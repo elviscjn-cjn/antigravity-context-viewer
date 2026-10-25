@@ -1,0 +1,14 @@
+node_modules/
+backups/
+package-*/
+context-meter-*.asar*
+installation.json
+.live-session.json
+live-host*.log
+__pycache__/
+*.pyc
+test-fixtures/
+v2-preview.png
+validation-*.json
+.DS_Store
+Thumbs.db

@@ -1,0 +1,37 @@
+{
+  "name": "antigravity-context-viewer",
+  "version": "2.3.0",
+  "description": "Antigravity 对话上下文查看器 & Token 用量看板 — Google Antigravity 原生级当前对话上下文进度条、超限预警与账号全局 Token 计数热力图套件",
+  "main": "cli.js",
+  "bin": {
+    "antigravity-context-viewer": "./cli.js",
+    "antigravity-meter": "./cli.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "install-patch": "node cli.js install",
+    "install-meter": "node cli.js install",
+    "live": "node cli.js live",
+    "status": "node cli.js status",
+    "check": "node cli.js check",
+    "restore": "node cli.js restore",
+    "uninstall-patch": "node cli.js restore",
+    "test": "node --test meter-core.test.js meter-renderer.test.js"
+  },
+  "keywords": [
+    "antigravity",
+    "google-antigravity",
+    "context-viewer",
+    "context-window",
+    "token-meter",
+    "token-tracker",
+    "activity-heatmap",
+    "progress-bar",
+    "electron-patch",
+    "gemini",
+    "ai-agent"
+  ],
+  "license": "MIT"
+}
