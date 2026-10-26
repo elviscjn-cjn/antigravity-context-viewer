@@ -150,4 +150,196 @@ async function collect(origin, id, options = {}) {
   conversations.set(key, { ...previous, pending: task });
   try { return await task; } catch (e) { conversations.delete(key); throw e; }
 }
-module.exports = { collect, scanFiles, pythonScan, resolvePython };
+
+let cachedTokenHistory = null;
+let cachedTokenHistoryAt = 0;
+
+function formatLocalDateKey(dateObj) {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function collectTokenHistory(options = {}) {
+  if (!options.force && cachedTokenHistory && Date.now() - cachedTokenHistoryAt < 15000) {
+    return cachedTokenHistory;
+  }
+  const home = process.env.USERPROFILE || os.homedir();
+  const agDir = path.join(home, '.gemini', 'antigravity');
+  const brainDir = path.join(agDir, 'brain');
+  const convDir = path.join(agDir, 'conversations');
+  const archivePath = path.join(agDir, 'token_usage_archive_v1.json');
+
+  let archive = { firstUseDate: null, dailyMap: {}, maxConversations: 0 };
+  try {
+    if (fs.existsSync(archivePath)) {
+      const raw = JSON.parse(fs.readFileSync(archivePath, 'utf8'));
+      if (raw && typeof raw === 'object') {
+        if (typeof raw.firstUseDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.firstUseDate)) {
+          archive.firstUseDate = raw.firstUseDate;
+        }
+        if (raw.dailyMap && typeof raw.dailyMap === 'object') {
+          archive.dailyMap = raw.dailyMap;
+        }
+        if (typeof raw.maxConversations === 'number') {
+          archive.maxConversations = raw.maxConversations;
+        }
+      }
+    }
+  } catch {}
+
+  let earliestDate = archive.firstUseDate || null;
+  const registerDate = (dateStr) => {
+    if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      if (!earliestDate || dateStr < earliestDate) earliestDate = dateStr;
+    }
+  };
+
+  // 1. Check conversations/*.pb timestamps for earliest local Antigravity usage
+  let pbCount = 0;
+  try {
+    if (fs.existsSync(convDir)) {
+      for (const name of fs.readdirSync(convDir)) {
+        const p = path.join(convDir, name);
+        try {
+          const st = fs.statSync(p);
+          if (st.isFile()) {
+            pbCount++;
+            const ts = st.birthtimeMs && st.birthtimeMs > 946684800000 ? Math.min(st.birthtimeMs, st.mtimeMs) : st.mtimeMs;
+            if (ts > 946684800000) registerDate(formatLocalDateKey(new Date(ts)));
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // 2. Walk brain/**/transcript.jsonl for complete step & token history
+  const transcriptFiles = [];
+  const walkBrain = (dir) => {
+    try {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) walkBrain(fullPath);
+        else if (entry.name === 'transcript.jsonl') transcriptFiles.push(fullPath);
+      }
+    } catch {}
+  };
+  walkBrain(brainDir);
+
+  const scannedDaily = {};
+  for (const file of transcriptFiles) {
+    try {
+      const content = fs.readFileSync(file, 'utf8');
+      const lines = content.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
+        let dateKey = null;
+        const mDate = line.match(/"created_at":"([^"]+)"/);
+        if (mDate) {
+          const d = new Date(mDate[1]);
+          if (!Number.isNaN(d.getTime())) {
+            dateKey = formatLocalDateKey(d);
+            registerDate(dateKey);
+          }
+        }
+        if (line.includes('"input_tokens":') || line.includes('"output_tokens":') || line.includes('"cache_read_tokens":')) {
+          const inp = Number((line.match(/"input_tokens":(\d+)/) || [])[1] || 0);
+          const outp = Number((line.match(/"output_tokens":(\d+)/) || [])[1] || 0);
+          const cap = Number((line.match(/"cache_read_tokens":(\d+)/) || [])[1] || 0);
+          const tot = inp + outp + cap;
+          if (tot > 0 && dateKey) {
+            if (!scannedDaily[dateKey]) {
+              scannedDaily[dateKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+            }
+            scannedDaily[dateKey].total += tot;
+            scannedDaily[dateKey].input += inp;
+            scannedDaily[dateKey].output += outp;
+            scannedDaily[dateKey].cache += cap;
+            scannedDaily[dateKey].steps += 1;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 3. Merge scannedDaily with persistent archive (retaining all historical dates without 12-month cap)
+  const mergedDaily = {};
+  const allKeys = new Set([...Object.keys(archive.dailyMap || {}), ...Object.keys(scannedDaily)]);
+  for (const k of Array.from(allKeys).sort()) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue;
+    registerDate(k);
+    const oldRec = archive.dailyMap?.[k];
+    const newRec = scannedDaily[k];
+    if (newRec && oldRec) {
+      mergedDaily[k] = {
+        total: Math.max(oldRec.total || 0, newRec.total || 0),
+        input: Math.max(oldRec.input || 0, newRec.input || 0),
+        output: Math.max(oldRec.output || 0, newRec.output || 0),
+        cache: Math.max(oldRec.cache || 0, newRec.cache || 0),
+        steps: Math.max(oldRec.steps || 0, newRec.steps || 0)
+      };
+    } else {
+      mergedDaily[k] = newRec || oldRec;
+    }
+  }
+
+  const now = new Date();
+  const todayKey = formatLocalDateKey(now);
+  const monthPrefix = todayKey.slice(0, 7);
+  const yearPrefix = todayKey.slice(0, 4);
+  if (!earliestDate) earliestDate = todayKey;
+
+  let grandTotalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCacheTokens = 0, totalSteps = 0;
+  let todayTokens = 0, monthTokens = 0, yearTokens = 0;
+
+  for (const [k, v] of Object.entries(mergedDaily)) {
+    if (!v) continue;
+    grandTotalTokens += v.total || 0;
+    totalInputTokens += v.input || 0;
+    totalOutputTokens += v.output || 0;
+    totalCacheTokens += v.cache || 0;
+    totalSteps += v.steps || 0;
+    if (k === todayKey) todayTokens += v.total || 0;
+    if (k.startsWith(monthPrefix)) monthTokens += v.total || 0;
+    if (k.startsWith(yearPrefix)) yearTokens += v.total || 0;
+  }
+
+  const totalConversations = Math.max(archive.maxConversations || 0, transcriptFiles.length, pbCount);
+  const out = {
+    updatedAt: `${todayKey} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`,
+    firstUseDate: earliestDate,
+    summary: {
+      grandTotalTokens,
+      totalInputTokens,
+      totalOutputTokens,
+      totalCacheTokens,
+      todayTokens,
+      monthTokens,
+      yearTokens,
+      totalSteps,
+      totalConversations,
+      firstUseDate: earliestDate,
+      activeDaysCount: Object.keys(mergedDaily).length
+    },
+    dailyMap: mergedDaily
+  };
+
+  try {
+    fs.mkdirSync(agDir, { recursive: true });
+    fs.writeFileSync(archivePath, JSON.stringify({
+      firstUseDate: earliestDate,
+      maxConversations: totalConversations,
+      updatedAt: out.updatedAt,
+      dailyMap: mergedDaily
+    }, null, 2), 'utf8');
+  } catch {}
+
+  cachedTokenHistory = out;
+  cachedTokenHistoryAt = Date.now();
+  return out;
+}
+
+module.exports = { collect, collectTokenHistory, scanFiles, pythonScan, resolvePython };

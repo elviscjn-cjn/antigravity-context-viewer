@@ -309,3 +309,112 @@ test('window controls overlay spacer, convPane flex-grow self-healing, and clean
   api.dispose();
 });
 
+test('v5 Section 1: floating panels reposition clear of left project sidebar and overlay right auxiliary pane without clipping', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  // Simulate left project sidebar expanded (0..256px) and right auxiliary pane open (host right = 610px in 1280px window)
+  h.sandbox.window.innerWidth = 1280;
+  h.sandbox.window.innerHeight = 800;
+  h.host.getBoundingClientRect = () => ({ left: 420, top: 6, right: 610, bottom: 34, width: 190, height: 28 });
+  h.sandbox.document.querySelector = sel => {
+    if (sel === 'div[role="navigation"]') {
+      return { getBoundingClientRect: () => ({ left: 0, top: 0, right: 256, bottom: 800, width: 256, height: 800 }) };
+    }
+    return null;
+  };
+
+  h.elements.get('badge-tokens').click();
+  const pTokens = h.elements.get('panel-tokens');
+  assert.equal(pTokens.hidden, false);
+  const leftPx = parseInt(pTokens.style.left, 10);
+  // Must be >= 256 + 12 = 268px (never occluded by left project sidebar) and extend rightward over Aux Pane
+  assert.equal(leftPx, 268);
+  assert.equal(pTokens.style.right, 'auto');
+  assert.ok(leftPx + 730 <= 1280 - 12);
+
+  api.dispose();
+});
+
+test('v5 Section 2 & 4: custom background color (panelBg), custom Color Picker HEX->RGB/HSL sync, and heatmap 5-stop presets & 2-endpoint interpolation', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // Custom panel background color unifies Level 1 & Level 2 and sets data-panel-tone
+  api.setCustomColor('panelBg', '#f8fafc');
+  assert.equal(h.host.style.getPropertyValue('--ag-custom-panel-bg'), '#f8fafc');
+  assert.equal(h.host.getAttribute('data-panel-tone'), 'light');
+
+  // Open custom Color Picker for tokenAccent and test direct HEX input without '#' ('652ab7')
+  api.openColorPicker('tokenAccent', null, 'Token 强调色');
+  assert.equal(h.elements.get('color-picker-popover').hidden, false);
+  const hexIn = h.elements.get('cp-input-hex');
+  const rgbIn = h.elements.get('cp-input-rgb');
+  const hslIn = h.elements.get('cp-input-hsl');
+  hexIn.value = '652ab7';
+  hexIn.trigger('input', { target: hexIn });
+  assert.equal(h.host.style.getPropertyValue('--ag-custom-token-accent'), '#652ab7');
+  assert.equal(rgbIn.value, 'rgb(101, 42, 183)');
+  assert.equal(hslIn.value, 'hsl(265, 63%, 44%)');
+
+  // Heatmap 5-stop preset switching
+  api.setHeatPreset('green');
+  assert.equal(api.getHeatPreset(), 'green');
+  assert.equal(h.host.style.getPropertyValue('--ag-heat-lvl-4'), '#86efac');
+
+  // Heatmap 2-endpoint custom interpolation (low = blue #1d4ed8, high = red #ef4444)
+  api.setCustomColor('heatLow', '#1d4ed8');
+  api.setCustomColor('heatHigh', '#ef4444');
+  const palette = api.getHeatPalette();
+  assert.equal(palette.length, 5);
+  assert.equal(palette[0], '#1d4ed8');
+  assert.equal(palette[4], '#ef4444');
+  assert.notEqual(palette[2], palette[0]);
+  assert.notEqual(palette[2], palette[4]);
+  assert.equal(h.host.style.getPropertyValue('--ag-heat-lvl-2'), palette[2]);
+
+  api.resetCustomColors();
+  assert.equal(h.host.getAttribute('data-panel-tone'), null);
+  api.dispose();
+});
+
+test('v5 Section 3 & 5: timeline starts at actual firstUseDate with zero leading blank cells and supports multi-year archive pagination', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // Verify default firstUseDate on this machine (2026-10-20)
+  h.elements.get('badge-tokens').click();
+  const win1 = api.getTimelineWindow();
+  assert.equal(win1.firstUseDate, '2026-10-20');
+  assert.equal(win1.winStart, '2026-10-20');
+  assert.equal(h.elements.get('first-use-badge').textContent, '首次使用：2026年10月20日');
+
+  const colsBox = h.elements.get('h-grid-cols');
+  assert.equal(colsBox.children.length, 52);
+  const firstCell = colsBox.children[0].children[0];
+  assert.equal(firstCell.getAttribute('data-date'), '2026-10-20');
+
+  // Simulate multi-year archive (e.g., first use 2025-03-15) -> rolling 12-month window with pagination clamped >= firstUseDate
+  api.setTokenHistoryForTest({
+    firstUseDate: '2025-03-15',
+    dailyMap: {
+      '2025-03-15': { total: 12000000, input: 10000000, output: 1000000, cache: 1000000, steps: 80 }
+    }
+  });
+  const win2 = api.getTimelineWindow();
+  assert.equal(win2.firstUseDate, '2025-03-15');
+  assert.equal(h.elements.get('first-use-badge').textContent, '首次使用：2025年3月15日');
+  assert.equal(win2.canPrev, true);
+
+  // Page back to earliest history; winStart must never go earlier than 2025-03-15
+  h.elements.get('h-page-prev').click();
+  h.elements.get('h-page-prev').click();
+  h.elements.get('h-page-prev').click();
+  const winEarliest = api.getTimelineWindow();
+  assert.equal(winEarliest.winStart, '2025-03-15');
+  assert.equal(winEarliest.canPrev, false);
+  assert.equal(winEarliest.canNext, true);
+
+  api.dispose();
+});
+
+

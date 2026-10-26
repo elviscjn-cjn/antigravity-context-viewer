@@ -10,19 +10,22 @@
   host.setAttribute('data-window-active', 'true');
   const shadow = host.attachShadow({ mode: 'open' });
 
-  // Antigravity 本地真实 Token 统计基准数据
+  // Antigravity 本地真实 Token 统计基准数据（自动与本地全量历史归档合并）
   const ANTIGRAVITY_TOKEN_DATA = {
-    updatedAt: "2026-10-26 03:40:45",
+    updatedAt: "2026-10-27 02:26:58",
+    firstUseDate: "2026-10-20",
     summary: {
-      grandTotalTokens: 428514452,
-      totalInputTokens: 20858713,
-      totalOutputTokens: 2065839,
-      totalCacheTokens: 405589900,
-      todayTokens: 69188942,
-      monthTokens: 428514452,
-      yearTokens: 428514452,
-      totalSteps: 3831,
-      totalConversations: 38
+      grandTotalTokens: 669964744,
+      totalInputTokens: 31150287,
+      totalOutputTokens: 3377500,
+      totalCacheTokens: 635436957,
+      todayTokens: 20057882,
+      monthTokens: 669964744,
+      yearTokens: 669964744,
+      totalSteps: 5831,
+      totalConversations: 53,
+      firstUseDate: "2026-10-20",
+      activeDaysCount: 8
     },
     dailyMap: {
       "2026-10-20": { total: 3594989, input: 738031, output: 52244, cache: 2804714, steps: 63 },
@@ -31,7 +34,8 @@
       "2026-10-23": { total: 25451505, input: 2179043, output: 123722, cache: 23148740, steps: 276 },
       "2026-10-24": { total: 247085955, input: 8760254, output: 765106, cache: 237560595, steps: 2071 },
       "2026-10-25": { total: 77539057, input: 4374559, output: 505159, cache: 72659339, steps: 686 },
-      "2026-10-26": { total: 69188942, input: 4099902, output: 552552, cache: 64536488, steps: 622 }
+      "2026-10-26": { total: 290581352, input: 14062310, output: 1743121, cache: 274775921, steps: 2490 },
+      "2026-10-27": { total: 20057882, input: 629166, output: 121092, cache: 19307624, steps: 132 }
     }
   };
 
@@ -45,7 +49,7 @@
       -webkit-app-region:no-drag;user-select:none;display:inline-flex;align-items:center;gap:2px;
       height:28px;flex-shrink:0;vertical-align:middle;
 
-      /* 优先复用 Antigravity 宿主主题变量，无变量时回退深色默认值 */
+      /* 优先复用 Antigravity 0 级宿主主题变量，无变量时回退深色默认值 */
       --ag-toolbar-fg:var(--secondary-foreground,#b8b8c0);
       --ag-toolbar-fg-hover:var(--foreground,#ececef);
       --ag-toolbar-bg:transparent;
@@ -65,57 +69,61 @@
       --ag-token-total-default:#b8b8c0;
       --ag-token-accent-default:#a78bfa;
 
-      /* 悬浮层与面板（优先对齐宿主 HoverWidget / Card 变量） */
-      --ag-float-bg:var(--vscode-editorHoverWidget-background,#21252b);
-      --ag-float-border:var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));
-      --ag-float-shadow:var(--vscode-widget-shadow,0 8px 24px rgba(0,0,0,0.48),0 2px 6px rgba(0,0,0,0.28));
+      /* 0 级主题背景与一级/二级严格统一背景色 */
+      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#181818));
+      --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
 
-      --ag-bg-panel:#1e1e22;
-      --ag-border-panel:rgba(255,255,255,0.10);
-      --ag-shadow-panel:0 14px 36px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.28);
+      --ag-float-bg:var(--ag-unified-bg);
+      --ag-float-border:rgba(255,255,255,0.12);
+      --ag-float-shadow:0 12px 32px rgba(0,0,0,0.52),0 2px 8px rgba(0,0,0,0.32);
+
+      --ag-bg-panel:var(--ag-unified-bg);
+      --ag-border-panel:rgba(255,255,255,0.11);
+      --ag-shadow-panel:0 16px 40px rgba(0,0,0,0.58),0 2px 10px rgba(0,0,0,0.32);
       --ag-text-primary:#ececef;
       --ag-text-secondary:#c8c8d0;
       --ag-text-muted:#8a8a94;
       --ag-border-subtle:rgba(255,255,255,0.08);
 
-      --ag-bg-card:rgba(255,255,255,0.03);
-      --ag-bg-card-hover:rgba(255,255,255,0.055);
-      --ag-border-card:rgba(255,255,255,0.07);
-      --ag-bg-subcard:rgba(255,255,255,0.02);
-      --ag-border-subcard:rgba(255,255,255,0.05);
-      --ag-bg-status:rgba(255,255,255,0.03);
+      /* 一级面板与二级内部菜单/卡片/抽屉背景严格一致 */
+      --ag-bg-card:var(--ag-unified-bg);
+      --ag-bg-card-hover:var(--ag-unified-bg);
+      --ag-border-card:rgba(255,255,255,0.09);
+      --ag-bg-subcard:var(--ag-unified-bg);
+      --ag-border-subcard:rgba(255,255,255,0.08);
+      --ag-bg-status:var(--ag-unified-bg);
       --ag-text-status:#c8c8d0;
 
-      --ag-btn-bg:rgba(255,255,255,0.05);
-      --ag-btn-hover:rgba(255,255,255,0.09);
-      --ag-btn-border:rgba(255,255,255,0.10);
-      --ag-btn-border-hover:rgba(255,255,255,0.18);
+      --ag-btn-bg:var(--ag-unified-bg);
+      --ag-btn-hover:rgba(255,255,255,0.08);
+      --ag-btn-border:rgba(255,255,255,0.12);
+      --ag-btn-border-hover:rgba(255,255,255,0.22);
       --ag-btn-text:#d4d4d8;
 
-      --ag-pill-muted-bg:rgba(255,255,255,0.05);
-      --ag-pill-muted-border:rgba(255,255,255,0.10);
+      --ag-pill-muted-bg:var(--ag-unified-bg);
+      --ag-pill-muted-border:rgba(255,255,255,0.12);
       --ag-pill-muted-text:#9a9aa2;
 
       --ag-track-bg:rgba(255,255,255,0.12);
       --ag-track-shadow:none;
 
-      --ag-heat-bg:rgba(0,0,0,0.20);
+      --ag-heat-bg:var(--ag-unified-bg);
       --ag-heat-lvl-0:#27272a;
       --ag-heat-lvl-1:#3f1e6b;
       --ag-heat-lvl-2:#652ab7;
       --ag-heat-lvl-3:#9053f8;
-      --ag-heat-lvl-4:var(--ag-custom-token-accent,#c084fc);
+      --ag-heat-lvl-4:#c084fc;
       --ag-heat-outline:#ffffff;
 
-      --ag-pop-bg:var(--ag-float-bg);
+      --ag-pop-bg:var(--ag-unified-bg);
       --ag-pop-border:var(--ag-float-border);
       --ag-pop-shadow:var(--ag-float-shadow);
       --ag-pop-text:var(--ag-text-primary);
       --ag-pop-muted:var(--ag-text-secondary);
       --ag-pop-sub:var(--ag-text-muted);
 
-      --ag-scrollbar-thumb:rgba(255,255,255,0.14);
-      --ag-scrollbar-hover:rgba(255,255,255,0.24);
+      --ag-scrollbar-thumb:rgba(255,255,255,0.16);
+      --ag-scrollbar-hover:rgba(255,255,255,0.28);
 
       color-scheme:dark;
       color:var(--ag-text-primary);
@@ -136,8 +144,9 @@
       opacity:1;
     }
 
-    /* 浅色模式规范 */
-    :host([data-theme="light"]){
+    /* 浅色模式规范（与 0 级浅色主题协调，且一级/二级背景严格统一） */
+    :host([data-theme="light"]),
+    :host([data-panel-tone="light"]){
       --ag-toolbar-fg:#52525b;
       --ag-toolbar-fg-hover:#18181b;
       --ag-toolbar-bg:transparent;
@@ -156,49 +165,52 @@
       --ag-token-total-default:#52525b;
       --ag-token-accent-default:#7c3aed;
 
-      --ag-float-bg:#ffffff;
+      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#ffffff));
+      --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
+
+      --ag-float-bg:var(--ag-unified-bg);
       --ag-float-border:rgba(0,0,0,0.12);
       --ag-float-shadow:0 8px 24px rgba(0,0,0,0.12),0 2px 6px rgba(0,0,0,0.06);
 
-      --ag-bg-panel:#ffffff;
-      --ag-border-panel:rgba(0,0,0,0.10);
-      --ag-shadow-panel:0 14px 36px rgba(0,0,0,0.12),0 2px 8px rgba(0,0,0,0.06);
+      --ag-bg-panel:var(--ag-unified-bg);
+      --ag-border-panel:rgba(0,0,0,0.12);
+      --ag-shadow-panel:0 14px 36px rgba(0,0,0,0.14),0 2px 8px rgba(0,0,0,0.06);
       --ag-text-primary:#18181b;
       --ag-text-secondary:#3f3f46;
       --ag-text-muted:#71717a;
       --ag-border-subtle:rgba(0,0,0,0.08);
 
-      --ag-bg-card:#f4f4f5;
-      --ag-bg-card-hover:#ececee;
-      --ag-border-card:rgba(0,0,0,0.07);
-      --ag-bg-subcard:#ffffff;
-      --ag-border-subcard:rgba(0,0,0,0.06);
-      --ag-bg-status:#f4f4f5;
+      --ag-bg-card:var(--ag-unified-bg);
+      --ag-bg-card-hover:var(--ag-unified-bg);
+      --ag-border-card:rgba(0,0,0,0.10);
+      --ag-bg-subcard:var(--ag-unified-bg);
+      --ag-border-subcard:rgba(0,0,0,0.09);
+      --ag-bg-status:var(--ag-unified-bg);
       --ag-text-status:#27272a;
 
-      --ag-btn-bg:#f4f4f5;
-      --ag-btn-hover:#e4e4e7;
-      --ag-btn-border:rgba(0,0,0,0.10);
-      --ag-btn-border-hover:rgba(0,0,0,0.18);
+      --ag-btn-bg:var(--ag-unified-bg);
+      --ag-btn-hover:rgba(0,0,0,0.05);
+      --ag-btn-border:rgba(0,0,0,0.12);
+      --ag-btn-border-hover:rgba(0,0,0,0.22);
       --ag-btn-text:#18181b;
 
-      --ag-pill-muted-bg:#ffffff;
+      --ag-pill-muted-bg:var(--ag-unified-bg);
       --ag-pill-muted-border:rgba(0,0,0,0.12);
       --ag-pill-muted-text:#52525b;
 
       --ag-track-bg:rgba(0,0,0,0.08);
       --ag-track-shadow:none;
 
-      --ag-heat-bg:#f4f4f5;
+      --ag-heat-bg:var(--ag-unified-bg);
       --ag-heat-lvl-0:#e4e4e7;
       --ag-heat-lvl-1:#e9d5ff;
       --ag-heat-lvl-2:#c084fc;
       --ag-heat-lvl-3:#9333ea;
-      --ag-heat-lvl-4:var(--ag-custom-token-accent,#6b21a8);
+      --ag-heat-lvl-4:#6b21a8;
       --ag-heat-outline:#18181b;
 
-      --ag-scrollbar-thumb:rgba(0,0,0,0.14);
-      --ag-scrollbar-hover:rgba(0,0,0,0.26);
+      --ag-scrollbar-thumb:rgba(0,0,0,0.16);
+      --ag-scrollbar-hover:rgba(0,0,0,0.28);
 
       color-scheme:light;
       color:var(--ag-text-primary);
@@ -386,7 +398,7 @@
     .drawer-arrow{font-size:11px;color:var(--ag-text-muted);font-weight:600}
     .drawer-body{margin-top:9px}
 
-    /* 自定义颜色设置网格 */
+    /* 自定义颜色设置网格与自定义颜色选取器面板 */
     .color-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:6px}
     .color-item{
       display:flex;align-items:center;justify-content:space-between;gap:6px;
@@ -394,10 +406,14 @@
     }
     .color-item-lbl{font-size:11px;color:var(--ag-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .color-item-ctrls{display:flex;align-items:center;gap:4px;flex-shrink:0}
-    .color-picker{
+    .color-picker{display:none!important}
+    .color-swatch-btn{
       width:20px;height:20px;padding:0;border:1px solid var(--ag-border-card);
-      border-radius:4px;background:transparent;cursor:pointer;
+      border-radius:4px;background:var(--swatch-color,#7748cf);cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,0.18);transition:transform .12s ease,border-color .12s ease;
     }
+    .color-swatch-btn:hover{transform:scale(1.08);border-color:var(--ag-text-primary)}
     .color-reset-btn{
       font-size:10.5px;padding:2px 6px;border-radius:4px;
       border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-muted);
@@ -405,9 +421,77 @@
     .color-reset-btn:hover{color:var(--ag-text-primary);background:var(--ag-btn-hover)}
     .color-reset-btn[data-mode="auto"]{opacity:0.55}
 
-    /* 弹出面板：上下文 (#panel) 与 Token 活动 (#panel-tokens) 独立面板 */
+    /* 自定义颜色选取器悬浮面板（参考样式：吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL三行） */
+    #color-picker-popover{
+      position:fixed;z-index:2147483640;width:304px;
+      background:var(--ag-bg-panel);color:var(--ag-text-primary);
+      border:1px solid var(--ag-border-panel);border-radius:10px;
+      box-shadow:var(--ag-shadow-panel);padding:12px;
+      user-select:none;
+    }
+    #color-picker-popover[hidden]{display:none!important}
+    .cp-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
+    .cp-title{font-size:12.5px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px}
+    .cp-target-lbl{font-size:11px;font-weight:400;color:var(--ag-text-muted)}
+    .cp-toolbar{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:9px}
+    .cp-eyedropper-btn{
+      display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;
+      border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-primary);
+      font-size:11.5px;font-weight:500;cursor:pointer;flex-shrink:0;
+    }
+    .cp-eyedropper-btn:hover{background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    .cp-presets{display:flex;align-items:center;gap:5px}
+    .cp-preset-dot{
+      width:16px;height:16px;border-radius:50%;border:1.5px solid rgba(255,255,255,0.22);
+      cursor:pointer;padding:0;transition:transform .12s ease;
+    }
+    :host([data-theme="light"]) .cp-preset-dot{border-color:rgba(0,0,0,0.18)}
+    .cp-preset-dot:hover{transform:scale(1.16)}
+    .cp-stage{display:grid;grid-template-columns:16px 1fr;gap:8px;margin-bottom:8px}
+    .cp-side-preview{border-radius:6px;border:1px solid var(--ag-border-card);background:#652ab7}
+    .cp-sv-area{
+      position:relative;height:132px;border-radius:7px;overflow:hidden;cursor:crosshair;
+      border:1px solid var(--ag-border-card);
+      background-color:#ff0000;
+      background-image:linear-gradient(to top,#000,transparent),linear-gradient(to right,#fff,transparent);
+    }
+    .cp-sv-thumb{
+      position:absolute;width:12px;height:12px;border-radius:50%;
+      border:2px solid #fff;box-shadow:0 0 3px rgba(0,0,0,0.75);
+      transform:translate(-50%,-50%);pointer-events:none;left:50%;top:50%;
+    }
+    .cp-hue-wrap{
+      position:relative;height:12px;border-radius:6px;margin-bottom:10px;cursor:ew-resize;
+      border:1px solid var(--ag-border-card);
+      background:linear-gradient(to right,#ff0000 0%,#ffff00 17%,#00ff00 33%,#00ffff 50%,#0000ff 67%,#ff00ff 83%,#ff0000 100%);
+    }
+    .cp-hue-thumb{
+      position:absolute;top:50%;width:12px;height:12px;border-radius:50%;
+      background:#fff;border:2px solid rgba(0,0,0,0.45);box-shadow:0 1px 3px rgba(0,0,0,0.5);
+      transform:translate(-50%,-50%);pointer-events:none;left:0%;
+    }
+    .cp-rows{display:flex;flex-direction:column;gap:6px}
+    .cp-row{
+      display:grid;grid-template-columns:36px 1fr 24px;align-items:center;gap:6px;
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-card);
+      border-radius:6px;padding:4px 7px;
+    }
+    .cp-fmt-lbl{font-size:11px;font-weight:600;color:var(--ag-text-muted)}
+    .cp-fmt-input{
+      width:100%;border:0;background:transparent;color:var(--ag-text-primary);
+      font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;
+      outline:none;padding:1px 2px;
+    }
+    .cp-copy-btn{
+      border:0;background:transparent;color:var(--ag-text-muted);cursor:pointer;
+      font-size:11.5px;padding:2px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;
+    }
+    .cp-copy-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
+    .cp-footer{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:7px;border-top:1px solid var(--ag-border-subtle)}
+
+    /* 弹出面板：上下文 (#panel) 与 Token 用量一览 (#panel-tokens) 独立面板 */
     .ag-panel{
-      position:fixed;top:38px;right:16px;z-index:2147483500;
+      position:fixed;top:38px;left:auto;right:16px;z-index:2147483500;
       max-width:calc(100vw - 24px);max-height:calc(100vh - 52px);
       overflow:auto;border:1px solid var(--ag-border-panel);border-radius:10px;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);box-shadow:var(--ag-shadow-panel);padding:14px;
@@ -477,8 +561,8 @@
     :host([data-theme="light"]) .file-unknown{color:#b45309}
     #v{color:var(--ag-text-muted);font-size:10px;font-weight:400;margin-left:6px}
 
-    /* 全局 Token 活动 */
-    #view-tokens{display:flex;flex-direction:column;gap:11px}
+    /* 全局 Token 用量一览 */
+    #view-tokens{display:flex;flex-direction:column;gap:10px}
     .token-stat-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
     .t-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:3px;transition:background-color .14s ease}
     .t-card:hover{background:var(--ag-bg-card-hover)}
@@ -488,9 +572,22 @@
     #t-today-val{color:var(--ag-custom-token-accent,var(--ag-text-primary))}
     .t-card-sub{font-size:10px;color:var(--ag-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-    .heatmap-section{background:var(--ag-heat-bg);border:1px solid var(--ag-border-card);border-radius:10px;padding:12px 14px}
-    .heat-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+    .heatmap-section{background:var(--ag-heat-bg);border:1px solid var(--ag-border-card);border-radius:10px;padding:12px}
+    .heat-header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+    .heat-header-left{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
     .heat-title{font-size:13px;font-weight:600;color:var(--ag-text-primary)}
+    .first-use-badge{
+      font-size:11px;font-weight:500;color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-card);
+      border-radius:6px;padding:2px 8px;font-variant-numeric:tabular-nums;
+    }
+    .heat-win-nav{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
+    .heat-nav-btn{
+      border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-secondary);
+      border-radius:4px;padding:1px 6px;font-size:11px;line-height:1.25;cursor:pointer;
+    }
+    .heat-nav-btn:hover:not(:disabled){background:var(--ag-btn-hover);color:var(--ag-text-primary)}
+    .heat-nav-btn:disabled{opacity:0.35;cursor:default}
     .heat-tabs{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--ag-text-muted)}
     .heat-tab-btn{background:none;border:0;color:var(--ag-text-muted);cursor:pointer;padding:2px 0;transition:color .14s ease}
     .heat-tab-btn:hover{color:var(--ag-text-primary)}
@@ -501,22 +598,39 @@
     .heat-week-col{display:flex;flex-direction:column;gap:3px}
     .heat-cell{width:10px;height:10px;border-radius:2px;background:var(--ag-heat-lvl-0);cursor:pointer;transition:transform .12s ease}
     .heat-cell:hover{transform:scale(1.3);z-index:5;outline:1.5px solid var(--ag-heat-outline)}
+    .heat-cell.is-future{opacity:0.36}
+    .heat-cell.is-today{outline:1.5px solid var(--ag-custom-token-accent,var(--ag-token-accent-default));outline-offset:0.5px}
     .lvl-0{background:var(--ag-heat-lvl-0)}
     .lvl-1{background:var(--ag-heat-lvl-1)}
     .lvl-2{background:var(--ag-heat-lvl-2)}
     .lvl-3{background:var(--ag-heat-lvl-3)}
     .lvl-4{background:var(--ag-heat-lvl-4)}
 
-    .heat-months{position:relative;height:18px;margin-top:4px;font-size:11px;color:var(--ag-text-muted)}
+    .heat-months{position:relative;height:18px;margin-top:4px;font-size:11px;color:var(--ag-text-muted);overflow:hidden}
     .heat-month-item{position:absolute;white-space:nowrap}
 
     #h-weekly-box{display:none;height:105px;align-items:flex-end;gap:3px;border-bottom:1px solid var(--ag-border-subtle);padding-bottom:3px}
     .w-bar-col{flex:1;height:100%;display:flex;align-items:flex-end;cursor:pointer}
     .w-bar-fill{width:100%;border-radius:2px 2px 0 0;background:var(--ag-heat-lvl-0);min-height:3px;transition:height .22s ease,background-color .14s ease}
-    .w-bar-col:hover .w-bar-fill{background:var(--ag-custom-token-accent,#c084fc)!important}
+    .w-bar-col:hover .w-bar-fill{background:var(--ag-custom-token-accent,var(--ag-heat-lvl-4))!important}
 
     #h-cum-box{display:none;height:105px;position:relative}
     canvas#h-cum-canvas{width:100%;height:105px;display:block}
+
+    .heat-preset-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin:6px 0 8px}
+    .heat-preset-group{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+    .heat-preset-btn{
+      display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:6px;
+      border:1px solid var(--ag-border-card);background:var(--ag-bg-subcard);color:var(--ag-text-secondary);
+      font-size:11px;cursor:pointer;transition:border-color .12s ease,color .12s ease;
+    }
+    .heat-preset-btn:hover{color:var(--ag-text-primary);border-color:var(--ag-btn-border-hover)}
+    .heat-preset-btn[data-active="true"]{
+      color:var(--ag-text-primary);border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default));
+      font-weight:600;
+    }
+    .heat-preset-dots{display:inline-flex;gap:2px}
+    .heat-preset-dots i{width:7px;height:7px;border-radius:1.5px;display:inline-block}
 
     .heat-popover{position:fixed;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);border-radius:8px;padding:6px 10px;box-shadow:var(--ag-pop-shadow);z-index:2147483600;opacity:0;transform:translate(-50%,-100%) translateY(-6px);transition:opacity .12s ease}
     .pop-date{font-size:11.5px;color:var(--ag-pop-muted)}
@@ -553,10 +667,10 @@
   </button>
 
   <!-- 顶部基本单元 3: 累计 Token 用量 -->
-  <button id="badge-tokens" class="ag-unit" type="button" aria-label="账号 Token 活动统计" aria-expanded="false">
+  <button id="badge-tokens" class="ag-unit" type="button" aria-label="Token 用量一览" aria-expanded="false">
     <span class="token-fire-dot" aria-hidden="true"></span>
-    <span id="token-amount">428.5M</span>
-    <span id="token-hover-extra" class="sr-only">· 今日 69.2M</span>
+    <span id="token-amount">670.0M</span>
+    <span id="token-hover-extra" class="sr-only">· 今日 65.5M</span>
   </button>
 
   <!-- 顶部基本单元 4: 窄屏溢出菜单按钮 -->
@@ -582,8 +696,8 @@
       <span id="overflow-speed-val" class="overflow-item-val">-- tok/s</span>
     </button>
     <button id="overflow-tokens-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span class="token-fire-dot"></span><span>累计用量</span></span>
-      <span id="overflow-tokens-val" class="overflow-item-val">428.5M</span>
+      <span class="overflow-item-label"><span class="token-fire-dot"></span><span>Token 用量一览</span></span>
+      <span id="overflow-tokens-val" class="overflow-item-val">670.0M</span>
     </button>
   </div>
 
@@ -601,7 +715,7 @@
 
     <div id="view-context">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <h3 style="margin:0">会话用量与生成监控<span id="v">v2.6</span></h3>
+        <h3 style="margin:0">会话用量与生成监控<span id="v">v2.7</span></h3>
       </div>
 
       <!-- 卡片 1: 核心用量速览 -->
@@ -639,54 +753,68 @@
         <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
       </div>
 
-      <!-- 二级交互折叠区 1: 颜色与外观自定义 -->
+      <!-- 二级交互折叠区 1: 面板背景与指标颜色自定义（就近放置于面板 B 内部） -->
       <div class="tech-drawer">
         <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left"><span>🎨 指标颜色自定义（默认跟随主题）</span></span>
+          <span class="drawer-trigger-left"><span>🎨 指标与背景颜色自定义（默认跟随主题）</span></span>
           <span id="color-drawer-arrow" class="drawer-arrow">▼ 展开设置</span>
         </button>
         <div id="color-drawer-body" class="drawer-body" style="display:none;">
           <div class="color-grid">
+            <div class="color-item" style="grid-column:1 / -1">
+              <span class="color-item-lbl">面板与菜单统一背景色（0级跟随 / 自定义）</span>
+              <div class="color-item-ctrls">
+                <input id="color-panelBg" class="color-picker" type="color" value="#181818" aria-label="面板背景色" />
+                <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
+                <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+              </div>
+            </div>
             <div class="color-item">
               <span class="color-item-lbl">圆环已用部分</span>
               <div class="color-item-ctrls">
                 <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb" aria-label="上下文圆环已用部分颜色" />
-                <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto">默认</button>
+                <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed" data-color-label="圆环已用部分" title="点击打开颜色选取器"></button>
+                <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl">圆环轨道</span>
               <div class="color-item-ctrls">
                 <input id="color-ringTrack" class="color-picker" type="color" value="#52525b" aria-label="圆环轨道颜色" />
-                <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto">默认</button>
+                <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack" data-color-label="圆环轨道" title="点击打开颜色选取器"></button>
+                <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl">上下文用量文字</span>
               <div class="color-item-ctrls">
                 <input id="color-contextText" class="color-picker" type="color" value="#ececef" aria-label="上下文用量文字颜色" />
-                <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto">默认</button>
+                <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText" data-color-label="上下文用量文字" title="点击打开颜色选取器"></button>
+                <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl">输出速度</span>
               <div class="color-item-ctrls">
                 <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" aria-label="输出速度颜色" />
-                <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto">默认</button>
+                <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="输出速度" title="点击打开颜色选取器"></button>
+                <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl">累计 token 用量</span>
               <div class="color-item-ctrls">
                 <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc" aria-label="累计 token 用量颜色" />
-                <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto">默认</button>
+                <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="点击打开颜色选取器"></button>
+                <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl">其他 token 指标</span>
               <div class="color-item-ctrls">
                 <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa" aria-label="其他 token 指标颜色" />
-                <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto">默认</button>
+                <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="其他 token 指标" title="点击打开颜色选取器"></button>
+                <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
           </div>
@@ -719,11 +847,11 @@
     </div>
   </section>
 
-  <!-- 弹出式面板 2: 账号 Token 活动与 7x52 活跃热力图 (#panel-tokens, 730px) -->
-  <section id="panel-tokens" class="ag-panel" hidden aria-label="账号 Token 活动详情">
+  <!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
+  <section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览">
     <div class="panel-header-bar">
       <div class="panel-title panel-title-tokens">
-        <span style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">🔥 账号 Token 活动</span>
+        <span id="panel-tokens-title" style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">🔥 Token 用量一览</span>
       </div>
       <div class="panel-header-actions">
         <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
@@ -735,29 +863,37 @@
       <div class="token-stat-cards">
         <div class="t-card">
           <div class="t-card-lbl"><span>全量累计</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Total</span></div>
-          <div class="t-card-val" id="t-total-val">428.5M</div>
-          <div class="t-card-sub" id="t-total-sub">428,514,452 Tokens</div>
+          <div class="t-card-val" id="t-total-val">670.0M</div>
+          <div class="t-card-sub" id="t-total-sub">669,964,744 Tokens</div>
         </div>
         <div class="t-card">
           <div class="t-card-lbl"><span>今日使用</span><span style="color:var(--ag-custom-token-accent,#0284c7)">Today</span></div>
-          <div class="t-card-val" id="t-today-val">69.2M</div>
-          <div class="t-card-sub" id="t-today-sub">38 会话实时累加</div>
+          <div class="t-card-val" id="t-today-val">65.5M</div>
+          <div class="t-card-sub" id="t-today-sub">53 会话实时累加</div>
         </div>
         <div class="t-card">
           <div class="t-card-lbl"><span>本月使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Month</span></div>
-          <div class="t-card-val" id="t-month-val">428.5M</div>
-          <div class="t-card-sub" id="t-month-sub">日均约 61.2M</div>
+          <div class="t-card-val" id="t-month-val">670.0M</div>
+          <div class="t-card-sub" id="t-month-sub">日均约 83.7M</div>
         </div>
         <div class="t-card">
           <div class="t-card-lbl"><span>年度使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Year</span></div>
-          <div class="t-card-val" id="t-year-val">428.5M</div>
-          <div class="t-card-sub" id="t-year-sub">365 天活动记录</div>
+          <div class="t-card-val" id="t-year-val">670.0M</div>
+          <div class="t-card-sub" id="t-year-sub">8 天活动记录</div>
         </div>
       </div>
 
       <div class="heatmap-section">
         <div class="heat-header">
-          <div class="heat-title">Token 活动</div>
+          <div class="heat-header-left">
+            <div class="heat-title">Token 活动</div>
+            <span id="first-use-badge" class="first-use-badge">首次使用：2026年10月20日</span>
+            <div class="heat-win-nav">
+              <button id="h-page-prev" class="heat-nav-btn" type="button" title="查看更早的 12 个月窗口" disabled>‹</button>
+              <span id="h-win-range">2026.10.20 – 2027.10.18</span>
+              <button id="h-page-next" class="heat-nav-btn" type="button" title="查看更新的 12 个月窗口" disabled>›</button>
+            </div>
+          </div>
           <div class="heat-tabs">
             <button class="heat-tab-btn active" id="h-tab-daily" type="button">每天</button>
             <button class="heat-tab-btn" id="h-tab-weekly" type="button">每周</button>
@@ -774,21 +910,145 @@
             <canvas id="h-cum-canvas"></canvas>
           </div>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted)">
-          <span>点击或悬浮格子查看当日详细 Token 构成</span>
-          <div style="display:flex;align-items:center;gap:4px">
-            <span>少</span>
-            <div style="width:8px;height:8px;border-radius:2px;background:var(--ag-heat-lvl-0)"></div>
-            <div style="width:8px;height:8px;border-radius:2px;background:var(--ag-heat-lvl-1)"></div>
-            <div style="width:8px;height:8px;border-radius:2px;background:var(--ag-heat-lvl-2)"></div>
-            <div style="width:8px;height:8px;border-radius:2px;background:var(--ag-heat-lvl-3)"></div>
-            <div style="width:8px;height:8px;border-radius:2px;background:var(--ag-heat-lvl-4)"></div>
-            <span>多</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px">
+          <span>点击或悬浮格子查看当日详细 Token 构成（起点为实际首次使用日，前置空白已消除）</span>
+          <div style="display:flex;align-items:center;gap:6px">
+            <div id="heat-legend-scale" style="display:flex;align-items:center;gap:4px;cursor:pointer" title="点击展开热力图色阶与面板颜色设置">
+              <span>少</span>
+              <div id="heat-leg-0" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-0);border:1px solid var(--ag-border-card)"></div>
+              <div id="heat-leg-1" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-1)"></div>
+              <div id="heat-leg-2" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-2)"></div>
+              <div id="heat-leg-3" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-3)"></div>
+              <div id="heat-leg-4" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-4)"></div>
+              <span>多</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 二级交互折叠区（就近放置于面板 A 内部）：面板背景色 + 热力图 5 档色阶预设与两端插值自定义 -->
+      <div class="tech-drawer" style="margin-top:2px">
+        <button id="btn-toggle-token-colors" class="drawer-trigger" aria-expanded="false" type="button">
+          <span class="drawer-trigger-left"><span>🎨 热力图色阶与面板外观自定义（默认跟随主题）</span></span>
+          <span id="token-color-drawer-arrow" class="drawer-arrow">▼ 展开设置</span>
+        </button>
+        <div id="token-color-drawer-body" class="drawer-body" style="display:none;">
+          <div class="heat-preset-bar">
+            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档色阶预设：</span>
+            <div class="heat-preset-group" id="heat-preset-group">
+              <button class="heat-preset-btn" type="button" data-heat-preset="purple" data-active="true">
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#3f1e6b"></i><i style="background:#652ab7"></i><i style="background:#9053f8"></i><i style="background:#c084fc"></i></span>
+                <span>紫色系</span>
+              </button>
+              <button class="heat-preset-btn" type="button" data-heat-preset="yellow" data-active="false">
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#713f12"></i><i style="background:#a16207"></i><i style="background:#eab308"></i><i style="background:#fde047"></i></span>
+                <span>黄色系</span>
+              </button>
+              <button class="heat-preset-btn" type="button" data-heat-preset="green" data-active="false">
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#14532d"></i><i style="background:#15803d"></i><i style="background:#22c55e"></i><i style="background:#86efac"></i></span>
+                <span>绿色系</span>
+              </button>
+              <button class="heat-preset-btn" type="button" data-heat-preset="blue" data-active="false">
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#1e3a8a"></i><i style="background:#1d4ed8"></i><i style="background:#3b82f6"></i><i style="background:#93c5fd"></i></span>
+                <span>蓝色系</span>
+              </button>
+              <button class="heat-preset-btn" type="button" data-heat-preset="red" data-active="false">
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#7f1d1d"></i><i style="background:#b91c1c"></i><i style="background:#ef4444"></i><i style="background:#fca5a5"></i></span>
+                <span>红色系</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="color-grid">
+            <div class="color-item">
+              <span class="color-item-lbl">色阶「少」端颜色（自动插值）</span>
+              <div class="color-item-ctrls">
+                <input id="color-heatLow" class="color-picker" type="color" value="#27272a" aria-label="热力图少端颜色" />
+                <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow" data-color-label="热力图「少」端颜色" title="点击打开颜色选取器"></button>
+                <button id="reset-heatLow" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+              </div>
+            </div>
+            <div class="color-item">
+              <span class="color-item-lbl">色阶「多」端颜色（自动插值）</span>
+              <div class="color-item-ctrls">
+                <input id="color-heatHigh" class="color-picker" type="color" value="#c084fc" aria-label="热力图多端颜色" />
+                <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh" data-color-label="热力图「多」端颜色" title="点击打开颜色选取器"></button>
+                <button id="reset-heatHigh" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+              </div>
+            </div>
+            <div class="color-item">
+              <span class="color-item-lbl">面板与菜单统一背景色</span>
+              <div class="color-item-ctrls">
+                <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
+                <button id="reset-panelBg-tokens" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+              </div>
+            </div>
+            <div class="color-item">
+              <span class="color-item-lbl">累计与强调指标色</span>
+              <div class="color-item-ctrls">
+                <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="总累计颜色"></button>
+                <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="Token 强调色" title="强调指标颜色"></button>
+                <button id="reset-all-colors-tokens" class="color-reset-btn" type="button">全部恢复跟随主题</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
   </section>
+
+  <!-- 自定义颜色选取器面板（替换系统原生取色器） -->
+  <div id="color-picker-popover" hidden role="dialog" aria-label="颜色选取器">
+    <div class="cp-header">
+      <div class="cp-title">
+        <span>🎨 颜色选取器</span>
+        <span id="cp-target-name" class="cp-target-lbl"></span>
+      </div>
+      <button id="cp-close" class="panel-icon-btn" type="button" aria-label="关闭颜色选取器">×</button>
+    </div>
+    <div class="cp-toolbar">
+      <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色">🖊 取色</button>
+      <div class="cp-presets" id="cp-presets">
+        <button class="cp-preset-dot" type="button" data-cp-hex="#ef4444" style="background:#ef4444" title="#EF4444"></button>
+        <button class="cp-preset-dot" type="button" data-cp-hex="#f97316" style="background:#f97316" title="#F97316"></button>
+        <button class="cp-preset-dot" type="button" data-cp-hex="#eab308" style="background:#eab308" title="#EAB308"></button>
+        <button class="cp-preset-dot" type="button" data-cp-hex="#22c55e" style="background:#22c55e" title="#22C55E"></button>
+        <button class="cp-preset-dot" type="button" data-cp-hex="#06b6d4" style="background:#06b6d4" title="#06B6D4"></button>
+        <button class="cp-preset-dot" type="button" data-cp-hex="#3b82f6" style="background:#3b82f6" title="#3B82F6"></button>
+        <button class="cp-preset-dot" type="button" data-cp-hex="#a855f7" style="background:#a855f7" title="#A855F7"></button>
+      </div>
+    </div>
+    <div class="cp-stage">
+      <div id="cp-side-preview" class="cp-side-preview"></div>
+      <div id="cp-sv-area" class="cp-sv-area">
+        <div id="cp-sv-thumb" class="cp-sv-thumb"></div>
+      </div>
+    </div>
+    <div id="cp-hue-wrap" class="cp-hue-wrap">
+      <div id="cp-hue-thumb" class="cp-hue-thumb"></div>
+    </div>
+    <div class="cp-rows">
+      <div class="cp-row">
+        <span class="cp-fmt-lbl">HEX</span>
+        <input id="cp-input-hex" class="cp-fmt-input" type="text" value="#652ab7" spellcheck="false" aria-label="HEX 色值输入" />
+        <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX">📋</button>
+      </div>
+      <div class="cp-row">
+        <span class="cp-fmt-lbl">RGB</span>
+        <input id="cp-input-rgb" class="cp-fmt-input" type="text" value="rgb(101, 42, 183)" spellcheck="false" aria-label="RGB 色值输入" />
+        <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB">📋</button>
+      </div>
+      <div class="cp-row">
+        <span class="cp-fmt-lbl">HSL</span>
+        <input id="cp-input-hsl" class="cp-fmt-input" type="text" value="hsl(265, 63%, 44%)" spellcheck="false" aria-label="HSL 色值输入" />
+        <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL">📋</button>
+      </div>
+    </div>
+    <div class="cp-footer">
+      <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)">支持直接输入或粘贴 HEX 色值</span>
+      <button id="cp-reset-slot" class="color-reset-btn" type="button">跟随主题</button>
+    </div>
+  </div>
 
   <!-- 热力图浮动 Tooltip -->
   <div class="heat-popover" id="heat-pop">
@@ -828,26 +1088,58 @@
   };
   const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
   let activeHeatView = 'daily';
+  let heatPageOffset = 0;
 
   // =========================================================================
-  // 模块 1: 主题跟随与 6 项独立自定义颜色管理
+  // 模块 1: 0 级主题跟随、面板与菜单统一背景色、热力图 5 档色阶与自定义颜色选取器
   // =========================================================================
   const COLOR_SLOTS = {
+    panelBg: '--ag-custom-panel-bg',
     ringUsed: '--ag-custom-ring-used',
     ringTrack: '--ag-custom-ring-track',
     contextText: '--ag-custom-context-text',
     speedText: '--ag-custom-speed',
     tokenTotal: '--ag-custom-token-total',
-    tokenAccent: '--ag-custom-token-accent'
+    tokenAccent: '--ag-custom-token-accent',
+    heatLow: '--ag-custom-heat-low',
+    heatHigh: '--ag-custom-heat-high'
   };
   const COLOR_STORAGE_KEY = 'ag_custom_colors_v1';
+  const HEAT_PRESET_STORAGE_KEY = 'ag_heat_preset_v1';
   const customColors = {
+    panelBg: '',
     ringUsed: '',
     ringTrack: '',
     contextText: '',
     speedText: '',
     tokenTotal: '',
-    tokenAccent: ''
+    tokenAccent: '',
+    heatLow: '',
+    heatHigh: ''
+  };
+  let heatPreset = 'purple';
+
+  const HEAT_PRESETS = {
+    purple: {
+      dark: ['#27272a', '#3f1e6b', '#652ab7', '#9053f8', '#c084fc'],
+      light: ['#e4e4e7', '#e9d5ff', '#c084fc', '#9333ea', '#6b21a8']
+    },
+    yellow: {
+      dark: ['#27272a', '#713f12', '#a16207', '#eab308', '#fde047'],
+      light: ['#e4e4e7', '#fef08a', '#facc15', '#ca8a04', '#854d0e']
+    },
+    green: {
+      dark: ['#27272a', '#14532d', '#15803d', '#22c55e', '#86efac'],
+      light: ['#e4e4e7', '#bbf7d0', '#4ade80', '#16a34a', '#14532d']
+    },
+    blue: {
+      dark: ['#27272a', '#1e3a8a', '#1d4ed8', '#3b82f6', '#93c5fd'],
+      light: ['#e4e4e7', '#bfdbfe', '#60a5fa', '#2563eb', '#1e3a8a']
+    },
+    red: {
+      dark: ['#27272a', '#7f1d1d', '#b91c1c', '#ef4444', '#fca5a5'],
+      light: ['#e4e4e7', '#fecaca', '#f87171', '#dc2626', '#7f1d1d']
+    }
   };
 
   try {
@@ -857,50 +1149,139 @@
       for (const k of Object.keys(COLOR_SLOTS)) {
         if (typeof parsed?.[k] === 'string') customColors[k] = parsed[k];
       }
+      if (typeof parsed?.heatPreset === 'string' && HEAT_PRESETS[parsed.heatPreset]) {
+        heatPreset = parsed.heatPreset;
+      }
     }
+    const savedPreset = typeof localStorage !== 'undefined' && localStorage.getItem(HEAT_PRESET_STORAGE_KEY);
+    if (savedPreset && HEAT_PRESETS[savedPreset]) heatPreset = savedPreset;
   } catch {}
 
   function saveCustomColors() {
     try {
       if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(COLOR_STORAGE_KEY, JSON.stringify(customColors));
+        localStorage.setItem(COLOR_STORAGE_KEY, JSON.stringify({ ...customColors, heatPreset }));
+        localStorage.setItem(HEAT_PRESET_STORAGE_KEY, heatPreset);
       }
     } catch {}
   }
 
-  function applyCustomColors() {
-    for (const [key, cssVar] of Object.entries(COLOR_SLOTS)) {
-      const val = customColors[key];
-      if (val) {
-        host.style.setProperty(cssVar, val);
-      } else if (host.style.removeProperty) {
-        host.style.removeProperty(cssVar);
-      } else {
-        host.style.setProperty(cssVar, '');
-      }
-      const inputEl = el(`color-${key}`);
-      const resetBtn = el(`reset-${key}`);
-      if (inputEl && val) inputEl.value = val;
-      if (resetBtn) {
-        resetBtn.setAttribute('data-mode', val ? 'custom' : 'auto');
-        resetBtn.textContent = val ? '恢复默认' : '跟随主题';
-      }
+  // 色彩空间转换与格式化工具（HEX <-> RGB <-> HSV <-> HSL）
+  function clampNum(n, min, max) {
+    return Math.min(max, Math.max(min, Number.isFinite(n) ? n : min));
+  }
+
+  function rgbToHex(r, g, b) {
+    const to2 = v => clampNum(Math.round(v), 0, 255).toString(16).padStart(2, '0');
+    return `#${to2(r)}${to2(g)}${to2(b)}`;
+  }
+
+  function hexToRgb(hexStr) {
+    if (!hexStr || typeof hexStr !== 'string') return null;
+    const clean = hexStr.trim().replace(/^#/, '');
+    if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(clean)) return null;
+    const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean;
+    const num = parseInt(full, 16);
+    if (Number.isNaN(num)) return null;
+    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+  }
+
+  function hslToRgb(h, s, l) {
+    const hn = ((Number(h) % 360) + 360) % 360;
+    const sn = clampNum(Number(s), 0, 100) / 100;
+    const ln = clampNum(Number(l), 0, 100) / 100;
+    const c = (1 - Math.abs(2 * ln - 1)) * sn;
+    const x = c * (1 - Math.abs(((hn / 60) % 2) - 1));
+    const m = ln - c / 2;
+    let r1 = 0, g1 = 0, b1 = 0;
+    if (hn < 60) { r1 = c; g1 = x; }
+    else if (hn < 120) { r1 = x; g1 = c; }
+    else if (hn < 180) { g1 = c; b1 = x; }
+    else if (hn < 240) { g1 = x; b1 = c; }
+    else if (hn < 300) { r1 = x; b1 = c; }
+    else { r1 = c; b1 = x; }
+    return {
+      r: Math.round((r1 + m) * 255),
+      g: Math.round((g1 + m) * 255),
+      b: Math.round((b1 + m) * 255)
+    };
+  }
+
+  function normalizeHex(input) {
+    if (!input || typeof input !== 'string') return null;
+    const s = input.trim();
+    const direct = hexToRgb(s);
+    if (direct) return rgbToHex(direct.r, direct.g, direct.b);
+    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (mRgb) return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
+    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?/i);
+    if (mHsl) {
+      const rgb = hslToRgb(Number(mHsl[1]), Number(mHsl[2]), Number(mHsl[3]));
+      return rgbToHex(rgb.r, rgb.g, rgb.b);
     }
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    return null;
   }
 
-  function setCustomColor(key, value) {
-    if (!Object.prototype.hasOwnProperty.call(COLOR_SLOTS, key)) return;
-    customColors[key] = value ? String(value).trim() : '';
-    saveCustomColors();
-    applyCustomColors();
+  function rgbToHsv(r, g, b) {
+    const rn = r / 255, gn = g / 255, bn = b / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    const d = max - min;
+    let h = 0;
+    if (d !== 0) {
+      if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
+      else if (max === gn) h = ((bn - rn) / d + 2) * 60;
+      else h = ((rn - gn) / d + 4) * 60;
+    }
+    const s = max === 0 ? 0 : (d / max) * 100;
+    const v = max * 100;
+    return { h: Math.round(h), s: Math.round(s), v: Math.round(v) };
   }
 
-  function resetCustomColors() {
-    for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = '';
-    saveCustomColors();
-    applyCustomColors();
+  function hsvToRgb(h, s, v) {
+    const hn = ((Number(h) % 360) + 360) % 360;
+    const sn = clampNum(Number(s), 0, 100) / 100;
+    const vn = clampNum(Number(v), 0, 100) / 100;
+    const c = vn * sn;
+    const x = c * (1 - Math.abs(((hn / 60) % 2) - 1));
+    const m = vn - c;
+    let r1 = 0, g1 = 0, b1 = 0;
+    if (hn < 60) { r1 = c; g1 = x; }
+    else if (hn < 120) { r1 = x; g1 = c; }
+    else if (hn < 180) { g1 = c; b1 = x; }
+    else if (hn < 240) { g1 = x; b1 = c; }
+    else if (hn < 300) { r1 = x; b1 = c; }
+    else { r1 = c; b1 = x; }
+    return {
+      r: Math.round((r1 + m) * 255),
+      g: Math.round((g1 + m) * 255),
+      b: Math.round((b1 + m) * 255)
+    };
+  }
+
+  function rgbToHsl(r, g, b) {
+    const rn = r / 255, gn = g / 255, bn = b / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    const l = (max + min) / 2;
+    const d = max - min;
+    let h = 0, s = 0;
+    if (d !== 0) {
+      s = d / (1 - Math.abs(2 * l - 1));
+      if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
+      else if (max === gn) h = ((bn - rn) / d + 2) * 60;
+      else h = ((rn - gn) / d + 4) * 60;
+    }
+    return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
+  }
+
+  function interpolateHex(hexA, hexB, t) {
+    const a = hexToRgb(hexA) || { r: 39, g: 39, b: 42 };
+    const b = hexToRgb(hexB) || { r: 192, g: 132, b: 252 };
+    const ratio = clampNum(t, 0, 1);
+    return rgbToHex(
+      a.r + (b.r - a.r) * ratio,
+      a.g + (b.g - a.g) * ratio,
+      a.b + (b.b - a.b) * ratio
+    );
   }
 
   let currentThemeMode = 'auto';
@@ -910,22 +1291,24 @@
 
   function parseRgbLuminance(colorStr) {
     if (!colorStr || typeof colorStr !== 'string') return null;
-    const s = colorStr.trim();
-    if (s.startsWith('#')) {
-      const hex = s.slice(1);
-      const full = hex.length === 3 ? hex.split('').map(c => c + c).join('') : hex.slice(0, 6);
-      if (full.length === 6) {
-        const r = parseInt(full.slice(0, 2), 16);
-        const g = parseInt(full.slice(2, 4), 16);
-        const b = parseInt(full.slice(4, 6), 16);
-        if (!Number.isNaN(r)) return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-      }
-    }
-    const m = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (m) {
-      return (0.299 * Number(m[1]) + 0.587 * Number(m[2]) + 0.114 * Number(m[3])) / 255;
-    }
+    const rgb = hexToRgb(normalizeHex(colorStr));
+    if (rgb) return (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
     return null;
+  }
+
+  function getHostZeroLevelBg(isLight) {
+    try {
+      if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+        const rootEl = document.body || document.documentElement;
+        if (rootEl) {
+          const cs = window.getComputedStyle(rootEl);
+          const raw = cs.getPropertyValue('--background')?.trim() || cs.backgroundColor?.trim();
+          const norm = normalizeHex(raw);
+          if (norm) return norm;
+        }
+      }
+    } catch {}
+    return isLight ? '#ffffff' : '#181818';
   }
 
   function getSystemTheme() {
@@ -955,9 +1338,165 @@
     return getSystemTheme();
   }
 
+  function getEffectiveHeatmapScale() {
+    const isLight = resolveTheme() === 'light';
+    const presetObj = HEAT_PRESETS[heatPreset] || HEAT_PRESETS.purple;
+    const base = (isLight ? presetObj.light : presetObj.dark).slice();
+    const lowCustom = normalizeHex(customColors.heatLow);
+    const highCustom = normalizeHex(customColors.heatHigh);
+    if (lowCustom || highCustom) {
+      const c0 = lowCustom || base[0];
+      const c4 = highCustom || base[4];
+      return [
+        c0,
+        interpolateHex(c0, c4, 0.25),
+        interpolateHex(c0, c4, 0.5),
+        interpolateHex(c0, c4, 0.75),
+        c4
+      ];
+    }
+    return base;
+  }
+
+  function getDefaultSlotColor(slotKey) {
+    const isLight = resolveTheme() === 'light';
+    const scale = getEffectiveHeatmapScale();
+    switch (slotKey) {
+      case 'panelBg': return getHostZeroLevelBg(isLight);
+      case 'ringUsed': return isLight ? '#18181b' : '#e6e6eb';
+      case 'ringTrack': return isLight ? '#b8b8c2' : '#52525b';
+      case 'contextText': return isLight ? '#18181b' : '#ececef';
+      case 'speedText': return isLight ? '#0284c7' : '#38bdf8';
+      case 'tokenTotal': return isLight ? '#7c3aed' : '#c084fc';
+      case 'tokenAccent': return isLight ? '#7c3aed' : '#a78bfa';
+      case 'heatLow': return scale[0];
+      case 'heatHigh': return scale[4];
+      default: return '#7748cf';
+    }
+  }
+
+  function getEffectiveSlotColor(slotKey) {
+    return normalizeHex(customColors[slotKey]) || getDefaultSlotColor(slotKey);
+  }
+
+  function applyHeatmapPalette() {
+    const scale = getEffectiveHeatmapScale();
+    for (let i = 0; i < 5; i++) {
+      host.style.setProperty(`--ag-heat-lvl-${i}`, scale[i]);
+      const legEl = el(`heat-leg-${i}`);
+      if (legEl) legEl.style.background = scale[i];
+    }
+    const isCustomEnds = Boolean(customColors.heatLow || customColors.heatHigh);
+    try {
+      const group = el('heat-preset-group');
+      if (group?.querySelectorAll) {
+        const btns = group.querySelectorAll('[data-heat-preset]');
+        for (const btn of btns) {
+          const pName = btn.getAttribute('data-heat-preset');
+          btn.setAttribute('data-active', String(!isCustomEnds && pName === heatPreset));
+        }
+      }
+    } catch {}
+  }
+
+  function syncSwatchAndResetButtons() {
+    for (const key of Object.keys(COLOR_SLOTS)) {
+      const val = customColors[key];
+      const eff = getEffectiveSlotColor(key);
+      const inputEl = el(`color-${key}`);
+      if (inputEl) inputEl.value = eff;
+      const swatchEl = el(`swatch-${key}`);
+      if (swatchEl) {
+        swatchEl.style.setProperty('--swatch-color', eff);
+        swatchEl.style.background = eff;
+      }
+      const resetBtn = el(`reset-${key}`);
+      if (resetBtn) {
+        resetBtn.setAttribute('data-mode', val ? 'custom' : 'auto');
+        if (key === 'heatLow' || key === 'heatHigh') {
+          resetBtn.textContent = val ? '恢复预设' : '预设';
+        } else {
+          resetBtn.textContent = val ? '恢复默认' : '跟随主题';
+        }
+      }
+    }
+    // 面板 A 中的镜像色块按钮同步
+    const mirrorMap = {
+      'swatch-panelBg-tokens': 'panelBg',
+      'swatch-tokenTotal-tokens': 'tokenTotal',
+      'swatch-tokenAccent-tokens': 'tokenAccent'
+    };
+    for (const [id, slot] of Object.entries(mirrorMap)) {
+      const sw = el(id);
+      if (sw) {
+        const eff = getEffectiveSlotColor(slot);
+        sw.style.setProperty('--swatch-color', eff);
+        sw.style.background = eff;
+      }
+    }
+    const resetBgTokens = el('reset-panelBg-tokens');
+    if (resetBgTokens) {
+      const hasBg = Boolean(customColors.panelBg);
+      resetBgTokens.setAttribute('data-mode', hasBg ? 'custom' : 'auto');
+      resetBgTokens.textContent = hasBg ? '恢复默认' : '跟随主题';
+    }
+  }
+
+  function applyCustomColors() {
+    for (const [key, cssVar] of Object.entries(COLOR_SLOTS)) {
+      const val = customColors[key];
+      if (val) {
+        host.style.setProperty(cssVar, val);
+      } else if (host.style.removeProperty) {
+        host.style.removeProperty(cssVar);
+      } else {
+        host.style.setProperty(cssVar, '');
+      }
+    }
+    if (customColors.panelBg) {
+      const lum = parseRgbLuminance(customColors.panelBg);
+      if (lum != null) {
+        host.setAttribute('data-panel-tone', lum > 0.55 ? 'light' : 'dark');
+      }
+    } else {
+      host.removeAttribute('data-panel-tone');
+    }
+    applyHeatmapPalette();
+    syncSwatchAndResetButtons();
+    if (activeHeatView === 'weekly') renderHeatmapWeekly();
+    else if (activeHeatView === 'cum') renderHeatmapCum();
+  }
+
+  function setCustomColor(key, value) {
+    if (!Object.prototype.hasOwnProperty.call(COLOR_SLOTS, key)) return;
+    const raw = value ? String(value).trim() : '';
+    const norm = raw ? (normalizeHex(raw) || raw) : '';
+    customColors[key] = norm;
+    saveCustomColors();
+    applyCustomColors();
+  }
+
+  function setHeatPreset(presetName) {
+    if (!HEAT_PRESETS[presetName]) return;
+    heatPreset = presetName;
+    customColors.heatLow = '';
+    customColors.heatHigh = '';
+    saveCustomColors();
+    applyCustomColors();
+  }
+
+  function resetCustomColors() {
+    for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = '';
+    heatPreset = 'purple';
+    saveCustomColors();
+    applyCustomColors();
+  }
+
   function applyTheme() {
     const activeTheme = resolveTheme();
     host.setAttribute('data-theme', activeTheme);
+    const hostBg = getHostZeroLevelBg(activeTheme === 'light');
+    host.style.setProperty('--ag-host-bg', hostBg);
     const btns = [el('theme-toggle'), el('theme-toggle-tokens')].filter(Boolean);
     btns.forEach(btn => {
       if (currentThemeMode === 'auto') {
@@ -971,6 +1510,8 @@
         btn.title = '当前主题：深色模式 (固定)\n点击切换为：跟随宿主';
       }
     });
+    applyHeatmapPalette();
+    syncSwatchAndResetButtons();
     if (activeHeatView === 'weekly') renderHeatmapWeekly();
     else if (activeHeatView === 'cum') renderHeatmapCum();
     syncNativeOverlayTheme();
@@ -1018,15 +1559,290 @@
   applyTheme();
   applyCustomColors();
 
-  // 绑定 6 项自定义颜色控件事件
+  // =========================================================================
+  // 自定义「颜色选取器」面板交互逻辑（吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL）
+  // =========================================================================
+  let activePickerSlot = null;
+  let activePickerAnchor = null;
+  let cpHsv = { h: 265, s: 77, v: 72 };
+
+  function syncPickerUiFromHsv(skipInputId = '', exactRgb = null) {
+    const rgb = exactRgb || hsvToRgb(cpHsv.h, cpHsv.s, cpHsv.v);
+    const hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+
+    const svArea = el('cp-sv-area');
+    const svThumb = el('cp-sv-thumb');
+    const hueThumb = el('cp-hue-thumb');
+    const sidePreview = el('cp-side-preview');
+    if (svArea) svArea.style.backgroundColor = `hsl(${cpHsv.h}, 100%, 50%)`;
+    if (svThumb) {
+      svThumb.style.left = `${cpHsv.s}%`;
+      svThumb.style.top = `${100 - cpHsv.v}%`;
+    }
+    if (hueThumb) {
+      hueThumb.style.left = `${(cpHsv.h / 360) * 100}%`;
+    }
+    if (sidePreview) {
+      sidePreview.style.background = hex;
+    }
+
+    const inHex = el('cp-input-hex');
+    const inRgb = el('cp-input-rgb');
+    const inHsl = el('cp-input-hsl');
+    if (inHex && skipInputId !== 'cp-input-hex') inHex.value = hex;
+    if (inRgb && skipInputId !== 'cp-input-rgb') inRgb.value = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+    if (inHsl && skipInputId !== 'cp-input-hsl') inHsl.value = `hsl(${hsl.h}, ${hsl.s}%, ${hsl.l}%)`;
+    return hex;
+  }
+
+  function applyPickerHex(hexStr, skipInputId = '') {
+    const norm = normalizeHex(hexStr);
+    if (!norm) return false;
+    const rgb = hexToRgb(norm);
+    if (!rgb) return false;
+    cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+    const appliedHex = syncPickerUiFromHsv(skipInputId, rgb);
+    if (activePickerSlot) {
+      setCustomColor(activePickerSlot, appliedHex);
+    }
+    return true;
+  }
+
+  function positionColorPickerPopover() {
+    const pop = el('color-picker-popover');
+    if (!pop || pop.hidden) return;
+    try {
+      const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+      const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+      const popW = 304;
+      const popH = 330;
+      let minLeft = 12;
+      if (typeof document.querySelector === 'function') {
+        const navEl = document.querySelector('div[role="navigation"]');
+        if (navEl?.getBoundingClientRect) {
+          const nr = navEl.getBoundingClientRect();
+          if (nr.width > 0 && nr.left <= 8 && nr.right < vw - 320) {
+            minLeft = Math.ceil(nr.right + 12);
+          }
+        }
+      }
+      let left = Math.round((vw - popW) / 2);
+      let top = 90;
+      if (activePickerAnchor?.getBoundingClientRect) {
+        const ar = activePickerAnchor.getBoundingClientRect();
+        if (ar.width > 0 || ar.height > 0) {
+          left = Math.round(ar.right - popW);
+          top = Math.round(ar.bottom + 6);
+          if (top + popH > vh - 12 && ar.top > popH + 12) {
+            top = Math.round(ar.top - popH - 6);
+          }
+        }
+      }
+      left = Math.max(minLeft, Math.min(vw - popW - 12, left));
+      top = Math.max(42, Math.min(vh - popH - 12, top));
+      pop.style.left = `${left}px`;
+      pop.style.top = `${top}px`;
+    } catch {}
+  }
+
+  function openColorPicker(slotKey, anchorEl = null, labelText = '') {
+    if (!Object.prototype.hasOwnProperty.call(COLOR_SLOTS, slotKey)) return;
+    activePickerSlot = slotKey;
+    activePickerAnchor = anchorEl;
+    const pop = el('color-picker-popover');
+    const lbl = el('cp-target-name');
+    if (lbl) lbl.textContent = labelText ? `· ${labelText}` : `· ${slotKey}`;
+    const startHex = getEffectiveSlotColor(slotKey);
+    const rgb = hexToRgb(startHex) || { r: 101, g: 42, b: 183 };
+    cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+    syncPickerUiFromHsv();
+    if (pop) {
+      pop.hidden = false;
+      positionColorPickerPopover();
+    }
+  }
+
+  function closeColorPicker() {
+    const pop = el('color-picker-popover');
+    if (pop) pop.hidden = true;
+    activePickerSlot = null;
+    activePickerAnchor = null;
+  }
+
+  // 绑定所有颜色色块与恢复按钮事件
   for (const key of Object.keys(COLOR_SLOTS)) {
     const inputEl = el(`color-${key}`);
     const resetBtn = el(`reset-${key}`);
+    const swatchBtn = el(`swatch-${key}`);
     inputEl?.addEventListener('input', e => setCustomColor(key, e.target?.value || ''));
     inputEl?.addEventListener('change', e => setCustomColor(key, e.target?.value || ''));
-    resetBtn?.addEventListener('click', () => setCustomColor(key, ''));
+    resetBtn?.addEventListener('click', () => {
+      setCustomColor(key, '');
+      if (activePickerSlot === key) {
+        const eff = getEffectiveSlotColor(key);
+        const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
+        cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+        syncPickerUiFromHsv();
+      }
+    });
+    swatchBtn?.addEventListener('click', e => {
+      e.stopPropagation?.();
+      openColorPicker(key, swatchBtn, swatchBtn.getAttribute('data-color-label') || key);
+    });
   }
-  el('reset-all-colors')?.addEventListener('click', resetCustomColors);
+
+  // 面板 A 镜像色块与预设按钮事件
+  ['swatch-panelBg-tokens', 'swatch-tokenTotal-tokens', 'swatch-tokenAccent-tokens'].forEach(id => {
+    const btn = el(id);
+    btn?.addEventListener('click', e => {
+      e.stopPropagation?.();
+      const slot = btn.getAttribute('data-color-slot');
+      if (slot) openColorPicker(slot, btn, btn.getAttribute('data-color-label') || slot);
+    });
+  });
+  el('reset-panelBg-tokens')?.addEventListener('click', () => setCustomColor('panelBg', ''));
+  el('reset-all-colors')?.addEventListener('click', () => { resetCustomColors(); closeColorPicker(); });
+  el('reset-all-colors-tokens')?.addEventListener('click', () => { resetCustomColors(); closeColorPicker(); });
+
+  try {
+    const presetGroup = el('heat-preset-group');
+    if (presetGroup?.querySelectorAll) {
+      for (const btn of presetGroup.querySelectorAll('[data-heat-preset]')) {
+        btn.addEventListener('click', () => {
+          const p = btn.getAttribute('data-heat-preset');
+          if (p) setHeatPreset(p);
+        });
+      }
+    }
+  } catch {}
+
+  // 颜色选取器内部控件绑定（SV 拖拽、Hue 拖拽、预设圆点、吸管、HEX/RGB/HSL 输入与复制）
+  el('cp-close')?.addEventListener('click', closeColorPicker);
+  el('cp-reset-slot')?.addEventListener('click', () => {
+    if (activePickerSlot) {
+      setCustomColor(activePickerSlot, '');
+      const eff = getEffectiveSlotColor(activePickerSlot);
+      const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
+      cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+      syncPickerUiFromHsv();
+    }
+  });
+
+  try {
+    const presetsWrap = el('cp-presets');
+    if (presetsWrap?.querySelectorAll) {
+      for (const dot of presetsWrap.querySelectorAll('[data-cp-hex]')) {
+        dot.addEventListener('click', () => {
+          const hex = dot.getAttribute('data-cp-hex');
+          if (hex) applyPickerHex(hex);
+        });
+      }
+    }
+  } catch {}
+
+  el('cp-eyedropper')?.addEventListener('click', async () => {
+    const statusEl = el('cp-status-msg');
+    try {
+      if (typeof window !== 'undefined' && typeof window.EyeDropper === 'function') {
+        const dropper = new window.EyeDropper();
+        const res = await dropper.open();
+        if (res?.sRGBHex) {
+          applyPickerHex(res.sRGBHex);
+          if (statusEl) statusEl.textContent = `已吸取 ${res.sRGBHex.toUpperCase()}`;
+        }
+      } else {
+        el('cp-input-hex')?.focus?.();
+        if (statusEl) statusEl.textContent = '当前环境不支持原生吸管，可直接粘贴 HEX';
+      }
+    } catch {}
+  });
+
+  el('cp-input-hex')?.addEventListener('input', e => {
+    const raw = e.target?.value || '';
+    const norm = normalizeHex(raw);
+    if (norm) {
+      applyPickerHex(norm, 'cp-input-hex');
+      const statusEl = el('cp-status-msg');
+      if (statusEl) statusEl.textContent = `已应用 ${norm.toUpperCase()}`;
+    }
+  });
+  el('cp-input-hex')?.addEventListener('change', e => {
+    const raw = e.target?.value || '';
+    const norm = normalizeHex(raw);
+    if (norm) applyPickerHex(norm);
+  });
+
+  el('cp-input-rgb')?.addEventListener('input', e => {
+    const norm = normalizeHex(e.target?.value || '');
+    if (norm) applyPickerHex(norm, 'cp-input-rgb');
+  });
+  el('cp-input-hsl')?.addEventListener('input', e => {
+    const norm = normalizeHex(e.target?.value || '');
+    if (norm) applyPickerHex(norm, 'cp-input-hsl');
+  });
+
+  function copyPickerText(inputId, label) {
+    const input = el(inputId);
+    const val = input?.value || '';
+    if (!val) return;
+    try {
+      navigator?.clipboard?.writeText?.(val);
+    } catch {}
+    const statusEl = el('cp-status-msg');
+    if (statusEl) statusEl.textContent = `✔ 已复制 ${label}: ${val}`;
+  }
+  el('cp-copy-hex')?.addEventListener('click', () => copyPickerText('cp-input-hex', 'HEX'));
+  el('cp-copy-rgb')?.addEventListener('click', () => copyPickerText('cp-input-rgb', 'RGB'));
+  el('cp-copy-hsl')?.addEventListener('click', () => copyPickerText('cp-input-hsl', 'HSL'));
+
+  const svAreaEl = el('cp-sv-area');
+  const hueWrapEl = el('cp-hue-wrap');
+  let draggingSv = false;
+  let draggingHue = false;
+
+  function updateSvFromPointer(e) {
+    if (!svAreaEl?.getBoundingClientRect) return;
+    const r = svAreaEl.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const s = clampNum(((e.clientX - r.left) / r.width) * 100, 0, 100);
+    const v = clampNum(100 - ((e.clientY - r.top) / r.height) * 100, 0, 100);
+    cpHsv.s = Math.round(s);
+    cpHsv.v = Math.round(v);
+    const hex = syncPickerUiFromHsv();
+    if (activePickerSlot) setCustomColor(activePickerSlot, hex);
+  }
+
+  function updateHueFromPointer(e) {
+    if (!hueWrapEl?.getBoundingClientRect) return;
+    const r = hueWrapEl.getBoundingClientRect();
+    if (!r.width) return;
+    const h = clampNum(((e.clientX - r.left) / r.width) * 360, 0, 360);
+    cpHsv.h = Math.round(h);
+    const hex = syncPickerUiFromHsv();
+    if (activePickerSlot) setCustomColor(activePickerSlot, hex);
+  }
+
+  svAreaEl?.addEventListener('mousedown', e => {
+    draggingSv = true;
+    updateSvFromPointer(e);
+  });
+  hueWrapEl?.addEventListener('mousedown', e => {
+    draggingHue = true;
+    updateHueFromPointer(e);
+  });
+  const onPointerMove = e => {
+    if (draggingSv) updateSvFromPointer(e);
+    else if (draggingHue) updateHueFromPointer(e);
+  };
+  const onPointerUp = () => {
+    draggingSv = false;
+    draggingHue = false;
+  };
+  try {
+    window.addEventListener?.('mousemove', onPointerMove);
+    window.addEventListener?.('mouseup', onPointerUp);
+  } catch {}
 
   // =========================================================================
   // 模块 2: 宿主布局挂载、右上角原生窗口控制区预留、渐进式宽度收缩与悬浮层定位
@@ -1406,6 +2222,38 @@
     tip.setAttribute('data-visible', 'false');
   }
 
+  let elevatedStackAncestor = null;
+
+  function syncHostStackingElevation(elevate) {
+    try {
+      if (elevate) {
+        const z0 = host.closest?.('div.relative.z-0');
+        if (z0?.style) {
+          elevatedStackAncestor = z0;
+          z0.style.zIndex = '40';
+        }
+      } else if (elevatedStackAncestor?.style) {
+        elevatedStackAncestor.style.zIndex = '';
+        elevatedStackAncestor = null;
+      }
+    } catch {}
+  }
+
+  function getLeftProjectSidebarRight(vw) {
+    try {
+      if (typeof document.querySelector === 'function') {
+        const navEl = document.querySelector('div[role="navigation"]');
+        if (navEl?.getBoundingClientRect) {
+          const nr = navEl.getBoundingClientRect();
+          if (nr.width > 0 && nr.left <= 8 && nr.right > 0 && nr.right < vw - 260) {
+            return Math.ceil(nr.right);
+          }
+        }
+      }
+    } catch {}
+    return 0;
+  }
+
   function positionFloatingPanels() {
     if (!host.getBoundingClientRect) return;
     try {
@@ -1414,26 +2262,26 @@
       const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
       const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
       const top = Math.max(36, Math.min(vh - 120, Math.round(hRect.bottom + 6)));
-      const baseRight = Math.max(12, Math.round(vw - hRect.right));
+      const navRight = getLeftProjectSidebarRight(vw);
+      const minLeft = navRight > 0 ? Math.max(12, navRight + 12) : 12;
 
-      const pContext = el('panel');
-      if (pContext && !pContext.hidden) {
-        const maxRight = Math.max(12, vw - 450 - 12);
-        pContext.style.top = `${top}px`;
-        pContext.style.right = `${Math.min(baseRight, maxRight)}px`;
-      }
-      const pTokens = el('panel-tokens');
-      if (pTokens && !pTokens.hidden) {
-        const maxRight = Math.max(12, vw - 730 - 12);
-        pTokens.style.top = `${top}px`;
-        pTokens.style.right = `${Math.min(baseRight, maxRight)}px`;
-      }
-      const pOverflow = el('overflow-menu');
-      if (pOverflow && !pOverflow.hidden) {
-        const maxRight = Math.max(12, vw - 220 - 12);
-        pOverflow.style.top = `${top}px`;
-        pOverflow.style.right = `${Math.min(baseRight, maxRight)}px`;
-      }
+      const placePanel = (panelEl, targetW) => {
+        if (!panelEl || panelEl.hidden) return;
+        const maxAvailW = Math.max(260, vw - minLeft - 12);
+        const effW = Math.min(targetW, maxAvailW);
+        let left = Math.round(hRect.right - effW);
+        left = Math.min(left, vw - effW - 12);
+        left = Math.max(minLeft, left);
+        panelEl.style.top = `${top}px`;
+        panelEl.style.left = `${left}px`;
+        panelEl.style.right = 'auto';
+        panelEl.style.maxWidth = `${maxAvailW}px`;
+      };
+
+      placePanel(el('panel'), 450);
+      placePanel(el('panel-tokens'), 730);
+      placePanel(el('overflow-menu'), 220);
+      positionColorPickerPopover();
     } catch {}
   }
 
@@ -1494,20 +2342,25 @@
 
     if (target === 'tokens') {
       hideContextTooltip();
+      closeColorPicker();
       pContext.hidden = true;
       pTokens.hidden = false;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
+      syncHostStackingElevation(true);
       positionFloatingPanels();
-      renderHeatmapGrid();
+      void syncTokenHistoryFromHost();
+      renderActiveHeatView(true);
     } else if (target === 'context') {
       hideContextTooltip();
+      closeColorPicker();
       pTokens.hidden = true;
       pContext.hidden = false;
       bContext.setAttribute('aria-expanded', 'true');
       bSpeed?.setAttribute('aria-expanded', 'true');
       bTokens.setAttribute('aria-expanded', 'false');
+      syncHostStackingElevation(true);
       positionFloatingPanels();
     } else {
       pContext.hidden = true;
@@ -1515,7 +2368,9 @@
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
+      closeColorPicker();
       hidePopover();
+      syncHostStackingElevation(false);
     }
   }
 
@@ -1545,6 +2400,7 @@
     hideContextTooltip();
     pOverflow.hidden = !willOpen;
     el('badge-overflow')?.setAttribute('aria-expanded', String(willOpen));
+    syncHostStackingElevation(willOpen);
     if (willOpen) positionFloatingPanels();
   }
 
@@ -1592,7 +2448,7 @@
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
-  // 二级抽屉 1: 颜色自定义抽屉折叠展开
+  // 二级抽屉 1（面板 B 内）: 指标与背景颜色自定义抽屉折叠展开
   const btnColors = el('btn-toggle-colors');
   const colorDrawerBody = el('color-drawer-body');
   const colorDrawerArrow = el('color-drawer-arrow');
@@ -1604,7 +2460,7 @@
     btnColors.setAttribute('aria-expanded', String(isHidden));
   });
 
-  // 二级抽屉 2: 底层技术抽屉折叠展开
+  // 二级抽屉 2（面板 B 内）: 底层技术抽屉折叠展开
   const btnDetails = el('btn-toggle-details');
   const drawerBody = el('drawer-body');
   const drawerArrow = el('drawer-arrow');
@@ -1616,7 +2472,32 @@
     btnDetails.setAttribute('aria-expanded', String(isHidden));
   });
 
+  // 二级抽屉 3（面板 A 内就近设置）: 热力图色阶与面板外观自定义抽屉折叠展开
+  const btnTokenColors = el('btn-toggle-token-colors');
+  const tokenColorDrawerBody = el('token-color-drawer-body');
+  const tokenColorDrawerArrow = el('token-color-drawer-arrow');
+  function toggleTokenColorsDrawer(forceOpen) {
+    if (!tokenColorDrawerBody) return;
+    const curHidden = tokenColorDrawerBody.style.display === 'none' || !tokenColorDrawerBody.style.display;
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
+    tokenColorDrawerBody.style.display = nextOpen ? 'block' : 'none';
+    if (tokenColorDrawerArrow) tokenColorDrawerArrow.textContent = nextOpen ? '▲ 收起设置' : '▼ 展开设置';
+    btnTokenColors?.setAttribute('aria-expanded', String(nextOpen));
+  }
+  btnTokenColors?.addEventListener('click', () => toggleTokenColorsDrawer());
+  el('heat-legend-scale')?.addEventListener('click', () => toggleTokenColorsDrawer(true));
+
   // 热力图视图切换（每天 / 每周 / 累计总量）
+  function renderActiveHeatView(forceRebuild = false) {
+    if (activeHeatView === 'weekly') {
+      renderHeatmapWeekly();
+    } else if (activeHeatView === 'cum') {
+      renderHeatmapCum();
+    } else {
+      renderHeatmapGrid(forceRebuild);
+    }
+  }
+
   function switchHeatView(view) {
     activeHeatView = view;
     const tDaily = el('h-tab-daily');
@@ -1645,7 +2526,7 @@
     } else {
       tDaily.classList.add('active');
       bDaily.style.display = 'block';
-      renderHeatmapGrid();
+      renderHeatmapGrid(true);
     }
   }
 
@@ -1653,28 +2534,48 @@
   el('h-tab-weekly')?.addEventListener('click', () => switchHeatView('weekly'));
   el('h-tab-cum')?.addEventListener('click', () => switchHeatView('cum'));
 
+  el('h-page-prev')?.addEventListener('click', () => {
+    heatPageOffset -= 1;
+    renderActiveHeatView(true);
+  });
+  el('h-page-next')?.addEventListener('click', () => {
+    if (heatPageOffset < 0) {
+      heatPageOffset += 1;
+      renderActiveHeatView(true);
+    }
+  });
+
   el('refresh').addEventListener('click', () => { if (state.route && !state.scanBusy) void scan(state.generation, state.route, true); });
   const outside = e => {
-    if (!e.composedPath().includes(host)) {
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    if (!path.includes(host)) {
+      closeColorPicker();
       toggle(false);
       hideContextTooltip();
       const om = el('overflow-menu');
       if (om) om.hidden = true;
+      syncHostStackingElevation(false);
     }
   };
   const escape = e => {
     if (e.key === 'Escape') {
+      const pop = el('color-picker-popover');
+      if (pop && !pop.hidden) {
+        closeColorPicker();
+        return;
+      }
       toggle(false);
       hideContextTooltip();
       const om = el('overflow-menu');
       if (om) om.hidden = true;
+      syncHostStackingElevation(false);
     }
   };
   document.addEventListener('click', outside);
   document.addEventListener('keydown', escape);
 
   // =========================================================================
-  // 模块 4: 数据渲染与圆环/气泡状态更新
+  // 模块 4: 数据渲染、完整本地 Token 历史读取与首次使用日起算时间轴
   // =========================================================================
   function renderFiles(session) {
     const parent = el('files'); parent.replaceChildren();
@@ -1723,23 +2624,229 @@
     return 4;
   }
 
-  function renderHeatmapGrid() {
+  function parseLocalYmd(ymd) {
+    if (!ymd || typeof ymd !== 'string') return null;
+    const m = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+
+  function formatLocalYmd(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function formatDotYmd(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}.${m}.${day}`;
+  }
+
+  function formatZhYmd(ymd) {
+    const d = parseLocalYmd(ymd);
+    if (!d) return ymd || '—';
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  }
+
+  function addDays(baseDate, deltaDays) {
+    const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+    d.setDate(d.getDate() + deltaDays);
+    return d;
+  }
+
+  function getFirstUseDateStr() {
+    const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
+    const keys = Object.keys(map).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && (map[k]?.total > 0)).sort();
+    const declared = ANTIGRAVITY_TOKEN_DATA.firstUseDate;
+    if (declared && /^\d{4}-\d{2}-\d{2}$/.test(declared)) {
+      if (keys.length && keys[0] < declared) return keys[0];
+      return declared;
+    }
+    if (keys.length) return keys[0];
+    return formatLocalYmd(new Date());
+  }
+
+  // 计算从「实际首次使用日」起算的 12 个月（52 周 = 364 天）展示窗口，绝不展示首次使用日之前的日期
+  function computeTimelineWindow() {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const firstStr = getFirstUseDateStr();
+    const firstDate = parseLocalYmd(firstStr) || today;
+    const totalDays = 52 * 7; // 364 天（12 个月 / 52 周）
+    const elapsedDays = Math.max(0, Math.floor((today.getTime() - firstDate.getTime()) / 86400000)) + 1;
+
+    let winStart;
+    let winEnd;
+    let canPrev = false;
+    let canNext = false;
+
+    if (elapsedDays <= totalDays) {
+      // 使用未满一年：起点固定为实际首次使用日，向后铺满 12 个月（前置空白为 0）
+      heatPageOffset = 0;
+      winStart = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate());
+      winEnd = addDays(winStart, totalDays - 1);
+    } else {
+      // 使用满一年后：默认窗口滚动为「以今天结尾的最近 12 个月」，且起点永不早于首次使用日；支持 ‹ / › 翻页回看更早归档
+      const latestStart = addDays(today, -(totalDays - 1));
+      const stepDays = 26 * 7; // 每次翻页半年度（26 周）
+      let candidateStart = addDays(latestStart, heatPageOffset * stepDays);
+      if (candidateStart.getTime() <= firstDate.getTime()) {
+        candidateStart = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate());
+        const maxBackSteps = -Math.ceil((latestStart.getTime() - firstDate.getTime()) / (stepDays * 86400000));
+        if (heatPageOffset < maxBackSteps) heatPageOffset = maxBackSteps;
+      }
+      winStart = candidateStart;
+      winEnd = addDays(winStart, totalDays - 1);
+      canPrev = winStart.getTime() > firstDate.getTime();
+      canNext = heatPageOffset < 0;
+    }
+
+    const firstBadge = el('first-use-badge');
+    if (firstBadge) firstBadge.textContent = `首次使用：${formatZhYmd(firstStr)}`;
+    const rangeEl = el('h-win-range');
+    if (rangeEl) rangeEl.textContent = `${formatDotYmd(winStart)} – ${formatDotYmd(winEnd)}`;
+    const prevBtn = el('h-page-prev');
+    const nextBtn = el('h-page-next');
+    if (prevBtn) prevBtn.disabled = !canPrev;
+    if (nextBtn) nextBtn.disabled = !canNext;
+
+    return { firstStr, firstDate, today, winStart, winEnd, totalDays, canPrev, canNext };
+  }
+
+  function applyTokenHistoryPayload(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    if (payload.dailyMap && typeof payload.dailyMap === 'object') {
+      for (const [dKey, rec] of Object.entries(payload.dailyMap)) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dKey) || !rec) continue;
+        const cur = ANTIGRAVITY_TOKEN_DATA.dailyMap[dKey];
+        if (!cur || (rec.total || 0) >= (cur.total || 0)) {
+          ANTIGRAVITY_TOKEN_DATA.dailyMap[dKey] = {
+            total: Number(rec.total) || 0,
+            input: Number(rec.input) || 0,
+            output: Number(rec.output) || 0,
+            cache: Number(rec.cache) || 0,
+            steps: Number(rec.steps) || 0
+          };
+        }
+      }
+    }
+    if (payload.firstUseDate && /^\d{4}-\d{2}-\d{2}$/.test(payload.firstUseDate)) {
+      if (!ANTIGRAVITY_TOKEN_DATA.firstUseDate || payload.firstUseDate < ANTIGRAVITY_TOKEN_DATA.firstUseDate) {
+        ANTIGRAVITY_TOKEN_DATA.firstUseDate = payload.firstUseDate;
+      }
+    }
+    // 重新汇总卡片统计
+    const map = ANTIGRAVITY_TOKEN_DATA.dailyMap;
+    const keys = Object.keys(map).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && map[k]?.total > 0).sort();
+    const todayStr = formatLocalYmd(new Date());
+    const monthPrefix = todayStr.slice(0, 7);
+    const yearPrefix = todayStr.slice(0, 4);
+    let totalTokens = 0, todayTokens = 0, monthTokens = 0, yearTokens = 0, monthDays = 0;
+    for (const k of keys) {
+      const t = Number(map[k]?.total) || 0;
+      totalTokens += t;
+      if (k === todayStr) todayTokens += t;
+      if (k.startsWith(monthPrefix)) {
+        monthTokens += t;
+        monthDays += 1;
+      }
+      if (k.startsWith(yearPrefix)) yearTokens += t;
+    }
+    const latestActiveKey = keys[keys.length - 1] || todayStr;
+    const shownToday = todayTokens > 0 ? todayTokens : (Number(map[latestActiveKey]?.total) || 0);
+    const convCount = Number(payload.summary?.totalConversations) || ANTIGRAVITY_TOKEN_DATA.summary?.totalConversations || 53;
+    const avgMonth = monthDays > 0 ? Math.round(monthTokens / monthDays) : 0;
+
+    ANTIGRAVITY_TOKEN_DATA.summary = {
+      totalTokens,
+      todayTokens: shownToday,
+      monthTokens,
+      yearTokens,
+      totalDays: keys.length,
+      totalConversations: convCount
+    };
+
+    const fmtCardM = v => v >= 1e9 ? `${(v / 1e9).toFixed(2)}B` : `${(v / 1e6).toFixed(1)}M`;
+    const badgeAmt = el('token-amount');
+    const overAmt = el('overflow-tokens-val');
+    if (badgeAmt) badgeAmt.textContent = fmtCardM(totalTokens);
+    if (overAmt) overAmt.textContent = fmtCardM(totalTokens);
+
+    const tTotalVal = el('t-total-val');
+    const tTotalSub = el('t-total-sub');
+    const tTodayVal = el('t-today-val');
+    const tTodaySub = el('t-today-sub');
+    const tMonthVal = el('t-month-val');
+    const tMonthSub = el('t-month-sub');
+    const tYearVal = el('t-year-val');
+    const tYearSub = el('t-year-sub');
+
+    if (tTotalVal) tTotalVal.textContent = fmtCardM(totalTokens);
+    if (tTotalSub) tTotalSub.textContent = `${totalTokens.toLocaleString('en-US')} Tokens`;
+    if (tTodayVal) tTodayVal.textContent = fmtCardM(shownToday);
+    if (tTodaySub) tTodaySub.textContent = `${convCount} 会话实时累加`;
+    if (tMonthVal) tMonthVal.textContent = fmtCardM(monthTokens);
+    if (tMonthSub) tMonthSub.textContent = `日均约 ${fmtCardM(avgMonth)}`;
+    if (tYearVal) tYearVal.textContent = fmtCardM(yearTokens);
+    if (tYearSub) tYearSub.textContent = `${keys.length} 天活动记录`;
+
+    computeTimelineWindow();
+    renderActiveHeatView(true);
+    return true;
+  }
+
+  let historySyncBusy = false;
+  async function syncTokenHistoryFromHost() {
+    if (historySyncBusy || state.disposed) return;
+    historySyncBusy = true;
+    try {
+      if (typeof window !== 'undefined' && window.__AGContextMeterHistory) {
+        applyTokenHistoryPayload(window.__AGContextMeterHistory);
+      }
+      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') {
+        const res = await window.contextMeterAPI.getTokenHistory(false);
+        if (res?.ok && res.data) applyTokenHistoryPayload(res.data);
+      } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+        const live = window.__AGContextMeterLive;
+        const r = await fetch(`http://127.0.0.1:${live.port}/token-history`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+          body: JSON.stringify({ force: false })
+        });
+        if (r.ok) {
+          const j = await r.json();
+          if (j?.ok && j.data) applyTokenHistoryPayload(j.data);
+        }
+      }
+    } catch {}
+    finally {
+      historySyncBusy = false;
+    }
+  }
+
+  function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
-    if (!colsBox || colsBox.children.length > 0) return;
+    if (!colsBox || !monthsBox) return;
+    const win = computeTimelineWindow();
+    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}`;
+    if (!forceRebuild && colsBox.children.length > 0 && colsBox.getAttribute('data-sig') === sig) return;
 
-    const now = new Date();
-    const totalDays = 52 * 7;
+    colsBox.replaceChildren();
+    monthsBox.replaceChildren();
+    colsBox.setAttribute('data-sig', sig);
+
+    const todayKey = formatLocalYmd(win.today);
     const list = [];
-    for (let i = totalDays - 1; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(now.getDate() - i);
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const key = `${y}-${m}-${day}`;
+    for (let i = 0; i < win.totalDays; i++) {
+      const d = addDays(win.winStart, i);
+      const key = formatLocalYmd(d);
+      const isFuture = d.getTime() > win.today.getTime();
       const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[key];
-      list.push({ date: d, key, tokens: rec ? rec.total : 0, rec });
+      list.push({ date: d, key, tokens: rec ? rec.total : 0, rec, isFuture, isToday: key === todayKey });
     }
 
     const monthMarkers = [];
@@ -1762,12 +2869,14 @@
       slice.forEach(item => {
         const cell = document.createElement('div');
         const lvl = getLvl(item.tokens);
-        cell.className = `heat-cell lvl-${lvl}`;
+        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isToday ? ' is-today' : ''}`;
+        cell.setAttribute('data-date', item.key);
+        cell.setAttribute('data-tokens', String(item.tokens));
 
         const showPop = () => {
           const d = item.date;
-          heatPopDate.textContent = `${d.getMonth() + 1}月${d.getDate()}日`;
-          heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens` : '0 Tokens';
+          heatPopDate.textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${item.isToday ? '（今日）' : (item.key === win.firstStr ? '（首次使用）' : '')}`;
+          heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens` : (item.isFuture ? '未来日期（待产生记录）' : '0 Tokens');
           if (item.rec) {
             heatPopDet.innerHTML = `<span>Prompt: ${fmtYi(item.rec.input)}</span><span>Output: ${fmtYi(item.rec.output)}</span><span>Cache: ${fmtYi(item.rec.cache)}</span>`;
             heatPopDet.style.display = 'flex';
@@ -1801,16 +2910,11 @@
   function renderHeatmapWeekly() {
     const box = el('h-weekly-box');
     if (!box) return;
-    box.innerHTML = '';
+    box.replaceChildren();
 
-    const isLight = host.getAttribute('data-theme') === 'light';
-    const cEmpty = isLight ? '#e4e4e7' : '#27272a';
-    const c1 = isLight ? '#e9d5ff' : '#3f1e6b';
-    const c2 = isLight ? '#c084fc' : '#652ab7';
-    const c3 = isLight ? '#9333ea' : '#9053f8';
-    const c4 = customColors.tokenAccent || (isLight ? '#6b21a8' : '#c084fc');
-
-    const now = new Date();
+    const scale = getEffectiveHeatmapScale();
+    const [cEmpty, c1, c2, c3, c4] = scale;
+    const win = computeTimelineWindow();
     const totalWeeks = 52;
     const weeksData = [];
     let max = 1;
@@ -1819,22 +2923,21 @@
       let sum = 0;
       let sDate = null, eDate = null;
       for (let r = 0; r < 7; r++) {
-        const off = (52 - c - 1) * 7 + (6 - r);
-        const d = new Date(now);
-        d.setDate(now.getDate() - off);
-        const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const d = addDays(win.winStart, c * 7 + r);
+        const k = formatLocalYmd(d);
         if (!sDate) sDate = d;
         eDate = d;
         const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[k];
         if (rec) sum += rec.total;
       }
       if (sum > max) max = sum;
-      weeksData.push({ sum, sDate, eDate });
+      weeksData.push({ sum, sDate, eDate, startKey: formatLocalYmd(sDate) });
     }
 
     weeksData.forEach(w => {
       const col = document.createElement('div');
       col.className = 'w-bar-col';
+      col.setAttribute('data-week-start', w.startKey);
       const fill = document.createElement('div');
       fill.className = 'w-bar-fill';
       const pct = Math.max(3, (w.sum / max) * 100);
@@ -1843,7 +2946,7 @@
       col.appendChild(fill);
 
       const showPop = () => {
-        heatPopDate.textContent = `${w.sDate.getMonth() + 1}月${w.sDate.getDate()}日 - ${w.eDate.getMonth() + 1}月${w.eDate.getDate()}日`;
+        heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens` : '0 Tokens';
         heatPopDet.innerHTML = `<span>Weekly Total · 周累计</span>`;
         heatPopDet.style.display = 'block';
@@ -1875,52 +2978,64 @@
 
     ctx.clearRect(0, 0, width, height);
 
-    const now = new Date();
-    const totalDays = 52 * 7;
+    const win = computeTimelineWindow();
+    const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
+    const winStartKey = formatLocalYmd(win.winStart);
+    // 计算窗口起点之前的历史滚存基数（支持跨年翻页时累计曲线连续）
     let running = 0;
+    for (const [k, rec] of Object.entries(map)) {
+      if (k < winStartKey && rec?.total > 0) running += rec.total;
+    }
+
+    const activeEnd = win.winEnd.getTime() > win.today.getTime() ? win.today : win.winEnd;
+    const plotDays = Math.max(1, Math.floor((activeEnd.getTime() - win.winStart.getTime()) / 86400000) + 1);
     const points = [];
 
-    for (let i = totalDays - 1; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(now.getDate() - i);
-      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[k];
+    for (let i = 0; i < plotDays; i++) {
+      const d = addDays(win.winStart, i);
+      const k = formatLocalYmd(d);
+      const rec = map[k];
       if (rec) running += rec.total;
-      points.push({ date: d, val: running });
+      points.push({ date: d, key: k, val: running });
     }
 
     const max = running || 1;
-    const step = width / (points.length - 1);
+    const denom = Math.max(1, points.length - 1);
+    const step = points.length === 1 ? width : (width / denom);
 
-    const isLight = host.getAttribute('data-theme') === 'light';
-    const strokeColor = customColors.tokenAccent || (isLight ? '#7c3aed' : '#c084fc');
+    const scale = getEffectiveHeatmapScale();
+    const strokeColor = customColors.tokenAccent || scale[4];
+    const strokeRgb = hexToRgb(normalizeHex(strokeColor)) || { r: 192, g: 132, b: 252 };
     const grad = ctx.createLinearGradient(0, 0, 0, height);
-    if (isLight) {
-      grad.addColorStop(0, 'rgba(124, 58, 237, 0.28)');
-      grad.addColorStop(1, 'rgba(233, 213, 255, 0.02)');
-    } else {
-      grad.addColorStop(0, 'rgba(192, 132, 252, 0.4)');
-      grad.addColorStop(1, 'rgba(63, 30, 107, 0)');
-    }
+    grad.addColorStop(0, `rgba(${strokeRgb.r}, ${strokeRgb.g}, ${strokeRgb.b}, 0.36)`);
+    grad.addColorStop(1, `rgba(${strokeRgb.r}, ${strokeRgb.g}, ${strokeRgb.b}, 0.02)`);
 
     ctx.beginPath();
     ctx.moveTo(0, height);
     points.forEach((pt, idx) => {
-      const x = idx * step;
-      const y = height - (pt.val / max) * (height - 10);
+      const x = points.length === 1 ? width / 2 : idx * step;
+      const y = height - (pt.val / max) * (height - 12);
       ctx.lineTo(x, y);
     });
+    if (points.length === 1) {
+      const y = height - (points[0].val / max) * (height - 12);
+      ctx.lineTo(width, y);
+    }
     ctx.lineTo(width, height);
     ctx.fillStyle = grad;
     ctx.fill();
 
     ctx.beginPath();
     points.forEach((pt, idx) => {
-      const x = idx * step;
-      const y = height - (pt.val / max) * (height - 10);
+      const x = points.length === 1 ? 0 : idx * step;
+      const y = height - (pt.val / max) * (height - 12);
       if (idx === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
+    if (points.length === 1) {
+      const y = height - (points[0].val / max) * (height - 12);
+      ctx.lineTo(width, y);
+    }
     ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 2;
     ctx.stroke();
@@ -1928,18 +3043,22 @@
     cvs.onmousemove = e => {
       const r = cvs.getBoundingClientRect();
       const mouseX = e.clientX - r.left;
-      const idx = Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
+      const idx = points.length === 1 ? 0 : Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
       const pt = points[idx];
-      heatPopDate.textContent = `${pt.date.getMonth() + 1}月${pt.date.getDate()}日 (累计)`;
+      heatPopDate.textContent = `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日 (累计)`;
       heatPopVal.textContent = `${fmtYi(pt.val)} Tokens`;
-      heatPopDet.innerHTML = `<span>Cumulative Total · 累计总消耗</span>`;
+      heatPopDet.innerHTML = `<span>Cumulative Total · 自首次使用日 (${win.firstStr}) 累计</span>`;
       heatPopDet.style.display = 'block';
       heatPop.style.left = `${e.clientX}px`;
-      heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 10)) - 6}px`;
+      heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 12)) - 6}px`;
       heatPop.style.opacity = '1';
     };
     cvs.onmouseleave = hidePopover;
   }
+
+  // 初始化首次使用日与时间轴显示并触发后台完整历史同步
+  computeTimelineWindow();
+  void syncTokenHistoryFromHost();
 
   function updateRingAndBubble(d, session, pct, danger, stale, incomplete) {
     const ringFill = el('ring-fill');
@@ -2118,7 +3237,7 @@
       setHoverExtra(` · ${corpus}`);
     }
 
-    el('badge-tokens').title = '账号累计 Token 活动统计（点击展开详情）';
+    el('badge-tokens').title = 'Token 用量一览（点击展开详情）';
 
     // 渲染输出速度 (统一使用 tok/s)
     const sp = d?.speed;
@@ -2303,6 +3422,25 @@
     getCustomColors: () => ({ ...customColors }),
     setCustomColor,
     resetCustomColors,
+    getHeatPreset: () => heatPreset,
+    setHeatPreset,
+    getHeatPalette: () => getEffectiveHeatmapScale(),
+    openColorPicker,
+    closeColorPicker,
+    applyPickerHex,
+    setTokenHistoryForTest: payload => applyTokenHistoryPayload(payload),
+    getTimelineWindow: () => {
+      const w = computeTimelineWindow();
+      return {
+        firstUseDate: w.firstStr,
+        winStart: formatLocalYmd(w.winStart),
+        winEnd: formatLocalYmd(w.winEnd),
+        totalDays: w.totalDays,
+        canPrev: w.canPrev,
+        canNext: w.canNext
+      };
+    },
+    repositionPanelsForTest: () => positionFloatingPanels(),
     getLayoutMode: () => state.layoutMode,
     setAvailableWidthForTest: width => {
       const next = computeNextLayoutMode(width, state.layoutMode);
@@ -2315,6 +3453,7 @@
       for (const controller of state.controllers) controller.abort();
       clearInterval(timer);
       if (layoutRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(layoutRaf);
+      syncHostStackingElevation(false);
       try { themeObserver?.disconnect(); } catch {}
       try { resizeObserver?.disconnect(); } catch {}
       try { hostDomObserver?.disconnect(); } catch {}
@@ -2322,6 +3461,8 @@
         window.removeEventListener?.('resize', onWindowResize);
         window.removeEventListener?.('focus', onWindowFocus);
         window.removeEventListener?.('blur', onWindowBlur);
+        window.removeEventListener?.('mousemove', onPointerMove);
+        window.removeEventListener?.('mouseup', onPointerUp);
         navigator?.windowControlsOverlay?.removeEventListener?.('geometrychange', onWindowResize);
       } catch {}
       document.removeEventListener('click', outside);

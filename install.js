@@ -105,6 +105,11 @@ async function tryHotInject() {
       if (liveInfo && liveInfo.origin === new URL(target.url).origin) {
         await evalExpr('window.__AGContextMeterLive=' + JSON.stringify({ port: liveInfo.port, token: liveInfo.token }));
       }
+      try {
+        const { collectTokenHistory } = require('./meter-collector');
+        const historyData = collectTokenHistory({ force: true });
+        await evalExpr('window.__AGContextMeterHistory=' + JSON.stringify(historyData));
+      } catch {}
       await evalExpr(bundle);
       ws.close();
     }
@@ -188,7 +193,7 @@ async function install(options = {}) {
       const regex = /\r?\n?\/\/ Context Meter v2: narrow read-only conversation scan API\r?\nelectron_1\.contextBridge\.exposeInMainWorld\("contextMeterAPI",\s*\{[\s\S]*?\}\);\r?\n?/g;
       preloadContent = preloadContent.replace(regex, '\n');
     }
-    preloadContent += `\n${preloadMarker}\nelectron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts) });\n`;
+    preloadContent += `\n${preloadMarker}\nelectron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTokenHistory: (force) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts) });\n`;
     fs.writeFileSync(preloadPath, preloadContent);
 
     const additions = ['meter-main.js', 'meter-core.js', 'meter-renderer.js', 'meter-collector.js', 'attachment_scan.py'];
