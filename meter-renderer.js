@@ -2754,7 +2754,11 @@
       const item = document.createElement('div'); item.className = 'file';
       const name = document.createElement('div'); name.className = 'file-name'; name.textContent = `${file.name} ${file.references > 1 ? `（引用 ${file.references} 次）` : ''}`;
       const detail = document.createElement('div'); detail.className = 'file-detail';
-      detail.textContent = `${file.source === 'assistant' ? '模型输出附件 · ' : ''}${file.chars ? `${range(file)} token · ${fmt(file.chars)} 字符` : '内容 token 未知'}${file.sheets != null ? ` · ${file.sheets} 个工作表，${fmt(file.cells)} 个单元格` : ''}${file.hiddenSheets ? `（含 ${file.hiddenSheets} 个隐藏表）` : ''}`;
+      const sizeInfo = file.width && file.height
+        ? `${file.width}×${file.height} 像素`
+        : (typeof file.chars === 'number' && file.chars > 0 ? `${fmt(file.chars)} 字符` : '');
+      const tokenInfo = range(file) ? `${range(file)} token` : '内容 token 未知';
+      detail.textContent = `${file.source === 'assistant' ? '模型输出附件 · ' : ''}${tokenInfo}${sizeInfo ? ` · ${sizeInfo}` : ''}${file.sheets != null ? ` · ${file.sheets} 个工作表，${fmt(file.cells)} 个单元格` : ''}${file.hiddenSheets ? `（含 ${file.hiddenSheets} 个隐藏表）` : ''}`;
       item.appendChild(name); item.appendChild(detail);
       if (file.unknownParts?.length) { const unknown = document.createElement('div'); unknown.className = 'file-unknown'; unknown.textContent = '未计全：' + file.unknownParts.join('；'); item.appendChild(unknown); }
       parent.appendChild(item);

@@ -210,7 +210,8 @@ def scan(item):
             if w and h:
                 result['width'] = w
                 result['height'] = h
-                result['chars'] = f"{w}×{h}"
+                result['chars'] = 0
+                result['dimensions'] = f"{w}×{h}"
                 if w <= 384 and h <= 384:
                     tok = 258
                 else:
@@ -221,7 +222,8 @@ def scan(item):
             else:
                 result['low'] = 258
                 result['high'] = 1120
-                result['chars'] = '图像'
+                result['chars'] = 0
+                result['dimensions'] = '图像'
             result['status'] = 'parsed'
         else:
             raise ValueError('此附件类型暂不支持内容解析，明确列为未知')
