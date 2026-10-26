@@ -594,7 +594,7 @@
     .heat-tab-btn:hover{color:var(--ag-text-primary)}
     .heat-tab-btn.active{color:var(--ag-text-primary);font-weight:600}
 
-    .heat-scroll-box{overflow-x:auto;padding-bottom:4px}
+    .heat-scroll-box{overflow-x:auto;overflow-y:hidden;padding:6px 6px 4px 6px}
     .heat-grid-cols{display:flex;gap:3px}
     .heat-week-col{display:flex;flex-direction:column;gap:3px}
     .heat-cell{width:10px;height:10px;border-radius:2px;background:var(--ag-heat-lvl-0);cursor:pointer;transition:transform .12s ease}
@@ -670,10 +670,13 @@
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     }
 
-    .heat-popover{position:fixed;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);border-radius:8px;padding:6px 10px;box-shadow:var(--ag-pop-shadow);z-index:2147483600;opacity:0;transform:translate(-50%,-100%) translateY(-6px);transition:opacity .12s ease}
+    .heat-popover{position:fixed;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);border-radius:8px;padding:7px 11px;box-shadow:var(--ag-pop-shadow);z-index:2147483600;opacity:0;transform:translate(-50%,-100%) translateY(-6px);transition:opacity .12s ease}
     .pop-date{font-size:11.5px;color:var(--ag-pop-muted)}
-    .pop-val{font-size:13px;font-weight:600;color:var(--ag-pop-text)}
-    .pop-det{font-size:10px;color:var(--ag-pop-sub);margin-top:2px;display:flex;gap:6px}
+    .pop-val{font-size:13.5px;font-weight:600;color:var(--ag-pop-text);margin:2px 0 4px}
+    .pop-det{font-size:10.5px;color:var(--ag-pop-sub);margin-top:2px;display:flex;gap:12px;align-items:flex-start}
+    .pop-det-col{display:inline-flex;flex-direction:column;align-items:flex-start;gap:2px}
+    .pop-det-val{font-size:11px;font-weight:500;color:var(--ag-pop-sub);font-variant-numeric:tabular-nums;white-space:nowrap}
+    .pop-det-trans{font-size:9.5px;color:var(--ag-pop-muted);opacity:0.88;white-space:nowrap;line-height:1.2}
 
     @media (prefers-reduced-motion: reduce){
       *,.ag-unit,.ring-fill,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill{
@@ -3057,7 +3060,11 @@
           heatPopDate.textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${item.isToday ? '（今日）' : (item.key === win.firstStr ? '（首次使用）' : '')}`;
           heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens` : (item.isFuture ? '未来日期（待产生记录）' : '0 Tokens');
           if (item.rec) {
-            heatPopDet.innerHTML = `<span>Prompt: ${fmtYi(item.rec.input)}</span><span>Output: ${fmtYi(item.rec.output)}</span><span>Cache: ${fmtYi(item.rec.cache)}</span>`;
+            heatPopDet.innerHTML = `
+              <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">提示词</span></div>
+              <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(item.rec.output)}</span><span class="pop-det-trans">输出</span></div>
+              <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(item.rec.cache)}</span><span class="pop-det-trans">缓存</span></div>
+            `.trim();
             heatPopDet.style.display = 'flex';
           } else {
             heatPopDet.style.display = 'none';

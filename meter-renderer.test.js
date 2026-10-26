@@ -29,6 +29,7 @@ function harness(scanSession = session()) {
       appendChild(x) { this.children.push(x); },
       replaceChildren() { this.children = []; },
       click() { listeners.get(el)?.get('click')?.(); },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 10, height: 10, right: 110, bottom: 110 }; },
       trigger(type, ev = {}) { listeners.get(el)?.get(type)?.(ev); }
     };
     return el;
@@ -473,6 +474,41 @@ test('v5 Additive: 5 heatmap levels (heatLvl0..4) support per-cell independent c
   // Reset all 5 heatmap levels via #reset-heat-lvls
   h.elements.get('reset-heat-lvls').click();
   assert.deepEqual(Array.from(api.getHeatPalette()), greenBase);
+
+  api.dispose();
+});
+
+test('v5.1: heatmap top-row anti-clipping padding and popover Chinese translations for Prompt, Output, Cache', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // 1) Ensure .heat-scroll-box has padding to prevent top cell hover outline clipping
+  assert.match(source, /\.heat-scroll-box\s*\{[^}]*padding:\s*6px 6px 4px 6px/);
+  assert.match(source, /\.pop-det-trans\s*\{[^}]*font-size:\s*9\.5px/);
+
+  // 2) Trigger daily heatmap cell click
+  h.elements.get('badge-tokens').click();
+  const colsBox = h.elements.get('h-grid-cols');
+  assert.ok(colsBox && colsBox.children.length > 0, 'grid columns should exist');
+  const firstCol = colsBox.children[0];
+  const firstCell = firstCol.children[0];
+  assert.ok(firstCell, 'first cell should exist');
+
+  // Trigger click on firstCell
+  firstCell.click();
+
+  const heatPopVal = h.elements.get('heat-pop-val');
+  const heatPopDet = h.elements.get('heat-pop-det');
+  assert.ok(heatPopVal, 'heatPopVal element exists');
+  assert.ok(heatPopDet, 'heatPopDet element exists');
+
+  // Value contains 'Tokens' without translation
+  assert.match(heatPopVal.textContent, /Tokens$/);
+
+  // Detail section has 3 columns with Chinese translations directly beneath Prompt, Output, Cache
+  assert.match(heatPopDet.innerHTML, /Prompt:[\s\S]*?<span class="pop-det-trans">提示词<\/span>/);
+  assert.match(heatPopDet.innerHTML, /Output:[\s\S]*?<span class="pop-det-trans">输出<\/span>/);
+  assert.match(heatPopDet.innerHTML, /Cache:[\s\S]*?<span class="pop-det-trans">缓存<\/span>/);
 
   api.dispose();
 });
