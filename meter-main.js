@@ -29,7 +29,13 @@ function ensureProxyEnvironment(targetEnv = process.env) {
 ensureProxyEnvironment(process.env);
 exports.ensureProxyEnvironment = ensureProxyEnvironment;
 
-const source = fs.readFileSync(path.join(__dirname, 'meter-core.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+function getMeterSource() {
+  try {
+    return fs.readFileSync(path.join(__dirname, 'meter-core.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  } catch (e) {
+    return '';
+  }
+}
 let registered = false;
 exports.installContextMeter = function (win) {
   if (!registered) {
@@ -76,7 +82,8 @@ exports.installContextMeter = function (win) {
     const url = win.webContents.getURL();
     if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(url)) return;
     syncWindowOverlayHeight();
-    void win.webContents.executeJavaScript(source).catch(error => console.warn('[Context Meter]', error.message));
+    const runtimeSource = getMeterSource();
+    if (runtimeSource) void win.webContents.executeJavaScript(runtimeSource).catch(error => console.warn('[Context Meter]', error.message));
   });
   win.webContents.on('zoom-changed', () => syncWindowOverlayHeight());
 };
