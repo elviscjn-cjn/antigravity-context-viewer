@@ -34,7 +34,7 @@
   shadow.innerHTML = `<style>
     :host{
       position:fixed;top:4px;right:146px;z-index:2147483000;
-      font:12px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+      font:12px/1.5 -apple-system-rounded,"SF Pro Rounded","Fredoka","Quicksand","Nunito",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
       -webkit-app-region:no-drag;user-select:none;display:flex;align-items:center;gap:6px;
       
       /* 深色默认变量 */
@@ -188,59 +188,83 @@
     button{font:inherit;color:inherit;cursor:pointer}
     button:focus-visible{outline:1.5px solid rgba(128,128,128,0.35);outline-offset:1px}
     
-    /* 胶囊 1: 会话上下文 */
+    /* 胶囊 1: 会话上下文 (Q弹设计) */
     #badge{
       display:inline-flex;align-items:center;height:26px;max-width:520px;padding:0 9px;
-      border:1px solid var(--ag-border-badge);border-radius:6px;
+      border:1px solid var(--ag-border-badge);border-radius:7px;
       background:var(--ag-bg-badge);color:var(--ag-text-badge);box-shadow:var(--ag-shadow-badge);
       white-space:nowrap;font-variant-numeric:tabular-nums;
-      transition:background-color .28s cubic-bezier(.16,1,.3,1),color .28s cubic-bezier(.16,1,.3,1),border-color .28s cubic-bezier(.16,1,.3,1),transform .12s cubic-bezier(.16,1,.3,1);
-      will-change:background-color,color,transform;
+      font-weight:600;letter-spacing:-0.015em;
+      transition:transform .35s cubic-bezier(.34,1.56,.64,1),background-color .2s ease,border-color .2s ease,color .2s ease,box-shadow .25s ease;
+      will-change:transform;
     }
     #badge:hover,#badge:focus-visible,#badge[aria-expanded="true"]{
       background:var(--ag-bg-badge-hover);color:var(--ag-text-badge-hover);border-color:var(--ag-border-badge-hover);
+      transform:translateY(-1.2px) scale(1.025);box-shadow:0 4px 12px rgba(0,0,0,0.22);
     }
-    #badge:active{transform:scale(0.98)}
+    #badge:active{transform:scale(0.93) translateY(0);transition:transform .08s ease}
     .meter-bar-track{width:42px;height:6px;margin-right:7px;background:var(--ag-track-bg);border-radius:3px;overflow:hidden;flex-shrink:0;box-shadow:var(--ag-track-shadow)}
     .meter-bar-fill{height:100%;width:0%;border-radius:3px;background:var(--bar-color,#69c0ff);transition:width .36s cubic-bezier(.22,1,.36,1),background-color .3s ease}
-    #amount{font-weight:500;font-size:12px;letter-spacing:-0.01em;overflow:hidden;text-overflow:ellipsis}
-    #hover-wrap{display:inline-block;width:0;opacity:0;overflow:hidden;vertical-align:middle;transition:width .28s cubic-bezier(.16,1,.3,1),opacity .24s cubic-bezier(.16,1,.3,1);will-change:width,opacity}
+    #amount{font-weight:600;font-size:12px;letter-spacing:-0.015em;overflow:hidden;text-overflow:ellipsis}
+    #hover-wrap{display:inline-block;width:0;opacity:0;overflow:hidden;vertical-align:middle;transition:width .35s cubic-bezier(.34,1.45,.64,1),opacity .22s ease;will-change:width,opacity}
     #badge:hover #hover-wrap,#badge:focus-visible #hover-wrap,#badge[aria-expanded="true"] #hover-wrap{width:var(--extra-w,0px);opacity:1}
-    #hover-extra{display:inline-block;padding-left:6px;color:var(--ag-text-extra);font-size:11.5px;font-weight:400;white-space:nowrap;transform:translateX(4px);transition:transform .28s cubic-bezier(.16,1,.3,1)}
+    #hover-extra{display:inline-block;padding-left:6px;color:var(--ag-text-extra);font-size:11.5px;font-weight:500;white-space:nowrap;transform:translateX(4px);transition:transform .28s cubic-bezier(.16,1,.3,1)}
     #badge:hover #hover-extra,#badge:focus-visible #hover-extra,#badge[aria-expanded="true"] #hover-extra{transform:translateX(0)}
 
-    /* 胶囊 2: 全局 Token 活动 */
+    /* 胶囊 2: 全局 Token 活动 (Q弹设计) */
     #badge-tokens{
       display:inline-flex;align-items:center;height:26px;padding:0 9px;
-      border:1px solid var(--ag-border-badge);border-radius:6px;
+      border:1px solid var(--ag-border-badge);border-radius:7px;
       background:var(--ag-bg-badge);color:var(--ag-text-token);box-shadow:var(--ag-shadow-badge);
-      white-space:nowrap;font-variant-numeric:tabular-nums;transition:all .28s cubic-bezier(.16,1,.3,1);gap:5px;
+      white-space:nowrap;font-variant-numeric:tabular-nums;
+      font-weight:600;letter-spacing:-0.015em;gap:5px;
+      transition:transform .35s cubic-bezier(.34,1.56,.64,1),background-color .2s ease,border-color .2s ease,color .2s ease,box-shadow .25s ease;
+      will-change:transform;
     }
     #badge-tokens:hover,#badge-tokens[aria-expanded="true"]{
       background:var(--ag-bg-badge-hover);color:var(--ag-text-token-hover);border-color:var(--ag-border-badge-hover);
+      transform:translateY(-1.2px) scale(1.025);box-shadow:0 4px 12px rgba(0,0,0,0.22);
     }
-    #badge-tokens:active{transform:scale(0.98)}
+    #badge-tokens:active{transform:scale(0.93) translateY(0);transition:transform .08s ease}
     .token-fire-dot{width:6px;height:6px;border-radius:50%;background:var(--ag-token-dot);box-shadow:var(--ag-token-dot-shadow);flex-shrink:0}
-    #token-amount{font-weight:600;font-size:12px;letter-spacing:-0.01em;color:var(--ag-text-token)}
-    #token-hover-extra{max-width:0;opacity:0;overflow:hidden;transition:all .28s cubic-bezier(.16,1,.3,1);font-size:11.5px;color:var(--ag-text-extra);white-space:nowrap}
+    #token-amount{font-weight:650;font-size:12px;letter-spacing:-0.015em;color:var(--ag-text-token)}
+    #token-hover-extra{max-width:0;opacity:0;overflow:hidden;transition:all .35s cubic-bezier(.34,1.45,.64,1);font-size:11.5px;color:var(--ag-text-extra);white-space:nowrap;font-weight:500}
     #badge-tokens:hover #token-hover-extra{max-width:140px;opacity:1;margin-left:3px}
 
-    /* 胶囊 3: 模型输出速度与耗时 */
+    /* 胶囊 3: 模型输出速度与耗时 (Q弹设计) */
     #badge-speed{
       display:inline-flex;align-items:center;height:26px;padding:0 9px;
-      border:1px solid var(--ag-border-badge);border-radius:6px;
+      border:1px solid var(--ag-border-badge);border-radius:7px;
       background:var(--ag-bg-badge);color:var(--ag-text-speed);box-shadow:var(--ag-shadow-badge);
-      white-space:nowrap;font-variant-numeric:tabular-nums;transition:all .28s cubic-bezier(.16,1,.3,1);gap:5px;
+      white-space:nowrap;font-variant-numeric:tabular-nums;gap:5px;
+      font-weight:600;letter-spacing:-0.015em;
       cursor:pointer;outline:none;
+      transition:transform .35s cubic-bezier(.34,1.56,.64,1),background-color .2s ease,border-color .2s ease,color .2s ease,box-shadow .25s ease;
+      will-change:transform;
     }
     #badge-speed:hover,#badge-speed[aria-expanded="true"]{
       background:var(--ag-bg-badge-hover);color:var(--ag-text-speed-hover);border-color:var(--ag-border-badge-hover);
+      transform:translateY(-1.2px) scale(1.025);box-shadow:0 4px 12px rgba(0,0,0,0.22);
     }
-    #badge-speed:active{transform:scale(0.98)}
+    #badge-speed:active{transform:scale(0.93) translateY(0);transition:transform .08s ease}
     .speed-icon{font-size:12px;line-height:1;flex-shrink:0;color:var(--ag-text-speed)}
-    #speed-amount{font-weight:600;font-size:12px;letter-spacing:-0.01em;color:var(--ag-text-speed)}
-    #speed-hover-extra{max-width:0;opacity:0;overflow:hidden;transition:all .28s cubic-bezier(.16,1,.3,1);font-size:11.5px;color:var(--ag-text-extra);white-space:nowrap}
+    #speed-amount{font-weight:650;font-size:12px;letter-spacing:-0.015em;color:var(--ag-text-speed)}
+    #speed-hover-extra{max-width:0;opacity:0;overflow:hidden;transition:all .35s cubic-bezier(.34,1.45,.64,1);font-size:11.5px;color:var(--ag-text-extra);white-space:nowrap;font-weight:500}
     #badge-speed:hover #speed-hover-extra{max-width:200px;opacity:1;margin-left:3px}
+
+    /* 详情二级抽屉折叠交互 */
+    .tech-drawer{margin-top:12px;border-top:1px dashed var(--ag-border-subtle);padding-top:10px}
+    .drawer-trigger{
+      width:100%;display:flex;justify-content:space-between;align-items:center;
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      border-radius:7px;padding:8px 12px;color:var(--ag-text-secondary);font-size:11.5px;font-weight:500;
+      cursor:pointer;transition:all .2s ease;
+    }
+    .drawer-trigger:hover{background:var(--ag-bg-card-hover);color:var(--ag-text-primary);border-color:var(--ag-border-card)}
+    .drawer-trigger-left{display:flex;align-items:center;gap:6px}
+    .drawer-arrow{font-size:11px;color:var(--ag-text-muted);font-weight:600;transition:transform .2s ease}
+    .drawer-body{margin-top:10px;animation:fadeSlideIn .2s cubic-bezier(.16,1,.3,1)}
+    @keyframes fadeSlideIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 
     /* 弹出主面板 */
     #panel{
@@ -373,8 +397,8 @@
   <!-- 顶部胶囊 2: 全局 Token 活动 (ChatGPT 风格) -->
   <button id="badge-tokens" aria-label="账号 Token 活动统计">
     <span class="token-fire-dot"></span>
-    <span id="token-amount">4.29亿</span>
-    <span id="token-hover-extra">· 今日 6919W</span>
+    <span id="token-amount">428.5M</span>
+    <span id="token-hover-extra">· 今日 69.2M</span>
   </button>
 
   <!-- 顶部胶囊 3: 模型输出速度与耗时 (⚡ Speed) -->
@@ -398,19 +422,24 @@
       </div>
     </div>
 
-    <!-- 视图 1: 原版会话上下文 -->
+    <!-- 视图 1: 会话上下文 (极简 UI 仪表盘 + 二级折叠) -->
     <div id="view-context">
-      <h3>会话与上下文统计<span id="v">v2.5</span></h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0">会话用量与生成监控<span id="v">v2.5</span></h3>
+      </div>
+
+      <!-- 卡片 1: 核心用量速览 (纯 UI) -->
       <div id="key-summary">
-        <div class="key-header"><span class="key-title">⭐ 核心用量速览（看这一项就够）</span><span id="key-badge" class="key-pill pill-muted">读取中</span></div>
+        <div class="key-header"><span class="key-title">⭐ 核心用量速览</span><span id="key-badge" class="key-pill pill-muted">读取中</span></div>
         <div class="key-bar-track"><div id="key-bar-fill" class="key-bar-fill"></div></div>
         <div class="key-stats"><div class="key-stat"><div class="key-stat-label">当前已用</div><div id="key-used" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">预算上限</div><div id="key-limit" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">剩余可用</div><div id="key-remaining" class="key-stat-val">—</div></div></div>
         <div id="key-takeaway" class="key-takeaway">正在计算核心指标…</div>
       </div>
-      <!-- ⚡ 最新生成速度与耗时速览卡片 -->
-      <div id="speed-summary" style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:12px 13px;margin:8px 0 12px;">
+
+      <!-- 卡片 2: 输出速度与延迟速览 (纯 UI) -->
+      <div id="speed-summary" style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:12px 13px;margin:8px 0 10px;">
         <div class="key-header">
-          <span class="key-title" style="color:var(--ag-text-speed);">⚡ 最新生成速度与耗时速览</span>
+          <span class="key-title" style="color:var(--ag-text-speed);">⚡ 最新生成速度与耗时</span>
           <span id="speed-badge" class="key-pill pill-muted">待生成</span>
         </div>
         <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
@@ -433,39 +462,51 @@
         </div>
         <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
       </div>
-      <p id="status">正在核对请求和附件…</p><p id="model"></p>
-      <h4>最近一次模型请求</h4>
-      <dl><dt>请求状态</dt><dd id="request-status">—</dd><dt>模型返回输入＋输出</dt><dd id="actual">—</dd><dt>客户端估算（可能漏附件）</dt><dd id="estimate">—</dd><dt>客户端预算字段</dt><dd id="budget">—</dd><dt>该次报错的服务端限制</dt><dd id="service-limit">—</dd><dt>相对客户端预算</dt><dd id="percent">—</dd></dl>
-      <h4>整个会话累计内容 · 本地估算</h4>
-      <dl><dt>可读取文本 token 估算</dt><dd id="session-total">扫描中…</dd><dt>实际读取文字字符数</dt><dd id="characters">—</dd><dt>用户消息</dt><dd id="user">—</dd><dt>模型回复</dt><dd id="assistant">—</dd><dt>可见思考内容</dt><dd id="thinking">—</dd><dt>工具调用与工具输出</dt><dd id="tools">—</dd><dt>历史压缩摘要</dt><dd id="summaries">—</dd><dt>当前系统提示与工具定义</dt><dd id="system">—</dd><dt>上传／输出附件文本</dt><dd id="attachment-total">—</dd><dt>历史步骤完整性</dt><dd id="steps">—</dd></dl>
-      <p id="coverage"></p><h4>附件逐项检查</h4><div id="files"></div><button id="refresh">重新扫描整段会话与附件</button>
-      <p id="note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token 区间是文本启发式估算，不是 Gemini 分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。</p>
-      <p id="updated"></p>
+
+      <!-- 二级交互折叠区: 底层技术明细与附件审计 (默认收起) -->
+      <div class="tech-drawer">
+        <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
+          <span class="drawer-trigger-left">
+            <span>📋 底层技术参数与附件审计</span>
+          </span>
+          <span id="drawer-arrow" class="drawer-arrow">▼ 点击展开明细</span>
+        </button>
+        <div id="drawer-body" class="drawer-body" style="display:none;">
+          <p id="status">正在核对请求和附件…</p><p id="model"></p>
+          <h4>最近一次模型请求</h4>
+          <dl><dt>请求状态</dt><dd id="request-status">—</dd><dt>模型返回输入＋输出</dt><dd id="actual">—</dd><dt>客户端估算（可能漏附件）</dt><dd id="estimate">—</dd><dt>客户端预算字段</dt><dd id="budget">—</dd><dt>该次报错的服务端限制</dt><dd id="service-limit">—</dd><dt>相对客户端预算</dt><dd id="percent">—</dd></dl>
+          <h4>整个会话累计内容 · 本地估算</h4>
+          <dl><dt>可读取文本 token 估算</dt><dd id="session-total">扫描中…</dd><dt>实际读取文字字符数</dt><dd id="characters">—</dd><dt>用户消息</dt><dd id="user">—</dd><dt>模型回复</dt><dd id="assistant">—</dd><dt>可见思考内容</dt><dd id="thinking">—</dd><dt>工具调用与工具输出</dt><dd id="tools">—</dd><dt>历史压缩摘要</dt><dd id="summaries">—</dd><dt>当前系统提示与工具定义</dt><dd id="system">—</dd><dt>上传／输出附件文本</dt><dd id="attachment-total">—</dd><dt>历史步骤完整性</dt><dd id="steps">—</dd></dl>
+          <p id="coverage"></p><h4>附件逐项检查</h4><div id="files"></div><button id="refresh">重新扫描整段会话与附件</button>
+          <p id="note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token 区间是文本启发式估算，不是 Gemini 分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。</p>
+          <p id="updated"></p>
+        </div>
+      </div>
     </div>
 
-    <!-- 视图 2: 🔥 账号 Token 活动 -->
+    <!-- 视图 2: 🔥 账号 Token 活动 (现代化 UI 卡片) -->
     <div id="view-tokens" style="display:none">
       <!-- 4 大核心统计看板 -->
       <div class="token-stat-cards">
         <div class="t-card">
-          <div class="t-card-lbl"><span>账号累计总消耗</span><span style="color:var(--ag-tab-active-purple-text)">全量</span></div>
-          <div class="t-card-val" id="t-total-val">4.29 亿</div>
-          <div class="t-card-sub" id="t-total-sub">428,514,452 个 Token</div>
+          <div class="t-card-lbl"><span>全量累计</span><span style="color:var(--ag-tab-active-purple-text)">Total</span></div>
+          <div class="t-card-val" id="t-total-val">428.5M</div>
+          <div class="t-card-sub" id="t-total-sub">428,514,452 Tokens</div>
         </div>
         <div class="t-card">
           <div class="t-card-lbl"><span>今日使用</span><span style="color:#0284c7">Today</span></div>
-          <div class="t-card-val" id="t-today-val">6918.9 万</div>
-          <div class="t-card-sub" id="t-today-sub">38会话实时累加</div>
+          <div class="t-card-val" id="t-today-val">69.2M</div>
+          <div class="t-card-sub" id="t-today-sub">38 会话实时累加</div>
         </div>
         <div class="t-card">
-          <div class="t-card-lbl"><span>本月使用 (10月)</span><span style="color:var(--ag-tab-active-purple-text)">当月</span></div>
-          <div class="t-card-val" id="t-month-val">4.29 亿</div>
-          <div class="t-card-sub" id="t-month-sub">日均约 6121.6万</div>
+          <div class="t-card-lbl"><span>本月使用</span><span style="color:var(--ag-tab-active-purple-text)">Month</span></div>
+          <div class="t-card-val" id="t-month-val">428.5M</div>
+          <div class="t-card-sub" id="t-month-sub">日均约 61.2M</div>
         </div>
         <div class="t-card">
-          <div class="t-card-lbl"><span>整年使用 (2026)</span><span style="color:var(--ag-tab-active-purple-text)">年度</span></div>
-          <div class="t-card-val" id="t-year-val">4.29 亿</div>
-          <div class="t-card-sub" id="t-year-sub">365天活动连续记录</div>
+          <div class="t-card-lbl"><span>年度使用</span><span style="color:var(--ag-tab-active-purple-text)">Year</span></div>
+          <div class="t-card-val" id="t-year-val">428.5M</div>
+          <div class="t-card-sub" id="t-year-sub">365 天活动记录</div>
         </div>
       </div>
 
@@ -519,7 +560,13 @@
   (document.body || document.documentElement).appendChild(host);
   const el = id => shadow.getElementById(id);
   const fmt = v => v == null ? '—' : Math.round(v).toLocaleString('en-US');
-  const short = v => v >= 1e6 ? `${parseFloat((v / 1e6).toFixed(2))}M` : v >= 1000 ? `${parseFloat((v / 1000).toFixed(1))}K` : fmt(v);
+  const short = v => {
+    if (v == null) return '—';
+    if (v >= 1e9) return `${parseFloat((v / 1e9).toFixed(2))}B`;
+    if (v >= 1e6) return `${parseFloat((v / 1e6).toFixed(2))}M`;
+    if (v >= 1000) return `${parseFloat((v / 1000).toFixed(1))}K`;
+    return fmt(v);
+  };
   const range = value => value ? `≈ ${short(value.low)}–${short(value.high)}` : '—';
   const token = value => value == null ? '未提供' : `${fmt(value)} tokens`;
   const state = { route: null, count: 0, latest: null, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0, scanError: '', scan: null, generation: 0, controllers: new Set(), disposed: false };
@@ -648,6 +695,18 @@
   el('badge').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
+  
+  // 二级技术抽屉折叠展开交互
+  const btnDetails = el('btn-toggle-details');
+  const drawerBody = el('drawer-body');
+  const drawerArrow = el('drawer-arrow');
+  btnDetails?.addEventListener('click', () => {
+    if (!drawerBody) return;
+    const isHidden = drawerBody.style.display === 'none' || !drawerBody.style.display;
+    drawerBody.style.display = isHidden ? 'block' : 'none';
+    if (drawerArrow) drawerArrow.textContent = isHidden ? '▲ 点击收起明细' : '▼ 点击展开明细';
+    btnDetails.setAttribute('aria-expanded', String(isHidden));
+  });
   el('tab-nav-context').addEventListener('click', () => switchPanelTab('context'));
   el('tab-nav-tokens').addEventListener('click', () => switchPanelTab('tokens'));
 
@@ -731,9 +790,10 @@
 
   function fmtYi(n) {
     if (!n || n <= 0) return '0';
-    if (n >= 1e8) return `${(n / 1e8).toFixed(2)} 亿`;
-    if (n >= 1e4) return `${(n / 1e4).toFixed(1)} 万`;
-    return n.toLocaleString();
+    if (n >= 1e9) return `${parseFloat((n / 1e9).toFixed(2))}B`;
+    if (n >= 1e6) return `${parseFloat((n / 1e6).toFixed(2))}M`;
+    if (n >= 1e3) return `${parseFloat((n / 1e3).toFixed(1))}K`;
+    return n.toLocaleString('en-US');
   }
 
   function getLvl(t) {
@@ -789,9 +849,9 @@
         const showPop = () => {
           const d = item.date;
           heatPopDate.textContent = `${d.getMonth() + 1}月${d.getDate()}日`;
-          heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} 个 Token` : '无 Token 消耗';
+          heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens` : '0 Tokens';
           if (item.rec) {
-            heatPopDet.innerHTML = `<span>输入: ${fmtYi(item.rec.input)}</span><span>输出: ${fmtYi(item.rec.output)}</span><span>缓存: ${fmtYi(item.rec.cache)}</span>`;
+            heatPopDet.innerHTML = `<span>Prompt: ${fmtYi(item.rec.input)}</span><span>Output: ${fmtYi(item.rec.output)}</span><span>Cache: ${fmtYi(item.rec.cache)}</span>`;
             heatPopDet.style.display = 'flex';
           } else {
             heatPopDet.style.display = 'none';
@@ -867,8 +927,8 @@
 
       const showPop = () => {
         heatPopDate.textContent = `${w.sDate.getMonth() + 1}月${w.sDate.getDate()}日 - ${w.eDate.getMonth() + 1}月${w.eDate.getDate()}日`;
-        heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} 个 Token` : '该周无消耗';
-        heatPopDet.innerHTML = `<span>周累计消耗</span>`;
+        heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens` : '0 Tokens';
+        heatPopDet.innerHTML = `<span>Weekly Total · 周累计</span>`;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
         heatPop.style.left = `${r.left + r.width / 2}px`;
@@ -955,8 +1015,8 @@
       const idx = Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
       const pt = points[idx];
       heatPopDate.textContent = `${pt.date.getMonth() + 1}月${pt.date.getDate()}日 (累计)`;
-      heatPopVal.textContent = `${fmtYi(pt.val)} 个 Token`;
-      heatPopDet.innerHTML = `<span>截至当日全周期累计</span>`;
+      heatPopVal.textContent = `${fmtYi(pt.val)} Tokens`;
+      heatPopDet.innerHTML = `<span>Cumulative Total · 累计总消耗</span>`;
       heatPopDet.style.display = 'block';
       heatPop.style.left = `${e.clientX}px`;
       heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 10)) - 6}px`;

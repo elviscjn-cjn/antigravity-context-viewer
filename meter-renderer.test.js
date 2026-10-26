@@ -5,7 +5,22 @@ const source = fs.readFileSync(require('node:path').join(__dirname, 'meter-rende
 function session(unknown = 0) { return { groups: Object.fromEntries(['user','assistant','thinking','tools','summaries','system','definitions'].map(k => [k,core.empty()])), total: { chars: 100, low: 10, high: 50 }, attachmentTotal: core.empty(), attachments: unknown ? [{ name: '<img onerror=bad>', status: 'unknown', unknownParts: ['图像 token 未知'], chars: 0, source: 'user' }] : [], unknownFiles: unknown, steps: 10, userMessages: 2, assistantMessages: 3 }; }
 function harness(scanSession = session()) {
   const elements = new Map();
-  const element = () => ({ style: { setProperty() {} }, children: [], hidden: false, textContent: '', addEventListener() {}, setAttribute() {}, remove() {}, appendChild(x) { this.children.push(x); }, replaceChildren() { this.children = []; } });
+  const listeners = new Map();
+  const element = () => {
+    const el = {
+      style: { display: '', setProperty() {} },
+      children: [], hidden: false, textContent: '',
+      addEventListener(type, fn) {
+        if (!listeners.has(el)) listeners.set(el, new Map());
+        listeners.get(el).set(type, fn);
+      },
+      setAttribute() {}, remove() {},
+      appendChild(x) { this.children.push(x); },
+      replaceChildren() { this.children = []; },
+      click() { listeners.get(el)?.get('click')?.(); }
+    };
+    return el;
+  };
   const host = element(); host.attachShadow = () => ({ set innerHTML(value) {}, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
   const pending = [], scans = [], timers = [];
   const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); } };
@@ -104,5 +119,20 @@ test('speed badge and speed summary card accurately render model output speed an
   assert.match(h.elements.get('speed-tokens').textContent, /2,388 tok/);
   assert.equal(h.elements.get('speed-badge').textContent, '极速');
   assert.match(h.elements.get('speed-takeaway').textContent, /112\.1 tok\/s/);
+  h.sandbox.__AGContextMeter.dispose();
+});
+test('drawer toggle controls secondary technical details visibility', () => {
+  const h = harness();
+  const btn = h.elements.get('btn-toggle-details');
+  const body = h.elements.get('drawer-body');
+  const arrow = h.elements.get('drawer-arrow');
+  assert.ok(btn);
+  assert.ok(body);
+  btn.click();
+  assert.equal(body.style.display, 'block');
+  assert.equal(arrow.textContent, '▲ 点击收起明细');
+  btn.click();
+  assert.equal(body.style.display, 'none');
+  assert.equal(arrow.textContent, '▼ 点击展开明细');
   h.sandbox.__AGContextMeter.dispose();
 });
