@@ -40,10 +40,37 @@ exports.installContextMeter = function (win) {
       try { return { ok: true, data: await collect(url.origin, id, { force: force === true }) }; }
       catch (e) { return { ok: false, error: e.message }; }
     });
+    ipcMain.handle('context-meter:sync-overlay', async (event, options) => {
+      try {
+        const { BrowserWindow } = require('electron');
+        const targetWin = BrowserWindow.fromWebContents(event.sender);
+        if (!targetWin || targetWin.isDestroyed() || typeof targetWin.setTitleBarOverlay !== 'function') return { ok: false };
+        const patch = {};
+        if (options && typeof options.color === 'string') patch.color = options.color;
+        if (options && typeof options.symbolColor === 'string') patch.symbolColor = options.symbolColor;
+        if (options && Number.isFinite(Number(options.height)) && Number(options.height) >= 24 && Number(options.height) <= 64) {
+          patch.height = Math.round(Number(options.height));
+        }
+        targetWin.setTitleBarOverlay(patch);
+        return { ok: true, patch };
+      } catch (e) {
+        return { ok: false, error: e.message };
+      }
+    });
   }
+  const syncWindowOverlayHeight = () => {
+    try {
+      if (process.platform === 'darwin' || win.isDestroyed() || typeof win.setTitleBarOverlay !== 'function') return;
+      const zf = typeof win.webContents?.getZoomFactor === 'function' ? win.webContents.getZoomFactor() : 1;
+      const targetH = Math.max(28, Math.min(60, Math.round(40 * (Number.isFinite(zf) && zf > 0 ? zf : 1))));
+      win.setTitleBarOverlay({ height: targetH });
+    } catch {}
+  };
   win.webContents.on('did-finish-load', () => {
     const url = win.webContents.getURL();
     if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(url)) return;
+    syncWindowOverlayHeight();
     void win.webContents.executeJavaScript(source).catch(error => console.warn('[Context Meter]', error.message));
   });
+  win.webContents.on('zoom-changed', () => syncWindowOverlayHeight());
 };

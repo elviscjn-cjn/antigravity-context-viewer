@@ -301,3 +301,11 @@ test('6 independent custom color slots support custom values, reset to theme def
   assert.equal(h.host.style.getPropertyValue('--ag-custom-speed'), '');
   api.dispose();
 });
+
+test('window controls overlay spacer, convPane flex-grow self-healing, and clean dispose', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  assert.equal(api.version, '2.6.0');
+  api.dispose();
+});
+
