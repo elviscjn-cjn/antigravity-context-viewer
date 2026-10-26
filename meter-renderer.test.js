@@ -264,14 +264,14 @@ test('progressive width collapse transitions smoothly across 4 stages with hyste
   assert.equal(api.setAvailableWidthForTest(75), 'ring-only'); // hysteresis (<82)
   assert.equal(api.setAvailableWidthForTest(90), 'minimal');
 
-  // In ring-only mode, clicking the ring opens context panel, and switch-to-tokens reaches token stats
+  // In ring-only mode, clicking the ring opens context panel, and overflow menu reaches token stats
   api.setAvailableWidthForTest(50);
   h.elements.get('badge').click();
   assert.equal(h.elements.get('panel').hidden, false);
-  h.elements.get('switch-to-tokens').click();
+  h.elements.get('overflow-tokens-btn')?.click();
   assert.equal(h.elements.get('panel').hidden, true);
   assert.equal(h.elements.get('panel-tokens').hidden, false);
-  h.elements.get('switch-to-context').click();
+  h.elements.get('overflow-speed-btn')?.click();
   assert.equal(h.elements.get('panel').hidden, false);
 
   api.dispose();

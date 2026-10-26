@@ -594,7 +594,6 @@
         <span style="font-size:13px;font-weight:600;color:var(--ag-text-primary)">💬 当前会话上下文</span>
       </div>
       <div class="panel-header-actions">
-        <button id="switch-to-tokens" class="panel-icon-btn" type="button" title="查看账号累计 Token 活动与热力图">🔥 累计用量</button>
         <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
         <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
@@ -727,7 +726,6 @@
         <span style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">🔥 账号 Token 活动</span>
       </div>
       <div class="panel-header-actions">
-        <button id="switch-to-context" class="panel-icon-btn" type="button" title="返回当前会话上下文详情">💬 会话上下文</button>
         <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
         <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
@@ -1397,8 +1395,6 @@
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
   el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context'));
   el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens'));
-  el('switch-to-tokens')?.addEventListener('click', () => showPanel('tokens'));
-  el('switch-to-context')?.addEventListener('click', () => showPanel('context'));
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
 
