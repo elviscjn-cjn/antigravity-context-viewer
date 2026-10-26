@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/Dependencies-Zero-success" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform Support">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+  <a href="https://linux.do/"><img src="https://img.shields.io/badge/LINUX%20DO-Community-2563EB?logo=linux&logoColor=white" alt="LINUX DO"></a>
 </p>
 
 <p align="center">
@@ -124,3 +125,9 @@ antigravity-context-viewer/
 ├── install.bat / install.sh      # One-click install scripts
 └── uninstall.bat / .sh           # One-click restore scripts
 ```
+
+---
+
+## 🤝 Community & Acknowledgements
+
+- **[LINUX DO](https://linux.do/)**: Proudly linked and acknowledging the LINUX DO developer community.

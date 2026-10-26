@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/Dependencies-Zero-success" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform Support">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+  <a href="https://linux.do/"><img src="https://img.shields.io/badge/LINUX%20DO-认可社区-2563EB?logo=linux&logoColor=white" alt="LINUX DO"></a>
 </p>
 
 <p align="center">
@@ -179,3 +180,9 @@ antigravity-context-viewer/
 ├── install.bat / install.sh      # 一键安装入口脚本
 └── uninstall.bat / .sh           # 一键卸载与还原入口脚本
 ```
+
+---
+
+## 🤝 社区与支持 (Community & Acknowledgements)
+
+- **[LINUX DO](https://linux.do/)**：本项目支持并认可 LINUX DO 社区，欢迎各位社区佬友交流探讨。

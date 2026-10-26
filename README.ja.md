@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/Dependencies-Zero-success" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform Support">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+  <a href="https://linux.do/"><img src="https://img.shields.io/badge/LINUX%20DO-Community-2563EB?logo=linux&logoColor=white" alt="LINUX DO"></a>
 </p>
 
 <p align="center">
@@ -81,3 +82,9 @@ node cli.js status
 
 - **Windows**: [`install.bat`](install.bat) をダブルクリック（アンインストール: [`uninstall.bat`](uninstall.bat)）
 - **macOS / Linux**: `./install.sh` を実行（アンインストール: `./uninstall.sh`）
+
+---
+
+## 🤝 コミュニティと謝辞 (Community)
+
+- **[LINUX DO](https://linux.do/)**: 本プロジェクトは LINUX DO 開発者コミュニティを支持・承認しています。

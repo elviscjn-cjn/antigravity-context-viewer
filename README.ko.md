@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/Dependencies-Zero-success" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform Support">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+  <a href="https://linux.do/"><img src="https://img.shields.io/badge/LINUX%20DO-Community-2563EB?logo=linux&logoColor=white" alt="LINUX DO"></a>
 </p>
 
 <p align="center">
@@ -81,3 +82,9 @@ node cli.js status
 
 - **Windows**: [`install.bat`](install.bat) 더블 클릭 실행 (삭제: [`uninstall.bat`](uninstall.bat))
 - **macOS / Linux**: `./install.sh` 실행 (삭제: `./uninstall.sh`)
+
+---
+
+## 🤝 커뮤니티 및 감사의 글 (Community)
+
+- **[LINUX DO](https://linux.do/)**: 본 프로젝트는 LINUX DO 개발자 커뮤니티를 지지하고 인정합니다.
