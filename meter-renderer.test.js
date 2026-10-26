@@ -72,3 +72,12 @@ test('key summary card shows overflow alert and zeroes remaining when exceeded',
   assert.match(h.elements.get('key-takeaway').textContent, /已超出服务端最大限制/);
   h.sandbox.__AGContextMeter.dispose();
 });
+test('theme mode switches freely between light and dark', () => {
+  const h = harness();
+  assert.equal(typeof h.sandbox.__AGContextMeter.theme(), 'string');
+  h.sandbox.__AGContextMeter.setTheme('light');
+  assert.equal(h.sandbox.__AGContextMeter.theme(), 'light');
+  h.sandbox.__AGContextMeter.setTheme('dark');
+  assert.equal(h.sandbox.__AGContextMeter.theme(), 'dark');
+  h.sandbox.__AGContextMeter.dispose();
+});
