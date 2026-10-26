@@ -2278,7 +2278,8 @@
           const contentStart = titleInner?.getBoundingClientRect
             ? Math.max(8, titleInner.getBoundingClientRect().left - tbRect.left)
             : (tbRect.left < 168 ? (168 - tbRect.left) : 12);
-          const minTitleWidth = 140;
+          const titleRealW = titleEl?.scrollWidth ? Math.min(320, titleEl.scrollWidth) : 160;
+          const minTitleWidth = Math.max(150, titleRealW);
           let nativeButtonsWidth = 64;
           let rightPad = 8;
           const rightGroup = host.parentElement;

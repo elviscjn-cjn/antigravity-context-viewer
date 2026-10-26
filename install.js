@@ -183,6 +183,7 @@ async function install(options = {}) {
     const patchedUtils = originalUtils
       .replace('"use strict";', '"use strict";\ntry { require("./meter-main").ensureProxyEnvironment(process.env); } catch {}')
       .replace(setupNodeMarker, setupNodeMarker + '\n    try { require("./meter-main").ensureProxyEnvironment(env); } catch {}')
+      .replace("titleBarStyle: 'hidden',", "titleBarStyle: 'hidden',\n        autoHideMenuBar: true,")
       .replace(marker, hookLine + marker);
     fs.writeFileSync(path.join(staging, 'dist', 'utils.js'), patchedUtils);
 

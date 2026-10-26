@@ -38,6 +38,24 @@ function getMeterSource() {
 }
 let registered = false;
 exports.installContextMeter = function (win) {
+  if (process.platform === 'win32') {
+    try {
+      if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
+      win.autoHideMenuBar = true;
+    } catch {}
+    win.on('show', () => {
+      try {
+        if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
+        win.autoHideMenuBar = true;
+      } catch {}
+    });
+    win.on('restore', () => {
+      try {
+        if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
+        win.autoHideMenuBar = true;
+      } catch {}
+    });
+  }
   if (!registered) {
     registered = true;
     ipcMain.handle('context-meter:scan', async (event, id, force) => {
@@ -56,7 +74,14 @@ exports.installContextMeter = function (win) {
       try {
         const { BrowserWindow } = require('electron');
         const targetWin = BrowserWindow.fromWebContents(event.sender);
-        if (!targetWin || targetWin.isDestroyed() || typeof targetWin.setTitleBarOverlay !== 'function') return { ok: false };
+        if (!targetWin || targetWin.isDestroyed()) return { ok: false };
+        if (process.platform === 'win32') {
+          try {
+            if (typeof targetWin.setMenuBarVisibility === 'function') targetWin.setMenuBarVisibility(false);
+            targetWin.autoHideMenuBar = true;
+          } catch {}
+        }
+        if (typeof targetWin.setTitleBarOverlay !== 'function') return { ok: true };
         const patch = {};
         if (options && typeof options.color === 'string') patch.color = options.color;
         if (options && typeof options.symbolColor === 'string') patch.symbolColor = options.symbolColor;
