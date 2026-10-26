@@ -7,18 +7,29 @@ function harness(scanSession = session()) {
   const elements = new Map();
   const listeners = new Map();
   const element = () => {
+    const attrs = new Map();
+    const props = new Map();
     const el = {
-      style: { display: '', setProperty() {} },
+      style: {
+        display: '',
+        opacity: '',
+        setProperty(k, v) { props.set(k, v); },
+        removeProperty(k) { props.delete(k); },
+        getPropertyValue(k) { return props.get(k) || ''; }
+      },
       children: [], hidden: false, textContent: '',
       addEventListener(type, fn) {
         if (!listeners.has(el)) listeners.set(el, new Map());
         listeners.get(el).set(type, fn);
       },
-      setAttribute() {}, remove() {},
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      remove() {},
       appendChild(x) { this.children.push(x); },
       replaceChildren() { this.children = []; },
       click() { listeners.get(el)?.get('click')?.(); },
-      trigger(type) { listeners.get(el)?.get(type)?.(); }
+      trigger(type, ev = {}) { listeners.get(el)?.get(type)?.(ev); }
     };
     return el;
   };
@@ -28,7 +39,7 @@ function harness(scanSession = session()) {
   // First createElement call is the host; later calls are safe text-only file rows.
   let first = true; sandbox.document.createElement = () => { if (first) { first = false; return host; } return element(); };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
-  return { sandbox, pending, scans, elements, tick: () => timers[0](), flush: () => new Promise(resolve => setImmediate(resolve)), finishScan(i = 0) { scans[i].resolve({ ok: true, data: { session: scanSession, scannedAt: Date.now(), latest: null } }); } };
+  return { sandbox, host, pending, scans, elements, tick: () => timers[0](), flush: () => new Promise(resolve => setImmediate(resolve)), finishScan(i = 0) { scans[i].resolve({ ok: true, data: { session: scanSession, scannedAt: Date.now(), latest: null } }); } };
 }
 function response(chatModel) { return { ok: true, json: async () => ({ generatorMetadata: [{ chatModel }] }) }; }
 test('late old request and old full-scan responses cannot contaminate a newly selected chat', async () => {
@@ -171,4 +182,122 @@ test('decoupled dual panels and hover switching between context and tokens', () 
   assert.equal(pTokens.hidden, true);
 
   h.sandbox.__AGContextMeter.dispose();
+});
+
+test('circular ring indicator and 3-layer tooltip bubble match reference hierarchy on hover and focus', async () => {
+  const h = harness(); h.finishScan();
+  h.pending[0].resolve(response({
+    usage: { inputTokens: 36500, outputTokens: 500 },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 475000 } }
+  }));
+  await h.flush();
+
+  const ringFill = h.elements.get('ring-fill');
+  const tip = h.elements.get('context-tooltip');
+  const tipTitle = h.elements.get('ctx-tip-title');
+  const tipPct = h.elements.get('ctx-tip-pct');
+  const tipDetail = h.elements.get('ctx-tip-detail');
+  const badge = h.elements.get('badge');
+
+  assert.equal(ringFill.getAttribute('data-ring-state'), 'determinate');
+  // 37k / 475k = 7.789% -> rounds to 8% used (92% remaining)
+  assert.equal(tipTitle.textContent, '上下文窗口：');
+  assert.equal(tipPct.textContent, '8% 已用（剩余 92%）');
+  assert.equal(tipDetail.textContent, '已用 37k token，共 475k');
+
+  // Hover opens tooltip, mouseleave closes
+  assert.equal(tip.getAttribute('data-visible'), 'false');
+  badge.trigger('mouseenter');
+  assert.equal(tip.getAttribute('data-visible'), 'true');
+  badge.trigger('mouseleave');
+  assert.equal(tip.getAttribute('data-visible'), 'false');
+
+  // Keyboard focus opens tooltip, blur closes
+  badge.trigger('focus');
+  assert.equal(tip.getAttribute('data-visible'), 'true');
+  badge.trigger('blur');
+  assert.equal(tip.getAttribute('data-visible'), 'false');
+
+  h.sandbox.__AGContextMeter.dispose();
+});
+
+test('unknown capacity and estimated states never draw ring as 0% or 100% and preserve estimation labels', async () => {
+  const h = harness(); h.finishScan();
+  // Case 1: estimated only, no actual server usage
+  h.pending[0].resolve(response({
+    chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 42000, maxContextTokens: 256000 } }
+  }));
+  await h.flush();
+
+  const ringFill = h.elements.get('ring-fill');
+  const tipTitle = h.elements.get('ctx-tip-title');
+  const tipPct = h.elements.get('ctx-tip-pct');
+  const tipDetail = h.elements.get('ctx-tip-detail');
+
+  assert.equal(ringFill.getAttribute('data-ring-state'), 'estimated');
+  assert.equal(ringFill.getAttribute('stroke-dasharray'), '3.2 4.97');
+  assert.match(tipTitle.textContent, /本地估算/);
+  assert.match(tipPct.textContent, /仅估算/);
+  assert.match(tipDetail.textContent, /≈ 42k token，共 256k/);
+
+  h.sandbox.__AGContextMeter.dispose();
+});
+
+test('progressive width collapse transitions smoothly across 4 stages with hysteresis and preserves full access in ring-only mode', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  assert.equal(api.getLayoutMode(), 'wide');
+  // Collapse wide -> compact (<195)
+  assert.equal(api.setAvailableWidthForTest(180), 'compact');
+  // Hysteresis deadband: 200 (<210) stays compact instead of oscillating back to wide
+  assert.equal(api.setAvailableWidthForTest(200), 'compact');
+  // Expand back to wide (>=210)
+  assert.equal(api.setAvailableWidthForTest(215), 'wide');
+
+  // Collapse to minimal (<135)
+  assert.equal(api.setAvailableWidthForTest(120), 'minimal');
+  assert.equal(api.setAvailableWidthForTest(142), 'minimal'); // hysteresis (<150)
+
+  // Collapse to ring-only (<68)
+  assert.equal(api.setAvailableWidthForTest(55), 'ring-only');
+  assert.equal(api.setAvailableWidthForTest(75), 'ring-only'); // hysteresis (<82)
+  assert.equal(api.setAvailableWidthForTest(90), 'minimal');
+
+  // In ring-only mode, clicking the ring opens context panel, and switch-to-tokens reaches token stats
+  api.setAvailableWidthForTest(50);
+  h.elements.get('badge').click();
+  assert.equal(h.elements.get('panel').hidden, false);
+  h.elements.get('switch-to-tokens').click();
+  assert.equal(h.elements.get('panel').hidden, true);
+  assert.equal(h.elements.get('panel-tokens').hidden, false);
+  h.elements.get('switch-to-context').click();
+  assert.equal(h.elements.get('panel').hidden, false);
+
+  api.dispose();
+});
+
+test('6 independent custom color slots support custom values, reset to theme default, and do not mask high-occupancy alerts', async () => {
+  const h = harness(); h.finishScan();
+  const api = h.sandbox.__AGContextMeter;
+
+  api.setCustomColor('ringUsed', '#10b981');
+  api.setCustomColor('speedText', '#f59e0b');
+  assert.equal(h.host.style.getPropertyValue('--ag-custom-ring-used'), '#10b981');
+  assert.equal(h.host.style.getPropertyValue('--ag-custom-speed'), '#f59e0b');
+
+  // High occupancy (>=90%) sets data-occupancy="danger" and explicit text warning in bubble
+  h.pending[0].resolve(response({
+    usage: { inputTokens: 240000, outputTokens: 2000 },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+  }));
+  await h.flush();
+  assert.equal(h.host.getAttribute('data-occupancy'), 'danger');
+  assert.match(h.elements.get('ctx-tip-title').textContent, /高占用告警/);
+  assert.match(h.elements.get('ctx-tip-pct').textContent, /接近上限/);
+
+  api.resetCustomColors();
+  assert.equal(h.host.style.getPropertyValue('--ag-custom-ring-used'), '');
+  assert.equal(h.host.style.getPropertyValue('--ag-custom-speed'), '');
+  api.dispose();
 });
