@@ -167,13 +167,24 @@ test('decoupled dual panels and hover switching between context and tokens', () 
   assert.equal(pContext.hidden, false);
   assert.equal(pTokens.hidden, true);
 
-  // Hover over Tokens badge while open -> smoothly switches to tokens panel
+  // Hover over Tokens badge while open -> does NOT accidentally switch (anti-misclick)
   bTokens.trigger('mouseenter');
+  assert.equal(pContext.hidden, false);
+  assert.equal(pTokens.hidden, true);
+
+  // Left click on Tokens badge -> switches to tokens panel
+  bTokens.click();
   assert.equal(pContext.hidden, true);
   assert.equal(pTokens.hidden, false);
 
-  // Hover over Speed badge -> switches back to context panel
+  // Hover over Speed / Context badge -> does NOT switch back
   bSpeed.trigger('mouseenter');
+  bContext.trigger('mouseenter');
+  assert.equal(pContext.hidden, true);
+  assert.equal(pTokens.hidden, false);
+
+  // Left click Context badge -> switches back to context panel
+  bContext.click();
   assert.equal(pContext.hidden, false);
   assert.equal(pTokens.hidden, true);
 

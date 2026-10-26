@@ -85,8 +85,21 @@
       if (value.uri && (value.mimeType || value.inlineData !== undefined)) {
         const key = String(value.uri);
         if (!withinStep.has(key)) { withinStep.add(key); const prior = media.get(key); if (prior) prior.references++; else media.set(key, { uri: key, name: String(value.description || key.split(/[\\/]/).pop()), mime: String(value.mimeType || ''), references: 1, source }); }
-      } else if (value.inlineData && value.mimeType && !value.uri) {
-        const key = `inline-${media.size}`; media.set(key, { uri: '', name: String(value.description || '内嵌附件'), mime: value.mimeType, references: 1, source, reason: '仅有内嵌数据，未读取原文件' });
+      } else if (value.inlineData && !value.uri) {
+        const key = `inline-${media.size}`;
+        const rawData = typeof value.inlineData === 'string' ? value.inlineData : (value.inlineData.data || '');
+        const mime = String(value.mimeType || value.inlineData.mimeType || '');
+        if (!withinStep.has(key)) {
+          withinStep.add(key);
+          media.set(key, {
+            uri: `inline:${key}`,
+            inlineData: rawData,
+            name: String(value.description || (mime.startsWith('image/') ? '内嵌图像' : '内嵌附件')),
+            mime,
+            references: 1,
+            source
+          });
+        }
       }
       for (const [key, v] of Object.entries(value)) if (!skip.has(key) || key === 'media') attachments(v, source, withinStep);
     }

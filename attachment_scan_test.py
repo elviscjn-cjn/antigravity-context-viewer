@@ -58,4 +58,21 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(r['chars'] > 0)
         self.assertTrue(any('HTML/XML' in part for part in r['unknownParts']))
 
+    def test_image_tokens_are_counted_with_dimensions_not_unknown(self):
+        # 1x1 minimal valid PNG with IHDR width=100, height=80
+        import struct, zlib
+        ihdr = struct.pack('>IIBBBBB', 100, 80, 8, 2, 0, 0, 0)
+        ihdr_crc = struct.pack('>I', zlib.crc32(b'IHDR' + ihdr))
+        idat = zlib.compress(b'\x00' * 80 * (100 * 3 + 1))
+        idat_crc = struct.pack('>I', zlib.crc32(b'IDAT' + idat))
+        png_bytes = b'\x89PNG\r\n\x1a\n' + struct.pack('>I', len(ihdr)) + b'IHDR' + ihdr + ihdr_crc + struct.pack('>I', len(idat)) + b'IDAT' + idat + idat_crc + b'\x00\x00\x00\x00IEND\xaeB`\x82'
+        path = ROOT / 'sample.png'
+        path.write_bytes(png_bytes)
+        r = scan(dict(path=str(path), key='img1'))
+        self.assertEqual(r['status'], 'parsed')
+        self.assertEqual(r['width'], 100)
+        self.assertEqual(r['height'], 80)
+        self.assertEqual(r['low'], 258)
+        self.assertEqual(r['unknownParts'], [])
+
 if __name__ == '__main__': unittest.main()

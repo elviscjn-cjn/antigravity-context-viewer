@@ -79,15 +79,92 @@ function runPythonScan(items) {
     child.stdin.on('error', () => {}); child.stdin.end(JSON.stringify(items));
   });
 }
+function getImageDimensions(buf) {
+  try {
+    if (buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+    if (buf.length >= 10 && (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a')) {
+      return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+    }
+    if (buf.length >= 26 && buf[0] === 0x42 && buf[1] === 0x4D) {
+      return { width: Math.abs(buf.readInt32LE(18)), height: Math.abs(buf.readInt32LE(22)) };
+    }
+    if (buf.length >= 4 && buf[0] === 0xFF && buf[1] === 0xD8) {
+      let offset = 2;
+      while (offset < buf.length - 8) {
+        if (buf[offset] === 0xFF && [0xC0, 0xC1, 0xC2, 0xC3].includes(buf[offset + 1])) {
+          return { height: buf.readUInt16BE(offset + 5), width: buf.readUInt16BE(offset + 7) };
+        } else if (buf[offset] === 0xFF) {
+          const len = buf.readUInt16BE(offset + 2);
+          offset += 2 + len;
+        } else {
+          offset++;
+        }
+      }
+    }
+  } catch {}
+  return { width: null, height: null };
+}
+
+function calcImageTokens(w, h) {
+  if (!w || !h) return [258, 1120];
+  if (w <= 384 && h <= 384) return [258, 258];
+  const tiles = Math.ceil(w / 768) * Math.ceil(h / 768);
+  const tok = tiles * 258;
+  return [tok, Math.max(tok, (w > 384 || h > 384) ? 1120 : 258)];
+}
+
 async function scanFiles(media) {
-  const root = fs.realpathSync(path.join(process.env.USERPROFILE || os.homedir(), '.gemini', 'antigravity', 'brain'));
   const results = new Map(), work = [];
   for (const item of media) {
     try {
+      if (item.inlineData) {
+        const mime = String(item.mime || '').toLowerCase();
+        const buf = Buffer.from(item.inlineData, 'base64');
+        if (mime.startsWith('image/')) {
+          const dims = getImageDimensions(buf);
+          const [low, high] = calcImageTokens(dims.width, dims.height);
+          results.set(item.uri, {
+            status: 'parsed',
+            width: dims.width,
+            height: dims.height,
+            chars: dims.width ? `${dims.width}×${dims.height}` : '图像',
+            bytes: buf.length,
+            low,
+            high,
+            unknownParts: []
+          });
+          continue;
+        } else if (mime.startsWith('text/') || mime === 'application/json' || mime === 'text/csv') {
+          const text = buf.toString('utf8');
+          const m = measure(text);
+          results.set(item.uri, {
+            status: 'parsed',
+            chars: text.length,
+            bytes: buf.length,
+            low: m.low,
+            high: m.high,
+            unknownParts: []
+          });
+          continue;
+        } else {
+          const est = Math.ceil(buf.length / 4);
+          results.set(item.uri, {
+            status: 'parsed',
+            chars: buf.length,
+            bytes: buf.length,
+            low: Math.ceil(est * 0.7),
+            high: Math.ceil(est * 1.4),
+            unknownParts: []
+          });
+          continue;
+        }
+      }
       if (!item.uri || /^https?:/i.test(item.uri)) throw new Error('无可用本地附件，内容未知');
-      const target = fs.realpathSync(item.uri.startsWith('file:') ? fileURLToPath(item.uri) : item.uri);
-      const relative = path.relative(root, target);
-      if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('附件不在本机会话存档中，未读取');
+      const targetPath = item.uri.startsWith('file:') ? fileURLToPath(item.uri) : item.uri;
+      if (!fs.existsSync(targetPath)) throw new Error('附件文件不存在或已移动');
+      const target = fs.realpathSync(targetPath);
       const stat = fs.statSync(target);
       if (!stat.isFile()) throw new Error('附件不是普通文件');
       const key = `${target.toLowerCase()}|${stat.size}|${stat.mtimeMs}`;

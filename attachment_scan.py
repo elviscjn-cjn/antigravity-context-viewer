@@ -118,18 +118,18 @@ def office_xml(path, counter, result, prefix):
 
 def scan(item):
     path = item['path']
+    ext = os.path.splitext(path)[1].lower() if path else ''
     result = dict(key=item['key'], status='parsed', unknownParts=[], **Counter().result())
     counter = Counter()
     try:
         size = os.path.getsize(path)
         result['fileBytes'] = size
         if size > MAX_BYTES: raise ValueError('附件超过 256 MiB，本地扫描未完成')
-        ext = os.path.splitext(path)[1].lower()
         if ext in ('.xlsx', '.xlsm', '.xltx', '.xltm'):
             xlsx_scan(path, counter, result)
         elif ext == '.xls':
-            import xlrd, io
             try:
+                import xlrd, io
                 book = xlrd.open_workbook(path, on_demand=True, logfile=io.StringIO())
                 result.update(sheets=book.nsheets, hiddenSheets=0, cells=0, formulaCoverage='已保存的单元格值；旧格式公式源码不保证可见')
                 try:
@@ -191,25 +191,79 @@ def scan(item):
             with open(path, 'rb') as text_file:
                 raw = text_file.read()
             text = None
-            for encoding in ('utf-8-sig', 'utf-16', 'gb18030'):
+            for encoding in ('utf-8-sig', 'utf-16', 'gb18030', 'gbk', 'utf-8', 'latin1'):
                 try: text = raw.decode(encoding); break
                 except UnicodeError: pass
-            if text is None: raise ValueError('文本编码无法识别')
+            if text is None: text = raw.decode('utf-8', errors='replace')
             counter.add(text)
+        elif ext in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.tif'):
+            w, h = None, None
+            try:
+                from PIL import Image
+                with Image.open(path) as image:
+                    w, h = image.size
+            except Exception:
+                pass
+            if not w or not h:
+                w, h = parse_image_dimensions_file(path)
+            import math
+            if w and h:
+                result['width'] = w
+                result['height'] = h
+                result['chars'] = f"{w}×{h}"
+                if w <= 384 and h <= 384:
+                    tok = 258
+                else:
+                    tiles = math.ceil(w / 768) * math.ceil(h / 768)
+                    tok = tiles * 258
+                result['low'] = tok
+                result['high'] = max(tok, 1120 if (w > 384 or h > 384) else 258)
+            else:
+                result['low'] = 258
+                result['high'] = 1120
+                result['chars'] = '图像'
+            result['status'] = 'parsed'
         else:
-            if ext in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.tif'):
-                try:
-                    from PIL import Image
-                    with Image.open(path) as image: result['width'], result['height'] = image.size
-                except Exception: pass
-                raise ValueError('图像/截图的视觉 token 无可靠本地计数，明确列为未知')
             raise ValueError('此附件类型暂不支持内容解析，明确列为未知')
     except Exception as e:
         result['unknownParts'].append(str(e)[:180])
-    result.update(counter.result())
+    c_res = counter.result()
+    if ext in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.tif') and result.get('low'):
+        result['bytes'] = result.get('fileBytes') or c_res['bytes']
+    else:
+        result.update(c_res)
     result['unknownParts'] = list(dict.fromkeys(result['unknownParts']))
     if result['unknownParts']: result['status'] = 'partial' if counter.chars else 'unknown'
     return result
+
+def parse_image_dimensions_file(path):
+    import struct
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(64)
+            if head.startswith(b'\x89PNG\r\n\x1a\n') and len(head) >= 24:
+                return struct.unpack('>II', head[16:24])
+            if head.startswith(b'GIF87a') or head.startswith(b'GIF89a'):
+                return struct.unpack('<HH', head[6:10])
+            if head.startswith(b'BM') and len(head) >= 26:
+                w, h = struct.unpack('<ii', head[18:26])
+                return abs(w), abs(h)
+            if head.startswith(b'\xff\xd8'):
+                f.seek(0)
+                data = f.read(65536)
+                idx = 2
+                while idx < len(data) - 9:
+                    if data[idx] == 0xff and data[idx+1] in (0xc0, 0xc1, 0xc2, 0xc3):
+                        h, w = struct.unpack('>HH', data[idx+5:idx+9])
+                        return w, h
+                    elif data[idx] == 0xff:
+                        length = struct.unpack('>H', data[idx+2:idx+4])[0]
+                        idx += 2 + length
+                    else:
+                        idx += 1
+    except Exception:
+        pass
+    return None, None
 
 if __name__ == '__main__':
     payload = json.load(sys.stdin)

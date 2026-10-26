@@ -59,3 +59,44 @@ test('model output speed and duration calculated accurately from timeToFirstToke
   assert.equal(d.speed.tps, 112.1);
   assert.equal(d.speed.streamingTps, 185.1);
 });
+
+test('inline attachments and images are fully counted and parsed instead of unknown', async () => {
+  const { scanFiles } = require('./meter-collector');
+  const zlib = require('zlib');
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(100, 0); ihdr.writeUInt32BE(80, 4);
+  ihdr[8] = 8; ihdr[9] = 2;
+  const idat = zlib.deflateSync(Buffer.alloc(80 * (100 * 3 + 1)));
+  const pngBuf = Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), ihdr, Buffer.alloc(4),
+    Buffer.from([0, 0, 0, idat.length]), Buffer.from('IDAT'), idat, Buffer.alloc(4),
+    Buffer.from([0, 0, 0, 0]), Buffer.from('IEND'), Buffer.alloc(4)
+  ]);
+  const base64Png = pngBuf.toString('base64');
+
+  const s = analyzeSteps([
+    {
+      plannerResponse: {
+        response: 'generated file',
+        attachment: {
+          mimeType: 'image/png',
+          description: 'result.png',
+          inlineData: { data: base64Png, mimeType: 'image/png' }
+        }
+      }
+    }
+  ]);
+
+  assert.equal(s.media.length, 1);
+  assert.equal(s.media[0].name, 'result.png');
+  assert.ok(s.media[0].inlineData);
+
+  const scanned = await scanFiles(s.media);
+  assert.equal(scanned.length, 1);
+  assert.equal(scanned[0].status, 'parsed');
+  assert.equal(scanned[0].width, 100);
+  assert.equal(scanned[0].height, 80);
+  assert.equal(scanned[0].low, 258);
+  assert.deepEqual(scanned[0].unknownParts, []);
+});

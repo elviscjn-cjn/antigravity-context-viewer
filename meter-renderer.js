@@ -952,7 +952,7 @@
           </div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px">
-          <span>点击或悬浮格子查看当日详细 Token 构成（起点为实际首次使用日，前置空白已消除）</span>
+          <span>点击或悬浮格子查看当日详细 Token 构成</span>
           <div style="display:flex;align-items:center;gap:6px">
             <div id="heat-legend-scale" style="display:flex;align-items:center;gap:4px;cursor:pointer" title="点击任一色块单独修改该档位颜色，或点击文字展开设置">
               <span>少</span>
@@ -2595,11 +2595,9 @@
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
 
-  // 上下文圆环悬停与键盘聚焦气泡 + 面板打开时的平滑互切
+  // 上下文圆环悬停与键盘聚焦气泡（面板打开时不通过悬停误切，必须通过显式左键点击切换）
   el('badge').addEventListener('mouseenter', () => {
-    if (isAnyPanelOpen()) {
-      if (!el('panel-tokens').hidden) showPanel('context');
-    } else {
+    if (!isAnyPanelOpen()) {
       showContextTooltip();
     }
   });
@@ -2611,17 +2609,6 @@
   });
   el('badge').addEventListener('blur', () => {
     hideContextTooltip();
-  });
-
-  el('badge-speed')?.addEventListener('mouseenter', () => {
-    if (isAnyPanelOpen() && !el('panel-tokens').hidden) {
-      showPanel('context');
-    }
-  });
-  el('badge-tokens').addEventListener('mouseenter', () => {
-    if (isAnyPanelOpen() && !el('panel').hidden) {
-      showPanel('tokens');
-    }
   });
 
   el('theme-toggle')?.addEventListener('click', cycleTheme);
