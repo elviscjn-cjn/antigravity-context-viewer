@@ -125,10 +125,6 @@ When both left navigation and right tool panes are active and main workspace wid
    - Detailed hover tooltips with Prompt, Output, and Cache metrics.
    - 5-stop additive color system: 5 presets, per-cell custom color popovers (clicking legend cells directly), and 2-endpoint interpolation.
 
-5. **Localization Immunity Shield & Zero-Restart Hot-Mount**:
-   - 100% compatible with existing Chinese patches or any localization.
-   - Instant CDP live injection without terminating the `Antigravity.exe` host process.
-
 ---
 
 ## 🌐 UI Localization & Multi-Language Support

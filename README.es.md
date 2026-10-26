@@ -119,9 +119,6 @@ Cuando se abren ambas barras laterales (navegación y herramientas), el grupo de
    - Cuatro tarjetas de métricas con abreviaturas internacionales (M / B).
    - Mapa de calor de 52 semanas con vistas Diaria, Semanal y Acumulada.
    - Sistema de color aditivo: 5 ajustes preestablecidos, selección de color celda por celda e interpolación lineal.
-5. **Inmunidad de Localización y Montaje en Caliente con CDP**:
-   - Conserva al 100% cualquier parche de traducción previo.
-   - Recarga en vivo inmediata mediante CDP sin forzar el cierre del proceso `Antigravity.exe`.
 
 ---
 
