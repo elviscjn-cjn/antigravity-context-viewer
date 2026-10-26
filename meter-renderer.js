@@ -491,6 +491,7 @@
 
     /* 弹出面板：上下文 (#panel) 与 Token 用量一览 (#panel-tokens) 独立面板 */
     .ag-panel{
+      box-sizing:border-box;
       position:fixed;top:38px;left:auto;right:16px;z-index:2147483500;
       max-width:calc(100vw - 24px);max-height:calc(100vh - 52px);
       overflow:auto;border:1px solid var(--ag-border-panel);border-radius:10px;
@@ -631,6 +632,43 @@
     }
     .heat-preset-dots{display:inline-flex;gap:2px}
     .heat-preset-dots i{width:7px;height:7px;border-radius:1.5px;display:inline-block}
+
+    .heat-leg-swatch{
+      width:11px;height:11px;padding:0;border-radius:2.5px;
+      border:1px solid var(--ag-border-card);
+      background:var(--swatch-color,var(--ag-heat-lvl-0));
+      cursor:pointer;flex-shrink:0;
+      transition:transform .12s ease,border-color .12s ease,box-shadow .12s ease;
+    }
+    .heat-leg-swatch:hover{
+      transform:scale(1.32);z-index:2;
+      border-color:var(--ag-text-primary);
+      box-shadow:0 0 0 1px var(--ag-text-primary);
+    }
+    .heat-leg-swatch[data-custom="true"]{
+      border-color:var(--ag-text-secondary);
+    }
+
+    .heat-lvl-custom-bar{
+      margin:6px 0 8px;padding:7px 8px;border-radius:7px;
+      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);
+    }
+    .heat-lvl-custom-hdr{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;
+      margin-bottom:6px;flex-wrap:wrap;
+    }
+    .heat-lvl-grid{
+      display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:6px;
+    }
+    .heat-lvl-item{
+      display:flex;align-items:center;justify-content:space-between;gap:4px;
+      padding:5px 7px;border-radius:6px;
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+    }
+    .heat-lvl-lbl{
+      font-size:10.5px;color:var(--ag-text-secondary);font-weight:500;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
 
     .heat-popover{position:fixed;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);border-radius:8px;padding:6px 10px;box-shadow:var(--ag-pop-shadow);z-index:2147483600;opacity:0;transform:translate(-50%,-100%) translateY(-6px);transition:opacity .12s ease}
     .pop-date{font-size:11.5px;color:var(--ag-pop-muted)}
@@ -913,20 +951,20 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px">
           <span>点击或悬浮格子查看当日详细 Token 构成（起点为实际首次使用日，前置空白已消除）</span>
           <div style="display:flex;align-items:center;gap:6px">
-            <div id="heat-legend-scale" style="display:flex;align-items:center;gap:4px;cursor:pointer" title="点击展开热力图色阶与面板颜色设置">
+            <div id="heat-legend-scale" style="display:flex;align-items:center;gap:4px;cursor:pointer" title="点击任一色块单独修改该档位颜色，或点击文字展开设置">
               <span>少</span>
-              <div id="heat-leg-0" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-0);border:1px solid var(--ag-border-card)"></div>
-              <div id="heat-leg-1" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-1)"></div>
-              <div id="heat-leg-2" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-2)"></div>
-              <div id="heat-leg-3" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-3)"></div>
-              <div id="heat-leg-4" style="width:9px;height:9px;border-radius:2px;background:var(--ag-heat-lvl-4)"></div>
+              <button id="heat-leg-0" class="heat-leg-swatch" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="第 1 档（少/无用量）：点击单独修改此格颜色"></button>
+              <button id="heat-leg-1" class="heat-leg-swatch" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="第 2 档（低用量）：点击单独修改此格颜色"></button>
+              <button id="heat-leg-2" class="heat-leg-swatch" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="第 3 档（中等用量）：点击单独修改此格颜色"></button>
+              <button id="heat-leg-3" class="heat-leg-swatch" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="第 4 档（高用量）：点击单独修改此格颜色"></button>
+              <button id="heat-leg-4" class="heat-leg-swatch" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="第 5 档（多/峰值用量）：点击单独修改此格颜色"></button>
               <span>多</span>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- 二级交互折叠区（就近放置于面板 A 内部）：面板背景色 + 热力图 5 档色阶预设与两端插值自定义 -->
+      <!-- 二级交互折叠区（就近放置于面板 A 内部）：面板背景色 + 热力图 5 档色阶预设、5 档逐格独立自定义与两端插值自定义 -->
       <div class="tech-drawer" style="margin-top:2px">
         <button id="btn-toggle-token-colors" class="drawer-trigger" aria-expanded="false" type="button">
           <span class="drawer-trigger-left"><span>🎨 热力图色阶与面板外观自定义（默认跟随主题）</span></span>
@@ -956,6 +994,55 @@
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#7f1d1d"></i><i style="background:#b91c1c"></i><i style="background:#ef4444"></i><i style="background:#fca5a5"></i></span>
                 <span>红色系</span>
               </button>
+            </div>
+          </div>
+
+          <div class="heat-lvl-custom-bar">
+            <div class="heat-lvl-custom-hdr">
+              <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档逐格独立自定义（点击任意一格或图例「少 ▢▢▢▢▢ 多」单独调色，可设 5 种不同颜色）：</span>
+              <button id="reset-heat-lvls" class="color-reset-btn" type="button">恢复 5 档预设</button>
+            </div>
+            <div class="heat-lvl-grid" id="heat-lvl-grid">
+              <div class="heat-lvl-item">
+                <span class="heat-lvl-lbl" title="第 1 档（少/无用量）">1档 · 少/无</span>
+                <div class="color-item-ctrls">
+                  <input id="color-heatLvl0" class="color-picker" type="color" value="#27272a" aria-label="热力图第1档颜色" />
+                  <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="点击单独设置第 1 档颜色"></button>
+                  <button id="reset-heatLvl0" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                </div>
+              </div>
+              <div class="heat-lvl-item">
+                <span class="heat-lvl-lbl" title="第 2 档（低用量）">2档 · 低</span>
+                <div class="color-item-ctrls">
+                  <input id="color-heatLvl1" class="color-picker" type="color" value="#3f1e6b" aria-label="热力图第2档颜色" />
+                  <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="点击单独设置第 2 档颜色"></button>
+                  <button id="reset-heatLvl1" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                </div>
+              </div>
+              <div class="heat-lvl-item">
+                <span class="heat-lvl-lbl" title="第 3 档（中等用量）">3档 · 中</span>
+                <div class="color-item-ctrls">
+                  <input id="color-heatLvl2" class="color-picker" type="color" value="#652ab7" aria-label="热力图第3档颜色" />
+                  <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="点击单独设置第 3 档颜色"></button>
+                  <button id="reset-heatLvl2" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                </div>
+              </div>
+              <div class="heat-lvl-item">
+                <span class="heat-lvl-lbl" title="第 4 档（高用量）">4档 · 高</span>
+                <div class="color-item-ctrls">
+                  <input id="color-heatLvl3" class="color-picker" type="color" value="#9053f8" aria-label="热力图第4档颜色" />
+                  <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="点击单独设置第 4 档颜色"></button>
+                  <button id="reset-heatLvl3" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                </div>
+              </div>
+              <div class="heat-lvl-item">
+                <span class="heat-lvl-lbl" title="第 5 档（多/峰值用量）">5档 · 多/峰</span>
+                <div class="color-item-ctrls">
+                  <input id="color-heatLvl4" class="color-picker" type="color" value="#c084fc" aria-label="热力图第5档颜色" />
+                  <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="点击单独设置第 5 档颜色"></button>
+                  <button id="reset-heatLvl4" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1102,7 +1189,12 @@
     tokenTotal: '--ag-custom-token-total',
     tokenAccent: '--ag-custom-token-accent',
     heatLow: '--ag-custom-heat-low',
-    heatHigh: '--ag-custom-heat-high'
+    heatHigh: '--ag-custom-heat-high',
+    heatLvl0: '--ag-custom-heat-lvl-0',
+    heatLvl1: '--ag-custom-heat-lvl-1',
+    heatLvl2: '--ag-custom-heat-lvl-2',
+    heatLvl3: '--ag-custom-heat-lvl-3',
+    heatLvl4: '--ag-custom-heat-lvl-4'
   };
   const COLOR_STORAGE_KEY = 'ag_custom_colors_v1';
   const HEAT_PRESET_STORAGE_KEY = 'ag_heat_preset_v1';
@@ -1115,7 +1207,12 @@
     tokenTotal: '',
     tokenAccent: '',
     heatLow: '',
-    heatHigh: ''
+    heatHigh: '',
+    heatLvl0: '',
+    heatLvl1: '',
+    heatLvl2: '',
+    heatLvl3: '',
+    heatLvl4: ''
   };
   let heatPreset = 'purple';
 
@@ -1338,10 +1435,14 @@
     return getSystemTheme();
   }
 
-  function getEffectiveHeatmapScale() {
+  function getPresetHeatmapScale() {
     const isLight = resolveTheme() === 'light';
     const presetObj = HEAT_PRESETS[heatPreset] || HEAT_PRESETS.purple;
-    const base = (isLight ? presetObj.light : presetObj.dark).slice();
+    return (isLight ? presetObj.light : presetObj.dark).slice();
+  }
+
+  function getBaseHeatmapScale() {
+    const base = getPresetHeatmapScale();
     const lowCustom = normalizeHex(customColors.heatLow);
     const highCustom = normalizeHex(customColors.heatHigh);
     if (lowCustom || highCustom) {
@@ -1358,9 +1459,19 @@
     return base;
   }
 
+  function getEffectiveHeatmapScale() {
+    const scale = getBaseHeatmapScale();
+    for (let i = 0; i < 5; i++) {
+      const lvlCustom = normalizeHex(customColors[`heatLvl${i}`]);
+      if (lvlCustom) scale[i] = lvlCustom;
+    }
+    return scale;
+  }
+
   function getDefaultSlotColor(slotKey) {
     const isLight = resolveTheme() === 'light';
-    const scale = getEffectiveHeatmapScale();
+    const presetScale = getPresetHeatmapScale();
+    const baseScale = getBaseHeatmapScale();
     switch (slotKey) {
       case 'panelBg': return getHostZeroLevelBg(isLight);
       case 'ringUsed': return isLight ? '#18181b' : '#e6e6eb';
@@ -1369,8 +1480,13 @@
       case 'speedText': return isLight ? '#0284c7' : '#38bdf8';
       case 'tokenTotal': return isLight ? '#7c3aed' : '#c084fc';
       case 'tokenAccent': return isLight ? '#7c3aed' : '#a78bfa';
-      case 'heatLow': return scale[0];
-      case 'heatHigh': return scale[4];
+      case 'heatLow': return presetScale[0];
+      case 'heatHigh': return presetScale[4];
+      case 'heatLvl0': return baseScale[0];
+      case 'heatLvl1': return baseScale[1];
+      case 'heatLvl2': return baseScale[2];
+      case 'heatLvl3': return baseScale[3];
+      case 'heatLvl4': return baseScale[4];
       default: return '#7748cf';
     }
   }
@@ -1384,16 +1500,23 @@
     for (let i = 0; i < 5; i++) {
       host.style.setProperty(`--ag-heat-lvl-${i}`, scale[i]);
       const legEl = el(`heat-leg-${i}`);
-      if (legEl) legEl.style.background = scale[i];
+      if (legEl) {
+        legEl.style.background = scale[i];
+        legEl.style.setProperty('--swatch-color', scale[i]);
+        legEl.setAttribute('data-custom', String(Boolean(customColors[`heatLvl${i}`])));
+      }
     }
-    const isCustomEnds = Boolean(customColors.heatLow || customColors.heatHigh);
+    const hasCustomHeat = Boolean(
+      customColors.heatLow || customColors.heatHigh ||
+      customColors.heatLvl0 || customColors.heatLvl1 || customColors.heatLvl2 || customColors.heatLvl3 || customColors.heatLvl4
+    );
     try {
       const group = el('heat-preset-group');
       if (group?.querySelectorAll) {
         const btns = group.querySelectorAll('[data-heat-preset]');
         for (const btn of btns) {
           const pName = btn.getAttribute('data-heat-preset');
-          btn.setAttribute('data-active', String(!isCustomEnds && pName === heatPreset));
+          btn.setAttribute('data-active', String(!hasCustomHeat && pName === heatPreset));
         }
       }
     } catch {}
@@ -1413,12 +1536,22 @@
       const resetBtn = el(`reset-${key}`);
       if (resetBtn) {
         resetBtn.setAttribute('data-mode', val ? 'custom' : 'auto');
-        if (key === 'heatLow' || key === 'heatHigh') {
+        if (key.startsWith('heatLvl')) {
+          resetBtn.textContent = val ? '恢复' : '预设';
+        } else if (key === 'heatLow' || key === 'heatHigh') {
           resetBtn.textContent = val ? '恢复预设' : '预设';
         } else {
           resetBtn.textContent = val ? '恢复默认' : '跟随主题';
         }
       }
+    }
+    const resetHeatLvlsBtn = el('reset-heat-lvls');
+    if (resetHeatLvlsBtn) {
+      const anyHeatLvl = Boolean(
+        customColors.heatLvl0 || customColors.heatLvl1 || customColors.heatLvl2 || customColors.heatLvl3 || customColors.heatLvl4 ||
+        customColors.heatLow || customColors.heatHigh
+      );
+      resetHeatLvlsBtn.setAttribute('data-mode', anyHeatLvl ? 'custom' : 'auto');
     }
     // 面板 A 中的镜像色块按钮同步
     const mirrorMap = {
@@ -1472,6 +1605,8 @@
     const raw = value ? String(value).trim() : '';
     const norm = raw ? (normalizeHex(raw) || raw) : '';
     customColors[key] = norm;
+    if (key === 'heatLow' && norm) customColors.heatLvl0 = '';
+    if (key === 'heatHigh' && norm) customColors.heatLvl4 = '';
     saveCustomColors();
     applyCustomColors();
   }
@@ -1481,6 +1616,19 @@
     heatPreset = presetName;
     customColors.heatLow = '';
     customColors.heatHigh = '';
+    for (let i = 0; i < 5; i++) {
+      customColors[`heatLvl${i}`] = '';
+    }
+    saveCustomColors();
+    applyCustomColors();
+  }
+
+  function resetHeatmapLevels() {
+    customColors.heatLow = '';
+    customColors.heatHigh = '';
+    for (let i = 0; i < 5; i++) {
+      customColors[`heatLvl${i}`] = '';
+    }
     saveCustomColors();
     applyCustomColors();
   }
@@ -1653,6 +1801,10 @@
     const pop = el('color-picker-popover');
     const lbl = el('cp-target-name');
     if (lbl) lbl.textContent = labelText ? `· ${labelText}` : `· ${slotKey}`;
+    const cpResetBtn = el('cp-reset-slot');
+    if (cpResetBtn) {
+      cpResetBtn.textContent = slotKey.startsWith('heat') ? '恢复该档预设' : '跟随主题';
+    }
     const startHex = getEffectiveSlotColor(slotKey);
     const rgb = hexToRgb(startHex) || { r: 101, g: 42, b: 183 };
     cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
@@ -1669,6 +1821,14 @@
     activePickerSlot = null;
     activePickerAnchor = null;
   }
+
+  const HEAT_LVL_LABELS = [
+    '色阶第 1 档（少/无用量）',
+    '色阶第 2 档（低用量）',
+    '色阶第 3 档（中等用量）',
+    '色阶第 4 档（高用量）',
+    '色阶第 5 档（多/峰值用量）'
+  ];
 
   // 绑定所有颜色色块与恢复按钮事件
   for (const key of Object.keys(COLOR_SLOTS)) {
@@ -1687,16 +1847,35 @@
       }
     });
     swatchBtn?.addEventListener('click', e => {
-      e.stopPropagation?.();
+      e?.stopPropagation?.();
       openColorPicker(key, swatchBtn, swatchBtn.getAttribute('data-color-label') || key);
     });
   }
+
+  // 热力图右下角「少 ▢▢▢▢▢ 多」5 个小色块图例直接点击弹出颜色选取器单独调色
+  for (let i = 0; i < 5; i++) {
+    const legBtn = el(`heat-leg-${i}`);
+    const slotKey = `heatLvl${i}`;
+    legBtn?.addEventListener('click', e => {
+      e?.stopPropagation?.();
+      openColorPicker(slotKey, legBtn, legBtn.getAttribute('data-color-label') || HEAT_LVL_LABELS[i]);
+    });
+  }
+  el('reset-heat-lvls')?.addEventListener('click', () => {
+    resetHeatmapLevels();
+    if (activePickerSlot?.startsWith('heat')) {
+      const eff = getEffectiveSlotColor(activePickerSlot);
+      const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
+      cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+      syncPickerUiFromHsv();
+    }
+  });
 
   // 面板 A 镜像色块与预设按钮事件
   ['swatch-panelBg-tokens', 'swatch-tokenTotal-tokens', 'swatch-tokenAccent-tokens'].forEach(id => {
     const btn = el(id);
     btn?.addEventListener('click', e => {
-      e.stopPropagation?.();
+      e?.stopPropagation?.();
       const slot = btn.getAttribute('data-color-slot');
       if (slot) openColorPicker(slot, btn, btn.getAttribute('data-color-label') || slot);
     });
@@ -3422,9 +3601,11 @@
     getCustomColors: () => ({ ...customColors }),
     setCustomColor,
     resetCustomColors,
+    resetHeatmapLevels,
     getHeatPreset: () => heatPreset,
     setHeatPreset,
     getHeatPalette: () => getEffectiveHeatmapScale(),
+    getActivePickerSlot: () => activePickerSlot,
     openColorPicker,
     closeColorPicker,
     applyPickerHex,

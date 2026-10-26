@@ -417,4 +417,65 @@ test('v5 Section 3 & 5: timeline starts at actual firstUseDate with zero leading
   api.dispose();
 });
 
+test('v5 Additive: 5 heatmap levels (heatLvl0..4) support per-cell independent custom colors, free layering with presets/2-endpoint interpolation, and direct legend click color picker', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // 1) All 5 levels (heatLvl0..4) set to 5 completely distinct custom colors
+  const distinct5 = ['#1e293b', '#06b6d4', '#eab308', '#f97316', '#ec4899'];
+  distinct5.forEach((hex, idx) => api.setCustomColor(`heatLvl${idx}`, hex));
+  assert.deepEqual(Array.from(api.getHeatPalette()), distinct5);
+  for (let i = 0; i < 5; i++) {
+    assert.equal(h.host.style.getPropertyValue(`--ag-heat-lvl-${i}`), distinct5[i]);
+    assert.equal(h.elements.get(`heat-leg-${i}`).style.background, distinct5[i]);
+    assert.equal(h.elements.get(`heat-leg-${i}`).getAttribute('data-custom'), 'true');
+  }
+
+  // 2) Switching preset clears heatLvl0..4 and heatLow/heatHigh overrides, then single-cell override layers on top
+  api.setHeatPreset('green');
+  assert.equal(api.getHeatPreset(), 'green');
+  const greenBase = Array.from(api.getHeatPalette());
+  assert.equal(greenBase[4], '#86efac');
+  assert.equal(h.elements.get('heat-leg-2').getAttribute('data-custom'), 'false');
+
+  // Layer single-cell override on level 3 (heatLvl2 = bright orange #f97316) over green preset
+  api.setCustomColor('heatLvl2', '#f97316');
+  const greenWithOrangeMid = Array.from(api.getHeatPalette());
+  assert.equal(greenWithOrangeMid[0], greenBase[0]);
+  assert.equal(greenWithOrangeMid[1], greenBase[1]);
+  assert.equal(greenWithOrangeMid[2], '#f97316');
+  assert.equal(greenWithOrangeMid[3], greenBase[3]);
+  assert.equal(greenWithOrangeMid[4], greenBase[4]);
+
+  // Layer 2-endpoint interpolation (heatLow + heatHigh) with single-cell override on heatLvl2
+  api.setCustomColor('heatLow', '#1d4ed8');
+  api.setCustomColor('heatHigh', '#ef4444');
+  const interpWithOrangeMid = Array.from(api.getHeatPalette());
+  assert.equal(interpWithOrangeMid[0], '#1d4ed8');
+  assert.equal(interpWithOrangeMid[2], '#f97316');
+  assert.equal(interpWithOrangeMid[4], '#ef4444');
+
+  // 3) Clicking legend cell #heat-leg-0..4 directly opens #color-picker-popover bound to that exact level
+  api.closeColorPicker();
+  assert.equal(h.elements.get('color-picker-popover').hidden, true);
+  h.elements.get('heat-leg-3').click();
+  assert.equal(h.elements.get('color-picker-popover').hidden, false);
+  assert.equal(api.getActivePickerSlot(), 'heatLvl3');
+  api.applyPickerHex('#a855f7');
+  assert.equal(api.getHeatPalette()[3], '#a855f7');
+  assert.equal(h.host.style.getPropertyValue('--ag-heat-lvl-3'), '#a855f7');
+
+  // Resetting single slot via #reset-heatLvl3 restores level 3 to interpolated/preset color without losing heatLvl2
+  h.elements.get('reset-heatLvl3').click();
+  assert.notEqual(api.getHeatPalette()[3], '#a855f7');
+  assert.equal(api.getHeatPalette()[2], '#f97316');
+
+  // Reset all 5 heatmap levels via #reset-heat-lvls
+  h.elements.get('reset-heat-lvls').click();
+  assert.deepEqual(Array.from(api.getHeatPalette()), greenBase);
+
+  api.dispose();
+});
+
+
 
