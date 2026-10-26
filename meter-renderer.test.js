@@ -81,3 +81,28 @@ test('theme mode switches freely between light and dark', () => {
   assert.equal(h.sandbox.__AGContextMeter.theme(), 'dark');
   h.sandbox.__AGContextMeter.dispose();
 });
+test('speed badge and speed summary card accurately render model output speed and duration', async () => {
+  const h = harness(); h.finishScan();
+  h.pending[0].resolve(response({
+    timeToFirstToken: '8.395092700s',
+    streamingDuration: '12.902455200s',
+    usage: {
+      inputTokens: 4335,
+      outputTokens: 2388,
+      thinkingOutputTokens: 1260,
+      responseOutputTokens: 1128
+    },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+  }));
+  await h.flush();
+  assert.equal(h.elements.get('speed-amount').textContent, '112.1 tok/s');
+  assert.match(h.elements.get('speed-hover-extra').textContent, /21\.3s/);
+  assert.match(h.elements.get('badge-speed').title, /112\.1 tok\/s/);
+  assert.equal(h.elements.get('speed-val').textContent, '112.1 tok/s');
+  assert.equal(h.elements.get('speed-duration').textContent, '21.3s');
+  assert.equal(h.elements.get('speed-ttft').textContent, '8.4s');
+  assert.match(h.elements.get('speed-tokens').textContent, /2,388 tok/);
+  assert.equal(h.elements.get('speed-badge').textContent, '极速');
+  assert.match(h.elements.get('speed-takeaway').textContent, /112\.1 tok\/s/);
+  h.sandbox.__AGContextMeter.dispose();
+});

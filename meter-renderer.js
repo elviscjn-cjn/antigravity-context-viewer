@@ -49,6 +49,8 @@
       --ag-text-token-hover:#e9d5ff;
       --ag-token-dot:#c084fc;
       --ag-token-dot-shadow:0 0 6px rgba(192,132,252,0.8);
+      --ag-text-speed:#38bdf8;
+      --ag-text-speed-hover:#7dd3fc;
       --ag-track-bg:rgba(255,255,255,0.12);
       --ag-track-shadow:inset 0 1px 2px rgba(0,0,0,0.45);
       --ag-text-extra:#9898a0;
@@ -119,6 +121,8 @@
       --ag-text-token-hover:#101010;
       --ag-token-dot:#8b5cf6;
       --ag-token-dot-shadow:0 0 6px rgba(139,92,246,0.5);
+      --ag-text-speed:#0284c7;
+      --ag-text-speed-hover:#0369a1;
       --ag-track-bg:rgba(0,0,0,0.08);
       --ag-track-shadow:inset 0 1px 2px rgba(0,0,0,0.06);
       --ag-text-extra:#666666;
@@ -220,6 +224,23 @@
     #token-amount{font-weight:600;font-size:12px;letter-spacing:-0.01em;color:var(--ag-text-token)}
     #token-hover-extra{max-width:0;opacity:0;overflow:hidden;transition:all .28s cubic-bezier(.16,1,.3,1);font-size:11.5px;color:var(--ag-text-extra);white-space:nowrap}
     #badge-tokens:hover #token-hover-extra{max-width:140px;opacity:1;margin-left:3px}
+
+    /* 胶囊 3: 模型输出速度与耗时 */
+    #badge-speed{
+      display:inline-flex;align-items:center;height:26px;padding:0 9px;
+      border:1px solid var(--ag-border-badge);border-radius:6px;
+      background:var(--ag-bg-badge);color:var(--ag-text-speed);box-shadow:var(--ag-shadow-badge);
+      white-space:nowrap;font-variant-numeric:tabular-nums;transition:all .28s cubic-bezier(.16,1,.3,1);gap:5px;
+      cursor:pointer;outline:none;
+    }
+    #badge-speed:hover,#badge-speed[aria-expanded="true"]{
+      background:var(--ag-bg-badge-hover);color:var(--ag-text-speed-hover);border-color:var(--ag-border-badge-hover);
+    }
+    #badge-speed:active{transform:scale(0.98)}
+    .speed-icon{font-size:12px;line-height:1;flex-shrink:0;color:var(--ag-text-speed)}
+    #speed-amount{font-weight:600;font-size:12px;letter-spacing:-0.01em;color:var(--ag-text-speed)}
+    #speed-hover-extra{max-width:0;opacity:0;overflow:hidden;transition:all .28s cubic-bezier(.16,1,.3,1);font-size:11.5px;color:var(--ag-text-extra);white-space:nowrap}
+    #badge-speed:hover #speed-hover-extra{max-width:200px;opacity:1;margin-left:3px}
 
     /* 弹出主面板 */
     #panel{
@@ -356,6 +377,13 @@
     <span id="token-hover-extra">· 今日 6919W</span>
   </button>
 
+  <!-- 顶部胶囊 3: 模型输出速度与耗时 (⚡ Speed) -->
+  <button id="badge-speed" aria-label="模型输出速度与耗时统计">
+    <span class="speed-icon">⚡</span>
+    <span id="speed-amount">-- tok/s</span>
+    <span id="speed-hover-extra"></span>
+  </button>
+
   <!-- 弹出式主面板 -->
   <section id="panel" hidden aria-label="统计与活动详情">
     <!-- 顶栏：双视图切换与主题控制 -->
@@ -372,12 +400,38 @@
 
     <!-- 视图 1: 原版会话上下文 -->
     <div id="view-context">
-      <h3>会话与上下文统计<span id="v">v2.4</span></h3>
+      <h3>会话与上下文统计<span id="v">v2.5</span></h3>
       <div id="key-summary">
         <div class="key-header"><span class="key-title">⭐ 核心用量速览（看这一项就够）</span><span id="key-badge" class="key-pill pill-muted">读取中</span></div>
         <div class="key-bar-track"><div id="key-bar-fill" class="key-bar-fill"></div></div>
         <div class="key-stats"><div class="key-stat"><div class="key-stat-label">当前已用</div><div id="key-used" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">预算上限</div><div id="key-limit" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">剩余可用</div><div id="key-remaining" class="key-stat-val">—</div></div></div>
         <div id="key-takeaway" class="key-takeaway">正在计算核心指标…</div>
+      </div>
+      <!-- ⚡ 最新生成速度与耗时速览卡片 -->
+      <div id="speed-summary" style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:12px 13px;margin:8px 0 12px;">
+        <div class="key-header">
+          <span class="key-title" style="color:var(--ag-text-speed);">⚡ 最新生成速度与耗时速览</span>
+          <span id="speed-badge" class="key-pill pill-muted">待生成</span>
+        </div>
+        <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
+          <div class="key-stat">
+            <div class="key-stat-label">输出速度</div>
+            <div id="speed-val" class="key-stat-val" style="color:var(--ag-text-speed);">—</div>
+          </div>
+          <div class="key-stat">
+            <div class="key-stat-label">生成耗时</div>
+            <div id="speed-duration" class="key-stat-val">—</div>
+          </div>
+          <div class="key-stat">
+            <div class="key-stat-label">首字延迟</div>
+            <div id="speed-ttft" class="key-stat-val">—</div>
+          </div>
+          <div class="key-stat">
+            <div class="key-stat-label">本次输出</div>
+            <div id="speed-tokens" class="key-stat-val">—</div>
+          </div>
+        </div>
+        <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
       </div>
       <p id="status">正在核对请求和附件…</p><p id="model"></p>
       <h4>最近一次模型请求</h4>
@@ -558,6 +612,8 @@
   function toggle(open, tab = 'context') {
     el('panel').hidden = !open;
     el('badge').setAttribute('aria-expanded', String(open));
+    el('badge-tokens')?.setAttribute('aria-expanded', String(open));
+    el('badge-speed')?.setAttribute('aria-expanded', String(open));
     if (open) switchPanelTab(tab);
   }
 
@@ -586,10 +642,12 @@
 
   el('badge').addEventListener('click', () => toggle(el('panel').hidden, 'context'));
   el('badge-tokens').addEventListener('click', () => toggle(el('panel').hidden || el('view-tokens').style.display === 'none', 'tokens'));
+  el('badge-speed')?.addEventListener('click', () => toggle(el('panel').hidden || el('view-context').style.display === 'none', 'context'));
   el('close').addEventListener('click', () => toggle(false));
   el('theme-toggle')?.addEventListener('click', cycleTheme);
   el('badge').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
+  el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('tab-nav-context').addEventListener('click', () => switchPanelTab('context'));
   el('tab-nav-tokens').addEventListener('click', () => switchPanelTab('tokens'));
 
@@ -959,6 +1017,29 @@
     el('badge').title = status + '\n' + (d?.actual != null ? `当前用量: ${fmt(d.actual)} tokens${d.budget ? ` / ${fmt(d.budget)}` : ''} (${pct != null ? pct.toFixed(1) + '%' : '未知%'})` : el('amount').textContent) + '\n' + corpus + '\n点击展开详情 · 右键快速切换浅色/深色主题';
     el('badge-tokens').title = '账号 Token 活动统计\n点击展开图表看板 · 右键快速切换浅色/深色主题';
 
+    // 渲染胶囊 3: 模型输出速度与耗时
+    const sp = d?.speed;
+    const speedBadge = el('badge-speed');
+    const speedAmount = el('speed-amount');
+    const speedHoverExtra = el('speed-hover-extra');
+    if (speedBadge && speedAmount) {
+      if (sp?.tps != null) {
+        speedAmount.textContent = `${sp.tps} tok/s`;
+        if (speedHoverExtra) {
+          speedHoverExtra.textContent = `${sp.duration ? ` · ${sp.duration}s` : ''}${sp.outputTokens ? ` · ${short(sp.outputTokens)} tok` : ''}`;
+        }
+        speedBadge.title = `最新模型输出速度：${sp.tps} tok/s${sp.streamingTps ? ` (流式 ${sp.streamingTps} tok/s)` : ''}\n总耗时：${sp.duration || '—'}s (首字 ${sp.ttft || '—'}s + 流式 ${sp.streamingSec || '—'}s)\n本次产出：${fmt(sp.outputTokens)} tokens (正文 ${fmt(sp.responseTokens)} + 思考 ${fmt(sp.thinkingTokens)})\n点击展开详情 · 右键快速切换浅色/深色主题`;
+      } else if (state.requestBusy) {
+        speedAmount.textContent = '计算中…';
+        if (speedHoverExtra) speedHoverExtra.textContent = '';
+        speedBadge.title = '正在等待模型返回或计算生成指标…\n点击展开详情 · 右键快速切换浅色/深色主题';
+      } else {
+        speedAmount.textContent = '-- tok/s';
+        if (speedHoverExtra) speedHoverExtra.textContent = ' · 待生成';
+        speedBadge.title = '模型输出速度与耗时\n等待模型回复完成后记录实际 TPS 速度\n点击展开详情 · 右键快速切换浅色/深色主题';
+      }
+    }
+
     if (el('key-summary')) {
       const keyBar = el('key-bar-fill');
       const keyBadge = el('key-badge');
@@ -1009,6 +1090,40 @@
         if (keyLimit) keyLimit.textContent = d?.budget ? short(d.budget) : '—';
         if (keyRemaining) keyRemaining.textContent = '待确认';
         if (keyTakeaway) keyTakeaway.textContent = 'ℹ 当前主要依赖本地估算或待服务端返回实际统计，暂不计算精确剩余空间。';
+      }
+    }
+
+    if (el('speed-summary')) {
+      const spBadge = el('speed-badge');
+      const spVal = el('speed-val');
+      const spDur = el('speed-duration');
+      const spTtft = el('speed-ttft');
+      const spTokens = el('speed-tokens');
+      const spTakeaway = el('speed-takeaway');
+
+      if (sp?.tps != null) {
+        if (spBadge) {
+          if (sp.tps >= 80) { spBadge.textContent = '极速'; spBadge.className = 'key-pill pill-good'; }
+          else if (sp.tps >= 35) { spBadge.textContent = '流畅'; spBadge.className = 'key-pill pill-good'; }
+          else if (sp.tps >= 15) { spBadge.textContent = '良好'; spBadge.className = 'key-pill pill-warn'; }
+          else { spBadge.textContent = '偏慢'; spBadge.className = 'key-pill pill-danger'; }
+        }
+        if (spVal) spVal.textContent = `${sp.tps} tok/s`;
+        if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
+        if (spTtft) spTtft.textContent = sp.ttft ? `${sp.ttft}s` : '—';
+        if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
+        if (spTakeaway) {
+          const modelStr = d?.model ? `（${d.model}）` : '';
+          const streamInfo = sp.streamingTps ? `，纯流式传输达 ${sp.streamingTps} tok/s` : '';
+          spTakeaway.textContent = `✔ 输出${sp.tps >= 35 ? '流畅' : '平稳'}（${sp.tps} tok/s${streamInfo}），总耗时 ${sp.duration}s 内生成 ${fmt(sp.outputTokens)} tokens${modelStr}。`;
+        }
+      } else {
+        if (spBadge) { spBadge.textContent = state.requestBusy ? '计算中' : '待生成'; spBadge.className = 'key-pill pill-muted'; }
+        if (spVal) spVal.textContent = '—';
+        if (spDur) spDur.textContent = '—';
+        if (spTtft) spTtft.textContent = '—';
+        if (spTokens) spTokens.textContent = '—';
+        if (spTakeaway) spTakeaway.textContent = 'ℹ 等待当前或下一次模型输出完成，将自动计算精确输出速度 (tok/s)、首字延迟与总耗时。';
       }
     }
 
@@ -1082,7 +1197,7 @@
 
   const timer = setInterval(tick, 500);
   globalThis.__AGContextMeter = {
-    version: '2.4.0',
+    version: '2.5.0',
     theme: () => resolveTheme(),
     setTheme: mode => { currentThemeMode = mode; try { localStorage.setItem('ag_theme_mode', mode); } catch {}; applyTheme(); },
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy }),

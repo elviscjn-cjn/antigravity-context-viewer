@@ -36,3 +36,26 @@ test('old error cleared after later user/assistant steps', () => {
 test('Chinese and non-BMP Unicode characters measured without treating binary byte sizes as tokens', () => {
   const s = measure('中文😀0'); assert.equal(s.chars, 4); assert.equal(s.bytes, 11); assert.ok(s.high >= s.low);
 });
+test('model output speed and duration calculated accurately from timeToFirstToken and streamingDuration', () => {
+  const d = summarize({
+    chatModel: {
+      timeToFirstToken: '8.395092700s',
+      streamingDuration: '12.902455200s',
+      usage: {
+        inputTokens: '4335',
+        outputTokens: '2388',
+        thinkingOutputTokens: '1260',
+        responseOutputTokens: '1128'
+      }
+    }
+  });
+  assert.ok(d.speed);
+  assert.equal(d.speed.duration, 21.30);
+  assert.equal(d.speed.ttft, 8.40);
+  assert.equal(d.speed.streamingSec, 12.90);
+  assert.equal(d.speed.outputTokens, 2388);
+  assert.equal(d.speed.thinkingTokens, 1260);
+  assert.equal(d.speed.responseTokens, 1128);
+  assert.equal(d.speed.tps, 112.1);
+  assert.equal(d.speed.streamingTps, 185.1);
+});

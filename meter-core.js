@@ -1,6 +1,14 @@
 (function (root) {
   'use strict';
   const number = value => value !== undefined && value !== null && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+  function parseDurationSec(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : null;
+    const match = String(value).trim().match(/^([\d.]+)\s*s?$/i);
+    if (!match) return null;
+    const num = parseFloat(match[1]);
+    return Number.isFinite(num) && num >= 0 ? num : null;
+  }
   function summarize(metadata) {
     const m = metadata?.chatModel;
     if (!m) return null;
@@ -10,10 +18,35 @@
     const serviceLimit = exceeded ? number(error.match(/(?:allowed|limit(?:\s+of)?|length(?:\s+is)?)\s*[:=]?\s*([\d,]+)/i)?.[1]?.replaceAll(',', '')) : null;
     const usage = lastRetry ? lastRetry.usage : m.usage;
     const input = number(usage?.inputTokens), cached = number(usage?.cacheReadTokens), output = number(usage?.outputTokens);
+    const thinking = number(usage?.thinkingOutputTokens), responseTokens = number(usage?.responseOutputTokens);
     const hasInput = (input || 0) + (cached || 0) > 0;
     const actual = hasInput && !error ? (input || 0) + (cached || 0) + (output || 0) : null;
     const context = m.chatStartMetadata?.contextWindowMetadata;
     const estimate = number(context?.estimatedTokensUsed), budget = number(context?.maxContextTokens);
+
+    // 计算生成耗时与输出速度 (Tokens Per Second)
+    const ttft = parseDurationSec(m.timeToFirstToken);
+    const streamingSec = parseDurationSec(m.streamingDuration);
+    const duration = (ttft !== null && streamingSec !== null) ? (ttft + streamingSec) : (ttft ?? streamingSec ?? null);
+    let tps = null;
+    if (output && duration && duration > 0) {
+      tps = Number((output / duration).toFixed(1));
+    }
+    let streamingTps = null;
+    if (output && streamingSec && streamingSec > 0.05) {
+      streamingTps = Number((output / streamingSec).toFixed(1));
+    }
+    const speed = (tps !== null || duration !== null || output !== null) ? {
+      tps,
+      streamingTps,
+      duration: duration !== null ? Number(duration.toFixed(2)) : null,
+      ttft: ttft !== null ? Number(ttft.toFixed(2)) : null,
+      streamingSec: streamingSec !== null ? Number(streamingSec.toFixed(2)) : null,
+      outputTokens: output ?? 0,
+      thinkingTokens: thinking ?? 0,
+      responseTokens: responseTokens ?? (output ?? 0)
+    } : null;
+
     return {
       used: actual ?? (estimate > 0 ? estimate : null), actual, estimate: estimate > 0 ? estimate : null,
       budget: budget > 0 ? budget : null, serviceLimit, exceeded, error,
@@ -22,6 +55,7 @@
       percent: actual !== null && budget > 0 && !exceeded ? actual / budget * 100 : null,
       model: m.modelDisplayName || m.responseModel || m.model || '',
       status: exceeded ? 'exceeded' : error ? 'failed' : actual !== null ? 'reported' : estimate > 0 ? 'estimated' : 'pending',
+      speed
     };
   }
   function measure(text) {
@@ -84,7 +118,7 @@
     const currentError = latestStepError && latestStepError.index > Math.max(lastUserAt, lastAssistantAt) ? latestStepError : null;
     return { groups, total, media: [...media.values()], steps: steps.length, userMessages, assistantMessages, currentError };
   }
-  const api = { summarize, measure, add, empty, analyzeSteps };
+  const api = { summarize, measure, add, empty, analyzeSteps, parseDurationSec };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.__AGContextMeterCore = api;
 })(globalThis);

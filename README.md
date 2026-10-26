@@ -1,7 +1,7 @@
 # Antigravity 对话上下文查看器 & Token 用量看板 (Antigravity Context & Token Viewer)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-2.3.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.5.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/Node.js-%3E%3D18.x-brightgreen?logo=node.js" alt="Node Version">
   <img src="https://img.shields.io/badge/Dependencies-Zero-success" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform Support">
@@ -13,7 +13,7 @@
   <b>简体中文</b> | <a href="README.en.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.es.md">Español</a>
 </p>
 
-专为 **Google Antigravity 桌面客户端 (2.x)** 打造的原厂级 **「单次对话上下文进度条 + 账号全局 Token 计数与活动热力图」** 双合一可视化套件。采用与 `antigravity-chinese` 相同的 **ASAR 持久化注入 + CDP 免重启热挂载** 架构，**零第三方 npm 依赖**，既支持双击脚本一键安装，也支持直接丢给任何 AI 智能体（Antigravity / Codex / Claude Code / Cursor）一句话自动部署。
+专为 **Google Antigravity 桌面客户端 (2.x)** 打造的原厂级 **「单次对话上下文进度条 + 账号全局 Token 计数热力图 + 模型实时输出速度监控」** 三合一可视化套件。采用与 `antigravity-chinese` 相同的 **ASAR 持久化注入 + CDP 免重启热挂载** 架构，**零第三方 npm 依赖**，既支持双击脚本一键安装，也支持直接丢给任何 AI 智能体（Antigravity / Codex / Claude Code / Cursor）一句话自动部署。
 
 ---
 
@@ -29,14 +29,15 @@
   <sub>🎬 演示动画：上下文查看器 + Token 热力图多视图切换 (<a href="assets/demo.mp4">Full Demo Animation</a>)</sub>
 </p>
 
-### 2. 顶栏双胶囊独立动效与状态拆解 (Topbar Capsules)
+### 2. 顶栏三胶囊独立动效与状态拆解 (Topbar Capsules)
 
-顶栏右上角常驻两枚无边框原生胶囊，未交互时采用 `#1e1e1e` 隐形融于顶栏，指针移入时以 `cubic-bezier(0.16, 1, 0.3, 1)` 阻尼曲线丝滑过渡至 `#343434` 并平滑展开详情：
+顶栏右上角常驻三枚无边框原生胶囊，未交互时采用 `#1e1e1e` 隐形融于顶栏，指针移入时以 `cubic-bezier(0.16, 1, 0.3, 1)` 阻尼曲线丝滑过渡至 `#343434` 并平滑展开详情：
 
-| 功能模块 | 独立演示动画 (Demo Animation) | 常驻默认态 (`#1e1e1e`) | 悬停展开态 (`#343434`) |
-| :--- | :---: | :---: | :---: |
-| **💬 当前对话上下文**<br>*(Session Context)* | <a href="assets/demo-context.mp4"><img src="assets/demo-context.gif" alt="上下文胶囊演示动画" width="320"></a><br><sub><a href="assets/demo-context.mp4">🎬 演示动画 (Context Demo)</a></sub> | <img src="assets/context-badge-default.png" alt="上下文默认态" height="34"><br><sub>仅展示进度条 + 已用百分比</sub> | <img src="assets/context-badge-hover.png" alt="上下文悬停态" height="34"><br><sub>平滑展开预算上限与会话估算</sub> |
-| **🔥 账号 Token 计数**<br>*(Account Token Tracker)* | <a href="assets/demo-token.mp4"><img src="assets/demo-token.gif" alt="Token 计数演示动画" width="320"></a><br><sub><a href="assets/demo-token.mp4">🎬 演示动画 (Token Demo)</a></sub> | <img src="assets/token-badge-default.png" alt="Token 默认态" height="34"><br><sub>仅展示呼吸指示点 + 累计总消耗</sub> | <img src="assets/token-badge-hover.png" alt="Token 悬停态" height="34"><br><sub>平滑展开今日实时消耗量</sub> |
+| 功能模块 | 常驻默认态 (`#1e1e1e`) | 悬停展开态 (`#343434`) | 悬停详情气泡 (Tooltip) |
+| :--- | :---: | :---: | :--- |
+| **💬 当前对话上下文**<br>*(Session Context)* | 进度条 + 已用百分比<br>`92.5K (36%)` | 平滑展开预算上限与会话估算<br>`/ 256K · 会话≈ 8.2K–12.5K` | 服务端 1M 超限状态、当前准确用量与健康度提示 |
+| **🔥 账号 Token 计数**<br>*(Account Token Tracker)* | 呼吸指示点 + 累计总消耗<br>`🔥 4.29亿` | 平滑展开今日实时消耗量<br>`· 今日 6919W` | 账号全局总消耗看板与 7×52 周热力图提示 |
+| **⚡ 模型输出速度**<br>*(Model Speed & Latency)* | 亮青指示 + 最新输出速度<br>`⚡ 98.4 tok/s` | 平滑展开总耗时与产出<br>`· 18.1s · 1.8K tok` | 纳秒级首字延迟 (TTFT)、流式解码耗时与思考/正文拆解 |
 
 ### 3. 双标签详情面板实拍对比 (Dual-Tab Detail Panels)
 
@@ -45,11 +46,11 @@
 | 💬 标签页一：当前会话上下文查看器 | 🔥 标签页二：账号 Token 计数与活动热力图 |
 | :---: | :---: |
 | <img src="assets/panel-detail.png" alt="当前会话上下文详情面板" width="430"> | <img src="assets/panel-activity.png" alt="账号 Token 活动与热力图面板" width="460"> |
-| 置顶 **「⭐ 核心用量速览（看这一项就够）」**，一眼看清**当前已用 / 预算上限 / 剩余可用**与一句话健康度结论；下方完整保留模型实际返回 Token、服务端 1M 超限预警与本地全格式附件占用拆解。 | 顶部四栏卡片展示 **账号累计总消耗、今日使用、本月使用、整年使用**；下方提供 **7×52 周活动热力图网格**，支持 **「每天 / 每周 / 累计总量」** 三视图切换、面积折线走势图与每日输入/输出/缓存悬浮气泡。 |
+| 置顶 **「⭐ 核心用量速览」** 与 **「⚡ 最新生成速度与耗时速览」**，一眼看清**当前已用 / 预算上限 / 输出速度 (tok/s) / 生成耗时 / 首字延迟**；下方保留真实服务端口径校准与本地全格式附件占用拆解。 | 顶部四栏卡片展示 **账号累计总消耗、今日使用、本月使用、整年使用**；下方提供 **7×52 周活动热力图网格**，支持 **「每天 / 每周 / 累计总量」** 三视图切换、面积折线走势图与每日输入/输出/缓存悬浮气泡。 |
 
 ---
 
-## ✨ 两大核心功能模块详解 (Features)
+## ✨ 三大核心功能模块详解 (Features)
 
 ### 模块一：💬 当前对话上下文查看器 (Session Context Viewer)
 1. **原生无边框融合进度条**：
@@ -69,6 +70,14 @@
    - 鼠标悬浮或点击任意日期格子，即时弹出 Tooltip 气泡展示**当日总消耗**及**输入 (Prompt) / 输出 (Output) / 缓存命中 (Cache)** 三项明细拆解。
 3. **「每天 / 每周 / 累计总量」三视图无缝切换**：
    - 点击面板右上角切换按钮，可在 **7×52 日历热力图（每天）**、**周度消耗趋势图（每周）** 与 **历史累计增长面积折线图（累计总量）** 之间自由切换。
+
+### 模块三：⚡ 模型实时输出速度与耗时监控 (Model Speed & Latency Tracker)
+1. **顶栏常驻独立速度胶囊 (`#badge-speed`)**：
+   - 实时显示模型最新一次回复的输出速度（如 `98.4 tok/s`），悬停丝滑展开总耗时与产出规模（如 `· 18.1s · 1.8K tok`）。
+   - 悬浮气泡完整展示：**平均生成速度 (tok/s)**、**纯流式解码速度**、**总生成耗时**、**首字响应延迟 (TTFT)** 与 **思考/正文 Token 产出拆解**。
+2. **详情面板首屏「⚡ 最新生成速度与耗时速览」卡片**：
+   - 4 栏数据网格：**输出速度 (tok/s)**、**生成总耗时 (Duration)**、**首字延迟 (TTFT)**、**本次产出 (Output Tokens)**。
+   - 附带四级性能状态标牌（极速 / 流畅 / 良好 / 偏慢）及基于真实时间戳（精确至毫秒）的一句话生成效率总结。
 
 ---
 

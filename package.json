@@ -1,7 +1,7 @@
 {
   "name": "antigravity-context-viewer",
-  "version": "2.4.0",
-  "description": "Antigravity 对话上下文查看器 & Token 用量看板 — Google Antigravity 原生级当前对话上下文进度条、超限预警与账号全局 Token 计数热力图套件",
+  "version": "2.5.0",
+  "description": "Antigravity 对话上下文查看器 & Token 用量看板 — Google Antigravity 原生级当前对话上下文进度条、模型输出速度监控、超限预警与账号全局 Token 计数热力图套件",
   "main": "cli.js",
   "bin": {
     "antigravity-context-viewer": "./cli.js",
