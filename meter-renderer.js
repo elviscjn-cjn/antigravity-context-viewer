@@ -106,13 +106,13 @@
       color:#d4d4d4;
     }
 
-    /* 浅色模式规范: 常驻 #f3f3f3, 交互 #eaeaea, 字体 #101010 */
+    /* 浅色模式规范: 常驻 #f3f3f3, 交互 #eaeaea, 字体 #101010, 无突兀边框融入背景 */
     :host([data-theme="light"]){
       --ag-bg-badge:#f3f3f3;
       --ag-bg-badge-hover:#eaeaea;
-      --ag-border-badge:rgba(0,0,0,0.08);
-      --ag-border-badge-hover:rgba(0,0,0,0.13);
-      --ag-shadow-badge:0 1px 2px rgba(0,0,0,0.04);
+      --ag-border-badge:transparent;
+      --ag-border-badge-hover:transparent;
+      --ag-shadow-badge:none;
       --ag-text-badge:#101010;
       --ag-text-badge-hover:#101010;
       --ag-text-token:#101010;
