@@ -202,16 +202,26 @@ async function install(options = {}) {
       }
     }
 
-    await asar.createPackageWithOptions(staging, packed, { unpackDir: '**/chrome-devtools-mcp' });
+    const hasUnpacked = originalEntries.some(file => {
+      const s = asar.statFile(sourceArchive, file.slice(1));
+      return s && s.unpacked;
+    });
+
+    if (hasUnpacked) {
+      await asar.createPackageWithOptions(staging, packed, { unpackDir: '**/chrome-devtools-mcp' });
+    } else {
+      await asar.createPackageWithOptions(staging, packed, {});
+    }
 
     let verified = 0;
+    const allowedChanges = ['dist/utils.js', 'dist/preload.js', ...additions.map(f => 'dist/' + f)].map(p => path.normalize(p));
     for (const file of originalEntries) {
       const name = path.normalize(file.slice(1));
       const before = asar.statFile(sourceArchive, name);
       const after = asar.statFile(packed, name);
       if (before.files || before.link) continue;
       if (!!before.unpacked !== !!after.unpacked) throw new Error(`Unpack flag changed: ${name}`);
-      if (!['dist/utils.js', 'dist/preload.js'].map(p => path.normalize(p)).includes(name) &&
+      if (!allowedChanges.includes(name) &&
           sha(asar.extractFile(sourceArchive, name)) !== sha(asar.extractFile(packed, name))) {
         throw new Error(`Unexpected file change: ${name}`);
       }

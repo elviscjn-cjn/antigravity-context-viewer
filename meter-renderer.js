@@ -266,29 +266,24 @@
     .drawer-body{margin-top:10px;animation:fadeSlideIn .2s cubic-bezier(.16,1,.3,1)}
     @keyframes fadeSlideIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 
-    /* 弹出主面板 */
-    #panel{
-      position:absolute;top:32px;right:0;width:450px;max-width:calc(100vw - 24px);max-height:calc(100vh - 64px);
+    /* 弹出面板：上下文 (#panel) 与 Token 活动 (#panel-tokens) 为两个独立面板，各自固定宽度，互不复用 DOM */
+    .ag-panel{
+      position:absolute;top:32px;right:0;max-width:calc(100vw - 24px);max-height:calc(100vh - 64px);
       overflow:auto;border:1px solid var(--ag-border-panel);border-radius:10px;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);box-shadow:var(--ag-shadow-panel);padding:15px;
       opacity:1;transform:translateY(0) scale(1);transform-origin:top right;visibility:visible;pointer-events:auto;
-      transition:width .25s ease,opacity .18s cubic-bezier(.16,1,.3,1),transform .18s cubic-bezier(.16,1,.3,1),visibility .18s;
+      transition:opacity .18s cubic-bezier(.16,1,.3,1),transform .18s cubic-bezier(.16,1,.3,1),visibility .18s;
+      contain:layout paint;
     }
-    #panel.wide-mode{width:730px}
-    #panel[hidden]{display:block!important;opacity:0;transform:translateY(-5px) scale(0.975);visibility:hidden;pointer-events:none}
+    #panel{width:450px}
+    #panel-tokens{width:730px}
+    .ag-panel[hidden]{display:block!important;opacity:0;transform:translateY(-5px) scale(0.975);visibility:hidden;pointer-events:none}
     
     /* 顶栏控制条 */
     .panel-header-bar{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--ag-border-subtle);padding-bottom:10px;margin-bottom:12px}
-    .panel-tabs{display:flex;align-items:center;gap:6px}
+    .panel-title{display:flex;align-items:center;gap:5px}
+    .panel-title-tokens{color:var(--ag-tab-active-purple-text)}
     .panel-header-actions{display:flex;align-items:center;gap:4px}
-    
-    .panel-tab-btn{
-      background:none;border:1px solid transparent;color:var(--ag-text-muted);font-size:12.5px;font-weight:500;
-      padding:4px 9px;border-radius:6px;transition:all .15s;
-    }
-    .panel-tab-btn:hover{color:var(--ag-text-primary);background:var(--ag-bg-badge-hover)}
-    .panel-tab-btn.active{color:var(--ag-tab-active-text);background:var(--ag-tab-active-bg);border-color:var(--ag-border-card);font-weight:600}
-    .panel-tab-btn.active-purple{color:var(--ag-tab-active-purple-text);background:var(--ag-tab-active-purple-bg);border-color:transparent;font-weight:600}
     
     .panel-icon-btn{
       background:none;border:0;color:var(--ag-text-muted);font-size:14px;line-height:1;
@@ -384,7 +379,7 @@
     .pop-val{font-size:13px;font-weight:600;color:var(--ag-pop-text)}
     .pop-det{font-size:10px;color:var(--ag-pop-sub);margin-top:2px;display:flex;gap:6px}
 
-    @media(max-width:800px){:host{top:34px;right:12px}#badge{max-width:calc(100vw - 24px)}#panel{width:400px}}
+    @media(max-width:800px){:host{top:34px;right:12px}#badge{max-width:calc(100vw - 24px)}#panel{width:400px}#panel-tokens{width:calc(100vw - 24px)}}
   </style>
 
   <!-- 顶部胶囊 1: 会话上下文 (原汁原味) -->
@@ -394,27 +389,26 @@
     <span id="hover-wrap"><span id="hover-extra"></span></span>
   </button>
 
-  <!-- 顶部胶囊 2: 全局 Token 活动 (ChatGPT 风格) -->
-  <button id="badge-tokens" aria-label="账号 Token 活动统计">
-    <span class="token-fire-dot"></span>
-    <span id="token-amount">428.5M</span>
-    <span id="token-hover-extra">· 今日 69.2M</span>
-  </button>
-
-  <!-- 顶部胶囊 3: 模型输出速度与耗时 (⚡ Speed) -->
+  <!-- 顶部胶囊 2: 模型输出速度与耗时 (⚡ Speed) -->
   <button id="badge-speed" aria-label="模型输出速度与耗时统计">
     <span class="speed-icon">⚡</span>
     <span id="speed-amount">-- tok/s</span>
     <span id="speed-hover-extra"></span>
   </button>
 
-  <!-- 弹出式主面板 -->
-  <section id="panel" hidden aria-label="统计与活动详情">
-    <!-- 顶栏：双视图切换与主题控制 -->
+  <!-- 顶部胶囊 3: 全局 Token 活动 (ChatGPT 风格) -->
+  <button id="badge-tokens" aria-label="账号 Token 活动统计">
+    <span class="token-fire-dot"></span>
+    <span id="token-amount">428.5M</span>
+    <span id="token-hover-extra">· 今日 69.2M</span>
+  </button>
+
+  <!-- 弹出式面板 1: 会话上下文与速度监控 (#panel, 450px) -->
+  <section id="panel" class="ag-panel" hidden aria-label="会话与上下文详情">
+    <!-- 顶栏：单视图标题与主题控制（无干扰选项卡） -->
     <div class="panel-header-bar">
-      <div class="panel-tabs">
-        <button id="tab-nav-context" class="panel-tab-btn active">💬 当前会话上下文</button>
-        <button id="tab-nav-tokens" class="panel-tab-btn">🔥 账号 Token 活动</button>
+      <div class="panel-title">
+        <span style="font-size:13px;font-weight:600;color:var(--ag-text-primary)">💬 当前会话上下文</span>
       </div>
       <div class="panel-header-actions">
         <button id="theme-toggle" class="panel-icon-btn" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
@@ -483,9 +477,23 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- 弹出式面板 2: 账号 Token 活动与 7x52 活跃热力图 (#panel-tokens, 730px) -->
+  <section id="panel-tokens" class="ag-panel" hidden aria-label="账号 Token 活动详情">
+    <!-- 顶栏：单视图标题与主题控制（无干扰选项卡） -->
+    <div class="panel-header-bar">
+      <div class="panel-title panel-title-tokens">
+        <span style="font-size:13px;font-weight:600;color:var(--ag-tab-active-purple-text)">🔥 账号 Token 活动</span>
+      </div>
+      <div class="panel-header-actions">
+        <button id="theme-toggle-tokens" class="panel-icon-btn" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
+        <button id="close-tokens" class="panel-icon-btn" aria-label="收起详情">×</button>
+      </div>
+    </div>
 
     <!-- 视图 2: 🔥 账号 Token 活动 (现代化 UI 卡片) -->
-    <div id="view-tokens" style="display:none">
+    <div id="view-tokens">
       <!-- 4 大核心统计看板 -->
       <div class="token-stat-cards">
         <div class="t-card">
@@ -605,8 +613,8 @@
   function applyTheme() {
     const activeTheme = resolveTheme();
     host.setAttribute('data-theme', activeTheme);
-    const btn = el('theme-toggle');
-    if (btn) {
+    const btns = [el('theme-toggle'), el('theme-toggle-tokens')].filter(Boolean);
+    btns.forEach(btn => {
       if (currentThemeMode === 'auto') {
         btn.textContent = activeTheme === 'light' ? '🌗' : '🌓';
         btn.title = `当前主题：跟随IDE (${activeTheme === 'light' ? '浅色' : '深色'})\n点击切换为：浅色模式`;
@@ -617,7 +625,7 @@
         btn.textContent = '🌙';
         btn.title = '当前主题：深色模式 (常驻)\n点击切换为：跟随IDE';
       }
-    }
+    });
     if (activeHeatView === 'weekly') renderHeatmapWeekly();
     else if (activeHeatView === 'cum') renderHeatmapCum();
   }
@@ -656,42 +664,83 @@
     return { ...(value || {}), ...failure, model: value?.model || '', used: null, estimate: null, actual: null, percent: null };
   }
 
-  function toggle(open, tab = 'context') {
-    el('panel').hidden = !open;
-    el('badge').setAttribute('aria-expanded', String(open));
-    el('badge-tokens')?.setAttribute('aria-expanded', String(open));
-    el('badge-speed')?.setAttribute('aria-expanded', String(open));
-    if (open) switchPanelTab(tab);
+  function isAnyPanelOpen() {
+    return !el('panel').hidden || !el('panel-tokens').hidden;
   }
 
-  function switchPanelTab(tab) {
-    const btnContext = el('tab-nav-context');
-    const btnTokens = el('tab-nav-tokens');
-    const vContext = el('view-context');
-    const vTokens = el('view-tokens');
-    const panel = el('panel');
+  function showPanel(target) {
+    const pContext = el('panel');
+    const pTokens = el('panel-tokens');
+    const bContext = el('badge');
+    const bSpeed = el('badge-speed');
+    const bTokens = el('badge-tokens');
 
-    if (tab === 'tokens') {
-      btnContext.className = 'panel-tab-btn';
-      btnTokens.className = 'panel-tab-btn active-purple';
-      vContext.style.display = 'none';
-      vTokens.style.display = 'flex';
-      panel.classList.add('wide-mode');
+    if (target === 'tokens') {
+      pContext.hidden = true;
+      pTokens.hidden = false;
+      bContext.setAttribute('aria-expanded', 'false');
+      bSpeed?.setAttribute('aria-expanded', 'false');
+      bTokens.setAttribute('aria-expanded', 'true');
       renderHeatmapGrid();
+    } else if (target === 'context') {
+      pTokens.hidden = true;
+      pContext.hidden = false;
+      bContext.setAttribute('aria-expanded', 'true');
+      bSpeed?.setAttribute('aria-expanded', 'true');
+      bTokens.setAttribute('aria-expanded', 'false');
     } else {
-      btnContext.className = 'panel-tab-btn active';
-      btnTokens.className = 'panel-tab-btn';
-      vContext.style.display = 'block';
-      vTokens.style.display = 'none';
-      panel.classList.remove('wide-mode');
+      pContext.hidden = true;
+      pTokens.hidden = true;
+      bContext.setAttribute('aria-expanded', 'false');
+      bSpeed?.setAttribute('aria-expanded', 'false');
+      bTokens.setAttribute('aria-expanded', 'false');
+      hidePopover();
     }
   }
 
-  el('badge').addEventListener('click', () => toggle(el('panel').hidden, 'context'));
-  el('badge-tokens').addEventListener('click', () => toggle(el('panel').hidden || el('view-tokens').style.display === 'none', 'tokens'));
-  el('badge-speed')?.addEventListener('click', () => toggle(el('panel').hidden || el('view-context').style.display === 'none', 'context'));
-  el('close').addEventListener('click', () => toggle(false));
+  function toggle(open, tab = 'context') {
+    if (!open) {
+      showPanel('none');
+    } else {
+      showPanel(tab === 'tokens' ? 'tokens' : 'context');
+    }
+  }
+
+  function toggleContext() {
+    if (!el('panel').hidden) showPanel('none');
+    else showPanel('context');
+  }
+
+  function toggleTokens() {
+    if (!el('panel-tokens').hidden) showPanel('none');
+    else showPanel('tokens');
+  }
+
+  el('badge').addEventListener('click', toggleContext);
+  el('badge-speed')?.addEventListener('click', toggleContext);
+  el('badge-tokens').addEventListener('click', toggleTokens);
+  el('close').addEventListener('click', () => showPanel('none'));
+  el('close-tokens')?.addEventListener('click', () => showPanel('none'));
+
+  // 鼠标指针平滑互切：已有面板打开时，移到另一个胶囊自动流畅切换，无需重新点击
+  el('badge').addEventListener('mouseenter', () => {
+    if (isAnyPanelOpen() && !el('panel-tokens').hidden) {
+      showPanel('context');
+    }
+  });
+  el('badge-speed')?.addEventListener('mouseenter', () => {
+    if (isAnyPanelOpen() && !el('panel-tokens').hidden) {
+      showPanel('context');
+    }
+  });
+  el('badge-tokens').addEventListener('mouseenter', () => {
+    if (isAnyPanelOpen() && !el('panel').hidden) {
+      showPanel('tokens');
+    }
+  });
+
   el('theme-toggle')?.addEventListener('click', cycleTheme);
+  el('theme-toggle-tokens')?.addEventListener('click', cycleTheme);
   el('badge').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
@@ -707,8 +756,6 @@
     if (drawerArrow) drawerArrow.textContent = isHidden ? '▲ 点击收起明细' : '▼ 点击展开明细';
     btnDetails.setAttribute('aria-expanded', String(isHidden));
   });
-  el('tab-nav-context').addEventListener('click', () => switchPanelTab('context'));
-  el('tab-nav-tokens').addEventListener('click', () => switchPanelTab('tokens'));
 
   // --- 🔥 视图切换（每天 / 每周 / 累计总量）交互逻辑 ---
   function switchHeatView(view) {

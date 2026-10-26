@@ -17,7 +17,8 @@ function harness(scanSession = session()) {
       setAttribute() {}, remove() {},
       appendChild(x) { this.children.push(x); },
       replaceChildren() { this.children = []; },
-      click() { listeners.get(el)?.get('click')?.(); }
+      click() { listeners.get(el)?.get('click')?.(); },
+      trigger(type) { listeners.get(el)?.get(type)?.(); }
     };
     return el;
   };
@@ -134,5 +135,40 @@ test('drawer toggle controls secondary technical details visibility', () => {
   btn.click();
   assert.equal(body.style.display, 'none');
   assert.equal(arrow.textContent, '▼ 点击展开明细');
+  h.sandbox.__AGContextMeter.dispose();
+});
+test('decoupled dual panels and hover switching between context and tokens', () => {
+  const h = harness();
+  const bContext = h.elements.get('badge');
+  const bSpeed = h.elements.get('badge-speed');
+  const bTokens = h.elements.get('badge-tokens');
+  const pContext = h.elements.get('panel');
+  const pTokens = h.elements.get('panel-tokens');
+
+  assert.ok(pContext);
+  assert.ok(pTokens);
+  assert.equal(pContext.hidden, true);
+  assert.equal(pTokens.hidden, true);
+
+  // Click Context badge -> opens context panel only
+  bContext.click();
+  assert.equal(pContext.hidden, false);
+  assert.equal(pTokens.hidden, true);
+
+  // Hover over Tokens badge while open -> smoothly switches to tokens panel
+  bTokens.trigger('mouseenter');
+  assert.equal(pContext.hidden, true);
+  assert.equal(pTokens.hidden, false);
+
+  // Hover over Speed badge -> switches back to context panel
+  bSpeed.trigger('mouseenter');
+  assert.equal(pContext.hidden, false);
+  assert.equal(pTokens.hidden, true);
+
+  // Close button closes context panel
+  h.elements.get('close').click();
+  assert.equal(pContext.hidden, true);
+  assert.equal(pTokens.hidden, true);
+
   h.sandbox.__AGContextMeter.dispose();
 });
