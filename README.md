@@ -1,7 +1,7 @@
 # Antigravity 对话上下文查看器 & Token 用量看板 (Antigravity Context & Token Viewer)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-2.5.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.7.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/Node.js-%3E%3D18.x-brightgreen?logo=node.js" alt="Node Version">
   <img src="https://img.shields.io/badge/Dependencies-Zero-success" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform Support">
@@ -13,71 +13,131 @@
   <b>简体中文</b> | <a href="README.en.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.es.md">Español</a>
 </p>
 
-专为 **Google Antigravity 桌面客户端 (2.x)** 打造的原厂级 **「单次对话上下文进度条 + 账号全局 Token 计数热力图 + 模型实时输出速度监控」** 三合一可视化套件。采用与 `antigravity-chinese` 相同的 **ASAR 持久化注入 + CDP 免重启热挂载** 架构，**零第三方 npm 依赖**，既支持双击脚本一键安装，也支持直接丢给任何 AI 智能体（Antigravity / Codex / Claude Code / Cursor）一句话自动部署。
+专为 **Google Antigravity 桌面客户端 (2.x)** 打造的原厂级 **「单次会话上下文与生成监控 + 账号全局 Token 计数热力图 + 模型实时输出速度监控」** 全功能可视化套件。采用与 `antigravity-chinese` 相同的 **ASAR 持久化注入 + CDP 免重启热挂载** 架构，**零第三方 npm 依赖**，既支持双击脚本一键安装，也支持直接丢给任何 AI 智能体（Antigravity / Codex / Claude Code / Cursor）一句话自动部署。
+
+> [!NOTE]
+> **关于深色与浅色模式画面适配**：  
+> 因为作者是懒狗，所以浅色画面没有截图和演示图片，但是一样是做了适配的（支持跟随系统或 Antigravity 主题自由切换浅色/深色，顶栏胶囊、原生气泡与双独立面板均已完成无缝自适应）。
 
 ---
 
-## 🎬 界面与交互预览 (Preview)
+## 🎬 界面与交互演示动画 (Video & Animation Previews)
 
-### 1. 双模块合并完整演示 (Combined Full Demo)
+本次 v2.7 版本提供 4 组涵盖全部交互层面的演示动画与高清录像：
+
+### 1. 当前会话上下文监控与底层技术参数附件审计
+> 演示文件：`01-当前会话上下文监控与底层技术参数附件审计.mp4`
+
+点击顶栏环形胶囊呼出「当前会话上下文」面板，查看核心用量速览、最新生成速度耗时，展开并滚览底层技术参数、真实服务端口径校准、图片像素尺寸格式化（如 `561×179 像素`）与全格式附件审计明细：
 
 <p align="center">
-  <a href="assets/demo.mp4">
-    <img src="assets/demo.gif" alt="Antigravity 对话上下文与 Token 看板完整演示" width="760">
+  <a href="assets/demo-01-context-audit.mp4">
+    <img src="assets/demo-01-context-audit.gif" alt="当前会话上下文监控与底层技术参数附件审计" width="760">
   </a>
   <br>
-  <sub>🎬 演示动画：上下文查看器 + Token 热力图多视图切换 (<a href="assets/demo.mp4">Full Demo Animation</a>)</sub>
+  <sub>🎬 演示动画：会话上下文面板、速度监控与底层审计明细 (<a href="assets/demo-01-context-audit.mp4">高清视频：01-当前会话上下文监控与底层技术参数附件审计.mp4</a>)</sub>
 </p>
-
-### 2. 顶栏三胶囊独立动效与状态拆解 (Topbar Capsules)
-
-顶栏右上角常驻三枚无边框原生胶囊，未交互时采用 `#1e1e1e` 隐形融于顶栏，指针移入时以 `cubic-bezier(0.16, 1, 0.3, 1)` 阻尼曲线丝滑过渡至 `#343434` 并平滑展开详情：
-
-| 功能模块 | 常驻默认态 (`#1e1e1e`) | 悬停展开态 (`#343434`) | 悬停详情气泡 (Tooltip) |
-| :--- | :---: | :---: | :--- |
-| **💬 当前对话上下文**<br>*(Session Context)* | 进度条 + 已用百分比<br>`92.5K (36%)` | 平滑展开预算上限与会话估算<br>`/ 256K · 会话≈ 8.2K–12.5K` | 服务端 1M 超限状态、当前准确用量与健康度提示 |
-| **🔥 账号 Token 计数**<br>*(Account Token Tracker)* | 呼吸指示点 + 累计总消耗<br>`🔥 4.29亿` | 平滑展开今日实时消耗量<br>`· 今日 6919W` | 账号全局总消耗看板与 7×52 周热力图提示 |
-| **⚡ 模型输出速度**<br>*(Model Speed & Latency)* | 亮青指示 + 最新输出速度<br>`⚡ 98.4 tok/s` | 平滑展开总耗时与产出<br>`· 18.1s · 1.8K tok` | 纳秒级首字延迟 (TTFT)、流式解码耗时与思考/正文拆解 |
-
-### 3. 双标签详情面板实拍对比 (Dual-Tab Detail Panels)
-
-点击顶栏任意胶囊即可弹出 `#1e1e1e` 原生暗色面板，支持在 **「💬 当前会话上下文」** 与 **「🔥 账号 Token 活动」** 两个标签页之间无缝切换：
-
-| 💬 标签页一：当前会话上下文查看器 | 🔥 标签页二：账号 Token 计数与活动热力图 |
-| :---: | :---: |
-| <img src="assets/panel-detail.png" alt="当前会话上下文详情面板" width="430"> | <img src="assets/panel-activity.png" alt="账号 Token 活动与热力图面板" width="460"> |
-| 置顶 **「⭐ 核心用量速览」** 与 **「⚡ 最新生成速度与耗时速览」**，一眼看清**当前已用 / 预算上限 / 输出速度 (tok/s) / 生成耗时 / 首字延迟**；下方保留真实服务端口径校准与本地全格式附件占用拆解。 | 顶部四栏卡片展示 **账号累计总消耗、今日使用、本月使用、整年使用**；下方提供 **7×52 周活动热力图网格**，支持 **「每天 / 每周 / 累计总量」** 三视图切换、面积折线走势图与每日输入/输出/缓存悬浮气泡。 |
 
 ---
 
-## ✨ 三大核心功能模块详解 (Features)
+### 2. Token 历史用量统计与 52 周活跃热力图交互
+> 演示文件：`02-Token历史用量统计与52周活跃热力图交互.mp4`
 
-### 模块一：💬 当前对话上下文查看器 (Session Context Viewer)
-1. **原生无边框融合进度条**：
-   - 未悬停时底色为 `#1e1e1e`，仅显示**可视化彩色进度条 + 已用上下文数值与百分比**（如 `92.5K (36%)`），不遮挡视线。
-   - 进度条支持三级动态色彩预警：健康（`<75%` 靛蓝 `#69c0ff`）、偏高预警（`75%–90%` 琥珀黄 `#faad14`）、临界或服务端超限（`≥90%` 警示红 `#ff4d4f`）。
-2. **「⭐ 核心用量速览（看这一项就够）」首屏卡片**：
-   - 点开面板最上方直接汇总**当前已用 / 预算上限 / 剩余可用**三栏核心数字与状态胶囊（正常 / 偏高 / 紧张 / 已超限），无需在复杂字段中翻找。
-3. **真实服务端口径校准 + 全格式本地附件扫描**：
-   - 严格区分**模型返回的真实输入+输出 Token**、**客户端预算上限**与**本地全会话估算**。一旦触发服务端 `1,048,576` (1M) 超限报错（HTTP 400）立即强制标红预警，拒绝虚假安全百分比。
-   - 内置只读附件扫描器，自动解析当前会话挂载的 `.xlsx`、`.xlsm`、`.xls`、`.xlsb`、`.csv`、`.pdf`、`.docx`、`.pptx` 及代码/文本附件的字符与 Token 占用。
+点击顶栏 Token 累计胶囊弹出「Token 用量一览」面板，展示全量累计/今日/本月/年度 4 大维度用量卡片、52 周日历热力图，并在热力图方格之间移动悬停，即时呈现包含 Prompt/Output/Cache 或未来日期状态的原生 Tooltip 气泡：
 
-### 模块二：🔥 账号全局 Token 计数与活动看板 (Account Token Tracker)
-1. **四大维度 Token 消耗看板**：
-   - 实时汇总展示当前账号的 **累计总消耗（全量）**、**今日使用（Today）**、**本月使用（当月）** 与 **整年使用（年度）**，支持万/亿单位自适应缩写与精确数值对照。
-2. **ChatGPT / GitHub 风格 7×52 周活跃热力图**：
-   - 采用 5 阶暗黑至亮紫梯度色阶呈现全年 365 天 Token 消耗分布。
-   - 鼠标悬浮或点击任意日期格子，即时弹出 Tooltip 气泡展示**当日总消耗**及**输入 (Prompt) / 输出 (Output) / 缓存命中 (Cache)** 三项明细拆解。
-3. **「每天 / 每周 / 累计总量」三视图无缝切换**：
-   - 点击面板右上角切换按钮，可在 **7×52 日历热力图（每天）**、**周度消耗趋势图（每周）** 与 **历史累计增长面积折线图（累计总量）** 之间自由切换。
+<p align="center">
+  <a href="assets/demo-02-token-heatmap.mp4">
+    <img src="assets/demo-02-token-heatmap.gif" alt="Token 历史用量统计与 52 周活跃热力图交互" width="760">
+  </a>
+  <br>
+  <sub>🎬 演示动画：Token 四维指标卡片与 52 周热力图悬浮气泡交互 (<a href="assets/demo-02-token-heatmap.mp4">高清视频：02-Token历史用量统计与52周活跃热力图交互.mp4</a>)</sub>
+</p>
 
-### 模块三：⚡ 模型实时输出速度与耗时监控 (Model Speed & Latency Tracker)
-1. **顶栏常驻独立速度胶囊 (`#badge-speed`)**：
-   - 实时显示模型最新一次回复的输出速度（如 `98.4 tok/s`），悬停丝滑展开总耗时与产出规模（如 `· 18.1s · 1.8K tok`）。
-   - 悬浮气泡完整展示：**平均生成速度 (tok/s)**、**纯流式解码速度**、**总生成耗时**、**首字响应延迟 (TTFT)** 与 **思考/正文 Token 产出拆解**。
-2. **详情面板首屏「⚡ 最新生成速度与耗时速览」卡片**：
-   - 4 栏数据网格：**输出速度 (tok/s)**、**生成总耗时 (Duration)**、**首字延迟 (TTFT)**、**本次产出 (Output Tokens)**。
-   - 附带四级性能状态标牌（极速 / 流畅 / 良好 / 偏慢）及基于真实时间戳（精确至毫秒）的一句话生成效率总结。
+---
+
+### 3. 独立双面板平滑切换与侧边栏防遮挡自适应
+> 演示文件：`03-独立双面板平滑切换与侧边栏防遮挡自适应.mp4`
+
+在开启右侧辅助栏（审查/文件/终端）的复杂布局下，面板智能计算右侧边界并贴边自适应停靠，杜绝内容裁切；通过点击顶栏不同胶囊即可在「Token 用量一览」与「当前会话上下文」之间顺滑切换：
+
+<p align="center">
+  <a href="assets/demo-03-panel-switching.mp4">
+    <img src="assets/demo-03-panel-switching.gif" alt="独立双面板平滑切换与侧边栏防遮挡自适应" width="760">
+  </a>
+  <br>
+  <sub>🎬 演示动画：侧边栏防裁切停靠与独立双面板无缝平滑互切 (<a href="assets/demo-03-panel-switching.mp4">高清视频：03-独立双面板平滑切换与侧边栏防遮挡自适应.mp4</a>)</sub>
+</p>
+
+---
+
+### 4. 顶栏胶囊多级响应式折叠与窄屏自适应
+> 演示文件：`04-顶栏胶囊多级响应式折叠与窄屏自适应.mp4`
+
+当同时开启左侧项目侧边栏与右侧辅助栏导致主工作区宽度极窄时，顶栏右上角胶囊群触发 4 级阶梯平滑响应式折叠（从完整文本 -> 纯数字 -> 紧凑环形图标与更多菜单），始终不溢出、不破坏顶栏原生布局，且折叠状态下点击环形仍可完美唤起面板：
+
+<p align="center">
+  <a href="assets/demo-04-responsive-collapse.mp4">
+    <img src="assets/demo-04-responsive-collapse.gif" alt="顶栏胶囊多级响应式折叠与窄屏自适应" width="760">
+  </a>
+  <br>
+  <sub>🎬 演示动画：顶栏胶囊 4 级响应式阶梯折叠与紧凑态呼出 (<a href="assets/demo-04-responsive-collapse.mp4">高清视频：04-顶栏胶囊多级响应式折叠与窄屏自适应.mp4</a>)</sub>
+</p>
+
+---
+
+## 📸 面板实拍与功能细节 (Screenshots & UI Details)
+
+| 01. 会话上下文与生成监控主视图 | 02. 会话上下文全展开：外观调色与底层审计 |
+| :---: | :---: |
+| <img src="assets/panel-context-main.png" alt="会话上下文与生成监控主视图" width="460"> | <img src="assets/panel-context-audit-expanded.png" alt="会话上下文全展开面板" width="460"> |
+| 置顶 **「⭐ 核心用量速览」**（当前已用、预算上限、剩余可用）与 **「⚡ 最新生成速度与耗时速览」**（输出速度 87.6 tok/s、生成耗时 10.12s、首字延迟 8.72s、本次输出 886 tok）；下方提供收起的调色抽屉与参数审计入口。 | 展开 **「🎨 指标与背景颜色自定义」**（支持面板统一 0 级背景跟随与指标色自定义）及 **「📋 底层技术参数与附件审计」**（服务端真实返回、本地全会话字符估算、图片像素尺寸与 token 审计、重新扫描入口）。 |
+
+| 03. 顶栏环形胶囊、实时速度与原生气泡提示 | 04. Token 用量总览与 5 档热力图逐格独立自定义 |
+| :---: | :---: |
+| <img src="assets/capsule-speed-and-tooltip.png" alt="顶栏环形胶囊与气泡提示" width="460"> | <img src="assets/panel-token-heatmap-customizer.png" alt="Token 用量总览与热力图调色" width="460"> |
+| 顶栏常驻圆环用量进度胶囊与 ⚡ 速度胶囊（如 `87.6 tok/s`）；鼠标悬浮弹出原生层级三层气泡 Tooltip，直观展示已用百分比、剩余百分比与精确 token 数量。 | 顶部四栏指标卡片展示 **全量累计 (Total)、今日使用 (Today)、本月使用 (Month)、年度使用 (Year)**；52 周热力图网格支持 **每天 / 每周 / 累计总量** 三视图；下方展开 **5 套色阶预设**、**5 档逐格独立调色** 与 **两端插值生成器**。 |
+
+---
+
+## ✨ 核心功能全景 (Comprehensive Features)
+
+### 1. 顶栏环形进度指示器与极速模型性能监控
+- **原生暗色融合双胶囊**：常驻顶栏右上角，未激活时隐形融入标题栏，交互时通过弹性曲线展开；
+- **环形圆环上下文指示器 (`#badge-context`)**：以精致的环形进度圈展示当前单次会话窗口占用比例，鼠标悬浮显示原生 3 层气泡 Tooltip；
+- **实时输出速度胶囊 (`#badge-speed`)**：精确捕获模型最新生成的首字延迟 (TTFT)、纯流式解码速度 (tok/s)、总生成耗时与输出规模；
+- **4 级阶梯响应式折叠**：当侧边栏挤压主窗口或分辨率受限时，自动平滑阶梯折叠，防止覆盖顶栏原有功能。
+
+### 2. 解耦独立双面板与防遮挡自适应停靠
+- **彻底解耦的双面板架构**：会话上下文面板与 Token 统计面板相互独立，通过点击顶栏胶囊直接呼出对应面板，并可在两面板间直接无缝切换；
+- **侧边栏防裁切自适应定位**：动态读取主视口与右侧辅助面板边界，在开启辅助栏时自动左移停靠，确保弹窗内容完整可见。
+
+### 3. 会话上下文监控面板 (Panel A)
+- **⭐ 核心用量速览**：首屏三栏直接呈现**当前已用 / 预算上限 / 剩余可用**核心数值与健康状态胶囊；
+- **⚡ 最新生成速度与耗时速览**：4 栏网格展示输出速度、生成耗时、首字响应延迟 (TTFT) 与本次产出 Token，附带极速/流畅评级；
+- **🎨 指标与背景颜色自定义抽屉**：
+  - 支持面板统一背景色（跟随主题或自定义 0 级深色）；
+  - 支持圆环进度、文字、速度、累计 Token 等多槽位指标独立调色；
+  - 提供一键恢复默认。
+- **📋 底层技术参数与全格式附件审计**：
+  - **真实服务端校准**：严格区分模型返回的真实输入+输出 Token 与本地全会话估算，服务端超限时直接高亮预警；
+  - **全会话本地估算拆解**：逐项统计用户消息、模型回复、思考过程、工具调用与系统提示字符与 Token 区间；
+  - **附件逐项审计**：准确识别并展示图片附件的实际像素尺寸（如 `561×179 像素`）并计算 Token，兼容 Office 文档、PDF 与代码附件；
+  - **重新扫描**：支持随时一键重新扫描整段会话与附件。
+
+### 4. 账号全局 Token 计数与 52 周活跃热力图 (Panel B)
+- **四大维度用量卡片**：全量累计 (Total)、今日使用 (Today)、本月使用 (Month)、年度使用 (Year)，全面采用国际通用缩写 (M / B)；
+- **GitHub / ChatGPT 风格 52 周热力图**：呈现 365 天历史 Token 消耗分布；
+- **三视图无缝切换**：支持「每天（7×52 日历网格）」、「每周（周度趋势）」与「累计总量（增长面积图）」；
+- **每日明细 Tooltip 气泡**：悬停格子即时展示当日 Prompt / Output / Cache 明细及中文标签；
+- **🎨 5 档色阶加法自定义系统**：
+  - **5 套整套预设**：紫色系、黄色系、绿色系、蓝色系、红色系一键应用；
+  - **5 档逐格独立自定义**：右下角「少 ▢▢▢▢▢ 多」图例的 5 个格子均可直接点击弹出调色盘；同时在抽屉内提供 1 档~5 档独立色块微调与单档重置；
+  - **两端线性插值**：支持仅设置「少端色」与「多端色」，自动平滑插值生成中间梯度；
+  - **层级优先级**：单格独立自定义 > 两端插值 > 整套预设，灵活自由。
+
+### 5. 中文汉化免疫护盾与外科手术式还原
+- **汉化补丁绝对共存**：基于当前 `app.asar` 原位无损注入，100% 保护已安装的 `antigravity-chinese` 汉化补丁，安装或卸载均不丢失中文；
+- **CDP 免重启热挂载**：安装与调试直接通过 CDP 端口注入当前运行窗口，无需强杀 Antigravity 进程，即时刷新生效。
 
 ---
 
@@ -158,7 +218,7 @@ npm test
 node --test meter-core.test.js meter-renderer.test.js
 ```
 
-包含 18 项针对 Token 缓存去重、服务端超限覆盖、异步会话切换防串染、进度条宽度与核心速览卡片渲染的回归测试。
+包含 38 项针对 Token 缓存去重、服务端超限覆盖、异步会话切换防串染、5 档色阶独立自定义、图例调色弹窗、图片尺寸格式化与双面板定位的完整回归测试。
 
 ---
 
@@ -166,28 +226,27 @@ node --test meter-core.test.js meter-renderer.test.js
 
 ```text
 antigravity-context-viewer/
-├── assets/                       # 演示动图、高清视频与三态实拍截图
-│   ├── demo.gif / demo.mp4       # 双模块完整交互演示动画与视频
-│   ├── demo-context.gif / .mp4   # 对话上下文进度条独立演示动画与视频
-│   ├── demo-token.gif / .mp4     # 账号 Token 计数独立演示动画与视频
-│   ├── context-badge-default.png # 上下文胶囊默认态 (#1e1e1e)
-│   ├── context-badge-hover.png   # 上下文胶囊悬停态 (#343434)
-│   ├── token-badge-default.png   # Token 胶囊默认态 (#1e1e1e)
-│   ├── token-badge-hover.png     # Token 胶囊悬停态 (#343434)
-│   ├── panel-detail.png          # 当前会话上下文详情面板实拍
-│   └── panel-activity.png        # 账号 Token 活动与热力图面板实拍
-├── asar-engine.js                # 零外部依赖的纯原生 Node.js ASAR 打包/解包引擎
-├── cli.js                        # 统一命令行接口 (install / live / status / check / restore)
-├── install.js                    # ASAR 注入与运行时热挂载调度器
-├── restore.js                    # 原始备份校验与无损还原调度器
-├── meter-main.js                 # Electron 主进程窗口钩子与只读 IPC 通道
-├── meter-core.js                 # 上下文估算、Token 统计与分词引擎
-├── meter-renderer.js             # 顶栏无边框双胶囊、双标签面板与热力图渲染器
-├── meter-collector.js            # 本地会话归档读取与附件提取收集器
-├── attachment_scan.py            # 全格式附件只读分析核心脚本 (Office / PDF / Code)
-├── AGENTS.md                     # AI 智能体专用一键安装与校验指南
-├── install.bat / install.sh      # 一键安装入口脚本
-└── uninstall.bat / .sh           # 一键卸载与还原入口脚本
+├── assets/                                 # 演示动图、高清录屏与实拍截图
+│   ├── demo-01-context-audit.gif / .mp4    # 演示 1：会话上下文监控与底层技术参数附件审计
+│   ├── demo-02-token-heatmap.gif / .mp4    # 演示 2：Token 历史用量统计与 52 周活跃热力图交互
+│   ├── demo-03-panel-switching.gif / .mp4  # 演示 3：独立双面板平滑切换与侧边栏防遮挡自适应
+│   ├── demo-04-responsive-collapse.gif/.mp4# 演示 4：顶栏胶囊多级响应式折叠与窄屏自适应
+│   ├── panel-context-main.png              # 实拍 1：会话上下文与生成监控主视图
+│   ├── panel-context-audit-expanded.png    # 实拍 2：会话上下文全展开：外观调色与底层审计
+│   ├── capsule-speed-and-tooltip.png       # 实拍 3：顶栏环形胶囊、实时速度与原生气泡提示
+│   └── panel-token-heatmap-customizer.png  # 实拍 4：Token 用量总览与 5 档热力图逐格独立自定义
+├── asar-engine.js                          # 零外部依赖的纯原生 Node.js ASAR 打包/解包引擎
+├── cli.js                                  # 统一命令行接口 (install / live / status / check / restore)
+├── install.js                              # ASAR 注入与运行时热挂载调度器
+├── restore.js                              # 原始备份校验与无损还原调度器
+├── meter-main.js                           # Electron 主进程窗口钩子与只读 IPC 通道
+├── meter-core.js                           # 上下文估算、Token 统计与分词引擎
+├── meter-renderer.js                       # 顶栏环形双胶囊、解耦双面板、5档热力图自定义渲染器
+├── meter-collector.js                      # 本地会话归档读取与附件提取收集器
+├── attachment_scan.py                      # 全格式附件只读分析核心脚本 (Office / PDF / Code)
+├── AGENTS.md                               # AI 智能体专用一键安装与校验指南
+├── install.bat / install.sh                # 一键安装入口脚本
+└── uninstall.bat / .sh                     # 一键卸载与还原入口脚本
 ```
 
 ---
