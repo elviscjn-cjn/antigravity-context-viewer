@@ -261,7 +261,7 @@ async function install(options = {}) {
       fs.copyFileSync(packed, installed);
     } catch (err) {
       if (err.code === 'EBUSY' || err.code === 'EPERM') {
-        throw new Error(无法写入目标文件 ()：文件正被运行中的 Antigravity 锁定。请先完全退出 Antigravity 客户端后再运行！);
+        throw new Error(`无法写入目标文件 (${installed})：文件正被运行中的 Antigravity 锁定。请先完全退出 Antigravity 客户端后再运行！`);
       }
       throw err;
     }
