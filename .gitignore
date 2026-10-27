@@ -12,3 +12,5 @@ v2-preview.png
 validation-*.json
 .DS_Store
 Thumbs.db
+dist/
+releases/
