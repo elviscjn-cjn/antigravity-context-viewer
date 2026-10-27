@@ -257,7 +257,14 @@ async function install(options = {}) {
       installedAt: new Date().toISOString()
     };
 
-    fs.copyFileSync(packed, installed);
+    try {
+      fs.copyFileSync(packed, installed);
+    } catch (err) {
+      if (err.code === 'EBUSY' || err.code === 'EPERM') {
+        throw new Error(无法写入目标文件 ()：文件正被运行中的 Antigravity 锁定。请先完全退出 Antigravity 客户端后再运行！);
+      }
+      throw err;
+    }
     if (sha(fs.readFileSync(installed)) !== manifest.patchedSha256) {
       throw new Error('Installed checksum mismatch');
     }

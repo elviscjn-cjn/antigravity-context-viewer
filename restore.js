@@ -60,7 +60,14 @@ async function restore() {
   if (sha(info.installed) !== info.patchedSha256) {
     throw new Error('Installed app has changed (possibly updated); refusing to overwrite');
   }
-  fs.copyFileSync(backup, info.installed);
+  try {
+    fs.copyFileSync(backup, info.installed);
+  } catch (err) {
+    if (err.code === 'EBUSY' || err.code === 'EPERM') {
+      throw new Error(无法还原目标文件 ()：文件正被运行中的 Antigravity 锁定。请先完全退出 Antigravity 客户端后再运行！);
+    }
+    throw err;
+  }
   await tryHotDispose();
   return { restored: info.installed, fromBackup: backup };
 }
