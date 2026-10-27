@@ -1,7 +1,7 @@
 # Antigravity 对话上下文查看器 & Token 用量看板 (Antigravity Context & Token Viewer)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-2.7.1-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.7.2-blue" alt="Version">
   <img src="https://img.shields.io/badge/Node.js-%3E%3D18.x-brightgreen?logo=node.js" alt="Node Version">
   <img src="https://img.shields.io/badge/Dependencies-Zero-success" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform Support">
@@ -23,7 +23,7 @@
 
 ## 🎬 界面与交互演示动画 (Video & Animation Previews)
 
-本次 v2.7.1 版本提供 4 组涵盖全部交互层面的演示动画与高清录像：
+本次 v2.7.2 版本提供 4 组涵盖全部交互层面的演示动画与高清录像：
 
 ### 1. 当前会话上下文监控与底层技术参数附件审计
 > 演示文件：`01-当前会话上下文监控与底层技术参数附件审计.mp4`

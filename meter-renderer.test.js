@@ -393,7 +393,13 @@ test('v5 Section 3 & 5: timeline starts at actual firstUseDate with zero leading
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
 
-  // Verify default firstUseDate on this machine (2026-10-20)
+  // Verify custom firstUseDate (2026-10-20)
+  api.setTokenHistoryForTest({
+    firstUseDate: '2026-10-20',
+    dailyMap: {
+      '2026-10-20': { total: 3594989, input: 738031, output: 52244, cache: 2804714, steps: 63 }
+    }
+  });
   h.elements.get('badge-tokens').click();
   const win1 = api.getTimelineWindow();
   assert.equal(win1.firstUseDate, '2026-10-20');
@@ -498,6 +504,12 @@ test('v5.1: heatmap top-row anti-clipping padding and popover Chinese translatio
   assert.match(source, /\.pop-det-trans\s*\{[^}]*font-size:\s*9\.5px/);
 
   // 2) Trigger daily heatmap cell click
+  api.setTokenHistoryForTest({
+    firstUseDate: '2026-10-20',
+    dailyMap: {
+      '2026-10-20': { total: 3594989, input: 738031, output: 52244, cache: 2804714, steps: 63 }
+    }
+  });
   h.elements.get('badge-tokens').click();
   const colsBox = h.elements.get('h-grid-cols');
   assert.ok(colsBox && colsBox.children.length > 0, 'grid columns should exist');

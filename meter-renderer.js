@@ -10,33 +10,24 @@
   host.setAttribute('data-window-active', 'true');
   const shadow = host.attachShadow({ mode: 'open' });
 
-  // Antigravity 本地真实 Token 统计基准数据（自动与本地全量历史归档合并）
+  // Antigravity 本地真实 Token 统计基准数据（纯净初始状态，启动时由宿主实时扫描本地实际账本注入）
   const ANTIGRAVITY_TOKEN_DATA = {
-    updatedAt: "2026-10-27 02:26:58",
-    firstUseDate: "2026-10-20",
+    updatedAt: "",
+    firstUseDate: null,
     summary: {
-      grandTotalTokens: 669964744,
-      totalInputTokens: 31150287,
-      totalOutputTokens: 3377500,
-      totalCacheTokens: 635436957,
-      todayTokens: 20057882,
-      monthTokens: 669964744,
-      yearTokens: 669964744,
-      totalSteps: 5831,
-      totalConversations: 53,
-      firstUseDate: "2026-10-20",
-      activeDaysCount: 8
+      grandTotalTokens: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheTokens: 0,
+      todayTokens: 0,
+      monthTokens: 0,
+      yearTokens: 0,
+      totalSteps: 0,
+      totalConversations: 0,
+      firstUseDate: null,
+      activeDaysCount: 0
     },
-    dailyMap: {
-      "2026-10-20": { total: 3594989, input: 738031, output: 52244, cache: 2804714, steps: 63 },
-      "2026-10-21": { total: 1457865, input: 329634, output: 30447, cache: 1097784, steps: 43 },
-      "2026-10-22": { total: 4196139, input: 377290, output: 36609, cache: 3782240, steps: 70 },
-      "2026-10-23": { total: 25451505, input: 2179043, output: 123722, cache: 23148740, steps: 276 },
-      "2026-10-24": { total: 247085955, input: 8760254, output: 765106, cache: 237560595, steps: 2071 },
-      "2026-10-25": { total: 77539057, input: 4374559, output: 505159, cache: 72659339, steps: 686 },
-      "2026-10-26": { total: 290581352, input: 14062310, output: 1743121, cache: 274775921, steps: 2490 },
-      "2026-10-27": { total: 20057882, input: 629166, output: 121092, cache: 19307624, steps: 132 }
-    }
+    dailyMap: {}
   };
 
   const RING_RADIUS = 6.5;
@@ -710,8 +701,8 @@
   <!-- 顶部基本单元 3: 累计 Token 用量 -->
   <button id="badge-tokens" class="ag-unit" type="button" aria-label="Token 用量一览" aria-expanded="false">
     <span class="token-fire-dot" aria-hidden="true"></span>
-    <span id="token-amount">670.0M</span>
-    <span id="token-hover-extra" class="sr-only">· 今日 65.5M</span>
+    <span id="token-amount">--</span>
+    <span id="token-hover-extra" class="sr-only"></span>
   </button>
 
   <!-- 顶部基本单元 4: 窄屏溢出菜单按钮 -->
@@ -738,7 +729,7 @@
     </button>
     <button id="overflow-tokens-btn" class="overflow-item" type="button">
       <span class="overflow-item-label"><span class="token-fire-dot"></span><span>Token 用量一览</span></span>
-      <span id="overflow-tokens-val" class="overflow-item-val">670.0M</span>
+      <span id="overflow-tokens-val" class="overflow-item-val">--</span>
     </button>
   </div>
 
@@ -904,23 +895,23 @@
       <div class="token-stat-cards">
         <div class="t-card">
           <div class="t-card-lbl"><span>全量累计</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Total</span></div>
-          <div class="t-card-val" id="t-total-val">670.0M</div>
-          <div class="t-card-sub" id="t-total-sub">669,964,744 Tokens</div>
+          <div class="t-card-val" id="t-total-val">--</div>
+          <div class="t-card-sub" id="t-total-sub">读取中...</div>
         </div>
         <div class="t-card">
           <div class="t-card-lbl"><span>今日使用</span><span style="color:var(--ag-custom-token-accent,#0284c7)">Today</span></div>
-          <div class="t-card-val" id="t-today-val">65.5M</div>
-          <div class="t-card-sub" id="t-today-sub">53 会话实时累加</div>
+          <div class="t-card-val" id="t-today-val">--</div>
+          <div class="t-card-sub" id="t-today-sub">读取中...</div>
         </div>
         <div class="t-card">
           <div class="t-card-lbl"><span>本月使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Month</span></div>
-          <div class="t-card-val" id="t-month-val">670.0M</div>
-          <div class="t-card-sub" id="t-month-sub">日均约 83.7M</div>
+          <div class="t-card-val" id="t-month-val">--</div>
+          <div class="t-card-sub" id="t-month-sub">读取中...</div>
         </div>
         <div class="t-card">
           <div class="t-card-lbl"><span>年度使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Year</span></div>
-          <div class="t-card-val" id="t-year-val">670.0M</div>
-          <div class="t-card-sub" id="t-year-sub">8 天活动记录</div>
+          <div class="t-card-val" id="t-year-val">--</div>
+          <div class="t-card-sub" id="t-year-sub">读取中...</div>
         </div>
       </div>
 
@@ -928,10 +919,10 @@
         <div class="heat-header">
           <div class="heat-header-left">
             <div class="heat-title">Token 活动</div>
-            <span id="first-use-badge" class="first-use-badge">首次使用：2026年10月20日</span>
+            <span id="first-use-badge" class="first-use-badge">首次使用：--</span>
             <div class="heat-win-nav">
               <button id="h-page-prev" class="heat-nav-btn" type="button" title="查看更早的 12 个月窗口" disabled>‹</button>
-              <span id="h-win-range">2026.10.20 – 2027.10.18</span>
+              <span id="h-win-range">--</span>
               <button id="h-page-next" class="heat-nav-btn" type="button" title="查看更新的 12 个月窗口" disabled>›</button>
             </div>
           </div>
@@ -2892,26 +2883,27 @@
 
   function applyTokenHistoryPayload(payload) {
     if (!payload || typeof payload !== 'object') return false;
+    const newMap = {};
     if (payload.dailyMap && typeof payload.dailyMap === 'object') {
       for (const [dKey, rec] of Object.entries(payload.dailyMap)) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dKey) || !rec) continue;
-        const cur = ANTIGRAVITY_TOKEN_DATA.dailyMap[dKey];
-        if (!cur || (rec.total || 0) >= (cur.total || 0)) {
-          ANTIGRAVITY_TOKEN_DATA.dailyMap[dKey] = {
-            total: Number(rec.total) || 0,
-            input: Number(rec.input) || 0,
-            output: Number(rec.output) || 0,
-            cache: Number(rec.cache) || 0,
-            steps: Number(rec.steps) || 0
-          };
-        }
+        newMap[dKey] = {
+          total: Number(rec.total) || 0,
+          input: Number(rec.input) || 0,
+          output: Number(rec.output) || 0,
+          cache: Number(rec.cache) || 0,
+          steps: Number(rec.steps) || 0
+        };
       }
     }
+    ANTIGRAVITY_TOKEN_DATA.dailyMap = newMap;
     if (payload.firstUseDate && /^\d{4}-\d{2}-\d{2}$/.test(payload.firstUseDate)) {
-      if (!ANTIGRAVITY_TOKEN_DATA.firstUseDate || payload.firstUseDate < ANTIGRAVITY_TOKEN_DATA.firstUseDate) {
-        ANTIGRAVITY_TOKEN_DATA.firstUseDate = payload.firstUseDate;
-      }
+      ANTIGRAVITY_TOKEN_DATA.firstUseDate = payload.firstUseDate;
+    } else if (payload.summary?.firstUseDate && /^\d{4}-\d{2}-\d{2}$/.test(payload.summary.firstUseDate)) {
+      ANTIGRAVITY_TOKEN_DATA.firstUseDate = payload.summary.firstUseDate;
     }
+    if (payload.updatedAt) ANTIGRAVITY_TOKEN_DATA.updatedAt = payload.updatedAt;
+
     // 重新汇总卡片统计
     const map = ANTIGRAVITY_TOKEN_DATA.dailyMap;
     const keys = Object.keys(map).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && map[k]?.total > 0).sort();
@@ -2931,10 +2923,11 @@
     }
     const latestActiveKey = keys[keys.length - 1] || todayStr;
     const shownToday = todayTokens > 0 ? todayTokens : (Number(map[latestActiveKey]?.total) || 0);
-    const convCount = Number(payload.summary?.totalConversations) || ANTIGRAVITY_TOKEN_DATA.summary?.totalConversations || 53;
+    const convCount = Number(payload.summary?.totalConversations) || Number(ANTIGRAVITY_TOKEN_DATA.summary?.totalConversations) || keys.length;
     const avgMonth = monthDays > 0 ? Math.round(monthTokens / monthDays) : 0;
 
     ANTIGRAVITY_TOKEN_DATA.summary = {
+      grandTotalTokens: totalTokens,
       totalTokens,
       todayTokens: shownToday,
       monthTokens,
@@ -2943,10 +2936,18 @@
       totalConversations: convCount
     };
 
-    const fmtCardM = v => v >= 1e9 ? `${(v / 1e9).toFixed(2)}B` : `${(v / 1e6).toFixed(1)}M`;
+    const fmtCardM = v => {
+      const n = Number(v) || 0;
+      if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+      if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+      if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+      return String(n);
+    };
     const badgeAmt = el('token-amount');
+    const badgeExtra = el('token-hover-extra');
     const overAmt = el('overflow-tokens-val');
     if (badgeAmt) badgeAmt.textContent = fmtCardM(totalTokens);
+    if (badgeExtra) badgeExtra.textContent = `· 今日 ${fmtCardM(shownToday)}`;
     if (overAmt) overAmt.textContent = fmtCardM(totalTokens);
 
     const tTotalVal = el('t-total-val');
@@ -3582,14 +3583,20 @@
     finally { if (generation === state.generation && !state.disposed) { state.scanBusy = false; state.scanNext = Date.now() + (document.hidden ? 60000 : 20000); render(); } }
   }
 
+  let lastHistorySync = 0;
   function tick() {
     const id = route();
     if (id !== state.route) {
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       Object.assign(state, { route: id, count: 0, latest: null, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0, scanError: '', scan: null }); toggle(false); hideContextTooltip(); renderFiles(null); render();
+      void syncTokenHistoryFromHost(true);
     }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
+    if (Date.now() - lastHistorySync > 15000) {
+      lastHistorySync = Date.now();
+      void syncTokenHistoryFromHost(false);
+    }
   }
 
   const timer = setInterval(tick, 500);

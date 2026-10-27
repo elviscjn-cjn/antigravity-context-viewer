@@ -1,72 +1,39 @@
-# 🚀 Antigravity Context & Token Viewer v2.7.1 更新日志
+# 🚀 Antigravity Context & Token Viewer v2.7.2 更新日志
 
-本次版本是自 `v2.4.0` 以来最重要的一次重构升级与缺陷修复里程碑。不仅彻底解决了社群与多位用户反馈的**“Token 锁死在 4.29 亿 / 6900 万”**、**“安装脚本白屏闪退”**等关键问题，还完整实装了**“实时模型输出性能监控（tok/s）”**、**“解耦独立双面板”**与**“跨平台标准发布资产”**。
-
-从本次版本起，项目版本号规范全面调整为三段式语义化小版本（如 `2.7.1`），后续常规缺陷修复均按小数点递增发布。
+本次发布紧急修复并彻底解决了**“Token 看板总使用量锁死为 670.0M / 20.06M 假数据、数值不随真实会话变动”**的核心缺陷，并实装了跨机器 100% 纯净日志扫描与全量动态联动。
 
 ---
 
-## ⚡ 重点更新一览 (Highlights)
+## ⚡ 核心修复与改进 (Bug Fixes & Improvements)
 
-### 1. ⚡ 实时模型解码速度与性能监控 (Speed Capsule)
-- **顶栏居中性能胶囊**：顶栏新增居中实时模型输出速度胶囊（如 `87.6 tok/s`）；
-- **全链路生成指标捕获**：准确计算并展示**首字响应延迟 (TTFT)**、**纯流式解码速度 (tok/s)**、**总生成耗时**与**本次产出 Token**，并附带流畅度/极速评级。
+### 1. 彻底剔除前端硬编码历史数据（解决 670.0M 死值根因）
+- **根因分析**：旧版本在 `meter-renderer.js` 第 14 行预埋了开发测试主机的历史基准表（`ANTIGRAVITY_TOKEN_DATA`，包含 `669,964,744` 总用量与 `20,057,882` 今日用量）。而在前端数据合并时执行了 `rec.total >= cur.total` 判断，导致新设备或真实用量较小（如 17.99M / 5.57M）的机器永远无法战胜写死的 670M，数字被永久锁死。
+- **重构方案**：
+  - 前端基准表改为完全纯净的零基初始状态（`dailyMap: {}`）；
+  - `applyTokenHistoryPayload` 彻底改为直接以本机实际扫描到的 `transcript.jsonl` 日志实测数据为准；
+  - 模板中的占位文本统一由写死数字清理为动态加载状态。
 
-### 2. 🗂️ 彻底解耦的独立双面板体系 (Decoupled Dual Panels)
-- **移除内部旧选项卡**：彻底移除了面板顶部旧版的「当前会话上下文」与「账号 Token 活动」切换标签；
-- **双独立面板直达**：点击左侧环形进度圈直达「会话上下文监控」，点击右侧 Token 胶囊直达「Token 用量一览」；
-- **侧边栏防裁切停靠**：在开启右侧辅助栏（终端/审查）时，面板动态计算边界贴边停靠，杜绝内容裁切。
+### 2. 支持小数值宽动态范围格式化 (K / M / B 自适应)
+- **宽量程自适应**：
+  - `≥ 1,000,000,000`：以 `1.23B` 呈现；
+  - `≥ 1,000,000`：以 `17.9M` / `846.8M` 呈现；
+  - `≥ 1,000`：以 `50.0K` / `85.2K` 呈现（避免小于 1M 时被粗暴四舍五入为 `0.0M`）；
+  - `< 1,000`：以精确整数呈现。
 
-### 3. 📊 本地会话日志全量动态聚合引擎 (Dynamic Token Engine)
-- **解决静态常量锁死缺陷**：彻底移除了旧版中写死的测试快照常量（4.29 亿 / 6918.9 万）；
-- **动态扫描真实日志**：后台深度递归遍历本机 `~/.gemini/antigravity/brain/**/transcript.jsonl` 与 `conversations/*.pb`，实时动态汇总当前账号在单机上的全量累计、今日用量、当月用量与年度历史；
-- **52 周 365 天日历活跃热力图**：真实呈现历史每日 Prompt、Output 与 Cache 消耗分布，支持 Tooltip 气泡明细查看。
+### 3. 实装 15 秒静默轮询与会话切换热联动 (Real-time Live Sync)
+- 前端 `tick()` 循环新增 15 秒静默轮询与切换会话立即强制重算机制；
+- 每次对话完成并生成新日志后，Token 计数胶囊与详情面板将在 15 秒内自动更新，无需手动重启或刷新窗口。
 
-### 4. 🎨 5 档热力图逐格独立自定义与主题统一
-- **5 套经典调色预设**：紫色系、黄色系、绿色系、蓝色系、红色系一键应用；
-- **5 档逐格独立调色**：热力图右下角「少 ▢▢▢▢▢ 多」图例支持直接点击弹出调色盘微调单档色阶；
-- **两端线性插值**：支持仅选两端颜色自动平滑插值过渡；
-- **0 级深色背景统一**：支持面板背景统一或跟随宿主主题。
-
-### 5. 📦 跨平台标准化 Release 发布规范 (Multi-OS Assets)
-- **对齐开源标杆分发规范**：为各大操作系统构建了专属的独立分发压缩包（Windows amd64/arm64、macOS Intel/Apple Silicon、Linux amd64/arm64）；
-- **标配 SHA-256 校验和**：随包附带 `checksums.txt`，供用户与 AI 智能体验证安装包完整性；
-- **自动化 CI/CD**：集成 GitHub Actions 自动化流水线，代码打 Tag 自动跨平台打包并发布 Release。
+### 4. 彻底解决 Windows 下批处理文件字节偏移错位闪退
+- `install.bat` 与 `uninstall.bat` 启动器已全面重构为 **100% 纯 7-bit ASCII 字符**，彻底杜绝 Windows CMD（代码页 936）在解析 UTF-8 多字节中文时因 `fseek` 字节漂移把命令拆成 `'f'`、`'ot'`、`'N_RUN_AS_NODE'`、`'cho.'` 的致命语法崩溃；
+- 中文交互界面统一由 Node.js 运行时（V8 原生 Unicode）渲染呈现。
 
 ---
 
-## 🛠️ 关键缺陷修复 (Bug Fixes)
+## 📦 跨平台 Release 安装包
 
-1. **[核心修复] 彻底消除 Token 看板显示假数据/锁死的 Bug**：
-   - 修复了旧版（v2.4.0）中因底层扫描 IPC 未就绪而在前端硬编码静态快照的问题；
-   - 修复了新机器安装后由于默认基准值导致 Token 统计被定在固定数值的缺陷，新版本纯净初始并完全以本地扫描结果为准。
-2. **[安装修复] 修复 Windows 下双击 `install.bat` / `uninstall.bat` 白屏一闪并闪退的问题**：
-   - 修复了批处理脚本调用 `agy-node.cmd` 时未加 `call` 导致执行流意外中断的机制问题；
-   - 增加了对运行中 `Antigravity.exe` 进程的检测与拦截提示，防止因 Windows 系统级文件占用独占锁（EBUSY / WinError 32）导致覆盖注入失败；
-   - 强制全局 `pause` 停驻控制台，确保安装全流程日志清晰可见，不再无提示闪退。
-3. **[附件审计] 修复多模态图片格式化为 NaN 的问题**：
-   - 图片附件统一识别为实际物理像素尺寸（如 `561×179 像素`），消除了字符估算偏差。
-
----
-
-## 📥 安装与升级方式 (Installation)
-
-### 方式一：直接下载对应系统的 Release 包（推荐）
-- **Windows 用户**：下载 `antigravity-context-viewer_2.7.1_windows_amd64.zip`，解压后双击运行 **`install.bat`**。
-- **macOS / Linux 用户**：下载对应系统的 Zip 包，解压后在终端运行 `./install.sh`。
-
-### 方式二：Git 仓库在线拉取
-```bash
-git checkout main
-git pull origin main
-# 运行安装（确保 Antigravity 客户端已退出）
-.\install.bat
-```
-
-### 方式三：直接交给 AI 智能体安装
-将解压后的文件夹直接丢给你的 AI 助手（Antigravity Agent、Codex、Claude Code、Cursor），对它说：
-> **“读取本目录里的 AGENTS.md，帮我安装这个插件”**
-
----
-
-**Full Changelog**: https://github.com/elviscjn-cjn/antigravity-context-viewer/compare/v2.4.0...v2.7.1
+所有安装包均已自动化编译并打包于 GitHub Release 资产中：
+- Windows: `antigravity-context-viewer_2.7.2_windows_amd64.zip` / `_arm64.zip`
+- macOS: `antigravity-context-viewer_2.7.2_darwin_amd64.zip` / `_arm64.zip`
+- Linux: `antigravity-context-viewer_2.7.2_linux_amd64.zip` / `_arm64.zip`
+- SHA256 校验和: `checksums.txt`
