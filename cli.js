@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+process.noAsar = true;
 
 /**
  * Antigravity Context Meter CLI
