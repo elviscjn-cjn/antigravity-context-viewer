@@ -32,10 +32,10 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
           files: |
             dist/release/*.zip
             dist/release/checksums.txt
-          generate_release_notes: true
           draft: false
           prerelease: false
         env:
