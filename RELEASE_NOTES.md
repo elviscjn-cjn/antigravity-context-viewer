@@ -17,6 +17,15 @@
 
 ---
 
+## 📦 跨平台 Release 安装包
+所有安装包均已自动化编译并打包至 GitHub Release 资产中：
+- Windows: `antigravity-context-viewer_2.7.3_windows_amd64.zip` / `_arm64.zip`
+- macOS: `antigravity-context-viewer_2.7.3_darwin_amd64.zip` / `_arm64.zip`
+- Linux: `antigravity-context-viewer_2.7.3_linux_amd64.zip` / `_arm64.zip`
+- SHA256 校验见附件 `checksums.txt`
+
+---
+
 # 🚀 Antigravity Context & Token Viewer v2.7.2 更新日志
 
 本次发布紧急修复并彻底解决了**“Token 看板总使用量锁死为 670.0M / 20.06M 假数据、数值不随真实会话变动”**的核心缺陷，并实装了跨机器 100% 纯净日志扫描与全量动态联动。
