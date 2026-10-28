@@ -1,3 +1,22 @@
+# 🚀 Antigravity Context & Token Viewer v2.7.3 更新日志
+
+本次发布全面优化了顶栏 UI 布局，深度适配 Google Antigravity 新版本的原生操作工具栏与辅助面板（Auxiliary Panel），解决指示器与原生按钮间隙过大以及自适应联动问题。
+
+---
+
+## ⚡ 核心修复与改进 (Bug Fixes & Improvements)
+
+### 1. 顶栏 Token 指示器位置精准对齐
+- **根因消除**：彻底清除在进入 `flow` 模式时残留的 `right: 142px` 内联相对位移偏差，并在 `:host([data-dock="flow"])` 添加样式隔离防护；
+- **位置右移**：指示器无缝贴合原生顶栏按钮群（`⋮` / `Open IDE`）左侧，彻底解决原悬空 140px 空白的问题；
+- **原生回退锚定**：在无会话顶栏（主页）场景下，动态探测原生 `Open IDE` 按钮并精确锚定其左侧。
+
+### 2. 原生辅助面板（Auxiliary Panel）实时联动自适应
+- 深度联动 Antigravity 原生顶栏 `data-testid="pane-titlebar-toolbar"` 容器；
+- 当辅助面板开启、折叠或拖拽调整宽度时，指示器随原生 Flexbox 容器平滑自适应，绝不发生重叠或遮挡。
+
+---
+
 # 🚀 Antigravity Context & Token Viewer v2.7.2 更新日志
 
 本次发布紧急修复并彻底解决了**“Token 看板总使用量锁死为 670.0M / 20.06M 假数据、数值不随真实会话变动”**的核心缺陷，并实装了跨机器 100% 纯净日志扫描与全量动态联动。

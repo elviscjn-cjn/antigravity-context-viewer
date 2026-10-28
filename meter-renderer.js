@@ -122,8 +122,8 @@
 
     /* 融入宿主原生布局容器时参与正常 Flexbox 空间分配 */
     :host([data-dock="flow"]){
-      position:relative;top:auto;right:auto;z-index:20;
-      margin-right:2px;
+      position:relative !important;top:auto !important;right:auto !important;left:auto !important;bottom:auto !important;z-index:20;
+      margin-right:4px;
     }
 
     /* 窗口非活动状态适度降低顶栏对比度 */
@@ -2186,6 +2186,12 @@
         }
       }
       host.setAttribute('data-dock', 'flow');
+      try {
+        host.style.removeProperty?.('right');
+        host.style.removeProperty?.('top');
+      } catch {}
+      host.style.right = '';
+      host.style.top = '';
 
       if (observedTitlebar !== titlebar) {
         observedTitlebar = titlebar;
@@ -2208,18 +2214,47 @@
     updateResponsiveLayout();
   }
 
+  function findNativeTopRightAnchor() {
+    try {
+      if (typeof document.querySelector !== 'function') return null;
+      const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+      const openIdeBtn = buttons.find(b => {
+        const text = (b.textContent || '').trim();
+        return (text === 'Open IDE' || text === '打开 IDE' || text.includes('Open IDE') || text.includes('打开 IDE')) && b.getBoundingClientRect?.().top < 50;
+      });
+      if (openIdeBtn) {
+        const parentGroup = openIdeBtn.closest('div.flex.items-center, div.absolute.right-0') || openIdeBtn;
+        return parentGroup;
+      }
+      const auxToggle = document.querySelector('[data-testid="toggle-aux-sidebar"]');
+      if (auxToggle?.closest) {
+        return auxToggle.closest('div.absolute.right-0.top-0') || auxToggle;
+      }
+      return document.querySelector('div.absolute.right-0.top-0');
+    } catch {
+      return null;
+    }
+  }
+
   function updateFixedFallbackPosition() {
     if (host.getAttribute?.('data-dock') === 'flow') {
+      try {
+        host.style.removeProperty?.('right');
+        host.style.removeProperty?.('top');
+      } catch {}
       host.style.right = '';
       host.style.top = '';
       return;
     }
     try {
-      let rightOffset = 142;
-      const topRightBar = findTopRightCluster();
-      if (topRightBar?.getBoundingClientRect) {
-        const r = topRightBar.getBoundingClientRect();
-        if (r.width > 0) rightOffset = Math.max(142, Math.ceil((window.innerWidth || 1280) - r.left + 8));
+      const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+      let rightOffset = 144;
+      const anchor = findNativeTopRightAnchor();
+      if (anchor?.getBoundingClientRect) {
+        const r = anchor.getBoundingClientRect();
+        if (r.width > 0 && r.left > 0 && r.left < vw) {
+          rightOffset = Math.max(144, Math.ceil(vw - r.left + 6));
+        }
       }
       host.style.top = '6px';
       host.style.right = `${rightOffset}px`;
