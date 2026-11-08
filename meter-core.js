@@ -9,12 +9,21 @@
     const num = parseFloat(match[1]);
     return Number.isFinite(num) && num >= 0 ? num : null;
   }
+  // 按模型覆盖上下文预算（2026-11-08）：Gemini 4 服务端 maxContextTokens 报 256000，
+  // 用户要求按 400000 展示与计算百分比；其余模型维持服务端预算。
+  const MODEL_BUDGET_OVERRIDES = [
+    { match: /gemini[\s_-]*4/i, budget: 400000 },
+  ];
   function summarize(metadata) {
     const m = metadata?.chatModel;
     if (!m) return null;
     const lastRetry = (m.retryInfos || []).at(-1);
     const error = String(lastRetry?.error || m.error || '');
-    const exceeded = /input token count exceeds|context.{0,40}(?:exceed|too long)|maximum context length/i.test(error);
+    // 网络层错误（连接中断/流超时）不是上下文超限。注意 Go 的超时错误
+    // "context deadline exceeded" 里的 context/exceed 会撞上超限正则
+    // context.{0,40}(?:exceed|too long)，必须先排除（2026-11-09 实测误报）。
+    const network = /request failed|\bEOF\b|idle timeout|deadline exceeded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up|fetch failed|Failed to fetch|NetworkError/i.test(error);
+    const exceeded = !network && /input token count exceeds|context.{0,40}(?:exceed|too long)|maximum context length/i.test(error);
     const serviceLimit = exceeded ? number(error.match(/(?:allowed|limit(?:\s+of)?|length(?:\s+is)?)\s*[:=]?\s*([\d,]+)/i)?.[1]?.replaceAll(',', '')) : null;
     const usage = lastRetry ? lastRetry.usage : m.usage;
     const input = number(usage?.inputTokens), cached = number(usage?.cacheReadTokens), output = number(usage?.outputTokens);
@@ -22,7 +31,11 @@
     const hasInput = (input || 0) + (cached || 0) > 0;
     const actual = hasInput && !error ? (input || 0) + (cached || 0) + (output || 0) : null;
     const context = m.chatStartMetadata?.contextWindowMetadata;
-    const estimate = number(context?.estimatedTokensUsed), budget = number(context?.maxContextTokens);
+    const model = m.modelDisplayName || m.responseModel || m.model || '';
+    const estimate = number(context?.estimatedTokensUsed);
+    const serverBudget = number(context?.maxContextTokens);
+    const override = MODEL_BUDGET_OVERRIDES.find(o => o.match.test(model));
+    const budget = override ? override.budget : serverBudget;
 
     // 计算生成耗时与输出速度 (Tokens Per Second)
     const ttft = parseDurationSec(m.timeToFirstToken);
@@ -49,12 +62,12 @@
 
     return {
       used: actual ?? (estimate > 0 ? estimate : null), actual, estimate: estimate > 0 ? estimate : null,
-      budget: budget > 0 ? budget : null, serviceLimit, exceeded, error,
+      budget: budget > 0 ? budget : null, serviceLimit, exceeded, network, error,
       estimated: actual === null, input: hasInput ? (input || 0) + (cached || 0) : null,
       cached: cached || 0, output: output ?? null,
       percent: actual !== null && budget > 0 && !exceeded ? actual / budget * 100 : null,
-      model: m.modelDisplayName || m.responseModel || m.model || '',
-      status: exceeded ? 'exceeded' : error ? 'failed' : actual !== null ? 'reported' : estimate > 0 ? 'estimated' : 'pending',
+      model,
+      status: exceeded ? 'exceeded' : network ? 'network' : error ? 'failed' : actual !== null ? 'reported' : estimate > 0 ? 'estimated' : 'pending',
       speed
     };
   }

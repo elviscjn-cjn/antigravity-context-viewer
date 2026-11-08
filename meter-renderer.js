@@ -747,7 +747,7 @@
 
     <div id="view-context">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <h3 style="margin:0">会话用量与生成监控<span id="v">v2.7</span></h3>
+        <h3 style="margin:0">会话用量与生成监控<span id="v">v2.8</span></h3>
       </div>
 
       <!-- 卡片 1: 核心用量速览 -->
@@ -1143,20 +1143,15 @@
   const fmt = v => v == null ? '—' : Math.round(v).toLocaleString('en-US');
   const short = v => {
     if (v == null) return '—';
-    if (v >= 1e9) return `${parseFloat((v / 1e9).toFixed(2))}B`;
-    if (v >= 1e6) return `${parseFloat((v / 1e6).toFixed(2))}M`;
-    if (v >= 1000) return `${parseFloat((v / 1000).toFixed(1))}K`;
+    if (v >= 1e8) return `${parseFloat((v / 1e8).toFixed(2))}亿`;
+    if (v >= 1e4) return `${parseFloat((v / 1e4).toFixed(1))}万`;
     return fmt(v);
   };
-  // 悬停信息气泡专用紧凑计数格式（如 37k、475k、1.05M）
+  // 悬停信息气泡专用紧凑计数格式（如 3.7万、475万、1.05亿）
   const fmtBubbleToken = v => {
     if (v == null) return '未知';
-    if (v >= 1e9) return `${parseFloat((v / 1e9).toFixed(2))}B`;
-    if (v >= 1e6) return `${parseFloat((v / 1e6).toFixed(2))}M`;
-    if (v >= 1000) {
-      const k = v / 1000;
-      return k >= 10 ? `${Math.round(k)}k` : `${parseFloat(k.toFixed(1))}k`;
-    }
+    if (v >= 1e8) return `${parseFloat((v / 1e8).toFixed(2))}亿`;
+    if (v >= 1e4) return `${parseFloat((v / 1e4).toFixed(1))}万`;
     return String(Math.round(v));
   };
   const range = value => value ? `≈ ${short(value.low)}–${short(value.high)}` : '—';
@@ -2810,9 +2805,8 @@
 
   function fmtYi(n) {
     if (!n || n <= 0) return '0';
-    if (n >= 1e9) return `${parseFloat((n / 1e9).toFixed(2))}B`;
-    if (n >= 1e6) return `${parseFloat((n / 1e6).toFixed(2))}M`;
-    if (n >= 1e3) return `${parseFloat((n / 1e3).toFixed(1))}K`;
+    if (n >= 1e8) return `${parseFloat((n / 1e8).toFixed(2))}亿`;
+    if (n >= 1e4) return `${parseFloat((n / 1e4).toFixed(1))}万`;
     return n.toLocaleString('en-US');
   }
 
@@ -2973,9 +2967,8 @@
 
     const fmtCardM = v => {
       const n = Number(v) || 0;
-      if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-      if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-      if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+      if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+      if (n >= 1e4) return `${(n / 1e4).toFixed(1)}万`;
       return String(n);
     };
     const badgeAmt = el('token-amount');
@@ -3427,7 +3420,7 @@
 
     updateRingAndBubble(d, session, pct, danger, stale, incomplete);
 
-    const status = d?.exceeded ? '服务端已拒绝：输入超限。本地估算不可靠，不能据此判断剩余空间。' : d?.error ? '最近请求失败。没有有效的新用量统计，请查看原始错误。' : stale ? '最近请求统计读取异常或延迟，不能判断剩余空间。' : state.scanError ? '全会话扫描未完成：' + state.scanError : incomplete ? `存在 ${session.unknownFiles} 个附件含未知内容；会话总量仍未计全，不能据此保证不会超限。` : d?.estimated ? '只有客户端估算，附件等内容可能未计全；当前请求真实占用未知。' : '请求用量与会话累计分别统计；会话 token 数始终为本地估算。';
+    const status = d?.exceeded ? '服务端已拒绝：输入超限。本地估算不可靠，不能据此判断剩余空间。' : d?.network ? '网络故障：请求未送达服务端（连接中断或超时），不是上下文超限，链路恢复后重试即可。' : d?.error ? '最近请求失败。没有有效的新用量统计，请查看原始错误。' : stale ? '最近请求统计读取异常或延迟，不能判断剩余空间。' : state.scanError ? '全会话扫描未完成：' + state.scanError : incomplete ? `存在 ${session.unknownFiles} 个附件含未知内容；会话总量仍未计全，不能据此保证不会超限。` : d?.estimated ? '只有客户端估算，附件等内容可能未计全；当前请求真实占用未知。' : '请求用量与会话累计分别统计；会话 token 数始终为本地估算。';
     el('status').textContent = status;
 
     const corpus = session ? `会话${range(session.total)}${incomplete ? '＋未知' : ''}` : state.scanBusy ? '会话扫描中…' : '会话待扫描';
@@ -3435,6 +3428,9 @@
     if (d?.exceeded) {
       el('amount').textContent = '服务端超限';
       setHoverExtra(' · 100% 已溢出');
+    } else if (d?.network) {
+      el('amount').textContent = '网络故障';
+      setHoverExtra(' · 非超限，链路恢复后重试');
     } else if (d?.error) {
       el('amount').textContent = '请求失败';
       setHoverExtra('');
@@ -3561,7 +3557,7 @@
     }
 
     el('model').textContent = d?.model?.startsWith('MODEL_PLACEHOLDER') ? '模型标识：' + d.model : d?.model || '未返回模型信息';
-    el('request-status').textContent = d?.exceeded ? '输入超限（已失败）' : d?.error ? '已失败' : d?.status === 'reported' ? '已返回实际统计' : d?.status === 'estimated' ? '只有本地估算' : '等待统计，未确认执行状态';
+    el('request-status').textContent = d?.exceeded ? '输入超限（已失败）' : d?.network ? '网络故障（非超限）' : d?.error ? '已失败' : d?.status === 'reported' ? '已返回实际统计' : d?.status === 'estimated' ? '只有本地估算' : '等待统计，未确认执行状态';
     el('actual').textContent = d?.actual != null ? token(d.actual) : d?.exceeded ? `>${fmt(d.serviceLimit || 0)}（实际总数未返回）` : '真实用量未知';
     if (d?.exceeded && !d.serviceLimit) el('actual').textContent = '已超限；实际数值未知';
     el('estimate').textContent = d?.estimate ? `约 ${fmt(d.estimate)} · ${d.exceeded ? '已证实低估' : '仅供参考'}` : '未提供';

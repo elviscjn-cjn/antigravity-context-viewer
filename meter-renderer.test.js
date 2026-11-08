@@ -81,11 +81,11 @@ test('badge renders visual progress bar and concise context number when unhovere
   const h = harness(); h.finishScan();
   h.pending[0].resolve(response({ usage: { inputTokens: 214624, outputTokens: 1454 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } })); await h.flush();
   assert.equal(h.elements.get('bar-fill').style.width, '84.40546875%');
-  assert.match(h.elements.get('amount').textContent, /^216(?:\.1)?K \(84%\)$/);
-  assert.match(h.elements.get('hover-extra').textContent, /\/ 256K/);
-  assert.equal(h.elements.get('key-used').textContent, '216.1K (84.4%)');
-  assert.equal(h.elements.get('key-limit').textContent, '256K');
-  assert.match(h.elements.get('key-remaining').textContent, /39\.9K \(15\.6%\)/);
+  assert.match(h.elements.get('amount').textContent, /^21\.6万 \(84%\)$/);
+  assert.match(h.elements.get('hover-extra').textContent, /\/ 25\.6万/);
+  assert.equal(h.elements.get('key-used').textContent, '21.6万 (84.4%)');
+  assert.equal(h.elements.get('key-limit').textContent, '25.6万');
+  assert.match(h.elements.get('key-remaining').textContent, /4万 \(15\.6%\)/);
   assert.match(h.elements.get('key-takeaway').textContent, /已使用 84\.4%/);
   assert.equal(h.elements.get('key-badge').textContent, '偏高');
   h.sandbox.__AGContextMeter.dispose();
@@ -212,10 +212,10 @@ test('circular ring indicator and 3-layer tooltip bubble match reference hierarc
   const badge = h.elements.get('badge');
 
   assert.equal(ringFill.getAttribute('data-ring-state'), 'determinate');
-  // 37k / 475k = 7.789% -> rounds to 8% used (92% remaining)
+  // 3.7万 / 47.5万 = 7.789% -> rounds to 8% used (92% remaining)
   assert.equal(tipTitle.textContent, '上下文窗口：');
   assert.equal(tipPct.textContent, '8% 已用（剩余 92%）');
-  assert.equal(tipDetail.textContent, '已用 37k token，共 475k');
+  assert.equal(tipDetail.textContent, '已用 3.7万 token，共 47.5万');
 
   // Hover opens tooltip, mouseleave closes
   assert.equal(tip.getAttribute('data-visible'), 'false');
@@ -250,7 +250,7 @@ test('unknown capacity and estimated states never draw ring as 0% or 100% and pr
   assert.equal(ringFill.getAttribute('stroke-dasharray'), '3.2 4.97');
   assert.match(tipTitle.textContent, /本地估算/);
   assert.match(tipPct.textContent, /仅估算/);
-  assert.match(tipDetail.textContent, /≈ 42k token，共 256k/);
+  assert.match(tipDetail.textContent, /≈ 4\.2万 token，共 25\.6万/);
 
   h.sandbox.__AGContextMeter.dispose();
 });

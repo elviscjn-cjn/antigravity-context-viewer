@@ -13,6 +13,24 @@ test('failed upload with 127117 estimate overrides a previous successful retry a
   const s = summarize(d);
   assert.equal(s.exceeded, true); assert.equal(s.actual, null); assert.equal(s.estimate, 127117); assert.equal(s.serviceLimit, 1048576); assert.equal(s.percent, null); assert.equal(s.status, 'exceeded');
 });
+test('Go timeout error "context deadline exceeded" is network, not context overflow (2026-11-09 misreport)', () => {
+  const d = entry({ inputTokens: 9000 });
+  d.chatModel.retryInfos = [{ usage: { inputTokens: 9000 } }, { error: 'request failed: stream idle timeout (5m0s): context deadline exceeded', usage: { model: 'gemini' } }];
+  const s = summarize(d);
+  assert.equal(s.exceeded, false); assert.equal(s.network, true); assert.equal(s.status, 'network'); assert.equal(s.serviceLimit, null);
+});
+test('gateway EOF ("Post ...: EOF") is network, not context overflow', () => {
+  const d = entry({ inputTokens: 9000 });
+  d.chatModel.retryInfos = [{ usage: { inputTokens: 9000 } }, { error: 'request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF', usage: { model: 'gemini' } }];
+  const s = summarize(d);
+  assert.equal(s.exceeded, false); assert.equal(s.network, true); assert.equal(s.status, 'network');
+});
+test('true overflow error is still exceeded even when phrased with generic words', () => {
+  const d = entry({ inputTokens: 9000 });
+  d.chatModel.retryInfos = [{ usage: { inputTokens: 9000 } }, { error: exceeded, usage: { model: 'gemini' } }];
+  const s = summarize(d);
+  assert.equal(s.exceeded, true); assert.equal(s.network, false);
+});
 test('estimated input never produces a safe remaining percent or invented million limit', () => {
   const s = summarize(entry({}, { estimatedTokensUsed: 127117 }));
   assert.equal(s.percent, null); assert.equal(s.budget, null); assert.equal(s.serviceLimit, null); assert.equal(s.status, 'estimated');
@@ -99,4 +117,15 @@ test('inline attachments and images are fully counted and parsed instead of unkn
   assert.equal(scanned[0].height, 80);
   assert.equal(scanned[0].low, 258);
   assert.deepEqual(scanned[0].unknownParts, []);
+});
+test('Gemini 4 budget override forces 400000 over server metadata; other models keep server budget', () => {
+  const g4 = summarize({ chatModel: { modelDisplayName: 'Gemini 4 Argon (Medium)', usage: { inputTokens: 40000 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } } });
+  assert.equal(g4.budget, 400000);
+  assert.equal(g4.percent, 40000 / 400000 * 100);
+  const g4byId = summarize({ chatModel: { model: 'gemini-4-argon-high', usage: { inputTokens: 40000 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } } });
+  assert.equal(g4byId.budget, 400000);
+  const other = summarize({ chatModel: { modelDisplayName: 'Gemini 3.8 Flash (High)', usage: { inputTokens: 40000 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } } });
+  assert.equal(other.budget, 256000);
+  const unnamed = summarize({ chatModel: { usage: { inputTokens: 40000 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } } });
+  assert.equal(unnamed.budget, 256000);
 });
