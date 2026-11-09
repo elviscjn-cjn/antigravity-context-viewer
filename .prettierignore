@@ -1,0 +1,8 @@
+dist/
+*.asar
+*.bak.json
+node_modules/
+.git/
+package-lock.json
+*.png
+*.jpg

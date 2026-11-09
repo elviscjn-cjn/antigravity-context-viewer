@@ -1,0 +1,22 @@
+node_modules/
+backups/
+package-*/
+context-meter-*.asar*
+installation.json
+.live-session.json
+live-host*.log
+__pycache__/
+*.pyc
+test-fixtures/
+v2-preview.png
+validation-*.json
+.DS_Store
+Thumbs.db
+dist/
+releases/
+
+# Local development records
+.local/
+HANDOFF_NEXT_SESSION.md
+scripts/benchmark_result.json
+scripts/capture-v080-screenshots.js
