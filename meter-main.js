@@ -147,8 +147,9 @@ function registerIpcOnce() {
       const patch = {};
       if (options && typeof options.color === 'string') patch.color = options.color;
       if (options && typeof options.symbolColor === 'string') patch.symbolColor = options.symbolColor;
-      if (options && Number.isFinite(Number(options.height)) && Number(options.height) >= 24 && Number(options.height) <= 64) {
-        patch.height = Math.round(Number(options.height));
+      const rawHeight = options?.height ?? options?.heightCssPx;
+      if (options && Number.isFinite(Number(rawHeight)) && Number(rawHeight) >= 24 && Number(rawHeight) <= 64) {
+        patch.height = Math.round(Number(rawHeight));
       }
       targetWin.setTitleBarOverlay(patch);
       return { ok: true, patch };

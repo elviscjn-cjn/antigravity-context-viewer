@@ -72,7 +72,8 @@
     route: null, count: 0, latest: null, requestAt: 0, requestError: '',
     requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0,
     scanError: '', scan: null, generation: 0, controllers: new Set(),
-    disposed: false, layoutMode: 'wide', tooltipOpen: false
+    disposed: false, layoutMode: 'wide', tooltipOpen: false,
+    reportedFinalCallIds: new Set(), reportedFinalCallOutputs: new Map()
   };
   const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
   let activeHeatView = 'daily';
@@ -679,7 +680,7 @@
       bTokens.setAttribute('aria-expanded', 'true');
       syncHostStackingElevation(true);
       positionFloatingPanels();
-      void syncTokenHistoryFromHost();
+      void syncTokenHistoryFromHost(false);
       renderActiveHeatView(true);
     } else if (target === 'context') {
       hideContextTooltip();
@@ -2318,11 +2319,15 @@
 
   async function recordModelCallsRemote(calls) {
     if (!calls || !calls.length) return;
+    let changed = false;
+    const hasFinalCall = calls.some(c => c?.status === 'final');
     try {
       if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls === 'function') {
         const res = await window.contextMeterAPI.recordCalls(calls);
         if (res && res.ok === false) {
           console.warn('Context Meter: 记录调用入账失败', res.error);
+        } else if (res?.changed) {
+          changed = true;
         }
       } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
         const live = window.__AGContextMeterLive;
@@ -2337,8 +2342,13 @@
           const res = await resp.json().catch(() => null);
           if (res && res.ok === false) {
             console.warn('Context Meter: 实时通道 record-calls 失败', res.error);
+          } else if (res?.changed) {
+            changed = true;
           }
         }
+      }
+      if (changed || hasFinalCall) {
+        void syncTokenHistoryFromHost(false);
       }
     } catch (err) {
       console.warn('Context Meter: 调用入账发生异常', err);
@@ -2373,18 +2383,25 @@
         return;
       }
 
+      if (settingsRes?.ok) {
+        const savedView = settingsRes.savedHeatView || settingsRes.uiPreferences?.savedHeatView;
+        if (savedView && ['daily', 'weekly', 'monthly', 'yearly', 'cum'].includes(savedView)) {
+          switchHeatView(savedView, false);
+        }
+        const savedAutoUpdate = settingsRes.autoCheckUpdate !== undefined
+          ? settingsRes.autoCheckUpdate
+          : settingsRes.uiPreferences?.autoCheckUpdate;
+        if (savedAutoUpdate !== undefined) {
+          autoCheckUpdate = savedAutoUpdate !== false;
+          const chk = el('check-auto-update');
+          if (chk) chk.checked = autoCheckUpdate;
+        }
+      }
+
       if (settingsRes?.ok && settingsRes.customPlan && typeof settingsRes.customPlan === 'object') {
         lastSavedCustomPlan = { ...settingsRes.customPlan };
         if (typeof window !== 'undefined') {
           window.__AGContextMeterSettings = { ok: true, customPlan: { ...settingsRes.customPlan } };
-        }
-        if (settingsRes.savedHeatView && ['daily', 'weekly', 'monthly', 'yearly', 'cum'].includes(settingsRes.savedHeatView)) {
-          switchHeatView(settingsRes.savedHeatView, false);
-        }
-        if (settingsRes.autoCheckUpdate !== undefined) {
-          autoCheckUpdate = settingsRes.autoCheckUpdate !== false;
-          const chk = el('check-auto-update');
-          if (chk) chk.checked = autoCheckUpdate;
         }
 
         const email = ANTIGRAVITY_TOKEN_DATA.planStatus?.email || settingsRes.customPlan?.account || currentEmail || 'default';
@@ -2411,8 +2428,15 @@
   }
 
   let historySyncBusy = false;
-  async function syncTokenHistoryFromHost() {
-    if (historySyncBusy || state.disposed) return;
+  let pendingHistoryForce = false;
+  async function syncTokenHistoryFromHost(force = false) {
+    if (state.disposed) return;
+    if (historySyncBusy) {
+      if (force) {
+        pendingHistoryForce = true;
+      }
+      return;
+    }
     historySyncBusy = true;
     try {
       await restoreSettingsFromHost();
@@ -2422,7 +2446,7 @@
         }
       }
       if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') {
-        const res = await window.contextMeterAPI.getTokenHistory(false);
+        const res = await window.contextMeterAPI.getTokenHistory(Boolean(force));
         if (res?.ok && res.data) {
           if (typeof window !== 'undefined') window.__AGContextMeterHistory = res.data;
           applyTokenHistoryPayload(res.data);
@@ -2432,7 +2456,7 @@
         const r = await fetch(`http://127.0.0.1:${live.port}/token-history`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify({ force: false })
+          body: JSON.stringify({ force: Boolean(force) })
         });
         if (r.ok) {
           const j = await r.json();
@@ -2445,6 +2469,10 @@
     } catch {}
     finally {
       historySyncBusy = false;
+      if (pendingHistoryForce) {
+        pendingHistoryForce = false;
+        void syncTokenHistoryFromHost(true);
+      }
       if (autoCheckUpdate) {
         setTimeout(() => { void checkAppUpdate(false); }, 1200);
       }
@@ -2983,7 +3011,25 @@
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
       if (parsedCalls.length) {
-        void recordModelCallsRemote(parsedCalls.filter(c => c.status === 'final'));
+        if (!state.reportedFinalCallIds) state.reportedFinalCallIds = new Set();
+        if (!state.reportedFinalCallOutputs) state.reportedFinalCallOutputs = new Map();
+        const callsToReport = [];
+        for (const call of parsedCalls) {
+          if (call && call.status === 'final' && call.callId) {
+            const lastOutput = state.reportedFinalCallOutputs.get(call.callId);
+            const currentOutput = call.outputTokens || 0;
+            if (!state.reportedFinalCallIds.has(call.callId) || (lastOutput != null && currentOutput > lastOutput)) {
+              callsToReport.push(call);
+            }
+          }
+        }
+        if (callsToReport.length) {
+          for (const call of callsToReport) {
+            state.reportedFinalCallIds.add(call.callId);
+            state.reportedFinalCallOutputs.set(call.callId, call.outputTokens || 0);
+          }
+          void recordModelCallsRemote(callsToReport);
+        }
       }
       for (let i = rows.length - 1; i >= 0; i--) { const value = summarize(rows[i]); if (value) { state.latest = withStepError(value, rows[i]); break; } }
       state.requestAt = Date.now(); state.requestError = '';
@@ -3021,8 +3067,17 @@
     if (id !== state.route) {
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       if (state.sessionCallsMap) state.sessionCallsMap.clear();
-      Object.assign(state, { route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0, scanError: '', scan: null }); toggle(false); hideContextTooltip(); renderFiles(null); render();
-      void syncTokenHistoryFromHost(true);
+      if (state.reportedFinalCallIds) state.reportedFinalCallIds.clear();
+      if (state.reportedFinalCallOutputs) state.reportedFinalCallOutputs.clear();
+      Object.assign(state, {
+        route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
+        requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
+        scanBusy: false, scanNext: 0, scanError: '', scan: null,
+        reportedFinalCallIds: state.reportedFinalCallIds || new Set(),
+        reportedFinalCallOutputs: state.reportedFinalCallOutputs || new Map()
+      });
+      toggle(false); hideContextTooltip(); renderFiles(null); render();
+      void syncTokenHistoryFromHost(false);
     }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);

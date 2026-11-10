@@ -47,6 +47,7 @@ async function queryLiveWindow() {
     });
     const target = pages.find(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
     if (!target) return { running: true, cdpPort: port, pageFound: false };
+    const origin = new URL(target.url).origin;
 
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
@@ -83,7 +84,7 @@ async function queryLiveWindow() {
       }));
     });
     ws.close();
-    return { running: true, cdpPort: port, pageFound: true, ...status };
+    return { running: true, cdpPort: port, pageFound: true, origin, ...status };
   } catch (e) {
     return { running: false, error: e.message };
   }
@@ -93,25 +94,53 @@ async function ensureLiveBridgeIfNeeded() {
   const live = await queryLiveWindow();
   if (!live.running || !live.pageFound || live.hasIpcBridge) return;
   const stateDir = getStateDir();
-  const liveSessionPath = fs.existsSync(path.join(stateDir, '.live-session.json'))
-    ? path.join(stateDir, '.live-session.json')
-    : path.join(__dirname, '.live-session.json');
+  const statePath = path.join(stateDir, '.live-session.json');
+  const legacyPath = path.join(__dirname, '.live-session.json');
+  const liveSessionPath = fs.existsSync(statePath) ? statePath : legacyPath;
+
   let alive = false;
+  let existingInfo = null;
   if (fs.existsSync(liveSessionPath)) {
     try {
       const info = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
+      existingInfo = info;
       process.kill(info.pid, 0);
-      alive = true;
+      if (!live.origin || info.origin === live.origin) {
+        alive = true;
+      }
     } catch {}
   }
   if (!alive) {
+    if (existingInfo?.pid) {
+      try { process.kill(existingInfo.pid); } catch {}
+    }
+    try { if (fs.existsSync(statePath)) fs.unlinkSync(statePath); } catch {}
+    try { if (fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath); } catch {}
+
     const child = spawn(process.execPath, [path.join(__dirname, 'live-host.js')], {
       detached: true,
       stdio: 'ignore',
       windowsHide: true
     });
     child.unref();
-    await new Promise(r => setTimeout(r, 800));
+
+    const maxWaitMs = 5000;
+    const intervalMs = 150;
+    const deadline = Date.now() + maxWaitMs;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, intervalMs));
+      const checkPath = fs.existsSync(statePath) ? statePath : (fs.existsSync(legacyPath) ? legacyPath : null);
+      if (checkPath) {
+        try {
+          const info = JSON.parse(fs.readFileSync(checkPath, 'utf8'));
+          if (info && info.pid && (!live.origin || info.origin === live.origin)) {
+            process.kill(info.pid, 0);
+            alive = true;
+            break;
+          }
+        } catch {}
+      }
+    }
   }
 }
 

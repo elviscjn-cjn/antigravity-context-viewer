@@ -1713,9 +1713,9 @@
 
     const res = {
       costUSD: calc.totalCostUSD || 0,
-      inputCost: calc.breakdownCostUSD?.input || 0,
-      cacheCost: calc.breakdownCostUSD?.cache || 0,
-      outputCost: calc.breakdownCostUSD?.output || 0
+      inputCost: calc.inputCostUSD ?? calc.breakdownCostUSD?.input ?? 0,
+      cacheCost: calc.cacheCostUSD ?? calc.breakdownCostUSD?.cache ?? 0,
+      outputCost: calc.outputCostUSD ?? calc.breakdownCostUSD?.output ?? 0
     };
     _dailyCostCache.set(cacheKey, res);
     return res;

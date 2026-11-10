@@ -522,6 +522,9 @@ function recordModelCalls(newCalls = [], options = {}) {
     if (!saveRes.ok) {
       return createRecordResult(false, false, saveRes.error || '保存账本落盘失败', saveRes.phase);
     }
+    if (!targetDir) {
+      cachedTokenHistoryAt = 0;
+    }
   }
 
   return createRecordResult(true, changed);
@@ -764,10 +767,13 @@ function getPluginSettings(options = {}) {
   const settings = loadCustomPlanSettings(targetDir);
   const email = options?.email || cachedTokenHistory?.planStatus?.email || null;
   const customPlan = resolveAccountCustomPlan(settings, email);
+  const uiPrefs = settings.uiPreferences || {};
   return {
     ok: true,
     customPlan,
-    uiPreferences: settings.uiPreferences || {},
+    uiPreferences: uiPrefs,
+    savedHeatView: uiPrefs.savedHeatView,
+    autoCheckUpdate: uiPrefs.autoCheckUpdate,
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
     recoveredFromCorruption: Boolean(settings.recoveredFromCorruption)
@@ -850,10 +856,21 @@ function savePluginSettings(payload = {}, options = {}) {
     }
   }
 
-  if (payload.uiPreferences && typeof payload.uiPreferences === 'object' && !Array.isArray(payload.uiPreferences)) {
+  const topLevelUiPrefs = {};
+  if (typeof payload.savedHeatView === 'string' && payload.savedHeatView) {
+    topLevelUiPrefs.savedHeatView = payload.savedHeatView;
+  }
+  if (typeof payload.autoCheckUpdate === 'boolean') {
+    topLevelUiPrefs.autoCheckUpdate = payload.autoCheckUpdate;
+  }
+  const incomingUiPrefs = (payload.uiPreferences && typeof payload.uiPreferences === 'object' && !Array.isArray(payload.uiPreferences))
+    ? { ...payload.uiPreferences, ...topLevelUiPrefs }
+    : (Object.keys(topLevelUiPrefs).length > 0 ? topLevelUiPrefs : null);
+
+  if (incomingUiPrefs) {
     settings.uiPreferences = {
       ...(settings.uiPreferences || {}),
-      ...payload.uiPreferences,
+      ...incomingUiPrefs,
       updatedAt: new Date().toISOString()
     };
   }
@@ -916,6 +933,9 @@ function savePluginSettings(payload = {}, options = {}) {
   };
 }
 
+let cachedHostUserStatus = null;
+let cachedHostUserStatusAt = 0;
+
 async function fetchUserStatusFromHost(options = {}) {
   if (options && options.userStatus !== undefined) {
     if (!options.userStatus) return null;
@@ -924,6 +944,9 @@ async function fetchUserStatusFromHost(options = {}) {
     if (parsed && configs.length) parsed.cascadeModelConfigs = configs;
     return parsed;
   }
+  if (!options.agDir && cachedHostUserStatus && Date.now() - cachedHostUserStatusAt < 60000) {
+    return cachedHostUserStatus;
+  }
   try {
     const { connect } = require('./local-api');
     const api = await connect();
@@ -931,20 +954,26 @@ async function fetchUserStatusFromHost(options = {}) {
     const parsed = parseUserPlanStatus(res);
     const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
     if (parsed && configs.length) parsed.cascadeModelConfigs = configs;
+    if (parsed && !options.agDir) {
+      cachedHostUserStatus = parsed;
+      cachedHostUserStatusAt = Date.now();
+    }
     return parsed;
   } catch {
-    return null;
+    return cachedHostUserStatus || null;
   }
 }
 
 let activeScanPromise = null;
 let currentScanSequence = 0;
+const TRANSCRIPT_SKIP_DIRS = new Set(['steps', 'scratch', 'media', 'artifacts', 'node_modules', '.git', '__pycache__']);
+const transcriptFileCache = new Map();
 
 async function collectTokenHistoryAsync(options = {}) {
   if (!options.force && !options.agDir && cachedTokenHistory && Date.now() - cachedTokenHistoryAt < 15000) {
     return cachedTokenHistory;
   }
-  if (!options.force && !options.agDir && activeScanPromise) {
+  if (!options.agDir && activeScanPromise) {
     return activeScanPromise;
   }
 
@@ -1030,26 +1059,51 @@ async function collectTokenHistoryAsync(options = {}) {
     cliPbCount = scanSessionDir(path.join(agCliDir, 'conversations'), true);
   }
 
-  // 4. 双目录遍历扫描 transcript.jsonl（软链接与环路去重）
+  // 4. 双目录遍历扫描 transcript.jsonl（跳过 steps/scratch 重型目录，软链接与环路去重）
   const visitedRealDirs = new Set();
   const transcriptJobs = [];
 
-  const walkTranscripts = (dir, sourceName) => {
+  const walkTranscripts = (dir, sourceName, depth = 0) => {
+    if (depth > 4) return;
     try {
       if (!fs.existsSync(dir)) return;
-      let realDir = dir;
-      try { realDir = fs.realpathSync(dir); } catch {}
-      if (visitedRealDirs.has(realDir)) return;
-      visitedRealDirs.add(realDir);
+      const normDir = path.resolve(dir);
+      if (visitedRealDirs.has(normDir)) return;
+      visitedRealDirs.add(normDir);
 
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (TRANSCRIPT_SKIP_DIRS.has(entry.name)) continue;
         const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          walkTranscripts(fullPath, sourceName);
+        if (entry.isSymbolicLink()) {
+          try {
+            const realTarget = fs.realpathSync(fullPath);
+            const st = fs.statSync(realTarget);
+            if (st.isDirectory()) {
+              if (!visitedRealDirs.has(realTarget)) {
+                walkTranscripts(realTarget, sourceName, depth + 1);
+              }
+            } else if (entry.name === 'transcript.jsonl') {
+              transcriptJobs.push({ path: realTarget, source: sourceName });
+            }
+          } catch {}
+        } else if (entry.isDirectory()) {
+          if (depth === 0) {
+            const stdLogPath = path.join(fullPath, '.system_generated', 'logs', 'transcript.jsonl');
+            const directLogPath = path.join(fullPath, 'transcript.jsonl');
+            let matchedFast = false;
+            if (fs.existsSync(stdLogPath)) {
+              transcriptJobs.push({ path: stdLogPath, source: sourceName });
+              matchedFast = true;
+            }
+            if (fs.existsSync(directLogPath)) {
+              transcriptJobs.push({ path: directLogPath, source: sourceName });
+              matchedFast = true;
+            }
+            if (matchedFast) continue;
+          }
+          walkTranscripts(fullPath, sourceName, depth + 1);
         } else if (entry.name === 'transcript.jsonl') {
-          let realFile = fullPath;
-          try { realFile = fs.realpathSync(fullPath); } catch {}
-          transcriptJobs.push({ path: realFile, source: sourceName });
+          transcriptJobs.push({ path: fullPath, source: sourceName });
         }
       }
     } catch {}
@@ -1060,98 +1114,133 @@ async function collectTokenHistoryAsync(options = {}) {
     walkTranscripts(path.join(agCliDir, 'brain'), 'cli');
   }
 
-  // 5. 结构化 JSON 解析 transcript.jsonl，去重并汇总
+  // 5. 结构化 JSON 解析 transcript.jsonl（基于 size+mtimeMs 单文件增量缓存，去重并汇总）
   const scannedBySource = {
     desktop: {},
     cli: {}
   };
   const seenEvents = new Set();
   const recentRequests = [];
+  const newlyParsedPricedRequests = [];
 
   for (let jIdx = 0; jIdx < transcriptJobs.length; jIdx++) {
     const job = transcriptJobs[jIdx];
-    if (jIdx > 0 && jIdx % 5 === 0) {
+    if (jIdx > 0 && jIdx % 15 === 0) {
       await new Promise(resolve => setImmediate(resolve));
     }
     try {
-      const content = fs.readFileSync(job.path, 'utf8');
-      const lines = content.split(/\r?\n/);
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (!line || !line.trim()) continue;
-        let event = null;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          continue;
-        }
+      const st = fs.statSync(job.path);
+      const cachedFile = transcriptFileCache.get(job.path);
+      let fileRecords = null;
+      let isFreshlyParsed = false;
 
-        let dateKey = null;
-        if (event.created_at) {
-          const d = new Date(event.created_at);
-          if (!Number.isNaN(d.getTime())) {
-            dateKey = formatLocalDateKey(d);
-            registerDate(dateKey);
+      if (cachedFile && cachedFile.size === st.size && cachedFile.mtimeMs === st.mtimeMs) {
+        fileRecords = cachedFile.records;
+      } else {
+        isFreshlyParsed = true;
+        fileRecords = [];
+        const content = fs.readFileSync(job.path, 'utf8');
+        const lines = content.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (!line || !line.trim()) continue;
+          let event = null;
+          try {
+            event = JSON.parse(line);
+          } catch {
+            continue;
+          }
+
+          let dateKey = null;
+          if (event.created_at) {
+            const d = new Date(event.created_at);
+            if (!Number.isNaN(d.getTime())) {
+              dateKey = formatLocalDateKey(d);
+            }
+          }
+
+          let inp = 0, outp = 0, cap = 0, thinking = 0;
+          let model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
+
+          if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
+            inp = Number(event.input_tokens || 0);
+            outp = Number(event.output_tokens || 0);
+            cap = Number(event.cache_read_tokens || 0);
+            thinking = Number(event.thinking_output_tokens || 0);
+          } else if (event.chatModel?.usage) {
+            const u = event.chatModel.usage;
+            inp = Number(u.inputTokens || 0);
+            outp = Number(u.outputTokens || 0);
+            cap = Number(u.cacheReadTokens || 0);
+            thinking = Number(u.thinkingOutputTokens || 0);
+          }
+
+          const tot = inp + outp + cap;
+          if (tot > 0 && dateKey) {
+            const eventId = event.callId || event.responseId || event.chatModel?.usage?.responseId || `${job.path}#${event.step_index ?? i}`;
+            const modelKey = normalizeModelId(model);
+            const reqObj = {
+              callId: eventId,
+              source: job.source,
+              cascadeId: event.cascadeId || path.basename(job.path, '.jsonl'),
+              model,
+              modelKey,
+              inputTokens: inp,
+              cacheTokens: cap,
+              cacheReadTokens: cap,
+              outputTokens: outp,
+              thinkingTokens: thinking,
+              totalTokens: tot,
+              status: 'final',
+              isEstimated: false,
+              date: dateKey,
+              created_at: event.created_at || null,
+              timestamp: event.created_at ? new Date(event.created_at).getTime() : Date.now()
+            };
+            const costCalc = calculateRequestApiCost(reqObj);
+            reqObj.isPriced = costCalc.isPriced;
+            reqObj.costUSD = costCalc.costUSD ?? 0;
+
+            fileRecords.push({
+              eventId,
+              dateKey,
+              inp,
+              outp,
+              cap,
+              tot,
+              reqObj
+            });
+          } else if (dateKey) {
+            fileRecords.push({ dateKey, tot: 0 });
           }
         }
-
-        // 提取 usage 数据
-        let inp = 0, outp = 0, cap = 0, thinking = 0;
-        let model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
-
-        if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
-          inp = Number(event.input_tokens || 0);
-          outp = Number(event.output_tokens || 0);
-          cap = Number(event.cache_read_tokens || 0);
-          thinking = Number(event.thinking_output_tokens || 0);
-        } else if (event.chatModel?.usage) {
-          const u = event.chatModel.usage;
-          inp = Number(u.inputTokens || 0);
-          outp = Number(u.outputTokens || 0);
-          cap = Number(u.cacheReadTokens || 0);
-          thinking = Number(u.thinkingOutputTokens || 0);
+        if (transcriptFileCache.size > 1000) {
+          const oldestKey = transcriptFileCache.keys().next().value;
+          if (oldestKey) transcriptFileCache.delete(oldestKey);
         }
+        transcriptFileCache.set(job.path, { size: st.size, mtimeMs: st.mtimeMs, records: fileRecords });
+      }
 
-        const tot = inp + outp + cap;
-        if (tot > 0 && dateKey) {
-          // 唯一事件标识去重 (避免复制/软链接/重复日志相加)
-          const eventId = event.callId || event.responseId || event.chatModel?.usage?.responseId || `${job.path}#${event.step_index ?? i}`;
-          if (seenEvents.has(eventId)) continue;
-          seenEvents.add(eventId);
+      for (let rIdx = 0; rIdx < fileRecords.length; rIdx++) {
+        const rec = fileRecords[rIdx];
+        if (rec.dateKey) registerDate(rec.dateKey);
+        if (!rec.tot || !rec.eventId) continue;
+        if (seenEvents.has(rec.eventId)) continue;
+        seenEvents.add(rec.eventId);
 
-          const srcMap = scannedBySource[job.source] || scannedBySource.desktop;
-          if (!srcMap[dateKey]) {
-            srcMap[dateKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
-          }
-          srcMap[dateKey].total += tot;
-          srcMap[dateKey].input += inp;
-          srcMap[dateKey].output += outp;
-          srcMap[dateKey].cache += cap;
-          srcMap[dateKey].steps += 1;
+        const srcMap = scannedBySource[job.source] || scannedBySource.desktop;
+        if (!srcMap[rec.dateKey]) {
+          srcMap[rec.dateKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+        }
+        srcMap[rec.dateKey].total += rec.tot;
+        srcMap[rec.dateKey].input += rec.inp;
+        srcMap[rec.dateKey].output += rec.outp;
+        srcMap[rec.dateKey].cache += rec.cap;
+        srcMap[rec.dateKey].steps += 1;
 
-          const modelKey = normalizeModelId(model);
-          const reqObj = {
-            callId: eventId,
-            source: job.source,
-            cascadeId: event.cascadeId || path.basename(job.path, '.jsonl'),
-            model,
-            modelKey,
-            inputTokens: inp,
-            cacheTokens: cap,
-            cacheReadTokens: cap,
-            outputTokens: outp,
-            thinkingTokens: thinking,
-            status: 'final',
-            isEstimated: false,
-            date: dateKey,
-            created_at: event.created_at || null,
-            timestamp: event.created_at ? new Date(event.created_at).getTime() : Date.now()
-          };
-          const costCalc = calculateRequestApiCost(reqObj);
-          reqObj.isPriced = costCalc.isPriced;
-          reqObj.costUSD = costCalc.costUSD ?? 0;
-
-          recentRequests.push(reqObj);
+        recentRequests.push(rec.reqObj);
+        if (isFreshlyParsed && rec.reqObj.isPriced && rec.reqObj.callId) {
+          newlyParsedPricedRequests.push(rec.reqObj);
         }
       }
     } catch {}
@@ -1255,11 +1344,10 @@ async function collectTokenHistoryAsync(options = {}) {
     currentEmail: currentAccountKey
   });
 
-  // 结合持久化逐请求账本与本次扫描调用
+  // 结合持久化逐请求账本与本次新解析的调用
   const ledger = loadPricingLedger(agDir);
-  // 把本次会话中识别到的请求也合并入账本（自动阻止合成/测试数据）
-  if (recentRequests.length) {
-    recordModelCalls(recentRequests.filter(r => r.isPriced && r.callId), { agDir });
+  if (newlyParsedPricedRequests.length) {
+    recordModelCalls(newlyParsedPricedRequests, { agDir });
   }
   const mergedCalls = Object.values(loadPricingLedger(agDir).calls || {});
 
@@ -1436,29 +1524,34 @@ async function collectTokenHistoryAsync(options = {}) {
     return out;
   }
 
-  // 持久化保存到 v2 与 v1 归档（原子写入）
+  // 持久化保存到 v2 与 v1 归档（仅在数据变化或文件不存在时原子写入，减少高频磁盘 I/O）
   try {
-    const v2Payload = {
-      version: '2.0.0',
-      firstUseDate: earliestDate,
-      updatedAt: out.updatedAt,
-      maxConversations: totalConversations,
-      planStatus: effectivePlanStatus,
-      costEstimate,
-      costEstimateCurrentMonth,
-      referenceCost: out.referenceCost,
-      dailyMapBySource: out.dailyMapBySource
-    };
-    safeWriteJsonSync(archivePathV2, v2Payload);
+    const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
+    const shouldWriteArchive = options.agDir || archiveSig !== collectTokenHistoryAsync._lastArchiveSig || !fs.existsSync(archivePathV2) || !fs.existsSync(archivePathV1);
+    if (shouldWriteArchive) {
+      collectTokenHistoryAsync._lastArchiveSig = archiveSig;
+      const v2Payload = {
+        version: '2.0.0',
+        firstUseDate: earliestDate,
+        updatedAt: out.updatedAt,
+        maxConversations: totalConversations,
+        planStatus: effectivePlanStatus,
+        costEstimate,
+        costEstimateCurrentMonth,
+        referenceCost: out.referenceCost,
+        dailyMapBySource: out.dailyMapBySource
+      };
+      safeWriteJsonSync(archivePathV2, v2Payload);
 
-    // 同时写回 v1 格式以保持向下完全兼容
-    const v1Payload = {
-      firstUseDate: earliestDate,
-      maxConversations: totalConversations,
-      updatedAt: out.updatedAt,
-      dailyMap: dailyMapAll
-    };
-    safeWriteJsonSync(archivePathV1, v1Payload);
+      // 同时写回 v1 格式以保持向下完全兼容
+      const v1Payload = {
+        firstUseDate: earliestDate,
+        maxConversations: totalConversations,
+        updatedAt: out.updatedAt,
+        dailyMap: dailyMapAll
+      };
+      safeWriteJsonSync(archivePathV1, v1Payload);
+    }
   } catch {}
 
   if (!options.agDir) {
@@ -1469,10 +1562,11 @@ async function collectTokenHistoryAsync(options = {}) {
   })();
 
   if (!options.agDir) {
-    activeScanPromise = runner.finally(() => {
-      if (activeScanPromise === runner) activeScanPromise = null;
+    const tracked = runner.finally(() => {
+      if (activeScanPromise === tracked) activeScanPromise = null;
     });
-    return activeScanPromise;
+    activeScanPromise = tracked;
+    return tracked;
   }
   return runner;
 }

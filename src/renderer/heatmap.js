@@ -287,9 +287,10 @@
 
     if ((viewType === 'monthly' || viewType === 'yearly') && subRatioWrapEl && subRatioEl) {
       const plan = resolveEffectivePlanStatus(ANTIGRAVITY_TOKEN_DATA.planStatus, ANTIGRAVITY_TOKEN_DATA.customPlanSettings);
-      const isZeroCost = plan.isZeroExtraCost || plan.pricePaid === 0;
-      if (!isZeroCost && plan.pricePaid > 0 && costAgg.totalCostUSD > 0) {
-        const subMonthlyUSD = plan.currency === 'USD' ? plan.pricePaid : (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : plan.pricePaid);
+      const paidVal = plan.actualPricePaid ?? plan.pricePaid ?? plan.officialPriceMonthly ?? null;
+      const isZeroCost = plan.isZeroExtraCost || paidVal === 0;
+      if (!isZeroCost && paidVal > 0 && costAgg.totalCostUSD > 0) {
+        const subMonthlyUSD = plan.currency === 'USD' ? paidVal : (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : paidVal);
         if (subMonthlyUSD > 0) {
           const ratio = (costAgg.totalCostUSD / (viewType === 'yearly' ? subMonthlyUSD * 12 : subMonthlyUSD)).toFixed(1);
           subRatioEl.textContent = `${ratio}x 回本`;

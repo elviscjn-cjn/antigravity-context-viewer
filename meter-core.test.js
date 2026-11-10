@@ -294,7 +294,7 @@ test('parseUserPlanStatus handles unknown or empty payload safely without throwi
   assert.equal(emptyPlan.tierName, '未知');
   assert.equal(emptyPlan.actualPricePaid, null);
 });
-const { isCompanionOrTempFile, collectTokenHistoryAsync } = require('./meter-collector');
+const { isCompanionOrTempFile, collectTokenHistoryAsync, recordModelCalls } = require('./meter-collector');
 
 test('isCompanionOrTempFile detects SQLite companion files and temporary locks', () => {
   assert.equal(isCompanionOrTempFile('session.db-wal'), true);
@@ -1276,4 +1276,95 @@ test('isValidExternalUrl: strictly allows only official repository paths and sub
   assert.equal(isValidExternalUrl('javascript:alert(1)'), false);
   assert.equal(isValidExternalUrl(''), false);
   assert.equal(isValidExternalUrl(null), false);
+});
+
+test('collectTokenHistoryAsync 连续两次非强制调用不会卡在旧 activeScanPromise 并能在入账后获取最新数据', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-meter-deadlock-test-'));
+  const tempCliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-meter-deadlock-cli-'));
+  const prevAgDir = process.env.AG_DIR;
+  const prevAgCliDir = process.env.AG_CLI_DIR;
+  process.env.AG_DIR = tempDir;
+  process.env.AG_CLI_DIR = tempCliDir;
+
+  try {
+    fs.mkdirSync(path.join(tempDir, 'brain', 'session_1'), { recursive: true });
+    fs.mkdirSync(path.join(tempDir, 'conversations'), { recursive: true });
+    fs.mkdirSync(path.join(tempCliDir, 'brain'), { recursive: true });
+    fs.mkdirSync(path.join(tempCliDir, 'conversations'), { recursive: true });
+
+    // 写入第一个对话数据（5500 tokens）
+    const event1 = {
+      created_at: '2026-11-08T10:00:00Z',
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 5000, outputTokens: 500, cacheReadTokens: 0 } }
+    };
+    fs.writeFileSync(path.join(tempDir, 'brain', 'session_1', 'transcript.jsonl'), JSON.stringify(event1) + '\n', 'utf8');
+
+    // 1. 发起第一次调用（非强制，初始化全局缓存与 activeScanPromise）
+    const res1 = await collectTokenHistoryAsync({ force: false });
+    assert.ok(res1);
+    assert.equal(res1.summary.grandTotalTokens, 5500);
+
+    // 2. 写入第二个对话数据（新增 2300 tokens）
+    fs.mkdirSync(path.join(tempDir, 'brain', 'session_2'), { recursive: true });
+    const event2 = {
+      created_at: '2026-11-08T11:00:00Z',
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 2000, outputTokens: 300, cacheReadTokens: 0 } }
+    };
+    fs.writeFileSync(path.join(tempDir, 'brain', 'session_2', 'transcript.jsonl'), JSON.stringify(event2) + '\n', 'utf8');
+
+    // recordModelCalls 入账成功并重置 cachedTokenHistoryAt = 0 使缓存失效
+    const recRes = recordModelCalls([{
+      callId: 'call_regress_deadlock_1',
+      model: 'gemini-3.8-flash',
+      status: 'final',
+      inputTokens: 2000,
+      outputTokens: 300,
+      created_at: new Date().toISOString()
+    }]);
+    assert.equal(recRes.ok, true);
+    assert.equal(recRes.changed, true);
+
+    // 3. 发起第二次非强制调用（force: false）
+    // 旧代码由于 runner.finally 比较错误，activeScanPromise 永远不为空，后续所有 force: false 调用恒返回旧的首次结果 (5500)
+    // 修复后 activeScanPromise 在首次完成后已成功释放，缓存已失效，此处必须执行新扫描并返回 7800 tokens
+    const res2 = await collectTokenHistoryAsync({ force: false });
+    assert.ok(res2);
+    assert.equal(res2.summary.grandTotalTokens, 7800);
+
+    // 4. 验证顶层 savedHeatView 与 autoCheckUpdate 的持久化与读取一致性
+    const { savePluginSettings, getPluginSettings } = require('./meter-collector');
+    const saveUiRes = savePluginSettings({ savedHeatView: 'monthly', autoCheckUpdate: false }, { agDir: tempDir });
+    assert.equal(saveUiRes.ok, true);
+    const loadedUi = getPluginSettings({ agDir: tempDir });
+    assert.equal(loadedUi.ok, true);
+    assert.equal(loadedUi.savedHeatView, 'monthly');
+    assert.equal(loadedUi.autoCheckUpdate, false);
+    assert.equal(loadedUi.uiPreferences.savedHeatView, 'monthly');
+    assert.equal(loadedUi.uiPreferences.autoCheckUpdate, false);
+
+    // 5. 验证 getDailyModelCost 分项费用 (inputCost / cacheCost / outputCost) 正确返回非零数值
+    const { getDailyModelCost, clearDailyCostCache } = require('./meter-core');
+    clearDailyCostCache();
+    const dayCost = getDailyModelCost(
+      { total: 3000000, input: 1000000, cache: 1000000, output: 1000000 },
+      '2026-11-10',
+      'gemini-3.8-flash'
+    );
+    assert.ok(dayCost.inputCost > 0);
+    assert.ok(dayCost.cacheCost > 0);
+    assert.ok(dayCost.outputCost > 0);
+    assert.equal(dayCost.costUSD, Number((dayCost.inputCost + dayCost.cacheCost + dayCost.outputCost).toFixed(4)));
+  } finally {
+    if (prevAgDir !== undefined) process.env.AG_DIR = prevAgDir;
+    else delete process.env.AG_DIR;
+    if (prevAgCliDir !== undefined) process.env.AG_CLI_DIR = prevAgCliDir;
+    else delete process.env.AG_CLI_DIR;
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tempCliDir, { recursive: true, force: true }); } catch {}
+  }
 });

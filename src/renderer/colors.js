@@ -486,6 +486,7 @@
     syncNativeOverlayTheme();
   }
 
+  let lastSyncedOverlayKey = '';
   function syncNativeOverlayTheme() {
     try {
       if (typeof window === 'undefined') return;
@@ -494,8 +495,11 @@
       const cs = (rootEl && typeof window.getComputedStyle === 'function') ? window.getComputedStyle(rootEl) : null;
       const bg = cs?.getPropertyValue?.('--background')?.trim() || (isLight ? '#FAFAFA' : '#131313');
       const fg = cs?.getPropertyValue?.('--foreground')?.trim() || (isLight ? '#383A42' : '#FAFAFA');
+      const overlayKey = `${bg}|${fg}|40`;
+      if (overlayKey === lastSyncedOverlayKey) return;
+      lastSyncedOverlayKey = overlayKey;
       if (typeof window.contextMeterAPI?.syncOverlay === 'function') {
-        void window.contextMeterAPI.syncOverlay({ color: bg, symbolColor: fg, heightCssPx: 40 });
+        void window.contextMeterAPI.syncOverlay({ color: bg, symbolColor: fg, height: 40, heightCssPx: 40 });
       } else if (typeof window.electronNative?.setTitleBarOverlay === 'function') {
         void window.electronNative.setTitleBarOverlay({ color: bg, symbolColor: fg });
       }
