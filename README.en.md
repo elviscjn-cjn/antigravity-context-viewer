@@ -6,9 +6,9 @@ See how much context your conversation uses, how fast the model responds, and ho
 
 ## Demo
 
-[![Watch the full demo (about 2 minutes)](assets/demo-preview.jpg)](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
-[Watch the full demo (about 2 minutes)](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+[Download HD MP4](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
 
 ## Features
 

@@ -6,9 +6,9 @@ Google Antigravity 2.x のツールバーで、会話のコンテキスト使用
 
 ## デモ
 
-[![デモ全編を見る（約2分）](assets/demo-preview.jpg)](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
-[デモ全編を見る（約2分）](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+[高画質 MP4 をダウンロード](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
 
 ## 機能
 

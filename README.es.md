@@ -6,9 +6,9 @@ Consulta cuánto contexto usa tu conversación, a qué velocidad responde el mod
 
 ## Demostración
 
-[![Ver la demostración completa (unos 2 minutos)](assets/demo-preview.jpg)](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
-[Ver la demostración completa (unos 2 minutos)](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+[Descargar MP4 en alta definición](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
 
 ## Funciones
 

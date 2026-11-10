@@ -6,9 +6,9 @@ Google Antigravity 2.x 도구 모음에서 대화의 컨텍스트 사용량, 모
 
 ## 데모
 
-[![전체 데모 보기 (약 2분)](assets/demo-preview.jpg)](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
-[전체 데모 보기 (약 2분)](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+[고화질 MP4 다운로드](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
 
 ## 기능
 

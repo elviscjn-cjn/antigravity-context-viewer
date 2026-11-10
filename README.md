@@ -6,9 +6,9 @@
 
 ## 演示
 
-[![观看完整演示（约 2 分钟）](assets/demo-preview.jpg)](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
-[观看完整演示（约 2 分钟）](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
+[下载高清 MP4](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
 
 ## 功能
 
