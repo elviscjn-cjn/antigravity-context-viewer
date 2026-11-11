@@ -1,6 +1,6 @@
 # agy 上下文选择器解锁（Windows x86-64 落地记录）
 
-来源：`%USERPROFILE%\Downloads\agy-context-unlock.zip`（上游验证平台 = macOS arm64 / agy 1.4.12）
+上游：同目录 `agy-patch.py` / `FINDINGS.md` / `verify_tui.py` 的 macOS arm64 分析（agy 1.4.12）
 落地：2026-11-11，Windows x86-64，agy **1.5.5**；2026-11-12 复验 agy **1.5.6**（自动更新覆盖后重跑即恢复）
 
 ## 结论
@@ -14,7 +14,7 @@
 ## 与原包的三处差异（原样打会失败）
 
 1. **版本太老，符号不存在。**
-   本机原装 agy 是 **1.2.12**，Go 符号表里没有 `model.SelectorModel.offersContextWindow`，
+   当时本机原装 agy 是 **1.2.12**，Go 符号表里没有 `model.SelectorModel.offersContextWindow`，
    也没有 `store.AutoCompactOverride`，UI 字符串里也没有 `512K`。
    → 必须先 `agy update`（实测 1.2.12 → 1.5.5 可用）。
 2. **`find_pclntab` 的 minLC 校验写死 arm64。**
@@ -27,8 +27,8 @@
 ## 实际操作序列（可复现）
 
 ```bash
-# 0. 备份：apply.sh 自动做，落在脚本所在目录的上一级
-#    ../_agy_backup_<日期>_<时间>_v<版本>/ （含原样 exe 与 sha256.txt）
+# 0. 备份：apply.sh 自动做，落在用户目录（不进仓库）
+#    ~/.antigravity-unlock-backups/_agy_backup_<日期>_<时间>_<版本>/ （含原样 exe 与 sha256.txt）
 
 # 1. 升到支持该功能的版本（1.2.12 等老版无此功能）
 agy update
@@ -72,7 +72,7 @@ bash apply.sh                                   # 在本目录内执行
 ## 回滚
 
 ```bash
-cp ../_agy_backup_<日期>_<时间>_v<版本>/agy_<版本>.orig.exe \
+cp ~/.antigravity-unlock-backups/_agy_backup_<日期>_<时间>_<版本>/agy_<版本>.orig.exe \
    "$LOCALAPPDATA/agy/bin/agy.exe"
 ```
 或直接用 updater 留下的 `agy.exe.<ts>.old`。

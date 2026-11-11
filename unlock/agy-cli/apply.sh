@@ -14,6 +14,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Windows 上常见只有 python，部分环境只有 python3
+PY="$(command -v python || command -v python3 || true)"
+[ -n "$PY" ] || { echo "[x] 找不到 python / python3"; exit 1; }
 AGY="${AGY_BIN:-$(cygpath -u "$LOCALAPPDATA")/agy/bin/agy.exe}"
 
 [ -f "$AGY" ] || { echo "[x] 找不到 agy.exe: $AGY"; exit 1; }
@@ -22,17 +25,21 @@ VER="$("$AGY" --version 2>/dev/null | head -1 | tr -d '\r')"
 echo "[i] agy $VER"
 echo "[i] $AGY"
 
-python "$HERE/agy-patch.py" --binary "$AGY" --locate | grep -E "arch=|offersContextWindow" || true
+"$PY" "$HERE/agy-patch.py" --binary "$AGY" --locate | grep -E "arch=|offersContextWindow" || true
 
-if python "$HERE/agy-patch.py" --binary "$AGY" --no-env-fix --dry-run | grep -q "nothing to change"; then
+# 先收完整输出再 grep：pipefail 下 `| grep -q` 提前退出会让 python 吃 SIGPIPE，误判为未打补丁
+DRY="$("$PY" "$HERE/agy-patch.py" --binary "$AGY" --no-env-fix --dry-run)"
+if grep -q "nothing to change" <<<"$DRY"; then
   echo "[=] 已经打过补丁，无需变更。"
 else
-  BK="$(dirname "$HERE")/_agy_backup_$(date +%Y%m%d_%H%M)_v${VER}"
+  # 备份放在用户目录，不落进仓库工作区，避免把原始 exe 误提交
+  SAFE_VER="$(printf '%s' "$VER" | tr -c 'A-Za-z0-9._-' '_')"
+  BK="$HOME/.antigravity-unlock-backups/_agy_backup_$(date +%Y%m%d_%H%M)_${SAFE_VER}"
   mkdir -p "$BK"
-  cp "$AGY" "$BK/agy_${VER}.orig.exe"
-  sha256sum "$BK/agy_${VER}.orig.exe" > "$BK/sha256.txt"
+  cp "$AGY" "$BK/agy_${SAFE_VER}.orig.exe"
+  sha256sum "$BK/agy_${SAFE_VER}.orig.exe" > "$BK/sha256.txt"
   echo "[i] 备份 -> $BK"
-  python "$HERE/agy-patch.py" --binary "$AGY" --no-env-fix --in-place
+  "$PY" "$HERE/agy-patch.py" --binary "$AGY" --no-env-fix --in-place
 fi
 
 echo "[i] 校验：$("$AGY" --version 2>&1 | head -1)"

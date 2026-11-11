@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Unlock the agy CLI /model Context selector (and restore the auto-compact env var).
 
-Verified: macOS arm64, agy 1.4.12.
-Best-effort: Linux/Windows locating code is implemented but has NOT been run
-here -- see README.md before trusting it on those targets.
+Verified: macOS arm64, agy 1.4.12 (both patches); Windows x86-64, agy 1.5.5 /
+1.5.6 (patch 1 only, see README-Windows.md).
+Best-effort: Linux locating code is implemented but has NOT been run -- see
+README.md before trusting it on that target.
 
 Patch 1 -- model.SelectorModel.offersContextWindow
     Release builds hardcode a whitelist of exactly one model ("Gemini 4 Argon").
