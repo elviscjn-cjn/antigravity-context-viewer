@@ -108,10 +108,12 @@
       if (typeof document.querySelector !== 'function') return null;
       const auxToggle = document.querySelector('[data-testid="toggle-aux-sidebar"]');
       if (auxToggle?.closest) {
-        const cluster = auxToggle.closest('div.absolute.right-0.top-0');
+        const cluster = auxToggle.closest('div.absolute.right-0.top-0') || auxToggle.closest('div.absolute.right-0');
         if (cluster) return cluster;
       }
-      return document.querySelector('div.h-screen.w-screen > div.flex-1 > div.absolute.right-0.top-0.z-50');
+      return document.querySelector('div.absolute.right-0.z-50') ||
+        document.querySelector('div.h-screen.w-screen > div.flex-1 > div.absolute.right-0.top-0.z-50') ||
+        document.querySelector('div.h-screen.w-screen > div.flex-1 > div.absolute.right-0');
     } catch {
       return null;
     }
