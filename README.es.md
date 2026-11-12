@@ -21,7 +21,15 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 ## Idioma de la interfaz
 
-Las cinco versiones del README son traducciones de la documentación. La interfaz se muestra en chino simplificado y no incluye un selector de idioma. Para usar otro idioma, sigue [AGENTS.md](AGENTS.md), traduce los textos de `src/renderer/`, vuelve a compilar e instala el resultado.
+Los paneles del medidor se muestran en chino simplificado. El instalador también puede traducir el propio cliente de Antigravity (interfaz, menú del sistema, bandeja y pantalla de carga) al chino simplificado o tradicional. El valor predeterminado es chino simplificado; para volver al inglés original usa la pestaña "系统增强" o estos comandos:
+
+```bash
+node cli.js install --locale zh-TW          # zh-CN / zh-TW / en
+node cli.js i18n --locale en                # volver al inglés original
+node cli.js i18n --brand-title translated   # english / hidden / translated
+```
+
+El motor de traducción del cliente y sus diccionarios provienen de [qqxpee/antigravity2-cn](https://github.com/qqxpee/antigravity2-cn). Las cinco versiones del README son traducciones de la documentación. Para traducir los paneles, sigue [AGENTS.md](AGENTS.md), edita los textos de `src/renderer/`, vuelve a compilar e instala el resultado.
 
 ---
 

@@ -21,7 +21,15 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 ## Interface language
 
-The five README versions are documentation translations. The interface defaults to Simplified Chinese and has no in-app language selector. To use another language, follow [AGENTS.md](AGENTS.md) to translate the UI text in `src/renderer/`, rebuild, and install.
+The meter panels are in Simplified Chinese. The installer can also localize the Antigravity client itself (UI, system menu, tray and loading screen) to Simplified Chinese or Traditional Chinese, or keep the original English. Installation defaults to Simplified Chinese. Switch it in the "系统增强" (System) tab or from the command line:
+
+```bash
+node cli.js install --locale zh-TW          # zh-CN / zh-TW / en
+node cli.js i18n --locale en                # back to the original English
+node cli.js i18n --brand-title translated   # english / hidden / translated
+```
+
+The client localization engine and dictionaries come from [qqxpee/antigravity2-cn](https://github.com/qqxpee/antigravity2-cn). The five README versions are documentation translations. To translate the meter panels, follow [AGENTS.md](AGENTS.md) to edit the text in `src/renderer/`, rebuild, and install.
 
 ---
 

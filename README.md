@@ -17,11 +17,20 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 - **Token 历史**. 汇总本地可读取的桌面端和 CLI 用量，可按来源筛选。查看日历热力图、周柱状图、月日历、年度气泡和累计曲线。
 - **API 参考金额和订阅**. 按支持的模型费率估算输入、缓存和输出金额，并列出未计价的用量。可比较地区参考价、自定义实付和 API 等值金额，支持币种选择及人民币折算。API 等值金额仅供比较，实际账单以服务商为准。
 - **外观**. 顶栏随可用空间收起，两个面板独立展开。支持深浅主题、热力图预设和逐档配色。
+- **系统增强**. 「系统增强」分页可调整后台语言服务的系统提示词档位（0~4）、上下文窗口上限（默认 / 512K / 900K）和自动中文会话标题。改动写入语言服务程序，重启语言服务后生效，`node cli.js restore --all` 可一并还原。
 - **CLI 和更新**. 从顶栏启动已安装的 Antigravity CLI，尽量沿用当前工作区和代理。可在面板内检查更新。安装器提供备份、完整性校验和还原。
 
 ## 界面语言
 
-这五份 README 是文档翻译。插件界面默认为简体中文，目前没有语言切换菜单。需要其他语言时，按 [AGENTS.md](AGENTS.md) 翻译 `src/renderer/` 中的界面文案，重新构建并安装。
+插件面板的文案为简体中文。安装器还会汉化 Antigravity 客户端本身（界面、系统菜单、托盘和加载页），支持简体中文、繁體中文和英文原版；左上角品牌名可保留英文、隐藏或显示为「反重力」。安装时默认简体中文，可以在「系统增强」分页切换，也可以用命令：
+
+```bash
+node cli.js install --locale zh-TW          # 安装时指定语言：zh-CN / zh-TW / en
+node cli.js i18n --locale en                # 切回英文原版
+node cli.js i18n --brand-title translated   # 品牌名：english / hidden / translated
+```
+
+客户端汉化引擎与词典来自 [qqxpee/antigravity2-cn](https://github.com/qqxpee/antigravity2-cn)。这五份 README 是文档翻译；要把插件面板翻译成其他语言，按 [AGENTS.md](AGENTS.md) 修改 `src/renderer/` 中的文案，重新构建并安装。
 
 ---
 
@@ -72,11 +81,18 @@ node cli.js live
 # 4. 查看当前安装状态与实时会话上下文用量
 node cli.js status
 
-# 5. 一键无损还原安装前的原始 app.asar
+# 5. 一键无损还原安装前的原始 app.asar（加 --all 同时还原内核补丁）
 node cli.js restore
 
 # 6. 指定自定义客户端路径安装
 node cli.js install --path "<path-to-app.asar>"
+
+# 7. 切换客户端界面语言与品牌名显示
+node cli.js i18n --locale zh-TW --brand-title english
+
+# 8. 内核补丁：提示词档位 / 上下文窗口 / 自动中文标题
+node cli.js patch --recommended
+node cli.js patch --restore
 ```
 
 ---
@@ -124,4 +140,5 @@ antigravity-context-viewer/
 
 ## 🤝 社区与支持 (Community & Acknowledgements)
 
+- **[qqxpee/antigravity2-cn](https://github.com/qqxpee/antigravity2-cn)**：客户端界面汉化引擎与简繁词典来源。
 - **[LINUX DO](https://linux.do/)**：本项目支持并认可 LINUX DO 社区，欢迎各位社区佬友交流探讨。

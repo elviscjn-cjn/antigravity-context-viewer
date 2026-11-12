@@ -21,7 +21,15 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 ## 表示言語
 
-5つの言語版は README の翻訳です。UI の既定言語は簡体字中国語で、アプリ内に言語切替はありません。他の言語で使うには、[AGENTS.md](AGENTS.md) に従って `src/renderer/` の表示文言を翻訳し、再ビルドしてインストールしてください。
+メーターのパネルは簡体字中国語です。インストーラーは Antigravity クライアント本体（UI、システムメニュー、トレイ、読み込み画面）も簡体字・繁体字中国語に翻訳できます。既定は簡体字中国語で、英語のまま使う場合は次のコマンドで戻せます。「系统增强」タブでも切り替えられます。
+
+```bash
+node cli.js install --locale zh-TW          # zh-CN / zh-TW / en
+node cli.js i18n --locale en                # 英語の原文に戻す
+node cli.js i18n --brand-title translated   # english / hidden / translated
+```
+
+クライアント翻訳エンジンと辞書は [qqxpee/antigravity2-cn](https://github.com/qqxpee/antigravity2-cn) に由来します。5つの言語版は README の翻訳です。パネルを他の言語にするには、[AGENTS.md](AGENTS.md) に従って `src/renderer/` の文言を翻訳し、再ビルドしてインストールしてください。
 
 ---
 

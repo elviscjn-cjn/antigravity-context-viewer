@@ -21,7 +21,15 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 ## 인터페이스 언어
 
-다섯 언어는 README 번역입니다. 인터페이스 기본 언어는 중국어 간체이며 앱 내 언어 선택 메뉴는 없습니다. 다른 언어가 필요하면 [AGENTS.md](AGENTS.md)에 따라 `src/renderer/`의 UI 문구를 번역한 뒤 다시 빌드하고 설치하세요.
+미터 패널은 중국어 간체로 표시됩니다. 설치 프로그램은 Antigravity 클라이언트 자체(UI, 시스템 메뉴, 트레이, 로딩 화면)도 중국어 간체 또는 번체로 번역할 수 있습니다. 기본값은 중국어 간체이며, "系统增强" 탭이나 다음 명령으로 영어 원문으로 되돌릴 수 있습니다.
+
+```bash
+node cli.js install --locale zh-TW          # zh-CN / zh-TW / en
+node cli.js i18n --locale en                # 영어 원문으로 복원
+node cli.js i18n --brand-title translated   # english / hidden / translated
+```
+
+클라이언트 번역 엔진과 사전은 [qqxpee/antigravity2-cn](https://github.com/qqxpee/antigravity2-cn)에서 가져왔습니다. 다섯 언어는 README 번역입니다. 패널을 다른 언어로 쓰려면 [AGENTS.md](AGENTS.md)에 따라 `src/renderer/`의 문구를 번역한 뒤 다시 빌드하고 설치하세요.
 
 ---
 
