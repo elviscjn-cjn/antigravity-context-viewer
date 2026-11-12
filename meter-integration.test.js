@@ -390,3 +390,153 @@ test('单元测试：BaseWindow / WebContentsView 架构适配与 WebContents �
     assert.doesNotThrow(() => closedListener(), '窗口关闭时清理探测定时器绝不抛错');
   }
 });
+
+// ============================================================================
+// 12. 验证 Windows CLI 多路径探测、注册表 PATH 回退、批处理目标解析与残缺 PATH 自愈
+// ============================================================================
+test('CLI 探测支持官方 %LOCALAPPDATA%\\agy\\bin、Programs\\Antigravity\\bin 及保存设置路径', () => {
+  const { resolveCliExecutable } = require('./meter-cli-launcher');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-discover-'));
+
+  try {
+    const homeDir = path.join(tmpRoot, 'home');
+    const localApp = path.join(tmpRoot, 'localappdata');
+    const appData = path.join(tmpRoot, 'appdata');
+    const emptyBaseOpts = {
+      platform: 'win32',
+      homeDir,
+      execPath: '',
+      skipRegistry: true,
+      env: { USERPROFILE: homeDir, LOCALAPPDATA: localApp, APPDATA: appData, PATH: '' }
+    };
+
+    // 1. 无任何安装时返回 CLI_NOT_FOUND 及可操作安装命令
+    const missRes = resolveCliExecutable(undefined, emptyBaseOpts);
+    assert.equal(missRes.ok, false);
+    assert.equal(missRes.code, 'CLI_NOT_FOUND');
+    assert.match(missRes.installCommand, /antigravity\.google\/cli\/install\.ps1/);
+
+    // 2. 在 custom_plan_v1.json 配置 uiPreferences.cliPath（带引号）可被识别
+    const customDir = path.join(tmpRoot, 'custom');
+    fs.mkdirSync(customDir, { recursive: true });
+    const customExe = path.join(customDir, 'agy.exe');
+    fs.writeFileSync(customExe, 'custom');
+    const agDir = path.join(tmpRoot, 'ag-dir');
+    fs.mkdirSync(agDir, { recursive: true });
+    fs.writeFileSync(path.join(agDir, 'custom_plan_v1.json'), JSON.stringify({
+      uiPreferences: { cliPath: `"${customExe}"` }
+    }));
+    const savedHit = resolveCliExecutable(undefined, {
+      ...emptyBaseOpts,
+      env: { ...emptyBaseOpts.env, AG_DIR: agDir }
+    });
+    assert.equal(savedHit.ok, true);
+    assert.equal(savedHit.source, 'saved_settings');
+    assert.equal(savedHit.exePath, customExe);
+
+    // 3. Antigravity 2.x 默认桌面目录 Programs\Antigravity\bin\agy.cmd 能解析底层 agy.exe
+    const progBin = path.join(localApp, 'Programs', 'Antigravity', 'bin');
+    const progApp = path.join(localApp, 'Programs', 'Antigravity', 'resources', 'cli');
+    fs.mkdirSync(progBin, { recursive: true });
+    fs.mkdirSync(progApp, { recursive: true });
+    const wrappedExe = path.join(progApp, 'agy.exe');
+    const progCmd = path.join(progBin, 'agy.cmd');
+    fs.writeFileSync(wrappedExe, 'wrapped');
+    fs.writeFileSync(progCmd, `@echo off\r\n"%~dp0..${path.sep}resources${path.sep}cli${path.sep}agy.exe" %*\r\n`);
+    const progHit = resolveCliExecutable(undefined, emptyBaseOpts);
+    assert.equal(progHit.ok, true);
+    assert.equal(progHit.source, 'programs_antigravity_bin');
+    assert.equal(progHit.cliPath, progCmd);
+    assert.equal(progHit.exePath, wrappedExe);
+
+    // 4. 官方安装路径 %LOCALAPPDATA%\agy\bin\agy.exe 具有最高候选目录优先级
+    const officialBin = path.join(localApp, 'agy', 'bin');
+    fs.mkdirSync(officialBin, { recursive: true });
+    const officialExe = path.join(officialBin, 'agy.exe');
+    fs.writeFileSync(officialExe, 'official');
+    const officialHit = resolveCliExecutable(undefined, emptyBaseOpts);
+    assert.equal(officialHit.ok, true);
+    assert.equal(officialHit.source, 'localappdata_agy_bin');
+    assert.equal(officialHit.exePath, officialExe);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('CLI 探测支持 Windows Path 大小写/引号、注册表回退及启动环境 PATH 修复', async () => {
+  const { resolveCliExecutable } = require('./meter-cli-launcher');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-reg-'));
+
+  try {
+    const homeDir = path.join(tmpRoot, 'home');
+    const localApp = path.join(tmpRoot, 'localappdata');
+    const appData = path.join(tmpRoot, 'appdata');
+    const pathDir = path.join(tmpRoot, 'path with space');
+    const pathExeDir = path.join(tmpRoot, 'real-exe');
+    fs.mkdirSync(pathDir, { recursive: true });
+    fs.mkdirSync(pathExeDir, { recursive: true });
+    const pathExe = path.join(pathExeDir, 'agy.exe');
+    const pathCmd = path.join(pathDir, 'agy.cmd');
+    fs.writeFileSync(pathExe, 'exe');
+    fs.writeFileSync(pathCmd, `@echo off\r\n"${pathExe}" %*\r\n`);
+
+    // 1. 验证混合大小写 env.Path 与双引号路径能解析 .cmd -> 底层 agy.exe
+    const pathHit = resolveCliExecutable(undefined, {
+      platform: 'win32',
+      homeDir,
+      execPath: '',
+      skipRegistry: true,
+      env: { USERPROFILE: homeDir, LOCALAPPDATA: localApp, APPDATA: appData, Path: `"${pathDir}"` }
+    });
+    assert.equal(pathHit.ok, true);
+    assert.equal(pathHit.source, 'PATH');
+    assert.equal(pathHit.cliPath, pathCmd);
+    assert.equal(pathHit.exePath, pathExe);
+
+    // 2. 验证空 PATH 时可通过 reg.exe 读取注册表 REG_EXPAND_SZ Path 并展开 %LOCALAPPDATA%
+    const regBin = path.join(localApp, 'custom-reg-cli', 'bin');
+    fs.mkdirSync(regBin, { recursive: true });
+    const regExeTarget = path.join(regBin, 'agy.exe');
+    fs.writeFileSync(regExeTarget, 'reg-exe');
+    const mockSpawnSync = (_exe, args) => {
+      if (args.includes('HKCU\\Environment')) {
+        return { status: 0, stdout: '\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    %LOCALAPPDATA%\\custom-reg-cli\\bin\r\n' };
+      }
+      return { status: 1, stdout: '' };
+    };
+    const regHit = resolveCliExecutable(undefined, {
+      platform: 'win32',
+      homeDir,
+      execPath: '',
+      spawnSync: mockSpawnSync,
+      env: { USERPROFILE: homeDir, LOCALAPPDATA: localApp, APPDATA: appData, PATH: '' }
+    });
+    assert.equal(regHit.ok, true);
+    assert.equal(regHit.source, 'registry_PATH');
+    assert.equal(regHit.exePath, regExeTarget);
+
+    // 3. 验证宿主机 PATH 为空时 launchCliSession 在 Windows 下补齐 System32 / PowerShell 与 CLI 目录
+    if (process.platform === 'win32') {
+      const fakeWin = path.join(tmpRoot, 'Windows');
+      const sys32 = path.join(fakeWin, 'System32');
+      const psDir = path.join(sys32, 'WindowsPowerShell', 'v1.0');
+      fs.mkdirSync(psDir, { recursive: true });
+      fs.writeFileSync(path.join(sys32, 'cmd.exe'), 'cmd');
+      fs.writeFileSync(path.join(psDir, 'powershell.exe'), 'ps');
+      const dryRun = await launchCliSession({
+        cliPath: `"${regExeTarget}"`,
+        cwd: tmpRoot,
+        dryRun: true,
+        env: { PATH: '', SystemRoot: fakeWin }
+      });
+      assert.equal(dryRun.ok, true);
+      assert.equal(dryRun.cmdExe, path.join(sys32, 'cmd.exe'));
+      assert.equal(dryRun.powershellExe, path.join(psDir, 'powershell.exe'));
+      assert.ok(String(dryRun.env.PATH).includes(regBin));
+      assert.ok(String(dryRun.env.PATH).includes(sys32));
+      assert.ok(String(dryRun.env.PATH).includes(psDir));
+    }
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
