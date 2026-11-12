@@ -1,6 +1,6 @@
 {
   "name": "antigravity-context-viewer",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Antigravity 桌面客户端的对话上下文、生成速度与 Token 用量看板",
   "main": "cli.js",
   "bin": {

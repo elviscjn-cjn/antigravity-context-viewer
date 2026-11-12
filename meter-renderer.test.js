@@ -375,7 +375,7 @@ test('6 independent custom color slots support custom values, reset to theme def
 test('window controls overlay spacer, convPane flex-grow self-healing, and clean dispose', () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
-  assert.equal(api.version, '0.8.1');
+  assert.equal(api.version, '0.8.2');
 
   // 1. Antigravity 1.x: class contains 'top-0'
   const cluster1x = h.sandbox.document.createElement();

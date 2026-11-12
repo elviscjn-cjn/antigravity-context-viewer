@@ -21,7 +21,7 @@ const targetFile = path.join(rootDir, 'meter-renderer.js');
 
 function buildRenderer() {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
-  const meterVersion = pkg.version || '0.8.1';
+  const meterVersion = pkg.version || '0.8.2';
 
   const styles = fs.readFileSync(path.join(srcDir, 'styles.css'), 'utf8').trim();
   let template = fs.readFileSync(path.join(srcDir, 'template.html'), 'utf8').trim();

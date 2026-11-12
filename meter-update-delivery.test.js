@@ -326,6 +326,7 @@ test('交付验证 4: 版本升级识别矩阵（0.8.0 识别 0.8.1 为新版本
   // 2. 模拟 0.8.0 客户端执行 checkUpdateAsync 必须成功识别到 0.8.1
   const checkOld = await checkUpdateAsync({
     currentVersion: '0.8.0',
+    installedVersion: '0.8.0',
     force: true,
     _requestGithubUrl: async () => JSON.stringify(releasesFixture)
   });
@@ -336,12 +337,65 @@ test('交付验证 4: 版本升级识别矩阵（0.8.0 识别 0.8.1 为新版本
   assert.equal(checkOld.tagName, 'v0.8.1');
   assert.match(checkOld.releaseNotes, /修复原生 helper 缺失/);
 
-  // 3. 0.8.1 默认客户端执行 checkUpdateAsync 必须判定已是最新（无新版本）
+  // 3. 0.8.2 默认客户端执行 checkUpdateAsync 面对 0.8.1 Release 必须判定已是最新（无新版本）
   const checkCurrent = await checkUpdateAsync({
     force: true,
     _requestGithubUrl: async () => JSON.stringify(releasesFixture)
   });
   assert.equal(checkCurrent.ok, true);
   assert.equal(checkCurrent.hasUpdate, false);
-  assert.equal(checkCurrent.currentVersion, '0.8.1');
+  assert.equal(checkCurrent.currentVersion, '0.8.2');
+});
+
+test('交付验证 5: 隔离环境中模拟在线安装完成后自动清空缓存并动态识别磁盘版本', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-update-sync-'));
+  const instPath = path.join(tmpDir, 'installation.json');
+  try {
+    // 1. 模拟初始状态：磁盘已安装 0.8.0
+    fs.writeFileSync(instPath, JSON.stringify({ meterVersion: '0.8.0' }), 'utf8');
+
+    const releasesFixture = [
+      {
+        tag_name: 'v0.8.1',
+        draft: false,
+        prerelease: false,
+        published_at: '2026-11-12T16:00:00Z',
+        body: '修复在线更新状态展示问题',
+        assets: [
+          {
+            name: 'antigravity-context-viewer-v0.8.1-windows_amd64.zip',
+            browser_download_url: 'https://example.com/download.zip'
+          }
+        ]
+      }
+    ];
+
+    // 2. 模拟更新检查，此时识别到 0.8.1 为新版本
+    const check1 = await checkUpdateAsync({
+      currentVersion: '0.8.0',
+      installedVersion: '0.8.0',
+      force: true,
+      _requestGithubUrl: async () => JSON.stringify(releasesFixture)
+    });
+    assert.equal(check1.ok, true);
+    assert.equal(check1.hasUpdate, true);
+    assert.equal(check1.latestVersion, '0.8.1');
+
+    // 3. 模拟完成安装，installation.json 写入 0.8.1
+    fs.writeFileSync(instPath, JSON.stringify({ meterVersion: '0.8.1' }), 'utf8');
+
+    // 4. 更新完成后再次检查更新（无论是否 force），必须动态识别磁盘已是 0.8.1，判定 hasUpdate 为 false
+    const check2 = await checkUpdateAsync({
+      currentVersion: '0.8.0', // 即使主进程内存仍为旧版
+      installedVersion: '0.8.1', // 磁盘已更新为 0.8.1
+      force: false,
+      _requestGithubUrl: async () => JSON.stringify(releasesFixture)
+    });
+    assert.equal(check2.ok, true);
+    assert.equal(check2.hasUpdate, false, '磁盘安装版本已是 0.8.1，不能继续提示有新版本');
+    assert.equal(check2.installedVersion, '0.8.1');
+    assert.equal(check2.diskPendingRestart, true, '标记为待重启以完全刷新主进程');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

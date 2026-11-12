@@ -1094,6 +1094,90 @@ test('界面状态 5.5：应用更新文案区分热注入即时生效与需重�
   h.sandbox.__AGContextMeter?.dispose();
 });
 
+test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最新且红点与更新按钮自动消除', async () => {
+  const h = setupRendererHarness();
+  let checkCount = 0;
+  h.sandbox.window.contextMeterAPI.checkUpdate = async (opts) => {
+    checkCount++;
+    if (checkCount === 1) {
+      return {
+        ok: true,
+        hasUpdate: true,
+        currentVersion: '0.8.0',
+        latestVersion: '0.8.1'
+      };
+    }
+    return {
+      ok: true,
+      hasUpdate: false,
+      currentVersion: opts?.currentVersion || '0.8.1',
+      installedVersion: '0.8.1',
+      latestVersion: '0.8.1'
+    };
+  };
+
+  h.sandbox.window.contextMeterAPI.applyUpdate = async () => ({
+    ok: true,
+    diskInstalled: true,
+    liveInjected: true,
+    version: '0.8.1'
+  });
+
+  // 1. 首次检查并应用更新
+  h.elements.get('btn-check-update').click();
+  await h.flush();
+  h.elements.get('btn-apply-update').click();
+  await h.flush();
+
+  const titleEl = h.elements.get('up-pop-title');
+  const verEl = h.elements.get('up-pop-ver');
+  const applyBtn = h.elements.get('btn-apply-update');
+  const dot = h.elements.get('update-badge-dot');
+  const pop = h.elements.get('update-popover');
+
+  // 2. 更新完成后弹窗关闭，用户再次主动触发“检查更新”
+  pop.style.display = 'none';
+  h.elements.get('btn-check-update').click();
+  await h.flush();
+
+  assert.equal(titleEl.textContent, '✅ 已是最新版本');
+  assert.match(verEl.textContent, /v0\.8\.1.*已是最新/);
+  assert.equal(applyBtn.style.display, 'none');
+  assert.equal(applyBtn.disabled, true);
+  assert.equal(dot.style.display, 'none');
+
+  h.sandbox.__AGContextMeter?.dispose();
+});
+
+test('界面状态 5.7：汉化状态检测在随后面板打开时即时自愈同步为已生效', async () => {
+  const h = setupRendererHarness();
+  h.sandbox.window.contextMeterAPI.getModulesStatus = async () => ({
+    ok: true,
+    data: { modules: { chinese: { enabled: true } } },
+    disk: { found: true, chinese: true }
+  });
+
+  const badge = h.elements.get('chinese-badge');
+  const toggleBtn = h.elements.get('btn-toggle-chinese');
+
+  // 1. 初始展开抽屉，由于此时宿主尚未翻译，显示待重启
+  toggleBtn.click();
+  await h.flush();
+  assert.match(badge.textContent, /⏳ 待重启客户端生效/);
+
+  // 2. 模拟随后宿主汉化完成（注入运行时数据）
+  h.sandbox.window.__AGY_I18N_DATA__ = { loaded: true };
+
+  // 3. 用户再次进入面板或展开抽屉，验证自动即时自愈为已生效
+  toggleBtn.click(); // 收起
+  await h.flush();
+  toggleBtn.click(); // 再次展开，触发即时刷新
+  await h.flush();
+
+  assert.match(badge.textContent, /🟢 已翻译生效/);
+  h.sandbox.__AGContextMeter?.dispose();
+});
+
 test('热注入安全 6.1：CDP 返回 exceptionDetails 时 tryHotInject 判定失败返回 false，无异常时返回 true', async () => {
   const http = require('node:http');
 

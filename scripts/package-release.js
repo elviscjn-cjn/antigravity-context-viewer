@@ -11,7 +11,10 @@ const crypto = require('crypto');
 const { execFileSync, spawnSync } = require('child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
-const DIST_DIR = path.join(ROOT_DIR, 'dist', 'release');
+const outDirArgIdx = process.argv.indexOf('--out-dir');
+const DIST_DIR = outDirArgIdx !== -1 && process.argv[outDirArgIdx + 1]
+  ? path.resolve(process.argv[outDirArgIdx + 1])
+  : (process.env.DIST_DIR ? path.resolve(process.env.DIST_DIR) : path.join(ROOT_DIR, 'dist', 'release'));
 
 const COMMON_FILES = [
   'cli.js',

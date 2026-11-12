@@ -36,7 +36,7 @@ test('CLI 启动模块 3: 源码绝对不残留同步 powershell、8000ms 阻塞
   assert.equal(src.includes("spawnSync('powershell.exe'"), false, '严禁包含 spawnSync powershell');
   assert.equal(src.includes('timeout: 8000'), false, '严禁包含旧版 8000ms 同步阻塞');
   assert.equal(src.includes('D:\\AI_plugin'), false, '严禁包含作者开发机本地绝对路径');
-  assert.ok(src.includes('0.8.1-helper-v2'), '必须包含最新的版本契约标识 0.8.1-helper-v2');
+  assert.ok(src.includes('0.8.2-helper-v2'), '必须包含最新的版本契约标识 0.8.2-helper-v2');
 });
 
 test('CLI 启动模块 4: helper 输出诊断结构完整解析与部分成功时防重入', async () => {

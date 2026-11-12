@@ -274,7 +274,7 @@ public static class CliWindowPlacement {
 }
 `;
 
-const LAUNCHER_VERSION = '0.8.1-helper-v2';
+const LAUNCHER_VERSION = '0.8.2-helper-v2';
 
 // 会话与项目工作区对应关系的内存缓存
 const conversationWorkspaces = new Map();

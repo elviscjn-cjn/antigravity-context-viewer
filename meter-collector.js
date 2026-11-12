@@ -282,7 +282,7 @@ async function collect(origin, id, options = {}) {
       }
     }
     const unknownFiles = attachments.filter(a => a.status !== 'parsed').length;
-    const result = { version: '0.8.1', conversation: id, workspacePath: wsPath || null, latest, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const result = { version: '0.8.2', conversation: id, workspacePath: wsPath || null, latest, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     conversations.set(key, { result, at: Date.now() });
     return result;
   })();
@@ -1457,8 +1457,8 @@ async function collectTokenHistoryAsync(options = {}) {
   const costEstimate = costEstimateAll;
 
   const out = {
-    schemaVersion: '0.8.1',
-    version: '0.8.1',
+    schemaVersion: '0.8.2',
+    version: '0.8.2',
     updatedAt: `${todayKey} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`,
     firstUseDate: earliestDate,
     currentPeriod: {
@@ -1587,8 +1587,8 @@ function collectTokenHistory(options = {}) {
   // 触发异步更新
   void collectTokenHistoryAsync(options);
   return cachedTokenHistory || {
-    schemaVersion: '0.8.1',
-    version: '0.8.1',
+    schemaVersion: '0.8.2',
+    version: '0.8.2',
     loading: true,
     updatedAt: '',
     firstUseDate: null,
@@ -1679,7 +1679,7 @@ function requestGithubUrl(rawUrl, options = {}) {
       const redirectCount = options.redirectCount || 0;
       const parsedUrl = new URL(rawUrl);
       const headers = Object.assign({
-        'User-Agent': 'AntigravityContextMeter/0.8.1',
+        'User-Agent': 'AntigravityContextMeter/0.8.2',
         'Accept': 'application/vnd.github.v3+json'
       }, options.headers || {});
 
@@ -1780,12 +1780,76 @@ function requestGithubUrl(rawUrl, options = {}) {
   });
 }
 
+function getInstalledMeterVersion(options = {}) {
+  try {
+    if (options && options.installedVersion) return String(options.installedVersion);
+    const { getStateDir, findAsarPath } = require('./asar-engine');
+    const stateDir = getStateDir();
+
+    let targetAsar = null;
+    try {
+      targetAsar = options.asarPath || findAsarPath(options.customPath || null);
+    } catch {}
+
+    const candidatePaths = [
+      options && options.installationJsonPath,
+      path.join(stateDir, 'installation.json'),
+      path.join(__dirname, 'installation.json')
+    ].filter(Boolean);
+
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        const manifest = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (manifest && manifest.meterVersion) {
+          // 严格核对清单中记录的安装目标是否与当前宿主目标一致
+          if (targetAsar && manifest.installed) {
+            try {
+              const manifestTarget = path.resolve(manifest.installed).toLowerCase();
+              const currentTarget = path.resolve(targetAsar).toLowerCase();
+              if (manifestTarget !== currentTarget) {
+                continue; // 属于其他宿主路径的陈旧记录，严禁采信
+              }
+            } catch {
+              continue;
+            }
+          }
+          if (manifest.installed && !fs.existsSync(manifest.installed)) {
+            continue; // 记录的物理文件已不存在，属于失效记录
+          }
+          return String(manifest.meterVersion);
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
 async function checkUpdateAsync(options = {}) {
-  const currentVersion = options.currentVersion || '0.8.1';
+  const runtimeVersion = options.currentVersion || '0.8.2';
+  const diskVersion = getInstalledMeterVersion(options);
+  const effectiveCurrentVersion = (diskVersion && compareVersions(diskVersion, runtimeVersion) > 0)
+    ? diskVersion
+    : runtimeVersion;
+  const installedVersion = diskVersion || runtimeVersion;
+
   const now = Date.now();
   const cacheTtl = 6 * 3600 * 1000;
   if (!options.force && cachedUpdateCheck && (now - cachedUpdateCheckAt < cacheTtl)) {
-    return cachedUpdateCheck;
+    // 若当前运行时版本与缓存中的运行时版本不一致（例如重启后运行版本对齐），缓存立即失效
+    if (cachedUpdateCheck.currentVersion && cachedUpdateCheck.currentVersion !== runtimeVersion) {
+      cachedUpdateCheck = null;
+      cachedUpdateCheckAt = 0;
+    } else if (cachedUpdateCheck.hasUpdate && cachedUpdateCheck.latestVersion) {
+      // 若当前磁盘或生效版本已追平或超越缓存的最新发布版本，该缓存必须即刻失效
+      if (compareVersions(effectiveCurrentVersion, cachedUpdateCheck.latestVersion) >= 0) {
+        cachedUpdateCheck = null;
+        cachedUpdateCheckAt = 0;
+      } else {
+        return cachedUpdateCheck;
+      }
+    } else {
+      return cachedUpdateCheck;
+    }
   }
 
   const releasesApiUrl = OFFICIAL_RELEASES_API;
@@ -1793,14 +1857,15 @@ async function checkUpdateAsync(options = {}) {
     const fetcher = options._requestGithubUrl || requestGithubUrl;
     const rawData = await fetcher(releasesApiUrl, { timeout: 8000 });
     const releasesList = JSON.parse(rawData);
-    const valid = filterReleases(releasesList, currentVersion);
+    const valid = filterReleases(releasesList, effectiveCurrentVersion);
     if (valid.length > 0) {
       const latest = valid[0];
       const bodyLines = (latest.body || '').split(/\r?\n/).slice(0, 8).join('\n');
       cachedUpdateCheck = {
         ok: true,
         hasUpdate: true,
-        currentVersion,
+        currentVersion: runtimeVersion,
+        installedVersion,
         latestVersion: latest.version,
         tagName: latest.tagName,
         releaseNotes: bodyLines,
@@ -1814,8 +1879,10 @@ async function checkUpdateAsync(options = {}) {
     cachedUpdateCheck = {
       ok: true,
       hasUpdate: false,
-      currentVersion,
-      latestVersion: currentVersion
+      currentVersion: runtimeVersion,
+      installedVersion,
+      latestVersion: effectiveCurrentVersion,
+      diskPendingRestart: compareVersions(installedVersion, runtimeVersion) > 0
     };
     cachedUpdateCheckAt = now;
     return cachedUpdateCheck;
@@ -1823,7 +1890,8 @@ async function checkUpdateAsync(options = {}) {
     return {
       ok: false,
       hasUpdate: false,
-      currentVersion,
+      currentVersion: runtimeVersion,
+      installedVersion,
       error: err.message
     };
   }
@@ -1859,7 +1927,7 @@ async function applyUpdateAsync(options = {}) {
   }
   isApplyingUpdate = true;
 
-  const currentVersion = options.currentVersion || '0.8.1';
+  const currentVersion = options.currentVersion || '0.8.2';
   let tmpDir = null;
   let checksumStream = null;
   let zipStream = null;
@@ -2069,12 +2137,17 @@ async function applyUpdateAsync(options = {}) {
       return { ok: false, error: `热安装执行失败: ${detail}` };
     }
 
+    cachedUpdateCheck = null;
+    cachedUpdateCheckAt = 0;
+
     const liveInjected = execRes.stdout.includes('已即时生效（无需重启）') || execRes.stdout.includes('"liveInjected": true');
+    const finalInstalledVer = getInstalledMeterVersion(options) || targetRelease.version;
     return {
       ok: true,
       diskInstalled: true,
       liveInjected: Boolean(liveInjected),
-      version: targetRelease.version
+      version: targetRelease.version,
+      installedVersion: finalInstalledVer
     };
   } catch (err) {
     return { ok: false, error: `更新安装异常: ${err.message}` };

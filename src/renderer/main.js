@@ -755,6 +755,7 @@
       bTokens.setAttribute('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
+      void refreshModulesDisplay();
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
       pContext.hidden = true;
@@ -1798,6 +1799,9 @@
     if (chineseDrawerBody) chineseDrawerBody.style.display = isChineseExpanded ? 'block' : 'none';
     if (chineseDrawerArrow) chineseDrawerArrow.textContent = isChineseExpanded ? '▲ 收起' : '▼ 展开';
     btnToggleChinese?.setAttribute('aria-expanded', String(isChineseExpanded));
+    if (isChineseExpanded) {
+      void refreshModulesDisplay();
+    }
   });
 
   // -------------------------------------------------------------
@@ -1850,15 +1854,39 @@
       const cfg = res.data;
 
       currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
-      // 判定汉化引擎是否已挂载生效：检测全局运行时对象与核心中文特征词（覆盖整个 DOM 与侧边栏）
-      const hasI18nRuntime = typeof window.__AGY_I18N_DATA__ !== 'undefined' || typeof window.__AGY_TRANSLATE_EL__ !== 'undefined';
-      const hasChineseKeywords = Boolean(
-        document.body?.innerText?.includes('新建会话') ||
-        document.body?.innerText?.includes('自定义扩展') ||
-        document.body?.innerText?.includes('项目列表') ||
-        document.querySelector("div[role='navigation']")?.innerText?.includes('新建会话')
-      );
-      const isDomTranslated = hasI18nRuntime || hasChineseKeywords;
+      // 判定宿主界面是否已翻译：定向检查系统导航、活动栏、菜单及操作按钮等固有系统壳层（排除用户消息内容区域）
+      const isDomTranslated = (() => {
+        if (typeof window.__AGY_I18N_DATA__ !== 'undefined' || typeof window.__AGY_TRANSLATE_EL__ !== 'undefined') {
+          return true;
+        }
+        try {
+          const systemContainers = document.querySelectorAll(
+            "div[role='navigation'], nav, header, [role='banner'], aside, [data-testid*='sidebar'], [data-testid*='navigation'], [class*='@container/titlebar'], .monaco-workbench, .activitybar"
+          );
+          const systemKeywords = ['新建对话', '新建会话', '新建', '设置', '账户', '项目', '关于', '帮助', '工作区', '管理', '自定义扩展', '资源管理器', '活动栏'];
+          for (let i = 0; i < systemContainers.length; i++) {
+            const container = systemContainers[i];
+            if (container.closest && container.closest('.chat-session, .conversation-view, .monaco-list-row, .markdown, [data-testid*="chat"], [data-testid*="message"]')) {
+              continue; // 严格排除用户聊天内容区
+            }
+            const labeledNodes = container.querySelectorAll ? container.querySelectorAll('button, a, [role="button"], [aria-label], [title], span') : [];
+            for (let j = 0; j < Math.min(labeledNodes.length, 40); j++) {
+              const node = labeledNodes[j];
+              const label = (node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || '';
+              if (label && systemKeywords.some(kw => label.includes(kw))) return true;
+              const text = (node.textContent || '').trim();
+              if (text && systemKeywords.some(kw => text.includes(kw))) return true;
+            }
+            const txt = container.innerText || '';
+            if (systemKeywords.some(kw => txt.includes(kw))) return true;
+          }
+          const nav = document.querySelector("div[role='navigation'], nav");
+          if (nav && nav.innerText && systemKeywords.some(kw => nav.innerText.includes(kw))) {
+            return true;
+          }
+        } catch {}
+        return false;
+      })();
       const disk = res.disk || {};
 
       if (chineseBadge) {
@@ -2034,6 +2062,11 @@
     void refreshUnlockStatus();
     void refreshModulesDisplay();
   }, 500);
+  setTimeout(() => {
+    if (currentChineseEnabled) {
+      void refreshModulesDisplay();
+    }
+  }, 2000);
 
   // 二级抽屉 1（面板 B 内）: 指标与背景颜色自定义抽屉折叠展开
   const btnColors = el('btn-toggle-colors');
@@ -3175,7 +3208,7 @@
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.1';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.2';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
@@ -3201,7 +3234,7 @@
     }
 
     try {
-      const res = await window.contextMeterAPI.checkUpdate({ force: manual });
+      const res = await window.contextMeterAPI.checkUpdate({ force: manual, currentVersion: currentVer });
 
       // 返回 null、非对象或 ok: false 均为检查失败，严禁显示“最新”
       if (!res || res.ok === false) {
@@ -3237,9 +3270,12 @@
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = '✅ 已是最新版本';
-        const effectiveCurrent = res.currentVersion || currentVer;
+        const effectiveCurrent = res.installedVersion || res.currentVersion || currentVer;
         if (verEl) verEl.textContent = `v${effectiveCurrent} (已是最新)`;
-        if (bodyEl) bodyEl.textContent = `当前已是最新版本 (v${effectiveCurrent})。已通过 GitHub Releases 确认。`;
+        const updateStatusText = res.diskPendingRestart
+          ? `已完成磁盘安装至最新版本 (v${effectiveCurrent})，待重启客户端后主进程完整生效。`
+          : `当前已是最新版本 (v${effectiveCurrent})。已通过 GitHub Releases 确认。`;
+        if (bodyEl) bodyEl.textContent = updateStatusText;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         if (manual) showUpdatePopover(trigger);
       }
@@ -3259,6 +3295,11 @@
     const pop = el('update-popover');
     const applyBtn = el('btn-apply-update');
     const statusEl = el('up-pop-status');
+    const titleEl = el('up-pop-title');
+    const bodyEl = el('up-pop-body');
+    const verEl = el('up-pop-ver');
+    const dot = el('update-badge-dot');
+    const dotCtx = el('update-badge-dot-ctx');
     if (!cachedLatestRelease) return;
 
     if (applyBtn) {
@@ -3278,13 +3319,34 @@
         throw new Error('更新接口不可用');
       }
       if (res && res.ok) {
+        const targetVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || currentVer;
+        currentVer = targetVer;
+        const vEl = el('v');
+        if (vEl) vEl.textContent = `v${currentVer}`;
+
+        const dot = el('update-badge-dot');
+        const dotCtx = el('update-badge-dot-ctx');
+        if (dot) dot.style.display = 'none';
+        if (dotCtx) dotCtx.style.display = 'none';
+
+        if (titleEl) titleEl.textContent = '🎉 更新已完成';
+        if (verEl) verEl.textContent = `v${currentVer} (已是最新)`;
+        if (bodyEl) {
+          bodyEl.textContent = res.liveInjected
+            ? `已成功在线更新至 v${currentVer}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。`
+            : `已成功完成 v${currentVer} 磁盘更新，需完全重启 Antigravity 后生效。`;
+        }
+        if (applyBtn) {
+          applyBtn.textContent = '已更新';
+          applyBtn.disabled = false;
+        }
+
         if (res.liveInjected) {
-          if (statusEl) statusEl.textContent = `🎉 更新成功 (v${res.version || cachedLatestRelease.latestVersion})！已完成热注入即时生效。`;
+          if (statusEl) statusEl.textContent = `🎉 磁盘更新成功 (v${currentVer})！已完成热注入即时生效（界面已刷新，主进程待重启完整生效）。`;
         } else {
           const detail = res.diskInstalled ? '已完成磁盘安装' : '更新已完成';
-          if (statusEl) statusEl.textContent = `✅ ${detail} (v${res.version || cachedLatestRelease.latestVersion})，热注入未连接，需完全重启 Antigravity 后生效。`;
+          if (statusEl) statusEl.textContent = `✅ ${detail} (v${currentVer})，需完全重启 Antigravity 后生效。`;
         }
-        if (applyBtn) applyBtn.textContent = '已更新';
         setTimeout(() => {
           if (pop) pop.style.display = 'none';
         }, 3500);
@@ -3779,7 +3841,7 @@
 
   const timer = setInterval(tick, 500);
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.1',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.2',
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();

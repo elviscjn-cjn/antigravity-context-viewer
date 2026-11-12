@@ -578,7 +578,7 @@ async function install(options = {}) {
         if (extractedLauncher.includes("spawnSync('powershell.exe'") || extractedLauncher.includes('timeout: 8000')) {
           throw new Error('ASAR 内仍然残留旧版同步 PowerShell 启动逻辑，拒绝完成安装！');
         }
-        if (!extractedLauncher.includes('0.8.1-helper-v2')) {
+        if (!extractedLauncher.includes('0.8.2-helper-v2')) {
           throw new Error('ASAR 内未包含最新的 LAUNCHER_VERSION 标识，拒绝完成安装！');
         }
 
