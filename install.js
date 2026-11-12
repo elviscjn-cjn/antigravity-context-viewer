@@ -1,11 +1,25 @@
 'use strict';
-process.noAsar = true;
+if (!process.versions || !process.versions.electron || process.env.ELECTRON_RUN_AS_NODE) {
+  process.noAsar = true;
+}
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { loadAsarEngine, getStateDir } = require('./asar-engine');
+const {
+  normalizeLocale,
+  normalizeBrandTitle,
+  readI18nConfig,
+  saveI18nConfig,
+  cacheMergedDictionariesToState,
+  applyI18nToStagingDir,
+  generatePreloadI18nScript,
+  getI18nStatus,
+  syncOptionalProxyFiles
+} = require('./meter-i18n');
+const { getKernelStatus } = require('./meter-patcher');
 
 const asar = loadAsarEngine();
 const sha = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
@@ -119,10 +133,32 @@ async function tryHotInject() {
           if (historyData && !historyData.loading) {
             await evalExpr('window.__AGContextMeterHistory=' + JSON.stringify(historyData));
           }
+          let asarForSnap = null;
+          try { asarForSnap = findAsarPath(); } catch {}
+          const bootstrapSnap = {
+            kernelStatus: getKernelStatus(),
+            i18nStatus: getI18nStatus({ asarPath: asarForSnap, stateDir })
+          };
+          await evalExpr('window.__AGContextMeterBootstrap=' + JSON.stringify(bootstrapSnap));
         } catch {}
         const evalRes = await evalExpr(bundle);
         if (evalRes && !evalRes.error && !evalRes.result?.exceptionDetails) {
           injectedCount++;
+          // 若当前窗口尚未加载界面汉化（如未重启客户端跨源刷新后）且配置为中文，顺手自动恢复汉化
+          try {
+            const savedCfg = readI18nConfig({ stateDir });
+            if (savedCfg.locale && savedCfg.locale !== 'en') {
+              const hasLocRes = await evalExpr('Boolean(window.__AGLocalization || (document.documentElement && document.documentElement.getAttribute("data-ag-i18n-locale")))');
+              if (!hasLocRes?.result?.value) {
+                const i18nScript = generatePreloadI18nScript({
+                  locale: savedCfg.locale,
+                  brandTitle: savedCfg.brandTitle,
+                  stateDir
+                }) + '\ntrue;';
+                await evalExpr(i18nScript);
+              }
+            }
+          } catch {}
         }
       } catch {} finally {
         if (ws) {
@@ -136,10 +172,78 @@ async function tryHotInject() {
   }
 }
 
+async function applyLiveI18nToRunningWindows(i18nOpts = {}) {
+  try {
+    const appData = process.env.APPDATA || (process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support')
+      : path.join(os.homedir(), '.config'));
+    const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
+    if (!fs.existsSync(portFile)) return false;
+    const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+    if (!port) return false;
+    const pages = await new Promise((resolve, reject) => {
+      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
+      });
+      req.setTimeout(2500, () => req.destroy(new Error('timeout')));
+      req.on('error', reject);
+    });
+    const targets = pages.filter(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
+    if (!targets.length) return false;
+
+    const locale = normalizeLocale(i18nOpts.locale) || 'zh-CN';
+    const brandTitle = normalizeBrandTitle(i18nOpts.brandTitle) || 'english';
+    const disposeSnippet = 'try { document.dispatchEvent(new CustomEvent("__ag_i18n_dispose__")); window.__AGLocalization?.revertAndDispose?.(); } catch (e) {}';
+    const scriptBody = locale === 'en'
+      ? `${disposeSnippet} true;`
+      : `${disposeSnippet}\n` + generatePreloadI18nScript({
+          locale,
+          brandTitle,
+          stateDir: i18nOpts.stateDir
+        }) + '\ntrue;';
+
+    let applied = 0;
+    for (const target of targets) {
+      let ws = null;
+      try {
+        ws = new WebSocket(target.webSocketDebuggerUrl);
+        await new Promise((resolve, reject) => {
+          ws.addEventListener('open', resolve, { once: true });
+          ws.addEventListener('error', reject, { once: true });
+        });
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('CDP i18n eval timeout')), 6000);
+          ws.addEventListener('message', ev => {
+            const d = JSON.parse(ev.data);
+            if (d.id === 1) {
+              clearTimeout(timer);
+              resolve(d);
+            }
+          });
+          ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: scriptBody, returnByValue: true } }));
+        });
+        applied++;
+      } catch {} finally {
+        if (ws) {
+          try { ws.close(); } catch {}
+        }
+      }
+    }
+    return applied > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function install(options = {}) {
   const customPathIdx = process.argv.indexOf('--path');
-  const customPath = options.path || (customPathIdx >= 0 ? process.argv[customPathIdx + 1] : null);
+  const customPath = options.path || options.asarPath || (customPathIdx >= 0 ? process.argv[customPathIdx + 1] : null);
   const installed = findAsarPath(customPath);
+  if (typeof asar.uncache === 'function') {
+    try { asar.uncache(installed); } catch {}
+  }
   const stateDir = getStateDir();
   let sourceArchive = installed;
   let previousManifest = null;
@@ -180,7 +284,8 @@ async function install(options = {}) {
 
   const version = JSON.parse(asar.extractFile(sourceArchive, 'package.json').toString('utf8')).version;
   let originalUtils = asar.extractFile(sourceArchive, 'dist/utils.js').toString('utf8');
-  const hookLine = '    require("./meter-main").installContextMeter(win);\n';
+  const hookLine = '    try { require("./meter-main").installContextMeter(win); } catch (e) { console.error("[Context Meter] init failed:", e); }\n';
+  const legacyHookLine = '    require("./meter-main").installContextMeter(win);\n';
   const createWinSig = 'function createWindow(url, storageManager, options) {';
   const storageFallbackLine = '    if (storageManager) globalThis.__agDefaultStorageManager = storageManager; else if (globalThis.__agDefaultStorageManager) storageManager = globalThis.__agDefaultStorageManager;';
   const showOrCreateHookFocus = '        wins[0].focus();\n        try { require("./meter-main").installContextMeter(wins[0]); require("./meter-main").ensureMeterInjected(wins[0], { force: true }); } catch {}';
@@ -197,6 +302,7 @@ async function install(options = {}) {
       .replace('\n    try { require("./meter-main").ensureProxyEnvironment(env); } catch {}', '')
       .replace('\n' + storageFallbackLine, '')
       .replace(hookLine, '')
+      .replace(legacyHookLine, '')
       .replace(/\n\s*try\s*\{\s*require\("\.\/meter-main"\)\.installContextMeter\(wins\[0\]\);[\s\S]*?\}\s*catch\s*\{\}/g, '')
       .replace(/const _mWin = createWindow\(`\$\{constants_1\.WINDOW_ORIGIN\}:\$\{port\}\/`\);\s*\n\s*try\s*\{\s*require\("\.\/meter-main"\)\.installContextMeter\(_mWin\);[\s\S]*?\}\s*catch\s*\{\}/g, 'createWindow(`${constants_1.WINDOW_ORIGIN}:${port}/`);');
   }
@@ -247,10 +353,45 @@ async function install(options = {}) {
       const regex = /\r?\n?\/\/ Context Meter v2: narrow read-only conversation scan API\r?\nelectron_1\.contextBridge\.exposeInMainWorld\("contextMeterAPI",\s*\{[\s\S]*?\}\);\r?\n?/g;
       preloadContent = preloadContent.replace(regex, '\n');
     }
-    preloadContent += `\n${preloadMarker}\nelectron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTokenHistory: (force) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url) });\n`;
+    preloadContent += `\n${preloadMarker}\nelectron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTokenHistory: (force) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getKernelStatus: () => electron_1.ipcRenderer.invoke("context-meter:get-kernel-status"), applyKernelPatch: (payload) => electron_1.ipcRenderer.invoke("context-meter:apply-kernel-patch", payload), getI18nStatus: () => electron_1.ipcRenderer.invoke("context-meter:get-i18n-status"), applyI18nConfig: (payload) => electron_1.ipcRenderer.invoke("context-meter:apply-i18n-config", payload) });\n`;
     fs.writeFileSync(preloadPath, preloadContent);
 
+    // 解析并应用客户端界面汉化配置（antigravity2-cn 五模块协同注入/剥离）
+    const hasFullDesktopModules = fs.existsSync(path.join(staging, 'dist', 'menu.js'));
+    const savedI18n = readI18nConfig({
+      stateDir,
+      defaultLocale: hasFullDesktopModules ? 'zh-CN' : 'en',
+      defaultBrandTitle: 'english'
+    });
+    const explicitLocale = normalizeLocale(options.locale);
+    const explicitBrand = normalizeBrandTitle(options.brandTitle);
+    const effectiveLocale = explicitLocale || savedI18n.locale;
+    const effectiveBrandTitle = explicitBrand || savedI18n.brandTitle;
+    const resolvedPluginSourceDir = fs.existsSync(path.join(__dirname, 'dicts'))
+      ? __dirname
+      : (savedI18n.pluginSourceDir || previousManifest?.pluginSourceDir || null);
+
+    if (explicitLocale || explicitBrand || (hasFullDesktopModules && !savedI18n.exists)) {
+      saveI18nConfig(
+        { locale: effectiveLocale, brandTitle: effectiveBrandTitle, pluginSourceDir: resolvedPluginSourceDir },
+        { stateDir }
+      );
+    }
+    if (hasFullDesktopModules && resolvedPluginSourceDir) {
+      try {
+        cacheMergedDictionariesToState({ stateDir, dictsBaseDir: resolvedPluginSourceDir });
+      } catch {}
+    }
+
+    const i18nResult = applyI18nToStagingDir(staging, {
+      locale: effectiveLocale,
+      brandTitle: effectiveBrandTitle,
+      stateDir,
+      dictsBaseDir: resolvedPluginSourceDir
+    });
+
     const additions = [
+      'asar-engine.js',
       'meter-main.js',
       'meter-core.js',
       'meter-renderer.js',
@@ -258,6 +399,8 @@ async function install(options = {}) {
       'meter-storage.js',
       'meter-proxy.js',
       'meter-cli-launcher.js',
+      'meter-patcher.js',
+      'meter-i18n.js',
       'local-api.js',
       'attachment_scan.py'
     ];
@@ -268,7 +411,8 @@ async function install(options = {}) {
     const originalEntries = asar.listPackage(sourceArchive);
     for (const file of originalEntries) {
       const stat = asar.statFile(sourceArchive, file.slice(1));
-      if (stat.unpacked && !file.replaceAll('\\', '/').startsWith('/node_modules/chrome-devtools-mcp/')) {
+      const normalized = file.replaceAll('\\', '/');
+      if (stat.unpacked && !normalized.startsWith('/node_modules/chrome-devtools-mcp')) {
         throw new Error('Unexpected unpacked file; not installing.');
       }
     }
@@ -285,7 +429,12 @@ async function install(options = {}) {
     }
 
     let verified = 0;
-    const allowedChanges = ['dist/utils.js', 'dist/preload.js', ...additions.map(f => 'dist/' + f)].map(p => path.normalize(p));
+    const allowedChanges = Array.from(new Set([
+      'dist/utils.js',
+      'dist/preload.js',
+      ...i18nResult.touchedFiles,
+      ...additions.map(f => 'dist/' + f)
+    ])).map(p => path.normalize(p));
     for (const file of originalEntries) {
       const name = path.normalize(file.slice(1));
       const before = asar.statFile(sourceArchive, name);
@@ -313,6 +462,7 @@ async function install(options = {}) {
       }
     })();
 
+    const modifiedFiles = Array.from(new Set(['dist/utils.js', 'dist/preload.js', ...i18nResult.touchedFiles]));
     const manifest = {
       meterVersion: pkgVersion,
       version,
@@ -324,7 +474,12 @@ async function install(options = {}) {
       patchedSha256: sha(fs.readFileSync(packed)),
       originalFilesVerified: verified,
       added: additions.map(f => 'dist/' + f),
-      modified: ['dist/utils.js', 'dist/preload.js'],
+      modified: modifiedFiles,
+      pluginSourceDir: resolvedPluginSourceDir,
+      i18n: {
+        locale: effectiveLocale,
+        brandTitle: effectiveBrandTitle
+      },
       installedAt: new Date().toISOString()
     };
 
@@ -339,8 +494,23 @@ async function install(options = {}) {
     if (sha(fs.readFileSync(installed)) !== manifest.patchedSha256) {
       throw new Error('Installed checksum mismatch');
     }
+    if (typeof asar.uncache === 'function') {
+      try { asar.uncache(installed); } catch {}
+    }
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-    const liveInjected = await tryHotInject();
+    if (resolvedPluginSourceDir && hasFullDesktopModules) {
+      try {
+        syncOptionalProxyFiles(path.dirname(path.dirname(installed)), resolvedPluginSourceDir);
+      } catch {}
+    }
+    const liveInjected = options.skipHotInject ? false : await tryHotInject();
+    if (options.liveRefreshI18n) {
+      await applyLiveI18nToRunningWindows({
+        locale: effectiveLocale,
+        brandTitle: effectiveBrandTitle,
+        stateDir
+      });
+    }
     return { ...manifest, liveInjected };
   } finally {
     try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}
@@ -358,4 +528,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { install, findAsarPath, tryHotInject };
+module.exports = { install, findAsarPath, tryHotInject, applyLiveI18nToRunningWindows };

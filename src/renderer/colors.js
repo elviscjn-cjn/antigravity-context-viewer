@@ -461,6 +461,12 @@
     applyCustomColors();
   }
 
+  const THEME_ICONS_SVG = {
+    auto: '<svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5z" fill="currentColor" stroke="none"></path></svg>',
+    light: '<svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"></circle><path d="M8 1.6v1.6M8 12.8v1.6M1.6 8h1.6M12.8 8h1.6M3.5 3.5l1.1 1.1M11.4 11.4l1.1 1.1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1"></path></svg>',
+    dark: '<svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 9.8A5.6 5.6 0 0 1 6.2 2.8a5.6 5.6 0 1 0 7 7z"></path></svg>'
+  };
+
   function applyTheme() {
     const activeTheme = resolveTheme();
     host.setAttribute('data-theme', activeTheme);
@@ -469,13 +475,13 @@
     const btns = [el('theme-toggle'), el('theme-toggle-tokens')].filter(Boolean);
     btns.forEach(btn => {
       if (currentThemeMode === 'auto') {
-        btn.textContent = activeTheme === 'light' ? '🌗' : '🌓';
+        btn.innerHTML = THEME_ICONS_SVG.auto;
         btn.title = `当前主题：跟随宿主 (${activeTheme === 'light' ? '浅色' : '深色'})\n点击切换为：浅色模式`;
       } else if (currentThemeMode === 'light') {
-        btn.textContent = '☀️';
+        btn.innerHTML = THEME_ICONS_SVG.light;
         btn.title = '当前主题：浅色模式 (固定)\n点击切换为：深色模式';
       } else {
-        btn.textContent = '🌙';
+        btn.innerHTML = THEME_ICONS_SVG.dark;
         btn.title = '当前主题：深色模式 (固定)\n点击切换为：跟随宿主';
       }
     });

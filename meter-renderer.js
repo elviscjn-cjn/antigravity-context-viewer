@@ -48,70 +48,72 @@
   shadow.innerHTML = `<style>
     :host{
       position:fixed;top:6px;right:138px;z-index:2147483000;
-      font:12px/1.4 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+      font:12px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
       -webkit-app-region:no-drag;user-select:none;display:inline-flex;align-items:center;gap:2px;
       height:28px;flex-shrink:0;vertical-align:middle;
 
-      /* 优先复用 Antigravity 0 级宿主主题变量，无变量时回退深色默认值 */
-      --ag-toolbar-fg:var(--secondary-foreground,#b8b8c0);
-      --ag-toolbar-fg-hover:var(--foreground,#ececef);
+      /* 宿主 0 级主题融合变量 */
+      --ag-toolbar-fg:var(--secondary-foreground,#b4b4be);
+      --ag-toolbar-fg-hover:var(--foreground,#f2f2f5);
       --ag-toolbar-bg:transparent;
-      --ag-toolbar-bg-hover:var(--secondary,rgba(255,255,255,0.08));
+      --ag-toolbar-bg-hover:var(--secondary,rgba(255,255,255,0.075));
       --ag-toolbar-bg-active:var(--secondary,rgba(255,255,255,0.12));
-      --ag-toolbar-border-focus:var(--primary,rgba(128,128,128,0.45));
-      --ag-divider:var(--border,rgba(255,255,255,0.08));
+      --ag-toolbar-border-focus:var(--primary,rgba(148,163,184,0.45));
+      --ag-divider:var(--border,rgba(255,255,255,0.07));
 
-      /* 圆环与各指标默认主题色 */
-      --ag-ring-track-default:rgba(255,255,255,0.20);
-      --ag-ring-used-default:#e6e6eb;
+      /* 圆环与核心遥测色 */
+      --ag-ring-track-default:rgba(255,255,255,0.18);
+      --ag-ring-used-default:#e4e4ea;
       --ag-ring-warn:#f59e0b;
       --ag-ring-danger:#ef4444;
 
-      --ag-context-text-default:#ececef;
-      --ag-speed-default:#b8b8c0;
-      --ag-token-total-default:#b8b8c0;
+      --ag-context-text-default:#f0f0f4;
+      --ag-speed-default:#b4b4be;
+      --ag-token-total-default:#b4b4be;
       --ag-token-accent-default:#a78bfa;
 
-      /* 0 级主题背景与一级/二级严格统一背景色 */
-      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#181818));
+      /* 面板基底与微层阶表面 */
+      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#161618));
       --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
+      --ag-surface-elevated:rgba(255,255,255,0.032);
+      --ag-surface-hover:rgba(255,255,255,0.055);
+      --ag-surface-active:rgba(255,255,255,0.09);
 
       --ag-float-bg:var(--ag-unified-bg);
-      --ag-float-border:rgba(255,255,255,0.12);
-      --ag-float-shadow:0 12px 32px rgba(0,0,0,0.52),0 2px 8px rgba(0,0,0,0.32);
+      --ag-float-border:rgba(255,255,255,0.10);
+      --ag-float-shadow:0 16px 36px -6px rgba(0,0,0,0.58),0 4px 12px rgba(0,0,0,0.32);
 
       --ag-bg-panel:var(--ag-unified-bg);
-      --ag-border-panel:rgba(255,255,255,0.11);
-      --ag-shadow-panel:0 16px 40px rgba(0,0,0,0.58),0 2px 10px rgba(0,0,0,0.32);
-      --ag-text-primary:#ececef;
-      --ag-text-secondary:#c8c8d0;
-      --ag-text-muted:#8a8a94;
-      --ag-border-subtle:rgba(255,255,255,0.08);
+      --ag-border-panel:rgba(255,255,255,0.095);
+      --ag-shadow-panel:0 20px 48px -8px rgba(0,0,0,0.64),0 4px 14px rgba(0,0,0,0.34);
+      --ag-text-primary:#f0f0f4;
+      --ag-text-secondary:#c2c2cc;
+      --ag-text-muted:#858592;
+      --ag-border-subtle:rgba(255,255,255,0.068);
 
-      /* 一级面板与二级内部菜单/卡片/抽屉背景严格一致 */
-      --ag-bg-card:var(--ag-unified-bg);
-      --ag-bg-card-hover:var(--ag-unified-bg);
-      --ag-border-card:rgba(255,255,255,0.09);
-      --ag-bg-subcard:var(--ag-unified-bg);
-      --ag-border-subcard:rgba(255,255,255,0.08);
-      --ag-bg-status:var(--ag-unified-bg);
-      --ag-text-status:#c8c8d0;
+      --ag-bg-card:var(--ag-surface-elevated);
+      --ag-bg-card-hover:var(--ag-surface-hover);
+      --ag-border-card:rgba(255,255,255,0.072);
+      --ag-bg-subcard:rgba(255,255,255,0.026);
+      --ag-border-subcard:rgba(255,255,255,0.072);
+      --ag-bg-status:rgba(255,255,255,0.03);
+      --ag-text-status:#d0d0da;
 
-      --ag-btn-bg:var(--ag-unified-bg);
-      --ag-btn-hover:rgba(255,255,255,0.08);
-      --ag-btn-border:rgba(255,255,255,0.12);
-      --ag-btn-border-hover:rgba(255,255,255,0.22);
-      --ag-btn-text:#d4d4d8;
+      --ag-btn-bg:rgba(255,255,255,0.03);
+      --ag-btn-hover:rgba(255,255,255,0.075);
+      --ag-btn-border:rgba(255,255,255,0.10);
+      --ag-btn-border-hover:rgba(255,255,255,0.20);
+      --ag-btn-text:#dcdce4;
 
-      --ag-pill-muted-bg:var(--ag-unified-bg);
-      --ag-pill-muted-border:rgba(255,255,255,0.12);
-      --ag-pill-muted-text:#9a9aa2;
+      --ag-pill-muted-bg:rgba(255,255,255,0.045);
+      --ag-pill-muted-border:rgba(255,255,255,0.09);
+      --ag-pill-muted-text:#9898a6;
 
-      --ag-track-bg:rgba(255,255,255,0.12);
+      --ag-track-bg:rgba(255,255,255,0.095);
       --ag-track-shadow:none;
 
-      --ag-heat-bg:var(--ag-unified-bg);
-      --ag-heat-lvl-0:#27272a;
+      --ag-heat-bg:var(--ag-surface-elevated);
+      --ag-heat-lvl-0:#26262b;
       --ag-heat-lvl-1:#3f1e6b;
       --ag-heat-lvl-2:#652ab7;
       --ag-heat-lvl-3:#9053f8;
@@ -125,44 +127,38 @@
       --ag-pop-muted:var(--ag-text-secondary);
       --ag-pop-sub:var(--ag-text-muted);
 
-      --ag-scrollbar-thumb:rgba(255,255,255,0.16);
-      --ag-scrollbar-hover:rgba(255,255,255,0.28);
+      --ag-scrollbar-thumb:rgba(255,255,255,0.14);
+      --ag-scrollbar-hover:rgba(255,255,255,0.26);
 
-      --ag-bg-input:rgba(255,255,255,0.06);
-      --ag-select-option-bg:#222226;
-      --ag-select-option-fg:#ececef;
+      --ag-bg-input:rgba(255,255,255,0.048);
+      --ag-select-option-bg:#202025;
+      --ag-select-option-fg:#f0f0f4;
 
       color-scheme:dark;
       color:var(--ag-text-primary);
     }
 
-    /* 融入宿主原生布局容器时参与正常 Flexbox 空间分配 */
     :host([data-dock="flow"]){
       position:relative !important;top:auto !important;right:auto !important;left:auto !important;bottom:auto !important;z-index:20;
       margin-right:4px;
     }
 
-    /* 窗口非活动状态适度降低顶栏对比度 */
-    :host([data-window-active="false"]) .ag-unit{
-      opacity:0.72;
-    }
+    :host([data-window-active="false"]) .ag-unit{opacity:0.72}
     :host([data-window-active="false"]) .ag-unit:hover,
-    :host([data-window-active="false"]) .ag-unit:focus-visible{
-      opacity:1;
-    }
+    :host([data-window-active="false"]) .ag-unit:focus-visible{opacity:1}
 
-    /* 浅色模式规范（与 0 级浅色主题协调，且一级/二级背景严格统一） */
+    /* 浅色模式规范 */
     :host([data-theme="light"]),
     :host([data-panel-tone="light"]){
       --ag-toolbar-fg:#52525b;
       --ag-toolbar-fg-hover:#18181b;
       --ag-toolbar-bg:transparent;
-      --ag-toolbar-bg-hover:rgba(0,0,0,0.06);
-      --ag-toolbar-bg-active:rgba(0,0,0,0.10);
-      --ag-toolbar-border-focus:rgba(0,0,0,0.35);
-      --ag-divider:rgba(0,0,0,0.08);
+      --ag-toolbar-bg-hover:rgba(0,0,0,0.055);
+      --ag-toolbar-bg-active:rgba(0,0,0,0.095);
+      --ag-toolbar-border-focus:rgba(0,0,0,0.32);
+      --ag-divider:rgba(0,0,0,0.075);
 
-      --ag-ring-track-default:rgba(0,0,0,0.18);
+      --ag-ring-track-default:rgba(0,0,0,0.15);
       --ag-ring-used-default:#18181b;
       --ag-ring-warn:#d97706;
       --ag-ring-danger:#dc2626;
@@ -174,41 +170,44 @@
 
       --ag-bg-panel-default:var(--ag-host-bg,var(--background,#ffffff));
       --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
+      --ag-surface-elevated:rgba(0,0,0,0.026);
+      --ag-surface-hover:rgba(0,0,0,0.048);
+      --ag-surface-active:rgba(0,0,0,0.075);
 
       --ag-float-bg:var(--ag-unified-bg);
-      --ag-float-border:rgba(0,0,0,0.12);
-      --ag-float-shadow:0 8px 24px rgba(0,0,0,0.12),0 2px 6px rgba(0,0,0,0.06);
+      --ag-float-border:rgba(0,0,0,0.10);
+      --ag-float-shadow:0 12px 28px -4px rgba(0,0,0,0.12),0 2px 8px rgba(0,0,0,0.06);
 
       --ag-bg-panel:var(--ag-unified-bg);
-      --ag-border-panel:rgba(0,0,0,0.12);
-      --ag-shadow-panel:0 14px 36px rgba(0,0,0,0.14),0 2px 8px rgba(0,0,0,0.06);
+      --ag-border-panel:rgba(0,0,0,0.10);
+      --ag-shadow-panel:0 16px 40px -6px rgba(0,0,0,0.14),0 3px 10px rgba(0,0,0,0.06);
       --ag-text-primary:#18181b;
       --ag-text-secondary:#3f3f46;
       --ag-text-muted:#71717a;
-      --ag-border-subtle:rgba(0,0,0,0.08);
+      --ag-border-subtle:rgba(0,0,0,0.07);
 
-      --ag-bg-card:var(--ag-unified-bg);
-      --ag-bg-card-hover:var(--ag-unified-bg);
-      --ag-border-card:rgba(0,0,0,0.10);
-      --ag-bg-subcard:var(--ag-unified-bg);
-      --ag-border-subcard:rgba(0,0,0,0.09);
-      --ag-bg-status:var(--ag-unified-bg);
+      --ag-bg-card:var(--ag-surface-elevated);
+      --ag-bg-card-hover:var(--ag-surface-hover);
+      --ag-border-card:rgba(0,0,0,0.075);
+      --ag-bg-subcard:rgba(0,0,0,0.024);
+      --ag-border-subcard:rgba(0,0,0,0.075);
+      --ag-bg-status:rgba(0,0,0,0.028);
       --ag-text-status:#27272a;
 
-      --ag-btn-bg:var(--ag-unified-bg);
-      --ag-btn-hover:rgba(0,0,0,0.05);
-      --ag-btn-border:rgba(0,0,0,0.12);
-      --ag-btn-border-hover:rgba(0,0,0,0.22);
+      --ag-btn-bg:rgba(0,0,0,0.025);
+      --ag-btn-hover:rgba(0,0,0,0.055);
+      --ag-btn-border:rgba(0,0,0,0.10);
+      --ag-btn-border-hover:rgba(0,0,0,0.20);
       --ag-btn-text:#18181b;
 
-      --ag-pill-muted-bg:var(--ag-unified-bg);
-      --ag-pill-muted-border:rgba(0,0,0,0.12);
+      --ag-pill-muted-bg:rgba(0,0,0,0.04);
+      --ag-pill-muted-border:rgba(0,0,0,0.085);
       --ag-pill-muted-text:#52525b;
 
-      --ag-track-bg:rgba(0,0,0,0.08);
+      --ag-track-bg:rgba(0,0,0,0.075);
       --ag-track-shadow:none;
 
-      --ag-heat-bg:var(--ag-unified-bg);
+      --ag-heat-bg:var(--ag-surface-elevated);
       --ag-heat-lvl-0:#e4e4e7;
       --ag-heat-lvl-1:#e9d5ff;
       --ag-heat-lvl-2:#c084fc;
@@ -216,10 +215,10 @@
       --ag-heat-lvl-4:#6b21a8;
       --ag-heat-outline:#18181b;
 
-      --ag-scrollbar-thumb:rgba(0,0,0,0.16);
-      --ag-scrollbar-hover:rgba(0,0,0,0.28);
+      --ag-scrollbar-thumb:rgba(0,0,0,0.15);
+      --ag-scrollbar-hover:rgba(0,0,0,0.26);
 
-      --ag-bg-input:rgba(0,0,0,0.04);
+      --ag-bg-input:rgba(0,0,0,0.036);
       --ag-select-option-bg:#ffffff;
       --ag-select-option-fg:#18181b;
 
@@ -228,6 +227,7 @@
     }
 
     *{box-sizing:border-box}
+    ::selection{background:rgba(56,189,248,0.25);color:var(--ag-text-primary)}
     .sr-only{
       position:absolute!important;width:1px!important;height:1px!important;
       padding:0!important;margin:-1px!important;overflow:hidden!important;
@@ -240,14 +240,14 @@
     button{font:inherit;color:inherit;cursor:pointer;background:none;border:0;padding:0}
     button:focus-visible{outline:1.5px solid var(--ag-toolbar-border-focus);outline-offset:1px}
 
-    /* Basic Unit: 原生工具栏级别精密小单元 */
+    /* 顶栏常驻微胶囊 */
     .ag-unit{
       display:inline-flex;align-items:center;justify-content:center;
-      height:28px;padding:0 7px;border-radius:8px;border:1px solid transparent;
+      height:28px;padding:0 7px;border-radius:7px;border:1px solid transparent;
       background:var(--ag-toolbar-bg);color:var(--ag-toolbar-fg);
       white-space:nowrap;font-variant-numeric:tabular-nums;
       font-size:12px;font-weight:500;letter-spacing:-0.01em;gap:4px;
-      transition:background-color .14s ease,color .14s ease,border-color .14s ease,opacity .14s ease,transform .1s cubic-bezier(0.16,1,0.3,1);
+      transition:background-color .14s ease,color .14s ease,opacity .14s ease,transform .1s cubic-bezier(0.16,1,0.3,1);
       flex-shrink:0;
     }
     .ag-unit:hover,.ag-unit:focus-visible,.ag-unit[aria-expanded="true"]{
@@ -256,143 +256,73 @@
     }
     .ag-unit:active{
       background:var(--ag-toolbar-bg-active);
-      transform:scale(0.96);
+      transform:scale(0.97);
     }
 
-    /* 单元 1: 上下文小圆环按钮（按内容自适应，圆环+百分比共存） */
     #badge.ag-unit-ring{
-      width:auto!important;
-      min-width:28px;
-      height:28px;
-      padding:0 6px 0 4px;
-      gap:3px;
-      display:inline-flex;
-      align-items:center;
-      justify-content:center;
+      width:auto!important;min-width:28px;height:28px;padding:0 6px 0 4px;gap:3px;
+      display:inline-flex;align-items:center;justify-content:center;
     }
     :host([data-layout="ring-only"]) #badge.ag-unit-ring{
-      width:28px!important;
-      min-width:28px!important;
-      padding:0!important;
-      gap:0!important;
+      width:28px!important;min-width:28px!important;padding:0!important;gap:0!important;
     }
-    .ring-svg{
-      width:18px;height:18px;display:block;flex-shrink:0;overflow:visible;
-    }
-    .ring-track{
-      stroke:var(--ag-custom-ring-track,var(--ag-ring-track-default));
-    }
+    .ring-svg{width:18px;height:18px;display:block;flex-shrink:0;overflow:visible}
+    .ring-track{stroke:var(--ag-custom-ring-track,var(--ag-ring-track-default))}
     .ring-fill{
       stroke:var(--ag-custom-ring-used,var(--ag-ring-used-default));
       transition:stroke-dasharray .22s ease,opacity .15s ease;
     }
-    :host([data-occupancy="warn"]) .ring-fill{
-      stroke:var(--ag-ring-warn);
-    }
-    :host([data-occupancy="danger"]) .ring-fill{
-      stroke:var(--ag-ring-danger);
-    }
+    :host([data-occupancy="warn"]) .ring-fill{stroke:var(--ag-ring-warn)}
+    :host([data-occupancy="danger"]) .ring-fill{stroke:var(--ag-ring-danger)}
 
-    /* 单元 2: 输出速度 */
-    #badge-speed{
-      color:var(--ag-custom-speed,var(--ag-speed-default));
-      min-width:54px;
-      justify-content:flex-start;
-    }
+    #badge-speed{color:var(--ag-custom-speed,var(--ag-speed-default));min-width:54px;justify-content:flex-start}
     #badge-speed:hover,#badge-speed:focus-visible,#badge-speed[aria-expanded="true"]{
       color:var(--ag-custom-speed,var(--ag-toolbar-fg-hover));
     }
-    .speed-icon{
-      width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;
-      flex-shrink:0;opacity:0.88;font-size:11.5px;line-height:1;
-    }
-    #speed-amount{
-      font-variant-numeric:tabular-nums;
-      display:inline-block;
-      min-width:32px;
-      text-align:left;
-      color:inherit;
-    }
+    .speed-icon{width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;opacity:0.85}
+    #speed-amount{font-variant-numeric:tabular-nums;display:inline-block;min-width:32px;text-align:left;color:inherit}
 
-    /* 单元 3: 累计 Token 用量 */
-    #badge-tokens{
-      color:var(--ag-custom-token-total,var(--ag-token-total-default));
-      min-width:68px;
-      justify-content:flex-start;
-    }
+    #badge-tokens{color:var(--ag-custom-token-total,var(--ag-token-total-default));min-width:68px;justify-content:flex-start}
     #badge-tokens:hover,#badge-tokens:focus-visible,#badge-tokens[aria-expanded="true"]{
       color:var(--ag-custom-token-total,var(--ag-toolbar-fg-hover));
     }
     .token-fire-dot{
       width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;
-      color:var(--ag-custom-token-accent,var(--ag-token-accent-default));
-      flex-shrink:0;opacity:0.95;
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default));flex-shrink:0;opacity:0.95;
     }
     .badge-pct-val{
       font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;
-      color:var(--ag-custom-context-text,var(--ag-context-text-default));
-      padding-left:2px;
+      color:var(--ag-custom-context-text,var(--ag-context-text-default));padding-left:2px;
     }
-    :host([data-layout="ring-only"]) .badge-pct-val{
-      display:none!important;
-    }
-    #token-amount{
-      font-variant-numeric:tabular-nums;
-      display:inline-block;
-      min-width:38px;
-      text-align:left;
-      color:inherit;
-    }
+    :host([data-layout="ring-only"]) .badge-pct-val{display:none!important}
+    #token-amount{font-variant-numeric:tabular-nums;display:inline-block;min-width:38px;text-align:left;color:inherit}
 
-    /* 下拉选择框与选项在深浅主题下的高对比度保底 */
-    select {
-      background-color: var(--ag-bg-input, rgba(255,255,255,0.08)) !important;
-      color: var(--ag-text-primary, #ececef) !important;
-      border: 1px solid var(--ag-border-subcard, rgba(255,255,255,0.15)) !important;
-      border-radius: 4px;
-      outline: none;
-      color-scheme: dark;
+    select{
+      background-color:var(--ag-bg-input) !important;
+      color:var(--ag-text-primary) !important;
+      border:1px solid var(--ag-border-subcard) !important;
+      border-radius:5px;outline:none;color-scheme:dark;
     }
     :host([data-theme="light"]) select,
-    :host([data-panel-tone="light"]) select {
-      background-color: var(--ag-bg-input, #f4f4f5) !important;
-      color: var(--ag-text-primary, #18181b) !important;
-      border-color: var(--ag-border-subcard, rgba(0,0,0,0.15)) !important;
-      color-scheme: light;
+    :host([data-panel-tone="light"]) select{
+      background-color:var(--ag-bg-input) !important;
+      color:var(--ag-text-primary) !important;
+      border-color:var(--ag-border-subcard) !important;
+      color-scheme:light;
     }
-    select option {
-      background-color: var(--ag-select-option-bg, #27272a) !important;
-      color: var(--ag-select-option-fg, #f4f4f5) !important;
-    }
-    :host([data-theme="light"]) select option,
-    :host([data-panel-tone="light"]) select option {
-      background-color: #ffffff !important;
-      color: #18181b !important;
+    select option{
+      background-color:var(--ag-select-option-bg) !important;
+      color:var(--ag-select-option-fg) !important;
     }
 
-    /* 单元 4: 一键启动 CLI 按钮 */
-    #badge-cli{
-      color:var(--ag-toolbar-fg);
-      min-width:44px;
-      padding:0 6px;
-      gap:3px;
-      justify-content:center;
-    }
-    #badge-cli:hover,#badge-cli:focus-visible{
-      color:var(--ag-toolbar-fg-hover);
-    }
-    #badge-cli[data-busy="true"]{
-      opacity:0.65;
-      pointer-events:none;
-    }
+    #badge-cli{color:var(--ag-toolbar-fg);min-width:44px;padding:0 6px;gap:3px;justify-content:center}
+    #badge-cli:hover,#badge-cli:focus-visible{color:var(--ag-toolbar-fg-hover)}
+    #badge-cli[data-busy="true"]{opacity:0.65;pointer-events:none}
     .cli-icon{
-      font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
-      font-size:10.5px;font-weight:700;
-      color:var(--ag-custom-token-accent,var(--ag-token-accent-default));
-      line-height:1;
+      font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10.5px;font-weight:700;
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default));line-height:1;
     }
 
-    /* CLI 启动状态提示浮层 */
     #cli-launch-toast{
       position:fixed;top:38px;right:140px;z-index:2147483650;
       max-width:360px;padding:7px 11px;border-radius:8px;
@@ -402,47 +332,25 @@
       pointer-events:auto;transition:opacity .15s ease,transform .15s ease;
     }
     #cli-launch-toast[hidden]{display:none!important}
-    #cli-launch-toast[data-tone="error"]{
-      border-color:rgba(239,68,68,0.45);
-      color:#f87171;
-    }
-    :host([data-theme="light"]) #cli-launch-toast[data-tone="error"]{
-      color:#dc2626;
-    }
+    #cli-launch-toast[data-tone="error"]{border-color:rgba(239,68,68,0.38);color:#f87171}
+    :host([data-theme="light"]) #cli-launch-toast[data-tone="error"]{color:#dc2626}
 
-    /* 单元 5: 窄屏溢出菜单入口 */
-    #badge-overflow{
-      width:28px;height:28px;padding:0;display:none;
-    }
-    .overflow-icon{
-      width:16px;height:16px;display:block;
-    }
+    #badge-overflow{width:28px;height:28px;padding:0;display:none}
+    .overflow-icon{width:16px;height:16px;display:block}
 
-    /* 渐进式宽度收缩四阶段: wide -> compact -> minimal -> ring-only */
-    :host([data-layout="compact"]){
-      gap:1px;
-    }
+    :host([data-layout="compact"]){gap:1px}
     :host([data-layout="compact"]) #badge-speed,
     :host([data-layout="compact"]) #badge-tokens,
-    :host([data-layout="compact"]) #badge-cli{
-      padding:0 5px;font-size:11.5px;gap:3px;
-    }
+    :host([data-layout="compact"]) #badge-cli{padding:0 5px;font-size:11.5px;gap:3px}
     :host([data-layout="minimal"]) #badge-speed,
     :host([data-layout="minimal"]) #badge-tokens,
-    :host([data-layout="minimal"]) #badge-cli{
-      display:none!important;
-    }
-    :host([data-layout="minimal"]) #badge-overflow{
-      display:inline-flex!important;
-    }
+    :host([data-layout="minimal"]) #badge-cli{display:none!important}
+    :host([data-layout="minimal"]) #badge-overflow{display:inline-flex!important}
     :host([data-layout="ring-only"]) #badge-speed,
     :host([data-layout="ring-only"]) #badge-tokens,
     :host([data-layout="ring-only"]) #badge-cli,
-    :host([data-layout="ring-only"]) #badge-overflow{
-      display:none!important;
-    }
+    :host([data-layout="ring-only"]) #badge-overflow{display:none!important}
 
-    /* 上下文悬停信息气泡（严格还原参考图三层结构） */
     #context-tooltip{
       position:fixed;top:0;left:0;z-index:2147483600;
       min-width:166px;max-width:268px;padding:9px 13px;
@@ -454,33 +362,16 @@
       transition:opacity .12s ease,transform .12s ease,visibility .12s ease;
       font-variant-numeric:tabular-nums;
     }
-    #context-tooltip[data-visible="true"]{
-      opacity:1;visibility:visible;transform:translateY(0);
-    }
-    .ctx-tip-title{
-      font-size:12px;line-height:1.35;font-weight:500;
-      color:var(--ag-text-muted);margin-bottom:2px;
-    }
-    .ctx-tip-pct{
-      font-size:13px;line-height:1.38;font-weight:600;
-      color:var(--ag-custom-context-text,var(--ag-context-text-default));
-    }
-    :host([data-occupancy="warn"]) .ctx-tip-pct{
-      color:var(--ag-ring-warn);
-    }
-    :host([data-occupancy="danger"]) .ctx-tip-pct{
-      color:var(--ag-ring-danger);
-    }
-    .ctx-tip-detail{
-      font-size:12.5px;line-height:1.38;font-weight:500;
-      color:var(--ag-custom-context-text,var(--ag-text-secondary));
-      margin-top:1px;
-    }
+    #context-tooltip[data-visible="true"]{opacity:1;visibility:visible;transform:translateY(0)}
+    .ctx-tip-title{font-size:11.5px;line-height:1.35;font-weight:500;color:var(--ag-text-muted);margin-bottom:2px}
+    .ctx-tip-pct{font-size:13px;line-height:1.38;font-weight:600;color:var(--ag-custom-context-text,var(--ag-context-text-default))}
+    :host([data-occupancy="warn"]) .ctx-tip-pct{color:var(--ag-ring-warn)}
+    :host([data-occupancy="danger"]) .ctx-tip-pct{color:var(--ag-ring-danger)}
+    .ctx-tip-detail{font-size:12px;line-height:1.38;font-weight:500;color:var(--ag-custom-context-text,var(--ag-text-secondary));margin-top:1px}
 
-    /* 窄屏溢出菜单浮层 */
     #overflow-menu{
       position:fixed;top:36px;right:12px;z-index:2147483500;
-      width:220px;padding:6px;border-radius:10px;
+      width:220px;padding:5px;border-radius:10px;
       border:1px solid var(--ag-float-border);
       background:var(--ag-float-bg);color:var(--ag-text-primary);
       box-shadow:var(--ag-float-shadow);
@@ -491,384 +382,420 @@
       padding:7px 9px;border-radius:7px;font-size:12px;color:var(--ag-text-secondary);
       text-align:left;transition:background-color .12s ease,color .12s ease;
     }
-    .overflow-item:hover,.overflow-item:focus-visible{
-      background:var(--ag-toolbar-bg-hover);color:var(--ag-text-primary);
-    }
+    .overflow-item:hover,.overflow-item:focus-visible{background:var(--ag-toolbar-bg-hover);color:var(--ag-text-primary)}
     .overflow-item-label{display:flex;align-items:center;gap:6px;font-weight:500}
     .overflow-item-val{font-weight:600;font-variant-numeric:tabular-nums;color:var(--ag-text-primary)}
 
-    /* 详情二级抽屉折叠交互 */
-    .tech-drawer{margin-top:10px;border-top:1px solid var(--ag-border-subtle);padding-top:9px}
-    .drawer-trigger{
-      width:100%;display:flex;justify-content:space-between;align-items:center;
-      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
-      border-radius:7px;padding:7px 11px;color:var(--ag-text-secondary);font-size:11.5px;font-weight:500;
-      cursor:pointer;transition:background-color .15s ease,border-color .15s ease,color .15s ease;
+    /* =========================================================================
+       弹出主面板骨架 (#panel 与 #panel-tokens)
+       ========================================================================= */
+    .ag-panel{
+      box-sizing:border-box;
+      position:fixed;top:38px;left:auto;right:16px;z-index:2147483500;
+      max-width:calc(100vw - 24px);max-height:calc(100vh - 52px);
+      overflow-y:auto;overflow-x:hidden;
+      border:1px solid var(--ag-border-panel);border-radius:12px;
+      background:var(--ag-bg-panel);color:var(--ag-text-primary);
+      box-shadow:var(--ag-shadow-panel);padding:13px 15px 15px;
+      opacity:1;transform:translateY(0);visibility:visible;pointer-events:auto;
+      transform-origin:top right;
+      transition:opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1),visibility .16s ease;
+      contain:layout paint;
     }
-    .drawer-trigger:hover{background:var(--ag-bg-card-hover);color:var(--ag-text-primary);border-color:var(--ag-border-card)}
-    .drawer-trigger-left{display:flex;align-items:center;gap:6px}
-    .drawer-arrow{font-size:11px;color:var(--ag-text-muted);font-weight:600}
-    .drawer-body{margin-top:9px}
+    #panel{width:428px}
+    #panel-tokens{
+      width:696px;
+      transition:width .22s cubic-bezier(0.16,1,0.3,1),left .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1);
+    }
+    #panel-tokens.cost-compact-view{width:400px!important;max-width:calc(100vw - 24px)}
+    .ag-panel[hidden]{display:block!important;opacity:0;transform:translateY(-6px);visibility:hidden;pointer-events:none}
 
-    /* 自定义颜色设置网格与自定义颜色选取器面板 */
-    .color-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:6px}
+    /* 统一粘性顶栏 */
+    .panel-header-bar{
+      position:sticky;top:-13px;background:var(--ag-bg-panel);z-index:20;
+      margin:-13px -15px 11px;padding:12px 15px 10px;
+      display:flex;justify-content:space-between;align-items:center;
+      border-bottom:1px solid var(--ag-border-subtle);
+    }
+    .panel-title{display:flex;align-items:center;gap:6px}
+    .panel-title-text{font-size:13px;font-weight:600;letter-spacing:-0.01em;color:var(--ag-text-primary)}
+    .panel-title-tokens .panel-title-text{color:var(--ag-text-primary)}
+    #v{
+      color:var(--ag-text-muted);font-size:10.5px;font-weight:500;
+      font-variant-numeric:tabular-nums;margin-left:2px;opacity:0.85;
+    }
+    .panel-header-actions{display:flex;align-items:center;gap:2px}
+    .panel-icon-btn{
+      width:26px;height:26px;padding:0;border-radius:6px;
+      color:var(--ag-text-muted);background:transparent;border:0;
+      display:inline-flex;align-items:center;justify-content:center;
+      transition:background-color .14s ease,color .14s ease;
+    }
+    .panel-icon-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
+    .panel-icon-btn.is-active{
+      color:var(--ag-text-primary);
+      background:var(--ag-surface-active);
+    }
+
+    /* =========================================================================
+       #panel 顶部三栏分段导航（替代全部纵向折叠抽屉）
+       ========================================================================= */
+    .ctx-seg-nav{
+      display:grid;grid-template-columns:1fr 1.35fr 1fr;gap:3px;
+      background:var(--ag-surface-elevated);
+      border:1px solid var(--ag-border-subtle);
+      border-radius:8px;padding:3px;margin-bottom:12px;
+    }
+    .ctx-seg-btn{
+      height:26px;padding:0 8px;border-radius:6px;
+      font-size:11.5px;font-weight:500;color:var(--ag-text-muted);
+      display:inline-flex;align-items:center;justify-content:center;gap:5px;
+      white-space:nowrap;transition:background-color .15s ease,color .15s ease,box-shadow .15s ease;
+    }
+    .ctx-seg-btn:hover{color:var(--ag-text-secondary)}
+    .ctx-seg-btn.is-active{
+      background:var(--ag-unified-bg);
+      color:var(--ag-text-primary);
+      font-weight:600;
+      box-shadow:0 1px 3px rgba(0,0,0,0.22),0 0 0 1px var(--ag-border-subtle);
+    }
+    :host([data-theme="light"]) .ctx-seg-btn.is-active{
+      box-shadow:0 1px 2px rgba(0,0,0,0.08),0 0 0 1px rgba(0,0,0,0.06);
+    }
+    .ctx-seg-badge{
+      font-size:9.5px;font-weight:600;line-height:1.2;
+      padding:1px 5px;border-radius:999px;
+      background:rgba(255,255,255,0.06);color:var(--ag-text-muted);
+      font-variant-numeric:tabular-nums;max-width:110px;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    .ctx-seg-badge.pill-good{
+      background:rgba(56,189,248,0.13);
+      color:#38bdf8;
+      border:0;
+    }
+    :host([data-theme="light"]) .ctx-seg-badge.pill-good{
+      background:rgba(2,132,199,0.10);
+      color:#0284c7;
+    }
+    .ctx-seg-badge.pill-muted{
+      background:rgba(255,255,255,0.055);
+      color:var(--ag-text-muted);
+      border:0;
+    }
+    :host([data-theme="light"]) .ctx-seg-badge.pill-muted{
+      background:rgba(0,0,0,0.05);
+      color:var(--ag-text-muted);
+    }
+
+    @keyframes agSmoothExpand{
+      0%{opacity:0;transform:translateY(3px)}
+      100%{opacity:1;transform:translateY(0)}
+    }
+    .ctx-pane:not([style*="display: none"]),
+    .collapsible-pane:not([style*="display: none"]),
+    #plan-detail-card:not([style*="display: none"]),
+    #plan-custom-form:not([style*="display: none"]),
+    #cost-details-pane:not([style*="display: none"]),
+    .token-palette-pane:not([style*="display: none"]){
+      animation:agSmoothExpand 0.16s cubic-bezier(0.16,1,0.3,1) forwards;
+    }
+
+    /* =========================================================================
+       #panel 分页 1: 概览（去嵌套小黑框，清爽遥测排版）
+       ========================================================================= */
+    .telemetry-section{padding:2px 0 11px}
+    .telemetry-divider{border-top:1px solid var(--ag-border-subtle);padding-top:12px}
+
+    .key-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+    .key-title{font-size:12px;font-weight:600;letter-spacing:-0.01em;color:var(--ag-text-primary);display:flex;align-items:center;gap:5px}
+    .key-pill{
+      font-size:10.5px;font-weight:600;padding:1.5px 7px;border-radius:999px;
+      border:1px solid transparent;line-height:1.3;
+    }
+    .pill-good{color:#34d399;background:rgba(16,185,129,0.11);border-color:rgba(16,185,129,0.22)}
+    :host([data-theme="light"]) .pill-good{color:#059669;background:rgba(16,185,129,0.09);border-color:rgba(16,185,129,0.25)}
+    .pill-warn{color:#fbbf24;background:rgba(245,158,11,0.12);border-color:rgba(245,158,11,0.25)}
+    :host([data-theme="light"]) .pill-warn{color:#d97706;background:rgba(245,158,11,0.10);border-color:rgba(245,158,11,0.28)}
+    .pill-danger{color:#f87171;background:rgba(239,68,68,0.13);border-color:rgba(239,68,68,0.28)}
+    :host([data-theme="light"]) .pill-danger{color:#dc2626;background:rgba(239,68,68,0.09);border-color:rgba(239,68,68,0.28)}
+    .pill-muted{color:var(--ag-pill-muted-text);background:var(--ag-pill-muted-bg);border-color:var(--ag-pill-muted-border)}
+
+    .key-bar-track{
+      width:100%;height:7px;background:var(--ag-custom-ring-track,var(--ag-track-bg));
+      border-radius:999px;overflow:hidden;margin-bottom:11px;
+    }
+    .key-bar-fill{
+      height:100%;width:0%;border-radius:999px;
+      background:var(--ag-custom-ring-used,var(--bar-color,#38bdf8));
+      transition:width .24s cubic-bezier(0.16,1,0.3,1),background-color .2s ease;
+    }
+    :host([data-occupancy="warn"]) .key-bar-fill{background:var(--ag-ring-warn)}
+    :host([data-occupancy="danger"]) .key-bar-fill{background:var(--ag-ring-danger)}
+
+    .key-stats{
+      display:grid;grid-template-columns:1.15fr 0.85fr 1.15fr;gap:0;
+      margin-bottom:8px;
+    }
+    .key-stats-4{grid-template-columns:repeat(4,1fr)}
+    .key-stat{padding:2px 10px;text-align:left}
+    .key-stat:first-child{padding-left:0}
+    .key-stat:last-child{padding-right:0}
+    .key-stat + .key-stat{border-left:1px solid var(--ag-border-subtle)}
+    .key-stat-label{font-size:10.5px;color:var(--ag-text-muted);margin-bottom:3px;font-weight:500}
+    .key-stat-val{
+      font-size:13.5px;font-weight:650;letter-spacing:-0.02em;
+      color:var(--ag-text-primary);font-variant-numeric:tabular-nums;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    #key-used{color:var(--ag-custom-context-text,var(--ag-text-primary))}
+    .speed-accent-val{color:var(--ag-custom-speed,var(--ag-text-primary))}
+    .key-takeaway{font-size:11px;color:var(--ag-text-muted);line-height:1.45;margin-top:2px}
+
+    .round-cost-bar{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
+      border-radius:8px;padding:7px 11px;margin-top:2px;font-size:11px;
+      font-variant-numeric:tabular-nums;
+    }
+    .round-cost-primary{font-weight:600;color:var(--ag-text-secondary)}
+    .round-cost-secondary{color:var(--ag-text-muted)}
+
+    /* =========================================================================
+       #panel 分页 2: 系统增强（无框分组表单）
+       ========================================================================= */
+    .kernel-quick-bar{
+      display:flex;justify-content:space-between;align-items:center;gap:8px;
+      padding-bottom:10px;border-bottom:1px solid var(--ag-border-subtle);
+    }
+    .kernel-quick-right{display:inline-flex;align-items:center;gap:5px}
+
+    .kernel-group-list{display:flex;flex-direction:column}
+    .kernel-section{
+      padding:10px 0;
+      border-bottom:1px solid var(--ag-border-subtle);
+    }
+    .kernel-sec-hdr{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:7px}
+    .kernel-sec-title{font-size:11.5px;font-weight:600;color:var(--ag-text-primary);letter-spacing:-0.01em}
+    .kernel-sec-meta{font-size:10.5px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+    .kernel-tier-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+    .kernel-ctx-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+    .kernel-duo-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
+
+    .kernel-sub-row{margin-top:8px}
+    .kernel-sub-hdr{
+      display:flex;justify-content:space-between;align-items:baseline;gap:6px;
+      margin-bottom:5px;font-size:11px;color:var(--ag-text-secondary);
+    }
+
+    .kernel-opt-btn{
+      height:27px;padding:0 5px;border-radius:6px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-surface-elevated);
+      color:var(--ag-text-secondary);
+      font-size:11px;font-weight:500;cursor:pointer;
+      text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      transition:background-color .14s ease,border-color .14s ease,color .14s ease;
+    }
+    .kernel-opt-btn:hover:not(:disabled){
+      background:var(--ag-surface-hover);
+      color:var(--ag-text-primary);
+      border-color:var(--ag-btn-border-hover);
+    }
+    .kernel-opt-btn.is-active{
+      background:rgba(56,189,248,0.13);
+      border-color:rgba(56,189,248,0.45);
+      color:#38bdf8;
+      font-weight:600;
+    }
+    :host([data-theme="light"]) .kernel-opt-btn.is-active{
+      background:rgba(2,132,199,0.10);
+      border-color:rgba(2,132,199,0.42);
+      color:#0284c7;
+    }
+    .kernel-opt-btn:disabled,.kernel-action-btn:disabled{opacity:0.38;cursor:not-allowed}
+    .kernel-opt-desc{margin-top:6px;font-size:10.5px;line-height:1.4;color:var(--ag-text-muted)}
+
+    .kernel-action-btn{
+      height:27px;padding:0 10px;border-radius:6px;
+      border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-secondary);
+      font-size:11px;font-weight:500;cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap;
+      transition:background-color .14s ease,border-color .14s ease,color .14s ease;
+    }
+    .kernel-action-btn:hover:not(:disabled){
+      background:var(--ag-btn-hover);color:var(--ag-text-primary);border-color:var(--ag-btn-border-hover);
+    }
+    .kernel-action-btn.icon-only{width:27px;padding:0}
+    .kernel-action-btn.primary{
+      background:rgba(56,189,248,0.14);border-color:rgba(56,189,248,0.38);
+      color:#38bdf8;font-weight:600;
+    }
+    .kernel-action-btn.primary:hover:not(:disabled){
+      background:rgba(56,189,248,0.22);border-color:rgba(56,189,248,0.58);color:#7dd3fc;
+    }
+    :host([data-theme="light"]) .kernel-action-btn.primary{
+      background:rgba(2,132,199,0.10);border-color:rgba(2,132,199,0.35);color:#0284c7;
+    }
+    .kernel-action-btn.warn-outline[data-confirm="true"]{
+      background:rgba(245,158,11,0.15);border-color:rgba(245,158,11,0.50);color:#fbbf24;font-weight:600;
+    }
+    :host([data-theme="light"]) .kernel-action-btn.warn-outline[data-confirm="true"]{
+      color:#b45309;background:rgba(245,158,11,0.11);
+    }
+
+    .kernel-bin-list{
+      display:flex;flex-direction:column;gap:4px;
+      padding:8px 0;border-bottom:1px solid var(--ag-border-subtle);
+    }
+    .kernel-bin-item{
+      display:flex;justify-content:space-between;align-items:center;gap:8px;
+      font-size:10.5px;color:var(--ag-text-secondary);padding:2px 0;
+    }
+    .kernel-bin-name{
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+      display:inline-flex;align-items:center;gap:6px;
+    }
+    .kernel-bin-dot{
+      width:6px;height:6px;border-radius:50%;background:#34d399;flex-shrink:0;
+    }
+    .kernel-bin-tag{font-size:10px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums;flex-shrink:0}
+
+    .kernel-footer-bar{
+      display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:9px;
+    }
+    .kernel-footer-hint{font-size:10.5px;color:var(--ag-text-muted);line-height:1.38}
+    .kernel-feedback{
+      margin-top:9px;padding:7px 10px;border-radius:7px;font-size:11px;line-height:1.45;
+      background:rgba(56,189,248,0.07);border:1px solid rgba(56,189,248,0.22);color:var(--ag-text-secondary);
+      white-space:pre-line;word-break:break-word;
+    }
+    .kernel-feedback[hidden]{display:none!important}
+    .kernel-feedback[data-tone="error"]{
+      background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.28);color:#f87171;
+    }
+    :host([data-theme="light"]) .kernel-feedback[data-tone="error"]{color:#dc2626}
+
+    /* =========================================================================
+       #panel 分页 3: 请求审计明细 & 外观调色子页
+       ========================================================================= */
+    h3{margin:0;font-size:13px;font-weight:600;color:var(--ag-text-primary)}
+    h4{margin:12px 0 6px;font-size:11px;font-weight:600;color:var(--ag-text-secondary)}
+    p{margin:5px 0;color:var(--ag-text-muted)}
+
+    #status{
+      padding:7px 10px;border-radius:7px;
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
+      color:var(--ag-text-status);font-weight:500;font-size:11.5px;margin-top:0;
+    }
+    #model{overflow-wrap:anywhere;font-size:11px;color:var(--ag-text-muted);font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+
+    .drawer-body dl,.audit-dl{
+      display:grid;grid-template-columns:1fr auto;gap:5px 10px;margin:0;
+      padding:8px 10px;border-radius:8px;background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
+    }
+    .drawer-body dt,.audit-dl dt{color:var(--ag-text-muted);font-size:11px}
+    .drawer-body dd,.audit-dl dd{
+      margin:0;text-align:right;color:var(--ag-text-primary);font-size:11.5px;
+      font-variant-numeric:tabular-nums;overflow-wrap:anywhere;max-width:240px;
+    }
+
+    .audit-files-hdr{display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px}
+    #refresh{
+      border:1px solid var(--ag-btn-border);border-radius:6px;
+      background:var(--ag-btn-bg);color:var(--ag-btn-text);
+      padding:3px 9px;font-size:11px;transition:background-color .14s ease,border-color .14s ease;
+    }
+    #refresh:hover:not(:disabled){background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    #files{max-height:180px;overflow:auto;border-radius:8px;background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);padding:2px 10px}
+    .file{padding:6px 0;border-top:1px solid var(--ag-border-subtle)}
+    .file:first-child{border-top:0}
+    .file-name{overflow-wrap:anywhere;color:var(--ag-text-primary);font-size:11.5px}
+    .file-detail{color:var(--ag-text-muted);font-size:10.5px}
+    .file-unknown{color:#fbbf24;font-size:10.5px}
+    :host([data-theme="light"]) .file-unknown{color:#b45309}
+
+    .audit-note-details{margin-top:10px;border-top:1px solid var(--ag-border-subtle);padding-top:8px}
+    .audit-note-details summary{font-size:11px;color:var(--ag-text-secondary);cursor:pointer;font-weight:500}
+    #note,#coverage,#updated{font-size:10.5px;color:var(--ag-text-muted);line-height:1.45}
+
+    .palette-pane-hdr{
+      display:flex;justify-content:space-between;align-items:center;
+      padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid var(--ag-border-subtle);
+    }
+    .palette-pane-footer{
+      display:flex;justify-content:space-between;align-items:center;
+      margin-top:10px;padding-top:8px;border-top:1px solid var(--ag-border-subtle);
+      font-size:10.5px;color:var(--ag-text-muted);
+    }
+
+    /* =========================================================================
+       自定义颜色网格与颜色选取器浮层
+       ========================================================================= */
+    .color-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
     .color-item{
       display:flex;align-items:center;justify-content:space-between;gap:6px;
-      padding:6px 8px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      padding:6px 8px;border-radius:7px;background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
     }
     .color-item-lbl{font-size:11px;color:var(--ag-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .color-item-ctrls{display:flex;align-items:center;gap:4px;flex-shrink:0}
     .color-picker{display:none!important}
     .color-swatch-btn{
-      width:20px;height:20px;padding:0;border:1px solid var(--ag-border-card);
-      border-radius:4px;background:var(--swatch-color,#7748cf);cursor:pointer;
+      width:19px;height:19px;padding:0;border:1px solid var(--ag-border-card);
+      border-radius:5px;background:var(--swatch-color,#7748cf);cursor:pointer;
       display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
-      box-shadow:inset 0 0 0 1px rgba(0,0,0,0.18);transition:transform .12s ease,border-color .12s ease;
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,0.16);transition:transform .12s ease,border-color .12s ease;
     }
     .color-swatch-btn:hover{transform:scale(1.08);border-color:var(--ag-text-primary)}
     .color-reset-btn{
-      font-size:10.5px;padding:2px 6px;border-radius:4px;
+      font-size:10.5px;padding:2px 7px;border-radius:5px;
       border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-muted);
+      transition:color .12s ease,background-color .12s ease;
     }
     .color-reset-btn:hover{color:var(--ag-text-primary);background:var(--ag-btn-hover)}
     .color-reset-btn[data-mode="auto"]{opacity:0.55}
 
-    /* 自定义颜色选取器悬浮面板（参考样式：吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL三行） */
     #color-picker-popover{
-      position:fixed;z-index:2147483640;width:304px;max-height:calc(100vh - 48px);overflow-y:auto;
+      position:fixed;z-index:2147483640;width:296px;max-height:calc(100vh - 48px);overflow-y:auto;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);
-      border:1px solid var(--ag-border-panel);border-radius:10px;
-      box-shadow:var(--ag-shadow-panel);padding:12px;
-      user-select:none;
+      border:1px solid var(--ag-border-panel);border-radius:12px;
+      box-shadow:var(--ag-shadow-panel);padding:12px;user-select:none;
       opacity:1;transform:translateY(0);
-      transition:opacity 170ms cubic-bezier(0.16, 1, 0.3, 1), transform 170ms cubic-bezier(0.16, 1, 0.3, 1);
+      transition:opacity 170ms cubic-bezier(0.16,1,0.3,1),transform 170ms cubic-bezier(0.16,1,0.3,1);
       pointer-events:auto;
     }
     #color-picker-popover[hidden]{display:none!important}
-    #color-picker-popover.is-opening{
-      opacity:0;transform:translateY(-3px);
-    }
+    #color-picker-popover.is-opening{opacity:0;transform:translateY(-3px)}
     #color-picker-popover.is-closing{
       opacity:0;transform:translateY(-3px);
-      transition:opacity 125ms cubic-bezier(0.4, 0, 1, 1), transform 125ms cubic-bezier(0.4, 0, 1, 1);
+      transition:opacity 125ms cubic-bezier(0.4,0,1,1),transform 125ms cubic-bezier(0.4,0,1,1);
       pointer-events:none!important;
     }
-    .cp-advanced-formats{
-      margin-top:6px;border-top:1px solid var(--ag-border-subtle);padding-top:6px;
-    }
-    .cp-fmt-summary{
-      font-size:11px;color:var(--ag-text-muted);cursor:pointer;outline:none;user-select:none;
-    }
+    .cp-advanced-formats{margin-top:6px;border-top:1px solid var(--ag-border-subtle);padding-top:6px}
+    .cp-fmt-summary{font-size:11px;color:var(--ag-text-muted);cursor:pointer;outline:none;user-select:none}
     .cp-fmt-summary:hover{color:var(--ag-text-primary)}
-    .source-switch-bar,.view-switch-bar{
-      display:inline-flex;align-items:center;background:var(--ag-bg-subcard);
-      border:1px solid var(--ag-border-subcard);border-radius:6px;padding:2px;gap:2px;
-    }
-    .switch-pill-btn{
-      border:0;background:transparent;color:var(--ag-text-muted);font-size:11px;font-weight:500;
-      padding:2px 8px;border-radius:4px;cursor:pointer;transition:background-color .12s,color .12s;
-    }
-    .switch-pill-btn:hover{color:var(--ag-text-primary)}
-    .switch-pill-btn.active{
-      background:var(--ag-unified-bg);color:var(--ag-text-primary);font-weight:600;
-      box-shadow:0 1px 3px rgba(0,0,0,0.18);
-    }
-    .plan-summary-price-badge{
-      display:inline-flex;align-items:center;gap:4px;
-      padding:2px 9px;border-radius:999px;
-      font-size:10.5px;font-weight:600;white-space:nowrap;
-      cursor:pointer;flex-shrink:0;user-select:none;
-      background:rgba(167,139,250,0.14);
-      border:1px solid rgba(167,139,250,0.32);
-      color:var(--ag-token-accent-default,#a78bfa);
-      transition:background 0.2s cubic-bezier(0.16,1,0.3,1), border-color 0.2s cubic-bezier(0.16,1,0.3,1), transform 0.2s cubic-bezier(0.16,1,0.3,1), box-shadow 0.25s ease;
-    }
-    .plan-summary-price-badge:hover{
-      background:rgba(167,139,250,0.24);
-      border-color:rgba(167,139,250,0.55);
-      color:#ffffff;
-      transform:scale(1.02);
-    }
-    .plan-summary-price-badge.is-animating{
-      box-shadow:0 0 10px rgba(167,139,250,0.45);
-      border-color:rgba(167,139,250,0.65);
-    }
-    :host([data-theme="light"]) .plan-summary-price-badge{
-      background:rgba(124,58,237,0.10);
-      border-color:rgba(124,58,237,0.28);
-      color:#7c3aed;
-    }
-    :host([data-theme="light"]) .plan-summary-price-badge.is-animating{
-      box-shadow:0 0 10px rgba(124,58,237,0.35);
-      border-color:rgba(124,58,237,0.55);
-    }
-    .badge-symbol-anim{
-      display:inline-block;
-      transition:opacity 0.18s cubic-bezier(0.4, 0, 0.2, 1), transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), filter 0.18s ease;
-      will-change:opacity, transform, filter;
-    }
-    .badge-symbol-anim.is-dissolving{
-      opacity:0;
-      transform:scale(0.72) translateY(-2px);
-      filter:blur(1.5px);
-    }
-    .badge-symbol-anim.is-entering{
-      opacity:0;
-      transform:scale(1.25) translateY(2px);
-      filter:blur(1.5px);
-    }
-    .badge-num-anim{
-      display:inline-block;
-      font-variant-numeric:tabular-nums;
-      font-feature-settings:"tnum";
-    }
-    .badge-cycle-anim{
-      display:inline-block;
-    }
-    .plan-summary-bar{
-      display:flex;align-items:center;justify-content:space-between;gap:8px;
-      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;
-      padding:7px 11px;margin-bottom:10px;font-size:11.5px;
-    }
-    .plan-summary-badge{
-      display:inline-flex;align-items:center;gap:6px;font-weight:600;
-      color:var(--ag-custom-token-accent,var(--ag-token-accent-default));
-    }
-    .plan-detail-dl{
-      display:grid;
-      grid-template-columns:115px minmax(0,1fr);
-      gap:6px 12px;
-      margin:0;
-      align-items:baseline;
-    }
-    .plan-detail-dl dt{
-      color:var(--ag-text-muted);
-      font-size:11px;
-      white-space:nowrap;
-      text-align:left;
-    }
-    .plan-detail-dl dd{
-      margin:0;
-      text-align:left;
-      max-width:none;
-      min-width:0;
-      color:var(--ag-text-primary);
-      font-size:11.5px;
-      line-height:1.45;
-      overflow-wrap:break-word;
-    }
-    @media (max-width: 600px) {
-      .plan-detail-dl{
-        grid-template-columns:1fr;
-        gap:3px 0;
-      }
-      .plan-detail-dl dt{
-        font-weight:600;
-        margin-top:3px;
-      }
-    }
-        /* 所有详情与收起面板的丝滑物理展开动画 (匹配一级菜单质感) */
-    @keyframes agSmoothExpand{
-      0%{
-        opacity:0;
-        transform:translateY(-6px) scale(0.985);
-      }
-      100%{
-        opacity:1;
-        transform:translateY(0) scale(1);
-      }
-    }
-    .collapsible-pane[style*="display: block"],
-    .collapsible-pane:not([style*="display: none"]),
-    #plan-detail-card:not([style*="display: none"]),
-    #plan-custom-form:not([style*="display: none"]),
-    #cost-details-pane:not([style*="display: none"]),
-    .drawer-body:not([style*="display: none"]){
-      animation: agSmoothExpand 0.2s cubic-bezier(0.16,1,0.3,1) forwards;
-      transform-origin: top center;
-    }
-
-    /* 适度调和、略亮半度但温润自然的药丸编辑按钮 */
-    .plan-edit-pill-btn{
-      display:inline-flex;align-items:center;gap:5px;
-      padding:4px 13px;border-radius:9999px;
-      font-size:11px;font-weight:500;
-      color:var(--ag-text-primary,#ececef);
-      background:rgba(167,139,250,0.14);
-      border:1px solid rgba(167,139,250,0.32);
-      box-shadow:0 2px 6px rgba(0,0,0,0.25);
-      cursor:pointer;user-select:none;
-      transition:all 0.16s cubic-bezier(0.16,1,0.3,1);
-    }
-    .plan-edit-pill-btn:hover{
-      background:rgba(167,139,250,0.24);
-      border-color:rgba(167,139,250,0.55);
-      color:#ffffff;
-      box-shadow:0 3px 10px rgba(124,58,237,0.25);
-      transform:translateY(-1px);
-    }
-    .plan-edit-pill-btn:active{
-      transform:translateY(0);
-      background:rgba(167,139,250,0.28);
-    }
-    :host([data-theme="light"]) .plan-edit-pill-btn{
-      background:linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
-      border-color:#6d28d9;color:#ffffff;
-      box-shadow:0 3px 10px rgba(124,58,237,0.3);
-    }
-
-    /* Antigravity 原生定制下拉组件样式与动效 */
-    .ag-dropdown-wrapper{
-      position:relative;width:100%;box-sizing:border-box;
-    }
-    .ag-dropdown-trigger{
-      width:100%;box-sizing:border-box;
-      display:flex;align-items:center;justify-content:space-between;gap:6px;
-      padding:5px 8px;font-size:11px;
-      color:var(--ag-text-primary);
-      background:var(--ag-bg-input);
-      border:1px solid var(--ag-border-subcard);
-      border-radius:5px;
-      cursor:pointer;user-select:none;
-      transition:background .15s cubic-bezier(0.16,1,0.3,1),border-color .15s cubic-bezier(0.16,1,0.3,1),box-shadow .15s cubic-bezier(0.16,1,0.3,1);
-    }
-    .ag-dropdown-trigger:hover{
-      background:rgba(255,255,255,0.08);
-      border-color:rgba(255,255,255,0.22);
-    }
-    :host([data-theme="light"]) .ag-dropdown-trigger:hover{
-      background:rgba(0,0,0,0.05);
-      border-color:rgba(0,0,0,0.22);
-    }
-    .ag-dropdown-wrapper.is-open .ag-dropdown-trigger{
-      border-color:var(--ag-token-accent-default,#a78bfa);
-      box-shadow:0 0 0 2px rgba(167,139,250,0.25);
-      background:var(--ag-bg-subcard);
-    }
-    .ag-dropdown-arrow{
-      width:10px;height:10px;display:flex;align-items:center;justify-content:center;
-      flex-shrink:0;opacity:0.65;
-      transition:transform 0.2s cubic-bezier(0.16,1,0.3,1),opacity 0.2s ease;
-    }
-    .ag-dropdown-wrapper.is-open .ag-dropdown-arrow{
-      transform:rotate(180deg);opacity:1;
-    }
-    .plan-detail-card, .plan-detail-dl{
-      overflow:visible !important;
-    }
-    .ag-dropdown-wrapper.is-open{
-      z-index:2147483647 !important;
-    }
-    .ag-dropdown-menu{
-      position:absolute;top:calc(100% + 4px);left:0;right:0;
-      max-height:240px;overflow-y:auto;
-      background:var(--ag-unified-bg,#1e1e24);
-      border:1px solid var(--ag-float-border,rgba(255,255,255,0.14));
-      border-radius:7px;
-      box-shadow:0 16px 40px rgba(0,0,0,0.65),0 4px 12px rgba(0,0,0,0.4);
-      backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
-      padding:4px;z-index:2147483647 !important;
-      opacity:0;transform:translateY(-6px) scale(0.97);
-      transform-origin:top center;pointer-events:none;
-      transition:opacity 0.16s cubic-bezier(0.16,1,0.3,1),transform 0.16s cubic-bezier(0.16,1,0.3,1);
-    }
-    .ag-dropdown-search-wrap{
-      position:sticky;top:-4px;margin:-4px -4px 4px -4px;padding:6px;
-      background:var(--ag-unified-bg,#1e1e24);
-      border-bottom:1px solid var(--ag-border-subcard);
-      z-index:10;
-    }
-    .ag-dropdown-search-input{
-      width:100%;box-sizing:border-box;
-      background:var(--ag-bg-input);
-      border:1px solid var(--ag-border-subcard);
-      border-radius:4px;padding:4px 7px;font-size:11px;
-      color:var(--ag-text-primary);outline:none;
-    }
-    .ag-dropdown-search-input:focus{
-      border-color:var(--ag-token-accent-default,#a78bfa);
-    }
-    .ag-dropdown-wrapper.is-open .ag-dropdown-menu{
-      opacity:1;transform:translateY(0) scale(1);pointer-events:auto;
-    }
-    .ag-dropdown-item{
-      display:flex;align-items:center;justify-content:space-between;gap:6px;
-      padding:5.5px 8px;border-radius:4px;
-      font-size:11px;color:var(--ag-text-secondary);
-      cursor:pointer;user-select:none;
-      transition:background 0.12s ease,color 0.12s ease;
-    }
-    .ag-dropdown-item:hover{
-      background:rgba(255,255,255,0.08);color:var(--ag-text-primary);
-    }
-    :host([data-theme="light"]) .ag-dropdown-item:hover{
-      background:rgba(0,0,0,0.05);color:var(--ag-text-primary);
-    }
-    .ag-dropdown-item.is-selected{
-      color:var(--ag-token-accent-default,#a78bfa);
-      font-weight:600;background:rgba(167,139,250,0.12);
-    }
-    .ag-dropdown-item-check{
-      font-size:10px;opacity:0;color:var(--ag-token-accent-default,#a78bfa);
-    }
-    .ag-dropdown-item.is-selected .ag-dropdown-item-check{
-      opacity:1;
-    }
-    .ag-dropdown-item.is-keyboard-focus{
-      background:rgba(255,255,255,0.12);outline:1px solid rgba(167,139,250,0.4);
-    }
-    :host([data-theme="light"]) .ag-dropdown-item.is-keyboard-focus{
-      background:rgba(0,0,0,0.08);outline:1px solid rgba(124,58,237,0.4);
-    }
-    .ag-dropdown-wrapper.open-up .ag-dropdown-menu{
-      top:auto;bottom:calc(100% + 4px);
-      transform-origin:bottom center;
-      transform:translateY(6px) scale(0.97);
-    }
-    .ag-dropdown-wrapper.is-open.open-up .ag-dropdown-menu{
-      transform:translateY(0) scale(1);
-    }
-    .ag-dropdown-item-sub{
-      font-size:9.5px;color:var(--ag-text-muted);margin-left:auto;padding-left:8px;
-    }
-    .ag-dropdown-item:hover .ag-dropdown-item-sub{
-      color:var(--ag-text-secondary);
-    }
-    .ag-dropdown-menu::-webkit-scrollbar{width:4px}
-    .ag-dropdown-menu::-webkit-scrollbar-thumb{background:var(--ag-scrollbar-thumb,rgba(255,255,255,0.2));border-radius:4px}
-
-    .plan-detail-card{
-      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:11.5px;
-    }
-    .collapsible-pane{
-      transition:opacity 0.18s ease;
-    }
-    .round-cost-bar{
-      display:flex;align-items:center;justify-content:space-between;gap:8px;
-      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;
-      padding:5px 9px;margin:6px 0 8px;font-size:11.5px;
-    }
     .cp-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
-    .cp-title{font-size:12.5px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px}
+    .cp-title{font-size:12px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px}
     .cp-target-lbl{font-size:11px;font-weight:400;color:var(--ag-text-muted)}
     .cp-toolbar{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:9px}
     .cp-eyedropper-btn{
       display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;
       border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-primary);
-      font-size:11.5px;font-weight:500;cursor:pointer;flex-shrink:0;
+      font-size:11px;font-weight:500;cursor:pointer;flex-shrink:0;
     }
     .cp-eyedropper-btn:hover{background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
     .cp-presets{display:flex;align-items:center;gap:5px}
     .cp-preset-dot{
-      width:16px;height:16px;border-radius:50%;border:1.5px solid rgba(255,255,255,0.22);
+      width:15px;height:15px;border-radius:50%;border:1.5px solid rgba(255,255,255,0.20);
       cursor:pointer;padding:0;transition:transform .12s ease;
     }
-    :host([data-theme="light"]) .cp-preset-dot{border-color:rgba(0,0,0,0.18)}
+    :host([data-theme="light"]) .cp-preset-dot{border-color:rgba(0,0,0,0.16)}
     .cp-preset-dot:hover{transform:scale(1.16)}
     .cp-stage{display:grid;grid-template-columns:16px 1fr;gap:8px;margin-bottom:8px}
     .cp-side-preview{border-radius:6px;border:1px solid var(--ag-border-card);background:#652ab7}
     .cp-sv-area{
-      position:relative;height:132px;border-radius:7px;overflow:hidden;cursor:crosshair;
+      position:relative;height:128px;border-radius:7px;overflow:hidden;cursor:crosshair;
       border:1px solid var(--ag-border-card);
       background-color:#ff0000;
       background-image:linear-gradient(to top,#000,transparent),linear-gradient(to right,#fff,transparent);
@@ -879,7 +806,7 @@
       transform:translate(-50%,-50%);pointer-events:none;left:50%;top:50%;
     }
     .cp-hue-wrap{
-      position:relative;height:12px;border-radius:6px;margin-bottom:10px;cursor:ew-resize;
+      position:relative;height:11px;border-radius:6px;margin-bottom:10px;cursor:ew-resize;
       border:1px solid var(--ag-border-card);
       background:linear-gradient(to right,#ff0000 0%,#ffff00 17%,#00ff00 33%,#00ffff 50%,#0000ff 67%,#ff00ff 83%,#ff0000 100%);
     }
@@ -890,11 +817,11 @@
     }
     .cp-rows{display:flex;flex-direction:column;gap:6px}
     .cp-row{
-      display:grid;grid-template-columns:36px 1fr 24px;align-items:center;gap:6px;
-      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-card);
+      display:grid;grid-template-columns:34px 1fr auto;align-items:center;gap:6px;
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
       border-radius:6px;padding:4px 7px;
     }
-    .cp-fmt-lbl{font-size:11px;font-weight:600;color:var(--ag-text-muted)}
+    .cp-fmt-lbl{font-size:10.5px;font-weight:600;color:var(--ag-text-muted)}
     .cp-fmt-input{
       width:100%;border:0;background:transparent;color:var(--ag-text-primary);
       font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;
@@ -902,159 +829,212 @@
     }
     .cp-copy-btn{
       border:0;background:transparent;color:var(--ag-text-muted);cursor:pointer;
-      font-size:11.5px;padding:2px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;
+      font-size:10.5px;padding:2px 5px;border-radius:4px;
     }
     .cp-copy-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
     .cp-footer{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:7px;border-top:1px solid var(--ag-border-subtle)}
 
-    /* 弹出面板：上下文 (#panel) 与 Token 用量一览 (#panel-tokens) 独立面板 */
-    .ag-panel{
-      box-sizing:border-box;
-      position:fixed;top:38px;left:auto;right:16px;z-index:2147483500;
-      max-width:calc(100vw - 24px);max-height:calc(100vh - 52px);
-      overflow:auto;border:1px solid var(--ag-border-panel);border-radius:10px;
-      background:var(--ag-bg-panel);color:var(--ag-text-primary);box-shadow:var(--ag-shadow-panel);padding:14px;
-      opacity:1;transform:translateY(0);visibility:visible;pointer-events:auto;
-      transform-origin:top right;
-      transition:opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1),visibility .16s ease;
-      contain:layout paint;
+    /* =========================================================================
+       #panel-tokens: Token 用量看板与订阅管理
+       ========================================================================= */
+    #view-tokens{display:flex;flex-direction:column;gap:9px}
+    .tokens-toolbar-row{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+    .source-switch-bar,.view-switch-bar{
+      display:inline-flex;align-items:center;background:var(--ag-surface-elevated);
+      border:1px solid var(--ag-border-subtle);border-radius:7px;padding:2px;gap:2px;
     }
-    #panel{width:450px}
-    #panel-tokens{width:730px;transition:width .22s cubic-bezier(0.16,1,0.3,1),left .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1)}
-    #panel-tokens.cost-compact-view{width:400px!important;max-width:calc(100vw - 24px)}
-    .ag-panel[hidden]{display:block!important;opacity:0;transform:translateY(-6px);visibility:hidden;pointer-events:none}
-
-    /* 视图内平滑交叉淡入淡出（避免直接 display 硬切导致内容跳闪） */
-    @keyframes agFadeIn{
-      from{opacity:0;transform:translateY(4px)}
-      to{opacity:1;transform:translateY(0)}
+    .switch-pill-btn{
+      border:0;background:transparent;color:var(--ag-text-muted);font-size:11px;font-weight:500;
+      padding:3px 9px;border-radius:5px;cursor:pointer;transition:background-color .12s,color .12s;
     }
-    .view-pane-fade{transition:opacity .15s ease,transform .15s ease;opacity:1;transform:translateY(0)}
-    .view-pane-fade.pane-hidden{opacity:0;transform:translateY(3px);display:none!important}
-
-    /* 顶栏控制条（sticky 固定，防止表单或详情展开时滚出视口） */
-    .panel-header-bar{
-      position:sticky;top:-14px;background:var(--ag-bg-panel);z-index:20;
-      margin-top:-14px;padding-top:14px;
-      display:flex;justify-content:space-between;align-items:center;
-      border-bottom:1px solid var(--ag-border-subtle);padding-bottom:9px;margin-bottom:11px
+    .switch-pill-btn:hover{color:var(--ag-text-primary)}
+    .switch-pill-btn.active{
+      background:var(--ag-unified-bg);color:var(--ag-text-primary);font-weight:600;
+      box-shadow:0 1px 2px rgba(0,0,0,0.2),0 0 0 1px var(--ag-border-subtle);
     }
-    .panel-title{display:flex;align-items:center;gap:5px}
-    .panel-title-tokens{color:var(--ag-custom-token-accent,var(--ag-token-accent-default))}
-    .panel-header-actions{display:flex;align-items:center;gap:4px}
 
-    .panel-icon-btn{
-      background:none;border:0;color:var(--ag-text-muted);font-size:12px;line-height:1;
-      padding:4px 7px;border-radius:6px;cursor:pointer;transition:background-color .14s ease,color .14s ease;
-      display:inline-flex;align-items:center;justify-content:center;gap:3px;
+    .plan-summary-bar{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);border-radius:8px;
+      padding:6px 10px;font-size:11.5px;
     }
-    .panel-icon-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
-    #close,#close-tokens{font-size:16px;padding:2px 7px}
+    .plan-summary-badge{
+      display:inline-flex;align-items:center;gap:6px;font-weight:500;
+      color:var(--ag-text-secondary);
+    }
+    .plan-summary-price-badge{
+      display:inline-flex;align-items:center;gap:4px;
+      padding:2px 9px;border-radius:999px;
+      font-size:10.5px;font-weight:600;white-space:nowrap;
+      cursor:pointer;flex-shrink:0;user-select:none;
+      background:rgba(167,139,250,0.11);
+      border:1px solid rgba(167,139,250,0.25);
+      color:var(--ag-token-accent-default,#a78bfa);
+      transition:background 0.18s ease,border-color 0.18s ease,color 0.18s ease;
+    }
+    .plan-summary-price-badge:hover{
+      background:rgba(167,139,250,0.18);
+      border-color:rgba(167,139,250,0.42);
+    }
+    :host([data-theme="light"]) .plan-summary-price-badge{
+      background:rgba(124,58,237,0.08);border-color:rgba(124,58,237,0.22);color:#7c3aed;
+    }
+    .badge-symbol-anim{
+      display:inline-block;
+      transition:opacity 0.18s cubic-bezier(0.4,0,0.2,1),transform 0.18s cubic-bezier(0.4,0,0.2,1),filter 0.18s ease;
+    }
+    .badge-symbol-anim.is-dissolving{opacity:0;transform:scale(0.72) translateY(-2px);filter:blur(1.5px)}
+    .badge-symbol-anim.is-entering{opacity:0;transform:scale(1.25) translateY(2px);filter:blur(1.5px)}
+    .badge-num-anim{display:inline-block;font-variant-numeric:tabular-nums}
+    .badge-cycle-anim{display:inline-block}
 
-    h3{margin:0;font-size:13px;font-weight:600;color:var(--ag-text-primary)}
-    h4{margin:12px 0 5px;font-size:11.5px;font-weight:600;color:var(--ag-text-secondary)}
-    p{margin:5px 0;color:var(--ag-text-muted)}
-    .drawer-body dl{display:grid;grid-template-columns:1fr auto;gap:5px;margin:0}
-    .drawer-body dt{color:var(--ag-text-muted)}
-    .drawer-body dd{margin:0;text-align:right;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow-wrap:anywhere;max-width:270px}
+    .plan-detail-card{
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
+      border-radius:10px;padding:10px 12px;font-size:11.5px;overflow:visible !important;
+    }
+    .plan-detail-dl{
+      display:grid;grid-template-columns:104px minmax(0,1fr);gap:6px 12px;margin:0;align-items:baseline;
+      overflow:visible !important;
+    }
+    .plan-detail-dl dt{color:var(--ag-text-muted);font-size:11px;white-space:nowrap;text-align:left}
+    .plan-detail-dl dd{margin:0;text-align:left;min-width:0;color:var(--ag-text-primary);font-size:11.5px;line-height:1.45;overflow-wrap:break-word}
 
-    #key-summary{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:6px 0 10px}
-    .key-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
-    .key-title{font-size:12px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:5px}
-    .key-pill{font-size:11px;font-weight:600;padding:1px 8px;border-radius:10px;border:1px solid transparent}
-    .pill-good{color:#52c41a;background:rgba(82,196,26,0.12);border-color:rgba(82,196,26,0.28)}
-    :host([data-theme="light"]) .pill-good{color:#389e0d;background:#f6ffed;border-color:#b7eb8f}
-    .pill-warn{color:#faad14;background:rgba(250,173,20,0.12);border-color:rgba(250,173,20,0.28)}
-    :host([data-theme="light"]) .pill-warn{color:#d46b08;background:#fff7e6;border-color:#ffd591}
-    .pill-danger{color:#ff4d4f;background:rgba(255,77,79,0.14);border-color:rgba(255,77,79,0.32)}
-    :host([data-theme="light"]) .pill-danger{color:#cf1322;background:#fff1f0;border-color:#ffa39e}
-    .pill-muted{color:var(--ag-pill-muted-text);background:var(--ag-pill-muted-bg);border-color:var(--ag-pill-muted-border)}
+    .plan-edit-pill-btn{
+      display:inline-flex;align-items:center;gap:5px;
+      padding:3.5px 11px;border-radius:6px;
+      font-size:11px;font-weight:500;
+      color:var(--ag-token-accent-default,#a78bfa);
+      background:rgba(167,139,250,0.12);
+      border:1px solid rgba(167,139,250,0.28);
+      cursor:pointer;transition:background 0.15s ease,border-color 0.15s ease;
+    }
+    .plan-edit-pill-btn:hover{background:rgba(167,139,250,0.20);border-color:rgba(167,139,250,0.45)}
+    :host([data-theme="light"]) .plan-edit-pill-btn{
+      color:#6d28d9;background:rgba(124,58,237,0.09);border-color:rgba(124,58,237,0.25);
+    }
 
-    .key-bar-track{width:100%;height:6px;background:var(--ag-custom-ring-track,var(--ag-track-bg));border-radius:3px;overflow:hidden;margin-bottom:9px}
-    .key-bar-fill{height:100%;width:0%;border-radius:3px;background:var(--ag-custom-ring-used,var(--bar-color,#69c0ff));transition:width .24s ease,background-color .2s ease}
-    :host([data-occupancy="warn"]) .key-bar-fill{background:var(--ag-ring-warn)}
-    :host([data-occupancy="danger"]) .key-bar-fill{background:var(--ag-ring-danger)}
-    .key-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;margin-bottom:7px}
-    .key-stat{background:var(--ag-bg-subcard);padding:6px 4px;border-radius:6px;border:1px solid var(--ag-border-subcard)}
-    .key-stat-label{font-size:10px;color:var(--ag-text-muted);margin-bottom:2px}
-    .key-stat-val{font-size:12px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    #key-used{color:var(--ag-custom-context-text,var(--ag-text-primary))}
-    .key-takeaway{font-size:11px;color:var(--ag-text-secondary);padding-top:6px;border-top:1px solid var(--ag-border-subcard);line-height:1.4}
+    /* 原生定制下拉框 */
+    .ag-dropdown-wrapper{position:relative;width:100%;box-sizing:border-box}
+    .ag-dropdown-wrapper.is-open{z-index:2147483647 !important}
+    .ag-dropdown-trigger{
+      width:100%;display:flex;align-items:center;justify-content:space-between;gap:6px;
+      padding:4.5px 8px;font-size:11px;color:var(--ag-text-primary);
+      background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:6px;
+      cursor:pointer;transition:background .14s ease,border-color .14s ease;
+    }
+    .ag-dropdown-trigger:hover{background:var(--ag-surface-hover);border-color:var(--ag-btn-border-hover)}
+    .ag-dropdown-wrapper.is-open .ag-dropdown-trigger{
+      border-color:var(--ag-token-accent-default,#a78bfa);
+      box-shadow:0 0 0 2px rgba(167,139,250,0.20);
+    }
+    .ag-dropdown-arrow{
+      width:10px;height:10px;display:flex;align-items:center;justify-content:center;
+      flex-shrink:0;opacity:0.65;transition:transform 0.18s ease,opacity 0.18s ease;
+    }
+    .ag-dropdown-wrapper.is-open .ag-dropdown-arrow{transform:rotate(180deg);opacity:1}
+    .ag-dropdown-menu{
+      position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:230px;overflow-y:auto;
+      background:var(--ag-unified-bg,#1c1c21);
+      border:1px solid var(--ag-float-border);border-radius:8px;
+      box-shadow:var(--ag-float-shadow);padding:4px;z-index:2147483647 !important;
+      opacity:0;transform:translateY(-4px) scale(0.98);
+      transform-origin:top center;pointer-events:none;
+      transition:opacity 0.14s ease,transform 0.14s ease;
+    }
+    .ag-dropdown-wrapper.is-open .ag-dropdown-menu{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+    .ag-dropdown-wrapper.open-up .ag-dropdown-menu{top:auto;bottom:calc(100% + 4px);transform-origin:bottom center;transform:translateY(4px) scale(0.98)}
+    .ag-dropdown-wrapper.is-open.open-up .ag-dropdown-menu{transform:translateY(0) scale(1)}
+    .ag-dropdown-search-wrap{
+      position:sticky;top:-4px;margin:-4px -4px 4px -4px;padding:5px;
+      background:var(--ag-unified-bg,#1c1c21);border-bottom:1px solid var(--ag-border-subcard);z-index:10;
+    }
+    .ag-dropdown-search-input{
+      width:100%;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);
+      border-radius:5px;padding:4px 7px;font-size:11px;color:var(--ag-text-primary);outline:none;
+    }
+    .ag-dropdown-item{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;
+      padding:5px 8px;border-radius:5px;font-size:11px;color:var(--ag-text-secondary);
+      cursor:pointer;transition:background 0.1s ease,color 0.1s ease;
+    }
+    .ag-dropdown-item:hover{background:var(--ag-surface-hover);color:var(--ag-text-primary)}
+    .ag-dropdown-item.is-selected{color:var(--ag-token-accent-default,#a78bfa);font-weight:600;background:rgba(167,139,250,0.11)}
+    .ag-dropdown-item-check{font-size:10px;opacity:0;color:var(--ag-token-accent-default,#a78bfa)}
+    .ag-dropdown-item.is-selected .ag-dropdown-item-check{opacity:1}
+    .ag-dropdown-item.is-keyboard-focus{background:var(--ag-surface-active)}
+    .ag-dropdown-item-sub{font-size:9.5px;color:var(--ag-text-muted);margin-left:auto;padding-left:8px}
 
-    #status{padding:7px 10px;border:0;border-left:2.5px solid var(--tone,#666);border-radius:4px;background:var(--ag-bg-status);color:var(--ag-text-status);font-weight:500;font-size:11.5px}
-    #model{overflow-wrap:anywhere;font-size:11.5px;color:var(--ag-text-muted)}
-    #note,#coverage,#updated{font-size:11px;color:var(--ag-text-muted)}
-    #refresh{border:1px solid var(--ag-btn-border);border-radius:6px;background:var(--ag-btn-bg);color:var(--ag-btn-text);padding:4px 10px;margin-top:8px;transition:background-color .14s ease,border-color .14s ease}
-    #refresh:hover:not(:disabled){background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    .cost-estimate-card{
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
+      border-radius:10px;padding:12px;
+    }
 
-    #files{max-height:220px;overflow:auto}
-    .file{padding:7px 0;border-top:1px solid var(--ag-border-subtle)}
-    .file-name{overflow-wrap:anywhere;color:var(--ag-text-primary)}
-    .file-detail{color:var(--ag-text-muted);font-size:11px}
-    .file-unknown{color:#e6b865;font-size:11px}
-    :host([data-theme="light"]) .file-unknown{color:#b45309}
-    #v{color:var(--ag-text-muted);font-size:10px;font-weight:400;margin-left:6px}
-
-    /* 全局 Token 用量一览 */
-    #view-tokens{display:flex;flex-direction:column;gap:10px}
-    .token-stat-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-    .t-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:3px;transition:background-color .14s ease}
-    .t-card:hover{background:var(--ag-bg-card-hover)}
-    .t-card-lbl{font-size:11px;color:var(--ag-text-muted);display:flex;justify-content:space-between}
-    .t-card-val{font-size:16.5px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.3px;font-variant-numeric:tabular-nums}
+    /* 4 张核心统计卡 */
+    .token-stat-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:9px}
+    .t-card{
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
+      border-radius:10px;padding:10px 11px;display:flex;flex-direction:column;gap:3px;
+      transition:border-color .14s ease,background-color .14s ease;
+    }
+    .t-card:hover{background:var(--ag-surface-hover)}
+    .t-card-lbl{font-size:11px;font-weight:500;color:var(--ag-text-muted);display:flex;justify-content:space-between;align-items:center}
+    .t-card-tag{font-size:9.5px;color:var(--ag-text-muted);opacity:0.8}
+    .t-card-val{
+      font-size:19px;font-weight:650;color:var(--ag-text-primary);
+      letter-spacing:-0.03em;line-height:1.25;font-variant-numeric:tabular-nums;margin:1px 0;
+    }
     #t-total-val{color:var(--ag-custom-token-total,var(--ag-text-primary))}
     #t-today-val{color:var(--ag-custom-token-accent,var(--ag-text-primary))}
-    .t-card-sub{font-size:10px;color:var(--ag-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .t-card-cost{font-size:9.5px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+    .t-card-sub{font-size:10.5px;color:var(--ag-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .t-card-cost{font-size:10px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
 
-    .heatmap-section{background:var(--ag-heat-bg);border:1px solid var(--ag-border-card);border-radius:10px;padding:12px}
-    .heat-header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+    /* 活动热力图卡片 */
+    .heatmap-section{
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
+      border-radius:10px;padding:12px;
+    }
+    .heat-header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:9px}
     .heat-header-left{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-    .heat-title{font-size:13px;font-weight:600;color:var(--ag-text-primary)}
+    .heat-title{font-size:12.5px;font-weight:600;color:var(--ag-text-primary);letter-spacing:-0.01em}
     .first-use-badge{
-      font-size:11px;font-weight:500;color:var(--ag-text-secondary);
-      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-card);
-      border-radius:6px;padding:2px 8px;font-variant-numeric:tabular-nums;
+      font-size:10.5px;font-weight:500;color:var(--ag-text-muted);
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subtle);
+      border-radius:6px;padding:1.5px 7px;font-variant-numeric:tabular-nums;
     }
     .heat-win-nav{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
     .heat-nav-btn{
       border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-secondary);
-      border-radius:4px;padding:1px 6px;font-size:11px;line-height:1.25;cursor:pointer;
+      border-radius:5px;padding:1px 6px;font-size:11px;line-height:1.25;cursor:pointer;
     }
     .heat-nav-btn:hover:not(:disabled){background:var(--ag-btn-hover);color:var(--ag-text-primary)}
-    .heat-nav-btn:disabled{opacity:0.35;cursor:default}
+    .heat-nav-btn:disabled{opacity:0.32;cursor:default}
+
     .heat-tabs{
       position:relative;display:inline-flex;align-items:center;
-      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
-      border-radius:9999px;padding:2px;gap:2px;user-select:none;
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subtle);
+      border-radius:7px;padding:2px;gap:1px;user-select:none;
     }
     .heat-tab-thumb{
-      position:absolute;top:2px;bottom:2px;left:0;width:0;
-      border-radius:9999px;
-      background:var(--ag-tab-thumb-bg, var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa)));
-      opacity:0.25;pointer-events:none;
-      transition:transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
-      will-change:transform, width;
-    }
-    @media (prefers-reduced-motion: reduce){
-      .heat-tab-thumb{transition:none!important}
+      position:absolute;top:2px;bottom:2px;left:0;width:0;border-radius:5px;
+      background:var(--ag-tab-thumb-bg,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));
+      opacity:0.22;pointer-events:none;
+      transition:transform 200ms cubic-bezier(0.2,0.8,0.2,1),width 200ms cubic-bezier(0.2,0.8,0.2,1);
     }
     .heat-tab-btn{
       position:relative;z-index:1;border:0;background:transparent;
       color:var(--ag-text-muted);font-size:11px;font-weight:500;
-      padding:3px 10px;border-radius:9999px;cursor:pointer;
+      padding:2.5px 9px;border-radius:5px;cursor:pointer;
       transition:color .14s ease;outline:none;white-space:nowrap;
     }
     .heat-tab-btn:hover{color:var(--ag-text-primary)}
     .heat-tab-btn.active{color:var(--ag-text-primary);font-weight:600}
-    .heat-tab-btn:focus-visible{box-shadow:0 0 0 1.5px var(--ag-token-accent-default,#a78bfa)}
 
     .heat-scroll-box{overflow-x:auto;overflow-y:hidden;padding:6px 6px 4px 6px}
     .heat-grid-cols{display:flex;gap:3px}
     .heat-week-col{display:flex;flex-direction:column;gap:3px}
     .heat-cell{width:10px;height:10px;border-radius:2px;background:var(--ag-heat-lvl-0);cursor:pointer;transition:transform .12s ease}
-    .heat-cell:hover{transform:scale(1.3);z-index:5;outline:1.5px solid var(--ag-heat-outline)}
-    .heat-cell.is-future{opacity:0.36}
+    .heat-cell:hover{transform:scale(1.28);z-index:5;outline:1.5px solid var(--ag-heat-outline)}
+    .heat-cell.is-future{opacity:0.35}
     .heat-cell.is-today{outline:1.5px solid var(--ag-custom-token-accent,var(--ag-token-accent-default));outline-offset:0.5px}
     .lvl-0{background:var(--ag-heat-lvl-0)}
     .lvl-1{background:var(--ag-heat-lvl-1)}
@@ -1062,133 +1042,141 @@
     .lvl-3{background:var(--ag-heat-lvl-3)}
     .lvl-4{background:var(--ag-heat-lvl-4)}
 
-    .heat-months{position:relative;height:18px;margin-top:4px;font-size:11px;color:var(--ag-text-muted);overflow:hidden}
+    .heat-months{position:relative;height:17px;margin-top:4px;font-size:10.5px;color:var(--ag-text-muted);overflow:hidden}
     .heat-month-item{position:absolute;white-space:nowrap}
 
-    #h-weekly-box{display:none;height:105px;align-items:flex-end;gap:3px;border-bottom:1px solid var(--ag-border-subtle);padding-bottom:3px}
+    #h-weekly-box{display:none;height:104px;align-items:flex-end;gap:3px;border-bottom:1px solid var(--ag-border-subtle);padding-bottom:3px}
     .w-bar-col{flex:1;height:100%;display:flex;align-items:flex-end;cursor:pointer}
     .w-bar-fill{width:100%;border-radius:2px 2px 0 0;background:var(--ag-heat-lvl-0);min-height:3px;transition:height .22s ease,background-color .14s ease}
     .w-bar-col:hover .w-bar-fill{background:var(--ag-custom-token-accent,var(--ag-heat-lvl-4))!important}
 
-    #h-monthly-box{display:none;height:105px;width:100%;box-sizing:border-box;align-items:center;justify-content:center}
+    #h-monthly-box{display:none;height:104px;width:100%;align-items:center;justify-content:center}
     .heat-month-grid{display:grid;width:100%;height:100%;align-content:center;justify-content:center}
     .heat-month-cell{display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;transition:transform .12s ease}
     .heat-month-cell:hover{transform:scale(1.18);z-index:5;outline:1.5px solid var(--ag-heat-outline,#fff)}
     .heat-month-cell-num{font-size:9.5px;font-weight:600;color:rgba(255,255,255,0.9);text-shadow:0 1px 2px rgba(0,0,0,0.65);pointer-events:none}
     :host([data-theme="light"]) .heat-month-cell-num{color:#18181b;text-shadow:none}
 
-    #h-yearly-box{display:none;height:105px;width:100%;box-sizing:border-box;align-items:center;justify-content:center}
-    .heat-yearly-svg{width:100%;height:105px;display:block;overflow:visible}
+    #h-yearly-box{display:none;height:104px;width:100%;align-items:center;justify-content:center}
+    .heat-yearly-svg{width:100%;height:104px;display:block;overflow:visible}
     @keyframes bubblePopIn{0%{transform:scale(0.6);opacity:0}100%{transform:scale(1);opacity:1}}
     .heat-yearly-bubble-group{transform-origin:center center;animation:bubblePopIn 0.22s cubic-bezier(0.16,1,0.3,1) both;cursor:pointer}
-    @media (prefers-reduced-motion: reduce){.heat-yearly-bubble-group{animation:none!important}}
     .heat-yearly-bubble-group:hover circle.bubble-main{filter:brightness(1.22);stroke:var(--ag-text-primary);stroke-width:1.5px}
 
-    #h-cum-box{display:none;height:105px;position:relative}
-    canvas#h-cum-canvas{width:100%;height:105px;display:block}
+    #h-cum-box{display:none;height:104px;position:relative}
+    canvas#h-cum-canvas{width:100%;height:104px;display:block}
 
     .heat-summary-bar{
       display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
-      margin-top:8px;padding:5px 8px;background:var(--ag-bg-subcard);border-radius:6px;
-      border:1px solid var(--ag-border-subcard);font-size:11px;
+      margin-top:8px;padding:6px 10px;background:var(--ag-bg-subcard);border-radius:7px;
+      border:1px solid var(--ag-border-subtle);font-size:11px;
     }
-    .heat-sum-item{display:inline-flex;align-items:center;gap:4px}
-    .heat-sum-label{color:var(--ag-text-muted);font-size:10px}
+    .heat-sum-item{display:inline-flex;align-items:center;gap:5px}
+    .heat-sum-label{color:var(--ag-text-muted);font-size:10.5px}
     .heat-sum-val{color:var(--ag-text-primary);font-weight:600;font-variant-numeric:tabular-nums}
-    .heat-cost-disclaimer{font-size:9.5px;color:var(--ag-text-muted);margin-top:4px;line-height:1.35}
+
+    .heat-bottom-meta{
+      display:flex;justify-content:space-between;align-items:center;
+      margin-top:8px;font-size:10.5px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px;
+    }
+    .heat-cost-disclaimer{font-size:10px;color:var(--ag-text-muted);line-height:1.35}
+    .heat-palette-link{
+      font-size:10.5px;color:var(--ag-text-secondary);padding:1.5px 7px;border-radius:5px;
+      border:1px solid var(--ag-border-subtle);background:var(--ag-bg-subcard);
+      transition:color .12s ease,border-color .12s ease;
+    }
+    .heat-palette-link:hover{color:var(--ag-text-primary);border-color:var(--ag-btn-border-hover)}
+
+    .token-palette-pane{
+      margin-top:9px;padding:11px 12px;border-radius:10px;
+      background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
+    }
 
     .update-btn{position:relative}
     .update-badge-dot{
-      position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;
+      position:absolute;top:4px;right:4px;width:6px;height:6px;border-radius:50%;
       background:#ef4444;box-shadow:0 0 0 1.5px var(--ag-bg-panel);
     }
     .update-popover{
-      position:absolute;top:44px;right:14px;width:280px;max-width:calc(100% - 28px);
-      background:var(--ag-unified-bg,#1e1e24);border:1px solid var(--ag-float-border,rgba(255,255,255,0.18));
-      border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.3);
-      padding:11px 13px;z-index:2147483647;
-      animation:agSmoothExpand 0.2s cubic-bezier(0.16,1,0.3,1);
+      position:fixed;top:44px;right:20px;width:288px;max-width:calc(100vw - 28px);
+      background:var(--ag-bg-panel);border:1px solid var(--ag-border-panel);
+      border-radius:10px;box-shadow:var(--ag-shadow-panel);
+      padding:11px 13px;z-index:2147483648;
+      animation:agSmoothExpand 0.16s cubic-bezier(0.16,1,0.3,1);
     }
-    .update-pop-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;border-bottom:1px solid var(--ag-border-subcard);padding-bottom:5px}
+    .update-pop-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;border-bottom:1px solid var(--ag-border-subtle);padding-bottom:6px}
     .update-pop-body{font-size:11px;color:var(--ag-text-secondary);line-height:1.45;max-height:130px;overflow-y:auto;white-space:pre-wrap;margin-bottom:9px}
     .update-pop-footer{display:flex;align-items:center;justify-content:flex-end;gap:6px}
 
-    .heat-preset-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin:6px 0 8px}
+    .heat-preset-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin-bottom:8px}
     .heat-preset-group{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
     .heat-preset-btn{
-      display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:6px;
-      border:1px solid var(--ag-border-card);background:var(--ag-bg-subcard);color:var(--ag-text-secondary);
+      display:inline-flex;align-items:center;gap:5px;padding:3.5px 8px;border-radius:6px;
+      border:1px solid var(--ag-border-subtle);background:var(--ag-bg-subcard);color:var(--ag-text-secondary);
       font-size:11px;cursor:pointer;transition:border-color .12s ease,color .12s ease;
     }
     .heat-preset-btn:hover{color:var(--ag-text-primary);border-color:var(--ag-btn-border-hover)}
     .heat-preset-btn[data-active="true"]{
-      color:var(--ag-text-primary);border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default));
-      font-weight:600;
+      color:var(--ag-text-primary);border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default));font-weight:600;
     }
     .heat-preset-dots{display:inline-flex;gap:2px}
     .heat-preset-dots i{width:7px;height:7px;border-radius:1.5px;display:inline-block}
 
     .heat-leg-swatch{
-      width:11px;height:11px;padding:0;border-radius:2.5px;
+      width:10px;height:10px;padding:0;border-radius:2px;
       border:1px solid var(--ag-border-card);
       background:var(--swatch-color,var(--ag-heat-lvl-0));
       cursor:pointer;flex-shrink:0;
-      transition:transform .12s ease,border-color .12s ease,box-shadow .12s ease;
+      transition:transform .12s ease,border-color .12s ease;
     }
-    .heat-leg-swatch:hover{
-      transform:scale(1.32);z-index:2;
-      border-color:var(--ag-text-primary);
-      box-shadow:0 0 0 1px var(--ag-text-primary);
-    }
-    .heat-leg-swatch[data-custom="true"]{
-      border-color:var(--ag-text-secondary);
-    }
+    .heat-leg-swatch:hover{transform:scale(1.3);z-index:2;border-color:var(--ag-text-primary)}
+    .heat-leg-swatch[data-custom="true"]{border-color:var(--ag-text-secondary)}
 
     .heat-lvl-custom-bar{
-      margin:6px 0 8px;padding:7px 8px;border-radius:7px;
-      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);
+      margin:6px 0 8px;padding:8px;border-radius:8px;
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subtle);
     }
-    .heat-lvl-custom-hdr{
-      display:flex;align-items:center;justify-content:space-between;gap:6px;
-      margin-bottom:6px;flex-wrap:wrap;
-    }
-    .heat-lvl-grid{
-      display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:6px;
-    }
+    .heat-lvl-custom-hdr{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;flex-wrap:wrap}
+    .heat-lvl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:6px}
     .heat-lvl-item{
       display:flex;align-items:center;justify-content:space-between;gap:4px;
-      padding:5px 7px;border-radius:6px;
-      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      padding:4px 7px;border-radius:6px;background:var(--ag-surface-elevated);border:1px solid var(--ag-border-subtle);
     }
-    .heat-lvl-lbl{
-      font-size:10.5px;color:var(--ag-text-secondary);font-weight:500;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-    }
+    .heat-lvl-lbl{font-size:10.5px;color:var(--ag-text-secondary);font-weight:500;white-space:nowrap}
 
-    .heat-popover{position:fixed;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);border-radius:8px;padding:7px 11px;box-shadow:var(--ag-pop-shadow);z-index:2147483600;opacity:0;transform:translate(-50%,-100%) translateY(-6px);transition:opacity .12s ease}
-    .pop-date{font-size:11.5px;color:var(--ag-pop-muted)}
-    .pop-val{font-size:13.5px;font-weight:600;color:var(--ag-pop-text);margin:2px 0 4px}
+    .heat-popover{
+      position:fixed;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);
+      border-radius:8px;padding:7px 11px;box-shadow:var(--ag-pop-shadow);z-index:2147483600;
+      opacity:0;transform:translate(-50%,-100%) translateY(-6px);transition:opacity .12s ease;
+    }
+    .pop-date{font-size:11px;color:var(--ag-pop-muted)}
+    .pop-val{font-size:13px;font-weight:650;color:var(--ag-pop-text);margin:2px 0 4px;font-variant-numeric:tabular-nums}
     .pop-det{font-size:10.5px;color:var(--ag-pop-sub);margin-top:2px;display:flex;gap:12px;align-items:flex-start}
     .pop-det-col{display:inline-flex;flex-direction:column;align-items:flex-start;gap:2px}
     .pop-det-val{font-size:11px;font-weight:500;color:var(--ag-pop-sub);font-variant-numeric:tabular-nums;white-space:nowrap}
     .pop-det-trans{font-size:9.5px;color:var(--ag-pop-muted);opacity:0.88;white-space:nowrap;line-height:1.2}
 
     @media (prefers-reduced-motion: reduce){
-      *,.ag-unit,.ring-fill,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill{
+      *,.ag-unit,.ring-fill,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill,.heat-tab-thumb,.heat-yearly-bubble-group{
         transition:none!important;animation:none!important;
       }
     }
-    @media(max-width:800px){
+    @media(max-width:760px){
       #panel{width:calc(100vw - 24px)}
       #panel-tokens:not(.cost-compact-view){width:calc(100vw - 24px)}
+    }
+    @media(max-width:600px){
+      .token-stat-cards{grid-template-columns:repeat(2,1fr)}
+      .plan-detail-dl{grid-template-columns:1fr;gap:3px 0}
+      .plan-detail-dl dt{font-weight:600;margin-top:3px}
     }
   </style>
 
   <!-- 顶部基本单元 1: 上下文小圆环 -->
   <button id="badge" class="ag-unit ag-unit-ring" type="button" aria-label="会话与上下文统计" aria-describedby="context-tooltip" aria-expanded="false">
     <svg id="ring-svg" class="ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-      <circle id="ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"></circle>
-      <circle id="ring-fill" class="ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1" stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
+      <circle id="ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2"></circle>
+      <circle id="ring-fill" class="ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2" stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
     </svg>
     <span id="badge-pct-val" class="badge-pct-val">--%</span>
     <div id="bar-wrap" class="sr-only" aria-hidden="true"><div id="bar-fill" class="meter-bar-fill"></div></div>
@@ -1198,14 +1186,18 @@
 
   <!-- 顶部基本单元 2: 输出速度 (tok/s) -->
   <button id="badge-speed" class="ag-unit" type="button" aria-label="模型输出速度与耗时统计" aria-expanded="false">
-    <span class="speed-icon" aria-hidden="true">⚡</span>
+    <span class="speed-icon" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L3.5 9h4.2L7 14.5 12.5 7H8.3L9 1.5z"></path></svg>
+    </span>
     <span id="speed-amount">-- tok/s</span>
     <span id="speed-hover-extra" class="sr-only"></span>
   </button>
 
-  <!-- 顶部基本单元 3: 累计 Token 用量（细线统计图标） -->
+  <!-- 顶部基本单元 3: 累计 Token 用量 -->
   <button id="badge-tokens" class="ag-unit" type="button" aria-label="Token 用量一览" aria-expanded="false">
-    <span class="token-fire-dot" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V9M8 13V4M13 13V7"></path></svg></span>
+    <span class="token-fire-dot" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V9M8 13V4M13 13V7"></path></svg>
+    </span>
     <span id="token-amount">--</span>
     <span id="token-hover-extra" class="sr-only"></span>
   </button>
@@ -1228,7 +1220,7 @@
   <!-- CLI 启动反馈提示气泡 -->
   <div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
 
-  <!-- 上下文圆环悬停/聚焦信息气泡（参考图三层结构） -->
+  <!-- 上下文圆环悬停/聚焦信息气泡 -->
   <div id="context-tooltip" role="tooltip" data-visible="false" data-placement="bottom">
     <div id="ctx-tip-title" class="ctx-tip-title">上下文窗口：</div>
     <div id="ctx-tip-pct" class="ctx-tip-pct">数据尚未就绪</div>
@@ -1238,11 +1230,17 @@
   <!-- 窄屏溢出菜单 -->
   <div id="overflow-menu" hidden aria-label="更多统计快捷菜单">
     <button id="overflow-speed-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span>⚡</span><span>输出速度</span></span>
+      <span class="overflow-item-label">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L3.5 9h4.2L7 14.5 12.5 7H8.3L9 1.5z"></path></svg>
+        <span>输出速度</span>
+      </span>
       <span id="overflow-speed-val" class="overflow-item-val">-- tok/s</span>
     </button>
     <button id="overflow-tokens-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span class="token-fire-dot"></span><span>Token 用量一览</span></span>
+      <span class="overflow-item-label">
+        <span class="token-fire-dot"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V9M8 13V4M13 13V7"></path></svg></span>
+        <span>Token 用量一览</span>
+      </span>
       <span id="overflow-tokens-val" class="overflow-item-val">--</span>
     </button>
     <button id="overflow-cli-btn" class="overflow-item" type="button">
@@ -1251,212 +1249,364 @@
     </button>
   </div>
 
-  <!-- 弹出式面板 1: 会话上下文与速度监控 (#panel, 450px) -->
-  <section id="panel" class="ag-panel" hidden aria-label="会话与上下文详情">
+  <!-- 在线更新检查浮层（全局共享，支持从任一面板唤起） -->
+  <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
+    <div class="update-pop-hdr">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">版本更新</span>
+        <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.0</span>
+      </div>
+      <button id="btn-close-update-pop" class="panel-icon-btn" type="button" aria-label="关闭更新提示">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+      </button>
+    </div>
+    <div id="up-pop-body" class="update-pop-body">正在检测最新版本…</div>
+    <div id="up-pop-footer" class="update-pop-footer">
+      <button id="btn-view-release-page" class="switch-pill-btn" type="button">发布页</button>
+      <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
+      <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
+    </div>
+    <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
+  </div>
+
+  <!-- 弹出式面板 1: 会话监控与系统增强 (#panel) -->
+  <section id="panel" class="ag-panel" hidden aria-label="会话与系统控制面板">
     <div class="panel-header-bar">
       <div class="panel-title">
-        <span style="font-size:13px;font-weight:600;color:var(--ag-text-primary)">💬 当前会话上下文</span>
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ag-text-secondary)"><circle cx="8" cy="8" r="6"></circle><path d="M8 5v3l2 1.5"></path></svg>
+        <span class="panel-title-text">会话监控</span>
+        <span id="v">v0.8.0</span>
       </div>
       <div class="panel-header-actions">
         <button id="btn-github-repo-ctx" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
         </button>
-        <button id="btn-check-update-ctx" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" title="检查插件更新" style="position:relative">
+        <button id="btn-check-update-ctx" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" title="检查插件更新">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-panel-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置" title="外观与调色设置">🎨</button>
-        <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
-        <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
+        <button id="btn-panel-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置" title="外观与指标配色">
+          <svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4c.9 0 1.5-.6 1.5-1.4 0-.4-.15-.7-.4-.95-.23-.25-.35-.55-.35-.9 0-.78.64-1.4 1.45-1.4H11a3.2 3.2 0 0 0 3.2-3.2C14.2 3.7 11.4 1.8 8 1.8z"></path><circle cx="5.2" cy="6.2" r="0.8" fill="currentColor" stroke="none"></circle><circle cx="7.8" cy="4.6" r="0.8" fill="currentColor" stroke="none"></circle><circle cx="10.6" cy="6" r="0.8" fill="currentColor" stroke="none"></circle></svg>
+        </button>
+        <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="切换主题（跟随宿主 / 浅色 / 深色）">
+          <svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5z" fill="currentColor" stroke="none"></path></svg>
+        </button>
+        <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+        </button>
       </div>
     </div>
 
     <div id="view-context">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <h3 style="margin:0">会话用量与生成监控<span id="v">v0.8.0</span></h3>
-      </div>
-
-      <!-- 本轮与当前会话实时 API 等值参考行 -->
-      <div id="round-cost-bar" class="round-cost-bar" title="当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）">
-        <span id="round-cost-text" style="font-weight:600;color:var(--ag-text-primary)">本轮估值：—</span>
-        <span id="session-cost-text" style="font-size:11px;color:var(--ag-text-muted)">当前会话合计：—</span>
-      </div>
-
-      <!-- 卡片 1: 核心用量速览 -->
-      <div id="key-summary">
-        <div class="key-header"><span class="key-title">⭐ 核心用量速览</span><span id="key-badge" class="key-pill pill-muted">读取中</span></div>
-        <div class="key-bar-track"><div id="key-bar-fill" class="key-bar-fill"></div></div>
-        <div class="key-stats"><div class="key-stat"><div class="key-stat-label">当前已用</div><div id="key-used" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">预算上限</div><div id="key-limit" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">剩余可用</div><div id="key-remaining" class="key-stat-val">—</div></div></div>
-        <div id="key-takeaway" class="key-takeaway">正在计算核心指标…</div>
-      </div>
-
-      <!-- 卡片 2: 输出速度与延迟速览 -->
-      <div id="speed-summary" style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:8px 0 10px;">
-        <div class="key-header">
-          <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));">⚡ 最新生成速度与耗时</span>
-          <span id="speed-badge" class="key-pill pill-muted">待生成</span>
-        </div>
-        <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
-          <div class="key-stat">
-            <div class="key-stat-label">输出速度</div>
-            <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—</div>
-          </div>
-          <div class="key-stat">
-            <div class="key-stat-label">生成耗时</div>
-            <div id="speed-duration" class="key-stat-val">—</div>
-          </div>
-          <div class="key-stat">
-            <div class="key-stat-label">首字延迟</div>
-            <div id="speed-ttft" class="key-stat-val">—</div>
-          </div>
-          <div class="key-stat">
-            <div class="key-stat-label">本次输出</div>
-            <div id="speed-tokens" class="key-stat-val">—</div>
-          </div>
-        </div>
-        <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
-      </div>
-
-      <!-- 二级交互折叠区 1: 面板背景与指标颜色自定义（就近放置于面板 B 内部） -->
-      <div class="tech-drawer">
-        <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left"><span>🎨 指标与背景颜色自定义（默认跟随主题）</span></span>
-          <span id="color-drawer-arrow" class="drawer-arrow">▼ 展开设置</span>
+      <!-- 顶部三栏分段切换器：替代纵向乱堆的手风琴抽屉 -->
+      <div class="ctx-seg-nav" id="ctx-seg-nav" role="tablist" aria-label="会话面板分页">
+        <button id="ctx-tab-overview" class="ctx-seg-btn is-active" role="tab" aria-selected="true" type="button">概览</button>
+        <button id="ctx-tab-enhance" class="ctx-seg-btn" role="tab" aria-selected="false" type="button">
+          <span>系统增强</span>
+          <span id="kernel-summary-pill" class="ctx-seg-badge">已就绪</span>
         </button>
-        <div id="color-drawer-body" class="drawer-body" style="display:none;">
-          <div class="color-grid">
-            <div class="color-item" style="grid-column:1 / -1">
-              <span class="color-item-lbl">面板与菜单统一背景色（0级跟随 / 自定义）</span>
-              <div class="color-item-ctrls">
-                <input id="color-panelBg" class="color-picker" type="color" value="#181818" aria-label="面板背景色" />
-                <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
-                <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
+        <button id="ctx-tab-audit" class="ctx-seg-btn" role="tab" aria-selected="false" type="button">请求审计</button>
+      </div>
+
+      <!-- 隐藏兼容触发器（保持既有单元测试 .click() 契约 100% 兼容） -->
+      <div class="sr-only" aria-hidden="true">
+        <div id="kernel-patch-drawer">
+          <button id="btn-toggle-kernel" type="button" aria-expanded="false"><span id="kernel-drawer-arrow">▼ 展开配置</span></button>
+        </div>
+        <button id="btn-toggle-colors" type="button" aria-expanded="false"><span id="color-drawer-arrow">▼ 展开设置</span></button>
+        <button id="btn-toggle-details" type="button" aria-expanded="false"><span id="drawer-arrow">▼ 点击展开明细</span></button>
+      </div>
+
+      <!-- 分页 1: 实时监控概览（干净无框套框） -->
+      <div id="ctx-pane-overview" class="ctx-pane">
+        <!-- 上下文容量主指标区 -->
+        <div id="key-summary" class="telemetry-section">
+          <div class="key-header">
+            <span class="key-title">上下文容量</span>
+            <span id="key-badge" class="key-pill pill-muted">读取中</span>
+          </div>
+          <div class="key-bar-track"><div id="key-bar-fill" class="key-bar-fill"></div></div>
+          <div class="key-stats">
+            <div class="key-stat">
+              <div class="key-stat-label">当前已用</div>
+              <div id="key-used" class="key-stat-val">—</div>
             </div>
-            <div class="color-item">
-              <span class="color-item-lbl">圆环已用部分</span>
-              <div class="color-item-ctrls">
-                <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb" aria-label="上下文圆环已用部分颜色" />
-                <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed" data-color-label="圆环已用部分" title="点击打开颜色选取器"></button>
-                <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
+            <div class="key-stat">
+              <div class="key-stat-label">预算上限</div>
+              <div id="key-limit" class="key-stat-val">—</div>
             </div>
-            <div class="color-item">
-              <span class="color-item-lbl">圆环轨道</span>
-              <div class="color-item-ctrls">
-                <input id="color-ringTrack" class="color-picker" type="color" value="#52525b" aria-label="圆环轨道颜色" />
-                <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack" data-color-label="圆环轨道" title="点击打开颜色选取器"></button>
-                <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">上下文用量文字</span>
-              <div class="color-item-ctrls">
-                <input id="color-contextText" class="color-picker" type="color" value="#ececef" aria-label="上下文用量文字颜色" />
-                <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText" data-color-label="上下文用量文字" title="点击打开颜色选取器"></button>
-                <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">输出速度</span>
-              <div class="color-item-ctrls">
-                <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" aria-label="输出速度颜色" />
-                <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="输出速度" title="点击打开颜色选取器"></button>
-                <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">累计 token 用量</span>
-              <div class="color-item-ctrls">
-                <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc" aria-label="累计 token 用量颜色" />
-                <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="点击打开颜色选取器"></button>
-                <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">其他 token 指标</span>
-              <div class="color-item-ctrls">
-                <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa" aria-label="其他 token 指标颜色" />
-                <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="其他 token 指标" title="点击打开颜色选取器"></button>
-                <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
+            <div class="key-stat">
+              <div class="key-stat-label">剩余可用</div>
+              <div id="key-remaining" class="key-stat-val">—</div>
             </div>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:7px">
-            <span style="font-size:10.5px;color:var(--ag-text-muted)">注：高占用与超限告警色独立保留，不被常态颜色覆盖。</span>
-            <button id="reset-all-colors" class="color-reset-btn" type="button">全部恢复跟随主题</button>
+          <div id="key-takeaway" class="key-takeaway">正在计算核心指标…</div>
+        </div>
+
+        <!-- 最新生成速度与延迟区 -->
+        <div id="speed-summary" class="telemetry-section telemetry-divider">
+          <div class="key-header">
+            <span class="key-title">生成性能</span>
+            <span id="speed-badge" class="key-pill pill-muted">待生成</span>
           </div>
+          <div class="key-stats key-stats-4">
+            <div class="key-stat">
+              <div class="key-stat-label">输出速度</div>
+              <div id="speed-val" class="key-stat-val speed-accent-val">—</div>
+            </div>
+            <div class="key-stat">
+              <div class="key-stat-label">生成耗时</div>
+              <div id="speed-duration" class="key-stat-val">—</div>
+            </div>
+            <div class="key-stat">
+              <div class="key-stat-label">首字延迟</div>
+              <div id="speed-ttft" class="key-stat-val">—</div>
+            </div>
+            <div class="key-stat">
+              <div class="key-stat-label">本次输出</div>
+              <div id="speed-tokens" class="key-stat-val">—</div>
+            </div>
+          </div>
+          <div id="speed-takeaway" class="key-takeaway">等待模型返回生成耗时统计…</div>
+        </div>
+
+        <!-- 本轮与当前会话实时 API 等值参考微条 -->
+        <div id="round-cost-bar" class="round-cost-bar" title="当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）">
+          <span id="round-cost-text" class="round-cost-primary">最近调用估值：—</span>
+          <span id="session-cost-text" class="round-cost-secondary">当前会话合计：—</span>
         </div>
       </div>
 
-      <!-- 二级交互折叠区 2: 底层技术参数与附件审计 -->
-      <div class="tech-drawer">
-        <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left">
-            <span>📋 底层技术参数与附件审计</span>
-          </span>
-          <span id="drawer-arrow" class="drawer-arrow">▼ 点击展开明细</span>
-        </button>
-        <div id="drawer-body" class="drawer-body" style="display:none;">
-          <p id="status">正在核对请求和附件…</p><p id="model"></p>
-          <h4>最近一次模型请求</h4>
-          <dl><dt>请求状态</dt><dd id="request-status">—</dd><dt>模型返回输入＋输出</dt><dd id="actual">—</dd><dt>客户端估算（可能漏附件）</dt><dd id="estimate">—</dd><dt>客户端预算字段</dt><dd id="budget">—</dd><dt>该次报错的服务端限制</dt><dd id="service-limit">—</dd><dt>相对客户端预算</dt><dd id="percent">—</dd></dl>
-          <h4>整个会话累计内容 · 本地估算</h4>
-          <dl><dt>可读取文本 token 估算</dt><dd id="session-total">扫描中…</dd><dt>实际读取文字字符数</dt><dd id="characters">—</dd><dt>用户消息</dt><dd id="user">—</dd><dt>模型回复</dt><dd id="assistant">—</dd><dt>可见思考内容</dt><dd id="thinking">—</dd><dt>工具调用与工具输出</dt><dd id="tools">—</dd><dt>历史压缩摘要</dt><dd id="summaries">—</dd><dt>当前系统提示与工具定义</dt><dd id="system">—</dd><dt>上传／输出附件文本</dt><dd id="attachment-total">—</dd><dt>历史步骤完整性</dt><dd id="steps">—</dd></dl>
-          <p id="coverage"></p><h4>附件逐项检查</h4><div id="files"></div><button id="refresh" type="button">重新扫描整段会话与附件</button>
-          <p id="note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token 区间是文本启发式估算，不是 Gemini 分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。</p>
-          <p id="updated"></p>
+      <!-- 分页 2: 系统增强（内核提示词 / 上下文解锁 / 自动中文标题 / 界面语言与品牌） -->
+      <div id="kernel-drawer-body" class="ctx-pane" style="display:none;">
+        <div class="kernel-quick-bar">
+          <button id="btn-kernel-recommended" class="kernel-action-btn primary" type="button" title="一键应用 4 档防幻觉精简提示词 + 解锁 900K 上下文窗口 + 开启自动中文标题">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L3.5 9h4.2L7 14.5 12.5 7H8.3L9 1.5z"></path></svg>
+            <span>一键推荐配置</span>
+          </button>
+          <div class="kernel-quick-right">
+            <button id="btn-kernel-restore" class="kernel-action-btn" type="button" title="从备份还原官方原版提示词、默认 256K 限制与英文标题">恢复默认</button>
+            <button id="btn-kernel-refresh" class="kernel-action-btn icon-only" type="button" title="重新扫描内核与界面语言状态" aria-label="刷新状态">
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"></path></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="kernel-group-list">
+          <div class="kernel-section">
+            <div class="kernel-sec-hdr">
+              <span class="kernel-sec-title">系统提示词</span>
+              <span id="kernel-prompt-meta" class="kernel-sec-meta">—</span>
+            </div>
+            <div class="kernel-tier-grid" role="radiogroup" aria-label="系统提示词档位">
+              <button id="btn-kernel-tier-0" type="button" class="kernel-opt-btn" data-prompt-tier="0">0 原版</button>
+              <button id="btn-kernel-tier-1" type="button" class="kernel-opt-btn" data-prompt-tier="1">1 去推销</button>
+              <button id="btn-kernel-tier-2" type="button" class="kernel-opt-btn" data-prompt-tier="2">2 精简</button>
+              <button id="btn-kernel-tier-3" type="button" class="kernel-opt-btn" data-prompt-tier="3">3 重写</button>
+              <button id="btn-kernel-tier-4" type="button" class="kernel-opt-btn" data-prompt-tier="4">4 防幻觉</button>
+            </div>
+            <div id="kernel-prompt-desc" class="kernel-opt-desc">选择档位后原位更新内核模板，保留全部原生工具定义。</div>
+          </div>
+
+          <div class="kernel-section">
+            <div class="kernel-sec-hdr">
+              <span class="kernel-sec-title">上下文窗口上限</span>
+              <span id="kernel-ctx-meta" class="kernel-sec-meta">—</span>
+            </div>
+            <div class="kernel-ctx-grid" role="radiogroup" aria-label="上下文窗口上限档位">
+              <button id="btn-kernel-ctx-stock" type="button" class="kernel-opt-btn" data-ctx-mode="stock">256K 默认</button>
+              <button id="btn-kernel-ctx-512k" type="button" class="kernel-opt-btn" data-ctx-mode="512k">512K</button>
+              <button id="btn-kernel-ctx-900k" type="button" class="kernel-opt-btn" data-ctx-mode="900k">900K 解锁</button>
+            </div>
+          </div>
+
+          <div class="kernel-section">
+            <div class="kernel-sec-hdr">
+              <span class="kernel-sec-title">自动中文标题</span>
+              <span id="kernel-title-meta" class="kernel-sec-meta">—</span>
+            </div>
+            <div class="kernel-duo-grid" role="radiogroup" aria-label="会话自动中文命名">
+              <button id="btn-kernel-title-zh" type="button" class="kernel-opt-btn" data-title-mode="zh">中文标题 (4~10字)</button>
+              <button id="btn-kernel-title-en" type="button" class="kernel-opt-btn" data-title-mode="en">英文默认</button>
+            </div>
+          </div>
+
+          <div class="kernel-section">
+            <div class="kernel-sec-hdr">
+              <span class="kernel-sec-title">客户端语言</span>
+              <span id="i18n-locale-meta" class="kernel-sec-meta">—</span>
+            </div>
+            <div class="kernel-ctx-grid" role="radiogroup" aria-label="客户端界面语言">
+              <button id="btn-i18n-zh-cn" type="button" class="kernel-opt-btn" data-i18n-locale="zh-CN">简体中文</button>
+              <button id="btn-i18n-zh-tw" type="button" class="kernel-opt-btn" data-i18n-locale="zh-TW">繁體中文</button>
+              <button id="btn-i18n-en" type="button" class="kernel-opt-btn" data-i18n-locale="en">English</button>
+            </div>
+            <div class="kernel-sub-row">
+              <div class="kernel-sub-hdr">
+                <span>左上角品牌显示</span>
+                <span id="i18n-brand-meta" class="kernel-sec-meta">—</span>
+              </div>
+              <div class="kernel-ctx-grid" role="radiogroup" aria-label="左上角品牌显示">
+                <button id="btn-i18n-brand-english" type="button" class="kernel-opt-btn" data-brand-mode="english">Antigravity</button>
+                <button id="btn-i18n-brand-hidden" type="button" class="kernel-opt-btn" data-brand-mode="hidden">隐藏品牌</button>
+                <button id="btn-i18n-brand-translated" type="button" class="kernel-opt-btn" data-brand-mode="translated">中文反重力</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="kernel-binaries-list" class="kernel-bin-list"></div>
+
+        <div class="kernel-footer-bar">
+          <span class="kernel-footer-hint">界面语言当前窗口即时刷新；内核改动重启语言服务后生效</span>
+          <button id="btn-kernel-restart-ls" class="kernel-action-btn warn-outline" type="button" title="重启后台 language_server 进程使内核配置立即生效">重启语言服务</button>
+        </div>
+
+        <div id="kernel-feedback" class="kernel-feedback" hidden></div>
+      </div>
+
+      <!-- 分页 3: 请求与附件审计明细 -->
+      <div id="drawer-body" class="ctx-pane drawer-body" style="display:none;">
+        <p id="status">正在核对请求和附件…</p>
+        <p id="model"></p>
+        <h4>最近一次模型请求</h4>
+        <dl class="audit-dl">
+          <dt>请求状态</dt><dd id="request-status">—</dd>
+          <dt>服务端返回用量</dt><dd id="actual">—</dd>
+          <dt>客户端估算</dt><dd id="estimate">—</dd>
+          <dt>客户端预算上限</dt><dd id="budget">—</dd>
+          <dt>报错服务端限制</dt><dd id="service-limit">—</dd>
+          <dt>相对预算占比</dt><dd id="percent">—</dd>
+        </dl>
+        <h4>全会话归档内容 · 本地估算</h4>
+        <dl class="audit-dl">
+          <dt>可读文本估算</dt><dd id="session-total">扫描中…</dd>
+          <dt>读取字符总数</dt><dd id="characters">—</dd>
+          <dt>用户消息</dt><dd id="user">—</dd>
+          <dt>模型回复</dt><dd id="assistant">—</dd>
+          <dt>可见思考链</dt><dd id="thinking">—</dd>
+          <dt>工具调用与输出</dt><dd id="tools">—</dd>
+          <dt>历史压缩摘要</dt><dd id="summaries">—</dd>
+          <dt>系统提示与工具定义</dt><dd id="system">—</dd>
+          <dt>附件提取文本</dt><dd id="attachment-total">—</dd>
+          <dt>历史步骤计数</dt><dd id="steps">—</dd>
+        </dl>
+        <p id="coverage"></p>
+        <div class="audit-files-hdr">
+          <h4 style="margin:0">附件逐项检查</h4>
+          <button id="refresh" type="button">重新扫描</button>
+        </div>
+        <div id="files"></div>
+        <details class="audit-note-details">
+          <summary>统计口径与隐私说明</summary>
+          <p id="note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入。<br><br>本地 token 区间是文本启发式估算，不是分词器精确结果。未知内容不按零处理；只有服务端返回的用量才标为实际统计。所有扫描均在本地只读完成，不向外部发送文件。</p>
+        </details>
+        <p id="updated"></p>
+      </div>
+
+      <!-- 外观子页: 面板与顶栏指标颜色定制（由顶栏调色盘按钮唤起） -->
+      <div id="color-drawer-body" class="ctx-pane" style="display:none;">
+        <div class="palette-pane-hdr">
+          <span class="kernel-sec-title">面板与指标配色</span>
+          <button id="btn-close-ctx-palette" class="color-reset-btn" type="button">返回概览</button>
+        </div>
+        <div class="color-grid">
+          <div class="color-item" style="grid-column:1 / -1">
+            <span class="color-item-lbl">面板与菜单背景色</span>
+            <div class="color-item-ctrls">
+              <input id="color-panelBg" class="color-picker" type="color" value="#181818" aria-label="面板背景色" />
+              <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
+              <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">圆环已用弧</span>
+            <div class="color-item-ctrls">
+              <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb" aria-label="上下文圆环已用部分颜色" />
+              <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed" data-color-label="圆环已用部分" title="点击打开颜色选取器"></button>
+              <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">圆环底轨</span>
+            <div class="color-item-ctrls">
+              <input id="color-ringTrack" class="color-picker" type="color" value="#52525b" aria-label="圆环轨道颜色" />
+              <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack" data-color-label="圆环轨道" title="点击打开颜色选取器"></button>
+              <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">百分比文字</span>
+            <div class="color-item-ctrls">
+              <input id="color-contextText" class="color-picker" type="color" value="#ececef" aria-label="上下文用量文字颜色" />
+              <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText" data-color-label="上下文用量文字" title="点击打开颜色选取器"></button>
+              <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">生成速度</span>
+            <div class="color-item-ctrls">
+              <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" aria-label="输出速度颜色" />
+              <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="输出速度" title="点击打开颜色选取器"></button>
+              <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">累计 Token</span>
+            <div class="color-item-ctrls">
+              <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc" aria-label="累计 token 用量颜色" />
+              <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="点击打开颜色选取器"></button>
+              <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">强调色</span>
+            <div class="color-item-ctrls">
+              <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa" aria-label="其他 token 指标颜色" />
+              <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="其他 token 指标" title="点击打开颜色选取器"></button>
+              <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+        </div>
+        <div class="palette-pane-footer">
+          <span>高占用与超限告警色独立保留</span>
+          <button id="reset-all-colors" class="color-reset-btn" type="button">全部恢复跟随主题</button>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
+  <!-- 弹出式面板 2: Token 用量看板 (#panel-tokens) -->
   <section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览">
     <div class="panel-header-bar">
       <div class="panel-title panel-title-tokens">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"><path d="M3 13V9M8 13V4M13 13V7"></path></svg>
-        <span id="panel-tokens-title" style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">本机已记录用量</span>
+        <span id="panel-tokens-title" class="panel-title-text">本机已记录用量</span>
       </div>
       <div class="panel-header-actions">
         <button id="btn-github-repo" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
         </button>
-        <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" title="检查插件更新" style="position:relative">
+        <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" title="检查插件更新">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-panel-tokens-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置" title="外观与调色设置">🎨</button>
-        <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
-        <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
+        <button id="btn-panel-tokens-palette" class="panel-icon-btn" type="button" aria-label="热力图与外观设置" title="热力图色阶与外观设置">
+          <svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4c.9 0 1.5-.6 1.5-1.4 0-.4-.15-.7-.4-.95-.23-.25-.35-.55-.35-.9 0-.78.64-1.4 1.45-1.4H11a3.2 3.2 0 0 0 3.2-3.2C14.2 3.7 11.4 1.8 8 1.8z"></path><circle cx="5.2" cy="6.2" r="0.8" fill="currentColor" stroke="none"></circle><circle cx="7.8" cy="4.6" r="0.8" fill="currentColor" stroke="none"></circle><circle cx="10.6" cy="6" r="0.8" fill="currentColor" stroke="none"></circle></svg>
+        </button>
+        <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="切换主题（跟随宿主 / 浅色 / 深色）">
+          <svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5z" fill="currentColor" stroke="none"></path></svg>
+        </button>
+        <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+        </button>
       </div>
-    </div>
-
-    <!-- 在线更新浮层，定位于 panel-tokens 内 -->
-    <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
-      <div class="update-pop-hdr">
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">🚀 发现新版本</span>
-          <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.0</span>
-        </div>
-        <button id="btn-close-update-pop" class="panel-icon-btn" type="button" style="padding:1px 5px;font-size:13px">×</button>
-      </div>
-      <div id="up-pop-body" class="update-pop-body">
-        正在检测最新版本…
-      </div>
-      <div id="up-pop-footer" class="update-pop-footer">
-        <button id="btn-view-release-page" class="switch-pill-btn" type="button">查看发布页</button>
-        <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
-        <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
-      </div>
-      <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
     </div>
 
     <div id="view-tokens">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">
+      <div class="tokens-toolbar-row">
         <div class="source-switch-bar">
-          <span style="font-size:10.5px;color:var(--ag-text-muted);padding:0 4px">来源:</span>
-          <button id="src-tab-all" class="switch-pill-btn active" type="button">全部</button>
+          <button id="src-tab-all" class="switch-pill-btn active" type="button">全部来源</button>
           <button id="src-tab-desktop" class="switch-pill-btn" type="button">桌面端</button>
           <button id="src-tab-cli" class="switch-pill-btn" type="button">CLI</button>
         </div>
@@ -1469,32 +1619,31 @@
       <!-- 账号套餐状态摘要行 -->
       <div id="plan-summary-bar" class="plan-summary-bar">
         <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
-          <span>💎</span>
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M2.5 6.2L5 2.5h6l2.5 3.7L8 13.8 2.5 6.2z"></path><path d="M2.5 6.2h11"></path></svg>
           <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · 已自动识别 · 刚刚更新</span>
         </div>
-        <!-- 黄框位置：实时联动的订阅费与汇率胶囊 -->
         <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)">
           <span id="plan-summary-price-val">$19.99/月</span>
           <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
         </div>
-        <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 6px;flex-shrink:0">详情 ▼</button>
+        <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 7px;flex-shrink:0">详情 ▼</button>
       </div>
 
-      <!-- 套餐详情卡片（可折叠，紧凑左对齐，支持就地自定义与获取方式设置） -->
+      <!-- 套餐详情卡片（可折叠，按需编辑） -->
       <div id="plan-detail-card" class="plan-detail-card collapsible-pane" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
           <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)">💎 AI 订阅与额度详情</span>
+            <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)">订阅与额度详情</span>
             <span id="plan-save-feedback" style="font-size:10px;color:var(--ag-text-muted);display:none"></span>
           </div>
-          <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:10.5px" title="收回 AI Pro 详情面板">详情收回 ▲</button>
+          <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:10.5px" title="收回详情面板">收起 ▲</button>
         </div>
         <dl class="plan-detail-dl">
-          <dt>当前套餐：</dt>
+          <dt>当前套餐</dt>
           <dd id="p-det-name" style="font-weight:600">Google AI Pro</dd>
-          <dt>当前账号：</dt>
+          <dt>当前账号</dt>
           <dd id="p-det-account">—</dd>
-          <dt>账号所在地区：</dt>
+          <dt>账号所在地区</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
             <span id="p-det-country" style="display:none">未知</span>
             <select id="direct-country-select" aria-label="账号所在地区 (仅本地记录)" style="display:none">
@@ -1518,7 +1667,7 @@
               <option value="中国大陆 (CN)">🇨🇳 中国大陆 (CN)</option>
             </select>
             <div id="direct-country-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-country-trigger" class="ag-dropdown-trigger" tabindex="0" title="用户记录或可靠来源识别的 Google 账号所属地区 (仅本地生效，不修改 Google 账号本身)">
+              <div id="direct-country-trigger" class="ag-dropdown-trigger" tabindex="0" title="仅本地记录显示，不修改 Google 账号本身">
                 <span id="direct-country-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🌐 未设置 / 自动</span>
                 <div class="ag-dropdown-arrow">
                   <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
@@ -1528,11 +1677,11 @@
             </div>
             <span id="p-det-country-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">已保存</span>
           </dd>
-          <dt>订阅国家：</dt>
+          <dt>订阅结算国家</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
             <span id="p-det-region" style="display:none">未知</span>
             <div id="direct-region-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-region-trigger" class="ag-dropdown-trigger" tabindex="0" title="这份订阅的购买或订阅所在国家/地区 (可与账号所在地区不同)">
+              <div id="direct-region-trigger" class="ag-dropdown-trigger" tabindex="0" title="订阅购买或结算所在的国家/地区">
                 <span id="direct-region-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🌏 未知 (点击选择订阅国家与币种建议)</span>
                 <div class="ag-dropdown-arrow">
                   <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
@@ -1542,7 +1691,7 @@
             </div>
             <span id="p-det-region-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">自定义</span>
           </dd>
-          <dt>订阅币种：</dt>
+          <dt>结算币种</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
             <span id="p-det-currency" style="display:none">USD</span>
             <select id="direct-currency-select" aria-label="订阅币种" style="display:none">
@@ -1565,7 +1714,7 @@
               <option value="BRL">BRL (R$ 雷亚尔)</option>
             </select>
             <div id="direct-currency-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-currency-trigger" class="ag-dropdown-trigger" tabindex="0" title="该订阅记录使用的计价与结算币种 (独立保存，可手动指定或自动跟随)">
+              <div id="direct-currency-trigger" class="ag-dropdown-trigger" tabindex="0" title="订阅计价与结算币种">
                 <span id="direct-currency-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">USD ($ 美元)</span>
                 <div class="ag-dropdown-arrow">
                   <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
@@ -1575,46 +1724,41 @@
             </div>
             <span id="p-det-currency-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">已保存</span>
           </dd>
-          <dt>获取方式：</dt>
+          <dt>获取方式</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span id="p-det-acq">正常付费订阅</span>
             <span id="p-det-acq-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none">活动权益</span>
           </dd>
-          <dt>计费周期与价格：</dt>
+          <dt>周期与实付</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span id="p-det-price">地区参考价 $19.99/月</span>
             <span id="p-det-price-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none">地区参考价</span>
             <div id="price-mode-switch-group" style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
-              <button id="btn-mode-preset" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px" title="跟随当前订阅国家的官方定价动态联动">跟随参考价</button>
-              <button id="btn-mode-custom" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px" title="手动指定用户真实实付金额（含0元/折扣等）">自定义实付</button>
+              <button id="btn-mode-preset" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px">跟随参考价</button>
+              <button id="btn-mode-custom" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px">自定义实付</button>
             </div>
           </dd>
-          <dt id="p-dt-validity" style="display:none">权益有效期：</dt>
+          <dt id="p-dt-validity" style="display:none">权益有效期</dt>
           <dd id="p-det-validity" style="display:none;color:var(--ag-text-secondary);font-size:11px">—</dd>
-          <dt id="p-dt-note" style="display:none">补充备注：</dt>
+          <dt id="p-dt-note" style="display:none">补充备注</dt>
           <dd id="p-det-note" style="display:none;color:var(--ag-text-secondary);font-size:11px">—</dd>
-          <dt>Prompt 额度池：</dt>
+          <dt>Prompt 额度</dt>
           <dd id="p-det-prompt-credits"><span id="p-det-credits">—</span></dd>
-          <dt>Flow 额度池：</dt>
+          <dt>Flow 额度</dt>
           <dd id="p-det-flow-credits">—</dd>
-          <dt>状态更新时间：</dt>
+          <dt>状态更新</dt>
           <dd id="p-det-time" style="font-size:11px;color:var(--ag-text-muted)">—</dd>
         </dl>
 
-        <!-- 底部操作栏：左侧提供详情收回按钮，右侧提供自定义订阅设置按钮 -->
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:6px;border-top:1px dashed var(--ag-border-subcard)">
-          <button id="btn-plan-detail-collapse" class="switch-pill-btn" type="button" style="padding:3px 10px;font-size:11px" title="收回详情面板">详情收回 ▲</button>
-          <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button" title="点击展开编辑当前账号订阅详细信息与实付设置">
-            <span style="font-size:12px">✎</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:6px;border-top:1px solid var(--ag-border-subcard)">
+          <button id="btn-plan-detail-collapse" class="switch-pill-btn" type="button" style="padding:3px 10px;font-size:11px">收起详情 ▲</button>
+          <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button">
             <span>自定义订阅设置</span>
           </button>
         </div>
 
-        <!-- 就地行内自定义编辑表单 -->
         <div id="plan-custom-form" style="display:none;margin-top:8px;padding:10px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px">
-          <div style="font-size:11px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)">
-            设置当前账号订阅信息
-          </div>
+          <div style="font-size:11px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)">设置当前账号订阅信息</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">获取方式 / 活动来源</label>
@@ -1644,7 +1788,7 @@
           </div>
           <div style="margin-bottom:6px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
-              <label style="font-size:10px;color:var(--ag-text-muted)">预设订阅国家与汇率 (可选快捷套用)</label>
+              <label style="font-size:10px;color:var(--ag-text-muted)">预设订阅国家与汇率</label>
               <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
             </div>
             <select id="select-custom-region-preset" style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
@@ -1666,22 +1810,22 @@
               <option value="AU">🇦🇺 澳大利亚 (AU) · AU$32.99/月 (折合 ≈ ¥146.8)</option>
               <option value="MY">🇲🇾 马来西亚 (MY) · RM 97.99/月 (折合 ≈ ¥151.9)</option>
               <option value="CN">🇨🇳 中国大陆/自定义 (CNY) · ¥140/月</option>
-              <option value="custom">✎ 自定义输入地区</option>
+              <option value="custom">自定义输入地区</option>
             </select>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">账号所在地区 (仅本地记录)</label>
-              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" title="仅作为本地显示记录，不修改实际 Google 账号" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">账号所在地区</label>
+              <input id="input-custom-country" type="text" placeholder="如：美国 (US)" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
             </div>
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅国家 (购买/结算地区)</label>
-              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" title="实际购买或支付订阅所在的国家或地区" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅结算地区</label>
+              <input id="input-custom-region" type="text" placeholder="如：韩国 / 澳大利亚" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
             </div>
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅币种与实付金额</label>
+              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">币种与实付金额</label>
               <div style="display:flex;gap:4px">
-                <select id="select-custom-currency" title="订阅计价/结算币种" style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                <select id="select-custom-currency" style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
                   <option value="USD">USD</option>
                   <option value="KRW">KRW</option>
                   <option value="HKD">HKD</option>
@@ -1722,7 +1866,7 @@
           </div>
           <div style="margin-bottom:6px">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">补充说明备注</label>
-            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <input id="input-custom-note" type="text" placeholder="例如：设备赠送 6 个月 / 家庭共享" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
           <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
             <button id="btn-custom-plan-clear" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px;color:#ef4444">清除自定义</button>
@@ -1732,45 +1876,36 @@
         </div>
       </div>
 
-      <!-- API 费用估算卡片（整个费用面板默认收为小摘要，展开后才显示详情） -->
-      <div id="cost-estimate-card" style="display:none;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:12px;margin-bottom:10px">
-        <!-- 紧凑小摘要区（默认常驻展示） -->
+      <!-- API 费用估算卡片 -->
+      <div id="cost-estimate-card" class="cost-estimate-card" style="display:none">
         <div id="cost-compact-summary">
-          <!-- 1. 标题与范围标签 -->
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <span id="cost-card-title" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary)">💰 本期 API 参考金额</span>
+            <span id="cost-card-title" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary)">本期 API 参考金额</span>
             <span id="cost-period-tag" class="key-pill pill-muted" style="font-size:10px">本月自然月</span>
           </div>
-          <!-- 2. 来源与时间短行 -->
-          <div id="cost-scope-desc" style="font-size:11px;color:var(--ag-text-muted);margin-bottom:6px">全部来源 · 2026-11 自然月</div>
-          <!-- 3. 主要参考金额及常驻“非实付”标识 -->
+          <div id="cost-scope-desc" style="font-size:11px;color:var(--ag-text-muted);margin-bottom:6px">全部来源 · 自然月</div>
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-            <div id="cost-grand-val" style="font-size:22px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.5px">约 $0.00</div>
+            <div id="cost-grand-val" style="font-size:22px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.03em;font-variant-numeric:tabular-nums">约 $0.00</div>
             <span id="cost-non-paid-badge" class="key-pill pill-muted" style="font-size:10px;padding:1px 6px">API折算 · 非实付</span>
           </div>
-          <!-- 4. 一行参考模型/情景假设 -->
           <div id="cost-grand-sub" style="font-size:11px;color:var(--ag-text-secondary);margin-bottom:6px;line-height:1.35">统一按 Gemini 3.8 Flash 估算</div>
-          <!-- 5. 一行订阅实付及补充入口 -->
-          <div id="cost-sub-line-wrap" style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin:6px 0 8px">
+          <div id="cost-sub-line-wrap" style="display:flex;justify-content:space-between;align-items:center;padding:6px 9px;background:var(--ag-surface-elevated);border-radius:6px;margin:6px 0 8px">
             <div style="display:flex;align-items:center;gap:4px">
               <span id="cost-sub-line" style="font-size:11px;color:var(--ag-text-primary)">订阅实付：未填写</span>
               <span id="cost-sub-spend-val" style="display:none">实付未知</span>
               <span id="cost-sub-compare-note" style="display:none">公开参考价 $19.99/月</span>
               <span id="cost-sub-spend-lbl" style="display:none">本人同期实际支出</span>
             </div>
-            <button id="btn-cost-fill-sub" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px" title="设置当前账号订阅来源与实付金额">补充</button>
+            <button id="btn-cost-fill-sub" class="switch-pill-btn" type="button" style="padding:1px 7px;font-size:10.5px">设置</button>
           </div>
-          <!-- 6. 展开详情入口 -->
           <div id="cost-expand-bar" style="display:flex;justify-content:flex-end">
             <button id="btn-cost-details-toggle" class="switch-pill-btn" type="button" style="padding:2px 10px;font-size:10.5px">展开详情 ▼</button>
           </div>
         </div>
 
-        <!-- 详细选项与分析区（展开后完整呈现，默认收起） -->
         <div id="cost-details-pane" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--ag-border-subcard)">
-          <!-- 高级控制条：范围与覆盖率 -->
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
-            <span style="font-size:11px;color:var(--ag-text-muted)">统计范围:</span>
+            <span style="font-size:11px;color:var(--ag-text-muted)">统计范围</span>
             <div style="display:flex;align-items:center;gap:4px">
               <button id="cost-btn-scope-period" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10.5px">本期</button>
               <button id="cost-btn-scope-all" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px">全量历史</button>
@@ -1778,9 +1913,8 @@
             </div>
           </div>
 
-          <!-- 估值模式快捷切换（中性“参考模型估算”） -->
           <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
-            <span style="font-size:10.5px;color:var(--ag-text-muted)">估值模式:</span>
+            <span style="font-size:10.5px;color:var(--ag-text-muted)">估值模式</span>
             <div class="source-switch-bar">
               <button id="cost-btn-mode-ref" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px">参考模型估算</button>
               <button id="cost-btn-mode-hybrid" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px">混合模式</button>
@@ -1788,47 +1922,37 @@
             </div>
           </div>
 
-          <!-- 用量与参考差额指标条（注明包含缓存读取） -->
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-surface-elevated);border-radius:6px;margin-bottom:8px">
             <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">累计处理 Token: -- (含 -- 缓存读取)</span>
-            <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">参考差额约 +$0.00 (API折算 - 实际支出)</span>
+            <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">参考差额约 +$0.00</span>
           </div>
 
-          <!-- 分类单价与公式明细卡片（输入、缓存读取、输出） -->
           <div id="ref-cost-breakdown-cards" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">输入 Token ($0.75/M)</div>
-              <div id="ref-cost-input-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
+            <div class="t-card" style="padding:7px 8px">
+              <div style="font-size:10px;color:var(--ag-text-muted)">输入 ($0.75/M)</div>
+              <div id="ref-cost-input-val" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums">$0.00</div>
               <div id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
             </div>
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">缓存读取 ($0.075/M 优惠)</div>
-              <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
+            <div class="t-card" style="padding:7px 8px">
+              <div style="font-size:10px;color:var(--ag-text-muted)">缓存读取 ($0.075/M)</div>
+              <div id="ref-cost-cache-val" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums">$0.00</div>
               <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
             </div>
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">输出 Token ($3.75/M)</div>
-              <div id="ref-cost-output-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
+            <div class="t-card" style="padding:7px 8px">
+              <div style="font-size:10px;color:var(--ag-text-muted)">输出 ($3.75/M)</div>
+              <div id="ref-cost-output-val" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums">$0.00</div>
               <div id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
             </div>
           </div>
 
-          <!-- 详细分析与未计价原因 -->
-          <div id="cost-breakdown-info" style="font-size:10.5px;color:var(--ag-text-secondary);line-height:1.4;padding-top:6px;border-top:1px solid var(--ag-border-subcard)">
-            正在分析请求模型与计价覆盖率…
-          </div>
+          <div id="cost-breakdown-info" style="font-size:10.5px;color:var(--ag-text-secondary);line-height:1.4;padding-top:6px;border-top:1px solid var(--ag-border-subcard)">正在分析请求模型与计价覆盖率…</div>
+          <div style="font-size:10px;color:var(--ag-text-muted);line-height:1.4;margin-top:6px">注：包月订阅与按量 API 非同类计费模式，折算差额仅作资源体量参考。</div>
 
-          <div style="font-size:10px;color:var(--ag-text-muted);line-height:1.4;margin-top:8px">
-            注：此折算反映按公开零售价调用同等资源之费用，包月订阅/活动赠送与 API 零售非同类计费模式，该差额不等于真实节省现金；缓存读取按 10% 优惠计价；不含缓存存储费与搜索落地费用。缓存可在多次请求中重复读取相同上下文，该总量不代表独立文本量或用户输入字数。
-          </div>
-
-          <!-- 底部收起详情按钮 -->
-          <div style="display:flex;justify-content:center;margin-top:10px">
-            <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button" style="padding:2px 14px;font-size:10.5px">收起详情 ▴</button>
+          <div style="display:flex;justify-content:center;margin-top:8px">
+            <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button" style="padding:2px 14px;font-size:10.5px">收起详情 ▲</button>
           </div>
         </div>
 
-        <!-- 隐藏辅助兼容层 -->
         <div id="ref-cost-drawer-body" style="display:none">
           <span id="ref-cost-grand-val">$0.00</span>
           <span id="ref-cost-mode-label">参考模型折算</span>
@@ -1838,185 +1962,182 @@
         </div>
       </div>
 
-      <!-- 专属 Token 统计页（包含卡片统计、热力图与调色抽屉，费用模式下完全不渲染） -->
+      <!-- 专属 Token 统计页 -->
       <div id="tokens-main-view">
         <div class="token-stat-cards" id="token-stat-cards">
           <div class="t-card">
-            <div class="t-card-lbl"><span>累计处理 Token</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Total</span></div>
-            <div style="font-size:9.5px;color:var(--ag-text-muted);margin:-2px 0 4px">含缓存读取</div>
+            <div class="t-card-lbl"><span>累计处理</span><span class="t-card-tag">含缓存</span></div>
             <div class="t-card-val" id="t-total-val">--</div>
             <div class="t-card-sub" id="t-total-sub">读取中...</div>
             <div class="t-card-cost" id="t-total-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>今日使用</span><span style="color:var(--ag-custom-token-accent,#0284c7)">Today</span></div>
+            <div class="t-card-lbl"><span>今日用量</span></div>
             <div class="t-card-val" id="t-today-val">--</div>
             <div class="t-card-sub" id="t-today-sub">读取中...</div>
             <div class="t-card-cost" id="t-today-cost">≈ $0.00 (¥0.00)</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>本月使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Month</span></div>
+            <div class="t-card-lbl"><span>本月用量</span></div>
             <div class="t-card-val" id="t-month-val">--</div>
             <div class="t-card-sub" id="t-month-sub">读取中...</div>
             <div class="t-card-cost" id="t-month-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>年度使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Year</span></div>
+            <div class="t-card-lbl"><span>年度累计</span></div>
             <div class="t-card-val" id="t-year-val">--</div>
             <div class="t-card-sub" id="t-year-sub">读取中...</div>
             <div class="t-card-cost" id="t-year-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
           </div>
         </div>
 
-      <div class="heatmap-section">
-        <div class="heat-header">
-          <div class="heat-header-left">
-            <div class="heat-title">Token 活动</div>
-            <span id="first-use-badge" class="first-use-badge">首次使用：--</span>
-            <div class="heat-win-nav">
-              <button id="h-page-prev" class="heat-nav-btn" type="button" title="查看更早的 12 个月窗口" disabled>‹</button>
-              <span id="h-win-range">--</span>
-              <button id="h-page-next" class="heat-nav-btn" type="button" title="查看更新的 12 个月窗口" disabled>›</button>
+        <div class="heatmap-section">
+          <div class="heat-header">
+            <div class="heat-header-left">
+              <div class="heat-title">活动热力图</div>
+              <span id="first-use-badge" class="first-use-badge">首次使用：--</span>
+              <div class="heat-win-nav">
+                <button id="h-page-prev" class="heat-nav-btn" type="button" title="查看更早区间" disabled>‹</button>
+                <span id="h-win-range">--</span>
+                <button id="h-page-next" class="heat-nav-btn" type="button" title="查看更新区间" disabled>›</button>
+              </div>
+            </div>
+            <div class="heat-tabs" id="heat-tabs-bar" role="tablist" aria-label="热力图统计周期">
+              <div class="heat-tab-thumb" id="heat-tab-thumb" aria-hidden="true"></div>
+              <button class="heat-tab-btn active" id="h-tab-daily" role="tab" aria-selected="true" type="button" tabindex="0">每天</button>
+              <button class="heat-tab-btn" id="h-tab-weekly" role="tab" aria-selected="false" type="button" tabindex="-1">每周</button>
+              <button class="heat-tab-btn" id="h-tab-monthly" role="tab" aria-selected="false" type="button" tabindex="-1">每月</button>
+              <button class="heat-tab-btn" id="h-tab-yearly" role="tab" aria-selected="false" type="button" tabindex="-1">今年</button>
+              <button class="heat-tab-btn" id="h-tab-cum" role="tab" aria-selected="false" type="button" tabindex="-1">累计</button>
             </div>
           </div>
-          <div class="heat-tabs" id="heat-tabs-bar" role="tablist" aria-label="热力图统计周期">
-            <div class="heat-tab-thumb" id="heat-tab-thumb" aria-hidden="true"></div>
-            <button class="heat-tab-btn active" id="h-tab-daily" role="tab" aria-selected="true" type="button" tabindex="0">每天</button>
-            <button class="heat-tab-btn" id="h-tab-weekly" role="tab" aria-selected="false" type="button" tabindex="-1">每周</button>
-            <button class="heat-tab-btn" id="h-tab-monthly" role="tab" aria-selected="false" type="button" tabindex="-1">每月</button>
-            <button class="heat-tab-btn" id="h-tab-yearly" role="tab" aria-selected="false" type="button" tabindex="-1">今年</button>
-            <button class="heat-tab-btn" id="h-tab-cum" role="tab" aria-selected="false" type="button" tabindex="-1">累计总量</button>
-          </div>
-        </div>
-        <div class="heat-scroll-box" id="h-scroll-box">
-          <div id="h-daily-box">
-            <div class="heat-grid-cols" id="h-grid-cols"></div>
-            <div class="heat-months" id="h-months"></div>
-          </div>
-          <div id="h-weekly-box" style="display:none"></div>
-          <div id="h-monthly-box" style="display:none"></div>
-          <div id="h-yearly-box" style="display:none"></div>
-          <div id="h-cum-box" style="display:none">
-            <canvas id="h-cum-canvas"></canvas>
-          </div>
-        </div>
-        <div id="h-summary-bar" class="heat-summary-bar">
-          <div class="heat-sum-item">
-            <span class="heat-sum-label">区间合计:</span>
-            <span id="h-sum-tokens" class="heat-sum-val">-- Tokens</span>
-          </div>
-          <div class="heat-sum-item">
-            <span class="heat-sum-label">预估费用:</span>
-            <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
-          </div>
-          <div class="heat-sum-item">
-            <span class="heat-sum-label">折合每天:</span>
-            <span id="h-sum-daily-avg" class="heat-sum-val">$0.00</span>
-          </div>
-          <div class="heat-sum-item">
-            <span class="heat-sum-label">活跃日均:</span>
-            <span id="h-sum-active-avg" class="heat-sum-val">$0.00 (0天)</span>
-          </div>
-          <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
-            <span class="heat-sum-label">订阅性价比:</span>
-            <span id="h-sum-sub-ratio" class="heat-sum-val" style="color:var(--ag-token-accent-default,#a78bfa)">--</span>
-          </div>
-        </div>
-        <div class="heat-cost-disclaimer">
-          注：按日聚合按基础档估算，未拆分长上下文分档，结果偏下限。有逐请求记录时优先精确入账。
-        </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px">
-          <span>点击或悬浮格子查看当日详细 Token 构成</span>
-          <div style="display:flex;align-items:center;gap:6px">
-            <div id="heat-legend-scale" style="display:flex;align-items:center;gap:4px;cursor:pointer" title="点击任一色块单独修改该档位颜色，或点击文字展开设置">
-              <span>少</span>
-              <button id="heat-leg-0" class="heat-leg-swatch" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="第 1 档（少/无用量）：点击单独修改此格颜色"></button>
-              <button id="heat-leg-1" class="heat-leg-swatch" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="第 2 档（低用量）：点击单独修改此格颜色"></button>
-              <button id="heat-leg-2" class="heat-leg-swatch" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="第 3 档（中等用量）：点击单独修改此格颜色"></button>
-              <button id="heat-leg-3" class="heat-leg-swatch" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="第 4 档（高用量）：点击单独修改此格颜色"></button>
-              <button id="heat-leg-4" class="heat-leg-swatch" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="第 5 档（多/峰值用量）：点击单独修改此格颜色"></button>
-              <span>多</span>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <!-- 二级交互折叠区（就近放置于面板 A 内部）：面板背景色 + 热力图 5 档色阶预设、5 档逐格独立自定义与两端插值自定义 -->
-      <div class="tech-drawer" style="margin-top:2px">
-        <button id="btn-toggle-token-colors" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left"><span>🎨 热力图色阶与面板外观自定义（默认跟随主题）</span></span>
-          <span id="token-color-drawer-arrow" class="drawer-arrow">▼ 展开设置</span>
-        </button>
-        <div id="token-color-drawer-body" class="drawer-body" style="display:none;">
+          <div class="heat-scroll-box" id="h-scroll-box">
+            <div id="h-daily-box">
+              <div class="heat-grid-cols" id="h-grid-cols"></div>
+              <div class="heat-months" id="h-months"></div>
+            </div>
+            <div id="h-weekly-box" style="display:none"></div>
+            <div id="h-monthly-box" style="display:none"></div>
+            <div id="h-yearly-box" style="display:none"></div>
+            <div id="h-cum-box" style="display:none">
+              <canvas id="h-cum-canvas"></canvas>
+            </div>
+          </div>
+
+          <div id="h-summary-bar" class="heat-summary-bar">
+            <div class="heat-sum-item">
+              <span class="heat-sum-label">区间合计</span>
+              <span id="h-sum-tokens" class="heat-sum-val">-- Tokens</span>
+            </div>
+            <div class="heat-sum-item">
+              <span class="heat-sum-label">参考折算</span>
+              <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
+            </div>
+            <div class="heat-sum-item">
+              <span class="heat-sum-label">日均</span>
+              <span id="h-sum-daily-avg" class="heat-sum-val">$0.00</span>
+            </div>
+            <div class="heat-sum-item">
+              <span class="heat-sum-label">活跃日均</span>
+              <span id="h-sum-active-avg" class="heat-sum-val">$0.00 (0天)</span>
+            </div>
+            <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
+              <span class="heat-sum-label">订阅比</span>
+              <span id="h-sum-sub-ratio" class="heat-sum-val" style="color:var(--ag-token-accent-default,#a78bfa)">--</span>
+            </div>
+          </div>
+
+          <div class="heat-bottom-meta">
+            <span class="heat-cost-disclaimer">悬浮格子查看单日明细 · 按日聚合按基础档折算</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div id="heat-legend-scale" style="display:flex;align-items:center;gap:3px;cursor:pointer" title="点击色块单独调色，或展开色阶设置">
+                <span>少</span>
+                <button id="heat-leg-0" class="heat-leg-swatch" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）"></button>
+                <button id="heat-leg-1" class="heat-leg-swatch" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）"></button>
+                <button id="heat-leg-2" class="heat-leg-swatch" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）"></button>
+                <button id="heat-leg-3" class="heat-leg-swatch" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）"></button>
+                <button id="heat-leg-4" class="heat-leg-swatch" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）"></button>
+                <span>多</span>
+              </div>
+              <button id="btn-toggle-token-colors" class="heat-palette-link" aria-expanded="false" type="button">
+                <span id="token-color-drawer-arrow">色阶设置</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 按需展开的热力图色阶与外观面板（默认隐藏，零抽屉边框干扰） -->
+        <div id="token-color-drawer-body" class="token-palette-pane" style="display:none;">
           <div class="heat-preset-bar">
-            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档色阶预设：</span>
+            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档色阶预设</span>
             <div class="heat-preset-group" id="heat-preset-group">
               <button class="heat-preset-btn" type="button" data-heat-preset="purple" data-active="true">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#3f1e6b"></i><i style="background:#652ab7"></i><i style="background:#9053f8"></i><i style="background:#c084fc"></i></span>
-                <span>紫色系</span>
+                <span>紫</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="yellow" data-active="false">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#713f12"></i><i style="background:#a16207"></i><i style="background:#eab308"></i><i style="background:#fde047"></i></span>
-                <span>黄色系</span>
+                <span>琥珀</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="green" data-active="false">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#14532d"></i><i style="background:#15803d"></i><i style="background:#22c55e"></i><i style="background:#86efac"></i></span>
-                <span>绿色系</span>
+                <span>翠绿</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="blue" data-active="false">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#1e3a8a"></i><i style="background:#1d4ed8"></i><i style="background:#3b82f6"></i><i style="background:#93c5fd"></i></span>
-                <span>蓝色系</span>
+                <span>海洋</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="red" data-active="false">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#7f1d1d"></i><i style="background:#b91c1c"></i><i style="background:#ef4444"></i><i style="background:#fca5a5"></i></span>
-                <span>红色系</span>
+                <span>珊瑚</span>
               </button>
             </div>
           </div>
 
           <div class="heat-lvl-custom-bar">
             <div class="heat-lvl-custom-hdr">
-              <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档逐格独立自定义（点击任意一格或图例「少 ▢▢▢▢▢ 多」单独调色，可设 5 种不同颜色）：</span>
-              <button id="reset-heat-lvls" class="color-reset-btn" type="button">恢复 5 档预设</button>
+              <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">逐档微调色阶</span>
+              <button id="reset-heat-lvls" class="color-reset-btn" type="button">恢复预设</button>
             </div>
             <div class="heat-lvl-grid" id="heat-lvl-grid">
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 1 档（少/无用量）">1档 · 少/无</span>
+                <span class="heat-lvl-lbl">1档 · 无</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl0" class="color-picker" type="color" value="#27272a" aria-label="热力图第1档颜色" />
-                  <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="点击单独设置第 1 档颜色"></button>
+                  <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档"></button>
                   <button id="reset-heatLvl0" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 2 档（低用量）">2档 · 低</span>
+                <span class="heat-lvl-lbl">2档 · 低</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl1" class="color-picker" type="color" value="#3f1e6b" aria-label="热力图第2档颜色" />
-                  <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="点击单独设置第 2 档颜色"></button>
+                  <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档"></button>
                   <button id="reset-heatLvl1" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 3 档（中等用量）">3档 · 中</span>
+                <span class="heat-lvl-lbl">3档 · 中</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl2" class="color-picker" type="color" value="#652ab7" aria-label="热力图第3档颜色" />
-                  <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="点击单独设置第 3 档颜色"></button>
+                  <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档"></button>
                   <button id="reset-heatLvl2" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 4 档（高用量）">4档 · 高</span>
+                <span class="heat-lvl-lbl">4档 · 高</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl3" class="color-picker" type="color" value="#9053f8" aria-label="热力图第4档颜色" />
-                  <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="点击单独设置第 4 档颜色"></button>
+                  <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档"></button>
                   <button id="reset-heatLvl3" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 5 档（多/峰值用量）">5档 · 多/峰</span>
+                <span class="heat-lvl-lbl">5档 · 峰</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl4" class="color-picker" type="color" value="#c084fc" aria-label="热力图第5档颜色" />
-                  <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="点击单独设置第 5 档颜色"></button>
+                  <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档"></button>
                   <button id="reset-heatLvl4" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
@@ -2025,62 +2146,63 @@
 
           <div class="color-grid">
             <div class="color-item">
-              <span class="color-item-lbl">色阶「少」端颜色（自动插值）</span>
+              <span class="color-item-lbl">「少」端插值色</span>
               <div class="color-item-ctrls">
                 <input id="color-heatLow" class="color-picker" type="color" value="#27272a" aria-label="热力图少端颜色" />
-                <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow" data-color-label="热力图「少」端颜色" title="点击打开颜色选取器"></button>
+                <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow" data-color-label="热力图「少」端颜色"></button>
                 <button id="reset-heatLow" class="color-reset-btn" type="button" data-mode="auto">预设</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">色阶「多」端颜色（自动插值）</span>
+              <span class="color-item-lbl">「多」端插值色</span>
               <div class="color-item-ctrls">
                 <input id="color-heatHigh" class="color-picker" type="color" value="#c084fc" aria-label="热力图多端颜色" />
-                <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh" data-color-label="热力图「多」端颜色" title="点击打开颜色选取器"></button>
+                <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh" data-color-label="热力图「多」端颜色"></button>
                 <button id="reset-heatHigh" class="color-reset-btn" type="button" data-mode="auto">预设</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">面板与菜单统一背景色</span>
+              <span class="color-item-lbl">面板统一背景色</span>
               <div class="color-item-ctrls">
-                <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
+                <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色"></button>
                 <button id="reset-panelBg-tokens" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl">累计与强调指标色</span>
               <div class="color-item-ctrls">
-                <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="总累计颜色"></button>
-                <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="Token 强调色" title="强调指标颜色"></button>
-                <button id="reset-all-colors-tokens" class="color-reset-btn" type="button">全部恢复跟随主题</button>
+                <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量"></button>
+                <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="Token 强调色"></button>
+                <button id="reset-all-colors-tokens" class="color-reset-btn" type="button">重置全部</button>
               </div>
             </div>
           </div>
 
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px dashed var(--ag-border-subcard);font-size:11px">
-            <span style="color:var(--ag-text-primary);font-weight:500">更新设置</span>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--ag-border-subcard);font-size:11px">
+            <span style="color:var(--ag-text-secondary)">更新偏好</span>
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
               <input id="check-auto-update" type="checkbox" checked>
-              <span>启动时自动检查更新（不自动安装）</span>
+              <span>启动时自动检查新版本</span>
             </label>
           </div>
         </div>
-      </div>
       </div><!-- end #tokens-main-view -->
     </div>
   </section>
 
-  <!-- 自定义颜色选取器面板（替换系统原生取色器） -->
+  <!-- 自定义颜色选取器面板 -->
   <div id="color-picker-popover" hidden role="dialog" aria-label="颜色选取器">
     <div class="cp-header">
       <div class="cp-title">
-        <span>🎨 颜色选取器</span>
+        <span>颜色选取器</span>
         <span id="cp-target-name" class="cp-target-lbl"></span>
       </div>
-      <button id="cp-close" class="panel-icon-btn" type="button" aria-label="关闭颜色选取器">×</button>
+      <button id="cp-close" class="panel-icon-btn" type="button" aria-label="关闭颜色选取器">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+      </button>
     </div>
     <div class="cp-toolbar">
-      <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色">🖊 取色</button>
+      <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色">吸管取色</button>
       <div class="cp-presets" id="cp-presets">
         <button class="cp-preset-dot" type="button" data-cp-hex="#ef4444" style="background:#ef4444" title="#EF4444"></button>
         <button class="cp-preset-dot" type="button" data-cp-hex="#f97316" style="background:#f97316" title="#F97316"></button>
@@ -2104,7 +2226,7 @@
       <div class="cp-row">
         <span class="cp-fmt-lbl">HEX</span>
         <input id="cp-input-hex" class="cp-fmt-input" type="text" value="#652ab7" spellcheck="false" aria-label="HEX 色值输入" />
-        <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX">📋</button>
+        <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX">复制</button>
       </div>
       <details class="cp-advanced-formats">
         <summary class="cp-fmt-summary">更多格式 (RGB / HSL)</summary>
@@ -2112,18 +2234,18 @@
           <div class="cp-row">
             <span class="cp-fmt-lbl">RGB</span>
             <input id="cp-input-rgb" class="cp-fmt-input" type="text" value="rgb(101, 42, 183)" spellcheck="false" aria-label="RGB 色值输入" />
-            <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB">📋</button>
+            <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB">复制</button>
           </div>
           <div class="cp-row">
             <span class="cp-fmt-lbl">HSL</span>
             <input id="cp-input-hsl" class="cp-fmt-input" type="text" value="hsl(265, 63%, 44%)" spellcheck="false" aria-label="HSL 色值输入" />
-            <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL">📋</button>
+            <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL">复制</button>
           </div>
         </div>
       </details>
     </div>
     <div class="cp-footer">
-      <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)">支持直接输入或粘贴 HEX 色值</span>
+      <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)">支持直接输入或粘贴色值</span>
       <button id="cp-reset-slot" class="color-reset-btn" type="button">跟随主题</button>
     </div>
   </div>
@@ -2137,6 +2259,9 @@
 
   (document.body || document.documentElement).appendChild(host);
   const el = id => shadow.getElementById(id);
+  if (el('v')) {
+    el('v').textContent = 'v' + (typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.0');
+  }
   const fmt = v => v == null ? '—' : Math.round(v).toLocaleString('en-US');
   const short = v => {
     if (v == null) return '—';
@@ -2638,6 +2763,12 @@
     applyCustomColors();
   }
 
+  const THEME_ICONS_SVG = {
+    auto: '<svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5z" fill="currentColor" stroke="none"></path></svg>',
+    light: '<svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"></circle><path d="M8 1.6v1.6M8 12.8v1.6M1.6 8h1.6M12.8 8h1.6M3.5 3.5l1.1 1.1M11.4 11.4l1.1 1.1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1"></path></svg>',
+    dark: '<svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 9.8A5.6 5.6 0 0 1 6.2 2.8a5.6 5.6 0 1 0 7 7z"></path></svg>'
+  };
+
   function applyTheme() {
     const activeTheme = resolveTheme();
     host.setAttribute('data-theme', activeTheme);
@@ -2646,13 +2777,13 @@
     const btns = [el('theme-toggle'), el('theme-toggle-tokens')].filter(Boolean);
     btns.forEach(btn => {
       if (currentThemeMode === 'auto') {
-        btn.textContent = activeTheme === 'light' ? '🌗' : '🌓';
+        btn.innerHTML = THEME_ICONS_SVG.auto;
         btn.title = `当前主题：跟随宿主 (${activeTheme === 'light' ? '浅色' : '深色'})\n点击切换为：浅色模式`;
       } else if (currentThemeMode === 'light') {
-        btn.textContent = '☀️';
+        btn.innerHTML = THEME_ICONS_SVG.light;
         btn.title = '当前主题：浅色模式 (固定)\n点击切换为：深色模式';
       } else {
-        btn.textContent = '🌙';
+        btn.innerHTML = THEME_ICONS_SVG.dark;
         btn.title = '当前主题：深色模式 (固定)\n点击切换为：跟随宿主';
       }
     });
@@ -3572,10 +3703,31 @@
         panelEl.style.transformOrigin = 'top right';
       };
 
-      placePanel(el('panel'), 450, el('badge'));
-      placePanel(el('panel-tokens'), 730, el('badge-tokens'));
+      placePanel(el('panel'), 428, el('badge'));
+      placePanel(el('panel-tokens'), 696, el('badge-tokens'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
+      positionUpdatePopover();
+    } catch {}
+  }
+
+  function positionUpdatePopover() {
+    try {
+      const pop = el('update-popover');
+      if (!pop || pop.style.display !== 'block') return;
+      const pContext = el('panel');
+      const pTokens = el('panel-tokens');
+      const activePanel = (pContext && !pContext.hidden) ? pContext : ((pTokens && !pTokens.hidden) ? pTokens : null);
+      if (!activePanel || !activePanel.getBoundingClientRect) return;
+      const pr = activePanel.getBoundingClientRect();
+      if (!pr || (pr.width === 0 && pr.height === 0)) return;
+      const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+      const popW = 288;
+      const top = Math.max(40, Math.round(pr.top + 42));
+      const left = Math.max(12, Math.min(vw - popW - 12, Math.round(pr.right - popW - 12)));
+      pop.style.top = `${top}px`;
+      pop.style.left = `${left}px`;
+      pop.style.right = 'auto';
     } catch {}
   }
 
@@ -3676,6 +3828,8 @@
       bTokens.setAttribute('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
+      void refreshKernelPatchStatus(false);
+      void refreshI18nStatus(false);
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
       pContext.hidden = true;
@@ -3685,6 +3839,8 @@
       bTokens.setAttribute('aria-expanded', 'false');
       closeColorPicker();
       hidePopover();
+      const upPop = el('update-popover');
+      if (upPop) upPop.style.display = 'none';
       syncHostStackingElevation(false);
     }
   }
@@ -5597,36 +5753,698 @@ function closeAllDropdowns(exceptWrap = null) {
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
-  // 二级抽屉 1（面板 B 内）: 指标与背景颜色自定义抽屉折叠展开
+  // 二级抽屉 0（面板 B 内）: 客户端增强（系统提示词 5 档 + 上下文 3 档 + 自动中文标题 + V12 界面汉化）
+  const PROMPT_TIER_DESCRIPTIONS = {
+    0: '0档（官方原版）：从 .bak 备份完整还原全部官方系统提示词模板，不做任何精简。',
+    1: '1档（仅去推销）：仅清空 slash_commands / plugins 推销模板，其余模板 100% 保持原版。',
+    2: '2档（原版精简）：清空 artifacts、persistent_context、conversation_transcript 等冗余模板，3 个核心模板保持原版。',
+    3: '3档（核心重写）：清空全部冗余模板，并将 guidelines、function_call、communication_style 重写为精简版规则。',
+    4: '4档（推荐）：清空冗余模板；保留原版核心底子，增加未读禁猜代码、最小改动、禁冒号废话、禁传 ArtifactMetadata、edit_file 3~5 行唯一锚点及验证护栏。'
+  };
+
+  let kernelStatusCache = null;
+  let kernelStatusFetchedAt = 0;
+  let kernelPatchBusy = false;
+  let kernelRestartConfirmUntil = 0;
+  let kernelRestartConfirmTimer = null;
+
+  let i18nStatusCache = null;
+  let i18nStatusFetchedAt = 0;
+  let i18nApplyBusy = false;
+
+  const KERNEL_SNAP_KEY = 'ag_kernel_status_snap_v1';
+  const I18N_SNAP_KEY = 'ag_i18n_status_snap_v1';
+
+  function saveBridgeStatusSnapshot(storageKey, data) {
+    try {
+      if (data && data.ok && typeof localStorage !== 'undefined') {
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      }
+    } catch {}
+  }
+
+  function readBridgeStatusSnapshot(storageKey, bootField) {
+    try {
+      if (typeof window !== 'undefined' && window.__AGContextMeterBootstrap?.[bootField]?.ok) {
+        return window.__AGContextMeterBootstrap[bootField];
+      }
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.ok) return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  function formatBridgeErrorMessage(rawErr, fallbackMsg) {
+    const msg = String(rawErr?.message || rawErr || fallbackMsg || '').trim();
+    if (/Failed to fetch|NetworkError|Load failed|fetch failed|本地桥接服务未就绪/i.test(msg)) {
+      return '临时桥接未连接，请重启一次 Antigravity 客户端以启用原生通道（或执行 node cli.js install）';
+    }
+    return msg || fallbackMsg || '执行失败';
+  }
+
+  // #panel 三栏分段视图控制器（'overview' | 'enhance' | 'audit' | 'palette'）
+  let activeContextTab = 'overview';
+  const ctxPaneOverview = el('ctx-pane-overview');
+  const btnKernelDrawer = el('btn-toggle-kernel');
+  const kernelDrawerBody = el('kernel-drawer-body');
+  const kernelDrawerArrow = el('kernel-drawer-arrow');
   const btnColors = el('btn-toggle-colors');
   const colorDrawerBody = el('color-drawer-body');
   const colorDrawerArrow = el('color-drawer-arrow');
-  function toggleColorsDrawer(forceOpen) {
-    if (!colorDrawerBody) return;
-    const isHidden = colorDrawerBody.style.display === 'none' || !colorDrawerBody.style.display;
-    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
-    colorDrawerBody.style.display = nextOpen ? 'block' : 'none';
-    if (colorDrawerArrow) colorDrawerArrow.textContent = nextOpen ? '▲ 收起设置' : '▼ 展开设置';
-    btnColors?.setAttribute('aria-expanded', String(nextOpen));
-    if (!nextOpen) {
-      closeColorPicker();
-    }
-  }
-  btnColors?.addEventListener('click', () => toggleColorsDrawer());
-
-  // 二级抽屉 2（面板 B 内）: 底层技术抽屉折叠展开
   const btnDetails = el('btn-toggle-details');
   const drawerBody = el('drawer-body');
   const drawerArrow = el('drawer-arrow');
-  btnDetails?.addEventListener('click', () => {
-    if (!drawerBody) return;
-    const isHidden = drawerBody.style.display === 'none' || !drawerBody.style.display;
-    drawerBody.style.display = isHidden ? 'block' : 'none';
-    if (drawerArrow) drawerArrow.textContent = isHidden ? '▲ 点击收起明细' : '▼ 点击展开明细';
-    btnDetails.setAttribute('aria-expanded', String(isHidden));
+
+  function switchContextTab(tab) {
+    const validTabs = ['overview', 'enhance', 'audit', 'palette'];
+    const next = validTabs.includes(tab) ? tab : 'overview';
+    activeContextTab = next;
+
+    if (ctxPaneOverview) ctxPaneOverview.style.display = next === 'overview' ? 'block' : 'none';
+    if (kernelDrawerBody) kernelDrawerBody.style.display = next === 'enhance' ? 'block' : 'none';
+    if (drawerBody) drawerBody.style.display = next === 'audit' ? 'block' : 'none';
+    if (colorDrawerBody) colorDrawerBody.style.display = next === 'palette' ? 'block' : 'none';
+
+    const segTabs = [
+      { key: 'overview', node: el('ctx-tab-overview') },
+      { key: 'enhance', node: el('ctx-tab-enhance') },
+      { key: 'audit', node: el('ctx-tab-audit') }
+    ];
+    for (const item of segTabs) {
+      if (!item.node) continue;
+      const isAct = next === item.key;
+      if (isAct) addClass(item.node, 'is-active'); else removeClass(item.node, 'is-active');
+      item.node.setAttribute?.('aria-selected', String(isAct));
+    }
+
+    const paletteBtn = el('btn-panel-palette');
+    if (paletteBtn) {
+      if (next === 'palette') addClass(paletteBtn, 'is-active');
+      else removeClass(paletteBtn, 'is-active');
+    }
+
+    // 同步隐藏兼容触发器与箭头文本（保持自动化测试契约 100% 兼容）
+    if (kernelDrawerArrow) kernelDrawerArrow.textContent = next === 'enhance' ? '▲ 收起配置' : '▼ 展开配置';
+    btnKernelDrawer?.setAttribute('aria-expanded', String(next === 'enhance'));
+
+    if (colorDrawerArrow) colorDrawerArrow.textContent = next === 'palette' ? '▲ 收起设置' : '▼ 展开设置';
+    btnColors?.setAttribute('aria-expanded', String(next === 'palette'));
+
+    if (drawerArrow) drawerArrow.textContent = next === 'audit' ? '▲ 点击收起明细' : '▼ 点击展开明细';
+    btnDetails?.setAttribute('aria-expanded', String(next === 'audit'));
+
+    if (next !== 'palette') {
+      closeColorPicker();
+    }
+    if (next === 'enhance') {
+      void refreshKernelPatchStatus(false);
+      void refreshI18nStatus(false);
+    }
+  }
+
+  el('ctx-tab-overview')?.addEventListener('click', () => switchContextTab('overview'));
+  el('ctx-tab-enhance')?.addEventListener('click', () => switchContextTab('enhance'));
+  el('ctx-tab-audit')?.addEventListener('click', () => switchContextTab('audit'));
+  el('btn-close-ctx-palette')?.addEventListener('click', () => switchContextTab('overview'));
+
+  function toggleKernelDrawer(forceOpen) {
+    const curOpen = kernelDrawerBody?.style?.display === 'block';
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !curOpen;
+    switchContextTab(nextOpen ? 'enhance' : 'overview');
+  }
+  btnKernelDrawer?.addEventListener('click', () => toggleKernelDrawer());
+
+  function resetRestartConfirmState() {
+    kernelRestartConfirmUntil = 0;
+    if (kernelRestartConfirmTimer) {
+      clearTimeout(kernelRestartConfirmTimer);
+      kernelRestartConfirmTimer = null;
+    }
+    const btnRestart = el('btn-kernel-restart-ls');
+    if (btnRestart) {
+      btnRestart.removeAttribute('data-confirm');
+      btnRestart.textContent = '重启语言服务';
+    }
+  }
+
+  function showKernelFeedback(text, isError = false) {
+    const fb = el('kernel-feedback');
+    if (!fb) return;
+    if (!text) {
+      fb.hidden = true;
+      fb.textContent = '';
+      fb.removeAttribute('data-tone');
+      return;
+    }
+    fb.hidden = false;
+    fb.textContent = text;
+    if (isError) fb.setAttribute('data-tone', 'error');
+    else fb.removeAttribute('data-tone');
+  }
+
+  const KERNEL_TIER_IDS = [0, 1, 2, 3, 4].map(t => ({ tier: t, id: `btn-kernel-tier-${t}` }));
+  const KERNEL_CTX_IDS = [
+    { mode: 'stock', id: 'btn-kernel-ctx-stock' },
+    { mode: '512k', id: 'btn-kernel-ctx-512k' },
+    { mode: '900k', id: 'btn-kernel-ctx-900k' }
+  ];
+  const KERNEL_TITLE_IDS = [
+    { mode: 'zh', enabled: true, id: 'btn-kernel-title-zh' },
+    { mode: 'en', enabled: false, id: 'btn-kernel-title-en' }
+  ];
+  const I18N_LOCALE_IDS = [
+    { locale: 'zh-CN', id: 'btn-i18n-zh-cn' },
+    { locale: 'zh-TW', id: 'btn-i18n-zh-tw' },
+    { locale: 'en', id: 'btn-i18n-en' }
+  ];
+  const I18N_BRAND_IDS = [
+    { mode: 'english', id: 'btn-i18n-brand-english' },
+    { mode: 'hidden', id: 'btn-i18n-brand-hidden' },
+    { mode: 'translated', id: 'btn-i18n-brand-translated' }
+  ];
+  const KERNEL_ACTION_IDS = [
+    'btn-kernel-recommended',
+    'btn-kernel-restore',
+    'btn-kernel-refresh',
+    'btn-kernel-restart-ls'
+  ];
+
+  function setKernelControlsDisabled(disabled) {
+    const allIds = [
+      ...KERNEL_TIER_IDS.map(x => x.id),
+      ...KERNEL_CTX_IDS.map(x => x.id),
+      ...KERNEL_TITLE_IDS.map(x => x.id),
+      ...KERNEL_ACTION_IDS
+    ];
+    for (const id of allIds) {
+      const b = el(id);
+      if (b) b.disabled = Boolean(disabled);
+    }
+  }
+
+  function setI18nControlsDisabled(disabled) {
+    const curLocale = i18nStatusCache?.locale || 'zh-CN';
+    for (const item of I18N_LOCALE_IDS) {
+      const b = el(item.id);
+      if (b) b.disabled = Boolean(disabled);
+    }
+    for (const item of I18N_BRAND_IDS) {
+      const b = el(item.id);
+      if (b) b.disabled = Boolean(disabled) || curLocale === 'en';
+    }
+  }
+
+  function formatKb(bytes) {
+    const n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 KB';
+    return `${(n / 1024).toFixed(1)} KB`;
+  }
+
+  function syncEnhancementSummaryPill() {
+    const summaryPill = el('kernel-summary-pill');
+    if (!summaryPill) return;
+
+    const kOk = kernelStatusCache && kernelStatusCache.ok;
+    const iOk = i18nStatusCache && i18nStatusCache.ok;
+
+    if (!kOk && !iOk) {
+      summaryPill.textContent = '已就绪';
+      summaryPill.className = 'ctx-seg-badge key-pill pill-muted';
+      return;
+    }
+
+    const parts = [];
+    let isEnhanced = false;
+
+    if (kOk && kernelStatusCache.supported === false) {
+      parts.push('仅限 Win x64');
+    } else if (kOk && kernelStatusCache.summary) {
+      const s = kernelStatusCache.summary;
+      const tier = Number.isFinite(Number(s.promptTier)) ? Number(s.promptTier) : 0;
+      const ctxMode = s.contextMode || 'stock';
+      const ctxTxt = ctxMode === '900k' ? '900K' : (ctxMode === '512k' ? '512K' : '256K');
+      parts.push(`${tier}档`);
+      parts.push(ctxTxt);
+      if (s.chineseTitleEnabled) parts.push('中标');
+      if (tier > 0 || ctxMode !== 'stock' || s.chineseTitleEnabled) isEnhanced = true;
+    }
+
+    if (iOk) {
+      const loc = i18nStatusCache.locale || 'en';
+      if (loc === 'zh-CN') {
+        parts.push('简中');
+        isEnhanced = true;
+      } else if (loc === 'zh-TW') {
+        parts.push('繁中');
+        isEnhanced = true;
+      } else {
+        parts.push('英文');
+      }
+    }
+
+    summaryPill.textContent = parts.join(' · ') || '已就绪';
+    summaryPill.className = isEnhanced
+      ? 'ctx-seg-badge key-pill pill-good'
+      : 'ctx-seg-badge key-pill pill-muted';
+  }
+
+  function renderKernelStatusUI(data) {
+    const promptMeta = el('kernel-prompt-meta');
+    const promptDesc = el('kernel-prompt-desc');
+    const ctxMeta = el('kernel-ctx-meta');
+    const titleMeta = el('kernel-title-meta');
+    const binList = el('kernel-binaries-list');
+
+    syncEnhancementSummaryPill();
+
+    if (!data || !data.ok) {
+      return;
+    }
+
+    if (data.supported === false) {
+      setKernelControlsDisabled(true);
+      showKernelFeedback(data.reason || '当前系统不支持 Windows PE64 内核补丁', false);
+      return;
+    }
+
+    const s = data.summary || {};
+    const tier = Number.isFinite(Number(s.promptTier)) ? Number(s.promptTier) : 0;
+    const ctxMode = s.contextMode || 'stock';
+    const titleMode = s.chineseTitleMode || 'en';
+
+    if (promptMeta) {
+      if (s.totalCapacityBytes > 0) {
+        promptMeta.textContent = s.savedBytes > 0
+          ? `有效 ${formatKb(s.activeSlotBytes)} / 省 ${formatKb(s.savedBytes)}`
+          : `原版 ${formatKb(s.totalCapacityBytes)} (${s.slotCount || 0} 模板)`;
+      } else {
+        promptMeta.textContent = `${s.installedCount || 0} 个内核`;
+      }
+    }
+
+    if (promptDesc) {
+      promptDesc.textContent = PROMPT_TIER_DESCRIPTIONS[tier] || PROMPT_TIER_DESCRIPTIONS[0];
+    }
+
+    if (ctxMeta) {
+      const liveBudget = state.latest?.budget || null;
+      const targetBudget = s.effectiveBudget || 256000;
+      const pendingRestart = liveBudget && ctxMode !== 'stock' && liveBudget < targetBudget - 10000;
+      const cfgTxt = s.configContextWindow ? `config: ${s.configContextWindow}` : 'config: 默认';
+      ctxMeta.textContent = pendingRestart ? `${cfgTxt} · 待重启生效` : cfgTxt;
+    }
+
+    const bins = Array.isArray(data.binaries) ? data.binaries.filter(b => b.exists) : [];
+    if (titleMeta) {
+      const supportedBins = bins.filter(b => !b.error && b.chineseTitleMode !== 'unsupported');
+      const zhBins = supportedBins.filter(b => b.chineseTitleEnabled);
+      if (titleMode === 'unsupported' && !supportedBins.length) {
+        titleMeta.textContent = '当前内核无标题特征';
+      } else if (supportedBins.length > 1 && zhBins.length > 0 && zhBins.length < supportedBins.length) {
+        titleMeta.textContent = `部分开启 (${zhBins.length}/${supportedBins.length} 内核)`;
+      } else {
+        titleMeta.textContent = s.chineseTitleEnabled ? '已开启 · 强制 4~10 字中文' : '官方默认英文';
+      }
+    }
+
+    for (const item of KERNEL_TIER_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = item.tier === tier;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+    }
+    for (const item of KERNEL_CTX_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = item.mode === ctxMode;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+    }
+    for (const item of KERNEL_TITLE_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = titleMode !== 'unsupported' && Boolean(s.chineseTitleEnabled) === item.enabled;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+      btn.disabled = titleMode === 'unsupported' || kernelPatchBusy;
+    }
+
+    if (binList) {
+      if (!bins.length) {
+        binList.innerHTML = '<div class="kernel-bin-item"><span class="kernel-bin-name">未检测到已安装的内核文件</span></div>';
+      } else {
+        binList.innerHTML = bins.map(b => {
+          const modeTxt = b.contextMode === '900k' ? '900K' : (b.contextMode === '512k' ? '512K' : '256K');
+          const titleTxt = b.chineseTitleMode === 'unsupported' ? '' : (b.chineseTitleEnabled ? ' · 中标' : ' · 英标');
+          const statusTag = b.error ? '解析异常' : `${b.promptTier}档 · ${modeTxt}${titleTxt}${b.bakExists ? ' · 已备份' : ''}`;
+          const safeLabel = String(b.label || '').replace(/[<>&"]/g, '');
+          return `<div class="kernel-bin-item"><span class="kernel-bin-name"><span class="kernel-bin-dot"></span>${safeLabel}</span><span class="kernel-bin-tag">${statusTag}</span></div>`;
+        }).join('');
+      }
+    }
+  }
+
+  function renderI18nStatusUI(data) {
+    const localeMeta = el('i18n-locale-meta');
+    const brandMeta = el('i18n-brand-meta');
+
+    syncEnhancementSummaryPill();
+
+    if (!data || !data.ok) {
+      if (localeMeta) localeMeta.textContent = '未连接';
+      return;
+    }
+
+    const locale = data.locale || 'en';
+    const brand = data.brandTitle || 'english';
+
+    if (localeMeta) {
+      const countPart = locale !== 'en' && data.dictEntryCount ? ` · ${data.dictEntryCount} 词条` : '';
+      localeMeta.textContent = `${data.localeLabel || locale}${countPart}`;
+    }
+
+    if (brandMeta) {
+      brandMeta.textContent = locale === 'en'
+        ? '开启中文汉化后可选'
+        : (data.brandTitleLabel || brand);
+    }
+
+    for (const item of I18N_LOCALE_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = item.locale === locale;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+      btn.disabled = i18nApplyBusy;
+    }
+
+    for (const item of I18N_BRAND_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = locale !== 'en' && item.mode === brand;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+      btn.disabled = i18nApplyBusy || locale === 'en';
+    }
+  }
+
+  async function invokeKernelBridge(method, payload) {
+    if (typeof window !== 'undefined') {
+      if (method === 'status' && typeof window.contextMeterAPI?.getKernelStatus === 'function') {
+        return await window.contextMeterAPI.getKernelStatus();
+      }
+      if (method === 'apply' && typeof window.contextMeterAPI?.applyKernelPatch === 'function') {
+        return await window.contextMeterAPI.applyKernelPatch(payload || {});
+      }
+      if (window.__AGContextMeterLive?.port) {
+        const live = window.__AGContextMeterLive;
+        const route = method === 'status' ? '/get-kernel-status' : '/apply-kernel-patch';
+        const r = await fetch(`http://127.0.0.1:${live.port}${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+          body: JSON.stringify(payload || {})
+        });
+        return await r.json().catch(() => ({ ok: false, error: `桥接响应异常 (HTTP ${r.status})` }));
+      }
+    }
+    return { ok: false, error: '本地桥接服务未就绪，请执行 node cli.js install 或重启客户端' };
+  }
+
+  async function invokeI18nBridge(method, payload) {
+    if (typeof window !== 'undefined') {
+      if (method === 'status' && typeof window.contextMeterAPI?.getI18nStatus === 'function') {
+        return await window.contextMeterAPI.getI18nStatus();
+      }
+      if (method === 'apply' && typeof window.contextMeterAPI?.applyI18nConfig === 'function') {
+        return await window.contextMeterAPI.applyI18nConfig(payload || {});
+      }
+      if (window.__AGContextMeterLive?.port) {
+        const live = window.__AGContextMeterLive;
+        const route = method === 'status' ? '/get-i18n-status' : '/apply-i18n-config';
+        const r = await fetch(`http://127.0.0.1:${live.port}${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+          body: JSON.stringify(payload || {})
+        });
+        return await r.json().catch(() => ({ ok: false, error: `桥接响应异常 (HTTP ${r.status})` }));
+      }
+    }
+    return { ok: false, error: '本地桥接服务未就绪，请执行 node cli.js install 或重启客户端' };
+  }
+
+  function hydrateEnhancementSnapshots() {
+    const kSnap = readBridgeStatusSnapshot(KERNEL_SNAP_KEY, 'kernelStatus');
+    const iSnap = readBridgeStatusSnapshot(I18N_SNAP_KEY, 'i18nStatus');
+    if (kSnap && kSnap.ok) {
+      kernelStatusCache = kSnap;
+      renderKernelStatusUI(kSnap);
+    }
+    if (iSnap && iSnap.ok) {
+      i18nStatusCache = iSnap;
+      renderI18nStatusUI(iSnap);
+    }
+  }
+
+  async function refreshKernelPatchStatus(force = false) {
+    if (kernelPatchBusy) return kernelStatusCache;
+    if (!force && kernelStatusCache && Date.now() - kernelStatusFetchedAt < 25000) {
+      renderKernelStatusUI(kernelStatusCache);
+      return kernelStatusCache;
+    }
+    try {
+      const res = await invokeKernelBridge('status', {});
+      if (res && res.ok) {
+        kernelStatusCache = res;
+        kernelStatusFetchedAt = Date.now();
+        saveBridgeStatusSnapshot(KERNEL_SNAP_KEY, res);
+        renderKernelStatusUI(res);
+      } else if (force && res?.error) {
+        showKernelFeedback(formatBridgeErrorMessage(res.error, '读取内核状态失败'), true);
+      }
+      return res;
+    } catch (err) {
+      // 自动/切换面板触发 (force === false) 时彻底静默容错，绝不弹出 Failed to fetch 红框
+      if (force) {
+        showKernelFeedback(formatBridgeErrorMessage(err, '读取内核状态异常'), true);
+      }
+      return { ok: false, error: err?.message || String(err) };
+    }
+  }
+
+  async function refreshI18nStatus(force = false) {
+    if (i18nApplyBusy) return i18nStatusCache;
+    if (!force && i18nStatusCache && Date.now() - i18nStatusFetchedAt < 25000) {
+      renderI18nStatusUI(i18nStatusCache);
+      return i18nStatusCache;
+    }
+    try {
+      const res = await invokeI18nBridge('status', {});
+      if (res && res.ok) {
+        i18nStatusCache = res;
+        i18nStatusFetchedAt = Date.now();
+        saveBridgeStatusSnapshot(I18N_SNAP_KEY, res);
+        renderI18nStatusUI(res);
+      }
+      return res;
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+  }
+
+  async function triggerApplyKernelPatch(payload = {}) {
+    if (kernelPatchBusy) return { ok: false, error: '正在执行内核操作，请稍候' };
+    kernelPatchBusy = true;
+    resetRestartConfirmState();
+    setKernelControlsDisabled(true);
+    showKernelFeedback('正在校验备份并原位写入内核配置…', false);
+    try {
+      const res = await invokeKernelBridge('apply', payload);
+      if (res && res.ok) {
+        if (res.status) {
+          kernelStatusCache = res.status;
+          kernelStatusFetchedAt = Date.now();
+          saveBridgeStatusSnapshot(KERNEL_SNAP_KEY, res.status);
+          renderKernelStatusUI(res.status);
+        } else {
+          kernelStatusFetchedAt = 0;
+          await refreshKernelPatchStatus(true);
+        }
+        const logSummary = Array.isArray(res.logs) && res.logs.length
+          ? res.logs.join('\n')
+          : '内核配置已更新';
+        showKernelFeedback(logSummary, false);
+        return res;
+      } else {
+        const errMsg = formatBridgeErrorMessage(res?.error, '内核补丁写入失败');
+        showKernelFeedback(errMsg, true);
+        return res || { ok: false, error: errMsg };
+      }
+    } catch (err) {
+      const errMsg = formatBridgeErrorMessage(err, '执行内核操作异常');
+      showKernelFeedback(errMsg, true);
+      return { ok: false, error: errMsg };
+    } finally {
+      kernelPatchBusy = false;
+      if (kernelStatusCache?.supported !== false) {
+        setKernelControlsDisabled(false);
+        renderKernelStatusUI(kernelStatusCache);
+      }
+    }
+  }
+
+  async function triggerApplyI18nConfig(payload = {}) {
+    if (i18nApplyBusy) return { ok: false, error: '正在切换界面语言配置，请稍候' };
+    i18nApplyBusy = true;
+    const reqPayload = {
+      locale: payload.locale !== undefined ? payload.locale : (i18nStatusCache?.locale || 'zh-CN'),
+      brandTitle: payload.brandTitle !== undefined ? payload.brandTitle : (i18nStatusCache?.brandTitle || 'english')
+    };
+    setI18nControlsDisabled(true);
+    showKernelFeedback('正在更新客户端汉化配置并实时刷新界面…', false);
+    try {
+      const res = await invokeI18nBridge('apply', reqPayload);
+      if (res && res.ok) {
+        if (res.status) {
+          i18nStatusCache = res.status;
+          i18nStatusFetchedAt = Date.now();
+          saveBridgeStatusSnapshot(I18N_SNAP_KEY, res.status);
+          renderI18nStatusUI(res.status);
+        } else {
+          i18nStatusFetchedAt = 0;
+          await refreshI18nStatus(true);
+        }
+        const st = i18nStatusCache || res.status || {};
+        const note = res.asarError
+          ? `当前窗口已实时生效 (${st.localeLabel || reqPayload.locale})，ASAR 提示：${res.asarError}`
+          : `界面语言已更新为「${st.localeLabel || reqPayload.locale}」${st.locale !== 'en' ? `（品牌：${st.brandTitleShortLabel || reqPayload.brandTitle}）` : ''}，当前窗口已实时刷新，系统菜单将在下次启动时生效。`;
+        showKernelFeedback(note, Boolean(res.asarError));
+        return res;
+      } else {
+        const errMsg = formatBridgeErrorMessage(res?.error, '界面语言配置更新失败');
+        showKernelFeedback(errMsg, true);
+        return res || { ok: false, error: errMsg };
+      }
+    } catch (err) {
+      const errMsg = formatBridgeErrorMessage(err, '切换界面语言异常');
+      showKernelFeedback(errMsg, true);
+      return { ok: false, error: errMsg };
+    } finally {
+      i18nApplyBusy = false;
+      setI18nControlsDisabled(false);
+      if (i18nStatusCache) renderI18nStatusUI(i18nStatusCache);
+    }
+  }
+
+  hydrateEnhancementSnapshots();
+
+  for (const item of KERNEL_TIER_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('mouseenter', () => {
+      const descEl = el('kernel-prompt-desc');
+      if (descEl && PROMPT_TIER_DESCRIPTIONS[item.tier]) {
+        descEl.textContent = PROMPT_TIER_DESCRIPTIONS[item.tier];
+      }
+    });
+    btn.addEventListener?.('mouseleave', () => {
+      const curTier = kernelStatusCache?.summary?.promptTier ?? 0;
+      const descEl = el('kernel-prompt-desc');
+      if (descEl && PROMPT_TIER_DESCRIPTIONS[curTier]) {
+        descEl.textContent = PROMPT_TIER_DESCRIPTIONS[curTier];
+      }
+    });
+    btn.addEventListener?.('click', () => {
+      void triggerApplyKernelPatch({ promptTier: String(item.tier) });
+    });
+  }
+  for (const item of KERNEL_CTX_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('click', () => {
+      void triggerApplyKernelPatch({ contextMode: item.mode });
+    });
+  }
+  for (const item of KERNEL_TITLE_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('click', () => {
+      void triggerApplyKernelPatch({ chineseTitle: item.enabled });
+    });
+  }
+  for (const item of I18N_LOCALE_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('click', () => {
+      void triggerApplyI18nConfig({ locale: item.locale });
+    });
+  }
+  for (const item of I18N_BRAND_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('click', () => {
+      void triggerApplyI18nConfig({ brandTitle: item.mode });
+    });
+  }
+
+  el('btn-kernel-recommended')?.addEventListener('click', () => {
+    void triggerApplyKernelPatch({ promptTier: '4', contextMode: '900k', chineseTitle: true });
+  });
+  el('btn-kernel-restore')?.addEventListener('click', () => {
+    void triggerApplyKernelPatch({ promptTier: '0', contextMode: 'stock', chineseTitle: false });
+  });
+  el('btn-kernel-refresh')?.addEventListener('click', () => {
+    showKernelFeedback('', false);
+    void refreshKernelPatchStatus(true);
+    void refreshI18nStatus(true);
+  });
+  el('btn-kernel-restart-ls')?.addEventListener('click', () => {
+    const hasNativeIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.applyKernelPatch === 'function';
+    if (!hasNativeIpc) {
+      showKernelFeedback(
+        '当前处于首次安装后的临时热挂载模式：请直接关闭并重新打开一次 Antigravity 客户端（只需重开一次，主进程原生钩子即永久激活，之后随时热重启语言服务都不会消失）。',
+        false
+      );
+      return;
+    }
+    const now = Date.now();
+    const btnRestart = el('btn-kernel-restart-ls');
+    if (now < kernelRestartConfirmUntil) {
+      void triggerApplyKernelPatch({ restartLanguageServer: true });
+      return;
+    }
+    kernelRestartConfirmUntil = now + 3500;
+    if (btnRestart) {
+      btnRestart.setAttribute('data-confirm', 'true');
+      btnRestart.textContent = '确认重启？(再点执行)';
+    }
+    if (kernelRestartConfirmTimer) clearTimeout(kernelRestartConfirmTimer);
+    kernelRestartConfirmTimer = setTimeout(() => {
+      resetRestartConfirmState();
+    }, 3500);
   });
 
-  // 二级抽屉 3（面板 A 内就近设置）: 热力图色阶与面板外观自定义抽屉折叠展开
+  // 外观配色页与请求审计页桥接（同时驱动顶部三栏 Tab 与旧按钮兼容语义）
+  function toggleColorsDrawer(forceOpen) {
+    if (!colorDrawerBody) return;
+    const curOpen = colorDrawerBody.style.display === 'block';
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !curOpen;
+    switchContextTab(nextOpen ? 'palette' : 'overview');
+  }
+  btnColors?.addEventListener('click', () => toggleColorsDrawer());
+
+  btnDetails?.addEventListener('click', () => {
+    if (!drawerBody) return;
+    const curOpen = drawerBody.style.display === 'block';
+    switchContextTab(curOpen ? 'overview' : 'audit');
+  });
+
+  // Token 看板内就近设置: 热力图色阶与面板外观按需展开
   const btnTokenColors = el('btn-toggle-token-colors');
   const tokenColorDrawerBody = el('token-color-drawer-body');
   const tokenColorDrawerArrow = el('token-color-drawer-arrow');
@@ -5636,8 +6454,13 @@ function closeAllDropdowns(exceptWrap = null) {
     const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
     tokenColorDrawerBody.style.display = nextOpen ? 'block' : 'none';
     tokenColorDrawerBody.classList?.toggle?.('is-expanded', nextOpen);
-    if (tokenColorDrawerArrow) tokenColorDrawerArrow.textContent = nextOpen ? '▲ 收起设置' : '▼ 展开设置';
+    if (tokenColorDrawerArrow) tokenColorDrawerArrow.textContent = nextOpen ? '收起设置 ▲' : '色阶设置';
     btnTokenColors?.setAttribute('aria-expanded', String(nextOpen));
+    const topPaletteBtn = el('btn-panel-tokens-palette');
+    if (topPaletteBtn) {
+      if (nextOpen) addClass(topPaletteBtn, 'is-active');
+      else removeClass(topPaletteBtn, 'is-active');
+    }
     if (!nextOpen) {
       closeColorPicker(false);
     }
@@ -6702,13 +7525,13 @@ function closeAllDropdowns(exceptWrap = null) {
       if (bodyEl) bodyEl.textContent = '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。';
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-      if (manual && pop) pop.style.display = 'block';
+      if (manual && pop) { pop.style.display = 'block'; positionUpdatePopover(); }
       return;
     }
 
     if (manual) {
       cachedLatestRelease = null;
-      if (pop) pop.style.display = 'block';
+      if (pop) { pop.style.display = 'block'; positionUpdatePopover(); }
       if (verEl) verEl.textContent = 'v0.8.0 (正在检查…)';
       if (bodyEl) bodyEl.textContent = '正在连接 GitHub 检测最新版本…';
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
@@ -8065,6 +8888,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     setTokenHistoryForTest: payload => applyTokenHistoryPayload(payload),
     getPlanDetailExpanded: () => planDetailExpanded,
     setPlanDetailExpanded,
+    switchContextTab,
+    getActiveContextTab: () => activeContextTab,
     switchTokenView,
     switchHeatView: view => switchHeatView(view),
     getActiveHeatView: () => activeHeatView,
@@ -8089,6 +8914,12 @@ function renderHeatmapGrid(forceRebuild = false) {
     restoreSettingsFromHost,
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,
+    refreshKernelStatus: force => refreshKernelPatchStatus(Boolean(force)),
+    applyKernelPatch: opts => triggerApplyKernelPatch(opts || {}),
+    getKernelStatusCache: () => kernelStatusCache,
+    refreshI18nStatus: force => refreshI18nStatus(Boolean(force)),
+    applyI18nConfig: opts => triggerApplyI18nConfig(opts || {}),
+    getI18nStatusCache: () => i18nStatusCache,
     getTimelineWindow: () => {
       const w = computeTimelineWindow();
       return {
@@ -8112,6 +8943,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       state.disposed = true;
       for (const controller of state.controllers) controller.abort();
       clearInterval(timer);
+      if (kernelRestartConfirmTimer) clearTimeout(kernelRestartConfirmTimer);
       if (layoutRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(layoutRaf);
       syncHostStackingElevation(false);
       try { themeObserver?.disconnect(); } catch {}

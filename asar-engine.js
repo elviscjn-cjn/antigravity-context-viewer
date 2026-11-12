@@ -1,24 +1,38 @@
 'use strict';
-process.noAsar = true;
+if (!process.versions || !process.versions.electron || process.env.ELECTRON_RUN_AS_NODE) {
+  process.noAsar = true;
+}
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-function readHeader(archivePath) {
-  const fd = fs.openSync(archivePath, 'r');
+function withNoAsar(fn) {
+  const prev = process.noAsar;
+  process.noAsar = true;
   try {
-    const pre = Buffer.alloc(16);
-    fs.readSync(fd, pre, 0, 16, 0);
-    const jsonSize = pre.readUInt32LE(12);
-    const padding = (4 - (jsonSize % 4)) % 4;
-    const jsonBuf = Buffer.alloc(jsonSize);
-    fs.readSync(fd, jsonBuf, 0, jsonSize, 16);
-    const header = JSON.parse(jsonBuf.toString('utf8'));
-    return { header, baseOffset: 16 + jsonSize + padding };
+    return fn();
   } finally {
-    fs.closeSync(fd);
+    process.noAsar = prev;
   }
+}
+
+function readHeader(archivePath) {
+  return withNoAsar(() => {
+    const fd = fs.openSync(archivePath, 'r');
+    try {
+      const pre = Buffer.alloc(16);
+      fs.readSync(fd, pre, 0, 16, 0);
+      const jsonSize = pre.readUInt32LE(12);
+      const padding = (4 - (jsonSize % 4)) % 4;
+      const jsonBuf = Buffer.alloc(jsonSize);
+      fs.readSync(fd, jsonBuf, 0, jsonSize, 16);
+      const header = JSON.parse(jsonBuf.toString('utf8'));
+      return { header, baseOffset: 16 + jsonSize + padding };
+    } finally {
+      fs.closeSync(fd);
+    }
+  });
 }
 
 function getNode(header, relPath) {
@@ -35,19 +49,21 @@ function getNode(header, relPath) {
 
 const builtinAsar = {
   extractFile(archivePath, relPath) {
-    const { header, baseOffset } = readHeader(archivePath);
-    const node = getNode(header, relPath);
-    if (node.unpacked) {
-      return fs.readFileSync(path.join(archivePath + '.unpacked', relPath));
-    }
-    const buf = Buffer.alloc(node.size);
-    const fd = fs.openSync(archivePath, 'r');
-    try {
-      fs.readSync(fd, buf, 0, node.size, baseOffset + Number(node.offset));
-      return buf;
-    } finally {
-      fs.closeSync(fd);
-    }
+    return withNoAsar(() => {
+      const { header, baseOffset } = readHeader(archivePath);
+      const node = getNode(header, relPath);
+      if (node.unpacked) {
+        return fs.readFileSync(path.join(archivePath + '.unpacked', relPath));
+      }
+      const buf = Buffer.alloc(node.size);
+      const fd = fs.openSync(archivePath, 'r');
+      try {
+        fs.readSync(fd, buf, 0, node.size, baseOffset + Number(node.offset));
+        return buf;
+      } finally {
+        fs.closeSync(fd);
+      }
+    });
   },
 
   statFile(archivePath, relPath) {

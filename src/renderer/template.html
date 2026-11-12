@@ -1,8 +1,8 @@
   <!-- 顶部基本单元 1: 上下文小圆环 -->
   <button id="badge" class="ag-unit ag-unit-ring" type="button" aria-label="会话与上下文统计" aria-describedby="context-tooltip" aria-expanded="false">
     <svg id="ring-svg" class="ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-      <circle id="ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"></circle>
-      <circle id="ring-fill" class="ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1" stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
+      <circle id="ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2"></circle>
+      <circle id="ring-fill" class="ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2" stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
     </svg>
     <span id="badge-pct-val" class="badge-pct-val">--%</span>
     <div id="bar-wrap" class="sr-only" aria-hidden="true"><div id="bar-fill" class="meter-bar-fill"></div></div>
@@ -12,14 +12,18 @@
 
   <!-- 顶部基本单元 2: 输出速度 (tok/s) -->
   <button id="badge-speed" class="ag-unit" type="button" aria-label="模型输出速度与耗时统计" aria-expanded="false">
-    <span class="speed-icon" aria-hidden="true">⚡</span>
+    <span class="speed-icon" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L3.5 9h4.2L7 14.5 12.5 7H8.3L9 1.5z"></path></svg>
+    </span>
     <span id="speed-amount">-- tok/s</span>
     <span id="speed-hover-extra" class="sr-only"></span>
   </button>
 
-  <!-- 顶部基本单元 3: 累计 Token 用量（细线统计图标） -->
+  <!-- 顶部基本单元 3: 累计 Token 用量 -->
   <button id="badge-tokens" class="ag-unit" type="button" aria-label="Token 用量一览" aria-expanded="false">
-    <span class="token-fire-dot" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V9M8 13V4M13 13V7"></path></svg></span>
+    <span class="token-fire-dot" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V9M8 13V4M13 13V7"></path></svg>
+    </span>
     <span id="token-amount">--</span>
     <span id="token-hover-extra" class="sr-only"></span>
   </button>
@@ -42,7 +46,7 @@
   <!-- CLI 启动反馈提示气泡 -->
   <div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
 
-  <!-- 上下文圆环悬停/聚焦信息气泡（参考图三层结构） -->
+  <!-- 上下文圆环悬停/聚焦信息气泡 -->
   <div id="context-tooltip" role="tooltip" data-visible="false" data-placement="bottom">
     <div id="ctx-tip-title" class="ctx-tip-title">上下文窗口：</div>
     <div id="ctx-tip-pct" class="ctx-tip-pct">数据尚未就绪</div>
@@ -52,11 +56,17 @@
   <!-- 窄屏溢出菜单 -->
   <div id="overflow-menu" hidden aria-label="更多统计快捷菜单">
     <button id="overflow-speed-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span>⚡</span><span>输出速度</span></span>
+      <span class="overflow-item-label">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L3.5 9h4.2L7 14.5 12.5 7H8.3L9 1.5z"></path></svg>
+        <span>输出速度</span>
+      </span>
       <span id="overflow-speed-val" class="overflow-item-val">-- tok/s</span>
     </button>
     <button id="overflow-tokens-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span class="token-fire-dot"></span><span>Token 用量一览</span></span>
+      <span class="overflow-item-label">
+        <span class="token-fire-dot"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V9M8 13V4M13 13V7"></path></svg></span>
+        <span>Token 用量一览</span>
+      </span>
       <span id="overflow-tokens-val" class="overflow-item-val">--</span>
     </button>
     <button id="overflow-cli-btn" class="overflow-item" type="button">
@@ -65,212 +75,364 @@
     </button>
   </div>
 
-  <!-- 弹出式面板 1: 会话上下文与速度监控 (#panel, 450px) -->
-  <section id="panel" class="ag-panel" hidden aria-label="会话与上下文详情">
+  <!-- 在线更新检查浮层（全局共享，支持从任一面板唤起） -->
+  <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
+    <div class="update-pop-hdr">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">版本更新</span>
+        <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.0</span>
+      </div>
+      <button id="btn-close-update-pop" class="panel-icon-btn" type="button" aria-label="关闭更新提示">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+      </button>
+    </div>
+    <div id="up-pop-body" class="update-pop-body">正在检测最新版本…</div>
+    <div id="up-pop-footer" class="update-pop-footer">
+      <button id="btn-view-release-page" class="switch-pill-btn" type="button">发布页</button>
+      <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
+      <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
+    </div>
+    <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
+  </div>
+
+  <!-- 弹出式面板 1: 会话监控与系统增强 (#panel) -->
+  <section id="panel" class="ag-panel" hidden aria-label="会话与系统控制面板">
     <div class="panel-header-bar">
       <div class="panel-title">
-        <span style="font-size:13px;font-weight:600;color:var(--ag-text-primary)">💬 当前会话上下文</span>
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ag-text-secondary)"><circle cx="8" cy="8" r="6"></circle><path d="M8 5v3l2 1.5"></path></svg>
+        <span class="panel-title-text">会话监控</span>
+        <span id="v">v0.8.0</span>
       </div>
       <div class="panel-header-actions">
         <button id="btn-github-repo-ctx" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
         </button>
-        <button id="btn-check-update-ctx" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" title="检查插件更新" style="position:relative">
+        <button id="btn-check-update-ctx" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" title="检查插件更新">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-panel-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置" title="外观与调色设置">🎨</button>
-        <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
-        <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
+        <button id="btn-panel-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置" title="外观与指标配色">
+          <svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4c.9 0 1.5-.6 1.5-1.4 0-.4-.15-.7-.4-.95-.23-.25-.35-.55-.35-.9 0-.78.64-1.4 1.45-1.4H11a3.2 3.2 0 0 0 3.2-3.2C14.2 3.7 11.4 1.8 8 1.8z"></path><circle cx="5.2" cy="6.2" r="0.8" fill="currentColor" stroke="none"></circle><circle cx="7.8" cy="4.6" r="0.8" fill="currentColor" stroke="none"></circle><circle cx="10.6" cy="6" r="0.8" fill="currentColor" stroke="none"></circle></svg>
+        </button>
+        <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="切换主题（跟随宿主 / 浅色 / 深色）">
+          <svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5z" fill="currentColor" stroke="none"></path></svg>
+        </button>
+        <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+        </button>
       </div>
     </div>
 
     <div id="view-context">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <h3 style="margin:0">会话用量与生成监控<span id="v">v0.7.0</span></h3>
-      </div>
-
-      <!-- 本轮与当前会话实时 API 等值参考行 -->
-      <div id="round-cost-bar" class="round-cost-bar" title="当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）">
-        <span id="round-cost-text" style="font-weight:600;color:var(--ag-text-primary)">本轮估值：—</span>
-        <span id="session-cost-text" style="font-size:11px;color:var(--ag-text-muted)">当前会话合计：—</span>
-      </div>
-
-      <!-- 卡片 1: 核心用量速览 -->
-      <div id="key-summary">
-        <div class="key-header"><span class="key-title">⭐ 核心用量速览</span><span id="key-badge" class="key-pill pill-muted">读取中</span></div>
-        <div class="key-bar-track"><div id="key-bar-fill" class="key-bar-fill"></div></div>
-        <div class="key-stats"><div class="key-stat"><div class="key-stat-label">当前已用</div><div id="key-used" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">预算上限</div><div id="key-limit" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">剩余可用</div><div id="key-remaining" class="key-stat-val">—</div></div></div>
-        <div id="key-takeaway" class="key-takeaway">正在计算核心指标…</div>
-      </div>
-
-      <!-- 卡片 2: 输出速度与延迟速览 -->
-      <div id="speed-summary" style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:8px 0 10px;">
-        <div class="key-header">
-          <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));">⚡ 最新生成速度与耗时</span>
-          <span id="speed-badge" class="key-pill pill-muted">待生成</span>
-        </div>
-        <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
-          <div class="key-stat">
-            <div class="key-stat-label">输出速度</div>
-            <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—</div>
-          </div>
-          <div class="key-stat">
-            <div class="key-stat-label">生成耗时</div>
-            <div id="speed-duration" class="key-stat-val">—</div>
-          </div>
-          <div class="key-stat">
-            <div class="key-stat-label">首字延迟</div>
-            <div id="speed-ttft" class="key-stat-val">—</div>
-          </div>
-          <div class="key-stat">
-            <div class="key-stat-label">本次输出</div>
-            <div id="speed-tokens" class="key-stat-val">—</div>
-          </div>
-        </div>
-        <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
-      </div>
-
-      <!-- 二级交互折叠区 1: 面板背景与指标颜色自定义（就近放置于面板 B 内部） -->
-      <div class="tech-drawer">
-        <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left"><span>🎨 指标与背景颜色自定义（默认跟随主题）</span></span>
-          <span id="color-drawer-arrow" class="drawer-arrow">▼ 展开设置</span>
+      <!-- 顶部三栏分段切换器：替代纵向乱堆的手风琴抽屉 -->
+      <div class="ctx-seg-nav" id="ctx-seg-nav" role="tablist" aria-label="会话面板分页">
+        <button id="ctx-tab-overview" class="ctx-seg-btn is-active" role="tab" aria-selected="true" type="button">概览</button>
+        <button id="ctx-tab-enhance" class="ctx-seg-btn" role="tab" aria-selected="false" type="button">
+          <span>系统增强</span>
+          <span id="kernel-summary-pill" class="ctx-seg-badge">已就绪</span>
         </button>
-        <div id="color-drawer-body" class="drawer-body" style="display:none;">
-          <div class="color-grid">
-            <div class="color-item" style="grid-column:1 / -1">
-              <span class="color-item-lbl">面板与菜单统一背景色（0级跟随 / 自定义）</span>
-              <div class="color-item-ctrls">
-                <input id="color-panelBg" class="color-picker" type="color" value="#181818" aria-label="面板背景色" />
-                <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
-                <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
+        <button id="ctx-tab-audit" class="ctx-seg-btn" role="tab" aria-selected="false" type="button">请求审计</button>
+      </div>
+
+      <!-- 隐藏兼容触发器（保持既有单元测试 .click() 契约 100% 兼容） -->
+      <div class="sr-only" aria-hidden="true">
+        <div id="kernel-patch-drawer">
+          <button id="btn-toggle-kernel" type="button" aria-expanded="false"><span id="kernel-drawer-arrow">▼ 展开配置</span></button>
+        </div>
+        <button id="btn-toggle-colors" type="button" aria-expanded="false"><span id="color-drawer-arrow">▼ 展开设置</span></button>
+        <button id="btn-toggle-details" type="button" aria-expanded="false"><span id="drawer-arrow">▼ 点击展开明细</span></button>
+      </div>
+
+      <!-- 分页 1: 实时监控概览（干净无框套框） -->
+      <div id="ctx-pane-overview" class="ctx-pane">
+        <!-- 上下文容量主指标区 -->
+        <div id="key-summary" class="telemetry-section">
+          <div class="key-header">
+            <span class="key-title">上下文容量</span>
+            <span id="key-badge" class="key-pill pill-muted">读取中</span>
+          </div>
+          <div class="key-bar-track"><div id="key-bar-fill" class="key-bar-fill"></div></div>
+          <div class="key-stats">
+            <div class="key-stat">
+              <div class="key-stat-label">当前已用</div>
+              <div id="key-used" class="key-stat-val">—</div>
             </div>
-            <div class="color-item">
-              <span class="color-item-lbl">圆环已用部分</span>
-              <div class="color-item-ctrls">
-                <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb" aria-label="上下文圆环已用部分颜色" />
-                <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed" data-color-label="圆环已用部分" title="点击打开颜色选取器"></button>
-                <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
+            <div class="key-stat">
+              <div class="key-stat-label">预算上限</div>
+              <div id="key-limit" class="key-stat-val">—</div>
             </div>
-            <div class="color-item">
-              <span class="color-item-lbl">圆环轨道</span>
-              <div class="color-item-ctrls">
-                <input id="color-ringTrack" class="color-picker" type="color" value="#52525b" aria-label="圆环轨道颜色" />
-                <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack" data-color-label="圆环轨道" title="点击打开颜色选取器"></button>
-                <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">上下文用量文字</span>
-              <div class="color-item-ctrls">
-                <input id="color-contextText" class="color-picker" type="color" value="#ececef" aria-label="上下文用量文字颜色" />
-                <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText" data-color-label="上下文用量文字" title="点击打开颜色选取器"></button>
-                <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">输出速度</span>
-              <div class="color-item-ctrls">
-                <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" aria-label="输出速度颜色" />
-                <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="输出速度" title="点击打开颜色选取器"></button>
-                <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">累计 token 用量</span>
-              <div class="color-item-ctrls">
-                <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc" aria-label="累计 token 用量颜色" />
-                <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="点击打开颜色选取器"></button>
-                <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">其他 token 指标</span>
-              <div class="color-item-ctrls">
-                <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa" aria-label="其他 token 指标颜色" />
-                <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="其他 token 指标" title="点击打开颜色选取器"></button>
-                <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
+            <div class="key-stat">
+              <div class="key-stat-label">剩余可用</div>
+              <div id="key-remaining" class="key-stat-val">—</div>
             </div>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:7px">
-            <span style="font-size:10.5px;color:var(--ag-text-muted)">注：高占用与超限告警色独立保留，不被常态颜色覆盖。</span>
-            <button id="reset-all-colors" class="color-reset-btn" type="button">全部恢复跟随主题</button>
+          <div id="key-takeaway" class="key-takeaway">正在计算核心指标…</div>
+        </div>
+
+        <!-- 最新生成速度与延迟区 -->
+        <div id="speed-summary" class="telemetry-section telemetry-divider">
+          <div class="key-header">
+            <span class="key-title">生成性能</span>
+            <span id="speed-badge" class="key-pill pill-muted">待生成</span>
           </div>
+          <div class="key-stats key-stats-4">
+            <div class="key-stat">
+              <div class="key-stat-label">输出速度</div>
+              <div id="speed-val" class="key-stat-val speed-accent-val">—</div>
+            </div>
+            <div class="key-stat">
+              <div class="key-stat-label">生成耗时</div>
+              <div id="speed-duration" class="key-stat-val">—</div>
+            </div>
+            <div class="key-stat">
+              <div class="key-stat-label">首字延迟</div>
+              <div id="speed-ttft" class="key-stat-val">—</div>
+            </div>
+            <div class="key-stat">
+              <div class="key-stat-label">本次输出</div>
+              <div id="speed-tokens" class="key-stat-val">—</div>
+            </div>
+          </div>
+          <div id="speed-takeaway" class="key-takeaway">等待模型返回生成耗时统计…</div>
+        </div>
+
+        <!-- 本轮与当前会话实时 API 等值参考微条 -->
+        <div id="round-cost-bar" class="round-cost-bar" title="当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）">
+          <span id="round-cost-text" class="round-cost-primary">最近调用估值：—</span>
+          <span id="session-cost-text" class="round-cost-secondary">当前会话合计：—</span>
         </div>
       </div>
 
-      <!-- 二级交互折叠区 2: 底层技术参数与附件审计 -->
-      <div class="tech-drawer">
-        <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left">
-            <span>📋 底层技术参数与附件审计</span>
-          </span>
-          <span id="drawer-arrow" class="drawer-arrow">▼ 点击展开明细</span>
-        </button>
-        <div id="drawer-body" class="drawer-body" style="display:none;">
-          <p id="status">正在核对请求和附件…</p><p id="model"></p>
-          <h4>最近一次模型请求</h4>
-          <dl><dt>请求状态</dt><dd id="request-status">—</dd><dt>模型返回输入＋输出</dt><dd id="actual">—</dd><dt>客户端估算（可能漏附件）</dt><dd id="estimate">—</dd><dt>客户端预算字段</dt><dd id="budget">—</dd><dt>该次报错的服务端限制</dt><dd id="service-limit">—</dd><dt>相对客户端预算</dt><dd id="percent">—</dd></dl>
-          <h4>整个会话累计内容 · 本地估算</h4>
-          <dl><dt>可读取文本 token 估算</dt><dd id="session-total">扫描中…</dd><dt>实际读取文字字符数</dt><dd id="characters">—</dd><dt>用户消息</dt><dd id="user">—</dd><dt>模型回复</dt><dd id="assistant">—</dd><dt>可见思考内容</dt><dd id="thinking">—</dd><dt>工具调用与工具输出</dt><dd id="tools">—</dd><dt>历史压缩摘要</dt><dd id="summaries">—</dd><dt>当前系统提示与工具定义</dt><dd id="system">—</dd><dt>上传／输出附件文本</dt><dd id="attachment-total">—</dd><dt>历史步骤完整性</dt><dd id="steps">—</dd></dl>
-          <p id="coverage"></p><h4>附件逐项检查</h4><div id="files"></div><button id="refresh" type="button">重新扫描整段会话与附件</button>
-          <p id="note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token 区间是文本启发式估算，不是 Gemini 分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。</p>
-          <p id="updated"></p>
+      <!-- 分页 2: 系统增强（内核提示词 / 上下文解锁 / 自动中文标题 / 界面语言与品牌） -->
+      <div id="kernel-drawer-body" class="ctx-pane" style="display:none;">
+        <div class="kernel-quick-bar">
+          <button id="btn-kernel-recommended" class="kernel-action-btn primary" type="button" title="一键应用 4 档防幻觉精简提示词 + 解锁 900K 上下文窗口 + 开启自动中文标题">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L3.5 9h4.2L7 14.5 12.5 7H8.3L9 1.5z"></path></svg>
+            <span>一键推荐配置</span>
+          </button>
+          <div class="kernel-quick-right">
+            <button id="btn-kernel-restore" class="kernel-action-btn" type="button" title="从备份还原官方原版提示词、默认 256K 限制与英文标题">恢复默认</button>
+            <button id="btn-kernel-refresh" class="kernel-action-btn icon-only" type="button" title="重新扫描内核与界面语言状态" aria-label="刷新状态">
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"></path></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="kernel-group-list">
+          <div class="kernel-section">
+            <div class="kernel-sec-hdr">
+              <span class="kernel-sec-title">系统提示词</span>
+              <span id="kernel-prompt-meta" class="kernel-sec-meta">—</span>
+            </div>
+            <div class="kernel-tier-grid" role="radiogroup" aria-label="系统提示词档位">
+              <button id="btn-kernel-tier-0" type="button" class="kernel-opt-btn" data-prompt-tier="0">0 原版</button>
+              <button id="btn-kernel-tier-1" type="button" class="kernel-opt-btn" data-prompt-tier="1">1 去推销</button>
+              <button id="btn-kernel-tier-2" type="button" class="kernel-opt-btn" data-prompt-tier="2">2 精简</button>
+              <button id="btn-kernel-tier-3" type="button" class="kernel-opt-btn" data-prompt-tier="3">3 重写</button>
+              <button id="btn-kernel-tier-4" type="button" class="kernel-opt-btn" data-prompt-tier="4">4 防幻觉</button>
+            </div>
+            <div id="kernel-prompt-desc" class="kernel-opt-desc">选择档位后原位更新内核模板，保留全部原生工具定义。</div>
+          </div>
+
+          <div class="kernel-section">
+            <div class="kernel-sec-hdr">
+              <span class="kernel-sec-title">上下文窗口上限</span>
+              <span id="kernel-ctx-meta" class="kernel-sec-meta">—</span>
+            </div>
+            <div class="kernel-ctx-grid" role="radiogroup" aria-label="上下文窗口上限档位">
+              <button id="btn-kernel-ctx-stock" type="button" class="kernel-opt-btn" data-ctx-mode="stock">256K 默认</button>
+              <button id="btn-kernel-ctx-512k" type="button" class="kernel-opt-btn" data-ctx-mode="512k">512K</button>
+              <button id="btn-kernel-ctx-900k" type="button" class="kernel-opt-btn" data-ctx-mode="900k">900K 解锁</button>
+            </div>
+          </div>
+
+          <div class="kernel-section">
+            <div class="kernel-sec-hdr">
+              <span class="kernel-sec-title">自动中文标题</span>
+              <span id="kernel-title-meta" class="kernel-sec-meta">—</span>
+            </div>
+            <div class="kernel-duo-grid" role="radiogroup" aria-label="会话自动中文命名">
+              <button id="btn-kernel-title-zh" type="button" class="kernel-opt-btn" data-title-mode="zh">中文标题 (4~10字)</button>
+              <button id="btn-kernel-title-en" type="button" class="kernel-opt-btn" data-title-mode="en">英文默认</button>
+            </div>
+          </div>
+
+          <div class="kernel-section">
+            <div class="kernel-sec-hdr">
+              <span class="kernel-sec-title">客户端语言</span>
+              <span id="i18n-locale-meta" class="kernel-sec-meta">—</span>
+            </div>
+            <div class="kernel-ctx-grid" role="radiogroup" aria-label="客户端界面语言">
+              <button id="btn-i18n-zh-cn" type="button" class="kernel-opt-btn" data-i18n-locale="zh-CN">简体中文</button>
+              <button id="btn-i18n-zh-tw" type="button" class="kernel-opt-btn" data-i18n-locale="zh-TW">繁體中文</button>
+              <button id="btn-i18n-en" type="button" class="kernel-opt-btn" data-i18n-locale="en">English</button>
+            </div>
+            <div class="kernel-sub-row">
+              <div class="kernel-sub-hdr">
+                <span>左上角品牌显示</span>
+                <span id="i18n-brand-meta" class="kernel-sec-meta">—</span>
+              </div>
+              <div class="kernel-ctx-grid" role="radiogroup" aria-label="左上角品牌显示">
+                <button id="btn-i18n-brand-english" type="button" class="kernel-opt-btn" data-brand-mode="english">Antigravity</button>
+                <button id="btn-i18n-brand-hidden" type="button" class="kernel-opt-btn" data-brand-mode="hidden">隐藏品牌</button>
+                <button id="btn-i18n-brand-translated" type="button" class="kernel-opt-btn" data-brand-mode="translated">中文反重力</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="kernel-binaries-list" class="kernel-bin-list"></div>
+
+        <div class="kernel-footer-bar">
+          <span class="kernel-footer-hint">界面语言当前窗口即时刷新；内核改动重启语言服务后生效</span>
+          <button id="btn-kernel-restart-ls" class="kernel-action-btn warn-outline" type="button" title="重启后台 language_server 进程使内核配置立即生效">重启语言服务</button>
+        </div>
+
+        <div id="kernel-feedback" class="kernel-feedback" hidden></div>
+      </div>
+
+      <!-- 分页 3: 请求与附件审计明细 -->
+      <div id="drawer-body" class="ctx-pane drawer-body" style="display:none;">
+        <p id="status">正在核对请求和附件…</p>
+        <p id="model"></p>
+        <h4>最近一次模型请求</h4>
+        <dl class="audit-dl">
+          <dt>请求状态</dt><dd id="request-status">—</dd>
+          <dt>服务端返回用量</dt><dd id="actual">—</dd>
+          <dt>客户端估算</dt><dd id="estimate">—</dd>
+          <dt>客户端预算上限</dt><dd id="budget">—</dd>
+          <dt>报错服务端限制</dt><dd id="service-limit">—</dd>
+          <dt>相对预算占比</dt><dd id="percent">—</dd>
+        </dl>
+        <h4>全会话归档内容 · 本地估算</h4>
+        <dl class="audit-dl">
+          <dt>可读文本估算</dt><dd id="session-total">扫描中…</dd>
+          <dt>读取字符总数</dt><dd id="characters">—</dd>
+          <dt>用户消息</dt><dd id="user">—</dd>
+          <dt>模型回复</dt><dd id="assistant">—</dd>
+          <dt>可见思考链</dt><dd id="thinking">—</dd>
+          <dt>工具调用与输出</dt><dd id="tools">—</dd>
+          <dt>历史压缩摘要</dt><dd id="summaries">—</dd>
+          <dt>系统提示与工具定义</dt><dd id="system">—</dd>
+          <dt>附件提取文本</dt><dd id="attachment-total">—</dd>
+          <dt>历史步骤计数</dt><dd id="steps">—</dd>
+        </dl>
+        <p id="coverage"></p>
+        <div class="audit-files-hdr">
+          <h4 style="margin:0">附件逐项检查</h4>
+          <button id="refresh" type="button">重新扫描</button>
+        </div>
+        <div id="files"></div>
+        <details class="audit-note-details">
+          <summary>统计口径与隐私说明</summary>
+          <p id="note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入。<br><br>本地 token 区间是文本启发式估算，不是分词器精确结果。未知内容不按零处理；只有服务端返回的用量才标为实际统计。所有扫描均在本地只读完成，不向外部发送文件。</p>
+        </details>
+        <p id="updated"></p>
+      </div>
+
+      <!-- 外观子页: 面板与顶栏指标颜色定制（由顶栏调色盘按钮唤起） -->
+      <div id="color-drawer-body" class="ctx-pane" style="display:none;">
+        <div class="palette-pane-hdr">
+          <span class="kernel-sec-title">面板与指标配色</span>
+          <button id="btn-close-ctx-palette" class="color-reset-btn" type="button">返回概览</button>
+        </div>
+        <div class="color-grid">
+          <div class="color-item" style="grid-column:1 / -1">
+            <span class="color-item-lbl">面板与菜单背景色</span>
+            <div class="color-item-ctrls">
+              <input id="color-panelBg" class="color-picker" type="color" value="#181818" aria-label="面板背景色" />
+              <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
+              <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">圆环已用弧</span>
+            <div class="color-item-ctrls">
+              <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb" aria-label="上下文圆环已用部分颜色" />
+              <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed" data-color-label="圆环已用部分" title="点击打开颜色选取器"></button>
+              <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">圆环底轨</span>
+            <div class="color-item-ctrls">
+              <input id="color-ringTrack" class="color-picker" type="color" value="#52525b" aria-label="圆环轨道颜色" />
+              <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack" data-color-label="圆环轨道" title="点击打开颜色选取器"></button>
+              <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">百分比文字</span>
+            <div class="color-item-ctrls">
+              <input id="color-contextText" class="color-picker" type="color" value="#ececef" aria-label="上下文用量文字颜色" />
+              <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText" data-color-label="上下文用量文字" title="点击打开颜色选取器"></button>
+              <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">生成速度</span>
+            <div class="color-item-ctrls">
+              <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" aria-label="输出速度颜色" />
+              <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="输出速度" title="点击打开颜色选取器"></button>
+              <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">累计 Token</span>
+            <div class="color-item-ctrls">
+              <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc" aria-label="累计 token 用量颜色" />
+              <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="点击打开颜色选取器"></button>
+              <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+          <div class="color-item">
+            <span class="color-item-lbl">强调色</span>
+            <div class="color-item-ctrls">
+              <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa" aria-label="其他 token 指标颜色" />
+              <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="其他 token 指标" title="点击打开颜色选取器"></button>
+              <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+            </div>
+          </div>
+        </div>
+        <div class="palette-pane-footer">
+          <span>高占用与超限告警色独立保留</span>
+          <button id="reset-all-colors" class="color-reset-btn" type="button">全部恢复跟随主题</button>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
+  <!-- 弹出式面板 2: Token 用量看板 (#panel-tokens) -->
   <section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览">
     <div class="panel-header-bar">
       <div class="panel-title panel-title-tokens">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"><path d="M3 13V9M8 13V4M13 13V7"></path></svg>
-        <span id="panel-tokens-title" style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">本机已记录用量</span>
+        <span id="panel-tokens-title" class="panel-title-text">本机已记录用量</span>
       </div>
       <div class="panel-header-actions">
         <button id="btn-github-repo" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
         </button>
-        <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" title="检查插件更新" style="position:relative">
+        <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" title="检查插件更新">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-panel-tokens-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置" title="外观与调色设置">🎨</button>
-        <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
-        <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
+        <button id="btn-panel-tokens-palette" class="panel-icon-btn" type="button" aria-label="热力图与外观设置" title="热力图色阶与外观设置">
+          <svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4c.9 0 1.5-.6 1.5-1.4 0-.4-.15-.7-.4-.95-.23-.25-.35-.55-.35-.9 0-.78.64-1.4 1.45-1.4H11a3.2 3.2 0 0 0 3.2-3.2C14.2 3.7 11.4 1.8 8 1.8z"></path><circle cx="5.2" cy="6.2" r="0.8" fill="currentColor" stroke="none"></circle><circle cx="7.8" cy="4.6" r="0.8" fill="currentColor" stroke="none"></circle><circle cx="10.6" cy="6" r="0.8" fill="currentColor" stroke="none"></circle></svg>
+        </button>
+        <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="切换主题（跟随宿主 / 浅色 / 深色）">
+          <svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5z" fill="currentColor" stroke="none"></path></svg>
+        </button>
+        <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+        </button>
       </div>
-    </div>
-
-    <!-- 在线更新浮层，定位于 panel-tokens 内 -->
-    <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
-      <div class="update-pop-hdr">
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">🚀 发现新版本</span>
-          <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.0</span>
-        </div>
-        <button id="btn-close-update-pop" class="panel-icon-btn" type="button" style="padding:1px 5px;font-size:13px">×</button>
-      </div>
-      <div id="up-pop-body" class="update-pop-body">
-        正在检测最新版本…
-      </div>
-      <div id="up-pop-footer" class="update-pop-footer">
-        <button id="btn-view-release-page" class="switch-pill-btn" type="button">查看发布页</button>
-        <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
-        <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
-      </div>
-      <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
     </div>
 
     <div id="view-tokens">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">
+      <div class="tokens-toolbar-row">
         <div class="source-switch-bar">
-          <span style="font-size:10.5px;color:var(--ag-text-muted);padding:0 4px">来源:</span>
-          <button id="src-tab-all" class="switch-pill-btn active" type="button">全部</button>
+          <button id="src-tab-all" class="switch-pill-btn active" type="button">全部来源</button>
           <button id="src-tab-desktop" class="switch-pill-btn" type="button">桌面端</button>
           <button id="src-tab-cli" class="switch-pill-btn" type="button">CLI</button>
         </div>
@@ -283,32 +445,31 @@
       <!-- 账号套餐状态摘要行 -->
       <div id="plan-summary-bar" class="plan-summary-bar">
         <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
-          <span>💎</span>
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M2.5 6.2L5 2.5h6l2.5 3.7L8 13.8 2.5 6.2z"></path><path d="M2.5 6.2h11"></path></svg>
           <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · 已自动识别 · 刚刚更新</span>
         </div>
-        <!-- 黄框位置：实时联动的订阅费与汇率胶囊 -->
         <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)">
           <span id="plan-summary-price-val">$19.99/月</span>
           <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
         </div>
-        <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 6px;flex-shrink:0">详情 ▼</button>
+        <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 7px;flex-shrink:0">详情 ▼</button>
       </div>
 
-      <!-- 套餐详情卡片（可折叠，紧凑左对齐，支持就地自定义与获取方式设置） -->
+      <!-- 套餐详情卡片（可折叠，按需编辑） -->
       <div id="plan-detail-card" class="plan-detail-card collapsible-pane" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
           <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)">💎 AI 订阅与额度详情</span>
+            <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)">订阅与额度详情</span>
             <span id="plan-save-feedback" style="font-size:10px;color:var(--ag-text-muted);display:none"></span>
           </div>
-          <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:10.5px" title="收回 AI Pro 详情面板">详情收回 ▲</button>
+          <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:10.5px" title="收回详情面板">收起 ▲</button>
         </div>
         <dl class="plan-detail-dl">
-          <dt>当前套餐：</dt>
+          <dt>当前套餐</dt>
           <dd id="p-det-name" style="font-weight:600">Google AI Pro</dd>
-          <dt>当前账号：</dt>
+          <dt>当前账号</dt>
           <dd id="p-det-account">—</dd>
-          <dt>账号所在地区：</dt>
+          <dt>账号所在地区</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
             <span id="p-det-country" style="display:none">未知</span>
             <select id="direct-country-select" aria-label="账号所在地区 (仅本地记录)" style="display:none">
@@ -332,7 +493,7 @@
               <option value="中国大陆 (CN)">🇨🇳 中国大陆 (CN)</option>
             </select>
             <div id="direct-country-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-country-trigger" class="ag-dropdown-trigger" tabindex="0" title="用户记录或可靠来源识别的 Google 账号所属地区 (仅本地生效，不修改 Google 账号本身)">
+              <div id="direct-country-trigger" class="ag-dropdown-trigger" tabindex="0" title="仅本地记录显示，不修改 Google 账号本身">
                 <span id="direct-country-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🌐 未设置 / 自动</span>
                 <div class="ag-dropdown-arrow">
                   <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
@@ -342,11 +503,11 @@
             </div>
             <span id="p-det-country-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">已保存</span>
           </dd>
-          <dt>订阅国家：</dt>
+          <dt>订阅结算国家</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
             <span id="p-det-region" style="display:none">未知</span>
             <div id="direct-region-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-region-trigger" class="ag-dropdown-trigger" tabindex="0" title="这份订阅的购买或订阅所在国家/地区 (可与账号所在地区不同)">
+              <div id="direct-region-trigger" class="ag-dropdown-trigger" tabindex="0" title="订阅购买或结算所在的国家/地区">
                 <span id="direct-region-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🌏 未知 (点击选择订阅国家与币种建议)</span>
                 <div class="ag-dropdown-arrow">
                   <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
@@ -356,7 +517,7 @@
             </div>
             <span id="p-det-region-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">自定义</span>
           </dd>
-          <dt>订阅币种：</dt>
+          <dt>结算币种</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
             <span id="p-det-currency" style="display:none">USD</span>
             <select id="direct-currency-select" aria-label="订阅币种" style="display:none">
@@ -379,7 +540,7 @@
               <option value="BRL">BRL (R$ 雷亚尔)</option>
             </select>
             <div id="direct-currency-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-currency-trigger" class="ag-dropdown-trigger" tabindex="0" title="该订阅记录使用的计价与结算币种 (独立保存，可手动指定或自动跟随)">
+              <div id="direct-currency-trigger" class="ag-dropdown-trigger" tabindex="0" title="订阅计价与结算币种">
                 <span id="direct-currency-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">USD ($ 美元)</span>
                 <div class="ag-dropdown-arrow">
                   <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
@@ -389,46 +550,41 @@
             </div>
             <span id="p-det-currency-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">已保存</span>
           </dd>
-          <dt>获取方式：</dt>
+          <dt>获取方式</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span id="p-det-acq">正常付费订阅</span>
             <span id="p-det-acq-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none">活动权益</span>
           </dd>
-          <dt>计费周期与价格：</dt>
+          <dt>周期与实付</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span id="p-det-price">地区参考价 $19.99/月</span>
             <span id="p-det-price-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none">地区参考价</span>
             <div id="price-mode-switch-group" style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
-              <button id="btn-mode-preset" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px" title="跟随当前订阅国家的官方定价动态联动">跟随参考价</button>
-              <button id="btn-mode-custom" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px" title="手动指定用户真实实付金额（含0元/折扣等）">自定义实付</button>
+              <button id="btn-mode-preset" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px">跟随参考价</button>
+              <button id="btn-mode-custom" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px">自定义实付</button>
             </div>
           </dd>
-          <dt id="p-dt-validity" style="display:none">权益有效期：</dt>
+          <dt id="p-dt-validity" style="display:none">权益有效期</dt>
           <dd id="p-det-validity" style="display:none;color:var(--ag-text-secondary);font-size:11px">—</dd>
-          <dt id="p-dt-note" style="display:none">补充备注：</dt>
+          <dt id="p-dt-note" style="display:none">补充备注</dt>
           <dd id="p-det-note" style="display:none;color:var(--ag-text-secondary);font-size:11px">—</dd>
-          <dt>Prompt 额度池：</dt>
+          <dt>Prompt 额度</dt>
           <dd id="p-det-prompt-credits"><span id="p-det-credits">—</span></dd>
-          <dt>Flow 额度池：</dt>
+          <dt>Flow 额度</dt>
           <dd id="p-det-flow-credits">—</dd>
-          <dt>状态更新时间：</dt>
+          <dt>状态更新</dt>
           <dd id="p-det-time" style="font-size:11px;color:var(--ag-text-muted)">—</dd>
         </dl>
 
-        <!-- 底部操作栏：左侧提供详情收回按钮，右侧提供自定义订阅设置按钮 -->
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:6px;border-top:1px dashed var(--ag-border-subcard)">
-          <button id="btn-plan-detail-collapse" class="switch-pill-btn" type="button" style="padding:3px 10px;font-size:11px" title="收回详情面板">详情收回 ▲</button>
-          <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button" title="点击展开编辑当前账号订阅详细信息与实付设置">
-            <span style="font-size:12px">✎</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:6px;border-top:1px solid var(--ag-border-subcard)">
+          <button id="btn-plan-detail-collapse" class="switch-pill-btn" type="button" style="padding:3px 10px;font-size:11px">收起详情 ▲</button>
+          <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button">
             <span>自定义订阅设置</span>
           </button>
         </div>
 
-        <!-- 就地行内自定义编辑表单 -->
         <div id="plan-custom-form" style="display:none;margin-top:8px;padding:10px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px">
-          <div style="font-size:11px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)">
-            设置当前账号订阅信息
-          </div>
+          <div style="font-size:11px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)">设置当前账号订阅信息</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">获取方式 / 活动来源</label>
@@ -458,7 +614,7 @@
           </div>
           <div style="margin-bottom:6px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
-              <label style="font-size:10px;color:var(--ag-text-muted)">预设订阅国家与汇率 (可选快捷套用)</label>
+              <label style="font-size:10px;color:var(--ag-text-muted)">预设订阅国家与汇率</label>
               <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
             </div>
             <select id="select-custom-region-preset" style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
@@ -480,22 +636,22 @@
               <option value="AU">🇦🇺 澳大利亚 (AU) · AU$32.99/月 (折合 ≈ ¥146.8)</option>
               <option value="MY">🇲🇾 马来西亚 (MY) · RM 97.99/月 (折合 ≈ ¥151.9)</option>
               <option value="CN">🇨🇳 中国大陆/自定义 (CNY) · ¥140/月</option>
-              <option value="custom">✎ 自定义输入地区</option>
+              <option value="custom">自定义输入地区</option>
             </select>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">账号所在地区 (仅本地记录)</label>
-              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" title="仅作为本地显示记录，不修改实际 Google 账号" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">账号所在地区</label>
+              <input id="input-custom-country" type="text" placeholder="如：美国 (US)" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
             </div>
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅国家 (购买/结算地区)</label>
-              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" title="实际购买或支付订阅所在的国家或地区" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅结算地区</label>
+              <input id="input-custom-region" type="text" placeholder="如：韩国 / 澳大利亚" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
             </div>
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅币种与实付金额</label>
+              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">币种与实付金额</label>
               <div style="display:flex;gap:4px">
-                <select id="select-custom-currency" title="订阅计价/结算币种" style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                <select id="select-custom-currency" style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
                   <option value="USD">USD</option>
                   <option value="KRW">KRW</option>
                   <option value="HKD">HKD</option>
@@ -536,7 +692,7 @@
           </div>
           <div style="margin-bottom:6px">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">补充说明备注</label>
-            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <input id="input-custom-note" type="text" placeholder="例如：设备赠送 6 个月 / 家庭共享" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
           <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
             <button id="btn-custom-plan-clear" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px;color:#ef4444">清除自定义</button>
@@ -546,45 +702,36 @@
         </div>
       </div>
 
-      <!-- API 费用估算卡片（整个费用面板默认收为小摘要，展开后才显示详情） -->
-      <div id="cost-estimate-card" style="display:none;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:12px;margin-bottom:10px">
-        <!-- 紧凑小摘要区（默认常驻展示） -->
+      <!-- API 费用估算卡片 -->
+      <div id="cost-estimate-card" class="cost-estimate-card" style="display:none">
         <div id="cost-compact-summary">
-          <!-- 1. 标题与范围标签 -->
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <span id="cost-card-title" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary)">💰 本期 API 参考金额</span>
+            <span id="cost-card-title" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary)">本期 API 参考金额</span>
             <span id="cost-period-tag" class="key-pill pill-muted" style="font-size:10px">本月自然月</span>
           </div>
-          <!-- 2. 来源与时间短行 -->
-          <div id="cost-scope-desc" style="font-size:11px;color:var(--ag-text-muted);margin-bottom:6px">全部来源 · 2026-11 自然月</div>
-          <!-- 3. 主要参考金额及常驻“非实付”标识 -->
+          <div id="cost-scope-desc" style="font-size:11px;color:var(--ag-text-muted);margin-bottom:6px">全部来源 · 自然月</div>
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-            <div id="cost-grand-val" style="font-size:22px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.5px">约 $0.00</div>
+            <div id="cost-grand-val" style="font-size:22px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.03em;font-variant-numeric:tabular-nums">约 $0.00</div>
             <span id="cost-non-paid-badge" class="key-pill pill-muted" style="font-size:10px;padding:1px 6px">API折算 · 非实付</span>
           </div>
-          <!-- 4. 一行参考模型/情景假设 -->
           <div id="cost-grand-sub" style="font-size:11px;color:var(--ag-text-secondary);margin-bottom:6px;line-height:1.35">统一按 Gemini 3.8 Flash 估算</div>
-          <!-- 5. 一行订阅实付及补充入口 -->
-          <div id="cost-sub-line-wrap" style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin:6px 0 8px">
+          <div id="cost-sub-line-wrap" style="display:flex;justify-content:space-between;align-items:center;padding:6px 9px;background:var(--ag-surface-elevated);border-radius:6px;margin:6px 0 8px">
             <div style="display:flex;align-items:center;gap:4px">
               <span id="cost-sub-line" style="font-size:11px;color:var(--ag-text-primary)">订阅实付：未填写</span>
               <span id="cost-sub-spend-val" style="display:none">实付未知</span>
               <span id="cost-sub-compare-note" style="display:none">公开参考价 $19.99/月</span>
               <span id="cost-sub-spend-lbl" style="display:none">本人同期实际支出</span>
             </div>
-            <button id="btn-cost-fill-sub" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px" title="设置当前账号订阅来源与实付金额">补充</button>
+            <button id="btn-cost-fill-sub" class="switch-pill-btn" type="button" style="padding:1px 7px;font-size:10.5px">设置</button>
           </div>
-          <!-- 6. 展开详情入口 -->
           <div id="cost-expand-bar" style="display:flex;justify-content:flex-end">
             <button id="btn-cost-details-toggle" class="switch-pill-btn" type="button" style="padding:2px 10px;font-size:10.5px">展开详情 ▼</button>
           </div>
         </div>
 
-        <!-- 详细选项与分析区（展开后完整呈现，默认收起） -->
         <div id="cost-details-pane" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--ag-border-subcard)">
-          <!-- 高级控制条：范围与覆盖率 -->
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
-            <span style="font-size:11px;color:var(--ag-text-muted)">统计范围:</span>
+            <span style="font-size:11px;color:var(--ag-text-muted)">统计范围</span>
             <div style="display:flex;align-items:center;gap:4px">
               <button id="cost-btn-scope-period" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10.5px">本期</button>
               <button id="cost-btn-scope-all" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px">全量历史</button>
@@ -592,9 +739,8 @@
             </div>
           </div>
 
-          <!-- 估值模式快捷切换（中性“参考模型估算”） -->
           <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
-            <span style="font-size:10.5px;color:var(--ag-text-muted)">估值模式:</span>
+            <span style="font-size:10.5px;color:var(--ag-text-muted)">估值模式</span>
             <div class="source-switch-bar">
               <button id="cost-btn-mode-ref" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px">参考模型估算</button>
               <button id="cost-btn-mode-hybrid" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px">混合模式</button>
@@ -602,47 +748,37 @@
             </div>
           </div>
 
-          <!-- 用量与参考差额指标条（注明包含缓存读取） -->
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-surface-elevated);border-radius:6px;margin-bottom:8px">
             <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">累计处理 Token: -- (含 -- 缓存读取)</span>
-            <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">参考差额约 +$0.00 (API折算 - 实际支出)</span>
+            <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">参考差额约 +$0.00</span>
           </div>
 
-          <!-- 分类单价与公式明细卡片（输入、缓存读取、输出） -->
           <div id="ref-cost-breakdown-cards" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">输入 Token ($0.75/M)</div>
-              <div id="ref-cost-input-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
+            <div class="t-card" style="padding:7px 8px">
+              <div style="font-size:10px;color:var(--ag-text-muted)">输入 ($0.75/M)</div>
+              <div id="ref-cost-input-val" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums">$0.00</div>
               <div id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
             </div>
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">缓存读取 ($0.075/M 优惠)</div>
-              <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
+            <div class="t-card" style="padding:7px 8px">
+              <div style="font-size:10px;color:var(--ag-text-muted)">缓存读取 ($0.075/M)</div>
+              <div id="ref-cost-cache-val" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums">$0.00</div>
               <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
             </div>
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">输出 Token ($3.75/M)</div>
-              <div id="ref-cost-output-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
+            <div class="t-card" style="padding:7px 8px">
+              <div style="font-size:10px;color:var(--ag-text-muted)">输出 ($3.75/M)</div>
+              <div id="ref-cost-output-val" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums">$0.00</div>
               <div id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
             </div>
           </div>
 
-          <!-- 详细分析与未计价原因 -->
-          <div id="cost-breakdown-info" style="font-size:10.5px;color:var(--ag-text-secondary);line-height:1.4;padding-top:6px;border-top:1px solid var(--ag-border-subcard)">
-            正在分析请求模型与计价覆盖率…
-          </div>
+          <div id="cost-breakdown-info" style="font-size:10.5px;color:var(--ag-text-secondary);line-height:1.4;padding-top:6px;border-top:1px solid var(--ag-border-subcard)">正在分析请求模型与计价覆盖率…</div>
+          <div style="font-size:10px;color:var(--ag-text-muted);line-height:1.4;margin-top:6px">注：包月订阅与按量 API 非同类计费模式，折算差额仅作资源体量参考。</div>
 
-          <div style="font-size:10px;color:var(--ag-text-muted);line-height:1.4;margin-top:8px">
-            注：此折算反映按公开零售价调用同等资源之费用，包月订阅/活动赠送与 API 零售非同类计费模式，该差额不等于真实节省现金；缓存读取按 10% 优惠计价；不含缓存存储费与搜索落地费用。缓存可在多次请求中重复读取相同上下文，该总量不代表独立文本量或用户输入字数。
-          </div>
-
-          <!-- 底部收起详情按钮 -->
-          <div style="display:flex;justify-content:center;margin-top:10px">
-            <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button" style="padding:2px 14px;font-size:10.5px">收起详情 ▴</button>
+          <div style="display:flex;justify-content:center;margin-top:8px">
+            <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button" style="padding:2px 14px;font-size:10.5px">收起详情 ▲</button>
           </div>
         </div>
 
-        <!-- 隐藏辅助兼容层 -->
         <div id="ref-cost-drawer-body" style="display:none">
           <span id="ref-cost-grand-val">$0.00</span>
           <span id="ref-cost-mode-label">参考模型折算</span>
@@ -652,185 +788,182 @@
         </div>
       </div>
 
-      <!-- 专属 Token 统计页（包含卡片统计、热力图与调色抽屉，费用模式下完全不渲染） -->
+      <!-- 专属 Token 统计页 -->
       <div id="tokens-main-view">
         <div class="token-stat-cards" id="token-stat-cards">
           <div class="t-card">
-            <div class="t-card-lbl"><span>累计处理 Token</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Total</span></div>
-            <div style="font-size:9.5px;color:var(--ag-text-muted);margin:-2px 0 4px">含缓存读取</div>
+            <div class="t-card-lbl"><span>累计处理</span><span class="t-card-tag">含缓存</span></div>
             <div class="t-card-val" id="t-total-val">--</div>
             <div class="t-card-sub" id="t-total-sub">读取中...</div>
             <div class="t-card-cost" id="t-total-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>今日使用</span><span style="color:var(--ag-custom-token-accent,#0284c7)">Today</span></div>
+            <div class="t-card-lbl"><span>今日用量</span></div>
             <div class="t-card-val" id="t-today-val">--</div>
             <div class="t-card-sub" id="t-today-sub">读取中...</div>
             <div class="t-card-cost" id="t-today-cost">≈ $0.00 (¥0.00)</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>本月使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Month</span></div>
+            <div class="t-card-lbl"><span>本月用量</span></div>
             <div class="t-card-val" id="t-month-val">--</div>
             <div class="t-card-sub" id="t-month-sub">读取中...</div>
             <div class="t-card-cost" id="t-month-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>年度使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Year</span></div>
+            <div class="t-card-lbl"><span>年度累计</span></div>
             <div class="t-card-val" id="t-year-val">--</div>
             <div class="t-card-sub" id="t-year-sub">读取中...</div>
             <div class="t-card-cost" id="t-year-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
           </div>
         </div>
 
-      <div class="heatmap-section">
-        <div class="heat-header">
-          <div class="heat-header-left">
-            <div class="heat-title">Token 活动</div>
-            <span id="first-use-badge" class="first-use-badge">首次使用：--</span>
-            <div class="heat-win-nav">
-              <button id="h-page-prev" class="heat-nav-btn" type="button" title="查看更早的 12 个月窗口" disabled>‹</button>
-              <span id="h-win-range">--</span>
-              <button id="h-page-next" class="heat-nav-btn" type="button" title="查看更新的 12 个月窗口" disabled>›</button>
+        <div class="heatmap-section">
+          <div class="heat-header">
+            <div class="heat-header-left">
+              <div class="heat-title">活动热力图</div>
+              <span id="first-use-badge" class="first-use-badge">首次使用：--</span>
+              <div class="heat-win-nav">
+                <button id="h-page-prev" class="heat-nav-btn" type="button" title="查看更早区间" disabled>‹</button>
+                <span id="h-win-range">--</span>
+                <button id="h-page-next" class="heat-nav-btn" type="button" title="查看更新区间" disabled>›</button>
+              </div>
+            </div>
+            <div class="heat-tabs" id="heat-tabs-bar" role="tablist" aria-label="热力图统计周期">
+              <div class="heat-tab-thumb" id="heat-tab-thumb" aria-hidden="true"></div>
+              <button class="heat-tab-btn active" id="h-tab-daily" role="tab" aria-selected="true" type="button" tabindex="0">每天</button>
+              <button class="heat-tab-btn" id="h-tab-weekly" role="tab" aria-selected="false" type="button" tabindex="-1">每周</button>
+              <button class="heat-tab-btn" id="h-tab-monthly" role="tab" aria-selected="false" type="button" tabindex="-1">每月</button>
+              <button class="heat-tab-btn" id="h-tab-yearly" role="tab" aria-selected="false" type="button" tabindex="-1">今年</button>
+              <button class="heat-tab-btn" id="h-tab-cum" role="tab" aria-selected="false" type="button" tabindex="-1">累计</button>
             </div>
           </div>
-          <div class="heat-tabs" id="heat-tabs-bar" role="tablist" aria-label="热力图统计周期">
-            <div class="heat-tab-thumb" id="heat-tab-thumb" aria-hidden="true"></div>
-            <button class="heat-tab-btn active" id="h-tab-daily" role="tab" aria-selected="true" type="button" tabindex="0">每天</button>
-            <button class="heat-tab-btn" id="h-tab-weekly" role="tab" aria-selected="false" type="button" tabindex="-1">每周</button>
-            <button class="heat-tab-btn" id="h-tab-monthly" role="tab" aria-selected="false" type="button" tabindex="-1">每月</button>
-            <button class="heat-tab-btn" id="h-tab-yearly" role="tab" aria-selected="false" type="button" tabindex="-1">今年</button>
-            <button class="heat-tab-btn" id="h-tab-cum" role="tab" aria-selected="false" type="button" tabindex="-1">累计总量</button>
-          </div>
-        </div>
-        <div class="heat-scroll-box" id="h-scroll-box">
-          <div id="h-daily-box">
-            <div class="heat-grid-cols" id="h-grid-cols"></div>
-            <div class="heat-months" id="h-months"></div>
-          </div>
-          <div id="h-weekly-box" style="display:none"></div>
-          <div id="h-monthly-box" style="display:none"></div>
-          <div id="h-yearly-box" style="display:none"></div>
-          <div id="h-cum-box" style="display:none">
-            <canvas id="h-cum-canvas"></canvas>
-          </div>
-        </div>
-        <div id="h-summary-bar" class="heat-summary-bar">
-          <div class="heat-sum-item">
-            <span class="heat-sum-label">区间合计:</span>
-            <span id="h-sum-tokens" class="heat-sum-val">-- Tokens</span>
-          </div>
-          <div class="heat-sum-item">
-            <span class="heat-sum-label">预估费用:</span>
-            <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
-          </div>
-          <div class="heat-sum-item">
-            <span class="heat-sum-label">折合每天:</span>
-            <span id="h-sum-daily-avg" class="heat-sum-val">$0.00</span>
-          </div>
-          <div class="heat-sum-item">
-            <span class="heat-sum-label">活跃日均:</span>
-            <span id="h-sum-active-avg" class="heat-sum-val">$0.00 (0天)</span>
-          </div>
-          <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
-            <span class="heat-sum-label">订阅性价比:</span>
-            <span id="h-sum-sub-ratio" class="heat-sum-val" style="color:var(--ag-token-accent-default,#a78bfa)">--</span>
-          </div>
-        </div>
-        <div class="heat-cost-disclaimer">
-          注：按日聚合按基础档估算，未拆分长上下文分档，结果偏下限。有逐请求记录时优先精确入账。
-        </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px">
-          <span>点击或悬浮格子查看当日详细 Token 构成</span>
-          <div style="display:flex;align-items:center;gap:6px">
-            <div id="heat-legend-scale" style="display:flex;align-items:center;gap:4px;cursor:pointer" title="点击任一色块单独修改该档位颜色，或点击文字展开设置">
-              <span>少</span>
-              <button id="heat-leg-0" class="heat-leg-swatch" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="第 1 档（少/无用量）：点击单独修改此格颜色"></button>
-              <button id="heat-leg-1" class="heat-leg-swatch" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="第 2 档（低用量）：点击单独修改此格颜色"></button>
-              <button id="heat-leg-2" class="heat-leg-swatch" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="第 3 档（中等用量）：点击单独修改此格颜色"></button>
-              <button id="heat-leg-3" class="heat-leg-swatch" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="第 4 档（高用量）：点击单独修改此格颜色"></button>
-              <button id="heat-leg-4" class="heat-leg-swatch" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="第 5 档（多/峰值用量）：点击单独修改此格颜色"></button>
-              <span>多</span>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <!-- 二级交互折叠区（就近放置于面板 A 内部）：面板背景色 + 热力图 5 档色阶预设、5 档逐格独立自定义与两端插值自定义 -->
-      <div class="tech-drawer" style="margin-top:2px">
-        <button id="btn-toggle-token-colors" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left"><span>🎨 热力图色阶与面板外观自定义（默认跟随主题）</span></span>
-          <span id="token-color-drawer-arrow" class="drawer-arrow">▼ 展开设置</span>
-        </button>
-        <div id="token-color-drawer-body" class="drawer-body" style="display:none;">
+          <div class="heat-scroll-box" id="h-scroll-box">
+            <div id="h-daily-box">
+              <div class="heat-grid-cols" id="h-grid-cols"></div>
+              <div class="heat-months" id="h-months"></div>
+            </div>
+            <div id="h-weekly-box" style="display:none"></div>
+            <div id="h-monthly-box" style="display:none"></div>
+            <div id="h-yearly-box" style="display:none"></div>
+            <div id="h-cum-box" style="display:none">
+              <canvas id="h-cum-canvas"></canvas>
+            </div>
+          </div>
+
+          <div id="h-summary-bar" class="heat-summary-bar">
+            <div class="heat-sum-item">
+              <span class="heat-sum-label">区间合计</span>
+              <span id="h-sum-tokens" class="heat-sum-val">-- Tokens</span>
+            </div>
+            <div class="heat-sum-item">
+              <span class="heat-sum-label">参考折算</span>
+              <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
+            </div>
+            <div class="heat-sum-item">
+              <span class="heat-sum-label">日均</span>
+              <span id="h-sum-daily-avg" class="heat-sum-val">$0.00</span>
+            </div>
+            <div class="heat-sum-item">
+              <span class="heat-sum-label">活跃日均</span>
+              <span id="h-sum-active-avg" class="heat-sum-val">$0.00 (0天)</span>
+            </div>
+            <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
+              <span class="heat-sum-label">订阅比</span>
+              <span id="h-sum-sub-ratio" class="heat-sum-val" style="color:var(--ag-token-accent-default,#a78bfa)">--</span>
+            </div>
+          </div>
+
+          <div class="heat-bottom-meta">
+            <span class="heat-cost-disclaimer">悬浮格子查看单日明细 · 按日聚合按基础档折算</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div id="heat-legend-scale" style="display:flex;align-items:center;gap:3px;cursor:pointer" title="点击色块单独调色，或展开色阶设置">
+                <span>少</span>
+                <button id="heat-leg-0" class="heat-leg-swatch" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）"></button>
+                <button id="heat-leg-1" class="heat-leg-swatch" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）"></button>
+                <button id="heat-leg-2" class="heat-leg-swatch" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）"></button>
+                <button id="heat-leg-3" class="heat-leg-swatch" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）"></button>
+                <button id="heat-leg-4" class="heat-leg-swatch" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）"></button>
+                <span>多</span>
+              </div>
+              <button id="btn-toggle-token-colors" class="heat-palette-link" aria-expanded="false" type="button">
+                <span id="token-color-drawer-arrow">色阶设置</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 按需展开的热力图色阶与外观面板（默认隐藏，零抽屉边框干扰） -->
+        <div id="token-color-drawer-body" class="token-palette-pane" style="display:none;">
           <div class="heat-preset-bar">
-            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档色阶预设：</span>
+            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档色阶预设</span>
             <div class="heat-preset-group" id="heat-preset-group">
               <button class="heat-preset-btn" type="button" data-heat-preset="purple" data-active="true">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#3f1e6b"></i><i style="background:#652ab7"></i><i style="background:#9053f8"></i><i style="background:#c084fc"></i></span>
-                <span>紫色系</span>
+                <span>紫</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="yellow" data-active="false">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#713f12"></i><i style="background:#a16207"></i><i style="background:#eab308"></i><i style="background:#fde047"></i></span>
-                <span>黄色系</span>
+                <span>琥珀</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="green" data-active="false">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#14532d"></i><i style="background:#15803d"></i><i style="background:#22c55e"></i><i style="background:#86efac"></i></span>
-                <span>绿色系</span>
+                <span>翠绿</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="blue" data-active="false">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#1e3a8a"></i><i style="background:#1d4ed8"></i><i style="background:#3b82f6"></i><i style="background:#93c5fd"></i></span>
-                <span>蓝色系</span>
+                <span>海洋</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="red" data-active="false">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#7f1d1d"></i><i style="background:#b91c1c"></i><i style="background:#ef4444"></i><i style="background:#fca5a5"></i></span>
-                <span>红色系</span>
+                <span>珊瑚</span>
               </button>
             </div>
           </div>
 
           <div class="heat-lvl-custom-bar">
             <div class="heat-lvl-custom-hdr">
-              <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档逐格独立自定义（点击任意一格或图例「少 ▢▢▢▢▢ 多」单独调色，可设 5 种不同颜色）：</span>
-              <button id="reset-heat-lvls" class="color-reset-btn" type="button">恢复 5 档预设</button>
+              <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">逐档微调色阶</span>
+              <button id="reset-heat-lvls" class="color-reset-btn" type="button">恢复预设</button>
             </div>
             <div class="heat-lvl-grid" id="heat-lvl-grid">
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 1 档（少/无用量）">1档 · 少/无</span>
+                <span class="heat-lvl-lbl">1档 · 无</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl0" class="color-picker" type="color" value="#27272a" aria-label="热力图第1档颜色" />
-                  <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="点击单独设置第 1 档颜色"></button>
+                  <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档"></button>
                   <button id="reset-heatLvl0" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 2 档（低用量）">2档 · 低</span>
+                <span class="heat-lvl-lbl">2档 · 低</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl1" class="color-picker" type="color" value="#3f1e6b" aria-label="热力图第2档颜色" />
-                  <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="点击单独设置第 2 档颜色"></button>
+                  <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档"></button>
                   <button id="reset-heatLvl1" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 3 档（中等用量）">3档 · 中</span>
+                <span class="heat-lvl-lbl">3档 · 中</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl2" class="color-picker" type="color" value="#652ab7" aria-label="热力图第3档颜色" />
-                  <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="点击单独设置第 3 档颜色"></button>
+                  <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档"></button>
                   <button id="reset-heatLvl2" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 4 档（高用量）">4档 · 高</span>
+                <span class="heat-lvl-lbl">4档 · 高</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl3" class="color-picker" type="color" value="#9053f8" aria-label="热力图第4档颜色" />
-                  <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="点击单独设置第 4 档颜色"></button>
+                  <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档"></button>
                   <button id="reset-heatLvl3" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 5 档（多/峰值用量）">5档 · 多/峰</span>
+                <span class="heat-lvl-lbl">5档 · 峰</span>
                 <div class="color-item-ctrls">
                   <input id="color-heatLvl4" class="color-picker" type="color" value="#c084fc" aria-label="热力图第5档颜色" />
-                  <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="点击单独设置第 5 档颜色"></button>
+                  <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档"></button>
                   <button id="reset-heatLvl4" class="color-reset-btn" type="button" data-mode="auto">预设</button>
                 </div>
               </div>
@@ -839,62 +972,63 @@
 
           <div class="color-grid">
             <div class="color-item">
-              <span class="color-item-lbl">色阶「少」端颜色（自动插值）</span>
+              <span class="color-item-lbl">「少」端插值色</span>
               <div class="color-item-ctrls">
                 <input id="color-heatLow" class="color-picker" type="color" value="#27272a" aria-label="热力图少端颜色" />
-                <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow" data-color-label="热力图「少」端颜色" title="点击打开颜色选取器"></button>
+                <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow" data-color-label="热力图「少」端颜色"></button>
                 <button id="reset-heatLow" class="color-reset-btn" type="button" data-mode="auto">预设</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">色阶「多」端颜色（自动插值）</span>
+              <span class="color-item-lbl">「多」端插值色</span>
               <div class="color-item-ctrls">
                 <input id="color-heatHigh" class="color-picker" type="color" value="#c084fc" aria-label="热力图多端颜色" />
-                <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh" data-color-label="热力图「多」端颜色" title="点击打开颜色选取器"></button>
+                <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh" data-color-label="热力图「多」端颜色"></button>
                 <button id="reset-heatHigh" class="color-reset-btn" type="button" data-mode="auto">预设</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">面板与菜单统一背景色</span>
+              <span class="color-item-lbl">面板统一背景色</span>
               <div class="color-item-ctrls">
-                <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
+                <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色"></button>
                 <button id="reset-panelBg-tokens" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl">累计与强调指标色</span>
               <div class="color-item-ctrls">
-                <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="总累计颜色"></button>
-                <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="Token 强调色" title="强调指标颜色"></button>
-                <button id="reset-all-colors-tokens" class="color-reset-btn" type="button">全部恢复跟随主题</button>
+                <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量"></button>
+                <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="Token 强调色"></button>
+                <button id="reset-all-colors-tokens" class="color-reset-btn" type="button">重置全部</button>
               </div>
             </div>
           </div>
 
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px dashed var(--ag-border-subcard);font-size:11px">
-            <span style="color:var(--ag-text-primary);font-weight:500">更新设置</span>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--ag-border-subcard);font-size:11px">
+            <span style="color:var(--ag-text-secondary)">更新偏好</span>
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
               <input id="check-auto-update" type="checkbox" checked>
-              <span>启动时自动检查更新（不自动安装）</span>
+              <span>启动时自动检查新版本</span>
             </label>
           </div>
         </div>
-      </div>
       </div><!-- end #tokens-main-view -->
     </div>
   </section>
 
-  <!-- 自定义颜色选取器面板（替换系统原生取色器） -->
+  <!-- 自定义颜色选取器面板 -->
   <div id="color-picker-popover" hidden role="dialog" aria-label="颜色选取器">
     <div class="cp-header">
       <div class="cp-title">
-        <span>🎨 颜色选取器</span>
+        <span>颜色选取器</span>
         <span id="cp-target-name" class="cp-target-lbl"></span>
       </div>
-      <button id="cp-close" class="panel-icon-btn" type="button" aria-label="关闭颜色选取器">×</button>
+      <button id="cp-close" class="panel-icon-btn" type="button" aria-label="关闭颜色选取器">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+      </button>
     </div>
     <div class="cp-toolbar">
-      <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色">🖊 取色</button>
+      <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色">吸管取色</button>
       <div class="cp-presets" id="cp-presets">
         <button class="cp-preset-dot" type="button" data-cp-hex="#ef4444" style="background:#ef4444" title="#EF4444"></button>
         <button class="cp-preset-dot" type="button" data-cp-hex="#f97316" style="background:#f97316" title="#F97316"></button>
@@ -918,7 +1052,7 @@
       <div class="cp-row">
         <span class="cp-fmt-lbl">HEX</span>
         <input id="cp-input-hex" class="cp-fmt-input" type="text" value="#652ab7" spellcheck="false" aria-label="HEX 色值输入" />
-        <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX">📋</button>
+        <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX">复制</button>
       </div>
       <details class="cp-advanced-formats">
         <summary class="cp-fmt-summary">更多格式 (RGB / HSL)</summary>
@@ -926,18 +1060,18 @@
           <div class="cp-row">
             <span class="cp-fmt-lbl">RGB</span>
             <input id="cp-input-rgb" class="cp-fmt-input" type="text" value="rgb(101, 42, 183)" spellcheck="false" aria-label="RGB 色值输入" />
-            <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB">📋</button>
+            <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB">复制</button>
           </div>
           <div class="cp-row">
             <span class="cp-fmt-lbl">HSL</span>
             <input id="cp-input-hsl" class="cp-fmt-input" type="text" value="hsl(265, 63%, 44%)" spellcheck="false" aria-label="HSL 色值输入" />
-            <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL">📋</button>
+            <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL">复制</button>
           </div>
         </div>
       </details>
     </div>
     <div class="cp-footer">
-      <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)">支持直接输入或粘贴 HEX 色值</span>
+      <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)">支持直接输入或粘贴色值</span>
       <button id="cp-reset-slot" class="color-reset-btn" type="button">跟随主题</button>
     </div>
   </div>

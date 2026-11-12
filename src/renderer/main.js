@@ -47,6 +47,9 @@
 
   (document.body || document.documentElement).appendChild(host);
   const el = id => shadow.getElementById(id);
+  if (el('v')) {
+    el('v').textContent = 'v' + (typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.0');
+  }
   const fmt = v => v == null ? '—' : Math.round(v).toLocaleString('en-US');
   const short = v => {
     if (v == null) return '—';
@@ -589,10 +592,31 @@
         panelEl.style.transformOrigin = 'top right';
       };
 
-      placePanel(el('panel'), 450, el('badge'));
-      placePanel(el('panel-tokens'), 730, el('badge-tokens'));
+      placePanel(el('panel'), 428, el('badge'));
+      placePanel(el('panel-tokens'), 696, el('badge-tokens'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
+      positionUpdatePopover();
+    } catch {}
+  }
+
+  function positionUpdatePopover() {
+    try {
+      const pop = el('update-popover');
+      if (!pop || pop.style.display !== 'block') return;
+      const pContext = el('panel');
+      const pTokens = el('panel-tokens');
+      const activePanel = (pContext && !pContext.hidden) ? pContext : ((pTokens && !pTokens.hidden) ? pTokens : null);
+      if (!activePanel || !activePanel.getBoundingClientRect) return;
+      const pr = activePanel.getBoundingClientRect();
+      if (!pr || (pr.width === 0 && pr.height === 0)) return;
+      const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+      const popW = 288;
+      const top = Math.max(40, Math.round(pr.top + 42));
+      const left = Math.max(12, Math.min(vw - popW - 12, Math.round(pr.right - popW - 12)));
+      pop.style.top = `${top}px`;
+      pop.style.left = `${left}px`;
+      pop.style.right = 'auto';
     } catch {}
   }
 
@@ -693,6 +717,8 @@
       bTokens.setAttribute('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
+      void refreshKernelPatchStatus(false);
+      void refreshI18nStatus(false);
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
       pContext.hidden = true;
@@ -702,6 +728,8 @@
       bTokens.setAttribute('aria-expanded', 'false');
       closeColorPicker();
       hidePopover();
+      const upPop = el('update-popover');
+      if (upPop) upPop.style.display = 'none';
       syncHostStackingElevation(false);
     }
   }
@@ -1402,36 +1430,698 @@
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
-  // 二级抽屉 1（面板 B 内）: 指标与背景颜色自定义抽屉折叠展开
+  // 二级抽屉 0（面板 B 内）: 客户端增强（系统提示词 5 档 + 上下文 3 档 + 自动中文标题 + V12 界面汉化）
+  const PROMPT_TIER_DESCRIPTIONS = {
+    0: '0档（官方原版）：从 .bak 备份完整还原全部官方系统提示词模板，不做任何精简。',
+    1: '1档（仅去推销）：仅清空 slash_commands / plugins 推销模板，其余模板 100% 保持原版。',
+    2: '2档（原版精简）：清空 artifacts、persistent_context、conversation_transcript 等冗余模板，3 个核心模板保持原版。',
+    3: '3档（核心重写）：清空全部冗余模板，并将 guidelines、function_call、communication_style 重写为精简版规则。',
+    4: '4档（推荐）：清空冗余模板；保留原版核心底子，增加未读禁猜代码、最小改动、禁冒号废话、禁传 ArtifactMetadata、edit_file 3~5 行唯一锚点及验证护栏。'
+  };
+
+  let kernelStatusCache = null;
+  let kernelStatusFetchedAt = 0;
+  let kernelPatchBusy = false;
+  let kernelRestartConfirmUntil = 0;
+  let kernelRestartConfirmTimer = null;
+
+  let i18nStatusCache = null;
+  let i18nStatusFetchedAt = 0;
+  let i18nApplyBusy = false;
+
+  const KERNEL_SNAP_KEY = 'ag_kernel_status_snap_v1';
+  const I18N_SNAP_KEY = 'ag_i18n_status_snap_v1';
+
+  function saveBridgeStatusSnapshot(storageKey, data) {
+    try {
+      if (data && data.ok && typeof localStorage !== 'undefined') {
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      }
+    } catch {}
+  }
+
+  function readBridgeStatusSnapshot(storageKey, bootField) {
+    try {
+      if (typeof window !== 'undefined' && window.__AGContextMeterBootstrap?.[bootField]?.ok) {
+        return window.__AGContextMeterBootstrap[bootField];
+      }
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.ok) return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  function formatBridgeErrorMessage(rawErr, fallbackMsg) {
+    const msg = String(rawErr?.message || rawErr || fallbackMsg || '').trim();
+    if (/Failed to fetch|NetworkError|Load failed|fetch failed|本地桥接服务未就绪/i.test(msg)) {
+      return '临时桥接未连接，请重启一次 Antigravity 客户端以启用原生通道（或执行 node cli.js install）';
+    }
+    return msg || fallbackMsg || '执行失败';
+  }
+
+  // #panel 三栏分段视图控制器（'overview' | 'enhance' | 'audit' | 'palette'）
+  let activeContextTab = 'overview';
+  const ctxPaneOverview = el('ctx-pane-overview');
+  const btnKernelDrawer = el('btn-toggle-kernel');
+  const kernelDrawerBody = el('kernel-drawer-body');
+  const kernelDrawerArrow = el('kernel-drawer-arrow');
   const btnColors = el('btn-toggle-colors');
   const colorDrawerBody = el('color-drawer-body');
   const colorDrawerArrow = el('color-drawer-arrow');
-  function toggleColorsDrawer(forceOpen) {
-    if (!colorDrawerBody) return;
-    const isHidden = colorDrawerBody.style.display === 'none' || !colorDrawerBody.style.display;
-    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
-    colorDrawerBody.style.display = nextOpen ? 'block' : 'none';
-    if (colorDrawerArrow) colorDrawerArrow.textContent = nextOpen ? '▲ 收起设置' : '▼ 展开设置';
-    btnColors?.setAttribute('aria-expanded', String(nextOpen));
-    if (!nextOpen) {
-      closeColorPicker();
-    }
-  }
-  btnColors?.addEventListener('click', () => toggleColorsDrawer());
-
-  // 二级抽屉 2（面板 B 内）: 底层技术抽屉折叠展开
   const btnDetails = el('btn-toggle-details');
   const drawerBody = el('drawer-body');
   const drawerArrow = el('drawer-arrow');
-  btnDetails?.addEventListener('click', () => {
-    if (!drawerBody) return;
-    const isHidden = drawerBody.style.display === 'none' || !drawerBody.style.display;
-    drawerBody.style.display = isHidden ? 'block' : 'none';
-    if (drawerArrow) drawerArrow.textContent = isHidden ? '▲ 点击收起明细' : '▼ 点击展开明细';
-    btnDetails.setAttribute('aria-expanded', String(isHidden));
+
+  function switchContextTab(tab) {
+    const validTabs = ['overview', 'enhance', 'audit', 'palette'];
+    const next = validTabs.includes(tab) ? tab : 'overview';
+    activeContextTab = next;
+
+    if (ctxPaneOverview) ctxPaneOverview.style.display = next === 'overview' ? 'block' : 'none';
+    if (kernelDrawerBody) kernelDrawerBody.style.display = next === 'enhance' ? 'block' : 'none';
+    if (drawerBody) drawerBody.style.display = next === 'audit' ? 'block' : 'none';
+    if (colorDrawerBody) colorDrawerBody.style.display = next === 'palette' ? 'block' : 'none';
+
+    const segTabs = [
+      { key: 'overview', node: el('ctx-tab-overview') },
+      { key: 'enhance', node: el('ctx-tab-enhance') },
+      { key: 'audit', node: el('ctx-tab-audit') }
+    ];
+    for (const item of segTabs) {
+      if (!item.node) continue;
+      const isAct = next === item.key;
+      if (isAct) addClass(item.node, 'is-active'); else removeClass(item.node, 'is-active');
+      item.node.setAttribute?.('aria-selected', String(isAct));
+    }
+
+    const paletteBtn = el('btn-panel-palette');
+    if (paletteBtn) {
+      if (next === 'palette') addClass(paletteBtn, 'is-active');
+      else removeClass(paletteBtn, 'is-active');
+    }
+
+    // 同步隐藏兼容触发器与箭头文本（保持自动化测试契约 100% 兼容）
+    if (kernelDrawerArrow) kernelDrawerArrow.textContent = next === 'enhance' ? '▲ 收起配置' : '▼ 展开配置';
+    btnKernelDrawer?.setAttribute('aria-expanded', String(next === 'enhance'));
+
+    if (colorDrawerArrow) colorDrawerArrow.textContent = next === 'palette' ? '▲ 收起设置' : '▼ 展开设置';
+    btnColors?.setAttribute('aria-expanded', String(next === 'palette'));
+
+    if (drawerArrow) drawerArrow.textContent = next === 'audit' ? '▲ 点击收起明细' : '▼ 点击展开明细';
+    btnDetails?.setAttribute('aria-expanded', String(next === 'audit'));
+
+    if (next !== 'palette') {
+      closeColorPicker();
+    }
+    if (next === 'enhance') {
+      void refreshKernelPatchStatus(false);
+      void refreshI18nStatus(false);
+    }
+  }
+
+  el('ctx-tab-overview')?.addEventListener('click', () => switchContextTab('overview'));
+  el('ctx-tab-enhance')?.addEventListener('click', () => switchContextTab('enhance'));
+  el('ctx-tab-audit')?.addEventListener('click', () => switchContextTab('audit'));
+  el('btn-close-ctx-palette')?.addEventListener('click', () => switchContextTab('overview'));
+
+  function toggleKernelDrawer(forceOpen) {
+    const curOpen = kernelDrawerBody?.style?.display === 'block';
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !curOpen;
+    switchContextTab(nextOpen ? 'enhance' : 'overview');
+  }
+  btnKernelDrawer?.addEventListener('click', () => toggleKernelDrawer());
+
+  function resetRestartConfirmState() {
+    kernelRestartConfirmUntil = 0;
+    if (kernelRestartConfirmTimer) {
+      clearTimeout(kernelRestartConfirmTimer);
+      kernelRestartConfirmTimer = null;
+    }
+    const btnRestart = el('btn-kernel-restart-ls');
+    if (btnRestart) {
+      btnRestart.removeAttribute('data-confirm');
+      btnRestart.textContent = '重启语言服务';
+    }
+  }
+
+  function showKernelFeedback(text, isError = false) {
+    const fb = el('kernel-feedback');
+    if (!fb) return;
+    if (!text) {
+      fb.hidden = true;
+      fb.textContent = '';
+      fb.removeAttribute('data-tone');
+      return;
+    }
+    fb.hidden = false;
+    fb.textContent = text;
+    if (isError) fb.setAttribute('data-tone', 'error');
+    else fb.removeAttribute('data-tone');
+  }
+
+  const KERNEL_TIER_IDS = [0, 1, 2, 3, 4].map(t => ({ tier: t, id: `btn-kernel-tier-${t}` }));
+  const KERNEL_CTX_IDS = [
+    { mode: 'stock', id: 'btn-kernel-ctx-stock' },
+    { mode: '512k', id: 'btn-kernel-ctx-512k' },
+    { mode: '900k', id: 'btn-kernel-ctx-900k' }
+  ];
+  const KERNEL_TITLE_IDS = [
+    { mode: 'zh', enabled: true, id: 'btn-kernel-title-zh' },
+    { mode: 'en', enabled: false, id: 'btn-kernel-title-en' }
+  ];
+  const I18N_LOCALE_IDS = [
+    { locale: 'zh-CN', id: 'btn-i18n-zh-cn' },
+    { locale: 'zh-TW', id: 'btn-i18n-zh-tw' },
+    { locale: 'en', id: 'btn-i18n-en' }
+  ];
+  const I18N_BRAND_IDS = [
+    { mode: 'english', id: 'btn-i18n-brand-english' },
+    { mode: 'hidden', id: 'btn-i18n-brand-hidden' },
+    { mode: 'translated', id: 'btn-i18n-brand-translated' }
+  ];
+  const KERNEL_ACTION_IDS = [
+    'btn-kernel-recommended',
+    'btn-kernel-restore',
+    'btn-kernel-refresh',
+    'btn-kernel-restart-ls'
+  ];
+
+  function setKernelControlsDisabled(disabled) {
+    const allIds = [
+      ...KERNEL_TIER_IDS.map(x => x.id),
+      ...KERNEL_CTX_IDS.map(x => x.id),
+      ...KERNEL_TITLE_IDS.map(x => x.id),
+      ...KERNEL_ACTION_IDS
+    ];
+    for (const id of allIds) {
+      const b = el(id);
+      if (b) b.disabled = Boolean(disabled);
+    }
+  }
+
+  function setI18nControlsDisabled(disabled) {
+    const curLocale = i18nStatusCache?.locale || 'zh-CN';
+    for (const item of I18N_LOCALE_IDS) {
+      const b = el(item.id);
+      if (b) b.disabled = Boolean(disabled);
+    }
+    for (const item of I18N_BRAND_IDS) {
+      const b = el(item.id);
+      if (b) b.disabled = Boolean(disabled) || curLocale === 'en';
+    }
+  }
+
+  function formatKb(bytes) {
+    const n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 KB';
+    return `${(n / 1024).toFixed(1)} KB`;
+  }
+
+  function syncEnhancementSummaryPill() {
+    const summaryPill = el('kernel-summary-pill');
+    if (!summaryPill) return;
+
+    const kOk = kernelStatusCache && kernelStatusCache.ok;
+    const iOk = i18nStatusCache && i18nStatusCache.ok;
+
+    if (!kOk && !iOk) {
+      summaryPill.textContent = '已就绪';
+      summaryPill.className = 'ctx-seg-badge key-pill pill-muted';
+      return;
+    }
+
+    const parts = [];
+    let isEnhanced = false;
+
+    if (kOk && kernelStatusCache.supported === false) {
+      parts.push('仅限 Win x64');
+    } else if (kOk && kernelStatusCache.summary) {
+      const s = kernelStatusCache.summary;
+      const tier = Number.isFinite(Number(s.promptTier)) ? Number(s.promptTier) : 0;
+      const ctxMode = s.contextMode || 'stock';
+      const ctxTxt = ctxMode === '900k' ? '900K' : (ctxMode === '512k' ? '512K' : '256K');
+      parts.push(`${tier}档`);
+      parts.push(ctxTxt);
+      if (s.chineseTitleEnabled) parts.push('中标');
+      if (tier > 0 || ctxMode !== 'stock' || s.chineseTitleEnabled) isEnhanced = true;
+    }
+
+    if (iOk) {
+      const loc = i18nStatusCache.locale || 'en';
+      if (loc === 'zh-CN') {
+        parts.push('简中');
+        isEnhanced = true;
+      } else if (loc === 'zh-TW') {
+        parts.push('繁中');
+        isEnhanced = true;
+      } else {
+        parts.push('英文');
+      }
+    }
+
+    summaryPill.textContent = parts.join(' · ') || '已就绪';
+    summaryPill.className = isEnhanced
+      ? 'ctx-seg-badge key-pill pill-good'
+      : 'ctx-seg-badge key-pill pill-muted';
+  }
+
+  function renderKernelStatusUI(data) {
+    const promptMeta = el('kernel-prompt-meta');
+    const promptDesc = el('kernel-prompt-desc');
+    const ctxMeta = el('kernel-ctx-meta');
+    const titleMeta = el('kernel-title-meta');
+    const binList = el('kernel-binaries-list');
+
+    syncEnhancementSummaryPill();
+
+    if (!data || !data.ok) {
+      return;
+    }
+
+    if (data.supported === false) {
+      setKernelControlsDisabled(true);
+      showKernelFeedback(data.reason || '当前系统不支持 Windows PE64 内核补丁', false);
+      return;
+    }
+
+    const s = data.summary || {};
+    const tier = Number.isFinite(Number(s.promptTier)) ? Number(s.promptTier) : 0;
+    const ctxMode = s.contextMode || 'stock';
+    const titleMode = s.chineseTitleMode || 'en';
+
+    if (promptMeta) {
+      if (s.totalCapacityBytes > 0) {
+        promptMeta.textContent = s.savedBytes > 0
+          ? `有效 ${formatKb(s.activeSlotBytes)} / 省 ${formatKb(s.savedBytes)}`
+          : `原版 ${formatKb(s.totalCapacityBytes)} (${s.slotCount || 0} 模板)`;
+      } else {
+        promptMeta.textContent = `${s.installedCount || 0} 个内核`;
+      }
+    }
+
+    if (promptDesc) {
+      promptDesc.textContent = PROMPT_TIER_DESCRIPTIONS[tier] || PROMPT_TIER_DESCRIPTIONS[0];
+    }
+
+    if (ctxMeta) {
+      const liveBudget = state.latest?.budget || null;
+      const targetBudget = s.effectiveBudget || 256000;
+      const pendingRestart = liveBudget && ctxMode !== 'stock' && liveBudget < targetBudget - 10000;
+      const cfgTxt = s.configContextWindow ? `config: ${s.configContextWindow}` : 'config: 默认';
+      ctxMeta.textContent = pendingRestart ? `${cfgTxt} · 待重启生效` : cfgTxt;
+    }
+
+    const bins = Array.isArray(data.binaries) ? data.binaries.filter(b => b.exists) : [];
+    if (titleMeta) {
+      const supportedBins = bins.filter(b => !b.error && b.chineseTitleMode !== 'unsupported');
+      const zhBins = supportedBins.filter(b => b.chineseTitleEnabled);
+      if (titleMode === 'unsupported' && !supportedBins.length) {
+        titleMeta.textContent = '当前内核无标题特征';
+      } else if (supportedBins.length > 1 && zhBins.length > 0 && zhBins.length < supportedBins.length) {
+        titleMeta.textContent = `部分开启 (${zhBins.length}/${supportedBins.length} 内核)`;
+      } else {
+        titleMeta.textContent = s.chineseTitleEnabled ? '已开启 · 强制 4~10 字中文' : '官方默认英文';
+      }
+    }
+
+    for (const item of KERNEL_TIER_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = item.tier === tier;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+    }
+    for (const item of KERNEL_CTX_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = item.mode === ctxMode;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+    }
+    for (const item of KERNEL_TITLE_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = titleMode !== 'unsupported' && Boolean(s.chineseTitleEnabled) === item.enabled;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+      btn.disabled = titleMode === 'unsupported' || kernelPatchBusy;
+    }
+
+    if (binList) {
+      if (!bins.length) {
+        binList.innerHTML = '<div class="kernel-bin-item"><span class="kernel-bin-name">未检测到已安装的内核文件</span></div>';
+      } else {
+        binList.innerHTML = bins.map(b => {
+          const modeTxt = b.contextMode === '900k' ? '900K' : (b.contextMode === '512k' ? '512K' : '256K');
+          const titleTxt = b.chineseTitleMode === 'unsupported' ? '' : (b.chineseTitleEnabled ? ' · 中标' : ' · 英标');
+          const statusTag = b.error ? '解析异常' : `${b.promptTier}档 · ${modeTxt}${titleTxt}${b.bakExists ? ' · 已备份' : ''}`;
+          const safeLabel = String(b.label || '').replace(/[<>&"]/g, '');
+          return `<div class="kernel-bin-item"><span class="kernel-bin-name"><span class="kernel-bin-dot"></span>${safeLabel}</span><span class="kernel-bin-tag">${statusTag}</span></div>`;
+        }).join('');
+      }
+    }
+  }
+
+  function renderI18nStatusUI(data) {
+    const localeMeta = el('i18n-locale-meta');
+    const brandMeta = el('i18n-brand-meta');
+
+    syncEnhancementSummaryPill();
+
+    if (!data || !data.ok) {
+      if (localeMeta) localeMeta.textContent = '未连接';
+      return;
+    }
+
+    const locale = data.locale || 'en';
+    const brand = data.brandTitle || 'english';
+
+    if (localeMeta) {
+      const countPart = locale !== 'en' && data.dictEntryCount ? ` · ${data.dictEntryCount} 词条` : '';
+      localeMeta.textContent = `${data.localeLabel || locale}${countPart}`;
+    }
+
+    if (brandMeta) {
+      brandMeta.textContent = locale === 'en'
+        ? '开启中文汉化后可选'
+        : (data.brandTitleLabel || brand);
+    }
+
+    for (const item of I18N_LOCALE_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = item.locale === locale;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+      btn.disabled = i18nApplyBusy;
+    }
+
+    for (const item of I18N_BRAND_IDS) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const active = locale !== 'en' && item.mode === brand;
+      if (active) addClass(btn, 'is-active'); else removeClass(btn, 'is-active');
+      btn.setAttribute?.('aria-checked', String(active));
+      btn.disabled = i18nApplyBusy || locale === 'en';
+    }
+  }
+
+  async function invokeKernelBridge(method, payload) {
+    if (typeof window !== 'undefined') {
+      if (method === 'status' && typeof window.contextMeterAPI?.getKernelStatus === 'function') {
+        return await window.contextMeterAPI.getKernelStatus();
+      }
+      if (method === 'apply' && typeof window.contextMeterAPI?.applyKernelPatch === 'function') {
+        return await window.contextMeterAPI.applyKernelPatch(payload || {});
+      }
+      if (window.__AGContextMeterLive?.port) {
+        const live = window.__AGContextMeterLive;
+        const route = method === 'status' ? '/get-kernel-status' : '/apply-kernel-patch';
+        const r = await fetch(`http://127.0.0.1:${live.port}${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+          body: JSON.stringify(payload || {})
+        });
+        return await r.json().catch(() => ({ ok: false, error: `桥接响应异常 (HTTP ${r.status})` }));
+      }
+    }
+    return { ok: false, error: '本地桥接服务未就绪，请执行 node cli.js install 或重启客户端' };
+  }
+
+  async function invokeI18nBridge(method, payload) {
+    if (typeof window !== 'undefined') {
+      if (method === 'status' && typeof window.contextMeterAPI?.getI18nStatus === 'function') {
+        return await window.contextMeterAPI.getI18nStatus();
+      }
+      if (method === 'apply' && typeof window.contextMeterAPI?.applyI18nConfig === 'function') {
+        return await window.contextMeterAPI.applyI18nConfig(payload || {});
+      }
+      if (window.__AGContextMeterLive?.port) {
+        const live = window.__AGContextMeterLive;
+        const route = method === 'status' ? '/get-i18n-status' : '/apply-i18n-config';
+        const r = await fetch(`http://127.0.0.1:${live.port}${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+          body: JSON.stringify(payload || {})
+        });
+        return await r.json().catch(() => ({ ok: false, error: `桥接响应异常 (HTTP ${r.status})` }));
+      }
+    }
+    return { ok: false, error: '本地桥接服务未就绪，请执行 node cli.js install 或重启客户端' };
+  }
+
+  function hydrateEnhancementSnapshots() {
+    const kSnap = readBridgeStatusSnapshot(KERNEL_SNAP_KEY, 'kernelStatus');
+    const iSnap = readBridgeStatusSnapshot(I18N_SNAP_KEY, 'i18nStatus');
+    if (kSnap && kSnap.ok) {
+      kernelStatusCache = kSnap;
+      renderKernelStatusUI(kSnap);
+    }
+    if (iSnap && iSnap.ok) {
+      i18nStatusCache = iSnap;
+      renderI18nStatusUI(iSnap);
+    }
+  }
+
+  async function refreshKernelPatchStatus(force = false) {
+    if (kernelPatchBusy) return kernelStatusCache;
+    if (!force && kernelStatusCache && Date.now() - kernelStatusFetchedAt < 25000) {
+      renderKernelStatusUI(kernelStatusCache);
+      return kernelStatusCache;
+    }
+    try {
+      const res = await invokeKernelBridge('status', {});
+      if (res && res.ok) {
+        kernelStatusCache = res;
+        kernelStatusFetchedAt = Date.now();
+        saveBridgeStatusSnapshot(KERNEL_SNAP_KEY, res);
+        renderKernelStatusUI(res);
+      } else if (force && res?.error) {
+        showKernelFeedback(formatBridgeErrorMessage(res.error, '读取内核状态失败'), true);
+      }
+      return res;
+    } catch (err) {
+      // 自动/切换面板触发 (force === false) 时彻底静默容错，绝不弹出 Failed to fetch 红框
+      if (force) {
+        showKernelFeedback(formatBridgeErrorMessage(err, '读取内核状态异常'), true);
+      }
+      return { ok: false, error: err?.message || String(err) };
+    }
+  }
+
+  async function refreshI18nStatus(force = false) {
+    if (i18nApplyBusy) return i18nStatusCache;
+    if (!force && i18nStatusCache && Date.now() - i18nStatusFetchedAt < 25000) {
+      renderI18nStatusUI(i18nStatusCache);
+      return i18nStatusCache;
+    }
+    try {
+      const res = await invokeI18nBridge('status', {});
+      if (res && res.ok) {
+        i18nStatusCache = res;
+        i18nStatusFetchedAt = Date.now();
+        saveBridgeStatusSnapshot(I18N_SNAP_KEY, res);
+        renderI18nStatusUI(res);
+      }
+      return res;
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+  }
+
+  async function triggerApplyKernelPatch(payload = {}) {
+    if (kernelPatchBusy) return { ok: false, error: '正在执行内核操作，请稍候' };
+    kernelPatchBusy = true;
+    resetRestartConfirmState();
+    setKernelControlsDisabled(true);
+    showKernelFeedback('正在校验备份并原位写入内核配置…', false);
+    try {
+      const res = await invokeKernelBridge('apply', payload);
+      if (res && res.ok) {
+        if (res.status) {
+          kernelStatusCache = res.status;
+          kernelStatusFetchedAt = Date.now();
+          saveBridgeStatusSnapshot(KERNEL_SNAP_KEY, res.status);
+          renderKernelStatusUI(res.status);
+        } else {
+          kernelStatusFetchedAt = 0;
+          await refreshKernelPatchStatus(true);
+        }
+        const logSummary = Array.isArray(res.logs) && res.logs.length
+          ? res.logs.join('\n')
+          : '内核配置已更新';
+        showKernelFeedback(logSummary, false);
+        return res;
+      } else {
+        const errMsg = formatBridgeErrorMessage(res?.error, '内核补丁写入失败');
+        showKernelFeedback(errMsg, true);
+        return res || { ok: false, error: errMsg };
+      }
+    } catch (err) {
+      const errMsg = formatBridgeErrorMessage(err, '执行内核操作异常');
+      showKernelFeedback(errMsg, true);
+      return { ok: false, error: errMsg };
+    } finally {
+      kernelPatchBusy = false;
+      if (kernelStatusCache?.supported !== false) {
+        setKernelControlsDisabled(false);
+        renderKernelStatusUI(kernelStatusCache);
+      }
+    }
+  }
+
+  async function triggerApplyI18nConfig(payload = {}) {
+    if (i18nApplyBusy) return { ok: false, error: '正在切换界面语言配置，请稍候' };
+    i18nApplyBusy = true;
+    const reqPayload = {
+      locale: payload.locale !== undefined ? payload.locale : (i18nStatusCache?.locale || 'zh-CN'),
+      brandTitle: payload.brandTitle !== undefined ? payload.brandTitle : (i18nStatusCache?.brandTitle || 'english')
+    };
+    setI18nControlsDisabled(true);
+    showKernelFeedback('正在更新客户端汉化配置并实时刷新界面…', false);
+    try {
+      const res = await invokeI18nBridge('apply', reqPayload);
+      if (res && res.ok) {
+        if (res.status) {
+          i18nStatusCache = res.status;
+          i18nStatusFetchedAt = Date.now();
+          saveBridgeStatusSnapshot(I18N_SNAP_KEY, res.status);
+          renderI18nStatusUI(res.status);
+        } else {
+          i18nStatusFetchedAt = 0;
+          await refreshI18nStatus(true);
+        }
+        const st = i18nStatusCache || res.status || {};
+        const note = res.asarError
+          ? `当前窗口已实时生效 (${st.localeLabel || reqPayload.locale})，ASAR 提示：${res.asarError}`
+          : `界面语言已更新为「${st.localeLabel || reqPayload.locale}」${st.locale !== 'en' ? `（品牌：${st.brandTitleShortLabel || reqPayload.brandTitle}）` : ''}，当前窗口已实时刷新，系统菜单将在下次启动时生效。`;
+        showKernelFeedback(note, Boolean(res.asarError));
+        return res;
+      } else {
+        const errMsg = formatBridgeErrorMessage(res?.error, '界面语言配置更新失败');
+        showKernelFeedback(errMsg, true);
+        return res || { ok: false, error: errMsg };
+      }
+    } catch (err) {
+      const errMsg = formatBridgeErrorMessage(err, '切换界面语言异常');
+      showKernelFeedback(errMsg, true);
+      return { ok: false, error: errMsg };
+    } finally {
+      i18nApplyBusy = false;
+      setI18nControlsDisabled(false);
+      if (i18nStatusCache) renderI18nStatusUI(i18nStatusCache);
+    }
+  }
+
+  hydrateEnhancementSnapshots();
+
+  for (const item of KERNEL_TIER_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('mouseenter', () => {
+      const descEl = el('kernel-prompt-desc');
+      if (descEl && PROMPT_TIER_DESCRIPTIONS[item.tier]) {
+        descEl.textContent = PROMPT_TIER_DESCRIPTIONS[item.tier];
+      }
+    });
+    btn.addEventListener?.('mouseleave', () => {
+      const curTier = kernelStatusCache?.summary?.promptTier ?? 0;
+      const descEl = el('kernel-prompt-desc');
+      if (descEl && PROMPT_TIER_DESCRIPTIONS[curTier]) {
+        descEl.textContent = PROMPT_TIER_DESCRIPTIONS[curTier];
+      }
+    });
+    btn.addEventListener?.('click', () => {
+      void triggerApplyKernelPatch({ promptTier: String(item.tier) });
+    });
+  }
+  for (const item of KERNEL_CTX_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('click', () => {
+      void triggerApplyKernelPatch({ contextMode: item.mode });
+    });
+  }
+  for (const item of KERNEL_TITLE_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('click', () => {
+      void triggerApplyKernelPatch({ chineseTitle: item.enabled });
+    });
+  }
+  for (const item of I18N_LOCALE_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('click', () => {
+      void triggerApplyI18nConfig({ locale: item.locale });
+    });
+  }
+  for (const item of I18N_BRAND_IDS) {
+    const btn = el(item.id);
+    if (!btn) continue;
+    btn.addEventListener?.('click', () => {
+      void triggerApplyI18nConfig({ brandTitle: item.mode });
+    });
+  }
+
+  el('btn-kernel-recommended')?.addEventListener('click', () => {
+    void triggerApplyKernelPatch({ promptTier: '4', contextMode: '900k', chineseTitle: true });
+  });
+  el('btn-kernel-restore')?.addEventListener('click', () => {
+    void triggerApplyKernelPatch({ promptTier: '0', contextMode: 'stock', chineseTitle: false });
+  });
+  el('btn-kernel-refresh')?.addEventListener('click', () => {
+    showKernelFeedback('', false);
+    void refreshKernelPatchStatus(true);
+    void refreshI18nStatus(true);
+  });
+  el('btn-kernel-restart-ls')?.addEventListener('click', () => {
+    const hasNativeIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.applyKernelPatch === 'function';
+    if (!hasNativeIpc) {
+      showKernelFeedback(
+        '当前处于首次安装后的临时热挂载模式：请直接关闭并重新打开一次 Antigravity 客户端（只需重开一次，主进程原生钩子即永久激活，之后随时热重启语言服务都不会消失）。',
+        false
+      );
+      return;
+    }
+    const now = Date.now();
+    const btnRestart = el('btn-kernel-restart-ls');
+    if (now < kernelRestartConfirmUntil) {
+      void triggerApplyKernelPatch({ restartLanguageServer: true });
+      return;
+    }
+    kernelRestartConfirmUntil = now + 3500;
+    if (btnRestart) {
+      btnRestart.setAttribute('data-confirm', 'true');
+      btnRestart.textContent = '确认重启？(再点执行)';
+    }
+    if (kernelRestartConfirmTimer) clearTimeout(kernelRestartConfirmTimer);
+    kernelRestartConfirmTimer = setTimeout(() => {
+      resetRestartConfirmState();
+    }, 3500);
   });
 
-  // 二级抽屉 3（面板 A 内就近设置）: 热力图色阶与面板外观自定义抽屉折叠展开
+  // 外观配色页与请求审计页桥接（同时驱动顶部三栏 Tab 与旧按钮兼容语义）
+  function toggleColorsDrawer(forceOpen) {
+    if (!colorDrawerBody) return;
+    const curOpen = colorDrawerBody.style.display === 'block';
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !curOpen;
+    switchContextTab(nextOpen ? 'palette' : 'overview');
+  }
+  btnColors?.addEventListener('click', () => toggleColorsDrawer());
+
+  btnDetails?.addEventListener('click', () => {
+    if (!drawerBody) return;
+    const curOpen = drawerBody.style.display === 'block';
+    switchContextTab(curOpen ? 'overview' : 'audit');
+  });
+
+  // Token 看板内就近设置: 热力图色阶与面板外观按需展开
   const btnTokenColors = el('btn-toggle-token-colors');
   const tokenColorDrawerBody = el('token-color-drawer-body');
   const tokenColorDrawerArrow = el('token-color-drawer-arrow');
@@ -1441,8 +2131,13 @@
     const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
     tokenColorDrawerBody.style.display = nextOpen ? 'block' : 'none';
     tokenColorDrawerBody.classList?.toggle?.('is-expanded', nextOpen);
-    if (tokenColorDrawerArrow) tokenColorDrawerArrow.textContent = nextOpen ? '▲ 收起设置' : '▼ 展开设置';
+    if (tokenColorDrawerArrow) tokenColorDrawerArrow.textContent = nextOpen ? '收起设置 ▲' : '色阶设置';
     btnTokenColors?.setAttribute('aria-expanded', String(nextOpen));
+    const topPaletteBtn = el('btn-panel-tokens-palette');
+    if (topPaletteBtn) {
+      if (nextOpen) addClass(topPaletteBtn, 'is-active');
+      else removeClass(topPaletteBtn, 'is-active');
+    }
     if (!nextOpen) {
       closeColorPicker(false);
     }
@@ -2507,13 +3202,13 @@
       if (bodyEl) bodyEl.textContent = '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。';
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-      if (manual && pop) pop.style.display = 'block';
+      if (manual && pop) { pop.style.display = 'block'; positionUpdatePopover(); }
       return;
     }
 
     if (manual) {
       cachedLatestRelease = null;
-      if (pop) pop.style.display = 'block';
+      if (pop) { pop.style.display = 'block'; positionUpdatePopover(); }
       if (verEl) verEl.textContent = 'v0.8.0 (正在检查…)';
       if (bodyEl) bodyEl.textContent = '正在连接 GitHub 检测最新版本…';
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
@@ -3113,6 +3808,8 @@
     setTokenHistoryForTest: payload => applyTokenHistoryPayload(payload),
     getPlanDetailExpanded: () => planDetailExpanded,
     setPlanDetailExpanded,
+    switchContextTab,
+    getActiveContextTab: () => activeContextTab,
     switchTokenView,
     switchHeatView: view => switchHeatView(view),
     getActiveHeatView: () => activeHeatView,
@@ -3137,6 +3834,12 @@
     restoreSettingsFromHost,
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,
+    refreshKernelStatus: force => refreshKernelPatchStatus(Boolean(force)),
+    applyKernelPatch: opts => triggerApplyKernelPatch(opts || {}),
+    getKernelStatusCache: () => kernelStatusCache,
+    refreshI18nStatus: force => refreshI18nStatus(Boolean(force)),
+    applyI18nConfig: opts => triggerApplyI18nConfig(opts || {}),
+    getI18nStatusCache: () => i18nStatusCache,
     getTimelineWindow: () => {
       const w = computeTimelineWindow();
       return {
@@ -3160,6 +3863,7 @@
       state.disposed = true;
       for (const controller of state.controllers) controller.abort();
       clearInterval(timer);
+      if (kernelRestartConfirmTimer) clearTimeout(kernelRestartConfirmTimer);
       if (layoutRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(layoutRaf);
       syncHostStackingElevation(false);
       try { themeObserver?.disconnect(); } catch {}

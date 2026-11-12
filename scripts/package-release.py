@@ -27,6 +27,9 @@ COMMON_FILES = [
     "meter-storage.js",
     "meter-proxy.js",
     "meter-cli-launcher.js",
+    "meter-patcher.js",
+    "meter-i18n.js",
+    "scripts/compare_dicts.js",
     "attachment_scan.py",
     "asar-engine.js",
     "package.json",
@@ -104,6 +107,13 @@ def build_releases():
                     zf.writestr(zinfo, content)
                 else:
                     zf.write(src_path, arcname=rel)
+
+            # 打包简繁中文界面汉化词典目录 (dicts/ 与 dicts_tw/)
+            for dict_folder in ("dicts", "dicts_tw"):
+                dict_dir = ROOT_DIR / dict_folder
+                if dict_dir.is_dir():
+                    for json_file in sorted(dict_dir.glob("*.json")):
+                        zf.write(json_file, arcname=f"{dict_folder}/{json_file.name}")
         
         size_kb = zip_path.stat().st_size / 1024
         print(f"  + Created {zip_filename} ({size_kb:.1f} KB)")
