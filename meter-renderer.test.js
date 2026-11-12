@@ -334,6 +334,92 @@ test('window controls overlay spacer, convPane flex-grow self-healing, and clean
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
   assert.equal(api.version, '0.8.0');
+
+  // 1. Antigravity 1.x: class contains 'top-0'
+  const cluster1x = h.sandbox.document.createElement();
+  cluster1x.className = 'absolute right-0 top-0 z-50 flex items-center';
+  cluster1x.getBoundingClientRect = () => ({ top: 0, left: 1200, right: 1440, bottom: 40, width: 240, height: 40 });
+  const auxToggle1x = h.sandbox.document.createElement();
+  auxToggle1x.setAttribute('data-testid', 'toggle-aux-sidebar');
+  auxToggle1x.closest = sel => sel.includes('top-0') ? cluster1x : null;
+
+  h.sandbox.document.querySelector = sel => {
+    if (sel.includes('toggle-aux-sidebar')) return auxToggle1x;
+    return null;
+  };
+  assert.equal(api.findTopRightClusterForTest(), cluster1x, 'Must detect Antigravity 1.x cluster with top-0 class');
+
+  // 2. Antigravity 2.x: top: 0px is inline style, class has no top-0
+  const cluster2x = h.sandbox.document.createElement();
+  cluster2x.className = 'absolute right-0 z-50 flex items-center shrink-0';
+  cluster2x.style.top = '0px';
+  cluster2x.getBoundingClientRect = () => ({ top: 0, left: 1200, right: 1440, bottom: 40, width: 240, height: 40 });
+  const auxToggle2x = h.sandbox.document.createElement();
+  auxToggle2x.setAttribute('data-testid', 'toggle-aux-sidebar');
+  auxToggle2x.closest = sel => sel.includes('top-0') ? null : (sel.includes('right-0') ? cluster2x : null);
+
+  h.sandbox.document.querySelector = sel => {
+    if (sel.includes('toggle-aux-sidebar')) return auxToggle2x;
+    return null;
+  };
+  assert.equal(api.findTopRightClusterForTest(), cluster2x, 'Must detect Antigravity 2.x cluster with style="top: 0px;"');
+
+  // 3. Fallback when auxToggle is missing: matches cluster2x via fallback selector
+  h.sandbox.document.querySelector = sel => {
+    if (sel === 'div.absolute.right-0.z-50') return cluster2x;
+    return null;
+  };
+  assert.equal(api.findTopRightClusterForTest(), cluster2x, 'Fallback must find top-right cluster');
+
+  // 4. Safety: strictly reject unrelated floating layers
+  // 4a. Scrollbar track (w-3, right-0.5, top-0.5)
+  const scrollbar = h.sandbox.document.createElement();
+  scrollbar.className = 'group absolute top-0.5 bottom-0.5 right-0.5 w-3 z-30';
+  scrollbar.getBoundingClientRect = () => ({ top: 0, left: 1435, right: 1440, bottom: 800, width: 5, height: 800 });
+
+  // 4b. Full-height side drawer / panel
+  const sideDrawer = h.sandbox.document.createElement();
+  sideDrawer.className = 'absolute right-0 top-12 bottom-0 w-80 bg-white';
+  sideDrawer.getBoundingClientRect = () => ({ top: 48, left: 1120, right: 1440, bottom: 800, width: 320, height: 752 });
+
+  // 4c. Bottom toast notification
+  const bottomToast = h.sandbox.document.createElement();
+  bottomToast.className = 'absolute right-0 bottom-4 z-50';
+  bottomToast.getBoundingClientRect = () => ({ top: 760, left: 1200, right: 1440, bottom: 800, width: 240, height: 40 });
+
+  for (const unrelated of [scrollbar, sideDrawer, bottomToast]) {
+    h.sandbox.document.querySelector = sel => {
+      if (sel === 'div.absolute.right-0.z-50') return unrelated;
+      return null;
+    };
+    assert.equal(api.findTopRightClusterForTest(), null, `Must safely reject unrelated floating element: ${unrelated.className}`);
+  }
+
+  // 5. WCO spacer width calculation & mounting on Windows
+  h.sandbox.document.querySelector = sel => {
+    if (sel.includes('toggle-aux-sidebar')) return auxToggle2x;
+    return null;
+  };
+  const wcoWidth = api.computeWindowControlsWidthForTest(cluster2x);
+  assert.equal(wcoWidth, 138, 'Windows with no menubar should allocate 138px for titleBarOverlay');
+
+  api.syncWindowControlsOverlayForTest();
+  assert.equal(cluster2x.children.length, 1);
+  const spacer = cluster2x.children[0];
+  assert.equal(spacer.id, 'ag-wco-spacer');
+  assert.equal(spacer.style.cssText, 'width:138px;height:100%;flex-shrink:0;pointer-events:none;');
+
+  // 6. When top menu bar is present (top >= 20), WCO width is 0 and spacer removed
+  const clusterWithMenu = h.sandbox.document.createElement();
+  clusterWithMenu.className = 'absolute right-0 z-50 flex items-center shrink-0';
+  clusterWithMenu.style.top = '35px';
+  clusterWithMenu.getBoundingClientRect = () => ({ top: 35, left: 1200, right: 1440, bottom: 75, width: 240, height: 40 });
+  assert.equal(api.computeWindowControlsWidthForTest(clusterWithMenu), 0);
+
+  // 7. On macOS (Darwin/MacIntel), WCO width is 0
+  h.sandbox.navigator = { platform: 'MacIntel' };
+  assert.equal(api.computeWindowControlsWidthForTest(cluster2x), 0);
+
   api.dispose();
 });
 
