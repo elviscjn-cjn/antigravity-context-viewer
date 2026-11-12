@@ -1,4 +1,14 @@
-  <!-- 顶部基本单元 1: 上下文小圆环 -->
+  <!-- 顶部基本单元 1: 当前模型剩余配额圆环（位于上下文圆环左侧） -->
+  <button id="badge-quota" class="ag-unit ag-unit-ring" type="button" aria-label="当前模型剩余配额" aria-describedby="quota-tooltip" aria-expanded="false">
+    <svg id="quota-ring-svg" class="ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+      <circle id="quota-ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"></circle>
+      <circle id="quota-ring-fill" class="ring-fill quota-ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1" stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
+    </svg>
+    <span id="quota-window-tag" class="quota-window-tag">5h</span>
+    <span id="quota-pct-val" class="quota-pct-val">--%</span>
+  </button>
+
+  <!-- 顶部基本单元 2: 上下文小圆环 -->
   <button id="badge" class="ag-unit ag-unit-ring" type="button" aria-label="会话与上下文统计" aria-describedby="context-tooltip" aria-expanded="false">
     <svg id="ring-svg" class="ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
       <circle id="ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"></circle>
@@ -47,6 +57,27 @@
     <div id="ctx-tip-title" class="ctx-tip-title">上下文窗口：</div>
     <div id="ctx-tip-pct" class="ctx-tip-pct">数据尚未就绪</div>
     <div id="ctx-tip-detail" class="ctx-tip-detail">正在读取当前会话上下文用量…</div>
+  </div>
+
+  <!-- 模型剩余配额悬停/点击展开菜单 -->
+  <div id="quota-tooltip" role="tooltip" data-visible="false" data-pinned="false" data-view="hover" data-placement="bottom">
+    <div class="quota-tip-header">
+      <div id="quota-tip-title" class="quota-tip-title">当前模型配额：</div>
+      <button id="quota-tip-refresh" class="quota-tip-refresh" type="button" title="立即刷新配额" aria-label="刷新配额">刷新</button>
+    </div>
+    <div id="quota-tip-pct" class="quota-tip-pct">正在读取模型配额…</div>
+    <div id="quota-tip-detail" class="quota-tip-detail">悬停查看当前模型周额度，点击查看详情</div>
+    <div id="quota-tip-dual" class="quota-tip-dual" style="display:none"></div>
+    <div id="quota-tip-pools-wrap" class="quota-tip-section" style="display:none">
+      <div class="quota-tip-section-title">5 小时周期额度 (5h)</div>
+      <div id="quota-tip-pools" class="quota-tip-pools"></div>
+    </div>
+    <div id="quota-tip-weekly-wrap" class="quota-tip-section" style="display:none">
+      <div class="quota-tip-section-title">每周总额度 (Weekly)</div>
+      <div id="quota-tip-weekly" class="quota-tip-pools quota-tip-weekly"></div>
+      <div id="quota-weekly-empty" class="quota-weekly-empty" style="display:none">当前语言服务未返回独立周额度数据</div>
+    </div>
+    <div id="quota-tip-foot" class="quota-tip-foot">点击圆环可固定展开或刷新配额</div>
   </div>
 
   <!-- 窄屏溢出菜单 -->

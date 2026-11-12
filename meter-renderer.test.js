@@ -1505,3 +1505,307 @@ test('online update and GitHub entry points: openExternal whitelist enforcement 
 
   api.dispose();
 });
+
+test('model quota ring unifies same-model tiers, estimates remaining tokens, and refreshes via GetUserStatus', async () => {
+  const h = harness();
+  h.finishScan();
+  h.pending[0].resolve(response({
+    model: 'Gemini 4 Hydrogen (XHigh)',
+    usage: { inputTokens: 12000, outputTokens: 1000 },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+  }));
+  await h.flush();
+
+  const api = h.sandbox.__AGContextMeter;
+  const quotaIdx = source.indexOf('id="badge-quota"');
+  const contextIdx = source.indexOf('id="badge"');
+  assert.ok(quotaIdx > 0 && contextIdx > 0 && quotaIdx < contextIdx, 'quota badge should render to the left of context badge');
+
+  const now = Date.now();
+  const resetAt = new Date(now + 90 * 60000).toISOString();
+  const sampleConfigs = [
+    {
+      label: 'Gemini 4 Hydrogen (XHigh)',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' },
+      quotaInfo: { remainingFraction: 0.85, resetTime: resetAt }
+    },
+    {
+      label: 'Gemini 4 Hydrogen (Low)',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M42' },
+      quotaInfo: { remainingFraction: 0.85, resetTime: resetAt }
+    },
+    {
+      label: 'Claude Sonnet 4.6 (Thinking)',
+      modelOrAlias: { model: 'claude-sonnet-4-6' },
+      quotaInfo: { remainingFraction: 0.24, resetTime: resetAt }
+    },
+    {
+      label: 'Gemini 3.1 Pro (High)',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M8' },
+      quotaInfo: { remainingFraction: 0.05, resetTime: resetAt }
+    },
+    {
+      label: 'Gemini 3.1 Pro (Low)',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M9' },
+      quotaInfo: { remainingFraction: 0.05, resetTime: resetAt }
+    }
+  ];
+
+  api.applyTokenHistoryPayload({
+    summary: { grandTotalTokens: 450000, todayTokens: 450000, monthTokens: 450000, yearTokens: 450000 },
+    dailyMap: { '2026-11-12': { total: 450000, input: 350000, output: 100000, cache: 0 } },
+    recentModelUsage: [
+      { id: 'u1', poolKey: 'gemini-4-hydrogen', ts: now - 30 * 60000, tok: 450000 }
+    ],
+    rawPlanStatus: { cascadeModelConfigs: sampleConfigs }
+  });
+
+  const qBtn = h.elements.get('badge-quota');
+  const qFill = h.elements.get('quota-ring-fill');
+  const qPctVal = h.elements.get('quota-pct-val');
+  const qTip = h.elements.get('quota-tooltip');
+  const qPools = h.elements.get('quota-tip-pools');
+  assert.equal(h.host.getAttribute('data-quota-state'), 'normal');
+  assert.equal(qFill.getAttribute('data-ring-state'), 'determinate');
+  assert.equal(qPctVal.textContent, '85%');
+  assert.match(h.elements.get('quota-tip-title').textContent, /Gemini 4 Hydrogen/);
+  assert.match(h.elements.get('quota-tip-pct').textContent, /剩余额度 85%.*约 2\.55M tok/);
+
+  qBtn.trigger('mouseenter');
+  assert.equal(qTip.getAttribute('data-visible'), 'true');
+  // 5 raw configs unify into 3 canonical model rows
+  assert.equal(qPools.children.length, 3);
+  assert.match(qPools.children[0].children[0].children[1].textContent, /85% · 约2\.55M tok/);
+  qBtn.trigger('mouseleave');
+  assert.equal(qTip.getAttribute('data-visible'), 'false');
+
+  // Delta calibration on subsequent drop in the same canonical model
+  api.setModelQuotaForTest(
+    [
+      {
+        label: 'Gemini 4 Hydrogen (XHigh)',
+        modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' },
+        quotaInfo: { remainingFraction: 0.75, resetTime: resetAt }
+      }
+    ],
+    'Gemini 4 Hydrogen',
+    {
+      usageEvents: [{ id: 'u2', model: 'Gemini 4 Hydrogen (Low)', ts: now - 5000, tok: 400000 }]
+    }
+  );
+  assert.equal(qPctVal.textContent, '75%');
+  assert.match(h.elements.get('quota-tip-pct').textContent, /剩余额度 75%.*约 3M tok/);
+
+  // Switch active model to low-quota warn & danger models
+  api.setModelQuotaForTest(sampleConfigs, 'Claude Sonnet 4.6');
+  assert.equal(h.host.getAttribute('data-quota-state'), 'warn');
+  assert.equal(qPctVal.textContent, '24%');
+
+  api.setModelQuotaForTest(sampleConfigs, 'Gemini 3.1 Pro (High)');
+  assert.equal(h.host.getAttribute('data-quota-state'), 'danger');
+  assert.equal(qPctVal.textContent, '5%');
+
+  // Direct manual refresh triggers GetUserStatus call and updates ring
+  const refreshPromise = api.refreshQuota({ force: true });
+  const quotaReq = h.pending.find(req => String(req.url).includes('/GetUserStatus'));
+  assert.ok(quotaReq, 'refreshQuota should request LanguageServerService/GetUserStatus');
+  quotaReq.resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            {
+              label: 'Gemini 3.1 Pro (High)',
+              modelOrAlias: { model: 'MODEL_PLACEHOLDER_M8' },
+              quotaInfo: { remainingFraction: 0.65, resetTime: resetAt }
+            }
+          ]
+        }
+      }
+    })
+  });
+  await refreshPromise;
+  assert.equal(h.host.getAttribute('data-quota-state'), 'normal');
+  assert.equal(qPctVal.textContent, '65%');
+
+  api.dispose();
+});
+
+test('model quota ring displays 5h in top bar and renders weekly quota in click-pinned expanded menu', async () => {
+  const h = harness();
+  h.finishScan();
+  h.pending[0].resolve(response({
+    model: 'Claude Sonnet 4.6 (Thinking)',
+    usage: { inputTokens: 12000, outputTokens: 1000 },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+  }));
+  await h.flush();
+
+  const api = h.sandbox.__AGContextMeter;
+  const now = Date.now();
+  const reset5h = new Date(now + 2 * 3600000).toISOString();
+  const resetWeekly = new Date(now + 4 * 86400000).toISOString();
+
+  api.applyTokenHistoryPayload({
+    summary: { grandTotalTokens: 3000000, todayTokens: 1000000, monthTokens: 3000000, yearTokens: 3000000 },
+    dailyMap: { '2026-11-13': { total: 1000000, input: 700000, output: 300000, cache: 0 } },
+    recentModelUsage: [
+      { id: 'w1', poolKey: 'claude-sonnet-4.6', ts: now - 30 * 60000, tok: 1000000 },
+      { id: 'w2', poolKey: 'claude-opus-4.6', ts: now - 48 * 3600000, tok: 2000000 }
+    ],
+    rawPlanStatus: {
+      cascadeModelConfigs: [
+        {
+          label: 'Claude Sonnet 4.6 (Thinking)',
+          modelOrAlias: { model: 'claude-sonnet-4-6-thinking' },
+          quotaInfo: { remainingFraction: 0.80, resetTime: reset5h }
+        },
+        {
+          label: 'Gemini 4 Hydrogen (XHigh)',
+          modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' },
+          quotaInfo: { remainingFraction: 0.90, resetTime: reset5h }
+        }
+      ],
+      quotaSummary: {
+        groups: [
+          {
+            groupId: 'GROUP_GEMINI',
+            displayName: 'Gemini',
+            modelIds: ['MODEL_PLACEHOLDER_M41'],
+            buckets: [{ window: 'WEEKLY', remainingFraction: 0.50, resetTime: resetWeekly }]
+          },
+          {
+            groupId: 'GROUP_THIRD_PARTY',
+            displayName: 'Third Party',
+            modelIds: ['claude-sonnet-4-6-thinking'],
+            buckets: [{ window: 'WEEKLY', remainingFraction: 0.75, resetTime: resetWeekly }]
+          }
+        ]
+      }
+    }
+  });
+
+  const qBtn = h.elements.get('badge-quota');
+  const qWinTag = h.elements.get('quota-window-tag');
+  const qPctVal = h.elements.get('quota-pct-val');
+  const qTip = h.elements.get('quota-tooltip');
+  const qTipPct = h.elements.get('quota-tip-pct');
+  const qFoot = h.elements.get('quota-tip-foot');
+  const qDual = h.elements.get('quota-tip-dual');
+  const qPools = h.elements.get('quota-tip-pools');
+  const qWeekly = h.elements.get('quota-tip-weekly');
+  const qDetail = h.elements.get('quota-tip-detail');
+
+  // Top bar focuses on 5h quota + tag
+  assert.equal(qWinTag.textContent, '5h');
+  assert.equal(qPctVal.textContent, '80%');
+  assert.match(qBtn.getAttribute('aria-label'), /5小时剩余配额 80%.*周额度 75%/);
+
+  // Hover opens concise weekly-only preview for active model (detail sections collapsed by data-view="hover")
+  qBtn.trigger('mouseenter');
+  assert.equal(qTip.getAttribute('data-visible'), 'true');
+  assert.equal(qTip.getAttribute('data-pinned'), 'false');
+  assert.equal(qTip.getAttribute('data-view'), 'hover');
+  assert.match(qTipPct.textContent, /每周剩余 75%.*约 9M tok/);
+  assert.doesNotMatch(qDetail.textContent, /5h/);
+  assert.match(qFoot.textContent, /点击圆环查看/);
+  qBtn.trigger('mouseleave');
+  assert.equal(qTip.getAttribute('data-visible'), 'false');
+
+  // Click expands detail view (data-view="detail", data-pinned="true") and triggers refresh
+  const pendingBeforeClick = h.pending.length;
+  qBtn.trigger('click');
+  assert.equal(qTip.getAttribute('data-visible'), 'true');
+  assert.equal(qTip.getAttribute('data-pinned'), 'true');
+  assert.equal(qTip.getAttribute('data-view'), 'detail');
+  assert.equal(qBtn.getAttribute('aria-expanded'), 'true');
+  assert.match(qTipPct.textContent, /5h 剩余 80%.*约 4M tok/);
+  assert.match(qDetail.textContent, /周剩余 75%/);
+  assert.equal(qDual.style.display, 'grid');
+  assert.equal(qDual.children.length, 2);
+  assert.equal(qDual.children[0].children[1].textContent, '80%');
+  assert.equal(qDual.children[1].children[1].textContent, '75%');
+  assert.equal(qPools.children.length, 2);
+  assert.equal(qWeekly.children.length, 2);
+  assert.match(qWeekly.children[1].children[0].children[1].textContent, /75% · 约9M tok/);
+
+  // mouseleave does not dismiss a click-pinned detail view
+  qBtn.trigger('mouseleave');
+  assert.equal(qTip.getAttribute('data-visible'), 'true');
+  assert.equal(qTip.getAttribute('data-pinned'), 'true');
+  assert.equal(qTip.getAttribute('data-view'), 'detail');
+
+  const clickReqs = h.pending.slice(pendingBeforeClick);
+  const statusReq = clickReqs.find(r => String(r.url).includes('/GetUserStatus'));
+  const summaryReq = clickReqs.find(r => String(r.url).includes('/RetrieveUserQuotaSummary'));
+  assert.ok(statusReq && summaryReq, 'refresh should query both GetUserStatus and RetrieveUserQuotaSummary');
+
+  statusReq.resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            {
+              label: 'Claude Sonnet 4.6 (Thinking)',
+              modelOrAlias: { model: 'claude-sonnet-4-6-thinking' },
+              quotaInfo: { remainingFraction: 0.70, resetTime: reset5h }
+            }
+          ]
+        }
+      }
+    })
+  });
+  summaryReq.resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      groups: [
+        {
+          groupId: 'GROUP_THIRD_PARTY',
+          displayName: 'Third Party',
+          modelIds: ['claude-sonnet-4-6-thinking'],
+          buckets: [{ window: 'WEEKLY', remainingFraction: 0.62, resetTime: resetWeekly }]
+        }
+      ]
+    })
+  });
+  await h.flush();
+
+  const stateAfterRefresh = api.getModelQuotaState();
+  assert.equal(stateAfterRefresh.hasShortData, true);
+  assert.equal(stateAfterRefresh.hasWeeklyData, true);
+  assert.equal(qPctVal.textContent, '70%');
+  assert.equal(qDual.children[1].children[1].textContent, '62%');
+
+  // Second click toggles pinned expanded menu closed and restores concise hover view
+  qBtn.trigger('click');
+  assert.equal(qTip.getAttribute('data-visible'), 'false');
+  assert.equal(qTip.getAttribute('data-pinned'), 'false');
+  assert.equal(qTip.getAttribute('data-view'), 'hover');
+  assert.equal(qBtn.getAttribute('aria-expanded'), 'false');
+  qBtn.trigger('mouseenter');
+  assert.equal(qTip.getAttribute('data-view'), 'hover');
+  assert.match(qTipPct.textContent, /每周剩余 62%/);
+  qBtn.trigger('mouseleave');
+
+  // Weekly-only fallback badge shows '7d' when 5h configs are empty
+  api.setModelQuotaForTest([], 'Claude Sonnet 4.6', {
+    quotaSummary: {
+      groups: [
+        {
+          groupId: 'GROUP_THIRD_PARTY',
+          displayName: 'Third Party',
+          buckets: [{ window: 'WEEKLY', remainingFraction: 0.44, resetTime: resetWeekly }]
+        }
+      ]
+    }
+  });
+  assert.equal(qWinTag.textContent, '7d');
+  assert.equal(qPctVal.textContent, '44%');
+
+  api.dispose();
+});

@@ -410,6 +410,74 @@
     :host([data-layout="ring-only"]) #badge-overflow{
       display:none!important;
     }
+    :host([data-layout="minimal"]) .quota-window-tag,
+    :host([data-layout="ring-only"]) .quota-pct-val,
+    :host([data-layout="ring-only"]) .quota-window-tag{
+      display:none!important;
+    }
+
+    /* 单元 2: 当前模型剩余配额圆环 */
+    :host{
+      --ag-quota-normal:#10b981;
+    }
+    :host([data-theme="light"]){
+      --ag-quota-normal:#059669;
+    }
+    #badge-quota{
+      gap:4px;
+      color:var(--ag-toolbar-fg);
+    }
+    #badge-quota:hover,#badge-quota:focus-visible,#badge-quota[aria-expanded="true"]{
+      color:var(--ag-toolbar-fg-hover);
+    }
+    .quota-window-tag{
+      font-size:9.5px;
+      font-weight:700;
+      letter-spacing:0.02em;
+      line-height:1;
+      padding:1.5px 4px;
+      border-radius:4px;
+      background:rgba(128,128,140,0.16);
+      color:var(--ag-text-muted);
+      flex-shrink:0;
+    }
+    :host([data-quota-state="warn"]) .quota-window-tag{
+      color:var(--ag-ring-warn,#f59e0b);
+      background:rgba(245,158,11,0.14);
+    }
+    :host([data-quota-state="danger"]) .quota-window-tag{
+      color:var(--ag-ring-danger,#ef4444);
+      background:rgba(239,68,68,0.14);
+    }
+    #badge-quota[data-busy="true"]{
+      opacity:0.7;
+    }
+    .quota-ring-fill{
+      stroke:var(--ag-quota-normal,#10b981);
+      transition:stroke-dasharray .24s ease,stroke .18s ease,opacity .18s ease;
+    }
+    .quota-pct-val{
+      font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;
+      color:inherit;
+    }
+    :host([data-quota-state="warn"]) .quota-ring-fill,
+    :host([data-quota-state="warn"]) .quota-pct-val,
+    :host([data-quota-state="warn"]) .quota-tip-pct{
+      stroke:var(--ag-ring-warn,#f59e0b);
+      color:var(--ag-ring-warn,#f59e0b);
+    }
+    :host([data-quota-state="danger"]) .quota-ring-fill,
+    :host([data-quota-state="danger"]) .quota-pct-val,
+    :host([data-quota-state="danger"]) .quota-tip-pct{
+      stroke:var(--ag-ring-danger,#ef4444);
+      color:var(--ag-ring-danger,#ef4444);
+    }
+    :host([data-quota-state="unknown"]) .quota-ring-fill{
+      stroke:var(--ag-text-muted,#71717a);
+    }
+    :host([data-quota-state="normal"]) .quota-tip-pct{
+      color:var(--ag-quota-normal,#10b981);
+    }
 
     /* 上下文悬停信息气泡（严格还原参考图三层结构） */
     #context-tooltip{
@@ -444,6 +512,147 @@
       font-size:12.5px;line-height:1.38;font-weight:500;
       color:var(--ag-custom-context-text,var(--ag-text-secondary));
       margin-top:1px;
+    }
+
+    /* 模型剩余配额悬停/展开菜单 */
+    #quota-tooltip{
+      position:fixed;top:0;left:0;z-index:2147483600;
+      min-width:276px;max-width:384px;max-height:calc(100vh - 64px);overflow-y:auto;
+      padding:10px 13px;
+      border-radius:10px;border:1px solid var(--ag-float-border);
+      background:var(--ag-float-bg);color:var(--ag-text-primary);
+      box-shadow:var(--ag-float-shadow);
+      pointer-events:none;opacity:0;visibility:hidden;
+      transform:translateY(2px);
+      transition:opacity .12s ease,transform .12s ease,visibility .12s ease;
+      font-variant-numeric:tabular-nums;
+    }
+    #quota-tooltip[data-visible="true"]{
+      opacity:1;visibility:visible;transform:translateY(0);
+    }
+    #quota-tooltip[data-pinned="true"]{
+      pointer-events:auto;
+      border-color:var(--ag-btn-border-hover,var(--ag-float-border));
+    }
+    #quota-tooltip[data-view="hover"]{
+      min-width:236px;max-width:320px;overflow-y:visible;
+    }
+    #quota-tooltip[data-view="hover"] .quota-tip-refresh,
+    #quota-tooltip[data-view="hover"] .quota-tip-dual,
+    #quota-tooltip[data-view="hover"] .quota-tip-section{
+      display:none!important;
+    }
+    .quota-tip-header{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;
+      margin-bottom:2px;
+    }
+    .quota-tip-title{
+      font-size:11.5px;line-height:1.35;font-weight:500;
+      color:var(--ag-text-muted);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    .quota-tip-refresh{
+      border:1px solid var(--ag-btn-border,var(--ag-border-subcard));
+      background:var(--ag-btn-bg,var(--ag-bg-subcard));
+      color:var(--ag-text-secondary);
+      border-radius:5px;padding:2px 7px;font-size:10.5px;font-weight:600;
+      cursor:pointer;flex-shrink:0;line-height:1.3;
+      transition:background-color .12s ease,color .12s ease;
+    }
+    .quota-tip-refresh:hover,.quota-tip-refresh:focus-visible{
+      background:var(--ag-btn-hover,var(--ag-toolbar-bg-hover));
+      color:var(--ag-text-primary);
+    }
+    .quota-tip-pct{
+      font-size:13px;line-height:1.38;font-weight:600;
+      color:var(--ag-text-primary);
+    }
+    .quota-tip-detail{
+      font-size:11.5px;line-height:1.38;font-weight:500;
+      color:var(--ag-text-secondary);
+      margin-top:2px;
+    }
+    .quota-tip-dual{
+      display:grid;grid-template-columns:1fr 1fr;gap:6px;
+      margin-top:8px;
+    }
+    .quota-dual-card{
+      display:flex;flex-direction:column;gap:3px;
+      padding:6px 8px;border-radius:7px;
+      background:var(--ag-bg-subcard);
+      border:1px solid var(--ag-border-subcard);
+      min-width:0;
+    }
+    .quota-dual-head{
+      display:flex;align-items:center;justify-content:space-between;gap:4px;
+      font-size:10.5px;color:var(--ag-text-muted);font-weight:600;
+    }
+    .quota-dual-val{
+      font-size:14px;line-height:1.25;font-weight:700;color:var(--ag-quota-normal,#10b981);
+    }
+    .quota-dual-card[data-tone="warn"] .quota-dual-val{color:var(--ag-ring-warn,#f59e0b)}
+    .quota-dual-card[data-tone="danger"] .quota-dual-val{color:var(--ag-ring-danger,#ef4444)}
+    .quota-dual-card[data-tone="muted"] .quota-dual-val{color:var(--ag-text-muted);font-size:12px}
+    .quota-dual-sub{
+      font-size:10.5px;line-height:1.32;color:var(--ag-text-secondary);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .quota-tip-section{
+      margin-top:8px;padding-top:7px;
+      border-top:1px solid var(--ag-border-subtle);
+    }
+    .quota-tip-section-title{
+      font-size:10.5px;font-weight:600;letter-spacing:0.02em;
+      color:var(--ag-text-muted);margin-bottom:4px;
+    }
+    .quota-tip-pools{
+      display:flex;flex-direction:column;gap:5px;
+    }
+    .quota-weekly-empty{
+      font-size:11px;color:var(--ag-text-muted);
+      padding:4px 6px;border-radius:6px;background:var(--ag-bg-subcard);
+    }
+    .quota-pool-row{
+      display:flex;flex-direction:column;gap:3px;
+      padding:4px 6px;border-radius:6px;
+      background:transparent;
+    }
+    .quota-pool-row[data-active="true"]{
+      background:var(--ag-bg-subcard);
+      border:1px solid var(--ag-border-subcard);
+    }
+    .quota-pool-head{
+      display:flex;align-items:center;justify-content:space-between;gap:10px;
+      font-size:11.5px;line-height:1.3;
+    }
+    .quota-pool-name{
+      font-weight:500;color:var(--ag-text-secondary);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .quota-pool-row[data-active="true"] .quota-pool-name{
+      color:var(--ag-text-primary);font-weight:600;
+    }
+    .quota-pool-meta{
+      font-weight:600;color:var(--ag-text-primary);white-space:nowrap;
+    }
+    .quota-pool-row[data-tone="warn"] .quota-pool-meta{color:var(--ag-ring-warn,#f59e0b)}
+    .quota-pool-row[data-tone="danger"] .quota-pool-meta{color:var(--ag-ring-danger,#ef4444)}
+    .quota-pool-bar{
+      height:3px;width:100%;border-radius:999px;
+      background:rgba(128,128,140,0.22);overflow:hidden;
+    }
+    .quota-pool-bar-fill{
+      height:100%;border-radius:999px;
+      background:var(--ag-quota-normal,#10b981);
+      transition:width .2s ease;
+    }
+    .quota-pool-row[data-window="weekly"] .quota-pool-bar-fill{background:#6366f1}
+    .quota-pool-row[data-tone="warn"] .quota-pool-bar-fill{background:var(--ag-ring-warn,#f59e0b)}
+    .quota-pool-row[data-tone="danger"] .quota-pool-bar-fill{background:var(--ag-ring-danger,#ef4444)}
+    .quota-tip-foot{
+      margin-top:7px;padding-top:5px;
+      border-top:1px solid var(--ag-border-subtle);
+      font-size:10.5px;color:var(--ag-text-muted);
     }
 
     /* 窄屏溢出菜单浮层 */

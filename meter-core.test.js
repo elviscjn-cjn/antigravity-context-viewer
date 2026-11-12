@@ -17,7 +17,13 @@ const {
   compareVersions,
   filterReleases,
   findReleaseAsset,
-  isValidExternalUrl
+  isValidExternalUrl,
+  summarizeModelQuotaPools,
+  formatResetCountdownZh,
+  getModelPoolKey,
+  formatApproxTokensZh,
+  classifyQuotaWindow,
+  extractQuotaSummaryGroups
 } = require('./meter-core');
 const entry = (usage, context = {}) => ({ chatModel: { usage, chatStartMetadata: { contextWindowMetadata: context } } });
 const exceeded = 'INVALID_ARGUMENT (code 400): The input token count exceeds the maximum number of tokens allowed 1048576.';
@@ -1367,4 +1373,339 @@ test('collectTokenHistoryAsync 连续两次非强制调用不会卡在旧 active
     try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tempCliDir, { recursive: true, force: true }); } catch {}
   }
+});
+
+test('summarizeModelQuotaPools & parseUserPlanStatus unify same-model variants and estimate remaining tokens', () => {
+  const nowMs = Date.parse('2026-11-13T02:00:00.000Z');
+  const resetSoon = '2026-11-13T04:30:00.000Z';
+  const fixture = {
+    userStatus: {
+      email: 'quota@example.com',
+      userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          {
+            label: 'Gemini 4 Hydrogen (XHigh)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' },
+            quotaInfo: { remainingFraction: 0.75, resetTime: resetSoon }
+          },
+          {
+            label: 'Gemini 4 Hydrogen (Low)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M42' },
+            quotaInfo: { remainingFraction: 0.75, resetTime: resetSoon }
+          },
+          {
+            label: 'Gemini 3.1 Pro (High)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M8' },
+            quotaInfo: { remainingFraction: 0.78, resetTime: resetSoon }
+          },
+          {
+            label: 'Gemini 3.1 Pro (Low)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M9' },
+            quotaInfo: { remainingFraction: 0.62, resetTime: resetSoon }
+          },
+          {
+            label: 'Gemini 3.8 Flash',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_FLASH' },
+            quotaInfo: { remainingFraction: 1.0, resetTime: '2026-11-13T03:00:00.000Z' }
+          },
+          {
+            label: 'Claude Opus 4.6 (Thinking)',
+            modelOrAlias: { model: 'MODEL_CLAUDE_OPUS' },
+            quotaInfo: { resetTime: '2026-11-13T06:00:00.000Z' }
+          },
+          {
+            label: 'Claude Sonnet 4.6',
+            modelOrAlias: { model: 'claude-sonnet-4-6' },
+            quotaInfo: { remainingFraction: 0.90, resetTime: '2026-11-13T06:00:00.000Z' }
+          },
+          {
+            label: 'Claude Sonnet 4.6 (Thinking)',
+            modelOrAlias: { model: 'MODEL_CLAUDE_SONNET_THINKING' },
+            quotaInfo: { remainingFraction: 0.90, resetTime: '2026-11-13T06:00:00.000Z' }
+          }
+        ]
+      }
+    }
+  };
+
+  const plan = parseUserPlanStatus(fixture);
+  assert.equal(Array.isArray(plan.cascadeModelConfigs), true);
+  assert.equal(plan.cascadeModelConfigs.length, 8);
+
+  assert.equal(formatResetCountdownZh(resetSoon, nowMs), '2小时30分后');
+  assert.equal(formatApproxTokensZh(5600000), '5.6M');
+  assert.equal(formatApproxTokensZh(420000), '420K');
+  assert.equal(formatApproxTokensZh(0), '0');
+  assert.equal(formatApproxTokensZh(null), null);
+
+  assert.equal(getModelPoolKey('MODEL_PLACEHOLDER_M41', 'Gemini 4 Hydrogen (XHigh)'), 'gemini-4-hydrogen');
+  assert.equal(getModelPoolKey('MODEL_PLACEHOLDER_M42', 'Gemini 4 Hydrogen (Low)'), 'gemini-4-hydrogen');
+  assert.equal(getModelPoolKey('claude-sonnet-4-6', 'Claude Sonnet 4.6 (Thinking)'), 'claude-sonnet-4.6');
+
+  // Cycle burn events: 1,000,000 tok inside current cycle + old yesterday event outside cycle
+  const cycleUsageEvents = [
+    { id: 'c1', poolKey: 'gemini-4-hydrogen', ts: nowMs - 30 * 60000, tok: 600000 },
+    { id: 'c2', poolKey: 'gemini-4-hydrogen', ts: nowMs - 10 * 60000, tok: 400000 },
+    { id: 'old', poolKey: 'gemini-4-hydrogen', ts: nowMs - 48 * 3600000, tok: 9000000 }
+  ];
+
+  const summaryHydrogen = summarizeModelQuotaPools(plan.cascadeModelConfigs, 'Gemini 4 Hydrogen (XHigh)', nowMs, {
+    usageEvents: cycleUsageEvents
+  });
+  assert.equal(summaryHydrogen.hasData, true);
+  assert.equal(summaryHydrogen.matchedByModel, true);
+  // 8 raw configs collapse into 5 canonical models
+  assert.equal(summaryHydrogen.pools.length, 5);
+  assert.equal(summaryHydrogen.active.poolKey, 'gemini-4-hydrogen');
+  assert.equal(summaryHydrogen.active.poolName, 'Gemini 4 Hydrogen');
+  assert.equal(summaryHydrogen.active.remainingPct, 75);
+  // 25% used == 1M tok => cycle capacity 4M => remaining 3M
+  assert.equal(summaryHydrogen.active.cycleTokensUsed, 1000000);
+  assert.equal(summaryHydrogen.active.estTotalTokens, 4000000);
+  assert.equal(summaryHydrogen.active.estRemainingTokens, 3000000);
+  assert.equal(summaryHydrogen.active.estRemainingZh, '3M');
+
+  // Differing fractions on the same canonical model take the tighter minimum (0.62 < 0.78)
+  const summaryPro = summarizeModelQuotaPools(plan.cascadeModelConfigs, 'Gemini 3.1 Pro (High)', nowMs);
+  assert.equal(summaryPro.matchedByModel, true);
+  assert.equal(summaryPro.active.poolName, 'Gemini 3.1 Pro');
+  assert.equal(summaryPro.active.remainingPct, 62);
+
+  // Exhausted (0%) => estRemainingTokens = 0; Uncalibrated 100% Flash => null (never fabricated)
+  const summaryClaude = summarizeModelQuotaPools(plan.cascadeModelConfigs, 'Claude Opus 4.6', nowMs);
+  assert.equal(summaryClaude.matchedByModel, true);
+  assert.equal(summaryClaude.active.remainingPct, 0);
+  assert.equal(summaryClaude.active.estRemainingTokens, 0);
+  assert.equal(summaryClaude.active.estRemainingZh, '0');
+  assert.ok(summaryClaude.active.resetTimeZh);
+
+  const flashPool = summaryClaude.pools.find(p => p.poolKey === 'gemini-3.8-flash');
+  assert.equal(flashPool.remainingPct, 100);
+  assert.equal(flashPool.estRemainingTokens, null);
+  assert.equal(flashPool.estRemainingZh, null);
+
+  // Delta calibration across two snapshots, then persistence across a quota reset to 100%
+  const singleConfig = f => ([{
+    label: 'Gemini 4 Hydrogen (XHigh)',
+    modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' },
+    quotaInfo: { remainingFraction: f, resetTime: resetSoon }
+  }]);
+  const poll1 = summarizeModelQuotaPools(singleConfig(0.90), 'Gemini 4 Hydrogen', nowMs, {
+    usageEvents: [{ id: 'p1', poolKey: 'gemini-4-hydrogen', ts: nowMs - 20 * 60000, tok: 100000 }]
+  });
+  const poll2 = summarizeModelQuotaPools(singleConfig(0.80), 'Gemini 4 Hydrogen', nowMs + 60000, {
+    usageEvents: [
+      { id: 'p1', poolKey: 'gemini-4-hydrogen', ts: nowMs - 20 * 60000, tok: 100000 },
+      { id: 'p2', poolKey: 'gemini-4-hydrogen', ts: nowMs - 1000, tok: 500000 }
+    ],
+    calibrationMap: poll1.nextCalibration
+  });
+  // deltaTok = 500k, deltaF = 0.10 => calibratedTotal = 5M => at 0.80 remaining = 4M
+  assert.equal(poll2.active.estSource, 'delta');
+  assert.equal(poll2.active.estTotalTokens, 5000000);
+  assert.equal(poll2.active.estRemainingTokens, 4000000);
+
+  const afterReset = summarizeModelQuotaPools([{
+    label: 'Gemini 4 Hydrogen',
+    modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' },
+    quotaInfo: { remainingFraction: 1.0, resetTime: '2026-11-13T09:30:00.000Z' }
+  }], 'Gemini 4 Hydrogen', nowMs + 3 * 3600000, {
+    usageEvents: [],
+    calibrationMap: poll2.nextCalibration
+  });
+  assert.equal(afterReset.active.remainingPct, 100);
+  assert.equal(afterReset.active.estRemainingTokens, 5000000);
+  assert.equal(afterReset.active.estRemainingZh, '5M');
+
+  const summaryFallback = summarizeModelQuotaPools(plan.cascadeModelConfigs, '', nowMs);
+  assert.equal(summaryFallback.hasData, true);
+  assert.equal(summaryFallback.matchedByModel, false);
+  assert.ok(summaryFallback.active);
+});
+
+test('summarizeModelQuotaPools supports 5h + weekly dual quota windows and group token calibration', async () => {
+  const { fetchUserStatusFromHost } = require('./meter-collector');
+  const nowMs = Date.parse('2026-11-13T04:00:00.000Z');
+  const reset5h = '2026-11-13T07:00:00.000Z';
+  const resetWeekly = '2026-11-17T04:00:00.000Z';
+
+  assert.equal(classifyQuotaWindow({ window: 'QUOTA_WINDOW_WEEKLY' }, reset5h, nowMs), 'weekly');
+  assert.equal(classifyQuotaWindow({ window: 'fiveHourQuota' }, reset5h, nowMs), '5h');
+  assert.equal(classifyQuotaWindow({ id: 'pool_default' }, resetWeekly, nowMs), 'weekly');
+
+  const rawUserStatus = {
+    userStatus: {
+      email: 'dual@example.com',
+      userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          {
+            label: 'Claude Sonnet 4.6 (Thinking)',
+            modelOrAlias: { model: 'claude-sonnet-4-6-thinking' },
+            quotaInfo: { remainingFraction: 0.80, resetTime: reset5h }
+          },
+          {
+            label: 'Claude Opus 4.6',
+            modelOrAlias: { model: 'MODEL_CLAUDE_OPUS' },
+            quotaInfo: { remainingFraction: 0.60, resetTime: reset5h }
+          },
+          {
+            label: 'Gemini 4 Hydrogen (XHigh)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' },
+            quotaInfo: { remainingFraction: 0.90, resetTime: reset5h }
+          }
+        ]
+      }
+    }
+  };
+
+  const rawQuotaSummary = {
+    userQuotaSummary: {
+      groups: [
+        {
+          groupId: 'GROUP_GEMINI',
+          displayName: 'Gemini Models',
+          modelIds: ['MODEL_PLACEHOLDER_M41', 'MODEL_PLACEHOLDER_FLASH'],
+          buckets: [
+            { window: 'FIVE_HOURS', remainingFraction: 0.90, resetTime: reset5h },
+            { window: 'WEEKLY', remainingFraction: 0.50, resetTime: resetWeekly }
+          ]
+        },
+        {
+          groupId: 'GROUP_THIRD_PARTY',
+          displayName: 'Third Party',
+          modelIds: ['claude-sonnet-4-6-thinking', 'MODEL_CLAUDE_OPUS'],
+          buckets: [
+            { window: 'FIVE_HOURS', remainingFraction: 0.80, resetTime: reset5h },
+            // Protobuf3 omits 0.0 when remainingAmount=0 + resetTime present in second bucket test below; here 0.75 weekly left
+            { window: 'QUOTA_WINDOW_WEEKLY', remainingFraction: 0.75, resetTime: resetWeekly }
+          ]
+        },
+        {
+          groupId: 'GROUP_GEMINI_ARGON',
+          displayName: 'Gemini Argon',
+          modelIds: ['MODEL_ARGON_PRO'],
+          buckets: [
+            { window: 'WEEKLY', remainingAmount: 0, resetTime: resetWeekly }
+          ]
+        }
+      ]
+    }
+  };
+
+  assert.equal(extractQuotaSummaryGroups(rawQuotaSummary).length, 3);
+
+  const fetched = await fetchUserStatusFromHost({ userStatus: rawUserStatus, quotaSummary: rawQuotaSummary });
+  assert.equal(fetched.cascadeModelConfigs.length, 3);
+  assert.ok(fetched.quotaSummary);
+
+  const parsedCombined = parseUserPlanStatus({ ...rawUserStatus, quotaSummary: rawQuotaSummary });
+  assert.ok(parsedCombined.quotaSummary);
+
+  // Events: 1M tok on Claude Sonnet 2h ago (both 5h & 7d windows), plus 2M tok on Claude Opus 2 days ago (7d window ONLY)
+  const usageEvents = [
+    { id: 'e-sonnet-2h', poolKey: 'claude-sonnet-4.6', ts: nowMs - 2 * 3600000, tok: 1000000 },
+    { id: 'e-opus-2d', poolKey: 'claude-opus-4.6', ts: nowMs - 48 * 3600000, tok: 2000000 }
+  ];
+
+  const dualClaude = summarizeModelQuotaPools(
+    fetched.cascadeModelConfigs,
+    'Claude Sonnet 4.6 (Thinking)',
+    nowMs,
+    { quotaSummary: fetched.quotaSummary, usageEvents }
+  );
+  assert.equal(dualClaude.hasData, true);
+  assert.equal(dualClaude.hasShortData, true);
+  assert.equal(dualClaude.hasWeeklyData, true);
+  assert.equal(dualClaude.matchedByModel, true);
+  assert.equal(dualClaude.weeklyMatchedByModel, true);
+
+  // Active 5h pool = claude-sonnet-4.6: 20% used == 1M => 5M total => 4M remaining
+  assert.equal(dualClaude.active.poolKey, 'claude-sonnet-4.6');
+  assert.equal(dualClaude.active.remainingPct, 80);
+  assert.equal(dualClaude.active.estRemainingTokens, 4000000);
+  assert.equal(dualClaude.active.estRemainingZh, '4M');
+
+  // Active Weekly pool = weekly:third-party: 25% used == (1M + 2M = 3M) => 12M total => 9M remaining
+  assert.equal(dualClaude.activeWeekly.poolKey, 'weekly:third-party');
+  assert.equal(dualClaude.activeWeekly.windowType, 'weekly');
+  assert.equal(dualClaude.activeWeekly.remainingPct, 75);
+  assert.equal(dualClaude.activeWeekly.estTotalTokens, 12000000);
+  assert.equal(dualClaude.activeWeekly.estRemainingTokens, 9000000);
+  assert.equal(dualClaude.activeWeekly.estRemainingZh, '9M');
+  assert.equal(dualClaude.activeWeekly.resetInZh, '4天后');
+
+  // Protobuf3 omitted remainingFraction + remainingAmount=0 resolves to 0% (exhausted), not null
+  const argonWeekly = dualClaude.weeklyPools.find(p => p.poolKey === 'weekly:gemini-argon');
+  assert.ok(argonWeekly);
+  assert.equal(argonWeekly.remainingPct, 0);
+  assert.equal(argonWeekly.estRemainingTokens, 0);
+  assert.equal(argonWeekly.estRemainingZh, '0');
+
+  // Switching to Gemini 4 Hydrogen selects weekly:gemini
+  const dualGemini = summarizeModelQuotaPools(
+    fetched.cascadeModelConfigs,
+    'Gemini 4 Hydrogen (XHigh)',
+    nowMs,
+    { quotaSummary: fetched.quotaSummary, usageEvents }
+  );
+  assert.equal(dualGemini.activeWeekly.poolKey, 'weekly:gemini');
+  assert.equal(dualGemini.activeWeekly.remainingPct, 50);
+
+  // Single-endpoint fallback: weekly resetTime (>26h) in GetUserStatus alone populates fallback weeklyPools
+  const fallbackWeekly = summarizeModelQuotaPools(
+    [
+      {
+        label: 'Claude Opus 4.6',
+        modelOrAlias: { model: 'MODEL_CLAUDE_OPUS' },
+        quotaInfo: { remainingFraction: 0.40, resetTime: resetWeekly }
+      }
+    ],
+    'Claude Opus 4.6',
+    nowMs
+  );
+  assert.equal(fallbackWeekly.hasWeeklyData, true);
+  assert.equal(fallbackWeekly.weeklyPools[0].poolKey, 'weekly:third-party');
+  assert.equal(fallbackWeekly.weeklyPools[0].remainingPct, 40);
+
+  // Weekly-only summary (no GetUserStatus configs) works when only quotaSummary succeeds
+  // Also verifies live Antigravity `response.groups` wrapper and `-disabled` empty entry filtering
+  const weeklyOnly = summarizeModelQuotaPools(
+    [
+      {
+        label: 'Gemini 4 Carbon',
+        modelOrAlias: { model: 'MODEL_PLACEHOLDER_CARBON' },
+        modelId: 'gemini-4-carbon-disabled'
+      }
+    ],
+    'Gemini 4 Hydrogen',
+    nowMs,
+    {
+      quotaSummary: {
+        response: {
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              buckets: [
+                { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.65, resetTime: resetWeekly }
+              ]
+            },
+            {
+              displayName: 'Claude and GPT models',
+              buckets: [
+                { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.47, resetTime: resetWeekly },
+                { bucketId: '3p-5h', window: '5h', remainingFraction: 0, resetTime: reset5h }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  );
+  assert.equal(weeklyOnly.hasData, true);
+  assert.equal(weeklyOnly.hasShortData, true);
+  assert.equal(weeklyOnly.hasWeeklyData, true);
+  assert.equal(weeklyOnly.activeWeekly.remainingPct, 65);
+  assert.equal(weeklyOnly.pools.some(p => p.poolKey === 'gemini-4-carbon'), false);
 });
