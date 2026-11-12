@@ -353,97 +353,357 @@ function extractWorkspaceFromTranscriptFile(transcriptPath) {
 }
 
 /**
- * 探测 Antigravity CLI (agy) 可执行文件路径
+ * 解析 Windows 系统核心可执行工具路径，避免宿主 Electron PATH 残缺导致找不到 cmd.exe / reg.exe / powershell.exe
  */
-function resolveCliExecutable(customCliPath) {
-  if (customCliPath !== undefined && customCliPath !== null && String(customCliPath).trim() !== '') {
-    const explicit = path.resolve(String(customCliPath).trim());
+function resolveWindowsSystemTools(env = process.env, fsImpl = fs) {
+  const sysRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
+  const system32 = path.join(sysRoot, 'System32');
+  const psDir = path.join(system32, 'WindowsPowerShell', 'v1.0');
+  const pick = (candidate, fallback) => {
     try {
-      if (fs.existsSync(explicit) && fs.statSync(explicit).isFile()) {
-        const dir = path.dirname(explicit);
-        const siblingExe = path.join(dir, 'agy.exe');
-        const directExe = explicit.toLowerCase().endsWith('.exe')
-          ? explicit
-          : (fs.existsSync(siblingExe) ? siblingExe : explicit);
-        return { ok: true, cliPath: explicit, exePath: directExe, source: 'explicit' };
-      }
+      if (fsImpl.existsSync(candidate)) return candidate;
     } catch {}
-    return {
-      ok: false,
-      code: 'CLI_NOT_FOUND',
-      cliPath: explicit,
-      error: `指定的 Antigravity CLI 路径不存在或不可用: ${explicit}`
-    };
+    return fallback;
+  };
+  return {
+    sysRoot,
+    system32,
+    psDir,
+    cmdExe: pick(path.join(system32, 'cmd.exe'), 'cmd.exe'),
+    powershellExe: pick(path.join(psDir, 'powershell.exe'), 'powershell.exe'),
+    regExe: pick(path.join(system32, 'reg.exe'), 'reg.exe')
+  };
+}
+
+/**
+ * 展开 Windows 路径中的 %VAR% 环境变量占位符
+ */
+function expandWindowsEnvVars(raw, env = process.env, extra = {}) {
+  const lookup = new Map();
+  for (const [k, v] of Object.entries(env || {})) {
+    if (v !== undefined && v !== null) lookup.set(String(k).toUpperCase(), String(v));
   }
-
-  const home = process.env.USERPROFILE || os.homedir();
-  const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
-  const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
-
-  const candidates = [];
-  if (process.env.AG_CLI_PATH) candidates.push({ p: process.env.AG_CLI_PATH, src: 'env_AG_CLI_PATH' });
-  if (process.platform === 'win32') {
-    candidates.push(
-      { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.exe'), src: 'gemini_bin_exe' },
-      { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.cmd'), src: 'gemini_bin_cmd' },
-      { p: path.join(appData, 'Antigravity', 'bin', 'agy.exe'), src: 'appdata_bin_exe' },
-      { p: path.join(appData, 'Antigravity', 'bin', 'agy.cmd'), src: 'appdata_bin_cmd' },
-      { p: path.join(localAppData, 'Programs', 'Antigravity IDE', 'bin', 'agy.exe'), src: 'ide_bin_exe' },
-      { p: path.join(localAppData, 'Programs', 'Antigravity IDE', 'bin', 'agy.cmd'), src: 'ide_bin_cmd' },
-      { p: path.join(home, '.local', 'bin', 'agy.exe'), src: 'local_bin' }
-    );
-  } else {
-    candidates.push(
-      { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy'), src: 'gemini_bin' },
-      { p: path.join(home, '.local', 'bin', 'agy'), src: 'local_bin' },
-      { p: '/usr/local/bin/agy', src: 'usr_local_bin' }
-    );
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (v !== undefined && v !== null) lookup.set(String(k).toUpperCase(), String(v));
   }
+  return String(raw || '').replace(/%([^%]+)%/g, (m, name) => {
+    const val = lookup.get(String(name).toUpperCase());
+    return val !== undefined ? val : m;
+  });
+}
 
-  for (const item of candidates) {
+/**
+ * 拆解并去重 PATH 目录列表，自动去除外层双引号
+ */
+function splitPathEntries(rawPath, platform = process.platform, delimiter = path.delimiter) {
+  const sep = platform === 'win32' ? ';' : delimiter;
+  const out = [];
+  const seen = new Set();
+  for (const part of String(rawPath || '').split(sep)) {
+    const cleaned = part.trim().replace(/^"+|"+$/g, '');
+    if (!cleaned) continue;
+    const key = platform === 'win32' ? cleaned.toLowerCase() : cleaned;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+/**
+ * 将额外的 Windows 工具目录合并进子进程 PATH（兼容 Path / PATH 大小写）
+ */
+function ensureWindowsSpawnPath(env, extraDirs = []) {
+  const currentRaw = env.PATH || env.Path || '';
+  const merged = [];
+  const seen = new Set();
+  for (const dir of [...extraDirs, ...splitPathEntries(currentRaw, 'win32')]) {
+    const cleaned = String(dir || '').trim().replace(/^"+|"+$/g, '');
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(cleaned);
+  }
+  delete env.Path;
+  env.PATH = merged.join(';');
+  return env.PATH;
+}
+
+/**
+ * 读取 Windows 注册表用户级与系统级 Path（应对桌面端未重启导致 PATH 过期或被精简）
+ */
+function readWindowsRegistryPathDirs(env = process.env, fsImpl = fs, spawnSyncImpl = spawnSync) {
+  const home = env.USERPROFILE || os.homedir();
+  const localAppData = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const appData = env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const winTools = resolveWindowsSystemTools(env, fsImpl);
+  const extraVars = {
+    USERPROFILE: home,
+    LOCALAPPDATA: localAppData,
+    APPDATA: appData,
+    SystemRoot: winTools.sysRoot,
+    ProgramFiles: env.ProgramFiles || 'C:\\Program Files',
+    'ProgramFiles(x86)': env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+  };
+  const hives = [
+    'HKCU\\Environment',
+    'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'
+  ];
+  const dirs = [];
+  const seen = new Set();
+  for (const hive of hives) {
     try {
-      if (item.p && fs.existsSync(item.p) && fs.statSync(item.p).isFile()) {
-        let exePath = item.p;
-        if (item.p.toLowerCase().endsWith('.cmd') || item.p.toLowerCase().endsWith('.bat')) {
-          const content = fs.readFileSync(item.p, 'utf8');
-          const m = content.match(/"([^"]*agy\.exe)"/i);
-          if (m && m[1]) {
-            const resolvedM = m[1].replace(/%~dp0/gi, path.dirname(item.p) + path.sep);
-            if (fs.existsSync(resolvedM)) exePath = path.resolve(resolvedM);
-          } else {
-            const sib = path.join(path.dirname(item.p), 'agy.exe');
-            if (fs.existsSync(sib)) exePath = sib;
+      const res = spawnSyncImpl(winTools.regExe, ['query', hive, '/v', 'Path'], {
+        encoding: 'utf8',
+        timeout: 2500,
+        windowsHide: true
+      });
+      if (res.status !== 0 || !res.stdout) continue;
+      for (const line of String(res.stdout).split(/\r?\n/)) {
+        const m = line.match(/^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.+)$/i);
+        if (!m || !m[1]) continue;
+        const expanded = expandWindowsEnvVars(m[1].trim(), env, extraVars);
+        for (const d of splitPathEntries(expanded, 'win32')) {
+          const key = d.toLowerCase();
+          if (!seen.has(key)) {
+            seen.add(key);
+            dirs.push(d);
           }
         }
+      }
+    } catch {}
+  }
+  return dirs;
+}
+
+/**
+ * 从 .cmd / .bat 包装脚本中解析真实的 agy.exe 目标路径
+ */
+function resolveBatchWrapperTarget(filePath, fsImpl = fs) {
+  let exePath = filePath;
+  const lower = String(filePath || '').toLowerCase();
+  if (!lower.endsWith('.cmd') && !lower.endsWith('.bat')) return exePath;
+  try {
+    const content = fsImpl.readFileSync(filePath, 'utf8');
+    const m = content.match(/"([^"]*agy\.exe)"/i);
+    if (m && m[1]) {
+      const resolvedM = m[1].replace(/%~dp0/gi, path.dirname(filePath) + path.sep);
+      if (fsImpl.existsSync(resolvedM)) return path.resolve(resolvedM);
+    }
+    const sib = path.join(path.dirname(filePath), 'agy.exe');
+    if (fsImpl.existsSync(sib)) return sib;
+  } catch {}
+  return exePath;
+}
+
+/**
+ * 在目录列表中按顺序探测指定文件名列表，并统一解析 .cmd/.bat 目标
+ */
+function findExecutableInDirs(dirs, binNames, source, fsImpl = fs) {
+  for (const dir of dirs) {
+    if (!dir) continue;
+    for (const bin of binNames) {
+      const full = path.join(dir, bin);
+      try {
+        if (fsImpl.existsSync(full) && fsImpl.statSync(full).isFile()) {
+          return {
+            ok: true,
+            cliPath: full,
+            exePath: resolveBatchWrapperTarget(full, fsImpl),
+            source
+          };
+        }
+      } catch {}
+    }
+  }
+  return null;
+}
+
+/**
+ * 读取用户在插件设置中保存的自定义 CLI 路径
+ */
+function readSavedCliPath(env = process.env, home = os.homedir(), fsImpl = fs) {
+  try {
+    const baseDir = env.AG_DIR || path.join(home, '.gemini', 'antigravity');
+    const cfgPath = path.join(baseDir, 'custom_plan_v1.json');
+    if (!fsImpl.existsSync(cfgPath)) return null;
+    const raw = JSON.parse(fsImpl.readFileSync(cfgPath, 'utf8'));
+    const candidate = raw?.uiPreferences?.cliPath || raw?.cliPath;
+    return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 生成未找到 CLI 时的平台安装指引
+ */
+function getCliInstallHint(platform = process.platform) {
+  if (platform === 'win32') {
+    return {
+      installCommand: 'irm https://antigravity.google/cli/install.ps1 | iex',
+      error: '未找到已安装的 Antigravity CLI (agy)。Antigravity 桌面版不会自动附带命令行工具，请在 PowerShell 运行 "irm https://antigravity.google/cli/install.ps1 | iex" 安装（默认位于 %LOCALAPPDATA%\\agy\\bin\\agy.exe），或通过环境变量 AG_CLI_PATH 指定 agy.exe。'
+    };
+  }
+  return {
+    installCommand: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+    error: '未找到已安装的 Antigravity CLI (agy)。可运行 "curl -fsSL https://antigravity.google/cli/install.sh | bash" 安装，或将其加入 PATH / 通过 AG_CLI_PATH 指定可执行文件。'
+  };
+}
+
+/**
+ * 探测 Antigravity CLI (agy) 可执行文件路径
+ */
+function resolveCliExecutable(customCliPath, options = {}) {
+  const fsImpl = options.fs || fs;
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const home = options.homeDir || env.USERPROFILE || env.HOME || os.homedir();
+  const execPath = options.execPath !== undefined ? options.execPath : process.execPath;
+
+  if (customCliPath !== undefined && customCliPath !== null && String(customCliPath).trim() !== '') {
+    const cleanedExplicit = String(customCliPath).trim().replace(/^"+|"+$/g, '');
+    if (cleanedExplicit) {
+      const explicit = path.resolve(cleanedExplicit);
+      try {
+        if (fsImpl.existsSync(explicit) && fsImpl.statSync(explicit).isFile()) {
+          return {
+            ok: true,
+            cliPath: explicit,
+            exePath: resolveBatchWrapperTarget(explicit, fsImpl),
+            source: 'explicit'
+          };
+        }
+      } catch {}
+      return {
+        ok: false,
+        code: 'CLI_NOT_FOUND',
+        cliPath: explicit,
+        ...getCliInstallHint(platform),
+        error: `指定的 Antigravity CLI 路径不存在或不可用: ${explicit}`
+      };
+    }
+  }
+
+  const localAppData = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const appData = env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const programFiles = env.ProgramFiles || 'C:\\Program Files';
+  const programFilesX86 = env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+  const programData = env.ProgramData || 'C:\\ProgramData';
+  const savedCliPath = options.settingsCliPath !== undefined ? options.settingsCliPath : readSavedCliPath(env, home, fsImpl);
+
+  const directCandidates = [];
+  if (env.AG_CLI_PATH) directCandidates.push({ p: env.AG_CLI_PATH, src: 'env_AG_CLI_PATH' });
+  if (env.ANTIGRAVITY_CLI_PATH) directCandidates.push({ p: env.ANTIGRAVITY_CLI_PATH, src: 'env_ANTIGRAVITY_CLI_PATH' });
+  if (savedCliPath) directCandidates.push({ p: savedCliPath, src: 'saved_settings' });
+
+  const binNames = platform === 'win32' ? ['agy.exe', 'agy.cmd', 'agy.bat'] : ['agy'];
+  const candidateDirs = [];
+
+  if (platform === 'win32') {
+    candidateDirs.push(
+      { dir: path.join(localAppData, 'agy', 'bin'), src: 'localappdata_agy_bin' },
+      { dir: path.join(home, '.gemini', 'antigravity', 'bin'), src: 'gemini_bin' },
+      { dir: path.join(home, '.gemini', 'antigravity-cli', 'bin'), src: 'gemini_cli_bin' },
+      { dir: path.join(appData, 'Antigravity', 'bin'), src: 'appdata_bin' },
+      { dir: path.join(localAppData, 'Programs', 'Antigravity', 'bin'), src: 'programs_antigravity_bin' },
+      { dir: path.join(localAppData, 'Programs', 'Antigravity IDE', 'bin'), src: 'ide_bin' },
+      { dir: path.join(localAppData, 'Programs', 'agy', 'bin'), src: 'programs_agy_bin' },
+      { dir: path.join(localAppData, 'Antigravity', 'bin'), src: 'localappdata_antigravity_bin' },
+      { dir: path.join(localAppData, 'Antigravity IDE', 'bin'), src: 'localappdata_ide_bin' }
+    );
+    if (env.ANTIGRAVITY_HOME) {
+      candidateDirs.push(
+        { dir: path.join(env.ANTIGRAVITY_HOME, 'bin'), src: 'antigravity_home_bin' },
+        { dir: env.ANTIGRAVITY_HOME, src: 'antigravity_home' }
+      );
+    }
+    if (execPath) {
+      const execDir = path.dirname(execPath);
+      candidateDirs.push(
+        { dir: path.join(execDir, 'bin'), src: 'exec_dir_bin' },
+        { dir: execDir, src: 'exec_dir' }
+      );
+    }
+    candidateDirs.push(
+      { dir: path.join(programFiles, 'agy', 'bin'), src: 'pf_agy_bin' },
+      { dir: path.join(programFiles, 'Antigravity', 'bin'), src: 'pf_antigravity_bin' },
+      { dir: path.join(programFiles, 'Antigravity IDE', 'bin'), src: 'pf_ide_bin' },
+      { dir: path.join(programFiles, 'Google', 'Antigravity', 'bin'), src: 'pf_google_antigravity_bin' },
+      { dir: path.join(programFiles, 'Google Antigravity', 'bin'), src: 'pf_google_space_bin' },
+      { dir: path.join(programFilesX86, 'Antigravity', 'bin'), src: 'pf86_antigravity_bin' },
+      { dir: path.join(home, '.local', 'bin'), src: 'local_bin' },
+      { dir: path.join(home, '.agy', 'bin'), src: 'home_agy_bin' },
+      { dir: path.join(home, '.antigravity', 'bin'), src: 'home_antigravity_bin' },
+      { dir: path.join(home, 'bin'), src: 'home_bin' },
+      { dir: path.join(localAppData, 'Microsoft', 'WinGet', 'Links'), src: 'winget_links' },
+      { dir: path.join(home, 'scoop', 'shims'), src: 'scoop_shims' },
+      { dir: path.join(programData, 'chocolatey', 'bin'), src: 'choco_bin' },
+      { dir: path.join(appData, 'npm'), src: 'npm_bin' },
+      { dir: path.join(localAppData, 'pnpm'), src: 'pnpm_bin' }
+    );
+  } else {
+    candidateDirs.push(
+      { dir: path.join(home, '.gemini', 'antigravity', 'bin'), src: 'gemini_bin' },
+      { dir: path.join(home, '.gemini', 'antigravity-cli', 'bin'), src: 'gemini_cli_bin' },
+      { dir: path.join(home, '.local', 'bin'), src: 'local_bin' },
+      { dir: path.join(home, '.agy', 'bin'), src: 'home_agy_bin' },
+      { dir: path.join(home, 'bin'), src: 'home_bin' },
+      { dir: '/opt/homebrew/bin', src: 'homebrew_bin' },
+      { dir: '/usr/local/bin', src: 'usr_local_bin' },
+      { dir: '/usr/bin', src: 'usr_bin' }
+    );
+    if (execPath) {
+      const execDir = path.dirname(execPath);
+      candidateDirs.push(
+        { dir: path.join(execDir, 'bin'), src: 'exec_dir_bin' },
+        { dir: path.resolve(execDir, '..', 'Resources', 'app', 'bin'), src: 'app_bundle_bin' }
+      );
+    }
+  }
+
+  for (const item of directCandidates) {
+    try {
+      const cleaned = String(item.p || '').trim().replace(/^"+|"+$/g, '');
+      if (!cleaned) continue;
+      const candidatePath = path.resolve(cleaned);
+      if (candidatePath && fsImpl.existsSync(candidatePath) && fsImpl.statSync(candidatePath).isFile()) {
         return {
           ok: true,
-          cliPath: item.launcher && fs.existsSync(item.launcher) ? item.launcher : item.p,
-          exePath,
+          cliPath: item.launcher && fsImpl.existsSync(item.launcher) ? item.launcher : candidatePath,
+          exePath: resolveBatchWrapperTarget(candidatePath, fsImpl),
           source: item.src
         };
       }
     } catch {}
   }
 
-  // 回退扫描系统 PATH
-  const pathDirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const binNames = process.platform === 'win32' ? ['agy.exe', 'agy.cmd', 'agy.bat'] : ['agy'];
-  for (const d of pathDirs) {
-    for (const b of binNames) {
-      const full = path.join(d, b);
-      try {
-        if (fs.existsSync(full) && fs.statSync(full).isFile()) {
-          return { ok: true, cliPath: full, exePath: full, source: 'PATH' };
-        }
-      } catch {}
-    }
+  for (const entry of candidateDirs) {
+    const hit = findExecutableInDirs([entry.dir], binNames, entry.src, fsImpl);
+    if (hit) return hit;
+  }
+
+  // 回退扫描系统 PATH（兼容 Windows Env 大小写与引号）
+  const rawPathEnv = env.PATH || env.Path || '';
+  const pathDirs = splitPathEntries(rawPathEnv, platform);
+  const pathHit = findExecutableInDirs(pathDirs, binNames, 'PATH', fsImpl);
+  if (pathHit) return pathHit;
+
+  // Windows 下桌面端进程可能携带过期或精简后的 PATH，补充读取注册表 User/System Path
+  if (platform === 'win32' && options.skipRegistry !== true) {
+    const regDirs = Array.isArray(options.registryPathDirs)
+      ? options.registryPathDirs
+      : readWindowsRegistryPathDirs(env, fsImpl, options.spawnSync || spawnSync);
+    const regHit = findExecutableInDirs(regDirs, binNames, 'registry_PATH', fsImpl);
+    if (regHit) return regHit;
   }
 
   return {
     ok: false,
     code: 'CLI_NOT_FOUND',
     cliPath: null,
-    error: '未找到已安装的 Antigravity CLI (agy)。请将 agy 加入 PATH，或通过 AG_CLI_PATH 指定可执行文件。'
+    ...getCliInstallHint(platform)
   };
 }
 
@@ -629,7 +889,14 @@ function resolveHelperExecutable(options = {}) {
  * 组装启动环境并调度启动 Antigravity CLI 会话
  */
 async function launchCliSession(options = {}, ownerHwnd = 0) {
-  const cliInfo = resolveCliExecutable(options.cliPath);
+  const baseEnv = options.env && typeof options.env === 'object' ? options.env : process.env;
+  const cliInfo = resolveCliExecutable(options.cliPath, {
+    env: baseEnv,
+    platform: options.platform,
+    homeDir: options.homeDir,
+    execPath: options.execPath,
+    skipRegistry: options.skipRegistry
+  });
   if (!cliInfo.ok) {
     return cliInfo;
   }
@@ -648,12 +915,19 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
     : [];
 
   const cliArgs = ['--model', model, ...extraArgs];
-  const env = buildCliProxyEnv(process.env);
+  const env = buildCliProxyEnv(baseEnv);
+  const winTools = process.platform === 'win32' ? resolveWindowsSystemTools(baseEnv) : null;
   // 恢复 Windows 交互式 CLI 子进程环境的原生彩虹渐变 Logo 与颜色能力（隔离宿主环境的 NO_COLOR/dumb）
   if (process.platform === 'win32') {
     delete env.NO_COLOR;
     env.TERM = 'xterm-256color';
     env.COLORTERM = 'truecolor';
+    ensureWindowsSpawnPath(env, [
+      path.dirname(cliInfo.exePath),
+      path.dirname(cliInfo.cliPath),
+      winTools.system32,
+      winTools.psDir
+    ]);
   }
 
   if (options.dryRun === true) {
@@ -667,19 +941,22 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       cwdSource: wsInfo.source,
       model,
       args: cliArgs,
+      cmdExe: winTools ? winTools.cmdExe : undefined,
+      powershellExe: winTools ? winTools.powershellExe : undefined,
       env: {
         NO_COLOR: env.NO_COLOR,
         TERM: env.TERM,
         COLORTERM: env.COLORTERM,
         HTTP_PROXY: env.HTTP_PROXY,
-        HTTPS_PROXY: env.HTTPS_PROXY
+        HTTPS_PROXY: env.HTTPS_PROXY,
+        PATH: env.PATH
       }
     };
   }
 
   try {
     if (process.platform === 'win32') {
-      const localBase = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+      const localBase = env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
       const stateDir = path.join(localBase, 'AntigravityContextMeter');
       fs.mkdirSync(stateDir, { recursive: true });
       const runnerBat = path.join(stateDir, 'launch-cli-runner.cmd');
@@ -687,12 +964,14 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       try { if (fs.existsSync(probeFile)) fs.unlinkSync(probeFile); } catch {}
 
       const extraArgsStr = extraArgs.map(a => `"${String(a).replace(/"/g, '')}"`).join(' ');
+      const isBatchTarget = /\.(cmd|bat)$/i.test(cliInfo.exePath);
+      const invokeLine = `${isBatchTarget ? 'call ' : ''}"${cliInfo.exePath}" --model "${model}" ${extraArgsStr}`;
       const batContent = [
         '@echo off',
         'if defined AG_CLI_PROBE_FILE (',
         '  > "%AG_CLI_PROBE_FILE%" echo %CD%',
         ')',
-        `"${cliInfo.exePath}" --model "${model}" ${extraArgsStr}`
+        invokeLine
       ].join('\r\n') + '\r\n';
       fs.writeFileSync(runnerBat, batContent, 'ascii');
 
@@ -830,7 +1109,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
         }
 
         // 终端未能通过 helper 创建成功，执行明确的降级并返回详细诊断
-        const fallbackChild = spawn('cmd.exe', ['/d', '/k', runnerBat], {
+        const fallbackChild = spawn(winTools.cmdExe, ['/d', '/k', runnerBat], {
           cwd,
           env,
           detached: true,
@@ -863,7 +1142,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       }
 
       // 未找到 helper 时的兜底降级方案：纯异步 spawn cmd.exe（绝不使用 spawnSync 阻塞主进程）
-      const child = spawn('cmd.exe', ['/d', '/k', runnerBat], {
+      const child = spawn(winTools.cmdExe, ['/d', '/k', runnerBat], {
         cwd,
         env,
         detached: true,
@@ -1013,6 +1292,11 @@ module.exports = {
   extractWorkspacePathFromUri,
   extractWorkspaceFromTrajectory,
   extractWorkspaceFromTranscriptFile,
+  resolveWindowsSystemTools,
+  expandWindowsEnvVars,
+  splitPathEntries,
+  ensureWindowsSpawnPath,
+  resolveBatchWrapperTarget,
   resolveCliExecutable,
   resolveCliWorkspace,
   resolveHelperExecutable,

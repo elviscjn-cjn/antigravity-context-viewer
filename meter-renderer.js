@@ -5812,7 +5812,7 @@ function closeAllDropdowns(exceptWrap = null) {
   let cliToastTimer = null;
   let lastCliLaunchResult = null;
 
-  function showCliToast(message, isError = false) {
+  function showCliToast(message, isError = false, durationMs = null) {
     const toast = el('cli-launch-toast');
     if (!toast) return;
     if (cliToastTimer) {
@@ -5822,10 +5822,11 @@ function closeAllDropdowns(exceptWrap = null) {
     toast.hidden = false;
     toast.setAttribute('data-tone', isError ? 'error' : 'info');
     toast.textContent = message;
+    const stayMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : (isError ? 5200 : 3200);
     cliToastTimer = setTimeout(() => {
       toast.hidden = true;
       cliToastTimer = null;
-    }, isError ? 5200 : 3200);
+    }, stayMs);
   }
 
   async function triggerLaunchCli(customOpts = {}) {
@@ -5880,8 +5881,9 @@ function closeAllDropdowns(exceptWrap = null) {
         showCliToast(`✔ 已启动 Antigravity CLI（目录：${res.cwd || '默认'}）`, false);
         return res;
       } else {
+        const isNotFound = res?.code === 'CLI_NOT_FOUND';
         const errMsg = res?.error || '未检测到可用的 Antigravity CLI (agy)，请检查安装路径';
-        showCliToast(`✖ 启动 CLI 失败：${errMsg}`, true);
+        showCliToast(`✖ 启动 CLI 失败：${errMsg}`, true, isNotFound ? 9500 : 5200);
         return res || { ok: false, error: errMsg };
       }
     } catch (err) {
