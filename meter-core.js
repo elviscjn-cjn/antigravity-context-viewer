@@ -10,15 +10,53 @@
     return Number.isFinite(num) && num >= 0 ? num : null;
   }
 
-  function getModelPoolKey(raw) {
-    if (!raw) return 'unknown';
-    const s = String(raw).toLowerCase();
-    if (s.includes('argon') || s.includes('gemini-4-argon')) return 'gemini-4-argon';
-    if (s.includes('flash') || s.includes('gemini-3.8-flash')) return 'gemini-3.8-flash';
-    if (s.includes('opus') || s.includes('claude-opus')) return 'claude-opus-5-5';
-    if (s.includes('sonnet') || s.includes('claude-sonnet')) return 'claude-sonnet-5-5';
-    if (s.includes('gpt-oss')) return 'gpt-oss-120b';
-    return s.replace(/[^a-z0-9_-]/g, '');
+  function stripModelVariantTags(raw) {
+    if (!raw) return '';
+    let s = String(raw).replace(/\s+/g, ' ').trim();
+    if (!s || /^model_(?:placeholder|unspecified)_?/i.test(s)) return '';
+    let prev;
+    do {
+      prev = s;
+      s = s.replace(/\s*\([^)]*\b(?:xhigh|high|medium|med|minimal|min|low|thinking|reasoning|extended|fast|turbo|standard|std|default|preview|experimental|exp|beta|alpha|recommended|new)\b[^)]*\)/gi, '').trim();
+    } while (s !== prev);
+    do {
+      prev = s;
+      s = s.replace(/[\s_-]+(?:xhigh|high|medium|med|minimal|min|low|thinking|reasoning|fast|preview)$/gi, '').trim();
+    } while (s !== prev);
+    return s;
+  }
+
+  function pickPreferredModelText(raw, labelFallback = '') {
+    const cleanLbl = stripModelVariantTags(labelFallback);
+    if (cleanLbl) return cleanLbl;
+    const cleanRaw = stripModelVariantTags(raw);
+    if (cleanRaw) return cleanRaw;
+    const l = String(labelFallback || '').trim();
+    const r = String(raw || '').trim();
+    if (l && !/^model_(?:placeholder|unspecified)_?/i.test(l)) return l;
+    return r || l;
+  }
+
+  function getModelPoolKey(raw, labelFallback = '') {
+    const preferred = pickPreferredModelText(raw, labelFallback);
+    if (!preferred) return 'unknown';
+    const base = stripModelVariantTags(preferred) || preferred;
+    const slug = base
+      .toLowerCase()
+      .replace(/(\d)-(\d)/g, '$1.$2')
+      .replace(/[^a-z0-9.]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return slug || base.toLowerCase().replace(/[^a-z0-9_.-]/g, '') || 'unknown';
+  }
+
+  function getPoolDisplayName(label, modelId, poolKey) {
+    const cleanLbl = stripModelVariantTags(label);
+    if (cleanLbl) return cleanLbl;
+    const cleanId = stripModelVariantTags(modelId);
+    if (cleanId) return cleanId;
+    const rawLbl = String(label || '').trim();
+    if (rawLbl && !/^model_(?:placeholder|unspecified)_?/i.test(rawLbl)) return rawLbl;
+    return poolKey && poolKey !== 'unknown' ? poolKey : '未知模型';
   }
 
   function formatResetTimeZh(isoStr) {
@@ -40,42 +78,53 @@
     if (!Array.isArray(cascadeModelConfigs) || !cascadeModelConfigs.length || !modelIdOrName) {
       return null;
     }
-    const poolKey = getModelPoolKey(modelIdOrName);
-    const targetStr = String(modelIdOrName).toLowerCase();
+    const targetPoolKey = getModelPoolKey(modelIdOrName);
+    const targetStr = String(modelIdOrName).toLowerCase().trim();
+    const readCfgId = c => String(c?.modelOrAlias?.model || c?.modelId || c?.model || '').trim();
 
     // 1. 优先精准匹配 modelId 或 label
     let matched = cascadeModelConfigs.find(c => {
-      const mId = String(c.modelId || '').toLowerCase();
-      const lbl = String(c.label || '').toLowerCase();
-      return mId === targetStr || lbl === targetStr;
+      const mId = readCfgId(c).toLowerCase();
+      const lbl = String(c?.label || c?.displayName || '').toLowerCase().trim();
+      return (mId && mId === targetStr) || (lbl && lbl === targetStr);
     });
 
-    // 2. 匹配同一配额池
-    if (!matched && poolKey !== 'unknown') {
+    // 2. 匹配同一规范化模型配额池（忽略 High / Low / XHigh / Thinking 及 placeholder ID 差异）
+    if (!matched && targetPoolKey !== 'unknown') {
       matched = cascadeModelConfigs.find(c => {
-        const cPool = getModelPoolKey(c.modelId || c.label);
-        return cPool === poolKey;
+        const cPool = getModelPoolKey(readCfgId(c), c?.label || c?.displayName);
+        return cPool === targetPoolKey;
+      });
+    }
+
+    // 3. 系列前缀回退（如简写 claude-opus 匹配 Claude Opus 4.6）
+    if (!matched && targetPoolKey !== 'unknown') {
+      matched = cascadeModelConfigs.find(c => {
+        const cPool = getModelPoolKey(readCfgId(c), c?.label || c?.displayName);
+        return cPool !== 'unknown' && (cPool.includes(targetPoolKey) || targetPoolKey.includes(cPool));
       });
     }
 
     if (!matched) return null;
 
-    const qi = matched.quotaInfo || {};
-    const poolNames = {
-      'gemini-4-argon': 'Gemini 4 Argon 配额池（周限额）',
-      'gemini-3.8-flash': 'Gemini 3.8 Flash 配额池',
-      'claude-opus-5-5': 'Claude Opus 5.5 配额池',
-      'claude-sonnet-5-5': 'Claude Sonnet 5.5 配额池',
-      'gpt-oss-120b': 'GPT-OSS 120B 配额池'
-    };
+    const matchedId = readCfgId(matched);
+    const matchedLabel = String(matched.label || matched.displayName || matchedId || modelIdOrName).trim();
+    const poolKey = getModelPoolKey(matchedId, matchedLabel);
+    const displayBase = getPoolDisplayName(matchedLabel, matchedId, poolKey);
+    const qi = matched.quotaInfo || matched.quota_info || {};
+    const rawFrac = qi.remainingFraction ?? qi.remaining_fraction;
+    const remainingFraction = (typeof rawFrac === 'number' && Number.isFinite(rawFrac))
+      ? Math.max(0, Math.min(1, rawFrac))
+      : ((rawFrac != null && rawFrac !== '' && Number.isFinite(Number(rawFrac))) ? Math.max(0, Math.min(1, Number(rawFrac))) : null);
 
     return {
-      modelId: matched.modelId || '',
-      label: matched.label || modelIdOrName,
+      modelId: matchedId,
+      label: matchedLabel,
+      baseName: displayBase,
       poolKey,
-      poolName: poolNames[poolKey] || (matched.label ? `${matched.label} 配额池` : '专属模型配额池'),
-      remainingFraction: typeof qi.remainingFraction === 'number' ? qi.remainingFraction : null,
-      resetTime: qi.resetTime || null
+      poolName: displayBase,
+      remainingFraction,
+      resetTime: qi.resetTime || qi.reset_time || null
     };
   }
 
@@ -752,6 +801,10 @@
     const planInfo = planStatus.planInfo || {};
     const email = us.email || null;
     const rawTierName = String(userTier.name || planInfo.planName || '').trim();
+    const cascadeModelConfigs = Array.isArray(us?.cascadeModelConfigData?.clientModelConfigs)
+      ? us.cascadeModelConfigData.clientModelConfigs
+      : (Array.isArray(raw?.cascadeModelConfigs) ? raw.cascadeModelConfigs : []);
+    const quotaSummary = us.quotaSummary || raw.quotaSummary || raw.userQuotaSummary || (Array.isArray(us.groups || raw.groups) ? { groups: us.groups || raw.groups } : null);
 
     // 只有具备明确权益证据时才识别套餐，避免空对象或缺省状态被当成 Free
     const hasTierEvidence = Boolean(
@@ -778,6 +831,8 @@
         isPriceEstimated: true,
         promptCredits: null,
         flowCredits: null,
+        cascadeModelConfigs,
+        quotaSummary,
         pricingTableVerifiedDate: '2026-11-08',
         updatedAt: null
       };
@@ -844,6 +899,8 @@
         available: planStatus.availableFlowCredits ?? null,
         monthly: planInfo.monthlyFlowCredits ?? null
       },
+      cascadeModelConfigs,
+      quotaSummary,
       pricingTableVerifiedDate: '2026-11-08',
       updatedAt: new Date().toISOString()
     };
@@ -1647,6 +1704,7 @@
       costEstimate: payload.costEstimate || null,
       costEstimateCurrentMonth: payload.costEstimateCurrentMonth || null,
       costEstimateBySource: payload.costEstimateBySource || null,
+      recentModelUsage: Array.isArray(payload.recentModelUsage) ? payload.recentModelUsage : [],
       referenceCost,
       summary,
       dailyMap: normalizedMap,
@@ -1879,11 +1937,628 @@
     }
   }
 
+  /**
+   * 将重置时间戳格式化为可读倒计时（如「2小时15分后」）
+   */
+  function formatResetCountdownZh(isoStr, nowMs = Date.now()) {
+    if (!isoStr) return null;
+    try {
+      const target = new Date(isoStr).getTime();
+      if (!Number.isFinite(target)) return null;
+      const diffMs = target - Number(nowMs);
+      if (diffMs <= 0) return '即将刷新';
+      const totalMin = Math.ceil(diffMs / 60000);
+      const days = Math.floor(totalMin / 1440);
+      const hours = Math.floor((totalMin % 1440) / 60);
+      const mins = totalMin % 60;
+      if (days > 0) return `${days}天${hours > 0 ? `${hours}小时` : ''}后`;
+      if (hours > 0) return `${hours}小时${mins > 0 ? `${mins}分` : ''}后`;
+      return `${Math.max(1, mins)}分钟后`;
+    } catch {
+      return null;
+    }
+  }
+
+  function formatApproxTokensZh(value) {
+    if (value == null || !Number.isFinite(Number(value)) || Number(value) < 0) return null;
+    const n = Math.round(Number(value));
+    if (n === 0) return '0';
+    if (n >= 1e9) return `${parseFloat((n / 1e9).toFixed(2))}B`;
+    if (n >= 1e6) return `${parseFloat((n / 1e6).toFixed(n >= 10e6 ? 1 : 2))}M`;
+    if (n >= 1000) return `${n >= 100000 ? Math.round(n / 1000) : parseFloat((n / 1000).toFixed(1))}K`;
+    return String(n);
+  }
+
+  function inferQuotaCycleStartMs(resetTimeIso, nowMs = Date.now(), windowType = null) {
+    if (!resetTimeIso) return null;
+    const resetMs = new Date(resetTimeIso).getTime();
+    if (!Number.isFinite(resetMs) || resetMs <= nowMs) return null;
+    if (windowType === 'weekly') return resetMs - 7 * 86400000;
+    if (windowType === '5h') return resetMs - 5 * 3600000;
+    if (windowType === '24h') return resetMs - 24 * 3600000;
+    const remMs = resetMs - nowMs;
+    if (remMs <= 6 * 3600000) return resetMs - 5 * 3600000;
+    if (remMs <= 26 * 3600000) return resetMs - 24 * 3600000;
+    return resetMs - 7 * 86400000;
+  }
+
+  function readQuotaFraction(qi) {
+    if (!qi || typeof qi !== 'object') return null;
+    const rawFrac = qi.remainingFraction ?? qi.remaining_fraction ?? qi.fraction;
+    if (typeof rawFrac === 'number' && Number.isFinite(rawFrac)) {
+      return Math.max(0, Math.min(1, rawFrac));
+    }
+    if (rawFrac != null && rawFrac !== '' && Number.isFinite(Number(rawFrac))) {
+      return Math.max(0, Math.min(1, Number(rawFrac)));
+    }
+    const rawPct = qi.remainingPct ?? qi.remainingPercent ?? qi.remaining_percent;
+    if (rawPct != null && rawPct !== '' && Number.isFinite(Number(rawPct))) {
+      return Math.max(0, Math.min(1, Number(rawPct) / 100));
+    }
+    if (qi.disabled === true) return null;
+    const resetTime = qi.resetTime || qi.reset_time || null;
+    const remAmount = qi.remainingAmount ?? qi.remaining_amount;
+    if (resetTime || (remAmount != null && Number(remAmount) === 0)) {
+      return 0;
+    }
+    return null;
+  }
+
+  function classifyQuotaWindow(source, resetTimeIso, nowMs = Date.now()) {
+    const text = [
+      source?.window,
+      source?.windowType,
+      source?.window_type,
+      source?.cadence,
+      source?.duration,
+      source?.quotaWindow,
+      source?.bucketId,
+      source?.bucket_id,
+      source?.id,
+      source?.displayName,
+      source?.display_name,
+      source?.label
+    ]
+      .filter(Boolean)
+      .map(s => String(s).replace(/([a-z0-9])([A-Z])/g, '$1 $2'))
+      .join(' ')
+      .toLowerCase();
+    if (/(?:^|[^a-z0-9])(weekly|week|1w|7d|7\s*days?|seven[_\s-]?days?|one[_\s-]?week|10080m)(?:$|[^a-z0-9])/.test(text) || /周/.test(text)) {
+      return 'weekly';
+    }
+    if (/(?:^|[^a-z0-9])(5h|5\s*hours?|five[_\s-]?hours?|300m)(?:$|[^a-z0-9])/.test(text) || /5\s*小时/.test(text)) {
+      return '5h';
+    }
+    if (/(?:^|[^a-z0-9])(24h|daily|1d|1440m)(?:$|[^a-z0-9])/.test(text)) {
+      return '24h';
+    }
+    if (resetTimeIso) {
+      const resetMs = new Date(resetTimeIso).getTime();
+      if (Number.isFinite(resetMs) && resetMs - nowMs > 26 * 3600000) {
+        return 'weekly';
+      }
+    }
+    return '5h';
+  }
+
+  function classifyQuotaGroupKey(groupId = '', displayName = '', modelIds = []) {
+    const combined = [
+      groupId,
+      displayName,
+      ...(Array.isArray(modelIds) ? modelIds : [])
+    ].filter(Boolean).join(' ').toLowerCase();
+    if (combined.includes('argon')) return 'gemini-argon';
+    if (combined.includes('gemini')) return 'gemini';
+    if (/(3p|third[-_ ]?party|claude|gpt|opus|sonnet|haiku|openai|anthropic|oss)/.test(combined)) {
+      return 'third-party';
+    }
+    const slug = String(groupId || displayName || 'other')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return slug || 'other';
+  }
+
+  function getQuotaGroupDisplayName(groupKey, rawDisplayName = '') {
+    if (groupKey === 'gemini') return 'Gemini 模型';
+    if (groupKey === 'gemini-argon') return 'Gemini Argon';
+    if (groupKey === 'third-party') return 'Claude & GPT 模型';
+    return String(rawDisplayName || groupKey || '其他模型').trim();
+  }
+
+  function doesModelPoolBelongToGroup(poolKey = '', modelName = '', group = null) {
+    const pk = String(poolKey || '').toLowerCase();
+    const mn = String(modelName || '').toLowerCase();
+    const groupKey = typeof group === 'string' ? group : (group?.groupKey || '');
+    const modelIds = Array.isArray(group?.modelIds) ? group.modelIds : [];
+    if (modelIds.length && mn) {
+      for (const id of modelIds) {
+        const lowId = String(id || '').toLowerCase();
+        if (lowId && (lowId === mn || mn.includes(lowId) || lowId.includes(mn))) return true;
+      }
+    }
+    if (groupKey === 'gemini-argon') {
+      return pk.includes('argon') || mn.includes('argon');
+    }
+    if (groupKey === 'gemini') {
+      if (pk.includes('argon') || mn.includes('argon')) return false;
+      return pk.startsWith('gemini') || mn.includes('gemini');
+    }
+    if (groupKey === 'third-party') {
+      return pk.startsWith('claude') || pk.startsWith('gpt') ||
+        /(claude|opus|sonnet|haiku|gpt|openai|anthropic)/.test(`${pk} ${mn}`);
+    }
+    return Boolean(groupKey && (pk === groupKey || pk.includes(groupKey) || mn.includes(groupKey)));
+  }
+
+  function extractQuotaSummaryGroups(rawSummary) {
+    if (!rawSummary || typeof rawSummary !== 'object') return [];
+    if (Array.isArray(rawSummary)) return rawSummary;
+    const candidates = [
+      rawSummary.groups,
+      rawSummary.modelGroups,
+      rawSummary.model_groups,
+      rawSummary.response?.groups,
+      rawSummary.response?.modelGroups,
+      rawSummary.response?.quotaSummary?.groups,
+      rawSummary.quotaSummary?.groups,
+      rawSummary.quotaSummary?.response?.groups,
+      rawSummary.userQuotaSummary?.groups,
+      rawSummary.userQuotaSummary?.response?.groups,
+      rawSummary.userStatus?.quotaSummary?.groups,
+      rawSummary.summary?.groups,
+      rawSummary.data?.groups
+    ];
+    for (const arr of candidates) {
+      if (Array.isArray(arr)) return arr;
+    }
+    return [];
+  }
+
+  function computePoolTokenEstimate(pool, options = {}) {
+    const nowMs = Number(options.nowMs) || Date.now();
+    const events = Array.isArray(options.usageEvents) ? options.usageEvents : [];
+    const prev = options.calibrationEntry && typeof options.calibrationEntry === 'object' ? { ...options.calibrationEntry } : null;
+    const frac = pool?.remainingFraction;
+    const matchPoolKey = typeof options.matchPoolKey === 'function'
+      ? options.matchPoolKey
+      : (evPoolKey => evPoolKey === pool.poolKey);
+
+    let calibratedTotal = (prev && Number.isFinite(Number(prev.calibratedTotalTokens)) && Number(prev.calibratedTotalTokens) > 0)
+      ? Number(prev.calibratedTotalTokens)
+      : null;
+    let sampleCount = Number(prev?.sampleCount) || 0;
+    let calSource = prev?.source || null;
+    let resetObservedAt = Number(prev?.lastResetObservedAt) || 0;
+
+    const resetMs = pool?.resetTime ? new Date(pool.resetTime).getTime() : NaN;
+    const prevResetMs = prev?.lastResetTime ? new Date(prev.lastResetTime).getTime() : NaN;
+    const resetShiftedForward = Number.isFinite(resetMs) && Number.isFinite(prevResetMs) && (resetMs - prevResetMs) > 600000;
+    const jumpedUp = prev && typeof prev.lastFraction === 'number' && frac != null && (frac - prev.lastFraction) >= 0.05;
+    if (jumpedUp || resetShiftedForward) {
+      resetObservedAt = nowMs;
+    }
+
+    const cycleStartMs = inferQuotaCycleStartMs(pool?.resetTime, nowMs, pool?.windowType || null);
+    const defaultWindowMs = pool?.windowType === 'weekly' ? 7 * 86400000 : (pool?.windowType === '24h' ? 24 * 3600000 : 5 * 3600000);
+    const effectiveStartMs = cycleStartMs != null
+      ? Math.max(cycleStartMs, resetObservedAt ? resetObservedAt - 60000 : 0)
+      : (resetObservedAt ? resetObservedAt - 60000 : (nowMs - defaultWindowMs));
+
+    let cycleTokensUsed = 0;
+    for (const ev of events) {
+      if (!ev || !matchPoolKey(ev.poolKey)) continue;
+      const ts = Number(ev.ts ?? ev.timestamp);
+      const tok = Number(ev.tok ?? ev.totalTokens ?? 0);
+      if (!Number.isFinite(ts) || !Number.isFinite(tok) || tok <= 0) continue;
+      if (ts >= effectiveStartMs && ts <= nowMs + 60000) {
+        cycleTokensUsed += tok;
+      }
+    }
+
+    if (frac == null) {
+      return {
+        estRemainingTokens: null,
+        estRemainingZh: null,
+        estTotalTokens: calibratedTotal ? Math.round(calibratedTotal) : null,
+        estSource: calibratedTotal ? 'cached' : 'unknown',
+        cycleTokensUsed: Math.round(cycleTokensUsed),
+        nextCalibrationEntry: prev
+      };
+    }
+
+    let anchorFraction = (prev && typeof prev.anchorFraction === 'number' && !jumpedUp && !resetShiftedForward)
+      ? prev.anchorFraction
+      : frac;
+    let anchorCycleTokens = (prev && typeof prev.anchorCycleTokens === 'number' && !jumpedUp && !resetShiftedForward)
+      ? prev.anchorCycleTokens
+      : cycleTokensUsed;
+
+    if (frac > anchorFraction && (frac - anchorFraction) < 0.05 && !resetShiftedForward) {
+      anchorFraction = frac;
+      anchorCycleTokens = cycleTokensUsed;
+    }
+
+    const deltaF = anchorFraction - frac;
+    const deltaTok = cycleTokensUsed - anchorCycleTokens;
+    if (deltaF >= 0.02 && deltaTok >= 1000) {
+      const sampleTotal = deltaTok / deltaF;
+      if (calibratedTotal && sampleCount >= 1) {
+        const clamped = Math.max(calibratedTotal * 0.25, Math.min(calibratedTotal * 4, sampleTotal));
+        calibratedTotal = sampleCount >= 2 ? (calibratedTotal * 0.6 + clamped * 0.4) : (calibratedTotal * 0.4 + clamped * 0.6);
+      } else {
+        calibratedTotal = sampleTotal;
+      }
+      sampleCount += 1;
+      calSource = 'delta';
+      anchorFraction = frac;
+      anchorCycleTokens = cycleTokensUsed;
+    }
+
+    const usedFrac = 1 - frac;
+    if (usedFrac >= 0.02 && cycleTokensUsed >= 1000) {
+      const cycleTotal = cycleTokensUsed / usedFrac;
+      if (!calibratedTotal || calSource !== 'delta') {
+        calibratedTotal = calibratedTotal && calSource === 'cycle'
+          ? (calibratedTotal * 0.35 + cycleTotal * 0.65)
+          : cycleTotal;
+        calSource = 'cycle';
+      }
+    }
+
+    const estRemainingTokens = frac <= 0
+      ? 0
+      : (calibratedTotal && calibratedTotal > 0 ? Math.max(0, Math.round(calibratedTotal * frac)) : null);
+
+    const nextCalibrationEntry = {
+      calibratedTotalTokens: calibratedTotal ? Math.round(calibratedTotal) : null,
+      sampleCount,
+      source: calSource,
+      lastFraction: frac,
+      lastResetTime: pool.resetTime || null,
+      lastResetObservedAt: resetObservedAt || null,
+      anchorFraction,
+      anchorCycleTokens: Math.round(anchorCycleTokens),
+      updatedAt: nowMs
+    };
+
+    return {
+      estRemainingTokens,
+      estRemainingZh: estRemainingTokens != null ? formatApproxTokensZh(estRemainingTokens) : null,
+      estTotalTokens: calibratedTotal ? Math.round(calibratedTotal) : null,
+      estSource: frac <= 0 ? 'exhausted' : (estRemainingTokens != null ? (calSource || 'cached') : 'uncalibrated'),
+      cycleTokensUsed: Math.round(cycleTokensUsed),
+      nextCalibrationEntry
+    };
+  }
+
+  /**
+   * 汇总所有模型配额（同模型不同档位/分支合并，支持 5 小时 + 每周双周期），并结合近期消耗推算约剩 token
+   */
+  function summarizeModelQuotaPools(cascadeModelConfigs, currentModel = '', nowMs = Date.now(), options = {}) {
+    const list = Array.isArray(cascadeModelConfigs) ? cascadeModelConfigs : [];
+    const poolMap = new Map();
+    const pools = [];
+    const readCfgId = item => String(item?.modelOrAlias?.model || item?.modelId || item?.model || '').trim();
+
+    function upsertMergedPool(map, targetArr, entryInput) {
+      const {
+        poolKey,
+        groupKey,
+        windowType,
+        poolName,
+        modelId,
+        remainingFraction,
+        resetTime,
+        models,
+        modelIds
+      } = entryInput;
+      const remainingPct = remainingFraction != null ? Math.round(remainingFraction * 100) : null;
+
+      if (!map.has(poolKey)) {
+        const entry = {
+          poolKey,
+          ...(groupKey ? { groupKey } : {}),
+          windowType: windowType || '5h',
+          poolName,
+          modelId: modelId || null,
+          label: poolName,
+          remainingFraction,
+          remainingPct,
+          resetTime,
+          resetTimeZh: resetTime ? formatResetTimeZh(resetTime) : null,
+          resetInZh: resetTime ? formatResetCountdownZh(resetTime, nowMs) : null,
+          models: Array.isArray(models) ? [...models] : [],
+          ...(Array.isArray(modelIds) ? { modelIds: [...modelIds] } : {})
+        };
+        map.set(poolKey, entry);
+        targetArr.push(entry);
+        return entry;
+      }
+
+      const existing = map.get(poolKey);
+      if (Array.isArray(models)) {
+        for (const m of models) {
+          if (m && !existing.models.includes(m)) existing.models.push(m);
+        }
+      }
+      if (Array.isArray(modelIds)) {
+        if (!Array.isArray(existing.modelIds)) existing.modelIds = [];
+        for (const id of modelIds) {
+          if (id && !existing.modelIds.includes(id)) existing.modelIds.push(id);
+        }
+      }
+      if (existing.remainingFraction == null && remainingFraction != null) {
+        existing.remainingFraction = remainingFraction;
+        existing.remainingPct = remainingPct;
+        if (resetTime) {
+          existing.resetTime = resetTime;
+          existing.resetTimeZh = formatResetTimeZh(resetTime);
+          existing.resetInZh = formatResetCountdownZh(resetTime, nowMs);
+        }
+      } else if (existing.remainingFraction != null && remainingFraction != null && remainingFraction < existing.remainingFraction) {
+        // 同模型/同配额组存在多个额度档位时合并为同一条，取更紧余量避免高估
+        existing.remainingFraction = remainingFraction;
+        existing.remainingPct = remainingPct;
+        if (resetTime) {
+          existing.resetTime = resetTime;
+          existing.resetTimeZh = formatResetTimeZh(resetTime);
+          existing.resetInZh = formatResetCountdownZh(resetTime, nowMs);
+        }
+      }
+      if (!existing.resetTime && resetTime) {
+        existing.resetTime = resetTime;
+        existing.resetTimeZh = formatResetTimeZh(resetTime);
+        existing.resetInZh = formatResetCountdownZh(resetTime, nowMs);
+      }
+      return existing;
+    }
+
+    for (const item of list) {
+      if (!item || typeof item !== 'object') continue;
+      const modelId = readCfgId(item);
+      const rawLabel = String(item.label || item.displayName || modelId || '').trim();
+      const qi = item.quotaInfo || item.quota_info || null;
+      const resetTime = qi?.resetTime || qi?.reset_time || null;
+      const remainingFraction = readQuotaFraction(qi);
+      const rawCfgModelId = String(item.modelId || '').trim();
+      if ((/disabled$/i.test(rawCfgModelId) || /disabled$/i.test(modelId) || qi?.disabled === true) && remainingFraction == null && !resetTime) continue;
+
+      const poolKey = getModelPoolKey(modelId, rawLabel);
+      const displayName = getPoolDisplayName(rawLabel, modelId, poolKey);
+      const windowType = classifyQuotaWindow({ ...item, ...(qi || {}) }, resetTime, nowMs);
+
+      upsertMergedPool(poolMap, pools, {
+        poolKey,
+        windowType,
+        poolName: displayName,
+        modelId,
+        remainingFraction,
+        resetTime,
+        models: rawLabel ? [rawLabel] : []
+      });
+    }
+
+    const rawQuotaSummary = options.quotaSummary || options.userStatus?.quotaSummary || options.userStatus?.userStatus?.quotaSummary || null;
+    const summaryGroups = extractQuotaSummaryGroups(rawQuotaSummary);
+    const weeklyPoolMap = new Map();
+    const weeklyPools = [];
+    const summaryShortMap = new Map();
+    const summaryShortPools = [];
+
+    for (const group of summaryGroups) {
+      if (!group || typeof group !== 'object') continue;
+      const groupId = String(group.id || group.groupId || group.group_id || group.groupKey || group.name || '').trim();
+      const rawGroupName = String(group.displayName || group.display_name || group.label || group.title || group.name || groupId || '').trim();
+      const rawModels = Array.isArray(group.modelIds)
+        ? group.modelIds
+        : (Array.isArray(group.model_ids) ? group.model_ids : (Array.isArray(group.models) ? group.models : []));
+      const modelIds = [];
+      const modelLabels = [];
+      for (const m of rawModels) {
+        if (typeof m === 'string') {
+          const clean = m.trim();
+          if (clean) {
+            modelIds.push(clean);
+            modelLabels.push(clean);
+          }
+        } else if (m && typeof m === 'object') {
+          const id = readCfgId(m) || String(m.id || '').trim();
+          const lbl = String(m.label || m.displayName || id || '').trim();
+          if (id) modelIds.push(id);
+          if (lbl) modelLabels.push(lbl);
+        }
+      }
+
+      const groupKey = classifyQuotaGroupKey(groupId, rawGroupName, modelIds);
+      const groupDisplayName = getQuotaGroupDisplayName(groupKey, rawGroupName);
+      const rawBuckets = Array.isArray(group.buckets)
+        ? group.buckets
+        : (Array.isArray(group.quotaBuckets)
+          ? group.quotaBuckets
+          : (Array.isArray(group.quota_buckets)
+            ? group.quota_buckets
+            : (Array.isArray(group.windows)
+              ? group.windows
+              : (Array.isArray(group.quotas) ? group.quotas : [group]))));
+
+      for (const bucket of rawBuckets) {
+        if (!bucket || typeof bucket !== 'object') continue;
+        const qi = bucket.quotaInfo || bucket.quota_info || null;
+        const bq = qi && typeof qi === 'object' ? { ...bucket, ...qi } : bucket;
+        const remainingFraction = readQuotaFraction(bq);
+        const resetTime = bq.resetTime || bq.reset_time || null;
+        if (remainingFraction == null && !resetTime) continue;
+
+        const win = classifyQuotaWindow({ ...group, ...bq }, resetTime, nowMs);
+        if (win === 'weekly') {
+          upsertMergedPool(weeklyPoolMap, weeklyPools, {
+            poolKey: `weekly:${groupKey}`,
+            groupKey,
+            windowType: 'weekly',
+            poolName: groupDisplayName,
+            modelId: modelIds[0] || groupId || null,
+            remainingFraction,
+            resetTime,
+            models: modelLabels,
+            modelIds
+          });
+        } else {
+          upsertMergedPool(summaryShortMap, summaryShortPools, {
+            poolKey: groupKey,
+            groupKey,
+            windowType: win,
+            poolName: groupDisplayName,
+            modelId: modelIds[0] || groupId || null,
+            remainingFraction,
+            resetTime,
+            models: modelLabels,
+            modelIds
+          });
+        }
+      }
+    }
+
+    if (!pools.some(p => p.remainingFraction != null || p.resetTime != null) && summaryShortPools.length > 0) {
+      for (const sp of summaryShortPools) {
+        upsertMergedPool(poolMap, pools, sp);
+      }
+    }
+
+    if (weeklyPools.length === 0) {
+      for (const p of pools) {
+        if (p.windowType !== 'weekly') continue;
+        const gk = classifyQuotaGroupKey(p.poolKey, p.poolName, [p.modelId, ...(p.models || [])]);
+        upsertMergedPool(weeklyPoolMap, weeklyPools, {
+          poolKey: `weekly:${gk}`,
+          groupKey: gk,
+          windowType: 'weekly',
+          poolName: getQuotaGroupDisplayName(gk, p.poolName),
+          modelId: p.modelId,
+          remainingFraction: p.remainingFraction,
+          resetTime: p.resetTime,
+          models: p.models,
+          modelIds: p.modelId ? [p.modelId] : []
+        });
+      }
+    }
+
+    const groupPriority = { gemini: 0, 'gemini-argon': 1, 'third-party': 2 };
+    weeklyPools.sort((a, b) => {
+      const pa = Object.prototype.hasOwnProperty.call(groupPriority, a.groupKey) ? groupPriority[a.groupKey] : 99;
+      const pb = Object.prototype.hasOwnProperty.call(groupPriority, b.groupKey) ? groupPriority[b.groupKey] : 99;
+      return pa - pb;
+    });
+
+    const usageEvents = Array.isArray(options.usageEvents) ? options.usageEvents : [];
+    const prevCalibration = options.calibrationMap && typeof options.calibrationMap === 'object' ? options.calibrationMap : {};
+    const nextCalibration = { ...prevCalibration };
+
+    for (const pool of pools) {
+      const est = computePoolTokenEstimate(pool, {
+        nowMs,
+        usageEvents,
+        calibrationEntry: prevCalibration[pool.poolKey] || null
+      });
+      pool.estRemainingTokens = est.estRemainingTokens;
+      pool.estRemainingZh = est.estRemainingZh;
+      pool.estTotalTokens = est.estTotalTokens;
+      pool.estSource = est.estSource;
+      pool.cycleTokensUsed = est.cycleTokensUsed;
+      if (est.nextCalibrationEntry) {
+        nextCalibration[pool.poolKey] = est.nextCalibrationEntry;
+      }
+    }
+
+    for (const wPool of weeklyPools) {
+      const est = computePoolTokenEstimate(wPool, {
+        nowMs,
+        usageEvents,
+        calibrationEntry: prevCalibration[wPool.poolKey] || null,
+        matchPoolKey: evPoolKey => doesModelPoolBelongToGroup(evPoolKey, '', wPool)
+      });
+      wPool.estRemainingTokens = est.estRemainingTokens;
+      wPool.estRemainingZh = est.estRemainingZh;
+      wPool.estTotalTokens = est.estTotalTokens;
+      wPool.estSource = est.estSource;
+      wPool.cycleTokensUsed = est.cycleTokensUsed;
+      if (est.nextCalibrationEntry) {
+        nextCalibration[wPool.poolKey] = est.nextCalibrationEntry;
+      }
+    }
+
+    const cleanModel = String(currentModel || '').trim();
+    let matchedPool = null;
+    let activeLabel = '';
+    if (cleanModel) {
+      const targetPoolKey = getModelPoolKey(cleanModel);
+      if (targetPoolKey !== 'unknown' && poolMap.has(targetPoolKey)) {
+        matchedPool = poolMap.get(targetPoolKey);
+      }
+      if (!matchedPool) {
+        const directMatch = resolveModelQuota(cleanModel, list);
+        if (directMatch) {
+          matchedPool = poolMap.get(directMatch.poolKey) || null;
+          activeLabel = directMatch.baseName || directMatch.label || '';
+        }
+      }
+      if (!matchedPool) {
+        const lowQuery = cleanModel.toLowerCase();
+        matchedPool = pools.find(p =>
+          (p.modelId && p.modelId.toLowerCase() === lowQuery) ||
+          (p.poolName && (p.poolName.toLowerCase().includes(lowQuery) || lowQuery.includes(p.poolName.toLowerCase()))) ||
+          p.models.some(m => m.toLowerCase().includes(lowQuery) || lowQuery.includes(m.toLowerCase()))
+        ) || null;
+      }
+      if (matchedPool && !activeLabel) {
+        activeLabel = matchedPool.poolName;
+      }
+    }
+
+    const matchedByModel = Boolean(matchedPool);
+    const active = matchedPool || pools.find(p => p.remainingFraction != null) || pools[0] || null;
+    const hasShortData = pools.some(p => p.remainingFraction != null || p.resetTime != null);
+
+    let matchedWeekly = null;
+    if (weeklyPools.length > 0 && cleanModel) {
+      const targetPoolKey = matchedPool?.poolKey || getModelPoolKey(cleanModel);
+      const effectivePoolKey = targetPoolKey === 'unknown' ? '' : targetPoolKey;
+      matchedWeekly = weeklyPools.find(wp =>
+        doesModelPoolBelongToGroup(effectivePoolKey, cleanModel || matchedPool?.modelId || '', wp)
+      ) || null;
+    }
+    const weeklyMatchedByModel = Boolean(matchedWeekly);
+    const activeWeekly = matchedWeekly || weeklyPools.find(w => w.remainingFraction != null) || weeklyPools[0] || null;
+    const hasWeeklyData = weeklyPools.some(w => w.remainingFraction != null || w.resetTime != null);
+    const hasData = hasShortData || hasWeeklyData;
+
+    return {
+      hasData,
+      hasShortData,
+      hasWeeklyData,
+      matchedByModel,
+      weeklyMatchedByModel,
+      currentModel: cleanModel || null,
+      active: active ? { ...active, activeLabel: activeLabel || active.poolName } : null,
+      activeWeekly: activeWeekly ? { ...activeWeekly } : null,
+      pools,
+      weeklyPools,
+      nextCalibration
+    };
+  }
+
   const api = {
     summarize,
     classifyRequestError,
     resolveModelQuota,
+    getModelPoolKey,
     formatResetTimeZh,
+    formatResetCountdownZh,
+    formatApproxTokensZh,
+    inferQuotaCycleStartMs,
+    classifyQuotaWindow,
+    extractQuotaSummaryGroups,
+    summarizeModelQuotaPools,
     measure,
     add,
     empty,

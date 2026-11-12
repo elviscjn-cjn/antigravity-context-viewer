@@ -39,6 +39,7 @@ const {
   parseGeneratorCall,
   extractModelString,
   normalizeModelId,
+  getModelPoolKey,
   calculateRequestApiCost,
   filterReleases,
   findReleaseAsset,
@@ -945,11 +946,20 @@ let cachedHostUserStatus = null;
 let cachedHostUserStatusAt = 0;
 
 async function fetchUserStatusFromHost(options = {}) {
-  if (options && options.userStatus !== undefined) {
-    if (!options.userStatus) return null;
-    const parsed = parseUserPlanStatus(options.userStatus);
-    const configs = options.userStatus?.userStatus?.cascadeModelConfigData?.clientModelConfigs || options.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
+  if (options && (options.userStatus !== undefined || options.quotaSummary !== undefined)) {
+    if (!options.userStatus && !options.quotaSummary) return null;
+    const baseInput = options.userStatus && typeof options.userStatus === 'object' ? options.userStatus : {};
+    const mergedInput = options.quotaSummary !== undefined
+      ? { ...baseInput, quotaSummary: options.quotaSummary }
+      : options.userStatus;
+    let parsed = parseUserPlanStatus(mergedInput);
+    const quotaSummary = options.quotaSummary !== undefined
+      ? options.quotaSummary
+      : (baseInput.quotaSummary || baseInput.userStatus?.quotaSummary || null);
+    if (!parsed && quotaSummary) parsed = { quotaSummary };
+    const configs = baseInput.userStatus?.cascadeModelConfigData?.clientModelConfigs || baseInput.cascadeModelConfigData?.clientModelConfigs || [];
     if (parsed && configs.length) parsed.cascadeModelConfigs = configs;
+    if (parsed && quotaSummary && !parsed.quotaSummary) parsed.quotaSummary = quotaSummary;
     return parsed;
   }
   if (!options.agDir && cachedHostUserStatus && Date.now() - cachedHostUserStatusAt < 60000) {
@@ -958,10 +968,19 @@ async function fetchUserStatusFromHost(options = {}) {
   try {
     const { connect } = require('./local-api');
     const api = await connect();
-    const res = await api.call('GetUserStatus', {});
-    const parsed = parseUserPlanStatus(res);
+    const [statusSettled, summarySettled] = await Promise.allSettled([
+      api.call('GetUserStatus', {}),
+      api.call('RetrieveUserQuotaSummary', {})
+    ]);
+    const res = statusSettled.status === 'fulfilled' ? statusSettled.value : null;
+    const summaryRes = summarySettled.status === 'fulfilled' ? summarySettled.value : null;
+    let parsed = res ? parseUserPlanStatus(res) : null;
+    if (!parsed && summaryRes) {
+      parsed = parseUserPlanStatus({ quotaSummary: summaryRes }) || { quotaSummary: summaryRes };
+    }
     const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
     if (parsed && configs.length) parsed.cascadeModelConfigs = configs;
+    if (parsed && summaryRes && !parsed.quotaSummary) parsed.quotaSummary = summaryRes;
     if (parsed && !options.agDir) {
       cachedHostUserStatus = parsed;
       cachedHostUserStatusAt = Date.now();
@@ -1168,7 +1187,7 @@ async function collectTokenHistoryAsync(options = {}) {
           }
 
           let inp = 0, outp = 0, cap = 0, thinking = 0;
-          let model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
+          let model = event.chatModel?.modelDisplayName || event.chatModel?.model || event.chatModel?.responseModel || event.modelDisplayName || event.model || event.modelId || '';
 
           if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
             inp = Number(event.input_tokens || 0);
@@ -1456,11 +1475,45 @@ async function collectTokenHistoryAsync(options = {}) {
 
   const costEstimate = costEstimateAll;
 
+  // 汇总最近 8 天各规范化模型配额池的真实 Token 消耗事件（供配额余量约数校准使用）
+  const quotaNowMs = Date.now();
+  const quotaCutoffMs = quotaNowMs - 8 * 86400000;
+  const quotaRecentCutoffMs = quotaNowMs - 86400000;
+  const seenQuotaCallIds = new Set();
+  const recentModelUsage = [];
+  const olderBuckets = new Map();
+  const pushQuotaUsageCall = (call) => {
+    if (!call || typeof call !== 'object') return;
+    if (call.callId && seenQuotaCallIds.has(call.callId)) return;
+    const rawTs = call.timestamp ?? (call.created_at ? new Date(call.created_at).getTime() : NaN);
+    const ts = Number(rawTs);
+    if (!Number.isFinite(ts) || ts < quotaCutoffMs || ts > quotaNowMs + 60000) return;
+    const rawModel = extractModelString(call);
+    const poolKey = getModelPoolKey ? getModelPoolKey(rawModel) : 'unknown';
+    if (!poolKey || poolKey === 'unknown') return;
+    const tok = Number(call.totalTokens ?? ((Number(call.inputTokens || 0)) + (Number(call.cacheTokens ?? call.cacheReadTokens ?? 0)) + (Number(call.outputTokens || 0))));
+    if (!Number.isFinite(tok) || tok <= 0) return;
+    if (call.callId) seenQuotaCallIds.add(call.callId);
+    if (ts >= quotaRecentCutoffMs) {
+      recentModelUsage.push({ id: call.callId || null, poolKey, ts, tok });
+    } else {
+      const bTs = Math.floor(ts / 900000) * 900000;
+      const bKey = `${poolKey}:${bTs}`;
+      const existingB = olderBuckets.get(bKey);
+      if (existingB) existingB.tok += tok;
+      else olderBuckets.set(bKey, { poolKey, ts: bTs, tok });
+    }
+  };
+  for (const c of mergedCalls) pushQuotaUsageCall(c);
+  for (const c of recentRequests) pushQuotaUsageCall(c);
+  for (const b of olderBuckets.values()) recentModelUsage.push(b);
+
   const out = {
     schemaVersion: '0.8.2',
     version: '0.8.2',
     updatedAt: `${todayKey} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`,
     firstUseDate: earliestDate,
+    recentModelUsage,
     currentPeriod: {
       key: monthPrefix,
       label: `${monthPrefix} (自然月)`,
@@ -1595,6 +1648,7 @@ function collectTokenHistory(options = {}) {
     planStatus: parseUserPlanStatus(null),
     costEstimate: { pricedCostUSD: 0, coveragePercent: 0, byModel: {} },
     summary: { grandTotalTokens: 0, todayTokens: 0, monthTokens: 0, yearTokens: 0, totalConversations: 0, activeDaysCount: 0 },
+    recentModelUsage: [],
     dailyMap: {},
     dailyMapBySource: { all: {}, desktop: {}, cli: {} }
   };
@@ -2167,6 +2221,7 @@ module.exports = {
   collect,
   collectTokenHistory,
   collectTokenHistoryAsync,
+  fetchUserStatusFromHost,
   scanFiles,
   pythonScan,
   resolvePython,

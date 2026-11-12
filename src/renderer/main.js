@@ -11,8 +11,30 @@
     getDailyModelCost,
     calculateIntervalCost,
     convertToCNY,
-    resolveEffectivePlanStatus
+    resolveEffectivePlanStatus,
+    resolveModelQuota,
+    getModelPoolKey,
+    formatResetTimeZh,
+    formatResetCountdownZh,
+    formatApproxTokensZh,
+    summarizeModelQuotaPools
   } = (globalThis.__AGContextMeterCore || {});
+
+  let quotaTooltipOpen = false;
+  let quotaTooltipPinned = false;
+  let quotaAt = 0;
+  let quotaBusy = false;
+  let quotaNext = Date.now() + 2500;
+  let quotaError = '';
+  let quotaReqSeq = 0;
+  let cascadeModelConfigs = null;
+  let quotaSummaryPayload = null;
+  let quotaSummary = null;
+  let quotaExplicitModel = '';
+  let lastDomModelCheckAt = 0;
+  let cachedDomModel = '';
+  let quotaCalibrationStore = null;
+  let quotaTestUsageEvents = null;
   const host = document.createElement('div');
   host.id = 'ag-context-meter';
   host.setAttribute('data-layout', 'wide');
@@ -734,6 +756,7 @@
 
     if (target === 'tokens') {
       hideContextTooltip();
+      hideQuotaTooltip();
       closeColorPicker();
       pContext.hidden = true;
       pTokens.hidden = false;
@@ -746,6 +769,7 @@
       renderActiveHeatView(true);
     } else if (target === 'context') {
       hideContextTooltip();
+      hideQuotaTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
       pTokens.hidden = true;
@@ -764,6 +788,7 @@
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
       closeColorPicker();
+      hideQuotaTooltip();
       hidePopover();
       syncHostStackingElevation(false);
     }
@@ -793,6 +818,7 @@
     const willOpen = pOverflow.hidden;
     showPanel('none');
     hideContextTooltip();
+    hideQuotaTooltip();
     pOverflow.hidden = !willOpen;
     el('badge-overflow')?.setAttribute('aria-expanded', String(willOpen));
     syncHostStackingElevation(willOpen);
@@ -1495,6 +1521,63 @@
   el('badge').addEventListener('blur', () => {
     hideContextTooltip();
   });
+
+  // 模型剩余配额圆环悬停、聚焦、点击展开菜单与刷新交互
+  el('badge-quota')?.addEventListener('click', e => {
+    e?.stopPropagation?.();
+    if (isAnyPanelOpen()) return;
+    if (quotaTooltipOpen && quotaTooltipPinned) {
+      hideQuotaTooltip(true);
+      return;
+    }
+    renderQuotaRing(true);
+    showQuotaTooltip(true);
+    void refreshQuota({ force: true });
+  });
+  el('badge-quota')?.addEventListener('mouseenter', () => {
+    if (!isAnyPanelOpen()) {
+      renderQuotaRing();
+      showQuotaTooltip(quotaTooltipPinned);
+      if (!quotaAt && typeof window !== 'undefined' && (window.__APP_CONFIG__?.csrfToken || typeof window.contextMeterAPI?.getQuota === 'function')) {
+        void refreshQuota({ force: false });
+      }
+    }
+  });
+  el('badge-quota')?.addEventListener('mouseleave', () => {
+    hideQuotaTooltip(false);
+  });
+  el('badge-quota')?.addEventListener('focus', () => {
+    if (!isAnyPanelOpen()) {
+      renderQuotaRing();
+      showQuotaTooltip(quotaTooltipPinned);
+    }
+  });
+  el('badge-quota')?.addEventListener('blur', () => {
+    hideQuotaTooltip(false);
+  });
+  el('quota-tip-refresh')?.addEventListener('click', e => {
+    e?.stopPropagation?.();
+    void refreshQuota({ force: true });
+  });
+  function onQuotaOutsideClick(e) {
+    if (!quotaTooltipOpen || !quotaTooltipPinned) return;
+    const path = typeof e?.composedPath === 'function' ? e.composedPath() : [];
+    const qBtn = el('badge-quota');
+    const qTip = el('quota-tooltip');
+    if ((qBtn && (path.includes(qBtn) || e?.target === qBtn)) || (qTip && (path.includes(qTip) || qTip.contains?.(e?.target)))) {
+      return;
+    }
+    hideQuotaTooltip(true);
+  }
+  function onQuotaEscapeKey(e) {
+    if (e?.key === 'Escape' && quotaTooltipOpen) {
+      hideQuotaTooltip(true);
+    }
+  }
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('click', onQuotaOutsideClick);
+    document.addEventListener('keydown', onQuotaEscapeKey);
+  }
 
   el('theme-toggle')?.addEventListener('click', cycleTheme);
   el('theme-toggle-tokens')?.addEventListener('click', cycleTheme);
@@ -2547,6 +2630,7 @@
       closeColorPicker(true);
       toggle(false);
       hideContextTooltip();
+      hideQuotaTooltip();
       const om = el('overflow-menu');
       if (om) om.hidden = true;
       syncHostStackingElevation(false);
@@ -2585,6 +2669,7 @@
       }
       toggle(false);
       hideContextTooltip();
+      hideQuotaTooltip();
       const om = el('overflow-menu');
       if (om) om.hidden = true;
       syncHostStackingElevation(false);
@@ -2765,7 +2850,8 @@
     const incomingKeys = Object.keys(payload.dailyMap || {});
     const incomingTotal = Number(payload.summary?.grandTotalTokens) || incomingKeys.reduce((acc, k) => acc + (Number(payload.dailyMap[k]?.total) || 0), 0);
     const hasIncomingRefCost = Boolean(payload.referenceCost?.currentMonth?.totalCostUSD || payload.referenceCost?.all?.totalCostUSD);
-    const hasIncomingPayloadContent = incomingKeys.length > 0 || incomingTotal > 0 || hasIncomingRefCost;
+    const hasIncomingPoolUsage = Array.isArray(payload.recentModelUsage) && payload.recentModelUsage.length > 0;
+    const hasIncomingPayloadContent = incomingKeys.length > 0 || incomingTotal > 0 || hasIncomingRefCost || hasIncomingPoolUsage;
     if (hasExistingData && !hasIncomingPayloadContent && !payload.isAccountSwitched && !payload.forceReset) {
       return false;
     }
@@ -2784,6 +2870,7 @@
       ANTIGRAVITY_TOKEN_DATA.summary = normalized.summary;
       ANTIGRAVITY_TOKEN_DATA.referenceCost = normalized.referenceCost;
       ANTIGRAVITY_TOKEN_DATA.currentPeriod = normalized.currentPeriod;
+      if (Array.isArray(payload.recentModelUsage)) ANTIGRAVITY_TOKEN_DATA.recentModelUsage = normalized.recentModelUsage;
       if (normalized.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate;
       if (normalized.updatedAt) ANTIGRAVITY_TOKEN_DATA.updatedAt = normalized.updatedAt;
     } else {
@@ -2802,6 +2889,7 @@
       }
       ANTIGRAVITY_TOKEN_DATA.dailyMap = newMap;
       if (payload.dailyMapBySource) ANTIGRAVITY_TOKEN_DATA.dailyMapBySource = payload.dailyMapBySource;
+      if (Array.isArray(payload.recentModelUsage)) ANTIGRAVITY_TOKEN_DATA.recentModelUsage = payload.recentModelUsage;
       if (payload.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = payload.firstUseDate;
       if (payload.updatedAt) ANTIGRAVITY_TOKEN_DATA.updatedAt = payload.updatedAt;
       if (payload.currentPeriod) ANTIGRAVITY_TOKEN_DATA.currentPeriod = payload.currentPeriod;
@@ -2876,6 +2964,32 @@
       ANTIGRAVITY_TOKEN_DATA.planStatus = mergedPlan;
       ANTIGRAVITY_TOKEN_DATA.rawPlanStatus = payload.rawPlanStatus || payload.planStatus || mergedPlan;
       renderPlanDetail(mergedPlan);
+    }
+
+    const incomingQuotaConfigs = Array.isArray(payload.cascadeModelConfigs) && payload.cascadeModelConfigs.length
+      ? payload.cascadeModelConfigs
+      : (Array.isArray(payload.rawPlanStatus?.cascadeModelConfigs) && payload.rawPlanStatus.cascadeModelConfigs.length
+        ? payload.rawPlanStatus.cascadeModelConfigs
+        : (Array.isArray(payload.planStatus?.cascadeModelConfigs) && payload.planStatus.cascadeModelConfigs.length
+          ? payload.planStatus.cascadeModelConfigs
+          : null));
+    const incomingQuotaSummary = payload.quotaSummary ||
+      payload.rawPlanStatus?.quotaSummary ||
+      payload.planStatus?.quotaSummary ||
+      null;
+    const hasIncomingQuotaSummary = Boolean(incomingQuotaSummary && typeof incomingQuotaSummary === 'object');
+    if (hasIncomingQuotaSummary) {
+      quotaSummaryPayload = incomingQuotaSummary;
+      quotaAt = Date.now();
+      quotaError = '';
+    }
+    if (incomingQuotaConfigs) {
+      cascadeModelConfigs = incomingQuotaConfigs;
+      quotaAt = Date.now();
+      quotaError = '';
+      renderQuotaRing();
+    } else if (hasIncomingQuotaSummary || (hasIncomingPoolUsage && ((Array.isArray(cascadeModelConfigs) && cascadeModelConfigs.length) || quotaSummaryPayload))) {
+      renderQuotaRing();
     }
 
     if (payload.costEstimate) {
@@ -3014,6 +3128,10 @@
         }
       }
       if (changed || hasFinalCall) {
+        if (hasFinalCall) {
+          const soon = Date.now() + 1800;
+          if (!quotaNext || quotaNext > soon) quotaNext = soon;
+        }
         void syncTokenHistoryFromHost(false);
       }
     } catch (err) {
@@ -3494,6 +3612,706 @@
     if (state.tooltipOpen) positionContextTooltip();
   }
 
+  function detectActiveModelFromDom(configs, forceCheck = false) {
+    if (!Array.isArray(configs) || !configs.length) return '';
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return '';
+    const now = Date.now();
+    if (!forceCheck && now - lastDomModelCheckAt < 1200) return cachedDomModel;
+    lastDomModelCheckAt = now;
+    try {
+      const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+      const candidates = document.querySelectorAll('button, [role="combobox"], [role="button"]');
+      let bestLabel = '';
+      let bestScore = -1;
+      for (let i = 0; i < candidates.length; i++) {
+        const node = candidates[i];
+        if (!node || host.contains?.(node)) continue;
+        if (node.closest?.('[role="listbox"], [role="menu"]')) continue;
+        const txt = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!txt || txt.length > 64) continue;
+        const lowTxt = txt.toLowerCase();
+        for (const cfg of configs) {
+          const lbl = String(cfg?.label || '').trim();
+          if (!lbl) continue;
+          const lowLbl = lbl.toLowerCase();
+          const baseLbl = lbl.replace(/\s*\([^)]*\)\s*/g, '').trim().toLowerCase();
+          let score = 0;
+          if (lowTxt === lowLbl || lowTxt.includes(lowLbl)) score = 3;
+          else if (baseLbl && baseLbl.length >= 4 && (lowTxt === baseLbl || lowTxt.includes(baseLbl))) score = 2;
+          if (score > 0) {
+            const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+            if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
+            const bonus = rect && rect.top >= vh * 0.45 ? 10 : 0;
+            const totalScore = score + bonus - (txt.length / 100);
+            if (totalScore > bestScore) {
+              bestScore = totalScore;
+              bestLabel = lbl;
+            }
+          }
+        }
+      }
+      cachedDomModel = bestLabel;
+      return bestLabel;
+    } catch {
+      return cachedDomModel || '';
+    }
+  }
+
+  function getActiveModelCandidate(forceDomCheck = false) {
+    if (quotaExplicitModel) return quotaExplicitModel;
+    const domModel = detectActiveModelFromDom(cascadeModelConfigs, forceDomCheck);
+    if (domModel) return domModel;
+    if (state.latest?.model) return state.latest.model;
+    if (state.scan?.latest?.model) return state.scan.latest.model;
+    if (Array.isArray(state.sessionCalls) && state.sessionCalls.length) {
+      const last = state.sessionCalls[state.sessionCalls.length - 1];
+      if (last?.model) return last.model;
+    }
+    return '';
+  }
+
+  function positionQuotaTooltip() {
+    const tip = el('quota-tooltip');
+    const anchor = el('badge-quota');
+    if (!tip || !anchor) return;
+    try {
+      const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+      const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+      const bRect = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+      const hRect = host.getBoundingClientRect ? host.getBoundingClientRect() : null;
+      const refRect = (bRect && bRect.width > 0) ? bRect : (hRect || { left: vw - 220, right: vw - 16, top: 6, bottom: 34 });
+      const tipRect = tip.getBoundingClientRect ? tip.getBoundingClientRect() : null;
+      const tipW = (tipRect && tipRect.width > 0) ? tipRect.width : 296;
+      const tipH = (tipRect && tipRect.height > 0) ? tipRect.height : 180;
+      let left = Math.round(refRect.right - tipW);
+      left = Math.max(12, Math.min(vw - tipW - 12, left));
+      let top = Math.round((refRect.bottom || 34) + 6);
+      let placement = 'bottom';
+      if (top + tipH > vh - 12 && refRect.top - tipH - 6 > 12) {
+        top = Math.round(refRect.top - tipH - 6);
+        placement = 'top';
+      }
+      tip.style.left = `${left}px`;
+      tip.style.top = `${top}px`;
+      tip.setAttribute('data-placement', placement);
+    } catch {}
+  }
+
+  function showQuotaTooltip(pinned = false) {
+    const tip = el('quota-tooltip');
+    const anchor = el('badge-quota');
+    if (!tip) return;
+    hideContextTooltip();
+    quotaTooltipOpen = true;
+    quotaTooltipPinned = Boolean(pinned);
+    tip.setAttribute('data-visible', 'true');
+    tip.setAttribute('data-pinned', quotaTooltipPinned ? 'true' : 'false');
+    tip.setAttribute('data-view', quotaTooltipPinned ? 'detail' : 'hover');
+    anchor?.setAttribute('aria-expanded', 'true');
+    if (typeof renderQuotaTooltipSummary === 'function') renderQuotaTooltipSummary();
+    positionQuotaTooltip();
+  }
+
+  function hideQuotaTooltip(force = true) {
+    if (!force && quotaTooltipPinned) return;
+    quotaTooltipOpen = false;
+    quotaTooltipPinned = false;
+    const tip = el('quota-tooltip');
+    const anchor = el('badge-quota');
+    if (tip) {
+      tip.setAttribute('data-visible', 'false');
+      tip.setAttribute('data-pinned', 'false');
+      tip.setAttribute('data-view', 'hover');
+    }
+    anchor?.setAttribute('aria-expanded', 'false');
+    if (typeof renderQuotaTooltipSummary === 'function') renderQuotaTooltipSummary();
+  }
+
+  const QUOTA_CALIB_STORAGE_KEY = 'ag_quota_calib_v1';
+
+  function getQuotaAccountKey() {
+    const email = ANTIGRAVITY_TOKEN_DATA.planStatus?.email || ANTIGRAVITY_TOKEN_DATA.rawPlanStatus?.email || 'default';
+    return String(email || 'default').trim().toLowerCase() || 'default';
+  }
+
+  function loadQuotaCalibrationForAccount(accountKey) {
+    if (!quotaCalibrationStore || typeof quotaCalibrationStore !== 'object') {
+      quotaCalibrationStore = {};
+      try {
+        const raw = typeof localStorage !== 'undefined' && localStorage.getItem(QUOTA_CALIB_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') quotaCalibrationStore = parsed;
+        }
+      } catch {}
+    }
+    const bucket = quotaCalibrationStore[accountKey];
+    return (bucket && typeof bucket === 'object') ? bucket : {};
+  }
+
+  function saveQuotaCalibrationForAccount(accountKey, nextMap) {
+    if (!quotaCalibrationStore || typeof quotaCalibrationStore !== 'object') quotaCalibrationStore = {};
+    quotaCalibrationStore[accountKey] = (nextMap && typeof nextMap === 'object') ? nextMap : {};
+    try {
+      if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
+        localStorage.setItem(QUOTA_CALIB_STORAGE_KEY, JSON.stringify(quotaCalibrationStore));
+      }
+    } catch {}
+  }
+
+  function collectQuotaUsageEvents() {
+    const resolveKey = typeof getModelPoolKey === 'function'
+      ? (m => getModelPoolKey(m))
+      : (m => String(m || 'unknown').trim().toLowerCase() || 'unknown');
+    const dedup = new Map();
+    const bucketEvents = [];
+    const pushItem = (item, preferLatest) => {
+      if (!item || typeof item !== 'object') return;
+      const ts = Number(item.ts ?? item.timestamp);
+      const tok = Number(
+        item.tok ??
+        item.totalTokens ??
+        ((Number(item.inputTokens) || 0) + (Number(item.cacheTokens ?? item.cacheReadTokens) || 0) + (Number(item.outputTokens) || 0))
+      );
+      const rawPoolKey = item.poolKey ? String(item.poolKey) : '';
+      const poolKey = rawPoolKey && rawPoolKey !== 'unknown'
+        ? rawPoolKey
+        : resolveKey(item.model || item.modelKey || '');
+      if (!poolKey || poolKey === 'unknown' || !Number.isFinite(ts) || !Number.isFinite(tok) || tok <= 0) return;
+      const id = item.id || item.callId || null;
+      const norm = { id: id ? String(id) : null, poolKey, ts, tok };
+      if (norm.id) {
+        const prev = dedup.get(norm.id);
+        if (!prev || (preferLatest ? norm.tok >= prev.tok : norm.tok > prev.tok)) {
+          dedup.set(norm.id, norm);
+        }
+      } else {
+        bucketEvents.push(norm);
+      }
+    };
+
+    if (Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentModelUsage)) {
+      for (const item of ANTIGRAVITY_TOKEN_DATA.recentModelUsage) pushItem(item, false);
+    }
+    if (Array.isArray(state.sessionCalls)) {
+      for (const call of state.sessionCalls) pushItem(call, true);
+    }
+    if (Array.isArray(quotaTestUsageEvents)) {
+      for (const item of quotaTestUsageEvents) pushItem(item, true);
+    }
+    return [...dedup.values(), ...bucketEvents];
+  }
+
+  function getQuotaTone(pct) {
+    if (pct == null) return 'unknown';
+    if (pct <= 10) return 'danger';
+    if (pct <= 30) return 'warn';
+    return 'normal';
+  }
+
+  function clearDomChildren(node) {
+    if (!node) return;
+    if (typeof node.replaceChildren === 'function') {
+      node.replaceChildren();
+    } else {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+  }
+
+  function renderQuotaPoolRows(containerEl, list, activeKey, windowType = '5h') {
+    if (!containerEl) return;
+    const pools = Array.isArray(list) ? list : [];
+    clearDomChildren(containerEl);
+    if (!pools.length) {
+      containerEl.style.display = 'none';
+      return;
+    }
+    containerEl.style.display = 'flex';
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+      containerEl.textContent = pools.map(p => {
+        const pStr = p.remainingPct != null ? `${p.remainingPct}%` : '--%';
+        const tStr = p.estRemainingZh != null ? ` 约${p.estRemainingZh} tok` : '';
+        return `${p.poolName}: ${pStr}${tStr}`;
+      }).join(' | ');
+      return;
+    }
+    const rows = [];
+    for (const pool of pools) {
+      const isActive = Boolean(activeKey && pool.poolKey === activeKey);
+      const row = document.createElement('div');
+      row.className = 'quota-pool-row';
+      row.setAttribute?.('data-active', String(isActive));
+      const pct = pool.remainingPct;
+      row.setAttribute?.('data-tone', getQuotaTone(pct));
+      row.setAttribute?.('data-window', windowType);
+
+      const head = document.createElement('div');
+      head.className = 'quota-pool-head';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'quota-pool-name';
+      nameSpan.textContent = `${isActive ? '● ' : '○ '}${pool.poolName || pool.label || pool.poolKey}`;
+      const metaSpan = document.createElement('span');
+      metaSpan.className = 'quota-pool-meta';
+      const pctText = pct != null ? `${pct}%` : '--%';
+      const estText = pool.estRemainingZh != null ? (pct === 0 ? '约0 tok' : `约${pool.estRemainingZh} tok`) : '';
+      const resetHint = pool.resetInZh || pool.resetTimeZh || '';
+      metaSpan.textContent = [pctText, estText, resetHint].filter(Boolean).join(' · ');
+      head.appendChild(nameSpan);
+      head.appendChild(metaSpan);
+
+      const bar = document.createElement('div');
+      bar.className = 'quota-pool-bar';
+      const barFill = document.createElement('div');
+      barFill.className = 'quota-pool-bar-fill';
+      barFill.style.width = `${pct != null ? Math.max(0, Math.min(100, pct)) : 0}%`;
+      bar.appendChild(barFill);
+
+      row.appendChild(head);
+      row.appendChild(bar);
+      rows.push(row);
+    }
+    for (const r of rows) containerEl.appendChild(r);
+  }
+
+  function renderQuotaDualCards(summary) {
+    const dualEl = el('quota-tip-dual');
+    if (!dualEl) return;
+    clearDomChildren(dualEl);
+    if (!summary?.hasData) {
+      dualEl.style.display = 'none';
+      return;
+    }
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+      const sPct = summary.active?.remainingPct != null ? `${summary.active.remainingPct}%` : '--%';
+      const wPct = summary.activeWeekly?.remainingPct != null ? `${summary.activeWeekly.remainingPct}%` : '暂无';
+      dualEl.style.display = 'grid';
+      dualEl.textContent = `5小时: ${sPct} | 每周: ${wPct}`;
+      return;
+    }
+
+    const buildCard = (title, pool, windowKey, fallbackSub) => {
+      const card = document.createElement('div');
+      card.className = 'quota-dual-card';
+      card.setAttribute?.('data-window', windowKey);
+      const pct = pool?.remainingPct;
+      card.setAttribute?.('data-tone', pct != null ? getQuotaTone(pct) : 'muted');
+
+      const head = document.createElement('div');
+      head.className = 'quota-dual-head';
+      const titleSpan = document.createElement('span');
+      titleSpan.textContent = title;
+      const poolTag = document.createElement('span');
+      poolTag.textContent = pool?.poolName || '';
+      head.appendChild(titleSpan);
+      if (pool?.poolName) head.appendChild(poolTag);
+
+      const val = document.createElement('div');
+      val.className = 'quota-dual-val';
+      val.textContent = pct != null ? `${pct}%` : '暂无数据';
+
+      const sub = document.createElement('div');
+      sub.className = 'quota-dual-sub';
+      if (pool && pct != null) {
+        const estStr = pool.estRemainingZh != null ? (pct === 0 ? '约0 tok' : `约${pool.estRemainingZh} tok`) : null;
+        const resetStr = pool.resetInZh || pool.resetTimeZh || (pct >= 100 ? '满格可用' : null);
+        sub.textContent = [estStr, resetStr].filter(Boolean).join(' · ') || '可用';
+      } else {
+        sub.textContent = fallbackSub;
+      }
+
+      card.appendChild(head);
+      card.appendChild(val);
+      card.appendChild(sub);
+      return card;
+    };
+
+    const shortActive = (summary.active && summary.active.windowType !== 'weekly') ? summary.active : null;
+    dualEl.style.display = 'grid';
+    dualEl.appendChild(buildCard('5 小时额度', shortActive, '5h', summary.hasWeeklyData ? '无独立 5h 限制' : '待获取'));
+    dualEl.appendChild(buildCard('每周额度', summary.activeWeekly, 'weekly', '未返回周额度'));
+  }
+
+  function renderQuotaTooltipPools(summary) {
+    renderQuotaDualCards(summary);
+
+    const poolsWrap = el('quota-tip-pools-wrap');
+    const poolsEl = el('quota-tip-pools');
+    const pools = Array.isArray(summary?.pools) ? summary.pools : [];
+    const displayShortPools = pools.filter(p => !(summary?.hasWeeklyData && p.windowType === 'weekly'));
+    renderQuotaPoolRows(poolsEl, displayShortPools, summary?.active?.poolKey || '', '5h');
+    if (poolsWrap) poolsWrap.style.display = displayShortPools.length ? 'block' : 'none';
+
+    const weeklyWrap = el('quota-tip-weekly-wrap');
+    const weeklyEl = el('quota-tip-weekly');
+    const weeklyEmptyEl = el('quota-weekly-empty');
+    const weeklyPools = Array.isArray(summary?.weeklyPools) ? summary.weeklyPools : [];
+    if (weeklyPools.length > 0) {
+      if (weeklyWrap) weeklyWrap.style.display = 'block';
+      renderQuotaPoolRows(weeklyEl, weeklyPools, summary?.activeWeekly?.poolKey || '', 'weekly');
+      if (weeklyEmptyEl) weeklyEmptyEl.style.display = 'none';
+    } else if (displayShortPools.length > 0) {
+      if (weeklyWrap) weeklyWrap.style.display = 'block';
+      clearDomChildren(weeklyEl);
+      if (weeklyEl) weeklyEl.style.display = 'none';
+      if (weeklyEmptyEl) weeklyEmptyEl.style.display = 'block';
+    } else {
+      if (weeklyWrap) weeklyWrap.style.display = 'none';
+      clearDomChildren(weeklyEl);
+      if (weeklyEl) weeklyEl.style.display = 'none';
+      if (weeklyEmptyEl) weeklyEmptyEl.style.display = 'none';
+    }
+  }
+
+  function formatQuotaHeadline(prefix, pool) {
+    if (!pool || pool.remainingPct == null) return '';
+    const pct = pool.remainingPct;
+    const poolName = pool.poolName || '';
+    if (pct <= 0) {
+      return pool.estRemainingZh != null
+        ? `${prefix} 0% · 约 0 tok（${poolName} · 已耗尽）`
+        : `${prefix} 0%（${poolName} · 已耗尽）`;
+    }
+    return pool.estRemainingZh != null
+      ? `${prefix} ${pct}% · 约 ${pool.estRemainingZh} tok（${poolName}）`
+      : `${prefix} ${pct}%（${poolName}）`;
+  }
+
+  function formatQuotaResetLine(pool, fullMsg, fallbackStr) {
+    if (pool?.resetTimeZh) {
+      return `预计 ${pool.resetTimeZh} 重置${pool.resetInZh ? `（${pool.resetInZh}）` : ''}`;
+    }
+    if (pool && pool.remainingPct >= 100) return fullMsg;
+    return fallbackStr;
+  }
+
+  function renderQuotaTooltipSummary(summaryArg = quotaSummary) {
+    const qTip = el('quota-tooltip');
+    const qTitle = el('quota-tip-title');
+    const qPct = el('quota-tip-pct');
+    const qDetail = el('quota-tip-detail');
+    const qFoot = el('quota-tip-foot');
+    const summary = summaryArg || {};
+    const isDetailView = Boolean(quotaTooltipPinned);
+    qTip?.setAttribute('data-view', isDetailView ? 'detail' : 'hover');
+
+    const shortActive = (summary.active && summary.active.windowType !== 'weekly') ? summary.active : null;
+    const weeklyActive = summary.activeWeekly || ((summary.active && summary.active.windowType === 'weekly') ? summary.active : null);
+    const primaryActive = shortActive || weeklyActive || summary.active || null;
+    const activeModel = summary.currentModel || getActiveModelCandidate(false);
+    const displayModelName = shortActive?.activeLabel || shortActive?.label || shortActive?.poolName ||
+      summary.currentModel || weeklyActive?.poolName || primaryActive?.poolName || '未知模型';
+
+    if (qTitle && qPct && qDetail) {
+      if (isDetailView) {
+        if (primaryActive && primaryActive.remainingPct != null) {
+          const isMatched = primaryActive.windowType === 'weekly' ? summary.weeklyMatchedByModel : summary.matchedByModel;
+          qTitle.textContent = isMatched
+            ? `当前模型：${displayModelName}`
+            : `模型配额（默认 · ${primaryActive.poolName}）：`;
+          const headPrefix = primaryActive.windowType === 'weekly' ? '每周剩余' : '5h 剩余';
+          qPct.textContent = formatQuotaHeadline(headPrefix, primaryActive);
+          const resetLine = formatQuotaResetLine(
+            primaryActive,
+            '当前配额满格（100% 可用）',
+            quotaAt ? `上次同步 ${new Date(quotaAt).toLocaleTimeString()}` : '已获取最新模型配额'
+          );
+          const weeklyDetail = (weeklyActive && weeklyActive.remainingPct != null && primaryActive.windowType !== 'weekly')
+            ? ` · 周剩余 ${weeklyActive.remainingPct}%${weeklyActive.estRemainingZh != null ? `（约 ${weeklyActive.estRemainingZh} tok）` : ''}`
+            : '';
+          qDetail.textContent = `${resetLine}${weeklyDetail}`;
+        } else if (quotaError) {
+          qTitle.textContent = '当前模型配额（读取失败）：';
+          qPct.textContent = '配额暂不可用';
+          qDetail.textContent = quotaError;
+        } else {
+          qTitle.textContent = activeModel ? `当前模型：${activeModel}` : '当前模型配额：';
+          qPct.textContent = quotaBusy ? '正在读取模型配额…' : '等待同步模型配额';
+          qDetail.textContent = '点击右上角“刷新”可立即同步配额';
+        }
+      } else {
+        // 悬停态：仅展示当前模型的周额度（无周额度数据时优雅降级展示 5h）
+        if (weeklyActive && weeklyActive.remainingPct != null) {
+          const matchedWeekly = Boolean(summary.weeklyMatchedByModel || summary.matchedByModel);
+          qTitle.textContent = matchedWeekly
+            ? `当前模型：${displayModelName}`
+            : `每周配额（默认 · ${weeklyActive.poolName}）：`;
+          qPct.textContent = formatQuotaHeadline('每周剩余', weeklyActive);
+          qDetail.textContent = formatQuotaResetLine(
+            weeklyActive,
+            '当前周额度满格（100% 可用）',
+            quotaAt ? `上次同步 ${new Date(quotaAt).toLocaleTimeString()}` : '当前模型每周剩余额度'
+          );
+        } else if (primaryActive && primaryActive.remainingPct != null) {
+          qTitle.textContent = summary.matchedByModel
+            ? `当前模型：${displayModelName}`
+            : `模型配额（默认 · ${primaryActive.poolName}）：`;
+          qPct.textContent = formatQuotaHeadline('剩余额度', primaryActive);
+          qDetail.textContent = formatQuotaResetLine(
+            primaryActive,
+            '当前配额满格（100% 可用）',
+            quotaAt ? `上次同步 ${new Date(quotaAt).toLocaleTimeString()}` : '已获取最新模型配额'
+          );
+        } else if (quotaError) {
+          qTitle.textContent = '当前模型配额（读取失败）：';
+          qPct.textContent = '配额暂不可用';
+          qDetail.textContent = quotaError;
+        } else {
+          qTitle.textContent = activeModel ? `当前模型：${activeModel}` : '当前模型配额：';
+          qPct.textContent = quotaBusy ? '正在读取模型配额…' : '等待同步模型配额';
+          qDetail.textContent = '悬停查看当前模型周额度，点击圆环展开详情';
+        }
+      }
+    }
+
+    if (qFoot) {
+      if (!isDetailView) {
+        qFoot.textContent = '点击圆环查看 5 小时与全部模型详情';
+      } else if (primaryActive && primaryActive.remainingPct != null) {
+        const capPool = (primaryActive.estRemainingZh != null && primaryActive.estTotalTokens)
+          ? primaryActive
+          : ((weeklyActive?.estRemainingZh != null && weeklyActive?.estTotalTokens) ? weeklyActive : null);
+        if (capPool) {
+          const capZh = typeof formatApproxTokensZh === 'function'
+            ? formatApproxTokensZh(capPool.estTotalTokens)
+            : String(capPool.estTotalTokens);
+          const capWin = capPool.windowType === 'weekly' ? '周' : '5h';
+          qFoot.textContent = `按实耗推算${capWin}总量约 ${capZh} tok · 再次点击圆环收起`;
+        } else if (primaryActive.cycleTokensUsed > 0) {
+          const usedZh = typeof formatApproxTokensZh === 'function'
+            ? formatApproxTokensZh(primaryActive.cycleTokensUsed)
+            : String(primaryActive.cycleTokensUsed);
+          qFoot.textContent = `本周期已用 ${usedZh} tok，待配额波动后校准 · 点击收起`;
+        } else {
+          qFoot.textContent = '同模型各档位已合并 · 再次点击圆环或按 Esc 收起';
+        }
+      } else {
+        qFoot.textContent = '再次点击圆环或按 Esc 收起';
+      }
+    }
+  }
+
+  function renderQuotaRing(forceDomCheck = false) {
+    const qBtn = el('badge-quota');
+    const qFill = el('quota-ring-fill');
+    const qWinTag = el('quota-window-tag');
+    const qPctVal = el('quota-pct-val');
+    const qRefresh = el('quota-tip-refresh');
+
+    const activeModel = getActiveModelCandidate(forceDomCheck);
+    const configs = Array.isArray(cascadeModelConfigs) ? cascadeModelConfigs : [];
+    const accountKey = getQuotaAccountKey();
+    const calibrationMap = loadQuotaCalibrationForAccount(accountKey);
+    const usageEvents = collectQuotaUsageEvents();
+    const summary = typeof summarizeModelQuotaPools === 'function'
+      ? summarizeModelQuotaPools(configs, activeModel, Date.now(), {
+        quotaSummary: quotaSummaryPayload,
+        usageEvents,
+        calibrationMap
+      })
+      : {
+        hasData: false,
+        hasShortData: false,
+        hasWeeklyData: false,
+        matchedByModel: false,
+        weeklyMatchedByModel: false,
+        currentModel: activeModel || null,
+        active: null,
+        activeWeekly: null,
+        pools: [],
+        weeklyPools: []
+      };
+    quotaSummary = summary;
+    if (summary?.hasData && summary.nextCalibration) {
+      saveQuotaCalibrationForAccount(accountKey, summary.nextCalibration);
+    }
+
+    const active = (summary.active && summary.active.remainingPct != null)
+      ? summary.active
+      : (summary.activeWeekly && summary.activeWeekly.remainingPct != null
+        ? summary.activeWeekly
+        : (summary.active || summary.activeWeekly || null));
+    const activeWeekly = summary.activeWeekly || null;
+    const primaryWindowTag = (active && active.windowType === 'weekly') ? '7d' : '5h';
+    const remPct = (summary.hasData && active && active.remainingPct != null) ? active.remainingPct : null;
+
+    let qState = 'unknown';
+    if (remPct != null) {
+      if (remPct <= 10) qState = 'danger';
+      else if (remPct <= 30) qState = 'warn';
+      else qState = 'normal';
+    }
+    host.setAttribute('data-quota-state', qState);
+    if (qBtn) {
+      qBtn.setAttribute('data-busy', quotaBusy ? 'true' : 'false');
+    }
+    if (qRefresh) {
+      qRefresh.disabled = Boolean(quotaBusy);
+      qRefresh.textContent = quotaBusy ? '刷新中…' : '刷新';
+    }
+
+    if (qFill) {
+      if (remPct != null) {
+        if (remPct <= 0) {
+          qFill.setAttribute('data-ring-state', 'exhausted');
+          qFill.setAttribute('stroke-dasharray', `0 ${RING_CIRCUMFERENCE.toFixed(2)}`);
+          qFill.style.opacity = '0';
+        } else {
+          qFill.setAttribute('data-ring-state', 'determinate');
+          const arcLen = Math.max(1.8, (Math.min(100, remPct) / 100) * RING_CIRCUMFERENCE);
+          qFill.setAttribute('stroke-dasharray', `${arcLen.toFixed(2)} ${RING_CIRCUMFERENCE.toFixed(2)}`);
+          qFill.style.opacity = '1';
+        }
+      } else {
+        qFill.setAttribute('data-ring-state', 'unknown');
+        qFill.setAttribute('stroke-dasharray', '3.2 4.97');
+        qFill.style.opacity = '0.55';
+      }
+    }
+
+    if (qWinTag) {
+      qWinTag.textContent = primaryWindowTag;
+    }
+    if (qPctVal) {
+      qPctVal.textContent = remPct != null ? `${remPct}%` : (quotaBusy ? '…' : '--%');
+    }
+    if (qBtn) {
+      const weeklyLabel = activeWeekly && activeWeekly.remainingPct != null
+        ? `；周额度 ${activeWeekly.remainingPct}%`
+        : '';
+      qBtn.setAttribute('aria-label', active && remPct != null
+        ? `当前模型 ${active.activeLabel || active.poolName} ${primaryWindowTag === '7d' ? '周' : '5小时'}剩余配额 ${remPct}%${active.estRemainingZh != null ? `（约 ${active.estRemainingZh} tokens）` : ''}${weeklyLabel}`
+        : '当前模型剩余配额');
+    }
+
+    renderQuotaTooltipSummary(summary);
+    renderQuotaTooltipPools(summary);
+    if (quotaTooltipOpen) positionQuotaTooltip();
+  }
+
+  async function refreshQuota({ force = false } = {}) {
+    if (state.disposed || quotaBusy) return null;
+    if (!force && quotaAt && Date.now() - quotaAt < 10000) return quotaSummary;
+    const reqSeq = ++quotaReqSeq;
+    quotaBusy = true;
+    const qBtn = el('badge-quota');
+    qBtn?.setAttribute('data-busy', 'true');
+    const qRefresh = el('quota-tip-refresh');
+    if (qRefresh) {
+      qRefresh.disabled = true;
+      qRefresh.textContent = '刷新中…';
+    }
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const summaryController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    if (controller) state.controllers.add(controller);
+    if (summaryController) state.controllers.add(summaryController);
+    const timeout = controller ? setTimeout(() => controller.abort(), 10000) : null;
+    const summaryTimeout = summaryController ? setTimeout(() => summaryController.abort(), 10000) : null;
+    timeout?.unref?.();
+    summaryTimeout?.unref?.();
+    const clearSummaryHandle = () => {
+      if (summaryTimeout) clearTimeout(summaryTimeout);
+      if (summaryController) state.controllers.delete(summaryController);
+    };
+    summaryController?.signal?.addEventListener?.('abort', clearSummaryHandle, { once: true });
+
+    let statusErr = null;
+    try {
+      let configs = null;
+      let nextSummaryPayload = null;
+      let summaryResolvedInThisCall = false;
+      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getQuota === 'function') {
+        const res = await window.contextMeterAPI.getQuota({ force: Boolean(force) });
+        if (res?.ok) {
+          if (Array.isArray(res.cascadeModelConfigs) && res.cascadeModelConfigs.length) {
+            configs = res.cascadeModelConfigs;
+          }
+          if (res.quotaSummary && typeof res.quotaSummary === 'object') {
+            nextSummaryPayload = res.quotaSummary;
+            summaryResolvedInThisCall = true;
+          }
+        }
+      }
+      if (!configs && typeof window !== 'undefined' && window.__APP_CONFIG__?.csrfToken) {
+        const headers = {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': window.__APP_CONFIG__.csrfToken
+        };
+        const statusPromise = fetch('/exa.language_server_pb.LanguageServerService/GetUserStatus', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({}),
+          signal: controller ? controller.signal : undefined
+        }).then(async response => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.json();
+        });
+
+        let summaryPromise = null;
+        if (!nextSummaryPayload) {
+          summaryPromise = fetch('/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({}),
+            signal: summaryController ? summaryController.signal : undefined
+          })
+            .then(async response => (response.ok ? response.json() : null))
+            .catch(() => null)
+            .then(val => {
+              clearSummaryHandle();
+              if (!state.disposed && reqSeq === quotaReqSeq && val && typeof val === 'object') {
+                summaryResolvedInThisCall = true;
+                const changed = quotaSummaryPayload !== val;
+                quotaSummaryPayload = val;
+                quotaAt = Date.now();
+                quotaError = '';
+                if (changed && !quotaBusy) renderQuotaRing(true);
+              }
+              return val;
+            });
+        }
+
+        try {
+          const payload = await statusPromise;
+          const clientConfigs = payload?.userStatus?.cascadeModelConfigData?.clientModelConfigs;
+          if (Array.isArray(clientConfigs)) configs = clientConfigs;
+        } catch (err) {
+          statusErr = err;
+        }
+
+        if (summaryPromise) {
+          await Promise.resolve();
+          await Promise.resolve();
+        }
+      }
+      if (state.disposed || reqSeq !== quotaReqSeq) return null;
+      if (nextSummaryPayload && typeof nextSummaryPayload === 'object') {
+        quotaSummaryPayload = nextSummaryPayload;
+      }
+      if (Array.isArray(configs)) {
+        cascadeModelConfigs = configs;
+        quotaAt = Date.now();
+        quotaError = '';
+      } else if (statusErr && !summaryResolvedInThisCall) {
+        throw statusErr;
+      } else if (summaryResolvedInThisCall) {
+        quotaAt = Date.now();
+        quotaError = '';
+      }
+    } catch (e) {
+      if (!state.disposed && reqSeq === quotaReqSeq) {
+        quotaError = e?.name === 'AbortError' ? '读取超时' : (e?.message || '读取配额失败');
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (controller) state.controllers.delete(controller);
+      quotaBusy = false;
+      quotaNext = Date.now() + ((typeof document !== 'undefined' && document.hidden) ? 60000 : 25000);
+      if (!state.disposed) renderQuotaRing(true);
+    }
+    return quotaSummary;
+  }
+
   function syncSpeedBadgeText() {
     const sp = state.latest?.speed;
     const speedAmount = el('speed-amount');
@@ -3517,6 +4335,7 @@
     host.hidden = false;
     host.setAttribute('data-has-session', state.route ? 'true' : 'false');
     ensureHostDocked();
+    renderQuotaRing();
     if (!state.route) {
       hideContextTooltip();
       const barFill = el('bar-fill');
@@ -3828,11 +4647,17 @@
         reportedFinalCallIds: state.reportedFinalCallIds || new Set(),
         reportedFinalCallOutputs: state.reportedFinalCallOutputs || new Map()
       });
-      toggle(false); hideContextTooltip(); renderFiles(null); render();
+      toggle(false); hideContextTooltip(); hideQuotaTooltip(); renderFiles(null); render();
       void syncTokenHistoryFromHost(false);
     }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
+    if (!state.disposed && !quotaBusy && Date.now() >= quotaNext) void refreshQuota({ force: false });
+    if (Array.isArray(cascadeModelConfigs) && cascadeModelConfigs.length) {
+      const prevDom = cachedDomModel;
+      const nextDom = detectActiveModelFromDom(cascadeModelConfigs, false);
+      if (nextDom && nextDom !== prevDom) renderQuotaRing(false);
+    }
     if (Date.now() - lastHistorySync > 15000) {
       lastHistorySync = Date.now();
       void syncTokenHistoryFromHost(false);
@@ -3907,6 +4732,38 @@
       applyLayoutMode(next);
       return state.layoutMode;
     },
+    getModelQuotaState: () => ({
+      hasData: Boolean(quotaSummary?.hasData),
+      hasShortData: Boolean(quotaSummary?.hasShortData),
+      hasWeeklyData: Boolean(quotaSummary?.hasWeeklyData),
+      active: quotaSummary?.active || null,
+      activeWeekly: quotaSummary?.activeWeekly || null,
+      matchedByModel: Boolean(quotaSummary?.matchedByModel),
+      weeklyMatchedByModel: Boolean(quotaSummary?.weeklyMatchedByModel),
+      pools: Array.isArray(quotaSummary?.pools) ? quotaSummary.pools : [],
+      weeklyPools: Array.isArray(quotaSummary?.weeklyPools) ? quotaSummary.weeklyPools : [],
+      updatedAt: quotaAt || null,
+      error: quotaError || ''
+    }),
+    setModelQuotaForTest: (configs, modelName, opts = {}) => {
+      cascadeModelConfigs = Array.isArray(configs) ? configs : [];
+      if (opts && Object.prototype.hasOwnProperty.call(opts, 'quotaSummary')) {
+        quotaSummaryPayload = opts.quotaSummary || null;
+      }
+      quotaExplicitModel = modelName !== undefined ? String(modelName || '') : '';
+      if (opts && opts.resetCalibration) {
+        quotaCalibrationStore = {};
+        try { localStorage?.removeItem?.(QUOTA_CALIB_STORAGE_KEY); } catch {}
+      }
+      if (opts && Object.prototype.hasOwnProperty.call(opts, 'usageEvents')) {
+        quotaTestUsageEvents = Array.isArray(opts.usageEvents) ? opts.usageEvents : null;
+      }
+      quotaAt = Date.now();
+      quotaError = '';
+      renderQuotaRing(false);
+      return globalThis.__AGContextMeter.getModelQuotaState();
+    },
+    refreshQuota: opts => refreshQuota(opts),
     findTopRightClusterForTest: () => findTopRightCluster(),
     syncWindowControlsOverlayForTest: () => syncWindowControlsOverlay(),
     computeWindowControlsWidthForTest: el => computeWindowControlsWidth(el),
@@ -3930,6 +4787,8 @@
       } catch {}
       document.removeEventListener('click', outside);
       document.removeEventListener('keydown', escape);
+      document.removeEventListener('click', onQuotaOutsideClick);
+      document.removeEventListener('keydown', onQuotaEscapeKey);
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch {}
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch {}
       host.remove();
