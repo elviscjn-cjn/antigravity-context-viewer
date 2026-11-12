@@ -3336,15 +3336,68 @@
     }
   }
 
+  function isTopRightToolbarCluster(el) {
+    if (!el || typeof el.getAttribute !== 'function') return false;
+    const cls = el.className || '';
+    if (typeof cls !== 'string') return false;
+    const classList = typeof el.classList?.contains === 'function'
+      ? el.classList
+      : { contains: c => cls.split(/\s+/).includes(c) };
+    if (!classList.contains('absolute') || !classList.contains('right-0')) return false;
+
+    const styleTop = el.style?.top || el.getAttribute('style') || '';
+    const hasTopClass = classList.contains('top-0');
+    const hasTopStyle = /(?:^|;)\s*top:\s*0(?:px)?(?:\s*;|$)/i.test(styleTop);
+    const rectTop = el.getBoundingClientRect ? el.getBoundingClientRect().top : 0;
+    if (el.getBoundingClientRect && rectTop >= 20) return false;
+    const isAtTop = hasTopClass || hasTopStyle || (rectTop <= 10 && rectTop >= 0);
+    if (!isAtTop) return false;
+
+    // 排除明显非顶栏容器（右侧全高抽屉、全屏浮层或带有明确非零高度下沉定位的浮层）
+    if (classList.contains('bottom-0') || classList.contains('h-screen') || classList.contains('h-full')) {
+      return false;
+    }
+
+    // 排除右侧滚动条滑槽（特征：包含 top-0.5 / bottom-0.5 / w-3 等滚动条特征）
+    if (classList.contains('w-3') || classList.contains('right-0.5')) {
+      return false;
+    }
+
+    // 必须符合顶栏控制按钮容器特征：
+    // a) 包含右侧栏切换按钮
+    // b) 或包含 z-50 并具有 flex / items-center 水平布局
+    const hasAuxToggle = Boolean(el.querySelector && el.querySelector('[data-testid="toggle-aux-sidebar"]'));
+    const hasToolbarLayout = classList.contains('z-50') && (classList.contains('items-center') || classList.contains('flex'));
+
+    return hasAuxToggle || hasToolbarLayout;
+  }
+
   function findTopRightCluster() {
     try {
       if (typeof document.querySelector !== 'function') return null;
+      // 1. 优先从右侧栏切换按钮向上寻找最近的顶栏容器
       const auxToggle = document.querySelector('[data-testid="toggle-aux-sidebar"]');
       if (auxToggle?.closest) {
-        const cluster = auxToggle.closest('div.absolute.right-0.top-0');
-        if (cluster) return cluster;
+        // 先尝试带 top-0 的经典结构（Antigravity 1.x）
+        let cluster = auxToggle.closest('div.absolute.right-0.top-0');
+        if (cluster && isTopRightToolbarCluster(cluster)) return cluster;
+        // 兼容 Antigravity 2.x（top: 0px 写在内联 style，class 无 top-0）
+        cluster = auxToggle.closest('div.absolute.right-0');
+        if (cluster && isTopRightToolbarCluster(cluster)) return cluster;
       }
-      return document.querySelector('div.h-screen.w-screen > div.flex-1 > div.absolute.right-0.top-0.z-50');
+
+      // 2. 备用安全探测：当 auxToggle 尚未挂载或被动态卸载时，精确匹配顶栏容器
+      // 严格检查顶部坐标与容器特征，绝不误伤滚动条、侧栏抽屉或模态弹窗
+      const selectors = [
+        'div.h-screen.w-screen > div.flex-1 > div.absolute.right-0.top-0.z-50',
+        'div.h-screen.w-screen > div.flex-1 > div.absolute.right-0.z-50',
+        'div.absolute.right-0.z-50'
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && isTopRightToolbarCluster(el)) return el;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -3352,6 +3405,7 @@
 
   // 动态计算右上角原生窗口控制区（Minimize / Maximize / Close）独占宽度（CSS px）
   function computeWindowControlsWidth(topRight) {
+    if (!topRight) return 0;
     try {
       const plat = (typeof navigator !== 'undefined' && navigator.platform) || '';
       if (/^Mac|iPhone|iPad/i.test(plat)) return 0;
@@ -3401,22 +3455,29 @@
     try {
       const topRight = findTopRightCluster();
       const wcoWidth = computeWindowControlsWidth(topRight);
-      if (topRight && typeof document.createElement === 'function') {
-        let spacer = typeof document.getElementById === 'function' ? document.getElementById('ag-wco-spacer') : null;
-        if (wcoWidth > 0) {
-          if (!spacer || spacer.parentElement !== topRight) {
-            spacer?.remove?.();
-            spacer = document.createElement('div');
-            spacer.id = 'ag-wco-spacer';
-            spacer.setAttribute('aria-hidden', 'true');
-            topRight.appendChild(spacer);
-          }
-          const targetCss = `width:${wcoWidth}px;height:100%;flex-shrink:0;pointer-events:none;`;
-          if (spacer.style.cssText !== targetCss) {
-            spacer.style.cssText = targetCss;
-          }
-        } else if (spacer) {
+      const spacer = typeof document.getElementById === 'function' ? document.getElementById('ag-wco-spacer') : null;
+      if (topRight && typeof document.createElement === 'function' && wcoWidth > 0) {
+        let activeSpacer = spacer;
+        if (!activeSpacer || activeSpacer.parentElement !== topRight) {
+          activeSpacer?.remove?.();
+          activeSpacer = document.createElement('div');
+          activeSpacer.id = 'ag-wco-spacer';
+          activeSpacer.setAttribute('aria-hidden', 'true');
+          topRight.appendChild(activeSpacer);
+        }
+        const targetCss = `width:${wcoWidth}px;height:100%;flex-shrink:0;pointer-events:none;`;
+        if (activeSpacer.style.cssText !== targetCss) {
+          activeSpacer.style.cssText = targetCss;
+        }
+      } else {
+        if (spacer) {
           spacer.remove();
+        }
+        if (topRight?.querySelectorAll) {
+          const oldSpacers = topRight.querySelectorAll('#ag-wco-spacer');
+          for (const s of oldSpacers) {
+            s.remove?.();
+          }
         }
       }
 
@@ -8986,6 +9047,9 @@ function renderHeatmapGrid(forceRebuild = false) {
       applyLayoutMode(next);
       return state.layoutMode;
     },
+    findTopRightClusterForTest: () => findTopRightCluster(),
+    syncWindowControlsOverlayForTest: () => syncWindowControlsOverlay(),
+    computeWindowControlsWidthForTest: el => computeWindowControlsWidth(el),
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     dispose() {
       state.disposed = true;

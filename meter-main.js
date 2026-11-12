@@ -418,6 +418,7 @@ function getWindowWebContents(win) {
   return null;
 }
 
+
 function syncWindowOverlayHeight(win) {
   try {
     if (!win || process.platform === 'darwin' || win.isDestroyed?.() || typeof win.setTitleBarOverlay !== 'function') return;
