@@ -188,10 +188,38 @@ function registerIpcOnce() {
   });
 }
 
+function getWindowWebContents(win) {
+  if (!win || win.isDestroyed?.()) return null;
+  if (win.webContents && !win.webContents.isDestroyed?.()) return win.webContents;
+  try {
+    const utils = require('./utils');
+    if (typeof utils.getHubWebContents === 'function') {
+      const wc = utils.getHubWebContents(win);
+      if (wc && !wc.isDestroyed?.()) return wc;
+    }
+  } catch {}
+  try {
+    const children = win.contentView?.children;
+    if (Array.isArray(children)) {
+      for (const child of children) {
+        if (child?.webContents && !child.webContents.isDestroyed?.()) {
+          const url = child.webContents.getURL?.() || '';
+          if (/^https:\/\/127\.0\.0\.1:\d+\//.test(url)) return child.webContents;
+        }
+      }
+      for (const child of children) {
+        if (child?.webContents && !child.webContents.isDestroyed?.()) return child.webContents;
+      }
+    }
+  } catch {}
+  return null;
+}
+
 function syncWindowOverlayHeight(win) {
   try {
     if (!win || process.platform === 'darwin' || win.isDestroyed?.() || typeof win.setTitleBarOverlay !== 'function') return;
-    const zf = typeof win.webContents?.getZoomFactor === 'function' ? win.webContents.getZoomFactor() : 1;
+    const wc = getWindowWebContents(win);
+    const zf = typeof wc?.getZoomFactor === 'function' ? wc.getZoomFactor() : 1;
     const targetH = Math.max(28, Math.min(60, Math.round(40 * (Number.isFinite(zf) && zf > 0 ? zf : 1))));
     win.setTitleBarOverlay({ height: targetH });
   } catch {}
@@ -200,8 +228,21 @@ function syncWindowOverlayHeight(win) {
 async function ensureMeterInjected(win, options = {}) {
   try {
     if (!win || win.isDestroyed?.()) return false;
-    const wc = win.webContents;
-    if (!wc || wc.isDestroyed?.()) return false;
+    const wc = getWindowWebContents(win);
+    if (!wc || wc.isDestroyed?.()) {
+      const attempt = Number(options.attempt || 0);
+      const delays = [300, 600, 1000, 1500, 2500];
+      if (attempt < delays.length && win && !win.isDestroyed?.()) {
+        const prevTimer = injectionTimers.get(win);
+        if (prevTimer) clearTimeout(prevTimer);
+        const t = setTimeout(() => {
+          injectionTimers.delete(win);
+          void ensureMeterInjected(win, { ...options, attempt: attempt + 1 });
+        }, delays[attempt]);
+        injectionTimers.set(win, t);
+      }
+      return false;
+    }
     const url = wc.getURL?.() || '';
     if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(url)) {
       const attempt = Number(options.attempt || 0);
@@ -280,8 +321,8 @@ exports.installContextMeter = function (win) {
     win.on?.('focus', onWinVisibleOrActive);
   }
 
-  const wc = win.webContents;
-  if (wc && !boundWebContents.has(wc)) {
+  const bindToWc = (wc) => {
+    if (!wc || boundWebContents.has(wc)) return;
     boundWebContents.add(wc);
     wc.on('did-finish-load', () => {
       void ensureMeterInjected(win, { force: true });
@@ -296,17 +337,37 @@ exports.installContextMeter = function (win) {
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('zoom-changed', () => syncWindowOverlayHeight(win));
+  };
+
+  const wc = getWindowWebContents(win);
+  if (wc) {
+    bindToWc(wc);
+  } else {
+    let retries = 0;
+    const interval = setInterval(() => {
+      retries++;
+      const candidateWc = getWindowWebContents(win);
+      if (candidateWc) {
+        clearInterval(interval);
+        bindToWc(candidateWc);
+        void ensureMeterInjected(win, { force: false });
+      } else if (retries >= 10 || !win || win.isDestroyed?.()) {
+        clearInterval(interval);
+      }
+    }, 150);
   }
 };
 
 try {
   if (app && typeof app.on === 'function') {
-    app.on('browser-window-created', (_event, win) => {
+    const handleCreated = (_event, win) => {
       try {
         exports.installContextMeter(win);
         void ensureMeterInjected(win, { force: false });
       } catch {}
-    });
+    };
+    app.on('browser-window-created', handleCreated);
+    app.on('base-window-created', handleCreated);
     app.on('activate', () => {
       try {
         const utils = require('./utils');
