@@ -1,5 +1,5 @@
 (function () {
-  const METER_VERSION = '0.8.0';
+  const METER_VERSION = '0.8.1';
 
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
@@ -377,19 +377,36 @@
       padding:0 6px;
       gap:3px;
       justify-content:center;
+      transition: transform 0.08s cubic-bezier(0.2, 0, 0, 1), background-color 0.12s ease, opacity 0.12s ease;
+      user-select: none;
+      -webkit-user-select: none;
     }
     #badge-cli:hover,#badge-cli:focus-visible{
       color:var(--ag-toolbar-fg-hover);
     }
+    #badge-cli:active,
+    #badge-cli[data-pressed="true"]{
+      transform: scale(0.92);
+      background: rgba(127, 127, 127, 0.16);
+    }
     #badge-cli[data-busy="true"]{
-      opacity:0.65;
-      pointer-events:none;
+      cursor: wait;
+      pointer-events: none;
+    }
+    #badge-cli[data-busy="true"] .cli-icon{
+      animation: ag-cli-pulse 0.8s ease-in-out infinite alternate;
+    }
+    @keyframes ag-cli-pulse {
+      0% { transform: scale(0.9); opacity: 0.6; }
+      100% { transform: scale(1.15); opacity: 1; }
     }
     .cli-icon{
       font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
       font-size:10.5px;font-weight:700;
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default));
       line-height:1;
+      display: inline-block;
+      transition: transform 0.15s ease;
     }
 
     /* CLI 启动状态提示浮层 */
@@ -962,8 +979,10 @@
     .key-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
     .key-title{font-size:12px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:5px}
     .key-pill{font-size:11px;font-weight:600;padding:1px 8px;border-radius:10px;border:1px solid transparent}
-    .pill-good{color:#52c41a;background:rgba(82,196,26,0.12);border-color:rgba(82,196,26,0.28)}
-    :host([data-theme="light"]) .pill-good{color:#389e0d;background:#f6ffed;border-color:#b7eb8f}
+    .pill-good, .pill-ok{color:#52c41a;background:rgba(82,196,26,0.12);border-color:rgba(82,196,26,0.28)}
+    :host([data-theme="light"]) .pill-good, :host([data-theme="light"]) .pill-ok{color:#389e0d;background:#f6ffed;border-color:#b7eb8f}
+    .pill-info{color:#1890ff;background:rgba(24,144,255,0.12);border-color:rgba(24,144,255,0.28)}
+    :host([data-theme="light"]) .pill-info{color:#096dd9;background:#e6f7ff;border-color:#91d5ff}
     .pill-warn{color:#faad14;background:rgba(250,173,20,0.12);border-color:rgba(250,173,20,0.28)}
     :host([data-theme="light"]) .pill-warn{color:#d46b08;background:#fff7e6;border-color:#ffd591}
     .pill-danger{color:#ff4d4f;background:rgba(255,77,79,0.14);border-color:rgba(255,77,79,0.32)}
@@ -1036,6 +1055,40 @@
       transition:transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
       will-change:transform, width;
     }
+    /* 上下文加长面板样式 */
+    .unlock-panel-content{padding:4px 0 2px;display:flex;flex-direction:column;gap:8px}
+    .unlock-status-row{display:flex;justify-content:space-between;align-items:flex-start;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
+    .unlock-label{font-size:11px;font-weight:600;color:var(--ag-text-primary);margin-bottom:2px}
+    .unlock-desc{font-size:11px;color:var(--ag-text-secondary);line-height:1.4}
+    .unlock-notice{background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.22);border-radius:6px;padding:7px 9px}
+    .unlock-notice-title{font-size:10.5px;font-weight:600;color:#eab308;margin-bottom:3px}
+    .unlock-notice-list{margin:0;padding-left:14px;font-size:10px;color:var(--ag-text-secondary);line-height:1.4}
+    .unlock-notice-list li{margin-bottom:2px}
+    .unlock-notice-list strong{color:var(--ag-text-primary)}
+    .unlock-actions-row{display:flex;gap:8px;align-items:center;margin-top:2px}
+    .unlock-btn{display:inline-flex;align-items:center;justify-content:center;padding:5px 12px;border-radius:5px;font-size:11px;font-weight:500;cursor:pointer;transition:all .15s ease}
+    .unlock-btn:disabled{opacity:0.5;cursor:not-allowed}
+    .unlock-btn-primary{background:#2563eb;color:#fff;border:1px solid #1d4ed8}
+    .unlock-btn-primary:hover:not(:disabled){background:#1d4ed8}
+    .unlock-btn-secondary{background:var(--ag-bg-subcard);color:var(--ag-text-primary);border:1px solid var(--ag-border-subcard)}
+    .unlock-btn-secondary:hover:not(:disabled){background:var(--ag-bg-card-hover)}
+    .unlock-result-box{border-radius:6px;padding:7px 9px;font-size:11px;line-height:1.4}
+    .unlock-result-box.result-success{background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);color:#22c55e}
+    .unlock-result-box.result-error{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444}
+    .unlock-meta-dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:10.5px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 10px;margin:2px 0}
+    .unlock-meta-dl dt{color:var(--ag-text-muted);font-weight:500}
+    .unlock-meta-dl dd{margin:0;color:var(--ag-text-secondary);word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    .unlock-credit-bar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:10.5px;color:var(--ag-text-muted);border-top:1px dashed var(--ag-border-subtle);padding-top:7px;margin-top:4px}
+    .unlock-credit-left{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .unlock-author-link{color:var(--ag-link,#38bdf8);text-decoration:underline;text-underline-offset:2px;font-weight:600;cursor:pointer;padding:1px 4px;border-radius:4px;transition:all .15s ease;display:inline-flex;align-items:center}
+    .unlock-author-link:hover{color:#7dd3fc;background:rgba(56,189,248,0.12)}
+    .unlock-author-link:focus-visible{outline:2px solid var(--ag-link,#38bdf8);background:rgba(56,189,248,0.18)}
+    .unlock-copy-link-btn{background:transparent;border:1px solid var(--ag-border-subcard);color:var(--ag-text-muted);border-radius:4px;font-size:10px;padding:1px 6px;cursor:pointer;transition:all .15s ease}
+    .unlock-copy-link-btn:hover{color:var(--ag-text-primary);border-color:var(--ag-text-muted);background:var(--ag-bg-card-hover)}
+    .unlock-copy-link-btn:focus-visible{outline:1px solid var(--ag-link,#38bdf8)}
+    .unlock-link-toast{margin-top:4px;font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(56,189,248,0.12);color:var(--ag-text-primary);border:1px solid rgba(56,189,248,0.3);line-height:1.4;animation:agSmoothExpand 0.15s ease}
+    .unlock-adapter-note{font-size:9.5px;opacity:0.8}
+
     @media (prefers-reduced-motion: reduce){
       .heat-tab-thumb{transition:none!important}
     }
@@ -1081,6 +1134,40 @@
     .heat-yearly-svg{width:100%;height:105px;display:block;overflow:visible}
     @keyframes bubblePopIn{0%{transform:scale(0.6);opacity:0}100%{transform:scale(1);opacity:1}}
     .heat-yearly-bubble-group{transform-origin:center center;animation:bubblePopIn 0.22s cubic-bezier(0.16,1,0.3,1) both;cursor:pointer}
+    /* 上下文加长面板样式 */
+    .unlock-panel-content{padding:4px 0 2px;display:flex;flex-direction:column;gap:8px}
+    .unlock-status-row{display:flex;justify-content:space-between;align-items:flex-start;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
+    .unlock-label{font-size:11px;font-weight:600;color:var(--ag-text-primary);margin-bottom:2px}
+    .unlock-desc{font-size:11px;color:var(--ag-text-secondary);line-height:1.4}
+    .unlock-notice{background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.22);border-radius:6px;padding:7px 9px}
+    .unlock-notice-title{font-size:10.5px;font-weight:600;color:#eab308;margin-bottom:3px}
+    .unlock-notice-list{margin:0;padding-left:14px;font-size:10px;color:var(--ag-text-secondary);line-height:1.4}
+    .unlock-notice-list li{margin-bottom:2px}
+    .unlock-notice-list strong{color:var(--ag-text-primary)}
+    .unlock-actions-row{display:flex;gap:8px;align-items:center;margin-top:2px}
+    .unlock-btn{display:inline-flex;align-items:center;justify-content:center;padding:5px 12px;border-radius:5px;font-size:11px;font-weight:500;cursor:pointer;transition:all .15s ease}
+    .unlock-btn:disabled{opacity:0.5;cursor:not-allowed}
+    .unlock-btn-primary{background:#2563eb;color:#fff;border:1px solid #1d4ed8}
+    .unlock-btn-primary:hover:not(:disabled){background:#1d4ed8}
+    .unlock-btn-secondary{background:var(--ag-bg-subcard);color:var(--ag-text-primary);border:1px solid var(--ag-border-subcard)}
+    .unlock-btn-secondary:hover:not(:disabled){background:var(--ag-bg-card-hover)}
+    .unlock-result-box{border-radius:6px;padding:7px 9px;font-size:11px;line-height:1.4}
+    .unlock-result-box.result-success{background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);color:#22c55e}
+    .unlock-result-box.result-error{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444}
+    .unlock-meta-dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:10.5px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 10px;margin:2px 0}
+    .unlock-meta-dl dt{color:var(--ag-text-muted);font-weight:500}
+    .unlock-meta-dl dd{margin:0;color:var(--ag-text-secondary);word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    .unlock-credit-bar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:10.5px;color:var(--ag-text-muted);border-top:1px dashed var(--ag-border-subtle);padding-top:7px;margin-top:4px}
+    .unlock-credit-left{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .unlock-author-link{color:var(--ag-link,#38bdf8);text-decoration:underline;text-underline-offset:2px;font-weight:600;cursor:pointer;padding:1px 4px;border-radius:4px;transition:all .15s ease;display:inline-flex;align-items:center}
+    .unlock-author-link:hover{color:#7dd3fc;background:rgba(56,189,248,0.12)}
+    .unlock-author-link:focus-visible{outline:2px solid var(--ag-link,#38bdf8);background:rgba(56,189,248,0.18)}
+    .unlock-copy-link-btn{background:transparent;border:1px solid var(--ag-border-subcard);color:var(--ag-text-muted);border-radius:4px;font-size:10px;padding:1px 6px;cursor:pointer;transition:all .15s ease}
+    .unlock-copy-link-btn:hover{color:var(--ag-text-primary);border-color:var(--ag-text-muted);background:var(--ag-bg-card-hover)}
+    .unlock-copy-link-btn:focus-visible{outline:1px solid var(--ag-link,#38bdf8)}
+    .unlock-link-toast{margin-top:4px;font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(56,189,248,0.12);color:var(--ag-text-primary);border:1px solid rgba(56,189,248,0.3);line-height:1.4;animation:agSmoothExpand 0.15s ease}
+    .unlock-adapter-note{font-size:9.5px;opacity:0.8}
+
     @media (prefers-reduced-motion: reduce){.heat-yearly-bubble-group{animation:none!important}}
     .heat-yearly-bubble-group:hover circle.bubble-main{filter:brightness(1.22);stroke:var(--ag-text-primary);stroke-width:1.5px}
 
@@ -1103,7 +1190,7 @@
       background:#ef4444;box-shadow:0 0 0 1.5px var(--ag-bg-panel);
     }
     .update-popover{
-      position:absolute;top:44px;right:14px;width:280px;max-width:calc(100% - 28px);
+      position:fixed;top:80px;right:24px;width:290px;max-width:calc(100vw - 28px);
       background:var(--ag-unified-bg,#1e1e24);border:1px solid var(--ag-float-border,rgba(255,255,255,0.18));
       border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.3);
       padding:11px 13px;z-index:2147483647;
@@ -1172,6 +1259,40 @@
     .pop-det-col{display:inline-flex;flex-direction:column;align-items:flex-start;gap:2px}
     .pop-det-val{font-size:11px;font-weight:500;color:var(--ag-pop-sub);font-variant-numeric:tabular-nums;white-space:nowrap}
     .pop-det-trans{font-size:9.5px;color:var(--ag-pop-muted);opacity:0.88;white-space:nowrap;line-height:1.2}
+
+    /* 上下文加长面板样式 */
+    .unlock-panel-content{padding:4px 0 2px;display:flex;flex-direction:column;gap:8px}
+    .unlock-status-row{display:flex;justify-content:space-between;align-items:flex-start;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
+    .unlock-label{font-size:11px;font-weight:600;color:var(--ag-text-primary);margin-bottom:2px}
+    .unlock-desc{font-size:11px;color:var(--ag-text-secondary);line-height:1.4}
+    .unlock-notice{background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.22);border-radius:6px;padding:7px 9px}
+    .unlock-notice-title{font-size:10.5px;font-weight:600;color:#eab308;margin-bottom:3px}
+    .unlock-notice-list{margin:0;padding-left:14px;font-size:10px;color:var(--ag-text-secondary);line-height:1.4}
+    .unlock-notice-list li{margin-bottom:2px}
+    .unlock-notice-list strong{color:var(--ag-text-primary)}
+    .unlock-actions-row{display:flex;gap:8px;align-items:center;margin-top:2px}
+    .unlock-btn{display:inline-flex;align-items:center;justify-content:center;padding:5px 12px;border-radius:5px;font-size:11px;font-weight:500;cursor:pointer;transition:all .15s ease}
+    .unlock-btn:disabled{opacity:0.5;cursor:not-allowed}
+    .unlock-btn-primary{background:#2563eb;color:#fff;border:1px solid #1d4ed8}
+    .unlock-btn-primary:hover:not(:disabled){background:#1d4ed8}
+    .unlock-btn-secondary{background:var(--ag-bg-subcard);color:var(--ag-text-primary);border:1px solid var(--ag-border-subcard)}
+    .unlock-btn-secondary:hover:not(:disabled){background:var(--ag-bg-card-hover)}
+    .unlock-result-box{border-radius:6px;padding:7px 9px;font-size:11px;line-height:1.4}
+    .unlock-result-box.result-success{background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);color:#22c55e}
+    .unlock-result-box.result-error{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444}
+    .unlock-meta-dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:10.5px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 10px;margin:2px 0}
+    .unlock-meta-dl dt{color:var(--ag-text-muted);font-weight:500}
+    .unlock-meta-dl dd{margin:0;color:var(--ag-text-secondary);word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    .unlock-credit-bar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:10.5px;color:var(--ag-text-muted);border-top:1px dashed var(--ag-border-subtle);padding-top:7px;margin-top:4px}
+    .unlock-credit-left{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .unlock-author-link{color:var(--ag-link,#38bdf8);text-decoration:underline;text-underline-offset:2px;font-weight:600;cursor:pointer;padding:1px 4px;border-radius:4px;transition:all .15s ease;display:inline-flex;align-items:center}
+    .unlock-author-link:hover{color:#7dd3fc;background:rgba(56,189,248,0.12)}
+    .unlock-author-link:focus-visible{outline:2px solid var(--ag-link,#38bdf8);background:rgba(56,189,248,0.18)}
+    .unlock-copy-link-btn{background:transparent;border:1px solid var(--ag-border-subcard);color:var(--ag-text-muted);border-radius:4px;font-size:10px;padding:1px 6px;cursor:pointer;transition:all .15s ease}
+    .unlock-copy-link-btn:hover{color:var(--ag-text-primary);border-color:var(--ag-text-muted);background:var(--ag-bg-card-hover)}
+    .unlock-copy-link-btn:focus-visible{outline:1px solid var(--ag-link,#38bdf8)}
+    .unlock-link-toast{margin-top:4px;font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(56,189,248,0.12);color:var(--ag-text-primary);border:1px solid rgba(56,189,248,0.3);line-height:1.4;animation:agSmoothExpand 0.15s ease}
+    .unlock-adapter-note{font-size:9.5px;opacity:0.8}
 
     @media (prefers-reduced-motion: reduce){
       *,.ag-unit,.ring-fill,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill{
@@ -1273,7 +1394,7 @@
 
     <div id="view-context">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <h3 style="margin:0">会话用量与生成监控<span id="v">v0.8.0</span></h3>
+        <h3 style="margin:0">会话用量与生成监控<span id="v">v0.8.1</span></h3>
       </div>
 
       <!-- 本轮与当前会话实时 API 等值参考行 -->
@@ -1315,6 +1436,69 @@
           </div>
         </div>
         <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
+      </div>
+
+      <!-- 二级交互折叠区: 上下文加长 (解除 256K 限制 / 实验特性) -->
+      <div class="tech-drawer" id="context-unlock-drawer">
+        <button id="btn-toggle-unlock" class="drawer-trigger" aria-expanded="false" type="button">
+          <span class="drawer-trigger-left">
+            <span>⚡ 上下文加长（解除 256K 限制 / 实验特性）</span>
+            <span id="unlock-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
+          </span>
+          <span id="unlock-drawer-arrow" class="drawer-arrow">▼ 展开</span>
+        </button>
+        <div id="unlock-drawer-body" class="drawer-body" style="display:none;">
+          <div class="unlock-panel-content">
+            <div class="unlock-status-row">
+              <div class="unlock-status-meta">
+                <div class="unlock-label">当前后端补丁状态</div>
+                <div id="unlock-status-desc" class="unlock-desc">正在分析当前 Antigravity 后端二进制…</div>
+              </div>
+            </div>
+
+            <div class="unlock-notice">
+              <div class="unlock-notice-title">⚠️ 技术边界与重要说明</div>
+              <ul class="unlock-notice-list">
+                <li>本功能为非官方本地技术修补，通过移除 <code>language_server</code> 中的 256,000 封顶截断序列，恢复按模型物理窗口动态分配（如 1M 模型最高 983,040 tokens）。</li>
+                <li><strong>桌面端差异</strong>：桌面端为独立后端服务架构，仅解除底层压缩硬上限，无 CLI 档位切换菜单；亦无法突破模型服务端支持的最大物理窗口。</li>
+                <li><strong>更新与账号风险</strong>：官方更新客户端后可能需重新应用；账号风险未知，无法承诺“不会封号”。</li>
+              </ul>
+            </div>
+
+            <div class="unlock-actions-row">
+              <button id="btn-apply-unlock" class="unlock-btn unlock-btn-primary" type="button">
+                <span>⚡ 立即应用加长补丁</span>
+              </button>
+              <button id="btn-restore-unlock" class="unlock-btn unlock-btn-secondary" type="button">
+                <span>🔄 恢复官方原版</span>
+              </button>
+              <button id="btn-refresh-unlock" class="unlock-btn unlock-btn-secondary" type="button" title="重新检测状态">
+                <span>🔄 刷新</span>
+              </button>
+            </div>
+
+            <div id="unlock-result-box" class="unlock-result-box" style="display:none;">
+              <div id="unlock-result-text" class="unlock-result-text"></div>
+            </div>
+
+            <dl class="unlock-meta-dl">
+              <dt>目标后端</dt><dd id="unlock-meta-target">—</dd>
+              <dt>目标架构</dt><dd id="unlock-meta-arch">—</dd>
+              <dt>文件哈希 (SHA-256)</dt><dd id="unlock-meta-sha">—</dd>
+              <dt>原版备份状态</dt><dd id="unlock-meta-backup">—</dd>
+            </dl>
+
+            <div class="unlock-credit-bar">
+              <div class="unlock-credit-left">
+                <span class="unlock-credit-lbl">解锁方案来源：</span>
+                <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank" rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0" title="点击在系统默认浏览器中打开原作者帖子">原作者帖子 (Linux.do @23375) ↗</a>
+                <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接">📋 复制链接</button>
+              </div>
+              <span class="unlock-adapter-note">本项目负责 Node.js 原生适配与客户端集成</span>
+            </div>
+            <div id="unlock-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
+          </div>
+        </div>
       </div>
 
       <!-- 二级交互折叠区 1: 面板背景与指标颜色自定义（就近放置于面板 B 内部） -->
@@ -1430,26 +1614,6 @@
         <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
         <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
-    </div>
-
-    <!-- 在线更新浮层，定位于 panel-tokens 内 -->
-    <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
-      <div class="update-pop-hdr">
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">🚀 发现新版本</span>
-          <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.0</span>
-        </div>
-        <button id="btn-close-update-pop" class="panel-icon-btn" type="button" style="padding:1px 5px;font-size:13px">×</button>
-      </div>
-      <div id="up-pop-body" class="update-pop-body">
-        正在检测最新版本…
-      </div>
-      <div id="up-pop-footer" class="update-pop-footer">
-        <button id="btn-view-release-page" class="switch-pill-btn" type="button">查看发布页</button>
-        <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
-        <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
-      </div>
-      <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
     </div>
 
     <div id="view-tokens">
@@ -2126,6 +2290,26 @@
       <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)">支持直接输入或粘贴 HEX 色值</span>
       <button id="cp-reset-slot" class="color-reset-btn" type="button">跟随主题</button>
     </div>
+  </div>
+
+  <!-- 全局在线更新浮层（跨面板独立定位与显示） -->
+  <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
+    <div class="update-pop-hdr">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">🚀 检查更新</span>
+        <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.1</span>
+      </div>
+      <button id="btn-close-update-pop" class="panel-icon-btn" type="button" style="padding:1px 5px;font-size:13px">×</button>
+    </div>
+    <div id="up-pop-body" class="update-pop-body">
+      正在检测最新版本…
+    </div>
+    <div id="up-pop-footer" class="update-pop-footer">
+      <button id="btn-view-release-page" class="switch-pill-btn" type="button">查看发布页</button>
+      <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
+      <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
+    </div>
+    <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
   </div>
 
   <!-- 热力图浮动 Tooltip -->
@@ -3650,6 +3834,7 @@
     const bTokens = el('badge-tokens');
     const bOverflow = el('badge-overflow');
 
+    hideUpdatePopover();
     if (pOverflow) pOverflow.hidden = true;
     bOverflow?.setAttribute('aria-expanded', 'false');
 
@@ -5516,13 +5701,32 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   async function triggerLaunchCli(customOpts = {}) {
-    if (cliLaunchBusy) return { ok: false, error: 'CLI 正在启动中，请稍候' };
+    if (cliLaunchBusy) {
+      showCliToast('CLI 正在启动中，请稍候…', false);
+      return { ok: false, error: 'CLI 正在启动中，请稍候' };
+    }
     cliLaunchBusy = true;
     const btn = el('badge-cli');
+    const label = el('cli-label');
     btn?.setAttribute('data-busy', 'true');
+    if (label) label.textContent = '…';
+    try {
+      if (typeof document !== 'undefined' && document.activeElement?.blur) {
+        document.activeElement.blur();
+      }
+    } catch {}
+
+    const hostBounds = {
+      x: typeof window !== 'undefined' ? (window.screenX || 0) : 0,
+      y: typeof window !== 'undefined' ? (window.screenY || 0) : 0,
+      width: typeof window !== 'undefined' ? (window.outerWidth || window.innerWidth || 1200) : 1200,
+      height: typeof window !== 'undefined' ? (window.outerHeight || window.innerHeight || 800) : 800
+    };
+
     const reqOpts = {
       cascadeId: state.route || undefined,
       cwd: customOpts.cwd !== undefined ? customOpts.cwd : (state.scan?.workspacePath || undefined),
+      hostBounds,
       ...customOpts
     };
     try {
@@ -5560,10 +5764,28 @@ function closeAllDropdowns(exceptWrap = null) {
     } finally {
       cliLaunchBusy = false;
       btn?.removeAttribute('data-busy');
+      btn?.removeAttribute('data-pressed');
+      if (label) label.textContent = 'CLI';
     }
   }
 
-  el('badge-cli')?.addEventListener('click', () => { void triggerLaunchCli(); });
+  const badgeCliEl = el('badge-cli');
+  if (badgeCliEl) {
+    const releasePress = () => {
+      badgeCliEl.removeAttribute('data-pressed');
+    };
+    badgeCliEl.addEventListener('pointerdown', () => {
+      badgeCliEl.setAttribute('data-pressed', 'true');
+    });
+    badgeCliEl.addEventListener('pointerup', releasePress);
+    badgeCliEl.addEventListener('pointercancel', releasePress);
+    badgeCliEl.addEventListener('mouseleave', releasePress);
+    badgeCliEl.addEventListener('blur', releasePress);
+    badgeCliEl.addEventListener('click', () => {
+      releasePress();
+      void triggerLaunchCli();
+    });
+  }
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
   el('badge').addEventListener('click', toggleContext);
@@ -5596,6 +5818,288 @@ function closeAllDropdowns(exceptWrap = null) {
   el('badge').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
+
+  // 二级抽屉: 上下文加长折叠展开与状态机
+  const btnUnlock = el('btn-toggle-unlock');
+  const unlockDrawerBody = el('unlock-drawer-body');
+  const unlockDrawerArrow = el('unlock-drawer-arrow');
+  const unlockBadge = el('unlock-badge');
+  const unlockStatusDesc = el('unlock-status-desc');
+  const btnApplyUnlock = el('btn-apply-unlock');
+  const btnRestoreUnlock = el('btn-restore-unlock');
+  const btnRefreshUnlock = el('btn-refresh-unlock');
+  const unlockResultBox = el('unlock-result-box');
+  const unlockResultText = el('unlock-result-text');
+  const unlockMetaTarget = el('unlock-meta-target');
+  const unlockMetaArch = el('unlock-meta-arch');
+  const unlockMetaSha = el('unlock-meta-sha');
+  const unlockMetaBackup = el('unlock-meta-backup');
+  const linkUnlockAuthor = el('link-unlock-author');
+  const btnCopyUnlockLink = el('btn-copy-unlock-link');
+  const unlockLinkToast = el('unlock-link-toast');
+
+  let currentUnlockStatus = null;
+  let isUnlocking = false;
+  let unlockReqSeq = 0;
+
+  function toggleUnlockDrawer(forceOpen) {
+    if (!unlockDrawerBody) return;
+    const isHidden = unlockDrawerBody.style.display === 'none' || !unlockDrawerBody.style.display;
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
+    unlockDrawerBody.style.display = nextOpen ? 'block' : 'none';
+    if (unlockDrawerArrow) unlockDrawerArrow.textContent = nextOpen ? '▲ 收起' : '▼ 展开';
+    btnUnlock?.setAttribute('aria-expanded', String(nextOpen));
+    if (nextOpen && !currentUnlockStatus) {
+      void refreshUnlockStatus();
+    }
+  }
+  btnUnlock?.addEventListener('click', () => toggleUnlockDrawer());
+
+  async function invokeUnlockApi(endpoint, payload = {}) {
+    if (endpoint === 'status' && window.contextMeterAPI?.getContextUnlockStatus) {
+      return await window.contextMeterAPI.getContextUnlockStatus(payload);
+    }
+    if (endpoint === 'apply' && window.contextMeterAPI?.applyContextUnlock) {
+      return await window.contextMeterAPI.applyContextUnlock(payload);
+    }
+    if (endpoint === 'restore' && window.contextMeterAPI?.restoreContextUnlock) {
+      return await window.contextMeterAPI.restoreContextUnlock(payload);
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const r = await fetch(`http://127.0.0.1:${live.port}/context-unlock-${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+        body: JSON.stringify(payload)
+      });
+      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+    }
+    return { ok: false, error: '未连接到桥接服务（请重启客户端生效新 IPC，或执行 node cli.js live）' };
+  }
+
+  async function refreshUnlockStatus() {
+    if (!unlockBadge) return;
+    const thisSeq = ++unlockReqSeq;
+    try {
+      const currentObservedBudget = (state.latest?.budget && state.latest.budget > 0)
+        ? state.latest.budget
+        : undefined;
+      const res = await invokeUnlockApi('status', { currentBudget: currentObservedBudget });
+      if (thisSeq !== unlockReqSeq) return;
+
+      if (!res || !res.ok || !res.data) {
+        unlockBadge.textContent = '检测失败';
+        unlockBadge.className = 'key-pill pill-danger';
+        if (unlockStatusDesc) unlockStatusDesc.textContent = res?.error || '获取后端状态失败。';
+        return;
+      }
+      const data = res.data;
+      currentUnlockStatus = data;
+
+      unlockBadge.textContent = data.statusText || data.status;
+      if (data.status === 'verified_active') {
+        unlockBadge.className = 'key-pill pill-ok';
+      } else if (data.status === 'patched_runtime_unconfirmed') {
+        unlockBadge.className = 'key-pill pill-info';
+      } else if (data.status === 'patched_pending_restart') {
+        unlockBadge.className = 'key-pill pill-warn';
+      } else if (data.status === 'not_patched') {
+        unlockBadge.className = 'key-pill pill-muted';
+      } else {
+        unlockBadge.className = 'key-pill pill-danger';
+      }
+
+      if (unlockStatusDesc) {
+        unlockStatusDesc.textContent = data.details || data.reason || '状态已更新。';
+      }
+
+      if (unlockMetaTarget) unlockMetaTarget.textContent = data.targetPath || '未检测到';
+      if (unlockMetaArch) unlockMetaArch.textContent = `${data.arch || '未知'} (${data.format || '未知'}, ${data.mode || '未知'})`;
+      if (unlockMetaSha) unlockMetaSha.textContent = data.sha256 ? `${data.sha256.slice(0, 16)}…` : '—';
+      if (unlockMetaBackup) {
+        if (data.hasBackup && data.backupInfo) {
+          unlockMetaBackup.textContent = `已备份 (${data.backupInfo.backupPath})`;
+        } else {
+          unlockMetaBackup.textContent = '尚未备份（首次应用时将自动安全备份至应用目录外部）';
+        }
+      }
+
+      if (btnApplyUnlock) {
+        if (data.status === 'not_patched') {
+          btnApplyUnlock.disabled = false;
+          btnApplyUnlock.textContent = '⚡ 立即应用加长补丁';
+        } else if (data.status === 'verified_active') {
+          btnApplyUnlock.disabled = true;
+          btnApplyUnlock.textContent = '✅ 已生效（无需重复应用）';
+        } else if (data.status === 'patched_runtime_unconfirmed') {
+          btnApplyUnlock.disabled = true;
+          btnApplyUnlock.textContent = '🔍 补丁已写入（运行状态待确认）';
+        } else if (data.status === 'patched_pending_restart') {
+          btnApplyUnlock.disabled = true;
+          btnApplyUnlock.textContent = '⏳ 已打补丁（待重启客户端）';
+        } else {
+          btnApplyUnlock.disabled = true;
+          btnApplyUnlock.textContent = '⚠️ 当前目标不受支持';
+        }
+      }
+
+      if (btnRestoreUnlock) {
+        if (data.status === 'verified_active' || data.status === 'patched_pending_restart' || data.status === 'patched_runtime_unconfirmed' || data.hasBackup) {
+          btnRestoreUnlock.disabled = false;
+        } else {
+          btnRestoreUnlock.disabled = true;
+        }
+      }
+    } catch (e) {
+      if (thisSeq !== unlockReqSeq) return;
+      unlockBadge.textContent = '异常';
+      unlockBadge.className = 'key-pill pill-danger';
+      if (unlockStatusDesc) unlockStatusDesc.textContent = `检测异常: ${e.message}`;
+    }
+  }
+
+  btnRefreshUnlock?.addEventListener('click', () => {
+    void refreshUnlockStatus();
+  });
+
+  btnApplyUnlock?.addEventListener('click', async () => {
+    if (isUnlocking) return;
+    isUnlocking = true;
+    if (btnApplyUnlock) btnApplyUnlock.disabled = true;
+    if (unlockResultBox) unlockResultBox.style.display = 'none';
+
+    try {
+      const res = await invokeUnlockApi('apply');
+      if (!res || !res.ok) {
+        throw new Error(res?.error || '应用补丁失败');
+      }
+      if (unlockResultBox && unlockResultText) {
+        unlockResultBox.style.display = 'block';
+        unlockResultBox.className = 'unlock-result-box result-success';
+        unlockResultText.innerHTML = `<strong>🎉 解锁成功！</strong><br>${res.message || '补丁已安全写入。'}`;
+      }
+    } catch (e) {
+      if (unlockResultBox && unlockResultText) {
+        unlockResultBox.style.display = 'block';
+        unlockResultBox.className = 'unlock-result-box result-error';
+        unlockResultText.innerHTML = `<strong>❌ 应用补丁失败：</strong>${e.message}`;
+      }
+    } finally {
+      isUnlocking = false;
+      await refreshUnlockStatus();
+    }
+  });
+
+  btnRestoreUnlock?.addEventListener('click', async () => {
+    if (isUnlocking) return;
+    isUnlocking = true;
+    if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
+    if (unlockResultBox) unlockResultBox.style.display = 'none';
+
+    try {
+      const res = await invokeUnlockApi('restore');
+      if (!res || !res.ok) {
+        throw new Error(res?.error || '恢复原版失败');
+      }
+      if (unlockResultBox && unlockResultText) {
+        unlockResultBox.style.display = 'block';
+        unlockResultBox.className = 'unlock-result-box result-success';
+        unlockResultText.innerHTML = `<strong>🔄 恢复成功！</strong><br>${res.message || '已成功还原官方原版二进制。'}`;
+      }
+    } catch (e) {
+      if (unlockResultBox && unlockResultText) {
+        unlockResultBox.style.display = 'block';
+        unlockResultBox.className = 'unlock-result-box result-error';
+        unlockResultText.innerHTML = `<strong>❌ 恢复原版失败：</strong>${e.message}`;
+      }
+    } finally {
+      isUnlocking = false;
+      await refreshUnlockStatus();
+    }
+  });
+
+  const UNLOCK_POST_URL = 'https://linux.do/t/topic/3117832';
+  let unlockToastTimer = null;
+
+  function showUnlockToast(msg) {
+    if (!unlockLinkToast) return;
+    if (unlockToastTimer) clearTimeout(unlockToastTimer);
+    unlockLinkToast.textContent = msg;
+    unlockLinkToast.style.display = 'block';
+    unlockToastTimer = setTimeout(() => {
+      unlockLinkToast.style.display = 'none';
+    }, 4500);
+  }
+
+  async function openUnlockAuthorPost() {
+    let opened = false;
+    try {
+      if (window.contextMeterAPI?.openExternal) {
+        const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
+        if (res && res.ok) opened = true;
+      }
+    } catch {}
+
+    if (!opened) {
+      try {
+        const w = window.open(UNLOCK_POST_URL, '_blank');
+        if (w) opened = true;
+      } catch {}
+    }
+
+    if (opened) {
+      showUnlockToast('已在系统默认浏览器中打开原作者帖子');
+    } else {
+      copyUnlockPostUrl(true);
+    }
+  }
+
+  function copyUnlockPostUrl(fromFailedOpen = false) {
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(UNLOCK_POST_URL);
+        copied = true;
+      }
+    } catch {}
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = UNLOCK_POST_URL;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        copied = true;
+      } catch {}
+    }
+    showUnlockToast(fromFailedOpen
+      ? '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。'
+      : '原作者帖子链接已成功复制到剪贴板！');
+  }
+
+  linkUnlockAuthor?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void openUnlockAuthorPost();
+  });
+
+  linkUnlockAuthor?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      void openUnlockAuthorPost();
+    }
+  });
+
+  btnCopyUnlockLink?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyUnlockPostUrl(false);
+  });
+
+  // 静默初始化检测一次解锁状态（不执行修改）
+  setTimeout(() => { void refreshUnlockStatus(); }, 500);
 
   // 二级抽屉 1（面板 B 内）: 指标与背景颜色自定义抽屉折叠展开
   const btnColors = el('btn-toggle-colors');
@@ -6683,33 +7187,80 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   }
 
-  async function checkAppUpdate(manual = false) {
+  let currentUpdateTrigger = 'tokens';
+
+  function positionUpdatePopover(trigger = currentUpdateTrigger) {
+    const pop = el('update-popover');
+    if (!pop) return;
+    const triggerBtn = trigger === 'ctx' ? el('btn-check-update-ctx') : el('btn-check-update');
+    if (!triggerBtn || typeof triggerBtn.getBoundingClientRect !== 'function') return;
+    const rect = triggerBtn.getBoundingClientRect();
+    const winW = typeof window !== 'undefined' ? (window.innerWidth || 1024) : 1024;
+    const winH = typeof window !== 'undefined' ? (window.innerHeight || 768) : 768;
+    let right = Math.max(14, winW - rect.right);
+    let top = rect.bottom + 8;
+    if (top + 220 > winH) {
+      top = Math.max(10, rect.top - 230);
+    }
+    pop.style.position = 'fixed';
+    pop.style.top = `${Math.round(top)}px`;
+    pop.style.right = `${Math.round(right)}px`;
+    pop.style.left = 'auto';
+  }
+
+  function showUpdatePopover(trigger = currentUpdateTrigger) {
+    const pop = el('update-popover');
+    if (!pop) return;
+    currentUpdateTrigger = trigger;
+    positionUpdatePopover(trigger);
+    pop.style.display = 'block';
+  }
+
+  function hideUpdatePopover() {
+    const pop = el('update-popover');
+    if (pop) pop.style.display = 'none';
+  }
+
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', () => {
+      const pop = el('update-popover');
+      if (pop && pop.style.display === 'block') {
+        positionUpdatePopover();
+      }
+    });
+  }
+
+  async function checkAppUpdate(manual = false, trigger = currentUpdateTrigger) {
     const dot = el('update-badge-dot');
     const dotCtx = el('update-badge-dot-ctx');
     const pop = el('update-popover');
+    const titleEl = el('up-pop-title');
     const bodyEl = el('up-pop-body');
     const verEl = el('up-pop-ver');
     const statusEl = el('up-pop-status');
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.1';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
-      if (verEl) verEl.textContent = 'v0.8.0 (更新不可用)';
+      if (titleEl) titleEl.textContent = 'ℹ️ 更新不可用';
+      if (verEl) verEl.textContent = `v${currentVer} (更新不可用)`;
       if (bodyEl) bodyEl.textContent = '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。';
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-      if (manual && pop) pop.style.display = 'block';
+      if (manual) showUpdatePopover(trigger);
       return;
     }
 
     if (manual) {
       cachedLatestRelease = null;
-      if (pop) pop.style.display = 'block';
-      if (verEl) verEl.textContent = 'v0.8.0 (正在检查…)';
+      showUpdatePopover(trigger);
+      if (titleEl) titleEl.textContent = '🔄 检查更新中';
+      if (verEl) verEl.textContent = `v${currentVer} (正在检查…)`;
       if (bodyEl) bodyEl.textContent = '正在连接 GitHub 检测最新版本…';
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -6723,11 +7274,12 @@ function closeAllDropdowns(exceptWrap = null) {
         cachedLatestRelease = null;
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
-        if (verEl) verEl.textContent = 'v0.8.0 (检查失败)';
+        if (titleEl) titleEl.textContent = '⚠️ 检查更新失败';
+        if (verEl) verEl.textContent = `v${currentVer} (检查失败)`;
         const errMsg = res?.error || '未能获取有效的版本数据';
         if (bodyEl) bodyEl.textContent = `检查更新失败: ${errMsg}。请检查网络代理设置或前往 GitHub 查看。`;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-        if (manual && pop) pop.style.display = 'block';
+        if (manual) showUpdatePopover(trigger);
         return;
       }
 
@@ -6735,7 +7287,8 @@ function closeAllDropdowns(exceptWrap = null) {
         cachedLatestRelease = res;
         if (dot) dot.style.display = 'block';
         if (dotCtx) dotCtx.style.display = 'block';
-        if (verEl) verEl.textContent = `v${res.currentVersion || '0.8.0'} → v${res.latestVersion}`;
+        if (titleEl) titleEl.textContent = '🚀 发现新版本';
+        if (verEl) verEl.textContent = `v${res.currentVersion || currentVer} → v${res.latestVersion}`;
         if (bodyEl) {
           bodyEl.textContent = `发现新版本 v${res.latestVersion}！\n\n更新说明：\n${res.releaseNotes || '性能优化与体验改进'}`;
         }
@@ -6744,24 +7297,27 @@ function closeAllDropdowns(exceptWrap = null) {
           applyBtn.textContent = '立即更新';
           applyBtn.style.display = 'inline-block';
         }
-        if (manual && pop) pop.style.display = 'block';
+        if (manual) showUpdatePopover(trigger);
       } else {
         cachedLatestRelease = null;
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
-        if (verEl) verEl.textContent = `v${res.currentVersion || '0.8.0'} (已是最新)`;
-        if (bodyEl) bodyEl.textContent = `当前已是最新版本 (v${res.currentVersion || '0.8.0'})。已通过 GitHub Releases 确认。`;
+        if (titleEl) titleEl.textContent = '✅ 已是最新版本';
+        const effectiveCurrent = res.currentVersion || currentVer;
+        if (verEl) verEl.textContent = `v${effectiveCurrent} (已是最新)`;
+        if (bodyEl) bodyEl.textContent = `当前已是最新版本 (v${effectiveCurrent})。已通过 GitHub Releases 确认。`;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-        if (manual && pop) pop.style.display = 'block';
+        if (manual) showUpdatePopover(trigger);
       }
     } catch (err) {
       cachedLatestRelease = null;
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
-      if (verEl) verEl.textContent = 'v0.8.0 (检查失败)';
+      if (titleEl) titleEl.textContent = '⚠️ 检查更新失败';
+      if (verEl) verEl.textContent = `v${currentVer} (检查失败)`;
       if (bodyEl) bodyEl.textContent = `检查更新失败: ${err.message}。请检查网络连接或稍后重试。`;
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-      if (manual && pop) pop.style.display = 'block';
+      if (manual) showUpdatePopover(trigger);
     }
   }
 
@@ -6812,18 +7368,18 @@ function closeAllDropdowns(exceptWrap = null) {
   el('btn-github-repo-ctx')?.addEventListener('click', () => openGithubRepo());
   el('btn-check-update')?.addEventListener('click', () => {
     const pop = el('update-popover');
-    if (pop && pop.style.display === 'block') {
+    if (pop && pop.style.display === 'block' && currentUpdateTrigger === 'tokens') {
       pop.style.display = 'none';
     } else {
-      void checkAppUpdate(true);
+      void checkAppUpdate(true, 'tokens');
     }
   });
   el('btn-check-update-ctx')?.addEventListener('click', () => {
     const pop = el('update-popover');
-    if (pop && pop.style.display === 'block') {
+    if (pop && pop.style.display === 'block' && currentUpdateTrigger === 'ctx') {
       pop.style.display = 'none';
     } else {
-      void checkAppUpdate(true);
+      void checkAppUpdate(true, 'ctx');
     }
   });
   el('btn-close-update-pop')?.addEventListener('click', () => {
@@ -7761,6 +8317,11 @@ function renderHeatmapGrid(forceRebuild = false) {
 
     updateRingAndBubble(d, session, pct, danger, stale, incomplete);
 
+    // 上下文预算与解锁状态自动联动：若观测到预算突破 256,000，且解锁抽屉中记录仍为待重启或未确认，则自动触发刷新同步
+    if (d?.budget && d.budget > 256000 && currentUnlockStatus && currentUnlockStatus.status !== 'verified_active') {
+      void refreshUnlockStatus();
+    }
+
     const status = disp.isError
       ? disp.statusText
       : stale ? '最近请求统计读取异常或延迟，不能判断剩余空间。'
@@ -8041,7 +8602,7 @@ function renderHeatmapGrid(forceRebuild = false) {
 
   const timer = setInterval(tick, 500);
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.0',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.1',
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();

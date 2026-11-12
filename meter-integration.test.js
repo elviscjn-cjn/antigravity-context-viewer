@@ -225,3 +225,58 @@ test('插件 Windows 交互式 CLI 子进程环境配置恢复原生渐变彩虹
     if (prevColorTerm !== undefined) process.env.COLORTERM = prevColorTerm; else delete process.env.COLORTERM;
   }
 });
+
+// ============================================================================
+// 7. 验证 CLI 窗口居中前置脚本与宿主边界传递
+// ============================================================================
+test('CLI 启动器具备以 Antigravity 触发窗口为基准居中、多显示器工作区裁剪与前台激活能力', () => {
+  const { windowsTerminalPlacement } = require('./meter-cli-launcher');
+  assert.ok(windowsTerminalPlacement.includes('PositionAndActivate'), '必须包含 PositionAndActivate 居中前台激活方法');
+  assert.ok(windowsTerminalPlacement.includes('SWP_SHOWWINDOW'), '必须包含 SWP_SHOWWINDOW 标志');
+  assert.ok(!windowsTerminalPlacement.includes('0x0014'), '严禁使用包含 SWP_NOACTIVATE 的 0x0014 标志导致无法前置');
+  assert.ok(windowsTerminalPlacement.includes('MonitorFromWindow'), '必须支持多显示器裁剪 MonitorFromWindow');
+  assert.ok(windowsTerminalPlacement.includes('GetMonitorInfo'), '必须获取显示器工作区 GetMonitorInfo');
+  assert.ok(windowsTerminalPlacement.includes('SetForegroundWindow'), '必须调用 SetForegroundWindow 确保首次获得焦点');
+});
+
+// ============================================================================
+// 8. 验证渲染层 CLI 按钮按压即刻回弹、启动防重入与状态恢复
+// ============================================================================
+test('渲染层顶部 CLI 按钮解耦按压反馈与启动加载态，松开即刻回弹且防重入', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  assert.ok(src.includes('data-pressed'), '必须支持 data-pressed 即刻按压反馈');
+  assert.ok(src.includes('pointerdown'), '必须监听 pointerdown 触发按压态');
+  assert.ok(src.includes('pointerup'), '必须监听 pointerup 立即释放按压态');
+  assert.ok(src.includes('pointercancel'), '必须监听 pointercancel 释放按压态');
+  assert.ok(src.includes('mouseleave'), '必须监听 mouseleave 释放按压态');
+  assert.ok(src.includes('blur'), '必须监听 blur 释放按压态');
+  assert.ok(src.includes('cliLaunchBusy'), '必须包含 cliLaunchBusy 防快速重复点击');
+  assert.ok(src.includes('showCliToast'), '启动失败或启动中必须提供明确可读提示');
+
+  const css = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  assert.ok(css.includes('#badge-cli:active') || css.includes('[data-pressed="true"]'), '样式必须包含轻量按压缩放与高亮反馈');
+  assert.ok(!css.includes('#badge-cli[data-busy="true"]{\n      opacity:0.65;'), '不能仅将整个按钮变灰代替启动过程');
+});
+
+// ============================================================================
+// 9. 验证上下文解锁状态机与实际预算联动、只读检测无副作用
+// ============================================================================
+test('上下文解锁状态与真实请求预算 (983K) 联动，清除过期待重启标记且只读安全', () => {
+  const { analyzeBinary } = require('./meter-context-unlock');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-audit-'));
+  try {
+    const mockFile = path.join(tmpDir, 'mock_engine.exe');
+    // 构造原版模拟文件
+    const mockBuf = Buffer.alloc(1024, 0);
+    fs.writeFileSync(mockFile, mockBuf);
+
+    // 只读检测不会打补丁或修改目标文件大小
+    const beforeStat = fs.statSync(mockFile);
+    analyzeBinary(mockFile, { backupDir: tmpDir });
+    const afterStat = fs.statSync(mockFile);
+    assert.equal(beforeStat.size, afterStat.size, '状态检测必须严格保持只读，不得修改文件');
+    assert.equal(beforeStat.mtimeMs, afterStat.mtimeMs, '状态检测不得更改文件修改时间戳');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

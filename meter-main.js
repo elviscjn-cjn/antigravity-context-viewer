@@ -11,7 +11,10 @@ const {
   savePluginSettings,
   launchCliSession,
   checkUpdateAsync,
-  applyUpdateAsync
+  applyUpdateAsync,
+  getContextUnlockStatus,
+  applyContextUnlock,
+  restoreContextUnlock
 } = require('./meter-collector');
 const { isValidExternalUrl } = require('./meter-core');
 
@@ -129,8 +132,48 @@ function registerIpcOnce() {
   ipcMain.handle('context-meter:launch-cli', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return await launchCliSession(options || {}); }
-    catch (e) { return { ok: false, error: e.message }; }
+    try {
+      const targetWin = resolveTargetWindow(event.sender);
+      let ownerHwndStr = '0';
+      let hostBounds = null;
+      if (targetWin && !targetWin.isDestroyed()) {
+        try {
+          const buf = targetWin.getNativeWindowHandle();
+          if (buf && buf.length >= 8) {
+            ownerHwndStr = buf.readBigInt64LE(0).toString();
+          } else if (buf && buf.length >= 4) {
+            ownerHwndStr = buf.readInt32LE(0).toString();
+          }
+        } catch {}
+        try {
+          hostBounds = targetWin.getBounds();
+        } catch {}
+      }
+      const res = await launchCliSession({
+        ...options,
+        ownerHwnd: ownerHwndStr,
+        hostBounds
+      }, ownerHwndStr);
+
+      try {
+        console.log('[AntigravityContextMeter:CLI] launch-cli result:', JSON.stringify({
+          ok: res?.ok,
+          terminalSpawned: res?.terminalSpawned,
+          cliAlive: res?.cliAlive,
+          isCentered: res?.isCentered,
+          isForeground: res?.isForeground,
+          pid: res?.pid,
+          runtimeInfo: res?.runtimeInfo,
+          telemetry: res?.telemetry
+        }));
+      } catch {}
+
+      return res;
+    }
+    catch (e) {
+      console.error('[AntigravityContextMeter:CLI] launch-cli exception:', e);
+      return { ok: false, error: e.message };
+    }
   });
 
   ipcMain.handle('context-meter:sync-overlay', async (event, options) => {
@@ -176,12 +219,42 @@ function registerIpcOnce() {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     if (!isValidExternalUrl(targetUrl)) {
-      return { ok: false, error: '仅允许打开官方 GitHub 仓库页面' };
+      return { ok: false, error: '仅允许打开官方白名单链接（GitHub 仓库或作者署名主页）' };
     }
     try {
       const { shell } = require('electron');
       await shell.openExternal(targetUrl);
       return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:context-unlock-status', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      return { ok: true, data: await getContextUnlockStatus(undefined, options || {}) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:context-unlock-apply', async (event) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      return applyContextUnlock();
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:context-unlock-restore', async (event) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      return restoreContextUnlock();
     } catch (e) {
       return { ok: false, error: e.message };
     }

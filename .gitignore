@@ -20,3 +20,11 @@ releases/
 HANDOFF_NEXT_SESSION.md
 scripts/benchmark_result.json
 scripts/capture-v080-screenshots.js
+
+# Local test & debug scripts and root redundant copies
+/apply_update_and_restart.bat
+/cli-window-helper.exe
+scripts/verify-installation.js
+scripts/demo-private-cli.cs
+scripts/run_demo_record.bat
+

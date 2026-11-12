@@ -27,6 +27,7 @@ COMMON_FILES = [
     "meter-storage.js",
     "meter-proxy.js",
     "meter-cli-launcher.js",
+    "meter-context-unlock.js",
     "attachment_scan.py",
     "asar-engine.js",
     "package.json",
@@ -40,13 +41,61 @@ COMMON_FILES = [
 ]
 
 PLATFORMS = [
-    {"name": "windows_amd64", "scripts": ["install.bat", "uninstall.bat"]},
-    {"name": "windows_arm64", "scripts": ["install.bat", "uninstall.bat"]},
+    {"name": "windows_amd64", "scripts": ["install.bat", "uninstall.bat", "scripts/cli-window-helper.exe"]},
+    {"name": "windows_arm64", "scripts": ["install.bat", "uninstall.bat", "scripts/cli-window-helper.exe"]},
     {"name": "darwin_amd64", "scripts": ["install.sh", "uninstall.sh"]},
     {"name": "darwin_arm64", "scripts": ["install.sh", "uninstall.sh"]},
     {"name": "linux_amd64", "scripts": ["install.sh", "uninstall.sh"]},
     {"name": "linux_arm64", "scripts": ["install.sh", "uninstall.sh"]},
 ]
+
+def ensure_windows_helper():
+    helper_path = ROOT_DIR / "scripts" / "cli-window-helper.exe"
+    cs_src = ROOT_DIR / "scripts" / "cli-window-helper.cs"
+    if helper_path.exists() and helper_path.stat().st_size > 0:
+        return True
+
+    print("[Packaging] 缺少预编译的 scripts/cli-window-helper.exe，尝试调用系统 C# 编译器自动构建...")
+    csc_candidates = [
+        Path(r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
+        Path(r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe")
+    ]
+    csc_exe = None
+    for cand in csc_candidates:
+        if cand.exists():
+            csc_exe = str(cand)
+            break
+
+    if not csc_exe:
+        import shutil
+        csc_exe = shutil.which("csc")
+
+    if csc_exe and cs_src.exists():
+        import subprocess
+        try:
+            cmd = [
+                csc_exe,
+                "/nologo",
+                "/target:exe",
+                "/platform:anycpu",
+                "/optimize+",
+                f"/out:{helper_path}",
+                str(cs_src)
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0 and helper_path.exists():
+                print(f"[Packaging] scripts/cli-window-helper.exe 自动构建成功 ({helper_path.stat().st_size} bytes)")
+                return True
+            else:
+                print(f"[Packaging Error] 编译失败: {res.stderr or res.stdout}")
+        except Exception as e:
+            print(f"[Packaging Error] 调用 csc 异常: {e}")
+
+    raise RuntimeError(
+        "缺少必需的 Windows 原生组件 scripts/cli-window-helper.exe，且无法自动编译！\n"
+        "请先执行 C# 编译: csc /target:exe /platform:anycpu /optimize+ /out:scripts/cli-window-helper.exe scripts/cli-window-helper.cs\n"
+        "拒绝打包功能残缺的发布包！"
+    )
 
 def sha256_file(filepath: Path) -> str:
     h = hashlib.sha256()
@@ -59,10 +108,11 @@ def get_version() -> str:
     pkg_json = ROOT_DIR / "package.json"
     with open(pkg_json, "r", encoding="utf-8") as f:
         data = json.load(f)
-    return data.get("version", "0.8.0")
+    return data.get("version", "0.8.1")
 
 def build_releases():
     import subprocess
+    ensure_windows_helper()
     print("[Packaging] Building latest meter-renderer.js from src/renderer/...")
     subprocess.run(["node", str(ROOT_DIR / "scripts" / "build-renderer.js")], check=True)
     version = get_version()

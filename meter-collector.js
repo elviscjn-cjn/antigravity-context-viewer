@@ -17,6 +17,14 @@ const {
   launchCliSession
 } = require('./meter-cli-launcher');
 const {
+  analyzeBinaryAsync: getContextUnlockStatus,
+  analyzeBinary,
+  analyzeBinaryAsync,
+  applyUnlock: applyContextUnlock,
+  restoreUnlock: restoreContextUnlock,
+  AUTHOR_INFO: CONTEXT_UNLOCK_AUTHOR
+} = require('./meter-context-unlock');
+const {
   analyzeSteps,
   summarize,
   add,
@@ -274,7 +282,7 @@ async function collect(origin, id, options = {}) {
       }
     }
     const unknownFiles = attachments.filter(a => a.status !== 'parsed').length;
-    const result = { version: '0.8.0', conversation: id, workspacePath: wsPath || null, latest, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const result = { version: '0.8.1', conversation: id, workspacePath: wsPath || null, latest, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     conversations.set(key, { result, at: Date.now() });
     return result;
   })();
@@ -1669,7 +1677,7 @@ function requestGithubUrl(rawUrl, options = {}) {
       const redirectCount = options.redirectCount || 0;
       const parsedUrl = new URL(rawUrl);
       const headers = Object.assign({
-        'User-Agent': 'AntigravityContextMeter/0.8.0',
+        'User-Agent': 'AntigravityContextMeter/0.8.1',
         'Accept': 'application/vnd.github.v3+json'
       }, options.headers || {});
 
@@ -1771,7 +1779,7 @@ function requestGithubUrl(rawUrl, options = {}) {
 }
 
 async function checkUpdateAsync(options = {}) {
-  const currentVersion = '0.8.0';
+  const currentVersion = options.currentVersion || '0.8.1';
   const now = Date.now();
   const cacheTtl = 6 * 3600 * 1000;
   if (!options.force && cachedUpdateCheck && (now - cachedUpdateCheckAt < cacheTtl)) {
@@ -1849,7 +1857,7 @@ async function applyUpdateAsync(options = {}) {
   }
   isApplyingUpdate = true;
 
-  const currentVersion = '0.8.0';
+  const currentVersion = options.currentVersion || '0.8.1';
   let tmpDir = null;
   let checksumStream = null;
   let zipStream = null;
@@ -2116,5 +2124,9 @@ module.exports = {
   isAllowedDownloadRedirectUrl,
   isOfficialAssetDownloadUrl,
   resolveNodeRuntime,
-  OFFICIAL_REPO
+  OFFICIAL_REPO,
+  getContextUnlockStatus,
+  applyContextUnlock,
+  restoreContextUnlock,
+  CONTEXT_UNLOCK_AUTHOR
 };

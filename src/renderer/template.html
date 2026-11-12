@@ -131,6 +131,69 @@
         <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
       </div>
 
+      <!-- 二级交互折叠区: 上下文加长 (解除 256K 限制 / 实验特性) -->
+      <div class="tech-drawer" id="context-unlock-drawer">
+        <button id="btn-toggle-unlock" class="drawer-trigger" aria-expanded="false" type="button">
+          <span class="drawer-trigger-left">
+            <span>⚡ 上下文加长（解除 256K 限制 / 实验特性）</span>
+            <span id="unlock-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
+          </span>
+          <span id="unlock-drawer-arrow" class="drawer-arrow">▼ 展开</span>
+        </button>
+        <div id="unlock-drawer-body" class="drawer-body" style="display:none;">
+          <div class="unlock-panel-content">
+            <div class="unlock-status-row">
+              <div class="unlock-status-meta">
+                <div class="unlock-label">当前后端补丁状态</div>
+                <div id="unlock-status-desc" class="unlock-desc">正在分析当前 Antigravity 后端二进制…</div>
+              </div>
+            </div>
+
+            <div class="unlock-notice">
+              <div class="unlock-notice-title">⚠️ 技术边界与重要说明</div>
+              <ul class="unlock-notice-list">
+                <li>本功能为非官方本地技术修补，通过移除 <code>language_server</code> 中的 256,000 封顶截断序列，恢复按模型物理窗口动态分配（如 1M 模型最高 983,040 tokens）。</li>
+                <li><strong>桌面端差异</strong>：桌面端为独立后端服务架构，仅解除底层压缩硬上限，无 CLI 档位切换菜单；亦无法突破模型服务端支持的最大物理窗口。</li>
+                <li><strong>更新与账号风险</strong>：官方更新客户端后可能需重新应用；账号风险未知，无法承诺“不会封号”。</li>
+              </ul>
+            </div>
+
+            <div class="unlock-actions-row">
+              <button id="btn-apply-unlock" class="unlock-btn unlock-btn-primary" type="button">
+                <span>⚡ 立即应用加长补丁</span>
+              </button>
+              <button id="btn-restore-unlock" class="unlock-btn unlock-btn-secondary" type="button">
+                <span>🔄 恢复官方原版</span>
+              </button>
+              <button id="btn-refresh-unlock" class="unlock-btn unlock-btn-secondary" type="button" title="重新检测状态">
+                <span>🔄 刷新</span>
+              </button>
+            </div>
+
+            <div id="unlock-result-box" class="unlock-result-box" style="display:none;">
+              <div id="unlock-result-text" class="unlock-result-text"></div>
+            </div>
+
+            <dl class="unlock-meta-dl">
+              <dt>目标后端</dt><dd id="unlock-meta-target">—</dd>
+              <dt>目标架构</dt><dd id="unlock-meta-arch">—</dd>
+              <dt>文件哈希 (SHA-256)</dt><dd id="unlock-meta-sha">—</dd>
+              <dt>原版备份状态</dt><dd id="unlock-meta-backup">—</dd>
+            </dl>
+
+            <div class="unlock-credit-bar">
+              <div class="unlock-credit-left">
+                <span class="unlock-credit-lbl">解锁方案来源：</span>
+                <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank" rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0" title="点击在系统默认浏览器中打开原作者帖子">原作者帖子 (Linux.do @23375) ↗</a>
+                <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接">📋 复制链接</button>
+              </div>
+              <span class="unlock-adapter-note">本项目负责 Node.js 原生适配与客户端集成</span>
+            </div>
+            <div id="unlock-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- 二级交互折叠区 1: 面板背景与指标颜色自定义（就近放置于面板 B 内部） -->
       <div class="tech-drawer">
         <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">
@@ -244,26 +307,6 @@
         <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）">🌓</button>
         <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
-    </div>
-
-    <!-- 在线更新浮层，定位于 panel-tokens 内 -->
-    <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
-      <div class="update-pop-hdr">
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">🚀 发现新版本</span>
-          <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.0</span>
-        </div>
-        <button id="btn-close-update-pop" class="panel-icon-btn" type="button" style="padding:1px 5px;font-size:13px">×</button>
-      </div>
-      <div id="up-pop-body" class="update-pop-body">
-        正在检测最新版本…
-      </div>
-      <div id="up-pop-footer" class="update-pop-footer">
-        <button id="btn-view-release-page" class="switch-pill-btn" type="button">查看发布页</button>
-        <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
-        <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
-      </div>
-      <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
     </div>
 
     <div id="view-tokens">
@@ -940,6 +983,26 @@
       <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)">支持直接输入或粘贴 HEX 色值</span>
       <button id="cp-reset-slot" class="color-reset-btn" type="button">跟随主题</button>
     </div>
+  </div>
+
+  <!-- 全局在线更新浮层（跨面板独立定位与显示） -->
+  <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
+    <div class="update-pop-hdr">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">🚀 检查更新</span>
+        <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.1</span>
+      </div>
+      <button id="btn-close-update-pop" class="panel-icon-btn" type="button" style="padding:1px 5px;font-size:13px">×</button>
+    </div>
+    <div id="up-pop-body" class="update-pop-body">
+      正在检测最新版本…
+    </div>
+    <div id="up-pop-footer" class="update-pop-footer">
+      <button id="btn-view-release-page" class="switch-pill-btn" type="button">查看发布页</button>
+      <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
+      <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
+    </div>
+    <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
   </div>
 
   <!-- 热力图浮动 Tooltip -->

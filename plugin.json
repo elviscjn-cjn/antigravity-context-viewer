@@ -1,0 +1,6 @@
+{
+  "name": "context-meter",
+  "displayName": "上下文查看器与 Token 看板",
+  "version": "0.8.1",
+  "description": "查看对话上下文、生成速度与 Token 用量."
+}

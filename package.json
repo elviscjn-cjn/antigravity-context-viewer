@@ -1,6 +1,6 @@
 {
   "name": "antigravity-context-viewer",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Antigravity 桌面客户端的对话上下文、生成速度与 Token 用量看板",
   "main": "cli.js",
   "bin": {
@@ -20,7 +20,7 @@
     "uninstall-patch": "node cli.js restore",
     "build:renderer": "node scripts/build-renderer.js",
     "pretest": "node scripts/build-renderer.js",
-    "test": "node --test meter-core.test.js meter-renderer.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js",
+    "test": "node --test meter-core.test.js meter-renderer.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-update-delivery.test.js meter-cli-launcher.test.js",
     "format": "npx prettier --write \"*.js\" \"*.json\" \"*.md\"",
     "format:check": "npx prettier --check \"*.js\" \"*.json\" \"*.md\"",
     "package": "python scripts/package-release.py"

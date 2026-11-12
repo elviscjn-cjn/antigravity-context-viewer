@@ -13,7 +13,8 @@ const isolatedAppData = path.join(os.tmpdir(), 'ag-meter-isolated-appdata');
 fs.mkdirSync(isolatedAppData, { recursive: true });
 process.env.APPDATA = isolatedAppData;
 
-const { builtinAsar } = require('./asar-engine');
+const { builtinAsar, loadAsarEngine } = require('./asar-engine');
+const asar = loadAsarEngine();
 const { install, tryHotInject } = require('./install');
 const { restore } = require('./restore');
 const {
@@ -382,6 +383,75 @@ test('卸载安全性 2.4：备份文件被损坏时拒绝还原，不修改当�
     );
 
     assert.equal(sha256(fs.readFileSync(targetAsar)), currentSha, '备份损坏时当前目标文件保持不变');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('安装异常恢复 1.7：当前文件包含补丁痕迹且哈希与清单脱节，但存在合规原版备份时，自动安全采信原版备份重新安装', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-recovery-install-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const v1Path = await createMockHostAsar(tmpDir, '0.1.0');
+    fs.copyFileSync(v1Path, targetAsar);
+    const origSha = sha256(fs.readFileSync(targetAsar));
+
+    // 1. 初次正常安装
+    const m1 = await install({ path: targetAsar });
+    assert.equal(m1.originalSha256, origSha);
+
+    // 2. 模拟文件被外部二次改动（例如热更新或重新打补丁），导致当前文件哈希与清单中的 patchedSha256 脱节
+    // 但内部依旧保留着本插件的补丁痕迹
+    fs.appendFileSync(targetAsar, '\n');
+
+    const desyncedSha = sha256(fs.readFileSync(targetAsar));
+    assert.notEqual(desyncedSha, m1.patchedSha256, '模拟文件哈希已与安装清单脱节');
+
+    // 3. 再次运行安装：安装器必须能够自动识别该脱节状态，并通过校验匹配的官方原版备份安全重新注入！
+    const m2 = await install({ path: targetAsar });
+    assert.equal(m2.originalSha256, origSha, '重新安装必须继承并核验原版备份');
+    assert.notEqual(m2.patchedSha256, desyncedSha, '必须生成新的合法补丁哈希');
+
+    // 验证重新注入后的文件包含合法补丁
+    const newUtils = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.ok(newUtils.includes('installContextMeter(win)'));
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('卸载异常恢复 2.5：当前文件包含补丁痕迹且哈希与清单脱节，但原版备份完好时，自动安全执行纯净原版还原', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-recovery-restore-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const v1Path = await createMockHostAsar(tmpDir, '0.1.0');
+    fs.copyFileSync(v1Path, targetAsar);
+    const origSha = sha256(fs.readFileSync(targetAsar));
+
+    // 1. 初次正常安装
+    const m1 = await install({ path: targetAsar });
+
+    // 2. 模拟文件哈希脱节但包含补丁痕迹
+    fs.appendFileSync(targetAsar, '\n');
+
+    // 3. 运行 restore：必须能够自愈并将文件完整还原为官方原版！
+    const res = await restore({ path: targetAsar });
+    assert.equal(sha256(fs.readFileSync(targetAsar)), origSha, '必须成功还原为官方纯净原版');
+    assert.equal(res.restored, targetAsar);
+
+    // 4. 重复卸载：幂等返回 alreadyRestored
+    const res2 = await restore({ path: targetAsar });
+    assert.equal(res2.alreadyRestored, true, '自愈后再次卸载必须幂等成功');
   } finally {
     if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
     else delete process.env.AG_METER_STATE_DIR;

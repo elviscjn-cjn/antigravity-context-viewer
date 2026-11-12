@@ -667,6 +667,7 @@
     const bTokens = el('badge-tokens');
     const bOverflow = el('badge-overflow');
 
+    hideUpdatePopover();
     if (pOverflow) pOverflow.hidden = true;
     bOverflow?.setAttribute('aria-expanded', 'false');
 
@@ -1321,13 +1322,32 @@
   }
 
   async function triggerLaunchCli(customOpts = {}) {
-    if (cliLaunchBusy) return { ok: false, error: 'CLI 正在启动中，请稍候' };
+    if (cliLaunchBusy) {
+      showCliToast('CLI 正在启动中，请稍候…', false);
+      return { ok: false, error: 'CLI 正在启动中，请稍候' };
+    }
     cliLaunchBusy = true;
     const btn = el('badge-cli');
+    const label = el('cli-label');
     btn?.setAttribute('data-busy', 'true');
+    if (label) label.textContent = '…';
+    try {
+      if (typeof document !== 'undefined' && document.activeElement?.blur) {
+        document.activeElement.blur();
+      }
+    } catch {}
+
+    const hostBounds = {
+      x: typeof window !== 'undefined' ? (window.screenX || 0) : 0,
+      y: typeof window !== 'undefined' ? (window.screenY || 0) : 0,
+      width: typeof window !== 'undefined' ? (window.outerWidth || window.innerWidth || 1200) : 1200,
+      height: typeof window !== 'undefined' ? (window.outerHeight || window.innerHeight || 800) : 800
+    };
+
     const reqOpts = {
       cascadeId: state.route || undefined,
       cwd: customOpts.cwd !== undefined ? customOpts.cwd : (state.scan?.workspacePath || undefined),
+      hostBounds,
       ...customOpts
     };
     try {
@@ -1365,10 +1385,28 @@
     } finally {
       cliLaunchBusy = false;
       btn?.removeAttribute('data-busy');
+      btn?.removeAttribute('data-pressed');
+      if (label) label.textContent = 'CLI';
     }
   }
 
-  el('badge-cli')?.addEventListener('click', () => { void triggerLaunchCli(); });
+  const badgeCliEl = el('badge-cli');
+  if (badgeCliEl) {
+    const releasePress = () => {
+      badgeCliEl.removeAttribute('data-pressed');
+    };
+    badgeCliEl.addEventListener('pointerdown', () => {
+      badgeCliEl.setAttribute('data-pressed', 'true');
+    });
+    badgeCliEl.addEventListener('pointerup', releasePress);
+    badgeCliEl.addEventListener('pointercancel', releasePress);
+    badgeCliEl.addEventListener('mouseleave', releasePress);
+    badgeCliEl.addEventListener('blur', releasePress);
+    badgeCliEl.addEventListener('click', () => {
+      releasePress();
+      void triggerLaunchCli();
+    });
+  }
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
   el('badge').addEventListener('click', toggleContext);
@@ -1401,6 +1439,288 @@
   el('badge').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
+
+  // 二级抽屉: 上下文加长折叠展开与状态机
+  const btnUnlock = el('btn-toggle-unlock');
+  const unlockDrawerBody = el('unlock-drawer-body');
+  const unlockDrawerArrow = el('unlock-drawer-arrow');
+  const unlockBadge = el('unlock-badge');
+  const unlockStatusDesc = el('unlock-status-desc');
+  const btnApplyUnlock = el('btn-apply-unlock');
+  const btnRestoreUnlock = el('btn-restore-unlock');
+  const btnRefreshUnlock = el('btn-refresh-unlock');
+  const unlockResultBox = el('unlock-result-box');
+  const unlockResultText = el('unlock-result-text');
+  const unlockMetaTarget = el('unlock-meta-target');
+  const unlockMetaArch = el('unlock-meta-arch');
+  const unlockMetaSha = el('unlock-meta-sha');
+  const unlockMetaBackup = el('unlock-meta-backup');
+  const linkUnlockAuthor = el('link-unlock-author');
+  const btnCopyUnlockLink = el('btn-copy-unlock-link');
+  const unlockLinkToast = el('unlock-link-toast');
+
+  let currentUnlockStatus = null;
+  let isUnlocking = false;
+  let unlockReqSeq = 0;
+
+  function toggleUnlockDrawer(forceOpen) {
+    if (!unlockDrawerBody) return;
+    const isHidden = unlockDrawerBody.style.display === 'none' || !unlockDrawerBody.style.display;
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
+    unlockDrawerBody.style.display = nextOpen ? 'block' : 'none';
+    if (unlockDrawerArrow) unlockDrawerArrow.textContent = nextOpen ? '▲ 收起' : '▼ 展开';
+    btnUnlock?.setAttribute('aria-expanded', String(nextOpen));
+    if (nextOpen && !currentUnlockStatus) {
+      void refreshUnlockStatus();
+    }
+  }
+  btnUnlock?.addEventListener('click', () => toggleUnlockDrawer());
+
+  async function invokeUnlockApi(endpoint, payload = {}) {
+    if (endpoint === 'status' && window.contextMeterAPI?.getContextUnlockStatus) {
+      return await window.contextMeterAPI.getContextUnlockStatus(payload);
+    }
+    if (endpoint === 'apply' && window.contextMeterAPI?.applyContextUnlock) {
+      return await window.contextMeterAPI.applyContextUnlock(payload);
+    }
+    if (endpoint === 'restore' && window.contextMeterAPI?.restoreContextUnlock) {
+      return await window.contextMeterAPI.restoreContextUnlock(payload);
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const r = await fetch(`http://127.0.0.1:${live.port}/context-unlock-${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+        body: JSON.stringify(payload)
+      });
+      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+    }
+    return { ok: false, error: '未连接到桥接服务（请重启客户端生效新 IPC，或执行 node cli.js live）' };
+  }
+
+  async function refreshUnlockStatus() {
+    if (!unlockBadge) return;
+    const thisSeq = ++unlockReqSeq;
+    try {
+      const currentObservedBudget = (state.latest?.budget && state.latest.budget > 0)
+        ? state.latest.budget
+        : undefined;
+      const res = await invokeUnlockApi('status', { currentBudget: currentObservedBudget });
+      if (thisSeq !== unlockReqSeq) return;
+
+      if (!res || !res.ok || !res.data) {
+        unlockBadge.textContent = '检测失败';
+        unlockBadge.className = 'key-pill pill-danger';
+        if (unlockStatusDesc) unlockStatusDesc.textContent = res?.error || '获取后端状态失败。';
+        return;
+      }
+      const data = res.data;
+      currentUnlockStatus = data;
+
+      unlockBadge.textContent = data.statusText || data.status;
+      if (data.status === 'verified_active') {
+        unlockBadge.className = 'key-pill pill-ok';
+      } else if (data.status === 'patched_runtime_unconfirmed') {
+        unlockBadge.className = 'key-pill pill-info';
+      } else if (data.status === 'patched_pending_restart') {
+        unlockBadge.className = 'key-pill pill-warn';
+      } else if (data.status === 'not_patched') {
+        unlockBadge.className = 'key-pill pill-muted';
+      } else {
+        unlockBadge.className = 'key-pill pill-danger';
+      }
+
+      if (unlockStatusDesc) {
+        unlockStatusDesc.textContent = data.details || data.reason || '状态已更新。';
+      }
+
+      if (unlockMetaTarget) unlockMetaTarget.textContent = data.targetPath || '未检测到';
+      if (unlockMetaArch) unlockMetaArch.textContent = `${data.arch || '未知'} (${data.format || '未知'}, ${data.mode || '未知'})`;
+      if (unlockMetaSha) unlockMetaSha.textContent = data.sha256 ? `${data.sha256.slice(0, 16)}…` : '—';
+      if (unlockMetaBackup) {
+        if (data.hasBackup && data.backupInfo) {
+          unlockMetaBackup.textContent = `已备份 (${data.backupInfo.backupPath})`;
+        } else {
+          unlockMetaBackup.textContent = '尚未备份（首次应用时将自动安全备份至应用目录外部）';
+        }
+      }
+
+      if (btnApplyUnlock) {
+        if (data.status === 'not_patched') {
+          btnApplyUnlock.disabled = false;
+          btnApplyUnlock.textContent = '⚡ 立即应用加长补丁';
+        } else if (data.status === 'verified_active') {
+          btnApplyUnlock.disabled = true;
+          btnApplyUnlock.textContent = '✅ 已生效（无需重复应用）';
+        } else if (data.status === 'patched_runtime_unconfirmed') {
+          btnApplyUnlock.disabled = true;
+          btnApplyUnlock.textContent = '🔍 补丁已写入（运行状态待确认）';
+        } else if (data.status === 'patched_pending_restart') {
+          btnApplyUnlock.disabled = true;
+          btnApplyUnlock.textContent = '⏳ 已打补丁（待重启客户端）';
+        } else {
+          btnApplyUnlock.disabled = true;
+          btnApplyUnlock.textContent = '⚠️ 当前目标不受支持';
+        }
+      }
+
+      if (btnRestoreUnlock) {
+        if (data.status === 'verified_active' || data.status === 'patched_pending_restart' || data.status === 'patched_runtime_unconfirmed' || data.hasBackup) {
+          btnRestoreUnlock.disabled = false;
+        } else {
+          btnRestoreUnlock.disabled = true;
+        }
+      }
+    } catch (e) {
+      if (thisSeq !== unlockReqSeq) return;
+      unlockBadge.textContent = '异常';
+      unlockBadge.className = 'key-pill pill-danger';
+      if (unlockStatusDesc) unlockStatusDesc.textContent = `检测异常: ${e.message}`;
+    }
+  }
+
+  btnRefreshUnlock?.addEventListener('click', () => {
+    void refreshUnlockStatus();
+  });
+
+  btnApplyUnlock?.addEventListener('click', async () => {
+    if (isUnlocking) return;
+    isUnlocking = true;
+    if (btnApplyUnlock) btnApplyUnlock.disabled = true;
+    if (unlockResultBox) unlockResultBox.style.display = 'none';
+
+    try {
+      const res = await invokeUnlockApi('apply');
+      if (!res || !res.ok) {
+        throw new Error(res?.error || '应用补丁失败');
+      }
+      if (unlockResultBox && unlockResultText) {
+        unlockResultBox.style.display = 'block';
+        unlockResultBox.className = 'unlock-result-box result-success';
+        unlockResultText.innerHTML = `<strong>🎉 解锁成功！</strong><br>${res.message || '补丁已安全写入。'}`;
+      }
+    } catch (e) {
+      if (unlockResultBox && unlockResultText) {
+        unlockResultBox.style.display = 'block';
+        unlockResultBox.className = 'unlock-result-box result-error';
+        unlockResultText.innerHTML = `<strong>❌ 应用补丁失败：</strong>${e.message}`;
+      }
+    } finally {
+      isUnlocking = false;
+      await refreshUnlockStatus();
+    }
+  });
+
+  btnRestoreUnlock?.addEventListener('click', async () => {
+    if (isUnlocking) return;
+    isUnlocking = true;
+    if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
+    if (unlockResultBox) unlockResultBox.style.display = 'none';
+
+    try {
+      const res = await invokeUnlockApi('restore');
+      if (!res || !res.ok) {
+        throw new Error(res?.error || '恢复原版失败');
+      }
+      if (unlockResultBox && unlockResultText) {
+        unlockResultBox.style.display = 'block';
+        unlockResultBox.className = 'unlock-result-box result-success';
+        unlockResultText.innerHTML = `<strong>🔄 恢复成功！</strong><br>${res.message || '已成功还原官方原版二进制。'}`;
+      }
+    } catch (e) {
+      if (unlockResultBox && unlockResultText) {
+        unlockResultBox.style.display = 'block';
+        unlockResultBox.className = 'unlock-result-box result-error';
+        unlockResultText.innerHTML = `<strong>❌ 恢复原版失败：</strong>${e.message}`;
+      }
+    } finally {
+      isUnlocking = false;
+      await refreshUnlockStatus();
+    }
+  });
+
+  const UNLOCK_POST_URL = 'https://linux.do/t/topic/3117832';
+  let unlockToastTimer = null;
+
+  function showUnlockToast(msg) {
+    if (!unlockLinkToast) return;
+    if (unlockToastTimer) clearTimeout(unlockToastTimer);
+    unlockLinkToast.textContent = msg;
+    unlockLinkToast.style.display = 'block';
+    unlockToastTimer = setTimeout(() => {
+      unlockLinkToast.style.display = 'none';
+    }, 4500);
+  }
+
+  async function openUnlockAuthorPost() {
+    let opened = false;
+    try {
+      if (window.contextMeterAPI?.openExternal) {
+        const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
+        if (res && res.ok) opened = true;
+      }
+    } catch {}
+
+    if (!opened) {
+      try {
+        const w = window.open(UNLOCK_POST_URL, '_blank');
+        if (w) opened = true;
+      } catch {}
+    }
+
+    if (opened) {
+      showUnlockToast('已在系统默认浏览器中打开原作者帖子');
+    } else {
+      copyUnlockPostUrl(true);
+    }
+  }
+
+  function copyUnlockPostUrl(fromFailedOpen = false) {
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(UNLOCK_POST_URL);
+        copied = true;
+      }
+    } catch {}
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = UNLOCK_POST_URL;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        copied = true;
+      } catch {}
+    }
+    showUnlockToast(fromFailedOpen
+      ? '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。'
+      : '原作者帖子链接已成功复制到剪贴板！');
+  }
+
+  linkUnlockAuthor?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void openUnlockAuthorPost();
+  });
+
+  linkUnlockAuthor?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      void openUnlockAuthorPost();
+    }
+  });
+
+  btnCopyUnlockLink?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyUnlockPostUrl(false);
+  });
+
+  // 静默初始化检测一次解锁状态（不执行修改）
+  setTimeout(() => { void refreshUnlockStatus(); }, 500);
 
   // 二级抽屉 1（面板 B 内）: 指标与背景颜色自定义抽屉折叠展开
   const btnColors = el('btn-toggle-colors');
@@ -2488,33 +2808,80 @@
     }
   }
 
-  async function checkAppUpdate(manual = false) {
+  let currentUpdateTrigger = 'tokens';
+
+  function positionUpdatePopover(trigger = currentUpdateTrigger) {
+    const pop = el('update-popover');
+    if (!pop) return;
+    const triggerBtn = trigger === 'ctx' ? el('btn-check-update-ctx') : el('btn-check-update');
+    if (!triggerBtn || typeof triggerBtn.getBoundingClientRect !== 'function') return;
+    const rect = triggerBtn.getBoundingClientRect();
+    const winW = typeof window !== 'undefined' ? (window.innerWidth || 1024) : 1024;
+    const winH = typeof window !== 'undefined' ? (window.innerHeight || 768) : 768;
+    let right = Math.max(14, winW - rect.right);
+    let top = rect.bottom + 8;
+    if (top + 220 > winH) {
+      top = Math.max(10, rect.top - 230);
+    }
+    pop.style.position = 'fixed';
+    pop.style.top = `${Math.round(top)}px`;
+    pop.style.right = `${Math.round(right)}px`;
+    pop.style.left = 'auto';
+  }
+
+  function showUpdatePopover(trigger = currentUpdateTrigger) {
+    const pop = el('update-popover');
+    if (!pop) return;
+    currentUpdateTrigger = trigger;
+    positionUpdatePopover(trigger);
+    pop.style.display = 'block';
+  }
+
+  function hideUpdatePopover() {
+    const pop = el('update-popover');
+    if (pop) pop.style.display = 'none';
+  }
+
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', () => {
+      const pop = el('update-popover');
+      if (pop && pop.style.display === 'block') {
+        positionUpdatePopover();
+      }
+    });
+  }
+
+  async function checkAppUpdate(manual = false, trigger = currentUpdateTrigger) {
     const dot = el('update-badge-dot');
     const dotCtx = el('update-badge-dot-ctx');
     const pop = el('update-popover');
+    const titleEl = el('up-pop-title');
     const bodyEl = el('up-pop-body');
     const verEl = el('up-pop-ver');
     const statusEl = el('up-pop-status');
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.1';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
-      if (verEl) verEl.textContent = 'v0.8.0 (更新不可用)';
+      if (titleEl) titleEl.textContent = 'ℹ️ 更新不可用';
+      if (verEl) verEl.textContent = `v${currentVer} (更新不可用)`;
       if (bodyEl) bodyEl.textContent = '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。';
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-      if (manual && pop) pop.style.display = 'block';
+      if (manual) showUpdatePopover(trigger);
       return;
     }
 
     if (manual) {
       cachedLatestRelease = null;
-      if (pop) pop.style.display = 'block';
-      if (verEl) verEl.textContent = 'v0.8.0 (正在检查…)';
+      showUpdatePopover(trigger);
+      if (titleEl) titleEl.textContent = '🔄 检查更新中';
+      if (verEl) verEl.textContent = `v${currentVer} (正在检查…)`;
       if (bodyEl) bodyEl.textContent = '正在连接 GitHub 检测最新版本…';
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -2528,11 +2895,12 @@
         cachedLatestRelease = null;
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
-        if (verEl) verEl.textContent = 'v0.8.0 (检查失败)';
+        if (titleEl) titleEl.textContent = '⚠️ 检查更新失败';
+        if (verEl) verEl.textContent = `v${currentVer} (检查失败)`;
         const errMsg = res?.error || '未能获取有效的版本数据';
         if (bodyEl) bodyEl.textContent = `检查更新失败: ${errMsg}。请检查网络代理设置或前往 GitHub 查看。`;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-        if (manual && pop) pop.style.display = 'block';
+        if (manual) showUpdatePopover(trigger);
         return;
       }
 
@@ -2540,7 +2908,8 @@
         cachedLatestRelease = res;
         if (dot) dot.style.display = 'block';
         if (dotCtx) dotCtx.style.display = 'block';
-        if (verEl) verEl.textContent = `v${res.currentVersion || '0.8.0'} → v${res.latestVersion}`;
+        if (titleEl) titleEl.textContent = '🚀 发现新版本';
+        if (verEl) verEl.textContent = `v${res.currentVersion || currentVer} → v${res.latestVersion}`;
         if (bodyEl) {
           bodyEl.textContent = `发现新版本 v${res.latestVersion}！\n\n更新说明：\n${res.releaseNotes || '性能优化与体验改进'}`;
         }
@@ -2549,24 +2918,27 @@
           applyBtn.textContent = '立即更新';
           applyBtn.style.display = 'inline-block';
         }
-        if (manual && pop) pop.style.display = 'block';
+        if (manual) showUpdatePopover(trigger);
       } else {
         cachedLatestRelease = null;
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
-        if (verEl) verEl.textContent = `v${res.currentVersion || '0.8.0'} (已是最新)`;
-        if (bodyEl) bodyEl.textContent = `当前已是最新版本 (v${res.currentVersion || '0.8.0'})。已通过 GitHub Releases 确认。`;
+        if (titleEl) titleEl.textContent = '✅ 已是最新版本';
+        const effectiveCurrent = res.currentVersion || currentVer;
+        if (verEl) verEl.textContent = `v${effectiveCurrent} (已是最新)`;
+        if (bodyEl) bodyEl.textContent = `当前已是最新版本 (v${effectiveCurrent})。已通过 GitHub Releases 确认。`;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-        if (manual && pop) pop.style.display = 'block';
+        if (manual) showUpdatePopover(trigger);
       }
     } catch (err) {
       cachedLatestRelease = null;
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
-      if (verEl) verEl.textContent = 'v0.8.0 (检查失败)';
+      if (titleEl) titleEl.textContent = '⚠️ 检查更新失败';
+      if (verEl) verEl.textContent = `v${currentVer} (检查失败)`;
       if (bodyEl) bodyEl.textContent = `检查更新失败: ${err.message}。请检查网络连接或稍后重试。`;
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
-      if (manual && pop) pop.style.display = 'block';
+      if (manual) showUpdatePopover(trigger);
     }
   }
 
@@ -2617,18 +2989,18 @@
   el('btn-github-repo-ctx')?.addEventListener('click', () => openGithubRepo());
   el('btn-check-update')?.addEventListener('click', () => {
     const pop = el('update-popover');
-    if (pop && pop.style.display === 'block') {
+    if (pop && pop.style.display === 'block' && currentUpdateTrigger === 'tokens') {
       pop.style.display = 'none';
     } else {
-      void checkAppUpdate(true);
+      void checkAppUpdate(true, 'tokens');
     }
   });
   el('btn-check-update-ctx')?.addEventListener('click', () => {
     const pop = el('update-popover');
-    if (pop && pop.style.display === 'block') {
+    if (pop && pop.style.display === 'block' && currentUpdateTrigger === 'ctx') {
       pop.style.display = 'none';
     } else {
-      void checkAppUpdate(true);
+      void checkAppUpdate(true, 'ctx');
     }
   });
   el('btn-close-update-pop')?.addEventListener('click', () => {
@@ -2808,6 +3180,11 @@
     if (barFill) barFill.style.width = pct != null ? `${pct}%` : (d?.exceeded ? '100%' : '0%');
 
     updateRingAndBubble(d, session, pct, danger, stale, incomplete);
+
+    // 上下文预算与解锁状态自动联动：若观测到预算突破 256,000，且解锁抽屉中记录仍为待重启或未确认，则自动触发刷新同步
+    if (d?.budget && d.budget > 256000 && currentUnlockStatus && currentUnlockStatus.status !== 'verified_active') {
+      void refreshUnlockStatus();
+    }
 
     const status = disp.isError
       ? disp.statusText
@@ -3089,7 +3466,7 @@
 
   const timer = setInterval(tick, 500);
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.0',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.1',
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();

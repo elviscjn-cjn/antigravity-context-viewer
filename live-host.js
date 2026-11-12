@@ -11,13 +11,16 @@ const {
   recordModelCalls,
   getPluginSettings,
   savePluginSettings,
-  launchCliSession
+  launchCliSession,
+  getContextUnlockStatus,
+  applyContextUnlock,
+  restoreContextUnlock
 } = require('./meter-collector');
 const { getStateDir } = require('./asar-engine');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
-const ALLOWED_ROUTES = ['/scan', '/token-history', '/record-calls', '/get-settings', '/save-settings', '/launch-cli'];
+const ALLOWED_ROUTES = ['/scan', '/token-history', '/record-calls', '/get-settings', '/save-settings', '/launch-cli', '/context-unlock-status', '/context-unlock-apply', '/context-unlock-restore'];
 
 (async () => {
   const api = await connect();
@@ -85,6 +88,24 @@ const ALLOWED_ROUTES = ['/scan', '/token-history', '/record-calls', '/get-settin
         }
         if (req.url === '/launch-cli') {
           const result = await launchCliSession(request);
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/context-unlock-status') {
+          const result = await getContextUnlockStatus();
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: result }));
+          return;
+        }
+        if (req.url === '/context-unlock-apply') {
+          const result = applyContextUnlock();
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/context-unlock-restore') {
+          const result = restoreContextUnlock();
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;

@@ -18,6 +18,7 @@ const { loadAsarEngine, getStateDir } = require('./asar-engine');
 const { install, findAsarPath, tryHotInject } = require('./install');
 const { restore } = require('./restore');
 const { resolvePython } = require('./meter-collector');
+const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, AUTHOR_INFO } = require('./meter-context-unlock');
 
 const asar = loadAsarEngine();
 const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -73,7 +74,7 @@ async function queryLiveWindow() {
             return {
               active: Boolean(window.__AGContextMeter),
               version: window.__AGContextMeter?.version || null,
-              hasIpcBridge: Boolean(window.contextMeterAPI?.scan && window.contextMeterAPI?.saveSettings && window.contextMeterAPI?.launchCli),
+              hasIpcBridge: Boolean(window.contextMeterAPI?.scan && window.contextMeterAPI?.saveSettings && window.contextMeterAPI?.launchCli && window.contextMeterAPI?.getContextUnlockStatus),
               badgeText: root?.getElementById('amount')?.textContent || null,
               route: s?.route || null,
               latest: s?.latest || null
@@ -192,13 +193,18 @@ async function main() {
   const cmd = (args.find(a => !a.startsWith('-')) || 'install').toLowerCase();
   const pathIdx = args.indexOf('--path');
   const customPath = pathIdx >= 0 ? args[pathIdx + 1] : null;
+  const backupIdx = args.indexOf('--backup');
+  const customBackup = backupIdx >= 0 ? args[backupIdx + 1] : null;
+  const isForce = args.includes('--force');
 
   if (cmd === 'install') {
-    console.log('🚀 [Antigravity 对话上下文查看器] 正在安装上下文可视化组件...');
+    const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
+    console.log(`🚀 [Antigravity 对话上下文查看器 v${meterVersion}] 正在安装上下文可视化组件...`);
     await ensureLiveBridgeIfNeeded();
-    const manifest = await install({ path: customPath });
+    const manifest = await install({ path: customPath, backup: customBackup, force: isForce });
     await tryHotInject();
-    console.log(`✅ ASAR 持久化注入完成: ${manifest.installed} (Antigravity v${manifest.version}, 校验 ${manifest.originalFilesVerified} 个原文件)`);
+    console.log(`✅ 插件 v${manifest.meterVersion} 安装完成 (Antigravity 宿主 v${manifest.version})`);
+    console.log(`✅ ASAR 持久化注入完成: ${manifest.installed} (校验 ${manifest.originalFilesVerified} 个原文件)`);
     console.log(`✅ 运行中窗口热挂载状态: ${manifest.liveInjected ? '已即时生效（无需重启）' : '将在下次启动 Antigravity 时自动生效'}`);
   } else if (cmd === 'live') {
     await ensureLiveBridgeIfNeeded();
@@ -206,8 +212,35 @@ async function main() {
     if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
     console.log('✅ 已通过 CDP 热注入当前运行的 Antigravity 窗口！');
   } else if (cmd === 'restore' || cmd === 'uninstall') {
-    const res = await restore();
+    const res = await restore({ path: customPath, force: isForce });
     console.log(`✅ 已无损还原官方包: ${res.restored}`);
+  } else if (cmd === 'unlock-status') {
+    console.log('🔍 正在检测 Antigravity 后端上下文加长状态...');
+    const st = await analyzeBinaryAsync(customPath);
+    console.log(`- 目标文件: ${st.targetPath || '未检测到'}`);
+    console.log(`- 目标架构: ${st.arch || '未知'} (${st.format || '未知'}, ${st.mode || '未知'})`);
+    console.log(`- 解锁状态: [${st.statusText || st.status}] ${st.details || st.reason || ''}`);
+    if (st.backupInfo) {
+      console.log(`- 备份文件: ${st.backupInfo.backupPath}`);
+    }
+    console.log(`- ${st.author?.credit || AUTHOR_INFO.credit} (${st.author?.url || AUTHOR_INFO.url})`);
+  } else if (cmd === 'unlock') {
+    console.log('⚡ 正在执行 Antigravity 后端上下文加长解锁...');
+    console.log(`ℹ ${AUTHOR_INFO.credit} (${AUTHOR_INFO.url})`);
+    console.log(`⚠️  ${AUTHOR_INFO.disclaimer}`);
+    const res = applyUnlock({ targetPath: customPath });
+    if (!res.ok) {
+      throw new Error(res.error);
+    }
+    console.log(`✅ ${res.message || '解锁成功！'}`);
+    if (res.backupPath) console.log(`📁 原版备份已安全保存至: ${res.backupPath}`);
+  } else if (cmd === 'unlock-restore') {
+    console.log('🔄 正在恢复 Antigravity 官方原版后端二进制...');
+    const res = restoreUnlock({ targetPath: customPath });
+    if (!res.ok) {
+      throw new Error(res.error);
+    }
+    console.log(`✅ ${res.message || '恢复完成！'}`);
   } else if (cmd === 'status') {
     await cmdStatus(customPath);
   } else if (cmd === 'check') {
@@ -218,7 +251,10 @@ async function main() {
   node cli.js live                          免改盘 CDP 热挂载到当前运行窗口
   node cli.js status                        查看安装状态与当前对话实时上下文用量
   node cli.js check                         执行前置环境健康检查
-  node cli.js restore                       一键无损卸载并恢复备份`);
+  node cli.js restore                       一键无损卸载并恢复备份
+  node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文加长状态
+  node cli.js unlock [--path <bin>]         执行上下文加长解锁（解除 256K 限制）
+  node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制`);
   }
 }
 

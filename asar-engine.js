@@ -1,5 +1,5 @@
 'use strict';
-process.noAsar = true;
+// Preserve Electron ASAR support in the host process.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

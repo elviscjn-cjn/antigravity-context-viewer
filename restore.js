@@ -5,9 +5,18 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { getStateDir } = require('./asar-engine');
+const { getStateDir, builtinAsar, loadAsarEngine } = require('./asar-engine');
 
 const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+function extractAsarFile(archivePath, relPath) {
+  try {
+    return builtinAsar.extractFile(archivePath, relPath);
+  } catch {
+    const asar = loadAsarEngine();
+    return asar.extractFile(archivePath, relPath);
+  }
+}
 
 async function tryHotDispose() {
   try {
@@ -77,12 +86,30 @@ async function restore(options = {}) {
     return { restored: info.installed, fromBackup: backup, alreadyRestored: true };
   }
 
-  // 2. 当前文件必须匹配本次安装记录的 patchedSha256，否则拒绝覆盖以保护宿主
+  const force = process.argv.includes('--force') || Boolean(options.force);
+
+  // 2. 当前文件若不匹配本次安装记录的 patchedSha256：
   if (currentInstalledSha !== info.patchedSha256) {
-    throw new Error(`目标文件 (${info.installed}) 校验失败：文件内容已被宿主升级、第三方补丁或其他操作改变（当前哈希: ${currentInstalledSha.slice(0, 12)}...，预期补丁哈希: ${info.patchedSha256 ? info.patchedSha256.slice(0, 12) : 'null'}...），拒绝覆盖还原以保护宿主文件。`);
+    let hasMeterTraces = false;
+    try {
+      const currentUtils = extractAsarFile(info.installed, 'dist/utils.js').toString('utf8');
+      hasMeterTraces = currentUtils.includes('installContextMeter');
+    } catch {}
+
+    // 如果未带 --force 且当前文件未检测到本插件补丁痕迹（表明可能是全新升级的纯净宿主），拒绝覆盖还原以保护宿主
+    if (!force && !hasMeterTraces) {
+      throw new Error(
+        `目标文件 (${info.installed}) 校验失败：文件内容已被宿主升级、第三方补丁或其他操作改变（当前哈希: ${currentInstalledSha.slice(0, 12)}...，预期补丁哈希: ${info.patchedSha256 ? info.patchedSha256.slice(0, 12) : 'null'}...），拒绝覆盖还原以保护宿主文件。\n` +
+        `若确认需要强制还原为官方原版备份，请使用 --force 参数执行卸载。`
+      );
+    }
+
+    if (hasMeterTraces) {
+      console.log(`[Auto-Recovery] 当前目标文件包含插件补丁痕迹但哈希与安装清单脱节，已通过 SHA-256 校验合规的原版备份安全执行还原覆盖。`);
+    }
   }
 
-  // 3. 当前文件匹配本次补丁哈希且备份校验已通过，执行还原
+  // 3. 备份校验已通过，执行还原
   try {
     fs.copyFileSync(backup, info.installed);
   } catch (err) {
@@ -97,6 +124,11 @@ async function restore(options = {}) {
   }
 
   await tryHotDispose();
+  // 卸载还原成功后更新清单记录，保留原版哈希以支持幂等安全调用
+  try {
+    info.restoredAt = new Date().toISOString();
+    fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
+  } catch {}
   return { restored: info.installed, fromBackup: backup };
 }
 

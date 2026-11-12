@@ -1802,7 +1802,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.8.0') {
+  function filterReleases(releasesList, currentVersion = '0.8.1') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {
@@ -1851,16 +1851,29 @@
   }
 
   /**
-   * 严格校验外部链接是否属于官方 GitHub 仓库白名单
+   * 严格校验外部链接是否属于官方白名单（官方仓库或作者署名主页）
    */
   function isValidExternalUrl(rawUrl) {
     if (!rawUrl || typeof rawUrl !== 'string') return false;
     try {
       const u = new URL(rawUrl);
-      if (u.protocol !== 'https:' || u.hostname !== 'github.com') return false;
-      const pathname = u.pathname.replace(/\/+$/, '');
-      const repoPrefix = '/elviscjn-cjn/antigravity-context-viewer';
-      return pathname === repoPrefix || pathname.startsWith(repoPrefix + '/');
+      if (u.protocol !== 'https:') return false;
+      if (u.hostname === 'github.com') {
+        const pathname = u.pathname.replace(/\/+$/, '');
+        const repoPrefix = '/elviscjn-cjn/antigravity-context-viewer';
+        return pathname === repoPrefix || pathname.startsWith(repoPrefix + '/');
+      }
+      if (u.hostname === 'linux.do') {
+        const pathname = u.pathname.replace(/\/+$/, '');
+        return (
+          pathname === '/t/topic/3117832' ||
+          pathname === '/t/3117832' ||
+          pathname.startsWith('/t/topic/3117832/') ||
+          pathname === '/u/23375/summary' ||
+          pathname === '/u/23375'
+        );
+      }
+      return false;
     } catch {
       return false;
     }
