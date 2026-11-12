@@ -5,6 +5,7 @@ const source = fs.readFileSync(require('node:path').join(__dirname, 'meter-rende
 function session(unknown = 0) { return { groups: Object.fromEntries(['user','assistant','thinking','tools','summaries','system','definitions'].map(k => [k,core.empty()])), total: { chars: 100, low: 10, high: 50 }, attachmentTotal: core.empty(), attachments: unknown ? [{ name: '<img onerror=bad>', status: 'unknown', unknownParts: ['图像 token 未知'], chars: 0, source: 'user' }] : [], unknownFiles: unknown, steps: 10, userMessages: 2, assistantMessages: 3 }; }
 function harness(scanSession = session()) {
   const elements = new Map();
+  const docElements = new Map();
   const listeners = new Map();
   const element = () => {
     const attrs = new Map();
@@ -18,6 +19,8 @@ function harness(scanSession = session()) {
         getPropertyValue(k) { return props.get(k) || ''; }
       },
       children: [], hidden: false, textContent: '',
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); if (v) docElements.set(String(v), el); },
       get className() { return attrs.get('class') || ''; },
       set className(v) { attrs.set('class', String(v || '')); },
       classList: {
@@ -38,11 +41,50 @@ function harness(scanSession = session()) {
         if (!listeners.has(el)) listeners.set(el, new Map());
         listeners.get(el).set(type, fn);
       },
-      setAttribute(k, v) { attrs.set(k, String(v)); },
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id' && v) docElements.set(String(v), el);
+      },
       getAttribute(k) { return attrs.get(k) ?? null; },
-      removeAttribute(k) { attrs.delete(k); },
-      remove() {},
-      appendChild(x) { this.children.push(x); },
+      removeAttribute(k) {
+        if (k === 'id') {
+          const id = attrs.get('id');
+          if (id && docElements.get(id) === el) docElements.delete(id);
+        }
+        attrs.delete(k);
+      },
+      remove() {
+        if (this.parentElement && Array.isArray(this.parentElement.children)) {
+          const idx = this.parentElement.children.indexOf(this);
+          if (idx >= 0) this.parentElement.children.splice(idx, 1);
+        }
+        const myId = attrs.get('id');
+        if (myId && docElements.get(myId) === this) {
+          docElements.delete(myId);
+        }
+      },
+      appendChild(x) {
+        if (x) {
+          x.parentElement = this;
+          this.children.push(x);
+          const xId = x.id || (typeof x.getAttribute === 'function' ? x.getAttribute('id') : null);
+          if (xId) docElements.set(xId, x);
+        }
+      },
+      querySelectorAll(sel) {
+        const found = [];
+        const check = node => {
+          if (!node) return;
+          if (sel === '#ag-wco-spacer' && (node.id === 'ag-wco-spacer' || node.getAttribute?.('id') === 'ag-wco-spacer')) {
+            found.push(node);
+          }
+          if (Array.isArray(node.children)) {
+            for (const child of node.children) check(child);
+          }
+        };
+        for (const child of this.children) check(child);
+        return found;
+      },
       replaceChildren() { this.children = []; },
       click() { listeners.get(el)?.get('click')?.(); },
       getBoundingClientRect() { return { left: 100, top: 100, width: 10, height: 10, right: 110, bottom: 110 }; },
@@ -52,7 +94,7 @@ function harness(scanSession = session()) {
   };
   const host = element(); host.attachShadow = () => ({ set innerHTML(value) {}, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
   const pending = [], scans = [], timers = [];
-  const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); } };
+  const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), getElementById: id => docElements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); } };
   // First createElement call is the host; later calls are safe text-only file rows.
   let first = true; sandbox.document.createElement = () => { if (first) { first = false; return host; } return element(); };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
@@ -395,7 +437,7 @@ test('window controls overlay spacer, convPane flex-grow self-healing, and clean
     assert.equal(api.findTopRightClusterForTest(), null, `Must safely reject unrelated floating element: ${unrelated.className}`);
   }
 
-  // 5. WCO spacer width calculation & mounting on Windows
+  // 5. WCO spacer width calculation & mounting on Windows (at top: 0px, no top-0 class)
   h.sandbox.document.querySelector = sel => {
     if (sel.includes('toggle-aux-sidebar')) return auxToggle2x;
     return null;
@@ -408,15 +450,24 @@ test('window controls overlay spacer, convPane flex-grow self-healing, and clean
   const spacer = cluster2x.children[0];
   assert.equal(spacer.id, 'ag-wco-spacer');
   assert.equal(spacer.style.cssText, 'width:138px;height:100%;flex-shrink:0;pointer-events:none;');
+  assert.equal(h.sandbox.document.getElementById('ag-wco-spacer'), spacer, 'ag-wco-spacer must be accessible in document');
 
-  // 6. When top menu bar is present (top >= 20), WCO width is 0 and spacer removed
+  // 6. When toolbar moves down (top >= 20), findTopRightCluster returns null, and syncWindowControlsOverlay removes the old spacer
+  cluster2x.style.top = '25px';
+  cluster2x.getBoundingClientRect = () => ({ top: 25, left: 1200, right: 1440, bottom: 65, width: 240, height: 40 });
+  assert.equal(api.findTopRightClusterForTest(), null, 'findTopRightCluster must return null when toolbar moves down to top >= 20');
+  api.syncWindowControlsOverlayForTest();
+  assert.equal(cluster2x.children.length, 0, 'Spacer must be cleanly removed from toolbar when moved down');
+  assert.equal(h.sandbox.document.getElementById('ag-wco-spacer'), null, 'ag-wco-spacer must be removed from document');
+
+  // 7. Standalone compute check: when top menu bar is present (top >= 20), WCO width is 0
   const clusterWithMenu = h.sandbox.document.createElement();
   clusterWithMenu.className = 'absolute right-0 z-50 flex items-center shrink-0';
   clusterWithMenu.style.top = '35px';
   clusterWithMenu.getBoundingClientRect = () => ({ top: 35, left: 1200, right: 1440, bottom: 75, width: 240, height: 40 });
   assert.equal(api.computeWindowControlsWidthForTest(clusterWithMenu), 0);
 
-  // 7. On macOS (Darwin/MacIntel), WCO width is 0
+  // 8. On macOS (Darwin/MacIntel), WCO width is 0
   h.sandbox.navigator = { platform: 'MacIntel' };
   assert.equal(api.computeWindowControlsWidthForTest(cluster2x), 0);
 

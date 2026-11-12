@@ -3099,6 +3099,7 @@
     const hasTopClass = classList.contains('top-0');
     const hasTopStyle = /(?:^|;)\s*top:\s*0(?:px)?(?:\s*;|$)/i.test(styleTop);
     const rectTop = el.getBoundingClientRect ? el.getBoundingClientRect().top : 0;
+    if (el.getBoundingClientRect && rectTop >= 20) return false;
     const isAtTop = hasTopClass || hasTopStyle || (rectTop <= 10 && rectTop >= 0);
     if (!isAtTop) return false;
 
@@ -3154,6 +3155,7 @@
 
   // 动态计算右上角原生窗口控制区（Minimize / Maximize / Close）独占宽度（CSS px）
   function computeWindowControlsWidth(topRight) {
+    if (!topRight) return 0;
     try {
       const plat = (typeof navigator !== 'undefined' && navigator.platform) || '';
       if (/^Mac|iPhone|iPad/i.test(plat)) return 0;
@@ -3203,22 +3205,29 @@
     try {
       const topRight = findTopRightCluster();
       const wcoWidth = computeWindowControlsWidth(topRight);
-      if (topRight && typeof document.createElement === 'function') {
-        let spacer = typeof document.getElementById === 'function' ? document.getElementById('ag-wco-spacer') : null;
-        if (wcoWidth > 0) {
-          if (!spacer || spacer.parentElement !== topRight) {
-            spacer?.remove?.();
-            spacer = document.createElement('div');
-            spacer.id = 'ag-wco-spacer';
-            spacer.setAttribute('aria-hidden', 'true');
-            topRight.appendChild(spacer);
-          }
-          const targetCss = `width:${wcoWidth}px;height:100%;flex-shrink:0;pointer-events:none;`;
-          if (spacer.style.cssText !== targetCss) {
-            spacer.style.cssText = targetCss;
-          }
-        } else if (spacer) {
+      const spacer = typeof document.getElementById === 'function' ? document.getElementById('ag-wco-spacer') : null;
+      if (topRight && typeof document.createElement === 'function' && wcoWidth > 0) {
+        let activeSpacer = spacer;
+        if (!activeSpacer || activeSpacer.parentElement !== topRight) {
+          activeSpacer?.remove?.();
+          activeSpacer = document.createElement('div');
+          activeSpacer.id = 'ag-wco-spacer';
+          activeSpacer.setAttribute('aria-hidden', 'true');
+          topRight.appendChild(activeSpacer);
+        }
+        const targetCss = `width:${wcoWidth}px;height:100%;flex-shrink:0;pointer-events:none;`;
+        if (activeSpacer.style.cssText !== targetCss) {
+          activeSpacer.style.cssText = targetCss;
+        }
+      } else {
+        if (spacer) {
           spacer.remove();
+        }
+        if (topRight?.querySelectorAll) {
+          const oldSpacers = topRight.querySelectorAll('#ag-wco-spacer');
+          for (const s of oldSpacers) {
+            s.remove?.();
+          }
         }
       }
 
