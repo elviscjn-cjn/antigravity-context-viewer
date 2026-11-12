@@ -23,7 +23,8 @@
     "test": "node --test meter-core.test.js meter-renderer.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-update-delivery.test.js meter-cli-launcher.test.js",
     "format": "npx prettier --write \"*.js\" \"*.json\" \"*.md\"",
     "format:check": "npx prettier --check \"*.js\" \"*.json\" \"*.md\"",
-    "package": "python scripts/package-release.py"
+    "pack": "node scripts/package-release.js",
+    "package": "node scripts/package-release.js"
   },
   "keywords": [
     "antigravity",

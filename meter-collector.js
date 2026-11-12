@@ -1457,8 +1457,8 @@ async function collectTokenHistoryAsync(options = {}) {
   const costEstimate = costEstimateAll;
 
   const out = {
-    schemaVersion: '0.8.0',
-    version: '0.8.0',
+    schemaVersion: '0.8.1',
+    version: '0.8.1',
     updatedAt: `${todayKey} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`,
     firstUseDate: earliestDate,
     currentPeriod: {
@@ -1587,8 +1587,8 @@ function collectTokenHistory(options = {}) {
   // 触发异步更新
   void collectTokenHistoryAsync(options);
   return cachedTokenHistory || {
-    schemaVersion: '0.8.0',
-    version: '0.8.0',
+    schemaVersion: '0.8.1',
+    version: '0.8.1',
     loading: true,
     updatedAt: '',
     firstUseDate: null,
@@ -1662,10 +1662,12 @@ function resolveNodeRuntime() {
       isElectron: true
     };
   }
+  const cleanEnv = Object.assign({}, process.env);
+  delete cleanEnv.ELECTRON_RUN_AS_NODE;
   return {
     runtime: process.execPath || 'node',
     args: [],
-    env: Object.assign({}, process.env),
+    env: cleanEnv,
     isElectron: false
   };
 }

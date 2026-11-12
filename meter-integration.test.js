@@ -280,3 +280,113 @@ test('上下文解锁状态与真实请求预算 (983K) 联动，清除过期待
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+// ============================================================================
+// 10. 单元测试验证：主窗口关闭拦截判定与多路径边界（辅助窗口放行、多窗口关闭、后台运行设置尊重与退出放行）
+// ============================================================================
+test('单元测试：主窗口关闭拦截判定与多路径边界（辅助窗口放行、多窗口关闭、后台运行设置尊重与退出放行）', () => {
+  const { shouldInterceptWindowClose, setAppQuitting } = require('./meter-main');
+
+  const mainWin1 = { isVisible: () => true, isDestroyed: () => false };
+  const mainWin2 = { isVisible: () => true, isDestroyed: () => false };
+  const auxPopupWindow = { isVisible: () => true, isDestroyed: () => false };
+
+  try {
+    setAppQuitting(false);
+
+    // 路径 1: 唯一的已确认主会话窗口 + 允许后台运行 -> 拦截并隐藏保留会话
+    const shouldHide = shouldInterceptWindowClose(mainWin1, {
+      isBackgroundEnabled: () => true,
+      getHubWindows: () => [mainWin1]
+    });
+    assert.equal(shouldHide, true, '唯一的主会话窗口在后台常驻开启时必须拦截隐藏');
+
+    // 路径 2: 辅助/弹窗窗口（不在 getHubWindows 列表中） -> 绝不拦截，避免影响辅助窗口
+    const auxResult = shouldInterceptWindowClose(auxPopupWindow, {
+      isBackgroundEnabled: () => true,
+      getHubWindows: () => [mainWin1]
+    });
+    assert.equal(auxResult, false, '辅助窗口/弹窗不在主窗口列表中，必须放行正常关闭');
+
+    // 路径 3: 多主窗口存在时，关闭其中一个窗口 -> 放行关闭辅助多开窗口
+    const multiWinResult = shouldInterceptWindowClose(mainWin1, {
+      isBackgroundEnabled: () => true,
+      getHubWindows: () => [mainWin1, mainWin2]
+    });
+    assert.equal(multiWinResult, false, '存在其他可见主窗口时，放行关闭多开窗口');
+
+    // 路径 4: 宿主后台常驻设置明确关闭 -> 尊重宿主设置，放行关闭
+    const noBgResult = shouldInterceptWindowClose(mainWin1, {
+      isBackgroundEnabled: () => false,
+      getHubWindows: () => [mainWin1]
+    });
+    assert.equal(noBgResult, false, '宿主未开启后台常驻时，必须放行关闭退出');
+
+    // 路径 5: 获取窗口列表或读取设置失败/异常 -> 绝不默认隐藏，放行正常关闭
+    const errorResult1 = shouldInterceptWindowClose(mainWin1, {
+      isBackgroundEnabled: () => { throw new Error('settings read failed'); },
+      getHubWindows: () => [mainWin1]
+    });
+    assert.equal(errorResult1, false, '读取设置异常时绝不默认隐藏，必须安全放行');
+
+    const errorResult2 = shouldInterceptWindowClose(mainWin1, {
+      isBackgroundEnabled: () => true,
+      getHubWindows: () => { throw new Error('getHubWindows failed'); }
+    });
+    assert.equal(errorResult2, false, '获取窗口列表异常时绝不默认隐藏，必须安全放行');
+
+    // 路径 6: 应用退出中（before-quit / will-quit） -> 放行关闭彻底释放
+    setAppQuitting(true);
+    const quittingResult = shouldInterceptWindowClose(mainWin1, {
+      isBackgroundEnabled: () => true,
+      getHubWindows: () => [mainWin1]
+    });
+    assert.equal(quittingResult, false, '应用退出状态下严禁拦截，确保窗口正常销毁退出');
+  } finally {
+    setAppQuitting(false);
+  }
+});
+
+// ============================================================================
+// 11. 单元测试验证：BaseWindow / WebContentsView 架构适配与 WebContents 严格探测
+// ============================================================================
+test('单元测试：BaseWindow / WebContentsView 架构适配与 WebContents 严格探测（PR #6 整合）', async () => {
+  const { getWindowWebContents, installContextMeter } = require('./meter-main');
+
+  // 场景 1: 传统 BrowserWindow 具备直接 webContents
+  const fakeDirectWc = { isDestroyed: () => false, getURL: () => 'https://127.0.0.1:49999/' };
+  const mockBrowserWin = { webContents: fakeDirectWc, isDestroyed: () => false };
+  assert.equal(getWindowWebContents(mockBrowserWin), fakeDirectWc, '传统 BrowserWindow 必须直接返回 webContents');
+
+  // 场景 2: BaseWindow 具备 contentView.children，包含遮罩 curtainView 与主 hubWcv
+  const curtainWc = { isDestroyed: () => false, getURL: () => 'data:text/html,<!doctype html>...' };
+  const hubWc = { isDestroyed: () => false, getURL: () => 'https://127.0.0.1:51234/' };
+  const mockBaseWin = {
+    isDestroyed: () => false,
+    contentView: {
+      children: [
+        { webContents: curtainWc },
+        { webContents: hubWc }
+      ]
+    }
+  };
+  const resolvedWc = getWindowWebContents(mockBaseWin);
+  assert.equal(resolvedWc, hubWc, 'BaseWindow 必须精准匹配本地主服务 hubWcv，坚决排除 data: 协议的遮罩 curtainView');
+
+  // 场景 3: BaseWindow 创建初期尚未挂载 WebContentsView，installContextMeter 延迟安全探测与清理
+  let closedListener = null;
+  const mockPendingWin = {
+    isDestroyed: () => false,
+    contentView: { children: [] },
+    on() {},
+    once(event, fn) {
+      if (event === 'closed') closedListener = fn;
+    }
+  };
+  installContextMeter(mockPendingWin);
+
+  // 模拟窗口在挂载完成前被关闭
+  if (typeof closedListener === 'function') {
+    assert.doesNotThrow(() => closedListener(), '窗口关闭时清理探测定时器绝不抛错');
+  }
+});

@@ -1632,8 +1632,8 @@
     }
 
     return {
-      schemaVersion: payload.schemaVersion || '0.8.0',
-      version: payload.version || '0.8.0',
+      schemaVersion: payload.schemaVersion || '0.8.1',
+      version: payload.version || '0.8.1',
       updatedAt: payload.updatedAt || '',
       firstUseDate: summary.firstUseDate,
       currentPeriod: payload.currentPeriod || {

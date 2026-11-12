@@ -12,6 +12,7 @@ const { EventEmitter } = require('node:events');
 const isolatedAppData = path.join(os.tmpdir(), 'ag-meter-isolated-appdata');
 fs.mkdirSync(isolatedAppData, { recursive: true });
 process.env.APPDATA = isolatedAppData;
+process.env.AG_METER_TEST_MODE = '1';
 
 const { builtinAsar, loadAsarEngine } = require('./asar-engine');
 const asar = loadAsarEngine();
@@ -44,7 +45,8 @@ function writeStreamAsync(stream, chunk) {
  * 辅助函数：快速在临时目录生成一个合法的 mock ASAR
  */
 async function createMockHostAsar(dir, version = '0.1.0', utilsContent = null) {
-  const src = path.join(dir, `mock-src-${version}`);
+  const rand = Math.random().toString(36).slice(2, 8);
+  const src = path.join(dir, `mock-src-${version}-${rand}`);
   fs.mkdirSync(path.join(src, 'dist'), { recursive: true });
   fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({ name: 'antigravity', version }), 'utf8');
 
@@ -58,8 +60,9 @@ function createWindow(url, storageManager, options) {
   fs.writeFileSync(path.join(src, 'dist', 'utils.js'), utilsContent || defaultUtils, 'utf8');
   fs.writeFileSync(path.join(src, 'dist', 'preload.js'), '// mock preload\nconst electron_1 = require("electron");\n', 'utf8');
 
-  const asarPath = path.join(dir, `app-${version}.asar`);
+  const asarPath = path.join(dir, `app-${version}-${rand}.asar`);
   await builtinAsar.createPackageWithOptions(src, asarPath, {});
+  try { fs.rmSync(src, { recursive: true, force: true }); } catch {}
   return asarPath;
 }
 
@@ -444,13 +447,13 @@ test('卸载异常恢复 2.5：当前文件包含补丁痕迹且哈希与清单�
     // 2. 模拟文件哈希脱节但包含补丁痕迹
     fs.appendFileSync(targetAsar, '\n');
 
-    // 3. 运行 restore：必须能够自愈并将文件完整还原为官方原版！
-    const res = await restore({ path: targetAsar });
+    // 3. 运行 restore --force：必须能够将文件完整还原为官方原版！
+    const res = await restore({ path: targetAsar, force: true });
     assert.equal(sha256(fs.readFileSync(targetAsar)), origSha, '必须成功还原为官方纯净原版');
     assert.equal(res.restored, targetAsar);
 
     // 4. 重复卸载：幂等返回 alreadyRestored
-    const res2 = await restore({ path: targetAsar });
+    const res2 = await restore({ path: targetAsar, force: true });
     assert.equal(res2.alreadyRestored, true, '自愈后再次卸载必须幂等成功');
   } finally {
     if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
@@ -1240,6 +1243,749 @@ test('热注入安全 6.1：CDP 返回 exceptionDetails 时 tryHotInject 判定�
     await new Promise(resolve => server.close(resolve));
     if (prevAppData !== undefined) process.env.APPDATA = prevAppData;
     else delete process.env.APPDATA;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ============================================================================
+// 专项复核测试集：识别误覆盖、保护无关内容、防跨版本回退与失败恢复
+// ============================================================================
+
+test('专项复核 1：同版本不同构建与第三方修改并存（必须保留第三方代码，严禁误丢弃）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-preserve-third-party-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const thirdPartyUtils = `"use strict";
+// Third-Party Custom Localization Patch v2
+globalThis.__customChineseLocalization = true;
+function setupNodeWrapper(env) {
+    if (globalThis.__customChineseLocalization) env.LANG = "zh_CN.UTF-8";
+}
+function createWindow(url, storageManager, options) {
+    void win.loadURL(url);
+}
+`;
+    const hostPath = await createMockHostAsar(tmpDir, '2.31.2', thirdPartyUtils);
+    fs.copyFileSync(hostPath, targetAsar);
+
+    // 1. 初次安装
+    await install({ path: targetAsar });
+
+    // 2. 模拟文件哈希微变（脱节）但带有第三方修改与旧插件痕迹
+    fs.appendFileSync(targetAsar, '\n');
+
+    // 3. 再次运行安装（重装升级）
+    await install({ path: targetAsar });
+
+    // 4. 断言：第三方修改必须完好保留！
+    const resUtils = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.ok(resUtils.includes('Third-Party Custom Localization Patch v2'), '必须完整保留第三方的自定义注释');
+    assert.ok(resUtils.includes('globalThis.__customChineseLocalization = true;'), '必须完整保留第三方定义的全局变量');
+    assert.ok(resUtils.includes('env.LANG = "zh_CN.UTF-8"'), '必须完整保留第三方定制的逻辑');
+    assert.ok(resUtils.includes('installContextMeter(win)'), '必须成功注入最新版插件代码');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 2：新版宿主仍含插件痕迹（严禁宿主版本意外回退回旧备份）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-prevent-host-downgrade-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    // 1. 在旧版宿主 2.30.0 上安装本插件，留下 2.30.0 的备份
+    const v1Path = await createMockHostAsar(tmpDir, '2.30.0');
+    fs.copyFileSync(v1Path, targetAsar);
+    const m1 = await install({ path: targetAsar });
+    assert.equal(m1.version, '2.30.0');
+
+    // 2. 宿主跨版本升级到了 2.31.2，外部操作残留了插件痕迹
+    const v2ResidualUtils = `"use strict";
+function setupNodeWrapper(env) {}
+function createWindow(url, storageManager, options) {
+    require("./meter-main").installContextMeter(win);
+    void win.loadURL(url);
+}
+`;
+    const v2Path = await createMockHostAsar(tmpDir, '2.31.2', v2ResidualUtils);
+    fs.copyFileSync(v2Path, targetAsar);
+
+    // 3. 执行安装：必须基于当前 2.31.2 打包，严禁将宿主版本回退为旧备份 2.30.0！
+    const m2 = await install({ path: targetAsar });
+    assert.equal(m2.version, '2.31.2', '宿主版本必须继承当前宿主 2.31.2，绝不能回退为旧备份 2.30.0');
+    const installedPkg = JSON.parse(builtinAsar.extractFile(targetAsar, 'package.json').toString('utf8'));
+    assert.equal(installedPkg.version, '2.31.2', 'ASAR 内部版本必须是 2.31.2');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 3：当前文件不含插件但清单陈旧（卸载时必须拒绝覆盖当前纯净新文件）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-stale-manifest-restore-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const v1Path = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(v1Path, targetAsar);
+    await install({ path: targetAsar });
+
+    const cleanHost = await createMockHostAsar(tmpDir, '2.31.2', `"use strict";\n// Official clean freshly installed\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url, storageManager, options) {\n    void win.loadURL(url);\n}\n`);
+    fs.copyFileSync(cleanHost, targetAsar);
+    const cleanSha = sha256(fs.readFileSync(targetAsar));
+
+    // 执行卸载：必须拒绝覆盖，保护用户的新文件！
+    await assert.rejects(
+      async () => { await restore({ path: targetAsar }); },
+      /拒绝覆盖还原以保护宿主文件/
+    );
+    assert.equal(sha256(fs.readFileSync(targetAsar)), cleanSha, '拒绝后当前纯净文件未被破坏');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 4：外部备份属于不同版本或无效（--backup 严格校验，拒绝并保持原文件不变）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-explicit-backup-validation-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const vHost = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(vHost, targetAsar);
+    const beforeSha = sha256(fs.readFileSync(targetAsar));
+
+    // 1. 传入不存在的文件路径
+    await assert.rejects(
+      async () => { await install({ path: targetAsar, backup: path.join(tmpDir, 'nonexistent.asar') }); },
+      /指定的 --backup 文件不存在或无效/
+    );
+
+    // 2. 传入版本不匹配的备份 (2.30.0 vs 2.31.2)
+    const mismatchedBackup = await createMockHostAsar(tmpDir, '2.30.0');
+    await assert.rejects(
+      async () => { await install({ path: targetAsar, backup: mismatchedBackup }); },
+      /指定的 --backup 宿主版本.*不匹配/
+    );
+
+    assert.equal(sha256(fs.readFileSync(targetAsar)), beforeSha, '参数无效时目标文件必须保持不变');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 5：改写中断与失败恢复机制（快照原子回退保护）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-rollback-protection-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const vHost = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(vHost, targetAsar);
+    const beforeSha = sha256(fs.readFileSync(targetAsar));
+
+    const origCopy = fs.copyFileSync;
+    let didThrow = false;
+    try {
+      fs.copyFileSync = (src, dest) => {
+        if (dest === targetAsar && !didThrow) {
+          didThrow = true;
+          throw new Error('Simulated disk full or I/O failure during file write');
+        }
+        return origCopy(src, dest);
+      };
+
+      await assert.rejects(
+        async () => { await install({ path: targetAsar }); },
+        /Simulated disk full or I\/O failure/
+      );
+
+      assert.equal(sha256(fs.readFileSync(targetAsar)), beforeSha, '异常中断后目标文件必须完整还原无损坏');
+    } finally {
+      fs.copyFileSync = origCopy;
+    }
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 6：restore 卸载时原位清洗保留第三方修改（反例 A 修复断言）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-restore-preserve-mod-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const v1Path = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(v1Path, targetAsar);
+    await install({ path: targetAsar });
+
+    const staging = path.join(tmpDir, 'staging-post-mod');
+    fs.mkdirSync(staging);
+    builtinAsar.extractAll(targetAsar, staging);
+    const thirdPartyMarker = '// Custom User Third-Party Feature Injection';
+    fs.appendFileSync(path.join(staging, 'dist', 'utils.js'), '\n' + thirdPartyMarker + '\n');
+    await builtinAsar.createPackageWithOptions(staging, targetAsar, {});
+    fs.rmSync(staging, { recursive: true, force: true });
+
+    const res = await restore({ path: targetAsar });
+    assert.equal(res.inPlaceCleaned, true, '必须优先走原位清洗卸载');
+
+    const restoredUtils = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.ok(restoredUtils.includes(thirdPartyMarker), '卸载后第三方修改必须完好保留，严禁被旧备份覆盖丢弃');
+    assert.equal(restoredUtils.includes('installContextMeter'), false, '本插件挂载代码必须已被彻底移除');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 7：改写目标后发生后续异常时的真实快照回滚（反例 B 修复断言）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-rollback-manifest-failure-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const vHost = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(vHost, targetAsar);
+    const beforeSha = sha256(fs.readFileSync(targetAsar));
+
+    const origWriteFile = fs.writeFileSync;
+    fs.writeFileSync = (p, data, opt) => {
+      if (typeof p === 'string' && p.endsWith('installation.json')) {
+        throw new Error('Simulated disk full or permission error while saving installation.json');
+      }
+      return origWriteFile(p, data, opt);
+    };
+
+    try {
+      await assert.rejects(
+        async () => { await install({ path: targetAsar }); },
+        /Simulated disk full or permission error while saving installation.json/
+      );
+
+      const afterSha = sha256(fs.readFileSync(targetAsar));
+      assert.equal(afterSha, beforeSha, '写清单失败后目标文件必须完整恢复为改写前快照状态');
+    } finally {
+      fs.writeFileSync = origWriteFile;
+    }
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 8：restore 自定义 --path 严格归属校验（反例 C 修复断言）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-restore-path-ownership-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetA = path.join(tmpDir, 'target-a', 'app.asar');
+    const targetB = path.join(tmpDir, 'target-b', 'app.asar');
+    fs.mkdirSync(path.dirname(targetA), { recursive: true });
+    fs.mkdirSync(path.dirname(targetB), { recursive: true });
+
+    const hostA = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(hostA, targetA);
+    const hostB = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(hostB, targetB);
+
+    await install({ path: targetA });
+
+    await assert.rejects(
+      async () => { await restore({ path: targetB }); },
+      /与安装记录中的目标.*不一致，拒绝跨目标还原/
+    );
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 9：原有 autoHideMenuBar 不被误删且 JS 语法校验通过（反例 D 修复断言）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-preserve-menubar-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const customMenuBarUtils = `"use strict";
+function setupNodeWrapper(env) {}
+function createWindow(url, storageManager, options) {
+    const win = { autoHideMenuBar: true };
+    void win.loadURL(url);
+}
+`;
+    const host = await createMockHostAsar(tmpDir, '2.31.2', customMenuBarUtils);
+    fs.copyFileSync(host, targetAsar);
+
+    await install({ path: targetAsar });
+    fs.appendFileSync(targetAsar, '\n');
+    await install({ path: targetAsar });
+
+    const finalUtils = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.ok(finalUtils.includes('const win = { autoHideMenuBar: true };'), '宿主原有的 autoHideMenuBar 绝不能被清洗逻辑误删！');
+
+    const vm = require('vm');
+    assert.doesNotThrow(() => {
+      new vm.Script(finalUtils, { filename: 'dist/utils.js' });
+    }, '最终 utils.js 必须是合法且可编译执行的 JavaScript 脚本');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('三模块组合验证 10：单模块、双模块、三模块按需开启、独立关闭及旧版配置平滑迁移', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-three-modules-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const host = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(host, targetAsar);
+
+    const { TAGS, validateSyntax } = require('./modular-installer');
+    const { loadModulesConfig, saveModulesConfig, testProxyHealth } = require('./modules-config');
+
+    // 1. 初始状态：仅安装上下文模块 (ContextMeter)，显式指定 pureMeterOnly
+    const m1 = await install({ path: targetAsar, pureMeterOnly: true, modules: { meter: { enabled: true }, chinese: { enabled: false }, proxy: { enabled: false } } });
+    let u1 = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    let p1 = builtinAsar.extractFile(targetAsar, 'dist/preload.js').toString('utf8');
+
+    assert.ok(u1.includes(TAGS.METER_UTILS_START), '上下文模块 utils 成对标记必须存在');
+    assert.ok(p1.includes(TAGS.METER_PRELOAD_START), '上下文模块 preload 成对标记必须存在');
+    assert.equal(u1.includes(TAGS.PROXY_START), false, '纯净上下文模式下免 TUN 绝不能有标记');
+    assert.equal(p1.includes(TAGS.CHINESE_START), false, '纯净上下文模式下汉化绝不能有标记');
+    assert.ok(validateSyntax(u1, 'dist/utils.js'));
+    assert.ok(validateSyntax(p1, 'dist/preload.js'));
+
+    // 2. 独立增量启用免 TUN 代理模块
+    await install({ path: targetAsar, injectChinese: false, modules: { proxy: { enabled: true, proxyUrl: 'http://127.0.0.1:9999' } } });
+    let u2 = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.ok(u2.includes(TAGS.PROXY_START), '免 TUN 代理成对标记必须成功注入');
+    assert.ok(u2.includes('127.0.0.1:9999'), '自定义代理地址必须准确写入');
+    assert.ok(u2.includes(TAGS.METER_UTILS_START), '原上下文模块必须完好保留');
+    assert.ok(validateSyntax(u2, 'dist/utils.js'));
+
+    // 3. 独立增量启用汉化模块（三模块同时启用）
+    await install({ path: targetAsar, modules: { chinese: { enabled: true } } });
+    let u3 = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    let p3 = builtinAsar.extractFile(targetAsar, 'dist/preload.js').toString('utf8');
+    assert.ok(u3.includes(TAGS.PROXY_START), '三模块共存时免 TUN 仍存在');
+    assert.ok(u3.includes(TAGS.METER_UTILS_START), '三模块共存时上下文仍存在');
+    assert.ok(p3.includes(TAGS.CHINESE_START), '三模块共存时汉化标记必须成功注入');
+    assert.ok(validateSyntax(u3, 'dist/utils.js'));
+    assert.ok(validateSyntax(p3, 'dist/preload.js'));
+
+    // 4. 独立关闭免 TUN 模块并原位清洗标记
+    await install({ path: targetAsar, injectProxy: false, modules: { proxy: { enabled: false } } });
+    let u4 = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    let p4 = builtinAsar.extractFile(targetAsar, 'dist/preload.js').toString('utf8');
+    assert.equal(u4.includes(TAGS.PROXY_START), false, '免 TUN 模块清洗后，其标记与代码必须被干净移除');
+    assert.ok(u4.includes(TAGS.METER_UTILS_START), '关闭免 TUN 模块时，上下文模块必须完好保留');
+    assert.ok(p4.includes(TAGS.CHINESE_START), '关闭免 TUN 模块时，汉化模块必须完好保留');
+    assert.ok(validateSyntax(u4, 'dist/utils.js'));
+
+    // 5. 独立关闭汉化模块并原位清洗标记
+    await install({ path: targetAsar, injectProxy: false, injectChinese: false, modules: { chinese: { enabled: false } } });
+    let p5 = builtinAsar.extractFile(targetAsar, 'dist/preload.js').toString('utf8');
+    assert.equal(p5.includes(TAGS.CHINESE_START), false, '汉化模块清洗后，其标记与代码必须被干净移除');
+    assert.ok(p5.includes(TAGS.METER_PRELOAD_START), '关闭汉化模块时，上下文模块必须完好保留');
+    assert.ok(validateSyntax(p5, 'dist/preload.js'));
+
+    // 6. 代理健康分层检测断言
+    const invalidRes = await testProxyHealth('not_a_valid_url');
+    assert.equal(invalidRes.configValid, false);
+    assert.match(invalidRes.error, /格式错误/);
+
+    const unreachableRes = await testProxyHealth('http://127.0.0.1:54321');
+    assert.equal(unreachableRes.configValid, true);
+    assert.equal(unreachableRes.proxyReachable, false);
+    assert.match(unreachableRes.error, /无法连接/);
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 11：restore 原位卸载写入目标时发生 I/O 异常时的快照回滚（断言目标文件未被写坏）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-restore-write-failure-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const v1Path = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(v1Path, targetAsar);
+    await install({ path: targetAsar });
+
+    // 增加第三方修改使其进入原位解构卸载路径
+    const staging = path.join(tmpDir, 'staging-mod');
+    fs.mkdirSync(staging);
+    builtinAsar.extractAll(targetAsar, staging);
+    fs.appendFileSync(path.join(staging, 'dist', 'utils.js'), '\n// Third Party Modification\n');
+    await builtinAsar.createPackageWithOptions(staging, targetAsar, {});
+    fs.rmSync(staging, { recursive: true, force: true });
+
+    const beforeRestoreSha = sha256(fs.readFileSync(targetAsar));
+
+    // Mock: 模拟在将原位清洗后的文件写回目标时抛出 I/O 错误
+    const origCopy = fs.copyFileSync;
+    let didThrow = false;
+    fs.copyFileSync = (src, dest) => {
+      if (dest === targetAsar && !didThrow) {
+        didThrow = true;
+        // 模拟文件被截断/破坏时抛出异常
+        throw new Error('Simulated disk full or I/O failure while writing restored ASAR');
+      }
+      return origCopy(src, dest);
+    };
+
+    try {
+      await assert.rejects(
+        async () => { await restore({ path: targetAsar }); },
+        /Simulated disk full or I\/O failure while writing restored ASAR/
+      );
+
+      // 断言：必须真实从快照回滚，目标文件完整保留原状，绝不留下损坏文件！
+      const afterRestoreSha = sha256(fs.readFileSync(targetAsar));
+      assert.equal(afterRestoreSha, beforeRestoreSha, '原位卸载写入失败后目标文件必须完整恢复为改写前快照状态');
+    } finally {
+      fs.copyFileSync = origCopy;
+    }
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 12：restore 原位卸载替换成功后写清单失败时的快照回滚（断言文件与清单保持一致）', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-restore-manifest-failure-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const v1Path = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(v1Path, targetAsar);
+    await install({ path: targetAsar });
+
+    const staging = path.join(tmpDir, 'staging-mod');
+    fs.mkdirSync(staging);
+    builtinAsar.extractAll(targetAsar, staging);
+    fs.appendFileSync(path.join(staging, 'dist', 'utils.js'), '\n// Third Party Modification\n');
+    await builtinAsar.createPackageWithOptions(staging, targetAsar, {});
+    fs.rmSync(staging, { recursive: true, force: true });
+
+    const beforeRestoreSha = sha256(fs.readFileSync(targetAsar));
+
+    // Mock: 模拟在写回 targetAsar 成功后，写入 installation.json 失败
+    const origWriteFile = fs.writeFileSync;
+    fs.writeFileSync = (p, data, opt) => {
+      if (typeof p === 'string' && p.endsWith('installation.json')) {
+        throw new Error('Simulated disk full while updating installation.json during restore');
+      }
+      return origWriteFile(p, data, opt);
+    };
+
+    try {
+      await assert.rejects(
+        async () => { await restore({ path: targetAsar }); },
+        /Simulated disk full while updating installation.json during restore/
+      );
+
+      // 断言：写清单失败后必须自动回滚目标文件，确保文件与清单不脱节
+      const afterRestoreSha = sha256(fs.readFileSync(targetAsar));
+      assert.equal(afterRestoreSha, beforeRestoreSha, '卸载写清单失败后目标文件必须完整恢复为改写前快照状态');
+    } finally {
+      fs.writeFileSync = origWriteFile;
+    }
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 13：汉化与三模块重复安装、资源缺失防护与原位解构清理', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-review-three-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const host = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(host, targetAsar);
+
+    const { TAGS, validateSyntax, generateChinesePreloadCode } = require('./modular-installer');
+
+    // 1. 静态代码审查断言：源码中绝对不残留作者本地绝对开发路径
+    const installSrc = fs.readFileSync(path.join(__dirname, 'install.js'), 'utf8');
+    assert.equal(installSrc.includes('D:\\AI_plugin'), false, 'install.js 严禁包含作者绝对开发路径');
+    const restoreSrc = fs.readFileSync(path.join(__dirname, 'restore.js'), 'utf8');
+    assert.equal(restoreSrc.includes('D:\\AI_plugin'), false, 'restore.js 严禁包含作者绝对开发路径');
+
+    // 2. 首次安装带汉化与代理
+    await install({ path: targetAsar, modules: { meter: { enabled: true }, chinese: { enabled: true }, proxy: { enabled: true } } });
+    const p1 = builtinAsar.extractFile(targetAsar, 'dist/preload.js').toString('utf8');
+    assert.ok(p1.includes(TAGS.CHINESE_START), '首次安装汉化标记必须存在');
+
+    // 3. 重复执行带汉化的安装：必须平滑通过，绝不能因 dist/i18n 未在 allowedChanges 而崩溃
+    await assert.doesNotReject(async () => {
+      await install({ path: targetAsar, modules: { meter: { enabled: true }, chinese: { enabled: true }, proxy: { enabled: true } } });
+    }, '同版本或已有 i18n 资源存在时重新安装必须平滑通过');
+
+    // 4. 原位解构卸载：必须同时清洗 dist/i18n 资源
+    await restore({ path: targetAsar });
+    const entriesAfterRestore = builtinAsar.listPackage(targetAsar);
+    assert.equal(entriesAfterRestore.includes('/dist/i18n/zh-CN.json'), false, '原位解构卸载后 dist/i18n 必须被干净移除');
+    assert.equal(entriesAfterRestore.includes('/dist/i18n/i18n-runtime.js'), false, '原位解构卸载后 i18n-runtime.js 必须被移除');
+
+    // 5. 校验 preload 汉化注入代码门禁语法
+    const dummyDict = '{"exact":{}}';
+    const dummyRuntime = 'console.log("rt");';
+    const code = generateChinesePreloadCode(dummyDict, dummyRuntime);
+    assert.ok(validateSyntax(code, 'preload.js'), '生成的 preload 汉化注入代码必须通过语法检查');
+    assert.ok(code.includes('chinese.enabled === false'), '生成的 preload 汉化代码必须包含配置门禁检查');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 14：隔离集成测试：状态机三分模型、目标定位失败保护与深层能力判定断言', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-ipc-toggle-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const host = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(host, targetAsar);
+
+    const { loadModulesConfig, inspectDiskModules, PROJECT_VERSION } = require('./modules-config');
+    const { handleToggleModule, handleModulesStatus } = require('./meter-main');
+    const { TAGS } = require('./modular-installer');
+
+    // 0. 权威版本一致性断言：模块配置 PROJECT_VERSION 必须严格等于 package.json 版本
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.equal(PROJECT_VERSION, pkg.version, 'PROJECT_VERSION 必须与 package.json 绝对一致');
+
+    const fakeEvent = {
+      sender: {
+        getURL: () => 'https://127.0.0.1:45678/'
+      }
+    };
+
+    // 1. 模拟未注入任何扩展模块的宿主环境（显式指定 pureMeterOnly）
+    await install({ path: targetAsar, pureMeterOnly: true, modules: { meter: { enabled: true }, chinese: { enabled: false }, proxy: { enabled: false } } });
+    
+    // 检查磁盘初始状态
+    const initDisk = inspectDiskModules(targetAsar);
+    assert.equal(initDisk.chinese, false, '初始磁盘 preload 未注入汉化代码');
+    assert.equal(initDisk.chineseReady, false);
+    assert.equal(initDisk.meter, true, '初始磁盘 utils 包含上下文监控');
+
+    const status1 = await handleModulesStatus(fakeEvent, targetAsar);
+    assert.equal(status1.ok, true);
+    assert.equal(status1.data.modules.chinese.enabled, false);
+    assert.equal(status1.disk.chinese, false);
+
+    // 2. 模拟磁盘组件未就绪时的保护拦截：在未注入汉化的宿主上，客户端内尝试开启汉化
+    // 测试防护机制：绝对不能把异常吃掉！绝对不能将配置改成 true！绝不调用内部危险安装！
+    const resFail = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsar });
+
+    assert.equal(resFail.ok, false, '磁盘未就绪时 toggle-module 必须返回 ok: false');
+    assert.equal(resFail.status, 'install_failed', '状态必须明确为 install_failed');
+    assert.match(resFail.error, /未注入/, '错误描述必须清晰指出磁盘未注入组件');
+
+    // 核查配置：modules.json 必须保持 enabled: false，绝不偷偷改成已开启！
+    const cfgAfterFail = loadModulesConfig();
+    assert.equal(cfgAfterFail.modules.chinese.enabled, false, '安装失败后配置必须依然保持 false');
+
+    // 3. 正常执行包含汉化门禁的安装（模拟用户通过 CLI 或成功安装器打入带门禁与字典的完整包）
+    await install({ path: targetAsar, modules: { chinese: { enabled: true } } });
+    const readyDisk = inspectDiskModules(targetAsar);
+    assert.equal(readyDisk.chinese, true, '此时磁盘已注入汉化');
+    assert.equal(readyDisk.chineseReady, true, '此时磁盘深层核实完整运行时与字典已就绪');
+    assert.equal(readyDisk.chineseStatus, 'ready');
+
+    // 4. 客户端内关闭汉化 (已有完整运行时通过配置门禁切换: config_toggled)
+    const resClose = await handleToggleModule(fakeEvent, 'chinese', false, { asarPath: targetAsar });
+    assert.equal(resClose.ok, true);
+    assert.equal(resClose.status, 'config_toggled', '必须命中 config_toggled 结果类型');
+    assert.equal(resClose.restartRequired, true, '必须提示需重启客户端生效');
+    const cfgClosed = loadModulesConfig();
+    assert.equal(cfgClosed.modules.chinese.enabled, false, '配置已正确更新为关闭');
+
+    // 5. 客户端内重新开启汉化 (同样命中 config_toggled，无需重复改写 ASAR)
+    const resReOpen = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsar });
+    assert.equal(resReOpen.ok, true);
+    assert.equal(resReOpen.status, 'config_toggled');
+    assert.equal(resReOpen.restartRequired, true);
+    const cfgReOpen = loadModulesConfig();
+    assert.equal(cfgReOpen.modules.chinese.enabled, true, '配置已正确更新为开启');
+
+    // 6. 深层能力判定反例测试 A: 标记存在但字典为空字典字面量 {}（缺少条目资源）
+    const brokenDictStaging = path.join(tmpDir, 'mock-broken-dict');
+    fs.mkdirSync(path.join(brokenDictStaging, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(brokenDictStaging, 'package.json'), JSON.stringify({ name: 'antigravity', version: '2.31.2' }));
+    fs.writeFileSync(path.join(brokenDictStaging, 'dist', 'utils.js'), '"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url) { void win.loadURL(url); }\n');
+    fs.writeFileSync(path.join(brokenDictStaging, 'dist', 'preload.js'), `${TAGS.CHINESE_START}\nvar _dictData = {};\nfunction createI18nEngine(){}\nif (modules.chinese.enabled === false) return;\n${TAGS.CHINESE_END}\n`);
+    const brokenDictAsar = path.join(tmpDir, 'broken-dict.asar');
+    await builtinAsar.createPackageWithOptions(brokenDictStaging, brokenDictAsar, {});
+    fs.rmSync(brokenDictStaging, { recursive: true, force: true });
+
+    const brokenDisk = inspectDiskModules(brokenDictAsar);
+    assert.equal(brokenDisk.chinese, true, '标记确实存在');
+    assert.equal(brokenDisk.chineseReady, false, '但字典为空，不能判定为 ready');
+    assert.equal(brokenDisk.chineseStatus, 'missing_resources', '状态必须判定为 missing_resources');
+
+    // 7. 深层能力判定反例测试 B: 标记与字典存在但缺少配置门禁
+    const noGateStaging = path.join(tmpDir, 'mock-no-gate');
+    fs.mkdirSync(path.join(noGateStaging, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(noGateStaging, 'package.json'), JSON.stringify({ name: 'antigravity', version: '2.31.2' }));
+    fs.writeFileSync(path.join(noGateStaging, 'dist', 'utils.js'), '"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url) { void win.loadURL(url); }\n');
+    const validDictSample = JSON.stringify({ exact: { "Hello": "你好", "World": "世界", "Settings": "设置", "About": "关于" } });
+    fs.writeFileSync(path.join(noGateStaging, 'dist', 'preload.js'), `${TAGS.CHINESE_START}\nvar _dictData = ${validDictSample.repeat(10)};\nwindow.__AGY_I18N_DATA__ = _dictData;\nfunction createI18nEngine(){}\n${TAGS.CHINESE_END}\n`);
+    const noGateAsar = path.join(tmpDir, 'no-gate.asar');
+    await builtinAsar.createPackageWithOptions(noGateStaging, noGateAsar, {});
+    fs.rmSync(noGateStaging, { recursive: true, force: true });
+
+    const noGateDisk = inspectDiskModules(noGateAsar);
+    assert.equal(noGateDisk.chinese, true);
+    assert.equal(noGateDisk.chineseReady, false);
+    assert.equal(noGateDisk.chineseStatus, 'missing_gate', '缺少门禁必须判定为 missing_gate');
+
+    // 8. 免 TUN 代理模块失败防护测试
+    // 若代理原本未注入，客户端内尝试开启必须报错并拒绝修改配置为 true
+    const cleanHostForProxy = await createMockHostAsar(tmpDir, '2.31.2');
+    const resProxyFail = await handleToggleModule(fakeEvent, 'proxy', true, { asarPath: cleanHostForProxy });
+    assert.equal(resProxyFail.ok, false);
+    assert.equal(resProxyFail.status, 'install_failed');
+    assert.match(resProxyFail.error, /未注入/);
+    const cfgProxyFail = loadModulesConfig();
+    assert.equal(cfgProxyFail.modules.proxy.enabled, false, '代理未就绪配置严禁被改成 true');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 15：真实 Electron/ASAR 模块加载环境验证：运行在 app.asar 内部时状态查询与模块检测零异常、零 process.noAsar 副作用', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-electron-asar-env-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'test-target.asar');
+    const host = await createMockHostAsar(tmpDir, '2.31.2');
+    fs.copyFileSync(host, targetAsar);
+
+    // 1. 执行全量模块安装注入，生成包含 additions（asar-engine, modules-config, modular-installer, meter-main 等）的真实完整 ASAR
+    await install({
+      path: targetAsar,
+      modules: {
+        meter: { enabled: true },
+        chinese: { enabled: true },
+        proxy: { enabled: true }
+      }
+    });
+
+    // 2. 纯 Node 环境断言：引入 modules-config 和 inspectDiskModules 前后绝对不污染 process.noAsar
+    const { inspectDiskModules, loadModulesConfig } = require('./modules-config');
+    const beforeNodeNoAsar = process.noAsar;
+    const diskFromNode = inspectDiskModules(targetAsar);
+    assert.equal(process.noAsar, beforeNodeNoAsar, 'Node 环境下 inspectDiskModules 不得篡改 process.noAsar');
+    assert.equal(diskFromNode.found, true);
+    assert.equal(diskFromNode.chinese, true);
+    assert.equal(diskFromNode.proxy, true);
+
+    // 3. 真实 Electron/ASAR 模块加载环境复现验证
+    // 探测本机 Antigravity 或 Electron 可执行文件
+    const electronCandidates = [
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'antigravity', 'Antigravity.exe'),
+      path.join(process.env.ProgramFiles || '', 'antigravity', 'Antigravity.exe'),
+      path.join(process.env.ProgramFiles || '', 'Google Antigravity', 'Antigravity.exe')
+    ];
+    const electronExe = electronCandidates.find(p => fs.existsSync(p));
+
+    if (!electronExe) {
+      console.log('   [注意] 当前机器未检测到 Antigravity.exe 宿主可执行文件，标记 Electron 真实进程子用例跳过（Node ASAR 验证已通过）');
+      return;
+    }
+
+    const runnerScript = path.join(tmpDir, 'runner.js');
+    fs.writeFileSync(runnerScript, `
+'use strict';
+const assert = require('assert');
+const testAsar = ${JSON.stringify(targetAsar)};
+
+assert.ok(process.versions.electron, '必须在 Electron 宿主运行时中执行');
+assert.equal(process.noAsar, undefined, '初始 process.noAsar 必须为 undefined');
+
+// 从 ASAR 归档内部路径加载 modules-config
+const modulesConfigPath = testAsar + '/dist/modules-config.js';
+const { inspectDiskModules, loadModulesConfig } = require(modulesConfigPath);
+assert.equal(process.noAsar, undefined, 'require 内部 modules-config 后 process.noAsar 必须保持 undefined');
+
+// 触发状态检测，断言不再报错 ENOENT/open/lstat 且正常返回各模块就绪状态
+const disk = inspectDiskModules(testAsar);
+assert.equal(disk.found, true);
+assert.equal(disk.meter, true);
+assert.equal(disk.chinese, true);
+assert.equal(disk.proxy, true);
+assert.equal(process.noAsar, undefined, '调用 inspectDiskModules 后 process.noAsar 必须依然为 undefined');
+
+const cfg = loadModulesConfig();
+assert.equal(cfg.modules.chinese.enabled, true);
+assert.equal(cfg.modules.proxy.enabled, true);
+
+console.log('ELECTRON_ASAR_VERIFIED_SUCCESS');
+`, 'utf8');
+
+    const { spawnSync } = require('child_process');
+    const childRes = spawnSync(electronExe, [runnerScript], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      encoding: 'utf8',
+      timeout: 10000
+    });
+
+    assert.equal(childRes.status, 0, `Electron 子进程异常退出 (${childRes.status})。STDERR: ${childRes.stderr}`);
+    assert.match(childRes.stdout, /ELECTRON_ASAR_VERIFIED_SUCCESS/, 'Electron ASAR 内部加载断言必须成功完成');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

@@ -1719,8 +1719,260 @@
     copyUnlockPostUrl(false);
   });
 
-  // 静默初始化检测一次解锁状态（不执行修改）
-  setTimeout(() => { void refreshUnlockStatus(); }, 500);
+  // -------------------------------------------------------------
+  // 模块 2: 客户端界面汉化 (AntigravityChinese)
+  // -------------------------------------------------------------
+  const btnToggleChinese = el('btn-toggle-chinese');
+  const chineseDrawerBody = el('chinese-drawer-body');
+  const chineseDrawerArrow = el('chinese-drawer-arrow');
+  const chineseBadge = el('chinese-badge');
+  const chineseStatusDesc = el('chinese-status-desc');
+  const btnToggleChineseModule = el('btn-toggle-chinese-module');
+
+  let isChineseExpanded = false;
+  let currentChineseEnabled = false;
+
+  btnToggleChinese?.addEventListener('click', () => {
+    isChineseExpanded = !isChineseExpanded;
+    if (chineseDrawerBody) chineseDrawerBody.style.display = isChineseExpanded ? 'block' : 'none';
+    if (chineseDrawerArrow) chineseDrawerArrow.textContent = isChineseExpanded ? '▲ 收起' : '▼ 展开';
+    btnToggleChinese?.setAttribute('aria-expanded', String(isChineseExpanded));
+  });
+
+  // -------------------------------------------------------------
+  // 模块 3: 免 TUN 网络直连 (AntigravityProxyNoTun)
+  // -------------------------------------------------------------
+  const btnToggleProxy = el('btn-toggle-proxy');
+  const proxyDrawerBody = el('proxy-drawer-body');
+  const proxyDrawerArrow = el('proxy-drawer-arrow');
+  const proxyBadge = el('proxy-badge');
+  const proxyStatusDesc = el('proxy-status-desc');
+  const inputProxyUrl = el('input-proxy-url');
+  const inputProxyBypass = el('input-proxy-bypass');
+  const btnTestProxy = el('btn-test-proxy');
+  const btnToggleProxyModule = el('btn-toggle-proxy-module');
+  const proxyTestResult = el('proxy-test-result');
+
+  let isProxyExpanded = false;
+  let currentProxyEnabled = false;
+
+  btnToggleProxy?.addEventListener('click', () => {
+    isProxyExpanded = !isProxyExpanded;
+    if (proxyDrawerBody) proxyDrawerBody.style.display = isProxyExpanded ? 'block' : 'none';
+    if (proxyDrawerArrow) proxyDrawerArrow.textContent = isProxyExpanded ? '▲ 收起' : '▼ 展开';
+    btnToggleProxy?.setAttribute('aria-expanded', String(isProxyExpanded));
+  });
+
+  async function refreshModulesDisplay() {
+    try {
+      const api = window.contextMeterAPI;
+      if (!api || typeof api.getModulesStatus !== 'function') return;
+      const res = await api.getModulesStatus();
+      if (!res || !res.ok || !res.data) {
+        const errMsg = (res && res.error) ? res.error : '模块状态返回异常';
+        if (chineseBadge) {
+          chineseBadge.textContent = '⚠️ 读取失败';
+          chineseBadge.className = 'key-pill pill-danger';
+        }
+        if (chineseStatusDesc) {
+          chineseStatusDesc.textContent = `检测汉化状态失败: ${errMsg}`;
+        }
+        if (proxyBadge) {
+          proxyBadge.textContent = '⚠️ 读取失败';
+          proxyBadge.className = 'key-pill pill-danger';
+        }
+        if (proxyStatusDesc) {
+          proxyStatusDesc.textContent = `检测免 TUN 代理状态失败: ${errMsg}`;
+        }
+        return;
+      }
+      const cfg = res.data;
+
+      currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
+      // 判定汉化引擎是否已挂载生效：检测全局运行时对象与核心中文特征词（覆盖整个 DOM 与侧边栏）
+      const hasI18nRuntime = typeof window.__AGY_I18N_DATA__ !== 'undefined' || typeof window.__AGY_TRANSLATE_EL__ !== 'undefined';
+      const hasChineseKeywords = Boolean(
+        document.body?.innerText?.includes('新建会话') ||
+        document.body?.innerText?.includes('自定义扩展') ||
+        document.body?.innerText?.includes('项目列表') ||
+        document.querySelector("div[role='navigation']")?.innerText?.includes('新建会话')
+      );
+      const isDomTranslated = hasI18nRuntime || hasChineseKeywords;
+      const disk = res.disk || {};
+
+      if (chineseBadge) {
+        if (!currentChineseEnabled) {
+          if (isDomTranslated) {
+            chineseBadge.textContent = '⏳ 需重启恢复英文';
+            chineseBadge.className = 'key-pill pill-warn';
+          } else {
+            chineseBadge.textContent = disk.chinese ? '⚪ 已关闭 (就绪)' : '⚪ 未安装';
+            chineseBadge.className = 'key-pill pill-muted';
+          }
+        } else if (isDomTranslated) {
+          chineseBadge.textContent = '🟢 已翻译生效';
+          chineseBadge.className = 'key-pill pill-ok';
+        } else if (!disk.chinese) {
+          chineseBadge.textContent = '⚠️ 磁盘未注入';
+          chineseBadge.className = 'key-pill pill-danger';
+        } else {
+          chineseBadge.textContent = '⏳ 待重启客户端生效';
+          chineseBadge.className = 'key-pill pill-warn';
+        }
+      }
+      if (chineseStatusDesc) {
+        if (!currentChineseEnabled) {
+          if (isDomTranslated) {
+            chineseStatusDesc.textContent = '汉化模块已在配置中关闭；当前界面仍保留已加载的中文 DOM 缓存，需完全退出并重新打开 Antigravity 客户端以彻底恢复纯净官方原生英文。';
+          } else {
+            chineseStatusDesc.textContent = disk.chinese
+              ? '客户端汉化已关闭（磁盘已具备汉化资源与配置门禁，开启后重启即可生效）。'
+              : '客户端汉化处于未安装状态，保持官方原生英文界面。';
+          }
+        } else if (isDomTranslated) {
+          chineseStatusDesc.textContent = '汉化引擎运行中：DOM 监听器正常工作，左侧边栏与核心菜单已成功翻译。';
+        } else if (!disk.chinese) {
+          chineseStatusDesc.textContent = '配置已开启，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。';
+        } else {
+          chineseStatusDesc.textContent = '汉化代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。';
+        }
+      }
+      if (btnToggleChineseModule) {
+        btnToggleChineseModule.textContent = currentChineseEnabled ? '关闭客户端汉化' : '开启客户端汉化';
+      }
+
+      currentProxyEnabled = Boolean(cfg.modules?.proxy?.enabled);
+      if (proxyBadge) {
+        if (currentProxyEnabled) {
+          proxyBadge.textContent = disk.proxy ? '🟢 直连已配置' : '⚠️ 磁盘未注入';
+          proxyBadge.className = disk.proxy ? 'key-pill pill-ok' : 'key-pill pill-warn';
+        } else {
+          proxyBadge.textContent = '⚪ 未启用';
+          proxyBadge.className = 'key-pill pill-muted';
+        }
+      }
+      if (inputProxyUrl && cfg.modules?.proxy?.proxyUrl) {
+        inputProxyUrl.value = cfg.modules.proxy.proxyUrl;
+      }
+      if (inputProxyBypass && cfg.modules?.proxy?.bypassList) {
+        inputProxyBypass.value = cfg.modules.proxy.bypassList;
+      }
+      if (proxyStatusDesc) {
+        if (currentProxyEnabled) {
+          proxyStatusDesc.textContent = disk.proxy
+            ? `已启用本地网络直连（代理: ${cfg.modules.proxy.proxyUrl}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。`
+            : `配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。`;
+        } else {
+          proxyStatusDesc.textContent = '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。';
+        }
+      }
+      if (btnToggleProxyModule) {
+        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭免 TUN 直连' : '开启免 TUN 直连';
+      }
+    } catch (err) {
+      const errMsg = err?.message || String(err);
+      if (chineseBadge) {
+        chineseBadge.textContent = '⚠️ 读取异常';
+        chineseBadge.className = 'key-pill pill-danger';
+      }
+      if (chineseStatusDesc) {
+        chineseStatusDesc.textContent = `检测汉化状态异常: ${errMsg}`;
+      }
+      if (proxyBadge) {
+        proxyBadge.textContent = '⚠️ 读取异常';
+        proxyBadge.className = 'key-pill pill-danger';
+      }
+      if (proxyStatusDesc) {
+        proxyStatusDesc.textContent = `检测免 TUN 代理状态异常: ${errMsg}`;
+      }
+    }
+  }
+
+  btnToggleChineseModule?.addEventListener('click', async () => {
+    try {
+      const api = window.contextMeterAPI;
+      if (!api || typeof api.toggleModule !== 'function') return;
+      btnToggleChineseModule.disabled = true;
+      btnToggleChineseModule.textContent = '正在处理…';
+      const res = await api.toggleModule('chinese', !currentChineseEnabled);
+      if (!res || !res.ok) {
+        alert(res?.error || '切换汉化模块失败');
+      }
+      await refreshModulesDisplay();
+    } catch (e) {
+      alert('切换汉化模块异常: ' + e.message);
+    } finally {
+      if (btnToggleChineseModule) {
+        btnToggleChineseModule.disabled = false;
+        btnToggleChineseModule.textContent = currentChineseEnabled ? '关闭客户端汉化' : '开启客户端汉化';
+      }
+    }
+  });
+
+  btnToggleProxyModule?.addEventListener('click', async () => {
+    try {
+      const api = window.contextMeterAPI;
+      if (!api || typeof api.toggleModule !== 'function') return;
+      btnToggleProxyModule.disabled = true;
+      btnToggleProxyModule.textContent = '正在处理…';
+      const res = await api.toggleModule('proxy', !currentProxyEnabled, {
+        proxyUrl: inputProxyUrl?.value?.trim(),
+        bypassList: inputProxyBypass?.value?.trim()
+      });
+      if (!res || !res.ok) {
+        alert(res?.error || '切换代理模块失败');
+      }
+      await refreshModulesDisplay();
+    } catch (e) {
+      alert('切换代理模块异常: ' + e.message);
+    } finally {
+      if (btnToggleProxyModule) {
+        btnToggleProxyModule.disabled = false;
+        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭免 TUN 直连' : '开启免 TUN 直连';
+      }
+    }
+  });
+
+  btnTestProxy?.addEventListener('click', async () => {
+    try {
+      const api = window.contextMeterAPI;
+      if (!api || typeof api.testProxy !== 'function') return;
+      btnTestProxy.disabled = true;
+      btnTestProxy.textContent = '正在测试…';
+      if (proxyTestResult) {
+        proxyTestResult.style.display = 'block';
+        proxyTestResult.textContent = '正在发起本地与网络连通性测试…';
+      }
+      const res = await api.testProxy(inputProxyUrl?.value?.trim());
+      if (proxyTestResult) {
+        if (!res || !res.ok) {
+          proxyTestResult.textContent = '❌ 测试失败: ' + (res?.error || '未知异常');
+        } else {
+          const d = res.data;
+          proxyTestResult.innerHTML = `
+            配置格式: ${d.configValid ? '✅ 合法' : '❌ 无效'}<br>
+            本地端口: ${d.proxyReachable ? '✅ 可连接' : '❌ 无法连接'}<br>
+            公网连通: ${d.internetReachable ? '✅ 可访问' : '⚠️ 无法访问公网 (可能无境外连通)'}<br>
+            模型请求: 待通过真实在线会话验证 (分层标定)
+            ${d.error ? `<br><span style="color:var(--ag-danger)">⚠️ ${d.error}</span>` : ''}
+          `;
+        }
+      }
+    } catch (e) {
+      if (proxyTestResult) proxyTestResult.textContent = '❌ 测试异常: ' + e.message;
+    } finally {
+      if (btnTestProxy) {
+        btnTestProxy.disabled = false;
+        btnTestProxy.textContent = '🔍 测试代理连通性';
+      }
+    }
+  });
+
+  // 静默初始化检测一次解锁状态与各模块状态
+  setTimeout(() => {
+    void refreshUnlockStatus();
+    void refreshModulesDisplay();
+  }, 500);
 
   // 二级抽屉 1（面板 B 内）: 指标与背景颜色自定义抽屉折叠展开
   const btnColors = el('btn-toggle-colors');

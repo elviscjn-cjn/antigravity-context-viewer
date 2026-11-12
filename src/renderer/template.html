@@ -194,6 +194,72 @@
         </div>
       </div>
 
+      <!-- 二级交互折叠区: 客户端界面汉化 (AntigravityChinese) -->
+      <div class="tech-drawer" id="chinese-i18n-drawer">
+        <button id="btn-toggle-chinese" class="drawer-trigger" aria-expanded="false" type="button">
+          <span class="drawer-trigger-left">
+            <span>🇨🇳 客户端界面汉化（桌面客户端）</span>
+            <span id="chinese-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
+          </span>
+          <span id="chinese-drawer-arrow" class="drawer-arrow">▼ 展开</span>
+        </button>
+        <div id="chinese-drawer-body" class="drawer-body" style="display:none;">
+          <div class="unlock-panel-content">
+            <div class="unlock-status-row">
+              <div class="unlock-status-meta">
+                <div class="unlock-label">汉化模块运行状态</div>
+                <div id="chinese-status-desc" class="unlock-desc">正在检测桌面端汉化注入状态…</div>
+              </div>
+            </div>
+            <div class="unlock-actions">
+              <button id="btn-toggle-chinese-module" class="unlock-btn unlock-btn-primary" type="button">切换汉化状态</button>
+            </div>
+            <div class="unlock-credit-row">
+              <div class="unlock-credit-left">
+                <span class="unlock-credit-lbl">汉化方案来源：</span>
+                <span class="unlock-adapter-note">AntigravityChinese (开源社区贡献)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 二级交互折叠区: 免 TUN 网络直连 (AntigravityProxyNoTun) -->
+      <div class="tech-drawer" id="proxy-notun-drawer">
+        <button id="btn-toggle-proxy" class="drawer-trigger" aria-expanded="false" type="button">
+          <span class="drawer-trigger-left">
+            <span>🌐 免 TUN 网络直连（本地代理）</span>
+            <span id="proxy-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
+          </span>
+          <span id="proxy-drawer-arrow" class="drawer-arrow">▼ 展开</span>
+        </button>
+        <div id="proxy-drawer-body" class="drawer-body" style="display:none;">
+          <div class="unlock-panel-content">
+            <div class="unlock-status-row">
+              <div class="unlock-status-meta">
+                <div class="unlock-label">代理直连配置与状态</div>
+                <div id="proxy-status-desc" class="unlock-desc">正在核对代理设置…</div>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
+              <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
+                <span>本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：</span>
+                <input id="input-proxy-url" type="text" class="unlock-input" style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;" value="http://127.0.0.1:7897" />
+              </label>
+              <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
+                <span>绕过代理列表 (NO_PROXY)：</span>
+                <input id="input-proxy-bypass" type="text" class="unlock-input" style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;" value="localhost,127.0.0.1,::1,<local>" />
+              </label>
+            </div>
+            <div class="unlock-actions" style="display:flex;gap:8px;">
+              <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button">🔍 测试代理连通性</button>
+              <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button">切换代理直连</button>
+            </div>
+            <div id="proxy-test-result" style="font-size:11px;margin-top:6px;display:none;color:var(--ag-text-secondary);"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- 二级交互折叠区 1: 面板背景与指标颜色自定义（就近放置于面板 B 内部） -->
       <div class="tech-drawer">
         <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">

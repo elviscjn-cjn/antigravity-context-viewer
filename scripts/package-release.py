@@ -30,6 +30,10 @@ COMMON_FILES = [
     "meter-context-unlock.js",
     "attachment_scan.py",
     "asar-engine.js",
+    "modules-config.js",
+    "modular-installer.js",
+    "i18n/zh-CN.json",
+    "i18n/i18n-runtime.js",
     "package.json",
     "README.md",
     "README.en.md",
@@ -52,10 +56,7 @@ PLATFORMS = [
 def ensure_windows_helper():
     helper_path = ROOT_DIR / "scripts" / "cli-window-helper.exe"
     cs_src = ROOT_DIR / "scripts" / "cli-window-helper.cs"
-    if helper_path.exists() and helper_path.stat().st_size > 0:
-        return True
 
-    print("[Packaging] 缺少预编译的 scripts/cli-window-helper.exe，尝试调用系统 C# 编译器自动构建...")
     csc_candidates = [
         Path(r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
         Path(r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe")
@@ -70,6 +71,7 @@ def ensure_windows_helper():
         import shutil
         csc_exe = shutil.which("csc")
 
+    # 若系统具备 C# 编译器，强制重新编译以确保 EXE 100% 对应当前 C# 源码
     if csc_exe and cs_src.exists():
         import subprocess
         try:
@@ -83,13 +85,18 @@ def ensure_windows_helper():
                 str(cs_src)
             ]
             res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode == 0 and helper_path.exists():
-                print(f"[Packaging] scripts/cli-window-helper.exe 自动构建成功 ({helper_path.stat().st_size} bytes)")
+            if res.returncode == 0 and helper_path.exists() and helper_path.stat().st_size > 0:
+                print(f"[Packaging] scripts/cli-window-helper.exe 源码编译成功 ({helper_path.stat().st_size} bytes)")
                 return True
             else:
-                print(f"[Packaging Error] 编译失败: {res.stderr or res.stdout}")
+                print(f"[Packaging Error] 重新编译失败: {res.stderr or res.stdout}")
         except Exception as e:
             print(f"[Packaging Error] 调用 csc 异常: {e}")
+
+    # 若无编译器环境但已有预编译文件存在且非空，允许在交叉打包等场景下复用
+    if helper_path.exists() and helper_path.stat().st_size > 0:
+        print("[Packaging Warn] 未检测到系统 C# 编译器，复用现有 scripts/cli-window-helper.exe 二进制")
+        return True
 
     raise RuntimeError(
         "缺少必需的 Windows 原生组件 scripts/cli-window-helper.exe，且无法自动编译！\n"
@@ -139,8 +146,7 @@ def build_releases():
             for rel in file_list:
                 src_path = ROOT_DIR / rel
                 if not src_path.exists():
-                    print(f"[Warn] File not found: {rel}")
-                    continue
+                    raise FileNotFoundError(f"[Packaging Error] 打包失败：缺少必需的发布文件 {rel}！拒绝生成残缺分发包。")
                 
                 # Normalize line endings: CRLF for .bat, LF for .sh
                 if rel.endswith(".sh"):

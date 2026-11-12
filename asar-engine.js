@@ -194,4 +194,54 @@ function getStateDir() {
   return dir;
 }
 
-module.exports = { loadAsarEngine, builtinAsar, getStateDir };
+/**
+ * 探测本机 Antigravity 宿主 app.asar 安装路径（纯路径定位，无安装副作用）
+ */
+function findAsarPath(customPath) {
+  if (customPath) {
+    let resolved = path.resolve(customPath);
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+      const inRes = path.join(resolved, 'resources', 'app.asar');
+      if (fs.existsSync(inRes)) return inRes;
+      const direct = path.join(resolved, 'app.asar');
+      if (fs.existsSync(direct)) return direct;
+    }
+    if (fs.existsSync(resolved)) return resolved;
+    throw new Error(`Could not find app.asar at specified path: ${customPath}`);
+  }
+  // 若在 Electron 宿主运行时内部被调用，优先定位宿主自身捆绑的 resources/app.asar
+  if (process.versions && process.versions.electron && process.execPath) {
+    const hostAsar = path.join(path.dirname(process.execPath), 'resources', 'app.asar');
+    if (fs.existsSync(hostAsar)) return hostAsar;
+  }
+  const home = os.homedir();
+  const candidates = [];
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    candidates.push(
+      path.join(localAppData, 'Programs', 'antigravity', 'resources', 'app.asar'),
+      path.join(programFiles, 'antigravity', 'resources', 'app.asar'),
+      path.join(programFiles, 'Google Antigravity', 'resources', 'app.asar'),
+      path.join(home, 'AppData', 'Roaming', 'antigravity', 'resources', 'app.asar')
+    );
+  } else if (process.platform === 'darwin') {
+    candidates.push(
+      '/Applications/Antigravity.app/Contents/Resources/app.asar',
+      path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'app.asar')
+    );
+  } else {
+    candidates.push(
+      '/opt/antigravity/resources/app.asar',
+      '/usr/lib/antigravity/resources/app.asar',
+      '/usr/share/antigravity/resources/app.asar',
+      path.join(home, '.local', 'share', 'antigravity', 'resources', 'app.asar')
+    );
+  }
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error('Could not auto-detect Antigravity installation (app.asar). Use --path <path-to-app.asar>.');
+}
+
+module.exports = { loadAsarEngine, builtinAsar, getStateDir, findAsarPath };
