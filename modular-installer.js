@@ -145,25 +145,33 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
   return `\n${TAGS.CHINESE_START}
 (function() {
   try {
-    var _fs = typeof require === 'function' ? (function() { try { return require('fs'); } catch(e) { return null; } })() : null;
-    var _path = typeof require === 'function' ? (function() { try { return require('path'); } catch(e) { return null; } })() : null;
-    var _os = typeof require === 'function' ? (function() { try { return require('os'); } catch(e) { return null; } })() : null;
-    if (_fs && _path && _os) {
-      var _localApp = process.platform === 'win32'
-        ? (process.env.LOCALAPPDATA || _path.join(_os.homedir(), 'AppData', 'Local'))
-        : (process.platform === 'darwin'
-          ? _path.join(_os.homedir(), 'Library', 'Application Support')
-          : _path.join(_os.homedir(), '.local', 'state'));
-      var _cfgP = _path.join(_localApp, 'AntigravityContextMeter', 'modules.json');
-      if (_fs.existsSync(_cfgP)) {
-        try {
-          var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
-          if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false) {
-            return;
-          }
-        } catch(e) {}
+    var _enabled = false;
+    if (typeof electron_1 !== 'undefined' && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
+      try {
+        _enabled = electron_1.ipcRenderer.sendSync('context-meter:is-chinese-enabled') === true;
+      } catch(e) { _enabled = false; }
+    } else {
+      var _fs = typeof require === 'function' ? (function() { try { return require('fs'); } catch(e) { return null; } })() : null;
+      var _path = typeof require === 'function' ? (function() { try { return require('path'); } catch(e) { return null; } })() : null;
+      var _os = typeof require === 'function' ? (function() { try { return require('os'); } catch(e) { return null; } })() : null;
+      if (_fs && _path && _os) {
+        var _localApp = process.platform === 'win32'
+          ? (process.env.LOCALAPPDATA || _path.join(_os.homedir(), 'AppData', 'Local'))
+          : (process.platform === 'darwin'
+            ? _path.join(_os.homedir(), 'Library', 'Application Support')
+            : _path.join(_os.homedir(), '.local', 'state'));
+        var _cfgP = _path.join(_localApp, 'AntigravityContextMeter', 'modules.json');
+        if (_fs.existsSync(_cfgP)) {
+          try {
+            var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
+            if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === true) {
+              _enabled = true;
+            }
+          } catch(e) {}
+        }
       }
     }
+    if (!_enabled) return;
 
     var _dictData = ${dictContent.trim()};
     if (typeof window !== 'undefined') {
