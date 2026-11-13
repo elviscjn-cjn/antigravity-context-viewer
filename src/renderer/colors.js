@@ -222,7 +222,12 @@
           const cs = window.getComputedStyle(rootEl);
           const raw = cs.getPropertyValue('--background')?.trim() || cs.backgroundColor?.trim();
           const norm = normalizeHex(raw);
-          if (norm) return norm;
+          if (norm) {
+            const lum = parseRgbLuminance(norm);
+            if (lum == null || (lum > 0.55) === Boolean(isLight)) {
+              return norm;
+            }
+          }
         }
       }
     } catch {}

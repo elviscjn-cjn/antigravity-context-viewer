@@ -1505,3 +1505,99 @@ test('online update and GitHub entry points: openExternal whitelist enforcement 
 
   api.dispose();
 });
+
+test('theme toggle updates host background instead of inheriting opposite host luminance', () => {
+  const h = harness();
+  h.sandbox.window.getComputedStyle = () => ({
+    getPropertyValue: prop => (prop === '--background' ? '#fafafa' : ''),
+    backgroundColor: '#fafafa'
+  });
+  const api = h.sandbox.__AGContextMeter;
+
+  api.setTheme('light');
+  assert.equal(api.theme(), 'light');
+  assert.equal(h.host.style.getPropertyValue('--ag-host-bg'), '#fafafa');
+
+  api.setTheme('dark');
+  assert.equal(api.theme(), 'dark');
+  assert.equal(h.host.style.getPropertyValue('--ag-host-bg'), '#181818');
+
+  api.dispose();
+});
+
+test('quota badge renders ring percentage, opens model quota panel on click, and supports toggle switch', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const targetReset = new Date(Date.now() + (4 * 60 + 1) * 60000 + 20000).toISOString();
+  const claudeReset = new Date(Date.now() + (4 * 60 + 46) * 60000 + 20000).toISOString();
+
+  api.setCascadeModelConfigsForTest([
+    {
+      modelId: 'MODEL_PLACEHOLDER_M1',
+      label: 'Gemini 4 Hydrogen (Medium)',
+      quotaInfo: { remainingFraction: 0.537, resetTime: targetReset }
+    },
+    {
+      modelId: 'MODEL_PLACEHOLDER_M2',
+      label: 'Claude Sonnet 5.5 (Medium)',
+      quotaInfo: { remainingFraction: 0.9, resetTime: claudeReset }
+    }
+  ]);
+
+  assert.equal(api.getQuotaBadgeEnabled(), true);
+  assert.equal(h.elements.get('badge-quota').hidden, false);
+  assert.equal(h.elements.get('quota-amount').textContent, '46%');
+  assert.notEqual(h.elements.get('quota-ring-fill').getAttribute('stroke-dasharray'), '0 40.84');
+  assert.equal(h.elements.get('quota-switch-pill').textContent, '已开启');
+
+  // 点击配额圆环弹出各模型配额面板
+  h.elements.get('badge-quota').click();
+  assert.equal(h.elements.get('panel-quota').hidden, false);
+  const collectText = node => [node?.textContent || '', ...(node?.children || []).map(collectText)].join(' ');
+  const listHtml = collectText(h.elements.get('quota-models-list'));
+  assert.match(listHtml, /Gemini 系列/);
+  assert.match(listHtml, /46\.3%/);
+  assert.match(listHtml, /4 小时 1 分钟后重置/);
+  assert.match(listHtml, /Claude 系列/);
+  assert.match(listHtml, /10\.0%/);
+  assert.match(listHtml, /4 小时 46 分钟后重置/);
+
+  // 开关关闭与恢复
+  h.elements.get('btn-toggle-quota-badge').click();
+  assert.equal(api.getQuotaBadgeEnabled(), false);
+  assert.equal(h.elements.get('badge-quota').hidden, true);
+  assert.equal(h.elements.get('quota-switch-pill').textContent, '已关闭');
+
+  h.elements.get('btn-toggle-quota-badge').click();
+  assert.equal(api.getQuotaBadgeEnabled(), true);
+  assert.equal(h.elements.get('badge-quota').hidden, false);
+
+  api.dispose();
+});
+
+test('generateChinesePreloadCode does not enable localization without explicit true from ipcRenderer', () => {
+  const vm = require('vm');
+  const { generateChinesePreloadCode } = require('./modular-installer');
+
+  // 1. 沙盒中 ipcRenderer 返回 false（未启用汉化）时，不执行 runtime
+  const code = generateChinesePreloadCode('{}', 'globalThis.__TEST_I18N_EXECUTED__ = true;');
+  const ctxFalse = {
+    electron_1: { ipcRenderer: { sendSync: ch => (ch === 'context-meter:is-chinese-enabled' ? false : null) } },
+    globalThis: {}
+  };
+  vm.runInNewContext(code, ctxFalse);
+  assert.equal(ctxFalse.globalThis.__TEST_I18N_EXECUTED__, undefined);
+
+  // 2. 沙盒中无 fs 且无 ipcRenderer 时，默认不执行 runtime
+  const ctxSandbox = { globalThis: {} };
+  vm.runInNewContext(code, ctxSandbox);
+  assert.equal(ctxSandbox.globalThis.__TEST_I18N_EXECUTED__, undefined);
+
+  // 3. 只有 ipcRenderer 明确返回 true 时，才执行 runtime
+  const ctxTrue = {
+    electron_1: { ipcRenderer: { sendSync: ch => (ch === 'context-meter:is-chinese-enabled' ? true : null) } },
+    globalThis: {}
+  };
+  vm.runInNewContext(code, ctxTrue);
+  assert.equal(ctxTrue.globalThis.__TEST_I18N_EXECUTED__, true);
+});

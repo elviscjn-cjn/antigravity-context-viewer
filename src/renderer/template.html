@@ -24,6 +24,15 @@
     <span id="token-hover-extra" class="sr-only"></span>
   </button>
 
+  <!-- 顶部基本单元 3.5: 模型配额小圆环 -->
+  <button id="badge-quota" class="ag-unit ag-unit-ring" type="button" aria-label="模型配额用量与重置倒计时" aria-expanded="false">
+    <svg id="quota-ring-svg" class="ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+      <circle id="quota-ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"></circle>
+      <circle id="quota-ring-fill" class="ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1" stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="0 40.84"></circle>
+    </svg>
+    <span id="quota-amount" class="badge-pct-val">--%</span>
+  </button>
+
   <!-- 顶部基本单元 4: 一键启动 CLI 模式 -->
   <button id="badge-cli" class="ag-unit" type="button" aria-label="启动 CLI" title="一键启动 Antigravity CLI 终端（自动进入当前项目目录）">
     <span class="cli-icon" aria-hidden="true">&gt;_</span>
@@ -58,6 +67,10 @@
     <button id="overflow-tokens-btn" class="overflow-item" type="button">
       <span class="overflow-item-label"><span class="token-fire-dot"></span><span>Token 用量一览</span></span>
       <span id="overflow-tokens-val" class="overflow-item-val">--</span>
+    </button>
+    <button id="overflow-quota-btn" class="overflow-item" type="button">
+      <span class="overflow-item-label"><span>📊</span><span>模型配额</span></span>
+      <span id="overflow-quota-val" class="overflow-item-val">--%</span>
     </button>
     <button id="overflow-cli-btn" class="overflow-item" type="button">
       <span class="overflow-item-label"><span class="cli-icon">&gt;_</span><span>启动 CLI 终端</span></span>
@@ -129,6 +142,17 @@
           </div>
         </div>
         <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
+      </div>
+
+      <!-- 顶栏配额圆环开关 -->
+      <div class="tech-drawer" id="quota-badge-drawer">
+        <div class="drawer-trigger" style="cursor:default;">
+          <span class="drawer-trigger-left">
+            <span>📊 顶栏模型配额圆环</span>
+            <span id="quota-switch-pill" class="key-pill pill-ok" style="margin-left:6px;font-size:10.5px;">已开启</span>
+          </span>
+          <button id="btn-toggle-quota-badge" class="unlock-btn unlock-btn-secondary" type="button" style="padding:3px 10px;font-size:11px;min-height:24px;">关闭显示</button>
+        </div>
       </div>
 
       <!-- 二级交互折叠区: 上下文加长 (解除 256K 限制 / 实验特性) -->
@@ -991,6 +1015,22 @@
       </div>
       </div><!-- end #tokens-main-view -->
     </div>
+  </section>
+
+  <!-- 弹出式面板 3: 各模型配额用量与重置时间 (#panel-quota, 350px) -->
+  <section id="panel-quota" class="ag-panel" hidden aria-label="各模型配额与重置时间">
+    <div class="panel-header-bar">
+      <div class="panel-title">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ag-token-accent-default)"><circle cx="8" cy="8" r="6"></circle><path d="M8 4.5V8l2.5 1.5"></path></svg>
+        <span style="font-size:13px;font-weight:600;color:var(--ag-text-primary)">模型配额</span>
+      </div>
+      <div class="panel-header-actions">
+        <button id="btn-refresh-quota" class="panel-icon-btn" type="button" aria-label="刷新配额数据" title="立即刷新模型配额数据">↻</button>
+        <button id="close-quota" class="panel-icon-btn" type="button" aria-label="关闭配额面板">×</button>
+      </div>
+    </div>
+    <div id="quota-panel-summary" class="quota-panel-summary" hidden></div>
+    <div id="quota-models-list" class="quota-models-list"></div>
   </section>
 
   <!-- 自定义颜色选取器面板（替换系统原生取色器） -->

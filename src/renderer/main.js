@@ -11,7 +11,8 @@
     getDailyModelCost,
     calculateIntervalCost,
     convertToCNY,
-    resolveEffectivePlanStatus
+    resolveEffectivePlanStatus,
+    resolveModelQuota
   } = (globalThis.__AGContextMeterCore || {});
   const host = document.createElement('div');
   host.id = 'ag-context-meter';
@@ -651,6 +652,7 @@
       };
 
       placePanel(el('panel'), 450, el('badge'));
+      placePanel(el('panel-quota'), 350, el('badge-quota'));
       placePanel(el('panel-tokens'), 730, el('badge-tokens'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
@@ -716,15 +718,17 @@
   }
 
   function isAnyPanelOpen() {
-    return !el('panel').hidden || !el('panel-tokens').hidden;
+    return !el('panel').hidden || !el('panel-tokens').hidden || Boolean(el('panel-quota') && !el('panel-quota').hidden);
   }
 
   function showPanel(target) {
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
+    const pQuota = el('panel-quota');
     const pOverflow = el('overflow-menu');
     const bContext = el('badge');
     const bSpeed = el('badge-speed');
+    const bQuota = el('badge-quota');
     const bTokens = el('badge-tokens');
     const bOverflow = el('badge-overflow');
 
@@ -736,9 +740,11 @@
       hideContextTooltip();
       closeColorPicker();
       pContext.hidden = true;
+      if (pQuota) pQuota.hidden = true;
       pTokens.hidden = false;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
       syncHostStackingElevation(true);
       positionFloatingPanels();
@@ -749,19 +755,38 @@
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
       pTokens.hidden = true;
+      if (pQuota) pQuota.hidden = true;
       pContext.hidden = false;
       bContext.setAttribute('aria-expanded', 'true');
       bSpeed?.setAttribute('aria-expanded', 'true');
+      bQuota?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
       void refreshModulesDisplay();
+    } else if (target === 'quota') {
+      hideContextTooltip();
+      closeColorPicker();
+      setPlanDetailExpanded(false, { skipReposition: true });
+      pContext.hidden = true;
+      pTokens.hidden = true;
+      if (pQuota) pQuota.hidden = false;
+      bContext.setAttribute('aria-expanded', 'false');
+      bSpeed?.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'true');
+      bTokens.setAttribute('aria-expanded', 'false');
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
+      if (typeof renderQuotaPanel === 'function') renderQuotaPanel();
+      if (typeof pollUserQuotaStatus === 'function') void pollUserQuotaStatus(false);
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
       pContext.hidden = true;
       pTokens.hidden = true;
+      if (pQuota) pQuota.hidden = true;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
       closeColorPicker();
       hidePopover();
@@ -773,7 +798,7 @@
     if (!open) {
       showPanel('none');
     } else {
-      showPanel(tab === 'tokens' ? 'tokens' : 'context');
+      showPanel(tab === 'tokens' ? 'tokens' : (tab === 'quota' ? 'quota' : 'context'));
     }
   }
 
@@ -785,6 +810,12 @@
   function toggleTokens() {
     if (!el('panel-tokens').hidden) showPanel('none');
     else showPanel('tokens');
+  }
+
+  function toggleQuota() {
+    const pQuota = el('panel-quota');
+    if (pQuota && !pQuota.hidden) showPanel('none');
+    else showPanel('quota');
   }
 
   function toggleOverflowMenu() {
@@ -1471,11 +1502,322 @@
   }
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
+  const QUOTA_BADGE_STORAGE_KEY = 'ag_show_quota_badge_v1';
+  let showQuotaBadge = true;
+  try {
+    const savedQuotaToggle = typeof localStorage !== 'undefined' && localStorage.getItem(QUOTA_BADGE_STORAGE_KEY);
+    if (savedQuotaToggle === 'false') showQuotaBadge = false;
+  } catch {}
+
+  function formatQuotaCountdown(resetTime) {
+    if (!resetTime) return '--';
+    const resetMs = typeof resetTime === 'number' ? resetTime : Date.parse(resetTime);
+    if (!Number.isFinite(resetMs)) return '--';
+    const diffMs = resetMs - Date.now();
+    if (diffMs <= 0) return '已重置';
+    const totalMin = Math.floor(diffMs / 60000);
+    const hours = Math.floor(totalMin / 60);
+    const mins = totalMin % 60;
+    return hours > 0 ? `${hours} 小时 ${mins} 分钟` : `${mins} 分钟`;
+  }
+
+  function formatQuotaBarText(remainingFraction, resetTime) {
+    if (typeof remainingFraction !== 'number' || !Number.isFinite(remainingFraction)) {
+      return 'Usage: --% □□□□□□□□□□ ⏱ --';
+    }
+    const usedPct = Math.max(0, Math.min(100, (1 - remainingFraction) * 100));
+    const totalBlocks = 10;
+    const filled = Math.min(totalBlocks, Math.max(0, Math.floor((usedPct / 100) * totalBlocks + 1e-6)));
+    const bar = '■'.repeat(filled) + '□'.repeat(totalBlocks - filled);
+    return `Usage: ${usedPct.toFixed(1)}% ${bar} ⏱ ${formatQuotaCountdown(resetTime)}`;
+  }
+
+  function resolveActiveQuotaInfo() {
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    if (!Array.isArray(configs) || !configs.length) return null;
+    const currentModel = state.latest?.model || '';
+    if (currentModel && typeof resolveModelQuota === 'function') {
+      const matched = resolveModelQuota(currentModel, configs);
+      if (matched && typeof matched.remainingFraction === 'number') return matched;
+    }
+    const fallback = configs.find(c => typeof c?.quotaInfo?.remainingFraction === 'number');
+    if (!fallback) return null;
+    return {
+      modelId: fallback.modelId || '',
+      label: fallback.label || fallback.modelId || '当前模型',
+      poolName: fallback.label ? `${fallback.label} 配额池` : '模型配额池',
+      remainingFraction: fallback.quotaInfo.remainingFraction,
+      resetTime: fallback.quotaInfo.resetTime || null
+    };
+  }
+
+  function formatResetClock(resetTime) {
+    if (!resetTime) return '';
+    const ms = typeof resetTime === 'number' ? resetTime : Date.parse(resetTime);
+    if (!Number.isFinite(ms)) return '';
+    const d = new Date(ms);
+    const now = new Date();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    if (sameDay) return `${hh}:${mm} 重置`;
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const da = String(d.getDate()).padStart(2, '0');
+    return `${mo}-${da} ${hh}:${mm} 重置`;
+  }
+
+  function stripTierSuffix(name) {
+    return String(name || '').replace(/\s*\((?:Low|Medium|High|XHigh)\)\s*$/i, '').trim();
+  }
+
+  function renderQuotaPanel() {
+    const summaryEl = el('quota-panel-summary');
+    const listEl = el('quota-models-list');
+    if (!listEl) return;
+
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const valid = configs.filter(c => typeof c?.quotaInfo?.remainingFraction === 'number');
+    if (!valid.length) {
+      if (summaryEl) {
+        summaryEl.hidden = false;
+        summaryEl.textContent = '暂无可用配额数据，点击右上角刷新试试';
+      }
+      listEl.innerHTML = '';
+      return;
+    }
+
+    if (summaryEl) summaryEl.hidden = true;
+    const active = resolveActiveQuotaInfo();
+
+    // 按系列与配额状态分组，并去除 (Low)/(Medium)/(High)/(XHigh) 冗余挡位后缀
+    const groups = [];
+    const groupMap = new Map();
+    for (const c of valid) {
+      const rf = c.quotaInfo.remainingFraction;
+      const rt = c.quotaInfo.resetTime || '';
+      const rawName = String(c.label || c.modelId || '未知模型');
+      const shortName = stripTierSuffix(rawName) || rawName;
+      const family = /claude/i.test(rawName) ? 'Claude 系列'
+        : /gpt/i.test(rawName) ? shortName
+        : /gemini|orchestrator/i.test(rawName) ? 'Gemini 系列'
+        : shortName;
+      const key = `${family}|${rf.toFixed(6)}|${rt}`;
+      if (!groupMap.has(key)) {
+        const entry = { family, remainingFraction: rf, resetTime: rt, shortModels: [], rawModels: [] };
+        groupMap.set(key, entry);
+        groups.push(entry);
+      }
+      const g = groupMap.get(key);
+      if (!g.shortModels.includes(shortName)) g.shortModels.push(shortName);
+      if (!g.rawModels.includes(rawName)) g.rawModels.push(rawName);
+    }
+
+    listEl.innerHTML = '';
+    for (const g of groups) {
+      const usedPct = Math.max(0, Math.min(100, (1 - g.remainingFraction) * 100));
+      const tone = usedPct >= 90 ? 'danger' : (usedPct >= 75 ? 'warn' : '');
+      const isActiveGroup = Boolean(
+        active &&
+        Math.abs(active.remainingFraction - g.remainingFraction) < 1e-6 &&
+        String(active.resetTime || '') === String(g.resetTime || '') &&
+        g.rawModels.some(m => m === active.label || m.toLowerCase() === String(state.latest?.model || '').toLowerCase())
+      );
+
+      const card = document.createElement('div');
+      card.className = 'quota-pool-card';
+      if (isActiveGroup) card.setAttribute('data-active', 'true');
+
+      // 1. 顶行：系列名 + 当前徽章 | 右侧已用百分比
+      const head = document.createElement('div');
+      head.className = 'quota-pool-head';
+
+      const title = document.createElement('div');
+      title.className = 'quota-pool-title';
+      const titleText = document.createElement('span');
+      titleText.textContent = g.family;
+      title.appendChild(titleText);
+
+      if (isActiveGroup) {
+        const pill = document.createElement('span');
+        pill.className = 'key-pill pill-good';
+        pill.style.fontSize = '10px';
+        pill.style.padding = '0 6px';
+        pill.textContent = '当前';
+        title.appendChild(pill);
+      }
+
+      const pctEl = document.createElement('span');
+      pctEl.className = 'quota-pool-pct';
+      if (tone) pctEl.setAttribute('data-tone', tone);
+      pctEl.textContent = `${usedPct.toFixed(1)}%`;
+
+      head.appendChild(title);
+      head.appendChild(pctEl);
+
+      // 2. 中间：现代圆角 CSS 进度条
+      const track = document.createElement('div');
+      track.className = 'quota-bar-track';
+      const fill = document.createElement('div');
+      fill.className = 'quota-bar-fill';
+      if (tone) fill.setAttribute('data-tone', tone);
+      fill.style.width = `${usedPct.toFixed(1)}%`;
+      track.appendChild(fill);
+
+      // 3. 底行：左侧精简去重模型列表 | 右侧重置倒计时（悬停显示精确时间）
+      const foot = document.createElement('div');
+      foot.className = 'quota-pool-foot';
+
+      const modelsSub = document.createElement('span');
+      modelsSub.className = 'quota-pool-models';
+      modelsSub.textContent = g.shortModels.length > 1 ? g.shortModels.join(' · ') : '独立配额池';
+      modelsSub.title = g.rawModels.join('\n');
+
+      const resetEl = document.createElement('span');
+      resetEl.className = 'quota-pool-reset';
+      const countdown = formatQuotaCountdown(g.resetTime);
+      const clock = formatResetClock(g.resetTime);
+      resetEl.textContent = countdown === '已重置' ? '已重置' : (countdown === '--' ? '--' : `${countdown}后重置`);
+      if (clock) resetEl.title = clock;
+
+      foot.appendChild(modelsSub);
+      foot.appendChild(resetEl);
+
+      card.appendChild(head);
+      card.appendChild(track);
+      card.appendChild(foot);
+      listEl.appendChild(card);
+    }
+  }
+
+  function renderQuotaBadge() {
+    const badgeQuota = el('badge-quota');
+    const quotaAmount = el('quota-amount');
+    const quotaRingFill = el('quota-ring-fill');
+    const overflowQuotaBtn = el('overflow-quota-btn');
+    const overflowQuotaVal = el('overflow-quota-val');
+    const switchPill = el('quota-switch-pill');
+    const toggleBtn = el('btn-toggle-quota-badge');
+
+    if (switchPill) {
+      const nextPillText = showQuotaBadge ? '已开启' : '已关闭';
+      const nextPillClass = showQuotaBadge ? 'key-pill pill-ok' : 'key-pill pill-muted';
+      if (switchPill.textContent !== nextPillText) switchPill.textContent = nextPillText;
+      if (switchPill.className !== nextPillClass) switchPill.className = nextPillClass;
+    }
+    if (toggleBtn) {
+      const nextBtnText = showQuotaBadge ? '关闭显示' : '开启显示';
+      if (toggleBtn.textContent !== nextBtnText) toggleBtn.textContent = nextBtnText;
+    }
+    if (badgeQuota && badgeQuota.hidden !== !showQuotaBadge) badgeQuota.hidden = !showQuotaBadge;
+    if (overflowQuotaBtn && overflowQuotaBtn.hidden !== !showQuotaBadge) overflowQuotaBtn.hidden = !showQuotaBadge;
+
+    const pQuota = el('panel-quota');
+    if (pQuota && !pQuota.hidden) {
+      renderQuotaPanel();
+    }
+    if (!showQuotaBadge) return;
+
+    const active = resolveActiveQuotaInfo();
+    const ringCirc = typeof RING_CIRCUMFERENCE === 'number' ? RING_CIRCUMFERENCE : 40.84;
+
+    if (badgeQuota) {
+      if (active && typeof active.remainingFraction === 'number') {
+        const usedPct = Math.max(0, Math.min(100, (1 - active.remainingFraction) * 100));
+        const pctLabel = `${usedPct.toFixed(0)}%`;
+        if (quotaAmount && quotaAmount.textContent !== pctLabel) quotaAmount.textContent = pctLabel;
+        if (quotaRingFill) {
+          if (usedPct <= 0) {
+            quotaRingFill.setAttribute('stroke-dasharray', `0 ${ringCirc.toFixed(2)}`);
+            quotaRingFill.style.opacity = '0';
+          } else {
+            const arcLen = Math.max(1.8, (usedPct / 100) * ringCirc);
+            quotaRingFill.setAttribute('stroke-dasharray', `${arcLen.toFixed(2)} ${ringCirc.toFixed(2)}`);
+            quotaRingFill.style.opacity = '1';
+          }
+        }
+        const nextTone = usedPct >= 90 ? 'danger' : (usedPct >= 75 ? 'warn' : '');
+        if (nextTone) {
+          if (badgeQuota.getAttribute?.('data-tone') !== nextTone) badgeQuota.setAttribute?.('data-tone', nextTone);
+        } else if (badgeQuota.getAttribute?.('data-tone')) {
+          badgeQuota.removeAttribute?.('data-tone');
+        }
+        const nextOvVal = `${usedPct.toFixed(1)}%`;
+        if (overflowQuotaVal && overflowQuotaVal.textContent !== nextOvVal) overflowQuotaVal.textContent = nextOvVal;
+      } else {
+        if (quotaAmount && quotaAmount.textContent !== '--%') quotaAmount.textContent = '--%';
+        if (quotaRingFill) {
+          quotaRingFill.setAttribute('stroke-dasharray', `0 ${ringCirc.toFixed(2)}`);
+          quotaRingFill.style.opacity = '0';
+        }
+        if (badgeQuota.getAttribute?.('data-tone')) badgeQuota.removeAttribute?.('data-tone');
+        if (overflowQuotaVal && overflowQuotaVal.textContent !== '--%') overflowQuotaVal.textContent = '--%';
+      }
+
+      const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+      const lines = [];
+      if (active) {
+        lines.push(`当前模型配额（点击查看各模型详情）：`);
+        lines.push(`${active.label}: ${formatQuotaBarText(active.remainingFraction, active.resetTime)}`);
+      }
+      const nextTitle = lines.length ? lines.join('\n') : '模型配额用量（点击查看各模型用量与重置时间）';
+      if (badgeQuota.title !== nextTitle) badgeQuota.title = nextTitle;
+    }
+  }
+
+  function setQuotaBadgeEnabled(enabled) {
+    showQuotaBadge = Boolean(enabled);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(QUOTA_BADGE_STORAGE_KEY, showQuotaBadge ? 'true' : 'false');
+      }
+    } catch {}
+    renderQuotaBadge();
+    if (showQuotaBadge) void pollUserQuotaStatus(true);
+  }
+
+  let lastQuotaPollAt = 0;
+  let quotaPollInFlight = false;
+  async function pollUserQuotaStatus(force = false) {
+    if (quotaPollInFlight) return;
+    if (!force && Date.now() - lastQuotaPollAt < 30000) return;
+    const csrf = window.__APP_CONFIG__?.csrfToken;
+    if (!csrf || typeof fetch !== 'function') return;
+    quotaPollInFlight = true;
+    try {
+      const response = await fetch('/exa.language_server_pb.LanguageServerService/GetUserStatus', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': csrf
+        },
+        body: JSON.stringify({})
+      });
+      if (response.ok) {
+        const res = await response.json();
+        const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs || res?.cascadeModelConfigData?.clientModelConfigs;
+        if (Array.isArray(configs) && configs.length) {
+          state.cascadeModelConfigs = configs;
+          lastQuotaPollAt = Date.now();
+          renderQuotaBadge();
+        }
+      }
+    } catch {} finally {
+      quotaPollInFlight = false;
+    }
+  }
+
   el('badge').addEventListener('click', toggleContext);
   el('badge-speed')?.addEventListener('click', toggleContext);
+  el('badge-quota')?.addEventListener('click', toggleQuota);
+  el('close-quota')?.addEventListener('click', () => showPanel('none'));
+  el('btn-refresh-quota')?.addEventListener('click', () => { void pollUserQuotaStatus(true); });
+  el('btn-toggle-quota-badge')?.addEventListener('click', () => setQuotaBadgeEnabled(!showQuotaBadge));
+  renderQuotaBadge();
   el('badge-tokens').addEventListener('click', toggleTokens);
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
   el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context'));
+  el('overflow-quota-btn')?.addEventListener('click', () => showPanel('quota'));
   el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens'));
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
@@ -1501,6 +1843,7 @@
   el('badge').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
+  el('badge-quota')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
   // 二级抽屉: 上下文加长折叠展开与状态机
   const btnUnlock = el('btn-toggle-unlock');
@@ -2851,6 +3194,10 @@
 
     if (payload.planStatus || payload.customPlanSettings) {
       let mergedPlan = payload.planStatus || ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+      const configs = payload.rawPlanStatus?.cascadeModelConfigs || payload.planStatus?.cascadeModelConfigs;
+      if (Array.isArray(configs) && configs.length) {
+        state.cascadeModelConfigs = configs;
+      }
       try {
         const email = mergedPlan.email || 'default';
         let customObj = lastSavedCustomPlan || payload.customPlanSettings || null;
@@ -3526,10 +3873,12 @@
       el('amount').textContent = '未打开会话';
       setHoverExtra(' · 点击查看或启动 CLI');
       syncSpeedBadgeText();
+      renderQuotaBadge();
       el('badge-tokens').title = 'Token 用量一览（点击展开详情）';
       return;
     }
     renderSessionCost();
+    renderQuotaBadge();
 
     const d = state.latest, session = state.scan?.session;
     const disp = resolveDisplayStatus(d, session);
@@ -3837,6 +4186,10 @@
       lastHistorySync = Date.now();
       void syncTokenHistoryFromHost(false);
     }
+    if (showQuotaBadge && (state.requestAt > 0 || !state.route) && (lastQuotaPollAt === 0 || Date.now() - lastQuotaPollAt > 30000)) {
+      void pollUserQuotaStatus(lastQuotaPollAt === 0);
+    }
+    renderQuotaBadge();
   }
 
   const timer = setInterval(tick, 500);
@@ -3862,6 +4215,9 @@
     closeColorPicker,
     applyTokenHistoryPayload,
     applyPickerHex,
+    getQuotaBadgeEnabled: () => showQuotaBadge,
+    setQuotaBadgeEnabled,
+    setCascadeModelConfigsForTest: configs => { state.cascadeModelConfigs = Array.isArray(configs) ? configs : []; renderQuotaBadge(); },
     setTokenHistoryForTest: payload => applyTokenHistoryPayload(payload),
     getPlanDetailExpanded: () => planDetailExpanded,
     setPlanDetailExpanded,
