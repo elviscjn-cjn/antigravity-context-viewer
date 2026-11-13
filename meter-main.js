@@ -202,13 +202,24 @@ function registerIpcOnce() {
       const res = recordModelCalls(calls);
       if (res && typeof res === 'object') {
         if (res.ok === false) {
-          return { ok: false, error: res.error || '入账失败', changed: false };
+          return {
+            ok: false,
+            error: res.error || '入账失败',
+            ...(res.phase ? { phase: res.phase } : {}),
+            ...(res.code ? { code: res.code } : {}),
+            changed: false
+          };
         }
         return { ok: true, changed: !!res.changed };
       }
       return { ok: true, changed: !!res };
     } catch (e) {
-      return { ok: false, error: e.message, changed: false };
+      return {
+        ok: false,
+        error: e.message,
+        ...(e?.code ? { code: e.code } : {}),
+        changed: false
+      };
     }
   });
 

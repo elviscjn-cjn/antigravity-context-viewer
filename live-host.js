@@ -66,7 +66,13 @@ const ALLOWED_ROUTES = ['/scan', '/token-history', '/record-calls', '/get-settin
           const resCall = recordModelCalls(calls);
           if (resCall && typeof resCall === 'object' && resCall.ok === false) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, changed: false, error: resCall.error || '入账落盘失败' }));
+            res.end(JSON.stringify({
+              ok: false,
+              changed: false,
+              error: resCall.error || '入账落盘失败',
+              ...(resCall.phase ? { phase: resCall.phase } : {}),
+              ...(resCall.code ? { code: resCall.code } : {})
+            }));
             return;
           }
           const changed = (resCall && typeof resCall === 'object') ? !!resCall.changed : !!resCall;

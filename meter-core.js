@@ -12,7 +12,9 @@
 
   function getModelPoolKey(raw) {
     if (!raw) return 'unknown';
-    const s = String(raw).toLowerCase();
+    const s = String(raw).trim().toLowerCase();
+    if (s.includes('hydrogen') || s.includes('gemini-4-hydrogen')) return 'gemini-4-hydrogen';
+    if (s.includes('carbon') || s.includes('gemini-4-carbon') || s === 'gemini-pro-orchestrator') return 'gemini-4-carbon';
     if (s.includes('argon') || s.includes('gemini-4-argon')) return 'gemini-4-argon';
     if (s.includes('flash') || s.includes('gemini-3.8-flash')) return 'gemini-3.8-flash';
     if (s.includes('opus') || s.includes('claude-opus')) return 'claude-opus-5-5';
@@ -36,6 +38,10 @@
     }
   }
 
+  function formatLocalDateStr(dt) {
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  }
+
   function resolveModelQuota(modelIdOrName, cascadeModelConfigs) {
     if (!Array.isArray(cascadeModelConfigs) || !cascadeModelConfigs.length || !modelIdOrName) {
       return null;
@@ -43,18 +49,21 @@
     const poolKey = getModelPoolKey(modelIdOrName);
     const targetStr = String(modelIdOrName).toLowerCase();
 
-    // 1. 优先精准匹配 modelId 或 label
+    // 1. 优先精准匹配 modelId、modelOrAlias.model 或 label（逐字段独立比对，防止非空占位 modelId 遮蔽 modelOrAlias.model）
     let matched = cascadeModelConfigs.find(c => {
-      const mId = String(c.modelId || '').toLowerCase();
-      const lbl = String(c.label || '').toLowerCase();
-      return mId === targetStr || lbl === targetStr;
+      if (!c || typeof c !== 'object') return false;
+      const candidates = [c.modelId, c.modelOrAlias?.model, c.label];
+      return candidates.some(cand => cand && String(cand).toLowerCase() === targetStr);
     });
 
-    // 2. 匹配同一配额池
+    // 2. 匹配同一配额池（按 label -> modelId -> modelOrAlias.model 依次尝试家族匹配，防止通用标签如 "High" 遮住可识别模型 ID）
     if (!matched && poolKey !== 'unknown') {
       matched = cascadeModelConfigs.find(c => {
-        const cPool = getModelPoolKey(c.modelId || c.label);
-        return cPool === poolKey;
+        const candidates = [c.label, c.modelId, c.modelOrAlias?.model];
+        for (const cand of candidates) {
+          if (cand && getModelPoolKey(cand) === poolKey) return true;
+        }
+        return false;
       });
     }
 
@@ -62,7 +71,9 @@
 
     const qi = matched.quotaInfo || {};
     const poolNames = {
-      'gemini-4-argon': 'Gemini 4 Argon 配额池（周限额）',
+      'gemini-4-hydrogen': 'Gemini 4 Hydrogen 配额池',
+      'gemini-4-carbon': 'Gemini 4 Carbon 配额池',
+      'gemini-4-argon': 'Gemini 4 Argon 配额池',
       'gemini-3.8-flash': 'Gemini 3.8 Flash 配额池',
       'claude-opus-5-5': 'Claude Opus 5.5 配额池',
       'claude-sonnet-5-5': 'Claude Sonnet 5.5 配额池',
@@ -70,7 +81,7 @@
     };
 
     return {
-      modelId: matched.modelId || '',
+      modelId: matched.modelId || matched.modelOrAlias?.model || '',
       label: matched.label || modelIdOrName,
       poolKey,
       poolName: poolNames[poolKey] || (matched.label ? `${matched.label} 配额池` : '专属模型配额池'),
@@ -413,8 +424,10 @@
   }
 
   // 官方 Developer API Standard 公开费率表 (USD / 百万 Token)
-  // 来源: https://ai.google.dev/gemini-api/docs/pricing
-  // 核对日期: 2026-11-08
+  // 来源: https://ai.google.dev/gemini-api/docs/pricing , https://aistudio.google.com/docs/pricing
+  //       https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-hydrogen/
+  //       https://platform.claude.com/docs/en/about-claude/pricing
+  // 核对日期: 2026-11-13
   const GEMINI_PRICING_TABLE = {
     'gemini-3.8-flash': [
       {
@@ -428,6 +441,27 @@
         inputPerMillion: 1.50,
         outputPerMillion: 7.50,
         cacheReadPerMillion: 0.15
+      }
+    ],
+    'gemini-4-hydrogen': [
+      {
+        inputPerMillion: 1.50,
+        outputPerMillion: 7.50,
+        cacheReadPerMillion: 0.075
+      }
+    ],
+    'gemini-4-carbon': [
+      {
+        effectiveTo: '2026-11-30',
+        inputPerMillion: 2.00,
+        outputPerMillion: 10.00,
+        cacheReadPerMillion: 0.10
+      },
+      {
+        effectiveFrom: '2026-12-01',
+        inputPerMillion: 4.00,
+        outputPerMillion: 20.00,
+        cacheReadPerMillion: 0.20
       }
     ],
     'gemini-4-argon': [
@@ -478,6 +512,20 @@
         outputPerMillion: 15.00,
         cacheReadPerMillion: 0.25
       }
+    ],
+    'claude-opus-5-5': [
+      {
+        inputPerMillion: 4.00,
+        outputPerMillion: 20.00,
+        cacheReadPerMillion: 0.20
+      }
+    ],
+    'claude-sonnet-5-5': [
+      {
+        inputPerMillion: 2.00,
+        outputPerMillion: 10.00,
+        cacheReadPerMillion: 0.10
+      }
     ]
   };
 
@@ -492,10 +540,14 @@
     if (!raw || typeof raw !== 'string') return null;
     const str = raw.trim().toLowerCase();
     if (str.includes('3.8-flash') || str.includes('3.8 flash') || str.includes('flash-n')) return 'gemini-3.8-flash';
+    if (str.includes('4-hydrogen') || str.includes('4 hydrogen') || str.includes('hydrogen')) return 'gemini-4-hydrogen';
+    if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || str === 'gemini-pro-orchestrator') return 'gemini-4-carbon';
     if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon')) return 'gemini-4-argon';
     if (str.includes('3.1-pro') || str.includes('3.1 pro')) return 'gemini-3.1-pro-preview';
     if (str.includes('3.5-flash-lite') || str.includes('3.5 flash-lite') || str.includes('flash-lite')) return 'gemini-3.5-flash-lite';
     if (str.includes('2.5-pro') || str.includes('2.5 pro')) return 'gemini-2.5-pro';
+    if (/(?:opus[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]opus)/.test(str)) return 'claude-opus-5-5';
+    if (/(?:sonnet[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]sonnet)/.test(str)) return 'claude-sonnet-5-5';
     return null;
   }
 
@@ -512,7 +564,22 @@
     const thinking = Number(req.thinkingTokens ?? req.thinking_output_tokens ?? req.thinking ?? 0);
     const totalPrompt = input + cache;
 
-    const reqDate = req.date ? String(req.date).slice(0, 10) : req.created_at ? String(req.created_at).slice(0, 10) : '2026-11-08';
+    let reqDate = '2026-11-08';
+    const hasExplicitDate = req.date && /^\d{4}-\d{2}-\d{2}/.test(String(req.date));
+    const isProv = req.dateIsProvisional === true || req.dateSource === 'provisional';
+    if (!isProv && req.created_at && (!hasExplicitDate || !req.dateSource || req.dateSource === 'created_at')) {
+      const dt = new Date(req.created_at);
+      if (!Number.isNaN(dt.getTime())) {
+        reqDate = formatLocalDateStr(dt);
+      } else if (hasExplicitDate) {
+        reqDate = String(req.date).slice(0, 10);
+      }
+    } else if (hasExplicitDate) {
+      reqDate = String(req.date).slice(0, 10);
+    } else if (req.created_at) {
+      const dt = new Date(req.created_at);
+      reqDate = !Number.isNaN(dt.getTime()) ? formatLocalDateStr(dt) : String(req.created_at).slice(0, 10);
+    }
     const tierRules = GEMINI_PRICING_TABLE[modelKey];
     let matchedTier = null;
 
@@ -596,26 +663,29 @@
     }
 
     const totalRequests = pricedRequestsCount + unpricedRequestsCount;
+    const totalTok = pricedTokens + unpricedTokens;
     let coveragePercent = null;
     let tokenCoveragePercent = null;
     let requestCoveragePercent = null;
     let isPartialCoverage = false;
 
-    if (totalRequests > 0) {
-      requestCoveragePercent = Number(((pricedRequestsCount / totalRequests) * 100).toFixed(1));
-      const totalTok = pricedTokens + unpricedTokens;
+    if (totalRequests > 0 || unpricedTokens > 0) {
+      if (totalRequests > 0) {
+        requestCoveragePercent = Number(((pricedRequestsCount / totalRequests) * 100).toFixed(1));
+      }
       if (totalTok > 0) {
         tokenCoveragePercent = Number(((pricedTokens / totalTok) * 100).toFixed(1));
       }
       if (pricedRequestsCount === 0) {
         coveragePercent = 0;
-      } else if (unpricedRequestsCount > 0) {
+      } else if (unpricedRequestsCount > 0 || unpricedTokens > 0) {
         isPartialCoverage = true;
-        // 当存在未计价历史记录且未知 token 未计时，不能虚假呈现 100% 覆盖
+        // 当存在未计价历史记录或未知 token 未计时，不能虚假呈现 100% 覆盖
         if (unpricedTokens === 0) {
           coveragePercent = requestCoveragePercent;
         } else {
-          coveragePercent = Math.min(tokenCoveragePercent ?? requestCoveragePercent, requestCoveragePercent);
+          const baseReqCov = requestCoveragePercent ?? 100;
+          coveragePercent = Math.min(tokenCoveragePercent ?? baseReqCov, baseReqCov);
         }
         if (coveragePercent >= 100) coveragePercent = 99.9;
       } else {
@@ -644,6 +714,29 @@
     };
   }
 
+  function extractCallId(row, cascadeId = null, fallbackStepIndex = null) {
+    if (!row || typeof row !== 'object') return '';
+    const u = row.chatModel?.usage || row.usage || {};
+    const explicit =
+      u.responseId ||
+      u.response_id ||
+      row.response_id ||
+      row.responseId ||
+      u.messageId ||
+      u.message_id ||
+      row.message_id ||
+      row.messageId ||
+      row.callId ||
+      row.call_id ||
+      '';
+    if (explicit) return String(explicit);
+    const stepIdx = row.stepIndices?.[0] ?? row.stepIndex ?? row.step_index ?? fallbackStepIndex;
+    if (cascadeId && stepIdx !== null && stepIdx !== undefined) {
+      return `${cascadeId}#${stepIdx}`;
+    }
+    return '';
+  }
+
   function parseGeneratorCall(row, cascadeId = null, source = 'desktop') {
     if (!row || typeof row !== 'object') return null;
     const cm = row.chatModel || {};
@@ -656,8 +749,13 @@
     const output = Number(u.outputTokens ?? row.outputTokens ?? row.output_tokens ?? 0);
     const thinking = Number(u.thinkingOutputTokens ?? row.thinkingTokens ?? row.thinking_output_tokens ?? 0);
     const responseTokens = Number(u.responseOutputTokens ?? row.responseTokens ?? (output - thinking > 0 ? output - thinking : output));
+    const totalTokens = input + cached + output;
 
-    const callId = String(u.responseId || u.messageId || row.callId || row.responseId || (cascadeId ? `${cascadeId}#${(row.stepIndices?.[0] ?? row.stepIndex ?? 0)}` : ''));
+    const rawStepIdx = row.stepIndices?.[0] ?? row.stepIndex ?? row.step_index;
+    const parsedStepIdx = rawStepIdx !== undefined && rawStepIdx !== null && rawStepIdx !== '' ? Number(rawStepIdx) : NaN;
+    const stepIndex = Number.isInteger(parsedStepIdx) && parsedStepIdx >= 0 ? parsedStepIdx : null;
+
+    const callId = extractCallId(row, cascadeId, stepIndex ?? 0);
     if (!callId) return null;
 
     // 完成状态管理：依据完成标记或耗时证据判定 final，流式中或只有部分文本时判定 streaming
@@ -669,26 +767,48 @@
       row.done === true ||
       (cm.streamingDuration != null && cm.timeToFirstToken != null)
     );
-    const hasUsage = (input + cached + output) > 0;
+    const hasUsage = totalTokens > 0;
     const status = hasExplicitFinish || (hasUsage && !row.isStreaming && row.status !== 'streaming') ? 'final' : 'streaming';
     const isEstimated = !hasUsage || output === 0;
 
-    // 日期与时间戳：严格提取真实创建时间，不默认将历史记录替换为今天
+    // 日期与时间戳：优先按真实创建时间转为本地日历日；RPC 缺失时间时显式标记 provisional 以便后续被权威时间校准覆盖
     let callDate = null;
     let callTimestamp = null;
+    let dateSource = null;
+    let dateIsProvisional = false;
     const rawCreatedAt = row.created_at || row.createdAt || row.timestamp;
     if (rawCreatedAt) {
       const dt = new Date(rawCreatedAt);
       if (!Number.isNaN(dt.getTime())) {
-        callDate = dt.toISOString().slice(0, 10);
+        callDate = formatLocalDateStr(dt);
         callTimestamp = dt.getTime();
+        dateSource = 'created_at';
       }
     } else if (row.date && /^\d{4}-\d{2}-\d{2}/.test(String(row.date))) {
       callDate = String(row.date).slice(0, 10);
       callTimestamp = new Date(callDate).getTime();
+      dateIsProvisional = Boolean(row.dateIsProvisional || row.dateSource === 'provisional');
+      dateSource = dateIsProvisional ? 'provisional' : (row.dateSource || 'explicit_date');
     } else if (source === 'desktop' && typeof window !== 'undefined') {
       callTimestamp = Date.now();
-      callDate = new Date(callTimestamp).toISOString().slice(0, 10);
+      callDate = formatLocalDateStr(new Date(callTimestamp));
+      dateSource = 'provisional';
+      dateIsProvisional = true;
+    } else {
+      dateIsProvisional = true;
+    }
+
+    let sourceRevision = null;
+    const rawRev = row.sourceRevision ?? row.revision ?? row.metadataRevision;
+    if (rawRev !== undefined && rawRev !== null && rawRev !== '') {
+      const revNum = Number(rawRev);
+      if (Number.isFinite(revNum)) sourceRevision = revNum;
+    } else {
+      const rawUpdated = row.updated_at ?? row.sourceUpdatedAt;
+      if (rawUpdated !== undefined && rawUpdated !== null && rawUpdated !== '') {
+        const updTs = typeof rawUpdated === 'number' ? rawUpdated : Date.parse(String(rawUpdated));
+        if (Number.isFinite(updTs)) sourceRevision = updTs;
+      }
     }
 
     const reqObj = {
@@ -698,7 +818,9 @@
       cacheReadTokens: cached,
       outputTokens: output,
       thinkingTokens: thinking,
-      date: callDate
+      date: callDate,
+      ...(dateSource ? { dateSource } : {}),
+      dateIsProvisional
     };
     const costCalc = calculateRequestApiCost(reqObj);
 
@@ -706,6 +828,7 @@
       callId,
       source,
       cascadeId,
+      stepIndex,
       model,
       modelKey,
       inputTokens: input,
@@ -714,13 +837,17 @@
       outputTokens: output,
       thinkingTokens: thinking,
       responseTokens,
+      totalTokens,
       status,
       isEstimated,
       isPriced: costCalc.isPriced,
       costUSD: costCalc.costUSD ?? 0,
       date: callDate,
-      created_at: rawCreatedAt ? String(rawCreatedAt) : (callTimestamp ? new Date(callTimestamp).toISOString() : null),
-      timestamp: callTimestamp
+      ...(dateSource ? { dateSource } : {}),
+      dateIsProvisional,
+      created_at: rawCreatedAt ? String(rawCreatedAt) : null,
+      timestamp: callTimestamp,
+      ...(sourceRevision !== null ? { sourceRevision } : {})
     };
   }
 
@@ -932,10 +1059,14 @@
 
     const modelNameMap = {
       'gemini-3.8-flash': 'Gemini 3.8 Flash Standard',
+      'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
+      'gemini-4-carbon': 'Gemini 4 Carbon',
       'gemini-4-argon': 'Gemini 4 Argon',
       'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',
       'gemini-3.5-flash-lite': 'Gemini 3.5 Flash-Lite',
-      'gemini-2.5-pro': 'Gemini 2.5 Pro'
+      'gemini-2.5-pro': 'Gemini 2.5 Pro',
+      'claude-opus-5-5': 'Claude Opus 5.5',
+      'claude-sonnet-5-5': 'Claude Sonnet 5.5'
     };
 
     return {
@@ -1901,6 +2032,7 @@
     calculateReferenceModelCost,
     resolveEffectivePlanStatus,
     parseUserPlanStatus,
+    extractCallId,
     parseGeneratorCall,
     extractModelString,
     normalizeTokenHistoryPayload,
