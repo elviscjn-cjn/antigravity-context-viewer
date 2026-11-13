@@ -1505,3 +1505,2087 @@ test('online update and GitHub entry points: openExternal whitelist enforcement 
 
   api.dispose();
 });
+
+test('real-time token history refresh: idle dedup, recordCalls ordering, a 5s automatic scan interval, and busy coalescing', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  // Drain initial boot scan & initial requestPoll microtasks first
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  let recordCallsDeferred = null;
+  const historyDeferredQueue = [];
+  let autoResolveHistory = true;
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const ids = calls.map(c => c.callId).join(',');
+      events.push(`recordCalls:${ids}`);
+      if (recordCallsDeferred) {
+        const p = recordCallsDeferred.promise;
+        recordCallsDeferred = null;
+        return p;
+      }
+      return Promise.resolve({ ok: true, changed: false });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      if (!autoResolveHistory) {
+        return new Promise(resolve => {
+          historyDeferredQueue.push({ force: Boolean(force), resolve });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 12:30:00',
+          summary: { grandTotalTokens: 40000, todayTokens: 4000 },
+          dailyMap: { '2026-11-12': { total: 4000, input: 3000, cache: 500, output: 500, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // (a) Initial hydration poll resolves a final row (changed: false) -> recorded once, then repeated idle 3s polls do NOT re-invoke recordCalls or getTokenHistory
+    const idleRow = {
+      stepIndices: [2],
+      chatModel: {
+        modelDisplayName: 'Gemini 3.8 Flash (High)',
+        responseModel: 'gemini-3.8-flash',
+        usage: { inputTokens: 10000, cacheReadTokens: 2000, outputTokens: 500, responseId: 'resp-idle-1' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+      }
+    };
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-idle-1']);
+
+    events.length = 0;
+    // Idle 3s poll #2 with identical final row
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 2);
+    h.pending[1].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Idle poll #2 with unchanged final row must not call recordCalls or getTokenHistory');
+
+    // Idle 3s poll #3 with identical final row
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    h.pending[2].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Idle poll #3 with unchanged final row must not call recordCalls or getTokenHistory');
+
+    // (b) Streaming row does not trigger recordCalls/getTokenHistory; newly-final transition awaits recordCalls strictly BEFORE getTokenHistory(true)
+    const streamingRow = {
+      isStreaming: true,
+      status: 'streaming',
+      stepIndices: [5],
+      chatModel: {
+        modelDisplayName: 'Gemini 3.8 Flash (High)',
+        usage: { inputTokens: 12000, outputTokens: 120, responseId: 'resp-live-2' }
+      }
+    };
+    fakeNow += 3500;
+    h.tick();
+    h.pending[3].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow, streamingRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'In-flight streaming row must not trigger final ledger write or token history rescan');
+
+    let resolveRecord;
+    recordCallsDeferred = {
+      promise: new Promise(r => { resolveRecord = r; })
+    };
+    const finalRow2 = {
+      stepIndices: [5],
+      chatModel: {
+        modelDisplayName: 'Gemini 3.8 Flash (High)',
+        responseModel: 'gemini-3.8-flash',
+        timeToFirstToken: '1.2s',
+        streamingDuration: '2.0s',
+        usage: { inputTokens: 12000, cacheReadTokens: 4000, outputTokens: 600, responseId: 'resp-live-2' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+      }
+    };
+    fakeNow += 3500;
+    h.tick();
+    h.pending[4].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow, finalRow2] }) });
+    await flushAsync();
+
+    // Context badge updates immediately without blocking on recordCalls, while getTokenHistory(true) waits for recordCalls!
+    assert.equal(api.snapshot().latest.actual, 16600);
+    assert.deepEqual(events, ['recordCalls:resp-live-2'], 'getTokenHistory must NOT fire before recordCalls resolves');
+
+    events.push('resolvingRecordCalls');
+    resolveRecord({ ok: true, changed: true });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp-live-2',
+      'resolvingRecordCalls',
+      'getTokenHistory:true'
+    ], 'getTokenHistory(true) must fire strictly after recordCalls resolves');
+
+    // Usage progression on an already-final row triggers once, then stabilizes
+    events.length = 0;
+    const calibratedRow2 = {
+      ...finalRow2,
+      chatModel: {
+        ...finalRow2.chatModel,
+        usage: { inputTokens: 12000, cacheReadTokens: 4000, outputTokens: 950, responseId: 'resp-live-2' }
+      }
+    };
+    fakeNow += 3500;
+    h.tick();
+    h.pending[5].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow, calibratedRow2] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-live-2'], 'Ledger writes should proceed during the scan cooldown');
+
+    fakeNow += 1499;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-live-2'], 'No automatic scan before five seconds');
+
+    fakeNow += 1;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-live-2', 'getTokenHistory:true']);
+
+    events.length = 0;
+    fakeNow += 2000;
+    h.tick();
+    h.pending[6].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow, calibratedRow2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Calibrated final row must not re-trigger on subsequent idle poll');
+
+    // (c) Concurrent syncTokenHistoryFromHost requests while historySyncBusy coalesce into at most ONE trailing getTokenHistory(true)
+    events.length = 0;
+    autoResolveHistory = false;
+
+    void api.syncTokenHistoryFromHost(false);
+    await flushAsync();
+    assert.equal(historyDeferredQueue.length, 1);
+    assert.equal(historyDeferredQueue[0].force, false);
+    assert.deepEqual(events, ['getTokenHistory:false']);
+
+    // Fire 5 overlapping refresh requests (including opening #panel-tokens and explicit force=true calls) while busy
+    void api.syncTokenHistoryFromHost(false);
+    h.elements.get('badge-tokens').click(); // showPanel('tokens') -> syncTokenHistoryFromHost(true)
+    void api.syncTokenHistoryFromHost(true);
+    void api.syncTokenHistoryFromHost(true);
+    void api.syncTokenHistoryFromHost(false);
+    await flushAsync();
+
+    assert.equal(historyDeferredQueue.length, 1, 'No parallel getTokenHistory calls while historySyncBusy is true');
+    assert.deepEqual(events, ['getTokenHistory:false']);
+
+    // Resolve the in-flight sync -> must launch AT MOST ONE trailing sync, upgraded to force=true
+    historyDeferredQueue[0].resolve({
+      ok: true,
+      data: {
+        updatedAt: '2026-11-12 12:31:00',
+        summary: { grandTotalTokens: 50000, todayTokens: 5000 },
+        dailyMap: { '2026-11-12': { total: 5000, input: 4000, cache: 500, output: 500, steps: 2 } }
+      }
+    });
+    await flushAsync();
+
+    assert.equal(historyDeferredQueue.length, 2, 'Exactly one trailing getTokenHistory call must start');
+    assert.equal(historyDeferredQueue[1].force, true, 'Trailing coalesced call must preserve force=true');
+    assert.deepEqual(events, ['getTokenHistory:false', 'getTokenHistory:true']);
+
+    // Resolve the trailing sync -> must settle cleanly with zero extra calls and render latest payload
+    historyDeferredQueue[1].resolve({
+      ok: true,
+      data: {
+        updatedAt: '2026-11-12 12:31:05',
+        summary: { grandTotalTokens: 88000, todayTokens: 8000 },
+        dailyMap: { '2026-11-12': { total: 8000, input: 6000, cache: 1000, output: 1000, steps: 3 } }
+      }
+    });
+    await flushAsync();
+
+    assert.equal(historyDeferredQueue.length, 2, 'No extra trailing syncs after coalesced sync finishes');
+    assert.equal(h.elements.get('token-amount').textContent, '88.0K');
+
+    // Also verify non-forced requests arriving while busy coalesce into ONE trailing getTokenHistory(false)
+    events.length = 0;
+    historyDeferredQueue.length = 0;
+    void api.syncTokenHistoryFromHost(true);
+    await flushAsync();
+    assert.equal(historyDeferredQueue.length, 1);
+    assert.equal(historyDeferredQueue[0].force, true);
+    void api.syncTokenHistoryFromHost(false);
+    void api.syncTokenHistoryFromHost(false);
+    await flushAsync();
+    historyDeferredQueue[0].resolve({
+      ok: true,
+      data: { updatedAt: '2026-11-12 12:31:10', summary: { grandTotalTokens: 88000, todayTokens: 8000 }, dailyMap: {} }
+    });
+    await flushAsync();
+    assert.equal(historyDeferredQueue.length, 2);
+    assert.equal(historyDeferredQueue[1].force, false, 'Non-forced pending syncs keep nextForce=false');
+    historyDeferredQueue[1].resolve({
+      ok: true,
+      data: { updatedAt: '2026-11-12 12:31:12', summary: { grandTotalTokens: 88000, todayTokens: 8000 }, dailyMap: {} }
+    });
+    await flushAsync();
+    assert.deepEqual(events, ['getTokenHistory:true', 'getTokenHistory:false']);
+
+    // Verify 15s polling fallback still works when >15000ms elapses
+    events.length = 0;
+    autoResolveHistory = true;
+    fakeNow += 16000;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, ['getTokenHistory:false']);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('requestPoll retries recordCalls on next 3s poll after failure or rejection and commits only on ok:true', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  let attempt = 0;
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      attempt++;
+      const ids = calls.map(c => c.callId).join(',');
+      events.push(`recordCalls#${attempt}:${ids}`);
+      if (attempt === 1) {
+        return Promise.resolve({ ok: false, error: 'write failed' });
+      }
+      if (attempt === 2) {
+        return Promise.reject(new Error('IPC channel busy'));
+      }
+      return Promise.resolve({ ok: true, changed: true });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 14:25:00',
+          summary: { grandTotalTokens: 64000, todayTokens: 14000 },
+          dailyMap: { '2026-11-12': { total: 14000, input: 10000, cache: 3000, output: 1000, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  const finalRow = {
+    stepIndices: [3],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 10000, cacheReadTokens: 3000, outputTokens: 1000, responseId: 'resp-retry-1' },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  };
+
+  try {
+    // Poll 1: recordCalls returns { ok: false, error: 'write failed' } -> must NOT commit or call getTokenHistory(true)
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [finalRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls#1:resp-retry-1'], 'Failed recordCalls (ok:false) must not trigger getTokenHistory(true)');
+
+    // Poll 2 (next 3s tick): identical finalRow -> retried (#2), rejects -> must NOT commit or call getTokenHistory(true)
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 2);
+    h.pending[1].resolve({ ok: true, json: async () => ({ generatorMetadata: [finalRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls#2:resp-retry-1'], 'Rejected recordCalls must not trigger getTokenHistory(true) and must stay retryable');
+
+    // Poll 3 (next 3s tick): identical finalRow -> retried (#3), succeeds ({ ok: true, changed: true }) -> commits & triggers getTokenHistory(true)
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    h.pending[2].resolve({ ok: true, json: async () => ({ generatorMetadata: [finalRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls#3:resp-retry-1', 'getTokenHistory:true'], 'Successful retry must trigger getTokenHistory(true)');
+    assert.equal(h.elements.get('token-amount').textContent, '64.0K');
+
+    // Poll 4 (next 3s tick): identical finalRow -> already committed in syncedFinalMap, zero further recordCalls attempts!
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 4);
+    h.pending[3].resolve({ ok: true, json: async () => ({ generatorMetadata: [finalRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Once recordCalls succeeds, subsequent idle polls must not re-send');
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('pendingFinalCalls retains 5-row batch across offset=2 sliding window, retries via tick() without RPC rows, and re-flushes in-flight progressions', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const makeRow = (id, stepIdx, outTokens = 400) => ({
+    stepIndices: [stepIdx],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 8000 + stepIdx * 100, cacheReadTokens: 2000, outputTokens: outTokens, responseId: id },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  });
+
+  const events = [];
+  const savedLedger = new Map();
+  let recordBehavior = () => Promise.resolve({ ok: true, changed: true });
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const summary = calls.map(c => `${c.callId}:${c.outputTokens}`).join(',');
+      events.push(`recordCalls:${summary}`);
+      return recordBehavior(calls);
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 15:00:00',
+          summary: { grandTotalTokens: 95000, todayTokens: 25000 },
+          dailyMap: { '2026-11-12': { total: 25000, input: 18000, cache: 5000, output: 2000, steps: 5 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // Part 1: Direct 5-row sliding-window failure (Poll 1 offset=0 -> Poll 2 +3.5s offset=2 with call_3..call_5 -> Poll 3 makes 0 recordCalls)
+    const rowsA = [1, 2, 3, 4, 5].map(n => makeRow(`call_${n}`, n, 300));
+    assert.equal(JSON.parse(h.pending[0].options.body).generatorMetadataOffset, 0);
+
+    recordBehavior = () => Promise.resolve({ ok: false, error: 'disk write failed' });
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsA }) });
+    await flushAsync();
+
+    assert.equal(api.snapshot().count, 5);
+    assert.deepEqual(events, [
+      'recordCalls:call_1:300,call_2:300,call_3:300,call_4:300,call_5:300'
+    ], 'Poll 1 attempts all 5 calls and does not call getTokenHistory on failure');
+
+    // Poll 2 (+3.5s): offset slides to Math.max(0, 5 - 3) = 2, returning ONLY call_3..call_5
+    events.length = 0;
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 2);
+    assert.equal(JSON.parse(h.pending[1].options.body).generatorMetadataOffset, 2);
+    h.pending[1].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsA.slice(2) }) });
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:call_1:300,call_2:300,call_3:300,call_4:300,call_5:300',
+      'getTokenHistory:true'
+    ], 'Retry must retain call_1 and call_2 despite offset=2 returning only call_3..call_5');
+    assert.deepEqual(Array.from(savedLedger.keys()), ['call_1', 'call_2', 'call_3', 'call_4', 'call_5']);
+
+    // Poll 3 (+3.5s): offset=2 returning call_3..call_5 -> 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    h.pending[2].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsA.slice(2) }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Poll 3 must make 0 recordCalls after all 5 calls were saved');
+
+    // Part 2: Sliding window + tick() retry when RPC is NOT polled yet AND after RPC returns []
+    savedLedger.clear();
+    h.sandbox.location.pathname = '/c/33333333-3333-3333-3333-333333333333';
+    h.tick();
+    h.finishScan(1);
+    await flushAsync();
+    events.length = 0;
+
+    const rowsB = [1, 2, 3, 4, 5].map(n => makeRow(`b_${n}`, n, 250));
+    const pollB1Idx = h.pending.length - 1;
+    assert.equal(JSON.parse(h.pending[pollB1Idx].options.body).generatorMetadataOffset, 0);
+
+    let resolveSlowFail;
+    recordBehavior = () => new Promise(r => { resolveSlowFail = r; });
+    h.pending[pollB1Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsB }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:b_1:250,b_2:250,b_3:250,b_4:250,b_5:250']);
+
+    // Slow failure finishes at +1000ms -> requestNext is +3000ms while nextFlushRetryAt is +4000ms
+    events.length = 0;
+    fakeNow += 1000;
+    resolveSlowFail({ ok: false, error: 'ipc timeout' });
+    await flushAsync();
+
+    // At +3200ms: Poll 2 (offset=2) runs and returns ONLY b_3..b_5 BEFORE nextFlushRetryAt (+4000ms)
+    fakeNow += 2200;
+    h.tick();
+    const pollB2Idx = h.pending.length - 1;
+    assert.equal(JSON.parse(h.pending[pollB2Idx].options.body).generatorMetadataOffset, 2);
+    h.pending[pollB2Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsB.slice(2) }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Retry waits until nextFlushRetryAt backoff expires');
+
+    // At +4100ms: tick() runs WITHOUT any new RPC poll (requestNext is +6200ms) -> retries all 5!
+    const pendingBeforeTickRetry = h.pending.length;
+    recordBehavior = () => Promise.reject(new Error('still busy'));
+    fakeNow += 900;
+    h.tick();
+    await flushAsync();
+    assert.equal(h.pending.length, pendingBeforeTickRetry, 'No RPC poll needed for tick() retry');
+    assert.deepEqual(events, ['recordCalls:b_1:250,b_2:250,b_3:250,b_4:250,b_5:250']);
+
+    // At +6500ms: Poll 3 runs and RPC returns empty [] -> pendingFinalCalls must still keep b_1..b_5!
+    events.length = 0;
+    fakeNow += 2400;
+    h.tick();
+    const pollB3Idx = h.pending.length - 1;
+    h.pending[pollB3Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [] }) });
+    await flushAsync();
+    assert.equal(api.snapshot().count, 0);
+    assert.deepEqual(events, []);
+
+    // At +7200ms: tick() retries again WITHOUT RPC returning any rows -> succeeds & saves all 5!
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    const pendingBeforeEmptyRecovery = h.pending.length;
+    fakeNow += 700;
+    h.tick();
+    await flushAsync();
+    assert.equal(h.pending.length, pendingBeforeEmptyRecovery);
+    assert.deepEqual(events, [
+      'recordCalls:b_1:250,b_2:250,b_3:250,b_4:250,b_5:250',
+      'getTokenHistory:true'
+    ], 'All 5 pending calls survive RPC [] and commit via tick() retry');
+    assert.deepEqual(Array.from(savedLedger.keys()), ['b_1', 'b_2', 'b_3', 'b_4', 'b_5']);
+
+    // Part 3: If a call progresses to larger { tot, out } while flushPendingFinalCalls is in flight, it is NOT deleted and triggers a follow-up flush
+    events.length = 0;
+    let resolveInFlight;
+    recordBehavior = calls => new Promise(r => {
+      resolveInFlight = val => {
+        for (const c of calls) savedLedger.set(c.callId, c);
+        r(val);
+      };
+    });
+    fakeNow += 3500;
+    h.tick();
+    const pollB4Idx = h.pending.length - 1;
+    h.pending[pollB4Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow('b_6', 6, 120)] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:b_6:120']);
+
+    // While b_6:120 flush is still in flight, next poll calibrates b_6 to outputTokens=480
+    fakeNow += 3500;
+    h.tick();
+    const pollB5Idx = h.pending.length - 1;
+    h.pending[pollB5Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow('b_6', 6, 480)] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:b_6:120'], 'Single-flight guard prevents overlapping flush');
+
+    // Prepare immediate resolution for the follow-up flush when in-flight flush completes
+    const finishFirstFlush = resolveInFlight;
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    finishFirstFlush({ ok: true, changed: true });
+    await flushAsync();
+
+    assert.equal(savedLedger.get('b_6')?.outputTokens, 480, 'Follow-up flush must persist progressed outputTokens=480');
+    assert.equal(events.includes('recordCalls:b_6:480'), true, 'Progressed pending call must trigger follow-up flush in finally');
+
+    // Subsequent idle poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    const pollB6Idx = h.pending.length - 1;
+    h.pending[pollB6Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow('b_6', 6, 480)] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Idle poll after follow-up flush makes 0 recordCalls');
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('pendingFinalCalls survives route switches across conversations and / home screen and retries via tick()', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  const savedLedger = new Map();
+  let recordBehavior = () => Promise.resolve({ ok: true, changed: true });
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const desc = calls.map(c => `${c.callId}@${c.cascadeId.slice(0, 8)}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      return recordBehavior(calls);
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 15:30:00',
+          summary: { grandTotalTokens: 112000, todayTokens: 32000 },
+          dailyMap: { '2026-11-12': { total: 32000, input: 24000, cache: 5000, output: 3000, steps: 2 } }
+        }
+      });
+    }
+  };
+
+  const rowUuid1 = {
+    stepIndices: [1],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 12000, cacheReadTokens: 3000, outputTokens: 1500, responseId: 'resp-route-u1' },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  };
+
+  const rowUuid2 = {
+    stepIndices: [2],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 12000, cacheReadTokens: 2000, outputTokens: 1500, responseId: 'resp-route-u2' },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  };
+
+  try {
+    // 1. In /c/11111111-..., Poll 1 fails ({ ok: false }) -> resp-route-u1 remains queued
+    recordBehavior = () => Promise.resolve({ ok: false, error: 'temporary lock' });
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowUuid1] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-route-u1@11111111']);
+
+    // 2. Switch route to /c/22222222-... AND then to / (id === null) before backoff expires
+    events.length = 0;
+    fakeNow += 500;
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    h.tick();
+    h.finishScan(1);
+    await flushAsync();
+
+    fakeNow += 500;
+    h.sandbox.location.pathname = '/';
+    h.tick();
+    await flushAsync();
+    assert.equal(api.snapshot().route, null);
+    assert.equal(api.snapshot().sessionCalls.length, 0);
+    // Only route-switch getTokenHistory(true) ran; backoff (+3000ms) hasn't expired yet
+    assert.equal(events.some(e => e.startsWith('recordCalls:')), false);
+
+    // 3. Once backoff expires while STILL on / (id === null), tick() retries recordCalls, saves uuid-1's call, empties queue, and refreshes history
+    events.length = 0;
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    fakeNow += 2500; // total +3500ms since failure
+    h.tick();
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:resp-route-u1@11111111',
+      'getTokenHistory:true'
+    ], 'tick() on / home route must retry and commit queued call from previous conversation');
+    assert.equal(savedLedger.get('resp-route-u1')?.cascadeId, '11111111-1111-1111-1111-111111111111');
+    assert.equal(h.elements.get('token-amount').textContent, '112.0K');
+
+    // Subsequent tick() on / makes 0 recordCalls (queue is now empty)
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // 4. Also verify an in-flight flush completes and commits even if route switches to / mid-flight
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    h.tick();
+    h.finishScan(2);
+    await flushAsync();
+    events.length = 0;
+
+    let resolveMidFlight;
+    recordBehavior = calls => new Promise(r => {
+      resolveMidFlight = val => {
+        for (const c of calls) savedLedger.set(c.callId, c);
+        r(val);
+      };
+    });
+    const poll2Idx = h.pending.length - 1;
+    h.pending[poll2Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowUuid2] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-route-u2@22222222']);
+
+    // Switch to / while recordCalls is still in flight
+    h.sandbox.location.pathname = '/';
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+
+    resolveMidFlight({ ok: true, changed: true });
+    await flushAsync();
+    assert.equal(savedLedger.has('resp-route-u2'), true);
+    assert.deepEqual(events, []);
+    fakeNow += 5000;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, ['getTokenHistory:true']);
+
+    // Re-entering /c/22222222-... and polling rowUuid2 again must NOT re-send resp-route-u2 (syncedFinalMap preserved across routes)
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    h.tick();
+    h.finishScan(3);
+    await flushAsync();
+    events.length = 0;
+    const pollReenterIdx = h.pending.length - 1;
+    h.pending[pollReenterIdx].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowUuid2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'syncedFinalMap retained across route switches prevents duplicate recordCalls on re-entry');
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('flushPendingFinalCalls chunks >500 items and >900KB UTF-8 payloads for live-host limits and recovers from partial chunk failure', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 12; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  // Use live-host HTTP mode (enforcing live-host.js MAX_RECORD_CALLS=500 & MAX_BODY_BYTES=1MB)
+  delete h.sandbox.window.contextMeterAPI.recordCalls;
+  delete h.sandbox.window.contextMeterAPI.getTokenHistory;
+  h.sandbox.window.__AGContextMeterLive = { port: 43199, token: 'test-live-token' };
+
+  const chunkLog = [];
+  const savedIds = new Set();
+  let failNextChunk2Once = true;
+  const baseFetch = h.sandbox.fetch;
+  h.sandbox.fetch = (url, options = {}) => {
+    if (String(url).endsWith('/record-calls')) {
+      const rawBody = String(options.body || '');
+      const utf8Bytes = Buffer.byteLength(rawBody, 'utf8');
+      if (utf8Bytes > 1024 * 1024) {
+        chunkLog.push(`413:${utf8Bytes}`);
+        return Promise.resolve({ ok: false, status: 413, json: async () => ({ ok: false, error: 'Payload too large' }) });
+      }
+      assert.equal(utf8Bytes <= 900 * 1024, true, `Chunk UTF-8 bytes (${utf8Bytes}) must respect 900KB ceiling`);
+      const parsed = JSON.parse(rawBody);
+      const calls = parsed.calls || [];
+      if (calls.length > 500) {
+        chunkLog.push(`400:${calls.length}`);
+        return Promise.resolve({ ok: false, status: 400, json: async () => ({ ok: false, error: 'Too many calls' }) });
+      }
+      chunkLog.push(`chunk:${calls.length}:${calls[0]?.callId}..${calls[calls.length - 1]?.callId}`);
+      if (calls.length === 1 && calls[0]?.callId === 'c_501' && failNextChunk2Once) {
+        failNextChunk2Once = false;
+        return Promise.resolve({ ok: false, status: 503, json: async () => ({ ok: false, error: 'transient 503' }) });
+      }
+      for (const c of calls) savedIds.add(c.callId);
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, changed: true }) });
+    }
+    if (String(url).endsWith('/token-history')) {
+      const parsed = JSON.parse(String(options.body || '{}'));
+      chunkLog.push(`history:${Boolean(parsed.force)}`);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            updatedAt: '2026-11-12 15:35:00',
+            summary: { grandTotalTokens: 501000, todayTokens: 501000 },
+            dailyMap: { '2026-11-12': { total: 501000, input: 400000, cache: 50000, output: 51000, steps: 501 } }
+          }
+        })
+      });
+    }
+    if (String(url).endsWith('/get-settings')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false }) });
+    }
+    return baseFetch(url, options);
+  };
+
+  const makeFinalRow = (id, stepIdx, modelLabel = 'Gemini 4 Carbon (High)') => ({
+    stepIndices: [stepIdx],
+    chatModel: {
+      modelDisplayName: modelLabel,
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 800, cacheReadTokens: 100, outputTokens: 100, responseId: id },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  });
+
+  try {
+    // (a) 501 items: Chunk 1 (500 items) succeeds and commits immediately; Chunk 2 (1 item) fails once, then retries ONLY that 1 item
+    const rows501 = Array.from({ length: 501 }, (_, idx) => makeFinalRow(`c_${idx + 1}`, idx + 1));
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: rows501 }) });
+    await flushAsync();
+
+    assert.equal(savedIds.size, 500, 'Chunk 1 (500 items) must commit even when Chunk 2 fails');
+    assert.deepEqual(chunkLog, [
+      'chunk:500:c_1..c_500',
+      'chunk:1:c_501..c_501',
+      'history:true'
+    ]);
+
+    // After +3.5s backoff, tick() retries ONLY the remaining 1 item (c_501), NOT the already-confirmed 500 items!
+    chunkLog.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    const poll2Idx = h.pending.length - 1;
+    h.pending[poll2Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: rows501.slice(498) }) });
+    await flushAsync();
+
+    assert.equal(savedIds.size, 501, 'Remaining Chunk 2 item must succeed on retry and drain queue to 0');
+    assert.deepEqual(chunkLog, ['chunk:1:c_501..c_501']);
+    fakeNow += 1500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(chunkLog, [
+      'chunk:1:c_501..c_501',
+      'history:true'
+    ]);
+
+    // Idle poll makes 0 /record-calls requests
+    chunkLog.length = 0;
+    fakeNow += 2000;
+    h.tick();
+    const poll3Idx = h.pending.length - 1;
+    h.pending[poll3Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: rows501.slice(498) }) });
+    await flushAsync();
+    assert.deepEqual(chunkLog, []);
+
+    // (b) Multi-byte UTF-8 byte-limit chunking: 12 items with 35,000 CJK chars each (~105KB UTF-8 per item -> ~1.26MB total > 1MB, though UTF-16 length is only ~420K)
+    const bigCjkLabel = 'Gemini 4 ' + '测'.repeat(35000);
+    const bigRows = Array.from({ length: 12 }, (_, idx) => makeFinalRow(`big_${idx + 1}`, 600 + idx, bigCjkLabel));
+    fakeNow += 3500;
+    h.tick();
+    const pollBigIdx = h.pending.length - 1;
+    h.pending[pollBigIdx].resolve({ ok: true, json: async () => ({ generatorMetadata: bigRows }) });
+    await flushAsync();
+
+    const bigChunks = chunkLog.filter(entry => entry.startsWith('chunk:'));
+    assert.equal(bigChunks.length >= 2, true, `Expected >=2 UTF-8 byte-capped chunks, got: ${JSON.stringify(chunkLog)}`);
+    for (let i = 1; i <= 12; i++) {
+      assert.equal(savedIds.has(`big_${i}`), true, `Missing big_${i}`);
+    }
+
+    // Idle poll after byte-chunked drain makes 0 /record-calls requests
+    chunkLog.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    const pollAfterBigIdx = h.pending.length - 1;
+    h.pending[pollAfterBigIdx].resolve({ ok: true, json: async () => ({ generatorMetadata: bigRows.slice(9) }) });
+    await flushAsync();
+    assert.deepEqual(chunkLog, []);
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('final call model enrichment with unchanged 100 tokens re-sends to host once (empty -> model, placeholder -> model, and in-flight enrichment)', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  const savedLedger = new Map();
+  let recordBehavior = calls => {
+    for (const c of calls) savedLedger.set(c.callId, c);
+    return Promise.resolve({ ok: true, changed: true });
+  };
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const desc = calls.map(c => `${c.callId}:${c.model || '(empty)'}:${c.modelKey || '(nokey)'}:${c.totalTokens}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      return recordBehavior(calls);
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 15:55:00',
+          summary: { grandTotalTokens: 120000, todayTokens: 12000 },
+          dailyMap: { '2026-11-12': { total: 12000, input: 8000, cache: 2000, output: 2000, steps: 3 } }
+        }
+      });
+    }
+  };
+
+  const makeRow100 = (id, stepIdx, modelDisplayName = '') => ({
+    stepIndices: [stepIdx],
+    status: 'final',
+    chatModel: {
+      ...(modelDisplayName ? { modelDisplayName } : {}),
+      usage: { inputTokens: 60, cacheReadTokens: 0, outputTokens: 40, responseId: id },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  });
+
+  try {
+    // (a1) model: "" -> model: "Gemini 4 Carbon" with identical 100 tokens
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-1', 1, '')] }) });
+    await flushAsync();
+    assert.equal(savedLedger.get('resp-mdl-1')?.model, '');
+    assert.equal(savedLedger.get('resp-mdl-1')?.isPriced, false);
+    assert.deepEqual(events, [
+      'recordCalls:resp-mdl-1:(empty):(nokey):100',
+      'getTokenHistory:true'
+    ]);
+
+    // Unchanged empty-model poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-1', 1, '')] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // Model populates to "Gemini 4 Carbon" while tokens stay at 100 (60 in + 40 out) -> MUST re-send & refresh history!
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-1', 1, 'Gemini 4 Carbon')] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp-mdl-1:Gemini 4 Carbon:gemini-4-carbon:100',
+      'getTokenHistory:true'
+    ]);
+    assert.equal(savedLedger.get('resp-mdl-1')?.model, 'Gemini 4 Carbon');
+    assert.equal(savedLedger.get('resp-mdl-1')?.modelKey, 'gemini-4-carbon');
+    assert.equal(savedLedger.get('resp-mdl-1')?.isPriced, true);
+
+    // Subsequent identical poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-1', 1, 'Gemini 4 Carbon')] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // (a2) Placeholder ("MODEL_PLACEHOLDER_M18" -> "Gemini 4 Argon (High)") and unmapped slug ("unknown-preview-v0" -> "Gemini 4 Carbon") with unchanged 100 tokens
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          makeRow100('resp-ph-unmapped', 2, 'unknown-preview-v0'),
+          makeRow100('resp-ph-mapped', 3, 'MODEL_PLACEHOLDER_M18')
+        ]
+      })
+    });
+    await flushAsync();
+    assert.equal(savedLedger.get('resp-ph-unmapped')?.modelKey, null);
+    assert.equal(savedLedger.get('resp-ph-mapped')?.modelKey, null);
+    assert.equal(savedLedger.get('resp-ph-mapped')?.isPriced, false);
+
+    events.length = 0;
+    fakeNow += 5000;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          makeRow100('resp-ph-unmapped', 2, 'Gemini 4 Carbon'),
+          makeRow100('resp-ph-mapped', 3, 'Gemini 4 Argon (High)')
+        ]
+      })
+    });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp-ph-unmapped:Gemini 4 Carbon:gemini-4-carbon:100,resp-ph-mapped:Gemini 4 Argon (High):gemini-4-argon:100',
+      'getTokenHistory:true'
+    ]);
+    assert.equal(savedLedger.get('resp-ph-unmapped')?.isPriced, true);
+    assert.equal(savedLedger.get('resp-ph-mapped')?.model, 'Gemini 4 Argon (High)');
+    assert.equal(savedLedger.get('resp-ph-mapped')?.modelKey, 'gemini-4-argon');
+    assert.equal(savedLedger.get('resp-ph-mapped')?.isPriced, true);
+
+    // Subsequent identical poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          makeRow100('resp-ph-unmapped', 2, 'Gemini 4 Carbon'),
+          makeRow100('resp-ph-mapped', 3, 'Gemini 4 Argon (High)')
+        ]
+      })
+    });
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // (a3) In-flight model enrichment while model:"" flush is still awaiting
+    events.length = 0;
+    let resolveFirstInFlight;
+    recordBehavior = calls => new Promise(r => {
+      resolveFirstInFlight = val => {
+        for (const c of calls) savedLedger.set(c.callId, c);
+        r(val);
+      };
+    });
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-inflight', 4, '')] })
+    });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-mdl-inflight:(empty):(nokey):100']);
+
+    // Enriched model arrives while first flush is still in flight
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-inflight', 4, 'Gemini 4 Carbon')] })
+    });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-mdl-inflight:(empty):(nokey):100']);
+
+    const finishFirst = resolveFirstInFlight;
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    finishFirst({ ok: true, changed: true });
+    await flushAsync();
+
+    assert.equal(savedLedger.get('resp-mdl-inflight')?.model, 'Gemini 4 Carbon');
+    assert.equal(savedLedger.get('resp-mdl-inflight')?.isPriced, true);
+    assert.equal(events.includes('recordCalls:resp-mdl-inflight:Gemini 4 Carbon:gemini-4-carbon:100'), true);
+
+    // Next identical poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-inflight', 4, 'Gemini 4 Carbon')] })
+    });
+    await flushAsync();
+    assert.deepEqual(events, []);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('oversized >1 MiB first item never head-of-line blocks normal queued items and is quarantined in Live HTTP and recordCalls modes', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 12; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  const makeRow = (id, stepIdx, modelLabel = 'Gemini 4 Carbon') => ({
+    stepIndices: [stepIdx],
+    status: 'final',
+    chatModel: {
+      modelDisplayName: modelLabel,
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 500, cacheReadTokens: 100, outputTokens: 100, responseId: id },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  });
+
+  // ~1.2 MiB UTF-8 string ('超' is 3 UTF-8 bytes -> 410,000 * 3 = 1,230,000 bytes > 1 MiB)
+  const over1MiBLabel = 'Gemini 4 Carbon ' + '超'.repeat(410000);
+  // ~950 KiB UTF-8 string (320,000 * 3 = 960,000 bytes -> >900 KiB and <=1 MiB)
+  const mid950KiBLabel = 'Gemini 4 Carbon ' + '中'.repeat(320000);
+
+  try {
+    // Part 1: Live HTTP mode (>1 MiB first item + 950 KiB 413 item + normal items behind them)
+    delete h.sandbox.window.contextMeterAPI.recordCalls;
+    delete h.sandbox.window.contextMeterAPI.getTokenHistory;
+    h.sandbox.window.__AGContextMeterLive = { port: 43299, token: 'live-tok' };
+
+    const liveEvents = [];
+    const liveSaved = new Set();
+    const baseFetch = h.sandbox.fetch;
+    h.sandbox.fetch = (url, options = {}) => {
+      if (String(url).endsWith('/record-calls')) {
+        const rawBody = String(options.body || '');
+        const utf8Bytes = Buffer.byteLength(rawBody, 'utf8');
+        const parsed = JSON.parse(rawBody);
+        const ids = (parsed.calls || []).map(c => c.callId).join(',');
+        if (utf8Bytes > 1024 * 1024 || ids === 'mid_413_live') {
+          liveEvents.push(`http413:${ids}`);
+          return Promise.resolve({ ok: false, status: 413, json: async () => ({ ok: false, error: 'Payload too large' }) });
+        }
+        liveEvents.push(`liveSaved:${ids}`);
+        for (const c of parsed.calls || []) liveSaved.add(c.callId);
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, changed: true }) });
+      }
+      if (String(url).endsWith('/token-history')) {
+        const parsed = JSON.parse(String(options.body || '{}'));
+        liveEvents.push(`liveHistory:${Boolean(parsed.force)}`);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            data: {
+              updatedAt: '2026-11-12 16:00:00',
+              summary: { grandTotalTokens: 1400, todayTokens: 1400 },
+              dailyMap: { '2026-11-12': { total: 1400, input: 1000, cache: 200, output: 200, steps: 2 } }
+            }
+          })
+        });
+      }
+      if (String(url).endsWith('/get-settings')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false }) });
+      }
+      return baseFetch(url, options);
+    };
+
+    // Enqueue >1 MiB item FIRST, 950 KiB 413 item SECOND, and normal items AFTER them!
+    const liveBatch = [
+      makeRow('huge_live_1', 1, over1MiBLabel),
+      makeRow('mid_413_live', 2, mid950KiBLabel),
+      makeRow('norm_live_1', 3),
+      makeRow('norm_live_2', 4)
+    ];
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: liveBatch }) });
+    await flushAsync();
+
+    // Normal items MUST drain FIRST without head-of-line blocking, >1 MiB item quarantined immediately, 413 item quarantined on 413!
+    assert.deepEqual(Array.from(liveSaved), ['norm_live_1', 'norm_live_2']);
+    assert.deepEqual(liveEvents, [
+      'liveSaved:norm_live_1,norm_live_2',
+      'http413:mid_413_live',
+      'liveHistory:true'
+    ]);
+
+    // Subsequent poll + tick() with identical rows must NOT re-enqueue quarantined items or spin!
+    liveEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: liveBatch }) });
+    await flushAsync();
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(liveEvents, [], 'Quarantined oversized items must not retry infinitely on subsequent polls/ticks');
+
+    // Part 2: IPC recordCalls mode rejecting >1 MiB payloads while normal items behind it drain first
+    const ipcEvents = [];
+    const ipcSaved = new Set();
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      recordCalls: calls => {
+        const bytes = Buffer.byteLength(JSON.stringify({ calls }), 'utf8');
+        const ids = calls.map(c => c.callId).join(',');
+        if (bytes > 1024 * 1024) {
+          ipcEvents.push(`ipcRejectOversize:${ids}`);
+          return Promise.resolve({ ok: false, error: 'Payload exceeds 1MiB' });
+        }
+        ipcEvents.push(`ipcSaved:${ids}`);
+        for (const c of calls) ipcSaved.add(c.callId);
+        return Promise.resolve({ ok: true, changed: true });
+      },
+      getTokenHistory: force => {
+        ipcEvents.push(`ipcHistory:${Boolean(force)}`);
+        return Promise.resolve({
+          ok: true,
+          data: {
+            updatedAt: '2026-11-12 16:01:00',
+            summary: { grandTotalTokens: 2800, todayTokens: 2800 },
+            dailyMap: { '2026-11-12': { total: 2800, input: 2000, cache: 400, output: 400, steps: 4 } }
+          }
+        });
+      }
+    };
+
+    const ipcBatch = [
+      makeRow('huge_ipc_1', 10, over1MiBLabel),
+      makeRow('norm_ipc_1', 11),
+      makeRow('norm_ipc_2', 12)
+    ];
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: ipcBatch }) });
+    await flushAsync();
+
+    assert.deepEqual(Array.from(ipcSaved), ['norm_ipc_1', 'norm_ipc_2']);
+    assert.deepEqual(ipcEvents, [
+      'ipcSaved:norm_ipc_1,norm_ipc_2',
+      'ipcRejectOversize:huge_ipc_1',
+      'ipcHistory:true'
+    ], 'Normal items drain first; rejected >1 MiB IPC item is quarantined after single attempt');
+
+    // Subsequent poll + tick() makes 0 further recordCalls attempts!
+    ipcEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: ipcBatch }) });
+    await flushAsync();
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(ipcEvents, []);
+
+    // Part 3: Transient IPC write failures on >1 MiB records (EBUSY / Promise reject) must NOT be misclassified as oversize — must retry & succeed!
+    let transientHugeAttempt = 0;
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      recordCalls: calls => {
+        const ids = calls.map(c => c.callId).join(',');
+        if (ids === 'huge_ipc_code_limit') {
+          ipcEvents.push(`ipcCodeQuarantine:${ids}`);
+          return Promise.resolve({ ok: false, code: 'PAYLOAD_TOO_LARGE', error: 'limit hit' });
+        }
+        if (ids === 'huge_ipc_transient') {
+          transientHugeAttempt++;
+          ipcEvents.push(`ipcHugeAttempt#${transientHugeAttempt}:${ids}`);
+          if (transientHugeAttempt === 1) {
+            return Promise.resolve({ ok: false, error: '保存账本落盘失败: EBUSY' });
+          }
+          if (transientHugeAttempt === 2) {
+            return Promise.reject(new Error('EBUSY: resource busy'));
+          }
+          for (const c of calls) ipcSaved.add(c.callId);
+          return Promise.resolve({ ok: true, changed: true });
+        }
+        ipcEvents.push(`ipcSaved:${ids}`);
+        for (const c of calls) ipcSaved.add(c.callId);
+        return Promise.resolve({ ok: true, changed: true });
+      }
+    };
+
+    // Attempt 1: >1 MiB item fails transiently with EBUSY while normal items behind it still save immediately
+    const ipcTransientBatch1 = [
+      makeRow('huge_ipc_transient', 20, over1MiBLabel),
+      makeRow('norm_ipc_3', 21)
+    ];
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: ipcTransientBatch1 }) });
+    await flushAsync();
+
+    assert.equal(ipcSaved.has('norm_ipc_3'), true, 'Normal record behind transient >1 MiB item must save immediately');
+    assert.equal(ipcSaved.has('huge_ipc_transient'), false);
+    assert.deepEqual(ipcEvents, [
+      'ipcSaved:norm_ipc_3',
+      'ipcHugeAttempt#1:huge_ipc_transient',
+      'ipcHistory:true'
+    ]);
+
+    // Attempt 2 (+3.5s, with a new normal record norm_ipc_4 arriving): norm_ipc_4 drains first, then >1 MiB retries (#2) and rejects transiently
+    ipcEvents.length = 0;
+    const ipcTransientBatch2 = [
+      makeRow('huge_ipc_transient', 20, over1MiBLabel),
+      makeRow('norm_ipc_3', 21),
+      makeRow('norm_ipc_4', 22)
+    ];
+    fakeNow += 3500;
+    h.tick();
+    // Wait: tick() starts retry #2 immediately if no new normal item arrived yet; verify retry #2 ran, then Poll 2 delivers norm_ipc_4 which drains immediately!
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: ipcTransientBatch2 }) });
+    await flushAsync();
+
+    assert.equal(ipcSaved.has('norm_ipc_4'), true, 'New normal record must drain immediately even while >1 MiB item is in retry backoff');
+    assert.equal(ipcEvents.includes('ipcHugeAttempt#2:huge_ipc_transient'), true);
+    assert.equal(ipcEvents.includes('ipcSaved:norm_ipc_4'), true);
+
+    // Attempt 3 (+3.5s via tick() without needing RPC rows): >1 MiB record retries (#3), succeeds, saves, and refreshes token history!
+    ipcEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [] }) });
+    await flushAsync();
+
+    assert.equal(ipcSaved.has('huge_ipc_transient'), true, 'Transiently failing >1 MiB IPC record must NOT be quarantined and must commit on retry');
+    assert.deepEqual(ipcEvents, [
+      'ipcHugeAttempt#3:huge_ipc_transient',
+      'ipcHistory:true'
+    ]);
+
+    // Subsequent poll with huge_ipc_transient makes 0 recordCalls (committed in syncedFinalMap), while explicit code:PAYLOAD_TOO_LARGE quarantines in 1 attempt
+    ipcEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          makeRow('huge_ipc_transient', 20, over1MiBLabel),
+          makeRow('huge_ipc_code_limit', 23, over1MiBLabel)
+        ]
+      })
+    });
+    await flushAsync();
+    assert.deepEqual(ipcEvents, ['ipcCodeQuarantine:huge_ipc_code_limit']);
+
+    ipcEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(ipcEvents, ['ipcHistory:true'], 'The deferred history refresh runs without re-sending either oversized record');
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('[P2] renderer watermark re-sends when RPC upgrades provisional date to authoritative date (same-cost cross-month & cross-rate-tier) without transcript log', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { recordModelCalls } = require('./meter-collector');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-renderer-date-upgrade-'));
+  const ledgerPath = path.join(tempDir, 'pricing_ledger_v1.json');
+  const prevWindow = globalThis.window;
+  const origDateNow = Date.now;
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = new Date(2026, 10, 12, 23, 59, 58).getTime(); // 本地 2026-11-12 23:59:58
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  globalThis.window = h.sandbox.window;
+  Date.now = () => fakeNow;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const desc = calls.map(c => `${c.callId}:${c.date}:${c.dateSource || 'none'}:${c.costUSD}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      const res = recordModelCalls(calls, { agDir: tempDir });
+      return Promise.resolve({ ok: res.ok, changed: res.changed, error: res.error, phase: res.phase });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 23:59:59',
+          summary: { grandTotalTokens: 405000, todayTokens: 0 },
+          dailyMap: { '2026-10-28': { total: 405000, input: 300000, cache: 100000, output: 5000, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // 1) 首次轮询：RPC 未返回时间，临时打上 2026-11-12（Claude Opus 5.5 费率 $1.32）并写入磁盘账本
+    const rowProvisionalNov = {
+      stepIndices: [1],
+      status: 'final',
+      chatModel: {
+        modelDisplayName: 'Claude Opus 5.5 (High)',
+        usage: { inputTokens: 300000, cacheReadTokens: 100000, outputTokens: 5000, responseId: 'resp_rpc_late_date' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowProvisionalNov] }) });
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:resp_rpc_late_date:2026-11-12:provisional:1.32',
+      'getTokenHistory:true'
+    ]);
+    let disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_rpc_late_date.date, '2026-11-12');
+    assert.equal(disk.calls.resp_rpc_late_date.dateIsProvisional, true);
+
+    // 2) 跨零点进入 2026-11-13 00:00:03，但 RPC 仍无真实时间（依然是 provisional）：不得产生跨零点无效重传
+    events.length = 0;
+    fakeNow = new Date(2026, 10, 13, 0, 0, 3).getTime();
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowProvisionalNov] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '仍为临时日期时跨零点轮询不得误触发重复入账');
+
+    // 3) RPC 后补真实日期 2026-10-28（Token 与 $1.32 费用完全相同，且无本地 transcript.jsonl）：渲染层必须识别日期来源提升并重传落盘！
+    events.length = 0;
+    fakeNow += 3500;
+    const rowAuthoritativeOct = {
+      ...rowProvisionalNov,
+      created_at: '2026-10-28T09:00:00Z'
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct] }) });
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:resp_rpc_late_date:2026-10-28:created_at:1.32',
+      'getTokenHistory:true'
+    ], 'RPC 补齐真实日期后必须触发单次重传并刷新历史');
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_rpc_late_date.date, '2026-10-28');
+    assert.equal(disk.calls.resp_rpc_late_date.dateIsProvisional, false);
+    assert.equal(disk.calls.resp_rpc_late_date.costUSD, 1.32);
+
+    // 4) 后续相同轮询稳定零重发
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // 5) 跨调价日回拨（临时 2026-12-02 $1.22 -> RPC 后补真实 2026-11-25 $0.61，费用下降）：同样重传 1 次并将 $0.61 落盘，后续稳定零重发
+    events.length = 0;
+    fakeNow = new Date(2026, 11, 2, 10, 0, 0).getTime(); // 2026-12-02
+    const rowCarbonProvDec = {
+      stepIndices: [2],
+      status: 'final',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 250000, cacheReadTokens: 100000, outputTokens: 10000, responseId: 'resp_rpc_rate_drop' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    h.tick();
+    if (h.scans.length > 1) h.finishScan(h.scans.length - 1);
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct, rowCarbonProvDec] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_rpc_rate_drop:2026-12-02:provisional:1.22',
+      'getTokenHistory:true'
+    ]);
+
+    events.length = 0;
+    fakeNow += 5000;
+    const rowCarbonAuthNov = {
+      ...rowCarbonProvDec,
+      created_at: '2026-11-25T10:00:00Z'
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct, rowCarbonAuthNov] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_rpc_rate_drop:2026-11-25:created_at:0.61',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_rpc_rate_drop.date, '2026-11-25');
+    assert.equal(disk.calls.resp_rpc_rate_drop.costUSD, 0.61);
+
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct, rowCarbonAuthNov] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '费用随真实日期下调落盘后，后续轮询不得因旧高价水位误判或重发');
+  } finally {
+    Date.now = origDateNow;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    api.dispose();
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+  }
+});
+
+test('[P3] provisional Carbon call crossing 11-30 -> 12-01 rate-hike midnight does not trigger spurious cost-growth re-send', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { recordModelCalls } = require('./meter-collector');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-renderer-prov-rate-midnight-'));
+  const ledgerPath = path.join(tempDir, 'pricing_ledger_v1.json');
+  const prevWindow = globalThis.window;
+  const origDateNow = Date.now;
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = new Date(2026, 10, 30, 23, 59, 58).getTime(); // 本地 2026-11-30 23:59:58
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  globalThis.window = h.sandbox.window;
+  Date.now = () => fakeNow;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const desc = calls.map(c => `${c.callId}:${c.date}:${c.dateSource || 'none'}:${c.costUSD}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      const res = recordModelCalls(calls, { agDir: tempDir });
+      return Promise.resolve({ ok: res.ok, changed: res.changed, error: res.error, phase: res.phase });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-30 23:59:59',
+          summary: { grandTotalTokens: 360000, todayTokens: 360000 },
+          dailyMap: { '2026-11-30': { total: 360000, input: 250000, cache: 100000, output: 10000, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // 1) 2026-11-30 23:59:58 首次观测无时间戳 Carbon 调用：按 11-30 费率 ($0.61) 记临时日期并落盘
+    const rowCarbonProv = {
+      stepIndices: [1],
+      status: 'final',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 250000, cacheReadTokens: 100000, outputTokens: 10000, responseId: 'resp_carbon_prov_midnight' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonProv] }) });
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:resp_carbon_prov_midnight:2026-11-30:provisional:0.61',
+      'getTokenHistory:true'
+    ]);
+    assert.equal(api.snapshot().sessionCostTotal, 0.61);
+
+    // 2) 跨过 11-30 -> 12-01 调价零点（未锚定时按 12-01 会变成 $1.22）：仍为临时日期且用量未变，不得触发任何重传，面板费用保持 $0.61
+    events.length = 0;
+    fakeNow = new Date(2026, 11, 1, 0, 0, 3).getTime(); // 本地 2026-12-01 00:00:03
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonProv] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '仍为临时日期跨过 Carbon 调价零点时不得因费率上涨触发无效重传');
+    assert.equal(api.snapshot().sessionCostTotal, 0.61);
+
+    // 3) 切换会话清空 sessionCallsMap 后再切回原会话（仍在 12-01）：凭 syncedFinalMap 锚定 11-30 临时日期，依然零重传且会话费用保持 $0.61
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+
+    h.sandbox.location.pathname = '/c/11111111-1111-1111-1111-111111111111';
+    fakeNow += 3500;
+    h.tick();
+    if (h.scans.length > 0) h.finishScan(h.scans.length - 1);
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonProv] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '跨路由切回后仍不得因 12-01 调价触发无效重传');
+    assert.equal(api.snapshot().sessionCostTotal, 0.61);
+
+    // 4) 同在 12-01 仍为临时日期时，若真实用量增长（如配比变化 + 输出增至 15k）：必须按锚定的 11-30 费率 ($0.755) 重传更新，而非 12-01 费率
+    events.length = 0;
+    fakeNow += 3500;
+    const rowCarbonProgressedUsage = {
+      ...rowCarbonProv,
+      chatModel: {
+        ...rowCarbonProv.chatModel,
+        usage: { inputTokens: 300000, cacheReadTokens: 50000, outputTokens: 15000, responseId: 'resp_carbon_prov_midnight' }
+      }
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonProgressedUsage] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_carbon_prov_midnight:2026-11-30:provisional:0.755',
+      'getTokenHistory:true'
+    ]);
+    let disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_carbon_prov_midnight.date, '2026-11-30');
+    assert.equal(disk.calls.resp_carbon_prov_midnight.costUSD, 0.755);
+
+    // 5) 随后 RPC 补齐真实本地 2026-12-01 时间戳：日期来源升阶 (1 -> 3)，按 12-01 费率 ($1.51) 校准落盘，后续轮询零重发
+    events.length = 0;
+    fakeNow += 5000;
+    const rowCarbonAuthDec = {
+      ...rowCarbonProgressedUsage,
+      created_at: new realDate(2026, 11, 1, 0, 0, 1).toISOString()
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonAuthDec] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_carbon_prov_midnight:2026-12-01:created_at:1.51',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_carbon_prov_midnight.date, '2026-12-01');
+    assert.equal(disk.calls.resp_carbon_prov_midnight.dateIsProvisional, false);
+    assert.equal(disk.calls.resp_carbon_prov_midnight.costUSD, 1.51);
+
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonAuthDec] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+  } finally {
+    Date.now = origDateNow;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    api.dispose();
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+  }
+});
+
+test('[P2] same-rank authoritative created_at revision updates persisted ledger date & costUSD and settles cleanly', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { recordModelCalls } = require('./meter-collector');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-renderer-same-rank-date-'));
+  const ledgerPath = path.join(tempDir, 'pricing_ledger_v1.json');
+  const prevWindow = globalThis.window;
+  const origDateNow = Date.now;
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = new Date(2026, 11, 1, 12, 0, 0).getTime();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  globalThis.window = h.sandbox.window;
+  Date.now = () => fakeNow;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const res = recordModelCalls(calls, { agDir: tempDir });
+      const desc = calls.map(c => `${c.callId}:${c.date}:${c.costUSD}:changed=${res.changed}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      return Promise.resolve({ ok: res.ok, changed: res.changed, error: res.error, phase: res.phase, code: res.code });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-12-01 12:00:00',
+          summary: { grandTotalTokens: 360000, todayTokens: 360000 },
+          dailyMap: { '2026-12-01': { total: 360000, input: 250000, cache: 100000, output: 10000, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // 1) 初始权威时间 2026-11-12 入账 ($0.61, sourceRevision: 1)
+    const rowNov = {
+      stepIndices: [1],
+      status: 'final',
+      sourceRevision: 1,
+      created_at: '2026-11-12T10:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 250000, cacheReadTokens: 100000, outputTokens: 10000, responseId: 'resp_same_rank_e2e' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNov] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_same_rank_e2e:2026-11-12:0.61:changed=true',
+      'getTokenHistory:true'
+    ]);
+    let disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.date, '2026-11-12');
+    assert.equal(disk.calls.resp_same_rank_e2e.costUSD, 0.61);
+
+    // 2) 同等级 created_at 正向修正至 2026-12-01 (sourceRevision: 2, 同用量 360k)：后端返回 changed=true 并更新磁盘为 12-01 / $1.22
+    events.length = 0;
+    fakeNow += 6000;
+    const rowDec = {
+      ...rowNov,
+      sourceRevision: 2,
+      created_at: '2026-12-01T10:00:00Z'
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowDec] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_same_rank_e2e:2026-12-01:1.22:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.date, '2026-12-01');
+    assert.equal(disk.calls.resp_same_rank_e2e.costUSD, 1.22);
+    assert.equal(api.snapshot().sessionCostTotal, 1.22);
+
+    // 2b) 新修正 -> 同用量旧包 (rev=1 及无版本旧包) -> 重复旧包（含切路由再切回）：严禁重发或回滚日期/费用
+    const rowNovUnversioned = { ...rowNov };
+    delete rowNovUnversioned.sourceRevision;
+    for (const staleVariant of [rowNov, rowNov, rowNovUnversioned]) {
+      events.length = 0;
+      fakeNow += 3500;
+      h.tick();
+      h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [staleVariant] }) });
+      await flushAsync();
+      assert.deepEqual(events, [], '同用量旧包及重复旧包不得触发重传');
+      assert.equal(api.snapshot().sessionCostTotal, 1.22);
+    }
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    h.sandbox.location.pathname = '/c/11111111-1111-1111-1111-111111111111';
+    fakeNow += 3500;
+    h.tick();
+    if (h.scans.length > 0) h.finishScan(h.scans.length - 1);
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovUnversioned] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '跨路由切回后收到同用量旧包依然零重发、零回滚');
+    assert.equal(api.snapshot().sessionCostTotal, 1.22);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.date, '2026-12-01');
+    assert.equal(disk.calls.resp_same_rank_e2e.costUSD, 1.22);
+
+    // 3) 同等级 created_at 逆向修正回 2026-11-15 (sourceRevision: 3)：双向校准更新磁盘回 2026-11-15 / $0.61，随后迟到 rev=2 零重发
+    events.length = 0;
+    fakeNow += 6000;
+    const rowNovRevised = {
+      ...rowNov,
+      sourceRevision: 3,
+      created_at: '2026-11-15T10:00:00Z'
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_same_rank_e2e:2026-11-15:0.61:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.date, '2026-11-15');
+    assert.equal(disk.calls.resp_same_rank_e2e.costUSD, 0.61);
+    assert.equal(api.snapshot().sessionCostTotal, 0.61);
+
+    for (const staleAfterRev3 of [rowDec, rowDec]) {
+      events.length = 0;
+      fakeNow += 3500;
+      h.tick();
+      h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [staleAfterRev3] }) });
+      await flushAsync();
+      assert.deepEqual(events, [], '逆向校准后迟到的高费率旧修订包不得触发重发');
+      assert.equal(api.snapshot().sessionCostTotal, 0.61);
+    }
+
+    // 4) 无版本冲突交替场景 ([11-12, 12-01, 11-12, 12-01])：保持首个已确认权威日期，零反复重发
+    events.length = 0;
+    fakeNow += 6000;
+    const rowUnvA = {
+      stepIndices: [2],
+      status: 'final',
+      created_at: '2026-11-12T10:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 250000, cacheReadTokens: 100000, outputTokens: 10000, responseId: 'resp_unv_alt' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    const rowUnvB = { ...rowUnvA, created_at: '2026-12-01T10:00:00Z' };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, rowUnvA] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_unv_alt:2026-11-12:0.61:changed=true',
+      'getTokenHistory:true'
+    ]);
+    for (const alt of [rowUnvB, rowUnvA, rowUnvB]) {
+      events.length = 0;
+      fakeNow += 3500;
+      h.tick();
+      h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, alt] }) });
+      await flushAsync();
+      assert.deepEqual(events, [], '两版无版本同用量快照交替到达时不得重发震荡');
+      assert.equal(api.snapshot().sessionCostTotal, 1.22); // 0.61 + 0.61
+    }
+
+    // 5) “总量增加、输出量下降”交叉变化前后端联动：input=100k,out=20k,tot=120k,11-12 ($0.40) -> input=130k,out=10k,tot=140k,12-01 ($0.72)
+    fakeNow += 6000;
+    const rowCross1 = {
+      stepIndices: [3],
+      status: 'final',
+      created_at: '2026-11-12T10:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 100000, cacheReadTokens: 0, outputTokens: 20000, responseId: 'resp_cross_e2e' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    const rowCross2 = {
+      ...rowCross1,
+      created_at: '2026-12-01T10:00:00Z',
+      chatModel: {
+        ...rowCross1.chatModel,
+        usage: { inputTokens: 130000, cacheReadTokens: 0, outputTokens: 10000, responseId: 'resp_cross_e2e' }
+      }
+    };
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, rowUnvA, rowCross1] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_cross_e2e:2026-11-12:0.4:changed=true',
+      'getTokenHistory:true'
+    ]);
+
+    fakeNow += 6000;
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, rowUnvA, rowCross2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_cross_e2e:2026-12-01:0.72:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_cross_e2e.inputTokens, 130000);
+    assert.equal(disk.calls.resp_cross_e2e.outputTokens, 10000);
+    assert.equal(disk.calls.resp_cross_e2e.totalTokens, 140000);
+    assert.equal(disk.calls.resp_cross_e2e.date, '2026-12-01');
+    assert.equal(disk.calls.resp_cross_e2e.costUSD, 0.72);
+    assert.equal(Number(api.snapshot().sessionCostTotal.toFixed(4)), 1.94); // 0.61 + 0.61 + 0.72
+
+    // 迟到的旧交叉快照 (120k/20k, 11-12) 到达时零重发，磁盘与面板完全一致
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, rowUnvA, rowCross1] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_cross_e2e.totalTokens, 140000);
+    assert.equal(disk.calls.resp_cross_e2e.outputTokens, 10000);
+    assert.equal(disk.calls.resp_cross_e2e.date, '2026-12-01');
+    assert.equal(disk.calls.resp_cross_e2e.costUSD, 0.72);
+
+    // 6a) 仅显式修订号提升 (sourceRevision: 3 -> 4，日期/总量/输出均未变)：提交 1 次更新账本版本，随后零重发
+    fakeNow += 6000;
+    const rowNovRev4 = { ...rowNovRevised, sourceRevision: 4 };
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_same_rank_e2e:2026-11-15:0.61:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.sourceRevision, 4);
+
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '仅修订号提升提交确认后，后续相同修订号轮询必须零重发');
+
+    // 6b) 同总量/输出量下输入与缓存重新分配导致费用下降 (rev=1: inp=1M,cap=0,$2.10 -> rev=2: inp=100k,cap=900k,$0.39) 及迟到旧版防护
+    fakeNow += 6000;
+    const rowSplitRev1 = {
+      stepIndices: [4],
+      status: 'final',
+      sourceRevision: 1,
+      created_at: '2026-11-12T10:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 1000000, cacheReadTokens: 0, outputTokens: 10000, responseId: 'resp_split_rebalance' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 1048576 } }
+      }
+    };
+    const rowSplitRev2 = {
+      ...rowSplitRev1,
+      sourceRevision: 2,
+      chatModel: {
+        ...rowSplitRev1.chatModel,
+        usage: { inputTokens: 100000, cacheReadTokens: 900000, outputTokens: 10000, responseId: 'resp_split_rebalance' }
+      }
+    };
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2, rowSplitRev1] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_split_rebalance:2026-11-12:2.1:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_split_rebalance.inputTokens, 1000000);
+    assert.equal(disk.calls.resp_split_rebalance.cacheTokens, 0);
+    assert.equal(disk.calls.resp_split_rebalance.costUSD, 2.1);
+
+    fakeNow += 6000;
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2, rowSplitRev2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_split_rebalance:2026-11-12:0.39:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_split_rebalance.inputTokens, 100000);
+    assert.equal(disk.calls.resp_split_rebalance.cacheTokens, 900000);
+    assert.equal(disk.calls.resp_split_rebalance.costUSD, 0.39);
+    assert.equal(disk.calls.resp_split_rebalance.sourceRevision, 2);
+    assert.equal(Number(api.snapshot().sessionCostTotal.toFixed(4)), 2.33); // 0.61 + 0.61 + 0.72 + 0.39
+
+    // 迟到的高费用旧版本 rev=1 ($2.10) 在同路由与跨路由切回后均不得覆盖或重发
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2, rowSplitRev1] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+    assert.equal(Number(api.snapshot().sessionCostTotal.toFixed(4)), 2.33);
+
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    h.sandbox.location.pathname = '/c/11111111-1111-1111-1111-111111111111';
+    fakeNow += 3500;
+    h.tick();
+    if (h.scans.length > 0) h.finishScan(h.scans.length - 1);
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2, rowSplitRev1] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '跨路由切回后收到同总量高费用旧版本 rev=1 仍不得覆盖或重发');
+    assert.equal(Number(api.snapshot().sessionCostTotal.toFixed(4)), 2.33);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_split_rebalance.inputTokens, 100000);
+    assert.equal(disk.calls.resp_split_rebalance.cacheTokens, 900000);
+    assert.equal(disk.calls.resp_split_rebalance.costUSD, 0.39);
+  } finally {
+    Date.now = origDateNow;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    api.dispose();
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+  }
+});

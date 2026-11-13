@@ -26,7 +26,7 @@ function safeWriteJsonSync(targetPath, data, options = {}) {
   try {
     fsImpl.mkdirSync(dir, { recursive: true });
   } catch (err) {
-    return { ok: false, phase: 'mkdir', error: err?.message || '创建父目录失败', path: resolved };
+    return { ok: false, phase: 'mkdir', ...(err?.code ? { code: err.code } : {}), error: err?.message || '创建父目录失败', path: resolved };
   }
 
   // 目标路径如果已存在且为目录，直接拒绝以防破坏
@@ -34,11 +34,11 @@ function safeWriteJsonSync(targetPath, data, options = {}) {
     if (fsImpl.existsSync(resolved)) {
       const st = fsImpl.statSync(resolved);
       if (st.isDirectory()) {
-        return { ok: false, phase: 'validate_target', error: '目标路径是一个目录，无法写入文件', path: resolved };
+        return { ok: false, phase: 'validate_target', code: 'EISDIR', error: '目标路径是一个目录，无法写入文件', path: resolved };
       }
     }
   } catch (err) {
-    return { ok: false, phase: 'stat', error: err?.message || '检查目标路径失败', path: resolved };
+    return { ok: false, phase: 'stat', ...(err?.code ? { code: err.code } : {}), error: err?.message || '检查目标路径失败', path: resolved };
   }
 
   // 序列化
@@ -61,7 +61,7 @@ function safeWriteJsonSync(targetPath, data, options = {}) {
     fsImpl.writeFileSync(tmpPath, serialized, 'utf8');
   } catch (err) {
     try { if (fsImpl.existsSync(tmpPath)) fsImpl.unlinkSync(tmpPath); } catch {}
-    return { ok: false, phase: 'write_temp', error: err?.message || '写入临时文件失败', path: resolved };
+    return { ok: false, phase: 'write_temp', ...(err?.code ? { code: err.code } : {}), error: err?.message || '写入临时文件失败', path: resolved };
   }
 
   // 2. 替换前校验（pre-verify）
@@ -76,7 +76,7 @@ function safeWriteJsonSync(targetPath, data, options = {}) {
     }
   } catch (err) {
     try { if (fsImpl.existsSync(tmpPath)) fsImpl.unlinkSync(tmpPath); } catch {}
-    return { ok: false, phase: 'pre_verify', error: err?.message || '临时文件校验失败', path: resolved };
+    return { ok: false, phase: 'pre_verify', ...(err?.code ? { code: err.code } : {}), error: err?.message || '临时文件校验失败', path: resolved };
   }
 
   // 3. 重命名替换目标文件（renameSync）
@@ -92,7 +92,7 @@ function safeWriteJsonSync(targetPath, data, options = {}) {
     } catch {
       // 故意忽略清理错误，保持 renameErr 为主错误
     }
-    return { ok: false, phase: 'rename', error: renameErr?.message || '重命名替换目标文件失败', path: resolved };
+    return { ok: false, phase: 'rename', ...(renameErr?.code ? { code: renameErr.code } : {}), error: renameErr?.message || '重命名替换目标文件失败', path: resolved };
   }
 
   // 4. 替换后校验（post-verify）
@@ -107,7 +107,7 @@ function safeWriteJsonSync(targetPath, data, options = {}) {
     }
   } catch (postErr) {
     // 此时目标已被替换，明确报告 post_verify 阶段失败，不虚报回滚成功
-    return { ok: false, phase: 'post_verify', error: postErr?.message || '替换后读回校验失败', path: resolved };
+    return { ok: false, phase: 'post_verify', ...(postErr?.code ? { code: postErr.code } : {}), error: postErr?.message || '替换后读回校验失败', path: resolved };
   }
 
   return {
@@ -127,7 +127,26 @@ function safeReadJsonSync(targetPath, fallbackValue = null, options = {}) {
   }
 
   const resolved = path.resolve(targetPath);
-  if (!fsImpl.existsSync(resolved)) {
+  if (typeof fsImpl.statSync === 'function') {
+    try {
+      const st = fsImpl.statSync(resolved);
+      if (st && typeof st.isDirectory === 'function' && st.isDirectory()) {
+        return { ok: false, data: fallbackValue, exists: true, corrupted: false, code: 'EISDIR', error: '目标路径是一个目录，无法作为文件读取' };
+      }
+    } catch (statErr) {
+      if (statErr && statErr.code === 'ENOENT') {
+        return { ok: true, data: fallbackValue, exists: false, corrupted: false };
+      }
+      return {
+        ok: false,
+        data: fallbackValue,
+        exists: true,
+        corrupted: false,
+        code: statErr?.code,
+        error: statErr?.message || '检查目标文件状态失败'
+      };
+    }
+  } else if (!fsImpl.existsSync(resolved)) {
     return { ok: true, data: fallbackValue, exists: false, corrupted: false };
   }
 
@@ -135,7 +154,7 @@ function safeReadJsonSync(targetPath, fallbackValue = null, options = {}) {
   try {
     content = fsImpl.readFileSync(resolved, 'utf8');
   } catch (err) {
-    return { ok: false, data: fallbackValue, exists: true, corrupted: false, error: err?.message || '读取文件失败' };
+    return { ok: false, data: fallbackValue, exists: true, corrupted: false, code: err?.code, error: err?.message || '读取文件失败' };
   }
 
   if (!content.trim()) {
