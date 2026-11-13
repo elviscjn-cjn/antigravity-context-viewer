@@ -2073,3 +2073,31 @@ console.log('ELECTRON_ASAR_VERIFIED_SUCCESS');
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('专项复核 16：沙箱 preload 环境下汉化门禁回退到 ipcRenderer.sendSync 且默认 fail-closed', async () => {
+  const vm = require('vm');
+  const { generateChinesePreloadCode, validateSyntax } = require('./modular-installer');
+  const code = generateChinesePreloadCode('{"exact":{}}', 'globalThis.__TEST_CHINESE_EXECUTED__ = true;');
+  assert.ok(validateSyntax(code, 'preload.js'), '生成的沙箱 preload 代码必须合法');
+
+  const runInSandbox = (ipcReturnValue) => {
+    const sandbox = {
+      require: () => { throw new Error('sandboxed require blocked'); },
+      process: { platform: 'win32', env: {} },
+      electron_1: {
+        ipcRenderer: {
+          sendSync: (channel) => (channel === 'context-meter:is-chinese-enabled' ? ipcReturnValue : false)
+        }
+      },
+      window: {},
+      globalThis: {}
+    };
+    sandbox.globalThis = sandbox;
+    vm.runInNewContext(code, sandbox);
+    return Boolean(sandbox.__TEST_CHINESE_EXECUTED__);
+  };
+
+  assert.equal(runInSandbox(false), false, 'ipcRenderer.sendSync 返回 false 时不得执行汉化注入');
+  assert.equal(runInSandbox(undefined), false, 'ipcRenderer.sendSync 返回非 true 值时必须保持 fail-closed');
+  assert.equal(runInSandbox(true), true, '仅当 ipcRenderer.sendSync 明确返回 true 时才允许执行汉化注入');
+});

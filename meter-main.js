@@ -367,6 +367,23 @@ function registerIpcOnce() {
   ipcMain.handle('context-meter:modules-status', handleModulesStatus);
   ipcMain.handle('context-meter:toggle-module', handleToggleModule);
 
+  if (typeof ipcMain.on === 'function') {
+    ipcMain.on('context-meter:is-chinese-enabled', (event) => {
+      const url = isLocalMainFrameSender(event);
+      if (!url) {
+        event.returnValue = false;
+        return;
+      }
+      try {
+        const { loadModulesConfig } = require('./modules-config');
+        const cfg = loadModulesConfig();
+        event.returnValue = Boolean(cfg?.modules?.chinese?.enabled);
+      } catch {
+        event.returnValue = false;
+      }
+    });
+  }
+
   ipcMain.handle('context-meter:test-proxy', async (event, proxyUrl) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
