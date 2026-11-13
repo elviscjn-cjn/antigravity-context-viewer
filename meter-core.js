@@ -12,8 +12,9 @@
 
   function getModelPoolKey(raw) {
     if (!raw) return 'unknown';
-    const s = String(raw).toLowerCase();
-    if (s.includes('carbon') || s.includes('gemini-4-carbon')) return 'gemini-4-carbon';
+    const s = String(raw).trim().toLowerCase();
+    if (s.includes('hydrogen') || s.includes('gemini-4-hydrogen')) return 'gemini-4-hydrogen';
+    if (s.includes('carbon') || s.includes('gemini-4-carbon') || s === 'gemini-pro-orchestrator') return 'gemini-4-carbon';
     if (s.includes('argon') || s.includes('gemini-4-argon')) return 'gemini-4-argon';
     if (s.includes('flash') || s.includes('gemini-3.8-flash')) return 'gemini-3.8-flash';
     if (s.includes('opus') || s.includes('claude-opus')) return 'claude-opus-5-5';
@@ -70,6 +71,7 @@
 
     const qi = matched.quotaInfo || {};
     const poolNames = {
+      'gemini-4-hydrogen': 'Gemini 4 Hydrogen 配额池',
       'gemini-4-carbon': 'Gemini 4 Carbon 配额池',
       'gemini-4-argon': 'Gemini 4 Argon 配额池',
       'gemini-3.8-flash': 'Gemini 3.8 Flash 配额池',
@@ -423,8 +425,9 @@
 
   // 官方 Developer API Standard 公开费率表 (USD / 百万 Token)
   // 来源: https://ai.google.dev/gemini-api/docs/pricing , https://aistudio.google.com/docs/pricing
+  //       https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-hydrogen/
   //       https://platform.claude.com/docs/en/about-claude/pricing
-  // 核对日期: 2026-11-12
+  // 核对日期: 2026-11-13
   const GEMINI_PRICING_TABLE = {
     'gemini-3.8-flash': [
       {
@@ -438,6 +441,13 @@
         inputPerMillion: 1.50,
         outputPerMillion: 7.50,
         cacheReadPerMillion: 0.15
+      }
+    ],
+    'gemini-4-hydrogen': [
+      {
+        inputPerMillion: 1.50,
+        outputPerMillion: 7.50,
+        cacheReadPerMillion: 0.075
       }
     ],
     'gemini-4-carbon': [
@@ -530,7 +540,8 @@
     if (!raw || typeof raw !== 'string') return null;
     const str = raw.trim().toLowerCase();
     if (str.includes('3.8-flash') || str.includes('3.8 flash') || str.includes('flash-n')) return 'gemini-3.8-flash';
-    if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon')) return 'gemini-4-carbon';
+    if (str.includes('4-hydrogen') || str.includes('4 hydrogen') || str.includes('hydrogen')) return 'gemini-4-hydrogen';
+    if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || str === 'gemini-pro-orchestrator') return 'gemini-4-carbon';
     if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon')) return 'gemini-4-argon';
     if (str.includes('3.1-pro') || str.includes('3.1 pro')) return 'gemini-3.1-pro-preview';
     if (str.includes('3.5-flash-lite') || str.includes('3.5 flash-lite') || str.includes('flash-lite')) return 'gemini-3.5-flash-lite';
@@ -1048,6 +1059,7 @@
 
     const modelNameMap = {
       'gemini-3.8-flash': 'Gemini 3.8 Flash Standard',
+      'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
       'gemini-4-carbon': 'Gemini 4 Carbon',
       'gemini-4-argon': 'Gemini 4 Argon',
       'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',

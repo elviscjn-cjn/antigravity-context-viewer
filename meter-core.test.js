@@ -3284,3 +3284,182 @@ test('Codex 审阅回归：resolveModelQuota 非空占位 modelId 不遮蔽 mode
     }
   }
 });
+
+test('Gemini 4 Hydrogen 四档模型识别、1M 统一单档计价、配额池解析与 Orchestrator 边界回归', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const { resolveModelQuota, calculateRequestApiCost } = require('./meter-core');
+  const { loadPricingLedger } = require('./meter-collector');
+
+  const multiPoolConfigs = [
+    {
+      modelId: 'MODEL_PLACEHOLDER_M501',
+      modelOrAlias: { model: 'gemini-4-hydrogen-xhigh' },
+      label: 'XHigh',
+      quotaInfo: { remainingFraction: 0.86, resetTime: '2026-11-13T06:54:16Z' }
+    },
+    {
+      modelId: 'MODEL_PLACEHOLDER_M37',
+      modelOrAlias: { model: 'gemini-4-carbon-high' },
+      label: 'Gemini 4 Carbon (High)',
+      quotaInfo: { remainingFraction: 0.86, resetTime: '2026-11-13T06:54:16Z' }
+    },
+    {
+      modelId: 'MODEL_PLACEHOLDER_M38',
+      modelOrAlias: { model: 'gemini-4-argon-high' },
+      label: 'Gemini 4 Argon (High)',
+      quotaInfo: { remainingFraction: 0.50, resetTime: '2026-11-13T06:54:16Z' }
+    }
+  ];
+
+  // 1) 线上 4 档 Hydrogen 模型 ID 与展示名（含新增 XHigh 思考档）识别及配额池家族回退归类
+  const hydrogenVariants = [
+    'gemini-4-hydrogen',
+    'gemini-4-hydrogen-low',
+    'gemini-4-hydrogen-medium',
+    'gemini-4-hydrogen-high',
+    'gemini-4-hydrogen-xhigh',
+    'Gemini 4 Hydrogen (Low)',
+    'Gemini 4 Hydrogen (Medium)',
+    'Gemini 4 Hydrogen (High)',
+    'Gemini 4 Hydrogen (XHigh)'
+  ];
+  for (const variant of hydrogenVariants) {
+    assert.equal(normalizeModelId(variant), 'gemini-4-hydrogen', `normalizeModelId 应识别 ${variant}`);
+    const q = resolveModelQuota(variant, multiPoolConfigs);
+    assert.ok(q, `resolveModelQuota 应匹配 ${variant}`);
+    assert.equal(q.poolKey, 'gemini-4-hydrogen', `poolKey 应归类 ${variant}`);
+    assert.equal(q.poolName, 'Gemini 4 Hydrogen 配额池');
+    assert.equal(q.remainingFraction, 0.86);
+  }
+
+  // 2) Orchestrator 原始 ID 与边界：裸 gemini-pro-orchestrator 归入 Carbon，-argon 归入 Argon，未知后缀保持未计价
+  assert.equal(normalizeModelId('gemini-pro-orchestrator'), 'gemini-4-carbon');
+  assert.equal(resolveModelQuota('gemini-pro-orchestrator', multiPoolConfigs).poolKey, 'gemini-4-carbon');
+  assert.equal(normalizeModelId('Orchestrator (Carbon)'), 'gemini-4-carbon');
+  assert.equal(normalizeModelId('gemini-pro-orchestrator-argon'), 'gemini-4-argon');
+  assert.equal(resolveModelQuota('gemini-pro-orchestrator-argon', multiPoolConfigs).poolKey, 'gemini-4-argon');
+  assert.equal(resolveModelQuota('gemini-pro-orchestrator-argon', multiPoolConfigs).remainingFraction, 0.50);
+  assert.equal(normalizeModelId('Orchestrator (Argon)'), 'gemini-4-argon');
+  assert.equal(normalizeModelId('gemini-pro-orchestrator-xenon'), null, '未知 Orchestrator 变体不得误套 Carbon 费率');
+  assert.equal(resolveModelQuota('gemini-pro-orchestrator-xenon', multiPoolConfigs), null);
+
+  // 3) 1M 窗口统一单档费率（$1.50 / $7.50 / $0.075 per 1M）：超 200K 上下文及跨年均无阶梯跳涨
+  //    400k input ($0.60) + 200k cache ($0.015) + 20k output ($0.15) = $0.765
+  const costNov = calculateRequestApiCost({
+    modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+    inputTokens: 400000,
+    cacheReadTokens: 200000,
+    outputTokens: 20000,
+    thinkingTokens: 12000,
+    date: '2026-11-13'
+  });
+  assert.equal(costNov.isPriced, true);
+  assert.equal(costNov.modelKey, 'gemini-4-hydrogen');
+  assert.equal(costNov.costUSD, 0.765);
+
+  const costJan = calculateRequestApiCost({
+    model: 'gemini-4-hydrogen-high',
+    inputTokens: 400000,
+    cacheReadTokens: 200000,
+    outputTokens: 20000,
+    date: '2027-01-15'
+  });
+  assert.equal(costJan.isPriced, true);
+  assert.equal(costJan.costUSD, 0.765);
+
+  const refHydrogen = calculateReferenceModelCost({
+    inputTokens: 400000,
+    cacheTokens: 200000,
+    outputTokens: 20000,
+    totalTokens: 620000
+  }, 'gemini-4-hydrogen', { pricingDate: '2026-11-13', mode: 'all' });
+  assert.equal(refHydrogen.modelDisplayName, 'Gemini 4 Hydrogen');
+  assert.equal(refHydrogen.totalCostUSD, 0.765);
+
+  // 4) resolveModelQuota：非空占位 modelId 下优先精确命中对应档位的 modelOrAlias.model
+  const hydrogenTierConfigs = [
+    {
+      modelId: 'MODEL_PLACEHOLDER_M501',
+      modelOrAlias: { model: 'gemini-4-hydrogen-xhigh' },
+      label: 'Gemini 4 Hydrogen (XHigh)',
+      quotaInfo: { remainingFraction: 0.86, resetTime: '2026-11-13T06:54:16Z' }
+    },
+    {
+      modelId: 'MODEL_PLACEHOLDER_M502',
+      modelOrAlias: { model: 'gemini-4-hydrogen-low' },
+      label: 'Gemini 4 Hydrogen (Low)',
+      quotaInfo: { remainingFraction: 0.42, resetTime: '2026-11-13T06:54:16Z' }
+    }
+  ];
+  const exactLowQuota = resolveModelQuota('gemini-4-hydrogen-low', hydrogenTierConfigs);
+  assert.ok(exactLowQuota);
+  assert.equal(exactLowQuota.poolKey, 'gemini-4-hydrogen');
+  assert.equal(exactLowQuota.poolName, 'Gemini 4 Hydrogen 配额池');
+  assert.equal(exactLowQuota.label, 'Gemini 4 Hydrogen (Low)');
+  assert.equal(exactLowQuota.remainingFraction, 0.42);
+
+  // 5) 历史账本兼容重算：旧版未收录时落盘的 isPriced=false Hydrogen 记录升级后自动识别重算
+  const agDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-hydrogen-upgrade-'));
+  const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-hydrogen-upgrade-cli-'));
+  try {
+    fs.writeFileSync(
+      path.join(agDir, 'pricing_ledger_v1.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        calls: {
+          resp_h2_old: {
+            callId: 'resp_h2_old',
+            source: 'desktop',
+            cascadeId: '11111111-aaaa-4444-8888-bbbbbbbbbbbb',
+            stepIndex: 1,
+            model: 'Gemini 4 Hydrogen (XHigh)',
+            modelKey: null,
+            inputTokens: 400000,
+            cacheTokens: 200000,
+            cacheReadTokens: 200000,
+            outputTokens: 20000,
+            totalTokens: 620000,
+            status: 'final',
+            isPriced: false,
+            costUSD: 0,
+            date: '2026-11-13',
+            dateSource: 'created_at',
+            dateIsProvisional: false
+          }
+        }
+      }, null, 2),
+      'utf8'
+    );
+    const hist = await collectTokenHistoryAsync({
+      force: true,
+      agDir,
+      agCliDir: cliDir,
+      userStatus: { userTier: { name: 'Pro' }, planStatus: { availablePromptCredits: 500 } }
+    });
+    assert.equal(hist.costEstimate.pricedCostUSD, 0.765);
+    assert.equal(hist.costEstimate.unpricedTokens, 0);
+
+    // 新入账的 Hydrogen 调用直接落盘 modelKey='gemini-4-hydrogen' 与准确费用
+    const recRes = recordModelCalls([parseGeneratorCall({
+      stepIndices: [2],
+      status: 'final',
+      created_at: '2026-11-13T12:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+        responseModel: 'gemini-4-hydrogen-xhigh',
+        usage: { inputTokens: 400000, cacheReadTokens: 200000, outputTokens: 20000, responseId: 'resp_h2_new' }
+      }
+    }, '11111111-aaaa-4444-8888-bbbbbbbbbbbb', 'desktop')], { agDir });
+    assert.equal(recRes.ok, true);
+    assert.equal(recRes.changed, true);
+    const savedNew = loadPricingLedger(agDir).calls.resp_h2_new;
+    assert.equal(savedNew.modelKey, 'gemini-4-hydrogen');
+    assert.equal(savedNew.isPriced, true);
+    assert.equal(savedNew.costUSD, 0.765);
+  } finally {
+    fs.rmSync(agDir, { recursive: true, force: true });
+    fs.rmSync(cliDir, { recursive: true, force: true });
+  }
+});
