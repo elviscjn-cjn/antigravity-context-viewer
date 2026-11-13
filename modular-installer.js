@@ -145,6 +145,7 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
   return `\n${TAGS.CHINESE_START}
 (function() {
   try {
+    var _chineseEnabled = false;
     var _fs = typeof require === 'function' ? (function() { try { return require('fs'); } catch(e) { return null; } })() : null;
     var _path = typeof require === 'function' ? (function() { try { return require('path'); } catch(e) { return null; } })() : null;
     var _os = typeof require === 'function' ? (function() { try { return require('os'); } catch(e) { return null; } })() : null;
@@ -161,8 +162,16 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
           if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false) {
             return;
           }
+          _chineseEnabled = Boolean(_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === true);
         } catch(e) {}
       }
+    } else if (typeof electron_1 !== 'undefined' && electron_1 && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
+      try {
+        _chineseEnabled = electron_1.ipcRenderer.sendSync('context-meter:is-chinese-enabled') === true;
+      } catch(e) {}
+    }
+    if (!_chineseEnabled) {
+      return;
     }
 
     var _dictData = ${dictContent.trim()};
