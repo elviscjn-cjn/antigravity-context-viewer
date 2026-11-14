@@ -30,7 +30,7 @@
       const searchInput = document.createElement('input');
       searchInput.type = 'text';
       searchInput.className = 'ag-dropdown-search-input';
-      searchInput.placeholder = cfg.searchPlaceholder || '🔍 搜索...';
+      searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
       searchInput.value = kw;
       searchWrap.appendChild(searchInput);
       menu.appendChild(searchWrap);
@@ -67,7 +67,7 @@
         const allItems = cfg.getOptions();
         const selectedVal = cfg.getSelectedValue();
 
-        visibleItems = allItems.filter(it => {
+        const matchesItem = it => {
           if (!searchKey) return true;
           if (cfg.filterItem) return cfg.filterItem(it, searchKey);
           const t1 = String(it.label || '').toLowerCase();
@@ -75,17 +75,55 @@
           const t3 = String(it.code || '').toLowerCase();
           const aliases = (it.aliases || []).map(a => String(a).toLowerCase());
           return t1.includes(searchKey) || t2.includes(searchKey) || t3.includes(searchKey) || aliases.some(a => a.includes(searchKey));
-        });
+        };
+
+        // 过滤可选项；组标题仅在后续存在命中项时显示且不可选
+        const renderEntries = [];
+        let pendingHeader = null;
+        visibleItems = [];
+        for (const it of allItems) {
+          if (it && it.isGroupHeader) {
+            pendingHeader = it;
+            continue;
+          }
+          if (matchesItem(it)) {
+            if (pendingHeader) {
+              renderEntries.push(pendingHeader);
+              pendingHeader = null;
+            }
+            renderEntries.push(it);
+            visibleItems.push(it);
+          }
+        }
 
         if (!visibleItems.length) {
           const emptyDiv = document.createElement('div');
           emptyDiv.style.cssText = 'padding:10px;text-align:center;color:var(--ag-text-muted);font-size:11px';
-          emptyDiv.textContent = cfg.emptyText || '未找到匹配项';
+          emptyDiv.textContent = (typeof cfg.emptyText === 'function' ? cfg.emptyText() : cfg.emptyText) || t('dropdown.empty');
           listContainer.appendChild(emptyDiv);
           return;
         }
 
-        visibleItems.forEach((opt, idx) => {
+        let selectableIdx = 0;
+        renderEntries.forEach((opt) => {
+          if (opt && opt.isGroupHeader) {
+            const groupEl = document.createElement('div');
+            groupEl.className = 'ag-dropdown-group-title';
+            groupEl.setAttribute?.('role', 'presentation');
+            if (opt.dotColor) {
+              const dot = document.createElement('span');
+              dot.className = 'ag-vendor-dot';
+              dot.style.backgroundColor = opt.dotColor;
+              groupEl.appendChild(dot);
+            }
+            const lbl = document.createElement('span');
+            lbl.textContent = opt.label || '';
+            groupEl.appendChild(lbl);
+            listContainer.appendChild(groupEl);
+            return;
+          }
+
+          const idx = selectableIdx++;
           const itemEl = document.createElement('div');
           const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
           itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
@@ -93,6 +131,14 @@
 
           const leftSpan = document.createElement('span');
           leftSpan.textContent = opt.displayLeft || opt.label;
+          itemEl.appendChild(leftSpan);
+
+          if (opt.badgeText) {
+            const b = document.createElement('span');
+            b.className = 'ag-dropdown-badge';
+            b.textContent = opt.badgeText;
+            itemEl.appendChild(b);
+          }
 
           const rightSpan = document.createElement('span');
           rightSpan.className = 'ag-dropdown-item-sub';
@@ -104,7 +150,6 @@
           check.className = 'ag-dropdown-item-check';
           check.textContent = '✓';
 
-          itemEl.appendChild(leftSpan);
           if (opt.displayRight) itemEl.appendChild(rightSpan);
           itemEl.appendChild(check);
 
@@ -215,9 +260,11 @@
       refresh: () => {
         const val = cfg.getSelectedValue();
         const opts = cfg.getOptions();
-        const found = opts.find(o => o.value === val);
+        const found = opts.find(o => !o.isGroupHeader && o.value === val);
         if (found) {
           label.textContent = cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value);
+        } else if (cfg.emptyLabel) {
+          label.textContent = cfg.emptyLabel;
         }
       },
       close: () => removeClass(wrap, 'is-open'),
@@ -227,13 +274,31 @@
     return controller;
   }
 
+  function formatOptionLabelByLang(opt) {
+    if (!opt) return '';
+    if (currentPanelLanguage === 'en') {
+      if (opt.labelEn) return opt.labelEn;
+      if (opt.code && opt.symbol) return `${opt.code} (${opt.symbol}${opt.nameEn ? ' ' + opt.nameEn : ''})`;
+      if (opt.value && opt.value !== '未知') {
+        const flagMatch = String(opt.label || '').match(/^([\u{1F1E6}-\u{1F1FF}]{2}|🌐|🌏)\s*/u);
+        const flag = flagMatch ? flagMatch[1] + ' ' : '';
+        return `${flag}${opt.code || opt.value}`;
+      }
+      return t('plan.country.auto');
+    }
+    if (currentPanelLanguage === 'zh-TW') {
+      if (opt.labelTw) return opt.labelTw;
+    }
+    return opt.label;
+  }
+
   // 刷新国家直接选择器显示
   function refreshDirectCountryDisplay(currentCountryVal) {
     const label = el('direct-country-label');
     if (!label) return;
     const val = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '未知';
     const matched = COUNTRY_OPTIONS.find(o => o.value === val);
-    label.textContent = matched ? matched.label : (val !== '未知' ? `🌐 ${val}` : '🌐 未设置 / 自动');
+    label.textContent = matched ? formatOptionLabelByLang(matched) : (val !== '未知' ? `🌐 ${val}` : t('plan.country.auto'));
   }
 
   // 刷新订阅地区直接选择器显示
@@ -247,15 +312,16 @@
     if (matched) {
       const curCode = matched.currency === 'TWD' ? 'NTD' : matched.currency;
       const cny = core?.convertToCNY ? core.convertToCNY(matched.monthlyPrice, matched.currency, matched.name) : (matched.monthlyPrice * matched.rateToCNY);
+      const dispName = currentPanelLanguage === 'en' ? (matched.nameEn || matched.id || matched.name) : matched.name;
       if (matched.currency === 'CNY') {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + matched.name + ' (' + curCode + ') · ¥' + matched.monthlyPrice + '/月';
+        directLabel.textContent = (matched.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ¥' + matched.monthlyPrice + t('dropdown.perMonth');
       } else {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + matched.name + ' (' + curCode + ') · ' + matched.symbol + matched.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
+        directLabel.textContent = (matched.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ' + matched.symbol + matched.monthlyPrice + ' (' + t('plan.cnyShort', { val: Number(cny).toFixed(1) }) + ')';
       }
     } else if (reg && reg !== '未知') {
       directLabel.textContent = '🌏 ' + reg;
     } else {
-      directLabel.textContent = '🌏 未知 (点击选择订阅地区与货币)';
+      directLabel.textContent = t('dropdown.regionUnknownShort');
     }
   }
 
@@ -266,7 +332,7 @@
     let val = currentCurrencyVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.currency || 'USD';
     if (val === 'NTD') val = 'TWD';
     const matched = CURRENCY_OPTIONS.find(o => o.value === val);
-    label.textContent = matched ? matched.label : val;
+    label.textContent = matched ? formatOptionLabelByLang(matched) : val;
   }
 
   function renderDirectRegionMenu(filterText = '') {
@@ -285,7 +351,7 @@
   let saveFeedbackTimer = null;
 
   function showPlanSaveFeedback(ok, message) {
-    lastSaveResult = { ok: Boolean(ok), error: ok ? '' : (message || '保存失败') };
+    lastSaveResult = { ok: Boolean(ok), error: ok ? '' : (message || t('dropdown.saveFailed')) };
     const fb = el('plan-save-feedback');
     if (!fb) return;
     if (saveFeedbackTimer) {
@@ -294,7 +360,7 @@
     }
     fb.style.display = 'inline-block';
     fb.style.color = ok ? '#22c55e' : '#ef4444';
-    fb.textContent = ok ? (message || '✔ 已自动保存') : `✖ 保存失败：${message || '无法写入配置文件'}`;
+    fb.textContent = ok ? (message || t('dropdown.autoSaved')) : t('dropdown.saveFailedDetail', { msg: message || t('dropdown.writeCfgFailed') });
     if (ok) {
       saveFeedbackTimer = setTimeout(() => {
         if (fb) fb.style.display = 'none';
@@ -327,7 +393,7 @@
       }
     }
     if (btn) {
-      btn.textContent = next ? '收起 ▲' : '详情 ▼';
+      btn.textContent = next ? t('plan.detail.toggleClose') : t('plan.detail.toggleOpen');
       btn.setAttribute?.('aria-expanded', String(next));
     }
     if (!next) {
@@ -392,7 +458,7 @@
     const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.saveSettings === 'function';
     const hasLive = typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port);
     if (!hasIpc && !hasLive) {
-      showPlanSaveFeedback(false, '未连接持久化服务，无法保存');
+      showPlanSaveFeedback(false, t('dropdown.noPersistBridge'));
       return { ok: false, error: 'NO_HOST_BRIDGE' };
     }
 
@@ -420,8 +486,9 @@
       }
 
       if (!res || res.ok === false) {
-        showPlanSaveFeedback(false, res?.error || '写入本地配置失败');
-        return { ok: false, error: res?.error || '写入本地配置失败' };
+        const errMsg = translateBackendText(res?.error) || t('dropdown.writeCfgFailed');
+        showPlanSaveFeedback(false, errMsg);
+        return { ok: false, error: errMsg };
       }
 
       // 宿主落盘确认成功后，才更新内存已保存缓存与全局快照
@@ -449,13 +516,13 @@
         } catch {}
       }
 
-      showPlanSaveFeedback(true, '✔ 已自动保存');
+      showPlanSaveFeedback(true, t('dropdown.autoSaved'));
       return res;
     } catch (err) {
       if (thisSeq >= currentSaveSeq) {
-        showPlanSaveFeedback(false, err?.message || '持久化异常');
+        showPlanSaveFeedback(false, err?.message || t('dropdown.persistErr'));
       }
-      return { ok: false, error: err?.message || '持久化异常' };
+      return { ok: false, error: err?.message || t('dropdown.persistErr') };
     }
   }
 
@@ -628,7 +695,7 @@
         const prevEl = el('region-cny-preview');
         if (prevEl && paid !== null && regionItem.rateToCNY) {
           const cny = (paid * regionItem.rateToCNY).toFixed(1);
-          prevEl.textContent = '折合 ≈ ¥' + cny + ' CNY/月';
+          prevEl.textContent = t('plan.cnyApprox', { val: cny });
         }
       }
     });
@@ -761,17 +828,17 @@
       labelId: 'direct-country-label',
       menuId: 'direct-country-menu',
       selectId: 'direct-country-select',
-      searchPlaceholder: '🔍 搜索账号所在地区或代码 (如: 美国、TW、JP)...',
-      getOptions: () => COUNTRY_OPTIONS,
+      searchPlaceholder: () => t('dropdown.countrySearch'),
+      getOptions: () => COUNTRY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
       getSelectedValue: () => {
         const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
         return (ps.country && !String(ps.country).includes('未知')) ? String(ps.country).trim() : '未知';
       },
-      getLabelText: (opt) => opt.label,
+      getLabelText: (opt) => formatOptionLabelByLang(opt),
       onSelect: (opt) => {
         applyDirectCountrySelection(opt.value);
       },
-      emptyText: '未找到匹配的账号所在地区'
+      emptyText: () => t('dropdown.countryEmpty')
     });
   }
 
@@ -783,22 +850,23 @@
       triggerId: 'direct-region-trigger',
       labelId: 'direct-region-label',
       menuId: 'direct-region-menu',
-      searchPlaceholder: '🔍 搜索订阅国家/地区、货币或缩写 (如: 台湾、澳、USD)...',
+      searchPlaceholder: () => t('dropdown.regionSearch'),
       getOptions: () => {
         return presets.map(p => {
           const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
+          const dispName = currentPanelLanguage === 'en' ? (p.id || p.name) : p.name;
           let displayRight = '';
           if (p.currency === 'CNY') {
-            displayRight = p.symbol + p.monthlyPrice + '/月';
+            displayRight = p.symbol + p.monthlyPrice + t('dropdown.perMonth');
           } else {
             const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-            displayRight = p.symbol + p.monthlyPrice + '/月 · ≈ ¥' + Number(cny).toFixed(1) + ' CNY';
+            displayRight = p.symbol + p.monthlyPrice + t('dropdown.perMonth') + ' · ≈ ¥' + Number(cny).toFixed(1) + ' CNY';
           }
           return {
             value: p.id,
             rawItem: p,
-            label: (p.flag || '🌏') + ' ' + p.name + ' (' + curCode + ')',
-            displayLeft: (p.flag || '🌏') + ' ' + p.name + ' (' + curCode + ')',
+            label: (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ')',
+            displayLeft: (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ')',
             displayRight,
             code: p.id,
             currency: curCode,
@@ -822,16 +890,17 @@
         const p = opt.rawItem;
         if (!p) return opt.label;
         const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
+        const dispName = currentPanelLanguage === 'en' ? (p.id || p.name) : p.name;
         if (p.currency === 'CNY') {
-          return (p.flag || '🌏') + ' ' + p.name + ' (' + curCode + ') · ¥' + p.monthlyPrice + '/月';
+          return (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ¥' + p.monthlyPrice + t('dropdown.perMonth');
         }
         const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-        return (p.flag || '🌏') + ' ' + p.name + ' (' + curCode + ') · ' + p.symbol + p.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
+        return (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ' + p.symbol + p.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
       },
       onSelect: (opt) => {
         if (opt.rawItem) applyDirectRegionSelection(opt.rawItem);
       },
-      emptyText: '未找到匹配的订阅国家/地区'
+      emptyText: () => t('dropdown.regionEmpty')
     });
   }
 
@@ -842,8 +911,8 @@
       labelId: 'direct-currency-label',
       menuId: 'direct-currency-menu',
       selectId: 'direct-currency-select',
-      searchPlaceholder: '🔍 搜索订阅币种、代码或符号 (如: 美元、AUD、¥、$)...',
-      getOptions: () => CURRENCY_OPTIONS,
+      searchPlaceholder: () => t('dropdown.currencySearch'),
+      getOptions: () => CURRENCY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
       getSelectedValue: () => {
         const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
         let cur = ps.currency || 'USD';
@@ -858,11 +927,11 @@
         const aliases = (it.aliases || []).map(a => String(a).toLowerCase());
         return name.includes(kw) || code.includes(kw) || sym.includes(kw) || label.includes(kw) || aliases.some(a => a.includes(kw));
       },
-      getLabelText: (opt) => opt.label,
+      getLabelText: (opt) => formatOptionLabelByLang(opt),
       onSelect: (opt) => {
         applyDirectCurrencySelection(opt.value);
       },
-      emptyText: '未找到匹配的订阅币种'
+      emptyText: () => t('dropdown.currencyEmpty')
     });
   }
 

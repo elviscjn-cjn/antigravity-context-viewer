@@ -46,16 +46,19 @@
 
         const showPop = () => {
           const d = item.date;
-          heatPopDate.textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${item.isToday ? '（今日）' : (item.key === win.firstStr ? '（首次使用）' : '')}`;
+          const dateLabel = currentPanelLanguage === 'en'
+            ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+            : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+          heatPopDate.textContent = `${dateLabel}${item.isToday ? t('heat.today') : (item.key === win.firstStr ? t('heat.firstUse') : '')}`;
           const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
           const cny = convertToCNY(costInfo.costUSD, 'USD');
           const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-          heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? '未来日期（待产生记录）' : '0 Tokens');
+          heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heat.future') : '0 Tokens');
           if (item.rec) {
             heatPopDet.innerHTML = `
-              <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">提示词</span></div>
-              <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(item.rec.output)}</span><span class="pop-det-trans">输出</span></div>
-              <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(item.rec.cache)}</span><span class="pop-det-trans">缓存</span></div>
+              <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
+              <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(item.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
+              <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(item.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
             `.trim();
             heatPopDet.style.display = 'flex';
           } else {
@@ -76,11 +79,12 @@
       colsBox.appendChild(col);
     }
 
+    const shortMonthsEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     monthMarkers.forEach(mm => {
       const lbl = document.createElement('span');
       lbl.className = 'heat-month-item';
       lbl.style.left = `${mm.colIdx * 13}px`;
-      lbl.textContent = `${mm.month}月`;
+      lbl.textContent = currentPanelLanguage === 'en' ? (shortMonthsEn[mm.month - 1] || `${mm.month}`) : `${mm.month}月`;
       monthsBox.appendChild(lbl);
     });
 
@@ -137,7 +141,7 @@
         const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : '0 Tokens';
-        heatPopDet.innerHTML = `<span>Weekly Total · 周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+        heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
         heatPop.style.left = `${r.left + r.width / 2}px`;
@@ -248,9 +252,12 @@
       });
       const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
       const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-      heatPopDate.textContent = `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日 (累计)`;
+      const cumDateLabel = currentPanelLanguage === 'en'
+        ? `${pt.date.getFullYear()}-${String(pt.date.getMonth() + 1).padStart(2, '0')}-${String(pt.date.getDate()).padStart(2, '0')}`
+        : `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日`;
+      heatPopDate.textContent = `${cumDateLabel}${t('heat.cumSuffix')}`;
       heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
-      heatPopDet.innerHTML = `<span>Cumulative Total · 截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+      heatPopDet.innerHTML = `<span>${t('heat.cumTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
       heatPopDet.style.display = 'block';
       heatPop.style.left = `${e.clientX}px`;
       heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 12)) - 6}px`;
@@ -283,7 +290,7 @@
     sumTokensEl.textContent = `${fmtYi(costAgg.totalTokens)} Tokens`;
     sumCostEl.textContent = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
     sumDailyAvgEl.textContent = `$${costAgg.dailyAverageUSD.toFixed(2)}`;
-    sumActiveAvgEl.textContent = `$${costAgg.activeDailyAverageUSD.toFixed(2)} (${costAgg.activeDays}天)`;
+    sumActiveAvgEl.textContent = t('heat.activeDays', { avg: costAgg.activeDailyAverageUSD.toFixed(2), days: costAgg.activeDays });
 
     if ((viewType === 'monthly' || viewType === 'yearly') && subRatioWrapEl && subRatioEl) {
       const plan = resolveEffectivePlanStatus(ANTIGRAVITY_TOKEN_DATA.planStatus, ANTIGRAVITY_TOKEN_DATA.customPlanSettings);
@@ -293,7 +300,7 @@
         const subMonthlyUSD = plan.currency === 'USD' ? paidVal : (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : paidVal);
         if (subMonthlyUSD > 0) {
           const ratio = (costAgg.totalCostUSD / (viewType === 'yearly' ? subMonthlyUSD * 12 : subMonthlyUSD)).toFixed(1);
-          subRatioEl.textContent = `${ratio}x 回本`;
+          subRatioEl.textContent = t('heat.roi', { ratio });
           subRatioWrapEl.style.display = 'inline-flex';
         } else {
           subRatioWrapEl.style.display = 'none';
@@ -381,13 +388,16 @@
         const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
         const cny = convertToCNY(costInfo.costUSD, 'USD');
         const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-        heatPopDate.textContent = `${targetYear}年${targetMonth + 1}月${day}日${isToday ? '（今日）' : ''}`;
-        heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? '未来日期（待产生记录）' : '0 Tokens');
+        const mDateLabel = currentPanelLanguage === 'en'
+          ? `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+          : `${targetYear}年${targetMonth + 1}月${day}日`;
+        heatPopDate.textContent = `${mDateLabel}${isToday ? t('heat.today') : ''}`;
+        heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? t('heat.future') : '0 Tokens');
         if (rec) {
           heatPopDet.innerHTML = `
-            <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(rec.input)}</span><span class="pop-det-trans">提示词</span></div>
-            <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(rec.output)}</span><span class="pop-det-trans">输出</span></div>
-            <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(rec.cache)}</span><span class="pop-det-trans">缓存</span></div>
+            <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
+            <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
+            <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
           `.trim();
           heatPopDet.style.display = 'flex';
         } else {
@@ -448,9 +458,10 @@
       if (!isFuture && mTokens > maxMonthTokens) {
         maxMonthTokens = mTokens;
       }
+      const shortMonthsEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       monthsData.push({
         monthIndex: m,
-        monthName: `${m + 1}月`,
+        monthName: currentPanelLanguage === 'en' ? (shortMonthsEn[m] || `${m + 1}`) : `${m + 1}月`,
         tokens: mTokens,
         dates: mDates,
         isCurrent,
@@ -535,7 +546,7 @@
         peakBadge.setAttribute('font-size', '8.5');
         peakBadge.setAttribute('font-weight', '600');
         peakBadge.setAttribute('fill', 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))');
-        peakBadge.textContent = '峰值';
+        peakBadge.textContent = t('heat.peak');
         g.appendChild(peakBadge);
       }
 
@@ -556,9 +567,10 @@
         });
         const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
         const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-        heatPopDate.textContent = `${targetYear}年${item.monthName}${item.isCurrent ? '（进行中）' : (item.monthIndex === peakMonthIndex ? '（年度峰值）' : '')}`;
-        heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? '未来月份（尚未产生用量）' : '0 Tokens');
-        heatPopDet.innerHTML = `<span>Monthly Total · 折合日均 $${costAgg.dailyAverageUSD.toFixed(2)} (活跃 ${costAgg.activeDays} 天)</span>`;
+        const yearMonthLabel = currentPanelLanguage === 'en' ? `${item.monthName} ${targetYear}` : `${targetYear}年${item.monthName}`;
+        heatPopDate.textContent = `${yearMonthLabel}${item.isCurrent ? t('heatmap.pop.inProgress') : (item.monthIndex === peakMonthIndex ? t('heatmap.pop.peak') : '')}`;
+        heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heatmap.pop.future') : '0 Tokens');
+        heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}</span>`;
         heatPopDet.style.display = 'block';
 
         const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
@@ -592,76 +604,78 @@
 
     if (kind === 'context_overflow' || d?.exceeded) {
       const sLimit = d?.serviceLimit || ec?.serviceLimit;
+      const limStatus = sLimit ? t('diag.ctx.statusLim', { lim: short(sLimit) }) : '';
+      const limTakeaway = sLimit ? t('diag.ctx.statusLim', { lim: fmt(sLimit) }) : '';
       return {
         kind: 'context_overflow',
-        badgeText: '超限',
-        amountText: '服务端超限',
-        keyBadgeText: '已超限',
+        badgeText: t('diag.ctx.badge'),
+        amountText: t('diag.ctx.amount'),
+        keyBadgeText: t('diag.ctx.keyBadge'),
         pillClass: 'key-pill pill-danger',
-        hoverExtra: ' · 100% 已溢出',
-        tipTitle: '上下文窗口（超限告警）：',
-        tipPct: '100% 已用（已超出上限）',
-        tipDetail: sLimit ? `已超上限，共 ${fmtBubbleToken(sLimit)} token` : '服务端已拒绝输入（超出容量上限）',
-        statusText: `服务端已拒绝：输入超限${sLimit ? `（上限 ${short(sLimit)} tokens）` : ''}。本地估算不可靠，需精简或新建会话。`,
-        keyTakeaway: `✖ 已超出服务端最大限制${sLimit ? `（${fmt(sLimit)} tokens）` : ''}，当前对话已被拒绝。需精简或新建会话。`,
+        hoverExtra: t('diag.ctx.hover'),
+        tipTitle: t('diag.ctx.tipTitle'),
+        tipPct: t('diag.ctx.tipPct'),
+        tipDetail: sLimit ? t('diag.ctx.tipDetailLim', { lim: fmtBubbleToken(sLimit) }) : t('diag.ctx.tipDetailDef'),
+        statusText: t('diag.ctx.status', { lim: limStatus }),
+        keyTakeaway: t('diag.ctx.takeaway', { lim: limTakeaway }),
         isError: true,
         isOverflow: true
       };
     }
 
     if (kind === 'quota_exhausted') {
-      const pool = ec?.modelOrPool || d?.model || '当前模型';
-      const resetStr = ec?.resetTimeZh ? `，预计将于 ${ec.resetTimeZh} 重置` : '';
+      const pool = ec?.modelOrPool || d?.model || t('diag.quota.defPool');
+      const resetStr = ec?.resetTimeZh ? t('diag.quota.reset', { time: ec.resetTimeZh }) : '';
       return {
         kind: 'quota_exhausted',
-        badgeText: '额度耗尽',
-        amountText: '额度耗尽',
-        keyBadgeText: '额度耗尽',
+        badgeText: t('diag.quota.badge'),
+        amountText: t('diag.quota.amount'),
+        keyBadgeText: t('diag.quota.badge'),
         pillClass: 'key-pill pill-danger',
-        hoverExtra: ' · 模型额度用尽，可切换模型',
-        tipTitle: '模型额度（额度耗尽）：',
-        tipPct: '当前模型配额已用尽',
-        tipDetail: `${pool}额度已耗尽${resetStr}。可手动切换至其他可用模型`,
-        statusText: `模型额度耗尽：${pool}额度已用尽${resetStr}。可手动切换至其他可用模型。`,
-        keyTakeaway: `✖ ${pool}额度已耗尽${resetStr}。可手动切换至 Gemini 3.8 Flash 或其他可用模型继续对话。`,
+        hoverExtra: t('diag.quota.hover'),
+        tipTitle: t('diag.quota.tipTitle'),
+        tipPct: t('diag.quota.tipPct'),
+        tipDetail: t('diag.quota.tipDetail', { pool, reset: resetStr }),
+        statusText: t('diag.quota.status', { pool, reset: resetStr }),
+        keyTakeaway: t('diag.quota.takeaway', { pool, reset: resetStr }),
         isError: true,
         isOverflow: false
       };
     }
 
     if (kind === 'rate_limited') {
-      const retryStr = ec?.retryAfterSec ? `（建议等待 ${ec.retryAfterSec} 秒）` : '';
+      const retryStr = ec?.retryAfterSec ? t('diag.rate.retry', { sec: ec.retryAfterSec }) : '';
       return {
         kind: 'rate_limited',
-        badgeText: '限流',
-        amountText: '请求限流',
-        keyBadgeText: '请求限流',
+        badgeText: t('diag.rate.badge'),
+        amountText: t('diag.rate.amount'),
+        keyBadgeText: t('diag.rate.amount'),
         pillClass: 'key-pill pill-danger',
-        hoverExtra: ' · 触发频率限制，请稍候',
-        tipTitle: '请求限制（请求过频）：',
-        tipPct: '触发服务端频率限制（429）',
-        tipDetail: `请求过于频繁${retryStr}，请稍候重试`,
-        statusText: `请求频率限制：请求过于频繁，触发服务端限制（429）${retryStr}。稍候重试即可恢复。`,
-        keyTakeaway: `⚠ 触发服务端请求频率限制（HTTP 429）${retryStr}，短时间内发送请求过多，稍候重试即可恢复。`,
+        hoverExtra: t('diag.rate.hover'),
+        tipTitle: t('diag.rate.tipTitle'),
+        tipPct: t('diag.rate.tipPct'),
+        tipDetail: t('diag.rate.tipDetail', { retry: retryStr }),
+        statusText: t('diag.rate.status', { retry: retryStr }),
+        keyTakeaway: t('diag.rate.takeaway', { retry: retryStr }),
         isError: true,
         isOverflow: false
       };
     }
 
     if (kind === 'network_error' || d?.network) {
-      const cleanDiag = ec?.diagnostic || '连接中断或超时';
+      const cleanDiag = ec?.diagnostic || t('diag.net.defDiag');
       return {
         kind: 'network_error',
-        badgeText: '网络',
-        amountText: '网络故障',
-        keyBadgeText: '网络故障',
+        badgeText: t('diag.net.badge'),
+        amountText: t('diag.net.amount'),
+        keyBadgeText: t('diag.net.amount'),
         pillClass: 'key-pill pill-danger',
-        hoverExtra: ' · 连接异常，请检查网络',
-        tipTitle: '网络连接（连接故障）：',
-        tipPct: '网络连接失败或超时',
-        tipDetail: `连接异常（${cleanDiag}）。请检查本地网络代理与连接`,
-        statusText: `网络连接异常：${cleanDiag}。请检查本地网络代理与网络链路设置。`,
-        keyTakeaway: `✖ 网络连接出现异常（${cleanDiag}）。请检查本地网络代理与链路状态。`,
+        hoverExtra: t('diag.net.hover'),
+        tipTitle: t('diag.net.tipTitle'),
+        tipPct: t('diag.net.tipPct'),
+        tipDetail: t('diag.net.tipDetail', { diag: cleanDiag }),
+        statusText: t('diag.net.status', { diag: cleanDiag }),
+        keyTakeaway: t('diag.net.takeaway', { diag: cleanDiag }),
         isError: true,
         isOverflow: false
       };
@@ -670,16 +684,16 @@
     if (kind === 'auth_error') {
       return {
         kind: 'auth_error',
-        badgeText: '认证',
-        amountText: '认证失败',
-        keyBadgeText: '认证异常',
+        badgeText: t('diag.auth.badge'),
+        amountText: t('diag.auth.amount'),
+        keyBadgeText: t('diag.auth.keyBadge'),
         pillClass: 'key-pill pill-danger',
-        hoverExtra: ' · 权限不足或登录异常',
-        tipTitle: '账号权限（身份异常）：',
-        tipPct: '身份认证失败或缺少权限',
-        tipDetail: '身份认证失败或无权限访问，请检查账号登录状态',
-        statusText: '身份认证失败或无访问权限，请检查账号登录状态或订阅权限。',
-        keyTakeaway: '✖ 身份认证失败或无访问权限（401/403）。请检查账号登录状态或订阅权限。',
+        hoverExtra: t('diag.auth.hover'),
+        tipTitle: t('diag.auth.tipTitle'),
+        tipPct: t('diag.auth.tipPct'),
+        tipDetail: t('diag.auth.tipDetail'),
+        statusText: t('diag.auth.status'),
+        keyTakeaway: t('diag.auth.takeaway'),
         isError: true,
         isOverflow: false
       };
@@ -688,16 +702,16 @@
     if (kind === 'service_unavailable') {
       return {
         kind: 'service_unavailable',
-        badgeText: '服务异常',
-        amountText: '服务受限',
-        keyBadgeText: '服务受限',
+        badgeText: t('diag.svc.badge'),
+        amountText: t('diag.svc.amount'),
+        keyBadgeText: t('diag.svc.amount'),
         pillClass: 'key-pill pill-danger',
-        hoverExtra: ' · 服务端繁忙，请稍候',
-        tipTitle: '服务端状态（服务受限）：',
-        tipPct: '模型服务暂不可用或过载',
-        tipDetail: '服务端暂时过载或维护中，请稍后重试',
-        statusText: '模型服务暂不可用或处于高负载（503/Overloaded），请稍后重试。',
-        keyTakeaway: '⚠ 服务端暂时不可用或处于高负载（503/Overloaded），请稍后重试。',
+        hoverExtra: t('diag.svc.hover'),
+        tipTitle: t('diag.svc.tipTitle'),
+        tipPct: t('diag.svc.tipPct'),
+        tipDetail: t('diag.svc.tipDetail'),
+        statusText: t('diag.svc.status'),
+        keyTakeaway: t('diag.svc.takeaway'),
         isError: true,
         isOverflow: false
       };
@@ -706,16 +720,16 @@
     if (kind === 'canceled') {
       return {
         kind: 'canceled',
-        badgeText: '已取消',
-        amountText: '请求取消',
-        keyBadgeText: '已取消',
+        badgeText: t('diag.cancel.badge'),
+        amountText: t('diag.cancel.amount'),
+        keyBadgeText: t('diag.cancel.badge'),
         pillClass: 'key-pill pill-muted',
-        hoverExtra: ' · 用户中断请求',
-        tipTitle: '请求状态（已取消）：',
-        tipPct: '请求已被主动取消',
-        tipDetail: '本次生成请求已由用户或系统主动取消',
-        statusText: '本次生成请求已由用户或系统主动取消。',
-        keyTakeaway: 'ℹ 本次生成请求已由用户或系统主动取消。',
+        hoverExtra: t('diag.cancel.hover'),
+        tipTitle: t('diag.cancel.tipTitle'),
+        tipPct: t('diag.cancel.tipPct'),
+        tipDetail: t('diag.cancel.tipDetail'),
+        statusText: t('diag.cancel.status'),
+        keyTakeaway: t('diag.cancel.takeaway'),
         isError: false,
         isOverflow: false
       };
@@ -725,16 +739,16 @@
       const diag = ec?.diagnostic || d.error;
       return {
         kind: 'unknown',
-        badgeText: '待确认',
-        amountText: '请求异常',
-        keyBadgeText: '原因待确认',
+        badgeText: t('diag.unknown.badge'),
+        amountText: t('diag.unknown.amount'),
+        keyBadgeText: t('diag.unknown.keyBadge'),
         pillClass: 'key-pill pill-danger',
-        hoverExtra: ' · 失败原因待确认',
-        tipTitle: '请求状态（原因待确认）：',
-        tipPct: '最近请求失败（原因未知）',
-        tipDetail: `当前无法确认具体原因（${diag}）`,
-        statusText: `最近请求遇到错误，当前无法独立确认具体原因（${diag}）。`,
-        keyTakeaway: `✖ 最近请求遇到错误，当前无法独立确认具体原因（${diag}）。`,
+        hoverExtra: t('diag.unknown.hover'),
+        tipTitle: t('diag.unknown.tipTitle'),
+        tipPct: t('diag.unknown.tipPct'),
+        tipDetail: t('diag.unknown.tipDetail', { diag }),
+        statusText: t('diag.unknown.status', { diag }),
+        keyTakeaway: t('diag.unknown.takeaway', { diag }),
         isError: true,
         isOverflow: false
       };

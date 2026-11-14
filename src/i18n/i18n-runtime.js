@@ -189,6 +189,16 @@
   var doc = root ? (root.document || (typeof document !== 'undefined' ? document : null)) : null;
 
   var I18N_DATA = (root && root.__AGY_I18N_DATA__) || { exact: {}, patterns: [] };
+  var I18N_CONFIG = (root && root.__AGY_I18N_CONFIG__) || { enabled: true, language: 'zh-CN', brandTitle: 'english' };
+  var i18nEnabled = I18N_CONFIG.enabled !== false && I18N_CONFIG.language !== 'en';
+  function getBrandTitleMode() {
+    var cfg = (root && root.__AGY_I18N_CONFIG__) || I18N_CONFIG;
+    if (cfg && (cfg.brandTitle === 'hidden' || cfg.brandTitle === 'translated')) {
+      return cfg.brandTitle;
+    }
+    return 'english';
+  }
+  var brandTitleMode = getBrandTitleMode();
   var defaultEngine = createI18nEngine(I18N_DATA);
   var exactDict = defaultEngine.exactDict;
   var patterns = defaultEngine.patterns;
@@ -237,8 +247,10 @@
 
   function shouldIgnoreElement(el) {
     if (!el || el.nodeType !== 1) return false;
+    if (el.id === 'context-meter-root') return true;
     if (IGNORED_TAGS[el.tagName]) return true;
     if (el.isContentEditable) return true;
+    if (el.closest && el.closest('#context-meter-root')) return true;
 
     // 模型选择器相关边界元素及其子元素保持英文原样（纯属性 O(1) 短路）
     if (isModelSelectorBoundary(el)) return true;
@@ -274,6 +286,76 @@
   // 扫描轮次 ID，同一轮全量扫描中元素只处理一次
   var currentScanId = 0;
 
+  function formatBrandDocumentTitle(rawTitle) {
+    // 仅控制左上角品牌文字，不顺带修改 document.title 或任务栏标题
+    return rawTitle;
+  }
+
+  function applyBrandTitleToText(trimmed, parentEl) {
+    var mode = getBrandTitleMode();
+    if (!parentEl || !parentEl.tagName) return null;
+    var tag = parentEl.tagName;
+    if (tag === 'CODE' || tag === 'PRE' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SCRIPT' || tag === 'STYLE') return null;
+
+    // 严密排除：正文段落、聊天消息、Markdown 块与代码容器内绝对不触发品牌替换，确保正文零误伤
+    if (parentEl.closest && parentEl.closest('p, pre, code, blockquote, [class*="message"], [class*="chat"], [class*="content"], [class*="markdown"], [class*="artifact"]')) {
+      return null;
+    }
+
+    // 0. 精准识别真实桌面客户端左上角品牌菜单项
+    var isExactBrandItem = Boolean(
+      (parentEl.getAttribute && (parentEl.getAttribute('data-agy-brand-item') === 'true' || parentEl.getAttribute('data-testid') === 'title-menu-bar-item')) ||
+      (parentEl.closest && parentEl.closest('[data-agy-brand-item="true"], [data-testid="title-menu-bar-item"]'))
+    );
+
+    var cls = typeof parentEl.className === 'string' ? parentEl.className.toLowerCase() : '';
+
+    // 1. 真实桌面客户端视口几何坐标判定（精准定位左上角品牌位，零假定类名）
+    var isTopLeftViewport = false;
+    try {
+      if (typeof parentEl.getBoundingClientRect === 'function') {
+        var rect = parentEl.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0 && rect.top <= 70 && rect.left <= 300) {
+          isTopLeftViewport = true;
+        }
+      }
+    } catch (e) {}
+
+    // 2. Electron titleBarStyle: hidden 顶栏拖拽区域或已知标题栏/侧栏顶部容器特征
+    var isTitleOrDragBar = Boolean(
+      isExactBrandItem ||
+      isTopLeftViewport ||
+      cls.indexOf('window-title') !== -1 ||
+      cls.indexOf('titlebar') !== -1 ||
+      cls.indexOf('top-bar') !== -1 ||
+      cls.indexOf('app-bar') !== -1 ||
+      cls.indexOf('drag') !== -1 ||
+      cls.indexOf('brand') !== -1 ||
+      cls.indexOf('logo') !== -1 ||
+      (parentEl.closest && parentEl.closest(
+        '.window-title, .titlebar-container, .part.titlebar, .titlebar-left, .titlebar-center, .titlebar-right, .titlebar, [class*="titlebar"], [class*="top-bar"], [class*="app-bar"], [class*="sidebar-header"], [style*="-webkit-app-region: drag"], [style*="-webkit-app-region:drag"]'
+      ))
+    );
+
+    // 严密限定：非标题栏/非左上角品牌区域一律不处理
+    if (!isTitleOrDragBar) return null;
+
+    // 匹配左上角独立应用名或带前缀名（支持三态来回切换恢复）
+    // 注意：title-menu-bar-item 同时用于“工作区、视图、窗口”等按钮，严格限定原 Antigravity/反重力 节点，不影响其他同属性菜单项
+    if (trimmed === 'Antigravity' || trimmed === 'Google Antigravity') {
+      if (mode === 'hidden') return '';
+      if (mode === 'translated') return trimmed === 'Google Antigravity' ? 'Google 反重力' : '反重力';
+      return null;
+    }
+    if (trimmed === '反重力' || trimmed === 'Google 反重力') {
+      if (mode === 'english') return trimmed === 'Google 反重力' ? 'Google Antigravity' : 'Antigravity';
+      if (mode === 'hidden') return '';
+      if (mode === 'translated') return trimmed === 'Google 反重力' ? 'Google 反重力' : '反重力';
+      return null;
+    }
+    return null;
+  }
+
   function translateTextNode(node) {
     if (!node || node.nodeType !== 3) return;
     var parent = node.parentElement || node.parentNode;
@@ -288,6 +370,34 @@
     var trimmed = original.trim();
     if (!trimmed) {
       // 对纯空白节点补充否定标记，二次扫描直接 O(1) 退出，避免重复调用 trim()
+      node._agyOriginal = original;
+      return;
+    }
+
+    var brandMapped = applyBrandTitleToText(trimmed, parent);
+    if (brandMapped !== null) {
+      var bLead = original.match(/^\s*/)[0];
+      var bTrail = original.match(/\s*$/)[0];
+      node.nodeValue = brandMapped === '' ? '' : (bLead + brandMapped + bTrail);
+      node._agyOriginal = node.nodeValue;
+      if (parent) {
+        var isExactBrandItem = Boolean(
+          (parent.getAttribute && (parent.getAttribute('data-agy-brand-item') === 'true' || parent.getAttribute('data-testid') === 'title-menu-bar-item')) ||
+          (parent.closest && parent.closest('[data-agy-brand-item="true"], [data-testid="title-menu-bar-item"]'))
+        );
+        if (isExactBrandItem && parent.setAttribute) {
+          try {
+            // 固化身份标记，隐藏后文本清空依然能通过属性选择器准确定位并无损恢复
+            parent.setAttribute('data-agy-brand-item', 'true');
+            // 保留入口可用，绝不使用 display: none 销毁菜单能力
+            parent.style.display = '';
+          } catch (e) {}
+        }
+      }
+      return;
+    }
+
+    if (!i18nEnabled) {
       node._agyOriginal = original;
       return;
     }
@@ -650,6 +760,29 @@
   }
 
   if (doc) {
+    try {
+      var proto = typeof Document !== 'undefined' ? Document.prototype : null;
+      var titleDesc = proto ? Object.getOwnPropertyDescriptor(proto, 'title') : null;
+      if (titleDesc && titleDesc.set && titleDesc.get) {
+        var origSetter = titleDesc.set;
+        var origGetter = titleDesc.get;
+        Object.defineProperty(doc, 'title', {
+          configurable: true,
+          enumerable: true,
+          get: function() {
+            return origGetter.call(this);
+          },
+          set: function(val) {
+            origSetter.call(this, formatBrandDocumentTitle(String(val || '')));
+          }
+        });
+      }
+      if (doc.title) {
+        var formatted = formatBrandDocumentTitle(doc.title);
+        if (formatted !== doc.title) doc.title = formatted;
+      }
+    } catch (e) {}
+
     if (doc.readyState === 'loading') {
       doc.addEventListener('DOMContentLoaded', startObserver);
     } else {
@@ -724,6 +857,8 @@
     root.__AGY_RUN_FULL_SCAN__ = safeFullScan;
     root.__AGY_CACHE__ = translationCache;
     root.__AGY_IS_FLOATING__ = isFloatingElement;
+    root.__AGY_FORMAT_BRAND_TITLE__ = formatBrandDocumentTitle;
+    root.__AGY_APPLY_BRAND_TEXT__ = applyBrandTitleToText;
   }
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 

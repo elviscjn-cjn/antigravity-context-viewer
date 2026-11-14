@@ -50,6 +50,13 @@ function getMeterSource() {
         bootstrap += `window.__AGContextMeterSettings = ${JSON.stringify(settingsSnap)};\n`;
       }
     } catch {}
+    try {
+      const { loadModulesConfig } = require('./modules-config');
+      const mCfg = loadModulesConfig();
+      if (mCfg?.modules?.chinese) {
+        bootstrap += `window.__AGY_CHINESE_CONFIG__ = ${JSON.stringify(mCfg.modules.chinese)};\n`;
+      }
+    } catch {}
     return `${bootstrap}${coreCode}\n${rendererCode}\ntrue;`;
   } catch (e) {
     return '';
@@ -135,15 +142,45 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
 
     // 结果类型 1: 已有完整运行时可通过配置切换 (config_toggled)
     if (hasDiskCapability) {
-      cfg.modules[moduleName].enabled = targetEnable;
+      if (moduleName === 'chinese') {
+        const { normalizeBrandTitle, normalizeClientLanguage } = require('./modules-config');
+        const nextLang = normalizeClientLanguage(extraOpts?.language, targetEnable);
+        const nextBrand = extraOpts?.brandTitle !== undefined
+          ? normalizeBrandTitle(extraOpts.brandTitle)
+          : cfg.modules.chinese.brandTitle;
+        cfg.modules.chinese.language = nextLang;
+        cfg.modules.chinese.enabled = nextLang === 'zh-CN';
+        cfg.modules.chinese.brandTitle = nextBrand;
+        cfg.modules.chinese.lastUpdated = new Date().toISOString();
+      } else {
+        cfg.modules[moduleName].enabled = targetEnable;
+      if (moduleName === 'chinese') {
+        cfg.modules.chinese.language = targetEnable ? 'zh-CN' : 'en';
+      }
+      }
       if (moduleName === 'proxy' && extraOpts) {
         if (extraOpts.proxyUrl) cfg.modules.proxy.proxyUrl = extraOpts.proxyUrl;
         if (extraOpts.bypassList) cfg.modules.proxy.bypassList = extraOpts.bypassList;
       }
       saveModulesConfig(cfg);
-      const msg = targetEnable
-        ? `已开启配置，重启客户端后生效`
-        : `已关闭配置，需完全重启客户端彻底退出`;
+      if (moduleName === 'chinese' && extraOpts?.brandTitle !== undefined) {
+        try {
+          const utils = require('./utils');
+          const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
+          for (const w of wins) {
+            const wc = getWindowWebContents(w);
+            if (wc && !wc.isDestroyed()) {
+              wc.send('context-meter:brand-title-changed', cfg.modules.chinese.brandTitle);
+            }
+          }
+        } catch {}
+      }
+      const isEnabledNow = cfg.modules[moduleName].enabled;
+      const msg = isEnabledNow
+        ? '已更新并保存设置，重启客户端后生效'
+        : (moduleName === 'chinese' && cfg.modules.chinese.brandTitle !== 'english')
+          ? '已保存品牌标题设置，重启客户端后生效'
+          : '已关闭配置，重启客户端后生效';
       return {
         ok: true,
         status: 'config_toggled',
@@ -155,9 +192,25 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     }
 
     // 若用户是关闭一个原本就未注入的模块，直接同步配置
-    if (!targetEnable) {
+    if (!targetEnable && !(moduleName === 'chinese' && extraOpts?.brandTitle && extraOpts.brandTitle !== 'english')) {
       cfg.modules[moduleName].enabled = false;
+      if (moduleName === 'chinese') {
+        cfg.modules.chinese.language = 'en';
+        cfg.modules.chinese.brandTitle = 'english';
+      }
       saveModulesConfig(cfg);
+      if (moduleName === 'chinese' && extraOpts?.brandTitle !== undefined) {
+        try {
+          const utils = require('./utils');
+          const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
+          for (const w of wins) {
+            const wc = getWindowWebContents(w);
+            if (wc && !wc.isDestroyed()) {
+              wc.send('context-meter:brand-title-changed', cfg.modules.chinese.brandTitle);
+            }
+          }
+        } catch {}
+      }
       return {
         ok: true,
         status: 'config_toggled',
@@ -182,6 +235,32 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     console.error(`[AntigravityContextMeter] 切换模块 ${moduleName} 异常:`, e);
     return { ok: false, status: 'error', error: e.message };
   }
+}
+
+async function handleRestartHost(event, options = {}) {
+  const url = isLocalMainFrameSender(event);
+  if (!url) throw new Error('仅允许本机主聊天窗口');
+  const targetApp = options?.appOverride || app;
+  if (!targetApp || typeof targetApp.relaunch !== 'function' || typeof targetApp.quit !== 'function') {
+    return { ok: true, supported: false };
+  }
+  const args = Array.isArray(options?.args)
+    ? options.args
+    : (Array.isArray(process.argv) ? process.argv.slice(1) : []);
+  const delayMs = Number.isFinite(Number(options?.delayMs)) ? Number(options.delayMs) : 80;
+  const triggerRestart = () => {
+    try {
+      setAppQuitting(true);
+      targetApp.relaunch({ args });
+      targetApp.quit();
+    } catch {}
+  };
+  if (delayMs <= 0) {
+    triggerRestart();
+  } else {
+    setTimeout(triggerRestart, delayMs);
+  }
+  return { ok: true, supported: true };
 }
 
 function registerIpcOnce() {
@@ -344,21 +423,81 @@ function registerIpcOnce() {
     }
   });
 
-  ipcMain.handle('context-meter:context-unlock-apply', async (event) => {
+  ipcMain.handle('context-meter:context-unlock-apply', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      return applyContextUnlock();
+      const opts = (options && typeof options === 'object') ? { ...options } : {};
+      if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
+      return applyContextUnlock(opts);
     } catch (e) {
       return { ok: false, error: e.message };
     }
   });
 
-  ipcMain.handle('context-meter:context-unlock-restore', async (event) => {
+  ipcMain.handle('context-meter:context-unlock-restore', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      return restoreContextUnlock();
+      const opts = (options && typeof options === 'object') ? { ...options } : {};
+      if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
+      return restoreContextUnlock(opts);
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:restart-host', handleRestartHost);
+
+  ipcMain.on('context-meter:get-chinese-config-sync', (event) => {
+    try {
+      const { loadModulesConfig } = require('./modules-config');
+      const cfg = loadModulesConfig();
+      event.returnValue = cfg?.modules?.chinese || null;
+    } catch (e) {
+      event.returnValue = null;
+    }
+  });
+
+  ipcMain.handle('context-meter:enhance-status', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getEnhanceStatus } = require('./meter-enhance');
+      return { ok: true, data: getEnhanceStatus(options && typeof options === 'object' ? options : {}) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:enhance-apply', async (event, payload) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { applyEnhancePatch } = require('./meter-enhance');
+      return applyEnhancePatch(payload && typeof payload === 'object' ? payload : {});
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:enhance-restore', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { restoreAllEnhance } = require('./meter-enhance');
+      return restoreAllEnhance(options && typeof options === 'object' ? options : {});
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:restart-language-servers', async (event) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { restartLanguageServers } = require('./meter-enhance');
+      return restartLanguageServers();
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -695,6 +834,7 @@ function shouldInterceptWindowClose(win, options = {}) {
 
 exports.handleModulesStatus = handleModulesStatus;
 exports.handleToggleModule = handleToggleModule;
+exports.handleRestartHost = handleRestartHost;
 exports.setAppQuitting = setAppQuitting;
 exports.getAppQuitting = getAppQuitting;
 exports.shouldInterceptWindowClose = shouldInterceptWindowClose;

@@ -20,7 +20,24 @@ const { getStateDir } = require('./asar-engine');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
-const ALLOWED_ROUTES = ['/scan', '/token-history', '/record-calls', '/get-settings', '/save-settings', '/launch-cli', '/context-unlock-status', '/context-unlock-apply', '/context-unlock-restore'];
+const ALLOWED_ROUTES = [
+  '/scan',
+  '/token-history',
+  '/record-calls',
+  '/get-settings',
+  '/save-settings',
+  '/launch-cli',
+  '/context-unlock-status',
+  '/context-unlock-apply',
+  '/context-unlock-restore',
+  '/enhance-status',
+  '/enhance-apply',
+  '/enhance-restore',
+  '/restart-language-servers',
+  '/modules-status',
+  '/toggle-module',
+  '/restart-host'
+];
 
 (async () => {
   const api = await connect();
@@ -93,21 +110,92 @@ const ALLOWED_ROUTES = ['/scan', '/token-history', '/record-calls', '/get-settin
           return;
         }
         if (req.url === '/context-unlock-status') {
-          const result = await getContextUnlockStatus();
+          const result = await getContextUnlockStatus(undefined, request || {});
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, data: result }));
           return;
         }
         if (req.url === '/context-unlock-apply') {
-          const result = applyContextUnlock();
+          const opts = { ...(request || {}) };
+          if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
+          const result = applyContextUnlock(opts);
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
         }
         if (req.url === '/context-unlock-restore') {
-          const result = restoreContextUnlock();
+          const opts = { ...(request || {}) };
+          if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
+          const result = restoreContextUnlock(opts);
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/enhance-status') {
+          const { getEnhanceStatus } = require('./meter-enhance');
+          const result = getEnhanceStatus(request || {});
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: result }));
+          return;
+        }
+        if (req.url === '/enhance-apply') {
+          const { applyEnhancePatch } = require('./meter-enhance');
+          const result = applyEnhancePatch(request || {});
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/enhance-restore') {
+          const { restoreAllEnhance } = require('./meter-enhance');
+          const result = restoreAllEnhance(request || {});
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/restart-language-servers') {
+          const { restartLanguageServers } = require('./meter-enhance');
+          const result = restartLanguageServers();
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/modules-status') {
+          const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: loadModulesConfig(), disk: inspectDiskModules(request?.asarPath || null) }));
+          return;
+        }
+        if (req.url === '/toggle-module') {
+          const { loadModulesConfig, saveModulesConfig, inspectDiskModules, normalizeBrandTitle, normalizeClientLanguage } = require('./modules-config');
+          const cfg = loadModulesConfig();
+          const mod = request?.name;
+          if (!cfg.modules[mod]) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: false, error: `未知模块: ${mod}` }));
+            return;
+          }
+          const extra = request?.opts || {};
+          if (mod === 'chinese') {
+            const nextLang = normalizeClientLanguage(extra.language, Boolean(request?.enable));
+            cfg.modules.chinese.language = nextLang;
+            cfg.modules.chinese.enabled = nextLang === 'zh-CN';
+            if (extra.brandTitle !== undefined) cfg.modules.chinese.brandTitle = normalizeBrandTitle(extra.brandTitle);
+            cfg.modules.chinese.lastUpdated = new Date().toISOString();
+          } else {
+            cfg.modules[mod].enabled = Boolean(request?.enable);
+            if (mod === 'proxy') {
+              if (extra.proxyUrl) cfg.modules.proxy.proxyUrl = extra.proxyUrl;
+              if (extra.bypassList) cfg.modules.proxy.bypassList = extra.bypassList;
+            }
+          }
+          saveModulesConfig(cfg);
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, status: 'config_toggled', data: cfg, disk: inspectDiskModules(extra.asarPath || null), restartRequired: true }));
+          return;
+        }
+        if (req.url === '/restart-host') {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, supported: false }));
           return;
         }
         if (req.url === '/token-history') {

@@ -8,6 +8,10 @@ const crypto = require('crypto');
 
 const {
   AUTHOR_INFO,
+  DEFAULT_CHECKPOINT_TOKENS,
+  MIN_ENGINEERING_LIMIT,
+  MAX_ENGINEERING_LIMIT,
+  validateContextLimit,
   detectTargetBinary,
   findTextSection,
   findPclntab,
@@ -18,7 +22,9 @@ const {
   cleanupOldReplacedFiles,
   applyUnlock,
   restoreUnlock,
-  getUnlockBackupDir
+  syncExternalContextConfigs,
+  getUnlockBackupDir,
+  loadGate3BSidecar
 } = require('./meter-context-unlock');
 
 /**
@@ -27,6 +33,10 @@ const {
 function createMockGoBinary(options = {}) {
   const isPatched = options.isPatched === true;
   const breakSymbols = options.breakSymbols === true;
+  const withDefaultSite = options.withDefaultSite === true;
+  const jccType = options.jccType || 'rel8'; // 'rel8' | 'rel32'
+  const peTimeDateStamp = options.peTimeDateStamp ?? 0x67101122;
+  const peSizeOfImage = options.peSizeOfImage ?? 0x10000;
 
   // 1. DOS + PE Header
   const buf = Buffer.alloc(1024 * 64, 0);
@@ -37,10 +47,12 @@ function createMockGoBinary(options = {}) {
   buf.write('PE\0\0', pe, 'ascii');
   buf.writeUInt16LE(0x8664, pe + 4); // x86-64
   buf.writeUInt16LE(1, pe + 6); // 1 section
+  buf.writeUInt32LE(peTimeDateStamp >>> 0, pe + 8); // TimeDateStamp
   buf.writeUInt16LE(0xf0, pe + 20); // opt header size
 
   const opt = pe + 24;
   buf.writeBigUInt64LE(0x140000000n, opt + 24); // ImageBase
+  buf.writeUInt32LE(peSizeOfImage >>> 0, opt + 56); // SizeOfImage
 
   const sect = opt + 0xf0;
   buf.write('.text\0\0\0', sect, 'ascii');
@@ -53,32 +65,59 @@ function createMockGoBinary(options = {}) {
   const textVA = 0x140001000n;
 
   // 2. 函数体填充
-  // Gate 3A: utils.GetCheckpointConfig
-  // x86-64 原版: 81fa00e80300be00e803000f42f2
-  // x86-64 补丁: 89d6 + 12个 90
+  // Gate 3A: utils.GetCheckpointConfig (将 fn3a 扩展到足够覆盖 0x100~0x280，函数大小 0x200 即可；如果需要测多候选超范围在 0x3000 用自定义函数大小)
   const CLAMP_ORIG = Buffer.from('81fa00e80300be00e803000f42f2', 'hex');
   const CLAMP_PATCH = Buffer.concat([Buffer.from('89d6', 'hex'), Buffer.alloc(12, 0x90)]);
+  const DEF_ORIG = Buffer.from('c7400c00e80300', 'hex');
 
   const fn3aOff = textOff + 0x100;
   buf.set(isPatched ? CLAMP_PATCH : CLAMP_ORIG, fn3aOff + 0x20);
+  if (withDefaultSite) {
+    if (options.partialDefLimit) {
+      const defBuf = Buffer.from('c7400c00000000', 'hex');
+      defBuf.writeUInt32LE(options.partialDefLimit >>> 0, 3);
+      buf.set(defBuf, fn3aOff + 0x60);
+    } else {
+      buf.set(DEF_ORIG, fn3aOff + 0x60);
+    }
+  }
+  if (options.extraClampNear) {
+    buf.set(CLAMP_ORIG, fn3aOff + 0x40);
+  }
+  if (options.extraClampConstFar) {
+    // 仍在 fn3a 体内若 fn3a 足够长（见下面 nextEntry 可调），或把主 default 放 fn3a 后端 >8192B
+    const constBuf = Buffer.alloc(14, 0x90);
+    constBuf[0] = 0xbe;
+    constBuf.writeUInt32LE(512000, 1);
+    buf.set(constBuf, fn3aOff + 0x100);
+  }
 
   // Gate 3B: config.applyFeatureProviderCheckpointOverrideConfig
-  // call to selectCheckpointExperimentKey (e8 disp32) -> test %al,%al (84 c0) -> jne (75 08)
-  const fn3bOff = textOff + 0x300;
-  const fnSelOff = textOff + 0x500;
+  const fn3bOff = textOff + (options.wideFn3a ? 0x3200 : 0x300);
+  const fnSelOff = textOff + (options.wideFn3a ? 0x3400 : 0x500);
 
-  // 在 fn3bOff + 0x10 放置 call fnSel
-  const callDisp = (0x500) - (0x300 + 0x10 + 5);
+  const callDisp = (options.wideFn3a ? 0x3400 : 0x500) - ((options.wideFn3a ? 0x3200 : 0x300) + 0x10 + 5);
   buf[fn3bOff + 0x10] = 0xe8;
   buf.writeInt32LE(callDisp, fn3bOff + 0x11);
   buf[fn3bOff + 0x15] = 0x84; // test %al, %al
   buf[fn3bOff + 0x16] = 0xc0;
-  if (isPatched) {
-    buf[fn3bOff + 0x17] = 0x90; // nop
-    buf[fn3bOff + 0x18] = 0x90;
+  const gate3bPatched = options.gate3bPatched !== undefined ? options.gate3bPatched : isPatched;
+  if (gate3bPatched) {
+    const len = jccType === 'rel32' ? 6 : 2;
+    buf.fill(0x90, fn3bOff + 0x17, fn3bOff + 0x17 + len);
+  } else if (jccType === 'rel32') {
+    buf.set(Buffer.from('0f8512000000', 'hex'), fn3bOff + 0x17);
   } else {
     buf[fn3bOff + 0x17] = 0x75; // jne
     buf[fn3bOff + 0x18] = 0x08;
+  }
+
+  if (options.wideFn3a) {
+    // 将主 clamp 放在偏移 0x2600（距 fn3aOff 0x2500），远端噪声在 fn3aOff+0x20，主 default 在 fn3aOff+0x2540（与主 clamp 在 ±8192 内）
+    buf.fill(0x00, fn3aOff + 0x20, fn3aOff + 0x2e);
+    buf.set(CLAMP_ORIG, fn3aOff + 0x20); // 距 default > 8192 (0x2540 - 0x20 = 0x2520 = 9504 > 8192!)
+    buf.set(CLAMP_ORIG, fn3aOff + 0x2500);
+    buf.set(DEF_ORIG, fn3aOff + 0x2540);
   }
 
   // 3. pclntab 构建
@@ -108,25 +147,29 @@ function createMockGoBinary(options = {}) {
   const recBase = pclnBase + 0x800;
 
   // func 0: utils.GetCheckpointConfig
+  const fn3bRelEntry = options.wideFn3a ? 0x3200 : 0x300;
+  const fnSelRelEntry = options.wideFn3a ? 0x3400 : 0x500;
+  const fnSelNext = options.wideFn3a ? 0x3600 : 0x700;
+
   buf.writeUInt32LE(0x100, pclnArray + 0); // entryoff
   buf.writeUInt32LE(0x800 - 0x400, pclnArray + 4); // funcoff (rec0)
-  buf.writeUInt32LE(0x300, pclnArray + 8); // nextEntry
+  buf.writeUInt32LE(fn3bRelEntry, pclnArray + 8); // nextEntry
 
   buf.writeInt32LE(0, recBase + 0);
   buf.writeInt32LE(off1, recBase + 4); // nameoff
 
   // func 1: config.applyFeatureProviderCheckpointOverrideConfig
-  buf.writeUInt32LE(0x300, pclnArray + 8);
+  buf.writeUInt32LE(fn3bRelEntry, pclnArray + 8);
   buf.writeUInt32LE(0x820 - 0x400, pclnArray + 12);
-  buf.writeUInt32LE(0x500, pclnArray + 16);
+  buf.writeUInt32LE(fnSelRelEntry, pclnArray + 16);
 
   buf.writeInt32LE(0, recBase + 0x20);
   buf.writeInt32LE(off2, recBase + 0x24);
 
   // func 2: config.selectCheckpointExperimentKey
-  buf.writeUInt32LE(0x500, pclnArray + 16);
+  buf.writeUInt32LE(fnSelRelEntry, pclnArray + 16);
   buf.writeUInt32LE(0x840 - 0x400, pclnArray + 20);
-  buf.writeUInt32LE(0x700, pclnArray + 24);
+  buf.writeUInt32LE(fnSelNext, pclnArray + 24);
 
   buf.writeInt32LE(0, recBase + 0x40);
   buf.writeInt32LE(off3, recBase + 0x44);
@@ -191,16 +234,18 @@ test('状态检测：静态打补丁但进程未运行时严禁误报 verified_a
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('状态检测：具备真实请求预算证据时准确判定为已验证生效 (verified_active)', () => {
+test('状态检测：仅观察到大于 256K 预算时绝不误判为真实请求已验证', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-verified-'));
   const testFile = path.join(tmpDir, 'mock_server.exe');
   fs.writeFileSync(testFile, createMockGoBinary({ isPatched: true }));
 
   const res = analyzeBinary(testFile, { currentBudget: 983040 });
-  assert.equal(res.status, 'verified_active');
-  assert.equal(res.statusText, '已验证生效');
-  assert.equal(res.runtimeEvidence.budgetVerified, true);
+  assert.equal(res.status, 'patched_runtime_unconfirmed');
+  assert.equal(res.realRequestVerified, false);
+  assert.equal(res.runtimeEvidence.realRequestVerified, false);
+  assert.equal(res.runtimeEvidence.budgetObservedAbove256k, true);
   assert.match(res.details, /983,040/);
+  assert.match(res.details, /尚未经过真实/);
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -239,10 +284,11 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   assert.equal(postAnalysis.gate3a.status, 'patched');
   assert.equal(postAnalysis.gate3b.status, 'patched');
 
-  // 当产生实际请求预算时，确证为 verified_active
-  const verifiedAnalysis = analyzeBinary(testFile, { backupDir, currentBudget: 983040 });
-  assert.equal(verifiedAnalysis.status, 'verified_active');
-  assert.equal(verifiedAnalysis.statusText, '已验证生效');
+  // 传入显示预算时仅记为参考观察值，严禁伪称已通过真实长请求验证
+  const observedAnalysis = analyzeBinary(testFile, { backupDir, currentBudget: 983040 });
+  assert.equal(observedAnalysis.status, 'patched_runtime_unconfirmed');
+  assert.equal(observedAnalysis.realRequestVerified, false);
+  assert.equal(observedAnalysis.runtimeEvidence.budgetObservedAbove256k, true);
 
   // 2. 幂等执行解锁：识别已打补丁，绝不把补丁覆盖为备份
   const applyRepeat = applyUnlock({ targetPath: testFile, backupDir });
@@ -294,11 +340,12 @@ test('状态流转细分：预算验证、已重启清除待重启标记与状�
   const backupDir = path.join(tmpDir, 'backups');
   fs.writeFileSync(testFile, createMockGoBinary({ isPatched: true }));
 
-  // 1. 预算大于 256,000 (如 983,040) 直接确认为 verified_active
+  // 1. 预算大于 256,000 时仅记录预算观察，不虚假标注为真实请求已验证
   const resBudget = analyzeBinary(testFile, { backupDir, currentBudget: 983040 });
-  assert.equal(resBudget.status, 'verified_active');
-  assert.equal(resBudget.statusText, '已验证生效');
-  assert.equal(resBudget.runtimeEvidence.budgetVerified, true);
+  assert.equal(resBudget.status, 'patched_runtime_unconfirmed');
+  assert.equal(resBudget.realRequestVerified, false);
+  assert.equal(resBudget.runtimeEvidence.observedBudget, 983040);
+  assert.equal(resBudget.runtimeEvidence.budgetObservedAbove256k, true);
   assert.match(resBudget.details, /983,040/);
 
   // 2. 静态未运行状态：进程未运行、文件未被占用，严禁误报 verified_active，准确判定为 patched_runtime_unconfirmed
@@ -405,5 +452,323 @@ test('跨平台与安全架构拦截：非支持平台或架构明确拒绝写�
     assert.equal(textInfo.arch, 'x86-64');
   } finally {
     Object.defineProperty(process, 'platform', { value: origPlatform });
+  }
+});
+
+test('PR #3 算法融合：ORIG / CONST(512000/524288/自定义) / DYN 任意互切、幂等与 rel32 sidecar 恢复', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-pr3-matrix-'));
+  try {
+    const testFile = path.join(tmpDir, 'language_server.exe');
+    const backupDir = path.join(tmpDir, 'backups');
+    const origBuf = createMockGoBinary({ isPatched: false, withDefaultSite: true, jccType: 'rel32' });
+    fs.writeFileSync(testFile, origBuf);
+    const origSha = crypto.createHash('sha256').update(origBuf).digest('hex');
+
+    // 1. ORIG -> CONST(512000)（明确区分 512000 与 524288）
+    const r512 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 512000 });
+    assert.equal(r512.ok, true);
+    assert.equal(r512.configuredMode, 'fixed');
+    assert.equal(r512.configuredLimitTokens, 512000);
+    assert.equal(r512.defaultSitePatched, true);
+    const st512 = analyzeBinary(testFile, { backupDir });
+    assert.equal(st512.configuredMode, 'fixed');
+    assert.equal(st512.configuredLimitTokens, 512000);
+    assert.equal(st512.gate3a.defaultLimit, 512000);
+    assert.equal(st512.gate3b.status, 'patched');
+    assert.equal(st512.gate3b.length, 6);
+
+    // 验证 Gate 3B 6字节 rel32 sidecar 记录准确
+    const sidecar = loadGate3BSidecar(backupDir);
+    assert.equal(sidecar.origHex, '0f8512000000');
+    assert.equal(sidecar.length, 6);
+
+    // 2. 同值幂等
+    const r512Repeat = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 512000 });
+    assert.equal(r512Repeat.ok, true);
+    assert.equal(r512Repeat.alreadyMatched, true);
+
+    // 3. CONST(512000) -> CONST(524288)
+    const r524 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 524288 });
+    assert.equal(r524.ok, true);
+    assert.equal(r524.configuredLimitTokens, 524288);
+    const st524 = analyzeBinary(testFile, { backupDir });
+    assert.equal(st524.configuredLimitTokens, 524288);
+    assert.equal(st524.gate3a.defaultLimit, 524288);
+
+    // 4. CONST(524288) -> 自定义非预设值 300000
+    const r300 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: '300000' });
+    assert.equal(r300.ok, true);
+    const st300 = analyzeBinary(testFile, { backupDir, expectedLimit: 300000 });
+    assert.equal(st300.configuredMode, 'fixed');
+    assert.equal(st300.configuredLimitTokens, 300000);
+    assert.equal(st300.gate3a.defaultLimit, 300000);
+
+    // 5. CONST(300000) -> DYN（动态透传，不锁定 983040，且 default 站点切回 256000）
+    const rDyn = applyUnlock({ targetPath: testFile, backupDir, mode: 'dynamic' });
+    assert.equal(rDyn.ok, true);
+    const stDyn = analyzeBinary(testFile, { backupDir });
+    assert.equal(stDyn.configuredMode, 'dynamic');
+    assert.equal(stDyn.configuredLimitTokens, null);
+    assert.equal(stDyn.gate3a.defaultLimit, 256000);
+    assert.match(stDyn.configuredSummary, /跟随模型/);
+
+    // 6. DYN -> default 模式切换恢复官方 ORIG 与 rel32 Gate 3B 字节，SHA-256 必须与原版一致
+    const rDef = applyUnlock({ targetPath: testFile, backupDir, mode: 'default' });
+    assert.equal(rDef.ok, true);
+    assert.equal(rDef.configuredMode, 'default');
+    const restoredSha = crypto.createHash('sha256').update(fs.readFileSync(testFile)).digest('hex');
+    assert.equal(restoredSha, origSha);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('边界输入校验、部分匹配拒绝、多候选收窄与拒绝写入', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-guards-'));
+  try {
+    // 1. 输入整数范围与合理小窗口校验
+    assert.equal(validateContextLimit(0).ok, false);
+    assert.equal(validateContextLimit(-5000).ok, false);
+    assert.equal(validateContextLimit(512000.5).ok, false);
+    assert.equal(validateContextLimit('512k').ok, false);
+    assert.equal(validateContextLimit(MIN_ENGINEERING_LIMIT - 1).ok, false);
+    assert.equal(validateContextLimit(MAX_ENGINEERING_LIMIT + 1).ok, false);
+
+    const smallValid = validateContextLimit(32768);
+    assert.equal(smallValid.ok, true);
+    assert.ok(smallValid.warnings.length >= 1, '小窗口必须给出输出预留空间警告');
+
+    const overflowLimit = validateContextLimit(524288, { serviceLimit: 256000 });
+    assert.equal(overflowLimit.ok, true);
+    assert.ok(overflowLimit.warnings.some(w => w.includes('256,000')));
+
+    // 2. 部分匹配状态：clamp(ORIG) 与 def(524288) 矛盾，拒绝写入
+    const partialFile = path.join(tmpDir, 'partial.exe');
+    fs.writeFileSync(partialFile, createMockGoBinary({ isPatched: false, withDefaultSite: true, partialDefLimit: 524288 }));
+    const partialRes = analyzeBinary(partialFile);
+    assert.equal(partialRes.status, 'partial_match');
+    const applyPartial = applyUnlock({ targetPath: partialFile, backupDir: path.join(tmpDir, 'bak1'), mode: 'fixed', limitTokens: 512000 });
+    assert.equal(applyPartial.ok, false);
+    assert.equal(applyPartial.code, 'PARTIAL_MATCH');
+
+    // 3. 混合状态：3A=patched 且 3B=unpatched，同样拒绝盲写
+    const mixedFile = path.join(tmpDir, 'mixed.exe');
+    fs.writeFileSync(mixedFile, createMockGoBinary({ isPatched: true, gate3bPatched: false }));
+    assert.equal(analyzeBinary(mixedFile).status, 'partial_match');
+    assert.equal(applyUnlock({ targetPath: mixedFile, backupDir: path.join(tmpDir, 'bak2'), mode: 'dynamic' }).ok, false);
+
+    // 4. 多候选无法唯一收窄：同函数相邻两个 clamp 均在 default 8192 范围内，拒绝写入
+    const ambFile = path.join(tmpDir, 'ambiguous.exe');
+    fs.writeFileSync(ambFile, createMockGoBinary({ isPatched: false, withDefaultSite: true, extraClampNear: true }));
+    const ambAnalysis = analyzeBinary(ambFile);
+    assert.equal(ambAnalysis.gate3a.status, 'unknown');
+    assert.match(ambAnalysis.gate3a.reason, /\d+\s*个\s*Gate 3A clamp 候选/);
+    assert.equal(applyUnlock({ targetPath: ambFile, backupDir: path.join(tmpDir, 'bak3'), mode: 'dynamic' }).ok, false);
+
+    // 5. 多候选可收窄：远离 default (>8192) 的噪声候选被排除，主候选成功收窄并写入
+    const narrowFile = path.join(tmpDir, 'narrow.exe');
+    fs.writeFileSync(narrowFile, createMockGoBinary({ isPatched: false, wideFn3a: true }));
+    const narrowRes = applyUnlock({ targetPath: narrowFile, backupDir: path.join(tmpDir, 'bak4'), mode: 'fixed', limitTokens: 524288 });
+    assert.equal(narrowRes.ok, true);
+    assert.equal(analyzeBinary(narrowFile, { backupDir: path.join(tmpDir, 'bak4') }).configuredLimitTokens, 524288);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('版本漂移安全拦截：宿主升级导致 PE 指纹变更后拒绝还原旧备份与复用旧 sidecar', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-pe-drift-'));
+  try {
+    const testFile = path.join(tmpDir, 'language_server.exe');
+    const backupDir = path.join(tmpDir, 'backups');
+
+    // v1 打补丁生成备份与 Gate 3B sidecar
+    fs.writeFileSync(testFile, createMockGoBinary({ isPatched: false, withDefaultSite: true, peTimeDateStamp: 0x11111111, peSizeOfImage: 0x10000 }));
+    const r1 = applyUnlock({ targetPath: testFile, backupDir, mode: 'dynamic' });
+    assert.equal(r1.ok, true);
+
+    // 模拟官方升级覆盖了新版本（PE TimeDateStamp 与 SizeOfImage 改变，且已是新构建 patched 形态）
+    fs.writeFileSync(testFile, createMockGoBinary({ isPatched: true, withDefaultSite: true, peTimeDateStamp: 0x22222222, peSizeOfImage: 0x12000 }));
+
+    const driftStatus = analyzeBinary(testFile, { backupDir });
+    assert.equal(driftStatus.hasBackup, true);
+    assert.equal(driftStatus.backupValidForCurrentBinary, false);
+    assert.equal(driftStatus.hasMatchingGate3BSidecar, false);
+    assert.match(driftStatus.backupStaleReason, /PE 构建版本已变更/);
+
+    // 尝试用旧备份恢复或无有效 sidecar 切回 default 时，必须严格拒绝！
+    const restoreDrift = restoreUnlock({ targetPath: testFile, backupDir });
+    assert.equal(restoreDrift.ok, false);
+    assert.equal(restoreDrift.code, 'BACKUP_VERSION_MISMATCH');
+
+    const switchDefaultDrift = applyUnlock({ targetPath: testFile, backupDir, mode: 'default' });
+    assert.equal(switchDefaultDrift.ok, false);
+    assert.equal(switchDefaultDrift.code, 'MISSING_OR_STALE_GATE3B_SIDECAR');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('handleRestartHost: 正常触发 app.relaunch + app.quit，无能力时返回 supported: false', async () => {
+  const { handleRestartHost, setAppQuitting, getAppQuitting } = require('./meter-main');
+  const localEvent = { senderFrame: { url: 'https://127.0.0.1:443/chat' } };
+
+  await assert.rejects(
+    () => handleRestartHost({ senderFrame: { url: 'https://example.com/' } }),
+    /仅允许本机主聊天窗口/
+  );
+
+  // 1. 纯 Node 环境无 Electron app 时明确返回 supported: false
+  const noAppRes = await handleRestartHost(localEvent);
+  assert.deepEqual(noAppRes, { ok: true, supported: false });
+
+  // 2. 注入模拟 Electron app 验证顺序执行 setAppQuitting(true) -> relaunch -> quit
+  const calls = [];
+  const fakeApp = {
+    relaunch: (opts) => calls.push(['relaunch', opts]),
+    quit: () => calls.push(['quit'])
+  };
+  try {
+    setAppQuitting(false);
+    const okRes = await handleRestartHost(localEvent, { appOverride: fakeApp, args: ['--test'], delayMs: 0 });
+    assert.deepEqual(okRes, { ok: true, supported: true });
+    assert.equal(getAppQuitting(), true);
+    assert.deepEqual(calls, [
+      ['relaunch', { args: ['--test'] }],
+      ['quit']
+    ]);
+  } finally {
+    setAppQuitting(false);
+  }
+});
+
+test('1M 应用回归：函数体内存在额外 1000000 干扰常量时仍准确收窄唯一 Gate 3A 并可互切还原', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-unlock-1m-'));
+  try {
+    const binPath = path.join(tmpDir, 'language_server.exe');
+    const backupDir = path.join(tmpDir, 'backups');
+    const mockBuf = createMockGoBinary({ withDefaultSite: true });
+    // 查找 textOff + 0x100 + 0x60 处刚写入的 DEF_ORIG (c7 40 0c 00 e8 03 00) 并为其前驱补上 jg +7 (7f 07)
+    const defSig = Buffer.from('c7400c00e80300', 'hex');
+    const defIdx = mockBuf.indexOf(defSig);
+    assert.ok(defIdx > 10);
+    mockBuf[defIdx - 2] = 0x7f;
+    mockBuf[defIdx - 1] = 0x07;
+    // 在同函数体内随后偏移放置一个不相关的 c7 40 0c <1000000> 常量
+    const noiseBuf = Buffer.from('488990a8000000c7400c40420f00', 'hex');
+    mockBuf.set(noiseBuf, defIdx + 0x20);
+    fs.writeFileSync(binPath, mockBuf);
+
+    // 1. 直接应用 1000000，不得因 1000000 常量而出现双候选失败
+    const res1M = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'fixed', limitTokens: 1000000 });
+    assert.equal(res1M.ok, true, `1M 应用应成功，实际错误: ${res1M.error}`);
+    assert.equal(res1M.configuredMode, 'fixed');
+    assert.equal(res1M.configuredLimitTokens, 1000000);
+
+    // 2. 切回 512000 与 dynamic，并还原原版
+    const res512 = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'fixed', limitTokens: 512000 });
+    assert.equal(res512.ok, true);
+    assert.equal(res512.configuredLimitTokens, 512000);
+
+    const resDyn = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'dynamic' });
+    assert.equal(resDyn.ok, true);
+    assert.equal(resDyn.configuredMode, 'dynamic');
+
+    const resRestore = restoreUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir });
+    assert.equal(resRestore.ok, true);
+    const { analyzeBinaryAsync } = require('./meter-context-unlock');
+    const afterRestore = await analyzeBinaryAsync(binPath);
+    assert.equal(afterRestore.status, 'not_patched');
+
+    // 3. 验证 failed 状态保留具体 gate3a.reason
+    const { synthesizeAnalysisStatus } = require('./meter-context-unlock');
+    const failedSynth = synthesizeAnalysisStatus({
+      target: binPath,
+      gate3a: { status: 'failed', reason: '检测到 2 个 Gate 3A default 候选且无法唯一收窄' },
+      gate3b: { status: 'original' }
+    });
+    assert.equal(failedSynth.overallStatus, 'failed');
+    assert.ok(failedSynth.details.includes('Gate 3A'));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('PR #3 CLI serializer 门禁互切及外部配置文件 / context-mode.json 精确同步', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-unlock-ext-'));
+  try {
+    const binPath = path.join(tmpDir, 'language_server.exe');
+    const backupDir = path.join(tmpDir, 'backups');
+    const fakeHome = path.join(tmpDir, 'home');
+    fs.mkdirSync(fakeHome, { recursive: true });
+
+    const mockBuf = createMockGoBinary({ withDefaultSite: true });
+    // 放入 CLI serializer 原生特征 `4889442470488b8c24a80100008908b830000000` 到可用代码空间
+    const serStock = Buffer.from('4889442470488b8c24a80100008908b830000000', 'hex');
+    const serOffset = mockBuf.indexOf(Buffer.from('c7400c00e80300', 'hex')) + 0x40;
+    serStock.copy(mockBuf, serOffset);
+    fs.writeFileSync(binPath, mockBuf);
+
+    // 1. Fixed 1000000: serializer 改写 mov dword [rax], 1000000 (c700 40420f00), config.json 与 context-mode.json 同步
+    const rFixed = await applyUnlock({ targetPath: binPath, backupDir, mode: 'fixed', limitTokens: 1000000, homeDir: fakeHome });
+    assert.equal(rFixed.ok, true);
+    const patchedSerSlice = fs.readFileSync(binPath).subarray(serOffset + 5, serOffset + 11);
+    assert.equal(patchedSerSlice.toString('hex'), 'c70040420f00');
+
+    const { readExternalContextConfig } = require('./meter-context-unlock');
+    const extFixed = readExternalContextConfig({ homeDir: fakeHome });
+    assert.equal(extFixed.configContextWindow, '1000K');
+    assert.equal(extFixed.contextModeBridge.effectiveMode, 'fixed');
+    assert.equal(extFixed.contextModeBridge.limitTokens, 1000000);
+
+    // 2. Dynamic: serializer 恢复 SERIALIZER_STOCK_X64 透传，context-mode.json 不冒充 983040
+    const rDyn = await applyUnlock({ targetPath: binPath, backupDir, mode: 'dynamic', homeDir: fakeHome });
+    assert.equal(rDyn.ok, true);
+    assert.equal(Buffer.compare(fs.readFileSync(binPath).subarray(serOffset, serOffset + serStock.length), serStock), 0);
+    const extDyn = readExternalContextConfig({ homeDir: fakeHome });
+    assert.equal(extDyn.configContextWindow, null);
+    assert.equal(extDyn.contextModeBridge.effectiveMode, 'dynamic');
+    assert.equal(extDyn.contextModeBridge.limitTokens, null);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('安全隔离回归：测试下缺失或拼错 targetPath 绝对禁止探测或写入系统安装目录', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-unlock-iso-'));
+  try {
+    const mockExe = path.join(tmpDir, 'mock_ls.exe');
+    fs.writeFileSync(mockExe, createMockGoBinary({ withDefaultSite: true }));
+    const backupDir = path.join(tmpDir, 'backups');
+
+    // 1. 拼错字段 binPath，即使 backupDir 存在或缺失均直接拒绝
+    const typo1 = applyUnlock({ binPath: mockExe, backupDir, mode: 'fixed', limitTokens: 1000000 });
+    assert.equal(typo1.ok, false);
+    assert.equal(typo1.code, 'INVALID_TARGET_OPTION');
+
+    const typo2 = applyUnlock({ binPath: mockExe, mode: 'fixed', limitTokens: 512000 });
+    assert.equal(typo2.ok, false);
+    assert.equal(typo2.code, 'INVALID_TARGET_OPTION');
+
+    const typoRestore = restoreUnlock({ binaryPath: mockExe });
+    assert.equal(typoRestore.ok, false);
+    assert.equal(typoRestore.code, 'INVALID_TARGET_OPTION');
+
+    // 2. 在 node --test 下未指定 targetPath 直接拒绝回退 detectTargetBinary()
+    const missingApply = applyUnlock({ mode: 'dynamic' });
+    assert.equal(missingApply.ok, false);
+    assert.equal(missingApply.code, 'MISSING_TARGET_PATH');
+
+    const missingRestore = restoreUnlock({});
+    assert.equal(missingRestore.ok, false);
+    assert.equal(missingRestore.code, 'MISSING_TARGET_PATH');
+
+    // 3. 验证 mockExe 与隔离外部配置目录未受写入污染
+    const fakeHome = path.join(tmpDir, 'home');
+    const syncedNoHome = syncExternalContextConfigs('fixed', 512000, { backupDir, targetPath: mockExe, syncConfigFiles: true });
+    assert.deepEqual(syncedNoHome, [], '隔离上下文缺失 homeDir 时不得写入真实主目录');
+    assert.equal(fs.existsSync(fakeHome), false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

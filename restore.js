@@ -220,6 +220,7 @@ async function restore(options = {}) {
             'meter-proxy.js',
             'meter-cli-launcher.js',
             'meter-context-unlock.js',
+            'meter-enhance.js',
             'local-api.js',
             'attachment_scan.py'
           ];

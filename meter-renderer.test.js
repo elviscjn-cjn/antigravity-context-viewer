@@ -375,7 +375,7 @@ test('6 independent custom color slots support custom values, reset to theme def
 test('window controls overlay spacer, convPane flex-grow self-healing, and clean dispose', () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
-  assert.equal(api.version, '0.8.2');
+  assert.equal(api.version, '0.8.3');
 
   // 1. Antigravity 1.x: class contains 'top-0'
   const cluster1x = h.sandbox.document.createElement();
@@ -823,7 +823,7 @@ test('default current period API reference amount, independent subscription spen
 
   assert.equal(customForm.style.display, 'none');
   assert.equal(h.elements.get('p-det-region').textContent, '日本 (JP)');
-  assert.match(h.elements.get('p-det-acq').textContent, /学生认证优惠/);
+  assert.match(h.elements.get('p-det-acq').textContent, /学生.*优惠/);
   assert.match(h.elements.get('p-det-price').textContent, /\$0/);
   assert.equal(h.elements.get('p-det-price-tag').textContent, '手动确认 · 免费');
 
@@ -912,7 +912,7 @@ test('integrated verification: legacy payload without referenceCost calculates d
   // 点击展开
   toggleBtn.click();
   assert.equal(detailsPane.style.display, 'block');
-  assert.equal(toggleBtn.textContent, '收起详情 ▲');
+  assert.equal(toggleBtn.textContent, '收起详情 ▴');
   const expandedLeft = parseInt(pTokens.style.left, 10);
   assert.ok(expandedLeft <= compactLeft); // 宽度增加时向左下方展开，left 变小
 
@@ -1502,6 +1502,889 @@ test('online update and GitHub entry points: openExternal whitelist enforcement 
   h.elements.get('btn-apply-update').click();
   await h.flush();
   assert.ok(appliedUpdateOpts);
+
+  api.dispose();
+});
+
+test('按稳定模型 ID 持久化上下文偏好、损坏隔离与模型切换独立加载', () => {
+  const tmpDir = fs.mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'ctx-pref-test-'));
+  try {
+    const collector = require('./meter-collector');
+    const stableA = core.resolveStableModelId({ model: 'MODEL_PLACEHOLDER_M37', modelDisplayName: 'Gemini 3.8 Flash' });
+    const stableB = core.resolveStableModelId({ model: 'claude-opus-5-5-thinking', modelDisplayName: 'Claude Opus 5.5' });
+    assert.equal(stableA, 'model_placeholder_m37');
+    assert.equal(stableB, 'claude-opus-5-5-thinking');
+
+    // 无效参数必须直接拦截拒写
+    const badFixed = collector.savePluginSettings({
+      contextPreference: { modelId: stableA, mode: 'fixed', limitTokens: 5000 }
+    }, { agDir: tmpDir });
+    assert.equal(badFixed.ok, false);
+
+    // 分别保存模型 A (512,000) 与 模型 B (动态透传)
+    const saveA = collector.savePluginSettings({
+      contextPreference: { modelId: stableA, label: 'Gemini 3.8 Flash', mode: 'fixed', limitTokens: 512000 }
+    }, { agDir: tmpDir });
+    assert.equal(saveA.ok, true);
+
+    const saveB = collector.savePluginSettings({
+      contextPreference: { modelId: stableB, label: 'Claude Opus 5.5', mode: 'dynamic' }
+    }, { agDir: tmpDir });
+    assert.equal(saveB.ok, true);
+
+    // 重新读取验证双方互相独立不覆盖
+    const loaded1 = collector.getPluginSettings({ agDir: tmpDir });
+    assert.equal(loaded1.contextPreferences[stableA].limitTokens, 512000);
+    assert.equal(loaded1.contextPreferences[stableB].mode, 'dynamic');
+
+    // 单模型恢复默认只移除 A，保留 B
+    const resetA = collector.savePluginSettings({
+      clearContextPreference: true,
+      modelId: stableA
+    }, { agDir: tmpDir });
+    assert.equal(resetA.ok, true);
+    const loaded2 = collector.getPluginSettings({ agDir: tmpDir });
+    assert.equal(loaded2.contextPreferences[stableA], undefined);
+    assert.equal(loaded2.contextPreferences[stableB].mode, 'dynamic');
+
+    // 配置文件损坏保护：破坏文件后触发备份隔离不崩溃
+    const cfgPath = collector.getCustomPlanPath(tmpDir);
+    fs.writeFileSync(cfgPath, '{ BROKEN_JSON !!!', 'utf8');
+    const recovered = collector.getPluginSettings({ agDir: tmpDir });
+    assert.equal(recovered.ok, true);
+    assert.equal(recovered.recoveredFromCorruption, true);
+    assert.ok(fs.existsSync(cfgPath.replace(/\.json$/i, '.corrupt.bak.json')));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('3 分页布局、设置视图迁移、7.1 禁用词与查看模型选择器契约', async () => {
+  const savedPayloads = [];
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, contextPreferences: {} }),
+    saveSettings: async (payload) => {
+      savedPayloads.push(payload);
+      return { ok: true, contextPreferences: {} };
+    },
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: { status: 'not_patched', arch: 'x86-64', configuredMode: 'default', configuredLimitTokens: 256000 }
+    }),
+    getModulesStatus: async () => ({
+      ok: true,
+      data: { modules: { chinese: { enabled: true }, proxy: { enabled: false, proxyUrl: 'http://127.0.0.1:7890' } } },
+      disk: { chineseReady: true, proxyReady: true }
+    }),
+    toggleModule: async () => ({ ok: true })
+  };
+
+  // 打开面板，验证 3 分页与当前会话核心字段保留
+  h.elements.get('badge').click();
+  await h.flush();
+  const api = h.sandbox.__AGContextMeter;
+  api.setContextLatestForTest({
+    model: 'Gemini 4 Argon (Low)',
+    modelId: 'gemini-4-argon-low',
+    status: 'reported',
+    used: 42000,
+    budget: 256000,
+    remaining: 214000,
+    speed: { tps: 88.5, durationSec: 2.0, ttftSec: 0.4, outputTokens: 177 }
+  }, [
+    { modelId: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
+    { modelId: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }
+  ]);
+  await h.flush();
+
+  assert.equal(h.elements.get('ctx-model-selector-role').textContent, '查看模型');
+  assert.equal(h.elements.get('pane-ctx-session').hidden, false);
+  assert.equal(h.elements.get('pane-ctx-models').hidden, true);
+  assert.equal(h.elements.get('pane-ctx-speed').hidden, true);
+  assert.equal(h.elements.get('speed-val').textContent, '88.5 tok/s');
+
+  // 切换到“模型设置”分页并验证选择器切换不写配置、且出现“回到当前模型”
+  h.elements.get('tab-ctx-models').click();
+  await h.flush();
+  assert.equal(h.elements.get('pane-ctx-models').hidden, false);
+  assert.equal(h.elements.get('pane-ctx-session').hidden, true);
+  const saveCountBeforeSwitch = savedPayloads.length;
+  const selectEl = h.elements.get('ctx-model-select');
+  selectEl.value = 'product:anthropic:claude-sonnet-4.6';
+  selectEl.trigger('change', { target: { value: 'product:anthropic:claude-sonnet-4.6' } });
+  await h.flush();
+  assert.equal(h.elements.get('btn-ctx-back-current').hidden, false);
+  assert.equal(savedPayloads.length, saveCountBeforeSwitch, '查看其他模型不得自动改写配置');
+  h.elements.get('btn-ctx-back-current').click();
+  assert.equal(api.getContextPreferencesState().selectedProductKey, 'product:google:gemini-4-argon');
+  assert.equal(h.elements.get('btn-ctx-back-current').hidden, true);
+
+  // 打开 ⚙ 设置视图，验证汉化、代理、外观 DOM ID 与事件仍在且 ‹ 返回有效
+  h.elements.get('btn-ctx-settings').click();
+  await h.flush();
+  assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
+  assert.equal(h.elements.get('ctx-tabs-bar').hidden, false);
+  assert.ok(h.elements.get('btn-toggle-chinese'));
+  assert.ok(h.elements.get('btn-toggle-chinese-module'));
+  assert.ok(h.elements.get('btn-toggle-proxy'));
+  assert.ok(h.elements.get('input-proxy-url'));
+  assert.ok(h.elements.get('input-proxy-bypass'));
+  assert.ok(h.elements.get('btn-toggle-proxy-module'));
+  assert.ok(h.elements.get('btn-toggle-colors'));
+  assert.ok(h.elements.get('color-panelBg'));
+  assert.ok(h.elements.get('btn-panel-palette'));
+
+  // 验证汉化切换按钮事件仍然有效
+  let toggleCalled = false;
+  h.sandbox.window.contextMeterAPI.toggleModule = async (mod) => {
+    if (mod === 'chinese') toggleCalled = true;
+    return { ok: true, data: { modules: { chinese: { enabled: false }, proxy: { enabled: false } } } };
+  };
+  h.elements.get('btn-toggle-chinese-module').click();
+  await h.flush();
+  assert.equal(toggleCalled, true);
+
+  h.elements.get('btn-ctx-settings-back').click();
+  assert.equal(h.elements.get('pane-ctx-settings').hidden, true);
+  assert.equal(h.elements.get('pane-ctx-models').hidden, false);
+
+  // 7.1 禁用词检查：模板中 #panel 区域及普通视图动态 DOM 文本均不可出现技术黑话
+  const tplHtml = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const panelSection = tplHtml.slice(tplHtml.indexOf('id="panel"'), tplHtml.indexOf('id="token-panel"'));
+  const forbiddenTerms = ['共享后端', '动态透传', 'Gate', 'sidecar', 'PE 指纹', '补丁', '二进制', 'language_server', 'manifest'];
+  const collectedRuntimeText = [
+    h.elements.get('ctx-compact-saved')?.textContent || '',
+    h.elements.get('ctx-compact-client')?.textContent || '',
+    h.elements.get('ctx-client-status-text')?.textContent || '',
+    h.elements.get('unlock-badge')?.textContent || '',
+    h.elements.get('ctx-card-saved')?.textContent || '',
+    h.elements.get('ctx-card-client')?.textContent || '',
+    h.elements.get('ctx-card-client-tag')?.textContent || '',
+    h.elements.get('ctx-card-observed-budget')?.textContent || '',
+    h.elements.get('ctx-card-observed-speed')?.textContent || '',
+    h.elements.get('unlock-status-desc')?.textContent || ''
+  ].join('\n');
+  for (const term of forbiddenTerms) {
+    assert.equal(panelSection.includes(term), false, `template.html 面板区不可包含禁用词: ${term}`);
+    assert.equal(collectedRuntimeText.includes(term), false, `运行时普通视图不可包含禁用词: ${term}`);
+  }
+  api.dispose();
+});
+
+test('产品级偏好、旧档位同值直显与异值冲突迁移、预设 512K/524288/983040 边界与 K 统一', async () => {
+  const savedStore = {
+    // 1. Hydrogen 同值旧键 -> 应直接合并显示 512K，且用户点击保存后清旧键写产品键
+    'gemini-4-hydrogen-low': { modelId: 'gemini-4-hydrogen-low', mode: 'fixed', limitTokens: 512000 },
+    'gemini-4-hydrogen-high': { modelId: 'gemini-4-hydrogen-high', mode: 'fixed', limitTokens: 512000 },
+    // 2. Argon 异值旧键 -> 应显示冲突横幅，用户未确认前绝不写回
+    'gemini-4-argon-low': { modelId: 'gemini-4-argon-low', mode: 'fixed', limitTokens: 524288 },
+    'gemini-4-argon-high': { modelId: 'gemini-4-argon-high', mode: 'fixed', limitTokens: 983040 }
+  };
+  let saveCalls = 0;
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, contextPreferences: { ...savedStore } }),
+    saveSettings: async (payload) => {
+      saveCalls++;
+      if (payload?.contextPreference) {
+        if (Array.isArray(payload.contextPreference.clearLegacyKeys)) {
+          for (const k of payload.contextPreference.clearLegacyKeys) delete savedStore[k];
+        }
+        const k = payload.contextPreference.productKey || payload.contextPreference.modelId;
+        savedStore[k] = { ...payload.contextPreference };
+      }
+      return { ok: true, contextPreferences: { ...savedStore } };
+    },
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: { status: 'not_patched', arch: 'x86-64', configuredMode: 'default', configuredLimitTokens: 256000 }
+    })
+  };
+  const api = h.sandbox.__AGContextMeter;
+  h.elements.get('ctx-conflict-rows').replaceChildren = function(...nodes) { this.children = nodes; };
+  h.elements.get('ctx-card-observed-speed').replaceChildren = function(...nodes) { this.children = nodes; };
+  const cascadeConfigs = [
+    { modelId: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+    { modelId: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+    { modelId: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
+    { modelId: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+    { modelId: 'orchestrator-carbon', label: 'Orchestrator (Carbon)' },
+    { modelId: 'orchestrator-argon', label: 'Orchestrator (Argon)' }
+  ];
+
+  // 先从宿主 mock 恢复测试配置，再切换至 Argon (触发异值冲突) -> 确认未写入、冲突横幅可见
+  await api.restoreSettingsFromHost();
+  api.setContextLatestForTest({
+    model: 'Gemini 4 Argon (Low)',
+    modelId: 'gemini-4-argon-low',
+    status: 'reported',
+    used: 12000,
+    budget: 256000,
+    serviceLimit: 1000000
+  }, cascadeConfigs);
+  api.switchContextTabForTest('models');
+  await h.flush();
+  assert.equal(h.elements.get('ctx-conflict-banner').hidden, false);
+  assert.equal(saveCalls, 0, '展示冲突时绝不能自动写入');
+  // 验证 budget 与 serviceLimit 分开显示（默认短 K 格式 + 悬浮完整数字）
+  assert.match(h.elements.get('ctx-card-observed-budget').textContent, /256K/);
+  assert.match(h.elements.get('ctx-card-observed-budget').title || '', /256,000/);
+  assert.match(h.elements.get('ctx-card-service-limit').textContent, /服务端报错上限：1M/);
+  assert.match(h.elements.get('ctx-card-service-limit').title || '', /1,000,000/);
+  assert.equal(h.elements.get('ctx-card-service-limit').hidden, false);
+
+  // 点击第一个冲突行的“用这个”(524288) -> 验证清掉旧档位键，写入产品键，并显示“自定义 524.3K（524,288）”
+  const conflictRows = h.elements.get('ctx-conflict-rows').children;
+  assert.ok(conflictRows.length >= 2);
+  const useBtn = conflictRows[0].children.find(c => c.textContent === '用这个');
+  useBtn.click();
+  await h.flush();
+  assert.equal(h.elements.get('ctx-conflict-banner').hidden, true);
+  assert.equal(savedStore['gemini-4-argon-low'], undefined);
+  assert.equal(savedStore['gemini-4-argon-high'], undefined);
+  assert.equal(savedStore['product:google:gemini-4-argon'].limitTokens, 524288);
+  assert.match(h.elements.get('ctx-card-saved').textContent, /自定义 524\.3K（524,288）/);
+
+  // B. 校验固定 983040 与动态跟随 (mode: 'dynamic') 是不同的存储结构
+  const customInput = h.elements.get('ctx-custom-limit-input');
+  customInput.value = '983040';
+  customInput.trigger('input');
+  h.elements.get('btn-save-model-ctx').click();
+  await h.flush();
+  assert.equal(savedStore['product:google:gemini-4-argon'].mode, 'fixed');
+  assert.equal(savedStore['product:google:gemini-4-argon'].limitTokens, 983040);
+  assert.match(h.elements.get('ctx-card-saved').textContent, /自定义 983K（983,040）/);
+
+  const dynBtn = { getAttribute: (k) => (k === 'data-ctx-mode' ? 'dynamic' : ''), dataset: { ctxMode: 'dynamic', ctxLimit: '' } };
+  h.elements.get('ctx-preset-grid').trigger('click', { target: { closest: () => dynBtn } });
+  h.elements.get('btn-save-model-ctx').click();
+  await h.flush();
+  assert.equal(savedStore['product:google:gemini-4-argon'].mode, 'dynamic');
+  assert.equal(savedStore['product:google:gemini-4-argon'].limitTokens, null);
+
+  // C. 切换 Hydrogen (同值 512,000 旧档位自动直显，不报冲突)，切换其 High 档位也共享同产品偏好，且预算/速度不跨档位借用
+  api.setContextLatestForTest({
+    model: 'Gemini 4 Hydrogen (Low)',
+    modelId: 'gemini-4-hydrogen-low',
+    status: 'reported',
+    used: 5000,
+    budget: 512000
+  }, cascadeConfigs);
+  await h.flush();
+  assert.equal(h.elements.get('ctx-conflict-banner').hidden, true);
+  assert.match(h.elements.get('ctx-card-saved').textContent, /^512K$/);
+  assert.match(h.elements.get('ctx-card-saved').title || '', /512,000/);
+
+  // 点击 512K 预设确认写入值是 512000 而非 524288
+  const p512Btn = { getAttribute: (k) => (k === 'data-ctx-mode' ? 'fixed' : (k === 'data-ctx-limit' ? '512000' : '')), dataset: { ctxMode: 'fixed', ctxLimit: '512000' } };
+  h.elements.get('ctx-preset-grid').trigger('click', { target: { closest: () => p512Btn } });
+  h.elements.get('btn-save-model-ctx').click();
+  await h.flush();
+  assert.equal(savedStore['product:google:gemini-4-hydrogen'].limitTokens, 512000);
+  assert.equal(savedStore['gemini-4-hydrogen-low'], undefined);
+
+  // 切换到未观测过的 Orchestrator (Carbon)，确保缺失预算与速度不跨档位借用且显示规定文案
+  api.setContextLatestForTest({
+    model: 'Orchestrator (Carbon)',
+    modelId: 'orchestrator-carbon',
+    status: 'reported',
+    used: 1000
+  }, cascadeConfigs);
+  await h.flush();
+  assert.equal(h.elements.get('ctx-card-observed-budget').textContent, '尚未观测');
+  assert.equal(h.elements.get('ctx-card-observed-speed').children[0]?.textContent, '暂无实测数据');
+
+  api.dispose();
+});
+
+test('安全应用、重启确认、手动重启说明与三条件已加载核验', async () => {
+  let restartCalls = 0;
+  let nextRestartSupported = true;
+  let mockStatusData = {
+    status: 'not_patched',
+    arch: 'x86-64',
+    configuredMode: 'default',
+    configuredLimitTokens: 256000,
+    runtimeEvidence: { restartDetected: false }
+  };
+  let nextApplyResponse = { ok: false, error: 'EBUSY: 占用中' };
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, contextPreferences: {} }),
+    saveSettings: async () => ({ ok: true }),
+    getContextUnlockStatus: async () => ({ ok: true, data: { ...mockStatusData } }),
+    applyContextUnlock: async () => nextApplyResponse,
+    restartHost: async () => {
+      restartCalls++;
+      return { ok: true, supported: nextRestartSupported };
+    }
+  };
+  const api = h.sandbox.__AGContextMeter;
+  api.setContextLatestForTest({ model: 'Gemini 4 Flash', modelId: 'gemini-4-flash', status: 'reported', used: 1000, budget: 256000 });
+  api.switchContextTabForTest('models');
+  await h.flush();
+
+  // 1. 保存 / 应用失败 -> 不出现重启按钮，不调用重启 IPC
+  const p512Btn = { getAttribute: (k) => (k === 'data-ctx-mode' ? 'fixed' : (k === 'data-ctx-limit' ? '512000' : '')), dataset: { ctxMode: 'fixed', ctxLimit: '512000' } };
+  h.elements.get('ctx-preset-grid').trigger('click', { target: { closest: () => p512Btn } });
+  h.elements.get('btn-apply-unlock').click();
+  await h.flush();
+  assert.equal(h.elements.get('btn-restart-host').hidden, true, '应用失败绝不出现重启按钮');
+  assert.equal(restartCalls, 0);
+
+  // 2. 应用成功且 needsRestart: true -> 自动出现重启按钮，但绝不自动重启
+  nextApplyResponse = { ok: true, needsRestart: true };
+  mockStatusData = {
+    status: 'patched_pending_restart',
+    arch: 'x86-64',
+    configuredMode: 'fixed',
+    configuredLimitTokens: 512000,
+    runtimeEvidence: { restartDetected: false }
+  };
+  h.elements.get('btn-apply-unlock').click();
+  await h.flush();
+  assert.equal(restartCalls, 0, '保存并应用后不能自动重启');
+  assert.equal(h.elements.get('btn-restart-host').hidden, false);
+
+  // 3. 当宿主不支持重启 (supported: false) -> 点击确认后显示手动重启说明
+  nextRestartSupported = false;
+  h.elements.get('btn-restart-host').click();
+  assert.equal(h.elements.get('ctx-restart-confirm').hidden, false);
+  h.elements.get('btn-restart-confirm-go').click();
+  await h.flush();
+  assert.equal(restartCalls, 1);
+  assert.equal(h.elements.get('ctx-manual-restart-note').hidden, false);
+
+  // 4. 三条件核验：仅 patched_loaded + 未重启 => 状态未确认；
+  // 重启过但配置不一致 (实际 256000 vs 目标 512000) => 状态未确认；
+  // 三条件全满足 => 已加载
+  api.setRestartVerificationForTest({ mode: 'fixed', limitTokens: 512000, requestedAt: new Date().toISOString() });
+  mockStatusData = { status: 'patched_loaded', arch: 'x86-64', configuredMode: 'fixed', configuredLimitTokens: 512000, runtimeEvidence: { restartDetected: false } };
+  await api.refreshUnlockStatusForTest();
+  assert.equal(h.elements.get('unlock-badge').textContent, '状态未确认');
+
+  mockStatusData = { status: 'patched_loaded', arch: 'x86-64', configuredMode: 'fixed', configuredLimitTokens: 256000, runtimeEvidence: { restartDetected: true } };
+  await api.refreshUnlockStatusForTest();
+  assert.equal(h.elements.get('unlock-badge').textContent, '状态未确认');
+  assert.equal(h.elements.get('ctx-restart-mismatch-note').hidden, false);
+
+  // 重新应用匹配目标并满足全部三条件
+  api.setRestartVerificationForTest({ mode: 'fixed', limitTokens: 512000, requestedAt: new Date().toISOString() });
+  mockStatusData = { status: 'patched_loaded', arch: 'x86-64', configuredMode: 'fixed', configuredLimitTokens: 512000, runtimeEvidence: { restartDetected: true } };
+  await api.refreshUnlockStatusForTest();
+  assert.equal(h.elements.get('unlock-badge').textContent, '已加载');
+
+  api.dispose();
+});
+
+test('速度对比分页：零网络请求与零 IPC 发送，正确绘制柱状图/折线图并标注样本少', async () => {
+  const h = harness();
+  h.finishScan();
+  await h.flush();
+  const api = h.sandbox.__AGContextMeter;
+
+  h.elements.get('badge').click();
+  h.elements.get('tab-ctx-speed').click();
+  await h.flush();
+  // harness 默认 replaceChildren 不保留子节点，此处启用以检查 SVG 绘制元素
+  h.elements.get('speed-bar-svg').replaceChildren = function(...nodes) { this.children = nodes; };
+  h.elements.get('speed-line-svg').replaceChildren = function(...nodes) { this.children = nodes; };
+
+  const fetchBefore = h.pending.length;
+  const scansBefore = h.scans.length;
+
+  const now = Date.now();
+  api.setSpeedRecordsForTest([
+    { callId: 'c1', modelExactId: 'gemini-4-argon-low', modelLabel: 'Gemini 4 Argon (Low)', status: 'final', outputTokens: 120, durationSec: 2, tps: 60, ttftSec: 0.5, timestamp: now - 5000 },
+    { callId: 'c2', modelExactId: 'gemini-4-argon-low', modelLabel: 'Gemini 4 Argon (Low)', status: 'final', outputTokens: 200, durationSec: 2, tps: 100, ttftSec: 0.7, timestamp: now - 3000 },
+    { callId: 'c3', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', outputTokens: 160, durationSec: 2, tps: 80, ttftSec: 0.9, timestamp: now - 4000 },
+    { callId: 'c4', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', outputTokens: 180, durationSec: 2, tps: 90, ttftSec: 1.0, timestamp: now - 2000 },
+    { callId: 'c5', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', outputTokens: 200, durationSec: 2, tps: 100, ttftSec: 1.1, timestamp: now - 1000 }
+  ]);
+  // 再切换到其他分页切回“速度对比”，确认打开页面不触发网络请求与 IPC
+  h.elements.get('tab-ctx-session').click();
+  h.elements.get('tab-ctx-speed').click();
+  await h.flush();
+
+  assert.equal(h.pending.length, fetchBefore, '打开速度对比页不得发起任何 fetch 请求');
+  assert.equal(h.scans.length, scansBefore, '打开速度对比页不得发起任何 scan/IPC');
+  assert.equal(h.elements.get('speed-bar-empty').hidden, true);
+  assert.equal(h.elements.get('speed-line-empty').hidden, true);
+
+  const collectNodeTexts = (node) => {
+    if (!node) return [];
+    const arr = [];
+    if (node.textContent) arr.push(node.textContent);
+    if (Array.isArray(node.children)) {
+      for (const ch of node.children) arr.push(...collectNodeTexts(ch));
+    }
+    return arr;
+  };
+  const barTexts = collectNodeTexts(h.elements.get('speed-bar-svg')).join(' | ');
+  assert.match(barTexts, /样本少/);
+  assert.ok(h.elements.get('speed-line-svg').children.length > 0, '折线图 SVG 应生成绘制节点');
+
+  // 切换指标到首字延迟
+  h.elements.get('speed-metric-ttft').click();
+  assert.equal(h.elements.get('speed-bar-title').textContent, '首字延迟对比');
+
+  api.dispose();
+});
+
+test('插件面板三语言切换、持久化、动态文案、模型名保留与客户端语言分离', async () => {
+  let savedSettingsPayload = null;
+  let storedSettings = {
+    contextPreferences: { 'gemini-3-1-pro': { mode: 'fixed', limitTokens: 512000 } }
+  };
+  let restartCalls = 0;
+
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, ...storedSettings }),
+    saveSettings: async (payload) => {
+      savedSettingsPayload = payload;
+      storedSettings = {
+        ...storedSettings,
+        panelLanguage: payload.panelLanguage,
+        uiPreferences: { ...(storedSettings.uiPreferences || {}), ...(payload.uiPreferences || {}) }
+      };
+      return { ok: true, ...storedSettings };
+    },
+    restartHost: async () => {
+      restartCalls += 1;
+      return { ok: true, supported: true };
+    },
+    getModulesStatus: async () => ({
+      ok: true,
+      chinese: { enabled: true, applied: true, active: true, asarPatched: true, targetLanguage: 'zh-CN' },
+      proxy: { enabled: false, active: false }
+    })
+  };
+  h.finishScan();
+  await h.flush();
+  const api = h.sandbox.__AGContextMeter;
+  await api.restoreSettingsForTest();
+
+  // 1. 老用户未设置 panelLanguage 时默认保持简体中文 (zh-CN)
+  assert.equal(api.getPanelLanguage(), 'zh-CN');
+  assert.equal(api.translateForTest('tab.session'), '当前会话');
+  assert.equal(api.translateForTest('tab.models'), '模型设置');
+  assert.equal(api.translateForTest('tab.speed'), '速度对比');
+  assert.equal(h.elements.get('status').textContent, '请求用量与会话累计分别统计；会话 token 数始终为本地估算。');
+
+  // 打开上下文面板与设置页，验证客户端语言选项仅提供简体中文和 English（无虚假繁體中文客户端按钮）
+  h.elements.get('badge').click();
+  h.elements.get('btn-ctx-settings').click();
+  await h.flush();
+  assert.ok(h.elements.get('btn-panel-lang-zh-CN'), '面板应提供简体中文按钮');
+  assert.ok(h.elements.get('btn-panel-lang-zh-TW'), '面板应提供繁體中文按钮');
+  assert.ok(h.elements.get('btn-panel-lang-en'), '面板应提供 English 按钮');
+  assert.ok(h.elements.get('btn-client-lang-zh-CN'), '客户端语言应提供简体中文按钮');
+  assert.ok(h.elements.get('btn-client-lang-en'), '客户端语言应提供 English 按钮');
+  assert.equal(h.elements.get('btn-client-lang-zh-TW'), undefined, '客户端暂不交付繁體中文词典，不得出现无效选择项');
+  assert.match(api.translateForTest('settings.clientLang.licenseNote'), /qqxpee\/antigravity2-cn/, '应展示客户端词典授权说明');
+
+  // 准备模型数据与最新请求数据（含官方模型名与准确 ID）
+  api.setContextLatestForTest({
+    model: 'Gemini 3.1 Pro (High)',
+    modelId: 'MODEL_PLACEHOLDER_M26',
+    status: 'reported',
+    used: 120000,
+    budget: 512000,
+    speed: { tps: 45, duration: 2.0, ttft: 0.4, streamingSec: 1.6, outputTokens: 90 }
+  });
+  await h.flush();
+
+  // 2. 切换为繁體中文 -> 立即更新静态+动态文案，不改写上下文长度，不触发重启
+  h.elements.get('btn-panel-lang-zh-TW').click();
+  await h.flush();
+  assert.equal(api.getPanelLanguage(), 'zh-TW');
+  assert.equal(api.translateForTest('tab.session'), '目前工作階段');
+  assert.equal(api.translateForTest('tab.models'), '模型設定');
+  assert.equal(api.translateForTest('tab.speed'), '速度對比');
+  assert.equal(h.elements.get('panel-lang-save-badge').textContent, '已切換並儲存');
+  assert.equal(savedSettingsPayload.panelLanguage, 'zh-TW');
+  assert.equal(savedSettingsPayload.contextPreferences, undefined, '切换面板语言不得改写上下文偏好');
+  assert.equal(restartCalls, 0, '切换面板语言不得触发重启');
+  assert.equal(h.elements.get('model').textContent, 'Gemini 3.1 Pro (High)', '模型正式名称应保持原样不被翻译');
+  assert.equal(h.elements.get('speed-badge').textContent, '流暢');
+
+  // 验证静态属性遍历器在标准 DOM 下会同步更新 data-i18n 节点
+  const mockStaticNode = {
+    getAttribute: (k) => (k === 'data-i18n' ? 'tab.session' : null),
+    textContent: ''
+  };
+  api.applyStaticTranslationsForTest({
+    querySelectorAll: (sel) => (sel === '[data-i18n]' ? [mockStaticNode] : [])
+  });
+  assert.equal(mockStaticNode.textContent, '目前工作階段');
+
+  // 3. 切换为 English -> 验证静态标签、动态状态、模型名称原样保留
+  h.elements.get('btn-panel-lang-en').click();
+  await h.flush();
+  assert.equal(api.getPanelLanguage(), 'en');
+  assert.equal(api.translateForTest('tab.session'), 'Session');
+  assert.equal(api.translateForTest('tab.models'), 'Models');
+  assert.equal(api.translateForTest('tab.speed'), 'Speed');
+  assert.equal(api.translateForTest('models.btn.saveApply'), 'Save & Apply');
+  assert.equal(h.elements.get('speed-bar-title').textContent, 'Output Speed Comparison');
+  assert.equal(h.elements.get('panel-lang-save-badge').textContent, api.translateForTest('settings.panelLang.saved'));
+  assert.equal(h.elements.get('model').textContent, 'Gemini 3.1 Pro (High)', '切换为 English 后模型正式名称应保持原样');
+  assert.equal(h.elements.get('speed-badge').textContent, 'Smooth');
+  assert.equal(storedSettings.contextPreferences['gemini-3-1-pro'].limitTokens, 512000, '已有模型上下文偏好必须保持原值');
+
+  // 4. 模拟重启恢复：重新挂载并从 getSettings 恢复为 en
+  api.dispose();
+  const h2 = harness();
+  h2.sandbox.window.contextMeterAPI = {
+    ...h2.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, ...storedSettings })
+  };
+  await h2.sandbox.__AGContextMeter.restoreSettingsForTest();
+  await h2.flush();
+  assert.equal(h2.sandbox.__AGContextMeter.getPanelLanguage(), 'en');
+  assert.equal(h2.elements.get('status').textContent, 'Request usage and cumulative session totals are tracked separately; session totals are local estimates.');
+  h2.sandbox.__AGContextMeter.dispose();
+});
+
+test('0.8.3 UI & restart & i18n regression: model selector moved into tab, details collapsed, restart button persists on patched_runtime_unconfirmed', async () => {
+  const pathMod = require('path');
+  const html = fs.readFileSync(pathMod.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const headerStart = html.indexOf('<div class="panel-header-bar">');
+  const tabsStart = html.indexOf('<div id="ctx-tabs-bar"');
+  assert.ok(headerStart >= 0 && tabsStart > headerStart);
+  const headerSlice = html.slice(headerStart, tabsStart);
+  assert.equal(headerSlice.includes('ctx-model-dropdown-wrap'), false, '标题栏第一行不应再包含模型下拉选择器');
+  const modelsPaneStart = html.indexOf('<div id="pane-ctx-models"');
+  const speedPaneStart = html.indexOf('<div id="pane-ctx-speed"');
+  const modelsPaneSlice = html.slice(modelsPaneStart, speedPaneStart);
+  assert.equal(modelsPaneSlice.includes('ctx-model-dropdown-wrap'), true, '模型选择器应位于模型设置页内');
+  assert.equal(modelsPaneSlice.includes('ctx-card-details-drawer'), true, '实测预算与速度详情应位于下层折叠抽屉');
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  assert.notEqual(h.elements.get('ctx-card-drawer-body').style.display, 'block');
+  h.elements.get('btn-toggle-card-details').click();
+  assert.equal(h.elements.get('ctx-card-drawer-body').style.display, 'block');
+  h.elements.get('btn-toggle-card-details').click();
+  assert.equal(h.elements.get('ctx-card-drawer-body').style.display, 'none');
+
+  // 模拟应用 1000000 后刷新状态返回 patched_runtime_unconfirmed，重启按钮必须保持可见
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: {
+        status: 'patched_runtime_unconfirmed',
+        arch: 'x86-64',
+        clientMode: 'fixed',
+        clientLimitTokens: 1000000,
+        hasBackup: true
+      }
+    }),
+    applyContextUnlock: async () => ({
+      ok: true,
+      status: 'patched_pending_restart',
+      arch: 'x86-64',
+      configuredMode: 'fixed',
+      configuredLimitTokens: 1000000,
+      needsRestart: true,
+      hasBackup: true
+    }),
+    saveSettings: async (p) => ({ ok: true, contextPreferences: {} })
+  };
+
+  api.setContextLatestForTest({
+    model: 'Gemini 3.8 Flash (Medium)',
+    modelId: 'gemini-3-8-flash-medium',
+    cascadeModelConfigs: [
+      { label: 'Gemini 3.8 Flash (Medium)', modelOrAlias: { model: 'gemini-3-8-flash-medium' } }
+    ]
+  });
+  await h.flush();
+
+  const limitInput = h.elements.get('ctx-custom-limit-input');
+  limitInput.value = '1000000';
+  limitInput.trigger('input');
+  h.elements.get('btn-apply-unlock').click();
+  await h.flush();
+  assert.equal(h.elements.get('btn-restart-host').hidden, false, '应用成功后即使状态为 patched_runtime_unconfirmed，重启按钮也必须可见');
+
+  // 切换至英文后确认新增 i18n 键非空且不等于中文
+  h.elements.get('btn-panel-lang-en').click();
+  await h.flush();
+  assert.equal(api.translateForTest('models.card.detailsToggle'), 'Observed budget, speed & details');
+  assert.equal(api.translateForTest('cost.subSpendLabel'), 'Your Actual Spend');
+  assert.equal(api.translateForTest('diag.ctx.badge'), 'Limit');
+  api.dispose();
+});
+
+test('0.8.3 增强设置中心全流程：品牌三态、0~4档矩阵、推荐配置勾选确认与恢复官方默认', async () => {
+  const calls = { enhanceApply: [], enhanceRestore: 0, toggleMod: [], unlockApply: [], unlockRestore: 0, restartLs: 0 };
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getEnhanceStatus: async () => ({
+      ok: true,
+      data: {
+        supported: true,
+        summary: {
+          promptTier: 0,
+          chineseTitleEnabled: false,
+          chineseTitleMode: 'en',
+          slotCount: 10,
+          activeSlotBytes: 3100,
+          totalCapacityBytes: 8192,
+          allBackedUp: false
+        }
+      }
+    }),
+    applyEnhancePatch: async (p) => {
+      calls.enhanceApply.push(p);
+      return { ok: true, needsRestart: true };
+    },
+    restoreAllEnhance: async () => {
+      calls.enhanceRestore++;
+      return { ok: true, needsRestart: true };
+    },
+    restartLanguageServers: async () => {
+      calls.restartLs++;
+      return { ok: true, killed: ['language_server.exe'] };
+    },
+    getModulesStatus: async () => ({
+      ok: true,
+      data: { modules: { chinese: { enabled: false, brandTitle: 'english' }, proxy: { enabled: false } } },
+      disk: { chinese: false, proxy: false }
+    }),
+    toggleModule: async (name, enable, opts) => {
+      calls.toggleMod.push({ name, enable, opts });
+      return { ok: true };
+    },
+    applyContextUnlock: async (p) => {
+      calls.unlockApply.push(p);
+      return { ok: true, needsRestart: true };
+    },
+    restoreContextUnlock: async () => {
+      calls.unlockRestore++;
+      return { ok: true };
+    }
+  };
+
+  h.elements.get('btn-ctx-settings').click();
+  await h.flush();
+  assert.equal(h.elements.get('enhance-stat-backup').textContent, '无（未改写）');
+
+  // 1. 切换品牌展示为「隐藏」
+  h.elements.get('btn-brand-hidden').click();
+  await h.flush();
+  assert.equal(calls.toggleMod.length, 1);
+  assert.equal(calls.toggleMod[0].opts.brandTitle, 'hidden');
+
+  // 2. 选择 4 档，核对保留/清空/替换矩阵文案更新
+  h.elements.get('enhance-tier-4').click();
+  assert.match(h.elements.get('enhance-tier-replaces').textContent, /证据准则|真实工具/);
+
+  // 3. 勾选推荐配置四项 -> 弹窗预览确认 -> 一键写入
+  h.elements.get('chk-rec-prompt').checked = true;
+  h.elements.get('chk-rec-title').checked = true;
+  h.elements.get('chk-rec-lang').checked = true;
+  h.elements.get('chk-rec-ctx').checked = true;
+  h.elements.get('btn-enhance-preset-apply').click();
+  assert.equal(h.elements.get('enhance-preset-confirm').hidden, false);
+
+  h.elements.get('btn-enhance-confirm-go').click();
+  await h.flush();
+  assert.equal(calls.enhanceApply[0].promptTier, 4);
+  assert.equal(calls.enhanceApply[0].chineseTitle, true);
+  assert.equal(calls.toggleMod.some(c => c.name === 'chinese' && c.enable === true), true);
+  assert.equal(calls.unlockApply[0].mode, 'dynamic');
+  assert.equal(h.elements.get('btn-enhance-restart-ls').hidden, false);
+  assert.equal(h.elements.get('btn-enhance-restart-host').hidden, false);
+
+  // 4. 恢复全部官方默认
+  h.elements.get('btn-enhance-restore-all').click();
+  h.elements.get('btn-enhance-confirm-go').click();
+  await h.flush();
+  assert.equal(calls.enhanceRestore, 1);
+  assert.equal(calls.unlockRestore, 1);
+  assert.equal(calls.toggleMod.at(-1).enable, false);
+  api.dispose();
+});
+
+test('0.8.3 结果框重启/手动引导、partial_match 重试与全量三语言无遗漏', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // 1. 模拟不支持自动重启的预览态 + 状态 partial_match -> 重试按钮必须可见，不误显示重启按钮
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: {
+        status: 'partial_match',
+        arch: 'x86-64',
+        hostSupportsRestart: false,
+        partialMatchReason: '未找到可用的上下文写入模式或目标特征不完整'
+      }
+    }),
+    saveSettings: async () => ({ ok: true, contextPreferences: {} })
+  };
+
+  await api.refreshUnlockStatusForTest();
+  await h.flush();
+  const uiState1 = api.getUnlockUiStateForTest();
+  assert.equal(uiState1.resultBoxDisplay, 'block');
+  assert.equal(uiState1.resultRetryHidden, false, 'partial_match 时应显示重新检测按钮');
+  assert.equal(uiState1.resultRestartHidden, true, '不支持自动重启时不应显示假重启按钮');
+
+  // 2. 切换为 zh-TW 和 en 验证所有核心增强与错误键都有准确非空翻译
+  for (const lang of ['zh-TW', 'en']) {
+    await api.setPanelLanguage(lang, { persist: false });
+    const titleVal = api.translateForTest('enhance.preset.title');
+    const partialVal = api.translateForTest('status.badge.partialMatch');
+    const halluVal = api.translateForTest('enhance.hallucinationNote');
+    assert.ok(titleVal && titleVal !== 'enhance.preset.title');
+    assert.ok(partialVal && partialVal !== 'status.badge.partialMatch');
+    assert.ok(halluVal && halluVal !== 'enhance.hallucinationNote');
+    if (lang === 'en') {
+      assert.equal(/[\u4e00-\u9fa5]/.test(titleVal), false, `en 文案不应含汉字: ${titleVal}`);
+      assert.equal(/[\u4e00-\u9fa5]/.test(partialVal), false, `en 文案不应含汉字: ${partialVal}`);
+    }
+  }
+  api.dispose();
+});
+
+test('0.8.3 推荐配置按勾选隔离且部分失败准确分列成功/失败，全部恢复不吞异常', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const calls = { enhanceApply: 0, toggleMod: 0, unlockApply: 0, unlockRestore: 0 };
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getEnhanceStatus: async () => ({ ok: true, data: { supported: true, summary: { promptTier: 0, chineseTitleMode: 'en' } } }),
+    applyEnhancePatch: async () => { calls.enhanceApply++; return { ok: true, needsRestart: true }; },
+    restoreAllEnhance: async () => ({ ok: true, needsRestart: true }),
+    getModulesStatus: async () => ({ ok: true, data: { modules: { chinese: { enabled: false, brandTitle: 'english' } } }, disk: {} }),
+    toggleModule: async () => { calls.toggleMod++; return { ok: false, error: 'app.asar 被占用' }; },
+    applyContextUnlock: async () => { calls.unlockApply++; return { ok: true, needsRestart: true }; },
+    restoreContextUnlock: async () => { calls.unlockRestore++; return { ok: false, error: 'language_server.exe 被锁定' }; }
+  };
+
+  h.elements.get('btn-ctx-settings').click();
+  await h.flush();
+
+  // 1. 只勾选上下文一项：其余三项调用数必须为 0
+  h.elements.get('chk-rec-prompt').checked = false;
+  h.elements.get('chk-rec-title').checked = false;
+  h.elements.get('chk-rec-lang').checked = false;
+  h.elements.get('chk-rec-ctx').checked = true;
+  h.elements.get('btn-enhance-preset-apply').click();
+  h.elements.get('btn-enhance-confirm-go').click();
+  await h.flush();
+  assert.equal(calls.enhanceApply, 0);
+  assert.equal(calls.toggleMod, 0);
+  assert.equal(calls.unlockApply, 1);
+
+  // 2. 恢复全部默认：提示词成功，但语言开关和上下文还原均返回失败 -> 绝不能整组报成功
+  h.elements.get('btn-enhance-restore-all').click();
+  assert.match(h.elements.get('enhance-preset-confirm-text').textContent, /不会清除网络代理/);
+  h.elements.get('btn-enhance-confirm-go').click();
+  await h.flush();
+  const resText = h.elements.get('enhance-global-result-text').textContent;
+  assert.match(resText, /部分完成/);
+  assert.match(resText, /app\.asar 被占用/);
+  assert.match(resText, /language_server\.exe 被锁定/);
+  assert.match(h.elements.get('enhance-global-result').className, /result-error/);
+  api.dispose();
+});
+
+test('0.8.3 UI 模式切换：所有模型统一设置与按模型分别设置切换、极简看板与详细信息折叠抽屉', async () => {
+  const h = harness();
+  let savedSettings = null;
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({
+      ok: true,
+      contextScopeMode: 'unified',
+      contextUnifiedPreference: { mode: 'fixed', limitTokens: 500000 },
+      contextPreferences: {
+        'product:google:gemini-3.8-flash': { mode: 'fixed', limitTokens: 512000 }
+      }
+    }),
+    saveSettings: async (payload) => {
+      savedSettings = payload;
+      return { ok: true, contextPreferences: {} };
+    },
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: { status: 'not_patched', arch: 'x86-64', hostSupportsRestart: false }
+    })
+  };
+
+  h.elements.get('badge').click();
+  await h.flush();
+  const api = h.sandbox.__AGContextMeter;
+  api.setContextLatestForTest({
+    model: 'Gemini 3.8 Flash',
+    modelId: 'gemini-3.8-flash',
+    status: 'reported',
+    used: 12000,
+    budget: 256000,
+    remaining: 244000
+  }, [
+    { modelId: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' }
+  ]);
+  h.elements.get('tab-ctx-models').click();
+  await h.flush();
+
+  // 1. 验证极简主看板元素存在且内容直观
+  const summaryModeEl = h.elements.get('ctx-summary-mode');
+  const summaryModelEl = h.elements.get('ctx-summary-model');
+  const summaryLengthEl = h.elements.get('ctx-summary-length');
+  const summaryPillEl = h.elements.get('ctx-summary-status-pill');
+  assert.ok(summaryModeEl, '当前模式元素存在');
+  assert.ok(summaryModelEl, '当前模型元素存在');
+  assert.ok(summaryLengthEl, '当前使用长度元素存在');
+  assert.ok(summaryPillEl, '当前状态角标存在');
+
+  // 2. 初始统一模式下：模型选择器工具条与模型列表处于隐藏状态
+  const btnUnified = h.elements.get('btn-ctx-mode-unified');
+  const btnPerModel = h.elements.get('btn-ctx-mode-per-model');
+  const toolbar = h.elements.get('ctx-models-toolbar');
+  const modelList = h.elements.get('ctx-model-list');
+  assert.equal(toolbar.hidden, true);
+  assert.equal(modelList.hidden, true);
+
+  // 3. 点击切换为按模型分别设置
+  btnPerModel.click();
+  await h.flush();
+  assert.equal(api.getContextScopeModeForTest(), 'per_model');
+  assert.equal(toolbar.hidden, false);
+  assert.equal(modelList.hidden, false);
+  assert.match(summaryModeEl.textContent, /按模型分别设置/);
+
+  // 4. 折叠抽屉：详细信息默认折叠，点击展开与收起
+  const cardDrawerBody = h.elements.get('ctx-card-drawer-body');
+  const toggleBtn = h.elements.get('btn-toggle-card-details');
+  assert.ok(toggleBtn);
+  assert.ok(cardDrawerBody);
+  toggleBtn.click();
+  assert.equal(cardDrawerBody.style.display, 'block');
+  toggleBtn.click();
+  assert.equal(cardDrawerBody.style.display, 'none');
+
+  // 5. 切回统一设置：原统一设置完好保留，不冲刷也不丢失
+  btnUnified.click();
+  await h.flush();
+  assert.equal(api.getContextScopeModeForTest(), 'unified');
+  assert.equal(toolbar.hidden, true);
+  assert.equal(modelList.hidden, true);
 
   api.dispose();
 });

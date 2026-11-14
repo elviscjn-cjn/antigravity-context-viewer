@@ -22,6 +22,8 @@ const {
   analyzeBinaryAsync,
   applyUnlock: applyContextUnlock,
   restoreUnlock: restoreContextUnlock,
+  validateContextLimit,
+  DEFAULT_CHECKPOINT_TOKENS,
   AUTHOR_INFO: CONTEXT_UNLOCK_AUTHOR
 } = require('./meter-context-unlock');
 const {
@@ -39,6 +41,9 @@ const {
   parseGeneratorCall,
   extractModelString,
   normalizeModelId,
+  resolveStableModelId,
+  isValidSpeedSample,
+  MAX_SPEED_SAMPLES_PER_MODEL,
   calculateRequestApiCost,
   filterReleases,
   findReleaseAsset,
@@ -81,6 +86,223 @@ function resolvePython() {
   }
   cachedPython = null;
   return null;
+}
+
+/**
+ * 规范化模型标识符（小写且去掉 proto 常见 MODEL_ 前缀）
+ * @param {string} raw
+ * @returns {string}
+ */
+function normalizeModelKeyForCap(raw) {
+  if (raw === null || raw === undefined) return '';
+  return String(raw).trim().toLowerCase().replace(/^model_/, '');
+}
+
+/**
+ * 读取正整数能力数值；非正数或非法值统一返回 null
+ * @param {unknown} v
+ * @returns {number|null}
+ */
+function toPositiveIntOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * 读取非负整数能力数值（如 minThinkingBudget/maxOutputTokens 为 0）
+ * @param {unknown} v
+ * @returns {number|null}
+ */
+function toNonNegativeIntOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
+}
+
+/**
+ * 解析 LanguageServerService.GetAvailableModels 响应为安全能力映射表
+ * 仅提取数值/枚举/标签元数据，绝不保留敏感或无关负载
+ * @param {object|null|undefined} raw
+ * @returns {Record<string, object>}
+ */
+function parseAvailableModelsResponse(raw) {
+  const out = Object.create(null);
+  const modelsObj = raw?.response?.models || raw?.models || (raw && typeof raw === 'object' && !Array.isArray(raw) && !raw.userStatus ? raw : null);
+  if (!modelsObj || typeof modelsObj !== 'object') return out;
+
+  const entries = Array.isArray(modelsObj)
+    ? modelsObj.map(item => [item?.model || item?.modelId || item?.id || '', item])
+    : Object.entries(modelsObj);
+
+  for (const [entryKey, d] of entries) {
+    if (!d || typeof d !== 'object') continue;
+    const rawId = String(d.model || d.modelId || entryKey || '').trim();
+    if (!rawId) continue;
+    const normKey = normalizeModelKeyForCap(rawId);
+    const entry = {
+      modelId: rawId,
+      normalizedId: normKey,
+      displayName: typeof d.displayName === 'string' && d.displayName.trim() ? d.displayName.trim() : null,
+      maxTokens: toPositiveIntOrNull(d.maxTokens ?? d.max_tokens),
+      maxOutputTokens: toNonNegativeIntOrNull(d.maxOutputTokens ?? d.max_output_tokens),
+      thinkingBudget: toNonNegativeIntOrNull(d.thinkingBudget ?? d.thinking_budget),
+      minThinkingBudget: toNonNegativeIntOrNull(d.minThinkingBudget ?? d.min_thinking_budget),
+      thinkingLevel: typeof (d.thinkingLevel ?? d.thinking_level) === 'string' ? (d.thinkingLevel ?? d.thinking_level) : null,
+      supportsModelInfoOverride: typeof (d.supportsModelInfoOverride ?? d.supports_model_info_override) === 'boolean'
+        ? Boolean(d.supportsModelInfoOverride ?? d.supports_model_info_override)
+        : null,
+      modelProvider: typeof (d.modelProvider ?? d.model_provider) === 'string' ? (d.modelProvider ?? d.model_provider) : null,
+      disabled: typeof d.disabled === 'boolean' ? d.disabled : null,
+      recommended: typeof d.recommended === 'boolean' ? d.recommended : null,
+      tagTitle: typeof (d.tagTitle ?? d.tag_title) === 'string' ? (d.tagTitle ?? d.tag_title).trim() : null,
+      tagDescription: typeof (d.tagDescription ?? d.tag_description) === 'string' ? (d.tagDescription ?? d.tag_description).trim() : null,
+      capabilitySource: 'get_available_models'
+    };
+    if (normKey) out[normKey] = entry;
+    if (entryKey && normalizeModelKeyForCap(entryKey) && !out[normalizeModelKeyForCap(entryKey)]) {
+      out[normalizeModelKeyForCap(entryKey)] = entry;
+    }
+  }
+  return out;
+}
+
+/**
+ * 从会话 steps[].metadata.modelInfo 中提取实测上报的模型能力元数据
+ * 严格隐私边界：仅提取 ModelInfo 数值与枚举标识，绝不读取/存储任何用户消息文本或令牌
+ * @param {Array<object>} steps
+ * @returns {Record<string, object>}
+ */
+function extractObservedModelInfoFromSteps(steps) {
+  const out = Object.create(null);
+  if (!Array.isArray(steps)) return out;
+  for (const s of steps) {
+    const md = s?.metadata;
+    const mi = md?.modelInfo || md?.model_info;
+    if (!mi || typeof mi !== 'object') continue;
+    const rawId = String(
+      mi.modelId || mi.model_id || md.requestedModel?.model || md.generatorModel?.model || ''
+    ).trim();
+    const normKey = normalizeModelKeyForCap(rawId);
+    const maxTokens = toPositiveIntOrNull(mi.maxTokens ?? mi.max_tokens);
+    const maxOutputTokens = toNonNegativeIntOrNull(mi.maxOutputTokens ?? mi.max_output_tokens);
+    if (!normKey || (!maxTokens && maxOutputTokens === null)) continue;
+    out[normKey] = {
+      modelId: rawId,
+      normalizedId: normKey,
+      displayName: typeof (mi.displayName ?? mi.display_name) === 'string' ? (mi.displayName ?? mi.display_name).trim() : null,
+      maxTokens,
+      maxOutputTokens,
+      thinkingBudget: toNonNegativeIntOrNull(mi.thinkingBudget ?? mi.thinking_budget),
+      minThinkingBudget: toNonNegativeIntOrNull(mi.minThinkingBudget ?? mi.min_thinking_budget),
+      thinkingLevel: typeof (mi.thinkingLevel ?? mi.thinking_level) === 'string' ? (mi.thinkingLevel ?? mi.thinking_level) : null,
+      capabilitySource: 'step_model_info'
+    };
+  }
+  return out;
+}
+
+/**
+ * 将 GetAvailableModels 与 Step.metadata.modelInfo 的能力字段安全合并到 cascadeModelConfigs
+ * 不做按模型名称猜上限；缺失能力保持 null
+ */
+function mergeModelCapabilitiesIntoConfigs(configs, availableMap = null, stepCapsMap = null) {
+  const list = Array.isArray(configs) ? configs.slice() : [];
+  const availEntries = availableMap && typeof availableMap === 'object' ? Object.values(availableMap) : [];
+  const stepEntries = stepCapsMap && typeof stepCapsMap === 'object' ? Object.values(stepCapsMap) : [];
+
+  const lookupCap = (candidates, label) => {
+    for (const c of candidates) {
+      const k = normalizeModelKeyForCap(c);
+      if (!k) continue;
+      if (availableMap?.[k]) return availableMap[k];
+      if (stepCapsMap?.[k]) return stepCapsMap[k];
+    }
+    const cleanLbl = typeof label === 'string' ? label.trim().toLowerCase() : '';
+    if (cleanLbl) {
+      const aMatches = availEntries.filter(e => e?.displayName && e.displayName.toLowerCase() === cleanLbl);
+      if (aMatches.length === 1) return aMatches[0];
+      const sMatches = stepEntries.filter(e => e?.displayName && e.displayName.toLowerCase() === cleanLbl);
+      if (sMatches.length === 1) return sMatches[0];
+    }
+    return null;
+  };
+
+  const merged = list.map(cfg => {
+    if (!cfg || typeof cfg !== 'object') return cfg;
+    const cap = lookupCap([cfg.modelId, cfg.model, cfg.modelOrAlias?.model, cfg.modelOrAlias?.alias], cfg.label || cfg.modelDisplayName);
+    if (!cap) return cfg;
+    const next = { ...cfg };
+    if (next.maxTokens == null && cap.maxTokens != null) next.maxTokens = cap.maxTokens;
+    if (next.maxOutputTokens == null && cap.maxOutputTokens != null) next.maxOutputTokens = cap.maxOutputTokens;
+    if (next.thinkingBudget == null && cap.thinkingBudget != null) next.thinkingBudget = cap.thinkingBudget;
+    if (next.minThinkingBudget == null && cap.minThinkingBudget != null) next.minThinkingBudget = cap.minThinkingBudget;
+    if (!next.thinkingLevel && cap.thinkingLevel) next.thinkingLevel = cap.thinkingLevel;
+    if (next.supportsModelInfoOverride == null && cap.supportsModelInfoOverride != null) {
+      next.supportsModelInfoOverride = cap.supportsModelInfoOverride;
+    }
+    if (!next.modelProvider && cap.modelProvider) next.modelProvider = cap.modelProvider;
+    if (!next.capabilitySource && cap.capabilitySource) next.capabilitySource = cap.capabilitySource;
+    if (next.disabled === undefined && cap.disabled !== null) next.disabled = cap.disabled;
+    if (!next.tagTitle && cap.tagTitle) next.tagTitle = cap.tagTitle;
+    if (!next.tagDescription && cap.tagDescription) next.tagDescription = cap.tagDescription;
+    return next;
+  });
+
+  return merged;
+}
+
+function sanitizeCascadeModelConfig(c) {
+  if (!c || typeof c !== 'object') return null;
+  const tagTitle = typeof c.tagTitle === 'string' ? c.tagTitle.trim() : '';
+  const tagDesc = typeof c.tagDescription === 'string' ? c.tagDescription.trim() : '';
+  const isTagUnavailable = /unavailable|disabled|不可用/i.test(tagTitle);
+  const isUnavail = Boolean(
+    c.unavailable === true ||
+    c.isUnavailable === true ||
+    c.status === 'unavailable' ||
+    c.disabled === true ||
+    c.enabled === false ||
+    isTagUnavailable
+  );
+  const isHist = Boolean(
+    c.isHistorical === true ||
+    c.historical === true ||
+    c.deprecated === true ||
+    c.isDeprecated === true ||
+    (typeof c.label === 'string' && /\(legacy\)|\(deprecated\)|\(old\)/i.test(c.label))
+  );
+  return {
+    modelId: c.modelId || c.model || '',
+    label: c.label || c.modelDisplayName || c.modelId || '',
+    modelOrAlias: c.modelOrAlias || null,
+    value: c.value !== undefined ? c.value : undefined,
+    modelAlias: c.modelAlias !== undefined ? c.modelAlias : undefined,
+    quotaInfo: c.quotaInfo ? {
+      remainingFraction: typeof c.quotaInfo.remainingFraction === 'number' ? c.quotaInfo.remainingFraction : null,
+      resetTime: c.quotaInfo.resetTime || null
+    } : null,
+    tagTitle: tagTitle || null,
+    tagDescription: tagDesc || null,
+    contextWindowOptions: Array.isArray(c.contextWindowOptions) ? c.contextWindowOptions : undefined,
+    maxTokens: toPositiveIntOrNull(c.maxTokens ?? c.max_tokens),
+    maxOutputTokens: toNonNegativeIntOrNull(c.maxOutputTokens ?? c.max_output_tokens),
+    thinkingBudget: toNonNegativeIntOrNull(c.thinkingBudget ?? c.thinking_budget),
+    minThinkingBudget: toNonNegativeIntOrNull(c.minThinkingBudget ?? c.min_thinking_budget),
+    thinkingLevel: typeof (c.thinkingLevel ?? c.thinking_level) === 'string' ? (c.thinkingLevel ?? c.thinking_level) : null,
+    supportsModelInfoOverride: typeof (c.supportsModelInfoOverride ?? c.supports_model_info_override) === 'boolean'
+      ? Boolean(c.supportsModelInfoOverride ?? c.supports_model_info_override)
+      : null,
+    modelProvider: typeof (c.modelProvider ?? c.model_provider) === 'string' ? (c.modelProvider ?? c.model_provider) : null,
+    capabilitySource: typeof c.capabilitySource === 'string' ? c.capabilitySource : null,
+    unavailable: isUnavail,
+    unavailabilityReason: c.unavailabilityReason || c.disabledReason || c.reason || (isUnavail ? (tagDesc || tagTitle || null) : null),
+    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && tagTitle ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : null),
+    isHistorical: isHist,
+    releaseDate: c.releaseDate || null,
+    family: c.family || null,
+    effort: c.effort || null
+  };
 }
 
 const filesCache = new Map();
@@ -248,6 +470,7 @@ async function collect(origin, id, options = {}) {
       steps.push(...page.steps);
     }
     const session = analyzeSteps(steps);
+    const stepCapabilities = extractObservedModelInfoFromSteps(steps);
     const attachments = await scanFiles(session.media);
     const attachmentTotal = empty();
     for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
@@ -255,8 +478,32 @@ async function collect(origin, id, options = {}) {
     let latest = null;
     const count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
     const tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 3), includeMessages: false });
+    let knownCascadeConfigs = Array.isArray(cachedHostUserStatus?.cascadeModelConfigs) ? cachedHostUserStatus.cascadeModelConfigs : [];
+    const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
+    if (!knownCascadeConfigs.length || !hasAnyCap) {
+      try {
+        const freshStatus = await fetchUserStatusFromHost();
+        if (Array.isArray(freshStatus?.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
+          knownCascadeConfigs = freshStatus.cascadeModelConfigs;
+        }
+      } catch {}
+    }
+    const mergedCascadeConfigs = mergeModelCapabilitiesIntoConfigs(
+      knownCascadeConfigs,
+      cachedHostUserStatus?.availableModelDetails || null,
+      stepCapabilities
+    );
     let latestModel = null;
-    for (const m of (tail.generatorMetadata || []).slice().reverse()) { latest = summarize(m); if (latest) { latestModel = m.chatModel; break; } }
+    let latestCallId = null;
+    for (const m of (tail.generatorMetadata || []).slice().reverse()) {
+      latest = summarize(m, { cascadeModelConfigs: mergedCascadeConfigs });
+      if (latest) {
+        latestModel = m.chatModel;
+        const callMeta = parseGeneratorCall(m, id, 'desktop', { cascadeModelConfigs: mergedCascadeConfigs });
+        latestCallId = callMeta?.callId || null;
+        break;
+      }
+    }
     const system = latestModel ? measure((latestModel.promptSections || []).map(p => p.content || '').join('\n') || latestModel.systemPrompt || '') : empty();
     const definitions = latestModel ? measure(JSON.stringify(latestModel.tools || [])) : empty();
     session.groups.system = system; session.groups.definitions = definitions;
@@ -264,6 +511,7 @@ async function collect(origin, id, options = {}) {
     if (session.currentError) {
       const fromStep = summarize({ chatModel: { retryInfos: [{ error: session.currentError.text }] } }, {
         currentModel: latest?.model || latestModel?.modelDisplayName || latestModel?.model || '',
+        cascadeModelConfigs: mergedCascadeConfigs,
         previousValidContext: latest
       });
       if (fromStep?.error) {
@@ -282,7 +530,12 @@ async function collect(origin, id, options = {}) {
       }
     }
     const unknownFiles = attachments.filter(a => a.status !== 'parsed').length;
-    const result = { version: '0.8.2', conversation: id, workspacePath: wsPath || null, latest, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const compactCascadeConfigs = mergedCascadeConfigs.map(sanitizeCascadeModelConfig).filter(Boolean);
+    const modelCapabilitiesById = {
+      ...(cachedHostUserStatus?.availableModelDetails || {}),
+      ...stepCapabilities
+    };
+    const result = { version: '0.8.3', conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     conversations.set(key, { result, at: Date.now() });
     return result;
   })();
@@ -473,6 +726,58 @@ function createRecordResult(ok, changed, error, phase) {
   };
 }
 
+function hasSpeedMetrics(rec) {
+  if (!rec || typeof rec !== 'object') return false;
+  return rec.durationSec != null || rec.tps != null || rec.ttftSec != null || rec.streamingSec != null;
+}
+
+function getCallSortTimestamp(rec) {
+  if (!rec) return 0;
+  if (Number.isFinite(Number(rec.timestamp)) && Number(rec.timestamp) > 0) return Number(rec.timestamp);
+  if (rec.created_at) {
+    const t = Date.parse(rec.created_at);
+    if (Number.isFinite(t) && t > 0) return t;
+  }
+  if (rec.date) {
+    const t = Date.parse(rec.date);
+    if (Number.isFinite(t) && t > 0) return t;
+  }
+  return Number(rec.updatedAt) || 0;
+}
+
+/**
+ * 每个准确模型 ID 最多保留最近 200 条速度样本；超出的只清除速度字段，计费与 token 数据保留不动
+ */
+function pruneExcessSpeedSamples(draftCalls, limit = MAX_SPEED_SAMPLES_PER_MODEL || 200) {
+  if (!draftCalls || typeof draftCalls !== 'object') return false;
+  const byModel = new Map();
+  for (const [callId, rec] of Object.entries(draftCalls)) {
+    if (!rec || !hasSpeedMetrics(rec)) continue;
+    const exactId = String(rec.modelExactId || resolveStableModelId(rec) || rec.model || '').trim().toLowerCase();
+    if (!exactId) continue;
+    if (!byModel.has(exactId)) byModel.set(exactId, []);
+    byModel.get(exactId).push({ callId, ts: getCallSortTimestamp(rec) });
+  }
+  let pruned = false;
+  for (const entries of byModel.values()) {
+    if (entries.length <= limit) continue;
+    entries.sort((a, b) => b.ts - a.ts);
+    for (let i = limit; i < entries.length; i++) {
+      const rec = draftCalls[entries[i].callId];
+      if (!rec) continue;
+      const copy = { ...rec };
+      delete copy.ttftSec;
+      delete copy.streamingSec;
+      delete copy.durationSec;
+      delete copy.tps;
+      delete copy.origin;
+      draftCalls[entries[i].callId] = copy;
+      pruned = true;
+    }
+  }
+  return pruned;
+}
+
 function recordModelCalls(newCalls = [], options = {}) {
   if (!Array.isArray(newCalls) || !newCalls.length) return createRecordResult(true, false);
   const targetDir = typeof options === 'string' ? options : (options.ledgerPath || options.agDir);
@@ -501,14 +806,16 @@ function recordModelCalls(newCalls = [], options = {}) {
       continue;
     }
 
-    // 幂等入账与数据校准：记录新调用；当存在更完整或最终用量数据时更新校准
+    // 幂等入账与数据校准：记录新调用；当存在更完整、最终用量或补齐实测速度数据时更新校准
     const stateProgressed = existing.status === 'streaming' && call.status === 'final';
     const usageProgressed = (call.outputTokens || 0) > (existing.outputTokens || 0) || (call.totalTokens || 0) > (existing.totalTokens || 0);
     const pricingProgressed = (!existing.isPriced || !existing.costUSD) && (call.isPriced && call.costUSD > 0);
+    const speedProgressed = !hasSpeedMetrics(existing) && hasSpeedMetrics(call) && isValidSpeedSample(call);
+    const modelExactProgressed = !existing.modelExactId && Boolean(call.modelExactId);
     const isStaleRollback = (existing.status === 'final' && call.status !== 'final') ||
       (existing.status === 'final' && (call.outputTokens || 0) < (existing.outputTokens || 0));
 
-    if (!isStaleRollback && (stateProgressed || usageProgressed || pricingProgressed)) {
+    if (!isStaleRollback && (stateProgressed || usageProgressed || pricingProgressed || speedProgressed || modelExactProgressed)) {
       draftCalls[call.callId] = {
         ...existing,
         ...call,
@@ -518,6 +825,10 @@ function recordModelCalls(newCalls = [], options = {}) {
       };
       changed = true;
     }
+  }
+
+  if (pruneExcessSpeedSamples(draftCalls)) {
+    changed = true;
   }
 
   if (changed) {
@@ -651,9 +962,66 @@ function sanitizeAccountPlanEntry(entry, accountKey = 'default') {
   return out;
 }
 
+function sanitizeContextPreferenceEntry(raw, fallbackModelId = null) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const isProductScope = raw.scope === 'product' || (typeof raw.productKey === 'string' && raw.productKey.trim()) || (typeof fallbackModelId === 'string' && fallbackModelId.startsWith('product:'));
+  const rawModelId = isProductScope ? (raw.productKey || raw.modelId || fallbackModelId) : (raw.modelId || fallbackModelId);
+  if (!rawModelId || typeof rawModelId !== 'string') return null;
+  const stableKey = isProductScope
+    ? rawModelId.trim().toLowerCase()
+    : (resolveStableModelId(rawModelId) || rawModelId.trim().toLowerCase());
+  if (!stableKey) return null;
+
+  const modeRaw = String(raw.mode || 'default').trim().toLowerCase();
+  if (modeRaw !== 'default' && modeRaw !== 'fixed' && modeRaw !== 'dynamic') {
+    return null;
+  }
+
+  let limitTokens = null;
+  if (modeRaw === 'default') {
+    limitTokens = DEFAULT_CHECKPOINT_TOKENS;
+  } else if (modeRaw === 'fixed') {
+    const val = validateContextLimit(raw.limitTokens);
+    if (!val.ok) return null;
+    limitTokens = val.limitTokens;
+  }
+
+  const out = {
+    modelId: stableKey,
+    label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : String(rawModelId).trim(),
+    mode: modeRaw,
+    limitTokens,
+    updatedAt: typeof raw.updatedAt === 'string' && raw.updatedAt ? raw.updatedAt : new Date().toISOString()
+  };
+  if (isProductScope) {
+    out.scope = 'product';
+    out.productKey = stableKey;
+  }
+  return out;
+}
+
+function sanitizeContextPreferencesMap(rawMap) {
+  const out = {};
+  if (!rawMap || typeof rawMap !== 'object' || Array.isArray(rawMap)) return out;
+  for (const [k, v] of Object.entries(rawMap)) {
+    const clean = sanitizeContextPreferenceEntry(v, k);
+    if (clean) out[clean.modelId] = clean;
+  }
+  return out;
+}
+
 function loadCustomPlanSettings(overridePathOrDir) {
   const p = getCustomPlanPath(overridePathOrDir);
-  const def = { version: '1.1.0', updatedAt: '', lastAccount: 'default', accounts: {}, uiPreferences: {} };
+  const def = {
+    version: '1.1.0',
+    updatedAt: '',
+    lastAccount: 'default',
+    accounts: {},
+    uiPreferences: {},
+    contextPreferences: {},
+    contextScopeMode: 'unified',
+    contextUnifiedPreference: { mode: 'default', limitTokens: null }
+  };
   try {
     if (!fs.existsSync(p)) return def;
     const content = fs.readFileSync(p, 'utf8');
@@ -669,7 +1037,9 @@ function loadCustomPlanSettings(overridePathOrDir) {
       } catch {}
       return { ...def, recoveredFromCorruption: true };
     }
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return def;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ...def, recoveredFromCorruption: true };
+    }
 
     const accounts = {};
     // 兼容旧版直接平铺在顶层的配置结构
@@ -690,13 +1060,29 @@ function loadCustomPlanSettings(overridePathOrDir) {
     const uiPreferences = (raw.uiPreferences && typeof raw.uiPreferences === 'object' && !Array.isArray(raw.uiPreferences))
       ? { ...raw.uiPreferences }
       : {};
+    const contextPreferences = sanitizeContextPreferencesMap(raw.contextPreferences);
+
+    // 默认使用统一模式，但升级时若已保存非默认模型偏好则保留分别模式，不覆盖用户选择
+    let contextScopeMode = 'unified';
+    if (raw.contextScopeMode === 'per_model' || raw.contextScopeMode === 'unified') {
+      contextScopeMode = raw.contextScopeMode;
+    } else if (Object.keys(contextPreferences).length > 0) {
+      contextScopeMode = 'per_model';
+    }
+
+    const contextUnifiedPreference = raw.contextUnifiedPreference && typeof raw.contextUnifiedPreference === 'object'
+      ? (sanitizeContextPreferenceEntry({ ...raw.contextUnifiedPreference, modelId: 'unified' }) || { mode: 'default', limitTokens: null })
+      : { mode: 'default', limitTokens: null };
 
     return {
       version: raw.version || '1.1.0',
       updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
       lastAccount: typeof raw.lastAccount === 'string' ? raw.lastAccount : 'default',
       accounts,
-      uiPreferences
+      uiPreferences,
+      contextPreferences,
+      contextScopeMode,
+      contextUnifiedPreference
     };
   } catch {
     return def;
@@ -776,12 +1162,17 @@ function getPluginSettings(options = {}) {
   const email = options?.email || cachedTokenHistory?.planStatus?.email || null;
   const customPlan = resolveAccountCustomPlan(settings, email);
   const uiPrefs = settings.uiPreferences || {};
+  const contextPreferences = settings.contextPreferences || {};
   return {
     ok: true,
     customPlan,
     uiPreferences: uiPrefs,
+    contextPreferences,
+    contextScopeMode: settings.contextScopeMode || 'unified',
+    contextUnifiedPreference: settings.contextUnifiedPreference || { mode: 'default', limitTokens: null },
     savedHeatView: uiPrefs.savedHeatView,
     autoCheckUpdate: uiPrefs.autoCheckUpdate,
+    panelLanguage: uiPrefs.panelLanguage || 'zh-CN',
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
     recoveredFromCorruption: Boolean(settings.recoveredFromCorruption)
@@ -868,21 +1259,116 @@ function savePluginSettings(payload = {}, options = {}) {
   if (typeof payload.savedHeatView === 'string' && payload.savedHeatView) {
     topLevelUiPrefs.savedHeatView = payload.savedHeatView;
   }
+  const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
   if (typeof payload.autoCheckUpdate === 'boolean') {
     topLevelUiPrefs.autoCheckUpdate = payload.autoCheckUpdate;
+  }
+  if (typeof payload.panelLanguage === 'string' && validPanelLanguages.has(payload.panelLanguage)) {
+    topLevelUiPrefs.panelLanguage = payload.panelLanguage;
   }
   const incomingUiPrefs = (payload.uiPreferences && typeof payload.uiPreferences === 'object' && !Array.isArray(payload.uiPreferences))
     ? { ...payload.uiPreferences, ...topLevelUiPrefs }
     : (Object.keys(topLevelUiPrefs).length > 0 ? topLevelUiPrefs : null);
 
   if (incomingUiPrefs) {
-    settings.uiPreferences = {
+    if (incomingUiPrefs.panelLanguage !== undefined && !validPanelLanguages.has(incomingUiPrefs.panelLanguage)) {
+      delete incomingUiPrefs.panelLanguage;
+    }
+    const nextUi = {
       ...(settings.uiPreferences || {}),
       ...incomingUiPrefs,
       updatedAt: new Date().toISOString()
     };
+    if (nextUi.restartVerification === null) {
+      delete nextUi.restartVerification;
+    }
+    settings.uiPreferences = nextUi;
   }
 
+  if (!settings.contextPreferences || typeof settings.contextPreferences !== 'object') {
+    settings.contextPreferences = {};
+  }
+
+  if (Array.isArray(payload.clearContextPreferences)) {
+    for (const rawKey of payload.clearContextPreferences) {
+      if (typeof rawKey !== 'string' || !rawKey.trim()) continue;
+      const kNorm = rawKey.trim().toLowerCase();
+      delete settings.contextPreferences[kNorm];
+      const resolvedK = resolveStableModelId(rawKey);
+      if (resolvedK) delete settings.contextPreferences[resolvedK];
+    }
+  }
+
+  if (payload.clearContextPreference === true) {
+    const rawTargetModel = payload.productKey || payload.modelId || payload.contextPreference?.productKey || payload.contextPreference?.modelId;
+    if (!rawTargetModel || typeof rawTargetModel !== 'string' || !rawTargetModel.trim()) {
+      return { ok: false, error: '恢复模型默认偏好时缺少模型标识' };
+    }
+    const trimmed = rawTargetModel.trim().toLowerCase();
+    delete settings.contextPreferences[trimmed];
+    if (!trimmed.startsWith('product:')) {
+      const stableKey = resolveStableModelId(rawTargetModel);
+      if (stableKey) delete settings.contextPreferences[stableKey];
+    }
+  } else if (payload.contextPreference !== undefined) {
+    const cp = payload.contextPreference;
+    if (!cp || typeof cp !== 'object' || Array.isArray(cp)) {
+      return { ok: false, error: '无效的模型上下文偏好参数格式' };
+    }
+    const isProd = cp.scope === 'product' || (typeof cp.productKey === 'string' && cp.productKey.trim());
+    const idField = isProd ? (cp.productKey || cp.modelId) : cp.modelId;
+    if (!idField || typeof idField !== 'string' || !idField.trim()) {
+      return { ok: false, error: '按模型保存偏好时必须提供模型标识' };
+    }
+    const modeRaw = String(cp.mode || 'default').trim().toLowerCase();
+    if (modeRaw !== 'default' && modeRaw !== 'fixed' && modeRaw !== 'dynamic') {
+      return { ok: false, error: `不支持的上下文偏好模式: ${cp.mode}` };
+    }
+    if (modeRaw === 'fixed') {
+      const valCheck = validateContextLimit(cp.limitTokens);
+      if (!valCheck.ok) {
+        return { ok: false, error: valCheck.error };
+      }
+    }
+    const sanitizedPref = sanitizeContextPreferenceEntry({
+      ...cp,
+      modelId: idField,
+      mode: modeRaw,
+      updatedAt: new Date().toISOString()
+    });
+    if (!sanitizedPref) {
+      return { ok: false, error: '模型上下文偏好参数校验失败' };
+    }
+    if (Array.isArray(cp.clearLegacyKeys)) {
+      for (const lk of cp.clearLegacyKeys) {
+        if (typeof lk !== 'string' || !lk.trim()) continue;
+        delete settings.contextPreferences[lk.trim().toLowerCase()];
+        const rk = resolveStableModelId(lk);
+        if (rk) delete settings.contextPreferences[rk];
+      }
+    }
+    settings.contextPreferences[sanitizedPref.modelId] = sanitizedPref;
+  }
+
+  if (payload.contextScopeMode === 'unified' || payload.contextScopeMode === 'per_model') {
+    settings.contextScopeMode = payload.contextScopeMode;
+  }
+  if (payload.contextUnifiedPreference !== undefined) {
+    if (payload.contextUnifiedPreference === null) {
+      delete settings.contextUnifiedPreference;
+    } else if (typeof payload.contextUnifiedPreference === 'object') {
+      const sanitizedUnified = sanitizeContextPreferenceEntry({
+        ...payload.contextUnifiedPreference,
+        modelId: 'unified',
+        updatedAt: new Date().toISOString()
+      });
+      if (sanitizedUnified) {
+        settings.contextUnifiedPreference = sanitizedUnified;
+      }
+    }
+  }
+
+  delete settings.recoveredFromCorruption;
   settings.updatedAt = new Date().toISOString();
   const writeRes = saveCustomPlanSettingsDetailed(settings, targetDir);
   if (!writeRes.ok) {
@@ -937,7 +1423,10 @@ function savePluginSettings(payload = {}, options = {}) {
     savedAt: settings.updatedAt,
     customPlan: activeCustom,
     planStatus: effectivePlanStatus,
-    uiPreferences: settings.uiPreferences
+    uiPreferences: settings.uiPreferences,
+    contextPreferences: settings.contextPreferences || {},
+    contextScopeMode: settings.contextScopeMode || 'unified',
+    contextUnifiedPreference: settings.contextUnifiedPreference || null
   };
 }
 
@@ -949,19 +1438,30 @@ async function fetchUserStatusFromHost(options = {}) {
     if (!options.userStatus) return null;
     const parsed = parseUserPlanStatus(options.userStatus);
     const configs = options.userStatus?.userStatus?.cascadeModelConfigData?.clientModelConfigs || options.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
-    if (parsed && configs.length) parsed.cascadeModelConfigs = configs;
+    const availMap = options.availableModels ? parseAvailableModelsResponse(options.availableModels) : {};
+    if (parsed) {
+      if (Object.keys(availMap).length) parsed.availableModelDetails = availMap;
+      if (configs.length) parsed.cascadeModelConfigs = mergeModelCapabilitiesIntoConfigs(configs, availMap);
+    }
     return parsed;
   }
-  if (!options.agDir && cachedHostUserStatus && Date.now() - cachedHostUserStatusAt < 60000) {
+  if (!options.agDir && !options.force && cachedHostUserStatus && Date.now() - cachedHostUserStatusAt < 60000) {
     return cachedHostUserStatus;
   }
   try {
     const { connect } = require('./local-api');
     const api = await connect();
-    const res = await api.call('GetUserStatus', {});
+    const [res, availRes] = await Promise.all([
+      api.call('GetUserStatus', {}),
+      api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
+    ]);
     const parsed = parseUserPlanStatus(res);
     const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
-    if (parsed && configs.length) parsed.cascadeModelConfigs = configs;
+    const availMap = availRes ? parseAvailableModelsResponse(availRes) : {};
+    if (parsed) {
+      if (Object.keys(availMap).length) parsed.availableModelDetails = availMap;
+      if (configs.length) parsed.cascadeModelConfigs = mergeModelCapabilitiesIntoConfigs(configs, availMap);
+    }
     if (parsed && !options.agDir) {
       cachedHostUserStatus = parsed;
       cachedHostUserStatusAt = Date.now();
@@ -1456,11 +1956,41 @@ async function collectTokenHistoryAsync(options = {}) {
 
   const costEstimate = costEstimateAll;
 
+  const speedRecords = mergedCalls
+    .filter(c => isValidSpeedSample(c))
+    .map(c => ({
+      callId: c.callId,
+      model: c.model,
+      modelExactId: c.modelExactId || resolveStableModelId(c, livePlanStatus?.cascadeModelConfigs || []) || null,
+      modelLabel: c.modelLabel || c.model || null,
+      effort: c.effort || null,
+      inputTokens: c.inputTokens,
+      cacheReadTokens: c.cacheReadTokens ?? c.cacheTokens ?? 0,
+      outputTokens: c.outputTokens,
+      ttftSec: c.ttftSec ?? null,
+      streamingSec: c.streamingSec ?? null,
+      durationSec: c.durationSec,
+      tps: c.tps ?? null,
+      origin: c.origin === 'speed-test' ? 'speed-test' : 'chat',
+      status: c.status,
+      isEstimated: Boolean(c.isEstimated),
+      date: c.date || null,
+      created_at: c.created_at || null,
+      timestamp: getCallSortTimestamp(c) || null
+    }));
+
+  const compactModelConfigs = Array.isArray(livePlanStatus?.cascadeModelConfigs)
+    ? livePlanStatus.cascadeModelConfigs.map(sanitizeCascadeModelConfig).filter(Boolean)
+    : [];
+
   const out = {
-    schemaVersion: '0.8.2',
-    version: '0.8.2',
+    schemaVersion: '0.8.3',
+    version: '0.8.3',
     updatedAt: `${todayKey} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`,
     firstUseDate: earliestDate,
+    speedRecords,
+    cascadeModelConfigs: compactModelConfigs,
+    modelCapabilitiesById: livePlanStatus?.availableModelDetails || null,
     currentPeriod: {
       key: monthPrefix,
       label: `${monthPrefix} (自然月)`,
@@ -1587,8 +2117,8 @@ function collectTokenHistory(options = {}) {
   // 触发异步更新
   void collectTokenHistoryAsync(options);
   return cachedTokenHistory || {
-    schemaVersion: '0.8.2',
-    version: '0.8.2',
+    schemaVersion: '0.8.3',
+    version: '0.8.3',
     loading: true,
     updatedAt: '',
     firstUseDate: null,
@@ -1679,7 +2209,7 @@ function requestGithubUrl(rawUrl, options = {}) {
       const redirectCount = options.redirectCount || 0;
       const parsedUrl = new URL(rawUrl);
       const headers = Object.assign({
-        'User-Agent': 'AntigravityContextMeter/0.8.2',
+        'User-Agent': 'AntigravityContextMeter/0.8.3',
         'Accept': 'application/vnd.github.v3+json'
       }, options.headers || {});
 
@@ -1825,7 +2355,7 @@ function getInstalledMeterVersion(options = {}) {
 }
 
 async function checkUpdateAsync(options = {}) {
-  const runtimeVersion = options.currentVersion || '0.8.2';
+  const runtimeVersion = options.currentVersion || '0.8.3';
   const diskVersion = getInstalledMeterVersion(options);
   const effectiveCurrentVersion = (diskVersion && compareVersions(diskVersion, runtimeVersion) > 0)
     ? diskVersion
@@ -1927,7 +2457,7 @@ async function applyUpdateAsync(options = {}) {
   }
   isApplyingUpdate = true;
 
-  const currentVersion = options.currentVersion || '0.8.2';
+  const currentVersion = options.currentVersion || '0.8.3';
   let tmpDir = null;
   let checksumStream = null;
   let zipStream = null;
@@ -2164,6 +2694,11 @@ async function applyUpdateAsync(options = {}) {
 }
 
 module.exports = {
+  sanitizeCascadeModelConfig,
+  parseAvailableModelsResponse,
+  extractObservedModelInfoFromSteps,
+  mergeModelCapabilitiesIntoConfigs,
+  fetchUserStatusFromHost,
   collect,
   collectTokenHistory,
   collectTokenHistoryAsync,
@@ -2188,6 +2723,7 @@ module.exports = {
   resolveAccountCustomPlan,
   getPluginSettings,
   savePluginSettings,
+  sanitizeContextPreferenceEntry,
   resolveCliExecutable,
   resolveCliWorkspace,
   buildCliProxyEnv,

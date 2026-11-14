@@ -231,8 +231,22 @@ async function main() {
     if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
     console.log('✅ 已通过 CDP 热注入当前运行的 Antigravity 窗口！');
   } else if (cmd === 'restore' || cmd === 'uninstall') {
+    const restoreAll = args.includes('--all');
     const res = await restore({ path: customPath, force: isForce });
     console.log(`✅ 已完成卸载还原: ${res.restored}`);
+    if (restoreAll) {
+      try {
+        const { restoreAllEnhance } = require('./meter-enhance');
+        const eRes = restoreAllEnhance({});
+        if (eRes.ok) {
+          console.log('✅ 已同步恢复内核系统提示词、中文标题及上下文默认状态！');
+        } else {
+          console.log(`⚠️  内核还原部分未执行: ${eRes.error}`);
+        }
+      } catch (e) {
+        console.log(`⚠️  内核还原异常: ${e.message}`);
+      }
+    }
     console.log('📦 模块清理与运行时状态说明:');
     console.log(`   - 磁盘处理方式: ${res.inPlaceCleaned ? '原位手术刀精准解构（保留宿主第三方修改）' : '官方原版备份整包还原'}`);
     console.log('   - 磁盘清理状态:');
@@ -244,32 +258,90 @@ async function main() {
     console.log('     * 界面汉化: 运行中已渲染 DOM 受客户端页面内存缓存影响，需完全重启客户端彻底恢复纯净英文');
     console.log('     * 代理环境: 运行中进程已加载的 process.env 环境变量与 Electron session 代理无法即时热撤销，必须完全重启客户端以彻底退出代理环境');
   } else if (cmd === 'unlock-status') {
-    console.log('🔍 正在检测 Antigravity 后端上下文加长状态...');
+    console.log('🔍 正在检测 Antigravity 后端上下文调整状态...');
     const st = await analyzeBinaryAsync(customPath);
     console.log(`- 目标文件: ${st.targetPath || '未检测到'}`);
     console.log(`- 目标架构: ${st.arch || '未知'} (${st.format || '未知'}, ${st.mode || '未知'})`);
-    console.log(`- 解锁状态: [${st.statusText || st.status}] ${st.details || st.reason || ''}`);
+    console.log(`- 磁盘模式: ${st.configuredSummary || '未知'}`);
+    console.log(`- 运行状态: [${st.statusText || st.status}] ${st.details || st.reason || ''}`);
+    if (st.scopeNotice) console.log(`- 作用范围: ${st.scopeNotice}`);
     if (st.backupInfo) {
-      console.log(`- 备份文件: ${st.backupInfo.backupPath}`);
+      console.log(`- 备份文件: ${st.backupInfo.backupPath}${st.backupStaleReason ? ` (⚠️ ${st.backupStaleReason})` : ''}`);
     }
     console.log(`- ${st.author?.credit || AUTHOR_INFO.credit} (${st.author?.url || AUTHOR_INFO.url})`);
   } else if (cmd === 'unlock') {
-    console.log('⚡ 正在执行 Antigravity 后端上下文加长解锁...');
+    const modeIdx = args.indexOf('--mode');
+    const modeVal = modeIdx >= 0 ? args[modeIdx + 1] : undefined;
+    const limitIdx = args.indexOf('--limit');
+    const limitVal = limitIdx >= 0 ? args[limitIdx + 1] : undefined;
+    const noCliSync = args.includes('--no-cli-sync') || args.includes('--no-sync');
+    console.log('⚡ 正在执行 Antigravity 后端上下文长度调整...');
     console.log(`ℹ ${AUTHOR_INFO.credit} (${AUTHOR_INFO.url})`);
     console.log(`⚠️  ${AUTHOR_INFO.disclaimer}`);
-    const res = applyUnlock({ targetPath: customPath });
+    const res = applyUnlock({ targetPath: customPath, mode: modeVal, limitTokens: limitVal, syncConfigFiles: true, syncCliConfigs: !noCliSync });
     if (!res.ok) {
       throw new Error(res.error);
     }
-    console.log(`✅ ${res.message || '解锁成功！'}`);
+    console.log(`✅ ${res.message || '调整完成！'}`);
+    if (res.warnings?.length) {
+      for (const w of res.warnings) console.log(`⚠️  ${w}`);
+    }
     if (res.backupPath) console.log(`📁 原版备份已安全保存至: ${res.backupPath}`);
   } else if (cmd === 'unlock-restore') {
+    const noCliSync = args.includes('--no-cli-sync') || args.includes('--no-sync');
     console.log('🔄 正在恢复 Antigravity 官方原版后端二进制...');
-    const res = restoreUnlock({ targetPath: customPath });
+    const res = restoreUnlock({ targetPath: customPath, syncConfigFiles: true, syncCliConfigs: !noCliSync });
     if (!res.ok) {
       throw new Error(res.error);
     }
     console.log(`✅ ${res.message || '恢复完成！'}`);
+  } else if (cmd === 'enhance-status') {
+    const { getEnhanceStatus } = require('./meter-enhance');
+    const st = getEnhanceStatus();
+    console.log(JSON.stringify(st, null, 2));
+  } else if (cmd === 'enhance') {
+    const { applyEnhancePatch } = require('./meter-enhance');
+    const getFlag = (flag) => {
+      const i = args.indexOf(flag);
+      return i >= 0 ? args[i + 1] : undefined;
+    };
+    const tierVal = getFlag('--tier');
+    const titleVal = getFlag('--title');
+    const ctxVal = getFlag('--context');
+    const limitVal = getFlag('--limit');
+    const brandVal = getFlag('--brand');
+    const langVal = getFlag('--lang');
+    if (brandVal || langVal) {
+      const { loadModulesConfig, saveModulesConfig, normalizeBrandTitle, normalizeClientLanguage } = require('./modules-config');
+      const cfg = loadModulesConfig();
+      if (langVal) {
+        const nl = normalizeClientLanguage(langVal, cfg.modules.chinese.enabled);
+        cfg.modules.chinese.language = nl;
+        cfg.modules.chinese.enabled = nl === 'zh-CN';
+      }
+      if (brandVal) {
+        cfg.modules.chinese.brandTitle = normalizeBrandTitle(brandVal);
+      }
+      cfg.modules.chinese.lastUpdated = new Date().toISOString();
+      saveModulesConfig(cfg);
+      console.log(`✅ 已更新界面语言/品牌配置: language=${cfg.modules.chinese.language}, brandTitle=${cfg.modules.chinese.brandTitle}（重启客户端后生效）`);
+    }
+    if (tierVal !== undefined || titleVal !== undefined || ctxVal !== undefined) {
+      const res = applyEnhancePatch({
+        promptTier: tierVal,
+        chineseTitle: titleVal,
+        contextMode: ctxVal,
+        contextLimitTokens: limitVal ? Number(limitVal) : undefined
+      });
+      if (!res.ok) throw new Error(res.error);
+      for (const l of (res.logs || [])) console.log('  ', l);
+      console.log('✅ 内核增强应用完成！');
+    }
+  } else if (cmd === 'enhance-restore') {
+    const { restoreAllEnhance } = require('./meter-enhance');
+    const res = restoreAllEnhance({});
+    if (!res.ok) throw new Error(res.error);
+    console.log('✅ 已还原官方原版系统提示词、英文会话标题与默认上下文上限！');
   } else if (cmd === 'modules') {
     const { loadModulesConfig, detectAndMigrateLegacyConfigs } = require('./modules-config');
     const cfg = loadModulesConfig();
@@ -349,10 +421,13 @@ async function main() {
   node cli.js live                          免改盘 CDP 热挂载到当前运行窗口
   node cli.js status                        查看安装状态与当前对话实时上下文用量
   node cli.js check                         执行前置环境健康检查
-  node cli.js restore                       一键无损卸载并恢复备份
-  node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文加长状态
-  node cli.js unlock [--path <bin>]         执行上下文加长解锁（解除 256K 限制）
-  node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制`);
+  node cli.js restore [--all]               一键无损卸载并恢复备份 (--all 含还原内核增强)
+  node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文调整状态
+  node cli.js unlock --mode <default|fixed|dynamic> [--limit N]  调整上下文长度上限
+  node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制
+  node cli.js enhance-status                检查系统提示词精简与中文标题内核状态
+  node cli.js enhance [--tier 0-4] [--title on|off] [--context default|512k|900k|dynamic] [--lang zh-CN|en] [--brand english|hidden|translated]
+  node cli.js enhance-restore               一键还原系统提示词、英文标题与默认上下文`);
   }
 }
 
