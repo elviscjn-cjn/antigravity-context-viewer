@@ -21,7 +21,7 @@ const targetFile = path.join(rootDir, 'meter-renderer.js');
 
 function buildRenderer() {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
-  const meterVersion = pkg.version || '0.8.2';
+  const meterVersion = pkg.version || '0.8.3';
 
   const styles = fs.readFileSync(path.join(srcDir, 'styles.css'), 'utf8').trim();
   let template = fs.readFileSync(path.join(srcDir, 'template.html'), 'utf8').trim();
@@ -29,6 +29,8 @@ function buildRenderer() {
   template = template.replace(/<span id="up-pop-ver"[^>]*>v[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v${meterVersion}</span>`);
 
   const colors = fs.readFileSync(path.join(srcDir, 'colors.js'), 'utf8').trim();
+  const i18n = fs.readFileSync(path.join(srcDir, 'i18n.js'), 'utf8').trim();
+  const budgetEngine = fs.readFileSync(path.join(srcDir, 'context-budget-engine.js'), 'utf8').trim();
   const dropdown = fs.readFileSync(path.join(srcDir, 'dropdown.js'), 'utf8').trim();
   const heatmap = fs.readFileSync(path.join(srcDir, 'heatmap.js'), 'utf8').trim();
   let mainTemplate = fs.readFileSync(path.join(srcDir, 'main.js'), 'utf8');
@@ -45,6 +47,8 @@ function buildRenderer() {
 
   let output = mainTemplate
     .replace('  /* @INSERT_STYLES_AND_TEMPLATE */', () => domString)
+    .replace('  /* @INSERT_I18N_MODULE */', () => i18n)
+    .replace('  /* @INSERT_BUDGET_ENGINE_MODULE */', () => budgetEngine)
     .replace('  /* @INSERT_COLORS_MODULE */', () => colors)
     .replace('  /* @INSERT_DROPDOWN_MODULE */', () => dropdown)
     .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap);

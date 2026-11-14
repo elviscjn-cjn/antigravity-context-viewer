@@ -39,6 +39,94 @@ const RET_TRUE_X64 = Buffer.from([0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3]);
 const CLAMP_256K_ARM64 = Buffer.from('04009dd26400a0f27f00046b04009dd26400a0f26330849a', 'hex');
 const CLAMP_256K_X64 = Buffer.from('81fa00e80300be00e803000f42f2', 'hex');
 const PATCH_256K_X64 = Buffer.concat([Buffer.from('89d6', 'hex'), Buffer.alloc(12, 0x90)]);
+const DEF_ORIG_X64 = Buffer.from('c7400c00e80300', 'hex'); // mov dword [rax+0xc], 256000 (7B)
+const DEF_PREFIX_X64 = Buffer.from('c7400c', 'hex');
+// populateContextWindowMetadata 前端显示上限门禁 (20B, PR #4 cli_serializer_max_ctx)
+const SERIALIZER_STOCK_X64 = Buffer.from('4889442470488b8c24a80100008908b830000000', 'hex');
+const SERIALIZER_HEAD_X64 = Buffer.from('4889442470c700', 'hex');
+const SERIALIZER_TAIL_X64 = Buffer.from('90909090b830000000', 'hex');
+
+// 上下文长度调整工程范围边界与常用预设
+const DEFAULT_CHECKPOINT_TOKENS = 256000;
+const MIN_ENGINEERING_LIMIT = 16384; // 16 KiB tokens
+const MAX_ENGINEERING_LIMIT = 2097152; // 2 MiB tokens
+const MIN_OUTPUT_RESERVE_HINT = 40000; // GetDefaultCheckpointConfigForModel 典型输出余量参考
+const KNOWN_LIMIT_PRESETS = [256000, 512000, 524288, 900000, 983040, 1000000];
+
+function buildClampConstX64(limitTokens) {
+  const out = Buffer.alloc(14, 0x90);
+  out[0] = 0xbe; // mov esi, imm32
+  out.writeUInt32LE(limitTokens >>> 0, 1);
+  return out;
+}
+
+function buildDefConstX64(limitTokens) {
+  const out = Buffer.alloc(7);
+  DEF_PREFIX_X64.copy(out, 0);
+  out.writeUInt32LE(limitTokens >>> 0, 3);
+  return out;
+}
+
+function buildSerializerConstX64(limitTokens) {
+  const out = Buffer.alloc(20);
+  SERIALIZER_HEAD_X64.copy(out, 0);
+  out.writeUInt32LE(limitTokens >>> 0, 7);
+  SERIALIZER_TAIL_X64.copy(out, 11);
+  return out;
+}
+
+/**
+ * 校验自定义上下文长度输入（正整数、安全整数与工程可写边界）
+ * 注意：可写边界仅代表补丁指令所能安全编码的工程范围，不代表模型必然支持。
+ */
+function validateContextLimit(rawInput, options = {}) {
+  let num = null;
+  if (typeof rawInput === 'number') {
+    if (!Number.isSafeInteger(rawInput) || rawInput <= 0) {
+      return { ok: false, error: '上下文长度必须为正安全整数（tokens）', min: MIN_ENGINEERING_LIMIT, max: MAX_ENGINEERING_LIMIT };
+    }
+    num = rawInput;
+  } else if (typeof rawInput === 'string') {
+    const trimmed = rawInput.trim().replace(/[,\s_]/g, '');
+    if (!/^\d+$/.test(trimmed)) {
+      return { ok: false, error: '上下文长度必须为纯正整数（tokens），不可包含小数或非数字字符', min: MIN_ENGINEERING_LIMIT, max: MAX_ENGINEERING_LIMIT };
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      return { ok: false, error: '上下文长度超出安全整数范围', min: MIN_ENGINEERING_LIMIT, max: MAX_ENGINEERING_LIMIT };
+    }
+    num = parsed;
+  } else {
+    return { ok: false, error: '无效的上下文长度输入类型', min: MIN_ENGINEERING_LIMIT, max: MAX_ENGINEERING_LIMIT };
+  }
+
+  if (num < MIN_ENGINEERING_LIMIT || num > MAX_ENGINEERING_LIMIT) {
+    return {
+      ok: false,
+      error: `上下文长度超出工程可写范围 (${MIN_ENGINEERING_LIMIT.toLocaleString('en-US')} ~ ${MAX_ENGINEERING_LIMIT.toLocaleString('en-US')} tokens)`,
+      min: MIN_ENGINEERING_LIMIT,
+      max: MAX_ENGINEERING_LIMIT
+    };
+  }
+
+  const warnings = [];
+  if (num < 65536) {
+    warnings.push(`目标值 (${num.toLocaleString('en-US')}) 较小，扣除至少 ${MIN_OUTPUT_RESERVE_HINT.toLocaleString('en-US')} tokens 输出预留与系统提示词后可用历史空间非常有限。`);
+  }
+  const serviceLimit = Number(options.serviceLimit || 0);
+  if (serviceLimit > 0 && num > serviceLimit) {
+    warnings.push(`目标值 (${num.toLocaleString('en-US')}) 高于当前观测到的服务端限制 (${serviceLimit.toLocaleString('en-US')})，实际长请求仍可能被服务端拒绝。`);
+  }
+
+  return {
+    ok: true,
+    limitTokens: num,
+    warnings,
+    min: MIN_ENGINEERING_LIMIT,
+    max: MAX_ENGINEERING_LIMIT,
+    scopeNote: `当前工程可写范围为 ${MIN_ENGINEERING_LIMIT.toLocaleString('en-US')} ~ ${MAX_ENGINEERING_LIMIT.toLocaleString('en-US')} tokens，仅代表补丁参数可写入范围，非模型保证支持范围。`
+  };
+}
 
 const AUTHOR_INFO = {
   name: 'Linux.do @23375',
@@ -167,14 +255,17 @@ function findTextSection(buf) {
     const nsec = buf.readUInt16LE(peOff + 6);
     const optSize = buf.readUInt16LE(peOff + 20);
     const opt = peOff + 24;
+    const peTimeDateStamp = buf.readUInt32LE(peOff + 8);
     const imageBase = buf.readBigUInt64LE(opt + 24);
+    const peSizeOfImage = buf.readUInt32LE(opt + 56);
     let sect = opt + optSize;
     for (let i = 0; i < nsec; i++) {
       const name = buf.subarray(sect, sect + 8).toString().replace(/\0+$/, '');
       if (name === '.text') {
         const vaddr = buf.readUInt32LE(sect + 12);
         const rawptr = buf.readUInt32LE(sect + 20);
-        return { textVA: imageBase + BigInt(vaddr), textOff: rawptr, arch, format: 'PE' };
+        const buildId = `${peTimeDateStamp.toString(16)}_${peSizeOfImage.toString(16)}_${rawptr.toString(16)}`;
+        return { textVA: imageBase + BigInt(vaddr), textOff: rawptr, arch, format: 'PE', peTimeDateStamp, peSizeOfImage, buildId };
       }
       sect += 40;
     }
@@ -272,10 +363,16 @@ function buildFunctions(buf, targetSymbols) {
   return { funcs, totalSymbols: nfunc };
 }
 
+function narrowCandidatesByAnchor(hits, anchorOffset, window = 8192) {
+  if (!Array.isArray(hits) || hits.length === 0) return null;
+  const near = hits.filter((h) => Math.abs(h.offset - anchorOffset) <= window);
+  return near.length === 1 ? near[0] : null;
+}
+
 /**
- * 检测 Gate 3A 状态
+ * 检测 Gate 3A 状态（融合 PR #3 的 clamp + default 双站点与 CONST/DYN/ORIG 检测）
  */
-function checkGate3A(buf, textOff, sym, arch) {
+function checkGate3A(buf, textOff, sym, arch, options = {}) {
   const fnOff = textOff + sym.entryoff;
   const fnSize = sym.size || 0x600;
   const body = buf.subarray(fnOff, Math.min(buf.length, fnOff + fnSize));
@@ -283,28 +380,172 @@ function checkGate3A(buf, textOff, sym, arch) {
   if (arch === 'arm64') {
     const nop6 = Buffer.concat([NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64]);
     if (body.indexOf(CLAMP_256K_ARM64) >= 0) {
-      return { status: 'unpatched', offset: fnOff + body.indexOf(CLAMP_256K_ARM64), length: 24 };
+      return { status: 'unpatched', mode: 'default', limit: DEFAULT_CHECKPOINT_TOKENS, offset: fnOff + body.indexOf(CLAMP_256K_ARM64), length: 24, hasDefaultSite: false };
     }
     if (body.indexOf(nop6) >= 0) {
-      return { status: 'patched', offset: fnOff + body.indexOf(nop6), length: 24 };
+      return { status: 'patched', mode: 'dynamic', limit: null, offset: fnOff + body.indexOf(nop6), length: 24, hasDefaultSite: false };
     }
-    return { status: 'unknown' };
+    return { status: 'unknown', reason: 'ARM64 函数体特征不识别' };
   }
 
-  // x86-64
-  const idx = body.indexOf(CLAMP_256K_X64);
-  if (idx >= 0) {
-    return { status: 'unpatched', offset: fnOff + idx, length: CLAMP_256K_X64.length };
+  // x86-64: 在 utils.GetCheckpointConfig 函数体内搜寻所有 CLAMP 候选
+  const clampHits = [];
+  for (let i = 0; i <= body.length - 14; i++) {
+    const slice = body.subarray(i, i + 14);
+    if (slice.equals(CLAMP_256K_X64)) {
+      clampHits.push({ state: 'ORIG', mode: 'default', limit: DEFAULT_CHECKPOINT_TOKENS, offset: fnOff + i });
+    } else if (slice.equals(PATCH_256K_X64)) {
+      clampHits.push({ state: 'DYN', mode: 'dynamic', limit: null, offset: fnOff + i });
+    } else if (slice[0] === 0xbe) {
+      let allNops = true;
+      for (let j = 5; j < 14; j++) {
+        if (slice[j] !== 0x90) { allNops = false; break; }
+      }
+      if (allNops) {
+        const imm = slice.readUInt32LE(1);
+        if (imm >= 4096 && imm <= 16 * 1024 * 1024) {
+          clampHits.push({ state: 'CONST', mode: 'fixed', limit: imm, offset: fnOff + i });
+        }
+      }
+    }
   }
-  const pIdx = body.indexOf(PATCH_256K_X64);
-  if (pIdx >= 0) {
-    return { status: 'patched', offset: fnOff + pIdx, length: PATCH_256K_X64.length };
+
+  // 收集已知与当前已写入的 default immediate 列表（仅依据当前二进制已存在的 CONST/ORIG 值，不提前混入待写入的 expectedLimit 以免碰撞原生常量）
+  const candidateDefImms = new Set([DEFAULT_CHECKPOINT_TOKENS, ...KNOWN_LIMIT_PRESETS]);
+  for (const h of clampHits) {
+    if (h.state === 'CONST' && h.limit) candidateDefImms.add(h.limit);
   }
-  return { status: 'unknown' };
+
+  // 在函数体内扫描所有 default 站点 (c7 40 0c <imm32>)
+  const defHits = [];
+  for (let i = 0; i <= body.length - 7; i++) {
+    if (body[i] === 0xc7 && body[i + 1] === 0x40 && body[i + 2] === 0x0c) {
+      const imm = body.readUInt32LE(i + 3);
+      if (candidateDefImms.has(imm)) {
+        defHits.push({
+          state: imm === DEFAULT_CHECKPOINT_TOKENS ? 'ORIG' : 'CONST',
+          limit: imm,
+          offset: fnOff + i,
+          relOffset: i
+        });
+      }
+    }
+  }
+
+  if (clampHits.length === 0) {
+    return { status: 'unknown', reason: '未在 utils.GetCheckpointConfig 中定位到 Gate 3A clamp 站点' };
+  }
+
+  // 多候选消歧：
+  // 1) 当 default site 与函数内原生常量（如 rel+1271 处的原生 1,000,000）碰撞时，
+  //    优先使用紧邻前置指令锚点 `cmp dword [rdx+0x14], 0; jg +7` (`83 7a 14 00 7f 07`) 唯一锁定真正 default 站点；
+  // 2) 次选任意 `jcc +7` (`0x70..0x7f 0x07`) 紧邻前导；
+  // 3) 兜底再以 ±8192 锚点距离窗口收窄，仍不唯一则拒写。
+  let chosenClamp = clampHits.length === 1 ? clampHits[0] : null;
+  let chosenDef = defHits.length === 1 ? defHits[0] : null;
+
+  if (!chosenClamp && defHits.length === 1) {
+    chosenClamp = narrowCandidatesByAnchor(clampHits, defHits[0].offset, 8192);
+  }
+  if (!chosenDef && defHits.length > 1) {
+    const exactGuardedHits = defHits.filter((d) => {
+      const r = d.relOffset;
+      return (
+        r >= 6 &&
+        body[r - 6] === 0x83 &&
+        body[r - 5] === 0x7a &&
+        body[r - 4] === 0x14 &&
+        body[r - 3] === 0x00 &&
+        body[r - 2] === 0x7f &&
+        body[r - 1] === 0x07
+      );
+    });
+    if (exactGuardedHits.length === 1) {
+      chosenDef = exactGuardedHits[0];
+    } else {
+      const guardedHits = defHits.filter((d) => {
+        const r = d.relOffset;
+        return r >= 2 && body[r - 2] >= 0x70 && body[r - 2] <= 0x7f && body[r - 1] === 0x07;
+      });
+      if (guardedHits.length === 1) {
+        chosenDef = guardedHits[0];
+      } else if (chosenClamp) {
+        chosenDef = narrowCandidatesByAnchor(defHits, chosenClamp.offset, 8192);
+      }
+    }
+  }
+  // 两边都多候选时尝试双向互锁：仅当有唯一的一组距离 <= 8192 时收窄
+  if (!chosenClamp && clampHits.length > 1 && defHits.length > 1) {
+    if (chosenDef) {
+      chosenClamp = narrowCandidatesByAnchor(clampHits, chosenDef.offset, 8192);
+    } else {
+      const pairs = [];
+      for (const c of clampHits) {
+        for (const d of defHits) {
+          if (Math.abs(c.offset - d.offset) <= 8192) pairs.push([c, d]);
+        }
+      }
+      if (pairs.length === 1) {
+        chosenClamp = pairs[0][0];
+        chosenDef = pairs[0][1];
+      }
+    }
+  }
+
+  if (!chosenClamp) {
+    return {
+      status: 'unknown',
+      reason: `检测到 ${clampHits.length} 个 Gate 3A clamp 候选且无法通过锚点唯一收窄，拒绝写入。`,
+      clampCandidateCount: clampHits.length,
+      defaultCandidateCount: defHits.length
+    };
+  }
+  if (defHits.length > 1 && !chosenDef) {
+    return {
+      status: 'unknown',
+      reason: `检测到 ${defHits.length} 个 Gate 3A default 候选且无法唯一收窄，拒绝写入。`,
+      clampCandidateCount: clampHits.length,
+      defaultCandidateCount: defHits.length
+    };
+  }
+
+  const hasDefaultSite = Boolean(chosenDef);
+  const baseInfo = {
+    offset: chosenClamp.offset,
+    length: 14,
+    mode: chosenClamp.mode,
+    limit: chosenClamp.limit,
+    clampState: chosenClamp.state,
+    defaultOffset: chosenDef ? chosenDef.offset : null,
+    defaultLength: chosenDef ? 7 : 0,
+    defaultLimit: chosenDef ? chosenDef.limit : null,
+    defaultState: chosenDef ? chosenDef.state : null,
+    hasDefaultSite,
+    clampCandidateCount: clampHits.length,
+    defaultCandidateCount: defHits.length
+  };
+
+  // 一致性验证：若 clamp 与 default 状态矛盾，必须报告 partial 状态，禁止盲目覆盖
+  if (hasDefaultSite) {
+    if (chosenClamp.state === 'ORIG' && chosenDef.state !== 'ORIG') {
+      return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp 为官方默认 (256,000)，但 default 站点为 ${chosenDef.limit.toLocaleString('en-US')}` };
+    }
+    if (chosenClamp.state === 'DYN' && chosenDef.state !== 'ORIG') {
+      return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp 为动态透传 (DYN)，但 default 站点未处于官方默认值 (实测 ${chosenDef.limit.toLocaleString('en-US')})` };
+    }
+    if (chosenClamp.state === 'CONST' && chosenDef.limit !== chosenClamp.limit) {
+      return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp (${chosenClamp.limit.toLocaleString('en-US')}) 与 default (${chosenDef.limit.toLocaleString('en-US')}) 数值不一致` };
+    }
+  }
+
+  return {
+    ...baseInfo,
+    status: chosenClamp.state === 'ORIG' ? 'unpatched' : 'patched'
+  };
 }
 
 /**
- * 检测 Gate 3B 状态
+ * 检测 Gate 3B 状态（验证唯一 call->selectCheckpointExperimentKey->test al,al->jcc 站点）
  */
 function checkGate3B(buf, textVA, textOff, symExp, symSelect, arch) {
   const fnOff = textOff + symExp.entryoff;
@@ -313,8 +554,9 @@ function checkGate3B(buf, textVA, textOff, symExp, symSelect, arch) {
   const body = buf.subarray(fnOff, Math.min(buf.length, fnOff + fnSize));
 
   if (arch === 'x86-64') {
-    if (!symSelect) return { status: 'unknown' };
+    if (!symSelect) return { status: 'unknown', reason: '缺符号 config.selectCheckpointExperimentKey' };
     const selVA = textVA + BigInt(symSelect.entryoff);
+    const hits = [];
 
     for (let rel = 0; rel < body.length - 12; rel++) {
       if (body[rel] === 0xe8) {
@@ -327,22 +569,28 @@ function checkGate3B(buf, textVA, textOff, symExp, symSelect, arch) {
             const b1 = body[jOff];
             const b2 = body[jOff + 1];
             if (b1 === 0x75) {
-              return { status: 'unpatched', offset: fnOff + jOff, length: 2, jumpType: 'rel8', origBytes: [b1, b2] };
-            }
-            if (b1 === 0x0f && b2 === 0x85) {
-              return { status: 'unpatched', offset: fnOff + jOff, length: 6, jumpType: 'rel32', origBytes: body.subarray(jOff, jOff + 6) };
-            }
-            if (b1 === 0x90 && b2 === 0x90) {
-              return { status: 'patched', offset: fnOff + jOff, length: 2 };
-            }
-            if (b1 === 0x90 && body.subarray(jOff, jOff + 6).every(b => b === 0x90)) {
-              return { status: 'patched', offset: fnOff + jOff, length: 6 };
+              hits.push({ status: 'unpatched', offset: fnOff + jOff, length: 2, jumpType: 'rel8', origBytes: [b1, b2], origHex: Buffer.from([b1, b2]).toString('hex') });
+            } else if (b1 === 0x0f && b2 === 0x85) {
+              const orig = body.subarray(jOff, jOff + 6);
+              hits.push({ status: 'unpatched', offset: fnOff + jOff, length: 6, jumpType: 'rel32', origBytes: Array.from(orig), origHex: Buffer.from(orig).toString('hex') });
+            } else if (b1 === 0x90 && b2 === 0x90) {
+              const run = (jOff + 6 <= body.length && body.subarray(jOff, jOff + 6).every((b) => b === 0x90)) ? 6 : 2;
+              hits.push({ status: 'patched', offset: fnOff + jOff, length: run });
+            } else {
+              hits.push({ status: 'unknown', offset: fnOff + jOff, reason: 'jcc 指令形状不识别' });
             }
           }
         }
       }
     }
-    return { status: 'unknown' };
+
+    if (hits.length === 0) {
+      return { status: 'unknown', reason: '未在函数体内找到 call->selectCheckpointExperimentKey->jcc 特征' };
+    }
+    if (hits.length > 1) {
+      return { status: 'unknown', reason: `检测到 ${hits.length} 个 Gate 3B 候选站点，拒绝写入`, candidateCount: hits.length };
+    }
+    return hits[0];
   }
 
   if (arch === 'arm64') {
@@ -360,6 +608,172 @@ function checkGate3B(buf, textVA, textOff, symExp, symSelect, arch) {
   }
 
   return { status: 'unknown' };
+}
+
+/**
+ * 检测 Desktop/CLI populateContextWindowMetadata 前端上限返回值门禁 (PR #4 cli_serializer_max_ctx)
+ * @param {Buffer} buf 目标二进制缓冲区
+ * @param {string} arch 架构
+ * @returns {{present: boolean, status: string, offset: number|null, limit: number|null}}
+ */
+function checkSerializerGate(buf, arch) {
+  if (arch !== 'x86-64' || !Buffer.isBuffer(buf)) {
+    return { present: false, status: 'absent', offset: null, limit: null };
+  }
+  const stockHits = [];
+  let idx = -1;
+  while ((idx = buf.indexOf(SERIALIZER_STOCK_X64, idx + 1)) !== -1) {
+    stockHits.push(idx);
+    if (stockHits.length > 2) break;
+  }
+  if (stockHits.length === 1) {
+    return { present: true, status: 'unpatched', offset: stockHits[0], limit: null };
+  }
+  if (stockHits.length > 1) {
+    return { present: false, status: 'ambiguous', offset: null, limit: null };
+  }
+
+  // 检查已改写形如 4889442470 c700 <imm32> 90909090 b830000000 (20B)
+  const patchedHits = [];
+  let p = -1;
+  while ((p = buf.indexOf(SERIALIZER_HEAD_X64, p + 1)) !== -1) {
+    if (p + 20 <= buf.length && buf.subarray(p + 11, p + 20).equals(SERIALIZER_TAIL_X64)) {
+      const imm = buf.readUInt32LE(p + 7);
+      if (imm >= 4096 && imm <= 16 * 1024 * 1024) {
+        patchedHits.push({ offset: p, limit: imm });
+        if (patchedHits.length > 2) break;
+      }
+    }
+  }
+  if (patchedHits.length === 1) {
+    return { present: true, status: 'patched', offset: patchedHits[0].offset, limit: patchedHits[0].limit };
+  }
+  return { present: false, status: patchedHits.length > 1 ? 'ambiguous' : 'absent', offset: null, limit: null };
+}
+
+/**
+ * 格式化配置同步用上下文标签（与 PR #3 / PR #4 约定一致，绝不把 dynamic 误标成 983040）
+ */
+function formatSyncContextLabel(mode, limitTokens) {
+  if (mode === 'default' || !mode) return null;
+  if (mode === 'dynamic') return 'DYNAMIC';
+  const n = Number(limitTokens);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n === 512000) return '512K';
+  if (n === 900000) return '900K';
+  if (n === 983040) return '983K';
+  if (n % 1000 === 0) return `${n / 1000}K`;
+  return String(n);
+}
+
+/**
+ * 同步 ~/.gemini/config/config.json、antigravity-cli/settings.json 与 context-mode.json
+ * 仅在明确启用 options.syncConfigFiles 或指定隔离 options.homeDir 时写盘
+ */
+function syncExternalContextConfigs(mode, limitTokens, options = {}) {
+  const shouldWrite = options.syncConfigFiles === true || Boolean(options.homeDir);
+  if (!shouldWrite) return [];
+  // 测试或隔离上下文中若未显式提供隔离 homeDir，严禁回落写入用户真实主目录
+  const isIsolated = Boolean(
+    options.backupDir ||
+    options.targetPath ||
+    options.stateDir ||
+    options.skipProcessCheck ||
+    process.env.NODE_TEST_CONTEXT
+  );
+  if (isIsolated && !options.homeDir) {
+    return [];
+  }
+  const home = options.homeDir || os.homedir();
+  const label = formatSyncContextLabel(mode, limitTokens);
+  const synced = [];
+
+  const shouldSyncCli = options.syncCliConfigs !== false;
+  if (shouldSyncCli) {
+    const jsonTargets = [
+      { filePath: path.join(home, '.gemini', 'config', 'config.json'), createDir: true },
+      { filePath: path.join(home, '.gemini', 'antigravity-cli', 'settings.json'), createDir: false }
+    ];
+    for (const item of jsonTargets) {
+      try {
+        const dir = path.dirname(item.filePath);
+        if (!fs.existsSync(dir)) {
+          if (item.createDir) fs.mkdirSync(dir, { recursive: true });
+          else continue;
+        }
+        let obj = {};
+        if (fs.existsSync(item.filePath)) {
+          try {
+            obj = JSON.parse(fs.readFileSync(item.filePath, 'utf8')) || {};
+          } catch {
+            obj = {};
+          }
+        }
+        if (mode === 'default' || mode === 'dynamic' || !label) {
+          delete obj.contextWindow;
+        } else {
+          obj.contextWindow = label;
+        }
+        const tmp = `${item.filePath}.tmp-${process.pid}`;
+        fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+        fs.renameSync(tmp, item.filePath);
+        synced.push(item.filePath);
+      } catch {}
+    }
+  }
+
+  // PR #3 context-mode.json 状态桥接（与 patch-language_server.py 对齐使用 getStateDir()）：
+  // 清晰记录 mode（default/fixed/dynamic）与数值，绝不将 dynamic 误写为 983040
+  try {
+    const stateDir = options.stateDir || (options.homeDir ? path.join(options.homeDir, '.gemini', 'antigravity') : getStateDir());
+    const modeFile = path.join(stateDir, 'context-mode.json');
+    const modeDir = path.dirname(modeFile);
+    if (!fs.existsSync(modeDir)) fs.mkdirSync(modeDir, { recursive: true });
+    const modePayload = {
+      mode: mode === 'dynamic' ? '983k' : (mode === 'fixed' ? '512k' : '256k'),
+      effectiveMode: mode,
+      limitTokens: mode === 'fixed' ? Number(limitTokens) : null,
+      floor: mode === 'fixed' ? Number(limitTokens) : (mode === 'dynamic' ? null : DEFAULT_CHECKPOINT_TOKENS),
+      label: mode === 'dynamic' ? 'dynamic' : (mode === 'fixed' ? label : 'default'),
+      updatedAt: new Date().toISOString()
+    };
+    if (mode === 'fixed') {
+      modePayload.limit = Number(limitTokens);
+    }
+    const tmpMode = `${modeFile}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpMode, JSON.stringify(modePayload, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmpMode, modeFile);
+    synced.push(modeFile);
+  } catch {}
+
+  return synced;
+}
+
+function readExternalContextConfig(options = {}) {
+  const home = options.homeDir || os.homedir();
+  let configContextWindow = null;
+  for (const cfgPath of [
+    path.join(home, '.gemini', 'config', 'config.json'),
+    path.join(home, '.gemini', 'antigravity-cli', 'settings.json')
+  ]) {
+    try {
+      if (!fs.existsSync(cfgPath)) continue;
+      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      if (parsed && typeof parsed.contextWindow === 'string' && parsed.contextWindow.trim()) {
+        configContextWindow = parsed.contextWindow.trim();
+        break;
+      }
+    } catch {}
+  }
+  let contextModeBridge = null;
+  try {
+    const stateDir = options.stateDir || (options.homeDir ? path.join(options.homeDir, '.gemini', 'antigravity') : getStateDir());
+    const modeFile = path.join(stateDir, 'context-mode.json');
+    if (fs.existsSync(modeFile)) {
+      contextModeBridge = JSON.parse(fs.readFileSync(modeFile, 'utf8'));
+    }
+  } catch {}
+  return { configContextWindow, contextModeBridge };
 }
 
 /**
@@ -401,6 +815,50 @@ function loadManifest(backupDir) {
 function saveManifest(data, backupDir) {
   const mf = getManifestPath(backupDir);
   fs.writeFileSync(mf, JSON.stringify(data, null, 2), 'utf8');
+}
+
+function getGate3BSidecarPath(backupDir) {
+  return path.join(getUnlockBackupDir(backupDir), 'gate3b.json');
+}
+
+function loadGate3BSidecar(backupDir) {
+  const p = getGate3BSidecarPath(backupDir);
+  if (fs.existsSync(p)) {
+    try {
+      return JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function saveGate3BSidecar(data, backupDir) {
+  const p = getGate3BSidecarPath(backupDir);
+  fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf8');
+}
+
+function isSameTargetPath(a, b) {
+  if (!a || !b) return false;
+  return path.resolve(String(a)).toLowerCase() === path.resolve(String(b)).toLowerCase();
+}
+
+function doesManifestMatchContainer(manifest, container, target) {
+  if (!manifest || !isSameTargetPath(manifest.targetPath, target)) return false;
+  if (manifest.buildId && container?.buildId && manifest.buildId !== container.buildId) return false;
+  if (manifest.peTimeDateStamp !== undefined && container?.peTimeDateStamp !== undefined && manifest.peTimeDateStamp !== container.peTimeDateStamp) return false;
+  if (manifest.peSizeOfImage !== undefined && container?.peSizeOfImage !== undefined && manifest.peSizeOfImage !== container.peSizeOfImage) return false;
+  return true;
+}
+
+function doesSidecarMatchTarget(sidecar, target, container, gate3b) {
+  if (!sidecar || !sidecar.origHex) return false;
+  if (sidecar.targetPath && !isSameTargetPath(sidecar.targetPath, target)) return false;
+  if (sidecar.buildId && container?.buildId && sidecar.buildId !== container.buildId) return false;
+  if (sidecar.peTimeDateStamp !== undefined && container?.peTimeDateStamp !== undefined && sidecar.peTimeDateStamp !== container.peTimeDateStamp) return false;
+  if (sidecar.peSizeOfImage !== undefined && container?.peSizeOfImage !== undefined && sidecar.peSizeOfImage !== container.peSizeOfImage) return false;
+  if (sidecar.offset !== undefined && gate3b?.offset !== undefined && sidecar.offset !== gate3b.offset) return false;
+  return true;
 }
 
 /**
@@ -620,8 +1078,36 @@ function checkProcessActivity(targetPath) {
   return getRunningLanguageServerInfo(targetPath, false);
 }
 
+function describeGate3AMode(gate3a) {
+  if (!gate3a) return { configuredMode: 'unknown', configuredLimitTokens: null, configuredSummary: '未知状态' };
+  if (gate3a.status === 'partial') {
+    return { configuredMode: 'partial', configuredLimitTokens: gate3a.limit ?? null, configuredSummary: '部分匹配（站点不一致）' };
+  }
+  if (gate3a.status === 'unknown') {
+    return { configuredMode: 'unknown', configuredLimitTokens: null, configuredSummary: '未知特征' };
+  }
+  if (gate3a.mode === 'default' || gate3a.status === 'unpatched') {
+    return { configuredMode: 'default', configuredLimitTokens: null, configuredSummary: '宿主默认（恢复原有行为）' };
+  }
+  if (gate3a.mode === 'fixed' && gate3a.limit) {
+    return {
+      configuredMode: 'fixed',
+      configuredLimitTokens: gate3a.limit,
+      configuredSummary: `固定上限 (${gate3a.limit.toLocaleString('en-US')} tokens)`
+    };
+  }
+  if (gate3a.mode === 'dynamic') {
+    return {
+      configuredMode: 'dynamic',
+      configuredLimitTokens: null,
+      configuredSummary: '动态跟随模型（透传，不锁定 983,040）'
+    };
+  }
+  return { configuredMode: 'unknown', configuredLimitTokens: null, configuredSummary: '未识别配置' };
+}
+
 /**
- * 核心状态判定推导算法（综合静态特征、真实请求预算证据与进程生命周期）
+ * 核心状态判定推导算法（综合静态特征、进程生命周期，严格区分显示预算观测与真实请求验证）
  */
 function synthesizeAnalysisStatus(options = {}) {
   const {
@@ -629,11 +1115,11 @@ function synthesizeAnalysisStatus(options = {}) {
     gate3b,
     proc,
     manifest,
+    container,
     stats,
     target,
     currentSha256,
-    observedBudget,
-    isBudgetVerified
+    observedBudget
   } = options;
 
   let overallStatus = 'unsupported';
@@ -643,7 +1129,8 @@ function synthesizeAnalysisStatus(options = {}) {
   const targetNorm = path.resolve(target).toLowerCase();
   const manifestTargetNorm = (manifest && manifest.targetPath) ? path.resolve(manifest.targetPath).toLowerCase() : null;
   const isTargetMatched = manifestTargetNorm === targetNorm;
-  const isRecent = Boolean(manifest && manifest.patchedSha256 === currentSha256 && isTargetMatched);
+  const isBuildMatched = container ? doesManifestMatchContainer(manifest, container, target) : isTargetMatched;
+  const isRecent = Boolean(manifest && manifest.patchedSha256 === currentSha256 && isBuildMatched);
   const patchedAtMs = (isRecent && manifest && manifest.patchedAt) ? new Date(manifest.patchedAt).getTime() : 0;
   const fileMtimeMs = (stats && stats.mtimeMs) ? stats.mtimeMs : 0;
   const effectivePatchTimeMs = patchedAtMs > 0 ? patchedAtMs : fileMtimeMs;
@@ -655,67 +1142,164 @@ function synthesizeAnalysisStatus(options = {}) {
   );
 
   let restartDetected = null;
-  // 必须确证目标进程路径匹配，绝不能仅凭存在某个新启动的同名进程就判定加载了本次修改后的二进制！
+  // 必须确证目标进程路径匹配，绝不能仅凭存在某个新启动的同名进程就判定加载了本次修改后的二进制
   if (isProcPathMatched && proc?.startTimeMs && effectivePatchTimeMs > 0) {
     restartDetected = (proc.startTimeMs >= effectivePatchTimeMs - 1500);
   }
 
+  const modeDesc = describeGate3AMode(gate3a);
+
   if (gate3a.status === 'unpatched' && gate3b.status === 'unpatched') {
     overallStatus = 'not_patched';
     statusText = '未解锁';
-    details = '检测到官方原版二进制，门禁特征完整，可安全执行加长解锁。';
+    details = '检测到宿主原始后端（未修改限制），可切换为固定数值或跟随模型模式。';
   } else if (gate3a.status === 'patched' && gate3b.status === 'patched') {
-    // 证据等级 1: 真实请求预算已突破 256,000 封顶（最强确凿证据）
-    if (isBudgetVerified) {
-      overallStatus = 'verified_active';
-      statusText = '已验证生效';
-      details = `补丁已加载生效，且当前会话已通过真实请求预算验证（有效检查点上限为 ${observedBudget.toLocaleString()} tokens）。`;
-      if (manifest && manifest.needsRestart) {
-        manifest.needsRestart = false;
-        try { saveManifest(manifest, options.backupDir); } catch {}
-      }
-    } else if (proc && !proc.isRunning && !proc.locked) {
-      // 客户端未处于运行状态：补丁已在磁盘安全就绪，但尚未在运行时加载生效，严禁误报 verified_active！
+    const modeNote = `当前磁盘模式：${modeDesc.configuredSummary}`;
+    const unverifiedTail = observedBudget > 256000
+      ? `；检测到界面显示预算 ${observedBudget.toLocaleString('en-US')} tokens（仅作参考，尚未经过真实长请求验证）。`
+      : '；尚未经过真实长请求验证。';
+
+    if (proc && !proc.isRunning && !proc.locked) {
       overallStatus = 'patched_runtime_unconfirmed';
       statusText = '磁盘已解锁，运行待确认';
-      details = '静态特征校验通过，双重 256,000 上限已放行；当前核心进程未运行，将在客户端启动后生效。';
+      details = `${modeNote}；当前后端未运行，将在客户端启动后加载${unverifiedTail}`;
     } else if (restartDetected === true && isProcPathMatched) {
-      // 明确检测到目标进程 (路径严格匹配) 启动时间晚于补丁修改时间 -> 确证已加载修改后的新二进制
-      overallStatus = 'verified_active';
-      statusText = '已验证生效';
-      details = `目标进程 (PID ${proc?.pid || '未知'}) 路径严格匹配，且启动时间晚于补丁写入时间，确证已加载本次修改后的二进制文件；待首条会话请求验证实际预算。`;
+      overallStatus = 'patched_loaded';
+      statusText = '已加载，待长请求实测';
+      details = `${modeNote}；目标进程 (PID ${proc?.pid || '未知'}) 启动时间晚于修改时间${unverifiedTail}`;
       if (manifest && manifest.needsRestart) {
         manifest.needsRestart = false;
         try { saveManifest(manifest, options.backupDir); } catch {}
       }
     } else if (restartDetected === false && isProcPathMatched) {
-      // 明确检测到运行中的进程启动时间早于打补丁时间 -> 确实未重启
       overallStatus = 'patched_pending_restart';
       statusText = '已写入补丁，待重启';
-      details = `补丁已安全写入磁盘，但当前运行中的 Antigravity 宿主进程 (PID ${proc?.pid || '未知'}) 启动于打补丁之前，请正常重启客户端以生效。`;
+      details = `${modeNote}；当前运行中的宿主进程 (PID ${proc?.pid || '未知'}) 启动于修改之前，请重启客户端使新配置生效。`;
     } else {
-      // 无法确证进程状态（如进程路径不匹配、仅文件被外部占用、进程枚举受限或缺少启动时间戳），严禁盲目误报已生效！
       overallStatus = 'patched_runtime_unconfirmed';
       statusText = '磁盘已解锁，运行待确认';
       details = isProcPathMatched
-        ? '补丁已写入磁盘并通过底层特征校验。若尚未重启客户端，请重启以生效；若已重启，发送一条对话请求即可自动确认。'
-        : '补丁已写入磁盘目标文件；检测到后台活动但未能确证目标进程加载路径，待客户端启动并拉起目标二进制后生效。';
+        ? `${modeNote}；未能确定进程重启时序，请确认已重启并观察后续真实请求表现${unverifiedTail}`
+        : `${modeNote}；未能确证目标进程加载路径，将在重启客户端后生效${unverifiedTail}`;
     }
-  } else if (gate3a.status === 'unknown' || gate3b.status === 'unknown') {
-    overallStatus = 'failed';
-    statusText = '检测或执行失败';
-    details = `特征匹配异常 (Gate 3A: ${gate3a.status}, Gate 3B: ${gate3b.status})，为防止损坏文件已中止操作。`;
+  } else if (gate3a.status === 'partial') {
+    overallStatus = 'partial_match';
+    statusText = '状态异常（部分匹配）';
+    details = '部分限制特征状态不一致，为避免损坏程序已拒绝写入。';
+  } else if ((gate3a.status === 'patched' && gate3b.status === 'unpatched') || (gate3a.status === 'unpatched' && gate3b.status === 'patched')) {
+    overallStatus = 'partial_match';
+    statusText = '状态异常（部分匹配）';
+    details = '后端限制处于半修改状态，拒绝直接覆写；请先通过「还原后端」恢复后再操作。';
   } else {
     overallStatus = 'failed';
     statusText = '检测或执行失败';
-    details = `门禁状态不一致 (Gate 3A: ${gate3a.status}, Gate 3B: ${gate3b.status})。`;
+    const specificReasons = [gate3a?.reason, gate3b?.reason].filter(Boolean);
+    details = specificReasons.length > 0
+      ? specificReasons.join('；')
+      : '未识别到可安全改写的特征（或版本已变更），已中止操作以防损坏文件。';
   }
 
   return {
     overallStatus,
     statusText,
     details,
-    restartDetected
+    restartDetected,
+    ...modeDesc
+  };
+}
+
+function buildAnalysisResult({
+  target,
+  container,
+  stats,
+  currentSha256,
+  totalSymbols,
+  mode,
+  gate3a,
+  gate3b,
+  serializerGate,
+  proc,
+  manifest,
+  sidecar,
+  observedBudget,
+  backupDir
+}) {
+  const synthesis = synthesizeAnalysisStatus({
+    gate3a,
+    gate3b,
+    proc,
+    manifest,
+    container,
+    stats,
+    target,
+    currentSha256,
+    observedBudget,
+    backupDir
+  });
+
+  const backupExists = Boolean(manifest && manifest.backupPath && fs.existsSync(manifest.backupPath));
+  const backupMatches = backupExists && doesManifestMatchContainer(manifest, container, target);
+  let backupStaleReason = null;
+  if (backupExists && !backupMatches) {
+    backupStaleReason = '检测到目标二进制路径或 PE 构建版本已变更，历史原版备份与当前文件不匹配（已禁用跨版本还原）。';
+  }
+
+  return {
+    status: synthesis.overallStatus,
+    statusText: synthesis.statusText,
+    details: synthesis.details,
+    targetPath: target,
+    format: container.format,
+    arch: container.arch,
+    peBuildId: container.buildId || null,
+    peTimeDateStamp: container.peTimeDateStamp ?? null,
+    peSizeOfImage: container.peSizeOfImage ?? null,
+    mode,
+    configuredMode: synthesis.configuredMode,
+    configuredLimitTokens: synthesis.configuredLimitTokens,
+    configuredSummary: synthesis.configuredSummary,
+    scope: 'shared_backend',
+    scopeNotice: '保存仅记录该模型偏好；应用会影响共享后端的所有会话，重启后生效。',
+    realRequestVerified: false,
+    engineeringRange: {
+      min: MIN_ENGINEERING_LIMIT,
+      max: MAX_ENGINEERING_LIMIT,
+      presets: KNOWN_LIMIT_PRESETS,
+      scopeNote: `补丁工程可写范围 ${MIN_ENGINEERING_LIMIT.toLocaleString('en-US')} ~ ${MAX_ENGINEERING_LIMIT.toLocaleString('en-US')} tokens（不代表模型保证支持上限）`
+    },
+    fileSize: stats.size,
+    sha256: currentSha256,
+    totalSymbols,
+    gate3a,
+    gate3b,
+    serializerGate: serializerGate || { present: false, status: 'absent', offset: null, limit: null },
+    isProcessRunning: proc.isRunning,
+    isProcessLocked: proc.locked,
+    runtimeEvidence: {
+      isProcessRunning: proc.isRunning,
+      isProcessLocked: proc.locked,
+      processPid: proc.pid || null,
+      processStartTime: proc.startTimeMs ? new Date(proc.startTimeMs).toISOString() : null,
+      patchedAt: manifest ? manifest.patchedAt : null,
+      restartDetected: synthesis.restartDetected,
+      observedBudget: observedBudget || null,
+      budgetObservedAbove256k: observedBudget > DEFAULT_CHECKPOINT_TOKENS,
+      realRequestVerified: false,
+      verificationNote: '仅依据静态特征/进程/前端显示预算，尚未经真实长请求服务端验证。'
+    },
+    hasBackup: backupExists,
+    backupValidForCurrentBinary: backupMatches,
+    backupStaleReason,
+    hasMatchingGate3BSidecar: doesSidecarMatchTarget(sidecar, target, container, gate3b),
+    backupInfo: manifest ? {
+      origSha256: manifest.origSha256,
+      backupPath: manifest.backupPath,
+      patchedAt: manifest.patchedAt,
+      buildId: manifest.buildId || null,
+      configuredMode: manifest.configuredMode || null,
+      configuredLimitTokens: manifest.configuredLimitTokens ?? null
+    } : null,
+    author: AUTHOR_INFO
   };
 }
 
@@ -818,62 +1402,32 @@ async function analyzeBinaryAsync(filePath, options = {}) {
     };
   }
 
-  const gate3a = checkGate3A(buf, textOff, symCheckpoint, arch);
+  const gate3a = checkGate3A(buf, textOff, symCheckpoint, arch, options);
   const gate3b = checkGate3B(buf, textVA, textOff, symExp, symSelect, arch);
+  const serializerGate = checkSerializerGate(buf, arch);
 
   // 异步非阻塞枚举进程信息
   const proc = await getRunningLanguageServerInfoAsync(target, options.forceRefresh === true);
   const manifest = loadManifest(options.backupDir);
-
+  const sidecar = loadGate3BSidecar(options.backupDir);
   const observedBudget = Number(options?.currentBudget || options?.observedBudget || 0);
-  const isBudgetVerified = observedBudget > 256000;
 
-  const synthesis = synthesizeAnalysisStatus({
+  return buildAnalysisResult({
+    target,
+    container,
+    stats,
+    currentSha256,
+    totalSymbols,
+    mode,
     gate3a,
     gate3b,
+    serializerGate,
     proc,
     manifest,
-    stats,
-    target,
-    currentSha256,
+    sidecar,
     observedBudget,
-    isBudgetVerified,
     backupDir: options.backupDir
   });
-
-  return {
-    status: synthesis.overallStatus,
-    statusText: synthesis.statusText,
-    details: synthesis.details,
-    targetPath: target,
-    format,
-    arch,
-    mode,
-    fileSize: stats.size,
-    sha256: currentSha256,
-    totalSymbols,
-    gate3a,
-    gate3b,
-    isProcessRunning: proc.isRunning,
-    isProcessLocked: proc.locked,
-    runtimeEvidence: {
-      isProcessRunning: proc.isRunning,
-      isProcessLocked: proc.locked,
-      processPid: proc.pid || null,
-      processStartTime: proc.startTimeMs ? new Date(proc.startTimeMs).toISOString() : null,
-      patchedAt: manifest ? manifest.patchedAt : null,
-      restartDetected: synthesis.restartDetected,
-      observedBudget: observedBudget || null,
-      budgetVerified: isBudgetVerified
-    },
-    hasBackup: Boolean(manifest && manifest.backupPath && fs.existsSync(manifest.backupPath)),
-    backupInfo: manifest ? {
-      origSha256: manifest.origSha256,
-      backupPath: manifest.backupPath,
-      patchedAt: manifest.patchedAt
-    } : null,
-    author: AUTHOR_INFO
-  };
 }
 
 /**
@@ -952,168 +1506,57 @@ function analyzeBinary(filePath, options = {}) {
     };
   }
 
-  const gate3a = checkGate3A(buf, textOff, symCheckpoint, arch);
+  const gate3a = checkGate3A(buf, textOff, symCheckpoint, arch, options);
   const gate3b = checkGate3B(buf, textVA, textOff, symExp, symSelect, arch);
+  const serializerGate = checkSerializerGate(buf, arch);
 
   const proc = checkProcessActivity(target);
   const manifest = loadManifest(options.backupDir);
-
+  const sidecar = loadGate3BSidecar(options.backupDir);
   const observedBudget = Number(options?.currentBudget || options?.observedBudget || 0);
-  const isBudgetVerified = observedBudget > 256000;
 
-  const synthesis = synthesizeAnalysisStatus({
+  return buildAnalysisResult({
+    target,
+    container,
+    stats,
+    currentSha256,
+    totalSymbols,
+    mode,
     gate3a,
     gate3b,
+    serializerGate,
     proc,
     manifest,
-    stats,
-    target,
-    currentSha256,
+    sidecar,
     observedBudget,
-    isBudgetVerified,
     backupDir: options.backupDir
   });
-
-  return {
-    status: synthesis.overallStatus,
-    statusText: synthesis.statusText,
-    details: synthesis.details,
-    targetPath: target,
-    format,
-    arch,
-    mode,
-    fileSize: stats.size,
-    sha256: currentSha256,
-    totalSymbols,
-    gate3a,
-    gate3b,
-    isProcessRunning: proc.isRunning,
-    isProcessLocked: proc.locked,
-    runtimeEvidence: {
-      isProcessRunning: proc.isRunning,
-      isProcessLocked: proc.locked,
-      processPid: proc.pid || null,
-      processStartTime: proc.startTimeMs ? new Date(proc.startTimeMs).toISOString() : null,
-      patchedAt: manifest ? manifest.patchedAt : null,
-      restartDetected: synthesis.restartDetected,
-      observedBudget: observedBudget || null,
-      budgetVerified: isBudgetVerified
-    },
-    hasBackup: Boolean(manifest && manifest.backupPath && fs.existsSync(manifest.backupPath)),
-    backupInfo: manifest ? {
-      origSha256: manifest.origSha256,
-      backupPath: manifest.backupPath,
-      patchedAt: manifest.patchedAt
-    } : null,
-    author: AUTHOR_INFO
-  };
 }
 
 /**
  * 执行上下文加长解锁 (Apply)
  */
-function applyUnlock(options = {}) {
-  // 跨平台安全策略拦截：仅支持 Windows (x86-64)
-  if (process.platform !== 'win32') {
-    return {
-      ok: false,
-      code: 'PLATFORM_UNSUPPORTED',
-      error: `当前平台 (${process.platform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
-    };
-  }
-
-  const target = options.targetPath || detectTargetBinary();
-  const analysis = analyzeBinary(target);
-
-  if (analysis.status === 'verified_active' || analysis.status === 'patched_pending_restart' || analysis.status === 'patched_runtime_unconfirmed') {
-    return {
-      ok: true,
-      alreadyPatched: true,
-      needsRestart: analysis.status === 'patched_pending_restart',
-      message: '目标已经处于解锁状态，无需重复打补丁。',
-      analysis
-    };
-  }
-
-  if (analysis.status !== 'not_patched') {
-    return {
-      ok: false,
-      error: `无法执行解锁：${analysis.details || analysis.reason || '目标不受支持'}`,
-      analysis
-    };
-  }
-
-  const { gate3a, gate3b, arch, targetPath, sha256: origSha256, fileSize: origSize } = analysis;
-  const backupDir = getUnlockBackupDir(options.backupDir);
-  const backupFile = path.join(backupDir, `${path.basename(targetPath)}_${origSha256.slice(0, 12)}.orig`);
-
-  // 1. 备份原版二进制至外部目录
-  try {
-    fs.copyFileSync(targetPath, backupFile);
-    const backupSha = sha256File(backupFile);
-    if (backupSha !== origSha256) {
-      if (fs.existsSync(backupFile)) fs.unlinkSync(backupFile);
-      return { ok: false, error: '原版备份哈希校验不匹配，操作已中止。' };
-    }
-  } catch (e) {
-    return { ok: false, error: `创建原版备份失败: ${e.message}` };
-  }
-
-  // 2. 内存打补丁
-  const buf = fs.readFileSync(targetPath);
-
-  // Patch Gate 3A
-  if (arch === 'x86-64') {
-    buf.set(PATCH_256K_X64, gate3a.offset);
-  } else if (arch === 'arm64') {
-    const nop6 = Buffer.concat([NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64]);
-    buf.set(nop6, gate3a.offset);
-  }
-
-  // Patch Gate 3B
-  if (arch === 'x86-64') {
-    const nopCount = gate3b.length || 2;
-    buf.fill(0x90, gate3b.offset, gate3b.offset + nopCount);
-  } else if (arch === 'arm64') {
-    const cbz_x0 = 0xb4000000;
-    const str_wzr = 0xb9000c1f;
-    const blob = Buffer.alloc(24, 0x1f); // NOPs
-    for (let i = 0; i < 24; i += 4) {
-      NOP_ARM64.copy(blob, i);
-    }
-    blob.writeUInt32LE(cbz_x0, 0);
-    blob.writeUInt32LE(str_wzr, 4);
-    buf.set(blob, gate3b.offset);
-  }
-
-  const patchedSha256 = sha256Buffer(buf);
-
-  // 3. 安全写盘（Windows 运行中占用原子替换与回滚机制）
-  const tmpNew = `${targetPath}.new_${Date.now()}`;
-  let writeSuccess = false;
+/**
+ * Windows 占用下安全原子写盘与回滚共用助手
+ */
+function atomicWriteBinary(targetPath, buf, tempTag = 'new') {
+  const tmpNew = `${targetPath}.${tempTag}_${Date.now()}`;
   let usedRenameTrick = false;
   let tmpOldCreated = null;
 
   try {
     fs.writeFileSync(tmpNew, buf);
-
-    // 尝试直接替换
     try {
       fs.copyFileSync(tmpNew, targetPath);
-      writeSuccess = true;
     } catch (e) {
       if (process.platform === 'win32' && (e.code === 'EBUSY' || e.code === 'EPERM')) {
-        // Windows 运行中被锁定：使用 Rename 替换法
         const tmpOld = `${targetPath}.old_${Date.now()}`;
         fs.renameSync(targetPath, tmpOld);
         tmpOldCreated = tmpOld;
-
         try {
           fs.renameSync(tmpNew, targetPath);
-          writeSuccess = true;
           usedRenameTrick = true;
         } catch (renameNewErr) {
-          // 关键安全回滚：新文件未能替换成功，立即将原文件 tmpOld 还原回 targetPath
           try {
             fs.renameSync(tmpOld, targetPath);
           } catch (rollbackErr) {
@@ -1132,12 +1575,9 @@ function applyUnlock(options = {}) {
       }
     }
   } catch (e) {
-    if (fs.existsSync(tmpNew)) {
-      try { fs.unlinkSync(tmpNew); } catch {}
-    }
     return {
       ok: false,
-      error: `写入补丁失败 (${e.code || e.message})。若客户端正在运行，请退出 Antigravity 客户端后重试。`
+      error: `写入目标文件失败 (${e.code || e.message})。若客户端正在运行，请退出 Antigravity 客户端后重试。`
     };
   } finally {
     if (fs.existsSync(tmpNew)) {
@@ -1145,44 +1585,341 @@ function applyUnlock(options = {}) {
     }
   }
 
-  // 4. 清理同目录下此前遗留的历史 .old_* 文件（当前刚刚被占用的 tmpOld 除外）
   try {
     cleanupOldReplacedFiles(path.dirname(targetPath), path.basename(targetPath), tmpOldCreated);
   } catch {}
 
-  // 5. 保存持久化清单
-  const manifest = {
-    targetPath,
-    arch,
-    origSha256,
-    origSize,
-    backupPath: backupFile,
-    backupSha256: origSha256,
-    patchedSha256,
-    patchedAt: new Date().toISOString(),
-    needsRestart: true,
-    author: AUTHOR_INFO
-  };
-  saveManifest(manifest, options.backupDir);
+  return { ok: true, usedRenameTrick };
+}
+
+/**
+ * 解析并规范化目标上下文调整参数
+ */
+function normalizeUnlockTargetOptions(options = {}) {
+  const hasLimitParam = options?.limitTokens !== undefined && options?.limitTokens !== null && options?.limitTokens !== '';
+  const rawMode = options?.mode ? String(options.mode).trim().toLowerCase() : (hasLimitParam ? 'fixed' : 'dynamic');
+
+  if (rawMode === 'default' || rawMode === 'orig' || rawMode === 'official') {
+    return { ok: true, mode: 'default', limitTokens: DEFAULT_CHECKPOINT_TOKENS, warnings: [] };
+  }
+  if (rawMode === 'dynamic' || rawMode === 'dyn' || rawMode === 'passthrough') {
+    return { ok: true, mode: 'dynamic', limitTokens: null, warnings: [] };
+  }
+  if (rawMode === 'fixed' || rawMode === 'const' || rawMode === 'custom') {
+    const validation = validateContextLimit(options?.limitTokens, { serviceLimit: options?.serviceLimit });
+    if (!validation.ok) return validation;
+    return {
+      ok: true,
+      mode: 'fixed',
+      limitTokens: validation.limitTokens,
+      warnings: validation.warnings,
+      scopeNote: validation.scopeNote
+    };
+  }
+
+  return { ok: false, error: `未知上下文模式: ${options.mode}`, code: 'INVALID_MODE' };
+}
+
+/**
+ * 安全解析写入/恢复目标二进制路径：测试/隔离上下文或拼错路径字段名时严禁回退系统安装目录
+ */
+function resolveUnlockTargetPath(options = {}) {
+  const typoKey = ['binPath', 'binaryPath', 'filePath', 'path', 'target'].find(
+    (k) => options[k] !== undefined && options[k] !== null && String(options[k]).trim() !== ''
+  );
+  if (typoKey && !options.targetPath) {
+    return {
+      ok: false,
+      code: 'INVALID_TARGET_OPTION',
+      error: `无效的目标路径字段 "${typoKey}"，请显式使用 targetPath；已拒绝回退至系统安装目录。`
+    };
+  }
+  if (options.targetPath && String(options.targetPath).trim() !== '') {
+    return { ok: true, target: path.resolve(String(options.targetPath)) };
+  }
+  const hasIsolationContext = Boolean(
+    options.backupDir ||
+    options.homeDir ||
+    options.stateDir ||
+    options.skipProcessCheck ||
+    process.env.NODE_TEST_CONTEXT
+  );
+  if (hasIsolationContext) {
+    return {
+      ok: false,
+      code: 'MISSING_TARGET_PATH',
+      error: '处于测试或隔离上下文但未显式指定 targetPath，已拒绝探测或写入系统安装目录。'
+    };
+  }
+  try {
+    const detected = detectTargetBinary();
+    if (!detected) {
+      return { ok: false, code: 'MISSING_TARGET_PATH', error: '未指定目标二进制文件路径，且未检测到默认安装目录。' };
+    }
+    return { ok: true, target: detected };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
+ * 执行上下文长度模式应用与已知态安全互切 (default / fixed / dynamic)
+ */
+function applyUnlock(options = {}) {
+  if (process.platform !== 'win32') {
+    return {
+      ok: false,
+      code: 'PLATFORM_UNSUPPORTED',
+      error: `当前平台 (${process.platform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
+    };
+  }
+
+  const targetSpec = normalizeUnlockTargetOptions(options);
+  if (!targetSpec.ok) {
+    return { ok: false, code: targetSpec.code || 'INVALID_INPUT', error: targetSpec.error };
+  }
+
+  const resolvedTarget = resolveUnlockTargetPath(options);
+  if (!resolvedTarget.ok) {
+    return resolvedTarget;
+  }
+  const target = resolvedTarget.target;
+
+  const analysis = analyzeBinary(target, {
+    backupDir: options.backupDir,
+    expectedLimit: targetSpec.limitTokens
+  });
+
+  const allowedStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
+  if (!allowedStatuses.has(analysis.status) || analysis.arch !== 'x86-64') {
+    return {
+      ok: false,
+      code: analysis.status === 'partial_match' ? 'PARTIAL_MATCH' : 'UNSUPPORTED_OR_UNKNOWN',
+      error: `无法应用设置：${analysis.details || analysis.reason || '目标状态不受支持或存在部分匹配异常'}`,
+      analysis
+    };
+  }
+
+  // 幂等检查
+  if (targetSpec.mode === 'default' && analysis.status === 'not_patched') {
+    return {
+      ok: true,
+      alreadyPatched: true,
+      alreadyRestored: true,
+      alreadyMatched: true,
+      configuredMode: 'default',
+      configuredLimitTokens: DEFAULT_CHECKPOINT_TOKENS,
+      needsRestart: false,
+      message: '当前已经处于宿主默认状态，无需重复切换。',
+      analysis
+    };
+  }
+  if (
+    targetSpec.mode === 'dynamic' &&
+    analysis.status !== 'not_patched' &&
+    analysis.configuredMode === 'dynamic'
+  ) {
+    return {
+      ok: true,
+      alreadyPatched: true,
+      alreadyMatched: true,
+      configuredMode: 'dynamic',
+      configuredLimitTokens: null,
+      needsRestart: analysis.status === 'patched_pending_restart',
+      message: '当前已经处于「动态跟随模型（透传）」模式，无需重复写入。',
+      analysis
+    };
+  }
+  if (
+    targetSpec.mode === 'fixed' &&
+    analysis.status !== 'not_patched' &&
+    analysis.configuredMode === 'fixed' &&
+    analysis.configuredLimitTokens === targetSpec.limitTokens
+  ) {
+    return {
+      ok: true,
+      alreadyPatched: true,
+      alreadyMatched: true,
+      configuredMode: 'fixed',
+      configuredLimitTokens: targetSpec.limitTokens,
+      needsRestart: analysis.status === 'patched_pending_restart',
+      message: `当前已经应用固定上限 ${targetSpec.limitTokens.toLocaleString('en-US')} tokens，无需重复写入。`,
+      analysis
+    };
+  }
+
+  const { gate3a, gate3b, serializerGate, arch, targetPath, sha256: beforeSha256, fileSize } = analysis;
+  const backupDir = getUnlockBackupDir(options.backupDir);
+  const existingManifest = loadManifest(options.backupDir);
+  const existingSidecar = loadGate3BSidecar(options.backupDir);
+  const buf = fs.readFileSync(targetPath);
+  const container = findTextSection(buf);
+
+  // 处理切回官方默认模式时对 Gate 3B 原始字节的安全核验
+  let gate3bOrigBytesForDefault = null;
+  if (targetSpec.mode === 'default') {
+    if (gate3b.status === 'patched') {
+      if (doesSidecarMatchTarget(existingSidecar, targetPath, container, gate3b)) {
+        gate3bOrigBytesForDefault = Buffer.from(existingSidecar.origHex, 'hex');
+      } else if (
+        existingManifest &&
+        existingManifest.backupPath &&
+        fs.existsSync(existingManifest.backupPath) &&
+        doesManifestMatchContainer(existingManifest, container, targetPath) &&
+        sha256File(existingManifest.backupPath) === existingManifest.origSha256
+      ) {
+        const backupBuf = fs.readFileSync(existingManifest.backupPath);
+        gate3bOrigBytesForDefault = backupBuf.subarray(gate3b.offset, gate3b.offset + (gate3b.length || 2));
+      } else {
+        return {
+          ok: false,
+          code: 'MISSING_OR_STALE_GATE3B_SIDECAR',
+          error: '缺少与当前版本匹配的原始字节记录或备份，无法安全切换回默认状态（已阻止盲写）。',
+          analysis
+        };
+      }
+    }
+  }
+
+  // 若当前为官方原版，首次修改前必须保存完整原版备份与 Gate 3B sidecar
+  let manifestToSave = existingManifest && doesManifestMatchContainer(existingManifest, container, targetPath)
+    ? { ...existingManifest }
+    : null;
+
+  if (analysis.status === 'not_patched') {
+    const backupFile = path.join(backupDir, `${path.basename(targetPath)}_${beforeSha256.slice(0, 12)}.orig`);
+    try {
+      fs.copyFileSync(targetPath, backupFile);
+      const backupSha = sha256File(backupFile);
+      if (backupSha !== beforeSha256) {
+        if (fs.existsSync(backupFile)) fs.unlinkSync(backupFile);
+        return { ok: false, error: '原版备份哈希校验不匹配，操作已中止。' };
+      }
+    } catch (e) {
+      return { ok: false, error: `创建原版备份失败: ${e.message}` };
+    }
+
+    if (gate3b.origHex) {
+      saveGate3BSidecar({
+        targetPath,
+        buildId: container.buildId || null,
+        peTimeDateStamp: container.peTimeDateStamp ?? null,
+        peSizeOfImage: container.peSizeOfImage ?? null,
+        offset: gate3b.offset,
+        length: gate3b.length,
+        origHex: gate3b.origHex,
+        origSha8: beforeSha256.slice(0, 8),
+        updatedAt: new Date().toISOString()
+      }, options.backupDir);
+    }
+
+    manifestToSave = {
+      targetPath,
+      arch,
+      buildId: container.buildId || null,
+      peTimeDateStamp: container.peTimeDateStamp ?? null,
+      peSizeOfImage: container.peSizeOfImage ?? null,
+      origSha256: beforeSha256,
+      origSize: fileSize,
+      backupPath: backupFile,
+      backupSha256: beforeSha256,
+      gate3bOrigHex: gate3b.origHex || null,
+      gate3bLength: gate3b.length || null,
+      gate3bOffset: gate3b.offset ?? null,
+      author: AUTHOR_INFO
+    };
+  }
+
+  // 写入 Gate 3A (clamp + 若存在则同步写 default 站点) 与可选 Serializer 前端门禁
+  let serializerPatched = false;
+  if (targetSpec.mode === 'default') {
+    buf.set(CLAMP_256K_X64, gate3a.offset);
+    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
+      buf.set(DEF_ORIG_X64, gate3a.defaultOffset);
+    }
+    if (gate3b.status === 'patched' && gate3bOrigBytesForDefault) {
+      buf.set(gate3bOrigBytesForDefault, gate3b.offset);
+    }
+    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+      buf.set(SERIALIZER_STOCK_X64, serializerGate.offset);
+      serializerPatched = true;
+    }
+  } else if (targetSpec.mode === 'fixed') {
+    buf.set(buildClampConstX64(targetSpec.limitTokens), gate3a.offset);
+    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
+      buf.set(buildDefConstX64(targetSpec.limitTokens), gate3a.defaultOffset);
+    }
+    if (gate3b.status === 'unpatched') {
+      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
+    }
+    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+      buf.set(buildSerializerConstX64(targetSpec.limitTokens), serializerGate.offset);
+      serializerPatched = true;
+    }
+  } else if (targetSpec.mode === 'dynamic') {
+    buf.set(PATCH_256K_X64, gate3a.offset);
+    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
+      buf.set(DEF_ORIG_X64, gate3a.defaultOffset);
+    }
+    if (gate3b.status === 'unpatched') {
+      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
+    }
+    // 动态跟随模式恢复 serializer 为默认透传状态，绝不硬写 983,040
+    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+      buf.set(SERIALIZER_STOCK_X64, serializerGate.offset);
+      serializerPatched = true;
+    }
+  }
+
+  const afterSha256 = sha256Buffer(buf);
+  const writeRes = atomicWriteBinary(targetPath, buf, 'new');
+  if (!writeRes.ok) {
+    return { ok: false, error: writeRes.error };
+  }
+
+  const syncedConfigs = syncExternalContextConfigs(targetSpec.mode, targetSpec.limitTokens, options);
+
+  if (manifestToSave) {
+    manifestToSave.patchedSha256 = afterSha256;
+    manifestToSave.patchedAt = new Date().toISOString();
+    manifestToSave.configuredMode = targetSpec.mode;
+    manifestToSave.configuredLimitTokens = targetSpec.limitTokens;
+    manifestToSave.needsRestart = true;
+    saveManifest(manifestToSave, options.backupDir);
+  }
+
+  const modeSummary = targetSpec.mode === 'default'
+    ? '宿主默认模式（恢复原有行为）'
+    : targetSpec.mode === 'fixed'
+      ? `固定上限 ${targetSpec.limitTokens.toLocaleString('en-US')} tokens`
+      : '跟随模型（动态透传）';
+
+  const restartHint = writeRes.usedRenameTrick
+    ? '由于客户端正在运行，请【完全退出并重启 Antigravity 客户端】使新后端配置生效。'
+    : '请重启 Antigravity 客户端使新后端配置生效。';
 
   return {
     ok: true,
     needsRestart: true,
     targetPath,
-    beforeSha256: origSha256,
-    afterSha256: patchedSha256,
-    backupPath: backupFile,
-    message: usedRenameTrick
-      ? '已成功应用上下文加长补丁！由于客户端正在运行，请【完全退出并重启 Antigravity 客户端】使新后端生效。'
-      : '已成功应用上下文加长补丁！请重启 Antigravity 客户端使新配置生效。'
+    configuredMode: targetSpec.mode,
+    configuredLimitTokens: targetSpec.limitTokens,
+    defaultSitePatched: Boolean(gate3a.hasDefaultSite),
+    serializerPatched,
+    syncedConfigs,
+    warnings: targetSpec.warnings || [],
+    scopeNote: analysis.scopeNotice,
+    beforeSha256,
+    afterSha256,
+    backupPath: manifestToSave ? manifestToSave.backupPath : null,
+    message: `已将共享后端切换为「${modeSummary}」，影响共享该后端的所有会话；${restartHint}（尚未经过真实长请求验证）`
   };
 }
 
 /**
- * 恢复原版二进制 (Restore)
+ * 恢复原版二进制 (Restore) — 严格校验路径、PE 构建版本与完整哈希匹配
  */
 function restoreUnlock(options = {}) {
-  // 跨平台安全策略拦截：仅支持 Windows (x86-64)
   if (process.platform !== 'win32') {
     return {
       ok: false,
@@ -1191,19 +1928,40 @@ function restoreUnlock(options = {}) {
     };
   }
 
-  const target = options.targetPath || detectTargetBinary();
-  const manifest = loadManifest(options.backupDir);
+  const resolvedTarget = resolveUnlockTargetPath(options);
+  if (!resolvedTarget.ok) {
+    return resolvedTarget;
+  }
+  const target = resolvedTarget.target;
 
   if (!target || !fs.existsSync(target)) {
     return { ok: false, error: '目标文件不存在，无法恢复' };
   }
 
-  const currentSha256 = sha256File(target);
+  const manifest = loadManifest(options.backupDir);
+  const sidecar = loadGate3BSidecar(options.backupDir);
+  const currentBuf = fs.readFileSync(target);
+  const currentSha256 = sha256Buffer(currentBuf);
 
-  // 1. 如果已有 manifest 且备份有效
+  let container;
+  try {
+    container = findTextSection(currentBuf);
+  } catch (e) {
+    return { ok: false, error: `解析当前二进制容器失败，拒绝恢复: ${e.message}` };
+  }
+
+  // 1. 优先使用经完整路径 + 完整 SHA-256 + PE 构建指纹校验通过的官方原版备份
   if (manifest && manifest.backupPath && fs.existsSync(manifest.backupPath)) {
-    if (manifest.targetPath !== target) {
+    if (!isSameTargetPath(manifest.targetPath, target)) {
       return { ok: false, error: '安装记录目标与当前恢复目标不一致，拒绝跨路径还原。' };
+    }
+
+    if (!doesManifestMatchContainer(manifest, container, target)) {
+      return {
+        ok: false,
+        code: 'BACKUP_VERSION_MISMATCH',
+        error: '检测到当前目标文件版本/构建已更新，与历史备份的 PE 构建指纹不一致，已拒绝跨版本还原以免破坏新版本二进制。'
+      };
     }
 
     const backupSha = sha256File(manifest.backupPath);
@@ -1217,123 +1975,84 @@ function restoreUnlock(options = {}) {
       return { ok: true, alreadyRestored: true, message: '当前已经是官方原版，无需重复恢复。' };
     }
 
-    // 执行还原
-    const tmpNew = `${target}.res_${Date.now()}`;
-    let usedRename = false;
-    let tmpOldCreated = null;
-    try {
-      fs.copyFileSync(manifest.backupPath, tmpNew);
-      try {
-        fs.copyFileSync(tmpNew, target);
-      } catch (e) {
-        if (process.platform === 'win32' && (e.code === 'EBUSY' || e.code === 'EPERM')) {
-          const tmpOld = `${target}.old_${Date.now()}`;
-          fs.renameSync(target, tmpOld);
-          tmpOldCreated = tmpOld;
-          try {
-            fs.renameSync(tmpNew, target);
-            usedRename = true;
-          } catch (renameNewErr) {
-            // 安全回滚
-            try { fs.renameSync(tmpOld, target); } catch {}
-            throw renameNewErr;
-          }
-        } else {
-          throw e;
-        }
-      }
-    } catch (e) {
-      if (fs.existsSync(tmpNew)) try { fs.unlinkSync(tmpNew); } catch {}
-      return { ok: false, error: `恢复原版写入失败: ${e.message}。请退出客户端后重试。` };
-    } finally {
-      if (fs.existsSync(tmpNew)) try { fs.unlinkSync(tmpNew); } catch {}
+    const backupBuf = fs.readFileSync(manifest.backupPath);
+    const writeRes = atomicWriteBinary(target, backupBuf, 'res');
+    if (!writeRes.ok) {
+      return { ok: false, error: `恢复原版写入失败: ${writeRes.error}` };
     }
 
-    // 清理历史残留旧文件
-    try {
-      cleanupOldReplacedFiles(path.dirname(target), path.basename(target), tmpOldCreated);
-    } catch {}
-
     manifest.needsRestart = true;
+    manifest.configuredMode = 'default';
+    manifest.configuredLimitTokens = DEFAULT_CHECKPOINT_TOKENS;
     saveManifest(manifest, options.backupDir);
+    const syncedConfigs = syncExternalContextConfigs('default', null, options);
 
     return {
       ok: true,
       needsRestart: true,
-      message: usedRename
+      syncedConfigs,
+      message: writeRes.usedRenameTrick
         ? '已成功恢复官方原版二进制！请【完全退出并重启 Antigravity 客户端】生效。'
         : '已成功恢复官方原版二进制！请重启客户端生效。'
     };
   }
 
-  // 2. 无备份文件时：尝试基于已知确定性原版特征逆向还原
-  const analysis = analyzeBinary(target);
+  // 2. 无匹配整包备份时：仅当匹配当前 PE 构建且同构建 Gate 3B sidecar 完整可用时，按确定性特征逆向还原
+  const analysis = analyzeBinary(target, { backupDir: options.backupDir });
   if (analysis.status === 'not_patched') {
-    return { ok: true, alreadyRestored: true, message: '当前已经是官方原版，无需恢复。' };
+    const syncedConfigs = syncExternalContextConfigs('default', null, options);
+    return { ok: true, alreadyRestored: true, syncedConfigs, message: '当前已经是官方原版，无需恢复。' };
   }
 
-  if (analysis.gate3a.status === 'patched' && analysis.gate3b.status === 'patched') {
-    // 进行特征反转
-    const buf = fs.readFileSync(target);
-    if (analysis.arch === 'x86-64') {
-      buf.set(CLAMP_256K_X64, analysis.gate3a.offset);
-      buf.set(Buffer.from([0x75, 0x08]), analysis.gate3b.offset);
-    } else if (analysis.arch === 'arm64') {
-      buf.set(CLAMP_256K_ARM64, analysis.gate3a.offset);
-      const cbz_x1 = 0xb4000001;
-      buf.writeUInt32LE(cbz_x1, analysis.gate3b.offset);
+  if (
+    (analysis.gate3a?.status === 'patched' || analysis.gate3a?.status === 'unpatched') &&
+    analysis.gate3b?.status === 'patched' &&
+    doesSidecarMatchTarget(sidecar, target, container, analysis.gate3b)
+  ) {
+    currentBuf.set(CLAMP_256K_X64, analysis.gate3a.offset);
+    if (analysis.gate3a.hasDefaultSite && analysis.gate3a.defaultOffset !== null) {
+      currentBuf.set(DEF_ORIG_X64, analysis.gate3a.defaultOffset);
+    }
+    currentBuf.set(Buffer.from(sidecar.origHex, 'hex'), analysis.gate3b.offset);
+    if (analysis.serializerGate?.present && analysis.serializerGate.offset !== null) {
+      currentBuf.set(SERIALIZER_STOCK_X64, analysis.serializerGate.offset);
     }
 
-    const tmpNew = `${target}.rev_${Date.now()}`;
-    let usedRename = false;
-    let tmpOldCreated = null;
-    try {
-      fs.writeFileSync(tmpNew, buf);
-      try {
-        fs.copyFileSync(tmpNew, target);
-      } catch (e) {
-        if (process.platform === 'win32' && (e.code === 'EBUSY' || e.code === 'EPERM')) {
-          const tmpOld = `${target}.old_${Date.now()}`;
-          fs.renameSync(target, tmpOld);
-          tmpOldCreated = tmpOld;
-          try {
-            fs.renameSync(tmpNew, target);
-            usedRename = true;
-          } catch (renameNewErr) {
-            try { fs.renameSync(tmpOld, target); } catch {}
-            throw renameNewErr;
-          }
-        } else {
-          throw e;
-        }
-      }
-    } catch (e) {
-      if (fs.existsSync(tmpNew)) try { fs.unlinkSync(tmpNew); } catch {}
-      return { ok: false, error: `逆向还原写入失败: ${e.message}` };
-    } finally {
-      if (fs.existsSync(tmpNew)) try { fs.unlinkSync(tmpNew); } catch {}
+    const writeRes = atomicWriteBinary(target, currentBuf, 'rev');
+    if (!writeRes.ok) {
+      return { ok: false, error: `逆向还原写入失败: ${writeRes.error}` };
     }
-
-    try {
-      cleanupOldReplacedFiles(path.dirname(target), path.basename(target), tmpOldCreated);
-    } catch {}
+    const syncedConfigs = syncExternalContextConfigs('default', null, options);
 
     return {
       ok: true,
       needsRestart: true,
-      message: '已通过确定性逆向特征恢复官方原版！请重启 Antigravity 客户端生效。'
+      syncedConfigs,
+      message: '已通过同构建校验记录恢复官方原版！请重启 Antigravity 客户端生效。'
     };
   }
 
-  return { ok: false, error: '未找到原版备份文件，且当前文件特征不匹配已知补丁，拒绝盲目覆盖。' };
+  return {
+    ok: false,
+    code: 'RESTORE_REJECTED',
+    error: '未找到与当前版本匹配的原版备份或原始字节记录，为确保安全拒绝覆盖。'
+  };
 }
 
 module.exports = {
   AUTHOR_INFO,
+  DEFAULT_CHECKPOINT_TOKENS,
+  MIN_ENGINEERING_LIMIT,
+  MAX_ENGINEERING_LIMIT,
+  KNOWN_LIMIT_PRESETS,
+  validateContextLimit,
   detectTargetBinary,
   findTextSection,
   findPclntab,
   buildFunctions,
+  checkSerializerGate,
+  syncExternalContextConfigs,
+  readExternalContextConfig,
   analyzeBinary,
   analyzeBinaryAsync,
   getRunningLanguageServerInfoAsync,
@@ -1341,5 +2060,7 @@ module.exports = {
   synthesizeAnalysisStatus,
   applyUnlock,
   restoreUnlock,
-  getUnlockBackupDir
+  getUnlockBackupDir,
+  loadGate3BSidecar,
+  saveGate3BSidecar
 };

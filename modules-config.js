@@ -15,8 +15,8 @@ const http = require('http');
 const https = require('https');
 const { getStateDir } = require('./asar-engine');
 
-const SCHEMA_VERSION = '0.8.2';
-const PROJECT_VERSION = '0.8.2';
+const SCHEMA_VERSION = '0.8.3';
+const PROJECT_VERSION = '0.8.3';
 
 const DEFAULT_CONFIG = {
   schemaVersion: SCHEMA_VERSION,
@@ -26,6 +26,8 @@ const DEFAULT_CONFIG = {
     },
     chinese: {
       enabled: false,
+      language: 'en', // 'zh-CN' | 'en'（zh-TW 因上游词典缺少开源授权暂不内置）
+      brandTitle: 'english', // 'english' | 'hidden' | 'translated'
       desktopOnly: true,
       lastUpdated: null
     },
@@ -37,6 +39,21 @@ const DEFAULT_CONFIG = {
     }
   }
 };
+
+function normalizeBrandTitle(val) {
+  const s = String(val || '').trim().toLowerCase();
+  if (s === 'hidden' || s === 'hide' || s === 'off' || s === 'none') return 'hidden';
+  if (s === 'translated' || s === 'zh' || s === 'cn' || s === 'fanzhongli' || s === 'anti-gravity') return 'translated';
+  return 'english';
+}
+
+function normalizeClientLanguage(val, enabledHint) {
+  const s = String(val || '').trim().toLowerCase();
+  if (s === 'zh-cn' || s === 'zh' || s === 'zh-hans' || s === 'cn') return 'zh-CN';
+  if (s === 'en' || s === 'english' || s === 'en-us') return 'en';
+  if (enabledHint === true) return 'zh-CN';
+  return 'en';
+}
 
 function getModulesConfigPath() {
   return path.join(getStateDir(), 'modules.json');
@@ -110,6 +127,12 @@ function loadModulesConfig() {
       if (parsed && parsed.modules) {
         current.modules.meter = Object.assign({}, DEFAULT_CONFIG.modules.meter, parsed.modules.meter || {});
         current.modules.chinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, parsed.modules.chinese || {});
+        current.modules.chinese.language = normalizeClientLanguage(
+          parsed.modules.chinese?.language,
+          current.modules.chinese.enabled === true
+        );
+        current.modules.chinese.brandTitle = normalizeBrandTitle(parsed.modules.chinese?.brandTitle);
+        current.modules.chinese.enabled = current.modules.chinese.language === 'zh-CN';
         current.modules.proxy = Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules.proxy || {});
         return current;
       }
@@ -126,6 +149,7 @@ function loadModulesConfig() {
   }
   if (legacy.chinese && legacy.chinese.detected) {
     current.modules.chinese.enabled = true;
+    current.modules.chinese.language = 'zh-CN';
     current.modules.chinese.migratedFrom = legacy.chinese.source;
   }
 
@@ -429,6 +453,8 @@ module.exports = {
   SCHEMA_VERSION,
   PROJECT_VERSION,
   DEFAULT_CONFIG,
+  normalizeBrandTitle,
+  normalizeClientLanguage,
   getModulesConfigPath,
   loadModulesConfig,
   saveModulesConfig,

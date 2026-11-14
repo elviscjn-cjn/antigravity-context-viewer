@@ -129,22 +129,111 @@ function generateMeterUtilsCode() {
 }
 
 /**
+ * 生成主世界语言服务客户端装饰器冷启动引导脚本（在 contextIsolation 下由 preload 注入主世界）
+ */
+function generateMainWorldDecoratorScript() {
+  return `(function(){
+  try{
+    if(globalThis.__agMeterClientDecoratorBootstrapped)return;
+    globalThis.__agMeterClientDecoratorBootstrapped=true;
+    var prevDec=typeof globalThis.__JETSKI_LS_CLIENT_DECORATOR__==="function"?globalThis.__JETSKI_LS_CLIENT_DECORATOR__:null;
+    var wrappedSet=typeof WeakSet==="function"?new WeakSet():null;
+    globalThis.__JETSKI_LS_CLIENT_DECORATOR__=function(client){
+      if(!client||(typeof client!=="object"&&typeof client!=="function"))return client;
+      if((wrappedSet&&wrappedSet.has(client))||client.__agMeterWrappedClient)return client;
+      var target=client;
+      if(prevDec){try{var out=prevDec(client);if(out)target=out;}catch(e){}}
+      if(!target||(typeof target!=="object"&&typeof target!=="function"))return target;
+      if((wrappedSet&&wrappedSet.has(target))||target.__agMeterWrappedClient)return target;
+      if(typeof target.sendUserCascadeMessage!=="function")return target;
+      var origSend=target.sendUserCascadeMessage;
+      var wrappedSend=function(req,opts){
+        var dispatchToken=null;
+        try{
+          var hook=globalThis.__AG_METER_ON_SEND_MESSAGE__;
+          if(typeof hook==="function"){dispatchToken=hook(req,"client_object")||null;}
+        }catch(hookErr){}
+        var res;
+        try{
+          res=origSend.call(this,req,opts);
+        }catch(syncErr){
+          try{if(dispatchToken&&dispatchToken.dispatchId&&typeof globalThis.__AG_METER_ON_SEND_RESULT__==="function"){globalThis.__AG_METER_ON_SEND_RESULT__(dispatchToken.dispatchId,false,syncErr);}}catch(e2){}
+          throw syncErr;
+        }
+        if(res&&typeof res.then==="function"){
+          return res.then(function(val){
+            try{if(dispatchToken&&dispatchToken.dispatchId&&typeof globalThis.__AG_METER_ON_SEND_RESULT__==="function"){globalThis.__AG_METER_ON_SEND_RESULT__(dispatchToken.dispatchId,true,null,val);}}catch(e3){}
+            return val;
+          },function(err){
+            try{if(dispatchToken&&dispatchToken.dispatchId&&typeof globalThis.__AG_METER_ON_SEND_RESULT__==="function"){globalThis.__AG_METER_ON_SEND_RESULT__(dispatchToken.dispatchId,false,err);}}catch(e4){}
+            throw err;
+          });
+        }
+        try{if(dispatchToken&&dispatchToken.dispatchId&&typeof globalThis.__AG_METER_ON_SEND_RESULT__==="function"){globalThis.__AG_METER_ON_SEND_RESULT__(dispatchToken.dispatchId,true,null,res);}}catch(e5){}
+        return res;
+      };
+      var proxy=new Proxy(target,{
+        get:function(obj,prop){
+          if(prop==="__agMeterWrappedClient")return true;
+          if(prop==="sendUserCascadeMessage")return wrappedSend;
+          var v=Reflect.get(obj,prop,obj);
+          return typeof v==="function"?v.bind(obj):v;
+        }
+      });
+      if(wrappedSet)wrappedSet.add(proxy);
+      return proxy;
+    };
+  }catch(e){}
+})();`;
+}
+
+/**
  * 生成上下文监控模块的 preload 注入代码（成对标记）
  */
 function generateMeterPreloadCode() {
+  const mainWorldScriptLiteral = JSON.stringify(generateMainWorldDecoratorScript());
   return `\n${TAGS.METER_PRELOAD_START}
-// Context Meter v2: narrow read-only conversation scan API
-electron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTokenHistory: (force) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getContextUnlockStatus: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status"), applyContextUnlock: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply"), restoreContextUnlock: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore"), getModulesStatus: () => electron_1.ipcRenderer.invoke("context-meter:modules-status"), toggleModule: (name, enable, opts) => electron_1.ipcRenderer.invoke("context-meter:toggle-module", name, enable, opts), testProxy: (url) => electron_1.ipcRenderer.invoke("context-meter:test-proxy", url) });
+// Context Meter v2: narrow read-only conversation scan API + cold-start main-world decorator bootstrap
+try {
+  if (typeof electron_1 !== "undefined" && electron_1.webFrame && typeof electron_1.webFrame.executeJavaScript === "function") {
+    var _agDecPromise = electron_1.webFrame.executeJavaScript(${mainWorldScriptLiteral}, false);
+    if (_agDecPromise && typeof _agDecPromise.catch === "function") { _agDecPromise.catch(function(){}); }
+  }
+} catch (_agDecErr) {}
+electron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTokenHistory: (force) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts), applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts), restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts), restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host"), getEnhanceStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-status", opts), applyEnhancePatch: (payload) => electron_1.ipcRenderer.invoke("context-meter:enhance-apply", payload), restoreAllEnhance: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-restore", opts), restartLanguageServers: () => electron_1.ipcRenderer.invoke("context-meter:restart-language-servers"), getModulesStatus: () => electron_1.ipcRenderer.invoke("context-meter:modules-status"), toggleModule: (name, enable, opts) => electron_1.ipcRenderer.invoke("context-meter:toggle-module", name, enable, opts), testProxy: (url) => electron_1.ipcRenderer.invoke("context-meter:test-proxy", url) });
 ${TAGS.METER_PRELOAD_END}\n`;
 }
 
 /**
- * 生成桌面端汉化注入代码（仅对桌面端 DOM 进行翻译，不篡改系统提示词与后端逻辑）
+ * 生成桌面端汉化与品牌控制注入代码（仅对桌面端 DOM 进行处理，不篡改系统提示词与后端逻辑）
  */
 function generateChinesePreloadCode(dictContent, runtimeContent) {
   return `\n${TAGS.CHINESE_START}
 (function() {
   try {
+    var _i18nConfig = { enabled: true, language: 'zh-CN', brandTitle: 'english' };
+    try {
+      if (typeof electron_1 !== 'undefined' && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
+        var _syncCfg = electron_1.ipcRenderer.sendSync('context-meter:get-chinese-config-sync');
+        if (_syncCfg && typeof _syncCfg === 'object') {
+          _i18nConfig.enabled = _syncCfg.enabled !== false && _syncCfg.language !== 'en';
+          _i18nConfig.language = _syncCfg.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
+          _i18nConfig.brandTitle = _syncCfg.brandTitle || 'english';
+        }
+      }
+    } catch(ipcErr) {}
+    try {
+      if (typeof electron_1 !== 'undefined' && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.on === 'function') {
+        electron_1.ipcRenderer.on('context-meter:brand-title-changed', function(_e, newBrand) {
+          try {
+            _i18nConfig.brandTitle = newBrand || 'english';
+            if (typeof window !== 'undefined' && typeof window.__AGY_RUN_FULL_SCAN__ === 'function') {
+              window.__AGY_RUN_FULL_SCAN__();
+            }
+          } catch(e) {}
+        });
+      }
+    } catch(ipcErr2) {}
     var _fs = typeof require === 'function' ? (function() { try { return require('fs'); } catch(e) { return null; } })() : null;
     var _path = typeof require === 'function' ? (function() { try { return require('path'); } catch(e) { return null; } })() : null;
     var _os = typeof require === 'function' ? (function() { try { return require('os'); } catch(e) { return null; } })() : null;
@@ -158,8 +247,14 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
       if (_fs.existsSync(_cfgP)) {
         try {
           var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
-          if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false) {
-            return;
+          var _ch = _c && _c.modules && _c.modules.chinese ? _c.modules.chinese : null;
+          if (_ch) {
+            _i18nConfig.enabled = _ch.enabled !== false && _ch.language !== 'en';
+            _i18nConfig.language = _ch.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
+            _i18nConfig.brandTitle = _ch.brandTitle || 'english';
+            if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false && _i18nConfig.brandTitle === 'english') {
+              return;
+            }
           }
         } catch(e) {}
       }
@@ -167,9 +262,11 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
 
     var _dictData = ${dictContent.trim()};
     if (typeof window !== 'undefined') {
+      window.__AGY_I18N_CONFIG__ = _i18nConfig;
       window.__AGY_I18N_DATA__ = _dictData;
     }
     if (typeof globalThis !== 'undefined') {
+      globalThis.__AGY_I18N_CONFIG__ = _i18nConfig;
       globalThis.__AGY_I18N_DATA__ = _dictData;
     }
     ${runtimeContent}
@@ -255,6 +352,7 @@ module.exports = {
   validateSyntax,
   generateProxyUtilsCode,
   generateMeterUtilsCode,
+  generateMainWorldDecoratorScript,
   generateMeterPreloadCode,
   generateChinesePreloadCode,
   cleanUtilsSource,

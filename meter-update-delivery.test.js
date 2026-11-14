@@ -337,14 +337,14 @@ test('交付验证 4: 版本升级识别矩阵（0.8.0 识别 0.8.1 为新版本
   assert.equal(checkOld.tagName, 'v0.8.1');
   assert.match(checkOld.releaseNotes, /修复原生 helper 缺失/);
 
-  // 3. 0.8.2 默认客户端执行 checkUpdateAsync 面对 0.8.1 Release 必须判定已是最新（无新版本）
+  // 3. 0.8.3 默认客户端执行 checkUpdateAsync 面对 0.8.1 Release 必须判定已是最新（无新版本）
   const checkCurrent = await checkUpdateAsync({
     force: true,
     _requestGithubUrl: async () => JSON.stringify(releasesFixture)
   });
   assert.equal(checkCurrent.ok, true);
   assert.equal(checkCurrent.hasUpdate, false);
-  assert.equal(checkCurrent.currentVersion, '0.8.2');
+  assert.equal(checkCurrent.currentVersion, '0.8.3');
 });
 
 test('交付验证 5: 隔离环境中模拟在线安装完成后自动清空缓存并动态识别磁盘版本', async () => {

@@ -293,3 +293,40 @@ test('meter-proxy: 统一配置探测、禁用与优先级解析', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('savePluginSettings & getPluginSettings: panelLanguage 白名单校验、持久化且不干扰 contextPreferences', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-panel-lang-'));
+  try {
+    // 1. 默认老用户（无 panelLanguage）返回 zh-CN
+    const init = getPluginSettings({ agDir: tempDir });
+    assert.equal(init.panelLanguage, 'zh-CN');
+
+    // 2. 先保存模型上下文偏好，再切换面板语言为 zh-TW 和 en
+    const r1 = savePluginSettings({
+      contextPreference: { modelId: 'product:google:gemini-3-1-pro', mode: 'fixed', limitTokens: 512000 }
+    }, { agDir: tempDir });
+    assert.equal(r1.ok, true);
+
+    const r2 = savePluginSettings({ panelLanguage: 'zh-TW' }, { agDir: tempDir });
+    assert.equal(r2.ok, true);
+    const s2 = getPluginSettings({ agDir: tempDir });
+    assert.equal(s2.panelLanguage, 'zh-TW');
+    assert.equal(s2.contextPreferences['product:google:gemini-3-1-pro'].limitTokens, 512000);
+
+    // 3. 非法语言代码回退/保留当前合法值，不写入脏值
+    const r3 = savePluginSettings({ panelLanguage: 'fr-FR' }, { agDir: tempDir });
+    assert.equal(r3.ok, true);
+    const s3 = getPluginSettings({ agDir: tempDir });
+    assert.equal(s3.panelLanguage, 'zh-TW');
+
+    // 4. 切换为 en 并重新读取验证落盘
+    const r4 = savePluginSettings({ uiPreferences: { panelLanguage: 'en' } }, { agDir: tempDir });
+    assert.equal(r4.ok, true);
+    const reloaded = getPluginSettings({ agDir: tempDir });
+    assert.equal(reloaded.panelLanguage, 'en');
+    assert.equal(reloaded.uiPreferences.panelLanguage, 'en');
+    assert.equal(reloaded.contextPreferences['product:google:gemini-3-1-pro'].limitTokens, 512000);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

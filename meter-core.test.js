@@ -17,7 +17,15 @@ const {
   compareVersions,
   filterReleases,
   findReleaseAsset,
-  isValidExternalUrl
+  isValidExternalUrl,
+  groupModelProduct,
+  detectModelVendor,
+  formatEffortLabel,
+  formatTokensK,
+  isValidSpeedSample,
+  computeMedian,
+  summarizeSpeedByModel,
+  MAX_SPEED_SAMPLES_PER_MODEL
 } = require('./meter-core');
 const entry = (usage, context = {}) => ({ chatModel: { usage, chatStartMetadata: { contextWindowMetadata: context } } });
 const exceeded = 'INVALID_ARGUMENT (code 400): The input token count exceeds the maximum number of tokens allowed 1048576.';
@@ -1367,4 +1375,108 @@ test('collectTokenHistoryAsync 连续两次非强制调用不会卡在旧 active
     try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tempCliDir, { recursive: true, force: true }); } catch {}
   }
+});
+
+test('产品分组严守档位白名单、不破坏 Carbon/Argon 与代际，且不改变 normalizeModelId', () => {
+  const gLow = groupModelProduct({ modelId: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' });
+  const gHigh = groupModelProduct({ modelId: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' });
+  assert.equal(gLow.productKey, gHigh.productKey);
+  assert.equal(gLow.productLabel, 'Gemini 4 Hydrogen');
+  assert.equal(gLow.effort, 'Low');
+  assert.equal(gHigh.effort, 'High');
+  assert.equal(gLow.vendor, 'Google');
+
+  const orchCarbon = groupModelProduct({ modelId: 'orchestrator-carbon', label: 'Orchestrator (Carbon)' });
+  const orchArgon = groupModelProduct({ modelId: 'orchestrator-argon', label: 'Orchestrator (Argon)' });
+  assert.notEqual(orchCarbon.productKey, orchArgon.productKey);
+  assert.equal(orchCarbon.productLabel, 'Orchestrator (Carbon)');
+  assert.equal(orchArgon.productLabel, 'Orchestrator (Argon)');
+  assert.equal(orchCarbon.effort, null);
+
+  const geminiArgon = groupModelProduct({ modelId: 'gemini-4-argon', label: 'Gemini 4 Argon' });
+  assert.notEqual(geminiArgon.productKey, orchArgon.productKey);
+
+  const g38Flash = groupModelProduct({ modelId: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' });
+  const g4Flash = groupModelProduct({ modelId: 'gemini-4-flash', label: 'Gemini 4 Flash' });
+  assert.notEqual(g38Flash.productKey, g4Flash.productKey);
+
+  assert.equal(formatEffortLabel('extra_high'), 'Extra High');
+  assert.equal(detectModelVendor('Claude Sonnet 4.6', 'claude-sonnet-4-6'), 'Anthropic');
+  assert.equal(detectModelVendor('GPT-5.4 Mini', 'gpt-5-4-mini'), 'OpenAI');
+
+  // 验证 normalizeModelId 计费归一化未被改动
+  assert.equal(normalizeModelId('gemini-3.8-flash-high'), 'gemini-3.8-flash');
+  assert.equal(normalizeModelId('gemini-4-argon-low'), 'gemini-4-argon');
+  assert.equal(normalizeModelId('gemini-3.1-pro-high'), 'gemini-3.1-pro-preview');
+});
+
+test('formatTokensK 与速度统计纯函数：中位数、样本数、无效样本排除与 200 条上限', () => {
+  assert.equal(formatTokensK(512000), '512K');
+  assert.equal(formatTokensK(256000), '256K');
+  assert.equal(formatTokensK(786432), '786.4K');
+  assert.equal(formatTokensK(1048576), '1.05M');
+  assert.equal(formatTokensK(null), '—');
+
+  assert.equal(computeMedian([10, 50, 20]), 20);
+  assert.equal(computeMedian([10, 20, 30, 40]), 25);
+  assert.equal(computeMedian([]), null);
+
+  assert.equal(isValidSpeedSample({ status: 'final', outputTokens: 100, durationSec: 2 }), true);
+  assert.equal(isValidSpeedSample({ status: 'streaming', outputTokens: 100, durationSec: 2 }), false);
+  assert.equal(isValidSpeedSample({ status: 'final', isEstimated: true, outputTokens: 100, durationSec: 2 }), false);
+  assert.equal(isValidSpeedSample({ status: 'final', isSynthetic: true, outputTokens: 100, durationSec: 2 }), false);
+  assert.equal(isValidSpeedSample({ status: 'final', outputTokens: 0, durationSec: 2 }), false);
+  assert.equal(isValidSpeedSample({ status: 'final', outputTokens: 100, durationSec: 0 }), false);
+
+  const now = Date.parse('2026-11-13T12:00:00Z');
+  const calls = [
+    // 模型 A: 2 条有效样本 + 1 条无效估算（排除）+ 1 条缺失 ttft（保持 null）
+    { callId: 'a1', modelExactId: 'gemini-4-hydrogen-low', modelLabel: 'Gemini 4 Hydrogen (Low)', status: 'final', outputTokens: 100, durationSec: 2, tps: 50, timestamp: now - 1000 },
+    { callId: 'a2', modelExactId: 'gemini-4-hydrogen-low', modelLabel: 'Gemini 4 Hydrogen (Low)', status: 'final', outputTokens: 200, durationSec: 2, tps: 100, ttftSec: 0.8, timestamp: now - 500 },
+    { callId: 'a-est', modelExactId: 'gemini-4-hydrogen-low', modelLabel: 'Gemini 4 Hydrogen (Low)', status: 'final', isEstimated: true, outputTokens: 500, durationSec: 1, tps: 500, timestamp: now - 200 }
+  ];
+  // 模型 B: 205 条样本（最旧 5 条 tps=10 应被 200 条上限裁掉，最近 200 条 tps=80）
+  for (let i = 0; i < 205; i++) {
+    const isOld = i < 5;
+    calls.push({
+      callId: `b-${i}`,
+      modelExactId: 'claude-sonnet-4-6',
+      modelLabel: 'Claude Sonnet 4.6',
+      status: 'final',
+      outputTokens: isOld ? 20 : 160,
+      durationSec: 2,
+      tps: isOld ? 10 : 80,
+      ttftSec: 1.2,
+      timestamp: now - (205 - i) * 1000
+    });
+  }
+
+  assert.equal(MAX_SPEED_SAMPLES_PER_MODEL, 200);
+  const summary = summarizeSpeedByModel(calls, { nowMs: now });
+  const rowA = summary.find(r => r.modelExactId === 'gemini-4-hydrogen-low');
+  const rowB = summary.find(r => r.modelExactId === 'claude-sonnet-4-6');
+  assert.ok(rowA && rowB);
+  assert.equal(rowA.count, 2);
+  assert.equal(rowA.lowSample, true);
+  assert.equal(rowA.medianTps, 75);
+  assert.equal(rowA.medianTtft, 0.8); // 缺失 ttft 的 a1 不补零，仅按有效 ttft 计算
+  assert.equal(rowB.count, 200);
+  assert.equal(rowB.lowSample, false);
+  assert.equal(rowB.medianTps, 80);
+});
+
+test('groupModelProduct: Hydrogen 与 Hydrogen (XHigh) 归入同一模型产品，Carbon/Argon/Orchestrator 保持独立', () => {
+  const { groupModelProduct } = require('./meter-core');
+  const hMed = groupModelProduct('Gemini 4 Hydrogen (Medium)', 'gemini-4-hydrogen-medium');
+  const hXHigh = groupModelProduct('Gemini 4 Hydrogen (XHigh)', 'gemini-4-hydrogen-xhigh');
+  const argon = groupModelProduct('Gemini 4 Argon (High)', 'gemini-4-argon-high');
+  const carbon = groupModelProduct('Gemini 4 Carbon', 'gemini-4-carbon-disabled');
+  const orch = groupModelProduct('Orchestrator (Argon)', 'orchestrator-argon');
+
+  assert.equal(hMed.productKey, hXHigh.productKey);
+  assert.equal(hMed.productLabel, 'Gemini 4 Hydrogen');
+  assert.equal(hXHigh.effort, 'XHigh');
+  assert.notEqual(argon.productKey, hMed.productKey);
+  assert.notEqual(carbon.productKey, hMed.productKey);
+  assert.notEqual(orch.productKey, argon.productKey);
 });

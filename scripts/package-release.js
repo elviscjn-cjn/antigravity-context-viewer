@@ -30,12 +30,22 @@ const COMMON_FILES = [
   'meter-proxy.js',
   'meter-cli-launcher.js',
   'meter-context-unlock.js',
+  'meter-enhance.js',
   'attachment_scan.py',
   'asar-engine.js',
   'modules-config.js',
   'modular-installer.js',
   'i18n/zh-CN.json',
   'i18n/i18n-runtime.js',
+  'unlock/README.md',
+  'unlock/language-server/README.md',
+  'unlock/language-server/patch-language_server.py',
+  'unlock/agy-cli/README.md',
+  'unlock/agy-cli/README-Windows.md',
+  'unlock/agy-cli/FINDINGS.md',
+  'unlock/agy-cli/agy-patch.py',
+  'unlock/agy-cli/apply.sh',
+  'unlock/agy-cli/verify_tui.py',
   'package.json',
   'README.md',
   'README.en.md',
@@ -91,7 +101,7 @@ function ensureWindowsHelper() {
 
 function getVersion() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
-  return pkg.version || '0.8.1';
+  return pkg.version || '0.8.3';
 }
 
 function packagePlatform(plat, version) {

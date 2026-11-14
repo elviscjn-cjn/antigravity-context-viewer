@@ -2,9 +2,10 @@
 // Preserve Electron ASAR support in the host process.
 // Context Meter Preload API Exposure Contract:
 // recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls)
-// getContextUnlockStatus: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status")
-// applyContextUnlock: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply")
-// restoreContextUnlock: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore")
+// getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts)
+// applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts)
+// restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts)
+// restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host")
 // additions: 'asar-engine.js', 'local-api.js', 'meter-context-unlock.js'
 const fs = require('fs');
 const os = require('os');
@@ -296,11 +297,22 @@ async function install(options = {}) {
     const modulesConfig = loadModulesConfig();
     if (options.modules) {
       if (options.modules.meter) Object.assign(modulesConfig.modules.meter, options.modules.meter);
-      if (options.modules.chinese) Object.assign(modulesConfig.modules.chinese, options.modules.chinese);
+      if (options.modules.chinese) {
+        Object.assign(modulesConfig.modules.chinese, options.modules.chinese);
+        if (options.modules.chinese.language === undefined && typeof options.modules.chinese.enabled === 'boolean') {
+          modulesConfig.modules.chinese.language = options.modules.chinese.enabled ? 'zh-CN' : 'en';
+        }
+      }
       if (options.modules.proxy) Object.assign(modulesConfig.modules.proxy, options.modules.proxy);
     }
-    if (process.argv.includes('--enable-chinese')) modulesConfig.modules.chinese.enabled = true;
-    if (process.argv.includes('--disable-chinese')) modulesConfig.modules.chinese.enabled = false;
+    if (process.argv.includes('--enable-chinese')) {
+      modulesConfig.modules.chinese.enabled = true;
+      modulesConfig.modules.chinese.language = 'zh-CN';
+    }
+    if (process.argv.includes('--disable-chinese')) {
+      modulesConfig.modules.chinese.enabled = false;
+      modulesConfig.modules.chinese.language = 'en';
+    }
     if (process.argv.includes('--enable-proxy')) modulesConfig.modules.proxy.enabled = true;
     if (process.argv.includes('--disable-proxy')) modulesConfig.modules.proxy.enabled = false;
     const proxyUrlIdx = process.argv.indexOf('--proxy-url');
@@ -445,6 +457,7 @@ async function install(options = {}) {
         'meter-proxy.js',
         'meter-cli-launcher.js',
         'meter-context-unlock.js',
+        'meter-enhance.js',
         'local-api.js',
         'attachment_scan.py'
       ];
@@ -578,7 +591,7 @@ async function install(options = {}) {
         if (extractedLauncher.includes("spawnSync('powershell.exe'") || extractedLauncher.includes('timeout: 8000')) {
           throw new Error('ASAR 内仍然残留旧版同步 PowerShell 启动逻辑，拒绝完成安装！');
         }
-        if (!extractedLauncher.includes('0.8.2-helper-v2')) {
+        if (!extractedLauncher.includes('0.8.3-helper-v2')) {
           throw new Error('ASAR 内未包含最新的 LAUNCHER_VERSION 标识，拒绝完成安装！');
         }
 
