@@ -618,6 +618,9 @@
     return 0;
   }
 
+  let activeContextAnchor = null;
+  let activeTokensAnchor = null;
+
   function positionFloatingPanels() {
     if (!host.getBoundingClientRect) return;
     try {
@@ -650,8 +653,8 @@
         panelEl.style.transformOrigin = 'top right';
       };
 
-      placePanel(el('panel'), 450, el('badge'));
-      placePanel(el('panel-tokens'), 730, el('badge-tokens'));
+      placePanel(el('panel'), 450, activeContextAnchor || el('badge'));
+      placePanel(el('panel-tokens'), 730, activeTokensAnchor || el('badge-tokens'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
     } catch {}
@@ -719,7 +722,7 @@
     return !el('panel').hidden || !el('panel-tokens').hidden;
   }
 
-  function showPanel(target) {
+  function showPanel(target, anchor = null) {
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
     const pOverflow = el('overflow-menu');
@@ -733,28 +736,31 @@
     bOverflow?.setAttribute('aria-expanded', 'false');
 
     if (target === 'tokens') {
+      if (anchor) activeTokensAnchor = anchor;
       hideContextTooltip();
       closeColorPicker();
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
       pContext.hidden = true;
       pTokens.hidden = false;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
-      syncHostStackingElevation(true);
-      positionFloatingPanels();
       void syncTokenHistoryFromHost(false);
       renderActiveHeatView(true);
     } else if (target === 'context') {
+      if (anchor) activeContextAnchor = anchor;
       hideContextTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
-      pTokens.hidden = true;
-      pContext.hidden = false;
-      bContext.setAttribute('aria-expanded', 'true');
-      bSpeed?.setAttribute('aria-expanded', 'true');
-      bTokens.setAttribute('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
+      pTokens.hidden = true;
+      pContext.hidden = false;
+      const ctxAnchor = activeContextAnchor || bContext;
+      bContext.setAttribute('aria-expanded', ctxAnchor === bContext ? 'true' : 'false');
+      bSpeed?.setAttribute('aria-expanded', ctxAnchor === bSpeed ? 'true' : 'false');
+      bTokens.setAttribute('aria-expanded', 'false');
       void refreshModulesDisplay();
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
@@ -769,22 +775,32 @@
     }
   }
 
-  function toggle(open, tab = 'context') {
+  function toggle(open, tab = 'context', anchor = null) {
     if (!open) {
       showPanel('none');
     } else {
-      showPanel(tab === 'tokens' ? 'tokens' : 'context');
+      showPanel(tab === 'tokens' ? 'tokens' : 'context', anchor);
     }
   }
 
-  function toggleContext() {
-    if (!el('panel').hidden) showPanel('none');
-    else showPanel('context');
+  function toggleContext(anchor = el('badge')) {
+    const p = el('panel');
+    const curAnchor = activeContextAnchor || el('badge');
+    if (!p.hidden && curAnchor === anchor) {
+      showPanel('none');
+    } else {
+      showPanel('context', anchor);
+    }
   }
 
-  function toggleTokens() {
-    if (!el('panel-tokens').hidden) showPanel('none');
-    else showPanel('tokens');
+  function toggleTokens(anchor = el('badge-tokens')) {
+    const p = el('panel-tokens');
+    const curAnchor = activeTokensAnchor || el('badge-tokens');
+    if (!p.hidden && curAnchor === anchor) {
+      showPanel('none');
+    } else {
+      showPanel('tokens', anchor);
+    }
   }
 
   function toggleOverflowMenu() {
@@ -1471,12 +1487,12 @@
   }
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
-  el('badge').addEventListener('click', toggleContext);
-  el('badge-speed')?.addEventListener('click', toggleContext);
-  el('badge-tokens').addEventListener('click', toggleTokens);
+  el('badge').addEventListener('click', () => toggleContext(el('badge')));
+  el('badge-speed')?.addEventListener('click', () => toggleContext(el('badge-speed')));
+  el('badge-tokens').addEventListener('click', () => toggleTokens(el('badge-tokens')));
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
-  el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context'));
-  el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens'));
+  el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context', el('badge-overflow')));
+  el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens', el('badge-overflow')));
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
 
