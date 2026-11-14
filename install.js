@@ -12,6 +12,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { loadAsarEngine, builtinAsar, getStateDir, findAsarPath } = require('./asar-engine');
+const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
 const { loadModulesConfig, saveModulesConfig, acquireFileLock } = require('./modules-config');
 const {
   TAGS,
@@ -55,33 +56,11 @@ function extractAllAsar(archivePath, destDir) {
 
 // findAsarPath 由 ./asar-engine 纯路径共享模块提供并导出
 
-async function tryHotInject() {
+async function tryHotInject(options = {}) {
   try {
-    const appData = process.env.APPDATA || (process.platform === 'darwin'
-      ? path.join(os.homedir(), 'Library', 'Application Support')
-      : path.join(os.homedir(), '.config'));
-
-    // 严格安全隔离门禁：若处于测试模式，严禁连接真实运行环境的 AppData/DevTools 端口！
-    if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
-      const isIsolatedTemp = appData.toLowerCase().includes(os.tmpdir().toLowerCase());
-      if (!isIsolatedTemp) return false;
-    }
-
-    const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
-    if (!fs.existsSync(portFile)) return false;
-    const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-    if (!port) return false;
-    const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
-        let body = '';
-        res.on('data', c => body += c);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-      });
-      req.setTimeout(2500, () => req.destroy(new Error('timeout')));
-      req.on('error', reject);
-    });
-    const targets = pages.filter(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
-    if (!targets.length) return false;
+    const discovered = await discoverAntigravityCdp(options);
+    if (!discovered.running || !discovered.targets || !discovered.targets.length) return false;
+    const targets = discovered.targets;
 
     const stateDir = getStateDir();
     const livePath = fs.existsSync(path.join(stateDir, '.live-session.json'))
@@ -92,51 +71,51 @@ async function tryHotInject() {
       .map(f => fs.readFileSync(path.join(__dirname, f), 'utf8'))
       .join('\n');
 
+    let settingsSnap = null;
+    let historyData = null;
+    if (!options.skipInitialData) {
+      try {
+        const { collectTokenHistoryAsync, getPluginSettings } = require('./meter-collector');
+        const snap = getPluginSettings();
+        if (snap && snap.ok) settingsSnap = snap;
+        const hist = await collectTokenHistoryAsync({ force: Boolean(options.forceHistory) });
+        if (hist && !hist.loading) historyData = hist;
+      } catch {}
+    }
+
     let injectedCount = 0;
     for (const target of targets) {
-      let ws = null;
+      let client = null;
       try {
-        ws = new WebSocket(target.webSocketDebuggerUrl);
-        await new Promise((resolve, reject) => {
-          ws.addEventListener('open', resolve, { once: true });
-          ws.addEventListener('error', reject, { once: true });
-        });
-        let seq = 0;
-        const evalExpr = expression => new Promise((resolve, reject) => {
-          const id = ++seq;
-          const timer = setTimeout(() => reject(new Error('CDP eval timeout')), 5000);
-          const handler = ev => {
-            const d = JSON.parse(ev.data);
-            if (d.id === id) {
-              clearTimeout(timer);
-              ws.removeEventListener('message', handler);
-              resolve(d);
+        client = await createCdpClient(target.webSocketDebuggerUrl, options);
+        if (options.onlyIfAbsent) {
+          const alreadyActive = await client.evaluateValue('Boolean(window.__AGContextMeter)', { timeoutMs: 4000 });
+          if (alreadyActive) {
+            if (liveInfo && liveInfo.origin === new URL(target.url).origin) {
+              const currentLivePort = await client.evaluateValue('window.__AGContextMeterLive?.port || null', { timeoutMs: 3000 });
+              if (currentLivePort !== liveInfo.port) {
+                await client.evaluate('window.__AGContextMeterLive=' + JSON.stringify({ port: liveInfo.port, token: liveInfo.token }), { timeoutMs: 4000 });
+              }
             }
-          };
-          ws.addEventListener('message', handler);
-          ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
-        });
-        if (liveInfo && liveInfo.origin === new URL(target.url).origin) {
-          await evalExpr('window.__AGContextMeterLive=' + JSON.stringify({ port: liveInfo.port, token: liveInfo.token }));
+            continue;
+          }
         }
-        try {
-          const { collectTokenHistoryAsync, getPluginSettings } = require('./meter-collector');
-          const settingsSnap = getPluginSettings();
-          if (settingsSnap && settingsSnap.ok) {
-            await evalExpr('window.__AGContextMeterSettings=' + JSON.stringify(settingsSnap));
-          }
-          const historyData = await collectTokenHistoryAsync({ force: true });
-          if (historyData && !historyData.loading) {
-            await evalExpr('window.__AGContextMeterHistory=' + JSON.stringify(historyData));
-          }
-        } catch {}
-        const evalRes = await evalExpr(bundle);
+        if (liveInfo && liveInfo.origin === new URL(target.url).origin) {
+          await client.evaluate('window.__AGContextMeterLive=' + JSON.stringify({ port: liveInfo.port, token: liveInfo.token }), { timeoutMs: 5000 });
+        }
+        if (settingsSnap) {
+          await client.evaluate('window.__AGContextMeterSettings=' + JSON.stringify(settingsSnap), { timeoutMs: 5000 });
+        }
+        if (historyData) {
+          await client.evaluate('window.__AGContextMeterHistory=' + JSON.stringify(historyData), { timeoutMs: 5000 });
+        }
+        const evalRes = await client.evaluate(bundle, { timeoutMs: 10000 });
         if (evalRes && !evalRes.error && !evalRes.result?.exceptionDetails) {
           injectedCount++;
         }
       } catch {} finally {
-        if (ws) {
-          try { ws.close(); } catch {}
+        if (client) {
+          try { client.close(); } catch {}
         }
       }
     }
@@ -355,8 +334,15 @@ async function install(options = {}) {
       // 若用户或测试显式传入 pureMeterOnly: true 或 --pure-meter-only，则仅注入上下文监控
       const isPureMeterOnly = Boolean(options.pureMeterOnly || process.argv.includes('--pure-meter-only'));
 
-      // 模块 A: Proxy NoTun (免 TUN 代理组件注入)
-      const shouldInjectProxy = !isPureMeterOnly && (modulesConfig.modules.proxy.enabled || options.injectProxy !== false);
+      // 模块 A: Proxy NoTun (免 TUN 代理组件注入：默认不注入已禁用的扩展模块，除非显式启用或请求)
+      const shouldInjectProxy = !isPureMeterOnly &&
+        options.injectProxy !== false &&
+        Boolean(
+          modulesConfig.modules.proxy.enabled ||
+          options.injectProxy === true ||
+          process.argv.includes('--inject-proxy') ||
+          process.argv.includes('--inject-all-modules')
+        );
       if (shouldInjectProxy) {
         const proxyCode = generateProxyUtilsCode(modulesConfig.modules.proxy);
         finalUtils = proxyCode + '\n' + finalUtils;
@@ -385,8 +371,15 @@ async function install(options = {}) {
         finalPreload += generateMeterPreloadCode();
       }
 
-      // 模块 C: Chinese (桌面端界面汉化组件注入)
-      const shouldInjectChinese = !isPureMeterOnly && (modulesConfig.modules.chinese.enabled || options.injectChinese !== false);
+      // 模块 C: Chinese (桌面端界面汉化组件注入：默认不注入已禁用的汉化模块，除非显式启用或请求)
+      const shouldInjectChinese = !isPureMeterOnly &&
+        options.injectChinese !== false &&
+        Boolean(
+          modulesConfig.modules.chinese.enabled ||
+          options.injectChinese === true ||
+          process.argv.includes('--inject-chinese') ||
+          process.argv.includes('--inject-all-modules')
+        );
       if (shouldInjectChinese) {
         const homeDir = os.homedir();
         const localAppDir = process.platform === 'win32'

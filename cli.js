@@ -4,97 +4,145 @@ process.noAsar = true;
 
 /**
  * Antigravity Context Meter CLI
- * Cross-platform installer, live CDP hot-injector, and lifecycle manager
+ * Cross-platform installer, live CDP hot-injector, background auto-attach watcher, and lifecycle manager
  * Format aligned with antigravity-chinese for one-command human & AI Agent execution.
  */
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const http = require('http');
-const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { loadAsarEngine, getStateDir } = require('./asar-engine');
+const { discoverAntigravityCdp, createCdpClient, parseExplicitPort } = require('./local-api');
 const { install, findAsarPath, tryHotInject } = require('./install');
-const { restore } = require('./restore');
+const { restore, tryHotDispose } = require('./restore');
 const { resolvePython } = require('./meter-collector');
 const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, AUTHOR_INFO } = require('./meter-context-unlock');
 
 const asar = loadAsarEngine();
-const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
-function getDevToolsPort() {
-  const appData = process.env.APPDATA || (process.platform === 'darwin'
-    ? path.join(os.homedir(), 'Library', 'Application Support')
-    : path.join(os.homedir(), '.config'));
-  const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
-  if (!fs.existsSync(portFile)) return null;
-  const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-  return Number.isFinite(port) && port > 0 ? port : null;
-}
-
-async function queryLiveWindow() {
-  const port = getDevToolsPort();
-  if (!port) return { running: false };
+function isPidAliveForUser(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
   try {
-    const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
-        let body = '';
-        res.on('data', c => body += c);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-      });
-      req.setTimeout(2500, () => req.destroy(new Error('timeout')));
-      req.on('error', reject);
-    });
-    const target = pages.find(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
-    if (!target) return { running: true, cdpPort: port, pageFound: false };
-    const origin = new URL(target.url).origin;
-
-    const ws = new WebSocket(target.webSocketDebuggerUrl);
-    await new Promise((resolve, reject) => {
-      ws.addEventListener('open', resolve, { once: true });
-      ws.addEventListener('error', reject, { once: true });
-    });
-    const status = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timeout')), 4000);
-      ws.addEventListener('message', ev => {
-        const d = JSON.parse(ev.data);
-        if (d.id === 1) {
-          clearTimeout(timer);
-          resolve(d.result?.result?.value || null);
-        }
-      });
-      ws.send(JSON.stringify({
-        id: 1,
-        method: 'Runtime.evaluate',
-        params: {
-          expression: `(() => {
-            const s = window.__AGContextMeter?.snapshot();
-            const root = document.getElementById('ag-context-meter')?.shadowRoot;
-            return {
-              active: Boolean(window.__AGContextMeter),
-              version: window.__AGContextMeter?.version || null,
-              hasIpcBridge: Boolean(window.contextMeterAPI?.scan && window.contextMeterAPI?.saveSettings && window.contextMeterAPI?.launchCli && window.contextMeterAPI?.getContextUnlockStatus),
-              badgeText: root?.getElementById('amount')?.textContent || null,
-              route: s?.route || null,
-              latest: s?.latest || null
-            };
-          })()`,
-          returnByValue: true
-        }
-      }));
-    });
-    ws.close();
-    return { running: true, cdpPort: port, pageFound: true, origin, ...status };
-  } catch (e) {
-    return { running: false, error: e.message };
+    process.kill(n, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
-async function ensureLiveBridgeIfNeeded() {
-  const live = await queryLiveWindow();
-  if (!live.running || !live.pageFound || live.hasIpcBridge) return;
-  const stateDir = getStateDir();
+function getWatchPidPath(stateDir = null) {
+  return path.join(stateDir || getStateDir(), 'watch.pid');
+}
+
+function readWatchPid(stateDir = null) {
+  const pidPath = getWatchPidPath(stateDir);
+  try {
+    if (!fs.existsSync(pidPath)) return null;
+    const raw = fs.readFileSync(pidPath, 'utf8').trim();
+    if (!raw) return null;
+    if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw);
+      const n = Number(parsed?.pid);
+      return Number.isInteger(n) && n > 0 ? n : null;
+    }
+    const n = parseInt(raw, 10);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+async function terminateProcessGracefully(pid, graceMs = 2000) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0 || n === process.pid) return false;
+  if (!isPidAliveForUser(n)) return false;
+  try {
+    process.kill(n, 'SIGTERM');
+  } catch {
+    return false;
+  }
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    if (!isPidAliveForUser(n)) return true;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  if (isPidAliveForUser(n)) {
+    try { process.kill(n, 'SIGKILL'); } catch {}
+  }
+  return true;
+}
+
+async function queryLiveWindow(options = {}) {
+  const discovered = await discoverAntigravityCdp(options);
+  if (!discovered.running) {
+    return { running: false, ...(discovered.error ? { error: discovered.error } : {}) };
+  }
+  if (!discovered.pageFound || !discovered.page) {
+    return { running: true, cdpPort: discovered.port, pageFound: false };
+  }
+  const target = discovered.page;
+  const origin = discovered.origin;
+  let client = null;
+  try {
+    client = await createCdpClient(target.webSocketDebuggerUrl, options);
+    const status = await client.evaluateValue(`(() => {
+      const s = window.__AGContextMeter?.snapshot();
+      const root = document.getElementById('ag-context-meter')?.shadowRoot;
+      return {
+        active: Boolean(window.__AGContextMeter),
+        version: window.__AGContextMeter?.version || null,
+        hasIpcBridge: Boolean(window.contextMeterAPI?.scan && window.contextMeterAPI?.saveSettings && window.contextMeterAPI?.launchCli && window.contextMeterAPI?.getContextUnlockStatus),
+        badgeText: root?.getElementById('amount')?.textContent || null,
+        route: s?.route || null,
+        latest: s?.latest || null
+      };
+    })()`, { timeoutMs: 4000 });
+    return {
+      running: true,
+      cdpPort: discovered.port,
+      pageFound: true,
+      origin,
+      ...(status || {})
+    };
+  } catch (e) {
+    return { running: false, error: e.message };
+  } finally {
+    if (client) {
+      try { client.close(); } catch {}
+    }
+  }
+}
+
+async function stopLiveBridge(options = {}) {
+  const stateDir = options.stateDir || getStateDir();
+  const statePath = path.join(stateDir, '.live-session.json');
+  const legacyPath = path.join(__dirname, '.live-session.json');
+  let stoppedPid = null;
+
+  for (const p of [statePath, legacyPath]) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const info = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (info && info.pid && isPidAliveForUser(info.pid)) {
+        await terminateProcessGracefully(info.pid, 1500);
+        stoppedPid = info.pid;
+      }
+    } catch {}
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch {}
+  }
+
+  return { stopped: Boolean(stoppedPid), pid: stoppedPid };
+}
+
+async function ensureLiveBridgeIfNeeded(options = {}) {
+  if (options.skipLiveHost) return false;
+  const live = options._liveSnapshot || await queryLiveWindow(options);
+  if (!live.running || !live.pageFound || live.hasIpcBridge) return false;
+
+  const stateDir = options.stateDir || getStateDir();
   const statePath = path.join(stateDir, '.live-session.json');
   const legacyPath = path.join(__dirname, '.live-session.json');
   const liveSessionPath = fs.existsSync(statePath) ? statePath : legacyPath;
@@ -105,28 +153,42 @@ async function ensureLiveBridgeIfNeeded() {
     try {
       const info = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
       existingInfo = info;
-      process.kill(info.pid, 0);
-      if (!live.origin || info.origin === live.origin) {
+      if (isPidAliveForUser(info.pid) && (!live.origin || info.origin === live.origin)) {
         alive = true;
       }
     } catch {}
   }
+
   if (!alive) {
     if (existingInfo?.pid) {
-      try { process.kill(existingInfo.pid); } catch {}
+      await terminateProcessGracefully(existingInfo.pid, 1000);
     }
     try { if (fs.existsSync(statePath)) fs.unlinkSync(statePath); } catch {}
     try { if (fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath); } catch {}
 
-    const child = spawn(process.execPath, [path.join(__dirname, 'live-host.js')], {
+    const childEnv = {
+      ...process.env,
+      AG_METER_STATE_DIR: stateDir
+    };
+    if (live.cdpPort) {
+      childEnv.AG_CDP_PORT = String(live.cdpPort);
+    }
+    if (options.appDataDir) {
+      childEnv.APPDATA = options.appDataDir;
+    }
+
+    const spawner = options._spawnLiveHost || spawn;
+    const liveHostScript = options.liveHostScript || path.join(__dirname, 'live-host.js');
+    const child = spawner(process.execPath, [liveHostScript], {
       detached: true,
       stdio: 'ignore',
-      windowsHide: true
+      windowsHide: true,
+      env: childEnv
     });
-    child.unref();
+    child.unref?.();
 
-    const maxWaitMs = 5000;
-    const intervalMs = 150;
+    const maxWaitMs = options.liveBridgeWaitMs || 5000;
+    const intervalMs = 100;
     const deadline = Date.now() + maxWaitMs;
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, intervalMs));
@@ -134,8 +196,7 @@ async function ensureLiveBridgeIfNeeded() {
       if (checkPath) {
         try {
           const info = JSON.parse(fs.readFileSync(checkPath, 'utf8'));
-          if (info && info.pid && (!live.origin || info.origin === live.origin)) {
-            process.kill(info.pid, 0);
+          if (info && info.pid && (!live.origin || info.origin === live.origin) && isPidAliveForUser(info.pid)) {
             alive = true;
             break;
           }
@@ -143,9 +204,223 @@ async function ensureLiveBridgeIfNeeded() {
       }
     }
   }
+  return alive;
 }
 
-async function cmdStatus(customPath) {
+/**
+ * 免改盘守护模式 (node cli.js watch)
+ * 随 Antigravity 中文.app 启动自动挂载顶部栏组件，并在客户端关闭后自动退出。
+ */
+async function runWatchDaemon(options = {}) {
+  const { readWatchConfigSnapshot } = require('./modules-config');
+  const stateDir = options.stateDir || getStateDir();
+  const pidPath = getWatchPidPath(stateDir);
+
+  // 1. 单实例 PID 互斥锁检查：若同用户已有存活的 watch 守护进程，干净退出 (0)
+  const existingPid = readWatchPid(stateDir);
+  if (existingPid && existingPid !== process.pid && isPidAliveForUser(existingPid)) {
+    if (!options.silent) {
+      console.log(`ℹ️ [Watch] 已有运行中的守护进程 (PID ${existingPid})，本次实例自动退出。`);
+    }
+    return { ok: true, alreadyRunning: true, pid: existingPid };
+  }
+
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(pidPath, `${process.pid}\n`, 'utf8');
+
+  const startupTimeoutMs = options.startupTimeoutMs ?? Number(process.env.AG_WATCH_STARTUP_TIMEOUT_MS || 60000);
+  const startupPollMs = options.startupPollMs ?? Number(process.env.AG_WATCH_STARTUP_POLL_MS || 1000);
+  const pollIntervalMs = options.pollIntervalMs ?? Number(process.env.AG_WATCH_POLL_MS || 3000);
+  const maxConsecutiveMisses = options.maxConsecutiveMisses ?? Number(process.env.AG_WATCH_MAX_MISSES || 3);
+  const maxCycles = options.maxCycles ?? Infinity;
+
+  let stopped = false;
+  let wakeSleep = null;
+  const sleep = ms => new Promise(resolve => {
+    const timer = setTimeout(() => {
+      wakeSleep = null;
+      resolve();
+    }, ms);
+    wakeSleep = () => {
+      clearTimeout(timer);
+      wakeSleep = null;
+      resolve();
+    };
+  });
+
+  const requestStop = () => {
+    stopped = true;
+    if (wakeSleep) wakeSleep();
+  };
+
+  const onSigInt = () => requestStop();
+  const onSigTerm = () => requestStop();
+  if (options.handleSignals !== false) {
+    process.on('SIGINT', onSigInt);
+    process.on('SIGTERM', onSigTerm);
+  }
+  if (options.signal && typeof options.signal.addEventListener === 'function') {
+    if (options.signal.aborted) requestStop();
+    else options.signal.addEventListener('abort', requestStop, { once: true });
+  }
+
+  const cleanupLockfile = () => {
+    try {
+      if (readWatchPid(stateDir) === process.pid && fs.existsSync(pidPath)) {
+        fs.unlinkSync(pidPath);
+      }
+    } catch {}
+  };
+
+  const startedAt = Date.now();
+  let windowEverSeen = false;
+  let consecutiveMisses = 0;
+  let injectedCount = 0;
+  let disposedCount = 0;
+  let cycles = 0;
+  let exitReason = 'stopped';
+
+  try {
+    while (!stopped && cycles < maxCycles) {
+      cycles++;
+      const discovered = await discoverAntigravityCdp(options);
+      const hasWindow = Boolean(discovered.running && discovered.targets && discovered.targets.length > 0);
+
+      if (!hasWindow) {
+        if (!windowEverSeen) {
+          if (Date.now() - startedAt >= startupTimeoutMs) {
+            exitReason = 'startup_timeout';
+            break;
+          }
+          await sleep(startupPollMs);
+          continue;
+        }
+
+        consecutiveMisses++;
+        if (consecutiveMisses >= maxConsecutiveMisses) {
+          exitReason = 'window_closed';
+          break;
+        }
+        await sleep(pollIntervalMs);
+        continue;
+      }
+
+      // 已探测到活跃的 Antigravity 窗口
+      windowEverSeen = true;
+      consecutiveMisses = 0;
+
+      const cfgPath = options.modulesConfigPath || path.join(stateDir, 'modules.json');
+      const { displayMode, meterEnabled } = readWatchConfigSnapshot(cfgPath);
+
+      if (displayMode === 'sidebar' || !meterEnabled) {
+        // 仅侧边栏模式 (Mode 2) 或监控已禁用：若当前页面挂载了顶栏实例则即时卸载并保持空闲
+        for (const target of discovered.targets) {
+          let client = null;
+          try {
+            client = await createCdpClient(target.webSocketDebuggerUrl, options);
+            const active = await client.evaluateValue('Boolean(window.__AGContextMeter)', { timeoutMs: 3000 });
+            if (active) {
+              await client.evaluate('window.__AGContextMeter?.dispose()', { timeoutMs: 3000 });
+              disposedCount++;
+            }
+          } catch {} finally {
+            if (client) { try { client.close(); } catch {} }
+          }
+        }
+        await stopLiveBridge({ stateDir });
+      } else {
+        // topbar (默认 Mode 1) 或 both (双模式)：按需启动 live-host 并在组件缺失时自动热挂载
+        let needsBridge = false;
+        let needsInject = false;
+        for (const target of discovered.targets) {
+          let client = null;
+          try {
+            client = await createCdpClient(target.webSocketDebuggerUrl, options);
+            const st = await client.evaluateValue(`(() => ({
+              active: Boolean(window.__AGContextMeter),
+              hasIpcBridge: Boolean(window.contextMeterAPI?.scan)
+            }))()`, { timeoutMs: 3500 });
+            if (!st?.hasIpcBridge) needsBridge = true;
+            if (!st?.active) needsInject = true;
+          } catch {} finally {
+            if (client) { try { client.close(); } catch {} }
+          }
+        }
+
+        if (needsBridge && !options.skipLiveHost) {
+          await ensureLiveBridgeIfNeeded({
+            ...options,
+            stateDir,
+            _liveSnapshot: {
+              running: true,
+              pageFound: true,
+              cdpPort: discovered.port,
+              origin: discovered.origin,
+              hasIpcBridge: false
+            }
+          });
+        }
+
+        if (needsInject) {
+          const injected = await tryHotInject({
+            ...options,
+            port: discovered.port,
+            onlyIfAbsent: true
+          });
+          if (injected) injectedCount++;
+        }
+      }
+
+      if (cycles >= maxCycles || stopped) break;
+      await sleep(pollIntervalMs);
+    }
+  } finally {
+    if (options.handleSignals !== false) {
+      process.off('SIGINT', onSigInt);
+      process.off('SIGTERM', onSigTerm);
+    }
+    await stopLiveBridge({ stateDir });
+    cleanupLockfile();
+  }
+
+  return {
+    ok: true,
+    alreadyRunning: false,
+    reason: exitReason,
+    windowEverSeen,
+    injectedCount,
+    disposedCount,
+    cycles
+  };
+}
+
+/**
+ * 停止正在运行的 watch 守护进程与 live-host 桥接进程 (node cli.js stop-watch)
+ */
+async function stopWatchDaemon(options = {}) {
+  const stateDir = options.stateDir || getStateDir();
+  const pidPath = getWatchPidPath(stateDir);
+  const watchPid = readWatchPid(stateDir);
+  let watchStopped = false;
+
+  if (watchPid && isPidAliveForUser(watchPid)) {
+    watchStopped = await terminateProcessGracefully(watchPid, 2500);
+  }
+  try {
+    if (fs.existsSync(pidPath)) fs.unlinkSync(pidPath);
+  } catch {}
+
+  const bridgeRes = await stopLiveBridge({ stateDir });
+  return {
+    ok: true,
+    watchStopped,
+    watchPid: watchPid || null,
+    liveBridgeStopped: bridgeRes.stopped,
+    liveBridgePid: bridgeRes.pid
+  };
+}
+
+async function cmdStatus(customPath, cdpOptions = {}) {
   let asarPath = null;
   let version = null;
   let asarPatched = false;
@@ -156,12 +431,17 @@ async function cmdStatus(customPath) {
     asarPatched = utilsSource.includes('installContextMeter(win)');
   } catch {}
 
-  const live = await queryLiveWindow();
+  const { getEffectiveDisplayMode } = require('./modules-config');
+  const live = await queryLiveWindow(cdpOptions);
   const py = resolvePython();
+  const watchPid = readWatchPid();
   const report = {
     asarPath,
     antigravityVersion: version,
     asarPatched,
+    displayMode: getEffectiveDisplayMode(),
+    watcherRunning: Boolean(watchPid && isPidAliveForUser(watchPid)),
+    watcherPid: (watchPid && isPidAliveForUser(watchPid)) ? watchPid : null,
     liveWindow: live,
     pythonAttachmentScanner: py || 'unavailable (optional)'
   };
@@ -169,7 +449,7 @@ async function cmdStatus(customPath) {
   return report;
 }
 
-async function cmdCheck(customPath) {
+async function cmdCheck(customPath, cdpOptions = {}) {
   console.log('🔍 [Antigravity 对话上下文查看器] 正在执行环境预检...');
   console.log(`  - Node.js 运行时: ${process.version} (${process.execPath})`);
   try {
@@ -183,26 +463,40 @@ async function cmdCheck(customPath) {
   }
   const py = resolvePython();
   console.log(`  - Python 附件深度解析器: ${py || '未检测到（基础上下文统计不受影响）'}`);
-  const live = await queryLiveWindow();
+  const live = await queryLiveWindow(cdpOptions);
   console.log(`  - 运行中窗口 CDP 状态: ${live.running ? `已连接 (端口 ${live.cdpPort})` : '客户端未运行或未开启调试端口'}`);
   console.log('✅ 环境预检通过！');
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const cmd = (args.find(a => !a.startsWith('-')) || 'install').toLowerCase();
+  let cmd = 'install';
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--path' || a === '--backup' || a === '--port' || a === '--proxy-url') {
+      i++;
+      continue;
+    }
+    if (!a.startsWith('-')) {
+      cmd = a.toLowerCase();
+      break;
+    }
+  }
+
   const pathIdx = args.indexOf('--path');
   const customPath = pathIdx >= 0 ? args[pathIdx + 1] : null;
   const backupIdx = args.indexOf('--backup');
   const customBackup = backupIdx >= 0 ? args[backupIdx + 1] : null;
+  const explicitPort = parseExplicitPort({ argv: process.argv });
   const isForce = args.includes('--force');
+  const cdpOptions = explicitPort ? { port: explicitPort } : {};
 
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
     console.log(`🚀 [Antigravity 对话上下文查看器 v${meterVersion}] 正在安装上下文可视化组件...`);
-    await ensureLiveBridgeIfNeeded();
-    const manifest = await install({ path: customPath, backup: customBackup, force: isForce });
-    await tryHotInject();
+    await ensureLiveBridgeIfNeeded(cdpOptions);
+    const manifest = await install({ path: customPath, backup: customBackup, force: isForce, ...cdpOptions });
+    await tryHotInject(cdpOptions);
     console.log(`✅ 插件 v${manifest.meterVersion} 安装完成 (Antigravity 宿主 v${manifest.version})`);
     console.log(`✅ ASAR 持久化注入完成: ${manifest.installed} (校验 ${manifest.originalFilesVerified} 个原文件)`);
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
@@ -210,7 +504,7 @@ async function main() {
     const disk = inspectDiskModules(manifest.installed);
     console.log('📦 模块状态分层报告:');
     console.log('   - ⚡ 上下文与 Token 监控:');
-    console.log(`     * 配置状态: [配置: ${cfg.modules.meter.enabled ? '已开启' : '已关闭'}]`);
+    console.log(`     * 配置状态: [配置: ${cfg.modules.meter.enabled ? '已开启' : '已关闭'}] (显示模式: ${cfg.displayMode})`);
     console.log(`     * 磁盘注入: ${disk.meter ? '✅ 已注入' : '⚪ 未注入'}`);
     console.log(`     * 运行中加载: ${manifest.liveInjected ? '✅ 已即时挂载生效（无需重启）' : '⏳ 待下次启动客户端时生效'}`);
 
@@ -226,12 +520,25 @@ async function main() {
     console.log(`     * 模型请求验证: 待通过真实在线会话验证 (分层标定，未发送请求前不宣称生效)`);
     console.log(`✅ 运行中窗口热挂载状态: ${manifest.liveInjected ? '已即时生效（无需重启）' : '将在下次启动 Antigravity 时自动生效'}`);
   } else if (cmd === 'live') {
-    await ensureLiveBridgeIfNeeded();
-    const ok = await tryHotInject();
-    if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
+    await ensureLiveBridgeIfNeeded(cdpOptions);
+    const ok = await tryHotInject(cdpOptions);
+    if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js watch。');
     console.log('✅ 已通过 CDP 热注入当前运行的 Antigravity 窗口！');
+  } else if (cmd === 'watch') {
+    const res = await runWatchDaemon(cdpOptions);
+    if (!res.alreadyRunning) {
+      console.log(`✅ [Watch] 守护进程已正常结束 (原因: ${res.reason}, 挂载次数: ${res.injectedCount})`);
+    }
+  } else if (cmd === 'stop-watch') {
+    const res = await stopWatchDaemon();
+    if (res.watchStopped || res.liveBridgeStopped) {
+      console.log(`✅ 已停止守护进程与本地桥接服务 (watch: ${res.watchStopped ? res.watchPid : '未运行'}, live-host: ${res.liveBridgeStopped ? res.liveBridgePid : '未运行'})`);
+    } else {
+      console.log('ℹ️ 当前没有正在运行的 watch 或 live-host 进程。');
+    }
   } else if (cmd === 'restore' || cmd === 'uninstall') {
-    const res = await restore({ path: customPath, force: isForce });
+    await stopWatchDaemon();
+    const res = await restore({ path: customPath, force: isForce, ...cdpOptions });
     console.log(`✅ 已完成卸载还原: ${res.restored}`);
     console.log('📦 模块清理与运行时状态说明:');
     console.log(`   - 磁盘处理方式: ${res.inPlaceCleaned ? '原位手术刀精准解构（保留宿主第三方修改）' : '官方原版备份整包还原'}`);
@@ -271,7 +578,7 @@ async function main() {
     }
     console.log(`✅ ${res.message || '恢复完成！'}`);
   } else if (cmd === 'modules') {
-    const { loadModulesConfig, detectAndMigrateLegacyConfigs } = require('./modules-config');
+    const { loadModulesConfig } = require('./modules-config');
     const cfg = loadModulesConfig();
     const asarPath = findAsarPath(customPath);
     let asarUtils = '';
@@ -282,6 +589,7 @@ async function main() {
     } catch {}
 
     console.log('📦 [Antigravity 统一模块状态总览]');
+    console.log(`0. 显示模式 (displayMode): ${cfg.displayMode}`);
     console.log('1. 上下文与 Token 监控 (ContextMeter):');
     console.log(`   - 配置状态: ${cfg.modules.meter.enabled ? '🟢 已启用' : '⚪ 已禁用'}`);
     console.log(`   - 磁盘注入: ${asarUtils.includes('installContextMeter') ? '✅ 已注入' : '⚪ 未注入'}`);
@@ -307,7 +615,7 @@ async function main() {
     const enable = cmd === 'chinese:enable';
     cfg.modules.chinese.enabled = enable;
     saveModulesConfig(cfg);
-    await install({ path: customPath, modules: { chinese: { enabled: enable } } });
+    await install({ path: customPath, modules: { chinese: { enabled: enable } }, ...cdpOptions });
     console.log(`✅ 客户端界面汉化模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
   } else if (cmd === 'proxy:enable' || cmd === 'proxy:disable') {
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
@@ -315,7 +623,7 @@ async function main() {
     const enable = cmd === 'proxy:enable';
     cfg.modules.proxy.enabled = enable;
     saveModulesConfig(cfg);
-    await install({ path: customPath, modules: { proxy: { enabled: enable } } });
+    await install({ path: customPath, modules: { proxy: { enabled: enable } }, ...cdpOptions });
     console.log(`✅ 免 TUN 网络直连模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
   } else if (cmd === 'proxy:set') {
     const newUrl = args[1] && !args[1].startsWith('-') ? args[1] : args[2];
@@ -325,7 +633,7 @@ async function main() {
     cfg.modules.proxy.proxyUrl = newUrl;
     saveModulesConfig(cfg);
     if (cfg.modules.proxy.enabled) {
-      await install({ path: customPath, modules: { proxy: { proxyUrl: newUrl } } });
+      await install({ path: customPath, modules: { proxy: { proxyUrl: newUrl } }, ...cdpOptions });
     }
     console.log(`✅ 代理地址已更新为: ${newUrl}`);
   } else if (cmd === 'proxy:test') {
@@ -340,15 +648,17 @@ async function main() {
     console.log(`  - 4. 真实模型请求: 待通过真实在线会话验证 (分层标定)`);
     if (r.error) console.log(`  ⚠️ 诊断提示: ${r.error}`);
   } else if (cmd === 'status') {
-    await cmdStatus(customPath);
+    await cmdStatus(customPath, cdpOptions);
   } else if (cmd === 'check') {
-    await cmdCheck(customPath);
+    await cmdCheck(customPath, cdpOptions);
   } else {
     console.log(`用法:
+  node cli.js watch [--port <port>]         免改盘后台守护模式（随客户端启动自动挂载顶栏，关闭后自动退出）
+  node cli.js stop-watch                    停止正在运行的 watch 守护进程与本地桥接服务
+  node cli.js live [--port <port>]          免改盘单次 CDP 热挂载到当前运行窗口
   node cli.js install [--path <app.asar>]   一键持久化安装并热注入当前运行窗口
-  node cli.js live                          免改盘 CDP 热挂载到当前运行窗口
-  node cli.js status                        查看安装状态与当前对话实时上下文用量
-  node cli.js check                         执行前置环境健康检查
+  node cli.js status [--port <port>]        查看安装状态与当前对话实时上下文用量
+  node cli.js check [--port <port>]         执行前置环境健康检查
   node cli.js restore                       一键无损卸载并恢复备份
   node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文加长状态
   node cli.js unlock [--path <bin>]         执行上下文加长解锁（解除 256K 限制）
@@ -363,4 +673,15 @@ if (require.main === module) {
   });
 }
 
-module.exports = { cmdStatus, cmdCheck };
+module.exports = {
+  cmdStatus,
+  cmdCheck,
+  queryLiveWindow,
+  ensureLiveBridgeIfNeeded,
+  stopLiveBridge,
+  runWatchDaemon,
+  stopWatchDaemon,
+  getWatchPidPath,
+  readWatchPid,
+  tryHotDispose
+};

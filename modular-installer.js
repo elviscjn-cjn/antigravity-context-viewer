@@ -148,21 +148,35 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
     var _fs = typeof require === 'function' ? (function() { try { return require('fs'); } catch(e) { return null; } })() : null;
     var _path = typeof require === 'function' ? (function() { try { return require('path'); } catch(e) { return null; } })() : null;
     var _os = typeof require === 'function' ? (function() { try { return require('os'); } catch(e) { return null; } })() : null;
-    if (_fs && _path && _os) {
-      var _localApp = process.platform === 'win32'
-        ? (process.env.LOCALAPPDATA || _path.join(_os.homedir(), 'AppData', 'Local'))
-        : (process.platform === 'darwin'
-          ? _path.join(_os.homedir(), 'Library', 'Application Support')
-          : _path.join(_os.homedir(), '.local', 'state'));
-      var _cfgP = _path.join(_localApp, 'AntigravityContextMeter', 'modules.json');
-      if (_fs.existsSync(_cfgP)) {
-        try {
-          var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
-          if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false) {
-            return;
-          }
-        } catch(e) {}
-      }
+    // 沙箱隔离防护：若 preload 运行于无 fs/path/os 权限的沙箱环境，严禁默认放行汉化注入
+    if (!_fs || !_path || !_os) {
+      return;
+    }
+    var _stateDir = (typeof process !== 'undefined' && process.env && process.env.AG_METER_STATE_DIR)
+      ? process.env.AG_METER_STATE_DIR
+      : (function() {
+          var _localApp = process.platform === 'win32'
+            ? (process.env.LOCALAPPDATA || _path.join(_os.homedir(), 'AppData', 'Local'))
+            : (process.platform === 'darwin'
+              ? _path.join(_os.homedir(), 'Library', 'Application Support')
+              : (process.env.XDG_STATE_HOME || _path.join(_os.homedir(), '.local', 'state')));
+          return _path.join(_localApp, 'AntigravityContextMeter');
+        })();
+    var _cfgP = _path.join(_stateDir, 'modules.json');
+    var _chineseEnabled = false;
+    if (_fs.existsSync(_cfgP)) {
+      try {
+        var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
+        if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false) {
+          return;
+        }
+        if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === true) {
+          _chineseEnabled = true;
+        }
+      } catch(e) {}
+    }
+    if (!_chineseEnabled) {
+      return;
     }
 
     var _dictData = ${dictContent.trim()};

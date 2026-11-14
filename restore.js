@@ -6,6 +6,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { getStateDir, builtinAsar, loadAsarEngine } = require('./asar-engine');
+const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
 const { acquireFileLock } = require('./modules-config');
 const {
   TAGS,
@@ -43,47 +44,22 @@ function extractAsarFile(archivePath, relPath) {
   }
 }
 
-async function tryHotDispose() {
+async function tryHotDispose(options = {}) {
   try {
-    const appData = process.env.APPDATA || (process.platform === 'darwin'
-      ? path.join(os.homedir(), 'Library', 'Application Support')
-      : path.join(os.homedir(), '.config'));
-
-    // 严格安全隔离门禁：若处于测试模式，严禁连接真实运行环境的 AppData/DevTools 端口！
-    if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
-      const isIsolatedTemp = appData.toLowerCase().includes(os.tmpdir().toLowerCase());
-      if (!isIsolatedTemp) return false;
-    }
-
-    const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
-    if (!fs.existsSync(portFile)) return false;
-    const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-    if (!port) return false;
-    const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
-        let body = '';
-        res.on('data', c => body += c);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-      });
-      req.setTimeout(2500, () => req.destroy(new Error('timeout')));
-      req.on('error', reject);
-    });
-    const targets = pages.filter(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
-    for (const target of targets) {
-      let ws = null;
+    const discovered = await discoverAntigravityCdp(options);
+    if (!discovered.running || !discovered.targets || !discovered.targets.length) return false;
+    let disposedCount = 0;
+    for (const target of discovered.targets) {
+      let client = null;
       try {
-        ws = new WebSocket(target.webSocketDebuggerUrl);
-        await new Promise((resolve, reject) => {
-          ws.addEventListener('open', resolve, { once: true });
-          ws.addEventListener('error', reject, { once: true });
-        });
-        ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'window.__AGContextMeter?.dispose()' } }));
-        await new Promise(r => setTimeout(r, 100));
+        client = await createCdpClient(target.webSocketDebuggerUrl, options);
+        await client.evaluate('window.__AGContextMeter?.dispose()', { timeoutMs: 4000 });
+        disposedCount++;
       } catch {} finally {
-        if (ws) { try { ws.close(); } catch {} }
+        if (client) { try { client.close(); } catch {} }
       }
     }
-    return targets.length > 0;
+    return disposedCount > 0;
   } catch {
     return false;
   }

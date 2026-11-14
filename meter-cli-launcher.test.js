@@ -14,21 +14,143 @@ const {
   launchCliSession
 } = require('./meter-cli-launcher');
 
-test('CLI 启动模块 1: resolveCliExecutable 探测真实环境 agy.exe', () => {
-  const res = resolveCliExecutable();
+test('CLI 启动模块 1: resolveCliExecutable 探测真实环境或隔离模拟环境 agy', () => {
+  let res = resolveCliExecutable();
+  if (!res.ok) {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-probe-'));
+    try {
+      const mockAppBin = path.join(tmpDir, 'Antigravity.app', 'Contents', 'Resources', 'app', 'bin');
+      fs.mkdirSync(mockAppBin, { recursive: true });
+      const mockAgy = path.join(mockAppBin, 'agy');
+      fs.writeFileSync(mockAgy, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      res = resolveCliExecutable(null, {
+        platform: 'darwin',
+        homeDir: tmpDir,
+        macAppRoots: [path.join(tmpDir, 'Antigravity.app')],
+        env: { PATH: '' }
+      });
+      assert.equal(res.ok, true, '必须能成功探测到 Antigravity CLI');
+      assert.ok(res.exePath && fs.existsSync(res.exePath), '解析的 CLI 可执行文件必须存在');
+      assert.match(res.exePath.toLowerCase(), /agy(\.exe|\.cmd)?$/, '可执行文件名必须为 agy');
+      assert.equal(res.source, 'mac_app_bin');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+    return;
+  }
   assert.equal(res.ok, true, '必须能成功探测到 Antigravity CLI');
   assert.ok(res.exePath && fs.existsSync(res.exePath), '解析的 CLI 可执行文件必须存在');
   assert.match(res.exePath.toLowerCase(), /agy(\.exe|\.cmd)?$/, '可执行文件名必须为 agy');
 });
 
-test('CLI 启动模块 2: dryRun 包含完整参数与环境隔离', async () => {
-  const dry = await launchCliSession({ dryRun: true, model: 'gemini-3.8-flash-high', args: ['--verbose'] });
-  assert.equal(dry.ok, true);
-  assert.equal(dry.dryRun, true);
-  assert.equal(dry.model, 'gemini-3.8-flash-high');
-  assert.deepEqual(dry.args, ['--model', 'gemini-3.8-flash-high', '--verbose']);
-  assert.equal(dry.env.TERM, 'xterm-256color');
-  assert.equal(dry.env.COLORTERM, 'truecolor');
+test('CLI 启动模块 2: dryRun 包含完整参数与跨平台色彩环境隔离', async () => {
+  const hostCli = resolveCliExecutable();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-dryrun-'));
+  try {
+    let cliPathOpt;
+    if (!hostCli.ok) {
+      cliPathOpt = path.join(tmpDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
+      fs.writeFileSync(cliPathOpt, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    }
+    const dry = await launchCliSession({
+      dryRun: true,
+      cliPath: cliPathOpt,
+      cwd: tmpDir,
+      model: 'gemini-3.8-flash-high',
+      args: ['--verbose'],
+      env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' }
+    });
+    assert.equal(dry.ok, true);
+    assert.equal(dry.dryRun, true);
+    assert.equal(dry.model, 'gemini-3.8-flash-high');
+    assert.deepEqual(dry.args, ['--model', 'gemini-3.8-flash-high', '--verbose']);
+    assert.equal(dry.env.NO_COLOR, undefined);
+    assert.equal(dry.env.TERM, 'xterm-256color');
+    assert.equal(dry.env.COLORTERM, 'truecolor');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('CLI 启动模块 2b: macOS 路径探测 (~/.gemini/antigravity/bin/agy、PATH、Application Support 与 zsh AppleScript)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-macos-'));
+  try {
+    const geminiBin = path.join(tmpDir, '.gemini', 'antigravity', 'bin');
+    fs.mkdirSync(geminiBin, { recursive: true });
+    const geminiAgy = path.join(geminiBin, 'agy');
+    fs.writeFileSync(geminiAgy, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    const fromGemini = resolveCliExecutable(null, {
+      platform: 'darwin',
+      homeDir: tmpDir,
+      macAppRoots: [path.join(tmpDir, 'Missing.app')],
+      env: { PATH: '' }
+    });
+    assert.equal(fromGemini.ok, true);
+    assert.equal(fromGemini.source, 'gemini_bin');
+
+    const pathBin = path.join(tmpDir, 'custom-path');
+    fs.mkdirSync(pathBin, { recursive: true });
+    const pathAgy = path.join(pathBin, 'agy');
+    fs.writeFileSync(pathAgy, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.unlinkSync(geminiAgy);
+
+    const fromPath = resolveCliExecutable(null, {
+      platform: 'darwin',
+      homeDir: tmpDir,
+      macAppRoots: [path.join(tmpDir, 'Missing.app')],
+      env: { PATH: pathBin }
+    });
+    assert.equal(fromPath.ok, true);
+    assert.equal(fromPath.source, 'PATH');
+
+    // 验证 macOS ~/Library/Application Support/Antigravity/app_storage.json 工作区解析
+    const appSupportDir = path.join(tmpDir, 'Library', 'Application Support', 'Antigravity');
+    const configProjDir = path.join(tmpDir, '.gemini', 'config', 'projects');
+    const workspaceDir = path.join(tmpDir, 'my-mac-project');
+    fs.mkdirSync(appSupportDir, { recursive: true });
+    fs.mkdirSync(configProjDir, { recursive: true });
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appSupportDir, 'app_storage.json'),
+      JSON.stringify({ 'new-convo-last-selected-project': 'proj-mac-1' })
+    );
+    fs.writeFileSync(
+      path.join(configProjDir, 'proj-mac-1.json'),
+      JSON.stringify({
+        name: 'Mac Project',
+        projectResources: {
+          resources: [{ folderUri: `file://${workspaceDir}` }]
+        }
+      })
+    );
+
+    const ws = await resolveCliWorkspace({
+      platform: 'darwin',
+      homeDir: tmpDir,
+      configDir: path.join(tmpDir, '.gemini', 'config')
+    });
+    assert.equal(ws.ok, true);
+    assert.equal(ws.source, 'last_selected_project');
+    assert.equal(ws.cwd, workspaceDir);
+
+    // 验证 macOS AppleScript 生成 ($SHELL / zsh + TERM/COLORTERM)
+    const macDry = await launchCliSession({
+      _inspectAppleScript: true,
+      platform: 'darwin',
+      cliPath: pathAgy,
+      cwd: workspaceDir,
+      model: 'gemini-3.8-pro',
+      env: { SHELL: '/bin/zsh', PATH: pathBin }
+    });
+    assert.equal(macDry.ok, true);
+    assert.equal(macDry.terminal, 'Terminal.app');
+    assert.match(macDry.appleScript, /TERM='xterm-256color'/);
+    assert.match(macDry.appleScript, /COLORTERM='truecolor'/);
+    assert.match(macDry.appleScript, /exec '\/bin\/zsh' -l/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('CLI 启动模块 3: 源码绝对不残留同步 powershell、8000ms 阻塞与作者绝对开发路径', () => {
