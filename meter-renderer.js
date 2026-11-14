@@ -247,7 +247,7 @@
       background:var(--ag-toolbar-bg);color:var(--ag-toolbar-fg);
       white-space:nowrap;font-variant-numeric:tabular-nums;
       font-size:12px;font-weight:500;letter-spacing:-0.01em;gap:4px;
-      transition:background-color .14s ease,color .14s ease,border-color .14s ease,opacity .14s ease,transform .1s cubic-bezier(0.16,1,0.3,1);
+      transition:background-color .14s ease,color .14s ease,border-color .14s ease,opacity .14s ease;
       flex-shrink:0;
     }
     .ag-unit:hover,.ag-unit:focus-visible,.ag-unit[aria-expanded="true"]{
@@ -256,7 +256,6 @@
     }
     .ag-unit:active{
       background:var(--ag-toolbar-bg-active);
-      transform:scale(0.96);
     }
 
     /* 单元 1: 上下文小圆环按钮（按内容自适应，圆环+百分比共存） */
@@ -496,6 +495,7 @@
 
     /* 窄屏溢出菜单浮层 */
     #overflow-menu{
+      box-sizing:border-box;
       position:fixed;top:36px;right:12px;z-index:2147483500;
       width:220px;padding:6px;border-radius:10px;
       border:1px solid var(--ag-float-border);
@@ -552,6 +552,7 @@
 
     /* 自定义颜色选取器悬浮面板（参考样式：吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL三行） */
     #color-picker-popover{
+      box-sizing:border-box;
       position:fixed;z-index:2147483640;width:304px;max-height:calc(100vh - 48px);overflow-y:auto;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);
       border:1px solid var(--ag-border-panel);border-radius:10px;
@@ -935,9 +936,11 @@
       transform-origin:top right;
       transition:opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1),visibility .16s ease;
       contain:layout paint;
+      will-change:transform,opacity;
+      backface-visibility:hidden;
     }
     #panel{width:450px}
-    #panel-tokens{width:730px;transition:width .22s cubic-bezier(0.16,1,0.3,1),left .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1)}
+    #panel-tokens{width:730px;transition:width .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1)}
     #panel-tokens.cost-compact-view{width:400px!important;max-width:calc(100vw - 24px)}
     .ag-panel[hidden]{display:block!important;opacity:0;transform:translateY(-6px);visibility:hidden;pointer-events:none}
 
@@ -1190,6 +1193,7 @@
       background:#ef4444;box-shadow:0 0 0 1.5px var(--ag-bg-panel);
     }
     .update-popover{
+      box-sizing:border-box;
       position:fixed;top:80px;right:24px;width:290px;max-width:calc(100vw - 28px);
       background:var(--ag-unified-bg,#1e1e24);border:1px solid var(--ag-float-border,rgba(255,255,255,0.18));
       border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.3);
@@ -3851,6 +3855,9 @@
     return 0;
   }
 
+  let activeContextAnchor = null;
+  let activeTokensAnchor = null;
+
   function positionFloatingPanels() {
     if (!host.getBoundingClientRect) return;
     try {
@@ -3883,8 +3890,8 @@
         panelEl.style.transformOrigin = 'top right';
       };
 
-      placePanel(el('panel'), 450, el('badge'));
-      placePanel(el('panel-tokens'), 730, el('badge-tokens'));
+      placePanel(el('panel'), 450, activeContextAnchor || el('badge'));
+      placePanel(el('panel-tokens'), 730, activeTokensAnchor || el('badge-tokens'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
     } catch {}
@@ -3952,7 +3959,7 @@
     return !el('panel').hidden || !el('panel-tokens').hidden;
   }
 
-  function showPanel(target) {
+  function showPanel(target, anchor = null) {
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
     const pOverflow = el('overflow-menu');
@@ -3966,28 +3973,31 @@
     bOverflow?.setAttribute('aria-expanded', 'false');
 
     if (target === 'tokens') {
+      if (anchor) activeTokensAnchor = anchor;
       hideContextTooltip();
       closeColorPicker();
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
       pContext.hidden = true;
       pTokens.hidden = false;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
-      syncHostStackingElevation(true);
-      positionFloatingPanels();
       void syncTokenHistoryFromHost(false);
       renderActiveHeatView(true);
     } else if (target === 'context') {
+      if (anchor) activeContextAnchor = anchor;
       hideContextTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
-      pTokens.hidden = true;
-      pContext.hidden = false;
-      bContext.setAttribute('aria-expanded', 'true');
-      bSpeed?.setAttribute('aria-expanded', 'true');
-      bTokens.setAttribute('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
+      pTokens.hidden = true;
+      pContext.hidden = false;
+      const ctxAnchor = activeContextAnchor || bContext;
+      bContext.setAttribute('aria-expanded', ctxAnchor === bContext ? 'true' : 'false');
+      bSpeed?.setAttribute('aria-expanded', ctxAnchor === bSpeed ? 'true' : 'false');
+      bTokens.setAttribute('aria-expanded', 'false');
       void refreshModulesDisplay();
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
@@ -4002,22 +4012,32 @@
     }
   }
 
-  function toggle(open, tab = 'context') {
+  function toggle(open, tab = 'context', anchor = null) {
     if (!open) {
       showPanel('none');
     } else {
-      showPanel(tab === 'tokens' ? 'tokens' : 'context');
+      showPanel(tab === 'tokens' ? 'tokens' : 'context', anchor);
     }
   }
 
-  function toggleContext() {
-    if (!el('panel').hidden) showPanel('none');
-    else showPanel('context');
+  function toggleContext(anchor = el('badge')) {
+    const p = el('panel');
+    const curAnchor = activeContextAnchor || el('badge');
+    if (!p.hidden && curAnchor === anchor) {
+      showPanel('none');
+    } else {
+      showPanel('context', anchor);
+    }
   }
 
-  function toggleTokens() {
-    if (!el('panel-tokens').hidden) showPanel('none');
-    else showPanel('tokens');
+  function toggleTokens(anchor = el('badge-tokens')) {
+    const p = el('panel-tokens');
+    const curAnchor = activeTokensAnchor || el('badge-tokens');
+    if (!p.hidden && curAnchor === anchor) {
+      showPanel('none');
+    } else {
+      showPanel('tokens', anchor);
+    }
   }
 
   function toggleOverflowMenu() {
@@ -5916,12 +5936,12 @@ function closeAllDropdowns(exceptWrap = null) {
   }
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
-  el('badge').addEventListener('click', toggleContext);
-  el('badge-speed')?.addEventListener('click', toggleContext);
-  el('badge-tokens').addEventListener('click', toggleTokens);
+  el('badge').addEventListener('click', () => toggleContext(el('badge')));
+  el('badge-speed')?.addEventListener('click', () => toggleContext(el('badge-speed')));
+  el('badge-tokens').addEventListener('click', () => toggleTokens(el('badge-tokens')));
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
-  el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context'));
-  el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens'));
+  el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context', el('badge-overflow')));
+  el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens', el('badge-overflow')));
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
 

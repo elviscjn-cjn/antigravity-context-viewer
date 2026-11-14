@@ -1505,3 +1505,50 @@ test('online update and GitHub entry points: openExternal whitelist enforcement 
 
   api.dispose();
 });
+
+test('dialog alignment: panel aligns to clicked button (badge, badge-speed, badge-tokens, overflow) and jitter prevention', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.innerWidth = 1920;
+  h.sandbox.window.innerHeight = 1080;
+  h.host.getBoundingClientRect = () => ({ left: 800, top: 6, right: 1300, bottom: 34, width: 500, height: 28 });
+
+  const badge = h.elements.get('badge');
+  const badgeSpeed = h.elements.get('badge-speed');
+  const badgeTokens = h.elements.get('badge-tokens');
+  const badgeOverflow = h.elements.get('badge-overflow');
+  const panel = h.elements.get('panel');
+  const panelTokens = h.elements.get('panel-tokens');
+
+  badge.getBoundingClientRect = () => ({ left: 900, top: 6, right: 960, bottom: 34, width: 60, height: 28 });
+  badgeSpeed.getBoundingClientRect = () => ({ left: 964, top: 6, right: 1060, bottom: 34, width: 96, height: 28 });
+  badgeTokens.getBoundingClientRect = () => ({ left: 1064, top: 6, right: 1140, bottom: 34, width: 76, height: 28 });
+  badgeOverflow.getBoundingClientRect = () => ({ left: 1144, top: 6, right: 1180, bottom: 34, width: 36, height: 28 });
+
+  // 1. Click badge -> panel opens, right edge aligns to badge right (960)
+  badge.click();
+  assert.equal(panel.hidden, false);
+  assert.equal(parseInt(panel.style.left, 10) + 450, 960);
+
+  // 2. Click badge-speed -> panel re-anchors to badge-speed right (1060)
+  badgeSpeed.click();
+  assert.equal(panel.hidden, false);
+  assert.equal(parseInt(panel.style.left, 10) + 450, 1060);
+
+  // 3. Click badge-tokens -> panel-tokens opens, right edge aligns to badge-tokens right (1140)
+  badgeTokens.click();
+  assert.equal(panelTokens.hidden, false);
+  assert.equal(parseInt(panelTokens.style.left, 10) + 730, 1140);
+
+  // 4. Overflow menu actions: clicking overflow-speed-btn anchors to badge-overflow (1180)
+  h.elements.get('overflow-speed-btn').click();
+  assert.equal(panel.hidden, false);
+  assert.equal(parseInt(panel.style.left, 10) + 450, 1180);
+
+  // 5. Overflow menu actions: clicking overflow-tokens-btn anchors to badge-overflow (1180)
+  h.elements.get('overflow-tokens-btn').click();
+  assert.equal(panelTokens.hidden, false);
+  assert.equal(parseInt(panelTokens.style.left, 10) + 730, 1180);
+
+  api.dispose();
+});
