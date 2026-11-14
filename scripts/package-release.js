@@ -1,4 +1,5 @@
 'use strict';
+require('./check-release-manifest');
 /**
  * Cross-Platform Release Packager for Antigravity Context & Token Viewer (Pure Node.js Engine)
  * Builds 6 platform-specific zip bundles and generates checksums.txt matching standard GitHub Release layout.
@@ -183,3 +184,4 @@ if (require.main === module) {
 }
 
 module.exports = { main, packagePlatform };
+
