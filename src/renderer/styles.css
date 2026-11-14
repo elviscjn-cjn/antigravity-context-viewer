@@ -25,7 +25,7 @@
       --ag-token-accent-default:#a78bfa;
 
       /* 0 级主题背景与一级/二级严格统一背景色 */
-      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#181818));
+      --ag-bg-panel-default:var(--ag-host-bg,#181818);
       --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
 
       --ag-float-bg:var(--ag-unified-bg);
@@ -124,7 +124,7 @@
       --ag-token-total-default:#52525b;
       --ag-token-accent-default:#7c3aed;
 
-      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#ffffff));
+      --ag-bg-panel-default:var(--ag-host-bg,#ffffff);
       --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
 
       --ag-float-bg:var(--ag-unified-bg);

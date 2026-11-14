@@ -1968,7 +1968,9 @@ async function applyUpdateAsync(options = {}) {
       targetRelease = validReleases[0];
     }
 
-    const { packageAsset, checksumAsset, targetOs, targetArch } = findReleaseAsset(targetRelease.assets, process.platform, process.arch);
+    const effectivePlatform = options.platform || options._platform || process.platform;
+    const effectiveArch = options.arch || options._arch || process.arch;
+    const { packageAsset, checksumAsset, targetOs, targetArch } = findReleaseAsset(targetRelease.assets, effectivePlatform, effectiveArch);
     if (!packageAsset || !checksumAsset) {
       return {
         ok: false,

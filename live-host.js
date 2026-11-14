@@ -125,9 +125,17 @@ const ALLOWED_ROUTES = ['/scan', '/token-history', '/record-calls', '/get-settin
   });
   server.listen(0, '127.0.0.1', () => {
     const info = { port: server.address().port, token: secret, pid: process.pid, origin: api.origin, startedAt: Date.now() };
+    fs.mkdirSync(path.dirname(stamp), { recursive: true });
     fs.writeFileSync(stamp, JSON.stringify(info));
     console.log('Context Meter local bridge ready on loopback port ' + info.port);
   });
+  const cleanupStampAndExit = () => {
+    try { if (fs.existsSync(stamp)) fs.unlinkSync(stamp); } catch {}
+    try { server.close(); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGTERM', cleanupStampAndExit);
+  process.on('SIGINT', cleanupStampAndExit);
   let misses = 0;
   const check = setInterval(async () => {
     try { const a = await connect(); if (a.origin !== api.origin) throw new Error('App restarted'); misses = 0; }

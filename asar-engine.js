@@ -168,21 +168,58 @@ const builtinAsar = {
 
 function loadAsarEngine() {
   const home = os.homedir();
-  const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
-  const candidates = [
-    '@electron/asar',
-    'asar',
-    path.join(localAppData, 'Programs', 'Antigravity IDE', 'resources', 'app', 'node_modules', 'asar'),
-    path.join(localAppData, 'AntigravityChinese', 'source', 'node_modules', '@electron', 'asar')
-  ];
+  const candidates = ['@electron/asar', 'asar'];
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    candidates.push(
+      path.join(localAppData, 'Programs', 'Antigravity IDE', 'resources', 'app', 'node_modules', 'asar'),
+      path.join(localAppData, 'AntigravityChinese', 'source', 'node_modules', '@electron', 'asar')
+    );
+  }
   for (const p of candidates) {
     try { return require(p); } catch {}
   }
   return builtinAsar;
 }
 
+function getAppDataDir(options = {}) {
+  if (options && typeof options.appDataDir === 'string' && options.appDataDir.trim()) {
+    return path.resolve(options.appDataDir.trim());
+  }
+  if (process.env.APPDATA) return process.env.APPDATA;
+  const home = (options && options.homeDir) || os.homedir();
+  if (process.platform === 'win32') {
+    return path.join(home, 'AppData', 'Roaming');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support');
+  }
+  return process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+}
+
+function isIsolatedTestPath(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') return false;
+  const resolved = path.resolve(targetPath);
+  const lower = resolved.toLowerCase();
+  const prefixes = [os.tmpdir().toLowerCase()];
+  try {
+    prefixes.push(fs.realpathSync(os.tmpdir()).toLowerCase());
+  } catch {}
+  if (process.platform !== 'win32') {
+    prefixes.push('/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/');
+  }
+  return prefixes.some(prefix => {
+    const norm = prefix.replace(/[\\/]+$/, '');
+    return lower === norm || lower.startsWith(norm + path.sep) || lower.startsWith(norm + '/');
+  });
+}
+
 function getStateDir() {
-  if (process.env.AG_METER_STATE_DIR) return process.env.AG_METER_STATE_DIR;
+  if (process.env.AG_METER_STATE_DIR) {
+    const customDir = path.resolve(process.env.AG_METER_STATE_DIR);
+    fs.mkdirSync(customDir, { recursive: true });
+    return customDir;
+  }
   const home = os.homedir();
   const base = process.platform === 'win32'
     ? (process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'))
@@ -244,4 +281,4 @@ function findAsarPath(customPath) {
   throw new Error('Could not auto-detect Antigravity installation (app.asar). Use --path <path-to-app.asar>.');
 }
 
-module.exports = { loadAsarEngine, builtinAsar, getStateDir, findAsarPath };
+module.exports = { loadAsarEngine, builtinAsar, getStateDir, getAppDataDir, isIsolatedTestPath, findAsarPath };

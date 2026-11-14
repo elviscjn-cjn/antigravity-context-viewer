@@ -1,6 +1,19 @@
 """Read-only attachment inventory. Outputs counts, never cell contents."""
 import sys, json, os, re, zipfile, time, xml.etree.ElementTree as ET
-sys.path.insert(0, os.path.join(os.environ.get('LOCALAPPDATA', ''), 'AntigravityContextMeter', 'python-packages'))
+
+def _get_state_dir():
+    if os.environ.get('AG_METER_STATE_DIR'):
+        return os.environ['AG_METER_STATE_DIR']
+    home = os.path.expanduser('~')
+    if sys.platform == 'win32':
+        base = os.environ.get('LOCALAPPDATA') or os.path.join(home, 'AppData', 'Local')
+    elif sys.platform == 'darwin':
+        base = os.path.join(home, 'Library', 'Application Support')
+    else:
+        base = os.environ.get('XDG_STATE_HOME') or os.path.join(home, '.local', 'state')
+    return os.path.join(base, 'AntigravityContextMeter')
+
+sys.path.insert(0, os.path.join(_get_state_dir(), 'python-packages'))
 
 MAX_BYTES = 256 * 1024 * 1024
 MAX_UNPACKED = 512 * 1024 * 1024
@@ -24,6 +37,59 @@ class Counter:
 
 def local(tag):
     return tag.rsplit('}', 1)[-1]
+
+def _col_to_num(col_str):
+    num = 0
+    for ch in col_str:
+        num = num * 26 + (ord(ch.upper()) - ord('A') + 1)
+    return num
+
+def _num_to_col(num):
+    if num < 1:
+        raise ValueError('invalid column index')
+    chars = []
+    while num > 0:
+        num, rem = divmod(num - 1, 26)
+        chars.append(chr(ord('A') + rem))
+    return ''.join(reversed(chars))
+
+def _parse_cell_ref(ref):
+    m = re.fullmatch(r'\$?([A-Za-z]{1,3})\$?(\d+)', (ref or '').strip())
+    if not m:
+        raise ValueError('invalid cell ref')
+    return _col_to_num(m.group(1)), int(m.group(2))
+
+def _translate_shared_formula_fallback(original, origin_ref, target_ref):
+    orig_col, orig_row = _parse_cell_ref(origin_ref)
+    tgt_col, tgt_row = _parse_cell_ref(target_ref)
+    dcol = tgt_col - orig_col
+    drow = tgt_row - orig_row
+    if dcol == 0 and drow == 0:
+        return original
+    # Match double-quoted string literals, single-quoted sheet names, or cell references
+    token_re = re.compile(
+        r'"(?:""|[^"])*"'
+        r"|'(?:''|[^'])*'!"
+        r'|(?<![A-Za-z0-9_.])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_.\(])'
+    )
+    def _repl(m):
+        col_letters = m.group(2)
+        if not col_letters:
+            return m.group(0)
+        abs_col, abs_row, row_digits = m.group(1), m.group(3), m.group(4)
+        col_idx = _col_to_num(col_letters)
+        row_idx = int(row_digits)
+        if col_idx > 16384 or row_idx < 1 or row_idx > 1048576:
+            return m.group(0)
+        new_col = col_idx if abs_col else col_idx + dcol
+        new_row = row_idx if abs_row else row_idx + drow
+        if new_col < 1 or new_col > 16384 or new_row < 1 or new_row > 1048576:
+            raise ValueError('translated cell ref out of bounds')
+        col_out = _num_to_col(new_col)
+        if col_letters.islower():
+            col_out = col_out.lower()
+        return f'{abs_col}{col_out}{abs_row}{new_row}'
+    return token_re.sub(_repl, original)
 
 def xlsx_scan(path, counter, result):
     with zipfile.ZipFile(path) as z:
@@ -65,9 +131,12 @@ def xlsx_scan(path, counter, result):
                                 shared_formulas[shared_id] = (e.attrib.get('r'), formula)
                             else:
                                 try:
-                                    from openpyxl.formula.translate import Translator
                                     origin, original = shared_formulas[shared_id]
-                                    formula = Translator('=' + original, origin=origin).translate_formula(e.attrib['r']).lstrip('=')
+                                    try:
+                                        from openpyxl.formula.translate import Translator
+                                        formula = Translator('=' + original, origin=origin).translate_formula(e.attrib['r']).lstrip('=')
+                                    except ImportError:
+                                        formula = _translate_shared_formula_fallback(original, origin, e.attrib.get('r'))
                                 except Exception:
                                     warning = '部分共享公式无法展开，仅计入已保存值'
                                     if warning not in result['unknownParts']: result['unknownParts'].append(warning)

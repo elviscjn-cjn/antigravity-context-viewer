@@ -69,13 +69,17 @@ node cli.js install
 # 3. 仅对当前运行窗口进行 CDP 免改盘热挂载
 node cli.js live
 
-# 4. 查看当前安装状态与实时会话上下文用量
+# 4. 免改盘后台守护模式（随客户端启动自动挂载顶栏，客户端关闭后自动退出，保留 macOS 原生签名）
+node cli.js watch
+node cli.js stop-watch
+
+# 5. 查看当前安装状态与实时会话上下文用量
 node cli.js status
 
-# 5. 一键无损还原安装前的原始 app.asar
+# 6. 一键无损还原安装前的原始 app.asar
 node cli.js restore
 
-# 6. 指定自定义客户端路径安装
+# 7. 指定自定义客户端路径安装
 node cli.js install --path "<path-to-app.asar>"
 ```
 
@@ -105,7 +109,7 @@ antigravity-context-viewer/
 │   ├── capsule-speed-and-tooltip.png       # 实拍 3：顶栏环形胶囊、实时速度与原生气泡提示
 │   └── panel-token-heatmap-customizer.png  # 实拍 4：Token 用量总览与 5 档热力图逐格独立自定义
 ├── asar-engine.js                          # 零外部依赖的纯原生 Node.js ASAR 打包/解包引擎
-├── cli.js                                  # 统一命令行接口 (install / live / status / check / restore)
+├── cli.js                                  # 统一命令行接口 (install / live / watch / status / check / restore)
 ├── install.js                              # ASAR 注入与运行时热挂载调度器
 ├── restore.js                              # 原始备份校验与无损还原调度器
 ├── meter-main.js                           # Electron 主进程窗口钩子与只读 IPC 通道

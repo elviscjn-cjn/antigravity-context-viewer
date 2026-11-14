@@ -226,7 +226,7 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   const origSha = crypto.createHash('sha256').update(origBuf).digest('hex');
 
   // 1. 首次解锁
-  const applyRes = applyUnlock({ targetPath: testFile, backupDir });
+  const applyRes = applyUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(applyRes.ok, true);
   assert.equal(applyRes.needsRestart, true);
   assert.equal(applyRes.beforeSha256, origSha);
@@ -245,7 +245,7 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   assert.equal(verifiedAnalysis.statusText, '已验证生效');
 
   // 2. 幂等执行解锁：识别已打补丁，绝不把补丁覆盖为备份
-  const applyRepeat = applyUnlock({ targetPath: testFile, backupDir });
+  const applyRepeat = applyUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(applyRepeat.ok, true);
   assert.equal(applyRepeat.alreadyPatched, true);
 
@@ -254,7 +254,7 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   assert.equal(crypto.createHash('sha256').update(backupContent).digest('hex'), origSha);
 
   // 3. 恢复原版
-  const restoreRes = restoreUnlock({ targetPath: testFile, backupDir });
+  const restoreRes = restoreUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(restoreRes.ok, true);
   assert.equal(restoreRes.needsRestart, true);
 
@@ -262,7 +262,7 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   assert.equal(restoredSha, origSha);
 
   // 4. 重复恢复原版：幂等返回 alreadyRestored
-  const restoreRepeat = restoreUnlock({ targetPath: testFile, backupDir });
+  const restoreRepeat = restoreUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(restoreRepeat.ok, true);
   assert.equal(restoreRepeat.alreadyRestored, true);
 
@@ -275,13 +275,13 @@ test('安全性：备份文件被篡改时拒绝恢复', () => {
   const backupDir = path.join(tmpDir, 'backups');
   fs.writeFileSync(testFile, createMockGoBinary({ isPatched: false }));
 
-  const applyRes = applyUnlock({ targetPath: testFile, backupDir });
+  const applyRes = applyUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(applyRes.ok, true);
 
   // 篡改备份文件
   fs.writeFileSync(applyRes.backupPath, Buffer.from('TAMPERED_BACKUP'));
 
-  const restoreRes = restoreUnlock({ targetPath: testFile, backupDir });
+  const restoreRes = restoreUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(restoreRes.ok, false);
   assert.match(restoreRes.error, /备份文件已损坏或被篡改/);
 
@@ -377,33 +377,51 @@ test('主线程无阻塞验证：异步进程枚举期间 Node.js 事件循环�
     const testFile = path.join(tmpDir, 'language_server.exe');
     fs.writeFileSync(testFile, createMockGoBinary({ isPatched: false }));
 
-    // 启动一个 5ms 的高频事件循环计数器
+    // 启动一个 1ms 的高频事件循环计数器
     let tickCount = 0;
     const interval = setInterval(() => {
       tickCount++;
-    }, 5);
+    }, 1);
 
     // 调用异步分析
-    const analysis = await analyzeBinaryAsync(testFile, { backupDir: tmpDir, forceRefresh: true });
+    const analysis = await analyzeBinaryAsync(testFile, { backupDir: tmpDir, forceRefresh: true, platform: 'win32' });
     clearInterval(interval);
 
     assert.equal(analysis.status, 'not_patched');
-    // 在异步查询期间（哪怕只有几十毫秒），高频定时器至少触发了一次以上，证明主事件循环未被同步冻结
+    // 在异步查询期间（哪怕只有几毫秒），高频定时器至少触发了一次以上，证明主事件循环未被同步冻结
     assert.ok(tickCount >= 1, `事件循环在异步查询期间必须持续流转 (tickCount=${tickCount})`);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
-test('跨平台与安全架构拦截：非支持平台或架构明确拒绝写入', () => {
-  // 模拟非法平台传入
-  const origPlatform = process.platform;
+test('跨平台与安全架构拦截：非支持平台或架构明确拒绝写入', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-guard-'));
   try {
-    // 验证状态判定中的平台支持说明
+    const testFile = path.join(tmpDir, 'language_server');
     const mock = createMockGoBinary();
+    fs.writeFileSync(testFile, mock);
     const textInfo = findTextSection(mock);
     assert.equal(textInfo.arch, 'x86-64');
+
+    const darwinAnalyze = await analyzeBinaryAsync(testFile, { platform: 'darwin' });
+    assert.equal(darwinAnalyze.status, 'unsupported');
+    assert.equal(darwinAnalyze.isPlatformSupported, false);
+
+    const darwinApply = applyUnlock({ targetPath: testFile, backupDir: tmpDir, platform: 'darwin' });
+    assert.equal(darwinApply.ok, false);
+    assert.equal(darwinApply.code, 'PLATFORM_UNSUPPORTED');
+
+    const darwinRestore = restoreUnlock({ targetPath: testFile, backupDir: tmpDir, platform: 'darwin' });
+    assert.equal(darwinRestore.ok, false);
+    assert.equal(darwinRestore.code, 'PLATFORM_UNSUPPORTED');
+
+    if (process.platform !== 'win32') {
+      const hostApply = applyUnlock({ targetPath: testFile, backupDir: tmpDir });
+      assert.equal(hostApply.ok, false);
+      assert.equal(hostApply.code, 'PLATFORM_UNSUPPORTED');
+    }
   } finally {
-    Object.defineProperty(process, 'platform', { value: origPlatform });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

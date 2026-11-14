@@ -16,12 +16,22 @@ function getProxyCandidatePaths(customPath = null) {
   if (customPath && typeof customPath === 'string') {
     candidates.push(path.resolve(customPath));
   }
+  if (process.env.AG_METER_STATE_DIR) {
+    const resolvedState = path.resolve(process.env.AG_METER_STATE_DIR);
+    candidates.push(
+      path.join(resolvedState, 'proxy.json'),
+      path.join(resolvedState, 'modules.json')
+    );
+  }
   const localBase = process.env.LOCALAPPDATA || (process.platform === 'win32'
     ? path.join(os.homedir(), 'AppData', 'Local')
-    : (process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')));
+    : process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support')
+      : (process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')));
 
   candidates.push(
     path.join(localBase, 'AntigravityContextMeter', 'proxy.json'),
+    path.join(localBase, 'AntigravityContextMeter', 'modules.json'),
     path.join(localBase, 'AntigravityProxyNoTun', 'config.json')
   );
 
@@ -42,9 +52,12 @@ function detectProxyConfig(options = {}) {
       if (!content || !content.trim()) continue;
       const cfg = JSON.parse(content);
       if (!cfg || typeof cfg !== 'object') continue;
+      const proxyNode = (cfg.modules && cfg.modules.proxy && typeof cfg.modules.proxy === 'object')
+        ? cfg.modules.proxy
+        : cfg;
 
       // 明确处理 enabled: false：当用户显式禁用代理时停止探测并不应用代理
-      if (cfg.enabled === false) {
+      if (proxyNode.enabled === false) {
         return {
           detected: true,
           enabled: false,
@@ -52,11 +65,11 @@ function detectProxyConfig(options = {}) {
         };
       }
 
-      const httpProxy = cfg.httpProxy || cfg.proxyUrl || null;
+      const httpProxy = proxyNode.httpProxy || proxyNode.proxyUrl || null;
       if (!httpProxy) continue;
 
-      const noProxy = cfg.noProxy || cfg.bypassList || DEFAULT_NO_PROXY;
-      const allProxy = cfg.allProxy || httpProxy;
+      const noProxy = proxyNode.noProxy || proxyNode.bypassList || DEFAULT_NO_PROXY;
+      const allProxy = proxyNode.allProxy || httpProxy;
 
       return {
         detected: true,
@@ -119,12 +132,10 @@ function buildCliProxyEnv(baseEnv = process.env, options = {}) {
 
   applyProxyEnvironment(env, options);
 
-  // 恢复 Windows 交互式 CLI 子进程环境的原生彩虹渐变 Logo 与颜色能力
-  if (process.platform === 'win32') {
-    delete env.NO_COLOR;
-    env.TERM = 'xterm-256color';
-    env.COLORTERM = 'truecolor';
-  }
+  // 恢复交互式 CLI 子进程环境的原生彩虹渐变 Logo 与颜色能力（跨平台支持 Windows / macOS / Linux）
+  delete env.NO_COLOR;
+  env.TERM = 'xterm-256color';
+  env.COLORTERM = 'truecolor';
 
   return env;
 }
