@@ -238,3 +238,150 @@ test('安全隔离回归：测试下缺失 targets 或误传单数字段时绝�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('identity.tmpl 含内嵌 {{- /* LINT.IfChange */ -}} 注释时不截断，activeSlotBytes 精确计入有效字节', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-enhance-ident-'));
+  try {
+    const rawIdentity = 'Header identity text.\n{{- /* LINT.IfChange("identity") */ -}}\nMore core rules kept intact.\n{{- /* LINT.ThenChange("ref") */ -}}';
+    const base = buildMockEnhancePe64();
+    const bigBuf = Buffer.alloc(0x10000, 0);
+    base.copy(bigBuf, 0, 0, base.length);
+    const longIdentity = rawIdentity + ' Trailing real prompt section padding check.';
+    const dataStart = 0x9000;
+    bigBuf.write(longIdentity, dataStart, 'utf8');
+    const dataLen = Buffer.byteLength(longIdentity, 'utf8');
+    const imageBase = 0x140000000n;
+    const rdataRva = 0x1000;
+    const rdataPtr = 0x400;
+    const va = (off) => imageBase + BigInt(rdataRva + (off - rdataPtr));
+    // 更新 .rdata 节大小和第 0 项 identity 数据指针，保持全文件名切片指向原位置
+    bigBuf.writeBigUInt64LE(va(dataStart), 0x4800 + 16);
+    bigBuf.writeBigUInt64LE(BigInt(dataLen), 0x4800 + 24);
+    bigBuf.writeUInt32LE(bigBuf.length - rdataPtr, 0x98 + 0xf0 + 8);
+    bigBuf.writeUInt32LE(bigBuf.length - rdataPtr, 0x98 + 0xf0 + 16);
+    bigBuf.writeUInt32LE(bigBuf.length, 0x98 + 56);
+
+    const parsed = enhance.parsePeEmbedTemplates(bigBuf);
+    const identSlot = parsed.get('system_prompts/identity.tmpl');
+    assert.ok(identSlot);
+    assert.equal(identSlot.activeBytes, dataLen, '含中间模板注释时 activeBytes 必须保留后续正文并等于实际长度');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('异步增强链路：状态缓存失效、并发串行锁、冷启动恢复偏好与客户端更新失配识别', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-enhance-async-'));
+  const bakDir = path.join(tmpDir, 'bak');
+  const stateDir = path.join(tmpDir, 'state');
+  try {
+    const lsExe = path.join(tmpDir, 'language_server.exe');
+    const agyExe = path.join(tmpDir, 'agy.exe');
+    fs.writeFileSync(lsExe, buildMockEnhancePe64());
+    fs.writeFileSync(agyExe, buildMockEnhancePe64());
+
+    const targets = [
+      { id: 'ls', label: 'language_server.exe', path: lsExe },
+      { id: 'desktop', label: 'agy.exe', path: agyExe }
+    ];
+    const opts = {
+      targets,
+      backupDir: bakDir,
+      stateDir,
+      platform: 'win32',
+      arch: 'x64',
+      skipProcessCheck: true
+    };
+
+    // 1. 并发同时对同一组目标提交 tier 2 和 tier 4：队列串行，最终写入均一致、无损坏且事件循环可响应
+    let timerTicks = 0;
+    const heartbeat = setInterval(() => { timerTicks++; }, 5);
+    const [rA, rB] = await Promise.all([
+      enhance.applyEnhancePatchAsync({ promptTier: 2, chineseTitle: false }, opts),
+      enhance.applyEnhancePatchAsync({ promptTier: 4, chineseTitle: true }, opts)
+    ]);
+    clearInterval(heartbeat);
+
+    assert.equal(rA.ok, true);
+    assert.equal(rB.ok, true);
+    assert.equal(rB.appliedPromptTier, 4);
+    assert.equal(rB.appliedChineseTitleEnabled, true);
+    assert.equal(rB.status.summary.targetsConsistent, true);
+    assert.equal(rB.status.summary.syncState, 'applied_saved');
+    assert.ok(rB._timings && typeof rB._timings.totalMs === 'number');
+
+    // 2. 相同设置幂等重应用：changed === false
+    const rIdem = await enhance.applyEnhancePatchAsync({ promptTier: 4, chineseTitle: true }, opts);
+    assert.equal(rIdem.ok, true);
+    assert.equal(rIdem.changed, false);
+
+    // 3. 模拟冷启动（清空内存缓存后重新探测）：保存到 modules.json 的偏好与磁盘完全吻合
+    enhance.invalidateBinaryCache();
+    const coldStatus = await enhance.getEnhanceStatusAsync(opts);
+    assert.equal(coldStatus.summary.promptTier, 4);
+    assert.equal(coldStatus.summary.chineseTitleEnabled, true);
+    assert.equal(coldStatus.summary.savedPromptTier, 4);
+    assert.equal(coldStatus.summary.savedChineseTitle, true);
+    assert.equal(coldStatus.summary.clientUpdatedSinceSave, false);
+    assert.equal(coldStatus.summary.syncState, 'applied_saved');
+
+    // 4. 命中缓存 vs 外部改写磁盘（客户端更新替换二进制 TimeDateStamp=0x69200000，恢复原版 0档）自动失效缓存并识别升级失配
+    const cachedHit = await enhance.getEnhanceStatusAsync({ ...opts, forceRefresh: false });
+    assert.equal(cachedHit.summary.promptTier, 4);
+
+    const updatedBuf = buildMockEnhancePe64();
+    updatedBuf.writeUInt32LE(0x69200000, 0x88); // 新 PE 构建时间戳
+    fs.writeFileSync(lsExe, updatedBuf);
+    fs.writeFileSync(agyExe, updatedBuf);
+
+    const afterUpdateStatus = await enhance.getEnhanceStatusAsync({ ...opts, forceRefresh: false });
+    assert.equal(afterUpdateStatus.summary.promptTier, 0);
+    assert.equal(afterUpdateStatus.summary.chineseTitleEnabled, false);
+    assert.equal(afterUpdateStatus.summary.savedPromptTier, 4);
+    assert.equal(afterUpdateStatus.summary.savedChineseTitle, true);
+    assert.equal(afterUpdateStatus.summary.clientUpdatedSinceSave, true);
+    assert.equal(afterUpdateStatus.summary.syncState, 'client_updated_mismatch');
+    assert.ok(timerTicks >= 0);
+  } finally {
+    enhance.invalidateBinaryCache();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('多目标部分失败时诚实返回 partialOk 与逐项目标错误信息，绝不笼统报成功', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-enhance-partial-'));
+  const bakDir = path.join(tmpDir, 'bak');
+  const stateDir = path.join(tmpDir, 'state');
+  try {
+    const okExe = path.join(tmpDir, 'ok_ls.exe');
+    const badExe = path.join(tmpDir, 'bad_agy.exe');
+    fs.writeFileSync(okExe, buildMockEnhancePe64());
+    // badExe 写入非法非 PE 数据触发解析/槽位缺失失败
+    fs.writeFileSync(badExe, Buffer.from('NOT_A_VALID_PE_FILE_AT_ALL'));
+
+    const res = await enhance.applyEnhancePatchAsync(
+      { promptTier: 3, chineseTitle: true },
+      {
+        targets: [
+          { id: 'ls', label: 'ok_ls.exe', path: okExe },
+          { id: 'desktop', label: 'bad_agy.exe', path: badExe }
+        ],
+        backupDir: bakDir,
+        stateDir,
+        platform: 'win32',
+        arch: 'x64',
+        skipProcessCheck: true
+      }
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.partialOk, true);
+    assert.equal(Array.isArray(res.targetResults), true);
+    assert.equal(res.targetResults.length, 2);
+    assert.equal(res.targetResults[0].ok, true);
+    assert.equal(res.targetResults[1].ok, false);
+    assert.match(res.error, /bad_agy\.exe/);
+  } finally {
+    enhance.invalidateBinaryCache();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

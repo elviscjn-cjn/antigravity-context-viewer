@@ -18,8 +18,59 @@
     trigger._bound = true;
 
     let keyboardFocusIndex = -1;
+    let listScrollTimer = null;
+    let lastClosedMenuSig = '';
+    const renderedItemMap = new Map();
 
-    function renderMenu(kw = '') {
+    /**
+     * 清空挂起的菜单内定位定时器，避免关闭或重建后继续触发滚动。
+     */
+    function clearListScrollTimer() {
+      if (listScrollTimer) {
+        clearTimeout(listScrollTimer);
+        listScrollTimer = null;
+      }
+    }
+
+    /**
+     * 仅在不触发祖先滚动容器跳转的前提下聚焦元素。
+     */
+    function focusNoScroll(targetEl) {
+      if (!targetEl || typeof targetEl.focus !== 'function') return;
+      try {
+        targetEl.focus({ preventScroll: true });
+      } catch {
+        targetEl.focus();
+      }
+    }
+
+    /**
+     * 仅调整下拉菜单自身 scrollTop，严禁调用会穿透滚动外层面板的 scrollIntoView。
+     */
+    function scrollChildNearestInContainer(scrollBox, childEl) {
+      if (!scrollBox || !childEl) return;
+      if (typeof scrollBox.getBoundingClientRect !== 'function' || typeof childEl.getBoundingClientRect !== 'function') return;
+      try {
+        const boxRect = scrollBox.getBoundingClientRect();
+        const itemRect = childEl.getBoundingClientRect();
+        if (!boxRect || !itemRect || boxRect.height <= 0 || itemRect.height <= 0) return;
+        const searchBar = menu.querySelector ? menu.querySelector('.ag-dropdown-search-wrap') : null;
+        const stickyTopH = (searchBar && typeof searchBar.getBoundingClientRect === 'function')
+          ? Math.max(0, Math.round(searchBar.getBoundingClientRect().height || 0))
+          : 0;
+        const visTop = boxRect.top + stickyTopH;
+        const visBottom = boxRect.bottom;
+        const curScroll = Number(scrollBox.scrollTop) || 0;
+        if (itemRect.top < visTop) {
+          scrollBox.scrollTop = Math.max(0, curScroll - (visTop - itemRect.top + 4));
+        } else if (itemRect.bottom > visBottom) {
+          scrollBox.scrollTop = curScroll + (itemRect.bottom - visBottom + 4);
+        }
+      } catch { }
+    }
+
+    function renderMenu(kw = '', menuOpts = {}) {
+      clearListScrollTimer();
       menu.innerHTML = '';
       if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
       keyboardFocusIndex = -1;
@@ -37,7 +88,7 @@
 
       searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
       searchInput.addEventListener('input', (e) => {
-        renderList(e.target.value.trim().toLowerCase());
+        renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
       });
 
       // 2. 列表容器
@@ -54,16 +105,18 @@
         Array.from(itemEls).forEach((elNode, idx) => {
           if (idx === keyboardFocusIndex) {
             addClass(elNode, 'is-keyboard-focus');
-            elNode.scrollIntoView?.({ block: 'nearest' });
+            scrollChildNearestInContainer(menu, elNode);
           } else {
             removeClass(elNode, 'is-keyboard-focus');
           }
         });
       }
 
-      function renderList(searchKey = '') {
+      function renderList(searchKey = '', listOpts = {}) {
+        clearListScrollTimer();
         if (typeof listContainer.replaceChildren === 'function') listContainer.replaceChildren();
         listContainer.innerHTML = '';
+        renderedItemMap.clear();
         const allItems = cfg.getOptions();
         const selectedVal = cfg.getSelectedValue();
 
@@ -128,6 +181,8 @@
           const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
           itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
           itemEl.setAttribute?.('data-index', String(idx));
+          itemEl.setAttribute?.('data-value', String(opt.value || ''));
+          if (opt.tooltip) itemEl.title = opt.tooltip;
 
           const leftSpan = document.createElement('span');
           leftSpan.textContent = opt.displayLeft || opt.label;
@@ -146,12 +201,24 @@
             rightSpan.textContent = opt.displayRight;
           }
 
+          const extraEl = typeof cfg.renderOptionExtras === 'function' ? cfg.renderOptionExtras(opt) : null;
+
           const check = document.createElement('span');
           check.className = 'ag-dropdown-item-check';
           check.textContent = '✓';
 
-          if (opt.displayRight) itemEl.appendChild(rightSpan);
+          if (extraEl) {
+            const rightGroup = document.createElement('span');
+            rightGroup.className = 'ag-dropdown-item-right';
+            rightGroup.appendChild(extraEl);
+            if (opt.displayRight) rightGroup.appendChild(rightSpan);
+            itemEl.appendChild(rightGroup);
+          } else if (opt.displayRight) {
+            itemEl.appendChild(rightSpan);
+          }
           itemEl.appendChild(check);
+
+          renderedItemMap.set(opt.value, { itemEl, extraEl });
 
           itemEl.addEventListener('click', (e) => {
             e?.stopPropagation?.();
@@ -161,14 +228,20 @@
           listContainer.appendChild(itemEl);
         });
 
-        // 滚入可视区
-        setTimeout(() => {
-          const selNode = listContainer.querySelector ? listContainer.querySelector('.ag-dropdown-item.is-selected') : null;
-          selNode?.scrollIntoView?.({ block: 'nearest' });
-        }, 30);
+        // 仅在主动展开菜单时，将当前选中项滚动到下拉列表自身可视区域（绝不触发祖先面板滚动）
+        if (listOpts.scrollSelected === true) {
+          listScrollTimer = setTimeout(() => {
+            listScrollTimer = null;
+            if (!hasClass(wrap, 'is-open')) return;
+            const selNode = listContainer.querySelector ? listContainer.querySelector('.ag-dropdown-item.is-selected') : null;
+            scrollChildNearestInContainer(menu, selNode);
+          }, 30);
+        }
       }
 
       function selectOption(opt) {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
         const text = cfg.getLabelText ? cfg.getLabelText(opt) : (opt.label || opt.value);
         label.textContent = text;
@@ -178,10 +251,10 @@
           });
         }
         if (cfg.onSelect) cfg.onSelect(opt);
-        trigger.focus?.();
+        focusNoScroll(trigger);
       }
 
-      renderList(kw);
+      renderList(kw, menuOpts);
 
       // 键盘导航
       const keyHandler = (e) => {
@@ -201,8 +274,10 @@
           }
         } else if (e.key === 'Escape') {
           e.preventDefault?.();
+          clearListScrollTimer();
+          clearInputFocusTimer();
           removeClass(wrap, 'is-open');
-          trigger.focus?.();
+          focusNoScroll(trigger);
         }
       };
 
@@ -210,13 +285,22 @@
       menu.addEventListener('keydown', keyHandler);
     }
 
-    // 立即预渲染一次菜单内容，避免初次点击或测试环境遇到空白
-    renderMenu();
+    let inputFocusTimer = null;
+    function clearInputFocusTimer() {
+      if (inputFocusTimer) {
+        clearTimeout(inputFocusTimer);
+        inputFocusTimer = null;
+      }
+    }
+
+    // 立即预渲染一次菜单内容，避免初次点击或测试环境遇到空白（不触发滚动）
+    renderMenu('', { scrollSelected: false });
 
     function toggleOpen() {
       const isOpen = hasClass(wrap, 'is-open');
       if (!isOpen) {
         closeAllDropdowns(wrap);
+        clearInputFocusTimer();
 
         // 空间不足检测，自适应展开方向
         try {
@@ -231,13 +315,17 @@
           removeClass(wrap, 'open-up');
         }
 
-        renderMenu();
         addClass(wrap, 'is-open');
-        setTimeout(() => {
+        renderMenu('', { scrollSelected: true });
+        inputFocusTimer = setTimeout(() => {
+          inputFocusTimer = null;
+          if (!hasClass(wrap, 'is-open')) return;
           const input = menu.querySelector ? menu.querySelector('.ag-dropdown-search-input') : null;
-          input?.focus?.();
+          focusNoScroll(input);
         }, 50);
       } else {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
       }
     }
@@ -252,6 +340,8 @@
         e.preventDefault?.();
         toggleOpen();
       } else if (e.key === 'Escape') {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
       }
     });
@@ -261,13 +351,33 @@
         const val = cfg.getSelectedValue();
         const opts = cfg.getOptions();
         const found = opts.find(o => !o.isGroupHeader && o.value === val);
-        if (found) {
-          label.textContent = cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value);
-        } else if (cfg.emptyLabel) {
-          label.textContent = cfg.emptyLabel;
+        const nextText = found
+          ? (cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value))
+          : (typeof cfg.emptyLabel === 'function' ? cfg.emptyLabel() : cfg.emptyLabel);
+        if (nextText != null && label.textContent !== nextText) {
+          label.textContent = nextText;
+        }
+        // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
+        if (!hasClass(wrap, 'is-open')) {
+          const optsSig = `${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
+          if (optsSig !== lastClosedMenuSig) {
+            lastClosedMenuSig = optsSig;
+            renderMenu('', { scrollSelected: false });
+          }
         }
       },
-      close: () => removeClass(wrap, 'is-open'),
+      isOpen: () => hasClass(wrap, 'is-open'),
+      updateItemsInPlace: (updater) => {
+        if (typeof updater !== 'function') return;
+        for (const [val, entry] of renderedItemMap.entries()) {
+          updater(val, entry.itemEl, entry.extraEl);
+        }
+      },
+      close: () => {
+        clearListScrollTimer();
+        clearInputFocusTimer();
+        removeClass(wrap, 'is-open');
+      },
       open: () => toggleOpen()
     };
     wrap._controller = controller;

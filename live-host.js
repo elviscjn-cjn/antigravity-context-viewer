@@ -8,21 +8,65 @@ const { connect } = require('./local-api');
 const {
   collect,
   collectTokenHistoryAsync,
+  fetchQuotaSnapshotFromHost,
   recordModelCalls,
   getPluginSettings,
   savePluginSettings,
   launchCliSession,
   getContextUnlockStatus,
-  applyContextUnlock,
-  restoreContextUnlock
+  applyContextUnlockAsync,
+  restoreContextUnlockAsync
 } = require('./meter-collector');
+const { normalizeProxyUrl } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
+
+const liveBootProxySnapshot = (() => {
+  const bootInfo = (typeof globalThis !== 'undefined' && globalThis.__AG_PROXY_BOOT_INFO__ && globalThis.__AG_PROXY_BOOT_INFO__.injectedAtStartup)
+    ? globalThis.__AG_PROXY_BOOT_INFO__
+    : null;
+  if (bootInfo) {
+    return {
+      injectedAtStartup: true,
+      enabled: Boolean(bootInfo.active && bootInfo.proxyUrl),
+      proxyUrl: bootInfo.proxyUrl || null,
+      bypassList: bootInfo.bypassList || null
+    };
+  }
+  const envProxy = normalizeProxyUrl(process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy || '');
+  const envBypass = String(process.env.NO_PROXY || process.env.no_proxy || '').trim() || null;
+  return {
+    injectedAtStartup: false,
+    enabled: Boolean(envProxy),
+    proxyUrl: envProxy || null,
+    bypassList: envBypass
+  };
+})();
+
+function buildLiveRuntimeModulesMeta(cfg) {
+  const diskProxy = cfg?.modules?.proxy || {};
+  const diskEnabled = Boolean(diskProxy.enabled);
+  const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
+  const diskBypass = String(diskProxy.bypassList || '').trim();
+  const runtimeEnabled = Boolean(liveBootProxySnapshot.enabled);
+  const runtimeUrl = normalizeProxyUrl(liveBootProxySnapshot.proxyUrl || '');
+  const runtimeBypass = String(liveBootProxySnapshot.bypassList || '').trim();
+  const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
+    (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || (diskBypass && runtimeBypass && diskBypass !== runtimeBypass)));
+  return {
+    injectedAtStartup: Boolean(liveBootProxySnapshot.injectedAtStartup),
+    proxyActive: runtimeEnabled,
+    runtimeProxyUrl: runtimeUrl || null,
+    runtimeBypassList: runtimeBypass || null,
+    proxyNeedsRestart
+  };
+}
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
 const ALLOWED_ROUTES = [
   '/scan',
   '/token-history',
+  '/quota',
   '/record-calls',
   '/get-settings',
   '/save-settings',
@@ -36,6 +80,7 @@ const ALLOWED_ROUTES = [
   '/restart-language-servers',
   '/modules-status',
   '/toggle-module',
+  '/test-proxy',
   '/restart-host'
 ];
 
@@ -83,7 +128,13 @@ const ALLOWED_ROUTES = [
           const resCall = recordModelCalls(calls);
           if (resCall && typeof resCall === 'object' && resCall.ok === false) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, changed: false, error: resCall.error || '入账落盘失败' }));
+            res.end(JSON.stringify({
+              ok: false,
+              changed: false,
+              error: resCall.error || '入账落盘失败',
+              ...(resCall.phase ? { phase: resCall.phase } : {}),
+              ...(resCall.code ? { code: resCall.code } : {})
+            }));
             return;
           }
           const changed = (resCall && typeof resCall === 'object') ? !!resCall.changed : !!resCall;
@@ -118,7 +169,7 @@ const ALLOWED_ROUTES = [
         if (req.url === '/context-unlock-apply') {
           const opts = { ...(request || {}) };
           if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
-          const result = applyContextUnlock(opts);
+          const result = await applyContextUnlockAsync(opts);
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
@@ -126,43 +177,56 @@ const ALLOWED_ROUTES = [
         if (req.url === '/context-unlock-restore') {
           const opts = { ...(request || {}) };
           if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
-          const result = restoreContextUnlock(opts);
+          const result = await restoreContextUnlockAsync(opts);
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
         }
         if (req.url === '/enhance-status') {
-          const { getEnhanceStatus } = require('./meter-enhance');
-          const result = getEnhanceStatus(request || {});
+          const { getEnhanceStatusAsync } = require('./meter-enhance');
+          const result = await getEnhanceStatusAsync(request || {});
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, data: result }));
           return;
         }
         if (req.url === '/enhance-apply') {
-          const { applyEnhancePatch } = require('./meter-enhance');
-          const result = applyEnhancePatch(request || {});
+          const { applyEnhancePatchAsync } = require('./meter-enhance');
+          const result = await applyEnhancePatchAsync(request || {});
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
         }
         if (req.url === '/enhance-restore') {
-          const { restoreAllEnhance } = require('./meter-enhance');
-          const result = restoreAllEnhance(request || {});
+          const { restoreAllEnhanceAsync } = require('./meter-enhance');
+          const result = await restoreAllEnhanceAsync(request || {});
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
         }
         if (req.url === '/restart-language-servers') {
-          const { restartLanguageServers } = require('./meter-enhance');
-          const result = restartLanguageServers();
+          const { restartLanguageServersAsync } = require('./meter-enhance');
+          const result = await restartLanguageServersAsync();
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
         }
+        if (req.url === '/test-proxy') {
+          const { testProxyHealth } = require('./modules-config');
+          const report = await testProxyHealth(request?.proxyUrl);
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: report }));
+          return;
+        }
         if (req.url === '/modules-status') {
           const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
+          const cfg = loadModulesConfig();
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, data: loadModulesConfig(), disk: inspectDiskModules(request?.asarPath || null) }));
+          res.end(JSON.stringify({
+            ok: true,
+            data: cfg,
+            disk: inspectDiskModules(request?.asarPath || null),
+            runtime: buildLiveRuntimeModulesMeta(cfg)
+          }));
           return;
         }
         if (req.url === '/toggle-module') {
@@ -175,22 +239,82 @@ const ALLOWED_ROUTES = [
             return;
           }
           const extra = request?.opts || {};
+          const targetEnable = Boolean(request?.enable);
+          const disk = inspectDiskModules(extra.asarPath || null);
+          const hasDiskCapability = mod === 'chinese'
+            ? Boolean(disk.chineseReady)
+            : (mod === 'proxy' ? Boolean(disk.proxyReady) : Boolean(disk.meterReady));
+
+          // 在热挂载模式或未持久化注入下尝试开启未注入模块时，给出可执行的外部补装指引，不假报切换成功
+          if (targetEnable && !hasDiskCapability) {
+            const modLabel = mod === 'chinese' ? '汉化' : '免 TUN 代理';
+            const subCmd = mod === 'proxy' ? 'proxy:enable' : 'chinese:enable';
+            const cmdHint = process.platform === 'win32'
+              ? `在插件目录打开终端运行 install.bat 或 node cli.js ${subCmd}`
+              : `在插件目录打开终端运行 node cli.js ${subCmd}`;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              ok: false,
+              status: 'install_failed',
+              data: cfg,
+              disk,
+              runtime: buildLiveRuntimeModulesMeta(cfg),
+              error: `当前客户端磁盘 ASAR 未注入${modLabel}组件（或组件不完整）。请先彻底退出 Antigravity（包含系统托盘），再${cmdHint} 完成持久化注入。`,
+              restartRequired: false
+            }));
+            return;
+          }
+
+          const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
+          const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
           if (mod === 'chinese') {
-            const nextLang = normalizeClientLanguage(extra.language, Boolean(request?.enable));
+            const nextLang = normalizeClientLanguage(extra.language, targetEnable);
             cfg.modules.chinese.language = nextLang;
             cfg.modules.chinese.enabled = nextLang === 'zh-CN';
             if (extra.brandTitle !== undefined) cfg.modules.chinese.brandTitle = normalizeBrandTitle(extra.brandTitle);
             cfg.modules.chinese.lastUpdated = new Date().toISOString();
           } else {
-            cfg.modules[mod].enabled = Boolean(request?.enable);
+            if (mod === 'proxy' && extra.proxyUrl !== undefined) {
+              try {
+                const cleanUrl = normalizeProxyUrl(extra.proxyUrl);
+                const u = new URL(cleanUrl);
+                const portNum = Number(u.port);
+                if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(u.protocol) || !u.hostname || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+                  throw new Error('bad proxy');
+                }
+                cfg.modules.proxy.proxyUrl = cleanUrl;
+              } catch {
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ ok: false, status: 'invalid_config', error: '代理地址格式无效，需包含有效协议(http/https/socks5)与端口(1-65535)', data: cfg, runtime: buildLiveRuntimeModulesMeta(cfg) }));
+                return;
+              }
+            }
+            cfg.modules[mod].enabled = targetEnable;
             if (mod === 'proxy') {
-              if (extra.proxyUrl) cfg.modules.proxy.proxyUrl = extra.proxyUrl;
-              if (extra.bypassList) cfg.modules.proxy.bypassList = extra.bypassList;
+              if (typeof extra.bypassList === 'string' && extra.bypassList.trim()) {
+                cfg.modules.proxy.bypassList = extra.bypassList.trim();
+              }
+              cfg.modules.proxy.lastUpdated = new Date().toISOString();
             }
           }
           saveModulesConfig(cfg);
+          const runtime = buildLiveRuntimeModulesMeta(cfg);
+          const langChanged = mod === 'chinese' && (
+            Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
+            cfg.modules.chinese.language !== prevChineseLang
+          );
+          const restartRequired = mod === 'proxy'
+            ? Boolean(runtime.proxyNeedsRestart)
+            : (mod === 'chinese' && extra.brandTitle !== undefined && !langChanged ? false : true);
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, status: 'config_toggled', data: cfg, disk: inspectDiskModules(extra.asarPath || null), restartRequired: true }));
+          res.end(JSON.stringify({
+            ok: true,
+            status: 'config_toggled',
+            data: cfg,
+            disk,
+            runtime,
+            restartRequired
+          }));
           return;
         }
         if (req.url === '/restart-host') {
@@ -202,6 +326,13 @@ const ALLOWED_ROUTES = [
           const data = await collectTokenHistoryAsync({ force: request.force === true });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, data }));
+          return;
+        }
+        if (req.url === '/quota') {
+          const resData = await fetchQuotaSnapshotFromHost({ force: request.force === true });
+          const { _raw, ...safeData } = resData || {};
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: safeData }));
           return;
         }
         const data = await collect(api.origin, request.id, { force: request.force === true });

@@ -10,8 +10,43 @@ permissions:
   contents: write
 
 jobs:
+  build-windows-helper:
+    name: Build Windows CLI Window Helper from Source
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Compile scripts/cli-window-helper.cs with .NET Framework csc.exe
+        shell: powershell
+        run: |
+          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) {
+            $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          }
+          if (-not (Test-Path $csc)) {
+            throw ".NET Framework csc.exe not found on windows-latest runner"
+          }
+          & $csc /nologo /target:exe /platform:anycpu /optimize+ /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
+          if ($LASTEXITCODE -ne 0) {
+            throw "csc.exe failed with exit code $LASTEXITCODE"
+          }
+          $hash = (Get-FileHash scripts\cli-window-helper.exe -Algorithm SHA256).Hash.ToLower()
+          Write-Host "Built scripts/cli-window-helper.exe SHA-256: $hash"
+          "$hash  scripts/cli-window-helper.exe" | Out-File -FilePath scripts\cli-window-helper.exe.sha256 -Encoding ascii
+
+      - name: Upload Compiled Helper Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-window-helper-win
+          path: |
+            scripts/cli-window-helper.exe
+            scripts/cli-window-helper.exe.sha256
+
   build-and-release:
     name: Build & Publish Release Assets
+    needs: build-windows-helper
     runs-on: ubuntu-latest
 
     steps:
@@ -19,6 +54,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Download CI-Built Windows Helper
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-window-helper-win
+          path: scripts
+
+      - name: Verify Helper Provenance
+        run: |
+          sha256sum -c scripts/cli-window-helper.exe.sha256
+          rm -f scripts/cli-window-helper.exe.sha256
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Set up Python
         uses: actions/setup-python@v5

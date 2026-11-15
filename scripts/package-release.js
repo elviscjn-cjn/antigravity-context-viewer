@@ -84,7 +84,7 @@ function ensureWindowsHelper() {
     try {
       execFileSync(cscExe, ['/nologo', '/target:exe', '/platform:anycpu', '/optimize+', `/out:${helperPath}`, csSrc], { stdio: 'pipe' });
       if (fs.existsSync(helperPath) && fs.statSync(helperPath).size > 0) {
-        console.log(`[Packaging] scripts/cli-window-helper.exe 源码编译成功 (${fs.statSync(helperPath).size} 字节)`);
+        console.log(`[Packaging] scripts/cli-window-helper.exe 源码编译成功 (${fs.statSync(helperPath).size} 字节, SHA-256: ${sha256File(helperPath)})`);
         return true;
       }
     } catch (e) {
@@ -93,7 +93,7 @@ function ensureWindowsHelper() {
   }
 
   if (fs.existsSync(helperPath) && fs.statSync(helperPath).size > 0) {
-    console.log('[Packaging] 复用已有的 scripts/cli-window-helper.exe 二进制');
+    console.log(`[Packaging] 复用当前 scripts/cli-window-helper.exe (SHA-256: ${sha256File(helperPath)})`);
     return true;
   }
 
@@ -102,7 +102,7 @@ function ensureWindowsHelper() {
 
 function getVersion() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
-  return pkg.version || '0.8.3';
+  return pkg.version || '0.8.4';
 }
 
 function packagePlatform(plat, version) {
@@ -137,14 +137,34 @@ function packagePlatform(plat, version) {
 
     if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
-    // 调用 PowerShell 原生 .NET ZipFile 进行高兼容无损压缩
-    const psScript = `
+    if (process.platform === 'win32') {
+      // 调用 PowerShell 原生 .NET ZipFile 进行高兼容无损压缩
+      const psScript = `
       [System.Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null
       [System.IO.Compression.ZipFile]::CreateFromDirectory('${stagingDir.replace(/'/g, "''")}', '${zipPath.replace(/'/g, "''")}', [System.IO.Compression.CompressionLevel]::Optimal, $false)
     `;
-    const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', psScript], { stdio: 'pipe' });
-    if (res.status !== 0 || !fs.existsSync(zipPath)) {
-      throw new Error(`打包 ${zipFilename} 失败: ${res.stderr?.toString('utf8') || '未知错误'}`);
+      const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', psScript], { stdio: 'pipe' });
+      if (res.status !== 0 || !fs.existsSync(zipPath)) {
+        throw new Error(`打包 ${zipFilename} 失败: ${res.stderr?.toString('utf8') || '未知错误'}`);
+      }
+    } else {
+      // Linux/macOS CI 下优先使用原生 zip 保留 POSIX 文件权限，缺省再回退 Python zipfile
+      const zipRes = spawnSync('zip', ['-rq', zipPath, '.'], { cwd: stagingDir, stdio: 'pipe' });
+      if (zipRes.status !== 0 || !fs.existsSync(zipPath)) {
+        const pyCode = [
+          'import os, sys, zipfile',
+          'src, dst = sys.argv[1], sys.argv[2]',
+          'with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zf:',
+          '    for root, _, files in os.walk(src):',
+          '        for name in files:',
+          '            full = os.path.join(root, name)',
+          '            zf.write(full, os.path.relpath(full, src))'
+        ].join('\n');
+        const pyRes = spawnSync('python3', ['-c', pyCode, stagingDir, zipPath], { stdio: 'pipe' });
+        if (pyRes.status !== 0 || !fs.existsSync(zipPath)) {
+          throw new Error(`打包 ${zipFilename} 失败: ${(zipRes.stderr || pyRes.stderr || Buffer.alloc(0)).toString('utf8') || '未知错误'}`);
+        }
+      }
     }
 
     const sz = fs.statSync(zipPath).size;

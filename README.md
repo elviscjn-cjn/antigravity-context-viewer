@@ -33,7 +33,7 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 如果你将本仓库交给 AI 助手安装，只需对 AI 说：**“读取仓库里的 `AGENTS.md` 或 `README.md`，帮我安装这个上下文查看器与 Token 看板”**。
 
-AI 智能体只需在仓库根目录执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 0.8.3）必须完全重启客户端**：
+AI 智能体只需在仓库根目录执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 0.8.4）必须完全重启客户端**：
 
 ```bash
 # 1. 持久化写入 ASAR 与全部插件模块
@@ -126,7 +126,7 @@ antigravity-context-viewer/
 ├── meter-enhance.js                        # 系统提示词 0~4 档、防幻觉与中文标题等长替换引擎
 ├── i18n/                                   # 客户端简体中文化词典与运行时 (zh-CN.json / i18n-runtime.js)
 ├── unlock/                                 # PR #3 跨平台解锁工具与文档 (language-server & agy-cli)
-├── meter-renderer.js                       # 渲染层构建产物 (0.8.3)
+├── meter-renderer.js                       # 渲染层构建产物 (0.8.4)
 ├── src/renderer/                           # 渲染层源码
 ├── scripts/                                # 构建、发布打包与基准测试
 ├── meter-collector.js                      # 本地会话归档读取与附件提取收集器
@@ -138,9 +138,30 @@ antigravity-context-viewer/
 
 ---
 
+## 🛡️ 安全说明与原生窗口辅助程序 (Security & Transparency)
+
+- **用途说明**：Windows 安装包中的可选组件 `scripts/cli-window-helper.exe`（源码 [scripts/cli-window-helper.cs](scripts/cli-window-helper.cs)）仅用于在从插件弹窗一键启动 `agy` CLI 时定位新控制台窗口、按当前工作区居中并激活前台焦点，不包含任何联网、持久化或后台驻留逻辑。
+- **工具链与构建命令**：基于 Windows 自带 `.NET Framework 4.0` 编译，可随时自行审计源码并本地重编：
+  ```powershell
+  C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /platform:anycpu /optimize+ /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
+  ```
+- **当前随附二进制 SHA-256**：`e6a62cbb03163107db889e6accf7c05049ecf949c89f29afaf072c66fe09eac9`（注：.NET Framework `csc.exe` 默认嵌入 PE 时间戳/MVID，自行本地或由 `.github/workflows/release.yml` 在 `windows-latest` 上从同份源码重编会生成有效功能等价但哈希值不同的二进制；CI 现场编译旨在提升构建来源透明度，但**不代表所有杀软引擎一定会停止触发告警**）。
+- **常见安全软件检测说明**：由于该程序是约 15 KB 的未数字签名原生辅助二进制且调用了 `keybd_event`、`AttachThreadInput`、`AllowSetForegroundWindow`、`CreateToolhelp32Snapshot` 与 `Process.Start("cmd.exe")`，部分杀毒引擎可能报启发式可疑告警。
+- **无需关闭杀软的可选降级**：如果您不希望保留任何预编译 `.exe` 或其被安全软件拦截，无需关闭安全软件，也无需购买签名证书，可直接删除 `scripts/cli-window-helper.exe`。`meter-cli-launcher.js` 检测到 helper 缺失或失败时会自动降级为直接启动标准 Windows 控制台 `cmd.exe /d /k`，CLI 启动与对话能力完全正常（仅不再自动居中或强制置顶窗口）。
+
+---
+
 ## 🤝 社区、贡献署名与支持 (Community & Acknowledgements)
 
 - **[LINUX DO](https://linux.do/)**：本项目支持并认可 LINUX DO 社区，欢迎各位社区佬友交流探讨。
 - **上下文解锁原方案**：感谢 **Linux.do @23375** 公布的上下文长度限制分析与修补思路（<https://linux.do/t/topic/3117832>）。
 - **PR #3（多模式上下文解锁 & agy CLI 工具链）**：感谢 **[@anyu0804](https://github.com/anyu0804)** 贡献 `ORIG / CONST / DYN` 模式、实验覆盖门禁分析、`cli_serializer_max_ctx` 对齐及跨平台 `unlock/` 工具与文档。
 - **PR #4（系统增强中心与防幻觉提示词）**：感谢 **[@Jia131313](https://github.com/Jia131313)** 贡献系统提示词 `0~4` 档位精简、防幻觉约束、中文会话标题、品牌展示与推荐配置体系。
+- **PR #7 / #12（模型剩余配额圆环、双窗口与主题/Opt-in 保护）**：感谢 **[@Azreal2021](https://github.com/Azreal2021)** 与 **[@Andrew-liu](https://github.com/Andrew-liu)**。
+- **PR #9（2.31+ 模型计价、共享池匹配与三源账本实时同步）**：感谢 **[@MoiraToki](https://github.com/MoiraToki)**。
+- **PR #11（沙箱 Preload 汉化配置门禁安全读取）**：感谢 **[@yinshengphy](https://github.com/yinshengphy)**。
+- **PR #13（弹窗动态锚点定位与展开防抖动）**：感谢 **[@nocoo](https://github.com/nocoo)**。
+- **PR #14（macOS 兼容适配评估参考）**：感谢 **[@nokiy](https://github.com/nokiy)**。
+- **Issue #17（`cli-window-helper` VirusTotal 检测溯源、文档透明度与 Windows CI 源码构建建议）**：感谢 **[@riandycandra](https://github.com/riandycandra)**。
+- **PR #21（繁体中文面板译文精细优化）**：感谢 **[@U1tr0n-Lee](https://github.com/U1tr0n-Lee)**。
+- **Issue #22（GitHub API 限流时官方 Atom/Web 更新回退方案）**：感谢 **[@zhao33079-zhao](https://github.com/zhao33079-zhao)**。

@@ -15,7 +15,17 @@ const {
 
 const {
   checkUpdateAsync,
-  applyUpdateAsync
+  applyUpdateAsync,
+  parseReleasesAtom,
+  parseLatestReleaseHtml,
+  parseExpandedAssetsHtml,
+  requestGithubUrl,
+  isAllowedDownloadRedirectUrl,
+  isOfficialAssetDownloadUrl,
+  OFFICIAL_RELEASES_API,
+  OFFICIAL_RELEASES_ATOM,
+  OFFICIAL_RELEASES_LATEST,
+  OFFICIAL_RELEASES_WEB_BASE
 } = require('./meter-collector');
 
 const {
@@ -337,14 +347,14 @@ test('交付验证 4: 版本升级识别矩阵（0.8.0 识别 0.8.1 为新版本
   assert.equal(checkOld.tagName, 'v0.8.1');
   assert.match(checkOld.releaseNotes, /修复原生 helper 缺失/);
 
-  // 3. 0.8.3 默认客户端执行 checkUpdateAsync 面对 0.8.1 Release 必须判定已是最新（无新版本）
+  // 3. 0.8.4 默认客户端执行 checkUpdateAsync 面对 0.8.1 Release 必须判定已是最新（无新版本）
   const checkCurrent = await checkUpdateAsync({
     force: true,
     _requestGithubUrl: async () => JSON.stringify(releasesFixture)
   });
   assert.equal(checkCurrent.ok, true);
   assert.equal(checkCurrent.hasUpdate, false);
-  assert.equal(checkCurrent.currentVersion, '0.8.3');
+  assert.equal(checkCurrent.currentVersion, '0.8.4');
 });
 
 test('交付验证 5: 隔离环境中模拟在线安装完成后自动清空缓存并动态识别磁盘版本', async () => {
@@ -397,5 +407,270 @@ test('交付验证 5: 隔离环境中模拟在线安装完成后自动清空缓�
     assert.equal(check2.diskPendingRestart, true, '标记为待重启以完全刷新主进程');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Issue #22: API 403/429 限流时自动回退官方 releases.atom + expanded_assets 并完成完整下载与 SHA-256 校验', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-issue22-fallback-'));
+  try {
+    const zipBuf = createSimpleZipBuffer({
+      'package.json': JSON.stringify({ name: 'antigravity-context-viewer', version: '0.9.2' }),
+      'cli.js': 'console.log("ok");\n'
+    });
+    const zipSha = crypto.createHash('sha256').update(zipBuf).digest('hex');
+    const platformMap = { win32: 'windows', darwin: 'darwin', linux: 'linux' };
+    const archMap = { x64: 'amd64', arm64: 'arm64' };
+    const zipName = `antigravity-context-viewer_0.9.2_${platformMap[process.platform] || 'windows'}_${archMap[process.arch] || 'amd64'}.zip`;
+    const checksumTxt = `${zipSha}  ${zipName}\n`;
+
+    const atomXml = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v0.9.2</id>
+    <updated>2026-11-15T12:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.2"/>
+    <title>v0.9.2</title>
+    <content type="html">&lt;p&gt;支持官方 Web 回退通道&lt;/p&gt;</content>
+  </entry>
+</feed>`;
+
+    const expandedHtml = `
+      <ul>
+        <li><a href="https://evil.example.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.2/${zipName}">Evil Mirror</a></li>
+        <li><a href="/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.2/../evil/${zipName}">Traversal</a></li>
+        <li><a href="/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.1/${zipName}">Wrong Tag</a></li>
+        <li><a href="/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.2/${zipName}">Valid Zip</a></li>
+        <li><a href="/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.2/checksums.txt">Valid Checksum</a></li>
+      </ul>`;
+
+    const requestedUrls = [];
+    const mockFetcher = async (url, opts = {}) => {
+      requestedUrls.push(url);
+      if (url === OFFICIAL_RELEASES_API) {
+        const err = new Error('GitHub HTTP 403: API rate limit exceeded');
+        err.statusCode = 403;
+        throw err;
+      }
+      if (url === OFFICIAL_RELEASES_ATOM) return atomXml;
+      if (url === `${OFFICIAL_RELEASES_WEB_BASE}/expanded_assets/v0.9.2`) return expandedHtml;
+      if (url === `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.2/checksums.txt` && opts.streamTo) {
+        opts.streamTo.end(Buffer.from(checksumTxt, 'utf8'));
+        return;
+      }
+      if (url === `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.2/${zipName}` && opts.streamTo) {
+        opts.streamTo.end(zipBuf);
+        return;
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    };
+
+    const chk = await checkUpdateAsync({
+      currentVersion: '0.8.3',
+      installedVersion: '0.8.3',
+      force: true,
+      _requestGithubUrl: mockFetcher
+    });
+    assert.equal(chk.ok, true);
+    assert.equal(chk.hasUpdate, true);
+    assert.equal(chk.latestVersion, '0.9.2');
+    assert.equal(chk.source, 'atom');
+    assert.match(chk.releaseNotes, /支持官方 Web 回退通道/);
+    assert.equal(chk.assets.length, 2, '仅允许同 tag 官方路径的两个合法资产，过滤外站/穿越/错 tag');
+
+    let spawnCalled = false;
+    const targetAsar = path.join(tmpDir, 'mock_app.asar');
+    const applyRes = await applyUpdateAsync({
+      version: '0.9.2',
+      currentVersion: '0.8.3',
+      targetPath: targetAsar,
+      _requestGithubUrl: mockFetcher,
+      _extractZip: async (zp, dir) => {
+        fs.writeFileSync(path.join(dir, 'cli.js'), 'ok', 'utf8');
+        return { status: 0 };
+      },
+      _spawn: () => {
+        spawnCalled = true;
+        const { EventEmitter } = require('events');
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        setTimeout(() => {
+          child.stdout.emit('data', Buffer.from('installed\n'));
+          child.emit('close', 0, null);
+        }, 5);
+        return child;
+      }
+    });
+    assert.equal(applyRes.ok, true);
+    assert.equal(applyRes.version, '0.9.2');
+    assert.equal(spawnCalled, true);
+    assert.ok(requestedUrls.includes(OFFICIAL_RELEASES_ATOM));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Issue #22: 429 限流且 atom 失败时兜底 releases/latest，同时拦截畸形响应、外站链接与错误校验和', async () => {
+  // 1. 429 -> atom 失败 -> releases/latest 成功解析 tag
+  const latestRes = await checkUpdateAsync({
+    currentVersion: '0.8.3',
+    installedVersion: '0.8.3',
+    force: true,
+    _requestGithubUrl: async (url) => {
+      if (url === OFFICIAL_RELEASES_API) {
+        const e = new Error('HTTP 429 Too Many Requests');
+        e.statusCode = 429;
+        throw e;
+      }
+      if (url === OFFICIAL_RELEASES_ATOM) throw new Error('atom temporarily down');
+      if (url === OFFICIAL_RELEASES_LATEST) {
+        return {
+          data: '<html><head><link rel="canonical" href="https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.5"></head></html>',
+          finalUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.5'
+        };
+      }
+      if (url === `${OFFICIAL_RELEASES_WEB_BASE}/expanded_assets/v0.9.5`) {
+        return '<a href="/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.5/checksums.txt">cs</a>';
+      }
+      throw new Error(`Unexpected: ${url}`);
+    }
+  });
+  assert.equal(latestRes.ok, true);
+  assert.equal(latestRes.hasUpdate, true);
+  assert.equal(latestRes.latestVersion, '0.9.5');
+  assert.equal(latestRes.source, 'latest');
+
+  // 2. 畸形 Atom/HTML 结构异常时准确返回失败与官方手动下载入口
+  const badCheck = await checkUpdateAsync({
+    currentVersion: '0.8.3',
+    installedVersion: '0.8.3',
+    force: true,
+    _requestGithubUrl: async () => '<html>not valid json or xml or tag</html>'
+  });
+  assert.equal(badCheck.ok, false);
+  assert.equal(badCheck.htmlUrl, OFFICIAL_RELEASES_WEB_BASE);
+  assert.match(badCheck.error, /官方网页通道回退亦失败/);
+
+  const badAssetsApply = await applyUpdateAsync({
+    version: '0.9.5',
+    currentVersion: '0.8.3',
+    _requestGithubUrl: async (url) => {
+      if (url === OFFICIAL_RELEASES_API) return JSON.stringify({ message: 'API rate limit exceeded' });
+      if (url === OFFICIAL_RELEASES_ATOM) throw new Error('502');
+      if (url === OFFICIAL_RELEASES_LATEST) return { data: '', finalUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.5' };
+      if (url.includes('expanded_assets')) return '<div>broken structure with no valid links</div>';
+      throw new Error('unexpected');
+    }
+  });
+  assert.equal(badAssetsApply.ok, false);
+  assert.match(badAssetsApply.error, /结构异常|手动下载/);
+  assert.match(badAssetsApply.htmlUrl, /\/releases\/tag\/v0\.9\.5$/);
+
+  // 3. 路径穿越与外站 URL 守卫验证
+  assert.equal(isAllowedDownloadRedirectUrl('/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.5', OFFICIAL_RELEASES_LATEST), true);
+  assert.equal(isAllowedDownloadRedirectUrl('https://evil.com/x.zip', OFFICIAL_RELEASES_LATEST), false);
+  assert.equal(isOfficialAssetDownloadUrl('https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.5/checksums.txt', 'checksums.txt', 'v0.9.5'), true);
+  assert.equal(isOfficialAssetDownloadUrl('https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.5/../v0.8.0/checksums.txt', 'checksums.txt', 'v0.9.5'), false);
+  assert.equal(isOfficialAssetDownloadUrl('https://user:pass@github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.5/checksums.txt', 'checksums.txt', 'v0.9.5'), false);
+  assert.equal(parseExpandedAssetsHtml('<a href="/other-owner/repo/releases/download/v0.9.5/checksums.txt">x</a>', 'v0.9.5').length, 0);
+
+  // 4. SHA-256 校验失败拒绝安装
+  const badShaRes = await applyUpdateAsync({
+    version: '0.9.2',
+    currentVersion: '0.8.3',
+    _requestGithubUrl: async (url, opts = {}) => {
+      const platformMap = { win32: 'windows', darwin: 'darwin', linux: 'linux' };
+      const archMap = { x64: 'amd64', arm64: 'arm64' };
+      const zipName = `antigravity-context-viewer_0.9.2_${platformMap[process.platform] || 'windows'}_${archMap[process.arch] || 'amd64'}.zip`;
+      if (url === OFFICIAL_RELEASES_API) {
+        return JSON.stringify([{
+          tag_name: 'v0.9.2',
+          html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.2',
+          assets: [
+            { name: zipName, browser_download_url: `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.2/${zipName}` },
+            { name: 'checksums.txt', browser_download_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.2/checksums.txt' }
+          ]
+        }]);
+      }
+      if (url.endsWith('checksums.txt') && opts.streamTo) {
+        opts.streamTo.end(Buffer.from(`${'0'.repeat(64)}  ${zipName}\n`, 'utf8'));
+        return;
+      }
+      if (url.endsWith(zipName) && opts.streamTo) {
+        opts.streamTo.end(Buffer.from('corrupted-zip-bytes', 'utf8'));
+        return;
+      }
+      throw new Error(`unexpected ${url}`);
+    }
+  });
+  assert.equal(badShaRes.ok, false);
+  assert.match(badShaRes.error, /SHA-256 校验失败/);
+});
+
+test('Issue #22: requestGithubUrl 相对重定向跟随、Authorization 不泄露至非 API 域与响应体积上限拦截', async () => {
+  const https = require('https');
+  const { EventEmitter } = require('events');
+  const origRequest = https.request;
+  const origGhToken = process.env.GITHUB_TOKEN;
+  const seenRequests = [];
+
+  try {
+    process.env.GITHUB_TOKEN = 'secret_test_token_123';
+    https.request = (opts, cb) => {
+      seenRequests.push({ hostname: opts.hostname, path: opts.path, headers: opts.headers });
+      const req = new EventEmitter();
+      req.setTimeout = () => { };
+      req.write = () => { };
+      req.destroy = (err) => { process.nextTick(() => req.emit('error', err)); };
+      req.end = () => {
+        const res = new EventEmitter();
+        res.resume = () => { };
+        if (opts.hostname === 'github.com' && opts.path === '/elviscjn-cjn/antigravity-context-viewer/releases/latest') {
+          res.statusCode = 302;
+          res.headers = { location: '/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.6' };
+          process.nextTick(() => cb(res));
+          return;
+        }
+        if (opts.hostname === 'github.com' && opts.path === '/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.6') {
+          res.statusCode = 200;
+          res.headers = {};
+          process.nextTick(() => {
+            cb(res);
+            res.emit('data', Buffer.from('<html>ok-tag-page</html>'));
+            res.emit('end');
+          });
+          return;
+        }
+        if (opts.hostname === 'api.github.com') {
+          res.statusCode = 200;
+          res.headers = {};
+          process.nextTick(() => {
+            cb(res);
+            res.emit('data', Buffer.from('x'.repeat(200)));
+            res.emit('end');
+          });
+          return;
+        }
+      };
+      return req;
+    };
+
+    // 1. github.com 相对重定向且不附带 GITHUB_TOKEN
+    const webRes = await requestGithubUrl(OFFICIAL_RELEASES_LATEST, { resolveWithMeta: true });
+    assert.equal(webRes.data, '<html>ok-tag-page</html>');
+    assert.equal(webRes.finalUrl, 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.6');
+    assert.equal(seenRequests[0].headers.Authorization, undefined, '非 API 域禁止携带 GitHub Token');
+    assert.equal(seenRequests[1].headers.Authorization, undefined, '重定向目标禁止携带 GitHub Token');
+
+    // 2. api.github.com 携带 Token，但超出 maxBytes 时中止拒绝
+    await assert.rejects(
+      requestGithubUrl(OFFICIAL_RELEASES_API, { maxBytes: 50 }),
+      /超出大小限制/
+    );
+    assert.equal(seenRequests[2].headers.Authorization, 'Bearer secret_test_token_123');
+  } finally {
+    https.request = origRequest;
+    if (origGhToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = origGhToken;
   }
 });

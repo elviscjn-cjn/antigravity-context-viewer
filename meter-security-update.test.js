@@ -2043,12 +2043,15 @@ const modulesConfigPath = testAsar + '/dist/modules-config.js';
 const { inspectDiskModules, loadModulesConfig } = require(modulesConfigPath);
 assert.equal(process.noAsar, undefined, 'require 内部 modules-config 后 process.noAsar 必须保持 undefined');
 
-// 触发状态检测，断言不再报错 ENOENT/open/lstat 且正常返回各模块就绪状态
+// 触发状态检测，断言不再报错 ENOENT/open/lstat 且正常返回各模块就绪状态（含 meterReady）
 const disk = inspectDiskModules(testAsar);
 assert.equal(disk.found, true);
 assert.equal(disk.meter, true);
+assert.equal(disk.meterReady, true, 'Electron ASAR 内运行不得误报 disk.meterReady = false');
 assert.equal(disk.chinese, true);
+assert.equal(disk.chineseReady, true);
 assert.equal(disk.proxy, true);
+assert.equal(disk.proxyReady, true);
 assert.equal(process.noAsar, undefined, '调用 inspectDiskModules 后 process.noAsar 必须依然为 undefined');
 
 const cfg = loadModulesConfig();
@@ -2074,30 +2077,100 @@ console.log('ELECTRON_ASAR_VERIFIED_SUCCESS');
   }
 });
 
-test('专项复核 16：沙箱 preload 环境下汉化门禁回退到 ipcRenderer.sendSync 且默认 fail-closed', async () => {
-  const vm = require('vm');
-  const { generateChinesePreloadCode, validateSyntax } = require('./modular-installer');
-  const code = generateChinesePreloadCode('{"exact":{}}', 'globalThis.__TEST_CHINESE_EXECUTED__ = true;');
-  assert.ok(validateSyntax(code, 'preload.js'), '生成的沙箱 preload 代码必须合法');
+test('专项复核 16：Electron original-fs 回退、ASAR 路径分隔符统一与真缺失准确报错', async () => {
+  const Module = require('module');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-meter-ready-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
 
-  const runInSandbox = (ipcReturnValue) => {
-    const sandbox = {
-      require: () => { throw new Error('sandboxed require blocked'); },
-      process: { platform: 'win32', env: {} },
-      electron_1: {
-        ipcRenderer: {
-          sendSync: (channel) => (channel === 'context-meter:is-chinese-enabled' ? ipcReturnValue : false)
+  try {
+    const targetAsar = path.join(tmpDir, 'host.asar');
+    const host = await createMockHostAsar(tmpDir, '2.32.1');
+    fs.copyFileSync(host, targetAsar);
+    await install({
+      path: targetAsar,
+      modules: { meter: { enabled: true }, chinese: { enabled: true }, proxy: { enabled: false } }
+    });
+
+    const { inspectDiskModules } = require('./modules-config');
+
+    // 1. 普通 Node 下检测应当全部就绪
+    const nodeDisk = inspectDiskModules(targetAsar);
+    assert.equal(nodeDisk.found, true);
+    assert.equal(nodeDisk.meterReady, true);
+    assert.equal(nodeDisk.chineseReady, true);
+
+    // 2. 路径分隔符差异（反斜杠 + 无前导斜杠）应标准化后判为 ready
+    const winSlashDisk = inspectDiskModules(targetAsar, {
+      _builtinAsar: {
+        extractFile: (p, rel) => require('./asar-engine').builtinAsar.extractFile(p, rel),
+        listPackage: () => ['dist\\meter-main.js', 'dist\\meter-core.js', 'dist\\i18n\\zh-CN.json']
+      }
+    });
+    assert.equal(winSlashDisk.meterReady, true, 'Windows 反斜杠与无前导斜杠清单不得导致 meterReady 误报 false');
+
+    // 3. 当核心组件真实缺失时，meterReady 必须如实报告 false
+    const missingFileDisk = inspectDiskModules(targetAsar, {
+      _builtinAsar: {
+        extractFile: (p, rel) => require('./asar-engine').builtinAsar.extractFile(p, rel),
+        listPackage: () => ['/dist/meter-main.js'] // 故意缺失 meter-core.js
+      }
+    });
+    assert.equal(missingFileDisk.found, true);
+    assert.equal(missingFileDisk.meter, true);
+    assert.equal(missingFileDisk.meterReady, false, '真实缺失 meter-core.js 时不得错报 meterReady = true');
+
+    // 4. 模拟 Electron 环境下 fs 被劫持读取 .asar 失败，验证自动切换 original-fs 仍正常检测
+    const origLoad = Module._load;
+    const prevElectronVer = process.versions.electron;
+    let originalFsCalled = false;
+    try {
+      Object.defineProperty(process.versions, 'electron', { value: '33.0.0', configurable: true });
+      const interceptedFs = new Proxy(fs, {
+        get(target, prop) {
+          if (prop === 'openSync') {
+            return (p, ...rest) => {
+              if (String(p).endsWith('.asar')) throw new Error('Simulated Electron VFS ASAR lock');
+              return target.openSync(p, ...rest);
+            };
+          }
+          return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
         }
-      },
-      window: {},
-      globalThis: {}
-    };
-    sandbox.globalThis = sandbox;
-    vm.runInNewContext(code, sandbox);
-    return Boolean(sandbox.__TEST_CHINESE_EXECUTED__);
-  };
-
-  assert.equal(runInSandbox(false), false, 'ipcRenderer.sendSync 返回 false 时不得执行汉化注入');
-  assert.equal(runInSandbox(undefined), false, 'ipcRenderer.sendSync 返回非 true 值时必须保持 fail-closed');
-  assert.equal(runInSandbox(true), true, '仅当 ipcRenderer.sendSync 明确返回 true 时才允许执行汉化注入');
+      });
+      const wrappedOriginalFs = new Proxy(fs, {
+        get(target, prop) {
+          if (prop === 'openSync') {
+            return (p, ...rest) => {
+              if (String(p).endsWith('.asar')) originalFsCalled = true;
+              return target.openSync(p, ...rest);
+            };
+          }
+          return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
+        }
+      });
+      Module._load = function (request, parent, isMain) {
+        if (request === 'fs') return interceptedFs;
+        if (request === 'original-fs') return wrappedOriginalFs;
+        return origLoad.call(this, request, parent, isMain);
+      };
+      delete require.cache[require.resolve('./asar-engine')];
+      delete require.cache[require.resolve('./modules-config')];
+      const { inspectDiskModules: electronInspect } = require('./modules-config');
+      const eDisk = electronInspect(targetAsar);
+      assert.equal(originalFsCalled, true, 'Electron 环境下必须通过 original-fs 读取 ASAR');
+      assert.equal(eDisk.found, true);
+      assert.equal(eDisk.meterReady, true, 'Electron 模拟下 disk.meterReady 必须为 true');
+      assert.equal(eDisk.chineseReady, true);
+    } finally {
+      Module._load = origLoad;
+      if (prevElectronVer === undefined) delete process.versions.electron;
+      else Object.defineProperty(process.versions, 'electron', { value: prevElectronVer, configurable: true });
+      delete require.cache[require.resolve('./asar-engine')];
+      delete require.cache[require.resolve('./modules-config')];
+    }
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

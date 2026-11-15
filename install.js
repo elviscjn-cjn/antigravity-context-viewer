@@ -535,6 +535,8 @@ async function install(options = {}) {
         meterVersion: pkgVersion,
         version,
         installed,
+        installerDir: __dirname,
+        cliPath: path.join(__dirname, 'cli.js'),
         backup,
         previousInstalledBackup,
         previousInstalledSha256,
@@ -591,7 +593,7 @@ async function install(options = {}) {
         if (extractedLauncher.includes("spawnSync('powershell.exe'") || extractedLauncher.includes('timeout: 8000')) {
           throw new Error('ASAR 内仍然残留旧版同步 PowerShell 启动逻辑，拒绝完成安装！');
         }
-        if (!extractedLauncher.includes('0.8.3-helper-v2')) {
+        if (!extractedLauncher.includes('0.8.4-helper-v2')) {
           throw new Error('ASAR 内未包含最新的 LAUNCHER_VERSION 标识，拒绝完成安装！');
         }
 

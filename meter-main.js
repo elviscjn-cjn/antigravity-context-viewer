@@ -16,6 +16,7 @@ const {
   collectTokenHistory,
   collectTokenHistoryAsync,
   recordModelCalls,
+  recordModelCallsAsync,
   getPluginSettings,
   savePluginSettings,
   launchCliSession,
@@ -23,15 +24,91 @@ const {
   applyUpdateAsync,
   getContextUnlockStatus,
   applyContextUnlock,
-  restoreContextUnlock
+  applyContextUnlockAsync,
+  restoreContextUnlock,
+  restoreContextUnlockAsync
 } = require('./meter-collector');
 const { isValidExternalUrl } = require('./meter-core');
 
-const { applyProxyEnvironment } = require('./meter-proxy');
+const { applyProxyEnvironment, detectProxyConfig, normalizeProxyUrl } = require('./meter-proxy');
+const { getStateDir } = require('./asar-engine');
+
+function resolveBootProxySnapshot() {
+  const bootInfo = (typeof globalThis !== 'undefined' && globalThis.__AG_PROXY_BOOT_INFO__ && globalThis.__AG_PROXY_BOOT_INFO__.injectedAtStartup)
+    ? globalThis.__AG_PROXY_BOOT_INFO__
+    : null;
+  if (bootInfo) {
+    return {
+      injectedAtStartup: true,
+      enabled: Boolean(bootInfo.active && bootInfo.proxyUrl),
+      proxyUrl: bootInfo.proxyUrl || null,
+      bypassList: bootInfo.bypassList || null
+    };
+  }
+  const envProxy = normalizeProxyUrl(process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy || '');
+  const envBypass = String(process.env.NO_PROXY || process.env.no_proxy || '').trim() || null;
+  return {
+    injectedAtStartup: false,
+    enabled: Boolean(envProxy),
+    proxyUrl: envProxy || null,
+    bypassList: envBypass
+  };
+}
+
+const bootProxySnapshot = resolveBootProxySnapshot();
+const bootChineseSnapshots = new Map();
+
+/**
+ * 解析当前进程启动瞬间的宿主汉化状态快照（同一 stateDir 生命周期内保持不变，防止受隔离上下文或用户项目名误判）
+ */
+function resolveBootChineseSnapshot() {
+  const key = String(process.env.AG_METER_STATE_DIR || '__default__');
+  if (bootChineseSnapshots.has(key)) return bootChineseSnapshots.get(key);
+  let snap = { enabled: false, language: 'en' };
+  try {
+    const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
+    const cfg = loadModulesConfig();
+    const disk = inspectDiskModules();
+    const ch = cfg?.modules?.chinese || {};
+    const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
+    const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
+    snap = {
+      enabled: active,
+      language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
+    };
+  } catch {}
+  bootChineseSnapshots.set(key, snap);
+  return snap;
+}
+
+function buildRuntimeModulesMeta(cfg) {
+  const diskProxy = cfg?.modules?.proxy || {};
+  const diskEnabled = Boolean(diskProxy.enabled);
+  const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
+  const diskBypass = String(diskProxy.bypassList || '').trim();
+  const runtimeEnabled = Boolean(bootProxySnapshot.enabled);
+  const runtimeUrl = normalizeProxyUrl(bootProxySnapshot.proxyUrl || '');
+  const runtimeBypass = String(bootProxySnapshot.bypassList || '').trim();
+  const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
+    (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || (diskBypass && runtimeBypass && diskBypass !== runtimeBypass)));
+  const bootZh = resolveBootChineseSnapshot();
+  const diskCh = cfg?.modules?.chinese || {};
+  const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
+  return {
+    injectedAtStartup: Boolean(bootProxySnapshot.injectedAtStartup),
+    proxyActive: runtimeEnabled,
+    runtimeProxyUrl: runtimeUrl || null,
+    runtimeBypassList: runtimeBypass || null,
+    proxyNeedsRestart,
+    chineseActive: Boolean(bootZh.enabled),
+    chineseBootLanguage: bootZh.language,
+    chineseNeedsRestart: diskZhActive !== Boolean(bootZh.enabled)
+  };
+}
 
 function ensureProxyEnvironment(targetEnv = process.env) {
   try {
-    return applyProxyEnvironment(targetEnv);
+    return applyProxyEnvironment(targetEnv, { overrideExisting: true });
   } catch {
     return targetEnv;
   }
@@ -111,10 +188,64 @@ async function handleModulesStatus(event, customAsar = null) {
   if (!url) throw new Error('仅允许本机主聊天窗口');
   try {
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
-    return { ok: true, data: loadModulesConfig(), disk: inspectDiskModules(customAsar) };
+    const cfg = loadModulesConfig();
+    return {
+      ok: true,
+      data: cfg,
+      disk: inspectDiskModules(customAsar),
+      runtime: buildRuntimeModulesMeta(cfg)
+    };
   } catch (e) {
     return { ok: false, error: e.message };
   }
+}
+
+/**
+ * 校验本地代理地址协议与端口范围是否有效
+ */
+function validateProxyUrlInput(proxyUrlStr) {
+  if (!proxyUrlStr || typeof proxyUrlStr !== 'string' || !proxyUrlStr.trim()) {
+    return { ok: false, error: '代理地址不能为空（示例：http://127.0.0.1:7897）' };
+  }
+  const trimmed = normalizeProxyUrl(proxyUrlStr);
+  try {
+    const u = new URL(trimmed);
+    const validProto = ['http:', 'https:', 'socks5:', 'socks5h:'].includes(u.protocol);
+    const portNum = Number(u.port);
+    if (!validProto || !u.hostname || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      return { ok: false, error: '代理地址格式无效，需包含有效协议(http/https/socks5)与端口(1-65535)' };
+    }
+    return { ok: true, value: trimmed };
+  } catch {
+    return { ok: false, error: '代理地址格式无效，请检查协议、主机与端口' };
+  }
+}
+
+function getRecordedInstallerDir() {
+  try {
+    const manifestPath = path.join(getStateDir(), 'installation.json');
+    if (!fs.existsSync(manifestPath)) return null;
+    const m = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (m && typeof m.installerDir === 'string' && m.installerDir.trim()) {
+      return m.installerDir.trim();
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * 生成跨平台的命令行安装指引（优先提供已记录的外部安装包路径，防止 macOS/Linux 上误提示 install.bat）
+ */
+function formatInstallCommandHint(subCommand = 'install', installerDir = getRecordedInstallerDir()) {
+  const cmdPart = process.platform === 'win32' && subCommand === 'install'
+    ? 'install.bat（或在外部终端运行 node cli.js install）'
+    : `node cli.js ${subCommand}`;
+  if (installerDir) {
+    return process.platform === 'win32'
+      ? `在目录「${installerDir}」打开外部终端运行 ${cmdPart}`
+      : `在目录「${installerDir}」的终端执行 ${cmdPart}`;
+  }
+  return `在插件安装包目录打开外部终端运行 ${cmdPart}`;
 }
 
 async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
@@ -142,6 +273,40 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
 
     // 结果类型 1: 已有完整运行时可通过配置切换 (config_toggled)
     if (hasDiskCapability) {
+      const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
+      const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
+      if (moduleName === 'proxy' && extraOpts) {
+        if (extraOpts.proxyUrl !== undefined) {
+          const check = validateProxyUrlInput(extraOpts.proxyUrl);
+          if (!check.ok) {
+            return {
+              ok: false,
+              status: 'invalid_config',
+              data: cfg,
+              disk,
+              runtime: buildRuntimeModulesMeta(cfg),
+              error: check.error,
+              restartRequired: false
+            };
+          }
+          cfg.modules.proxy.proxyUrl = check.value;
+        } else if (targetEnable && !cfg.modules.proxy.proxyUrl) {
+          return {
+            ok: false,
+            status: 'invalid_config',
+            data: cfg,
+            disk,
+            runtime: buildRuntimeModulesMeta(cfg),
+            error: '开启免 TUN 前请填写有效的本地代理地址',
+            restartRequired: false
+          };
+        }
+        if (typeof extraOpts.bypassList === 'string' && extraOpts.bypassList.trim()) {
+          cfg.modules.proxy.bypassList = extraOpts.bypassList.trim();
+        }
+        cfg.modules.proxy.lastUpdated = new Date().toISOString();
+      }
+
       if (moduleName === 'chinese') {
         const { normalizeBrandTitle, normalizeClientLanguage } = require('./modules-config');
         const nextLang = normalizeClientLanguage(extraOpts?.language, targetEnable);
@@ -154,14 +319,8 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         cfg.modules.chinese.lastUpdated = new Date().toISOString();
       } else {
         cfg.modules[moduleName].enabled = targetEnable;
-      if (moduleName === 'chinese') {
-        cfg.modules.chinese.language = targetEnable ? 'zh-CN' : 'en';
       }
-      }
-      if (moduleName === 'proxy' && extraOpts) {
-        if (extraOpts.proxyUrl) cfg.modules.proxy.proxyUrl = extraOpts.proxyUrl;
-        if (extraOpts.bypassList) cfg.modules.proxy.bypassList = extraOpts.bypassList;
-      }
+
       saveModulesConfig(cfg);
       if (moduleName === 'chinese' && extraOpts?.brandTitle !== undefined) {
         try {
@@ -175,18 +334,31 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
           }
         } catch {}
       }
+
+      const runtime = buildRuntimeModulesMeta(cfg);
+      const langChanged = moduleName === 'chinese' && (
+        Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
+        cfg.modules.chinese.language !== prevChineseLang
+      );
+      const brandOnlyUpdate = moduleName === 'chinese' && extraOpts?.brandTitle !== undefined && !langChanged;
+      const restartRequired = moduleName === 'proxy'
+        ? Boolean(runtime.proxyNeedsRestart)
+        : (brandOnlyUpdate ? false : true);
       const isEnabledNow = cfg.modules[moduleName].enabled;
-      const msg = isEnabledNow
-        ? '已更新并保存设置，重启客户端后生效'
-        : (moduleName === 'chinese' && cfg.modules.chinese.brandTitle !== 'english')
-          ? '已保存品牌标题设置，重启客户端后生效'
-          : '已关闭配置，重启客户端后生效';
+      const msg = brandOnlyUpdate
+        ? '已保存并热同步品牌标题设置'
+        : (isEnabledNow
+          ? '已更新并保存设置，重启客户端后生效'
+          : (moduleName === 'chinese' && cfg.modules.chinese.brandTitle !== 'english')
+            ? '已保存品牌标题设置，重启客户端后生效'
+            : '已关闭配置，重启客户端后生效');
       return {
         ok: true,
         status: 'config_toggled',
         data: cfg,
         disk,
-        restartRequired: true,
+        runtime,
+        restartRequired,
         message: msg
       };
     }
@@ -198,6 +370,15 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         cfg.modules.chinese.language = 'en';
         cfg.modules.chinese.brandTitle = 'english';
       }
+      if (moduleName === 'proxy' && extraOpts) {
+        if (typeof extraOpts.proxyUrl === 'string' && extraOpts.proxyUrl.trim()) {
+          cfg.modules.proxy.proxyUrl = extraOpts.proxyUrl.trim();
+        }
+        if (typeof extraOpts.bypassList === 'string' && extraOpts.bypassList.trim()) {
+          cfg.modules.proxy.bypassList = extraOpts.bypassList.trim();
+        }
+        cfg.modules.proxy.lastUpdated = new Date().toISOString();
+      }
       saveModulesConfig(cfg);
       if (moduleName === 'chinese' && extraOpts?.brandTitle !== undefined) {
         try {
@@ -216,19 +397,26 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         status: 'config_toggled',
         data: cfg,
         disk,
+        runtime: buildRuntimeModulesMeta(cfg),
         restartRequired: false,
         message: '模块未注入，配置保持关闭'
       };
     }
 
-    // 结果类型 3: 磁盘上原本没有该组件/资源，无法在客户端运行中直接热注入
-    // 明确提示用户需完全退出客户端后，在安装包目录运行 install.bat 或对应命令完成注入
+    // 结果类型 3: 磁盘上原本没有该组件/资源或组件不完整，无法在客户端运行中直接热注入
+    const modLabel = moduleName === 'chinese' ? '汉化' : '免 TUN 代理';
+    const partialReason = moduleName === 'chinese'
+      ? (disk.chinese && !disk.chineseReady ? (disk.chineseReason || '汉化资源或门禁不完整') : '')
+      : (disk.proxy && !disk.proxyReady ? (disk.proxyReason || '代理拦截代码不完整') : '');
+    const cmdHint = formatInstallCommandHint(moduleName === 'proxy' ? 'proxy:enable' : 'chinese:enable');
+    const detailSuffix = partialReason ? `原因：${partialReason}。` : '';
     return {
       ok: false,
       status: 'install_failed',
       data: cfg,
       disk,
-      error: `当前客户端磁盘 ASAR 未注入${moduleName === 'chinese' ? '汉化' : '免 TUN 代理'}组件（或组件不完整）。由于客户端正在运行受系统文件保护，请完全退出 Antigravity 客户端后，在安装包目录运行 install.bat 完成注入。`,
+      runtime: buildRuntimeModulesMeta(cfg),
+      error: `当前客户端磁盘 ASAR 未注入${modLabel}组件（或组件不完整）。${detailSuffix}请先从系统托盘/菜单彻底退出 Antigravity（仅点关闭按钮可能后台驻留锁定 app.asar），然后${cmdHint} 完成注入后再重启。`,
       restartRequired: false
     };
   } catch (e) {
@@ -266,11 +454,17 @@ async function handleRestartHost(event, options = {}) {
 function registerIpcOnce() {
   if (registered || !ipcMain) return;
   registered = true;
+  registerMeterIpcHandlers(ipcMain);
+}
+
+/** 注册 Meter 全部 IPC 通道（支持单元测试注入独立 ipcTarget） */
+function registerMeterIpcHandlers(ipcMain) {
+  if (!ipcMain) return;
 
   ipcMain.handle('context-meter:scan', async (event, id, force) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collect(url.origin, id, { force: force === true }) }; }
+    try { return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true }) }; }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -278,10 +472,18 @@ function registerIpcOnce() {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const res = recordModelCalls(calls);
+      const res = typeof recordModelCallsAsync === 'function'
+        ? await recordModelCallsAsync(calls)
+        : recordModelCalls(calls);
       if (res && typeof res === 'object') {
         if (res.ok === false) {
-          return { ok: false, error: res.error || '入账失败', changed: false };
+          return {
+            ok: false,
+            error: res.error || '入账失败',
+            ...(res.phase ? { phase: res.phase } : {}),
+            ...(res.code ? { code: res.code } : {}),
+            changed: false
+          };
         }
         return { ok: true, changed: !!res.changed };
       }
@@ -296,6 +498,22 @@ function registerIpcOnce() {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try { return { ok: true, data: await collectTokenHistoryAsync({ force: force === true }) }; }
     catch (e) { return { ok: false, error: e.message }; }
+  });
+
+  ipcMain.handle('context-meter:get-quota', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const collector = require('./meter-collector');
+      const opts = typeof options === 'boolean'
+        ? { force: options }
+        : (options && typeof options === 'object' ? { ...options } : {});
+      const res = await collector.fetchQuotaSnapshotFromHost(opts);
+      const { _raw, ...safePayload } = res || {};
+      return { ok: true, data: safePayload };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   });
 
   ipcMain.handle('context-meter:get-settings', async (event, options) => {
@@ -429,7 +647,7 @@ function registerIpcOnce() {
     try {
       const opts = (options && typeof options === 'object') ? { ...options } : {};
       if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
-      return applyContextUnlock(opts);
+      return await applyContextUnlockAsync(opts);
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -441,7 +659,7 @@ function registerIpcOnce() {
     try {
       const opts = (options && typeof options === 'object') ? { ...options } : {};
       if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
-      return restoreContextUnlock(opts);
+      return await restoreContextUnlockAsync(opts);
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -449,22 +667,37 @@ function registerIpcOnce() {
 
   ipcMain.handle('context-meter:restart-host', handleRestartHost);
 
-  ipcMain.on('context-meter:get-chinese-config-sync', (event) => {
-    try {
-      const { loadModulesConfig } = require('./modules-config');
-      const cfg = loadModulesConfig();
-      event.returnValue = cfg?.modules?.chinese || null;
-    } catch (e) {
-      event.returnValue = null;
-    }
-  });
+  if (typeof ipcMain.on === 'function') {
+    ipcMain.on('context-meter:get-chinese-config-sync', (event) => {
+      const url = isLocalMainFrameSender(event);
+      if (!url) {
+        event.returnValue = { enabled: false, language: 'en', brandTitle: 'english', resolved: false };
+        return;
+      }
+      try {
+        const { loadModulesConfig } = require('./modules-config');
+        const cfg = loadModulesConfig();
+        const ch = cfg?.modules?.chinese;
+        if (ch && typeof ch === 'object') {
+          const enabled = ch.enabled !== false && ch.language !== 'en';
+          const language = ch.language || (enabled ? 'zh-CN' : 'en');
+          const brandTitle = ch.brandTitle || 'english';
+          event.returnValue = { enabled, language, brandTitle, resolved: true };
+          return;
+        }
+        event.returnValue = { enabled: false, language: 'en', brandTitle: 'english', resolved: false };
+      } catch (e) {
+        event.returnValue = { enabled: false, language: 'en', brandTitle: 'english', resolved: false };
+      }
+    });
+  }
 
   ipcMain.handle('context-meter:enhance-status', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const { getEnhanceStatus } = require('./meter-enhance');
-      return { ok: true, data: getEnhanceStatus(options && typeof options === 'object' ? options : {}) };
+      const { getEnhanceStatusAsync } = require('./meter-enhance');
+      return { ok: true, data: await getEnhanceStatusAsync(options && typeof options === 'object' ? options : {}) };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -474,8 +707,8 @@ function registerIpcOnce() {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const { applyEnhancePatch } = require('./meter-enhance');
-      return applyEnhancePatch(payload && typeof payload === 'object' ? payload : {});
+      const { applyEnhancePatchAsync } = require('./meter-enhance');
+      return await applyEnhancePatchAsync(payload && typeof payload === 'object' ? payload : {});
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -485,8 +718,8 @@ function registerIpcOnce() {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const { restoreAllEnhance } = require('./meter-enhance');
-      return restoreAllEnhance(options && typeof options === 'object' ? options : {});
+      const { restoreAllEnhanceAsync } = require('./meter-enhance');
+      return await restoreAllEnhanceAsync(options && typeof options === 'object' ? options : {});
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -496,8 +729,8 @@ function registerIpcOnce() {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const { restartLanguageServers } = require('./meter-enhance');
-      return restartLanguageServers();
+      const { restartLanguageServersAsync } = require('./meter-enhance');
+      return await restartLanguageServersAsync();
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -505,23 +738,6 @@ function registerIpcOnce() {
 
   ipcMain.handle('context-meter:modules-status', handleModulesStatus);
   ipcMain.handle('context-meter:toggle-module', handleToggleModule);
-
-  if (typeof ipcMain.on === 'function') {
-    ipcMain.on('context-meter:is-chinese-enabled', (event) => {
-      const url = isLocalMainFrameSender(event);
-      if (!url) {
-        event.returnValue = false;
-        return;
-      }
-      try {
-        const { loadModulesConfig } = require('./modules-config');
-        const cfg = loadModulesConfig();
-        event.returnValue = Boolean(cfg?.modules?.chinese?.enabled);
-      } catch {
-        event.returnValue = false;
-      }
-    });
-  }
 
   ipcMain.handle('context-meter:test-proxy', async (event, proxyUrl) => {
     const url = isLocalMainFrameSender(event);
@@ -852,6 +1068,7 @@ function shouldInterceptWindowClose(win, options = {}) {
 exports.handleModulesStatus = handleModulesStatus;
 exports.handleToggleModule = handleToggleModule;
 exports.handleRestartHost = handleRestartHost;
+exports.registerMeterIpcHandlers = registerMeterIpcHandlers;
 exports.setAppQuitting = setAppQuitting;
 exports.getAppQuitting = getAppQuitting;
 exports.shouldInterceptWindowClose = shouldInterceptWindowClose;

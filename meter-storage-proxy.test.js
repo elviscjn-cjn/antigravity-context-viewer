@@ -330,3 +330,488 @@ test('savePluginSettings & getPluginSettings: panelLanguage 白名单校验、�
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+
+test('recordModelCalls & loadPricingLedger: 显式 agDir 与默认 AG_DIR 交替写入绝不相互覆盖（A -> A+B -> A+B+C）', async () => {
+  const { collectTokenHistoryAsync } = require('./meter-collector');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ledger-interleave-'));
+  const tempDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ledger-isolated-'));
+  const prevAgDir = process.env.AG_DIR;
+  try {
+    process.env.AG_DIR = tempDir;
+
+    // 1. 实时 IPC 路径（不传 agDir，走默认 AG_DIR）写入记录 A
+    const resA = recordModelCalls([{
+      callId: 'call-live-A',
+      source: 'desktop',
+      cascadeId: '11111111-1111-1111-1111-111111111111',
+      stepIndex: 2,
+      model: 'Gemini 4 Carbon (High)',
+      modelKey: 'gemini-4-carbon',
+      inputTokens: 1000,
+      cacheTokens: 0,
+      outputTokens: 200,
+      totalTokens: 1200,
+      status: 'final',
+      isPriced: true,
+      costUSD: 0.004,
+      date: '2026-11-12'
+    }]);
+    assert.equal(resA.ok, true);
+    assert.equal(resA.changed, true);
+
+    // 2. 扫描路径（显式传 { agDir: tempDir }）写入记录 B（同时测试 collectTokenHistoryAsync 落盘）
+    const brainSessionDir = path.join(tempDir, 'brain', '22222222-2222-2222-2222-222222222222', '.system_generated', 'logs');
+    fs.mkdirSync(brainSessionDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(brainSessionDir, 'transcript.jsonl'),
+      JSON.stringify({
+        step_index: 4,
+        callId: 'call-scan-B',
+        created_at: '2026-11-12T04:00:00Z',
+        model: 'Gemini 3.8 Flash (High)',
+        input_tokens: 2000,
+        cache_read_tokens: 500,
+        output_tokens: 300
+      }) + '\n',
+      'utf8'
+    );
+    await collectTokenHistoryAsync({
+      agDir: tempDir,
+      agCliDir: path.join(tempDir, 'cli-empty'),
+      force: true,
+      userStatus: { userTier: { name: 'Pro' }, planStatus: { availablePromptCredits: 500 } }
+    });
+
+    // 3. 再次走实时 IPC 路径（不传 agDir）写入记录 C，并校准记录 A 的 stepIndex 回填
+    const resC = recordModelCalls([
+      {
+        callId: 'call-live-C',
+        source: 'desktop',
+        cascadeId: '11111111-1111-1111-1111-111111111111',
+        stepIndex: 6,
+        model: 'Claude Sonnet 5.5 (High)',
+        modelKey: 'claude-sonnet-5-5',
+        inputTokens: 1500,
+        cacheTokens: 0,
+        outputTokens: 250,
+        totalTokens: 1750,
+        status: 'final',
+        isPriced: true,
+        costUSD: 0.0055,
+        date: '2026-11-12'
+      }
+    ]);
+    assert.equal(resC.ok, true);
+    assert.equal(resC.changed, true);
+
+    const memLedger = loadPricingLedger();
+    const diskLedger = JSON.parse(fs.readFileSync(path.join(tempDir, 'pricing_ledger_v1.json'), 'utf8'));
+    for (const target of [memLedger, diskLedger]) {
+      assert.ok(target.calls['call-live-A'], 'A 不得丢失');
+      assert.ok(target.calls['call-scan-B'], 'B 绝不能被后续无参 recordModelCalls 覆盖丢失');
+      assert.ok(target.calls['call-live-C'], 'C 必须成功追加');
+    }
+
+    // 4. 切换 AG_DIR 环境变量时，缓存按解析后绝对路径严格隔离
+    process.env.AG_DIR = tempDir2;
+    const isolatedLedger = loadPricingLedger();
+    assert.deepEqual(isolatedLedger.calls, {});
+  } finally {
+    if (prevAgDir === undefined) delete process.env.AG_DIR;
+    else process.env.AG_DIR = prevAgDir;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir2, { recursive: true, force: true });
+  }
+});
+
+test('[P1] loadPricingLedger & recordModelCalls: statSync EBUSY、readFileSync EACCES 及 stat 存在但读取返回 exists:false 时严禁空覆盖，保留 A+B 并在恢复后写入 A+B+C', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ledger-read-guard-'));
+  const ledgerPath = path.resolve(path.join(tempDir, 'pricing_ledger_v1.json'));
+  const origStatSync = fs.statSync;
+  const origReadFileSync = fs.readFileSync;
+
+  const callA = {
+    callId: 'call-guard-A',
+    source: 'desktop',
+    cascadeId: 'aaaaaaaa-1111-4444-8888-111111111111',
+    stepIndex: 1,
+    model: 'Gemini 4 Carbon (High)',
+    modelKey: 'gemini-4-carbon',
+    inputTokens: 1000,
+    cacheTokens: 0,
+    outputTokens: 200,
+    totalTokens: 1200,
+    status: 'final',
+    isPriced: true,
+    costUSD: 0.004,
+    date: '2026-11-12'
+  };
+  const callB = {
+    ...callA,
+    callId: 'call-guard-B',
+    stepIndex: 2,
+    totalTokens: 1500,
+    outputTokens: 500
+  };
+  const callC = {
+    ...callA,
+    callId: 'call-guard-C',
+    stepIndex: 3,
+    totalTokens: 1800,
+    outputTokens: 800
+  };
+
+  try {
+    // 0. 当账本文件真实不存在 (ENOENT) 时正常初始化并写入 A + B
+    const seedRes = recordModelCalls([callA, callB], { agDir: tempDir });
+    assert.equal(seedRes.ok, true);
+    assert.equal(seedRes.changed, true);
+    assert.deepEqual(Object.keys(JSON.parse(origReadFileSync(ledgerPath, 'utf8')).calls).sort(), ['call-guard-A', 'call-guard-B']);
+
+    // 1. 注入一次 statSync 的 EBUSY：必须拒绝写入并返回失败，磁盘完整保留 A + B
+    let statFaultActive = true;
+    fs.statSync = function (p, ...rest) {
+      if (statFaultActive && path.resolve(String(p)) === ledgerPath) {
+        const err = new Error('EBUSY: resource busy or locked, stat');
+        err.code = 'EBUSY';
+        throw err;
+      }
+      return origStatSync.call(fs, p, ...rest);
+    };
+    const resStatBusy = recordModelCalls([callC], { agDir: tempDir });
+    statFaultActive = false;
+    fs.statSync = origStatSync;
+
+    assert.equal(resStatBusy.ok, false);
+    assert.equal(resStatBusy.changed, false);
+    assert.equal(resStatBusy.phase, 'unreadable_guard');
+    assert.equal(resStatBusy.code, 'EBUSY');
+    assert.deepEqual(
+      Object.keys(JSON.parse(origReadFileSync(ledgerPath, 'utf8')).calls).sort(),
+      ['call-guard-A', 'call-guard-B'],
+      'statSync EBUSY 后磁盘必须完整保留 A+B，绝不能被 C 覆盖'
+    );
+
+    // 2. 注入一次 readFileSync 的 EACCES（上面已失效缓存，本次必走磁盘读取）：必须拒绝写入，磁盘保留 A + B
+    let readFaultActive = true;
+    fs.readFileSync = function (p, ...rest) {
+      if (readFaultActive && path.resolve(String(p)) === ledgerPath) {
+        const err = new Error('EACCES: permission denied, open');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return origReadFileSync.call(fs, p, ...rest);
+    };
+    const resReadDenied = recordModelCalls([callC], { agDir: tempDir });
+    readFaultActive = false;
+    fs.readFileSync = origReadFileSync;
+
+    assert.equal(resReadDenied.ok, false);
+    assert.equal(resReadDenied.changed, false);
+    assert.equal(resReadDenied.phase, 'unreadable_guard');
+    assert.equal(resReadDenied.code, 'EACCES');
+    assert.deepEqual(
+      Object.keys(JSON.parse(origReadFileSync(ledgerPath, 'utf8')).calls).sort(),
+      ['call-guard-A', 'call-guard-B'],
+      'readFileSync EACCES 后磁盘必须完整保留 A+B，绝不能被 C 覆盖'
+    );
+
+    // 3. statSync 已确认文件存在，但后续读取阶段返回 exists: false（如瞬态竞争或外部拦截）：同样必须阻断写入
+    let statCallCount = 0;
+    const inconsistentFs = {
+      ...fs,
+      statSync(p, ...rest) {
+        if (path.resolve(String(p)) === ledgerPath) {
+          statCallCount++;
+          if (statCallCount >= 2) {
+            const enoent = new Error('ENOENT: simulated transient disappearance');
+            enoent.code = 'ENOENT';
+            throw enoent;
+          }
+        }
+        return origStatSync.call(fs, p, ...rest);
+      }
+    };
+    const resExistsMismatch = recordModelCalls([callC], { agDir: tempDir, fs: inconsistentFs });
+    assert.equal(resExistsMismatch.ok, false);
+    assert.equal(resExistsMismatch.changed, false);
+    assert.equal(resExistsMismatch.phase, 'unreadable_guard');
+    assert.equal(resExistsMismatch.code, 'ENOENT');
+    assert.deepEqual(
+      Object.keys(JSON.parse(origReadFileSync(ledgerPath, 'utf8')).calls).sort(),
+      ['call-guard-A', 'call-guard-B'],
+      'stat 存在但后续读取返回 exists:false 时必须阻断写入保留 A+B'
+    );
+
+    // 3b. renameSync 阶段出现 EPERM 锁冲突时，同样向上层完整透传 code: 'EPERM' 且保留原文件
+    const renameBusyFs = {
+      ...fs,
+      renameSync() {
+        const err = new Error('EPERM: operation not permitted, rename');
+        err.code = 'EPERM';
+        throw err;
+      }
+    };
+    const resRenamePerm = recordModelCalls([callC], { agDir: tempDir, fs: renameBusyFs });
+    assert.equal(resRenamePerm.ok, false);
+    assert.equal(resRenamePerm.changed, false);
+    assert.equal(resRenamePerm.phase, 'rename');
+    assert.equal(resRenamePerm.code, 'EPERM');
+
+    // 3c. pre_verify 临时文件读回校验出现 EACCES 锁冲突时，同样完整透传 phase: 'pre_verify' 与 code: 'EACCES' 且保留原文件
+    const preVerifyDeniedFs = {
+      ...fs,
+      readFileSync(p, ...rest) {
+        if (String(p).endsWith('.tmp')) {
+          const err = new Error('EACCES: permission denied, open tmp');
+          err.code = 'EACCES';
+          throw err;
+        }
+        return origReadFileSync.call(fs, p, ...rest);
+      }
+    };
+    const resPreVerifyErr = recordModelCalls([callC], { agDir: tempDir, fs: preVerifyDeniedFs });
+    assert.equal(resPreVerifyErr.ok, false);
+    assert.equal(resPreVerifyErr.changed, false);
+    assert.equal(resPreVerifyErr.phase, 'pre_verify');
+    assert.equal(resPreVerifyErr.code, 'EACCES');
+    assert.deepEqual(
+      Object.keys(JSON.parse(origReadFileSync(ledgerPath, 'utf8')).calls).sort(),
+      ['call-guard-A', 'call-guard-B'],
+      'pre_verify 读回失败时必须保留原账本 A+B'
+    );
+
+    // 4. 故障解除后重试写入 C：成功读取既有 A + B 并合并落盘得到 A + B + C
+    const resRetryOk = recordModelCalls([callC], { agDir: tempDir });
+    assert.equal(resRetryOk.ok, true);
+    assert.equal(resRetryOk.changed, true);
+
+    const finalDisk = JSON.parse(origReadFileSync(ledgerPath, 'utf8'));
+    const finalMem = loadPricingLedger(tempDir);
+    for (const target of [finalDisk, finalMem]) {
+      assert.deepEqual(Object.keys(target.calls).sort(), ['call-guard-A', 'call-guard-B', 'call-guard-C']);
+    }
+  } finally {
+    fs.statSync = origStatSync;
+    fs.readFileSync = origReadFileSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('loadPricingLedger: 读取前后 statSync (mtimeMs / size) 发生变化时拒绝写入陈旧缓存，下次读取自动加载新内容', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ledger-stat-race-'));
+  const ledgerPath = path.resolve(path.join(tempDir, 'pricing_ledger_v1.json'));
+  const origReadFileSync = fs.readFileSync;
+  try {
+    const v1 = {
+      version: '1.0.0',
+      updatedAt: '2026-11-12T00:00:00Z',
+      calls: { 'call-v1': { callId: 'call-v1', totalTokens: 100, status: 'final' } }
+    };
+    const v2 = {
+      version: '1.0.0',
+      updatedAt: '2026-11-12T00:00:05Z',
+      calls: {
+        'call-v1': { callId: 'call-v1', totalTokens: 100, status: 'final' },
+        'call-v2-concurrent': { callId: 'call-v2-concurrent', totalTokens: 999, status: 'final' }
+      }
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(v1, null, 2) + '\n', 'utf8');
+
+    // 模拟在 readFileSync 刚读出旧内容 v1 后、post-read statSync 执行前，外部进程并发原子更新了账本为 v2
+    let injectedConcurrentWrite = false;
+    fs.readFileSync = function (p, ...rest) {
+      const content = origReadFileSync.call(fs, p, ...rest);
+      if (!injectedConcurrentWrite && path.resolve(String(p)) === ledgerPath) {
+        injectedConcurrentWrite = true;
+        fs.writeFileSync(ledgerPath, JSON.stringify(v2, null, 2) + '\n', 'utf8');
+      }
+      return content;
+    };
+
+    const firstRead = loadPricingLedger(tempDir);
+    fs.readFileSync = origReadFileSync;
+    assert.equal(Boolean(firstRead.calls['call-v1']), true);
+    assert.equal(Boolean(firstRead.calls['call-v2-concurrent']), false);
+
+    // 若旧实现直接用 stAfter 缓存了 firstRead，则此处会命中 v2 的 (mtimeMs, size) 却永久返回缺失 call-v2-concurrent 的陈旧数据
+    const secondRead = loadPricingLedger(tempDir);
+    assert.equal(Boolean(secondRead.calls['call-v2-concurrent']), true, '读取前后 stat 不一致时不得缓存旧快照');
+    assert.equal(secondRead.calls['call-v2-concurrent'].totalTokens, 999);
+  } finally {
+    fs.readFileSync = origReadFileSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('meter-proxy & modules-config: modules.json 优先于遗留 proxy.json，关闭与改端口不被旧配置覆盖', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proxy-prio-'));
+  const prevLocalApp = process.env.LOCALAPPDATA;
+  const prevXdgState = process.env.XDG_STATE_HOME;
+  try {
+    const stateRoot = path.join(tempDir, 'AntigravityContextMeter');
+    fs.mkdirSync(stateRoot, { recursive: true });
+    if (process.platform === 'win32') process.env.LOCALAPPDATA = tempDir;
+    else process.env.XDG_STATE_HOME = tempDir;
+
+    // 同时存在历史遗留 proxy.json（启用 7897）与新统一 modules.json（关闭，端口 17890）
+    fs.writeFileSync(path.join(stateRoot, 'proxy.json'), JSON.stringify({
+      enabled: true,
+      httpProxy: 'http://127.0.0.1:7897',
+      allProxy: 'socks5://127.0.0.1:7897'
+    }), 'utf8');
+    fs.writeFileSync(path.join(stateRoot, 'modules.json'), JSON.stringify({
+      schemaVersion: 1,
+      modules: {
+        proxy: {
+          enabled: false,
+          proxyUrl: 'http://127.0.0.1:17890',
+          bypassList: 'localhost,127.0.0.1'
+        }
+      }
+    }), 'utf8');
+
+    const cands = getProxyCandidatePaths();
+    assert.equal(path.basename(cands[0]), 'modules.json', 'modules.json 必须排在历史 proxy.json 之前');
+    const detected = detectProxyConfig();
+    assert.equal(detected.enabled, false, '禁用状态不得被旧 proxy.json 的 enabled:true 覆盖');
+    assert.equal(detected.detected, true);
+    assert.equal(path.resolve(detected.configPath), path.resolve(path.join(stateRoot, 'modules.json')));
+
+    // 重新开启 modules.json 代理，env 注入应读取新端口 17890 而非 7897
+    const cfg = JSON.parse(fs.readFileSync(path.join(stateRoot, 'modules.json'), 'utf8'));
+    cfg.modules.proxy.enabled = true;
+    fs.writeFileSync(path.join(stateRoot, 'modules.json'), JSON.stringify(cfg, null, 2), 'utf8');
+    const targetEnv = {};
+    applyProxyEnvironment(targetEnv);
+    assert.equal(targetEnv.HTTPS_PROXY, 'http://127.0.0.1:17890');
+    assert.equal(targetEnv.ALL_PROXY, 'http://127.0.0.1:17890');
+  } finally {
+    if (prevLocalApp === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = prevLocalApp;
+    if (prevXdgState === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prevXdgState;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('testProxyHealth: 协议/端口边界校验与 HTTP/SOCKS5 分层连通性探测（modelCallVerified 绝不虚报）', async () => {
+  const http = require('http');
+  const net = require('net');
+  const { testProxyHealth } = require('./modules-config');
+
+  // 1. 非法协议与空地址校验
+  const badEmpty = await testProxyHealth('');
+  assert.equal(badEmpty.configValid, false);
+  const badProto = await testProxyHealth('ftp://127.0.0.1:7897');
+  assert.equal(badProto.configValid, false);
+  const badPort = await testProxyHealth('http://127.0.0.1:99999');
+  assert.equal(badPort.configValid, false);
+
+  // 2. HTTP 代理端口可达 + 外网通 vs 端口可达但外网不通
+  const httpProxy = http.createServer((req, res) => {
+    res.writeHead(req.url.includes('generate_204') ? 204 : 502);
+    res.end();
+  });
+  httpProxy.on('connect', (_req, socket) => {
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    socket.end();
+  });
+  await new Promise((r) => httpProxy.listen(0, '127.0.0.1', r));
+
+  const deadOnlineProxy = http.createServer((_req, res) => {
+    res.writeHead(502);
+    res.end();
+  });
+  deadOnlineProxy.on('connect', (_req, socket) => {
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    socket.end();
+  });
+  await new Promise((r) => deadOnlineProxy.listen(0, '127.0.0.1', r));
+
+  // 3. 本地 SOCKS5 模拟服务器（greeting + CONNECT + generate_204）
+  const socksProxy = net.createServer((sock) => {
+    let stage = 0;
+    sock.on('data', () => {
+      if (stage === 0) {
+        stage = 1;
+        sock.write(Buffer.from([0x05, 0x00]));
+      } else if (stage === 1) {
+        stage = 2;
+        sock.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 80]));
+      } else if (stage === 2) {
+        stage = 3;
+        sock.write('HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n');
+        sock.end();
+      }
+    });
+  });
+  await new Promise((r) => socksProxy.listen(0, '127.0.0.1', r));
+
+  try {
+    const httpPort = httpProxy.address().port;
+    const rHttp = await testProxyHealth(`http://127.0.0.1:${httpPort}`);
+    assert.equal(rHttp.configValid, true);
+    assert.equal(rHttp.proxyReachable, true);
+    assert.equal(rHttp.internetReachable, true);
+    assert.equal(rHttp.modelCallVerified, false);
+
+    const deadPort = deadOnlineProxy.address().port;
+    const rDeadNet = await testProxyHealth(`http://127.0.0.1:${deadPort}`);
+    assert.equal(rDeadNet.configValid, true);
+    assert.equal(rDeadNet.proxyReachable, true);
+    assert.equal(rDeadNet.internetReachable, false);
+    assert.equal(rDeadNet.modelCallVerified, false);
+
+    const socksPort = socksProxy.address().port;
+    const rSocks = await testProxyHealth(`socks5://127.0.0.1:${socksPort}`);
+    assert.equal(rSocks.configValid, true);
+    assert.equal(rSocks.proxyReachable, true);
+    assert.equal(rSocks.internetReachable, true);
+    assert.equal(rSocks.modelCallVerified, false);
+  } finally {
+    await Promise.all([
+      new Promise((r) => httpProxy.close(r)),
+      new Promise((r) => deadOnlineProxy.close(r)),
+      new Promise((r) => socksProxy.close(r))
+    ]);
+  }
+});
+
+test('meter-main.js 模块 IPC: 跨平台提示无 install.bat、代理校验与品牌热更 restartRequired 区分', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ipc-mod-'));
+  const prevLocalApp = process.env.LOCALAPPDATA;
+  const prevXdgState = process.env.XDG_STATE_HOME;
+  const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  try {
+    if (process.platform === 'win32') process.env.LOCALAPPDATA = tempDir;
+    else process.env.XDG_STATE_HOME = tempDir;
+
+    const handlers = {};
+    const mockIpc = { handle: (ch, fn) => { handlers[ch] = fn; } };
+    const { registerMeterIpcHandlers } = require('./meter-main');
+    registerMeterIpcHandlers(mockIpc, {});
+    const localFrame = { url: 'https://127.0.0.1:5173/' };
+    const localEv = { senderFrame: localFrame, sender: { mainFrame: localFrame } };
+
+    // 1. 在 macOS 下请求开启未注入组件时，不得出现 install.bat 字样
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    const fakeUninjectedAsar = path.join(tempDir, 'empty.asar');
+    const modResMac = await handlers['context-meter:toggle-module'](localEv, 'proxy', true, { asarPath: fakeUninjectedAsar });
+    assert.equal(modResMac.ok, false);
+    assert.equal(modResMac.status, 'install_failed');
+    assert.doesNotMatch(modResMac.error, /install\.bat/);
+    assert.match(modResMac.error, /node cli\.js proxy:enable/);
+
+    // 2. status 返回包含 runtime 元数据
+    const statusRes = await handlers['context-meter:modules-status'](localEv, fakeUninjectedAsar);
+    assert.equal(statusRes.ok, true);
+    assert.equal(typeof statusRes.runtime, 'object');
+    assert.equal(typeof statusRes.runtime.proxyActive, 'boolean');
+    assert.equal(typeof statusRes.runtime.proxyNeedsRestart, 'boolean');
+  } finally {
+    if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+    if (prevLocalApp === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = prevLocalApp;
+    if (prevXdgState === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prevXdgState;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

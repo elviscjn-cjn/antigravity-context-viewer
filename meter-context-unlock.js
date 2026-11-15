@@ -20,7 +20,11 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execFile, execFileSync } = require('child_process');
+const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const { getStateDir } = require('./asar-engine');
+
+const ORIG_UNLOCK_FS_READ_SYNC = fs.readFileSync;
+const ORIG_UNLOCK_FS_READ_ASYNC = fs.promises.readFile;
 
 const PCLNTAB_MAGIC = 0xFFFFFFF1;
 
@@ -1303,6 +1307,46 @@ function buildAnalysisResult({
   };
 }
 
+const unlockStaticCache = new Map();
+const unlockTargetWriteQueues = new Map();
+
+function yieldEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function sha256BufferAsync(buf) {
+  const hash = crypto.createHash('sha256');
+  const CHUNK_SIZE = 16 * 1024 * 1024;
+  for (let off = 0; off < buf.length; off += CHUNK_SIZE) {
+    hash.update(buf.subarray(off, Math.min(off + CHUNK_SIZE, buf.length)));
+    if (off + CHUNK_SIZE < buf.length) {
+      await yieldEventLoop();
+    }
+  }
+  return hash.digest('hex');
+}
+
+function invalidateUnlockCache(targetPath = null) {
+  if (!targetPath) {
+    unlockStaticCache.clear();
+    return;
+  }
+  unlockStaticCache.delete(path.resolve(String(targetPath)).toLowerCase());
+}
+
+function enqueueUnlockTargetWrite(targetPath, taskFn) {
+  const key = path.resolve(String(targetPath)).toLowerCase();
+  const prev = unlockTargetWriteQueues.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(taskFn);
+  const tail = run.finally(() => {
+    if (unlockTargetWriteQueues.get(key) === tail) {
+      unlockTargetWriteQueues.delete(key);
+    }
+  });
+  unlockTargetWriteQueues.set(key, tail);
+  return run;
+}
+
 /**
  * 完整分析二进制支持度与补丁状态（纯异步非阻塞版本，供主进程 IPC、CLI 及前端使用）
  */
@@ -1328,100 +1372,163 @@ async function analyzeBinaryAsync(filePath, options = {}) {
     };
   }
 
-  let buf;
-  let stats;
-  try {
-    stats = fs.statSync(target);
-    buf = fs.readFileSync(target);
-  } catch (e) {
-    return {
-      status: 'failed',
-      targetPath: target,
-      reason: `读取目标文件失败: ${e.message}`
-    };
+  let stats = options.preloadedStats || null;
+  if (!stats) {
+    try {
+      stats = await fs.promises.stat(target);
+    } catch (e) {
+      return {
+        status: 'failed',
+        targetPath: target,
+        reason: `读取目标文件失败: ${e.message}`
+      };
+    }
   }
 
-  const currentSha256 = sha256Buffer(buf);
+  const cacheKey = path.resolve(target).toLowerCase();
+  const statSig = `${stats.size}:${stats.mtimeMs}`;
+  const expectedLimitKey = options.expectedLimit ?? '';
+  const allowCache = options.forceRefresh !== true && !options.preloadedBuf;
+  let staticInfo = null;
 
-  let container;
-  try {
-    container = findTextSection(buf);
-  } catch (e) {
-    return {
-      status: 'unsupported',
-      targetPath: target,
-      sha256: currentSha256,
-      reason: e.message
-    };
+  if (allowCache) {
+    const cached = unlockStaticCache.get(cacheKey);
+    if (
+      cached &&
+      cached.statSig === statSig &&
+      cached.expectedLimitKey === expectedLimitKey &&
+      (options.skipSha256 === true || cached.currentSha256)
+    ) {
+      staticInfo = cached;
+    }
   }
 
-  const { textVA, textOff, arch, format } = container;
+  if (!staticInfo) {
+    if (canUseUnlockWorker(options) && !options.preloadedBuf) {
+      const workerRes = await runUnlockWorkerTask('analyze', {
+        filePath: target,
+        options: sanitizeUnlockWorkerOptions(options)
+      });
+      if (workerRes && workerRes._workerHandled) {
+        return workerRes.result;
+      }
+    }
+    let buf = options.preloadedBuf || null;
+    if (!buf) {
+      try {
+        buf = await fs.promises.readFile(target);
+      } catch (e) {
+        return {
+          status: 'failed',
+          targetPath: target,
+          reason: `读取目标文件失败: ${e.message}`
+        };
+      }
+    }
 
-  if (arch !== 'x86-64') {
-    return {
-      status: 'unsupported',
-      targetPath: target,
-      arch,
-      format,
-      sha256: currentSha256,
-      reason: `暂未开放对 ${arch} 架构的写入支持，当前版本仅支持 x86-64 架构。`
-    };
-  }
+    const currentSha256 = options.skipSha256 === true ? '' : await sha256BufferAsync(buf);
 
-  let funcsData;
-  try {
-    funcsData = buildFunctions(buf);
-  } catch (e) {
-    return {
-      status: 'unsupported',
-      targetPath: target,
-      arch,
-      format,
-      sha256: currentSha256,
-      reason: e.message
-    };
-  }
+    let container;
+    try {
+      container = findTextSection(buf);
+    } catch (e) {
+      return {
+        status: 'unsupported',
+        targetPath: target,
+        sha256: currentSha256,
+        reason: e.message
+      };
+    }
 
-  const { funcs, totalSymbols } = funcsData;
-  const isServerOnly = (!funcs[FUNC_OFFERS] && !funcs[FUNC_STORE_CW]);
-  const mode = isServerOnly ? 'standalone language_server' : 'agy CLI';
+    const { textVA, textOff, arch, format } = container;
 
-  const symCheckpoint = funcs[FUNC_CHECKPOINT];
-  const symExp = funcs[FUNC_EXP_CHECKPOINT];
-  const symSelect = funcs[FUNC_SELECT_EXP_KEY];
+    if (arch !== 'x86-64') {
+      return {
+        status: 'unsupported',
+        targetPath: target,
+        arch,
+        format,
+        sha256: currentSha256,
+        reason: `暂未开放对 ${arch} 架构的写入支持，当前版本仅支持 x86-64 架构。`
+      };
+    }
 
-  if (!symCheckpoint || !symExp) {
-    return {
-      status: 'unsupported',
-      targetPath: target,
-      arch,
-      format,
+    await yieldEventLoop();
+
+    let funcsData;
+    try {
+      funcsData = buildFunctions(buf);
+    } catch (e) {
+      return {
+        status: 'unsupported',
+        targetPath: target,
+        arch,
+        format,
+        sha256: currentSha256,
+        reason: e.message
+      };
+    }
+
+    const { funcs, totalSymbols } = funcsData;
+    const isServerOnly = (!funcs[FUNC_OFFERS] && !funcs[FUNC_STORE_CW]);
+    const mode = isServerOnly ? 'standalone language_server' : 'agy CLI';
+
+    const symCheckpoint = funcs[FUNC_CHECKPOINT];
+    const symExp = funcs[FUNC_EXP_CHECKPOINT];
+    const symSelect = funcs[FUNC_SELECT_EXP_KEY];
+
+    if (!symCheckpoint || !symExp) {
+      return {
+        status: 'unsupported',
+        targetPath: target,
+        arch,
+        format,
+        mode,
+        sha256: currentSha256,
+        reason: '缺少核心检查点上限符号 (utils.GetCheckpointConfig 或 config.applyFeatureProviderCheckpointOverrideConfig)'
+      };
+    }
+
+    await yieldEventLoop();
+
+    const gate3a = checkGate3A(buf, textOff, symCheckpoint, arch, options);
+    const gate3b = checkGate3B(buf, textVA, textOff, symExp, symSelect, arch);
+    const serializerGate = checkSerializerGate(buf, arch);
+
+    staticInfo = {
+      statSig,
+      expectedLimitKey,
+      container,
+      currentSha256,
+      totalSymbols,
       mode,
-      sha256: currentSha256,
-      reason: '缺少核心检查点上限符号 (utils.GetCheckpointConfig 或 config.applyFeatureProviderCheckpointOverrideConfig)'
+      gate3a,
+      gate3b,
+      serializerGate
     };
+    if (!options.expectedLimit) {
+      unlockStaticCache.set(cacheKey, staticInfo);
+    }
   }
 
-  const gate3a = checkGate3A(buf, textOff, symCheckpoint, arch, options);
-  const gate3b = checkGate3B(buf, textVA, textOff, symExp, symSelect, arch);
-  const serializerGate = checkSerializerGate(buf, arch);
-
-  // 异步非阻塞枚举进程信息
-  const proc = await getRunningLanguageServerInfoAsync(target, options.forceRefresh === true);
+  // 异步非阻塞枚举进程信息（可选跳过以降低高频批量探测开销）
+  const proc = options.skipProcessCheck
+    ? { isRunning: false, locked: false, pid: null, startTimeMs: null }
+    : await getRunningLanguageServerInfoAsync(target, options.forceRefresh === true);
   const manifest = loadManifest(options.backupDir);
   const sidecar = loadGate3BSidecar(options.backupDir);
   const observedBudget = Number(options?.currentBudget || options?.observedBudget || 0);
 
   return buildAnalysisResult({
     target,
-    container,
+    container: staticInfo.container,
     stats,
-    currentSha256,
-    totalSymbols,
-    mode,
-    gate3a,
-    gate3b,
-    serializerGate,
+    currentSha256: staticInfo.currentSha256,
+    totalSymbols: staticInfo.totalSymbols,
+    mode: staticInfo.mode,
+    gate3a: staticInfo.gate3a,
+    gate3b: staticInfo.gate3b,
+    serializerGate: staticInfo.serializerGate,
     proc,
     manifest,
     sidecar,
@@ -1589,6 +1696,64 @@ function atomicWriteBinary(targetPath, buf, tempTag = 'new') {
     cleanupOldReplacedFiles(path.dirname(targetPath), path.basename(targetPath), tmpOldCreated);
   } catch {}
 
+  invalidateUnlockCache(targetPath);
+  return { ok: true, usedRenameTrick };
+}
+
+/**
+ * 异步安全原子写盘与回滚助手（避免大二进制 writeFileSync/copyFileSync 阻塞主线程）
+ */
+async function atomicWriteBinaryAsync(targetPath, buf, tempTag = 'new') {
+  const tmpNew = `${targetPath}.${tempTag}_${Date.now()}`;
+  let usedRenameTrick = false;
+  let tmpOldCreated = null;
+
+  try {
+    await fs.promises.writeFile(tmpNew, buf);
+    try {
+      await fs.promises.copyFile(tmpNew, targetPath);
+    } catch (e) {
+      if (process.platform === 'win32' && (e.code === 'EBUSY' || e.code === 'EPERM')) {
+        const tmpOld = `${targetPath}.old_${Date.now()}`;
+        await fs.promises.rename(targetPath, tmpOld);
+        tmpOldCreated = tmpOld;
+        try {
+          await fs.promises.rename(tmpNew, targetPath);
+          usedRenameTrick = true;
+        } catch (renameNewErr) {
+          try {
+            await fs.promises.rename(tmpOld, targetPath);
+          } catch (rollbackErr) {
+            return {
+              ok: false,
+              error: `替换新文件失败且回滚原文件失败: ${rollbackErr.message} (原始错误: ${renameNewErr.message})`
+            };
+          }
+          return {
+            ok: false,
+            error: `写入新补丁文件失败，已安全回滚原文件: ${renameNewErr.message}`
+          };
+        }
+      } else {
+        throw e;
+      }
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      error: `写入目标文件失败 (${e.code || e.message})。若客户端正在运行，请退出 Antigravity 客户端后重试。`
+    };
+  } finally {
+    try {
+      await fs.promises.unlink(tmpNew);
+    } catch {}
+  }
+
+  try {
+    cleanupOldReplacedFiles(path.dirname(targetPath), path.basename(targetPath), tmpOldCreated);
+  } catch {}
+
+  invalidateUnlockCache(targetPath);
   return { ok: true, usedRenameTrick };
 }
 
@@ -2039,6 +2204,592 @@ function restoreUnlock(options = {}) {
   };
 }
 
+/**
+ * 复用：幂等性判定，避免重复改写同一二进制
+ */
+function checkUnlockIdempotency(targetSpec, analysis) {
+  if (targetSpec.mode === 'default' && analysis.status === 'not_patched') {
+    return {
+      ok: true,
+      alreadyPatched: true,
+      alreadyRestored: true,
+      alreadyMatched: true,
+      configuredMode: 'default',
+      configuredLimitTokens: DEFAULT_CHECKPOINT_TOKENS,
+      needsRestart: false,
+      message: '当前已经处于宿主默认状态，无需重复切换。',
+      analysis
+    };
+  }
+  if (
+    targetSpec.mode === 'dynamic' &&
+    analysis.status !== 'not_patched' &&
+    analysis.configuredMode === 'dynamic'
+  ) {
+    return {
+      ok: true,
+      alreadyPatched: true,
+      alreadyMatched: true,
+      configuredMode: 'dynamic',
+      configuredLimitTokens: null,
+      needsRestart: analysis.status === 'patched_pending_restart',
+      message: '当前已经处于「动态跟随模型（透传）」模式，无需重复写入。',
+      analysis
+    };
+  }
+  if (
+    targetSpec.mode === 'fixed' &&
+    analysis.status !== 'not_patched' &&
+    analysis.configuredMode === 'fixed' &&
+    analysis.configuredLimitTokens === targetSpec.limitTokens
+  ) {
+    return {
+      ok: true,
+      alreadyPatched: true,
+      alreadyMatched: true,
+      configuredMode: 'fixed',
+      configuredLimitTokens: targetSpec.limitTokens,
+      needsRestart: analysis.status === 'patched_pending_restart',
+      message: `当前已经应用固定上限 ${targetSpec.limitTokens.toLocaleString('en-US')} tokens，无需重复写入。`,
+      analysis
+    };
+  }
+  return null;
+}
+
+/**
+ * 复用：按目标规格就地修改二进制 Buffer 中的 Gate 3A/3B 与 Serializer 门禁
+ */
+function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate3bOrigBytesForDefault) {
+  let serializerPatched = false;
+  if (targetSpec.mode === 'default') {
+    buf.set(CLAMP_256K_X64, gate3a.offset);
+    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
+      buf.set(DEF_ORIG_X64, gate3a.defaultOffset);
+    }
+    if (gate3b.status === 'patched' && gate3bOrigBytesForDefault) {
+      buf.set(gate3bOrigBytesForDefault, gate3b.offset);
+    }
+    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+      buf.set(SERIALIZER_STOCK_X64, serializerGate.offset);
+      serializerPatched = true;
+    }
+  } else if (targetSpec.mode === 'fixed') {
+    buf.set(buildClampConstX64(targetSpec.limitTokens), gate3a.offset);
+    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
+      buf.set(buildDefConstX64(targetSpec.limitTokens), gate3a.defaultOffset);
+    }
+    if (gate3b.status === 'unpatched') {
+      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
+    }
+    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+      buf.set(buildSerializerConstX64(targetSpec.limitTokens), serializerGate.offset);
+      serializerPatched = true;
+    }
+  } else if (targetSpec.mode === 'dynamic') {
+    buf.set(PATCH_256K_X64, gate3a.offset);
+    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
+      buf.set(DEF_ORIG_X64, gate3a.defaultOffset);
+    }
+    if (gate3b.status === 'unpatched') {
+      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
+    }
+    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+      buf.set(SERIALIZER_STOCK_X64, serializerGate.offset);
+      serializerPatched = true;
+    }
+  }
+  return serializerPatched;
+}
+
+/**
+ * 异步非阻塞上下文长度应用（同一目标串行加锁，保持备份、校验与回滚语义）
+ */
+async function applyUnlockAsync(options = {}) {
+  if (process.platform !== 'win32') {
+    return {
+      ok: false,
+      code: 'PLATFORM_UNSUPPORTED',
+      error: `当前平台 (${process.platform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
+    };
+  }
+
+  const targetSpec = normalizeUnlockTargetOptions(options);
+  if (!targetSpec.ok) {
+    return { ok: false, code: targetSpec.code || 'INVALID_INPUT', error: targetSpec.error };
+  }
+
+  const resolvedTarget = resolveUnlockTargetPath(options);
+  if (!resolvedTarget.ok) {
+    return resolvedTarget;
+  }
+  const target = resolvedTarget.target;
+
+  return enqueueUnlockTargetWrite(target, async () => {
+    if (canUseUnlockWorker(options) && !options.preloadedBuf) {
+      const workerRes = await runUnlockWorkerTask('apply', {
+        options: { ...sanitizeUnlockWorkerOptions(options), targetPath: target }
+      });
+      if (workerRes && workerRes._workerHandled) {
+        invalidateUnlockCache(target);
+        return workerRes.result;
+      }
+    }
+    let preloadedBuf = options.preloadedBuf || null;
+    let preloadedStats = options.preloadedStats || null;
+    if (!preloadedBuf && fs.existsSync(target)) {
+      try {
+        preloadedStats = await fs.promises.stat(target);
+        preloadedBuf = await fs.promises.readFile(target);
+      } catch {}
+    }
+
+    const analysis = await analyzeBinaryAsync(target, {
+      backupDir: options.backupDir,
+      expectedLimit: targetSpec.limitTokens,
+      preloadedBuf,
+      preloadedStats,
+      forceRefresh: true,
+      skipProcessCheck: options.skipProcessCheck === true
+    });
+
+    const allowedStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
+    if (!allowedStatuses.has(analysis.status) || analysis.arch !== 'x86-64') {
+      return {
+        ok: false,
+        code: analysis.status === 'partial_match' ? 'PARTIAL_MATCH' : 'UNSUPPORTED_OR_UNKNOWN',
+        error: `无法应用设置：${analysis.details || analysis.reason || '目标状态不受支持或存在部分匹配异常'}`,
+        analysis
+      };
+    }
+
+    const idemRes = checkUnlockIdempotency(targetSpec, analysis);
+    if (idemRes) return idemRes;
+
+    const { gate3a, gate3b, serializerGate, arch, targetPath, sha256: beforeSha256, fileSize } = analysis;
+    const backupDir = getUnlockBackupDir(options.backupDir);
+    const existingManifest = loadManifest(options.backupDir);
+    const existingSidecar = loadGate3BSidecar(options.backupDir);
+    const buf = preloadedBuf ? Buffer.from(preloadedBuf) : await fs.promises.readFile(targetPath);
+    const container = findTextSection(buf);
+
+    let gate3bOrigBytesForDefault = null;
+    if (targetSpec.mode === 'default' && gate3b.status === 'patched') {
+      if (doesSidecarMatchTarget(existingSidecar, targetPath, container, gate3b)) {
+        gate3bOrigBytesForDefault = Buffer.from(existingSidecar.origHex, 'hex');
+      } else if (
+        existingManifest &&
+        existingManifest.backupPath &&
+        fs.existsSync(existingManifest.backupPath) &&
+        doesManifestMatchContainer(existingManifest, container, targetPath)
+      ) {
+        const backupBuf = await fs.promises.readFile(existingManifest.backupPath);
+        const backupSha = await sha256BufferAsync(backupBuf);
+        if (backupSha !== existingManifest.origSha256) {
+          return {
+            ok: false,
+            code: 'MISSING_OR_STALE_GATE3B_SIDECAR',
+            error: '缺少与当前版本匹配的原始字节记录或备份，无法安全切换回默认状态（已阻止盲写）。',
+            analysis
+          };
+        }
+        gate3bOrigBytesForDefault = backupBuf.subarray(gate3b.offset, gate3b.offset + (gate3b.length || 2));
+      } else {
+        return {
+          ok: false,
+          code: 'MISSING_OR_STALE_GATE3B_SIDECAR',
+          error: '缺少与当前版本匹配的原始字节记录或备份，无法安全切换回默认状态（已阻止盲写）。',
+          analysis
+        };
+      }
+    }
+
+    let manifestToSave = existingManifest && doesManifestMatchContainer(existingManifest, container, targetPath)
+      ? { ...existingManifest }
+      : null;
+
+    if (analysis.status === 'not_patched') {
+      const backupFile = path.join(backupDir, `${path.basename(targetPath)}_${beforeSha256.slice(0, 12)}.orig`);
+      try {
+        await fs.promises.writeFile(backupFile, buf);
+        const backupRead = await fs.promises.readFile(backupFile);
+        const backupSha = await sha256BufferAsync(backupRead);
+        if (backupSha !== beforeSha256) {
+          try { await fs.promises.unlink(backupFile); } catch {}
+          return { ok: false, error: '原版备份哈希校验不匹配，操作已中止。' };
+        }
+      } catch (e) {
+        return { ok: false, error: `创建原版备份失败: ${e.message}` };
+      }
+
+      if (gate3b.origHex) {
+        saveGate3BSidecar({
+          targetPath,
+          buildId: container.buildId || null,
+          peTimeDateStamp: container.peTimeDateStamp ?? null,
+          peSizeOfImage: container.peSizeOfImage ?? null,
+          offset: gate3b.offset,
+          length: gate3b.length,
+          origHex: gate3b.origHex,
+          origSha8: beforeSha256.slice(0, 8),
+          updatedAt: new Date().toISOString()
+        }, options.backupDir);
+      }
+
+      manifestToSave = {
+        targetPath,
+        arch,
+        buildId: container.buildId || null,
+        peTimeDateStamp: container.peTimeDateStamp ?? null,
+        peSizeOfImage: container.peSizeOfImage ?? null,
+        origSha256: beforeSha256,
+        origSize: fileSize,
+        backupPath: backupFile,
+        backupSha256: beforeSha256,
+        gate3bOrigHex: gate3b.origHex || null,
+        gate3bLength: gate3b.length || null,
+        gate3bOffset: gate3b.offset ?? null,
+        author: AUTHOR_INFO
+      };
+    }
+
+    const serializerPatched = patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate3bOrigBytesForDefault);
+    const afterSha256 = await sha256BufferAsync(buf);
+    const writeRes = await atomicWriteBinaryAsync(targetPath, buf, 'new');
+    if (!writeRes.ok) {
+      return { ok: false, error: writeRes.error };
+    }
+
+    const syncedConfigs = syncExternalContextConfigs(targetSpec.mode, targetSpec.limitTokens, options);
+
+    if (manifestToSave) {
+      manifestToSave.patchedSha256 = afterSha256;
+      manifestToSave.patchedAt = new Date().toISOString();
+      manifestToSave.configuredMode = targetSpec.mode;
+      manifestToSave.configuredLimitTokens = targetSpec.limitTokens;
+      manifestToSave.needsRestart = true;
+      saveManifest(manifestToSave, options.backupDir);
+    }
+
+    const modeSummary = targetSpec.mode === 'default'
+      ? '宿主默认模式（恢复原有行为）'
+      : targetSpec.mode === 'fixed'
+        ? `固定上限 ${targetSpec.limitTokens.toLocaleString('en-US')} tokens`
+        : '跟随模型（动态透传）';
+    const restartHint = writeRes.usedRenameTrick
+      ? '由于客户端正在运行，请【完全退出并重启 Antigravity 客户端】使新后端配置生效。'
+      : '请重启 Antigravity 客户端使新后端配置生效。';
+
+    return {
+      ok: true,
+      needsRestart: true,
+      targetPath,
+      configuredMode: targetSpec.mode,
+      configuredLimitTokens: targetSpec.limitTokens,
+      defaultSitePatched: Boolean(gate3a.hasDefaultSite),
+      serializerPatched,
+      syncedConfigs,
+      warnings: targetSpec.warnings || [],
+      scopeNote: analysis.scopeNotice,
+      beforeSha256,
+      afterSha256,
+      backupPath: manifestToSave ? manifestToSave.backupPath : null,
+      message: `已将共享后端切换为「${modeSummary}」，影响共享该后端的所有会话；${restartHint}（尚未经过真实长请求验证）`
+    };
+  });
+}
+
+/**
+ * 异步非阻塞恢复原版二进制 (Restore)
+ */
+async function restoreUnlockAsync(options = {}) {
+  if (process.platform !== 'win32') {
+    return {
+      ok: false,
+      code: 'PLATFORM_UNSUPPORTED',
+      error: `当前平台 (${process.platform}) 暂未通过安全写入验证，已自动拦截操作。`
+    };
+  }
+
+  const resolvedTarget = resolveUnlockTargetPath(options);
+  if (!resolvedTarget.ok) {
+    return resolvedTarget;
+  }
+  const target = resolvedTarget.target;
+
+  if (!target || !fs.existsSync(target)) {
+    return { ok: false, error: '目标文件不存在，无法恢复' };
+  }
+
+  return enqueueUnlockTargetWrite(target, async () => {
+    if (canUseUnlockWorker(options)) {
+      const workerRes = await runUnlockWorkerTask('restore', {
+        options: { ...sanitizeUnlockWorkerOptions(options), targetPath: target }
+      });
+      if (workerRes && workerRes._workerHandled) {
+        invalidateUnlockCache(target);
+        return workerRes.result;
+      }
+    }
+    const manifest = loadManifest(options.backupDir);
+    const sidecar = loadGate3BSidecar(options.backupDir);
+    const currentBuf = await fs.promises.readFile(target);
+    const currentSha256 = await sha256BufferAsync(currentBuf);
+
+    let container;
+    try {
+      container = findTextSection(currentBuf);
+    } catch (e) {
+      return { ok: false, error: `解析当前二进制容器失败，拒绝恢复: ${e.message}` };
+    }
+
+    if (manifest && manifest.backupPath && fs.existsSync(manifest.backupPath)) {
+      if (!isSameTargetPath(manifest.targetPath, target)) {
+        return { ok: false, error: '安装记录目标与当前恢复目标不一致，拒绝跨路径还原。' };
+      }
+      if (!doesManifestMatchContainer(manifest, container, target)) {
+        return {
+          ok: false,
+          code: 'BACKUP_VERSION_MISMATCH',
+          error: '检测到当前目标文件版本/构建已更新，与历史备份的 PE 构建指纹不一致，已拒绝跨版本还原以免破坏新版本二进制。'
+        };
+      }
+      const backupBuf = await fs.promises.readFile(manifest.backupPath);
+      const backupSha = await sha256BufferAsync(backupBuf);
+      if (backupSha !== manifest.origSha256) {
+        return { ok: false, error: '原版备份文件已损坏或被篡改，无法执行还原。' };
+      }
+      if (currentSha256 === manifest.origSha256) {
+        manifest.needsRestart = false;
+        saveManifest(manifest, options.backupDir);
+        return { ok: true, alreadyRestored: true, message: '当前已经是官方原版，无需重复恢复。' };
+      }
+
+      const writeRes = await atomicWriteBinaryAsync(target, backupBuf, 'res');
+      if (!writeRes.ok) {
+        return { ok: false, error: `恢复原版写入失败: ${writeRes.error}` };
+      }
+
+      manifest.needsRestart = true;
+      manifest.configuredMode = 'default';
+      manifest.configuredLimitTokens = DEFAULT_CHECKPOINT_TOKENS;
+      saveManifest(manifest, options.backupDir);
+      const syncedConfigs = syncExternalContextConfigs('default', null, options);
+
+      return {
+        ok: true,
+        needsRestart: true,
+        syncedConfigs,
+        message: writeRes.usedRenameTrick
+          ? '已成功恢复官方原版二进制！请【完全退出并重启 Antigravity 客户端】生效。'
+          : '已成功恢复官方原版二进制！请重启客户端生效。'
+      };
+    }
+
+    const analysis = await analyzeBinaryAsync(target, {
+      backupDir: options.backupDir,
+      preloadedBuf: currentBuf,
+      forceRefresh: true,
+      skipProcessCheck: true
+    });
+    if (analysis.status === 'not_patched') {
+      const syncedConfigs = syncExternalContextConfigs('default', null, options);
+      return { ok: true, alreadyRestored: true, syncedConfigs, message: '当前已经是官方原版，无需恢复。' };
+    }
+
+    if (
+      (analysis.gate3a?.status === 'patched' || analysis.gate3a?.status === 'unpatched') &&
+      analysis.gate3b?.status === 'patched' &&
+      doesSidecarMatchTarget(sidecar, target, container, analysis.gate3b)
+    ) {
+      currentBuf.set(CLAMP_256K_X64, analysis.gate3a.offset);
+      if (analysis.gate3a.hasDefaultSite && analysis.gate3a.defaultOffset !== null) {
+        currentBuf.set(DEF_ORIG_X64, analysis.gate3a.defaultOffset);
+      }
+      currentBuf.set(Buffer.from(sidecar.origHex, 'hex'), analysis.gate3b.offset);
+      if (analysis.serializerGate?.present && analysis.serializerGate.offset !== null) {
+        currentBuf.set(SERIALIZER_STOCK_X64, analysis.serializerGate.offset);
+      }
+
+      const writeRes = await atomicWriteBinaryAsync(target, currentBuf, 'rev');
+      if (!writeRes.ok) {
+        return { ok: false, error: `逆向还原写入失败: ${writeRes.error}` };
+      }
+      const syncedConfigs = syncExternalContextConfigs('default', null, options);
+
+      return {
+        ok: true,
+        needsRestart: true,
+        syncedConfigs,
+        message: '已通过同构建校验记录恢复官方原版！请重启 Antigravity 客户端生效。'
+      };
+    }
+
+    return {
+      ok: false,
+      code: 'RESTORE_REJECTED',
+      error: '未找到与当前版本匹配的原版备份或原始字节记录，为确保安全拒绝覆盖。'
+    };
+  });
+}
+
+// ============================================================================
+// 内嵌 worker_threads 后台卸载引擎（消除 200MB 二进制扫描、哈希与写盘的主线程阻塞）
+// ============================================================================
+
+let unlockWorkerInstance = null;
+let unlockWorkerDisabled = false;
+let unlockWorkerReqId = 1;
+const unlockWorkerPending = new Map();
+let unlockWorkerIdleTimer = null;
+
+function canUseUnlockWorker(options = {}) {
+  if (!isMainThread || unlockWorkerDisabled || options._inWorker === true || options.useMainThread === true) {
+    return false;
+  }
+  if (fs.readFileSync !== ORIG_UNLOCK_FS_READ_SYNC || fs.promises.readFile !== ORIG_UNLOCK_FS_READ_ASYNC) {
+    return false;
+  }
+  return typeof Worker === 'function';
+}
+
+function sanitizeUnlockWorkerOptions(options = {}) {
+  const safe = {};
+  const keys = [
+    'targetPath', 'backupDir', 'enhanceBackupDir', 'homeDir', 'localAppData',
+    'stateDir', 'expectedLimit', 'limitTokens', 'mode', 'modeName',
+    'skipSha256', 'skipProcessCheck', 'syncConfigFiles', 'forceRefresh',
+    'contextMode', 'contextLimitTokens'
+  ];
+  for (const k of keys) {
+    if (options[k] !== undefined) safe[k] = options[k];
+  }
+  return safe;
+}
+
+function captureEnvSnapshot() {
+  return {
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
+    APPDATA: process.env.APPDATA,
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+    AG_METER_TEST_MODE: process.env.AG_METER_TEST_MODE
+  };
+}
+
+function scheduleUnlockWorkerIdleCleanup() {
+  if (unlockWorkerIdleTimer) {
+    clearTimeout(unlockWorkerIdleTimer);
+    unlockWorkerIdleTimer = null;
+  }
+  if (unlockWorkerPending.size > 0 || !unlockWorkerInstance) return;
+  const idleMs = process.env.NODE_TEST_CONTEXT ? 120 : 2500;
+  unlockWorkerIdleTimer = setTimeout(() => {
+    unlockWorkerIdleTimer = null;
+    if (unlockWorkerPending.size === 0 && unlockWorkerInstance) {
+      const w = unlockWorkerInstance;
+      unlockWorkerInstance = null;
+      try { w.terminate(); } catch {}
+    }
+  }, idleMs);
+  if (typeof unlockWorkerIdleTimer.unref === 'function') unlockWorkerIdleTimer.unref();
+}
+
+function getOrStartUnlockWorker() {
+  if (unlockWorkerInstance) return unlockWorkerInstance;
+  const w = new Worker(__filename, {
+    workerData: { agUnlockWorker: true }
+  });
+  w.unref();
+  w.on('message', (msg) => {
+    if (!msg || !msg.id) return;
+    const entry = unlockWorkerPending.get(msg.id);
+    if (!entry) return;
+    unlockWorkerPending.delete(msg.id);
+    scheduleUnlockWorkerIdleCleanup();
+    if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result });
+    else entry.resolve(null);
+  });
+  w.on('error', () => {
+    unlockWorkerDisabled = true;
+    if (unlockWorkerInstance === w) unlockWorkerInstance = null;
+    for (const [id, entry] of unlockWorkerPending.entries()) {
+      unlockWorkerPending.delete(id);
+      entry.resolve(null);
+    }
+    try { w.terminate(); } catch {}
+  });
+  w.on('exit', () => {
+    if (unlockWorkerInstance === w) unlockWorkerInstance = null;
+    for (const [id, entry] of unlockWorkerPending.entries()) {
+      unlockWorkerPending.delete(id);
+      entry.resolve(null);
+    }
+  });
+  unlockWorkerInstance = w;
+  return w;
+}
+
+async function runUnlockWorkerTask(cmd, payload) {
+  try {
+    if (unlockWorkerIdleTimer) {
+      clearTimeout(unlockWorkerIdleTimer);
+      unlockWorkerIdleTimer = null;
+    }
+    const w = getOrStartUnlockWorker();
+    const id = unlockWorkerReqId++;
+    return await new Promise((resolve) => {
+      unlockWorkerPending.set(id, { resolve });
+      try {
+        w.postMessage({ id, cmd, payload, env: captureEnvSnapshot() });
+      } catch {
+        unlockWorkerPending.delete(id);
+        resolve(null);
+      }
+    });
+  } catch {
+    unlockWorkerDisabled = true;
+    return null;
+  }
+}
+
+if (!isMainThread && workerData && workerData.agUnlockWorker && parentPort) {
+  parentPort.on('message', async (msg) => {
+    const { id, cmd, payload, env } = msg || {};
+    const prevEnv = {};
+    if (env && typeof env === 'object') {
+      for (const [k, v] of Object.entries(env)) {
+        prevEnv[k] = process.env[k];
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    try {
+      let result = null;
+      if (cmd === 'analyze') {
+        result = await analyzeBinaryAsync(payload.filePath, { ...(payload.options || {}), _inWorker: true });
+      } else if (cmd === 'apply') {
+        result = await applyUnlockAsync({ ...(payload.options || {}), _inWorker: true });
+      } else if (cmd === 'restore') {
+        result = await restoreUnlockAsync({ ...(payload.options || {}), _inWorker: true });
+      } else {
+        throw new Error(`Unknown unlock worker command: ${cmd}`);
+      }
+      parentPort.postMessage({ id, ok: true, result });
+    } catch (err) {
+      parentPort.postMessage({ id, ok: false, error: err && err.message ? err.message : String(err) });
+    } finally {
+      if (env && typeof env === 'object') {
+        for (const [k, v] of Object.entries(prevEnv)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    }
+  });
+}
+
 module.exports = {
   AUTHOR_INFO,
   DEFAULT_CHECKPOINT_TOKENS,
@@ -2059,7 +2810,11 @@ module.exports = {
   cleanupOldReplacedFiles,
   synthesizeAnalysisStatus,
   applyUnlock,
+  applyUnlockAsync,
   restoreUnlock,
+  restoreUnlockAsync,
+  invalidateUnlockCache,
+  enqueueUnlockTargetWrite,
   getUnlockBackupDir,
   loadGate3BSidecar,
   saveGate3BSidecar

@@ -36,7 +36,7 @@ test('CLI 启动模块 3: 源码绝对不残留同步 powershell、8000ms 阻塞
   assert.equal(src.includes("spawnSync('powershell.exe'"), false, '严禁包含 spawnSync powershell');
   assert.equal(src.includes('timeout: 8000'), false, '严禁包含旧版 8000ms 同步阻塞');
   assert.equal(src.includes('D:\\AI_plugin'), false, '严禁包含作者开发机本地绝对路径');
-  assert.ok(src.includes('0.8.3-helper-v2'), '必须包含最新的版本契约标识 0.8.3-helper-v2');
+  assert.ok(src.includes('0.8.4-helper-v2'), '必须包含最新的版本契约标识 0.8.4-helper-v2');
 });
 
 test('CLI 启动模块 4: helper 输出诊断结构完整解析与部分成功时防重入', async () => {
@@ -89,29 +89,65 @@ test('CLI 启动模块 5: 隔离环境中验证 helper 部署、探测与哈希�
   }
 });
 
-test('CLI 启动模块 6: helper 缺失与启动失败时合理降级，不谎报原生居中成功', async () => {
+test('CLI 启动模块 6: helper 缺失与启动失败时真实走标准控制台降级启动 CLI，不谎报原生居中成功', async () => {
+  const { spawnSync } = require('node:child_process');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-missing-'));
   try {
-    // 探测一个确定不存在的路径
-    const resMissing = resolveHelperExecutable({ helperPath: path.join(tmpDir, 'non_existent.exe') });
+    const missingHelper = path.join(tmpDir, 'non_existent.exe');
+    const resMissing = resolveHelperExecutable({ helperPath: missingHelper });
     assert.equal(resMissing.ok, false);
     assert.match(resMissing.error, /(未找到|不存在)/);
 
-    // 验证 launchCliSession 针对 helper 缺失的降级响应字段
-    // dryRun 会跳过执行，因此这里用单测模拟降级返回结构契约
-    const fallbackContract = {
-      ok: true,
-      fallback: true,
-      nativePlacement: false,
-      windowLocated: false,
-      isCentered: false,
-      isForeground: false,
-      fallbackReason: '未检测到原生定位辅助程序 (cli-window-helper.exe)，已降级启动标准控制台'
-    };
-    assert.equal(fallbackContract.fallback, true);
-    assert.equal(fallbackContract.nativePlacement, false);
-    assert.equal(fallbackContract.isCentered, false);
-    assert.equal(fallbackContract.isForeground, false);
+    if (process.platform === 'win32') {
+      const mockStateDir = path.join(tmpDir, 'state');
+      const wsDir = path.join(tmpDir, 'workspace');
+      fs.mkdirSync(wsDir, { recursive: true });
+      const cliMarker = path.join(tmpDir, 'cli-ran.txt');
+      const fakeCli = path.join(tmpDir, 'agy.cmd');
+      fs.writeFileSync(fakeCli, `@echo off\r\n> "${cliMarker}" echo ARGS=%*\r\n`, 'ascii');
+
+      const spawnCalls = [];
+      const res = await launchCliSession({
+        cliPath: fakeCli,
+        cwd: wsDir,
+        stateDir: mockStateDir,
+        helperPath: missingHelper,
+        model: 'gemini-3.8-flash-high',
+        args: ['--dry-marker'],
+        _spawn: (cmd, args, opts) => {
+          spawnCalls.push({ cmd, args, opts });
+          return { pid: 43210, unref() {} };
+        }
+      });
+
+      assert.equal(res.ok, true);
+      assert.equal(res.fallback, true);
+      assert.equal(res.nativePlacement, false);
+      assert.equal(res.terminalSpawned, true);
+      assert.equal(res.windowLocated, false);
+      assert.equal(res.isCentered, false);
+      assert.equal(res.isForeground, false);
+      assert.match(res.fallbackReason, /标准控制台/);
+      assert.equal(spawnCalls.length, 1);
+      assert.equal(spawnCalls[0].cmd, 'cmd.exe');
+      assert.deepEqual(spawnCalls[0].args.slice(0, 2), ['/d', '/k']);
+
+      // 在无窗口后台真实执行生成出来的 runnerBat (/d /c)，验证回退链路可真实启动目标 CLI 与探测 cwd
+      const runnerBat = spawnCalls[0].args[2];
+      assert.ok(fs.existsSync(runnerBat));
+      const execOut = spawnSync('cmd.exe', ['/d', '/c', runnerBat], {
+        cwd: spawnCalls[0].opts.cwd,
+        env: spawnCalls[0].opts.env,
+        windowsHide: true,
+        encoding: 'utf8'
+      });
+      assert.equal(execOut.status, 0);
+      assert.ok(fs.existsSync(res.probeFile), '标准控制台回退脚本必须真实写入 cwd 探测文件');
+      assert.ok(fs.existsSync(cliMarker), '标准控制台回退脚本必须真实调用到 CLI 可执行文件');
+      const cliArgsText = fs.readFileSync(cliMarker, 'utf8');
+      assert.match(cliArgsText, /--model "?gemini-3\.8-flash-high"?/);
+      assert.match(cliArgsText, /--dry-marker/);
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -124,4 +160,82 @@ test('CLI 启动模块 7: POSIX 命令行参数安全转义（免疫 Shell 注�
   assert.equal(escapePosixArg('$HOME && rm -rf /'), "'$HOME && rm -rf /'");
   assert.equal(escapePosixArg(''), "''");
   assert.equal(escapePosixArg(null), "''");
+});
+
+test('PR #14 独立适配 8: macOS agy 探测、AppleScript Terminal 参数组装与跨平台代理/状态路径', async () => {
+  const { getAppDataDir } = require('./asar-engine');
+  const { getProxyCandidatePaths, detectProxyConfig } = require('./meter-proxy');
+  const { detectAndMigrateLegacyConfigs } = require('./modules-config');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-mac-paths-'));
+  try {
+    const macApp = path.join(tmpDir, 'Antigravity.app');
+    const agyBin = path.join(macApp, 'Contents', 'Resources', 'app', 'bin', 'agy');
+    fs.mkdirSync(path.dirname(agyBin), { recursive: true });
+    fs.writeFileSync(agyBin, '#!/bin/sh\necho ok\n', 'utf8');
+
+    const macCli = resolveCliExecutable(null, {
+      platform: 'darwin',
+      homeDir: tmpDir,
+      env: {},
+      macAppRoots: [macApp]
+    });
+    assert.equal(macCli.ok, true);
+    assert.equal(macCli.source, 'mac_app_bin');
+    assert.equal(macCli.exePath, agyBin);
+
+    const inspect = await launchCliSession({
+      platform: 'darwin',
+      homeDir: tmpDir,
+      macAppRoots: [macApp],
+      cwd: tmpDir,
+      model: 'gemini-3.8-flash-high',
+      args: ["--prompt='hi'"],
+      env: { HTTP_PROXY: 'http://127.0.0.1:7897' },
+      _inspectAppleScript: true
+    });
+    assert.equal(inspect.ok, true);
+    assert.equal(inspect.terminal, 'Terminal.app');
+    assert.match(inspect.appleScript, /tell application "Terminal"/);
+    assert.match(inspect.shellCmd, /HTTP_PROXY='http:\/\/127\.0\.0\.1:7897'/);
+    assert.match(inspect.shellCmd, /exec '[^']+' -l/);
+
+    // getAppDataDir & proxy & legacy migration macOS 路径
+    const origAppData = process.env.APPDATA;
+    delete process.env.APPDATA;
+    try {
+      const macAppData = getAppDataDir({ platform: 'darwin', homeDir: '/Users/demo' });
+      assert.equal(macAppData.replace(/\\/g, '/'), '/Users/demo/Library/Application Support');
+    } finally {
+      if (origAppData !== undefined) process.env.APPDATA = origAppData;
+    }
+
+    const macProxyCandidates = getProxyCandidatePaths(null, { platform: 'darwin', homeDir: tmpDir, env: {} });
+    assert.ok(macProxyCandidates.some(p => p.includes('Application Support') && p.endsWith('modules.json')));
+
+    const modCfgPath = path.join(tmpDir, 'Library', 'Application Support', 'AntigravityContextMeter', 'modules.json');
+    fs.mkdirSync(path.dirname(modCfgPath), { recursive: true });
+    fs.writeFileSync(modCfgPath, JSON.stringify({
+      modules: { proxy: { enabled: true, httpProxy: 'http://127.0.0.1:7897' } }
+    }), 'utf8');
+    const proxyRes = detectProxyConfig({ platform: 'darwin', homeDir: tmpDir, env: {} });
+    assert.equal(proxyRes.enabled, true);
+    assert.equal(proxyRes.httpProxy, 'http://127.0.0.1:7897');
+
+    // 验证 Python attachment_scan.py 共享公式纯标准库回退与 _get_state_dir
+    const { spawnSync } = require('node:child_process');
+    const pyCheck = spawnSync('python', ['-c', `
+import os, attachment_scan as s
+assert s._translate_shared_formula_fallback('SUM(A1:B1)+$C$1', 'C1', 'D3') == 'SUM(B3:C3)+$C$1'
+os.environ['AG_METER_STATE_DIR'] = 'X_CUSTOM'
+assert s._get_state_dir() == 'X_CUSTOM'
+print('PY_OK')
+`], { cwd: __dirname, encoding: 'utf8' });
+    if (pyCheck.status === 0) {
+      assert.match(pyCheck.stdout, /PY_OK/);
+    }
+    assert.ok(typeof detectAndMigrateLegacyConfigs === 'function');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

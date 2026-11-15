@@ -1,9 +1,37 @@
 (function () {
-  const METER_VERSION = '0.8.3';
+  const METER_VERSION = '0.8.4';
 
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
-  globalThis.__AGContextMeter?.dispose();
+  globalThis.__AGContextMeter?.dispose?.();
+  const activeDisposers = (globalThis.__AGContextMeterDisposers = globalThis.__AGContextMeterDisposers || new Set());
+  for (const fn of Array.from(activeDisposers)) {
+    try { fn(); } catch { }
+  }
+  activeDisposers.clear();
+  // 清理此前初始化异常或重复挂载遗留的孤儿宿主容器，保证页面内永远仅有唯一实例
+  try {
+    if (typeof document.querySelectorAll === 'function') {
+      document.querySelectorAll('#ag-context-meter').forEach(node => {
+        try {
+          if (typeof node.__agForceDispose === 'function') {
+            node.__agForceDispose();
+            node.remove?.();
+            return;
+          }
+          // 无主历史闭包节点：剥离 ID、隐藏且清空 shadowRoot 内容，保持其在位静默不再触发重插循环
+          node.removeAttribute?.('id');
+          node.setAttribute?.('data-ag-retired', '1');
+          if (node.style) {
+            node.style.cssText = 'display:none!important;width:0!important;height:0!important;overflow:hidden!important;pointer-events:none!important;position:absolute!important;';
+          }
+          if (node.shadowRoot && typeof node.shadowRoot.innerHTML === 'string') {
+            node.shadowRoot.innerHTML = '';
+          }
+        } catch { }
+      });
+    }
+  } catch { }
   const {
     summarize,
     parseGeneratorCall,
@@ -301,6 +329,57 @@
       stroke:var(--ag-ring-danger);
     }
 
+    /* 单元 1B: 模型额度圆环入口 */
+    #badge-quota.ag-unit-quota{
+      width:auto;
+      min-width:28px;
+      height:28px;
+      padding:0 6px 0 5px;
+      gap:4px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      color:var(--ag-toolbar-fg);
+    }
+    .quota-ring-svg{
+      width:18px;height:18px;display:block;flex-shrink:0;overflow:visible;
+    }
+    .quota-ring-track{
+      stroke:var(--ag-custom-ring-track,var(--ag-ring-track-default));
+    }
+    .quota-ring-fill{
+      stroke:#22c55e;
+      transition:stroke-dashoffset .22s cubic-bezier(0.22,1,0.36,1),stroke .18s ease,opacity .15s ease;
+    }
+    #badge-quota[data-quota-state="available"] .quota-ring-fill{ stroke:#22c55e; }
+    #badge-quota[data-quota-state="low"] .quota-ring-fill{ stroke:#f59e0b; }
+    #badge-quota[data-quota-state="exhausted"] .quota-ring-fill{ stroke:#ef4444; }
+    #badge-quota[data-quota-state="no_permission"] .quota-ring-fill{ stroke:#a855f7; }
+    #badge-quota[data-quota-state="stale"] .quota-ring-fill{ stroke:#eab308; opacity:0.8; }
+    #badge-quota[data-quota-state="error"] .quota-ring-fill{ stroke:#f97316; }
+    #badge-quota[data-quota-state="unknown"] .quota-ring-fill{ stroke:var(--ag-text-muted); opacity:0.65; }
+    .quota-badge-val{
+      font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;
+      color:var(--ag-text-primary);
+      white-space:nowrap;
+      min-width:34px;text-align:center;
+    }
+    #badge-quota[data-quota-state="exhausted"] .quota-badge-val{ color:#f87171; }
+    #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#fb923c; }
+    #badge-quota[data-quota-state="no_permission"] .quota-badge-val{ color:#c084fc; }
+    :host([data-theme="light"]) #badge-quota[data-quota-state="exhausted"] .quota-badge-val{ color:#dc2626; }
+    :host([data-theme="light"]) #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#ea580c; }
+    :host([data-theme="light"]) #badge-quota[data-quota-state="no_permission"] .quota-badge-val{ color:#7e22ce; }
+    .quota-badge-tag{
+      font-size:10px;font-weight:600;padding:0 4px;border-radius:4px;
+      background:rgba(127,127,127,0.16);color:var(--ag-text-secondary);
+      line-height:15px;white-space:nowrap;
+    }
+    :host([data-layout="compact"]) #badge-quota{ padding:0 5px 0 4px;gap:3px; }
+    :host([data-layout="compact"]) .quota-badge-tag{ display:none!important; }
+    :host([data-layout="minimal"]) #badge-quota,
+    :host([data-layout="ring-only"]) #badge-quota{ display:none!important; }
+
     /* 单元 2: 输出速度 */
     #badge-speed{
       color:var(--ag-custom-speed,var(--ag-speed-default));
@@ -510,6 +589,7 @@
       border:1px solid var(--ag-float-border);
       background:var(--ag-float-bg);color:var(--ag-text-primary);
       box-shadow:var(--ag-float-shadow);
+      transform-origin:top right;will-change:opacity,transform;
     }
     #overflow-menu[hidden]{display:none!important}
     .overflow-item{
@@ -561,7 +641,6 @@
 
     /* 自定义颜色选取器悬浮面板（参考样式：吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL三行） */
     #color-picker-popover{
-      box-sizing:border-box;
       position:fixed;z-index:2147483640;width:304px;max-height:calc(100vh - 48px);overflow-y:auto;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);
       border:1px solid var(--ag-border-panel);border-radius:10px;
@@ -788,7 +867,7 @@
     }
     .ag-dropdown-menu{
       position:absolute;top:calc(100% + 4px);left:0;right:0;
-      max-height:240px;overflow-y:auto;
+      max-height:240px;overflow-y:auto;overflow-anchor:none;
       background:var(--ag-unified-bg,#1e1e24);
       border:1px solid var(--ag-float-border,rgba(255,255,255,0.14));
       border-radius:7px;
@@ -855,8 +934,14 @@
     .ag-dropdown-wrapper.is-open.open-up .ag-dropdown-menu{
       transform:translateY(0) scale(1);
     }
+    .ag-dropdown-item-right{
+      display:inline-flex;align-items:center;gap:6px;margin-left:auto;padding-left:6px;flex-shrink:0;
+    }
     .ag-dropdown-item-sub{
       font-size:9.5px;color:var(--ag-text-muted);margin-left:auto;padding-left:8px;
+    }
+    .ag-dropdown-item-right .ag-dropdown-item-sub{
+      margin-left:0;padding-left:0;
     }
     .ag-dropdown-item:hover .ag-dropdown-item-sub{
       color:var(--ag-text-secondary);
@@ -938,17 +1023,27 @@
     .ag-panel{
       box-sizing:border-box;
       position:fixed;top:38px;left:auto;right:16px;z-index:2147483500;
-      max-width:calc(100vw - 24px);max-height:calc(100vh - 52px);
-      overflow:auto;border:1px solid var(--ag-border-panel);border-radius:10px;
-      background:var(--ag-bg-panel);color:var(--ag-text-primary);box-shadow:var(--ag-shadow-panel);padding:14px;
+      max-width:calc(100vw - 24px);max-height:calc(100vh - 54px);
+      overflow:auto;overflow-anchor:none;border:1px solid var(--ag-border-panel);border-radius:10px;
+      background:var(--ag-bg-panel);color:var(--ag-text-primary);box-shadow:var(--ag-shadow-panel);padding:14px 14px 18px;
       opacity:1;transform:translateY(0);visibility:visible;pointer-events:auto;
-      transform-origin:top right;
+      transform-origin:top right;will-change:opacity,transform;
       transition:opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1),visibility .16s ease;
       contain:layout paint;
-      will-change:transform,opacity;
-      backface-visibility:hidden;
+    }
+    .ag-panel.ag-panel-flex{
+      display:flex;flex-direction:column;overflow:hidden;padding:0;
+    }
+    .ag-panel.ag-panel-flex .panel-header-bar{
+      position:relative;top:auto;flex:0 0 auto;margin:0;padding:12px 14px 9px;
+      border-bottom:1px solid var(--ag-border-subtle);background:var(--ag-bg-panel);z-index:20;
+    }
+    .quota-panel-body{
+      flex:1 1 auto;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;
+      padding:10px 14px 20px;box-sizing:border-box;
     }
     #panel{width:472px;max-width:calc(100vw - 24px)}
+    #panel-quota{width:460px;max-width:calc(100vw - 24px)}
     #panel-tokens{width:730px;transition:width .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1)}
     #panel-tokens.cost-compact-view{width:400px!important;max-width:calc(100vw - 24px)}
     .ag-panel[hidden]{display:block!important;opacity:0;transform:translateY(-6px);visibility:hidden;pointer-events:none}
@@ -980,7 +1075,142 @@
       display:inline-flex;align-items:center;justify-content:center;gap:3px;
     }
     .panel-icon-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
-    #close,#close-tokens{font-size:16px;padding:2px 7px}
+    #close,#close-tokens,#close-quota{font-size:16px;padding:2px 7px}
+
+    /* 模型额度看板面板 (#panel-quota) */
+    .quota-refresh-feedback{
+      display:inline-flex;align-items:center;
+      font-size:10.5px;font-weight:500;color:#22c55e;
+      background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.28);
+      padding:1px 6px;border-radius:10px;white-space:nowrap;
+      opacity:1;visibility:visible;
+      transition:opacity .18s ease,visibility .18s ease;
+    }
+    :host([data-theme="light"]) .quota-refresh-feedback{color:#15803d;background:#dcfce7;border-color:#86efac}
+    .quota-refresh-feedback[hidden]{display:inline-flex!important;opacity:0;visibility:hidden;pointer-events:none}
+    .quota-refresh-btn{gap:4px;font-size:11.5px;padding:3px 8px;border:1px solid var(--ag-btn-border);border-radius:6px;background:var(--ag-btn-bg);color:var(--ag-text-secondary);transition:background .15s ease,border-color .15s ease,color .15s ease}
+    .quota-refresh-btn:not(:disabled):hover{color:var(--ag-text-primary);background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    .quota-refresh-btn[disabled]{cursor:progress;color:var(--ag-text-primary);background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    .quota-refresh-icon{display:inline-block;transform-origin:center}
+    @media (max-width:440px){.quota-refresh-feedback[hidden]{display:none!important}}
+    .quota-banner{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;
+      padding:7px 10px;border-radius:7px;margin-bottom:8px;font-size:11px;line-height:1.4;
+      border:1px solid rgba(245,158,11,0.35);background:rgba(245,158,11,0.1);color:var(--ag-text-primary);
+    }
+    .quota-banner[hidden],.quota-cur-alert[hidden],.quota-cur-est[hidden],.quota-bucket-est[hidden],#quota-plan-tier-pill[hidden]{display:none !important}
+    .quota-banner .switch-pill-btn{white-space:nowrap;flex-shrink:0}
+    .quota-banner[data-tone="error"]{border-color:rgba(239,68,68,0.4);background:rgba(239,68,68,0.12)}
+    .quota-times-grid{
+      display:grid;grid-template-columns:minmax(0,0.9fr) minmax(0,0.92fr) minmax(0,1.33fr);gap:6px;margin-bottom:9px;
+    }
+    .quota-time-cell{
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      border-radius:6px;padding:6px 7px;min-width:0;
+    }
+    .quota-time-label{font-size:10px;color:var(--ag-text-muted);margin-bottom:2px}
+    .quota-time-val{font-size:10.5px;line-height:1.3;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .quota-current-card{
+      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);
+      border-radius:8px;padding:10px 11px;margin-bottom:10px;
+    }
+    .quota-cur-model-name{font-size:13px;font-weight:600;color:var(--ag-text-primary);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .quota-cur-pool-sub{font-size:10.5px;color:var(--ag-text-muted);margin-top:2px}
+    .quota-cur-est{font-size:10.5px;color:var(--ag-text-secondary);margin-top:3px;font-variant-numeric:tabular-nums}
+    .quota-cur-alert{
+      margin-top:7px;padding:6px 8px;border-radius:6px;font-size:11px;line-height:1.4;
+      background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.28);color:var(--ag-text-secondary);
+    }
+    .quota-cur-alert[data-kind="notice"]{background:rgba(24,144,255,0.08);border-color:rgba(24,144,255,0.26)}
+    .quota-buckets-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+    .quota-bucket-row{display:flex;flex-direction:column;gap:3px}
+    .quota-bucket-meta{display:flex;justify-content:space-between;align-items:center;font-size:11px;gap:6px}
+    .quota-bucket-name{color:var(--ag-text-secondary);font-weight:500}
+    .quota-bucket-val{font-weight:600;font-variant-numeric:tabular-nums;color:var(--ag-text-primary);text-align:right}
+    .quota-pct-num{display:inline-block;min-width:34px;text-align:right;font-variant-numeric:tabular-nums}
+    .quota-bucket-est{font-size:10px;color:var(--ag-text-muted);line-height:1.35;font-variant-numeric:tabular-nums}
+    .quota-bar-track{position:relative;width:100%;height:5px;border-radius:3px;background:var(--ag-track-bg);overflow:hidden}
+    .quota-bar-fill{width:100%;height:100%;border-radius:3px;background:#22c55e;transform-origin:left center;transform:scaleX(var(--quota-scale,0));transition:transform .22s cubic-bezier(0.22,1,0.36,1),background-color .18s ease;will-change:transform}
+    .quota-bar-fill[data-status="low"]{background:#f59e0b}
+    .quota-bar-fill[data-status="exhausted"]{background:#ef4444}
+    .quota-bar-fill[data-status="no_permission"]{background:#a855f7}
+    .quota-bar-fill[data-status="unknown"]{background:var(--ag-text-muted)}
+    .quota-bar-charge-stage{
+      position:absolute;left:0;top:0;bottom:0;width:0;
+      border-radius:3px;overflow:hidden;pointer-events:none;
+      --quota-charge-bg:linear-gradient(90deg,rgba(34,197,94,0.92) 0%,#4ade80 62%,#bbf7d0 100%);
+    }
+    .quota-bar-charge-stage[hidden]{display:none!important}
+    .quota-bar-charge-stage[data-status="low"]{
+      --quota-charge-bg:linear-gradient(90deg,rgba(245,158,11,0.92) 0%,#fbbf24 62%,#fef08a 100%);
+    }
+    .quota-bar-charge-stage[data-status="exhausted"]{
+      --quota-charge-bg:linear-gradient(90deg,rgba(239,68,68,0.92) 0%,#f87171 62%,#fecaca 100%);
+    }
+    :host([data-theme="light"]) .quota-bar-charge-stage{
+      --quota-charge-bg:linear-gradient(90deg,rgba(22,163,74,0.94) 0%,#4ade80 68%,#dcfce7 100%);
+    }
+    :host([data-theme="light"]) .quota-bar-charge-stage[data-status="low"]{
+      --quota-charge-bg:linear-gradient(90deg,rgba(217,119,6,0.94) 0%,#fbbf24 68%,#fef3c7 100%);
+    }
+    :host([data-theme="light"]) .quota-bar-charge-stage[data-status="exhausted"]{
+      --quota-charge-bg:linear-gradient(90deg,rgba(220,38,38,0.94) 0%,#f87171 68%,#fee2e2 100%);
+    }
+    .quota-bar-charge-fill{
+      position:absolute;inset:0;border-radius:3px;
+      background:var(--quota-charge-bg);
+      transform-origin:left center;transform:scaleX(0);opacity:0;
+      will-change:transform,opacity;
+    }
+    .quota-bar-charge-sheen{
+      position:absolute;top:0;bottom:0;left:0;width:62%;
+      background:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.82) 50%,rgba(255,255,255,0) 100%);
+      transform:translateX(-120%);opacity:0;
+      will-change:transform,opacity;
+    }
+    .quota-bar-track[data-charging="true"] .quota-bar-charge-fill{
+      animation:ag-quota-bar-charge-fill 720ms linear forwards;
+    }
+    .quota-bar-track[data-charging="true"] .quota-bar-charge-sheen{
+      animation:ag-quota-bar-charge-sheen 720ms linear forwards;
+    }
+    @keyframes ag-quota-bar-charge-fill{
+      0%{transform:scaleX(0);opacity:0.96;animation-timing-function:cubic-bezier(0.22,1,0.36,1)}
+      55%{transform:scaleX(1);opacity:1}
+      76%{transform:scaleX(1);opacity:0.9;animation-timing-function:ease-out}
+      100%{transform:scaleX(1);opacity:0}
+    }
+    @keyframes ag-quota-bar-charge-sheen{
+      0%,34%{transform:translateX(-115%);opacity:0;animation-timing-function:cubic-bezier(0.35,0,0.25,1)}
+      43%{opacity:1}
+      76%{transform:translateX(175%);opacity:0.95}
+      85%,100%{transform:translateX(190%);opacity:0}
+    }
+    .quota-pools-header{display:flex;justify-content:space-between;align-items:center;margin:2px 0 6px;gap:8px}
+    .quota-pools-list{display:flex;flex-direction:column;gap:8px}
+    .quota-pool-card{
+      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);
+      border-radius:8px;padding:9px 10px;cursor:pointer;transition:border-color .14s ease,background-color .14s ease;
+    }
+    .quota-pool-card:hover{border-color:var(--ag-btn-border-hover)}
+    .quota-pool-card[data-active-current="true"]{border-color:rgba(34,197,94,0.45)}
+    .quota-pool-card[data-browsing="true"]{box-shadow:inset 0 0 0 1px rgba(24,144,255,0.45)}
+    .quota-pool-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px}
+    .quota-pool-title{font-size:12px;font-weight:600;color:var(--ag-text-primary);line-height:1.35}
+    .quota-pool-tags{display:flex;align-items:center;gap:4px;flex-shrink:0;flex-wrap:wrap}
+    .quota-current-tag{font-size:10px;padding:1px 6px;border-radius:9px;background:rgba(24,144,255,0.14);color:#38bdf8;border:1px solid rgba(56,189,248,0.3);font-weight:600}
+    :host([data-theme="light"]) .quota-current-tag{color:#0284c7;background:#e0f2fe;border-color:#7dd3fc}
+    .quota-models-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;padding-top:6px;border-top:1px solid var(--ag-border-subcard)}
+    .quota-model-chip{
+      display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:5px;
+      font-size:10.5px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-secondary);
+    }
+    .quota-model-chip[data-current-model="true"]{border-color:rgba(56,189,248,0.5);color:var(--ag-text-primary);font-weight:600}
+    .quota-chip-efforts{font-size:9.5px;color:var(--ag-text-muted)}
+    .quota-chip-notice{font-size:9.5px;padding:0 4px;border-radius:3px;background:rgba(24,144,255,0.14);color:#60a5fa}
+    .quota-chip-noperm{font-size:9.5px;padding:0 4px;border-radius:3px;background:rgba(168,85,247,0.15);color:#c084fc}
+    .quota-basis-note{margin-top:10px;padding-top:8px;border-top:1px solid var(--ag-border-subtle);font-size:10.5px;color:var(--ag-text-muted);line-height:1.45}
+    .quota-usage-tip{margin-top:6px;padding:6px 8px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);font-size:10.5px;color:var(--ag-text-secondary);line-height:1.45}
 
     h3{margin:0;font-size:13px;font-weight:600;color:var(--ag-text-primary)}
     h4{margin:12px 0 5px;font-size:11.5px;font-weight:600;color:var(--ag-text-secondary)}
@@ -1198,7 +1428,6 @@
       background:#ef4444;box-shadow:0 0 0 1.5px var(--ag-bg-panel);
     }
     .update-popover{
-      box-sizing:border-box;
       position:fixed;top:80px;right:24px;width:290px;max-width:calc(100vw - 28px);
       background:var(--ag-unified-bg,#1e1e24);border:1px solid var(--ag-float-border,rgba(255,255,255,0.18));
       border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.3);
@@ -1378,7 +1607,7 @@
     .ctx-mode-tab-desc{font-size:9.5px;color:var(--ag-text-muted);line-height:1.3}
 
     /* 厂商分组模型列表 */
-    .ctx-model-list{display:flex;flex-direction:column;gap:6px;max-height:175px;overflow-y:auto;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:7px;margin-bottom:8px}
+    .ctx-model-list{display:flex;flex-direction:column;gap:6px;max-height:175px;overflow-y:auto;overflow-anchor:none;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:7px;margin-bottom:8px}
     .ctx-model-group{display:flex;flex-direction:column;gap:3px}
     .ctx-model-group-hdr{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:600;color:var(--ag-text-muted);padding:2px 4px}
     .ctx-product-row{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;text-align:left;background:transparent;border:1px solid transparent;border-radius:5px;padding:5px 7px;cursor:pointer;color:var(--ag-text-secondary);font-size:11px;transition:background .12s ease,border-color .12s ease}
@@ -1389,8 +1618,39 @@
     .ctx-product-row-notice-tag{font-size:9.5px;padding:0 4px;border-radius:3px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);color:#f59e0b;flex-shrink:0}
     .ctx-product-row-left{display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden}
     .ctx-product-row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .ctx-product-row-right{display:flex;align-items:center;gap:4px;flex-shrink:0;font-size:10px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
+    .ctx-product-row-right{display:flex;align-items:center;gap:5px;flex-shrink:0;font-size:10px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
     .ctx-product-row-val.is-conflict{color:#f59e0b;font-weight:600}
+
+    /* 模型列表 / 下拉 / 卡片小额度圆环芯片（贴近原生 UI，保留状态文字与数值） */
+    .ctx-model-quota-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 6px 1px 4px;border-radius:999px;background:rgba(127,127,127,0.10);border:1px solid rgba(127,127,127,0.18);font-size:10px;font-weight:600;line-height:14px;font-variant-numeric:tabular-nums;color:var(--ag-text-secondary);white-space:nowrap;flex-shrink:0;transition:border-color .18s ease,background-color .18s ease,color .18s ease}
+    .ctx-model-quota-chip.is-dropdown{padding:1px 5px 1px 4px;font-size:9.5px}
+    .ctx-model-quota-chip.is-card{padding:1.5px 7px 1.5px 5px;font-size:10px}
+    .ctx-quota-ring-svg{width:13px;height:13px;display:block;flex-shrink:0;overflow:visible}
+    .ctx-quota-ring-track{stroke:var(--ag-custom-ring-track,var(--ag-ring-track-default))}
+    .ctx-quota-ring-fill{stroke:#22c55e;transition:stroke-dashoffset .24s cubic-bezier(0.22,1,0.36,1),stroke .18s ease,opacity .15s ease}
+    .ctx-model-quota-chip[data-quota-state="available"]{background:rgba(34,197,94,0.10);border-color:rgba(34,197,94,0.28);color:#4ade80}
+    .ctx-model-quota-chip[data-quota-state="available"] .ctx-quota-ring-fill{stroke:#22c55e}
+    .ctx-model-quota-chip[data-quota-state="low"]{background:rgba(245,158,11,0.11);border-color:rgba(245,158,11,0.32);color:#fbbf24}
+    .ctx-model-quota-chip[data-quota-state="low"] .ctx-quota-ring-fill{stroke:#f59e0b}
+    .ctx-model-quota-chip[data-quota-state="exhausted"]{background:rgba(239,68,68,0.11);border-color:rgba(239,68,68,0.32);color:#f87171}
+    .ctx-model-quota-chip[data-quota-state="exhausted"] .ctx-quota-ring-fill{stroke:#ef4444}
+    .ctx-model-quota-chip[data-quota-state="no_permission"]{background:rgba(168,85,247,0.11);border-color:rgba(168,85,247,0.30);color:#c084fc}
+    .ctx-model-quota-chip[data-quota-state="no_permission"] .ctx-quota-ring-fill{stroke:#a855f7}
+    .ctx-model-quota-chip[data-quota-state="stale"]{background:rgba(234,179,8,0.10);border-color:rgba(234,179,8,0.30);color:#facc15}
+    .ctx-model-quota-chip[data-quota-state="stale"] .ctx-quota-ring-fill{stroke:#eab308;opacity:0.85}
+    .ctx-model-quota-chip[data-quota-state="error"]{background:rgba(249,115,22,0.10);border-color:rgba(249,115,22,0.30);color:#fb923c}
+    .ctx-model-quota-chip[data-quota-state="error"] .ctx-quota-ring-fill{stroke:#f97316}
+    .ctx-model-quota-chip[data-quota-state="unknown"]{background:rgba(127,127,127,0.08);border-color:rgba(127,127,127,0.20);color:var(--ag-text-muted)}
+    .ctx-model-quota-chip[data-quota-state="unknown"] .ctx-quota-ring-fill{stroke:var(--ag-text-muted);opacity:0.65}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="available"]{color:#15803d}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="low"]{color:#b45309}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="exhausted"]{color:#dc2626}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="no_permission"]{color:#7e22ce}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="stale"]{color:#a16207}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="error"]{color:#ea580c}
+    .ctx-card-vendor-left{display:inline-flex;align-items:center;gap:6px;min-width:0}
+    .ctx-card-quota-slot{display:inline-flex;align-items:center;margin-left:auto;flex-shrink:0}
+    .ctx-card-quota-slot[hidden]{display:none!important}
 
     /* 模型大卡片 */
     .ctx-detail-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:10px 11px;margin-bottom:8px;display:flex;flex-direction:column;gap:8px}
@@ -1403,7 +1663,7 @@
     .ctx-conflict-btn:hover{background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
 
     .ctx-card-top{display:flex;flex-direction:column;gap:3px}
-    .ctx-card-vendor-row{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--ag-text-muted)}
+    .ctx-card-vendor-row{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10.5px;color:var(--ag-text-muted)}
     .ctx-card-product-name{font-size:13.5px;font-weight:600;color:var(--ag-text-primary);line-height:1.3;overflow-wrap:anywhere;word-break:break-word}
     .ctx-card-efforts-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:10.5px;color:var(--ag-text-secondary)}
     .ctx-card-session-effort{font-weight:600;color:var(--ag-link,#38bdf8)}
@@ -1573,9 +1833,10 @@
       .color-grid{grid-template-columns:1fr}
     }
     @media (prefers-reduced-motion: reduce){
-      *,.ag-unit,.ring-fill,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill{
+      *,.ag-unit,.ring-fill,.quota-ring-fill,.ctx-quota-ring-fill,.ctx-model-quota-chip,.quota-bar-fill,.quota-bar-charge-stage,.quota-bar-charge-fill,.quota-bar-charge-sheen,.quota-refresh-icon,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill{
         transition:none!important;animation:none!important;
       }
+      .quota-bar-charge-stage{display:none!important}
     }
     @media(max-width:500px){
       #panel{width:calc(100vw - 24px)}
@@ -1585,1344 +1846,1736 @@
     }
   </style>
 
-  <!-- 顶部基本单元 1: 上下文小圆环 -->
-  <button id="badge" class="ag-unit ag-unit-ring" type="button" aria-label="会话与上下文统计" data-i18n-aria="badge.aria" aria-describedby="context-tooltip" aria-expanded="false">
-    <svg id="ring-svg" class="ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-      <circle id="ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"></circle>
-      <circle id="ring-fill" class="ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1" stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
-    </svg>
-    <span id="badge-pct-val" class="badge-pct-val">--%</span>
-    <div id="bar-wrap" class="sr-only" aria-hidden="true"><div id="bar-fill" class="meter-bar-fill"></div></div>
-    <span id="amount" class="sr-only" data-i18n="badge.reading">读取中…</span>
-    <span id="hover-wrap" class="sr-only"><span id="hover-extra"></span></span>
-  </button>
+  <!-- 顶部基本单元 0: 模型额度圆环入口（工具组最左侧） -->
+<button id="badge-quota" class="ag-unit ag-unit-quota" type="button" aria-label="模型剩余额度与重置状态"
+  data-i18n-aria="badge.quota.aria" aria-expanded="false" data-quota-state="unknown" title="模型额度看板">
+  <svg id="quota-ring-svg" class="quota-ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+    <circle id="quota-ring-track" class="quota-ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1">
+    </circle>
+    <circle id="quota-ring-fill" class="quota-ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"
+      stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="10 30.84" stroke-dashoffset="0"></circle>
+  </svg>
+  <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
+  <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
+</button>
 
-  <!-- 顶部基本单元 2: 输出速度 (tok/s) -->
-  <button id="badge-speed" class="ag-unit" type="button" aria-label="模型输出速度与耗时统计" data-i18n-aria="badge.speed.aria" aria-expanded="false">
-    <span class="speed-icon" aria-hidden="true">⚡</span>
-    <span id="speed-amount">-- tok/s</span>
-    <span id="speed-hover-extra" class="sr-only"></span>
-  </button>
-
-  <!-- 顶部基本单元 3: 累计 Token 用量（细线统计图标） -->
-  <button id="badge-tokens" class="ag-unit" type="button" aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria" aria-expanded="false">
-    <span class="token-fire-dot" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V9M8 13V4M13 13V7"></path></svg></span>
-    <span id="token-amount">--</span>
-    <span id="token-hover-extra" class="sr-only"></span>
-  </button>
-
-  <!-- 顶部基本单元 4: 一键启动 CLI 模式 -->
-  <button id="badge-cli" class="ag-unit" type="button" aria-label="启动 CLI" data-i18n-aria="badge.cli.aria" title="一键启动 Antigravity CLI 终端（自动进入当前项目目录）" data-i18n-title="badge.cli.title">
-    <span class="cli-icon" aria-hidden="true">&gt;_</span>
-    <span id="cli-label">CLI</span>
-  </button>
-
-  <!-- 顶部基本单元 5: 窄屏溢出菜单按钮 -->
-  <button id="badge-overflow" class="ag-unit" type="button" aria-label="更多统计指标" data-i18n-aria="badge.overflow.aria" aria-expanded="false">
-    <svg class="overflow-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <circle cx="3.5" cy="8" r="1.25"></circle>
-      <circle cx="8" cy="8" r="1.25"></circle>
-      <circle cx="12.5" cy="8" r="1.25"></circle>
-    </svg>
-  </button>
-
-  <!-- CLI 启动反馈提示气泡 -->
-  <div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
-
-  <!-- 上下文圆环悬停/聚焦信息气泡（参考图三层结构） -->
-  <div id="context-tooltip" role="tooltip" data-visible="false" data-placement="bottom">
-    <div id="ctx-tip-title" class="ctx-tip-title" data-i18n="tip.title.default">上下文窗口：</div>
-    <div id="ctx-tip-pct" class="ctx-tip-pct" data-i18n="tip.pct.notReady">数据尚未就绪</div>
-    <div id="ctx-tip-detail" class="ctx-tip-detail" data-i18n="tip.detail.loading">正在读取当前会话上下文用量…</div>
+<!-- 顶部基本单元 1: 上下文小圆环（与速度入口紧邻） -->
+<button id="badge" class="ag-unit ag-unit-ring" type="button" aria-label="会话与上下文统计" data-i18n-aria="badge.aria"
+  aria-describedby="context-tooltip" aria-expanded="false">
+  <svg id="ring-svg" class="ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+    <circle id="ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"></circle>
+    <circle id="ring-fill" class="ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1" stroke-linecap="round"
+      transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
+  </svg>
+  <span id="badge-pct-val" class="badge-pct-val">--%</span>
+  <div id="bar-wrap" class="sr-only" aria-hidden="true">
+    <div id="bar-fill" class="meter-bar-fill"></div>
   </div>
+  <span id="amount" class="sr-only" data-i18n="badge.reading">读取中…</span>
+  <span id="hover-wrap" class="sr-only"><span id="hover-extra"></span></span>
+</button>
 
-  <!-- 窄屏溢出菜单 -->
-  <div id="overflow-menu" hidden aria-label="更多统计快捷菜单" data-i18n-aria="overflow.aria">
-    <button id="overflow-speed-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span>⚡</span><span data-i18n="overflow.speed">输出速度</span></span>
-      <span id="overflow-speed-val" class="overflow-item-val">-- tok/s</span>
-    </button>
-    <button id="overflow-tokens-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span class="token-fire-dot"></span><span data-i18n="overflow.tokens">Token 用量一览</span></span>
-      <span id="overflow-tokens-val" class="overflow-item-val">--</span>
-    </button>
-    <button id="overflow-cli-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span class="cli-icon">&gt;_</span><span data-i18n="overflow.cli">启动 CLI 终端</span></span>
-      <span id="overflow-cli-val" class="overflow-item-val">agy</span>
-    </button>
-  </div>
+<!-- 顶部基本单元 2: 输出速度 (tok/s) -->
+<button id="badge-speed" class="ag-unit" type="button" aria-label="模型输出速度与耗时统计" data-i18n-aria="badge.speed.aria"
+  aria-expanded="false">
+  <span class="speed-icon" aria-hidden="true">⚡</span>
+  <span id="speed-amount">-- tok/s</span>
+  <span id="speed-hover-extra" class="sr-only"></span>
+</button>
 
-  <!-- 弹出式面板 1: 会话上下文与速度监控 (#panel, 450px) -->
-  <section id="panel" class="ag-panel" hidden aria-label="会话与上下文详情" data-i18n-aria="panel.ctx.aria">
-    <div class="panel-header-bar">
-      <div class="panel-title">
-        <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)" data-i18n="panel.ctx.title">💬 当前会话上下文</span>
-        <span id="v">v0.8.3</span>
+<!-- 顶部基本单元 3: 累计 Token 用量（细线统计图标） -->
+<button id="badge-tokens" class="ag-unit" type="button" aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria"
+  aria-expanded="false">
+  <span class="token-fire-dot" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13" fill="none"
+      stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 13V9M8 13V4M13 13V7"></path>
+    </svg></span>
+  <span id="token-amount">--</span>
+  <span id="token-hover-extra" class="sr-only"></span>
+</button>
+
+<!-- 顶部基本单元 4: 一键启动 CLI 模式 -->
+<button id="badge-cli" class="ag-unit" type="button" aria-label="启动 CLI" data-i18n-aria="badge.cli.aria"
+  title="一键启动 Antigravity CLI 终端（自动进入当前项目目录）" data-i18n-title="badge.cli.title">
+  <span class="cli-icon" aria-hidden="true">&gt;_</span>
+  <span id="cli-label">CLI</span>
+</button>
+
+<!-- 顶部基本单元 5: 窄屏溢出菜单按钮 -->
+<button id="badge-overflow" class="ag-unit" type="button" aria-label="更多统计指标" data-i18n-aria="badge.overflow.aria"
+  aria-expanded="false">
+  <svg class="overflow-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+    <circle cx="3.5" cy="8" r="1.25"></circle>
+    <circle cx="8" cy="8" r="1.25"></circle>
+    <circle cx="12.5" cy="8" r="1.25"></circle>
+  </svg>
+</button>
+
+<!-- CLI 启动反馈提示气泡 -->
+<div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
+
+<!-- 上下文圆环悬停/聚焦信息气泡（参考图三层结构） -->
+<div id="context-tooltip" role="tooltip" data-visible="false" data-placement="bottom">
+  <div id="ctx-tip-title" class="ctx-tip-title" data-i18n="tip.title.default">上下文窗口：</div>
+  <div id="ctx-tip-pct" class="ctx-tip-pct" data-i18n="tip.pct.notReady">数据尚未就绪</div>
+  <div id="ctx-tip-detail" class="ctx-tip-detail" data-i18n="tip.detail.loading">正在读取当前会话上下文用量…</div>
+</div>
+
+<!-- 窄屏溢出菜单 -->
+<div id="overflow-menu" hidden aria-label="更多统计快捷菜单" data-i18n-aria="overflow.aria">
+  <button id="overflow-quota-btn" class="overflow-item" type="button">
+    <span class="overflow-item-label"><span>◔</span><span data-i18n="overflow.quota">模型额度</span></span>
+    <span id="overflow-quota-val" class="overflow-item-val">--</span>
+  </button>
+  <button id="overflow-speed-btn" class="overflow-item" type="button">
+    <span class="overflow-item-label"><span>⚡</span><span data-i18n="overflow.speed">输出速度</span></span>
+    <span id="overflow-speed-val" class="overflow-item-val">-- tok/s</span>
+  </button>
+  <button id="overflow-tokens-btn" class="overflow-item" type="button">
+    <span class="overflow-item-label"><span class="token-fire-dot"></span><span data-i18n="overflow.tokens">Token
+        用量一览</span></span>
+    <span id="overflow-tokens-val" class="overflow-item-val">--</span>
+  </button>
+  <button id="overflow-cli-btn" class="overflow-item" type="button">
+    <span class="overflow-item-label"><span class="cli-icon">&gt;_</span><span data-i18n="overflow.cli">启动 CLI
+        终端</span></span>
+    <span id="overflow-cli-val" class="overflow-item-val">agy</span>
+  </button>
+</div>
+
+<!-- 弹出式面板 1: 会话上下文与速度监控 (#panel, 450px) -->
+<section id="panel" class="ag-panel" hidden aria-label="会话与上下文详情" data-i18n-aria="panel.ctx.aria">
+  <div class="panel-header-bar">
+    <div class="panel-title">
+      <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
+        data-i18n="panel.ctx.title">💬 当前会话上下文</span>
+      <span id="v">v0.8.4</span>
+    </div>
+    <div class="panel-header-actions ctx-header-actions">
+      <!-- 插件面板三语言快速切换分段按钮 -->
+      <div id="panel-lang-top-segmented" class="ctx-segmented ctx-lang-top-segmented" role="group" aria-label="插件面板语言"
+        data-i18n-aria="settings.panelLang.aria">
+        <button id="btn-top-lang-zh-CN" class="ctx-seg-btn active" type="button" data-panel-lang="zh-CN" title="简体中文"
+          aria-label="简体中文">简</button>
+        <button id="btn-top-lang-zh-TW" class="ctx-seg-btn" type="button" data-panel-lang="zh-TW" title="繁體中文"
+          aria-label="繁體中文">繁</button>
+        <button id="btn-top-lang-en" class="ctx-seg-btn" type="button" data-panel-lang="en" title="English"
+          aria-label="English">EN</button>
       </div>
-      <div class="panel-header-actions ctx-header-actions">
-        <!-- 插件面板三语言快速切换分段按钮 -->
-        <div id="panel-lang-top-segmented" class="ctx-segmented ctx-lang-top-segmented" role="group" aria-label="插件面板语言" data-i18n-aria="settings.panelLang.aria">
-          <button id="btn-top-lang-zh-CN" class="ctx-seg-btn active" type="button" data-panel-lang="zh-CN" title="简体中文" aria-label="简体中文">简</button>
-          <button id="btn-top-lang-zh-TW" class="ctx-seg-btn" type="button" data-panel-lang="zh-TW" title="繁體中文" aria-label="繁體中文">繁</button>
-          <button id="btn-top-lang-en" class="ctx-seg-btn" type="button" data-panel-lang="en" title="English" aria-label="English">EN</button>
+      <button id="btn-github-repo-ctx" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库"
+        data-i18n-aria="header.github.aria" title="打开 GitHub 仓库" data-i18n-title="header.github.aria">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
+          </path>
+        </svg>
+      </button>
+      <button id="btn-check-update-ctx" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新"
+        data-i18n-aria="header.update.aria" title="检查插件更新" data-i18n-title="header.update.aria"
+        style="position:relative">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path>
+        </svg>
+        <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
+      </button>
+      <button id="btn-panel-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置"
+        data-i18n-aria="header.palette.aria" title="外观与调色设置" data-i18n-title="header.palette.aria">🎨</button>
+      <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
+        data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）"
+        data-i18n-title="header.theme.title">🌓</button>
+      <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情"
+        data-i18n-aria="header.close.aria">×</button>
+    </div>
+  </div>
+
+  <div id="view-context">
+    <!-- 顶部 4 分页标签栏 -->
+    <div id="ctx-tabs-bar" class="ctx-tabs-bar" role="tablist" aria-label="上下文面板分页" data-i18n-aria="tabs.aria">
+      <button id="tab-ctx-session" class="ctx-tab-btn active" type="button" role="tab" aria-selected="true"
+        data-ctx-tab="session" data-i18n="tab.session">当前会话</button>
+      <button id="tab-ctx-models" class="ctx-tab-btn" type="button" role="tab" aria-selected="false"
+        data-ctx-tab="models" data-i18n="tab.models">模型设置</button>
+      <button id="tab-ctx-speed" class="ctx-tab-btn" type="button" role="tab" aria-selected="false" data-ctx-tab="speed"
+        data-i18n="tab.speed">速度对比</button>
+      <button id="tab-ctx-settings" class="ctx-tab-btn" type="button" role="tab" aria-selected="false"
+        data-ctx-tab="settings" data-i18n="tab.settings">配置</button>
+    </div>
+
+    <!-- 分页 1: 当前会话 -->
+    <div id="pane-ctx-session" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-session">
+      <!-- 本轮与当前会话实时 API 等值参考行 -->
+      <div id="round-cost-bar" class="round-cost-bar" title="当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）"
+        data-i18n-title="session.costBar.title">
+        <span id="round-cost-text" style="font-weight:600;color:var(--ag-text-primary)"
+          data-i18n="session.roundCost.dash">本轮估值：—</span>
+        <span id="session-cost-text" style="font-size:11px;color:var(--ag-text-muted)"
+          data-i18n="session.sessionCost.dash">当前会话合计：—</span>
+      </div>
+
+      <!-- 卡片 1: 核心用量速览 -->
+      <div id="key-summary">
+        <div class="key-header"><span class="key-title" data-i18n="session.keySummary.title">⭐ 核心用量速览</span><span
+            id="key-badge" class="key-pill pill-muted" data-i18n="session.badge.reading">读取中</span></div>
+        <div class="key-bar-track">
+          <div id="key-bar-fill" class="key-bar-fill"></div>
         </div>
-        <button id="btn-github-repo-ctx" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库" data-i18n-aria="header.github.aria" title="打开 GitHub 仓库" data-i18n-title="header.github.aria">
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+        <div class="key-stats">
+          <div class="key-stat">
+            <div class="key-stat-label" data-i18n="session.stat.used">当前已用</div>
+            <div id="key-used" class="key-stat-val">—</div>
+          </div>
+          <div class="key-stat">
+            <div class="key-stat-label" data-i18n="session.stat.limit">预算上限</div>
+            <div id="key-limit" class="key-stat-val">—</div>
+          </div>
+          <div class="key-stat">
+            <div class="key-stat-label" data-i18n="session.stat.remaining">剩余可用</div>
+            <div id="key-remaining" class="key-stat-val">—</div>
+          </div>
+        </div>
+        <div id="key-takeaway" class="key-takeaway" data-i18n="session.keyTakeaway.loading">正在计算核心指标…</div>
+      </div>
+
+      <!-- 卡片 2: 输出速度与延迟速览 -->
+      <div id="speed-summary"
+        style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:8px 0 10px;">
+        <div class="key-header">
+          <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));"
+            data-i18n="session.speedSummary.title">⚡ 最新生成速度与耗时</span>
+          <span id="speed-badge" class="key-pill pill-muted" data-i18n="session.speed.pending">待生成</span>
+        </div>
+        <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
+          <div class="key-stat">
+            <div class="key-stat-label" data-i18n="session.speed.rate">输出速度</div>
+            <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—
+            </div>
+          </div>
+          <div class="key-stat">
+            <div class="key-stat-label" data-i18n="session.speed.duration">生成耗时</div>
+            <div id="speed-duration" class="key-stat-val">—</div>
+          </div>
+          <div class="key-stat">
+            <div class="key-stat-label" data-i18n="session.speed.ttft">首字延迟</div>
+            <div id="speed-ttft" class="key-stat-val">—</div>
+          </div>
+          <div class="key-stat">
+            <div class="key-stat-label" data-i18n="session.speed.tokens">本次输出</div>
+            <div id="speed-tokens" class="key-stat-val">—</div>
+          </div>
+        </div>
+        <div id="speed-takeaway" class="key-takeaway" data-i18n="session.speed.wait">等待首次模型输出产生速度统计…</div>
+      </div>
+
+      <!-- 紧凑上下文设置入口卡片 -->
+      <div id="ctx-compact-card" class="ctx-compact-card">
+        <div class="ctx-compact-info">
+          <div class="ctx-compact-title" data-i18n="session.compact.title">上下文设置</div>
+          <div class="ctx-compact-meta">
+            <span><span data-i18n="session.compact.savedLabel">本模型已保存：</span><strong
+                id="ctx-compact-saved">未单独设置（使用默认）</strong></span>
+            <span><span data-i18n="session.compact.clientLabel">客户端当前使用：</span><strong
+                id="ctx-compact-client">状态读取中…</strong></span>
+          </div>
+        </div>
+        <button id="btn-goto-model-settings" class="ctx-compact-link-btn" type="button"
+          data-i18n="session.compact.gotoModels">去模型设置 ›</button>
+      </div>
+
+      <!-- 底层技术参数与附件审计 -->
+      <div class="tech-drawer">
+        <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
+          <span class="drawer-trigger-left">
+            <span data-i18n="session.techDrawer.title">📋 底层技术参数与附件审计</span>
+          </span>
+          <span id="drawer-arrow" class="drawer-arrow" data-i18n="session.techDrawer.expand">▼ 点击展开明细</span>
         </button>
-        <button id="btn-check-update-ctx" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" data-i18n-aria="header.update.aria" title="检查插件更新" data-i18n-title="header.update.aria" style="position:relative">
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
-          <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
-        </button>
-        <button id="btn-panel-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置" data-i18n-aria="header.palette.aria" title="外观与调色设置" data-i18n-title="header.palette.aria">🎨</button>
-        <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）" data-i18n-title="header.theme.title">🌓</button>
-        <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情" data-i18n-aria="header.close.aria">×</button>
+        <div id="drawer-body" class="drawer-body" style="display:none;">
+          <p id="status" data-i18n="session.tech.checking">正在核对请求和附件…</p>
+          <p id="model"></p>
+          <h4 data-i18n="session.tech.latestReq">最近一次模型请求</h4>
+          <dl>
+            <dt data-i18n="session.tech.reqStatus">请求状态</dt>
+            <dd id="request-status">—</dd>
+            <dt data-i18n="session.tech.actual">模型返回输入＋输出</dt>
+            <dd id="actual">—</dd>
+            <dt data-i18n="session.tech.estimate">客户端估算（可能漏附件）</dt>
+            <dd id="estimate">—</dd>
+            <dt data-i18n="session.tech.budget">客户端预算字段</dt>
+            <dd id="budget">—</dd>
+            <dt data-i18n="session.tech.serviceLimit">该次报错的服务端限制</dt>
+            <dd id="service-limit">—</dd>
+            <dt data-i18n="session.tech.percent">相对客户端预算</dt>
+            <dd id="percent">—</dd>
+          </dl>
+          <h4 data-i18n="session.tech.sessionHeading">整个会话累计内容 · 本地估算</h4>
+          <dl>
+            <dt data-i18n="session.tech.sessionTotal">可读取文本 token 估算</dt>
+            <dd id="session-total" data-i18n="session.tech.scanning">扫描中…</dd>
+            <dt data-i18n="session.tech.characters">实际读取文字字符数</dt>
+            <dd id="characters">—</dd>
+            <dt data-i18n="session.tech.user">用户消息</dt>
+            <dd id="user">—</dd>
+            <dt data-i18n="session.tech.assistant">模型回复</dt>
+            <dd id="assistant">—</dd>
+            <dt data-i18n="session.tech.thinking">可见思考内容</dt>
+            <dd id="thinking">—</dd>
+            <dt data-i18n="session.tech.tools">工具调用与工具输出</dt>
+            <dd id="tools">—</dd>
+            <dt data-i18n="session.tech.summaries">历史压缩摘要</dt>
+            <dd id="summaries">—</dd>
+            <dt data-i18n="session.tech.system">当前系统提示与工具定义</dt>
+            <dd id="system">—</dd>
+            <dt data-i18n="session.tech.attachments">上传／输出附件文本</dt>
+            <dd id="attachment-total">—</dd>
+            <dt data-i18n="session.tech.steps">历史步骤完整性</dt>
+            <dd id="steps">—</dd>
+          </dl>
+          <p id="coverage"></p>
+          <h4 data-i18n="session.tech.filesHeading">附件逐项检查</h4>
+          <div id="files"></div><button id="refresh" type="button" data-i18n="session.tech.rescan">重新扫描整段会话与附件</button>
+          <p id="note" data-i18n-html="session.tech.note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M
+            判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token
+            区间是文本启发式估算，不是 Gemini
+            分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。</p>
+          <p id="updated"></p>
+        </div>
       </div>
     </div>
 
-    <div id="view-context">
-      <!-- 顶部 4 分页标签栏 -->
-      <div id="ctx-tabs-bar" class="ctx-tabs-bar" role="tablist" aria-label="上下文面板分页" data-i18n-aria="tabs.aria">
-        <button id="tab-ctx-session" class="ctx-tab-btn active" type="button" role="tab" aria-selected="true" data-ctx-tab="session" data-i18n="tab.session">当前会话</button>
-        <button id="tab-ctx-models" class="ctx-tab-btn" type="button" role="tab" aria-selected="false" data-ctx-tab="models" data-i18n="tab.models">模型设置</button>
-        <button id="tab-ctx-speed" class="ctx-tab-btn" type="button" role="tab" aria-selected="false" data-ctx-tab="speed" data-i18n="tab.speed">速度对比</button>
-        <button id="tab-ctx-settings" class="ctx-tab-btn" type="button" role="tab" aria-selected="false" data-ctx-tab="settings" data-i18n="tab.settings">配置</button>
+    <!-- 分页 2: 模型设置 -->
+    <div id="pane-ctx-models" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-models" hidden>
+      <!-- 1. 客户端状态条（全局一条） -->
+      <div id="ctx-client-status-bar" class="ctx-status-bar">
+        <div class="ctx-status-bar-main">
+          <div class="ctx-status-left">
+            <span id="ctx-client-status-text" class="ctx-client-status-text"
+              data-i18n="status.client.reading">客户端当前使用：状态读取中…</span>
+            <span id="unlock-badge" class="key-pill pill-muted" data-i18n="status.badge.reading">状态读取中…</span>
+          </div>
+          <div class="ctx-status-actions">
+            <button id="btn-restart-host" class="unlock-btn unlock-btn-primary ctx-restart-btn" type="button" hidden
+              data-i18n="models.restartBtn">重启客户端使设置生效</button>
+          </div>
+        </div>
+        <div id="ctx-restart-mismatch-note" class="ctx-status-subnote" hidden></div>
+        <div id="ctx-manual-restart-note" class="ctx-manual-restart-note" hidden data-i18n="models.manualRestart">
+          请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。</div>
+        <div id="ctx-restart-confirm" class="ctx-restart-confirm" hidden>
+          <div class="ctx-restart-confirm-text" data-i18n="models.restartConfirm.text">重启会中断正在运行的任务。请先保存未保存的内容。</div>
+          <div class="ctx-restart-confirm-actions">
+            <button id="btn-restart-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="models.restartConfirm.cancel">取消</button>
+            <button id="btn-restart-confirm-go" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="models.restartConfirm.go">重启</button>
+          </div>
+        </div>
+        <div id="ctx-restart-feedback" class="ctx-restart-feedback" hidden></div>
       </div>
 
-      <!-- 分页 1: 当前会话 -->
-      <div id="pane-ctx-session" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-session">
-        <!-- 本轮与当前会话实时 API 等值参考行 -->
-        <div id="round-cost-bar" class="round-cost-bar" title="当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）" data-i18n-title="session.costBar.title">
-          <span id="round-cost-text" style="font-weight:600;color:var(--ag-text-primary)" data-i18n="session.roundCost.dash">本轮估值：—</span>
-          <span id="session-cost-text" style="font-size:11px;color:var(--ag-text-muted)" data-i18n="session.sessionCost.dash">当前会话合计：—</span>
-        </div>
-
-        <!-- 卡片 1: 核心用量速览 -->
-        <div id="key-summary">
-          <div class="key-header"><span class="key-title" data-i18n="session.keySummary.title">⭐ 核心用量速览</span><span id="key-badge" class="key-pill pill-muted" data-i18n="session.badge.reading">读取中</span></div>
-          <div class="key-bar-track"><div id="key-bar-fill" class="key-bar-fill"></div></div>
-          <div class="key-stats"><div class="key-stat"><div class="key-stat-label" data-i18n="session.stat.used">当前已用</div><div id="key-used" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label" data-i18n="session.stat.limit">预算上限</div><div id="key-limit" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label" data-i18n="session.stat.remaining">剩余可用</div><div id="key-remaining" class="key-stat-val">—</div></div></div>
-          <div id="key-takeaway" class="key-takeaway" data-i18n="session.keyTakeaway.loading">正在计算核心指标…</div>
-        </div>
-
-        <!-- 卡片 2: 输出速度与延迟速览 -->
-        <div id="speed-summary" style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:8px 0 10px;">
-          <div class="key-header">
-            <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));" data-i18n="session.speedSummary.title">⚡ 最新生成速度与耗时</span>
-            <span id="speed-badge" class="key-pill pill-muted" data-i18n="session.speed.pending">待生成</span>
-          </div>
-          <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
-            <div class="key-stat">
-              <div class="key-stat-label" data-i18n="session.speed.rate">输出速度</div>
-              <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—</div>
-            </div>
-            <div class="key-stat">
-              <div class="key-stat-label" data-i18n="session.speed.duration">生成耗时</div>
-              <div id="speed-duration" class="key-stat-val">—</div>
-            </div>
-            <div class="key-stat">
-              <div class="key-stat-label" data-i18n="session.speed.ttft">首字延迟</div>
-              <div id="speed-ttft" class="key-stat-val">—</div>
-            </div>
-            <div class="key-stat">
-              <div class="key-stat-label" data-i18n="session.speed.tokens">本次输出</div>
-              <div id="speed-tokens" class="key-stat-val">—</div>
-            </div>
-          </div>
-          <div id="speed-takeaway" class="key-takeaway" data-i18n="session.speed.wait">等待首次模型输出产生速度统计…</div>
-        </div>
-
-        <!-- 紧凑上下文设置入口卡片 -->
-        <div id="ctx-compact-card" class="ctx-compact-card">
-          <div class="ctx-compact-info">
-            <div class="ctx-compact-title" data-i18n="session.compact.title">上下文设置</div>
-            <div class="ctx-compact-meta">
-              <span><span data-i18n="session.compact.savedLabel">本模型已保存：</span><strong id="ctx-compact-saved">未单独设置（使用默认）</strong></span>
-              <span><span data-i18n="session.compact.clientLabel">客户端当前使用：</span><strong id="ctx-compact-client">状态读取中…</strong></span>
-            </div>
-          </div>
-          <button id="btn-goto-model-settings" class="ctx-compact-link-btn" type="button" data-i18n="session.compact.gotoModels">去模型设置 ›</button>
-        </div>
-
-        <!-- 底层技术参数与附件审计 -->
-        <div class="tech-drawer">
-          <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
-            <span class="drawer-trigger-left">
-              <span data-i18n="session.techDrawer.title">📋 底层技术参数与附件审计</span>
-            </span>
-            <span id="drawer-arrow" class="drawer-arrow" data-i18n="session.techDrawer.expand">▼ 点击展开明细</span>
+      <!-- 2. 模式选择器（统一设置 vs 按模型分别设置） -->
+      <div class="ctx-scope-selector-wrap" id="ctx-scope-selector-wrap">
+        <div class="ctx-scope-mode-toggle" role="radiogroup" aria-label="上下文设置模式" data-i18n-aria="models.mode.aria">
+          <button type="button" class="ctx-mode-tab-btn is-active" id="btn-ctx-mode-unified" data-mode="unified"
+            role="radio" aria-checked="true">
+            <span class="ctx-mode-tab-title" data-i18n="models.mode.unifiedTitle">所有模型统一设置</span>
+            <span class="ctx-mode-tab-desc" data-i18n="models.mode.unifiedDesc">设置一次，所有模型使用相同的上下文长度。</span>
           </button>
-          <div id="drawer-body" class="drawer-body" style="display:none;">
-            <p id="status" data-i18n="session.tech.checking">正在核对请求和附件…</p><p id="model"></p>
-            <h4 data-i18n="session.tech.latestReq">最近一次模型请求</h4>
-            <dl><dt data-i18n="session.tech.reqStatus">请求状态</dt><dd id="request-status">—</dd><dt data-i18n="session.tech.actual">模型返回输入＋输出</dt><dd id="actual">—</dd><dt data-i18n="session.tech.estimate">客户端估算（可能漏附件）</dt><dd id="estimate">—</dd><dt data-i18n="session.tech.budget">客户端预算字段</dt><dd id="budget">—</dd><dt data-i18n="session.tech.serviceLimit">该次报错的服务端限制</dt><dd id="service-limit">—</dd><dt data-i18n="session.tech.percent">相对客户端预算</dt><dd id="percent">—</dd></dl>
-            <h4 data-i18n="session.tech.sessionHeading">整个会话累计内容 · 本地估算</h4>
-            <dl><dt data-i18n="session.tech.sessionTotal">可读取文本 token 估算</dt><dd id="session-total" data-i18n="session.tech.scanning">扫描中…</dd><dt data-i18n="session.tech.characters">实际读取文字字符数</dt><dd id="characters">—</dd><dt data-i18n="session.tech.user">用户消息</dt><dd id="user">—</dd><dt data-i18n="session.tech.assistant">模型回复</dt><dd id="assistant">—</dd><dt data-i18n="session.tech.thinking">可见思考内容</dt><dd id="thinking">—</dd><dt data-i18n="session.tech.tools">工具调用与工具输出</dt><dd id="tools">—</dd><dt data-i18n="session.tech.summaries">历史压缩摘要</dt><dd id="summaries">—</dd><dt data-i18n="session.tech.system">当前系统提示与工具定义</dt><dd id="system">—</dd><dt data-i18n="session.tech.attachments">上传／输出附件文本</dt><dd id="attachment-total">—</dd><dt data-i18n="session.tech.steps">历史步骤完整性</dt><dd id="steps">—</dd></dl>
-            <p id="coverage"></p><h4 data-i18n="session.tech.filesHeading">附件逐项检查</h4><div id="files"></div><button id="refresh" type="button" data-i18n="session.tech.rescan">重新扫描整段会话与附件</button>
-            <p id="note" data-i18n-html="session.tech.note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token 区间是文本启发式估算，不是 Gemini 分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。</p>
-            <p id="updated"></p>
-          </div>
+          <button type="button" class="ctx-mode-tab-btn" id="btn-ctx-mode-per-model" data-mode="per_model" role="radio"
+            aria-checked="false">
+            <span class="ctx-mode-tab-title" data-i18n="models.mode.perModelTitle">按模型分别设置</span>
+            <span class="ctx-mode-tab-desc" data-i18n="models.mode.perModelDesc">每个模型分别保存，使用哪个模型，就采用它的上下文长度。</span>
+          </button>
         </div>
       </div>
 
-      <!-- 分页 2: 模型设置 -->
-      <div id="pane-ctx-models" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-models" hidden>
-        <!-- 1. 客户端状态条（全局一条） -->
-        <div id="ctx-client-status-bar" class="ctx-status-bar">
-          <div class="ctx-status-bar-main">
-            <div class="ctx-status-left">
-              <span id="ctx-client-status-text" class="ctx-client-status-text" data-i18n="status.client.reading">客户端当前使用：状态读取中…</span>
-              <span id="unlock-badge" class="key-pill pill-muted" data-i18n="status.badge.reading">状态读取中…</span>
-            </div>
-            <div class="ctx-status-actions">
-              <button id="btn-restart-host" class="unlock-btn unlock-btn-primary ctx-restart-btn" type="button" hidden data-i18n="models.restartBtn">重启客户端使设置生效</button>
-            </div>
-          </div>
-          <div id="ctx-restart-mismatch-note" class="ctx-status-subnote" hidden></div>
-          <div id="ctx-manual-restart-note" class="ctx-manual-restart-note" hidden data-i18n="models.manualRestart">请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。</div>
-          <div id="ctx-restart-confirm" class="ctx-restart-confirm" hidden>
-            <div class="ctx-restart-confirm-text" data-i18n="models.restartConfirm.text">重启会中断正在运行的任务。请先保存未保存的内容。</div>
-            <div class="ctx-restart-confirm-actions">
-              <button id="btn-restart-cancel" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="models.restartConfirm.cancel">取消</button>
-              <button id="btn-restart-confirm-go" class="unlock-btn unlock-btn-primary" type="button" data-i18n="models.restartConfirm.go">重启</button>
-            </div>
-          </div>
-          <div id="ctx-restart-feedback" class="ctx-restart-feedback" hidden></div>
-        </div>
-
-        <!-- 2. 模式选择器（统一设置 vs 按模型分别设置） -->
-        <div class="ctx-scope-selector-wrap" id="ctx-scope-selector-wrap">
-          <div class="ctx-scope-mode-toggle" role="radiogroup" aria-label="上下文设置模式" data-i18n-aria="models.mode.aria">
-            <button type="button" class="ctx-mode-tab-btn is-active" id="btn-ctx-mode-unified" data-mode="unified" role="radio" aria-checked="true">
-              <span class="ctx-mode-tab-title" data-i18n="models.mode.unifiedTitle">所有模型统一设置</span>
-              <span class="ctx-mode-tab-desc" data-i18n="models.mode.unifiedDesc">设置一次，所有模型使用相同的上下文长度。</span>
-            </button>
-            <button type="button" class="ctx-mode-tab-btn" id="btn-ctx-mode-per-model" data-mode="per_model" role="radio" aria-checked="false">
-              <span class="ctx-mode-tab-title" data-i18n="models.mode.perModelTitle">按模型分别设置</span>
-              <span class="ctx-mode-tab-desc" data-i18n="models.mode.perModelDesc">每个模型分别保存，使用哪个模型，就采用它的上下文长度。</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 3. 模型查看与切换条（仅在分别设置模式下呈现） -->
-        <div class="ctx-models-toolbar" id="ctx-models-toolbar" hidden>
-          <div class="ctx-header-model-ctrl">
-            <span id="ctx-model-selector-role" class="ctx-selector-role-lbl" data-i18n="panel.ctx.viewModel">查看模型</span>
-            <select id="ctx-model-select" class="ctx-model-select" aria-label="查看模型" data-i18n-aria="panel.ctx.viewModel" style="display:none"></select>
-            <div id="ctx-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-header-dropdown">
-              <div id="ctx-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0" title="按厂商查看不同模型的上下文设置" data-i18n-title="panel.ctx.viewModelTitle">
-                <span id="ctx-model-dropdown-label" class="ag-dropdown-label" data-i18n="panel.ctx.loadingModels">正在读取模型…</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
-                </div>
+      <!-- 3. 模型查看与切换条（仅在分别设置模式下呈现） -->
+      <div class="ctx-models-toolbar" id="ctx-models-toolbar" hidden>
+        <div class="ctx-header-model-ctrl">
+          <span id="ctx-model-selector-role" class="ctx-selector-role-lbl" data-i18n="panel.ctx.viewModel">查看模型</span>
+          <select id="ctx-model-select" class="ctx-model-select" aria-label="查看模型" data-i18n-aria="panel.ctx.viewModel"
+            style="display:none"></select>
+          <div id="ctx-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-header-dropdown">
+            <div id="ctx-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0"
+              title="按厂商查看不同模型的上下文设置" data-i18n-title="panel.ctx.viewModelTitle">
+              <span id="ctx-model-dropdown-label" class="ag-dropdown-label"
+                data-i18n="panel.ctx.loadingModels">正在读取模型…</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
               </div>
-              <div id="ctx-model-dropdown-menu" class="ag-dropdown-menu ctx-model-dropdown-menu"></div>
             </div>
-            <button id="btn-ctx-back-current" class="ctx-mini-link-btn" type="button" hidden title="回到当前会话正在使用的模型" data-i18n="panel.ctx.backCurrent" data-i18n-title="panel.ctx.backCurrentTitle">回到当前模型</button>
+            <div id="ctx-model-dropdown-menu" class="ag-dropdown-menu ctx-model-dropdown-menu"></div>
           </div>
-          <div class="ctx-selector-hint" data-i18n="panel.ctx.viewModelHint">仅查看模型配置与实测数据；切换聊天模型请在输入框右侧选择。</div>
+          <button id="btn-ctx-back-current" class="ctx-mini-link-btn" type="button" hidden title="回到当前会话正在使用的模型"
+            data-i18n="panel.ctx.backCurrent" data-i18n-title="panel.ctx.backCurrentTitle">回到当前模型</button>
+        </div>
+        <div class="ctx-selector-hint" data-i18n="panel.ctx.viewModelHint">仅查看模型配置与实测数据；切换聊天模型请在输入框右侧选择。</div>
+      </div>
+
+      <!-- 4. 模型列表（按厂商分组，仅在分别设置模式下呈现） -->
+      <div id="ctx-model-list" class="ctx-model-list" aria-label="按厂商分组的模型产品列表" data-i18n-aria="models.list.aria"
+        hidden></div>
+
+      <!-- 5. 选中模型的大卡片（主视图只展示当前模式、当前模型、当前使用长度；详细信息折叠至抽屉） -->
+      <div id="ctx-model-card" class="ctx-detail-card">
+        <div id="ctx-conflict-banner" class="ctx-conflict-banner" hidden>
+          <div class="ctx-conflict-title" data-i18n="models.conflict.title">这个模型的不同档位保存过不同长度，请选一个统一值。</div>
+          <div id="ctx-conflict-rows" class="ctx-conflict-rows"></div>
         </div>
 
-        <!-- 4. 模型列表（按厂商分组，仅在分别设置模式下呈现） -->
-        <div id="ctx-model-list" class="ctx-model-list" aria-label="按厂商分组的模型产品列表" data-i18n-aria="models.list.aria" hidden></div>
-
-        <!-- 5. 选中模型的大卡片（主视图只展示当前模式、当前模型、当前使用长度；详细信息折叠至抽屉） -->
-        <div id="ctx-model-card" class="ctx-detail-card">
-          <div id="ctx-conflict-banner" class="ctx-conflict-banner" hidden>
-            <div class="ctx-conflict-title" data-i18n="models.conflict.title">这个模型的不同档位保存过不同长度，请选一个统一值。</div>
-            <div id="ctx-conflict-rows" class="ctx-conflict-rows"></div>
-          </div>
-
-          <div class="ctx-card-top">
-            <div class="ctx-card-vendor-row">
+        <div class="ctx-card-top">
+          <div class="ctx-card-vendor-row">
+            <span class="ctx-card-vendor-left">
               <span id="ctx-card-vendor-dot" class="ag-vendor-dot"></span>
               <span id="ctx-card-vendor-name" class="ctx-card-vendor-name">—</span>
-            </div>
-            <div id="ctx-card-product-name" class="ctx-card-product-name" data-i18n="models.card.waiting">等待读取模型…</div>
-            <div class="ctx-card-efforts-row">
-              <span id="ctx-card-efforts-list" class="ctx-card-efforts-list" data-i18n="models.card.effortsEmpty">可用档位：—</span>
-              <span id="ctx-card-session-effort" class="ctx-card-session-effort" hidden>当前会话：—</span>
-            </div>
-          </div>
-
-          <!-- 主界面极简核心展示区：当前模式、当前模型、当前使用长度 -->
-          <div class="ctx-summary-highlight-grid" id="ctx-summary-highlight-grid">
-            <div class="ctx-summary-item">
-              <span class="ctx-summary-label" data-i18n="models.summary.mode">当前模式</span>
-              <span class="ctx-summary-value" id="ctx-summary-mode" data-i18n="models.mode.unifiedTitle">所有模型统一设置</span>
-            </div>
-            <div class="ctx-summary-item">
-              <span class="ctx-summary-label" data-i18n="models.summary.model">当前模型</span>
-              <span class="ctx-summary-value" id="ctx-summary-model">—</span>
-            </div>
-            <div class="ctx-summary-item ctx-summary-item-length">
-              <span class="ctx-summary-label" data-i18n="models.summary.length">目标设置与状态</span>
-              <div class="ctx-summary-length-row">
-                <span class="ctx-summary-value ctx-length-val" id="ctx-summary-length" data-i18n="models.summary.modelDefault">使用模型默认值</span>
-                <span class="key-pill pill-muted" id="ctx-summary-status-pill" hidden>待重启生效</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 模型能力与当前生效参考（紧邻预算设置区，不隐藏） -->
-          <div class="ctx-cap-ref-card" id="ctx-capability-ref">
-            <div class="ctx-cap-ref-grid">
-              <div class="ctx-cap-item">
-                <span class="ctx-cap-lbl" data-i18n="models.cap.window">模型总窗口</span>
-                <span class="ctx-cap-val" id="ctx-cap-window">—</span>
-              </div>
-              <div class="ctx-cap-item">
-                <span class="ctx-cap-lbl" data-i18n="models.cap.output">最大输出</span>
-                <span class="ctx-cap-val" id="ctx-cap-output">—</span>
-              </div>
-              <div class="ctx-cap-item">
-                <span class="ctx-cap-lbl" data-i18n="models.cap.modelMax">模型理论输入上限</span>
-                <span class="ctx-cap-val" id="ctx-cap-model-max">—</span>
-              </div>
-              <div class="ctx-cap-item">
-                <span class="ctx-cap-lbl" data-i18n="models.cap.clientPolicy">当前客户端限制</span>
-                <span class="ctx-cap-val" id="ctx-cap-client-policy">—</span>
-              </div>
-              <div class="ctx-cap-item">
-                <span class="ctx-cap-lbl" data-i18n="models.cap.defaultCap">当前策略默认预算</span>
-                <span class="ctx-cap-val" id="ctx-cap-default">—</span>
-              </div>
-              <div class="ctx-cap-item">
-                <span class="ctx-cap-lbl" data-i18n="models.cap.range">当前可采纳输入范围</span>
-                <span class="ctx-cap-val" id="ctx-cap-range">16,384 – 2,097,152</span>
-              </div>
-              <div class="ctx-cap-item ctx-cap-item-wide">
-                <span class="ctx-cap-lbl" data-i18n="models.cap.formulaLbl">来源与计算说明</span>
-                <span class="ctx-cap-sub" id="ctx-cap-formula">等待读取模型元数据…</span>
-              </div>
-            </div>
-            <div class="ctx-cap-verify-strip" id="ctx-cap-verify-strip">
-              <span class="ctx-cap-v-cell"><em data-i18n="models.cap.saved">已保存</em> <strong id="ctx-ref-saved">—</strong></span>
-              <span class="ctx-cap-v-cell"><em data-i18n="models.cap.sent">最近请求携带</em> <strong id="ctx-ref-sent">尚无本次验证</strong></span>
-              <span class="ctx-cap-v-cell"><em data-i18n="models.cap.adopted">后端实际采用</em> <strong id="ctx-ref-adopted">尚无本次验证</strong></span>
-            </div>
-            <div class="ctx-unified-proj" id="ctx-unified-projection" hidden></div>
-          </div>
-
-          <!-- 折叠抽屉：详细信息（配置来源、请求参数、底座状态、实测预算） -->
-          <div class="ctx-card-details-drawer">
-            <button id="btn-toggle-card-details" class="drawer-trigger ctx-card-drawer-trigger" aria-expanded="false" type="button">
-              <span class="drawer-trigger-left" data-i18n="models.card.detailsToggle">详细信息（配置来源、请求参数与预算验证）</span>
-              <span id="ctx-card-drawer-arrow" class="drawer-arrow" data-i18n="session.techDrawer.expand">▼ 点击展开明细</span>
-            </button>
-            <div id="ctx-card-drawer-body" class="drawer-body ctx-card-drawer-body" style="display:none;">
-              <div class="ctx-card-metrics">
-                <div class="ctx-metric-row ctx-metric-saved">
-                  <span class="ctx-metric-label" data-i18n="models.card.saved">已保存</span>
-                  <span class="ctx-metric-value" id="ctx-card-saved" data-i18n="status.savedDefault">未单独设置（使用默认）</span>
-                  <span class="ctx-metric-side" data-i18n="models.card.savedSide">为这个模型记下的长度</span>
-                </div>
-                <div class="ctx-metric-row ctx-metric-request">
-                  <span class="ctx-metric-label" data-i18n="models.card.request">请求携带</span>
-                  <span class="ctx-metric-value" id="ctx-card-request">默认透传</span>
-                  <span class="ctx-metric-side" data-i18n="models.card.requestSide">本次请求发送给底座的参数</span>
-                </div>
-                <div class="ctx-metric-row ctx-metric-client">
-                  <span class="ctx-metric-label" data-i18n="models.card.client">底座状态</span>
-                  <span class="ctx-metric-value">
-                    <span id="ctx-card-client" data-i18n="status.badge.reading">状态读取中…</span>
-                    <span id="ctx-card-client-tag" class="key-pill pill-muted" data-i18n="status.badge.reading">状态读取中…</span>
-                  </span>
-                  <span class="ctx-metric-side" data-i18n="models.card.clientSide">底座运行模式</span>
-                </div>
-                <div class="ctx-metric-row ctx-metric-observed">
-                  <span class="ctx-metric-label" data-i18n="models.card.observedBudget">实测预算</span>
-                  <div class="ctx-metric-value-col">
-                    <span class="ctx-metric-value" id="ctx-card-observed-budget" data-i18n="models.card.observedBudgetNone">尚未观测</span>
-                    <span class="ctx-metric-pre-restart" id="ctx-card-pre-restart-budget" hidden></span>
-                    <span class="ctx-metric-service-limit" id="ctx-card-service-limit" hidden></span>
-                  </div>
-                  <span class="ctx-metric-side" data-i18n="models.card.observedBudgetSide">对话中实际分配</span>
-                </div>
-                <div class="ctx-metric-row ctx-metric-convo">
-                  <span class="ctx-metric-label" data-i18n="models.card.convoIdTitle">对应会话</span>
-                  <span class="ctx-metric-value" id="ctx-card-convo">—</span>
-                  <span class="ctx-metric-side">发生调用的会话标识</span>
-                </div>
-                <div class="ctx-metric-row ctx-metric-diagnosis">
-                  <span class="ctx-metric-label" data-i18n="models.card.diagnosisTitle">生效诊断</span>
-                  <span class="ctx-metric-value" id="ctx-card-diagnosis">—</span>
-                  <span class="ctx-metric-side">目标值与观测值比对结果</span>
-                </div>
-                <div class="ctx-metric-row ctx-metric-observed">
-                  <span class="ctx-metric-label" data-i18n="models.card.observedSpeed">实测速度</span>
-                  <div class="ctx-metric-value-col">
-                    <div id="ctx-card-observed-speed" class="ctx-speed-effort-lines" data-i18n="models.card.observedSpeedNone">暂无实测数据</div>
-                    <button id="btn-card-goto-speed" class="ctx-inline-link-btn" type="button" data-i18n="models.card.gotoSpeed">查看速度对比 ›</button>
-                  </div>
-                </div>
-                <div class="ctx-metric-row ctx-metric-client" id="ctx-card-tier-caps-row" hidden>
-                  <span class="ctx-metric-label" data-i18n="models.card.tierCaps">档位能力</span>
-                  <div class="ctx-metric-value-col">
-                    <div id="ctx-card-tier-caps" class="ctx-speed-effort-lines">—</div>
-                  </div>
-                </div>
-              </div>
-              <div id="ctx-card-hints" class="ctx-card-hints" hidden></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 4. 设置操作区 -->
-        <div class="ctx-adjust-box" id="ctx-adjust-box">
-          <div class="ctx-preset-grid" id="ctx-preset-grid" role="group" aria-label="上下文长度预设" data-i18n-aria="models.preset.aria">
-            <button type="button" class="ctx-preset-btn" data-ctx-mode="default" data-ctx-limit="">
-              <span class="ctx-preset-title" data-i18n="models.preset.default">恢复客户端默认</span>
-              <span class="ctx-preset-sub" data-i18n="models.preset.defaultSub">清除请求覆盖，由当前底座策略决定</span>
-            </button>
-            <button type="button" class="ctx-preset-btn" data-ctx-mode="fixed" data-ctx-limit="128000">
-              <span class="ctx-preset-title">128,000</span>
-              <span class="ctx-preset-sub" data-i18n="models.preset.p128Sub">插件预设 · 128,000 tokens</span>
-            </button>
-            <button type="button" class="ctx-preset-btn" data-ctx-mode="fixed" data-ctx-limit="256000">
-              <span class="ctx-preset-title">256,000</span>
-              <span class="ctx-preset-sub" data-i18n="models.preset.p256Sub">插件预设 · 256,000 tokens</span>
-            </button>
-            <button type="button" class="ctx-preset-btn" data-ctx-mode="fixed" data-ctx-limit="512000">
-              <span class="ctx-preset-title">512,000</span>
-              <span class="ctx-preset-sub" data-i18n="models.preset.p512Sub">插件预设 · 512,000 tokens</span>
-            </button>
-            <button type="button" class="ctx-preset-btn" data-ctx-mode="model_max" data-ctx-limit="">
-              <span class="ctx-preset-title" data-i18n="models.preset.modelMax">按模型最大可用</span>
-              <span class="ctx-preset-sub" id="ctx-preset-modelmax-sub" data-i18n="models.preset.modelMaxSub">总窗口 - 最大输出（需元数据）</span>
-            </button>
-            <button type="button" class="ctx-preset-btn" data-ctx-mode="dynamic" data-ctx-limit="">
-              <span class="ctx-preset-title" data-i18n="models.preset.dynamic">动态跟随</span>
-              <span class="ctx-preset-sub" data-i18n="models.preset.dynamicSub">不固定数值，按底座动态计算</span>
-            </button>
-          </div>
-
-          <div class="ctx-custom-row">
-            <label for="ctx-custom-limit-input" class="ctx-small-label" data-i18n="models.custom.label">自定义长度</label>
-            <div class="ctx-custom-input-wrap">
-              <input id="ctx-custom-limit-input" class="ctx-custom-input" type="text" inputmode="numeric" placeholder="输入整数，例如 300000" data-i18n-placeholder="models.custom.placeholder" autocomplete="off">
-              <span class="ctx-input-unit">tokens</span>
-            </div>
-          </div>
-          <div id="ctx-limit-validation" class="ctx-validation-msg" data-i18n="models.validation.defaultRange">可设置范围：16,384 – 2,097,152 tokens。</div>
-
-          <div class="ctx-pref-actions">
-            <button id="btn-save-model-ctx" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="models.btn.save">保存</button>
-            <button id="btn-apply-unlock" class="unlock-btn unlock-btn-primary" type="button" data-i18n="models.btn.saveApply">保存并应用</button>
-            <button id="btn-reset-model-ctx" class="ctx-text-action-btn" type="button" data-i18n="models.btn.reset">恢复默认</button>
-          </div>
-
-          <div id="ctx-reset-notice" class="ctx-reset-notice" hidden></div>
-
-          <div class="ctx-plain-help">
-            <div data-i18n="models.help.line1">保存：记住当前模型的设置。底座引擎：一次性解除 256K 限制并启用动态跟随。</div>
-            <div data-i18n="models.help.line2">各模型根据保存的设置独立生效，多会话与模型切换互不干扰。</div>
-          </div>
-
-          <div id="unlock-result-box" class="unlock-result-box" style="display:none;">
-            <div id="unlock-result-text" class="unlock-result-text"></div>
-            <div id="unlock-result-actions" class="unlock-result-actions" hidden>
-              <button id="btn-unlock-result-restart" class="unlock-btn unlock-btn-primary" type="button" hidden data-i18n="models.restartBtn">重启客户端使设置生效</button>
-              <button id="btn-unlock-result-retry" class="unlock-btn unlock-btn-secondary" type="button" hidden data-i18n="models.btn.retryApply">重新检测并应用</button>
-            </div>
-            <div id="unlock-result-manual" class="ctx-result-manual-note" hidden data-i18n="models.manualRestart">请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。</div>
-          </div>
-        </div>
-
-        <!-- 5. 唯一保留的折叠区：详细说明 -->
-        <div class="tech-drawer" id="context-unlock-drawer">
-          <button id="btn-toggle-unlock-details" class="drawer-trigger" aria-expanded="false" type="button">
-            <span class="drawer-trigger-left">
-              <span data-i18n="models.details.title">详细说明</span>
             </span>
-            <span id="unlock-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+            <span id="ctx-card-quota-slot" class="ctx-card-quota-slot" hidden></span>
+          </div>
+          <div id="ctx-card-product-name" class="ctx-card-product-name" data-i18n="models.card.waiting">等待读取模型…</div>
+          <div class="ctx-card-efforts-row">
+            <span id="ctx-card-efforts-list" class="ctx-card-efforts-list"
+              data-i18n="models.card.effortsEmpty">可用档位：—</span>
+            <span id="ctx-card-session-effort" class="ctx-card-session-effort" hidden>当前会话：—</span>
+          </div>
+        </div>
+
+        <!-- 主界面极简核心展示区：当前模式、当前模型、当前使用长度 -->
+        <div class="ctx-summary-highlight-grid" id="ctx-summary-highlight-grid">
+          <div class="ctx-summary-item">
+            <span class="ctx-summary-label" data-i18n="models.summary.mode">当前模式</span>
+            <span class="ctx-summary-value" id="ctx-summary-mode" data-i18n="models.mode.unifiedTitle">所有模型统一设置</span>
+          </div>
+          <div class="ctx-summary-item">
+            <span class="ctx-summary-label" data-i18n="models.summary.model">当前模型</span>
+            <span class="ctx-summary-value" id="ctx-summary-model">—</span>
+          </div>
+          <div class="ctx-summary-item ctx-summary-item-length">
+            <span class="ctx-summary-label" data-i18n="models.summary.length">目标设置与状态</span>
+            <div class="ctx-summary-length-row">
+              <span class="ctx-summary-value ctx-length-val" id="ctx-summary-length"
+                data-i18n="models.summary.modelDefault">使用模型默认值</span>
+              <span class="key-pill pill-muted" id="ctx-summary-status-pill" hidden>待重启生效</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 模型能力与当前生效参考（紧邻预算设置区，不隐藏） -->
+        <div class="ctx-cap-ref-card" id="ctx-capability-ref">
+          <div class="ctx-cap-ref-grid">
+            <div class="ctx-cap-item">
+              <span class="ctx-cap-lbl" data-i18n="models.cap.window">模型总窗口</span>
+              <span class="ctx-cap-val" id="ctx-cap-window">—</span>
+            </div>
+            <div class="ctx-cap-item">
+              <span class="ctx-cap-lbl" data-i18n="models.cap.output">最大输出</span>
+              <span class="ctx-cap-val" id="ctx-cap-output">—</span>
+            </div>
+            <div class="ctx-cap-item">
+              <span class="ctx-cap-lbl" data-i18n="models.cap.modelMax">模型理论输入上限</span>
+              <span class="ctx-cap-val" id="ctx-cap-model-max">—</span>
+            </div>
+            <div class="ctx-cap-item">
+              <span class="ctx-cap-lbl" data-i18n="models.cap.clientPolicy">当前客户端限制</span>
+              <span class="ctx-cap-val" id="ctx-cap-client-policy">—</span>
+            </div>
+            <div class="ctx-cap-item">
+              <span class="ctx-cap-lbl" data-i18n="models.cap.defaultCap">当前策略默认预算</span>
+              <span class="ctx-cap-val" id="ctx-cap-default">—</span>
+            </div>
+            <div class="ctx-cap-item">
+              <span class="ctx-cap-lbl" data-i18n="models.cap.range">当前可采纳输入范围</span>
+              <span class="ctx-cap-val" id="ctx-cap-range">16,384 – 2,097,152</span>
+            </div>
+            <div class="ctx-cap-item ctx-cap-item-wide">
+              <span class="ctx-cap-lbl" data-i18n="models.cap.formulaLbl">来源与计算说明</span>
+              <span class="ctx-cap-sub" id="ctx-cap-formula">等待读取模型元数据…</span>
+            </div>
+          </div>
+          <div class="ctx-cap-verify-strip" id="ctx-cap-verify-strip">
+            <span class="ctx-cap-v-cell"><em data-i18n="models.cap.saved">已保存</em> <strong
+                id="ctx-ref-saved">—</strong></span>
+            <span class="ctx-cap-v-cell"><em data-i18n="models.cap.sent">最近请求携带</em> <strong
+                id="ctx-ref-sent">尚无本次验证</strong></span>
+            <span class="ctx-cap-v-cell"><em data-i18n="models.cap.adopted">后端实际采用</em> <strong
+                id="ctx-ref-adopted">尚无本次验证</strong></span>
+          </div>
+          <div class="ctx-unified-proj" id="ctx-unified-projection" hidden></div>
+        </div>
+
+        <!-- 折叠抽屉：详细信息（配置来源、请求参数、底座状态、实测预算） -->
+        <div class="ctx-card-details-drawer">
+          <button id="btn-toggle-card-details" class="drawer-trigger ctx-card-drawer-trigger" aria-expanded="false"
+            type="button">
+            <span class="drawer-trigger-left" data-i18n="models.card.detailsToggle">详细信息（配置来源、请求参数与预算验证）</span>
+            <span id="ctx-card-drawer-arrow" class="drawer-arrow" data-i18n="session.techDrawer.expand">▼ 点击展开明细</span>
           </button>
-          <div id="unlock-drawer-body" class="drawer-body" style="display:none;">
+          <div id="ctx-card-drawer-body" class="drawer-body ctx-card-drawer-body" style="display:none;">
+            <div class="ctx-card-metrics">
+              <div class="ctx-metric-row ctx-metric-saved">
+                <span class="ctx-metric-label" data-i18n="models.card.saved">已保存</span>
+                <span class="ctx-metric-value" id="ctx-card-saved" data-i18n="status.savedDefault">未单独设置（使用默认）</span>
+                <span class="ctx-metric-side" data-i18n="models.card.savedSide">为这个模型记下的长度</span>
+              </div>
+              <div class="ctx-metric-row ctx-metric-request">
+                <span class="ctx-metric-label" data-i18n="models.card.request">请求携带</span>
+                <span class="ctx-metric-value" id="ctx-card-request">默认透传</span>
+                <span class="ctx-metric-side" data-i18n="models.card.requestSide">本次请求发送给底座的参数</span>
+              </div>
+              <div class="ctx-metric-row ctx-metric-client">
+                <span class="ctx-metric-label" data-i18n="models.card.client">底座状态</span>
+                <span class="ctx-metric-value">
+                  <span id="ctx-card-client" data-i18n="status.badge.reading">状态读取中…</span>
+                  <span id="ctx-card-client-tag" class="key-pill pill-muted"
+                    data-i18n="status.badge.reading">状态读取中…</span>
+                </span>
+                <span class="ctx-metric-side" data-i18n="models.card.clientSide">底座运行模式</span>
+              </div>
+              <div class="ctx-metric-row ctx-metric-observed">
+                <span class="ctx-metric-label" data-i18n="models.card.observedBudget">实测预算</span>
+                <div class="ctx-metric-value-col">
+                  <span class="ctx-metric-value" id="ctx-card-observed-budget"
+                    data-i18n="models.card.observedBudgetNone">尚未观测</span>
+                  <span class="ctx-metric-pre-restart" id="ctx-card-pre-restart-budget" hidden></span>
+                  <span class="ctx-metric-service-limit" id="ctx-card-service-limit" hidden></span>
+                </div>
+                <span class="ctx-metric-side" data-i18n="models.card.observedBudgetSide">对话中实际分配</span>
+              </div>
+              <div class="ctx-metric-row ctx-metric-convo">
+                <span class="ctx-metric-label" data-i18n="models.card.convoIdTitle">对应会话</span>
+                <span class="ctx-metric-value" id="ctx-card-convo">—</span>
+                <span class="ctx-metric-side">发生调用的会话标识</span>
+              </div>
+              <div class="ctx-metric-row ctx-metric-diagnosis">
+                <span class="ctx-metric-label" data-i18n="models.card.diagnosisTitle">生效诊断</span>
+                <span class="ctx-metric-value" id="ctx-card-diagnosis">—</span>
+                <span class="ctx-metric-side">目标值与观测值比对结果</span>
+              </div>
+              <div class="ctx-metric-row ctx-metric-observed">
+                <span class="ctx-metric-label" data-i18n="models.card.observedSpeed">实测速度</span>
+                <div class="ctx-metric-value-col">
+                  <div id="ctx-card-observed-speed" class="ctx-speed-effort-lines"
+                    data-i18n="models.card.observedSpeedNone">暂无实测数据</div>
+                  <button id="btn-card-goto-speed" class="ctx-inline-link-btn" type="button"
+                    data-i18n="models.card.gotoSpeed">查看速度对比 ›</button>
+                </div>
+              </div>
+              <div class="ctx-metric-row ctx-metric-client" id="ctx-card-tier-caps-row" hidden>
+                <span class="ctx-metric-label" data-i18n="models.card.tierCaps">档位能力</span>
+                <div class="ctx-metric-value-col">
+                  <div id="ctx-card-tier-caps" class="ctx-speed-effort-lines">—</div>
+                </div>
+              </div>
+            </div>
+            <div id="ctx-card-hints" class="ctx-card-hints" hidden></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. 设置操作区 -->
+      <div class="ctx-adjust-box" id="ctx-adjust-box">
+        <div class="ctx-preset-grid" id="ctx-preset-grid" role="group" aria-label="上下文长度预设"
+          data-i18n-aria="models.preset.aria">
+          <button type="button" class="ctx-preset-btn" data-ctx-mode="default" data-ctx-limit="">
+            <span class="ctx-preset-title" data-i18n="models.preset.default">恢复客户端默认</span>
+            <span class="ctx-preset-sub" data-i18n="models.preset.defaultSub">清除请求覆盖，由当前底座策略决定</span>
+          </button>
+          <button type="button" class="ctx-preset-btn" data-ctx-mode="fixed" data-ctx-limit="128000">
+            <span class="ctx-preset-title">128,000</span>
+            <span class="ctx-preset-sub" data-i18n="models.preset.p128Sub">插件预设 · 128,000 tokens</span>
+          </button>
+          <button type="button" class="ctx-preset-btn" data-ctx-mode="fixed" data-ctx-limit="256000">
+            <span class="ctx-preset-title">256,000</span>
+            <span class="ctx-preset-sub" data-i18n="models.preset.p256Sub">插件预设 · 256,000 tokens</span>
+          </button>
+          <button type="button" class="ctx-preset-btn" data-ctx-mode="fixed" data-ctx-limit="512000">
+            <span class="ctx-preset-title">512,000</span>
+            <span class="ctx-preset-sub" data-i18n="models.preset.p512Sub">插件预设 · 512,000 tokens</span>
+          </button>
+          <button type="button" class="ctx-preset-btn" data-ctx-mode="model_max" data-ctx-limit="">
+            <span class="ctx-preset-title" data-i18n="models.preset.modelMax">按模型最大可用</span>
+            <span class="ctx-preset-sub" id="ctx-preset-modelmax-sub" data-i18n="models.preset.modelMaxSub">总窗口 -
+              最大输出（需元数据）</span>
+          </button>
+          <button type="button" class="ctx-preset-btn" data-ctx-mode="dynamic" data-ctx-limit="">
+            <span class="ctx-preset-title" data-i18n="models.preset.dynamic">动态跟随</span>
+            <span class="ctx-preset-sub" data-i18n="models.preset.dynamicSub">不固定数值，按底座动态计算</span>
+          </button>
+        </div>
+
+        <div class="ctx-custom-row">
+          <label for="ctx-custom-limit-input" class="ctx-small-label" data-i18n="models.custom.label">自定义长度</label>
+          <div class="ctx-custom-input-wrap">
+            <input id="ctx-custom-limit-input" class="ctx-custom-input" type="text" inputmode="numeric"
+              placeholder="输入整数，例如 300000" data-i18n-placeholder="models.custom.placeholder" autocomplete="off">
+            <span class="ctx-input-unit">tokens</span>
+          </div>
+        </div>
+        <div id="ctx-limit-validation" class="ctx-validation-msg" data-i18n="models.validation.defaultRange">
+          可设置范围：16,384 – 2,097,152 tokens。</div>
+
+        <div class="ctx-pref-actions">
+          <button id="btn-save-model-ctx" class="unlock-btn unlock-btn-secondary" type="button"
+            data-i18n="models.btn.save">保存</button>
+          <button id="btn-apply-unlock" class="unlock-btn unlock-btn-primary" type="button"
+            data-i18n="models.btn.saveApply">保存并应用</button>
+          <button id="btn-reset-model-ctx" class="ctx-text-action-btn" type="button"
+            data-i18n="models.btn.reset">恢复默认</button>
+        </div>
+
+        <div id="ctx-reset-notice" class="ctx-reset-notice" hidden></div>
+
+        <div class="ctx-plain-help">
+          <div data-i18n="models.help.line1">保存：记住当前模型的设置。底座引擎：一次性解除 256K 限制并启用动态跟随。</div>
+          <div data-i18n="models.help.line2">各模型根据保存的设置独立生效，多会话与模型切换互不干扰。</div>
+        </div>
+
+        <div id="unlock-result-box" class="unlock-result-box" style="display:none;">
+          <div id="unlock-result-text" class="unlock-result-text"></div>
+          <div id="unlock-result-actions" class="unlock-result-actions" hidden>
+            <button id="btn-unlock-result-restart" class="unlock-btn unlock-btn-primary" type="button" hidden
+              data-i18n="models.restartBtn">重启客户端使设置生效</button>
+            <button id="btn-unlock-result-retry" class="unlock-btn unlock-btn-secondary" type="button" hidden
+              data-i18n="models.btn.retryApply">重新检测并应用</button>
+          </div>
+          <div id="unlock-result-manual" class="ctx-result-manual-note" hidden data-i18n="models.manualRestart">
+            请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。</div>
+        </div>
+      </div>
+
+      <!-- 5. 唯一保留的折叠区：详细说明 -->
+      <div class="tech-drawer" id="context-unlock-drawer">
+        <button id="btn-toggle-unlock-details" class="drawer-trigger" aria-expanded="false" type="button">
+          <span class="drawer-trigger-left">
+            <span data-i18n="models.details.title">详细说明</span>
+          </span>
+          <span id="unlock-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+        </button>
+        <div id="unlock-drawer-body" class="drawer-body" style="display:none;">
+          <div class="unlock-panel-content">
+            <div class="unlock-notice">
+              <ol class="unlock-notice-list ctx-detail-ol">
+                <li data-i18n-html="models.details.li1"><strong>底座解锁与按模型请求注入的分工</strong>：客户端语言服务原版会对默认与回落预算实施 256,000
+                  tokens 钳位（256K 限制点），并允许远程实验覆写。底座解锁用于一次性开启「动态跟随（Dynamic）」默认策略并屏蔽远程实验覆写；每次发送消息时，插件再按当次请求实际选中的模型在请求参数
+                  <code>checkpointConfig.maxTokenLimit</code> 中写入你设定的预算。若设定超过 256,000 tokens，仍需底座处于「动态跟随」已解锁状态。</li>
+                <li data-i18n-html="models.details.li2">
+                  <strong>多项安全检查点说明</strong>：客户端包含默认/钳位双检查点、远程实验覆写拦截点以及上下文窗口序列上限检查点；本插件只依赖本地偏好配合每次请求参数写入实现按模型隔离，不会在切换模型时反复改写宿主程序文件。
+                </li>
+                <li data-i18n-html="models.details.li3"><strong>恢复客户端默认 vs
+                    按模型最大可用</strong>：「恢复客户端默认」仅清除请求级覆盖参数，把决定权交回当前语言服务的全局策略（若已开启「动态跟随」则走模型动态默认，无法逐模型单切回原版 256K
+                  钳位）；「按模型最大可用」则按 IDE 元数据公式 <code>maxTokens - maxOutputTokens</code> 计算并显式发送该整数上限。</li>
+                <li data-i18n-html="models.details.li4"><strong>几个数字的区别</strong>：
+                  <div>模型总窗口 / 最大输出：来自 IDE 模型目录与步骤元数据，不代表实际已分配配额。</div>
+                  <div>已保存：你为当前模型或统一模式保存的目标值。</div>
+                  <div>最近请求携带 / 后端实际采用：按当前会话与模型轮次严格隔离对照，尚无对应发送时显示「尚无本次验证」。</div>
+                  <div>服务端报错上限：仅当请求被服务端拒绝且报错给出明确数字时出现。</div>
+                </li>
+                <li data-i18n-html="models.details.li5"><strong>工程范围与预设说明</strong>：128,000 / 256,000 / 512,000
+                  属于插件预设；合法自定义工程范围为 16,384 – 2,097,152 任意整数 tokens，真实超长请求能否被服务端接受取决于各模型自身配额与风控策略。</li>
+              </ol>
+            </div>
+
+            <div class="unlock-actions-row">
+              <button id="btn-restore-unlock" class="unlock-btn unlock-btn-secondary" type="button"
+                data-i18n="models.btn.restoreOriginal">客户端恢复原始设置</button>
+              <button id="btn-refresh-unlock" class="unlock-btn unlock-btn-secondary" type="button" title="重新检测状态"
+                data-i18n="models.btn.refreshStatus" data-i18n-title="models.btn.refreshStatus">刷新状态</button>
+            </div>
+
+            <div id="unlock-status-desc" class="unlock-desc" style="margin-top:8px;"
+              data-i18n="models.status.detecting">正在检测当前 Antigravity 状态…</div>
+            <dl class="unlock-meta-dl">
+              <dt data-i18n="models.meta.mode">当前配置 / 实测</dt>
+              <dd id="unlock-meta-mode">—</dd>
+              <dt data-i18n="models.meta.target">目标进程</dt>
+              <dd id="unlock-meta-target">—</dd>
+              <dt data-i18n="models.meta.arch">系统架构</dt>
+              <dd id="unlock-meta-arch">—</dd>
+              <dt data-i18n="models.meta.backup">原版备份状态</dt>
+              <dd id="unlock-meta-backup">—</dd>
+            </dl>
+
+            <div class="unlock-credit-bar">
+              <div class="unlock-credit-left">
+                <span class="unlock-credit-lbl" data-i18n="models.credit.source">方案来源：</span>
+                <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank"
+                  rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
+                  title="点击在系统默认浏览器中打开原作者帖子" data-i18n="models.credit.author">原作者帖子 (Linux.do @23375) ↗</a>
+                <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接"
+                  data-i18n="models.credit.copy">📋 复制链接</button>
+              </div>
+              <span class="unlock-adapter-note" data-i18n="models.credit.adapter">本项目负责 Node.js 适配与集成</span>
+            </div>
+            <div id="unlock-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 分页 3: 速度对比 -->
+    <div id="pane-ctx-speed" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-speed" hidden>
+      <div class="ctx-speed-toolbar">
+        <div class="ctx-segmented" role="group" aria-label="时间范围" data-i18n-aria="speed.range.aria">
+          <button id="speed-range-7d" class="ctx-seg-btn active" type="button" data-speed-range="7"
+            data-i18n="speed.range.7d">近 7 天</button>
+          <button id="speed-range-30d" class="ctx-seg-btn" type="button" data-speed-range="30"
+            data-i18n="speed.range.30d">近 30 天</button>
+          <button id="speed-range-all" class="ctx-seg-btn" type="button" data-speed-range="all"
+            data-i18n="speed.range.all">全部</button>
+        </div>
+        <div id="speed-origin-filter-wrap" class="ctx-segmented" role="group" aria-label="样本来源"
+          data-i18n-aria="speed.origin.aria">
+          <button id="speed-origin-all" class="ctx-seg-btn active" type="button" data-speed-origin="all"
+            data-i18n="speed.origin.all">全部来源</button>
+          <button id="speed-origin-chat" class="ctx-seg-btn" type="button" data-speed-origin="chat"
+            data-i18n="speed.origin.chat">日常对话</button>
+        </div>
+      </div>
+
+      <!-- 柱状图卡片 -->
+      <div class="ctx-chart-card">
+        <div class="ctx-chart-header">
+          <span id="speed-bar-title" class="ctx-chart-title" data-i18n="speed.barTitle.tps">输出速度对比</span>
+          <div class="ctx-segmented" role="group" aria-label="对比指标" data-i18n-aria="speed.metric.aria">
+            <button id="speed-metric-tps" class="ctx-seg-btn active" type="button" data-speed-metric="tps"
+              data-i18n="speed.metric.tps">输出速度</button>
+            <button id="speed-metric-ttft" class="ctx-seg-btn" type="button" data-speed-metric="ttft"
+              data-i18n="speed.metric.ttft">首字延迟</button>
+            <button id="speed-metric-duration" class="ctx-seg-btn" type="button" data-speed-metric="duration"
+              data-i18n="speed.metric.duration">总耗时</button>
+          </div>
+        </div>
+        <div id="speed-bar-empty" class="ctx-speed-empty" hidden data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
+        <div id="speed-bar-chart-wrap" class="ctx-svg-wrap" style="position:relative;">
+          <svg id="speed-bar-svg" class="ctx-speed-svg" role="img" aria-label="各模型与档位速度对比柱状图"
+            data-i18n-aria="speed.barSvg.aria"></svg>
+          <div id="speed-bar-tooltip" class="ctx-chart-tooltip" hidden></div>
+        </div>
+        <div id="speed-bar-note" class="ctx-chart-note" data-i18n="speed.barNote">以各模型与档位的中位数统计；不足 3
+          条标注“样本少”。总耗时受输出长度影响，条件相近时才可比较。</div>
+      </div>
+
+      <!-- 单模型折线图卡片 -->
+      <div class="ctx-chart-card">
+        <div class="ctx-chart-header ctx-line-header">
+          <span class="ctx-chart-title" data-i18n="speed.lineTitle">单模型速度趋势</span>
+          <div id="speed-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-speed-dropdown">
+            <div id="speed-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0"
+              title="选择一个模型与档位查看速度变化" data-i18n-title="speed.linePickTitle">
+              <span id="speed-model-dropdown-label" class="ag-dropdown-label"
+                data-i18n="speed.lineNoModel">暂无模型记录</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </div>
+            </div>
+            <div id="speed-model-dropdown-menu" class="ag-dropdown-menu"></div>
+          </div>
+        </div>
+        <div id="speed-line-empty" class="ctx-speed-empty" data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
+        <div id="speed-line-chart-wrap" class="ctx-svg-wrap" style="position:relative;" hidden>
+          <svg id="speed-line-svg" class="ctx-speed-svg" role="img" aria-label="所选模型与档位历史输出速度折线图"
+            data-i18n-aria="speed.lineSvg.aria"></svg>
+          <div id="speed-line-tooltip" class="ctx-chart-tooltip" hidden></div>
+        </div>
+      </div>
+
+      <div id="speed-active-test-note" class="ctx-active-test-note" data-i18n="speed.activeTestNote">
+        主动测试：未接通。目前没有可靠的指定模型调用入口，暂时只能使用日常对话的实测记录。</div>
+    </div>
+
+    <!-- 设置与系统配置 (第四分页: 配置 / setting) -->
+    <div id="pane-ctx-settings" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-settings" hidden>
+      <!-- 1. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
+      <div class="ctx-settings-card" id="enhance-preset-card">
+        <div class="ctx-settings-card-hdr">
+          <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
+          <span id="enhance-global-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+        </div>
+        <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">正常安装默认保持客户端原样。下方列出推荐增强组合；只有你勾选并确认后才会实际写入。
+        </div>
+        <div class="ctx-preset-checklist">
+          <label class="ctx-preset-check-item">
+            <input id="chk-rec-prompt" type="checkbox" checked>
+            <div class="ctx-preset-check-meta">
+              <strong data-i18n="enhance.preset.itemPrompt">系统提示词 4 档（极简防幻觉）</strong>
+              <span data-i18n="enhance.preset.itemPromptSub">精简模板套话并保留真实工具契约；仅作用于系统提示，不能保证模型永不犯错。</span>
+            </div>
+          </label>
+          <label class="ctx-preset-check-item">
+            <input id="chk-rec-title" type="checkbox" checked>
+            <div class="ctx-preset-check-meta">
+              <strong data-i18n="enhance.preset.itemTitle">自动中文会话标题</strong>
+              <span data-i18n="enhance.preset.itemTitleSub">新会话自动生成简体中文标题（等长替换指令文本，不破坏结构）。</span>
+            </div>
+          </label>
+          <label class="ctx-preset-check-item">
+            <input id="chk-rec-lang" type="checkbox" checked>
+            <div class="ctx-preset-check-meta">
+              <strong data-i18n="enhance.preset.itemLang">客户端简体中文界面（Antigravity 本身）</strong>
+              <span data-i18n="enhance.preset.itemLangSub">仅改变桌面端壳层中文，不影响你选择的插件面板语言。</span>
+            </div>
+          </label>
+          <label class="ctx-preset-check-item">
+            <input id="chk-rec-ctx" type="checkbox" checked>
+            <div class="ctx-preset-check-meta">
+              <strong data-i18n="enhance.preset.itemCtx">上下文模式：跟随模型</strong>
+              <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>
+            </div>
+          </label>
+        </div>
+        <div class="ctx-settings-card-actions">
+          <button id="btn-enhance-preset-apply" class="unlock-btn unlock-btn-primary" type="button"
+            data-i18n="enhance.preset.applyBtn">应用所选推荐配置</button>
+          <button id="btn-enhance-restore-all" class="unlock-btn unlock-btn-danger" type="button"
+            data-i18n="enhance.restoreAll.btn">全部恢复官方默认</button>
+        </div>
+        <div id="enhance-preset-confirm" class="ctx-enhance-confirm" hidden>
+          <div id="enhance-preset-confirm-text"></div>
+          <div class="ctx-enhance-confirm-actions">
+            <button id="btn-enhance-confirm-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="models.restartConfirm.cancel">取消</button>
+            <button id="btn-enhance-confirm-go" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="enhance.confirm.go">确认应用</button>
+          </div>
+        </div>
+        <div id="enhance-global-result" class="unlock-result-box" style="display:none;">
+          <div id="enhance-global-result-text" class="unlock-result-text"></div>
+          <div id="enhance-global-result-actions" class="unlock-result-actions" hidden>
+            <button id="btn-enhance-restart-ls" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="enhance.btn.restartLs">重启语言服务</button>
+            <button id="btn-enhance-restart-host" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="models.restartBtn">重启客户端使设置生效</button>
+          </div>
+          <div id="enhance-global-manual-note" class="ctx-result-manual-note" hidden data-i18n="models.manualRestart">
+            请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。</div>
+        </div>
+      </div>
+
+      <!-- 2. 客户端界面语言与品牌标题 (Antigravity 本身) -->
+      <div class="ctx-settings-card" id="client-brand-lang-card">
+        <div class="ctx-settings-card-hdr">
+          <div class="ctx-settings-card-title" data-i18n="settings.clientLang.title">🖥️ 客户端界面语言与品牌（Antigravity 本身）
+          </div>
+          <span id="chinese-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+        </div>
+        <div id="chinese-status-desc" class="ctx-settings-card-desc" data-i18n="settings.clientLang.detecting">
+          正在检测桌面端汉化运行状态…</div>
+        <div class="ctx-segmented ctx-lang-segmented" id="client-lang-segmented" role="group" aria-label="客户端界面语言"
+          data-i18n-aria="settings.clientLang.aria">
+          <button id="btn-client-lang-zh-CN" class="ctx-seg-btn" type="button" data-client-lang="zh-CN">简体中文</button>
+          <button id="btn-client-lang-en" class="ctx-seg-btn" type="button" data-client-lang="en">English</button>
+        </div>
+        <div class="ctx-small-label" style="margin-top:8px" data-i18n="enhance.brand.label">左上角品牌文字显示（仅作用于左上角品牌位，不影响
+          Logo、菜单或代码）：</div>
+        <div class="ctx-segmented ctx-lang-segmented" id="brand-title-segmented" role="group" aria-label="品牌名称选项"
+          data-i18n-aria="enhance.brand.aria">
+          <button id="btn-brand-english" class="ctx-seg-btn active" type="button" data-brand-title="english"
+            data-i18n="enhance.brand.english">Antigravity</button>
+          <button id="btn-brand-hidden" class="ctx-seg-btn" type="button" data-brand-title="hidden"
+            data-i18n="enhance.brand.hidden">隐藏</button>
+          <button id="btn-brand-translated" class="ctx-seg-btn" type="button" data-brand-title="translated"
+            data-i18n="enhance.brand.translated">反重力</button>
+        </div>
+        <div id="brand-apply-feedback" class="ctx-brand-feedback" style="display:none;"></div>
+        <div id="client-lang-license-note" class="ctx-client-lang-note" data-i18n="settings.clientLang.licenseNote">
+          说明：此设置控制 Antigravity 客户端本身，与顶部插件面板语言相互独立。切换客户端语言需重新安装/重启客户端后生效。</div>
+        <div class="ctx-settings-card-actions">
+          <button id="btn-toggle-chinese-module" class="unlock-btn unlock-btn-primary" type="button"
+            data-i18n="settings.clientLang.toggle">切换汉化状态</button>
+          <button id="btn-apply-brand-title" class="unlock-btn unlock-btn-secondary" type="button"
+            data-i18n="enhance.brand.applyBtn">保存品牌选择并应用</button>
+        </div>
+      </div>
+
+      <!-- 3. 回答与工具使用规则 (原防幻觉档位) 与自动中文标题 -->
+      <div class="ctx-settings-card" id="enhance-prompt-card">
+        <div class="ctx-settings-card-hdr">
+          <div class="ctx-settings-card-title" data-i18n="enhance.prompt.title">🧠 回答与工具使用规则</div>
+          <span id="enhance-prompt-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+        </div>
+        <!-- 第一层：默认可见的白话说明 -->
+        <div class="ctx-plain-help"
+          style="margin:4px 0 8px 0;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;">
+          <div style="font-size:11.5px;line-height:1.55;color:var(--ag-text-primary);"
+            data-i18n="enhance.prompt.plainIntro">
+            调整客户端给 AI 的工作说明，让它更重视证据：没读过的文件不猜，没运行的测试不说通过。它不会升级模型底层能力，也不能保证回答永远正确。
+          </div>
+          <div id="enhance-tier-current-desc"
+            style="font-size:11px;line-height:1.5;color:var(--ag-text-secondary);margin-top:4px;">
+            当前档位说明加载中…
+          </div>
+        </div>
+        <div class="ctx-enhance-status-grid">
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.prompt">当前检测档位</div>
+            <div id="enhance-stat-prompt" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.title">自动中文标题</div>
+            <div id="enhance-stat-title" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.evidence">证据检测状态</div>
+            <div id="enhance-stat-slots" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.backup">原版内核备份</div>
+            <div id="enhance-stat-backup" class="ctx-enhance-stat-val">—</div>
+          </div>
+        </div>
+        <div id="enhance-tier-grid" class="ctx-tier-grid" role="group" aria-label="规则档位"
+          data-i18n-aria="enhance.prompt.aria">
+          <button id="enhance-tier-0" class="ctx-tier-btn" type="button" data-enhance-tier="0">
+            <span class="ctx-tier-num">0</span>
+            <span class="ctx-tier-name" data-i18n="enhance.tier.0.short">原版</span>
+          </button>
+          <button id="enhance-tier-1" class="ctx-tier-btn" type="button" data-enhance-tier="1">
+            <span class="ctx-tier-num">1</span>
+            <span class="ctx-tier-name" data-i18n="enhance.tier.1.short">基础</span>
+          </button>
+          <button id="enhance-tier-2" class="ctx-tier-btn" type="button" data-enhance-tier="2">
+            <span class="ctx-tier-num">2</span>
+            <span class="ctx-tier-name" data-i18n="enhance.tier.2.short">精简</span>
+          </button>
+          <button id="enhance-tier-3" class="ctx-tier-btn" type="button" data-enhance-tier="3">
+            <span class="ctx-tier-num">3</span>
+            <span class="ctx-tier-name" data-i18n="enhance.tier.3.short">深度</span>
+          </button>
+          <button id="enhance-tier-4" class="ctx-tier-btn" type="button" data-enhance-tier="4">
+            <span class="ctx-tier-num">4</span>
+            <span class="ctx-tier-name" data-i18n="enhance.tier.4.short">极简</span>
+          </button>
+        </div>
+        <div id="enhance-tier-matrix" class="ctx-tier-matrix">
+          <div id="enhance-tier-matrix-title" class="ctx-tier-matrix-title">—</div>
+          <div class="ctx-tier-matrix-row">
+            <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.keeps">保留</span>
+            <span id="enhance-tier-keeps" class="ctx-tier-matrix-v">—</span>
+          </div>
+          <div class="ctx-tier-matrix-row">
+            <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.clears">清空</span>
+            <span id="enhance-tier-clears" class="ctx-tier-matrix-v">—</span>
+          </div>
+          <div class="ctx-tier-matrix-row">
+            <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.replaces">替换</span>
+            <span id="enhance-tier-replaces" class="ctx-tier-matrix-v">—</span>
+          </div>
+          <div class="ctx-tier-matrix-row">
+            <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.meaning">对你的影响</span>
+            <span id="enhance-tier-meaning" class="ctx-tier-matrix-v">—</span>
+          </div>
+        </div>
+        <div id="enhance-hallucination-note" class="ctx-tier-note-warn" data-i18n="enhance.hallucinationNote">
+          说明：规则档位通过精简冗余指引并强化真实工具核对来规范行为。高档位删减提示模板中的工作指引，不等于删除用户文件或工件本身；是否影响具体能力需在对话中实际验证。</div>
+        <label class="ctx-toggle-row">
+          <div class="ctx-toggle-row-text">
+            <span class="ctx-toggle-row-title" data-i18n="enhance.titlePatch.label">自动生成简体中文会话标题</span>
+            <span class="ctx-toggle-row-sub" data-i18n="enhance.titlePatch.sub">等长替换会话命名提示词，不破坏原有长度对齐；支持随时改回官方英文。</span>
+          </div>
+          <input id="chk-enhance-chinese-title" type="checkbox">
+        </label>
+        <div class="ctx-settings-card-actions">
+          <button id="btn-enhance-apply-prompt" class="unlock-btn unlock-btn-primary" type="button"
+            data-i18n="enhance.btn.applyPrompt">应用提示词与标题设置</button>
+          <button id="btn-enhance-refresh" class="unlock-btn unlock-btn-secondary" type="button"
+            data-i18n="models.btn.refreshStatus">刷新状态</button>
+        </div>
+        <div id="enhance-prompt-result" class="unlock-result-box" style="display:none;">
+          <div id="enhance-prompt-result-text" class="unlock-result-text"></div>
+        </div>
+
+        <!-- 第二层：可展开的“详细说明” -->
+        <div class="tech-drawer" id="enhance-details-drawer" style="margin-top:4px">
+          <button id="btn-toggle-enhance-details" class="drawer-trigger" aria-expanded="false" type="button">
+            <span class="drawer-trigger-left" data-i18n="enhance.details.toggle">详细说明：来源范围、三层状态与检测依据</span>
+            <span id="enhance-details-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+          </button>
+          <div id="enhance-details-body" class="drawer-body" style="display:none;">
             <div class="unlock-panel-content">
               <div class="unlock-notice">
-                <ol class="unlock-notice-list ctx-detail-ol">
-                  <li data-i18n-html="models.details.li1"><strong>底座解锁与按模型请求注入的分工</strong>：客户端语言服务原版会对默认与回落预算实施 256,000 tokens 钳位（256K 限制点），并允许远程实验覆写。底座解锁用于一次性开启「动态跟随（Dynamic）」默认策略并屏蔽远程实验覆写；每次发送消息时，插件再按当次请求实际选中的模型在请求参数 <code>checkpointConfig.maxTokenLimit</code> 中写入你设定的预算。若设定超过 256,000 tokens，仍需底座处于「动态跟随」已解锁状态。</li>
-                  <li data-i18n-html="models.details.li2"><strong>多项安全检查点说明</strong>：客户端包含默认/钳位双检查点、远程实验覆写拦截点以及上下文窗口序列上限检查点；本插件只依赖本地偏好配合每次请求参数写入实现按模型隔离，不会在切换模型时反复改写宿主程序文件。</li>
-                  <li data-i18n-html="models.details.li3"><strong>恢复客户端默认 vs 按模型最大可用</strong>：「恢复客户端默认」仅清除请求级覆盖参数，把决定权交回当前语言服务的全局策略（若已开启「动态跟随」则走模型动态默认，无法逐模型单切回原版 256K 钳位）；「按模型最大可用」则按 IDE 元数据公式 <code>maxTokens - maxOutputTokens</code> 计算并显式发送该整数上限。</li>
-                  <li data-i18n-html="models.details.li4"><strong>几个数字的区别</strong>：
-                    <div>模型总窗口 / 最大输出：来自 IDE 模型目录与步骤元数据，不代表实际已分配配额。</div>
-                    <div>已保存：你为当前模型或统一模式保存的目标值。</div>
-                    <div>最近请求携带 / 后端实际采用：按当前会话与模型轮次严格隔离对照，尚无对应发送时显示「尚无本次验证」。</div>
-                    <div>服务端报错上限：仅当请求被服务端拒绝且报错给出明确数字时出现。</div>
-                  </li>
-                  <li data-i18n-html="models.details.li5"><strong>工程范围与预设说明</strong>：128,000 / 256,000 / 512,000 属于插件预设；合法自定义工程范围为 16,384 – 2,097,152 任意整数 tokens，真实超长请求能否被服务端接受取决于各模型自身配额与风控策略。</li>
-                </ol>
-              </div>
-
-              <div class="unlock-actions-row">
-                <button id="btn-restore-unlock" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="models.btn.restoreOriginal">客户端恢复原始设置</button>
-                <button id="btn-refresh-unlock" class="unlock-btn unlock-btn-secondary" type="button" title="重新检测状态" data-i18n="models.btn.refreshStatus" data-i18n-title="models.btn.refreshStatus">刷新状态</button>
-              </div>
-
-              <div id="unlock-status-desc" class="unlock-desc" style="margin-top:8px;" data-i18n="models.status.detecting">正在检测当前 Antigravity 状态…</div>
-              <dl class="unlock-meta-dl">
-                <dt data-i18n="models.meta.mode">当前配置 / 实测</dt><dd id="unlock-meta-mode">—</dd>
-                <dt data-i18n="models.meta.target">目标进程</dt><dd id="unlock-meta-target">—</dd>
-                <dt data-i18n="models.meta.arch">系统架构</dt><dd id="unlock-meta-arch">—</dd>
-                <dt data-i18n="models.meta.backup">原版备份状态</dt><dd id="unlock-meta-backup">—</dd>
-              </dl>
-
-              <div class="unlock-credit-bar">
-                <div class="unlock-credit-left">
-                  <span class="unlock-credit-lbl" data-i18n="models.credit.source">方案来源：</span>
-                  <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank" rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0" title="点击在系统默认浏览器中打开原作者帖子" data-i18n="models.credit.author">原作者帖子 (Linux.do @23375) ↗</a>
-                  <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接" data-i18n="models.credit.copy">📋 复制链接</button>
-                </div>
-                <span class="unlock-adapter-note" data-i18n="models.credit.adapter">本项目负责 Node.js 适配与集成</span>
-              </div>
-              <div id="unlock-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 分页 3: 速度对比 -->
-      <div id="pane-ctx-speed" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-speed" hidden>
-        <div class="ctx-speed-toolbar">
-          <div class="ctx-segmented" role="group" aria-label="时间范围" data-i18n-aria="speed.range.aria">
-            <button id="speed-range-7d" class="ctx-seg-btn active" type="button" data-speed-range="7" data-i18n="speed.range.7d">近 7 天</button>
-            <button id="speed-range-30d" class="ctx-seg-btn" type="button" data-speed-range="30" data-i18n="speed.range.30d">近 30 天</button>
-            <button id="speed-range-all" class="ctx-seg-btn" type="button" data-speed-range="all" data-i18n="speed.range.all">全部</button>
-          </div>
-          <div id="speed-origin-filter-wrap" class="ctx-segmented" role="group" aria-label="样本来源" data-i18n-aria="speed.origin.aria">
-            <button id="speed-origin-all" class="ctx-seg-btn active" type="button" data-speed-origin="all" data-i18n="speed.origin.all">全部来源</button>
-            <button id="speed-origin-chat" class="ctx-seg-btn" type="button" data-speed-origin="chat" data-i18n="speed.origin.chat">日常对话</button>
-          </div>
-        </div>
-
-        <!-- 柱状图卡片 -->
-        <div class="ctx-chart-card">
-          <div class="ctx-chart-header">
-            <span id="speed-bar-title" class="ctx-chart-title" data-i18n="speed.barTitle.tps">输出速度对比</span>
-            <div class="ctx-segmented" role="group" aria-label="对比指标" data-i18n-aria="speed.metric.aria">
-              <button id="speed-metric-tps" class="ctx-seg-btn active" type="button" data-speed-metric="tps" data-i18n="speed.metric.tps">输出速度</button>
-              <button id="speed-metric-ttft" class="ctx-seg-btn" type="button" data-speed-metric="ttft" data-i18n="speed.metric.ttft">首字延迟</button>
-              <button id="speed-metric-duration" class="ctx-seg-btn" type="button" data-speed-metric="duration" data-i18n="speed.metric.duration">总耗时</button>
-            </div>
-          </div>
-          <div id="speed-bar-empty" class="ctx-speed-empty" hidden data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
-          <div id="speed-bar-chart-wrap" class="ctx-svg-wrap" style="position:relative;">
-            <svg id="speed-bar-svg" class="ctx-speed-svg" role="img" aria-label="各模型与档位速度对比柱状图" data-i18n-aria="speed.barSvg.aria"></svg>
-            <div id="speed-bar-tooltip" class="ctx-chart-tooltip" hidden></div>
-          </div>
-          <div id="speed-bar-note" class="ctx-chart-note" data-i18n="speed.barNote">以各模型与档位的中位数统计；不足 3 条标注“样本少”。总耗时受输出长度影响，条件相近时才可比较。</div>
-        </div>
-
-        <!-- 单模型折线图卡片 -->
-        <div class="ctx-chart-card">
-          <div class="ctx-chart-header ctx-line-header">
-            <span class="ctx-chart-title" data-i18n="speed.lineTitle">单模型速度趋势</span>
-            <div id="speed-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-speed-dropdown">
-              <div id="speed-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0" title="选择一个模型与档位查看速度变化" data-i18n-title="speed.linePickTitle">
-                <span id="speed-model-dropdown-label" class="ag-dropdown-label" data-i18n="speed.lineNoModel">暂无模型记录</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
-                </div>
-              </div>
-              <div id="speed-model-dropdown-menu" class="ag-dropdown-menu"></div>
-            </div>
-          </div>
-          <div id="speed-line-empty" class="ctx-speed-empty" data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
-          <div id="speed-line-chart-wrap" class="ctx-svg-wrap" style="position:relative;" hidden>
-            <svg id="speed-line-svg" class="ctx-speed-svg" role="img" aria-label="所选模型与档位历史输出速度折线图" data-i18n-aria="speed.lineSvg.aria"></svg>
-            <div id="speed-line-tooltip" class="ctx-chart-tooltip" hidden></div>
-          </div>
-        </div>
-
-        <div id="speed-active-test-note" class="ctx-active-test-note" data-i18n="speed.activeTestNote">主动测试：未接通。目前没有可靠的指定模型调用入口，暂时只能使用日常对话的实测记录。</div>
-      </div>
-
-      <!-- 设置与系统配置 (第四分页: 配置 / setting) -->
-      <div id="pane-ctx-settings" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-settings" hidden>
-        <!-- 1. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
-        <div class="ctx-settings-card" id="enhance-preset-card">
-          <div class="ctx-settings-card-hdr">
-            <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
-            <span id="enhance-global-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
-          </div>
-          <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">正常安装默认保持客户端原样。下方列出推荐增强组合；只有你勾选并确认后才会实际写入。</div>
-          <div class="ctx-preset-checklist">
-            <label class="ctx-preset-check-item">
-              <input id="chk-rec-prompt" type="checkbox" checked>
-              <div class="ctx-preset-check-meta">
-                <strong data-i18n="enhance.preset.itemPrompt">系统提示词 4 档（极简防幻觉）</strong>
-                <span data-i18n="enhance.preset.itemPromptSub">精简模板套话并保留真实工具契约；仅作用于系统提示，不能保证模型永不犯错。</span>
-              </div>
-            </label>
-            <label class="ctx-preset-check-item">
-              <input id="chk-rec-title" type="checkbox" checked>
-              <div class="ctx-preset-check-meta">
-                <strong data-i18n="enhance.preset.itemTitle">自动中文会话标题</strong>
-                <span data-i18n="enhance.preset.itemTitleSub">新会话自动生成简体中文标题（等长替换指令文本，不破坏结构）。</span>
-              </div>
-            </label>
-            <label class="ctx-preset-check-item">
-              <input id="chk-rec-lang" type="checkbox" checked>
-              <div class="ctx-preset-check-meta">
-                <strong data-i18n="enhance.preset.itemLang">客户端简体中文界面（Antigravity 本身）</strong>
-                <span data-i18n="enhance.preset.itemLangSub">仅改变桌面端壳层中文，不影响你选择的插件面板语言。</span>
-              </div>
-            </label>
-            <label class="ctx-preset-check-item">
-              <input id="chk-rec-ctx" type="checkbox" checked>
-              <div class="ctx-preset-check-meta">
-                <strong data-i18n="enhance.preset.itemCtx">上下文模式：跟随模型</strong>
-                <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>
-              </div>
-            </label>
-          </div>
-          <div class="ctx-settings-card-actions">
-            <button id="btn-enhance-preset-apply" class="unlock-btn unlock-btn-primary" type="button" data-i18n="enhance.preset.applyBtn">应用所选推荐配置</button>
-            <button id="btn-enhance-restore-all" class="unlock-btn unlock-btn-danger" type="button" data-i18n="enhance.restoreAll.btn">全部恢复官方默认</button>
-          </div>
-          <div id="enhance-preset-confirm" class="ctx-enhance-confirm" hidden>
-            <div id="enhance-preset-confirm-text"></div>
-            <div class="ctx-enhance-confirm-actions">
-              <button id="btn-enhance-confirm-cancel" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="models.restartConfirm.cancel">取消</button>
-              <button id="btn-enhance-confirm-go" class="unlock-btn unlock-btn-primary" type="button" data-i18n="enhance.confirm.go">确认应用</button>
-            </div>
-          </div>
-          <div id="enhance-global-result" class="unlock-result-box" style="display:none;">
-            <div id="enhance-global-result-text" class="unlock-result-text"></div>
-            <div id="enhance-global-result-actions" class="unlock-result-actions" hidden>
-              <button id="btn-enhance-restart-ls" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="enhance.btn.restartLs">重启语言服务</button>
-              <button id="btn-enhance-restart-host" class="unlock-btn unlock-btn-primary" type="button" data-i18n="models.restartBtn">重启客户端使设置生效</button>
-            </div>
-            <div id="enhance-global-manual-note" class="ctx-result-manual-note" hidden data-i18n="models.manualRestart">请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。</div>
-          </div>
-        </div>
-
-        <!-- 2. 客户端界面语言与品牌标题 (Antigravity 本身) -->
-        <div class="ctx-settings-card" id="client-brand-lang-card">
-          <div class="ctx-settings-card-hdr">
-            <div class="ctx-settings-card-title" data-i18n="settings.clientLang.title">🖥️ 客户端界面语言与品牌（Antigravity 本身）</div>
-            <span id="chinese-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
-          </div>
-          <div id="chinese-status-desc" class="ctx-settings-card-desc" data-i18n="settings.clientLang.detecting">正在检测桌面端汉化运行状态…</div>
-          <div class="ctx-segmented ctx-lang-segmented" id="client-lang-segmented" role="group" aria-label="客户端界面语言" data-i18n-aria="settings.clientLang.aria">
-            <button id="btn-client-lang-zh-CN" class="ctx-seg-btn" type="button" data-client-lang="zh-CN">简体中文</button>
-            <button id="btn-client-lang-en" class="ctx-seg-btn" type="button" data-client-lang="en">English</button>
-          </div>
-          <div class="ctx-small-label" style="margin-top:8px" data-i18n="enhance.brand.label">左上角品牌文字显示（仅作用于左上角品牌位，不影响 Logo、菜单或代码）：</div>
-          <div class="ctx-segmented ctx-lang-segmented" id="brand-title-segmented" role="group" aria-label="品牌名称选项" data-i18n-aria="enhance.brand.aria">
-            <button id="btn-brand-english" class="ctx-seg-btn active" type="button" data-brand-title="english" data-i18n="enhance.brand.english">Antigravity (英文原样)</button>
-            <button id="btn-brand-hidden" class="ctx-seg-btn" type="button" data-brand-title="hidden" data-i18n="enhance.brand.hidden">隐藏品牌字样</button>
-            <button id="btn-brand-translated" class="ctx-seg-btn" type="button" data-brand-title="translated" data-i18n="enhance.brand.translated">反重力</button>
-          </div>
-          <div id="brand-apply-feedback" class="ctx-brand-feedback" style="display:none;"></div>
-          <div id="client-lang-license-note" class="ctx-client-lang-note" data-i18n="settings.clientLang.licenseNote">说明：此设置控制 Antigravity 客户端本身，与顶部插件面板语言相互独立。切换客户端语言或品牌标题在保存后需重启客户端完全生效。</div>
-          <div class="ctx-settings-card-actions">
-            <button id="btn-toggle-chinese-module" class="unlock-btn unlock-btn-primary" type="button" data-i18n="settings.clientLang.toggle">切换汉化状态</button>
-            <button id="btn-apply-brand-title" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="enhance.brand.applyBtn">保存品牌选择并应用</button>
-          </div>
-        </div>
-
-        <!-- 3. 回答与工具使用规则 (原防幻觉档位) 与自动中文标题 -->
-        <div class="ctx-settings-card" id="enhance-prompt-card">
-          <div class="ctx-settings-card-hdr">
-            <div class="ctx-settings-card-title" data-i18n="enhance.prompt.title">🧠 回答与工具使用规则</div>
-            <span id="enhance-prompt-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
-          </div>
-          <!-- 第一层：默认可见的白话说明 -->
-          <div class="ctx-plain-help" style="margin:4px 0 8px 0;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;">
-            <div style="font-size:11.5px;line-height:1.55;color:var(--ag-text-primary);" data-i18n="enhance.prompt.plainIntro">
-              调整客户端给 AI 的工作说明，让它更重视证据：没读过的文件不猜，没运行的测试不说通过。它不会升级模型底层能力，也不能保证回答永远正确。
-            </div>
-            <div id="enhance-tier-current-desc" style="font-size:11px;line-height:1.5;color:var(--ag-text-secondary);margin-top:4px;">
-              当前档位说明加载中…
-            </div>
-          </div>
-          <div class="ctx-enhance-status-grid">
-            <div class="ctx-enhance-stat">
-              <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.prompt">当前检测档位</div>
-              <div id="enhance-stat-prompt" class="ctx-enhance-stat-val">—</div>
-            </div>
-            <div class="ctx-enhance-stat">
-              <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.title">自动中文标题</div>
-              <div id="enhance-stat-title" class="ctx-enhance-stat-val">—</div>
-            </div>
-            <div class="ctx-enhance-stat">
-              <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.evidence">证据检测状态</div>
-              <div id="enhance-stat-slots" class="ctx-enhance-stat-val">—</div>
-            </div>
-            <div class="ctx-enhance-stat">
-              <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.backup">原版内核备份</div>
-              <div id="enhance-stat-backup" class="ctx-enhance-stat-val">—</div>
-            </div>
-          </div>
-          <div id="enhance-tier-grid" class="ctx-tier-grid" role="group" aria-label="规则档位" data-i18n-aria="enhance.prompt.aria">
-            <button id="enhance-tier-0" class="ctx-tier-btn" type="button" data-enhance-tier="0">
-              <span class="ctx-tier-num">0</span>
-              <span class="ctx-tier-name" data-i18n="enhance.tier.0.short">原版</span>
-            </button>
-            <button id="enhance-tier-1" class="ctx-tier-btn" type="button" data-enhance-tier="1">
-              <span class="ctx-tier-num">1</span>
-              <span class="ctx-tier-name" data-i18n="enhance.tier.1.short">基础</span>
-            </button>
-            <button id="enhance-tier-2" class="ctx-tier-btn" type="button" data-enhance-tier="2">
-              <span class="ctx-tier-num">2</span>
-              <span class="ctx-tier-name" data-i18n="enhance.tier.2.short">精简</span>
-            </button>
-            <button id="enhance-tier-3" class="ctx-tier-btn" type="button" data-enhance-tier="3">
-              <span class="ctx-tier-num">3</span>
-              <span class="ctx-tier-name" data-i18n="enhance.tier.3.short">深度</span>
-            </button>
-            <button id="enhance-tier-4" class="ctx-tier-btn" type="button" data-enhance-tier="4">
-              <span class="ctx-tier-num">4</span>
-              <span class="ctx-tier-name" data-i18n="enhance.tier.4.short">极简</span>
-            </button>
-          </div>
-          <div id="enhance-tier-matrix" class="ctx-tier-matrix">
-            <div id="enhance-tier-matrix-title" class="ctx-tier-matrix-title">—</div>
-            <div class="ctx-tier-matrix-row">
-              <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.keeps">保留</span>
-              <span id="enhance-tier-keeps" class="ctx-tier-matrix-v">—</span>
-            </div>
-            <div class="ctx-tier-matrix-row">
-              <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.clears">清空</span>
-              <span id="enhance-tier-clears" class="ctx-tier-matrix-v">—</span>
-            </div>
-            <div class="ctx-tier-matrix-row">
-              <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.replaces">替换</span>
-              <span id="enhance-tier-replaces" class="ctx-tier-matrix-v">—</span>
-            </div>
-            <div class="ctx-tier-matrix-row">
-              <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.meaning">对你的影响</span>
-              <span id="enhance-tier-meaning" class="ctx-tier-matrix-v">—</span>
-            </div>
-          </div>
-          <div id="enhance-hallucination-note" class="ctx-tier-note-warn" data-i18n="enhance.hallucinationNote">说明：规则档位通过精简冗余指引并强化真实工具核对来规范行为。高档位删减提示模板中的工作指引，不等于删除用户文件或工件本身；是否影响具体能力需在对话中实际验证。</div>
-          <label class="ctx-toggle-row">
-            <div class="ctx-toggle-row-text">
-              <span class="ctx-toggle-row-title" data-i18n="enhance.titlePatch.label">自动生成简体中文会话标题</span>
-              <span class="ctx-toggle-row-sub" data-i18n="enhance.titlePatch.sub">等长替换会话命名提示词，不破坏原有长度对齐；支持随时改回官方英文。</span>
-            </div>
-            <input id="chk-enhance-chinese-title" type="checkbox">
-          </label>
-          <div class="ctx-settings-card-actions">
-            <button id="btn-enhance-apply-prompt" class="unlock-btn unlock-btn-primary" type="button" data-i18n="enhance.btn.applyPrompt">应用提示词与标题设置</button>
-            <button id="btn-enhance-refresh" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="models.btn.refreshStatus">刷新状态</button>
-          </div>
-          <div id="enhance-prompt-result" class="unlock-result-box" style="display:none;">
-            <div id="enhance-prompt-result-text" class="unlock-result-text"></div>
-          </div>
-
-          <!-- 第二层：可展开的“详细说明” -->
-          <div class="tech-drawer" id="enhance-details-drawer" style="margin-top:4px">
-            <button id="btn-toggle-enhance-details" class="drawer-trigger" aria-expanded="false" type="button">
-              <span class="drawer-trigger-left" data-i18n="enhance.details.toggle">详细说明：来源范围、三层状态与检测依据</span>
-              <span id="enhance-details-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
-            </button>
-            <div id="enhance-details-body" class="drawer-body" style="display:none;">
-              <div class="unlock-panel-content">
-                <div class="unlock-notice">
-                  <div class="unlock-desc" data-i18n="enhance.details.body">方案来源：PR #4 (Jia131313) 与 PR #3 (anyu0804 / Linux.do @23375)，由本项目进行本地适配、工具契约安全核对与多语言整合。<br><br>
+                <div class="unlock-desc" data-i18n="enhance.details.body">方案来源：PR #4 (Jia131313) 与 PR #3 (anyu0804 /
+                  Linux.do @23375)，由本项目进行本地适配、工具契约安全核对与多语言整合。<br><br>
                   <strong>修改目标程序</strong>：仅修改本地桌面端语言服务核心程序内嵌模板表；不改动任何云端模型，亦不影响 CLI 以外的外部环境。<br><br>
                   <strong>三层状态区别</strong>：<br>
                   1. <strong>写入状态</strong>：检测目标程序磁盘文件已覆写指定槽位（安全空格对齐填充，零结构偏移）。<br>
                   2. <strong>服务加载状态</strong>：需完全退出并重启客户端后，由新启动的语言服务进程加载读取。<br>
-                  3. <strong>行为效果验证</strong>：提示词仅是 AI 的工作指南，不能保证永不犯错；实际表现需由用户在真实会话中体验，不宣称数学上的绝对消除。</div>
-                </div>
-                <div id="enhance-binary-list" class="unlock-desc" style="margin-top:6px;"></div>
-                <div class="unlock-credit-row">
-                  <span class="unlock-credit-lbl" data-i18n="enhance.details.credit">恢复操作：点击上方“全部恢复官方默认”将无损还原官方备份模板。</span>
+                  3. <strong>行为效果验证</strong>：提示词仅是 AI 的工作指南，不能保证永不犯错；实际表现需由用户在真实会话中体验，不宣称数学上的绝对消除。
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-          </div>
-        </div>
-
-        <!-- 保留：兼容隐藏旧中文折叠触发节点以防测试脚本寻找该 ID -->
-        <div id="chinese-i18n-drawer" hidden>
-          <button id="btn-toggle-chinese" type="button" hidden></button>
-          <div id="chinese-drawer-body" style="display:none;"><span id="chinese-drawer-arrow"></span></div>
-        </div>
-
-        <!-- 5. 免 TUN 网络直连 (AntigravityProxyNoTun) -->
-        <div class="tech-drawer" id="proxy-notun-drawer">
-          <button id="btn-toggle-proxy" class="drawer-trigger" aria-expanded="false" type="button">
-            <span class="drawer-trigger-left">
-              <span data-i18n="settings.proxy.title">🌐 免 TUN 网络直连（本地代理）</span>
-              <span id="proxy-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;" data-i18n="settings.common.reading">读取中…</span>
-            </span>
-            <span id="proxy-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
-          </button>
-          <div id="proxy-drawer-body" class="drawer-body" style="display:none;">
-            <div class="unlock-panel-content">
-              <div class="unlock-status-row">
-                <div class="unlock-status-meta">
-                  <div class="unlock-label" data-i18n="settings.proxy.statusLabel">代理直连配置与状态</div>
-                  <div id="proxy-status-desc" class="unlock-desc" data-i18n="settings.proxy.checking">正在核对代理设置…</div>
-                </div>
+              <div id="enhance-binary-list" class="unlock-desc" style="margin-top:6px;"></div>
+              <div class="unlock-credit-row">
+                <span class="unlock-credit-lbl"
+                  data-i18n="enhance.details.credit">恢复操作：点击上方“全部恢复官方默认”将无损还原官方备份模板。</span>
               </div>
-              <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
-                <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
-                  <span data-i18n="settings.proxy.urlLabel">本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：</span>
-                  <input id="input-proxy-url" type="text" class="unlock-input" style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;" value="http://127.0.0.1:7897" />
-                </label>
-                <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
-                  <span data-i18n="settings.proxy.bypassLabel">绕过代理列表 (NO_PROXY)：</span>
-                  <input id="input-proxy-bypass" type="text" class="unlock-input" style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;" value="localhost,127.0.0.1,::1,<local>" />
-                </label>
-              </div>
-              <div class="unlock-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
-                <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="settings.proxy.testBtn">🔍 测试代理连通性</button>
-                <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button" data-i18n="mod.proxy.btnEnable">开启免 TUN 直连</button>
-              </div>
-              <div id="proxy-test-result" style="font-size:11px;margin-top:6px;display:none;color:var(--ag-text-secondary);"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 6. 面板背景与指标颜色自定义 -->
-        <div class="tech-drawer">
-          <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">
-            <span class="drawer-trigger-left"><span data-i18n="settings.colors.title">🎨 指标与背景颜色自定义（默认跟随主题）</span></span>
-            <span id="color-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expandSettings">▼ 展开设置</span>
-          </button>
-          <div id="color-drawer-body" class="drawer-body" style="display:none;">
-            <div class="color-grid">
-              <div class="color-item" style="grid-column:1 / -1">
-                <span class="color-item-lbl" data-i18n="settings.colors.panelBg">面板与菜单统一背景色（0级跟随 / 自定义）</span>
-                <div class="color-item-ctrls">
-                  <input id="color-panelBg" class="color-picker" type="color" value="#181818" data-i18n-aria="settings.colors.panelBg" aria-label="面板背景色" />
-                  <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                  <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto" data-i18n="colors.followTheme">跟随主题</button>
-                </div>
-              </div>
-              <div class="color-item">
-                <span class="color-item-lbl" data-i18n="settings.colors.ringUsed">圆环已用部分</span>
-                <div class="color-item-ctrls">
-                  <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb" data-i18n-aria="settings.colors.ringUsed" aria-label="上下文圆环已用部分颜色" />
-                  <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed" data-color-label="圆环已用部分" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                  <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto" data-i18n="colors.followTheme">跟随主题</button>
-                </div>
-              </div>
-              <div class="color-item">
-                <span class="color-item-lbl" data-i18n="settings.colors.ringTrack">圆环轨道</span>
-                <div class="color-item-ctrls">
-                  <input id="color-ringTrack" class="color-picker" type="color" value="#52525b" data-i18n-aria="settings.colors.ringTrack" aria-label="圆环轨道颜色" />
-                  <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack" data-color-label="圆环轨道" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                  <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto" data-i18n="colors.followTheme">跟随主题</button>
-                </div>
-              </div>
-              <div class="color-item">
-                <span class="color-item-lbl" data-i18n="settings.colors.contextText">上下文用量文字</span>
-                <div class="color-item-ctrls">
-                  <input id="color-contextText" class="color-picker" type="color" value="#ececef" data-i18n-aria="settings.colors.contextText" aria-label="上下文用量文字颜色" />
-                  <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText" data-color-label="上下文用量文字" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                  <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto" data-i18n="colors.followTheme">跟随主题</button>
-                </div>
-              </div>
-              <div class="color-item">
-                <span class="color-item-lbl" data-i18n="settings.colors.speedText">输出速度</span>
-                <div class="color-item-ctrls">
-                  <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" data-i18n-aria="settings.colors.speedText" aria-label="输出速度颜色" />
-                  <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="输出速度" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                  <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto" data-i18n="colors.followTheme">跟随主题</button>
-                </div>
-              </div>
-              <div class="color-item">
-                <span class="color-item-lbl" data-i18n="settings.colors.tokenTotal">累计 token 用量</span>
-                <div class="color-item-ctrls">
-                  <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc" data-i18n-aria="settings.colors.tokenTotal" aria-label="累计 token 用量颜色" />
-                  <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                  <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto" data-i18n="colors.followTheme">跟随主题</button>
-                </div>
-              </div>
-              <div class="color-item">
-                <span class="color-item-lbl" data-i18n="settings.colors.tokenAccent">其他 token 指标</span>
-                <div class="color-item-ctrls">
-                  <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa" data-i18n-aria="settings.colors.tokenAccent" aria-label="其他 token 指标颜色" />
-                  <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="其他 token 指标" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                  <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto" data-i18n="colors.followTheme">跟随主题</button>
-                </div>
-              </div>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:7px">
-              <span style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="settings.colors.note">注：高占用与超限告警色独立保留，不被常态颜色覆盖。</span>
-              <button id="reset-all-colors" class="color-reset-btn" type="button" data-i18n="settings.colors.resetAll">全部恢复跟随主题</button>
             </div>
           </div>
         </div>
       </div>
     </div>
+  </div>
 
-    <!-- 全局统一居中重启确认模态弹窗（立即可见，支持顶部、底部与配置区所有重启入口） -->
-    <div id="global-restart-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-restart-title">
-      <div class="ag-modal-card">
-        <div id="modal-restart-title" class="ag-modal-title" data-i18n="models.restartConfirm.title">重启 Antigravity 客户端</div>
-        <div id="modal-restart-text" class="ag-modal-body" data-i18n="models.restartConfirm.text">重启会中断正在运行的任务。请先保存未保存的内容。</div>
-        <div id="modal-restart-feedback" class="ag-modal-feedback" hidden></div>
-        <div class="ag-modal-actions">
-          <button id="btn-modal-restart-cancel" class="unlock-btn unlock-btn-secondary" type="button" data-i18n="models.restartConfirm.cancel">取消</button>
-          <button id="btn-modal-restart-confirm" class="unlock-btn unlock-btn-primary" type="button" data-i18n="models.restartConfirm.go">确认重启</button>
+  <!-- 保留：兼容隐藏旧中文折叠触发节点以防测试脚本寻找该 ID -->
+  <div id="chinese-i18n-drawer" hidden>
+    <button id="btn-toggle-chinese" type="button" hidden></button>
+    <div id="chinese-drawer-body" style="display:none;"><span id="chinese-drawer-arrow"></span></div>
+  </div>
+
+  <!-- 5. 免 TUN 网络直连 (AntigravityProxyNoTun) -->
+  <div class="tech-drawer" id="proxy-notun-drawer">
+    <button id="btn-toggle-proxy" class="drawer-trigger" aria-expanded="false" type="button">
+      <span class="drawer-trigger-left">
+        <span data-i18n="settings.proxy.title">🌐 免 TUN 网络直连（本地代理）</span>
+        <span id="proxy-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;"
+          data-i18n="settings.common.reading">读取中…</span>
+      </span>
+      <span id="proxy-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+    </button>
+    <div id="proxy-drawer-body" class="drawer-body" style="display:none;">
+      <div class="unlock-panel-content">
+        <div class="unlock-status-row">
+          <div class="unlock-status-meta">
+            <div class="unlock-label" data-i18n="settings.proxy.statusLabel">代理直连配置与状态</div>
+            <div id="proxy-status-desc" class="unlock-desc" data-i18n="settings.proxy.checking">正在核对代理设置…</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
+          <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
+            <span data-i18n="settings.proxy.urlLabel">本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：</span>
+            <input id="input-proxy-url" type="text" class="unlock-input"
+              style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;"
+              value="http://127.0.0.1:7897" />
+          </label>
+          <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
+            <span data-i18n="settings.proxy.bypassLabel">绕过代理列表 (NO_PROXY)：</span>
+            <input id="input-proxy-bypass" type="text" class="unlock-input"
+              style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;"
+              value="localhost,127.0.0.1,::1,<local>" />
+          </label>
+        </div>
+        <div class="unlock-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button"
+            data-i18n="settings.proxy.testBtn">🔍 测试代理连通性</button>
+          <button id="btn-save-proxy-config" class="unlock-btn unlock-btn-secondary" type="button" hidden
+            data-i18n="mod.proxy.btnSave">保存代理设置</button>
+          <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button"
+            data-i18n="mod.proxy.btnEnable">开启免 TUN 直连</button>
+        </div>
+        <div id="proxy-test-result" style="font-size:11px;margin-top:6px;display:none;color:var(--ag-text-secondary);">
         </div>
       </div>
     </div>
-  </section>
+  </div>
 
-  <!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
-  <section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria">
-    <div class="panel-header-bar">
-      <div class="panel-title panel-title-tokens">
-        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"><path d="M3 13V9M8 13V4M13 13V7"></path></svg>
-        <span id="panel-tokens-title" style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))" data-i18n="tokens.title">本机已记录用量</span>
+  <!-- 6. 面板背景与指标颜色自定义 -->
+  <div class="tech-drawer">
+    <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">
+      <span class="drawer-trigger-left"><span data-i18n="settings.colors.title">🎨 指标与背景颜色自定义（默认跟随主题）</span></span>
+      <span id="color-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expandSettings">▼ 展开设置</span>
+    </button>
+    <div id="color-drawer-body" class="drawer-body" style="display:none;">
+      <div class="color-grid">
+        <div class="color-item" style="grid-column:1 / -1">
+          <span class="color-item-lbl" data-i18n="settings.colors.panelBg">面板与菜单统一背景色（0级跟随 / 自定义）</span>
+          <div class="color-item-ctrls">
+            <input id="color-panelBg" class="color-picker" type="color" value="#181818"
+              data-i18n-aria="settings.colors.panelBg" aria-label="面板背景色" />
+            <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg"
+              data-color-label="面板与菜单背景色" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+            <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto"
+              data-i18n="colors.followTheme">跟随主题</button>
+          </div>
+        </div>
+        <div class="color-item">
+          <span class="color-item-lbl" data-i18n="settings.colors.ringUsed">圆环已用部分</span>
+          <div class="color-item-ctrls">
+            <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb"
+              data-i18n-aria="settings.colors.ringUsed" aria-label="上下文圆环已用部分颜色" />
+            <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed"
+              data-color-label="圆环已用部分" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+            <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto"
+              data-i18n="colors.followTheme">跟随主题</button>
+          </div>
+        </div>
+        <div class="color-item">
+          <span class="color-item-lbl" data-i18n="settings.colors.ringTrack">圆环轨道</span>
+          <div class="color-item-ctrls">
+            <input id="color-ringTrack" class="color-picker" type="color" value="#52525b"
+              data-i18n-aria="settings.colors.ringTrack" aria-label="圆环轨道颜色" />
+            <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack"
+              data-color-label="圆环轨道" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+            <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto"
+              data-i18n="colors.followTheme">跟随主题</button>
+          </div>
+        </div>
+        <div class="color-item">
+          <span class="color-item-lbl" data-i18n="settings.colors.contextText">上下文用量文字</span>
+          <div class="color-item-ctrls">
+            <input id="color-contextText" class="color-picker" type="color" value="#ececef"
+              data-i18n-aria="settings.colors.contextText" aria-label="上下文用量文字颜色" />
+            <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText"
+              data-color-label="上下文用量文字" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+            <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto"
+              data-i18n="colors.followTheme">跟随主题</button>
+          </div>
+        </div>
+        <div class="color-item">
+          <span class="color-item-lbl" data-i18n="settings.colors.speedText">输出速度</span>
+          <div class="color-item-ctrls">
+            <input id="color-speedText" class="color-picker" type="color" value="#38bdf8"
+              data-i18n-aria="settings.colors.speedText" aria-label="输出速度颜色" />
+            <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText"
+              data-color-label="输出速度" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+            <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto"
+              data-i18n="colors.followTheme">跟随主题</button>
+          </div>
+        </div>
+        <div class="color-item">
+          <span class="color-item-lbl" data-i18n="settings.colors.tokenTotal">累计 token 用量</span>
+          <div class="color-item-ctrls">
+            <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc"
+              data-i18n-aria="settings.colors.tokenTotal" aria-label="累计 token 用量颜色" />
+            <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal"
+              data-color-label="累计 token 用量" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+            <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto"
+              data-i18n="colors.followTheme">跟随主题</button>
+          </div>
+        </div>
+        <div class="color-item">
+          <span class="color-item-lbl" data-i18n="settings.colors.tokenAccent">其他 token 指标</span>
+          <div class="color-item-ctrls">
+            <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa"
+              data-i18n-aria="settings.colors.tokenAccent" aria-label="其他 token 指标颜色" />
+            <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent"
+              data-color-label="其他 token 指标" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+            <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto"
+              data-i18n="colors.followTheme">跟随主题</button>
+          </div>
+        </div>
       </div>
-      <div class="panel-header-actions">
-        <button id="btn-github-repo" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库" data-i18n-aria="header.github.aria" title="打开 GitHub 仓库" data-i18n-title="header.github.aria">
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:7px">
+        <span style="font-size:10.5px;color:var(--ag-text-muted)"
+          data-i18n="settings.colors.note">注：高占用与超限告警色独立保留，不被常态颜色覆盖。</span>
+        <button id="reset-all-colors" class="color-reset-btn" type="button"
+          data-i18n="settings.colors.resetAll">全部恢复跟随主题</button>
+      </div>
+    </div>
+  </div>
+  </div>
+  </div>
+
+  <!-- 全局统一居中重启确认模态弹窗（立即可见，支持顶部、底部与配置区所有重启入口） -->
+  <div id="global-restart-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
+    aria-labelledby="modal-restart-title">
+    <div class="ag-modal-card">
+      <div id="modal-restart-title" class="ag-modal-title" data-i18n="models.restartConfirm.title">重启 Antigravity 客户端
+      </div>
+      <div id="modal-restart-text" class="ag-modal-body" data-i18n="models.restartConfirm.text">重启会中断正在运行的任务。请先保存未保存的内容。
+      </div>
+      <div id="modal-restart-feedback" class="ag-modal-feedback" hidden></div>
+      <div class="ag-modal-actions">
+        <button id="btn-modal-restart-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+          data-i18n="models.restartConfirm.cancel">取消</button>
+        <button id="btn-modal-restart-confirm" class="unlock-btn unlock-btn-primary" type="button"
+          data-i18n="models.restartConfirm.go">确认重启</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
+<section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria">
+  <div class="panel-header-bar">
+    <div class="panel-title panel-title-tokens">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"
+        stroke-linecap="round" stroke-linejoin="round"
+        style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">
+        <path d="M3 13V9M8 13V4M13 13V7"></path>
+      </svg>
+      <span id="panel-tokens-title"
+        style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"
+        data-i18n="tokens.title">本机已记录用量</span>
+    </div>
+    <div class="panel-header-actions">
+      <button id="btn-github-repo" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库"
+        data-i18n-aria="header.github.aria" title="打开 GitHub 仓库" data-i18n-title="header.github.aria">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
+          </path>
+        </svg>
+      </button>
+      <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新"
+        data-i18n-aria="header.update.aria" title="检查插件更新" data-i18n-title="header.update.aria"
+        style="position:relative">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path>
+        </svg>
+        <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
+      </button>
+      <button id="btn-panel-tokens-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置"
+        data-i18n-aria="header.palette.aria" title="外观与调色设置" data-i18n-title="header.palette.aria">🎨</button>
+      <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
+        data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）"
+        data-i18n-title="header.theme.title">🌓</button>
+      <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情"
+        data-i18n-aria="header.close.aria">×</button>
+    </div>
+  </div>
+
+  <div id="view-tokens">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">
+      <div class="source-switch-bar">
+        <span style="font-size:10.5px;color:var(--ag-text-muted);padding:0 4px"
+          data-i18n="tokens.sourceLabel">来源:</span>
+        <button id="src-tab-all" class="switch-pill-btn active" type="button" data-i18n="tokens.src.all">全部</button>
+        <button id="src-tab-desktop" class="switch-pill-btn" type="button" data-i18n="tokens.src.desktop">桌面端</button>
+        <button id="src-tab-cli" class="switch-pill-btn" type="button" data-i18n="tokens.src.cli">CLI</button>
+      </div>
+      <div class="view-switch-bar">
+        <button id="tok-view-tokens" class="switch-pill-btn active" type="button" data-i18n="tokens.view.tokens">Token
+          统计</button>
+        <button id="tok-view-cost" class="switch-pill-btn" type="button" data-i18n="tokens.view.cost">API 参考金额</button>
+      </div>
+    </div>
+
+    <!-- 账号套餐状态摘要行 -->
+    <div id="plan-summary-bar" class="plan-summary-bar">
+      <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
+        <span>💎</span>
+        <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · ...</span>
+      </div>
+      <!-- 黄框位置：实时联动的订阅费与汇率胶囊 -->
+      <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)"
+        data-i18n-title="plan.summary.priceBadgeTitle">
+        <span id="plan-summary-price-val">$19.99/月</span>
+        <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
+      </div>
+      <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 6px;flex-shrink:0"
+        data-i18n="plan.detail.toggleOpen">详情 ▼</button>
+    </div>
+
+    <!-- 套餐详情卡片（可折叠，紧凑左对齐，支持就地自定义与获取方式设置） -->
+    <div id="plan-detail-card" class="plan-detail-card collapsible-pane" style="display:none">
+      <div
+        style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)" data-i18n="plan.detail.title">💎
+            AI 订阅与额度详情</span>
+          <span id="plan-save-feedback" style="font-size:10px;color:var(--ag-text-muted);display:none"></span>
+        </div>
+        <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button"
+          style="padding:2px 8px;font-size:10.5px" data-i18n="plan.detail.toggleClose">详情收回 ▲</button>
+      </div>
+      <dl class="plan-detail-dl">
+        <dt data-i18n="plan.dt.plan">当前套餐：</dt>
+        <dd id="p-det-name" style="font-weight:600">Google AI Pro</dd>
+        <dt data-i18n="plan.dt.account">当前账号：</dt>
+        <dd id="p-det-account">—</dd>
+        <dt data-i18n="plan.dt.country">账号所在地区：</dt>
+        <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
+          <span id="p-det-country" style="display:none">未知</span>
+          <select id="direct-country-select" aria-label="账号所在地区 (仅本地记录)" style="display:none">
+            <option value="未知">🌐 未设置 / 自动</option>
+            <option value="美国 (US)">🇺🇸 美国 (US)</option>
+            <option value="日本 (JP)">🇯🇵 日本 (JP)</option>
+            <option value="韩国 (KR)">🇰🇷 韩国 (KR)</option>
+            <option value="中国台湾 (TW)">🇹🇼 中国台湾 (TW)</option>
+            <option value="中国香港 (HK)">🇭🇰 中国香港 (HK)</option>
+            <option value="澳大利亚 (AU)">🇦🇺 澳大利亚 (AU)</option>
+            <option value="新加坡 (SG)">🇸🇬 新加坡 (SG)</option>
+            <option value="英国 (UK)">🇬🇧 英国 (UK)</option>
+            <option value="德国 (DE)">🇩🇪 德国 (DE)</option>
+            <option value="加拿大 (CA)">🇨🇦 加拿大 (CA)</option>
+            <option value="土耳其 (TR)">🇹🇷 土耳其 (TR)</option>
+            <option value="尼日利亚 (NG)">🇳🇬 尼日利亚 (NG)</option>
+            <option value="菲律宾 (PH)">🇵🇭 菲律宾 (PH)</option>
+            <option value="印度 (IN)">🇮🇳 印度 (IN)</option>
+            <option value="马来西亚 (MY)">🇲🇾 马来西亚 (MY)</option>
+            <option value="巴西 (BR)">🇧🇷 巴西 (BR)</option>
+            <option value="中国大陆 (CN)">🇨🇳 中国大陆 (CN)</option>
+          </select>
+          <div id="direct-country-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
+            <div id="direct-country-trigger" class="ag-dropdown-trigger" tabindex="0"
+              title="用户记录或可靠来源识别的 Google 账号所属地区 (仅本地生效，不修改 Google 账号本身)" data-i18n-title="plan.country.title">
+              <span id="direct-country-label" class="ag-dropdown-label"
+                style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" data-i18n="plan.country.auto">🌐 未设置 /
+                自动</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </div>
+            </div>
+            <div id="direct-country-menu" class="ag-dropdown-menu"></div>
+          </div>
+          <span id="p-det-country-tag" class="key-pill pill-muted"
+            style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap"
+            data-i18n="plan.tag.saved">已保存</span>
+        </dd>
+        <dt data-i18n="plan.dt.region">订阅国家：</dt>
+        <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
+          <span id="p-det-region" style="display:none">未知</span>
+          <div id="direct-region-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
+            <div id="direct-region-trigger" class="ag-dropdown-trigger" tabindex="0"
+              title="这份订阅的购买或订阅所在国家/地区 (可与账号所在地区不同)" data-i18n-title="plan.region.title">
+              <span id="direct-region-label" class="ag-dropdown-label"
+                style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" data-i18n="plan.region.unknown">🌏 未知
+                (点击选择订阅国家与币种建议)</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </div>
+            </div>
+            <div id="direct-region-menu" class="ag-dropdown-menu"></div>
+          </div>
+          <span id="p-det-region-tag" class="key-pill pill-muted"
+            style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap"
+            data-i18n="plan.tag.custom">自定义</span>
+        </dd>
+        <dt data-i18n="plan.dt.currency">订阅币种：</dt>
+        <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
+          <span id="p-det-currency" style="display:none">USD</span>
+          <select id="direct-currency-select" aria-label="订阅币种" data-i18n-aria="plan.currency.aria"
+            style="display:none">
+            <option value="USD">USD ($ 美元)</option>
+            <option value="KRW">KRW (₩ 韩元)</option>
+            <option value="AUD">AUD (AU$ 澳元)</option>
+            <option value="JPY">JPY (¥ 日元)</option>
+            <option value="HKD">HKD (HK$ 港币)</option>
+            <option value="TWD">TWD (NT$ 台币)</option>
+            <option value="TRY">TRY (₺ 里拉)</option>
+            <option value="NGN">NGN (₦ 奈拉)</option>
+            <option value="CNY">CNY (¥ 人民币)</option>
+            <option value="EUR">EUR (€ 欧元)</option>
+            <option value="GBP">GBP (£ 英镑)</option>
+            <option value="SGD">SGD (S$ 新元)</option>
+            <option value="CAD">CAD (CA$ 加元)</option>
+            <option value="PHP">PHP (₱ 比索)</option>
+            <option value="INR">INR (₹ 卢比)</option>
+            <option value="MYR">MYR (RM 令吉)</option>
+            <option value="BRL">BRL (R$ 雷亚尔)</option>
+          </select>
+          <div id="direct-currency-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
+            <div id="direct-currency-trigger" class="ag-dropdown-trigger" tabindex="0"
+              title="该订阅记录使用的计价与结算币种 (独立保存，可手动指定或自动跟随)" data-i18n-title="plan.currency.title">
+              <span id="direct-currency-label" class="ag-dropdown-label"
+                style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">USD</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </div>
+            </div>
+            <div id="direct-currency-menu" class="ag-dropdown-menu"></div>
+          </div>
+          <span id="p-det-currency-tag" class="key-pill pill-muted"
+            style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap"
+            data-i18n="plan.tag.saved">已保存</span>
+        </dd>
+        <dt data-i18n="plan.dt.acq">获取方式：</dt>
+        <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span id="p-det-acq" data-i18n="plan.acq.normal">正常付费订阅</span>
+          <span id="p-det-acq-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none"
+            data-i18n="plan.tag.promo">活动权益</span>
+        </dd>
+        <dt data-i18n="plan.dt.price">计费周期与价格：</dt>
+        <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span id="p-det-price">$19.99</span>
+          <span id="p-det-price-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none"
+            data-i18n="plan.tag.regionRef">地区参考价</span>
+          <div id="price-mode-switch-group" style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
+            <button id="btn-mode-preset" class="switch-pill-btn active" type="button"
+              style="padding:1px 6px;font-size:10px" data-i18n="plan.price.modePreset">跟随参考价</button>
+            <button id="btn-mode-custom" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px"
+              data-i18n="plan.price.modeCustom">自定义实付</button>
+          </div>
+        </dd>
+        <dt id="p-dt-validity" style="display:none" data-i18n="plan.dt.validity">权益有效期：</dt>
+        <dd id="p-det-validity" style="display:none;color:var(--ag-text-secondary);font-size:11px">—</dd>
+        <dt id="p-dt-note" style="display:none" data-i18n="plan.dt.note">补充备注：</dt>
+        <dd id="p-det-note" style="display:none;color:var(--ag-text-secondary);font-size:11px">—</dd>
+        <dt data-i18n="plan.dt.promptCredits">Prompt 额度池：</dt>
+        <dd id="p-det-prompt-credits"><span id="p-det-credits">—</span></dd>
+        <dt data-i18n="plan.dt.flowCredits">Flow 额度池：</dt>
+        <dd id="p-det-flow-credits">—</dd>
+        <dt data-i18n="plan.dt.updated">状态更新时间：</dt>
+        <dd id="p-det-time" style="font-size:11px;color:var(--ag-text-muted)">—</dd>
+      </dl>
+
+      <!-- 底部操作栏：左侧提供详情收回按钮，右侧提供自定义订阅设置按钮 -->
+      <div
+        style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:6px;border-top:1px dashed var(--ag-border-subcard)">
+        <button id="btn-plan-detail-collapse" class="switch-pill-btn" type="button"
+          style="padding:3px 10px;font-size:11px" data-i18n="plan.detail.toggleClose">详情收回 ▲</button>
+        <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button">
+          <span style="font-size:12px">✎</span>
+          <span data-i18n="plan.btn.editCustom">自定义订阅设置</span>
         </button>
-        <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新" data-i18n-aria="header.update.aria" title="检查插件更新" data-i18n-title="header.update.aria" style="position:relative">
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
-          <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
-        </button>
-        <button id="btn-panel-tokens-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置" data-i18n-aria="header.palette.aria" title="外观与调色设置" data-i18n-title="header.palette.aria">🎨</button>
-        <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题" data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）" data-i18n-title="header.theme.title">🌓</button>
-        <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情" data-i18n-aria="header.close.aria">×</button>
+      </div>
+
+      <!-- 就地行内自定义编辑表单 -->
+      <div id="plan-custom-form"
+        style="display:none;margin-top:8px;padding:10px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px">
+        <div style="font-size:11px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)"
+          data-i18n="plan.form.title">
+          设置当前账号订阅信息
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+          <div>
+            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
+              data-i18n="plan.form.acqLabel">获取方式 / 活动来源</label>
+            <select id="select-custom-acq"
+              style="width:100%;font-size:11px;padding:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <option value="normal_paid" data-i18n="plan.acqOpt.normal_paid">正常付费订阅</option>
+              <option value="student_offer" data-i18n="plan.acqOpt.student_offer">学生认证优惠</option>
+              <option value="pixel_bundle" data-i18n="plan.acqOpt.pixel_bundle">Google Pixel 设备赠送</option>
+              <option value="chromebook_bundle" data-i18n="plan.acqOpt.chromebook_bundle">Chromebook Plus 设备赠送</option>
+              <option value="samsung_galaxy" data-i18n="plan.acqOpt.samsung_galaxy">Samsung Galaxy 设备指定活动</option>
+              <option value="jio_offer" data-i18n="plan.acqOpt.jio_offer">Jio 运营商套餐权益</option>
+              <option value="partner_carrier" data-i18n="plan.acqOpt.partner_carrier">其他运营商 / 合作伙伴权益</option>
+              <option value="family_sharing" data-i18n="plan.acqOpt.family_sharing">家庭组共享 / 他人赠送</option>
+              <option value="official_promo" data-i18n="plan.acqOpt.official_promo">官方限时试用 / 促销活动</option>
+              <option value="custom_source" data-i18n="plan.acqOpt.custom_source">其他 / 自由命名</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
+              data-i18n="plan.form.acqCustomLabel">自定义活动 / 合作方名称</label>
+            <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送"
+              data-i18n-placeholder="plan.form.acqCustomPh"
+              style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+          </div>
+        </div>
+        <div style="margin-bottom:6px">
+          <label
+            style="font-size:10.5px;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input id="check-zero-extra" type="checkbox">
+            <span data-i18n="plan.form.zeroExtra">本权益期间无需另付订阅费</span>
+          </label>
+        </div>
+        <div style="margin-bottom:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+            <label style="font-size:10px;color:var(--ag-text-muted)" data-i18n="plan.form.presetLabel">预设订阅国家与汇率
+              (可选快捷套用)</label>
+            <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
+          </div>
+          <select id="select-custom-region-preset"
+            style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <option value="" data-i18n="plan.form.presetPlaceholder">-- 选择预设地区 (自动填入价格与汇率) --</option>
+            <option value="US">🇺🇸 美国 (US) · $19.99/月 (折合 ≈ ¥134.3)</option>
+            <option value="KR">🇰🇷 韩国 (KR) · ₩29,000/月 (折合 ≈ ¥147.9)</option>
+            <option value="HK">🇭🇰 中国香港 (HK) · HK$158/月 (折合 ≈ ¥135.4)</option>
+            <option value="JP">🇯🇵 日本 (JP) · ¥2,900/月 (折合 ≈ ¥123.3)</option>
+            <option value="TR">🇹🇷 土耳其 (TR) · ₺869.99/月 (折合 ≈ ¥115.7)</option>
+            <option value="NG">🇳🇬 尼日利亚 (NG) · ₦28,500/月 (折合 ≈ ¥119.7)</option>
+            <option value="TW">🇹🇼 中国台湾 (TW) · NT$650/月 (折合 ≈ ¥136.5)</option>
+            <option value="PH">🇵🇭 菲律宾 (PH) · ₱1,100/月 (折合 ≈ ¥128.7)</option>
+            <option value="IN">🇮🇳 印度 (IN) · ₹1,950/月 (折合 ≈ ¥148.2)</option>
+            <option value="GB">🇬🇧 英国 (UK) · £18.99/月 (折合 ≈ ¥166.2)</option>
+            <option value="EU">🇪🇺 欧洲 (EU) · €21.99/月 (折合 ≈ ¥165.4)</option>
+            <option value="BR">🇧🇷 巴西 (BR) · R$96.99/月 (折合 ≈ ¥114.4)</option>
+            <option value="SG">🇸🇬 新加坡 (SG) · S$27.99/月 (折合 ≈ ¥143.3)</option>
+            <option value="CA">🇨🇦 加拿大 (CA) · CA$26.99/月 (折合 ≈ ¥131.7)</option>
+            <option value="AU">🇦🇺 澳大利亚 (AU) · AU$32.99/月 (折合 ≈ ¥146.8)</option>
+            <option value="MY">🇲🇾 马来西亚 (MY) · RM 97.99/月 (折合 ≈ ¥151.9)</option>
+            <option value="CN">🇨🇳 中国大陆/自定义 (CNY) · ¥140/月</option>
+            <option value="custom" data-i18n="plan.form.presetCustom">✎ 自定义输入地区</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
+          <div>
+            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
+              data-i18n="plan.form.countryLabel">账号所在地区 (仅本地记录)</label>
+            <input id="input-custom-country" type="text" placeholder="例如：美国 (US)"
+              data-i18n-placeholder="plan.form.countryPh" title="仅作为本地显示记录，不修改实际 Google 账号"
+              data-i18n-title="plan.country.title"
+              style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
+              data-i18n="plan.form.regionLabel">订阅国家 (购买/结算地区)</label>
+            <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚"
+              data-i18n-placeholder="plan.form.regionPh" title="实际购买或支付订阅所在的国家或地区" data-i18n-title="plan.region.title"
+              style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
+              data-i18n="plan.form.currencyLabel">订阅币种与实付金额</label>
+            <div style="display:flex;gap:4px">
+              <select id="select-custom-currency" title="订阅计价/结算币种" data-i18n-title="plan.currency.title"
+                style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                <option value="USD">USD</option>
+                <option value="KRW">KRW</option>
+                <option value="HKD">HKD</option>
+                <option value="JPY">JPY</option>
+                <option value="TRY">TRY</option>
+                <option value="NGN">NGN</option>
+                <option value="TWD">TWD</option>
+                <option value="PHP">PHP</option>
+                <option value="INR">INR</option>
+                <option value="CNY">CNY</option>
+                <option value="EUR">EUR</option>
+                <option value="GBP">GBP</option>
+                <option value="SGD">SGD</option>
+                <option value="BRL">BRL</option>
+                <option value="CAD">CAD</option>
+                <option value="AUD">AUD</option>
+                <option value="MYR">MYR</option>
+              </select>
+              <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额"
+                data-i18n-placeholder="plan.form.paidPh"
+                style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            </div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+          <div>
+            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
+              data-i18n="plan.form.cycleLabel">计费周期</label>
+            <select id="select-custom-cycle"
+              style="width:100%;font-size:11px;padding:4px 6px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <option value="月付" data-i18n="plan.cycleOpt.monthly">月付</option>
+              <option value="年付" data-i18n="plan.cycleOpt.yearly">年付</option>
+              <option value="免费/赠送" data-i18n="plan.cycleOpt.free">免费 / 促销赠送</option>
+              <option value="随套餐包含" data-i18n="plan.cycleOpt.included">随套餐包含</option>
+              <option value="其他周期" data-i18n="plan.cycleOpt.other">其他周期</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
+              data-i18n="plan.form.validEndLabel">权益到期日</label>
+            <input id="input-valid-end" type="date"
+              style="width:100%;font-size:11px;padding:3px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+          </div>
+        </div>
+        <div style="margin-bottom:6px">
+          <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
+            data-i18n="plan.form.noteLabel">补充说明备注</label>
+          <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车"
+            data-i18n-placeholder="plan.form.notePh"
+            style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
+          <button id="btn-custom-plan-clear" class="switch-pill-btn" type="button"
+            style="padding:2px 8px;font-size:11px;color:#ef4444" data-i18n="plan.form.clear">清除自定义</button>
+          <button id="btn-custom-plan-cancel" class="switch-pill-btn" type="button"
+            style="padding:2px 8px;font-size:11px" data-i18n="plan.form.cancel">取消</button>
+          <button id="btn-custom-plan-save" class="switch-pill-btn active" type="button"
+            style="padding:2px 10px;font-size:11px" data-i18n="plan.form.save">保存</button>
+        </div>
       </div>
     </div>
 
-    <div id="view-tokens">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">
-        <div class="source-switch-bar">
-          <span style="font-size:10.5px;color:var(--ag-text-muted);padding:0 4px" data-i18n="tokens.sourceLabel">来源:</span>
-          <button id="src-tab-all" class="switch-pill-btn active" type="button" data-i18n="tokens.src.all">全部</button>
-          <button id="src-tab-desktop" class="switch-pill-btn" type="button" data-i18n="tokens.src.desktop">桌面端</button>
-          <button id="src-tab-cli" class="switch-pill-btn" type="button" data-i18n="tokens.src.cli">CLI</button>
+    <!-- API 费用估算卡片（整个费用面板默认收为小摘要，展开后才显示详情） -->
+    <div id="cost-estimate-card"
+      style="display:none;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:12px;margin-bottom:10px">
+      <!-- 紧凑小摘要区（默认常驻展示） -->
+      <div id="cost-compact-summary">
+        <!-- 1. 标题与范围标签 -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span id="cost-card-title" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary)"
+            data-i18n="cost.title">💰 本期 API 参考金额</span>
+          <span id="cost-period-tag" class="key-pill pill-muted" style="font-size:10px"
+            data-i18n="cost.periodTag">本月自然月</span>
         </div>
-        <div class="view-switch-bar">
-          <button id="tok-view-tokens" class="switch-pill-btn active" type="button" data-i18n="tokens.view.tokens">Token 统计</button>
-          <button id="tok-view-cost" class="switch-pill-btn" type="button" data-i18n="tokens.view.cost">API 参考金额</button>
+        <!-- 2. 来源与时间短行 -->
+        <div id="cost-scope-desc" style="font-size:11px;color:var(--ag-text-muted);margin-bottom:6px">—</div>
+        <!-- 3. 主要参考金额及常驻“非实付”标识 -->
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+          <div id="cost-grand-val"
+            style="font-size:22px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.5px">$0.00</div>
+          <span id="cost-non-paid-badge" class="key-pill pill-muted" style="font-size:10px;padding:1px 6px"
+            data-i18n="cost.nonPaidBadge">API折算 · 非实付</span>
         </div>
-      </div>
-
-      <!-- 账号套餐状态摘要行 -->
-      <div id="plan-summary-bar" class="plan-summary-bar">
-        <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
-          <span>💎</span>
-          <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · ...</span>
+        <!-- 4. 一行参考模型/情景假设 -->
+        <div id="cost-grand-sub"
+          style="font-size:11px;color:var(--ag-text-secondary);margin-bottom:6px;line-height:1.35">—</div>
+        <!-- 5. 一行订阅实付及补充入口 -->
+        <div id="cost-sub-line-wrap"
+          style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin:6px 0 8px">
+          <div style="display:flex;align-items:center;gap:4px">
+            <span id="cost-sub-line" style="font-size:11px;color:var(--ag-text-primary)"
+              data-i18n="cost.subUnknown">订阅实付：未填写</span>
+            <span id="cost-sub-spend-val" style="display:none">—</span>
+            <span id="cost-sub-compare-note" style="display:none"></span>
+            <span id="cost-sub-spend-lbl" style="display:none"></span>
+          </div>
+          <button id="btn-cost-fill-sub" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px"
+            data-i18n="cost.btnFill">补充</button>
         </div>
-        <!-- 黄框位置：实时联动的订阅费与汇率胶囊 -->
-        <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)" data-i18n-title="plan.summary.priceBadgeTitle">
-          <span id="plan-summary-price-val">$19.99/月</span>
-          <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
-        </div>
-        <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 6px;flex-shrink:0" data-i18n="plan.detail.toggleOpen">详情 ▼</button>
-      </div>
-
-      <!-- 套餐详情卡片（可折叠，紧凑左对齐，支持就地自定义与获取方式设置） -->
-      <div id="plan-detail-card" class="plan-detail-card collapsible-pane" style="display:none">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
-          <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)" data-i18n="plan.detail.title">💎 AI 订阅与额度详情</span>
-            <span id="plan-save-feedback" style="font-size:10px;color:var(--ag-text-muted);display:none"></span>
-          </div>
-          <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:10.5px" data-i18n="plan.detail.toggleClose">详情收回 ▲</button>
-        </div>
-        <dl class="plan-detail-dl">
-          <dt data-i18n="plan.dt.plan">当前套餐：</dt>
-          <dd id="p-det-name" style="font-weight:600">Google AI Pro</dd>
-          <dt data-i18n="plan.dt.account">当前账号：</dt>
-          <dd id="p-det-account">—</dd>
-          <dt data-i18n="plan.dt.country">账号所在地区：</dt>
-          <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
-            <span id="p-det-country" style="display:none">未知</span>
-            <select id="direct-country-select" aria-label="账号所在地区 (仅本地记录)" style="display:none">
-              <option value="未知">🌐 未设置 / 自动</option>
-              <option value="美国 (US)">🇺🇸 美国 (US)</option>
-              <option value="日本 (JP)">🇯🇵 日本 (JP)</option>
-              <option value="韩国 (KR)">🇰🇷 韩国 (KR)</option>
-              <option value="中国台湾 (TW)">🇹🇼 中国台湾 (TW)</option>
-              <option value="中国香港 (HK)">🇭🇰 中国香港 (HK)</option>
-              <option value="澳大利亚 (AU)">🇦🇺 澳大利亚 (AU)</option>
-              <option value="新加坡 (SG)">🇸🇬 新加坡 (SG)</option>
-              <option value="英国 (UK)">🇬🇧 英国 (UK)</option>
-              <option value="德国 (DE)">🇩🇪 德国 (DE)</option>
-              <option value="加拿大 (CA)">🇨🇦 加拿大 (CA)</option>
-              <option value="土耳其 (TR)">🇹🇷 土耳其 (TR)</option>
-              <option value="尼日利亚 (NG)">🇳🇬 尼日利亚 (NG)</option>
-              <option value="菲律宾 (PH)">🇵🇭 菲律宾 (PH)</option>
-              <option value="印度 (IN)">🇮🇳 印度 (IN)</option>
-              <option value="马来西亚 (MY)">🇲🇾 马来西亚 (MY)</option>
-              <option value="巴西 (BR)">🇧🇷 巴西 (BR)</option>
-              <option value="中国大陆 (CN)">🇨🇳 中国大陆 (CN)</option>
-            </select>
-            <div id="direct-country-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-country-trigger" class="ag-dropdown-trigger" tabindex="0" title="用户记录或可靠来源识别的 Google 账号所属地区 (仅本地生效，不修改 Google 账号本身)" data-i18n-title="plan.country.title">
-                <span id="direct-country-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" data-i18n="plan.country.auto">🌐 未设置 / 自动</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
-                </div>
-              </div>
-              <div id="direct-country-menu" class="ag-dropdown-menu"></div>
-            </div>
-            <span id="p-det-country-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap" data-i18n="plan.tag.saved">已保存</span>
-          </dd>
-          <dt data-i18n="plan.dt.region">订阅国家：</dt>
-          <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
-            <span id="p-det-region" style="display:none">未知</span>
-            <div id="direct-region-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-region-trigger" class="ag-dropdown-trigger" tabindex="0" title="这份订阅的购买或订阅所在国家/地区 (可与账号所在地区不同)" data-i18n-title="plan.region.title">
-                <span id="direct-region-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" data-i18n="plan.region.unknown">🌏 未知 (点击选择订阅国家与币种建议)</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
-                </div>
-              </div>
-              <div id="direct-region-menu" class="ag-dropdown-menu"></div>
-            </div>
-            <span id="p-det-region-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap" data-i18n="plan.tag.custom">自定义</span>
-          </dd>
-          <dt data-i18n="plan.dt.currency">订阅币种：</dt>
-          <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
-            <span id="p-det-currency" style="display:none">USD</span>
-            <select id="direct-currency-select" aria-label="订阅币种" data-i18n-aria="plan.currency.aria" style="display:none">
-              <option value="USD">USD ($ 美元)</option>
-              <option value="KRW">KRW (₩ 韩元)</option>
-              <option value="AUD">AUD (AU$ 澳元)</option>
-              <option value="JPY">JPY (¥ 日元)</option>
-              <option value="HKD">HKD (HK$ 港币)</option>
-              <option value="TWD">TWD (NT$ 台币)</option>
-              <option value="TRY">TRY (₺ 里拉)</option>
-              <option value="NGN">NGN (₦ 奈拉)</option>
-              <option value="CNY">CNY (¥ 人民币)</option>
-              <option value="EUR">EUR (€ 欧元)</option>
-              <option value="GBP">GBP (£ 英镑)</option>
-              <option value="SGD">SGD (S$ 新元)</option>
-              <option value="CAD">CAD (CA$ 加元)</option>
-              <option value="PHP">PHP (₱ 比索)</option>
-              <option value="INR">INR (₹ 卢比)</option>
-              <option value="MYR">MYR (RM 令吉)</option>
-              <option value="BRL">BRL (R$ 雷亚尔)</option>
-            </select>
-            <div id="direct-currency-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
-              <div id="direct-currency-trigger" class="ag-dropdown-trigger" tabindex="0" title="该订阅记录使用的计价与结算币种 (独立保存，可手动指定或自动跟随)" data-i18n-title="plan.currency.title">
-                <span id="direct-currency-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">USD</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
-                </div>
-              </div>
-              <div id="direct-currency-menu" class="ag-dropdown-menu"></div>
-            </div>
-            <span id="p-det-currency-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap" data-i18n="plan.tag.saved">已保存</span>
-          </dd>
-          <dt data-i18n="plan.dt.acq">获取方式：</dt>
-          <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-            <span id="p-det-acq" data-i18n="plan.acq.normal">正常付费订阅</span>
-            <span id="p-det-acq-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none" data-i18n="plan.tag.promo">活动权益</span>
-          </dd>
-          <dt data-i18n="plan.dt.price">计费周期与价格：</dt>
-          <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-            <span id="p-det-price">$19.99</span>
-            <span id="p-det-price-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none" data-i18n="plan.tag.regionRef">地区参考价</span>
-            <div id="price-mode-switch-group" style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
-              <button id="btn-mode-preset" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px" data-i18n="plan.price.modePreset">跟随参考价</button>
-              <button id="btn-mode-custom" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px" data-i18n="plan.price.modeCustom">自定义实付</button>
-            </div>
-          </dd>
-          <dt id="p-dt-validity" style="display:none" data-i18n="plan.dt.validity">权益有效期：</dt>
-          <dd id="p-det-validity" style="display:none;color:var(--ag-text-secondary);font-size:11px">—</dd>
-          <dt id="p-dt-note" style="display:none" data-i18n="plan.dt.note">补充备注：</dt>
-          <dd id="p-det-note" style="display:none;color:var(--ag-text-secondary);font-size:11px">—</dd>
-          <dt data-i18n="plan.dt.promptCredits">Prompt 额度池：</dt>
-          <dd id="p-det-prompt-credits"><span id="p-det-credits">—</span></dd>
-          <dt data-i18n="plan.dt.flowCredits">Flow 额度池：</dt>
-          <dd id="p-det-flow-credits">—</dd>
-          <dt data-i18n="plan.dt.updated">状态更新时间：</dt>
-          <dd id="p-det-time" style="font-size:11px;color:var(--ag-text-muted)">—</dd>
-        </dl>
-
-        <!-- 底部操作栏：左侧提供详情收回按钮，右侧提供自定义订阅设置按钮 -->
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:6px;border-top:1px dashed var(--ag-border-subcard)">
-          <button id="btn-plan-detail-collapse" class="switch-pill-btn" type="button" style="padding:3px 10px;font-size:11px" data-i18n="plan.detail.toggleClose">详情收回 ▲</button>
-          <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button">
-            <span style="font-size:12px">✎</span>
-            <span data-i18n="plan.btn.editCustom">自定义订阅设置</span>
-          </button>
-        </div>
-
-        <!-- 就地行内自定义编辑表单 -->
-        <div id="plan-custom-form" style="display:none;margin-top:8px;padding:10px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px">
-          <div style="font-size:11px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)" data-i18n="plan.form.title">
-            设置当前账号订阅信息
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-            <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px" data-i18n="plan.form.acqLabel">获取方式 / 活动来源</label>
-              <select id="select-custom-acq" style="width:100%;font-size:11px;padding:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-                <option value="normal_paid" data-i18n="plan.acqOpt.normal_paid">正常付费订阅</option>
-                <option value="student_offer" data-i18n="plan.acqOpt.student_offer">学生认证优惠</option>
-                <option value="pixel_bundle" data-i18n="plan.acqOpt.pixel_bundle">Google Pixel 设备赠送</option>
-                <option value="chromebook_bundle" data-i18n="plan.acqOpt.chromebook_bundle">Chromebook Plus 设备赠送</option>
-                <option value="samsung_galaxy" data-i18n="plan.acqOpt.samsung_galaxy">Samsung Galaxy 设备指定活动</option>
-                <option value="jio_offer" data-i18n="plan.acqOpt.jio_offer">Jio 运营商套餐权益</option>
-                <option value="partner_carrier" data-i18n="plan.acqOpt.partner_carrier">其他运营商 / 合作伙伴权益</option>
-                <option value="family_sharing" data-i18n="plan.acqOpt.family_sharing">家庭组共享 / 他人赠送</option>
-                <option value="official_promo" data-i18n="plan.acqOpt.official_promo">官方限时试用 / 促销活动</option>
-                <option value="custom_source" data-i18n="plan.acqOpt.custom_source">其他 / 自由命名</option>
-              </select>
-            </div>
-            <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px" data-i18n="plan.form.acqCustomLabel">自定义活动 / 合作方名称</label>
-              <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送" data-i18n-placeholder="plan.form.acqCustomPh" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-            </div>
-          </div>
-          <div style="margin-bottom:6px">
-            <label style="font-size:10.5px;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px;cursor:pointer">
-              <input id="check-zero-extra" type="checkbox">
-              <span data-i18n="plan.form.zeroExtra">本权益期间无需另付订阅费</span>
-            </label>
-          </div>
-          <div style="margin-bottom:6px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
-              <label style="font-size:10px;color:var(--ag-text-muted)" data-i18n="plan.form.presetLabel">预设订阅国家与汇率 (可选快捷套用)</label>
-              <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
-            </div>
-            <select id="select-custom-region-preset" style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-              <option value="" data-i18n="plan.form.presetPlaceholder">-- 选择预设地区 (自动填入价格与汇率) --</option>
-              <option value="US">🇺🇸 美国 (US) · $19.99/月 (折合 ≈ ¥134.3)</option>
-              <option value="KR">🇰🇷 韩国 (KR) · ₩29,000/月 (折合 ≈ ¥147.9)</option>
-              <option value="HK">🇭🇰 中国香港 (HK) · HK$158/月 (折合 ≈ ¥135.4)</option>
-              <option value="JP">🇯🇵 日本 (JP) · ¥2,900/月 (折合 ≈ ¥123.3)</option>
-              <option value="TR">🇹🇷 土耳其 (TR) · ₺869.99/月 (折合 ≈ ¥115.7)</option>
-              <option value="NG">🇳🇬 尼日利亚 (NG) · ₦28,500/月 (折合 ≈ ¥119.7)</option>
-              <option value="TW">🇹🇼 中国台湾 (TW) · NT$650/月 (折合 ≈ ¥136.5)</option>
-              <option value="PH">🇵🇭 菲律宾 (PH) · ₱1,100/月 (折合 ≈ ¥128.7)</option>
-              <option value="IN">🇮🇳 印度 (IN) · ₹1,950/月 (折合 ≈ ¥148.2)</option>
-              <option value="GB">🇬🇧 英国 (UK) · £18.99/月 (折合 ≈ ¥166.2)</option>
-              <option value="EU">🇪🇺 欧洲 (EU) · €21.99/月 (折合 ≈ ¥165.4)</option>
-              <option value="BR">🇧🇷 巴西 (BR) · R$96.99/月 (折合 ≈ ¥114.4)</option>
-              <option value="SG">🇸🇬 新加坡 (SG) · S$27.99/月 (折合 ≈ ¥143.3)</option>
-              <option value="CA">🇨🇦 加拿大 (CA) · CA$26.99/月 (折合 ≈ ¥131.7)</option>
-              <option value="AU">🇦🇺 澳大利亚 (AU) · AU$32.99/月 (折合 ≈ ¥146.8)</option>
-              <option value="MY">🇲🇾 马来西亚 (MY) · RM 97.99/月 (折合 ≈ ¥151.9)</option>
-              <option value="CN">🇨🇳 中国大陆/自定义 (CNY) · ¥140/月</option>
-              <option value="custom" data-i18n="plan.form.presetCustom">✎ 自定义输入地区</option>
-            </select>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
-            <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px" data-i18n="plan.form.countryLabel">账号所在地区 (仅本地记录)</label>
-              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" data-i18n-placeholder="plan.form.countryPh" title="仅作为本地显示记录，不修改实际 Google 账号" data-i18n-title="plan.country.title" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-            </div>
-            <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px" data-i18n="plan.form.regionLabel">订阅国家 (购买/结算地区)</label>
-              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" data-i18n-placeholder="plan.form.regionPh" title="实际购买或支付订阅所在的国家或地区" data-i18n-title="plan.region.title" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-            </div>
-            <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px" data-i18n="plan.form.currencyLabel">订阅币种与实付金额</label>
-              <div style="display:flex;gap:4px">
-                <select id="select-custom-currency" title="订阅计价/结算币种" data-i18n-title="plan.currency.title" style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-                  <option value="USD">USD</option>
-                  <option value="KRW">KRW</option>
-                  <option value="HKD">HKD</option>
-                  <option value="JPY">JPY</option>
-                  <option value="TRY">TRY</option>
-                  <option value="NGN">NGN</option>
-                  <option value="TWD">TWD</option>
-                  <option value="PHP">PHP</option>
-                  <option value="INR">INR</option>
-                  <option value="CNY">CNY</option>
-                  <option value="EUR">EUR</option>
-                  <option value="GBP">GBP</option>
-                  <option value="SGD">SGD</option>
-                  <option value="BRL">BRL</option>
-                  <option value="CAD">CAD</option>
-                  <option value="AUD">AUD</option>
-                  <option value="MYR">MYR</option>
-                </select>
-                <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额" data-i18n-placeholder="plan.form.paidPh" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-              </div>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-            <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px" data-i18n="plan.form.cycleLabel">计费周期</label>
-              <select id="select-custom-cycle" style="width:100%;font-size:11px;padding:4px 6px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-                <option value="月付" data-i18n="plan.cycleOpt.monthly">月付</option>
-                <option value="年付" data-i18n="plan.cycleOpt.yearly">年付</option>
-                <option value="免费/赠送" data-i18n="plan.cycleOpt.free">免费 / 促销赠送</option>
-                <option value="随套餐包含" data-i18n="plan.cycleOpt.included">随套餐包含</option>
-                <option value="其他周期" data-i18n="plan.cycleOpt.other">其他周期</option>
-              </select>
-            </div>
-            <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px" data-i18n="plan.form.validEndLabel">权益到期日</label>
-              <input id="input-valid-end" type="date" style="width:100%;font-size:11px;padding:3px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-            </div>
-          </div>
-          <div style="margin-bottom:6px">
-            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px" data-i18n="plan.form.noteLabel">补充说明备注</label>
-            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" data-i18n-placeholder="plan.form.notePh" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
-          </div>
-          <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
-            <button id="btn-custom-plan-clear" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px;color:#ef4444" data-i18n="plan.form.clear">清除自定义</button>
-            <button id="btn-custom-plan-cancel" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px" data-i18n="plan.form.cancel">取消</button>
-            <button id="btn-custom-plan-save" class="switch-pill-btn active" type="button" style="padding:2px 10px;font-size:11px" data-i18n="plan.form.save">保存</button>
-          </div>
+        <!-- 6. 展开详情入口 -->
+        <div id="cost-expand-bar" style="display:flex;justify-content:flex-end">
+          <button id="btn-cost-details-toggle" class="switch-pill-btn" type="button"
+            style="padding:2px 10px;font-size:10.5px" data-i18n="cost.btnExpand">展开详情 ▼</button>
         </div>
       </div>
 
-      <!-- API 费用估算卡片（整个费用面板默认收为小摘要，展开后才显示详情） -->
-      <div id="cost-estimate-card" style="display:none;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:12px;margin-bottom:10px">
-        <!-- 紧凑小摘要区（默认常驻展示） -->
-        <div id="cost-compact-summary">
-          <!-- 1. 标题与范围标签 -->
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <span id="cost-card-title" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary)" data-i18n="cost.title">💰 本期 API 参考金额</span>
-            <span id="cost-period-tag" class="key-pill pill-muted" style="font-size:10px" data-i18n="cost.periodTag">本月自然月</span>
-          </div>
-          <!-- 2. 来源与时间短行 -->
-          <div id="cost-scope-desc" style="font-size:11px;color:var(--ag-text-muted);margin-bottom:6px">—</div>
-          <!-- 3. 主要参考金额及常驻“非实付”标识 -->
-          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-            <div id="cost-grand-val" style="font-size:22px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.5px">$0.00</div>
-            <span id="cost-non-paid-badge" class="key-pill pill-muted" style="font-size:10px;padding:1px 6px" data-i18n="cost.nonPaidBadge">API折算 · 非实付</span>
-          </div>
-          <!-- 4. 一行参考模型/情景假设 -->
-          <div id="cost-grand-sub" style="font-size:11px;color:var(--ag-text-secondary);margin-bottom:6px;line-height:1.35">—</div>
-          <!-- 5. 一行订阅实付及补充入口 -->
-          <div id="cost-sub-line-wrap" style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin:6px 0 8px">
-            <div style="display:flex;align-items:center;gap:4px">
-              <span id="cost-sub-line" style="font-size:11px;color:var(--ag-text-primary)" data-i18n="cost.subUnknown">订阅实付：未填写</span>
-              <span id="cost-sub-spend-val" style="display:none">—</span>
-              <span id="cost-sub-compare-note" style="display:none"></span>
-              <span id="cost-sub-spend-lbl" style="display:none"></span>
-            </div>
-            <button id="btn-cost-fill-sub" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px" data-i18n="cost.btnFill">补充</button>
-          </div>
-          <!-- 6. 展开详情入口 -->
-          <div id="cost-expand-bar" style="display:flex;justify-content:flex-end">
-            <button id="btn-cost-details-toggle" class="switch-pill-btn" type="button" style="padding:2px 10px;font-size:10.5px" data-i18n="cost.btnExpand">展开详情 ▼</button>
+      <!-- 详细选项与分析区（展开后完整呈现，默认收起） -->
+      <div id="cost-details-pane"
+        style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--ag-border-subcard)">
+        <!-- 高级控制条：范围与覆盖率 -->
+        <div
+          style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+          <span style="font-size:11px;color:var(--ag-text-muted)" data-i18n="cost.scopeLabel">统计范围:</span>
+          <div style="display:flex;align-items:center;gap:4px">
+            <button id="cost-btn-scope-period" class="switch-pill-btn active" type="button"
+              style="padding:1px 6px;font-size:10.5px" data-i18n="cost.scopePeriod">本期</button>
+            <button id="cost-btn-scope-all" class="switch-pill-btn" type="button"
+              style="padding:1px 6px;font-size:10.5px" data-i18n="cost.scopeAll">全量历史</button>
+            <span id="cost-coverage-pill" class="key-pill pill-muted" style="font-size:10.5px">100%</span>
           </div>
         </div>
 
-        <!-- 详细选项与分析区（展开后完整呈现，默认收起） -->
-        <div id="cost-details-pane" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--ag-border-subcard)">
-          <!-- 高级控制条：范围与覆盖率 -->
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
-            <span style="font-size:11px;color:var(--ag-text-muted)" data-i18n="cost.scopeLabel">统计范围:</span>
-            <div style="display:flex;align-items:center;gap:4px">
-              <button id="cost-btn-scope-period" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10.5px" data-i18n="cost.scopePeriod">本期</button>
-              <button id="cost-btn-scope-all" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px" data-i18n="cost.scopeAll">全量历史</button>
-              <span id="cost-coverage-pill" class="key-pill pill-muted" style="font-size:10.5px">100%</span>
-            </div>
-          </div>
-
-          <!-- 估值模式快捷切换（中性“参考模型估算”） -->
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
-            <span style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="cost.modeLabel">估值模式:</span>
-            <div class="source-switch-bar">
-              <button id="cost-btn-mode-ref" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px" data-i18n="cost.modeRef">参考模型估算</button>
-              <button id="cost-btn-mode-hybrid" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px" data-i18n="cost.modeHybrid">混合模式</button>
-              <button id="cost-btn-mode-identified" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px" data-i18n="cost.modeIdentified">仅已识别模型</button>
-            </div>
-          </div>
-
-          <!-- 用量与参考差额指标条（注明包含缓存读取） -->
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin-bottom:8px">
-            <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">—</span>
-            <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">—</span>
-          </div>
-
-          <!-- 分类单价与公式明细卡片（输入、缓存读取、输出） -->
-          <div id="ref-cost-breakdown-cards" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.input">输入 Token</span> ($0.75/M)</div>
-              <div id="ref-cost-input-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-              <div id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
-            </div>
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.cache">缓存读取 (优惠)</span> ($0.075/M)</div>
-              <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-              <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
-            </div>
-            <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.output">输出 Token</span> ($3.75/M)</div>
-              <div id="ref-cost-output-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-              <div id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
-            </div>
-          </div>
-
-          <!-- 详细分析与未计价原因 -->
-          <div id="cost-breakdown-info" style="font-size:10.5px;color:var(--ag-text-secondary);line-height:1.4;padding-top:6px;border-top:1px solid var(--ag-border-subcard)" data-i18n="cost.analyzing">
-            正在分析请求模型与计价覆盖率…
-          </div>
-
-          <div style="font-size:10px;color:var(--ag-text-muted);line-height:1.4;margin-top:8px" data-i18n="cost.disclaimer">
-            注：此折算反映按公开零售价调用同等资源之费用，包月订阅/活动赠送与 API 零售非同类计费模式，该差额不等于真实节省现金；缓存读取按 10% 优惠计价；不含缓存存储费与搜索落地费用。缓存可在多次请求中重复读取相同上下文，该总量不代表独立文本量或用户输入字数。
-          </div>
-
-          <!-- 底部收起详情按钮 -->
-          <div style="display:flex;justify-content:center;margin-top:10px">
-            <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button" style="padding:2px 14px;font-size:10.5px" data-i18n="cost.btnCollapse">收起详情 ▴</button>
+        <!-- 估值模式快捷切换（中性“参考模型估算”） -->
+        <div
+          style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
+          <span style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="cost.modeLabel">估值模式:</span>
+          <div class="source-switch-bar">
+            <button id="cost-btn-mode-ref" class="switch-pill-btn active" type="button"
+              style="padding:1px 6px;font-size:10px" data-i18n="cost.modeRef">参考模型估算</button>
+            <button id="cost-btn-mode-hybrid" class="switch-pill-btn" type="button"
+              style="padding:1px 6px;font-size:10px" data-i18n="cost.modeHybrid">混合模式</button>
+            <button id="cost-btn-mode-identified" class="switch-pill-btn" type="button"
+              style="padding:1px 6px;font-size:10px" data-i18n="cost.modeIdentified">仅已识别模型</button>
           </div>
         </div>
 
-        <!-- 隐藏辅助兼容层 -->
-        <div id="ref-cost-drawer-body" style="display:none">
-          <span id="ref-cost-grand-val">$0.00</span>
-          <span id="ref-cost-mode-label">参考模型折算</span>
-          <button id="btn-toggle-ref-cost-drawer" type="button" style="display:none"></button>
-          <button id="btn-ref-mode-all" type="button" style="display:none"></button>
-          <button id="btn-ref-mode-hybrid" type="button" style="display:none"></button>
+        <!-- 用量与参考差额指标条（注明包含缓存读取） -->
+        <div
+          style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin-bottom:8px">
+          <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">—</span>
+          <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">—</span>
+        </div>
+
+        <!-- 分类单价与公式明细卡片（输入、缓存读取、输出） -->
+        <div id="ref-cost-breakdown-cards"
+          style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+          <div class="t-card" style="padding:6px">
+            <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.input">输入 Token</span>
+              ($0.75/M)</div>
+            <div id="ref-cost-input-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
+            <div id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+          </div>
+          <div class="t-card" style="padding:6px">
+            <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.cache">缓存读取 (优惠)</span>
+              ($0.075/M)</div>
+            <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
+            <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+          </div>
+          <div class="t-card" style="padding:6px">
+            <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.output">输出 Token</span>
+              ($3.75/M)</div>
+            <div id="ref-cost-output-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00
+            </div>
+            <div id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+          </div>
+        </div>
+
+        <!-- 详细分析与未计价原因 -->
+        <div id="cost-breakdown-info"
+          style="font-size:10.5px;color:var(--ag-text-secondary);line-height:1.4;padding-top:6px;border-top:1px solid var(--ag-border-subcard)"
+          data-i18n="cost.analyzing">
+          正在分析请求模型与计价覆盖率…
+        </div>
+
+        <div style="font-size:10px;color:var(--ag-text-muted);line-height:1.4;margin-top:8px"
+          data-i18n="cost.disclaimer">
+          注：此折算反映按公开零售价调用同等资源之费用，包月订阅/活动赠送与 API 零售非同类计费模式，该差额不等于真实节省现金；缓存读取按 10%
+          优惠计价；不含缓存存储费与搜索落地费用。缓存可在多次请求中重复读取相同上下文，该总量不代表独立文本量或用户输入字数。
+        </div>
+
+        <!-- 底部收起详情按钮 -->
+        <div style="display:flex;justify-content:center;margin-top:10px">
+          <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button"
+            style="padding:2px 14px;font-size:10.5px" data-i18n="cost.btnCollapse">收起详情 ▴</button>
         </div>
       </div>
 
-      <!-- 专属 Token 统计页（包含卡片统计、热力图与调色抽屉，费用模式下完全不渲染） -->
-      <div id="tokens-main-view">
-        <div class="token-stat-cards" id="token-stat-cards">
-          <div class="t-card">
-            <div class="t-card-lbl"><span data-i18n="tokens.card.total">累计处理 Token</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Total</span></div>
-            <div style="font-size:9.5px;color:var(--ag-text-muted);margin:-2px 0 4px" data-i18n="tokens.card.includeCache">含缓存读取</div>
-            <div class="t-card-val" id="t-total-val">--</div>
-            <div class="t-card-sub" id="t-total-sub" data-i18n="common.loading">读取中...</div>
-            <div class="t-card-cost" id="t-total-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00</div>
-          </div>
-          <div class="t-card">
-            <div class="t-card-lbl"><span data-i18n="tokens.card.today">今日使用</span><span style="color:var(--ag-custom-token-accent,#0284c7)">Today</span></div>
-            <div class="t-card-val" id="t-today-val">--</div>
-            <div class="t-card-sub" id="t-today-sub" data-i18n="common.loading">读取中...</div>
-            <div class="t-card-cost" id="t-today-cost">≈ $0.00 (¥0.00)</div>
-          </div>
-          <div class="t-card">
-            <div class="t-card-lbl"><span data-i18n="tokens.card.month">本月使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Month</span></div>
-            <div class="t-card-val" id="t-month-val">--</div>
-            <div class="t-card-sub" id="t-month-sub" data-i18n="common.loading">读取中...</div>
-            <div class="t-card-cost" id="t-month-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00</div>
-          </div>
-          <div class="t-card">
-            <div class="t-card-lbl"><span data-i18n="tokens.card.year">年度使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Year</span></div>
-            <div class="t-card-val" id="t-year-val">--</div>
-            <div class="t-card-sub" id="t-year-sub" data-i18n="common.loading">读取中...</div>
-            <div class="t-card-cost" id="t-year-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00</div>
+      <!-- 隐藏辅助兼容层 -->
+      <div id="ref-cost-drawer-body" style="display:none">
+        <span id="ref-cost-grand-val">$0.00</span>
+        <span id="ref-cost-mode-label">参考模型折算</span>
+        <button id="btn-toggle-ref-cost-drawer" type="button" style="display:none"></button>
+        <button id="btn-ref-mode-all" type="button" style="display:none"></button>
+        <button id="btn-ref-mode-hybrid" type="button" style="display:none"></button>
+      </div>
+    </div>
+
+    <!-- 专属 Token 统计页（包含卡片统计、热力图与调色抽屉，费用模式下完全不渲染） -->
+    <div id="tokens-main-view">
+      <div class="token-stat-cards" id="token-stat-cards">
+        <div class="t-card">
+          <div class="t-card-lbl"><span data-i18n="tokens.card.total">累计处理 Token</span><span
+              style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Total</span></div>
+          <div style="font-size:9.5px;color:var(--ag-text-muted);margin:-2px 0 4px"
+            data-i18n="tokens.card.includeCache">含缓存读取</div>
+          <div class="t-card-val" id="t-total-val">--</div>
+          <div class="t-card-sub" id="t-total-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cost" id="t-total-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
           </div>
         </div>
+        <div class="t-card">
+          <div class="t-card-lbl"><span data-i18n="tokens.card.today">今日使用</span><span
+              style="color:var(--ag-custom-token-accent,#0284c7)">Today</span></div>
+          <div class="t-card-val" id="t-today-val">--</div>
+          <div class="t-card-sub" id="t-today-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cost" id="t-today-cost">≈ $0.00 (¥0.00)</div>
+        </div>
+        <div class="t-card">
+          <div class="t-card-lbl"><span data-i18n="tokens.card.month">本月使用</span><span
+              style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Month</span></div>
+          <div class="t-card-val" id="t-month-val">--</div>
+          <div class="t-card-sub" id="t-month-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cost" id="t-month-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
+          </div>
+        </div>
+        <div class="t-card">
+          <div class="t-card-lbl"><span data-i18n="tokens.card.year">年度使用</span><span
+              style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Year</span></div>
+          <div class="t-card-val" id="t-year-val">--</div>
+          <div class="t-card-sub" id="t-year-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cost" id="t-year-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
+          </div>
+        </div>
+      </div>
 
       <div class="heatmap-section">
         <div class="heat-header">
           <div class="heat-header-left">
             <div class="heat-title" data-i18n="tokens.heat.title">Token 活动</div>
-            <span id="first-use-badge" class="first-use-badge" data-i18n="tokens.heat.firstUsePlaceholder">首次使用：--</span>
+            <span id="first-use-badge" class="first-use-badge"
+              data-i18n="tokens.heat.firstUsePlaceholder">首次使用：--</span>
             <div class="heat-win-nav">
-              <button id="h-page-prev" class="heat-nav-btn" type="button" title="查看更早的 12 个月窗口" data-i18n-title="tokens.heat.prevTitle" disabled>‹</button>
+              <button id="h-page-prev" class="heat-nav-btn" type="button" title="查看更早的 12 个月窗口"
+                data-i18n-title="tokens.heat.prevTitle" disabled>‹</button>
               <span id="h-win-range">--</span>
-              <button id="h-page-next" class="heat-nav-btn" type="button" title="查看更新的 12 个月窗口" data-i18n-title="tokens.heat.nextTitle" disabled>›</button>
+              <button id="h-page-next" class="heat-nav-btn" type="button" title="查看更新的 12 个月窗口"
+                data-i18n-title="tokens.heat.nextTitle" disabled>›</button>
             </div>
           </div>
-          <div class="heat-tabs" id="heat-tabs-bar" role="tablist" aria-label="热力图统计周期" data-i18n-aria="tokens.heat.tabsAria">
+          <div class="heat-tabs" id="heat-tabs-bar" role="tablist" aria-label="热力图统计周期"
+            data-i18n-aria="tokens.heat.tabsAria">
             <div class="heat-tab-thumb" id="heat-tab-thumb" aria-hidden="true"></div>
-            <button class="heat-tab-btn active" id="h-tab-daily" role="tab" aria-selected="true" type="button" tabindex="0" data-i18n="tokens.heat.daily">每天</button>
-            <button class="heat-tab-btn" id="h-tab-weekly" role="tab" aria-selected="false" type="button" tabindex="-1" data-i18n="tokens.heat.weekly">每周</button>
-            <button class="heat-tab-btn" id="h-tab-monthly" role="tab" aria-selected="false" type="button" tabindex="-1" data-i18n="tokens.heat.monthly">每月</button>
-            <button class="heat-tab-btn" id="h-tab-yearly" role="tab" aria-selected="false" type="button" tabindex="-1" data-i18n="tokens.heat.yearly">今年</button>
-            <button class="heat-tab-btn" id="h-tab-cum" role="tab" aria-selected="false" type="button" tabindex="-1" data-i18n="tokens.heat.cum">累计总量</button>
+            <button class="heat-tab-btn active" id="h-tab-daily" role="tab" aria-selected="true" type="button"
+              tabindex="0" data-i18n="tokens.heat.daily">每天</button>
+            <button class="heat-tab-btn" id="h-tab-weekly" role="tab" aria-selected="false" type="button" tabindex="-1"
+              data-i18n="tokens.heat.weekly">每周</button>
+            <button class="heat-tab-btn" id="h-tab-monthly" role="tab" aria-selected="false" type="button" tabindex="-1"
+              data-i18n="tokens.heat.monthly">每月</button>
+            <button class="heat-tab-btn" id="h-tab-yearly" role="tab" aria-selected="false" type="button" tabindex="-1"
+              data-i18n="tokens.heat.yearly">今年</button>
+            <button class="heat-tab-btn" id="h-tab-cum" role="tab" aria-selected="false" type="button" tabindex="-1"
+              data-i18n="tokens.heat.cum">累计总量</button>
           </div>
         </div>
         <div class="heat-scroll-box" id="h-scroll-box">
@@ -2952,26 +3605,40 @@
           </div>
           <div class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumActiveAvg">活跃日均:</span>
-            <span id="h-sum-active-avg" class="heat-sum-val" data-i18n="tokens.heat.activeAvgPlaceholder">$0.00 (0天)</span>
+            <span id="h-sum-active-avg" class="heat-sum-val" data-i18n="tokens.heat.activeAvgPlaceholder">$0.00
+              (0天)</span>
           </div>
           <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumSubRatio">订阅性价比:</span>
-            <span id="h-sum-sub-ratio" class="heat-sum-val" style="color:var(--ag-token-accent-default,#a78bfa)">--</span>
+            <span id="h-sum-sub-ratio" class="heat-sum-val"
+              style="color:var(--ag-token-accent-default,#a78bfa)">--</span>
           </div>
         </div>
         <div class="heat-cost-disclaimer" data-i18n="tokens.heat.disclaimer">
           注：按日聚合按基础档估算，未拆分长上下文分档，结果偏下限。有逐请求记录时优先精确入账。
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px">
+        <div
+          style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px">
           <span data-i18n="tokens.heat.tip">点击或悬浮格子查看当日详细 Token 构成</span>
           <div style="display:flex;align-items:center;gap:6px">
-            <div id="heat-legend-scale" style="display:flex;align-items:center;gap:4px;cursor:pointer" title="点击任一色块单独修改该档位颜色，或点击文字展开设置" data-i18n-title="tokens.heat.legendTitle">
+            <div id="heat-legend-scale" style="display:flex;align-items:center;gap:4px;cursor:pointer"
+              title="点击任一色块单独修改该档位颜色，或点击文字展开设置" data-i18n-title="tokens.heat.legendTitle">
               <span data-i18n="tokens.heat.less">少</span>
-              <button id="heat-leg-0" class="heat-leg-swatch" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="第 1 档（少/无用量）：点击单独修改此格颜色" data-i18n-title="colors.lvl0Title"></button>
-              <button id="heat-leg-1" class="heat-leg-swatch" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="第 2 档（低用量）：点击单独修改此格颜色" data-i18n-title="colors.lvl1Title"></button>
-              <button id="heat-leg-2" class="heat-leg-swatch" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="第 3 档（中等用量）：点击单独修改此格颜色" data-i18n-title="colors.lvl2Title"></button>
-              <button id="heat-leg-3" class="heat-leg-swatch" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="第 4 档（高用量）：点击单独修改此格颜色" data-i18n-title="colors.lvl3Title"></button>
-              <button id="heat-leg-4" class="heat-leg-swatch" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="第 5 档（多/峰值用量）：点击单独修改此格颜色" data-i18n-title="colors.lvl4Title"></button>
+              <button id="heat-leg-0" class="heat-leg-swatch" type="button" data-color-slot="heatLvl0"
+                data-color-label="色阶第 1 档（少/无用量）" title="第 1 档（少/无用量）：点击单独修改此格颜色"
+                data-i18n-title="colors.lvl0Title"></button>
+              <button id="heat-leg-1" class="heat-leg-swatch" type="button" data-color-slot="heatLvl1"
+                data-color-label="色阶第 2 档（低用量）" title="第 2 档（低用量）：点击单独修改此格颜色"
+                data-i18n-title="colors.lvl1Title"></button>
+              <button id="heat-leg-2" class="heat-leg-swatch" type="button" data-color-slot="heatLvl2"
+                data-color-label="色阶第 3 档（中等用量）" title="第 3 档（中等用量）：点击单独修改此格颜色"
+                data-i18n-title="colors.lvl2Title"></button>
+              <button id="heat-leg-3" class="heat-leg-swatch" type="button" data-color-slot="heatLvl3"
+                data-color-label="色阶第 4 档（高用量）" title="第 4 档（高用量）：点击单独修改此格颜色"
+                data-i18n-title="colors.lvl3Title"></button>
+              <button id="heat-leg-4" class="heat-leg-swatch" type="button" data-color-slot="heatLvl4"
+                data-color-label="色阶第 5 档（多/峰值用量）" title="第 5 档（多/峰值用量）：点击单独修改此格颜色"
+                data-i18n-title="colors.lvl4Title"></button>
               <span data-i18n="tokens.heat.more">多</span>
             </div>
           </div>
@@ -2986,26 +3653,37 @@
         </button>
         <div id="token-color-drawer-body" class="drawer-body" style="display:none;">
           <div class="heat-preset-bar">
-            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500" data-i18n="tokens.heat.presetLabel">5 档色阶预设：</span>
+            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500"
+              data-i18n="tokens.heat.presetLabel">5 档色阶预设：</span>
             <div class="heat-preset-group" id="heat-preset-group">
               <button class="heat-preset-btn" type="button" data-heat-preset="purple" data-active="true">
-                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#3f1e6b"></i><i style="background:#652ab7"></i><i style="background:#9053f8"></i><i style="background:#c084fc"></i></span>
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#3f1e6b"></i><i
+                    style="background:#652ab7"></i><i style="background:#9053f8"></i><i
+                    style="background:#c084fc"></i></span>
                 <span data-i18n="tokens.heat.presetPurple">紫色系</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="yellow" data-active="false">
-                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#713f12"></i><i style="background:#a16207"></i><i style="background:#eab308"></i><i style="background:#fde047"></i></span>
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#713f12"></i><i
+                    style="background:#a16207"></i><i style="background:#eab308"></i><i
+                    style="background:#fde047"></i></span>
                 <span data-i18n="tokens.heat.presetYellow">黄色系</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="green" data-active="false">
-                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#14532d"></i><i style="background:#15803d"></i><i style="background:#22c55e"></i><i style="background:#86efac"></i></span>
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#14532d"></i><i
+                    style="background:#15803d"></i><i style="background:#22c55e"></i><i
+                    style="background:#86efac"></i></span>
                 <span data-i18n="tokens.heat.presetGreen">绿色系</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="blue" data-active="false">
-                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#1e3a8a"></i><i style="background:#1d4ed8"></i><i style="background:#3b82f6"></i><i style="background:#93c5fd"></i></span>
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#1e3a8a"></i><i
+                    style="background:#1d4ed8"></i><i style="background:#3b82f6"></i><i
+                    style="background:#93c5fd"></i></span>
                 <span data-i18n="tokens.heat.presetBlue">蓝色系</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="red" data-active="false">
-                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#7f1d1d"></i><i style="background:#b91c1c"></i><i style="background:#ef4444"></i><i style="background:#fca5a5"></i></span>
+                <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#7f1d1d"></i><i
+                    style="background:#b91c1c"></i><i style="background:#ef4444"></i><i
+                    style="background:#fca5a5"></i></span>
                 <span data-i18n="tokens.heat.presetRed">红色系</span>
               </button>
             </div>
@@ -3013,48 +3691,65 @@
 
           <div class="heat-lvl-custom-bar">
             <div class="heat-lvl-custom-hdr">
-              <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500" data-i18n="tokens.heat.customTitle">5 档逐格独立自定义（点击任意一格或图例「少 ▢▢▢▢▢ 多」单独调色，可设 5 种不同颜色）：</span>
-              <button id="reset-heat-lvls" class="color-reset-btn" type="button" data-i18n="tokens.heat.resetLvls">恢复 5 档预设</button>
+              <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500"
+                data-i18n="tokens.heat.customTitle">5 档逐格独立自定义（点击任意一格或图例「少 ▢▢▢▢▢ 多」单独调色，可设 5 种不同颜色）：</span>
+              <button id="reset-heat-lvls" class="color-reset-btn" type="button" data-i18n="tokens.heat.resetLvls">恢复 5
+                档预设</button>
             </div>
             <div class="heat-lvl-grid" id="heat-lvl-grid">
               <div class="heat-lvl-item">
                 <span class="heat-lvl-lbl" data-i18n="tokens.heat.lvl0">1档 · 少/无</span>
                 <div class="color-item-ctrls">
-                  <input id="color-heatLvl0" class="color-picker" type="color" value="#27272a" aria-label="热力图第1档颜色" data-i18n-aria-label="tokens.heat.lvl0Aria" />
-                  <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" data-i18n-color-label="tokens.heat.lvl0Swatch"></button>
-                  <button id="reset-heatLvl0" class="color-reset-btn" type="button" data-mode="auto" data-i18n="tokens.heat.btnPreset">预设</button>
+                  <input id="color-heatLvl0" class="color-picker" type="color" value="#27272a" aria-label="热力图第1档颜色"
+                    data-i18n-aria-label="tokens.heat.lvl0Aria" />
+                  <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0"
+                    data-color-label="色阶第 1 档（少/无用量）" data-i18n-color-label="tokens.heat.lvl0Swatch"></button>
+                  <button id="reset-heatLvl0" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="tokens.heat.btnPreset">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
                 <span class="heat-lvl-lbl" data-i18n="tokens.heat.lvl1">2档 · 低</span>
                 <div class="color-item-ctrls">
-                  <input id="color-heatLvl1" class="color-picker" type="color" value="#3f1e6b" aria-label="热力图第2档颜色" data-i18n-aria-label="tokens.heat.lvl1Aria" />
-                  <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" data-i18n-color-label="tokens.heat.lvl1Swatch"></button>
-                  <button id="reset-heatLvl1" class="color-reset-btn" type="button" data-mode="auto" data-i18n="tokens.heat.btnPreset">预设</button>
+                  <input id="color-heatLvl1" class="color-picker" type="color" value="#3f1e6b" aria-label="热力图第2档颜色"
+                    data-i18n-aria-label="tokens.heat.lvl1Aria" />
+                  <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1"
+                    data-color-label="色阶第 2 档（低用量）" data-i18n-color-label="tokens.heat.lvl1Swatch"></button>
+                  <button id="reset-heatLvl1" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="tokens.heat.btnPreset">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
                 <span class="heat-lvl-lbl" data-i18n="tokens.heat.lvl2">3档 · 中</span>
                 <div class="color-item-ctrls">
-                  <input id="color-heatLvl2" class="color-picker" type="color" value="#652ab7" aria-label="热力图第3档颜色" data-i18n-aria-label="tokens.heat.lvl2Aria" />
-                  <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" data-i18n-color-label="tokens.heat.lvl2Swatch"></button>
-                  <button id="reset-heatLvl2" class="color-reset-btn" type="button" data-mode="auto" data-i18n="tokens.heat.btnPreset">预设</button>
+                  <input id="color-heatLvl2" class="color-picker" type="color" value="#652ab7" aria-label="热力图第3档颜色"
+                    data-i18n-aria-label="tokens.heat.lvl2Aria" />
+                  <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2"
+                    data-color-label="色阶第 3 档（中等用量）" data-i18n-color-label="tokens.heat.lvl2Swatch"></button>
+                  <button id="reset-heatLvl2" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="tokens.heat.btnPreset">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
                 <span class="heat-lvl-lbl" data-i18n="tokens.heat.lvl3">4档 · 高</span>
                 <div class="color-item-ctrls">
-                  <input id="color-heatLvl3" class="color-picker" type="color" value="#9053f8" aria-label="热力图第4档颜色" data-i18n-aria-label="tokens.heat.lvl3Aria" />
-                  <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" data-i18n-color-label="tokens.heat.lvl3Swatch"></button>
-                  <button id="reset-heatLvl3" class="color-reset-btn" type="button" data-mode="auto" data-i18n="tokens.heat.btnPreset">预设</button>
+                  <input id="color-heatLvl3" class="color-picker" type="color" value="#9053f8" aria-label="热力图第4档颜色"
+                    data-i18n-aria-label="tokens.heat.lvl3Aria" />
+                  <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3"
+                    data-color-label="色阶第 4 档（高用量）" data-i18n-color-label="tokens.heat.lvl3Swatch"></button>
+                  <button id="reset-heatLvl3" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="tokens.heat.btnPreset">预设</button>
                 </div>
               </div>
               <div class="heat-lvl-item">
                 <span class="heat-lvl-lbl" data-i18n="tokens.heat.lvl4">5档 · 多/峰</span>
                 <div class="color-item-ctrls">
-                  <input id="color-heatLvl4" class="color-picker" type="color" value="#c084fc" aria-label="热力图第5档颜色" data-i18n-aria-label="tokens.heat.lvl4Aria" />
-                  <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" data-i18n-color-label="tokens.heat.lvl4Swatch"></button>
-                  <button id="reset-heatLvl4" class="color-reset-btn" type="button" data-mode="auto" data-i18n="tokens.heat.btnPreset">预设</button>
+                  <input id="color-heatLvl4" class="color-picker" type="color" value="#c084fc" aria-label="热力图第5档颜色"
+                    data-i18n-aria-label="tokens.heat.lvl4Aria" />
+                  <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4"
+                    data-color-label="色阶第 5 档（多/峰值用量）" data-i18n-color-label="tokens.heat.lvl4Swatch"></button>
+                  <button id="reset-heatLvl4" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="tokens.heat.btnPreset">预设</button>
                 </div>
               </div>
             </div>
@@ -3064,37 +3759,51 @@
             <div class="color-item">
               <span class="color-item-lbl" data-i18n="tokens.heat.lowEnd">色阶「少」端颜色（自动插值）</span>
               <div class="color-item-ctrls">
-                <input id="color-heatLow" class="color-picker" type="color" value="#27272a" aria-label="热力图少端颜色" data-i18n-aria-label="tokens.heat.lowEndAria" />
-                <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow" data-color-label="热力图「少」端颜色" data-i18n-color-label="tokens.heat.lowEndSwatch"></button>
-                <button id="reset-heatLow" class="color-reset-btn" type="button" data-mode="auto" data-i18n="tokens.heat.btnPreset">预设</button>
+                <input id="color-heatLow" class="color-picker" type="color" value="#27272a" aria-label="热力图少端颜色"
+                  data-i18n-aria-label="tokens.heat.lowEndAria" />
+                <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow"
+                  data-color-label="热力图「少」端颜色" data-i18n-color-label="tokens.heat.lowEndSwatch"></button>
+                <button id="reset-heatLow" class="color-reset-btn" type="button" data-mode="auto"
+                  data-i18n="tokens.heat.btnPreset">预设</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl" data-i18n="tokens.heat.highEnd">色阶「多」端颜色（自动插值）</span>
               <div class="color-item-ctrls">
-                <input id="color-heatHigh" class="color-picker" type="color" value="#c084fc" aria-label="热力图多端颜色" data-i18n-aria-label="tokens.heat.highEndAria" />
-                <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh" data-color-label="热力图「多」端颜色" data-i18n-color-label="tokens.heat.highEndSwatch"></button>
-                <button id="reset-heatHigh" class="color-reset-btn" type="button" data-mode="auto" data-i18n="tokens.heat.btnPreset">预设</button>
+                <input id="color-heatHigh" class="color-picker" type="color" value="#c084fc" aria-label="热力图多端颜色"
+                  data-i18n-aria-label="tokens.heat.highEndAria" />
+                <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh"
+                  data-color-label="热力图「多」端颜色" data-i18n-color-label="tokens.heat.highEndSwatch"></button>
+                <button id="reset-heatHigh" class="color-reset-btn" type="button" data-mode="auto"
+                  data-i18n="tokens.heat.btnPreset">预设</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl" data-i18n="tokens.heat.panelBg">面板与菜单统一背景色</span>
               <div class="color-item-ctrls">
-                <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" data-i18n-color-label="colors.panelBgSwatch"></button>
-                <button id="reset-panelBg-tokens" class="color-reset-btn" type="button" data-mode="auto" data-i18n="tokens.colors.followTheme">跟随主题</button>
+                <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg"
+                  data-color-label="面板与菜单背景色" data-i18n-color-label="colors.panelBgSwatch"></button>
+                <button id="reset-panelBg-tokens" class="color-reset-btn" type="button" data-mode="auto"
+                  data-i18n="tokens.colors.followTheme">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
               <span class="color-item-lbl" data-i18n="tokens.heat.accentColors">累计与强调指标色</span>
               <div class="color-item-ctrls">
-                <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" data-i18n-color-label="tokens.heat.totalSwatch"></button>
-                <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="Token 强调色" data-i18n-color-label="tokens.heat.accentSwatch"></button>
-                <button id="reset-all-colors-tokens" class="color-reset-btn" type="button" data-i18n="settings.colors.resetAll">全部恢复跟随主题</button>
+                <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button"
+                  data-color-slot="tokenTotal" data-color-label="累计 token 用量"
+                  data-i18n-color-label="tokens.heat.totalSwatch"></button>
+                <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button"
+                  data-color-slot="tokenAccent" data-color-label="Token 强调色"
+                  data-i18n-color-label="tokens.heat.accentSwatch"></button>
+                <button id="reset-all-colors-tokens" class="color-reset-btn" type="button"
+                  data-i18n="settings.colors.resetAll">全部恢复跟随主题</button>
               </div>
             </div>
           </div>
 
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px dashed var(--ag-border-subcard);font-size:11px">
+          <div
+            style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px dashed var(--ag-border-subcard);font-size:11px">
             <span style="color:var(--ag-text-primary);font-weight:500" data-i18n="tokens.update.title">更新设置</span>
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
               <input id="check-auto-update" type="checkbox" checked>
@@ -3103,1114 +3812,1224 @@
           </div>
         </div>
       </div>
-      </div><!-- end #tokens-main-view -->
-    </div>
-  </section>
+    </div><!-- end #tokens-main-view -->
+  </div>
+</section>
 
-  <!-- 自定义颜色选取器面板（替换系统原生取色器） -->
-  <div id="color-picker-popover" hidden role="dialog" aria-label="颜色选取器" data-i18n-aria="cp.title">
-    <div class="cp-header">
-      <div class="cp-title">
-        <span data-i18n="cp.title">🎨 颜色选取器</span>
-        <span id="cp-target-name" class="cp-target-lbl"></span>
-      </div>
-      <button id="cp-close" class="panel-icon-btn" type="button" aria-label="关闭颜色选取器" data-i18n-aria="cp.closeAria">×</button>
+<!-- 自定义颜色选取器面板（替换系统原生取色器） -->
+<div id="color-picker-popover" hidden role="dialog" aria-label="颜色选取器" data-i18n-aria="cp.title">
+  <div class="cp-header">
+    <div class="cp-title">
+      <span data-i18n="cp.title">🎨 颜色选取器</span>
+      <span id="cp-target-name" class="cp-target-lbl"></span>
     </div>
-    <div class="cp-toolbar">
-      <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色" data-i18n-title="cp.eyedropperTitle" data-i18n="cp.eyedropper">🖊 取色</button>
-      <div class="cp-presets" id="cp-presets">
-        <button class="cp-preset-dot" type="button" data-cp-hex="#ef4444" style="background:#ef4444" title="#EF4444"></button>
-        <button class="cp-preset-dot" type="button" data-cp-hex="#f97316" style="background:#f97316" title="#F97316"></button>
-        <button class="cp-preset-dot" type="button" data-cp-hex="#eab308" style="background:#eab308" title="#EAB308"></button>
-        <button class="cp-preset-dot" type="button" data-cp-hex="#22c55e" style="background:#22c55e" title="#22C55E"></button>
-        <button class="cp-preset-dot" type="button" data-cp-hex="#06b6d4" style="background:#06b6d4" title="#06B6D4"></button>
-        <button class="cp-preset-dot" type="button" data-cp-hex="#3b82f6" style="background:#3b82f6" title="#3B82F6"></button>
-        <button class="cp-preset-dot" type="button" data-cp-hex="#a855f7" style="background:#a855f7" title="#A855F7"></button>
-      </div>
+    <button id="cp-close" class="panel-icon-btn" type="button" aria-label="关闭颜色选取器"
+      data-i18n-aria="cp.closeAria">×</button>
+  </div>
+  <div class="cp-toolbar">
+    <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色"
+      data-i18n-title="cp.eyedropperTitle" data-i18n="cp.eyedropper">🖊 取色</button>
+    <div class="cp-presets" id="cp-presets">
+      <button class="cp-preset-dot" type="button" data-cp-hex="#ef4444" style="background:#ef4444"
+        title="#EF4444"></button>
+      <button class="cp-preset-dot" type="button" data-cp-hex="#f97316" style="background:#f97316"
+        title="#F97316"></button>
+      <button class="cp-preset-dot" type="button" data-cp-hex="#eab308" style="background:#eab308"
+        title="#EAB308"></button>
+      <button class="cp-preset-dot" type="button" data-cp-hex="#22c55e" style="background:#22c55e"
+        title="#22C55E"></button>
+      <button class="cp-preset-dot" type="button" data-cp-hex="#06b6d4" style="background:#06b6d4"
+        title="#06B6D4"></button>
+      <button class="cp-preset-dot" type="button" data-cp-hex="#3b82f6" style="background:#3b82f6"
+        title="#3B82F6"></button>
+      <button class="cp-preset-dot" type="button" data-cp-hex="#a855f7" style="background:#a855f7"
+        title="#A855F7"></button>
     </div>
-    <div class="cp-stage">
-      <div id="cp-side-preview" class="cp-side-preview"></div>
-      <div id="cp-sv-area" class="cp-sv-area">
-        <div id="cp-sv-thumb" class="cp-sv-thumb"></div>
-      </div>
+  </div>
+  <div class="cp-stage">
+    <div id="cp-side-preview" class="cp-side-preview"></div>
+    <div id="cp-sv-area" class="cp-sv-area">
+      <div id="cp-sv-thumb" class="cp-sv-thumb"></div>
     </div>
-    <div id="cp-hue-wrap" class="cp-hue-wrap">
-      <div id="cp-hue-thumb" class="cp-hue-thumb"></div>
+  </div>
+  <div id="cp-hue-wrap" class="cp-hue-wrap">
+    <div id="cp-hue-thumb" class="cp-hue-thumb"></div>
+  </div>
+  <div class="cp-rows">
+    <div class="cp-row">
+      <span class="cp-fmt-lbl">HEX</span>
+      <input id="cp-input-hex" class="cp-fmt-input" type="text" value="#652ab7" spellcheck="false" aria-label="HEX 色值输入"
+        data-i18n-aria="cp.hexAria" />
+      <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX" data-i18n-title="cp.copyHex">📋</button>
     </div>
-    <div class="cp-rows">
-      <div class="cp-row">
-        <span class="cp-fmt-lbl">HEX</span>
-        <input id="cp-input-hex" class="cp-fmt-input" type="text" value="#652ab7" spellcheck="false" aria-label="HEX 色值输入" data-i18n-aria="cp.hexAria" />
-        <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX" data-i18n-title="cp.copyHex">📋</button>
-      </div>
-      <details class="cp-advanced-formats">
-        <summary class="cp-fmt-summary" data-i18n="cp.moreFormats">更多格式 (RGB / HSL)</summary>
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
-          <div class="cp-row">
-            <span class="cp-fmt-lbl">RGB</span>
-            <input id="cp-input-rgb" class="cp-fmt-input" type="text" value="rgb(101, 42, 183)" spellcheck="false" aria-label="RGB 色值输入" data-i18n-aria="cp.rgbAria" />
-            <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB" data-i18n-title="cp.copyRgb">📋</button>
-          </div>
-          <div class="cp-row">
-            <span class="cp-fmt-lbl">HSL</span>
-            <input id="cp-input-hsl" class="cp-fmt-input" type="text" value="hsl(265, 63%, 44%)" spellcheck="false" aria-label="HSL 色值输入" data-i18n-aria="cp.hslAria" />
-            <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL" data-i18n-title="cp.copyHsl">📋</button>
-          </div>
+    <details class="cp-advanced-formats">
+      <summary class="cp-fmt-summary" data-i18n="cp.moreFormats">更多格式 (RGB / HSL)</summary>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
+        <div class="cp-row">
+          <span class="cp-fmt-lbl">RGB</span>
+          <input id="cp-input-rgb" class="cp-fmt-input" type="text" value="rgb(101, 42, 183)" spellcheck="false"
+            aria-label="RGB 色值输入" data-i18n-aria="cp.rgbAria" />
+          <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB"
+            data-i18n-title="cp.copyRgb">📋</button>
         </div>
-      </details>
-    </div>
-    <div class="cp-footer">
-      <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="cp.hint">支持直接输入或粘贴 HEX 色值</span>
-      <button id="cp-reset-slot" class="color-reset-btn" type="button" data-i18n="cp.followTheme">跟随主题</button>
-    </div>
-  </div>
-
-  <!-- 全局在线更新浮层（跨面板独立定位与显示） -->
-  <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情" data-i18n-aria="update.dialogAria">
-    <div class="update-pop-hdr">
-      <div style="display:flex;align-items:center;gap:6px">
-        <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)" data-i18n="update.title">🚀 检查更新</span>
-        <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.3</span>
+        <div class="cp-row">
+          <span class="cp-fmt-lbl">HSL</span>
+          <input id="cp-input-hsl" class="cp-fmt-input" type="text" value="hsl(265, 63%, 44%)" spellcheck="false"
+            aria-label="HSL 色值输入" data-i18n-aria="cp.hslAria" />
+          <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL"
+            data-i18n-title="cp.copyHsl">📋</button>
+        </div>
       </div>
-      <button id="btn-close-update-pop" class="panel-icon-btn" type="button" style="padding:1px 5px;font-size:13px">×</button>
+    </details>
+  </div>
+  <div class="cp-footer">
+    <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="cp.hint">支持直接输入或粘贴 HEX
+      色值</span>
+    <button id="cp-reset-slot" class="color-reset-btn" type="button" data-i18n="cp.followTheme">跟随主题</button>
+  </div>
+</div>
+
+<!-- 全局在线更新浮层（跨面板独立定位与显示） -->
+<div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情"
+  data-i18n-aria="update.dialogAria">
+  <div class="update-pop-hdr">
+    <div style="display:flex;align-items:center;gap:6px">
+      <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
+        data-i18n="update.title">🚀 检查更新</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.4</span>
     </div>
-    <div id="up-pop-body" class="update-pop-body" data-i18n="update.checking">
-      正在检测最新版本…
+    <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
+      style="padding:1px 5px;font-size:13px">×</button>
+  </div>
+  <div id="up-pop-body" class="update-pop-body" data-i18n="update.checking">
+    正在检测最新版本…
+  </div>
+  <div id="up-pop-footer" class="update-pop-footer">
+    <button id="btn-view-release-page" class="switch-pill-btn" type="button"
+      data-i18n="update.viewRelease">查看发布页</button>
+    <button id="btn-update-later" class="switch-pill-btn" type="button" data-i18n="update.later">稍后</button>
+    <button id="btn-apply-update" class="switch-pill-btn active" type="button" data-i18n="update.applyNow">立即更新</button>
+  </div>
+  <div id="up-pop-status"
+    style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
+</div>
+
+<!-- 热力图浮动 Tooltip -->
+<div class="heat-popover" id="heat-pop">
+  <div class="pop-date" id="heat-pop-date">10月24日</div>
+  <div class="pop-val" id="heat-pop-val">2.47亿 个 Token</div>
+  <div class="pop-det" id="heat-pop-det"></div>
+</div>
+
+<!-- 弹出式面板 3: 模型额度看板 (#panel-quota, 460px) -->
+<section id="panel-quota" class="ag-panel ag-panel-flex" hidden aria-label="模型额度看板" data-i18n-aria="quota.panel.aria">
+  <div class="panel-header-bar">
+    <div class="panel-title">
+      <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
+        data-i18n="quota.panel.title">◔ 模型额度看板</span>
+      <span id="quota-plan-tier-pill" class="key-pill pill-muted" hidden></span>
     </div>
-    <div id="up-pop-footer" class="update-pop-footer">
-      <button id="btn-view-release-page" class="switch-pill-btn" type="button" data-i18n="update.viewRelease">查看发布页</button>
-      <button id="btn-update-later" class="switch-pill-btn" type="button" data-i18n="update.later">稍后</button>
-      <button id="btn-apply-update" class="switch-pill-btn active" type="button" data-i18n="update.applyNow">立即更新</button>
+    <div class="panel-header-actions">
+      <span id="quota-refresh-feedback" class="quota-refresh-feedback" hidden
+        data-i18n="quota.refresh.upToDate">已更新</span>
+      <button id="btn-quota-refresh" class="panel-icon-btn quota-refresh-btn" type="button" aria-label="手动刷新模型额度"
+        data-i18n-aria="quota.refresh.aria" title="手动刷新模型额度" data-i18n-title="quota.refresh.aria">
+        <span class="quota-refresh-icon" aria-hidden="true">↻</span>
+        <span id="quota-refresh-text" data-i18n="quota.refresh.btn">刷新</span>
+      </button>
+      <button id="close-quota" class="panel-icon-btn" type="button" aria-label="收起详情"
+        data-i18n-aria="header.close.aria">×</button>
     </div>
-    <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
   </div>
 
-  <!-- 热力图浮动 Tooltip -->
-  <div class="heat-popover" id="heat-pop">
-    <div class="pop-date" id="heat-pop-date">10月24日</div>
-    <div class="pop-val" id="heat-pop-val">2.47亿 个 Token</div>
-    <div class="pop-det" id="heat-pop-det"></div>
-  </div>`;
+  <div id="view-quota" class="quota-panel-body">
+    <div id="quota-banner" class="quota-banner" hidden>
+      <span id="quota-banner-text"></span>
+      <button id="btn-quota-banner-retry" class="switch-pill-btn" type="button" data-i18n="quota.retry">重试</button>
+    </div>
+
+    <!-- 独立三时间分列展示（数据更新时间 / 下次自动刷新 / 当前额度重置） -->
+    <div id="quota-times-grid" class="quota-times-grid">
+      <div class="quota-time-cell">
+        <div class="quota-time-label" data-i18n="quota.time.updated">数据更新时间</div>
+        <div id="quota-time-updated" class="quota-time-val">—</div>
+      </div>
+      <div class="quota-time-cell">
+        <div class="quota-time-label" data-i18n="quota.time.nextRefresh">下次自动刷新</div>
+        <div id="quota-time-next" class="quota-time-val">—</div>
+      </div>
+      <div class="quota-time-cell">
+        <div class="quota-time-label" data-i18n="quota.time.reset">当前额度重置</div>
+        <div id="quota-time-reset" class="quota-time-val">—</div>
+      </div>
+    </div>
+
+    <!-- 当前会话模型额度总览 -->
+    <div id="quota-current-card" class="quota-current-card">
+      <div class="key-header">
+        <div style="min-width:0;flex:1">
+          <div style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="quota.current.label">当前会话模型</div>
+          <div id="quota-cur-model" class="quota-cur-model-name">—</div>
+          <div id="quota-cur-pool" class="quota-cur-pool-sub"></div>
+          <div id="quota-cur-est" class="quota-cur-est" hidden></div>
+        </div>
+        <span id="quota-cur-status" class="key-pill pill-muted">未知</span>
+      </div>
+      <div id="quota-cur-alert" class="quota-cur-alert" hidden></div>
+      <div id="quota-cur-buckets" class="quota-buckets-list"></div>
+    </div>
+
+    <!-- 共享额度池清单（支持浏览切换查看而不修改当前会话模型） -->
+    <div class="quota-pools-header">
+      <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-secondary)"
+        data-i18n="quota.pools.heading">共享额度池与模型分布</span>
+      <span id="quota-pools-browse-hint" style="font-size:10.5px;color:var(--ag-text-muted)"
+        data-i18n="quota.pools.browseHint">点击可查看详情（不切换当前会话模型）</span>
+    </div>
+    <div id="quota-pools-list" class="quota-pools-list"></div>
+
+    <div id="quota-basis-note" class="quota-basis-note" data-i18n="quota.basisNote">百分比与重置时间来自宿主接口；「约剩余
+      Token」按本机输入+缓存+输出原始 Token 统计，受服务端计费权重、同池模型混用、他端消耗及周期采样覆盖度影响；校准过期或样本不足时不按有效推算展示。</div>
+    <div id="quota-usage-tip" class="quota-usage-tip" data-i18n="quota.usageTip">💡
+      用量提示：使用前可先查看各池剩余额度，优先选择余量充足且适合当前任务的模型。</div>
+  </div>
+</section>`;
 
   (document.body || document.documentElement).appendChild(host);
   const el = id => shadow.getElementById(id);
 // =========================================================================
-  // 模块 0: 插件面板三语言国际化 (简体中文 / 繁體中文 / English)
-  // =========================================================================
-  const VALID_PANEL_LANGUAGES = new Set(['zh-CN', 'zh-TW', 'en']);
-  let currentPanelLanguage = 'zh-CN';
+// 模块 0: 插件面板三语言国际化 (简体中文 / 繁體中文 / English)
+// =========================================================================
+const VALID_PANEL_LANGUAGES = new Set(['zh-CN', 'zh-TW', 'en']);
+let currentPanelLanguage = 'zh-CN';
 
-  function normalizePanelLanguage(lang) {
-    if (typeof lang !== 'string') return 'zh-CN';
-    const trimmed = lang.trim();
-    if (VALID_PANEL_LANGUAGES.has(trimmed)) return trimmed;
-    const lower = trimmed.toLowerCase();
-    if (lower === 'zh-tw' || lower === 'zh-hant' || lower === 'tw') return 'zh-TW';
-    if (lower === 'en' || lower.startsWith('en-')) return 'en';
-    return 'zh-CN';
-  }
+function normalizePanelLanguage(lang) {
+  if (typeof lang !== 'string') return 'zh-CN';
+  const trimmed = lang.trim();
+  if (VALID_PANEL_LANGUAGES.has(trimmed)) return trimmed;
+  const lower = trimmed.toLowerCase();
+  if (lower === 'zh-tw' || lower === 'zh-hant' || lower === 'tw') return 'zh-TW';
+  if (lower === 'en' || lower.startsWith('en-')) return 'en';
+  return 'zh-CN';
+}
 
-  function getPanelLanguage() {
-    return currentPanelLanguage;
-  }
+function getPanelLanguage() {
+  return currentPanelLanguage;
+}
 
-  const PANEL_I18N = {
-    // 顶部入口单元与气泡
-    'badge.aria': { 'zh-CN': '会话与上下文统计', 'zh-TW': '對話與 Context 統計', en: 'Session and context statistics' },
-    'badge.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
-    'badge.speed.aria': { 'zh-CN': '模型输出速度与耗时统计', 'zh-TW': '模型輸出速度與耗時統計', en: 'Model output speed and latency' },
-    'badge.tokens.aria': { 'zh-CN': 'Token 用量一览', 'zh-TW': 'Token 用量總覽', en: 'Token usage overview' },
-    'badge.cli.aria': { 'zh-CN': '启动 CLI', 'zh-TW': '啟動 CLI', en: 'Launch CLI' },
-    'badge.cli.title': { 'zh-CN': '一键启动 Antigravity CLI 终端（自动进入当前项目目录）', 'zh-TW': '一鍵啟動 Antigravity CLI 終端機（自動進入目前專案目錄）', en: 'Launch Antigravity CLI in the current workspace' },
-    'badge.overflow.aria': { 'zh-CN': '更多统计指标', 'zh-TW': '更多統計指標', en: 'More metrics' },
-    'tip.title.default': { 'zh-CN': '上下文窗口：', 'zh-TW': 'Context 視窗：', en: 'Context window:' },
-    'tip.pct.notReady': { 'zh-CN': '数据尚未就绪', 'zh-TW': '資料尚未就緒', en: 'Data not ready' },
-    'tip.detail.loading': { 'zh-CN': '正在读取当前会话上下文用量…', 'zh-TW': '正在讀取目前對話 Context 用量…', en: 'Reading current session context usage…' },
-    'overflow.aria': { 'zh-CN': '更多统计快捷菜单', 'zh-TW': '更多統計快捷選單', en: 'More metrics menu' },
-    'overflow.speed': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output speed' },
-    'overflow.tokens': { 'zh-CN': 'Token 用量一览', 'zh-TW': 'Token 用量總覽', en: 'Token usage' },
-    'overflow.cli': { 'zh-CN': '启动 CLI 终端', 'zh-TW': '啟動 CLI 終端機', en: 'Launch CLI' },
-    'cli.launching': { 'zh-CN': '正在打开 Antigravity CLI…', 'zh-TW': '正在開啟 Antigravity CLI…', en: 'Opening Antigravity CLI…' },
-    'cli.launched': { 'zh-CN': '已启动 CLI：{path}', 'zh-TW': '已啟動 CLI：{path}', en: 'CLI launched: {path}' },
-    'cli.error': { 'zh-CN': '启动 CLI 失败：{err}', 'zh-TW': '啟動 CLI 失敗：{err}', en: 'Failed to launch CLI: {err}' },
-    'cli.unavailable': { 'zh-CN': '当前环境不支持启动 CLI', 'zh-TW': '目前環境不支援啟動 CLI', en: 'CLI launch is unavailable in this environment' },
+const PANEL_I18N = {
+  // 顶部入口单元与气泡
+  'badge.aria': { 'zh-CN': '会话与上下文统计', 'zh-TW': '對話與 Context 統計', en: 'Session and context statistics' },
+  'badge.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
+  'badge.speed.aria': { 'zh-CN': '模型输出速度与耗时统计', 'zh-TW': '模型輸出速度與耗時統計', en: 'Model output speed and latency' },
+  'badge.tokens.aria': { 'zh-CN': 'Token 用量一览', 'zh-TW': 'Token 用量總覽', en: 'Token usage overview' },
+  'badge.cli.aria': { 'zh-CN': '启动 CLI', 'zh-TW': '啟動 CLI', en: 'Launch CLI' },
+  'badge.cli.title': { 'zh-CN': '一键启动 Antigravity CLI 终端（自动进入当前项目目录）', 'zh-TW': '一鍵啟動 Antigravity CLI 終端機（自動進入目前專案目錄）', en: 'Launch Antigravity CLI in the current workspace' },
+  'badge.overflow.aria': { 'zh-CN': '更多统计指标', 'zh-TW': '更多統計指標', en: 'More metrics' },
+  'tip.title.default': { 'zh-CN': '上下文窗口：', 'zh-TW': 'Context 視窗：', en: 'Context window:' },
+  'tip.pct.notReady': { 'zh-CN': '数据尚未就绪', 'zh-TW': '資料尚未就緒', en: 'Data not ready' },
+  'tip.detail.loading': { 'zh-CN': '正在读取当前会话上下文用量…', 'zh-TW': '正在讀取目前對話 Context 用量…', en: 'Reading current session context usage…' },
+  'overflow.aria': { 'zh-CN': '更多统计快捷菜单', 'zh-TW': '更多統計快捷選單', en: 'More metrics menu' },
+  'overflow.speed': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output speed' },
+  'overflow.tokens': { 'zh-CN': 'Token 用量一览', 'zh-TW': 'Token 用量總覽', en: 'Token usage' },
+  'overflow.cli': { 'zh-CN': '启动 CLI 终端', 'zh-TW': '啟動 CLI 終端機', en: 'Launch CLI' },
+  'cli.launching': { 'zh-CN': '正在打开 Antigravity CLI…', 'zh-TW': '正在開啟 Antigravity CLI…', en: 'Opening Antigravity CLI…' },
+  'cli.launched': { 'zh-CN': '已启动 CLI：{path}', 'zh-TW': '已啟動 CLI：{path}', en: 'CLI launched: {path}' },
+  'cli.error': { 'zh-CN': '启动 CLI 失败：{err}', 'zh-TW': '啟動 CLI 失敗：{err}', en: 'Failed to launch CLI: {err}' },
+  'cli.unavailable': { 'zh-CN': '当前环境不支持启动 CLI', 'zh-TW': '目前環境不支援啟動 CLI', en: 'CLI launch is unavailable in this environment' },
 
-    // 上下文面板头部与分页
-    'panel.ctx.aria': { 'zh-CN': '会话与上下文详情', 'zh-TW': '對話與 Context 詳細資訊', en: 'Session & Context Details' },
-    'panel.ctx.title': { 'zh-CN': '💬 当前会话上下文', 'zh-TW': '💬 目前對話 Context', en: '💬 Current Session Context' },
-    'panel.ctx.viewModel': { 'zh-CN': '查看模型', 'zh-TW': '檢視模型', en: 'Model' },
-    'panel.ctx.viewModelTitle': { 'zh-CN': '按厂商查看不同模型的上下文设置', 'zh-TW': '依廠商檢視不同模型的上下文設定', en: 'Inspect context settings by vendor and model' },
-    'panel.ctx.loadingModels': { 'zh-CN': '正在读取模型…', 'zh-TW': '正在讀取模型…', en: 'Loading models…' },
-    'panel.ctx.backCurrent': { 'zh-CN': '回到当前模型', 'zh-TW': '回到目前模型', en: 'Back to current' },
-    'panel.ctx.backCurrentTitle': { 'zh-CN': '回到当前会话正在使用的模型', 'zh-TW': '回到目前工作階段正在使用的模型', en: 'Switch back to the active session model' },
-    'header.settings.aria': { 'zh-CN': '打开设置', 'zh-TW': '開啟設定', en: 'Open settings' },
-    'header.settings.title': { 'zh-CN': '设置（语言、代理、外观）', 'zh-TW': '設定（語言、代理與外觀）', en: 'Settings (Language, Proxy, Appearance)' },
-    'header.github.aria': { 'zh-CN': '打开 GitHub 仓库', 'zh-TW': '開啟 GitHub 儲存庫', en: 'Open GitHub repository' },
-    'header.update.aria': { 'zh-CN': '检查插件更新', 'zh-TW': '檢查外掛更新', en: 'Check for updates' },
-    'header.palette.aria': { 'zh-CN': '外观与调色设置', 'zh-TW': '外觀與配色設定', en: 'Appearance & color settings' },
-    'header.close.aria': { 'zh-CN': '收起详情', 'zh-TW': '收起詳細資訊', en: 'Close panel' },
-    'tabs.aria': { 'zh-CN': '上下文面板分页', 'zh-TW': '上下文面板分頁', en: 'Context panel tabs' },
-    'tab.session': { 'zh-CN': '当前会话', 'zh-TW': '目前工作階段', en: 'Session' },
-    'tab.models': { 'zh-CN': '模型设置', 'zh-TW': '模型設定', en: 'Models' },
-    'tab.speed': { 'zh-CN': '速度对比', 'zh-TW': '速度對比', en: 'Speed' },
-    'tab.settings': { 'zh-CN': '配置', 'zh-TW': '配置', en: 'setting' },
+  // 上下文面板头部与分页
+  'panel.ctx.aria': { 'zh-CN': '会话与上下文详情', 'zh-TW': '對話與 Context 詳細資訊', en: 'Session & Context Details' },
+  'panel.ctx.title': { 'zh-CN': '💬 当前会话上下文', 'zh-TW': '💬 目前對話 Context', en: '💬 Current Session Context' },
+  'panel.ctx.viewModel': { 'zh-CN': '查看模型', 'zh-TW': '檢視模型', en: 'Model' },
+  'panel.ctx.viewModelTitle': { 'zh-CN': '按厂商查看不同模型的上下文设置', 'zh-TW': '依廠商檢視不同模型的上下文設定', en: 'Inspect context settings by vendor and model' },
+  'panel.ctx.loadingModels': { 'zh-CN': '正在读取模型…', 'zh-TW': '正在讀取模型…', en: 'Loading models…' },
+  'panel.ctx.backCurrent': { 'zh-CN': '回到当前模型', 'zh-TW': '回到目前模型', en: 'Back to current' },
+  'panel.ctx.backCurrentTitle': { 'zh-CN': '回到当前会话正在使用的模型', 'zh-TW': '回到目前工作階段正在使用的模型', en: 'Switch back to the active session model' },
+  'header.settings.aria': { 'zh-CN': '打开设置', 'zh-TW': '開啟設定', en: 'Open settings' },
+  'header.settings.title': { 'zh-CN': '设置（语言、代理、外观）', 'zh-TW': '設定（語言、代理與外觀）', en: 'Settings (Language, Proxy, Appearance)' },
+  'header.github.aria': { 'zh-CN': '打开 GitHub 仓库', 'zh-TW': '開啟 GitHub 儲存庫', en: 'Open GitHub repository' },
+  'header.update.aria': { 'zh-CN': '检查插件更新', 'zh-TW': '檢查外掛更新', en: 'Check for updates' },
+  'header.palette.aria': { 'zh-CN': '外观与调色设置', 'zh-TW': '外觀與配色設定', en: 'Appearance & color settings' },
+  'header.close.aria': { 'zh-CN': '收起详情', 'zh-TW': '收起詳細資訊', en: 'Close panel' },
+  'tabs.aria': { 'zh-CN': '上下文面板分页', 'zh-TW': '上下文面板分頁', en: 'Context panel tabs' },
+  'tab.session': { 'zh-CN': '当前会话', 'zh-TW': '目前工作階段', en: 'Session' },
+  'tab.models': { 'zh-CN': '模型设置', 'zh-TW': '模型設定', en: 'Models' },
+  'tab.speed': { 'zh-CN': '速度对比', 'zh-TW': '速度對比', en: 'Speed' },
+  'tab.settings': { 'zh-CN': '配置', 'zh-TW': '配置', en: 'setting' },
 
-    // 分页 1: 当前会话
-    'session.costBar.title': { 'zh-CN': '当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）', 'zh-TW': '目前模型呼叫的 API 等值參考金額（依已回傳用量或即時生成估算）', en: 'Estimated API-equivalent cost for the current model (based on returned usage or live output)' },
-    'session.roundCost': { 'zh-CN': '本轮估值：{val}', 'zh-TW': '本輪估值：{val}', en: 'This turn: {val}' },
-    'session.sessionCost': { 'zh-CN': '当前会话合计：{val}', 'zh-TW': '目前工作階段合計：{val}', en: 'Session total: {val}' },
-    'session.roundCost.dash': { 'zh-CN': '本轮估值：—', 'zh-TW': '本輪估算：—', en: 'This turn: —' },
-    'session.sessionCost.dash': { 'zh-CN': '当前会话合计：—', 'zh-TW': '目前對話合計：—', en: 'Session total: —' },
-    'session.keySummary.title': { 'zh-CN': '⭐ 核心用量速览', 'zh-TW': '⭐ 核心用量速覽', en: '⭐ Context Summary' },
-    'session.badge.reading': { 'zh-CN': '读取中', 'zh-TW': '讀取中', en: 'Loading' },
-    'session.stat.used': { 'zh-CN': '当前已用', 'zh-TW': '目前已用', en: 'Used' },
-    'session.stat.limit': { 'zh-CN': '预算上限', 'zh-TW': '預算上限', en: 'Budget Limit' },
-    'session.stat.remaining': { 'zh-CN': '剩余可用', 'zh-TW': '剩餘可用', en: 'Remaining' },
-    'session.keyTakeaway.loading': { 'zh-CN': '正在计算核心指标…', 'zh-TW': '正在計算核心指標…', en: 'Calculating key metrics…' },
-    'session.speedSummary.title': { 'zh-CN': '⚡ 最新生成速度与耗时', 'zh-TW': '⚡ 最新生成速度與耗時', en: '⚡ Latest Speed & Latency' },
-    'session.speed.pending': { 'zh-CN': '待生成', 'zh-TW': '待生成', en: 'Idle' },
-    'session.speed.rate': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output Speed' },
-    'session.speed.duration': { 'zh-CN': '生成耗时', 'zh-TW': '生成耗時', en: 'Duration' },
-    'session.speed.ttft': { 'zh-CN': '首字延迟', 'zh-TW': '首字延遲', en: 'TTFT' },
-    'session.speed.tokens': { 'zh-CN': '本次输出', 'zh-TW': '本次輸出', en: 'Output' },
-    'session.speed.wait': { 'zh-CN': '等待首次模型输出产生速度统计…', 'zh-TW': '等待首次模型輸出產生速度統計…', en: 'Waiting for the first model response…' },
-    'session.compact.title': { 'zh-CN': '上下文设置', 'zh-TW': '上下文設定', en: 'Context Settings' },
-    'session.compact.savedLabel': { 'zh-CN': '本模型已保存：', 'zh-TW': '本模型已儲存：', en: 'Saved for model: ' },
-    'session.compact.clientLabel': { 'zh-CN': '客户端当前使用：', 'zh-TW': '用戶端目前使用：', en: 'Client active: ' },
-    'session.compact.gotoModels': { 'zh-CN': '去模型设置 ›', 'zh-TW': '前往模型設定 ›', en: 'Model settings ›' },
-    'session.techDrawer.title': { 'zh-CN': '📋 底层技术参数与附件审计', 'zh-TW': '📋 底層技術參數與附件稽核', en: '📋 Technical Metrics & Attachment Audit' },
-    'session.techDrawer.expand': { 'zh-CN': '▼ 点击展开明细', 'zh-TW': '▼ 點擊展開明細', en: '▼ Show details' },
-    'session.techDrawer.collapse': { 'zh-CN': '▲ 点击收起明细', 'zh-TW': '▲ 點擊收起明細', en: '▲ Hide details' },
-    'session.tech.checking': { 'zh-CN': '正在核对请求和附件…', 'zh-TW': '正在核對請求與附件…', en: 'Checking requests and attachments…' },
-    'session.tech.latestReq': { 'zh-CN': '最近一次模型请求', 'zh-TW': '最近一次模型請求', en: 'Latest Model Request' },
-    'session.tech.reqStatus': { 'zh-CN': '请求状态', 'zh-TW': '請求狀態', en: 'Request status' },
-    'session.tech.actual': { 'zh-CN': '模型返回输入＋输出', 'zh-TW': '模型回傳輸入＋輸出', en: 'Returned input + output' },
-    'session.tech.estimate': { 'zh-CN': '客户端估算（可能漏附件）', 'zh-TW': '用戶端估算（可能漏附件）', en: 'Client estimate (may miss files)' },
-    'session.tech.budget': { 'zh-CN': '客户端预算字段', 'zh-TW': '用戶端預算欄位', en: 'Client budget field' },
-    'session.tech.serviceLimit': { 'zh-CN': '该次报错的服务端限制', 'zh-TW': '該次報錯的伺服器端限制', en: 'Server limit from error' },
-    'session.tech.percent': { 'zh-CN': '相对客户端预算', 'zh-TW': '相對用戶端預算', en: 'Share of client budget' },
-    'session.tech.sessionHeading': { 'zh-CN': '整个会话累计内容 · 本地估算', 'zh-TW': '整段對話累計內容 · 本機估算', en: 'Cumulative Session Content · Local Estimate' },
-    'session.tech.sessionTotal': { 'zh-CN': '可读取文本 token 估算', 'zh-TW': '可讀取文字 Token 估算', en: 'Readable text token est.' },
-    'session.tech.scanning': { 'zh-CN': '扫描中…', 'zh-TW': '掃描中…', en: 'Scanning…' },
-    'session.tech.characters': { 'zh-CN': '实际读取文字字符数', 'zh-TW': '實際讀取文字字元數', en: 'Readable characters' },
-    'session.tech.user': { 'zh-CN': '用户消息', 'zh-TW': '使用者訊息', en: 'User messages' },
-    'session.tech.assistant': { 'zh-CN': '模型回复', 'zh-TW': '模型回覆', en: 'Assistant replies' },
-    'session.tech.thinking': { 'zh-CN': '可见思考内容', 'zh-TW': '可見思考內容', en: 'Visible thinking' },
-    'session.tech.tools': { 'zh-CN': '工具调用与工具输出', 'zh-TW': '工具呼叫與工具輸出', en: 'Tool calls & outputs' },
-    'session.tech.summaries': { 'zh-CN': '历史压缩摘要', 'zh-TW': '歷史壓縮摘要', en: 'Compressed summaries' },
-    'session.tech.system': { 'zh-CN': '当前系统提示与工具定义', 'zh-TW': '目前系統提示與工具定義', en: 'System prompt & tools' },
-    'session.tech.attachments': { 'zh-CN': '上传／输出附件文本', 'zh-TW': '上傳／輸出附件文字', en: 'Attachment text' },
-    'session.tech.steps': { 'zh-CN': '历史步骤完整性', 'zh-TW': '歷史步驟完整性', en: 'History completeness' },
-    'session.tech.filesHeading': { 'zh-CN': '附件逐项检查', 'zh-TW': '附件逐項檢查', en: 'Attachment Inspection' },
-    'session.tech.rescan': { 'zh-CN': '重新扫描整段会话与附件', 'zh-TW': '重新掃描整段對話與附件', en: 'Rescan session & attachments' },
-    'session.tech.note': {
-      'zh-CN': '会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token 区间是文本启发式估算，不是 Gemini 分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。',
-      'zh-TW': '工作階段累計包含可讀取的全部封存歷史；已壓縮內容仍計入累計。它不等於目前實際傳送給模型的上下文，不能用累計值除以 1M 判斷剩餘空間。附件原文與工具讀出的文字可能在歷史中分別出現，各按一次出現計入。尚未傳送的草稿與待上傳附件不在封存內，暫未計入；新上傳可能使下一次請求明顯增長。<br><br>本機 token 區間是文字啟發式估算，不是 Gemini 分詞結果，也不是嚴格上下界。影像、音視訊、加密檔案、無法存取檔案與未解析部分會明確列為未知。未知內容不按零處理；只有伺服器端回傳的用量才標為實際統計。此功能不向外部傳送檔案，不執行巨集或公式。',
-      en: 'Cumulative session totals include all readable archived history (including compressed turns). They do not equal the active context sent to the model and must not be divided by 1M to judge remaining space. Attachment text and tool-read text may appear separately in history and are counted per occurrence. Unsent drafts and pending uploads are excluded.<br><br>Local token ranges are text heuristics, not exact Gemini tokenization or strict bounds. Images, audio/video, encrypted, inaccessible, or unparsed items are marked unknown (never zero). Only server-returned counts are labeled actual usage. No files are sent externally and no macros are executed.'
-    },
+  // 分页 1: 当前会话
+  'session.costBar.title': { 'zh-CN': '当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）', 'zh-TW': '目前模型呼叫的 API 等值參考金額（依已回傳用量或即時生成估算）', en: 'Estimated API-equivalent cost for the current model (based on returned usage or live output)' },
+  'session.roundCost': { 'zh-CN': '本轮估值：{val}', 'zh-TW': '本輪估值：{val}', en: 'This turn: {val}' },
+  'session.sessionCost': { 'zh-CN': '当前会话合计：{val}', 'zh-TW': '目前工作階段合計：{val}', en: 'Session total: {val}' },
+  'session.roundCost.dash': { 'zh-CN': '本轮估值：—', 'zh-TW': '本輪估算：—', en: 'This turn: —' },
+  'session.sessionCost.dash': { 'zh-CN': '当前会话合计：—', 'zh-TW': '目前對話合計：—', en: 'Session total: —' },
+  'session.keySummary.title': { 'zh-CN': '⭐ 核心用量速览', 'zh-TW': '⭐ 核心用量速覽', en: '⭐ Context Summary' },
+  'session.badge.reading': { 'zh-CN': '读取中', 'zh-TW': '讀取中', en: 'Loading' },
+  'session.stat.used': { 'zh-CN': '当前已用', 'zh-TW': '目前已用', en: 'Used' },
+  'session.stat.limit': { 'zh-CN': '预算上限', 'zh-TW': '預算上限', en: 'Budget Limit' },
+  'session.stat.remaining': { 'zh-CN': '剩余可用', 'zh-TW': '剩餘可用', en: 'Remaining' },
+  'session.keyTakeaway.loading': { 'zh-CN': '正在计算核心指标…', 'zh-TW': '正在計算核心指標…', en: 'Calculating key metrics…' },
+  'session.speedSummary.title': { 'zh-CN': '⚡ 最新生成速度与耗时', 'zh-TW': '⚡ 最新生成速度與耗時', en: '⚡ Latest Speed & Latency' },
+  'session.speed.pending': { 'zh-CN': '待生成', 'zh-TW': '待生成', en: 'Idle' },
+  'session.speed.rate': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output Speed' },
+  'session.speed.duration': { 'zh-CN': '生成耗时', 'zh-TW': '生成耗時', en: 'Duration' },
+  'session.speed.ttft': { 'zh-CN': '首字延迟', 'zh-TW': '首字延遲', en: 'TTFT' },
+  'session.speed.tokens': { 'zh-CN': '本次输出', 'zh-TW': '本次輸出', en: 'Output' },
+  'session.speed.wait': { 'zh-CN': '等待首次模型输出产生速度统计…', 'zh-TW': '等待首次模型輸出產生速度統計…', en: 'Waiting for the first model response…' },
+  'session.compact.title': { 'zh-CN': '上下文设置', 'zh-TW': '上下文設定', en: 'Context Settings' },
+  'session.compact.savedLabel': { 'zh-CN': '本模型已保存：', 'zh-TW': '本模型已儲存：', en: 'Saved for model: ' },
+  'session.compact.clientLabel': { 'zh-CN': '客户端当前使用：', 'zh-TW': '用戶端目前使用：', en: 'Client active: ' },
+  'session.compact.gotoModels': { 'zh-CN': '去模型设置 ›', 'zh-TW': '前往模型設定 ›', en: 'Model settings ›' },
+  'session.techDrawer.title': { 'zh-CN': '📋 底层技术参数与附件审计', 'zh-TW': '📋 底層技術參數與附件稽核', en: '📋 Technical Metrics & Attachment Audit' },
+  'session.techDrawer.expand': { 'zh-CN': '▼ 点击展开明细', 'zh-TW': '▼ 點擊展開明細', en: '▼ Show details' },
+  'session.techDrawer.collapse': { 'zh-CN': '▲ 点击收起明细', 'zh-TW': '▲ 點擊收起明細', en: '▲ Hide details' },
+  'session.tech.checking': { 'zh-CN': '正在核对请求和附件…', 'zh-TW': '正在核對請求與附件…', en: 'Checking requests and attachments…' },
+  'session.tech.latestReq': { 'zh-CN': '最近一次模型请求', 'zh-TW': '最近一次模型請求', en: 'Latest Model Request' },
+  'session.tech.reqStatus': { 'zh-CN': '请求状态', 'zh-TW': '請求狀態', en: 'Request status' },
+  'session.tech.actual': { 'zh-CN': '模型返回输入＋输出', 'zh-TW': '模型回傳輸入＋輸出', en: 'Returned input + output' },
+  'session.tech.estimate': { 'zh-CN': '客户端估算（可能漏附件）', 'zh-TW': '用戶端估算（可能漏附件）', en: 'Client estimate (may miss files)' },
+  'session.tech.budget': { 'zh-CN': '客户端预算字段', 'zh-TW': '用戶端預算欄位', en: 'Client budget field' },
+  'session.tech.serviceLimit': { 'zh-CN': '该次报错的服务端限制', 'zh-TW': '該次報錯的伺服器端限制', en: 'Server limit from error' },
+  'session.tech.percent': { 'zh-CN': '相对客户端预算', 'zh-TW': '相對用戶端預算', en: 'Share of client budget' },
+  'session.tech.sessionHeading': { 'zh-CN': '整个会话累计内容 · 本地估算', 'zh-TW': '整段對話累計內容 · 本機估算', en: 'Cumulative Session Content · Local Estimate' },
+  'session.tech.sessionTotal': { 'zh-CN': '可读取文本 token 估算', 'zh-TW': '可讀取文字 Token 估算', en: 'Readable text token est.' },
+  'session.tech.scanning': { 'zh-CN': '扫描中…', 'zh-TW': '掃描中…', en: 'Scanning…' },
+  'session.tech.characters': { 'zh-CN': '实际读取文字字符数', 'zh-TW': '實際讀取文字字元數', en: 'Readable characters' },
+  'session.tech.user': { 'zh-CN': '用户消息', 'zh-TW': '使用者訊息', en: 'User messages' },
+  'session.tech.assistant': { 'zh-CN': '模型回复', 'zh-TW': '模型回覆', en: 'Assistant replies' },
+  'session.tech.thinking': { 'zh-CN': '可见思考内容', 'zh-TW': '可見思考內容', en: 'Visible thinking' },
+  'session.tech.tools': { 'zh-CN': '工具调用与工具输出', 'zh-TW': '工具呼叫與工具輸出', en: 'Tool calls & outputs' },
+  'session.tech.summaries': { 'zh-CN': '历史压缩摘要', 'zh-TW': '歷史壓縮摘要', en: 'Compressed summaries' },
+  'session.tech.system': { 'zh-CN': '当前系统提示与工具定义', 'zh-TW': '目前系統提示與工具定義', en: 'System prompt & tools' },
+  'session.tech.attachments': { 'zh-CN': '上传／输出附件文本', 'zh-TW': '上傳／輸出附件文字', en: 'Attachment text' },
+  'session.tech.steps': { 'zh-CN': '历史步骤完整性', 'zh-TW': '歷史步驟完整性', en: 'History completeness' },
+  'session.tech.filesHeading': { 'zh-CN': '附件逐项检查', 'zh-TW': '附件逐項檢查', en: 'Attachment Inspection' },
+  'session.tech.rescan': { 'zh-CN': '重新扫描整段会话与附件', 'zh-TW': '重新掃描整段對話與附件', en: 'Rescan session & attachments' },
+  'session.tech.note': {
+    'zh-CN': '会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token 区间是文本启发式估算，不是 Gemini 分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。',
+    'zh-TW': '工作階段累計包含可讀取的全部封存歷史；已壓縮內容仍計入累計。它不等於目前實際傳送給模型的上下文，不能用累計值除以 1M 判斷剩餘空間。附件原文與工具讀出的文字可能在歷史中分別出現，各按一次出現計入。尚未傳送的草稿與待上傳附件不在封存內，暫未計入；新上傳可能使下一次請求明顯增長。<br><br>本機 token 區間是文字啟發式估算，不是 Gemini 分詞結果，也不是嚴格上下界。影像、音視訊、加密檔案、無法存取檔案與未解析部分會明確列為未知。未知內容不按零處理；只有伺服器端回傳的用量才標為實際統計。此功能不向外部傳送檔案，不執行巨集或公式。',
+    en: 'Cumulative session totals include all readable archived history (including compressed turns). They do not equal the active context sent to the model and must not be divided by 1M to judge remaining space. Attachment text and tool-read text may appear separately in history and are counted per occurrence. Unsent drafts and pending uploads are excluded.<br><br>Local token ranges are text heuristics, not exact Gemini tokenization or strict bounds. Images, audio/video, encrypted, inaccessible, or unparsed items are marked unknown (never zero). Only server-returned counts are labeled actual usage. No files are sent externally and no macros are executed.'
+  },
 
-    // 分页 2: 模型设置
-    'models.list.aria': { 'zh-CN': '按厂商分组的模型产品列表', 'zh-TW': '依廠商分組的模型產品清單', en: 'Models grouped by vendor' },
-    'models.list.empty': { 'zh-CN': '暂无已知模型，发一条消息或等待模型列表加载后显示。', 'zh-TW': '暫無已知模型，發送一則訊息或等待模型清單載入後顯示。', en: 'No models detected yet. Send a message or wait for the model list to load.' },
-    'models.restartBtn': { 'zh-CN': '重启客户端使设置生效', 'zh-TW': '重新啟動用戶端使設定生效', en: 'Restart client to apply' },
-    'models.manualRestart': { 'zh-CN': '请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。', 'zh-TW': '請手動重新啟動：關閉所有 Antigravity 視窗（包含系統匣圖示中的「結束」），再重新開啟 Antigravity。', en: 'Please restart manually: close all Antigravity windows (including Quit from the tray icon) and reopen Antigravity.' },
-    'models.restartConfirm.text': { 'zh-CN': '重启会中断正在运行的任务。请先保存未保存的内容。', 'zh-TW': '重新啟動會中斷正在執行的任務。請先儲存未儲存的內容。', en: 'Restarting will interrupt active tasks. Please save any unsaved work first.' },
-    'models.restartConfirm.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
-    'models.restartConfirm.go': { 'zh-CN': '重启', 'zh-TW': '重新啟動', en: 'Restart' },
-    'models.restart.restarting': { 'zh-CN': '正在重启客户端…', 'zh-TW': '正在重新啟動用戶端…', en: 'Restarting client…' },
-    'models.restart.notExited': { 'zh-CN': '客户端没有退出，可能被取消或正在等待。请手动重启。', 'zh-TW': '用戶端沒有結束，可能被取消或正在等待。請手動重新啟動。', en: 'The client did not exit (cancelled or busy). Please restart manually.' },
-    'models.conflict.title': { 'zh-CN': '这个模型的不同档位保存过不同长度，请选一个统一值。', 'zh-TW': '此模型的不同檔位儲存過不同長度，請選一個統一值。', en: 'Different efforts of this model have different saved limits. Pick one unified value.' },
-    'models.conflict.keep': { 'zh-CN': '保留此值', 'zh-TW': '保留此值', en: 'Use this' },
-    'models.card.waiting': { 'zh-CN': '等待读取模型…', 'zh-TW': '等待讀取模型…', en: 'Waiting for model…' },
-    'models.card.efforts': { 'zh-CN': '可用档位：{val}', 'zh-TW': '可用檔位：{val}', en: 'Efforts: {val}' },
-    'models.card.effortsEmpty': { 'zh-CN': '可用档位：—', 'zh-TW': '可用檔位：—', en: 'Efforts: —' },
-    'models.card.sessionEffort': { 'zh-CN': '当前会话：{val}', 'zh-TW': '目前工作階段：{val}', en: 'Current session: {val}' },
-    'models.card.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
-    'models.card.savedSide': { 'zh-CN': '为这个模型记下的长度', 'zh-TW': '為此模型記下的長度', en: 'Saved limit for this model' },
-    'models.card.request': { 'zh-CN': '请求携带', 'zh-TW': '請求攜帶', en: 'Request Attached' },
-    'models.mode.aria': { 'zh-CN': '上下文设置模式', 'zh-TW': '上下文設定模式', en: 'Context setting mode' },
-    'models.mode.unifiedTitle': { 'zh-CN': '所有模型统一设置', 'zh-TW': '所有模型統一設定', en: 'Unified for All Models' },
-    'models.mode.unifiedDesc': { 'zh-CN': '设置一次，所有模型使用相同的上下文长度。', 'zh-TW': '設定一次，所有模型使用相同的上下文長度。', en: 'Set once; all models use the same context length.' },
-    'models.mode.perModelTitle': { 'zh-CN': '按模型分别设置', 'zh-TW': '依模型個別設定', en: 'Per-Model Separate Settings' },
-    'models.mode.perModelDesc': { 'zh-CN': '每个模型分别保存，使用哪个模型，就采用它的上下文长度。', 'zh-TW': '每個模型分別儲存，使用哪個模型，就採用其上下文長度。', en: 'Each model saved separately; active model uses its own length.' },
-    'models.summary.mode': { 'zh-CN': '当前模式', 'zh-TW': '目前模式', en: 'Active Mode' },
-    'models.summary.model': { 'zh-CN': '当前模型', 'zh-TW': '目前模型', en: 'Active Model' },
-    'models.summary.length': { 'zh-CN': '目标设置与状态', 'zh-TW': '目標設定與狀態', en: 'Target & Status' },
-    'models.status.savedPendingDispatch': { 'zh-CN': '已保存，下一次发送时尝试应用', 'zh-TW': '已儲存，下一次發送時嘗試套用', en: 'Saved; will attempt to apply on next message' },
-    'models.status.dispatchedPendingConfirm': { 'zh-CN': '已发送设置，等待确认', 'zh-TW': '已發送設定，等待確認', en: 'Setting dispatched; awaiting confirmation' },
-    'models.status.confirmed': { 'zh-CN': '实际预算已确认', 'zh-TW': '實際預算已確認', en: 'Observed budget confirmed' },
-    'models.status.mismatch': { 'zh-CN': '未生效：目标值与观测值不一致', 'zh-TW': '未生效：目標值與觀測值不一致', en: 'Not active: target differs from observed budget' },
-    'panel.ctx.currentModelUnconfirmed': { 'zh-CN': '当前会话模型待确认（请在输入框选择模型或发送消息）', 'zh-TW': '目前工作階段模型待確認（請在輸入框選擇模型或發送訊息）', en: 'Active model pending confirmation (select a model or send a message first)' },
-    'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
-    'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
-    'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
-    'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
-    'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
-    'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
-    'models.summary.unconfirmed': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
-    'models.summary.pendingRestart': { 'zh-CN': '待重启生效', 'zh-TW': '待重啟生效', en: 'Pending Restart' },
-    'models.summary.modelDefault': { 'zh-CN': '使用模型默认值', 'zh-TW': '使用模型預設值', en: 'Use model default' },
-    'models.summary.unifiedTarget': { 'zh-CN': '所有模型（统一生效）', 'zh-TW': '所有模型（統一生效）', en: 'All models (unified)' },
-    'models.card.detailsToggle': { 'zh-CN': '详细信息（配置来源、请求参数与预算验证）', 'zh-TW': '詳細資訊（設定來源、請求參數與預算驗證）', en: 'Details (Source, request params & budget)' },
-    'models.card.requestSide': { 'zh-CN': '本次请求发送给底座的参数', 'zh-TW': '本次請求發送給底座的參數', en: 'Limit sent in request' },
-    'models.card.client': { 'zh-CN': '底座引擎', 'zh-TW': '底座引擎', en: 'Base Engine' },
-    'models.card.clientSide': { 'zh-CN': '底座透传与门禁状态', 'zh-TW': '底座透傳與門禁狀態', en: 'Pass-through & gate status' },
-    'models.card.observedBudget': { 'zh-CN': '实测预算', 'zh-TW': '實測預算', en: 'Observed Budget' },
-    'models.card.observedBudgetNone': { 'zh-CN': '尚未观测', 'zh-TW': '尚未觀測', en: 'Not observed yet' },
-    'models.card.observedBudgetSide': { 'zh-CN': '对话中实际分配', 'zh-TW': '對話中實際分配', en: 'Allocated in live turns' },
-    'models.card.observedSpeed': { 'zh-CN': '实测速度', 'zh-TW': '實測速度', en: 'Observed Speed' },
-    'models.card.observedSpeedNone': { 'zh-CN': '暂无实测数据', 'zh-TW': '暫無實測資料', en: 'No speed data yet' },
-    'models.card.gotoSpeed': { 'zh-CN': '查看速度对比 ›', 'zh-TW': '檢視速度對比 ›', en: 'Compare speed ›' },
-    'models.preset.aria': { 'zh-CN': '上下文长度预设', 'zh-TW': '上下文長度預設', en: 'Context length presets' },
-    'models.preset.default': { 'zh-CN': '恢复客户端默认', 'zh-TW': '恢復用戶端預設', en: 'Restore Client Default' },
-    'models.preset.defaultSub': { 'zh-CN': '清除请求覆盖，由当前底座策略决定', 'zh-TW': '清除請求覆寫，由目前底座策略決定', en: 'Clear request override; follow active host policy' },
-    'models.preset.p128Sub': { 'zh-CN': '插件预设 · 128,000 tokens', 'zh-TW': '外掛預設 · 128,000 tokens', en: 'Plugin preset · 128,000 tokens' },
-    'models.preset.p256Sub': { 'zh-CN': '插件预设 · 256,000 tokens', 'zh-TW': '外掛預設 · 256,000 tokens', en: 'Plugin preset · 256,000 tokens' },
-    'models.preset.p512Sub': { 'zh-CN': '插件预设 · 512,000 tokens', 'zh-TW': '外掛預設 · 512,000 tokens', en: 'Plugin preset · 512,000 tokens' },
-    'models.preset.modelMax': { 'zh-CN': '按模型最大可用', 'zh-TW': '依模型最大可用', en: 'Max Usable for Model' },
-    'models.preset.modelMaxSub': { 'zh-CN': '总窗口 - 最大输出（需元数据）', 'zh-TW': '總視窗 - 最大輸出（需中繼資料）', en: 'Context window - max output (needs metadata)' },
-    'models.preset.dynamic': { 'zh-CN': '动态跟随', 'zh-TW': '動態跟隨', en: 'Dynamic Follow' },
-    'models.preset.dynamicSub': { 'zh-CN': '不固定数值，按底座动态计算', 'zh-TW': '不固定數值，依底座動態計算', en: 'No fixed cap; compute dynamically on host' },
-    'models.cap.window': { 'zh-CN': '模型总窗口', 'zh-TW': '模型總視窗', en: 'Context Window' },
-    'models.cap.output': { 'zh-CN': '最大输出', 'zh-TW': '最大輸出', en: 'Max Output' },
-    'models.cap.modelMax': { 'zh-CN': '模型理论输入上限', 'zh-TW': '模型理論輸入上限', en: 'Model Theoretical Input Cap' },
-    'models.cap.clientPolicy': { 'zh-CN': '当前客户端限制', 'zh-TW': '目前用戶端限制', en: 'Current Client Policy Limit' },
-    'models.cap.defaultCap': { 'zh-CN': '当前策略默认预算', 'zh-TW': '目前策略預設預算', en: 'Current Strategy Default' },
-    'models.cap.range': { 'zh-CN': '当前可采纳输入范围', 'zh-TW': '目前可採納輸入範圍', en: 'Adoptable Input Range' },
-    'models.cap.formulaLbl': { 'zh-CN': '来源与计算说明', 'zh-TW': '來源與計算說明', en: 'Source & Formula' },
-    'models.cap.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
-    'models.cap.sent': { 'zh-CN': '最近请求携带', 'zh-TW': '最近請求攜帶', en: 'Last Request' },
-    'models.cap.adopted': { 'zh-CN': '后端实际采用', 'zh-TW': '後端實際採用', en: 'Backend Adopted' },
-    'models.card.tierCaps': { 'zh-CN': '档位能力', 'zh-TW': '檔位能力', en: 'Tier Capabilities' },
-    'models.custom.label': { 'zh-CN': '自定义长度', 'zh-TW': '自訂長度', en: 'Custom limit' },
-    'models.custom.placeholder': { 'zh-CN': '输入整数，例如 333333', 'zh-TW': '輸入整數，例如 333333', en: 'Enter integer, e.g. 333333' },
-    'models.validation.defaultRange': { 'zh-CN': '可设置范围：16,384 – 2,097,152 tokens。', 'zh-TW': '可設定範圍：16,384 – 2,097,152 tokens。', en: 'Valid range: 16,384 – 2,097,152 tokens.' },
-    'models.validation.empty': { 'zh-CN': '请输入 16,384 到 2,097,152 之间的整数。', 'zh-TW': '請輸入 16,384 到 2,097,152 之間的整數。', en: 'Enter an integer between 16,384 and 2,097,152.' },
-    'models.validation.int': { 'zh-CN': '请输入整数（不要带小数或单位）。', 'zh-TW': '請輸入整數（不要帶小數或單位）。', en: 'Enter a whole integer without decimals or units.' },
-    'models.validation.range': { 'zh-CN': '数值必须在 16,384 – 2,097,152 tokens 之间。', 'zh-TW': '數值必須在 16,384 – 2,097,152 tokens 之間。', en: 'Value must be between 16,384 and 2,097,152 tokens.' },
-    'models.btn.save': { 'zh-CN': '保存', 'zh-TW': '儲存', en: 'Save' },
-    'models.btn.saveApply': { 'zh-CN': '保存并应用', 'zh-TW': '儲存並套用', en: 'Save & Apply' },
-    'models.btn.reset': { 'zh-CN': '恢复默认', 'zh-TW': '還原預設', en: 'Reset to Default' },
-    'models.help.line1': { 'zh-CN': '保存：记住当前模型的设置。底座引擎：一次性解除 256K 限制并启用动态跟随。', 'zh-TW': '儲存：記住目前模型的設定。底座引擎：一次性解除 256K 限制並啟用動態跟隨。', en: 'Save: record limit for this model. Engine: unlock 256K limit and enable dynamic follow.' },
-    'models.help.line2': { 'zh-CN': '各模型根据保存的设置独立生效，多会话与模型切换互不干扰。', 'zh-TW': '各模型依儲存的設定獨立生效，多工作階段與模型切換互不干擾。', en: 'Each model applies its saved setting independently without crosstalk across sessions or switches.' },
-    'models.details.title': { 'zh-CN': '详细说明', 'zh-TW': '詳細說明', en: 'Details & Notes' },
-    'models.details.li1': { 'zh-CN': '<strong>设置存在哪里</strong>：模型设置保存在插件的本地设置文件里，按模型产品记录。「应用」会把一种设置写入客户端的语言服务，重启后由新进程读取。', 'zh-TW': '<strong>設定儲存在哪裡</strong>：模型設定儲存在外掛的本機設定檔中，依模型產品記錄。「套用」會將設定寫入用戶端語言服務，重新啟動後由新行程讀取。', en: '<strong>Where settings live</strong>: Per-model preferences are stored in local plugin settings. "Apply" writes the selected limit to the client language server for the next restart.' },
-    'models.details.li2': {
-      'zh-CN': '<strong>几个数字的区别</strong>：<div>已保存：你为模型记下的目标。</div><div>请求携带：本次对话请求实际发送给底座的参数。</div><div>底座引擎：底座语言服务的动态跟随状态。</div><div>实测预算：对话请求中客户端实际分配的上下文预算。</div><div>服务端报错上限：只有服务端拒绝请求时才会出现。</div>',
-      'zh-TW': '<strong>幾個數字的區別</strong>：<div>已儲存：你為模型記下的目標。</div><div>請求攜帶：本次對話請求實際發送給底座的參數。</div><div>底座引擎：底座語言服務的動態跟隨狀態。</div><div>實測預算：對話請求中用戶端實際分配的上下文預算。</div><div>伺服器端報錯上限：只有伺服器端拒絕請求時才會出現。</div>',
-      en: '<strong>Understanding the numbers</strong>:<div>Saved: target limit for this model.</div><div>Request Attached: parameter sent in this turn.</div><div>Base Engine: follow state of the language server.</div><div>Observed budget: actual budget allocated in live turns.</div><div>Service limit: appears only when the server rejects a request.</div>'
-    },
-    'models.details.li3': { 'zh-CN': '<strong>影响范围</strong>：底座引擎采用动态跟随架构，每个对话请求按当前所选模型分别携带独立上下文参数，多会话与多模型并发隔离生效。', 'zh-TW': '<strong>影響範圍</strong>：底座引擎採用動態跟隨架構，每個對話請求按目前所選模型分別攜帶獨立上下文參數，多工作階段與多模型並發隔離生效。', en: '<strong>Scope</strong>: The base engine uses a dynamic follow architecture, where each request carries independent context limits per model with full multi-session isolation.' },
-    'models.details.li4': {
-      'zh-CN': '<strong>验证范围</strong>：<div>已验证：客户端重启后读到了新设置，并在之后的会话中观测到对应预算。</div><div>未验证：真实超长请求能否被服务端完整接受；账号风险未知。</div>',
-      'zh-TW': '<strong>驗證範圍</strong>：<div>已驗證：用戶端重啟後讀到了新設定，並在之後的對話中觀測到對應預算。</div><div>未驗證：真實超長請求能否被伺服器端完整接受；帳號風險未知。</div>',
-      en: '<strong>Verification scope</strong>:<div>Verified: client read the new setting after restart and live turns showed the updated budget.</div><div>Unverified: whether the server accepts full ultra-long requests; account risk is unknown.</div>'
-    },
-    'models.details.li5': { 'zh-CN': '<strong>精确数值</strong>：512K = 512,000 tokens；可设置范围 16,384 – 2,097,152 tokens；跟随模型不固定数值。', 'zh-TW': '<strong>精確數值</strong>：512K = 512,000 tokens；可設定範圍 16,384 – 2,097,152 tokens；跟隨模型不固定數值。', en: '<strong>Exact values</strong>: 512K = 512,000 tokens; allowed range 16,384 – 2,097,152 tokens; Follow Model has no fixed cap.' },
-    'models.btn.restoreOriginal': { 'zh-CN': '客户端恢复原始设置', 'zh-TW': '用戶端恢復原始設定', en: 'Restore Client Default' },
-    'models.btn.refreshStatus': { 'zh-CN': '刷新状态', 'zh-TW': '重新整理狀態', en: 'Refresh' },
-    'models.status.detecting': { 'zh-CN': '正在检测当前 Antigravity 状态…', 'zh-TW': '正在偵測目前 Antigravity 狀態…', en: 'Detecting current Antigravity status…' },
-    'models.meta.mode': { 'zh-CN': '当前配置 / 实测', 'zh-TW': '目前設定 / 實測', en: 'Config / Observed' },
-    'models.meta.target': { 'zh-CN': '目标进程', 'zh-TW': '目標行程', en: 'Target Binary' },
-    'models.meta.arch': { 'zh-CN': '系统架构', 'zh-TW': '系統架構', en: 'Architecture' },
-    'models.meta.backup': { 'zh-CN': '原版备份状态', 'zh-TW': '原版備份狀態', en: 'Original Backup' },
-    'models.credit.source': { 'zh-CN': '方案来源：', 'zh-TW': '方案來源：', en: 'Source:' },
-    'models.credit.author': { 'zh-CN': '原作者帖子 (Linux.do @23375) ↗', 'zh-TW': '原作者文章 (Linux.do @23375) ↗', en: 'Original Post (Linux.do @23375) ↗' },
-    'models.credit.copy': { 'zh-CN': '📋 复制链接', 'zh-TW': '📋 複製連結', en: '📋 Copy Link' },
-    'models.credit.adapter': { 'zh-CN': '本项目负责 Node.js 适配与集成', 'zh-TW': '本專案負責 Node.js 適配與整合', en: 'Node.js adaptation & integration by this project' },
+  // 分页 2: 模型设置
+  'models.list.aria': { 'zh-CN': '按厂商分组的模型产品列表', 'zh-TW': '依廠商分組的模型產品清單', en: 'Models grouped by vendor' },
+  'models.list.empty': { 'zh-CN': '暂无已知模型，发一条消息或等待模型列表加载后显示。', 'zh-TW': '暫無已知模型，發送一則訊息或等待模型清單載入後顯示。', en: 'No models detected yet. Send a message or wait for the model list to load.' },
+  'models.restartBtn': { 'zh-CN': '重启客户端使设置生效', 'zh-TW': '重新啟動用戶端使設定生效', en: 'Restart client to apply' },
+  'models.manualRestart': { 'zh-CN': '请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。', 'zh-TW': '請手動重新啟動：關閉所有 Antigravity 視窗（包含系統匣圖示中的「結束」），再重新開啟 Antigravity。', en: 'Please restart manually: close all Antigravity windows (including Quit from the tray icon) and reopen Antigravity.' },
+  'models.restartConfirm.text': { 'zh-CN': '重启会中断正在运行的任务。请先保存未保存的内容。', 'zh-TW': '重新啟動會中斷正在執行的任務。請先儲存未儲存的內容。', en: 'Restarting will interrupt active tasks. Please save any unsaved work first.' },
+  'models.restartConfirm.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
+  'models.restartConfirm.go': { 'zh-CN': '重启', 'zh-TW': '重新啟動', en: 'Restart' },
+  'models.restart.restarting': { 'zh-CN': '正在重启客户端…', 'zh-TW': '正在重新啟動用戶端…', en: 'Restarting client…' },
+  'models.restart.notExited': { 'zh-CN': '客户端没有退出，可能被取消或正在等待。请手动重启。', 'zh-TW': '用戶端沒有結束，可能被取消或正在等待。請手動重新啟動。', en: 'The client did not exit (cancelled or busy). Please restart manually.' },
+  'models.conflict.title': { 'zh-CN': '这个模型的不同档位保存过不同长度，请选一个统一值。', 'zh-TW': '此模型的不同檔位儲存過不同長度，請選一個統一值。', en: 'Different efforts of this model have different saved limits. Pick one unified value.' },
+  'models.conflict.keep': { 'zh-CN': '保留此值', 'zh-TW': '保留此值', en: 'Use this' },
+  'models.card.waiting': { 'zh-CN': '等待读取模型…', 'zh-TW': '等待讀取模型…', en: 'Waiting for model…' },
+  'models.card.efforts': { 'zh-CN': '可用档位：{val}', 'zh-TW': '可用檔位：{val}', en: 'Efforts: {val}' },
+  'models.card.effortsEmpty': { 'zh-CN': '可用档位：—', 'zh-TW': '可用檔位：—', en: 'Efforts: —' },
+  'models.card.sessionEffort': { 'zh-CN': '当前会话：{val}', 'zh-TW': '目前工作階段：{val}', en: 'Current session: {val}' },
+  'models.card.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
+  'models.card.savedSide': { 'zh-CN': '为这个模型记下的长度', 'zh-TW': '為此模型記下的長度', en: 'Saved limit for this model' },
+  'models.card.request': { 'zh-CN': '请求携带', 'zh-TW': '請求攜帶', en: 'Request Attached' },
+  'models.mode.aria': { 'zh-CN': '上下文设置模式', 'zh-TW': '上下文設定模式', en: 'Context setting mode' },
+  'models.mode.unifiedTitle': { 'zh-CN': '所有模型统一设置', 'zh-TW': '所有模型統一設定', en: 'Unified for All Models' },
+  'models.mode.unifiedDesc': { 'zh-CN': '设置一次，所有模型使用相同的上下文长度。', 'zh-TW': '設定一次，所有模型使用相同的上下文長度。', en: 'Set once; all models use the same context length.' },
+  'models.mode.perModelTitle': { 'zh-CN': '按模型分别设置', 'zh-TW': '依模型個別設定', en: 'Per-Model Separate Settings' },
+  'models.mode.perModelDesc': { 'zh-CN': '每个模型分别保存，使用哪个模型，就采用它的上下文长度。', 'zh-TW': '每個模型分別儲存，使用哪個模型，就採用其上下文長度。', en: 'Each model saved separately; active model uses its own length.' },
+  'models.summary.mode': { 'zh-CN': '当前模式', 'zh-TW': '目前模式', en: 'Active Mode' },
+  'models.summary.model': { 'zh-CN': '当前模型', 'zh-TW': '目前模型', en: 'Active Model' },
+  'models.summary.length': { 'zh-CN': '目标设置与状态', 'zh-TW': '目標設定與狀態', en: 'Target & Status' },
+  'models.status.savedPendingDispatch': { 'zh-CN': '已保存，下一次发送时尝试应用', 'zh-TW': '已儲存，下一次發送時嘗試套用', en: 'Saved; will attempt to apply on next message' },
+  'models.status.dispatchedPendingConfirm': { 'zh-CN': '已发送设置，等待确认', 'zh-TW': '已發送設定，等待確認', en: 'Setting dispatched; awaiting confirmation' },
+  'models.status.confirmed': { 'zh-CN': '实际预算已确认', 'zh-TW': '實際預算已確認', en: 'Observed budget confirmed' },
+  'models.status.mismatch': { 'zh-CN': '未生效：目标值与观测值不一致', 'zh-TW': '未生效：目標值與觀測值不一致', en: 'Not active: target differs from observed budget' },
+  'panel.ctx.currentModelUnconfirmed': { 'zh-CN': '当前会话模型待确认（请在输入框选择模型或发送消息）', 'zh-TW': '目前工作階段模型待確認（請在輸入框選擇模型或發送訊息）', en: 'Active model pending confirmation (select a model or send a message first)' },
+  'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
+  'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
+  'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
+  'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
+  'models.summary.unconfirmed': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
+  'models.summary.pendingRestart': { 'zh-CN': '待重启生效', 'zh-TW': '待重啟生效', en: 'Pending Restart' },
+  'models.summary.modelDefault': { 'zh-CN': '使用模型默认值', 'zh-TW': '使用模型預設值', en: 'Use model default' },
+  'models.summary.unifiedTarget': { 'zh-CN': '所有模型（统一生效）', 'zh-TW': '所有模型（統一生效）', en: 'All models (unified)' },
+  'models.card.detailsToggle': { 'zh-CN': '详细信息（配置来源、请求参数与预算验证）', 'zh-TW': '詳細資訊（設定來源、請求參數與預算驗證）', en: 'Details (Source, request params & budget)' },
+  'models.card.requestSide': { 'zh-CN': '本次请求发送给底座的参数', 'zh-TW': '本次請求發送給底座的參數', en: 'Limit sent in request' },
+  'models.card.client': { 'zh-CN': '底座引擎', 'zh-TW': '底座引擎', en: 'Base Engine' },
+  'models.card.clientSide': { 'zh-CN': '底座透传与门禁状态', 'zh-TW': '底座透傳與門禁狀態', en: 'Pass-through & gate status' },
+  'models.card.observedBudget': { 'zh-CN': '实测预算', 'zh-TW': '實測預算', en: 'Observed Budget' },
+  'models.card.observedBudgetNone': { 'zh-CN': '尚未观测', 'zh-TW': '尚未觀測', en: 'Not observed yet' },
+  'models.card.observedBudgetSide': { 'zh-CN': '对话中实际分配', 'zh-TW': '對話中實際分配', en: 'Allocated in live turns' },
+  'models.card.observedSpeed': { 'zh-CN': '实测速度', 'zh-TW': '實測速度', en: 'Observed Speed' },
+  'models.card.observedSpeedNone': { 'zh-CN': '暂无实测数据', 'zh-TW': '暫無實測資料', en: 'No speed data yet' },
+  'models.card.gotoSpeed': { 'zh-CN': '查看速度对比 ›', 'zh-TW': '檢視速度對比 ›', en: 'Compare speed ›' },
+  'models.preset.aria': { 'zh-CN': '上下文长度预设', 'zh-TW': '上下文長度預設', en: 'Context length presets' },
+  'models.preset.default': { 'zh-CN': '恢复客户端默认', 'zh-TW': '恢復用戶端預設', en: 'Restore Client Default' },
+  'models.preset.defaultSub': { 'zh-CN': '清除请求覆盖，由当前底座策略决定', 'zh-TW': '清除請求覆寫，由目前底座策略決定', en: 'Clear request override; follow active host policy' },
+  'models.preset.p128Sub': { 'zh-CN': '插件预设 · 128,000 tokens', 'zh-TW': '外掛預設 · 128,000 tokens', en: 'Plugin preset · 128,000 tokens' },
+  'models.preset.p256Sub': { 'zh-CN': '插件预设 · 256,000 tokens', 'zh-TW': '外掛預設 · 256,000 tokens', en: 'Plugin preset · 256,000 tokens' },
+  'models.preset.p512Sub': { 'zh-CN': '插件预设 · 512,000 tokens', 'zh-TW': '外掛預設 · 512,000 tokens', en: 'Plugin preset · 512,000 tokens' },
+  'models.preset.modelMax': { 'zh-CN': '按模型最大可用', 'zh-TW': '依模型最大可用', en: 'Max Usable for Model' },
+  'models.preset.modelMaxSub': { 'zh-CN': '总窗口 - 最大输出（需元数据）', 'zh-TW': '總視窗 - 最大輸出（需中繼資料）', en: 'Context window - max output (needs metadata)' },
+  'models.preset.dynamic': { 'zh-CN': '动态跟随', 'zh-TW': '動態跟隨', en: 'Dynamic Follow' },
+  'models.preset.dynamicSub': { 'zh-CN': '不固定数值，按底座动态计算', 'zh-TW': '不固定數值，依底座動態計算', en: 'No fixed cap; compute dynamically on host' },
+  'models.cap.window': { 'zh-CN': '模型总窗口', 'zh-TW': '模型總視窗', en: 'Context Window' },
+  'models.cap.output': { 'zh-CN': '最大输出', 'zh-TW': '最大輸出', en: 'Max Output' },
+  'models.cap.modelMax': { 'zh-CN': '模型理论输入上限', 'zh-TW': '模型理論輸入上限', en: 'Model Theoretical Input Cap' },
+  'models.cap.clientPolicy': { 'zh-CN': '当前客户端限制', 'zh-TW': '目前用戶端限制', en: 'Current Client Policy Limit' },
+  'models.cap.defaultCap': { 'zh-CN': '当前策略默认预算', 'zh-TW': '目前策略預設預算', en: 'Current Strategy Default' },
+  'models.cap.range': { 'zh-CN': '当前可采纳输入范围', 'zh-TW': '目前可採納輸入範圍', en: 'Adoptable Input Range' },
+  'models.cap.formulaLbl': { 'zh-CN': '来源与计算说明', 'zh-TW': '來源與計算說明', en: 'Source & Formula' },
+  'models.cap.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
+  'models.cap.sent': { 'zh-CN': '最近请求携带', 'zh-TW': '最近請求攜帶', en: 'Last Request' },
+  'models.cap.adopted': { 'zh-CN': '后端实际采用', 'zh-TW': '後端實際採用', en: 'Backend Adopted' },
+  'models.card.tierCaps': { 'zh-CN': '档位能力', 'zh-TW': '檔位能力', en: 'Tier Capabilities' },
+  'models.custom.label': { 'zh-CN': '自定义长度', 'zh-TW': '自訂長度', en: 'Custom limit' },
+  'models.custom.placeholder': { 'zh-CN': '输入整数，例如 333333', 'zh-TW': '輸入整數，例如 333333', en: 'Enter integer, e.g. 333333' },
+  'models.validation.defaultRange': { 'zh-CN': '可设置范围：16,384 – 2,097,152 tokens。', 'zh-TW': '可設定範圍：16,384 – 2,097,152 tokens。', en: 'Valid range: 16,384 – 2,097,152 tokens.' },
+  'models.validation.empty': { 'zh-CN': '请输入 16,384 到 2,097,152 之间的整数。', 'zh-TW': '請輸入 16,384 到 2,097,152 之間的整數。', en: 'Enter an integer between 16,384 and 2,097,152.' },
+  'models.validation.int': { 'zh-CN': '请输入整数（不要带小数或单位）。', 'zh-TW': '請輸入整數（不要帶小數或單位）。', en: 'Enter a whole integer without decimals or units.' },
+  'models.validation.range': { 'zh-CN': '数值必须在 16,384 – 2,097,152 tokens 之间。', 'zh-TW': '數值必須在 16,384 – 2,097,152 tokens 之間。', en: 'Value must be between 16,384 and 2,097,152 tokens.' },
+  'models.btn.save': { 'zh-CN': '保存', 'zh-TW': '儲存', en: 'Save' },
+  'models.btn.saveApply': { 'zh-CN': '保存并应用', 'zh-TW': '儲存並套用', en: 'Save & Apply' },
+  'models.btn.reset': { 'zh-CN': '恢复默认', 'zh-TW': '還原預設', en: 'Reset to Default' },
+  'models.help.line1': { 'zh-CN': '保存：记住当前模型的设置。底座引擎：一次性解除 256K 限制并启用动态跟随。', 'zh-TW': '儲存：記住目前模型的設定。底座引擎：一次性解除 256K 限制並啟用動態跟隨。', en: 'Save: record limit for this model. Engine: unlock 256K limit and enable dynamic follow.' },
+  'models.help.line2': { 'zh-CN': '各模型根据保存的设置独立生效，多会话与模型切换互不干扰。', 'zh-TW': '各模型依儲存的設定獨立生效，多工作階段與模型切換互不干擾。', en: 'Each model applies its saved setting independently without crosstalk across sessions or switches.' },
+  'models.details.title': { 'zh-CN': '详细说明', 'zh-TW': '詳細說明', en: 'Details & Notes' },
+  'models.details.li1': { 'zh-CN': '<strong>设置存在哪里</strong>：模型设置保存在插件的本地设置文件里，按模型产品记录。「应用」会把一种设置写入客户端的语言服务，重启后由新进程读取。', 'zh-TW': '<strong>設定儲存在哪裡</strong>：模型設定儲存在外掛的本機設定檔中，依模型產品記錄。「套用」會將設定寫入用戶端語言服務，重新啟動後由新行程讀取。', en: '<strong>Where settings live</strong>: Per-model preferences are stored in local plugin settings. "Apply" writes the selected limit to the client language server for the next restart.' },
+  'models.details.li2': {
+    'zh-CN': '<strong>几个数字的区别</strong>：<div>已保存：你为模型记下的目标。</div><div>请求携带：本次对话请求实际发送给底座的参数。</div><div>底座引擎：底座语言服务的动态跟随状态。</div><div>实测预算：对话请求中客户端实际分配的上下文预算。</div><div>服务端报错上限：只有服务端拒绝请求时才会出现。</div>',
+    'zh-TW': '<strong>幾個數字的區別</strong>：<div>已儲存：你為模型記下的目標。</div><div>請求攜帶：本次對話請求實際發送給底座的參數。</div><div>底座引擎：底座語言服務的動態跟隨狀態。</div><div>實測預算：對話請求中用戶端實際分配的上下文預算。</div><div>伺服器端報錯上限：只有伺服器端拒絕請求時才會出現。</div>',
+    en: '<strong>Understanding the numbers</strong>:<div>Saved: target limit for this model.</div><div>Request Attached: parameter sent in this turn.</div><div>Base Engine: follow state of the language server.</div><div>Observed budget: actual budget allocated in live turns.</div><div>Service limit: appears only when the server rejects a request.</div>'
+  },
+  'models.details.li3': { 'zh-CN': '<strong>影响范围</strong>：底座引擎采用动态跟随架构，每个对话请求按当前所选模型分别携带独立上下文参数，多会话与多模型并发隔离生效。', 'zh-TW': '<strong>影響範圍</strong>：底座引擎採用動態跟隨架構，每個對話請求按目前所選模型分別攜帶獨立上下文參數，多工作階段與多模型並發隔離生效。', en: '<strong>Scope</strong>: The base engine uses a dynamic follow architecture, where each request carries independent context limits per model with full multi-session isolation.' },
+  'models.details.li4': {
+    'zh-CN': '<strong>验证范围</strong>：<div>已验证：客户端重启后读到了新设置，并在之后的会话中观测到对应预算。</div><div>未验证：真实超长请求能否被服务端完整接受；账号风险未知。</div>',
+    'zh-TW': '<strong>驗證範圍</strong>：<div>已驗證：用戶端重啟後讀到了新設定，並在之後的對話中觀測到對應預算。</div><div>未驗證：真實超長請求能否被伺服器端完整接受；帳號風險未知。</div>',
+    en: '<strong>Verification scope</strong>:<div>Verified: client read the new setting after restart and live turns showed the updated budget.</div><div>Unverified: whether the server accepts full ultra-long requests; account risk is unknown.</div>'
+  },
+  'models.details.li5': { 'zh-CN': '<strong>精确数值</strong>：512K = 512,000 tokens；可设置范围 16,384 – 2,097,152 tokens；跟随模型不固定数值。', 'zh-TW': '<strong>精確數值</strong>：512K = 512,000 tokens；可設定範圍 16,384 – 2,097,152 tokens；跟隨模型不固定數值。', en: '<strong>Exact values</strong>: 512K = 512,000 tokens; allowed range 16,384 – 2,097,152 tokens; Follow Model has no fixed cap.' },
+  'models.btn.restoreOriginal': { 'zh-CN': '客户端恢复原始设置', 'zh-TW': '用戶端恢復原始設定', en: 'Restore Client Default' },
+  'models.btn.refreshStatus': { 'zh-CN': '刷新状态', 'zh-TW': '重新整理狀態', en: 'Refresh' },
+  'models.status.detecting': { 'zh-CN': '正在检测当前 Antigravity 状态…', 'zh-TW': '正在偵測目前 Antigravity 狀態…', en: 'Detecting current Antigravity status…' },
+  'models.meta.mode': { 'zh-CN': '当前配置 / 实测', 'zh-TW': '目前設定 / 實測', en: 'Config / Observed' },
+  'models.meta.target': { 'zh-CN': '目标进程', 'zh-TW': '目標行程', en: 'Target Binary' },
+  'models.meta.arch': { 'zh-CN': '系统架构', 'zh-TW': '系統架構', en: 'Architecture' },
+  'models.meta.backup': { 'zh-CN': '原版备份状态', 'zh-TW': '原版備份狀態', en: 'Original Backup' },
+  'models.credit.source': { 'zh-CN': '方案来源：', 'zh-TW': '方案來源：', en: 'Source:' },
+  'models.credit.author': { 'zh-CN': '原作者帖子 (Linux.do @23375) ↗', 'zh-TW': '原作者文章 (Linux.do @23375) ↗', en: 'Original Post (Linux.do @23375) ↗' },
+  'models.credit.copy': { 'zh-CN': '📋 复制链接', 'zh-TW': '📋 複製連結', en: '📋 Copy Link' },
+  'models.credit.adapter': { 'zh-CN': '本项目负责 Node.js 适配与集成', 'zh-TW': '本專案負責 Node.js 適配與整合', en: 'Node.js adaptation & integration by this project' },
 
-    // 状态与反馈通用
-    'status.savedDefault': { 'zh-CN': '未单独设置（使用默认）', 'zh-TW': '未單獨設定（使用預設）', en: 'Not set (Default)' },
-    'status.savedShortDefault': { 'zh-CN': '默认', 'zh-TW': '預設', en: 'Default' },
-    'status.badge.unavailable': { 'zh-CN': '暂时无法读取客户端状态', 'zh-TW': '暫時無法讀取用戶端狀態', en: 'Client status unavailable' },
-    'status.badge.reading': { 'zh-CN': '状态读取中…', 'zh-TW': '狀態讀取中…', en: 'Reading status…' },
-    'status.badge.pendingRestart': { 'zh-CN': '需要重启', 'zh-TW': '需要重新啟動', en: 'Restart Required' },
-    'status.badge.notPatched': { 'zh-CN': '未修改（使用默认）', 'zh-TW': '未修改（使用預設）', en: 'Unmodified (Default)' },
-    'status.badge.unconfirmed': { 'zh-CN': '状态未确认', 'zh-TW': '狀態未確認', en: 'Unconfirmed' },
-    'status.badge.loaded': { 'zh-CN': '已加载', 'zh-TW': '已載入', en: 'Active' },
-    'status.badge.failed': { 'zh-CN': '应用失败', 'zh-TW': '套用失敗', en: 'Apply Failed' },
-    'status.client.reading': { 'zh-CN': '客户端设置：状态读取中…', 'zh-TW': '用戶端設定：狀態讀取中…', en: 'Client setting: reading…' },
-    'status.client.pendingRestart': { 'zh-CN': '待重启：已设置为 {val}，重启后生效', 'zh-TW': '待重啟：已設定為 {val}，重啟後生效', en: 'Pending restart: set to {val}, restart client to apply' },
-    'status.client.loadedFixed': { 'zh-CN': '当前已加载的设置：{val}', 'zh-TW': '目前已載入的設定：{val}', en: 'Active loaded setting: {val}' },
-    'status.client.loadedDynamic': { 'zh-CN': '当前已加载的设置：跟随模型', 'zh-TW': '目前已載入的設定：跟隨模型', en: 'Active loaded setting: Follow Model' },
-    'status.client.loadedDefault': { 'zh-CN': '当前已加载的设置：官方默认', 'zh-TW': '目前已載入的設定：官方預設', en: 'Active loaded setting: Official Default' },
-    'status.client.unknown': { 'zh-CN': '当前已加载设置：未知', 'zh-TW': '目前已載入設定：未知', en: 'Active loaded setting: unknown' },
-    'status.client.dynamic': { 'zh-CN': '客户端设置：跟随模型（各模型实际长度可能不同）', 'zh-TW': '用戶端設定：跟隨模型（各模型實際長度可能不同）', en: 'Client setting: Follow Model (varies by model)' },
-    'status.client.fixed': { 'zh-CN': '客户端设置：{val}（所有模型同一长度）', 'zh-TW': '用戶端設定：{val}（所有模型同一長度）', en: 'Client setting: {val} (shared across models)' },
-    'msg.savedUnified': { 'zh-CN': '已为该模型保存统一设置。', 'zh-TW': '已為此模型儲存統一設定。', en: 'Saved unified setting for this model.' },
-    'msg.saveUnifiedFail': { 'zh-CN': '保存统一设置失败：{err}', 'zh-TW': '儲存統一設定失敗：{err}', en: 'Failed to save unified setting: {err}' },
-    'msg.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
-    'msg.resetDefault': { 'zh-CN': '已恢复默认设置。', 'zh-TW': '已恢復預設設定。', en: 'Reset to default.' },
-    'msg.resetStillUsing': { 'zh-CN': '客户端仍在使用 {val}。需要时请在「详细说明」里点「客户端恢复原始设置」。', 'zh-TW': '用戶端仍在使用 {val}。需要時請在「詳細說明」中點擊「用戶端恢復原始設定」。', en: 'Client is still using {val}. Use "Restore Client Default" in Details if needed.' },
-    'msg.clearFail': { 'zh-CN': '清除设置失败：{err}', 'zh-TW': '清除設定失敗：{err}', en: 'Failed to clear setting: {err}' },
-    'msg.appliedRestart': { 'zh-CN': '已应用。重启客户端后生效。', 'zh-TW': '已套用。重新啟動用戶端後生效。', en: 'Applied. Restart the client to take effect.' },
-    'msg.alreadyClient': { 'zh-CN': '客户端已经是这个设置', 'zh-TW': '用戶端已經是此設定', en: 'Client is already using this setting.' },
-    'msg.applied': { 'zh-CN': '已应用当前设置。', 'zh-TW': '已套用目前設定。', en: 'Setting applied.' },
-    'msg.restoredRestart': { 'zh-CN': '客户端已恢复原始设置，重启客户端后生效。', 'zh-TW': '用戶端已恢復原始設定，重新啟動用戶端後生效。', en: 'Client restored to original default. Restart to take effect.' },
-    'msg.restoreFail': { 'zh-CN': '恢复原始设置失败', 'zh-TW': '恢復原始設定失敗', en: 'Failed to restore client default' },
-    'msg.writeBusy': { 'zh-CN': '客户端正在占用文件，写入失败。请关闭客户端后再试。', 'zh-TW': '用戶端正在佔用檔案，寫入失敗。請關閉用戶端後再試。', en: 'File is in use by the client. Close the client and try again.' },
-    'msg.writeFail': { 'zh-CN': '写入失败：{err}', 'zh-TW': '寫入失敗：{err}', en: 'Write failed: {err}' },
-    'msg.unknownErr': { 'zh-CN': '未知错误', 'zh-TW': '未知錯誤', en: 'Unknown error' },
+  // 状态与反馈通用
+  'status.savedDefault': { 'zh-CN': '未单独设置（使用默认）', 'zh-TW': '未單獨設定（使用預設）', en: 'Not set (Default)' },
+  'status.savedShortDefault': { 'zh-CN': '默认', 'zh-TW': '預設', en: 'Default' },
+  'status.badge.unavailable': { 'zh-CN': '暂时无法读取客户端状态', 'zh-TW': '暫時無法讀取用戶端狀態', en: 'Client status unavailable' },
+  'status.badge.reading': { 'zh-CN': '状态读取中…', 'zh-TW': '狀態讀取中…', en: 'Reading status…' },
+  'status.badge.pendingRestart': { 'zh-CN': '需要重启', 'zh-TW': '需要重新啟動', en: 'Restart Required' },
+  'status.badge.notPatched': { 'zh-CN': '未修改（使用默认）', 'zh-TW': '未修改（使用預設）', en: 'Unmodified (Default)' },
+  'status.badge.unconfirmed': { 'zh-CN': '状态未确认', 'zh-TW': '狀態未確認', en: 'Unconfirmed' },
+  'status.badge.loaded': { 'zh-CN': '已加载', 'zh-TW': '已載入', en: 'Active' },
+  'status.badge.failed': { 'zh-CN': '应用失败', 'zh-TW': '套用失敗', en: 'Apply Failed' },
+  'status.client.reading': { 'zh-CN': '客户端设置：状态读取中…', 'zh-TW': '用戶端設定：狀態讀取中…', en: 'Client setting: reading…' },
+  'status.client.pendingRestart': { 'zh-CN': '待重启：已设置为 {val}，重启后生效', 'zh-TW': '待重啟：已設定為 {val}，重啟後生效', en: 'Pending restart: set to {val}, restart client to apply' },
+  'status.client.loadedFixed': { 'zh-CN': '当前已加载的设置：{val}', 'zh-TW': '目前已載入的設定：{val}', en: 'Active loaded setting: {val}' },
+  'status.client.loadedDynamic': { 'zh-CN': '当前已加载的设置：跟随模型', 'zh-TW': '目前已載入的設定：跟隨模型', en: 'Active loaded setting: Follow Model' },
+  'status.client.loadedDefault': { 'zh-CN': '当前已加载的设置：官方默认', 'zh-TW': '目前已載入的設定：官方預設', en: 'Active loaded setting: Official Default' },
+  'status.client.unknown': { 'zh-CN': '当前已加载设置：未知', 'zh-TW': '目前已載入設定：未知', en: 'Active loaded setting: unknown' },
+  'status.client.dynamic': { 'zh-CN': '客户端设置：跟随模型（各模型实际长度可能不同）', 'zh-TW': '用戶端設定：跟隨模型（各模型實際長度可能不同）', en: 'Client setting: Follow Model (varies by model)' },
+  'status.client.fixed': { 'zh-CN': '客户端设置：{val}（所有模型同一长度）', 'zh-TW': '用戶端設定：{val}（所有模型同一長度）', en: 'Client setting: {val} (shared across models)' },
+  'msg.savedUnified': { 'zh-CN': '已为该模型保存统一设置。', 'zh-TW': '已為此模型儲存統一設定。', en: 'Saved unified setting for this model.' },
+  'msg.saveUnifiedFail': { 'zh-CN': '保存统一设置失败：{err}', 'zh-TW': '儲存統一設定失敗：{err}', en: 'Failed to save unified setting: {err}' },
+  'msg.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
+  'msg.resetDefault': { 'zh-CN': '已恢复默认设置。', 'zh-TW': '已恢復預設設定。', en: 'Reset to default.' },
+  'msg.resetStillUsing': { 'zh-CN': '客户端仍在使用 {val}。需要时请在「详细说明」里点「客户端恢复原始设置」。', 'zh-TW': '用戶端仍在使用 {val}。需要時請在「詳細說明」中點擊「用戶端恢復原始設定」。', en: 'Client is still using {val}. Use "Restore Client Default" in Details if needed.' },
+  'msg.clearFail': { 'zh-CN': '清除设置失败：{err}', 'zh-TW': '清除設定失敗：{err}', en: 'Failed to clear setting: {err}' },
+  'msg.appliedRestart': { 'zh-CN': '已应用。重启客户端后生效。', 'zh-TW': '已套用。重新啟動用戶端後生效。', en: 'Applied. Restart the client to take effect.' },
+  'msg.alreadyClient': { 'zh-CN': '客户端已经是这个设置', 'zh-TW': '用戶端已經是此設定', en: 'Client is already using this setting.' },
+  'msg.applied': { 'zh-CN': '已应用当前设置。', 'zh-TW': '已套用目前設定。', en: 'Setting applied.' },
+  'msg.restoredRestart': { 'zh-CN': '客户端已恢复原始设置，重启客户端后生效。', 'zh-TW': '用戶端已恢復原始設定，重新啟動用戶端後生效。', en: 'Client restored to original default. Restart to take effect.' },
+  'msg.restoreFail': { 'zh-CN': '恢复原始设置失败', 'zh-TW': '恢復原始設定失敗', en: 'Failed to restore client default' },
+  'msg.writeBusy': { 'zh-CN': '客户端正在占用文件，写入失败。请关闭客户端后再试。', 'zh-TW': '用戶端正在佔用檔案，寫入失敗。請關閉用戶端後再試。', en: 'File is in use by the client. Close the client and try again.' },
+  'msg.writeFail': { 'zh-CN': '写入失败：{err}', 'zh-TW': '寫入失敗：{err}', en: 'Write failed: {err}' },
+  'msg.unknownErr': { 'zh-CN': '未知错误', 'zh-TW': '未知錯誤', en: 'Unknown error' },
 
-    // 分页 3: 速度对比
-    'speed.range.aria': { 'zh-CN': '时间范围', 'zh-TW': '時間範圍', en: 'Time range' },
-    'speed.range.7d': { 'zh-CN': '近 7 天', 'zh-TW': '近 7 天', en: '7D' },
-    'speed.range.30d': { 'zh-CN': '近 30 天', 'zh-TW': '近 30 天', en: '30D' },
-    'speed.range.all': { 'zh-CN': '全部', 'zh-TW': '全部', en: 'All' },
-    'speed.origin.aria': { 'zh-CN': '样本来源', 'zh-TW': '樣本來源', en: 'Sample origin' },
-    'speed.origin.all': { 'zh-CN': '全部来源', 'zh-TW': '全部來源', en: 'All sources' },
-    'speed.origin.chat': { 'zh-CN': '日常对话', 'zh-TW': '日常對話', en: 'Chat' },
-    'speed.metric.aria': { 'zh-CN': '对比指标', 'zh-TW': '對比指標', en: 'Metric' },
-    'speed.metric.tps': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Speed' },
-    'speed.metric.ttft': { 'zh-CN': '首字延迟', 'zh-TW': '首字延遲', en: 'TTFT' },
-    'speed.metric.duration': { 'zh-CN': '总耗时', 'zh-TW': '總耗時', en: 'Duration' },
-    'speed.barTitle.tps': { 'zh-CN': '输出速度对比', 'zh-TW': '輸出速度對比', en: 'Output Speed Comparison' },
-    'speed.barTitle.ttft': { 'zh-CN': '首字延迟对比', 'zh-TW': '首字延遲對比', en: 'First-Token Latency (TTFT)' },
-    'speed.barTitle.duration': { 'zh-CN': '总耗时对比', 'zh-TW': '總耗時對比', en: 'Total Duration Comparison' },
-    'speed.empty': { 'zh-CN': '还没有可用的速度记录。正常对话后会自动积累。', 'zh-TW': '還沒有可用的速度記錄。正常對話後會自動累積。', en: 'No speed samples yet. Samples are recorded automatically during normal chats.' },
-    'speed.barNote': { 'zh-CN': '以各模型与档位的中位数统计；不足 3 条标注“样本少”。总耗时受输出长度影响，条件相近时才可比较。', 'zh-TW': '以各模型與檔位的中位數統計；不足 3 筆標註「樣本少」。總耗時受輸出長度影響，條件相近時才可比較。', en: 'Bars show median per model & effort; <3 samples are marked "Low n". Total duration depends on output length.' },
-    'speed.lineTitle': { 'zh-CN': '单模型速度趋势', 'zh-TW': '單模型速度趨勢', en: 'Model Speed Trend' },
-    'speed.linePickTitle': { 'zh-CN': '选择一个模型与档位查看速度变化', 'zh-TW': '選擇一個模型與檔位檢視速度變化', en: 'Select a model & effort to view speed trend' },
-    'speed.lineNoModel': { 'zh-CN': '暂无模型记录', 'zh-TW': '暫無模型記錄', en: 'No model records' },
-    'speed.activeTestNote': { 'zh-CN': '主动测试：未接通。目前没有可靠的指定模型调用入口，暂时只能使用日常对话的实测记录。', 'zh-TW': '主動測試：未接通。目前沒有可靠的指定模型呼叫入口，暫時只能使用日常對話的實測記錄。', en: 'Active benchmark: unavailable. No reliable per-model probe endpoint exists yet; showing live chat measurements only.' },
-    'speed.lowSample': { 'zh-CN': '样本少', 'zh-TW': '樣本少', en: 'Low n' },
-    'speed.samples': { 'zh-CN': '{n} 条', 'zh-TW': '{n} 筆', en: '{n} samples' },
-    'speed.median': { 'zh-CN': '中位数：{val}', 'zh-TW': '中位數：{val}', en: 'Median: {val}' },
-    'speed.avg': { 'zh-CN': '均值：{val}', 'zh-TW': '均值：{val}', en: 'Avg: {val}' },
-    'speed.sampleCount': { 'zh-CN': '样本数：{n} 条', 'zh-TW': '樣本數：{n} 筆', en: 'Samples: {n}' },
-    'speed.latestAt': { 'zh-CN': '最近：{time}', 'zh-TW': '最近：{time}', en: 'Latest: {time}' },
+  // 分页 3: 速度对比
+  'speed.range.aria': { 'zh-CN': '时间范围', 'zh-TW': '時間範圍', en: 'Time range' },
+  'speed.range.7d': { 'zh-CN': '近 7 天', 'zh-TW': '近 7 天', en: '7D' },
+  'speed.range.30d': { 'zh-CN': '近 30 天', 'zh-TW': '近 30 天', en: '30D' },
+  'speed.range.all': { 'zh-CN': '全部', 'zh-TW': '全部', en: 'All' },
+  'speed.origin.aria': { 'zh-CN': '样本来源', 'zh-TW': '樣本來源', en: 'Sample origin' },
+  'speed.origin.all': { 'zh-CN': '全部来源', 'zh-TW': '全部來源', en: 'All sources' },
+  'speed.origin.chat': { 'zh-CN': '日常对话', 'zh-TW': '日常對話', en: 'Chat' },
+  'speed.metric.aria': { 'zh-CN': '对比指标', 'zh-TW': '對比指標', en: 'Metric' },
+  'speed.metric.tps': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Speed' },
+  'speed.metric.ttft': { 'zh-CN': '首字延迟', 'zh-TW': '首字延遲', en: 'TTFT' },
+  'speed.metric.duration': { 'zh-CN': '总耗时', 'zh-TW': '總耗時', en: 'Duration' },
+  'speed.barTitle.tps': { 'zh-CN': '输出速度对比', 'zh-TW': '輸出速度對比', en: 'Output Speed Comparison' },
+  'speed.barTitle.ttft': { 'zh-CN': '首字延迟对比', 'zh-TW': '首字延遲對比', en: 'First-Token Latency (TTFT)' },
+  'speed.barTitle.duration': { 'zh-CN': '总耗时对比', 'zh-TW': '總耗時對比', en: 'Total Duration Comparison' },
+  'speed.empty': { 'zh-CN': '还没有可用的速度记录。正常对话后会自动积累。', 'zh-TW': '還沒有可用的速度記錄。正常對話後會自動累積。', en: 'No speed samples yet. Samples are recorded automatically during normal chats.' },
+  'speed.barNote': { 'zh-CN': '以各模型与档位的中位数统计；不足 3 条标注“样本少”。总耗时受输出长度影响，条件相近时才可比较。', 'zh-TW': '以各模型與檔位的中位數統計；不足 3 筆標註「樣本少」。總耗時受輸出長度影響，條件相近時才可比較。', en: 'Bars show median per model & effort; <3 samples are marked "Low n". Total duration depends on output length.' },
+  'speed.lineTitle': { 'zh-CN': '单模型速度趋势', 'zh-TW': '單模型速度趨勢', en: 'Model Speed Trend' },
+  'speed.linePickTitle': { 'zh-CN': '选择一个模型与档位查看速度变化', 'zh-TW': '選擇一個模型與檔位檢視速度變化', en: 'Select a model & effort to view speed trend' },
+  'speed.lineNoModel': { 'zh-CN': '暂无模型记录', 'zh-TW': '暫無模型記錄', en: 'No model records' },
+  'speed.activeTestNote': { 'zh-CN': '主动测试：未接通。目前没有可靠的指定模型调用入口，暂时只能使用日常对话的实测记录。', 'zh-TW': '主動測試：未接通。目前沒有可靠的指定模型呼叫入口，暫時只能使用日常對話的實測記錄。', en: 'Active benchmark: unavailable. No reliable per-model probe endpoint exists yet; showing live chat measurements only.' },
+  'speed.lowSample': { 'zh-CN': '样本少', 'zh-TW': '樣本少', en: 'Low n' },
+  'speed.samples': { 'zh-CN': '{n} 条', 'zh-TW': '{n} 筆', en: '{n} samples' },
+  'speed.median': { 'zh-CN': '中位数：{val}', 'zh-TW': '中位數：{val}', en: 'Median: {val}' },
+  'speed.avg': { 'zh-CN': '均值：{val}', 'zh-TW': '均值：{val}', en: 'Avg: {val}' },
+  'speed.sampleCount': { 'zh-CN': '样本数：{n} 条', 'zh-TW': '樣本數：{n} 筆', en: 'Samples: {n}' },
+  'speed.latestAt': { 'zh-CN': '最近：{time}', 'zh-TW': '最近：{time}', en: 'Latest: {time}' },
 
-    // 齿轮设置页
-    'settings.back': { 'zh-CN': '‹ 返回', 'zh-TW': '‹ 返回', en: '‹ Back' },
-    'settings.title': { 'zh-CN': '设置（语言、网络代理与外观）', 'zh-TW': '設定（語言、網路代理與外觀）', en: 'Settings (Language, Proxy & Appearance)' },
-    'settings.panelLang.title': { 'zh-CN': '🌐 插件面板语言（Context Meter）', 'zh-TW': '🌐 外掛面板語言（Context Meter）', en: '🌐 Panel Language (Context Meter)' },
-    'settings.panelLang.aria': { 'zh-CN': '插件面板语言', 'zh-TW': '外掛面板語言', en: 'Panel language' },
-    'settings.panelLang.desc': { 'zh-CN': '控制 Context Meter 面板、按钮、图表与提示文字。切换立即生效并保存，重启后保留；不改写上下文长度，不触发重启。', 'zh-TW': '控制 Context Meter 面板、按鈕、圖表與提示文字。切換立即生效並儲存，重啟後保留；不改寫上下文長度，不觸發重啟。', en: 'Controls Context Meter UI, charts, and messages. Applies and saves immediately without changing context limits or restarting.' },
-    'settings.panelLang.saved': { 'zh-CN': '已切换并保存', 'zh-TW': '已切換並儲存', en: 'Saved' },
-    'settings.panelLang.saveLocal': { 'zh-CN': '已切换（仅本地生效）', 'zh-TW': '已切換（僅本機生效）', en: 'Applied locally' },
-    'settings.clientLang.title': { 'zh-CN': '🖥️ 客户端界面语言（Antigravity 本身）', 'zh-TW': '🖥️ 用戶端介面語言（Antigravity 本身）', en: '🖥️ Client UI Language (Antigravity)' },
-    'settings.clientLang.aria': { 'zh-CN': '客户端界面语言', 'zh-TW': '用戶端介面語言', en: 'Client UI language' },
-    'settings.clientLang.statusLabel': { 'zh-CN': '客户端当前语言与生效方式', 'zh-TW': '用戶端目前語言與生效方式', en: 'Client language status & apply behavior' },
-    'settings.clientLang.licenseNote': { 'zh-CN': '说明：此设置控制 Antigravity 客户端本身，与上方插件面板语言相互独立。切换客户端语言需重新安装/重启客户端后生效。由于上游客户端繁體中文词典（qqxpee/antigravity2-cn）未声明开源许可证，暂未内置客户端繁體中文选项。', 'zh-TW': '說明：此設定控制 Antigravity 用戶端本身，與上方外掛面板語言相互獨立。切換用戶端語言需重新安裝／重新啟動用戶端後生效。由於上游用戶端繁體中文詞典（qqxpee/antigravity2-cn）未聲明開源授權，暫未內建用戶端繁體中文選項。', en: 'Note: Controls Antigravity itself, independent from Panel Language. Changing client language requires reinstalling/restarting Antigravity. Traditional Chinese client dicts (upstream qqxpee/antigravity2-cn) have no declared license and are not bundled.' },
-    'settings.clientLang.sourceLabel': { 'zh-CN': '汉化方案来源：', 'zh-TW': '中文化方案來源：', en: 'Localization source:' },
-    'settings.clientLang.sourceValue': { 'zh-CN': 'AntigravityChinese (开源社区贡献)', 'zh-TW': 'AntigravityChinese（開源社群貢獻）', en: 'AntigravityChinese (Community)' },
-    'settings.proxy.title': { 'zh-CN': '🌐 免 TUN 网络直连（本地代理）', 'zh-TW': '🌐 免 TUN 網路直連（本機代理）', en: '🌐 TUN-free Local Proxy' },
-    'settings.proxy.statusLabel': { 'zh-CN': '代理直连配置与状态', 'zh-TW': '代理直連設定與狀態', en: 'Proxy configuration & status' },
-    'settings.proxy.urlLabel': { 'zh-CN': '本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：', 'zh-TW': '本機代理位址 (例如 http://127.0.0.1:7897 或 socks5://...)：', en: 'Local proxy URL (e.g. http://127.0.0.1:7897 or socks5://...):' },
-    'settings.proxy.bypassLabel': { 'zh-CN': '绕过代理列表 (NO_PROXY)：', 'zh-TW': '略過代理清單 (NO_PROXY)：', en: 'Bypass list (NO_PROXY):' },
-    'settings.proxy.testBtn': { 'zh-CN': '🔍 测试代理连通性', 'zh-TW': '🔍 測試代理連通性', en: '🔍 Test Proxy' },
-    'settings.colors.title': { 'zh-CN': '🎨 指标与背景颜色自定义（默认跟随主题）', 'zh-TW': '🎨 指標與背景顏色自訂（預設跟隨佈景主題）', en: '🎨 Metric & Background Colors (Follow Theme)' },
-    'settings.colors.panelBg': { 'zh-CN': '面板与菜单统一背景色（0级跟随 / 自定义）', 'zh-TW': '面板與選單統一背景色（0級跟隨 / 自訂）', en: 'Panel & menu background (Auto / Custom)' },
-    'settings.colors.ringUsed': { 'zh-CN': '圆环已用部分', 'zh-TW': '圓環已用部分', en: 'Ring used' },
-    'settings.colors.ringTrack': { 'zh-CN': '圆环轨道', 'zh-TW': '圓環軌道', en: 'Ring track' },
-    'settings.colors.contextText': { 'zh-CN': '上下文用量文字', 'zh-TW': 'Context 用量文字', en: 'Context text' },
-    'settings.colors.speedText': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output speed' },
-    'settings.colors.tokenTotal': { 'zh-CN': '累计 token 用量', 'zh-TW': '累計 Token 用量', en: 'Total tokens' },
-    'settings.colors.tokenAccent': { 'zh-CN': '其他 token 指标', 'zh-TW': '其他 Token 指標', en: 'Token accent' },
-    'settings.colors.note': { 'zh-CN': '注：高占用与超限告警色独立保留，不被常态颜色覆盖。', 'zh-TW': '註：高佔用與超限警示色獨立保留，不被常態顏色覆蓋。', en: 'Note: High-usage and overflow alert colors remain independent.' },
-    'settings.colors.resetAll': { 'zh-CN': '全部恢复跟随主题', 'zh-TW': '全部還原跟隨佈景主題', en: 'Reset all to theme' },
-    'drawer.expand': { 'zh-CN': '▼ 展开', 'zh-TW': '▼ 展開', en: '▼ Expand' },
-    'drawer.collapse': { 'zh-CN': '▲ 收起', 'zh-TW': '▲ 收起', en: '▲ Collapse' },
-    'drawer.expandSettings': { 'zh-CN': '▼ 展开设置', 'zh-TW': '▼ 展開設定', en: '▼ Expand' },
-    'drawer.collapseSettings': { 'zh-CN': '▲ 收起设置', 'zh-TW': '▲ 收起設定', en: '▲ Collapse' },
+  // 齿轮设置页
+  'settings.back': { 'zh-CN': '‹ 返回', 'zh-TW': '‹ 返回', en: '‹ Back' },
+  'settings.title': { 'zh-CN': '设置（语言、网络代理与外观）', 'zh-TW': '設定（語言、網路代理與外觀）', en: 'Settings (Language, Proxy & Appearance)' },
+  'settings.panelLang.title': { 'zh-CN': '🌐 插件面板语言（Context Meter）', 'zh-TW': '🌐 外掛面板語言（Context Meter）', en: '🌐 Panel Language (Context Meter)' },
+  'settings.panelLang.aria': { 'zh-CN': '插件面板语言', 'zh-TW': '外掛面板語言', en: 'Panel language' },
+  'settings.panelLang.desc': { 'zh-CN': '控制 Context Meter 面板、按钮、图表与提示文字。切换立即生效并保存，重启后保留；不改写上下文长度，不触发重启。', 'zh-TW': '控制 Context Meter 面板、按鈕、圖表與提示文字。切換立即生效並儲存，重啟後保留；不改寫上下文長度，不觸發重啟。', en: 'Controls Context Meter UI, charts, and messages. Applies and saves immediately without changing context limits or restarting.' },
+  'settings.panelLang.saved': { 'zh-CN': '已切换并保存', 'zh-TW': '已切換並儲存', en: 'Saved' },
+  'settings.panelLang.saveLocal': { 'zh-CN': '已切换（仅本地生效）', 'zh-TW': '已切換（僅本機生效）', en: 'Applied locally' },
+  'settings.clientLang.title': { 'zh-CN': '🖥️ 客户端界面语言（Antigravity 本身）', 'zh-TW': '🖥️ 用戶端介面語言（Antigravity 本身）', en: '🖥️ Client UI Language (Antigravity)' },
+  'settings.clientLang.aria': { 'zh-CN': '客户端界面语言', 'zh-TW': '用戶端介面語言', en: 'Client UI language' },
+  'settings.clientLang.statusLabel': { 'zh-CN': '客户端当前语言与生效方式', 'zh-TW': '用戶端目前語言與生效方式', en: 'Client language status & apply behavior' },
+  'settings.clientLang.licenseNote': { 'zh-CN': '说明：此设置控制 Antigravity 客户端本身，与上方插件面板语言相互独立。切换客户端语言需重新安装/重启客户端后生效。由于上游客户端繁體中文词典（qqxpee/antigravity2-cn）未声明开源许可证，暂未内置客户端繁體中文选项。', 'zh-TW': '說明：此設定控制 Antigravity 用戶端本身，與上方外掛面板語言相互獨立。切換用戶端語言需重新安裝／重新啟動用戶端後生效。由於上游用戶端繁體中文詞典（qqxpee/antigravity2-cn）未聲明開源授權，暫未內建用戶端繁體中文選項。', en: 'Note: Controls Antigravity itself, independent from Panel Language. Changing client language requires reinstalling/restarting Antigravity. Traditional Chinese client dicts (upstream qqxpee/antigravity2-cn) have no declared license and are not bundled.' },
+  'settings.clientLang.sourceLabel': { 'zh-CN': '汉化方案来源：', 'zh-TW': '中文化方案來源：', en: 'Localization source:' },
+  'settings.clientLang.sourceValue': { 'zh-CN': 'AntigravityChinese (开源社区贡献)', 'zh-TW': 'AntigravityChinese（開源社群貢獻）', en: 'AntigravityChinese (Community)' },
+  'settings.proxy.title': { 'zh-CN': '🌐 免 TUN 网络直连（本地代理）', 'zh-TW': '🌐 免 TUN 網路直連（本機代理）', en: '🌐 TUN-free Local Proxy' },
+  'settings.proxy.statusLabel': { 'zh-CN': '代理直连配置与状态', 'zh-TW': '代理直連設定與狀態', en: 'Proxy configuration & status' },
+  'settings.proxy.urlLabel': { 'zh-CN': '本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：', 'zh-TW': '本機代理位址 (例如 http://127.0.0.1:7897 或 socks5://...)：', en: 'Local proxy URL (e.g. http://127.0.0.1:7897 or socks5://...):' },
+  'settings.proxy.bypassLabel': { 'zh-CN': '绕过代理列表 (NO_PROXY)：', 'zh-TW': '略過代理清單 (NO_PROXY)：', en: 'Bypass list (NO_PROXY):' },
+  'settings.proxy.testBtn': { 'zh-CN': '🔍 测试代理连通性', 'zh-TW': '🔍 測試代理連通性', en: '🔍 Test Proxy' },
+  'settings.colors.title': { 'zh-CN': '🎨 指标与背景颜色自定义（默认跟随主题）', 'zh-TW': '🎨 指標與背景顏色自訂（預設跟隨佈景主題）', en: '🎨 Metric & Background Colors (Follow Theme)' },
+  'settings.colors.panelBg': { 'zh-CN': '面板与菜单统一背景色（0级跟随 / 自定义）', 'zh-TW': '面板與選單統一背景色（0級跟隨 / 自訂）', en: 'Panel & menu background (Auto / Custom)' },
+  'settings.colors.ringUsed': { 'zh-CN': '圆环已用部分', 'zh-TW': '圓環已用部分', en: 'Ring used' },
+  'settings.colors.ringTrack': { 'zh-CN': '圆环轨道', 'zh-TW': '圓環軌道', en: 'Ring track' },
+  'settings.colors.contextText': { 'zh-CN': '上下文用量文字', 'zh-TW': 'Context 用量文字', en: 'Context text' },
+  'settings.colors.speedText': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output speed' },
+  'settings.colors.tokenTotal': { 'zh-CN': '累计 token 用量', 'zh-TW': '累計 Token 用量', en: 'Total tokens' },
+  'settings.colors.tokenAccent': { 'zh-CN': '其他 token 指标', 'zh-TW': '其他 Token 指標', en: 'Token accent' },
+  'settings.colors.note': { 'zh-CN': '注：高占用与超限告警色独立保留，不被常态颜色覆盖。', 'zh-TW': '註：高佔用與超限警示色獨立保留，不被常態顏色覆蓋。', en: 'Note: High-usage and overflow alert colors remain independent.' },
+  'settings.colors.resetAll': { 'zh-CN': '全部恢复跟随主题', 'zh-TW': '全部還原跟隨佈景主題', en: 'Reset all to theme' },
+  'drawer.expand': { 'zh-CN': '▼ 展开', 'zh-TW': '▼ 展開', en: '▼ Expand' },
+  'drawer.collapse': { 'zh-CN': '▲ 收起', 'zh-TW': '▲ 收起', en: '▲ Collapse' },
+  'drawer.expandSettings': { 'zh-CN': '▼ 展开设置', 'zh-TW': '▼ 展開設定', en: '▼ Expand' },
+  'drawer.collapseSettings': { 'zh-CN': '▲ 收起设置', 'zh-TW': '▲ 收起設定', en: '▲ Collapse' },
 
-    // 下拉菜单通用
-    'dropdown.searchPlaceholder': { 'zh-CN': '🔍 搜索...', 'zh-TW': '🔍 搜尋...', en: '🔍 Search...' },
-    'dropdown.empty': { 'zh-CN': '未找到匹配项', 'zh-TW': '找不到相符項目', en: 'No matching items' },
-    'dropdown.modelSearch': { 'zh-CN': '🔍 搜索模型或厂商…', 'zh-TW': '🔍 搜尋模型或廠商…', en: '🔍 Search model or vendor…' },
-    'dropdown.modelEmpty': { 'zh-CN': '未找到匹配的模型', 'zh-TW': '找不到符合的模型', en: 'No matching models' },
-    'dropdown.speedSearch': { 'zh-CN': '🔍 搜索模型或档位…', 'zh-TW': '🔍 搜尋模型或檔位…', en: '🔍 Search model or effort…' },
-    'dropdown.speedEmpty': { 'zh-CN': '未找到匹配的模型记录', 'zh-TW': '找不到符合的模型記錄', en: 'No matching speed records' },
+  // 下拉菜单通用
+  'dropdown.searchPlaceholder': { 'zh-CN': '🔍 搜索...', 'zh-TW': '🔍 搜尋...', en: '🔍 Search...' },
+  'dropdown.empty': { 'zh-CN': '未找到匹配项', 'zh-TW': '找不到相符項目', en: 'No matching items' },
+  'dropdown.modelSearch': { 'zh-CN': '🔍 搜索模型或厂商…', 'zh-TW': '🔍 搜尋模型或廠商…', en: '🔍 Search model or vendor…' },
+  'dropdown.modelEmpty': { 'zh-CN': '未找到匹配的模型', 'zh-TW': '找不到符合的模型', en: 'No matching models' },
+  'dropdown.speedSearch': { 'zh-CN': '🔍 搜索模型或档位…', 'zh-TW': '🔍 搜尋模型或檔位…', en: '🔍 Search model or effort…' },
+  'dropdown.speedEmpty': { 'zh-CN': '未找到匹配的模型记录', 'zh-TW': '找不到符合的模型記錄', en: 'No matching speed records' },
 
-    // Token 面板 & 颜色选择器 & 更新浮层
-    'tokens.title': { 'zh-CN': '本机已记录用量', 'zh-TW': '本機已記錄用量', en: 'Local Recorded Usage' },
-    'tokens.sourceLabel': { 'zh-CN': '来源:', 'zh-TW': '來源:', en: 'Source:' },
-    'tokens.src.all': { 'zh-CN': '全部', 'zh-TW': '全部', en: 'All' },
-    'tokens.src.desktop': { 'zh-CN': '桌面端', 'zh-TW': '桌面端', en: 'Desktop' },
-    'tokens.src.cli': { 'zh-CN': 'CLI', 'zh-TW': 'CLI', en: 'CLI' },
-    'tokens.view.tokens': { 'zh-CN': 'Token 统计', 'zh-TW': 'Token 統計', en: 'Token Stats' },
-    'tokens.view.cost': { 'zh-CN': 'API 参考金额', 'zh-TW': 'API 參考金額', en: 'API Est. Cost' },
-    'tokens.card.total': { 'zh-CN': '累计处理 Token', 'zh-TW': '累計處理 Token', en: 'Total Tokens' },
-    'tokens.card.includeCache': { 'zh-CN': '含缓存读取', 'zh-TW': '含快取讀取', en: 'Incl. cache reads' },
-    'tokens.card.today': { 'zh-CN': '今日使用', 'zh-TW': '今日使用', en: 'Today' },
-    'tokens.card.month': { 'zh-CN': '本月使用', 'zh-TW': '本月使用', en: 'This Month' },
-    'tokens.card.year': { 'zh-CN': '年度使用', 'zh-TW': '年度使用', en: 'This Year' },
-    'tokens.heat.title': { 'zh-CN': 'Token 活动', 'zh-TW': 'Token 活動', en: 'Token Activity' },
-    'tokens.heat.daily': { 'zh-CN': '每天', 'zh-TW': '每天', en: 'Daily' },
-    'tokens.heat.weekly': { 'zh-CN': '每周', 'zh-TW': '每週', en: 'Weekly' },
-    'tokens.heat.monthly': { 'zh-CN': '每月', 'zh-TW': '每月', en: 'Monthly' },
-    'tokens.heat.yearly': { 'zh-CN': '今年', 'zh-TW': '今年', en: 'Year' },
-    'tokens.heat.cum': { 'zh-CN': '累计总量', 'zh-TW': '累計總量', en: 'Cumulative' },
-    'tokens.heat.sumTokens': { 'zh-CN': '区间合计:', 'zh-TW': '區間合計:', en: 'Range total:' },
-    'tokens.heat.sumCost': { 'zh-CN': '预估费用:', 'zh-TW': '預估費用:', en: 'Est. cost:' },
-    'tokens.heat.sumDailyAvg': { 'zh-CN': '折合每天:', 'zh-TW': '折合每天:', en: 'Daily avg:' },
-    'tokens.heat.sumActiveAvg': { 'zh-CN': '活跃日均:', 'zh-TW': '活躍日均:', en: 'Active avg:' },
-    'tokens.heat.sumSubRatio': { 'zh-CN': '订阅性价比:', 'zh-TW': '訂閱性價比:', en: 'Plan value:' },
-    'tokens.heat.disclaimer': { 'zh-CN': '注：按日聚合按基础档估算，未拆分长上下文分档，结果偏下限。有逐请求记录时优先精确入账。', 'zh-TW': '註：按日彙總依基礎檔估算，未拆分長上下文分檔，結果偏下限。有逐請求記錄時優先精確入帳。', en: 'Note: Daily aggregates use base tier pricing (lower bound) unless per-request records are available.' },
-    'tokens.heat.tip': { 'zh-CN': '点击或悬浮格子查看当日详细 Token 构成', 'zh-TW': '點擊或懸停格子查看當日詳細 Token 結構', en: 'Click or hover a cell to view daily token breakdown' },
-    'tokens.heat.less': { 'zh-CN': '少', 'zh-TW': '少', en: 'Less' },
-    'tokens.heat.more': { 'zh-CN': '多', 'zh-TW': '多', en: 'More' },
-    'tokens.colors.title': { 'zh-CN': '🎨 热力图色阶与面板外观自定义（默认跟随主题）', 'zh-TW': '🎨 熱力圖色階與面板外觀自訂（預設跟隨佈景主題）', en: '🎨 Heatmap Palette & Panel Appearance' },
-    'tokens.update.title': { 'zh-CN': '更新设置', 'zh-TW': '更新設定', en: 'Update Settings' },
-    'tokens.update.auto': { 'zh-CN': '启动时自动检查更新（不自动安装）', 'zh-TW': '啟動時自動檢查更新（不自動安裝）', en: 'Check for updates on startup (manual install)' },
-    'cp.title': { 'zh-CN': '🎨 颜色选取器', 'zh-TW': '🎨 顏色選擇器', en: '🎨 Color Picker' },
-    'cp.eyedropper': { 'zh-CN': '🖊 取色', 'zh-TW': '🖊 滴管取色', en: '🖊 Pick' },
-    'cp.moreFormats': { 'zh-CN': '更多格式 (RGB / HSL)', 'zh-TW': '更多格式 (RGB / HSL)', en: 'More formats (RGB / HSL)' },
-    'cp.hint': { 'zh-CN': '支持直接输入或粘贴 HEX 色值', 'zh-TW': '支援直接輸入或貼上 HEX 色碼', en: 'Type or paste a HEX color value' },
-    'cp.followTheme': { 'zh-CN': '跟随主题', 'zh-TW': '跟隨佈景主題', en: 'Follow Theme' },
-    'colors.btn.restore': { 'zh-CN': '恢复', 'zh-TW': '還原', en: 'Reset' },
-    'colors.btn.preset': { 'zh-CN': '预设', 'zh-TW': '預設', en: 'Preset' },
-    'colors.btn.restorePreset': { 'zh-CN': '恢复预设', 'zh-TW': '還原預設', en: 'Reset Preset' },
-    'colors.btn.restoreDefault': { 'zh-CN': '恢复默认', 'zh-TW': '還原預設', en: 'Default' },
-    'theme.light': { 'zh-CN': '浅色', 'zh-TW': '淺色', en: 'Light' },
-    'theme.dark': { 'zh-CN': '深色', 'zh-TW': '深色', en: 'Dark' },
-    'theme.autoTitle': { 'zh-CN': '当前主题：跟随宿主 ({mode})\n点击切换为：浅色模式', 'zh-TW': '目前主題：跟隨宿主 ({mode})\n點擊切換為：淺色模式', en: 'Theme: Follow IDE ({mode})\nClick to switch to Light' },
-    'theme.lightTitle': { 'zh-CN': '当前主题：浅色模式 (固定)\n点击切换为：深色模式', 'zh-TW': '目前主題：淺色模式 (固定)\n點擊切換為：深色模式', en: 'Theme: Light (Fixed)\nClick to switch to Dark' },
-    'theme.darkTitle': { 'zh-CN': '当前主题：深色模式 (固定)\n点击切换为：跟随宿主', 'zh-TW': '目前主題：深色模式 (固定)\n點擊切換為：跟隨宿主', en: 'Theme: Dark (Fixed)\nClick to switch to Follow IDE' },
+  // Token 面板 & 颜色选择器 & 更新浮层
+  'tokens.title': { 'zh-CN': '本机已记录用量', 'zh-TW': '本機已記錄用量', en: 'Local Recorded Usage' },
+  'tokens.sourceLabel': { 'zh-CN': '来源:', 'zh-TW': '來源:', en: 'Source:' },
+  'tokens.src.all': { 'zh-CN': '全部', 'zh-TW': '全部', en: 'All' },
+  'tokens.src.desktop': { 'zh-CN': '桌面端', 'zh-TW': '桌面端', en: 'Desktop' },
+  'tokens.src.cli': { 'zh-CN': 'CLI', 'zh-TW': 'CLI', en: 'CLI' },
+  'tokens.view.tokens': { 'zh-CN': 'Token 统计', 'zh-TW': 'Token 統計', en: 'Token Stats' },
+  'tokens.view.cost': { 'zh-CN': 'API 参考金额', 'zh-TW': 'API 參考金額', en: 'API Est. Cost' },
+  'tokens.card.total': { 'zh-CN': '累计处理 Token', 'zh-TW': '累計處理 Token', en: 'Total Tokens' },
+  'tokens.card.includeCache': { 'zh-CN': '含缓存读取', 'zh-TW': '含快取讀取', en: 'Incl. cache reads' },
+  'tokens.card.today': { 'zh-CN': '今日使用', 'zh-TW': '今日使用', en: 'Today' },
+  'tokens.card.month': { 'zh-CN': '本月使用', 'zh-TW': '本月使用', en: 'This Month' },
+  'tokens.card.year': { 'zh-CN': '年度使用', 'zh-TW': '年度使用', en: 'This Year' },
+  'tokens.heat.title': { 'zh-CN': 'Token 活动', 'zh-TW': 'Token 活動', en: 'Token Activity' },
+  'tokens.heat.daily': { 'zh-CN': '每天', 'zh-TW': '每天', en: 'Daily' },
+  'tokens.heat.weekly': { 'zh-CN': '每周', 'zh-TW': '每週', en: 'Weekly' },
+  'tokens.heat.monthly': { 'zh-CN': '每月', 'zh-TW': '每月', en: 'Monthly' },
+  'tokens.heat.yearly': { 'zh-CN': '今年', 'zh-TW': '今年', en: 'Year' },
+  'tokens.heat.cum': { 'zh-CN': '累计总量', 'zh-TW': '累計總量', en: 'Cumulative' },
+  'tokens.heat.sumTokens': { 'zh-CN': '区间合计:', 'zh-TW': '區間合計:', en: 'Range total:' },
+  'tokens.heat.sumCost': { 'zh-CN': '预估费用:', 'zh-TW': '預估費用:', en: 'Est. cost:' },
+  'tokens.heat.sumDailyAvg': { 'zh-CN': '折合每天:', 'zh-TW': '折合每天:', en: 'Daily avg:' },
+  'tokens.heat.sumActiveAvg': { 'zh-CN': '活跃日均:', 'zh-TW': '活躍日均:', en: 'Active avg:' },
+  'tokens.heat.sumSubRatio': { 'zh-CN': '订阅性价比:', 'zh-TW': '訂閱性價比:', en: 'Plan value:' },
+  'tokens.heat.disclaimer': { 'zh-CN': '注：按日聚合按基础档估算，未拆分长上下文分档，结果偏下限。有逐请求记录时优先精确入账。', 'zh-TW': '註：按日彙總依基礎檔估算，未拆分長上下文分檔，結果偏下限。有逐請求記錄時優先精確入帳。', en: 'Note: Daily aggregates use base tier pricing (lower bound) unless per-request records are available.' },
+  'tokens.heat.tip': { 'zh-CN': '点击或悬浮格子查看当日详细 Token 构成', 'zh-TW': '點擊或懸停格子查看當日詳細 Token 結構', en: 'Click or hover a cell to view daily token breakdown' },
+  'tokens.heat.less': { 'zh-CN': '少', 'zh-TW': '少', en: 'Less' },
+  'tokens.heat.more': { 'zh-CN': '多', 'zh-TW': '多', en: 'More' },
+  'tokens.colors.title': { 'zh-CN': '🎨 热力图色阶与面板外观自定义（默认跟随主题）', 'zh-TW': '🎨 熱力圖色階與面板外觀自訂（預設跟隨佈景主題）', en: '🎨 Heatmap Palette & Panel Appearance' },
+  'tokens.update.title': { 'zh-CN': '更新设置', 'zh-TW': '更新設定', en: 'Update Settings' },
+  'tokens.update.auto': { 'zh-CN': '启动时自动检查更新（不自动安装）', 'zh-TW': '啟動時自動檢查更新（不自動安裝）', en: 'Check for updates on startup (manual install)' },
+  'cp.title': { 'zh-CN': '🎨 颜色选取器', 'zh-TW': '🎨 顏色選擇器', en: '🎨 Color Picker' },
+  'cp.eyedropper': { 'zh-CN': '🖊 取色', 'zh-TW': '🖊 滴管取色', en: '🖊 Pick' },
+  'cp.moreFormats': { 'zh-CN': '更多格式 (RGB / HSL)', 'zh-TW': '更多格式 (RGB / HSL)', en: 'More formats (RGB / HSL)' },
+  'cp.hint': { 'zh-CN': '支持直接输入或粘贴 HEX 色值', 'zh-TW': '支援直接輸入或貼上 HEX 色碼', en: 'Type or paste a HEX color value' },
+  'cp.followTheme': { 'zh-CN': '跟随主题', 'zh-TW': '跟隨佈景主題', en: 'Follow Theme' },
+  'colors.btn.restore': { 'zh-CN': '恢复', 'zh-TW': '還原', en: 'Reset' },
+  'colors.btn.preset': { 'zh-CN': '预设', 'zh-TW': '預設', en: 'Preset' },
+  'colors.btn.restorePreset': { 'zh-CN': '恢复预设', 'zh-TW': '還原預設', en: 'Reset Preset' },
+  'colors.btn.restoreDefault': { 'zh-CN': '恢复默认', 'zh-TW': '還原預設', en: 'Default' },
+  'theme.light': { 'zh-CN': '浅色', 'zh-TW': '淺色', en: 'Light' },
+  'theme.dark': { 'zh-CN': '深色', 'zh-TW': '深色', en: 'Dark' },
+  'theme.autoTitle': { 'zh-CN': '当前主题：跟随宿主 ({mode})\n点击切换为：浅色模式', 'zh-TW': '目前主題：跟隨宿主 ({mode})\n點擊切換為：淺色模式', en: 'Theme: Follow IDE ({mode})\nClick to switch to Light' },
+  'theme.lightTitle': { 'zh-CN': '当前主题：浅色模式 (固定)\n点击切换为：深色模式', 'zh-TW': '目前主題：淺色模式 (固定)\n點擊切換為：深色模式', en: 'Theme: Light (Fixed)\nClick to switch to Dark' },
+  'theme.darkTitle': { 'zh-CN': '当前主题：深色模式 (固定)\n点击切换为：跟随宿主', 'zh-TW': '目前主題：深色模式 (固定)\n點擊切換為：跟隨宿主', en: 'Theme: Dark (Fixed)\nClick to switch to Follow IDE' },
 
-    // 本轮/会话估值
-    'cost.streamingEst': { 'zh-CN': '生成中暂估', 'zh-TW': '生成中暫估', en: 'Streaming est.' },
-    'cost.returnedEst': { 'zh-CN': '按已返回用量估算', 'zh-TW': '依已回應用量估算', en: 'Based on returned usage' },
-    'cost.latestTurn': { 'zh-CN': '最近调用 {val} · {label}', 'zh-TW': '最近呼叫 {val} · {label}', en: 'Latest turn {val} · {label}' },
-    'cost.unpriced': { 'zh-CN': '最近调用：模型费率未收录', 'zh-TW': '最近呼叫：模型費率未收錄', en: 'Latest turn: unpriced model' },
-    'cost.latestDash': { 'zh-CN': '最近调用估值：—', 'zh-TW': '最近呼叫估值：—', en: 'Latest turn: —' },
-    'cost.sessionTotal': { 'zh-CN': '当前会话合计约 ${val}', 'zh-TW': '目前工作階段合計約 ${val}', en: 'Session total ≈ ${val}' },
-    'cost.modelTip': { 'zh-CN': '模型：{model}\n输入：{input} tok\n缓存：{cache} tok\n输出：{output} tok\n参考金额：${cost}', 'zh-TW': '模型：{model}\n輸入：{input} tok\n快取：{cache} tok\n輸出：{output} tok\n參考金額：${cost}', en: 'Model: {model}\nInput: {input} tok\nCache: {cache} tok\nOutput: {output} tok\nEst. cost: ${cost}' },
-    'cost.unpricedTip': { 'zh-CN': '模型：{model}（公开费率未收录）', 'zh-TW': '模型：{model}（公開費率未收錄）', en: 'Model: {model} (public rate unavailable)' },
-    'cost.missingModel': { 'zh-CN': '缺少模型信息', 'zh-TW': '缺少模型資訊', en: 'Missing model info' },
+  // 本轮/会话估值
+  'cost.streamingEst': { 'zh-CN': '生成中暂估', 'zh-TW': '生成中暫估', en: 'Streaming est.' },
+  'cost.returnedEst': { 'zh-CN': '按已返回用量估算', 'zh-TW': '依已回應用量估算', en: 'Based on returned usage' },
+  'cost.latestTurn': { 'zh-CN': '最近调用 {val} · {label}', 'zh-TW': '最近呼叫 {val} · {label}', en: 'Latest turn {val} · {label}' },
+  'cost.unpriced': { 'zh-CN': '最近调用：模型费率未收录', 'zh-TW': '最近呼叫：模型費率未收錄', en: 'Latest turn: unpriced model' },
+  'cost.latestDash': { 'zh-CN': '最近调用估值：—', 'zh-TW': '最近呼叫估值：—', en: 'Latest turn: —' },
+  'cost.sessionTotal': { 'zh-CN': '当前会话合计约 ${val}', 'zh-TW': '目前工作階段合計約 ${val}', en: 'Session total ≈ ${val}' },
+  'cost.modelTip': { 'zh-CN': '模型：{model}\n输入：{input} tok\n缓存：{cache} tok\n输出：{output} tok\n参考金额：${cost}', 'zh-TW': '模型：{model}\n輸入：{input} tok\n快取：{cache} tok\n輸出：{output} tok\n參考金額：${cost}', en: 'Model: {model}\nInput: {input} tok\nCache: {cache} tok\nOutput: {output} tok\nEst. cost: ${cost}' },
+  'cost.unpricedTip': { 'zh-CN': '模型：{model}（公开费率未收录）', 'zh-TW': '模型：{model}（公開費率未收錄）', en: 'Model: {model} (public rate unavailable)' },
+  'cost.missingModel': { 'zh-CN': '缺少模型信息', 'zh-TW': '缺少模型資訊', en: 'Missing model info' },
 
-    // 模块状态（客户端语言 / 代理）
-    'mod.readFail': { 'zh-CN': '⚠️ 读取失败', 'zh-TW': '⚠️ 讀取失敗', en: '⚠️ Read Failed' },
-    'mod.readErr': { 'zh-CN': '⚠️ 读取异常', 'zh-TW': '⚠️ 讀取異常', en: '⚠️ Read Error' },
-    'mod.processing': { 'zh-CN': '正在处理…', 'zh-TW': '正在處理…', en: 'Processing…' },
-    'mod.zh.failDetect': { 'zh-CN': '检测汉化状态失败: {err}', 'zh-TW': '偵測中文化狀態失敗: {err}', en: 'Failed to detect client language status: {err}' },
-    'mod.zh.errDetect': { 'zh-CN': '检测汉化状态异常: {err}', 'zh-TW': '偵測中文化狀態異常: {err}', en: 'Error detecting client language status: {err}' },
-    'mod.zh.badgeRestartEn': { 'zh-CN': '⏳ 需重启恢复英文', 'zh-TW': '⏳ 需重啟恢復英文', en: '⏳ Restart for English' },
-    'mod.zh.badgeOffReady': { 'zh-CN': '⚪ 已关闭 (官方英文)', 'zh-TW': '⚪ 已關閉 (官方英文)', en: '⚪ English (Active)' },
-    'mod.zh.badgeNotInstalled': { 'zh-CN': '⚪ 官方英文 (未注入汉化)', 'zh-TW': '⚪ 官方英文 (未注入中文化)', en: '⚪ English (Default)' },
-    'mod.zh.badgeActive': { 'zh-CN': '🟢 已翻译生效', 'zh-TW': '🟢 已翻譯生效', en: '🟢 zh-CN Active' },
-    'mod.zh.badgeNotInjected': { 'zh-CN': '⚠️ 磁盘未注入', 'zh-TW': '⚠️ 磁碟未注入', en: '⚠️ Not Injected' },
-    'mod.zh.badgePendingRestart': { 'zh-CN': '⏳ 待重启客户端生效', 'zh-TW': '⏳ 待重啟用戶端生效', en: '⏳ Restart Required' },
-    'mod.zh.descRestartEn': { 'zh-CN': '已切换为官方英文；当前界面仍保留已加载的中文 DOM 缓存，需完全退出并重新打开 Antigravity 客户端后彻底生效。', 'zh-TW': '已切換為官方英文；目前介面仍保留已載入的中文 DOM 快取，需完全結束並重新開啟 Antigravity 用戶端後徹底生效。', en: 'Switched to English; current UI still retains loaded Chinese DOM cache. Fully quit and reopen Antigravity to apply.' },
-    'mod.zh.descOffReady': { 'zh-CN': '客户端当前保持官方原生英文（磁盘已具备简体中文资源与配置门禁，切换为简体中文并重启即可生效）。', 'zh-TW': '用戶端目前保持官方原生英文（磁碟已具備簡體中文資源與設定門禁，切換為簡體中文並重啟即可生效）。', en: 'Client is running native English (zh-CN resources are staged on disk; switch to zh-CN and restart to apply).' },
-    'mod.zh.descOffNotInstalled': { 'zh-CN': '客户端汉化处于未安装状态，保持官方原生英文界面。', 'zh-TW': '用戶端中文化處於未安裝狀態，保持官方原生英文介面。', en: 'Client localization is not installed; running native English.' },
-    'mod.zh.descActive': { 'zh-CN': '客户端简体中文运行中：DOM 监听器正常工作，左侧边栏与核心菜单已翻译。', 'zh-TW': '用戶端簡體中文執行中：DOM 監聽器正常運作，左側邊欄與核心選單已翻譯。', en: 'Client zh-CN localization is active.' },
-    'mod.zh.descNeedInject': { 'zh-CN': '配置已开启简体中文，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。', 'zh-TW': '設定已開啟簡體中文，但目前磁碟 ASAR 未注入中文化資源；需結束用戶端後執行 node cli.js chinese:enable 完成注入。', en: 'zh-CN is enabled in config, but ASAR lacks localization injection. Quit Antigravity and run: node cli.js chinese:enable' },
-    'mod.zh.descPendingRestart': { 'zh-CN': '简体中文代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。', 'zh-TW': '簡體中文程式碼已注入且設定已開啟；需完全結束並重新開啟 Antigravity 用戶端載入生效。', en: 'zh-CN localization is injected and enabled; quit and reopen Antigravity to take effect.' },
-    'mod.zh.btnDisable': { 'zh-CN': '切换为官方英文 (需重启)', 'zh-TW': '切換為官方英文 (需重啟)', en: 'Switch to English (Restart)' },
-    'mod.zh.btnEnable': { 'zh-CN': '切换为简体中文 (需重启)', 'zh-TW': '切換為簡體中文 (需重啟)', en: 'Switch to 简体中文 (Restart)' },
-    'mod.zh.toggleFail': { 'zh-CN': '切换客户端语言失败', 'zh-TW': '切換用戶端語言失敗', en: 'Failed to switch client language' },
-    'mod.proxy.failDetect': { 'zh-CN': '检测免 TUN 代理状态失败: {err}', 'zh-TW': '偵測免 TUN 代理狀態失敗: {err}', en: 'Failed to detect proxy status: {err}' },
-    'mod.proxy.errDetect': { 'zh-CN': '检测免 TUN 代理状态异常: {err}', 'zh-TW': '偵測免 TUN 代理狀態異常: {err}', en: 'Error detecting proxy status: {err}' },
-    'mod.proxy.badgeOk': { 'zh-CN': '🟢 直连已配置', 'zh-TW': '🟢 直連已設定', en: '🟢 Configured' },
-    'mod.proxy.badgeNotInjected': { 'zh-CN': '⚠️ 磁盘未注入', 'zh-TW': '⚠️ 磁碟未注入', en: '⚠️ Not Injected' },
-    'mod.proxy.badgeOff': { 'zh-CN': '⚪ 未启用', 'zh-TW': '⚪ 未啟用', en: '⚪ Disabled' },
-    'mod.proxy.descOn': { 'zh-CN': '已启用本地网络直连（代理: {url}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。', 'zh-TW': '已啟用本機網路直連（代理: {url}）。注意：模型請求連通性待實際線上對話驗證。', en: 'Local proxy enabled ({url}). Connectivity should be verified with a live chat request.' },
-    'mod.proxy.descNeedInject': { 'zh-CN': '配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。', 'zh-TW': '設定已開啟代理，但目前磁碟 ASAR 未注入代理攔截邏輯；需結束用戶端後執行 node cli.js proxy:enable 完成注入。', en: 'Proxy enabled in config, but ASAR lacks proxy hook. Quit Antigravity and run: node cli.js proxy:enable' },
-    'mod.proxy.descOff': { 'zh-CN': '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。', 'zh-TW': '未啟用本機網路直連，網路請求跟隨系統預設/TUN 設定。', en: 'Local proxy disabled; requests follow system/TUN settings.' },
-    'mod.proxy.btnDisable': { 'zh-CN': '关闭免 TUN 直连', 'zh-TW': '關閉免 TUN 直連', en: 'Disable Local Proxy' },
-    'mod.proxy.btnEnable': { 'zh-CN': '开启免 TUN 直连', 'zh-TW': '開啟免 TUN 直連', en: 'Enable Local Proxy' },
-    'mod.proxy.testing': { 'zh-CN': '正在测试…', 'zh-TW': '正在測試…', en: 'Testing…' },
-    'mod.proxy.testingDetail': { 'zh-CN': '正在发起本地与网络连通性测试…', 'zh-TW': '正在發起本機與網路連通性測試…', en: 'Testing local port and internet reachability…' },
+  // 模块状态（客户端语言 / 代理）
+  'mod.readFail': { 'zh-CN': '⚠️ 读取失败', 'zh-TW': '⚠️ 讀取失敗', en: '⚠️ Read Failed' },
+  'mod.readErr': { 'zh-CN': '⚠️ 读取异常', 'zh-TW': '⚠️ 讀取異常', en: '⚠️ Read Error' },
+  'mod.processing': { 'zh-CN': '正在处理…', 'zh-TW': '正在處理…', en: 'Processing…' },
+  'mod.zh.failDetect': { 'zh-CN': '检测汉化状态失败: {err}', 'zh-TW': '偵測中文化狀態失敗: {err}', en: 'Failed to detect client language status: {err}' },
+  'mod.zh.errDetect': { 'zh-CN': '检测汉化状态异常: {err}', 'zh-TW': '偵測中文化狀態異常: {err}', en: 'Error detecting client language status: {err}' },
+  'mod.zh.badgeRestartEn': { 'zh-CN': '⏳ 需重启恢复英文', 'zh-TW': '⏳ 需重啟恢復英文', en: '⏳ Restart for English' },
+  'mod.zh.badgeOffReady': { 'zh-CN': '⚪ 已关闭 (官方英文)', 'zh-TW': '⚪ 已關閉 (官方英文)', en: '⚪ English (Active)' },
+  'mod.zh.badgeNotInstalled': { 'zh-CN': '⚪ 官方英文 (未注入汉化)', 'zh-TW': '⚪ 官方英文 (未注入中文化)', en: '⚪ English (Default)' },
+  'mod.zh.badgeActive': { 'zh-CN': '🟢 已翻译生效', 'zh-TW': '🟢 已翻譯生效', en: '🟢 zh-CN Active' },
+  'mod.zh.badgeNotInjected': { 'zh-CN': '⚠️ 磁盘未注入', 'zh-TW': '⚠️ 磁碟未注入', en: '⚠️ Not Injected' },
+  'mod.zh.badgePendingRestart': { 'zh-CN': '⏳ 待重启客户端生效', 'zh-TW': '⏳ 待重啟用戶端生效', en: '⏳ Restart Required' },
+  'mod.zh.descRestartEn': { 'zh-CN': '已切换为官方英文；当前界面仍保留已加载的中文 DOM 缓存，需完全退出并重新打开 Antigravity 客户端后彻底生效。', 'zh-TW': '已切換為官方英文；目前介面仍保留已載入的中文 DOM 快取，需完全結束並重新開啟 Antigravity 用戶端後徹底生效。', en: 'Switched to English; current UI still retains loaded Chinese DOM cache. Fully quit and reopen Antigravity to apply.' },
+  'mod.zh.descOffReady': { 'zh-CN': '客户端当前保持官方原生英文（磁盘已具备简体中文资源与配置门禁，切换为简体中文并重启即可生效）。', 'zh-TW': '用戶端目前保持官方原生英文（磁碟已具備簡體中文資源與設定門禁，切換為簡體中文並重啟即可生效）。', en: 'Client is running native English (zh-CN resources are staged on disk; switch to zh-CN and restart to apply).' },
+  'mod.zh.descOffNotInstalled': { 'zh-CN': '客户端汉化处于未安装状态，保持官方原生英文界面。', 'zh-TW': '用戶端中文化處於未安裝狀態，保持官方原生英文介面。', en: 'Client localization is not installed; running native English.' },
+  'mod.zh.descActive': { 'zh-CN': '客户端简体中文运行中：DOM 监听器正常工作，左侧边栏与核心菜单已翻译。', 'zh-TW': '用戶端簡體中文執行中：DOM 監聽器正常運作，左側邊欄與核心選單已翻譯。', en: 'Client zh-CN localization is active.' },
+  'mod.zh.descNeedInject': { 'zh-CN': '配置已开启简体中文，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。', 'zh-TW': '設定已開啟簡體中文，但目前磁碟 ASAR 未注入中文化資源；需結束用戶端後執行 node cli.js chinese:enable 完成注入。', en: 'zh-CN is enabled in config, but ASAR lacks localization injection. Quit Antigravity and run: node cli.js chinese:enable' },
+  'mod.zh.descPendingRestart': { 'zh-CN': '简体中文代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。', 'zh-TW': '簡體中文程式碼已注入且設定已開啟；需完全結束並重新開啟 Antigravity 用戶端載入生效。', en: 'zh-CN localization is injected and enabled; quit and reopen Antigravity to take effect.' },
+  'mod.zh.descPartialInject': { 'zh-CN': '磁盘 ASAR 仅包含部分汉化代码但资源或门禁不完整（{reason}）；请从系统托盘彻底退出 Antigravity 后，在安装包目录运行 install.bat 或 node cli.js chinese:enable 补装。', 'zh-TW': '磁碟 ASAR 僅包含部分漢化程式碼但資源或門禁不完整（{reason}）；請從系統匣徹底結束 Antigravity 後，在安裝包目錄執行 install.bat 或 node cli.js chinese:enable 補裝。', en: 'Localization module in app.asar is incomplete ({reason}). Fully quit Antigravity (including tray) and run install.bat / node cli.js chinese:enable from the package directory.' },
+  'mod.zh.savedEnableRestart': { 'zh-CN': '✔ 已开启客户端简体中文并保存配置，完全退出并重启 Antigravity 后生效。', 'zh-TW': '✔ 已開啟用戶端簡體中文並儲存設定，完全結束並重啟 Antigravity 後生效。', en: '✔ Simplified Chinese saved; quit and restart Antigravity to apply.' },
+  'mod.zh.savedDisableRestart': { 'zh-CN': '✔ 已切换为官方英文并保存配置，完全退出并重启 Antigravity 后恢复英文。', 'zh-TW': '✔ 已切換為官方英文並儲存設定，完全結束並重啟 Antigravity 後恢復英文。', en: '✔ Native English saved; quit and restart Antigravity to restore English.' },
+  'mod.zh.btnDisable': { 'zh-CN': '切换为官方英文 (需重启)', 'zh-TW': '切換為官方英文 (需重啟)', en: 'Switch to English (Restart)' },
+  'mod.zh.btnEnable': { 'zh-CN': '切换为简体中文 (需重启)', 'zh-TW': '切換為簡體中文 (需重啟)', en: 'Switch to 简体中文 (Restart)' },
+  'mod.zh.toggleFail': { 'zh-CN': '切换客户端语言失败', 'zh-TW': '切換用戶端語言失敗', en: 'Failed to switch client language' },
+  'mod.proxy.failDetect': { 'zh-CN': '检测免 TUN 代理状态失败: {err}', 'zh-TW': '偵測免 TUN 代理狀態失敗: {err}', en: 'Failed to detect proxy status: {err}' },
+  'mod.proxy.errDetect': { 'zh-CN': '检测免 TUN 代理状态异常: {err}', 'zh-TW': '偵測免 TUN 代理狀態異常: {err}', en: 'Error detecting proxy status: {err}' },
+  'mod.proxy.badgeOk': { 'zh-CN': '🟢 直连已配置', 'zh-TW': '🟢 直連已設定', en: '🟢 Configured' },
+  'mod.proxy.badgeNotInjected': { 'zh-CN': '⚠️ 磁盘未注入', 'zh-TW': '⚠️ 磁碟未注入', en: '⚠️ Not Injected' },
+  'mod.proxy.badgeOff': { 'zh-CN': '⚪ 未启用', 'zh-TW': '⚪ 未啟用', en: '⚪ Disabled' },
+  'mod.proxy.descOn': { 'zh-CN': '已启用本地网络直连（代理: {url}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。', 'zh-TW': '已啟用本機網路直連（代理: {url}）。注意：模型請求連通性待實際線上對話驗證。', en: 'Local proxy enabled ({url}). Connectivity should be verified with a live chat request.' },
+  'mod.proxy.descNeedInject': { 'zh-CN': '配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。', 'zh-TW': '設定已開啟代理，但目前磁碟 ASAR 未注入代理攔截邏輯；需結束用戶端後執行 node cli.js proxy:enable 完成注入。', en: 'Proxy enabled in config, but ASAR lacks proxy hook. Quit Antigravity and run: node cli.js proxy:enable' },
+  'mod.proxy.descPartialInject': { 'zh-CN': '磁盘 ASAR 代理拦截组件不完整（{reason}）；请从系统托盘彻底退出 Antigravity 后，在安装包目录运行 install.bat 或 node cli.js proxy:enable 补装。', 'zh-TW': '磁碟 ASAR 代理攔截元件不完整（{reason}）；請從系統匣徹底結束 Antigravity 後，在安裝包目錄執行 install.bat 或 node cli.js proxy:enable 補裝。', en: 'Proxy hook in app.asar is incomplete ({reason}). Fully quit Antigravity (including tray) and run install.bat / node cli.js proxy:enable from the package directory.' },
+  'mod.proxy.descOff': { 'zh-CN': '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。', 'zh-TW': '未啟用本機網路直連，網路請求跟隨系統預設/TUN 設定。', en: 'Local proxy disabled; requests follow system/TUN settings.' },
+  'mod.proxy.btnDisable': { 'zh-CN': '关闭免 TUN 直连', 'zh-TW': '關閉免 TUN 直連', en: 'Disable Local Proxy' },
+  'mod.proxy.btnEnable': { 'zh-CN': '开启免 TUN 直连', 'zh-TW': '開啟免 TUN 直連', en: 'Enable Local Proxy' },
+  'mod.proxy.btnSave': { 'zh-CN': '保存代理设置', 'zh-TW': '儲存代理設定', en: 'Save Proxy Config' },
+  'mod.proxy.btnSaving': { 'zh-CN': '正在保存…', 'zh-TW': '正在儲存…', en: 'Saving…' },
+  'mod.proxy.badgePendingRestart': { 'zh-CN': '⏳ 已配置 · 待重启生效', 'zh-TW': '⏳ 已設定 · 待重啟生效', en: '⏳ Saved · Restart Needed' },
+  'mod.proxy.badgeActive': { 'zh-CN': '🟢 运行中已生效', 'zh-TW': '🟢 執行中已生效', en: '🟢 Active in Runtime' },
+  'mod.proxy.badgePendingOff': { 'zh-CN': '⚪ 已关闭 · 待重启', 'zh-TW': '⚪ 已關閉 · 待重啟', en: '⚪ Disabled · Restart Needed' },
+  'mod.proxy.descPendingRestart': { 'zh-CN': '已保存免 TUN 直连（{url}），完全退出并重启 Antigravity 客户端后在运行时生效；模型请求连通性待真实在线对话验证。', 'zh-TW': '已儲存免 TUN 直連（{url}），完全結束並重啟 Antigravity 用戶端後在執行時生效；模型請求連通性待真實線上對話驗證。', en: 'Local proxy saved ({url}). Quit and reopen Antigravity to activate; model connectivity requires a live chat request.' },
+  'mod.proxy.descActive': { 'zh-CN': '免 TUN 直连已在运行时生效（代理: {url}）；如更改地址请保存并重启客户端。模型请求连通性待真实在线对话验证。', 'zh-TW': '免 TUN 直連已在執行時生效（代理: {url}）；如變更位址請儲存並重啟用戶端。模型請求連通性待真實線上對話驗證。', en: 'Local proxy is active in runtime ({url}). Save and restart client after address changes; model connectivity requires a live chat request.' },
+  'mod.proxy.descPendingOff': { 'zh-CN': '配置已关闭，当前窗口仍沿用启动时的旧代理（{url}）；重启客户端后将停止使用。', 'zh-TW': '設定已關閉，目前視窗仍沿用啟動時的舊代理（{url}）；重啟用戶端後將停止使用。', en: 'Proxy disabled in config; previous proxy ({url}) stays active until client restart.' },
+  'mod.proxy.savedPendingRestart': { 'zh-CN': '✔ 代理配置已保存（{url}），请重启 Antigravity 客户端后生效。', 'zh-TW': '✔ 代理設定已儲存（{url}），請重啟 Antigravity 用戶端後生效。', en: '✔ Proxy config saved ({url}). Restart Antigravity client to take effect.' },
+  'mod.proxy.savedAlreadyActive': { 'zh-CN': '✔ 当前代理配置已写入并处于运行生效状态（{url}），无需重复重启。', 'zh-TW': '✔ 目前代理設定已寫入並處於執行生效狀態（{url}），無需重複重啟。', en: '✔ Proxy config saved and already active ({url}); no restart needed.' },
+  'mod.proxy.disabledPendingRestart': { 'zh-CN': '✔ 免 TUN 直连已关闭并保存，完全退出重启客户端后停止使用旧代理。', 'zh-TW': '✔ 免 TUN 直連已關閉並儲存，完全結束重啟用戶端後停止使用舊代理。', en: '✔ Local proxy disabled and saved; restart Antigravity to stop using the old proxy.' },
+  'mod.proxy.disabledSaved': { 'zh-CN': '✔ 免 TUN 直连已关闭并保存。', 'zh-TW': '✔ 免 TUN 直連已關閉並儲存。', en: '✔ Local proxy disabled and saved.' },
+  'mod.proxy.testing': { 'zh-CN': '正在测试…', 'zh-TW': '正在測試…', en: 'Testing…' },
+  'mod.proxy.testingDetail': { 'zh-CN': '正在发起本地与网络连通性测试…', 'zh-TW': '正在發起本機與網路連通性測試…', en: 'Testing local port and internet reachability…' },
 
-    // 模型卡片与列表细节
-    'models.list.currentTag': { 'zh-CN': '当前', 'zh-TW': '目前', en: 'Current' },
-    'models.list.conflictPill': { 'zh-CN': '多档位冲突', 'zh-TW': '多檔位衝突', en: 'Conflict' },
-    'models.card.savedConflict': { 'zh-CN': '多档位冲突（请统一）', 'zh-TW': '多檔位衝突（請統一）', en: 'Conflict (pick one)' },
-    'models.card.savedCustom': { 'zh-CN': '自定义 {val}', 'zh-TW': '自訂 {val}', en: 'Custom {val}' },
-    'models.card.savedShortCustom': { 'zh-CN': '自定义', 'zh-TW': '自訂', en: 'Custom' },
-    'models.card.clientFollowing': { 'zh-CN': '跟随模型', 'zh-TW': '跟隨模型', en: 'Follow Model' },
-    'models.card.clientDefault': { 'zh-CN': '默认（未修改）', 'zh-TW': '預設（未修改）', en: 'Default (Original)' },
-    'models.card.preRestart': { 'zh-CN': '重启前已观测：{val}', 'zh-TW': '重啟前已觀測：{val}', en: 'Before restart: {val}' },
-    'models.card.serviceLimit': { 'zh-CN': '服务端报错上限：{val}', 'zh-TW': '伺服器端報錯上限：{val}', en: 'Server error limit: {val}' },
-    'models.card.hintDynamic': { 'zh-CN': '已应用跟随模型；正在使用的模型实际预算需由对话请求确认。', 'zh-TW': '已套用跟隨模型；正在使用的模型實際預算需由對話請求確認。', en: 'Follow Model is active; exact per-model budget is confirmed during live chat.' },
-    'models.card.hintSavedDiff': { 'zh-CN': '已保存目标（{saved}）与客户端当前配置（{client}）不同；点击下方「保存并应用」写入客户端。', 'zh-TW': '已儲存目標（{saved}）與用戶端目前設定（{client}）不同；點擊下方「儲存並套用」寫入用戶端。', en: 'Saved target ({saved}) differs from client active ({client}); click "Save & Apply" to update.' },
-    'models.card.hintRestartWait': { 'zh-CN': '新设置已写入客户端，重启后生效，目前对话仍使用旧设置。', 'zh-TW': '新設定已寫入用戶端，重啟後生效，目前對話仍使用舊設定。', en: 'New setting written to client; restart required before new chats use it.' },
-    'models.card.speedLine': { 'zh-CN': '{effort}：中位 {tps} tok/s · {n} 条', 'zh-TW': '{effort}：中位 {tps} tok/s · {n} 筆', en: '{effort}: median {tps} tok/s · {n}' },
-    'models.card.defaultEffort': { 'zh-CN': '标准', 'zh-TW': '標準', en: 'Standard' },
-    'models.mismatch': { 'zh-CN': '客户端重启后读到的配置（{actual}）与目标不一致，请重新应用。', 'zh-TW': '用戶端重啟後讀到的設定（{actual}）與目標不一致，請重新套用。', en: 'Client loaded ({actual}) after restart, which differs from target. Please reapply.' },
-    'models.meta.modeLine': { 'zh-CN': '配置 {cfg} / 实测 {obs}', 'zh-TW': '設定 {cfg} / 實測 {obs}', en: 'Config {cfg} / Observed {obs}' },
-    'models.meta.unobserved': { 'zh-CN': '未观测', 'zh-TW': '未觀測', en: 'Unobserved' },
-    'models.meta.backupOk': { 'zh-CN': '已备份完整', 'zh-TW': '已備份完整', en: 'Backed up' },
-    'models.meta.backupNone': { 'zh-CN': '无（未修改原版）', 'zh-TW': '無（未修改原版）', en: 'None (original)' },
-    'models.copyOk': { 'zh-CN': '已复制链接', 'zh-TW': '已複製連結', en: 'Link copied' },
-    'models.linkOpened': { 'zh-CN': '已在系统默认浏览器中打开原作者帖子', 'zh-TW': '已在系統預設瀏覽器中開啟原作者文章', en: 'Opened original author post in default browser' },
-    'models.linkCopyFallback': { 'zh-CN': '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。', 'zh-TW': '無法直接開啟外部瀏覽器，原作者文章連結已複製到剪貼簿，可直接在瀏覽器貼上存取。', en: 'Could not launch browser; author post URL copied to clipboard.' },
-    'models.copyFail': { 'zh-CN': '无法自动打开，请手动复制：{url}', 'zh-TW': '無法自動開啟，請手動複製：{url}', en: 'Could not open automatically. URL: {url}' },
-    'models.validation.dynamicDesc': { 'zh-CN': '跟随模型：所有模型使用同一种方式，每个模型按自己支持的长度分配，实际预算可能不同。', 'zh-TW': '跟隨模型：所有模型使用同一種方式，每個模型依自身支援的長度分配，實際預算可能不同。', en: 'Follow Model: each model uses its own supported limit; active budgets may differ.' },
-    'models.validation.defaultDesc': { 'zh-CN': '默认：使用客户端原本的长度。', 'zh-TW': '預設：使用用戶端原本的長度。', en: 'Default: uses the native client limit.' },
-    'models.validation.outOfRange': { 'zh-CN': '超出可设置范围（{min} – {max}）', 'zh-TW': '超出可設定範圍（{min} – {max}）', en: 'Out of allowed range ({min} – {max})' },
-    'models.validation.tooSmall': { 'zh-CN': '设置值 {val} 偏小，可能很快触发上下文压缩。', 'zh-TW': '設定值 {val} 偏小，可能很快觸發上下文壓縮。', en: 'Value {val} is small and may trigger early compression.' },
-    'models.validation.aboveService': { 'zh-CN': '高于最近一次服务端报错上限（{val}）。', 'zh-TW': '高於最近一次伺服器端報錯上限（{val}）。', en: 'Above recent server error limit ({val}).' },
-    'models.card.observedWaitRestart': { 'zh-CN': '重启后尚未观测，发一条消息后更新', 'zh-TW': '重啟後尚未觀測，發送一則訊息後更新', en: 'Not observed after restart; send a message to update' },
-    'models.card.observedTitle': { 'zh-CN': '实际分配预算：{val} tokens', 'zh-TW': '實際分配預算：{val} tokens', en: 'Allocated budget: {val} tokens' },
-    'models.card.preRestartTitle': { 'zh-CN': '重启前预算：{val} tokens', 'zh-TW': '重啟前預算：{val} tokens', en: 'Budget before restart: {val} tokens' },
-    'models.card.serviceLimitTitle': { 'zh-CN': '服务端报错上限：{val} tokens', 'zh-TW': '伺服器端報錯上限：{val} tokens', en: 'Server error limit: {val} tokens' },
-    'models.card.speedLineText': { 'zh-CN': '{prefix}{tps} tokens/秒 · 近 {count} 次中位数{low}{ts}', 'zh-TW': '{prefix}{tps} tokens/秒 · 近 {count} 次中位數{low}{ts}', en: '{prefix}{tps} tok/s · median of {count}{low}{ts}' },
-    'models.card.lowSampleParen': { 'zh-CN': '（样本少）', 'zh-TW': '（樣本少）', en: ' (low n)' },
-    'models.card.hintDiffClient': { 'zh-CN': '与客户端当前使用的长度不同。应用后，所有模型都会改用这个长度。', 'zh-TW': '與用戶端目前使用的長度不同。套用後，所有模型都會改用此長度。', en: 'Differs from current client setting. Applying will update all models.' },
-    'models.card.hintBelowSet': { 'zh-CN': '实际分配低于设置值，可能受模型或服务端限制。', 'zh-TW': '實際分配低於設定值，可能受模型或伺服器端限制。', en: 'Allocated budget is lower than configured; may be capped by model or server.' },
-    'models.conflict.useThis': { 'zh-CN': '用这个', 'zh-TW': '用這個', en: 'Use this' },
-    'models.conflict.orCustom': { 'zh-CN': '或重新设定一个统一值', 'zh-TW': '或重新設定一個統一值', en: 'Or set a unified value' },
-    'models.conflict.selfSet': { 'zh-CN': '自己设置', 'zh-TW': '自行設定', en: 'Set manually' },
-    'models.dropdown.empty': { 'zh-CN': '暂无已知模型', 'zh-TW': '暫無已知模型', en: 'No models yet' },
+  // 模型卡片与列表细节
+  'models.list.currentTag': { 'zh-CN': '当前', 'zh-TW': '目前', en: 'Current' },
+  'models.list.conflictPill': { 'zh-CN': '多档位冲突', 'zh-TW': '多檔位衝突', en: 'Conflict' },
+  'models.card.savedConflict': { 'zh-CN': '多档位冲突（请统一）', 'zh-TW': '多檔位衝突（請統一）', en: 'Conflict (pick one)' },
+  'models.card.savedCustom': { 'zh-CN': '自定义 {val}', 'zh-TW': '自訂 {val}', en: 'Custom {val}' },
+  'models.card.savedShortCustom': { 'zh-CN': '自定义', 'zh-TW': '自訂', en: 'Custom' },
+  'models.card.clientFollowing': { 'zh-CN': '跟随模型', 'zh-TW': '跟隨模型', en: 'Follow Model' },
+  'models.card.clientDefault': { 'zh-CN': '默认（未修改）', 'zh-TW': '預設（未修改）', en: 'Default (Original)' },
+  'models.card.preRestart': { 'zh-CN': '重启前已观测：{val}', 'zh-TW': '重啟前已觀測：{val}', en: 'Before restart: {val}' },
+  'models.card.serviceLimit': { 'zh-CN': '服务端报错上限：{val}', 'zh-TW': '伺服器端報錯上限：{val}', en: 'Server error limit: {val}' },
+  'models.card.hintDynamic': { 'zh-CN': '已应用跟随模型；正在使用的模型实际预算需由对话请求确认。', 'zh-TW': '已套用跟隨模型；正在使用的模型實際預算需由對話請求確認。', en: 'Follow Model is active; exact per-model budget is confirmed during live chat.' },
+  'models.card.hintSavedDiff': { 'zh-CN': '已保存目标（{saved}）与客户端当前配置（{client}）不同；点击下方「保存并应用」写入客户端。', 'zh-TW': '已儲存目標（{saved}）與用戶端目前設定（{client}）不同；點擊下方「儲存並套用」寫入用戶端。', en: 'Saved target ({saved}) differs from client active ({client}); click "Save & Apply" to update.' },
+  'models.card.hintRestartWait': { 'zh-CN': '新设置已写入客户端，重启后生效，目前对话仍使用旧设置。', 'zh-TW': '新設定已寫入用戶端，重啟後生效，目前對話仍使用舊設定。', en: 'New setting written to client; restart required before new chats use it.' },
+  'models.card.speedLine': { 'zh-CN': '{effort}：中位 {tps} tok/s · {n} 条', 'zh-TW': '{effort}：中位 {tps} tok/s · {n} 筆', en: '{effort}: median {tps} tok/s · {n}' },
+  'models.card.defaultEffort': { 'zh-CN': '标准', 'zh-TW': '標準', en: 'Standard' },
+  'models.mismatch': { 'zh-CN': '客户端重启后读到的配置（{actual}）与目标不一致，请重新应用。', 'zh-TW': '用戶端重啟後讀到的設定（{actual}）與目標不一致，請重新套用。', en: 'Client loaded ({actual}) after restart, which differs from target. Please reapply.' },
+  'models.meta.modeLine': { 'zh-CN': '配置 {cfg} / 实测 {obs}', 'zh-TW': '設定 {cfg} / 實測 {obs}', en: 'Config {cfg} / Observed {obs}' },
+  'models.meta.unobserved': { 'zh-CN': '未观测', 'zh-TW': '未觀測', en: 'Unobserved' },
+  'models.meta.backupOk': { 'zh-CN': '已备份完整', 'zh-TW': '已備份完整', en: 'Backed up' },
+  'models.meta.backupNone': { 'zh-CN': '无（未修改原版）', 'zh-TW': '無（未修改原版）', en: 'None (original)' },
+  'models.copyOk': { 'zh-CN': '已复制链接', 'zh-TW': '已複製連結', en: 'Link copied' },
+  'models.linkOpened': { 'zh-CN': '已在系统默认浏览器中打开原作者帖子', 'zh-TW': '已在系統預設瀏覽器中開啟原作者文章', en: 'Opened original author post in default browser' },
+  'models.linkCopyFallback': { 'zh-CN': '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。', 'zh-TW': '無法直接開啟外部瀏覽器，原作者文章連結已複製到剪貼簿，可直接在瀏覽器貼上存取。', en: 'Could not launch browser; author post URL copied to clipboard.' },
+  'models.copyFail': { 'zh-CN': '无法自动打开，请手动复制：{url}', 'zh-TW': '無法自動開啟，請手動複製：{url}', en: 'Could not open automatically. URL: {url}' },
+  'models.validation.dynamicDesc': { 'zh-CN': '跟随模型：所有模型使用同一种方式，每个模型按自己支持的长度分配，实际预算可能不同。', 'zh-TW': '跟隨模型：所有模型使用同一種方式，每個模型依自身支援的長度分配，實際預算可能不同。', en: 'Follow Model: each model uses its own supported limit; active budgets may differ.' },
+  'models.validation.defaultDesc': { 'zh-CN': '默认：使用客户端原本的长度。', 'zh-TW': '預設：使用用戶端原本的長度。', en: 'Default: uses the native client limit.' },
+  'models.validation.outOfRange': { 'zh-CN': '超出可设置范围（{min} – {max}）', 'zh-TW': '超出可設定範圍（{min} – {max}）', en: 'Out of allowed range ({min} – {max})' },
+  'models.validation.tooSmall': { 'zh-CN': '设置值 {val} 偏小，可能很快触发上下文压缩。', 'zh-TW': '設定值 {val} 偏小，可能很快觸發上下文壓縮。', en: 'Value {val} is small and may trigger early compression.' },
+  'models.validation.aboveService': { 'zh-CN': '高于最近一次服务端报错上限（{val}）。', 'zh-TW': '高於最近一次伺服器端報錯上限（{val}）。', en: 'Above recent server error limit ({val}).' },
+  'models.card.observedWaitRestart': { 'zh-CN': '重启后尚未观测，发一条消息后更新', 'zh-TW': '重啟後尚未觀測，發送一則訊息後更新', en: 'Not observed after restart; send a message to update' },
+  'models.card.observedTitle': { 'zh-CN': '实际分配预算：{val} tokens', 'zh-TW': '實際分配預算：{val} tokens', en: 'Allocated budget: {val} tokens' },
+  'models.card.preRestartTitle': { 'zh-CN': '重启前预算：{val} tokens', 'zh-TW': '重啟前預算：{val} tokens', en: 'Budget before restart: {val} tokens' },
+  'models.card.serviceLimitTitle': { 'zh-CN': '服务端报错上限：{val} tokens', 'zh-TW': '伺服器端報錯上限：{val} tokens', en: 'Server error limit: {val} tokens' },
+  'models.card.speedLineText': { 'zh-CN': '{prefix}{tps} tokens/秒 · 近 {count} 次中位数{low}{ts}', 'zh-TW': '{prefix}{tps} tokens/秒 · 近 {count} 次中位數{low}{ts}', en: '{prefix}{tps} tok/s · median of {count}{low}{ts}' },
+  'models.card.lowSampleParen': { 'zh-CN': '（样本少）', 'zh-TW': '（樣本少）', en: ' (low n)' },
+  'models.card.hintDiffClient': { 'zh-CN': '与客户端当前使用的长度不同。应用后，所有模型都会改用这个长度。', 'zh-TW': '與用戶端目前使用的長度不同。套用後，所有模型都會改用此長度。', en: 'Differs from current client setting. Applying will update all models.' },
+  'models.card.hintBelowSet': { 'zh-CN': '实际分配低于设置值，可能受模型或服务端限制。', 'zh-TW': '實際分配低於設定值，可能受模型或伺服器端限制。', en: 'Allocated budget is lower than configured; may be capped by model or server.' },
+  'models.conflict.useThis': { 'zh-CN': '用这个', 'zh-TW': '用這個', en: 'Use this' },
+  'models.conflict.orCustom': { 'zh-CN': '或重新设定一个统一值', 'zh-TW': '或重新設定一個統一值', en: 'Or set a unified value' },
+  'models.conflict.selfSet': { 'zh-CN': '自己设置', 'zh-TW': '自行設定', en: 'Set manually' },
+  'models.dropdown.empty': { 'zh-CN': '暂无已知模型', 'zh-TW': '暫無已知模型', en: 'No models yet' },
 
-    // 速度图内部与提示
-    'speed.unitSec': { 'zh-CN': '{val} 秒', 'zh-TW': '{val} 秒', en: '{val} s' },
-    'speed.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-    'speed.originProbe': { 'zh-CN': '主动测试', 'zh-TW': '主動測試', en: 'Probe' },
-    'speed.tip.samples': { 'zh-CN': '样本数：{n}{low}', 'zh-TW': '樣本數：{n}{low}', en: 'Samples: {n}{low}' },
-    'speed.tip.timeRange': { 'zh-CN': '时间范围：{range}', 'zh-TW': '時間範圍：{range}', en: 'Range: {range}' },
-    'speed.tip.medOut': { 'zh-CN': '输出 tokens 中位数：{val}', 'zh-TW': '輸出 tokens 中位數：{val}', en: 'Median output tokens: {val}' },
-    'speed.tip.medIn': { 'zh-CN': '输入 tokens 中位数：{val}', 'zh-TW': '輸入 tokens 中位數：{val}', en: 'Median input tokens: {val}' },
-    'speed.tip.time': { 'zh-CN': '时间：{val}', 'zh-TW': '時間：{val}', en: 'Time: {val}' },
-    'speed.tip.output': { 'zh-CN': '输出：{val} tokens', 'zh-TW': '輸出：{val} tokens', en: 'Output: {val} tokens' },
-    'speed.tip.ttft': { 'zh-CN': '首字延迟：{val}', 'zh-TW': '首字延遲：{val}', en: 'TTFT: {val}' },
-    'speed.tip.origin': { 'zh-CN': '来源：{val}', 'zh-TW': '來源：{val}', en: 'Source: {val}' },
-    'speed.tip.tpsLine': { 'zh-CN': '#{idx} · {tps} tokens/秒', 'zh-TW': '#{idx} · {tps} tokens/秒', en: '#{idx} · {tps} tok/s' },
+  // 速度图内部与提示
+  'speed.unitSec': { 'zh-CN': '{val} 秒', 'zh-TW': '{val} 秒', en: '{val} s' },
+  'speed.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'speed.originProbe': { 'zh-CN': '主动测试', 'zh-TW': '主動測試', en: 'Probe' },
+  'speed.tip.samples': { 'zh-CN': '样本数：{n}{low}', 'zh-TW': '樣本數：{n}{low}', en: 'Samples: {n}{low}' },
+  'speed.tip.timeRange': { 'zh-CN': '时间范围：{range}', 'zh-TW': '時間範圍：{range}', en: 'Range: {range}' },
+  'speed.tip.medOut': { 'zh-CN': '输出 tokens 中位数：{val}', 'zh-TW': '輸出 tokens 中位數：{val}', en: 'Median output tokens: {val}' },
+  'speed.tip.medIn': { 'zh-CN': '输入 tokens 中位数：{val}', 'zh-TW': '輸入 tokens 中位數：{val}', en: 'Median input tokens: {val}' },
+  'speed.tip.time': { 'zh-CN': '时间：{val}', 'zh-TW': '時間：{val}', en: 'Time: {val}' },
+  'speed.tip.output': { 'zh-CN': '输出：{val} tokens', 'zh-TW': '輸出：{val} tokens', en: 'Output: {val} tokens' },
+  'speed.tip.ttft': { 'zh-CN': '首字延迟：{val}', 'zh-TW': '首字延遲：{val}', en: 'TTFT: {val}' },
+  'speed.tip.origin': { 'zh-CN': '来源：{val}', 'zh-TW': '來源：{val}', en: 'Source: {val}' },
+  'speed.tip.tpsLine': { 'zh-CN': '#{idx} · {tps} tokens/秒', 'zh-TW': '#{idx} · {tps} tokens/秒', en: '#{idx} · {tps} tok/s' },
 
-      // 悬停气泡与顶部胶囊
-      'tip.title.normal': { 'zh-CN': '上下文窗口：', 'zh-TW': 'Context 視窗：', en: 'Context window:' },
-      'tip.title.stale': { 'zh-CN': '上下文窗口（数据过期）：', 'zh-TW': '上下文視窗（資料過期）：', en: 'Context window (stale):' },
-      'tip.title.high90': { 'zh-CN': '上下文窗口（高占用告警）：', 'zh-TW': '上下文視窗（高佔用警示）：', en: 'Context window (high usage):' },
-      'tip.title.high75': { 'zh-CN': '上下文窗口（占用偏高）：', 'zh-TW': '上下文視窗（佔用偏高）：', en: 'Context window (elevated):' },
-      'tip.title.est': { 'zh-CN': '上下文窗口（本地估算）：', 'zh-TW': '上下文視窗（本機估算）：', en: 'Context window (local est.):' },
-      'tip.pct.staleVal': { 'zh-CN': '{used}% 已用（剩余 {rem}% · 统计延迟）', 'zh-TW': '{used}% 已用（剩餘 {rem}% · 統計延遲）', en: '{used}% used ({rem}% left · delayed)' },
-      'tip.pct.staleUnknown': { 'zh-CN': '统计读取延迟（剩余未知）', 'zh-TW': '統計讀取延遲（剩餘未知）', en: 'Stats delayed (remaining unknown)' },
-      'tip.pct.high90': { 'zh-CN': '{used}% 已用（剩余 {rem}% · 接近上限）', 'zh-TW': '{used}% 已用（剩餘 {rem}% · 接近上限）', en: '{used}% used ({rem}% left · near limit)' },
-      'tip.pct.high75': { 'zh-CN': '{used}% 已用（剩余 {rem}% · 占用偏高）', 'zh-TW': '{used}% 已用（剩餘 {rem}% · 佔用偏高）', en: '{used}% used ({rem}% left · elevated)' },
-      'tip.pct.normal': { 'zh-CN': '{used}% 已用（剩余 {rem}%）', 'zh-TW': '{used}% 已用（剩餘 {rem}%）', en: '{used}% used ({rem}% left)' },
-      'tip.pct.noBudget': { 'zh-CN': '容量未知（未返回上限）', 'zh-TW': '容量未知（未回傳上限）', en: 'Limit unknown (not returned)' },
-      'tip.pct.estOnly': { 'zh-CN': '真实占比未知（仅估算）', 'zh-TW': '真實佔比未知（僅估算）', en: 'Actual % unknown (estimate only)' },
-      'tip.pct.waitStats': { 'zh-CN': '等待请求统计（仅归档估算）', 'zh-TW': '等待請求統計（僅封存估算）', en: 'Waiting for stats (archive est.)' },
-      'tip.pct.notReady': { 'zh-CN': '数据尚未就绪', 'zh-TW': '資料尚未就緒', en: 'Data not ready' },
-      'tip.detail.usedOfBudget': { 'zh-CN': '已用 {used} token，共 {budget}{inc}', 'zh-TW': '已用 {used} token，共 {budget}{inc}', en: '{used} / {budget} tokens used{inc}' },
-      'tip.detail.usedNoBudget': { 'zh-CN': '已用 {used} token，总容量未知', 'zh-TW': '已用 {used} token，總容量未知', en: '{used} tokens used, limit unknown' },
-      'tip.detail.estUsed': { 'zh-CN': '已用 ≈ {used} token{budget}', 'zh-TW': '已用 ≈ {used} token{budget}', en: 'Used ≈ {used} tokens{budget}' },
-      'tip.detail.estBudgetPart': { 'zh-CN': '，共 {budget}', 'zh-TW': '，共 {budget}', en: ' of {budget}' },
-      'tip.detail.estNoBudgetPart': { 'zh-CN': '，总容量未知', 'zh-TW': '，總容量未知', en: ', limit unknown' },
-      'tip.detail.sessionEst': { 'zh-CN': '会话估算 ≈ {low}–{high} token', 'zh-TW': '工作階段估算 ≈ {low}–{high} token', en: 'Session est. ≈ {low}–{high} tokens' },
-      'tip.detail.sessionCum': { 'zh-CN': '会话累计 ≈ {low}–{high} token', 'zh-TW': '工作階段累計 ≈ {low}–{high} token', en: 'Session cumulative ≈ {low}–{high} tokens' },
-      'tip.detail.waitBg': { 'zh-CN': '正在等待后台更新统计数据', 'zh-TW': '正在等待背景更新統計資料', en: 'Waiting for background stats update' },
-      'tip.detail.readingSession': { 'zh-CN': '正在读取当前会话上下文用量…', 'zh-TW': '正在讀取目前對話 Context 用量…', en: 'Reading current session context usage…' },
-      'tip.detail.incSuffix': { 'zh-CN': '（含未知附件）', 'zh-TW': '（含未知附件）', en: ' (incl. unknown files)' },
-      'badge.noSession': { 'zh-CN': '未打开会话', 'zh-TW': '未打開對話', en: 'No active chat' },
-      'badge.clickOpenCli': { 'zh-CN': ' · 点击查看或启动 CLI', 'zh-TW': ' · 點擊檢視或啟動 CLI', en: ' · Click to view or launch CLI' },
-      'badge.contexts': { 'zh-CN': 'contexts', 'zh-TW': 'contexts', en: 'contexts' },
-      'badge.delayed': { 'zh-CN': '统计延迟', 'zh-TW': '統計延遲', en: 'Delayed' },
-      'badge.actualUnknown': { 'zh-CN': '真实量未知', 'zh-TW': '真實量未知', en: 'Actual unknown' },
-      'badge.tokensTitle': { 'zh-CN': 'Token 用量一览（点击展开详情）', 'zh-TW': 'Token 用量總覽（點擊展開詳細資訊）', en: 'Token Usage Overview (click to open)' },
-      'badge.speedCalc': { 'zh-CN': '计算中…', 'zh-TW': '計算中…', en: 'Calculating…' },
-      'badge.speedHoverIdle': { 'zh-CN': ' · 待生成', 'zh-TW': ' · 待生成', en: ' · Idle' },
-      'badge.speedTitleIdle': { 'zh-CN': '模型输出速度与耗时 (tok/s)', 'zh-TW': '模型輸出速度與耗時 (tok/s)', en: 'Model output speed & latency (tok/s)' },
-      'badge.speedTitleWait': { 'zh-CN': '正在等待模型返回或计算生成指标…', 'zh-TW': '正在等待模型回傳或計算生成指標…', en: 'Waiting for model response or metrics…' },
-      'badge.speedTitleDetail': { 'zh-CN': '最新模型输出速度：{tps} tok/s{streaming}\n总耗时：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次产出：{output} tokens', 'zh-TW': '最新模型輸出速度：{tps} tok/s{streaming}\n總耗時：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次產出：{output} tokens', en: 'Latest output speed: {tps} tok/s{streaming}\nTotal: {duration}s (TTFT {ttft}s + streaming {streamSec}s)\nOutput: {output} tokens' },
-      'badge.speedStreamingPart': { 'zh-CN': ' (流式 {tps} tok/s)', 'zh-TW': ' (流式 {tps} tok/s)', en: ' (streaming {tps} tok/s)' },
-      'badge.corpus.range': { 'zh-CN': '会话{range}{inc}', 'zh-TW': '工作階段{range}{inc}', en: 'Chat {range}{inc}' },
-      'badge.corpus.incPlus': { 'zh-CN': '＋未知', 'zh-TW': '＋未知', en: '+unknown' },
-      'badge.corpus.scanning': { 'zh-CN': '会话扫描中…', 'zh-TW': '對話掃描中…', en: 'Scanning chat…' },
-      'badge.corpus.pending': { 'zh-CN': '会话待扫描', 'zh-TW': '對話待掃描', en: 'Chat scan pending' },
-      'badge.status.stale': { 'zh-CN': '最近请求统计读取异常或延迟，不能判断剩余空间。', 'zh-TW': '最近請求統計讀取異常或延遲，不能判斷剩餘空間。', en: 'Latest request stats delayed or unavailable; remaining space cannot be determined.' },
-      'badge.status.scanErr': { 'zh-CN': '全会话扫描未完成：{err}', 'zh-TW': '全工作階段掃描未完成：{err}', en: 'Session scan incomplete: {err}' },
-      'badge.status.incomplete': { 'zh-CN': '存在 {count} 个附件含未知内容；会话总量仍未计全，不能据此保证不会超限。', 'zh-TW': '存在 {count} 個附件含未知內容；工作階段總量仍未計全，無法據此保證不會超限。', en: '{count} attachment(s) contain unreadable content; cumulative total is incomplete.' },
-      'badge.status.estimated': { 'zh-CN': '只有客户端估算，附件等内容可能未计全；当前请求真实占用未知。', 'zh-TW': '僅有用戶端估算，附件等內容可能未計全；目前請求真實佔用未知。', en: 'Client estimate only; attachments may be omitted and actual usage is unknown.' },
-      'badge.status.normal': { 'zh-CN': '请求用量与会话累计分别统计；会话 token 数始终为本地估算。', 'zh-TW': '請求用量與工作階段累計分別統計；工作階段 token 數始終為本機估算。', en: 'Request usage and cumulative session totals are tracked separately; session totals are local estimates.' },
-    'update.title': { 'zh-CN': '🚀 检查更新', 'zh-TW': '🚀 檢查更新', en: '🚀 Check for Updates' },
-    'update.checking': { 'zh-CN': '正在检测最新版本…', 'zh-TW': '正在偵測最新版本…', en: 'Checking for the latest version…' },
-    'update.viewRelease': { 'zh-CN': '查看发布页', 'zh-TW': '查看版本發布頁', en: 'Release Notes' },
-    'update.later': { 'zh-CN': '稍后', 'zh-TW': '稍後', en: 'Later' },
-      'update.applyNow': { 'zh-CN': '立即更新', 'zh-TW': '立即更新', en: 'Update Now' },
-      'update.connecting': { 'zh-CN': '正在连接 GitHub 检测最新版本…', 'zh-TW': '正在連接 GitHub 檢測最新版本…', en: 'Connecting to GitHub to check for updates…' },
-      'update.failedTitle': { 'zh-CN': '⚠️ 检查更新失败', 'zh-TW': '⚠️ 檢查更新失敗', en: '⚠️ Update Check Failed' },
-      'update.failedVer': { 'zh-CN': 'v{ver} (检查失败)', 'zh-TW': 'v{ver} (檢查失敗)', en: 'v{ver} (Check failed)' },
-      'update.failedFetch': { 'zh-CN': '未能获取有效的版本数据', 'zh-TW': '未能取得有效的版本資料', en: 'Failed to retrieve valid release metadata' },
-      'update.failedBody': { 'zh-CN': '检查更新失败: {err}。请检查网络代理设置或前往 GitHub 查看。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路代理設定或前往 GitHub 檢視。', en: 'Update check failed: {err}. Please check your proxy or visit GitHub.' },
-      'update.failedNetBody': { 'zh-CN': '检查更新失败: {err}。请检查网络连接或稍后重试。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路連線或稍後重試。', en: 'Update check failed: {err}. Please check your network and try again.' },
-      'update.foundTitle': { 'zh-CN': '🚀 发现新版本', 'zh-TW': '🚀 發現新版本', en: '🚀 Update Available' },
-      'update.foundBody': { 'zh-CN': '发现新版本 v{ver}！\n\n更新说明：\n{notes}', 'zh-TW': '發現新版本 v{ver}！\n\n更新說明：\n{notes}', en: 'Version v{ver} is available!\n\nRelease notes:\n{notes}' },
-      'update.defaultNotes': { 'zh-CN': '性能优化与体验改进', 'zh-TW': '效能最佳化與體驗改進', en: 'Performance and usability improvements' },
-      'update.latestTitle': { 'zh-CN': '✅ 已是最新版本', 'zh-TW': '✅ 已是最新版本', en: '✅ Up to Date' },
-      'update.latestVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Latest)' },
-      'update.diskPending': { 'zh-CN': '已完成磁盘安装至最新版本 (v{ver})，待重启客户端后主进程完整生效。', 'zh-TW': '已完成磁碟安裝至最新版本 (v{ver})，待重新啟動用戶端後主行程完整生效。', en: 'v{ver} has been installed on disk. Restart the client for main-process changes to take effect.' },
-      'update.latestBody': { 'zh-CN': '当前已是最新版本 (v{ver})。已通过 GitHub Releases 确认。', 'zh-TW': '目前已是最新版本 (v{ver})。已透過 GitHub Releases 確認。', en: 'You are on the latest version (v{ver}), verified via GitHub Releases.' },
-      'update.updatingBtn': { 'zh-CN': '正在更新...', 'zh-TW': '正在更新...', en: 'Updating…' },
-      'update.downloading': { 'zh-CN': '正在下载安装包并校验 SHA-256...', 'zh-TW': '正在下載安裝套件並校驗 SHA-256...', en: 'Downloading package and verifying SHA-256…' },
-      'update.noApi': { 'zh-CN': '更新接口不可用', 'zh-TW': '更新介面無法使用', en: 'Update API unavailable' },
+  // 悬停气泡与顶部胶囊
+  'tip.title.normal': { 'zh-CN': '上下文窗口：', 'zh-TW': 'Context 視窗：', en: 'Context window:' },
+  'tip.title.stale': { 'zh-CN': '上下文窗口（数据过期）：', 'zh-TW': '上下文視窗（資料過期）：', en: 'Context window (stale):' },
+  'tip.title.high90': { 'zh-CN': '上下文窗口（高占用告警）：', 'zh-TW': '上下文視窗（高佔用警示）：', en: 'Context window (high usage):' },
+  'tip.title.high75': { 'zh-CN': '上下文窗口（占用偏高）：', 'zh-TW': '上下文視窗（佔用偏高）：', en: 'Context window (elevated):' },
+  'tip.title.est': { 'zh-CN': '上下文窗口（本地估算）：', 'zh-TW': '上下文視窗（本機估算）：', en: 'Context window (local est.):' },
+  'tip.pct.staleVal': { 'zh-CN': '{used}% 已用（剩余 {rem}% · 统计延迟）', 'zh-TW': '{used}% 已用（剩餘 {rem}% · 統計延遲）', en: '{used}% used ({rem}% left · delayed)' },
+  'tip.pct.staleUnknown': { 'zh-CN': '统计读取延迟（剩余未知）', 'zh-TW': '統計讀取延遲（剩餘未知）', en: 'Stats delayed (remaining unknown)' },
+  'tip.pct.high90': { 'zh-CN': '{used}% 已用（剩余 {rem}% · 接近上限）', 'zh-TW': '{used}% 已用（剩餘 {rem}% · 接近上限）', en: '{used}% used ({rem}% left · near limit)' },
+  'tip.pct.high75': { 'zh-CN': '{used}% 已用（剩余 {rem}% · 占用偏高）', 'zh-TW': '{used}% 已用（剩餘 {rem}% · 佔用偏高）', en: '{used}% used ({rem}% left · elevated)' },
+  'tip.pct.normal': { 'zh-CN': '{used}% 已用（剩余 {rem}%）', 'zh-TW': '{used}% 已用（剩餘 {rem}%）', en: '{used}% used ({rem}% left)' },
+  'tip.pct.noBudget': { 'zh-CN': '容量未知（未返回上限）', 'zh-TW': '容量未知（未回傳上限）', en: 'Limit unknown (not returned)' },
+  'tip.pct.estOnly': { 'zh-CN': '真实占比未知（仅估算）', 'zh-TW': '真實佔比未知（僅估算）', en: 'Actual % unknown (estimate only)' },
+  'tip.pct.waitStats': { 'zh-CN': '等待请求统计（仅归档估算）', 'zh-TW': '等待請求統計（僅封存估算）', en: 'Waiting for stats (archive est.)' },
+  'tip.pct.notReady': { 'zh-CN': '数据尚未就绪', 'zh-TW': '資料尚未就緒', en: 'Data not ready' },
+  'tip.detail.usedOfBudget': { 'zh-CN': '已用 {used} token，共 {budget}{inc}', 'zh-TW': '已用 {used} token，共 {budget}{inc}', en: '{used} / {budget} tokens used{inc}' },
+  'tip.detail.usedNoBudget': { 'zh-CN': '已用 {used} token，总容量未知', 'zh-TW': '已用 {used} token，總容量未知', en: '{used} tokens used, limit unknown' },
+  'tip.detail.estUsed': { 'zh-CN': '已用 ≈ {used} token{budget}', 'zh-TW': '已用 ≈ {used} token{budget}', en: 'Used ≈ {used} tokens{budget}' },
+  'tip.detail.estBudgetPart': { 'zh-CN': '，共 {budget}', 'zh-TW': '，共 {budget}', en: ' of {budget}' },
+  'tip.detail.estNoBudgetPart': { 'zh-CN': '，总容量未知', 'zh-TW': '，總容量未知', en: ', limit unknown' },
+  'tip.detail.sessionEst': { 'zh-CN': '会话估算 ≈ {low}–{high} token', 'zh-TW': '工作階段估算 ≈ {low}–{high} token', en: 'Session est. ≈ {low}–{high} tokens' },
+  'tip.detail.sessionCum': { 'zh-CN': '会话累计 ≈ {low}–{high} token', 'zh-TW': '工作階段累計 ≈ {low}–{high} token', en: 'Session cumulative ≈ {low}–{high} tokens' },
+  'tip.detail.waitBg': { 'zh-CN': '正在等待后台更新统计数据', 'zh-TW': '正在等待背景更新統計資料', en: 'Waiting for background stats update' },
+  'tip.detail.readingSession': { 'zh-CN': '正在读取当前会话上下文用量…', 'zh-TW': '正在讀取目前對話 Context 用量…', en: 'Reading current session context usage…' },
+  'tip.detail.incSuffix': { 'zh-CN': '（含未知附件）', 'zh-TW': '（含未知附件）', en: ' (incl. unknown files)' },
+  'badge.noSession': { 'zh-CN': '未打开会话', 'zh-TW': '未打開對話', en: 'No active chat' },
+  'badge.clickOpenCli': { 'zh-CN': ' · 点击查看或启动 CLI', 'zh-TW': ' · 點擊檢視或啟動 CLI', en: ' · Click to view or launch CLI' },
+  'badge.contexts': { 'zh-CN': 'contexts', 'zh-TW': 'contexts', en: 'contexts' },
+  'badge.delayed': { 'zh-CN': '统计延迟', 'zh-TW': '統計延遲', en: 'Delayed' },
+  'badge.actualUnknown': { 'zh-CN': '真实量未知', 'zh-TW': '真實量未知', en: 'Actual unknown' },
+  'badge.tokensTitle': { 'zh-CN': 'Token 用量一览（点击展开详情）', 'zh-TW': 'Token 用量總覽（點擊展開詳細資訊）', en: 'Token Usage Overview (click to open)' },
+  'badge.speedCalc': { 'zh-CN': '计算中…', 'zh-TW': '計算中…', en: 'Calculating…' },
+  'badge.speedHoverIdle': { 'zh-CN': ' · 待生成', 'zh-TW': ' · 待生成', en: ' · Idle' },
+  'badge.speedTitleIdle': { 'zh-CN': '模型输出速度与耗时 (tok/s)', 'zh-TW': '模型輸出速度與耗時 (tok/s)', en: 'Model output speed & latency (tok/s)' },
+  'badge.speedTitleWait': { 'zh-CN': '正在等待模型返回或计算生成指标…', 'zh-TW': '正在等待模型回傳或計算生成指標…', en: 'Waiting for model response or metrics…' },
+  'badge.speedTitleDetail': { 'zh-CN': '最新模型输出速度：{tps} tok/s{streaming}\n总耗时：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次产出：{output} tokens', 'zh-TW': '最新模型輸出速度：{tps} tok/s{streaming}\n總耗時：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次產出：{output} tokens', en: 'Latest output speed: {tps} tok/s{streaming}\nTotal: {duration}s (TTFT {ttft}s + streaming {streamSec}s)\nOutput: {output} tokens' },
+  'badge.speedStreamingPart': { 'zh-CN': ' (流式 {tps} tok/s)', 'zh-TW': ' (流式 {tps} tok/s)', en: ' (streaming {tps} tok/s)' },
+  'badge.corpus.range': { 'zh-CN': '会话{range}{inc}', 'zh-TW': '工作階段{range}{inc}', en: 'Chat {range}{inc}' },
+  'badge.corpus.incPlus': { 'zh-CN': '＋未知', 'zh-TW': '＋未知', en: '+unknown' },
+  'badge.corpus.scanning': { 'zh-CN': '会话扫描中…', 'zh-TW': '對話掃描中…', en: 'Scanning chat…' },
+  'badge.corpus.pending': { 'zh-CN': '会话待扫描', 'zh-TW': '對話待掃描', en: 'Chat scan pending' },
+  'badge.status.stale': { 'zh-CN': '最近请求统计读取异常或延迟，不能判断剩余空间。', 'zh-TW': '最近請求統計讀取異常或延遲，不能判斷剩餘空間。', en: 'Latest request stats delayed or unavailable; remaining space cannot be determined.' },
+  'badge.status.scanErr': { 'zh-CN': '全会话扫描未完成：{err}', 'zh-TW': '全工作階段掃描未完成：{err}', en: 'Session scan incomplete: {err}' },
+  'badge.status.incomplete': { 'zh-CN': '存在 {count} 个附件含未知内容；会话总量仍未计全，不能据此保证不会超限。', 'zh-TW': '存在 {count} 個附件含未知內容；工作階段總量仍未計全，無法據此保證不會超限。', en: '{count} attachment(s) contain unreadable content; cumulative total is incomplete.' },
+  'badge.status.estimated': { 'zh-CN': '只有客户端估算，附件等内容可能未计全；当前请求真实占用未知。', 'zh-TW': '僅有用戶端估算，附件等內容可能未計全；目前請求真實佔用未知。', en: 'Client estimate only; attachments may be omitted and actual usage is unknown.' },
+  'badge.status.normal': { 'zh-CN': '请求用量与会话累计分别统计；会话 token 数始终为本地估算。', 'zh-TW': '請求用量與工作階段累計分別統計；工作階段 token 數始終為本機估算。', en: 'Request usage and cumulative session totals are tracked separately; session totals are local estimates.' },
+  'update.title': { 'zh-CN': '🚀 检查更新', 'zh-TW': '🚀 檢查更新', en: '🚀 Check for Updates' },
+  'update.checking': { 'zh-CN': '正在检测最新版本…', 'zh-TW': '正在偵測最新版本…', en: 'Checking for the latest version…' },
+  'update.viewRelease': { 'zh-CN': '查看发布页', 'zh-TW': '查看版本發布頁', en: 'Release Notes' },
+  'update.later': { 'zh-CN': '稍后', 'zh-TW': '稍後', en: 'Later' },
+  'update.applyNow': { 'zh-CN': '立即更新', 'zh-TW': '立即更新', en: 'Update Now' },
+  'update.connecting': { 'zh-CN': '正在连接 GitHub 检测最新版本…', 'zh-TW': '正在連接 GitHub 檢測最新版本…', en: 'Connecting to GitHub to check for updates…' },
+  'update.failedTitle': { 'zh-CN': '⚠️ 检查更新失败', 'zh-TW': '⚠️ 檢查更新失敗', en: '⚠️ Update Check Failed' },
+  'update.failedVer': { 'zh-CN': 'v{ver} (检查失败)', 'zh-TW': 'v{ver} (檢查失敗)', en: 'v{ver} (Check failed)' },
+  'update.failedFetch': { 'zh-CN': '未能获取有效的版本数据', 'zh-TW': '未能取得有效的版本資料', en: 'Failed to retrieve valid release metadata' },
+  'update.failedBody': { 'zh-CN': '检查更新失败: {err}。请检查网络代理设置或前往 GitHub 查看。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路代理設定或前往 GitHub 檢視。', en: 'Update check failed: {err}. Please check your proxy or visit GitHub.' },
+  'update.failedNetBody': { 'zh-CN': '检查更新失败: {err}。请检查网络连接或稍后重试。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路連線或稍後重試。', en: 'Update check failed: {err}. Please check your network and try again.' },
+  'update.foundTitle': { 'zh-CN': '🚀 发现新版本', 'zh-TW': '🚀 發現新版本', en: '🚀 Update Available' },
+  'update.foundBody': { 'zh-CN': '发现新版本 v{ver}！\n\n更新说明：\n{notes}', 'zh-TW': '發現新版本 v{ver}！\n\n更新說明：\n{notes}', en: 'Version v{ver} is available!\n\nRelease notes:\n{notes}' },
+  'update.defaultNotes': { 'zh-CN': '性能优化与体验改进', 'zh-TW': '效能最佳化與體驗改進', en: 'Performance and usability improvements' },
+  'update.latestTitle': { 'zh-CN': '✅ 已是最新版本', 'zh-TW': '✅ 已是最新版本', en: '✅ Up to Date' },
+  'update.latestVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Latest)' },
+  'update.diskPending': { 'zh-CN': '已完成磁盘安装至最新版本 (v{ver})，待重启客户端后主进程完整生效。', 'zh-TW': '已完成磁碟安裝至最新版本 (v{ver})，待重新啟動用戶端後主行程完整生效。', en: 'v{ver} has been installed on disk. Restart the client for main-process changes to take effect.' },
+  'update.latestBody': { 'zh-CN': '当前已是最新版本 (v{ver})。已通过 GitHub Releases 确认。', 'zh-TW': '目前已是最新版本 (v{ver})。已透過 GitHub Releases 確認。', en: 'You are on the latest version (v{ver}), verified via GitHub Releases.' },
+  'update.updatingBtn': { 'zh-CN': '正在更新...', 'zh-TW': '正在更新...', en: 'Updating…' },
+  'update.downloading': { 'zh-CN': '正在下载安装包并校验 SHA-256...', 'zh-TW': '正在下載安裝套件並校驗 SHA-256...', en: 'Downloading package and verifying SHA-256…' },
+  'update.noApi': { 'zh-CN': '更新接口不可用', 'zh-TW': '更新介面無法使用', en: 'Update API unavailable' },
 
-      // CLI 启动提示
-      'cli.busy': { 'zh-CN': 'CLI 正在启动中，请稍候…', 'zh-TW': 'CLI 正在啟動中，請稍候…', en: 'CLI is launching, please wait…' },
-      'cli.noBridge': { 'zh-CN': '本地桥接服务未连接，请执行 node cli.js install 或重启客户端', 'zh-TW': '本機橋接服務未連線，請執行 node cli.js install 或重新啟動用戶端', en: 'Local bridge is not connected. Run `node cli.js install` or restart the client.' },
-      'cli.defaultCwd': { 'zh-CN': '默认', 'zh-TW': '預設', en: 'Default' },
-      'cli.launched': { 'zh-CN': '✔ 已启动 Antigravity CLI（目录：{cwd}）', 'zh-TW': '✔ 已啟動 Antigravity CLI（目錄：{cwd}）', en: '✔ Launched Antigravity CLI (cwd: {cwd})' },
-      'cli.notFound': { 'zh-CN': '未检测到可用的 Antigravity CLI (agy)，请检查安装路径', 'zh-TW': '未偵測到可用的 Antigravity CLI (agy)，請檢查安裝路徑', en: 'Antigravity CLI (agy) was not found. Check your installation path.' },
-      'cli.failed': { 'zh-CN': '✖ 启动 CLI 失败：{err}', 'zh-TW': '✖ 啟動 CLI 失敗：{err}', en: '✖ Failed to launch CLI: {err}' },
-      'cli.exception': { 'zh-CN': '启动 CLI 发生异常', 'zh-TW': '啟動 CLI 發生異常', en: 'Unexpected error launching CLI' },
+  // CLI 启动提示
+  'cli.busy': { 'zh-CN': 'CLI 正在启动中，请稍候…', 'zh-TW': 'CLI 正在啟動中，請稍候…', en: 'CLI is launching, please wait…' },
+  'cli.noBridge': { 'zh-CN': '本地桥接服务未连接，请执行 node cli.js install 或重启客户端', 'zh-TW': '本機橋接服務未連線，請執行 node cli.js install 或重新啟動用戶端', en: 'Local bridge is not connected. Run `node cli.js install` or restart the client.' },
+  'cli.defaultCwd': { 'zh-CN': '默认', 'zh-TW': '預設', en: 'Default' },
+  'cli.launched': { 'zh-CN': '✔ 已启动 Antigravity CLI（目录：{cwd}）', 'zh-TW': '✔ 已啟動 Antigravity CLI（目錄：{cwd}）', en: '✔ Launched Antigravity CLI (cwd: {cwd})' },
+  'cli.notFound': { 'zh-CN': '未检测到可用的 Antigravity CLI (agy)，请检查安装路径', 'zh-TW': '未偵測到可用的 Antigravity CLI (agy)，請檢查安裝路徑', en: 'Antigravity CLI (agy) was not found. Check your installation path.' },
+  'cli.failed': { 'zh-CN': '✖ 启动 CLI 失败：{err}', 'zh-TW': '✖ 啟動 CLI 失敗：{err}', en: '✖ Failed to launch CLI: {err}' },
+  'cli.exception': { 'zh-CN': '启动 CLI 发生异常', 'zh-TW': '啟動 CLI 發生異常', en: 'Unexpected error launching CLI' },
 
-      // 折叠抽屉开关
-      'drawer.colors.expand': { 'zh-CN': '▼ 展开设置', 'zh-TW': '▼ 展開設定', en: '▼ Expand' },
-      'drawer.colors.collapse': { 'zh-CN': '▲ 收起设置', 'zh-TW': '▲ 收起設定', en: '▲ Collapse' },
+  // 折叠抽屉开关
+  'drawer.colors.expand': { 'zh-CN': '▼ 展开设置', 'zh-TW': '▼ 展開設定', en: '▼ Expand' },
+  'drawer.colors.collapse': { 'zh-CN': '▲ 收起设置', 'zh-TW': '▲ 收起設定', en: '▲ Collapse' },
 
-      // 会话关键摘要 & 技术明细
-      'key.overflowUsed': { 'zh-CN': '超限', 'zh-TW': '超限', en: 'Exceeded' },
-      'key.overflowRem': { 'zh-CN': '0 (已溢出)', 'zh-TW': '0 (已溢位)', en: '0 (Overflow)' },
-      'key.estShort': { 'zh-CN': '约 {val} (估算)', 'zh-TW': '約 {val} (估算)', en: '~{val} (est.)' },
-      'key.estPrefix': { 'zh-CN': '约 {val}', 'zh-TW': '約 {val}', en: '~{val}' },
-      'key.pending': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
-      'key.pill.tight': { 'zh-CN': '紧张', 'zh-TW': '緊張', en: 'Critical' },
-      'key.pill.elevated': { 'zh-CN': '偏高', 'zh-TW': '偏高', en: 'High' },
-      'key.pill.normal': { 'zh-CN': '正常', 'zh-TW': '正常', en: 'Normal' },
-      'key.pill.est': { 'zh-CN': '估算', 'zh-TW': '估算', en: 'Estimate' },
-      'key.pill.reading': { 'zh-CN': '读取中', 'zh-TW': '讀取中', en: 'Reading' },
-      'key.takeaway.90': { 'zh-CN': '⚠ 上下文已消耗 {pct}%，仅剩约 {rem} tokens，接近预算上限！建议清理冗余上下文。', 'zh-TW': '⚠ 上下文已消耗 {pct}%，僅剩約 {rem} tokens，接近預算上限！建議清理多餘上下文。', en: '⚠ Context usage is at {pct}% (~{rem} tokens left), near the limit. Consider trimming context.' },
-      'key.takeaway.75': { 'zh-CN': '⚡ 已使用 {pct}%，剩余可用空间约 {rem} tokens，注意大文件或长输出。', 'zh-TW': '⚡ 已使用 {pct}%，剩餘可用空間約 {rem} tokens，注意大型檔案或長輸出。', en: '⚡ {pct}% used (~{rem} tokens left). Watch large files or long outputs.' },
-      'key.takeaway.ok': { 'zh-CN': '✔ 当前用量健康（{pct}%），剩余可用空间充足（约 {rem} tokens），可正常继续对话。', 'zh-TW': '✔ 目前用量健康（{pct}%），剩餘可用空間充足（約 {rem} tokens），可正常繼續對話。', en: '✔ Healthy usage ({pct}%), plenty of room (~{rem} tokens left).' },
-      'key.takeaway.est': { 'zh-CN': 'ℹ 当前主要依赖本地估算或待服务端返回实际统计，暂不计算精确剩余空间。', 'zh-TW': 'ℹ 目前主要依賴本機估算或待伺服器端回傳實際統計，暫不計算精確剩餘空間。', en: 'ℹ Relying on local estimates or awaiting server stats; exact remaining space unavailable.' },
-      'speed.pill.fast': { 'zh-CN': '极速', 'zh-TW': '極速', en: 'Fast' },
-      'speed.pill.smooth': { 'zh-CN': '流畅', 'zh-TW': '流暢', en: 'Smooth' },
-      'speed.pill.good': { 'zh-CN': '良好', 'zh-TW': '良好', en: 'Good' },
-      'speed.pill.slow': { 'zh-CN': '偏慢', 'zh-TW': '偏慢', en: 'Slow' },
-      'speed.pill.calc': { 'zh-CN': '计算中', 'zh-TW': '計算中', en: 'Calculating' },
-      'speed.pill.idle': { 'zh-CN': '待生成', 'zh-TW': '待生成', en: 'Idle' },
-      'speed.takeaway.ok': { 'zh-CN': '✔ 输出{tone}（{tps} tok/s{stream}），总耗时 {dur}s 内生成 {tok} tokens{model}。', 'zh-TW': '✔ 輸出{tone}（{tps} tok/s{stream}），總耗時 {dur}s 內產生 {tok} tokens{model}。', en: '✔ Output {tone} ({tps} tok/s{stream}), generated {tok} tokens in {dur}s{model}.' },
-      'speed.tone.smooth': { 'zh-CN': '流畅', 'zh-TW': '流暢', en: 'smooth' },
-      'speed.tone.steady': { 'zh-CN': '平稳', 'zh-TW': '平穩', en: 'steady' },
-      'speed.streamPart': { 'zh-CN': '，纯流式传输达 {tps} tok/s', 'zh-TW': '，純串流傳輸達 {tps} tok/s', en: ', streaming {tps} tok/s' },
-      'speed.takeaway.idle': { 'zh-CN': 'ℹ 等待当前或下一次模型输出完成，将自动计算精确输出速度 (tok/s)、首字延迟与总耗时。', 'zh-TW': 'ℹ 等待目前或下一次模型輸出完成，將自動計算精確輸出速度 (tok/s)、首字延遲與總耗時。', en: 'ℹ Waiting for the next model response to measure output speed (tok/s), TTFT, and duration.' },
-      'tech.modelPlaceholder': { 'zh-CN': '模型标识：{id}', 'zh-TW': '模型識別：{id}', en: 'Model ID: {id}' },
-      'tech.modelMissing': { 'zh-CN': '未返回模型信息', 'zh-TW': '未回傳模型資訊', en: 'No model info returned' },
-      'tech.req.exceeded': { 'zh-CN': '输入超限（已失败）', 'zh-TW': '輸入超限（已失敗）', en: 'Input limit exceeded (failed)' },
-      'tech.req.network': { 'zh-CN': '网络故障（非超限）', 'zh-TW': '網路故障（非超限）', en: 'Network error (not overflow)' },
-      'tech.req.failed': { 'zh-CN': '已失败', 'zh-TW': '已失敗', en: 'Failed' },
-      'tech.req.reported': { 'zh-CN': '已返回实际统计', 'zh-TW': '已回傳實際統計', en: 'Actual stats returned' },
-      'tech.req.estimated': { 'zh-CN': '只有本地估算', 'zh-TW': '只有本機估算', en: 'Local estimate only' },
-      'tech.req.waiting': { 'zh-CN': '等待统计，未确认执行状态', 'zh-TW': '等待統計，未確認執行狀態', en: 'Awaiting stats; status unconfirmed' },
-      'tech.actual.exceeded': { 'zh-CN': '>{val}（实际总数未返回）', 'zh-TW': '>{val}（實際總數未回傳）', en: '>{val} (actual total not returned)' },
-      'tech.actual.exceededNoLim': { 'zh-CN': '已超限；实际数值未知', 'zh-TW': '已超限；實際數值未知', en: 'Exceeded; actual count unknown' },
-      'tech.actual.unknown': { 'zh-CN': '真实用量未知', 'zh-TW': '真實用量未知', en: 'Actual usage unknown' },
-      'tech.est.val': { 'zh-CN': '约 {val} · {note}', 'zh-TW': '約 {val} · {note}', en: '~{val} · {note}' },
-      'tech.est.under': { 'zh-CN': '已证实低估', 'zh-TW': '已證實低估', en: 'Confirmed underestimate' },
-      'tech.est.ref': { 'zh-CN': '仅供参考', 'zh-TW': '僅供參考', en: 'For reference only' },
-      'tech.est.none': { 'zh-CN': '未提供', 'zh-TW': '未提供', en: 'Not provided' },
-      'tech.svcLim.val': { 'zh-CN': '{val}（仅该次错误证据）', 'zh-TW': '{val}（僅該次錯誤證據）', en: '{val} (from this error)' },
-      'tech.svcLim.none': { 'zh-CN': '本次没有服务端限制证据', 'zh-TW': '本次沒有伺服器端限制證據', en: 'No server limit evidence' },
-      'tech.pct.val': { 'zh-CN': '{pct}%（非 1M 总容量）', 'zh-TW': '{pct}%（非 1M 總容量）', en: '{pct}% (not 1M cap)' },
-      'tech.pct.none': { 'zh-CN': '不提供安全余量百分比', 'zh-TW': '不提供安全餘量百分比', en: 'Headroom % unavailable' },
-      'tech.plusUnknown': { 'zh-CN': ' ＋ 未知内容', 'zh-TW': ' ＋ 未知內容', en: ' + unknown' },
-      'tech.plusUnknownShort': { 'zh-CN': ' ＋ 未知', 'zh-TW': ' ＋ 未知', en: ' + unknown' },
-      'tech.scanIncomplete': { 'zh-CN': '扫描未完成', 'zh-TW': '掃描未完成', en: 'Scan incomplete' },
-      'tech.scanning': { 'zh-CN': '扫描中…', 'zh-TW': '掃描中…', en: 'Scanning…' },
-      'tech.stepsVal': { 'zh-CN': '{steps} 条；{user} 条用户消息／{assistant} 条回复', 'zh-TW': '{steps} 筆；{user} 則使用者訊息／{assistant} 則回覆', en: '{steps} steps; {user} user / {assistant} assistant' },
-      'tech.stepsNone': { 'zh-CN': '尚未完成全量读取', 'zh-TW': '尚未完成全量讀取', en: 'Full history not loaded yet' },
-      'tech.coverageVal': { 'zh-CN': '{total} 个附件条目（{user} 个上传、{assistant} 个模型/工具输出）；{read} 个已读到文本，{unknown} 个含未计内容。{rescan}{err}', 'zh-TW': '{total} 個附件項目（{user} 個上傳、{assistant} 個模型/工具輸出）；{read} 個已讀到文字，{unknown} 個含未計內容。{rescan}{err}', en: '{total} attachment(s) ({user} uploaded, {assistant} model/tool); {read} readable, {unknown} with unread content.{rescan}{err}' },
-      'tech.coverageRescan': { 'zh-CN': ' 正在重新扫描…', 'zh-TW': ' 正在重新掃描…', en: ' Rescanning…' },
-      'tech.coverageErr': { 'zh-CN': ' 最近重扫失败，当前为旧结果：{err}', 'zh-TW': ' 最近重掃失敗，目前為舊結果：{err}', en: ' Latest rescan failed (showing prior data): {err}' },
-      'tech.coverageScanning': { 'zh-CN': '正在扫描整段归档，不依赖页面已加载的聊天条数。', 'zh-TW': '正在掃描整段封存，不依賴頁面已載入的聊天筆數。', en: 'Scanning full archive regardless of rendered chat items.' },
-      'tech.updatedVal': { 'zh-CN': '请求统计 {req} · 全量扫描 {scan}', 'zh-TW': '請求統計 {req} · 全量掃描 {scan}', en: 'Request stats {req} · Full scan {scan}' },
-      'tech.unread': { 'zh-CN': '未读取', 'zh-TW': '未讀取', en: 'Unread' },
-      'tech.unfinished': { 'zh-CN': '未完成', 'zh-TW': '未完成', en: 'Pending' },
-      'files.reading': { 'zh-CN': '正在读取全量会话附件引用…', 'zh-TW': '正在讀取全量工作階段附件引用…', en: 'Reading session attachment references…' },
-      'files.empty': { 'zh-CN': '归档中没有上传附件引用。', 'zh-TW': '封存中沒有上傳附件引用。', en: 'No attachment references in archive.' },
-      'files.refs': { 'zh-CN': '（引用 {n} 次）', 'zh-TW': '（引用 {n} 次）', en: ' ({n} refs)' },
-      'files.px': { 'zh-CN': '{w}×{h} 像素', 'zh-TW': '{w}×{h} 像素', en: '{w}×{h} px' },
-      'files.chars': { 'zh-CN': '{n} 字符', 'zh-TW': '{n} 字元', en: '{n} chars' },
-      'files.tokUnknown': { 'zh-CN': '内容 token 未知', 'zh-TW': '內容 token 未知', en: 'Token count unknown' },
-      'files.assistantPrefix': { 'zh-CN': '模型输出附件 · ', 'zh-TW': '模型輸出附件 · ', en: 'Model/tool attachment · ' },
-      'files.sheets': { 'zh-CN': ' · {sheets} 个工作表，{cells} 个单元格', 'zh-TW': ' · {sheets} 個工作表，{cells} 個儲存格', en: ' · {sheets} sheets, {cells} cells' },
-      'files.hiddenSheets': { 'zh-CN': '（含 {n} 个隐藏表）', 'zh-TW': '（含 {n} 個隱藏工作表）', en: ' ({n} hidden)' },
-      'files.unknownPrefix': { 'zh-CN': '未计全：{parts}', 'zh-TW': '未計全：{parts}', en: 'Partial: {parts}' },
+  // 会话关键摘要 & 技术明细
+  'key.overflowUsed': { 'zh-CN': '超限', 'zh-TW': '超限', en: 'Exceeded' },
+  'key.overflowRem': { 'zh-CN': '0 (已溢出)', 'zh-TW': '0 (已溢位)', en: '0 (Overflow)' },
+  'key.estShort': { 'zh-CN': '约 {val} (估算)', 'zh-TW': '約 {val} (估算)', en: '~{val} (est.)' },
+  'key.estPrefix': { 'zh-CN': '约 {val}', 'zh-TW': '約 {val}', en: '~{val}' },
+  'key.pending': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
+  'key.pill.tight': { 'zh-CN': '紧张', 'zh-TW': '緊張', en: 'Critical' },
+  'key.pill.elevated': { 'zh-CN': '偏高', 'zh-TW': '偏高', en: 'High' },
+  'key.pill.normal': { 'zh-CN': '正常', 'zh-TW': '正常', en: 'Normal' },
+  'key.pill.est': { 'zh-CN': '估算', 'zh-TW': '估算', en: 'Estimate' },
+  'key.pill.reading': { 'zh-CN': '读取中', 'zh-TW': '讀取中', en: 'Reading' },
+  'key.takeaway.90': { 'zh-CN': '⚠ 上下文已消耗 {pct}%，仅剩约 {rem} tokens，接近预算上限！建议清理冗余上下文。', 'zh-TW': '⚠ 上下文已消耗 {pct}%，僅剩約 {rem} tokens，接近預算上限！建議清理多餘上下文。', en: '⚠ Context usage is at {pct}% (~{rem} tokens left), near the limit. Consider trimming context.' },
+  'key.takeaway.75': { 'zh-CN': '⚡ 已使用 {pct}%，剩余可用空间约 {rem} tokens，注意大文件或长输出。', 'zh-TW': '⚡ 已使用 {pct}%，剩餘可用空間約 {rem} tokens，注意大型檔案或長輸出。', en: '⚡ {pct}% used (~{rem} tokens left). Watch large files or long outputs.' },
+  'key.takeaway.ok': { 'zh-CN': '✔ 当前用量健康（{pct}%），剩余可用空间充足（约 {rem} tokens），可正常继续对话。', 'zh-TW': '✔ 目前用量健康（{pct}%），剩餘可用空間充足（約 {rem} tokens），可正常繼續對話。', en: '✔ Healthy usage ({pct}%), plenty of room (~{rem} tokens left).' },
+  'key.takeaway.est': { 'zh-CN': 'ℹ 当前主要依赖本地估算或待服务端返回实际统计，暂不计算精确剩余空间。', 'zh-TW': 'ℹ 目前主要依賴本機估算或待伺服器端回傳實際統計，暫不計算精確剩餘空間。', en: 'ℹ Relying on local estimates or awaiting server stats; exact remaining space unavailable.' },
+  'speed.pill.fast': { 'zh-CN': '极速', 'zh-TW': '極速', en: 'Fast' },
+  'speed.pill.smooth': { 'zh-CN': '流畅', 'zh-TW': '流暢', en: 'Smooth' },
+  'speed.pill.good': { 'zh-CN': '良好', 'zh-TW': '良好', en: 'Good' },
+  'speed.pill.slow': { 'zh-CN': '偏慢', 'zh-TW': '偏慢', en: 'Slow' },
+  'speed.pill.calc': { 'zh-CN': '计算中', 'zh-TW': '計算中', en: 'Calculating' },
+  'speed.pill.idle': { 'zh-CN': '待生成', 'zh-TW': '待生成', en: 'Idle' },
+  'speed.takeaway.ok': { 'zh-CN': '✔ 输出{tone}（{tps} tok/s{stream}），总耗时 {dur}s 内生成 {tok} tokens{model}。', 'zh-TW': '✔ 輸出{tone}（{tps} tok/s{stream}），總耗時 {dur}s 內產生 {tok} tokens{model}。', en: '✔ Output {tone} ({tps} tok/s{stream}), generated {tok} tokens in {dur}s{model}.' },
+  'speed.tone.smooth': { 'zh-CN': '流畅', 'zh-TW': '流暢', en: 'smooth' },
+  'speed.tone.steady': { 'zh-CN': '平稳', 'zh-TW': '平穩', en: 'steady' },
+  'speed.streamPart': { 'zh-CN': '，纯流式传输达 {tps} tok/s', 'zh-TW': '，純串流傳輸達 {tps} tok/s', en: ', streaming {tps} tok/s' },
+  'speed.takeaway.idle': { 'zh-CN': 'ℹ 等待当前或下一次模型输出完成，将自动计算精确输出速度 (tok/s)、首字延迟与总耗时。', 'zh-TW': 'ℹ 等待目前或下一次模型輸出完成，將自動計算精確輸出速度 (tok/s)、首字延遲與總耗時。', en: 'ℹ Waiting for the next model response to measure output speed (tok/s), TTFT, and duration.' },
+  'tech.modelPlaceholder': { 'zh-CN': '模型标识：{id}', 'zh-TW': '模型識別：{id}', en: 'Model ID: {id}' },
+  'tech.modelMissing': { 'zh-CN': '未返回模型信息', 'zh-TW': '未回傳模型資訊', en: 'No model info returned' },
+  'tech.req.exceeded': { 'zh-CN': '输入超限（已失败）', 'zh-TW': '輸入超限（已失敗）', en: 'Input limit exceeded (failed)' },
+  'tech.req.network': { 'zh-CN': '网络故障（非超限）', 'zh-TW': '網路故障（非超限）', en: 'Network error (not overflow)' },
+  'tech.req.failed': { 'zh-CN': '已失败', 'zh-TW': '已失敗', en: 'Failed' },
+  'tech.req.reported': { 'zh-CN': '已返回实际统计', 'zh-TW': '已回傳實際統計', en: 'Actual stats returned' },
+  'tech.req.estimated': { 'zh-CN': '只有本地估算', 'zh-TW': '只有本機估算', en: 'Local estimate only' },
+  'tech.req.waiting': { 'zh-CN': '等待统计，未确认执行状态', 'zh-TW': '等待統計，未確認執行狀態', en: 'Awaiting stats; status unconfirmed' },
+  'tech.actual.exceeded': { 'zh-CN': '>{val}（实际总数未返回）', 'zh-TW': '>{val}（實際總數未回傳）', en: '>{val} (actual total not returned)' },
+  'tech.actual.exceededNoLim': { 'zh-CN': '已超限；实际数值未知', 'zh-TW': '已超限；實際數值未知', en: 'Exceeded; actual count unknown' },
+  'tech.actual.unknown': { 'zh-CN': '真实用量未知', 'zh-TW': '真實用量未知', en: 'Actual usage unknown' },
+  'tech.est.val': { 'zh-CN': '约 {val} · {note}', 'zh-TW': '約 {val} · {note}', en: '~{val} · {note}' },
+  'tech.est.under': { 'zh-CN': '已证实低估', 'zh-TW': '已證實低估', en: 'Confirmed underestimate' },
+  'tech.est.ref': { 'zh-CN': '仅供参考', 'zh-TW': '僅供參考', en: 'For reference only' },
+  'tech.est.none': { 'zh-CN': '未提供', 'zh-TW': '未提供', en: 'Not provided' },
+  'tech.svcLim.val': { 'zh-CN': '{val}（仅该次错误证据）', 'zh-TW': '{val}（僅該次錯誤證據）', en: '{val} (from this error)' },
+  'tech.svcLim.none': { 'zh-CN': '本次没有服务端限制证据', 'zh-TW': '本次沒有伺服器端限制證據', en: 'No server limit evidence' },
+  'tech.pct.val': { 'zh-CN': '{pct}%（非 1M 总容量）', 'zh-TW': '{pct}%（非 1M 總容量）', en: '{pct}% (not 1M cap)' },
+  'tech.pct.none': { 'zh-CN': '不提供安全余量百分比', 'zh-TW': '不提供安全餘量百分比', en: 'Headroom % unavailable' },
+  'tech.plusUnknown': { 'zh-CN': ' ＋ 未知内容', 'zh-TW': ' ＋ 未知內容', en: ' + unknown' },
+  'tech.plusUnknownShort': { 'zh-CN': ' ＋ 未知', 'zh-TW': ' ＋ 未知', en: ' + unknown' },
+  'tech.scanIncomplete': { 'zh-CN': '扫描未完成', 'zh-TW': '掃描未完成', en: 'Scan incomplete' },
+  'tech.scanning': { 'zh-CN': '扫描中…', 'zh-TW': '掃描中…', en: 'Scanning…' },
+  'tech.stepsVal': { 'zh-CN': '{steps} 条；{user} 条用户消息／{assistant} 条回复', 'zh-TW': '{steps} 筆；{user} 則使用者訊息／{assistant} 則回覆', en: '{steps} steps; {user} user / {assistant} assistant' },
+  'tech.stepsNone': { 'zh-CN': '尚未完成全量读取', 'zh-TW': '尚未完成全量讀取', en: 'Full history not loaded yet' },
+  'tech.coverageVal': { 'zh-CN': '{total} 个附件条目（{user} 个上传、{assistant} 个模型/工具输出）；{read} 个已读到文本，{unknown} 个含未计内容。{rescan}{err}', 'zh-TW': '{total} 個附件項目（{user} 個上傳、{assistant} 個模型/工具輸出）；{read} 個已讀到文字，{unknown} 個含未計內容。{rescan}{err}', en: '{total} attachment(s) ({user} uploaded, {assistant} model/tool); {read} readable, {unknown} with unread content.{rescan}{err}' },
+  'tech.coverageRescan': { 'zh-CN': ' 正在重新扫描…', 'zh-TW': ' 正在重新掃描…', en: ' Rescanning…' },
+  'tech.coverageErr': { 'zh-CN': ' 最近重扫失败，当前为旧结果：{err}', 'zh-TW': ' 最近重掃失敗，目前為舊結果：{err}', en: ' Latest rescan failed (showing prior data): {err}' },
+  'tech.coverageScanning': { 'zh-CN': '正在扫描整段归档，不依赖页面已加载的聊天条数。', 'zh-TW': '正在掃描整段封存，不依賴頁面已載入的聊天筆數。', en: 'Scanning full archive regardless of rendered chat items.' },
+  'tech.updatedVal': { 'zh-CN': '请求统计 {req} · 全量扫描 {scan}', 'zh-TW': '請求統計 {req} · 全量掃描 {scan}', en: 'Request stats {req} · Full scan {scan}' },
+  'tech.unread': { 'zh-CN': '未读取', 'zh-TW': '未讀取', en: 'Unread' },
+  'tech.unfinished': { 'zh-CN': '未完成', 'zh-TW': '未完成', en: 'Pending' },
+  'files.reading': { 'zh-CN': '正在读取全量会话附件引用…', 'zh-TW': '正在讀取全量工作階段附件引用…', en: 'Reading session attachment references…' },
+  'files.empty': { 'zh-CN': '归档中没有上传附件引用。', 'zh-TW': '封存中沒有上傳附件引用。', en: 'No attachment references in archive.' },
+  'files.refs': { 'zh-CN': '（引用 {n} 次）', 'zh-TW': '（引用 {n} 次）', en: ' ({n} refs)' },
+  'files.px': { 'zh-CN': '{w}×{h} 像素', 'zh-TW': '{w}×{h} 像素', en: '{w}×{h} px' },
+  'files.chars': { 'zh-CN': '{n} 字符', 'zh-TW': '{n} 字元', en: '{n} chars' },
+  'files.tokUnknown': { 'zh-CN': '内容 token 未知', 'zh-TW': '內容 token 未知', en: 'Token count unknown' },
+  'files.assistantPrefix': { 'zh-CN': '模型输出附件 · ', 'zh-TW': '模型輸出附件 · ', en: 'Model/tool attachment · ' },
+  'files.sheets': { 'zh-CN': ' · {sheets} 个工作表，{cells} 个单元格', 'zh-TW': ' · {sheets} 個工作表，{cells} 個儲存格', en: ' · {sheets} sheets, {cells} cells' },
+  'files.hiddenSheets': { 'zh-CN': '（含 {n} 个隐藏表）', 'zh-TW': '（含 {n} 個隱藏工作表）', en: ' ({n} hidden)' },
+  'files.unknownPrefix': { 'zh-CN': '未计全：{parts}', 'zh-TW': '未計全：{parts}', en: 'Partial: {parts}' },
 
-      // 热力图与 Token 用量弹窗
-      'heat.today': { 'zh-CN': '（今日）', 'zh-TW': '（今日）', en: ' (Today)' },
-      'heat.firstUse': { 'zh-CN': '（首次使用）', 'zh-TW': '（首次使用）', en: ' (First use)' },
-      'heat.future': { 'zh-CN': '未来日期（待产生记录）', 'zh-TW': '未來日期（尚無記錄）', en: 'Future date (no records yet)' },
-      'heat.prompt': { 'zh-CN': '提示词', 'zh-TW': '提示詞', en: 'Prompt' },
-      'heat.output': { 'zh-CN': '输出', 'zh-TW': '輸出', en: 'Output' },
-      'heat.cache': { 'zh-CN': '缓存', 'zh-TW': '快取', en: 'Cache' },
-      'heat.weeklyTotal': { 'zh-CN': 'Weekly Total · 周累计 (折合日均 ${avg})', 'zh-TW': 'Weekly Total · 週累計 (折合日均 ${avg})', en: 'Weekly Total (daily avg ${avg})' },
-      'heat.cumSuffix': { 'zh-CN': ' (累计)', 'zh-TW': ' (累計)', en: ' (Cumulative)' },
-      'heat.cumTotal': { 'zh-CN': 'Cumulative Total · 截至当日累计 (折合日均 ${avg})', 'zh-TW': 'Cumulative Total · 截至當日累計 (折合日均 ${avg})', en: 'Cumulative Total to Date (daily avg ${avg})' },
-      'heat.activeDays': { 'zh-CN': '${avg} ({days}天)', 'zh-TW': '${avg} ({days}天)', en: '${avg} ({days}d)' },
-      'heat.roi': { 'zh-CN': '{ratio}x 回本', 'zh-TW': '{ratio}x 回本', en: '{ratio}x ROI' },
-      'heat.peak': { 'zh-CN': '峰值', 'zh-TW': '尖峰', en: 'Peak' },
+  // 热力图与 Token 用量弹窗
+  'heat.today': { 'zh-CN': '（今日）', 'zh-TW': '（今日）', en: ' (Today)' },
+  'heat.firstUse': { 'zh-CN': '（首次使用）', 'zh-TW': '（首次使用）', en: ' (First use)' },
+  'heat.future': { 'zh-CN': '未来日期（待产生记录）', 'zh-TW': '未來日期（尚無記錄）', en: 'Future date (no records yet)' },
+  'heat.prompt': { 'zh-CN': '提示词', 'zh-TW': '提示詞', en: 'Prompt' },
+  'heat.output': { 'zh-CN': '输出', 'zh-TW': '輸出', en: 'Output' },
+  'heat.cache': { 'zh-CN': '缓存', 'zh-TW': '快取', en: 'Cache' },
+  'heat.weeklyTotal': { 'zh-CN': 'Weekly Total · 周累计 (折合日均 ${avg})', 'zh-TW': 'Weekly Total · 週累計 (折合日均 ${avg})', en: 'Weekly Total (daily avg ${avg})' },
+  'heat.cumSuffix': { 'zh-CN': ' (累计)', 'zh-TW': ' (累計)', en: ' (Cumulative)' },
+  'heat.cumTotal': { 'zh-CN': 'Cumulative Total · 截至当日累计 (折合日均 ${avg})', 'zh-TW': 'Cumulative Total · 截至當日累計 (折合日均 ${avg})', en: 'Cumulative Total to Date (daily avg ${avg})' },
+  'heat.activeDays': { 'zh-CN': '${avg} ({days}天)', 'zh-TW': '${avg} ({days}天)', en: '${avg} ({days}d)' },
+  'heat.roi': { 'zh-CN': '{ratio}x 回本', 'zh-TW': '{ratio}x 回本', en: '{ratio}x ROI' },
+  'heat.peak': { 'zh-CN': '峰值', 'zh-TW': '尖峰', en: 'Peak' },
 
-      // 模型卡片折叠详情、历史分组与按钮状态补齐
-      'models.card.detailsToggle': { 'zh-CN': '实测预算、速度与内部详情', 'zh-TW': '實測預算、速度與內部詳情', en: 'Observed budget, speed & details' },
-      'models.list.historyGroup': { 'zh-CN': '仅历史记录 / 本地设置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / Local Only' },
-      'models.list.historyTag': { 'zh-CN': '仅历史', 'zh-TW': '僅歷史', en: 'History' },
-      'models.btn.partialBlocked': { 'zh-CN': '需先还原后端', 'zh-TW': '需先還原後端', en: 'Restore backend first' },
-      'models.btn.retryApply': { 'zh-CN': '重新检测并应用', 'zh-TW': '重新偵測並套用', en: 'Retry detect & apply' },
-      'models.btn.unsupported': { 'zh-CN': '当前环境不可应用', 'zh-TW': '目前環境無法套用', en: 'Unsupported environment' },
-      'header.theme.aria': { 'zh-CN': '切换浅色/深色主题', 'zh-TW': '切換淺色/深色主題', en: 'Toggle light/dark theme' },
-      'header.theme.title': { 'zh-CN': '当前：跟随IDE（点击切换：浅色 / 深色 / 自动）', 'zh-TW': '目前：跟隨IDE（點擊切換：淺色 / 深色 / 自動）', en: 'Current: Follow IDE (click to cycle Light / Dark / Auto)' },
+  // 模型卡片折叠详情、历史分组与按钮状态补齐
+  'models.card.detailsToggle': { 'zh-CN': '实测预算、速度与内部详情', 'zh-TW': '實測預算、速度與內部詳情', en: 'Observed budget, speed & details' },
+  'models.list.historyGroup': { 'zh-CN': '仅历史记录 / 本地设置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / Local Only' },
+  'models.list.historyTag': { 'zh-CN': '仅历史', 'zh-TW': '僅歷史', en: 'History' },
+  'models.btn.partialBlocked': { 'zh-CN': '需先还原后端', 'zh-TW': '需先還原後端', en: 'Restore backend first' },
+  'models.btn.retryApply': { 'zh-CN': '重新检测并应用', 'zh-TW': '重新偵測並套用', en: 'Retry detect & apply' },
+  'models.btn.unsupported': { 'zh-CN': '当前环境不可应用', 'zh-TW': '目前環境無法套用', en: 'Unsupported environment' },
+  'header.theme.aria': { 'zh-CN': '切换浅色/深色主题', 'zh-TW': '切換淺色/深色主題', en: 'Toggle light/dark theme' },
+  'header.theme.title': { 'zh-CN': '当前：跟随IDE（点击切换：浅色 / 深色 / 自动）', 'zh-TW': '目前：跟隨IDE（點擊切換：淺色 / 深色 / 自動）', en: 'Current: Follow IDE (click to cycle Light / Dark / Auto)' },
 
-      // 订阅详情与地区/币种选择
-      'plan.detail.toggleOpen': { 'zh-CN': '详情 ▼', 'zh-TW': '詳細資訊 ▼', en: 'Details ▼' },
-      'plan.detail.toggleClose': { 'zh-CN': '详情收回 ▲', 'zh-TW': '收回詳細資訊 ▲', en: 'Hide ▲' },
-      'plan.detail.title': { 'zh-CN': '💎 AI 订阅与额度详情', 'zh-TW': '💎 AI 訂閱與額度詳細資訊', en: '💎 AI Subscription & Credits' },
-      'plan.summary.identified': { 'zh-CN': '已自动识别', 'zh-TW': '已自動識別', en: 'Auto-detected' },
-      'plan.summary.custom': { 'zh-CN': '自定义生效', 'zh-TW': '自訂生效', en: 'Custom' },
-      'plan.summary.unknown': { 'zh-CN': '未识别/默认', 'zh-TW': '未識別/預設', en: 'Default / Unknown' },
-      'plan.summary.justNow': { 'zh-CN': '刚刚更新', 'zh-TW': '剛剛更新', en: 'Just now' },
-      'plan.summary.perMonth': { 'zh-CN': '/月', 'zh-TW': '/月', en: '/mo' },
-      'plan.summary.freeWithPlan': { 'zh-CN': '(随套餐免费)', 'zh-TW': '(隨方案免費)', en: '(Included)' },
-      'plan.dt.plan': { 'zh-CN': '当前套餐：', 'zh-TW': '目前方案：', en: 'Plan:' },
-      'plan.dt.account': { 'zh-CN': '当前账号：', 'zh-TW': '目前帳號：', en: 'Account:' },
-      'plan.dt.country': { 'zh-CN': '账号所在地区：', 'zh-TW': '帳號所在地區：', en: 'Account country:' },
-      'plan.dt.region': { 'zh-CN': '订阅国家：', 'zh-TW': '訂閱國家：', en: 'Billing country:' },
-      'plan.dt.currency': { 'zh-CN': '订阅币种：', 'zh-TW': '訂閱幣別：', en: 'Currency:' },
-      'plan.dt.acq': { 'zh-CN': '获取方式：', 'zh-TW': '取得方式：', en: 'Source:' },
-      'plan.dt.price': { 'zh-CN': '计费周期与价格：', 'zh-TW': '計費週期與價格：', en: 'Billing & price:' },
-      'plan.dt.validity': { 'zh-CN': '权益有效期：', 'zh-TW': '權益有效期限：', en: 'Valid until:' },
-      'plan.dt.note': { 'zh-CN': '补充备注：', 'zh-TW': '補充備註：', en: 'Note:' },
-      'plan.dt.promptCredits': { 'zh-CN': 'Prompt 额度池：', 'zh-TW': 'Prompt 額度池：', en: 'Prompt credits:' },
-      'plan.dt.flowCredits': { 'zh-CN': 'Flow 额度池：', 'zh-TW': 'Flow 額度池：', en: 'Flow credits:' },
-      'plan.dt.updated': { 'zh-CN': '状态更新时间：', 'zh-TW': '狀態更新時間：', en: 'Updated:' },
-      'plan.account.unknown': { 'zh-CN': '未识别当前登录邮箱', 'zh-TW': '未識別目前登入信箱', en: 'Signed-in email not detected' },
-      'plan.country.auto': { 'zh-CN': '🌐 未设置 / 自动', 'zh-TW': '🌐 未設定 / 自動', en: '🌐 Unset / Auto' },
-      'plan.region.unknown': { 'zh-CN': '🌏 未知 (点击选择订阅国家与币种建议)', 'zh-TW': '🌏 未知 (點擊選擇訂閱國家與幣別建議)', en: '🌏 Unknown (select billing country & currency)' },
-      'plan.tag.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
-      'plan.tag.custom': { 'zh-CN': '自定义', 'zh-TW': '自訂', en: 'Custom' },
-      'plan.tag.promo': { 'zh-CN': '活动权益', 'zh-TW': '活動權益', en: 'Promo' },
-      'plan.tag.manualFree': { 'zh-CN': '手动确认 · 免费', 'zh-TW': '手動確認 · 免費', en: 'Manual · Free' },
-      'plan.tag.userPaid': { 'zh-CN': '用户实付', 'zh-TW': '使用者實付', en: 'Actual paid' },
-      'plan.tag.official': { 'zh-CN': '官方定价', 'zh-TW': '官方定價', en: 'Official price' },
-      'plan.tag.publicRef': { 'zh-CN': '公开参考价', 'zh-TW': '公開參考價', en: 'Public ref' },
-      'plan.tag.regionRef': { 'zh-CN': '地区参考价', 'zh-TW': '地區參考價', en: 'Regional ref' },
-      'plan.acq.normal': { 'zh-CN': '正常付费订阅', 'zh-TW': '正常付費訂閱', en: 'Standard Paid Plan' },
-      'plan.cycle.monthly': { 'zh-CN': '月付', 'zh-TW': '月繳', en: 'Monthly' },
-      'plan.cycle.yearly': { 'zh-CN': '年付', 'zh-TW': '年繳', en: 'Yearly' },
-      'plan.cycle.oneTime': { 'zh-CN': '单次', 'zh-TW': '單次', en: 'One-time' },
-      'plan.cny.approx': { 'zh-CN': '折合 ≈ {val}', 'zh-TW': '約 ≈ {val}', en: 'approx. {val}' },
-      'models.restartConfirm.title': { 'zh-CN': '重启 Antigravity 客户端', 'zh-TW': '重新啟動 Antigravity 用戶端', en: 'Restart Antigravity Client' },
-      'plan.price.modePreset': { 'zh-CN': '跟随参考价', 'zh-TW': '跟隨參考價', en: 'Use reference' },
-      'plan.price.modeCustom': { 'zh-CN': '自定义实付', 'zh-TW': '自訂實付', en: 'Custom paid' },
-      'plan.btn.editCustom': { 'zh-CN': '自定义订阅设置', 'zh-TW': '自訂訂閱設定', en: 'Customize plan' },
-      'plan.credits.avail': { 'zh-CN': '{avail} 可用 / {monthly} 月额度', 'zh-TW': '{avail} 可用 / {monthly} 月額度', en: '{avail} left / {monthly} monthly' },
-      'plan.validity.expired': { 'zh-CN': '至 {date} · ⚠️ 权益已到期', 'zh-TW': '至 {date} · ⚠️ 權益已到期', en: 'Until {date} · ⚠️ Expired' },
-      'plan.validity.active': { 'zh-CN': '至 {date} · 有效期内', 'zh-TW': '至 {date} · 有效期內', en: 'Until {date} · Active' },
-      'plan.form.title': { 'zh-CN': '设置当前账号订阅信息', 'zh-TW': '設定目前帳號訂閱資訊', en: 'Configure Account Subscription' },
-      'plan.form.acqLabel': { 'zh-CN': '获取方式 / 活动来源', 'zh-TW': '取得方式 / 活動來源', en: 'Acquisition / Promo Source' },
-      'plan.form.acqCustomLabel': { 'zh-CN': '自定义活动 / 合作方名称', 'zh-TW': '自訂活動 / 合作夥伴名稱', en: 'Custom Promo / Partner Name' },
-      'plan.form.acqCustomPh': { 'zh-CN': '选填，如 Pixel 11 Pro 赠送', 'zh-TW': '選填，如 Pixel 11 Pro 贈送', en: 'Optional, e.g. Pixel bundle' },
-      'plan.form.zeroExtra': { 'zh-CN': '本权益期间无需另付订阅费', 'zh-TW': '本權益期間無需另付訂閱費', en: 'No extra subscription fee during this period' },
-      'plan.form.presetLabel': { 'zh-CN': '预设订阅国家与汇率 (可选快捷套用)', 'zh-TW': '預設訂閱國家與匯率 (可選快速套用)', en: 'Region & Exchange Rate Preset (optional)' },
-      'plan.form.countryLabel': { 'zh-CN': '账号所在地区 (仅本地记录)', 'zh-TW': '帳號所在地區 (僅本機記錄)', en: 'Account Country (local only)' },
-      'plan.form.regionLabel': { 'zh-CN': '订阅国家 (购买/结算地区)', 'zh-TW': '訂閱國家 (購買/結算地區)', en: 'Billing Country' },
-      'plan.form.currencyLabel': { 'zh-CN': '订阅币种与实付金额', 'zh-TW': '訂閱幣別與實付金額', en: 'Currency & Paid Amount' },
-      'plan.form.paidPh': { 'zh-CN': '实付金额', 'zh-TW': '實付金額', en: 'Amount' },
-      'plan.form.cycleLabel': { 'zh-CN': '计费周期', 'zh-TW': '計費週期', en: 'Billing Cycle' },
-      'plan.form.validEndLabel': { 'zh-CN': '权益到期日', 'zh-TW': '權益到期日', en: 'Expiration Date' },
-      'plan.form.noteLabel': { 'zh-CN': '补充说明备注', 'zh-TW': '補充說明備註', en: 'Notes' },
-      'plan.form.notePh': { 'zh-CN': '例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车', 'zh-TW': '例如：Pixel 11 Pro 贈送 6 個月 / 家庭共享', en: 'e.g. Device promo / family sharing' },
-      'plan.form.clear': { 'zh-CN': '清除自定义', 'zh-TW': '清除自訂', en: 'Clear custom' },
-      'plan.form.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
-      'plan.form.save': { 'zh-CN': '保存', 'zh-TW': '儲存', en: 'Save' },
+  // 订阅详情与地区/币种选择
+  'plan.detail.toggleOpen': { 'zh-CN': '详情 ▼', 'zh-TW': '詳細資訊 ▼', en: 'Details ▼' },
+  'plan.detail.toggleClose': { 'zh-CN': '详情收回 ▲', 'zh-TW': '收回詳細資訊 ▲', en: 'Hide ▲' },
+  'plan.detail.title': { 'zh-CN': '💎 AI 订阅与额度详情', 'zh-TW': '💎 AI 訂閱與額度詳細資訊', en: '💎 AI Subscription & Credits' },
+  'plan.summary.identified': { 'zh-CN': '已自动识别', 'zh-TW': '已自動識別', en: 'Auto-detected' },
+  'plan.summary.custom': { 'zh-CN': '自定义生效', 'zh-TW': '自訂生效', en: 'Custom' },
+  'plan.summary.unknown': { 'zh-CN': '未识别/默认', 'zh-TW': '未識別/預設', en: 'Default / Unknown' },
+  'plan.summary.justNow': { 'zh-CN': '刚刚更新', 'zh-TW': '剛剛更新', en: 'Just now' },
+  'plan.summary.perMonth': { 'zh-CN': '/月', 'zh-TW': '/月', en: '/mo' },
+  'plan.summary.freeWithPlan': { 'zh-CN': '(随套餐免费)', 'zh-TW': '(隨方案免費)', en: '(Included)' },
+  'plan.dt.plan': { 'zh-CN': '当前套餐：', 'zh-TW': '目前方案：', en: 'Plan:' },
+  'plan.dt.account': { 'zh-CN': '当前账号：', 'zh-TW': '目前帳號：', en: 'Account:' },
+  'plan.dt.country': { 'zh-CN': '账号所在地区：', 'zh-TW': '帳號所在地區：', en: 'Account country:' },
+  'plan.dt.region': { 'zh-CN': '订阅国家：', 'zh-TW': '訂閱國家：', en: 'Billing country:' },
+  'plan.dt.currency': { 'zh-CN': '订阅币种：', 'zh-TW': '訂閱幣別：', en: 'Currency:' },
+  'plan.dt.acq': { 'zh-CN': '获取方式：', 'zh-TW': '取得方式：', en: 'Source:' },
+  'plan.dt.price': { 'zh-CN': '计费周期与价格：', 'zh-TW': '計費週期與價格：', en: 'Billing & price:' },
+  'plan.dt.validity': { 'zh-CN': '权益有效期：', 'zh-TW': '權益有效期限：', en: 'Valid until:' },
+  'plan.dt.note': { 'zh-CN': '补充备注：', 'zh-TW': '補充備註：', en: 'Note:' },
+  'plan.dt.promptCredits': { 'zh-CN': 'Prompt 额度池：', 'zh-TW': 'Prompt 額度池：', en: 'Prompt credits:' },
+  'plan.dt.flowCredits': { 'zh-CN': 'Flow 额度池：', 'zh-TW': 'Flow 額度池：', en: 'Flow credits:' },
+  'plan.dt.updated': { 'zh-CN': '状态更新时间：', 'zh-TW': '狀態更新時間：', en: 'Updated:' },
+  'plan.account.unknown': { 'zh-CN': '未识别当前登录邮箱', 'zh-TW': '未識別目前登入信箱', en: 'Signed-in email not detected' },
+  'plan.country.auto': { 'zh-CN': '🌐 未设置 / 自动', 'zh-TW': '🌐 未設定 / 自動', en: '🌐 Unset / Auto' },
+  'plan.region.unknown': { 'zh-CN': '🌏 未知 (点击选择订阅国家与币种建议)', 'zh-TW': '🌏 未知 (點擊選擇訂閱國家與幣別建議)', en: '🌏 Unknown (select billing country & currency)' },
+  'plan.tag.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
+  'plan.tag.custom': { 'zh-CN': '自定义', 'zh-TW': '自訂', en: 'Custom' },
+  'plan.tag.promo': { 'zh-CN': '活动权益', 'zh-TW': '活動權益', en: 'Promo' },
+  'plan.tag.manualFree': { 'zh-CN': '手动确认 · 免费', 'zh-TW': '手動確認 · 免費', en: 'Manual · Free' },
+  'plan.tag.userPaid': { 'zh-CN': '用户实付', 'zh-TW': '使用者實付', en: 'Actual paid' },
+  'plan.tag.official': { 'zh-CN': '官方定价', 'zh-TW': '官方定價', en: 'Official price' },
+  'plan.tag.publicRef': { 'zh-CN': '公开参考价', 'zh-TW': '公開參考價', en: 'Public ref' },
+  'plan.tag.regionRef': { 'zh-CN': '地区参考价', 'zh-TW': '地區參考價', en: 'Regional ref' },
+  'plan.acq.normal': { 'zh-CN': '正常付费订阅', 'zh-TW': '正常付費訂閱', en: 'Standard Paid Plan' },
+  'plan.cycle.monthly': { 'zh-CN': '月付', 'zh-TW': '月繳', en: 'Monthly' },
+  'plan.cycle.yearly': { 'zh-CN': '年付', 'zh-TW': '年繳', en: 'Yearly' },
+  'plan.cycle.oneTime': { 'zh-CN': '单次', 'zh-TW': '單次', en: 'One-time' },
+  'plan.cny.approx': { 'zh-CN': '折合 ≈ {val}', 'zh-TW': '約 ≈ {val}', en: 'approx. {val}' },
+  'models.restartConfirm.title': { 'zh-CN': '重启 Antigravity 客户端', 'zh-TW': '重新啟動 Antigravity 用戶端', en: 'Restart Antigravity Client' },
+  'plan.price.modePreset': { 'zh-CN': '跟随参考价', 'zh-TW': '跟隨參考價', en: 'Use reference' },
+  'plan.price.modeCustom': { 'zh-CN': '自定义实付', 'zh-TW': '自訂實付', en: 'Custom paid' },
+  'plan.btn.editCustom': { 'zh-CN': '自定义订阅设置', 'zh-TW': '自訂訂閱設定', en: 'Customize plan' },
+  'plan.credits.avail': { 'zh-CN': '{avail} 可用 / {monthly} 月额度', 'zh-TW': '{avail} 可用 / {monthly} 月額度', en: '{avail} left / {monthly} monthly' },
+  'plan.validity.expired': { 'zh-CN': '至 {date} · ⚠️ 权益已到期', 'zh-TW': '至 {date} · ⚠️ 權益已到期', en: 'Until {date} · ⚠️ Expired' },
+  'plan.validity.active': { 'zh-CN': '至 {date} · 有效期内', 'zh-TW': '至 {date} · 有效期內', en: 'Until {date} · Active' },
+  'plan.form.title': { 'zh-CN': '设置当前账号订阅信息', 'zh-TW': '設定目前帳號訂閱資訊', en: 'Configure Account Subscription' },
+  'plan.form.acqLabel': { 'zh-CN': '获取方式 / 活动来源', 'zh-TW': '取得方式 / 活動來源', en: 'Acquisition / Promo Source' },
+  'plan.form.acqCustomLabel': { 'zh-CN': '自定义活动 / 合作方名称', 'zh-TW': '自訂活動 / 合作夥伴名稱', en: 'Custom Promo / Partner Name' },
+  'plan.form.acqCustomPh': { 'zh-CN': '选填，如 Pixel 11 Pro 赠送', 'zh-TW': '選填，如 Pixel 11 Pro 贈送', en: 'Optional, e.g. Pixel bundle' },
+  'plan.form.zeroExtra': { 'zh-CN': '本权益期间无需另付订阅费', 'zh-TW': '本權益期間無需另付訂閱費', en: 'No extra subscription fee during this period' },
+  'plan.form.presetLabel': { 'zh-CN': '预设订阅国家与汇率 (可选快捷套用)', 'zh-TW': '預設訂閱國家與匯率 (可選快速套用)', en: 'Region & Exchange Rate Preset (optional)' },
+  'plan.form.countryLabel': { 'zh-CN': '账号所在地区 (仅本地记录)', 'zh-TW': '帳號所在地區 (僅本機記錄)', en: 'Account Country (local only)' },
+  'plan.form.regionLabel': { 'zh-CN': '订阅国家 (购买/结算地区)', 'zh-TW': '訂閱國家 (購買/結算地區)', en: 'Billing Country' },
+  'plan.form.currencyLabel': { 'zh-CN': '订阅币种与实付金额', 'zh-TW': '訂閱幣別與實付金額', en: 'Currency & Paid Amount' },
+  'plan.form.paidPh': { 'zh-CN': '实付金额', 'zh-TW': '實付金額', en: 'Amount' },
+  'plan.form.cycleLabel': { 'zh-CN': '计费周期', 'zh-TW': '計費週期', en: 'Billing Cycle' },
+  'plan.form.validEndLabel': { 'zh-CN': '权益到期日', 'zh-TW': '權益到期日', en: 'Expiration Date' },
+  'plan.form.noteLabel': { 'zh-CN': '补充说明备注', 'zh-TW': '補充說明備註', en: 'Notes' },
+  'plan.form.notePh': { 'zh-CN': '例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车', 'zh-TW': '例如：Pixel 11 Pro 贈送 6 個月 / 家庭共享', en: 'e.g. Device promo / family sharing' },
+  'plan.form.clear': { 'zh-CN': '清除自定义', 'zh-TW': '清除自訂', en: 'Clear custom' },
+  'plan.form.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
+  'plan.form.save': { 'zh-CN': '保存', 'zh-TW': '儲存', en: 'Save' },
 
-      // API 参考金额与展开详情
-      'cost.title': { 'zh-CN': '💰 本期 API 参考金额', 'zh-TW': '💰 本期 API 參考金額', en: '💰 Period API Reference Cost' },
-      'cost.periodTag': { 'zh-CN': '本月自然月', 'zh-TW': '本月自然月', en: 'This Calendar Month' },
-      'cost.nonPaidBadge': { 'zh-CN': 'API折算 · 非实付', 'zh-TW': 'API換算 · 非實付', en: 'API Est. · Not Billed' },
-      'cost.subUnknown': { 'zh-CN': '订阅实付：未填写', 'zh-TW': '訂閱實付：未填寫', en: 'Plan paid: Not set' },
-      'cost.btnFill': { 'zh-CN': '补充', 'zh-TW': '補充', en: 'Edit' },
-      'cost.btnExpand': { 'zh-CN': '展开详情 ▼', 'zh-TW': '展開詳細資訊 ▼', en: 'Show details ▼' },
-      'cost.btnCollapse': { 'zh-CN': '收起详情 ▴', 'zh-TW': '收起詳細資訊 ▴', en: 'Hide details ▴' },
-      'cost.scopeLabel': { 'zh-CN': '统计范围:', 'zh-TW': '統計範圍:', en: 'Scope:' },
-      'cost.scopePeriod': { 'zh-CN': '本期', 'zh-TW': '本期', en: 'This period' },
-      'cost.scopeAll': { 'zh-CN': '全量历史', 'zh-TW': '完整歷史紀錄', en: 'All history' },
-      'cost.modeLabel': { 'zh-CN': '估值模式:', 'zh-TW': '估算模式:', en: 'Pricing mode:' },
-      'cost.modeRef': { 'zh-CN': '参考模型估算', 'zh-TW': '參考模型估算', en: 'Reference model' },
-      'cost.modeHybrid': { 'zh-CN': '混合模式', 'zh-TW': '混合模式', en: 'Hybrid' },
-      'cost.modeIdentified': { 'zh-CN': '仅已识别模型', 'zh-TW': '僅已識別模型', en: 'Identified only' },
-      'cost.card.input': { 'zh-CN': '输入 Token', 'zh-TW': '輸入 Token', en: 'Input Tokens' },
-      'cost.card.cache': { 'zh-CN': '缓存读取 (优惠)', 'zh-TW': '快取讀取 (優惠)', en: 'Cache Read (discounted)' },
-      'cost.card.output': { 'zh-CN': '输出 Token', 'zh-TW': '輸出 Token', en: 'Output Tokens' },
-      'cost.analyzing': { 'zh-CN': '正在分析请求模型与计价覆盖率…', 'zh-TW': '正在分析請求模型與計價覆蓋率…', en: 'Analyzing model calls and pricing coverage…' },
-      'cost.disclaimer': {
-        'zh-CN': '注：此折算反映按公开零售价调用同等资源之费用，包月订阅/活动赠送与 API 零售非同类计费模式，该差额不等于真实节省现金；缓存读取按 10% 优惠计价；不含缓存存储费与搜索落地费用。缓存可在多次请求中重复读取相同上下文，该总量不代表独立文本量或用户输入字数。',
-        'zh-TW': '註：此換算反映依公開零售價呼叫同等資源之費用，包月訂閱/活動贈送與 API 零售非同類計費模式，該差額不等於真實節省現金；快取讀取依 10% 優惠計價；不含快取儲存費與搜尋落地費用。快取可在多次請求中重複讀取相同上下文，該總量不代表獨立文字量或使用者輸入字數。',
-        en: 'Note: Estimates reflect public API retail rates for equivalent usage. Subscriptions/promos differ from pay-as-you-go API billing; differences do not equal cash saved. Cache reads are priced at 10%; storage and grounding fees are excluded. Repeated cache reads do not represent unique text.'
-      },
+  // API 参考金额与展开详情
+  'cost.title': { 'zh-CN': '💰 本期 API 参考金额', 'zh-TW': '💰 本期 API 參考金額', en: '💰 Period API Reference Cost' },
+  'cost.periodTag': { 'zh-CN': '本月自然月', 'zh-TW': '本月自然月', en: 'This Calendar Month' },
+  'cost.nonPaidBadge': { 'zh-CN': 'API折算 · 非实付', 'zh-TW': 'API換算 · 非實付', en: 'API Est. · Not Billed' },
+  'cost.subUnknown': { 'zh-CN': '订阅实付：未填写', 'zh-TW': '訂閱實付：未填寫', en: 'Plan paid: Not set' },
+  'cost.btnFill': { 'zh-CN': '补充', 'zh-TW': '補充', en: 'Edit' },
+  'cost.btnExpand': { 'zh-CN': '展开详情 ▼', 'zh-TW': '展開詳細資訊 ▼', en: 'Show details ▼' },
+  'cost.btnCollapse': { 'zh-CN': '收起详情 ▴', 'zh-TW': '收起詳細資訊 ▴', en: 'Hide details ▴' },
+  'cost.scopeLabel': { 'zh-CN': '统计范围:', 'zh-TW': '統計範圍:', en: 'Scope:' },
+  'cost.scopePeriod': { 'zh-CN': '本期', 'zh-TW': '本期', en: 'This period' },
+  'cost.scopeAll': { 'zh-CN': '全量历史', 'zh-TW': '完整歷史紀錄', en: 'All history' },
+  'cost.modeLabel': { 'zh-CN': '估值模式:', 'zh-TW': '估算模式:', en: 'Pricing mode:' },
+  'cost.modeRef': { 'zh-CN': '参考模型估算', 'zh-TW': '參考模型估算', en: 'Reference model' },
+  'cost.modeHybrid': { 'zh-CN': '混合模式', 'zh-TW': '混合模式', en: 'Hybrid' },
+  'cost.modeIdentified': { 'zh-CN': '仅已识别模型', 'zh-TW': '僅已識別模型', en: 'Identified only' },
+  'cost.card.input': { 'zh-CN': '输入 Token', 'zh-TW': '輸入 Token', en: 'Input Tokens' },
+  'cost.card.cache': { 'zh-CN': '缓存读取 (优惠)', 'zh-TW': '快取讀取 (優惠)', en: 'Cache Read (discounted)' },
+  'cost.card.output': { 'zh-CN': '输出 Token', 'zh-TW': '輸出 Token', en: 'Output Tokens' },
+  'cost.analyzing': { 'zh-CN': '正在分析请求模型与计价覆盖率…', 'zh-TW': '正在分析請求模型與計價覆蓋率…', en: 'Analyzing model calls and pricing coverage…' },
+  'cost.disclaimer': {
+    'zh-CN': '注：此折算反映按公开零售价调用同等资源之费用，包月订阅/活动赠送与 API 零售非同类计费模式，该差额不等于真实节省现金；缓存读取按 10% 优惠计价；不含缓存存储费与搜索落地费用。缓存可在多次请求中重复读取相同上下文，该总量不代表独立文本量或用户输入字数。',
+    'zh-TW': '註：此換算反映依公開零售價呼叫同等資源之費用，包月訂閱/活動贈送與 API 零售非同類計費模式，該差額不等於真實節省現金；快取讀取依 10% 優惠計價；不含快取儲存費與搜尋落地費用。快取可在多次請求中重複讀取相同上下文，該總量不代表獨立文字量或使用者輸入字數。',
+    en: 'Note: Estimates reflect public API retail rates for equivalent usage. Subscriptions/promos differ from pay-as-you-go API billing; differences do not equal cash saved. Cache reads are priced at 10%; storage and grounding fees are excluded. Repeated cache reads do not represent unique text.'
+  },
 
-      // Token 统计与热力图控制
-      'tokens.titleCost': { 'zh-CN': 'API 价格折算', 'zh-TW': 'API 價格換算', en: 'API Equivalent Cost' },
-      'tokens.firstUse': { 'zh-CN': '首次使用：{date}', 'zh-TW': '首次使用：{date}', en: 'First use: {date}' },
-      'tokens.heat.presetLabel': { 'zh-CN': '5 档色阶预设：', 'zh-TW': '5 檔色階預設：', en: '5-step presets:' },
-      'tokens.heat.presetPurple': { 'zh-CN': '紫色系', 'zh-TW': '紫色系', en: 'Purple' },
-      'tokens.heat.presetYellow': { 'zh-CN': '黄色系', 'zh-TW': '黃色系', en: 'Yellow' },
-      'tokens.heat.presetGreen': { 'zh-CN': '绿色系', 'zh-TW': '綠色系', en: 'Green' },
-      'tokens.heat.presetBlue': { 'zh-CN': '蓝色系', 'zh-TW': '藍色系', en: 'Blue' },
-      'tokens.heat.presetRed': { 'zh-CN': '红色系', 'zh-TW': '紅色系', en: 'Red' },
-      'tokens.heat.customTitle': { 'zh-CN': '5 档逐格独立自定义（点击任意一格或图例「少 ▢▢▢▢▢ 多」单独调色，可设 5 种不同颜色）：', 'zh-TW': '5 檔逐格獨立自訂（點擊任意一格或圖例「少 ▢▢▢▢▢ 多」單獨調色，可設 5 種不同顏色）：', en: 'Customize each of the 5 steps independently:' },
-      'tokens.heat.resetLvls': { 'zh-CN': '恢复 5 档预设', 'zh-TW': '還原 5 檔預設', en: 'Reset 5 steps' },
-      'tokens.heat.lvl0': { 'zh-CN': '1档 · 少/无', 'zh-TW': '1檔 · 少/無', en: 'L1 · None/Min' },
-      'tokens.heat.lvl1': { 'zh-CN': '2档 · 低', 'zh-TW': '2檔 · 低', en: 'L2 · Low' },
-      'tokens.heat.lvl2': { 'zh-CN': '3档 · 中', 'zh-TW': '3檔 · 中', en: 'L3 · Med' },
-      'tokens.heat.lvl3': { 'zh-CN': '4档 · 高', 'zh-TW': '4檔 · 高', en: 'L4 · High' },
-      'tokens.heat.lvl4': { 'zh-CN': '5档 · 多/峰', 'zh-TW': '5檔 · 多/尖峰', en: 'L5 · Peak' },
-      'tokens.heat.btnPreset': { 'zh-CN': '预设', 'zh-TW': '預設', en: 'Preset' },
-      'tokens.heat.lowEnd': { 'zh-CN': '色阶「少」端颜色（自动插值）', 'zh-TW': '色階「少」端顏色（自動插值）', en: 'Low end color (auto-interpolated)' },
-      'tokens.heat.highEnd': { 'zh-CN': '色阶「多」端颜色（自动插值）', 'zh-TW': '色階「多」端顏色（自動插值）', en: 'High end color (auto-interpolated)' },
-      'tokens.heat.panelBg': { 'zh-CN': '面板与菜单统一背景色', 'zh-TW': '面板與選單統一背景色', en: 'Unified panel background' },
-      'tokens.heat.accentColors': { 'zh-CN': '累计与强调指标色', 'zh-TW': '累計與強調指標色', en: 'Total & accent colors' },
-      'tokens.colors.followTheme': { 'zh-CN': '跟随主题', 'zh-TW': '跟隨佈景主題', en: 'Follow theme' },
+  // Token 统计与热力图控制
+  'tokens.titleCost': { 'zh-CN': 'API 价格折算', 'zh-TW': 'API 價格換算', en: 'API Equivalent Cost' },
+  'tokens.firstUse': { 'zh-CN': '首次使用：{date}', 'zh-TW': '首次使用：{date}', en: 'First use: {date}' },
+  'tokens.heat.presetLabel': { 'zh-CN': '5 档色阶预设：', 'zh-TW': '5 檔色階預設：', en: '5-step presets:' },
+  'tokens.heat.presetPurple': { 'zh-CN': '紫色系', 'zh-TW': '紫色系', en: 'Purple' },
+  'tokens.heat.presetYellow': { 'zh-CN': '黄色系', 'zh-TW': '黃色系', en: 'Yellow' },
+  'tokens.heat.presetGreen': { 'zh-CN': '绿色系', 'zh-TW': '綠色系', en: 'Green' },
+  'tokens.heat.presetBlue': { 'zh-CN': '蓝色系', 'zh-TW': '藍色系', en: 'Blue' },
+  'tokens.heat.presetRed': { 'zh-CN': '红色系', 'zh-TW': '紅色系', en: 'Red' },
+  'tokens.heat.customTitle': { 'zh-CN': '5 档逐格独立自定义（点击任意一格或图例「少 ▢▢▢▢▢ 多」单独调色，可设 5 种不同颜色）：', 'zh-TW': '5 檔逐格獨立自訂（點擊任意一格或圖例「少 ▢▢▢▢▢ 多」單獨調色，可設 5 種不同顏色）：', en: 'Customize each of the 5 steps independently:' },
+  'tokens.heat.resetLvls': { 'zh-CN': '恢复 5 档预设', 'zh-TW': '還原 5 檔預設', en: 'Reset 5 steps' },
+  'tokens.heat.lvl0': { 'zh-CN': '1档 · 少/无', 'zh-TW': '1檔 · 少/無', en: 'L1 · None/Min' },
+  'tokens.heat.lvl1': { 'zh-CN': '2档 · 低', 'zh-TW': '2檔 · 低', en: 'L2 · Low' },
+  'tokens.heat.lvl2': { 'zh-CN': '3档 · 中', 'zh-TW': '3檔 · 中', en: 'L3 · Med' },
+  'tokens.heat.lvl3': { 'zh-CN': '4档 · 高', 'zh-TW': '4檔 · 高', en: 'L4 · High' },
+  'tokens.heat.lvl4': { 'zh-CN': '5档 · 多/峰', 'zh-TW': '5檔 · 多/尖峰', en: 'L5 · Peak' },
+  'tokens.heat.btnPreset': { 'zh-CN': '预设', 'zh-TW': '預設', en: 'Preset' },
+  'tokens.heat.lowEnd': { 'zh-CN': '色阶「少」端颜色（自动插值）', 'zh-TW': '色階「少」端顏色（自動插值）', en: 'Low end color (auto-interpolated)' },
+  'tokens.heat.highEnd': { 'zh-CN': '色阶「多」端颜色（自动插值）', 'zh-TW': '色階「多」端顏色（自動插值）', en: 'High end color (auto-interpolated)' },
+  'tokens.heat.panelBg': { 'zh-CN': '面板与菜单统一背景色', 'zh-TW': '面板與選單統一背景色', en: 'Unified panel background' },
+  'tokens.heat.accentColors': { 'zh-CN': '累计与强调指标色', 'zh-TW': '累計與強調指標色', en: 'Total & accent colors' },
+  'tokens.colors.followTheme': { 'zh-CN': '跟随主题', 'zh-TW': '跟隨佈景主題', en: 'Follow theme' },
 
-      // 动态费用明细与 Token 卡片补齐
-      'cost.titleAll': { 'zh-CN': '💰 全量 API 参考金额', 'zh-TW': '💰 全量 API 參考金額', en: '💰 All-Time API Reference Cost' },
-      'cost.allHistory': { 'zh-CN': '全历史累计', 'zh-TW': '全歷史累計', en: 'All history' },
-      'cost.approx': { 'zh-CN': '约 ${val}', 'zh-TW': '約 ${val}', en: '~${val}' },
-      'cost.notReady': { 'zh-CN': '数据未就绪', 'zh-TW': '資料尚未就緒', en: 'Not ready' },
-      'cost.noRecords': { 'zh-CN': '暂无记录', 'zh-TW': '暫無記錄', en: 'No records' },
-      'cost.unpriced': { 'zh-CN': '暂无法估值', 'zh-TW': '暫無法估值', en: 'Unpriced' },
-      'cost.refSub': { 'zh-CN': '统一按 {model} 估算 (输入 ${in} / 缓存 ${ca} / 输出 ${out} 每百万 Token)', 'zh-TW': '統一依 {model} 估算 (輸入 ${in} / 快取 ${ca} / 輸出 ${out} 每百萬 Token)', en: 'Estimated via {model} (In ${in} / Cache ${ca} / Out ${out} per 1M)' },
-      'cost.hybridSub': { 'zh-CN': '混合模式：已识别 ${known} + 未知折算 ${res}', 'zh-TW': '混合模式：已識別 ${known} + 未知換算 ${res}', en: 'Hybrid: Identified ${known} + Residual ${res}' },
-      'cost.hybridBadge': { 'zh-CN': '混合模式折算', 'zh-TW': '混合模式換算', en: 'Hybrid mode' },
-      'cost.identSub': { 'zh-CN': '仅计入 {n} 条已知真实模型调用', 'zh-TW': '僅計入 {n} 筆已知真實模型呼叫', en: 'Only {n} identified model call(s) included' },
-      'cost.identSubNone': { 'zh-CN': '当前范围内请求缺少模型型号（未按 $0 计入）', 'zh-TW': '目前範圍內請求缺少模型型號（未按 $0 計入）', en: 'Requests lack model IDs (not counted as $0)' },
-      'cost.covPct': { 'zh-CN': '{pct}% 计价覆盖', 'zh-TW': '{pct}% 計價覆蓋', en: '{pct}% priced' },
-      'cost.tokCacheDiscount': { 'zh-CN': '{tok} tok (优惠)', 'zh-TW': '{tok} tok (優惠)', en: '{tok} tok (disc.)' },
-      'cost.tokResidual': { 'zh-CN': '剩余 {tok} tok', 'zh-TW': '剩餘 {tok} tok', en: 'Rem. {tok} tok' },
-      'cost.usageSummary': { 'zh-CN': '累计处理 Token: {total} (含 {cache} 缓存读取)', 'zh-TW': '累計處理 Token: {total} (含 {cache} 快取讀取)', en: 'Total tokens: {total} (incl. {cache} cache)' },
-      'cost.diffAll': { 'zh-CN': '全量累计不直接与单月费用做差额比较 · 避免跨月虚高', 'zh-TW': '全量累計不直接與單月費用做差額比較 · 避免跨月虛高', en: 'All-time totals are not compared against monthly fees' },
-      'cost.diffFree': { 'zh-CN': '与此 API 方案参考差额 约 +${val} (免费权益使用中 · 不计算无限倍数)', 'zh-TW': '與此 API 方案參考差額 約 +${val} (免費權益使用中 · 不計算無限倍數)', en: 'Diff vs API: ~+${val} (free promo active)' },
-      'cost.diffPaid': { 'zh-CN': '与此 API 方案参考差额 {sign}${val} (API折算 - 实际支出 · 仅供参考比较)', 'zh-TW': '與此 API 方案參考差額 {sign}${val} (API換算 - 實際支出 · 僅供參考比較)', en: 'Diff vs API: {sign}${val} (API est. - paid · reference only)' },
-      'cost.diffUnknown': { 'zh-CN': '跨币种或实付未知 · 并列展示不计算差额', 'zh-TW': '跨幣別或實付未知 · 並列顯示不計算差額', en: 'Cross-currency or paid amount unknown' },
-      'cost.subLineFree': { 'zh-CN': '订阅额外实付：{sym}0 ({src})', 'zh-TW': '訂閱額外實付：{sym}0 ({src})', en: 'Extra plan paid: {sym}0 ({src})' },
-      'cost.subLinePaid': { 'zh-CN': '订阅实付：{sym}{val}{cny} ({cycle}{exp})', 'zh-TW': '訂閱實付：{sym}{val}{cny} ({cycle}{exp})', en: 'Plan paid: {sym}{val}{cny} ({cycle}{exp})' },
-      'cost.breakdownPrefix': { 'zh-CN': '已识别真实模型明细：{details}{note}。', 'zh-TW': '已識別真實模型明細：{details}{note}。', en: 'Identified models: {details}{note}.' },
-      'cost.breakdownNone': { 'zh-CN': '暂无已匹配真实模型', 'zh-TW': '暫無已匹配真實模型', en: 'No matched model calls yet' },
-      'tokens.dailyAvg': { 'zh-CN': ' · 日均 ${val}', 'zh-TW': ' · 日均 ${val}', en: ' · Avg ${val}/d' },
-      'tokens.firstUseNone': { 'zh-CN': '首次使用：--', 'zh-TW': '首次使用：--', en: 'First use: --' },
-      'tokens.srcAllLabel': { 'zh-CN': '全部来源', 'zh-TW': '全部來源', en: 'All Sources' },
-      'tokens.srcDesktopLabel': { 'zh-CN': '桌面端', 'zh-TW': '桌面端', en: 'Desktop' },
+  // 动态费用明细与 Token 卡片补齐
+  'cost.titleAll': { 'zh-CN': '💰 全量 API 参考金额', 'zh-TW': '💰 全量 API 參考金額', en: '💰 All-Time API Reference Cost' },
+  'cost.allHistory': { 'zh-CN': '全历史累计', 'zh-TW': '全歷史累計', en: 'All history' },
+  'cost.approx': { 'zh-CN': '约 ${val}', 'zh-TW': '約 ${val}', en: '~${val}' },
+  'cost.notReady': { 'zh-CN': '数据未就绪', 'zh-TW': '資料尚未就緒', en: 'Not ready' },
+  'cost.noRecords': { 'zh-CN': '暂无记录', 'zh-TW': '暫無記錄', en: 'No records' },
+  'cost.unpriced': { 'zh-CN': '暂无法估值', 'zh-TW': '暫無法估值', en: 'Unpriced' },
+  'cost.refSub': { 'zh-CN': '统一按 {model} 估算 (输入 ${in} / 缓存 ${ca} / 输出 ${out} 每百万 Token)', 'zh-TW': '統一依 {model} 估算 (輸入 ${in} / 快取 ${ca} / 輸出 ${out} 每百萬 Token)', en: 'Estimated via {model} (In ${in} / Cache ${ca} / Out ${out} per 1M)' },
+  'cost.hybridSub': { 'zh-CN': '混合模式：已识别 ${known} + 未知折算 ${res}', 'zh-TW': '混合模式：已識別 ${known} + 未知換算 ${res}', en: 'Hybrid: Identified ${known} + Residual ${res}' },
+  'cost.hybridBadge': { 'zh-CN': '混合模式折算', 'zh-TW': '混合模式換算', en: 'Hybrid mode' },
+  'cost.identSub': { 'zh-CN': '仅计入 {n} 条已知真实模型调用', 'zh-TW': '僅計入 {n} 筆已知真實模型呼叫', en: 'Only {n} identified model call(s) included' },
+  'cost.identSubNone': { 'zh-CN': '当前范围内请求缺少模型型号（未按 $0 计入）', 'zh-TW': '目前範圍內請求缺少模型型號（未按 $0 計入）', en: 'Requests lack model IDs (not counted as $0)' },
+  'cost.covPct': { 'zh-CN': '{pct}% 计价覆盖', 'zh-TW': '{pct}% 計價覆蓋', en: '{pct}% priced' },
+  'cost.tokCacheDiscount': { 'zh-CN': '{tok} tok (优惠)', 'zh-TW': '{tok} tok (優惠)', en: '{tok} tok (disc.)' },
+  'cost.tokResidual': { 'zh-CN': '剩余 {tok} tok', 'zh-TW': '剩餘 {tok} tok', en: 'Rem. {tok} tok' },
+  'cost.usageSummary': { 'zh-CN': '累计处理 Token: {total} (含 {cache} 缓存读取)', 'zh-TW': '累計處理 Token: {total} (含 {cache} 快取讀取)', en: 'Total tokens: {total} (incl. {cache} cache)' },
+  'cost.diffAll': { 'zh-CN': '全量累计不直接与单月费用做差额比较 · 避免跨月虚高', 'zh-TW': '全量累計不直接與單月費用做差額比較 · 避免跨月虛高', en: 'All-time totals are not compared against monthly fees' },
+  'cost.diffFree': { 'zh-CN': '与此 API 方案参考差额 约 +${val} (免费权益使用中 · 不计算无限倍数)', 'zh-TW': '與此 API 方案參考差額 約 +${val} (免費權益使用中 · 不計算無限倍數)', en: 'Diff vs API: ~+${val} (free promo active)' },
+  'cost.diffPaid': { 'zh-CN': '与此 API 方案参考差额 {sign}${val} (API折算 - 实际支出 · 仅供参考比较)', 'zh-TW': '與此 API 方案參考差額 {sign}${val} (API換算 - 實際支出 · 僅供參考比較)', en: 'Diff vs API: {sign}${val} (API est. - paid · reference only)' },
+  'cost.diffUnknown': { 'zh-CN': '跨币种或实付未知 · 并列展示不计算差额', 'zh-TW': '跨幣別或實付未知 · 並列顯示不計算差額', en: 'Cross-currency or paid amount unknown' },
+  'cost.subLineFree': { 'zh-CN': '订阅额外实付：{sym}0 ({src})', 'zh-TW': '訂閱額外實付：{sym}0 ({src})', en: 'Extra plan paid: {sym}0 ({src})' },
+  'cost.subLinePaid': { 'zh-CN': '订阅实付：{sym}{val}{cny} ({cycle}{exp})', 'zh-TW': '訂閱實付：{sym}{val}{cny} ({cycle}{exp})', en: 'Plan paid: {sym}{val}{cny} ({cycle}{exp})' },
+  'cost.breakdownPrefix': { 'zh-CN': '已识别真实模型明细：{details}{note}。', 'zh-TW': '已識別真實模型明細：{details}{note}。', en: 'Identified models: {details}{note}.' },
+  'cost.breakdownNone': { 'zh-CN': '暂无已匹配真实模型', 'zh-TW': '暫無已匹配真實模型', en: 'No matched model calls yet' },
+  'tokens.dailyAvg': { 'zh-CN': ' · 日均 ${val}', 'zh-TW': ' · 日均 ${val}', en: ' · Avg ${val}/d' },
+  'tokens.firstUseNone': { 'zh-CN': '首次使用：--', 'zh-TW': '首次使用：--', en: 'First use: --' },
+  'tokens.srcAllLabel': { 'zh-CN': '全部来源', 'zh-TW': '全部來源', en: 'All Sources' },
+  'tokens.srcDesktopLabel': { 'zh-CN': '桌面端', 'zh-TW': '桌面端', en: 'Desktop' },
 
-      // 模型卡片/解锁/异常状态与动态文案补齐
-      'models.status.savedPendingDispatch': { 'zh-CN': '已保存，下一次发送时尝试应用', 'zh-TW': '已儲存，下一次發送時嘗試套用', en: 'Saved; will attempt to apply on next message' },
-      'models.status.dispatchedPendingConfirm': { 'zh-CN': '已发送设置，等待确认', 'zh-TW': '已發送設定，等待確認', en: 'Setting dispatched; awaiting confirmation' },
-      'models.status.confirmed': { 'zh-CN': '实际预算已确认', 'zh-TW': '實際預算已確認', en: 'Observed budget confirmed' },
-      'models.status.mismatch': { 'zh-CN': '未生效：目标值与观测值不一致', 'zh-TW': '未生效：目標值與觀測值不一致', en: 'Not active: target differs from observed budget' },
-      'panel.ctx.currentModelUnconfirmed': { 'zh-CN': '当前会话模型待确认（请在输入框选择模型或发送消息）', 'zh-TW': '目前工作階段模型待確認（請在輸入框選擇模型或發送訊息）', en: 'Active model pending confirmation (select a model or send a message first)' },
-      'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
-      'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
-      'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
-      'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
-      'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
-      'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
-      'models.pref.none': { 'zh-CN': '未单独设置（使用默认）', 'zh-TW': '未單獨設定（使用預設）', en: 'Not set (Default)' },
-      'models.pref.noneShort': { 'zh-CN': '默认', 'zh-TW': '預設', en: 'Default' },
-      'models.pref.inconsistent': { 'zh-CN': '档位设置不一致', 'zh-TW': '檔位設定不一致', en: 'Effort mismatch' },
-      'models.card.waiting': { 'zh-CN': '等待读取模型…', 'zh-TW': '等待讀取模型…', en: 'Waiting for model…' },
-      'models.card.effortsEmpty': { 'zh-CN': '可用档位：—', 'zh-TW': '可用檔位：—', en: 'Efforts: —' },
-      'models.card.effortsList': { 'zh-CN': '可用档位：{list}', 'zh-TW': '可用檔位：{list}', en: 'Efforts: {list}' },
-      'models.card.effortStandard': { 'zh-CN': '可用档位：标准', 'zh-TW': '可用檔位：標準', en: 'Efforts: Standard' },
-      'models.card.sessionEffort': { 'zh-CN': '当前会话：{effort}', 'zh-TW': '目前會話：{effort}', en: 'Session: {effort}' },
-      'models.toast.savedUniform': { 'zh-CN': '已为该模型保存统一设置。', 'zh-TW': '已為該模型儲存統一設定。', en: 'Saved uniform setting for this model.' },
-      'models.toast.saveFailed': { 'zh-CN': '保存统一设置失败：{err}', 'zh-TW': '儲存統一設定失敗：{err}', en: 'Failed to save uniform setting: {err}' },
-      'models.input.phFollow': { 'zh-CN': '当前为跟随模型（可点 512K 或输入整数）', 'zh-TW': '目前為跟隨模型（可點 512K 或輸入整數）', en: 'Follow model (click 512K or enter integer)' },
-      'models.input.phDefault': { 'zh-CN': '当前为默认（可点 512K 或输入整数）', 'zh-TW': '目前為預設（可點 512K 或輸入整數）', en: 'Default (click 512K or enter integer)' },
-      'models.input.validFixed': { 'zh-CN': '将设定固定长度：{short}（{full} tokens）', 'zh-TW': '將設定固定長度：{short}（{full} tokens）', en: 'Will set fixed limit: {short} ({full} tokens)' },
-      'models.err.noSettingsBridge': { 'zh-CN': '未连接到宿主设置桥接', 'zh-TW': '未連線到宿主設定橋接', en: 'Not connected to host settings bridge' },
-      'models.err.noApplyBridge': { 'zh-CN': '未连接到客户端设置桥接', 'zh-TW': '未連線到用戶端設定橋接', en: 'Not connected to client settings bridge' },
-      'models.err.noModels': { 'zh-CN': '尚未检测到可选模型，请先开启对话或等待列表读取。', 'zh-TW': '尚未偵測到可選模型，請先開啟對話或等待清單讀取。', en: 'No models detected yet. Start a chat or wait for the list.' },
-      'models.err.saveFailed': { 'zh-CN': '保存失败', 'zh-TW': '儲存失敗', en: 'Save failed' },
-      'models.status.line': { 'zh-CN': '当前状态：{badge} · 配置：{mode}', 'zh-TW': '目前狀態：{badge} · 設定：{mode}', en: 'Status: {badge} · Mode: {mode}' },
-      'status.client.unavailable': { 'zh-CN': '当前环境无法读取客户端状态', 'zh-TW': '目前環境無法讀取用戶端狀態', en: 'Unable to read client status in this environment' },
-      'models.status.restartMismatch': { 'zh-CN': '重启后读到的设置与目标不同（实际：{actual}）', 'zh-TW': '重啟後讀到的設定與目標不同（實際：{actual}）', en: 'Post-restart config differs from target (actual: {actual})' },
-      'models.meta.targetDesktop': { 'zh-CN': '桌面端核心服务', 'zh-TW': '桌面端核心服務', en: 'Desktop Core Service' },
-      'models.meta.targetDesktopArch': { 'zh-CN': '桌面端核心服务 ({arch})', 'zh-TW': '桌面端核心服務 ({arch})', en: 'Desktop Core Service ({arch})' },
-      'models.meta.archUnknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-      'models.meta.backupStale': { 'zh-CN': '客户端已更新，历史备份已过期', 'zh-TW': '用戶端已更新，歷史備份已過期', en: 'Client updated; legacy backup expired' },
-      'models.meta.backupReady': { 'zh-CN': '已自动备份原始文件', 'zh-TW': '已自動備份原始檔案', en: 'Original binary backed up' },
-      'models.meta.backupNone': { 'zh-CN': '尚未产生备份（首次修改前自动备份）', 'zh-TW': '尚未產生備份（首次修改前自動備份）', en: 'No backup yet (created before first patch)' },
-      'models.credit.openedBrowser': { 'zh-CN': '已在系统默认浏览器中打开原作者帖子', 'zh-TW': '已在系統預設瀏覽器中開啟原作者貼文', en: 'Opened author thread in default browser' },
-      'models.credit.openFallback': { 'zh-CN': '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。', 'zh-TW': '無法直接開啟外部瀏覽器，原作者貼文連結已複製到剪貼簿，可直接在瀏覽器貼上存取。', en: 'Could not launch browser; link copied to clipboard.' },
-      'models.credit.copiedLink': { 'zh-CN': '已复制原作者帖子链接', 'zh-TW': '已複製原作者貼文連結', en: 'Author thread link copied' },
+  // 模型卡片/解锁/异常状态与动态文案补齐
+  'models.status.savedPendingDispatch': { 'zh-CN': '已保存，下一次发送时尝试应用', 'zh-TW': '已儲存，下一次發送時嘗試套用', en: 'Saved; will attempt to apply on next message' },
+  'models.status.dispatchedPendingConfirm': { 'zh-CN': '已发送设置，等待确认', 'zh-TW': '已發送設定，等待確認', en: 'Setting dispatched; awaiting confirmation' },
+  'models.status.confirmed': { 'zh-CN': '实际预算已确认', 'zh-TW': '實際預算已確認', en: 'Observed budget confirmed' },
+  'models.status.mismatch': { 'zh-CN': '未生效：目标值与观测值不一致', 'zh-TW': '未生效：目標值與觀測值不一致', en: 'Not active: target differs from observed budget' },
+  'panel.ctx.currentModelUnconfirmed': { 'zh-CN': '当前会话模型待确认（请在输入框选择模型或发送消息）', 'zh-TW': '目前工作階段模型待確認（請在輸入框選擇模型或發送訊息）', en: 'Active model pending confirmation (select a model or send a message first)' },
+  'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
+  'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
+  'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
+  'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
+  'models.pref.none': { 'zh-CN': '未单独设置（使用默认）', 'zh-TW': '未單獨設定（使用預設）', en: 'Not set (Default)' },
+  'models.pref.noneShort': { 'zh-CN': '默认', 'zh-TW': '預設', en: 'Default' },
+  'models.pref.inconsistent': { 'zh-CN': '档位设置不一致', 'zh-TW': '檔位設定不一致', en: 'Effort mismatch' },
+  'models.card.waiting': { 'zh-CN': '等待读取模型…', 'zh-TW': '等待讀取模型…', en: 'Waiting for model…' },
+  'models.card.effortsEmpty': { 'zh-CN': '可用档位：—', 'zh-TW': '可用檔位：—', en: 'Efforts: —' },
+  'models.card.effortsList': { 'zh-CN': '可用档位：{list}', 'zh-TW': '可用檔位：{list}', en: 'Efforts: {list}' },
+  'models.card.effortStandard': { 'zh-CN': '可用档位：标准', 'zh-TW': '可用檔位：標準', en: 'Efforts: Standard' },
+  'models.card.sessionEffort': { 'zh-CN': '当前会话：{effort}', 'zh-TW': '目前會話：{effort}', en: 'Session: {effort}' },
+  'models.toast.savedUniform': { 'zh-CN': '已为该模型保存统一设置。', 'zh-TW': '已為該模型儲存統一設定。', en: 'Saved uniform setting for this model.' },
+  'models.toast.saveFailed': { 'zh-CN': '保存统一设置失败：{err}', 'zh-TW': '儲存統一設定失敗：{err}', en: 'Failed to save uniform setting: {err}' },
+  'models.input.phFollow': { 'zh-CN': '当前为跟随模型（可点 512K 或输入整数）', 'zh-TW': '目前為跟隨模型（可點 512K 或輸入整數）', en: 'Follow model (click 512K or enter integer)' },
+  'models.input.phDefault': { 'zh-CN': '当前为默认（可点 512K 或输入整数）', 'zh-TW': '目前為預設（可點 512K 或輸入整數）', en: 'Default (click 512K or enter integer)' },
+  'models.input.validFixed': { 'zh-CN': '将设定固定长度：{short}（{full} tokens）', 'zh-TW': '將設定固定長度：{short}（{full} tokens）', en: 'Will set fixed limit: {short} ({full} tokens)' },
+  'models.err.noSettingsBridge': { 'zh-CN': '未连接到宿主设置桥接', 'zh-TW': '未連線到宿主設定橋接', en: 'Not connected to host settings bridge' },
+  'models.err.noApplyBridge': { 'zh-CN': '未连接到客户端设置桥接', 'zh-TW': '未連線到用戶端設定橋接', en: 'Not connected to client settings bridge' },
+  'models.err.noModels': { 'zh-CN': '尚未检测到可选模型，请先开启对话或等待列表读取。', 'zh-TW': '尚未偵測到可選模型，請先開啟對話或等待清單讀取。', en: 'No models detected yet. Start a chat or wait for the list.' },
+  'models.err.saveFailed': { 'zh-CN': '保存失败', 'zh-TW': '儲存失敗', en: 'Save failed' },
+  'models.status.line': { 'zh-CN': '当前状态：{badge} · 配置：{mode}', 'zh-TW': '目前狀態：{badge} · 設定：{mode}', en: 'Status: {badge} · Mode: {mode}' },
+  'status.client.unavailable': { 'zh-CN': '当前环境无法读取客户端状态', 'zh-TW': '目前環境無法讀取用戶端狀態', en: 'Unable to read client status in this environment' },
+  'models.status.restartMismatch': { 'zh-CN': '重启后读到的设置与目标不同（实际：{actual}）', 'zh-TW': '重啟後讀到的設定與目標不同（實際：{actual}）', en: 'Post-restart config differs from target (actual: {actual})' },
+  'models.meta.targetDesktop': { 'zh-CN': '桌面端核心服务', 'zh-TW': '桌面端核心服務', en: 'Desktop Core Service' },
+  'models.meta.targetDesktopArch': { 'zh-CN': '桌面端核心服务 ({arch})', 'zh-TW': '桌面端核心服務 ({arch})', en: 'Desktop Core Service ({arch})' },
+  'models.meta.archUnknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'models.meta.backupStale': { 'zh-CN': '客户端已更新，历史备份已过期', 'zh-TW': '用戶端已更新，歷史備份已過期', en: 'Client updated; legacy backup expired' },
+  'models.meta.backupReady': { 'zh-CN': '已自动备份原始文件', 'zh-TW': '已自動備份原始檔案', en: 'Original binary backed up' },
+  'models.meta.backupNone': { 'zh-CN': '尚未产生备份（首次修改前自动备份）', 'zh-TW': '尚未產生備份（首次修改前自動備份）', en: 'No backup yet (created before first patch)' },
+  'models.credit.openedBrowser': { 'zh-CN': '已在系统默认浏览器中打开原作者帖子', 'zh-TW': '已在系統預設瀏覽器中開啟原作者貼文', en: 'Opened author thread in default browser' },
+  'models.credit.openFallback': { 'zh-CN': '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。', 'zh-TW': '無法直接開啟外部瀏覽器，原作者貼文連結已複製到剪貼簿，可直接在瀏覽器貼上存取。', en: 'Could not launch browser; link copied to clipboard.' },
+  'models.credit.copiedLink': { 'zh-CN': '已复制原作者帖子链接', 'zh-TW': '已複製原作者貼文連結', en: 'Author thread link copied' },
 
-      // 异常诊断态
-      'diag.ctx.badge': { 'zh-CN': '超限', 'zh-TW': '超限', en: 'Limit' },
-      'diag.ctx.amount': { 'zh-CN': '服务端超限', 'zh-TW': '伺服器端超限', en: 'Server Limit' },
-      'diag.ctx.keyBadge': { 'zh-CN': '已超限', 'zh-TW': '已超限', en: 'Exceeded' },
-      'diag.ctx.hover': { 'zh-CN': ' · 100% 已溢出', 'zh-TW': ' · 100% 已超限', en: ' · 100% overflow' },
-      'diag.ctx.tipTitle': { 'zh-CN': '上下文窗口（超限告警）：', 'zh-TW': 'Context 視窗（超限警示）：', en: 'Context Window (Exceeded):' },
-      'diag.ctx.tipPct': { 'zh-CN': '100% 已用（已超出上限）', 'zh-TW': '100% 已用（已超出上限）', en: '100% used (exceeded)' },
-      'diag.ctx.tipDetailLim': { 'zh-CN': '已超上限，共 {lim} token', 'zh-TW': '已超上限，共 {lim} token', en: 'Exceeded {lim} tokens' },
-      'diag.ctx.tipDetailDef': { 'zh-CN': '服务端已拒绝输入（超出容量上限）', 'zh-TW': '伺服器端已拒絕輸入（超出容量上限）', en: 'Input rejected by server (over limit)' },
-      'diag.ctx.status': { 'zh-CN': '服务端已拒绝：输入超限{lim}。本地估算不可靠，需精简或新建会话。', 'zh-TW': '伺服器端已拒絕：輸入超限{lim}。本機估算不可靠，需精簡或新建會話。', en: 'Server rejected: input exceeded{lim}. Trim context or start a new chat.' },
-      'diag.ctx.statusLim': { 'zh-CN': '（上限 {lim} tokens）', 'zh-TW': '（上限 {lim} tokens）', en: ' (limit {lim} tokens)' },
-      'diag.ctx.takeaway': { 'zh-CN': '✖ 已超出服务端最大限制{lim}，当前对话已被拒绝。需精简或新建会话。', 'zh-TW': '✖ 已超出伺服器端最大限制{lim}，目前對話已被拒絕。需精簡或新建會話。', en: '✖ Exceeded server max limit{lim}; current chat rejected. Trim or start new chat.' },
-      'diag.quota.badge': { 'zh-CN': '额度耗尽', 'zh-TW': '額度耗盡', en: 'Quota' },
-      'diag.quota.amount': { 'zh-CN': '额度耗尽', 'zh-TW': '額度耗盡', en: 'Out of Quota' },
-      'diag.quota.hover': { 'zh-CN': ' · 模型额度用尽，可切换模型', 'zh-TW': ' · 模型配額用盡，可切換模型', en: ' · Model quota exhausted' },
-      'diag.quota.tipTitle': { 'zh-CN': '模型额度（额度耗尽）：', 'zh-TW': '模型額度（額度耗盡）：', en: 'Model Quota (Exhausted):' },
-      'diag.quota.tipPct': { 'zh-CN': '当前模型配额已用尽', 'zh-TW': '目前模型配額已用盡', en: 'Current model quota exhausted' },
-      'diag.quota.reset': { 'zh-CN': '，预计将于 {time} 重置', 'zh-TW': '，預計將於 {time} 重置', en: ', resets around {time}' },
-      'diag.quota.tipDetail': { 'zh-CN': '{pool}额度已耗尽{reset}。可手动切换至其他可用模型', 'zh-TW': '{pool}額度已耗盡{reset}。可手動切換至其他可用模型', en: '{pool} quota exhausted{reset}. Switch to another model.' },
-      'diag.quota.status': { 'zh-CN': '模型额度耗尽：{pool}额度已耗尽{reset}。可手动切换至其他可用模型。', 'zh-TW': '模型額度耗盡：{pool}額度已耗盡{reset}。可手動切換至其他可用模型。', en: 'Quota exhausted: {pool} quota depleted{reset}. Switch to another model.' },
-      'diag.quota.takeaway': { 'zh-CN': '✖ {pool}额度已耗尽{reset}。可手动切换至其他可用模型继续对话。', 'zh-TW': '✖ {pool}額度已耗盡{reset}。可手動切換至其他可用模型繼續對話。', en: '✖ {pool} quota exhausted{reset}. Switch to another model to continue.' },
-      'diag.rate.badge': { 'zh-CN': '限流', 'zh-TW': '限流', en: '429' },
-      'diag.rate.amount': { 'zh-CN': '请求限流', 'zh-TW': '請求限流', en: 'Rate Limited' },
-      'diag.rate.hover': { 'zh-CN': ' · 触发频率限制，请稍候', 'zh-TW': ' · 已達速率限制，請稍候', en: ' · Rate limited, wait a moment' },
-      'diag.rate.tipTitle': { 'zh-CN': '请求限制（请求过频）：', 'zh-TW': '請求限制（請求過頻）：', en: 'Rate Limit (Too Many Requests):' },
-      'diag.rate.tipPct': { 'zh-CN': '触发服务端频率限制（429）', 'zh-TW': '觸發伺服器端頻率限制（429）', en: 'Server rate limit (429)' },
-      'diag.rate.retry': { 'zh-CN': '（建议等待 {sec} 秒）', 'zh-TW': '（建議等待 {sec} 秒）', en: ' (retry in {sec}s)' },
-      'diag.rate.tipDetail': { 'zh-CN': '请求过于频繁{retry}，请稍候重试', 'zh-TW': '請求過於頻繁{retry}，請稍候重試', en: 'Too many requests{retry}, try again later' },
-      'diag.rate.status': { 'zh-CN': '请求频率限制：请求过于频繁，触发服务端限制（429）{retry}。稍候重试即可恢复。', 'zh-TW': '請求頻率限制：請求過於頻繁，觸發伺服器端限制（429）{retry}。稍候重試即可恢復。', en: 'Rate limited (429){retry}. Wait and retry.' },
-      'diag.rate.takeaway': { 'zh-CN': '⚠ 触发服务端请求频率限制（HTTP 429）{retry}，短时间内发送请求过多，稍候重试即可恢复。', 'zh-TW': '⚠ 觸發伺服器端請求頻率限制（HTTP 429）{retry}，短時間內發送請求過多，稍候重試即可恢復。', en: '⚠ HTTP 429 rate limit{retry}. Wait briefly and retry.' },
-      'diag.net.defDiag': { 'zh-CN': '连接中断或超时', 'zh-TW': '連線中斷或逾時', en: 'Connection dropped or timed out' },
-      'diag.net.badge': { 'zh-CN': '网络', 'zh-TW': '網路', en: 'Network' },
-      'diag.net.amount': { 'zh-CN': '网络故障', 'zh-TW': '網路故障', en: 'Network Error' },
-      'diag.net.hover': { 'zh-CN': ' · 连接异常，请检查网络', 'zh-TW': ' · 連線異常，請檢查網路', en: ' · Connection error, check network' },
-      'diag.net.tipTitle': { 'zh-CN': '网络连接（连接故障）：', 'zh-TW': '網路連線（連線故障）：', en: 'Network (Connection Failed):' },
-      'diag.net.tipPct': { 'zh-CN': '网络连接失败或超时', 'zh-TW': '網路連線失敗或逾時', en: 'Connection failed or timed out' },
-      'diag.net.tipDetail': { 'zh-CN': '连接异常（{diag}）。请检查本地网络代理与连接', 'zh-TW': '連線異常（{diag}）。請檢查本機網路代理與連線', en: 'Connection error ({diag}). Check proxy & network.' },
-      'diag.net.status': { 'zh-CN': '网络连接异常：{diag}。请检查本地网络代理与网络链路设置。', 'zh-TW': '網路連線異常：{diag}。請檢查本機網路代理與網路鏈路設定。', en: 'Network error: {diag}. Check local proxy and network settings.' },
-      'diag.net.takeaway': { 'zh-CN': '✖ 网络连接出现异常（{diag}）。请检查本地网络代理与链路状态。', 'zh-TW': '✖ 網路連線出現異常（{diag}）。請檢查本機網路代理與鏈路狀態。', en: '✖ Network error ({diag}). Check proxy and connection.' },
-      'diag.auth.badge': { 'zh-CN': '认证', 'zh-TW': '認證', en: 'Auth' },
-      'diag.auth.amount': { 'zh-CN': '认证失败', 'zh-TW': '認證失敗', en: 'Auth Failed' },
-      'diag.auth.keyBadge': { 'zh-CN': '认证异常', 'zh-TW': '認證異常', en: 'Auth Error' },
-      'diag.auth.hover': { 'zh-CN': ' · 权限不足或登录异常', 'zh-TW': ' · 權限不足或登入異常', en: ' · Unauthorized or session expired' },
-      'diag.auth.tipTitle': { 'zh-CN': '账号权限（身份异常）：', 'zh-TW': '帳號權限（身分異常）：', en: 'Account Auth (Error):' },
-      'diag.auth.tipPct': { 'zh-CN': '身份认证失败或缺少权限', 'zh-TW': '身分認證失敗或缺少權限', en: 'Authentication failed or unauthorized' },
-      'diag.auth.tipDetail': { 'zh-CN': '身份认证失败或无权限访问，请检查账号登录状态', 'zh-TW': '身分認證失敗或無權限存取，請檢查帳號登入狀態', en: 'Auth failed or no access. Check sign-in status.' },
-      'diag.auth.status': { 'zh-CN': '身份认证失败或无访问权限，请检查账号登录状态或订阅权限。', 'zh-TW': '身分認證失敗或無存取權限，請檢查帳號登入狀態或訂閱權限。', en: 'Authentication failed or unauthorized (401/403). Check account sign-in.' },
-      'diag.auth.takeaway': { 'zh-CN': '✖ 身份认证失败或无访问权限（401/403）。请检查账号登录状态或订阅权限。', 'zh-TW': '✖ 身分認證失敗或無存取權限（401/403）。請檢查帳號登入狀態或訂閱權限。', en: '✖ Auth failed or forbidden (401/403). Check account sign-in or plan.' },
-      'diag.svc.badge': { 'zh-CN': '服务异常', 'zh-TW': '服務異常', en: '503' },
-      'diag.svc.amount': { 'zh-CN': '服务受限', 'zh-TW': '服務受限', en: 'Unavailable' },
-      'diag.svc.hover': { 'zh-CN': ' · 服务端繁忙，请稍候', 'zh-TW': ' · 伺服器端繁忙，請稍候', en: ' · Server overloaded, wait briefly' },
-      'diag.svc.tipTitle': { 'zh-CN': '服务端状态（服务受限）：', 'zh-TW': '伺服器端狀態（服務受限）：', en: 'Service Status (Unavailable):' },
-      'diag.svc.tipPct': { 'zh-CN': '模型服务暂不可用或过载', 'zh-TW': '模型服務暫不可用或過載', en: 'Model service overloaded or unavailable' },
-      'diag.svc.tipDetail': { 'zh-CN': '服务端暂时过载或维护中，请稍后重试', 'zh-TW': '伺服器端暫時過載或維護中，請稍後重試', en: 'Server overloaded or under maintenance. Retry later.' },
-      'diag.svc.status': { 'zh-CN': '模型服务暂不可用或处于高负载（503/Overloaded），请稍后重试。', 'zh-TW': '模型服務暫無法使用或處於高負載（503/Overloaded），請稍後重試。', en: 'Model service unavailable or overloaded (503). Retry later.' },
-      'diag.svc.takeaway': { 'zh-CN': '⚠ 服务端暂时不可用或处于高负载（503/Overloaded），请稍后重试。', 'zh-TW': '⚠ 伺服器端暫時不可用或處於高負載（503/Overloaded），請稍後重試。', en: '⚠ Service unavailable or overloaded (503). Retry later.' },
-      'diag.cancel.badge': { 'zh-CN': '已取消', 'zh-TW': '已取消', en: 'Cancelled' },
-      'diag.cancel.amount': { 'zh-CN': '请求取消', 'zh-TW': '請求取消', en: 'Cancelled' },
-      'diag.cancel.hover': { 'zh-CN': ' · 请求已取消', 'zh-TW': ' · 請求已取消', en: ' · Request cancelled' },
-      'diag.cancel.tipTitle': { 'zh-CN': '请求状态（已取消）：', 'zh-TW': '請求狀態（已取消）：', en: 'Request Status (Cancelled):' },
-      'diag.cancel.tipPct': { 'zh-CN': '本次请求被中止或取消', 'zh-TW': '本次請求被中止或取消', en: 'Request aborted or cancelled' },
-      'diag.cancel.tipDetail': { 'zh-CN': '本次生成已被用户取消或中断，可重新发送消息', 'zh-TW': '本次生成已被使用者取消或中斷，可重新發送訊息', en: 'Generation cancelled. Resend message if needed.' },
-      'diag.cancel.status': { 'zh-CN': '请求已取消：当前轮次生成被中断。', 'zh-TW': '請求已取消：目前輪次生成被中斷。', en: 'Request cancelled: current generation aborted.' },
-      'diag.cancel.takeaway': { 'zh-CN': 'ℹ 本轮生成已被用户取消或中断，未完整输出。', 'zh-TW': 'ℹ 本輪生成已被使用者取消或中斷，未完整輸出。', en: 'ℹ Generation cancelled before completion.' },
-      'diag.quota.defPool': { 'zh-CN': '当前模型', 'zh-TW': '目前模型', en: 'Current model' },
-      'diag.unknown.badge': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Error' },
-      'diag.unknown.amount': { 'zh-CN': '请求异常', 'zh-TW': '請求異常', en: 'Request Error' },
-      'diag.unknown.keyBadge': { 'zh-CN': '原因待确认', 'zh-TW': '原因待確認', en: 'Unconfirmed' },
-      'diag.unknown.hover': { 'zh-CN': ' · 失败原因待确认', 'zh-TW': ' · 失敗原因待確認', en: ' · Reason unconfirmed' },
-      'diag.unknown.tipTitle': { 'zh-CN': '请求状态（原因待确认）：', 'zh-TW': '請求狀態（原因待確認）：', en: 'Request Status (Unconfirmed):' },
-      'diag.unknown.tipPct': { 'zh-CN': '最近请求失败（原因未知）', 'zh-TW': '最近請求失敗（原因未知）', en: 'Recent request failed (unknown reason)' },
-      'diag.unknown.tipDetail': { 'zh-CN': '当前无法确认具体原因（{diag}）', 'zh-TW': '目前無法確認具體原因（{diag}）', en: 'Cannot confirm exact reason ({diag})' },
-      'diag.unknown.status': { 'zh-CN': '最近请求遇到错误，当前无法独立确认具体原因（{diag}）。', 'zh-TW': '最近請求遇到錯誤，目前無法獨立確認具體原因（{diag}）。', en: 'Recent request failed; cannot confirm exact reason ({diag}).' },
-      'diag.unknown.takeaway': { 'zh-CN': '✖ 最近请求遇到错误，当前无法独立确认具体原因（{diag}）。', 'zh-TW': '✖ 最近請求遇到錯誤，目前無法獨立確認具體原因（{diag}）。', en: '✖ Recent request failed; cannot confirm exact reason ({diag}).' },
+  // 异常诊断态
+  'diag.ctx.badge': { 'zh-CN': '超限', 'zh-TW': '超限', en: 'Limit' },
+  'diag.ctx.amount': { 'zh-CN': '服务端超限', 'zh-TW': '伺服器端超限', en: 'Server Limit' },
+  'diag.ctx.keyBadge': { 'zh-CN': '已超限', 'zh-TW': '已超限', en: 'Exceeded' },
+  'diag.ctx.hover': { 'zh-CN': ' · 100% 已溢出', 'zh-TW': ' · 100% 已超限', en: ' · 100% overflow' },
+  'diag.ctx.tipTitle': { 'zh-CN': '上下文窗口（超限告警）：', 'zh-TW': 'Context 視窗（超限警示）：', en: 'Context Window (Exceeded):' },
+  'diag.ctx.tipPct': { 'zh-CN': '100% 已用（已超出上限）', 'zh-TW': '100% 已用（已超出上限）', en: '100% used (exceeded)' },
+  'diag.ctx.tipDetailLim': { 'zh-CN': '已超上限，共 {lim} token', 'zh-TW': '已超上限，共 {lim} token', en: 'Exceeded {lim} tokens' },
+  'diag.ctx.tipDetailDef': { 'zh-CN': '服务端已拒绝输入（超出容量上限）', 'zh-TW': '伺服器端已拒絕輸入（超出容量上限）', en: 'Input rejected by server (over limit)' },
+  'diag.ctx.status': { 'zh-CN': '服务端已拒绝：输入超限{lim}。本地估算不可靠，需精简或新建会话。', 'zh-TW': '伺服器端已拒絕：輸入超限{lim}。本機估算不可靠，需精簡或新建會話。', en: 'Server rejected: input exceeded{lim}. Trim context or start a new chat.' },
+  'diag.ctx.statusLim': { 'zh-CN': '（上限 {lim} tokens）', 'zh-TW': '（上限 {lim} tokens）', en: ' (limit {lim} tokens)' },
+  'diag.ctx.takeaway': { 'zh-CN': '✖ 已超出服务端最大限制{lim}，当前对话已被拒绝。需精简或新建会话。', 'zh-TW': '✖ 已超出伺服器端最大限制{lim}，目前對話已被拒絕。需精簡或新建會話。', en: '✖ Exceeded server max limit{lim}; current chat rejected. Trim or start new chat.' },
+  'diag.quota.badge': { 'zh-CN': '额度耗尽', 'zh-TW': '額度耗盡', en: 'Quota' },
+  'diag.quota.amount': { 'zh-CN': '额度耗尽', 'zh-TW': '額度耗盡', en: 'Out of Quota' },
+  'diag.quota.hover': { 'zh-CN': ' · 模型额度用尽，可切换模型', 'zh-TW': ' · 模型配額用盡，可切換模型', en: ' · Model quota exhausted' },
+  'diag.quota.tipTitle': { 'zh-CN': '模型额度（额度耗尽）：', 'zh-TW': '模型額度（額度耗盡）：', en: 'Model Quota (Exhausted):' },
+  'diag.quota.tipPct': { 'zh-CN': '当前模型配额已用尽', 'zh-TW': '目前模型配額已用盡', en: 'Current model quota exhausted' },
+  'diag.quota.reset': { 'zh-CN': '，预计将于 {time} 重置', 'zh-TW': '，預計將於 {time} 重置', en: ', resets around {time}' },
+  'diag.quota.tipDetail': { 'zh-CN': '{pool}额度已耗尽{reset}。可手动切换至其他可用模型', 'zh-TW': '{pool}額度已耗盡{reset}。可手動切換至其他可用模型', en: '{pool} quota exhausted{reset}. Switch to another model.' },
+  'diag.quota.status': { 'zh-CN': '模型额度耗尽：{pool}额度已耗尽{reset}。可手动切换至其他可用模型。', 'zh-TW': '模型額度耗盡：{pool}額度已耗盡{reset}。可手動切換至其他可用模型。', en: 'Quota exhausted: {pool} quota depleted{reset}. Switch to another model.' },
+  'diag.quota.takeaway': { 'zh-CN': '✖ {pool}额度已耗尽{reset}。可手动切换至其他可用模型继续对话。', 'zh-TW': '✖ {pool}額度已耗盡{reset}。可手動切換至其他可用模型繼續對話。', en: '✖ {pool} quota exhausted{reset}. Switch to another model to continue.' },
+  'diag.rate.badge': { 'zh-CN': '限流', 'zh-TW': '限流', en: '429' },
+  'diag.rate.amount': { 'zh-CN': '请求限流', 'zh-TW': '請求限流', en: 'Rate Limited' },
+  'diag.rate.hover': { 'zh-CN': ' · 触发频率限制，请稍候', 'zh-TW': ' · 已達速率限制，請稍候', en: ' · Rate limited, wait a moment' },
+  'diag.rate.tipTitle': { 'zh-CN': '请求限制（请求过频）：', 'zh-TW': '請求限制（請求過頻）：', en: 'Rate Limit (Too Many Requests):' },
+  'diag.rate.tipPct': { 'zh-CN': '触发服务端频率限制（429）', 'zh-TW': '觸發伺服器端頻率限制（429）', en: 'Server rate limit (429)' },
+  'diag.rate.retry': { 'zh-CN': '（建议等待 {sec} 秒）', 'zh-TW': '（建議等待 {sec} 秒）', en: ' (retry in {sec}s)' },
+  'diag.rate.tipDetail': { 'zh-CN': '请求过于频繁{retry}，请稍候重试', 'zh-TW': '請求過於頻繁{retry}，請稍候重試', en: 'Too many requests{retry}, try again later' },
+  'diag.rate.status': { 'zh-CN': '请求频率限制：请求过于频繁，触发服务端限制（429）{retry}。稍候重试即可恢复。', 'zh-TW': '請求頻率限制：請求過於頻繁，觸發伺服器端限制（429）{retry}。稍候重試即可恢復。', en: 'Rate limited (429){retry}. Wait and retry.' },
+  'diag.rate.takeaway': { 'zh-CN': '⚠ 触发服务端请求频率限制（HTTP 429）{retry}，短时间内发送请求过多，稍候重试即可恢复。', 'zh-TW': '⚠ 觸發伺服器端請求頻率限制（HTTP 429）{retry}，短時間內發送請求過多，稍候重試即可恢復。', en: '⚠ HTTP 429 rate limit{retry}. Wait briefly and retry.' },
+  'diag.net.defDiag': { 'zh-CN': '连接中断或超时', 'zh-TW': '連線中斷或逾時', en: 'Connection dropped or timed out' },
+  'diag.net.badge': { 'zh-CN': '网络', 'zh-TW': '網路', en: 'Network' },
+  'diag.net.amount': { 'zh-CN': '网络故障', 'zh-TW': '網路故障', en: 'Network Error' },
+  'diag.net.hover': { 'zh-CN': ' · 连接异常，请检查网络', 'zh-TW': ' · 連線異常，請檢查網路', en: ' · Connection error, check network' },
+  'diag.net.tipTitle': { 'zh-CN': '网络连接（连接故障）：', 'zh-TW': '網路連線（連線故障）：', en: 'Network (Connection Failed):' },
+  'diag.net.tipPct': { 'zh-CN': '网络连接失败或超时', 'zh-TW': '網路連線失敗或逾時', en: 'Connection failed or timed out' },
+  'diag.net.tipDetail': { 'zh-CN': '连接异常（{diag}）。请检查本地网络代理与连接', 'zh-TW': '連線異常（{diag}）。請檢查本機網路代理與連線', en: 'Connection error ({diag}). Check proxy & network.' },
+  'diag.net.status': { 'zh-CN': '网络连接异常：{diag}。请检查本地网络代理与网络链路设置。', 'zh-TW': '網路連線異常：{diag}。請檢查本機網路代理與網路鏈路設定。', en: 'Network error: {diag}. Check local proxy and network settings.' },
+  'diag.net.takeaway': { 'zh-CN': '✖ 网络连接出现异常（{diag}）。请检查本地网络代理与链路状态。', 'zh-TW': '✖ 網路連線出現異常（{diag}）。請檢查本機網路代理與鏈路狀態。', en: '✖ Network error ({diag}). Check proxy and connection.' },
+  'diag.auth.badge': { 'zh-CN': '认证', 'zh-TW': '認證', en: 'Auth' },
+  'diag.auth.amount': { 'zh-CN': '认证失败', 'zh-TW': '認證失敗', en: 'Auth Failed' },
+  'diag.auth.keyBadge': { 'zh-CN': '认证异常', 'zh-TW': '認證異常', en: 'Auth Error' },
+  'diag.auth.hover': { 'zh-CN': ' · 权限不足或登录异常', 'zh-TW': ' · 權限不足或登入異常', en: ' · Unauthorized or session expired' },
+  'diag.auth.tipTitle': { 'zh-CN': '账号权限（身份异常）：', 'zh-TW': '帳號權限（身分異常）：', en: 'Account Auth (Error):' },
+  'diag.auth.tipPct': { 'zh-CN': '身份认证失败或缺少权限', 'zh-TW': '身分認證失敗或缺少權限', en: 'Authentication failed or unauthorized' },
+  'diag.auth.tipDetail': { 'zh-CN': '身份认证失败或无权限访问，请检查账号登录状态', 'zh-TW': '身分認證失敗或無權限存取，請檢查帳號登入狀態', en: 'Auth failed or no access. Check sign-in status.' },
+  'diag.auth.status': { 'zh-CN': '身份认证失败或无访问权限，请检查账号登录状态或订阅权限。', 'zh-TW': '身分認證失敗或無存取權限，請檢查帳號登入狀態或訂閱權限。', en: 'Authentication failed or unauthorized (401/403). Check account sign-in.' },
+  'diag.auth.takeaway': { 'zh-CN': '✖ 身份认证失败或无访问权限（401/403）。请检查账号登录状态或订阅权限。', 'zh-TW': '✖ 身分認證失敗或無存取權限（401/403）。請檢查帳號登入狀態或訂閱權限。', en: '✖ Auth failed or forbidden (401/403). Check account sign-in or plan.' },
+  'diag.svc.badge': { 'zh-CN': '服务异常', 'zh-TW': '服務異常', en: '503' },
+  'diag.svc.amount': { 'zh-CN': '服务受限', 'zh-TW': '服務受限', en: 'Unavailable' },
+  'diag.svc.hover': { 'zh-CN': ' · 服务端繁忙，请稍候', 'zh-TW': ' · 伺服器端繁忙，請稍候', en: ' · Server overloaded, wait briefly' },
+  'diag.svc.tipTitle': { 'zh-CN': '服务端状态（服务受限）：', 'zh-TW': '伺服器端狀態（服務受限）：', en: 'Service Status (Unavailable):' },
+  'diag.svc.tipPct': { 'zh-CN': '模型服务暂不可用或过载', 'zh-TW': '模型服務暫不可用或過載', en: 'Model service overloaded or unavailable' },
+  'diag.svc.tipDetail': { 'zh-CN': '服务端暂时过载或维护中，请稍后重试', 'zh-TW': '伺服器端暫時過載或維護中，請稍後重試', en: 'Server overloaded or under maintenance. Retry later.' },
+  'diag.svc.status': { 'zh-CN': '模型服务暂不可用或处于高负载（503/Overloaded），请稍后重试。', 'zh-TW': '模型服務暫無法使用或處於高負載（503/Overloaded），請稍後重試。', en: 'Model service unavailable or overloaded (503). Retry later.' },
+  'diag.svc.takeaway': { 'zh-CN': '⚠ 服务端暂时不可用或处于高负载（503/Overloaded），请稍后重试。', 'zh-TW': '⚠ 伺服器端暫時不可用或處於高負載（503/Overloaded），請稍後重試。', en: '⚠ Service unavailable or overloaded (503). Retry later.' },
+  'diag.cancel.badge': { 'zh-CN': '已取消', 'zh-TW': '已取消', en: 'Cancelled' },
+  'diag.cancel.amount': { 'zh-CN': '请求取消', 'zh-TW': '請求取消', en: 'Cancelled' },
+  'diag.cancel.hover': { 'zh-CN': ' · 请求已取消', 'zh-TW': ' · 請求已取消', en: ' · Request cancelled' },
+  'diag.cancel.tipTitle': { 'zh-CN': '请求状态（已取消）：', 'zh-TW': '請求狀態（已取消）：', en: 'Request Status (Cancelled):' },
+  'diag.cancel.tipPct': { 'zh-CN': '本次请求被中止或取消', 'zh-TW': '本次請求被中止或取消', en: 'Request aborted or cancelled' },
+  'diag.cancel.tipDetail': { 'zh-CN': '本次生成已被用户取消或中断，可重新发送消息', 'zh-TW': '本次生成已被使用者取消或中斷，可重新發送訊息', en: 'Generation cancelled. Resend message if needed.' },
+  'diag.cancel.status': { 'zh-CN': '请求已取消：当前轮次生成被中断。', 'zh-TW': '請求已取消：目前輪次生成被中斷。', en: 'Request cancelled: current generation aborted.' },
+  'diag.cancel.takeaway': { 'zh-CN': 'ℹ 本轮生成已被用户取消或中断，未完整输出。', 'zh-TW': 'ℹ 本輪生成已被使用者取消或中斷，未完整輸出。', en: 'ℹ Generation cancelled before completion.' },
+  'diag.quota.defPool': { 'zh-CN': '当前模型', 'zh-TW': '目前模型', en: 'Current model' },
+  'diag.unknown.badge': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Error' },
+  'diag.unknown.amount': { 'zh-CN': '请求异常', 'zh-TW': '請求異常', en: 'Request Error' },
+  'diag.unknown.keyBadge': { 'zh-CN': '原因待确认', 'zh-TW': '原因待確認', en: 'Unconfirmed' },
+  'diag.unknown.hover': { 'zh-CN': ' · 失败原因待确认', 'zh-TW': ' · 失敗原因待確認', en: ' · Reason unconfirmed' },
+  'diag.unknown.tipTitle': { 'zh-CN': '请求状态（原因待确认）：', 'zh-TW': '請求狀態（原因待確認）：', en: 'Request Status (Unconfirmed):' },
+  'diag.unknown.tipPct': { 'zh-CN': '最近请求失败（原因未知）', 'zh-TW': '最近請求失敗（原因未知）', en: 'Recent request failed (unknown reason)' },
+  'diag.unknown.tipDetail': { 'zh-CN': '当前无法确认具体原因（{diag}）', 'zh-TW': '目前無法確認具體原因（{diag}）', en: 'Cannot confirm exact reason ({diag})' },
+  'diag.unknown.status': { 'zh-CN': '最近请求遇到错误，当前无法独立确认具体原因（{diag}）。', 'zh-TW': '最近請求遇到錯誤，目前無法獨立確認具體原因（{diag}）。', en: 'Recent request failed; cannot confirm exact reason ({diag}).' },
+  'diag.unknown.takeaway': { 'zh-CN': '✖ 最近请求遇到错误，当前无法独立确认具体原因（{diag}）。', 'zh-TW': '✖ 最近請求遇到錯誤，目前無法獨立確認具體原因（{diag}）。', en: '✖ Recent request failed; cannot confirm exact reason ({diag}).' },
 
-      // Token 统计、热力图与成本细节补齐
-      'tokens.badge.today': { 'zh-CN': ' · 今日 {val}', 'zh-TW': ' · 今日 {val}', en: ' · Today {val}' },
-      'common.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-      'common.notProvided': { 'zh-CN': '未提供', 'zh-TW': '未提供', en: 'Not provided' },
-      'common.loading': { 'zh-CN': '读取中...', 'zh-TW': '讀取中...', en: 'Loading...' },
-      'tokens.heat.firstUsePlaceholder': { 'zh-CN': '首次使用：--', 'zh-TW': '首次使用：--', en: 'First use: --' },
-      'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (¥0.00) · 日均 $0.00', en: '≈ $0.00 (¥0.00) · $0.00/d' },
-      'tokens.heat.activeAvgPlaceholder': { 'zh-CN': '$0.00 (0天)', 'zh-TW': '$0.00 (0天)', en: '$0.00 (0d)' },
-      'tokens.card.todaySub': { 'zh-CN': '{n} 会话实时累加', 'zh-TW': '{n} 會話即時累加', en: '{n} chat(s) live' },
-      'tokens.card.monthSub': { 'zh-CN': '日均约 {val}', 'zh-TW': '日均約 {val}', en: '~{val}/day avg' },
-      'tokens.card.yearSub': { 'zh-CN': '{n} 天活动记录', 'zh-TW': '{n} 天活動記錄', en: '{n} active day(s)' },
-      'tokens.range.month': { 'zh-CN': '{y}年{m}月', 'zh-TW': '{y}年{m}月', en: '{y}-{m}' },
-      'tokens.range.year': { 'zh-CN': '{y}年', 'zh-TW': '{y}年', en: '{y}' },
-      'tokens.range.yearToToday': { 'zh-CN': '{y}年（1月1日–今天）', 'zh-TW': '{y}年（1月1日–今天）', en: '{y} (Jan 1 – Today)' },
-      'heatmap.pop.inProgress': { 'zh-CN': '（进行中）', 'zh-TW': '（進行中）', en: ' (Current)' },
-      'heatmap.pop.peak': { 'zh-CN': '（年度峰值）', 'zh-TW': '（年度尖峰）', en: ' (Peak)' },
-      'heatmap.pop.future': { 'zh-CN': '未来月份（尚未产生用量）', 'zh-TW': '未來月份（尚無用量）', en: 'Future month (no usage)' },
-      'heatmap.pop.monthlyDet': { 'zh-CN': '月度合计 · 折合日均 ${avg} (活跃 {days} 天)', 'zh-TW': '月度合計 · 折合日均 ${avg} (活躍 {days} 天)', en: 'Monthly Total · Avg ${avg}/d ({days} active days)' },
-      'cost.subSpendLabel': { 'zh-CN': '本人同期实际支出', 'zh-TW': '本人同期實際支出', en: 'Your Actual Spend' },
-      'cost.freePromo': { 'zh-CN': '免费活动', 'zh-TW': '免費活動', en: 'Free promo' },
-      'cost.subSpend': { 'zh-CN': '订阅支出', 'zh-TW': '訂閱支出', en: 'Plan spend' },
-      'cost.paidLabel': { 'zh-CN': '实付', 'zh-TW': '實付', en: 'Paid' },
-      'cost.paidUnknown': { 'zh-CN': '实付未知', 'zh-TW': '實付未知', en: 'Paid unknown' },
-      'cost.publicRefMonthly': { 'zh-CN': '公开参考价 ${p}/月（实付未确认）', 'zh-TW': '公開參考價 ${p}/月（實付未確認）', en: 'Public ref ${p}/mo (paid unconfirmed)' },
-      'cost.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-      'cost.noPlanData': { 'zh-CN': '未获取到套餐与实付数据', 'zh-TW': '未取得方案與實付資料', en: 'No plan or spend data available' },
-      'cost.allNoCompare': { 'zh-CN': ' · 全量累计不直接对比单月支出', 'zh-TW': ' · 全量累計不直接對比單月支出', en: ' · All-time not compared to monthly spend' },
-      'cost.expiredTag': { 'zh-CN': ' · ⚠️ 权益已到期', 'zh-TW': ' · ⚠️ 權益已到期', en: ' · ⚠️ Expired' },
-      'cost.freeActive': { 'zh-CN': '{src} · 用户确认 · 免费权益使用中{extra}', 'zh-TW': '{src} · 使用者確認 · 免費權益使用中{extra}', en: '{src} · Confirmed · Free active{extra}' },
-      'cost.covFull': { 'zh-CN': '100% 折算覆盖', 'zh-TW': '100% 換算覆蓋', en: '100% priced' },
-      'cost.refApprox': { 'zh-CN': '约 ${val}', 'zh-TW': '約 ${val}', en: '~${val}' },
+  // Token 统计、热力图与成本细节补齐
+  'tokens.badge.today': { 'zh-CN': ' · 今日 {val}', 'zh-TW': ' · 今日 {val}', en: ' · Today {val}' },
+  'common.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'common.notProvided': { 'zh-CN': '未提供', 'zh-TW': '未提供', en: 'Not provided' },
+  'common.loading': { 'zh-CN': '读取中...', 'zh-TW': '讀取中...', en: 'Loading...' },
+  'tokens.heat.firstUsePlaceholder': { 'zh-CN': '首次使用：--', 'zh-TW': '首次使用：--', en: 'First use: --' },
+  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (¥0.00) · 日均 $0.00', en: '≈ $0.00 (¥0.00) · $0.00/d' },
+  'tokens.heat.activeAvgPlaceholder': { 'zh-CN': '$0.00 (0天)', 'zh-TW': '$0.00 (0天)', en: '$0.00 (0d)' },
+  'tokens.card.todaySub': { 'zh-CN': '{n} 会话实时累加', 'zh-TW': '{n} 會話即時累加', en: '{n} chat(s) live' },
+  'tokens.card.monthSub': { 'zh-CN': '日均约 {val}', 'zh-TW': '日均約 {val}', en: '~{val}/day avg' },
+  'tokens.card.yearSub': { 'zh-CN': '{n} 天活动记录', 'zh-TW': '{n} 天活動記錄', en: '{n} active day(s)' },
+  'tokens.range.month': { 'zh-CN': '{y}年{m}月', 'zh-TW': '{y}年{m}月', en: '{y}-{m}' },
+  'tokens.range.year': { 'zh-CN': '{y}年', 'zh-TW': '{y}年', en: '{y}' },
+  'tokens.range.yearToToday': { 'zh-CN': '{y}年（1月1日–今天）', 'zh-TW': '{y}年（1月1日–今天）', en: '{y} (Jan 1 – Today)' },
+  'heatmap.pop.inProgress': { 'zh-CN': '（进行中）', 'zh-TW': '（進行中）', en: ' (Current)' },
+  'heatmap.pop.peak': { 'zh-CN': '（年度峰值）', 'zh-TW': '（年度尖峰）', en: ' (Peak)' },
+  'heatmap.pop.future': { 'zh-CN': '未来月份（尚未产生用量）', 'zh-TW': '未來月份（尚無用量）', en: 'Future month (no usage)' },
+  'heatmap.pop.monthlyDet': { 'zh-CN': '月度合计 · 折合日均 ${avg} (活跃 {days} 天)', 'zh-TW': '月度合計 · 折合日均 ${avg} (活躍 {days} 天)', en: 'Monthly Total · Avg ${avg}/d ({days} active days)' },
+  'cost.subSpendLabel': { 'zh-CN': '本人同期实际支出', 'zh-TW': '本人同期實際支出', en: 'Your Actual Spend' },
+  'cost.freePromo': { 'zh-CN': '免费活动', 'zh-TW': '免費活動', en: 'Free promo' },
+  'cost.subSpend': { 'zh-CN': '订阅支出', 'zh-TW': '訂閱支出', en: 'Plan spend' },
+  'cost.paidLabel': { 'zh-CN': '实付', 'zh-TW': '實付', en: 'Paid' },
+  'cost.paidUnknown': { 'zh-CN': '实付未知', 'zh-TW': '實付未知', en: 'Paid unknown' },
+  'cost.publicRefMonthly': { 'zh-CN': '公开参考价 ${p}/月（实付未确认）', 'zh-TW': '公開參考價 ${p}/月（實付未確認）', en: 'Public ref ${p}/mo (paid unconfirmed)' },
+  'cost.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'cost.noPlanData': { 'zh-CN': '未获取到套餐与实付数据', 'zh-TW': '未取得方案與實付資料', en: 'No plan or spend data available' },
+  'cost.allNoCompare': { 'zh-CN': ' · 全量累计不直接对比单月支出', 'zh-TW': ' · 全量累計不直接對比單月支出', en: ' · All-time not compared to monthly spend' },
+  'cost.expiredTag': { 'zh-CN': ' · ⚠️ 权益已到期', 'zh-TW': ' · ⚠️ 權益已到期', en: ' · ⚠️ Expired' },
+  'cost.freeActive': { 'zh-CN': '{src} · 用户确认 · 免费权益使用中{extra}', 'zh-TW': '{src} · 使用者確認 · 免費權益使用中{extra}', en: '{src} · Confirmed · Free active{extra}' },
+  'cost.covFull': { 'zh-CN': '100% 折算覆盖', 'zh-TW': '100% 換算覆蓋', en: '100% priced' },
+  'cost.refApprox': { 'zh-CN': '约 ${val}', 'zh-TW': '約 ${val}', en: '~${val}' },
 
-      // 调色板与下拉选择器
-      'colors.resetLevel': { 'zh-CN': '恢复该档预设', 'zh-TW': '還原該檔預設', en: 'Reset step' },
-      'colors.followTheme': { 'zh-CN': '跟随主题', 'zh-TW': '跟隨佈景主題', en: 'Follow theme' },
-      'colors.lvl0': { 'zh-CN': '色阶第 1 档（少/无用量）', 'zh-TW': '色階第 1 檔（少/無用量）', en: 'Step 1 (None/Min)' },
-      'colors.lvl1': { 'zh-CN': '色阶第 2 档（低用量）', 'zh-TW': '色階第 2 檔（低用量）', en: 'Step 2 (Low)' },
-      'colors.lvl2': { 'zh-CN': '色阶第 3 档（中等用量）', 'zh-TW': '色階第 3 檔（中等用量）', en: 'Step 3 (Medium)' },
-      'colors.lvl3': { 'zh-CN': '色阶第 4 档（高用量）', 'zh-TW': '色階第 4 檔（高用量）', en: 'Step 4 (High)' },
-      'colors.lvl4': { 'zh-CN': '色阶第 5 档（多/峰值用量）', 'zh-TW': '色階第 5 檔（多/尖峰用量）', en: 'Step 5 (Peak)' },
-      'colors.eyedropperPicked': { 'zh-CN': '已吸取 {hex}', 'zh-TW': '已吸取 {hex}', en: 'Picked {hex}' },
-      'colors.eyedropperUnsupported': { 'zh-CN': '当前环境不支持原生吸管，可直接粘贴 HEX', 'zh-TW': '目前環境不支援原生滴管，可直接貼上 HEX 色碼', en: 'Eyedropper unsupported; paste HEX directly' },
-      'colors.appliedHex': { 'zh-CN': '已应用 {hex}', 'zh-TW': '已套用 {hex}', en: 'Applied {hex}' },
-      'colors.copied': { 'zh-CN': '✔ 已复制 {label}: {val}', 'zh-TW': '✔ 已複製 {label}: {val}', en: '✔ Copied {label}: {val}' },
-      'dropdown.countrySearch': { 'zh-CN': '🔍 搜索账号所在地区或代码 (如: 美国、TW、JP)...', 'zh-TW': '🔍 搜尋帳號所在地區或代碼 (如: 美國、TW、JP)...', en: '🔍 Search country or code (e.g. US, TW, JP)...' },
-      'dropdown.countryEmpty': { 'zh-CN': '未找到匹配的账号所在地区', 'zh-TW': '找不到相符的帳號所在地區', en: 'No matching country found' },
-      'dropdown.regionSearch': { 'zh-CN': '🔍 搜索订阅国家/地区、货币或缩写 (如: 台湾、澳、USD)...', 'zh-TW': '🔍 搜尋訂閱國家/地區、幣別或縮寫 (如: 台灣、澳、USD)...', en: '🔍 Search billing region or currency (e.g. TW, USD)...' },
-      'dropdown.regionEmpty': { 'zh-CN': '未找到匹配的订阅国家/地区', 'zh-TW': '找不到相符的訂閱國家/地區', en: 'No matching billing region found' },
-      'dropdown.currencySearch': { 'zh-CN': '🔍 搜索币种名称或代码 (如: USD、NTD、人民币)...', 'zh-TW': '🔍 搜尋幣別名稱或代碼 (如: USD、NTD、台幣)...', en: '🔍 Search currency code or name (e.g. USD, CNY)...' },
-      'dropdown.currencyEmpty': { 'zh-CN': '未找到匹配的币种', 'zh-TW': '未找到匹配的幣別', en: 'No matching currency found' },
-      'dropdown.autoSaved': { 'zh-CN': '✔ 已自动保存', 'zh-TW': '✔ 已自動儲存', en: '✔ Auto-saved' },
-      'dropdown.saveFailed': { 'zh-CN': '保存失败', 'zh-TW': '儲存失敗', en: 'Save failed' },
-      'dropdown.saveFailedDetail': { 'zh-CN': '✖ 保存失败：{msg}', 'zh-TW': '✖ 儲存失敗：{msg}', en: '✖ Save failed: {msg}' },
-      'dropdown.writeCfgFailed': { 'zh-CN': '无法写入配置文件', 'zh-TW': '無法寫入設定檔', en: 'Cannot write settings file' },
-      'dropdown.noPersistBridge': { 'zh-CN': '未连接持久化服务，无法保存', 'zh-TW': '未連線至持久化服務，無法儲存', en: 'Persistence bridge unavailable' },
-      'dropdown.persistErr': { 'zh-CN': '持久化异常', 'zh-TW': '持久化異常', en: 'Persistence error' },
-      'dropdown.perMonth': { 'zh-CN': '/月', 'zh-TW': '/月', en: '/mo' },
-      'dropdown.regionUnknownShort': { 'zh-CN': '🌏 未知 (点击选择订阅地区与货币)', 'zh-TW': '🌏 未知 (點擊選擇訂閱地區與幣別)', en: '🌏 Unknown (select region & currency)' },
+  // 调色板与下拉选择器
+  'colors.resetLevel': { 'zh-CN': '恢复该档预设', 'zh-TW': '還原該檔預設', en: 'Reset step' },
+  'colors.followTheme': { 'zh-CN': '跟随主题', 'zh-TW': '跟隨佈景主題', en: 'Follow theme' },
+  'colors.lvl0': { 'zh-CN': '色阶第 1 档（少/无用量）', 'zh-TW': '色階第 1 檔（少/無用量）', en: 'Step 1 (None/Min)' },
+  'colors.lvl1': { 'zh-CN': '色阶第 2 档（低用量）', 'zh-TW': '色階第 2 檔（低用量）', en: 'Step 2 (Low)' },
+  'colors.lvl2': { 'zh-CN': '色阶第 3 档（中等用量）', 'zh-TW': '色階第 3 檔（中等用量）', en: 'Step 3 (Medium)' },
+  'colors.lvl3': { 'zh-CN': '色阶第 4 档（高用量）', 'zh-TW': '色階第 4 檔（高用量）', en: 'Step 4 (High)' },
+  'colors.lvl4': { 'zh-CN': '色阶第 5 档（多/峰值用量）', 'zh-TW': '色階第 5 檔（多/尖峰用量）', en: 'Step 5 (Peak)' },
+  'colors.eyedropperPicked': { 'zh-CN': '已吸取 {hex}', 'zh-TW': '已吸取 {hex}', en: 'Picked {hex}' },
+  'colors.eyedropperUnsupported': { 'zh-CN': '当前环境不支持原生吸管，可直接粘贴 HEX', 'zh-TW': '目前環境不支援原生滴管，可直接貼上 HEX 色碼', en: 'Eyedropper unsupported; paste HEX directly' },
+  'colors.appliedHex': { 'zh-CN': '已应用 {hex}', 'zh-TW': '已套用 {hex}', en: 'Applied {hex}' },
+  'colors.copied': { 'zh-CN': '✔ 已复制 {label}: {val}', 'zh-TW': '✔ 已複製 {label}: {val}', en: '✔ Copied {label}: {val}' },
+  'dropdown.countrySearch': { 'zh-CN': '🔍 搜索账号所在地区或代码 (如: 美国、TW、JP)...', 'zh-TW': '🔍 搜尋帳號所在地區或代碼 (如: 美國、TW、JP)...', en: '🔍 Search country or code (e.g. US, TW, JP)...' },
+  'dropdown.countryEmpty': { 'zh-CN': '未找到匹配的账号所在地区', 'zh-TW': '找不到相符的帳號所在地區', en: 'No matching country found' },
+  'dropdown.regionSearch': { 'zh-CN': '🔍 搜索订阅国家/地区、货币或缩写 (如: 台湾、澳、USD)...', 'zh-TW': '🔍 搜尋訂閱國家/地區、幣別或縮寫 (如: 台灣、澳、USD)...', en: '🔍 Search billing region or currency (e.g. TW, USD)...' },
+  'dropdown.regionEmpty': { 'zh-CN': '未找到匹配的订阅国家/地区', 'zh-TW': '找不到相符的訂閱國家/地區', en: 'No matching billing region found' },
+  'dropdown.currencySearch': { 'zh-CN': '🔍 搜索币种名称或代码 (如: USD、NTD、人民币)...', 'zh-TW': '🔍 搜尋幣別名稱或代碼 (如: USD、NTD、台幣)...', en: '🔍 Search currency code or name (e.g. USD, CNY)...' },
+  'dropdown.currencyEmpty': { 'zh-CN': '未找到匹配的币种', 'zh-TW': '未找到匹配的幣別', en: 'No matching currency found' },
+  'dropdown.autoSaved': { 'zh-CN': '✔ 已自动保存', 'zh-TW': '✔ 已自動儲存', en: '✔ Auto-saved' },
+  'dropdown.saveFailed': { 'zh-CN': '保存失败', 'zh-TW': '儲存失敗', en: 'Save failed' },
+  'dropdown.saveFailedDetail': { 'zh-CN': '✖ 保存失败：{msg}', 'zh-TW': '✖ 儲存失敗：{msg}', en: '✖ Save failed: {msg}' },
+  'dropdown.writeCfgFailed': { 'zh-CN': '无法写入配置文件', 'zh-TW': '無法寫入設定檔', en: 'Cannot write settings file' },
+  'dropdown.noPersistBridge': { 'zh-CN': '未连接持久化服务，无法保存', 'zh-TW': '未連線至持久化服務，無法儲存', en: 'Persistence bridge unavailable' },
+  'dropdown.persistErr': { 'zh-CN': '持久化异常', 'zh-TW': '持久化異常', en: 'Persistence error' },
+  'dropdown.perMonth': { 'zh-CN': '/月', 'zh-TW': '/月', en: '/mo' },
+  'dropdown.regionUnknownShort': { 'zh-CN': '🌏 未知 (点击选择订阅地区与货币)', 'zh-TW': '🌏 未知 (點擊選擇訂閱地區與幣別)', en: '🌏 Unknown (select region & currency)' },
 
-      // 速度图表 Aria 与 设置/更新弹窗
-      'speed.barSvg.aria': { 'zh-CN': '各模型与档位速度对比柱状图', 'zh-TW': '各模型與檔位速度對比長條圖', en: 'Model & effort speed comparison bar chart' },
-      'speed.lineSvg.aria': { 'zh-CN': '所选模型与档位历史输出速度折线图', 'zh-TW': '所選模型與檔位歷史輸出速度折線圖', en: 'Selected model & effort speed trend line chart' },
-      'settings.common.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
-      'settings.clientLang.detecting': { 'zh-CN': '正在检测桌面端汉化运行状态…', 'zh-TW': '正在偵測桌面端漢化執行狀態…', en: 'Checking desktop localization status…' },
-      'settings.clientLang.toggle': { 'zh-CN': '切换汉化状态', 'zh-TW': '切換漢化狀態', en: 'Toggle Localization' },
-      'settings.proxy.checking': { 'zh-CN': '正在核对代理设置…', 'zh-TW': '正在核對代理設定…', en: 'Checking proxy settings…' },
-      'settings.proxy.testBtn': { 'zh-CN': '🔍 测试代理连通性', 'zh-TW': '🔍 測試代理連通性', en: '🔍 Test Proxy Connectivity' },
-      'settings.proxy.testing': { 'zh-CN': '正在测试…', 'zh-TW': '正在測試…', en: 'Testing…' },
-      'settings.proxy.testingDetail': { 'zh-CN': '正在发起本地与网络连通性测试…', 'zh-TW': '正在發起本機與網路連通性測試…', en: 'Running local & network connectivity test…' },
-      'settings.proxy.testFail': { 'zh-CN': '❌ 测试失败: {err}', 'zh-TW': '❌ 測試失敗: {err}', en: '❌ Test failed: {err}' },
-      'settings.proxy.testErr': { 'zh-CN': '❌ 测试异常: {err}', 'zh-TW': '❌ 測試異常: {err}', en: '❌ Test error: {err}' },
-      'settings.proxy.enableBtn': { 'zh-CN': '开启免 TUN 直连', 'zh-TW': '開啟免 TUN 直連', en: 'Enable No-TUN Direct' },
-      'settings.proxy.resValid': { 'zh-CN': '✅ 合法', 'zh-TW': '✅ 合法', en: '✅ Valid' },
-      'settings.proxy.resInvalid': { 'zh-CN': '❌ 无效', 'zh-TW': '❌ 無效', en: '❌ Invalid' },
-      'settings.proxy.resReachable': { 'zh-CN': '✅ 可连接', 'zh-TW': '✅ 可連線', en: '✅ Reachable' },
-      'settings.proxy.resUnreachable': { 'zh-CN': '❌ 无法连接', 'zh-TW': '❌ 無法連線', en: '❌ Unreachable' },
-      'settings.proxy.resOnline': { 'zh-CN': '✅ 可访问', 'zh-TW': '✅ 可存取', en: '✅ Reachable' },
-      'settings.proxy.resOffline': { 'zh-CN': '⚠️ 无法访问公网 (可能无境外连通)', 'zh-TW': '⚠️ 無法存取公網 (可能無境外連通)', en: '⚠️ Public internet unreachable' },
-      'settings.proxy.resPending': { 'zh-CN': '待通过真实在线会话验证 (分层标定)', 'zh-TW': '待透過真實線上會話驗證 (分層標定)', en: 'Pending live chat verification' },
-      'settings.proxy.resFmt': { 'zh-CN': '配置格式', 'zh-TW': '設定格式', en: 'Config format' },
-      'settings.proxy.resPort': { 'zh-CN': '本地端口', 'zh-TW': '本機連接埠', en: 'Local port' },
-      'settings.proxy.resNet': { 'zh-CN': '公网连通', 'zh-TW': '公網連通', en: 'Internet' },
-      'settings.proxy.resModel': { 'zh-CN': '模型请求', 'zh-TW': '模型請求', en: 'Model request' },
+  // 速度图表 Aria 与 设置/更新弹窗
+  'speed.barSvg.aria': { 'zh-CN': '各模型与档位速度对比柱状图', 'zh-TW': '各模型與檔位速度對比長條圖', en: 'Model & effort speed comparison bar chart' },
+  'speed.lineSvg.aria': { 'zh-CN': '所选模型与档位历史输出速度折线图', 'zh-TW': '所選模型與檔位歷史輸出速度折線圖', en: 'Selected model & effort speed trend line chart' },
+  'settings.common.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
+  'settings.clientLang.detecting': { 'zh-CN': '正在检测桌面端汉化运行状态…', 'zh-TW': '正在偵測桌面端漢化執行狀態…', en: 'Checking desktop localization status…' },
+  'settings.clientLang.toggle': { 'zh-CN': '切换汉化状态', 'zh-TW': '切換漢化狀態', en: 'Toggle Localization' },
+  'settings.proxy.checking': { 'zh-CN': '正在核对代理设置…', 'zh-TW': '正在核對代理設定…', en: 'Checking proxy settings…' },
+  'settings.proxy.testBtn': { 'zh-CN': '🔍 测试代理连通性', 'zh-TW': '🔍 測試代理連通性', en: '🔍 Test Proxy Connectivity' },
+  'settings.proxy.testing': { 'zh-CN': '正在测试…', 'zh-TW': '正在測試…', en: 'Testing…' },
+  'settings.proxy.testingDetail': { 'zh-CN': '正在发起本地与网络连通性测试…', 'zh-TW': '正在發起本機與網路連通性測試…', en: 'Running local & network connectivity test…' },
+  'settings.proxy.testFail': { 'zh-CN': '❌ 测试失败: {err}', 'zh-TW': '❌ 測試失敗: {err}', en: '❌ Test failed: {err}' },
+  'settings.proxy.testErr': { 'zh-CN': '❌ 测试异常: {err}', 'zh-TW': '❌ 測試異常: {err}', en: '❌ Test error: {err}' },
+  'settings.proxy.enableBtn': { 'zh-CN': '开启免 TUN 直连', 'zh-TW': '開啟免 TUN 直連', en: 'Enable No-TUN Direct' },
+  'settings.proxy.resValid': { 'zh-CN': '✅ 合法', 'zh-TW': '✅ 合法', en: '✅ Valid' },
+  'settings.proxy.resInvalid': { 'zh-CN': '❌ 无效', 'zh-TW': '❌ 無效', en: '❌ Invalid' },
+  'settings.proxy.resReachable': { 'zh-CN': '✅ 可连接', 'zh-TW': '✅ 可連線', en: '✅ Reachable' },
+  'settings.proxy.resUnreachable': { 'zh-CN': '❌ 无法连接', 'zh-TW': '❌ 無法連線', en: '❌ Unreachable' },
+  'settings.proxy.resOnline': { 'zh-CN': '✅ 可访问', 'zh-TW': '✅ 可存取', en: '✅ Reachable' },
+  'settings.proxy.resOffline': { 'zh-CN': '⚠️ 无法访问公网 (可能无境外连通)', 'zh-TW': '⚠️ 無法存取公網 (可能無境外連通)', en: '⚠️ Public internet unreachable' },
+  'settings.proxy.resPending': { 'zh-CN': '待通过真实在线会话验证 (分层标定)', 'zh-TW': '待透過真實線上會話驗證 (分層標定)', en: 'Pending live chat verification' },
+  'settings.proxy.resFmt': { 'zh-CN': '配置格式', 'zh-TW': '設定格式', en: 'Config format' },
+  'settings.proxy.resPort': { 'zh-CN': '本地端口', 'zh-TW': '本機連接埠', en: 'Local port' },
+  'settings.proxy.resNet': { 'zh-CN': '公网连通', 'zh-TW': '公網連通', en: 'Internet' },
+  'settings.proxy.resModel': { 'zh-CN': '模型请求', 'zh-TW': '模型請求', en: 'Model request' },
 
-      'update.unavailableTitle': { 'zh-CN': 'ℹ️ 更新不可用', 'zh-TW': 'ℹ️ 更新不可用', en: 'ℹ️ Update Unavailable' },
-      'update.unavailableVer': { 'zh-CN': 'v{ver} (更新不可用)', 'zh-TW': 'v{ver} (更新不可用)', en: 'v{ver} (Unavailable)' },
-      'update.unavailableBody': { 'zh-CN': '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。', 'zh-TW': '目前環境未提供更新橋接介面（如純前端除錯或免安裝熱掛載模式），無法線上檢查更新。請前往 GitHub Releases 頁面查看最新發布。', en: 'Update bridge unavailable in this mode. Check GitHub Releases for the latest version.' },
-      'update.checkingTitle': { 'zh-CN': '🔄 检查更新中', 'zh-TW': '🔄 檢查更新中', en: '🔄 Checking for Updates' },
-      'update.checkingVer': { 'zh-CN': 'v{ver} (正在检查…)', 'zh-TW': 'v{ver} (正在檢查…)', en: 'v{ver} (Checking…)' },
-      'update.doneTitle': { 'zh-CN': '🎉 更新已完成', 'zh-TW': '🎉 更新已完成', en: '🎉 Update Complete' },
-      'update.doneVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Up to date)' },
-      'update.doneHot': { 'zh-CN': '已成功在线更新至 v{ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 v{ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to v{ver}. UI hot-injected immediately; restart client for main-process changes.' },
-      'update.doneDisk': { 'zh-CN': '已成功完成 v{ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 v{ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to v{ver} complete. Restart Antigravity to apply.' },
-      'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },
-      'update.btnRetry': { 'zh-CN': '重试更新', 'zh-TW': '重試更新', en: 'Retry Update' },
-      'update.failStatus': { 'zh-CN': '✖ 更新失败: {err}', 'zh-TW': '✖ 更新失敗: {err}', en: '✖ Update failed: {err}' },
-      'update.errStatus': { 'zh-CN': '✖ 更新异常: {err}', 'zh-TW': '✖ 更新異常: {err}', en: '✖ Update error: {err}' },
+  'update.unavailableTitle': { 'zh-CN': 'ℹ️ 更新不可用', 'zh-TW': 'ℹ️ 更新不可用', en: 'ℹ️ Update Unavailable' },
+  'update.unavailableVer': { 'zh-CN': 'v{ver} (更新不可用)', 'zh-TW': 'v{ver} (更新不可用)', en: 'v{ver} (Unavailable)' },
+  'update.unavailableBody': { 'zh-CN': '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。', 'zh-TW': '目前環境未提供更新橋接介面（如純前端除錯或免安裝熱掛載模式），無法線上檢查更新。請前往 GitHub Releases 頁面查看最新發布。', en: 'Update bridge unavailable in this mode. Check GitHub Releases for the latest version.' },
+  'update.checkingTitle': { 'zh-CN': '🔄 检查更新中', 'zh-TW': '🔄 檢查更新中', en: '🔄 Checking for Updates' },
+  'update.checkingVer': { 'zh-CN': 'v{ver} (正在检查…)', 'zh-TW': 'v{ver} (正在檢查…)', en: 'v{ver} (Checking…)' },
+  'update.doneTitle': { 'zh-CN': '🎉 更新已完成', 'zh-TW': '🎉 更新已完成', en: '🎉 Update Complete' },
+  'update.doneVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Up to date)' },
+  'update.doneHot': { 'zh-CN': '已成功在线更新至 v{ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 v{ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to v{ver}. UI hot-injected immediately; restart client for main-process changes.' },
+  'update.doneDisk': { 'zh-CN': '已成功完成 v{ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 v{ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to v{ver} complete. Restart Antigravity to apply.' },
+  'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },
+  'update.btnRetry': { 'zh-CN': '重试更新', 'zh-TW': '重試更新', en: 'Retry Update' },
+  'update.failStatus': { 'zh-CN': '✖ 更新失败: {err}', 'zh-TW': '✖ 更新失敗: {err}', en: '✖ Update failed: {err}' },
+  'update.errStatus': { 'zh-CN': '✖ 更新异常: {err}', 'zh-TW': '✖ 更新異常: {err}', en: '✖ Update error: {err}' },
 
-      // 模型查看提示 & 状态扩展 & 重启交互
-      'panel.ctx.viewModelHint': { 'zh-CN': '仅查看模型配置；在此切换不会改变发送模型', 'zh-TW': '僅檢視模型設定；在此切換不會改變發送模型', en: 'Inspect model config only; does not change active chat model' },
-      'status.badge.partialMatch': { 'zh-CN': '特征未识别（部分匹配）', 'zh-TW': '特徵未識別（部分匹配）', en: 'Signature mismatch (partial)' },
-      'client.restart.hostNotSupported': { 'zh-CN': '当前窗口为热注入或预览模式，不支持一键重启客户端，请手动完全退出后重新打开。', 'zh-TW': '目前視窗為熱注入或預覽模式，不支援一鍵重啟用戶端，請手動完全結束後重新開啟。', en: 'Current mode does not support one-click host restart. Fully quit and reopen Antigravity manually.' },
-      'client.restart.triggering': { 'zh-CN': '正在通知客户端退出并重启…', 'zh-TW': '正在通知用戶端結束並重新啟動…', en: 'Requesting Antigravity restart…' },
-      'client.restart.triggered': { 'zh-CN': '已触发客户端重启；若未自动拉起，请手动重新打开 Antigravity。', 'zh-TW': '已觸發用戶端重啟；若未自動拉起，請手動重新開啟 Antigravity。', en: 'Restart requested. Reopen Antigravity manually if it does not relaunch automatically.' },
-      'client.restart.failed': { 'zh-CN': '无法自动重启：{err}，请手动完全退出后重新打开客户端。', 'zh-TW': '無法自動重啟：{err}，請手動完全結束後重新開啟用戶端。', en: 'Auto-restart failed: {err}. Please quit and reopen Antigravity manually.' },
-      'client.restart.manualNote': { 'zh-CN': '请手动完全退出 Antigravity 并重新打开，然后刷新状态确认是否生效。', 'zh-TW': '請手動完全結束 Antigravity 並重新開啟，然後重新整理狀態確認是否生效。', en: 'Quit Antigravity completely and reopen it, then refresh status to verify.' },
-      'msg.saveFail': { 'zh-CN': '保存失败', 'zh-TW': '儲存失敗', en: 'Save failed' },
-      'msg.noHostBridge': { 'zh-CN': '未连接到宿主设置桥接', 'zh-TW': '未連線到宿主設定橋接', en: 'Host settings bridge is not connected' },
-      'msg.noModelsDetected': { 'zh-CN': '尚未检测到可选模型，请先开启对话或等待列表读取。', 'zh-TW': '尚未偵測到可選模型，請先開啟對話或等待清單讀取。', en: 'No models detected yet. Start a chat or wait for the model list to load.' },
-      'models.btn.recheck': { 'zh-CN': '重新检测', 'zh-TW': '重新偵測', en: 'Re-detect' },
-      'models.card.partialFailDetail': { 'zh-CN': '未定位到完整的上下文写入点，为保护二进制完整性已中止写入。{reason}', 'zh-TW': '未定位到完整的上下文寫入點，為保護二進位完整性已中止寫入。{reason}', en: 'Could not locate all required binary gates; aborted safely. {reason}' },
+  // 模型查看提示 & 状态扩展 & 重启交互
+  'panel.ctx.viewModelHint': { 'zh-CN': '仅查看模型配置；在此切换不会改变发送模型', 'zh-TW': '僅檢視模型設定；在此切換不會改變發送模型', en: 'Inspect model config only; does not change active chat model' },
+  'status.badge.partialMatch': { 'zh-CN': '特征未识别（部分匹配）', 'zh-TW': '特徵未識別（部分匹配）', en: 'Signature mismatch (partial)' },
+  'client.restart.hostNotSupported': { 'zh-CN': '当前窗口为热注入或预览模式，不支持一键重启客户端，请手动完全退出后重新打开。', 'zh-TW': '目前視窗為熱注入或預覽模式，不支援一鍵重啟用戶端，請手動完全結束後重新開啟。', en: 'Current mode does not support one-click host restart. Fully quit and reopen Antigravity manually.' },
+  'client.restart.triggering': { 'zh-CN': '正在通知客户端退出并重启…', 'zh-TW': '正在通知用戶端結束並重新啟動…', en: 'Requesting Antigravity restart…' },
+  'client.restart.triggered': { 'zh-CN': '已触发客户端重启；若未自动拉起，请手动重新打开 Antigravity。', 'zh-TW': '已觸發用戶端重啟；若未自動拉起，請手動重新開啟 Antigravity。', en: 'Restart requested. Reopen Antigravity manually if it does not relaunch automatically.' },
+  'client.restart.failed': { 'zh-CN': '无法自动重启：{err}，请手动完全退出后重新打开客户端。', 'zh-TW': '無法自動重啟：{err}，請手動完全結束後重新開啟用戶端。', en: 'Auto-restart failed: {err}. Please quit and reopen Antigravity manually.' },
+  'client.restart.manualNote': { 'zh-CN': '请手动完全退出 Antigravity 并重新打开，然后刷新状态确认是否生效。', 'zh-TW': '請手動完全結束 Antigravity 並重新開啟，然後重新整理狀態確認是否生效。', en: 'Quit Antigravity completely and reopen it, then refresh status to verify.' },
+  'msg.saveFail': { 'zh-CN': '保存失败', 'zh-TW': '儲存失敗', en: 'Save failed' },
+  'msg.noHostBridge': { 'zh-CN': '未连接到宿主设置桥接', 'zh-TW': '未連線到宿主設定橋接', en: 'Host settings bridge is not connected' },
+  'msg.noModelsDetected': { 'zh-CN': '尚未检测到可选模型，请先开启对话或等待列表读取。', 'zh-TW': '尚未偵測到可選模型，請先開啟對話或等待清單讀取。', en: 'No models detected yet. Start a chat or wait for the model list to load.' },
+  'models.btn.recheck': { 'zh-CN': '重新检测', 'zh-TW': '重新偵測', en: 'Re-detect' },
+  'models.card.partialFailDetail': { 'zh-CN': '未定位到完整的上下文写入点，为保护二进制完整性已中止写入。{reason}', 'zh-TW': '未定位到完整的上下文寫入點，為保護二進位完整性已中止寫入。{reason}', en: 'Could not locate all required binary gates; aborted safely. {reason}' },
 
       // 推荐配置 / 提示词档位 / 品牌标题 / 增强设置
       'enhance.preset.title': { 'zh-CN': '✨ 推荐配置（按需主动应用）', 'zh-TW': '✨ 推薦設定（依需求主動套用）', en: '✨ Recommended Setup (Opt-In)' },
@@ -4232,11 +5051,19 @@
       'enhance.btn.restartLs': { 'zh-CN': '重启语言服务', 'zh-TW': '重啟語言服務', en: 'Restart Language Server' },
       'enhance.brand.label': { 'zh-CN': '左上角品牌文字显示（仅作用于左上角品牌位，不影响 Logo、菜单或代码）：', 'zh-TW': '左上角品牌文字顯示（僅作用於左上角品牌位，不影響 Logo、選單或程式碼）：', en: 'Header Brand Text (applies only to top-left brand slot; does not alter logo, menus, or code):' },
       'enhance.brand.aria': { 'zh-CN': '品牌显示模式', 'zh-TW': '品牌顯示模式', en: 'Brand display mode' },
-      'enhance.brand.english': { 'zh-CN': '保留 Antigravity', 'zh-TW': '保留 Antigravity', en: 'Keep Antigravity' },
+      'enhance.brand.english': { 'zh-CN': 'Antigravity', 'zh-TW': 'Antigravity', en: 'Antigravity' },
       'enhance.brand.hidden': { 'zh-CN': '隐藏', 'zh-TW': '隱藏', en: 'Hide' },
-      'enhance.brand.translated': { 'zh-CN': '反重力', 'zh-TW': '反重力', en: '反重力 (Translated)' },
+      'enhance.brand.translated': { 'zh-CN': '反重力', 'zh-TW': '反重力', en: 'Translated Name' },
       'enhance.brand.applyBtn': { 'zh-CN': '保存品牌选择并应用', 'zh-TW': '儲存品牌選擇並套用', en: 'Save & Apply Brand' },
-      'enhance.brand.switched': { 'zh-CN': '品牌显示已保存为「{mode}」，重启 Antigravity 客户端后生效。', 'zh-TW': '品牌顯示已儲存為「{mode}」，重新啟動 Antigravity 用戶端後生效。', en: 'Brand display saved as "{mode}". Restart Antigravity to take effect.' },
+      'enhance.brand.hiddenValue': { 'zh-CN': '隐藏', 'zh-TW': '隱藏', en: 'Hide' },
+      'enhance.brand.switched': { 'zh-CN': '已保存并应用：左上角品牌已更新为「{mode}」。', 'zh-TW': '已儲存並套用：左上角品牌已更新為「{mode}」。', en: 'Header name updated to "{mode}" (applied).' },
+      'enhance.brand.appliedName': { 'zh-CN': '已保存并应用：左上角品牌已更新为「{mode}」。', 'zh-TW': '已儲存並套用：左上角品牌已更新為「{mode}」。', en: 'Header name updated to "{mode}" (applied).' },
+      'enhance.brand.appliedHidden': { 'zh-CN': '已保存并应用：左上角品牌已隐藏。', 'zh-TW': '已儲存並套用：左上角品牌已隱藏。', en: 'Header name hidden (applied).' },
+      'enhance.brand.savedNotFound': { 'zh-CN': '品牌设置已保存为「{mode}」，但当前窗口未检测到品牌元素，未能即时应用。', 'zh-TW': '品牌設定已儲存為「{mode}」，但目前視窗未偵測到品牌元素，未能即時套用。', en: 'Brand setting saved ({mode}), but header element was not found in this window (not applied live).' },
+      'enhance.brand.savedApplyFailed': { 'zh-CN': '品牌设置已保存为「{mode}」，但当前窗口实时更新未生效。', 'zh-TW': '品牌設定已儲存為「{mode}」，但目前視窗即時更新未生效。', en: 'Brand setting saved ({mode}), but live update did not take effect.' },
+      'enhance.brand.saveFailErr': { 'zh-CN': '保存品牌设置失败：{err}', 'zh-TW': '儲存品牌設定失敗：{err}', en: 'Failed to save brand setting: {err}' },
+      'list.sep': { 'zh-CN': '、', 'zh-TW': '、', en: ', ' },
+      'list.semiSep': { 'zh-CN': '；', 'zh-TW': '；', en: '; ' },
       'enhance.prompt.title': { 'zh-CN': '🧠 回答与工具使用规则', 'zh-TW': '🧠 回答與工具使用規則', en: '🧠 Response & Tool Usage Rules' },
       'enhance.prompt.plainIntro': { 'zh-CN': '调整客户端给 AI 的工作说明，让它更重视证据：没读过的文件不猜，没运行的测试不说通过。它不会升级模型底层能力，也不能保证回答永远正确。', 'zh-TW': '調整用戶端提供給 AI 的工作指引，促使其更重視證據：未讀取的檔案不臆測，未實際執行的測試不宣稱通過。此功能調整本機範本指引，不會提升模型底層能力，亦無法確保回答絕對無誤。', en: 'Adjusts client instructions to AI to emphasize evidence: never guess unread files, never claim untested code passed. It does not upgrade model intelligence or guarantee error-free output.' },
       'enhance.stat.prompt': { 'zh-CN': '当前检测档位', 'zh-TW': '目前檢測檔位', en: 'Detected Tier' },
@@ -4291,18 +5118,30 @@
       'enhance.details.body': { 'zh-CN': '所有提示词与中文标题改动均采用等长槽位替换并保留原版备份，不改变文件体积，不会静默覆盖原有上下文配置。防幻觉档位已在融合前移除与本机工具不符、固定知识截止日与强制配色规则。', 'zh-TW': '所有提示詞與中文標題變更皆採用等長槽位替換並保留原版備份，不改變檔案體積，不會靜默覆蓋原有上下文設定。防幻覺檔位已在融合前移除與本機工具不符、固定知識截止日與強制配色規則。', en: 'Prompt and title changes use fixed-length slot replacement with stock backups so file size never shifts and context settings stay separate.' },
       'enhance.details.credit': { 'zh-CN': '增强与提示词档位思路源自开源贡献 PR #4 (Jia131313)，桌面端与 CLI 解锁逻辑融合自 PR #3 (anyu0804 / Linux.do @23375)，经本仓库适配器统一持久化链路与防幻觉契约。', 'zh-TW': '增強與提示詞檔位思路源自開源貢獻 PR #4 (Jia131313)，桌面端與 CLI 解鎖邏輯融合自 PR #3 (anyu0804 / Linux.do @23375)，經本專案適配器統一持久化鏈路與防幻覺契約。', en: 'Prompt tiers & enhance ideas adapted from PR #4 (Jia131313); context unlock adapted from PR #3 (anyu0804 / Linux.do @23375), unified in this project.' },
       'enhance.status.unread': { 'zh-CN': '未读取', 'zh-TW': '未讀取', en: 'Unread' },
-      'enhance.status.pendingRestartLs': { 'zh-CN': '待重启语言服务', 'zh-TW': '待重啟語言服務', en: 'LS Restart Needed' },
-      'enhance.status.patchedActive': { 'zh-CN': '已写入', 'zh-TW': '已寫入', en: 'Patched' },
+      'enhance.status.unsupportedPlatform': { 'zh-CN': '当前平台不支持', 'zh-TW': '目前平台不支援', en: 'Unsupported Platform' },
+      'enhance.status.pendingRestartLs': { 'zh-CN': '已写入 · 待重启语言服务', 'zh-TW': '已寫入 · 待重啟語言服務', en: 'Written · LS Restart Needed' },
+      'enhance.status.runtimeConfirmed': { 'zh-CN': '已写入 · 进程已重载', 'zh-TW': '已寫入 · 行程已重載', en: 'Written · LS Reloaded' },
+      'enhance.status.patchedActive': { 'zh-CN': '已保存并写入', 'zh-TW': '已儲存並寫入', en: 'Saved & Written' },
+      'enhance.status.clientUpdated': { 'zh-CN': '配置已保存 · 客户端更新待重写入', 'zh-TW': '設定已儲存 · 用戶端更新待重寫入', en: 'Saved · Client Updated (Reapply)' },
+      'enhance.status.diskMismatch': { 'zh-CN': '配置已保存 · 磁盘待写入', 'zh-TW': '設定已儲存 · 磁碟待寫入', en: 'Saved · Disk Out of Sync' },
+      'enhance.status.draftUnsaved': { 'zh-CN': '（有未应用修改）', 'zh-TW': '（有未套用修改）', en: ' (Unsaved Draft)' },
       'enhance.status.stock': { 'zh-CN': '官方原版', 'zh-TW': '官方原版', en: 'Stock' },
       'enhance.status.slotsInfo': { 'zh-CN': '提示词 {p} · 标题 {t}', 'zh-TW': '提示詞 {p} · 標題 {t}', en: 'Prompt {p} · Title {t}' },
       'enhance.status.backupYes': { 'zh-CN': '已备份', 'zh-TW': '已備份', en: 'Backed up' },
       'enhance.status.backupNo': { 'zh-CN': '无（未改写）', 'zh-TW': '無（未改寫）', en: 'None (stock)' },
-      'enhance.titleState.on': { 'zh-CN': '已开启', 'zh-TW': '已開啟', en: 'Enabled' },
+      'enhance.titleState.on': { 'zh-CN': '已写入磁盘', 'zh-TW': '已寫入磁碟', en: 'Written on Disk' },
+      'enhance.titleState.onConfirmed': { 'zh-CN': '已写入 · 进程已重载（效果需对话实测）', 'zh-TW': '已寫入 · 行程已重載（效果需對話實測）', en: 'Written · Process Reloaded (Verify in Chat)' },
       'enhance.titleState.onWritten': { 'zh-CN': '已写入磁盘（待重新加载）', 'zh-TW': '已寫入磁碟（待重新載入）', en: 'Written to disk (Reload needed)' },
       'enhance.titleState.off': { 'zh-CN': '原版英文', 'zh-TW': '原版英文', en: 'Stock English' },
       'enhance.titleState.conflict': { 'zh-CN': '状态不一致', 'zh-TW': '狀態不一致', en: 'Mismatch' },
-      'enhance.result.appliedNeedRestartLs': { 'zh-CN': '✔ 提示词与标题配置已写入磁盘（{tier} / 中文标题：{title}）。需重启后台语言服务或重开客户端以加载新指令；标题实际效果由模型生成，不保证必定中文。', 'zh-TW': '✔ 提示詞與標題設定已寫入磁碟（{tier} / 中文標題：{title}）。需重啟後台語言服務或重開用戶端以載入新指令；標題實際效果由模型生成，不保證必定中文。', en: '✔ Prompt & title settings written ({tier} / Title: {title}). Language server or client restart required to reload. Title output depends on model.' },
+      'enhance.result.appliedNeedRestartLs': { 'zh-CN': '✔ 提示词与标题配置已保存并写入磁盘（{tier} / 中文标题：{title}）。需重启后台语言服务或重开客户端以加载新指令；标题实际效果由模型生成，不保证必定中文。', 'zh-TW': '✔ 提示詞與標題設定已儲存並寫入磁碟（{tier} / 中文標題：{title}）。需重啟後台語言服務或重開用戶端以載入新指令；標題實際效果由模型生成，不保證必定中文。', en: '✔ Prompt & title settings written & saved ({tier} / Title: {title}). Language server or client restart required to reload. Title output depends on model.' },
+      'enhance.result.alreadyApplied': { 'zh-CN': '✔ 当前已是目标状态（{tier} / 中文标题：{title}），配置已确认保存，无需重复写入或重启。', 'zh-TW': '✔ 目前已是目標狀態（{tier} / 中文標題：{title}），設定已確認儲存，無需重複寫入或重啟。', en: '✔ Already at target state ({tier} / Title: {title}). Settings verified and saved; no write or restart needed.' },
       'enhance.result.presetDone': { 'zh-CN': '✔ 所选推荐配置已写入（{summary}）。请重启语言服务或客户端让全部变更加载生效。', 'zh-TW': '✔ 所選推薦設定已寫入（{summary}）。請重啟語言服務或用戶端讓全部變更載入生效。', en: '✔ Selected preset applied ({summary}). Restart language server or client to load changes.' },
+      'enhance.result.presetAlreadyApplied': { 'zh-CN': '✔ 所选推荐配置均已是目标状态（{summary}），无需重复写入。', 'zh-TW': '✔ 所選推薦設定均已是目標狀態（{summary}），無需重複寫入。', en: '✔ Selected presets are already active ({summary}); no write needed.' },
+      'enhance.result.presetWorking': { 'zh-CN': '正在应用所选配置，请稍候…', 'zh-TW': '正在套用所選設定，請稍候…', en: 'Applying selected settings…' },
+      'enhance.result.restoreWorking': { 'zh-CN': '正在恢复官方默认配置，请稍候…', 'zh-TW': '正在恢復官方預設設定，請稍候…', en: 'Restoring stock defaults…' },
+      'enhance.result.clientUpdatedNotice': { 'zh-CN': '检测到客户端目标文件已恢复官方原版（可能因版本更新），已恢复显示上次保存偏好（{tier} / 中文标题：{title}），点击应用即可重新写入。', 'zh-TW': '偵測到用戶端目標檔案已恢復官方原版（可能因版本更新），已恢復顯示上次儲存偏好（{tier} / 中文標題：{title}），點擊套用即可重新寫入。', en: 'Client binaries appear reset (e.g. client update). Saved preference ({tier} / Title: {title}) is kept in draft; click Apply to re-patch.' },
+      'enhance.btn.restartLsBusy': { 'zh-CN': '正在重启语言服务…', 'zh-TW': '正在重啟語言服務…', en: 'Restarting LS…' },
       'enhance.result.restoredDone': { 'zh-CN': '✔ 已恢复为官方默认状态（0档原版、关闭中文标题、官方英文与默认上下文）。请重启客户端完整生效。', 'zh-TW': '✔ 已恢復為官方預設狀態（0檔原版、關閉中文標題、官方英文與預設上下文）。請重啟用戶端完整生效。', en: '✔ Restored to stock defaults (Tier 0, original title & English UI, native context). Restart client to take effect.' },
       'enhance.result.partialFail': { 'zh-CN': '⚠ 部分完成，未全部成功。已成功：{done}；失败：{failed}。请处理异常项后重试。', 'zh-TW': '⚠ 部分完成，未全部成功。已成功：{done}；失敗：{failed}。請處理異常項後重試。', en: '⚠ Partial completion. Succeeded: {done}; Failed: {failed}. Please retry failed items.' },
       'enhance.result.lsRestarted': { 'zh-CN': '✔ 已通知语言服务重载（终止 {killed} 个旧进程），Antigravity 将自动拉起新版后端。', 'zh-TW': '✔ 已通知語言服務重載（終止 {killed} 個舊行程），Antigravity 將自動拉起新版後端。', en: '✔ Language server signaled to reload ({killed} process(es) cycled); Antigravity will respawn it.' },
@@ -4310,217 +5149,378 @@
       'enhance.result.noBridge': { 'zh-CN': '当前预览模式未连接到语言服务增强桥接，可通过 node cli.js enhance-status 查看或执行。', 'zh-TW': '目前預覽模式未連線到語言服務增強橋接，可透過 node cli.js enhance-status 檢視或執行。', en: 'Enhance bridge unavailable in this mode. Use `node cli.js enhance-status` via CLI.' },
       'enhance.result.fail': { 'zh-CN': '操作失败：{err}', 'zh-TW': '操作失敗：{err}', en: 'Action failed: {err}' },
 
-      // 颜色与拾色器 & 更新弹窗补充
-      'colors.swatchTitle': { 'zh-CN': '点击打开调色板', 'zh-TW': '點擊開啟調色盤', en: 'Click to pick color' },
-      'colors.lvl0Title': { 'zh-CN': '热力图第1档：少/无用量（点击独立调色）', 'zh-TW': '熱力圖第1檔：少/無用量（點擊獨立調色）', en: 'Heatmap Level 1: None/Low (click to edit)' },
-      'colors.lvl1Title': { 'zh-CN': '热力图第2档：低用量（点击独立调色）', 'zh-TW': '熱力圖第2檔：低用量（點擊獨立調色）', en: 'Heatmap Level 2: Light (click to edit)' },
-      'colors.lvl2Title': { 'zh-CN': '热力图第3档：中等用量（点击独立调色）', 'zh-TW': '熱力圖第3檔：中等用量（點擊獨立調色）', en: 'Heatmap Level 3: Medium (click to edit)' },
-      'colors.lvl3Title': { 'zh-CN': '热力图第4档：高用量（点击独立调色）', 'zh-TW': '熱力圖第4檔：高用量（點擊獨立調色）', en: 'Heatmap Level 4: High (click to edit)' },
-      'colors.lvl4Title': { 'zh-CN': '热力图第5档：多/峰值用量（点击独立调色）', 'zh-TW': '熱力圖第5檔：多/峰值用量（點擊獨立調色）', en: 'Heatmap Level 5: Peak (click to edit)' },
-      'colors.panelBgSwatch': { 'zh-CN': '面板与菜单背景色', 'zh-TW': '面板與選單背景色', en: 'Panel & Menu Background' },
-      'cp.closeAria': { 'zh-CN': '关闭调色器', 'zh-TW': '關閉調色盤', en: 'Close color picker' },
-      'cp.eyedropperTitle': { 'zh-CN': '屏幕取色器 (吸管)', 'zh-TW': '螢幕取色器 (吸管)', en: 'Eyedropper' },
-      'cp.hexAria': { 'zh-CN': 'HEX 色值', 'zh-TW': 'HEX 色值', en: 'HEX value' },
-      'cp.copyHex': { 'zh-CN': '复制 HEX', 'zh-TW': '複製 HEX', en: 'Copy HEX' },
-      'cp.rgbAria': { 'zh-CN': 'RGB 色值', 'zh-TW': 'RGB 色值', en: 'RGB value' },
-      'cp.copyRgb': { 'zh-CN': '复制 RGB', 'zh-TW': '複製 RGB', en: 'Copy RGB' },
-      'cp.hslAria': { 'zh-CN': 'HSL 色值', 'zh-TW': 'HSL 色值', en: 'HSL value' },
-      'cp.copyHsl': { 'zh-CN': '复制 HSL', 'zh-TW': '複製 HSL', en: 'Copy HSL' },
-      'update.dialogAria': { 'zh-CN': '软件更新', 'zh-TW': '軟體更新', en: 'Software Update' },
+  // 颜色与拾色器 & 更新弹窗补充
+  'colors.swatchTitle': { 'zh-CN': '点击打开调色板', 'zh-TW': '點擊開啟調色盤', en: 'Click to pick color' },
+  'colors.lvl0Title': { 'zh-CN': '热力图第1档：少/无用量（点击独立调色）', 'zh-TW': '熱力圖第1檔：少/無用量（點擊獨立調色）', en: 'Heatmap Level 1: None/Low (click to edit)' },
+  'colors.lvl1Title': { 'zh-CN': '热力图第2档：低用量（点击独立调色）', 'zh-TW': '熱力圖第2檔：低用量（點擊獨立調色）', en: 'Heatmap Level 2: Light (click to edit)' },
+  'colors.lvl2Title': { 'zh-CN': '热力图第3档：中等用量（点击独立调色）', 'zh-TW': '熱力圖第3檔：中等用量（點擊獨立調色）', en: 'Heatmap Level 3: Medium (click to edit)' },
+  'colors.lvl3Title': { 'zh-CN': '热力图第4档：高用量（点击独立调色）', 'zh-TW': '熱力圖第4檔：高用量（點擊獨立調色）', en: 'Heatmap Level 4: High (click to edit)' },
+  'colors.lvl4Title': { 'zh-CN': '热力图第5档：多/峰值用量（点击独立调色）', 'zh-TW': '熱力圖第5檔：多/峰值用量（點擊獨立調色）', en: 'Heatmap Level 5: Peak (click to edit)' },
+  'colors.panelBgSwatch': { 'zh-CN': '面板与菜单背景色', 'zh-TW': '面板與選單背景色', en: 'Panel & Menu Background' },
+  'cp.closeAria': { 'zh-CN': '关闭调色器', 'zh-TW': '關閉調色盤', en: 'Close color picker' },
+  'cp.eyedropperTitle': { 'zh-CN': '屏幕取色器 (吸管)', 'zh-TW': '螢幕取色器 (吸管)', en: 'Eyedropper' },
+  'cp.hexAria': { 'zh-CN': 'HEX 色值', 'zh-TW': 'HEX 色值', en: 'HEX value' },
+  'cp.copyHex': { 'zh-CN': '复制 HEX', 'zh-TW': '複製 HEX', en: 'Copy HEX' },
+  'cp.rgbAria': { 'zh-CN': 'RGB 色值', 'zh-TW': 'RGB 色值', en: 'RGB value' },
+  'cp.copyRgb': { 'zh-CN': '复制 RGB', 'zh-TW': '複製 RGB', en: 'Copy RGB' },
+  'cp.hslAria': { 'zh-CN': 'HSL 色值', 'zh-TW': 'HSL 色值', en: 'HSL value' },
+  'cp.copyHsl': { 'zh-CN': '复制 HSL', 'zh-TW': '複製 HSL', en: 'Copy HSL' },
+  'update.dialogAria': { 'zh-CN': '软件更新', 'zh-TW': '軟體更新', en: 'Software Update' },
 
-      // 订阅表单与热力图补充
-      'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅月费及人民币折合汇率参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱月費及人民幣折合匯率參考 (點擊展開/收起詳情)', en: 'Current monthly fee & CNY estimate (click to toggle details)' },
-      'plan.country.title': { 'zh-CN': '仅作为本地显示记录，不修改实际 Google 账号', 'zh-TW': '僅作為本機顯示記錄，不修改實際 Google 帳號', en: 'Local display record only; does not change your Google account' },
-      'plan.region.title': { 'zh-CN': '实际购买或支付订阅所在的国家或地区', 'zh-TW': '實際購買或支付訂閱所在的國家或地區', en: 'Country/region where the subscription is billed' },
-      'plan.currency.aria': { 'zh-CN': '选择订阅币种', 'zh-TW': '選擇訂閱幣別', en: 'Select subscription currency' },
-      'plan.currency.title': { 'zh-CN': '订阅计价/结算币种', 'zh-TW': '訂閱計價/結算幣別', en: 'Subscription billing currency' },
-      'plan.country.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-      'plan.region.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-      'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '折合 ≈ ¥{val} CNY/月', en: '≈ ¥{val} CNY/mo' },
-      'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '≈ ¥{val} CNY', en: '≈ ¥{val} CNY' },
-      'plan.acqOpt.normal_paid': { 'zh-CN': '正常官方付费订阅', 'zh-TW': '正常官方付費訂閱', en: 'Standard paid subscription' },
-      'plan.acqOpt.student_offer': { 'zh-CN': '学生教育优惠 (Google AI Pro 学生方案)', 'zh-TW': '學生教育優惠 (Google AI Pro 學生方案)', en: 'Student discount (Google AI Pro)' },
-      'plan.acqOpt.pixel_bundle': { 'zh-CN': 'Pixel 手机购机赠送权益', 'zh-TW': 'Pixel 手機購機贈送權益', en: 'Pixel phone bundle perk' },
-      'plan.acqOpt.chromebook_bundle': { 'zh-CN': 'Chromebook 购机赠送权益', 'zh-TW': 'Chromebook 購機贈送權益', en: 'Chromebook bundle perk' },
-      'plan.acqOpt.samsung_galaxy': { 'zh-CN': 'Samsung Galaxy 手机赠送权益', 'zh-TW': 'Samsung Galaxy 手機贈送權益', en: 'Samsung Galaxy perk' },
-      'plan.acqOpt.jio_offer': { 'zh-CN': 'Jio 运营商优惠活动', 'zh-TW': 'Jio 電信優惠活動', en: 'Jio carrier promotion' },
-      'plan.acqOpt.partner_carrier': { 'zh-CN': '合作运营商 / 活动赠送', 'zh-TW': '合作電信商 / 活動贈送', en: 'Carrier / partner promotion' },
-      'plan.acqOpt.family_sharing': { 'zh-CN': 'Google 家庭共享成员', 'zh-TW': 'Google 家庭共享成員', en: 'Google Family Sharing' },
-      'plan.acqOpt.official_promo': { 'zh-CN': '官方试用 / 促销优惠', 'zh-TW': '官方試用 / 促銷優惠', en: 'Official trial / promo' },
-      'plan.acqOpt.custom_source': { 'zh-CN': '其他自定义渠道', 'zh-TW': '其他自訂管道', en: 'Other custom source' },
-      'plan.form.presetPlaceholder': { 'zh-CN': '-- 选择预设地区 (自动填入价格与汇率) --', 'zh-TW': '-- 選擇預設地區 (自動填入價格與匯率) --', en: '-- Choose preset region (auto-fills price & rate) --' },
-      'plan.form.presetCustom': { 'zh-CN': '✎ 自定义输入地区', 'zh-TW': '✎ 自訂輸入地區', en: '✎ Custom region' },
-      'plan.form.countryPh': { 'zh-CN': '例如：美国 (US)', 'zh-TW': '例如：美國 (US)', en: 'e.g. United States (US)' },
-      'plan.form.regionPh': { 'zh-CN': '例如：韩国 / 澳大利亚', 'zh-TW': '例如：韓國 / 澳洲', en: 'e.g. South Korea / Australia' },
-      'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', en: '{flag} {name} ({id}) · {sym}{price}/mo (≈ ¥{cny})' },
-      'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月', en: '{flag} {name} (CNY) · ¥{price}/mo' },
-      'plan.cycleOpt.monthly': { 'zh-CN': '月付', 'zh-TW': '月付', en: 'Monthly' },
-      'plan.cycleOpt.yearly': { 'zh-CN': '年付', 'zh-TW': '年付', en: 'Yearly' },
-      'plan.cycleOpt.free': { 'zh-CN': '免费 / 促销赠送', 'zh-TW': '免費 / 促銷贈送', en: 'Free / Promo' },
-      'plan.cycleOpt.included': { 'zh-CN': '随套餐包含', 'zh-TW': '隨方案包含', en: 'Included in bundle' },
-      'plan.cycleOpt.other': { 'zh-CN': '其他周期', 'zh-TW': '其他週期', en: 'Other cycle' },
-      'tokens.heat.prevTitle': { 'zh-CN': '上一个周期', 'zh-TW': '上一個週期', en: 'Previous period' },
-      'tokens.heat.nextTitle': { 'zh-CN': '下一个周期', 'zh-TW': '下一個週期', en: 'Next period' },
-      'tokens.heat.tabsAria': { 'zh-CN': '热力图时间维度', 'zh-TW': '熱力圖時間維度', en: 'Heatmap time dimension' },
-      'tokens.heat.legendTitle': { 'zh-CN': '点击任意档位色块即可单独自定义该档颜色', 'zh-TW': '點擊任意檔位色塊即可單獨自訂該檔顏色', en: 'Click any legend swatch to customize its color' },
-      'tokens.heat.lvl0Aria': { 'zh-CN': '热力图第1档颜色', 'zh-TW': '熱力圖第1檔顏色', en: 'Heatmap level 1 color' },
-      'tokens.heat.lvl0Swatch': { 'zh-CN': '色阶第 1 档（少/无用量）', 'zh-TW': '色階第 1 檔（少/無用量）', en: 'Heatmap Level 1 (None/Low)' },
-      'tokens.heat.lvl1Aria': { 'zh-CN': '热力图第2档颜色', 'zh-TW': '熱力圖第2檔顏色', en: 'Heatmap level 2 color' },
-      'tokens.heat.lvl1Swatch': { 'zh-CN': '色阶第 2 档（低用量）', 'zh-TW': '色階第 2 檔（低用量）', en: 'Heatmap Level 2 (Light)' },
-      'tokens.heat.lvl2Aria': { 'zh-CN': '热力图第3档颜色', 'zh-TW': '熱力圖第3檔顏色', en: 'Heatmap level 3 color' },
-      'tokens.heat.lvl2Swatch': { 'zh-CN': '色阶第 3 档（中等用量）', 'zh-TW': '色階第 3 檔（中等用量）', en: 'Heatmap Level 3 (Medium)' },
-      'tokens.heat.lvl3Aria': { 'zh-CN': '热力图第4档颜色', 'zh-TW': '熱力圖第4檔顏色', en: 'Heatmap level 4 color' },
-      'tokens.heat.lvl3Swatch': { 'zh-CN': '色阶第 4 档（高用量）', 'zh-TW': '色階第 4 檔（高用量）', en: 'Heatmap Level 4 (High)' },
-      'tokens.heat.lvl4Aria': { 'zh-CN': '热力图第5档颜色', 'zh-TW': '熱力圖第5檔顏色', en: 'Heatmap level 5 color' },
-      'tokens.heat.lvl4Swatch': { 'zh-CN': '色阶第 5 档（多/峰值用量）', 'zh-TW': '色階第 5 檔（多/尖峰用量）', en: 'Heatmap Level 5 (Peak)' },
-      'tokens.heat.lowEndAria': { 'zh-CN': '热力图少端颜色', 'zh-TW': '熱力圖少端顏色', en: 'Heatmap low end color' },
-      'tokens.heat.lowEndSwatch': { 'zh-CN': '热力图「少」端颜色', 'zh-TW': '熱力圖「少」端顏色', en: 'Heatmap Low Color' },
-      'tokens.heat.highEndAria': { 'zh-CN': '热力图多端颜色', 'zh-TW': '熱力圖多端顏色', en: 'Heatmap high end color' },
-      'tokens.heat.highEndSwatch': { 'zh-CN': '热力图「多」端颜色', 'zh-TW': '熱力圖「多」端顏色', en: 'Heatmap High Color' },
-      'tokens.heat.totalSwatch': { 'zh-CN': '累计 token 用量', 'zh-TW': '累計 Token 用量', en: 'Total Tokens Color' },
-      'tokens.heat.accentSwatch': { 'zh-CN': 'Token 強調色', 'zh-TW': 'Token 強調色', en: 'Token Accent Color' },
+  // 订阅表单与热力图补充
+  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅月费及人民币折合汇率参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱月費及人民幣折合匯率參考 (點擊展開/收起詳情)', en: 'Current monthly fee & CNY estimate (click to toggle details)' },
+  'plan.country.title': { 'zh-CN': '仅作为本地显示记录，不修改实际 Google 账号', 'zh-TW': '僅作為本機顯示記錄，不修改實際 Google 帳號', en: 'Local display record only; does not change your Google account' },
+  'plan.region.title': { 'zh-CN': '实际购买或支付订阅所在的国家或地区', 'zh-TW': '實際購買或支付訂閱所在的國家或地區', en: 'Country/region where the subscription is billed' },
+  'plan.currency.aria': { 'zh-CN': '选择订阅币种', 'zh-TW': '選擇訂閱幣別', en: 'Select subscription currency' },
+  'plan.currency.title': { 'zh-CN': '订阅计价/结算币种', 'zh-TW': '訂閱計價/結算幣別', en: 'Subscription billing currency' },
+  'plan.country.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'plan.region.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '折合 ≈ ¥{val} CNY/月', en: '≈ ¥{val} CNY/mo' },
+  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '≈ ¥{val} CNY', en: '≈ ¥{val} CNY' },
+  'plan.acqOpt.normal_paid': { 'zh-CN': '正常官方付费订阅', 'zh-TW': '正常官方付費訂閱', en: 'Standard paid subscription' },
+  'plan.acqOpt.student_offer': { 'zh-CN': '学生教育优惠 (Google AI Pro 学生方案)', 'zh-TW': '學生教育優惠 (Google AI Pro 學生方案)', en: 'Student discount (Google AI Pro)' },
+  'plan.acqOpt.pixel_bundle': { 'zh-CN': 'Pixel 手机购机赠送权益', 'zh-TW': 'Pixel 手機購機贈送權益', en: 'Pixel phone bundle perk' },
+  'plan.acqOpt.chromebook_bundle': { 'zh-CN': 'Chromebook 购机赠送权益', 'zh-TW': 'Chromebook 購機贈送權益', en: 'Chromebook bundle perk' },
+  'plan.acqOpt.samsung_galaxy': { 'zh-CN': 'Samsung Galaxy 手机赠送权益', 'zh-TW': 'Samsung Galaxy 手機贈送權益', en: 'Samsung Galaxy perk' },
+  'plan.acqOpt.jio_offer': { 'zh-CN': 'Jio 运营商优惠活动', 'zh-TW': 'Jio 電信優惠活動', en: 'Jio carrier promotion' },
+  'plan.acqOpt.partner_carrier': { 'zh-CN': '合作运营商 / 活动赠送', 'zh-TW': '合作電信商 / 活動贈送', en: 'Carrier / partner promotion' },
+  'plan.acqOpt.family_sharing': { 'zh-CN': 'Google 家庭共享成员', 'zh-TW': 'Google 家庭共享成員', en: 'Google Family Sharing' },
+  'plan.acqOpt.official_promo': { 'zh-CN': '官方试用 / 促销优惠', 'zh-TW': '官方試用 / 促銷優惠', en: 'Official trial / promo' },
+  'plan.acqOpt.custom_source': { 'zh-CN': '其他自定义渠道', 'zh-TW': '其他自訂管道', en: 'Other custom source' },
+  'plan.form.presetPlaceholder': { 'zh-CN': '-- 选择预设地区 (自动填入价格与汇率) --', 'zh-TW': '-- 選擇預設地區 (自動填入價格與匯率) --', en: '-- Choose preset region (auto-fills price & rate) --' },
+  'plan.form.presetCustom': { 'zh-CN': '✎ 自定义输入地区', 'zh-TW': '✎ 自訂輸入地區', en: '✎ Custom region' },
+  'plan.form.countryPh': { 'zh-CN': '例如：美国 (US)', 'zh-TW': '例如：美國 (US)', en: 'e.g. United States (US)' },
+  'plan.form.regionPh': { 'zh-CN': '例如：韩国 / 澳大利亚', 'zh-TW': '例如：韓國 / 澳洲', en: 'e.g. South Korea / Australia' },
+  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', en: '{flag} {name} ({id}) · {sym}{price}/mo (≈ ¥{cny})' },
+  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月', en: '{flag} {name} (CNY) · ¥{price}/mo' },
+  'plan.cycleOpt.monthly': { 'zh-CN': '月付', 'zh-TW': '月付', en: 'Monthly' },
+  'plan.cycleOpt.yearly': { 'zh-CN': '年付', 'zh-TW': '年付', en: 'Yearly' },
+  'plan.cycleOpt.free': { 'zh-CN': '免费 / 促销赠送', 'zh-TW': '免費 / 促銷贈送', en: 'Free / Promo' },
+  'plan.cycleOpt.included': { 'zh-CN': '随套餐包含', 'zh-TW': '隨方案包含', en: 'Included in bundle' },
+  'plan.cycleOpt.other': { 'zh-CN': '其他周期', 'zh-TW': '其他週期', en: 'Other cycle' },
+  'tokens.heat.prevTitle': { 'zh-CN': '上一个周期', 'zh-TW': '上一個週期', en: 'Previous period' },
+  'tokens.heat.nextTitle': { 'zh-CN': '下一个周期', 'zh-TW': '下一個週期', en: 'Next period' },
+  'tokens.heat.tabsAria': { 'zh-CN': '热力图时间维度', 'zh-TW': '熱力圖時間維度', en: 'Heatmap time dimension' },
+  'tokens.heat.legendTitle': { 'zh-CN': '点击任意档位色块即可单独自定义该档颜色', 'zh-TW': '點擊任意檔位色塊即可單獨自訂該檔顏色', en: 'Click any legend swatch to customize its color' },
+  'tokens.heat.lvl0Aria': { 'zh-CN': '热力图第1档颜色', 'zh-TW': '熱力圖第1檔顏色', en: 'Heatmap level 1 color' },
+  'tokens.heat.lvl0Swatch': { 'zh-CN': '色阶第 1 档（少/无用量）', 'zh-TW': '色階第 1 檔（少/無用量）', en: 'Heatmap Level 1 (None/Low)' },
+  'tokens.heat.lvl1Aria': { 'zh-CN': '热力图第2档颜色', 'zh-TW': '熱力圖第2檔顏色', en: 'Heatmap level 2 color' },
+  'tokens.heat.lvl1Swatch': { 'zh-CN': '色阶第 2 档（低用量）', 'zh-TW': '色階第 2 檔（低用量）', en: 'Heatmap Level 2 (Light)' },
+  'tokens.heat.lvl2Aria': { 'zh-CN': '热力图第3档颜色', 'zh-TW': '熱力圖第3檔顏色', en: 'Heatmap level 3 color' },
+  'tokens.heat.lvl2Swatch': { 'zh-CN': '色阶第 3 档（中等用量）', 'zh-TW': '色階第 3 檔（中等用量）', en: 'Heatmap Level 3 (Medium)' },
+  'tokens.heat.lvl3Aria': { 'zh-CN': '热力图第4档颜色', 'zh-TW': '熱力圖第4檔顏色', en: 'Heatmap level 4 color' },
+  'tokens.heat.lvl3Swatch': { 'zh-CN': '色阶第 4 档（高用量）', 'zh-TW': '色階第 4 檔（高用量）', en: 'Heatmap Level 4 (High)' },
+  'tokens.heat.lvl4Aria': { 'zh-CN': '热力图第5档颜色', 'zh-TW': '熱力圖第5檔顏色', en: 'Heatmap level 5 color' },
+  'tokens.heat.lvl4Swatch': { 'zh-CN': '色阶第 5 档（多/峰值用量）', 'zh-TW': '色階第 5 檔（多/尖峰用量）', en: 'Heatmap Level 5 (Peak)' },
+  'tokens.heat.lowEndAria': { 'zh-CN': '热力图少端颜色', 'zh-TW': '熱力圖少端顏色', en: 'Heatmap low end color' },
+  'tokens.heat.lowEndSwatch': { 'zh-CN': '热力图「少」端颜色', 'zh-TW': '熱力圖「少」端顏色', en: 'Heatmap Low Color' },
+  'tokens.heat.highEndAria': { 'zh-CN': '热力图多端颜色', 'zh-TW': '熱力圖多端顏色', en: 'Heatmap high end color' },
+  'tokens.heat.highEndSwatch': { 'zh-CN': '热力图「多」端颜色', 'zh-TW': '熱力圖「多」端顏色', en: 'Heatmap High Color' },
+  'tokens.heat.totalSwatch': { 'zh-CN': '累计 token 用量', 'zh-TW': '累計 Token 用量', en: 'Total Tokens Color' },
+  'tokens.heat.accentSwatch': { 'zh-CN': 'Token 強調色', 'zh-TW': 'Token 強調色', en: 'Token Accent Color' },
 
-      // 其余散落文案
-      'drawer.shortExpand': { 'zh-CN': '▼ 展开', 'zh-TW': '▼ 展開', en: '▼ Expand' },
-      'drawer.shortCollapse': { 'zh-CN': '▲ 收起', 'zh-TW': '▲ 收起', en: '▲ Collapse' },
-      'scan.failPrefix': { 'zh-CN': '读取会话失败：{err}', 'zh-TW': '讀取工作階段失敗：{err}', en: 'Failed to read session: {err}' },
-      'scan.notLoadedPrefix': { 'zh-CN': '无法读取全量会话：{err}', 'zh-TW': '無法讀取全量工作階段：{err}', en: 'Failed to scan session: {err}' },
-      'mod.proxy.emptyErr': { 'zh-CN': '请输入有效的代理地址', 'zh-TW': '請輸入有效的代理位址', en: 'Enter a valid proxy URL' },
-      'mod.proxy.toggleFail': { 'zh-CN': '切换失败', 'zh-TW': '切換失敗', en: 'Toggle failed' },
-      'mod.proxy.connOk': { 'zh-CN': '✔ 本地代理正常，Google 连通 ({ms}ms)', 'zh-TW': '✔ 本機代理正常，Google 連通 ({ms}ms)', en: '✔ Proxy healthy, Google reachable ({ms}ms)' },
-      'mod.proxy.connFail': { 'zh-CN': '✖ 连通性测试失败：{detail}', 'zh-TW': '✖ 連通性測試失敗：{detail}', en: '✖ Connectivity test failed: {detail}' }
-  };
+  // 其余散落文案
+  'drawer.shortExpand': { 'zh-CN': '▼ 展开', 'zh-TW': '▼ 展開', en: '▼ Expand' },
+  'drawer.shortCollapse': { 'zh-CN': '▲ 收起', 'zh-TW': '▲ 收起', en: '▲ Collapse' },
+  'scan.failPrefix': { 'zh-CN': '读取会话失败：{err}', 'zh-TW': '讀取工作階段失敗：{err}', en: 'Failed to read session: {err}' },
+  'scan.notLoadedPrefix': { 'zh-CN': '无法读取全量会话：{err}', 'zh-TW': '無法讀取全量工作階段：{err}', en: 'Failed to scan session: {err}' },
+  'mod.proxy.emptyErr': { 'zh-CN': '请输入有效的代理地址', 'zh-TW': '請輸入有效的代理位址', en: 'Enter a valid proxy URL' },
+  'mod.proxy.toggleFail': { 'zh-CN': '切换失败', 'zh-TW': '切換失敗', en: 'Toggle failed' },
+  'mod.proxy.connOk': { 'zh-CN': '✔ 本地代理正常，Google 连通 ({ms}ms)', 'zh-TW': '✔ 本機代理正常，Google 連通 ({ms}ms)', en: '✔ Proxy healthy, Google reachable ({ms}ms)' },
+  'mod.proxy.connFail': { 'zh-CN': '✖ 连通性测试失败：{detail}', 'zh-TW': '✖ 連通性測試失敗：{detail}', en: '✖ Connectivity test failed: {detail}' },
 
-  function t(key, vars = null) {
-    const entry = PANEL_I18N[key];
-    let text = entry
-      ? (entry[currentPanelLanguage] ?? entry['zh-CN'] ?? key)
-      : key;
-    if (vars && typeof vars === 'object') {
-      text = text.replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : ''));
+  // 模型额度看板 (ELV-34)
+  'badge.quota.aria': { 'zh-CN': '模型剩余额度与重置状态', 'zh-TW': '模型剩餘額度與重設狀態', en: 'Model remaining quota and reset status' },
+  'overflow.quota': { 'zh-CN': '模型额度', 'zh-TW': '模型額度', en: 'Model Quota' },
+  'quota.panel.aria': { 'zh-CN': '模型额度看板', 'zh-TW': '模型額度看板', en: 'Model Quota Board' },
+  'quota.panel.title': { 'zh-CN': '◔ 模型额度看板', 'zh-TW': '◔ 模型額度看板', en: '◔ Model Quota' },
+  'quota.refresh.aria': { 'zh-CN': '手动刷新模型额度', 'zh-TW': '手動重新整理模型額度', en: 'Refresh model quota' },
+  'quota.refresh.btn': { 'zh-CN': '刷新', 'zh-TW': '重新整理', en: 'Refresh' },
+  'quota.refresh.busy': { 'zh-CN': '刷新中', 'zh-TW': '更新中', en: 'Syncing' },
+  'quota.refresh.upToDate': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Up to date' },
+  'quota.retry': { 'zh-CN': '重试', 'zh-TW': '重試', en: 'Retry' },
+  'quota.time.updated': { 'zh-CN': '数据更新时间', 'zh-TW': '資料更新時間', en: 'Updated' },
+  'quota.time.nextRefresh': { 'zh-CN': '下次自动刷新', 'zh-TW': '下次自動重新整理', en: 'Next Refresh' },
+  'quota.time.reset': { 'zh-CN': '当前额度重置', 'zh-TW': '目前額度重設', en: 'Quota Reset' },
+  'quota.time.paused': { 'zh-CN': '后台已暂停', 'zh-TW': '背景已暫停', en: 'Paused (bg)' },
+  'quota.time.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'quota.current.label': { 'zh-CN': '当前会话模型', 'zh-TW': '目前工作階段模型', en: 'Active Session Model' },
+  'quota.current.unmatched': { 'zh-CN': '暂未识别当前模型', 'zh-TW': '暫未識別目前模型', en: 'Active model not detected' },
+  'quota.current.tag': { 'zh-CN': '当前使用', 'zh-TW': '目前使用', en: 'Active' },
+  'quota.pools.heading': { 'zh-CN': '共享额度池与模型分布', 'zh-TW': '共享額度池與模型分佈', en: 'Shared Quota Pools' },
+  'quota.pools.browseHint': { 'zh-CN': '点击可查看详情（不切换当前会话模型）', 'zh-TW': '點擊可檢視詳情（不切換目前工作階段模型）', en: 'Click to inspect (session model unchanged)' },
+  'quota.pools.empty': { 'zh-CN': '暂未获取到共享额度池数据，请点击刷新。', 'zh-TW': '暫未取得共享額度池資料，請點擊重新整理。', en: 'No shared quota pool data yet. Click Refresh.' },
+  'quota.basisNote': { 'zh-CN': '百分比与重置时间来自宿主接口；「约剩余 Token」按本机输入+缓存+输出原始 Token 统计，受服务端计费权重、同池模型混用、他端消耗及周期采样覆盖度影响；校准过期或样本不足时不按有效推算展示。', 'zh-TW': '百分比與重設時間來自宿主介面；「約剩餘 Token」按本機輸入+快取+輸出原始 Token 統計，受伺服端計費權重、同池模型混用、他端消耗及週期採樣覆蓋度影響；校準過期或樣本不足時不按有效推算顯示。', en: 'Percentages & reset times come from host APIs. Estimated tokens (~) sum raw local input+cache+output tokens; billing weights, mixed models in one pool, external devices, and cycle coverage affect accuracy. Expired or invalidated calibrations are never shown as reliable.' },
+  'quota.usageTip': { 'zh-CN': '💡 用量提示：使用前可先查看各池剩余额度，优先选择余量充足且适合当前任务的模型。', 'zh-TW': '💡 用量提示：使用前可先檢視各池剩餘額度，優先選擇餘量充足且適合目前任務的模型。', en: '💡 Usage tip: Check pool headroom before starting heavy work and pick an available model that fits the task.' },
+  'quota.est.approx': { 'zh-CN': '约剩余 {tokens} Token', 'zh-TW': '約剩餘 {tokens} Token', en: '~{tokens} tokens left' },
+  'quota.est.exhausted': { 'zh-CN': '约剩余 0 Token（额度已耗尽）', 'zh-TW': '約剩餘 0 Token（額度已耗盡）', en: '0 tokens left (exhausted)' },
+  'quota.est.waiting': { 'zh-CN': '剩余 Token 暂无法估算（等待有效消耗样本）', 'zh-TW': '剩餘 Token 暫無法估算（等待有效消耗樣本）', en: 'Token estimate unavailable (awaiting valid local samples)' },
+  'quota.est.incomplete': { 'zh-CN': '剩余 Token 暂无法估算（检测到未采集消耗或采样失真）', 'zh-TW': '剩餘 Token 暫無法估算（偵測到未採集消耗或採樣失真）', en: 'Token estimate unavailable (external usage or sample distortion detected)' },
+  'quota.est.expired': { 'zh-CN': '剩余 Token 暂无法估算（历史校准已过期，等待新样本）', 'zh-TW': '剩餘 Token 暫無法估算（歷史校準已過期，等待新樣本）', en: 'Token estimate unavailable (calibration expired, awaiting new samples)' },
+  'quota.est.coverageIncomplete': { 'zh-CN': '剩余 Token 暂无法估算（缺少本周期完整覆盖记录，等待增量样本）', 'zh-TW': '剩餘 Token 暫無法估算（缺少本週期完整覆蓋記錄，等待增量樣本）', en: 'Token estimate unavailable (incomplete cycle coverage, awaiting delta samples)' },
+  'quota.est.basisDelta': { 'zh-CN': '实耗差值校准 · 估算值', 'zh-TW': '實耗差值校準 · 估算值', en: 'Delta calibrated · estimate' },
+  'quota.est.basisCycle': { 'zh-CN': '本周期实耗推算 · 估算值', 'zh-TW': '本週期實耗推算 · 估算值', en: 'Cycle usage est. · estimate' },
+  'quota.est.basisCached': { 'zh-CN': '沿用上周期校准参考（待本周期复核）', 'zh-TW': '沿用上週期校準參考（待本週期覆核）', en: 'Prior-cycle calibration ref. (unverified)' },
+  'quota.est.basisStaleDivergence': { 'zh-CN': '历史校准不可靠（检测到未采集消耗）', 'zh-TW': '歷史校準不可靠（偵測到未採集消耗）', en: 'Stale calibration unreliable (external usage detected)' },
+  'quota.est.mixedModels': { 'zh-CN': '同池混用模型', 'zh-TW': '同池混用模型', en: 'mixed pool models' },
+  'quota.est.cycleUsed': { 'zh-CN': '本周期已记 {used}', 'zh-TW': '本週期已記 {used}', en: 'Cycle used {used}' },
+  'quota.state.available': { 'zh-CN': '正常可用', 'zh-TW': '正常可用', en: 'Available' },
+  'quota.state.low': { 'zh-CN': '余量较低', 'zh-TW': '餘量較低', en: 'Low' },
+  'quota.state.exhausted': { 'zh-CN': '额度耗尽', 'zh-TW': '額度耗盡', en: 'Exhausted' },
+  'quota.state.no_permission': { 'zh-CN': '权限不足', 'zh-TW': '權限不足', en: 'No Access' },
+  'quota.state.stale': { 'zh-CN': '数据过期', 'zh-TW': '資料過期', en: 'Stale' },
+  'quota.state.error': { 'zh-CN': '刷新失败', 'zh-TW': '重新整理失敗', en: 'Failed' },
+  'quota.state.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'quota.short.exhausted': { 'zh-CN': '耗尽', 'zh-TW': '耗盡', en: '0% Empty' },
+  'quota.short.no_permission': { 'zh-CN': '无权限', 'zh-TW': '無權限', en: 'No Access' },
+  'quota.short.error': { 'zh-CN': '失败', 'zh-TW': '失敗', en: 'Failed' },
+  'quota.short.stale': { 'zh-CN': '过期', 'zh-TW': '過期', en: 'Stale' },
+  'quota.short.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'quota.staleBanner': { 'zh-CN': '当前展示历史缓存数据（{reason}），请手动刷新确认最新额度。', 'zh-TW': '目前顯示歷史快取資料（{reason}），請手動重新整理確認最新額度。', en: 'Showing cached data ({reason}). Refresh to verify latest quota.' },
+  'quota.errorBanner': { 'zh-CN': '获取模型额度失败：{reason}（这不代表额度已耗尽）', 'zh-TW': '取得模型額度失敗：{reason}（這不代表額度已耗盡）', en: 'Quota fetch failed: {reason} (does not mean quota exhausted)' },
+  'quota.resetPassReason': { 'zh-CN': '已到重置时间待确认', 'zh-TW': '已到重設時間待確認', en: 'Reset window reached, pending verify' },
+  'quota.ageExpiredReason': { 'zh-CN': '距上次获取已超过 3 分钟', 'zh-TW': '距上次取得已超過 3 分鐘', en: 'Cached over 3m ago' },
+  'quota.modelChip.tooltip': { 'zh-CN': '{model} · 池: {pool} · {status} ({value})', 'zh-TW': '{model} · 池: {pool} · {status} ({value})', en: '{model} · Pool: {pool} · {status} ({value})' },
+  'quota.modelChip.unpooled': { 'zh-CN': '未归属当前账号额度池', 'zh-TW': '未歸屬目前帳號額度池', en: 'Not in active quota pools' },
+  'quota.modelChip.resetPart': { 'zh-CN': '重置: {reset}', 'zh-TW': '重設: {reset}', en: 'Reset: {reset}' },
+  'quota.modelChip.historyHint': { 'zh-CN': '仅历史记录 / 本地配置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / local preference only' }
+};
+
+function t(key, vars = null) {
+  const entry = PANEL_I18N[key];
+  let text = entry
+    ? (entry[currentPanelLanguage] ?? entry['zh-CN'] ?? key)
+    : key;
+  if (vars && typeof vars === 'object') {
+    text = text.replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : ''));
+  }
+  return text;
+}
+
+function applyStaticPanelTranslations(rootNode = shadow) {
+  if (!rootNode || typeof rootNode.querySelectorAll !== 'function') return;
+  for (const node of rootNode.querySelectorAll('[data-i18n]')) {
+    const key = node.getAttribute('data-i18n');
+    if (key) node.textContent = t(key);
+  }
+  for (const node of rootNode.querySelectorAll('[data-i18n-html]')) {
+    const key = node.getAttribute('data-i18n-html');
+    if (key) node.innerHTML = t(key);
+  }
+  for (const node of rootNode.querySelectorAll('[data-i18n-title]')) {
+    const key = node.getAttribute('data-i18n-title');
+    if (key) node.setAttribute('title', t(key));
+  }
+  for (const node of rootNode.querySelectorAll('[data-i18n-aria]')) {
+    const key = node.getAttribute('data-i18n-aria');
+    if (key) node.setAttribute('aria-label', t(key));
+  }
+  for (const node of rootNode.querySelectorAll('[data-i18n-aria-label]')) {
+    const key = node.getAttribute('data-i18n-aria-label');
+    if (key) node.setAttribute('aria-label', t(key));
+  }
+  for (const node of rootNode.querySelectorAll('[data-i18n-color-label]')) {
+    const key = node.getAttribute('data-i18n-color-label');
+    if (key) node.setAttribute('data-color-label', t(key));
+  }
+  for (const node of rootNode.querySelectorAll('[data-i18n-placeholder]')) {
+    const key = node.getAttribute('data-i18n-placeholder');
+    if (key) node.setAttribute('placeholder', t(key));
+  }
+}
+
+const BACKEND_EXACT_TRANSLATIONS = {
+  '未知错误': { 'zh-TW': '未知錯誤', en: 'Unknown error' },
+  '无效的设置参数': { 'zh-TW': '無效的設定參數', en: 'Invalid settings payload' },
+  '宿主暂不支持重启': { 'zh-TW': '宿主暫不支援重新啟動', en: 'Host restart is not supported' },
+  '未检测到语言服务二进制文件': { 'zh-TW': '未偵測到語言服務二進位檔案', en: 'Language server binary not found' },
+  '未检测到可用的语言服务目标文件': { 'zh-TW': '未偵測到可用的語言服務目標檔案', en: 'No language server binary target found' },
+  '原版备份不存在': { 'zh-TW': '原版備份不存在', en: 'Original backup not found' },
+  '当前已是原版，无需恢复': { 'zh-TW': '目前已經是原版，無需恢復', en: 'Already using the original binary' },
+  '写入失败': { 'zh-TW': '寫入失敗', en: 'Write failed' },
+  '未连接到宿主设置桥接': { 'zh-TW': '未連線到宿主設定橋接', en: 'Host settings bridge is not connected' },
+  '尚未检测到可选模型，请先开启对话或等待列表读取。': { 'zh-TW': '尚未偵測到可選模型，請先開啟對話或等待清單讀取。', en: 'No models detected yet. Start a chat or wait for the list to load.' },
+  '本地代理响应异常或目标不可达': { 'zh-TW': '本機代理回應異常或目標不可達', en: 'Local proxy error or target unreachable' },
+  '代理状态检查失败': { 'zh-TW': '代理狀態檢查失敗', en: 'Failed to inspect proxy status' },
+  '未找到可用的上下文写入模式或目标特征不完整': { 'zh-TW': '未找到可用的上下文寫入模式或目標特徵不完整', en: 'Context patch target signature is incomplete' },
+  '当前架构暂不支持上下文补丁': { 'zh-TW': '目前架構暫不支援上下文修補', en: 'Context patching is unsupported on this architecture' },
+  '提示词与标题槽位特征不完整': { 'zh-TW': '提示詞與標題槽位特徵不完整', en: 'Prompt/title binary slots not found or incomplete' },
+  '后台尚未就绪': { 'zh-TW': '背景服務尚未就緒', en: 'Backend is not ready yet' },
+  '读取超时': { 'zh-TW': '讀取逾時', en: 'Request timed out' },
+  '完整重启 Antigravity 后启用附件扫描': { 'zh-TW': '完整重新啟動 Antigravity 後啟用附件掃描', en: 'Fully restart Antigravity to enable attachment scanning' },
+  '扫描未返回有效结果': { 'zh-TW': '掃描未回傳有效結果', en: 'Scan returned no valid result' },
+  '当前预览模式未连接到语言服务增强桥接，可通过 node cli.js enhance-status 查看或执行。': { 'zh-TW': '目前預覽模式未連線到語言服務增強橋接，可透過 node cli.js enhance-status 檢視或執行。', en: 'Enhance bridge unavailable in this mode. Use `node cli.js enhance-status` via CLI.' },
+  '仅支持 Windows 平台重启后台语言服务': { 'zh-TW': '僅支援 Windows 平台重啟後台語言服務', en: 'Language server restart is only supported on Windows' },
+  '当前操作系统或架构不支持 Windows PE64 内核原位补丁': { 'zh-TW': '目前作業系統或架構不支援 Windows PE64 核心原位修補', en: 'Windows PE64 in-place binary patching is unsupported on this OS/arch' },
+  '未指定要应用的提示词档位、中文标题或上下文设置': { 'zh-TW': '未指定要套用的提示詞檔位、中文標題或上下文設定', en: 'No prompt tier, title mode, or context setting specified' },
+  '未检测到本机已安装的 Antigravity 内核文件 (language_server.exe / agy.exe)': { 'zh-TW': '未偵測到本機已安裝的 Antigravity 核心檔案 (language_server.exe / agy.exe)', en: 'Local Antigravity binaries (language_server.exe / agy.exe) not found' },
+  '未指定目标二进制文件路径，且未检测到默认安装目录。': { 'zh-TW': '未指定目標二進位檔案路徑，且未偵測到預設安裝目錄。', en: 'Target binary path not specified and default install directory not found' },
+  '目标文件不存在，无法恢复': { 'zh-TW': '目標檔案不存在，無法恢復', en: 'Target file does not exist; cannot restore' },
+  '原版备份文件已损坏或被篡改，无法执行还原。': { 'zh-TW': '原版備份檔案已損壞或遭竄改，無法執行還原。', en: 'Original backup checksum mismatch or corrupted; restore aborted' },
+  '原版备份哈希校验不匹配，操作已中止。': { 'zh-TW': '原版備份雜湊校驗不匹配，操作已中止。', en: 'Original backup hash mismatch; operation aborted' },
+  '未找到与当前版本匹配的原版备份或原始字节记录，为确保安全拒绝覆盖。': { 'zh-TW': '未找到與目前版本相符的原版備份或原始位元組記錄，為確保安全拒絕覆蓋。', en: 'No matching original backup or byte record found; overwrite aborted' },
+  '缺少与当前版本匹配的原始字节记录或备份，无法安全切换回默认状态（已阻止盲写）。': { 'zh-TW': '缺少與目前版本相符的原始位元組記錄或備份，無法安全切換回預設狀態（已阻止盲寫）。', en: 'Missing matching original byte record or backup; safe restore aborted' },
+  '当前客户端磁盘 ASAR 未注入汉化组件（或组件不完整）。由于客户端正在运行受系统文件保护，请完全退出 Antigravity 客户端后，在安装包目录运行 install.bat 完成注入。': {
+    'zh-TW': '目前用戶端磁碟 ASAR 尚未注入漢化元件（或元件不完整）。由於用戶端執行中受系統檔案保護，請完全結束 Antigravity 用戶端後，在安裝包目錄執行 install.bat 完成注入。',
+    en: 'Localization module is missing or incomplete in Antigravity app.asar. Because the running client locks its files, completely quit Antigravity and run install.bat from the package directory.'
+  },
+  '当前客户端磁盘 ASAR 未注入免 TUN 代理组件（或组件不完整）。由于客户端正在运行受系统文件保护，请完全退出 Antigravity 客户端后，在安装包目录运行 install.bat 完成注入。': {
+    'zh-TW': '目前用戶端磁碟 ASAR 尚未注入免 TUN 代理元件（或元件不完整）。由於用戶端執行中受系統檔案保護，請完全結束 Antigravity 用戶端後，在安裝包目錄執行 install.bat 完成注入。',
+    en: 'TUN-free proxy module is missing or incomplete in Antigravity app.asar. Because the running client locks its files, completely quit Antigravity and run install.bat from the package directory.'
+  },
+  '模块未注入，配置保持关闭': { 'zh-TW': '模組未注入，設定維持關閉', en: 'Module not injected; setting kept off' },
+  '已更新并保存设置，重启客户端后生效': { 'zh-TW': '已更新並儲存設定，重啟用戶端後生效', en: 'Settings saved; restart Antigravity to take effect' },
+  '已保存品牌标题设置，重启客户端后生效': { 'zh-TW': '已儲存品牌標題設定，重啟用戶端後生效', en: 'Brand title setting saved; restart Antigravity to take effect' },
+  '已关闭配置，重启客户端后生效': { 'zh-TW': '已關閉設定，重啟用戶端後生效', en: 'Setting disabled; restart Antigravity to take effect' },
+  '仅允许本机主聊天窗口': { 'zh-TW': '僅允許本機主聊天視窗', en: 'Local main chat window only' },
+  '仅允许打开官方白名单链接（GitHub 仓库或作者署名主页）': { 'zh-TW': '僅允許開啟官方白名單連結（GitHub 倉庫或作者署名首頁）', en: 'Only allowlisted official links are allowed' },
+  '入账失败': { 'zh-TW': '入帳失敗', en: 'Failed to record usage' },
+  '代理地址为空或格式无效': { 'zh-TW': '代理位址為空或格式無效', en: 'Proxy URL is empty or invalid' },
+  '代理端口可连接，但外网访问无响应，可能节点异常或未接通公网': { 'zh-TW': '代理連接埠可連線，但外網存取無回應，可能節點異常或未連通公網', en: 'Local proxy port is reachable, but public internet test timed out' },
+  '未提供有效的目标二进制文件 (options.targets)': { 'zh-TW': '未提供有效的目標二進位檔案 (options.targets)', en: 'No valid target binary files provided (options.targets)' },
+  '上下文长度必须为正安全整数（tokens）': { 'zh-TW': '上下文長度必須為正安全整數（tokens）', en: 'Context limit must be a positive safe integer (tokens)' },
+  '上下文长度必须为纯正整数（tokens），不可包含小数或非数字字符': { 'zh-TW': '上下文長度必須為純正整數（tokens），不可包含小數或非數字字元', en: 'Context limit must contain digits only (positive integer tokens)' },
+  '上下文长度超出安全整数范围': { 'zh-TW': '上下文長度超出安全整數範圍', en: 'Context limit exceeds safe integer range' },
+  '无效的上下文长度输入类型': { 'zh-TW': '無效的上下文長度輸入類型', en: 'Invalid context limit input type' },
+  '未知的模块标识': { 'zh-TW': '未知的模組識別碼', en: 'Unknown module identifier' },
+  '不支持的代理协议': { 'zh-TW': '不支援的代理通訊協定', en: 'Unsupported proxy protocol' },
+  '代理地址格式错误': { 'zh-TW': '代理位址格式錯誤', en: 'Invalid proxy URL format' },
+  '本地代理端口检测异常': { 'zh-TW': '本機代理連接埠檢測異常', en: 'Local proxy port check error' },
+  '外网连通性测试异常': { 'zh-TW': '外網連通性測試異常', en: 'Internet connectivity check error' },
+  '无效的提示词档位参数': { 'zh-TW': '無效的提示詞檔位參數', en: 'Invalid prompt tier parameter' },
+  '无效的中文标题补丁参数': { 'zh-TW': '無效的中文標題修補參數', en: 'Invalid Chinese title patch parameter' },
+  '无效的上下文模式参数': { 'zh-TW': '無效的上下文模式參數', en: 'Invalid context mode parameter' },
+  '指定的目标文件不存在': { 'zh-TW': '指定的目標檔案不存在', en: 'Target file does not exist' }
+};
+
+function localizeBillingCycleLabel(cycle) {
+  if (!cycle) return t('plan.cycleOpt.monthly');
+  const c = String(cycle).trim();
+  if (c === '月付' || c === '月繳' || c === 'Monthly' || c === 'monthly') return t('plan.cycleOpt.monthly');
+  if (c === '年付' || c === '年繳' || c === 'Yearly' || c === 'yearly') return t('plan.cycleOpt.yearly');
+  if (c === '免费/赠送' || c === '随套餐赠送/免费' || c === 'Free / Promo' || c === 'free') {
+    if (currentPanelLanguage === 'zh-CN') return '免费/赠送';
+    if (currentPanelLanguage === 'zh-TW') return '免費/贈送';
+    return 'Free / Promo';
+  }
+  if (c === '随套餐包含' || c === 'Included in bundle') return t('plan.cycleOpt.included');
+  if (c === '单次' || c === '單次' || c === 'One-time' || c === 'one_time') return t('plan.cycle.oneTime');
+  if (c === '其他周期' || c === 'Other cycle') return t('plan.cycleOpt.other');
+  if (c === '未知' || c === 'Unknown') return t('speed.unknown');
+  return c;
+}
+
+function localizeAcquisitionSource(val) {
+  if (!val) return t('plan.acq.normal');
+  const s = String(val).trim();
+  const directKey = `plan.acqOpt.${s}`;
+  const directHit = t(directKey);
+  if (directHit && directHit !== directKey) return directHit;
+
+  if (s.includes('学生') || s.includes('教育') || s.includes('Student')) return t('plan.acqOpt.student_offer');
+  if (s.includes('Pixel')) return t('plan.acqOpt.pixel_bundle');
+  if (s.includes('Chromebook')) return t('plan.acqOpt.chromebook_bundle');
+  if (s.includes('Samsung') || s.includes('三星')) return t('plan.acqOpt.samsung_galaxy');
+  if (s.includes('Jio')) return t('plan.acqOpt.jio_offer');
+  if (s.includes('家庭') || s.includes('Family')) return t('plan.acqOpt.family_sharing');
+  if (s.includes('促销') || s.includes('试用') || s.includes('Promo') || s.includes('Trial')) return t('plan.acqOpt.official_promo');
+  if (s.includes('正常') || s.includes('付费') || s.includes('Standard') || s.includes('Paid')) return t('plan.acq.normal');
+  if (s.includes('自定义') || s.includes('Custom')) return t('plan.acqOpt.custom_source');
+  return s;
+}
+
+function localizeCnyFormatted(str) {
+  if (!str) return '';
+  const s = String(str).trim();
+  const cleanVal = s.replace(/^[折合約\s≈()（）]+/, '').replace(/[()（）]/g, '').trim();
+  if (!cleanVal) return '';
+  return t('plan.cny.approx', { val: cleanVal });
+}
+
+function localizeUnknownLabel(val) {
+  if (val === null || val === undefined || val === '') return t('speed.unknown');
+  const s = String(val).trim();
+  if (s === '未知' || s === 'Unknown' || s.includes('未在当前会话中获取')) return t('speed.unknown');
+  return s;
+}
+
+function translateBackendText(text) {
+  if (text === null || text === undefined) return '';
+  const str = String(text);
+  if (currentPanelLanguage === 'zh-CN') return str;
+  const trimmed = str.trim();
+  const hit = BACKEND_EXACT_TRANSLATIONS[trimmed];
+  if (hit && hit[currentPanelLanguage]) return hit[currentPanelLanguage];
+
+  // 模式化翻译：ASAR 未注入模块提示（兼容任意模块名称）
+  const asarMissingMatch = trimmed.match(/^当前客户端磁盘\s*ASAR\s*未注入(.+?)组件（或组件不完整）。/);
+  if (asarMissingMatch) {
+    const modRaw = asarMissingMatch[1].trim();
+    if (currentPanelLanguage === 'en') {
+      const modEn = modRaw === '汉化'
+        ? 'Localization'
+        : (modRaw === '免 TUN 代理' ? 'TUN-free proxy' : modRaw);
+      return `${modEn} module is missing or incomplete in Antigravity app.asar. Because the running client locks its files, completely quit Antigravity and run install.bat from the package directory.`;
     }
-    return text;
+    const modTw = modRaw === '汉化' ? '漢化' : modRaw;
+    return `目前用戶端磁碟 ASAR 尚未注入${modTw}元件（或元件不完整）。由於用戶端執行中受系統檔案保護，請完全結束 Antigravity 用戶端後，在安裝包目錄執行 install.bat 完成注入。`;
   }
 
-  function applyStaticPanelTranslations(rootNode = shadow) {
-    if (!rootNode || typeof rootNode.querySelectorAll !== 'function') return;
-    for (const node of rootNode.querySelectorAll('[data-i18n]')) {
-      const key = node.getAttribute('data-i18n');
-      if (key) node.textContent = t(key);
-    }
-    for (const node of rootNode.querySelectorAll('[data-i18n-html]')) {
-      const key = node.getAttribute('data-i18n-html');
-      if (key) node.innerHTML = t(key);
-    }
-    for (const node of rootNode.querySelectorAll('[data-i18n-title]')) {
-      const key = node.getAttribute('data-i18n-title');
-      if (key) node.setAttribute('title', t(key));
-    }
-    for (const node of rootNode.querySelectorAll('[data-i18n-aria]')) {
-      const key = node.getAttribute('data-i18n-aria');
-      if (key) node.setAttribute('aria-label', t(key));
-    }
-    for (const node of rootNode.querySelectorAll('[data-i18n-aria-label]')) {
-      const key = node.getAttribute('data-i18n-aria-label');
-      if (key) node.setAttribute('aria-label', t(key));
-    }
-    for (const node of rootNode.querySelectorAll('[data-i18n-color-label]')) {
-      const key = node.getAttribute('data-i18n-color-label');
-      if (key) node.setAttribute('data-color-label', t(key));
-    }
-    for (const node of rootNode.querySelectorAll('[data-i18n-placeholder]')) {
-      const key = node.getAttribute('data-i18n-placeholder');
-      if (key) node.setAttribute('placeholder', t(key));
-    }
+  // 模式化翻译：本地代理端口无法连接
+  const proxyUnreachMatch = trimmed.match(/^本地代理端口\s*\((.+?)\)\s*无法连接，请确认代理软件已启动$/);
+  if (proxyUnreachMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Local proxy port (${proxyUnreachMatch[1]}) is unreachable; ensure your proxy client is running`
+      : `本機代理連接埠 (${proxyUnreachMatch[1]}) 無法連線，請確認代理軟體已啟動`;
   }
 
-  const BACKEND_EXACT_TRANSLATIONS = {
-    '未知错误': { 'zh-TW': '未知錯誤', en: 'Unknown error' },
-    '无效的设置参数': { 'zh-TW': '無效的設定參數', en: 'Invalid settings payload' },
-    '宿主暂不支持重启': { 'zh-TW': '宿主暫不支援重新啟動', en: 'Host restart is not supported' },
-    '未检测到语言服务二进制文件': { 'zh-TW': '未偵測到語言服務二進位檔案', en: 'Language server binary not found' },
-    '未检测到可用的语言服务目标文件': { 'zh-TW': '未偵測到可用的語言服務目標檔案', en: 'No language server binary target found' },
-    '原版备份不存在': { 'zh-TW': '原版備份不存在', en: 'Original backup not found' },
-    '当前已是原版，无需恢复': { 'zh-TW': '目前已經是原版，無需恢復', en: 'Already using the original binary' },
-    '写入失败': { 'zh-TW': '寫入失敗', en: 'Write failed' },
-    '未连接到宿主设置桥接': { 'zh-TW': '未連線到宿主設定橋接', en: 'Host settings bridge is not connected' },
-    '尚未检测到可选模型，请先开启对话或等待列表读取。': { 'zh-TW': '尚未偵測到可選模型，請先開啟對話或等待清單讀取。', en: 'No models detected yet. Start a chat or wait for the list to load.' },
-    '本地代理响应异常或目标不可达': { 'zh-TW': '本機代理回應異常或目標不可達', en: 'Local proxy error or target unreachable' },
-    '代理状态检查失败': { 'zh-TW': '代理狀態檢查失敗', en: 'Failed to inspect proxy status' },
-    '未找到可用的上下文写入模式或目标特征不完整': { 'zh-TW': '未找到可用的上下文寫入模式或目標特徵不完整', en: 'Context patch target signature is incomplete' },
-    '当前架构暂不支持上下文补丁': { 'zh-TW': '目前架構暫不支援上下文修補', en: 'Context patching is unsupported on this architecture' },
-    '提示词与标题槽位特征不完整': { 'zh-TW': '提示詞與標題槽位特徵不完整', en: 'Prompt/title binary slots not found or incomplete' },
-    '后台尚未就绪': { 'zh-TW': '背景服務尚未就緒', en: 'Backend is not ready yet' },
-    '读取超时': { 'zh-TW': '讀取逾時', en: 'Request timed out' },
-    '完整重启 Antigravity 后启用附件扫描': { 'zh-TW': '完整重新啟動 Antigravity 後啟用附件掃描', en: 'Fully restart Antigravity to enable attachment scanning' },
-    '扫描未返回有效结果': { 'zh-TW': '掃描未回傳有效結果', en: 'Scan returned no valid result' }
-  };
+  // 模式化翻译：文件被运行中后台服务锁定
+  const fileLockSwapMatch = trimmed.match(/^文件正被运行中的后台服务锁定且重命名替换失败（可点击「重启客户端」或退出后重试）[:：]\s*(.+)$/);
+  if (fileLockSwapMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Target binary is locked by a running background service and atomic swap failed (click Restart Antigravity or quit and retry): ${translateBackendText(fileLockSwapMatch[1])}`
+      : `檔案正被執行中的背景服務鎖定且重新命名取代失敗（可點擊「重啟用戶端」或結束後重試）：${translateBackendText(fileLockSwapMatch[1])}`;
+  }
 
-  function localizeBillingCycleLabel(cycle) {
-    if (!cycle) return t('plan.cycleOpt.monthly');
-    const c = String(cycle).trim();
-    if (c === '月付' || c === '月繳' || c === 'Monthly' || c === 'monthly') return t('plan.cycleOpt.monthly');
-    if (c === '年付' || c === '年繳' || c === 'Yearly' || c === 'yearly') return t('plan.cycleOpt.yearly');
-    if (c === '免费/赠送' || c === '随套餐赠送/免费' || c === 'Free / Promo' || c === 'free') {
-      if (currentPanelLanguage === 'zh-CN') return '免费/赠送';
-      if (currentPanelLanguage === 'zh-TW') return '免費/贈送';
-      return 'Free / Promo';
+  // 模式化翻译：上下文长度超限
+  const ctxRangeMatch = trimmed.match(/^上下文长度超出工程可写范围\s*\((.+?)\)$/);
+  if (ctxRangeMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Context limit out of supported range (${ctxRangeMatch[1]})`
+      : `上下文長度超出工程可寫範圍 (${ctxRangeMatch[1]})`;
+  }
+
+  // 模式化翻译：文件名/目标被占用或锁定
+  const inUseMatch = trimmed.match(/^(.+?)\s*被占用$/);
+  if (inUseMatch) {
+    return currentPanelLanguage === 'en' ? `${inUseMatch[1]} is in use` : `${inUseMatch[1]} 正被佔用`;
+  }
+  const lockedMatch = trimmed.match(/^(.+?)\s*被锁定$/);
+  if (lockedMatch) {
+    return currentPanelLanguage === 'en' ? `${lockedMatch[1]} is locked` : `${lockedMatch[1]} 已被鎖定`;
+  }
+  const colonMatch = trimmed.match(/^([^:：]{2,40})[:：]\s*(.+)$/);
+  if (colonMatch) {
+    const prefix = colonMatch[1].trim();
+    const rest = colonMatch[2].trim();
+    const prefixHit = BACKEND_EXACT_TRANSLATIONS[prefix];
+    if (prefixHit && prefixHit[currentPanelLanguage]) {
+      const sep = currentPanelLanguage === 'en' ? ': ' : '：';
+      return `${prefixHit[currentPanelLanguage]}${sep}${translateBackendText(rest)}`;
     }
-    if (c === '随套餐包含' || c === 'Included in bundle') return t('plan.cycleOpt.included');
-    if (c === '单次' || c === '單次' || c === 'One-time' || c === 'one_time') return t('plan.cycle.oneTime');
-    if (c === '其他周期' || c === 'Other cycle') return t('plan.cycleOpt.other');
-    if (c === '未知' || c === 'Unknown') return t('speed.unknown');
-    return c;
   }
-
-  function localizeAcquisitionSource(val) {
-    if (!val) return t('plan.acq.normal');
-    const s = String(val).trim();
-    const directKey = `plan.acqOpt.${s}`;
-    const directHit = t(directKey);
-    if (directHit && directHit !== directKey) return directHit;
-
-    if (s.includes('学生') || s.includes('教育') || s.includes('Student')) return t('plan.acqOpt.student_offer');
-    if (s.includes('Pixel')) return t('plan.acqOpt.pixel_bundle');
-    if (s.includes('Chromebook')) return t('plan.acqOpt.chromebook_bundle');
-    if (s.includes('Samsung') || s.includes('三星')) return t('plan.acqOpt.samsung_galaxy');
-    if (s.includes('Jio')) return t('plan.acqOpt.jio_offer');
-    if (s.includes('家庭') || s.includes('Family')) return t('plan.acqOpt.family_sharing');
-    if (s.includes('促销') || s.includes('试用') || s.includes('Promo') || s.includes('Trial')) return t('plan.acqOpt.official_promo');
-    if (s.includes('正常') || s.includes('付费') || s.includes('Standard') || s.includes('Paid')) return t('plan.acq.normal');
-    if (s.includes('自定义') || s.includes('Custom')) return t('plan.acqOpt.custom_source');
-    return s;
+  // 防止英文模式下未知中文后端文本泄漏造成中英混杂拼接
+  if (currentPanelLanguage === 'en' && /[\u4e00-\u9fa5]/.test(trimmed)) {
+    return 'Backend operation failed (check desktop log for details)';
   }
+  return str;
+}
 
-  function localizeCnyFormatted(str) {
-    if (!str) return '';
-    const s = String(str).trim();
-    const cleanVal = s.replace(/^[折合約\s≈()（）]+/, '').replace(/[()（）]/g, '').trim();
-    if (!cleanVal) return '';
-    return t('plan.cny.approx', { val: cleanVal });
-  }
-
-  function localizeUnknownLabel(val) {
-    if (val === null || val === undefined || val === '') return t('speed.unknown');
-    const s = String(val).trim();
-    if (s === '未知' || s === 'Unknown' || s.includes('未在当前会话中获取')) return t('speed.unknown');
-    return s;
-  }
-
-  function translateBackendText(text) {
-    if (text === null || text === undefined) return '';
-    const str = String(text);
-    if (currentPanelLanguage === 'zh-CN') return str;
-    const hit = BACKEND_EXACT_TRANSLATIONS[str.trim()];
-    if (hit && hit[currentPanelLanguage]) return hit[currentPanelLanguage];
-    return str;
-  }
-
-  function formatVendorLabel(vendor) {
-    if (!vendor) return currentPanelLanguage === 'en' ? 'Other' : '其他';
-    if (vendor === '其他') return currentPanelLanguage === 'en' ? 'Other' : '其他';
-    return vendor;
-  }
+function formatVendorLabel(vendor) {
+  if (!vendor) return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  if (vendor === '其他') return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  return vendor;
+}
 (function (root) {
   'use strict';
 
@@ -6598,7 +7598,9 @@
     requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0,
     scanError: '', scan: null, generation: 0, controllers: new Set(),
     disposed: false, layoutMode: 'wide', tooltipOpen: false,
-    reportedFinalCallIds: new Set(), reportedFinalCallOutputs: new Map()
+    callsHydrated: false, syncedFinalMap: new Map(), pendingFinalCalls: new Map(),
+    quarantinedOversizeMap: new Map(), flushFinalsBusy: false, pendingFlushForceSync: false,
+    nextFlushRetryAt: 0, nextOversizeRetryAt: 0
   };
   const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
   let activeHeatView = 'daily';
@@ -6740,12 +7742,23 @@
   function normalizeHex(input) {
     if (!input || typeof input !== 'string') return null;
     const s = input.trim();
+    if (!s || /^transparent$/i.test(s)) return null;
     const direct = hexToRgb(s);
     if (direct) return rgbToHex(direct.r, direct.g, direct.b);
-    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (mRgb) return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
-    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?/i);
+    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+%?))?/i);
+    if (mRgb) {
+      if (mRgb[4] !== undefined) {
+        const alphaRaw = mRgb[4].endsWith('%') ? Number(mRgb[4].slice(0, -1)) / 100 : Number(mRgb[4]);
+        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+      }
+      return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
+    }
+    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?(?:\s*[,/]\s*([\d.]+%?))?/i);
     if (mHsl) {
+      if (mHsl[4] !== undefined) {
+        const alphaRaw = mHsl[4].endsWith('%') ? Number(mHsl[4].slice(0, -1)) / 100 : Number(mHsl[4]);
+        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+      }
       const rgb = hslToRgb(Number(mHsl[1]), Number(mHsl[2]), Number(mHsl[3]));
       return rgbToHex(rgb.r, rgb.g, rgb.b);
     }
@@ -6827,18 +7840,28 @@
   }
 
   function getHostZeroLevelBg(isLight) {
+    const fallback = isLight ? '#ffffff' : '#181818';
     try {
       if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
         const rootEl = document.body || document.documentElement;
         if (rootEl) {
           const cs = window.getComputedStyle(rootEl);
-          const raw = cs.getPropertyValue('--background')?.trim() || cs.backgroundColor?.trim();
-          const norm = normalizeHex(raw);
-          if (norm) return norm;
+          const candidates = [
+            cs.getPropertyValue('--background')?.trim(),
+            cs.backgroundColor?.trim()
+          ].filter(Boolean);
+          for (const raw of candidates) {
+            const norm = normalizeHex(raw);
+            if (!norm) continue;
+            const lum = parseRgbLuminance(norm);
+            const normIsLight = lum != null ? lum > 0.55 : Boolean(isLight);
+            if (normIsLight === Boolean(isLight)) return norm;
+            return fallback;
+          }
         }
       }
     } catch {}
-    return isLight ? '#ffffff' : '#181818';
+    return fallback;
   }
 
   function getSystemTheme() {
@@ -7503,8 +8526,42 @@
   // =========================================================================
   let resizeObserver = null;
   let hostDomObserver = null;
+  let brandObserver = null;
   let observedTitlebar = null;
   let layoutRaf = 0;
+  const earlyDisposeHooks = [];
+  const disconnectBrandObserver = () => {
+    try { brandObserver?.disconnect?.(); } catch { }
+    if (brandObserver && globalThis.__AGContextMeterBrandObserver === brandObserver) {
+      globalThis.__AGContextMeterBrandObserver = null;
+    }
+    brandObserver = null;
+  };
+  const earlyForceDispose = () => {
+    state.disposed = true;
+    for (const controller of state.controllers) {
+      try { controller.abort(); } catch { }
+    }
+    if (layoutRaf && typeof cancelAnimationFrame === 'function') {
+      try { cancelAnimationFrame(layoutRaf); } catch { }
+      layoutRaf = 0;
+    }
+    while (earlyDisposeHooks.length) {
+      const hook = earlyDisposeHooks.pop();
+      try { hook(); } catch { }
+    }
+    try { resizeObserver?.disconnect?.(); } catch { }
+    try { hostDomObserver?.disconnect?.(); } catch { }
+    disconnectBrandObserver();
+    if (globalThis.__AGContextMeterActiveHost === host) {
+      globalThis.__AGContextMeterActiveHost = null;
+    }
+    activeDisposers.delete(earlyForceDispose);
+    try { host.remove?.(); } catch { }
+  };
+  globalThis.__AGContextMeterActiveHost = host;
+  host.__agForceDispose = earlyForceDispose;
+  activeDisposers.add(earlyForceDispose);
 
   function findHostTitlebar() {
     try {
@@ -7696,11 +8753,32 @@
         }
       }
       syncNativeOverlayTheme();
-    } catch {}
+    } catch { }
   }
+
+  let layoutMeasurementDirty = true;
+  let cachedMeasuredAvailWidth = null;
+  let cachedMeasuredAvailAt = 0;
+  let cachedMeasuredWinWidth = 0;
 
   function ensureHostDocked() {
     if (state.disposed) return;
+    if (globalThis.__AGContextMeterActiveHost && globalThis.__AGContextMeterActiveHost !== host) {
+      earlyForceDispose();
+      return;
+    }
+    // 热路径短路：宿主已稳固停靠在预期标题栏内且尺寸未标脏时，跳过 DOM 遍历与强制布局查询
+    if (
+      !layoutMeasurementDirty
+      && host.isConnected
+      && host.getAttribute('data-dock') === 'flow'
+      && observedTitlebar
+      && observedTitlebar.isConnected
+      && observedTitlebar.contains(host)
+      && host.parentElement
+    ) {
+      return;
+    }
     syncWindowControlsOverlay();
     const titlebar = findHostTitlebar();
     if (titlebar) {
@@ -7710,7 +8788,7 @@
         if (convPane?.style && (!convPane.style.flexGrow || convPane.style.flexGrow === '0')) {
           convPane.style.flexGrow = '1';
         }
-      } catch {}
+      } catch { }
 
       let targetContainer = titlebar;
       try {
@@ -7718,7 +8796,7 @@
         if (rightGroup && rightGroup !== titlebar.firstElementChild) {
           targetContainer = rightGroup;
         }
-      } catch {}
+      } catch { }
 
       if (host.parentElement !== targetContainer) {
         if (targetContainer.firstChild && targetContainer !== titlebar) {
@@ -7731,7 +8809,7 @@
       try {
         host.style.removeProperty?.('right');
         host.style.removeProperty?.('top');
-      } catch {}
+      } catch { }
       host.style.right = '';
       host.style.top = '';
 
@@ -7743,7 +8821,7 @@
             resizeObserver.observe(titlebar);
             if (document.body) resizeObserver.observe(document.body);
           }
-        } catch {}
+        } catch { }
       }
     } else {
       const fallbackParent = document.body || document.documentElement;
@@ -7753,7 +8831,7 @@
       host.setAttribute('data-dock', 'fixed');
       updateFixedFallbackPosition();
     }
-    updateResponsiveLayout();
+    updateResponsiveLayout(layoutMeasurementDirty);
   }
 
   function findNativeTopRightAnchor() {
@@ -7783,7 +8861,7 @@
       try {
         host.style.removeProperty?.('right');
         host.style.removeProperty?.('top');
-      } catch {}
+      } catch { }
       host.style.right = '';
       host.style.top = '';
       return;
@@ -7800,7 +8878,7 @@
       }
       host.style.top = '6px';
       host.style.right = `${rightOffset}px`;
-    } catch {}
+    } catch { }
   }
 
   // 带迟滞区间（Hysteresis）的四阶段渐进收缩计算，防止临界宽度抖动
@@ -7835,8 +8913,19 @@
     return 'ring-only';
   }
 
-  function measureAvailableWidth() {
+  function measureAvailableWidth(force = false) {
     try {
+      const now = Date.now();
+      const curWinW = typeof window !== 'undefined' ? (window.innerWidth || 0) : 0;
+      if (
+        !force
+        && !layoutMeasurementDirty
+        && cachedMeasuredAvailWidth !== null
+        && curWinW === cachedMeasuredWinWidth
+        && now - cachedMeasuredAvailAt < 300
+      ) {
+        return cachedMeasuredAvailWidth;
+      }
       const titlebar = findHostTitlebar();
       if (titlebar?.getBoundingClientRect) {
         const tbRect = titlebar.getBoundingClientRect();
@@ -7875,13 +8964,23 @@
               if (sum > 0) nativeButtonsWidth = sum + 6;
             }
           }
-          return tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          const avail = tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          cachedMeasuredAvailWidth = avail;
+          cachedMeasuredAvailAt = now;
+          cachedMeasuredWinWidth = curWinW;
+          layoutMeasurementDirty = false;
+          return avail;
         }
       }
       if (typeof window !== 'undefined' && window.innerWidth) {
-        return window.innerWidth - 360;
+        const avail = window.innerWidth - 360;
+        cachedMeasuredAvailWidth = avail;
+        cachedMeasuredAvailAt = now;
+        cachedMeasuredWinWidth = curWinW;
+        layoutMeasurementDirty = false;
+        return avail;
       }
-    } catch {}
+    } catch { }
     return 400;
   }
 
@@ -7931,10 +9030,11 @@
     renderSessionCost();
   }
 
-  function updateResponsiveLayout() {
+  function updateResponsiveLayout(forceMeasure = false) {
     if (state.disposed) return;
+    if (forceMeasure) layoutMeasurementDirty = true;
     syncWindowControlsOverlay();
-    const avail = measureAvailableWidth();
+    const avail = measureAvailableWidth(forceMeasure);
     const nextMode = computeNextLayoutMode(avail, state.layoutMode);
     applyLayoutMode(nextMode);
     if (state.tooltipOpen) positionContextTooltip();
@@ -7986,7 +9086,7 @@
 
       tip.style.top = `${top}px`;
       tip.style.left = `${left}px`;
-    } catch {}
+    } catch { }
   }
 
   function showContextTooltip() {
@@ -8018,7 +9118,7 @@
         elevatedStackAncestor.style.zIndex = '';
         elevatedStackAncestor = null;
       }
-    } catch {}
+    } catch { }
   }
 
   function getLeftProjectSidebarRight(vw) {
@@ -8032,12 +9132,9 @@
           }
         }
       }
-    } catch {}
+    } catch { }
     return 0;
   }
-
-  let activeContextAnchor = null;
-  let activeTokensAnchor = null;
 
   function positionFloatingPanels() {
     if (!host.getBoundingClientRect) return;
@@ -8065,44 +9162,106 @@
         left = Math.min(left, vw - finalW - 12);
         left = Math.max(minLeft, left);
 
+        const maxWidthPx = Math.max(260, vw - left - 12);
+        const maxHeightPx = Math.max(160, vh - top - 16);
+        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}`;
+        if (panelEl._lastPlacedGeomKey === geomKey) return;
+        panelEl._lastPlacedGeomKey = geomKey;
+
         panelEl.style.top = `${top}px`;
         panelEl.style.left = `${left}px`;
         panelEl.style.right = 'auto';
-        panelEl.style.maxWidth = `${Math.max(260, vw - left - 12)}px`;
+        panelEl.style.maxWidth = `${maxWidthPx}px`;
+        panelEl.style.maxHeight = `${maxHeightPx}px`;
         panelEl.style.transformOrigin = 'top right';
       };
 
-      placePanel(el('panel'), 472, activeContextAnchor || el('badge'));
-      placePanel(el('panel-tokens'), 730, activeTokensAnchor || el('badge-tokens'));
+      placePanel(el('panel'), 472, el(activeContextAnchorId) || el('badge'));
+      placePanel(el('panel-quota'), 460, el(activeQuotaAnchorId) || el('badge-quota'));
+      placePanel(el('panel-tokens'), 730, el(activeTokensAnchorId) || el('badge-tokens'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
-    } catch {}
+    } catch { }
+  }
+
+  let lastObservedHostModelSig = null;
+  let hostModelSyncTimer = null;
+  let domMutationThrottleTimer = null;
+  function scheduleHostModelSync() {
+    try {
+      if (state.disposed || typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+      if (hostModelSyncTimer) return;
+      hostModelSyncTimer = setTimeout(() => {
+        hostModelSyncTimer = null;
+        try {
+          if (state.disposed || typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+          const trig = document.querySelector('[data-testid="model-selector-trigger"]');
+          const nextSig = trig ? `${trig.getAttribute?.('aria-label') || ''}|${trig.textContent || ''}` : '';
+          if (nextSig === lastObservedHostModelSig) return;
+          lastObservedHostModelSig = nextSig;
+          if (typeof syncContextModelSelectionFromState === 'function') {
+            syncContextModelSelectionFromState();
+          }
+        } catch { }
+      }, 60);
+    } catch { }
+  }
+
+  function flushHostDomMutationCheck() {
+    domMutationThrottleTimer = null;
+    if (state.disposed) return;
+    if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
+      scheduleLayoutSync();
+    }
+    scheduleHostModelSync();
   }
 
   try {
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => updateResponsiveLayout());
+      resizeObserver = new ResizeObserver(() => updateResponsiveLayout(true));
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
       hostDomObserver = new MutationObserver(() => {
-        if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
+        if (state.disposed) return;
+        // 轻量 O(1) 检查优先，其余全量/选择器查询合并节流至低频窗口，防止聊天吐字与切会话卡顿
+        if (!host.isConnected || host.getAttribute('data-dock') !== 'flow') {
+          layoutMeasurementDirty = true;
           scheduleLayoutSync();
         }
+        if (!domMutationThrottleTimer) {
+          domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 180);
+        }
       });
-      hostDomObserver.observe(document.body, { childList: true, subtree: true });
+      hostDomObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label'] });
     }
-  } catch {}
+  } catch { }
 
-  const onWindowResize = () => updateResponsiveLayout();
-  const onWindowFocus = () => host.setAttribute('data-window-active', 'true');
-  const onWindowBlur = () => host.setAttribute('data-window-active', 'false');
+  const onWindowResize = () => updateResponsiveLayout(true);
+  const onWindowFocus = () => {
+    host.setAttribute('data-window-active', 'true');
+    if (typeof onQuotaWindowFocus === 'function') onQuotaWindowFocus();
+  };
+  const onWindowBlur = () => {
+    host.setAttribute('data-window-active', 'false');
+    if (typeof onQuotaWindowBlur === 'function') onQuotaWindowBlur();
+  };
   try {
     window.addEventListener?.('resize', onWindowResize);
     window.addEventListener?.('focus', onWindowFocus);
     window.addEventListener?.('blur', onWindowBlur);
     navigator?.windowControlsOverlay?.addEventListener?.('geometrychange', onWindowResize);
-  } catch {}
+    earlyDisposeHooks.push(() => {
+      try {
+        window.removeEventListener?.('resize', onWindowResize);
+        window.removeEventListener?.('focus', onWindowFocus);
+        window.removeEventListener?.('blur', onWindowBlur);
+        navigator?.windowControlsOverlay?.removeEventListener?.('geometrychange', onWindowResize);
+        if (hostModelSyncTimer) { clearTimeout(hostModelSyncTimer); hostModelSyncTimer = null; }
+        if (domMutationThrottleTimer) { clearTimeout(domMutationThrottleTimer); domMutationThrottleTimer = null; }
+      } catch { }
+    });
+  } catch { }
 
   ensureHostDocked();
 
@@ -8138,50 +9297,75 @@
   }
 
   function isAnyPanelOpen() {
-    return !el('panel').hidden || !el('panel-tokens').hidden;
+    return !el('panel').hidden || !el('panel-tokens').hidden || !el('panel-quota')?.hidden;
   }
 
-  function showPanel(target, anchor = null) {
+  function showPanel(target) {
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
+    const pQuota = el('panel-quota');
     const pOverflow = el('overflow-menu');
     const bContext = el('badge');
     const bSpeed = el('badge-speed');
     const bTokens = el('badge-tokens');
+    const bQuota = el('badge-quota');
     const bOverflow = el('badge-overflow');
 
     hideUpdatePopover();
     if (pOverflow) pOverflow.hidden = true;
     bOverflow?.setAttribute('aria-expanded', 'false');
+    if (target !== 'quota' && typeof clearQuotaBarChargeAnimations === 'function') {
+      clearQuotaBarChargeAnimations();
+    }
 
     if (target === 'tokens') {
-      if (anchor) activeTokensAnchor = anchor;
       hideContextTooltip();
       closeColorPicker();
-      syncHostStackingElevation(true);
-      positionFloatingPanels();
       pContext.hidden = true;
-      pTokens.hidden = false;
+      if (pQuota) pQuota.hidden = true;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
-      void syncTokenHistoryFromHost(false);
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
+      pTokens.hidden = false;
       renderActiveHeatView(true);
-    } else if (target === 'context') {
-      if (anchor) activeContextAnchor = anchor;
+      const hasCachedHistory = Boolean(ANTIGRAVITY_TOKEN_DATA.updatedAt || ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens);
+      if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
+        void syncTokenHistoryFromHost(false);
+      }
+    } else if (target === 'quota') {
       hideContextTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
+      pContext.hidden = true;
+      pTokens.hidden = true;
+      bContext.setAttribute('aria-expanded', 'false');
+      bSpeed?.setAttribute('aria-expanded', 'false');
+      bTokens.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'true');
       syncHostStackingElevation(true);
       positionFloatingPanels();
+      if (pQuota) pQuota.hidden = false;
+      if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
+      if (typeof maybeRefreshQuotaOnOpen === 'function') void maybeRefreshQuotaOnOpen();
+    } else if (target === 'context') {
+      hideContextTooltip();
+      closeColorPicker();
+      setPlanDetailExpanded(false, { skipReposition: true });
       pTokens.hidden = true;
-      pContext.hidden = false;
-      const ctxAnchor = activeContextAnchor || bContext;
-      bContext.setAttribute('aria-expanded', ctxAnchor === bContext ? 'true' : 'false');
-      bSpeed?.setAttribute('aria-expanded', ctxAnchor === bSpeed ? 'true' : 'false');
+      if (pQuota) pQuota.hidden = true;
+      bContext.setAttribute('aria-expanded', String(activeContextAnchorId === 'badge'));
+      bSpeed?.setAttribute('aria-expanded', String(activeContextAnchorId === 'badge-speed'));
       bTokens.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'false');
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
+      pContext.hidden = false;
       applyContextViewVisibility?.();
       if (activeContextTab === 'models' && !isContextSettingsView) {
+        if (typeof syncModelListQuotaIndicators === 'function') syncModelListQuotaIndicators(null, Date.now(), true);
         void refreshUnlockStatus();
       } else if (activeContextTab === 'speed' && !isContextSettingsView) {
         renderSpeedComparisonTab?.();
@@ -8193,40 +9377,53 @@
       setPlanDetailExpanded(false, { skipReposition: true });
       pContext.hidden = true;
       pTokens.hidden = true;
+      if (pQuota) pQuota.hidden = true;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'false');
       closeColorPicker();
       hidePopover();
       syncHostStackingElevation(false);
     }
   }
 
-  function toggle(open, tab = 'context', anchor = null) {
+  let activeContextAnchorId = 'badge';
+  let activeTokensAnchorId = 'badge-tokens';
+  let activeQuotaAnchorId = 'badge-quota';
+
+  function toggle(open, tab = 'context') {
     if (!open) {
       showPanel('none');
     } else {
-      showPanel(tab === 'tokens' ? 'tokens' : 'context', anchor);
+      showPanel(tab === 'tokens' ? 'tokens' : (tab === 'quota' ? 'quota' : 'context'));
     }
   }
 
-  function toggleContext(anchor = el('badge')) {
-    const p = el('panel');
-    const curAnchor = activeContextAnchor || el('badge');
-    if (!p.hidden && curAnchor === anchor) {
+  function toggleContext(anchorId = 'badge') {
+    if (!el('panel').hidden && activeContextAnchorId === anchorId) {
       showPanel('none');
     } else {
-      showPanel('context', anchor);
+      activeContextAnchorId = anchorId || 'badge';
+      showPanel('context');
     }
   }
 
-  function toggleTokens(anchor = el('badge-tokens')) {
-    const p = el('panel-tokens');
-    const curAnchor = activeTokensAnchor || el('badge-tokens');
-    if (!p.hidden && curAnchor === anchor) {
+  function toggleTokens(anchorId = 'badge-tokens') {
+    if (!el('panel-tokens').hidden && activeTokensAnchorId === anchorId) {
       showPanel('none');
     } else {
-      showPanel('tokens', anchor);
+      activeTokensAnchorId = anchorId || 'badge-tokens';
+      showPanel('tokens');
+    }
+  }
+
+  function toggleQuota(anchorId = 'badge-quota') {
+    if (el('panel-quota') && !el('panel-quota').hidden && activeQuotaAnchorId === anchorId) {
+      showPanel('none');
+    } else {
+      activeQuotaAnchorId = anchorId || 'badge-quota';
+      showPanel('quota');
     }
   }
 
@@ -8236,10 +9433,10 @@
     const willOpen = pOverflow.hidden;
     showPanel('none');
     hideContextTooltip();
+    if (willOpen) positionFloatingPanels();
     pOverflow.hidden = !willOpen;
     el('badge-overflow')?.setAttribute('aria-expanded', String(willOpen));
     syncHostStackingElevation(willOpen);
-    if (willOpen) positionFloatingPanels();
   }
 
   // 外观调色按钮进入设置视图并直接展开颜色自定义抽屉
@@ -8376,8 +9573,59 @@ function closeAllDropdowns(exceptWrap = null) {
     trigger._bound = true;
 
     let keyboardFocusIndex = -1;
+    let listScrollTimer = null;
+    let lastClosedMenuSig = '';
+    const renderedItemMap = new Map();
 
-    function renderMenu(kw = '') {
+    /**
+     * 清空挂起的菜单内定位定时器，避免关闭或重建后继续触发滚动。
+     */
+    function clearListScrollTimer() {
+      if (listScrollTimer) {
+        clearTimeout(listScrollTimer);
+        listScrollTimer = null;
+      }
+    }
+
+    /**
+     * 仅在不触发祖先滚动容器跳转的前提下聚焦元素。
+     */
+    function focusNoScroll(targetEl) {
+      if (!targetEl || typeof targetEl.focus !== 'function') return;
+      try {
+        targetEl.focus({ preventScroll: true });
+      } catch {
+        targetEl.focus();
+      }
+    }
+
+    /**
+     * 仅调整下拉菜单自身 scrollTop，严禁调用会穿透滚动外层面板的 scrollIntoView。
+     */
+    function scrollChildNearestInContainer(scrollBox, childEl) {
+      if (!scrollBox || !childEl) return;
+      if (typeof scrollBox.getBoundingClientRect !== 'function' || typeof childEl.getBoundingClientRect !== 'function') return;
+      try {
+        const boxRect = scrollBox.getBoundingClientRect();
+        const itemRect = childEl.getBoundingClientRect();
+        if (!boxRect || !itemRect || boxRect.height <= 0 || itemRect.height <= 0) return;
+        const searchBar = menu.querySelector ? menu.querySelector('.ag-dropdown-search-wrap') : null;
+        const stickyTopH = (searchBar && typeof searchBar.getBoundingClientRect === 'function')
+          ? Math.max(0, Math.round(searchBar.getBoundingClientRect().height || 0))
+          : 0;
+        const visTop = boxRect.top + stickyTopH;
+        const visBottom = boxRect.bottom;
+        const curScroll = Number(scrollBox.scrollTop) || 0;
+        if (itemRect.top < visTop) {
+          scrollBox.scrollTop = Math.max(0, curScroll - (visTop - itemRect.top + 4));
+        } else if (itemRect.bottom > visBottom) {
+          scrollBox.scrollTop = curScroll + (itemRect.bottom - visBottom + 4);
+        }
+      } catch { }
+    }
+
+    function renderMenu(kw = '', menuOpts = {}) {
+      clearListScrollTimer();
       menu.innerHTML = '';
       if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
       keyboardFocusIndex = -1;
@@ -8395,7 +9643,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
       searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
       searchInput.addEventListener('input', (e) => {
-        renderList(e.target.value.trim().toLowerCase());
+        renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
       });
 
       // 2. 列表容器
@@ -8412,16 +9660,18 @@ function closeAllDropdowns(exceptWrap = null) {
         Array.from(itemEls).forEach((elNode, idx) => {
           if (idx === keyboardFocusIndex) {
             addClass(elNode, 'is-keyboard-focus');
-            elNode.scrollIntoView?.({ block: 'nearest' });
+            scrollChildNearestInContainer(menu, elNode);
           } else {
             removeClass(elNode, 'is-keyboard-focus');
           }
         });
       }
 
-      function renderList(searchKey = '') {
+      function renderList(searchKey = '', listOpts = {}) {
+        clearListScrollTimer();
         if (typeof listContainer.replaceChildren === 'function') listContainer.replaceChildren();
         listContainer.innerHTML = '';
+        renderedItemMap.clear();
         const allItems = cfg.getOptions();
         const selectedVal = cfg.getSelectedValue();
 
@@ -8486,6 +9736,8 @@ function closeAllDropdowns(exceptWrap = null) {
           const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
           itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
           itemEl.setAttribute?.('data-index', String(idx));
+          itemEl.setAttribute?.('data-value', String(opt.value || ''));
+          if (opt.tooltip) itemEl.title = opt.tooltip;
 
           const leftSpan = document.createElement('span');
           leftSpan.textContent = opt.displayLeft || opt.label;
@@ -8504,12 +9756,24 @@ function closeAllDropdowns(exceptWrap = null) {
             rightSpan.textContent = opt.displayRight;
           }
 
+          const extraEl = typeof cfg.renderOptionExtras === 'function' ? cfg.renderOptionExtras(opt) : null;
+
           const check = document.createElement('span');
           check.className = 'ag-dropdown-item-check';
           check.textContent = '✓';
 
-          if (opt.displayRight) itemEl.appendChild(rightSpan);
+          if (extraEl) {
+            const rightGroup = document.createElement('span');
+            rightGroup.className = 'ag-dropdown-item-right';
+            rightGroup.appendChild(extraEl);
+            if (opt.displayRight) rightGroup.appendChild(rightSpan);
+            itemEl.appendChild(rightGroup);
+          } else if (opt.displayRight) {
+            itemEl.appendChild(rightSpan);
+          }
           itemEl.appendChild(check);
+
+          renderedItemMap.set(opt.value, { itemEl, extraEl });
 
           itemEl.addEventListener('click', (e) => {
             e?.stopPropagation?.();
@@ -8519,14 +9783,20 @@ function closeAllDropdowns(exceptWrap = null) {
           listContainer.appendChild(itemEl);
         });
 
-        // 滚入可视区
-        setTimeout(() => {
-          const selNode = listContainer.querySelector ? listContainer.querySelector('.ag-dropdown-item.is-selected') : null;
-          selNode?.scrollIntoView?.({ block: 'nearest' });
-        }, 30);
+        // 仅在主动展开菜单时，将当前选中项滚动到下拉列表自身可视区域（绝不触发祖先面板滚动）
+        if (listOpts.scrollSelected === true) {
+          listScrollTimer = setTimeout(() => {
+            listScrollTimer = null;
+            if (!hasClass(wrap, 'is-open')) return;
+            const selNode = listContainer.querySelector ? listContainer.querySelector('.ag-dropdown-item.is-selected') : null;
+            scrollChildNearestInContainer(menu, selNode);
+          }, 30);
+        }
       }
 
       function selectOption(opt) {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
         const text = cfg.getLabelText ? cfg.getLabelText(opt) : (opt.label || opt.value);
         label.textContent = text;
@@ -8536,10 +9806,10 @@ function closeAllDropdowns(exceptWrap = null) {
           });
         }
         if (cfg.onSelect) cfg.onSelect(opt);
-        trigger.focus?.();
+        focusNoScroll(trigger);
       }
 
-      renderList(kw);
+      renderList(kw, menuOpts);
 
       // 键盘导航
       const keyHandler = (e) => {
@@ -8559,8 +9829,10 @@ function closeAllDropdowns(exceptWrap = null) {
           }
         } else if (e.key === 'Escape') {
           e.preventDefault?.();
+          clearListScrollTimer();
+          clearInputFocusTimer();
           removeClass(wrap, 'is-open');
-          trigger.focus?.();
+          focusNoScroll(trigger);
         }
       };
 
@@ -8568,13 +9840,22 @@ function closeAllDropdowns(exceptWrap = null) {
       menu.addEventListener('keydown', keyHandler);
     }
 
-    // 立即预渲染一次菜单内容，避免初次点击或测试环境遇到空白
-    renderMenu();
+    let inputFocusTimer = null;
+    function clearInputFocusTimer() {
+      if (inputFocusTimer) {
+        clearTimeout(inputFocusTimer);
+        inputFocusTimer = null;
+      }
+    }
+
+    // 立即预渲染一次菜单内容，避免初次点击或测试环境遇到空白（不触发滚动）
+    renderMenu('', { scrollSelected: false });
 
     function toggleOpen() {
       const isOpen = hasClass(wrap, 'is-open');
       if (!isOpen) {
         closeAllDropdowns(wrap);
+        clearInputFocusTimer();
 
         // 空间不足检测，自适应展开方向
         try {
@@ -8589,13 +9870,17 @@ function closeAllDropdowns(exceptWrap = null) {
           removeClass(wrap, 'open-up');
         }
 
-        renderMenu();
         addClass(wrap, 'is-open');
-        setTimeout(() => {
+        renderMenu('', { scrollSelected: true });
+        inputFocusTimer = setTimeout(() => {
+          inputFocusTimer = null;
+          if (!hasClass(wrap, 'is-open')) return;
           const input = menu.querySelector ? menu.querySelector('.ag-dropdown-search-input') : null;
-          input?.focus?.();
+          focusNoScroll(input);
         }, 50);
       } else {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
       }
     }
@@ -8610,6 +9895,8 @@ function closeAllDropdowns(exceptWrap = null) {
         e.preventDefault?.();
         toggleOpen();
       } else if (e.key === 'Escape') {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
       }
     });
@@ -8619,13 +9906,33 @@ function closeAllDropdowns(exceptWrap = null) {
         const val = cfg.getSelectedValue();
         const opts = cfg.getOptions();
         const found = opts.find(o => !o.isGroupHeader && o.value === val);
-        if (found) {
-          label.textContent = cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value);
-        } else if (cfg.emptyLabel) {
-          label.textContent = cfg.emptyLabel;
+        const nextText = found
+          ? (cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value))
+          : (typeof cfg.emptyLabel === 'function' ? cfg.emptyLabel() : cfg.emptyLabel);
+        if (nextText != null && label.textContent !== nextText) {
+          label.textContent = nextText;
+        }
+        // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
+        if (!hasClass(wrap, 'is-open')) {
+          const optsSig = `${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
+          if (optsSig !== lastClosedMenuSig) {
+            lastClosedMenuSig = optsSig;
+            renderMenu('', { scrollSelected: false });
+          }
         }
       },
-      close: () => removeClass(wrap, 'is-open'),
+      isOpen: () => hasClass(wrap, 'is-open'),
+      updateItemsInPlace: (updater) => {
+        if (typeof updater !== 'function') return;
+        for (const [val, entry] of renderedItemMap.entries()) {
+          updater(val, entry.itemEl, entry.extraEl);
+        }
+      },
+      close: () => {
+        clearListScrollTimer();
+        clearInputFocusTimer();
+        removeClass(wrap, 'is-open');
+      },
       open: () => toggleOpen()
     };
     wrap._controller = controller;
@@ -9719,7 +11026,7 @@ function closeAllDropdowns(exceptWrap = null) {
         symbolEl.textContent = endSymbol;
         symbolEl.classList.remove('is-dissolving');
         symbolEl.classList.add('is-entering');
-        try { void symbolEl.offsetWidth; } catch {}
+        try { void symbolEl.offsetWidth; } catch { }
         setTimeout(() => {
           symbolEl.classList?.remove?.('is-entering');
         }, 180);
@@ -10020,7 +11327,7 @@ function closeAllDropdowns(exceptWrap = null) {
   let activeTokenSource = 'all';
   function switchTokenSource(src) {
     activeTokenSource = src;
-    try { localStorage?.setItem('ag_token_source_v1', src); } catch {}
+    try { localStorage?.setItem('ag_token_source_v1', src); } catch { }
     setPillActive(el('src-tab-all'), src === 'all');
     setPillActive(el('src-tab-desktop'), src === 'desktop');
     setPillActive(el('src-tab-cli'), src === 'cli');
@@ -10163,7 +11470,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (typeof document !== 'undefined' && document.activeElement?.blur) {
         document.activeElement.blur();
       }
-    } catch {}
+    } catch { }
 
     const hostBounds = {
       x: typeof window !== 'undefined' ? (window.screenX || 0) : 0,
@@ -10237,14 +11544,27 @@ function closeAllDropdowns(exceptWrap = null) {
   }
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
-  el('badge').addEventListener('click', () => toggleContext(el('badge')));
-  el('badge-speed')?.addEventListener('click', () => toggleContext(el('badge-speed')));
-  el('badge-tokens').addEventListener('click', () => toggleTokens(el('badge-tokens')));
+  el('badge-quota')?.addEventListener('click', () => toggleQuota('badge-quota'));
+  el('badge').addEventListener('click', () => toggleContext('badge'));
+  el('badge-speed')?.addEventListener('click', () => toggleContext('badge-speed'));
+  el('badge-tokens').addEventListener('click', () => toggleTokens('badge-tokens'));
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
-  el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context', el('badge-overflow')));
-  el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens', el('badge-overflow')));
+  el('overflow-quota-btn')?.addEventListener('click', () => {
+    activeQuotaAnchorId = 'badge-overflow';
+    showPanel('quota');
+  });
+  el('overflow-speed-btn')?.addEventListener('click', () => {
+    activeContextAnchorId = 'badge-overflow';
+    showPanel('context');
+  });
+  el('overflow-tokens-btn')?.addEventListener('click', () => {
+    activeTokensAnchorId = 'badge-overflow';
+    showPanel('tokens');
+  });
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
+  el('close-quota')?.addEventListener('click', () => showPanel('none'));
+  el('badge-quota')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
   // 上下文圆环悬停与键盘聚焦气泡（面板打开时不通过悬停误切，必须通过显式左键点击切换）
   el('badge').addEventListener('mouseenter', () => {
@@ -10333,6 +11653,7 @@ function closeAllDropdowns(exceptWrap = null) {
   const ctxConflictRows = el('ctx-conflict-rows');
   const ctxCardVendorDot = el('ctx-card-vendor-dot');
   const ctxCardVendorName = el('ctx-card-vendor-name');
+  const ctxCardQuotaSlot = el('ctx-card-quota-slot');
   const ctxCardProductName = el('ctx-card-product-name');
   const ctxCardEffortsList = el('ctx-card-efforts-list');
   const ctxCardSessionEffort = el('ctx-card-session-effort');
@@ -10398,7 +11719,7 @@ function closeAllDropdowns(exceptWrap = null) {
     if (savedTab === 'session' || savedTab === 'models' || savedTab === 'speed') {
       activeContextTab = savedTab;
     }
-  } catch {}
+  } catch { }
   let isContextSettingsView = false;
 
   let currentUnlockStatus = null;
@@ -10429,7 +11750,7 @@ function closeAllDropdowns(exceptWrap = null) {
       const rawUni = localStorage.getItem('ag-context-unified-preference');
       if (rawUni) contextUnifiedPreference = JSON.parse(rawUni) || contextUnifiedPreference;
     }
-  } catch {}
+  } catch { }
 
   function getContextScopeMode() {
     return contextScopeMode || 'unified';
@@ -10449,7 +11770,7 @@ function closeAllDropdowns(exceptWrap = null) {
         localStorage?.setItem('ag-context-scope-mode', contextScopeMode);
         localStorage?.setItem('ag-context-unified-preference', JSON.stringify(contextUnifiedPreference || {}));
       }
-    } catch {}
+    } catch { }
   }
   let activeSessionModelKey = null;
   let activeSessionProductKey = null;
@@ -10472,7 +11793,7 @@ function closeAllDropdowns(exceptWrap = null) {
   try {
     const rawPre = localStorage?.getItem(CTX_PRE_RESTART_OBS_KEY);
     if (rawPre) preRestartSnapshot = JSON.parse(rawPre);
-  } catch {}
+  } catch { }
 
   let speedRangeDays = '7';
   let speedOriginFilter = 'all';
@@ -10550,7 +11871,7 @@ function closeAllDropdowns(exceptWrap = null) {
         if (!isContextSettingsView && activeContextTab === 'models') {
           renderModelSettingsTab();
         }
-      } catch {}
+      } catch { }
     }, delayMs);
     pendingConfirmTimers.add(tId);
   }
@@ -10560,7 +11881,7 @@ function closeAllDropdowns(exceptWrap = null) {
       renderCompactSessionCard();
       const prod = getSelectedProductObj();
       if (prod) renderModelDetailCard(prod);
-    } catch {}
+    } catch { }
   }
 
   /**
@@ -10600,25 +11921,48 @@ function closeAllDropdowns(exceptWrap = null) {
     const rawText = (clone.textContent || '').trim();
     if (!rawText) return null;
 
-    if (!effort) {
-      const mEffort = rawText.match(/\((Extra High|XHigh|Low|Medium|High|Extra|Minimal|Max)\)/i);
-      if (mEffort) effort = mEffort[1];
+    const effortCaseMap = {
+      'extra high': 'Extra High',
+      xhigh: 'XHigh',
+      low: 'Low',
+      medium: 'Medium',
+      high: 'High',
+      extra: 'Extra',
+      minimal: 'Minimal',
+      max: 'Max'
+    };
+    let baseText = rawText;
+    const mParen = rawText.match(/^(.*?)\s*\((Extra High|XHigh|Low|Medium|High|Extra|Minimal|Max)\)\s*$/i);
+    if (mParen) {
+      baseText = mParen[1].trim() || rawText;
+      if (!effort) effort = mParen[2];
+    } else {
+      const mTrail = rawText.match(/^(.*?)\s+(Extra High|XHigh|Low|Medium|High|Minimal|Max)\s*$/i);
+      if (mTrail) {
+        baseText = mTrail[1].trim() || rawText;
+        if (!effort) effort = mTrail[2];
+      }
     }
+    const normEffort = effort ? (effortCaseMap[String(effort).trim().toLowerCase()] || effort) : null;
+    const parenLabel = (normEffort && baseText && !baseText.includes('(')) ? `${baseText} (${normEffort})` : rawText;
 
     const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
-    const stableId = resolveStableModelKeyClient(rawText) || (typeof resolveStableModelId === 'function' ? resolveStableModelId(rawText, configs) : null);
+    const resolveCand = (cand) => cand
+      ? (resolveStableModelKeyClient(cand) || (typeof resolveStableModelId === 'function' ? resolveStableModelId(cand, configs) : null))
+      : null;
+    const stableId = resolveCand(parenLabel) || resolveCand(rawText) || resolveCand(baseText);
     const g = groupProductSafe({
-      modelId: stableId || rawText,
-      label: rawText,
-      effort
+      modelId: stableId || parenLabel,
+      label: parenLabel,
+      effort: normEffort
     });
 
     return {
       rawText,
-      modelId: stableId || rawText,
+      modelId: stableId || parenLabel,
       productKey: g.productKey,
-      productLabel: g.productLabel || rawText,
-      effort: effort || g.effort || null,
+      productLabel: g.productLabel || baseText,
+      effort: normEffort || g.effort || null,
       source: 'dom_trigger'
     };
   }
@@ -10702,7 +12046,7 @@ function closeAllDropdowns(exceptWrap = null) {
     if (window.__agRequestInterceptorInstalled) return;
 
     // 0. 绑定主世界冷启动客户端装饰器回调（序列化前修改真实请求对象）
-    globalThis.__AG_METER_ON_SEND_MESSAGE__ = function(req, channel = 'client_object') {
+    globalThis.__AG_METER_ON_SEND_MESSAGE__ = function (req, channel = 'client_object') {
       try {
         if (!req || typeof req !== 'object' || typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
         const tx = budgetEngine.transformOutgoingSendRequest(req, buildInterceptorContext(channel, 'SendUserCascadeMessage'));
@@ -10722,7 +12066,7 @@ function closeAllDropdowns(exceptWrap = null) {
         return null;
       }
     };
-    globalThis.__AG_METER_ON_SEND_RESULT__ = function(dispatchId, ok, err) {
+    globalThis.__AG_METER_ON_SEND_RESULT__ = function (dispatchId, ok, err) {
       finishDispatchOutcome(dispatchId, ok, err);
     };
 
@@ -10740,7 +12084,7 @@ function closeAllDropdowns(exceptWrap = null) {
     if (typeof window.WebSocket === 'function' && window.WebSocket.prototype && typeof window.WebSocket.prototype.send === 'function') {
       const origWsSend = window.WebSocket.prototype.send;
       window.__agOrigWsSend = origWsSend;
-      window.WebSocket.prototype.send = function(data) {
+      window.WebSocket.prototype.send = function (data) {
         let nextData = data;
         let rec = null;
         try {
@@ -10771,7 +12115,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const origFetch = window.fetch;
     if (typeof origFetch === 'function') {
       window.__agOrigFetch = origFetch;
-      window.fetch = async function(resource, init) {
+      window.fetch = async function (resource, init) {
         let rec = null;
         try {
           const urlStr = typeof resource === 'string'
@@ -10822,26 +12166,26 @@ function closeAllDropdowns(exceptWrap = null) {
       window.__agOrigXhrSetHdr = origSetHdr;
       window.__agOrigXhrSend = origSend;
 
-      window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+      window.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
         try {
           this.__agRequestUrl = typeof url === 'string' ? url : String(url || '');
           this.__agRequestHeaders = {};
-        } catch {}
+        } catch { }
         return origOpen.call(this, method, url, ...rest);
       };
 
       if (typeof origSetHdr === 'function') {
-        window.XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+        window.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
           try {
             if (this.__agRequestHeaders && typeof name === 'string') {
               this.__agRequestHeaders[name.toLowerCase()] = String(value || '');
             }
-          } catch {}
+          } catch { }
           return origSetHdr.call(this, name, value);
         };
       }
 
-      window.XMLHttpRequest.prototype.send = function(body) {
+      window.XMLHttpRequest.prototype.send = function (body) {
         let rec = null;
         try {
           const urlStr = this.__agRequestUrl || '';
@@ -10935,11 +12279,14 @@ function closeAllDropdowns(exceptWrap = null) {
     return null;
   }
 
+  let modelCapabilitiesVersion = 1;
+
   function mergeCapabilitiesMapClient(incomingMap) {
     if (!incomingMap || typeof incomingMap !== 'object') return;
     if (!state.modelCapabilitiesById || typeof state.modelCapabilitiesById !== 'object') {
       state.modelCapabilitiesById = {};
     }
+    let updated = false;
     for (const [rawKey, rawVal] of Object.entries(incomingMap)) {
       if (!rawVal || typeof rawVal !== 'object') continue;
       const k = String(rawKey).trim().toLowerCase().replace(/^model_/, '');
@@ -10948,7 +12295,9 @@ function closeAllDropdowns(exceptWrap = null) {
         ...(state.modelCapabilitiesById[k] || {}),
         ...rawVal
       };
+      updated = true;
     }
+    if (updated) modelCapabilitiesVersion++;
   }
 
   function validateCustomLimitClient(rawInput, modeOverride = ctxDraft.mode, productOverride = null) {
@@ -11056,11 +12405,55 @@ function closeAllDropdowns(exceptWrap = null) {
     return { ok: true, mode: 'fixed', limitTokens: num, warnings };
   }
 
-  /** 将所有已知模型、当前会话和历史调用按产品维度分组 */
-  function getKnownModelProducts() {
-    const productMap = new Map();
-    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+  let cachedKnownProductsSnapshot = null;
 
+  /** 将所有已知模型、当前会话和历史调用按产品维度分组（带签名缓存与调用模型去重，避免每次渲染重复全量分组） */
+  function getKnownModelProducts() {
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const speedRecords = ANTIGRAVITY_TOKEN_DATA.speedRecords || [];
+    const sessionCalls = state.sessionCalls || [];
+    const latest = state.latest || null;
+    const capsMap = state.modelCapabilitiesById || null;
+    const prefsMap = contextPreferencesMap || {};
+
+    let configsSig = '';
+    if (Array.isArray(configs) && configs.length) {
+      for (let i = 0; i < configs.length; i++) {
+        const c = configs[i];
+        configsSig += `${c?.modelId || c?.modelOrAlias?.model || ''}:${c?.maxTokens ?? ''}:${c?.maxOutputTokens ?? ''}:${c?.disabled ? 1 : 0}:${c?.unavailable ? 1 : 0}:${c?.isHistorical ? 1 : 0}:${c?.capabilitySource || ''};`;
+      }
+    }
+    let prefsSig = '';
+    for (const k of Object.keys(prefsMap)) {
+      const p = prefsMap[k];
+      prefsSig += `${k}:${p?.scope || ''}:${p?.productKey || ''}:${p?.label || ''};`;
+    }
+    const latestSig = latest ? `${latest.modelId || ''}|${latest.modelRaw || ''}|${latest.model || ''}|${latest.effort || ''}` : '';
+    const capsLen = capsMap ? Object.keys(capsMap).length : 0;
+    const speedLen = Array.isArray(speedRecords) ? speedRecords.length : 0;
+    const sessLen = Array.isArray(sessionCalls) ? sessionCalls.length : 0;
+    const speedEdge = speedLen ? `${speedRecords[0]?.modelExactId || speedRecords[0]?.model || ''}|${speedRecords[speedLen - 1]?.callId || speedRecords[speedLen - 1]?.modelExactId || ''}` : '';
+    const sessEdge = sessLen ? `${sessionCalls[0]?.modelExactId || sessionCalls[0]?.model || ''}|${sessionCalls[sessLen - 1]?.callId || sessionCalls[sessLen - 1]?.model || ''}` : '';
+
+    if (
+      cachedKnownProductsSnapshot
+      && cachedKnownProductsSnapshot.configsRef === configs
+      && cachedKnownProductsSnapshot.configsSig === configsSig
+      && cachedKnownProductsSnapshot.speedRef === speedRecords
+      && cachedKnownProductsSnapshot.speedLen === speedLen
+      && cachedKnownProductsSnapshot.speedEdge === speedEdge
+      && cachedKnownProductsSnapshot.sessRef === sessionCalls
+      && cachedKnownProductsSnapshot.sessLen === sessLen
+      && cachedKnownProductsSnapshot.sessEdge === sessEdge
+      && cachedKnownProductsSnapshot.latestSig === latestSig
+      && cachedKnownProductsSnapshot.prefsSig === prefsSig
+      && cachedKnownProductsSnapshot.capsVer === modelCapabilitiesVersion
+      && cachedKnownProductsSnapshot.capsLen === capsLen
+    ) {
+      return cachedKnownProductsSnapshot.result.map(p => ({ ...p, members: p.members.slice() }));
+    }
+
+    const productMap = new Map();
     const slugToKey = new Map();
     const ensureProduct = (meta, fromAccountCatalog = false) => {
       const g = groupProductSafe(meta);
@@ -11147,37 +12540,49 @@ function closeAllDropdowns(exceptWrap = null) {
           thinkingLevel: c?.thinkingLevel,
           supportsModelInfoOverride: c?.supportsModelInfoOverride,
           capabilitySource: c?.capabilitySource,
-          unavailable: c?.unavailable,
-          unavailabilityReason: c?.unavailabilityReason,
+          unavailable: Boolean(c?.unavailable || c?.disabled),
+          unavailabilityReason: c?.unavailabilityReason || c?.tagDescription || null,
           notice: c?.notice,
           isHistorical: c?.isHistorical
         }, true);
       }
     }
 
-    if (state.latest?.modelId || state.latest?.modelRaw || state.latest?.model) {
-      const stableId = resolveStableModelKeyClient(state.latest);
+    if (latest?.modelId || latest?.modelRaw || latest?.model) {
+      const stableId = resolveStableModelKeyClient(latest);
       ensureProduct({
         modelId: stableId,
-        label: state.latest.model || stableId,
-        modelOrAlias: state.latest.modelOrAlias,
-        effort: state.latest.effort
+        label: latest.model || stableId,
+        modelOrAlias: latest.modelOrAlias,
+        effort: latest.effort
       }, false);
     }
 
-    const calls = [...(ANTIGRAVITY_TOKEN_DATA.speedRecords || []), ...(state.sessionCalls || [])];
-    for (const c of calls) {
-      if (!c) continue;
-      const mid = c.modelExactId || c.modelId || c.model;
-      if (!mid) continue;
-      ensureProduct({
-        modelId: mid,
-        label: c.modelLabel || c.model || mid,
-        effort: c.effort
-      }, false);
-    }
+    // 先按 (modelId, label, effort) 去重，避免成百上千条同模型历史/会话调用重复执行产品分组
+    const seenCallModels = new Set();
+    const processCallList = (list) => {
+      if (!Array.isArray(list)) return;
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i];
+        if (!c) continue;
+        const mid = c.modelExactId || c.modelId || c.model;
+        if (!mid) continue;
+        const lbl = c.modelLabel || c.model || mid;
+        const eff = c.effort || '';
+        const sig = `${mid}\0${lbl}\0${eff}`;
+        if (seenCallModels.has(sig)) continue;
+        seenCallModels.add(sig);
+        ensureProduct({
+          modelId: mid,
+          label: lbl,
+          effort: eff || undefined
+        }, false);
+      }
+    };
+    processCallList(speedRecords);
+    processCallList(sessionCalls);
 
-    for (const [k, pref] of Object.entries(contextPreferencesMap || {})) {
+    for (const [k, pref] of Object.entries(prefsMap)) {
       if (!pref) continue;
       const g = groupProductSafe({
         modelId: pref.productKey || k,
@@ -11226,7 +12631,23 @@ function closeAllDropdowns(exceptWrap = null) {
       if (va !== vb) return (va === -1 ? 99 : va) - (vb === -1 ? 99 : vb);
       return a.productLabel.localeCompare(b.productLabel);
     });
-    return result;
+
+    cachedKnownProductsSnapshot = {
+      configsRef: configs,
+      configsSig,
+      speedRef: speedRecords,
+      speedLen,
+      speedEdge,
+      sessRef: sessionCalls,
+      sessLen,
+      sessEdge,
+      latestSig,
+      prefsSig,
+      capsVer: modelCapabilitiesVersion,
+      capsLen,
+      result
+    };
+    return result.map(p => ({ ...p, members: p.members.slice() }));
   }
 
   function formatSavedPrefLabel(pref) {
@@ -11426,7 +12847,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     activeContextTab = tabName;
     isContextSettingsView = tabName === 'settings';
-    try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, tabName); } catch {}
+    try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, tabName); } catch { }
     applyContextViewVisibility();
     if (tabName === 'models') {
       renderModelSettingsTab();
@@ -11438,6 +12859,9 @@ function closeAllDropdowns(exceptWrap = null) {
       renderSpeedComparisonTab();
     } else if (tabName === 'settings') {
       void refreshModulesDisplay();
+      if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
+        void refreshUnlockStatus();
+      }
       if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
     }
     positionFloatingPanels();
@@ -11545,6 +12969,329 @@ function closeAllDropdowns(exceptWrap = null) {
     return products[0];
   }
 
+  const MINI_QUOTA_RING_RADIUS = 5.5;
+  const MINI_QUOTA_RING_CIRC = 2 * Math.PI * MINI_QUOTA_RING_RADIUS;
+  const modelListChipByProductKey = new Map();
+  let lastModelQuotaSyncSig = '';
+  let quotaStateInitialized = false;
+
+  /**
+   * 安全获取额度视图（防止初始化阶段提前触发时出现 TDZ 异常）。
+   */
+  function getSafeQuotaViewForModelList(nowMs = Date.now()) {
+    if (!quotaStateInitialized || typeof computeEffectiveQuotaView !== 'function') return null;
+    try {
+      return computeEffectiveQuotaView(nowMs);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 兼容浏览器与精简测试环境的 SVG 节点创建函数。
+   */
+  function createQuotaSvgEl(tag) {
+    if (typeof document === 'undefined') return null;
+    if (typeof document.createElementNS === 'function') {
+      return document.createElementNS('http://www.w3.org/2000/svg', tag);
+    }
+    return typeof document.createElement === 'function' ? document.createElement(tag) : null;
+  }
+
+  /**
+   * 将模型产品对象映射到共享额度池并生成小圆环展示摘要。
+   */
+  function resolveProductQuotaSummary(product, quotaView = null, nowMs = Date.now()) {
+    const core = typeof __AGContextMeterCore !== 'undefined'
+      ? __AGContextMeterCore
+      : (globalThis.__AGContextMeterCore || null);
+    const view = quotaView || getSafeQuotaViewForModelList(nowMs);
+    const unknownText = t('quota.short.unknown');
+    if (!product) {
+      return {
+        status: 'unknown',
+        statusLabel: getQuotaStatusLabelText('unknown'),
+        shortText: unknownText,
+        fraction: null,
+        poolKey: '',
+        poolTitle: '',
+        tooltip: '',
+        ariaLabel: unknownText
+      };
+    }
+
+    const pools = Array.isArray(view?.pools) ? view.pools : [];
+    const membersList = Array.isArray(product.members)
+      ? product.members
+      : Array.from(product.members?.values?.() || []);
+    const candidateIds = new Set();
+    const candidateLabels = new Set();
+    const pKeyLower = String(product.productKey || '').trim().toLowerCase();
+    const pLabelLower = String(product.productLabel || '').trim().toLowerCase();
+    if (pLabelLower) candidateLabels.add(pLabelLower);
+    for (const m of membersList) {
+      if (m?.modelId) candidateIds.add(String(m.modelId).trim().toLowerCase());
+      if (m?.label) candidateLabels.add(String(m.label).trim().toLowerCase());
+    }
+
+    let matchedPool = null;
+    let matchedModel = null;
+    const isHistoryOnly = Boolean(product.isHistorical || !product.inAccountCatalog);
+
+    // 1. 优先通过 productKey / modelIds / aliases 精确命中账号额度池模型（仅历史记录模型不借用当前活跃额度池）
+    if (!isHistoryOnly) {
+      for (const pool of pools) {
+        for (const m of (pool.models || [])) {
+          const mProdKey = String(m.productKey || '').trim().toLowerCase();
+          const mLabel = String(m.productLabel || '').trim().toLowerCase();
+          const mIds = Array.isArray(m.modelIds) ? m.modelIds.map(x => String(x || '').trim().toLowerCase()) : [];
+          const mAliases = Array.isArray(m.aliases) ? m.aliases.map(x => String(x || '').trim().toLowerCase()) : [];
+          const hit =
+            (pKeyLower && mProdKey && mProdKey === pKeyLower) ||
+            mIds.some(id => candidateIds.has(id)) ||
+            mAliases.some(a => candidateIds.has(a) || candidateLabels.has(a)) ||
+            (mLabel && candidateLabels.has(mLabel));
+          if (hit) {
+            matchedPool = pool;
+            matchedModel = m;
+            break;
+          }
+        }
+        if (matchedPool) break;
+      }
+
+      // 2. 次级按共享额度池键归并当前账号目录内的模型
+      if (!matchedPool && core?.getSharedQuotaGroupKey) {
+        const probeInput = {
+          modelId: membersList[0]?.modelId || product.productKey,
+          label: product.productLabel || membersList[0]?.label || ''
+        };
+        const gKey = core.getSharedQuotaGroupKey(probeInput);
+        if (gKey) {
+          matchedPool = pools.find(p => p.poolKey === gKey) || null;
+        }
+      }
+    }
+
+    const syncState = view?.syncState || 'unknown';
+    const isNoPerm = Boolean(matchedModel?.noPermission || matchedPool?.noPermission || product.unavailable);
+    let status = 'unknown';
+    let shortText = unknownText;
+    let fraction = null;
+
+    if (isNoPerm) {
+      status = 'no_permission';
+      shortText = t('quota.short.no_permission');
+    } else if (syncState === 'error' && !matchedPool) {
+      status = 'error';
+      shortText = t('quota.short.error');
+    } else if (matchedPool) {
+      fraction = matchedPool.remainingFraction;
+      if (fraction === null || fraction === undefined) {
+        status = syncState === 'stale' ? 'stale' : 'unknown';
+        shortText = t(`quota.short.${status}`);
+      } else if (matchedPool.isExhausted || fraction === 0) {
+        status = syncState === 'stale' ? 'stale' : 'exhausted';
+        shortText = t('quota.short.exhausted');
+      } else {
+        status = syncState === 'stale' ? 'stale' : (fraction <= 0.2 ? 'low' : 'available');
+        shortText = core?.formatQuotaPercentText
+          ? core.formatQuotaPercentText(fraction)
+          : (matchedPool.percentText || `${Math.round(fraction * 100)}%`);
+      }
+    } else if (product.isHistorical || !product.inAccountCatalog) {
+      status = 'unknown';
+      shortText = unknownText;
+    } else {
+      status = syncState === 'stale' ? 'stale' : 'unknown';
+      shortText = t(`quota.short.${status}`);
+    }
+
+    const statusLabel = typeof getQuotaStatusLabelText === 'function'
+      ? getQuotaStatusLabelText(status)
+      : status;
+    const poolName = matchedPool?.title || (product.isHistorical ? t('quota.modelChip.historyHint') : t('quota.modelChip.unpooled'));
+    const tipParts = [
+      t('quota.modelChip.tooltip', {
+        model: product.productLabel,
+        pool: poolName,
+        status: statusLabel,
+        value: shortText
+      })
+    ];
+    if (matchedPool?.hasResetTime && matchedPool.resetTimeText) {
+      const cdStr = Number.isFinite(matchedPool.resetAtMs)
+        ? ` (${formatCountdownMsCompact((matchedPool.resetAtMs || 0) - nowMs)})`
+        : '';
+      tipParts.push(t('quota.modelChip.resetPart', { reset: `${matchedPool.resetTimeText}${cdStr}` }));
+    }
+    const reason = matchedModel?.unavailabilityReason || product.unavailabilityReason;
+    if (isNoPerm && reason) tipParts.push(String(reason));
+    if (matchedModel?.noticeText) tipParts.push(String(matchedModel.noticeText));
+    if (syncState === 'error' && view?.lastError && !matchedPool && !isNoPerm) {
+      tipParts.push(String(view.lastError));
+    }
+    const tooltip = tipParts.join(' · ');
+
+    return {
+      status,
+      statusLabel,
+      shortText,
+      fraction,
+      poolKey: matchedPool?.poolKey || '',
+      poolTitle: matchedPool?.title || '',
+      tooltip,
+      ariaLabel: tooltip
+    };
+  }
+
+  /**
+   * 更新小额度圆环芯片的圆弧进度、语义状态、数值文本与悬浮说明。
+   */
+  function updateMiniQuotaChipElement(chip, summary) {
+    if (!chip || !summary) return;
+    setQuotaAttrIfChanged(chip, 'data-quota-state', summary.status || 'unknown');
+    setQuotaAttrIfChanged(chip, 'data-pool-key', summary.poolKey || '');
+    setQuotaAttrIfChanged(chip, 'aria-label', summary.ariaLabel || summary.shortText);
+    if (chip.title !== summary.tooltip) chip.title = summary.tooltip;
+    if (chip._valNode && chip._valNode.textContent !== summary.shortText) {
+      chip._valNode.textContent = summary.shortText;
+    }
+    const fill = chip._ringFill;
+    if (!fill) return;
+    if (summary.status === 'unknown' || (summary.fraction == null && summary.status === 'stale')) {
+      setQuotaAttrIfChanged(fill, 'stroke-dasharray', '8 26.56');
+      setQuotaAttrIfChanged(fill, 'stroke-dashoffset', '0');
+    } else if (
+      summary.fraction == null ||
+      summary.status === 'exhausted' ||
+      summary.status === 'no_permission' ||
+      summary.status === 'error'
+    ) {
+      setQuotaAttrIfChanged(fill, 'stroke-dasharray', `0 ${MINI_QUOTA_RING_CIRC.toFixed(2)}`);
+      setQuotaAttrIfChanged(fill, 'stroke-dashoffset', '0');
+    } else {
+      const clamped = Math.max(0, Math.min(1, Number(summary.fraction) || 0));
+      const arcLen = clamped > 0 ? Math.max(1.6, clamped * MINI_QUOTA_RING_CIRC) : 0;
+      const dashStr = `${MINI_QUOTA_RING_CIRC.toFixed(2)} ${MINI_QUOTA_RING_CIRC.toFixed(2)}`;
+      const offsetStr = (MINI_QUOTA_RING_CIRC - arcLen).toFixed(2);
+      setQuotaAttrIfChanged(fill, 'stroke-dasharray', dashStr);
+      setQuotaAttrIfChanged(fill, 'stroke-dashoffset', offsetStr);
+    }
+  }
+
+  /**
+   * 创建贴近原生 UI 的小额度圆环进度与状态芯片节点。
+   */
+  function createMiniQuotaChipElement(summary, opts = {}) {
+    const chip = document.createElement('span');
+    chip.className = `ctx-model-quota-chip${opts.variant ? ` is-${opts.variant}` : ''}`;
+    const svg = createQuotaSvgEl('svg');
+    let fill = null;
+    if (svg) {
+      svg.setAttribute?.('class', 'ctx-quota-ring-svg');
+      svg.setAttribute?.('width', '13');
+      svg.setAttribute?.('height', '13');
+      svg.setAttribute?.('viewBox', '0 0 16 16');
+      svg.setAttribute?.('aria-hidden', 'true');
+      const track = createQuotaSvgEl('circle');
+      if (track) {
+        track.setAttribute?.('class', 'ctx-quota-ring-track');
+        track.setAttribute?.('cx', '8');
+        track.setAttribute?.('cy', '8');
+        track.setAttribute?.('r', String(MINI_QUOTA_RING_RADIUS));
+        track.setAttribute?.('fill', 'none');
+        track.setAttribute?.('stroke-width', '2');
+        svg.appendChild(track);
+      }
+      fill = createQuotaSvgEl('circle');
+      if (fill) {
+        fill.setAttribute?.('class', 'ctx-quota-ring-fill');
+        fill.setAttribute?.('cx', '8');
+        fill.setAttribute?.('cy', '8');
+        fill.setAttribute?.('r', String(MINI_QUOTA_RING_RADIUS));
+        fill.setAttribute?.('fill', 'none');
+        fill.setAttribute?.('stroke-width', '2');
+        fill.setAttribute?.('stroke-linecap', 'round');
+        fill.setAttribute?.('transform', 'rotate(-90 8 8)');
+        svg.appendChild(fill);
+      }
+      chip.appendChild(svg);
+    }
+    const valNode = document.createElement('span');
+    valNode.className = 'ctx-model-quota-val';
+    chip.appendChild(valNode);
+    chip._ringFill = fill;
+    chip._valNode = valNode;
+    updateMiniQuotaChipElement(chip, summary);
+    return chip;
+  }
+
+  /**
+   * 原地同步模型列表、下拉选择器与选中模型卡片中的小额度圆环状态，避免重建闪烁。
+   */
+  function syncModelListQuotaIndicators(quotaView = null, nowMs = Date.now(), force = false) {
+    const view = quotaView || getSafeQuotaViewForModelList(nowMs);
+    if (!view) return;
+    const poolSig = (view.pools || [])
+      .map(p => `${p.poolKey}:${p.remainingFraction ?? 'n'}:${p.noPermission ? 1 : 0}:${p.hasResetTime ? Math.floor(((p.resetAtMs || 0) - nowMs) / 60000) : 'x'}`)
+      .join('|');
+    const sig = `${view.syncState || ''}|${currentPanelLanguage}|${selectedProductKey || ''}|${poolSig}`;
+    if (!force && sig === lastModelQuotaSyncSig) return;
+    lastModelQuotaSyncSig = sig;
+
+    const products = getKnownModelProducts();
+    const byKey = new Map(products.map(p => [p.productKey, p]));
+    const summaryCache = new Map();
+    const getSummary = (prod) => {
+      if (!prod) return null;
+      if (!summaryCache.has(prod.productKey)) {
+        summaryCache.set(prod.productKey, resolveProductQuotaSummary(prod, view, nowMs));
+      }
+      return summaryCache.get(prod.productKey);
+    };
+
+    for (const [pKey, entry] of modelListChipByProductKey.entries()) {
+      const prod = byKey.get(pKey);
+      if (!prod || !entry?.chipEl) continue;
+      const summary = getSummary(prod);
+      updateMiniQuotaChipElement(entry.chipEl, summary);
+      if (entry.rowEl && entry.rowEl.title !== summary.tooltip) {
+        entry.rowEl.title = summary.tooltip;
+      }
+    }
+
+    if (ctxHeaderDropdownCtrl && typeof ctxHeaderDropdownCtrl.updateItemsInPlace === 'function') {
+      ctxHeaderDropdownCtrl.updateItemsInPlace((val, itemEl, extraEl) => {
+        const prod = byKey.get(val);
+        if (!prod) return;
+        const summary = getSummary(prod);
+        if (extraEl) updateMiniQuotaChipElement(extraEl, summary);
+        if (itemEl && itemEl.title !== summary.tooltip) itemEl.title = summary.tooltip;
+      });
+    }
+
+    if (ctxCardQuotaSlot) {
+      const currentProd = getSelectedProductObj();
+      if (!currentProd) {
+        ctxCardQuotaSlot.hidden = true;
+      } else {
+        const summary = getSummary(currentProd);
+        ctxCardQuotaSlot.hidden = false;
+        if (!ctxCardQuotaSlot._chipEl) {
+          ctxCardQuotaSlot._chipEl = createMiniQuotaChipElement(summary, { variant: 'card' });
+          if (typeof ctxCardQuotaSlot.replaceChildren === 'function') {
+            ctxCardQuotaSlot.replaceChildren(ctxCardQuotaSlot._chipEl);
+          } else {
+            ctxCardQuotaSlot.appendChild(ctxCardQuotaSlot._chipEl);
+          }
+        } else {
+          updateMiniQuotaChipElement(ctxCardQuotaSlot._chipEl, summary);
+        }
+      }
+    }
+  }
+
   function renderHeaderModelDropdown() {
     const products = getKnownModelProducts();
     if (!selectedProductKey && products.length) {
@@ -11567,21 +13314,31 @@ function closeAllDropdowns(exceptWrap = null) {
 
     if (ctxModelSelect && typeof document !== 'undefined' && typeof document.createElement === 'function') {
       if (typeof ctxModelSelect.replaceChildren === 'function') {
-        const opts = [];
-        for (const p of products) {
-          const opt = document.createElement('option');
-          opt.value = p.productKey;
+        const optionEntries = products.map((p) => {
           const pState = resolveProductPreferenceState(p);
-          opt.textContent = `${p.productLabel} (${pState.shortText})${p.productKey === activeSessionProductKey ? ` [${t('models.list.currentTag')}]` : ''}`;
-          opts.push(opt);
+          const optText = `${p.productLabel} (${pState.shortText})${p.productKey === activeSessionProductKey ? ` [${t('models.list.currentTag')}]` : ''}`;
+          return { value: p.productKey, text: optText };
+        });
+        const optsSig = `${currentPanelLanguage}|${optionEntries.map(o => `${o.value}=${o.text}`).join('|')}`;
+        if (ctxModelSelect._lastOptionsSig !== optsSig) {
+          ctxModelSelect._lastOptionsSig = optsSig;
+          const opts = optionEntries.map((entry) => {
+            const opt = document.createElement('option');
+            opt.value = entry.value;
+            opt.textContent = entry.text;
+            return opt;
+          });
+          ctxModelSelect.replaceChildren(...opts);
         }
-        ctxModelSelect.replaceChildren(...opts);
-        if (selectedProductKey) ctxModelSelect.value = selectedProductKey;
+        if (selectedProductKey && ctxModelSelect.value !== selectedProductKey) {
+          ctxModelSelect.value = selectedProductKey;
+        }
       }
     }
 
-    if (ctxModelDropdownLabelEl) {
-      ctxModelDropdownLabelEl.textContent = currentProd ? currentProd.productLabel : t('models.dropdown.empty');
+    const nextDropdownLabel = currentProd ? currentProd.productLabel : t('models.dropdown.empty');
+    if (ctxModelDropdownLabelEl && ctxModelDropdownLabelEl.textContent !== nextDropdownLabel) {
+      ctxModelDropdownLabelEl.textContent = nextDropdownLabel;
     }
 
     if (!ctxHeaderDropdownCtrl && typeof initDropdownController === 'function' && el('ctx-model-dropdown-wrap')) {
@@ -11595,6 +13352,7 @@ function closeAllDropdowns(exceptWrap = null) {
         searchPlaceholder: () => t('dropdown.modelSearch'),
         emptyText: () => t('dropdown.modelEmpty'),
         getSelectedValue: () => selectedProductKey || '',
+        renderOptionExtras: (opt) => opt?.quotaSummary ? createMiniQuotaChipElement(opt.quotaSummary, { variant: 'dropdown' }) : null,
         onSelect: (opt) => {
           const val = opt?.value || '';
           if (!val) return;
@@ -11607,6 +13365,8 @@ function closeAllDropdowns(exceptWrap = null) {
         },
         getOptions: () => {
           const list = getKnownModelProducts();
+          const nowMs = Date.now();
+          const qView = getSafeQuotaViewForModelList(nowMs);
           const items = [];
           const activeList = list.filter(p => p.inAccountCatalog);
           const historyList = list.filter(p => !p.inAccountCatalog);
@@ -11622,10 +13382,13 @@ function closeAllDropdowns(exceptWrap = null) {
               });
             }
             const pState = resolveProductPreferenceState(p);
+            const qSummary = resolveProductQuotaSummary(p, qView, nowMs);
             items.push({
               value: p.productKey,
               label: p.productLabel,
               displayRight: pState.shortText,
+              quotaSummary: qSummary,
+              tooltip: qSummary.tooltip,
               badgeText: p.productKey === activeSessionProductKey ? t('models.list.currentTag') : '',
               aliases: [p.vendor, p.productKey]
             });
@@ -11639,10 +13402,13 @@ function closeAllDropdowns(exceptWrap = null) {
             });
             for (const p of historyList) {
               const pState = resolveProductPreferenceState(p);
+              const qSummary = resolveProductQuotaSummary(p, qView, nowMs);
               items.push({
                 value: p.productKey,
                 label: p.productLabel,
                 displayRight: pState.shortText,
+                quotaSummary: qSummary,
+                tooltip: qSummary.tooltip,
                 badgeText: p.productKey === activeSessionProductKey ? t('models.list.currentTag') : t('models.list.historyTag'),
                 aliases: [p.vendor, p.productKey]
               });
@@ -11758,12 +13524,31 @@ function closeAllDropdowns(exceptWrap = null) {
 
   function renderModelListGroup(products) {
     if (!ctxModelListEl || typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+    const nowMs = Date.now();
+    const qView = getSafeQuotaViewForModelList(nowMs);
     if (!products.length) {
+      modelListChipByProductKey.clear();
+      ctxModelListEl._lastStructSig = '';
       ctxModelListEl.textContent = t('models.list.empty');
       return;
     }
     const catalogConfigs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
     const hasAccountCatalog = Array.isArray(catalogConfigs) && catalogConfigs.length > 0;
+    const structSig = `${currentPanelLanguage}|${selectedProductKey || ''}|${activeSessionProductKey || ''}|${hasAccountCatalog ? 1 : 0}|` + products.map((p) => {
+      const ps = resolveProductPreferenceState(p);
+      return `${p.productKey}:${p.productLabel}:${p.vendor}:${p.unavailable ? 1 : 0}:${p.inAccountCatalog ? 1 : 0}:${p.isHistorical ? 1 : 0}:${ps.status}:${ps.shortText}:${Boolean(p.notice)}`;
+    }).join(';');
+
+    if (ctxModelListEl._lastStructSig === structSig && modelListChipByProductKey.size > 0) {
+      syncModelListQuotaIndicators(qView, nowMs, false);
+      return;
+    }
+    ctxModelListEl._lastStructSig = structSig;
+    modelListChipByProductKey.clear();
+
+    const outerPanel = el('panel');
+    const prevPanelScrollTop = (outerPanel && typeof outerPanel.scrollTop === 'number') ? outerPanel.scrollTop : 0;
+    const prevScrollTop = ctxModelListEl.scrollTop || 0;
     const accountProducts = hasAccountCatalog ? products.filter(p => p.inAccountCatalog) : products;
     const historyProducts = hasAccountCatalog ? products.filter(p => !p.inAccountCatalog) : [];
 
@@ -11824,10 +13609,15 @@ function closeAllDropdowns(exceptWrap = null) {
 
         const right = document.createElement('span');
         right.className = 'ctx-product-row-right';
+        const qSummary = resolveProductQuotaSummary(prod, qView, nowMs);
+        const qChip = createMiniQuotaChipElement(qSummary, { variant: 'row' });
+        right.appendChild(qChip);
         const valSpan = document.createElement('span');
         valSpan.className = `ctx-product-row-val${pState.status === 'conflict' ? ' is-conflict' : ''}`;
         valSpan.textContent = pState.shortText;
         right.appendChild(valSpan);
+        row.title = qSummary.tooltip;
+        modelListChipByProductKey.set(prod.productKey, { rowEl: row, chipEl: qChip });
 
         row.appendChild(left);
         row.appendChild(right);
@@ -11858,6 +13648,12 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     if (typeof ctxModelListEl.replaceChildren === 'function') {
       ctxModelListEl.replaceChildren(...fragNodes);
+    }
+    if (prevScrollTop > 0 && Math.abs((ctxModelListEl.scrollTop || 0) - prevScrollTop) > 1) {
+      ctxModelListEl.scrollTop = prevScrollTop;
+    }
+    if (outerPanel && prevPanelScrollTop > 0 && Math.abs((outerPanel.scrollTop || 0) - prevPanelScrollTop) > 1) {
+      outerPanel.scrollTop = prevPanelScrollTop;
     }
   }
 
@@ -12108,6 +13904,7 @@ function closeAllDropdowns(exceptWrap = null) {
     if (!product) {
       if (ctxCardProductName) ctxCardProductName.textContent = t('models.card.waiting');
       if (ctxCardVendorName) ctxCardVendorName.textContent = '—';
+      if (ctxCardQuotaSlot) ctxCardQuotaSlot.hidden = true;
       if (ctxCardEffortsList) ctxCardEffortsList.textContent = t('models.card.effortsEmpty');
       if (ctxCardSessionEffort) ctxCardSessionEffort.hidden = true;
       if (ctxConflictBanner) ctxConflictBanner.hidden = true;
@@ -12123,6 +13920,21 @@ function closeAllDropdowns(exceptWrap = null) {
       ctxCardVendorDot.style.background = VENDOR_DOT_COLORS[product.vendor] || VENDOR_DOT_COLORS['其他'];
     }
     if (ctxCardVendorName) ctxCardVendorName.textContent = formatVendorLabel(product.vendor);
+    if (ctxCardQuotaSlot) {
+      const nowMs = Date.now();
+      const qSummary = resolveProductQuotaSummary(product, null, nowMs);
+      ctxCardQuotaSlot.hidden = false;
+      if (!ctxCardQuotaSlot._chipEl) {
+        ctxCardQuotaSlot._chipEl = createMiniQuotaChipElement(qSummary, { variant: 'card' });
+        if (typeof ctxCardQuotaSlot.replaceChildren === 'function') {
+          ctxCardQuotaSlot.replaceChildren(ctxCardQuotaSlot._chipEl);
+        } else {
+          ctxCardQuotaSlot.appendChild(ctxCardQuotaSlot._chipEl);
+        }
+      } else {
+        updateMiniQuotaChipElement(ctxCardQuotaSlot._chipEl, qSummary);
+      }
+    }
     if (ctxCardProductName) {
       if (product.unavailable) {
         ctxCardProductName.textContent = `${product.productLabel} [${t('models.card.modelUnavailable') || '不可用'}]`;
@@ -12864,6 +14676,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     renderHeaderModelDropdown();
     renderCompactSessionCard();
+    if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
     if (!isContextSettingsView && activeContextTab === 'models') {
       renderModelSettingsTab();
     } else if (!isContextSettingsView && activeContextTab === 'speed') {
@@ -13233,7 +15046,7 @@ function closeAllDropdowns(exceptWrap = null) {
         return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
       }
     }
-    return { ok: false, error: t('enhance.result.noBridge'), unavailable: true };
+    return { ok: false, errorKey: 'enhance.result.noBridge', error: t('enhance.result.noBridge'), unavailable: true };
   }
 
   async function invokeModulesApi(action, name, enable, opts = {}) {
@@ -13359,6 +15172,9 @@ function closeAllDropdowns(exceptWrap = null) {
         renderClientStatusBar();
         if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
       }
+      if (typeof syncEnhanceInteractiveDisabledState === 'function') {
+        syncEnhanceInteractiveDisabledState();
+      }
     } catch {
       if (thisSeq !== unlockReqSeq) return;
       unlockStatusFetchError = true;
@@ -13372,6 +15188,20 @@ function closeAllDropdowns(exceptWrap = null) {
     void refreshUnlockStatus();
   });
 
+  function yieldForSettingsPaint() {
+    if (typeof requestAnimationFrame === 'function') {
+      return new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (typeof MessageChannel === 'function') {
+      return new Promise((resolve) => {
+        const mc = new MessageChannel();
+        mc.port1.onmessage = () => resolve();
+        mc.port2.postMessage(null);
+      });
+    }
+    return Promise.resolve();
+  }
+
   btnApplyUnlock?.addEventListener('click', async () => {
     if (isUnlocking) return;
     if (ctxResetNoticeEl) ctxResetNoticeEl.hidden = true;
@@ -13384,11 +15214,13 @@ function closeAllDropdowns(exceptWrap = null) {
 
     isUnlocking = true;
     if (btnApplyUnlock) btnApplyUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
+    if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
+    showUnlockResultBox(true, t('mod.processing'));
     needsRestartAfterApply = false;
     restartMismatchNotice = '';
 
     try {
+      await yieldForSettingsPaint();
       // ELV-41: 底座统一应用为动态透传模式 (mov esi, edx)，使各模型设置能够独立生效，绝不把单一模型的数值固化进二进制
       const res = await invokeUnlockApi('apply', {
         mode: 'dynamic',
@@ -13415,6 +15247,8 @@ function closeAllDropdowns(exceptWrap = null) {
       showUnlockResultBox(false, buildFriendlyWriteError(e?.message), { showRetry: true });
     } finally {
       isUnlocking = false;
+      if (btnApplyUnlock) btnApplyUnlock.disabled = false;
+      if (btnRestoreUnlock) btnRestoreUnlock.disabled = false;
       await refreshUnlockStatus();
       if (!needsRestartAfterApply && currentUnlockStatus?.status === 'patched_pending_restart') {
         needsRestartAfterApply = true;
@@ -13437,7 +15271,7 @@ function closeAllDropdowns(exceptWrap = null) {
       for (const [mid, val] of observedByModelId.entries()) obsObj[mid] = val;
       preRestartSnapshot = { requestedAt: new Date().toISOString(), observations: obsObj };
       localStorage?.setItem(CTX_PRE_RESTART_OBS_KEY, JSON.stringify(preRestartSnapshot));
-    } catch {}
+    } catch { }
 
     const feedbackEl = fromModal ? modalRestartFeedback : (modalRestartFeedback || ctxRestartFeedback);
     if (feedbackEl) {
@@ -13534,9 +15368,11 @@ function closeAllDropdowns(exceptWrap = null) {
     if (isUnlocking) return;
     isUnlocking = true;
     if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
+    if (btnApplyUnlock) btnApplyUnlock.disabled = true;
+    showUnlockResultBox(true, t('mod.processing'));
 
     try {
+      await yieldForSettingsPaint();
       const res = await invokeUnlockApi('restore');
       if (!res || !res.ok) {
         showUnlockResultBox(false, buildFriendlyWriteError(res?.error || t('msg.restoreFail')), { showRetry: true });
@@ -13548,6 +15384,8 @@ function closeAllDropdowns(exceptWrap = null) {
       showUnlockResultBox(false, buildFriendlyWriteError(e?.message), { showRetry: true });
     } finally {
       isUnlocking = false;
+      if (btnRestoreUnlock) btnRestoreUnlock.disabled = false;
+      if (btnApplyUnlock) btnApplyUnlock.disabled = false;
       await refreshUnlockStatus();
     }
   });
@@ -13929,13 +15767,13 @@ function closeAllDropdowns(exceptWrap = null) {
         const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
         if (res && res.ok) opened = true;
       }
-    } catch {}
+    } catch { }
 
     if (!opened) {
       try {
         const w = window.open(UNLOCK_POST_URL, '_blank');
         if (w) opened = true;
-      } catch {}
+      } catch { }
     }
 
     if (opened) {
@@ -13952,7 +15790,7 @@ function closeAllDropdowns(exceptWrap = null) {
         navigator.clipboard.writeText(UNLOCK_POST_URL);
         copied = true;
       }
-    } catch {}
+    } catch { }
     if (!copied) {
       try {
         const ta = document.createElement('textarea');
@@ -13962,7 +15800,7 @@ function closeAllDropdowns(exceptWrap = null) {
         document.execCommand('copy');
         document.body.removeChild(ta);
         copied = true;
-      } catch {}
+      } catch { }
     }
     showUnlockToast(fromFailedOpen
       ? t('models.linkCopyFallback')
@@ -14067,6 +15905,14 @@ function closeAllDropdowns(exceptWrap = null) {
         const open = unlockDrawerBody.style.display === 'block';
         unlockDrawerArrow.textContent = open ? t('drawer.collapse') : t('drawer.expand');
       }
+      if (proxyDrawerArrow && proxyDrawerBody) {
+        const open = proxyDrawerBody.style.display === 'block';
+        proxyDrawerArrow.textContent = open ? t('drawer.shortCollapse') : t('drawer.shortExpand');
+      }
+      if (chineseDrawerArrow && chineseDrawerBody) {
+        const open = chineseDrawerBody.style.display === 'block';
+        chineseDrawerArrow.textContent = open ? t('drawer.collapse') : t('drawer.expand');
+      }
       const btnCostDet = el('btn-cost-details-toggle');
       const costDetBody = el('cost-details-pane');
       if (btnCostDet && costDetBody) {
@@ -14077,14 +15923,15 @@ function closeAllDropdowns(exceptWrap = null) {
       if (btnPlanDet) {
         btnPlanDet.textContent = planDetailExpanded ? t('plan.detail.toggleClose') : t('plan.detail.toggleOpen');
       }
-    } catch {}
-    try { if (typeof applyTheme === 'function') applyTheme(); } catch {}
-    try { render(); } catch {}
-    try { renderSessionCost(); } catch {}
-    try { renderHeaderModelDropdown(); } catch {}
-    try { renderModelSettingsTab(); } catch {}
-    try { renderSpeedComparisonTab(); } catch {}
-    try { if (currentUnlockStatus) { renderClientStatusBar(); renderCompactSessionCard(); } } catch {}
+    } catch { }
+    try { if (typeof applyTheme === 'function') applyTheme(); } catch { }
+    try { render(); } catch { }
+    try { renderSessionCost(); } catch { }
+    try { if (typeof renderQuotaBoard === 'function') renderQuotaBoard(); } catch { }
+    try { renderHeaderModelDropdown(); } catch { }
+    try { renderModelSettingsTab(); } catch { }
+    try { renderSpeedComparisonTab(); } catch { }
+    try { if (currentUnlockStatus) { renderClientStatusBar(); renderCompactSessionCard(); } } catch { }
     try {
       if (typeof renderPlanDetail === 'function' && ANTIGRAVITY_TOKEN_DATA?.planStatus) {
         renderPlanDetail(ANTIGRAVITY_TOKEN_DATA.planStatus);
@@ -14098,27 +15945,28 @@ function closeAllDropdowns(exceptWrap = null) {
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
-    } catch {}
+    } catch { }
     try {
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
-    } catch {}
+      if (typeof rerenderSettingsFeedbacks === 'function') rerenderSettingsFeedbacks();
+    } catch { }
     try {
       if (isChineseExpanded || isProxyExpanded || isContextSettingsView) {
         void refreshModulesDisplay();
       }
       if (isContextSettingsView && typeof refreshEnhanceStatus === 'function') {
-        void refreshEnhanceStatus();
+        void refreshEnhanceStatus(false);
       }
-    } catch {}
+    } catch { }
     try {
       if (typeof applyTokenHistoryPayload === 'function' && ANTIGRAVITY_TOKEN_DATA) {
         applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA);
       }
-    } catch {}
+    } catch { }
 
     if (persist) {
       userActionSeq++;
-      try { localStorage?.setItem('ag_panel_language', nextLang); } catch {}
+      try { localStorage?.setItem('ag_panel_language', nextLang); } catch { }
       const res = await saveSettingsPayloadBridge({
         panelLanguage: nextLang,
         uiPreferences: { panelLanguage: nextLang }
@@ -14180,17 +16028,68 @@ function closeAllDropdowns(exceptWrap = null) {
   const inputProxyUrl = el('input-proxy-url');
   const inputProxyBypass = el('input-proxy-bypass');
   const btnTestProxy = el('btn-test-proxy');
+  const btnSaveProxyConfig = el('btn-save-proxy-config');
   const btnToggleProxyModule = el('btn-toggle-proxy-module');
   const proxyTestResult = el('proxy-test-result');
 
   let isProxyExpanded = false;
   let currentProxyEnabled = false;
+  let proxyInputDirty = false;
+  let savedProxyUrl = '';
+  let savedProxyBypass = '';
+  let isProxyBusy = false;
+  let modulesStatusReqSeq = 0;
+
+  function proxyInputsDifferFromSaved() {
+    const curUrl = String(inputProxyUrl?.value ?? '').trim();
+    const curBypass = String(inputProxyBypass?.value ?? '').trim();
+    return Boolean(
+      (savedProxyUrl && curUrl && curUrl !== savedProxyUrl) ||
+      (savedProxyBypass && curBypass && curBypass !== savedProxyBypass)
+    );
+  }
+
+  function syncProxySaveButtonState() {
+    if (!btnSaveProxyConfig) return;
+    const show = Boolean(currentProxyEnabled && (proxyInputDirty || proxyInputsDifferFromSaved()));
+    btnSaveProxyConfig.hidden = !show;
+    btnSaveProxyConfig.disabled = Boolean(isProxyBusy);
+    btnSaveProxyConfig.textContent = isProxyBusy ? t('mod.proxy.btnSaving') : t('mod.proxy.btnSave');
+  }
+
+  inputProxyUrl?.addEventListener('input', () => {
+    proxyInputDirty = true;
+    syncProxySaveButtonState();
+  });
+  inputProxyBypass?.addEventListener('input', () => {
+    proxyInputDirty = true;
+    syncProxySaveButtonState();
+  });
+
+  async function invokeTestProxyApi(proxyUrl) {
+    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.testProxy === 'function') {
+      return await window.contextMeterAPI.testProxy(proxyUrl);
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const r = await fetch(`http://127.0.0.1:${live.port}/test-proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+        body: JSON.stringify({ proxyUrl })
+      });
+      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+    }
+    return { ok: false, error: t('msg.noHostBridge'), unavailable: true };
+  }
 
   btnToggleProxy?.addEventListener('click', () => {
     isProxyExpanded = !isProxyExpanded;
     if (proxyDrawerBody) proxyDrawerBody.style.display = isProxyExpanded ? 'block' : 'none';
     if (proxyDrawerArrow) proxyDrawerArrow.textContent = isProxyExpanded ? t('drawer.shortCollapse') : t('drawer.shortExpand');
     btnToggleProxy?.setAttribute('aria-expanded', String(isProxyExpanded));
+    if (isProxyExpanded) {
+      void refreshModulesDisplay();
+    }
   });
 
   // -------------------------------------------------------------
@@ -14252,9 +16151,17 @@ function closeAllDropdowns(exceptWrap = null) {
   let currentEnhanceStatus = null;
   let selectedEnhanceTier = 0;
   let enhanceTitleDraft = false;
+  let enhanceTierDirty = false;
+  let enhanceTitleDirty = false;
+  let enhanceStatusReqSeq = 0;
   let pendingEnhanceConfirmMode = null; // 'preset' | 'restore' | null
   let isEnhanceBusy = false;
+  let isLsRestartBusy = false;
   let hasPendingLsReload = false;
+  let enhanceGlobalResultState = null; // { ok, resolveMessage, opts }
+  let enhancePromptResultState = null; // { ok, resolveMessage }
+  let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
+  let lastProxyTestState = null;       // { pending, thrownErr, res }
 
   function syncBrandTitleButtons(mode = currentBrandTitle) {
     for (const [k, btn] of Object.entries(brandTitleBtns)) {
@@ -14284,11 +16191,49 @@ function closeAllDropdowns(exceptWrap = null) {
     if (enhanceTierMeaning) enhanceTierMeaning.textContent = t(`enhance.tier.${idx}.meaning`);
   }
 
+  function syncEnhanceInteractiveDisabledState() {
+    const unsupported = Boolean(currentEnhanceStatus && currentEnhanceStatus.supported === false);
+    const lockPromptControls = Boolean(isEnhanceBusy || unsupported);
+    const allTierBtns = enhanceTierGrid?.querySelectorAll?.('[data-enhance-tier]') || enhanceTierBtns.filter(Boolean);
+    allTierBtns.forEach?.((btn) => {
+      btn.disabled = lockPromptControls;
+    });
+    if (enhanceChineseTitleCheck) enhanceChineseTitleCheck.disabled = lockPromptControls;
+    if (btnApplyEnhancePrompt) btnApplyEnhancePrompt.disabled = lockPromptControls;
+    if (btnRefreshEnhance) btnRefreshEnhance.disabled = Boolean(isEnhanceBusy);
+    if (btnEnhancePresetApply) btnEnhancePresetApply.disabled = Boolean(isEnhanceBusy);
+    if (btnEnhanceRestoreAll) btnEnhanceRestoreAll.disabled = Boolean(isEnhanceBusy);
+    if (btnEnhanceConfirmGo) btnEnhanceConfirmGo.disabled = Boolean(isEnhanceBusy);
+
+    if (currentEnhanceStatus) {
+      if (chkPresetPrompt) {
+        if (unsupported) chkPresetPrompt.checked = false;
+        chkPresetPrompt.disabled = lockPromptControls;
+      }
+      if (chkPresetTitle) {
+        if (unsupported) chkPresetTitle.checked = false;
+        chkPresetTitle.disabled = lockPromptControls;
+      }
+    }
+    const ctxUnsupported = Boolean(
+      currentUnlockStatus &&
+      currentUnlockStatus.isPlatformSupported === false &&
+      currentUnlockStatus.status === 'unsupported'
+    );
+    if (chkPresetCtx && currentUnlockStatus) {
+      if (ctxUnsupported) chkPresetCtx.checked = false;
+      chkPresetCtx.disabled = Boolean(isEnhanceBusy || ctxUnsupported);
+    }
+  }
+
   function renderEnhanceSectionUI() {
     syncBrandTitleButtons(currentBrandTitle);
     renderEnhancePromptMatrix(selectedEnhanceTier);
+    syncEnhanceInteractiveDisabledState();
+
     const data = currentEnhanceStatus;
     const s = data?.summary || data;
+    const isUnsupported = Boolean(data && data.supported === false);
     const tierNum = s?.promptTier ?? s?.detectedTier;
     const hasTitle = Boolean(s?.chineseTitleEnabled);
     const titleMode = s?.chineseTitleMode || (hasTitle ? 'zh' : 'en');
@@ -14296,12 +16241,35 @@ function closeAllDropdowns(exceptWrap = null) {
     const totalCap = Number(s?.totalCapacityBytes || 0);
     const activeBytes = Number(s?.activeSlotBytes || 0);
     const allBak = Boolean(s?.allBackedUp ?? s?.hasBackup);
+    const syncState = s?.syncState || null;
     const targetsList = Array.isArray(data?.binaries) ? data.binaries : (Array.isArray(data?.targets) ? data.targets : []);
+    const hasUnsavedDraft = Boolean(
+      data &&
+      data.supported &&
+      !isUnsupported &&
+      ((enhanceTierDirty && Number(selectedEnhanceTier) !== Number(tierNum)) ||
+        (enhanceTitleDirty && Boolean(enhanceChineseTitleCheck ? enhanceChineseTitleCheck.checked : enhanceTitleDraft) !== hasTitle))
+    );
 
     if (enhanceGlobalBadge) {
-      if (!data || !data.supported) {
+      if (!data) {
         enhanceGlobalBadge.textContent = t('enhance.status.unread');
         enhanceGlobalBadge.className = 'key-pill pill-muted';
+      } else if (isUnsupported) {
+        enhanceGlobalBadge.textContent = t('enhance.status.unsupportedPlatform');
+        enhanceGlobalBadge.className = 'key-pill pill-warn';
+      } else if (syncState === 'client_updated_mismatch') {
+        enhanceGlobalBadge.textContent = t('enhance.status.clientUpdated');
+        enhanceGlobalBadge.className = 'key-pill pill-warn';
+      } else if (syncState === 'saved_disk_mismatch' || syncState === 'partial_mismatch') {
+        enhanceGlobalBadge.textContent = t('enhance.status.diskMismatch');
+        enhanceGlobalBadge.className = 'key-pill pill-warn';
+      } else if (syncState === 'pending_ls_restart' || hasPendingLsReload) {
+        enhanceGlobalBadge.textContent = t('enhance.status.pendingRestartLs');
+        enhanceGlobalBadge.className = 'key-pill pill-warn';
+      } else if (syncState === 'runtime_confirmed' && (Number(tierNum) > 0 || hasTitle)) {
+        enhanceGlobalBadge.textContent = t('enhance.status.runtimeConfirmed');
+        enhanceGlobalBadge.className = 'key-pill pill-ok';
       } else if (Number(tierNum) > 0 || hasTitle) {
         enhanceGlobalBadge.textContent = t('enhance.status.patchedActive');
         enhanceGlobalBadge.className = 'key-pill pill-ok';
@@ -14311,19 +16279,27 @@ function closeAllDropdowns(exceptWrap = null) {
       }
     }
     if (enhancePromptBadge) {
-      if (!data || !data.supported) {
+      if (!data) {
         enhancePromptBadge.textContent = t('enhance.status.unread');
         enhancePromptBadge.className = 'key-pill pill-muted';
+      } else if (isUnsupported) {
+        enhancePromptBadge.textContent = t('enhance.status.unsupportedPlatform');
+        enhancePromptBadge.className = 'key-pill pill-warn';
       } else {
-        enhancePromptBadge.textContent = [0, 1, 2, 3, 4].includes(Number(tierNum))
+        const baseText = [0, 1, 2, 3, 4].includes(Number(tierNum))
           ? t(`enhance.tier.${tierNum}.short`)
           : t('enhance.status.patchedActive');
-        enhancePromptBadge.className = Number(tierNum) > 0 ? 'key-pill pill-ok' : 'key-pill pill-muted';
+        enhancePromptBadge.textContent = hasUnsavedDraft ? `${baseText}${t('enhance.status.draftUnsaved')}` : baseText;
+        enhancePromptBadge.className = hasUnsavedDraft
+          ? 'key-pill pill-warn'
+          : (Number(tierNum) > 0 ? 'key-pill pill-ok' : 'key-pill pill-muted');
       }
     }
     if (enhanceStatPrompt) {
-      if (!data || !data.supported) {
+      if (!data) {
         enhanceStatPrompt.textContent = t('enhance.status.unread');
+      } else if (isUnsupported) {
+        enhanceStatPrompt.textContent = t('enhance.status.unsupportedPlatform');
       } else {
         enhanceStatPrompt.textContent = [0, 1, 2, 3, 4].includes(Number(tierNum))
           ? t(`enhance.tier.${tierNum}.short`)
@@ -14331,20 +16307,29 @@ function closeAllDropdowns(exceptWrap = null) {
       }
     }
     if (enhanceStatTitle) {
-      if (!data || !data.supported) enhanceStatTitle.textContent = t('enhance.status.unread');
-      else if (titleMode === 'zh' || hasTitle) enhanceStatTitle.textContent = hasPendingLsReload ? t('enhance.titleState.onWritten') : t('enhance.titleState.on');
-      else if (titleMode === 'mixed') enhanceStatTitle.textContent = t('enhance.titleState.conflict');
+      if (!data) enhanceStatTitle.textContent = t('enhance.status.unread');
+      else if (isUnsupported) enhanceStatTitle.textContent = t('enhance.status.unsupportedPlatform');
+      else if (titleMode === 'zh' || hasTitle) {
+        enhanceStatTitle.textContent = (hasPendingLsReload || s?.pendingLsRestart)
+          ? t('enhance.titleState.onWritten')
+          : (syncState === 'runtime_confirmed' ? t('enhance.titleState.onConfirmed') : t('enhance.titleState.on'));
+      } else if (titleMode === 'mixed') enhanceStatTitle.textContent = t('enhance.titleState.conflict');
       else enhanceStatTitle.textContent = t('enhance.titleState.off');
     }
     if (enhanceStatSlots) {
-      if (!data || !data.supported || totalCap <= 0) {
+      if (!data) {
+        enhanceStatSlots.textContent = t('enhance.status.unread');
+      } else if (isUnsupported) {
+        enhanceStatSlots.textContent = t('enhance.status.unsupportedPlatform');
+      } else if (totalCap <= 0) {
         enhanceStatSlots.textContent = t('enhance.status.unread');
       } else {
         enhanceStatSlots.textContent = `${activeBytes} / ${totalCap} B (${slotCount})`;
       }
     }
     if (enhanceStatBackup) {
-      if (!data || !data.supported) enhanceStatBackup.textContent = t('enhance.status.unread');
+      if (!data) enhanceStatBackup.textContent = t('enhance.status.unread');
+      else if (isUnsupported) enhanceStatBackup.textContent = t('enhance.status.unsupportedPlatform');
       else enhanceStatBackup.textContent = allBak ? t('enhance.status.backupYes') : t('enhance.status.backupNo');
     }
     if (enhanceBinaryList && targetsList.length) {
@@ -14356,11 +16341,31 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   }
 
-  function showEnhanceResultBox(ok, message, opts = {}) {
+  /** 获取用于操作反馈插值的品牌名称展示值 */
+  function getBrandDisplayValue(modeKey) {
+    if (modeKey === 'translated') return '反重力';
+    if (modeKey === 'hidden') return t('enhance.brand.hiddenValue');
+    return 'Antigravity';
+  }
+
+  /** 解析后端或增强桥接返回错误，兼容 errorKey 与后端原文翻译 */
+  function resolveSettingsErrorText(rawOrRes, fallbackKey = 'msg.unknownErr') {
+    if (rawOrRes && typeof rawOrRes === 'object') {
+      if (rawOrRes.errorKey) return t(rawOrRes.errorKey);
+      return translateBackendText(rawOrRes.error ?? rawOrRes.message) || t(fallbackKey);
+    }
+    return translateBackendText(rawOrRes) || t(fallbackKey);
+  }
+
+  function showEnhanceResultBox(ok, messageOrResolver, opts = {}) {
     if (!enhanceGlobalResult || !enhanceResultText) return;
+    const resolveMessage = typeof messageOrResolver === 'function'
+      ? messageOrResolver
+      : () => String(messageOrResolver ?? '');
+    enhanceGlobalResultState = { ok, resolveMessage, opts };
     enhanceGlobalResult.style.display = 'block';
     enhanceGlobalResult.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
-    enhanceResultText.textContent = message;
+    enhanceResultText.textContent = resolveMessage();
     const needLs = Boolean(opts.needsLsRestart);
     const needHost = Boolean(opts.needsHostRestart);
     const canRestartHost = Boolean(hostSupportsRestart);
@@ -14370,55 +16375,158 @@ function closeAllDropdowns(exceptWrap = null) {
     if (enhanceResultActions) enhanceResultActions.hidden = !(needLs || (needHost && canRestartHost));
   }
 
-  function showEnhancePromptResult(ok, message) {
+  function showEnhancePromptResult(ok, messageOrResolver) {
     if (!enhancePromptResult || !enhancePromptResultText) return;
+    const resolveMessage = typeof messageOrResolver === 'function'
+      ? messageOrResolver
+      : () => String(messageOrResolver ?? '');
+    enhancePromptResultState = { ok, resolveMessage };
     enhancePromptResult.style.display = 'block';
     enhancePromptResult.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
-    enhancePromptResultText.textContent = message;
+    enhancePromptResultText.textContent = resolveMessage();
   }
 
-  async function refreshEnhanceStatus(syncDrafts = true) {
-    try {
-      const res = await invokeEnhanceApi('status', {});
-      if (res && res.ok && res.data) {
-        currentEnhanceStatus = res.data;
-        const s = res.data.summary || res.data;
-        if (syncDrafts) {
-          const tierVal = s.promptTier ?? s.detectedTier;
-          if ([0, 1, 2, 3, 4].includes(Number(tierVal))) {
-            selectedEnhanceTier = Number(tierVal);
-          }
-          enhanceTitleDraft = Boolean(s.chineseTitleEnabled);
-          if (enhanceChineseTitleCheck) enhanceChineseTitleCheck.checked = enhanceTitleDraft;
+  function getSelectedPresetLabelResolvers() {
+    const resolvers = [];
+    if (chkPresetPrompt?.checked) resolvers.push(() => t('enhance.preset.itemPrompt'));
+    if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
+    if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
+    if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
+    return resolvers;
+  }
+
+  function renderEnhancePresetConfirmText() {
+    if (!enhancePresetConfirm || enhancePresetConfirm.hidden || !enhanceConfirmTitle || !pendingEnhanceConfirmMode) return;
+    if (pendingEnhanceConfirmMode === 'preset') {
+      const items = getSelectedPresetLabelResolvers().map(fn => fn()).join(t('list.sep'));
+      enhanceConfirmTitle.textContent = t('enhance.confirm.presetSummary', { items });
+    } else if (pendingEnhanceConfirmMode === 'restore') {
+      enhanceConfirmTitle.textContent = t('enhance.confirm.restoreSummary');
+    }
+  }
+
+  function renderProxyTestResultView() {
+    if (!proxyTestResult || !lastProxyTestState) return;
+    if (lastProxyTestState.pending) {
+      proxyTestResult.textContent = t('settings.proxy.testingDetail');
+      return;
+    }
+    if (lastProxyTestState.thrownErr) {
+      proxyTestResult.textContent = t('settings.proxy.testErr', { err: translateBackendText(lastProxyTestState.thrownErr) || t('msg.unknownErr') });
+      return;
+    }
+    const res = lastProxyTestState.res;
+    if (!res || !res.ok) {
+      proxyTestResult.textContent = t('settings.proxy.testFail', { err: translateBackendText(res?.error) || t('models.meta.archUnknown') });
+      return;
+    }
+    const d = res.data;
+    proxyTestResult.innerHTML = `
+      ${t('settings.proxy.resFmt')}: ${d.configValid ? t('settings.proxy.resValid') : t('settings.proxy.resInvalid')}<br>
+      ${t('settings.proxy.resPort')}: ${d.proxyReachable ? t('settings.proxy.resReachable') : t('settings.proxy.resUnreachable')}<br>
+      ${t('settings.proxy.resNet')}: ${d.internetReachable ? t('settings.proxy.resOnline') : t('settings.proxy.resOffline')}<br>
+      ${t('settings.proxy.resModel')}: ${t('settings.proxy.resPending')}
+      ${d.error ? `<br><span style="color:var(--ag-danger)">⚠️ ${translateBackendText(d.error)}</span>` : ''}
+    `;
+  }
+
+  /** 面板语言切换后，同步更新设置页当前仍可见的动态操作反馈与确认提示 */
+  function rerenderSettingsFeedbacks() {
+    renderEnhancePresetConfirmText();
+    if (enhanceGlobalResultState && enhanceGlobalResult && enhanceGlobalResult.style.display && enhanceGlobalResult.style.display !== 'none') {
+      showEnhanceResultBox(enhanceGlobalResultState.ok, enhanceGlobalResultState.resolveMessage, enhanceGlobalResultState.opts);
+    }
+    if (enhancePromptResultState && enhancePromptResult && enhancePromptResult.style.display && enhancePromptResult.style.display !== 'none') {
+      showEnhancePromptResult(enhancePromptResultState.ok, enhancePromptResultState.resolveMessage);
+    }
+    if (brandFeedbackState && brandApplyFeedback && !brandApplyFeedback.hidden && brandApplyFeedback.style.display && brandApplyFeedback.style.display !== 'none') {
+      showBrandFeedback(brandFeedbackState.mode, brandFeedbackState.isSuccess, brandFeedbackState.resolveMessage, brandFeedbackState.isApplied);
+    }
+    if (lastProxyTestState && proxyTestResult && proxyTestResult.style.display && proxyTestResult.style.display !== 'none') {
+      renderProxyTestResultView();
+    }
+  }
+
+  function applyEnhanceStatusPayload(statusData, { syncDrafts = true, forceSyncDrafts = false } = {}) {
+    currentEnhanceStatus = statusData;
+    const s = statusData?.summary || statusData;
+    if (s && s.pendingLsRestart !== undefined) {
+      hasPendingLsReload = Boolean(s.pendingLsRestart);
+    }
+    const useSavedAfterUpdate = Boolean(s?.clientUpdatedSinceSave && [0, 1, 2, 3, 4].includes(Number(s?.savedPromptTier)));
+    if (syncDrafts && s && statusData?.supported !== false) {
+      if (forceSyncDrafts || !enhanceTierDirty) {
+        const tierVal = useSavedAfterUpdate ? s.savedPromptTier : (s.promptTier ?? s.detectedTier);
+        if ([0, 1, 2, 3, 4].includes(Number(tierVal))) {
+          selectedEnhanceTier = Number(tierVal);
         }
-      } else if (res && res.unavailable) {
-        currentEnhanceStatus = { supported: false };
+        if (forceSyncDrafts) enhanceTierDirty = false;
       }
-    } catch {
-      currentEnhanceStatus = null;
+      if (forceSyncDrafts || !enhanceTitleDirty) {
+        enhanceTitleDraft = useSavedAfterUpdate ? Boolean(s.savedChineseTitle) : Boolean(s.chineseTitleEnabled);
+        if (enhanceChineseTitleCheck) enhanceChineseTitleCheck.checked = enhanceTitleDraft;
+        if (forceSyncDrafts) enhanceTitleDirty = false;
+      }
+      if (useSavedAfterUpdate && (!enhancePromptResult || enhancePromptResult.style.display === 'none')) {
+        const savedTierSnap = Number(s.savedPromptTier);
+        const savedTitleSnap = Boolean(s.savedChineseTitle);
+        showEnhancePromptResult(false, () => t('enhance.result.clientUpdatedNotice', {
+          tier: t(`enhance.tier.${savedTierSnap}.short`),
+          title: savedTitleSnap ? t('enhance.titleState.on') : t('enhance.titleState.off')
+        }));
+      }
     }
     renderEnhanceSectionUI();
+  }
+
+  async function refreshEnhanceStatus(syncDrafts = true, { forceSyncDrafts = false, forceRefresh = false } = {}) {
+    const seq = ++enhanceStatusReqSeq;
+    try {
+      const res = await invokeEnhanceApi('status', forceRefresh ? { forceRefresh: true } : {});
+      if (seq !== enhanceStatusReqSeq) return;
+      if (res && res.ok && res.data) {
+        applyEnhanceStatusPayload(res.data, { syncDrafts, forceSyncDrafts });
+      } else if (res && res.unavailable) {
+        currentEnhanceStatus = { supported: false };
+        renderEnhanceSectionUI();
+      } else {
+        renderEnhanceSectionUI();
+      }
+    } catch {
+      if (seq !== enhanceStatusReqSeq) return;
+      currentEnhanceStatus = null;
+      renderEnhanceSectionUI();
+    }
   }
 
   for (let i = 0; i < enhanceTierBtns.length; i++) {
     const btn = enhanceTierBtns[i];
     btn?.addEventListener('click', () => {
+      if (isEnhanceBusy) return;
       selectedEnhanceTier = i;
+      enhanceTierDirty = true;
       renderEnhancePromptMatrix(i);
+      renderEnhanceSectionUI();
     });
   }
 
   enhanceTierGrid?.addEventListener('click', (e) => {
+    if (isEnhanceBusy) return;
     const btn = e?.target?.closest?.('[data-enhance-tier]');
-    if (!btn) return;
+    if (!btn || btn.disabled) return;
     const idx = Number(btn.getAttribute('data-enhance-tier'));
     if (![0, 1, 2, 3, 4].includes(idx)) return;
     selectedEnhanceTier = idx;
+    enhanceTierDirty = true;
     renderEnhancePromptMatrix(idx);
+    renderEnhanceSectionUI();
   });
 
   enhanceChineseTitleCheck?.addEventListener('change', (e) => {
+    if (isEnhanceBusy) return;
     enhanceTitleDraft = Boolean(e?.target?.checked);
+    enhanceTitleDirty = true;
+    renderEnhanceSectionUI();
   });
 
   btnToggleEnhanceDetails?.addEventListener('click', () => {
@@ -14430,72 +16538,99 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   btnRefreshEnhance?.addEventListener('click', () => {
-    void refreshEnhanceStatus(true);
+    if (isEnhanceBusy) return;
+    void refreshEnhanceStatus(true, { forceSyncDrafts: true, forceRefresh: true });
   });
 
   btnApplyEnhancePrompt?.addEventListener('click', async () => {
     if (isEnhanceBusy) return;
+    if (currentEnhanceStatus && currentEnhanceStatus.supported === false) {
+      showEnhancePromptResult(false, () => t('enhance.status.unsupportedPlatform'));
+      return;
+    }
+    const submittedTier = Number(selectedEnhanceTier);
+    const submittedTitle = enhanceChineseTitleCheck ? Boolean(enhanceChineseTitleCheck.checked) : Boolean(enhanceTitleDraft);
     isEnhanceBusy = true;
-    const wantTitle = enhanceChineseTitleCheck ? Boolean(enhanceChineseTitleCheck.checked) : enhanceTitleDraft;
+    syncEnhanceInteractiveDisabledState();
     if (btnApplyEnhancePrompt) {
       btnApplyEnhancePrompt.disabled = true;
       btnApplyEnhancePrompt.textContent = t('enhance.btn.applyPromptBusy');
     }
+    showEnhancePromptResult(true, () => t('enhance.btn.applyPromptBusy'));
     try {
+      await yieldForSettingsPaint();
       const res = await invokeEnhanceApi('apply', {
-        promptTier: selectedEnhanceTier,
-        chineseTitle: wantTitle,
+        promptTier: submittedTier,
+        chineseTitle: submittedTitle,
         restartLanguageServer: false
       });
       if (!res || !res.ok) {
-        const errMsg = t('enhance.result.fail', { err: translateBackendText(res?.error) || t('msg.unknownErr') });
-        showEnhancePromptResult(false, errMsg);
-        showEnhanceResultBox(false, errMsg);
+        const errPayload = res;
+        const resolveErr = () => t('enhance.result.fail', { err: resolveSettingsErrorText(errPayload, 'msg.unknownErr') });
+        showEnhancePromptResult(false, resolveErr);
+        showEnhanceResultBox(false, resolveErr);
+        await refreshEnhanceStatus(false);
       } else {
-        const tierLabel = t(`enhance.tier.${selectedEnhanceTier}.short`);
-        const titleLabel = wantTitle ? t('enhance.titleState.on') : t('enhance.titleState.off');
-        hasPendingLsReload = true;
-        const msg = t('enhance.result.appliedNeedRestartLs', { tier: tierLabel, title: titleLabel });
-        showEnhancePromptResult(true, msg);
-        showEnhanceResultBox(true, msg, { needsLsRestart: true, needsHostRestart: false });
+        const actualTier = [0, 1, 2, 3, 4].includes(Number(res.appliedPromptTier))
+          ? Number(res.appliedPromptTier)
+          : ([0, 1, 2, 3, 4].includes(Number(res.status?.summary?.promptTier)) ? Number(res.status.summary.promptTier) : submittedTier);
+        const actualTitle = res.appliedChineseTitleEnabled !== undefined
+          ? Boolean(res.appliedChineseTitleEnabled)
+          : (res.status?.summary?.chineseTitleEnabled !== undefined ? Boolean(res.status.summary.chineseTitleEnabled) : submittedTitle);
+        const changedAny = res.changed !== false;
+        const needLsRestart = res.needsRestart !== undefined ? Boolean(res.needsRestart) : changedAny;
+        hasPendingLsReload = needLsRestart;
+        enhanceTierDirty = false;
+        enhanceTitleDirty = false;
+
+        const resolveSuccess = (!changedAny && !needLsRestart)
+          ? () => t('enhance.result.alreadyApplied', {
+              tier: t(`enhance.tier.${actualTier}.short`),
+              title: actualTitle ? t('enhance.titleState.on') : t('enhance.titleState.off')
+            })
+          : () => t('enhance.result.appliedNeedRestartLs', {
+              tier: t(`enhance.tier.${actualTier}.short`),
+              title: actualTitle ? t('enhance.titleState.on') : t('enhance.titleState.off')
+            });
+        showEnhancePromptResult(true, resolveSuccess);
+        showEnhanceResultBox(true, resolveSuccess, { needsLsRestart: needLsRestart, needsHostRestart: false });
+        if (res.status) {
+          applyEnhanceStatusPayload(res.status, { syncDrafts: true, forceSyncDrafts: true });
+        } else {
+          await refreshEnhanceStatus(true, { forceSyncDrafts: true });
+        }
       }
-      await refreshEnhanceStatus(true);
     } catch (e) {
-      const errMsg = t('enhance.result.fail', { err: e?.message || t('msg.unknownErr') });
-      showEnhancePromptResult(false, errMsg);
-      showEnhanceResultBox(false, errMsg);
+      const rawErr = e?.message;
+      const resolveErr = () => t('enhance.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') });
+      showEnhancePromptResult(false, resolveErr);
+      showEnhanceResultBox(false, resolveErr);
     } finally {
       isEnhanceBusy = false;
       if (btnApplyEnhancePrompt) {
-        btnApplyEnhancePrompt.disabled = false;
         btnApplyEnhancePrompt.textContent = t('enhance.btn.applyPrompt');
       }
+      syncEnhanceInteractiveDisabledState();
     }
   });
 
   btnEnhancePresetApply?.addEventListener('click', () => {
-    const selectedLabels = [];
-    if (chkPresetPrompt?.checked) selectedLabels.push(t('enhance.preset.itemPrompt'));
-    if (chkPresetTitle?.checked) selectedLabels.push(t('enhance.preset.itemTitle'));
-    if (chkPresetLang?.checked) selectedLabels.push(t('enhance.preset.itemLang'));
-    if (chkPresetCtx?.checked) selectedLabels.push(t('enhance.preset.itemCtx'));
-    if (!selectedLabels.length) {
-      showEnhanceResultBox(false, t('enhance.confirm.noneSelected'));
+    if (isEnhanceBusy) return;
+    const selectedResolvers = getSelectedPresetLabelResolvers();
+    if (!selectedResolvers.length) {
+      showEnhanceResultBox(false, () => t('enhance.confirm.noneSelected'));
       return;
     }
     pendingEnhanceConfirmMode = 'preset';
-    if (enhanceConfirmTitle) {
-      enhanceConfirmTitle.textContent = t('enhance.confirm.presetSummary', { items: selectedLabels.join('、') });
-    }
     if (enhancePresetConfirm) enhancePresetConfirm.hidden = false;
+    renderEnhancePresetConfirmText();
   });
 
   btnEnhanceRestoreAll?.addEventListener('click', () => {
+    if (isEnhanceBusy) return;
     pendingEnhanceConfirmMode = 'restore';
-    if (enhanceConfirmTitle) {
-      enhanceConfirmTitle.textContent = t('enhance.confirm.restoreSummary');
-    }
     if (enhancePresetConfirm) enhancePresetConfirm.hidden = false;
+    renderEnhancePresetConfirmText();
   });
 
   btnEnhanceConfirmCancel?.addEventListener('click', () => {
@@ -14509,34 +16644,47 @@ function closeAllDropdowns(exceptWrap = null) {
     if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
     if (!mode || isEnhanceBusy) return;
 
+    const wantPrompt = Boolean(chkPresetPrompt?.checked);
+    const wantTitle = Boolean(chkPresetTitle?.checked);
+    const wantLang = Boolean(chkPresetLang?.checked);
+    const wantCtx = Boolean(chkPresetCtx?.checked);
+
     isEnhanceBusy = true;
+    syncEnhanceInteractiveDisabledState();
+    showEnhanceResultBox(true, () => t(mode === 'restore' ? 'enhance.result.restoreWorking' : 'enhance.result.presetWorking'));
+
     try {
-      const doneParts = [];
-      const failedParts = [];
+      await yieldForSettingsPaint();
+      const doneResolvers = [];
+      const failedResolvers = [];
       let needsLsRestart = false;
       let needsHostRestart = false;
+      let anyChanged = false;
+      let latestEnhanceStatus = null;
 
       if (mode === 'preset') {
-        const wantPrompt = Boolean(chkPresetPrompt?.checked);
-        const wantTitle = Boolean(chkPresetTitle?.checked);
-        const wantLang = Boolean(chkPresetLang?.checked);
-        const wantCtx = Boolean(chkPresetCtx?.checked);
-
         if (wantPrompt || wantTitle) {
-          const itemLabel = [wantPrompt ? t('enhance.preset.itemPrompt') : '', wantTitle ? t('enhance.preset.itemTitle') : ''].filter(Boolean).join('、');
+          const resolveItemLabel = () => [wantPrompt ? t('enhance.preset.itemPrompt') : '', wantTitle ? t('enhance.preset.itemTitle') : ''].filter(Boolean).join(t('list.sep'));
           try {
             const payload = {};
             if (wantPrompt) payload.promptTier = 4;
             if (wantTitle) payload.chineseTitle = true;
             const eRes = await invokeEnhanceApi('apply', payload);
             if (!eRes || !eRes.ok) {
-              throw new Error(translateBackendText(eRes?.error) || t('msg.unknownErr'));
+              const errPayload = eRes;
+              failedResolvers.push(() => `${resolveItemLabel()}: ${resolveSettingsErrorText(errPayload, 'msg.unknownErr')}`);
+            } else {
+              if (wantPrompt) doneResolvers.push(() => t('enhance.preset.itemPrompt'));
+              if (wantTitle) doneResolvers.push(() => t('enhance.preset.itemTitle'));
+              if (eRes.changed !== false) anyChanged = true;
+              if (eRes.needsRestart !== false) needsLsRestart = true;
+              if (eRes.status) latestEnhanceStatus = eRes.status;
+              enhanceTierDirty = false;
+              enhanceTitleDirty = false;
             }
-            if (wantPrompt) doneParts.push(t('enhance.preset.itemPrompt'));
-            if (wantTitle) doneParts.push(t('enhance.preset.itemTitle'));
-            if (eRes.needsRestart !== false) needsLsRestart = true;
           } catch (stepErr) {
-            failedParts.push(`${itemLabel}: ${stepErr?.message || t('msg.unknownErr')}`);
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${resolveItemLabel()}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
           }
         }
 
@@ -14547,12 +16695,16 @@ function closeAllDropdowns(exceptWrap = null) {
               brandTitle: currentBrandTitle
             });
             if (!lRes || !lRes.ok) {
-              throw new Error(translateBackendText(lRes?.error) || t('mod.zh.toggleFail'));
+              const errPayload = lRes;
+              failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail')}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemLang'));
+              anyChanged = true;
+              if (lRes.restartRequired !== false) needsHostRestart = true;
             }
-            doneParts.push(t('enhance.preset.itemLang'));
-            needsHostRestart = true;
           } catch (stepErr) {
-            failedParts.push(`${t('enhance.preset.itemLang')}: ${stepErr?.message || t('mod.zh.toggleFail')}`);
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${translateBackendText(rawErr) || t('mod.zh.toggleFail')}`);
           }
         }
 
@@ -14560,122 +16712,256 @@ function closeAllDropdowns(exceptWrap = null) {
           try {
             const cRes = await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null });
             if (!cRes || !cRes.ok) {
-              throw new Error(buildFriendlyWriteError(cRes?.error));
+              const rawErr = cRes?.error;
+              failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemCtx'));
+              if (!cRes.alreadyMatched) anyChanged = true;
+              if (cRes.needsRestart) needsHostRestart = true;
             }
-            doneParts.push(t('enhance.preset.itemCtx'));
-            if (cRes.needsRestart) needsHostRestart = true;
           } catch (stepErr) {
-            failedParts.push(`${t('enhance.preset.itemCtx')}: ${stepErr?.message || t('msg.unknownErr')}`);
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
           }
         }
       } else if (mode === 'restore') {
-        const promptTitleLabel = `${t('enhance.preset.itemPrompt')} / ${t('enhance.preset.itemTitle')}`;
+        const resolvePromptTitleLabel = () => `${t('enhance.preset.itemPrompt')} / ${t('enhance.preset.itemTitle')}`;
         try {
           const rRes = await invokeEnhanceApi('restore', {});
           if (!rRes || !rRes.ok) {
-            throw new Error(translateBackendText(rRes?.error) || t('msg.restoreFail'));
+            const errPayload = rRes;
+            failedResolvers.push(() => `${resolvePromptTitleLabel()}: ${resolveSettingsErrorText(errPayload, 'msg.restoreFail')}`);
+          } else {
+            doneResolvers.push(resolvePromptTitleLabel);
+            if (rRes.needsRestart) needsLsRestart = true;
+            if (rRes.status) latestEnhanceStatus = rRes.status;
+            enhanceTierDirty = false;
+            enhanceTitleDirty = false;
           }
-          doneParts.push(promptTitleLabel);
-          if (rRes.needsRestart) needsLsRestart = true;
         } catch (stepErr) {
-          failedParts.push(`${promptTitleLabel}: ${stepErr?.message || t('msg.restoreFail')}`);
+          const rawErr = stepErr?.message;
+          failedResolvers.push(() => `${resolvePromptTitleLabel()}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
         }
 
         try {
           const lRes = await invokeModulesApi('toggle', 'chinese', false, { language: 'en', brandTitle: 'english' });
           if (!lRes || !lRes.ok) {
-            throw new Error(translateBackendText(lRes?.error) || t('mod.zh.toggleFail'));
+            const errPayload = lRes;
+            failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail')}`);
+          } else {
+            currentBrandTitle = 'english';
+            doneResolvers.push(() => t('enhance.preset.itemLang'));
+            if (lRes.restartRequired !== false) needsHostRestart = true;
           }
-          currentBrandTitle = 'english';
-          doneParts.push(t('enhance.preset.itemLang'));
-          needsHostRestart = true;
         } catch (stepErr) {
-          failedParts.push(`${t('enhance.preset.itemLang')}: ${stepErr?.message || t('mod.zh.toggleFail')}`);
+          const rawErr = stepErr?.message;
+          failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${translateBackendText(rawErr) || t('mod.zh.toggleFail')}`);
         }
 
         try {
           const cRes = await invokeUnlockApi('restore', {});
           if (!cRes || !cRes.ok) {
-            throw new Error(buildFriendlyWriteError(cRes?.error));
+            const rawErr = cRes?.error;
+            failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
+          } else {
+            doneResolvers.push(() => t('enhance.preset.itemCtx'));
+            if (cRes.needsRestart) needsHostRestart = true;
           }
-          doneParts.push(t('enhance.preset.itemCtx'));
-          if (cRes.needsRestart) needsHostRestart = true;
         } catch (stepErr) {
-          failedParts.push(`${t('enhance.preset.itemCtx')}: ${stepErr?.message || t('msg.restoreFail')}`);
+          const rawErr = stepErr?.message;
+          failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
         }
       }
 
       if (needsHostRestart) needsRestartAfterApply = true;
+      if (needsLsRestart) hasPendingLsReload = true;
 
-      if (failedParts.length > 0) {
-        const msg = doneParts.length > 0
-          ? t('enhance.result.partialFail', { done: doneParts.join('、'), failed: failedParts.join('；') })
-          : t('enhance.result.fail', { err: failedParts.join('；') });
-        showEnhanceResultBox(false, msg, { needsLsRestart, needsHostRestart });
+      if (failedResolvers.length > 0) {
+        const resolveMsg = doneResolvers.length > 0
+          ? () => t('enhance.result.partialFail', {
+            done: doneResolvers.map(fn => fn()).join(t('list.sep')),
+            failed: failedResolvers.map(fn => fn()).join(t('list.semiSep'))
+          })
+          : () => t('enhance.result.fail', {
+            err: failedResolvers.map(fn => fn()).join(t('list.semiSep'))
+          });
+        showEnhanceResultBox(false, resolveMsg, { needsLsRestart, needsHostRestart });
       } else if (mode === 'preset') {
+        const key = (!anyChanged && !needsLsRestart && !needsHostRestart)
+          ? 'enhance.result.presetAlreadyApplied'
+          : 'enhance.result.presetDone';
         showEnhanceResultBox(
           true,
-          t('enhance.result.presetDone', { summary: doneParts.join('、') }),
+          () => t(key, { summary: doneResolvers.map(fn => fn()).join(t('list.sep')) }),
           { needsLsRestart, needsHostRestart }
         );
       } else if (mode === 'restore') {
-        showEnhanceResultBox(true, t('enhance.result.restoredDone'), { needsLsRestart, needsHostRestart: true });
+        showEnhanceResultBox(true, () => t('enhance.result.restoredDone'), { needsLsRestart, needsHostRestart: true });
       }
-      await Promise.all([refreshEnhanceStatus(true), refreshModulesDisplay(), refreshUnlockStatus()]);
+
+      if (latestEnhanceStatus) {
+        applyEnhanceStatusPayload(latestEnhanceStatus, { syncDrafts: true, forceSyncDrafts: true });
+        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus()]);
+      } else {
+        await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus()]);
+      }
     } catch (e) {
-      showEnhanceResultBox(false, t('enhance.result.fail', { err: e?.message || t('msg.unknownErr') }));
+      const rawErr = e?.message;
+      showEnhanceResultBox(false, () => t('enhance.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') }));
     } finally {
       isEnhanceBusy = false;
+      syncEnhanceInteractiveDisabledState();
     }
   });
 
   btnEnhanceRestartLs?.addEventListener('click', async () => {
+    if (isLsRestartBusy) return;
+    isLsRestartBusy = true;
+    if (btnEnhanceRestartLs) {
+      btnEnhanceRestartLs.disabled = true;
+      btnEnhanceRestartLs.textContent = t('enhance.btn.restartLsBusy');
+    }
     try {
+      await yieldForSettingsPaint();
       const res = await invokeEnhanceApi('restart-ls', {});
       if (!res || !res.ok) {
-        showEnhanceResultBox(false, t('enhance.result.lsRestartFail', { err: translateBackendText(res?.error) || t('msg.unknownErr') }));
+        const errPayload = res;
+        showEnhanceResultBox(false, () => t('enhance.result.lsRestartFail', { err: resolveSettingsErrorText(errPayload, 'msg.unknownErr') }));
         return;
       }
       const killedCount = Array.isArray(res.killed) ? res.killed.length : (Number(res.killed) || 0);
       hasPendingLsReload = false;
-      showEnhanceResultBox(true, t('enhance.result.lsRestarted', { killed: killedCount }), { needsLsRestart: false, needsHostRestart: needsRestartAfterApply });
+      const hostRestartFlag = needsRestartAfterApply;
+      showEnhanceResultBox(true, () => t('enhance.result.lsRestarted', { killed: killedCount }), { needsLsRestart: false, needsHostRestart: hostRestartFlag });
       await refreshEnhanceStatus(false);
     } catch (e) {
-      showEnhanceResultBox(false, t('enhance.result.lsRestartFail', { err: e?.message || t('msg.unknownErr') }));
+      const rawErr = e?.message;
+      showEnhanceResultBox(false, () => t('enhance.result.lsRestartFail', { err: translateBackendText(rawErr) || t('msg.unknownErr') }));
+    } finally {
+      isLsRestartBusy = false;
+      if (btnEnhanceRestartLs) {
+        btnEnhanceRestartLs.disabled = false;
+        btnEnhanceRestartLs.textContent = t('enhance.btn.restartLs');
+      }
     }
   });
 
   btnEnhanceRestartHost?.addEventListener('click', openClientRestartConfirmFlow);
 
   let selectedBrandTitle = currentBrandTitle;
-  let brandObserver = null;
+
+  /**
+   * 定位品牌按钮内的目标文本节点，避免直接覆写 textContent 破坏 React 子元素结构
+   */
+  function findBrandTextNode(el) {
+    if (!el) return null;
+    const nodes = el.childNodes ? Array.from(el.childNodes) : (el.children || []);
+    for (const node of nodes) {
+      if (node && node.nodeType === 3) {
+        return node;
+      }
+    }
+    let cur = el;
+    let depth = 0;
+    while (cur && depth < 6) {
+      const children = cur.childNodes ? Array.from(cur.childNodes) : [];
+      if (children.length === 1) {
+        const only = children[0];
+        if (only && only.nodeType === 3) return only;
+        if (only && only.nodeType === 1) {
+          cur = only;
+          depth++;
+          continue;
+        }
+      }
+      break;
+    }
+    return null;
+  }
+
+  /**
+   * 仅更新品牌节点的纯文本内容，保持 DOM 结构与 i18n 运行时状态同步
+   */
+  function writeBrandButtonText(btn, expectedText) {
+    if (!btn) return;
+    const textNode = findBrandTextNode(btn);
+    if (textNode) {
+      if (textNode.nodeValue !== expectedText) {
+        textNode.nodeValue = expectedText;
+      }
+      textNode._agyOriginal = expectedText;
+      return;
+    }
+    if ((btn.textContent || '') !== expectedText) {
+      btn.textContent = expectedText;
+    }
+  }
+
+  /**
+   * 在修改品牌 DOM 之前先同步运行时配置，防止 i18n 扫描器与品牌设置互相冲突
+   */
+  function syncRuntimeBrandConfig(modeKey) {
+    try {
+      if (typeof window !== 'undefined' && window.__AGY_I18N_CONFIG__) {
+        window.__AGY_I18N_CONFIG__.brandTitle = modeKey;
+      }
+    } catch { }
+  }
 
   function ensureBrandObserver(modeKey, targetBtn) {
-    if (brandObserver) {
-      try { brandObserver.disconnect(); } catch {}
-      brandObserver = null;
-    }
-    if (!targetBtn || modeKey === 'english') return;
+    disconnectBrandObserver();
+    try {
+      if (globalThis.__AGContextMeterBrandObserver && typeof globalThis.__AGContextMeterBrandObserver.disconnect === 'function') {
+        globalThis.__AGContextMeterBrandObserver.disconnect();
+        globalThis.__AGContextMeterBrandObserver = null;
+      }
+    } catch { }
+    if (state.disposed || !targetBtn || modeKey === 'english') return;
     try {
       const container = targetBtn.parentElement || targetBtn;
-      brandObserver = new MutationObserver(() => {
+      const expectedText = modeKey === 'hidden' ? '' : '反重力';
+      let burstWindowStart = 0;
+      let burstCount = 0;
+      const obs = new MutationObserver(() => {
+        if (state.disposed || brandObserver !== obs || globalThis.__AGContextMeterBrandObserver !== obs) {
+          try { obs.disconnect(); } catch { }
+          return;
+        }
         const btn = document.querySelector('button[data-agy-brand-item="true"]') || targetBtn;
         if (!btn) return;
         const txt = btn.textContent?.trim() || '';
-        if (modeKey === 'hidden' && txt !== '') {
-          btn.textContent = '';
-        } else if (modeKey === 'translated' && txt !== '反重力') {
-          btn.textContent = '反重力';
+        if (txt === expectedText) return;
+        const now = Date.now();
+        if (now - burstWindowStart > 250) {
+          burstWindowStart = now;
+          burstCount = 0;
+        }
+        burstCount++;
+        if (burstCount > 8) {
+          // 熔断保护：检测到高频互搏变更时主动停止监听，防止渲染进程主线程卡死
+          disconnectBrandObserver();
+          return;
+        }
+        try {
+          obs.disconnect();
+          writeBrandButtonText(btn, expectedText);
+        } finally {
+          if (!state.disposed && brandObserver === obs && globalThis.__AGContextMeterBrandObserver === obs) {
+            try { obs.observe(container, { childList: true, subtree: true, characterData: true }); } catch { }
+          }
         }
       });
-      brandObserver.observe(container, { childList: true, subtree: true, characterData: true });
-    } catch {}
+      brandObserver = obs;
+      globalThis.__AGContextMeterBrandObserver = obs;
+      obs.observe(container, { childList: true, subtree: true, characterData: true });
+    } catch { }
   }
 
   function applyBrandTitleToDom(modeKey) {
     if (typeof document === 'undefined' || typeof document.querySelector !== 'function') {
       return { found: false, applied: false, nodeText: null };
     }
+    disconnectBrandObserver();
     // 1. 优先通过持久化标记锁定曾确认过的品牌节点（确保隐藏清空文字后仍可精准识别与无损恢复）
     let targetBtn = document.querySelector('button[data-agy-brand-item="true"]');
 
@@ -14719,22 +17005,9 @@ function closeAllDropdowns(exceptWrap = null) {
 
     const expectedText = modeKey === 'translated' ? '反重力' : (modeKey === 'hidden' ? '' : 'Antigravity');
 
-    const nodes = targetBtn.childNodes ? Array.from(targetBtn.childNodes) : (targetBtn.children || []);
-    let textNode = null;
-    for (const node of nodes) {
-      if (node && node.nodeType === 3) {
-        textNode = node;
-        break;
-      }
-    }
-
     // 保留菜单入口可用（不设置 display: none，隐藏模式仅清空文字），确保菜单功能随时可点击
     targetBtn.style.display = '';
-    if (textNode) {
-      textNode.nodeValue = expectedText;
-    } else {
-      targetBtn.textContent = expectedText;
-    }
+    writeBrandButtonText(targetBtn, expectedText);
     targetBtn.setAttribute('data-agy-brand-mode', modeKey);
 
     ensureBrandObserver(modeKey, targetBtn);
@@ -14749,22 +17022,29 @@ function closeAllDropdowns(exceptWrap = null) {
     };
   }
 
-  function showBrandFeedback(mode, isSuccess = true, customMsg = '', isApplied = false) {
+  function showBrandFeedback(mode, isSuccess = true, customMsgOrResolver = '', isApplied = false) {
     if (!brandApplyFeedback) return;
+    const resolveMessage = typeof customMsgOrResolver === 'function'
+      ? customMsgOrResolver
+      : (customMsgOrResolver
+        ? () => String(customMsgOrResolver)
+        : () => {
+          if (!isSuccess) return t('msg.saveFail');
+          const brandVal = getBrandDisplayValue(mode);
+          if (!isApplied) return t('enhance.brand.savedNotFound', { mode: brandVal });
+          return mode === 'hidden'
+            ? t('enhance.brand.appliedHidden')
+            : t('enhance.brand.appliedName', { mode: brandVal });
+        });
+    brandFeedbackState = { mode, isSuccess, resolveMessage, isApplied };
+    brandApplyFeedback.style.display = 'block';
+    brandApplyFeedback.hidden = false;
     if (!isSuccess) {
-      brandApplyFeedback.textContent = customMsg || t('msg.saveFail');
+      brandApplyFeedback.textContent = resolveMessage();
       brandApplyFeedback.style.color = '#ef4444';
-      brandApplyFeedback.hidden = false;
       return;
     }
-    const modeLabel = t(`enhance.brand.${mode}`) || mode;
-    let msg = customMsg;
-    if (!msg) {
-      msg = isApplied
-        ? `${t('enhance.brand.switched', { mode: modeLabel })}（已即时生效）`
-        : `${t('enhance.brand.switched', { mode: modeLabel })}（未检测到目标，${t('models.status.pendingRestart')}）`;
-    }
-    brandApplyFeedback.textContent = msg;
+    brandApplyFeedback.textContent = resolveMessage();
     if (!isApplied) {
       const rBtn = document.createElement('button');
       rBtn.type = 'button';
@@ -14775,52 +17055,58 @@ function closeAllDropdowns(exceptWrap = null) {
       brandApplyFeedback.appendChild(rBtn);
     }
     brandApplyFeedback.style.color = isApplied ? '#10b981' : 'var(--ag-text-primary)';
-    brandApplyFeedback.hidden = false;
   }
 
   async function applyBrandTitleSetting(modeKey) {
+    if (btnApplyBrandTitle) btnApplyBrandTitle.disabled = true;
     try {
+      await yieldForSettingsPaint();
       const res = await invokeModulesApi('toggle', 'chinese', currentChineseEnabled, {
         language: currentChineseEnabled ? 'zh-CN' : 'en',
         brandTitle: modeKey
       });
       if (!res || !res.ok) {
-        const err = translateBackendText(res?.error) || t('msg.saveFail');
-        showBrandFeedback(modeKey, false, err, false);
-        showEnhanceResultBox(false, err);
+        const errPayload = res;
+        const resolveErr = () => t('enhance.brand.saveFailErr', { err: resolveSettingsErrorText(errPayload, 'msg.saveFail') });
+        showBrandFeedback(modeKey, false, resolveErr, false);
+        showEnhanceResultBox(false, resolveErr);
         return;
       }
       currentBrandTitle = modeKey;
       selectedBrandTitle = modeKey;
       syncBrandTitleButtons(modeKey);
 
-      // 实时真实 DOM 应用
+      // 实时真实 DOM 应用（先同步运行时配置再更新 DOM，防止 i18n 扫描器与品牌设置互相冲突）
+      syncRuntimeBrandConfig(modeKey);
       const domResult = applyBrandTitleToDom(modeKey);
 
       // 实时热同步（若已注入运行时环境）
       try {
-        if (typeof window !== 'undefined' && window.__AGY_I18N_CONFIG__) {
-          window.__AGY_I18N_CONFIG__.brandTitle = modeKey;
-          if (typeof window.__AGY_RUN_FULL_SCAN__ === 'function') {
-            window.__AGY_RUN_FULL_SCAN__();
-          }
+        if (typeof window !== 'undefined' && typeof window.__AGY_RUN_FULL_SCAN__ === 'function') {
+          window.__AGY_RUN_FULL_SCAN__();
         }
-      } catch {}
+      } catch { }
 
-      const modeLabel = t(`enhance.brand.${modeKey}`) || modeKey;
       if (domResult.applied) {
-        const appliedMsg = `${t('enhance.brand.switched', { mode: modeLabel })}（左上角品牌已切换为：${modeLabel}）`;
-        showBrandFeedback(modeKey, true, appliedMsg, true);
-        showEnhanceResultBox(true, appliedMsg, { needsHostRestart: false });
+        const resolveApplied = modeKey === 'hidden'
+          ? () => t('enhance.brand.appliedHidden')
+          : () => t('enhance.brand.appliedName', { mode: getBrandDisplayValue(modeKey) });
+        showBrandFeedback(modeKey, true, resolveApplied, true);
+        showEnhanceResultBox(true, resolveApplied, { needsHostRestart: false });
       } else {
-        const pendingMsg = `${t('enhance.brand.switched', { mode: modeLabel })}（当前窗口未检测到品牌节点，重启客户端后生效）`;
-        showBrandFeedback(modeKey, true, pendingMsg, false);
-        showEnhanceResultBox(true, pendingMsg, { needsHostRestart: true });
+        const resolveNotApplied = !domResult.found
+          ? () => t('enhance.brand.savedNotFound', { mode: getBrandDisplayValue(modeKey) })
+          : () => t('enhance.brand.savedApplyFailed', { mode: getBrandDisplayValue(modeKey) });
+        showBrandFeedback(modeKey, true, resolveNotApplied, false);
+        showEnhanceResultBox(false, resolveNotApplied, { needsHostRestart: true });
       }
     } catch (e) {
-      const err = e?.message || t('msg.saveFail');
-      showBrandFeedback(modeKey, false, err, false);
-      showEnhanceResultBox(false, err);
+      const rawErr = e?.message;
+      const resolveErr = () => t('enhance.brand.saveFailErr', { err: translateBackendText(rawErr) || t('msg.saveFail') });
+      showBrandFeedback(modeKey, false, resolveErr, false);
+      showEnhanceResultBox(false, resolveErr);
+    } finally {
+      if (btnApplyBrandTitle) btnApplyBrandTitle.disabled = false;
     }
   }
 
@@ -14836,9 +17122,11 @@ function closeAllDropdowns(exceptWrap = null) {
     void applyBrandTitleSetting(selectedBrandTitle || currentBrandTitle);
   });
 
-  async function refreshModulesDisplay() {
+  async function refreshModulesDisplay({ forceProxySync = false } = {}) {
+    const seq = ++modulesStatusReqSeq;
     try {
       const res = await invokeModulesApi('status');
+      if (seq !== modulesStatusReqSeq) return;
       if (!res || !res.ok || !res.data) {
         const errMsg = (res && res.error) ? translateBackendText(res.error) : t('msg.unknownErr');
         if (chineseBadge) {
@@ -14862,41 +17150,49 @@ function closeAllDropdowns(exceptWrap = null) {
       currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
       currentBrandTitle = cfg.modules?.chinese?.brandTitle || 'english';
       syncBrandTitleButtons(currentBrandTitle);
+      syncRuntimeBrandConfig(currentBrandTitle);
       applyBrandTitleToDom(currentBrandTitle);
-      // 判定宿主界面是否已翻译：定向检查系统导航、活动栏、菜单及操作按钮等固有系统壳层（排除用户消息内容区域）
+      const runtimeMeta = res.runtime && typeof res.runtime === 'object' ? res.runtime : null;
+      // 判定宿主界面是否已翻译：优先使用 __AGY_I18N_CONFIG__，其次主进程启动期快照 runtimeMeta.chineseActive（跨 Electron 沙箱隔离真实可靠），最后仅匹配宿主固定壳层控件并严格排除用户项目/会话标题
       const isDomTranslated = (() => {
+        const cfgSnap = typeof window.__AGY_I18N_CONFIG__ === 'object' && window.__AGY_I18N_CONFIG__
+          ? window.__AGY_I18N_CONFIG__
+          : null;
+        if (cfgSnap) {
+          return Boolean(cfgSnap.enabled === true && cfgSnap.language !== 'en');
+        }
+        if (runtimeMeta && typeof runtimeMeta.chineseActive === 'boolean') {
+          return Boolean(runtimeMeta.chineseActive);
+        }
         if (typeof window.__AGY_I18N_DATA__ !== 'undefined' || typeof window.__AGY_TRANSLATE_EL__ !== 'undefined') {
           return true;
         }
         try {
-          const systemContainers = document.querySelectorAll(
-            "div[role='navigation'], nav, header, [role='banner'], aside, [data-testid*='sidebar'], [data-testid*='navigation'], [class*='@container/titlebar'], .monaco-workbench, .activitybar"
-          );
-          const systemKeywords = ['新建对话', '新建会话', '新建', '设置', '账户', '项目', '关于', '帮助', '工作区', '管理', '自定义扩展', '资源管理器', '活动栏'];
-          for (let i = 0; i < systemContainers.length; i++) {
-            const container = systemContainers[i];
-            if (container.closest && container.closest('.chat-session, .conversation-view, .monaco-list-row, .markdown, [data-testid*="chat"], [data-testid*="message"]')) {
-              continue; // 严格排除用户聊天内容区
+          const fixedSelectors = [
+            "[data-testid='new-conversation-button']",
+            "[data-testid='automations-button']",
+            "[data-testid='settings-button']",
+            "[data-testid='open-editor-single']",
+            "[data-testid='title-menu-bar-item']"
+          ];
+          const exactSystemLabels = new Set([
+            '新建对话', '新建会话', '自动化', '设置', '打开 IDE', '工作区', '视图', '窗口', '自定义扩展'
+          ]);
+          for (let i = 0; i < fixedSelectors.length; i++) {
+            const nodes = document.querySelectorAll ? document.querySelectorAll(fixedSelectors[i]) : [];
+            for (let j = 0; j < nodes.length; j++) {
+              const txt = (nodes[j].textContent || '').replace(/^\+\s*/, '').trim();
+              if (txt && exactSystemLabels.has(txt)) return true;
             }
-            const labeledNodes = container.querySelectorAll ? container.querySelectorAll('button, a, [role="button"], [aria-label], [title], span') : [];
-            for (let j = 0; j < Math.min(labeledNodes.length, 40); j++) {
-              const node = labeledNodes[j];
-              const label = (node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || '';
-              if (label && systemKeywords.some(kw => label.includes(kw))) return true;
-              const text = (node.textContent || '').trim();
-              if (text && systemKeywords.some(kw => text.includes(kw))) return true;
-            }
-            const txt = container.innerText || '';
-            if (systemKeywords.some(kw => txt.includes(kw))) return true;
           }
-          const nav = document.querySelector("div[role='navigation'], nav");
-          if (nav && nav.innerText && systemKeywords.some(kw => nav.innerText.includes(kw))) {
-            return true;
-          }
-        } catch {}
+        } catch { }
         return false;
       })();
       const disk = res.disk || {};
+      const isChineseDiskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
+      const isChinesePartial = Boolean(disk.chinese && disk.chineseReady === false);
+      const isProxyDiskReady = disk.proxyReady !== undefined ? Boolean(disk.proxyReady) : Boolean(disk.proxy);
+      const isProxyPartial = Boolean(disk.proxy && disk.proxyReady === false);
 
       if (chineseBadge) {
         if (!currentChineseEnabled) {
@@ -14904,13 +17200,13 @@ function closeAllDropdowns(exceptWrap = null) {
             chineseBadge.textContent = t('mod.zh.badgeRestartEn');
             chineseBadge.className = 'key-pill pill-warn';
           } else {
-            chineseBadge.textContent = disk.chinese ? t('mod.zh.badgeOffReady') : t('mod.zh.badgeNotInstalled');
+            chineseBadge.textContent = isChineseDiskReady ? t('mod.zh.badgeOffReady') : t('mod.zh.badgeNotInstalled');
             chineseBadge.className = 'key-pill pill-muted';
           }
         } else if (isDomTranslated) {
           chineseBadge.textContent = t('mod.zh.badgeActive');
           chineseBadge.className = 'key-pill pill-ok';
-        } else if (!disk.chinese) {
+        } else if (!isChineseDiskReady) {
           chineseBadge.textContent = t('mod.zh.badgeNotInjected');
           chineseBadge.className = 'key-pill pill-danger';
         } else {
@@ -14923,14 +17219,16 @@ function closeAllDropdowns(exceptWrap = null) {
           if (isDomTranslated) {
             chineseStatusDesc.textContent = t('mod.zh.descRestartEn');
           } else {
-            chineseStatusDesc.textContent = disk.chinese
+            chineseStatusDesc.textContent = isChineseDiskReady
               ? t('mod.zh.descOffReady')
               : t('mod.zh.descOffNotInstalled');
           }
         } else if (isDomTranslated) {
           chineseStatusDesc.textContent = t('mod.zh.descActive');
-        } else if (!disk.chinese) {
-          chineseStatusDesc.textContent = t('mod.zh.descNeedInject');
+        } else if (!isChineseDiskReady) {
+          chineseStatusDesc.textContent = isChinesePartial && disk.chineseReason
+            ? t('mod.zh.descPartialInject', { reason: translateBackendText(disk.chineseReason) })
+            : t('mod.zh.descNeedInject');
         } else {
           chineseStatusDesc.textContent = t('mod.zh.descPendingRestart');
         }
@@ -14941,26 +17239,56 @@ function closeAllDropdowns(exceptWrap = null) {
       syncClientLanguageButtons();
 
       currentProxyEnabled = Boolean(cfg.modules?.proxy?.enabled);
+      const diskProxyUrl = String(cfg.modules?.proxy?.proxyUrl || '');
+      const diskProxyBypass = String(cfg.modules?.proxy?.bypassList || '');
+      savedProxyUrl = diskProxyUrl;
+      savedProxyBypass = diskProxyBypass;
+
+      if (inputProxyUrl && diskProxyUrl && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyUrl))) {
+        inputProxyUrl.value = diskProxyUrl;
+      }
+      if (inputProxyBypass && diskProxyBypass && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyBypass))) {
+        inputProxyBypass.value = diskProxyBypass;
+      }
+
       if (proxyBadge) {
         if (currentProxyEnabled) {
-          proxyBadge.textContent = disk.proxy ? t('mod.proxy.badgeOk') : t('mod.proxy.badgeNotInjected');
-          proxyBadge.className = disk.proxy ? 'key-pill pill-ok' : 'key-pill pill-warn';
+          if (!isProxyDiskReady) {
+            proxyBadge.textContent = t('mod.proxy.badgeNotInjected');
+            proxyBadge.className = 'key-pill pill-warn';
+          } else if (runtimeMeta?.proxyNeedsRestart) {
+            proxyBadge.textContent = t('mod.proxy.badgePendingRestart');
+            proxyBadge.className = 'key-pill pill-warn';
+          } else if (runtimeMeta?.proxyActive) {
+            proxyBadge.textContent = t('mod.proxy.badgeActive');
+            proxyBadge.className = 'key-pill pill-ok';
+          } else {
+            proxyBadge.textContent = t('mod.proxy.badgeOk');
+            proxyBadge.className = 'key-pill pill-ok';
+          }
+        } else if (runtimeMeta?.proxyNeedsRestart) {
+          proxyBadge.textContent = t('mod.proxy.badgePendingOff');
+          proxyBadge.className = 'key-pill pill-warn';
         } else {
           proxyBadge.textContent = t('mod.proxy.badgeOff');
           proxyBadge.className = 'key-pill pill-muted';
         }
       }
-      if (inputProxyUrl && cfg.modules?.proxy?.proxyUrl) {
-        inputProxyUrl.value = cfg.modules.proxy.proxyUrl;
-      }
-      if (inputProxyBypass && cfg.modules?.proxy?.bypassList) {
-        inputProxyBypass.value = cfg.modules.proxy.bypassList;
-      }
       if (proxyStatusDesc) {
         if (currentProxyEnabled) {
-          proxyStatusDesc.textContent = disk.proxy
-            ? t('mod.proxy.descOn', { url: cfg.modules.proxy.proxyUrl })
-            : t('mod.proxy.descNeedInject');
+          if (!isProxyDiskReady) {
+            proxyStatusDesc.textContent = isProxyPartial && disk.proxyReason
+              ? t('mod.proxy.descPartialInject', { reason: translateBackendText(disk.proxyReason) })
+              : t('mod.proxy.descNeedInject');
+          } else if (runtimeMeta?.proxyNeedsRestart) {
+            proxyStatusDesc.textContent = t('mod.proxy.descPendingRestart', { url: diskProxyUrl });
+          } else if (runtimeMeta?.proxyActive) {
+            proxyStatusDesc.textContent = t('mod.proxy.descActive', { url: runtimeMeta.runtimeProxyUrl || diskProxyUrl });
+          } else {
+            proxyStatusDesc.textContent = t('mod.proxy.descOn', { url: diskProxyUrl });
+          }
+        } else if (runtimeMeta?.proxyNeedsRestart) {
+          proxyStatusDesc.textContent = t('mod.proxy.descPendingOff', { url: runtimeMeta.runtimeProxyUrl || '' });
         } else {
           proxyStatusDesc.textContent = t('mod.proxy.descOff');
         }
@@ -14968,7 +17296,9 @@ function closeAllDropdowns(exceptWrap = null) {
       if (btnToggleProxyModule) {
         btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
       }
+      syncProxySaveButtonState();
     } catch (err) {
+      if (seq !== modulesStatusReqSeq) return;
       const errMsg = err?.message || String(err);
       if (chineseBadge) {
         chineseBadge.textContent = t('mod.readErr');
@@ -14994,19 +17324,28 @@ function closeAllDropdowns(exceptWrap = null) {
       btnToggleChineseModule.textContent = t('mod.processing');
     }
     try {
+      await yieldForSettingsPaint();
       const res = await invokeModulesApi('toggle', 'chinese', Boolean(wantChinese), {
         language: wantChinese ? 'zh-CN' : 'en',
         brandTitle: currentBrandTitle
       });
       if (!res || !res.ok) {
-        showEnhanceResultBox(false, translateBackendText(res?.error) || t('mod.zh.toggleFail'));
+        const errPayload = res;
+        showEnhanceResultBox(false, () => resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail'));
       } else {
-        needsRestartAfterApply = true;
+        needsRestartAfterApply = Boolean(res.restartRequired !== false);
         renderClientStatusBar();
+        if (res.restartRequired !== false) {
+          showEnhanceResultBox(
+            true,
+            () => t(wantChinese ? 'mod.zh.savedEnableRestart' : 'mod.zh.savedDisableRestart'),
+            { needsHostRestart: true }
+          );
+        }
       }
       await refreshModulesDisplay();
     } catch (e) {
-      showEnhanceResultBox(false, `${t('mod.zh.toggleFail')}: ${e.message}`);
+      showEnhanceResultBox(false, () => `${t('mod.zh.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`);
     } finally {
       if (btnToggleChineseModule) {
         btnToggleChineseModule.disabled = false;
@@ -15026,55 +17365,82 @@ function closeAllDropdowns(exceptWrap = null) {
     void setClientLanguageTarget(!currentChineseEnabled);
   });
 
-  btnToggleProxyModule?.addEventListener('click', async () => {
-    try {
+  async function applyProxyModuleUpdate(enableTarget) {
+    if (isProxyBusy) return;
+    isProxyBusy = true;
+    const rawUrl = String(inputProxyUrl?.value ?? '').trim();
+    const rawBypass = String(inputProxyBypass?.value ?? '').trim();
+    if (btnToggleProxyModule) {
       btnToggleProxyModule.disabled = true;
       btnToggleProxyModule.textContent = t('mod.processing');
-      const res = await invokeModulesApi('toggle', 'proxy', !currentProxyEnabled, {
-        proxyUrl: inputProxyUrl?.value?.trim(),
-        bypassList: inputProxyBypass?.value?.trim()
+    }
+    syncProxySaveButtonState();
+    try {
+      await yieldForSettingsPaint();
+      const res = await invokeModulesApi('toggle', 'proxy', Boolean(enableTarget), {
+        proxyUrl: rawUrl || undefined,
+        bypassList: rawBypass || undefined
       });
       if (!res || !res.ok) {
-        showEnhanceResultBox(false, translateBackendText(res?.error) || t('mod.proxy.toggleFail'));
+        const errPayload = res;
+        showEnhanceResultBox(false, () => resolveSettingsErrorText(errPayload, 'mod.proxy.toggleFail'));
+      } else {
+        proxyInputDirty = false;
+        const needRestart = Boolean(res.runtime?.proxyNeedsRestart ?? res.restartRequired);
+        if (needRestart) needsRestartAfterApply = true;
+        const appliedUrl = res.data?.modules?.proxy?.proxyUrl || rawUrl;
+        if (enableTarget) {
+          const msgKey = needRestart ? 'mod.proxy.savedPendingRestart' : 'mod.proxy.savedAlreadyActive';
+          showEnhanceResultBox(true, () => t(msgKey, { url: appliedUrl }), { needsHostRestart: needRestart });
+        } else {
+          const msgKey = needRestart ? 'mod.proxy.disabledPendingRestart' : 'mod.proxy.disabledSaved';
+          showEnhanceResultBox(true, () => t(msgKey), { needsHostRestart: needRestart });
+        }
       }
-      await refreshModulesDisplay();
+      await refreshModulesDisplay({ forceProxySync: true });
     } catch (e) {
-      showEnhanceResultBox(false, `${t('mod.proxy.toggleFail')}: ${e.message}`);
+      showEnhanceResultBox(false, () => `${t('mod.proxy.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`);
     } finally {
+      isProxyBusy = false;
       if (btnToggleProxyModule) {
         btnToggleProxyModule.disabled = false;
-        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('settings.proxy.enableBtn');
+        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
       }
+      syncProxySaveButtonState();
     }
+  }
+
+  btnToggleProxyModule?.addEventListener('click', () => {
+    void applyProxyModuleUpdate(!currentProxyEnabled);
+  });
+
+  btnSaveProxyConfig?.addEventListener('click', () => {
+    void applyProxyModuleUpdate(true);
   });
 
   btnTestProxy?.addEventListener('click', async () => {
+    if (isProxyBusy) return;
     try {
-      const api = window.contextMeterAPI;
-      if (!api || typeof api.testProxy !== 'function') return;
-      btnTestProxy.disabled = true;
-      btnTestProxy.textContent = t('settings.proxy.testing');
+      if (btnTestProxy) {
+        btnTestProxy.disabled = true;
+        btnTestProxy.textContent = t('settings.proxy.testing');
+      }
       if (proxyTestResult) {
         proxyTestResult.style.display = 'block';
-        proxyTestResult.textContent = t('settings.proxy.testingDetail');
+        lastProxyTestState = { pending: true };
+        renderProxyTestResultView();
       }
-      const res = await api.testProxy(inputProxyUrl?.value?.trim());
+      await yieldForSettingsPaint();
+      const res = await invokeTestProxyApi(inputProxyUrl?.value?.trim());
       if (proxyTestResult) {
-        if (!res || !res.ok) {
-          proxyTestResult.textContent = t('settings.proxy.testFail', { err: translateBackendText(res?.error) || t('models.meta.archUnknown') });
-        } else {
-          const d = res.data;
-          proxyTestResult.innerHTML = `
-            ${t('settings.proxy.resFmt')}: ${d.configValid ? t('settings.proxy.resValid') : t('settings.proxy.resInvalid')}<br>
-            ${t('settings.proxy.resPort')}: ${d.proxyReachable ? t('settings.proxy.resReachable') : t('settings.proxy.resUnreachable')}<br>
-            ${t('settings.proxy.resNet')}: ${d.internetReachable ? t('settings.proxy.resOnline') : t('settings.proxy.resOffline')}<br>
-            ${t('settings.proxy.resModel')}: ${t('settings.proxy.resPending')}
-            ${d.error ? `<br><span style="color:var(--ag-danger)">⚠️ ${translateBackendText(d.error)}</span>` : ''}
-          `;
-        }
+        lastProxyTestState = { pending: false, res };
+        renderProxyTestResultView();
       }
     } catch (e) {
-      if (proxyTestResult) proxyTestResult.textContent = t('settings.proxy.testErr', { err: e.message });
+      if (proxyTestResult) {
+        lastProxyTestState = { pending: false, thrownErr: e?.message || String(e || '') };
+        renderProxyTestResultView();
+      }
     } finally {
       if (btnTestProxy) {
         btnTestProxy.disabled = false;
@@ -15084,15 +17450,21 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   // 静默初始化检测一次解锁状态与各模块状态
-  setTimeout(() => {
+  const initDetectTimer1 = setTimeout(() => {
+    if (state.disposed) return;
     void refreshUnlockStatus();
     void refreshModulesDisplay();
   }, 500);
-  setTimeout(() => {
+  const initDetectTimer2 = setTimeout(() => {
+    if (state.disposed) return;
     if (currentChineseEnabled) {
       void refreshModulesDisplay();
     }
   }, 2000);
+  earlyDisposeHooks.push(() => {
+    clearTimeout(initDetectTimer1);
+    clearTimeout(initDetectTimer2);
+  });
 
   // 二级抽屉 1（面板 B 内）: 指标与背景颜色自定义抽屉折叠展开
   const btnColors = el('btn-toggle-colors');
@@ -15648,9 +18020,33 @@ function closeAllDropdowns(exceptWrap = null) {
   // 模块 4: 数据渲染、完整本地 Token 历史读取与首次使用日起算时间轴
   // =========================================================================
   function renderFiles(session) {
-    const parent = el('files'); parent.replaceChildren();
-    if (!session) { const item = document.createElement('p'); item.textContent = t('files.reading'); parent.appendChild(item); return; }
-    if (!Array.isArray(session.attachments) || !session.attachments.length) { const item = document.createElement('p'); item.textContent = t('files.empty'); parent.appendChild(item); return; }
+    const parent = el('files');
+    if (!parent) return;
+    if (!session) {
+      const sig = `none|${currentPanelLanguage}`;
+      if (parent._lastRenderSig === sig) return;
+      parent._lastRenderSig = sig;
+      const item = document.createElement('p');
+      item.textContent = t('files.reading');
+      parent.replaceChildren(item);
+      return;
+    }
+    if (!Array.isArray(session.attachments) || !session.attachments.length) {
+      const sig = `empty|${currentPanelLanguage}`;
+      if (parent._lastRenderSig === sig) return;
+      parent._lastRenderSig = sig;
+      const item = document.createElement('p');
+      item.textContent = t('files.empty');
+      parent.replaceChildren(item);
+      return;
+    }
+    const filesSig = `${currentPanelLanguage}|` + session.attachments.map(file =>
+      `${file.name}|${file.references}|${file.width || 0}x${file.height || 0}|${file.chars || 0}|${file.sheets ?? ''}|${file.cells || 0}|${file.hiddenSheets || 0}|${file.source || ''}|${range(file) || ''}|${(file.unknownParts || []).join(',')}`
+    ).join(';');
+    if (parent._lastRenderSig === filesSig) return;
+    parent._lastRenderSig = filesSig;
+
+    const nodes = [];
     for (const file of session.attachments) {
       const item = document.createElement('div'); item.className = 'file';
       const name = document.createElement('div'); name.className = 'file-name'; name.textContent = `${file.name} ${file.references > 1 ? t('files.refs', { n: file.references }) : ''}`;
@@ -15664,7 +18060,14 @@ function closeAllDropdowns(exceptWrap = null) {
       detail.textContent = `${file.source === 'assistant' ? t('files.assistantPrefix') : ''}${tokenInfo}${sizeInfo ? ` · ${sizeInfo}` : ''}${sheetsPart}${hiddenPart}`;
       item.appendChild(name); item.appendChild(detail);
       if (file.unknownParts?.length) { const unknown = document.createElement('div'); unknown.className = 'file-unknown'; unknown.textContent = t('files.unknownPrefix', { parts: file.unknownParts.join('；') }); item.appendChild(unknown); }
-      parent.appendChild(item);
+      nodes.push(item);
+    }
+    const outerPanel = el('panel');
+    const prevPanelScrollTop = (outerPanel && typeof outerPanel.scrollTop === 'number') ? outerPanel.scrollTop : 0;
+    parent.replaceChildren();
+    for (const n of nodes) parent.appendChild(n);
+    if (outerPanel && prevPanelScrollTop > 0 && Math.abs((outerPanel.scrollTop || 0) - prevPanelScrollTop) > 1) {
+      outerPanel.scrollTop = prevPanelScrollTop;
     }
   }
 
@@ -15812,10 +18215,27 @@ function closeAllDropdowns(exceptWrap = null) {
 
   function applyTokenHistoryPayload(payload) {
     if (!payload || typeof payload !== 'object') return false;
+    const incomingScope = payload.accountScopeKey || (payload.planStatus?.email ? String(payload.planStatus.email).trim().toLowerCase() : null);
+    if (payload.isAccountSwitched || (incomingScope && typeof handleQuotaAccountSwitch === 'function' && handleQuotaAccountSwitch(incomingScope))) {
+      if (typeof handleQuotaAccountSwitch === 'function') handleQuotaAccountSwitch(incomingScope || null, { forceRefresh: true });
+    }
     if (payload.loading) {
       if (Number(ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens) > 0) return false;
     }
 
+    if (payload.isAccountSwitched) {
+      ANTIGRAVITY_TOKEN_DATA.recentModelUsage = [];
+      ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs = null;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'quotaUsageCoverageStartMs')) {
+      ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs = payload.quotaUsageCoverageStartMs ?? null;
+    }
+    if (Array.isArray(payload.recentModelUsage)) {
+      ANTIGRAVITY_TOKEN_DATA.recentModelUsage = payload.recentModelUsage;
+      if (typeof refreshQuotaTokenEstimates === 'function') {
+        refreshQuotaTokenEstimates();
+      }
+    }
     if (Array.isArray(payload.speedRecords)) {
       ANTIGRAVITY_TOKEN_DATA.speedRecords = payload.speedRecords;
       if (!isContextSettingsView && activeContextTab === 'speed') {
@@ -15944,12 +18364,12 @@ function closeAllDropdowns(exceptWrap = null) {
             const jsonStr = JSON.stringify(customObj);
             if (email && email !== 'default') localStorage?.setItem('ag_custom_plan_' + email.toLowerCase(), jsonStr);
             localStorage?.setItem('ag_custom_plan_default', jsonStr);
-          } catch {}
+          } catch { }
           if (core && core.resolveEffectivePlanStatus) {
             mergedPlan = core.resolveEffectivePlanStatus(payload.rawPlanStatus || payload.planStatus, customObj, { currentEmail: email });
           }
         }
-      } catch {}
+      } catch { }
       ANTIGRAVITY_TOKEN_DATA.planStatus = mergedPlan;
       ANTIGRAVITY_TOKEN_DATA.rawPlanStatus = payload.rawPlanStatus || payload.planStatus || mergedPlan;
       renderPlanDetail(mergedPlan);
@@ -16061,17 +18481,14 @@ function closeAllDropdowns(exceptWrap = null) {
 
 
   async function recordModelCallsRemote(calls) {
-    if (!calls || !calls.length) return;
-    let changed = false;
-    const hasFinalCall = calls.some(c => c?.status === 'final');
+    if (!calls || !calls.length) return { ok: false, changed: false };
     try {
       if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls === 'function') {
         const res = await window.contextMeterAPI.recordCalls(calls);
         if (res && res.ok === false) {
           console.warn('Context Meter: 记录调用入账失败', res.error);
-        } else if (res?.changed) {
-          changed = true;
         }
+        return res || { ok: false, changed: false };
       } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
         const live = window.__AGContextMeterLive;
         const resp = await fetch(`http://127.0.0.1:${live.port}/record-calls`, {
@@ -16080,22 +18497,29 @@ function closeAllDropdowns(exceptWrap = null) {
           body: JSON.stringify({ calls })
         });
         if (!resp.ok) {
+          const errBody = typeof resp.json === 'function' ? await resp.json().catch(() => null) : null;
           console.warn(`Context Meter: 实时通道 record-calls 响应异常 HTTP ${resp.status}`);
+          return {
+            ok: false,
+            changed: false,
+            status: resp.status,
+            ...(errBody?.error ? { error: errBody.error } : {}),
+            ...(errBody?.phase ? { phase: errBody.phase } : {}),
+            ...(errBody?.code ? { code: errBody.code } : {})
+          };
         } else {
           const res = await resp.json().catch(() => null);
           if (res && res.ok === false) {
             console.warn('Context Meter: 实时通道 record-calls 失败', res.error);
-          } else if (res?.changed) {
-            changed = true;
           }
+          return res || { ok: false, changed: false, status: resp.status };
         }
-      }
-      if (changed || hasFinalCall) {
-        void syncTokenHistoryFromHost(false);
       }
     } catch (err) {
       console.warn('Context Meter: 调用入账发生异常', err);
+      return { ok: false, changed: false, error: err?.message || String(err || '') };
     }
+    return { ok: false, changed: false };
   }
 
   async function restoreSettingsFromHost() {
@@ -16173,7 +18597,7 @@ function closeAllDropdowns(exceptWrap = null) {
           if (localLang && ['zh-CN', 'zh-TW', 'en'].includes(localLang) && localLang !== currentPanelLanguage) {
             await applyPanelLanguage(localLang, { persist: false });
           }
-        } catch {}
+        } catch { }
       }
 
       if (settingsRes?.ok && settingsRes.customPlan && typeof settingsRes.customPlan === 'object') {
@@ -16191,7 +18615,7 @@ function closeAllDropdowns(exceptWrap = null) {
           const jsonStr = JSON.stringify(settingsRes.customPlan);
           if (email && email !== 'default') localStorage?.setItem('ag_custom_plan_' + String(email).toLowerCase(), jsonStr);
           localStorage?.setItem('ag_custom_plan_default', jsonStr);
-        } catch {}
+        } catch { }
         applyCustomPlanObjectLocally(settingsRes.customPlan, email);
       } else {
         // 回退检查 localStorage
@@ -16206,57 +18630,85 @@ function closeAllDropdowns(exceptWrap = null) {
           }
         }
       }
-    } catch {}
+    } catch { }
   }
 
+  let lastHistorySync = 0;
   let historySyncBusy = false;
-  let pendingHistoryForce = false;
+  let historySyncPending = false;
+  let historySyncPendingForce = false;
+  const AUTOMATIC_HISTORY_SYNC_INTERVAL_MS = 5000;
+  let automaticHistorySyncPending = false;
+  let lastAutomaticHistorySync = null;
+  let hasScheduledInitialUpdateCheck = false;
+  let startupRestorePromise = null;
+
+  function syncPendingAutomaticHistory() {
+    if (!automaticHistorySyncPending || historySyncBusy || state.disposed) return;
+    const now = Date.now();
+    if (lastAutomaticHistorySync !== null && now - lastAutomaticHistorySync < AUTOMATIC_HISTORY_SYNC_INTERVAL_MS) return;
+    lastAutomaticHistorySync = now;
+    void syncTokenHistoryFromHost(true);
+  }
+
   async function syncTokenHistoryFromHost(force = false) {
     if (state.disposed) return;
     if (historySyncBusy) {
-      if (force) {
-        pendingHistoryForce = true;
-      }
+      historySyncPending = true;
+      if (force) historySyncPendingForce = true;
       return;
     }
+    const forceFlag = Boolean(force);
+    if (forceFlag) automaticHistorySyncPending = false;
     historySyncBusy = true;
+    lastHistorySync = Date.now();
     try {
-      await restoreSettingsFromHost();
+      const fetchHistoryAsync = async () => {
+        if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') {
+          return await window.contextMeterAPI.getTokenHistory(forceFlag);
+        }
+        if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+          const live = window.__AGContextMeterLive;
+          const r = await fetch(`http://127.0.0.1:${live.port}/token-history`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+            body: JSON.stringify({ force: forceFlag })
+          });
+          if (r.ok) {
+            return await r.json();
+          }
+        }
+        return null;
+      };
+      const restoreStep = startupRestorePromise
+        ? startupRestorePromise
+        : restoreSettingsFromHost();
+      const [, res] = await Promise.all([restoreStep, fetchHistoryAsync()]);
+      if (state.disposed) return;
       if (typeof window !== 'undefined' && window.__AGContextMeterHistory) {
         if (!ANTIGRAVITY_TOKEN_DATA.updatedAt && !ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens) {
           applyTokenHistoryPayload(window.__AGContextMeterHistory);
         }
       }
-      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') {
-        const res = await window.contextMeterAPI.getTokenHistory(Boolean(force));
-        if (res?.ok && res.data) {
-          if (typeof window !== 'undefined') window.__AGContextMeterHistory = res.data;
-          applyTokenHistoryPayload(res.data);
-        }
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-        const live = window.__AGContextMeterLive;
-        const r = await fetch(`http://127.0.0.1:${live.port}/token-history`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify({ force: Boolean(force) })
-        });
-        if (r.ok) {
-          const j = await r.json();
-          if (j?.ok && j.data) {
-            if (typeof window !== 'undefined') window.__AGContextMeterHistory = j.data;
-            applyTokenHistoryPayload(j.data);
-          }
-        }
+      if (res?.ok && res.data) {
+        if (typeof window !== 'undefined') window.__AGContextMeterHistory = res.data;
+        applyTokenHistoryPayload(res.data);
       }
-    } catch {}
+    } catch { }
     finally {
       historySyncBusy = false;
-      if (pendingHistoryForce) {
-        pendingHistoryForce = false;
-        void syncTokenHistoryFromHost(true);
+      lastHistorySync = Date.now();
+      if (!hasScheduledInitialUpdateCheck && autoCheckUpdate && !state.disposed) {
+        hasScheduledInitialUpdateCheck = true;
+        setTimeout(() => { if (!state.disposed) void checkAppUpdate(false); }, 4500);
       }
-      if (autoCheckUpdate) {
-        setTimeout(() => { void checkAppUpdate(false); }, 1200);
+      if (historySyncPending && !state.disposed) {
+        const nextForce = historySyncPendingForce;
+        historySyncPending = false;
+        historySyncPendingForce = false;
+        void syncTokenHistoryFromHost(nextForce);
+      } else {
+        syncPendingAutomaticHistory();
       }
     }
   }
@@ -16324,7 +18776,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.3';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
@@ -16435,10 +18887,10 @@ function closeAllDropdowns(exceptWrap = null) {
         throw new Error(t('update.noApi'));
       }
       if (res && res.ok) {
-        const targetVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || currentVer;
-        currentVer = targetVer;
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4';
+        const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
-        if (vEl) vEl.textContent = `v${currentVer}`;
+        if (vEl) vEl.textContent = `v${nextVer}`;
 
         const dot = el('update-badge-dot');
         const dotCtx = el('update-badge-dot-ctx');
@@ -16446,11 +18898,11 @@ function closeAllDropdowns(exceptWrap = null) {
         if (dotCtx) dotCtx.style.display = 'none';
 
         if (titleEl) titleEl.textContent = t('update.doneTitle');
-        if (verEl) verEl.textContent = t('update.doneVer', { ver: currentVer });
+        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextVer });
         if (bodyEl) {
           bodyEl.textContent = res.liveInjected
-            ? t('update.doneHot', { ver: currentVer })
-            : t('update.doneDisk', { ver: currentVer });
+            ? t('update.doneHot', { ver: nextVer })
+            : t('update.doneDisk', { ver: nextVer });
         }
         if (applyBtn) {
           applyBtn.textContent = t('update.btnUpdated');
@@ -16458,9 +18910,9 @@ function closeAllDropdowns(exceptWrap = null) {
         }
 
         if (res.liveInjected) {
-          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: currentVer });
+          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextVer });
         } else {
-          if (statusEl) statusEl.textContent = t('update.doneDisk', { ver: currentVer });
+          if (statusEl) statusEl.textContent = t('update.doneDisk', { ver: nextVer });
         }
         setTimeout(() => {
           if (pop) pop.style.display = 'none';
@@ -17419,6 +19871,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       setHoverExtra(t('badge.clickOpenCli'));
       syncSpeedBadgeText();
       el('badge-tokens').title = t('badge.tokensTitle');
+      syncContextModelSelectionFromState();
       return;
     }
     renderSessionCost();
@@ -17461,10 +19914,10 @@ function renderHeatmapGrid(forceRebuild = false) {
     const status = disp.isError
       ? disp.statusText
       : stale ? t('badge.status.stale')
-      : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })
-      : incomplete ? t('badge.status.incomplete', { count: session.unknownFiles })
-      : d?.estimated ? t('badge.status.estimated')
-      : t('badge.status.normal');
+        : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })
+          : incomplete ? t('badge.status.incomplete', { count: session.unknownFiles })
+            : d?.estimated ? t('badge.status.estimated')
+              : t('badge.status.normal');
     el('status').textContent = status;
 
     const corpus = session?.total
@@ -17649,20 +20102,410 @@ function renderHeatmapGrid(forceRebuild = false) {
     el('steps').textContent = session?.steps != null ? t('tech.stepsVal', { steps: fmt(session.steps), user: session.userMessages, assistant: session.assistantMessages }) : t('tech.stepsNone');
     el('coverage').textContent = Array.isArray(session?.attachments)
       ? t('tech.coverageVal', {
-          total: session.attachments.length,
-          user: session.attachments.filter(f => f.source === 'user').length,
-          assistant: session.attachments.filter(f => f.source === 'assistant').length,
-          read: session.attachments.filter(f => f.chars > 0).length,
-          unknown: session.unknownFiles,
-          rescan: state.scanBusy ? t('tech.coverageRescan') : '',
-          err: state.scanError ? t('tech.coverageErr', { err: translateBackendText(state.scanError) }) : ''
-        })
+        total: session.attachments.length,
+        user: session.attachments.filter(f => f.source === 'user').length,
+        assistant: session.attachments.filter(f => f.source === 'assistant').length,
+        read: session.attachments.filter(f => f.chars > 0).length,
+        unknown: session.unknownFiles,
+        rescan: state.scanBusy ? t('tech.coverageRescan') : '',
+        err: state.scanError ? t('tech.coverageErr', { err: translateBackendText(state.scanError) }) : ''
+      })
       : (state.scanError ? translateBackendText(state.scanError) : t('tech.coverageScanning'));
     el('updated').textContent = t('tech.updatedVal', {
       req: state.requestAt ? new Date(state.requestAt).toLocaleTimeString() : t('tech.unread'),
       scan: state.scan ? new Date(state.scan.scannedAt).toLocaleTimeString() : t('tech.unfinished')
     });
     el('refresh').disabled = state.scanBusy;
+  }
+
+  const MAX_FLUSH_BATCH_CALLS = 500;
+  const MAX_FLUSH_BATCH_BYTES = 900 * 1024;
+  const MAX_LIVE_RECORD_BODY_BYTES = 1024 * 1024;
+  const utf8Encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+  function getUtf8ByteLength(str) {
+    const s = String(str ?? '');
+    if (utf8Encoder) return utf8Encoder.encode(s).length;
+    if (typeof Buffer !== 'undefined' && typeof Buffer.byteLength === 'function') return Buffer.byteLength(s, 'utf8');
+    let bytes = 0;
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      if (code < 0x80) bytes += 1;
+      else if (code < 0x800) bytes += 2;
+      else if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
+        const next = s.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++; }
+        else bytes += 3;
+      } else bytes += 3;
+    }
+    return bytes;
+  }
+
+  const getSingleCallBodyBytes = call => 12 + getUtf8ByteLength(JSON.stringify(call));
+
+  const getModelRank = (model, modelKey) => {
+    const s = String(model || '').trim();
+    if (!s) return 0;
+    if (/^model_placeholder_/i.test(s)) return modelKey ? 2 : 1;
+    return modelKey ? 3 : 2;
+  };
+
+  const getDateRank = call => {
+    if (!call) return 0;
+    const hasDate = Boolean(call.date && /^\d{4}-\d{2}-\d{2}/.test(String(call.date)));
+    const isProv = call.dateIsProvisional === true || call.dateSource === 'provisional';
+    if (isProv) return hasDate ? 1 : 0;
+    let hasValidCreatedAt = false;
+    if (call.created_at) {
+      const dt = new Date(call.created_at);
+      hasValidCreatedAt = !Number.isNaN(dt.getTime());
+    }
+    if (call.dateSource === 'transcript' && (hasDate || hasValidCreatedAt)) return 4;
+    if (hasValidCreatedAt) return 3;
+    if (hasDate) return 2;
+    return 0;
+  };
+
+  const resolveWatermarkDate = call => {
+    if (!call) return '';
+    const isProv = call.dateIsProvisional === true || call.dateSource === 'provisional';
+    if (!isProv && call.created_at) {
+      const dt = new Date(call.created_at);
+      if (!Number.isNaN(dt.getTime())) return formatLocalYmd(dt);
+    }
+    return (call.date && /^\d{4}-\d{2}-\d{2}/.test(String(call.date))) ? String(call.date).slice(0, 10) : '';
+  };
+
+  function rawRevIsPresent(val) {
+    return val !== null && val !== '';
+  }
+
+  const extractSourceRevision = row => {
+    if (!row || typeof row !== 'object') return null;
+    const raw = row.sourceRevision ?? row.revision ?? row.metadataRevision;
+    if (raw !== undefined && rawRevIsPresent(raw)) {
+      const num = Number(raw);
+      if (Number.isFinite(num)) return num;
+    }
+    const rawUpdated = row.updated_at ?? row.sourceUpdatedAt;
+    if (rawUpdated !== undefined && rawRevIsPresent(rawUpdated)) {
+      const ts = typeof rawUpdated === 'number' ? rawUpdated : Date.parse(String(rawUpdated));
+      if (Number.isFinite(ts)) return ts;
+    }
+    return null;
+  };
+
+  const compareSourceRevision = (incRev, baseRev) => {
+    const a = typeof incRev === 'number' && Number.isFinite(incRev) ? incRev : null;
+    const b = typeof baseRev === 'number' && Number.isFinite(baseRev) ? baseRev : null;
+    if (a === null && b === null) return 0;
+    if (a !== null && b === null) return 1;
+    if (a === null && b !== null) return -1;
+    if (a === b) return 0;
+    return a > b ? 1 : -1;
+  };
+
+  const compareWatermarkUsage = (a, b) => {
+    const totDiff = (a?.tot || 0) - (b?.tot || 0);
+    if (totDiff !== 0) return totDiff;
+    return (a?.out || 0) - (b?.out || 0);
+  };
+
+  const canAdoptNextDate = (nextWm, prevWm) => {
+    if (!prevWm) return Boolean(nextWm?.date);
+    const nextDateRank = nextWm?.dateRank || 0;
+    const prevDateRank = prevWm?.dateRank || 0;
+    if (nextDateRank > prevDateRank) return Boolean(nextWm?.date);
+    if (nextDateRank < prevDateRank) return false;
+    if (!nextWm?.date) return false;
+    if (!prevWm?.date) return true;
+    const usageCmp = compareWatermarkUsage(nextWm, prevWm);
+    const revCmp = compareSourceRevision(nextWm.sourceRevision, prevWm.sourceRevision);
+    if (nextDateRank >= 2) {
+      if (revCmp > 0 && usageCmp >= 0) return true;
+      if (usageCmp > 0 && revCmp >= 0) return true;
+      return nextWm.date === prevWm.date && (nextWm.createdAt || '') === (prevWm.createdAt || '') && revCmp >= 0 && usageCmp >= 0;
+    }
+    return nextWm.date < prevWm.date;
+  };
+
+  const getFinalCallWatermark = call => ({
+    inp: call?.inputTokens || 0,
+    cap: call?.cacheTokens || 0,
+    tot: (call?.inputTokens || 0) + (call?.cacheTokens || 0) + (call?.outputTokens || 0),
+    out: call?.outputTokens || 0,
+    model: String(call?.model || '').trim(),
+    modelKey: String(call?.modelKey || '').trim(),
+    isPriced: Boolean(call?.isPriced),
+    costUSD: Number(call?.costUSD || 0),
+    date: resolveWatermarkDate(call),
+    createdAt: call?.created_at ? String(call.created_at) : '',
+    dateSource: call?.dateSource ? String(call.dateSource) : '',
+    dateRank: getDateRank(call),
+    sourceRevision: extractSourceRevision(call)
+  });
+
+  function hasWatermarkProgressed(nextWm, prevWm) {
+    if (!prevWm) return true;
+    const usageCmp = compareWatermarkUsage(nextWm, prevWm);
+    if (usageCmp > 0) return true;
+    if (getModelRank(nextWm.model, nextWm.modelKey) > getModelRank(prevWm.model, prevWm.modelKey)) return true;
+    if (!prevWm.modelKey && Boolean(nextWm.modelKey)) return true;
+    if (!prevWm.isPriced && Boolean(nextWm.isPriced)) return true;
+    const nextDateRank = nextWm.dateRank || 0;
+    const prevDateRank = prevWm.dateRank || 0;
+    if (nextDateRank > prevDateRank) return true;
+    const usageRegressed = usageCmp < 0;
+    const revCmp = compareSourceRevision(nextWm.sourceRevision, prevWm.sourceRevision);
+    if (!usageRegressed && revCmp > 0) return true;
+    const takeNextDate = canAdoptNextDate(nextWm, prevWm);
+    if (
+      takeNextDate &&
+      nextDateRank >= 2 &&
+      nextDateRank === prevDateRank &&
+      Boolean(nextWm.date) &&
+      (
+        nextWm.date !== prevWm.date ||
+        (nextDateRank >= 3 && Boolean(nextWm.createdAt) && nextWm.createdAt !== (prevWm.createdAt || ''))
+      )
+    ) {
+      return true;
+    }
+    const hasUnacceptedDate = Boolean(prevWm.date) && Boolean(nextWm.date) && nextWm.date !== prevWm.date && !takeNextDate;
+    if (!usageRegressed && revCmp >= 0 && !hasUnacceptedDate && nextWm.isPriced && !(prevWm.costUSD > 0) && nextWm.costUSD > 0) return true;
+    return false;
+  }
+
+  function mergeWatermarks(prevWm, nextWm) {
+    if (!prevWm) return { ...nextWm };
+    const nextRank = getModelRank(nextWm.model, nextWm.modelKey);
+    const prevRank = getModelRank(prevWm.model, prevWm.modelKey);
+    const nextDateRank = nextWm.dateRank || 0;
+    const prevDateRank = prevWm.dateRank || 0;
+    const usageCmp = compareWatermarkUsage(nextWm, prevWm);
+    const usageRegressed = usageCmp < 0;
+    const revCmp = compareSourceRevision(nextWm.sourceRevision, prevWm.sourceRevision);
+    const takeNextUsage = usageCmp > 0 || (usageCmp === 0 && revCmp >= 0);
+    const takeNextDate = canAdoptNextDate(nextWm, prevWm);
+    const mergedSourceRevision = revCmp >= 0
+      ? (nextWm.sourceRevision ?? prevWm.sourceRevision ?? null)
+      : (prevWm.sourceRevision ?? null);
+    let mergedCost = Math.max(prevWm.isPriced ? (prevWm.costUSD || 0) : 0, nextWm.isPriced ? (nextWm.costUSD || 0) : 0);
+    if (!usageRegressed && revCmp >= 0 && nextWm.isPriced && (takeNextDate || nextWm.date === prevWm.date || !prevWm.date)) {
+      mergedCost = nextWm.costUSD || 0;
+    }
+    return {
+      inp: takeNextUsage ? (nextWm.inp ?? 0) : (prevWm.inp ?? 0),
+      cap: takeNextUsage ? (nextWm.cap ?? 0) : (prevWm.cap ?? 0),
+      tot: takeNextUsage ? nextWm.tot : prevWm.tot,
+      out: takeNextUsage ? nextWm.out : prevWm.out,
+      model: nextRank >= prevRank && nextWm.model ? nextWm.model : prevWm.model,
+      modelKey: nextWm.modelKey || prevWm.modelKey || '',
+      isPriced: Boolean(prevWm.isPriced || nextWm.isPriced),
+      costUSD: mergedCost,
+      date: takeNextDate ? nextWm.date : (prevWm.date || nextWm.date || ''),
+      createdAt: takeNextDate ? (nextWm.createdAt || '') : (prevWm.createdAt || ''),
+      dateSource: takeNextDate ? (nextWm.dateSource || '') : (prevWm.dateSource || ''),
+      dateRank: Math.max(prevDateRank, nextDateRank),
+      sourceRevision: mergedSourceRevision
+    };
+  }
+
+  function mergePendingCallData(prevCall, nextCall) {
+    if (!prevCall) return nextCall;
+    const prevWm = getFinalCallWatermark(prevCall);
+    const nextWm = getFinalCallWatermark(nextCall);
+    const merged = { ...nextCall };
+    const usageCmp = compareWatermarkUsage(nextWm, prevWm);
+    const revCmp = compareSourceRevision(nextWm.sourceRevision, prevWm.sourceRevision);
+    const takePrevUsage = usageCmp < 0 || (usageCmp === 0 && revCmp < 0);
+    if (takePrevUsage) {
+      merged.inputTokens = prevCall.inputTokens;
+      merged.cacheTokens = prevCall.cacheTokens;
+      merged.cacheReadTokens = prevCall.cacheReadTokens;
+      merged.outputTokens = prevCall.outputTokens;
+      merged.thinkingTokens = prevCall.thinkingTokens;
+      merged.responseTokens = prevCall.responseTokens;
+      merged.totalTokens = prevCall.totalTokens;
+    }
+    const takeNextDate = canAdoptNextDate(nextWm, prevWm);
+    const takePrevDate = !takeNextDate && Boolean(prevWm.date || (prevWm.dateRank || 0) > (nextWm.dateRank || 0));
+    if (takePrevDate) {
+      merged.date = prevCall.date;
+      merged.created_at = prevCall.created_at;
+      if (prevCall.dateSource !== undefined) merged.dateSource = prevCall.dateSource;
+      else delete merged.dateSource;
+      merged.dateIsProvisional = prevCall.dateIsProvisional;
+      if (prevCall.timestamp !== undefined) merged.timestamp = prevCall.timestamp;
+    }
+    if (revCmp < 0 && prevWm.sourceRevision !== null) {
+      merged.sourceRevision = prevWm.sourceRevision;
+    } else if (nextWm.sourceRevision !== null) {
+      merged.sourceRevision = nextWm.sourceRevision;
+    } else {
+      delete merged.sourceRevision;
+    }
+    if (getModelRank(prevWm.model, prevWm.modelKey) > getModelRank(nextWm.model, nextWm.modelKey)) {
+      merged.model = prevCall.model;
+    }
+    if (!nextWm.modelKey && prevWm.modelKey) {
+      merged.modelKey = prevCall.modelKey;
+    }
+    if (typeof calculateRequestApiCost === 'function' && (merged.model || merged.modelKey)) {
+      const recalc = calculateRequestApiCost(merged);
+      if (recalc.isPriced) {
+        merged.modelKey = recalc.modelKey;
+        merged.isPriced = true;
+        merged.costUSD = recalc.costUSD ?? 0;
+      }
+    } else if (!nextWm.isPriced && prevWm.isPriced) {
+      merged.isPriced = prevCall.isPriced;
+      merged.costUSD = prevCall.costUSD;
+    } else if (nextWm.isPriced && prevWm.isPriced && (takePrevUsage || takePrevDate) && (prevWm.costUSD || 0) > (nextWm.costUSD || 0)) {
+      merged.costUSD = prevCall.costUSD;
+    }
+    return merged;
+  }
+
+  function takeNextPendingBatch(pendingMap) {
+    const chunk = [];
+    const snap = [];
+    let totalBytes = 12; // '{"calls":[]}'
+    for (const call of pendingMap.values()) {
+      if (chunk.length >= MAX_FLUSH_BATCH_CALLS) break;
+      const itemBytes = getUtf8ByteLength(JSON.stringify(call));
+      if (12 + itemBytes > MAX_FLUSH_BATCH_BYTES) continue;
+      const addedBytes = (chunk.length > 0 ? 1 : 0) + itemBytes;
+      if (chunk.length > 0 && totalBytes + addedBytes > MAX_FLUSH_BATCH_BYTES) break;
+      chunk.push(call);
+      snap.push({ callId: call.callId, wm: getFinalCallWatermark(call) });
+      totalBytes += addedBytes;
+    }
+    return { chunk, snap };
+  }
+
+  function commitConfirmedEntries(entries) {
+    for (const entry of entries) {
+      state.quarantinedOversizeMap?.delete(entry.callId);
+      const curSynced = state.syncedFinalMap.get(entry.callId);
+      const nextSynced = mergeWatermarks(curSynced, entry.wm);
+      state.syncedFinalMap.set(entry.callId, nextSynced);
+      const curPending = state.pendingFinalCalls.get(entry.callId);
+      if (curPending && !hasWatermarkProgressed(getFinalCallWatermark(curPending), nextSynced)) {
+        state.pendingFinalCalls.delete(entry.callId);
+      }
+    }
+  }
+
+  const EXPLICIT_OVERSIZE_RE = /\b413\b|payload\s+too\s+large|entity\s+too\s+large|body\s+too\s+large|(?:payload|body|size|record|message|batch|bytes?)\b.*(?:exceeds?|exceeded|over)\b|(?:exceeds?|exceeded|over)\b.*(?:\d+\s*(?:kib|mib|kb|mb|bytes?)|(?:size|payload|body)\s*(?:limit|max))|传输体积超限|体积超限|超出上限|超过.*上限/i;
+
+  function isExplicitOversizeError(recRes) {
+    if (!recRes || typeof recRes !== 'object') return false;
+    if (recRes.status === 413) return true;
+    if (recRes.code === 'PAYLOAD_TOO_LARGE' || recRes.code === 'OVERSIZE' || recRes.phase === 'oversize_guard') return true;
+    return EXPLICIT_OVERSIZE_RE.test(String(recRes.error || ''));
+  }
+
+  function quarantineOversizedEntry(callId, wm) {
+    if (!state.quarantinedOversizeMap) state.quarantinedOversizeMap = new Map();
+    const prevQuarantined = state.quarantinedOversizeMap.get(callId);
+    state.quarantinedOversizeMap.set(callId, mergeWatermarks(prevQuarantined, wm));
+    const curPending = state.pendingFinalCalls.get(callId);
+    if (curPending && !hasWatermarkProgressed(getFinalCallWatermark(curPending), wm) && getSingleCallBodyBytes(curPending) > MAX_FLUSH_BATCH_BYTES) {
+      state.pendingFinalCalls.delete(callId);
+    }
+  }
+
+  async function flushPendingFinalCalls(triggerSyncEvenIfUnchanged) {
+    if (triggerSyncEvenIfUnchanged && state.flushFinalsBusy) {
+      state.pendingFlushForceSync = true;
+    }
+    if (state.flushFinalsBusy || state.disposed || !state.pendingFinalCalls?.size) return;
+    if (Date.now() < (state.nextFlushRetryAt || 0)) return;
+    state.flushFinalsBusy = true;
+    let anySucceeded = false;
+    let anyChanged = false;
+    let failedDuringLoop = false;
+    try {
+      while (!state.disposed && state.pendingFinalCalls.size > 0) {
+        if (Date.now() < (state.nextFlushRetryAt || 0)) break;
+        const { chunk, snap } = takeNextPendingBatch(state.pendingFinalCalls);
+        if (!chunk.length) break;
+        const recRes = await recordModelCallsRemote(chunk);
+        if (state.disposed) break;
+        if (recRes?.ok === true) {
+          anySucceeded = true;
+          if (recRes.changed) anyChanged = true;
+          commitConfirmedEntries(snap);
+        } else {
+          failedDuringLoop = true;
+          state.nextFlushRetryAt = Date.now() + (document.hidden ? 15000 : 3000);
+          break;
+        }
+      }
+      if (!state.disposed && !failedDuringLoop && state.pendingFinalCalls.size > 0 && Date.now() >= (state.nextOversizeRetryAt || 0)) {
+        const oversizedItems = [];
+        for (const call of state.pendingFinalCalls.values()) {
+          const singleBytes = getSingleCallBodyBytes(call);
+          if (singleBytes > MAX_FLUSH_BATCH_BYTES) {
+            oversizedItems.push({ call, singleBytes, wm: getFinalCallWatermark(call) });
+          }
+        }
+        for (const item of oversizedItems) {
+          if (state.disposed) break;
+          if (!state.pendingFinalCalls.has(item.call.callId)) continue;
+          const isLiveHttpMode = !(typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls === 'function')
+            && Boolean(typeof window !== 'undefined' && window.__AGContextMeterLive?.port);
+          if (isLiveHttpMode && item.singleBytes > MAX_LIVE_RECORD_BODY_BYTES) {
+            quarantineOversizedEntry(item.call.callId, item.wm);
+            console.warn(`Context Meter: 单条调用记录超过实时通道 1MiB 上限 (${item.singleBytes} bytes)，已隔离跳过: ${item.call.callId}`);
+            continue;
+          }
+          const recRes = await recordModelCallsRemote([item.call]);
+          if (state.disposed) break;
+          if (recRes?.ok === true) {
+            anySucceeded = true;
+            if (recRes.changed) anyChanged = true;
+            state.nextOversizeRetryAt = 0;
+            commitConfirmedEntries([{ callId: item.call.callId, wm: item.wm }]);
+          } else if ((isLiveHttpMode && (item.singleBytes > MAX_LIVE_RECORD_BODY_BYTES || recRes?.status === 413)) || isExplicitOversizeError(recRes)) {
+            quarantineOversizedEntry(item.call.callId, item.wm);
+            console.warn(`Context Meter: 超大调用记录入账被拒绝，已隔离跳过: ${item.call.callId}`);
+          } else {
+            failedDuringLoop = true;
+            const retryAt = Date.now() + (document.hidden ? 15000 : 3000);
+            state.nextOversizeRetryAt = retryAt;
+            state.nextFlushRetryAt = retryAt;
+            break;
+          }
+        }
+      }
+      if (!state.disposed && !failedDuringLoop && state.pendingFinalCalls.size > 0 && (state.nextOversizeRetryAt || 0) > Date.now()) {
+        const { chunk: remainingNormal } = takeNextPendingBatch(state.pendingFinalCalls);
+        if (!remainingNormal.length) {
+          state.nextFlushRetryAt = state.nextOversizeRetryAt;
+        }
+      }
+      if (!state.disposed && anySucceeded) {
+        if (!failedDuringLoop && state.pendingFinalCalls.size === 0) {
+          state.nextFlushRetryAt = 0;
+          state.nextOversizeRetryAt = 0;
+        }
+        if (triggerSyncEvenIfUnchanged || state.pendingFlushForceSync || anyChanged) {
+          state.pendingFlushForceSync = false;
+          automaticHistorySyncPending = true;
+          syncPendingAutomaticHistory();
+        }
+        if (typeof scheduleQuotaPostTurnRefresh === 'function') {
+          scheduleQuotaPostTurnRefresh();
+        }
+      }
+    } finally {
+      state.flushFinalsBusy = false;
+      if (anySucceeded && !state.disposed && state.pendingFinalCalls.size > 0 && Date.now() >= (state.nextFlushRetryAt || 0)) {
+        void flushPendingFinalCalls(true);
+      }
+    }
   }
 
   async function requestPoll(generation, id) {
@@ -17678,37 +20521,124 @@ function renderHeatmapGrid(forceRebuild = false) {
       const rows = data.generatorMetadata || [];
       state.count = rows.length ? offset + rows.length : 0;
       if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
-      const parsedCalls = [];
+      if (!state.syncedFinalMap) state.syncedFinalMap = new Map();
+      if (!state.pendingFinalCalls) state.pendingFinalCalls = new Map();
+      if (!state.quarantinedOversizeMap) state.quarantinedOversizeMap = new Map();
+      const wasHydrated = Boolean(state.callsHydrated);
+      let hasNewOrProgressedPending = false;
       const modelConfigsList = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
       for (let i = 0; i < rows.length; i++) {
         const call = parseGeneratorCall ? parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: modelConfigsList }) : null;
         if (call && call.callId) {
-          state.sessionCallsMap.set(call.callId, call);
-          parsedCalls.push(call);
-        }
-      }
-      state.sessionCalls = Array.from(state.sessionCallsMap.values());
-      state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
-      if (parsedCalls.length) {
-        if (!state.reportedFinalCallIds) state.reportedFinalCallIds = new Set();
-        if (!state.reportedFinalCallOutputs) state.reportedFinalCallOutputs = new Map();
-        const callsToReport = [];
-        for (const call of parsedCalls) {
-          if (call && call.status === 'final' && call.callId) {
-            const lastOutput = state.reportedFinalCallOutputs.get(call.callId);
-            const currentOutput = call.outputTokens || 0;
-            if (!state.reportedFinalCallIds.has(call.callId) || (lastOutput != null && currentOutput > lastOutput)) {
-              callsToReport.push(call);
+          const prevSessionCall = state.sessionCallsMap.get(call.callId);
+          const prevSynced = state.syncedFinalMap.get(call.callId);
+          const prevPending = state.pendingFinalCalls.get(call.callId);
+          const prevQuarantined = state.quarantinedOversizeMap.get(call.callId);
+          let effectiveCall = (prevSessionCall && call.status === 'final' && prevSessionCall.status === 'final')
+            ? mergePendingCallData(prevSessionCall, call)
+            : call;
+          if (prevPending && effectiveCall.status === 'final' && prevPending.status === 'final') {
+            effectiveCall = mergePendingCallData(prevPending, effectiveCall);
+          }
+          if (effectiveCall.status === 'final') {
+            if (prevSynced) {
+              const effWm0 = getFinalCallWatermark(effectiveCall);
+              const uCmp0 = compareWatermarkUsage(effWm0, prevSynced);
+              const rCmp0 = compareSourceRevision(effWm0.sourceRevision, prevSynced.sourceRevision);
+              const restoreSyncedUsage = (uCmp0 < 0 || (uCmp0 === 0 && rCmp0 < 0)) && prevSynced.inp !== undefined;
+              const restoreSyncedDate = (prevSynced.dateRank || 0) >= 2 && Boolean(prevSynced.date) && !canAdoptNextDate(effWm0, prevSynced);
+              const restoreSyncedRev = rCmp0 < 0 && prevSynced.sourceRevision !== null && prevSynced.sourceRevision !== undefined;
+              if (restoreSyncedUsage || restoreSyncedDate || restoreSyncedRev) {
+                effectiveCall = {
+                  ...effectiveCall,
+                  ...(restoreSyncedUsage ? {
+                    inputTokens: prevSynced.inp,
+                    cacheTokens: prevSynced.cap,
+                    cacheReadTokens: prevSynced.cap,
+                    outputTokens: prevSynced.out,
+                    totalTokens: prevSynced.tot
+                  } : {}),
+                  ...(restoreSyncedDate ? {
+                    date: prevSynced.date,
+                    created_at: prevSynced.createdAt || null,
+                    ...(prevSynced.dateSource ? { dateSource: prevSynced.dateSource } : {}),
+                    dateIsProvisional: false
+                  } : {}),
+                  ...(restoreSyncedRev ? { sourceRevision: prevSynced.sourceRevision } : {})
+                };
+                if (restoreSyncedDate && !prevSynced.dateSource) delete effectiveCall.dateSource;
+                if (typeof calculateRequestApiCost === 'function' && (effectiveCall.model || effectiveCall.modelKey)) {
+                  const recalc = calculateRequestApiCost(effectiveCall);
+                  if (recalc.isPriced) {
+                    effectiveCall.modelKey = recalc.modelKey;
+                    effectiveCall.isPriced = true;
+                    effectiveCall.costUSD = recalc.costUSD ?? 0;
+                  }
+                }
+              }
+            }
+            if (getDateRank(effectiveCall) === 1) {
+              let earliestProvDate = effectiveCall.date ? String(effectiveCall.date).slice(0, 10) : '';
+              for (const ref of [prevPending, prevSynced, prevQuarantined]) {
+                const refRank = ref ? (ref.dateRank !== undefined ? ref.dateRank : getDateRank(ref)) : 0;
+                const refDate = ref?.date ? String(ref.date).slice(0, 10) : '';
+                if (refRank === 1 && refDate && (!earliestProvDate || refDate < earliestProvDate)) {
+                  earliestProvDate = refDate;
+                }
+              }
+              if (earliestProvDate && earliestProvDate !== String(effectiveCall.date || '').slice(0, 10)) {
+                effectiveCall = { ...effectiveCall, date: earliestProvDate, created_at: null, dateSource: 'provisional', dateIsProvisional: true };
+                if (typeof calculateRequestApiCost === 'function' && (effectiveCall.model || effectiveCall.modelKey)) {
+                  const recalc = calculateRequestApiCost(effectiveCall);
+                  if (recalc.isPriced) {
+                    effectiveCall.modelKey = recalc.modelKey;
+                    effectiveCall.isPriced = true;
+                    effectiveCall.costUSD = recalc.costUSD ?? 0;
+                  }
+                }
+              }
+            }
+          }
+          state.sessionCallsMap.set(call.callId, effectiveCall);
+          if (effectiveCall.status === 'final') {
+            const wm = getFinalCallWatermark(effectiveCall);
+            if (hasWatermarkProgressed(wm, prevSynced)) {
+              if (prevQuarantined && !hasWatermarkProgressed(wm, prevQuarantined) && getSingleCallBodyBytes(effectiveCall) > MAX_FLUSH_BATCH_BYTES) {
+                continue;
+              }
+              const prevPendingWm = prevPending ? getFinalCallWatermark(prevPending) : null;
+              const progressedVsPending = hasWatermarkProgressed(wm, prevPendingWm);
+              if (progressedVsPending) {
+                hasNewOrProgressedPending = true;
+                if (getSingleCallBodyBytes(effectiveCall) > MAX_FLUSH_BATCH_BYTES) {
+                  state.nextOversizeRetryAt = 0;
+                }
+              }
+              const notRegressedVsPending = !prevPendingWm || (
+                compareWatermarkUsage(wm, prevPendingWm) >= 0 &&
+                compareSourceRevision(wm.sourceRevision, prevPendingWm.sourceRevision) >= 0 &&
+                canAdoptNextDate(wm, prevPendingWm) &&
+                getModelRank(wm.model, wm.modelKey) >= getModelRank(prevPendingWm.model, prevPendingWm.modelKey) &&
+                (wm.dateRank || 0) >= (prevPendingWm.dateRank || 0) &&
+                (!prevPendingWm.modelKey || Boolean(wm.modelKey)) &&
+                (!prevPendingWm.isPriced || Boolean(wm.isPriced))
+              );
+              if (progressedVsPending || notRegressedVsPending) {
+                const nextPendingCall = prevPending ? mergePendingCallData(prevPending, effectiveCall) : effectiveCall;
+                state.pendingFinalCalls.set(call.callId, nextPendingCall);
+              }
             }
           }
         }
-        if (callsToReport.length) {
-          for (const call of callsToReport) {
-            state.reportedFinalCallIds.add(call.callId);
-            state.reportedFinalCallOutputs.set(call.callId, call.outputTokens || 0);
-          }
-          void recordModelCallsRemote(callsToReport);
-        }
+      }
+      state.callsHydrated = true;
+      state.sessionCalls = Array.from(state.sessionCallsMap.values());
+      state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
+      if (hasNewOrProgressedPending) {
+        state.nextFlushRetryAt = 0;
+      }
+      if (state.pendingFinalCalls.size > 0) {
+        void flushPendingFinalCalls(wasHydrated);
       }
       for (let i = rows.length - 1; i >= 0; i--) {
         const value = summarize(rows[i], { cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [] });
@@ -17740,6 +20670,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         finally { clearTimeout(timeout); state.controllers.delete(controller); }
       } else throw new Error('完整重启 Antigravity 后启用附件扫描');
       if (generation !== state.generation || state.disposed) return;
+      if (result?.data?.abortedStale) return;
       if (!result?.ok) throw new Error(result?.error || '扫描未返回有效结果');
       state.scan = result.data; state.scanError = '';
       if (result.data.modelCapabilitiesById && typeof result.data.modelCapabilitiesById === 'object') {
@@ -17766,7 +20697,6 @@ function renderHeatmapGrid(forceRebuild = false) {
     finally { if (generation === state.generation && !state.disposed) { state.scanBusy = false; state.scanNext = Date.now() + (document.hidden ? 60000 : 20000); render(); } }
   }
 
-  let lastHistorySync = 0;
   let lastAvailableModelsSync = 0;
   let availableModelsFetchInFlight = false;
   async function fetchAvailableModelsIfNeeded() {
@@ -17823,47 +20753,1684 @@ function renderHeatmapGrid(forceRebuild = false) {
           renderPresetSelectionUI();
         }
       }
-    } catch {}
+    } catch { }
     finally {
       availableModelsFetchInFlight = false;
     }
   }
 
+  // =========================================================================
+  // 模块 5: 模型额度看板（ELV-34）—— 顶栏圆环入口、共享池归组、多状态机与定时刷新
+  // =========================================================================
+  const QUOTA_REFRESH_FG_MS = 60000;
+  const QUOTA_REFRESH_BG_MS = 180000;
+  const QUOTA_STALE_MS = 180000;
+  const QUOTA_ANIM_DURATION_MS = 220;
+  const QUOTA_CAL_STORAGE_PREFIX = 'ag_quota_token_cal_v2_';
+  const quotaState = {
+    accountScopeKey: null,
+    snapshot: null,
+    rawInput: null,
+    browsePoolKey: null,
+    busy: false,
+    lastFetchedAtMs: null,
+    lastSuccessAtMs: null,
+    nextRefreshAtMs: null,
+    error: null,
+    errorKind: null,
+    consecutiveErrors: 0,
+    lastResetRequeryKey: null,
+    autoPaused: false
+  };
+  quotaStateInitialized = true;
+  let quotaAutoTimer = null;
+  let quotaResetTimer = null;
+  let quotaPostTurnTimer = null;
+  let quotaFeedbackTimer = null;
+  let quotaInFlightPromise = null;
+  let quotaAbortController = null;
+  const QUOTA_BAR_CHARGE_DURATION_MS = 720;
+  let quotaRefreshSpinAnim = null;
+  let quotaBarChargeTimer = null;
+  let quotaBarChargePlaying = false;
+  const quotaAnimRafs = new Set();
+  const quotaActiveChargeRefs = new Set();
+  const quotaNumAnimState = new WeakMap();
+  const quotaNodeRefsMap = new WeakMap();
+  let quotaCalibrationScope = null;
+  let quotaCalibrationMap = {};
+  let quotaLastEstComputeSig = '';
+  let quotaCachedEstByKey = null;
+  let quotaLastSnapshotSig = null;
+  let quotaPendingSmoothAnim = false;
+  let quotaBadgeLastHasFraction = false;
+
+  function isQuotaReducedMotion() {
+    try {
+      return Boolean(typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch {
+      return false;
+    }
+  }
+
+  function clearQuotaBarChargeAnimations() {
+    if (quotaBarChargeTimer) {
+      clearTimeout(quotaBarChargeTimer);
+      quotaBarChargeTimer = null;
+    }
+    quotaBarChargePlaying = false;
+    for (const ref of quotaActiveChargeRefs) {
+      if (ref?.track) removeQuotaAttrIfPresent(ref.track, 'data-charging');
+      if (ref?.chargeStage) setQuotaHiddenIfChanged(ref.chargeStage, true);
+    }
+    quotaActiveChargeRefs.clear();
+  }
+
+  function triggerQuotaBarsChargeAnimation(targets) {
+    if (!Array.isArray(targets) || !targets.length) return false;
+    // 动画进行中不堆积或重启多轮播放；减少动态效果下交由静态提示处理
+    if (quotaBarChargePlaying || isQuotaReducedMotion()) return false;
+    const panelQuotaEl = el('panel-quota');
+    if (!panelQuotaEl || panelQuotaEl.hidden) return false;
+
+    const validRefs = [];
+    for (const ref of targets) {
+      if (ref && ref.chargeEligible && ref.track && ref.chargeStage) {
+        validRefs.push(ref);
+      }
+    }
+    if (!validRefs.length) return false;
+
+    for (const ref of validRefs) {
+      removeQuotaAttrIfPresent(ref.track, 'data-charging');
+      setQuotaHiddenIfChanged(ref.chargeStage, false);
+      quotaActiveChargeRefs.add(ref);
+    }
+    // 仅触发单次整体可见性提交，确保后续 CSS 关键帧从 0% 平滑起播
+    if (typeof panelQuotaEl.offsetHeight === 'number') void panelQuotaEl.offsetHeight;
+    for (const ref of validRefs) {
+      setQuotaAttrIfChanged(ref.track, 'data-charging', 'true');
+    }
+
+    quotaBarChargePlaying = true;
+    quotaBarChargeTimer = setTimeout(() => {
+      clearQuotaBarChargeAnimations();
+    }, QUOTA_BAR_CHARGE_DURATION_MS + 30);
+    return true;
+  }
+
+  function triggerQuotaRefreshIconSpin() {
+    if (isQuotaReducedMotion()) return;
+    const btn = el('btn-quota-refresh');
+    const icon = btn?.querySelector?.('.quota-refresh-icon');
+    if (!icon || typeof icon.animate !== 'function') return;
+    if (quotaRefreshSpinAnim && quotaRefreshSpinAnim.playState === 'running') return;
+    try {
+      const anim = icon.animate(
+        [{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }],
+        { duration: 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'none' }
+      );
+      quotaRefreshSpinAnim = anim;
+      const clearRef = () => {
+        if (quotaRefreshSpinAnim === anim) quotaRefreshSpinAnim = null;
+      };
+      anim.onfinish = clearRef;
+      anim.oncancel = clearRef;
+    } catch { }
+  }
+
+  function clearQuotaAnimations() {
+    for (const rafId of quotaAnimRafs) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+    }
+    quotaAnimRafs.clear();
+    clearQuotaBarChargeAnimations();
+    if (quotaRefreshSpinAnim) {
+      try { quotaRefreshSpinAnim.cancel(); } catch { }
+      quotaRefreshSpinAnim = null;
+    }
+  }
+
+  function clearQuotaTimers() {
+    if (quotaAutoTimer) { clearTimeout(quotaAutoTimer); quotaAutoTimer = null; }
+    if (quotaResetTimer) { clearTimeout(quotaResetTimer); quotaResetTimer = null; }
+    if (quotaPostTurnTimer) { clearTimeout(quotaPostTurnTimer); quotaPostTurnTimer = null; }
+    if (quotaFeedbackTimer) { clearTimeout(quotaFeedbackTimer); quotaFeedbackTimer = null; }
+    clearQuotaAnimations();
+    try { quotaAbortController?.abort?.(); } catch { }
+    quotaAbortController = null;
+  }
+
+  function loadQuotaCalibrationForScope(scopeKey) {
+    const clean = scopeKey ? String(scopeKey).trim() : 'anonymous';
+    if (quotaCalibrationScope === clean) return quotaCalibrationMap;
+    quotaCalibrationScope = clean;
+    quotaCalibrationMap = {};
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(`${QUOTA_CAL_STORAGE_PREFIX}${clean}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') quotaCalibrationMap = parsed;
+        }
+      }
+    } catch { }
+    return quotaCalibrationMap;
+  }
+
+  function saveQuotaCalibrationForScope(scopeKey, nextMap) {
+    const clean = scopeKey ? String(scopeKey).trim() : 'anonymous';
+    quotaCalibrationScope = clean;
+    quotaCalibrationMap = nextMap && typeof nextMap === 'object' ? nextMap : {};
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(`${QUOTA_CAL_STORAGE_PREFIX}${clean}`, JSON.stringify(quotaCalibrationMap));
+      }
+    } catch { }
+  }
+
+  // 仅在值实际改变时写入 DOM，避免重复替换 Text 节点或重设属性引发重排与闪烁
+  function setQuotaTextIfChanged(node, text) {
+    if (!node) return;
+    const next = text == null ? '' : String(text);
+    if (node.textContent !== next) node.textContent = next;
+  }
+
+  function setQuotaHiddenIfChanged(node, hidden) {
+    if (!node) return;
+    const next = Boolean(hidden);
+    if (Boolean(node.hidden) !== next) node.hidden = next;
+  }
+
+  function setQuotaAttrIfChanged(node, name, val) {
+    if (!node) return;
+    const next = String(val);
+    if (getChildAttr(node, name) !== next) node.setAttribute(name, next);
+  }
+
+  function removeQuotaAttrIfPresent(node, name) {
+    if (!node) return;
+    if (getChildAttr(node, name) !== null) node.removeAttribute?.(name);
+  }
+
+  function setQuotaClassIfChanged(node, cls) {
+    if (!node) return;
+    const next = String(cls || '');
+    if (node.className !== next) node.className = next;
+  }
+
+  function hideQuotaRefreshFeedback() {
+    if (quotaFeedbackTimer) { clearTimeout(quotaFeedbackTimer); quotaFeedbackTimer = null; }
+    const fb = el('quota-refresh-feedback');
+    if (fb) setQuotaHiddenIfChanged(fb, true);
+  }
+
+  function showQuotaUpToDateFeedback() {
+    const fb = el('quota-refresh-feedback');
+    if (!fb) return;
+    if (quotaFeedbackTimer) { clearTimeout(quotaFeedbackTimer); quotaFeedbackTimer = null; }
+    setQuotaTextIfChanged(fb, t('quota.refresh.upToDate'));
+    setQuotaHiddenIfChanged(fb, false);
+    quotaFeedbackTimer = setTimeout(() => {
+      quotaFeedbackTimer = null;
+      if (!state.disposed && el('quota-refresh-feedback')) {
+        setQuotaHiddenIfChanged(el('quota-refresh-feedback'), true);
+      }
+    }, 1800);
+  }
+
+  function computeQuotaVisualSignature(view) {
+    if (!view || !Array.isArray(view.pools)) return 'empty';
+    const parts = [
+      view.currentModel?.productKey || '',
+      view.activeStatus || '',
+      view.badge?.fraction == null ? 'null' : view.badge.fraction.toFixed(4)
+    ];
+    for (const p of view.pools) {
+      const bStr = (p.buckets || []).map(b => `${b.bucketId}:${b.remainingFraction == null ? 'null' : b.remainingFraction.toFixed(4)}:${b.resetAtMs || ''}`).join(',');
+      parts.push(`${p.poolKey}=${p.status}=${bStr}`);
+    }
+    return parts.join('|');
+  }
+
+  function formatQuotaNumPctValue(pctVal) {
+    if (!Number.isFinite(pctVal)) return '';
+    const clamped = Math.max(0, Math.min(100, pctVal));
+    if (clamped === 0) return '0%';
+    if (clamped > 0 && clamped < 1) return `${Math.max(0.1, Math.round(clamped * 10) / 10)}%`;
+    return `${Math.round(clamped)}%`;
+  }
+
+  function animateQuotaPercentNode(node, targetFrac, animate, fallbackText = '') {
+    if (!node) return;
+    const prevState = quotaNumAnimState.get(node) || { rafId: 0, currentPct: null, targetPct: null };
+    if (targetFrac == null || !Number.isFinite(Number(targetFrac))) {
+      if (prevState.rafId && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(prevState.rafId);
+        quotaAnimRafs.delete(prevState.rafId);
+      }
+      quotaNumAnimState.set(node, { rafId: 0, currentPct: null, targetPct: null });
+      setQuotaTextIfChanged(node, fallbackText);
+      return;
+    }
+
+    const targetPct = Math.max(0, Math.min(100, Number(targetFrac) * 100));
+    const canAnimate = Boolean(
+      animate &&
+      !isQuotaReducedMotion() &&
+      typeof requestAnimationFrame === 'function' &&
+      prevState.currentPct !== null &&
+      Math.abs(targetPct - prevState.currentPct) >= 0.05
+    );
+
+    if (!canAnimate) {
+      if (prevState.rafId && prevState.targetPct !== null && Math.abs(prevState.targetPct - targetPct) < 0.05) {
+        return;
+      }
+      if (prevState.rafId && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(prevState.rafId);
+        quotaAnimRafs.delete(prevState.rafId);
+      }
+      quotaNumAnimState.set(node, { rafId: 0, currentPct: targetPct, targetPct });
+      setQuotaTextIfChanged(node, formatQuotaNumPctValue(targetPct));
+      return;
+    }
+
+    if (prevState.rafId && prevState.targetPct !== null && Math.abs(prevState.targetPct - targetPct) < 0.05) {
+      return;
+    }
+
+    if (prevState.rafId && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(prevState.rafId);
+      quotaAnimRafs.delete(prevState.rafId);
+    }
+
+    const startPct = prevState.currentPct;
+    const startTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const animObj = { rafId: 0, currentPct: startPct, targetPct };
+    quotaNumAnimState.set(node, animObj);
+
+    const step = (nowTs) => {
+      if (state.disposed) {
+        quotaAnimRafs.delete(animObj.rafId);
+        animObj.rafId = 0;
+        return;
+      }
+      const curNow = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const rawT = Math.min(1, Math.max(0, (curNow - startTs) / QUOTA_ANIM_DURATION_MS));
+      const eased = 1 - Math.pow(1 - rawT, 3);
+      const val = startPct + (targetPct - startPct) * eased;
+      animObj.currentPct = val;
+      setQuotaTextIfChanged(node, formatQuotaNumPctValue(val));
+      if (rawT < 1) {
+        animObj.rafId = requestAnimationFrame(step);
+        quotaAnimRafs.add(animObj.rafId);
+      } else {
+        quotaAnimRafs.delete(animObj.rafId);
+        animObj.rafId = 0;
+        animObj.currentPct = targetPct;
+        setQuotaTextIfChanged(node, formatQuotaNumPctValue(targetPct));
+      }
+    };
+    animObj.rafId = requestAnimationFrame(step);
+    quotaAnimRafs.add(animObj.rafId);
+  }
+
+  function resetQuotaState(opts = {}) {
+    clearQuotaTimers();
+    if (opts.clearAccountScope !== false) {
+      quotaState.accountScopeKey = null;
+      quotaCalibrationScope = null;
+      quotaCalibrationMap = {};
+    }
+    quotaLastEstComputeSig = '';
+    quotaCachedEstByKey = null;
+    quotaLastSnapshotSig = null;
+    quotaPendingSmoothAnim = false;
+    quotaBadgeLastHasFraction = false;
+    quotaState.snapshot = null;
+    quotaState.rawInput = null;
+    quotaState.browsePoolKey = null;
+    quotaState.busy = false;
+    quotaState.lastFetchedAtMs = null;
+    quotaState.lastSuccessAtMs = null;
+    quotaState.nextRefreshAtMs = null;
+    quotaState.error = null;
+    quotaState.errorKind = null;
+    quotaState.consecutiveErrors = 0;
+    quotaState.lastResetRequeryKey = null;
+    quotaInFlightPromise = null;
+    renderQuotaBoard();
+  }
+
+  function refreshQuotaTokenEstimates() {
+    quotaLastEstComputeSig = '';
+    quotaCachedEstByKey = null;
+    if (!state.disposed && (quotaState.snapshot || quotaState.rawInput)) {
+      renderQuotaBoard(Date.now(), { animate: false });
+    }
+  }
+
+  function handleQuotaAccountSwitch(nextScopeKey, opts = {}) {
+    const cleanNext = nextScopeKey ? String(nextScopeKey).trim() : null;
+    const prev = quotaState.accountScopeKey;
+    const changed = Boolean(cleanNext && prev && cleanNext !== prev);
+    if (changed || opts.forceRefresh) {
+      resetQuotaState({ clearAccountScope: true });
+      if (cleanNext) quotaState.accountScopeKey = cleanNext;
+      if (!state.disposed) void syncQuotaFromHost(true);
+      return true;
+    }
+    if (cleanNext && !prev) {
+      quotaState.accountScopeKey = cleanNext;
+    }
+    return false;
+  }
+
+  function getQuotaStatusLabelText(statusKey) {
+    const keyMap = {
+      available: 'quota.state.available',
+      low: 'quota.state.low',
+      exhausted: 'quota.state.exhausted',
+      no_permission: 'quota.state.no_permission',
+      stale: 'quota.state.stale',
+      error: 'quota.state.error',
+      unknown: 'quota.state.unknown'
+    };
+    return t(keyMap[statusKey] || 'quota.state.unknown');
+  }
+
+  function getQuotaShortBadgeText(statusKey) {
+    const keyMap = {
+      exhausted: 'quota.short.exhausted',
+      no_permission: 'quota.short.no_permission',
+      error: 'quota.short.error',
+      stale: 'quota.short.stale',
+      unknown: 'quota.short.unknown'
+    };
+    return keyMap[statusKey] ? t(keyMap[statusKey]) : '';
+  }
+
+  function getQuotaPillClass(statusKey) {
+    if (statusKey === 'available') return 'pill-good';
+    if (statusKey === 'low' || statusKey === 'stale') return 'pill-warn';
+    if (statusKey === 'exhausted' || statusKey === 'error') return 'pill-danger';
+    if (statusKey === 'no_permission') return 'pill-info';
+    return 'pill-muted';
+  }
+
+  function formatQuotaDateTime(ms) {
+    if (!Number.isFinite(Number(ms)) || Number(ms) <= 0) return t('quota.time.unknown');
+    const d = new Date(Number(ms));
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const da = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${mo}-${da} ${hh}:${mi}:${ss}`;
+  }
+
+  function formatCountdownMsCompact(ms) {
+    if (!Number.isFinite(Number(ms))) return t('quota.time.unknown');
+    if (ms <= 0) return '0s';
+    const sec = Math.ceil(ms / 1000);
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (currentPanelLanguage === 'en') {
+      if (d > 0) return `${d}d ${h}h`;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m`;
+      return `${s}s`;
+    }
+    if (d > 0) return `${d}天${h}小时`;
+    if (h > 0) return `${h}小时${m}分`;
+    if (m > 0) return `${m}分`;
+    return `${s}秒`;
+  }
+
+  function formatQuotaWindowTitle(bucket) {
+    if (!bucket) return '';
+    if (currentPanelLanguage === 'en') {
+      if (bucket.windowKey === '5h') return '5h Window';
+      if (bucket.windowKey === 'weekly') return 'Weekly Window';
+      if (bucket.windowKey === 'daily') return 'Daily Window';
+      return 'Primary Quota';
+    }
+    if (currentPanelLanguage === 'zh-TW') {
+      if (bucket.windowKey === '5h') return '5小時限額';
+      if (bucket.windowKey === 'weekly') return '每週限額';
+      if (bucket.windowKey === 'daily') return '每日限額';
+      return '目前主限額';
+    }
+    return bucket.windowLabel || '周期限额';
+  }
+
+  function getActiveQuotaModelInput() {
+    if (activeSessionModelConfirmed && (activeSessionModelKey || activeSessionProductKey)) {
+      const cfgList = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+      const activeKeyLower = String(activeSessionModelKey || '').trim().toLowerCase();
+      const matched = activeKeyLower ? cfgList.find(c =>
+        String(c?.modelId || '').trim().toLowerCase() === activeKeyLower ||
+        String(c?.modelOrAlias?.model || '').trim().toLowerCase() === activeKeyLower
+      ) : null;
+      if (matched) return matched;
+      return {
+        modelId: activeSessionModelKey || '',
+        label: state.latest?.model || activeSessionModelKey || activeSessionProductKey,
+        productKey: activeSessionProductKey || ''
+      };
+    }
+    if (state.latest?.modelId || state.latest?.model) {
+      return {
+        modelId: state.latest.modelId || state.latest.model,
+        label: state.latest.model || state.latest.modelId
+      };
+    }
+    return null;
+  }
+
+  function attachTokenEstimatesToQuotaView(view, nowMs) {
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    if (!view || !Array.isArray(view.pools) || !core?.applyQuotaTokenEstimates) return view;
+    const scopeKey = quotaState.accountScopeKey || view.accountScopeKey || 'anonymous';
+    const usageEvents = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentModelUsage) ? ANTIGRAVITY_TOKEN_DATA.recentModelUsage : [];
+    const coverageStartMs = ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs ?? null;
+    const lastEvTs = usageEvents.length ? Number(usageEvents[usageEvents.length - 1]?.ts || 0) : 0;
+    const poolSig = view.pools.map(p => `${p.poolKey}:${(p.buckets || []).map(b => `${b.bucketId}=${b.remainingFraction ?? 'n'}`).join(',')}`).join(';');
+    const computeSig = `${scopeKey}|${view.fetchedAtMs || 0}|${coverageStartMs ?? 'null'}|${usageEvents.length}|${lastEvTs}|${poolSig}`;
+
+    if (quotaLastEstComputeSig === computeSig && quotaCachedEstByKey) {
+      const enrichedPools = view.pools.map(p => {
+        const nextBuckets = (p.buckets || []).map(b => {
+          const bKey = `${p.poolKey}::${b.bucketId || b.windowKey}`;
+          return quotaCachedEstByKey[bKey] ? { ...b, tokenEstimate: quotaCachedEstByKey[bKey] } : b;
+        });
+        const pb = p.primaryBucket ? (nextBuckets.find(b => b.bucketId === p.primaryBucket.bucketId) || nextBuckets[0] || p.primaryBucket) : (nextBuckets[0] || null);
+        return { ...p, buckets: nextBuckets, primaryBucket: pb, tokenEstimate: pb?.tokenEstimate || p.tokenEstimate || null };
+      });
+      return { ...view, pools: enrichedPools };
+    }
+
+    const calMap = loadQuotaCalibrationForScope(scopeKey);
+    const applied = core.applyQuotaTokenEstimates(view, {
+      accountScopeKey: scopeKey,
+      usageEvents,
+      historyCoverageStartMs: coverageStartMs,
+      calibrationMap: calMap,
+      nowMs: view.fetchedAtMs || nowMs
+    });
+    if (applied?.nextCalibrationMap) {
+      saveQuotaCalibrationForScope(scopeKey, applied.nextCalibrationMap);
+    }
+    const cacheObj = {};
+    for (const p of (applied?.snapshot?.pools || [])) {
+      for (const b of (p.buckets || [])) {
+        cacheObj[`${p.poolKey}::${b.bucketId || b.windowKey}`] = b.tokenEstimate || null;
+      }
+    }
+    quotaLastEstComputeSig = computeSig;
+    quotaCachedEstByKey = cacheObj;
+    return applied?.snapshot || view;
+  }
+
+  function computeEffectiveQuotaView(nowMs = Date.now()) {
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const currentModelInput = getActiveQuotaModelInput();
+
+    // 1. 优先复用 rawInput 通过 buildModelQuotaSnapshot 完整演算（支持测试注入原始响应或本地配置变更）
+    if (quotaState.rawInput && core?.buildModelQuotaSnapshot) {
+      const built = core.buildModelQuotaSnapshot({
+        ...quotaState.rawInput,
+        currentModel: currentModelInput,
+        browsePoolKey: quotaState.browsePoolKey,
+        fetchMeta: {
+          fetchedAtMs: quotaState.lastSuccessAtMs ?? quotaState.lastFetchedAtMs,
+          nextRefreshAtMs: quotaState.nextRefreshAtMs,
+          staleThresholdMs: QUOTA_STALE_MS,
+          error: quotaState.error,
+          errorKind: quotaState.errorKind
+        },
+        nowMs
+      });
+      return attachTokenEstimatesToQuotaView(built, nowMs);
+    }
+
+    // 2. 基于主进程返回的标准化 snapshot 重新结合当前会话模型与实时 nowMs 刷新视图状态
+    const base = quotaState.snapshot;
+    if (!base) {
+      const hasErr = Boolean(quotaState.error);
+      return {
+        schemaVersion: 1,
+        syncState: hasErr ? 'error' : 'unknown',
+        fetchedAtMs: quotaState.lastSuccessAtMs ?? quotaState.lastFetchedAtMs,
+        nextRefreshAtMs: quotaState.nextRefreshAtMs,
+        staleThresholdMs: QUOTA_STALE_MS,
+        lastError: quotaState.error,
+        errorKind: quotaState.errorKind,
+        currentModel: currentModelInput ? { productLabel: String(currentModelInput.label || currentModelInput.modelId) } : null,
+        activeStatus: hasErr ? 'error' : 'unknown',
+        activeStatusLabel: getQuotaStatusLabelText(hasErr ? 'error' : 'unknown'),
+        badge: {
+          text: getQuotaShortBadgeText(hasErr ? 'error' : 'unknown'),
+          tag: hasErr ? t('quota.retry') : '',
+          fraction: null,
+          status: hasErr ? 'error' : 'unknown',
+          statusLabel: getQuotaStatusLabelText(hasErr ? 'error' : 'unknown')
+        },
+        activeReset: { hasResetTime: false, resetTimeText: null, countdownText: null, isResetPassed: false },
+        browsePoolKey: quotaState.browsePoolKey,
+        planTierName: ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName || null,
+        pools: []
+      };
+    }
+
+    const updatedPools = (base.pools || []).map(p => {
+      const nextBuckets = (p.buckets || []).map(b => {
+        if (!b.resetTimeIso || !core?.formatQuotaResetMeta) return { ...b };
+        const rm = core.formatQuotaResetMeta(b.resetTimeIso, nowMs);
+        return {
+          ...b,
+          hasResetTime: rm.hasResetTime,
+          resetAtMs: rm.resetAtMs,
+          resetTimeText: rm.resetTimeText,
+          countdownText: rm.countdownText,
+          isResetPassed: rm.isResetPassed
+        };
+      });
+      const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
+      const pb = priced[0] || nextBuckets[0] || p.primaryBucket || null;
+      return {
+        ...p,
+        buckets: nextBuckets,
+        primaryBucket: pb,
+        hasResetTime: Boolean(pb?.hasResetTime ?? p.hasResetTime),
+        resetTimeIso: pb?.resetTimeIso ?? p.resetTimeIso ?? null,
+        resetAtMs: pb?.resetAtMs ?? p.resetAtMs ?? null,
+        resetTimeText: pb?.resetTimeText ?? p.resetTimeText ?? null,
+        countdownText: pb?.countdownText ?? p.countdownText ?? null,
+        isResetPassed: Boolean(pb?.isResetPassed ?? p.isResetPassed)
+      };
+    });
+
+    // 针对实时切换后的会话模型重新匹配池与模型
+    const tStr = currentModelInput
+      ? String(currentModelInput.modelId || currentModelInput.label || '').trim().toLowerCase()
+      : '';
+    const tStripped = tStr.replace(/^model_/, '');
+    let matchedPool = null;
+    let matchedModel = null;
+    if (tStr) {
+      for (const p of updatedPools) {
+        for (const m of (p.models || [])) {
+          const allIds = [...(m.modelIds || []), ...(m.aliases || [])].map(x => String(x).toLowerCase());
+          if (allIds.some(id => id === tStr || id.replace(/^model_/, '') === tStripped)) {
+            matchedPool = p;
+            matchedModel = m;
+            break;
+          }
+          if (m.productLabel && m.productLabel.toLowerCase() === tStr) {
+            matchedPool = p;
+            matchedModel = m;
+            break;
+          }
+          if (m.productKey && currentModelInput?.productKey && m.productKey === currentModelInput.productKey) {
+            matchedPool = p;
+            matchedModel = m;
+            break;
+          }
+        }
+        if (matchedPool) break;
+      }
+      if (!matchedPool && core?.getSharedQuotaGroupKey) {
+        const gKey = core.getSharedQuotaGroupKey(currentModelInput);
+        matchedPool = updatedPools.find(p => p.poolKey === gKey) || null;
+        if (matchedPool) matchedModel = matchedPool.models?.[0] || null;
+      }
+    }
+
+    const lastOkMs = quotaState.lastSuccessAtMs ?? base.fetchedAtMs ?? null;
+    const ageExpired = lastOkMs !== null && (nowMs - lastOkMs > QUOTA_STALE_MS);
+    const anyResetPassed = updatedPools.some(p => p.isResetPassed && p.remainingFraction === 0);
+    const hasAnyPool = updatedPools.some(p => p.remainingFraction !== null || p.noPermission);
+    let syncState = 'unknown';
+    if (!hasAnyPool && quotaState.error) syncState = 'error';
+    else if (hasAnyPool && (quotaState.error || ageExpired || anyResetPassed)) syncState = 'stale';
+    else if (hasAnyPool) syncState = 'fresh';
+
+    let activeStatus = 'unknown';
+    let badgeText = t('quota.short.unknown');
+    let badgeTag = '';
+    let activeFraction = null;
+    let activeReset = { hasResetTime: false, resetTimeText: null, countdownText: null, isResetPassed: false };
+
+    if (syncState === 'error') {
+      activeStatus = 'error';
+      badgeText = t('quota.short.error');
+      badgeTag = t('quota.retry');
+    } else if (matchedModel?.noPermission || matchedPool?.noPermission) {
+      activeStatus = 'no_permission';
+      badgeText = t('quota.short.no_permission');
+    } else if (matchedPool) {
+      activeFraction = matchedPool.remainingFraction;
+      activeReset = {
+        hasResetTime: matchedPool.hasResetTime,
+        resetTimeIso: matchedPool.resetTimeIso,
+        resetAtMs: matchedPool.resetAtMs,
+        resetTimeText: matchedPool.resetTimeText,
+        countdownText: matchedPool.countdownText,
+        isResetPassed: matchedPool.isResetPassed
+      };
+      if (matchedPool.remainingFraction === null) {
+        activeStatus = syncState === 'stale' ? 'stale' : 'unknown';
+        badgeText = t(syncState === 'stale' ? 'quota.short.stale' : 'quota.short.unknown');
+      } else if (matchedPool.isExhausted || matchedPool.remainingFraction === 0) {
+        activeStatus = syncState === 'stale' ? 'stale' : 'exhausted';
+        badgeText = t('quota.short.exhausted');
+        badgeTag = matchedPool.primaryBucket?.windowShort || '';
+      } else {
+        activeStatus = syncState === 'stale' ? 'stale' : (matchedPool.remainingFraction <= 0.2 ? 'low' : 'available');
+        badgeText = core?.formatQuotaPercentText ? core.formatQuotaPercentText(matchedPool.remainingFraction) : matchedPool.percentText;
+        badgeTag = syncState === 'stale' ? t('quota.short.stale') : (matchedPool.primaryBucket?.windowShort || '');
+      }
+    } else if (syncState === 'stale') {
+      activeStatus = 'stale';
+      badgeText = t('quota.short.stale');
+    }
+
+    return attachTokenEstimatesToQuotaView({
+      ...base,
+      syncState,
+      fetchedAtMs: lastOkMs,
+      nextRefreshAtMs: quotaState.nextRefreshAtMs,
+      lastError: quotaState.error,
+      errorKind: quotaState.errorKind,
+      currentModel: matchedModel
+        ? {
+          productKey: matchedModel.productKey,
+          productLabel: matchedModel.productLabel,
+          poolKey: matchedPool.poolKey,
+          poolTitle: matchedPool.title,
+          noPermission: matchedModel.noPermission,
+          unavailabilityReason: matchedModel.unavailabilityReason,
+          noticeText: matchedModel.noticeText
+        }
+        : (currentModelInput ? { productLabel: String(currentModelInput.label || currentModelInput.modelId), poolKey: null, poolTitle: null } : base.currentModel),
+      activeStatus,
+      activeStatusLabel: getQuotaStatusLabelText(activeStatus),
+      badge: {
+        text: badgeText,
+        tag: badgeTag,
+        fraction: activeFraction,
+        status: activeStatus,
+        statusLabel: getQuotaStatusLabelText(activeStatus)
+      },
+      activeReset,
+      browsePoolKey: quotaState.browsePoolKey || matchedPool?.poolKey || updatedPools[0]?.poolKey || null,
+      pools: updatedPools
+    }, nowMs);
+  }
+
+  function formatBucketTokenEstimateLine(est) {
+    if (!est || est.estSource === 'unavailable' || est.estSource === 'unknown') return '';
+    if (est.estBasis === 'exhausted' || est.estSource === 'exhausted' || est.estRemainingTokens === 0) {
+      return t('quota.est.exhausted');
+    }
+    if (est.estBasis === 'incomplete_samples' || est.estSource === 'incomplete') {
+      return t('quota.est.incomplete');
+    }
+    if (est.estBasis === 'calibration_expired' || est.estSource === 'expired') {
+      return t('quota.est.expired');
+    }
+    if (est.estBasis === 'coverage_incomplete') {
+      return t('quota.est.coverageIncomplete');
+    }
+    if (est.estRemainingTokens != null && est.estRemainingShort) {
+      let basisKey = 'quota.est.basisCached';
+      if (est.estBasis === 'stale_with_divergence' || est.estSource === 'unreliable_cached') {
+        basisKey = 'quota.est.basisStaleDivergence';
+      } else if (est.estBasis === 'delta_calibrated' && est.estSource === 'delta') {
+        basisKey = 'quota.est.basisDelta';
+      } else if (est.estBasis === 'cycle_estimated' && est.estSource === 'cycle') {
+        basisKey = 'quota.est.basisCycle';
+      }
+      const mainPart = t('quota.est.approx', { tokens: est.estRemainingShort });
+      const basisPart = t(basisKey);
+      const mixedPart = est.mixedPoolModels ? ` (${t('quota.est.mixedModels')})` : '';
+      const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+      const usedShort = est.cycleTokensUsed > 0 && core?.formatApproxTokensShort
+        ? core.formatApproxTokensShort(est.cycleTokensUsed)
+        : null;
+      return usedShort
+        ? `${mainPart} · ${basisPart}${mixedPart} · ${t('quota.est.cycleUsed', { used: usedShort })}`
+        : `${mainPart} · ${basisPart}${mixedPart}`;
+    }
+    return t('quota.est.waiting');
+  }
+
+  function getChildAttr(node, name) {
+    if (!node) return null;
+    if (typeof node.getAttribute === 'function') return node.getAttribute(name);
+    return node.attributes?.[name] ?? null;
+  }
+
+  function reconcileQuotaChildOrder(container, desiredNodes) {
+    const cur = Array.from(container.children || []);
+    const sameOrder = cur.length === desiredNodes.length && cur.every((n, idx) => n === desiredNodes[idx]);
+    if (sameOrder) return;
+    if (typeof container.removeChild === 'function' && typeof container.insertBefore === 'function') {
+      const wantSet = new Set(desiredNodes);
+      for (const ch of cur) {
+        if (!wantSet.has(ch)) container.removeChild(ch);
+      }
+      for (let i = 0; i < desiredNodes.length; i++) {
+        const node = desiredNodes[i];
+        const atIdx = container.children[i] || null;
+        if (atIdx !== node) {
+          container.insertBefore(node, atIdx);
+        }
+      }
+      return;
+    }
+    if (typeof container.replaceChildren === 'function') {
+      container.replaceChildren(...desiredNodes);
+    } else {
+      if (Array.isArray(container.children)) container.children.length = 0;
+      for (const n of desiredNodes) container.appendChild?.(n);
+    }
+  }
+
+  function renderQuotaBucketsContainer(container, buckets, statusOverride = null, opts = {}) {
+    if (!container) return;
+    const list = Array.isArray(buckets) ? buckets : [];
+    const animate = Boolean(opts.animate);
+    const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+    if (!list.length) {
+      reconcileQuotaChildOrder(container, []);
+      return;
+    }
+
+    const existingRows = new Map();
+    for (const child of Array.from(container.children || [])) {
+      const bKey = getChildAttr(child, 'data-bucket-key');
+      if (bKey) existingRows.set(bKey, child);
+    }
+
+    const desiredRows = [];
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      const bKey = String(b.bucketId || b.windowKey || `b-${i}`);
+
+      let row = existingRows.get(bKey);
+      let refs = row ? quotaNodeRefsMap.get(row) : null;
+
+      if (!row || !refs) {
+        row = document.createElement('div');
+        row.className = 'quota-bucket-row';
+        row.setAttribute('data-bucket-key', bKey);
+
+        const meta = document.createElement('div');
+        meta.className = 'quota-bucket-meta';
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'quota-bucket-name';
+
+        const valEl = document.createElement('span');
+        valEl.className = 'quota-bucket-val';
+        const pctEl = document.createElement('span');
+        pctEl.className = 'quota-pct-num';
+        const resetEl = document.createElement('span');
+        resetEl.className = 'quota-reset-span';
+        valEl.appendChild(pctEl);
+        valEl.appendChild(resetEl);
+
+        meta.appendChild(nameEl);
+        meta.appendChild(valEl);
+
+        const track = document.createElement('div');
+        track.className = 'quota-bar-track';
+        const fillEl = document.createElement('div');
+        fillEl.className = 'quota-bar-fill';
+        track.appendChild(fillEl);
+
+        // 独立充能动画层：裁剪在真实比例宽度内，绝不归零底层也不填满到 100%
+        const chargeStage = document.createElement('div');
+        chargeStage.className = 'quota-bar-charge-stage';
+        chargeStage.hidden = true;
+        const chargeFill = document.createElement('div');
+        chargeFill.className = 'quota-bar-charge-fill';
+        const chargeSheen = document.createElement('div');
+        chargeSheen.className = 'quota-bar-charge-sheen';
+        chargeStage.appendChild(chargeFill);
+        chargeStage.appendChild(chargeSheen);
+        track.appendChild(chargeStage);
+
+        const estEl = document.createElement('div');
+        estEl.className = 'quota-bucket-est';
+        estEl.hidden = true;
+
+        row.appendChild(meta);
+        row.appendChild(track);
+        row.appendChild(estEl);
+        refs = {
+          nameEl,
+          pctEl,
+          resetEl,
+          track,
+          fillEl,
+          chargeStage,
+          chargeFill,
+          chargeSheen,
+          chargeRef: { track, chargeStage, chargeEligible: false },
+          estEl
+        };
+        quotaNodeRefsMap.set(row, refs);
+      }
+
+      const { nameEl, pctEl, resetEl, track, fillEl, chargeStage, chargeRef, estEl } = refs;
+      if (nameEl) setQuotaTextIfChanged(nameEl, formatQuotaWindowTitle(b));
+
+      if (pctEl) {
+        if (statusOverride === 'no_permission') {
+          animateQuotaPercentNode(pctEl, null, false, t('quota.short.no_permission'));
+        } else if (b.remainingFraction == null) {
+          animateQuotaPercentNode(pctEl, null, false, t('quota.time.unknown'));
+        } else {
+          animateQuotaPercentNode(pctEl, b.remainingFraction, animate, b.percentText);
+        }
+      }
+
+      if (resetEl) {
+        const resetSuffix = b.hasResetTime
+          ? ` · ${b.resetTimeText}${b.countdownText ? ` (${b.isResetPassed ? b.countdownText : formatCountdownMsCompact((b.resetAtMs || 0) - nowMs)})` : ''}`
+          : ` · ${t('quota.time.reset')}: ${t('quota.time.unknown')}`;
+        setQuotaTextIfChanged(resetEl, resetSuffix);
+      }
+
+      if (fillEl) {
+        const bStatus = statusOverride || (b.remainingFraction == null
+          ? 'unknown'
+          : (b.isExhausted || b.remainingFraction === 0 ? 'exhausted' : (b.remainingFraction <= 0.2 ? 'low' : 'available')));
+        const scaleVal = b.remainingFraction == null ? 0 : Math.max(0, Math.min(1, b.remainingFraction));
+        const scaleStr = scaleVal.toFixed(4);
+        const stageWidthStr = `${(scaleVal * 100).toFixed(2)}%`;
+        setQuotaAttrIfChanged(fillEl, 'data-status', bStatus);
+        if (getChildAttr(fillEl, 'data-fraction') !== scaleStr) {
+          fillEl.setAttribute('data-fraction', scaleStr);
+          if (typeof fillEl.style?.setProperty === 'function') {
+            fillEl.style.setProperty('--quota-scale', scaleStr);
+          }
+          if (fillEl.style) {
+            fillEl.style.transform = `scaleX(${scaleStr})`;
+          }
+        }
+        const chargeEligible = Boolean(
+          statusOverride !== 'no_permission' &&
+          bStatus !== 'no_permission' &&
+          bStatus !== 'unknown' &&
+          b.remainingFraction != null &&
+          Number.isFinite(Number(b.remainingFraction)) &&
+          scaleVal > 0
+        );
+        if (chargeStage) {
+          setQuotaAttrIfChanged(chargeStage, 'data-status', bStatus);
+          if (getChildAttr(chargeStage, 'data-fraction') !== scaleStr) {
+            chargeStage.setAttribute('data-fraction', scaleStr);
+            if (chargeStage.style) {
+              chargeStage.style.width = stageWidthStr;
+            }
+          }
+        }
+        if (track) {
+          setQuotaAttrIfChanged(track, 'data-charge-eligible', chargeEligible ? 'true' : 'false');
+          if (!chargeEligible) {
+            removeQuotaAttrIfPresent(track, 'data-charging');
+            if (chargeStage) setQuotaHiddenIfChanged(chargeStage, true);
+            if (chargeRef) quotaActiveChargeRefs.delete(chargeRef);
+          }
+        }
+        if (chargeRef) {
+          chargeRef.chargeEligible = chargeEligible;
+          if (chargeEligible && Array.isArray(opts.chargeTargets)) {
+            opts.chargeTargets.push(chargeRef);
+          }
+        }
+      }
+
+      if (estEl) {
+        const estText = statusOverride === 'no_permission' ? '' : formatBucketTokenEstimateLine(b.tokenEstimate);
+        if (estText) {
+          setQuotaHiddenIfChanged(estEl, false);
+          setQuotaTextIfChanged(estEl, estText);
+        } else {
+          setQuotaHiddenIfChanged(estEl, true);
+          setQuotaTextIfChanged(estEl, '');
+        }
+      }
+      desiredRows.push(row);
+    }
+
+    reconcileQuotaChildOrder(container, desiredRows);
+  }
+
+  function renderQuotaBoard(nowMs = Date.now(), renderOpts = {}) {
+    const viewQuotaBody = el('view-quota');
+    const savedScrollTop = (viewQuotaBody && typeof viewQuotaBody.scrollTop === 'number') ? viewQuotaBody.scrollTop : null;
+    const view = computeEffectiveQuotaView(nowMs);
+    const currentSig = computeQuotaVisualSignature(view);
+    const chargeBarTargets = renderOpts.chargeBars ? [] : null;
+    const shouldAnimate = Boolean(
+      renderOpts.animate !== undefined
+        ? renderOpts.animate
+        : (quotaPendingSmoothAnim && quotaLastSnapshotSig !== null && currentSig !== quotaLastSnapshotSig)
+    );
+    if (renderOpts.consumeAnim !== false && quotaPendingSmoothAnim) {
+      quotaPendingSmoothAnim = false;
+    }
+    quotaLastSnapshotSig = currentSig;
+
+    // 1. 渲染顶栏圆环入口与窄屏溢出菜单项（不只靠颜色，必含数值/状态短文本）
+    const bQuota = el('badge-quota');
+    const qFill = el('quota-ring-fill');
+    const qVal = el('quota-badge-val');
+    const qTag = el('quota-badge-tag');
+    const oQuotaVal = el('overflow-quota-val');
+
+    if (bQuota) {
+      setQuotaAttrIfChanged(bQuota, 'data-quota-state', view.activeStatus || 'unknown');
+      const tipModel = view.currentModel?.productLabel || t('quota.current.unmatched');
+      const tipReset = view.activeReset?.hasResetTime
+        ? `${view.activeReset.resetTimeText} (${formatCountdownMsCompact((view.activeReset.resetAtMs || 0) - nowMs)})`
+        : t('quota.time.unknown');
+      const nextTitle = `${tipModel} · ${view.activeStatusLabel} (${view.badge.text}) · ${t('quota.time.reset')}: ${tipReset}`;
+      if (bQuota.title !== nextTitle) bQuota.title = nextTitle;
+      setQuotaAttrIfChanged(bQuota, 'aria-label', `${t('badge.quota.aria')}: ${view.badge.text} (${view.activeStatusLabel})`);
+    }
+    if (qFill) {
+      if (view.badge.fraction == null) {
+        const nextDash = view.activeStatus === 'unknown' ? '10 30.84' : `0 ${RING_CIRCUMFERENCE.toFixed(2)}`;
+        setQuotaAttrIfChanged(qFill, 'stroke-dasharray', nextDash);
+        setQuotaAttrIfChanged(qFill, 'stroke-dashoffset', '0');
+        quotaBadgeLastHasFraction = false;
+      } else {
+        const clampedFrac = Math.max(0, Math.min(1, view.badge.fraction));
+        const offsetStr = (RING_CIRCUMFERENCE * (1 - clampedFrac)).toFixed(2);
+        const dashStr = `${RING_CIRCUMFERENCE.toFixed(2)} ${RING_CIRCUMFERENCE.toFixed(2)}`;
+        if (!quotaBadgeLastHasFraction && qFill.style && typeof qFill.getBoundingClientRect === 'function') {
+          qFill.style.transition = 'none';
+          qFill.setAttribute('stroke-dasharray', dashStr);
+          qFill.setAttribute('stroke-dashoffset', offsetStr);
+          qFill.getBoundingClientRect();
+          qFill.style.transition = '';
+        } else {
+          setQuotaAttrIfChanged(qFill, 'stroke-dasharray', dashStr);
+          setQuotaAttrIfChanged(qFill, 'stroke-dashoffset', offsetStr);
+        }
+        quotaBadgeLastHasFraction = true;
+      }
+    }
+    if (qVal) {
+      const hasNumericPct = view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error' && view.activeStatus !== 'unknown' && view.badge.fraction != null;
+      if (hasNumericPct) {
+        animateQuotaPercentNode(qVal, view.badge.fraction, shouldAnimate, view.badge.text);
+      } else {
+        let dispVal = view.badge.text;
+        if (view.activeStatus === 'exhausted') dispVal = t('quota.short.exhausted');
+        else if (view.activeStatus === 'no_permission') dispVal = t('quota.short.no_permission');
+        else if (view.activeStatus === 'error') dispVal = t('quota.short.error');
+        else if (view.activeStatus === 'unknown' || view.badge.fraction == null) {
+          dispVal = view.activeStatus === 'stale' ? t('quota.short.stale') : t('quota.short.unknown');
+        }
+        animateQuotaPercentNode(qVal, null, false, dispVal);
+      }
+    }
+    if (qTag) {
+      let dispTag = view.badge.tag;
+      if (view.activeStatus === 'error') dispTag = t('quota.retry');
+      else if (view.activeStatus === 'stale' && view.badge.fraction != null) dispTag = t('quota.short.stale');
+      if (dispTag) {
+        setQuotaHiddenIfChanged(qTag, false);
+        setQuotaTextIfChanged(qTag, dispTag);
+      } else {
+        setQuotaHiddenIfChanged(qTag, true);
+        setQuotaTextIfChanged(qTag, '');
+      }
+    }
+    if (oQuotaVal) {
+      const dispTxt = view.badge.fraction != null && view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error'
+        ? view.badge.text
+        : (qVal ? qVal.textContent : view.badge.text);
+      const dispTag = (qTag && !qTag.hidden) ? qTag.textContent : '';
+      setQuotaTextIfChanged(oQuotaVal, dispTag ? `${dispTxt} · ${dispTag}` : dispTxt);
+    }
+
+    // 2. 刷新按钮与横幅渲染（请求中维持现有文字、宽度与卡片数据，避免闪烁与布局抽动）
+    const btnRefresh = el('btn-quota-refresh');
+    const txtRefresh = el('quota-refresh-text');
+    if (btnRefresh) {
+      if (Boolean(btnRefresh.disabled) !== Boolean(quotaState.busy)) {
+        btnRefresh.disabled = Boolean(quotaState.busy);
+      }
+      setQuotaAttrIfChanged(btnRefresh, 'data-busy', quotaState.busy ? 'true' : 'false');
+    }
+    if (txtRefresh) {
+      setQuotaTextIfChanged(txtRefresh, t('quota.refresh.btn'));
+    }
+
+    const tierPill = el('quota-plan-tier-pill');
+    if (tierPill) {
+      const tierTxt = view.planTierName || ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName || '';
+      if (tierTxt && tierTxt !== '未知') {
+        setQuotaHiddenIfChanged(tierPill, false);
+        setQuotaTextIfChanged(tierPill, tierTxt);
+      } else {
+        setQuotaHiddenIfChanged(tierPill, true);
+      }
+    }
+
+    const bannerEl = el('quota-banner');
+    const bannerTextEl = el('quota-banner-text');
+    if (bannerEl && bannerTextEl) {
+      if (view.syncState === 'error' && view.lastError) {
+        setQuotaHiddenIfChanged(bannerEl, false);
+        setQuotaAttrIfChanged(bannerEl, 'data-tone', 'error');
+        setQuotaTextIfChanged(bannerTextEl, t('quota.errorBanner', { reason: view.lastError }));
+      } else if (view.syncState === 'stale') {
+        setQuotaHiddenIfChanged(bannerEl, false);
+        setQuotaAttrIfChanged(bannerEl, 'data-tone', 'warn');
+        const staleReason = view.lastError
+          || (view.pools.some(p => p.isResetPassed && p.remainingFraction === 0) ? t('quota.resetPassReason') : t('quota.ageExpiredReason'));
+        setQuotaTextIfChanged(bannerTextEl, t('quota.staleBanner', { reason: staleReason }));
+      } else {
+        setQuotaHiddenIfChanged(bannerEl, true);
+      }
+    }
+
+    // 三时间分列渲染：数据更新时间 / 下次自动刷新 / 当前额度重置
+    const tUpd = el('quota-time-updated');
+    const tNext = el('quota-time-next');
+    const tReset = el('quota-time-reset');
+    if (tUpd) {
+      const updStr = formatQuotaDateTime(view.fetchedAtMs);
+      setQuotaTextIfChanged(tUpd, updStr);
+      if (tUpd.title !== updStr) tUpd.title = updStr;
+    }
+    if (tNext) {
+      const prevNextText = String(tNext.textContent || '').trim();
+      const hasValidNextText = Boolean(prevNextText && prevNextText !== '—' && prevNextText !== t('quota.time.unknown') && prevNextText !== t('quota.refresh.busy'));
+      let nextStr = null;
+      if (quotaState.busy) {
+        if (!hasValidNextText) nextStr = t('quota.refresh.busy');
+      } else if (quotaState.autoPaused) {
+        nextStr = t('quota.time.paused');
+      } else if (Number.isFinite(Number(quotaState.nextRefreshAtMs))) {
+        const nextDiff = quotaState.nextRefreshAtMs - nowMs;
+        if (nextDiff > 0) {
+          nextStr = `${formatQuotaDateTime(quotaState.nextRefreshAtMs).slice(6)} (${formatCountdownMsCompact(nextDiff)})`;
+        } else if (!hasValidNextText) {
+          nextStr = t('quota.refresh.busy');
+        }
+      } else {
+        nextStr = t('quota.time.unknown');
+      }
+      if (nextStr !== null) {
+        setQuotaTextIfChanged(tNext, nextStr);
+        if (tNext.title !== nextStr) tNext.title = nextStr;
+      }
+    }
+    if (tReset) {
+      let resetStr = t('quota.time.unknown');
+      if (view.activeReset?.hasResetTime) {
+        const diffText = view.activeReset.isResetPassed
+          ? t('quota.resetPassReason')
+          : formatCountdownMsCompact((view.activeReset.resetAtMs || 0) - nowMs);
+        resetStr = `${view.activeReset.resetTimeText} (${diffText})`;
+      }
+      setQuotaTextIfChanged(tReset, resetStr);
+      if (tReset.title !== resetStr) tReset.title = resetStr;
+    }
+
+    // 当前会话模型概览卡片
+    const curModelEl = el('quota-cur-model');
+    const curPoolEl = el('quota-cur-pool');
+    const curEstEl = el('quota-cur-est');
+    const curStatusEl = el('quota-cur-status');
+    const curAlertEl = el('quota-cur-alert');
+    const curBucketsEl = el('quota-cur-buckets');
+
+    const matchedPoolObj = view.pools.find(p => p.poolKey === view.currentModel?.poolKey);
+
+    if (curModelEl) {
+      setQuotaTextIfChanged(curModelEl, view.currentModel?.productLabel || t('quota.current.unmatched'));
+    }
+    if (curPoolEl) {
+      setQuotaTextIfChanged(curPoolEl, view.currentModel?.poolTitle ? `${view.currentModel.poolTitle}` : '');
+    }
+    if (curEstEl) {
+      const curEstText = !view.currentModel?.noPermission && matchedPoolObj?.primaryBucket?.tokenEstimate
+        ? formatBucketTokenEstimateLine(matchedPoolObj.primaryBucket.tokenEstimate)
+        : '';
+      if (curEstText) {
+        setQuotaHiddenIfChanged(curEstEl, false);
+        setQuotaTextIfChanged(curEstEl, curEstText);
+      } else {
+        setQuotaHiddenIfChanged(curEstEl, true);
+        setQuotaTextIfChanged(curEstEl, '');
+      }
+    }
+    if (curStatusEl) {
+      setQuotaClassIfChanged(curStatusEl, `key-pill ${getQuotaPillClass(view.activeStatus)}`);
+      setQuotaTextIfChanged(curStatusEl, getQuotaStatusLabelText(view.activeStatus));
+    }
+    if (curAlertEl) {
+      if (view.currentModel?.noPermission && view.currentModel?.unavailabilityReason) {
+        setQuotaHiddenIfChanged(curAlertEl, false);
+        setQuotaAttrIfChanged(curAlertEl, 'data-kind', 'noperm');
+        setQuotaTextIfChanged(curAlertEl, view.currentModel.unavailabilityReason);
+      } else if (
+        view.currentModel?.noticeText &&
+        !/^(?:new|beta|preview|updated|notice|recommended)$/i.test(String(view.currentModel.noticeText).trim())
+      ) {
+        setQuotaHiddenIfChanged(curAlertEl, false);
+        setQuotaAttrIfChanged(curAlertEl, 'data-kind', 'notice');
+        setQuotaTextIfChanged(curAlertEl, `Notice: ${view.currentModel.noticeText}`);
+      } else {
+        setQuotaHiddenIfChanged(curAlertEl, true);
+      }
+    }
+    if (curBucketsEl) {
+      renderQuotaBucketsContainer(
+        curBucketsEl,
+        matchedPoolObj?.buckets || [],
+        view.currentModel?.noPermission ? 'no_permission' : null,
+        { animate: shouldAnimate, nowMs, chargeTargets: view.currentModel?.noPermission ? null : chargeBarTargets }
+      );
+    }
+
+    // 共享额度池列表（原地复用已有 DOM 卡片，禁止整块摧毁重排，兼顾轻量 mock DOM）
+    const listEl = el('quota-pools-list');
+    if (listEl) {
+      if (!view.pools.length) {
+        let emptyEl = Array.from(listEl.children || []).find(ch => String(ch.className || '').includes('quota-pools-empty-state')) || null;
+        if (!emptyEl) {
+          emptyEl = document.createElement('div');
+          emptyEl.className = 'quota-pools-empty-state';
+          if (emptyEl.style) emptyEl.style.cssText = 'font-size:11px;color:var(--ag-text-muted);padding:10px;text-align:center;border:1px dashed var(--ag-border-subcard);border-radius:7px';
+        }
+        setQuotaTextIfChanged(emptyEl, t('quota.pools.empty'));
+        reconcileQuotaChildOrder(listEl, [emptyEl]);
+      } else {
+        const existingCards = new Map();
+        for (const ch of Array.from(listEl.children || [])) {
+          const pk = getChildAttr(ch, 'data-pool-key');
+          if (pk) existingCards.set(pk, ch);
+        }
+
+        const desiredCards = [];
+        for (let pIdx = 0; pIdx < view.pools.length; pIdx++) {
+          const pool = view.pools[pIdx];
+          const isCurrentPool = Boolean(view.currentModel?.poolKey && pool.poolKey === view.currentModel.poolKey);
+          const isBrowsing = Boolean(view.browsePoolKey && pool.poolKey === view.browsePoolKey);
+
+          let card = existingCards.get(pool.poolKey);
+          let refs = card ? quotaNodeRefsMap.get(card) : null;
+
+          if (!card || !refs) {
+            card = document.createElement('div');
+            card.className = 'quota-pool-card';
+            card.setAttribute('data-pool-key', pool.poolKey);
+            card.addEventListener('click', () => {
+              quotaState.browsePoolKey = pool.poolKey;
+              renderQuotaBoard(Date.now(), { animate: false });
+            });
+
+            const top = document.createElement('div');
+            top.className = 'quota-pool-top';
+            const titleEl = document.createElement('div');
+            titleEl.className = 'quota-pool-title';
+            const tagsEl = document.createElement('div');
+            tagsEl.className = 'quota-pool-tags';
+            const curTagEl = document.createElement('span');
+            curTagEl.className = 'quota-current-tag';
+            curTagEl.hidden = true;
+            const stPill = document.createElement('span');
+            stPill.className = 'key-pill quota-pool-status-pill';
+            tagsEl.appendChild(curTagEl);
+            tagsEl.appendChild(stPill);
+            top.appendChild(titleEl);
+            top.appendChild(tagsEl);
+
+            const reasonEl = document.createElement('div');
+            reasonEl.className = 'quota-pool-reason';
+            if (reasonEl.style) reasonEl.style.cssText = 'font-size:10.5px;color:var(--ag-text-muted);margin-bottom:4px';
+            reasonEl.hidden = true;
+
+            const bucketsBox = document.createElement('div');
+            bucketsBox.className = 'quota-buckets-list';
+
+            const chipsBox = document.createElement('div');
+            chipsBox.className = 'quota-models-chips';
+
+            card.appendChild(top);
+            card.appendChild(reasonEl);
+            card.appendChild(bucketsBox);
+            card.appendChild(chipsBox);
+            refs = { titleEl, curTagEl, stPill, reasonEl, bucketsBox, chipsBox };
+            quotaNodeRefsMap.set(card, refs);
+          }
+
+          const { titleEl, curTagEl, stPill, reasonEl, bucketsBox, chipsBox } = refs;
+
+          if (isCurrentPool) setQuotaAttrIfChanged(card, 'data-active-current', 'true');
+          else removeQuotaAttrIfPresent(card, 'data-active-current');
+          if (isBrowsing) setQuotaAttrIfChanged(card, 'data-browsing', 'true');
+          else removeQuotaAttrIfPresent(card, 'data-browsing');
+
+          if (titleEl) setQuotaTextIfChanged(titleEl, pool.title);
+          if (curTagEl) {
+            if (isCurrentPool) {
+              setQuotaHiddenIfChanged(curTagEl, false);
+              setQuotaTextIfChanged(curTagEl, t('quota.current.tag'));
+            } else {
+              setQuotaHiddenIfChanged(curTagEl, true);
+            }
+          }
+          if (stPill) {
+            const pStatus = pool.noPermission ? 'no_permission' : (pool.status || 'unknown');
+            setQuotaClassIfChanged(stPill, `key-pill quota-pool-status-pill ${getQuotaPillClass(pStatus)}`);
+            const pctStr = !pool.noPermission && pool.percentText && pool.percentText !== '未知' ? ` · ${pool.percentText}` : '';
+            setQuotaTextIfChanged(stPill, `${getQuotaStatusLabelText(pStatus)}${pctStr}`);
+          }
+
+          if (pool.noPermission && pool.unavailabilityReason) {
+            if (reasonEl) {
+              setQuotaHiddenIfChanged(reasonEl, false);
+              setQuotaTextIfChanged(reasonEl, pool.unavailabilityReason);
+            }
+            if (bucketsBox) {
+              setQuotaHiddenIfChanged(bucketsBox, true);
+              renderQuotaBucketsContainer(bucketsBox, [], null, { animate: false, nowMs });
+            }
+          } else {
+            if (reasonEl) setQuotaHiddenIfChanged(reasonEl, true);
+            if (bucketsBox) {
+              if (pool.buckets && pool.buckets.length) {
+                setQuotaHiddenIfChanged(bucketsBox, false);
+                renderQuotaBucketsContainer(bucketsBox, pool.buckets, null, { animate: shouldAnimate, nowMs, chargeTargets: chargeBarTargets });
+              } else {
+                setQuotaHiddenIfChanged(bucketsBox, true);
+                renderQuotaBucketsContainer(bucketsBox, [], null, { animate: false, nowMs });
+              }
+            }
+          }
+
+          if (chipsBox) {
+            const modelsList = Array.isArray(pool.models) ? pool.models : [];
+            if (!modelsList.length) {
+              setQuotaHiddenIfChanged(chipsBox, true);
+            } else {
+              setQuotaHiddenIfChanged(chipsBox, false);
+              const chipsSig = modelsList.map(m => `${m.productKey}:${m.productLabel}:${(m.efforts || []).join('/')}:${m.noPermission ? 1 : 0}:${m.noticeText || ''}:${view.currentModel?.productKey === m.productKey ? 1 : 0}:${t('quota.short.no_permission')}`).join(';');
+              if (getChildAttr(chipsBox, 'data-chips-sig') !== chipsSig) {
+                chipsBox.setAttribute('data-chips-sig', chipsSig);
+                const chipNodes = [];
+                for (const m of modelsList) {
+                  const chip = document.createElement('span');
+                  chip.className = 'quota-model-chip';
+                  if (view.currentModel?.productKey && m.productKey === view.currentModel.productKey) {
+                    chip.setAttribute('data-current-model', 'true');
+                  }
+                  const lbl = document.createElement('span');
+                  lbl.textContent = m.productLabel;
+                  chip.appendChild(lbl);
+                  if (m.efforts && m.efforts.length) {
+                    const ef = document.createElement('span');
+                    ef.className = 'quota-chip-efforts';
+                    ef.textContent = `(${m.efforts.join('/')})`;
+                    chip.appendChild(ef);
+                  }
+                  if (m.noPermission) {
+                    const np = document.createElement('span');
+                    np.className = 'quota-chip-noperm';
+                    np.textContent = t('quota.short.no_permission');
+                    chip.appendChild(np);
+                  } else if (m.noticeText) {
+                    const nt = document.createElement('span');
+                    nt.className = 'quota-chip-notice';
+                    nt.title = m.noticeText;
+                    nt.textContent = m.noticeTitle || 'Notice';
+                    chip.appendChild(nt);
+                  }
+                  chipNodes.push(chip);
+                }
+                reconcileQuotaChildOrder(chipsBox, chipNodes);
+              }
+            }
+          }
+          desiredCards.push(card);
+        }
+        reconcileQuotaChildOrder(listEl, desiredCards);
+      }
+    }
+
+    if (
+      savedScrollTop !== null &&
+      savedScrollTop > 0 &&
+      viewQuotaBody &&
+      el('panel-quota') &&
+      !el('panel-quota').hidden &&
+      Math.abs((viewQuotaBody.scrollTop || 0) - savedScrollTop) > 1
+    ) {
+      viewQuotaBody.scrollTop = savedScrollTop;
+    }
+
+    if (renderOpts.chargeBars) {
+      if (isQuotaReducedMotion()) {
+        showQuotaUpToDateFeedback();
+      } else if (chargeBarTargets && chargeBarTargets.length > 0) {
+        triggerQuotaBarsChargeAnimation(chargeBarTargets);
+      }
+    }
+
+    syncModelListQuotaIndicators(view, nowMs);
+    scheduleQuotaResetConfirmIfNeeded(view, nowMs);
+  }
+
+  function scheduleQuotaResetConfirmIfNeeded(view, nowMs = Date.now()) {
+    if (state.disposed) return;
+    if (quotaResetTimer) { clearTimeout(quotaResetTimer); quotaResetTimer = null; }
+    // 找到未来最近的 resetAtMs 并设定到点 +2s 自动刷新；若刚过 reset 且尚未确认重拉则安排一次即时确认
+    let soonestFutureMs = null;
+    let passedKey = null;
+    for (const p of (view.pools || [])) {
+      for (const b of (p.buckets || [])) {
+        if (!b.hasResetTime || !Number.isFinite(b.resetAtMs)) continue;
+        if (b.resetAtMs > nowMs) {
+          if (soonestFutureMs === null || b.resetAtMs < soonestFutureMs) soonestFutureMs = b.resetAtMs;
+        } else if (b.remainingFraction === 0) {
+          const rKey = `${p.poolKey}:${b.bucketId}:${b.resetTimeIso}`;
+          if (quotaState.lastResetRequeryKey !== rKey) {
+            passedKey = rKey;
+          }
+        }
+      }
+    }
+    if (passedKey && !quotaState.busy) {
+      quotaState.lastResetRequeryKey = passedKey;
+      quotaResetTimer = setTimeout(() => { void syncQuotaFromHost(true); }, 1500);
+      return;
+    }
+    if (soonestFutureMs !== null) {
+      const waitMs = Math.min(2147483000, Math.max(2000, soonestFutureMs - nowMs + 2000));
+      quotaResetTimer = setTimeout(() => { void syncQuotaFromHost(true); }, waitMs);
+    }
+  }
+
+  function scheduleQuotaAutoRefresh(delayMs = null) {
+    if (state.disposed) return;
+    if (quotaAutoTimer) { clearTimeout(quotaAutoTimer); quotaAutoTimer = null; }
+    const isWindowActive = host.getAttribute('data-window-active') !== 'false' && (typeof document === 'undefined' || !document.hidden);
+    let interval = delayMs;
+    if (!Number.isFinite(interval) || interval <= 0) {
+      if (quotaState.consecutiveErrors > 0) {
+        interval = Math.min(180000, 30000 * Math.pow(2, Math.min(2, quotaState.consecutiveErrors - 1)));
+      } else {
+        interval = isWindowActive ? QUOTA_REFRESH_FG_MS : QUOTA_REFRESH_BG_MS;
+      }
+    }
+    quotaState.nextRefreshAtMs = Date.now() + interval;
+    quotaAutoTimer = setTimeout(() => {
+      quotaAutoTimer = null;
+      if (!state.disposed) void syncQuotaFromHost(false, { silent: true });
+    }, interval);
+  }
+
+  function onQuotaWindowFocus() {
+    if (state.disposed) return;
+    quotaState.autoPaused = false;
+    const elapsed = quotaState.lastFetchedAtMs ? (Date.now() - quotaState.lastFetchedAtMs) : Infinity;
+    if (elapsed >= 20000 && !quotaState.busy) {
+      void syncQuotaFromHost(false, { silent: true });
+    } else {
+      scheduleQuotaAutoRefresh();
+    }
+  }
+
+  function onQuotaWindowBlur() {
+    if (state.disposed) return;
+    scheduleQuotaAutoRefresh(QUOTA_REFRESH_BG_MS);
+  }
+
+  function scheduleQuotaPostTurnRefresh() {
+    if (state.disposed) return;
+    if (quotaPostTurnTimer) clearTimeout(quotaPostTurnTimer);
+    quotaPostTurnTimer = setTimeout(() => {
+      quotaPostTurnTimer = null;
+      const elapsed = quotaState.lastFetchedAtMs ? (Date.now() - quotaState.lastFetchedAtMs) : Infinity;
+      if (!state.disposed && !quotaState.busy && elapsed > 5000) {
+        void syncQuotaFromHost(true);
+      }
+    }, 1500);
+  }
+
+  async function maybeRefreshQuotaOnOpen() {
+    const elapsed = quotaState.lastFetchedAtMs ? (Date.now() - quotaState.lastFetchedAtMs) : Infinity;
+    if (!quotaState.snapshot || elapsed > 15000) {
+      await syncQuotaFromHost(false);
+    }
+  }
+
+  async function syncQuotaFromHost(force = false, meta = {}) {
+    if (state.disposed) return null;
+    if (quotaInFlightPromise) {
+      return quotaInFlightPromise;
+    }
+
+    const isManual = Boolean(meta.manual);
+    const isSilent = Boolean(meta.silent) && !isManual;
+    if (isManual) triggerQuotaRefreshIconSpin();
+    const runner = (async () => {
+      const prevSig = computeQuotaVisualSignature(computeEffectiveQuotaView(Date.now()));
+      quotaState.busy = true;
+      renderQuotaBoard(Date.now(), { animate: false, consumeAnim: false });
+      let payload = null;
+      let rpcErr = null;
+      try {
+        if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getQuota === 'function') {
+          const res = await window.contextMeterAPI.getQuota({ force: Boolean(force) });
+          if (res?.ok && res.data) payload = res.data;
+          else if (res?.error) rpcErr = res.error;
+        } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+          const live = window.__AGContextMeterLive;
+          quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          const r = await fetch(`http://127.0.0.1:${live.port}/quota`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+            body: JSON.stringify({ force: Boolean(force) }),
+            signal: quotaAbortController?.signal
+          });
+          if (r.ok) {
+            const j = await r.json();
+            if (j?.ok && j.data) payload = j.data;
+            else if (j?.error) rpcErr = j.error;
+          } else {
+            rpcErr = `HTTP ${r.status}`;
+          }
+        }
+      } catch (e) {
+        if (e?.name !== 'AbortError') {
+          rpcErr = e?.message || '请求模型额度失败';
+        }
+      } finally {
+        quotaAbortController = null;
+      }
+
+      if (state.disposed) return null;
+      const nowMs = Date.now();
+      quotaState.busy = false;
+      quotaState.lastFetchedAtMs = nowMs;
+
+      if (payload) {
+        if (payload.accountSwitched || (payload.accountScopeKey && quotaState.accountScopeKey && payload.accountScopeKey !== quotaState.accountScopeKey)) {
+          clearQuotaBarChargeAnimations();
+          quotaState.snapshot = null;
+          quotaState.rawInput = null;
+          quotaState.browsePoolKey = null;
+          quotaState.lastResetRequeryKey = null;
+          quotaLastEstComputeSig = '';
+          quotaCachedEstByKey = null;
+        }
+        if (payload.accountScopeKey) quotaState.accountScopeKey = payload.accountScopeKey;
+
+        if (payload.ok !== false) {
+          quotaState.snapshot = payload.snapshot || null;
+          quotaState.rawInput = null;
+          quotaState.lastSuccessAtMs = payload.lastSuccessAtMs || payload.fetchedAtMs || nowMs;
+          quotaState.error = null;
+          quotaState.errorKind = null;
+          quotaState.consecutiveErrors = 0;
+          if (Array.isArray(payload.cascadeModelConfigs) && payload.cascadeModelConfigs.length > 0 && (!state.cascadeModelConfigs || !state.cascadeModelConfigs.length)) {
+            state.cascadeModelConfigs = payload.cascadeModelConfigs;
+            renderHeaderModelDropdown();
+            syncContextModelSelectionFromState();
+          }
+        } else {
+          quotaState.error = payload.error || '刷新失败';
+          quotaState.errorKind = payload.errorKind || 'network';
+          quotaState.consecutiveErrors += 1;
+          if (payload.snapshot && !quotaState.snapshot) {
+            quotaState.snapshot = payload.snapshot;
+          }
+        }
+      } else if (rpcErr) {
+        quotaState.error = rpcErr;
+        quotaState.errorKind = 'network';
+        quotaState.consecutiveErrors += 1;
+      }
+
+      const nextView = computeEffectiveQuotaView(nowMs);
+      const nextSig = computeQuotaVisualSignature(nextView);
+      const hasDataChanged = nextSig !== prevSig;
+      const requestSucceeded = Boolean(payload && payload.ok !== false && !rpcErr && !quotaState.error);
+      const shouldAnimateChange = Boolean(hasDataChanged && !quotaState.error && prevSig !== 'empty' && !isSilent);
+      const panelQuotaEl = el('panel-quota');
+      const shouldChargeBars = Boolean(isManual && requestSucceeded && panelQuotaEl && !panelQuotaEl.hidden);
+      quotaPendingSmoothAnim = shouldAnimateChange;
+      if (!hasDataChanged && isManual && requestSucceeded) {
+        showQuotaUpToDateFeedback();
+      } else if (hasDataChanged || !requestSucceeded) {
+        hideQuotaRefreshFeedback();
+      }
+
+      scheduleQuotaAutoRefresh();
+      renderQuotaBoard(nowMs, { animate: shouldAnimateChange, chargeBars: shouldChargeBars });
+      return quotaState.snapshot;
+    })();
+
+    quotaInFlightPromise = runner;
+    try {
+      return await runner;
+    } finally {
+      if (quotaInFlightPromise === runner) quotaInFlightPromise = null;
+    }
+  }
+
+  el('btn-quota-refresh')?.addEventListener('click', () => {
+    void syncQuotaFromHost(true, { manual: true });
+  });
+  el('btn-quota-banner-retry')?.addEventListener('click', () => {
+    void syncQuotaFromHost(true, { manual: true });
+  });
+  renderQuotaBoard();
+
+  let quotaTickCounter = 0;
   function tick() {
-    if (!state.disposed && !host.isConnected) {
+    if (state.disposed || (globalThis.__AGContextMeterActiveHost && globalThis.__AGContextMeterActiveHost !== host)) {
+      earlyForceDispose();
+      return;
+    }
+    if (!host.isConnected) {
       ensureHostDocked();
     }
     const id = route();
     if (id !== state.route) {
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       if (state.sessionCallsMap) state.sessionCallsMap.clear();
-      if (state.reportedFinalCallIds) state.reportedFinalCallIds.clear();
-      if (state.reportedFinalCallOutputs) state.reportedFinalCallOutputs.clear();
       Object.assign(state, {
         route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
-        requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
-        scanBusy: false, scanNext: 0, scanError: '', scan: null,
-        reportedFinalCallIds: state.reportedFinalCallIds || new Set(),
-        reportedFinalCallOutputs: state.reportedFinalCallOutputs || new Map()
+        callsHydrated: false, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
+        scanBusy: false, scanNext: 0, scanError: '', scan: null
       });
+      // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
+      if (lastHistorySync > 0) {
+        lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
+      }
       toggle(false); hideContextTooltip(); renderFiles(null); render();
-      void syncTokenHistoryFromHost(false);
     }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
+    if (!state.disposed && state.pendingFinalCalls?.size && !state.flushFinalsBusy && Date.now() >= (state.nextFlushRetryAt || 0)) {
+      void flushPendingFinalCalls(false);
+    }
+    syncPendingAutomaticHistory();
     if (Date.now() - lastHistorySync > 15000) {
       const isInitialSync = lastHistorySync === 0;
       lastHistorySync = Date.now();
       void syncTokenHistoryFromHost(false);
+      if (isInitialSync && !quotaState.snapshot && !quotaState.busy) {
+        void syncQuotaFromHost(false);
+      }
       if (!isInitialSync && activeContextTab === 'models' && !isContextSettingsView) {
         void fetchAvailableModelsIfNeeded();
       }
     }
+    quotaTickCounter = (quotaTickCounter + 1) % 2;
+    if (quotaTickCounter === 0 && el('panel-quota') && !el('panel-quota').hidden) {
+      renderQuotaBoard(Date.now());
+    }
   }
 
   const timer = setInterval(tick, 500);
+  // 监听 SPA 路由跳转，切会话微任务内立即清旧状态并发起新会话采集，消除轮询间隙旧数据残留
+  let routeHookScheduled = false;
+  const scheduleImmediateRouteTick = () => {
+    if (routeHookScheduled || state.disposed) return;
+    routeHookScheduled = true;
+    Promise.resolve().then(() => {
+      routeHookScheduled = false;
+      if (!state.disposed && route() !== state.route) tick();
+    });
+  };
+  let origPushState = null;
+  let origReplaceState = null;
+  let wrappedPushState = null;
+  let wrappedReplaceState = null;
+  if (typeof globalThis.addEventListener === 'function') {
+    globalThis.addEventListener('popstate', scheduleImmediateRouteTick);
+  }
+  if (typeof globalThis.history === 'object' && globalThis.history) {
+    if (typeof globalThis.history.pushState === 'function') {
+      origPushState = globalThis.history.pushState;
+      wrappedPushState = function (...args) {
+        const res = origPushState.apply(this, args);
+        scheduleImmediateRouteTick();
+        return res;
+      };
+      try { globalThis.history.pushState = wrappedPushState; } catch { wrappedPushState = null; }
+    }
+    if (typeof globalThis.history.replaceState === 'function') {
+      origReplaceState = globalThis.history.replaceState;
+      wrappedReplaceState = function (...args) {
+        const res = origReplaceState.apply(this, args);
+        scheduleImmediateRouteTick();
+        return res;
+      };
+      try { globalThis.history.replaceState = wrappedReplaceState; } catch { wrappedReplaceState = null; }
+    }
+  }
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.3',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4',
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();
@@ -17871,7 +22438,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       return true;
     },
     theme: () => resolveTheme(),
-    setTheme: mode => { currentThemeMode = mode; try { localStorage.setItem('ag_theme_mode', mode); } catch {}; applyTheme(); },
+    setTheme: mode => { currentThemeMode = mode; try { localStorage.setItem('ag_theme_mode', mode); } catch { }; applyTheme(); },
     getCustomColors: () => ({ ...customColors }),
     setCustomColor,
     resetCustomColors,
@@ -17909,6 +22476,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     setCountry: val => applyDirectCountrySelection(val),
     setCurrency: val => applyDirectCurrencySelection(val),
     restoreSettingsFromHost,
+    syncTokenHistoryFromHost,
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,
     getTimelineWindow: () => {
@@ -17983,6 +22551,10 @@ function renderHeatmapGrid(forceRebuild = false) {
       currentBrandTitle,
       selectedEnhanceTier,
       enhanceTitleDraft,
+      enhanceTierDirty,
+      enhanceTitleDirty,
+      proxyInputDirty,
+      currentProxyEnabled,
       hasPendingLsReload,
       currentEnhanceStatus: currentEnhanceStatus ? { ...currentEnhanceStatus } : null
     }),
@@ -18003,29 +22575,96 @@ function renderHeatmapGrid(forceRebuild = false) {
     restoreSettingsForTest: () => restoreSettingsFromHost(),
     translateForTest: (key, vars) => t(key, vars),
     applyStaticTranslationsForTest: (rootNode) => applyStaticPanelTranslations(rootNode),
+    getModelQuotaStateForTest: (nowMs) => ({
+      state: {
+        accountScopeKey: quotaState.accountScopeKey,
+        browsePoolKey: quotaState.browsePoolKey,
+        busy: quotaState.busy,
+        lastFetchedAtMs: quotaState.lastFetchedAtMs,
+        lastSuccessAtMs: quotaState.lastSuccessAtMs,
+        nextRefreshAtMs: quotaState.nextRefreshAtMs,
+        error: quotaState.error,
+        activeSessionModelKey
+      },
+      view: computeEffectiveQuotaView(Number.isFinite(nowMs) ? nowMs : Date.now())
+    }),
+    setQuotaSnapshotForTest: (payload, nowMs) => {
+      const tNow = Number.isFinite(nowMs) ? nowMs : Date.now();
+      if (!payload) {
+        resetQuotaState({ clearAccountScope: true });
+        return computeEffectiveQuotaView(tNow);
+      }
+      const prevSig = computeQuotaVisualSignature(computeEffectiveQuotaView(tNow));
+      if (payload.accountSwitched || (payload.accountScopeKey && quotaState.accountScopeKey && payload.accountScopeKey !== quotaState.accountScopeKey)) {
+        resetQuotaState({ clearAccountScope: true });
+      }
+      if (payload.accountScopeKey) quotaState.accountScopeKey = payload.accountScopeKey;
+      quotaState.error = payload.error || null;
+      quotaState.errorKind = payload.errorKind || (payload.error ? 'network' : null);
+      if (payload.fetchedAtMs !== undefined) quotaState.lastFetchedAtMs = payload.fetchedAtMs;
+      if (payload.lastSuccessAtMs !== undefined) quotaState.lastSuccessAtMs = payload.lastSuccessAtMs;
+      if (payload.nextRefreshAtMs !== undefined) quotaState.nextRefreshAtMs = payload.nextRefreshAtMs;
+      if (payload.userStatusRes || payload.quotaSummaryRes || payload.cascadeModelConfigs) {
+        const fallbackCfgs = (Array.isArray(state.cascadeModelConfigs) && state.cascadeModelConfigs.length > 0)
+          ? state.cascadeModelConfigs
+          : null;
+        quotaState.rawInput = {
+          userStatusRes: payload.userStatusRes || null,
+          quotaSummaryRes: payload.quotaSummaryRes || null,
+          cascadeModelConfigs: (Array.isArray(payload.cascadeModelConfigs) && payload.cascadeModelConfigs.length > 0)
+            ? payload.cascadeModelConfigs
+            : fallbackCfgs,
+          planStatus: payload.planStatus || ANTIGRAVITY_TOKEN_DATA.planStatus || null
+        };
+        quotaState.snapshot = null;
+        if (!payload.error && payload.lastSuccessAtMs === undefined) quotaState.lastSuccessAtMs = tNow;
+      } else if (payload.snapshot !== undefined) {
+        quotaState.snapshot = payload.snapshot;
+        quotaState.rawInput = null;
+        if (!payload.error && payload.lastSuccessAtMs === undefined && payload.snapshot?.fetchedAtMs) {
+          quotaState.lastSuccessAtMs = payload.snapshot.fetchedAtMs;
+        }
+      }
+      const nextSig = computeQuotaVisualSignature(computeEffectiveQuotaView(tNow));
+      const shouldAnimate = Boolean(prevSig !== 'empty' && nextSig !== prevSig && !quotaState.error);
+      renderQuotaBoard(tNow, { animate: shouldAnimate });
+      return computeEffectiveQuotaView(tNow);
+    },
+    refreshQuotaForTest: (force = false, meta = {}) => syncQuotaFromHost(Boolean(force), meta),
+    selectQuotaPoolBrowseForTest: (poolKey) => {
+      quotaState.browsePoolKey = poolKey || null;
+      renderQuotaBoard();
+      return { browsePoolKey: quotaState.browsePoolKey, activeSessionModelKey };
+    },
+    showQuotaPanelForTest: (open = true) => {
+      showPanel(open ? 'quota' : 'none');
+      return !el('panel-quota')?.hidden;
+    },
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     dispose() {
-      state.disposed = true;
-      for (const controller of state.controllers) controller.abort();
+      earlyForceDispose();
+      clearQuotaTimers();
       clearInterval(timer);
-      if (layoutRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(layoutRaf);
-      syncHostStackingElevation(false);
-      try { uninstallRequestInterceptor(); } catch {}
-      try { themeObserver?.disconnect(); } catch {}
-      try { resizeObserver?.disconnect(); } catch {}
-      try { hostDomObserver?.disconnect(); } catch {}
+      try { globalThis.removeEventListener?.('popstate', scheduleImmediateRouteTick); } catch { }
       try {
-        window.removeEventListener?.('resize', onWindowResize);
-        window.removeEventListener?.('focus', onWindowFocus);
-        window.removeEventListener?.('blur', onWindowBlur);
+        if (wrappedPushState && globalThis.history?.pushState === wrappedPushState && origPushState) {
+          globalThis.history.pushState = origPushState;
+        }
+        if (wrappedReplaceState && globalThis.history?.replaceState === wrappedReplaceState && origReplaceState) {
+          globalThis.history.replaceState = origReplaceState;
+        }
+      } catch { }
+      syncHostStackingElevation(false);
+      try { uninstallRequestInterceptor(); } catch { }
+      try { themeObserver?.disconnect(); } catch { }
+      try {
         window.removeEventListener?.('mousemove', onPointerMove);
         window.removeEventListener?.('mouseup', onPointerUp);
-        navigator?.windowControlsOverlay?.removeEventListener?.('geometrychange', onWindowResize);
-      } catch {}
+      } catch { }
       document.removeEventListener('click', outside);
       document.removeEventListener('keydown', escape);
-      try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch {}
-      try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch {}
+      try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
+      try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
       host.remove();
     }
   };
@@ -18033,7 +22672,9 @@ function renderHeatmapGrid(forceRebuild = false) {
   applyStaticPanelTranslations(shadow);
   refreshRegionPresetSelectOptions();
   renderEnhanceSectionUI();
-  void restoreSettingsFromHost();
+  startupRestorePromise = restoreSettingsFromHost().finally(() => {
+    startupRestorePromise = null;
+  });
   installRequestInterceptor();
   render();
   tick();

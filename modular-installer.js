@@ -38,11 +38,13 @@ function validateSyntax(code, filename = 'script.js') {
 }
 
 /**
- * 生成免 TUN 代理主进程注入代码（支持环境变量拦截、Chromium 命令行开关与 Electron session 代理）
+ * 生成免 TUN 代理主进程注入代码（支持环境变量覆盖拦截、Chromium 命令行开关与全 Session 代理）
  */
 function generateProxyUtilsCode(cfg = {}) {
-  const proxyUrl = cfg.proxyUrl || 'http://127.0.0.1:7897';
-  const bypassList = cfg.bypassList || 'localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<local>';
+  const defaultEnabled = cfg.enabled === true;
+  const rawDefaultUrl = String(cfg.proxyUrl || '').trim().replace(/^([a-zA-Z0-9+.-]+:\/\/[^/?#]+)\/+$/, '$1');
+  const proxyUrl = defaultEnabled && rawDefaultUrl ? rawDefaultUrl : null;
+  const bypassList = String(cfg.bypassList || 'localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<local>').trim();
   return `\n${TAGS.PROXY_START}
 try {
   const _fs = require('fs');
@@ -52,43 +54,96 @@ try {
 
   let _proxyUrl = ${JSON.stringify(proxyUrl)};
   let _noProxy = ${JSON.stringify(bypassList)};
+  let _matchedCfgPath = null;
+  const _normalizeUrl = (v) => String(v || '').trim().replace(/^([a-zA-Z0-9+.-]+:\\/\\/[^/?#]+)\\/+$/, '$1');
 
   const _localApp = process.platform === 'win32'
     ? (process.env.LOCALAPPDATA || _path.join(_os.homedir(), 'AppData', 'Local'))
     : (process.platform === 'darwin'
       ? _path.join(_os.homedir(), 'Library', 'Application Support')
-      : _path.join(_os.homedir(), '.local', 'state'));
+      : (process.env.XDG_STATE_HOME || _path.join(_os.homedir(), '.local', 'state')));
 
-  const _cfgCandidates = [
+  const _cfgCandidates = [];
+  if (process.env.ANTIGRAVITY_PROXY_CONFIG && process.env.ANTIGRAVITY_PROXY_CONFIG.trim()) {
+    _cfgCandidates.push(_path.resolve(process.env.ANTIGRAVITY_PROXY_CONFIG.trim()));
+  }
+  if (process.env.AG_METER_STATE_DIR && process.env.AG_METER_STATE_DIR.trim()) {
+    const _stateDir = _path.resolve(process.env.AG_METER_STATE_DIR.trim());
+    _cfgCandidates.push(
+      _path.join(_stateDir, 'modules.json'),
+      _path.join(_stateDir, 'proxy.json')
+    );
+  }
+  _cfgCandidates.push(
     _path.join(_localApp, 'AntigravityContextMeter', 'modules.json'),
     _path.join(_localApp, 'AntigravityContextMeter', 'proxy.json'),
     _path.join(_localApp, 'AntigravityProxyNoTun', 'config.json')
-  ];
+  );
 
   for (const _p of _cfgCandidates) {
     if (_fs.existsSync(_p)) {
+      const _isUnified = _path.basename(_p) === 'modules.json';
       try {
-        const _d = JSON.parse(_fs.readFileSync(_p, 'utf8'));
-        const _pCfg = (_d.modules && _d.modules.proxy) ? _d.modules.proxy : _d;
-        if (_pCfg.enabled === false) { _proxyUrl = null; break; }
-        if (_pCfg.proxyUrl || _pCfg.httpProxy) _proxyUrl = _pCfg.proxyUrl || _pCfg.httpProxy;
-        if (_pCfg.bypassList || _pCfg.noProxy) _noProxy = _pCfg.bypassList || _pCfg.noProxy;
+        const _rawText = _fs.readFileSync(_p, 'utf8');
+        if (!_rawText || !_rawText.trim()) {
+          if (_isUnified) { _proxyUrl = null; _matchedCfgPath = _p; break; }
+          continue;
+        }
+        const _d = JSON.parse(_rawText);
+        const _pCfg = (_d && _d.modules && _d.modules.proxy) ? _d.modules.proxy : _d;
+        _matchedCfgPath = _p;
+        if (!_pCfg || _pCfg.enabled === false) { _proxyUrl = null; break; }
+        if (_isUnified && _pCfg.enabled !== true) { _proxyUrl = null; break; }
+        const _candUrl = _normalizeUrl(_pCfg.proxyUrl || _pCfg.httpProxy || '');
+        if (_candUrl) _proxyUrl = _candUrl;
+        else if (_isUnified) { _proxyUrl = null; break; }
+        if (_pCfg.bypassList || _pCfg.noProxy) _noProxy = String(_pCfg.bypassList || _pCfg.noProxy).trim();
         break;
-      } catch {}
+      } catch (_cfgErr) {
+        if (_isUnified) {
+          _proxyUrl = null;
+          _matchedCfgPath = _p;
+          console.warn('[ProxyNoTun] modules.json parse failed; fail-closed without fallback:', _cfgErr);
+          break;
+        }
+      }
     }
   }
 
+  let _chromiumProxy = null;
   if (_proxyUrl) {
+    _proxyUrl = _normalizeUrl(_proxyUrl);
+    _chromiumProxy = _proxyUrl.replace(/^socks5h:\\/\\//i, 'socks5://');
     for (const _k of ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy']) {
-      if (!process.env[_k]) process.env[_k] = _proxyUrl;
+      process.env[_k] = _proxyUrl;
     }
     process.env['NO_PROXY'] = _noProxy;
     process.env['no_proxy'] = _noProxy;
+    process.env['NODE_USE_ENV_PROXY'] = '1';
 
     if (_electron && _electron.app && _electron.app.commandLine) {
       try {
-        _electron.app.commandLine.appendSwitch('proxy-server', _proxyUrl);
+        _electron.app.commandLine.appendSwitch('proxy-server', _chromiumProxy);
         _electron.app.commandLine.appendSwitch('proxy-bypass-list', _noProxy);
+      } catch {}
+    }
+
+    const _applySessionProxy = (_sess) => {
+      try {
+        if (_sess && typeof _sess.setProxy === 'function') {
+          _sess.setProxy({
+            proxyRules: _chromiumProxy,
+            proxyBypassRules: _noProxy
+          }).catch(() => {});
+        }
+      } catch {}
+    };
+
+    if (_electron && _electron.app && typeof _electron.app.on === 'function') {
+      try {
+        _electron.app.on('session-created', (_sess) => {
+          _applySessionProxy(_sess);
+        });
       } catch {}
     }
 
@@ -96,15 +151,27 @@ try {
       _electron.app.whenReady().then(() => {
         try {
           if (_electron.session && _electron.session.defaultSession) {
-            _electron.session.defaultSession.setProxy({
-              proxyRules: _proxyUrl,
-              proxyBypassRules: _noProxy
-            }).catch(() => {});
+            _applySessionProxy(_electron.session.defaultSession);
+          }
+          if (_electron.session && typeof _electron.session.fromPartition === 'function') {
+            _applySessionProxy(_electron.session.fromPartition('persist:hub-browser-anonymous'));
           }
         } catch {}
       }).catch(() => {});
     }
   }
+
+  try {
+    globalThis.__AG_PROXY_BOOT_INFO__ = {
+      injectedAtStartup: true,
+      active: Boolean(_proxyUrl),
+      proxyUrl: _proxyUrl || null,
+      chromiumProxyUrl: _chromiumProxy || null,
+      bypassList: _noProxy || null,
+      configPath: _matchedCfgPath,
+      recordedAt: new Date().toISOString()
+    };
+  } catch {}
 } catch (_pErr) {
   console.warn('[ProxyNoTun] Injection init warning:', _pErr);
 }
@@ -200,7 +267,7 @@ try {
     if (_agDecPromise && typeof _agDecPromise.catch === "function") { _agDecPromise.catch(function(){}); }
   }
 } catch (_agDecErr) {}
-electron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTokenHistory: (force) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts), applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts), restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts), restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host"), getEnhanceStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-status", opts), applyEnhancePatch: (payload) => electron_1.ipcRenderer.invoke("context-meter:enhance-apply", payload), restoreAllEnhance: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-restore", opts), restartLanguageServers: () => electron_1.ipcRenderer.invoke("context-meter:restart-language-servers"), getModulesStatus: () => electron_1.ipcRenderer.invoke("context-meter:modules-status"), toggleModule: (name, enable, opts) => electron_1.ipcRenderer.invoke("context-meter:toggle-module", name, enable, opts), testProxy: (url) => electron_1.ipcRenderer.invoke("context-meter:test-proxy", url) });
+electron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTokenHistory: (force) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true), getQuota: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-quota", opts), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts), applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts), restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts), restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host"), getEnhanceStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-status", opts), applyEnhancePatch: (payload) => electron_1.ipcRenderer.invoke("context-meter:enhance-apply", payload), restoreAllEnhance: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-restore", opts), restartLanguageServers: () => electron_1.ipcRenderer.invoke("context-meter:restart-language-servers"), getModulesStatus: () => electron_1.ipcRenderer.invoke("context-meter:modules-status"), toggleModule: (name, enable, opts) => electron_1.ipcRenderer.invoke("context-meter:toggle-module", name, enable, opts), testProxy: (url) => electron_1.ipcRenderer.invoke("context-meter:test-proxy", url) });
 ${TAGS.METER_PRELOAD_END}\n`;
 }
 
@@ -211,16 +278,17 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
   return `\n${TAGS.CHINESE_START}
 (function() {
   try {
+    // 默认 fail-closed：未确认明确开启时不执行汉化（PR #11 / PR #12）
     var _i18nConfig = { enabled: false, language: 'en', brandTitle: 'english' };
-    var _configResolved = false;
+    var _resolved = false;
     try {
       if (typeof electron_1 !== 'undefined' && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
         var _syncCfg = electron_1.ipcRenderer.sendSync('context-meter:get-chinese-config-sync');
-        if (_syncCfg && typeof _syncCfg === 'object') {
-          _configResolved = true;
+        if (_syncCfg && typeof _syncCfg === 'object' && _syncCfg.resolved !== false) {
           _i18nConfig.enabled = _syncCfg.enabled !== false && _syncCfg.language !== 'en';
           _i18nConfig.language = _syncCfg.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
           _i18nConfig.brandTitle = _syncCfg.brandTitle || 'english';
+          _resolved = true;
         }
       }
     } catch(ipcErr) {}
@@ -236,43 +304,40 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
         });
       }
     } catch(ipcErr2) {}
-    var _chineseEnabled = false;
     var _fs = typeof require === 'function' ? (function() { try { return require('fs'); } catch(e) { return null; } })() : null;
     var _path = typeof require === 'function' ? (function() { try { return require('path'); } catch(e) { return null; } })() : null;
     var _os = typeof require === 'function' ? (function() { try { return require('os'); } catch(e) { return null; } })() : null;
     if (_fs && _path && _os) {
+      var _stateOverride = (typeof process !== 'undefined' && process && process.env && process.env.AG_METER_STATE_DIR)
+        ? String(process.env.AG_METER_STATE_DIR).trim()
+        : '';
       var _localApp = process.platform === 'win32'
         ? (process.env.LOCALAPPDATA || _path.join(_os.homedir(), 'AppData', 'Local'))
         : (process.platform === 'darwin'
           ? _path.join(_os.homedir(), 'Library', 'Application Support')
-          : _path.join(_os.homedir(), '.local', 'state'));
-      var _cfgP = _path.join(_localApp, 'AntigravityContextMeter', 'modules.json');
-      if (_fs.existsSync(_cfgP)) {
+          : (process.env.XDG_STATE_HOME || _path.join(_os.homedir(), '.local', 'state')));
+      var _cfgP = _stateOverride
+        ? _path.join(_path.resolve(_stateOverride), 'modules.json')
+        : _path.join(_localApp, 'AntigravityContextMeter', 'modules.json');
+      if (!_resolved && _fs.existsSync(_cfgP)) {
         try {
           var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
           var _ch = _c && _c.modules && _c.modules.chinese ? _c.modules.chinese : null;
           if (_ch) {
-            _configResolved = true;
             _i18nConfig.enabled = _ch.enabled !== false && _ch.language !== 'en';
             _i18nConfig.language = _ch.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
             _i18nConfig.brandTitle = _ch.brandTitle || 'english';
+            _resolved = true;
             if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false && _i18nConfig.brandTitle === 'english') {
               return;
             }
           }
-          _chineseEnabled = Boolean(_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === true);
-        } catch(e) {}
-      }
-    } else if (typeof electron_1 !== 'undefined' && electron_1 && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
-      try {
-        if (!_configResolved) {
-          _chineseEnabled = electron_1.ipcRenderer.sendSync('context-meter:is-chinese-enabled') === true;
-          _i18nConfig.enabled = _chineseEnabled;
-          _i18nConfig.language = _chineseEnabled ? 'zh-CN' : 'en';
+        } catch(e) {
+          _resolved = false;
         }
-      } catch(e) {}
+      }
     }
-    if (!_i18nConfig.enabled && _i18nConfig.brandTitle === 'english') {
+    if (!_resolved || (!_i18nConfig.enabled && _i18nConfig.brandTitle === 'english')) {
       return;
     }
 

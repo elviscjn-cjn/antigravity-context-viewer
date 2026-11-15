@@ -378,23 +378,38 @@ async function main() {
     const cfg = loadModulesConfig();
     const enable = cmd === 'chinese:enable';
     cfg.modules.chinese.enabled = enable;
+    cfg.modules.chinese.language = enable ? 'zh-CN' : 'en';
+    cfg.modules.chinese.lastUpdated = new Date().toISOString();
     saveModulesConfig(cfg);
-    await install({ path: customPath, modules: { chinese: { enabled: enable } } });
+    await install({ path: customPath, modules: { chinese: { enabled: enable, language: cfg.modules.chinese.language } } });
     console.log(`✅ 客户端界面汉化模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
   } else if (cmd === 'proxy:enable' || cmd === 'proxy:disable') {
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
     const cfg = loadModulesConfig();
     const enable = cmd === 'proxy:enable';
     cfg.modules.proxy.enabled = enable;
+    cfg.modules.proxy.lastUpdated = new Date().toISOString();
     saveModulesConfig(cfg);
     await install({ path: customPath, modules: { proxy: { enabled: enable } } });
     console.log(`✅ 免 TUN 网络直连模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
   } else if (cmd === 'proxy:set') {
-    const newUrl = args[1] && !args[1].startsWith('-') ? args[1] : args[2];
-    if (!newUrl) throw new Error('请提供有效的代理地址，例如: node cli.js proxy:set http://127.0.0.1:7890');
+    const rawUrl = args[1] && !args[1].startsWith('-') ? args[1] : args[2];
+    if (!rawUrl) throw new Error('请提供有效的代理地址，例如: node cli.js proxy:set http://127.0.0.1:7890');
+    const { normalizeProxyUrl } = require('./meter-proxy');
+    const newUrl = normalizeProxyUrl(rawUrl);
+    try {
+      const u = new URL(newUrl);
+      const portNum = Number(u.port);
+      if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(u.protocol) || !u.hostname || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+        throw new Error('invalid');
+      }
+    } catch {
+      throw new Error('代理地址格式无效，需包含有效协议(http/https/socks5)与端口(1-65535)');
+    }
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
     const cfg = loadModulesConfig();
     cfg.modules.proxy.proxyUrl = newUrl;
+    cfg.modules.proxy.lastUpdated = new Date().toISOString();
     saveModulesConfig(cfg);
     if (cfg.modules.proxy.enabled) {
       await install({ path: customPath, modules: { proxy: { proxyUrl: newUrl } } });

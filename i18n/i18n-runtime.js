@@ -450,7 +450,7 @@
     if (scanId) el._agyScanId = scanId;
 
     // 复合组件自愈：处理特定 JSX 碎片化 Alert（如 plan-command-fyi-alert）
-    if (el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
+    if (i18nEnabled && el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
       var alertSpan = el.querySelector ? el.querySelector('span') : null;
       if (alertSpan && !alertSpan._agyAlertDone) {
         var alertChild = alertSpan.firstChild;
@@ -466,22 +466,24 @@
     }
 
     // 翻译属性
-    for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
-      var attr = TRANSLATABLE_ATTRS[i];
-      if (el.hasAttribute && el.hasAttribute(attr)) {
-        var val = el.getAttribute(attr);
-        if (val) {
-          // 检查是否已翻译过此属性
-          var markKey = MARK_ATTR + '_' + attr;
-          if (el[markKey] === val) continue;
+    if (i18nEnabled) {
+      for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
+        var attr = TRANSLATABLE_ATTRS[i];
+        if (el.hasAttribute && el.hasAttribute(attr)) {
+          var val = el.getAttribute(attr);
+          if (val) {
+            // 检查是否已翻译过此属性
+            var markKey = MARK_ATTR + '_' + attr;
+            if (el[markKey] === val) continue;
 
-          var trans = translateSingleUnit(val);
-          if (trans !== null && trans !== val) {
-            el.setAttribute(attr, trans);
-            el[markKey] = trans; // 标记已翻译的值
-          } else {
-            // 关键性能优化：补充 DOM 否定标记，未命中时记录原属性值，二次扫描直接 O(1) 退出
-            el[markKey] = val;
+            var trans = translateSingleUnit(val);
+            if (trans !== null && trans !== val) {
+              el.setAttribute(attr, trans);
+              el[markKey] = trans; // 标记已翻译的值
+            } else {
+              // 关键性能优化：补充 DOM 否定标记，未命中时记录原属性值，二次扫描直接 O(1) 退出
+              el[markKey] = val;
+            }
           }
         }
       }
@@ -490,7 +492,7 @@
     // 遍历子节点
     // 联合文本自愈：如果元素直接子节点全为纯文本节点且数量 > 1（常见于 React 碎片化模板拆分，如 "All ", e, "s run as Flash."）
     var first = el.firstChild;
-    if (first && first.nextSibling) {
+    if (i18nEnabled && first && first.nextSibling) {
       var allText = true;
       var cur = first;
       while (cur) {
@@ -652,14 +654,38 @@
   function flushPendingNodes() {
     rafScheduled = false;
     if (pendingNodes.length === 0) return;
-    var batch = pendingNodes.splice(0, 200);
-    if (pendingNodeSet) {
-      for (var bIdx = 0; bIdx < batch.length; bIdx++) {
-        pendingNodeSet.delete(batch[bIdx]);
+    var getNow = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? function () { return performance.now(); }
+      : Date.now;
+    var startMs = getNow();
+    var limit = Math.min(pendingNodes.length, 200);
+    var processed = 0;
+    disconnectObserver();
+    try {
+      for (var i = 0; i < limit; i++) {
+        var node = pendingNodes[i];
+        if (pendingNodeSet) pendingNodeSet.delete(node);
+        if (node) {
+          if (node.nodeType === 1) {
+            translateElement(node);
+          } else if (node.nodeType === 3) {
+            translateTextNode(node);
+          }
+        }
+        processed++;
+        if (processed >= 1 && i + 1 < limit && (getNow() - startMs) >= 6) {
+          break;
+        }
       }
+    } catch (e) {
+      // 静默吞错，避免一个异常阻断整体
+    } finally {
+      if (processed > 0) {
+        pendingNodes.splice(0, processed);
+      }
+      reconnectObserver();
     }
-    safeTranslateNodes(batch);
-    // 如果还有剩余，安排下一帧处理
+    // 如果还有剩余，安排下一帧分片处理，避免单帧超 16ms 引起掉帧
     if (pendingNodes.length > 0) {
       scheduleFlush();
     }

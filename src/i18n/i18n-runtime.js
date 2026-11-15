@@ -652,14 +652,38 @@
   function flushPendingNodes() {
     rafScheduled = false;
     if (pendingNodes.length === 0) return;
-    var batch = pendingNodes.splice(0, 200);
-    if (pendingNodeSet) {
-      for (var bIdx = 0; bIdx < batch.length; bIdx++) {
-        pendingNodeSet.delete(batch[bIdx]);
+    var getNow = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? function () { return performance.now(); }
+      : Date.now;
+    var startMs = getNow();
+    var limit = Math.min(pendingNodes.length, 200);
+    var processed = 0;
+    disconnectObserver();
+    try {
+      for (var i = 0; i < limit; i++) {
+        var node = pendingNodes[i];
+        if (pendingNodeSet) pendingNodeSet.delete(node);
+        if (node) {
+          if (node.nodeType === 1) {
+            translateElement(node);
+          } else if (node.nodeType === 3) {
+            translateTextNode(node);
+          }
+        }
+        processed++;
+        if (processed >= 1 && i + 1 < limit && (getNow() - startMs) >= 6) {
+          break;
+        }
       }
+    } catch (e) {
+      // 静默吞错，避免一个异常阻断整体
+    } finally {
+      if (processed > 0) {
+        pendingNodes.splice(0, processed);
+      }
+      reconnectObserver();
     }
-    safeTranslateNodes(batch);
-    // 如果还有剩余，安排下一帧处理
+    // 如果还有剩余，安排下一帧分片处理，避免单帧超 16ms 引起掉帧
     if (pendingNodes.length > 0) {
       scheduleFlush();
     }

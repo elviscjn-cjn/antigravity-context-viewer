@@ -76,9 +76,30 @@ Tests cover context estimates, token aggregation, storage, proxy configuration, 
 
 ---
 
+## 🛡️ Security & Windows CLI Helper Transparency
+
+- **Purpose**: On Windows, the optional `scripts/cli-window-helper.exe` (source in [scripts/cli-window-helper.cs](scripts/cli-window-helper.cs)) is used solely when launching an `agy` CLI session from the UI popup to locate, center, and foreground the newly spawned console window. It makes no network calls and performs no persistence.
+- **Toolchain & Local Build Command**: Compiled from source using built-in Windows `.NET Framework 4.0`:
+  ```powershell
+  C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /platform:anycpu /optimize+ /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
+  ```
+- **Current Prebuilt Binary SHA-256**: `e6a62cbb03163107db889e6accf7c05049ecf949c89f29afaf072c66fe09eac9` (Note: `csc.exe` embeds PE timestamps/MVIDs unless deterministic flags are set, so rebuilding locally or in `.github/workflows/release.yml` on `windows-latest` yields a functionally identical binary with a different hash; CI source compilation improves build provenance, though it does **not** guarantee zero heuristic detections by all AV engines.)
+- **AV Heuristic Phenomenon**: Because it is an unsigned ~15 KB .NET executable invoking `keybd_event`, `AttachThreadInput`, `AllowSetForegroundWindow`, `CreateToolhelp32Snapshot`, and `Process.Start("cmd.exe")`, some antivirus scanners may flag it heuristically.
+- **Safe Fallback Without Disabling AV**: You do **not** need to disable antivirus software or buy a code-signing certificate. Simply delete `scripts/cli-window-helper.exe` (or allow AV quarantine). `meter-cli-launcher.js` automatically falls back to spawning a standard console (`cmd.exe /d /k`) directly—CLI launching continues working normally, only without automatic centering or forced foreground activation.
+
+---
+
 ## 🤝 Community & Acknowledgements
 
 - **[LINUX DO](https://linux.do/)**: Endorsed by and supporting the LINUX DO community.
 - **Original Context Unlock Research**: **Linux.do @23375** (<https://linux.do/t/topic/3117832>).
 - **PR #3 (Multi-mode Context Unlock & `unlock/` Toolchain)**: Contributed by **[@anyu0804](https://github.com/anyu0804)**.
 - **PR #4 (System Enhancement Hub, Prompt Tiers 0–4 & Anti-Hallucination)**: Contributed by **[@Jia131313](https://github.com/Jia131313)**.
+- **PR #7 & #12 (Model Quota Rings, Dual Windows & Opt-in/Theme Safeguards)**: Contributed by **[@Azreal2021](https://github.com/Azreal2021)** and **[@Andrew-liu](https://github.com/Andrew-liu)**.
+- **PR #9 (2.31+ Pricing, Quota Pool Matching & 3-Source Ledger Sync)**: Contributed by **[@MoiraToki](https://github.com/MoiraToki)**.
+- **PR #11 (Sandboxed Preload i18n Gate Enforcement)**: Contributed by **[@yinshengphy](https://github.com/yinshengphy)**.
+- **PR #13 (Popup Anchor Alignment & Anti-Jitter Positioning)**: Contributed by **[@nocoo](https://github.com/nocoo)**.
+- **PR #14 (macOS Compatibility Review Reference)**: Contributed by **[@nokiy](https://github.com/nokiy)**.
+- **Issue #17 (`cli-window-helper` Security Transparency, Hashes & CI Build Workflow)**: Reported & investigated by **[@riandycandra](https://github.com/riandycandra)**.
+- **PR #21 (Traditional Chinese UI Refinement)**: Contributed by **[@U1tr0n-Lee](https://github.com/U1tr0n-Lee)**.
+- **Issue #22 (Official Web/Atom Fallback Under GitHub API Rate Limits)**: Proposed by **[@zhao33079-zhao](https://github.com/zhao33079-zhao)**.
