@@ -31,6 +31,7 @@ write failure and let the user close the client before retrying.
 Other commands:
 
 - `node cli.js live`: inject into the running window without patching the archive.
+- `node cli.js watch`: run a zero-patch background watcher that auto-attaches to Antigravity windows via CDP and exits when the client closes (`node cli.js stop-watch` stops an active watcher).
 - `node cli.js restore`: restore the recorded backup.
 
 ## UI translation

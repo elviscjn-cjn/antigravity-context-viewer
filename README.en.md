@@ -58,6 +58,8 @@ node cli.js status
 ```bash
 node cli.js check
 node cli.js install
+node cli.js live
+node cli.js watch       # Zero-patch auto-attach watcher (stop with: node cli.js stop-watch)
 node cli.js status
 node cli.js restore
 node cli.js enhance-status
