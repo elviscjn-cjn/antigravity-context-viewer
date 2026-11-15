@@ -202,8 +202,9 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
   });
 
   const zipSha = crypto.createHash('sha256').update(zipBuf).digest('hex');
-  const zipName = 'antigravity-context-viewer_0.9.0_windows_amd64.zip';
-  const checksumsContent = `${zipSha}  ${zipName}\n`;
+  const winZipName = 'antigravity-context-viewer_0.9.0_windows_amd64.zip';
+  const macZipName = 'antigravity-context-viewer_0.9.0_darwin_arm64.zip';
+  const checksumsContent = `${zipSha}  ${winZipName}\n${zipSha}  ${macZipName}\n`;
 
   const mockReleases = [
     {
@@ -213,8 +214,12 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
       html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.0',
       assets: [
         {
-          name: zipName,
-          browser_download_url: `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.0/${zipName}`
+          name: winZipName,
+          browser_download_url: `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.0/${winZipName}`
+        },
+        {
+          name: macZipName,
+          browser_download_url: `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.0/${macZipName}`
         },
         {
           name: 'checksums.txt',
@@ -259,9 +264,11 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
     return child;
   };
 
-  // 执行 applyUpdateAsync
+  // 执行 applyUpdateAsync (验证 Windows x64 与 macOS arm64 跨平台资产匹配)
   const updateRes = await applyUpdateAsync({
     version: '0.9.0',
+    platform: 'win32',
+    arch: 'x64',
     _requestGithubUrl: mockFetcher,
     _spawn: mockSpawn
   });
@@ -273,6 +280,16 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
   assert.equal(updateRes.version, '0.9.0');
   assert.equal(updateRes.diskInstalled, true);
   assert.equal(updateRes.liveInjected, true);
+
+  const macUpdateRes = await applyUpdateAsync({
+    version: '0.9.0',
+    platform: 'darwin',
+    arch: 'arm64',
+    _requestGithubUrl: mockFetcher,
+    _spawn: mockSpawn
+  });
+  assert.equal(macUpdateRes.ok, true);
+  assert.equal(macUpdateRes.version, '0.9.0');
 
   // 检查解压包中确实包含了 meter-context-unlock.js！
   assert.equal(inspectedExtractedFile, mockUnlock, '发布更新包解压后必须包含 meter-context-unlock.js');

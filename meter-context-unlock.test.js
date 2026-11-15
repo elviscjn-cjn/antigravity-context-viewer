@@ -271,7 +271,7 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   const origSha = crypto.createHash('sha256').update(origBuf).digest('hex');
 
   // 1. 首次解锁
-  const applyRes = applyUnlock({ targetPath: testFile, backupDir });
+  const applyRes = applyUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(applyRes.ok, true);
   assert.equal(applyRes.needsRestart, true);
   assert.equal(applyRes.beforeSha256, origSha);
@@ -291,7 +291,7 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   assert.equal(observedAnalysis.runtimeEvidence.budgetObservedAbove256k, true);
 
   // 2. 幂等执行解锁：识别已打补丁，绝不把补丁覆盖为备份
-  const applyRepeat = applyUnlock({ targetPath: testFile, backupDir });
+  const applyRepeat = applyUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(applyRepeat.ok, true);
   assert.equal(applyRepeat.alreadyPatched, true);
 
@@ -300,7 +300,7 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   assert.equal(crypto.createHash('sha256').update(backupContent).digest('hex'), origSha);
 
   // 3. 恢复原版
-  const restoreRes = restoreUnlock({ targetPath: testFile, backupDir });
+  const restoreRes = restoreUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(restoreRes.ok, true);
   assert.equal(restoreRes.needsRestart, true);
 
@@ -308,7 +308,7 @@ test('完整生命周期：解锁 -> 幂等防重入 -> 恢复原版 -> 重复�
   assert.equal(restoredSha, origSha);
 
   // 4. 重复恢复原版：幂等返回 alreadyRestored
-  const restoreRepeat = restoreUnlock({ targetPath: testFile, backupDir });
+  const restoreRepeat = restoreUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(restoreRepeat.ok, true);
   assert.equal(restoreRepeat.alreadyRestored, true);
 
@@ -321,13 +321,13 @@ test('安全性：备份文件被篡改时拒绝恢复', () => {
   const backupDir = path.join(tmpDir, 'backups');
   fs.writeFileSync(testFile, createMockGoBinary({ isPatched: false }));
 
-  const applyRes = applyUnlock({ targetPath: testFile, backupDir });
+  const applyRes = applyUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(applyRes.ok, true);
 
   // 篡改备份文件
   fs.writeFileSync(applyRes.backupPath, Buffer.from('TAMPERED_BACKUP'));
 
-  const restoreRes = restoreUnlock({ targetPath: testFile, backupDir });
+  const restoreRes = restoreUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
   assert.equal(restoreRes.ok, false);
   assert.match(restoreRes.error, /备份文件已损坏或被篡改/);
 
@@ -431,7 +431,7 @@ test('主线程无阻塞验证：异步进程枚举期间 Node.js 事件循环�
     }, 5);
 
     // 调用异步分析
-    const analysis = await analyzeBinaryAsync(testFile, { backupDir: tmpDir, forceRefresh: true });
+    const analysis = await analyzeBinaryAsync(testFile, { backupDir: tmpDir, forceRefresh: true, platform: 'win32' });
     clearInterval(interval);
 
     assert.equal(analysis.status, 'not_patched');
@@ -442,16 +442,28 @@ test('主线程无阻塞验证：异步进程枚举期间 Node.js 事件循环�
   }
 });
 
-test('跨平台与安全架构拦截：非支持平台或架构明确拒绝写入', () => {
-  // 模拟非法平台传入
-  const origPlatform = process.platform;
+test('跨平台与安全架构拦截：非支持平台或架构明确拒绝写入', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-platform-'));
   try {
-    // 验证状态判定中的平台支持说明
     const mock = createMockGoBinary();
     const textInfo = findTextSection(mock);
     assert.equal(textInfo.arch, 'x86-64');
+
+    const testFile = path.join(tmpDir, 'language_server_macos_arm64');
+    fs.writeFileSync(testFile, mock);
+    const stDarwin = await analyzeBinaryAsync(testFile, { backupDir: tmpDir, platform: 'darwin' });
+    assert.equal(stDarwin.status, 'unsupported');
+    assert.equal(stDarwin.isPlatformSupported, false);
+
+    const applyDarwin = applyUnlock({ targetPath: testFile, backupDir: tmpDir, mode: 'dynamic', platform: 'darwin' });
+    assert.equal(applyDarwin.ok, false);
+    assert.equal(applyDarwin.code, 'PLATFORM_UNSUPPORTED');
+
+    const restoreDarwin = restoreUnlock({ targetPath: testFile, backupDir: tmpDir, platform: 'darwin' });
+    assert.equal(restoreDarwin.ok, false);
+    assert.equal(restoreDarwin.code, 'PLATFORM_UNSUPPORTED');
   } finally {
-    Object.defineProperty(process, 'platform', { value: origPlatform });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
@@ -465,7 +477,7 @@ test('PR #3 算法融合：ORIG / CONST(512000/524288/自定义) / DYN 任意互
     const origSha = crypto.createHash('sha256').update(origBuf).digest('hex');
 
     // 1. ORIG -> CONST(512000)（明确区分 512000 与 524288）
-    const r512 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 512000 });
+    const r512 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 512000, platform: 'win32' });
     assert.equal(r512.ok, true);
     assert.equal(r512.configuredMode, 'fixed');
     assert.equal(r512.configuredLimitTokens, 512000);
@@ -483,12 +495,12 @@ test('PR #3 算法融合：ORIG / CONST(512000/524288/自定义) / DYN 任意互
     assert.equal(sidecar.length, 6);
 
     // 2. 同值幂等
-    const r512Repeat = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 512000 });
+    const r512Repeat = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 512000, platform: 'win32' });
     assert.equal(r512Repeat.ok, true);
     assert.equal(r512Repeat.alreadyMatched, true);
 
     // 3. CONST(512000) -> CONST(524288)
-    const r524 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 524288 });
+    const r524 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: 524288, platform: 'win32' });
     assert.equal(r524.ok, true);
     assert.equal(r524.configuredLimitTokens, 524288);
     const st524 = analyzeBinary(testFile, { backupDir });
@@ -496,7 +508,7 @@ test('PR #3 算法融合：ORIG / CONST(512000/524288/自定义) / DYN 任意互
     assert.equal(st524.gate3a.defaultLimit, 524288);
 
     // 4. CONST(524288) -> 自定义非预设值 300000
-    const r300 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: '300000' });
+    const r300 = applyUnlock({ targetPath: testFile, backupDir, mode: 'fixed', limitTokens: '300000', platform: 'win32' });
     assert.equal(r300.ok, true);
     const st300 = analyzeBinary(testFile, { backupDir, expectedLimit: 300000 });
     assert.equal(st300.configuredMode, 'fixed');
@@ -504,7 +516,7 @@ test('PR #3 算法融合：ORIG / CONST(512000/524288/自定义) / DYN 任意互
     assert.equal(st300.gate3a.defaultLimit, 300000);
 
     // 5. CONST(300000) -> DYN（动态透传，不锁定 983040，且 default 站点切回 256000）
-    const rDyn = applyUnlock({ targetPath: testFile, backupDir, mode: 'dynamic' });
+    const rDyn = applyUnlock({ targetPath: testFile, backupDir, mode: 'dynamic', platform: 'win32' });
     assert.equal(rDyn.ok, true);
     const stDyn = analyzeBinary(testFile, { backupDir });
     assert.equal(stDyn.configuredMode, 'dynamic');
@@ -513,7 +525,7 @@ test('PR #3 算法融合：ORIG / CONST(512000/524288/自定义) / DYN 任意互
     assert.match(stDyn.configuredSummary, /跟随模型/);
 
     // 6. DYN -> default 模式切换恢复官方 ORIG 与 rel32 Gate 3B 字节，SHA-256 必须与原版一致
-    const rDef = applyUnlock({ targetPath: testFile, backupDir, mode: 'default' });
+    const rDef = applyUnlock({ targetPath: testFile, backupDir, mode: 'default', platform: 'win32' });
     assert.equal(rDef.ok, true);
     assert.equal(rDef.configuredMode, 'default');
     const restoredSha = crypto.createHash('sha256').update(fs.readFileSync(testFile)).digest('hex');
@@ -547,7 +559,7 @@ test('边界输入校验、部分匹配拒绝、多候选收窄与拒绝写入',
     fs.writeFileSync(partialFile, createMockGoBinary({ isPatched: false, withDefaultSite: true, partialDefLimit: 524288 }));
     const partialRes = analyzeBinary(partialFile);
     assert.equal(partialRes.status, 'partial_match');
-    const applyPartial = applyUnlock({ targetPath: partialFile, backupDir: path.join(tmpDir, 'bak1'), mode: 'fixed', limitTokens: 512000 });
+    const applyPartial = applyUnlock({ targetPath: partialFile, backupDir: path.join(tmpDir, 'bak1'), mode: 'fixed', limitTokens: 512000, platform: 'win32' });
     assert.equal(applyPartial.ok, false);
     assert.equal(applyPartial.code, 'PARTIAL_MATCH');
 
@@ -555,7 +567,7 @@ test('边界输入校验、部分匹配拒绝、多候选收窄与拒绝写入',
     const mixedFile = path.join(tmpDir, 'mixed.exe');
     fs.writeFileSync(mixedFile, createMockGoBinary({ isPatched: true, gate3bPatched: false }));
     assert.equal(analyzeBinary(mixedFile).status, 'partial_match');
-    assert.equal(applyUnlock({ targetPath: mixedFile, backupDir: path.join(tmpDir, 'bak2'), mode: 'dynamic' }).ok, false);
+    assert.equal(applyUnlock({ targetPath: mixedFile, backupDir: path.join(tmpDir, 'bak2'), mode: 'dynamic', platform: 'win32' }).ok, false);
 
     // 4. 多候选无法唯一收窄：同函数相邻两个 clamp 均在 default 8192 范围内，拒绝写入
     const ambFile = path.join(tmpDir, 'ambiguous.exe');
@@ -563,12 +575,12 @@ test('边界输入校验、部分匹配拒绝、多候选收窄与拒绝写入',
     const ambAnalysis = analyzeBinary(ambFile);
     assert.equal(ambAnalysis.gate3a.status, 'unknown');
     assert.match(ambAnalysis.gate3a.reason, /\d+\s*个\s*Gate 3A clamp 候选/);
-    assert.equal(applyUnlock({ targetPath: ambFile, backupDir: path.join(tmpDir, 'bak3'), mode: 'dynamic' }).ok, false);
+    assert.equal(applyUnlock({ targetPath: ambFile, backupDir: path.join(tmpDir, 'bak3'), mode: 'dynamic', platform: 'win32' }).ok, false);
 
     // 5. 多候选可收窄：远离 default (>8192) 的噪声候选被排除，主候选成功收窄并写入
     const narrowFile = path.join(tmpDir, 'narrow.exe');
     fs.writeFileSync(narrowFile, createMockGoBinary({ isPatched: false, wideFn3a: true }));
-    const narrowRes = applyUnlock({ targetPath: narrowFile, backupDir: path.join(tmpDir, 'bak4'), mode: 'fixed', limitTokens: 524288 });
+    const narrowRes = applyUnlock({ targetPath: narrowFile, backupDir: path.join(tmpDir, 'bak4'), mode: 'fixed', limitTokens: 524288, platform: 'win32' });
     assert.equal(narrowRes.ok, true);
     assert.equal(analyzeBinary(narrowFile, { backupDir: path.join(tmpDir, 'bak4') }).configuredLimitTokens, 524288);
   } finally {
@@ -584,7 +596,7 @@ test('版本漂移安全拦截：宿主升级导致 PE 指纹变更后拒绝还�
 
     // v1 打补丁生成备份与 Gate 3B sidecar
     fs.writeFileSync(testFile, createMockGoBinary({ isPatched: false, withDefaultSite: true, peTimeDateStamp: 0x11111111, peSizeOfImage: 0x10000 }));
-    const r1 = applyUnlock({ targetPath: testFile, backupDir, mode: 'dynamic' });
+    const r1 = applyUnlock({ targetPath: testFile, backupDir, mode: 'dynamic', platform: 'win32' });
     assert.equal(r1.ok, true);
 
     // 模拟官方升级覆盖了新版本（PE TimeDateStamp 与 SizeOfImage 改变，且已是新构建 patched 形态）
@@ -597,11 +609,11 @@ test('版本漂移安全拦截：宿主升级导致 PE 指纹变更后拒绝还�
     assert.match(driftStatus.backupStaleReason, /PE 构建版本已变更/);
 
     // 尝试用旧备份恢复或无有效 sidecar 切回 default 时，必须严格拒绝！
-    const restoreDrift = restoreUnlock({ targetPath: testFile, backupDir });
+    const restoreDrift = restoreUnlock({ targetPath: testFile, backupDir, platform: 'win32' });
     assert.equal(restoreDrift.ok, false);
     assert.equal(restoreDrift.code, 'BACKUP_VERSION_MISMATCH');
 
-    const switchDefaultDrift = applyUnlock({ targetPath: testFile, backupDir, mode: 'default' });
+    const switchDefaultDrift = applyUnlock({ targetPath: testFile, backupDir, mode: 'default', platform: 'win32' });
     assert.equal(switchDefaultDrift.ok, false);
     assert.equal(switchDefaultDrift.code, 'MISSING_OR_STALE_GATE3B_SIDECAR');
   } finally {
@@ -660,24 +672,24 @@ test('1M 应用回归：函数体内存在额外 1000000 干扰常量时仍准�
     fs.writeFileSync(binPath, mockBuf);
 
     // 1. 直接应用 1000000，不得因 1000000 常量而出现双候选失败
-    const res1M = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'fixed', limitTokens: 1000000 });
+    const res1M = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'fixed', limitTokens: 1000000, platform: 'win32' });
     assert.equal(res1M.ok, true, `1M 应用应成功，实际错误: ${res1M.error}`);
     assert.equal(res1M.configuredMode, 'fixed');
     assert.equal(res1M.configuredLimitTokens, 1000000);
 
     // 2. 切回 512000 与 dynamic，并还原原版
-    const res512 = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'fixed', limitTokens: 512000 });
+    const res512 = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'fixed', limitTokens: 512000, platform: 'win32' });
     assert.equal(res512.ok, true);
     assert.equal(res512.configuredLimitTokens, 512000);
 
-    const resDyn = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'dynamic' });
+    const resDyn = await applyUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, mode: 'dynamic', platform: 'win32' });
     assert.equal(resDyn.ok, true);
     assert.equal(resDyn.configuredMode, 'dynamic');
 
-    const resRestore = restoreUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir });
+    const resRestore = restoreUnlock({ targetPath: binPath, backupDir, homeDir: tmpDir, platform: 'win32' });
     assert.equal(resRestore.ok, true);
     const { analyzeBinaryAsync } = require('./meter-context-unlock');
-    const afterRestore = await analyzeBinaryAsync(binPath);
+    const afterRestore = await analyzeBinaryAsync(binPath, { platform: 'win32' });
     assert.equal(afterRestore.status, 'not_patched');
 
     // 3. 验证 failed 状态保留具体 gate3a.reason
@@ -710,7 +722,7 @@ test('PR #3 CLI serializer 门禁互切及外部配置文件 / context-mode.json
     fs.writeFileSync(binPath, mockBuf);
 
     // 1. Fixed 1000000: serializer 改写 mov dword [rax], 1000000 (c700 40420f00), config.json 与 context-mode.json 同步
-    const rFixed = await applyUnlock({ targetPath: binPath, backupDir, mode: 'fixed', limitTokens: 1000000, homeDir: fakeHome });
+    const rFixed = await applyUnlock({ targetPath: binPath, backupDir, mode: 'fixed', limitTokens: 1000000, homeDir: fakeHome, platform: 'win32' });
     assert.equal(rFixed.ok, true);
     const patchedSerSlice = fs.readFileSync(binPath).subarray(serOffset + 5, serOffset + 11);
     assert.equal(patchedSerSlice.toString('hex'), 'c70040420f00');
@@ -722,7 +734,7 @@ test('PR #3 CLI serializer 门禁互切及外部配置文件 / context-mode.json
     assert.equal(extFixed.contextModeBridge.limitTokens, 1000000);
 
     // 2. Dynamic: serializer 恢复 SERIALIZER_STOCK_X64 透传，context-mode.json 不冒充 983040
-    const rDyn = await applyUnlock({ targetPath: binPath, backupDir, mode: 'dynamic', homeDir: fakeHome });
+    const rDyn = await applyUnlock({ targetPath: binPath, backupDir, mode: 'dynamic', homeDir: fakeHome, platform: 'win32' });
     assert.equal(rDyn.ok, true);
     assert.equal(Buffer.compare(fs.readFileSync(binPath).subarray(serOffset, serOffset + serStock.length), serStock), 0);
     const extDyn = readExternalContextConfig({ homeDir: fakeHome });

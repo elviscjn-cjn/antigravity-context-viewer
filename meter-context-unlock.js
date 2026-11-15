@@ -20,7 +20,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execFile, execFileSync } = require('child_process');
-const { getStateDir } = require('./asar-engine');
+const { getStateDir, isIsolatedTestPath } = require('./asar-engine');
 
 const PCLNTAB_MAGIC = 0xFFFFFFF1;
 
@@ -151,6 +151,10 @@ function detectTargetBinary(customPath) {
     const resolved = path.resolve(customPath);
     if (fs.existsSync(resolved)) return resolved;
     throw new Error(`指定的目标文件不存在: ${customPath}`);
+  }
+
+  if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
+    return null;
   }
 
   const home = os.homedir();
@@ -1006,30 +1010,60 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
     } else {
       // Unix / macOS 异步探测
       try {
-        const binName = targetPath ? path.basename(targetPath) : 'language_server';
-        const res = await new Promise((resolve, reject) => {
-          execFile('pgrep', ['-f', binName], { encoding: 'utf8', timeout: 2000 }, (err, out) => {
-            if (err) reject(err); else resolve(out);
-          });
-        });
-        const pids = String(res || '').trim().split(/\s+/).map(Number).filter(Boolean);
-        if (pids.length > 0) {
-          result.isRunning = true;
-          result.pids = pids;
-          result.pid = pids[0];
-          try {
-            const psOut = await new Promise((resolve, reject) => {
-              execFile('ps', ['-p', String(pids[0]), '-o', 'etimes='], { encoding: 'utf8', timeout: 1500 }, (err, out) => {
-                if (err) reject(err); else resolve(out);
-              });
-            });
-            const elapsedSec = parseInt(String(psOut || '').trim(), 10);
-            if (!isNaN(elapsedSec)) {
-              result.startTimeMs = Date.now() - (elapsedSec * 1000);
-            }
-          } catch {}
-        } else {
+        const isTest = process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+        if (isTest && (!targetPath || !isIsolatedTestPath(targetPath))) {
           result.isRunning = false;
+        } else {
+          const binName = targetPath ? path.basename(targetPath) : 'language_server';
+          const res = await new Promise((resolve, reject) => {
+            execFile('pgrep', ['-f', binName], { encoding: 'utf8', timeout: 2000 }, (err, out) => {
+              if (err && (err.code === 1 || err.status === 1)) {
+                resolve('');
+              } else if (err) {
+                reject(err);
+              } else {
+                resolve(out);
+              }
+            });
+          });
+          const rawPids = String(res || '').trim().split(/\s+/).map(Number).filter(p => p > 0 && p !== process.pid);
+          let matchedPids = rawPids;
+          if (rawPids.length > 0 && targetPath && isIsolatedTestPath(targetPath)) {
+            const resolvedTarget = path.resolve(targetPath);
+            const verified = [];
+            for (const pid of rawPids) {
+              try {
+                const cmdOut = await new Promise((resolve, reject) => {
+                  execFile('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 1500 }, (err, out) => {
+                    if (err) reject(err); else resolve(out);
+                  });
+                });
+                if (String(cmdOut || '').includes(resolvedTarget)) {
+                  verified.push(pid);
+                }
+              } catch {}
+            }
+            matchedPids = verified;
+          }
+          if (matchedPids.length > 0) {
+            result.isRunning = true;
+            result.pids = matchedPids;
+            result.pid = matchedPids[0];
+            result.path = targetPath || null;
+            try {
+              const psOut = await new Promise((resolve, reject) => {
+                execFile('ps', ['-p', String(matchedPids[0]), '-o', 'lstart='], { encoding: 'utf8', timeout: 1500 }, (err, out) => {
+                  if (err) reject(err); else resolve(out);
+                });
+              });
+              const parsedStart = Date.parse(String(psOut || '').trim());
+              if (!Number.isNaN(parsedStart) && parsedStart > 0) {
+                result.startTimeMs = parsedStart;
+              }
+            } catch {}
+          } else {
+            result.isRunning = false;
+          }
         }
       } catch {
         result.queryFailed = true;
@@ -1317,13 +1351,14 @@ async function analyzeBinaryAsync(filePath, options = {}) {
   }
 
   // 跨平台安全策略拦截：仅支持 Windows (x86-64)
-  if (process.platform !== 'win32') {
+  const effectivePlatform = options.platform || process.platform;
+  if (effectivePlatform !== 'win32') {
     return {
       status: 'unsupported',
       targetPath: target,
-      format: process.platform === 'darwin' ? 'Mach-O' : 'ELF',
+      format: effectivePlatform === 'darwin' ? 'Mach-O' : 'ELF',
       arch: os.arch(),
-      reason: `暂未开放对 ${process.platform} 平台的写入支持：受 macOS/Linux 代码签名校验与动态安全策略限制，当前版本仅在 Windows (x86-64) 平台完成端到端签名与安全回滚验收，以避免导致后端语言服务器异常崩溃。`,
+      reason: `暂未开放对 ${effectivePlatform} 平台的写入支持：受 macOS/Linux 代码签名校验与动态安全策略限制，当前版本仅在 Windows (x86-64) 平台完成端到端签名与安全回滚验收，以避免导致后端语言服务器异常崩溃。`,
       isPlatformSupported: false
     };
   }
@@ -1331,8 +1366,8 @@ async function analyzeBinaryAsync(filePath, options = {}) {
   let buf;
   let stats;
   try {
-    stats = fs.statSync(target);
-    buf = fs.readFileSync(target);
+    stats = await fs.promises.stat(target);
+    buf = await fs.promises.readFile(target);
   } catch (e) {
     return {
       status: 'failed',
@@ -1666,14 +1701,6 @@ function resolveUnlockTargetPath(options = {}) {
  * 执行上下文长度模式应用与已知态安全互切 (default / fixed / dynamic)
  */
 function applyUnlock(options = {}) {
-  if (process.platform !== 'win32') {
-    return {
-      ok: false,
-      code: 'PLATFORM_UNSUPPORTED',
-      error: `当前平台 (${process.platform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
-    };
-  }
-
   const targetSpec = normalizeUnlockTargetOptions(options);
   if (!targetSpec.ok) {
     return { ok: false, code: targetSpec.code || 'INVALID_INPUT', error: targetSpec.error };
@@ -1684,6 +1711,15 @@ function applyUnlock(options = {}) {
     return resolvedTarget;
   }
   const target = resolvedTarget.target;
+
+  const effectivePlatform = options.platform || process.platform;
+  if (effectivePlatform !== 'win32') {
+    return {
+      ok: false,
+      code: 'PLATFORM_UNSUPPORTED',
+      error: `当前平台 (${effectivePlatform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
+    };
+  }
 
   const analysis = analyzeBinary(target, {
     backupDir: options.backupDir,
@@ -1920,19 +1956,20 @@ function applyUnlock(options = {}) {
  * 恢复原版二进制 (Restore) — 严格校验路径、PE 构建版本与完整哈希匹配
  */
 function restoreUnlock(options = {}) {
-  if (process.platform !== 'win32') {
-    return {
-      ok: false,
-      code: 'PLATFORM_UNSUPPORTED',
-      error: `当前平台 (${process.platform}) 暂未通过安全写入验证，已自动拦截操作。`
-    };
-  }
-
   const resolvedTarget = resolveUnlockTargetPath(options);
   if (!resolvedTarget.ok) {
     return resolvedTarget;
   }
   const target = resolvedTarget.target;
+
+  const effectivePlatform = options.platform || process.platform;
+  if (effectivePlatform !== 'win32') {
+    return {
+      ok: false,
+      code: 'PLATFORM_UNSUPPORTED',
+      error: `当前平台 (${effectivePlatform}) 暂未通过安全写入验证，已自动拦截操作。`
+    };
+  }
 
   if (!target || !fs.existsSync(target)) {
     return { ok: false, error: '目标文件不存在，无法恢复' };

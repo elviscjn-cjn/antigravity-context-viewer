@@ -8197,12 +8197,31 @@
     el('refresh').disabled = state.scanBusy;
   }
 
+  function resolveLsCsrfToken() {
+    try {
+      const fromCfg = typeof window !== 'undefined' ? window.__APP_CONFIG__?.csrfToken : '';
+      if (typeof fromCfg === 'string' && fromCfg.trim()) return fromCfg.trim();
+    } catch {}
+    try {
+      const fromLs = typeof window !== 'undefined' && window.localStorage
+        ? (window.localStorage.getItem('agy_session_csrf_token') || window.localStorage.getItem('csrf_token') || '')
+        : '';
+      if (typeof fromLs === 'string' && fromLs.trim()) return fromLs.trim();
+    } catch {}
+    try {
+      const rawCookie = typeof document !== 'undefined' && typeof document.cookie === 'string' ? document.cookie : '';
+      const m = rawCookie.match(/(?:^|;\s*)(?:agy_session_csrf_token|csrf_token|x-codeium-csrf-token)=([^;]+)/i);
+      if (m && m[1]) return decodeURIComponent(m[1]).trim();
+    } catch {}
+    return '';
+  }
+
   async function requestPoll(generation, id) {
     state.requestBusy = true;
     const controller = new AbortController(); state.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 12000);
     try {
-      const csrf = window.__APP_CONFIG__?.csrfToken; if (!csrf) throw new Error('后台尚未就绪');
+      const csrf = resolveLsCsrfToken(); if (!csrf) throw new Error('后台尚未就绪');
       const offset = Math.max(0, state.count - 3);
       const response = await fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: offset, includeMessages: false }), signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -8304,7 +8323,7 @@
   async function fetchAvailableModelsIfNeeded() {
     if (availableModelsFetchInFlight) return;
     if (typeof fetch !== 'function') return;
-    const csrf = typeof window !== 'undefined' ? window.__APP_CONFIG__?.csrfToken : null;
+    const csrf = resolveLsCsrfToken();
     if (!csrf) return;
     if (Date.now() - lastAvailableModelsSync < 300000 && state.modelCapabilitiesById && Object.keys(state.modelCapabilitiesById).length > 0) {
       return;
@@ -8396,6 +8415,13 @@
   const timer = setInterval(tick, 500);
   globalThis.__AGContextMeter = {
     version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.3',
+    repo: 'elviscjn-cjn/antigravity-context-viewer',
+    buildId: typeof METER_BUILD_ID !== 'undefined' ? METER_BUILD_ID : null,
+    onLiveBridgeUpdated: () => {
+      if (state.disposed) return;
+      void restoreSettingsFromHost();
+      state.scanNext = 0;
+    },
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();

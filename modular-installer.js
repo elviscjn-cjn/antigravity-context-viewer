@@ -207,15 +207,17 @@ ${TAGS.METER_PRELOAD_END}\n`;
 /**
  * 生成桌面端汉化与品牌控制注入代码（仅对桌面端 DOM 进行处理，不篡改系统提示词与后端逻辑）
  */
-function generateChinesePreloadCode(dictContent, runtimeContent) {
+function generateChinesePreloadCode(dictContent = '{}', runtimeContent = '') {
   return `\n${TAGS.CHINESE_START}
 (function() {
   try {
-    var _i18nConfig = { enabled: true, language: 'zh-CN', brandTitle: 'english' };
+    var _hasSyncCfg = false;
+    var _i18nConfig = { enabled: false, language: 'en', brandTitle: 'english' };
     try {
       if (typeof electron_1 !== 'undefined' && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
         var _syncCfg = electron_1.ipcRenderer.sendSync('context-meter:get-chinese-config-sync');
         if (_syncCfg && typeof _syncCfg === 'object') {
+          _hasSyncCfg = true;
           _i18nConfig.enabled = _syncCfg.enabled !== false && _syncCfg.language !== 'en';
           _i18nConfig.language = _syncCfg.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
           _i18nConfig.brandTitle = _syncCfg.brandTitle || 'english';
@@ -237,19 +239,29 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
     var _fs = typeof require === 'function' ? (function() { try { return require('fs'); } catch(e) { return null; } })() : null;
     var _path = typeof require === 'function' ? (function() { try { return require('path'); } catch(e) { return null; } })() : null;
     var _os = typeof require === 'function' ? (function() { try { return require('os'); } catch(e) { return null; } })() : null;
+    // 沙箱隔离防护：若既无主进程同步配置又处于无 fs/path/os 权限的沙箱环境，严禁默认放行汉化注入
+    if (!_hasSyncCfg && (!_fs || !_path || !_os)) {
+      return;
+    }
     if (_fs && _path && _os) {
-      var _localApp = process.platform === 'win32'
-        ? (process.env.LOCALAPPDATA || _path.join(_os.homedir(), 'AppData', 'Local'))
-        : (process.platform === 'darwin'
-          ? _path.join(_os.homedir(), 'Library', 'Application Support')
-          : _path.join(_os.homedir(), '.local', 'state'));
-      var _cfgP = _path.join(_localApp, 'AntigravityContextMeter', 'modules.json');
+      var _stateDir = (typeof process !== 'undefined' && process.env && process.env.AG_METER_STATE_DIR)
+        ? process.env.AG_METER_STATE_DIR
+        : (function() {
+            var _localApp = process.platform === 'win32'
+              ? (process.env.LOCALAPPDATA || _path.join(_os.homedir(), 'AppData', 'Local'))
+              : (process.platform === 'darwin'
+                ? _path.join(_os.homedir(), 'Library', 'Application Support')
+                : (process.env.XDG_STATE_HOME || _path.join(_os.homedir(), '.local', 'state')));
+            return _path.join(_localApp, 'AntigravityContextMeter');
+          })();
+      var _cfgP = _path.join(_stateDir, 'modules.json');
       if (_fs.existsSync(_cfgP)) {
         try {
           var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
           var _ch = _c && _c.modules && _c.modules.chinese ? _c.modules.chinese : null;
           if (_ch) {
-            _i18nConfig.enabled = _ch.enabled !== false && _ch.language !== 'en';
+            _i18nConfig.enabled = _ch.enabled === true || _ch.language === 'zh-CN';
+            if (_ch.enabled === false) _i18nConfig.enabled = false;
             _i18nConfig.language = _ch.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
             _i18nConfig.brandTitle = _ch.brandTitle || 'english';
             if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false && _i18nConfig.brandTitle === 'english') {
@@ -259,8 +271,11 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
         } catch(e) {}
       }
     }
+    if (!_i18nConfig.enabled && _i18nConfig.brandTitle === 'english') {
+      return;
+    }
 
-    var _dictData = ${dictContent.trim()};
+    var _dictData = ${(dictContent || '{}').trim()};
     if (typeof window !== 'undefined') {
       window.__AGY_I18N_CONFIG__ = _i18nConfig;
       window.__AGY_I18N_DATA__ = _dictData;
@@ -269,7 +284,7 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
       globalThis.__AGY_I18N_CONFIG__ = _i18nConfig;
       globalThis.__AGY_I18N_DATA__ = _dictData;
     }
-    ${runtimeContent}
+    ${runtimeContent || ''}
   } catch(e) {
     if (typeof console !== 'undefined' && console.warn) {
       console.warn('[AGY-i18n] Runtime Injection Error:', e);

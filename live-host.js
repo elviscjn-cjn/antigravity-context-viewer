@@ -14,9 +14,12 @@ const {
   launchCliSession,
   getContextUnlockStatus,
   applyContextUnlock,
-  restoreContextUnlock
+  restoreContextUnlock,
+  OFFICIAL_REPO
 } = require('./meter-collector');
 const { getStateDir } = require('./asar-engine');
+const { PROJECT_VERSION } = require('./modules-config');
+const { getRendererBuildId, getWatchBundleBuildId } = require('./install');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
@@ -212,10 +215,29 @@ const ALLOWED_ROUTES = [
     });
   });
   server.listen(0, '127.0.0.1', () => {
-    const info = { port: server.address().port, token: secret, pid: process.pid, origin: api.origin, startedAt: Date.now() };
+    const info = {
+      port: server.address().port,
+      token: secret,
+      pid: process.pid,
+      origin: api.origin,
+      script: __filename,
+      version: PROJECT_VERSION,
+      repo: OFFICIAL_REPO,
+      buildId: getWatchBundleBuildId(),
+      rendererBuildId: getRendererBuildId(),
+      startedAt: Date.now()
+    };
+    fs.mkdirSync(path.dirname(stamp), { recursive: true });
     fs.writeFileSync(stamp, JSON.stringify(info));
     console.log('Context Meter local bridge ready on loopback port ' + info.port);
   });
+  const cleanupStampAndExit = () => {
+    try { if (fs.existsSync(stamp)) fs.unlinkSync(stamp); } catch {}
+    try { server.close(); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGTERM', cleanupStampAndExit);
+  process.on('SIGINT', cleanupStampAndExit);
   let misses = 0;
   const check = setInterval(async () => {
     try { const a = await connect(); if (a.origin !== api.origin) throw new Error('App restarted'); misses = 0; }

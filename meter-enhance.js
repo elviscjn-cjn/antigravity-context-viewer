@@ -964,9 +964,6 @@ function getEnhanceStatus(options = {}) {
 function applyEnhancePatch(payload = {}, options = {}) {
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
-  if (!Array.isArray(options.targets) && (platform !== 'win32' || arch !== 'x64')) {
-    return { ok: false, error: '当前操作系统或架构不支持 Windows PE64 内核原位补丁' };
-  }
 
   const promptTier = normalizePromptTier(payload.promptTier);
   if (promptTier === undefined) {
@@ -1013,6 +1010,10 @@ function applyEnhancePatch(payload = {}, options = {}) {
   }
   if (Array.isArray(options.targets) && options.targets.length === 0) {
     return { ok: false, code: 'MISSING_TARGETS', error: '未提供有效的目标二进制文件 (options.targets 为空)' };
+  }
+
+  if (!Array.isArray(options.targets) && (platform !== 'win32' || arch !== 'x64')) {
+    return { ok: false, error: '当前操作系统或架构不支持 Windows PE64 内核原位补丁' };
   }
 
   const targets = resolveTargetBinaries(options).filter((t) => fs.existsSync(t.path));
@@ -1125,6 +1126,7 @@ function applyEnhancePatch(payload = {}, options = {}) {
         const res = contextUnlock.applyUnlock({
           ...unlockOpts,
           targetPath: ut.path,
+          platform: options.platform || (Array.isArray(options.targets) ? 'win32' : undefined),
           backupDir: options.backupDir,
           homeDir: options.homeDir,
           stateDir: options.stateDir,

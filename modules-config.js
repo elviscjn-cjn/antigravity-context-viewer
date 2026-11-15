@@ -17,9 +17,11 @@ const { getStateDir } = require('./asar-engine');
 
 const SCHEMA_VERSION = '0.8.3';
 const PROJECT_VERSION = '0.8.3';
+const VALID_DISPLAY_MODES = ['topbar', 'sidebar', 'both'];
 
 const DEFAULT_CONFIG = {
   schemaVersion: SCHEMA_VERSION,
+  displayMode: 'topbar',
   modules: {
     meter: {
       enabled: true
@@ -55,25 +57,71 @@ function normalizeClientLanguage(val, enabledHint) {
   return 'en';
 }
 
+function normalizeDisplayMode(mode) {
+  if (typeof mode === 'string') {
+    const trimmed = mode.trim().toLowerCase();
+    if (VALID_DISPLAY_MODES.includes(trimmed)) return trimmed;
+  }
+  return 'topbar';
+}
+
 function getModulesConfigPath() {
   return path.join(getStateDir(), 'modules.json');
 }
 
 /**
+ * 读取当前生效的显示模式（无写入副作用；当 modules.json 不存在或 displayMode 未设置时默认返回 'topbar'）
+ */
+function getEffectiveDisplayMode(customConfigPath = null) {
+  const cfgPath = customConfigPath || getModulesConfigPath();
+  try {
+    if (!fs.existsSync(cfgPath)) return 'topbar';
+    const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    return normalizeDisplayMode(parsed && parsed.displayMode);
+  } catch {
+    return 'topbar';
+  }
+}
+
+/**
+ * 供守护进程轮询使用的无副作用轻量配置快照
+ */
+function readWatchConfigSnapshot(customConfigPath = null) {
+  const cfgPath = customConfigPath || getModulesConfigPath();
+  try {
+    if (!fs.existsSync(cfgPath)) {
+      return { displayMode: 'topbar', meterEnabled: true };
+    }
+    const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const displayMode = normalizeDisplayMode(parsed && parsed.displayMode);
+    const meterEnabled = !(parsed && parsed.modules && parsed.modules.meter && parsed.modules.meter.enabled === false);
+    return { displayMode, meterEnabled };
+  } catch {
+    return { displayMode: 'topbar', meterEnabled: true };
+  }
+}
+
+/**
  * 迁移旧独立版配置（识别已有独立版的机器状态，避免静默改变用户偏好）
  */
-function detectAndMigrateLegacyConfigs() {
-  const migrations = [];
-  const home = os.homedir();
-  const localApp = process.platform === 'win32'
-    ? (process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'))
-    : path.join(home, '.local', 'state');
+function detectAndMigrateLegacyConfigs(options = {}) {
+  const isTest = process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  const hasExplicitHome = Boolean(options && options.homeDir);
+  const home = options.homeDir || os.homedir();
+  const platform = options.platform || process.platform;
+  const localApp = platform === 'win32'
+    ? (options.localAppData || process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'))
+    : platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support')
+      : (process.env.XDG_STATE_HOME || path.join(home, '.local', 'state'));
 
   // 1. 检查独立版 AntigravityProxyNoTun 配置
-  const legacyProxyPaths = [
-    path.join(localApp, 'AntigravityProxyNoTun', 'config.json'),
-    path.join(getStateDir(), 'proxy.json')
-  ];
+  const legacyProxyPaths = (isTest && !hasExplicitHome)
+    ? [path.join(getStateDir(), 'proxy.json')]
+    : [
+        path.join(localApp, 'AntigravityProxyNoTun', 'config.json'),
+        path.join(getStateDir(), 'proxy.json')
+      ];
   let legacyProxyFound = null;
   for (const lp of legacyProxyPaths) {
     if (fs.existsSync(lp)) {
@@ -93,10 +141,12 @@ function detectAndMigrateLegacyConfigs() {
   }
 
   // 2. 检查独立版 AntigravityChinese 安装痕迹
-  const legacyChinesePaths = [
-    path.join(localApp, 'AntigravityChinese', 'installation.json'),
-    path.join(localApp, 'AntigravityChinese', 'config.json')
-  ];
+  const legacyChinesePaths = (isTest && !hasExplicitHome)
+    ? []
+    : [
+        path.join(localApp, 'AntigravityChinese', 'installation.json'),
+        path.join(localApp, 'AntigravityChinese', 'config.json')
+      ];
   let legacyChineseFound = null;
   for (const lcp of legacyChinesePaths) {
     if (fs.existsSync(lcp)) {
@@ -124,17 +174,27 @@ function loadModulesConfig() {
   if (fs.existsSync(cfgPath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      if (parsed && parsed.modules) {
-        current.modules.meter = Object.assign({}, DEFAULT_CONFIG.modules.meter, parsed.modules.meter || {});
-        current.modules.chinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, parsed.modules.chinese || {});
-        current.modules.chinese.language = normalizeClientLanguage(
-          parsed.modules.chinese?.language,
-          current.modules.chinese.enabled === true
+      if (parsed && typeof parsed === 'object') {
+        const mergedChinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, parsed.modules?.chinese || {});
+        mergedChinese.language = normalizeClientLanguage(
+          parsed.modules?.chinese?.language,
+          mergedChinese.enabled === true
         );
-        current.modules.chinese.brandTitle = normalizeBrandTitle(parsed.modules.chinese?.brandTitle);
-        current.modules.chinese.enabled = current.modules.chinese.language === 'zh-CN';
-        current.modules.proxy = Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules.proxy || {});
-        return current;
+        mergedChinese.brandTitle = normalizeBrandTitle(parsed.modules?.chinese?.brandTitle);
+        mergedChinese.enabled = mergedChinese.language === 'zh-CN';
+        const mergedModules = {
+          meter: Object.assign({}, DEFAULT_CONFIG.modules.meter, parsed.modules?.meter || {}),
+          chinese: mergedChinese,
+          proxy: Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules?.proxy || {})
+        };
+        current = Object.assign({}, current, parsed, {
+          schemaVersion: parsed.schemaVersion || SCHEMA_VERSION,
+          displayMode: normalizeDisplayMode(parsed.displayMode),
+          modules: Object.assign({}, parsed.modules || {}, mergedModules)
+        });
+        if (parsed.modules) {
+          return current;
+        }
       }
     } catch {}
   }
@@ -452,10 +512,14 @@ function inspectDiskModules(customPath = null) {
 module.exports = {
   SCHEMA_VERSION,
   PROJECT_VERSION,
+  VALID_DISPLAY_MODES,
   DEFAULT_CONFIG,
   normalizeBrandTitle,
   normalizeClientLanguage,
+  normalizeDisplayMode,
   getModulesConfigPath,
+  getEffectiveDisplayMode,
+  readWatchConfigSnapshot,
   loadModulesConfig,
   saveModulesConfig,
   detectAndMigrateLegacyConfigs,

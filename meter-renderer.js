@@ -1,5 +1,6 @@
 (function () {
   const METER_VERSION = '0.8.3';
+  const METER_BUILD_ID = '52913cfb6464';
 
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
@@ -82,7 +83,7 @@
       --ag-token-accent-default:#a78bfa;
 
       /* 0 级主题背景与一级/二级严格统一背景色 */
-      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#181818));
+      --ag-bg-panel-default:var(--ag-host-bg,#181818);
       --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
 
       --ag-float-bg:var(--ag-unified-bg);
@@ -181,7 +182,7 @@
       --ag-token-total-default:#52525b;
       --ag-token-accent-default:#7c3aed;
 
-      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#ffffff));
+      --ag-bg-panel-default:var(--ag-host-bg,#ffffff);
       --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
 
       --ag-float-bg:var(--ag-unified-bg);
@@ -6736,12 +6737,17 @@
   function normalizeHex(input) {
     if (!input || typeof input !== 'string') return null;
     const s = input.trim();
+    if (!s || s.toLowerCase() === 'transparent') return null;
     const direct = hexToRgb(s);
     if (direct) return rgbToHex(direct.r, direct.g, direct.b);
-    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (mRgb) return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
-    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?/i);
+    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+))?\s*\)/i);
+    if (mRgb) {
+      if (mRgb[4] !== undefined && Number(mRgb[4]) <= 0) return null;
+      return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
+    }
+    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?(?:\s*[,/]\s*([\d.]+))?\s*\)/i);
     if (mHsl) {
+      if (mHsl[4] !== undefined && Number(mHsl[4]) <= 0) return null;
       const rgb = hslToRgb(Number(mHsl[1]), Number(mHsl[2]), Number(mHsl[3]));
       return rgbToHex(rgb.r, rgb.g, rgb.b);
     }
@@ -6823,18 +6829,30 @@
   }
 
   function getHostZeroLevelBg(isLight) {
+    const fallback = isLight ? '#ffffff' : '#181818';
     try {
       if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
         const rootEl = document.body || document.documentElement;
         if (rootEl) {
           const cs = window.getComputedStyle(rootEl);
-          const raw = cs.getPropertyValue('--background')?.trim() || cs.backgroundColor?.trim();
-          const norm = normalizeHex(raw);
-          if (norm) return norm;
+          const candidates = [
+            cs.getPropertyValue('--background')?.trim(),
+            cs.backgroundColor?.trim()
+          ].filter(Boolean);
+          for (const raw of candidates) {
+            const norm = normalizeHex(raw);
+            if (!norm) continue;
+            const lum = parseRgbLuminance(norm);
+            if (lum == null) continue;
+            // 当宿主 0 级背景明度与当前选定的浅/深色主题冲突时，干净回退至标准默认背景色 (#ffffff / #181818)
+            if (isLight && lum <= 0.55) return fallback;
+            if (!isLight && lum > 0.55) return fallback;
+            return norm;
+          }
         }
       }
     } catch {}
-    return isLight ? '#ffffff' : '#181818';
+    return fallback;
   }
 
   function getSystemTheme() {
@@ -17645,12 +17663,31 @@ function renderHeatmapGrid(forceRebuild = false) {
     el('refresh').disabled = state.scanBusy;
   }
 
+  function resolveLsCsrfToken() {
+    try {
+      const fromCfg = typeof window !== 'undefined' ? window.__APP_CONFIG__?.csrfToken : '';
+      if (typeof fromCfg === 'string' && fromCfg.trim()) return fromCfg.trim();
+    } catch {}
+    try {
+      const fromLs = typeof window !== 'undefined' && window.localStorage
+        ? (window.localStorage.getItem('agy_session_csrf_token') || window.localStorage.getItem('csrf_token') || '')
+        : '';
+      if (typeof fromLs === 'string' && fromLs.trim()) return fromLs.trim();
+    } catch {}
+    try {
+      const rawCookie = typeof document !== 'undefined' && typeof document.cookie === 'string' ? document.cookie : '';
+      const m = rawCookie.match(/(?:^|;\s*)(?:agy_session_csrf_token|csrf_token|x-codeium-csrf-token)=([^;]+)/i);
+      if (m && m[1]) return decodeURIComponent(m[1]).trim();
+    } catch {}
+    return '';
+  }
+
   async function requestPoll(generation, id) {
     state.requestBusy = true;
     const controller = new AbortController(); state.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 12000);
     try {
-      const csrf = window.__APP_CONFIG__?.csrfToken; if (!csrf) throw new Error('后台尚未就绪');
+      const csrf = resolveLsCsrfToken(); if (!csrf) throw new Error('后台尚未就绪');
       const offset = Math.max(0, state.count - 3);
       const response = await fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: offset, includeMessages: false }), signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -17752,7 +17789,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   async function fetchAvailableModelsIfNeeded() {
     if (availableModelsFetchInFlight) return;
     if (typeof fetch !== 'function') return;
-    const csrf = typeof window !== 'undefined' ? window.__APP_CONFIG__?.csrfToken : null;
+    const csrf = resolveLsCsrfToken();
     if (!csrf) return;
     if (Date.now() - lastAvailableModelsSync < 300000 && state.modelCapabilitiesById && Object.keys(state.modelCapabilitiesById).length > 0) {
       return;
@@ -17844,6 +17881,13 @@ function renderHeatmapGrid(forceRebuild = false) {
   const timer = setInterval(tick, 500);
   globalThis.__AGContextMeter = {
     version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.3',
+    repo: 'elviscjn-cjn/antigravity-context-viewer',
+    buildId: typeof METER_BUILD_ID !== 'undefined' ? METER_BUILD_ID : null,
+    onLiveBridgeUpdated: () => {
+      if (state.disposed) return;
+      void restoreSettingsFromHost();
+      state.scanNext = 0;
+    },
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();

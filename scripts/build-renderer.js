@@ -14,6 +14,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const rootDir = path.resolve(__dirname, '..');
 const srcDir = path.join(rootDir, 'src', 'renderer');
@@ -34,11 +35,37 @@ function buildRenderer() {
   const dropdown = fs.readFileSync(path.join(srcDir, 'dropdown.js'), 'utf8').trim();
   const heatmap = fs.readFileSync(path.join(srcDir, 'heatmap.js'), 'utf8').trim();
   let mainTemplate = fs.readFileSync(path.join(srcDir, 'main.js'), 'utf8');
+  const corePath = path.join(rootDir, 'meter-core.js');
+  const coreSource = fs.existsSync(corePath) ? fs.readFileSync(corePath, 'utf8') : '';
 
-  // 注入或同步构建期版本常量
-  const versionConst = `  const METER_VERSION = '${meterVersion}';\n`;
+  const meterBuildId = crypto
+    .createHash('sha256')
+    .update(meterVersion)
+    .update('\0')
+    .update(coreSource)
+    .update('\0')
+    .update(styles)
+    .update('\0')
+    .update(template)
+    .update('\0')
+    .update(colors)
+    .update('\0')
+    .update(i18n)
+    .update('\0')
+    .update(budgetEngine)
+    .update('\0')
+    .update(dropdown)
+    .update('\0')
+    .update(heatmap)
+    .update('\0')
+    .update(mainTemplate)
+    .digest('hex')
+    .slice(0, 12);
+
+  // 注入或同步构建期版本常量与确定性 buildId
+  const versionConst = `  const METER_VERSION = '${meterVersion}';\n  const METER_BUILD_ID = '${meterBuildId}';\n`;
   if (mainTemplate.includes('const METER_VERSION =')) {
-    mainTemplate = mainTemplate.replace(/const METER_VERSION = '[^']*';/, `const METER_VERSION = '${meterVersion}';`);
+    mainTemplate = mainTemplate.replace(/const METER_VERSION = '[^']*';(?:\s*const METER_BUILD_ID = '[^']*';)?/, `const METER_VERSION = '${meterVersion}';\n  const METER_BUILD_ID = '${meterBuildId}';`);
   } else {
     mainTemplate = mainTemplate.replace(/\(function \(\) \{/, `(function () {\n${versionConst}`);
   }

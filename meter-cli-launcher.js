@@ -355,7 +355,9 @@ function extractWorkspaceFromTranscriptFile(transcriptPath) {
 /**
  * 探测 Antigravity CLI (agy) 可执行文件路径
  */
-function resolveCliExecutable(customCliPath) {
+function resolveCliExecutable(customCliPath, options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
   if (customCliPath !== undefined && customCliPath !== null && String(customCliPath).trim() !== '') {
     const explicit = path.resolve(String(customCliPath).trim());
     try {
@@ -364,7 +366,7 @@ function resolveCliExecutable(customCliPath) {
         const siblingExe = path.join(dir, 'agy.exe');
         const directExe = explicit.toLowerCase().endsWith('.exe')
           ? explicit
-          : (fs.existsSync(siblingExe) ? siblingExe : explicit);
+          : (platform === 'win32' && fs.existsSync(siblingExe) ? siblingExe : explicit);
         return { ok: true, cliPath: explicit, exePath: directExe, source: 'explicit' };
       }
     } catch {}
@@ -376,13 +378,13 @@ function resolveCliExecutable(customCliPath) {
     };
   }
 
-  const home = process.env.USERPROFILE || os.homedir();
-  const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
-  const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const home = options.homeDir || env.USERPROFILE || os.homedir();
+  const localAppData = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const appData = env.APPDATA || path.join(home, 'AppData', 'Roaming');
 
   const candidates = [];
-  if (process.env.AG_CLI_PATH) candidates.push({ p: process.env.AG_CLI_PATH, src: 'env_AG_CLI_PATH' });
-  if (process.platform === 'win32') {
+  if (env.AG_CLI_PATH) candidates.push({ p: env.AG_CLI_PATH, src: 'env_AG_CLI_PATH' });
+  if (platform === 'win32') {
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.exe'), src: 'gemini_bin_exe' },
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.cmd'), src: 'gemini_bin_cmd' },
@@ -391,6 +393,27 @@ function resolveCliExecutable(customCliPath) {
       { p: path.join(localAppData, 'Programs', 'Antigravity IDE', 'bin', 'agy.exe'), src: 'ide_bin_exe' },
       { p: path.join(localAppData, 'Programs', 'Antigravity IDE', 'bin', 'agy.cmd'), src: 'ide_bin_cmd' },
       { p: path.join(home, '.local', 'bin', 'agy.exe'), src: 'local_bin' }
+    );
+  } else if (platform === 'darwin') {
+    const appRoots = Array.isArray(options.macAppRoots)
+      ? options.macAppRoots
+      : [
+          '/Applications/Antigravity.app',
+          path.join(home, 'Applications', 'Antigravity.app'),
+          '/Applications/Antigravity IDE.app',
+          path.join(home, 'Applications', 'Antigravity IDE.app')
+        ];
+    for (const appRoot of appRoots) {
+      candidates.push(
+        { p: path.join(appRoot, 'Contents', 'Resources', 'app', 'bin', 'agy'), src: 'mac_app_bin' },
+        { p: path.join(appRoot, 'Contents', 'Resources', 'bin', 'agy'), src: 'mac_resources_bin' }
+      );
+    }
+    candidates.push(
+      { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy'), src: 'gemini_bin' },
+      { p: path.join(home, '.local', 'bin', 'agy'), src: 'local_bin' },
+      { p: '/opt/homebrew/bin/agy', src: 'homebrew_bin' },
+      { p: '/usr/local/bin/agy', src: 'usr_local_bin' }
     );
   } else {
     candidates.push(
@@ -426,8 +449,8 @@ function resolveCliExecutable(customCliPath) {
   }
 
   // 回退扫描系统 PATH
-  const pathDirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const binNames = process.platform === 'win32' ? ['agy.exe', 'agy.cmd', 'agy.bat'] : ['agy'];
+  const pathDirs = String(env.PATH || '').split(path.delimiter).filter(Boolean);
+  const binNames = platform === 'win32' ? ['agy.exe', 'agy.cmd', 'agy.bat'] : ['agy'];
   for (const d of pathDirs) {
     for (const b of binNames) {
       const full = path.join(d, b);
@@ -451,10 +474,17 @@ function resolveCliExecutable(customCliPath) {
  * 探测并解析当前最适合的 CLI 项目工作目录
  */
 async function resolveCliWorkspace(options = {}) {
-  const home = process.env.USERPROFILE || os.homedir();
+  const home = options.homeDir || process.env.USERPROFILE || os.homedir();
   const agDir = options.agDir || process.env.AG_DIR || path.join(home, '.gemini', 'antigravity');
   const configDir = options.configDir || path.join(home, '.gemini', 'config');
-  const appDataDir = options.appDataDir || process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const platform = options.platform || process.platform;
+  const appDataDir = options.appDataDir || process.env.APPDATA || (
+    platform === 'win32'
+      ? path.join(home, 'AppData', 'Roaming')
+      : platform === 'darwin'
+        ? path.join(home, 'Library', 'Application Support')
+        : (process.env.XDG_CONFIG_HOME || path.join(home, '.config'))
+  );
 
   // 1. 显式传入的 cwd 优先
   if (options.cwd !== undefined && options.cwd !== null && String(options.cwd).trim() !== '') {
@@ -629,7 +659,7 @@ function resolveHelperExecutable(options = {}) {
  * 组装启动环境并调度启动 Antigravity CLI 会话
  */
 async function launchCliSession(options = {}, ownerHwnd = 0) {
-  const cliInfo = resolveCliExecutable(options.cliPath);
+  const cliInfo = resolveCliExecutable(options.cliPath, options);
   if (!cliInfo.ok) {
     return cliInfo;
   }
@@ -648,13 +678,11 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
     : [];
 
   const cliArgs = ['--model', model, ...extraArgs];
-  const env = buildCliProxyEnv(process.env);
-  // 恢复 Windows 交互式 CLI 子进程环境的原生彩虹渐变 Logo 与颜色能力（隔离宿主环境的 NO_COLOR/dumb）
-  if (process.platform === 'win32') {
-    delete env.NO_COLOR;
-    env.TERM = 'xterm-256color';
-    env.COLORTERM = 'truecolor';
-  }
+  const env = buildCliProxyEnv(options.env || process.env);
+  // 跨平台恢复交互式 CLI 子进程环境的原生彩虹渐变 Logo 与颜色能力（隔离宿主环境的 NO_COLOR/dumb）
+  delete env.NO_COLOR;
+  env.TERM = 'xterm-256color';
+  env.COLORTERM = 'truecolor';
 
   if (options.dryRun === true) {
     return {
@@ -678,7 +706,8 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
   }
 
   try {
-    if (process.platform === 'win32') {
+    const runtimePlatform = options.platform || process.platform;
+    if (runtimePlatform === 'win32') {
       const localBase = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
       const stateDir = path.join(localBase, 'AntigravityContextMeter');
       fs.mkdirSync(stateDir, { recursive: true });
@@ -897,26 +926,58 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
           fallback: true
         }
       };
-    } else if (process.platform === 'darwin') {
-      // macOS: 通过 osascript 在 Terminal.app 中打开交互会话
+    } else if (runtimePlatform === 'darwin') {
+      // macOS: 通过 osascript 在 Terminal.app 中打开交互会话，优先使用用户默认登录 Shell ($SHELL / zsh)
+      const preferredShell = (env.SHELL && typeof env.SHELL === 'string' && fs.existsSync(env.SHELL))
+        ? env.SHELL
+        : (fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash');
+      const safeShell = escapePosixArg(preferredShell);
       const safeCwd = escapePosixArg(cwd);
       const safeCli = escapePosixArg(cliInfo.exePath);
       const safeArgs = cliArgs.map(escapePosixArg).join(' ');
-      const bashCmd = `cd ${safeCwd} && ${safeCli} ${safeArgs}; exec bash`;
-      const escapedScriptCmd = bashCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const envAssigns = [
+        `TERM=${escapePosixArg(env.TERM)}`,
+        `COLORTERM=${escapePosixArg(env.COLORTERM)}`
+      ];
+      for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY']) {
+        if (env[k]) envAssigns.push(`${k}=${escapePosixArg(env[k])}`);
+      }
+      const shellCmd = `cd ${safeCwd} && export ${envAssigns.join(' ')} && ${safeCli} ${safeArgs}; exec ${safeShell} -l`;
+      const escapedScriptCmd = shellCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       const appleScript = `tell application "Terminal"\n  do script "${escapedScriptCmd}"\n  activate\nend tell`;
 
-      const child = spawn('osascript', ['-e', appleScript], {
+      if (options._inspectAppleScript === true) {
+        return {
+          ok: true,
+          dryRun: true,
+          terminal: 'Terminal.app',
+          shell: preferredShell,
+          shellCmd,
+          appleScript,
+          cliPath: cliInfo.cliPath,
+          exePath: cliInfo.exePath,
+          cliSource: cliInfo.source,
+          cwd,
+          cwdSource: wsInfo.source,
+          model,
+          args: cliArgs
+        };
+      }
+
+      const spawner = options._spawn || spawn;
+      const child = spawner('osascript', ['-e', appleScript], {
         detached: true,
-        stdio: 'ignore'
+        stdio: 'ignore',
+        env
       });
-      child.unref();
+      child.unref?.();
 
       return {
         ok: true,
         nativePlacement: false,
         fallback: false,
         terminal: 'Terminal.app',
+        shell: preferredShell,
         pid: child.pid || null,
         cliPath: cliInfo.cliPath,
         exePath: cliInfo.exePath,
@@ -926,7 +987,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
         model,
         args: cliArgs
       };
-    } else if (process.platform === 'linux') {
+    } else if (runtimePlatform === 'linux') {
       // Linux: 探测系统可用的图形终端模拟器
       const candidateTerminals = [
         { bin: 'x-terminal-emulator', buildArgs: cmd => ['-e', `bash -c ${escapePosixArg(cmd + '; exec bash')}`] },
