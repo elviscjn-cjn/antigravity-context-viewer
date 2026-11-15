@@ -211,11 +211,13 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
   return `\n${TAGS.CHINESE_START}
 (function() {
   try {
-    var _i18nConfig = { enabled: true, language: 'zh-CN', brandTitle: 'english' };
+    var _i18nConfig = { enabled: false, language: 'en', brandTitle: 'english' };
+    var _configResolved = false;
     try {
       if (typeof electron_1 !== 'undefined' && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
         var _syncCfg = electron_1.ipcRenderer.sendSync('context-meter:get-chinese-config-sync');
         if (_syncCfg && typeof _syncCfg === 'object') {
+          _configResolved = true;
           _i18nConfig.enabled = _syncCfg.enabled !== false && _syncCfg.language !== 'en';
           _i18nConfig.language = _syncCfg.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
           _i18nConfig.brandTitle = _syncCfg.brandTitle || 'english';
@@ -234,6 +236,7 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
         });
       }
     } catch(ipcErr2) {}
+    var _chineseEnabled = false;
     var _fs = typeof require === 'function' ? (function() { try { return require('fs'); } catch(e) { return null; } })() : null;
     var _path = typeof require === 'function' ? (function() { try { return require('path'); } catch(e) { return null; } })() : null;
     var _os = typeof require === 'function' ? (function() { try { return require('os'); } catch(e) { return null; } })() : null;
@@ -249,6 +252,7 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
           var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
           var _ch = _c && _c.modules && _c.modules.chinese ? _c.modules.chinese : null;
           if (_ch) {
+            _configResolved = true;
             _i18nConfig.enabled = _ch.enabled !== false && _ch.language !== 'en';
             _i18nConfig.language = _ch.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
             _i18nConfig.brandTitle = _ch.brandTitle || 'english';
@@ -256,8 +260,20 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
               return;
             }
           }
+          _chineseEnabled = Boolean(_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === true);
         } catch(e) {}
       }
+    } else if (typeof electron_1 !== 'undefined' && electron_1 && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
+      try {
+        if (!_configResolved) {
+          _chineseEnabled = electron_1.ipcRenderer.sendSync('context-meter:is-chinese-enabled') === true;
+          _i18nConfig.enabled = _chineseEnabled;
+          _i18nConfig.language = _chineseEnabled ? 'zh-CN' : 'en';
+        }
+      } catch(e) {}
+    }
+    if (!_i18nConfig.enabled && _i18nConfig.brandTitle === 'english') {
+      return;
     }
 
     var _dictData = ${dictContent.trim()};
