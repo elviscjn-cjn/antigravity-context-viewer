@@ -143,7 +143,7 @@
   shadow.innerHTML = `<style>
     :host{
       position:fixed;top:6px;right:138px;z-index:2147483000;
-      font:12px/1.4 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+      font:12px/1.4 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
       -webkit-app-region:no-drag;user-select:none;display:inline-flex;align-items:center;gap:2px;
       height:28px;flex-shrink:0;vertical-align:middle;
 
@@ -617,7 +617,7 @@
       font-variant-numeric:tabular-nums;
     }
     #context-tooltip[data-visible="true"]{
-      opacity:1;visibility:visible;transform:translateY(0);
+      opacity:1;visibility:visible;transform:none;
     }
     .ctx-tip-title{
       font-size:12px;line-height:1.35;font-weight:500;
@@ -647,7 +647,7 @@
       border:1px solid var(--ag-float-border);
       background:var(--ag-float-bg);color:var(--ag-text-primary);
       box-shadow:var(--ag-float-shadow);
-      transform-origin:top right;will-change:opacity,transform;
+      transform-origin:top right;
     }
     #overflow-menu[hidden]{display:none!important}
     .overflow-item{
@@ -704,7 +704,7 @@
       border:1px solid var(--ag-border-panel);border-radius:10px;
       box-shadow:var(--ag-shadow-panel);padding:12px;
       user-select:none;
-      opacity:1;transform:translateY(0);
+      opacity:1;transform:none;
       transition:opacity 170ms cubic-bezier(0.16, 1, 0.3, 1), transform 170ms cubic-bezier(0.16, 1, 0.3, 1);
       pointer-events:auto;
     }
@@ -769,7 +769,6 @@
     .badge-symbol-anim{
       display:inline-block;
       transition:opacity 0.18s cubic-bezier(0.4, 0, 0.2, 1), transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), filter 0.18s ease;
-      will-change:opacity, transform, filter;
     }
     .badge-symbol-anim.is-dissolving{
       opacity:0;
@@ -839,7 +838,7 @@
       }
       100%{
         opacity:1;
-        transform:translateY(0) scale(1);
+        transform:none;
       }
     }
     .collapsible-pane[style*="display: block"],
@@ -848,7 +847,7 @@
     #plan-custom-form:not([style*="display: none"]),
     #cost-details-pane:not([style*="display: none"]),
     .drawer-body:not([style*="display: none"]){
-      animation: agSmoothExpand 0.2s cubic-bezier(0.16,1,0.3,1) forwards;
+      animation: agSmoothExpand 0.2s cubic-bezier(0.16,1,0.3,1);
       transform-origin: top center;
     }
 
@@ -930,7 +929,6 @@
       border:1px solid var(--ag-float-border,rgba(255,255,255,0.14));
       border-radius:7px;
       box-shadow:0 16px 40px rgba(0,0,0,0.65),0 4px 12px rgba(0,0,0,0.4);
-      backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
       padding:4px;z-index:2147483647 !important;
       opacity:0;transform:translateY(-6px) scale(0.97);
       transform-origin:top center;pointer-events:none;
@@ -953,7 +951,7 @@
       border-color:var(--ag-token-accent-default,#a78bfa);
     }
     .ag-dropdown-wrapper.is-open .ag-dropdown-menu{
-      opacity:1;transform:translateY(0) scale(1);pointer-events:auto;
+      opacity:1;transform:none;pointer-events:auto;
     }
     .ag-dropdown-item{
       display:flex;align-items:center;justify-content:space-between;gap:6px;
@@ -990,7 +988,7 @@
       transform:translateY(6px) scale(0.97);
     }
     .ag-dropdown-wrapper.is-open.open-up .ag-dropdown-menu{
-      transform:translateY(0) scale(1);
+      transform:none;
     }
     .ag-dropdown-item-right{
       display:inline-flex;align-items:center;gap:6px;margin-left:auto;padding-left:6px;flex-shrink:0;
@@ -1084,10 +1082,9 @@
       max-width:calc(100vw - 24px);max-height:calc(100vh - 54px);
       overflow:auto;overflow-anchor:none;border:1px solid var(--ag-border-panel);border-radius:10px;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);box-shadow:var(--ag-shadow-panel);padding:14px 14px 18px;
-      opacity:1;transform:translateY(0);visibility:visible;pointer-events:auto;
-      transform-origin:top right;will-change:opacity,transform;
+      opacity:1;transform:none;visibility:visible;pointer-events:auto;
+      transform-origin:top right;
       transition:opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1),visibility .16s ease;
-      contain:layout paint;
     }
     .ag-panel.ag-panel-flex{
       display:flex;flex-direction:column;overflow:hidden;padding:0;
@@ -1109,9 +1106,9 @@
     /* 视图内平滑交叉淡入淡出（避免直接 display 硬切导致内容跳闪） */
     @keyframes agFadeIn{
       from{opacity:0;transform:translateY(4px)}
-      to{opacity:1;transform:translateY(0)}
+      to{opacity:1;transform:none}
     }
-    .view-pane-fade{transition:opacity .15s ease,transform .15s ease;opacity:1;transform:translateY(0)}
+    .view-pane-fade{transition:opacity .15s ease,transform .15s ease;opacity:1;transform:none}
     .view-pane-fade.pane-hidden{opacity:0;transform:translateY(3px);display:none!important}
 
     /* 顶栏控制条（sticky 固定，防止表单或详情展开时滚出视口） */
@@ -7833,6 +7830,28 @@ function formatVendorLabel(vendor) {
     return { source: 'none', result: null };
   }
 
+  /**
+   * 获取当前有效设备像素比，用于跨屏混合 DPI 下的物理像素网格对齐
+   */
+  function getEffectiveDpr() {
+    try {
+      const dpr = typeof window !== 'undefined' ? Number(window.devicePixelRatio) : 1;
+      return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  /**
+   * 将 CSS 逻辑坐标对齐到最近的物理设备像素边界，防止 100%/175% 混合缩放下出现亚像素偏移发虚
+   */
+  function snapToDevicePixel(px) {
+    const num = Number(px);
+    if (!Number.isFinite(num)) return 0;
+    const dpr = getEffectiveDpr();
+    return Math.round(num * dpr) / dpr;
+  }
+
 // =========================================================================
   // 模块 1: 0 级主题跟随、面板与菜单统一背景色、热力图 5 档色阶与自定义颜色选取器
   // =========================================================================
@@ -8458,20 +8477,21 @@ function formatVendorLabel(vendor) {
           }
         }
       }
-      let left = Math.round((vw - popW) / 2);
+      const snapPx = typeof snapToDevicePixel === 'function' ? snapToDevicePixel : Math.round;
+      let left = snapPx((vw - popW) / 2);
       let top = 90;
       if (activePickerAnchor?.getBoundingClientRect) {
         const ar = activePickerAnchor.getBoundingClientRect();
         if (ar.width > 0 || ar.height > 0) {
-          left = Math.round(ar.right - popW);
-          top = Math.round(ar.bottom + 6);
+          left = snapPx(ar.right - popW);
+          top = snapPx(ar.bottom + 6);
           if (top + popH > vh - 12 && ar.top > popH + 12) {
-            top = Math.round(ar.top - popH - 6);
+            top = snapPx(ar.top - popH - 6);
           }
         }
       }
-      left = Math.max(minLeft, Math.min(vw - popW - 12, left));
-      top = Math.max(42, Math.min(vh - popH - 12, top));
+      left = snapPx(Math.max(minLeft, Math.min(vw - popW - 12, left)));
+      top = snapPx(Math.max(42, Math.min(vh - popH - 12, top)));
       pop.style.left = `${left}px`;
       pop.style.top = `${top}px`;
     } catch {}
@@ -9300,10 +9320,10 @@ function formatVendorLabel(vendor) {
         top = bRect.bottom + gap;
         tip.setAttribute('data-placement', 'bottom');
       }
-      top = Math.max(6, Math.min(vh - tipH - 6, Math.round(top)));
+      top = snapToDevicePixel(Math.max(6, Math.min(vh - tipH - 6, top)));
 
-      let left = Math.round(bRect.left + bRect.width / 2 - tipW / 2);
-      left = Math.max(8, Math.min(vw - tipW - 8, left));
+      let left = bRect.left + bRect.width / 2 - tipW / 2;
+      left = snapToDevicePixel(Math.max(8, Math.min(vw - tipW - 8, left)));
 
       tip.style.top = `${top}px`;
       tip.style.left = `${left}px`;
@@ -9372,20 +9392,21 @@ function formatVendorLabel(vendor) {
         const bRect = (anchorBtn && anchorBtn.getBoundingClientRect && anchorBtn !== host && anchorBtn.getBoundingClientRect().right > hRect.left)
           ? anchorBtn.getBoundingClientRect()
           : hRect;
-        const top = Math.max(36, Math.min(vh - 120, Math.round((bRect.bottom || hRect.bottom) + 6)));
+        const dpr = getEffectiveDpr();
+        const top = snapToDevicePixel(Math.max(36, Math.min(vh - 120, (bRect.bottom || hRect.bottom) + 6)));
         const isCompact = panelEl.classList?.contains?.('cost-compact-view') || panelEl.getAttribute?.('class')?.includes?.('cost-compact-view');
         const effW = isCompact ? 400 : targetW;
         const maxAvailW = Math.max(260, vw - minLeft - 12);
         const finalW = Math.min(effW, maxAvailW);
 
-        // 核心锚点：右侧精确对齐到触发按钮右边缘，确保任何视口宽度下右边缘绝不溢出
-        let left = Math.round(bRect.right - finalW);
-        left = Math.min(left, vw - finalW - 12);
-        left = Math.max(minLeft, left);
+        // 核心锚点：右侧精确对齐到触发按钮右边缘，并按当前 DPI 物理像素网格对齐
+        let left = snapToDevicePixel(bRect.right - finalW);
+        left = Math.min(left, snapToDevicePixel(vw - finalW - 12));
+        left = Math.max(snapToDevicePixel(minLeft), left);
 
         const maxWidthPx = Math.max(260, vw - left - 12);
         const maxHeightPx = Math.max(160, vh - top - 16);
-        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}`;
+        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${dpr}`;
         if (panelEl._lastPlacedGeomKey === geomKey) return;
         panelEl._lastPlacedGeomKey = geomKey;
 
@@ -9459,6 +9480,49 @@ function formatVendorLabel(vendor) {
   } catch { }
 
   const onWindowResize = () => updateResponsiveLayout(true);
+  const handleDpiOrZoomChange = () => {
+    try {
+      for (const id of ['panel', 'panel-quota', 'panel-tokens', 'overflow-menu']) {
+        const node = el(id);
+        if (node) node._lastPlacedGeomKey = '';
+      }
+      layoutMeasurementDirty = true;
+      updateResponsiveLayout(true);
+      const upPop = el('update-popover');
+      if (upPop && upPop.style.display === 'block') {
+        positionUpdatePopover();
+      }
+      if (state.tooltipOpen) positionContextTooltip();
+    } catch { }
+  };
+  let removeDpiWatcher = null;
+  const attachDpiWatcher = () => {
+    try {
+      if (removeDpiWatcher) {
+        removeDpiWatcher();
+        removeDpiWatcher = null;
+      }
+      if (state.disposed || typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+      const mql = window.matchMedia(`(resolution: ${getEffectiveDpr()}dppx)`);
+      if (!mql) return;
+      const onChange = () => {
+        if (state.disposed) return;
+        attachDpiWatcher();
+        handleDpiOrZoomChange();
+      };
+      if (typeof mql.addEventListener === 'function') {
+        mql.addEventListener('change', onChange);
+        removeDpiWatcher = () => {
+          try { mql.removeEventListener?.('change', onChange); } catch { }
+        };
+      } else if (typeof mql.addListener === 'function') {
+        mql.addListener(onChange);
+        removeDpiWatcher = () => {
+          try { mql.removeListener?.(onChange); } catch { }
+        };
+      }
+    } catch { }
+  };
   const onWindowFocus = () => {
     host.setAttribute('data-window-active', 'true');
     if (typeof onQuotaWindowFocus === 'function') onQuotaWindowFocus();
@@ -9472,12 +9536,17 @@ function formatVendorLabel(vendor) {
     window.addEventListener?.('focus', onWindowFocus);
     window.addEventListener?.('blur', onWindowBlur);
     navigator?.windowControlsOverlay?.addEventListener?.('geometrychange', onWindowResize);
+    attachDpiWatcher();
     earlyDisposeHooks.push(() => {
       try {
         window.removeEventListener?.('resize', onWindowResize);
         window.removeEventListener?.('focus', onWindowFocus);
         window.removeEventListener?.('blur', onWindowBlur);
         navigator?.windowControlsOverlay?.removeEventListener?.('geometrychange', onWindowResize);
+        if (removeDpiWatcher) {
+          removeDpiWatcher();
+          removeDpiWatcher = null;
+        }
         if (hostModelSyncTimer) { clearTimeout(hostModelSyncTimer); hostModelSyncTimer = null; }
         if (domMutationThrottleTimer) { clearTimeout(domMutationThrottleTimer); domMutationThrottleTimer = null; }
       } catch { }
@@ -18986,8 +19055,8 @@ function closeAllDropdowns(exceptWrap = null) {
       top = Math.max(10, rect.top - 230);
     }
     pop.style.position = 'fixed';
-    pop.style.top = `${Math.round(top)}px`;
-    pop.style.right = `${Math.round(right)}px`;
+    pop.style.top = `${snapToDevicePixel(top)}px`;
+    pop.style.right = `${snapToDevicePixel(right)}px`;
     pop.style.left = 'auto';
   }
 
@@ -19178,11 +19247,12 @@ function closeAllDropdowns(exceptWrap = null) {
       } else {
         throw new Error(t('update.noApi'));
       }
+      if (state.disposed) return;
       if (res && res.ok) {
         const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
-        if (vEl) vEl.textContent = `v${nextVer}`;
+        if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;
 
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';

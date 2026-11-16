@@ -200,7 +200,9 @@ function createHotloadDomSandbox({ fetchImpl = null, contextMeterAPI = null, liv
       'ctx-model-list', 'ctx-custom-limit-input',
       'input-proxy-url', 'input-proxy-bypass', 'btn-save-proxy-config', 'btn-toggle-proxy-module',
       'proxy-status-desc', 'proxy-test-result', 'chk-enhance-chinese-title', 'btn-enhance-preset-apply',
-      'btn-apply-update', 'btn-update-restart', 'up-pop-title', 'up-pop-body', 'up-pop-ver', 'up-pop-status',
+      'btn-apply-update', 'btn-update-restart', 'btn-check-update', 'btn-check-update-ctx',
+      'btn-close-update-pop', 'btn-update-later', 'btn-view-release-page',
+      'up-pop-title', 'up-pop-body', 'up-pop-ver', 'up-pop-status',
       'update-popover', 'update-badge-dot', 'update-badge-dot-ctx', 'check-auto-update',
       'ctx-restart-confirm', 'btn-ctx-restart-confirm-yes'
     ];
@@ -1068,5 +1070,123 @@ test('更新下载稳定性与脱敏诊断：瞬态 ETIMEDOUT 触发有限次干
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('热加载 7：PROJECT_VERSION 精确跟随本插件 package.json 但不误读宿主 package.json，未热注入时不篡改渲染版本号', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agcm-ver-iso-'));
+  let h = null;
+  try {
+    // 模拟 ASAR 内部 dist/modules-config.js 与上级宿主 package.json (2.32.1) 共存
+    const distDir = path.join(dir, 'dist');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'antigravity-host', version: '2.32.1' }));
+    fs.copyFileSync(path.join(__dirname, 'modules-config.js'), path.join(distDir, 'modules-config.js'));
+    fs.copyFileSync(path.join(__dirname, 'asar-engine.js'), path.join(distDir, 'asar-engine.js'));
+    fs.copyFileSync(path.join(__dirname, 'meter-storage.js'), path.join(distDir, 'meter-storage.js'));
+    fs.copyFileSync(path.join(__dirname, 'meter-proxy.js'), path.join(distDir, 'meter-proxy.js'));
+
+    const hostModCfg = require(path.join(distDir, 'modules-config.js'));
+    assert.equal(hostModCfg.PROJECT_VERSION, '0.8.7', '未存在插件自身 package.json 时必须回退插件版本，绝不能误读宿主 2.32.1');
+
+    // 同目录存在本插件 package.json 时，应动态对齐新版本（例如 0.8.8）
+    const extDir = path.join(dir, 'ext');
+    fs.mkdirSync(extDir, { recursive: true });
+    fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version: '0.8.8' }));
+    fs.copyFileSync(path.join(__dirname, 'modules-config.js'), path.join(extDir, 'modules-config.js'));
+    fs.copyFileSync(path.join(__dirname, 'asar-engine.js'), path.join(extDir, 'asar-engine.js'));
+    fs.copyFileSync(path.join(__dirname, 'meter-storage.js'), path.join(extDir, 'meter-storage.js'));
+    fs.copyFileSync(path.join(__dirname, 'meter-proxy.js'), path.join(extDir, 'meter-proxy.js'));
+    const extModCfg = require(path.join(extDir, 'modules-config.js'));
+    assert.equal(extModCfg.PROJECT_VERSION, '0.8.8', '存在本插件 package.json 时 PROJECT_VERSION 必须随包版本动态更新');
+
+    // 渲染层：applyUpdate 返回 liveInjected: false 时不得将 #v 伪造为新版号
+    h = createHotloadDomSandbox({
+      liveBridge: null,
+      contextMeterAPI: {
+        getRuntimeInfo: async () => ({ ok: true, backendVersion: '0.8.7', backendSource: 'electron-ipc' }),
+        checkUpdate: async () => ({
+          ok: true,
+          hasUpdate: true,
+          currentVersion: '0.8.7',
+          latestVersion: '0.8.8',
+          releaseNotes: 'note',
+          htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.8'
+        }),
+        applyUpdate: async () => ({
+          ok: true,
+          diskInstalled: true,
+          liveInjected: false,
+          backendHotReloaded: false,
+          restartRequired: true,
+          version: '0.8.8',
+          installedVersion: '0.8.8'
+        }),
+        getQuota: async () => ({ ok: true, activeStatus: 'available', planInfo: {}, groups: [], models: {}, backendVersion: '0.8.7' }),
+        scan: async () => ({ status: 'empty' }),
+        getSettings: async () => ({ ok: true, country: 'US', subscriptionRegion: 'US', currency: 'USD', pricingPeriod: 'month' }),
+        saveSettings: async () => ({ ok: true })
+      }
+    });
+    const vEl = h.shadowElements.get('v');
+    vEl.textContent = 'v0.8.7';
+    h.shadowElements.get('btn-check-update-ctx').click();
+    await h.flush(40);
+    h.shadowElements.get('btn-apply-update').click();
+    await h.flush(60);
+    assert.equal(vEl.textContent, 'v0.8.7', '未完成热注入时顶部运行版本号不得提前伪造为 v0.8.8');
+  } finally {
+    try { h?.cleanup?.(); } catch {}
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('热加载 8：存在 HTTP_PROXY/HTTPS_PROXY 且缺少 NO_PROXY 时，回环热加载探活与本地主机连接严格直连不误走代理', async () => {
+  const prevHttp = process.env.HTTP_PROXY;
+  const prevHttps = process.env.HTTPS_PROXY;
+  const prevNoProxy = process.env.NO_PROXY;
+  const loopSrv = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
+  });
+  let proxyHits = 0;
+  const blackholeProxy = http.createServer((req, res) => {
+    proxyHits++;
+    res.writeHead(405);
+    res.end('Use CONNECT');
+  });
+  blackholeProxy.on('connect', (_req, sock) => {
+    proxyHits++;
+    sock.write('HTTP/1.1 405 Method Not Allowed\r\n\r\n');
+    sock.destroy();
+  });
+
+  await new Promise(r => loopSrv.listen(0, '127.0.0.1', r));
+  await new Promise(r => blackholeProxy.listen(0, '127.0.0.1', r));
+  const loopPort = loopSrv.address().port;
+  const proxyPort = blackholeProxy.address().port;
+
+  try {
+    process.env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;
+    process.env.HTTPS_PROXY = `http://127.0.0.1:${proxyPort}`;
+    delete process.env.NO_PROXY;
+
+    const { probeLiveHostRuntimeInfo } = require('./install');
+    const probe = await probeLiveHostRuntimeInfo(
+      { port: loopPort, token: 'test-tok', origin: 'https://127.0.0.1:61597' },
+      'https://127.0.0.1:61597'
+    );
+    assert.equal(probe.ok, true, '即使全局设置了 HTTP_PROXY，回环探活必须直连成功而非返回 405');
+    assert.equal(probe.backendVersion, PROJECT_VERSION);
+    assert.equal(proxyHits, 0, '任何 127.0.0.1 回环控制面请求均不得误入外置代理');
+  } finally {
+    if (prevHttp === undefined) delete process.env.HTTP_PROXY;
+    else process.env.HTTP_PROXY = prevHttp;
+    if (prevHttps === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = prevHttps;
+    if (prevNoProxy === undefined) delete process.env.NO_PROXY;
+    else process.env.NO_PROXY = prevNoProxy;
+    await new Promise(r => loopSrv.close(r));
+    await new Promise(r => blackholeProxy.close(r));
   }
 });

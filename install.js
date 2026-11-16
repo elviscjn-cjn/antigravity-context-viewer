@@ -33,7 +33,7 @@ function clearAsarCache(archivePath) {
   try {
     if (asar && typeof asar.uncacheAll === 'function') asar.uncacheAll();
     if (asar && typeof asar.uncache === 'function' && archivePath) asar.uncache(archivePath);
-  } catch {}
+  } catch { }
 }
 
 function extractAsarFile(archivePath, relPath) {
@@ -59,12 +59,16 @@ function extractAllAsar(archivePath, destDir) {
 function postLiveHttpJson(port, token, routePath, origin, body = {}, timeoutMs = 2500) {
   return new Promise((resolve) => {
     try {
+      const net = require('net');
       const dataStr = JSON.stringify(body || {});
+      const numPort = Number(port);
       const req = http.request({
         hostname: '127.0.0.1',
-        port: Number(port),
+        port: numPort,
         path: routePath,
         method: 'POST',
+        agent: false,
+        createConnection: () => net.connect(numPort, '127.0.0.1'),
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(dataStr),
@@ -154,7 +158,7 @@ async function tryHotInjectDetailed(options = {}) {
       return report;
     }
     const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
+      const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
         let body = '';
         res.on('data', c => body += c);
         res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
@@ -172,7 +176,7 @@ async function tryHotInjectDetailed(options = {}) {
     let pkgVersion = null;
     try {
       pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
-    } catch {}
+    } catch { }
     const stateDir = getStateDir();
     const livePath = fs.existsSync(path.join(stateDir, '.live-session.json'))
       ? path.join(stateDir, '.live-session.json')
@@ -205,7 +209,7 @@ async function tryHotInjectDetailed(options = {}) {
       if (settingsSnap && settingsSnap.ok) cachedSettings = settingsSnap;
       const historyData = await collectTokenHistoryAsync({ force: true });
       if (historyData && !historyData.loading) cachedHistory = historyData;
-    } catch {}
+    } catch { }
 
     for (const target of targets) {
       const targetOrigin = new URL(target.url).origin;
@@ -295,7 +299,7 @@ async function tryHotInjectDetailed(options = {}) {
                 report.backendVersion = winEntry.backendVersion;
               }
             }
-          } catch {}
+          } catch { }
         } else {
           winEntry.error = evalRes?.result?.exceptionDetails?.text || evalRes?.error?.message || 'eval_failed';
         }
@@ -303,7 +307,7 @@ async function tryHotInjectDetailed(options = {}) {
         winEntry.error = e.message;
       } finally {
         if (ws) {
-          try { ws.close(); } catch {}
+          try { ws.close(); } catch { }
         }
       }
       report.windows.push(winEntry);
@@ -349,7 +353,7 @@ async function install(options = {}) {
     : (fs.existsSync(legacyManifestPath) ? legacyManifestPath : null);
 
   if (activeManifestPath) {
-    try { previousManifest = JSON.parse(fs.readFileSync(activeManifestPath, 'utf8')); } catch {}
+    try { previousManifest = JSON.parse(fs.readFileSync(activeManifestPath, 'utf8')); } catch { }
   }
 
   // 获取目标文件互斥锁，避免并发改写冲突
@@ -373,7 +377,7 @@ async function install(options = {}) {
       let tHostVer = null;
       try {
         tHostVer = JSON.parse(extractAsarFile(installed, 'package.json').toString('utf8')).version;
-      } catch {}
+      } catch { }
       if (bHostVer && tHostVer && bHostVer !== tHostVer) {
         throw new Error(`指定的 --backup 宿主版本 (v${bHostVer}) 与当前目标宿主版本 (v${tHostVer}) 不匹配，拒绝跨版本还原。`);
       }
@@ -404,9 +408,9 @@ async function install(options = {}) {
       }
 
       const hasPluginTrace = currentUtilsRaw.includes('installContextMeter') ||
-                             currentUtilsRaw.includes(TAGS.METER_UTILS_START) ||
-                             currentUtilsRaw.includes(TAGS.PROXY_START) ||
-                             currentPreloadRaw.includes(TAGS.CHINESE_START);
+        currentUtilsRaw.includes(TAGS.METER_UTILS_START) ||
+        currentUtilsRaw.includes(TAGS.PROXY_START) ||
+        currentPreloadRaw.includes(TAGS.CHINESE_START);
 
       if (!hasPluginTrace) {
         // 场景 A: 纯净宿主（全新安装或宿主官方升级后，无本插件任何模块痕迹）
@@ -457,7 +461,7 @@ async function install(options = {}) {
                   bVer = JSON.parse(extractAsarFile(matchedBackup, 'package.json').toString('utf8')).version;
                   const bUtils = extractAsarFile(matchedBackup, 'dist/utils.js').toString('utf8');
                   bClean = verifyCleanStructure(bUtils);
-                } catch {}
+                } catch { }
                 if (bVer && targetHostVer && bVer === targetHostVer && bClean) {
                   sourceArchive = matchedBackup;
                   console.log(`[Installation] 已安全采信与当前宿主版本 (v${bVer}) 匹配的原版备份 (${path.basename(matchedBackup)}) 作为基底重新安装。`);
@@ -657,10 +661,22 @@ async function install(options = {}) {
         'local-api.js',
         'attachment_scan.py'
       ];
+      const { PROJECT_VERSION } = require('./modules-config');
+      const pkgVersion = PROJECT_VERSION;
+
       for (const file of additions) {
         const srcP = path.join(__dirname, file);
         if (fs.existsSync(srcP) && !fs.statSync(srcP).isDirectory()) {
-          fs.copyFileSync(srcP, path.join(staging, 'dist', file));
+          if (file === 'modules-config.js' && pkgVersion) {
+            const rawModCfg = fs.readFileSync(srcP, 'utf8');
+            const syncedModCfg = rawModCfg.replace(
+              /const FALLBACK_PROJECT_VERSION = '[^']*';/,
+              `const FALLBACK_PROJECT_VERSION = '${String(pkgVersion).replace(/'/g, '')}';`
+            );
+            fs.writeFileSync(path.join(staging, 'dist', file), syncedModCfg, 'utf8');
+          } else {
+            fs.copyFileSync(srcP, path.join(staging, 'dist', file));
+          }
         } else {
           const inStaging = path.join(staging, 'dist', file);
           if (!fs.existsSync(inStaging)) {
@@ -715,13 +731,10 @@ async function install(options = {}) {
         : path.join(backupDir, `pre-meter-${version}-${targetKey}.asar`);
 
       if (isReadableAsar(backup) && !isReadableAsar(previousInstalledBackup)) {
-        try { fs.copyFileSync(backup, previousInstalledBackup); } catch {}
+        try { fs.copyFileSync(backup, previousInstalledBackup); } catch { }
       }
       const previousInstalledSha256 = isReadableAsar(previousInstalledBackup) ? sha(fs.readFileSync(previousInstalledBackup)) : null;
       const origSha = isReadableAsar(backup) ? sha(fs.readFileSync(backup)) : (previousInstalledSha256 || previousManifest?.originalSha256);
-
-      const { PROJECT_VERSION } = require('./modules-config');
-      const pkgVersion = PROJECT_VERSION;
 
       const manifest = {
         meterVersion: pkgVersion,
@@ -761,7 +774,7 @@ async function install(options = {}) {
           }
           throw err;
         } finally {
-          try { if (fs.existsSync(tempReplacement)) fs.unlinkSync(tempReplacement); } catch {}
+          try { if (fs.existsSync(tempReplacement)) fs.unlinkSync(tempReplacement); } catch { }
         }
 
         if (sha(fs.readFileSync(installed)) !== manifest.patchedSha256) {
@@ -826,7 +839,7 @@ async function install(options = {}) {
           if (fs.existsSync(resBinDir)) {
             try {
               fs.copyFileSync(helperSrc, path.join(resBinDir, 'cli-window-helper.exe'));
-            } catch {}
+            } catch { }
           }
         }
 
@@ -841,7 +854,7 @@ async function install(options = {}) {
         try {
           const { syncLiveRuntimeBundle } = require('./meter-collector');
           syncLiveRuntimeBundle(__dirname, { version: manifest.meterVersion });
-        } catch {}
+        } catch { }
         const hotInjectReport = await tryHotInjectDetailed(options.hotInjectOptions || {});
         return { ...manifest, liveInjected: hotInjectReport.ok, hotInjectReport };
       } catch (err) {
@@ -858,9 +871,9 @@ async function install(options = {}) {
         throw err;
       }
     } finally {
-      try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}
-      try { fs.rmSync(packed, { force: true }); } catch {}
-      try { fs.rmSync(packed + '.unpacked', { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(staging, { recursive: true, force: true }); } catch { }
+      try { fs.rmSync(packed, { force: true }); } catch { }
+      try { fs.rmSync(packed + '.unpacked', { recursive: true, force: true }); } catch { }
     }
   } finally {
     fileLock.release();

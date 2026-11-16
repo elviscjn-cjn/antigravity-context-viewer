@@ -27,7 +27,7 @@ function normalizeLoopbackOrigin(rawOrigin) {
 
 function request(url, body, token) {
   return new Promise((resolve, reject) => {
-    const req = (url.startsWith('https:') ? https : http).request(url, { rejectUnauthorized: false, method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {} }, response => {
+    const req = (url.startsWith('https:') ? https : http).request(url, { agent: false, rejectUnauthorized: false, method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {} }, response => {
       let text = ''; response.on('data', chunk => text += chunk);
       response.on('end', () => response.statusCode === 200 ? resolve(text) : reject(new Error(`HTTP ${response.statusCode}: ${text.slice(0, 200)}`)));
     });

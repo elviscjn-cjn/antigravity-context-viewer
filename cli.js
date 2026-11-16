@@ -38,7 +38,7 @@ async function queryLiveWindow() {
   if (!port) return { running: false };
   try {
     const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
+      const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
         let body = '';
         res.on('data', c => body += c);
         res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });

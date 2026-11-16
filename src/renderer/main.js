@@ -339,6 +339,28 @@
     return { source: 'none', result: null };
   }
 
+  /**
+   * 获取当前有效设备像素比，用于跨屏混合 DPI 下的物理像素网格对齐
+   */
+  function getEffectiveDpr() {
+    try {
+      const dpr = typeof window !== 'undefined' ? Number(window.devicePixelRatio) : 1;
+      return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  /**
+   * 将 CSS 逻辑坐标对齐到最近的物理设备像素边界，防止 100%/175% 混合缩放下出现亚像素偏移发虚
+   */
+  function snapToDevicePixel(px) {
+    const num = Number(px);
+    if (!Number.isFinite(num)) return 0;
+    const dpr = getEffectiveDpr();
+    return Math.round(num * dpr) / dpr;
+  }
+
   /* @INSERT_COLORS_MODULE */
   // =========================================================================
   // 模块 2: 宿主布局挂载、右上角原生窗口控制区预留、渐进式宽度收缩与悬浮层定位
@@ -898,10 +920,10 @@
         top = bRect.bottom + gap;
         tip.setAttribute('data-placement', 'bottom');
       }
-      top = Math.max(6, Math.min(vh - tipH - 6, Math.round(top)));
+      top = snapToDevicePixel(Math.max(6, Math.min(vh - tipH - 6, top)));
 
-      let left = Math.round(bRect.left + bRect.width / 2 - tipW / 2);
-      left = Math.max(8, Math.min(vw - tipW - 8, left));
+      let left = bRect.left + bRect.width / 2 - tipW / 2;
+      left = snapToDevicePixel(Math.max(8, Math.min(vw - tipW - 8, left)));
 
       tip.style.top = `${top}px`;
       tip.style.left = `${left}px`;
@@ -970,20 +992,21 @@
         const bRect = (anchorBtn && anchorBtn.getBoundingClientRect && anchorBtn !== host && anchorBtn.getBoundingClientRect().right > hRect.left)
           ? anchorBtn.getBoundingClientRect()
           : hRect;
-        const top = Math.max(36, Math.min(vh - 120, Math.round((bRect.bottom || hRect.bottom) + 6)));
+        const dpr = getEffectiveDpr();
+        const top = snapToDevicePixel(Math.max(36, Math.min(vh - 120, (bRect.bottom || hRect.bottom) + 6)));
         const isCompact = panelEl.classList?.contains?.('cost-compact-view') || panelEl.getAttribute?.('class')?.includes?.('cost-compact-view');
         const effW = isCompact ? 400 : targetW;
         const maxAvailW = Math.max(260, vw - minLeft - 12);
         const finalW = Math.min(effW, maxAvailW);
 
-        // 核心锚点：右侧精确对齐到触发按钮右边缘，确保任何视口宽度下右边缘绝不溢出
-        let left = Math.round(bRect.right - finalW);
-        left = Math.min(left, vw - finalW - 12);
-        left = Math.max(minLeft, left);
+        // 核心锚点：右侧精确对齐到触发按钮右边缘，并按当前 DPI 物理像素网格对齐
+        let left = snapToDevicePixel(bRect.right - finalW);
+        left = Math.min(left, snapToDevicePixel(vw - finalW - 12));
+        left = Math.max(snapToDevicePixel(minLeft), left);
 
         const maxWidthPx = Math.max(260, vw - left - 12);
         const maxHeightPx = Math.max(160, vh - top - 16);
-        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}`;
+        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${dpr}`;
         if (panelEl._lastPlacedGeomKey === geomKey) return;
         panelEl._lastPlacedGeomKey = geomKey;
 
@@ -1057,6 +1080,49 @@
   } catch { }
 
   const onWindowResize = () => updateResponsiveLayout(true);
+  const handleDpiOrZoomChange = () => {
+    try {
+      for (const id of ['panel', 'panel-quota', 'panel-tokens', 'overflow-menu']) {
+        const node = el(id);
+        if (node) node._lastPlacedGeomKey = '';
+      }
+      layoutMeasurementDirty = true;
+      updateResponsiveLayout(true);
+      const upPop = el('update-popover');
+      if (upPop && upPop.style.display === 'block') {
+        positionUpdatePopover();
+      }
+      if (state.tooltipOpen) positionContextTooltip();
+    } catch { }
+  };
+  let removeDpiWatcher = null;
+  const attachDpiWatcher = () => {
+    try {
+      if (removeDpiWatcher) {
+        removeDpiWatcher();
+        removeDpiWatcher = null;
+      }
+      if (state.disposed || typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+      const mql = window.matchMedia(`(resolution: ${getEffectiveDpr()}dppx)`);
+      if (!mql) return;
+      const onChange = () => {
+        if (state.disposed) return;
+        attachDpiWatcher();
+        handleDpiOrZoomChange();
+      };
+      if (typeof mql.addEventListener === 'function') {
+        mql.addEventListener('change', onChange);
+        removeDpiWatcher = () => {
+          try { mql.removeEventListener?.('change', onChange); } catch { }
+        };
+      } else if (typeof mql.addListener === 'function') {
+        mql.addListener(onChange);
+        removeDpiWatcher = () => {
+          try { mql.removeListener?.(onChange); } catch { }
+        };
+      }
+    } catch { }
+  };
   const onWindowFocus = () => {
     host.setAttribute('data-window-active', 'true');
     if (typeof onQuotaWindowFocus === 'function') onQuotaWindowFocus();
@@ -1070,12 +1136,17 @@
     window.addEventListener?.('focus', onWindowFocus);
     window.addEventListener?.('blur', onWindowBlur);
     navigator?.windowControlsOverlay?.addEventListener?.('geometrychange', onWindowResize);
+    attachDpiWatcher();
     earlyDisposeHooks.push(() => {
       try {
         window.removeEventListener?.('resize', onWindowResize);
         window.removeEventListener?.('focus', onWindowFocus);
         window.removeEventListener?.('blur', onWindowBlur);
         navigator?.windowControlsOverlay?.removeEventListener?.('geometrychange', onWindowResize);
+        if (removeDpiWatcher) {
+          removeDpiWatcher();
+          removeDpiWatcher = null;
+        }
         if (hostModelSyncTimer) { clearTimeout(hostModelSyncTimer); hostModelSyncTimer = null; }
         if (domMutationThrottleTimer) { clearTimeout(domMutationThrottleTimer); domMutationThrottleTimer = null; }
       } catch { }
@@ -9193,8 +9264,8 @@
       top = Math.max(10, rect.top - 230);
     }
     pop.style.position = 'fixed';
-    pop.style.top = `${Math.round(top)}px`;
-    pop.style.right = `${Math.round(right)}px`;
+    pop.style.top = `${snapToDevicePixel(top)}px`;
+    pop.style.right = `${snapToDevicePixel(right)}px`;
     pop.style.left = 'auto';
   }
 
@@ -9385,11 +9456,12 @@
       } else {
         throw new Error(t('update.noApi'));
       }
+      if (state.disposed) return;
       if (res && res.ok) {
         const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
-        if (vEl) vEl.textContent = `v${nextVer}`;
+        if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;
 
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';

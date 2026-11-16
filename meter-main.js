@@ -1116,12 +1116,16 @@ function defaultPostLiveHttpJson(port, token, routePath, origin, body = {}, time
   return new Promise((resolve) => {
     try {
       const http = require('http');
+      const net = require('net');
       const dataStr = JSON.stringify(body || {});
+      const numPort = Number(port);
       const req = http.request({
         hostname: '127.0.0.1',
-        port: Number(port),
+        port: numPort,
         path: routePath,
         method: 'POST',
+        agent: false,
+        createConnection: () => net.connect(numPort, '127.0.0.1'),
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(dataStr),

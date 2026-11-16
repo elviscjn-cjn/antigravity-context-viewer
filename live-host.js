@@ -495,7 +495,7 @@ function discoverCdpPageOrigins() {
       if (!fs.existsSync(portFile)) return resolve([]);
       const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
       if (!Number.isFinite(port) || port <= 0) return resolve([]);
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
+      const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
         let d = '';
         res.on('data', c => d += c);
         res.on('end', () => {
@@ -523,7 +523,7 @@ function probeOriginAlive(origin) {
   return new Promise((resolve) => {
     try {
       const https = require('https');
-      const req = https.request(origin + '/', { rejectUnauthorized: false, method: 'GET' }, res => {
+      const req = https.request(origin + '/', { agent: false, rejectUnauthorized: false, method: 'GET' }, res => {
         res.resume();
         resolve(res.statusCode >= 200 && res.statusCode < 500);
       });
