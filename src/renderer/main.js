@@ -132,6 +132,9 @@
       activeDaysCount: 0
     },
     dailyMap: {},
+    dailyModelMap: {},
+    dailyModelMapBySource: null,
+    modelMetaByKey: null,
     speedRecords: []
   };
 
@@ -1822,6 +1825,14 @@
     }
   }
 
+  function formatCompactTokenCount(v) {
+    const n = Number(v) || 0;
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return String(n);
+  }
+
   // 数据源切换（全部 / 桌面 / CLI）
   let activeTokenSource = 'all';
   function switchTokenSource(src) {
@@ -1837,8 +1848,11 @@
       const bySrc = ANTIGRAVITY_TOKEN_DATA.dailyMapBySource || {};
       const srcMap = bySrc[src] || bySrc.all || ANTIGRAVITY_TOKEN_DATA.dailyMap;
       ANTIGRAVITY_TOKEN_DATA.dailyMap = srcMap;
+      const mBySrc = ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource || {};
+      ANTIGRAVITY_TOKEN_DATA.dailyModelMap = mBySrc[src] || mBySrc.all || ANTIGRAVITY_TOKEN_DATA.dailyModelMap || {};
       renderActiveHeatView(true);
       renderActiveCostEstimateView();
+      renderModelUsageView();
     }
   }
   el('src-tab-all')?.addEventListener('click', () => switchTokenSource('all'));
@@ -1888,17 +1902,276 @@
   });
   toggleCostDetails(false);
 
+  // 按模型 Token 统计状态与视图渲染
+  let modelUsagePeriodDays = 7;
+  let modelUsageOffsetDays = 0;
+  let modelUsageGroupBy = 'model';
+  let modelUsageMetric = 'total';
+  let modelUsageHideUnattr = false;
+
+  function formatModelDateShort(dateStr) {
+    const parts = String(dateStr || '').split('-').map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return dateStr || '';
+    const [y, m, d] = parts;
+    if (currentPanelLanguage === 'en') {
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return `${months[m - 1] || m} ${d}`;
+    }
+    return `${m}/${String(d).padStart(2, '0')}`;
+  }
+
+  function formatModelRangeLabel(startStr, endStr) {
+    const sp = String(startStr || '').split('-').map(Number);
+    const ep = String(endStr || '').split('-').map(Number);
+    if (sp.length !== 3 || ep.length !== 3) return `${startStr} – ${endStr}`;
+    if (currentPanelLanguage === 'en') {
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      if (sp[0] === ep[0] && sp[1] === ep[1]) {
+        return `${months[sp[1] - 1]} ${sp[2]} – ${ep[2]}, ${ep[0]}`;
+      }
+      if (sp[0] === ep[0]) {
+        return `${months[sp[1] - 1]} ${sp[2]} – ${months[ep[1] - 1]} ${ep[2]}, ${ep[0]}`;
+      }
+      return `${months[sp[1] - 1]} ${sp[2]}, ${sp[0]} – ${months[ep[1] - 1]} ${ep[2]}, ${ep[0]}`;
+    }
+    return sp[0] === ep[0]
+      ? `${startStr} – ${String(ep[1]).padStart(2, '0')}-${String(ep[2]).padStart(2, '0')}`
+      : `${startStr} – ${endStr}`;
+  }
+
+  function renderModelUsageView() {
+    const viewEl = el('model-usage-view');
+    if (!viewEl) return;
+
+    setPillActive(el('model-period-7d'), modelUsagePeriodDays === 7);
+    setPillActive(el('model-period-30d'), modelUsagePeriodDays === 30);
+    setPillActive(el('model-group-model'), modelUsageGroupBy === 'model');
+    setPillActive(el('model-group-variant'), modelUsageGroupBy === 'variant');
+    setPillActive(el('model-metric-total'), modelUsageMetric === 'total');
+    setPillActive(el('model-metric-nocache'), modelUsageMetric === 'noCache');
+
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    if (!core || typeof core.summarizeModelUsageWindow !== 'function') return;
+
+    const todayStr = formatLocalYmd(new Date());
+    const todayDate = new Date(todayStr + 'T00:00:00');
+    const endDt = new Date(todayDate.getTime() - modelUsageOffsetDays * 86400000);
+    const endDate = formatLocalYmd(endDt);
+
+    const bySrcModel = ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource || {};
+    const dailyModelMap = bySrcModel[activeTokenSource] || bySrcModel.all || ANTIGRAVITY_TOKEN_DATA.dailyModelMap || {};
+
+    const isLightTone = host.getAttribute?.('data-theme') === 'light' || host.getAttribute?.('data-panel-tone') === 'light';
+    const themeAccent = customColors?.tokenAccent || (typeof heatPreset !== 'undefined' && heatPreset !== 'purple' && typeof getEffectiveHeatmapScale === 'function'
+      ? getEffectiveHeatmapScale()[3]
+      : '');
+    const summary = core.summarizeModelUsageWindow(dailyModelMap, {
+      periodDays: modelUsagePeriodDays,
+      endDate,
+      groupBy: modelUsageGroupBy,
+      metric: modelUsageMetric,
+      hideUnattributed: modelUsageHideUnattr,
+      theme: isLightTone ? 'light' : 'dark',
+      accentColor: themeAccent || undefined,
+      modelMetaByKey: ANTIGRAVITY_TOKEN_DATA.modelMetaByKey,
+      unattributedLabel: t('modelsUsage.unattributed')
+    });
+
+    const rangeLbl = el('model-usage-range-label');
+    if (rangeLbl) rangeLbl.textContent = formatModelRangeLabel(summary.startDate, summary.endDate);
+    const winTotEl = el('model-usage-window-total');
+    if (winTotEl) winTotEl.textContent = `${formatCompactTokenCount(summary.windowTotalTokens)} Tokens`;
+
+    const unattrBtn = el('model-toggle-unattr');
+    if (unattrBtn) {
+      const showBtn = summary.hasUnattributed || modelUsageHideUnattr;
+      unattrBtn.style.display = showBtn ? 'inline-flex' : 'none';
+      setPillActive(unattrBtn, modelUsageHideUnattr);
+      unattrBtn.textContent = modelUsageHideUnattr ? t('modelsUsage.showUnattr') : t('modelsUsage.hideUnattr');
+    }
+
+    const firstUse = ANTIGRAVITY_TOKEN_DATA.firstUseDate || ANTIGRAVITY_TOKEN_DATA.summary?.firstUseDate || null;
+    const allModelDates = Object.keys(dailyModelMap || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort();
+    const earliestKnown = allModelDates[0] && (!firstUse || allModelDates[0] < firstUse) ? allModelDates[0] : firstUse;
+    const prevBtn = el('btn-model-win-prev');
+    const nextBtn = el('btn-model-win-next');
+    if (prevBtn) prevBtn.disabled = Boolean(earliestKnown && summary.startDate <= earliestKnown);
+    if (nextBtn) nextBtn.disabled = modelUsageOffsetDays <= 0;
+
+    const maxLblEl = el('model-chart-max-lbl');
+    if (maxLblEl) {
+      maxLblEl.textContent = summary.maxDayTotal > 0 ? formatCompactTokenCount(summary.maxDayTotal) : '';
+    }
+
+    const barsEl = el('model-usage-bars');
+    const xaxisEl = el('model-usage-xaxis');
+    const legendEl = el('model-usage-legend');
+    const emptyEl = el('model-usage-empty');
+    const chartWrap = el('model-usage-chart-wrap');
+
+    const hasAnyData = summary.windowTotalTokens > 0;
+    if (emptyEl) emptyEl.style.display = hasAnyData ? 'none' : 'block';
+    if (chartWrap) chartWrap.style.display = hasAnyData ? 'block' : 'none';
+
+    const isCompact30 = modelUsagePeriodDays === 30;
+    if (barsEl) {
+      if (isCompact30) barsEl.classList?.add('compact-30');
+      else barsEl.classList?.remove('compact-30');
+      barsEl.replaceChildren();
+    }
+    if (xaxisEl) {
+      if (isCompact30) xaxisEl.classList?.add('compact-30');
+      else xaxisEl.classList?.remove('compact-30');
+      xaxisEl.replaceChildren();
+    }
+
+    const anchorIndices = isCompact30
+      ? new Set([0, 7, 14, 21, 29])
+      : new Set([0, 1, 2, 3, 4, 5, 6]);
+    const chartPxHeight = 140;
+
+    summary.days.forEach((day, idx) => {
+      if (barsEl) {
+        const col = document.createElement('div');
+        col.className = 'model-usage-col';
+        if (day.total > 0 && summary.maxDayTotal > 0 && day.segments.length > 0) {
+          const totalH = Math.max(4, Math.round((day.total / summary.maxDayTotal) * chartPxHeight));
+          const stack = document.createElement('div');
+          stack.className = 'model-usage-stack';
+          stack.style.height = `${totalH}px`;
+
+          let allocatedH = 0;
+          day.segments.forEach((seg, sIdx) => {
+            const segEl = document.createElement('div');
+            segEl.className = 'model-usage-seg';
+            let segH = Math.max(2, Math.round((seg.tokens / day.total) * totalH));
+            if (sIdx === day.segments.length - 1) {
+              segH = Math.max(2, totalH - allocatedH);
+            }
+            allocatedH += segH;
+            segEl.style.height = `${segH}px`;
+            segEl.style.background = seg.color;
+            stack.appendChild(segEl);
+          });
+          col.appendChild(stack);
+        } else {
+          const emptyBar = document.createElement('div');
+          emptyBar.className = 'model-usage-empty-bar';
+          col.appendChild(emptyBar);
+        }
+
+        const showBarPop = () => {
+          const hp = el('heat-pop');
+          const hpDate = el('heat-pop-date');
+          const hpVal = el('heat-pop-val');
+          const hpDet = el('heat-pop-det');
+          if (!hp || !hpDate || !hpVal || !hpDet) return;
+          hpDate.textContent = day.date + (day.date === todayStr ? t('heat.today') : '');
+          hpVal.textContent = day.total > 0 ? `${formatCompactTokenCount(day.total)} Tokens` : '0 Tokens';
+          hpDet.replaceChildren();
+          if (day.segments.length > 0) {
+            hpDet.style.display = 'flex';
+            hpDet.style.flexDirection = 'column';
+            hpDet.style.gap = '3px';
+            day.segments.slice(0, 6).forEach(seg => {
+              const row = document.createElement('div');
+              row.style.display = 'flex';
+              row.style.justifyContent = 'space-between';
+              row.style.alignItems = 'center';
+              row.style.gap = '10px';
+              row.style.fontSize = '10.5px';
+              const left = document.createElement('span');
+              left.style.display = 'inline-flex';
+              left.style.alignItems = 'center';
+              left.style.gap = '5px';
+              const dot = document.createElement('span');
+              dot.style.display = 'inline-block';
+              dot.style.width = '6px';
+              dot.style.height = '6px';
+              dot.style.borderRadius = '999px';
+              dot.style.background = seg.color;
+              const nm = document.createElement('span');
+              nm.textContent = seg.label;
+              left.appendChild(dot);
+              left.appendChild(nm);
+              const right = document.createElement('span');
+              right.textContent = `${formatCompactTokenCount(seg.tokens)} (${Math.round(seg.pct * 10) / 10}%)`;
+              row.appendChild(left);
+              row.appendChild(right);
+              hpDet.appendChild(row);
+            });
+          } else {
+            hpDet.style.display = 'none';
+          }
+          const r = col.getBoundingClientRect();
+          hp.style.left = `${r.left + r.width / 2}px`;
+          hp.style.top = `${r.top - 6}px`;
+          hp.style.opacity = '1';
+        };
+        col.addEventListener('mouseenter', showBarPop);
+        col.addEventListener('mouseleave', hidePopover);
+        col.addEventListener('click', showBarPop);
+        barsEl.appendChild(col);
+      }
+
+      if (xaxisEl) {
+        const lbl = document.createElement('div');
+        lbl.className = 'model-usage-xlabel';
+        lbl.textContent = anchorIndices.has(idx) ? formatModelDateShort(day.date) : '';
+        xaxisEl.appendChild(lbl);
+      }
+    });
+
+    if (legendEl) {
+      legendEl.replaceChildren();
+      summary.legend.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'model-legend-item';
+        const bar = document.createElement('div');
+        bar.className = 'model-legend-bar';
+        bar.style.background = item.color;
+
+        const textWrap = document.createElement('div');
+        textWrap.className = 'model-legend-text';
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'model-legend-name';
+        nameEl.textContent = item.label;
+        nameEl.title = item.label;
+
+        const valRow = document.createElement('div');
+        valRow.className = 'model-legend-val-row';
+
+        const pctEl = document.createElement('span');
+        pctEl.className = 'model-legend-pct';
+        pctEl.textContent = item.pctLabel;
+
+        const metaEl = document.createElement('span');
+        metaEl.className = 'model-legend-meta';
+        metaEl.textContent = `${formatCompactTokenCount(item.tokens)} · ${t('modelsUsage.stepsSuffix', { n: item.steps })}`;
+
+        valRow.appendChild(pctEl);
+        valRow.appendChild(metaEl);
+        textWrap.appendChild(nameEl);
+        textWrap.appendChild(valRow);
+        card.appendChild(bar);
+        card.appendChild(textWrap);
+        legendEl.appendChild(card);
+      });
+    }
+  }
+
   function switchTokenView(v) {
     activeTokenView = v;
     // 离开 Token 统计视图时关闭订阅详情与表单
-    if (v !== 'tokens') {
-      setPlanDetailExpanded(false, { skipReposition: true });
-    } else {
-      setPlanDetailExpanded(false, { skipReposition: true });
-    }
+    setPlanDetailExpanded(false, { skipReposition: true });
+    if (typeof hidePopover === 'function') hidePopover();
+
     setPillActive(el('tok-view-tokens'), v === 'tokens');
+    setPillActive(el('tok-view-models'), v === 'models');
     setPillActive(el('tok-view-cost'), v === 'cost');
     const costCard = el('cost-estimate-card');
+    const modelView = el('model-usage-view');
     const tokensMain = el('tokens-main-view');
     const statCards = el('token-stat-cards');
     const planBar = el('plan-summary-bar');
@@ -1909,13 +2182,26 @@
       costCard.style.display = v === 'cost' ? 'block' : 'none';
       if (v === 'cost') costCard.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
     }
+    if (modelView) {
+      modelView.style.display = v === 'models' ? 'block' : 'none';
+      if (v === 'models') {
+        modelView.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+        renderModelUsageView();
+      }
+    }
     if (tokensMain) {
       tokensMain.style.display = v === 'tokens' ? 'block' : 'none';
       if (v === 'tokens') tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
     }
     if (statCards) statCards.style.display = v === 'tokens' ? 'grid' : 'none';
     if (planBar) planBar.style.display = v === 'tokens' ? 'flex' : 'none';
-    if (titleTokens) titleTokens.textContent = v === 'cost' ? t('tokens.titleCost') : t('tokens.title');
+    if (titleTokens) {
+      titleTokens.textContent = v === 'cost'
+        ? t('tokens.titleCost')
+        : v === 'models'
+          ? t('tokens.titleModels')
+          : t('tokens.title');
+    }
 
     if (pTokens) {
       const isCompact = v === 'cost' && !costDetailsExpanded;
@@ -1930,7 +2216,46 @@
     positionFloatingPanels();
   }
   el('tok-view-tokens')?.addEventListener('click', () => switchTokenView('tokens'));
+  el('tok-view-models')?.addEventListener('click', () => switchTokenView('models'));
   el('tok-view-cost')?.addEventListener('click', () => switchTokenView('cost'));
+  el('model-period-7d')?.addEventListener('click', () => {
+    modelUsagePeriodDays = 7;
+    modelUsageOffsetDays = 0;
+    renderModelUsageView();
+  });
+  el('model-period-30d')?.addEventListener('click', () => {
+    modelUsagePeriodDays = 30;
+    modelUsageOffsetDays = 0;
+    renderModelUsageView();
+  });
+  el('model-group-model')?.addEventListener('click', () => {
+    modelUsageGroupBy = 'model';
+    renderModelUsageView();
+  });
+  el('model-group-variant')?.addEventListener('click', () => {
+    modelUsageGroupBy = 'variant';
+    renderModelUsageView();
+  });
+  el('model-metric-total')?.addEventListener('click', () => {
+    modelUsageMetric = 'total';
+    renderModelUsageView();
+  });
+  el('model-metric-nocache')?.addEventListener('click', () => {
+    modelUsageMetric = 'noCache';
+    renderModelUsageView();
+  });
+  el('model-toggle-unattr')?.addEventListener('click', () => {
+    modelUsageHideUnattr = !modelUsageHideUnattr;
+    renderModelUsageView();
+  });
+  el('btn-model-win-prev')?.addEventListener('click', () => {
+    modelUsageOffsetDays += modelUsagePeriodDays;
+    renderModelUsageView();
+  });
+  el('btn-model-win-next')?.addEventListener('click', () => {
+    modelUsageOffsetDays = Math.max(0, modelUsageOffsetDays - modelUsagePeriodDays);
+    renderModelUsageView();
+  });
 
   // =========================================================================
   // 一键启动 CLI 模式（当前项目目录绑定 + 中文/空格路径兼容 + 错误提示）
@@ -8834,6 +9159,9 @@
     if (normalized) {
       ANTIGRAVITY_TOKEN_DATA.dailyMap = normalized.dailyMap;
       ANTIGRAVITY_TOKEN_DATA.dailyMapBySource = normalized.dailyMapBySource;
+      ANTIGRAVITY_TOKEN_DATA.dailyModelMap = normalized.dailyModelMap || {};
+      ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource = normalized.dailyModelMapBySource || payload.dailyModelMapBySource || null;
+      ANTIGRAVITY_TOKEN_DATA.modelMetaByKey = normalized.modelMetaByKey || payload.modelMetaByKey || null;
       ANTIGRAVITY_TOKEN_DATA.summary = normalized.summary;
       ANTIGRAVITY_TOKEN_DATA.referenceCost = normalized.referenceCost;
       ANTIGRAVITY_TOKEN_DATA.currentPeriod = normalized.currentPeriod;
@@ -8855,6 +9183,13 @@
       }
       ANTIGRAVITY_TOKEN_DATA.dailyMap = newMap;
       if (payload.dailyMapBySource) ANTIGRAVITY_TOKEN_DATA.dailyMapBySource = payload.dailyMapBySource;
+      if (payload.dailyModelMapBySource) {
+        ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource = payload.dailyModelMapBySource;
+        ANTIGRAVITY_TOKEN_DATA.dailyModelMap = payload.dailyModelMapBySource[activeTokenSource] || payload.dailyModelMapBySource.all || {};
+      } else if (payload.dailyModelMap) {
+        ANTIGRAVITY_TOKEN_DATA.dailyModelMap = payload.dailyModelMap;
+      }
+      if (payload.modelMetaByKey) ANTIGRAVITY_TOKEN_DATA.modelMetaByKey = payload.modelMetaByKey;
       if (payload.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = payload.firstUseDate;
       if (payload.updatedAt) ANTIGRAVITY_TOKEN_DATA.updatedAt = payload.updatedAt;
       if (payload.currentPeriod) ANTIGRAVITY_TOKEN_DATA.currentPeriod = payload.currentPeriod;
@@ -9029,6 +9364,7 @@
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
     renderActiveCostEstimateView();
+    renderModelUsageView();
 
     computeTimelineWindow();
     renderActiveHeatView(true);

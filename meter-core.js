@@ -2589,6 +2589,13 @@
       };
     }
 
+    const dailyModelMapBySource = payload.dailyModelMapBySource && typeof payload.dailyModelMapBySource === 'object'
+      ? payload.dailyModelMapBySource
+      : null;
+    const dailyModelMap = dailyModelMapBySource
+      ? (dailyModelMapBySource[source] || dailyModelMapBySource.all || {})
+      : (payload.dailyModelMap || {});
+
     return {
       schemaVersion: payload.schemaVersion || '0.8.8',
       version: payload.version || '0.8.8',
@@ -2608,7 +2615,10 @@
       referenceCost,
       summary,
       dailyMap: normalizedMap,
-      dailyMapBySource
+      dailyMapBySource,
+      dailyModelMap,
+      dailyModelMapBySource,
+      modelMetaByKey: payload.modelMetaByKey || null
     };
   }
 
@@ -3854,6 +3864,341 @@
     }
   }
 
+  const UNATTRIBUTED_MODEL_KEY = '__unattributed__';
+  const MODEL_PRODUCT_DISPLAY_NAMES = {
+    'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
+    'gemini-4-argon': 'Gemini 4 Argon',
+    'gemini-4-carbon': 'Gemini 4 Carbon',
+    'gemini-3.8-flash': 'Gemini 3.8 Flash',
+    'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
+    'gemini-3.5-flash-lite': 'Gemini 3.5 Flash-Lite',
+    'gemini-2.5-pro': 'Gemini 2.5 Pro',
+    'claude-opus-5-5': 'Claude Opus 5.5',
+    'claude-sonnet-5-5': 'Claude Sonnet 5.5',
+    'gpt-oss-120b': 'GPT-OSS 120B'
+  };
+  const MODEL_FIXED_COLORS_DARK = {
+    'gemini-4-hydrogen': '#a78bfa',
+    'gemini-4-argon': '#6366f1',
+    'gemini-3.8-flash': '#38bdf8',
+    'gemini-4-carbon': '#e879f9',
+    'claude-opus-5-5': '#f59e0b',
+    'claude-sonnet-5-5': '#fbbf24',
+    'gpt-oss-120b': '#10b981',
+    'gemini-3.1-pro-preview': '#818cf8',
+    'gemini-3.5-flash-lite': '#2dd4bf',
+    'gemini-2.5-pro': '#8b5cf6',
+    [UNATTRIBUTED_MODEL_KEY]: 'rgba(161, 161, 170, 0.28)'
+  };
+  const MODEL_FIXED_COLORS_LIGHT = {
+    'gemini-4-hydrogen': '#7c3aed',
+    'gemini-4-argon': '#4f46e5',
+    'gemini-3.8-flash': '#0284c7',
+    'gemini-4-carbon': '#c026d3',
+    'claude-opus-5-5': '#d97706',
+    'claude-sonnet-5-5': '#b45309',
+    'gpt-oss-120b': '#059669',
+    'gemini-3.1-pro-preview': '#4338ca',
+    'gemini-3.5-flash-lite': '#0d9488',
+    'gemini-2.5-pro': '#6d28d9',
+    [UNATTRIBUTED_MODEL_KEY]: 'rgba(113, 113, 122, 0.24)'
+  };
+  const MODEL_FALLBACK_PALETTE_DARK = ['#a78bfa', '#38bdf8', '#6366f1', '#2dd4bf', '#f59e0b', '#e879f9', '#10b981', '#818cf8'];
+  const MODEL_FALLBACK_PALETTE_LIGHT = ['#7c3aed', '#0284c7', '#4f46e5', '#0d9488', '#d97706', '#c026d3', '#059669', '#4338ca'];
+
+  function resolveModelUsageBucket(call, cascadeModelConfigs = []) {
+    if (!call || typeof call !== 'object') {
+      return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
+    }
+    const rawStr = String(call.model || call.modelLabel || call.modelExactId || call.modelId || '').trim();
+    if (!rawStr) {
+      return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
+    }
+    const resolvedStable = resolveStableModelId(call, cascadeModelConfigs);
+    const probeText = `${rawStr} ${resolvedStable || ''} ${call.modelLabel || ''}`.trim();
+    let modelKey = normalizeModelId(probeText);
+    if (!modelKey) {
+      const lower = probeText.toLowerCase();
+      if (lower.includes('gpt-oss')) modelKey = 'gpt-oss-120b';
+    }
+    const prod = groupModelProduct({
+      modelId: resolvedStable || call.modelExactId || call.modelId || rawStr,
+      label: call.modelLabel || (/[A-Z\s()]/.test(rawStr) ? rawStr : ''),
+      effort: call.effort
+    });
+    if (!modelKey) {
+      const slug = String(prod.productLabel || resolvedStable || rawStr)
+        .toLowerCase()
+        .replace(/^model_/, '')
+        .replace(/[^a-z0-9.\u4e00-\u9fa5]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      modelKey = slug || UNATTRIBUTED_MODEL_KEY;
+    }
+    if (modelKey === UNATTRIBUTED_MODEL_KEY) {
+      return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
+    }
+    const modelLabel = MODEL_PRODUCT_DISPLAY_NAMES[modelKey] || prod.productLabel || modelKey;
+    let effort = prod.effort || null;
+    if (!effort) {
+      const mEff = rawStr.match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?$/i)
+        || (resolvedStable || '').match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?$/i);
+      if (mEff) effort = formatEffortLabel(mEff[1]);
+    }
+    const variantKey = effort ? `${modelKey}:${effort.toLowerCase().replace(/\s+/g, '')}` : modelKey;
+    const variantLabel = effort ? `${modelLabel} (${effort})` : modelLabel;
+    return {
+      modelKey,
+      modelLabel,
+      variantKey,
+      variantLabel,
+      isAttributed: true
+    };
+  }
+
+  function shiftIsoDateDays(dateStr, deltaDays) {
+    const parts = String(dateStr || '').split('-').map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return '';
+    const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + deltaDays));
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function parseHexRgb(hexStr) {
+    const clean = String(hexStr || '').trim().replace(/^#/, '');
+    if (!/^[0-9a-fA-F]{6}$/.test(clean)) return null;
+    const n = parseInt(clean, 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+
+  function shiftHexShade(hexStr, amount) {
+    const rgb = parseHexRgb(hexStr);
+    if (!rgb) return hexStr;
+    const amt = Math.max(-0.6, Math.min(0.6, Number(amount) || 0));
+    const mix = (ch) => amt >= 0
+      ? Math.round(ch + (255 - ch) * amt)
+      : Math.round(ch * (1 + amt));
+    const to2 = v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0');
+    return `#${to2(mix(rgb.r))}${to2(mix(rgb.g))}${to2(mix(rgb.b))}`;
+  }
+
+  function resolveBaseModelColor(baseKey, rankIdx = 0, options = {}) {
+    const isLight = options.theme === 'light';
+    const fixedTable = isLight ? MODEL_FIXED_COLORS_LIGHT : MODEL_FIXED_COLORS_DARK;
+    const palette = isLight ? MODEL_FALLBACK_PALETTE_LIGHT : MODEL_FALLBACK_PALETTE_DARK;
+    const accentHex = parseHexRgb(options.accentColor) ? String(options.accentColor).trim() : null;
+
+    if (baseKey === 'gemini-4-hydrogen' && accentHex) {
+      return accentHex;
+    }
+    if (fixedTable[baseKey]) return fixedTable[baseKey];
+    if (baseKey.startsWith('claude-')) {
+      return baseKey.includes('sonnet') ? fixedTable['claude-sonnet-5-5'] : fixedTable['claude-opus-5-5'];
+    }
+    if (baseKey.includes('gpt')) return fixedTable['gpt-oss-120b'];
+    if (baseKey.includes('flash')) return fixedTable['gemini-3.8-flash'];
+    if (baseKey.includes('argon')) return fixedTable['gemini-4-argon'];
+    if (baseKey.includes('carbon')) return fixedTable['gemini-4-carbon'];
+    if (baseKey.includes('hydrogen')) return accentHex || fixedTable['gemini-4-hydrogen'];
+    let hash = 0;
+    for (let i = 0; i < baseKey.length; i++) {
+      hash = (hash * 31 + baseKey.charCodeAt(i)) >>> 0;
+    }
+    return palette[(rankIdx + hash) % palette.length];
+  }
+
+  function getModelChartColor(key, rankIdx = 0, options = {}) {
+    const isLight = options.theme === 'light';
+    const fixedTable = isLight ? MODEL_FIXED_COLORS_LIGHT : MODEL_FIXED_COLORS_DARK;
+    if (key === UNATTRIBUTED_MODEL_KEY) return fixedTable[UNATTRIBUTED_MODEL_KEY];
+
+    const parts = String(key || '').split(':');
+    const baseKey = parts[0] || String(key || '');
+    const effortPart = (parts[1] || '').toLowerCase();
+    const baseColor = resolveBaseModelColor(baseKey, rankIdx, options);
+
+    if (!effortPart) return baseColor;
+    // 同模型家族内按档位做同色系明度阶梯区分
+    const shadeOffsetByEffort = isLight
+      ? { xhigh: -0.24, extrahigh: -0.24, max: -0.24, high: -0.05, medium: 0.16, low: 0.34, minimal: 0.42 }
+      : { xhigh: -0.22, extrahigh: -0.22, max: -0.22, high: -0.04, medium: 0.18, low: 0.34, minimal: 0.42 };
+    const offset = shadeOffsetByEffort[effortPart];
+    return offset !== undefined ? shiftHexShade(baseColor, offset) : baseColor;
+  }
+
+  /**
+   * 按指定天窗 (7d/30d) 与分组粒度汇总按日按模型 Token 分布与图例占比
+   */
+  function summarizeModelUsageWindow(dailyModelMap = {}, options = {}) {
+    const periodDays = Number(options.periodDays) === 30 ? 30 : 7;
+    const endDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.endDate || ''))
+      ? String(options.endDate)
+      : formatLocalDateKeyCompat(new Date());
+    const startDate = shiftIsoDateDays(endDate, -(periodDays - 1));
+    const groupBy = options.groupBy === 'variant' ? 'variant' : 'model';
+    const metric = options.metric === 'noCache' ? 'noCache' : 'total';
+    const hideUnattributed = Boolean(options.hideUnattributed);
+    const metaMap = (options.modelMetaByKey && typeof options.modelMetaByKey === 'object') ? options.modelMetaByKey : {};
+
+    const resolveMetricVal = (rec) => {
+      if (!rec) return 0;
+      const inp = Number(rec.input) || 0;
+      const out = Number(rec.output) || 0;
+      const cac = Number(rec.cache) || 0;
+      const tot = Number(rec.total) || (inp + out + cac);
+      return metric === 'noCache' ? Math.max(0, inp + out) : Math.max(0, tot);
+    };
+
+    const windowTotalsByGroup = new Map();
+    const dayBucketsList = [];
+    let unattributedTokens = 0;
+    let windowTotalTokens = 0;
+    let windowTotalSteps = 0;
+
+    for (let i = 0; i < periodDays; i++) {
+      const dStr = shiftIsoDateDays(startDate, i);
+      const dayRaw = (dailyModelMap && dailyModelMap[dStr] && typeof dailyModelMap[dStr] === 'object') ? dailyModelMap[dStr] : {};
+      const dayGrouped = new Map();
+      let dayTotal = 0;
+
+      for (const [rawKey, rec] of Object.entries(dayRaw)) {
+        if (!rec || typeof rec !== 'object') continue;
+        const val = resolveMetricVal(rec);
+        const inp = Number(rec.input) || 0;
+        const out = Number(rec.output) || 0;
+        const cac = Number(rec.cache) || 0;
+        const steps = Number(rec.steps) || 0;
+        if (val <= 0 && steps <= 0) continue;
+
+        const isUnattr = rawKey === UNATTRIBUTED_MODEL_KEY;
+        if (isUnattr) unattributedTokens += val;
+        if (isUnattr && hideUnattributed) continue;
+
+        const meta = metaMap[rawKey] || null;
+        let gKey = rawKey;
+        let gLabel = rawKey;
+        if (isUnattr) {
+          gKey = UNATTRIBUTED_MODEL_KEY;
+          gLabel = options.unattributedLabel || '未标明模型';
+        } else if (groupBy === 'model') {
+          gKey = meta?.modelKey || rawKey.split(':')[0] || rawKey;
+          gLabel = meta?.modelLabel || MODEL_PRODUCT_DISPLAY_NAMES[gKey] || gKey;
+        } else {
+          gKey = rawKey;
+          gLabel = meta?.variantLabel || meta?.modelLabel || rawKey;
+        }
+
+        const prevDay = dayGrouped.get(gKey) || { key: gKey, label: gLabel, tokens: 0, input: 0, output: 0, cache: 0, steps: 0 };
+        prevDay.tokens += val;
+        prevDay.input += inp;
+        prevDay.output += out;
+        prevDay.cache += cac;
+        prevDay.steps += steps;
+        dayGrouped.set(gKey, prevDay);
+        dayTotal += val;
+
+        const prevWin = windowTotalsByGroup.get(gKey) || { key: gKey, label: gLabel, tokens: 0, input: 0, output: 0, cache: 0, steps: 0 };
+        prevWin.tokens += val;
+        prevWin.input += inp;
+        prevWin.output += out;
+        prevWin.cache += cac;
+        prevWin.steps += steps;
+        windowTotalsByGroup.set(gKey, prevWin);
+        windowTotalTokens += val;
+        windowTotalSteps += steps;
+      }
+
+      dayBucketsList.push({ date: dStr, total: dayTotal, grouped: dayGrouped });
+    }
+
+    // 排序：已标明模型按窗口总用量降序，未标明模型固定置底
+    const sortedWin = Array.from(windowTotalsByGroup.values()).sort((a, b) => {
+      if (a.key === UNATTRIBUTED_MODEL_KEY && b.key !== UNATTRIBUTED_MODEL_KEY) return 1;
+      if (b.key === UNATTRIBUTED_MODEL_KEY && a.key !== UNATTRIBUTED_MODEL_KEY) return -1;
+      return b.tokens - a.tokens || a.label.localeCompare(b.label);
+    });
+
+    const colorByKey = new Map();
+    const orderByKey = new Map();
+    const usedColors = new Set();
+    const themeOpt = options.theme === 'light' ? 'light' : 'dark';
+    const fallbackPalette = themeOpt === 'light' ? MODEL_FALLBACK_PALETTE_LIGHT : MODEL_FALLBACK_PALETTE_DARK;
+    const colorOpts = { theme: themeOpt, accentColor: options.accentColor || null };
+    sortedWin.forEach((item, idx) => {
+      orderByKey.set(item.key, idx);
+      let color = getModelChartColor(item.key, idx, colorOpts);
+      if (item.key !== UNATTRIBUTED_MODEL_KEY && usedColors.has(color)) {
+        const isVariant = item.key.includes(':');
+        if (isVariant) {
+          color = shiftHexShade(color, themeOpt === 'light' ? 0.12 : -0.12);
+        }
+        if (usedColors.has(color)) {
+          const alt = fallbackPalette.find(c => !usedColors.has(c));
+          if (alt) color = alt;
+        }
+      }
+      usedColors.add(color);
+      colorByKey.set(item.key, color);
+    });
+
+    const formatPctLabel = (pct) => {
+      if (pct <= 0) return '0%';
+      if (pct < 0.1) return '<0.1%';
+      const rounded = Math.round(pct * 10) / 10;
+      return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
+    };
+
+    const legend = sortedWin.map(item => {
+      const pct = windowTotalTokens > 0 ? (item.tokens / windowTotalTokens) * 100 : 0;
+      return {
+        ...item,
+        color: colorByKey.get(item.key) || '#71717a',
+        pct,
+        pctLabel: formatPctLabel(pct)
+      };
+    });
+
+    let maxDayTotal = 0;
+    const days = dayBucketsList.map(d => {
+      if (d.total > maxDayTotal) maxDayTotal = d.total;
+      const segs = Array.from(d.grouped.values())
+        .filter(s => s.tokens > 0)
+        .sort((a, b) => (orderByKey.get(a.key) ?? 999) - (orderByKey.get(b.key) ?? 999))
+        .map(s => ({
+          ...s,
+          color: colorByKey.get(s.key) || '#71717a',
+          pct: d.total > 0 ? (s.tokens / d.total) * 100 : 0
+        }));
+      return {
+        date: d.date,
+        total: d.total,
+        segments: segs
+      };
+    });
+
+    return {
+      periodDays,
+      startDate,
+      endDate,
+      groupBy,
+      metric,
+      hideUnattributed,
+      days,
+      legend,
+      maxDayTotal,
+      windowTotalTokens,
+      windowTotalSteps,
+      hasUnattributed: unattributedTokens > 0,
+      unattributedTokens
+    };
+  }
+
+  function formatLocalDateKeyCompat(d) {
+    const dt = d instanceof Date ? d : new Date(d);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  }
+
   const api = {
     summarize,
     classifyRequestError,
@@ -3885,6 +4230,10 @@
     CURRENCY_SYMBOLS,
     normalizeModelId,
     resolveStableModelId,
+    UNATTRIBUTED_MODEL_KEY,
+    resolveModelUsageBucket,
+    getModelChartColor,
+    summarizeModelUsageWindow,
     EFFORT_WHITELIST,
     formatEffortLabel,
     detectModelVendor,

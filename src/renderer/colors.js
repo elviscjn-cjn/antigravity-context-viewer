@@ -417,6 +417,15 @@
     }
   }
 
+  function refreshActiveChartViews() {
+    if (activeHeatView === 'weekly') renderHeatmapWeekly();
+    else if (activeHeatView === 'cum') renderHeatmapCum();
+    const modelViewEl = el('model-usage-view');
+    if (modelViewEl && modelViewEl.style && modelViewEl.style.display === 'block' && typeof renderModelUsageView === 'function') {
+      renderModelUsageView();
+    }
+  }
+
   function applyCustomColors() {
     for (const [key, cssVar] of Object.entries(COLOR_SLOTS)) {
       const val = customColors[key];
@@ -438,8 +447,7 @@
     }
     applyHeatmapPalette();
     syncSwatchAndResetButtons();
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    refreshActiveChartViews();
   }
 
   function setCustomColor(key, value) {
@@ -502,8 +510,7 @@
     });
     applyHeatmapPalette();
     syncSwatchAndResetButtons();
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    refreshActiveChartViews();
     syncNativeOverlayTheme();
   }
 

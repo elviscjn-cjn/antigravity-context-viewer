@@ -1192,6 +1192,7 @@
       <div class="view-switch-bar">
         <button id="tok-view-tokens" class="switch-pill-btn active" type="button" data-i18n="tokens.view.tokens">Token
           统计</button>
+        <button id="tok-view-models" class="switch-pill-btn" type="button" data-i18n="tokens.view.models">按模型</button>
         <button id="tok-view-cost" class="switch-pill-btn" type="button" data-i18n="tokens.view.cost">API 参考金额</button>
       </div>
     </div>
@@ -1661,6 +1662,59 @@
         <button id="btn-ref-mode-all" type="button" style="display:none"></button>
         <button id="btn-ref-mode-hybrid" type="button" style="display:none"></button>
       </div>
+    </div>
+
+    <!-- 按模型 Token 用量分布视图（支持 7d/30d 堆叠柱图、模型/档位粒度与占比图例） -->
+    <div id="model-usage-view" class="model-usage-card" style="display:none">
+      <div class="model-usage-header">
+        <div>
+          <div class="model-usage-title" data-i18n="modelsUsage.title">按模型 Token 用量</div>
+          <div id="model-usage-subtitle" class="model-usage-subtitle" data-i18n="modelsUsage.subtitle">查看桌面端与 CLI 各模型每日 Token 消耗及占比分布。</div>
+        </div>
+      </div>
+
+      <div class="model-usage-controls">
+        <div class="source-switch-bar">
+          <button id="model-period-7d" class="switch-pill-btn active" type="button">7d</button>
+          <button id="model-period-30d" class="switch-pill-btn" type="button">30d</button>
+        </div>
+        <div class="model-usage-right-ctrls">
+          <div class="source-switch-bar">
+            <button id="model-group-model" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.groupModel">按模型</button>
+            <button id="model-group-variant" class="switch-pill-btn" type="button" data-i18n="modelsUsage.groupVariant">按档位</button>
+          </div>
+          <div class="source-switch-bar">
+            <button id="model-metric-total" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.metricTotal">含缓存</button>
+            <button id="model-metric-nocache" class="switch-pill-btn" type="button" data-i18n="modelsUsage.metricNoCache">不含缓存</button>
+          </div>
+          <button id="model-toggle-unattr" class="switch-pill-btn model-unattr-btn" type="button" style="display:none" data-i18n="modelsUsage.hideUnattr">隐藏未标明</button>
+        </div>
+      </div>
+
+      <div class="model-usage-nav-row">
+        <div class="model-usage-range-wrap">
+          <span id="model-usage-range-label" class="model-usage-range-lbl">--</span>
+          <span id="model-usage-window-total" class="key-pill pill-muted" style="font-size:10px;padding:1px 6px">--</span>
+        </div>
+        <div class="model-usage-nav-btns">
+          <button id="btn-model-win-prev" class="heat-nav-btn" type="button" title="查看更早区间" data-i18n-title="modelsUsage.prevTitle">‹</button>
+          <button id="btn-model-win-next" class="heat-nav-btn" type="button" title="查看更新区间" data-i18n-title="modelsUsage.nextTitle" disabled>›</button>
+        </div>
+      </div>
+
+      <div id="model-usage-chart-wrap" class="model-usage-chart-wrap">
+        <div class="model-usage-gridlines" aria-hidden="true">
+          <div class="model-usage-gridline"><span id="model-chart-max-lbl" class="model-chart-max-lbl"></span></div>
+          <div class="model-usage-gridline"></div>
+          <div class="model-usage-gridline"></div>
+          <div class="model-usage-gridline"></div>
+        </div>
+        <div id="model-usage-bars" class="model-usage-bars"></div>
+        <div id="model-usage-xaxis" class="model-usage-xaxis"></div>
+      </div>
+
+      <div id="model-usage-empty" class="model-usage-empty" style="display:none" data-i18n="modelsUsage.empty">当前时间窗暂无 Token 用量记录</div>
+      <div id="model-usage-legend" class="model-usage-legend"></div>
     </div>
 
     <!-- 专属 Token 统计页（包含卡片统计、热力图与调色抽屉，费用模式下完全不渲染） -->
