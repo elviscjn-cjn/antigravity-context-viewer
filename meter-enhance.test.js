@@ -385,3 +385,113 @@ test('多目标部分失败时诚实返回 partialOk 与逐项目标错误信息
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('macOS Mach-O arm64 适配：embed.FS 槽位解析、0~4 档切换、中文标题与全还原', async () => {
+  const buf = Buffer.alloc(0x10000, 0);
+  const vmBase = 0x100000000n;
+  // Mach-O 64-bit header (arm64)
+  buf.writeUInt32LE(0xfeedfacf, 0);
+  buf.writeUInt32LE(0x0100000c, 4); // CPU_TYPE_ARM64
+  buf.writeUInt32LE(0, 8);
+  buf.writeUInt32LE(2, 12); // MH_EXECUTE
+  buf.writeUInt32LE(2, 16); // ncmds = 2 (LC_UUID + LC_SEGMENT_64)
+  // LC_UUID at 32 (24B)
+  buf.writeUInt32LE(0x1b, 32);
+  buf.writeUInt32LE(24, 36);
+  Buffer.from('00112233445566778899aabbccddeeff', 'hex').copy(buf, 40);
+  // LC_SEGMENT_64 (__TEXT) at 56 (72 + 2 * 80 = 232B)
+  buf.writeUInt32LE(0x19, 56);
+  buf.writeUInt32LE(72 + 2 * 80, 60);
+  buf.write('__TEXT', 64, 'ascii');
+  buf.writeBigUInt64LE(vmBase, 80);
+  buf.writeBigUInt64LE(0x10000n, 88);
+  buf.writeBigUInt64LE(0n, 96);
+  buf.writeBigUInt64LE(0x10000n, 104);
+  buf.writeUInt32LE(2, 120); // nsects = 2
+  buf.writeUInt32LE(24 + 72 + 2 * 80, 20); // sizeofcmds
+
+  // Section 1: __rodata at 0x2000..0x8000
+  const s1 = 128;
+  buf.write('__rodata', s1, 'ascii');
+  buf.write('__TEXT', s1 + 16, 'ascii');
+  buf.writeBigUInt64LE(vmBase + 0x2000n, s1 + 32);
+  buf.writeBigUInt64LE(0x6000n, s1 + 40);
+  buf.writeUInt32LE(0x2000, s1 + 48);
+  // Section 2: __cstring at 0x8000..0xf000
+  const s2 = s1 + 80;
+  buf.write('__cstring', s2, 'ascii');
+  buf.write('__TEXT', s2 + 16, 'ascii');
+  buf.writeBigUInt64LE(vmBase + 0x8000n, s2 + 32);
+  buf.writeBigUInt64LE(0x7000n, s2 + 40);
+  buf.writeUInt32LE(0x8000, s2 + 48);
+
+  const prefix = 'google3/third_party/jetski/prompt/template_provider/templates/system_prompts/';
+  const slots = [
+    { name: 'identity.tmpl', text: 'You are Antigravity, an agentic AI coding assistant.' },
+    { name: 'guidelines.tmpl', text: 'G'.repeat(700) },
+    { name: 'function_call.tmpl', text: 'F'.repeat(605) },
+    { name: 'communication_style.tmpl', text: 'C'.repeat(2034) },
+    { name: 'slash_commands.tmpl', text: 'S'.repeat(600) },
+    { name: 'plugins.tmpl', text: 'P'.repeat(600) },
+    { name: 'artifacts.tmpl', text: 'A'.repeat(1200) }
+  ];
+
+  let strCursor = 0x2100;
+  let tblCursor = 0x9000;
+  for (const s of slots) {
+    const fullName = prefix + s.name;
+    const nameOff = strCursor;
+    buf.write(fullName, nameOff, 'utf8');
+    strCursor += Buffer.byteLength(fullName, 'utf8') + 16;
+
+    const dataOff = strCursor;
+    buf.write(s.text, dataOff, 'utf8');
+    strCursor += Buffer.byteLength(s.text, 'utf8') + 16;
+
+    buf.writeBigUInt64LE(vmBase + BigInt(nameOff), tblCursor);
+    buf.writeBigUInt64LE(BigInt(Buffer.byteLength(fullName, 'utf8')), tblCursor + 8);
+    buf.writeBigUInt64LE(vmBase + BigInt(dataOff), tblCursor + 16);
+    buf.writeBigUInt64LE(BigInt(Buffer.byteLength(s.text, 'utf8')), tblCursor + 24);
+    tblCursor += 48;
+  }
+
+  for (const rule of enhance.CHINESE_TITLE_RULES) {
+    buf.write(rule.oldText, strCursor, 'ascii');
+    strCursor += rule.oldText.length + 16;
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-enhance-macho-'));
+  try {
+    const binPath = path.join(tmpDir, 'language_server');
+    fs.writeFileSync(binPath, buf);
+    const opts = {
+      targets: [{ id: 'desktop', label: 'macOS LS', path: binPath }],
+      enhanceBackupDir: path.join(tmpDir, 'enh_bak'),
+      backupDir: path.join(tmpDir, 'ctx_bak'),
+      stateDir: path.join(tmpDir, 'state'),
+      platform: 'darwin',
+      arch: 'arm64',
+      skipProcessCheck: true
+    };
+
+    const st0 = await enhance.getEnhanceStatusAsync(opts);
+    assert.equal(st0.supported, true);
+    assert.equal(st0.summary.promptTier, 0);
+    assert.equal(st0.summary.chineseTitleMode, 'en');
+    assert.equal(st0.summary.slotCount, 7);
+
+    const r4 = await enhance.applyEnhancePatchAsync({ promptTier: 4, chineseTitle: true }, opts);
+    assert.equal(r4.ok, true);
+    assert.equal(r4.appliedPromptTier, 4);
+    assert.equal(r4.appliedChineseTitleEnabled, true);
+
+    const r0 = await enhance.restoreAllEnhanceAsync(opts);
+    assert.equal(r0.ok, true);
+    assert.equal(r0.status.summary.promptTier, 0);
+    assert.equal(r0.status.summary.chineseTitleEnabled, false);
+    assert.equal(Buffer.compare(fs.readFileSync(binPath), buf), 0);
+  } finally {
+    enhance.invalidateBinaryCache();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
