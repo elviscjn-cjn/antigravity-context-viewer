@@ -29,7 +29,7 @@ const liveBootProxySnapshot = (() => {
       injectedAtStartup: true,
       enabled: Boolean(bootInfo.active && bootInfo.proxyUrl),
       proxyUrl: bootInfo.proxyUrl || null,
-      bypassList: bootInfo.bypassList || null
+      bypassList: typeof bootInfo.bypassList === 'string' ? bootInfo.bypassList : null
     };
   }
   const envProxy = normalizeProxyUrl(process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy || '');
@@ -82,7 +82,7 @@ function buildLiveRuntimeModulesMeta(cfg) {
     injectedAtStartup: Boolean(liveBootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
     runtimeProxyUrl: runtimeUrl || null,
-    runtimeBypassList: liveBootProxySnapshot.bypassList || null,
+    runtimeBypassList: typeof liveBootProxySnapshot.bypassList === 'string' ? liveBootProxySnapshot.bypassList : null,
     proxyNeedsRestart,
     chineseActive: Boolean(bootZh.enabled),
     chineseBootLanguage: bootZh.language,

@@ -44,7 +44,10 @@ function generateProxyUtilsCode(cfg = {}) {
   const defaultEnabled = cfg.enabled === true;
   const rawDefaultUrl = String(cfg.proxyUrl || '').trim().replace(/^([a-zA-Z0-9+.-]+:\/\/[^/?#]+)\/+$/, '$1');
   const proxyUrl = defaultEnabled && rawDefaultUrl ? rawDefaultUrl : null;
-  const bypassList = String(cfg.bypassList || 'localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<local>').trim();
+  const rawBypass = cfg.bypassList !== undefined && cfg.bypassList !== null
+    ? cfg.bypassList
+    : (cfg.noProxy !== undefined && cfg.noProxy !== null ? cfg.noProxy : 'localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<local>');
+  const bypassList = String(rawBypass).trim();
   return `\n${TAGS.PROXY_START}
 try {
   const _fs = require('fs');
@@ -97,7 +100,12 @@ try {
         const _candUrl = _normalizeUrl(_pCfg.proxyUrl || _pCfg.httpProxy || '');
         if (_candUrl) _proxyUrl = _candUrl;
         else if (_isUnified) { _proxyUrl = null; break; }
-        if (_pCfg.bypassList || _pCfg.noProxy) _noProxy = String(_pCfg.bypassList || _pCfg.noProxy).trim();
+        const _rawNoProxy = Object.prototype.hasOwnProperty.call(_pCfg, 'bypassList')
+          ? _pCfg.bypassList
+          : _pCfg.noProxy;
+        if (_rawNoProxy !== undefined && _rawNoProxy !== null) {
+          _noProxy = String(_rawNoProxy).trim();
+        }
         break;
       } catch (_cfgErr) {
         if (_isUnified) {
@@ -117,14 +125,21 @@ try {
     for (const _k of ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy']) {
       process.env[_k] = _proxyUrl;
     }
-    process.env['NO_PROXY'] = _noProxy;
-    process.env['no_proxy'] = _noProxy;
+    if (_noProxy) {
+      process.env['NO_PROXY'] = _noProxy;
+      process.env['no_proxy'] = _noProxy;
+    } else {
+      delete process.env['NO_PROXY'];
+      delete process.env['no_proxy'];
+    }
     process.env['NODE_USE_ENV_PROXY'] = '1';
 
     if (_electron && _electron.app && _electron.app.commandLine) {
       try {
         _electron.app.commandLine.appendSwitch('proxy-server', _chromiumProxy);
-        _electron.app.commandLine.appendSwitch('proxy-bypass-list', _noProxy);
+        if (_noProxy) {
+          _electron.app.commandLine.appendSwitch('proxy-bypass-list', _noProxy);
+        }
       } catch {}
     }
 
@@ -167,7 +182,7 @@ try {
       active: Boolean(_proxyUrl),
       proxyUrl: _proxyUrl || null,
       chromiumProxyUrl: _chromiumProxy || null,
-      bypassList: _noProxy || null,
+      bypassList: typeof _noProxy === 'string' ? _noProxy : '',
       configPath: _matchedCfgPath,
       recordedAt: new Date().toISOString()
     };

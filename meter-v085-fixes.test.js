@@ -643,6 +643,56 @@ test('4. 代理参数一致性（无端口默认端口 & bypassList 清空持久
       applyProxyEnvironment(envObj, { overrideExisting: true });
       assert.equal(envObj.NO_PROXY, undefined, '空 bypassList 启用 overrideExisting 时应清除残留 NO_PROXY');
 
+      // 验证启动期主进程引导脚本在 bypassList='' 时不回落到安装默认列表
+      const { generateProxyUtilsCode } = require(path.join(ROOT_DIR, 'modular-installer'));
+      const bootCode = generateProxyUtilsCode({
+        enabled: true,
+        proxyUrl: 'http://proxy.local',
+        bypassList: 'localhost,legacy.default'
+      });
+      const bootCheckOut = execFileSync('node', ['-e', `
+        const Module = require('module');
+        const origLoad = Module._load;
+        const switches = [];
+        const sessionCalls = [];
+        Module._load = function (id, parent, isMain) {
+          if (id === 'electron') {
+            return {
+              app: {
+                commandLine: { appendSwitch: (k, v) => switches.push([k, v]) },
+                on: () => {},
+                whenReady: () => Promise.resolve()
+              },
+              session: {
+                defaultSession: { setProxy: async (opts) => sessionCalls.push(opts) },
+                fromPartition: () => ({ setProxy: async () => {} })
+              }
+            };
+          }
+          return origLoad.apply(this, arguments);
+        };
+        process.env.NO_PROXY = 'stale.env';
+        process.env.no_proxy = 'stale.env';
+        const fn = new Function('require', 'process', 'globalThis', 'console', ${JSON.stringify(bootCode)});
+        fn(require, process, globalThis, console);
+        setTimeout(() => {
+          console.log(JSON.stringify({
+            bootInfo: globalThis.__AG_PROXY_BOOT_INFO__,
+            noProxyEnv: process.env.NO_PROXY,
+            switches,
+            sessionCalls
+          }));
+        }, 20);
+      `], {
+        env: { ...process.env },
+        encoding: 'utf8'
+      });
+      const bootParsed = JSON.parse(bootCheckOut.trim().split(/\r?\n/).pop());
+      assert.equal(bootParsed.bootInfo.bypassList, '', '启动引导脚本必须保持空 bypassList 而不回填默认列表');
+      assert.equal(bootParsed.noProxyEnv, undefined, '空 bypassList 启动引导必须清除残留 NO_PROXY');
+      assert.equal(bootParsed.switches.some(([k]) => k === 'proxy-bypass-list'), false, '空 bypassList 不应附加 proxy-bypass-list 参数');
+      assert.deepEqual(bootParsed.sessionCalls[0], { proxyRules: 'http://proxy.local', proxyBypassRules: '' });
+
       // CLI proxy:set 支持无端口 http://proxy.local
       execFileSync('node', [path.join(ROOT_DIR, 'cli.js'), 'proxy:set', 'http://proxy.local', '--path', targetAsar], {
         env: { ...process.env },
