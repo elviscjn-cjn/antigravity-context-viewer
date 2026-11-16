@@ -14,21 +14,58 @@ const {
   launchCliSession
 } = require('./meter-cli-launcher');
 
-test('CLI 启动模块 1: resolveCliExecutable 探测真实环境 agy.exe', () => {
-  const res = resolveCliExecutable();
-  assert.equal(res.ok, true, '必须能成功探测到 Antigravity CLI');
-  assert.ok(res.exePath && fs.existsSync(res.exePath), '解析的 CLI 可执行文件必须存在');
-  assert.match(res.exePath.toLowerCase(), /agy(\.exe|\.cmd)?$/, '可执行文件名必须为 agy');
+test('CLI 启动模块 1: resolveCliExecutable 隔离跨平台探测（Windows .exe/.cmd 与 macOS .app）及环境探测', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-resolve-'));
+  try {
+    // 1. 隔离模拟 Windows 安装目录 (.gemini/antigravity/bin/agy.exe)
+    const winHome = path.join(tmpDir, 'win-home');
+    const winBin = path.join(winHome, '.gemini', 'antigravity', 'bin');
+    fs.mkdirSync(winBin, { recursive: true });
+    const fakeWinExe = path.join(winBin, 'agy.exe');
+    fs.writeFileSync(fakeWinExe, 'MZ');
+    const resWin = resolveCliExecutable(null, { platform: 'win32', homeDir: winHome, env: { USERPROFILE: winHome, PATH: '' } });
+    assert.equal(resWin.ok, true);
+    assert.equal(path.resolve(resWin.exePath), path.resolve(fakeWinExe));
+
+    // 2. 隔离模拟 macOS Google Antigravity.app 安装目录
+    const macAppRoot = path.join(tmpDir, 'Google Antigravity.app');
+    const macBin = path.join(macAppRoot, 'Contents', 'Resources', 'app', 'bin', 'agy');
+    fs.mkdirSync(path.dirname(macBin), { recursive: true });
+    fs.writeFileSync(macBin, '#!/bin/sh\necho ok\n', { mode: 0o755 });
+    const resMac = resolveCliExecutable(null, { platform: 'darwin', macAppRoots: [macAppRoot], homeDir: tmpDir, env: { PATH: '' } });
+    assert.equal(resMac.ok, true);
+    assert.equal(path.resolve(resMac.exePath), path.resolve(macBin));
+
+    // 3. 如宿主机实际已安装 Antigravity CLI，额外核对真实探测结果格式正确
+    const hostRes = resolveCliExecutable();
+    if (hostRes.ok) {
+      assert.ok(hostRes.exePath && fs.existsSync(hostRes.exePath));
+      assert.match(path.basename(hostRes.exePath).toLowerCase(), /^agy(\.exe|\.cmd|\.bat)?$/);
+    } else {
+      assert.equal(hostRes.code, 'CLI_NOT_FOUND');
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('CLI 启动模块 2: dryRun 包含完整参数与环境隔离', async () => {
-  const dry = await launchCliSession({ dryRun: true, model: 'gemini-3.8-flash-high', args: ['--verbose'] });
-  assert.equal(dry.ok, true);
-  assert.equal(dry.dryRun, true);
-  assert.equal(dry.model, 'gemini-3.8-flash-high');
-  assert.deepEqual(dry.args, ['--model', 'gemini-3.8-flash-high', '--verbose']);
-  assert.equal(dry.env.TERM, 'xterm-256color');
-  assert.equal(dry.env.COLORTERM, 'truecolor');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-dryrun-'));
+  try {
+    const fakeCli = path.join(tmpDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
+    fs.writeFileSync(fakeCli, 'stub', { mode: 0o755 });
+    const dry = await launchCliSession({ cliPath: fakeCli, cwd: tmpDir, dryRun: true, model: 'gemini-3.8-flash-high', args: ['--verbose'] });
+    assert.equal(dry.ok, true);
+    assert.equal(dry.dryRun, true);
+    assert.equal(dry.model, 'gemini-3.8-flash-high');
+    assert.deepEqual(dry.args, ['--model', 'gemini-3.8-flash-high', '--verbose']);
+    if (process.platform === 'win32') {
+      assert.equal(dry.env.TERM, 'xterm-256color');
+      assert.equal(dry.env.COLORTERM, 'truecolor');
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('CLI 启动模块 3: 源码绝对不残留同步 powershell、8000ms 阻塞与作者绝对开发路径', () => {

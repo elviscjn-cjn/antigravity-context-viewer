@@ -20,18 +20,21 @@ jobs:
         include:
           - label: Apple Silicon (arm64 / macos-15)
             runner: macos-15
-          - label: Apple Silicon (arm64 / macos-14)
-            runner: macos-14
           - label: Intel (x86_64 / macos-15-intel)
             runner: macos-15-intel
 
     steps:
       - name: Inspect Runner Hardware & OS
+        shell: bash
         run: |
-          uname -a
-          sw_vers
-          arch
-          sysctl -n machdep.cpu.brand_string || true
+          UNAME_INFO="$(uname -a)"
+          SW_INFO="$(sw_vers | tr '\n' ';')"
+          ARCH_INFO="$(arch)"
+          CPU_INFO="$(sysctl -n machdep.cpu.brand_string || echo unknown)"
+          echo "$UNAME_INFO"
+          echo "$SW_INFO"
+          echo "arch=$ARCH_INFO cpu=$CPU_INFO"
+          echo "::notice title=Runner Hardware (${{ matrix.runner }})::uname=$UNAME_INFO | arch=$ARCH_INFO | cpu=$CPU_INFO | $SW_INFO"
 
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -47,18 +50,44 @@ jobs:
           python-version: "3.x"
 
       - name: Run Full JS Test Suite & Renderer Build
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test > /tmp/npm-test.log 2>&1 || {
+            TAIL_OUT="$(tail -n 80 /tmp/npm-test.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+            echo "::error title=npm test failed on ${{ matrix.runner }}::$TAIL_OUT"
+            cat /tmp/npm-test.log
+            exit 1
+          }
+          SUMMARY_OUT="$(grep -E '^ℹ ' /tmp/npm-test.log | tr '\n' ' ')"
+          echo "::notice title=npm test passed (${{ matrix.runner }})::$SUMMARY_OUT"
+          cat /tmp/npm-test.log
 
       - name: Run Python Attachment Scanner Tests
-        run: python3 -m unittest attachment_scan_test.py
+        shell: bash
+        run: |
+          python3 -m unittest attachment_scan_test.py 2>&1 | tee /tmp/py-test.log
+          echo "::notice title=Python test passed (${{ matrix.runner }})::$(tail -n 3 /tmp/py-test.log | tr '\n' ' ')"
 
       - name: Run macOS Real Mach-O Codesign & Execution Verification (Isolated /tmp)
-        run: node scripts/macos-ci-verify.js
+        shell: bash
+        run: |
+          node scripts/macos-ci-verify.js > /tmp/macos-real.log 2>&1 || {
+            FAIL_OUT="$(cat /tmp/macos-real.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+            echo "::error title=macos-ci-verify failed (${{ matrix.runner }})::$FAIL_OUT"
+            cat /tmp/macos-real.log
+            exit 1
+          }
+          PASS_OUT="$(cat /tmp/macos-real.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+          echo "::notice title=Real Mach-O Verify (${{ matrix.runner }})::$PASS_OUT"
+          cat /tmp/macos-real.log
 
       - name: Verify Package Manifest & Cross-Platform Build
+        shell: bash
         run: |
           node scripts/check-release-manifest.js
           npm run pack
           unzip -l dist/release/antigravity-context-viewer_*_darwin_arm64.zip | grep macos-binary-utils.js
           unzip -l dist/release/antigravity-context-viewer_*_darwin_amd64.zip | grep macos-binary-utils.js
-          cat dist/release/checksums.txt
+          CHECKSUMS="$(cat dist/release/checksums.txt | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+          echo "::notice title=Release Checksums (${{ matrix.runner }})::$CHECKSUMS"

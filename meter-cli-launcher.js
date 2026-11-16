@@ -401,7 +401,9 @@ function resolveCliExecutable(customCliPath, options = {}) {
           '/Applications/Antigravity.app',
           path.join(home, 'Applications', 'Antigravity.app'),
           '/Applications/Antigravity IDE.app',
-          path.join(home, 'Applications', 'Antigravity IDE.app')
+          path.join(home, 'Applications', 'Antigravity IDE.app'),
+          '/Applications/Google Antigravity.app',
+          path.join(home, 'Applications', 'Google Antigravity.app')
         ];
     for (const appRoot of appRoots) {
       candidates.push(
