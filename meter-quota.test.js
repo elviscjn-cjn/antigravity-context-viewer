@@ -9,6 +9,53 @@ const { generateMeterPreloadCode } = require('./modular-installer');
 
 const RENDERER_PATH = path.join(__dirname, 'meter-renderer.js');
 
+test('个人订阅 ID 与团队套餐枚举分别识别，不误报模型无权限', () => {
+  const config = {
+    label: 'Gemini 4 Carbon (High)',
+    modelId: 'MODEL_FAKE_CARBON',
+    tagTitle: 'New',
+    allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_TEAMS', 'TEAMS_TIER_PRO_ULTIMATE'],
+    quotaInfo: { remainingFraction: 0.7 }
+  };
+  const userStatusRes = { userStatus: {
+    userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+    planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO' } },
+    cascadeModelConfigData: { clientModelConfigs: [config] }
+  } };
+  const plan = core.parseUserPlanStatus(userStatusRes);
+  assert.equal(plan.tierId, 'g1-ultra-tier');
+  assert.equal(plan.teamsTier, 'TEAMS_TIER_PRO');
+  assert.equal(core.classifyModelQuotaAvailability(collector.sanitizeCascadeModelConfig(config), plan).noPermission, false);
+
+  // 通过完整看板计算链路验证模型及共享池仍显示服务端提供的额度。
+  const now = Date.now();
+  const snapshot = core.buildModelQuotaSnapshot({ userStatusRes, currentModel: config.modelId,
+    fetchMeta: { fetchedAtMs: now }, nowMs: now });
+  const models = snapshot.pools.flatMap(pool => pool.models);
+  assert.equal(models.length, 1);
+  assert.equal(models[0].noPermission, false);
+  assert.equal(models[0].remainingFraction, 0.7);
+  assert.equal(snapshot.pools[0].noPermission, false);
+});
+
+test('缺失或未知的团队套餐不与个人订阅 ID 错误比较', () => {
+  const config = { allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_TEAMS'] };
+  for (const teamsTier of [null, '', 'TEAMS_TIER_UNSPECIFIED', 'TEAMS_TIER_UNKNOWN']) {
+    const result = core.classifyModelQuotaAvailability(config, { tierId: 'g1-ultra-tier', tierKey: 'ultra', teamsTier });
+    assert.equal(result.noPermission, false, String(teamsTier));
+  }
+});
+
+test('同类套餐标识必须精确匹配，服务端明确禁用仍显示无权限', () => {
+  const config = { allowedTiers: ['TEAMS_TIER_PRO_ULTIMATE'] };
+  assert.equal(core.classifyModelQuotaAvailability(config, { teamsTier: 'TEAMS_TIER_PRO' }).noPermission, true);
+  assert.equal(core.classifyModelQuotaAvailability(config, { teamsTier: 'TEAMS_TIER_PRO_ULTIMATE' }).noPermission, false);
+  assert.equal(core.classifyModelQuotaAvailability({ allowedTiers: ['g1-pro-tier'] }, { tierId: 'g1-ultra-tier' }).noPermission, true);
+  assert.equal(core.classifyModelQuotaAvailability({ ...config, disabled: true }, { teamsTier: 'TEAMS_TIER_PRO_ULTIMATE' }).noPermission, true);
+  assert.equal(core.classifyModelQuotaAvailability({ ...config, tagTitle: 'Unavailable' }, { teamsTier: 'TEAMS_TIER_PRO_ULTIMATE' }).noPermission, true);
+  assert.equal(core.classifyModelQuotaAvailability({ allowedTiers: ['TEAMS_TIER_PRO', 'g1-pro-tier'] }, { teamsTier: 'TEAMS_TIER_TEAMS' }).noPermission, false);
+});
+
 function buildRealistic2321Fixtures(nowIso = '2026-11-15T00:44:00Z', future5hIso = '2026-11-15T05:00:00Z', futureWeekIso = '2026-11-18T22:00:00Z', argonResetIso = '2026-11-21T11:48:00Z') {
   const userStatusRes = {
     userStatus: {
