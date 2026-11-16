@@ -52,15 +52,20 @@ jobs:
       - name: Run Full JS Test Suite & Renderer Build
         shell: bash
         run: |
-          set -o pipefail
           npm test > /tmp/npm-test.log 2>&1 || {
-            FAIL_LINES="$(grep -A 15 -E '^not ok ' /tmp/npm-test.log | head -n 90 | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
-            SUMMARY_OUT="$(grep -E '^ℹ ' /tmp/npm-test.log | tr '\n' ' ')"
-            echo "::error title=npm test failed on ${{ matrix.runner }} ($SUMMARY_OUT)::$FAIL_LINES"
+            ERR_OUT="$(python3 -c '
+import sys
+txt = open("/tmp/npm-test.log", "r", encoding="utf-8", errors="replace").read()
+lines = txt.splitlines()
+idx = next((i for i, l in enumerate(lines) if "failing tests:" in l or "not ok " in l), max(0, len(lines) - 60))
+snippet = "\n".join(lines[idx:idx+80])[-3200:]
+print(snippet.replace("%", "%25").replace("\r", "").replace("\n", "%0A"))
+')"
+            echo "::error title=npm test failed on ${{ matrix.runner }}::$ERR_OUT"
             cat /tmp/npm-test.log
             exit 1
           }
-          SUMMARY_OUT="$(grep -E '^ℹ ' /tmp/npm-test.log | tr '\n' ' ')"
+          SUMMARY_OUT="$(grep -E '^ℹ ' /tmp/npm-test.log | tr '\n' ' ' || true)"
           echo "::notice title=npm test passed (${{ matrix.runner }})::$SUMMARY_OUT"
           cat /tmp/npm-test.log
 
