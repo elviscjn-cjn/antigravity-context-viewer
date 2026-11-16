@@ -4,11 +4,13 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { connect } = require('./local-api');
+const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api');
 const {
   collect,
   collectTokenHistoryAsync,
   fetchQuotaSnapshotFromHost,
+  checkUpdateAsync,
+  applyUpdateAsync,
   recordModelCalls,
   getPluginSettings,
   savePluginSettings,
@@ -94,6 +96,7 @@ function buildLiveRuntimeModulesMeta(cfg) {
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
 const ALLOWED_ROUTES = [
+  '/runtime-info',
   '/scan',
   '/token-history',
   '/quota',
@@ -111,14 +114,56 @@ const ALLOWED_ROUTES = [
   '/modules-status',
   '/toggle-module',
   '/test-proxy',
+  '/check-update',
+  '/apply-update',
+  '/shutdown',
   '/restart-host'
 ];
 
-function createLiveRequestHandler({ api, secret }) {
+const LIVE_HOST_STARTED_AT = Date.now();
+const LIVE_CAPABILITIES = {
+  scan: true,
+  tokenHistory: true,
+  quota: true,
+  recordCalls: true,
+  settings: true,
+  launchCli: true,
+  contextUnlock: true,
+  enhance: true,
+  modules: true,
+  checkUpdate: true,
+  applyUpdate: true,
+  restartHost: false,
+  hotReload: true
+};
+
+function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT }) {
+  const resolveAllowedSet = () => {
+    const set = new Set();
+    const addAllowed = (raw) => {
+      if (!raw || typeof raw !== 'string') return;
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+      const norm = normalizeLoopbackOrigin(trimmed);
+      set.add(norm || trimmed);
+    };
+    if (typeof getAllowedOrigins === 'function') {
+      const list = getAllowedOrigins() || [];
+      for (const o of list) addAllowed(o);
+    }
+    if (Array.isArray(api?.origins)) {
+      for (const o of api.origins) addAllowed(o);
+    }
+    if (api?.origin) addAllowed(api.origin);
+    return set;
+  };
+
   return async (req, res) => {
-    const origin = req.headers.origin;
-    if (origin !== api.origin) { res.writeHead(403); res.end(); return; }
-    res.setHeader('Access-Control-Allow-Origin', api.origin);
+    const rawOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+    const reqOrigin = normalizeLoopbackOrigin(rawOrigin) || rawOrigin;
+    const allowedSet = resolveAllowedSet();
+    if (!reqOrigin || !allowedSet.has(reqOrigin)) { res.writeHead(403); res.end(); return; }
+    res.setHeader('Access-Control-Allow-Origin', reqOrigin);
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
     res.setHeader('Vary', 'Origin');
     if (req.method === 'OPTIONS') {
@@ -350,6 +395,41 @@ function createLiveRequestHandler({ api, secret }) {
           }));
           return;
         }
+        if (req.url === '/runtime-info') {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            backendVersion: PROJECT_VERSION,
+            backendSource: 'live-host',
+            pid: process.pid,
+            startedAt,
+            capabilities: { ...LIVE_CAPABILITIES },
+            origins: Array.from(resolveAllowedSet())
+          }));
+          return;
+        }
+        if (req.url === '/check-update') {
+          const result = await checkUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/apply-update') {
+          const result = await applyUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/shutdown') {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, shuttingDown: true, pid: process.pid, version: PROJECT_VERSION }));
+          if (typeof onShutdown === 'function') {
+            setImmediate(() => {
+              try { onShutdown(); } catch {}
+            });
+          }
+          return;
+        }
         if (req.url === '/restart-host') {
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, supported: false }));
@@ -362,43 +442,204 @@ function createLiveRequestHandler({ api, secret }) {
           return;
         }
         if (req.url === '/quota') {
-          const resData = await fetchQuotaSnapshotFromHost({ force: request.force === true });
+          const reqTargetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
+          const targetOrigin = allowedSet.has(reqTargetOrigin) ? reqTargetOrigin : reqOrigin;
+          const resData = await fetchQuotaSnapshotFromHost({
+            force: request.force === true,
+            origin: targetOrigin,
+            backendSource: 'live-host',
+            currentModel: request.currentModel || null,
+            browsePoolKey: request.browsePoolKey || null
+          });
           const { _raw, ...safeData } = resData || {};
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, data: safeData }));
           return;
         }
-        const data = await collect(api.origin, request.id, { force: request.force === true });
+        const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
+        const effectiveOrigin = allowedSet.has(scanOrigin) ? scanOrigin : reqOrigin;
+        const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ ok: true, data }));
+        res.end(JSON.stringify({
+          ok: true,
+          data: {
+            ...(data || {}),
+            backendVersion: PROJECT_VERSION,
+            backendSource: 'live-host'
+          }
+        }));
       }
       catch (e) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: false, error: e.message })); }
     });
   };
 }
 
+function parseInitialOriginsEnv() {
+  const raw = String(process.env.AG_LIVE_ORIGINS || '').trim();
+  if (!raw) return [];
+  try {
+    if (raw.startsWith('[')) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? Array.from(new Set(parsed.map(normalizeLoopbackOrigin).filter(Boolean)))
+        : [];
+    }
+  } catch {}
+  return Array.from(new Set(raw.split(/[,;\s]+/).map(normalizeLoopbackOrigin).filter(Boolean)));
+}
+
+function discoverCdpPageOrigins() {
+  return new Promise((resolve) => {
+    try {
+      const portFile = path.join(getAppDataDir(), 'Antigravity', 'DevToolsActivePort');
+      if (!fs.existsSync(portFile)) return resolve([]);
+      const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+      if (!Number.isFinite(port) || port <= 0) return resolve([]);
+      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => {
+          try {
+            const pages = JSON.parse(d);
+            const list = Array.from(new Set(
+              (Array.isArray(pages) ? pages : [])
+                .filter(item => item && item.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(item.url))
+                .map(item => normalizeLoopbackOrigin(item.url))
+                .filter(Boolean)
+            ));
+            resolve(list);
+          } catch { resolve([]); }
+        });
+      });
+      req.setTimeout(2000, () => { req.destroy(); resolve([]); });
+      req.on('error', () => resolve([]));
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+function probeOriginAlive(origin) {
+  return new Promise((resolve) => {
+    try {
+      const https = require('https');
+      const req = https.request(origin + '/', { rejectUnauthorized: false, method: 'GET' }, res => {
+        res.resume();
+        resolve(res.statusCode >= 200 && res.statusCode < 500);
+      });
+      req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+      req.on('error', () => resolve(false));
+      req.end();
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 async function startLiveHost() {
-  const api = await connect();
+  const envOrigins = parseInitialOriginsEnv();
+  let currentOrigins = envOrigins;
+  let api = null;
+  if (currentOrigins.length > 0) {
+    api = await connect({ origin: currentOrigins[0] });
+    api.origins = currentOrigins;
+  } else {
+    api = await connect();
+    currentOrigins = Array.isArray(api.origins) && api.origins.length ? api.origins : [api.origin];
+  }
   const secret = crypto.randomBytes(32).toString('hex');
-  const stamp = path.join(getStateDir(), '.live-session.json');
-  const server = http.createServer(createLiveRequestHandler({ api, secret }));
+  const stamp = process.env.AG_LIVE_STAMP_PATH
+    ? path.resolve(process.env.AG_LIVE_STAMP_PATH)
+    : path.join(getStateDir(), '.live-session.json');
+  const hostPidRaw = Number(process.env.AG_LIVE_HOST_PID || 0);
+  const watchHostPid = Number.isInteger(hostPidRaw) && hostPidRaw > 0 ? hostPidRaw : null;
+
+  let checkTimer = null;
+  let server = null;
+  let shuttingDown = false;
+  const shutdownGracefully = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (checkTimer) {
+      clearInterval(checkTimer);
+      checkTimer = null;
+    }
+    try {
+      if (fs.existsSync(stamp)) {
+        const cur = JSON.parse(fs.readFileSync(stamp, 'utf8'));
+        if (cur && cur.pid === process.pid) fs.unlinkSync(stamp);
+      }
+    } catch {}
+    if (server) {
+      try {
+        server.close(() => process.exit(0));
+        setTimeout(() => process.exit(0), 500).unref();
+      } catch {
+        process.exit(0);
+      }
+    } else {
+      process.exit(0);
+    }
+  };
+
+  server = http.createServer(createLiveRequestHandler({
+    api,
+    secret,
+    getAllowedOrigins: () => currentOrigins,
+    onShutdown: shutdownGracefully,
+    startedAt: LIVE_HOST_STARTED_AT
+  }));
+
   server.listen(0, '127.0.0.1', () => {
     const info = {
       port: server.address().port,
       token: secret,
       pid: process.pid,
       origin: api.origin,
+      origins: currentOrigins,
       version: PROJECT_VERSION,
+      backendSource: 'live-host',
       hasQuota: true,
-      startedAt: Date.now()
+      hasRuntimeInfo: true,
+      capabilities: Object.keys(LIVE_CAPABILITIES).filter(k => LIVE_CAPABILITIES[k]),
+      startedAt: LIVE_HOST_STARTED_AT
     };
-    fs.writeFileSync(stamp, JSON.stringify(info));
+    fs.mkdirSync(path.dirname(stamp), { recursive: true });
+    const tmpStamp = `${stamp}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpStamp, JSON.stringify(info, null, 2));
+    fs.renameSync(tmpStamp, stamp);
     console.log('Context Meter local bridge ready on loopback port ' + info.port);
   });
+
   let misses = 0;
-  const check = setInterval(async () => {
-    try { const a = await connect(); if (a.origin !== api.origin) throw new Error('App restarted'); misses = 0; }
-    catch { if (++misses >= 3) { clearInterval(check); server.close(); process.exit(0); } }
+  checkTimer = setInterval(async () => {
+    if (shuttingDown) return;
+    try {
+      if (watchHostPid) {
+        try { process.kill(watchHostPid, 0); } catch {
+          shutdownGracefully();
+          return;
+        }
+      }
+      const cdpOrigins = await discoverCdpPageOrigins();
+      if (cdpOrigins.length > 0) {
+        currentOrigins = Array.from(new Set([...cdpOrigins, ...envOrigins]));
+        misses = 0;
+        return;
+      }
+      if (envOrigins.length > 0) {
+        const aliveResults = await Promise.all(envOrigins.map(o => probeOriginAlive(o)));
+        if (aliveResults.some(Boolean)) {
+          misses = 0;
+          return;
+        }
+      }
+      throw new Error('No live Antigravity origins available');
+    } catch {
+      if (++misses >= 3) {
+        shutdownGracefully();
+      }
+    }
   }, 10000);
 }
 
@@ -407,7 +648,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  LIVE_CAPABILITIES,
   buildLiveRuntimeModulesMeta,
   createLiveRequestHandler,
+  parseInitialOriginsEnv,
   startLiveHost
 };

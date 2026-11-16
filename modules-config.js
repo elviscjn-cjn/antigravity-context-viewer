@@ -17,8 +17,8 @@ const { getStateDir } = require('./asar-engine');
 const { safeWriteJsonSync } = require('./meter-storage');
 const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
-const SCHEMA_VERSION = '0.8.6';
-const PROJECT_VERSION = '0.8.6';
+const SCHEMA_VERSION = '0.8.7';
+const PROJECT_VERSION = '0.8.7';
 
 const DEFAULT_CONFIG = {
   schemaVersion: SCHEMA_VERSION,
