@@ -32,6 +32,7 @@ const COMMON_FILES = [
   'meter-cli-launcher.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
+  'macos-binary-utils.js',
   'attachment_scan.py',
   'asar-engine.js',
   'modules-config.js',

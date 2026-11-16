@@ -180,7 +180,8 @@ function isLocalMainFrameSender(event) {
   try {
     const rawUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || '';
     const url = new URL(rawUrl);
-    if (url.protocol !== 'https:' || url.hostname !== '127.0.0.1') return null;
+    const portNum = url.port ? Number(url.port) : (url.protocol === 'https:' ? 443 : (url.protocol === 'http:' ? 80 : 0));
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.hostname !== '127.0.0.1' || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return null;
     if (event.senderFrame && event.sender?.mainFrame && event.senderFrame !== event.sender.mainFrame) return null;
     return url;
   } catch {
@@ -818,11 +819,11 @@ function getWindowWebContents(win) {
   try {
     const children = win.contentView?.children;
     if (Array.isArray(children)) {
-      // 优先：明确匹配本地主聊天服务地址 (https://127.0.0.1:<port>/)
+      // 优先：明确匹配本地主聊天服务地址 (http:// 或 https://127.0.0.1:<port>/)
       for (const child of children) {
         if (child?.webContents && !child.webContents.isDestroyed?.()) {
           const url = child.webContents.getURL?.() || '';
-          if (/^https:\/\/127\.0\.0\.1:\d+\//.test(url)) return child.webContents;
+          if (/^https?:\/\/127\.0\.0\.1:\d+\//.test(url)) return child.webContents;
         }
       }
       // 次优：若正在加载中尚未完成导航，排除明确的 data: 遮罩页 (curtainView)
@@ -867,7 +868,7 @@ async function ensureMeterInjected(win, options = {}) {
       return false;
     }
     const url = wc.getURL?.() || '';
-    if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(url)) {
+    if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url)) {
       const attempt = Number(options.attempt || 0);
       const delays = [300, 600, 1000, 1500, 2500];
       if (attempt < delays.length && win && !win.isDestroyed?.()) {
@@ -1194,7 +1195,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     const wc = getWindowWebContents(w);
     if (!wc || wc.isDestroyed?.() || typeof wc.executeJavaScript !== 'function') continue;
     const rawUrl = wc.getURL?.() || '';
-    if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(rawUrl)) continue;
+    if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(rawUrl)) continue;
     try {
       activeTargets.push({ win: w, wc, origin: new URL(rawUrl).origin });
     } catch {}

@@ -523,7 +523,7 @@ function discoverCdpPageOrigins() {
             const pages = JSON.parse(d);
             const list = Array.from(new Set(
               (Array.isArray(pages) ? pages : [])
-                .filter(item => item && item.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(item.url))
+                .filter(item => item && item.type === 'page' && /^https?:\/\/127\.0\.0\.1:\d+\//.test(item.url))
                 .map(item => normalizeLoopbackOrigin(item.url))
                 .filter(Boolean)
             ));
@@ -542,8 +542,10 @@ function discoverCdpPageOrigins() {
 function probeOriginAlive(origin) {
   return new Promise((resolve) => {
     try {
-      const https = require('https');
-      const req = https.request(origin + '/', { agent: false, rejectUnauthorized: false, method: 'GET' }, res => {
+      const safeOrigin = normalizeLoopbackOrigin(origin);
+      if (!safeOrigin) return resolve(false);
+      const transport = safeOrigin.startsWith('https:') ? require('https') : http;
+      const req = transport.request(safeOrigin + '/', { agent: false, rejectUnauthorized: false, method: 'GET' }, res => {
         res.resume();
         resolve(res.statusCode >= 200 && res.statusCode < 500);
       });

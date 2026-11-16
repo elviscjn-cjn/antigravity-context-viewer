@@ -2426,3 +2426,210 @@ test('ELV-83 安装与热加载桥接核验：live-host 版本元数据、cli.js
   assert.ok(installSectionMatch);
   assert.equal((installSectionMatch[1].match(/tryHotInject\(/g) || []).length, 0, 'cli.js install 分支不得重复触发第二次 tryHotInject');
 });
+
+test('跨平台 HTTP+HTTPS 多窗口 origin 隔离、系统代理免疫及非法端口/非回环拦截', async (t) => {
+  const os = require('os');
+  const http = require('http');
+  const https = require('https');
+  const crypto = require('crypto');
+
+  // 生成纯 Node 自签本地回环证书（含 SAN 127.0.0.1）
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const spkiDer = publicKey.export({ type: 'spki', format: 'der' });
+  const derLen = (n) => (n < 128 ? Buffer.from([n]) : Buffer.from([0x81, n]));
+  const tlv = (tag, body) => {
+    const lb = body.length < 128 ? Buffer.from([body.length]) : (body.length < 256 ? Buffer.from([0x81, body.length]) : Buffer.from([0x82, body.length >> 8, body.length & 0xff]));
+    return Buffer.concat([Buffer.from([tag]), lb, body]);
+  };
+  const seq = (...xs) => tlv(0x30, Buffer.concat(xs));
+  const oid = (nums) => {
+    const out = [nums[0] * 40 + nums[1]];
+    for (let i = 2; i < nums.length; i++) {
+      let v = nums[i];
+      const enc = [v & 0x7f];
+      while ((v >>= 7) > 0) enc.unshift((v & 0x7f) | 0x80);
+      out.push(...enc);
+    }
+    return tlv(0x06, Buffer.from(out));
+  };
+  const utc = (d) => tlv(0x17, Buffer.from(
+    String(d.getUTCFullYear()).slice(-2) +
+    String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0') +
+    String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0') + String(d.getUTCSeconds()).padStart(2, '0') + 'Z',
+    'ascii'
+  ));
+  const shaAlg = seq(oid([1, 2, 840, 113549, 1, 1, 11]), Buffer.from([0x05, 0x00]));
+  const name = seq(tlv(0x31, seq(oid([2, 5, 4, 3]), tlv(0x0c, Buffer.from('localhost', 'utf8')))));
+  const sanExt = seq(oid([2, 5, 29, 17]), tlv(0x04, seq(tlv(0x82, Buffer.from('localhost', 'ascii')), tlv(0x87, Buffer.from([127, 0, 0, 1])))));
+  const tbs = seq(tlv(0xa0, tlv(0x02, Buffer.from([2]))), tlv(0x02, Buffer.from([1])), shaAlg, name, seq(utc(new Date()), utc(new Date(Date.now() + 86400000))), name, spkiDer, tlv(0xa3, seq(sanExt)));
+  const sig = crypto.createSign('RSA-SHA256').update(tbs).sign(privateKey);
+  const certDer = seq(tbs, shaAlg, tlv(0x03, Buffer.concat([Buffer.from([0]), sig])));
+  const certPem = `-----BEGIN CERTIFICATE-----\n${certDer.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n`;
+  const keyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-quota-multiwin-'));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const appDataDir = path.join(homeDir, 'Library', 'Application Support');
+  fs.mkdirSync(path.join(appDataDir, 'Antigravity'), { recursive: true });
+
+  // 窗口 1：HTTP 本地端口（模拟 Mac HTTP 主窗口，账号 A）
+  let originA = '';
+  let originB = '';
+  const srvA = http.createServer((req, res) => {
+    if (req.url === '/json/list') {
+      res.end(JSON.stringify([
+        { type: 'page', url: originA + '/c/conv-a' },
+        { type: 'page', url: originB + '/c/conv-b' },
+        { type: 'page', url: 'https://evil.example.com/c/ignore' }
+      ]));
+    } else if (req.url === '/') {
+      res.end('<script>window.__APP_CONFIG__ = {"csrfToken":"csrf-win-a"};</script>');
+    } else if (req.url.endsWith('/GetUserStatus')) {
+      assert.equal(req.headers['x-codeium-csrf-token'], 'csrf-win-a');
+      res.end(JSON.stringify({ userStatus: { email: 'alice@example.com' } }));
+    } else {
+      res.end(JSON.stringify({ response: { groups: [] } }));
+    }
+  });
+  await new Promise(r => srvA.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => srvA.close(r)));
+  originA = `http://127.0.0.1:${srvA.address().port}`;
+
+  // 窗口 2：HTTPS 本地端口（模拟 HTTPS 主窗口，账号 B）
+  const srvB = https.createServer({ key: keyPem, cert: certPem }, (req, res) => {
+    if (req.url === '/') {
+      res.end('<script>window.__APP_CONFIG__ = {"csrfToken":"csrf-win-b"};</script>');
+    } else if (req.url.endsWith('/GetUserStatus')) {
+      assert.equal(req.headers['x-codeium-csrf-token'], 'csrf-win-b');
+      res.end(JSON.stringify({ userStatus: { email: 'bob@example.com' } }));
+    } else {
+      res.end(JSON.stringify({ response: { groups: [] } }));
+    }
+  });
+  await new Promise(r => srvB.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => srvB.close(r)));
+  originB = `https://127.0.0.1:${srvB.address().port}`;
+
+  fs.writeFileSync(path.join(appDataDir, 'Antigravity', 'DevToolsActivePort'), `${srvA.address().port}\n/devtools/browser/test\n`);
+
+  const prevHttpProxy = process.env.HTTP_PROXY;
+  const prevHttpsProxy = process.env.HTTPS_PROXY;
+  const prevRejectTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  process.env.HTTP_PROXY = 'http://127.0.0.1:1';
+  process.env.HTTPS_PROXY = 'http://127.0.0.1:1';
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+  t.after(() => {
+    if (prevHttpProxy === undefined) delete process.env.HTTP_PROXY; else process.env.HTTP_PROXY = prevHttpProxy;
+    if (prevHttpsProxy === undefined) delete process.env.HTTPS_PROXY; else process.env.HTTPS_PROXY = prevHttpsProxy;
+    if (prevRejectTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED; else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevRejectTls;
+  });
+
+  // 按 origin 分别拉取额度快照，绝不串用账号与 token
+  const resA = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: originA,
+    connect: (opts) => connectLocalApi({ ...opts, appDataDir })
+  });
+  const resB = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: originB,
+    connect: (opts) => connectLocalApi({ ...opts, appDataDir })
+  });
+
+  assert.equal(resA.ok, true);
+  assert.equal(resB.ok, true);
+  assert.equal(resA.originScope, originA);
+  assert.equal(resB.originScope, originB);
+  assert.ok(resA.accountScopeKey && resB.accountScopeKey);
+  assert.notEqual(resA.accountScopeKey, resB.accountScopeKey);
+
+  // 通过 /json/list 发现并保留多窗口 origins 列表
+  const multiConn = await connectLocalApi({ appDataDir });
+  assert.deepEqual(multiConn.origins, [originA, originB]);
+
+  // 非回环或非法端口 origin 必须拒绝
+  await assert.rejects(() => connectLocalApi({ appDataDir, origin: 'https://evil.example.com:8443' }), /非法的本机回环页面地址/);
+  await assert.rejects(() => connectLocalApi({ appDataDir, origin: 'http://127.0.0.1:70000' }), /非法的本机回环页面地址/);
+});
+
+test('隔离额度请求遇到窗口未就绪、CSRF 缺失及 401/403 鉴权失败时准确报错且不误报耗尽/无权限', async (t) => {
+  const os = require('os');
+  const http = require('http');
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-quota-auth-'));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const appDataDir = path.join(homeDir, 'Library', 'Application Support');
+  fs.mkdirSync(path.join(appDataDir, 'Antigravity'), { recursive: true });
+
+  // 场景 1：页面尚无 __APP_CONFIG__（窗口未就绪）
+  let originNotReady = '';
+  const srvNotReady = http.createServer((req, res) => {
+    if (req.url === '/json/list') {
+      res.end(JSON.stringify([{ type: 'page', url: originNotReady + '/c/1' }]));
+    } else {
+      res.end('<html><body>loading...</body></html>');
+    }
+  });
+  await new Promise(r => srvNotReady.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => srvNotReady.close(r)));
+  originNotReady = `http://127.0.0.1:${srvNotReady.address().port}`;
+  fs.writeFileSync(path.join(appDataDir, 'Antigravity', 'DevToolsActivePort'), `${srvNotReady.address().port}\n/devtools/browser/1\n`);
+
+  const notReadyRes = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: originNotReady,
+    connect: (opts) => connectLocalApi({ ...opts, appDataDir })
+  });
+  assert.equal(notReadyRes.ok, false);
+  assert.equal(notReadyRes.errorKind, 'network');
+  assert.match(notReadyRes.error, /尚未就绪|连接/);
+  assert.notEqual(notReadyRes.snapshot.activeStatus, 'exhausted');
+  assert.notEqual(notReadyRes.snapshot.activeStatus, 'no_permission');
+
+  // 场景 2：页面存在 __APP_CONFIG__ 但缺少 csrfToken
+  let originNoCsrf = '';
+  const srvNoCsrf = http.createServer((req, res) => {
+    if (req.url === '/json/list') {
+      res.end(JSON.stringify([{ type: 'page', url: originNoCsrf + '/c/1' }]));
+    } else {
+      res.end('<script>window.__APP_CONFIG__ = {};</script>');
+    }
+  });
+  await new Promise(r => srvNoCsrf.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => srvNoCsrf.close(r)));
+  originNoCsrf = `http://127.0.0.1:${srvNoCsrf.address().port}`;
+
+  const noCsrfRes = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: originNoCsrf,
+    connect: (opts) => connectLocalApi({ ...opts, appDataDir })
+  });
+  assert.equal(noCsrfRes.ok, false);
+  assert.equal(noCsrfRes.errorKind, 'auth');
+  assert.match(noCsrfRes.error, /鉴权/);
+  assert.notEqual(noCsrfRes.snapshot.activeStatus, 'exhausted');
+  assert.notEqual(noCsrfRes.snapshot.activeStatus, 'no_permission');
+
+  // 场景 3：RPC 返回 HTTP 403 Unauthorized
+  let origin403 = '';
+  const srv403 = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.end('<script>window.__APP_CONFIG__ = {"csrfToken":"tok-403"};</script>');
+    } else {
+      res.statusCode = 403;
+      res.end('HTTP 403 Forbidden');
+    }
+  });
+  await new Promise(r => srv403.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => srv403.close(r)));
+  origin403 = `http://127.0.0.1:${srv403.address().port}`;
+
+  const authFailRes = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: origin403,
+    connect: (opts) => connectLocalApi({ ...opts, appDataDir })
+  });
+  assert.equal(authFailRes.ok, false);
+  assert.equal(authFailRes.errorKind, 'auth');
+  assert.notEqual(authFailRes.snapshot.activeStatus, 'exhausted');
+  assert.notEqual(authFailRes.snapshot.activeStatus, 'no_permission');
+});

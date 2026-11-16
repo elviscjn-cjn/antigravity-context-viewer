@@ -6,6 +6,8 @@ const path = require('path');
 const { execFile, execFileSync } = require('child_process');
 
 const MH_MAGIC_64 = 0xfeedfacf;
+const FAT_MAGIC = 0xcafebabe;
+const FAT_CIGAM = 0xbebafeca;
 const LC_SEGMENT_64 = 0x19;
 const LC_UUID = 0x1b;
 const CPU_TYPE_ARM64 = 0x0100000c;
@@ -17,16 +19,21 @@ function isMachO64Buffer(buf) {
 
 /**
  * 解析 64 位 Mach-O 容器的 CPU 架构、段/节表、UUID 与虚拟地址映射
+ * 对损坏、截断、段偏移越界或未知 Load Command 结构严格返回 null，拒绝盲目写入。
  */
 function parseMachO64(buf) {
-  if (!isMachO64Buffer(buf)) return null;
+  if (!Buffer.isBuffer(buf) || buf.length < 64) return null;
+  const magic = buf.readUInt32LE(0);
+  if (magic === FAT_MAGIC || magic === FAT_CIGAM) return null;
+  if (magic !== MH_MAGIC_64) return null;
 
   const cputype = buf.readUInt32LE(4);
   const arch = cputype === CPU_TYPE_ARM64 ? 'arm64' : (cputype === CPU_TYPE_X86_64 ? 'x86-64' : null);
   const ncmds = buf.readUInt32LE(16);
   const sizeofcmds = buf.readUInt32LE(20);
-  if (32 + sizeofcmds > buf.length) return null;
+  if (ncmds > 4096 || 32 + sizeofcmds > buf.length) return null;
 
+  const cmdsEnd = 32 + sizeofcmds;
   const segments = [];
   const sections = [];
   let uuid = null;
@@ -35,20 +42,32 @@ function parseMachO64(buf) {
 
   let off = 32;
   for (let c = 0; c < ncmds; c++) {
-    if (off + 8 > buf.length) break;
+    if (off + 8 > cmdsEnd) return null;
     const cmd = buf.readUInt32LE(off);
     const cmdsize = buf.readUInt32LE(off + 4);
-    if (cmdsize < 8 || off + cmdsize > buf.length) break;
+    if (cmdsize < 8 || (cmdsize % 4) !== 0 || off + cmdsize > cmdsEnd) return null;
 
-    if (cmd === LC_UUID && cmdsize >= 24) {
+    if (cmd === LC_UUID) {
+      if (cmdsize < 24) return null;
       uuid = buf.subarray(off + 8, off + 24).toString('hex');
-    } else if (cmd === LC_SEGMENT_64 && cmdsize >= 72) {
+    } else if (cmd === LC_SEGMENT_64) {
+      if (cmdsize < 72) return null;
       const segname = buf.subarray(off + 8, off + 24).toString('ascii').replace(/\0.*$/, '');
       const vmaddr = buf.readBigUInt64LE(off + 24);
       const vmsize = buf.readBigUInt64LE(off + 32);
-      const fileoff = Number(buf.readBigUInt64LE(off + 40));
-      const filesize = Number(buf.readBigUInt64LE(off + 48));
+      const rawFileoff = buf.readBigUInt64LE(off + 40);
+      const rawFilesize = buf.readBigUInt64LE(off + 48);
       const nsects = buf.readUInt32LE(off + 64);
+
+      if (rawFileoff > BigInt(buf.length) || rawFilesize > BigInt(buf.length) || rawFileoff + rawFilesize > BigInt(buf.length)) {
+        return null;
+      }
+      const fileoff = Number(rawFileoff);
+      const filesize = Number(rawFilesize);
+
+      if (nsects > 4096 || 72 + nsects * 80 > cmdsize) {
+        return null;
+      }
 
       if (segname === '__LINKEDIT') hasLinkedit = true;
       if (segname === '__TEXT') textSize = filesize;
@@ -56,12 +75,21 @@ function parseMachO64(buf) {
 
       let sectOff = off + 72;
       for (let s = 0; s < nsects; s++) {
-        if (sectOff + 80 > off + cmdsize) break;
+        if (sectOff + 80 > off + cmdsize) return null;
         const sectname = buf.subarray(sectOff, sectOff + 16).toString('ascii').replace(/\0.*$/, '');
         const sectSeg = buf.subarray(sectOff + 16, sectOff + 32).toString('ascii').replace(/\0.*$/, '');
         const addr = buf.readBigUInt64LE(sectOff + 32);
-        const size = Number(buf.readBigUInt64LE(sectOff + 40));
+        const rawSize = buf.readBigUInt64LE(sectOff + 40);
         const offset = buf.readUInt32LE(sectOff + 48);
+        const flags = buf.readUInt32LE(sectOff + 64);
+        const sectType = flags & 0xff;
+        const isZerofill = sectType === 0x1 || sectType === 0xc; // S_ZEROFILL / S_THREAD_LOCAL_ZEROFILL
+        if (!isZerofill && offset > 0 && rawSize > 0n) {
+          if (BigInt(offset) + rawSize > BigInt(buf.length)) {
+            return null;
+          }
+        }
+        const size = Number(rawSize);
         sections.push({ segname: sectSeg, sectname, addr, size, offset });
         sectOff += 80;
       }
@@ -135,42 +163,54 @@ function getMachODataSearchRanges(buf) {
   return ranges.length > 0 ? ranges : [{ start: 0, end: buf.length }];
 }
 
-function extractMachOEntitlementsXmlSync(sourcePath) {
+function extractPlistXml(rawOut) {
+  const out = String(rawOut || '');
+  const idx = out.indexOf('<?xml');
+  if (idx !== -1) return out.slice(idx);
+  const plistIdx = out.indexOf('<plist');
+  if (plistIdx !== -1) return out.slice(plistIdx);
+  return null;
+}
+
+function extractMachOEntitlementsXmlSync(sourcePath, options = {}) {
   if (!sourcePath || !fs.existsSync(sourcePath)) return null;
+  const runSync = typeof options._execFileSync === 'function' ? options._execFileSync : execFileSync;
+  const codesignBin = options.codesignBin || 'codesign';
   try {
-    const out = execFileSync('codesign', ['-d', '--entitlements', '-', '--xml', sourcePath], {
+    const out = runSync(codesignBin, ['-d', '--entitlements', '-', '--xml', sourcePath], {
       encoding: 'utf8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'pipe']
     });
-    const idx = out.indexOf('<?xml');
-    if (idx !== -1) return out.slice(idx);
-    const plistIdx = out.indexOf('<plist');
-    if (plistIdx !== -1) return out.slice(plistIdx);
-  } catch {}
-  return null;
+    return extractPlistXml(out);
+  } catch (e) {
+    const fallbackOut = (e && e.stdout ? String(e.stdout) : '') + (e && e.stderr ? String(e.stderr) : '');
+    return extractPlistXml(fallbackOut);
+  }
 }
 
-function extractMachOEntitlementsXmlAsync(sourcePath) {
+function extractMachOEntitlementsXmlAsync(sourcePath, options = {}) {
   if (!sourcePath || !fs.existsSync(sourcePath)) return Promise.resolve(null);
+  const runAsync = typeof options._execFile === 'function' ? options._execFile : execFile;
+  const codesignBin = options.codesignBin || 'codesign';
   return new Promise((resolve) => {
-    execFile('codesign', ['-d', '--entitlements', '-', '--xml', sourcePath], {
+    runAsync(codesignBin, ['-d', '--entitlements', '-', '--xml', sourcePath], {
       encoding: 'utf8',
       timeout: 5000
     }, (err, stdout, stderr) => {
+      const combined = String(stdout || '') + String(stderr || '');
+      const xml = extractPlistXml(combined);
+      if (xml) return resolve(xml);
       if (err) return resolve(null);
-      const out = String(stdout || '') + String(stderr || '');
-      const idx = out.indexOf('<?xml');
-      if (idx !== -1) return resolve(out.slice(idx));
-      const plistIdx = out.indexOf('<plist');
-      if (plistIdx !== -1) return resolve(out.slice(plistIdx));
       resolve(null);
     });
   });
 }
 
-function resignMachOFileSync(filePath, entitlementsSourcePath = null) {
-  const xml = extractMachOEntitlementsXmlSync(entitlementsSourcePath || filePath);
+function resignMachOFileSync(filePath, entitlementsSourcePath = null, options = {}) {
+  const runSync = typeof options._execFileSync === 'function' ? options._execFileSync : execFileSync;
+  const codesignBin = options.codesignBin || 'codesign';
+  const xml = extractMachOEntitlementsXmlSync(entitlementsSourcePath || filePath, options);
   let entPath = null;
   try {
     const args = ['--force', '--sign', '-', '--options', 'runtime'];
@@ -180,12 +220,13 @@ function resignMachOFileSync(filePath, entitlementsSourcePath = null) {
       args.push('--entitlements', entPath);
     }
     args.push(filePath);
-    execFileSync('codesign', args, { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] });
-    execFileSync('codesign', ['--verify', '--verbose=1', filePath], {
+    runSync(codesignBin, args, { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] });
+    runSync(codesignBin, ['--verify', '--deep', '--strict', '--verbose=1', filePath], {
       encoding: 'utf8',
       timeout: 15000,
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    return { ok: true, entitlementsPreserved: Boolean(xml), signatureMode: 'ad-hoc' };
   } finally {
     if (entPath) {
       try { fs.unlinkSync(entPath); } catch {}
@@ -193,8 +234,10 @@ function resignMachOFileSync(filePath, entitlementsSourcePath = null) {
   }
 }
 
-async function resignMachOFileAsync(filePath, entitlementsSourcePath = null) {
-  const xml = await extractMachOEntitlementsXmlAsync(entitlementsSourcePath || filePath);
+async function resignMachOFileAsync(filePath, entitlementsSourcePath = null, options = {}) {
+  const runAsync = typeof options._execFile === 'function' ? options._execFile : execFile;
+  const codesignBin = options.codesignBin || 'codesign';
+  const xml = await extractMachOEntitlementsXmlAsync(entitlementsSourcePath || filePath, options);
   let entPath = null;
   try {
     const args = ['--force', '--sign', '-', '--options', 'runtime'];
@@ -205,17 +248,18 @@ async function resignMachOFileAsync(filePath, entitlementsSourcePath = null) {
     }
     args.push(filePath);
     await new Promise((resolve, reject) => {
-      execFile('codesign', args, { encoding: 'utf8', timeout: 30000 }, (err, _stdout, stderr) => {
+      runAsync(codesignBin, args, { encoding: 'utf8', timeout: 30000 }, (err, _stdout, stderr) => {
         if (err) reject(new Error(stderr || err.message));
         else resolve();
       });
     });
     await new Promise((resolve, reject) => {
-      execFile('codesign', ['--verify', '--verbose=1', filePath], { encoding: 'utf8', timeout: 15000 }, (err, _stdout, stderr) => {
+      runAsync(codesignBin, ['--verify', '--deep', '--strict', '--verbose=1', filePath], { encoding: 'utf8', timeout: 15000 }, (err, _stdout, stderr) => {
         if (err) reject(new Error(stderr || err.message));
         else resolve();
       });
     });
+    return { ok: true, entitlementsPreserved: Boolean(xml), signatureMode: 'ad-hoc' };
   } finally {
     if (entPath) {
       try { await fs.promises.unlink(entPath); } catch {}
@@ -224,24 +268,33 @@ async function resignMachOFileAsync(filePath, entitlementsSourcePath = null) {
 }
 
 function shouldResignMachO(buf, options = {}) {
-  if (options.skipCodesign === true || process.platform !== 'darwin') return false;
+  if (options.skipCodesign === true) return false;
   const info = parseMachO64(buf);
-  return Boolean(info && info.hasLinkedit);
+  if (!info) return false;
+  if (options.forceCodesign === true) return true;
+  if (process.platform !== 'darwin') return false;
+  return Boolean(info.hasLinkedit);
 }
 
 /**
- * macOS 安全原子写盘（写入临时文件 -> 重签名并校验 -> chmod 0755 -> rename 原子切换 inode）
+ * macOS 安全原子写盘（写入临时文件 -> 重签名并校验 -> chmod 0755 -> rename 原子切换 inode；失败则删临时文件保留原文件）
  */
 function atomicWriteMachOBinarySync(targetPath, buf, options = {}) {
+  const info = parseMachO64(buf);
+  if (!info) {
+    throw new Error('目标 Mach-O 二进制格式损坏或结构异常，拒绝写入');
+  }
   const dir = path.dirname(targetPath);
   const tmpPath = path.join(dir, `${path.basename(targetPath)}.tmp_${process.pid}_${Date.now()}`);
+  let signResult = { entitlementsPreserved: false, signatureMode: 'unchanged' };
   try {
     fs.writeFileSync(tmpPath, buf);
     try { fs.chmodSync(tmpPath, 0o755); } catch {}
     if (shouldResignMachO(buf, options)) {
-      resignMachOFileSync(tmpPath, options.entitlementsSourcePath || targetPath);
+      signResult = resignMachOFileSync(tmpPath, options.entitlementsSourcePath || targetPath, options);
     }
     fs.renameSync(tmpPath, targetPath);
+    return signResult;
   } catch (err) {
     try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
     throw err;
@@ -249,15 +302,21 @@ function atomicWriteMachOBinarySync(targetPath, buf, options = {}) {
 }
 
 async function atomicWriteMachOBinaryAsync(targetPath, buf, options = {}) {
+  const info = parseMachO64(buf);
+  if (!info) {
+    throw new Error('目标 Mach-O 二进制格式损坏或结构异常，拒绝写入');
+  }
   const dir = path.dirname(targetPath);
   const tmpPath = path.join(dir, `${path.basename(targetPath)}.tmp_${process.pid}_${Date.now()}`);
+  let signResult = { entitlementsPreserved: false, signatureMode: 'unchanged' };
   try {
     await fs.promises.writeFile(tmpPath, buf);
     try { await fs.promises.chmod(tmpPath, 0o755); } catch {}
     if (shouldResignMachO(buf, options)) {
-      await resignMachOFileAsync(tmpPath, options.entitlementsSourcePath || targetPath);
+      signResult = await resignMachOFileAsync(tmpPath, options.entitlementsSourcePath || targetPath, options);
     }
     await fs.promises.rename(tmpPath, targetPath);
+    return signResult;
   } catch (err) {
     try { await fs.promises.unlink(tmpPath); } catch {}
     throw err;
@@ -282,6 +341,27 @@ function parsePsOutput(stdout) {
     }
   }
   return procs;
+}
+
+/**
+ * 精确判定进程可执行路径是否为目标 Antigravity language_server（绝不按宽泛名称误杀其他应用）
+ */
+function isExactMacLanguageServerProcess(procPath, knownTargetPaths = []) {
+  if (!procPath || typeof procPath !== 'string') return false;
+  const resolved = path.resolve(procPath.trim());
+  if (Array.isArray(knownTargetPaths) && knownTargetPaths.length > 0) {
+    for (const kt of knownTargetPaths) {
+      if (kt && path.resolve(String(kt)) === resolved) return true;
+    }
+  }
+  const norm = resolved.replace(/\\/g, '/');
+  return (
+    norm.endsWith('/Antigravity.app/Contents/Resources/bin/language_server') ||
+    norm.endsWith('/Antigravity IDE.app/Contents/Resources/bin/language_server') ||
+    norm.endsWith('/Google Antigravity.app/Contents/Resources/bin/language_server') ||
+    norm.endsWith('/Contents/Resources/app/extensions/antigravity/bin/language_server_darwin_arm64') ||
+    norm.endsWith('/Contents/Resources/app/extensions/antigravity/bin/language_server_darwin_x64')
+  );
 }
 
 function listMacProcessesSync() {
@@ -313,6 +393,8 @@ function listMacProcessesAsync() {
 
 module.exports = {
   MH_MAGIC_64,
+  FAT_MAGIC,
+  FAT_CIGAM,
   LC_SEGMENT_64,
   LC_UUID,
   CPU_TYPE_ARM64,
@@ -327,6 +409,7 @@ module.exports = {
   atomicWriteMachOBinarySync,
   atomicWriteMachOBinaryAsync,
   parsePsOutput,
+  isExactMacLanguageServerProcess,
   listMacProcessesSync,
   listMacProcessesAsync
 };

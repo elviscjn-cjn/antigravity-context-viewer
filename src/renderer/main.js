@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
+  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
 
   // 在替换或重载旧实例之前捕获当前打开面板、滚动位置与未保存设置草稿（同时兼容无 captureHotReloadState 的旧版本）
   let inheritedHotReloadState = null;
@@ -185,7 +185,7 @@
   let autoCheckUpdate = true;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
   const backendStatus = {
     rendererVersion: METER_RENDERER_VERSION,
     backendSource: null,
@@ -2235,20 +2235,30 @@
   let contextScopeMode = 'unified'; // 'unified' | 'per_model'
   let contextUnifiedPreference = { mode: 'default', limitTokens: CTX_DEFAULT_TOKENS };
   try {
+    const bootSettings = (typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok)
+      ? window.__AGContextMeterSettings
+      : null;
     if (typeof window !== 'undefined' && window.__AGContextPreferences && typeof window.__AGContextPreferences === 'object') {
       contextPreferencesMap = { ...window.__AGContextPreferences };
+    } else if (bootSettings?.contextPreferences && typeof bootSettings.contextPreferences === 'object') {
+      contextPreferencesMap = { ...bootSettings.contextPreferences };
     } else if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
       const rawPrefs = localStorage.getItem('ag-context-preferences');
       if (rawPrefs) contextPreferencesMap = JSON.parse(rawPrefs) || {};
     }
     const initMode = (typeof window !== 'undefined' && window.__AGContextScopeMode)
+      || bootSettings?.contextScopeMode
       || (typeof localStorage !== 'undefined' && localStorage?.getItem?.('ag-context-scope-mode'))
       || '';
     if (initMode === 'unified' || initMode === 'per_model') {
       contextScopeMode = initMode;
+    } else if (Object.values(contextPreferencesMap).some(p => p && p.mode && p.mode !== 'default')) {
+      contextScopeMode = 'per_model';
     }
     if (typeof window !== 'undefined' && window.__AGContextUnifiedPreference && typeof window.__AGContextUnifiedPreference === 'object') {
       contextUnifiedPreference = { ...window.__AGContextUnifiedPreference };
+    } else if (bootSettings?.contextUnifiedPreference && typeof bootSettings.contextUnifiedPreference === 'object') {
+      contextUnifiedPreference = { ...bootSettings.contextUnifiedPreference };
     } else if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
       const rawUni = localStorage.getItem('ag-context-unified-preference');
       if (rawUni) contextUnifiedPreference = JSON.parse(rawUni) || contextUnifiedPreference;
@@ -2266,12 +2276,22 @@
   function syncContextPreferencesCache(map) {
     try {
       if (typeof window !== 'undefined') {
-        window.__AGContextPreferences = { ...(map || {}) };
+        const cleanMap = { ...(map || {}) };
+        const cleanUni = { ...(contextUnifiedPreference || {}) };
+        window.__AGContextPreferences = cleanMap;
         window.__AGContextScopeMode = contextScopeMode;
-        window.__AGContextUnifiedPreference = { ...(contextUnifiedPreference || {}) };
-        localStorage?.setItem('ag-context-preferences', JSON.stringify(map || {}));
+        window.__AGContextUnifiedPreference = cleanUni;
+        if (window.__AGContextMeterSettings && typeof window.__AGContextMeterSettings === 'object') {
+          window.__AGContextMeterSettings = {
+            ...window.__AGContextMeterSettings,
+            contextPreferences: cleanMap,
+            contextScopeMode,
+            contextUnifiedPreference: cleanUni
+          };
+        }
+        localStorage?.setItem('ag-context-preferences', JSON.stringify(cleanMap));
         localStorage?.setItem('ag-context-scope-mode', contextScopeMode);
-        localStorage?.setItem('ag-context-unified-preference', JSON.stringify(contextUnifiedPreference || {}));
+        localStorage?.setItem('ag-context-unified-preference', JSON.stringify(cleanUni));
       }
     } catch { }
   }
@@ -5191,6 +5211,7 @@
   ctxPresetGrid?.addEventListener('click', (e) => {
     const btn = e?.target?.closest?.('.ctx-preset-btn');
     if (!btn || btn.disabled) return;
+    userActionSeq++;
     const mode = btn.getAttribute?.('data-ctx-mode') || btn.dataset?.ctxMode || 'default';
     const rawLim = btn.getAttribute?.('data-ctx-limit') ?? btn.dataset?.ctxLimit;
     ctxDraftDirty = true;
@@ -5218,6 +5239,7 @@
   });
 
   ctxCustomInput?.addEventListener('input', () => {
+    userActionSeq++;
     const rawStr = String(ctxCustomInput.value || '').trim();
     ctxDraftDirty = true;
     if (ctxResetNoticeEl) ctxResetNoticeEl.hidden = true;
@@ -5268,6 +5290,7 @@
   }
 
   async function saveCurrentProductDraft() {
+    userActionSeq++;
     if (contextScopeMode === 'unified') {
       const rawLimit = ctxDraft.mode === 'fixed'
         ? (ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== '' ? ctxCustomInput.value : ctxDraft.limitTokens)
@@ -5388,6 +5411,7 @@
   });
 
   btnResetModelCtx?.addEventListener('click', async () => {
+    userActionSeq++;
     if (contextScopeMode === 'unified') {
       contextUnifiedPreference = {
         modelId: 'unified',
@@ -5457,6 +5481,7 @@
   });
 
   function setScopeMode(newMode) {
+    userActionSeq++;
     contextScopeMode = newMode === 'per_model' ? 'per_model' : 'unified';
     if (btnModeUnified) {
       if (contextScopeMode === 'unified') addClass(btnModeUnified, 'is-active');
@@ -9069,7 +9094,7 @@
           settingsRes = out.result;
         } catch { }
       }
-      if (!settingsRes && typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
+      if (!settingsRes?.ok && typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
         settingsRes = window.__AGContextMeterSettings;
       }
 
@@ -9098,6 +9123,17 @@
 
         if (settingsRes.contextPreferences && typeof settingsRes.contextPreferences === 'object') {
           contextPreferencesMap = { ...settingsRes.contextPreferences };
+        }
+        if (typeof window !== 'undefined') {
+          window.__AGContextMeterSettings = {
+            ...(window.__AGContextMeterSettings || {}),
+            ok: true,
+            ...(settingsRes.customPlan ? { customPlan: { ...settingsRes.customPlan } } : {}),
+            uiPreferences: { ...(settingsRes.uiPreferences || {}) },
+            contextScopeMode,
+            contextUnifiedPreference: { ...contextUnifiedPreference },
+            contextPreferences: { ...contextPreferencesMap }
+          };
         }
         syncContextPreferencesCache(contextPreferencesMap);
         renderHeaderModelDropdown();
@@ -9132,8 +9168,11 @@
         lastSavedCustomPlan = { ...settingsRes.customPlan };
         if (typeof window !== 'undefined') {
           window.__AGContextMeterSettings = {
+            ...(window.__AGContextMeterSettings || {}),
             ok: true,
             customPlan: { ...settingsRes.customPlan },
+            contextScopeMode,
+            contextUnifiedPreference: { ...contextUnifiedPreference },
             contextPreferences: { ...contextPreferencesMap }
           };
         }
@@ -9314,7 +9353,7 @@
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
@@ -9459,7 +9498,7 @@
       }
       if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;

@@ -1,21 +1,18 @@
 'use strict';
 const fs = require('fs');
-const http = require('http');
 const path = require('path');
-const { getStateDir, getAppDataDir } = require('./asar-engine');
-function getJson(url) { return new Promise((resolve, reject) => http.get(url, response => { let body = ''; response.on('data', chunk => body += chunk); response.on('end', () => { try { resolve(JSON.parse(body)); } catch (error) { reject(error); } }); }).on('error', reject)); }
+const { getStateDir } = require('./asar-engine');
+const { discoverAntigravityCdp, createCdpClient, parseExplicitPort } = require('./local-api');
+
 async function main() {
-  const portFile = path.join(getAppDataDir(), 'Antigravity', 'DevToolsActivePort');
-  const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-  const pages = (await getJson(`http://127.0.0.1:${port}/json/list`)).filter(page => page.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(page.url));
+  const portIdx = process.argv.indexOf('--port');
+  const explicitPort = portIdx >= 0 ? parseExplicitPort(process.argv[portIdx + 1]) : null;
+  const cdp = await discoverAntigravityCdp(explicitPort ? { port: explicitPort } : {});
+  const pages = Array.isArray(cdp.pages) ? cdp.pages : [];
   if (pages.length !== 1) throw new Error('Expected exactly one Antigravity page');
-  const ws = new WebSocket(pages[0].webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => { ws.addEventListener('open', resolve, { once: true }); ws.addEventListener('error', reject, { once: true }); });
-  let seq = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', event => { const data = JSON.parse(event.data); if (waiting.has(data.id)) { const callback = waiting.get(data.id); waiting.delete(data.id); callback(data); } });
-  function evaluate(expression) { return new Promise((resolve, reject) => { const id = ++seq; const timeout = setTimeout(() => { waiting.delete(id); reject(new Error('Evaluation timeout')); }, 10000); waiting.set(id, data => { clearTimeout(timeout); if (data.error || data.result?.exceptionDetails) reject(new Error(JSON.stringify(data.error || data.result.exceptionDetails))); else resolve(data.result?.result?.value); }); ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } })); }); }
-  function protocol(method, params) { return new Promise((resolve, reject) => { const id = ++seq; const timeout = setTimeout(() => { waiting.delete(id); reject(new Error('Protocol timeout')); }, 10000); waiting.set(id, data => { clearTimeout(timeout); data.error ? reject(new Error(JSON.stringify(data.error))) : resolve(data.result); }); ws.send(JSON.stringify({ id, method, params })); }); }
+  const client = await createCdpClient(pages[0].webSocketDebuggerUrl, { timeoutMs: 5000 });
+  const evaluate = (expression) => client.evaluateValue(expression, { timeoutMs: 10000 });
+  const protocol = (method, params) => client.call(method, params, 10000);
   try {
     if (process.argv.includes('--install-live')) {
       const stateDir = getStateDir();
@@ -24,7 +21,10 @@ async function main() {
         : path.join(__dirname, '.live-session.json');
       if (fs.existsSync(livePath)) {
         const live = JSON.parse(fs.readFileSync(livePath, 'utf8'));
-        if (live.origin === new URL(pages[0].url).origin) await evaluate('window.__AGContextMeterLive=' + JSON.stringify({ port: live.port, token: live.token }));
+        const pageOrigin = new URL(pages[0].url).origin;
+        if (live.origin === pageOrigin || (Array.isArray(live.origins) && live.origins.includes(pageOrigin))) {
+          await evaluate('window.__AGContextMeterLive=' + JSON.stringify({ port: live.port, token: live.token, origin: pageOrigin, origins: live.origins || [live.origin] }));
+        }
       }
       const source = ['meter-core.js', 'meter-renderer.js'].map(file => fs.readFileSync(path.join(__dirname, file), 'utf8')).join('\n');
       await evaluate(source);
@@ -40,6 +40,9 @@ async function main() {
         console.log('Widget preview saved to ' + outPath);
       } finally { if (rect.wasHidden) await evaluate("document.getElementById('ag-context-meter').shadowRoot.getElementById('panel').hidden=true"); }
     }
-  } finally { ws.close(); }
+  } finally {
+    client.close();
+  }
 }
+
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

@@ -24,6 +24,7 @@ const {
   getMachODataSearchRanges,
   atomicWriteMachOBinarySync,
   atomicWriteMachOBinaryAsync,
+  isExactMacLanguageServerProcess,
   listMacProcessesSync,
   listMacProcessesAsync
 } = require('./macos-binary-utils');
@@ -296,9 +297,15 @@ function resolveTargetBinaries(options = {}) {
   const home = options.homeDir || os.homedir();
 
   if (platform === 'darwin') {
-    const sysApp = '/Applications/Antigravity.app/Contents/Resources/bin/language_server';
-    const userApp = path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server');
-    const desktopPath = fs.existsSync(sysApp) ? sysApp : (fs.existsSync(userApp) ? userApp : sysApp);
+    const macDesktopCandidates = [
+      '/Applications/Antigravity.app/Contents/Resources/bin/language_server',
+      path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server'),
+      '/Applications/Antigravity IDE.app/Contents/Resources/bin/language_server',
+      path.join(home, 'Applications', 'Antigravity IDE.app', 'Contents', 'Resources', 'bin', 'language_server'),
+      '/Applications/Google Antigravity.app/Contents/Resources/bin/language_server',
+      path.join(home, 'Applications', 'Google Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server')
+    ];
+    const desktopPath = macDesktopCandidates.find((p) => fs.existsSync(p)) || macDesktopCandidates[0];
     const cliPath = resolveStandaloneAgyPath('', home, 'darwin');
     const targets = [
       { id: 'desktop', label: 'Antigravity 桌面端内核 (language_server)', path: desktopPath }
@@ -424,7 +431,10 @@ function parsePeEmbedTemplates(buf) {
   if (isMachO64Buffer(buf)) {
     const macho = parseMachO64(buf);
     if (!macho || !macho.arch) {
-      throw new Error('不是有效的 64 位 Mach-O 可执行文件');
+      throw new Error('不是有效的 64 位 Mach-O 可执行文件（或头部/段偏移损坏）');
+    }
+    if (macho.arch !== 'arm64') {
+      throw new Error(`暂未开放对 Intel Mac (Mach-O ${macho.arch}) 的内核修改，当前 macOS 仅完成 Apple Silicon (arm64) 验证`);
     }
     fileOffsetToVA = macho.fileOffsetToVA;
     vaToFileOffset = macho.vaToFileOffset;
@@ -936,7 +946,10 @@ function writeBinarySafely(targetPath, oldBuf, newBuf, dirtyRanges = null, write
   if (isMachO64Buffer(newBuf)) {
     atomicWriteMachOBinarySync(targetPath, newBuf, {
       entitlementsSourcePath: writeOpts.entitlementsSourcePath || targetPath,
-      skipCodesign: writeOpts.skipCodesign === true
+      skipCodesign: writeOpts.skipCodesign === true,
+      forceCodesign: writeOpts.forceCodesign === true,
+      codesignBin: writeOpts.codesignBin,
+      _execFileSync: writeOpts._execFileSync
     });
     return { writtenBytes: countChangedBytes(oldBuf, newBuf, diffs), method: 'rename-swap' };
   }
@@ -1027,7 +1040,10 @@ async function writeBinarySafelyAsync(targetPath, oldBuf, newBuf, dirtyRanges = 
   if (isMachO64Buffer(newBuf)) {
     await atomicWriteMachOBinaryAsync(targetPath, newBuf, {
       entitlementsSourcePath: writeOpts.entitlementsSourcePath || targetPath,
-      skipCodesign: writeOpts.skipCodesign === true
+      skipCodesign: writeOpts.skipCodesign === true,
+      forceCodesign: writeOpts.forceCodesign === true,
+      codesignBin: writeOpts.codesignBin,
+      _execFile: writeOpts._execFile
     });
     return { writtenBytes: countChangedBytes(oldBuf, newBuf, diffs), method: 'rename-swap' };
   }
@@ -1075,7 +1091,7 @@ let lsProcCache = { ts: 0, running: false, startTimeMs: null };
 function checkLanguageServerRunning() {
   if (process.platform === 'darwin') {
     const procs = listMacProcessesSync();
-    return procs.some((p) => p.path.endsWith('/Contents/Resources/bin/language_server'));
+    return procs.some((p) => isExactMacLanguageServerProcess(p.path));
   }
   if (process.platform !== 'win32') return false;
   try {
@@ -1139,7 +1155,7 @@ function restartLanguageServers() {
     const procs = listMacProcessesSync();
     const killed = [];
     for (const p of procs) {
-      if (p.path.endsWith('/Contents/Resources/bin/language_server')) {
+      if (isExactMacLanguageServerProcess(p.path)) {
         try {
           process.kill(p.pid, 'SIGTERM');
           killed.push(`${path.basename(p.path)}#${p.pid}`);
@@ -1173,7 +1189,7 @@ async function restartLanguageServersAsync() {
     const procs = await listMacProcessesAsync();
     const killed = [];
     for (const p of procs) {
-      if (p.path.endsWith('/Contents/Resources/bin/language_server')) {
+      if (isExactMacLanguageServerProcess(p.path)) {
         try {
           process.kill(p.pid, 'SIGTERM');
           killed.push(`${path.basename(p.path)}#${p.pid}`);
@@ -1601,8 +1617,15 @@ function finalizeEnhanceStatus(platform, arch, binaries, procInfo, options = {})
 
 function isSupportedEnhancePlatform(platform, arch) {
   if (platform === 'win32' && arch === 'x64') return true;
-  if (platform === 'darwin' && (arch === 'arm64' || arch === 'x64')) return true;
+  if (platform === 'darwin' && arch === 'arm64') return true;
   return false;
+}
+
+function getUnsupportedEnhanceReason(platform, arch) {
+  if (platform === 'darwin' && arch !== 'arm64') {
+    return `系统提示词精简与中文标题内核原位补丁目前仅完成 Windows x64 与 Apple Silicon (macOS arm64) 验证，暂不支持 Intel Mac (${arch})`;
+  }
+  return '系统提示词精简与中文标题内核原位补丁目前仅支持 Windows x64 与 Apple Silicon (macOS arm64) 客户端';
 }
 
 function getEnhanceStatus(options = {}) {
@@ -1614,7 +1637,7 @@ function getEnhanceStatus(options = {}) {
       supported: false,
       platform,
       arch,
-      reason: '系统提示词精简与中文标题内核原位补丁目前仅支持 Windows x64 与 macOS 客户端',
+      reason: getUnsupportedEnhanceReason(platform, arch),
       binaries: [],
       summary: null
     };
@@ -1642,7 +1665,7 @@ async function getEnhanceStatusAsync(options = {}) {
       supported: false,
       platform,
       arch,
-      reason: '系统提示词精简与中文标题内核原位补丁目前仅支持 Windows x64 与 macOS 客户端',
+      reason: getUnsupportedEnhanceReason(platform, arch),
       binaries: [],
       summary: null
     };
@@ -1713,7 +1736,7 @@ function validateEnhanceApplyInputs(payload = {}, options = {}) {
   }
 
   if (!Array.isArray(options.targets) && !isSupportedEnhancePlatform(platform, arch)) {
-    return { ok: false, error: '当前操作系统或架构不支持内核原位补丁' };
+    return { ok: false, error: getUnsupportedEnhanceReason(platform, arch) };
   }
 
   const targets = resolveTargetBinaries(options).filter((t) => fs.existsSync(t.path));
@@ -1845,7 +1868,13 @@ function applyEnhancePatch(payload = {}, options = {}) {
           }
 
           const { nextBuf, titleMatchedCount, dirtyRanges } = patchSingleEnhanceBuffer(target, origDiskBuf, bakBuf, promptTier, chineseTitle, logs);
-          const writeRes = writeBinarySafely(target.path, origDiskBuf, nextBuf, dirtyRanges);
+          const writeRes = writeBinarySafely(target.path, origDiskBuf, nextBuf, dirtyRanges, {
+            entitlementsSourcePath: bakPath,
+            skipCodesign: options.skipCodesign === true,
+            forceCodesign: options.forceCodesign === true,
+            codesignBin: options.codesignBin,
+            _execFileSync: options._execFileSync
+          });
           invalidateBinaryCache(target.path);
           if (writeRes.method !== 'unchanged') {
             needsRestart = true;
@@ -2095,7 +2124,13 @@ async function applySingleEnhanceTargetCoreAsync(target, promptTier, chineseTitl
     await yieldEventLoop();
 
     const w0 = performance.now();
-    writeRes = await writeBinarySafelyAsync(target.path, origDiskBuf, resultBuf, patched.dirtyRanges);
+    writeRes = await writeBinarySafelyAsync(target.path, origDiskBuf, resultBuf, patched.dirtyRanges, {
+      entitlementsSourcePath: bakPath,
+      skipCodesign: options.skipCodesign === true,
+      forceCodesign: options.forceCodesign === true,
+      codesignBin: options.codesignBin,
+      _execFile: options._execFile
+    });
     writeMs = performance.now() - w0;
   } else {
     if (promptTier !== null) {
@@ -2389,6 +2424,14 @@ let enhanceWorkerIdleTimer = null;
 
 function canUseEnhanceWorker(options = {}) {
   if (!isMainThread || enhanceWorkerDisabled || options._inWorker === true || options.useMainThread === true) {
+    return false;
+  }
+  if (
+    typeof options._execFile === 'function' ||
+    typeof options._execFileSync === 'function' ||
+    options.forceCodesign === true ||
+    options.codesignBin !== undefined
+  ) {
     return false;
   }
   if (fs.readFileSync !== ORIG_ENHANCE_FS_READ_SYNC || fs.promises.readFile !== ORIG_ENHANCE_FS_READ_ASYNC) {

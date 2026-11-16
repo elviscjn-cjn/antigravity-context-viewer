@@ -3,7 +3,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const http = require('http');
 const https = require('https');
+const { normalizeLoopbackOrigin } = require('./local-api');
 const { fileURLToPath } = require('url');
 const { spawn, spawnSync } = require('child_process');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
@@ -356,7 +358,9 @@ function request(origin, method, body, token, signal = null) {
       reject(err);
       return;
     }
-    const req = https.request(url, {
+    const transport = url.startsWith('https:') ? https : http;
+    const req = transport.request(url, {
+      agent: false,
       rejectUnauthorized: false,
       method: method ? 'POST' : 'GET',
       headers: method ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {},
@@ -548,7 +552,9 @@ let collectSeqCounter = 0;
 const latestCollectSeqByOrigin = new Map();
 
 async function collect(origin, id, options = {}) {
-  if (!/^https:\/\/127\.0\.0\.1:\d+$/.test(origin) || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
+  const safeOrigin = normalizeLoopbackOrigin(origin);
+  if (!safeOrigin || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
+  origin = safeOrigin;
   const key = `${origin}/${id}`;
   const supersede = options.supersedePrevious === true;
   const mySeq = supersede ? (++collectSeqCounter) : 0;
@@ -2273,7 +2279,7 @@ function classifyQuotaFetchError(err) {
   if (/econnrefused|econnreset|enotfound|not running|unreachable|network|socket|connect/i.test(lower)) {
     return { kind: 'network', message: '未能连接到 Antigravity 本地服务' };
   }
-  if (/unauthorized|forbidden|401|403|csrf/i.test(lower)) {
+  if (/unauthorized|forbidden|401|403|csrf|鉴权/i.test(lower)) {
     return { kind: 'auth', message: '本地鉴权失败或已失效' };
   }
   return { kind: 'network', message: msg || '额度数据获取失败' };
@@ -5116,6 +5122,7 @@ const LIVE_RUNTIME_FILES = [
   'meter-cli-launcher.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
+  'macos-binary-utils.js',
   'attachment_scan.py',
   'asar-engine.js',
   'modules-config.js',

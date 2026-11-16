@@ -1,8 +1,8 @@
 (function () {
-  const METER_VERSION = '0.8.7';
+  const METER_VERSION = '0.8.8';
 
   'use strict';
-  if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
+  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
 
   // 在替换或重载旧实例之前捕获当前打开面板、滚动位置与未保存设置草稿（同时兼容无 captureHotReloadState 的旧版本）
   let inheritedHotReloadState = null;
@@ -2004,7 +2004,7 @@
     <div class="panel-title">
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title">💬 当前会话上下文</span>
-      <span id="v">v0.8.7</span>
+      <span id="v">v0.8.8</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -3951,7 +3951,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.7</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.8</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -4458,7 +4458,7 @@ const PANEL_I18N = {
   'mod.zh.descActive': { 'zh-CN': '客户端简体中文运行中：DOM 监听器正常工作，左侧边栏与核心菜单已翻译。', 'zh-TW': '用戶端簡體中文執行中：DOM 監聽器正常運作，左側邊欄與核心選單已翻譯。', en: 'Client zh-CN localization is active.' },
   'mod.zh.descNeedInject': { 'zh-CN': '配置已开启简体中文，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。', 'zh-TW': '設定已開啟簡體中文，但目前磁碟 ASAR 未注入中文化資源；需結束用戶端後執行 node cli.js chinese:enable 完成注入。', en: 'zh-CN is enabled in config, but ASAR lacks localization injection. Quit Antigravity and run: node cli.js chinese:enable' },
   'mod.zh.descPendingRestart': { 'zh-CN': '简体中文代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。', 'zh-TW': '簡體中文程式碼已注入且設定已開啟；需完全結束並重新開啟 Antigravity 用戶端載入生效。', en: 'zh-CN localization is injected and enabled; quit and reopen Antigravity to take effect.' },
-  'mod.zh.descPartialInject': { 'zh-CN': '磁盘 ASAR 仅包含部分汉化代码但资源或门禁不完整（{reason}）；请从系统托盘彻底退出 Antigravity 后，在安装包目录运行 install.bat 或 node cli.js chinese:enable 补装。', 'zh-TW': '磁碟 ASAR 僅包含部分漢化程式碼但資源或門禁不完整（{reason}）；請從系統匣徹底結束 Antigravity 後，在安裝包目錄執行 install.bat 或 node cli.js chinese:enable 補裝。', en: 'Localization module in app.asar is incomplete ({reason}). Fully quit Antigravity (including tray) and run install.bat / node cli.js chinese:enable from the package directory.' },
+  'mod.zh.descPartialInject': { 'zh-CN': '磁盘 ASAR 仅包含部分汉化代码但资源或门禁不完整（{reason}）；请彻底退出 Antigravity 后，在安装包目录运行 install.bat（macOS/Linux 执行 node cli.js chinese:enable）补装。', 'zh-TW': '磁碟 ASAR 僅包含部分漢化程式碼但資源或門禁不完整（{reason}）；請徹底結束 Antigravity 後，在安裝包目錄執行 install.bat（macOS/Linux 執行 node cli.js chinese:enable）補裝。', en: 'Localization module in app.asar is incomplete ({reason}). Fully quit Antigravity and run install.bat (or node cli.js chinese:enable on macOS/Linux) from the package directory.' },
   'mod.zh.savedEnableRestart': { 'zh-CN': '✔ 已开启客户端简体中文并保存配置，完全退出并重启 Antigravity 后生效。', 'zh-TW': '✔ 已開啟用戶端簡體中文並儲存設定，完全結束並重啟 Antigravity 後生效。', en: '✔ Simplified Chinese saved; quit and restart Antigravity to apply.' },
   'mod.zh.savedDisableRestart': { 'zh-CN': '✔ 已切换为官方英文并保存配置，完全退出并重启 Antigravity 后恢复英文。', 'zh-TW': '✔ 已切換為官方英文並儲存設定，完全結束並重啟 Antigravity 後恢復英文。', en: '✔ Native English saved; quit and restart Antigravity to restore English.' },
   'mod.zh.btnDisable': { 'zh-CN': '切换为官方英文 (需重启)', 'zh-TW': '切換為官方英文 (需重啟)', en: 'Switch to English (Restart)' },
@@ -4471,7 +4471,7 @@ const PANEL_I18N = {
   'mod.proxy.badgeOff': { 'zh-CN': '⚪ 未启用', 'zh-TW': '⚪ 未啟用', en: '⚪ Disabled' },
   'mod.proxy.descOn': { 'zh-CN': '已启用本地网络直连（代理: {url}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。', 'zh-TW': '已啟用本機網路直連（代理: {url}）。注意：模型請求連通性待實際線上對話驗證。', en: 'Local proxy enabled ({url}). Connectivity should be verified with a live chat request.' },
   'mod.proxy.descNeedInject': { 'zh-CN': '配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。', 'zh-TW': '設定已開啟代理，但目前磁碟 ASAR 未注入代理攔截邏輯；需結束用戶端後執行 node cli.js proxy:enable 完成注入。', en: 'Proxy enabled in config, but ASAR lacks proxy hook. Quit Antigravity and run: node cli.js proxy:enable' },
-  'mod.proxy.descPartialInject': { 'zh-CN': '磁盘 ASAR 代理拦截组件不完整（{reason}）；请从系统托盘彻底退出 Antigravity 后，在安装包目录运行 install.bat 或 node cli.js proxy:enable 补装。', 'zh-TW': '磁碟 ASAR 代理攔截元件不完整（{reason}）；請從系統匣徹底結束 Antigravity 後，在安裝包目錄執行 install.bat 或 node cli.js proxy:enable 補裝。', en: 'Proxy hook in app.asar is incomplete ({reason}). Fully quit Antigravity (including tray) and run install.bat / node cli.js proxy:enable from the package directory.' },
+  'mod.proxy.descPartialInject': { 'zh-CN': '磁盘 ASAR 代理拦截组件不完整（{reason}）；请彻底退出 Antigravity 后，在安装包目录运行 install.bat（macOS/Linux 执行 node cli.js proxy:enable）补装。', 'zh-TW': '磁碟 ASAR 代理攔截元件不完整（{reason}）；請徹底結束 Antigravity 後，在安裝包目錄執行 install.bat（macOS/Linux 執行 node cli.js proxy:enable）補裝。', en: 'Proxy hook in app.asar is incomplete ({reason}). Fully quit Antigravity and run install.bat (or node cli.js proxy:enable on macOS/Linux) from the package directory.' },
   'mod.proxy.descOff': { 'zh-CN': '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。', 'zh-TW': '未啟用本機網路直連，網路請求跟隨系統預設/TUN 設定。', en: 'Local proxy disabled; requests follow system/TUN settings.' },
   'mod.proxy.btnDisable': { 'zh-CN': '关闭免 TUN 直连', 'zh-TW': '關閉免 TUN 直連', en: 'Disable Local Proxy' },
   'mod.proxy.btnEnable': { 'zh-CN': '开启免 TUN 直连', 'zh-TW': '開啟免 TUN 直連', en: 'Enable Local Proxy' },
@@ -7676,7 +7676,7 @@ function formatVendorLabel(vendor) {
   let autoCheckUpdate = true;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
   const backendStatus = {
     rendererVersion: METER_RENDERER_VERSION,
     backendSource: null,
@@ -12034,20 +12034,30 @@ function closeAllDropdowns(exceptWrap = null) {
   let contextScopeMode = 'unified'; // 'unified' | 'per_model'
   let contextUnifiedPreference = { mode: 'default', limitTokens: CTX_DEFAULT_TOKENS };
   try {
+    const bootSettings = (typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok)
+      ? window.__AGContextMeterSettings
+      : null;
     if (typeof window !== 'undefined' && window.__AGContextPreferences && typeof window.__AGContextPreferences === 'object') {
       contextPreferencesMap = { ...window.__AGContextPreferences };
+    } else if (bootSettings?.contextPreferences && typeof bootSettings.contextPreferences === 'object') {
+      contextPreferencesMap = { ...bootSettings.contextPreferences };
     } else if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
       const rawPrefs = localStorage.getItem('ag-context-preferences');
       if (rawPrefs) contextPreferencesMap = JSON.parse(rawPrefs) || {};
     }
     const initMode = (typeof window !== 'undefined' && window.__AGContextScopeMode)
+      || bootSettings?.contextScopeMode
       || (typeof localStorage !== 'undefined' && localStorage?.getItem?.('ag-context-scope-mode'))
       || '';
     if (initMode === 'unified' || initMode === 'per_model') {
       contextScopeMode = initMode;
+    } else if (Object.values(contextPreferencesMap).some(p => p && p.mode && p.mode !== 'default')) {
+      contextScopeMode = 'per_model';
     }
     if (typeof window !== 'undefined' && window.__AGContextUnifiedPreference && typeof window.__AGContextUnifiedPreference === 'object') {
       contextUnifiedPreference = { ...window.__AGContextUnifiedPreference };
+    } else if (bootSettings?.contextUnifiedPreference && typeof bootSettings.contextUnifiedPreference === 'object') {
+      contextUnifiedPreference = { ...bootSettings.contextUnifiedPreference };
     } else if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
       const rawUni = localStorage.getItem('ag-context-unified-preference');
       if (rawUni) contextUnifiedPreference = JSON.parse(rawUni) || contextUnifiedPreference;
@@ -12065,12 +12075,22 @@ function closeAllDropdowns(exceptWrap = null) {
   function syncContextPreferencesCache(map) {
     try {
       if (typeof window !== 'undefined') {
-        window.__AGContextPreferences = { ...(map || {}) };
+        const cleanMap = { ...(map || {}) };
+        const cleanUni = { ...(contextUnifiedPreference || {}) };
+        window.__AGContextPreferences = cleanMap;
         window.__AGContextScopeMode = contextScopeMode;
-        window.__AGContextUnifiedPreference = { ...(contextUnifiedPreference || {}) };
-        localStorage?.setItem('ag-context-preferences', JSON.stringify(map || {}));
+        window.__AGContextUnifiedPreference = cleanUni;
+        if (window.__AGContextMeterSettings && typeof window.__AGContextMeterSettings === 'object') {
+          window.__AGContextMeterSettings = {
+            ...window.__AGContextMeterSettings,
+            contextPreferences: cleanMap,
+            contextScopeMode,
+            contextUnifiedPreference: cleanUni
+          };
+        }
+        localStorage?.setItem('ag-context-preferences', JSON.stringify(cleanMap));
         localStorage?.setItem('ag-context-scope-mode', contextScopeMode);
-        localStorage?.setItem('ag-context-unified-preference', JSON.stringify(contextUnifiedPreference || {}));
+        localStorage?.setItem('ag-context-unified-preference', JSON.stringify(cleanUni));
       }
     } catch { }
   }
@@ -14990,6 +15010,7 @@ function closeAllDropdowns(exceptWrap = null) {
   ctxPresetGrid?.addEventListener('click', (e) => {
     const btn = e?.target?.closest?.('.ctx-preset-btn');
     if (!btn || btn.disabled) return;
+    userActionSeq++;
     const mode = btn.getAttribute?.('data-ctx-mode') || btn.dataset?.ctxMode || 'default';
     const rawLim = btn.getAttribute?.('data-ctx-limit') ?? btn.dataset?.ctxLimit;
     ctxDraftDirty = true;
@@ -15017,6 +15038,7 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   ctxCustomInput?.addEventListener('input', () => {
+    userActionSeq++;
     const rawStr = String(ctxCustomInput.value || '').trim();
     ctxDraftDirty = true;
     if (ctxResetNoticeEl) ctxResetNoticeEl.hidden = true;
@@ -15067,6 +15089,7 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   async function saveCurrentProductDraft() {
+    userActionSeq++;
     if (contextScopeMode === 'unified') {
       const rawLimit = ctxDraft.mode === 'fixed'
         ? (ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== '' ? ctxCustomInput.value : ctxDraft.limitTokens)
@@ -15187,6 +15210,7 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   btnResetModelCtx?.addEventListener('click', async () => {
+    userActionSeq++;
     if (contextScopeMode === 'unified') {
       contextUnifiedPreference = {
         modelId: 'unified',
@@ -15256,6 +15280,7 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   function setScopeMode(newMode) {
+    userActionSeq++;
     contextScopeMode = newMode === 'per_model' ? 'per_model' : 'unified';
     if (btnModeUnified) {
       if (contextScopeMode === 'unified') addClass(btnModeUnified, 'is-active');
@@ -18868,7 +18893,7 @@ function closeAllDropdowns(exceptWrap = null) {
           settingsRes = out.result;
         } catch { }
       }
-      if (!settingsRes && typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
+      if (!settingsRes?.ok && typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
         settingsRes = window.__AGContextMeterSettings;
       }
 
@@ -18897,6 +18922,17 @@ function closeAllDropdowns(exceptWrap = null) {
 
         if (settingsRes.contextPreferences && typeof settingsRes.contextPreferences === 'object') {
           contextPreferencesMap = { ...settingsRes.contextPreferences };
+        }
+        if (typeof window !== 'undefined') {
+          window.__AGContextMeterSettings = {
+            ...(window.__AGContextMeterSettings || {}),
+            ok: true,
+            ...(settingsRes.customPlan ? { customPlan: { ...settingsRes.customPlan } } : {}),
+            uiPreferences: { ...(settingsRes.uiPreferences || {}) },
+            contextScopeMode,
+            contextUnifiedPreference: { ...contextUnifiedPreference },
+            contextPreferences: { ...contextPreferencesMap }
+          };
         }
         syncContextPreferencesCache(contextPreferencesMap);
         renderHeaderModelDropdown();
@@ -18931,8 +18967,11 @@ function closeAllDropdowns(exceptWrap = null) {
         lastSavedCustomPlan = { ...settingsRes.customPlan };
         if (typeof window !== 'undefined') {
           window.__AGContextMeterSettings = {
+            ...(window.__AGContextMeterSettings || {}),
             ok: true,
             customPlan: { ...settingsRes.customPlan },
+            contextScopeMode,
+            contextUnifiedPreference: { ...contextUnifiedPreference },
             contextPreferences: { ...contextPreferencesMap }
           };
         }
@@ -19113,7 +19152,7 @@ function closeAllDropdowns(exceptWrap = null) {
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
@@ -19258,7 +19297,7 @@ function closeAllDropdowns(exceptWrap = null) {
       }
       if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;

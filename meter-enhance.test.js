@@ -490,6 +490,33 @@ test('macOS Mach-O arm64 适配：embed.FS 槽位解析、0~4 档切换、中文
     assert.equal(r0.status.summary.promptTier, 0);
     assert.equal(r0.status.summary.chineseTitleEnabled, false);
     assert.equal(Buffer.compare(fs.readFileSync(binPath), buf), 0);
+
+    // 额外验证 Intel Mac (darwin/x64) 必须明确拒绝写入增强补丁，且 codesign 失败严格回滚原文件
+    const intelStatus = await enhance.getEnhanceStatusAsync({
+      platform: 'darwin',
+      arch: 'x64',
+      stateDir: path.join(tmpDir, 'state_intel'),
+      skipProcessCheck: true
+    });
+    assert.equal(intelStatus.supported, false);
+
+    const shaBeforeCsFail = require('crypto').createHash('sha256').update(fs.readFileSync(binPath)).digest('hex');
+    const csFailRes = await enhance.applyEnhancePatchAsync(
+      { promptTier: 4, chineseTitle: true },
+      {
+        ...opts,
+        forceCodesign: true,
+        _execFile: (bin, args, _execOpts, cb) => {
+          if (args.includes('--force')) {
+            return cb(new Error('codesign failed'), '', 'codesign error');
+          }
+          return cb(null, '', '');
+        }
+      }
+    );
+    assert.equal(csFailRes.ok, false);
+    const shaAfterCsFail = require('crypto').createHash('sha256').update(fs.readFileSync(binPath)).digest('hex');
+    assert.equal(shaAfterCsFail, shaBeforeCsFail, 'codesign 失败后增强目标原文件 SHA256 必须一字节不变');
   } finally {
     enhance.invalidateBinaryCache();
     fs.rmSync(tmpDir, { recursive: true, force: true });

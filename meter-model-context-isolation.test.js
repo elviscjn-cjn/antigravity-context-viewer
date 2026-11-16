@@ -1780,3 +1780,191 @@ test('v0.8.3 回归 16: plugin.json 与 package.json 版本统一，且原位卸
   const restoreSrc = fs.readFileSync(path.join(__dirname, 'restore.js'), 'utf8');
   assert.ok(restoreSrc.includes("'meter-enhance.js'"), 'restore.js additions 必须包含 meter-enhance.js 避免原位卸载残留');
 });
+
+test('ELV-81 回归: http://127.0.0.1 Mac 窗口正常挂载、__AGContextMeterSettings 冷启动恢复与防慢返回覆盖及跨冷启动持久化', async () => {
+  const rendererCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-elv81-state-'));
+  try {
+    const createHttpSandbox = (initialSettings, { onSave, slowGetSettingsDelayMs = 0, slowGetSettingsPayload = null } = {}) => {
+      const elemMap = new Map();
+      const listenerMap = new Map();
+      const makeEl = (id = null, tagName = 'DIV') => {
+        const classSet = new Set();
+        const attrs = new Map();
+        const listeners = new Map();
+        const node = {
+          id, tagName, children: [], hidden: false, disabled: false, textContent: '', innerHTML: '', value: '', title: '', placeholder: '',
+          classList: {
+            add: (...c) => c.forEach(x => classSet.add(x)),
+            remove: (...c) => c.forEach(x => classSet.delete(x)),
+            contains: c => classSet.has(c)
+          },
+          setAttribute: (k, v) => attrs.set(k, String(v)),
+          getAttribute: k => (attrs.has(k) ? attrs.get(k) : null),
+          removeAttribute: k => attrs.delete(k),
+          addEventListener: (ev, fn) => {
+            if (!listeners.has(ev)) listeners.set(ev, []);
+            listeners.get(ev).push(fn);
+          },
+          dispatchEvent: (ev) => {
+            const list = listeners.get(ev.type) || [];
+            for (const fn of list) fn(ev);
+          },
+          appendChild: c => { node.children.push(c); return c; },
+          replaceChildren: (...nodes) => { node.children = nodes; },
+          closest: () => null,
+          contains: t => t === node,
+          cloneNode: () => makeEl(null, tagName),
+          getBoundingClientRect: () => ({ left: 100, top: 0, width: 120, height: 24 }),
+          querySelector: () => null,
+          querySelectorAll: () => [],
+          remove: () => {},
+          focus: () => {},
+          style: { setProperty: () => {}, removeProperty: () => {} }
+        };
+        if (id) {
+          elemMap.set(id, node);
+          listenerMap.set(id, listeners);
+        }
+        return node;
+      };
+      ['ctx-compact-saved', 'ctx-model-list', 'ctx-custom-limit-input', 'btn-save-model-ctx', 'ctx-preset-grid', 'btn-reset-model-ctx'].forEach(id => makeEl(id));
+      const shadowRoot = {
+        getElementById: id => elemMap.get(id) || makeEl(id),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener: () => {}
+      };
+      const sandbox = {
+        URL,
+        localStorage: { _m: new Map(), getItem(k) { return this._m.get(k) || null; }, setItem(k, v) { this._m.set(k, String(v)); }, removeItem(k) { this._m.delete(k); } },
+        // 关键：模拟 Mac 客户端可能使用的 http://127.0.0.1 非 HTTPS 本地窗口
+        location: { protocol: 'http:', hostname: '127.0.0.1', port: '51234', pathname: '/c/77777777-7777-4777-8777-777777777777' },
+        document: {
+          documentElement: makeEl('html', 'HTML'),
+          body: makeEl('body', 'BODY'),
+          getElementById: () => null,
+          querySelectorAll: () => [],
+          querySelector: () => null,
+          addEventListener() {},
+          removeEventListener() {},
+          createElement: (tag) => { const n = makeEl(null, tag); n.attachShadow = () => shadowRoot; return n; },
+          hidden: false
+        },
+        matchMedia: () => ({ matches: true, addEventListener() {} }),
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        WebSocket: function () {},
+        XMLHttpRequest: function () {},
+        __APP_CONFIG__: { csrfToken: 'mac-csrf' },
+        __AGContextMeterCore: core,
+        __AGContextMeterSettings: initialSettings,
+        contextMeterAPI: {
+          getSettings: async () => {
+            if (slowGetSettingsDelayMs > 0) await new Promise(r => setTimeout(r, slowGetSettingsDelayMs));
+            return slowGetSettingsPayload || initialSettings;
+          },
+          saveSettings: async (payload) => onSave(payload),
+          getContextUnlockStatus: async () => ({ ok: true, data: { status: 'patched_loaded', configuredMode: 'dynamic' } })
+        },
+        setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+        AbortController, TextEncoder, TextDecoder, console
+      };
+      sandbox.WebSocket.prototype = { send() {} };
+      sandbox.XMLHttpRequest.prototype = { open() {}, setRequestHeader() {}, send() {}, addEventListener() {} };
+      sandbox.window = sandbox;
+      sandbox.globalThis = sandbox;
+      vm.runInNewContext(rendererCode, sandbox);
+      return { sandbox, elemMap };
+    };
+
+    const flashCfg = collector.sanitizeCascadeModelConfig({
+      modelId: 'MODEL_PLACEHOLDER_M37_LOW',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M37_LOW' },
+      label: 'Gemini 3.8 Flash Low',
+      unavailable: false,
+      maxTokens: 1048576,
+      maxOutputTokens: 65536
+    });
+    const opusCfg = collector.sanitizeCascadeModelConfig({
+      modelId: 'MODEL_CLAUDE_4_OPUS_THINKING',
+      modelOrAlias: { model: 'MODEL_CLAUDE_4_OPUS_THINKING' },
+      label: 'Claude Opus 4.6 (Thinking)',
+      unavailable: false,
+      maxTokens: 1000000,
+      maxOutputTokens: 32000
+    });
+
+    // 1. 磁盘预先保存了 customPlan + unified 409600，慢返回 getSettings 在 40ms 后企图回写旧状态
+    await collector.savePluginSettings({
+      customPlan: { provider: 'google', tier: 'pro' },
+      contextScopeMode: 'unified',
+      contextUnifiedPreference: { modelId: 'unified', mode: 'fixed', limitTokens: 409600 },
+      contextPreference: {
+        scope: 'product',
+        productKey: 'product:google:gemini-3.8-flash',
+        mode: 'fixed',
+        limitTokens: 512000
+      }
+    }, { agDir: tmpDir });
+
+    const boot1 = await collector.getPluginSettings({ agDir: tmpDir });
+    const h1 = createHttpSandbox(boot1, {
+      slowGetSettingsDelayMs: 40,
+      slowGetSettingsPayload: {
+        ok: true,
+        customPlan: { provider: 'google', tier: 'pro' },
+        contextScopeMode: 'unified',
+        contextUnifiedPreference: { modelId: 'unified', mode: 'fixed', limitTokens: 256000 },
+        contextPreferences: {}
+      },
+      onSave: (payload) => collector.savePluginSettings(payload, { agDir: tmpDir })
+    });
+
+    const api1 = h1.sandbox.__AGContextMeter;
+    assert.ok(api1, 'http://127.0.0.1 环境下必须成功初始化 __AGContextMeter');
+    assert.equal(api1.getContextScopeModeForTest(), 'unified', '启动即应从 __AGContextMeterSettings 恢复 contextScopeMode');
+    assert.equal(api1.getContextUnifiedPreferenceForTest().limitTokens, 409600, '启动即应恢复统一上限 409600');
+
+    // 在启动 40ms 异步 getSettings 尚未返回前，用户立刻切换到 per_model 并修改模型值为 655360 且点击保存
+    api1.setContextScopeModeForTest('per_model');
+    api1.setContextLatestForTest(
+      { modelId: 'MODEL_CLAUDE_4_OPUS_THINKING', model: 'Claude Opus 4.6 (Thinking)', modelDisplayName: 'Claude Opus 4.6 (Thinking)' },
+      [flashCfg, opusCfg]
+    );
+    const inputEl = h1.elemMap.get('ctx-custom-limit-input');
+    inputEl.value = '655360';
+    inputEl.dispatchEvent({ type: 'input', target: inputEl });
+    h1.elemMap.get('btn-save-model-ctx').dispatchEvent({ type: 'click', target: h1.elemMap.get('btn-save-model-ctx') });
+
+    // 等候 80ms，确保慢返回 restoreSettingsFromHost 和异步 saveSettings 都已落地
+    await new Promise(r => setTimeout(r, 80));
+
+    assert.equal(api1.getContextScopeModeForTest(), 'per_model', '慢返回不得将 per_model 覆盖回 unified');
+    assert.equal(
+      h1.sandbox.__AGContextPreferences['product:anthropic:claude-opus-4.6-thinking']?.limitTokens,
+      655360,
+      '用户刚保存的 655360 不得被慢返回覆盖为 {}'
+    );
+
+    // 切换模型再切回验证内存与缓存未串扰
+    api1.setContextLatestForTest({ modelId: 'MODEL_PLACEHOLDER_M37_LOW', model: 'Gemini 3.8 Flash Low', modelDisplayName: 'Gemini 3.8 Flash Low' }, [flashCfg, opusCfg]);
+    const backState = api1.setContextLatestForTest({ modelId: 'MODEL_CLAUDE_4_OPUS_THINKING', model: 'Claude Opus 4.6 (Thinking)', modelDisplayName: 'Claude Opus 4.6 (Thinking)' }, [flashCfg, opusCfg]);
+    assert.equal(backState.draft.mode, 'fixed');
+    assert.equal(backState.draft.limitTokens, 655360);
+    api1.dispose();
+
+    // 2. 模拟冷启动新开窗口（全新沙箱，无 localStorage），从磁盘同一 agDir 读回配置
+    const boot2 = await collector.getPluginSettings({ agDir: tmpDir });
+    const h2 = createHttpSandbox(boot2, {
+      onSave: (payload) => collector.savePluginSettings(payload, { agDir: tmpDir })
+    });
+    const api2 = h2.sandbox.__AGContextMeter;
+    await api2.restoreSettingsForTest();
+    assert.equal(api2.getContextScopeModeForTest(), 'per_model');
+    assert.equal(h2.sandbox.__AGContextPreferences['product:google:gemini-3.8-flash']?.limitTokens, 512000);
+    assert.equal(h2.sandbox.__AGContextPreferences['product:anthropic:claude-opus-4.6-thinking']?.limitTokens, 655360);
+    api2.dispose();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

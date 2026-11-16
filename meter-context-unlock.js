@@ -24,10 +24,30 @@ const { Worker, isMainThread, parentPort, workerData } = require('worker_threads
 const { getStateDir } = require('./asar-engine');
 const {
   isMachO64Buffer,
+  parseMachO64,
   atomicWriteMachOBinarySync,
   atomicWriteMachOBinaryAsync,
+  isExactMacLanguageServerProcess,
   listMacProcessesAsync
 } = require('./macos-binary-utils');
+
+/**
+ * 校验二进制格式与架构组合是否已完成端到端适配与签名验证：
+ * 仅开放 Windows PE64 (x86-64) 与 macOS Mach-O Apple Silicon (arm64)，
+ * 严格排除 Intel Mac (Mach-O x86-64) 与未验证架构。
+ */
+function isSupportedUnlockTarget(format, arch) {
+  if (format === 'PE' && arch === 'x86-64') return true;
+  if (format === 'Mach-O' && arch === 'arm64') return true;
+  return false;
+}
+
+function getUnsupportedTargetReason(format, arch) {
+  if (format === 'Mach-O' && arch === 'x86-64') {
+    return '暂未开放对 Intel Mac (Mach-O x86-64) 的写入支持：当前 macOS 二进制调整仅完成 Apple Silicon (arm64) 适配与验证。';
+  }
+  return `暂未开放对 ${format || '未知格式'} (${arch || '未知架构'}) 的写入支持：当前仅支持 Windows PE64 (x86-64) 与 macOS Apple Silicon Mach-O (arm64)。`;
+}
 
 const ORIG_UNLOCK_FS_READ_SYNC = fs.readFileSync;
 const ORIG_UNLOCK_FS_READ_ASYNC = fs.promises.readFile;
@@ -223,7 +243,11 @@ function detectTargetBinary(customPath) {
   } else if (process.platform === 'darwin') {
     candidates.push(
       '/Applications/Antigravity.app/Contents/Resources/bin/language_server',
-      path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server')
+      path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server'),
+      '/Applications/Antigravity IDE.app/Contents/Resources/bin/language_server',
+      path.join(home, 'Applications', 'Antigravity IDE.app', 'Contents', 'Resources', 'bin', 'language_server'),
+      '/Applications/Google Antigravity.app/Contents/Resources/bin/language_server',
+      path.join(home, 'Applications', 'Google Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server')
     );
   } else {
     candidates.push(
@@ -245,39 +269,27 @@ function detectTargetBinary(customPath) {
 function findTextSection(buf) {
   if (buf.length < 64) throw new Error('文件体积过小，非有效可执行文件');
 
-  // Mach-O 64-bit LE
+  // Mach-O 64-bit LE（严格复用 parseMachO64 进行头长度与段偏移边界校验）
   if (buf[0] === 0xcf && buf[1] === 0xfa && buf[2] === 0xed && buf[3] === 0xfe) {
     const cputype = buf.readUInt32LE(4);
-    const arch = cputype === 0x0100000C ? 'arm64' : (cputype === 0x01000007 ? 'x86-64' : null);
-    if (!arch) throw new Error(`不支持的 Mach-O cputype: 0x${cputype.toString(16)}`);
-    const ncmds = buf.readUInt32LE(16);
-    let off = 32;
-    let textInfo = null;
-    let uuidHex = null;
-    for (let c = 0; c < ncmds; c++) {
-      const cmd = buf.readUInt32LE(off);
-      const size = buf.readUInt32LE(off + 4);
-      if (cmd === 0x1b && size >= 24) {
-        uuidHex = buf.subarray(off + 8, off + 24).toString('hex');
-      } else if (cmd === 0x19) { // LC_SEGMENT_64
-        const nsects = buf.readUInt32LE(off + 64);
-        let sect = off + 72;
-        for (let s = 0; s < nsects; s++) {
-          const sectName = buf.subarray(sect, sect + 16).toString().replace(/\0+$/, '');
-          if (sectName === '__text') {
-            const addr = buf.readBigUInt64LE(sect + 32);
-            const sectSize = Number(buf.readBigUInt64LE(sect + 40));
-            const offset = buf.readUInt32LE(sect + 48);
-            textInfo = { textVA: addr, textOff: offset, textSize: sectSize, arch, format: 'Mach-O' };
-          }
-          sect += 80;
-        }
-      }
-      off += size;
+    const macho = parseMachO64(buf);
+    if (!macho) {
+      throw new Error('Mach-O 头部损坏、截断或段偏移越界，已拒绝解析与写入');
     }
-    if (textInfo) {
-      textInfo.buildId = uuidHex ? `macho_${uuidHex}` : `macho_${arch}_${textInfo.textSize}`;
-      return textInfo;
+    if (!macho.arch) throw new Error(`不支持的 Mach-O cputype: 0x${cputype.toString(16)}`);
+    const textSect = macho.sections.find((s) => s.sectname === '__text');
+    if (textSect) {
+      if (textSect.offset + textSect.size > buf.length) {
+        throw new Error('Mach-O __text 段偏移或大小超出文件边界，已拒绝解析');
+      }
+      return {
+        textVA: textSect.addr,
+        textOff: textSect.offset,
+        textSize: textSect.size,
+        arch: macho.arch,
+        format: 'Mach-O',
+        buildId: macho.buildKey
+      };
     }
     throw new Error('未在 Mach-O 中找到 __text 段');
   }
@@ -1223,7 +1235,7 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
           const allProcs = await listMacProcessesAsync();
           const matchedProcs = targetNormalized
             ? allProcs.filter((p) => path.resolve(p.path).toLowerCase() === targetNormalized)
-            : allProcs.filter((p) => path.basename(p.path) === 'language_server');
+            : allProcs.filter((p) => isExactMacLanguageServerProcess(p.path));
           if (matchedProcs.length > 0) {
             result.isRunning = true;
             result.pids = matchedProcs.map((p) => p.pid);
@@ -1586,14 +1598,26 @@ async function analyzeBinaryAsync(filePath, options = {}) {
     };
   }
 
-  // 跨平台安全策略拦截：支持 Windows (x86-64) 与 macOS (arm64 / x86-64)
+  // 跨平台安全策略拦截：支持 Windows (x86-64) 与 Apple Silicon macOS (arm64)，显式排除 Linux/ELF 与 Intel Mac (x64)
   if (process.platform !== 'win32' && process.platform !== 'darwin') {
     return {
+      ok: false,
       status: 'unsupported',
       targetPath: target,
       format: 'ELF',
       arch: os.arch(),
-      reason: `暂未开放对 ${process.platform} 平台的写入支持：当前版本仅支持 Windows (x86-64) 与 macOS (arm64 / x86-64)。`,
+      reason: `暂未开放对 ${process.platform} 平台的写入支持：当前仅支持 Windows (x86-64) 与 macOS Apple Silicon (arm64)。`,
+      isPlatformSupported: false
+    };
+  }
+  if (!filePath && process.platform === 'darwin' && os.arch() !== 'arm64') {
+    return {
+      ok: false,
+      status: 'unsupported',
+      targetPath: target,
+      format: 'Mach-O',
+      arch: os.arch() === 'x64' ? 'x86-64' : os.arch(),
+      reason: '暂未开放对 Intel Mac (x86-64) 的写入支持：当前 macOS 二进制调整仅完成 Apple Silicon (arm64) 验证。',
       isPlatformSupported: false
     };
   }
@@ -1668,14 +1692,15 @@ async function analyzeBinaryAsync(filePath, options = {}) {
 
     const { textVA, textOff, arch, format } = container;
 
-    if (arch !== 'x86-64' && arch !== 'arm64') {
+    if (!isSupportedUnlockTarget(format, arch)) {
       return {
         status: 'unsupported',
         targetPath: target,
         arch,
         format,
         sha256: currentSha256,
-        reason: `暂未开放对 ${arch} 架构的写入支持，当前版本仅支持 x86-64 与 arm64 架构。`
+        isPlatformSupported: false,
+        reason: getUnsupportedTargetReason(format, arch)
       };
     }
 
@@ -1805,6 +1830,18 @@ function analyzeBinary(filePath, options = {}) {
 
   const { textVA, textOff, arch, format } = container;
 
+  if (!isSupportedUnlockTarget(format, arch)) {
+    return {
+      status: 'unsupported',
+      targetPath: target,
+      arch,
+      format,
+      sha256: currentSha256,
+      isPlatformSupported: false,
+      reason: getUnsupportedTargetReason(format, arch)
+    };
+  }
+
   let funcsData;
   try {
     funcsData = buildFunctions(buf);
@@ -1873,18 +1910,27 @@ function analyzeBinary(filePath, options = {}) {
  * Windows 占用下安全原子写盘与回滚共用助手
  */
 function atomicWriteBinary(targetPath, buf, tempTag = 'new', writeOpts = {}) {
-  if (process.platform === 'darwin' && isMachO64Buffer(buf)) {
+  if ((process.platform === 'darwin' || writeOpts.forceCodesign === true) && isMachO64Buffer(buf)) {
     try {
-      atomicWriteMachOBinarySync(targetPath, buf, {
+      const signRes = atomicWriteMachOBinarySync(targetPath, buf, {
         entitlementsSourcePath: writeOpts.entitlementsSourcePath || targetPath,
-        skipCodesign: writeOpts.skipCodesign === true
+        skipCodesign: writeOpts.skipCodesign === true,
+        forceCodesign: writeOpts.forceCodesign === true,
+        codesignBin: writeOpts.codesignBin,
+        _execFileSync: writeOpts._execFileSync
       });
       invalidateUnlockCache(targetPath);
-      return { ok: true, usedRenameTrick: true };
+      return {
+        ok: true,
+        usedRenameTrick: true,
+        signatureMode: signRes?.signatureMode || (writeOpts.skipCodesign ? 'unchanged' : 'ad-hoc'),
+        entitlementsPreserved: Boolean(signRes?.entitlementsPreserved)
+      };
     } catch (e) {
       return {
         ok: false,
-        error: `macOS 原子写入或重签名失败 (${e.code || e.message})`
+        code: 'MACOS_CODESIGN_OR_WRITE_FAILED',
+        error: `macOS 原子写入或本地 ad-hoc 重签名失败，已完整保留原文件 (${e.code || e.message})`
       };
     }
   }
@@ -1946,18 +1992,27 @@ function atomicWriteBinary(targetPath, buf, tempTag = 'new', writeOpts = {}) {
  * 异步安全原子写盘与回滚助手（避免大二进制 writeFileSync/copyFileSync 阻塞主线程）
  */
 async function atomicWriteBinaryAsync(targetPath, buf, tempTag = 'new', writeOpts = {}) {
-  if (process.platform === 'darwin' && isMachO64Buffer(buf)) {
+  if ((process.platform === 'darwin' || writeOpts.forceCodesign === true) && isMachO64Buffer(buf)) {
     try {
-      await atomicWriteMachOBinaryAsync(targetPath, buf, {
+      const signRes = await atomicWriteMachOBinaryAsync(targetPath, buf, {
         entitlementsSourcePath: writeOpts.entitlementsSourcePath || targetPath,
-        skipCodesign: writeOpts.skipCodesign === true
+        skipCodesign: writeOpts.skipCodesign === true,
+        forceCodesign: writeOpts.forceCodesign === true,
+        codesignBin: writeOpts.codesignBin,
+        _execFile: writeOpts._execFile
       });
       invalidateUnlockCache(targetPath);
-      return { ok: true, usedRenameTrick: true };
+      return {
+        ok: true,
+        usedRenameTrick: true,
+        signatureMode: signRes?.signatureMode || (writeOpts.skipCodesign ? 'unchanged' : 'ad-hoc'),
+        entitlementsPreserved: Boolean(signRes?.entitlementsPreserved)
+      };
     } catch (e) {
       return {
         ok: false,
-        error: `macOS 原子写入或重签名失败 (${e.code || e.message})`
+        code: 'MACOS_CODESIGN_OR_WRITE_FAILED',
+        error: `macOS 原子写入或本地 ad-hoc 重签名失败，已完整保留原文件 (${e.code || e.message})`
       };
     }
   }
@@ -2114,7 +2169,7 @@ function applyUnlock(options = {}) {
   });
 
   const allowedStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
-  if (!allowedStatuses.has(analysis.status) || (analysis.arch !== 'x86-64' && analysis.arch !== 'arm64')) {
+  if (!allowedStatuses.has(analysis.status) || !isSupportedUnlockTarget(analysis.format, analysis.arch)) {
     return {
       ok: false,
       code: analysis.status === 'partial_match' ? 'PARTIAL_MATCH' : 'UNSUPPORTED_OR_UNKNOWN',
@@ -2258,12 +2313,15 @@ function applyUnlock(options = {}) {
 
   const writeRes = atomicWriteBinary(targetPath, buf, 'new', {
     entitlementsSourcePath: manifestToSave?.backupPath || targetPath,
-    skipCodesign: options.skipCodesign === true
+    skipCodesign: options.skipCodesign === true,
+    forceCodesign: options.forceCodesign === true,
+    codesignBin: options.codesignBin,
+    _execFileSync: options._execFileSync
   });
   if (!writeRes.ok) {
-    return { ok: false, error: writeRes.error };
+    return { ok: false, code: writeRes.code || 'WRITE_FAILED', error: writeRes.error };
   }
-  const afterSha256 = (process.platform === 'darwin' && isMachO64Buffer(buf)) ? sha256File(targetPath) : sha256Buffer(buf);
+  const afterSha256 = isMachO64Buffer(buf) ? sha256File(targetPath) : sha256Buffer(buf);
 
   const syncedConfigs = syncExternalContextConfigs(targetSpec.mode, targetSpec.limitTokens, options);
 
@@ -2286,6 +2344,12 @@ function applyUnlock(options = {}) {
     ? '由于客户端正在运行，请【完全退出并重启 Antigravity 客户端】使新后端配置生效。'
     : '请重启 Antigravity 客户端使新后端配置生效。';
 
+  const signHint = writeRes.signatureMode === 'ad-hoc'
+    ? (writeRes.entitlementsPreserved
+      ? '已保留原有 entitlements 并完成本地 ad-hoc 重签名'
+      : '已完成本地 ad-hoc 重签名')
+    : '';
+
   return {
     ok: true,
     needsRestart: true,
@@ -2295,12 +2359,14 @@ function applyUnlock(options = {}) {
     defaultSitePatched: Boolean(gate3a.hasDefaultSite),
     serializerPatched,
     syncedConfigs,
+    signatureMode: writeRes.signatureMode || null,
+    entitlementsPreserved: Boolean(writeRes.entitlementsPreserved),
     warnings: targetSpec.warnings || [],
     scopeNote: analysis.scopeNotice,
     beforeSha256,
     afterSha256,
     backupPath: manifestToSave ? manifestToSave.backupPath : null,
-    message: `已将共享后端切换为「${modeSummary}」，影响共享该后端的所有会话；${restartHint}（尚未经过真实长请求验证）`
+    message: `已将共享后端切换为「${modeSummary}」，影响共享该后端的所有会话；${signHint ? `${signHint}；` : ''}${restartHint}（尚未经过真实长请求验证）`
   };
 }
 
@@ -2378,6 +2444,8 @@ function restoreUnlock(options = {}) {
     return {
       ok: true,
       needsRestart: true,
+      restoredOriginalSignature: true,
+      afterSha256: manifest.origSha256,
       syncedConfigs,
       message: writeRes.usedRenameTrick
         ? '已成功恢复官方原版二进制！请【完全退出并重启 Antigravity 客户端】生效。'
@@ -2399,7 +2467,12 @@ function restoreUnlock(options = {}) {
   ) {
     patchUnlockBuffer(currentBuf, { mode: 'default', limitTokens: DEFAULT_CHECKPOINT_TOKENS }, analysis.gate3a, analysis.gate3b, analysis.serializerGate, Buffer.from(sidecar.origHex, 'hex'), container.arch);
 
-    const writeRes = atomicWriteBinary(target, currentBuf, 'rev', { skipCodesign: options.skipCodesign === true });
+    const writeRes = atomicWriteBinary(target, currentBuf, 'rev', {
+      skipCodesign: options.skipCodesign === true,
+      forceCodesign: options.forceCodesign === true,
+      codesignBin: options.codesignBin,
+      _execFileSync: options._execFileSync
+    });
     if (!writeRes.ok) {
       return { ok: false, error: `逆向还原写入失败: ${writeRes.error}` };
     }
@@ -2582,7 +2655,7 @@ async function applyUnlockAsync(options = {}) {
     });
 
     const allowedStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
-    if (!allowedStatuses.has(analysis.status) || (analysis.arch !== 'x86-64' && analysis.arch !== 'arm64')) {
+    if (!allowedStatuses.has(analysis.status) || !isSupportedUnlockTarget(analysis.format, analysis.arch)) {
       return {
         ok: false,
         code: analysis.status === 'partial_match' ? 'PARTIAL_MATCH' : 'UNSUPPORTED_OR_UNKNOWN',
@@ -2684,12 +2757,15 @@ async function applyUnlockAsync(options = {}) {
     const serializerPatched = patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate3bOrigBytesForDefault, arch);
     const writeRes = await atomicWriteBinaryAsync(targetPath, buf, 'new', {
       entitlementsSourcePath: manifestToSave?.backupPath || targetPath,
-      skipCodesign: options.skipCodesign === true
+      skipCodesign: options.skipCodesign === true,
+      forceCodesign: options.forceCodesign === true,
+      codesignBin: options.codesignBin,
+      _execFile: options._execFile
     });
     if (!writeRes.ok) {
-      return { ok: false, error: writeRes.error };
+      return { ok: false, code: writeRes.code || 'WRITE_FAILED', error: writeRes.error };
     }
-    const afterSha256 = (process.platform === 'darwin' && isMachO64Buffer(buf))
+    const afterSha256 = isMachO64Buffer(buf)
       ? await sha256BufferAsync(await fs.promises.readFile(targetPath))
       : await sha256BufferAsync(buf);
 
@@ -2713,6 +2789,12 @@ async function applyUnlockAsync(options = {}) {
       ? '由于客户端正在运行，请【完全退出并重启 Antigravity 客户端】使新后端配置生效。'
       : '请重启 Antigravity 客户端使新后端配置生效。';
 
+    const signHint = writeRes.signatureMode === 'ad-hoc'
+      ? (writeRes.entitlementsPreserved
+        ? '已保留原有 entitlements 并完成本地 ad-hoc 重签名'
+        : '已完成本地 ad-hoc 重签名')
+      : '';
+
     return {
       ok: true,
       needsRestart: true,
@@ -2722,12 +2804,14 @@ async function applyUnlockAsync(options = {}) {
       defaultSitePatched: Boolean(gate3a.hasDefaultSite),
       serializerPatched,
       syncedConfigs,
+      signatureMode: writeRes.signatureMode || null,
+      entitlementsPreserved: Boolean(writeRes.entitlementsPreserved),
       warnings: targetSpec.warnings || [],
       scopeNote: analysis.scopeNotice,
       beforeSha256,
       afterSha256,
       backupPath: manifestToSave ? manifestToSave.backupPath : null,
-      message: `已将共享后端切换为「${modeSummary}」，影响共享该后端的所有会话；${restartHint}（尚未经过真实长请求验证）`
+      message: `已将共享后端切换为「${modeSummary}」，影响共享该后端的所有会话；${signHint ? `${signHint}；` : ''}${restartHint}（尚未经过真实长请求验证）`
     };
   });
 }
@@ -2812,6 +2896,8 @@ async function restoreUnlockAsync(options = {}) {
       return {
         ok: true,
         needsRestart: true,
+        restoredOriginalSignature: true,
+        afterSha256: manifest.origSha256,
         syncedConfigs,
         message: writeRes.usedRenameTrick
           ? '已成功恢复官方原版二进制！请【完全退出并重启 Antigravity 客户端】生效。'
@@ -2837,7 +2923,12 @@ async function restoreUnlockAsync(options = {}) {
     ) {
       patchUnlockBuffer(currentBuf, { mode: 'default', limitTokens: DEFAULT_CHECKPOINT_TOKENS }, analysis.gate3a, analysis.gate3b, analysis.serializerGate, Buffer.from(sidecar.origHex, 'hex'), container.arch);
 
-      const writeRes = await atomicWriteBinaryAsync(target, currentBuf, 'rev', { skipCodesign: options.skipCodesign === true });
+      const writeRes = await atomicWriteBinaryAsync(target, currentBuf, 'rev', {
+        skipCodesign: options.skipCodesign === true,
+        forceCodesign: options.forceCodesign === true,
+        codesignBin: options.codesignBin,
+        _execFile: options._execFile
+      });
       if (!writeRes.ok) {
         return { ok: false, error: `逆向还原写入失败: ${writeRes.error}` };
       }
@@ -2884,6 +2975,15 @@ function clearAllUnlockWorkerPending(targetWorker = null, reasonResult = null) {
 
 function canUseUnlockWorker(options = {}) {
   if (!isMainThread || unlockWorkerDisabled || options._inWorker === true || options.useMainThread === true) {
+    return false;
+  }
+  if (
+    typeof options._execFile === 'function' ||
+    typeof options._execFileSync === 'function' ||
+    options.forceCodesign === true ||
+    options.codesignBin !== undefined ||
+    options.skipCodesign === true
+  ) {
     return false;
   }
   if (fs.readFileSync !== ORIG_UNLOCK_FS_READ_SYNC || fs.promises.readFile !== ORIG_UNLOCK_FS_READ_ASYNC) {

@@ -234,25 +234,68 @@ function getStateDir() {
 }
 
 /**
+ * 判断路径是否位于隔离的测试临时目录中（兼容 Windows Temp、Linux /tmp 与 macOS /private/var/folders 软链）
+ */
+function isIsolatedTestPath(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') return false;
+  const resolved = path.resolve(targetPath);
+  const candidates = [os.tmpdir()];
+  try {
+    candidates.push(fs.realpathSync(os.tmpdir()));
+  } catch {}
+  try {
+    if (fs.existsSync(resolved)) {
+      const realTarget = fs.realpathSync(resolved);
+      for (const tmpBase of candidates) {
+        if (tmpBase && realTarget.toLowerCase().startsWith(path.resolve(tmpBase).toLowerCase())) {
+          return true;
+        }
+      }
+    }
+  } catch {}
+  const lower = resolved.toLowerCase().replace(/\\/g, '/');
+  for (const tmpBase of candidates) {
+    if (tmpBase && lower.startsWith(path.resolve(tmpBase).toLowerCase().replace(/\\/g, '/'))) {
+      return true;
+    }
+  }
+  return (
+    lower.startsWith('/tmp/') ||
+    lower.startsWith('/private/tmp/') ||
+    lower.startsWith('/var/folders/') ||
+    lower.startsWith('/private/var/folders/')
+  );
+}
+
+/**
  * 探测本机 Antigravity 宿主 app.asar 安装路径（纯路径定位，无安装副作用）
  */
 function findAsarPath(customPath) {
   const rawFs = getRawFs();
-  if (customPath) {
-    let resolved = path.resolve(customPath);
+  const explicitPath = customPath || (process.env.AG_ASAR_PATH ? String(process.env.AG_ASAR_PATH).trim() : '');
+  if (explicitPath) {
+    let resolved = path.resolve(explicitPath);
     if (rawFs.existsSync(resolved) && rawFs.statSync(resolved).isDirectory()) {
+      const inMacBundle = path.join(resolved, 'Contents', 'Resources', 'app.asar');
+      if (rawFs.existsSync(inMacBundle)) return inMacBundle;
       const inRes = path.join(resolved, 'resources', 'app.asar');
       if (rawFs.existsSync(inRes)) return inRes;
       const direct = path.join(resolved, 'app.asar');
       if (rawFs.existsSync(direct)) return direct;
     }
     if (rawFs.existsSync(resolved)) return resolved;
-    throw new Error(`Could not find app.asar at specified path: ${customPath}`);
+    throw new Error(`Could not find app.asar at specified path: ${explicitPath}`);
   }
-  // 若在 Electron 宿主运行时内部被调用，优先定位宿主自身捆绑的 resources/app.asar
+  // 若在 Electron 宿主运行时内部被调用，优先定位宿主自身捆绑的 resources/app.asar 或 Contents/Resources/app.asar
   if (process.versions && process.versions.electron && process.execPath) {
-    const hostAsar = path.join(path.dirname(process.execPath), 'resources', 'app.asar');
-    if (rawFs.existsSync(hostAsar)) return hostAsar;
+    const execDir = path.dirname(process.execPath);
+    const hostCandidates = [
+      path.join(execDir, 'resources', 'app.asar'),
+      path.join(execDir, '..', 'Resources', 'app.asar')
+    ];
+    for (const hostAsar of hostCandidates) {
+      if (rawFs.existsSync(hostAsar)) return path.resolve(hostAsar);
+    }
   }
   const home = os.homedir();
   const candidates = [];
@@ -268,7 +311,11 @@ function findAsarPath(customPath) {
   } else if (process.platform === 'darwin') {
     candidates.push(
       '/Applications/Antigravity.app/Contents/Resources/app.asar',
-      path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'app.asar')
+      path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'app.asar'),
+      '/Applications/Antigravity IDE.app/Contents/Resources/app.asar',
+      path.join(home, 'Applications', 'Antigravity IDE.app', 'Contents', 'Resources', 'app.asar'),
+      '/Applications/Google Antigravity.app/Contents/Resources/app.asar',
+      path.join(home, 'Applications', 'Google Antigravity.app', 'Contents', 'Resources', 'app.asar')
     );
   } else {
     candidates.push(
@@ -303,4 +350,4 @@ function collectUnpackedPaths(asarLib, archivePath) {
   return unpacked;
 }
 
-module.exports = { loadAsarEngine, builtinAsar, collectUnpackedPaths, getRawFs, getStateDir, getAppDataDir, findAsarPath };
+module.exports = { loadAsarEngine, builtinAsar, collectUnpackedPaths, getRawFs, getStateDir, getAppDataDir, isIsolatedTestPath, findAsarPath };
