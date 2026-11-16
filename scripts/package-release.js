@@ -139,14 +139,19 @@ function packagePlatform(plat, version) {
     if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
     if (process.platform === 'win32') {
-      // 调用 PowerShell 原生 .NET ZipFile 进行高兼容无损压缩
-      const psScript = `
+      // 优先使用 Windows 内置 bsdtar (-a -cf) 生成使用正斜杠 '/' 的跨平台标准 ZIP，确保 macOS/Linux 解压子目录一致
+      const topEntries = fs.readdirSync(stagingDir);
+      const tarRes = spawnSync('tar.exe', ['-a', '-cf', zipPath, ...topEntries], { cwd: stagingDir, stdio: 'pipe', windowsHide: true });
+      if (tarRes.status !== 0 || !fs.existsSync(zipPath)) {
+        // 回退 PowerShell 原生 .NET ZipFile
+        const psScript = `
       [System.Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null
       [System.IO.Compression.ZipFile]::CreateFromDirectory('${stagingDir.replace(/'/g, "''")}', '${zipPath.replace(/'/g, "''")}', [System.IO.Compression.CompressionLevel]::Optimal, $false)
     `;
-      const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', psScript], { stdio: 'pipe' });
-      if (res.status !== 0 || !fs.existsSync(zipPath)) {
-        throw new Error(`打包 ${zipFilename} 失败: ${res.stderr?.toString('utf8') || '未知错误'}`);
+        const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', psScript], { stdio: 'pipe', windowsHide: true });
+        if (res.status !== 0 || !fs.existsSync(zipPath)) {
+          throw new Error(`打包 ${zipFilename} 失败: ${res.stderr?.toString('utf8') || '未知错误'}`);
+        }
       }
     } else {
       // Linux/macOS CI 下优先使用原生 zip 保留 POSIX 文件权限，缺省再回退 Python zipfile

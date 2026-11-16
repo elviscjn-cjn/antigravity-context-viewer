@@ -111,6 +111,10 @@ const builtinAsar = {
     }
   },
 
+  async createPackage(srcDir, destAsar) {
+    return this.createPackageWithOptions(srcDir, destAsar, {});
+  },
+
   async createPackageWithOptions(srcDir, destAsar, options = {}) {
     const rawFs = getRawFs();
     let offset = 0;

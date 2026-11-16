@@ -54,8 +54,9 @@ jobs:
         run: |
           set -o pipefail
           npm test > /tmp/npm-test.log 2>&1 || {
-            TAIL_OUT="$(tail -n 80 /tmp/npm-test.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
-            echo "::error title=npm test failed on ${{ matrix.runner }}::$TAIL_OUT"
+            FAIL_LINES="$(grep -A 15 -E '^not ok ' /tmp/npm-test.log | head -n 90 | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+            SUMMARY_OUT="$(grep -E '^ℹ ' /tmp/npm-test.log | tr '\n' ' ')"
+            echo "::error title=npm test failed on ${{ matrix.runner }} ($SUMMARY_OUT)::$FAIL_LINES"
             cat /tmp/npm-test.log
             exit 1
           }
