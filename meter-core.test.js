@@ -3683,3 +3683,213 @@ test('ELV-83: parseUserPlanStatus、resolveEffectivePlanStatus 与严格 allowed
   assert.equal(unknownPlanSnap.activeStatus, 'unknown');
   assert.equal(unknownPlanSnap.pools[0]?.noPermission, false);
 });
+
+test('parseLxssRegistryOutput parses active WSL distros and filters container-runtime or non-ready entries', () => {
+  const { parseLxssRegistryOutput } = require('./meter-collector');
+  const raw = [
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss',
+    '    DefaultDistribution    REG_SZ    {11111111-1111-1111-1111-111111111111}',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{11111111-1111-1111-1111-111111111111}',
+    '    State    REG_DWORD    0x1',
+    '    DistributionName    REG_SZ    Ubuntu-24.04',
+    '    Version    REG_DWORD    0x2',
+    '    DefaultUid    REG_DWORD    0x0',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{22222222-2222-2222-2222-222222222222}',
+    '    State    REG_DWORD    0x1',
+    '    DistributionName    REG_SZ    docker-desktop',
+    '    Version    REG_DWORD    0x2',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{33333333-3333-3333-3333-333333333333}',
+    '    State    REG_DWORD    0x1',
+    '    DistributionName    REG_SZ    docker-desktop-data',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{44444444-4444-4444-4444-444444444444}',
+    '    State    REG_DWORD    0x4',
+    '    DistributionName    REG_SZ    Debian-Uninstalling',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{55555555-5555-5555-5555-555555555555}',
+    '    State    REG_DWORD    1',
+    '    DistributionName    REG_SZ    Arch',
+    '    Version    REG_DWORD    2',
+    '    DefaultUid    REG_DWORD    1000',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{66666666-6666-6666-6666-666666666666}',
+    '    State    REG_DWORD    0x1',
+    '    DistributionName    REG_SZ    ubuntu-24.04',
+    ''
+  ].join('\r\n');
+
+  const parsed = parseLxssRegistryOutput(raw);
+  assert.deepEqual(parsed, [
+    { name: 'Ubuntu-24.04', state: 1, version: 2, defaultUid: 0 },
+    { name: 'Arch', state: 1, version: 2, defaultUid: 1000 }
+  ]);
+  assert.deepEqual(parseLxssRegistryOutput(''), []);
+});
+
+test('resolveWslDistroUncRoot and discoverWslGeminiDirs handle wsl.localhost preference, wsl$ fallback and isolation guards', () => {
+  const {
+    resolveWslDistroUncRoot,
+    collectGeminiDirsFromLinuxRoot,
+    discoverWslGeminiDirs,
+    getEffectiveScanScopeKey
+  } = require('./meter-collector');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  const existingUnc = new Set([
+    '\\\\wsl.localhost\\Ubuntu-24.04\\root',
+    '\\\\wsl$\\Ubuntu-24.04\\root',
+    '\\\\wsl$\\DebianLegacy\\home'
+  ]);
+  const fakeFs = {
+    existsSync: (p) => existingUnc.has(p)
+  };
+  assert.equal(resolveWslDistroUncRoot('Ubuntu-24.04', { fs: fakeFs }), '\\\\wsl.localhost\\Ubuntu-24.04');
+  assert.equal(resolveWslDistroUncRoot('DebianLegacy', { fs: fakeFs }), '\\\\wsl$\\DebianLegacy');
+  assert.equal(resolveWslDistroUncRoot('MissingDistro', { fs: fakeFs }), null);
+
+  const tmpWslRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-wsl-root-'));
+  try {
+    fs.mkdirSync(path.join(tmpWslRoot, 'root', '.gemini', 'antigravity', 'brain'), { recursive: true });
+    fs.mkdirSync(path.join(tmpWslRoot, 'home', 'alice', '.gemini', 'antigravity', 'brain'), { recursive: true });
+    fs.mkdirSync(path.join(tmpWslRoot, 'home', 'alice', '.gemini', 'antigravity-cli', 'brain'), { recursive: true });
+    fs.mkdirSync(path.join(tmpWslRoot, 'home', 'bob'), { recursive: true });
+
+    const found = collectGeminiDirsFromLinuxRoot(tmpWslRoot);
+    assert.equal(found.desktopDirs.length, 2);
+    assert.equal(found.cliDirs.length, 1);
+
+    const disabledByOpt = discoverWslGeminiDirs({ includeWsl: false, wslRoots: [tmpWslRoot] });
+    assert.deepEqual(disabledByOpt.desktopDirs, []);
+    assert.deepEqual(disabledByOpt.cliDirs, []);
+
+    const prevDisable = process.env.AG_DISABLE_WSL_SCAN;
+    process.env.AG_DISABLE_WSL_SCAN = '1';
+    try {
+      const disabledByEnv = discoverWslGeminiDirs({ includeWsl: true, wslRoots: [tmpWslRoot] });
+      assert.deepEqual(disabledByEnv.desktopDirs, []);
+    } finally {
+      if (prevDisable === undefined) delete process.env.AG_DISABLE_WSL_SCAN;
+      else process.env.AG_DISABLE_WSL_SCAN = prevDisable;
+    }
+
+    const withRoots = discoverWslGeminiDirs({ agDir: tmpWslRoot, wslRoots: [tmpWslRoot] });
+    assert.deepEqual(withRoots.distros, []);
+    assert.equal(withRoots.desktopDirs.length, 2);
+    assert.equal(withRoots.cliDirs.length, 1);
+
+    assert.notEqual(
+      getEffectiveScanScopeKey({ agDir: tmpWslRoot, includeWsl: false }),
+      getEffectiveScanScopeKey({ agDir: tmpWslRoot, includeWsl: true, wslRoots: [tmpWslRoot] })
+    );
+  } finally {
+    fs.rmSync(tmpWslRoot, { recursive: true, force: true });
+  }
+});
+
+test('collectTokenHistoryAsync aggregates WSL desktop/cli sessions without double-counting or writing into WSL dirs', async () => {
+  const { formatLocalDateKey } = require('./meter-collector');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  const winAgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-win-primary-'));
+  const winCliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-win-cli-'));
+  const wslRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-wsl-distro-'));
+
+  try {
+    const ts1 = '2026-11-15T10:00:00Z';
+    const ts2 = '2026-11-16T10:00:00Z';
+    const ts3 = '2026-11-16T11:00:00Z';
+    const d1 = formatLocalDateKey(new Date(ts1));
+    const d2 = formatLocalDateKey(new Date(ts2));
+
+    // Windows 主目录会话（含与 WSL 重复的 eventId & conversation 名称，用于验证去重）
+    const winConvDir = path.join(winAgDir, 'conversations');
+    const winBrainDir = path.join(winAgDir, 'brain', 'conv-shared', '.system_generated', 'logs');
+    fs.mkdirSync(winConvDir, { recursive: true });
+    fs.mkdirSync(winBrainDir, { recursive: true });
+    fs.writeFileSync(path.join(winConvDir, 'conv-shared.db'), 'db');
+    fs.writeFileSync(path.join(winConvDir, 'conv-shared.db-wal'), 'wal');
+    fs.writeFileSync(path.join(winBrainDir, 'transcript.jsonl'), JSON.stringify({
+      created_at: ts1,
+      step_index: 1,
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 1000, cacheReadTokens: 500, outputTokens: 200, responseId: 'resp_shared_1' } }
+    }) + '\n', 'utf8');
+
+    // WSL /root desktop 目录（1 条重复事件 + 1 条 WSL 独有事件）
+    const wslRootAg = path.join(wslRoot, 'root', '.gemini', 'antigravity');
+    const wslRootConv = path.join(wslRootAg, 'conversations');
+    const wslRootSharedBrain = path.join(wslRootAg, 'brain', 'conv-shared', '.system_generated', 'logs');
+    const wslRootNewBrain = path.join(wslRootAg, 'brain', 'conv-wsl-only', '.system_generated', 'logs');
+    fs.mkdirSync(wslRootConv, { recursive: true });
+    fs.mkdirSync(wslRootSharedBrain, { recursive: true });
+    fs.mkdirSync(wslRootNewBrain, { recursive: true });
+    fs.writeFileSync(path.join(wslRootConv, 'conv-shared.db'), 'dup-db');
+    fs.writeFileSync(path.join(wslRootConv, 'conv-wsl-only.db'), 'wsl-db');
+    fs.writeFileSync(path.join(wslRootSharedBrain, 'transcript.jsonl'), JSON.stringify({
+      created_at: ts1,
+      step_index: 1,
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 1000, cacheReadTokens: 500, outputTokens: 200, responseId: 'resp_shared_1' } }
+    }) + '\n', 'utf8');
+    fs.writeFileSync(path.join(wslRootNewBrain, 'transcript.jsonl'), JSON.stringify({
+      created_at: ts2,
+      step_index: 2,
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 4000, cacheReadTokens: 2000, outputTokens: 500, responseId: 'resp_wsl_2' } }
+    }) + '\n', 'utf8');
+
+    // WSL /home/alice antigravity-cli 目录（仅 WSL 侧有 CLI 记录）
+    const wslCliAg = path.join(wslRoot, 'home', 'alice', '.gemini', 'antigravity-cli');
+    const wslCliConv = path.join(wslCliAg, 'conversations');
+    const wslCliBrain = path.join(wslCliAg, 'brain', 'conv-wsl-cli', '.system_generated', 'logs');
+    fs.mkdirSync(wslCliConv, { recursive: true });
+    fs.mkdirSync(wslCliBrain, { recursive: true });
+    fs.writeFileSync(path.join(wslCliConv, 'conv-wsl-cli.pb'), 'pb');
+    fs.writeFileSync(path.join(wslCliBrain, 'transcript.jsonl'), JSON.stringify({
+      created_at: ts3,
+      step_index: 1,
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 800, cacheReadTokens: 100, outputTokens: 100, responseId: 'resp_wsl_cli_1' } }
+    }) + '\n', 'utf8');
+
+    const res = await collectTokenHistoryAsync({
+      force: true,
+      agDir: winAgDir,
+      agCliDir: winCliDir,
+      wslRoots: [wslRoot],
+      userStatus: null
+    });
+
+    assert.equal(res.summary.totalInputTokens, 1000 + 4000 + 800);
+    assert.equal(res.summary.totalCacheTokens, 500 + 2000 + 100);
+    assert.equal(res.summary.totalOutputTokens, 200 + 500 + 100);
+    assert.equal(res.summary.grandTotalTokens, 1700 + 6500 + 1000);
+    assert.equal(res.summary.totalSteps, 3);
+    assert.equal(res.dailyMapBySource.desktop[d1].total, 1700);
+    assert.equal(res.dailyMapBySource.desktop[d2].total, 6500);
+    assert.equal(res.dailyMapBySource.cli[d2].total, 1000);
+    assert.equal(res.sources.desktop.conversationsCount, 2);
+    assert.equal(res.sources.cli.dirExists, true);
+    assert.equal(res.sources.cli.conversationsCount, 1);
+    assert.equal(res.sources.cli.transcriptsCount, 1);
+    assert.equal(res.sources.wsl.desktopDirsCount, 1);
+    assert.equal(res.sources.wsl.cliDirsCount, 1);
+
+    // 确认不会向 WSL 目录写入归档或账本文件（只读扫描 WSL）
+    assert.equal(fs.existsSync(path.join(wslRootAg, 'token_usage_archive_v2.json')), false);
+    assert.equal(fs.existsSync(path.join(wslRootAg, 'pricing_ledger_v1.json')), false);
+    assert.equal(fs.existsSync(path.join(winAgDir, 'token_usage_archive_v2.json')), true);
+  } finally {
+    fs.rmSync(winAgDir, { recursive: true, force: true });
+    fs.rmSync(winCliDir, { recursive: true, force: true });
+    fs.rmSync(wslRoot, { recursive: true, force: true });
+  }
+});
