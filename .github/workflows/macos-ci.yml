@@ -53,7 +53,7 @@ jobs:
         shell: bash
         run: |
           npm test > /tmp/npm-test.log 2>&1 || {
-            ERR_OUT="$(node -e 'const fs=require("fs");const lines=fs.readFileSync("/tmp/npm-test.log","utf8").split(/\r?\n/);const idx=lines.findIndex(l=>/failing tests:|not ok |✖ /.test(l));const slice=(idx>=0?lines.slice(idx,idx+80):lines.slice(-60)).join("\n").slice(-3200);process.stdout.write(slice.replace(/%/g,"%25").replace(/\r/g,"").replace(/\n/g,"%0A"));')"
+            ERR_OUT="$(node -e 'const fs=require("fs");const lines=fs.readFileSync("/tmp/npm-test.log","utf8").split(/\r?\n/);const fails=lines.map((l,i)=>/^(not ok |✖ )/.test(l)?lines.slice(i,i+12).join("\n"):"").filter(Boolean);const out=(fails.length?fails.join("\n---\n"):lines.slice(-60).join("\n")).slice(0,3200);process.stdout.write(out.replace(/%/g,"%25").replace(/\r/g,"").replace(/\n/g,"%0A"));')"
             echo "::error title=npm test failed on ${{ matrix.runner }}::$ERR_OUT"
             cat /tmp/npm-test.log
             exit 1

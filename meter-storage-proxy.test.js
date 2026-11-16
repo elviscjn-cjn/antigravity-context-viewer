@@ -649,9 +649,11 @@ test('meter-proxy & modules-config: modules.json 优先于遗留 proxy.json，�
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proxy-prio-'));
   const prevLocalApp = process.env.LOCALAPPDATA;
   const prevXdgState = process.env.XDG_STATE_HOME;
+  const prevMeterState = process.env.AG_METER_STATE_DIR;
   try {
     const stateRoot = path.join(tempDir, 'AntigravityContextMeter');
     fs.mkdirSync(stateRoot, { recursive: true });
+    process.env.AG_METER_STATE_DIR = stateRoot;
     if (process.platform === 'win32') process.env.LOCALAPPDATA = tempDir;
     else process.env.XDG_STATE_HOME = tempDir;
 
@@ -688,6 +690,7 @@ test('meter-proxy & modules-config: modules.json 优先于遗留 proxy.json，�
     assert.equal(targetEnv.HTTPS_PROXY, 'http://127.0.0.1:17890');
     assert.equal(targetEnv.ALL_PROXY, 'http://127.0.0.1:17890');
   } finally {
+    if (prevMeterState === undefined) delete process.env.AG_METER_STATE_DIR; else process.env.AG_METER_STATE_DIR = prevMeterState;
     if (prevLocalApp === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = prevLocalApp;
     if (prevXdgState === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prevXdgState;
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -781,8 +784,10 @@ test('meter-main.js 模块 IPC: 跨平台提示无 install.bat、代理校验与
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ipc-mod-'));
   const prevLocalApp = process.env.LOCALAPPDATA;
   const prevXdgState = process.env.XDG_STATE_HOME;
+  const prevMeterState = process.env.AG_METER_STATE_DIR;
   const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
   try {
+    process.env.AG_METER_STATE_DIR = path.join(tempDir, 'AntigravityContextMeter');
     if (process.platform === 'win32') process.env.LOCALAPPDATA = tempDir;
     else process.env.XDG_STATE_HOME = tempDir;
 
@@ -810,6 +815,7 @@ test('meter-main.js 模块 IPC: 跨平台提示无 install.bat、代理校验与
     assert.equal(typeof statusRes.runtime.proxyNeedsRestart, 'boolean');
   } finally {
     if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+    if (prevMeterState === undefined) delete process.env.AG_METER_STATE_DIR; else process.env.AG_METER_STATE_DIR = prevMeterState;
     if (prevLocalApp === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = prevLocalApp;
     if (prevXdgState === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prevXdgState;
     fs.rmSync(tempDir, { recursive: true, force: true });
