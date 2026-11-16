@@ -2500,8 +2500,8 @@
     }
 
     return {
-      schemaVersion: payload.schemaVersion || '0.8.4',
-      version: payload.version || '0.8.4',
+      schemaVersion: payload.schemaVersion || '0.8.5',
+      version: payload.version || '0.8.5',
       updatedAt: payload.updatedAt || '',
       firstUseDate: summary.firstUseDate,
       currentPeriod: payload.currentPeriod || {
@@ -2670,7 +2670,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.8.4') {
+  function filterReleases(releasesList, currentVersion = '0.8.5') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {

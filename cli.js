@@ -149,6 +149,10 @@ async function cmdStatus(customPath) {
   let asarPath = null;
   let version = null;
   let asarPatched = false;
+  let pluginVersion = null;
+  try {
+    pluginVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
+  } catch {}
   try {
     asarPath = findAsarPath(customPath);
     version = JSON.parse(asar.extractFile(asarPath, 'package.json').toString('utf8')).version;
@@ -159,6 +163,7 @@ async function cmdStatus(customPath) {
   const live = await queryLiveWindow();
   const py = resolvePython();
   const report = {
+    pluginVersion,
     asarPath,
     antigravityVersion: version,
     asarPatched,
@@ -170,7 +175,11 @@ async function cmdStatus(customPath) {
 }
 
 async function cmdCheck(customPath) {
-  console.log('🔍 [Antigravity 对话上下文查看器] 正在执行环境预检...');
+  let pluginVersion = 'unknown';
+  try {
+    pluginVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || 'unknown';
+  } catch {}
+  console.log(`🔍 [Antigravity 对话上下文查看器 v${pluginVersion}] 正在执行环境预检...`);
   console.log(`  - Node.js 运行时: ${process.version} (${process.execPath})`);
   try {
     const asarPath = findAsarPath(customPath);
@@ -395,17 +404,12 @@ async function main() {
   } else if (cmd === 'proxy:set') {
     const rawUrl = args[1] && !args[1].startsWith('-') ? args[1] : args[2];
     if (!rawUrl) throw new Error('请提供有效的代理地址，例如: node cli.js proxy:set http://127.0.0.1:7890');
-    const { normalizeProxyUrl } = require('./meter-proxy');
-    const newUrl = normalizeProxyUrl(rawUrl);
-    try {
-      const u = new URL(newUrl);
-      const portNum = Number(u.port);
-      if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(u.protocol) || !u.hostname || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
-        throw new Error('invalid');
-      }
-    } catch {
-      throw new Error('代理地址格式无效，需包含有效协议(http/https/socks5)与端口(1-65535)');
+    const { parseAndValidateProxyUrl } = require('./meter-proxy');
+    const check = parseAndValidateProxyUrl(rawUrl);
+    if (!check.ok) {
+      throw new Error(check.error || '代理地址格式错误，需包含有效协议(http/https/socks5)与端口(1-65535)');
     }
+    const newUrl = check.value;
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
     const cfg = loadModulesConfig();
     cfg.modules.proxy.proxyUrl = newUrl;

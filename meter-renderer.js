@@ -1,5 +1,5 @@
 (function () {
-  const METER_VERSION = '0.8.4';
+  const METER_VERSION = '0.8.5';
 
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
@@ -1949,7 +1949,7 @@
     <div class="panel-title">
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title">💬 当前会话上下文</span>
-      <span id="v">v0.8.4</span>
+      <span id="v">v0.8.5</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -3896,7 +3896,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.4</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.5</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -16044,8 +16044,8 @@ function closeAllDropdowns(exceptWrap = null) {
     const curUrl = String(inputProxyUrl?.value ?? '').trim();
     const curBypass = String(inputProxyBypass?.value ?? '').trim();
     return Boolean(
-      (savedProxyUrl && curUrl && curUrl !== savedProxyUrl) ||
-      (savedProxyBypass && curBypass && curBypass !== savedProxyBypass)
+      (curUrl && curUrl !== savedProxyUrl) ||
+      (curBypass !== savedProxyBypass)
     );
   }
 
@@ -17146,6 +17146,9 @@ function closeAllDropdowns(exceptWrap = null) {
         return;
       }
       const cfg = res.data;
+      if (res.configCorrupted && res.configError) {
+        showEnhanceResultBox(false, () => translateBackendText(res.configError));
+      }
 
       currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
       currentBrandTitle = cfg.modules?.chinese?.brandTitle || 'english';
@@ -17247,8 +17250,16 @@ function closeAllDropdowns(exceptWrap = null) {
       if (inputProxyUrl && diskProxyUrl && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyUrl))) {
         inputProxyUrl.value = diskProxyUrl;
       }
-      if (inputProxyBypass && diskProxyBypass && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyBypass))) {
+      if (inputProxyBypass && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyBypass))) {
         inputProxyBypass.value = diskProxyBypass;
+      }
+      if (runtimeMeta) {
+        if (typeof runtimeMeta.chineseNeedsRestart === 'boolean') {
+          needsRestartAfterApply = Boolean(runtimeMeta.proxyNeedsRestart || runtimeMeta.chineseNeedsRestart);
+        } else if (runtimeMeta.proxyNeedsRestart) {
+          needsRestartAfterApply = true;
+        }
+        renderClientStatusBar();
       }
 
       if (proxyBadge) {
@@ -17333,13 +17344,19 @@ function closeAllDropdowns(exceptWrap = null) {
         const errPayload = res;
         showEnhanceResultBox(false, () => resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail'));
       } else {
-        needsRestartAfterApply = Boolean(res.restartRequired !== false);
+        needsRestartAfterApply = Boolean(res.restartRequired);
         renderClientStatusBar();
-        if (res.restartRequired !== false) {
+        if (res.restartRequired) {
           showEnhanceResultBox(
             true,
             () => t(wantChinese ? 'mod.zh.savedEnableRestart' : 'mod.zh.savedDisableRestart'),
             { needsHostRestart: true }
+          );
+        } else {
+          showEnhanceResultBox(
+            true,
+            () => translateBackendText(res.message || '已同步回当前运行状态，无需重启'),
+            { needsHostRestart: false }
           );
         }
       }
@@ -17379,7 +17396,7 @@ function closeAllDropdowns(exceptWrap = null) {
       await yieldForSettingsPaint();
       const res = await invokeModulesApi('toggle', 'proxy', Boolean(enableTarget), {
         proxyUrl: rawUrl || undefined,
-        bypassList: rawBypass || undefined
+        bypassList: rawBypass
       });
       if (!res || !res.ok) {
         const errPayload = res;
@@ -18776,7 +18793,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
@@ -18887,7 +18904,7 @@ function closeAllDropdowns(exceptWrap = null) {
         throw new Error(t('update.noApi'));
       }
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl) vEl.textContent = `v${nextVer}`;
@@ -22430,7 +22447,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
   }
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5',
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();

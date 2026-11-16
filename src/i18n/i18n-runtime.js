@@ -362,10 +362,27 @@
     if (parent && (shouldIgnoreElement(parent) || parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA')) return;
 
     var original = node.nodeValue;
+    // 如果节点曾被品牌三态 hidden 清空，当品牌切回 english / translated 时利用暂存原文无损恢复
+    if ((!original || !original.trim()) && node._agyHiddenOrigBrand) {
+      var modeNow = getBrandTitleMode();
+      if (modeNow !== 'hidden') {
+        var restoredText = applyBrandTitleToText(node._agyHiddenOrigBrand, parent) || node._agyHiddenOrigBrand;
+        var hLead = node._agyHiddenLead || '';
+        var hTrail = node._agyHiddenTrail || '';
+        node.nodeValue = hLead + restoredText + hTrail;
+        node._agyOriginal = node.nodeValue;
+        delete node._agyHiddenOrigBrand;
+        delete node._agyHiddenLead;
+        delete node._agyHiddenTrail;
+      } else {
+        node._agyOriginal = original || '';
+      }
+      return;
+    }
     if (!original) return;
 
-    // 如果节点已标记原始文本且未变化，直接 O(1) 瞬时退出
-    if (node._agyOriginal === original) return;
+    // 如果节点已标记原始文本且未变化，直接 O(1) 瞬时退出（品牌节点受三态模式动态影响，不得被此缓存短路）
+    if (node._agyOriginal === original && !node._agyIsBrandNode) return;
 
     var trimmed = original.trim();
     if (!trimmed) {
@@ -376,9 +393,20 @@
 
     var brandMapped = applyBrandTitleToText(trimmed, parent);
     if (brandMapped !== null) {
+      node._agyIsBrandNode = true;
       var bLead = original.match(/^\s*/)[0];
       var bTrail = original.match(/\s*$/)[0];
-      node.nodeValue = brandMapped === '' ? '' : (bLead + brandMapped + bTrail);
+      if (brandMapped === '') {
+        node._agyHiddenOrigBrand = trimmed;
+        node._agyHiddenLead = bLead;
+        node._agyHiddenTrail = bTrail;
+        node.nodeValue = '';
+      } else {
+        delete node._agyHiddenOrigBrand;
+        delete node._agyHiddenLead;
+        delete node._agyHiddenTrail;
+        node.nodeValue = bLead + brandMapped + bTrail;
+      }
       node._agyOriginal = node.nodeValue;
       if (parent) {
         var isExactBrandItem = Boolean(
@@ -450,7 +478,7 @@
     if (scanId) el._agyScanId = scanId;
 
     // 复合组件自愈：处理特定 JSX 碎片化 Alert（如 plan-command-fyi-alert）
-    if (el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
+    if (i18nEnabled && el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
       var alertSpan = el.querySelector ? el.querySelector('span') : null;
       if (alertSpan && !alertSpan._agyAlertDone) {
         var alertChild = alertSpan.firstChild;
@@ -466,22 +494,24 @@
     }
 
     // 翻译属性
-    for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
-      var attr = TRANSLATABLE_ATTRS[i];
-      if (el.hasAttribute && el.hasAttribute(attr)) {
-        var val = el.getAttribute(attr);
-        if (val) {
-          // 检查是否已翻译过此属性
-          var markKey = MARK_ATTR + '_' + attr;
-          if (el[markKey] === val) continue;
+    if (i18nEnabled) {
+      for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
+        var attr = TRANSLATABLE_ATTRS[i];
+        if (el.hasAttribute && el.hasAttribute(attr)) {
+          var val = el.getAttribute(attr);
+          if (val) {
+            // 检查是否已翻译过此属性
+            var markKey = MARK_ATTR + '_' + attr;
+            if (el[markKey] === val) continue;
 
-          var trans = translateSingleUnit(val);
-          if (trans !== null && trans !== val) {
-            el.setAttribute(attr, trans);
-            el[markKey] = trans; // 标记已翻译的值
-          } else {
-            // 关键性能优化：补充 DOM 否定标记，未命中时记录原属性值，二次扫描直接 O(1) 退出
-            el[markKey] = val;
+            var trans = translateSingleUnit(val);
+            if (trans !== null && trans !== val) {
+              el.setAttribute(attr, trans);
+              el[markKey] = trans; // 标记已翻译的值
+            } else {
+              // 关键性能优化：补充 DOM 否定标记，未命中时记录原属性值，二次扫描直接 O(1) 退出
+              el[markKey] = val;
+            }
           }
         }
       }
@@ -490,7 +520,7 @@
     // 遍历子节点
     // 联合文本自愈：如果元素直接子节点全为纯文本节点且数量 > 1（常见于 React 碎片化模板拆分，如 "All ", e, "s run as Flash."）
     var first = el.firstChild;
-    if (first && first.nextSibling) {
+    if (i18nEnabled && first && first.nextSibling) {
       var allText = true;
       var cur = first;
       while (cur) {
@@ -735,6 +765,7 @@
     // 低频保底扫描：彻底阻断 50~60Hz 无限自旋死循环，改为每 15 秒配合 requestIdleCallback 执行一次低频保底扫描
     var idleScanScheduled = false;
     function scheduleIdleScan() {
+      if (!i18nEnabled && getBrandTitleMode() === 'english') return;
       if (idleScanScheduled) return;
       if (root.requestIdleCallback) {
         idleScanScheduled = true;

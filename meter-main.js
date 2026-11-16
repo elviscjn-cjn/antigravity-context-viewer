@@ -30,7 +30,13 @@ const {
 } = require('./meter-collector');
 const { isValidExternalUrl } = require('./meter-core');
 
-const { applyProxyEnvironment, detectProxyConfig, normalizeProxyUrl } = require('./meter-proxy');
+const {
+  applyProxyEnvironment,
+  detectProxyConfig,
+  normalizeProxyUrl,
+  normalizeBypassListForCompare,
+  parseAndValidateProxyUrl
+} = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
 
 function resolveBootProxySnapshot() {
@@ -80,17 +86,18 @@ function resolveBootChineseSnapshot() {
   bootChineseSnapshots.set(key, snap);
   return snap;
 }
+try { resolveBootChineseSnapshot(); } catch {}
 
 function buildRuntimeModulesMeta(cfg) {
   const diskProxy = cfg?.modules?.proxy || {};
   const diskEnabled = Boolean(diskProxy.enabled);
   const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
-  const diskBypass = String(diskProxy.bypassList || '').trim();
+  const diskBypass = normalizeBypassListForCompare(diskProxy.bypassList || '');
   const runtimeEnabled = Boolean(bootProxySnapshot.enabled);
   const runtimeUrl = normalizeProxyUrl(bootProxySnapshot.proxyUrl || '');
-  const runtimeBypass = String(bootProxySnapshot.bypassList || '').trim();
+  const runtimeBypass = normalizeBypassListForCompare(bootProxySnapshot.bypassList || '');
   const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
-    (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || (diskBypass && runtimeBypass && diskBypass !== runtimeBypass)));
+    (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || diskBypass !== runtimeBypass));
   const bootZh = resolveBootChineseSnapshot();
   const diskCh = cfg?.modules?.chinese || {};
   const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
@@ -98,7 +105,7 @@ function buildRuntimeModulesMeta(cfg) {
     injectedAtStartup: Boolean(bootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
     runtimeProxyUrl: runtimeUrl || null,
-    runtimeBypassList: runtimeBypass || null,
+    runtimeBypassList: bootProxySnapshot.bypassList || null,
     proxyNeedsRestart,
     chineseActive: Boolean(bootZh.enabled),
     chineseBootLanguage: bootZh.language,
@@ -193,7 +200,10 @@ async function handleModulesStatus(event, customAsar = null) {
       ok: true,
       data: cfg,
       disk: inspectDiskModules(customAsar),
-      runtime: buildRuntimeModulesMeta(cfg)
+      runtime: buildRuntimeModulesMeta(cfg),
+      configCorrupted: Boolean(cfg.__configCorrupted),
+      configError: cfg.__configError || null,
+      corruptedConfigPath: cfg.__corruptedConfigPath || null
     };
   } catch (e) {
     return { ok: false, error: e.message };
@@ -201,24 +211,10 @@ async function handleModulesStatus(event, customAsar = null) {
 }
 
 /**
- * 校验本地代理地址协议与端口范围是否有效
+ * 校验本地代理地址协议与端口范围是否有效（统一委托 parseAndValidateProxyUrl）
  */
 function validateProxyUrlInput(proxyUrlStr) {
-  if (!proxyUrlStr || typeof proxyUrlStr !== 'string' || !proxyUrlStr.trim()) {
-    return { ok: false, error: '代理地址不能为空（示例：http://127.0.0.1:7897）' };
-  }
-  const trimmed = normalizeProxyUrl(proxyUrlStr);
-  try {
-    const u = new URL(trimmed);
-    const validProto = ['http:', 'https:', 'socks5:', 'socks5h:'].includes(u.protocol);
-    const portNum = Number(u.port);
-    if (!validProto || !u.hostname || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
-      return { ok: false, error: '代理地址格式无效，需包含有效协议(http/https/socks5)与端口(1-65535)' };
-    }
-    return { ok: true, value: trimmed };
-  } catch {
-    return { ok: false, error: '代理地址格式无效，请检查协议、主机与端口' };
-  }
+  return parseAndValidateProxyUrl(proxyUrlStr);
 }
 
 function getRecordedInstallerDir() {
@@ -273,6 +269,8 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
 
     // 结果类型 1: 已有完整运行时可通过配置切换 (config_toggled)
     if (hasDiskCapability) {
+      // 在任何写盘修改之前先锁定本生命周期的启动汉化快照，防止先 toggle 后读盘自欺
+      resolveBootChineseSnapshot();
       const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
       const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
       if (moduleName === 'proxy' && extraOpts) {
@@ -301,7 +299,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
             restartRequired: false
           };
         }
-        if (typeof extraOpts.bypassList === 'string' && extraOpts.bypassList.trim()) {
+        if (typeof extraOpts.bypassList === 'string') {
           cfg.modules.proxy.bypassList = extraOpts.bypassList.trim();
         }
         cfg.modules.proxy.lastUpdated = new Date().toISOString();
@@ -343,15 +341,17 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       const brandOnlyUpdate = moduleName === 'chinese' && extraOpts?.brandTitle !== undefined && !langChanged;
       const restartRequired = moduleName === 'proxy'
         ? Boolean(runtime.proxyNeedsRestart)
-        : (brandOnlyUpdate ? false : true);
+        : (brandOnlyUpdate ? false : Boolean(runtime.chineseNeedsRestart));
       const isEnabledNow = cfg.modules[moduleName].enabled;
       const msg = brandOnlyUpdate
         ? '已保存并热同步品牌标题设置'
-        : (isEnabledNow
-          ? '已更新并保存设置，重启客户端后生效'
-          : (moduleName === 'chinese' && cfg.modules.chinese.brandTitle !== 'english')
-            ? '已保存品牌标题设置，重启客户端后生效'
-            : '已关闭配置，重启客户端后生效');
+        : (!restartRequired
+          ? '已同步回当前运行状态，无需重启'
+          : (isEnabledNow
+            ? '已更新并保存设置，重启客户端后生效'
+            : (moduleName === 'chinese' && cfg.modules.chinese.brandTitle !== 'english')
+              ? '已保存品牌标题设置，重启客户端后生效'
+              : '已关闭配置，重启客户端后生效'));
       return {
         ok: true,
         status: 'config_toggled',
@@ -374,7 +374,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         if (typeof extraOpts.proxyUrl === 'string' && extraOpts.proxyUrl.trim()) {
           cfg.modules.proxy.proxyUrl = extraOpts.proxyUrl.trim();
         }
-        if (typeof extraOpts.bypassList === 'string' && extraOpts.bypassList.trim()) {
+        if (typeof extraOpts.bypassList === 'string') {
           cfg.modules.proxy.bypassList = extraOpts.bypassList.trim();
         }
         cfg.modules.proxy.lastUpdated = new Date().toISOString();
@@ -404,11 +404,14 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     }
 
     // 结果类型 3: 磁盘上原本没有该组件/资源或组件不完整，无法在客户端运行中直接热注入
-    const modLabel = moduleName === 'chinese' ? '汉化' : '免 TUN 代理';
+    const modLabel = moduleName === 'chinese' ? '汉化' : (moduleName === 'proxy' ? '免 TUN 代理' : '核心监控');
     const partialReason = moduleName === 'chinese'
       ? (disk.chinese && !disk.chineseReady ? (disk.chineseReason || '汉化资源或门禁不完整') : '')
-      : (disk.proxy && !disk.proxyReady ? (disk.proxyReason || '代理拦截代码不完整') : '');
-    const cmdHint = formatInstallCommandHint(moduleName === 'proxy' ? 'proxy:enable' : 'chinese:enable');
+      : (moduleName === 'proxy'
+        ? (disk.proxy && !disk.proxyReady ? (disk.proxyReason || '代理拦截代码不完整') : '')
+        : (disk.meter && !disk.meterReady ? (disk.meterReason || '核心监控资源不完整') : ''));
+    const subCmd = moduleName === 'proxy' ? 'proxy:enable' : (moduleName === 'chinese' ? 'chinese:enable' : 'install');
+    const cmdHint = formatInstallCommandHint(subCmd);
     const detailSuffix = partialReason ? `原因：${partialReason}。` : '';
     return {
       ok: false,

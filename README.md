@@ -33,7 +33,7 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 如果你将本仓库交给 AI 助手安装，只需对 AI 说：**“读取仓库里的 `AGENTS.md` 或 `README.md`，帮我安装这个上下文查看器与 Token 看板”**。
 
-AI 智能体只需在仓库根目录执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 0.8.4）必须完全重启客户端**：
+AI 智能体只需在仓库根目录执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 0.8.5）必须完全重启客户端**：
 
 ```bash
 # 1. 持久化写入 ASAR 与全部插件模块
@@ -126,7 +126,7 @@ antigravity-context-viewer/
 ├── meter-enhance.js                        # 系统提示词 0~4 档、防幻觉与中文标题等长替换引擎
 ├── i18n/                                   # 客户端简体中文化词典与运行时 (zh-CN.json / i18n-runtime.js)
 ├── unlock/                                 # PR #3 跨平台解锁工具与文档 (language-server & agy-cli)
-├── meter-renderer.js                       # 渲染层构建产物 (0.8.4)
+├── meter-renderer.js                       # 渲染层构建产物 (0.8.5)
 ├── src/renderer/                           # 渲染层源码
 ├── scripts/                                # 构建、发布打包与基准测试
 ├── meter-collector.js                      # 本地会话归档读取与附件提取收集器

@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { loadAsarEngine, builtinAsar, getStateDir, findAsarPath } = require('./asar-engine');
+const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, findAsarPath } = require('./asar-engine');
 const { loadModulesConfig, saveModulesConfig, acquireFileLock } = require('./modules-config');
 const {
   TAGS,
@@ -148,6 +148,16 @@ async function tryHotInject() {
 }
 
 async function install(options = {}) {
+  if (options && typeof options === 'object') {
+    if (options.path === undefined) {
+      const misnamedKey = ['asarPath', 'targetPath', 'target', 'file', 'asar'].find(k => options[k] !== undefined);
+      if (misnamedKey) {
+        throw new Error(`无效的安装选项字段 "${misnamedKey}"：请使用 { path: "<app.asar>" } 指定安装目标，已拒绝回落至默认宿主路径。`);
+      }
+    } else if (options.path !== null && (typeof options.path !== 'string' || !options.path.trim())) {
+      throw new Error('安装选项 path 必须为非空字符串。');
+    }
+  }
   const customPathIdx = process.argv.indexOf('--path');
   const customPath = options.path || (customPathIdx >= 0 ? process.argv[customPathIdx + 1] : null);
   const customBackupIdx = process.argv.indexOf('--backup');
@@ -332,12 +342,23 @@ async function install(options = {}) {
     const snapshotFile = path.join(snapshotDir, `app-${version}-preinstall-${stamp}-${currentInstalledSha.slice(0, 8)}.asar`);
     fs.copyFileSync(installed, snapshotFile);
 
-    // 5. 建立长期官方原版备份（基于当前目标路径与宿主版本严格物理隔离）
+    // 5. 建立长期官方原版备份（基于当前目标路径与宿主版本严格物理隔离，若旧备份已损坏则从安全基线重建）
     const targetKey = crypto.createHash('sha256').update(path.resolve(installed)).digest('hex').slice(0, 8);
     const backup = path.join(backupDir, `app-${version}-${targetKey}-base.asar`);
 
-    if (!fs.existsSync(backup)) {
-      if (sourceArchive !== installed) {
+    const isReadableAsar = (filePath) => {
+      try {
+        if (!filePath || !fs.existsSync(filePath)) return false;
+        const pkgBuf = extractAsarFile(filePath, 'package.json');
+        const pkg = JSON.parse(pkgBuf.toString('utf8'));
+        return Boolean(pkg && pkg.name);
+      } catch {
+        return false;
+      }
+    };
+
+    if (!isReadableAsar(backup)) {
+      if (sourceArchive !== installed && isReadableAsar(sourceArchive)) {
         fs.copyFileSync(sourceArchive, backup);
       } else if (!extractAsarFile(sourceArchive, 'dist/utils.js').toString('utf8').includes('installContextMeter')) {
         fs.copyFileSync(sourceArchive, backup);
@@ -485,13 +506,9 @@ async function install(options = {}) {
       }
 
       const originalEntries = asar.listPackage(sourceArchive);
-      const hasUnpacked = originalEntries.some(file => {
-        const s = asar.statFile(sourceArchive, file.slice(1));
-        return s && s.unpacked;
-      });
-
-      if (hasUnpacked) {
-        await builtinAsar.createPackageWithOptions(staging, packed, { unpackDir: '**/chrome-devtools-mcp' });
+      const unpackedPaths = collectUnpackedPaths(asar, sourceArchive);
+      if (unpackedPaths.size > 0) {
+        await builtinAsar.createPackageWithOptions(staging, packed, { unpackedPaths });
       } else {
         await builtinAsar.createPackageWithOptions(staging, packed, {});
       }
@@ -522,11 +539,11 @@ async function install(options = {}) {
         ? previousManifest.previousInstalledBackup
         : path.join(backupDir, `pre-meter-${version}-${targetKey}.asar`);
 
-      if (fs.existsSync(backup) && !fs.existsSync(previousInstalledBackup)) {
+      if (isReadableAsar(backup) && !isReadableAsar(previousInstalledBackup)) {
         try { fs.copyFileSync(backup, previousInstalledBackup); } catch {}
       }
-      const previousInstalledSha256 = fs.existsSync(previousInstalledBackup) ? sha(fs.readFileSync(previousInstalledBackup)) : null;
-      const origSha = fs.existsSync(backup) ? sha(fs.readFileSync(backup)) : (previousInstalledSha256 || previousManifest?.originalSha256);
+      const previousInstalledSha256 = isReadableAsar(previousInstalledBackup) ? sha(fs.readFileSync(previousInstalledBackup)) : null;
+      const origSha = isReadableAsar(backup) ? sha(fs.readFileSync(backup)) : (previousInstalledSha256 || previousManifest?.originalSha256);
 
       const { PROJECT_VERSION } = require('./modules-config');
       const pkgVersion = PROJECT_VERSION;

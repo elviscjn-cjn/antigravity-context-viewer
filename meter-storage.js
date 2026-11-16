@@ -213,7 +213,72 @@ function safeReadJsonSync(targetPath, fallbackValue = null, options = {}) {
   }
 }
 
+const LOCK_SLEEP_BUF = typeof SharedArrayBuffer === 'function'
+  ? new Int32Array(new SharedArrayBuffer(4))
+  : null;
+
+function sleepSyncMs(ms) {
+  if (LOCK_SLEEP_BUF) {
+    try {
+      Atomics.wait(LOCK_SLEEP_BUF, 0, 0, ms);
+      return;
+    } catch {}
+  }
+  const until = Date.now() + ms;
+  while (Date.now() < until) {}
+}
+
+/**
+ * 跨进程文件互斥锁（同步版本，用于协调多进程读-改-写账本，避免丢失更新）
+ */
+function acquireSyncFileLock(targetPath, timeoutMs = 15000) {
+  const resolved = path.resolve(targetPath);
+  const lockFile = `${resolved}.lock`;
+  try { fs.mkdirSync(path.dirname(lockFile), { recursive: true }); } catch {}
+  const start = Date.now();
+  while (true) {
+    try {
+      const fd = fs.openSync(lockFile, 'wx');
+      fs.writeFileSync(fd, `${process.pid}:${Date.now()}`, 'utf8');
+      fs.closeSync(fd);
+      return {
+        lockFile,
+        release: () => {
+          try { fs.unlinkSync(lockFile); } catch {}
+        }
+      };
+    } catch {
+      if (Date.now() - start >= timeoutMs) {
+        throw new Error(`获取文件写锁超时 (${lockFile})`);
+      }
+      try {
+        const content = fs.readFileSync(lockFile, 'utf8');
+        const pid = parseInt(String(content).split(':')[0], 10);
+        if (pid && !isNaN(pid)) {
+          let running = true;
+          try { process.kill(pid, 0); } catch { running = false; }
+          if (!running) {
+            try { fs.unlinkSync(lockFile); } catch {}
+            continue;
+          }
+        }
+      } catch {}
+      sleepSyncMs(12);
+    }
+  }
+}
+
+function withFileLockSync(targetPath, fn, timeoutMs = 15000) {
+  const lock = acquireSyncFileLock(targetPath, timeoutMs);
+  try {
+    return fn();
+  } finally {
+    lock.release();
+  }
+}
+
 module.exports = {
   safeWriteJsonSync,
-  safeReadJsonSync
+  safeReadJsonSync,
+  withFileLockSync
 };

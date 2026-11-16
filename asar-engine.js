@@ -115,7 +115,12 @@ const builtinAsar = {
     const rawFs = getRawFs();
     let offset = 0;
     const chunks = [];
-    const unpackMatcher = options.unpackDir ? (relPosix => relPosix.includes('chrome-devtools-mcp')) : () => false;
+    const unpackedSet = options.unpackedPaths instanceof Set ? options.unpackedPaths : null;
+    const unpackMatcher = unpackedSet
+      ? (relPosix => unpackedSet.has(relPosix))
+      : (typeof options.unpackMatcher === 'function'
+        ? options.unpackMatcher
+        : (options.unpackDir ? (relPosix => relPosix.includes('chrome-devtools-mcp')) : () => false));
 
     function build(currentDir, relPosix) {
       const files = {};
@@ -279,4 +284,23 @@ function findAsarPath(customPath) {
   throw new Error('Could not auto-detect Antigravity installation (app.asar). Use --path <path-to-app.asar>.');
 }
 
-module.exports = { loadAsarEngine, builtinAsar, getRawFs, getStateDir, getAppDataDir, findAsarPath };
+/**
+ * 从源 ASAR 归档收集所有带有 unpacked 标记的 POSIX 相对路径集合，供重打包精确复刻
+ */
+function collectUnpackedPaths(asarLib, archivePath) {
+  const unpacked = new Set();
+  if (!asarLib || typeof asarLib.listPackage !== 'function') return unpacked;
+  try {
+    const entries = asarLib.listPackage(archivePath);
+    for (const file of entries) {
+      const relWin = file.startsWith('/') || file.startsWith('\\') ? file.slice(1) : file;
+      const stat = asarLib.statFile(archivePath, relWin);
+      if (stat && stat.unpacked) {
+        unpacked.add(relWin.replace(/\\/g, '/'));
+      }
+    }
+  } catch {}
+  return unpacked;
+}
+
+module.exports = { loadAsarEngine, builtinAsar, collectUnpackedPaths, getRawFs, getStateDir, getAppDataDir, findAsarPath };

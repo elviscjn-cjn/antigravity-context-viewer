@@ -14,9 +14,11 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const { getStateDir } = require('./asar-engine');
+const { safeWriteJsonSync } = require('./meter-storage');
+const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
-const SCHEMA_VERSION = '0.8.4';
-const PROJECT_VERSION = '0.8.4';
+const SCHEMA_VERSION = '0.8.5';
+const PROJECT_VERSION = '0.8.5';
 
 const DEFAULT_CONFIG = {
   schemaVersion: SCHEMA_VERSION,
@@ -130,40 +132,98 @@ function detectAndMigrateLegacyConfigs(options = {}) {
   };
 }
 
+function isPlainObject(val) {
+  return Boolean(val && typeof val === 'object' && !Array.isArray(val));
+}
+
+function validateModulesSchema(parsed) {
+  if (!isPlainObject(parsed)) return { ok: false, error: '配置文件根节点必须是 JSON 对象' };
+  if (!isPlainObject(parsed.modules)) return { ok: false, error: '配置文件缺少有效的 modules 对象' };
+  const mods = parsed.modules;
+  for (const key of ['meter', 'chinese', 'proxy', 'enhance']) {
+    if (mods[key] !== undefined && !isPlainObject(mods[key])) {
+      return { ok: false, error: `配置文件中 modules.${key} 字段格式非法` };
+    }
+  }
+  if (mods.proxy) {
+    if (mods.proxy.enabled !== undefined && typeof mods.proxy.enabled !== 'boolean') {
+      return { ok: false, error: '配置文件中 modules.proxy.enabled 必须为布尔值' };
+    }
+    if (mods.proxy.proxyUrl !== undefined && mods.proxy.proxyUrl !== null && typeof mods.proxy.proxyUrl !== 'string') {
+      return { ok: false, error: '配置文件中 modules.proxy.proxyUrl 必须为字符串' };
+    }
+  }
+  if (mods.chinese) {
+    if (mods.chinese.enabled !== undefined && typeof mods.chinese.enabled !== 'boolean') {
+      return { ok: false, error: '配置文件中 modules.chinese.enabled 必须为布尔值' };
+    }
+    if (mods.chinese.language !== undefined && mods.chinese.language !== null && typeof mods.chinese.language !== 'string') {
+      return { ok: false, error: '配置文件中 modules.chinese.language 必须为字符串' };
+    }
+  }
+  return { ok: true };
+}
+
+function attachConfigCorruptionMeta(target, cfgPath, errorMsg) {
+  Object.defineProperties(target, {
+    __configCorrupted: { value: true, enumerable: false, configurable: true },
+    __configError: { value: errorMsg, enumerable: false, configurable: true },
+    __corruptedConfigPath: { value: cfgPath, enumerable: false, configurable: true }
+  });
+  return target;
+}
+
 /**
- * 读取统一模块配置，自动合并默认值与旧版迁移记录
+ * 读取统一模块配置；配置文件不存在时迁移旧版，已存在但损坏时 fail-closed 并保留损坏原件
  */
 function loadModulesConfig(options = {}) {
   const cfgPath = getModulesConfigPath(options);
-  let current = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  const current = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 
   if (fs.existsSync(cfgPath)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      if (parsed && parsed.modules) {
-        current.modules.meter = Object.assign({}, DEFAULT_CONFIG.modules.meter, parsed.modules.meter || {});
-        current.modules.chinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, parsed.modules.chinese || {});
-        current.modules.chinese.language = normalizeClientLanguage(
-          parsed.modules.chinese?.language,
-          current.modules.chinese.enabled === true
-        );
-        current.modules.chinese.brandTitle = normalizeBrandTitle(parsed.modules.chinese?.brandTitle);
-        current.modules.chinese.enabled = current.modules.chinese.language === 'zh-CN';
-        current.modules.proxy = Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules.proxy || {});
-        current.modules.enhance = Object.assign(
-          {},
-          DEFAULT_CONFIG.modules.enhance,
-          parsed.modules.enhance || {},
-          {
-            targetBuilds: Object.assign({}, parsed.modules.enhance?.targetBuilds || {})
-          }
-        );
-        return current;
+      const rawText = fs.readFileSync(cfgPath, 'utf8');
+      if (!rawText || !rawText.trim()) {
+        return attachConfigCorruptionMeta(current, cfgPath, '配置文件为空，已保持模块默认关闭状态并保留原文件');
       }
-    } catch {}
+      const parsed = JSON.parse(rawText);
+      const schemaCheck = validateModulesSchema(parsed);
+      if (!schemaCheck.ok) {
+        return attachConfigCorruptionMeta(
+          current,
+          cfgPath,
+          `${schemaCheck.error}，已保持模块默认关闭状态并保留原文件`
+        );
+      }
+
+      current.modules.meter = Object.assign({}, DEFAULT_CONFIG.modules.meter, parsed.modules.meter || {});
+      current.modules.chinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, parsed.modules.chinese || {});
+      current.modules.chinese.language = normalizeClientLanguage(
+        parsed.modules.chinese?.language,
+        current.modules.chinese.enabled === true
+      );
+      current.modules.chinese.brandTitle = normalizeBrandTitle(parsed.modules.chinese?.brandTitle);
+      current.modules.chinese.enabled = current.modules.chinese.language === 'zh-CN';
+      current.modules.proxy = Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules.proxy || {});
+      current.modules.enhance = Object.assign(
+        {},
+        DEFAULT_CONFIG.modules.enhance,
+        parsed.modules.enhance || {},
+        {
+          targetBuilds: Object.assign({}, parsed.modules.enhance?.targetBuilds || {})
+        }
+      );
+      return current;
+    } catch (e) {
+      return attachConfigCorruptionMeta(
+        current,
+        cfgPath,
+        `配置文件解析失败 (${e?.message || 'JSON 语法错误'})，已保持模块默认关闭状态并保留原文件`
+      );
+    }
   }
 
-  // 若无统一配置，尝试识别旧独立版并平滑继承
+  // 仅当统一配置尚不存在时，才尝试识别旧独立版并平滑继承
   const legacy = detectAndMigrateLegacyConfigs(options);
   if (legacy.proxy) {
     current.modules.proxy.enabled = legacy.proxy.enabled;
@@ -182,12 +242,32 @@ function loadModulesConfig(options = {}) {
 }
 
 /**
- * 持久化保存统一配置
+ * 持久化保存统一配置（使用同目录临时文件 + 读回校验 + 原子替换，防止半写入文件；原文件已损坏时先留存 .corrupt.*.bak）
  */
 function saveModulesConfig(cfg, options = {}) {
   const cfgPath = getModulesConfigPath(options);
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+  if (fs.existsSync(cfgPath)) {
+    try {
+      const existingRaw = fs.readFileSync(cfgPath, 'utf8');
+      const parsed = existingRaw && existingRaw.trim() ? JSON.parse(existingRaw) : null;
+      if (!parsed || !validateModulesSchema(parsed).ok) {
+        const bakPath = `${cfgPath}.corrupt.${Date.now()}.bak`;
+        fs.copyFileSync(cfgPath, bakPath);
+      }
+    } catch {
+      try {
+        const bakPath = `${cfgPath}.corrupt.${Date.now()}.bak`;
+        fs.copyFileSync(cfgPath, bakPath);
+      } catch {}
+    }
+  }
+  const res = safeWriteJsonSync(cfgPath, cfg, {
+    validate: (data) => isPlainObject(data) && validateModulesSchema(data).ok
+  });
+  if (!res.ok) {
+    throw new Error(`保存模块配置失败 (${res.phase || 'write'}): ${res.error || '未知错误'}`);
+  }
 }
 
 /**
@@ -291,31 +371,15 @@ async function testProxyHealth(proxyUrlStr) {
     testedAt: new Date().toISOString()
   };
 
-  if (!proxyUrlStr || typeof proxyUrlStr !== 'string' || !proxyUrlStr.trim()) {
-    report.error = '代理地址为空或格式无效';
+  const parsedCheck = parseAndValidateProxyUrl(proxyUrlStr);
+  if (!parsedCheck.ok) {
+    report.error = parsedCheck.error;
     return report;
   }
-
-  let u = null;
-  try {
-    u = new URL(proxyUrlStr.trim());
-    if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(u.protocol)) {
-      report.error = `不支持的代理协议: ${u.protocol}`;
-      return report;
-    }
-    const portNum = u.port ? Number(u.port) : (u.protocol === 'https:' ? 443 : (u.protocol.startsWith('socks') ? 1080 : 80));
-    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
-      report.error = `代理端口号无效: ${u.port || ''}`;
-      return report;
-    }
-    report.configValid = true;
-  } catch (e) {
-    report.error = `代理地址格式错误: ${e.message}`;
-    return report;
-  }
-
-  const isSocks = u.protocol === 'socks5:' || u.protocol === 'socks5h:';
-  const port = Number(u.port) || (u.protocol === 'https:' ? 443 : (isSocks ? 1080 : 80));
+  report.configValid = true;
+  const u = new URL(parsedCheck.value);
+  const isSocks = parsedCheck.isSocks;
+  const port = parsedCheck.port;
 
   // 阶段 2: 本地代理端口可达性检测
   try {
@@ -455,6 +519,18 @@ function inspectDiskModules(customPath = null, options = {}) {
   const rawFs = typeof getRawFs === 'function' ? getRawFs() : fs;
   let asarPath = null;
   try { asarPath = findAsarPath(customPath); } catch {}
+  if ((!asarPath || !rawFs.existsSync(asarPath)) && !customPath) {
+    try {
+      const manifestPath = path.join(resolveModulesStateDir(options), 'installation.json');
+      if (rawFs.existsSync(manifestPath)) {
+        const m = JSON.parse(rawFs.readFileSync(manifestPath, 'utf8'));
+        const recPath = m && (m.installed || m.targetPath);
+        if (typeof recPath === 'string' && recPath.trim() && rawFs.existsSync(recPath.trim())) {
+          asarPath = recPath.trim();
+        }
+      }
+    } catch {}
+  }
   if (!asarPath || !rawFs.existsSync(asarPath)) {
     return {
       found: false,
@@ -640,6 +716,7 @@ module.exports = {
   DEFAULT_CONFIG,
   normalizeBrandTitle,
   normalizeClientLanguage,
+  parseAndValidateProxyUrl,
   getModulesConfigPath,
   loadModulesConfig,
   saveModulesConfig,

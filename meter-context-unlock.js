@@ -2642,6 +2642,19 @@ let unlockWorkerDisabled = false;
 let unlockWorkerReqId = 1;
 const unlockWorkerPending = new Map();
 let unlockWorkerIdleTimer = null;
+let unlockWorkerScriptPath = __filename;
+let unlockWorkerConsecutiveFailures = 0;
+const UNLOCK_WORKER_TIMEOUT_MS = 45000;
+const UNLOCK_WORKER_MAX_FAILURES = 3;
+
+function clearAllUnlockWorkerPending(targetWorker = null, reasonResult = null) {
+  for (const [id, entry] of unlockWorkerPending.entries()) {
+    if (targetWorker && entry.worker !== targetWorker) continue;
+    unlockWorkerPending.delete(id);
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.resolve(reasonResult);
+  }
+}
 
 function canUseUnlockWorker(options = {}) {
   if (!isMainThread || unlockWorkerDisabled || options._inWorker === true || options.useMainThread === true) {
@@ -2696,9 +2709,19 @@ function scheduleUnlockWorkerIdleCleanup() {
   if (typeof unlockWorkerIdleTimer.unref === 'function') unlockWorkerIdleTimer.unref();
 }
 
-function getOrStartUnlockWorker() {
-  if (unlockWorkerInstance) return unlockWorkerInstance;
-  const w = new Worker(__filename, {
+function getOrStartUnlockWorker(workerScript = __filename) {
+  const targetScript = workerScript || __filename;
+  if (unlockWorkerInstance && unlockWorkerScriptPath === targetScript) {
+    return unlockWorkerInstance;
+  }
+  if (unlockWorkerInstance && unlockWorkerScriptPath !== targetScript) {
+    const oldW = unlockWorkerInstance;
+    unlockWorkerInstance = null;
+    clearAllUnlockWorkerPending(oldW, null);
+    try { oldW.terminate(); } catch {}
+  }
+  unlockWorkerScriptPath = targetScript;
+  const w = new Worker(targetScript, {
     workerData: { agUnlockWorker: true }
   });
   w.unref();
@@ -2707,49 +2730,81 @@ function getOrStartUnlockWorker() {
     const entry = unlockWorkerPending.get(msg.id);
     if (!entry) return;
     unlockWorkerPending.delete(msg.id);
+    if (entry.timer) clearTimeout(entry.timer);
+    if (msg.ok) unlockWorkerConsecutiveFailures = 0;
     scheduleUnlockWorkerIdleCleanup();
     if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result });
     else entry.resolve(null);
   });
   w.on('error', () => {
-    unlockWorkerDisabled = true;
     if (unlockWorkerInstance === w) unlockWorkerInstance = null;
-    for (const [id, entry] of unlockWorkerPending.entries()) {
-      unlockWorkerPending.delete(id);
-      entry.resolve(null);
+    unlockWorkerConsecutiveFailures += 1;
+    if (unlockWorkerConsecutiveFailures >= UNLOCK_WORKER_MAX_FAILURES) {
+      unlockWorkerDisabled = true;
     }
+    clearAllUnlockWorkerPending(w, null);
     try { w.terminate(); } catch {}
   });
-  w.on('exit', () => {
+  w.on('exit', (code) => {
     if (unlockWorkerInstance === w) unlockWorkerInstance = null;
-    for (const [id, entry] of unlockWorkerPending.entries()) {
-      unlockWorkerPending.delete(id);
-      entry.resolve(null);
+    if (code !== 0) {
+      let hadPending = false;
+      for (const entry of unlockWorkerPending.values()) {
+        if (entry.worker === w) { hadPending = true; break; }
+      }
+      if (hadPending) {
+        unlockWorkerConsecutiveFailures += 1;
+        if (unlockWorkerConsecutiveFailures >= UNLOCK_WORKER_MAX_FAILURES) {
+          unlockWorkerDisabled = true;
+        }
+      }
     }
+    clearAllUnlockWorkerPending(w, null);
   });
   unlockWorkerInstance = w;
   return w;
 }
 
-async function runUnlockWorkerTask(cmd, payload) {
+async function runUnlockWorkerTask(cmd, payload, workerOpts = {}) {
   try {
     if (unlockWorkerIdleTimer) {
       clearTimeout(unlockWorkerIdleTimer);
       unlockWorkerIdleTimer = null;
     }
-    const w = getOrStartUnlockWorker();
+    const targetScript = (typeof workerOpts._unlockWorkerScript === 'string' && workerOpts._unlockWorkerScript.trim())
+      ? workerOpts._unlockWorkerScript.trim()
+      : __filename;
+    const timeoutMs = (Number.isFinite(workerOpts.workerTimeoutMs) && workerOpts.workerTimeoutMs > 0)
+      ? workerOpts.workerTimeoutMs
+      : UNLOCK_WORKER_TIMEOUT_MS;
+    const w = getOrStartUnlockWorker(targetScript);
     const id = unlockWorkerReqId++;
     return await new Promise((resolve) => {
-      unlockWorkerPending.set(id, { resolve });
+      const timer = setTimeout(() => {
+        const entry = unlockWorkerPending.get(id);
+        if (!entry) return;
+        unlockWorkerPending.delete(id);
+        // 超时销毁卡死 Worker 并仅清属于该 Worker 的等待项，由后续队列按需重建而非永久禁用
+        if (unlockWorkerInstance === w) unlockWorkerInstance = null;
+        clearAllUnlockWorkerPending(w, null);
+        try { w.terminate(); } catch {}
+        resolve(null);
+      }, timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+      unlockWorkerPending.set(id, { resolve, timer, worker: w });
       try {
         w.postMessage({ id, cmd, payload, env: captureEnvSnapshot() });
       } catch {
+        clearTimeout(timer);
         unlockWorkerPending.delete(id);
         resolve(null);
       }
     });
   } catch {
-    unlockWorkerDisabled = true;
+    unlockWorkerConsecutiveFailures += 1;
+    if (unlockWorkerConsecutiveFailures >= UNLOCK_WORKER_MAX_FAILURES) {
+      unlockWorkerDisabled = true;
+    }
     return null;
   }
 }
@@ -2817,5 +2872,6 @@ module.exports = {
   enqueueUnlockTargetWrite,
   getUnlockBackupDir,
   loadGate3BSidecar,
-  saveGate3BSidecar
+  saveGate3BSidecar,
+  runUnlockWorkerTask
 };

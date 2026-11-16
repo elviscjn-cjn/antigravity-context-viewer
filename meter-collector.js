@@ -17,8 +17,8 @@ const origFsMethods = {
   statSync: fs.statSync,
   existsSync: fs.existsSync
 };
-const { safeWriteJsonSync, safeReadJsonSync } = require('./meter-storage');
-const { buildCliProxyEnv, detectProxyConfig } = require('./meter-proxy');
+const { safeWriteJsonSync, safeReadJsonSync, withFileLockSync } = require('./meter-storage');
+const { buildCliProxyEnv, detectProxyConfig, parseAndValidateProxyUrl, matchesNoProxy } = require('./meter-proxy');
 const {
   conversationWorkspaces,
   extractWorkspacePathFromUri,
@@ -569,7 +569,7 @@ async function collect(origin, id, options = {}) {
       let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
       if (!token) {
         const html = await request(origin, null, null, null, signal);
-        if (isSuperseded()) return { version: '0.8.4', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
         token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
         csrfTokenByOrigin.set(origin, token);
       }
@@ -588,7 +588,7 @@ async function collect(origin, id, options = {}) {
         }
       };
       const full = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 3 });
-      if (isSuperseded()) return { version: '0.8.4', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const trajectory = full.trajectory;
       if (!trajectory) throw new Error('未取得会话历史，无法完整统计');
       const wsPath = extractWorkspaceFromTrajectory(trajectory);
@@ -596,16 +596,16 @@ async function collect(origin, id, options = {}) {
       const steps = trajectory.steps || [];
       const expected = Number(full.numTotalSteps ?? steps.length);
       while (steps.length < expected) {
-        if (isSuperseded()) return { version: '0.8.4', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
         const page = await call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: steps.length, trajectoryVerbosity: 3 });
         if (!page.steps?.length) throw new Error(`历史仅取得 ${steps.length}/${expected} 步，扫描未完成`);
         steps.push(...page.steps);
       }
-      if (isSuperseded()) return { version: '0.8.4', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const session = analyzeSteps(steps);
       const stepCapabilities = extractObservedModelInfoFromSteps(steps);
       const attachments = await scanFiles(session.media, { signal });
-      if (isSuperseded()) return { version: '0.8.4', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const attachmentTotal = empty();
       for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
       const total = add({ ...session.total }, attachmentTotal);
@@ -669,16 +669,16 @@ async function collect(origin, id, options = {}) {
       ...(cachedHostUserStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
-    const result = { version: '0.8.4', conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const result = { version: '0.8.5', conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     if (isSuperseded()) {
       conversations.delete(key);
-      return { version: '0.8.4', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
     }
     setBoundedMap(conversations, key, { result, at: Date.now() }, CONVERSATIONS_CACHE_MAX_ENTRIES);
     return result;
     } catch (err) {
       if (isSuperseded() || (err && err.name === 'AbortError' && signal?.aborted)) {
-        return { version: '0.8.4', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       }
       throw err;
     }
@@ -1503,141 +1503,154 @@ function recordModelCalls(newCalls = [], options = {}) {
   if (!Array.isArray(newCalls) || !newCalls.length) return createRecordResult(true, false);
   const targetDir = typeof options === 'string' ? options : (options.ledgerPath || options.agDir);
   const fsOpt = (options && typeof options === 'object' && options.fs) ? { fs: options.fs } : undefined;
-  const ledger = loadPricingLedger(targetDir, fsOpt);
+  const resolvedLedgerPath = path.resolve(getPricingLedgerPath(targetDir));
 
-  if (ledger.__corrupted || ledger.__unreadable) {
-    const prefix = ledger.__corrupted
-      ? '账本已损坏，阻止空覆盖'
-      : `账本当前不可读 (${ledger.__error || 'I/O 异常'})，阻止覆盖`;
-    return createRecordResult(
-      false,
-      false,
-      `${prefix} (${ledger.__corruptedPath})`,
-      ledger.__guardPhase || (ledger.__corrupted ? 'corrupted_guard' : 'unreadable_guard'),
-      ledger.__code
-    );
-  }
-
-  // 第一阶段：每条传入记录仅按自身 targetKey 入表或同键合并，避免逐条贪心跨键绑定引发输入顺序依赖
-  const beforeCalls = ledger.calls || {};
-  const draftCalls = { ...beforeCalls };
-
-  for (const call of newCalls) {
-    if (!call || !call.callId) continue;
-    // 默认阻止测试样例和合成调用污染生产账本
-    if (!options.allowSynthetic && isSyntheticCall(call.callId, call)) continue;
-
-    const targetKey = String(call.callId);
-    const incomingFallback = parseStepFallbackKey(targetKey, call.cascadeId);
-    const callCidRaw = call.cascadeId || incomingFallback?.cascadeId;
-    const existing = draftCalls[targetKey];
-
-    if (!existing) {
-      const normalizedStep = extractCallStepNumbers(call, targetKey)[0] ?? null;
-      const uInc = getCallTokenBreakdown(call);
-      const dInfo = extractNormalizedDateInfo(call);
-      const incRev = extractSourceRevision(call);
-      const nextEntry = {
-        ...call,
-        callId: targetKey,
-        ...(callCidRaw && !call.cascadeId ? { cascadeId: callCidRaw } : {}),
-        ...(normalizedStep !== null && call.stepIndex == null ? { stepIndex: normalizedStep } : {}),
-        ...(call.totalTokens == null && uInc.tot > 0 ? { totalTokens: uInc.tot } : {}),
-        ...(dInfo.date ? { date: dInfo.date } : {}),
-        ...(dInfo.created_at ? { created_at: dInfo.created_at } : (dInfo.dateIsProvisional ? { created_at: null } : {})),
-        ...(dInfo.dateSource ? { dateSource: dInfo.dateSource } : {}),
-        dateIsProvisional: Boolean(dInfo.dateIsProvisional),
-        ...(incRev !== null ? { sourceRevision: incRev } : {}),
-        updatedAt: Date.now()
-      };
-      if (incRev === null) {
-        delete nextEntry.sourceRevision;
-      }
-      if (dInfo.date && dInfo.date !== call.date) {
-        const recalc = calculateRequestApiCost(nextEntry);
-        if (recalc.isPriced) {
-          nextEntry.modelKey = recalc.modelKey;
-          nextEntry.isPriced = true;
-          nextEntry.costUSD = recalc.costUSD ?? 0;
-        }
-      }
-      draftCalls[targetKey] = nextEntry;
-      continue;
+  const executeLocked = () => {
+    // 持锁期间强制失效内存缓存，确保跨进程场景读到前一进程刚落盘的最新账本状态
+    if (!fsOpt) {
+      ledgerCacheByPath.delete(normalizeLedgerKey(resolvedLedgerPath));
     }
+    const ledger = loadPricingLedger(targetDir, fsOpt);
 
-    const uExist = getCallTokenBreakdown(existing);
-    const uCall = getCallTokenBreakdown(call);
-    const usageCmp = compareCallUsage(uCall, uExist);
-    const existRev = extractSourceRevision(existing);
-    const callRev = extractSourceRevision(call);
-    const revCmp = compareSourceRevision(callRev, existRev);
-    const incomingIsStaleStatus = existing.status === 'final' && Boolean(call.status) && call.status !== 'final';
-    const isUsageRollback = incomingIsStaleStatus || (existing.status === 'final' && usageCmp < 0);
-    const existDateInfo = extractNormalizedDateInfo(existing);
-    const callDateInfo = extractNormalizedDateInfo(call);
-    const trustIncomingTranscriptDate = Boolean(options.trustTranscriptDate && callDateInfo.dateSource === 'transcript');
-    const adoptIncomingSameRankDate = callDateInfo.rank >= 2 &&
-      callDateInfo.rank === existDateInfo.rank &&
-      shouldAdoptSameRankAuthDate(existing, call, existDateInfo, callDateInfo, usageCmp, revCmp, trustIncomingTranscriptDate);
-    const sameRankAuthDateProgressed = adoptIncomingSameRankDate && (
-      callDateInfo.date !== existDateInfo.date ||
-      (callDateInfo.rank >= 3 && Boolean(callDateInfo.created_at) && callDateInfo.created_at !== existDateInfo.created_at)
-    );
-    const dateProgressed = (
-      callDateInfo.rank > existDateInfo.rank ||
-      sameRankAuthDateProgressed ||
-      (existing.date && existDateInfo.date && existing.date !== existDateInfo.date)
-    ) && Boolean(callDateInfo.date || existDateInfo.date);
-    const stateProgressed = existing.status !== 'final' && call.status === 'final';
-    const usageProgressed = !incomingIsStaleStatus && usageCmp > 0;
-    const revisionUsageProgressed = !isUsageRollback && usageCmp === 0 && revCmp > 0 && (
-      uCall.inp !== uExist.inp || uCall.cap !== uExist.cap || uCall.think !== uExist.think
-    );
-    const revisionMetaProgressed = !isUsageRollback && revCmp > 0 && callRev !== existRev;
-    const modelProgressed = getCollectorModelRank(call.model) > getCollectorModelRank(existing.model);
-    const speedProgressed = !hasSpeedMetrics(existing) && hasSpeedMetrics(call) && isValidSpeedSample(call);
-    const modelExactProgressed = !existing.modelExactId && Boolean(call.modelExactId);
-    const recalcExist = calculateRequestApiCost(existing);
-    const costOutOfSync = Boolean(recalcExist.isPriced) !== Boolean(existing.isPriced)
-      || (recalcExist.isPriced && Number(existing.costUSD || 0) !== Number(recalcExist.costUSD || 0));
-    const pricingProgressed = costOutOfSync || ((!existing.isPriced || !existing.costUSD) && Boolean((call.isPriced && call.costUSD > 0) || normalizeModelId(call.model || existing.model)));
-    const resolvedStepIndex = existing.stepIndex ?? call.stepIndex ?? extractCallStepNumbers(existing, targetKey)[0] ?? extractCallStepNumbers(call, targetKey)[0] ?? null;
-    const metaProgressed = (existing.stepIndex == null && resolvedStepIndex != null) || (!existing.cascadeId && Boolean(callCidRaw)) || modelExactProgressed;
-
-    if (modelProgressed || metaProgressed || dateProgressed || (!isUsageRollback && (stateProgressed || usageProgressed || revisionUsageProgressed || revisionMetaProgressed || pricingProgressed || speedProgressed))) {
-      draftCalls[targetKey] = mergeSameCallRecords(
-        existing,
-        call,
-        targetKey,
-        resolvedStepIndex,
-        !isUsageRollback && revCmp >= 0,
-        adoptIncomingSameRankDate
+    if (ledger.__corrupted || ledger.__unreadable) {
+      const prefix = ledger.__corrupted
+        ? '账本已损坏，阻止空覆盖'
+        : `账本当前不可读 (${ledger.__error || 'I/O 异常'})，阻止覆盖`;
+      return createRecordResult(
+        false,
+        false,
+        `${prefix} (${ledger.__corruptedPath})`,
+        ledger.__guardPhase || (ledger.__corrupted ? 'corrupted_guard' : 'unreadable_guard'),
+        ledger.__code
       );
     }
-  }
 
-  // 第二阶段：在完整候选集（既有记录 + 整批新入账记录）上统一执行无顺序依赖的充分证据跨键消解
-  reconcileConfirmableDuplicateStepCalls(draftCalls);
-  pruneExcessSpeedSamples(draftCalls);
+    // 第一阶段：每条传入记录仅按自身 targetKey 入表或同键合并，避免逐条贪心跨键绑定引发输入顺序依赖
+    const beforeCalls = ledger.calls || {};
+    const draftCalls = { ...beforeCalls };
 
-  const changed = Boolean(ledger.__hadDuplicateStepKeys) || hasCallsMapChanged(beforeCalls, draftCalls);
+    for (const call of newCalls) {
+      if (!call || !call.callId) continue;
+      // 默认阻止测试样例和合成调用污染生产账本
+      if (!options.allowSynthetic && isSyntheticCall(call.callId, call)) continue;
 
-  if (changed) {
-    const draftLedger = {
-      ...ledger,
-      calls: draftCalls,
-      updatedAt: new Date().toISOString()
-    };
-    const saveRes = savePricingLedger(draftLedger, targetDir, fsOpt);
-    if (!saveRes.ok) {
-      return createRecordResult(false, false, saveRes.error || '保存账本落盘失败', saveRes.phase, saveRes.code);
+      const targetKey = String(call.callId);
+      const incomingFallback = parseStepFallbackKey(targetKey, call.cascadeId);
+      const callCidRaw = call.cascadeId || incomingFallback?.cascadeId;
+      const existing = draftCalls[targetKey];
+
+      if (!existing) {
+        const normalizedStep = extractCallStepNumbers(call, targetKey)[0] ?? null;
+        const uInc = getCallTokenBreakdown(call);
+        const dInfo = extractNormalizedDateInfo(call);
+        const incRev = extractSourceRevision(call);
+        const nextEntry = {
+          ...call,
+          callId: targetKey,
+          ...(callCidRaw && !call.cascadeId ? { cascadeId: callCidRaw } : {}),
+          ...(normalizedStep !== null && call.stepIndex == null ? { stepIndex: normalizedStep } : {}),
+          ...(call.totalTokens == null && uInc.tot > 0 ? { totalTokens: uInc.tot } : {}),
+          ...(dInfo.date ? { date: dInfo.date } : {}),
+          ...(dInfo.created_at ? { created_at: dInfo.created_at } : (dInfo.dateIsProvisional ? { created_at: null } : {})),
+          ...(dInfo.dateSource ? { dateSource: dInfo.dateSource } : {}),
+          dateIsProvisional: Boolean(dInfo.dateIsProvisional),
+          ...(incRev !== null ? { sourceRevision: incRev } : {}),
+          updatedAt: Date.now()
+        };
+        if (incRev === null) {
+          delete nextEntry.sourceRevision;
+        }
+        if (dInfo.date && dInfo.date !== call.date) {
+          const recalc = calculateRequestApiCost(nextEntry);
+          if (recalc.isPriced) {
+            nextEntry.modelKey = recalc.modelKey;
+            nextEntry.isPriced = true;
+            nextEntry.costUSD = recalc.costUSD ?? 0;
+          }
+        }
+        draftCalls[targetKey] = nextEntry;
+        continue;
+      }
+
+      const uExist = getCallTokenBreakdown(existing);
+      const uCall = getCallTokenBreakdown(call);
+      const usageCmp = compareCallUsage(uCall, uExist);
+      const existRev = extractSourceRevision(existing);
+      const callRev = extractSourceRevision(call);
+      const revCmp = compareSourceRevision(callRev, existRev);
+      const incomingIsStaleStatus = existing.status === 'final' && Boolean(call.status) && call.status !== 'final';
+      const isUsageRollback = incomingIsStaleStatus || (existing.status === 'final' && usageCmp < 0);
+      const existDateInfo = extractNormalizedDateInfo(existing);
+      const callDateInfo = extractNormalizedDateInfo(call);
+      const trustIncomingTranscriptDate = Boolean(options.trustTranscriptDate && callDateInfo.dateSource === 'transcript');
+      const adoptIncomingSameRankDate = callDateInfo.rank >= 2 &&
+        callDateInfo.rank === existDateInfo.rank &&
+        shouldAdoptSameRankAuthDate(existing, call, existDateInfo, callDateInfo, usageCmp, revCmp, trustIncomingTranscriptDate);
+      const sameRankAuthDateProgressed = adoptIncomingSameRankDate && (
+        callDateInfo.date !== existDateInfo.date ||
+        (callDateInfo.rank >= 3 && Boolean(callDateInfo.created_at) && callDateInfo.created_at !== existDateInfo.created_at)
+      );
+      const dateProgressed = (
+        callDateInfo.rank > existDateInfo.rank ||
+        sameRankAuthDateProgressed ||
+        (existing.date && existDateInfo.date && existing.date !== existDateInfo.date)
+      ) && Boolean(callDateInfo.date || existDateInfo.date);
+      const stateProgressed = existing.status !== 'final' && call.status === 'final';
+      const usageProgressed = !incomingIsStaleStatus && usageCmp > 0;
+      const revisionUsageProgressed = !isUsageRollback && usageCmp === 0 && revCmp > 0 && (
+        uCall.inp !== uExist.inp || uCall.cap !== uExist.cap || uCall.think !== uExist.think
+      );
+      const revisionMetaProgressed = !isUsageRollback && revCmp > 0 && callRev !== existRev;
+      const modelProgressed = getCollectorModelRank(call.model) > getCollectorModelRank(existing.model);
+      const speedProgressed = !hasSpeedMetrics(existing) && hasSpeedMetrics(call) && isValidSpeedSample(call);
+      const modelExactProgressed = !existing.modelExactId && Boolean(call.modelExactId);
+      const recalcExist = calculateRequestApiCost(existing);
+      const costOutOfSync = Boolean(recalcExist.isPriced) !== Boolean(existing.isPriced)
+        || (recalcExist.isPriced && Number(existing.costUSD || 0) !== Number(recalcExist.costUSD || 0));
+      const pricingProgressed = costOutOfSync || ((!existing.isPriced || !existing.costUSD) && Boolean((call.isPriced && call.costUSD > 0) || normalizeModelId(call.model || existing.model)));
+      const resolvedStepIndex = existing.stepIndex ?? call.stepIndex ?? extractCallStepNumbers(existing, targetKey)[0] ?? extractCallStepNumbers(call, targetKey)[0] ?? null;
+      const metaProgressed = (existing.stepIndex == null && resolvedStepIndex != null) || (!existing.cascadeId && Boolean(callCidRaw)) || modelExactProgressed;
+
+      if (modelProgressed || metaProgressed || dateProgressed || (!isUsageRollback && (stateProgressed || usageProgressed || revisionUsageProgressed || revisionMetaProgressed || pricingProgressed || speedProgressed))) {
+        draftCalls[targetKey] = mergeSameCallRecords(
+          existing,
+          call,
+          targetKey,
+          resolvedStepIndex,
+          !isUsageRollback && revCmp >= 0,
+          adoptIncomingSameRankDate
+        );
+      }
     }
-    if (!targetDir) {
-      cachedTokenHistoryAt = 0;
-    }
-  }
 
-  return createRecordResult(true, changed);
+    // 第二阶段：在完整候选集（既有记录 + 整批新入账记录）上统一执行无顺序依赖的充分证据跨键消解
+    reconcileConfirmableDuplicateStepCalls(draftCalls);
+    pruneExcessSpeedSamples(draftCalls);
+
+    const changed = Boolean(ledger.__hadDuplicateStepKeys) || hasCallsMapChanged(beforeCalls, draftCalls);
+
+    if (changed) {
+      const draftLedger = {
+        ...ledger,
+        calls: draftCalls,
+        updatedAt: new Date().toISOString()
+      };
+      const saveRes = savePricingLedger(draftLedger, targetDir, fsOpt);
+      if (!saveRes.ok) {
+        return createRecordResult(false, false, saveRes.error || '保存账本落盘失败', saveRes.phase, saveRes.code);
+      }
+      if (!targetDir) {
+        cachedTokenHistoryAt = 0;
+      }
+    }
+
+    return createRecordResult(true, changed);
+  };
+
+  if (fsOpt) {
+    return executeLocked();
+  }
+  return withFileLockSync(resolvedLedgerPath, executeLocked);
 }
 
 // ============================================================================
@@ -2520,11 +2533,23 @@ function canUseHistoryWorker(options = {}) {
 }
 
 let historyWorkerDisabled = false;
+let historyWorkerConsecutiveErrors = 0;
 let historyWorkerInstance = null;
+let historyWorkerScriptPath = __filename;
 let historyWorkerIdleTimer = null;
 let historyWorkerReqId = 1;
 const historyWorkerPending = new Map();
 const HISTORY_WORKER_IDLE_MS = 45000;
+const DEFAULT_HISTORY_WORKER_TIMEOUT_MS = 45000;
+
+function clearAllHistoryWorkerPending(targetWorker = null, errReason = null) {
+  for (const [id, entry] of historyWorkerPending.entries()) {
+    if (targetWorker && entry.worker !== targetWorker) continue;
+    historyWorkerPending.delete(id);
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.resolve(errReason ? { _workerHandled: false, error: errReason } : null);
+  }
+}
 
 function scheduleHistoryWorkerIdleCleanup() {
   if (historyWorkerIdleTimer) {
@@ -2544,9 +2569,17 @@ function scheduleHistoryWorkerIdleCleanup() {
   if (typeof historyWorkerIdleTimer.unref === 'function') historyWorkerIdleTimer.unref();
 }
 
-function getOrStartHistoryWorker() {
-  if (historyWorkerInstance) return historyWorkerInstance;
-  const w = new Worker(__filename, {
+function getOrStartHistoryWorker(workerEntry = __filename) {
+  const targetScript = workerEntry || __filename;
+  if (historyWorkerInstance && historyWorkerScriptPath === targetScript) return historyWorkerInstance;
+  if (historyWorkerInstance && historyWorkerScriptPath !== targetScript) {
+    const oldW = historyWorkerInstance;
+    historyWorkerInstance = null;
+    clearAllHistoryWorkerPending(oldW, 'worker_replaced');
+    try { oldW.terminate(); } catch { }
+  }
+  historyWorkerScriptPath = targetScript;
+  const w = new Worker(targetScript, {
     workerData: { agCollectorHistoryWorker: true }
   });
   w.unref();
@@ -2555,25 +2588,36 @@ function getOrStartHistoryWorker() {
     const entry = historyWorkerPending.get(msg.id);
     if (!entry) return;
     historyWorkerPending.delete(msg.id);
+    if (entry.timer) clearTimeout(entry.timer);
+    historyWorkerConsecutiveErrors = 0;
     scheduleHistoryWorkerIdleCleanup();
     if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result });
     else entry.resolve({ _workerHandled: false, error: msg.error || 'Worker 执行失败' });
   });
-  w.on('error', () => {
-    historyWorkerDisabled = true;
-    if (historyWorkerInstance === w) historyWorkerInstance = null;
-    for (const [id, entry] of historyWorkerPending.entries()) {
-      historyWorkerPending.delete(id);
-      entry.resolve(null);
+  w.on('error', (err) => {
+    historyWorkerConsecutiveErrors++;
+    if (historyWorkerConsecutiveErrors >= 3) {
+      historyWorkerDisabled = true;
     }
+    if (historyWorkerInstance === w) historyWorkerInstance = null;
+    clearAllHistoryWorkerPending(w, err?.message || 'worker_error');
     try { w.terminate(); } catch { }
   });
-  w.on('exit', () => {
-    if (historyWorkerInstance === w) historyWorkerInstance = null;
-    for (const [id, entry] of historyWorkerPending.entries()) {
-      historyWorkerPending.delete(id);
-      entry.resolve(null);
+  w.on('exit', (code) => {
+    if (code !== 0) {
+      let hadPending = false;
+      for (const entry of historyWorkerPending.values()) {
+        if (entry.worker === w) { hadPending = true; break; }
+      }
+      if (hadPending) {
+        historyWorkerConsecutiveErrors++;
+        if (historyWorkerConsecutiveErrors >= 3) {
+          historyWorkerDisabled = true;
+        }
+      }
     }
+    if (historyWorkerInstance === w) historyWorkerInstance = null;
+    clearAllHistoryWorkerPending(w, code !== 0 ? `worker_exit_${code}` : null);
   });
   historyWorkerInstance = w;
   return w;
@@ -2600,7 +2644,7 @@ async function recordModelCallsAsync(newCalls = [], options = {}) {
       const workerResp = await runHistoryWorkerTask({
         newCalls,
         options: cloneCollectorOptionsForWorker(optsObj)
-      }, 'recordModelCalls');
+      }, 'recordModelCalls', optsObj);
       if (workerResp && workerResp._workerHandled) {
         const res = workerResp.result;
         if (res && res.changed) {
@@ -2619,25 +2663,39 @@ async function recordModelCallsAsync(newCalls = [], options = {}) {
   return task;
 }
 
-async function runHistoryWorkerTask(payload, cmd = 'collectTokenHistory') {
+async function runHistoryWorkerTask(payload, cmd = 'collectTokenHistory', taskOptions = {}) {
   try {
     if (historyWorkerIdleTimer) {
       clearTimeout(historyWorkerIdleTimer);
       historyWorkerIdleTimer = null;
     }
-    const w = getOrStartHistoryWorker();
+    const workerEntry = (taskOptions && taskOptions._historyWorkerScript) || __filename;
+    const timeoutMs = Number.isFinite(Number(taskOptions?.workerTimeoutMs)) && Number(taskOptions.workerTimeoutMs) > 0
+      ? Number(taskOptions.workerTimeoutMs)
+      : DEFAULT_HISTORY_WORKER_TIMEOUT_MS;
+    const w = getOrStartHistoryWorker(workerEntry);
     const id = historyWorkerReqId++;
     return await new Promise((resolve) => {
-      historyWorkerPending.set(id, { resolve });
+      const entry = { resolve, timer: null, worker: w };
+      entry.timer = setTimeout(() => {
+        if (!historyWorkerPending.has(id)) return;
+        historyWorkerPending.delete(id);
+        if (historyWorkerInstance === w) historyWorkerInstance = null;
+        clearAllHistoryWorkerPending(w, `Worker 任务超时 (${timeoutMs}ms)`);
+        try { w.terminate(); } catch { }
+        resolve({ _workerHandled: false, error: `Worker 任务超时 (${timeoutMs}ms)`, timedOut: true });
+      }, timeoutMs);
+      if (typeof entry.timer.unref === 'function') entry.timer.unref();
+      historyWorkerPending.set(id, entry);
       try {
         w.postMessage({ id, cmd, payload, env: captureCollectorEnvSnapshot() });
       } catch {
         historyWorkerPending.delete(id);
+        if (entry.timer) clearTimeout(entry.timer);
         resolve(null);
       }
     });
   } catch {
-    historyWorkerDisabled = true;
     return null;
   }
 }
@@ -3570,8 +3628,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     ? extraContext.prevAccountEmail
     : (collectTokenHistoryAsync._lastAccountEmail || null);
   const out = {
-    schemaVersion: '0.8.4',
-    version: '0.8.4',
+    schemaVersion: '0.8.5',
+    version: '0.8.5',
     accountScopeKey: currentAccountKey ? buildAccountScopeKey(currentAccountKey) : null,
     isAccountSwitched: Boolean(
       currentAccountKey &&
@@ -3723,7 +3781,7 @@ async function collectTokenHistoryAsync(options = {}) {
         livePlanStatus,
         prevAccountEmail,
         prevArchiveSig
-      });
+      }, 'collectTokenHistory', options);
       if (workerResp && workerResp._workerHandled && workerResp.result && workerResp.result.out) {
         result = workerResp.result;
       }
@@ -3822,8 +3880,8 @@ function collectTokenHistory(options = {}) {
   // 触发异步更新
   void collectTokenHistoryAsync(options);
   return (cachedTokenHistory && cachedTokenHistoryScope === scopeKey) ? cachedTokenHistory : {
-    schemaVersion: '0.8.4',
-    version: '0.8.4',
+    schemaVersion: '0.8.5',
+    version: '0.8.5',
     loading: true,
     updatedAt: '',
     firstUseDate: null,
@@ -3924,6 +3982,222 @@ function resolveNodeRuntime() {
   };
 }
 
+/**
+ * 通过 SOCKS5 (RFC 1928 / 1929) 建立到目标主机端口的 TCP 隧道（支持无认证及用户名密码认证）。
+ * 握手失败或超时后立即销毁底层 socket 并抛出明确错误。
+ */
+function openSocks5Tunnel(proxyParsed, targetHost, targetPort, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const net = require('net');
+    const socket = net.connect({ host: proxyParsed.hostname, port: proxyParsed.port });
+    let settled = false;
+    let stage = 'greeting';
+    let recvBuf = Buffer.alloc(0);
+
+    const timer = setTimeout(() => {
+      fail(new Error(`SOCKS5 代理握手超时 (${proxyParsed.hostname}:${proxyParsed.port}, ${timeoutMs}ms)`));
+    }, timeoutMs);
+
+    function cleanupListeners() {
+      clearTimeout(timer);
+      socket.removeListener('connect', onConnect);
+      socket.removeListener('data', onData);
+      socket.removeListener('error', onError);
+      socket.removeListener('close', onClose);
+    }
+
+    function fail(err) {
+      if (settled) return;
+      settled = true;
+      cleanupListeners();
+      try { socket.destroy(); } catch { }
+      reject(err);
+    }
+
+    function succeed(leftover) {
+      if (settled) return;
+      settled = true;
+      cleanupListeners();
+      if (leftover && leftover.length > 0) {
+        socket.unshift(leftover);
+      }
+      resolve(socket);
+    }
+
+    function sendConnectRequest() {
+      stage = 'connect';
+      const portBuf = Buffer.allocUnsafe(2);
+      portBuf.writeUInt16BE(Number(targetPort) || 443, 0);
+      let addrPart;
+      if (net.isIPv4(targetHost)) {
+        const octets = targetHost.split('.').map(n => Number(n));
+        addrPart = Buffer.from([0x01, ...octets]);
+      } else {
+        const hostBuf = Buffer.from(String(targetHost), 'utf8');
+        if (hostBuf.length === 0 || hostBuf.length > 255) {
+          return fail(new Error(`SOCKS5 目标主机名长度非法: ${targetHost}`));
+        }
+        addrPart = Buffer.concat([Buffer.from([0x03, hostBuf.length]), hostBuf]);
+      }
+      const reqPacket = Buffer.concat([Buffer.from([0x05, 0x01, 0x00]), addrPart, portBuf]);
+      socket.write(reqPacket);
+    }
+
+    function onConnect() {
+      const hasAuth = Boolean(proxyParsed.username || proxyParsed.password);
+      const greeting = hasAuth
+        ? Buffer.from([0x05, 0x02, 0x00, 0x02])
+        : Buffer.from([0x05, 0x01, 0x00]);
+      socket.write(greeting);
+    }
+
+    function onData(chunk) {
+      recvBuf = recvBuf.length ? Buffer.concat([recvBuf, chunk]) : chunk;
+      while (!settled) {
+        if (stage === 'greeting') {
+          if (recvBuf.length < 2) return;
+          const ver = recvBuf[0];
+          const method = recvBuf[1];
+          recvBuf = recvBuf.subarray(2);
+          if (ver !== 0x05) {
+            return fail(new Error(`SOCKS5 代理版本响应异常: 0x${ver.toString(16)}`));
+          }
+          if (method === 0x00) {
+            sendConnectRequest();
+            continue;
+          }
+          if (method === 0x02) {
+            stage = 'auth';
+            const uBuf = Buffer.from(decodeURIComponent(proxyParsed.username || ''), 'utf8');
+            const pBuf = Buffer.from(decodeURIComponent(proxyParsed.password || ''), 'utf8');
+            if (uBuf.length > 255 || pBuf.length > 255) {
+              return fail(new Error('SOCKS5 认证用户名或密码过长'));
+            }
+            const authPacket = Buffer.concat([
+              Buffer.from([0x01, uBuf.length]),
+              uBuf,
+              Buffer.from([pBuf.length]),
+              pBuf
+            ]);
+            socket.write(authPacket);
+            continue;
+          }
+          return fail(new Error(`SOCKS5 代理拒绝认证协商 (method=0x${method.toString(16)})`));
+        }
+
+        if (stage === 'auth') {
+          if (recvBuf.length < 2) return;
+          const authVer = recvBuf[0];
+          const status = recvBuf[1];
+          recvBuf = recvBuf.subarray(2);
+          if (authVer !== 0x01 || status !== 0x00) {
+            return fail(new Error(`SOCKS5 代理用户名密码认证失败 (status=${status})`));
+          }
+          sendConnectRequest();
+          continue;
+        }
+
+        if (stage === 'connect') {
+          if (recvBuf.length < 4) return;
+          const ver = recvBuf[0];
+          const rep = recvBuf[1];
+          const atyp = recvBuf[3];
+          if (ver !== 0x05) {
+            return fail(new Error(`SOCKS5 响应版本异常: 0x${ver.toString(16)}`));
+          }
+          if (rep !== 0x00) {
+            return fail(new Error(`SOCKS5 代理 CONNECT 失败 (reply=0x${rep.toString(16)})`));
+          }
+          let totalReplyLen = 0;
+          if (atyp === 0x01) totalReplyLen = 4 + 4 + 2;
+          else if (atyp === 0x04) totalReplyLen = 4 + 16 + 2;
+          else if (atyp === 0x03) {
+            if (recvBuf.length < 5) return;
+            totalReplyLen = 4 + 1 + recvBuf[4] + 2;
+          } else {
+            return fail(new Error(`SOCKS5 响应地址类型未知: 0x${atyp.toString(16)}`));
+          }
+          if (recvBuf.length < totalReplyLen) return;
+          const leftover = recvBuf.subarray(totalReplyLen);
+          succeed(leftover);
+          return;
+        }
+        return;
+      }
+    }
+
+    function onError(err) {
+      fail(new Error(`SOCKS5 代理连接失败: ${err?.message || String(err)}`));
+    }
+    function onClose() {
+      fail(new Error('SOCKS5 代理连接在握手完成前意外关闭'));
+    }
+
+    socket.on('connect', onConnect);
+    socket.on('data', onData);
+    socket.on('error', onError);
+    socket.on('close', onClose);
+  });
+}
+
+/**
+ * 通过 HTTP / HTTPS 代理 CONNECT 方法建立 TLS 隧道。
+ * CONNECT 失败、返回非 200 或超时均直接 reject，不静默回落直连。
+ */
+function openHttpConnectTunnel(proxyParsed, targetHost, targetPort, timeoutMs, proxyTlsOpts = {}) {
+  return new Promise((resolve, reject) => {
+    const httpMod = proxyParsed.protocol === 'https:' ? https : require('http');
+    let settled = false;
+    const reqHeaders = {};
+    if (proxyParsed.username || proxyParsed.password) {
+      const cred = `${decodeURIComponent(proxyParsed.username || '')}:${decodeURIComponent(proxyParsed.password || '')}`;
+      reqHeaders['Proxy-Authorization'] = `Basic ${Buffer.from(cred, 'utf8').toString('base64')}`;
+    }
+    const connectOpts = {
+      host: proxyParsed.hostname,
+      port: proxyParsed.port,
+      method: 'CONNECT',
+      path: `${targetHost}:${targetPort}`,
+      headers: reqHeaders
+    };
+    if (proxyParsed.protocol === 'https:') {
+      if (proxyTlsOpts.ca) connectOpts.ca = proxyTlsOpts.ca;
+      if (typeof proxyTlsOpts.rejectUnauthorized === 'boolean') {
+        connectOpts.rejectUnauthorized = proxyTlsOpts.rejectUnauthorized;
+      }
+    }
+
+    const connectReq = httpMod.request(connectOpts);
+    const finishErr = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
+    connectReq.on('connect', (res, socket) => {
+      if (settled) {
+        try { socket.destroy(); } catch { }
+        return;
+      }
+      if (res.statusCode === 200) {
+        settled = true;
+        resolve(socket);
+      } else {
+        try { socket.destroy(); } catch { }
+        finishErr(new Error(`HTTP 代理 CONNECT 失败: HTTP ${res.statusCode}`));
+      }
+    });
+    connectReq.on('error', err => {
+      finishErr(new Error(`HTTP 代理连接失败: ${err?.message || String(err)}`));
+    });
+    connectReq.setTimeout(timeoutMs, () => {
+      try { connectReq.destroy(); } catch { }
+      finishErr(new Error(`HTTP 代理 CONNECT 超时 (${timeoutMs}ms)`));
+    });
+    connectReq.end();
+  });
+}
+
 function requestGithubUrl(rawUrl, options = {}) {
   return new Promise((resolve, reject) => {
     try {
@@ -3943,7 +4217,7 @@ function requestGithubUrl(rawUrl, options = {}) {
         }
       }
       const headers = Object.assign({
-        'User-Agent': 'AntigravityContextMeter/0.8.4',
+        'User-Agent': 'AntigravityContextMeter/0.8.5',
         'Accept': isApiHost ? 'application/vnd.github.v3+json' : (options.accept || '*/*')
       }, rawHeaders);
       const token = options.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -3951,38 +4225,40 @@ function requestGithubUrl(rawUrl, options = {}) {
         headers.Authorization = `Bearer ${String(token).trim()}`;
       }
 
-      const finishResolve = val => { resolve(val); };
-      const finishReject = err => { reject(err); };
-      const proxyInfo = options.useProxy === false ? null : detectProxyConfig();
-      if (proxyInfo && proxyInfo.enabled && proxyInfo.httpProxy) {
-        try {
-          const proxyUrl = new URL(proxyInfo.httpProxy);
-          const http = require('http');
-          const connectReq = http.request({
-            host: proxyUrl.hostname,
-            port: Number(proxyUrl.port) || 80,
-            method: 'CONNECT',
-            path: `${parsedUrl.hostname}:${parsedUrl.port || 443}`
-          });
-          connectReq.on('connect', (res, socket) => {
-            if (res.statusCode === 200) {
-              doRequest(socket);
-            } else {
-              try { socket.destroy(); } catch { }
-              doRequest(null);
-            }
-          });
-          connectReq.on('error', () => doRequest(null));
-          connectReq.setTimeout(timeoutMs, () => {
-            connectReq.destroy();
-            doRequest(null);
-          });
-          connectReq.end();
-          return;
-        } catch {
-          doRequest(null);
-          return;
+      let settledOuter = false;
+      const finishResolve = val => {
+        if (settledOuter) return;
+        settledOuter = true;
+        resolve(val);
+      };
+      const finishReject = err => {
+        if (settledOuter) return;
+        settledOuter = true;
+        reject(err);
+      };
+
+      const proxyInfo = options.useProxy === false
+        ? null
+        : detectProxyConfig(options.proxyConfigOptions || {});
+
+      if (proxyInfo && proxyInfo.enabled && proxyInfo.httpProxy && !matchesNoProxy(parsedUrl.hostname, proxyInfo.noProxy)) {
+        const parsedProxy = parseAndValidateProxyUrl(proxyInfo.httpProxy);
+        if (!parsedProxy.ok) {
+          return finishReject(new Error(`代理配置无效: ${parsedProxy.error || '无法解析代理地址'}`));
         }
+        const targetPort = Number(parsedUrl.port) || 443;
+        const tunnelPromise = (parsedProxy.protocol === 'socks5:' || parsedProxy.protocol === 'socks5h:')
+          ? openSocks5Tunnel(parsedProxy, parsedUrl.hostname, targetPort, timeoutMs)
+          : openHttpConnectTunnel(parsedProxy, parsedUrl.hostname, targetPort, timeoutMs, {
+              ca: options.proxyCa || options.ca,
+              rejectUnauthorized: options.proxyRejectUnauthorized
+            });
+        // 代理已启用且未命中绕过规则时，隧道失败必须立即报错，绝不静默改走直连
+        tunnelPromise.then(
+          socket => doRequest(socket),
+          err => finishReject(err)
+        );
+        return;
       }
 
       doRequest(null);
@@ -4009,12 +4285,21 @@ function requestGithubUrl(rawUrl, options = {}) {
           method: options.method || 'GET',
           headers
         };
+        if (options.ca) reqOpts.ca = options.ca;
+        if (typeof options.rejectUnauthorized === 'boolean') {
+          reqOpts.rejectUnauthorized = options.rejectUnauthorized;
+        }
         if (tunnelSocket) {
           const tls = require('tls');
           reqOpts.agent = false;
           reqOpts.createConnection = () => {
             tunnelConsumed = true;
-            return tls.connect({ socket: tunnelSocket, servername: parsedUrl.hostname });
+            const tlsOpts = { socket: tunnelSocket, servername: parsedUrl.hostname };
+            if (options.ca) tlsOpts.ca = options.ca;
+            if (typeof options.rejectUnauthorized === 'boolean') {
+              tlsOpts.rejectUnauthorized = options.rejectUnauthorized;
+            }
+            return tls.connect(tlsOpts);
           };
         }
 
@@ -4032,11 +4317,14 @@ function requestGithubUrl(rawUrl, options = {}) {
               if (options.streamTo) { try { options.streamTo.destroy(); } catch { } }
               return settleReject(new Error('GitHub 请求重定向次数过多 (>5)'));
             }
-            if (!nextUrlStr || !isAllowedDownloadRedirectUrl(nextUrlStr, parsedUrl.toString())) {
+            const redirectOk = typeof options._isAllowedRedirectUrl === 'function'
+              ? options._isAllowedRedirectUrl(nextUrlStr, parsedUrl.toString())
+              : isAllowedDownloadRedirectUrl(nextUrlStr, parsedUrl.toString());
+            if (!nextUrlStr || !redirectOk) {
               if (options.streamTo) { try { options.streamTo.destroy(); } catch { } }
               return settleReject(new Error(`下载重定向地址不受信任或协议不安全: ${rawLocation}`));
             }
-            // 剥离旧 headers 与 Authorization，按新目标域名重新决定是否附带凭据
+            // 剥离旧 headers 与 Authorization，按新目标域名重新决定是否附带凭据与代理绕过
             const nextHeaders = Object.assign({}, options.headers || {});
             for (const hKey of Object.keys(nextHeaders)) {
               if (hKey.toLowerCase() === 'authorization') delete nextHeaders[hKey];
@@ -4063,34 +4351,87 @@ function requestGithubUrl(rawUrl, options = {}) {
             return;
           }
           let totalBytes = 0;
-          let abortedForSize = false;
+          let abortedOrInvalid = false;
+          const rawContentLen = !res.headers['content-encoding'] ? res.headers['content-length'] : null;
+          const expectedContentLen = (rawContentLen != null && /^\d+$/.test(String(rawContentLen).trim()))
+            ? Number(String(rawContentLen).trim())
+            : null;
+
+          const validateResponseComplete = () => {
+            if (res.complete === false || res.aborted) {
+              return new Error('响应流未完整结束，连接可能已提前中断');
+            }
+            if (expectedContentLen !== null && totalBytes !== expectedContentLen) {
+              return new Error(`响应长度不完整 (期望 ${expectedContentLen} 字节，实际接收 ${totalBytes} 字节)`);
+            }
+            return null;
+          };
+
           if (options.streamTo) {
+            let resEnded = false;
+            let streamFinished = false;
+            const tryResolveStream = () => {
+              if (abortedOrInvalid || !resEnded || !streamFinished) return;
+              const integrityErr = validateResponseComplete();
+              if (integrityErr) {
+                abortedOrInvalid = true;
+                try { options.streamTo.destroy(integrityErr); } catch { }
+                return settleReject(integrityErr);
+              }
+              settleResolve();
+            };
+
             res.on('data', chunk => {
               totalBytes += chunk.length;
-              if (totalBytes > maxBytes && !abortedForSize) {
-                abortedForSize = true;
+              if (totalBytes > maxBytes && !abortedOrInvalid) {
+                abortedOrInvalid = true;
                 const err = new Error(`响应体超出大小限制 (>${maxBytes} 字节)`);
                 err.code = 'RESPONSE_TOO_LARGE';
                 if (typeof res.destroy === 'function') res.destroy(err);
                 try { options.streamTo.destroy(err); } catch { }
+                settleReject(err);
               }
             });
-            res.pipe(options.streamTo);
-            options.streamTo.on('finish', () => {
-              if (!abortedForSize) settleResolve();
-            });
-            options.streamTo.on('error', settleReject);
-            res.on('error', err => {
+            res.on('aborted', () => {
+              if (abortedOrInvalid) return;
+              abortedOrInvalid = true;
+              const err = new Error('下载响应流意外中断 (aborted)');
               try { options.streamTo.destroy(err); } catch { }
               settleReject(err);
             });
+            res.on('end', () => {
+              resEnded = true;
+              tryResolveStream();
+            });
+            res.on('close', () => {
+              if (!resEnded && !abortedOrInvalid && !res.complete) {
+                abortedOrInvalid = true;
+                const err = new Error('下载连接未完整结束即关闭');
+                try { options.streamTo.destroy(err); } catch { }
+                settleReject(err);
+              }
+            });
+            res.on('error', err => {
+              abortedOrInvalid = true;
+              try { options.streamTo.destroy(err); } catch { }
+              settleReject(err);
+            });
+            options.streamTo.on('finish', () => {
+              streamFinished = true;
+              tryResolveStream();
+            });
+            options.streamTo.on('error', err => {
+              abortedOrInvalid = true;
+              settleReject(err);
+            });
+            res.pipe(options.streamTo);
           } else {
             const chunks = [];
             res.on('data', chunk => {
               const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
               totalBytes += buf.length;
               if (totalBytes > maxBytes) {
-                abortedForSize = true;
+                abortedOrInvalid = true;
                 const err = new Error(`响应体超出大小限制 (>${maxBytes} 字节)`);
                 err.code = 'RESPONSE_TOO_LARGE';
                 if (typeof res.destroy === 'function') res.destroy(err);
@@ -4099,8 +4440,18 @@ function requestGithubUrl(rawUrl, options = {}) {
               }
               chunks.push(buf);
             });
+            res.on('aborted', () => {
+              if (abortedOrInvalid) return;
+              abortedOrInvalid = true;
+              settleReject(new Error('响应流意外中断 (aborted)'));
+            });
             res.on('end', () => {
-              if (abortedForSize) return;
+              if (abortedOrInvalid) return;
+              const integrityErr = validateResponseComplete();
+              if (integrityErr) {
+                abortedOrInvalid = true;
+                return settleReject(integrityErr);
+              }
               const data = Buffer.concat(chunks).toString('utf8');
               if (options.resolveWithMeta) {
                 settleResolve({ data, finalUrl: parsedUrl.toString(), statusCode: res.statusCode });
@@ -4108,8 +4459,14 @@ function requestGithubUrl(rawUrl, options = {}) {
                 settleResolve(data);
               }
             });
+            res.on('close', () => {
+              if (!abortedOrInvalid && !res.complete) {
+                abortedOrInvalid = true;
+                settleReject(new Error('响应连接未完整结束即关闭'));
+              }
+            });
             res.on('error', err => {
-              if (!abortedForSize) settleReject(err);
+              if (!abortedOrInvalid) settleReject(err);
             });
           }
         });
@@ -4358,7 +4715,7 @@ function shouldUseWebFallback(err, rawData) {
 }
 
 async function fetchOfficialReleasesWithFallback(options = {}) {
-  const effectiveCurrentVersion = options.currentVersion || '0.8.4';
+  const effectiveCurrentVersion = options.currentVersion || '0.8.5';
   const fetcher = options._requestGithubUrl || requestGithubUrl;
   const timeout = options.timeout || 8000;
   let primaryErr = null;
@@ -4434,7 +4791,7 @@ async function resolveAssetsForWebRelease(targetRelease, fetcher, timeout = 8000
 }
 
 async function checkUpdateAsync(options = {}) {
-  const runtimeVersion = options.currentVersion || '0.8.4';
+  const runtimeVersion = options.currentVersion || '0.8.5';
   const diskVersion = getInstalledMeterVersion(options);
   const effectiveCurrentVersion = (diskVersion && compareVersions(diskVersion, runtimeVersion) > 0)
     ? diskVersion
@@ -4584,7 +4941,7 @@ async function applyUpdateAsync(options = {}) {
   }
   isApplyingUpdate = true;
 
-  const currentVersion = options.currentVersion || '0.8.4';
+  const currentVersion = options.currentVersion || '0.8.5';
   let tmpDir = null;
   let checksumStream = null;
   let zipStream = null;
@@ -4712,7 +5069,7 @@ async function applyUpdateAsync(options = {}) {
         extractRes = { status: 1, error: err };
       }
     } else if (process.platform === 'win32') {
-      extractRes = spawnSync('tar', ['-xf', zipPath, '-C', extractDir], { stdio: 'ignore' });
+      extractRes = spawnSync('tar', ['-xf', zipPath, '-C', extractDir], { stdio: 'ignore', windowsHide: true });
     } else {
       extractRes = spawnSync('unzip', ['-q', zipPath, '-d', extractDir], { stdio: 'ignore' });
     }

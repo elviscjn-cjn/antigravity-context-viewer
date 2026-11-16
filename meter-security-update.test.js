@@ -1916,26 +1916,29 @@ test('专项复核 14：隔离集成测试：状态机三分模型、目标定�
     const cfgAfterFail = loadModulesConfig();
     assert.equal(cfgAfterFail.modules.chinese.enabled, false, '安装失败后配置必须依然保持 false');
 
-    // 3. 正常执行包含汉化门禁的安装（模拟用户通过 CLI 或成功安装器打入带门禁与字典的完整包）
-    await install({ path: targetAsar, modules: { chinese: { enabled: true } } });
-    const readyDisk = inspectDiskModules(targetAsar);
+    // 3. 在全新隔离会话目录与纯净宿主副本上安装完整汉化包，模拟“客户端已开启汉化启动”，再测切回启动态的一致性判断
+    process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state-boot-zh');
+    const targetAsarBootZh = path.join(tmpDir, 'app-boot-zh.asar');
+    fs.copyFileSync(host, targetAsarBootZh);
+    await install({ path: targetAsarBootZh, modules: { chinese: { enabled: true } } });
+    const readyDisk = inspectDiskModules(targetAsarBootZh);
     assert.equal(readyDisk.chinese, true, '此时磁盘已注入汉化');
     assert.equal(readyDisk.chineseReady, true, '此时磁盘深层核实完整运行时与字典已就绪');
     assert.equal(readyDisk.chineseStatus, 'ready');
 
-    // 4. 客户端内关闭汉化 (已有完整运行时通过配置门禁切换: config_toggled)
-    const resClose = await handleToggleModule(fakeEvent, 'chinese', false, { asarPath: targetAsar });
+    // 4. 客户端内关闭汉化 (偏离启动态 enabled: true，必须提示需重启客户端生效)
+    const resClose = await handleToggleModule(fakeEvent, 'chinese', false, { asarPath: targetAsarBootZh });
     assert.equal(resClose.ok, true);
     assert.equal(resClose.status, 'config_toggled', '必须命中 config_toggled 结果类型');
     assert.equal(resClose.restartRequired, true, '必须提示需重启客户端生效');
     const cfgClosed = loadModulesConfig();
     assert.equal(cfgClosed.modules.chinese.enabled, false, '配置已正确更新为关闭');
 
-    // 5. 客户端内重新开启汉化 (同样命中 config_toggled，无需重复改写 ASAR)
-    const resReOpen = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsar });
+    // 5. 客户端内重新开启汉化 (切回与启动态 enabled: true 一致，不误报需重启)
+    const resReOpen = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsarBootZh });
     assert.equal(resReOpen.ok, true);
     assert.equal(resReOpen.status, 'config_toggled');
-    assert.equal(resReOpen.restartRequired, true);
+    assert.equal(resReOpen.restartRequired, false, '切回与启动态一致后不得再误报需要重启');
     const cfgReOpen = loadModulesConfig();
     assert.equal(cfgReOpen.modules.chinese.enabled, true, '配置已正确更新为开启');
 

@@ -102,7 +102,7 @@ function ensureWindowsHelper() {
 
 function getVersion() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
-  return pkg.version || '0.8.4';
+  return pkg.version || '0.8.5';
 }
 
 function packagePlatform(plat, version) {

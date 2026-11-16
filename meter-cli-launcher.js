@@ -719,12 +719,13 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       const extraArgsStr = extraArgs.map(a => `"${String(a).replace(/"/g, '')}"`).join(' ');
       const batContent = [
         '@echo off',
+        'chcp 65001 >nul',
         'if defined AG_CLI_PROBE_FILE (',
         '  > "%AG_CLI_PROBE_FILE%" echo %CD%',
         ')',
         `"${cliInfo.exePath}" --model "${model}" ${extraArgsStr}`
       ].join('\r\n') + '\r\n';
-      fs.writeFileSync(runnerBat, batContent, 'ascii');
+      fs.writeFileSync(runnerBat, batContent, 'utf8');
 
       env.AG_CLI_TARGET_EXE = cliInfo.exePath;
       env.AG_CLI_TARGET_MODEL = model;

@@ -17,7 +17,7 @@ const {
   applyContextUnlockAsync,
   restoreContextUnlockAsync
 } = require('./meter-collector');
-const { normalizeProxyUrl } = require('./meter-proxy');
+const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
 
 const liveBootProxySnapshot = (() => {
@@ -42,22 +42,51 @@ const liveBootProxySnapshot = (() => {
   };
 })();
 
+const liveBootChineseSnapshots = new Map();
+
+function resolveLiveBootChineseSnapshot() {
+  const key = String(process.env.AG_METER_STATE_DIR || '__default__');
+  if (liveBootChineseSnapshots.has(key)) return liveBootChineseSnapshots.get(key);
+  let snap = { enabled: false, language: 'en' };
+  try {
+    const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
+    const cfg = loadModulesConfig();
+    const disk = inspectDiskModules();
+    const ch = cfg?.modules?.chinese || {};
+    const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
+    const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
+    snap = {
+      enabled: active,
+      language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
+    };
+  } catch {}
+  liveBootChineseSnapshots.set(key, snap);
+  return snap;
+}
+try { resolveLiveBootChineseSnapshot(); } catch {}
+
 function buildLiveRuntimeModulesMeta(cfg) {
   const diskProxy = cfg?.modules?.proxy || {};
   const diskEnabled = Boolean(diskProxy.enabled);
   const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
-  const diskBypass = String(diskProxy.bypassList || '').trim();
+  const diskBypass = normalizeBypassListForCompare(diskProxy.bypassList || '');
   const runtimeEnabled = Boolean(liveBootProxySnapshot.enabled);
   const runtimeUrl = normalizeProxyUrl(liveBootProxySnapshot.proxyUrl || '');
-  const runtimeBypass = String(liveBootProxySnapshot.bypassList || '').trim();
+  const runtimeBypass = normalizeBypassListForCompare(liveBootProxySnapshot.bypassList || '');
   const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
-    (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || (diskBypass && runtimeBypass && diskBypass !== runtimeBypass)));
+    (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || diskBypass !== runtimeBypass));
+  const bootZh = resolveLiveBootChineseSnapshot();
+  const diskCh = cfg?.modules?.chinese || {};
+  const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
   return {
     injectedAtStartup: Boolean(liveBootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
     runtimeProxyUrl: runtimeUrl || null,
-    runtimeBypassList: runtimeBypass || null,
-    proxyNeedsRestart
+    runtimeBypassList: liveBootProxySnapshot.bypassList || null,
+    proxyNeedsRestart,
+    chineseActive: Boolean(bootZh.enabled),
+    chineseBootLanguage: bootZh.language,
+    chineseNeedsRestart: diskZhActive !== Boolean(bootZh.enabled)
   };
 }
 
@@ -84,11 +113,8 @@ const ALLOWED_ROUTES = [
   '/restart-host'
 ];
 
-(async () => {
-  const api = await connect();
-  const secret = crypto.randomBytes(32).toString('hex');
-  const stamp = path.join(getStateDir(), '.live-session.json');
-  const server = http.createServer(async (req, res) => {
+function createLiveRequestHandler({ api, secret }) {
+  return async (req, res) => {
     const origin = req.headers.origin;
     if (origin !== api.origin) { res.writeHead(403); res.end(); return; }
     res.setHeader('Access-Control-Allow-Origin', api.origin);
@@ -225,7 +251,10 @@ const ALLOWED_ROUTES = [
             ok: true,
             data: cfg,
             disk: inspectDiskModules(request?.asarPath || null),
-            runtime: buildLiveRuntimeModulesMeta(cfg)
+            runtime: buildLiveRuntimeModulesMeta(cfg),
+            configCorrupted: Boolean(cfg.__configCorrupted),
+            configError: cfg.__configError || null,
+            corruptedConfigPath: cfg.__corruptedConfigPath || null
           }));
           return;
         }
@@ -247,8 +276,8 @@ const ALLOWED_ROUTES = [
 
           // 在热挂载模式或未持久化注入下尝试开启未注入模块时，给出可执行的外部补装指引，不假报切换成功
           if (targetEnable && !hasDiskCapability) {
-            const modLabel = mod === 'chinese' ? '汉化' : '免 TUN 代理';
-            const subCmd = mod === 'proxy' ? 'proxy:enable' : 'chinese:enable';
+            const modLabel = mod === 'chinese' ? '汉化' : (mod === 'proxy' ? '免 TUN 代理' : '核心监控');
+            const subCmd = mod === 'proxy' ? 'proxy:enable' : (mod === 'chinese' ? 'chinese:enable' : 'install');
             const cmdHint = process.platform === 'win32'
               ? `在插件目录打开终端运行 install.bat 或 node cli.js ${subCmd}`
               : `在插件目录打开终端运行 node cli.js ${subCmd}`;
@@ -265,6 +294,8 @@ const ALLOWED_ROUTES = [
             return;
           }
 
+          // 在写盘更改前先确保本生命周期启动汉化快照已捕获
+          resolveLiveBootChineseSnapshot();
           const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
           const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
           if (mod === 'chinese') {
@@ -275,23 +306,23 @@ const ALLOWED_ROUTES = [
             cfg.modules.chinese.lastUpdated = new Date().toISOString();
           } else {
             if (mod === 'proxy' && extra.proxyUrl !== undefined) {
-              try {
-                const cleanUrl = normalizeProxyUrl(extra.proxyUrl);
-                const u = new URL(cleanUrl);
-                const portNum = Number(u.port);
-                if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(u.protocol) || !u.hostname || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
-                  throw new Error('bad proxy');
-                }
-                cfg.modules.proxy.proxyUrl = cleanUrl;
-              } catch {
+              const check = parseAndValidateProxyUrl(extra.proxyUrl);
+              if (!check.ok) {
                 res.setHeader('Content-Type', 'application/json');
-                res.end(JSON.stringify({ ok: false, status: 'invalid_config', error: '代理地址格式无效，需包含有效协议(http/https/socks5)与端口(1-65535)', data: cfg, runtime: buildLiveRuntimeModulesMeta(cfg) }));
+                res.end(JSON.stringify({
+                  ok: false,
+                  status: 'invalid_config',
+                  error: check.error,
+                  data: cfg,
+                  runtime: buildLiveRuntimeModulesMeta(cfg)
+                }));
                 return;
               }
+              cfg.modules.proxy.proxyUrl = check.value;
             }
             cfg.modules[mod].enabled = targetEnable;
             if (mod === 'proxy') {
-              if (typeof extra.bypassList === 'string' && extra.bypassList.trim()) {
+              if (typeof extra.bypassList === 'string') {
                 cfg.modules.proxy.bypassList = extra.bypassList.trim();
               }
               cfg.modules.proxy.lastUpdated = new Date().toISOString();
@@ -303,9 +334,10 @@ const ALLOWED_ROUTES = [
             Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
             cfg.modules.chinese.language !== prevChineseLang
           );
+          const brandOnlyUpdate = mod === 'chinese' && extra.brandTitle !== undefined && !langChanged;
           const restartRequired = mod === 'proxy'
             ? Boolean(runtime.proxyNeedsRestart)
-            : (mod === 'chinese' && extra.brandTitle !== undefined && !langChanged ? false : true);
+            : (brandOnlyUpdate ? false : Boolean(runtime.chineseNeedsRestart));
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
             ok: true,
@@ -341,7 +373,14 @@ const ALLOWED_ROUTES = [
       }
       catch (e) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: false, error: e.message })); }
     });
-  });
+  };
+}
+
+async function startLiveHost() {
+  const api = await connect();
+  const secret = crypto.randomBytes(32).toString('hex');
+  const stamp = path.join(getStateDir(), '.live-session.json');
+  const server = http.createServer(createLiveRequestHandler({ api, secret }));
   server.listen(0, '127.0.0.1', () => {
     const info = { port: server.address().port, token: secret, pid: process.pid, origin: api.origin, startedAt: Date.now() };
     fs.writeFileSync(stamp, JSON.stringify(info));
@@ -352,4 +391,14 @@ const ALLOWED_ROUTES = [
     try { const a = await connect(); if (a.origin !== api.origin) throw new Error('App restarted'); misses = 0; }
     catch { if (++misses >= 3) { clearInterval(check); server.close(); process.exit(0); } }
   }, 10000);
-})().catch(e => { console.error(e.message); process.exitCode = 1; });
+}
+
+if (require.main === module) {
+  startLiveHost().catch(e => { console.error(e.message); process.exitCode = 1; });
+}
+
+module.exports = {
+  buildLiveRuntimeModulesMeta,
+  createLiveRequestHandler,
+  startLiveHost
+};

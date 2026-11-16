@@ -362,10 +362,27 @@
     if (parent && (shouldIgnoreElement(parent) || parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA')) return;
 
     var original = node.nodeValue;
+    // 如果节点曾被品牌三态 hidden 清空，当品牌切回 english / translated 时利用暂存原文无损恢复
+    if ((!original || !original.trim()) && node._agyHiddenOrigBrand) {
+      var modeNow = getBrandTitleMode();
+      if (modeNow !== 'hidden') {
+        var restoredText = applyBrandTitleToText(node._agyHiddenOrigBrand, parent) || node._agyHiddenOrigBrand;
+        var hLead = node._agyHiddenLead || '';
+        var hTrail = node._agyHiddenTrail || '';
+        node.nodeValue = hLead + restoredText + hTrail;
+        node._agyOriginal = node.nodeValue;
+        delete node._agyHiddenOrigBrand;
+        delete node._agyHiddenLead;
+        delete node._agyHiddenTrail;
+      } else {
+        node._agyOriginal = original || '';
+      }
+      return;
+    }
     if (!original) return;
 
-    // 如果节点已标记原始文本且未变化，直接 O(1) 瞬时退出
-    if (node._agyOriginal === original) return;
+    // 如果节点已标记原始文本且未变化，直接 O(1) 瞬时退出（品牌节点受三态模式动态影响，不得被此缓存短路）
+    if (node._agyOriginal === original && !node._agyIsBrandNode) return;
 
     var trimmed = original.trim();
     if (!trimmed) {
@@ -376,9 +393,20 @@
 
     var brandMapped = applyBrandTitleToText(trimmed, parent);
     if (brandMapped !== null) {
+      node._agyIsBrandNode = true;
       var bLead = original.match(/^\s*/)[0];
       var bTrail = original.match(/\s*$/)[0];
-      node.nodeValue = brandMapped === '' ? '' : (bLead + brandMapped + bTrail);
+      if (brandMapped === '') {
+        node._agyHiddenOrigBrand = trimmed;
+        node._agyHiddenLead = bLead;
+        node._agyHiddenTrail = bTrail;
+        node.nodeValue = '';
+      } else {
+        delete node._agyHiddenOrigBrand;
+        delete node._agyHiddenLead;
+        delete node._agyHiddenTrail;
+        node.nodeValue = bLead + brandMapped + bTrail;
+      }
       node._agyOriginal = node.nodeValue;
       if (parent) {
         var isExactBrandItem = Boolean(
@@ -737,6 +765,7 @@
     // 低频保底扫描：彻底阻断 50~60Hz 无限自旋死循环，改为每 15 秒配合 requestIdleCallback 执行一次低频保底扫描
     var idleScanScheduled = false;
     function scheduleIdleScan() {
+      if (!i18nEnabled && getBrandTitleMode() === 'english') return;
       if (idleScanScheduled) return;
       if (root.requestIdleCallback) {
         idleScanScheduled = true;

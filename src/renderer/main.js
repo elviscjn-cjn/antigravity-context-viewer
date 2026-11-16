@@ -6260,8 +6260,8 @@
     const curUrl = String(inputProxyUrl?.value ?? '').trim();
     const curBypass = String(inputProxyBypass?.value ?? '').trim();
     return Boolean(
-      (savedProxyUrl && curUrl && curUrl !== savedProxyUrl) ||
-      (savedProxyBypass && curBypass && curBypass !== savedProxyBypass)
+      (curUrl && curUrl !== savedProxyUrl) ||
+      (curBypass !== savedProxyBypass)
     );
   }
 
@@ -7362,6 +7362,9 @@
         return;
       }
       const cfg = res.data;
+      if (res.configCorrupted && res.configError) {
+        showEnhanceResultBox(false, () => translateBackendText(res.configError));
+      }
 
       currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
       currentBrandTitle = cfg.modules?.chinese?.brandTitle || 'english';
@@ -7463,8 +7466,16 @@
       if (inputProxyUrl && diskProxyUrl && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyUrl))) {
         inputProxyUrl.value = diskProxyUrl;
       }
-      if (inputProxyBypass && diskProxyBypass && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyBypass))) {
+      if (inputProxyBypass && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyBypass))) {
         inputProxyBypass.value = diskProxyBypass;
+      }
+      if (runtimeMeta) {
+        if (typeof runtimeMeta.chineseNeedsRestart === 'boolean') {
+          needsRestartAfterApply = Boolean(runtimeMeta.proxyNeedsRestart || runtimeMeta.chineseNeedsRestart);
+        } else if (runtimeMeta.proxyNeedsRestart) {
+          needsRestartAfterApply = true;
+        }
+        renderClientStatusBar();
       }
 
       if (proxyBadge) {
@@ -7549,13 +7560,19 @@
         const errPayload = res;
         showEnhanceResultBox(false, () => resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail'));
       } else {
-        needsRestartAfterApply = Boolean(res.restartRequired !== false);
+        needsRestartAfterApply = Boolean(res.restartRequired);
         renderClientStatusBar();
-        if (res.restartRequired !== false) {
+        if (res.restartRequired) {
           showEnhanceResultBox(
             true,
             () => t(wantChinese ? 'mod.zh.savedEnableRestart' : 'mod.zh.savedDisableRestart'),
             { needsHostRestart: true }
+          );
+        } else {
+          showEnhanceResultBox(
+            true,
+            () => translateBackendText(res.message || '已同步回当前运行状态，无需重启'),
+            { needsHostRestart: false }
           );
         }
       }
@@ -7595,7 +7612,7 @@
       await yieldForSettingsPaint();
       const res = await invokeModulesApi('toggle', 'proxy', Boolean(enableTarget), {
         proxyUrl: rawUrl || undefined,
-        bypassList: rawBypass || undefined
+        bypassList: rawBypass
       });
       if (!res || !res.ok) {
         const errPayload = res;
@@ -8992,7 +9009,7 @@
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
@@ -9103,7 +9120,7 @@
         throw new Error(t('update.noApi'));
       }
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl) vEl.textContent = `v${nextVer}`;
@@ -11875,7 +11892,7 @@
     }
   }
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.4',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5',
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();
