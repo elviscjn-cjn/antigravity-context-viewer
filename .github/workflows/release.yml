@@ -88,7 +88,8 @@ jobs:
             dist/release/*.zip
             dist/release/checksums.txt
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-rc.') }}
+          make_latest: ${{ contains(github.ref_name, '-rc.') && 'false' || 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
