@@ -213,6 +213,9 @@
       const myIds = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey]
         .filter(Boolean)
         .map(v => String(v).toLowerCase());
+      if (planStatus.tierKey === 'ultra' || myIds.some(id => id.includes('ultra'))) {
+        myIds.push('teams_tier_pro_ultimate', 'ultimate');
+      }
       const allowedLower = config.allowedTiers.map(v => String(v).toLowerCase());
       const hit = myIds.some(id => allowedLower.some(a => a === id || a.includes(id) || id.includes(a)));
       if (!hit) {
@@ -236,10 +239,14 @@
       ? (tagDesc || (!isDecorativeBadgeTag ? tagTitle : null))
       : (hasConfigNotice ? config.notice.trim() : null);
 
+    const unavailabilityReason = tierBlocked
+      ? (config.unavailabilityReason || tierReason || tagDesc || (!isDecorativeBadgeTag ? tagTitle : null) || '当前套餐无权访问该模型')
+      : (config.unavailabilityReason || tagDesc || tagTitle || tierReason || '当前套餐无权访问该模型');
+
     return {
       noPermission: explicitlyDisabled,
       unavailable: explicitlyDisabled,
-      reason: explicitlyDisabled ? (config.unavailabilityReason || tagDesc || tagTitle || tierReason || '当前套餐无权访问该模型') : null,
+      reason: explicitlyDisabled ? unavailabilityReason : null,
       noticeTitle: (noticeText && (isTagNotice || hasConfigNotice)) ? (tagTitle || 'Notice') : null,
       noticeText: noticeText || null
     };
@@ -1595,6 +1602,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: null,
         planName: '未知',
         email: null,
         region: '未知',
@@ -1621,6 +1629,7 @@
     const hasTierEvidence = Boolean(
       rawTierName ||
       userTier.id ||
+      planInfo.teamsTier ||
       planStatus.availablePromptCredits !== undefined ||
       planInfo.monthlyPromptCredits !== undefined
     );
@@ -1631,6 +1640,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: null,
         planName: '未知',
         email,
         region: '未知',
@@ -1691,6 +1701,7 @@
       tierKey,
       tierName: tierDisplayName,
       tierId: userTier.id || null,
+      teamsTier: planInfo.teamsTier || null,
       planName: planInfo.planName || tierDisplayName,
       email,
       region: '未知',
@@ -2097,6 +2108,7 @@
     let tierKey = 'unknown';
     let tierName = '未知';
     let tierId = null;
+    let teamsTier = null;
     let planName = '未知';
     let tierSource = 'unknown';
 
@@ -2105,6 +2117,7 @@
       tierKey = rawLive.tierKey;
       tierName = rawLive.tierName;
       tierId = rawLive.tierId;
+      teamsTier = rawLive.teamsTier || null;
       planName = rawLive.planName || rawLive.tierName;
       tierSource = 'live';
     } else if (effectiveCustom && effectiveCustom.tierName) {
@@ -2118,6 +2131,7 @@
       tierKey = cachedLive.tierKey;
       tierName = cachedLive.tierName;
       tierId = cachedLive.tierId;
+      teamsTier = cachedLive.teamsTier || null;
       planName = cachedLive.planName || cachedLive.tierName;
       tierSource = 'cached_live';
     }
@@ -2320,6 +2334,7 @@
       tierKey,
       tierName,
       tierId,
+      teamsTier,
       planName,
       email: currentEmail,
       accountRegion: country,

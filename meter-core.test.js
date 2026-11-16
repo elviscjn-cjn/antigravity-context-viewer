@@ -285,6 +285,8 @@ test('parseUserPlanStatus extracts Pro plan and credits correctly while keeping 
   assert.equal(plan.status, 'identified');
   assert.equal(plan.tierKey, 'pro');
   assert.equal(plan.tierName, 'Google AI Pro');
+  assert.equal(plan.tierId, 'g1-pro-tier');
+  assert.equal(plan.teamsTier, 'TEAMS_TIER_PRO');
   assert.equal(plan.planName, 'Pro');
   assert.equal(plan.email, 'test@example.com');
   assert.equal(plan.officialPriceMonthly, 19.99);
