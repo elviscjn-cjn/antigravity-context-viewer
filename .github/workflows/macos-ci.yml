@@ -1,0 +1,64 @@
+name: macOS Compatibility CI
+
+on:
+  push:
+    branches:
+      - "ci/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-macos:
+    name: Verify macOS (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Apple Silicon (arm64 / macos-15)
+            runner: macos-15
+          - label: Apple Silicon (arm64 / macos-14)
+            runner: macos-14
+          - label: Intel (x86_64 / macos-15-intel)
+            runner: macos-15-intel
+
+    steps:
+      - name: Inspect Runner Hardware & OS
+        run: |
+          uname -a
+          sw_vers
+          arch
+          sysctl -n machdep.cpu.brand_string || true
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run Full JS Test Suite & Renderer Build
+        run: npm test
+
+      - name: Run Python Attachment Scanner Tests
+        run: python3 -m unittest attachment_scan_test.py
+
+      - name: Run macOS Real Mach-O Codesign & Execution Verification (Isolated /tmp)
+        run: node scripts/macos-ci-verify.js
+
+      - name: Verify Package Manifest & Cross-Platform Build
+        run: |
+          node scripts/check-release-manifest.js
+          npm run pack
+          unzip -l dist/release/antigravity-context-viewer_*_darwin_arm64.zip | grep macos-binary-utils.js
+          unzip -l dist/release/antigravity-context-viewer_*_darwin_amd64.zip | grep macos-binary-utils.js
+          cat dist/release/checksums.txt
