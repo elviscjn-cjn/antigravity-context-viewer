@@ -2486,13 +2486,238 @@ let currentScanSequence = 0;
 const TRANSCRIPT_SKIP_DIRS = new Set(['steps', 'tasks', 'scratch', 'media', 'artifacts', 'node_modules', '.git', '__pycache__']);
 const transcriptFileCache = new Map();
 
+const IGNORED_WSL_DISTRO_RE = /^(?:docker-desktop(?:-data)?|rancher-desktop(?:-data)?|podman-machine(?:-[a-z0-9_-]+)?)$/i;
+const WSL_LXSS_REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss';
+
+function dedupeScanPaths(paths = [], platform = process.platform) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of paths) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const pathMod = (platform === 'win32' || trimmed.startsWith('\\\\')) ? path.win32 : path;
+    const resolved = pathMod.resolve(trimmed);
+    const key = (platform === 'win32' || resolved.startsWith('\\\\')) ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(resolved);
+  }
+  return out;
+}
+
+/**
+ * 解析 Windows 注册表 Lxss 导出内容，提取已安装且可用的 WSL 发行版
+ * @param {string} rawText
+ */
+function parseLxssRegistryOutput(rawText = '') {
+  if (typeof rawText !== 'string' || !rawText.trim()) return [];
+  const distros = [];
+  const seenNames = new Set();
+  let current = null;
+
+  const flush = () => {
+    if (!current || !current.name) return;
+    const name = current.name.trim();
+    if (!name || IGNORED_WSL_DISTRO_RE.test(name)) return;
+    if (current.state !== null && current.state !== 1) return;
+    const key = name.toLowerCase();
+    if (seenNames.has(key)) return;
+    seenNames.add(key);
+    distros.push({
+      name,
+      state: current.state,
+      version: current.version,
+      defaultUid: current.defaultUid
+    });
+  };
+
+  for (const line of rawText.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^(?:HKEY_CURRENT_USER|HKCU)\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\/i.test(trimmed)) {
+      flush();
+      current = { name: '', state: null, version: null, defaultUid: null };
+      continue;
+    }
+    if (!current) continue;
+    const nameMatch = trimmed.match(/^DistributionName\s+REG_SZ\s+(.+)$/i);
+    if (nameMatch) {
+      current.name = nameMatch[1].trim();
+      continue;
+    }
+    const stateMatch = trimmed.match(/^State\s+REG_DWORD\s+(?:0x([0-9a-f]+)|(\d+))$/i);
+    if (stateMatch) {
+      current.state = stateMatch[1] ? parseInt(stateMatch[1], 16) : parseInt(stateMatch[2], 10);
+      continue;
+    }
+    const verMatch = trimmed.match(/^Version\s+REG_DWORD\s+(?:0x([0-9a-f]+)|(\d+))$/i);
+    if (verMatch) {
+      current.version = verMatch[1] ? parseInt(verMatch[1], 16) : parseInt(verMatch[2], 10);
+      continue;
+    }
+    const uidMatch = trimmed.match(/^DefaultUid\s+REG_DWORD\s+(?:0x([0-9a-f]+)|(\d+))$/i);
+    if (uidMatch) {
+      current.defaultUid = uidMatch[1] ? parseInt(uidMatch[1], 16) : parseInt(uidMatch[2], 10);
+    }
+  }
+  flush();
+  return distros;
+}
+
+function listRegisteredWslDistros(options = {}) {
+  if (Array.isArray(options.wslDistros)) {
+    const out = [];
+    const seen = new Set();
+    for (const item of options.wslDistros) {
+      const rawName = typeof item === 'string' ? item : item?.name;
+      const name = typeof rawName === 'string' ? rawName.trim() : '';
+      if (!name || IGNORED_WSL_DISTRO_RE.test(name)) continue;
+      const state = typeof item === 'object' && item && item.state !== undefined ? Number(item.state) : null;
+      if (state !== null && Number.isFinite(state) && state !== 1) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        name,
+        state: Number.isFinite(state) ? state : null,
+        version: typeof item === 'object' && item ? (item.version ?? null) : null,
+        defaultUid: typeof item === 'object' && item ? (item.defaultUid ?? null) : null
+      });
+    }
+    return out;
+  }
+  const platform = options.platform || process.platform;
+  if (platform !== 'win32') return [];
+  try {
+    const res = spawnSync('reg.exe', ['query', WSL_LXSS_REG_KEY, '/s'], {
+      encoding: 'utf8',
+      timeout: 2500,
+      windowsHide: true
+    });
+    if (res.error || res.status !== 0 || !res.stdout) return [];
+    return parseLxssRegistryOutput(res.stdout);
+  } catch {
+    return [];
+  }
+}
+
+function resolveWslDistroUncRoot(distroName, options = {}) {
+  const fsApi = options.fs || fs;
+  const name = typeof distroName === 'string' ? distroName.trim() : '';
+  if (!name) return null;
+  for (const prefix of ['\\\\wsl.localhost', '\\\\wsl$']) {
+    const candidate = `${prefix}\\${name}`;
+    try {
+      if (fsApi.existsSync(path.win32.join(candidate, 'root')) || fsApi.existsSync(path.win32.join(candidate, 'home'))) {
+        return candidate;
+      }
+    } catch { }
+  }
+  return null;
+}
+
+function collectGeminiDirsFromLinuxRoot(rootDir, options = {}) {
+  const fsApi = options.fs || fs;
+  const platform = options.platform || process.platform;
+  const desktopDirs = [];
+  const cliDirs = [];
+  if (typeof rootDir !== 'string' || !rootDir.trim()) return { desktopDirs, cliDirs };
+  const pathMod = (platform === 'win32' || rootDir.startsWith('\\\\')) ? path.win32 : path;
+
+  const candidateHomes = [];
+  const rootHome = pathMod.join(rootDir, 'root');
+  try {
+    if (fsApi.existsSync(rootHome)) candidateHomes.push(rootHome);
+  } catch { }
+
+  const homeParent = pathMod.join(rootDir, 'home');
+  try {
+    if (fsApi.existsSync(homeParent)) {
+      for (const entry of fsApi.readdirSync(homeParent, { withFileTypes: true })) {
+        const sub = pathMod.join(homeParent, entry.name);
+        if (entry.isDirectory()) {
+          candidateHomes.push(sub);
+        } else if (entry.isSymbolicLink()) {
+          try {
+            if (fsApi.statSync(sub).isDirectory()) candidateHomes.push(sub);
+          } catch { }
+        }
+      }
+    }
+  } catch { }
+
+  const uniqueHomes = dedupeScanPaths(candidateHomes.map((h) => {
+    try {
+      return typeof fsApi.realpathSync === 'function' ? fsApi.realpathSync(h) : h;
+    } catch {
+      return h;
+    }
+  }), platform);
+
+  for (const h of uniqueHomes) {
+    const ag = pathMod.join(h, '.gemini', 'antigravity');
+    const cli = pathMod.join(h, '.gemini', 'antigravity-cli');
+    try {
+      if (fsApi.existsSync(ag)) desktopDirs.push(ag);
+    } catch { }
+    try {
+      if (fsApi.existsSync(cli)) cliDirs.push(cli);
+    } catch { }
+  }
+  return {
+    desktopDirs: dedupeScanPaths(desktopDirs, platform),
+    cliDirs: dedupeScanPaths(cliDirs, platform)
+  };
+}
+
+function discoverWslGeminiDirs(options = {}) {
+  const platform = options.platform || process.platform;
+  if (options.includeWsl === false || process.env.AG_DISABLE_WSL_SCAN === '1') {
+    return { distros: [], roots: [], desktopDirs: [], cliDirs: [] };
+  }
+  const hasExplicitPrimary = Boolean(options.agDir || options.agCliDir || process.env.AG_DIR || process.env.AG_CLI_DIR);
+  const allowAutoDistros = options.includeWsl === true ||
+    (platform === 'win32' && !hasExplicitPrimary && process.env.AG_METER_TEST_MODE !== '1');
+
+  const distros = allowAutoDistros ? listRegisteredWslDistros(options) : [];
+  const discoveredRoots = [];
+  for (const d of distros) {
+    const uncRoot = resolveWslDistroUncRoot(d.name, options);
+    if (uncRoot) discoveredRoots.push(uncRoot);
+  }
+  const explicitRoots = Array.isArray(options.wslRoots) ? options.wslRoots : [];
+  const roots = dedupeScanPaths([...discoveredRoots, ...explicitRoots], platform);
+
+  const desktopDirs = [];
+  const cliDirs = [];
+  for (const r of roots) {
+    const found = collectGeminiDirsFromLinuxRoot(r, options);
+    desktopDirs.push(...found.desktopDirs);
+    cliDirs.push(...found.cliDirs);
+  }
+  return {
+    distros: distros.map(d => d.name),
+    roots,
+    desktopDirs: dedupeScanPaths(desktopDirs, platform),
+    cliDirs: dedupeScanPaths(cliDirs, platform)
+  };
+}
+
 function getEffectiveScanScopeKey(options = {}) {
   const home = process.env.USERPROFILE || os.homedir();
   const agDir = path.resolve(options.agDir || process.env.AG_DIR || path.join(home, '.gemini', 'antigravity'));
   const agCliDir = path.resolve(options.agCliDir || process.env.AG_CLI_DIR || path.join(home, '.gemini', 'antigravity-cli'));
+  const extraDesk = dedupeScanPaths(Array.isArray(options.extraAgDirs) ? options.extraAgDirs : []);
+  const extraCli = dedupeScanPaths(Array.isArray(options.extraAgCliDirs) ? options.extraAgCliDirs : []);
+  const wslRoots = dedupeScanPaths(Array.isArray(options.wslRoots) ? options.wslRoots : []);
+  const wslFlag = options.includeWsl === false || process.env.AG_DISABLE_WSL_SCAN === '1'
+    ? 'wsl=0'
+    : (options.includeWsl === true ? 'wsl=1' : 'wsl=auto');
+  const parts = [agDir, agCliDir, wslFlag, ...extraDesk, ...extraCli, ...wslRoots];
   return process.platform === 'win32'
-    ? `${agDir.toLowerCase()}|${agCliDir.toLowerCase()}`
-    : `${agDir}|${agCliDir}`;
+    ? parts.map(p => p.toLowerCase()).join('|')
+    : parts.join('|');
 }
 
 function isFsMonkeyPatched() {
@@ -2710,8 +2935,6 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const agDir = options.agDir || process.env.AG_DIR || path.join(home, '.gemini', 'antigravity');
   const agCliDir = options.agCliDir || process.env.AG_CLI_DIR || path.join(home, '.gemini', 'antigravity-cli');
 
-  const brainDir = path.join(agDir, 'brain');
-  const convDir = path.join(agDir, 'conversations');
   const archivePathV1 = path.join(agDir, 'token_usage_archive_v1.json');
   const archivePathV2 = path.join(agDir, 'token_usage_archive_v2.json');
 
@@ -2757,20 +2980,37 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   };
 
-  // 3. 扫描桌面端与 CLI 会话文件（忽略 -wal/-shm/-journal 等伴生文件）
+  // 3. 扫描桌面端与 CLI 会话文件（含 Windows 自动探测的 WSL 发行版目录，忽略伴生文件并按文件名去重）
+  const extraWsl = discoverWslGeminiDirs(options);
+  const desktopAgDirs = dedupeScanPaths([
+    agDir,
+    ...(Array.isArray(options.extraAgDirs) ? options.extraAgDirs : []),
+    ...extraWsl.desktopDirs
+  ]);
+  const cliAgDirs = dedupeScanPaths([
+    agCliDir,
+    ...(Array.isArray(options.extraAgCliDirs) ? options.extraAgCliDirs : []),
+    ...extraWsl.cliDirs
+  ]);
+
   let desktopPbCount = 0;
   let cliPbCount = 0;
-  const scanSessionDir = (dir, isCli = false) => {
+  const seenDesktopConvs = new Set();
+  const seenCliConvs = new Set();
+  const scanSessionDir = (dir, seenSet = null) => {
     let count = 0;
     try {
       if (!fs.existsSync(dir)) return 0;
       for (const name of fs.readdirSync(dir)) {
         if (isCompanionOrTempFile(name)) continue;
         if (!name.endsWith('.pb') && !name.endsWith('.db')) continue;
+        const dedupeKey = process.platform === 'win32' ? name.toLowerCase() : name;
+        if (seenSet && seenSet.has(dedupeKey)) continue;
         const p = path.join(dir, name);
         try {
           const st = fs.statSync(p);
           if (st.isFile()) {
+            if (seenSet) seenSet.add(dedupeKey);
             count++;
             const ts = st.birthtimeMs && st.birthtimeMs > 946684800000 ? Math.min(st.birthtimeMs, st.mtimeMs) : st.mtimeMs;
             if (ts > 946684800000) registerDate(formatLocalDateKey(new Date(ts)));
@@ -2781,12 +3021,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     return count;
   };
 
-  desktopPbCount = scanSessionDir(convDir, false);
-  if (fs.existsSync(path.join(agCliDir, 'conversations'))) {
-    cliPbCount = scanSessionDir(path.join(agCliDir, 'conversations'), true);
+  for (const dDir of desktopAgDirs) {
+    desktopPbCount += scanSessionDir(path.join(dDir, 'conversations'), seenDesktopConvs);
+  }
+  for (const cDir of cliAgDirs) {
+    cliPbCount += scanSessionDir(path.join(cDir, 'conversations'), seenCliConvs);
   }
 
-  // 4. 双目录遍历扫描 transcript.jsonl（跳过 steps/scratch 重型目录，软链接与环路去重）
+  // 4. 多目录遍历扫描 transcript.jsonl（跳过 steps/scratch 重型目录，软链接与环路去重）
   const visitedRealDirs = new Set();
   const transcriptJobs = [];
 
@@ -2795,8 +3037,9 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     try {
       if (!fs.existsSync(dir)) return;
       const normDir = path.resolve(dir);
-      if (visitedRealDirs.has(normDir)) return;
-      visitedRealDirs.add(normDir);
+      const normKey = process.platform === 'win32' ? normDir.toLowerCase() : normDir;
+      if (visitedRealDirs.has(normKey)) return;
+      visitedRealDirs.add(normKey);
 
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         if (TRANSCRIPT_SKIP_DIRS.has(entry.name)) continue;
@@ -2804,9 +3047,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         if (entry.isSymbolicLink()) {
           try {
             const realTarget = fs.realpathSync(fullPath);
+            const realKey = process.platform === 'win32' ? realTarget.toLowerCase() : realTarget;
             const st = fs.statSync(realTarget);
             if (st.isDirectory()) {
-              if (!visitedRealDirs.has(realTarget)) {
+              if (!visitedRealDirs.has(realKey)) {
                 walkTranscripts(realTarget, sourceName, depth + 1);
               }
             } else if (entry.name === 'transcript.jsonl') {
@@ -2836,9 +3080,13 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     } catch { }
   };
 
-  walkTranscripts(brainDir, 'desktop');
-  if (fs.existsSync(path.join(agCliDir, 'brain'))) {
-    walkTranscripts(path.join(agCliDir, 'brain'), 'cli');
+  for (const dDir of desktopAgDirs) {
+    const bDir = path.join(dDir, 'brain');
+    if (fs.existsSync(bDir)) walkTranscripts(bDir, 'desktop');
+  }
+  for (const cDir of cliAgDirs) {
+    const cbDir = path.join(cDir, 'brain');
+    if (fs.existsSync(cbDir)) walkTranscripts(cbDir, 'cli');
   }
 
   // 5. 结构化 JSON 解析 transcript.jsonl（基于 size+mtimeMs 单文件增量缓存，去重并汇总）
@@ -3655,9 +3903,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         transcriptsCount: transcriptJobs.filter(j => j.source === 'desktop').length
       },
       cli: {
-        dirExists: fs.existsSync(agCliDir),
+        dirExists: cliAgDirs.some(d => fs.existsSync(d)),
         conversationsCount: cliPbCount,
         transcriptsCount: transcriptJobs.filter(j => j.source === 'cli').length
+      },
+      wsl: {
+        distros: extraWsl.distros,
+        desktopDirsCount: extraWsl.desktopDirs.length,
+        cliDirsCount: extraWsl.cliDirs.length
       }
     },
     planStatus: effectivePlanStatus,
@@ -5202,6 +5455,12 @@ module.exports = {
   collect,
   collectTokenHistory,
   collectTokenHistoryAsync,
+  parseLxssRegistryOutput,
+  listRegisteredWslDistros,
+  resolveWslDistroUncRoot,
+  collectGeminiDirsFromLinuxRoot,
+  discoverWslGeminiDirs,
+  getEffectiveScanScopeKey,
   scanFiles,
   pythonScan,
   resolvePython,
