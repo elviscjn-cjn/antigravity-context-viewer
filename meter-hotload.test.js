@@ -1317,3 +1317,56 @@ test('热加载 11：非测试上下文执行 collectTokenHistoryAsync 后 Worke
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('热加载 12：build-renderer 检测到 truncated for diff preview 时立即停止构建并报告文件及位置，保留现场字节不变，恢复正常源码后可正常构建', () => {
+  const { buildRenderer } = require('./scripts/build-renderer');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-build-trunc-guard-'));
+  const tmpSrc = path.join(tmpRoot, 'src', 'renderer');
+  const tmpOut = path.join(tmpRoot, 'meter-renderer.js');
+  try {
+    fs.mkdirSync(tmpSrc, { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version: '0.8.7' }), 'utf8');
+    for (const f of ['styles.css', 'template.html', 'colors.js', 'i18n.js', 'context-budget-engine.js', 'dropdown.js', 'heatmap.js']) {
+      fs.copyFileSync(path.join(__dirname, 'src', 'renderer', f), path.join(tmpSrc, f));
+    }
+
+    const truncatedMainPath = path.join(tmpSrc, 'main.js');
+    const truncatedContent = [
+      '(function () {',
+      '  "use strict";',
+      '  const UnsavedUserDraft = 42;',
+      '  ...[truncated for diff preview]',
+      '})();'
+    ].join('\n');
+    fs.writeFileSync(truncatedMainPath, truncatedContent, 'utf8');
+    const beforeBytes = fs.readFileSync(truncatedMainPath);
+    fs.writeFileSync(tmpOut, '// PREVIOUS_VALID_BUNDLE', 'utf8');
+
+    let caughtErr = null;
+    try {
+      buildRenderer({ rootDir: tmpRoot, srcDir: tmpSrc, targetFile: tmpOut });
+    } catch (err) {
+      caughtErr = err;
+    }
+
+    assert.ok(caughtErr, '检测到截断标记时必须抛出异常阻止构建');
+    assert.equal(caughtErr.code, 'ERR_SOURCE_TRUNCATED');
+    assert.equal(caughtErr.filePath, truncatedMainPath);
+    assert.equal(caughtErr.line, 4);
+    assert.equal(caughtErr.column, 7);
+    assert.match(caughtErr.message, /main\.js:4:7/, '错误信息必须包含准确文件名、行号与列号');
+
+    const afterBytes = fs.readFileSync(truncatedMainPath);
+    assert.equal(Buffer.compare(beforeBytes, afterBytes), 0, '严禁覆盖或修改截断源文件现场字节');
+    assert.equal(fs.readFileSync(tmpOut, 'utf8'), '// PREVIOUS_VALID_BUNDLE', '中止构建时不得覆写已有构建产物');
+
+    // 恢复为正常完整源码后应能正常构建
+    fs.copyFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), truncatedMainPath);
+    buildRenderer({ rootDir: tmpRoot, srcDir: tmpSrc, targetFile: tmpOut });
+    const builtContent = fs.readFileSync(tmpOut, 'utf8');
+    assert.ok(builtContent.length > 100000, '正常源码应成功构建完整 meter-renderer.js');
+    assert.ok(!builtContent.includes('truncated for diff preview'));
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
