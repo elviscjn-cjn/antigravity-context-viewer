@@ -3580,3 +3580,106 @@ test('Gemini 4 Hydrogen 四档模型识别、1M 统一单档计价、配额池�
     fs.rmSync(cliDir, { recursive: true, force: true });
   }
 });
+
+test('ELV-83: parseUserPlanStatus、resolveEffectivePlanStatus 与严格 allowedTiers 权限矩阵验证', () => {
+  const {
+    classifyModelQuotaAvailability,
+    buildModelQuotaSnapshot
+  } = require('./meter-core');
+
+  // 1. 保留与透传 teamsTier（live / cached_live / custom 补充场景）
+  const ultraFeedbackPlan = parseUserPlanStatus({
+    userStatus: {
+      email: 'ultra.user@example.com',
+      userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' } }
+    }
+  });
+  assert.equal(ultraFeedbackPlan.status, 'identified');
+  assert.equal(ultraFeedbackPlan.tierKey, 'ultra');
+  assert.equal(ultraFeedbackPlan.tierId, 'g1-ultra-tier');
+  assert.equal(ultraFeedbackPlan.teamsTier, 'TEAMS_TIER_PRO');
+
+  const effLive = resolveEffectivePlanStatus(ultraFeedbackPlan, { subscriptionRegion: '美国 (US)' });
+  assert.equal(effLive.teamsTier, 'TEAMS_TIER_PRO');
+  assert.equal(effLive.tierId, 'g1-ultra-tier');
+
+  const effCached = resolveEffectivePlanStatus(null, null, { cachedLivePlan: ultraFeedbackPlan });
+  assert.equal(effCached.teamsTier, 'TEAMS_TIER_PRO');
+  assert.equal(effCached.tierId, 'g1-ultra-tier');
+
+  // 仅凭 planInfo.teamsTier 也可识别套餐
+  const onlyTeamsTier = parseUserPlanStatus({
+    userStatus: {
+      email: 'teams@example.com',
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO_ULTIMATE' } }
+    }
+  });
+  assert.equal(onlyTeamsTier.status, 'identified');
+  assert.equal(onlyTeamsTier.tierKey, 'ultra');
+  assert.equal(onlyTeamsTier.teamsTier, 'TEAMS_TIER_PRO_ULTIMATE');
+
+  // 2. Pro 套餐面对仅限 Ultra 的 TEAMS_TIER_PRO_ULTIMATE 必须拦截（禁止子串 includes 误放行）
+  const proPlan = { status: 'identified', tierKey: 'pro', tierId: 'g1-pro-tier', teamsTier: 'TEAMS_TIER_PRO' };
+  const ultraOnlyModel = {
+    label: 'Gemini 4 Carbon (XHigh)',
+    tagTitle: 'New',
+    allowedTiers: ['TEAMS_TIER_PRO_ULTIMATE'],
+    quotaInfo: { remainingFraction: 0.9 }
+  };
+  const proOnUltraModel = classifyModelQuotaAvailability(ultraOnlyModel, proPlan);
+  assert.equal(proOnUltraModel.noPermission, true, 'Pro 不得因 TEAMS_TIER_PRO_ULTIMATE 包含 TEAMS_TIER_PRO 而被误放行');
+  assert.match(proOnUltraModel.reason || '', /TEAMS_TIER_PRO_ULTIMATE/);
+  assert.notEqual(proOnUltraModel.reason, 'New');
+
+  // Pro 面对 TEAMS_TIER_PRO 模型应正常放行（含缺少 teamsTier 时按 tierKey 推导）
+  const proSharedModel = { label: 'Gemini 4 Hydrogen', tagTitle: 'New', allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_PRO_ULTIMATE'] };
+  assert.equal(classifyModelQuotaAvailability(proSharedModel, proPlan).noPermission, false);
+  assert.equal(classifyModelQuotaAvailability(proSharedModel, { status: 'identified', tierKey: 'pro', tierId: 'g1-pro-tier', teamsTier: null }).noPermission, false);
+
+  // 3. Ultra 账号（含 TEAMS_TIER_PRO 与缺失 teamsTier）允许 Carbon / Hydrogen / Sonnet，但拦截企业专享模型
+  assert.equal(classifyModelQuotaAvailability(ultraOnlyModel, ultraFeedbackPlan).noPermission, false);
+  assert.equal(classifyModelQuotaAvailability(ultraOnlyModel, { status: 'identified', tierKey: 'ultra', tierId: 'g1-ultra-tier', teamsTier: null }).noPermission, false);
+  const entOnly = classifyModelQuotaAvailability(
+    { label: 'Enterprise Private', tagTitle: 'New', allowedTiers: ['TEAMS_TIER_ENTERPRISE_SAAS'] },
+    ultraFeedbackPlan
+  );
+  assert.equal(entOnly.noPermission, true);
+  assert.match(entOnly.reason || '', /TEAMS_TIER_ENTERPRISE_SAAS/);
+
+  // 4. 真正受限套餐（Free 无 ID / Free 有 ID / 名称包含 ultra 的过期或非官方 custom 套餐）必须拦截
+  assert.equal(classifyModelQuotaAvailability(proSharedModel, { status: 'identified', tierKey: 'free', tierId: null, teamsTier: null }).noPermission, true);
+  assert.equal(classifyModelQuotaAvailability(proSharedModel, { status: 'identified', tierKey: 'free', tierId: 'free-tier', teamsTier: 'TEAMS_TIER_FREE' }).noPermission, true);
+  assert.equal(classifyModelQuotaAvailability(ultraOnlyModel, { status: 'identified', tierKey: 'custom', tierId: 'ultra_expired', teamsTier: null }).noPermission, true);
+
+  // 5. 服务端明确禁用时，即使套餐允许且 quotaInfo 返回剩余百分比，也必须判无权限且 New 不覆盖故障原因
+  const serverDisabledWithPct = classifyModelQuotaAvailability(
+    {
+      label: 'Gemini 4 Carbon',
+      tagTitle: 'New',
+      disabled: true,
+      unavailabilityReason: 'New',
+      allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_PRO_ULTIMATE'],
+      quotaInfo: { remainingFraction: 0.88 }
+    },
+    ultraFeedbackPlan
+  );
+  assert.equal(serverDisabledWithPct.noPermission, true);
+  assert.equal(serverDisabledWithPct.reason, '当前套餐无权访问该模型');
+
+  // 6. 未知套餐不按 allowedTiers 猜测误判无权限，保持 unknown 状态
+  const unknownPlanSnap = buildModelQuotaSnapshot({
+    userStatusRes: {
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            { modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen', allowedTiers: ['TEAMS_TIER_PRO'] }
+          ]
+        }
+      }
+    },
+    currentModel: 'gemini-4-hydrogen'
+  });
+  assert.equal(unknownPlanSnap.activeStatus, 'unknown');
+  assert.equal(unknownPlanSnap.pools[0]?.noPermission, false);
+});

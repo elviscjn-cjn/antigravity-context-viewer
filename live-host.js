@@ -19,6 +19,7 @@ const {
 } = require('./meter-collector');
 const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
+const { PROJECT_VERSION } = require('./modules-config');
 
 const liveBootProxySnapshot = (() => {
   const bootInfo = (typeof globalThis !== 'undefined' && globalThis.__AG_PROXY_BOOT_INFO__ && globalThis.__AG_PROXY_BOOT_INFO__.injectedAtStartup)
@@ -382,7 +383,15 @@ async function startLiveHost() {
   const stamp = path.join(getStateDir(), '.live-session.json');
   const server = http.createServer(createLiveRequestHandler({ api, secret }));
   server.listen(0, '127.0.0.1', () => {
-    const info = { port: server.address().port, token: secret, pid: process.pid, origin: api.origin, startedAt: Date.now() };
+    const info = {
+      port: server.address().port,
+      token: secret,
+      pid: process.pid,
+      origin: api.origin,
+      version: PROJECT_VERSION,
+      hasQuota: true,
+      startedAt: Date.now()
+    };
     fs.writeFileSync(stamp, JSON.stringify(info));
     console.log('Context Meter local bridge ready on loopback port ' + info.port);
   });

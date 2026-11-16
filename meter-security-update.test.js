@@ -2177,3 +2177,47 @@ test('专项复核 16：Electron original-fs 回退、ASAR 路径分隔符统一
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('专项复核 17：更新浮层在应用内更新或 diskPendingRestart 时展示可用重启入口并拉起确认弹窗', async () => {
+  const h = setupRendererHarness();
+  let restartCalled = false;
+  h.sandbox.window.contextMeterAPI.restartHost = async () => {
+    restartCalled = true;
+    return { ok: true, supported: true };
+  };
+  h.sandbox.window.contextMeterAPI.checkUpdate = async () => ({
+    ok: true,
+    hasUpdate: true,
+    currentVersion: '0.8.5',
+    latestVersion: '0.8.6'
+  });
+  h.sandbox.window.contextMeterAPI.applyUpdate = async () => ({
+    ok: true,
+    diskInstalled: true,
+    liveInjected: false,
+    version: '0.8.6'
+  });
+
+  try {
+    // 1. 更新前重启按钮隐藏
+    assert.equal(h.elements.get('btn-update-restart').hidden, true);
+
+    // 2. 检查并应用更新后，重启按钮立即可见，弹窗不自动消失
+    h.elements.get('btn-check-update').click();
+    await h.flush();
+    assert.equal(h.elements.get('btn-update-restart').hidden, true);
+
+    h.elements.get('btn-apply-update').click();
+    await h.flush();
+    assert.equal(h.elements.get('btn-update-restart').hidden, false);
+    assert.equal(h.elements.get('btn-update-restart').style.display, 'inline-block');
+
+    // 3. 点击更新浮层重启按钮，打开全局确认弹窗（不强杀也不跳过确认直接退出）
+    h.elements.get('btn-update-restart').click();
+    await h.flush();
+    assert.equal(restartCalled, false);
+    assert.equal(h.elements.get('global-restart-modal').hidden, false);
+  } finally {
+    h.sandbox.__AGContextMeter?.dispose();
+  }
+});

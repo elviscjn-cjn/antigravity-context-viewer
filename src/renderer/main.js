@@ -1999,6 +1999,7 @@
   let ctxDraftDirty = false;
   let lastAutoObservedBudget = 0;
   let needsRestartAfterApply = false;
+  let pendingUpdateRestart = false;
   let pendingRestartVerification = null;
   let restartTimeoutTimer = null;
   let hostSupportsRestart = true;
@@ -5538,6 +5539,13 @@
   function openClientRestartConfirmFlow() {
     if (!hostSupportsRestart) {
       showUnlockResultBox(true, t('client.restart.hostNotSupported'), { needsRestart: true });
+      const upStatusEl = el('up-pop-status');
+      const upPop = el('update-popover');
+      if (upStatusEl && upPop && upPop.style.display === 'block') {
+        upStatusEl.style.display = 'block';
+        upStatusEl.textContent = t('client.restart.hostNotSupported');
+      }
+      renderQuotaBoard?.();
       return;
     }
     if (globalRestartModal) {
@@ -6801,13 +6809,13 @@
 
         const resolveSuccess = (!changedAny && !needLsRestart)
           ? () => t('enhance.result.alreadyApplied', {
-              tier: t(`enhance.tier.${actualTier}.short`),
-              title: actualTitle ? t('enhance.titleState.on') : t('enhance.titleState.off')
-            })
+            tier: t(`enhance.tier.${actualTier}.short`),
+            title: actualTitle ? t('enhance.titleState.on') : t('enhance.titleState.off')
+          })
           : () => t('enhance.result.appliedNeedRestartLs', {
-              tier: t(`enhance.tier.${actualTier}.short`),
-              title: actualTitle ? t('enhance.titleState.on') : t('enhance.titleState.off')
-            });
+            tier: t(`enhance.tier.${actualTier}.short`),
+            title: actualTitle ? t('enhance.titleState.on') : t('enhance.titleState.off')
+          });
         showEnhancePromptResult(true, resolveSuccess);
         showEnhanceResultBox(true, resolveSuccess, { needsLsRestart: needLsRestart, needsHostRestart: false });
         if (res.status) {
@@ -9007,9 +9015,16 @@
     const verEl = el('up-pop-ver');
     const statusEl = el('up-pop-status');
     const applyBtn = el('btn-apply-update');
+    const restartBtn = el('btn-update-restart');
+    const setUpdateRestartVisible = (visible) => {
+      if (!restartBtn) return;
+      const show = Boolean(visible && hostSupportsRestart);
+      restartBtn.hidden = !show;
+      if (restartBtn.style) restartBtn.style.display = show ? 'inline-block' : 'none';
+    };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.6';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
@@ -9020,6 +9035,7 @@
       if (bodyEl) bodyEl.textContent = t('update.unavailableBody');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
+      setUpdateRestartVisible(false);
       if (manual) showUpdatePopover(trigger);
       return;
     }
@@ -9032,6 +9048,7 @@
       if (bodyEl) bodyEl.textContent = t('update.connecting');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
+      setUpdateRestartVisible(false);
     }
 
     try {
@@ -9047,6 +9064,7 @@
         const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
         if (bodyEl) bodyEl.textContent = t('update.failedBody', { err: errMsg });
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
+        setUpdateRestartVisible(false);
         if (manual) showUpdatePopover(trigger);
         return;
       }
@@ -9065,6 +9083,7 @@
           applyBtn.textContent = t('update.applyNow');
           applyBtn.style.display = 'inline-block';
         }
+        setUpdateRestartVisible(false);
         if (manual) showUpdatePopover(trigger);
       } else {
         cachedLatestRelease = null;
@@ -9073,11 +9092,20 @@
         if (titleEl) titleEl.textContent = t('update.latestTitle');
         const effectiveCurrent = res.installedVersion || res.currentVersion || currentVer;
         if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveCurrent });
-        const updateStatusText = res.diskPendingRestart
+        const needsDiskRestart = Boolean(res.diskPendingRestart);
+        if (needsDiskRestart) {
+          pendingUpdateRestart = true;
+        }
+        const updateStatusText = needsDiskRestart
           ? t('update.diskPending', { ver: effectiveCurrent })
           : t('update.latestBody', { ver: effectiveCurrent });
         if (bodyEl) bodyEl.textContent = updateStatusText;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
+        setUpdateRestartVisible(needsDiskRestart);
+        if (needsDiskRestart && !hostSupportsRestart && statusEl) {
+          statusEl.style.display = 'block';
+          statusEl.textContent = t('client.restart.hostNotSupported');
+        }
         if (manual) showUpdatePopover(trigger);
       }
     } catch (err) {
@@ -9088,6 +9116,7 @@
       if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
       if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: translateBackendText(err.message) });
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
+      setUpdateRestartVisible(false);
       if (manual) showUpdatePopover(trigger);
     }
   }
@@ -9095,6 +9124,7 @@
   async function applyAppUpdate() {
     const pop = el('update-popover');
     const applyBtn = el('btn-apply-update');
+    const restartBtn = el('btn-update-restart');
     const statusEl = el('up-pop-status');
     const titleEl = el('up-pop-title');
     const bodyEl = el('up-pop-body');
@@ -9103,6 +9133,10 @@
     const dotCtx = el('update-badge-dot-ctx');
     if (!cachedLatestRelease) return;
 
+    if (restartBtn) {
+      restartBtn.hidden = true;
+      if (restartBtn.style) restartBtn.style.display = 'none';
+    }
     if (applyBtn) {
       applyBtn.disabled = true;
       applyBtn.textContent = t('update.updatingBtn');
@@ -9120,16 +9154,15 @@
         throw new Error(t('update.noApi'));
       }
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.6';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl) vEl.textContent = `v${nextVer}`;
 
-        const dot = el('update-badge-dot');
-        const dotCtx = el('update-badge-dot-ctx');
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
 
+        pendingUpdateRestart = true;
         if (titleEl) titleEl.textContent = t('update.doneTitle');
         if (verEl) verEl.textContent = t('update.doneVer', { ver: nextVer });
         if (bodyEl) {
@@ -9141,15 +9174,23 @@
           applyBtn.textContent = t('update.btnUpdated');
           applyBtn.disabled = false;
         }
+        if (restartBtn && hostSupportsRestart) {
+          restartBtn.hidden = false;
+          if (restartBtn.style) restartBtn.style.display = 'inline-block';
+        }
 
         if (res.liveInjected) {
           if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextVer });
         } else {
-          if (statusEl) statusEl.textContent = t('update.doneDisk', { ver: nextVer });
+          if (statusEl) {
+            statusEl.textContent = hostSupportsRestart
+              ? t('update.doneDisk', { ver: nextVer })
+              : `${t('update.doneDisk', { ver: nextVer })} ${t('client.restart.hostNotSupported')}`;
+          }
         }
-        setTimeout(() => {
-          if (pop) pop.style.display = 'none';
-        }, 3500);
+        if (typeof renderQuotaBoard === 'function') {
+          renderQuotaBoard(Date.now(), { animate: false });
+        }
       } else {
         if (statusEl) statusEl.textContent = t('update.failStatus', { err: translateBackendText(res?.error) || t('models.meta.archUnknown') });
         if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = t('update.btnRetry'); }
@@ -9190,6 +9231,15 @@
     openGithubRepo(cachedLatestRelease?.tagName ? `/releases/tag/${cachedLatestRelease.tagName}` : '/releases');
   });
   el('btn-apply-update')?.addEventListener('click', () => void applyAppUpdate());
+  const btnUpdateRestartInit = el('btn-update-restart');
+  if (btnUpdateRestartInit) {
+    btnUpdateRestartInit.hidden = true;
+    if (btnUpdateRestartInit.style) btnUpdateRestartInit.style.display = 'none';
+    btnUpdateRestartInit.addEventListener('click', () => {
+      hideUpdatePopover();
+      openClientRestartConfirmFlow();
+    });
+  }
 
   el('check-auto-update')?.addEventListener('change', e => {
     autoCheckUpdate = e.target.checked;
@@ -10231,6 +10281,7 @@
   const QUOTA_CAL_STORAGE_PREFIX = 'ag_quota_token_cal_v2_';
   const quotaState = {
     accountScopeKey: null,
+    collectorVersion: null,
     snapshot: null,
     rawInput: null,
     browsePoolKey: null,
@@ -11293,8 +11344,39 @@
 
     const bannerEl = el('quota-banner');
     const bannerTextEl = el('quota-banner-text');
+    const bannerRetryBtn = el('btn-quota-banner-retry');
+    const bannerRestartBtn = el('btn-quota-banner-restart');
     if (bannerEl && bannerTextEl) {
-      if (view.syncState === 'error' && view.lastError) {
+      const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.6';
+      const isBridgeMissing = quotaState.errorKind === 'bridge_unavailable';
+      const isStaleCollectorAfterUpdate = Boolean(
+        pendingUpdateRestart &&
+        (!quotaState.collectorVersion || quotaState.collectorVersion !== currentVer) &&
+        (Boolean(quotaState.error) || view.activeStatus === 'no_permission' || view.activeStatus === 'unknown')
+      );
+      const needsRestartAction = isBridgeMissing || isStaleCollectorAfterUpdate;
+      if (bannerRestartBtn) {
+        setQuotaHiddenIfChanged(bannerRestartBtn, !(needsRestartAction && hostSupportsRestart));
+      }
+      if (bannerRetryBtn) {
+        setQuotaHiddenIfChanged(bannerRetryBtn, isBridgeMissing);
+      }
+
+      if (isBridgeMissing) {
+        setQuotaHiddenIfChanged(bannerEl, false);
+        setQuotaAttrIfChanged(bannerEl, 'data-tone', 'warn');
+        const msg = hostSupportsRestart
+          ? t('quota.bridgeMissing')
+          : `${t('quota.bridgeMissing')} ${t('client.restart.hostNotSupported')}`;
+        setQuotaTextIfChanged(bannerTextEl, msg);
+      } else if (isStaleCollectorAfterUpdate) {
+        setQuotaHiddenIfChanged(bannerEl, false);
+        setQuotaAttrIfChanged(bannerEl, 'data-tone', 'warn');
+        const msg = hostSupportsRestart
+          ? t('quota.pendingRestartBanner')
+          : `${t('quota.pendingRestartBanner')} ${t('client.restart.hostNotSupported')}`;
+        setQuotaTextIfChanged(bannerTextEl, msg);
+      } else if (view.syncState === 'error' && view.lastError) {
         setQuotaHiddenIfChanged(bannerEl, false);
         setQuotaAttrIfChanged(bannerEl, 'data-tone', 'error');
         setQuotaTextIfChanged(bannerTextEl, t('quota.errorBanner', { reason: view.lastError }));
@@ -11683,6 +11765,30 @@
     }
   }
 
+  function mergeQuotaConfigsPreservingCapabilities(prevConfigs, nextConfigs) {
+    if (!Array.isArray(nextConfigs) || !nextConfigs.length) return Array.isArray(prevConfigs) ? prevConfigs : [];
+    const prevById = new Map();
+    if (Array.isArray(prevConfigs)) {
+      for (const item of prevConfigs) {
+        const key = String(item?.model || item?.modelId || item?.modelOrAlias?.model || '').trim().toLowerCase();
+        if (key) prevById.set(key, item);
+      }
+    }
+    return nextConfigs.map(cfg => {
+      if (!cfg || typeof cfg !== 'object') return cfg;
+      const key = String(cfg.model || cfg.modelId || cfg.modelOrAlias?.model || '').trim().toLowerCase();
+      const prev = key ? prevById.get(key) : null;
+      if (!prev) return cfg;
+      const merged = { ...cfg };
+      for (const field of ['maxTokens', 'maxOutputTokens', 'thinkingBudget', 'minThinkingBudget', 'thinkingLevel', 'supportsModelInfoOverride', 'capabilitySource']) {
+        if ((merged[field] == null || merged[field] === '') && prev[field] != null && prev[field] !== '') {
+          merged[field] = prev[field];
+        }
+      }
+      return merged;
+    });
+  }
+
   async function syncQuotaFromHost(force = false, meta = {}) {
     if (state.disposed) return null;
     if (quotaInFlightPromise) {
@@ -11698,12 +11804,15 @@
       renderQuotaBoard(Date.now(), { animate: false, consumeAnim: false });
       let payload = null;
       let rpcErr = null;
+      let missingBridge = false;
       try {
-        if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getQuota === 'function') {
+        const hasIpcGetQuota = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getQuota === 'function';
+        const hasLivePort = typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port);
+        if (hasIpcGetQuota) {
           const res = await window.contextMeterAPI.getQuota({ force: Boolean(force) });
           if (res?.ok && res.data) payload = res.data;
           else if (res?.error) rpcErr = res.error;
-        } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+        } else if (hasLivePort) {
           const live = window.__AGContextMeterLive;
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
           const r = await fetch(`http://127.0.0.1:${live.port}/quota`, {
@@ -11719,6 +11828,9 @@
           } else {
             rpcErr = `HTTP ${r.status}`;
           }
+        } else {
+          missingBridge = true;
+          rpcErr = t('quota.bridgeMissing');
         }
       } catch (e) {
         if (e?.name !== 'AbortError') {
@@ -11744,6 +11856,7 @@
           quotaCachedEstByKey = null;
         }
         if (payload.accountScopeKey) quotaState.accountScopeKey = payload.accountScopeKey;
+        if (payload.collectorVersion) quotaState.collectorVersion = payload.collectorVersion;
 
         if (payload.ok !== false) {
           quotaState.snapshot = payload.snapshot || null;
@@ -11752,10 +11865,16 @@
           quotaState.error = null;
           quotaState.errorKind = null;
           quotaState.consecutiveErrors = 0;
-          if (Array.isArray(payload.cascadeModelConfigs) && payload.cascadeModelConfigs.length > 0 && (!state.cascadeModelConfigs || !state.cascadeModelConfigs.length)) {
-            state.cascadeModelConfigs = payload.cascadeModelConfigs;
+          if (Array.isArray(payload.cascadeModelConfigs) && payload.cascadeModelConfigs.length > 0) {
+            state.cascadeModelConfigs = mergeQuotaConfigsPreservingCapabilities(
+              payload.accountSwitched ? [] : state.cascadeModelConfigs,
+              payload.cascadeModelConfigs
+            );
             renderHeaderModelDropdown();
             syncContextModelSelectionFromState();
+            if (!isContextSettingsView && activeContextTab === 'models') {
+              renderModelSettingsTab();
+            }
           }
         } else {
           quotaState.error = payload.error || '刷新失败';
@@ -11767,7 +11886,7 @@
         }
       } else if (rpcErr) {
         quotaState.error = rpcErr;
-        quotaState.errorKind = 'network';
+        quotaState.errorKind = missingBridge ? 'bridge_unavailable' : 'network';
         quotaState.consecutiveErrors += 1;
       }
 
@@ -11785,7 +11904,12 @@
         hideQuotaRefreshFeedback();
       }
 
-      scheduleQuotaAutoRefresh();
+      if (missingBridge) {
+        clearQuotaTimers();
+        quotaState.nextRefreshAtMs = null;
+      } else {
+        scheduleQuotaAutoRefresh();
+      }
       renderQuotaBoard(nowMs, { animate: shouldAnimateChange, chargeBars: shouldChargeBars });
       return quotaState.snapshot;
     })();
@@ -11804,9 +11928,17 @@
   el('btn-quota-banner-retry')?.addEventListener('click', () => {
     void syncQuotaFromHost(true, { manual: true });
   });
+  const btnQuotaBannerRestartInit = el('btn-quota-banner-restart');
+  if (btnQuotaBannerRestartInit) {
+    btnQuotaBannerRestartInit.hidden = true;
+    btnQuotaBannerRestartInit.addEventListener('click', () => {
+      openClientRestartConfirmFlow();
+    });
+  }
   renderQuotaBoard();
 
   let quotaTickCounter = 0;
+  let hasTriggeredInitialQuotaSync = false;
   function tick() {
     if (state.disposed || (globalThis.__AGContextMeterActiveHost && globalThis.__AGContextMeterActiveHost !== host)) {
       earlyForceDispose();
@@ -11836,13 +11968,16 @@
       void flushPendingFinalCalls(false);
     }
     syncPendingAutomaticHistory();
+    if (!hasTriggeredInitialQuotaSync) {
+      hasTriggeredInitialQuotaSync = true;
+      if (!quotaState.snapshot && !quotaState.busy && !quotaInFlightPromise) {
+        void syncQuotaFromHost(false);
+      }
+    }
     if (Date.now() - lastHistorySync > 15000) {
       const isInitialSync = lastHistorySync === 0;
       lastHistorySync = Date.now();
       void syncTokenHistoryFromHost(false);
-      if (isInitialSync && !quotaState.snapshot && !quotaState.busy) {
-        void syncQuotaFromHost(false);
-      }
       if (!isInitialSync && activeContextTab === 'models' && !isContextSettingsView) {
         void fetchAvailableModelsIfNeeded();
       }
@@ -12040,16 +12175,22 @@
     getModelQuotaStateForTest: (nowMs) => ({
       state: {
         accountScopeKey: quotaState.accountScopeKey,
+        collectorVersion: quotaState.collectorVersion,
         browsePoolKey: quotaState.browsePoolKey,
         busy: quotaState.busy,
         lastFetchedAtMs: quotaState.lastFetchedAtMs,
         lastSuccessAtMs: quotaState.lastSuccessAtMs,
         nextRefreshAtMs: quotaState.nextRefreshAtMs,
         error: quotaState.error,
+        errorKind: quotaState.errorKind,
         activeSessionModelKey
       },
       view: computeEffectiveQuotaView(Number.isFinite(nowMs) ? nowMs : Date.now())
     }),
+    setPendingUpdateRestartForTest: (val) => {
+      pendingUpdateRestart = Boolean(val);
+      renderQuotaBoard(Date.now(), { animate: false });
+    },
     setQuotaSnapshotForTest: (payload, nowMs) => {
       const tNow = Number.isFinite(nowMs) ? nowMs : Date.now();
       if (!payload) {

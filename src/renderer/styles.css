@@ -1013,7 +1013,7 @@
       padding:7px 10px;border-radius:7px;margin-bottom:8px;font-size:11px;line-height:1.4;
       border:1px solid rgba(245,158,11,0.35);background:rgba(245,158,11,0.1);color:var(--ag-text-primary);
     }
-    .quota-banner[hidden],.quota-cur-alert[hidden],.quota-cur-est[hidden],.quota-bucket-est[hidden],#quota-plan-tier-pill[hidden]{display:none !important}
+    .quota-banner[hidden],.quota-cur-alert[hidden],.quota-cur-est[hidden],.quota-bucket-est[hidden],#quota-plan-tier-pill[hidden],#btn-quota-banner-restart[hidden],#btn-update-restart[hidden]{display:none !important}
     .quota-banner .switch-pill-btn{white-space:nowrap;flex-shrink:0}
     .quota-banner[data-tone="error"]{border-color:rgba(239,68,68,0.4);background:rgba(239,68,68,0.12)}
     .quota-times-grid{

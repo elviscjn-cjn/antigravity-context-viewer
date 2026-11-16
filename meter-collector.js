@@ -53,6 +53,7 @@ const {
   CURRENCY_SYMBOLS,
   parseUserPlanStatus,
   buildModelQuotaSnapshot,
+  isDecorativeBadgeTagTitle,
   getModelPoolKey,
   getSharedQuotaGroupKey,
   extractCallId,
@@ -67,6 +68,7 @@ const {
   findReleaseAsset,
   compareVersions
 } = require('./meter-core');
+const { PROJECT_VERSION } = require('./modules-config');
 
 let cachedPython = undefined;
 function resolvePython() {
@@ -274,7 +276,8 @@ function sanitizeCascadeModelConfig(c) {
   if (!c || typeof c !== 'object') return null;
   const tagTitle = typeof c.tagTitle === 'string' ? c.tagTitle.trim() : '';
   const tagDesc = typeof c.tagDescription === 'string' ? c.tagDescription.trim() : '';
-  const isTagUnavailable = /unavailable|disabled|不可用/i.test(tagTitle);
+  const isTagUnavailable = /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle);
+  const isDecoTag = isDecorativeBadgeTagTitle(tagTitle);
   const isUnavail = Boolean(
     c.unavailable === true ||
     c.isUnavailable === true ||
@@ -290,6 +293,9 @@ function sanitizeCascadeModelConfig(c) {
     c.isDeprecated === true ||
     (typeof c.label === 'string' && /\(legacy\)|\(deprecated\)|\(old\)/i.test(c.label))
   );
+  const rawReason = String(c.unavailabilityReason || c.disabledReason || c.reason || '').trim();
+  const safeReason = (rawReason && !isDecorativeBadgeTagTitle(rawReason)) ? rawReason : null;
+  const fallbackTagReason = isUnavail ? (tagDesc || (!isDecoTag && tagTitle ? tagTitle : null)) : null;
   return {
     modelId: c.modelId || c.model || '',
     label: c.label || c.modelDisplayName || c.modelId || '',
@@ -316,8 +322,8 @@ function sanitizeCascadeModelConfig(c) {
     disabled: c.disabled === true,
     allowedTiers: Array.isArray(c.allowedTiers) ? c.allowedTiers.slice() : undefined,
     unavailable: isUnavail,
-    unavailabilityReason: c.unavailabilityReason || c.disabledReason || c.reason || (isUnavail ? (tagDesc || tagTitle || null) : null),
-    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && tagTitle ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : null),
+    unavailabilityReason: safeReason || fallbackTagReason || null,
+    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && tagTitle && (!isDecoTag || tagDesc) ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : null),
     isHistorical: isHist,
     releaseDate: c.releaseDate || null,
     family: c.family || null,
@@ -569,7 +575,7 @@ async function collect(origin, id, options = {}) {
       let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
       if (!token) {
         const html = await request(origin, null, null, null, signal);
-        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
         token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
         csrfTokenByOrigin.set(origin, token);
       }
@@ -588,7 +594,7 @@ async function collect(origin, id, options = {}) {
         }
       };
       const full = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 3 });
-      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const trajectory = full.trajectory;
       if (!trajectory) throw new Error('未取得会话历史，无法完整统计');
       const wsPath = extractWorkspaceFromTrajectory(trajectory);
@@ -596,16 +602,16 @@ async function collect(origin, id, options = {}) {
       const steps = trajectory.steps || [];
       const expected = Number(full.numTotalSteps ?? steps.length);
       while (steps.length < expected) {
-        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
         const page = await call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: steps.length, trajectoryVerbosity: 3 });
         if (!page.steps?.length) throw new Error(`历史仅取得 ${steps.length}/${expected} 步，扫描未完成`);
         steps.push(...page.steps);
       }
-      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const session = analyzeSteps(steps);
       const stepCapabilities = extractObservedModelInfoFromSteps(steps);
       const attachments = await scanFiles(session.media, { signal });
-      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const attachmentTotal = empty();
       for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
       const total = add({ ...session.total }, attachmentTotal);
@@ -669,16 +675,16 @@ async function collect(origin, id, options = {}) {
       ...(cachedHostUserStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
-    const result = { version: '0.8.5', conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     if (isSuperseded()) {
       conversations.delete(key);
-      return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
     }
     setBoundedMap(conversations, key, { result, at: Date.now() }, CONVERSATIONS_CACHE_MAX_ENTRIES);
     return result;
     } catch (err) {
       if (isSuperseded() || (err && err.name === 'AbortError' && signal?.aborted)) {
-        return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       }
       throw err;
     }
@@ -2374,12 +2380,21 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       });
       const out = {
         ok: false,
+        collectorVersion: PROJECT_VERSION,
         accountScopeKey: prevRaw?.accountScopeKey || nextScopeKey,
         accountSwitched,
         fetchedAtMs: doneAtMs,
         lastSuccessAtMs: prevRaw?.fetchedAtMs || null,
         error: fetchError,
         errorKind,
+        planTierSummary: prevRaw?.planStatus ? {
+          status: prevRaw.planStatus.status,
+          tierKey: prevRaw.planStatus.tierKey,
+          tierId: prevRaw.planStatus.tierId || null,
+          teamsTier: prevRaw.planStatus.teamsTier || null,
+          tierName: prevRaw.planStatus.tierName || null,
+          planName: prevRaw.planStatus.planName || null
+        } : null,
         snapshot,
         _raw: prevRaw
       };
@@ -2413,12 +2428,21 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
 
     const out = {
       ok: true,
+      collectorVersion: PROJECT_VERSION,
       accountScopeKey: nextScopeKey,
       accountSwitched,
       fetchedAtMs: doneAtMs,
       lastSuccessAtMs: doneAtMs,
       error: null,
       errorKind: null,
+      planTierSummary: parsedPlan ? {
+        status: parsedPlan.status,
+        tierKey: parsedPlan.tierKey,
+        tierId: parsedPlan.tierId || null,
+        teamsTier: parsedPlan.teamsTier || null,
+        tierName: parsedPlan.tierName || null,
+        planName: parsedPlan.planName || null
+      } : null,
       snapshot,
       cascadeModelConfigs: sanitizedConfigs,
       _raw: rawRecord
@@ -2470,6 +2494,11 @@ async function fetchUserStatusFromHost(options = {}) {
       if (configs.length) parsed.cascadeModelConfigs = mergeModelCapabilitiesIntoConfigs(configs, availMap);
     }
     if (parsed && !options.agDir) {
+      const nextScope = parsed.email ? buildAccountScopeKey(parsed.email) : null;
+      if (nextScope && lastHostAccountScopeKey && nextScope !== lastHostAccountScopeKey) {
+        cachedQuotaState = null;
+      }
+      if (nextScope) lastHostAccountScopeKey = nextScope;
       cachedHostUserStatus = parsed;
       cachedHostUserStatusAt = Date.now();
     }
@@ -3628,8 +3657,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     ? extraContext.prevAccountEmail
     : (collectTokenHistoryAsync._lastAccountEmail || null);
   const out = {
-    schemaVersion: '0.8.5',
-    version: '0.8.5',
+    schemaVersion: PROJECT_VERSION,
+    version: PROJECT_VERSION,
     accountScopeKey: currentAccountKey ? buildAccountScopeKey(currentAccountKey) : null,
     isAccountSwitched: Boolean(
       currentAccountKey &&
@@ -3710,7 +3739,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   };
 
-  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
+  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.tierId || ''}|${effectivePlanStatus?.teamsTier || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
   const isStaleCheck = typeof extraContext.isStale === 'function' ? extraContext.isStale : null;
   if (isStaleCheck && isStaleCheck()) {
     return { out, archiveSig: null, accountKey: currentAccountKey || null, stale: true };
@@ -3880,8 +3909,8 @@ function collectTokenHistory(options = {}) {
   // 触发异步更新
   void collectTokenHistoryAsync(options);
   return (cachedTokenHistory && cachedTokenHistoryScope === scopeKey) ? cachedTokenHistory : {
-    schemaVersion: '0.8.5',
-    version: '0.8.5',
+    schemaVersion: PROJECT_VERSION,
+    version: PROJECT_VERSION,
     loading: true,
     updatedAt: '',
     firstUseDate: null,
@@ -4217,7 +4246,7 @@ function requestGithubUrl(rawUrl, options = {}) {
         }
       }
       const headers = Object.assign({
-        'User-Agent': 'AntigravityContextMeter/0.8.5',
+        'User-Agent': `AntigravityContextMeter/${PROJECT_VERSION}`,
         'Accept': isApiHost ? 'application/vnd.github.v3+json' : (options.accept || '*/*')
       }, rawHeaders);
       const token = options.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -4250,9 +4279,9 @@ function requestGithubUrl(rawUrl, options = {}) {
         const tunnelPromise = (parsedProxy.protocol === 'socks5:' || parsedProxy.protocol === 'socks5h:')
           ? openSocks5Tunnel(parsedProxy, parsedUrl.hostname, targetPort, timeoutMs)
           : openHttpConnectTunnel(parsedProxy, parsedUrl.hostname, targetPort, timeoutMs, {
-              ca: options.proxyCa || options.ca,
-              rejectUnauthorized: options.proxyRejectUnauthorized
-            });
+            ca: options.proxyCa || options.ca,
+            rejectUnauthorized: options.proxyRejectUnauthorized
+          });
         // 代理已启用且未命中绕过规则时，隧道失败必须立即报错，绝不静默改走直连
         tunnelPromise.then(
           socket => doRequest(socket),
@@ -4715,7 +4744,7 @@ function shouldUseWebFallback(err, rawData) {
 }
 
 async function fetchOfficialReleasesWithFallback(options = {}) {
-  const effectiveCurrentVersion = options.currentVersion || '0.8.5';
+  const effectiveCurrentVersion = options.currentVersion || PROJECT_VERSION;
   const fetcher = options._requestGithubUrl || requestGithubUrl;
   const timeout = options.timeout || 8000;
   let primaryErr = null;
@@ -4791,7 +4820,7 @@ async function resolveAssetsForWebRelease(targetRelease, fetcher, timeout = 8000
 }
 
 async function checkUpdateAsync(options = {}) {
-  const runtimeVersion = options.currentVersion || '0.8.5';
+  const runtimeVersion = options.currentVersion || PROJECT_VERSION;
   const diskVersion = getInstalledMeterVersion(options);
   const effectiveCurrentVersion = (diskVersion && compareVersions(diskVersion, runtimeVersion) > 0)
     ? diskVersion
@@ -4941,7 +4970,7 @@ async function applyUpdateAsync(options = {}) {
   }
   isApplyingUpdate = true;
 
-  const currentVersion = options.currentVersion || '0.8.5';
+  const currentVersion = options.currentVersion || PROJECT_VERSION;
   let tmpDir = null;
   let checksumStream = null;
   let zipStream = null;

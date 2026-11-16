@@ -75,6 +75,8 @@ async function queryLiveWindow() {
               active: Boolean(window.__AGContextMeter),
               version: window.__AGContextMeter?.version || null,
               hasIpcBridge: Boolean(window.contextMeterAPI?.scan && window.contextMeterAPI?.saveSettings && window.contextMeterAPI?.launchCli && window.contextMeterAPI?.getContextUnlockStatus),
+              hasQuotaIpcBridge: Boolean(window.contextMeterAPI?.getQuota),
+              hasRestartBridge: Boolean(window.contextMeterAPI?.restartHost),
               badgeText: root?.getElementById('amount')?.textContent || null,
               route: s?.route || null,
               latest: s?.latest || null
@@ -91,9 +93,14 @@ async function queryLiveWindow() {
   }
 }
 
-async function ensureLiveBridgeIfNeeded() {
-  const live = await queryLiveWindow();
-  if (!live.running || !live.pageFound || live.hasIpcBridge) return;
+async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
+  const live = liveSnapshot || await queryLiveWindow();
+  if (!live.running || !live.pageFound) return;
+  if (live.hasIpcBridge && live.hasQuotaIpcBridge) return;
+  let currentPkgVersion = null;
+  try {
+    currentPkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
+  } catch {}
   const stateDir = getStateDir();
   const statePath = path.join(stateDir, '.live-session.json');
   const legacyPath = path.join(__dirname, '.live-session.json');
@@ -106,7 +113,9 @@ async function ensureLiveBridgeIfNeeded() {
       const info = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
       existingInfo = info;
       process.kill(info.pid, 0);
-      if (!live.origin || info.origin === live.origin) {
+      const originMatches = !live.origin || info.origin === live.origin;
+      const versionMatches = Boolean(info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion));
+      if (originMatches && versionMatches) {
         alive = true;
       }
     } catch {}
@@ -209,9 +218,16 @@ async function main() {
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
     console.log(`🚀 [Antigravity 对话上下文查看器 v${meterVersion}] 正在安装上下文可视化组件...`);
-    await ensureLiveBridgeIfNeeded();
+    const liveBefore = await queryLiveWindow();
+    await ensureLiveBridgeIfNeeded(liveBefore);
     const manifest = await install({ path: customPath, backup: customBackup, force: isForce });
-    await tryHotInject();
+    const hasStaleMainProcess = Boolean(
+      manifest.liveInjected &&
+      liveBefore.running &&
+      liveBefore.hasIpcBridge &&
+      liveBefore.version &&
+      liveBefore.version !== meterVersion
+    );
     console.log(`✅ 插件 v${manifest.meterVersion} 安装完成 (Antigravity 宿主 v${manifest.version})`);
     console.log(`✅ ASAR 持久化注入完成: ${manifest.installed} (校验 ${manifest.originalFilesVerified} 个原文件)`);
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
@@ -221,7 +237,7 @@ async function main() {
     console.log('   - ⚡ 上下文与 Token 监控:');
     console.log(`     * 配置状态: [配置: ${cfg.modules.meter.enabled ? '已开启' : '已关闭'}]`);
     console.log(`     * 磁盘注入: ${disk.meter ? '✅ 已注入' : '⚪ 未注入'}`);
-    console.log(`     * 运行中加载: ${manifest.liveInjected ? '✅ 已即时挂载生效（无需重启）' : '⏳ 待下次启动客户端时生效'}`);
+    console.log(`     * 运行中加载: ${manifest.liveInjected ? (hasStaleMainProcess ? `⚠️ 界面已热挂载（运行中主进程仍为 v${liveBefore.version}，请重启客户端以启用新版主进程模块）` : '✅ 已即时挂载生效（无需重启）') : '⏳ 待下次启动客户端时生效'}`);
 
     console.log('   - 🇨🇳 客户端界面汉化 (桌面客户端):');
     console.log(`     * 配置状态: [配置: ${cfg.modules.chinese.enabled ? '已开启' : '已关闭'}]`);

@@ -196,31 +196,98 @@
     };
   }
 
+  const DECORATIVE_BADGE_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|hot|popular|最新|预览|預覽|推荐|推薦)$/i;
+
+  /**
+   * 判断模型角标文本是否仅为装饰性标签，不能作为不可用或故障原因
+   */
+  function isDecorativeBadgeTagTitle(tagTitle) {
+    return typeof tagTitle === 'string' && DECORATIVE_BADGE_TAG_RE.test(tagTitle.trim());
+  }
+
+  /**
+   * 将账号套餐字段规范化为精确允许匹配的套餐标识集合，禁止宽泛子串误放行受限账号
+   */
+  function buildAllowedTierMatchSet(planStatus) {
+    if (!planStatus || typeof planStatus !== 'object') return null;
+    const rawTierKey = typeof planStatus.tierKey === 'string' ? planStatus.tierKey.trim().toLowerCase() : '';
+    const rawTierId = typeof planStatus.tierId === 'string' ? planStatus.tierId.trim().toLowerCase() : '';
+    const rawTeamsTier = typeof planStatus.teamsTier === 'string' ? planStatus.teamsTier.trim().toLowerCase() : '';
+
+    // 套餐尚未识别且无任何具体层级标识时，不执行 allowedTiers 猜测拦截
+    if (planStatus.status === 'unidentified' || ((!rawTierKey || rawTierKey === 'unknown') && !rawTierId && !rawTeamsTier)) {
+      return null;
+    }
+
+    const tokens = new Set();
+    if (rawTierId) tokens.add(rawTierId);
+    if (rawTeamsTier) tokens.add(rawTeamsTier);
+    if (rawTierKey && rawTierKey !== 'unknown' && rawTierKey !== 'custom') tokens.add(rawTierKey);
+
+    const isUltraTier = rawTierKey === 'ultra' ||
+      rawTierId === 'g1-ultra-tier' ||
+      rawTeamsTier === 'teams_tier_pro_ultimate' ||
+      rawTeamsTier === 'teams_tier_ultra';
+    const isProTier = !isUltraTier && (
+      rawTierKey === 'pro' ||
+      rawTierId === 'g1-pro-tier' ||
+      rawTeamsTier === 'teams_tier_pro'
+    );
+    const isPlusTier = rawTierKey === 'plus' ||
+      rawTierId === 'g1-plus-tier' ||
+      rawTeamsTier === 'teams_tier_plus';
+    const isFreeTier = rawTierKey === 'free' ||
+      rawTierId === 'free-tier' ||
+      rawTeamsTier === 'teams_tier_free';
+
+    if (isUltraTier) {
+      // Ultra 账号向上覆盖 Ultimate，并兼容上游可能回传或缺失 TEAMS_TIER_PRO 的情况；不放行未声明的企业专享档位
+      tokens.add('ultra');
+      tokens.add('g1-ultra-tier');
+      tokens.add('teams_tier_pro_ultimate');
+      tokens.add('teams_tier_ultra');
+      tokens.add('ultimate');
+      tokens.add('teams_tier_pro');
+      tokens.add('g1-pro-tier');
+      tokens.add('pro');
+    } else if (isProTier) {
+      tokens.add('pro');
+      tokens.add('g1-pro-tier');
+      tokens.add('teams_tier_pro');
+    } else if (isPlusTier) {
+      tokens.add('plus');
+      tokens.add('g1-plus-tier');
+      tokens.add('teams_tier_plus');
+    } else if (isFreeTier) {
+      tokens.add('free');
+      tokens.add('free-tier');
+      tokens.add('teams_tier_free');
+    }
+
+    return tokens.size > 0 ? tokens : null;
+  }
+
   function classifyModelQuotaAvailability(config, planStatus = null) {
     if (!config || typeof config !== 'object') {
       return { noPermission: false, unavailable: false, reason: null, noticeTitle: null, noticeText: null };
     }
     const tagTitle = typeof config.tagTitle === 'string' ? config.tagTitle.trim() : '';
     const tagDesc = typeof config.tagDescription === 'string' ? config.tagDescription.trim() : '';
-    const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用/i.test(tagTitle);
-    const isDecorativeBadgeTag = /^(new|beta|preview|alpha|experimental|recommended|最新|预览|預覽|推荐|推薦)$/i.test(tagTitle);
+    const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle);
+    const isDecorativeBadgeTag = isDecorativeBadgeTagTitle(tagTitle);
     const isExplicitNoticeTag = /^notice$/i.test(tagTitle);
     const isTagNotice = !isTagUnavailable && (Boolean(tagDesc) || isExplicitNoticeTag || (Boolean(tagTitle) && !isDecorativeBadgeTag));
 
     let tierBlocked = false;
     let tierReason = null;
-    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus && (planStatus.tierId || planStatus.teamsTier)) {
-      const myIds = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey]
-        .filter(Boolean)
-        .map(v => String(v).toLowerCase());
-      if (planStatus.tierKey === 'ultra' || myIds.some(id => id.includes('ultra'))) {
-        myIds.push('teams_tier_pro_ultimate', 'ultimate');
-      }
-      const allowedLower = config.allowedTiers.map(v => String(v).toLowerCase());
-      const hit = myIds.some(id => allowedLower.some(a => a === id || a.includes(id) || id.includes(a)));
-      if (!hit) {
-        tierBlocked = true;
-        tierReason = `仅限 ${config.allowedTiers.join(' / ')} 套餐可用`;
+    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0) {
+      const allowedTokens = buildAllowedTierMatchSet(planStatus);
+      if (allowedTokens) {
+        const hit = config.allowedTiers.some(v => allowedTokens.has(String(v || '').trim().toLowerCase()));
+        if (!hit) {
+          tierBlocked = true;
+          tierReason = `仅限 ${config.allowedTiers.join(' / ')} 套餐可用`;
+        }
       }
     }
 
@@ -239,9 +306,14 @@
       ? (tagDesc || (!isDecorativeBadgeTag ? tagTitle : null))
       : (hasConfigNotice ? config.notice.trim() : null);
 
+    // 清洗服务端或上游缓存中可能被装饰角标污染的 reason，确保真实故障原因不被 New 等角标覆盖
+    const rawConfigReason = typeof config.unavailabilityReason === 'string' ? config.unavailabilityReason.trim() : '';
+    const cleanConfigReason = (rawConfigReason && !isDecorativeBadgeTagTitle(rawConfigReason)) ? rawConfigReason : '';
+    const nonDecorativeTagTitle = (!isDecorativeBadgeTag && tagTitle) ? tagTitle : null;
+
     const unavailabilityReason = tierBlocked
-      ? (config.unavailabilityReason || tierReason || tagDesc || (!isDecorativeBadgeTag ? tagTitle : null) || '当前套餐无权访问该模型')
-      : (config.unavailabilityReason || tagDesc || tagTitle || tierReason || '当前套餐无权访问该模型');
+      ? (cleanConfigReason || tierReason || tagDesc || nonDecorativeTagTitle || '当前套餐无权访问该模型')
+      : (cleanConfigReason || tagDesc || nonDecorativeTagTitle || tierReason || '当前套餐无权访问该模型');
 
     return {
       noPermission: explicitlyDisabled,
@@ -252,7 +324,7 @@
     };
   }
 
-  function resolveModelQuota(modelIdOrName, cascadeModelConfigs) {
+  function resolveModelQuota(modelIdOrName, cascadeModelConfigs, options = {}) {
     if (!Array.isArray(cascadeModelConfigs) || !cascadeModelConfigs.length || !modelIdOrName) {
       return null;
     }
@@ -282,7 +354,7 @@
 
     if (!matched) return null;
 
-    const avail = classifyModelQuotaAvailability(matched);
+    const avail = classifyModelQuotaAvailability(matched, options?.planStatus || null);
     const qi = matched.quotaInfo || {};
     const parsed = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
     const poolNames = {
@@ -1661,8 +1733,9 @@
     let tierDisplayName = '未知';
     let officialPrice = null;
     let priceRange = null;
+    const rawTeamsTier = typeof planInfo.teamsTier === 'string' ? planInfo.teamsTier.trim() : '';
 
-    if (/ultra/i.test(rawTierName) || /ultra/i.test(userTier.id || '')) {
+    if (/ultra/i.test(rawTierName) || /ultra/i.test(userTier.id || '') || /pro_ultimate|teams_tier_ultra/i.test(rawTeamsTier)) {
       tierKey = 'ultra';
       const subTierMatch = rawTierName.match(/ultra\s*([0-9a-zA-Z\-_]+)/i);
       if (subTierMatch && !['plan', 'tier'].includes(subTierMatch[1].toLowerCase())) {
@@ -1674,24 +1747,24 @@
         officialPrice = null;
         priceRange = '参考区间 $99.99 ~ $249.99/月（子档未知）';
       }
-    } else if (/pro/i.test(rawTierName) || /pro/i.test(userTier.id || '')) {
+    } else if (/pro/i.test(rawTierName) || /pro/i.test(userTier.id || '') || /^teams_tier_pro$/i.test(rawTeamsTier)) {
       tierKey = 'pro';
       tierDisplayName = 'Google AI Pro';
       officialPrice = 19.99;
       priceRange = '$19.99/月（公开参考）';
-    } else if (/plus/i.test(rawTierName) || /plus/i.test(userTier.id || '')) {
+    } else if (/plus/i.test(rawTierName) || /plus/i.test(userTier.id || '') || /^teams_tier_plus$/i.test(rawTeamsTier)) {
       tierKey = 'plus';
       tierDisplayName = 'Google AI Plus';
       officialPrice = 4.99;
       priceRange = '$4.99/月（公开参考）';
-    } else if (/free/i.test(rawTierName) || /free/i.test(userTier.id || '')) {
+    } else if (/free/i.test(rawTierName) || /free/i.test(userTier.id || '') || /^teams_tier_free$/i.test(rawTeamsTier)) {
       tierKey = 'free';
       tierDisplayName = 'Free';
       officialPrice = 0;
       priceRange = '$0/月（公开参考）';
     } else {
       tierKey = 'custom';
-      tierDisplayName = rawTierName || '未知套餐';
+      tierDisplayName = rawTierName || rawTeamsTier || '未知套餐';
       officialPrice = null;
       priceRange = '费率未知';
     }
@@ -2124,6 +2197,8 @@
       status = 'custom';
       tierKey = effectiveCustom.tierKey || 'custom';
       tierName = effectiveCustom.tierName;
+      tierId = effectiveCustom.tierId || rawLive?.tierId || cachedLive?.tierId || null;
+      teamsTier = effectiveCustom.teamsTier || rawLive?.teamsTier || cachedLive?.teamsTier || null;
       planName = effectiveCustom.tierName;
       tierSource = 'custom';
     } else if (cachedLive && cachedLive.status === 'identified' && cachedLive.tierKey !== 'unknown') {
@@ -2515,8 +2590,8 @@
     }
 
     return {
-      schemaVersion: payload.schemaVersion || '0.8.5',
-      version: payload.version || '0.8.5',
+      schemaVersion: payload.schemaVersion || '0.8.6',
+      version: payload.version || '0.8.6',
       updatedAt: payload.updatedAt || '',
       firstUseDate: summary.firstUseDate,
       currentPeriod: payload.currentPeriod || {
@@ -2685,7 +2760,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.8.5') {
+  function filterReleases(releasesList, currentVersion = '0.8.6') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {
@@ -3262,6 +3337,9 @@
       activeReset: activeResetMeta,
       browsePoolKey: browsePool?.poolKey || null,
       planTierName: planStatus?.tierName || planStatus?.planName || null,
+      planTierKey: planStatus?.tierKey || null,
+      planTierId: planStatus?.tierId || null,
+      planTeamsTier: planStatus?.teamsTier || null,
       pools,
       basisNote: '仅依据宿主接口返回的剩余比例与重置时间展示，不凭空换算剩余 Token 数量。'
     };
@@ -3786,6 +3864,7 @@
     formatQuotaPercentText,
     formatQuotaResetMeta,
     classifyModelQuotaAvailability,
+    isDecorativeBadgeTagTitle,
     buildModelQuotaSnapshot,
     formatApproxTokensShort,
     inferQuotaWindowDurationMs,
