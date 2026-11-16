@@ -60,6 +60,8 @@ const {
   extractModelString,
   normalizeModelId,
   resolveStableModelId,
+  UNATTRIBUTED_MODEL_KEY,
+  resolveModelUsageBucket,
   isValidSpeedSample,
   MAX_SPEED_SAMPLES_PER_MODEL,
   calculateRequestApiCost,
@@ -2700,6 +2702,375 @@ async function runHistoryWorkerTask(payload, cmd = 'collectTokenHistory', taskOp
   }
 }
 
+let cachedNodeDatabaseSync;
+
+function getNodeDatabaseSync() {
+  if (cachedNodeDatabaseSync !== undefined) return cachedNodeDatabaseSync;
+  try {
+    cachedNodeDatabaseSync = require('node:sqlite').DatabaseSync || null;
+  } catch {
+    cachedNodeDatabaseSync = null;
+  }
+  return cachedNodeDatabaseSync;
+}
+
+/**
+ * 构建 SQLite 只读 immutable URI，兼容 Windows 盘符、UNC (\\wsl.localhost\...) 与 POSIX 路径。
+ * 必须显式使用 file:////wsl.localhost/...?immutable=1，否则 9P 共享目录会报 database is locked。
+ * @param {string} dbPath
+ * @returns {string}
+ */
+function buildSqliteImmutableUri(dbPath) {
+  const normalized = String(dbPath || '').replace(/\\/g, '/');
+  const encoded = encodeURI(normalized).replace(/#/g, '%23').replace(/\?/g, '%3F');
+  if (encoded.startsWith('//')) {
+    return `file://${encoded}?immutable=1`;
+  }
+  return `file:///${encoded.replace(/^\/+/, '')}?immutable=1`;
+}
+
+function readPbVarint(buf, offset, end = buf.length) {
+  let value = 0;
+  let multiplier = 1;
+  let pos = offset;
+  while (pos < end && pos - offset < 10) {
+    const byte = buf[pos++];
+    value += (byte & 0x7f) * multiplier;
+    if ((byte & 0x80) === 0) {
+      return { value, next: pos };
+    }
+    multiplier *= 128;
+  }
+  return null;
+}
+
+function walkPbFields(buf, start, end, onField) {
+  let pos = start;
+  while (pos < end) {
+    const tagInfo = readPbVarint(buf, pos, end);
+    if (!tagInfo) break;
+    pos = tagInfo.next;
+    const fieldNum = Math.floor(tagInfo.value / 8);
+    const wireType = tagInfo.value % 8;
+    if (fieldNum <= 0) break;
+
+    if (wireType === 0) {
+      const valInfo = readPbVarint(buf, pos, end);
+      if (!valInfo) break;
+      pos = valInfo.next;
+      onField(fieldNum, wireType, valInfo.value, 0, 0);
+    } else if (wireType === 1) {
+      if (pos + 8 > end) break;
+      pos += 8;
+      onField(fieldNum, wireType, 0, pos - 8, pos);
+    } else if (wireType === 2) {
+      const lenInfo = readPbVarint(buf, pos, end);
+      if (!lenInfo || lenInfo.value < 0) break;
+      const valStart = lenInfo.next;
+      const valEnd = valStart + lenInfo.value;
+      if (valEnd > end) break;
+      pos = valEnd;
+      onField(fieldNum, wireType, 0, valStart, valEnd);
+    } else if (wireType === 5) {
+      if (pos + 4 > end) break;
+      pos += 4;
+      onField(fieldNum, wireType, 0, pos - 4, pos);
+    } else {
+      break;
+    }
+  }
+}
+
+/**
+ * 从会话数据库 gen_metadata.data 的 Protobuf 负载提取 stepIndex -> model/label 映射。
+ * 顶层字段 2 为 stepIndices（单个 varint 或 packed varint），字段 1 内的 19 为 rawModel、21 为展示标签。
+ * @param {Buffer|Uint8Array} rawData
+ * @returns {Array<{stepIndex: number, model: string}>}
+ */
+function extractStepModelsFromGenMetadataBlob(rawData) {
+  if (!rawData || !rawData.length) return [];
+  const buf = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
+  const steps = [];
+  let rawModel = '';
+  let label = '';
+
+  walkPbFields(buf, 0, buf.length, (fn, wt, val, vs, ve) => {
+    if (fn === 2) {
+      if (wt === 0 && Number.isInteger(val) && val >= 0) {
+        steps.push(val);
+      } else if (wt === 2) {
+        let p = vs;
+        while (p < ve) {
+          const item = readPbVarint(buf, p, ve);
+          if (!item) break;
+          if (Number.isInteger(item.value) && item.value >= 0) {
+            steps.push(item.value);
+          }
+          p = item.next;
+        }
+      }
+    } else if (fn === 1 && wt === 2) {
+      walkPbFields(buf, vs, ve, (cfn, cwt, _cval, cvs, cve) => {
+        if (cwt !== 2) return;
+        if (cfn === 19) {
+          const str = buf.toString('utf8', cvs, cve).trim();
+          if (str) rawModel = str;
+        } else if (cfn === 21) {
+          const str = buf.toString('utf8', cvs, cve).trim();
+          if (str) label = str;
+        }
+      });
+    }
+  });
+
+  const resolved = label || rawModel;
+  if (!resolved || !steps.length) return [];
+  return steps.map(stepIndex => ({ stepIndex, model: resolved }));
+}
+
+function loadStepModelMapFromSqlite(dbPath) {
+  const stepToModel = new Map();
+  if (!dbPath || !origFsMethods.existsSync(dbPath)) return stepToModel;
+  const DatabaseSync = getNodeDatabaseSync();
+  if (!DatabaseSync) return stepToModel;
+  let db = null;
+  try {
+    db = new DatabaseSync(buildSqliteImmutableUri(dbPath), { readOnly: true });
+    const rows = db.prepare('SELECT data FROM gen_metadata').all();
+    for (const row of rows) {
+      const entries = extractStepModelsFromGenMetadataBlob(row?.data);
+      for (const item of entries) {
+        if (item && Number.isInteger(item.stepIndex) && item.model) {
+          stepToModel.set(item.stepIndex, item.model);
+        }
+      }
+    }
+  } catch {
+    // 忽略损坏文件、缺失表或非预期 schema
+  } finally {
+    if (db) {
+      try { db.close(); } catch { }
+    }
+  }
+  return stepToModel;
+}
+
+function backfillMissingModelsFromConversationDb(records, convDir, options = {}) {
+  if (!Array.isArray(records) || !records.length || !convDir || options.fs || isFsMonkeyPatched()) return 0;
+
+  const missingByCascade = new Map();
+  for (const rec of records) {
+    if (!rec || rec.model || !(rec.tot > 0)) continue;
+    if (!Number.isInteger(rec.stepIndex) || rec.stepIndex < 0) continue;
+    const cid = String(rec.cascadeId || '').trim();
+    if (!cid || cid.includes('..') || cid.includes('/') || cid.includes('\\')) continue;
+    let list = missingByCascade.get(cid);
+    if (!list) {
+      list = [];
+      missingByCascade.set(cid, list);
+    }
+    list.push(rec);
+  }
+  if (missingByCascade.size === 0) return 0;
+
+  let filledCount = 0;
+  for (const [cid, recs] of missingByCascade.entries()) {
+    const dbPath = path.join(convDir, `${cid}.db`);
+    const stepModelMap = loadStepModelMapFromSqlite(dbPath);
+    if (stepModelMap.size === 0) continue;
+    for (const rec of recs) {
+      const recovered = stepModelMap.get(rec.stepIndex);
+      if (recovered) {
+        rec.model = recovered;
+        filledCount++;
+      }
+    }
+  }
+  return filledCount;
+}
+
+function mergeModelDailyMaps(...maps) {
+  const out = {};
+  for (const m of maps) {
+    if (!m || typeof m !== 'object') continue;
+    for (const [dateKey, modelRecs] of Object.entries(m)) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || !modelRecs || typeof modelRecs !== 'object') continue;
+      if (!out[dateKey]) out[dateKey] = {};
+      for (const [mKey, rec] of Object.entries(modelRecs)) {
+        if (!rec || typeof rec !== 'object') continue;
+        if (!out[dateKey][mKey]) {
+          out[dateKey][mKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+        }
+        out[dateKey][mKey].total += Number(rec.total) || 0;
+        out[dateKey][mKey].input += Number(rec.input) || 0;
+        out[dateKey][mKey].output += Number(rec.output) || 0;
+        out[dateKey][mKey].cache += Number(rec.cache) || 0;
+        out[dateKey][mKey].steps += Number(rec.steps) || 0;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 基于账本（含 RPC 富化模型）与未匹配 transcript 实时记录构建分来源按日按模型用量分布，
+ * 并严格对齐 dailyMap 权威总额（未能归属模型的差额落入 UNATTRIBUTED_MODEL_KEY）。
+ */
+function buildDailyModelBreakdown(params) {
+  const {
+    recentRequests,
+    finalCallsEntries,
+    matchedTranscriptReqs,
+    matchedLedgerKeys,
+    resolveLedgerCallDate,
+    mergedDesktop,
+    mergedCli,
+    mergedLegacyUnallocated,
+    archiveV2,
+    compactModelConfigs
+  } = params;
+
+  const modelMetaByKey = { ...(archiveV2?.modelMetaByKey || {}) };
+  const matchedModels = { desktop: {}, cli: {} };
+  const extraModels = { desktop: {}, cli: {} };
+
+  const addModelBucket = (srcMap, dateKey, callObj, inp, cap, outp, tot, steps = 1) => {
+    if (!dateKey || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return;
+    if (tot <= 0 && steps <= 0) return;
+    const bucket = resolveModelUsageBucket(callObj, compactModelConfigs);
+    const vKey = bucket.variantKey || UNATTRIBUTED_MODEL_KEY;
+    if (bucket.isAttributed && vKey !== UNATTRIBUTED_MODEL_KEY) {
+      modelMetaByKey[vKey] = {
+        modelKey: bucket.modelKey,
+        modelLabel: bucket.modelLabel,
+        variantKey: vKey,
+        variantLabel: bucket.variantLabel
+      };
+    }
+    if (!srcMap[dateKey]) srcMap[dateKey] = {};
+    if (!srcMap[dateKey][vKey]) {
+      srcMap[dateKey][vKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+    }
+    srcMap[dateKey][vKey].total += tot;
+    srcMap[dateKey][vKey].input += inp;
+    srcMap[dateKey][vKey].output += outp;
+    srcMap[dateKey][vKey].cache += cap;
+    srcMap[dateKey][vKey].steps += steps;
+  };
+
+  for (const [ledgerKey, c] of finalCallsEntries) {
+    if (!c) continue;
+    const effDate = resolveLedgerCallDate(ledgerKey, c);
+    if (!effDate || !/^\d{4}-\d{2}-\d{2}$/.test(effDate)) continue;
+    const srcKey = c.source === 'cli' ? 'cli' : 'desktop';
+    const inp = Number(c.inputTokens ?? c.input_tokens ?? c.input ?? 0) || 0;
+    const cap = Number(c.cacheTokens ?? c.cacheReadTokens ?? c.cache_read_tokens ?? c.cached ?? 0) || 0;
+    const outp = Number(c.outputTokens ?? c.output_tokens ?? c.output ?? 0) || 0;
+    const tot = Number(c.totalTokens) || (inp + cap + outp);
+    addModelBucket(matchedLedgerKeys.has(ledgerKey) ? matchedModels[srcKey] : extraModels[srcKey], effDate, c, inp, cap, outp, tot, 1);
+  }
+
+  for (const r of recentRequests) {
+    if (matchedTranscriptReqs && matchedTranscriptReqs.has(r)) continue;
+    const srcKey = r.source === 'cli' ? 'cli' : 'desktop';
+    const inp = Number(r.inputTokens) || 0;
+    const cap = Number(r.cacheTokens ?? r.cacheReadTokens ?? 0) || 0;
+    const outp = Number(r.outputTokens) || 0;
+    const tot = Number(r.totalTokens) || (inp + cap + outp);
+    addModelBucket(matchedModels[srcKey], r.date, r, inp, cap, outp, tot, 1);
+  }
+
+  const appendScaledDayBuckets = (dayOut, srcDay, authTotal, state) => {
+    if (!srcDay) return;
+    for (const [mKey, rec] of Object.entries(srcDay)) {
+      if (state.sumTot >= authTotal) break;
+      const takeTot = Math.min(rec.total, authTotal - state.sumTot);
+      const ratio = rec.total > 0 ? takeTot / rec.total : 0;
+      if (!dayOut[mKey]) dayOut[mKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+      const addInp = takeTot === rec.total ? rec.input : Math.round(rec.input * ratio);
+      const addOut = takeTot === rec.total ? rec.output : Math.round(rec.output * ratio);
+      const addCap = takeTot === rec.total ? rec.cache : Math.max(0, takeTot - addInp - addOut);
+      dayOut[mKey].total += takeTot;
+      dayOut[mKey].input += addInp;
+      dayOut[mKey].output += addOut;
+      dayOut[mKey].cache += addCap;
+      dayOut[mKey].steps += rec.steps;
+      state.sumTot += takeTot;
+      state.sumInp += addInp;
+      state.sumOut += addOut;
+      state.sumCap += addCap;
+      state.sumSteps += rec.steps;
+    }
+  };
+
+  const reconcileSourceMap = (srcKey, authDailyMap) => {
+    const archivedModels = archiveV2?.dailyModelMapBySource?.[srcKey] || {};
+    const outMap = {};
+    const allDates = new Set([
+      ...Object.keys(authDailyMap || {}),
+      ...Object.keys(matchedModels[srcKey]),
+      ...Object.keys(extraModels[srcKey])
+    ]);
+    for (const dateKey of allDates) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) continue;
+      const authRec = authDailyMap?.[dateKey];
+      if (!authRec || Number(authRec.total) <= 0) continue;
+
+      const dayOut = {};
+      const scanDay = matchedModels[srcKey][dateKey];
+      const extraDay = extraModels[srcKey][dateKey];
+      const state = { sumTot: 0, sumInp: 0, sumOut: 0, sumCap: 0, sumSteps: 0 };
+
+      if (scanDay || extraDay) {
+        appendScaledDayBuckets(dayOut, scanDay, authRec.total, state);
+        appendScaledDayBuckets(dayOut, extraDay, authRec.total, state);
+      } else if (archivedModels[dateKey]) {
+        for (const [mKey, rec] of Object.entries(archivedModels[dateKey])) {
+          dayOut[mKey] = { ...rec };
+          state.sumTot += rec.total;
+          state.sumInp += rec.input;
+          state.sumOut += rec.output;
+          state.sumCap += rec.cache;
+          state.sumSteps += rec.steps;
+        }
+      }
+
+      const diffTot = Math.max(0, (Number(authRec.total) || 0) - state.sumTot);
+      if (diffTot > 0) {
+        if (!dayOut[UNATTRIBUTED_MODEL_KEY]) {
+          dayOut[UNATTRIBUTED_MODEL_KEY] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+        }
+        dayOut[UNATTRIBUTED_MODEL_KEY].total += diffTot;
+        dayOut[UNATTRIBUTED_MODEL_KEY].input += Math.max(0, (Number(authRec.input) || 0) - state.sumInp);
+        dayOut[UNATTRIBUTED_MODEL_KEY].output += Math.max(0, (Number(authRec.output) || 0) - state.sumOut);
+        dayOut[UNATTRIBUTED_MODEL_KEY].cache += Math.max(0, (Number(authRec.cache) || 0) - state.sumCap);
+        dayOut[UNATTRIBUTED_MODEL_KEY].steps += Math.max(0, (Number(authRec.steps) || 0) - state.sumSteps);
+      }
+
+      if (Object.keys(dayOut).length > 0) outMap[dateKey] = dayOut;
+    }
+    return outMap;
+  };
+
+  const desktopModelMap = reconcileSourceMap('desktop', mergedDesktop);
+  const cliModelMap = reconcileSourceMap('cli', mergedCli);
+  const unallocatedModelMap = {};
+  for (const [dateKey, rec] of Object.entries(mergedLegacyUnallocated || {})) {
+    if (!rec || Number(rec.total) <= 0) continue;
+    unallocatedModelMap[dateKey] = { [UNATTRIBUTED_MODEL_KEY]: { ...rec } };
+  }
+  const allModelMap = mergeModelDailyMaps(desktopModelMap, cliModelMap, unallocatedModelMap);
+
+  return {
+    dailyModelMapBySource: {
+      all: allModelMap,
+      desktop: desktopModelMap,
+      cli: cliModelMap
+    },
+    modelMetaByKey
+  };
+}
+
 /**
  * 历史用量与账本聚合核心逻辑（支持在 Worker 线程或主线程直接运行）
  * @param {object} options
@@ -2790,7 +3161,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const visitedRealDirs = new Set();
   const transcriptJobs = [];
 
-  const walkTranscripts = (dir, sourceName, depth = 0) => {
+  const walkTranscripts = (dir, sourceName, depth = 0, convDirPath = '') => {
     if (depth > 4) return;
     try {
       if (!fs.existsSync(dir)) return;
@@ -2807,10 +3178,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
             const st = fs.statSync(realTarget);
             if (st.isDirectory()) {
               if (!visitedRealDirs.has(realTarget)) {
-                walkTranscripts(realTarget, sourceName, depth + 1);
+                walkTranscripts(realTarget, sourceName, depth + 1, convDirPath);
               }
             } else if (entry.name === 'transcript.jsonl') {
-              transcriptJobs.push({ path: realTarget, source: sourceName });
+              transcriptJobs.push({ path: realTarget, source: sourceName, convDir: convDirPath });
             }
           } catch { }
         } else if (entry.isDirectory()) {
@@ -2819,26 +3190,26 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
             const directLogPath = path.join(fullPath, 'transcript.jsonl');
             let matchedFast = false;
             if (fs.existsSync(stdLogPath)) {
-              transcriptJobs.push({ path: stdLogPath, source: sourceName });
+              transcriptJobs.push({ path: stdLogPath, source: sourceName, convDir: convDirPath });
               matchedFast = true;
             }
             if (fs.existsSync(directLogPath)) {
-              transcriptJobs.push({ path: directLogPath, source: sourceName });
+              transcriptJobs.push({ path: directLogPath, source: sourceName, convDir: convDirPath });
               matchedFast = true;
             }
             if (matchedFast) continue;
           }
-          walkTranscripts(fullPath, sourceName, depth + 1);
+          walkTranscripts(fullPath, sourceName, depth + 1, convDirPath);
         } else if (entry.name === 'transcript.jsonl') {
-          transcriptJobs.push({ path: fullPath, source: sourceName });
+          transcriptJobs.push({ path: fullPath, source: sourceName, convDir: convDirPath });
         }
       }
     } catch { }
   };
 
-  walkTranscripts(brainDir, 'desktop');
+  walkTranscripts(brainDir, 'desktop', 0, convDir);
   if (fs.existsSync(path.join(agCliDir, 'brain'))) {
-    walkTranscripts(path.join(agCliDir, 'brain'), 'cli');
+    walkTranscripts(path.join(agCliDir, 'brain'), 'cli', 0, path.join(agCliDir, 'conversations'));
   }
 
   // 5. 结构化 JSON 解析 transcript.jsonl（基于 size+mtimeMs 单文件增量缓存，去重并汇总）
@@ -2930,6 +3301,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
             });
           }
         }
+        backfillMissingModelsFromConversationDb(fileRecords, job.convDir, options);
         if (transcriptFileCache.size > 1000) {
           const oldestKey = transcriptFileCache.keys().next().value;
           if (oldestKey) transcriptFileCache.delete(oldestKey);
@@ -3624,6 +3996,19 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   for (const b of olderQuotaBuckets.values()) recentModelUsage.push(b);
   const quotaUsageCoverageStartMs = allKnownCallsMinTs !== null ? Math.max(quotaCutoffMs, allKnownCallsMinTs) : null;
 
+  const modelBreakdown = buildDailyModelBreakdown({
+    recentRequests,
+    finalCallsEntries,
+    matchedTranscriptReqs,
+    matchedLedgerKeys,
+    resolveLedgerCallDate,
+    mergedDesktop,
+    mergedCli,
+    mergedLegacyUnallocated,
+    archiveV2,
+    compactModelConfigs
+  });
+
   const prevAccountEmail = Object.prototype.hasOwnProperty.call(extraContext, 'prevAccountEmail')
     ? extraContext.prevAccountEmail
     : (collectTokenHistoryAsync._lastAccountEmail || null);
@@ -3707,10 +4092,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       desktop: mergedDesktop,
       cli: mergedCli,
       legacyUnallocated: mergedLegacyUnallocated
-    }
+    },
+    dailyModelMapBySource: modelBreakdown.dailyModelMapBySource,
+    modelMetaByKey: modelBreakdown.modelMetaByKey
   };
 
-  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
+  const unattributedModelTokens = Object.values(modelBreakdown.dailyModelMapBySource?.all || {}).reduce(
+    (acc, dayRec) => acc + (Number(dayRec?.[UNATTRIBUTED_MODEL_KEY]?.total) || 0),
+    0
+  );
+  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|m:${Object.keys(modelBreakdown.modelMetaByKey).length}|u:${unattributedModelTokens}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
   const isStaleCheck = typeof extraContext.isStale === 'function' ? extraContext.isStale : null;
   if (isStaleCheck && isStaleCheck()) {
     return { out, archiveSig: null, accountKey: currentAccountKey || null, stale: true };
@@ -3732,7 +4123,9 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         costEstimate,
         costEstimateCurrentMonth,
         referenceCost: out.referenceCost,
-        dailyMapBySource: out.dailyMapBySource
+        dailyMapBySource: out.dailyMapBySource,
+        dailyModelMapBySource: modelBreakdown.dailyModelMapBySource,
+        modelMetaByKey: modelBreakdown.modelMetaByKey
       };
       safeWriteJsonSync(archivePathV2, v2Payload);
 
@@ -5202,6 +5595,10 @@ module.exports = {
   collect,
   collectTokenHistory,
   collectTokenHistoryAsync,
+  buildSqliteImmutableUri,
+  extractStepModelsFromGenMetadataBlob,
+  loadStepModelMapFromSqlite,
+  backfillMissingModelsFromConversationDb,
   scanFiles,
   pythonScan,
   resolvePython,
