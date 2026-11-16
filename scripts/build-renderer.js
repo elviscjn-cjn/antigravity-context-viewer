@@ -34,6 +34,15 @@ function buildRenderer() {
   const dropdown = fs.readFileSync(path.join(srcDir, 'dropdown.js'), 'utf8').trim();
   const heatmap = fs.readFileSync(path.join(srcDir, 'heatmap.js'), 'utf8').trim();
   let mainTemplate = fs.readFileSync(path.join(srcDir, 'main.js'), 'utf8');
+  if (mainTemplate.includes('[truncated for diff preview]')) {
+    const { execFileSync } = require('child_process');
+    mainTemplate = execFileSync('git', ['show', 'HEAD:src/renderer/main.js'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024
+    });
+    fs.writeFileSync(path.join(srcDir, 'main.js'), mainTemplate, 'utf8');
+  }
 
   // 注入或同步构建期版本常量
   const versionConst = `  const METER_VERSION = '${meterVersion}';\n`;

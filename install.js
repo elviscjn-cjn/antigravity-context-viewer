@@ -696,6 +696,12 @@ async function install(options = {}) {
         }
       }
 
+      fs.writeFileSync(path.join(staging, 'dist', 'meter-manifest.json'), JSON.stringify({
+        version: pkgVersion,
+        hostVersion: version,
+        updatedAt: new Date().toISOString()
+      }, null, 2), 'utf8');
+
       const originalEntries = asar.listPackage(sourceArchive);
       const unpackedPaths = collectUnpackedPaths(asar, sourceArchive);
       if (unpackedPaths.size > 0) {
@@ -708,6 +714,7 @@ async function install(options = {}) {
       const allowedChanges = [
         'dist/utils.js',
         'dist/preload.js',
+        'dist/meter-manifest.json',
         'dist/i18n/zh-CN.json',
         'dist/i18n/i18n-runtime.js',
         ...additions.map(f => 'dist/' + f)

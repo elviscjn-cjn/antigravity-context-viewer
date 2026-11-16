@@ -574,14 +574,22 @@
 
     try {
       let res = null;
-      if (hasIpc) {
-        res = await window.contextMeterAPI.saveSettings({ ...payload, email, saveSeq: thisSeq });
+      const savePayload = { ...payload, email, saveSeq: thisSeq };
+      if (typeof callBackendWithPriority === 'function') {
+        const out = await callBackendWithPriority({
+          ipcCall: hasIpc ? () => window.contextMeterAPI.saveSettings(savePayload) : null,
+          liveRoute: '/save-settings',
+          liveBody: savePayload
+        });
+        res = out.result;
+      } else if (hasIpc) {
+        res = await window.contextMeterAPI.saveSettings(savePayload);
       } else if (hasLive) {
         const live = window.__AGContextMeterLive;
         const resp = await fetch(`http://127.0.0.1:${live.port}/save-settings`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify({ ...payload, email, saveSeq: thisSeq })
+          body: JSON.stringify(savePayload)
         });
         if (!resp.ok) {
           showPlanSaveFeedback(false, `HTTP ${resp.status}`);

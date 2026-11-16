@@ -137,6 +137,14 @@ const LIVE_CAPABILITIES = {
   hotReload: true
 };
 
+function timingSafeTokenEqual(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string' || !expected) return false;
+  const bufA = Buffer.from(provided, 'utf8');
+  const bufB = Buffer.from(expected, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT }) {
   const resolveAllowedSet = () => {
     const set = new Set();
@@ -171,7 +179,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-AG-Context-Token');
       res.writeHead(204); res.end(); return;
     }
-    if (req.method !== 'POST' || !ALLOWED_ROUTES.includes(req.url) || req.headers['x-ag-context-token'] !== secret) { res.writeHead(403); res.end(); return; }
+    if (req.method !== 'POST' || !ALLOWED_ROUTES.includes(req.url) || !timingSafeTokenEqual(req.headers['x-ag-context-token'], secret)) { res.writeHead(403); res.end(); return; }
     let body = '';
     let bodyLength = 0;
     let exceeded = false;
@@ -474,8 +482,20 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
   };
 }
 
+function getCliArgValue(flagName) {
+  const idx = process.argv.indexOf(flagName);
+  if (idx >= 0 && idx + 1 < process.argv.length) {
+    return String(process.argv[idx + 1] || '').trim();
+  }
+  return '';
+}
+
 function parseInitialOriginsEnv() {
-  const raw = String(process.env.AG_LIVE_ORIGINS || '').trim();
+  const cliOriginsB64 = getCliArgValue('--origins-b64');
+  let raw = String(process.env.AG_LIVE_ORIGINS || '').trim();
+  if (!raw && cliOriginsB64) {
+    try { raw = Buffer.from(cliOriginsB64, 'base64').toString('utf8').trim(); } catch {}
+  }
   if (!raw) return [];
   try {
     if (raw.startsWith('[')) {
@@ -548,10 +568,12 @@ async function startLiveHost() {
     currentOrigins = Array.isArray(api.origins) && api.origins.length ? api.origins : [api.origin];
   }
   const secret = crypto.randomBytes(32).toString('hex');
-  const stamp = process.env.AG_LIVE_STAMP_PATH
-    ? path.resolve(process.env.AG_LIVE_STAMP_PATH)
+  const cliStamp = getCliArgValue('--stamp');
+  const stampRaw = process.env.AG_LIVE_STAMP_PATH || cliStamp;
+  const stamp = stampRaw
+    ? path.resolve(stampRaw)
     : path.join(getStateDir(), '.live-session.json');
-  const hostPidRaw = Number(process.env.AG_LIVE_HOST_PID || 0);
+  const hostPidRaw = Number(process.env.AG_LIVE_HOST_PID || getCliArgValue('--host-pid') || 0);
   const watchHostPid = Number.isInteger(hostPidRaw) && hostPidRaw > 0 ? hostPidRaw : null;
 
   let checkTimer = null;
@@ -564,12 +586,15 @@ async function startLiveHost() {
       clearInterval(checkTimer);
       checkTimer = null;
     }
-    try {
-      if (fs.existsSync(stamp)) {
-        const cur = JSON.parse(fs.readFileSync(stamp, 'utf8'));
-        if (cur && cur.pid === process.pid) fs.unlinkSync(stamp);
-      }
-    } catch {}
+    const primaryStamp = path.join(getStateDir(), '.live-session.json');
+    for (const candidateStamp of Array.from(new Set([stamp, primaryStamp]))) {
+      try {
+        if (fs.existsSync(candidateStamp)) {
+          const cur = JSON.parse(fs.readFileSync(candidateStamp, 'utf8'));
+          if (cur && cur.pid === process.pid) fs.unlinkSync(candidateStamp);
+        }
+      } catch {}
+    }
     if (server) {
       try {
         server.close(() => process.exit(0));

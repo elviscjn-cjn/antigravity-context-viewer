@@ -8441,8 +8441,8 @@
     renderActiveHeatView(true);
     updateHeatTabThumb();
 
-    if (save && typeof window !== 'undefined' && typeof window.contextMeterAPI?.saveSettings === 'function') {
-      window.contextMeterAPI.saveSettings({ savedHeatView: view });
+    if (save && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ savedHeatView: view });
     }
   }
 
@@ -9554,8 +9554,8 @@
 
   el('check-auto-update')?.addEventListener('change', e => {
     autoCheckUpdate = e.target.checked;
-    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.saveSettings === 'function') {
-      window.contextMeterAPI.saveSettings({ autoCheckUpdate });
+    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+      void saveSettingsPayloadBridge({ autoCheckUpdate });
     }
   });
 

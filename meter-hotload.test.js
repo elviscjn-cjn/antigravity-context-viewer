@@ -78,7 +78,7 @@ function createHotloadDomSandbox({ fetchImpl = null, contextMeterAPI = null, liv
       innerHTML: '',
       style: {
         display: '', opacity: '', cssText: '',
-        setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; }
+        setProperty() { }, removeProperty() { }, getPropertyValue() { return ''; }
       },
       children,
       parentNode: null,
@@ -168,7 +168,7 @@ function createHotloadDomSandbox({ fetchImpl = null, contextMeterAPI = null, liv
       },
       click() {
         const fns = listeners.get(el)?.get('click');
-        if (fns) for (const fn of fns) fn({ target: el, preventDefault() {}, stopPropagation() {} });
+        if (fns) for (const fn of fns) fn({ target: el, preventDefault() { }, stopPropagation() { } });
       },
       querySelector() { return null; },
       querySelectorAll(sel) {
@@ -179,7 +179,7 @@ function createHotloadDomSandbox({ fetchImpl = null, contextMeterAPI = null, liv
         return [];
       },
       getBoundingClientRect() { return { left: 100, top: 10, right: 200, bottom: 40, width: 100, height: 30 }; },
-      focus() {}
+      focus() { }
     };
     return el;
   };
@@ -382,7 +382,7 @@ function createHotloadDomSandbox({ fetchImpl = null, contextMeterAPI = null, liv
       await new Promise(r => setTimeout(r, ms));
     },
     cleanup() {
-      try { sandbox.__AGContextMeter?.dispose?.(); } catch {}
+      try { sandbox.__AGContextMeter?.dispose?.(); } catch { }
       for (const id of Array.from(trackedIntervals)) {
         globalThis.clearInterval(id);
         trackedIntervals.delete(id);
@@ -770,7 +770,7 @@ test('热加载 4：live-host 多窗口 origin 隔离、不串账号缓存、/ru
       res.on('data', c => data += c);
       res.on('end', () => {
         let parsed = null;
-        try { parsed = JSON.parse(data); } catch {}
+        try { parsed = JSON.parse(data); } catch { }
         resolve({ status: res.statusCode, headers: res.headers, json: parsed });
       });
     });
@@ -1136,7 +1136,7 @@ test('热加载 7：PROJECT_VERSION 精确跟随本插件 package.json 但不误
     await h.flush(60);
     assert.equal(vEl.textContent, 'v0.8.7', '未完成热注入时顶部运行版本号不得提前伪造为 v0.8.8');
   } finally {
-    try { h?.cleanup?.(); } catch {}
+    try { h?.cleanup?.(); } catch { }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -1188,5 +1188,132 @@ test('热加载 8：存在 HTTP_PROXY/HTTPS_PROXY 且缺少 NO_PROXY 时，回�
     else process.env.NO_PROXY = prevNoProxy;
     await new Promise(r => loopSrv.close(r));
     await new Promise(r => blackholeProxy.close(r));
+  }
+});
+
+test('热加载 9：cli 注入失败时 rollbackPreparedLiveBridge 恢复旧 .live-session.json 且 live-host 拒绝错误 token / 脱敏检查错误', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-hotload-rollback-'));
+  const sessionPath = path.join(tmpDir, '.live-session.json');
+  const prevInfo = { pid: 1001, port: 41001, token: 'old-tok', origin: 'https://127.0.0.1:41001', version: '0.8.6' };
+  const nextInfo = { pid: 999999, port: 41002, token: 'new-tok', origin: 'https://127.0.0.1:41002', version: '0.8.7' };
+  try {
+    fs.writeFileSync(sessionPath, JSON.stringify(nextInfo, null, 2));
+    const { rollbackPreparedLiveBridge } = require('./cli');
+    const rb1 = await rollbackPreparedLiveBridge({
+      reused: false,
+      liveInfo: nextInfo,
+      previousLiveInfo: prevInfo,
+      statePath: sessionPath
+    });
+    assert.equal(rb1.rolledBack, true);
+    const restored = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+    assert.equal(restored.pid, 1001);
+    assert.equal(restored.version, '0.8.6');
+
+    fs.writeFileSync(sessionPath, JSON.stringify(nextInfo, null, 2));
+    const rb2 = await rollbackPreparedLiveBridge({
+      reused: false,
+      liveInfo: nextInfo,
+      previousLiveInfo: null,
+      statePath: sessionPath
+    });
+    assert.equal(rb2.rolledBack, true);
+    assert.equal(fs.existsSync(sessionPath), false, '无旧连接时回滚应清理新建的 .live-session.json');
+
+    // timingSafeTokenEqual 拒绝错长度与空/错误 token
+    const { createLiveRequestHandler } = require('./live-host');
+    const handler = createLiveRequestHandler({
+      api: { origin: 'https://127.0.0.1:51111', origins: ['https://127.0.0.1:51111'] },
+      secret: 'secret-token-value-123456'
+    });
+    const fakeRes = () => ({ status: 0, headers: {}, writeHead(s) { this.status = s; }, setHeader(k, v) { this.headers[k] = v; }, end() { } });
+    const rBadLen = fakeRes();
+    await handler({ method: 'POST', url: '/runtime-info', headers: { origin: 'https://127.0.0.1:51111', 'x-ag-context-token': 'short' } }, rBadLen);
+    assert.equal(rBadLen.status, 403);
+    const rBadSameLen = fakeRes();
+    await handler({ method: 'POST', url: '/runtime-info', headers: { origin: 'https://127.0.0.1:51111', 'x-ag-context-token': 'secret-token-value-999999' } }, rBadSameLen);
+    assert.equal(rBadSameLen.status, 403);
+
+    // checkUpdateAsync 报错脱敏代理凭据
+    const collector = require('./meter-collector');
+    const errRes = await collector.checkUpdateAsync({
+      force: true,
+      currentVersion: '0.8.7',
+      _requestGithubUrl: async () => {
+        throw new Error('connect via http://alice:supersecret@127.0.0.1:7897 failed');
+      }
+    });
+    assert.equal(errRes.ok, false);
+    assert.doesNotMatch(errRes.error, /alice|supersecret/, '检查更新报错必须剥离代理账密凭据');
+    assert.match(errRes.error, /http:\/\/127\.0\.0\.1:7897/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('热加载 10：dropdown 自定义套餐设置与热力图视图切换保存优先路由至新版 live-host /save-settings', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-dropdown-live-'));
+  let h;
+  try {
+    let ipcSaveHits = 0;
+    const liveReqs = [];
+    h = createHotloadDomSandbox({
+      liveInfo: {
+        port: 49999,
+        token: 'tok-live',
+        version: PROJECT_VERSION,
+        backendSource: 'live-host'
+      },
+      hotCtx: {
+        expectedVersion: PROJECT_VERSION,
+        source: 'in-app-update',
+        preferLiveHost: true
+      },
+      fetchImpl: async (url, opts) => {
+        if (String(url).startsWith('http://127.0.0.1:49999')) {
+          liveReqs.push({ url, body: JSON.parse(opts.body || '{}') });
+          return { ok: true, status: 200, json: async () => ({ ok: true }) };
+        }
+        return new Promise(() => { });
+      },
+      contextMeterAPI: {
+        getRuntimeInfo: async () => ({ ok: true, backendVersion: '0.8.6', backendSource: 'electron-ipc' }),
+        saveSettings: async () => { ipcSaveHits++; return { ok: true }; },
+        getQuota: async () => ({ ok: true, activeStatus: 'available', planInfo: {}, groups: [], models: {}, backendVersion: '0.8.6' }),
+        scan: async () => ({ status: 'empty' }),
+        getSettings: async () => ({ ok: true, country: 'US', subscriptionRegion: 'US', currency: 'USD', pricingPeriod: 'month' })
+      }
+    });
+    await h.flush(30);
+    h.shadowElements.get('h-tab-weekly').click();
+    h.shadowElements.get('btn-custom-plan-clear').click();
+    await h.flush(30);
+    assert.equal(ipcSaveHits, 0, '旧版 IPC 不得在热加载新版 live-host 就绪时劫持保存设置');
+    assert.ok(liveReqs.some(r => r.url.endsWith('/save-settings') && r.body.savedHeatView === 'weekly'));
+    assert.ok(liveReqs.some(r => r.url.endsWith('/save-settings') && r.body.clearPlan === true));
+  } finally {
+    try { h?.cleanup?.(); } catch { }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('热加载 11：非测试上下文执行 collectTokenHistoryAsync 后 Worker.unref 生效，进程快速退出不卡死 45s 空闲等待', () => {
+  const { execFileSync } = require('node:child_process');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-worker-exit-'));
+  try {
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.NODE_TEST_CONTEXT;
+    const t0 = Date.now();
+    execFileSync(process.execPath, [
+      '-e',
+      `const { collectTokenHistoryAsync } = require(${JSON.stringify(path.join(__dirname, 'meter-collector.js'))});
+       collectTokenHistoryAsync({ force: true, agDir: ${JSON.stringify(tmpDir)} }).then(r => {
+         if (!r) process.exit(2);
+       });`
+    ], { env: cleanEnv, timeout: 5000, stdio: 'pipe' });
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 4500, `Worker.unref 未生效或阻塞退出，耗时 ${elapsed}ms`);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

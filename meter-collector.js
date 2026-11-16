@@ -2643,7 +2643,6 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
   const w = new Worker(targetScript, {
     workerData: { agCollectorHistoryWorker: true }
   });
-  w.unref();
   w.on('message', (msg) => {
     if (!msg || !msg.id) return;
     const entry = historyWorkerPending.get(msg.id);
@@ -2651,6 +2650,9 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
     historyWorkerPending.delete(msg.id);
     if (entry.timer) clearTimeout(entry.timer);
     historyWorkerConsecutiveErrors = 0;
+    if (historyWorkerPending.size === 0) {
+      try { w.unref(); } catch { }
+    }
     scheduleHistoryWorkerIdleCleanup();
     if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result });
     else entry.resolve({ _workerHandled: false, error: msg.error || 'Worker 执行失败' });
@@ -2680,6 +2682,8 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
     if (historyWorkerInstance === w) historyWorkerInstance = null;
     clearAllHistoryWorkerPending(w, code !== 0 ? `worker_exit_${code}` : null);
   });
+  // Node.js v24 注册 message 监听会隐式 ref 底层 MessagePort，必须在全部监听绑定之后再 unref
+  try { w.unref(); } catch { }
   historyWorkerInstance = w;
   return w;
 }
@@ -2749,9 +2753,13 @@ async function runHistoryWorkerTask(payload, cmd = 'collectTokenHistory', taskOp
       if (typeof entry.timer.unref === 'function') entry.timer.unref();
       historyWorkerPending.set(id, entry);
       try {
+        try { w.ref(); } catch { }
         w.postMessage({ id, cmd, payload, env: captureCollectorEnvSnapshot() });
       } catch {
         historyWorkerPending.delete(id);
+        if (historyWorkerPending.size === 0) {
+          try { w.unref(); } catch { }
+        }
         if (entry.timer) clearTimeout(entry.timer);
         resolve(null);
       }
@@ -5024,7 +5032,8 @@ async function checkUpdateAsync(options = {}) {
       currentVersion: runtimeVersion,
       installedVersion,
       htmlUrl: OFFICIAL_RELEASES_WEB_BASE,
-      error: err.message
+      error: sanitizeDiagnosticErrorText(err),
+      ...(err?.diagnostics ? { diagnostics: err.diagnostics } : {})
     };
   }
 }

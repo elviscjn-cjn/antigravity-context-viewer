@@ -15,9 +15,10 @@ const http = require('http');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { loadAsarEngine, getStateDir } = require('./asar-engine');
-const { install, findAsarPath, tryHotInject, tryHotInjectDetailed, probeLiveHostRuntimeInfo, shutdownLiveHostGracefully } = require('./install');
+const { install, findAsarPath, tryHotInject, tryHotInjectDetailed, probeLiveHostRuntimeInfo, shutdownLiveHostGracefully, extractAsarFile } = require('./install');
 const { restore } = require('./restore');
-const { resolvePython } = require('./meter-collector');
+const { resolvePython, syncLiveRuntimeBundle } = require('./meter-collector');
+const { redactProxyUrl } = require('./meter-proxy');
 const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, AUTHOR_INFO } = require('./meter-context-unlock');
 
 const asar = loadAsarEngine();
@@ -195,9 +196,16 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
   } catch {}
 
   const liveRuntimeScript = path.join(stateDir, 'live-runtime', 'live-host.js');
-  const hostEntryScript = fs.existsSync(liveRuntimeScript) && !__dirname.toLowerCase().includes(os.tmpdir().toLowerCase())
-    ? path.join(__dirname, 'live-host.js')
-    : path.join(__dirname, 'live-host.js');
+  // 在从临时解压目录安装或升级前先同步持久化 live-runtime，避免触发进程删除临时目录后影响后台按需加载
+  let syncedRuntimeDir = null;
+  try {
+    syncedRuntimeDir = syncLiveRuntimeBundle(__dirname, { version: currentPkgVersion, stateDir });
+  } catch {}
+  const hostEntryScript = (syncedRuntimeDir && fs.existsSync(liveRuntimeScript))
+    ? liveRuntimeScript
+    : (fs.existsSync(liveRuntimeScript) && !__dirname.toLowerCase().includes(os.tmpdir().toLowerCase())
+      ? liveRuntimeScript
+      : path.join(__dirname, 'live-host.js'));
 
   const childEnv = {
     ...process.env,
@@ -206,16 +214,58 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
   };
   delete childEnv.ELECTRON_RUN_AS_NODE;
 
+  const originsB64 = expectedOrigins.length
+    ? Buffer.from(JSON.stringify(expectedOrigins), 'utf8').toString('base64')
+    : '';
+  const hostArgs = [hostEntryScript, '--stamp', stagingStamp];
+  if (originsB64) hostArgs.push('--origins-b64', originsB64);
+
   let spawnedChild = null;
+  let spawnedPid = null;
   let newInfo = null;
   try {
-    spawnedChild = spawn(process.execPath, [hostEntryScript], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      env: childEnv
-    });
-    spawnedChild.unref();
+    const canBreakawayWmi = process.platform === 'win32'
+      && process.env.AG_METER_TEST_MODE !== '1'
+      && process.env.NODE_ENV !== 'test'
+      && !process.env.AG_METER_STATE_DIR;
+    if (canBreakawayWmi) {
+      try {
+        const { spawnSync } = require('child_process');
+        const cmdLine = [process.execPath, ...hostArgs]
+          .map(a => `"${String(a).replace(/"/g, '""')}"`)
+          .join(' ');
+        const psCmd = `
+          $si = [CimInstance](New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly)
+          $si.ShowWindow = 0
+          $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+            CommandLine = '${cmdLine.replace(/'/g, "''")}'
+            CurrentDirectory = '${path.dirname(hostEntryScript).replace(/'/g, "''")}'
+            ProcessStartupInformation = $si
+          }
+          if ($r.ReturnValue -eq 0 -and $r.ProcessId) { Write-Output $r.ProcessId }
+        `;
+        const wmiRes = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], {
+          windowsHide: true,
+          timeout: 4000,
+          encoding: 'utf8'
+        });
+        const parsedPid = Number(String(wmiRes.stdout || '').trim().split(/\r?\n/).pop());
+        if (Number.isInteger(parsedPid) && parsedPid > 0) {
+          spawnedPid = parsedPid;
+        }
+      } catch {}
+    }
+    if (!spawnedPid) {
+      spawnedChild = spawn(process.execPath, hostArgs, {
+        cwd: path.dirname(hostEntryScript),
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: childEnv
+      });
+      spawnedChild.unref();
+      spawnedPid = spawnedChild.pid || null;
+    }
 
     const deadline = Date.now() + 6000;
     while (Date.now() < deadline) {
@@ -244,8 +294,9 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
   try { if (fs.existsSync(stagingStamp)) fs.unlinkSync(stagingStamp); } catch {}
 
   if (!newInfo) {
-    if (spawnedChild?.pid) {
-      try { process.kill(spawnedChild.pid); } catch {}
+    const killPid = spawnedPid || spawnedChild?.pid;
+    if (killPid) {
+      try { process.kill(killPid); } catch {}
     }
     return {
       needed: true,
@@ -275,8 +326,33 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
     backendSource: 'live-host',
     backendVersion: newInfo.version,
     liveInfo: newInfo,
-    previousLiveInfo: prevToShutdown
+    previousLiveInfo: prevToShutdown,
+    statePath
   };
+}
+
+/**
+ * 若本次新建了 live-host 但随后安装或窗口注入失败，关闭新建后台并还原 .live-session.json
+ */
+async function rollbackPreparedLiveBridge(bridgePrep) {
+  if (!bridgePrep || bridgePrep.reused || !bridgePrep.liveInfo) return { rolledBack: false };
+  const statePath = bridgePrep.statePath || path.join(getStateDir(), '.live-session.json');
+  try {
+    await shutdownLiveHostGracefully(bridgePrep.liveInfo);
+  } catch {}
+  try {
+    if (bridgePrep.previousLiveInfo) {
+      const tmpRestore = `${statePath}.rollback-${process.pid}`;
+      fs.writeFileSync(tmpRestore, JSON.stringify(bridgePrep.previousLiveInfo, null, 2));
+      fs.renameSync(tmpRestore, statePath);
+    } else if (fs.existsSync(statePath)) {
+      const cur = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      if (cur && cur.pid === bridgePrep.liveInfo.pid) {
+        fs.unlinkSync(statePath);
+      }
+    }
+  } catch {}
+  return { rolledBack: true };
 }
 
 async function cmdStatus(customPath) {
@@ -290,11 +366,11 @@ async function cmdStatus(customPath) {
   } catch {}
   try {
     asarPath = findAsarPath(customPath);
-    version = JSON.parse(asar.extractFile(asarPath, 'package.json').toString('utf8')).version;
-    const utilsSource = asar.extractFile(asarPath, 'dist/utils.js').toString('utf8');
+    version = JSON.parse(extractAsarFile(asarPath, 'package.json').toString('utf8')).version;
+    const utilsSource = extractAsarFile(asarPath, 'dist/utils.js').toString('utf8');
     asarPatched = utilsSource.includes('installContextMeter(win)');
     try {
-      const manifestRaw = asar.extractFile(asarPath, 'dist/meter-manifest.json');
+      const manifestRaw = extractAsarFile(asarPath, 'dist/meter-manifest.json');
       const mObj = JSON.parse(manifestRaw.toString('utf8'));
       if (mObj?.version) diskVersion = mObj.version;
     } catch {}
@@ -383,10 +459,18 @@ async function main() {
       preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
       clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
     };
-    const manifest = await install({ path: customPath, backup: customBackup, force: isForce, hotInjectOptions });
+    let manifest;
+    try {
+      manifest = await install({ path: customPath, backup: customBackup, force: isForce, hotInjectOptions });
+    } catch (installErr) {
+      await rollbackPreparedLiveBridge(bridgePrep);
+      throw installErr;
+    }
 
     if (manifest.liveInjected && bridgePrep.previousLiveInfo) {
       await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
+    } else if (!manifest.liveInjected) {
+      await rollbackPreparedLiveBridge(bridgePrep);
     }
 
     const reportBackendVersion = manifest.hotInjectReport?.backendVersion || bridgePrep.backendVersion || null;
@@ -424,7 +508,7 @@ async function main() {
     console.log(`     * 生效说明: ${cfg.modules.chinese.enabled ? '⏳ 重启 Antigravity 客户端后加载中文' : '⚪ 默认保持官方原生英文，可在客户端面板中随时开启并重启生效'}`);
 
     console.log('   - 🌐 免 TUN 网络直连 (本地代理):');
-    console.log(`     * 配置状态: [配置: ${cfg.modules.proxy.enabled ? '已开启' : '已关闭'}] (代理: ${cfg.modules.proxy.proxyUrl || '未配置'})`);
+    console.log(`     * 配置状态: [配置: ${cfg.modules.proxy.enabled ? '已开启' : '已关闭'}] (代理: ${redactProxyUrl(cfg.modules.proxy.proxyUrl) || '未配置'})`);
     console.log(`     * 磁盘组件: ${disk.proxyReady ? '✅ 已注入（支持 Session 代理与环境变量拦截）' : (disk.proxy ? '⚠️ 磁盘注入不完整' : '⚪ 未注入')}`);
     console.log(`     * 生效说明: ${cfg.modules.proxy.enabled ? '🔍 需通过 node cli.js proxy:test 测试连通性' : '⚪ 跟随系统默认网络栈，可在客户端面板中随时配置并开启'}`);
     console.log(`     * 模型请求验证: 待通过真实在线会话验证 (分层标定，未发送请求前不宣称生效)`);
@@ -443,14 +527,23 @@ async function main() {
   } else if (cmd === 'live') {
     const liveBefore = await queryLiveWindow();
     const bridgePrep = await ensureLiveBridgeIfNeeded(liveBefore);
-    const report = await tryHotInjectDetailed({
-      source: 'cli-live',
-      liveInfo: bridgePrep.liveInfo || null,
-      liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
-      preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
-      clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
-    });
-    if (!report.ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
+    let report;
+    try {
+      report = await tryHotInjectDetailed({
+        source: 'cli-live',
+        liveInfo: bridgePrep.liveInfo || null,
+        liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
+        preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
+        clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
+      });
+    } catch (liveErr) {
+      await rollbackPreparedLiveBridge(bridgePrep);
+      throw liveErr;
+    }
+    if (!report.ok) {
+      await rollbackPreparedLiveBridge(bridgePrep);
+      throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
+    }
     if (bridgePrep.previousLiveInfo) {
       await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
     }
@@ -673,4 +766,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { cmdStatus, cmdCheck };
+module.exports = { cmdStatus, cmdCheck, rollbackPreparedLiveBridge };
