@@ -212,7 +212,9 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
   });
 
   const zipSha = crypto.createHash('sha256').update(zipBuf).digest('hex');
-  const zipName = 'antigravity-context-viewer_0.9.0_windows_amd64.zip';
+  const osMap = { win32: 'windows', darwin: 'darwin', linux: 'linux' };
+  const archMap = { x64: 'amd64', arm64: 'arm64' };
+  const zipName = `antigravity-context-viewer_0.9.0_${osMap[process.platform] || 'windows'}_${archMap[process.arch] || 'amd64'}.zip`;
   const checksumsContent = `${zipSha}  ${zipName}\n`;
 
   const mockReleases = [

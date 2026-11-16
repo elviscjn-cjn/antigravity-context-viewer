@@ -155,7 +155,7 @@ function createSelfSignedLocalhostCert() {
 
   const tbs = seq(
     tlv(0xa0, intBuf(2)),
-    intBuf(crypto.randomBytes(8).map((b, idx) => (idx === 0 ? b & 0x7f : b))),
+    intBuf(crypto.randomBytes(8).map((b, idx) => (idx === 0 ? ((b & 0x7f) || 0x01) : b))),
     sha256WithRsaAlg,
     name,
     validity,
@@ -220,14 +220,19 @@ test('1. 配置损坏 fail-closed：不静默迁移旧代理/旧汉化、保留�
   const sb = makeTempSandbox('ag-v085-cfg-');
   try {
     withIsolatedEnv(sb, () => {
-      // 先埋入遗留旧代理与旧汉化配置（开启态，对应 LOCALAPPDATA 路径规范）
-      const legacyProxyDir = path.join(sb.localAppData, 'AntigravityProxyNoTun');
+      // 先埋入遗留旧代理与旧汉化配置（按当前平台对应遗留目录写入）
+      const legacyBaseDir = process.platform === 'win32'
+        ? sb.localAppData
+        : (process.platform === 'darwin'
+          ? path.join(sb.homeDir, 'Library', 'Application Support')
+          : sb.stateDir);
+      const legacyProxyDir = path.join(legacyBaseDir, 'AntigravityProxyNoTun');
       fs.mkdirSync(legacyProxyDir, { recursive: true });
       fs.writeFileSync(path.join(legacyProxyDir, 'config.json'), JSON.stringify({
         enabled: true,
         proxyUrl: 'http://127.0.0.1:19999'
       }), 'utf8');
-      const legacyZhDir = path.join(sb.localAppData, 'AntigravityChinese');
+      const legacyZhDir = path.join(legacyBaseDir, 'AntigravityChinese');
       fs.mkdirSync(legacyZhDir, { recursive: true });
       fs.writeFileSync(path.join(legacyZhDir, 'config.json'), JSON.stringify({ enabled: true }), 'utf8');
 
