@@ -15134,7 +15134,8 @@ function closeAllDropdowns(exceptWrap = null) {
 
       if (btnApplyUnlock) {
         const writableStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
-        if (writableStatuses.has(data.status) && (!data.arch || data.arch === 'x86-64')) {
+        const archSupported = data.isPlatformSupported !== false && (!data.arch || data.arch === 'x86-64' || data.arch === 'arm64');
+        if (writableStatuses.has(data.status) && archSupported) {
           btnApplyUnlock.disabled = false;
           btnApplyUnlock.textContent = t('models.btn.saveApply');
         } else if (data.status === 'partial_match') {

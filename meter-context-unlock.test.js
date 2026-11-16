@@ -772,3 +772,120 @@ test('安全隔离回归：测试下缺失或拼错 targetPath 绝对禁止探�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('macOS Mach-O arm64 适配：Gate 3A (clamp + default) 与 Gate 3B (bl + tbnz) 读写与 sidecar 无损还原', async () => {
+  const buf = Buffer.alloc(0x20000, 0);
+  const vmBase = 0x100000000n;
+  const textOff = 0x1000;
+  const textVA = vmBase + 0x1000n;
+
+  buf.writeUInt32LE(0xfeedfacf, 0);
+  buf.writeUInt32LE(0x0100000c, 4); // arm64
+  buf.writeUInt32LE(2, 12);
+  buf.writeUInt32LE(2, 16); // ncmds
+  buf.writeUInt32LE(0x1b, 32); // LC_UUID
+  buf.writeUInt32LE(24, 36);
+  Buffer.from('aabbccddeeff00112233445566778899', 'hex').copy(buf, 40);
+  buf.writeUInt32LE(0x19, 56); // LC_SEGMENT_64
+  buf.writeUInt32LE(72 + 80, 60);
+  buf.write('__TEXT', 64, 'ascii');
+  buf.writeBigUInt64LE(vmBase, 80);
+  buf.writeBigUInt64LE(0x10000n, 88);
+  buf.writeBigUInt64LE(0n, 96);
+  buf.writeBigUInt64LE(0x10000n, 104);
+  buf.writeUInt32LE(1, 120);
+  buf.writeUInt32LE(24 + 72 + 80, 20);
+
+  const s1 = 128;
+  buf.write('__text', s1, 'ascii');
+  buf.write('__TEXT', s1 + 16, 'ascii');
+  buf.writeBigUInt64LE(textVA, s1 + 32);
+  buf.writeBigUInt64LE(0x8000n, s1 + 40);
+  buf.writeUInt32LE(textOff, s1 + 48);
+
+  // 函数布局:
+  // 0x000..0x300 utils.GetCheckpointConfig (clamp at +0x100, default at +0x200)
+  // 0x300..0x400 config.selectCheckpointExperimentKey
+  // 0x400..0x500 config.applyFeatureProviderCheckpointOverrideConfig (bl 0x300 at +0x20, tbnz w0, #0, +12 at +0x2c)
+  const clampArm64 = Buffer.from('04009dd26400a0f27f00046b04009dd26400a0f26330849a', 'hex');
+  clampArm64.copy(buf, textOff + 0x100);
+  // cmp w3, #0 (7100007f); b.gt +16 (5400008c); mov x3, #0xe800; movk x3, #0x3, lsl #16; str w3, [x0, #0xc]
+  buf.writeUInt32LE(0x7100007f, textOff + 0x200 - 8);
+  buf.writeUInt32LE(0x5400008c, textOff + 0x200 - 4);
+  Buffer.from('03009dd26300a0f2030c00b9', 'hex').copy(buf, textOff + 0x200);
+
+  // BL from 0x420 to 0x300 => delta = -0x120 => -0x48 words => 0x97ffffb8
+  buf.writeUInt32LE(0x97ffffb8, textOff + 0x420);
+  // tbnz w0, #0, +12 => 0x37000060 at +0x42c
+  buf.writeUInt32LE(0x37000060, textOff + 0x42c);
+
+  // Minimal .gopclntab at 0x10000
+  const pcBase = 0x10000;
+  const funcNames = [
+    { name: 'google3/third_party/jetski/cortex/utils/utils.GetCheckpointConfig', entry: 0x0, size: 0x300 },
+    { name: 'google3/third_party/jetski/cortex/config/config.selectCheckpointExperimentKey', entry: 0x300, size: 0x100 },
+    { name: 'google3/third_party/jetski/cortex/config/config.applyFeatureProviderCheckpointOverrideConfig', entry: 0x400, size: 0x100 }
+  ];
+  const fnNameOff = 0x100;
+  const pclnOff = 0x400;
+  buf.writeUInt32LE(0xfffffff1, pcBase);
+  buf[pcBase + 6] = 4;
+  buf[pcBase + 7] = 8;
+  // nfunc must satisfy 1000 < nfunc < 5000000
+  buf.writeBigUInt64LE(1001n, pcBase + 8);
+  buf.writeBigUInt64LE(BigInt(fnNameOff), pcBase + 32);
+  buf.writeBigUInt64LE(BigInt(pclnOff), pcBase + 64);
+
+  let strPos = pcBase + fnNameOff;
+  for (let i = 0; i < funcNames.length; i++) {
+    const f = funcNames[i];
+    const relName = strPos - (pcBase + fnNameOff);
+    buf.write(f.name + '\0', strPos, 'ascii');
+    strPos += f.name.length + 1;
+    const recOff = 1002 * 8 + i * 16;
+    buf.writeUInt32LE(f.entry, pcBase + pclnOff + i * 8);
+    buf.writeUInt32LE(recOff, pcBase + pclnOff + i * 8 + 4);
+    buf.writeInt32LE(relName, pcBase + pclnOff + recOff + 4);
+  }
+  buf.writeUInt32LE(0x500, pcBase + pclnOff + 3 * 8);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-unlock-macho-'));
+  try {
+    const binPath = path.join(tmpDir, 'language_server');
+    const backupDir = path.join(tmpDir, 'bak');
+    fs.writeFileSync(binPath, buf);
+
+    const a0 = analyzeBinary(binPath, { backupDir, skipProcessCheck: true });
+    assert.equal(a0.format, 'Mach-O');
+    assert.equal(a0.arch, 'arm64');
+    assert.equal(a0.status, 'not_patched');
+    assert.equal(a0.gate3a.hasDefaultSite, true);
+    assert.equal(a0.gate3b.status, 'unpatched');
+    assert.equal(a0.gate3b.origHex, '60000037');
+
+    // 1. 固定模式 512,000
+    const rFixed = applyUnlock({ targetPath: binPath, backupDir, mode: 'fixed', limitTokens: 512000, skipCodesign: true });
+    assert.equal(rFixed.ok, true);
+    assert.equal(rFixed.defaultSitePatched, true);
+    const aFixed = analyzeBinary(binPath, { backupDir, skipProcessCheck: true });
+    assert.equal(aFixed.configuredMode, 'fixed');
+    assert.equal(aFixed.configuredLimitTokens, 512000);
+    assert.equal(aFixed.gate3a.defaultLimit, 512000);
+    assert.equal(aFixed.gate3b.status, 'patched');
+
+    // 2. 动态模式
+    const rDyn = applyUnlock({ targetPath: binPath, backupDir, mode: 'dynamic', skipCodesign: true });
+    assert.equal(rDyn.ok, true);
+    const aDyn = analyzeBinary(binPath, { backupDir, skipProcessCheck: true });
+    assert.equal(aDyn.configuredMode, 'dynamic');
+    assert.equal(aDyn.gate3a.defaultLimit, 256000);
+
+    // 3. 无整包备份条件下验证 sidecar 逆向还原一字节不差
+    fs.rmSync(rFixed.backupPath, { force: true });
+    const rRev = restoreUnlock({ targetPath: binPath, backupDir, skipCodesign: true });
+    assert.equal(rRev.ok, true);
+    assert.equal(Buffer.compare(fs.readFileSync(binPath), buf), 0, 'ARM64 sidecar 逆向还原后必须一字节不差');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

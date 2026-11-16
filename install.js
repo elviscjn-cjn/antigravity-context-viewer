@@ -479,6 +479,7 @@ async function install(options = {}) {
         'meter-cli-launcher.js',
         'meter-context-unlock.js',
         'meter-enhance.js',
+        'macos-binary-utils.js',
         'local-api.js',
         'attachment_scan.py'
       ];

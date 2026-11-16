@@ -22,6 +22,12 @@ const crypto = require('crypto');
 const { execFile, execFileSync } = require('child_process');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const { getStateDir } = require('./asar-engine');
+const {
+  isMachO64Buffer,
+  atomicWriteMachOBinarySync,
+  atomicWriteMachOBinaryAsync,
+  listMacProcessesAsync
+} = require('./macos-binary-utils');
 
 const ORIG_UNLOCK_FS_READ_SYNC = fs.readFileSync;
 const ORIG_UNLOCK_FS_READ_ASYNC = fs.promises.readFile;
@@ -41,6 +47,9 @@ const RET_TRUE_ARM64 = Buffer.from([0x20, 0x00, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0x
 const RET_TRUE_X64 = Buffer.from([0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3]);
 
 const CLAMP_256K_ARM64 = Buffer.from('04009dd26400a0f27f00046b04009dd26400a0f26330849a', 'hex');
+const PATCH_256K_ARM64 = Buffer.concat([NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64]);
+const DEF_ORIG_ARM64 = Buffer.from('03009dd26300a0f2030c00b9', 'hex'); // mov x3, #0xe800; movk x3, #0x3, lsl #16; str w3, [x0, #0xc]
+const STR_W3_X0_0C_ARM64 = 0xb9000c03;
 const CLAMP_256K_X64 = Buffer.from('81fa00e80300be00e803000f42f2', 'hex');
 const PATCH_256K_X64 = Buffer.concat([Buffer.from('89d6', 'hex'), Buffer.alloc(12, 0x90)]);
 const DEF_ORIG_X64 = Buffer.from('c7400c00e80300', 'hex'); // mov dword [rax+0xc], 256000 (7B)
@@ -56,6 +65,49 @@ const MIN_ENGINEERING_LIMIT = 16384; // 16 KiB tokens
 const MAX_ENGINEERING_LIMIT = 2097152; // 2 MiB tokens
 const MIN_OUTPUT_RESERVE_HINT = 40000; // GetDefaultCheckpointConfigForModel 典型输出余量参考
 const KNOWN_LIMIT_PRESETS = [256000, 512000, 524288, 900000, 983040, 1000000];
+
+function encodeMovz64Arm64(reg, imm16) {
+  return (0xd2800000 | ((imm16 & 0xffff) << 5) | (reg & 0x1f)) >>> 0;
+}
+
+function encodeMovk64Lsl16Arm64(reg, imm16) {
+  return (0xf2a00000 | ((imm16 & 0xffff) << 5) | (reg & 0x1f)) >>> 0;
+}
+
+function decodeMov32Arm64(w0, w1, expectedReg) {
+  const mask = 0xffe0001f;
+  const expectZ = (0xd2800000 | (expectedReg & 0x1f)) >>> 0;
+  const expectK = (0xf2a00000 | (expectedReg & 0x1f)) >>> 0;
+  if (((w0 & mask) >>> 0) !== expectZ || ((w1 & mask) >>> 0) !== expectK) return null;
+  const lo = (w0 >>> 5) & 0xffff;
+  const hi = (w1 >>> 5) & 0xffff;
+  return (((hi << 16) | lo) >>> 0);
+}
+
+function buildClampConstArm64(limitTokens) {
+  const out = Buffer.alloc(24);
+  const val = limitTokens >>> 0;
+  out.writeUInt32LE(encodeMovz64Arm64(3, val & 0xffff), 0);
+  out.writeUInt32LE(encodeMovk64Lsl16Arm64(3, (val >>> 16) & 0xffff), 4);
+  for (let i = 8; i < 24; i += 4) NOP_ARM64.copy(out, i);
+  return out;
+}
+
+function buildDefConstArm64(limitTokens) {
+  const out = Buffer.alloc(12);
+  const val = limitTokens >>> 0;
+  out.writeUInt32LE(encodeMovz64Arm64(3, val & 0xffff), 0);
+  out.writeUInt32LE(encodeMovk64Lsl16Arm64(3, (val >>> 16) & 0xffff), 4);
+  out.writeUInt32LE(STR_W3_X0_0C_ARM64, 8);
+  return out;
+}
+
+function decodeArm64BlTarget(instr, pcVA) {
+  if (((instr & 0xfc000000) >>> 0) !== 0x94000000) return null;
+  let imm26 = instr & 0x03ffffff;
+  if (imm26 & 0x02000000) imm26 -= 0x04000000;
+  return pcVA + BigInt(imm26 * 4);
+}
 
 function buildClampConstX64(limitTokens) {
   const out = Buffer.alloc(14, 0x90);
@@ -200,23 +252,32 @@ function findTextSection(buf) {
     if (!arch) throw new Error(`不支持的 Mach-O cputype: 0x${cputype.toString(16)}`);
     const ncmds = buf.readUInt32LE(16);
     let off = 32;
+    let textInfo = null;
+    let uuidHex = null;
     for (let c = 0; c < ncmds; c++) {
       const cmd = buf.readUInt32LE(off);
       const size = buf.readUInt32LE(off + 4);
-      if (cmd === 0x19) { // LC_SEGMENT_64
+      if (cmd === 0x1b && size >= 24) {
+        uuidHex = buf.subarray(off + 8, off + 24).toString('hex');
+      } else if (cmd === 0x19) { // LC_SEGMENT_64
         const nsects = buf.readUInt32LE(off + 64);
         let sect = off + 72;
         for (let s = 0; s < nsects; s++) {
           const sectName = buf.subarray(sect, sect + 16).toString().replace(/\0+$/, '');
           if (sectName === '__text') {
             const addr = buf.readBigUInt64LE(sect + 32);
+            const sectSize = Number(buf.readBigUInt64LE(sect + 40));
             const offset = buf.readUInt32LE(sect + 48);
-            return { textVA: addr, textOff: offset, arch, format: 'Mach-O' };
+            textInfo = { textVA: addr, textOff: offset, textSize: sectSize, arch, format: 'Mach-O' };
           }
           sect += 80;
         }
       }
       off += size;
+    }
+    if (textInfo) {
+      textInfo.buildId = uuidHex ? `macho_${uuidHex}` : `macho_${arch}_${textInfo.textSize}`;
+      return textInfo;
     }
     throw new Error('未在 Mach-O 中找到 __text 段');
   }
@@ -382,14 +443,122 @@ function checkGate3A(buf, textOff, sym, arch, options = {}) {
   const body = buf.subarray(fnOff, Math.min(buf.length, fnOff + fnSize));
 
   if (arch === 'arm64') {
-    const nop6 = Buffer.concat([NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64, NOP_ARM64]);
-    if (body.indexOf(CLAMP_256K_ARM64) >= 0) {
-      return { status: 'unpatched', mode: 'default', limit: DEFAULT_CHECKPOINT_TOKENS, offset: fnOff + body.indexOf(CLAMP_256K_ARM64), length: 24, hasDefaultSite: false };
+    const clampHits = [];
+    for (let i = 0; i <= body.length - 24; i += 4) {
+      const slice = body.subarray(i, i + 24);
+      if (slice.equals(CLAMP_256K_ARM64)) {
+        clampHits.push({ state: 'ORIG', mode: 'default', limit: DEFAULT_CHECKPOINT_TOKENS, offset: fnOff + i });
+      } else if (slice.equals(PATCH_256K_ARM64)) {
+        clampHits.push({ state: 'DYN', mode: 'dynamic', limit: null, offset: fnOff + i });
+      } else {
+        const w0 = slice.readUInt32LE(0);
+        const w1 = slice.readUInt32LE(4);
+        const imm = decodeMov32Arm64(w0, w1, 3);
+        if (
+          imm !== null &&
+          imm >= 4096 &&
+          imm <= 16 * 1024 * 1024 &&
+          slice.subarray(8, 12).equals(NOP_ARM64) &&
+          slice.subarray(12, 16).equals(NOP_ARM64) &&
+          slice.subarray(16, 20).equals(NOP_ARM64) &&
+          slice.subarray(20, 24).equals(NOP_ARM64)
+        ) {
+          clampHits.push({ state: 'CONST', mode: 'fixed', limit: imm, offset: fnOff + i });
+        }
+      }
     }
-    if (body.indexOf(nop6) >= 0) {
-      return { status: 'patched', mode: 'dynamic', limit: null, offset: fnOff + body.indexOf(nop6), length: 24, hasDefaultSite: false };
+
+    const candidateDefImms = new Set([DEFAULT_CHECKPOINT_TOKENS, ...KNOWN_LIMIT_PRESETS]);
+    for (const h of clampHits) {
+      if (h.state === 'CONST' && h.limit) candidateDefImms.add(h.limit);
     }
-    return { status: 'unknown', reason: 'ARM64 函数体特征不识别' };
+
+    const defHits = [];
+    for (let i = 0; i <= body.length - 12; i += 4) {
+      if (body.readUInt32LE(i + 8) === STR_W3_X0_0C_ARM64) {
+        const imm = decodeMov32Arm64(body.readUInt32LE(i), body.readUInt32LE(i + 4), 3);
+        if (imm !== null && candidateDefImms.has(imm)) {
+          defHits.push({
+            state: imm === DEFAULT_CHECKPOINT_TOKENS ? 'ORIG' : 'CONST',
+            limit: imm,
+            offset: fnOff + i,
+            relOffset: i
+          });
+        }
+      }
+    }
+
+    if (clampHits.length === 0) {
+      return { status: 'unknown', reason: '未在 ARM64 utils.GetCheckpointConfig 中定位到 Gate 3A clamp 站点' };
+    }
+
+    let chosenClamp = clampHits.length === 1 ? clampHits[0] : null;
+    let chosenDef = defHits.length === 1 ? defHits[0] : null;
+
+    if (!chosenDef && defHits.length > 1) {
+      // 优先锁定紧跟在 cmp w3, #0 (7100007f); b.gt +16 (5400008c) 之后的 default 站点
+      const guardedHits = defHits.filter((d) => {
+        const r = d.relOffset;
+        return r >= 8 && body.readUInt32LE(r - 8) === 0x7100007f && body.readUInt32LE(r - 4) === 0x5400008c;
+      });
+      if (guardedHits.length === 1) {
+        chosenDef = guardedHits[0];
+      } else if (chosenClamp) {
+        chosenDef = narrowCandidatesByAnchor(defHits, chosenClamp.offset, 8192);
+      }
+    }
+    if (!chosenClamp && chosenDef) {
+      chosenClamp = narrowCandidatesByAnchor(clampHits, chosenDef.offset, 8192);
+    }
+    if (!chosenClamp) {
+      return {
+        status: 'unknown',
+        reason: `检测到 ${clampHits.length} 个 ARM64 Gate 3A clamp 候选且无法唯一收窄，拒绝写入。`,
+        clampCandidateCount: clampHits.length,
+        defaultCandidateCount: defHits.length
+      };
+    }
+    if (defHits.length > 1 && !chosenDef) {
+      return {
+        status: 'unknown',
+        reason: `检测到 ${defHits.length} 个 ARM64 Gate 3A default 候选且无法唯一收窄，拒绝写入。`,
+        clampCandidateCount: clampHits.length,
+        defaultCandidateCount: defHits.length
+      };
+    }
+
+    const hasDefaultSite = Boolean(chosenDef);
+    const baseInfo = {
+      offset: chosenClamp.offset,
+      length: 24,
+      mode: chosenClamp.mode,
+      limit: chosenClamp.limit,
+      clampState: chosenClamp.state,
+      defaultOffset: chosenDef ? chosenDef.offset : null,
+      defaultLength: chosenDef ? 12 : 0,
+      defaultLimit: chosenDef ? chosenDef.limit : null,
+      defaultState: chosenDef ? chosenDef.state : null,
+      hasDefaultSite,
+      clampCandidateCount: clampHits.length,
+      defaultCandidateCount: defHits.length
+    };
+
+    if (hasDefaultSite) {
+      if (chosenClamp.state === 'ORIG' && chosenDef.state !== 'ORIG') {
+        return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp 为官方默认 (256,000)，但 default 站点为 ${chosenDef.limit.toLocaleString('en-US')}` };
+      }
+      if (chosenClamp.state === 'DYN' && chosenDef.state !== 'ORIG') {
+        return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp 为动态透传 (DYN)，但 default 站点未处于官方默认值 (实测 ${chosenDef.limit.toLocaleString('en-US')})` };
+      }
+      if (chosenClamp.state === 'CONST' && chosenDef.limit !== chosenClamp.limit) {
+        return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp (${chosenClamp.limit.toLocaleString('en-US')}) 与 default (${chosenDef.limit.toLocaleString('en-US')}) 数值不一致` };
+      }
+    }
+
+    return {
+      ...baseInfo,
+      status: chosenClamp.state === 'ORIG' ? 'unpatched' : 'patched'
+    };
   }
 
   // x86-64: 在 utils.GetCheckpointConfig 函数体内搜寻所有 CLAMP 候选
@@ -598,17 +767,57 @@ function checkGate3B(buf, textVA, textOff, symExp, symSelect, arch) {
   }
 
   if (arch === 'arm64') {
+    if (symSelect) {
+      const selVA = textVA + BigInt(symSelect.entryoff);
+      const hits = [];
+      for (let rel = 0; rel <= body.length - 8; rel += 4) {
+        const instr = body.readUInt32LE(rel);
+        const targetVA = decodeArm64BlTarget(instr, fnVA + BigInt(rel));
+        if (targetVA === selVA) {
+          const winEnd = Math.min(body.length - 4, rel + 128);
+          for (let jOff = rel + 4; jOff <= winEnd; jOff += 4) {
+            const w = body.readUInt32LE(jOff);
+            // 匹配 tbnz/tbz/cbz/cbnz 条件分支（如 tbnz w0, #0, +12 -> 0x37000060）或已写入的 NOP
+            const isTbzTbnz = ((w & 0x7e000000) >>> 0) === 0x36000000;
+            const isCbzCbnz = ((w & 0x7e000000) >>> 0) === 0x34000000;
+            if (isTbzTbnz || isCbzCbnz) {
+              const orig = body.subarray(jOff, jOff + 4);
+              hits.push({
+                status: 'unpatched',
+                offset: fnOff + jOff,
+                length: 4,
+                jumpType: 'arm64-branch',
+                origBytes: Array.from(orig),
+                origHex: Buffer.from(orig).toString('hex')
+              });
+              break;
+            }
+            if (w === 0xd503201f) {
+              hits.push({ status: 'patched', offset: fnOff + jOff, length: 4 });
+              break;
+            }
+          }
+        }
+      }
+      if (hits.length === 1) return hits[0];
+      if (hits.length > 1) {
+        return { status: 'unknown', reason: `检测到 ${hits.length} 个 ARM64 Gate 3B 候选站点，拒绝写入`, candidateCount: hits.length };
+      }
+    }
+
+    // 兼容旧版 ARM64 特征兜底
     for (let rel = 4; rel < body.length - 16; rel += 4) {
       const w0 = body.readUInt32LE(rel);
       const w1 = body.readUInt32LE(rel + 4);
       if ((w0 & 0xff00001f) === 0xb4000000 && w1 === 0xb9000c1f) {
-        return { status: 'patched', offset: fnOff + rel, length: 24 };
+        return { status: 'patched', offset: fnOff + rel, length: 4 };
       }
       if ((w0 & 0xff00001f) === 0xb4000001) { // cbz x1, ...
-        return { status: 'unpatched', offset: fnOff + rel, length: 24 };
+        const orig = body.subarray(rel, rel + 4);
+        return { status: 'unpatched', offset: fnOff + rel, length: 4, origBytes: Array.from(orig), origHex: Buffer.from(orig).toString('hex') };
       }
     }
-    return { status: 'unknown' };
+    return { status: 'unknown', reason: '未在 ARM64 函数体内定位到 Gate 3B 跳转站点' };
   }
 
   return { status: 'unknown' };
@@ -1010,30 +1219,47 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
     } else {
       // Unix / macOS 异步探测
       try {
-        const binName = targetPath ? path.basename(targetPath) : 'language_server';
-        const res = await new Promise((resolve, reject) => {
-          execFile('pgrep', ['-f', binName], { encoding: 'utf8', timeout: 2000 }, (err, out) => {
-            if (err) reject(err); else resolve(out);
-          });
-        });
-        const pids = String(res || '').trim().split(/\s+/).map(Number).filter(Boolean);
-        if (pids.length > 0) {
-          result.isRunning = true;
-          result.pids = pids;
-          result.pid = pids[0];
-          try {
-            const psOut = await new Promise((resolve, reject) => {
-              execFile('ps', ['-p', String(pids[0]), '-o', 'etimes='], { encoding: 'utf8', timeout: 1500 }, (err, out) => {
-                if (err) reject(err); else resolve(out);
-              });
-            });
-            const elapsedSec = parseInt(String(psOut || '').trim(), 10);
-            if (!isNaN(elapsedSec)) {
-              result.startTimeMs = Date.now() - (elapsedSec * 1000);
-            }
-          } catch {}
+        if (process.platform === 'darwin') {
+          const allProcs = await listMacProcessesAsync();
+          const matchedProcs = targetNormalized
+            ? allProcs.filter((p) => path.resolve(p.path).toLowerCase() === targetNormalized)
+            : allProcs.filter((p) => path.basename(p.path) === 'language_server');
+          if (matchedProcs.length > 0) {
+            result.isRunning = true;
+            result.pids = matchedProcs.map((p) => p.pid);
+            result.pid = matchedProcs[0].pid;
+            result.path = matchedProcs[0].path;
+            result.startTimeMs = matchedProcs[0].startTimeMs;
+          } else {
+            result.isRunning = false;
+          }
         } else {
-          result.isRunning = false;
+          const binName = targetPath ? path.basename(targetPath) : 'language_server';
+          const res = await new Promise((resolve, reject) => {
+            execFile('pgrep', ['-f', binName], { encoding: 'utf8', timeout: 2000 }, (err, out) => {
+              if (err) reject(err); else resolve(out);
+            });
+          });
+          const pids = String(res || '').trim().split(/\s+/).map(Number).filter(Boolean);
+          if (pids.length > 0) {
+            result.isRunning = true;
+            result.pids = pids;
+            result.pid = pids[0];
+            result.path = targetPath || null;
+            try {
+              const psOut = await new Promise((resolve, reject) => {
+                execFile('ps', ['-p', String(pids[0]), '-o', 'etimes='], { encoding: 'utf8', timeout: 1500 }, (err, out) => {
+                  if (err) reject(err); else resolve(out);
+                });
+              });
+              const elapsedSec = parseInt(String(psOut || '').trim(), 10);
+              if (!isNaN(elapsedSec)) {
+                result.startTimeMs = Date.now() - (elapsedSec * 1000);
+              }
+            } catch {}
+          } else {
+            result.isRunning = false;
+          }
         }
       } catch {
         result.queryFailed = true;
@@ -1360,14 +1586,14 @@ async function analyzeBinaryAsync(filePath, options = {}) {
     };
   }
 
-  // 跨平台安全策略拦截：仅支持 Windows (x86-64)
-  if (process.platform !== 'win32') {
+  // 跨平台安全策略拦截：支持 Windows (x86-64) 与 macOS (arm64 / x86-64)
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
     return {
       status: 'unsupported',
       targetPath: target,
-      format: process.platform === 'darwin' ? 'Mach-O' : 'ELF',
+      format: 'ELF',
       arch: os.arch(),
-      reason: `暂未开放对 ${process.platform} 平台的写入支持：受 macOS/Linux 代码签名校验与动态安全策略限制，当前版本仅在 Windows (x86-64) 平台完成端到端签名与安全回滚验收，以避免导致后端语言服务器异常崩溃。`,
+      reason: `暂未开放对 ${process.platform} 平台的写入支持：当前版本仅支持 Windows (x86-64) 与 macOS (arm64 / x86-64)。`,
       isPlatformSupported: false
     };
   }
@@ -1442,14 +1668,14 @@ async function analyzeBinaryAsync(filePath, options = {}) {
 
     const { textVA, textOff, arch, format } = container;
 
-    if (arch !== 'x86-64') {
+    if (arch !== 'x86-64' && arch !== 'arm64') {
       return {
         status: 'unsupported',
         targetPath: target,
         arch,
         format,
         sha256: currentSha256,
-        reason: `暂未开放对 ${arch} 架构的写入支持，当前版本仅支持 x86-64 架构。`
+        reason: `暂未开放对 ${arch} 架构的写入支持，当前版本仅支持 x86-64 与 arm64 架构。`
       };
     }
 
@@ -1646,7 +1872,23 @@ function analyzeBinary(filePath, options = {}) {
 /**
  * Windows 占用下安全原子写盘与回滚共用助手
  */
-function atomicWriteBinary(targetPath, buf, tempTag = 'new') {
+function atomicWriteBinary(targetPath, buf, tempTag = 'new', writeOpts = {}) {
+  if (process.platform === 'darwin' && isMachO64Buffer(buf)) {
+    try {
+      atomicWriteMachOBinarySync(targetPath, buf, {
+        entitlementsSourcePath: writeOpts.entitlementsSourcePath || targetPath,
+        skipCodesign: writeOpts.skipCodesign === true
+      });
+      invalidateUnlockCache(targetPath);
+      return { ok: true, usedRenameTrick: true };
+    } catch (e) {
+      return {
+        ok: false,
+        error: `macOS 原子写入或重签名失败 (${e.code || e.message})`
+      };
+    }
+  }
+
   const tmpNew = `${targetPath}.${tempTag}_${Date.now()}`;
   let usedRenameTrick = false;
   let tmpOldCreated = null;
@@ -1703,7 +1945,23 @@ function atomicWriteBinary(targetPath, buf, tempTag = 'new') {
 /**
  * 异步安全原子写盘与回滚助手（避免大二进制 writeFileSync/copyFileSync 阻塞主线程）
  */
-async function atomicWriteBinaryAsync(targetPath, buf, tempTag = 'new') {
+async function atomicWriteBinaryAsync(targetPath, buf, tempTag = 'new', writeOpts = {}) {
+  if (process.platform === 'darwin' && isMachO64Buffer(buf)) {
+    try {
+      await atomicWriteMachOBinaryAsync(targetPath, buf, {
+        entitlementsSourcePath: writeOpts.entitlementsSourcePath || targetPath,
+        skipCodesign: writeOpts.skipCodesign === true
+      });
+      invalidateUnlockCache(targetPath);
+      return { ok: true, usedRenameTrick: true };
+    } catch (e) {
+      return {
+        ok: false,
+        error: `macOS 原子写入或重签名失败 (${e.code || e.message})`
+      };
+    }
+  }
+
   const tmpNew = `${targetPath}.${tempTag}_${Date.now()}`;
   let usedRenameTrick = false;
   let tmpOldCreated = null;
@@ -1831,7 +2089,7 @@ function resolveUnlockTargetPath(options = {}) {
  * 执行上下文长度模式应用与已知态安全互切 (default / fixed / dynamic)
  */
 function applyUnlock(options = {}) {
-  if (process.platform !== 'win32') {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
     return {
       ok: false,
       code: 'PLATFORM_UNSUPPORTED',
@@ -1856,7 +2114,7 @@ function applyUnlock(options = {}) {
   });
 
   const allowedStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
-  if (!allowedStatuses.has(analysis.status) || analysis.arch !== 'x86-64') {
+  if (!allowedStatuses.has(analysis.status) || (analysis.arch !== 'x86-64' && analysis.arch !== 'arm64')) {
     return {
       ok: false,
       code: analysis.status === 'partial_match' ? 'PARTIAL_MATCH' : 'UNSUPPORTED_OR_UNKNOWN',
@@ -1996,51 +2254,16 @@ function applyUnlock(options = {}) {
   }
 
   // 写入 Gate 3A (clamp + 若存在则同步写 default 站点) 与可选 Serializer 前端门禁
-  let serializerPatched = false;
-  if (targetSpec.mode === 'default') {
-    buf.set(CLAMP_256K_X64, gate3a.offset);
-    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
-      buf.set(DEF_ORIG_X64, gate3a.defaultOffset);
-    }
-    if (gate3b.status === 'patched' && gate3bOrigBytesForDefault) {
-      buf.set(gate3bOrigBytesForDefault, gate3b.offset);
-    }
-    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
-      buf.set(SERIALIZER_STOCK_X64, serializerGate.offset);
-      serializerPatched = true;
-    }
-  } else if (targetSpec.mode === 'fixed') {
-    buf.set(buildClampConstX64(targetSpec.limitTokens), gate3a.offset);
-    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
-      buf.set(buildDefConstX64(targetSpec.limitTokens), gate3a.defaultOffset);
-    }
-    if (gate3b.status === 'unpatched') {
-      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
-    }
-    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
-      buf.set(buildSerializerConstX64(targetSpec.limitTokens), serializerGate.offset);
-      serializerPatched = true;
-    }
-  } else if (targetSpec.mode === 'dynamic') {
-    buf.set(PATCH_256K_X64, gate3a.offset);
-    if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
-      buf.set(DEF_ORIG_X64, gate3a.defaultOffset);
-    }
-    if (gate3b.status === 'unpatched') {
-      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
-    }
-    // 动态跟随模式恢复 serializer 为默认透传状态，绝不硬写 983,040
-    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
-      buf.set(SERIALIZER_STOCK_X64, serializerGate.offset);
-      serializerPatched = true;
-    }
-  }
+  const serializerPatched = patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate3bOrigBytesForDefault, arch);
 
-  const afterSha256 = sha256Buffer(buf);
-  const writeRes = atomicWriteBinary(targetPath, buf, 'new');
+  const writeRes = atomicWriteBinary(targetPath, buf, 'new', {
+    entitlementsSourcePath: manifestToSave?.backupPath || targetPath,
+    skipCodesign: options.skipCodesign === true
+  });
   if (!writeRes.ok) {
     return { ok: false, error: writeRes.error };
   }
+  const afterSha256 = (process.platform === 'darwin' && isMachO64Buffer(buf)) ? sha256File(targetPath) : sha256Buffer(buf);
 
   const syncedConfigs = syncExternalContextConfigs(targetSpec.mode, targetSpec.limitTokens, options);
 
@@ -2085,7 +2308,7 @@ function applyUnlock(options = {}) {
  * 恢复原版二进制 (Restore) — 严格校验路径、PE 构建版本与完整哈希匹配
  */
 function restoreUnlock(options = {}) {
-  if (process.platform !== 'win32') {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
     return {
       ok: false,
       code: 'PLATFORM_UNSUPPORTED',
@@ -2141,7 +2364,7 @@ function restoreUnlock(options = {}) {
     }
 
     const backupBuf = fs.readFileSync(manifest.backupPath);
-    const writeRes = atomicWriteBinary(target, backupBuf, 'res');
+    const writeRes = atomicWriteBinary(target, backupBuf, 'res', { skipCodesign: true });
     if (!writeRes.ok) {
       return { ok: false, error: `恢复原版写入失败: ${writeRes.error}` };
     }
@@ -2174,16 +2397,9 @@ function restoreUnlock(options = {}) {
     analysis.gate3b?.status === 'patched' &&
     doesSidecarMatchTarget(sidecar, target, container, analysis.gate3b)
   ) {
-    currentBuf.set(CLAMP_256K_X64, analysis.gate3a.offset);
-    if (analysis.gate3a.hasDefaultSite && analysis.gate3a.defaultOffset !== null) {
-      currentBuf.set(DEF_ORIG_X64, analysis.gate3a.defaultOffset);
-    }
-    currentBuf.set(Buffer.from(sidecar.origHex, 'hex'), analysis.gate3b.offset);
-    if (analysis.serializerGate?.present && analysis.serializerGate.offset !== null) {
-      currentBuf.set(SERIALIZER_STOCK_X64, analysis.serializerGate.offset);
-    }
+    patchUnlockBuffer(currentBuf, { mode: 'default', limitTokens: DEFAULT_CHECKPOINT_TOKENS }, analysis.gate3a, analysis.gate3b, analysis.serializerGate, Buffer.from(sidecar.origHex, 'hex'), container.arch);
 
-    const writeRes = atomicWriteBinary(target, currentBuf, 'rev');
+    const writeRes = atomicWriteBinary(target, currentBuf, 'rev', { skipCodesign: options.skipCodesign === true });
     if (!writeRes.ok) {
       return { ok: false, error: `逆向还原写入失败: ${writeRes.error}` };
     }
@@ -2260,41 +2476,53 @@ function checkUnlockIdempotency(targetSpec, analysis) {
 /**
  * 复用：按目标规格就地修改二进制 Buffer 中的 Gate 3A/3B 与 Serializer 门禁
  */
-function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate3bOrigBytesForDefault) {
+function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate3bOrigBytesForDefault, arch = 'x86-64') {
   let serializerPatched = false;
+  const isArm64 = arch === 'arm64';
+
+  const writeGate3BNop = () => {
+    if (isArm64) {
+      for (let off = gate3b.offset; off < gate3b.offset + (gate3b.length || 4); off += 4) {
+        NOP_ARM64.copy(buf, off);
+      }
+    } else {
+      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
+    }
+  };
+
   if (targetSpec.mode === 'default') {
-    buf.set(CLAMP_256K_X64, gate3a.offset);
+    buf.set(isArm64 ? CLAMP_256K_ARM64 : CLAMP_256K_X64, gate3a.offset);
     if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
-      buf.set(DEF_ORIG_X64, gate3a.defaultOffset);
+      buf.set(isArm64 ? DEF_ORIG_ARM64 : DEF_ORIG_X64, gate3a.defaultOffset);
     }
     if (gate3b.status === 'patched' && gate3bOrigBytesForDefault) {
       buf.set(gate3bOrigBytesForDefault, gate3b.offset);
     }
-    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+    if (!isArm64 && serializerGate && serializerGate.present && serializerGate.offset !== null) {
       buf.set(SERIALIZER_STOCK_X64, serializerGate.offset);
       serializerPatched = true;
     }
   } else if (targetSpec.mode === 'fixed') {
-    buf.set(buildClampConstX64(targetSpec.limitTokens), gate3a.offset);
+    buf.set(isArm64 ? buildClampConstArm64(targetSpec.limitTokens) : buildClampConstX64(targetSpec.limitTokens), gate3a.offset);
     if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
-      buf.set(buildDefConstX64(targetSpec.limitTokens), gate3a.defaultOffset);
+      buf.set(isArm64 ? buildDefConstArm64(targetSpec.limitTokens) : buildDefConstX64(targetSpec.limitTokens), gate3a.defaultOffset);
     }
     if (gate3b.status === 'unpatched') {
-      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
+      writeGate3BNop();
     }
-    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+    if (!isArm64 && serializerGate && serializerGate.present && serializerGate.offset !== null) {
       buf.set(buildSerializerConstX64(targetSpec.limitTokens), serializerGate.offset);
       serializerPatched = true;
     }
   } else if (targetSpec.mode === 'dynamic') {
-    buf.set(PATCH_256K_X64, gate3a.offset);
+    buf.set(isArm64 ? PATCH_256K_ARM64 : PATCH_256K_X64, gate3a.offset);
     if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
-      buf.set(DEF_ORIG_X64, gate3a.defaultOffset);
+      buf.set(isArm64 ? DEF_ORIG_ARM64 : DEF_ORIG_X64, gate3a.defaultOffset);
     }
     if (gate3b.status === 'unpatched') {
-      buf.fill(0x90, gate3b.offset, gate3b.offset + (gate3b.length || 2));
+      writeGate3BNop();
     }
-    if (serializerGate && serializerGate.present && serializerGate.offset !== null) {
+    if (!isArm64 && serializerGate && serializerGate.present && serializerGate.offset !== null) {
       buf.set(SERIALIZER_STOCK_X64, serializerGate.offset);
       serializerPatched = true;
     }
@@ -2306,7 +2534,7 @@ function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate
  * 异步非阻塞上下文长度应用（同一目标串行加锁，保持备份、校验与回滚语义）
  */
 async function applyUnlockAsync(options = {}) {
-  if (process.platform !== 'win32') {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
     return {
       ok: false,
       code: 'PLATFORM_UNSUPPORTED',
@@ -2354,7 +2582,7 @@ async function applyUnlockAsync(options = {}) {
     });
 
     const allowedStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
-    if (!allowedStatuses.has(analysis.status) || analysis.arch !== 'x86-64') {
+    if (!allowedStatuses.has(analysis.status) || (analysis.arch !== 'x86-64' && analysis.arch !== 'arm64')) {
       return {
         ok: false,
         code: analysis.status === 'partial_match' ? 'PARTIAL_MATCH' : 'UNSUPPORTED_OR_UNKNOWN',
@@ -2453,12 +2681,17 @@ async function applyUnlockAsync(options = {}) {
       };
     }
 
-    const serializerPatched = patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate3bOrigBytesForDefault);
-    const afterSha256 = await sha256BufferAsync(buf);
-    const writeRes = await atomicWriteBinaryAsync(targetPath, buf, 'new');
+    const serializerPatched = patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate3bOrigBytesForDefault, arch);
+    const writeRes = await atomicWriteBinaryAsync(targetPath, buf, 'new', {
+      entitlementsSourcePath: manifestToSave?.backupPath || targetPath,
+      skipCodesign: options.skipCodesign === true
+    });
     if (!writeRes.ok) {
       return { ok: false, error: writeRes.error };
     }
+    const afterSha256 = (process.platform === 'darwin' && isMachO64Buffer(buf))
+      ? await sha256BufferAsync(await fs.promises.readFile(targetPath))
+      : await sha256BufferAsync(buf);
 
     const syncedConfigs = syncExternalContextConfigs(targetSpec.mode, targetSpec.limitTokens, options);
 
@@ -2503,7 +2736,7 @@ async function applyUnlockAsync(options = {}) {
  * 异步非阻塞恢复原版二进制 (Restore)
  */
 async function restoreUnlockAsync(options = {}) {
-  if (process.platform !== 'win32') {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
     return {
       ok: false,
       code: 'PLATFORM_UNSUPPORTED',
@@ -2565,7 +2798,7 @@ async function restoreUnlockAsync(options = {}) {
         return { ok: true, alreadyRestored: true, message: '当前已经是官方原版，无需重复恢复。' };
       }
 
-      const writeRes = await atomicWriteBinaryAsync(target, backupBuf, 'res');
+      const writeRes = await atomicWriteBinaryAsync(target, backupBuf, 'res', { skipCodesign: true });
       if (!writeRes.ok) {
         return { ok: false, error: `恢复原版写入失败: ${writeRes.error}` };
       }
@@ -2602,16 +2835,9 @@ async function restoreUnlockAsync(options = {}) {
       analysis.gate3b?.status === 'patched' &&
       doesSidecarMatchTarget(sidecar, target, container, analysis.gate3b)
     ) {
-      currentBuf.set(CLAMP_256K_X64, analysis.gate3a.offset);
-      if (analysis.gate3a.hasDefaultSite && analysis.gate3a.defaultOffset !== null) {
-        currentBuf.set(DEF_ORIG_X64, analysis.gate3a.defaultOffset);
-      }
-      currentBuf.set(Buffer.from(sidecar.origHex, 'hex'), analysis.gate3b.offset);
-      if (analysis.serializerGate?.present && analysis.serializerGate.offset !== null) {
-        currentBuf.set(SERIALIZER_STOCK_X64, analysis.serializerGate.offset);
-      }
+      patchUnlockBuffer(currentBuf, { mode: 'default', limitTokens: DEFAULT_CHECKPOINT_TOKENS }, analysis.gate3a, analysis.gate3b, analysis.serializerGate, Buffer.from(sidecar.origHex, 'hex'), container.arch);
 
-      const writeRes = await atomicWriteBinaryAsync(target, currentBuf, 'rev');
+      const writeRes = await atomicWriteBinaryAsync(target, currentBuf, 'rev', { skipCodesign: options.skipCodesign === true });
       if (!writeRes.ok) {
         return { ok: false, error: `逆向还原写入失败: ${writeRes.error}` };
       }
