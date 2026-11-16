@@ -209,13 +209,27 @@
 
     let tierBlocked = false;
     let tierReason = null;
-    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus && (planStatus.tierId || planStatus.teamsTier)) {
-      const myIds = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey]
-        .filter(Boolean)
-        .map(v => String(v).toLowerCase());
-      const allowedLower = config.allowedTiers.map(v => String(v).toLowerCase());
-      const hit = myIds.some(id => allowedLower.some(a => a === id || a.includes(id) || id.includes(a)));
-      if (!hit) {
+    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus) {
+      const allowed = config.allowedTiers
+        .filter(value => typeof value === 'string' && value.trim())
+        .map(value => value.trim().toLowerCase());
+      const teamsTier = typeof planStatus.teamsTier === 'string' ? planStatus.teamsTier.trim().toLowerCase() : '';
+      const tierId = typeof planStatus.tierId === 'string' ? planStatus.tierId.trim().toLowerCase() : '';
+
+      // allowedTiers 里的 TEAMS_TIER_* 与用户订阅的 g1-*-tier 是两套标识。
+      // 不能把个人订阅 ID 或 "ultra" 这样的显示分类与团队枚举直接比较：
+      // 它们天然不相等，会将所有正常模型误报成无权限。只有同一套标识
+      // 明确可比较时才推断不可用；缺失、未知或混合类型保留为未确定。
+      let comparableCurrent = null;
+      if (allowed.length === config.allowedTiers.length && allowed.every(value => /^teams_tier_/.test(value))) {
+        if (/^teams_tier_/.test(teamsTier) && !/(?:unspecified|unknown|unset)$/.test(teamsTier)) {
+          comparableCurrent = teamsTier;
+        }
+      } else if (allowed.length === config.allowedTiers.length && allowed.every(value => /^g1[-_]/.test(value))) {
+        if (/^g1[-_]/.test(tierId)) comparableCurrent = tierId;
+      }
+      // 必须精确匹配，避免 TEAMS_TIER_PRO 被误当成 PRO_ULTIMATE。
+      if (comparableCurrent !== null && !allowed.includes(comparableCurrent)) {
         tierBlocked = true;
         tierReason = `仅限 ${config.allowedTiers.join(' / ')} 套餐可用`;
       }
@@ -1595,6 +1609,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: null,
         planName: '未知',
         email: null,
         region: '未知',
@@ -1631,6 +1646,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: typeof planInfo.teamsTier === 'string' ? planInfo.teamsTier : null,
         planName: '未知',
         email,
         region: '未知',
@@ -1691,6 +1707,8 @@
       tierKey,
       tierName: tierDisplayName,
       tierId: userTier.id || null,
+      // 保留服务端的团队枚举供 allowedTiers 判断，不要用个人订阅 ID 替代。
+      teamsTier: typeof planInfo.teamsTier === 'string' ? planInfo.teamsTier : null,
       planName: planInfo.planName || tierDisplayName,
       email,
       region: '未知',
