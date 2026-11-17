@@ -429,6 +429,25 @@ function getImageDimensions(buf) {
     if (buf.length >= 26 && buf[0] === 0x42 && buf[1] === 0x4D) {
       return { width: Math.abs(buf.readInt32LE(18)), height: Math.abs(buf.readInt32LE(22)) };
     }
+    if (buf.length >= 16 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+      const chunk = buf.toString('ascii', 12, 16);
+      if (chunk === 'VP8 ' && buf.length >= 30) {
+        if ((buf[20] & 0x01) === 0 && buf[23] === 0x9D && buf[24] === 0x01 && buf[25] === 0x2A) {
+          const width = buf.readUInt16LE(26) & 0x3FFF;
+          const height = buf.readUInt16LE(28) & 0x3FFF;
+          if (width > 0 && height > 0) return { width, height };
+        }
+      } else if (chunk === 'VP8L' && buf.length >= 25 && buf[20] === 0x2F) {
+        const packed = buf.readUInt32LE(21);
+        const width = (packed & 0x3FFF) + 1;
+        const height = ((packed >>> 14) & 0x3FFF) + 1;
+        if (width > 0 && height > 0) return { width, height };
+      } else if (chunk === 'VP8X' && buf.length >= 30) {
+        const width = buf.readUIntLE(24, 3) + 1;
+        const height = buf.readUIntLE(27, 3) + 1;
+        if (width > 0 && height > 0) return { width, height };
+      }
+    }
     if (buf.length >= 4 && buf[0] === 0xFF && buf[1] === 0xD8) {
       let offset = 2;
       while (offset < buf.length - 8) {
@@ -444,6 +463,51 @@ function getImageDimensions(buf) {
     }
   } catch { }
   return { width: null, height: null };
+}
+
+const INLINE_IMAGE_DIMS_CACHE = new Map();
+const MAX_INLINE_IMAGE_DIMS_CACHE = 512;
+
+function inspectInlineImageMeta(uri, mime, b64) {
+  const safeUri = String(uri || '');
+  const safeMime = String(mime || '').toLowerCase();
+  const raw = String(b64 || '');
+  const cacheKey = raw.length <= 256
+    ? `${safeMime}|${raw}`
+    : `${safeUri}|${safeMime}|${raw.length}|${raw.slice(0, 64)}|${raw.slice(-64)}`;
+
+  if (INLINE_IMAGE_DIMS_CACHE.has(cacheKey)) {
+    return { ...INLINE_IMAGE_DIMS_CACHE.get(cacheKey), cacheHit: true };
+  }
+
+  let dims = { width: null, height: null };
+  let bytes = 0;
+  const hasWhitespace = raw.indexOf('\n') !== -1 || raw.indexOf('\r') !== -1 || raw.indexOf(' ') !== -1 || raw.indexOf('\t') !== -1;
+
+  if (!hasWhitespace && raw.length > 128) {
+    // PNG/GIF/BMP/WebP 宽高均在前 30 字节内，先解码前 128 字符避免每次全量分配 Buffer
+    const headDims = getImageDimensions(Buffer.from(raw.slice(0, 128), 'base64'));
+    if (headDims.width && headDims.height) {
+      dims = headDims;
+      bytes = Buffer.byteLength(raw, 'base64');
+    } else {
+      const fullBuf = Buffer.from(raw, 'base64');
+      dims = getImageDimensions(fullBuf);
+      bytes = fullBuf.length;
+    }
+  } else {
+    const fullBuf = Buffer.from(raw, 'base64');
+    dims = getImageDimensions(fullBuf);
+    bytes = fullBuf.length;
+  }
+
+  const meta = { width: dims.width, height: dims.height, bytes };
+  if (INLINE_IMAGE_DIMS_CACHE.size >= MAX_INLINE_IMAGE_DIMS_CACHE && !INLINE_IMAGE_DIMS_CACHE.has(cacheKey)) {
+    const oldest = INLINE_IMAGE_DIMS_CACHE.keys().next().value;
+    if (oldest !== undefined) INLINE_IMAGE_DIMS_CACHE.delete(oldest);
+  }
+  INLINE_IMAGE_DIMS_CACHE.set(cacheKey, meta);
+  return { ...meta, cacheHit: false };
 }
 
 function calcImageTokens(w, h) {
@@ -462,23 +526,24 @@ async function scanFiles(media, scanOptions = {}) {
     try {
       if (item.inlineData) {
         const mime = String(item.mime || '').toLowerCase();
-        const buf = Buffer.from(item.inlineData, 'base64');
         if (mime.startsWith('image/')) {
-          const dims = getImageDimensions(buf);
-          const [low, high] = calcImageTokens(dims.width, dims.height);
+          const meta = inspectInlineImageMeta(item.uri, mime, item.inlineData);
+          const [low, high] = calcImageTokens(meta.width, meta.height);
           results.set(item.uri, {
             status: 'parsed',
-            width: dims.width,
-            height: dims.height,
+            width: meta.width,
+            height: meta.height,
             chars: 0,
-            dimensions: dims.width ? `${dims.width}×${dims.height}` : null,
-            bytes: buf.length,
+            dimensions: meta.width ? `${meta.width}×${meta.height}` : null,
+            bytes: meta.bytes,
             low,
             high,
             unknownParts: []
           });
           continue;
-        } else if (mime.startsWith('text/') || mime === 'application/json' || mime === 'text/csv') {
+        }
+        const buf = Buffer.from(item.inlineData, 'base64');
+        if (mime.startsWith('text/') || mime === 'application/json' || mime === 'text/csv') {
           const text = buf.toString('utf8');
           const m = measure(text);
           results.set(item.uri, {
@@ -2547,10 +2612,208 @@ let currentScanSequence = 0;
 const TRANSCRIPT_SKIP_DIRS = new Set(['steps', 'tasks', 'scratch', 'media', 'artifacts', 'node_modules', '.git', '__pycache__']);
 const transcriptFileCache = new Map();
 
-function getEffectiveScanScopeKey(options = {}) {
+function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
+  if (!line) return null;
+  const cleanLine = line.charCodeAt(0) === 0xFEFF ? line.slice(1) : line;
+  if (!cleanLine.trim()) return null;
+  let event = null;
+  try {
+    event = JSON.parse(cleanLine);
+  } catch {
+    return null;
+  }
+
+  let hasValidCreatedAt = false;
+  if (event && event.created_at) {
+    const d = new Date(event.created_at);
+    if (!Number.isNaN(d.getTime())) {
+      hasValidCreatedAt = true;
+    }
+  }
+  if (!hasValidCreatedAt) return null;
+
+  let inp = 0, outp = 0, cap = 0, thinking = 0;
+  const model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
+
+  if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
+    inp = Number(event.input_tokens || 0);
+    outp = Number(event.output_tokens || 0);
+    cap = Number(event.cache_read_tokens || 0);
+    thinking = Number(event.thinking_output_tokens || 0);
+  } else if (event.chatModel?.usage) {
+    const u = event.chatModel.usage;
+    inp = Number(u.inputTokens || 0);
+    outp = Number(u.outputTokens || 0);
+    cap = Number(u.cacheReadTokens || 0);
+    thinking = Number(u.thinkingOutputTokens || 0);
+  }
+
+  const tot = inp + outp + cap;
+  if (tot > 0) {
+    const cascadeId = String(event.cascadeId || (brainMatch ? brainMatch[1] : path.basename(jobPath, '.jsonl')));
+    const rawStep = event.step_index ?? event.stepIndex;
+    const parsedStep = rawStep !== undefined && rawStep !== null && rawStep !== '' ? Number(rawStep) : NaN;
+    const stepIndex = Number.isInteger(parsedStep) && parsedStep >= 0 ? parsedStep : null;
+    const fallbackScope = (event.cascadeId || brainMatch) ? cascadeId : jobPath;
+    const eventId = extractCallId(event, fallbackScope, stepIndex ?? fallbackLineIdx);
+
+    return {
+      eventId,
+      cascadeId,
+      stepIndex,
+      model,
+      inp,
+      outp,
+      cap,
+      thinking,
+      tot,
+      created_at: event.created_at
+    };
+  }
+
+  return {
+    tot: 0,
+    created_at: event.created_at
+  };
+}
+
+function loadIncrementalTranscriptRecords(jobPath, st, cacheMap = transcriptFileCache) {
+  const cachedFile = cacheMap.get(jobPath);
+  if (cachedFile && cachedFile.size === st.size && cachedFile.mtimeMs === st.mtimeMs) {
+    return { records: cachedFile.records, mode: 'cache-hit' };
+  }
+
+  const brainMatch = String(jobPath).match(/[\\/]brain[\\/]([^\\/]+)[\\/]/i);
+  let canResume = Boolean(
+    cachedFile &&
+    Number.isFinite(cachedFile.parsedOffset) &&
+    cachedFile.parsedOffset >= 0 &&
+    st.size >= cachedFile.parsedOffset &&
+    Array.isArray(cachedFile.committedRecords)
+  );
+
+  let anchorLen = 0;
+  let readStart = 0;
+  let committedRecords = [];
+  let committedLineCount = 0;
+  let startOffset = 0;
+
+  if (canResume && cachedFile.parsedOffset > 0 && cachedFile.anchorBuf) {
+    anchorLen = cachedFile.anchorBuf.length;
+    readStart = cachedFile.parsedOffset - anchorLen;
+    startOffset = cachedFile.parsedOffset;
+    committedRecords = cachedFile.committedRecords;
+    committedLineCount = cachedFile.committedLineCount || 0;
+  } else if (canResume && cachedFile.parsedOffset === 0) {
+    committedRecords = cachedFile.committedRecords;
+    committedLineCount = cachedFile.committedLineCount || 0;
+  } else {
+    canResume = false;
+  }
+
+  const bytesToRead = st.size - readStart;
+  let rawBuf = Buffer.alloc(0);
+  if (bytesToRead > 0) {
+    rawBuf = Buffer.allocUnsafe(bytesToRead);
+    const fd = fs.openSync(jobPath, 'r');
+    try {
+      let totalRead = 0;
+      while (totalRead < bytesToRead) {
+        const n = fs.readSync(fd, rawBuf, totalRead, bytesToRead - totalRead, readStart + totalRead);
+        if (!n) break;
+        totalRead += n;
+      }
+      if (totalRead < bytesToRead) rawBuf = rawBuf.subarray(0, totalRead);
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  // 若历史块锚点失配（文件被原地重写/轮转），自动回退全量重读
+  if (canResume && anchorLen > 0) {
+    if (rawBuf.length < anchorLen || !rawBuf.subarray(0, anchorLen).equals(cachedFile.anchorBuf)) {
+      canResume = false;
+      anchorLen = 0;
+      startOffset = 0;
+      committedRecords = [];
+      committedLineCount = 0;
+      rawBuf = fs.readFileSync(jobPath);
+    }
+  }
+
+  const chunkBuf = anchorLen > 0 ? rawBuf.subarray(anchorLen) : rawBuf;
+  const lastNl = chunkBuf.lastIndexOf(0x0A);
+
+  const newCommittedRecords = canResume ? committedRecords.slice() : [];
+  let newParsedOffset = startOffset;
+  let newCommittedLineCount = committedLineCount;
+  let newAnchorBuf = canResume && cachedFile?.anchorBuf ? cachedFile.anchorBuf : Buffer.alloc(0);
+
+  if (lastNl >= 0) {
+    const committedText = chunkBuf.subarray(0, lastNl + 1).toString('utf8');
+    const trimmedText = committedText.endsWith('\r\n') ? committedText.slice(0, -2) : committedText.slice(0, -1);
+    const committedLines = trimmedText.split(/\r?\n/);
+    for (let i = 0; i < committedLines.length; i++) {
+      const rec = parseTranscriptLineRecord(committedLines[i], newCommittedLineCount + i, jobPath, brainMatch);
+      if (rec) newCommittedRecords.push(rec);
+    }
+    newParsedOffset = startOffset + lastNl + 1;
+    newCommittedLineCount += committedLines.length;
+    const endInRaw = anchorLen + lastNl + 1;
+    newAnchorBuf = Buffer.from(rawBuf.subarray(Math.max(0, endInRaw - 32), endInRaw));
+  }
+
+  const tailStart = lastNl >= 0 ? lastNl + 1 : 0;
+  let fileRecords = newCommittedRecords;
+  if (tailStart < chunkBuf.length) {
+    const tailStr = chunkBuf.subarray(tailStart).toString('utf8');
+    const tailLines = tailStr.split(/\r?\n/);
+    const tailRecords = [];
+    for (let i = 0; i < tailLines.length; i++) {
+      const rec = parseTranscriptLineRecord(tailLines[i], newCommittedLineCount + i, jobPath, brainMatch);
+      if (rec) tailRecords.push(rec);
+    }
+    if (tailRecords.length > 0) {
+      fileRecords = [...newCommittedRecords, ...tailRecords];
+    }
+  }
+
+  if (cacheMap.size > 1000 && !cacheMap.has(jobPath)) {
+    const oldestKey = cacheMap.keys().next().value;
+    if (oldestKey) cacheMap.delete(oldestKey);
+  }
+  cacheMap.set(jobPath, {
+    size: st.size,
+    mtimeMs: st.mtimeMs,
+    parsedOffset: newParsedOffset,
+    committedLineCount: newCommittedLineCount,
+    anchorBuf: newAnchorBuf,
+    committedRecords: newCommittedRecords,
+    records: fileRecords
+  });
+
+  return {
+    records: fileRecords,
+    mode: canResume ? 'incremental' : 'full'
+  };
+}
+
+function resolveAgDirs(options = {}) {
   const home = process.env.USERPROFILE || os.homedir();
-  const agDir = path.resolve(options.agDir || process.env.AG_DIR || path.join(home, '.gemini', 'antigravity'));
-  const agCliDir = path.resolve(options.agCliDir || process.env.AG_CLI_DIR || path.join(home, '.gemini', 'antigravity-cli'));
+  const explicitAgDir = options.agDir || process.env.AG_DIR;
+  const agDir = explicitAgDir || path.join(home, '.gemini', 'antigravity');
+  const agCliDir = options.agCliDir || process.env.AG_CLI_DIR || (
+    explicitAgDir
+      ? path.join(path.dirname(path.resolve(agDir)), 'antigravity-cli')
+      : path.join(home, '.gemini', 'antigravity-cli')
+  );
+  return { agDir, agCliDir };
+}
+
+function getEffectiveScanScopeKey(options = {}) {
+  const dirs = resolveAgDirs(options);
+  const agDir = path.resolve(dirs.agDir);
+  const agCliDir = path.resolve(dirs.agCliDir);
   return process.platform === 'win32'
     ? `${agDir.toLowerCase()}|${agCliDir.toLowerCase()}`
     : `${agDir}|${agCliDir}`;
@@ -2775,9 +3038,7 @@ async function runHistoryWorkerTask(payload, cmd = 'collectTokenHistory', taskOp
  * @param {object} extraContext
  */
 async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
-  const home = process.env.USERPROFILE || os.homedir();
-  const agDir = options.agDir || process.env.AG_DIR || path.join(home, '.gemini', 'antigravity');
-  const agCliDir = options.agCliDir || process.env.AG_CLI_DIR || path.join(home, '.gemini', 'antigravity-cli');
+  const { agDir, agCliDir } = resolveAgDirs(options);
 
   const brainDir = path.join(agDir, 'brain');
   const convDir = path.join(agDir, 'conversations');
@@ -2925,86 +3186,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
     try {
       const st = fs.statSync(job.path);
-      const cachedFile = transcriptFileCache.get(job.path);
-      let fileRecords = null;
-
-      if (cachedFile && cachedFile.size === st.size && cachedFile.mtimeMs === st.mtimeMs) {
-        fileRecords = cachedFile.records;
-      } else {
-        fileRecords = [];
-        const brainMatch = String(job.path).match(/[\\/]brain[\\/]([^\\/]+)[\\/]/i);
-        const content = fs.readFileSync(job.path, 'utf8');
-        const lines = content.split(/\r?\n/);
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line || !line.trim()) continue;
-          let event = null;
-          try {
-            event = JSON.parse(line);
-          } catch {
-            continue;
-          }
-
-          let hasValidCreatedAt = false;
-          if (event.created_at) {
-            const d = new Date(event.created_at);
-            if (!Number.isNaN(d.getTime())) {
-              hasValidCreatedAt = true;
-            }
-          }
-          if (!hasValidCreatedAt) continue;
-
-          let inp = 0, outp = 0, cap = 0, thinking = 0;
-          const model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
-
-          if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
-            inp = Number(event.input_tokens || 0);
-            outp = Number(event.output_tokens || 0);
-            cap = Number(event.cache_read_tokens || 0);
-            thinking = Number(event.thinking_output_tokens || 0);
-          } else if (event.chatModel?.usage) {
-            const u = event.chatModel.usage;
-            inp = Number(u.inputTokens || 0);
-            outp = Number(u.outputTokens || 0);
-            cap = Number(u.cacheReadTokens || 0);
-            thinking = Number(u.thinkingOutputTokens || 0);
-          }
-
-          const tot = inp + outp + cap;
-          if (tot > 0) {
-            // 唯一事件标识去重 (避免复制/软链接/重复日志相加)
-            const cascadeId = String(event.cascadeId || (brainMatch ? brainMatch[1] : path.basename(job.path, '.jsonl')));
-            const rawStep = event.step_index ?? event.stepIndex;
-            const parsedStep = rawStep !== undefined && rawStep !== null && rawStep !== '' ? Number(rawStep) : NaN;
-            const stepIndex = Number.isInteger(parsedStep) && parsedStep >= 0 ? parsedStep : null;
-            const fallbackScope = (event.cascadeId || brainMatch) ? cascadeId : job.path;
-            const eventId = extractCallId(event, fallbackScope, stepIndex ?? i);
-
-            fileRecords.push({
-              eventId,
-              cascadeId,
-              stepIndex,
-              model,
-              inp,
-              outp,
-              cap,
-              thinking,
-              tot,
-              created_at: event.created_at
-            });
-          } else {
-            fileRecords.push({
-              tot: 0,
-              created_at: event.created_at
-            });
-          }
-        }
-        if (transcriptFileCache.size > 1000) {
-          const oldestKey = transcriptFileCache.keys().next().value;
-          if (oldestKey) transcriptFileCache.delete(oldestKey);
-        }
-        transcriptFileCache.set(job.path, { size: st.size, mtimeMs: st.mtimeMs, records: fileRecords });
-      }
+      const loaded = loadIncrementalTranscriptRecords(job.path, st, transcriptFileCache);
+      const fileRecords = loaded.records;
 
       for (let rIdx = 0; rIdx < fileRecords.length; rIdx++) {
         const rec = fileRecords[rIdx];
@@ -5573,6 +5756,11 @@ module.exports = {
   collectTokenHistory,
   collectTokenHistoryAsync,
   scanFiles,
+  getImageDimensions,
+  inspectInlineImageMeta,
+  INLINE_IMAGE_DIMS_CACHE,
+  loadIncrementalTranscriptRecords,
+  transcriptFileCache,
   pythonScan,
   resolvePython,
   isCompanionOrTempFile,
