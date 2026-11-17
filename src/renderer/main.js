@@ -30,7 +30,7 @@
         const openDrawers = [];
         for (const btnId of [
           'btn-toggle-details', 'btn-toggle-card-details', 'btn-toggle-unlock-details',
-          'btn-toggle-enhance-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
+          'btn-toggle-enhance-details', 'btn-toggle-rehydrate-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
         ]) {
           if (prevRoot.getElementById(btnId)?.getAttribute?.('aria-expanded') === 'true') {
             openDrawers.push(btnId);
@@ -212,7 +212,6 @@
   function hasLiveRouteCapability(routePath) {
     if (!hasLiveHttpBridge()) return false;
     const caps = window.__AGContextMeterLive?.capabilities;
-    if (!caps || typeof caps !== 'object') return true;
     const map = {
       '/quota': 'quota',
       '/scan': 'scan',
@@ -228,6 +227,10 @@
       '/enhance-apply': 'enhance',
       '/enhance-restore': 'enhance',
       '/restart-language-servers': 'enhance',
+      '/rehydrate-status': 'rehydrate',
+      '/rehydrate-apply': 'rehydrate',
+      '/rehydrate-disable': 'rehydrate',
+      '/rehydrate-restore': 'rehydrate',
       '/modules-status': 'modules',
       '/toggle-module': 'modules',
       '/test-proxy': 'modules',
@@ -236,6 +239,11 @@
     };
     const key = map[routePath];
     if (!key) return true;
+    if (key === 'rehydrate') {
+      if (!caps || typeof caps !== 'object') return false;
+      return Array.isArray(caps) ? caps.includes('rehydrate') : caps.rehydrate === true;
+    }
+    if (!caps || typeof caps !== 'object') return true;
     if (Array.isArray(caps)) return caps.includes(key);
     return caps[key] !== false;
   }
@@ -331,7 +339,7 @@
       syncObservedBackendMeta('electron-ipc', res?.data || res);
       return { source: 'electron-ipc', result: res };
     }
-    if (hasLiveHttpBridge() && liveRoute) {
+    if (hasLiveHttpBridge() && liveRoute && hasLiveRouteCapability(liveRoute)) {
       const res = await postLiveHttpEndpoint(liveRoute, liveBody, liveFetchOpts);
       syncObservedBackendMeta('live-host', res?.data || res);
       return { source: 'live-host', result: res };
@@ -3367,6 +3375,7 @@
         void refreshUnlockStatus();
       }
       if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
+      if (typeof refreshRehydrateStatus === 'function') void refreshRehydrateStatus();
     }
     positionFloatingPanels();
   }
@@ -5550,6 +5559,36 @@
     }
   }
 
+  async function invokeRehydrateApi(endpoint, payload = {}) {
+    const ipcMap = {
+      status: window.contextMeterAPI?.getRehydrateStatus,
+      apply: window.contextMeterAPI?.applyRehydrate,
+      disable: window.contextMeterAPI?.disableRehydrate,
+      restore: window.contextMeterAPI?.restoreRehydrate
+    };
+    const routeMap = {
+      status: '/rehydrate-status',
+      apply: '/rehydrate-apply',
+      disable: '/rehydrate-disable',
+      restore: '/rehydrate-restore'
+    };
+    const ipcFn = typeof ipcMap[endpoint] === 'function' ? () => ipcMap[endpoint](payload) : null;
+    const liveRoute = routeMap[endpoint] || '';
+    if ((!ipcFn && !hasLiveRouteCapability(liveRoute)) || !liveRoute) {
+      return { ok: false, errorKey: 'rehydrate.result.noBridge', error: t('rehydrate.result.noBridge'), unavailable: true };
+    }
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute,
+        liveBody: payload
+      });
+      return out.result || { ok: false, errorKey: 'rehydrate.result.noBridge', error: t('rehydrate.result.noBridge'), unavailable: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('rehydrate.result.noBridge') };
+    }
+  }
+
   async function invokeModulesApi(action, name, enable, opts = {}) {
     const ipcFn = (action === 'status' && typeof window.contextMeterAPI?.getModulesStatus === 'function')
       ? () => window.contextMeterAPI.getModulesStatus()
@@ -6270,41 +6309,18 @@
     }, 4500);
   }
 
-  async function openUnlockAuthorPost() {
-    let opened = false;
-    try {
-      if (window.contextMeterAPI?.openExternal) {
-        const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
-        if (res && res.ok) opened = true;
-      }
-    } catch { }
-
-    if (!opened) {
-      try {
-        const w = window.open(UNLOCK_POST_URL, '_blank');
-        if (w) opened = true;
-      } catch { }
-    }
-
-    if (opened) {
-      showUnlockToast(t('models.linkOpened'));
-    } else {
-      copyUnlockPostUrl(true);
-    }
-  }
-
-  function copyUnlockPostUrl(fromFailedOpen = false) {
+  function copyUrlWithToast(targetUrl, showToastFn, fromFailedOpen = false) {
     let copied = false;
     try {
       if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(UNLOCK_POST_URL);
+        navigator.clipboard.writeText(targetUrl);
         copied = true;
       }
     } catch { }
     if (!copied) {
       try {
         const ta = document.createElement('textarea');
-        ta.value = UNLOCK_POST_URL;
+        ta.value = targetUrl;
         document.body.appendChild(ta);
         ta.select();
         document.execCommand('copy');
@@ -6312,9 +6328,38 @@
         copied = true;
       } catch { }
     }
-    showUnlockToast(fromFailedOpen
-      ? t('models.linkCopyFallback')
-      : t('models.copyOk'));
+    showToastFn(fromFailedOpen ? t('models.linkCopyFallback') : t('models.copyOk'));
+  }
+
+  async function openExternalWithFallback(targetUrl, showToastFn) {
+    let opened = false;
+    try {
+      if (window.contextMeterAPI?.openExternal) {
+        const res = await window.contextMeterAPI.openExternal(targetUrl);
+        if (res && res.ok) opened = true;
+      }
+    } catch { }
+
+    if (!opened) {
+      try {
+        const w = window.open(targetUrl, '_blank');
+        if (w) opened = true;
+      } catch { }
+    }
+
+    if (opened) {
+      showToastFn(t('models.linkOpened'));
+    } else {
+      copyUrlWithToast(targetUrl, showToastFn, true);
+    }
+  }
+
+  function openUnlockAuthorPost() {
+    return openExternalWithFallback(UNLOCK_POST_URL, showUnlockToast);
+  }
+
+  function copyUnlockPostUrl(fromFailedOpen = false) {
+    copyUrlWithToast(UNLOCK_POST_URL, showUnlockToast, fromFailedOpen);
   }
 
   linkUnlockAuthor?.addEventListener('click', (e) => {
@@ -6626,6 +6671,7 @@
   const chkPresetTitle = el('chk-rec-title');
   const chkPresetLang = el('chk-rec-lang');
   const chkPresetCtx = el('chk-rec-ctx');
+  const chkPresetRehydrate = el('chk-rec-rehydrate');
 
   const brandTitleBtns = {
     english: el('btn-brand-english'),
@@ -6660,19 +6706,44 @@
   const enhanceDetailsArrow = el('enhance-details-arrow');
   const enhanceBinaryList = el('enhance-binary-list');
 
+  const rehydrateBadge = el('rehydrate-badge');
+  const rehydrateStatHook = el('rehydrate-stat-hook');
+  const rehydrateStatScript = el('rehydrate-stat-script');
+  const rehydrateStatPython = el('rehydrate-stat-python');
+  const rehydrateStatSiblings = el('rehydrate-stat-siblings');
+  const btnRehydrateEnable = el('btn-rehydrate-enable');
+  const btnRehydrateDisable = el('btn-rehydrate-disable');
+  const btnRehydrateRefresh = el('btn-rehydrate-refresh');
+  const btnRehydrateRemove = el('btn-rehydrate-remove');
+  const rehydrateResultBox = el('rehydrate-result-box');
+  const rehydrateResultText = el('rehydrate-result-text');
+  const btnToggleRehydrateDetails = el('btn-toggle-rehydrate-details');
+  const rehydrateDetailsBody = el('rehydrate-details-body');
+  const rehydrateDetailsArrow = el('rehydrate-details-arrow');
+  const rehydratePathsMeta = el('rehydrate-paths-meta');
+  const linkRehydrateAuthor = el('link-rehydrate-author');
+  const btnCopyRehydrateLink = el('btn-copy-rehydrate-link');
+  const rehydrateLinkToast = el('rehydrate-link-toast');
+  const REHYDRATE_AUTHOR_URL = 'https://agy-rehydrate.pages.dev/';
+
   let currentBrandTitle = 'english';
   let currentEnhanceStatus = null;
+  let currentRehydrateStatus = null;
   let selectedEnhanceTier = 0;
   let enhanceTitleDraft = false;
   let enhanceTierDirty = false;
   let enhanceTitleDirty = false;
   let enhanceStatusReqSeq = 0;
+  let rehydrateStatusReqSeq = 0;
   let pendingEnhanceConfirmMode = null; // 'preset' | 'restore' | null
   let isEnhanceBusy = false;
+  let isRehydrateBusy = false;
   let isLsRestartBusy = false;
   let hasPendingLsReload = false;
   let enhanceGlobalResultState = null; // { ok, resolveMessage, opts }
   let enhancePromptResultState = null; // { ok, resolveMessage }
+  let rehydrateResultState = null;     // { ok, resolveMessage }
+  let rehydrateToastTimer = null;
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
 
@@ -6736,6 +6807,17 @@
     if (chkPresetCtx && currentUnlockStatus) {
       if (ctxUnsupported) chkPresetCtx.checked = false;
       chkPresetCtx.disabled = Boolean(isEnhanceBusy || ctxUnsupported);
+    }
+    if (chkPresetRehydrate && currentRehydrateStatus && currentRehydrateStatus.supported !== false) {
+      const rhBlocked = Boolean(
+        currentRehydrateStatus.hooksFileValid === false ||
+        currentRehydrateStatus.modulesConfigValid === false ||
+        (!currentRehydrateStatus.pythonReady && currentRehydrateStatus.status !== 'enabled')
+      );
+      if (rhBlocked) chkPresetRehydrate.checked = false;
+      chkPresetRehydrate.disabled = Boolean(isEnhanceBusy || isRehydrateBusy || rhBlocked);
+    } else if (chkPresetRehydrate) {
+      chkPresetRehydrate.disabled = Boolean(isEnhanceBusy || isRehydrateBusy);
     }
   }
 
@@ -6905,6 +6987,7 @@
     if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
     if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
     if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
+    if (chkPresetRehydrate?.checked) resolvers.push(() => t('enhance.preset.itemRehydrate'));
     return resolvers;
   }
 
@@ -6958,6 +7041,10 @@
     if (lastProxyTestState && proxyTestResult && proxyTestResult.style.display && proxyTestResult.style.display !== 'none') {
       renderProxyTestResultView();
     }
+    if (rehydrateResultState && rehydrateResultBox && rehydrateResultBox.style.display && rehydrateResultBox.style.display !== 'none') {
+      showRehydrateResult(rehydrateResultState.ok, rehydrateResultState.resolveMessage);
+    }
+    if (typeof renderRehydrateSectionUI === 'function') renderRehydrateSectionUI();
   }
 
   function applyEnhanceStatusPayload(statusData, { syncDrafts = true, forceSyncDrafts = false } = {}) {
@@ -7161,6 +7248,7 @@
     const wantTitle = Boolean(chkPresetTitle?.checked);
     const wantLang = Boolean(chkPresetLang?.checked);
     const wantCtx = Boolean(chkPresetCtx?.checked);
+    const wantRehydrate = Boolean(chkPresetRehydrate?.checked);
 
     isEnhanceBusy = true;
     syncEnhanceInteractiveDisabledState();
@@ -7237,6 +7325,22 @@
             failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
           }
         }
+
+        if (wantRehydrate) {
+          try {
+            const rhRes = await invokeRehydrateApi('apply', {});
+            if (!rhRes || !rhRes.ok) {
+              failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${resolveSettingsErrorText(rhRes, 'msg.unknownErr')}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemRehydrate'));
+              if (rhRes.changed !== false) anyChanged = true;
+              if (rhRes.status) applyRehydrateStatusPayload(rhRes.status);
+            }
+          } catch (stepErr) {
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
+          }
+        }
       } else if (mode === 'restore') {
         const resolvePromptTitleLabel = () => `${t('enhance.preset.itemPrompt')} / ${t('enhance.preset.itemTitle')}`;
         try {
@@ -7284,6 +7388,22 @@
           const rawErr = stepErr?.message;
           failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
         }
+
+        const hasRehydrateBridge = Boolean(window.contextMeterAPI?.restoreRehydrate || hasLiveRouteCapability('/rehydrate-restore'));
+        if (hasRehydrateBridge) {
+          try {
+            const rhRes = await invokeRehydrateApi('restore', {});
+            if (!rhRes || !rhRes.ok) {
+              failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${resolveSettingsErrorText(rhRes, 'msg.restoreFail')}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemRehydrate'));
+              if (rhRes.status) applyRehydrateStatusPayload(rhRes.status);
+            }
+          } catch (stepErr) {
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
+          }
+        }
       }
 
       if (needsHostRestart) needsRestartAfterApply = true;
@@ -7314,9 +7434,9 @@
 
       if (latestEnhanceStatus) {
         applyEnhanceStatusPayload(latestEnhanceStatus, { syncDrafts: true, forceSyncDrafts: true });
-        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus()]);
+        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus(), refreshRehydrateStatus()]);
       } else {
-        await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus()]);
+        await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus(), refreshRehydrateStatus()]);
       }
     } catch (e) {
       const rawErr = e?.message;
@@ -7360,6 +7480,217 @@
   });
 
   btnEnhanceRestartHost?.addEventListener('click', openClientRestartConfirmFlow);
+
+  // -------------------------------------------------------------
+  // 模块 3.6: 压缩后无损回水与跨 /fork 溯源 (Slim-LTS Hook) 控制器
+  // -------------------------------------------------------------
+  function showRehydrateToast(msg) {
+    if (!rehydrateLinkToast) return;
+    if (rehydrateToastTimer) clearTimeout(rehydrateToastTimer);
+    rehydrateLinkToast.textContent = msg;
+    rehydrateLinkToast.style.display = 'block';
+    rehydrateToastTimer = setTimeout(() => {
+      rehydrateLinkToast.style.display = 'none';
+    }, 4500);
+  }
+
+  function showRehydrateResult(ok, messageOrResolver) {
+    if (!rehydrateResultBox || !rehydrateResultText) return;
+    const resolveMessage = typeof messageOrResolver === 'function'
+      ? messageOrResolver
+      : () => String(messageOrResolver ?? '');
+    rehydrateResultState = { ok, resolveMessage };
+    rehydrateResultBox.style.display = 'block';
+    rehydrateResultBox.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
+    rehydrateResultText.textContent = resolveMessage();
+  }
+
+  function syncRehydrateInteractiveState() {
+    const d = currentRehydrateStatus;
+    const busy = Boolean(isRehydrateBusy || isEnhanceBusy);
+    const unavailable = Boolean(d && d.supported === false);
+    const corrupt = Boolean(d && d.hooksFileValid === false);
+    const modCfgCorrupt = Boolean(d && d.modulesConfigValid === false);
+    const pyBlocked = Boolean(d && d.supported !== false && !d.pythonReady);
+    if (btnRehydrateEnable) btnRehydrateEnable.disabled = busy || unavailable || corrupt || modCfgCorrupt || pyBlocked;
+    if (btnRehydrateDisable) btnRehydrateDisable.disabled = busy || unavailable || corrupt || modCfgCorrupt || !d?.hookRegistered || !d?.hookEnabled;
+    if (btnRehydrateRemove) btnRehydrateRemove.disabled = busy || unavailable || corrupt || (!d?.hookRegistered && !d?.scriptInstalled);
+    if (btnRehydrateRefresh) btnRehydrateRefresh.disabled = busy;
+  }
+
+  function renderRehydrateSectionUI() {
+    syncRehydrateInteractiveState();
+    const d = currentRehydrateStatus;
+    const unread = !d || d.supported === false;
+    if (rehydrateBadge) {
+      if (unread) {
+        rehydrateBadge.textContent = t('rehydrate.status.unread');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      } else if (d.status === 'enabled') {
+        rehydrateBadge.textContent = t('rehydrate.status.enabled');
+        rehydrateBadge.className = 'key-pill pill-ok';
+      } else if (d.status === 'disabled') {
+        rehydrateBadge.textContent = t('rehydrate.status.disabled');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      } else if (d.status === 'broken') {
+        rehydrateBadge.textContent = t('rehydrate.status.broken');
+        rehydrateBadge.className = 'key-pill pill-warn';
+      } else if (d.status === 'corrupt_hooks_json') {
+        rehydrateBadge.textContent = t('rehydrate.status.corrupt');
+        rehydrateBadge.className = 'key-pill pill-warn';
+      } else {
+        rehydrateBadge.textContent = t('rehydrate.status.notInstalled');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      }
+    }
+    if (rehydrateStatHook) {
+      rehydrateStatHook.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.hookRegistered ? (d.hookEnabled ? t('rehydrate.state.hookEnabled') : t('rehydrate.state.hookDisabled')) : t('rehydrate.state.hookNone'));
+    }
+    if (rehydrateStatScript) {
+      rehydrateStatScript.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.scriptInstalled ? (d.scriptMatchesBundled ? t('rehydrate.state.scriptSynced') : t('rehydrate.state.scriptCustom')) : t('rehydrate.state.scriptMissing'));
+    }
+    if (rehydrateStatPython) {
+      rehydrateStatPython.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.pythonReady ? t('rehydrate.state.pythonOk', { ver: d.pythonVersion || '3.10+' }) : (d.pythonVersion ? t('rehydrate.state.pythonOld', { ver: d.pythonVersion }) : t('rehydrate.state.pythonMissing')));
+    }
+    if (rehydrateStatSiblings) {
+      if (unread) {
+        rehydrateStatSiblings.textContent = t('rehydrate.status.unread');
+      } else if (d.hooksFileValid === false) {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsBlocked');
+      } else if (Array.isArray(d.otherHookNames) && d.otherHookNames.length > 0) {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsList', { names: d.otherHookNames.join(', ') });
+      } else {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsNone');
+      }
+    }
+    if (rehydratePathsMeta && d && (d.hooksJsonPath || d.deployedScriptPath)) {
+      rehydratePathsMeta.textContent = t('rehydrate.paths.summary', {
+        hooksJson: d.hooksJsonPath || '~/.gemini/config/hooks.json',
+        script: d.deployedScriptPath || '~/.gemini/config/hooks/rehydrate_after_compact.py'
+      });
+    }
+    if (rehydrateDetailsArrow && rehydrateDetailsBody) {
+      const open = rehydrateDetailsBody.style.display === 'block';
+      rehydrateDetailsArrow.textContent = open ? t('drawer.shortCollapse') : t('drawer.shortExpand');
+    }
+  }
+
+  function applyRehydrateStatusPayload(statusData) {
+    currentRehydrateStatus = statusData;
+    syncEnhanceInteractiveDisabledState();
+    renderRehydrateSectionUI();
+    if (statusData && (statusData.status === 'corrupt_hooks_json' || statusData.status === 'broken' || statusData.modulesConfigValid === false) && statusData.errorKey) {
+      showRehydrateResult(false, () => t(statusData.errorKey));
+    }
+  }
+
+  async function refreshRehydrateStatus() {
+    const seq = ++rehydrateStatusReqSeq;
+    try {
+      const res = await invokeRehydrateApi('status', {});
+      if (seq !== rehydrateStatusReqSeq) return;
+      if (res && res.ok && res.data) {
+        applyRehydrateStatusPayload(res.data);
+      } else if (res && res.unavailable) {
+        currentRehydrateStatus = { supported: false };
+        syncEnhanceInteractiveDisabledState();
+        renderRehydrateSectionUI();
+      } else {
+        renderRehydrateSectionUI();
+      }
+    } catch {
+      if (seq !== rehydrateStatusReqSeq) return;
+      currentRehydrateStatus = null;
+      renderRehydrateSectionUI();
+    }
+  }
+
+  async function runRehydrateAction(endpoint, btnEl, busyKey, idleKey, onSuccess, payload = {}) {
+    if (isRehydrateBusy || isEnhanceBusy) return;
+    isRehydrateBusy = true;
+    syncEnhanceInteractiveDisabledState();
+    syncRehydrateInteractiveState();
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = t(busyKey);
+    }
+    showRehydrateResult(true, () => t(busyKey));
+    try {
+      await yieldForSettingsPaint();
+      const res = await invokeRehydrateApi(endpoint, payload);
+      if (!res || !res.ok) {
+        if (res?.status) applyRehydrateStatusPayload(res.status);
+        showRehydrateResult(false, () => t('rehydrate.result.fail', { err: resolveSettingsErrorText(res, 'msg.unknownErr') }));
+      } else {
+        if (res.status) applyRehydrateStatusPayload(res.status);
+        else await refreshRehydrateStatus();
+        showRehydrateResult(true, onSuccess(res));
+      }
+    } catch (e) {
+      const rawErr = e?.message;
+      showRehydrateResult(false, () => t('rehydrate.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') }));
+    } finally {
+      isRehydrateBusy = false;
+      if (btnEl) btnEl.textContent = t(idleKey);
+      syncEnhanceInteractiveDisabledState();
+      syncRehydrateInteractiveState();
+    }
+  }
+
+  btnRehydrateEnable?.addEventListener('click', () => {
+    void runRehydrateAction('apply', btnRehydrateEnable, 'rehydrate.btn.enableBusy', 'rehydrate.btn.enable', (res) => {
+      if (res.changed === false) return () => t('rehydrate.result.alreadyEnabled');
+      const p = res.status?.hooksJsonPath || '~/.gemini/config/hooks.json';
+      return () => t('rehydrate.result.enabled', { path: p });
+    });
+  });
+
+  btnRehydrateDisable?.addEventListener('click', () => {
+    void runRehydrateAction('disable', btnRehydrateDisable, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
+  });
+
+  btnRehydrateRemove?.addEventListener('click', () => {
+    void runRehydrateAction('restore', btnRehydrateRemove, 'rehydrate.btn.removeBusy', 'rehydrate.btn.remove', () => () => t('rehydrate.result.removed'), { force: true });
+  });
+
+  btnRehydrateRefresh?.addEventListener('click', () => {
+    if (isRehydrateBusy) return;
+    void refreshRehydrateStatus();
+  });
+
+  btnToggleRehydrateDetails?.addEventListener('click', () => {
+    if (!rehydrateDetailsBody) return;
+    const isHidden = rehydrateDetailsBody.style.display === 'none' || !rehydrateDetailsBody.style.display;
+    rehydrateDetailsBody.style.display = isHidden ? 'block' : 'none';
+    btnToggleRehydrateDetails.setAttribute('aria-expanded', String(isHidden));
+    renderRehydrateSectionUI();
+  });
+
+  linkRehydrateAuthor?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast);
+  });
+
+  linkRehydrateAuthor?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast);
+    }
+  });
+
+  btnCopyRehydrateLink?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyUrlWithToast(REHYDRATE_AUTHOR_URL, showRehydrateToast, false);
+  });
 
   let selectedBrandTitle = currentBrandTitle;
 
@@ -12427,7 +12758,7 @@
     const openDrawers = [];
     for (const btnId of [
       'btn-toggle-details', 'btn-toggle-card-details', 'btn-toggle-unlock-details',
-      'btn-toggle-enhance-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
+      'btn-toggle-enhance-details', 'btn-toggle-rehydrate-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
     ]) {
       if (el(btnId)?.getAttribute?.('aria-expanded') === 'true') {
         openDrawers.push(btnId);
@@ -12635,6 +12966,10 @@
     getKnownModelProductsForTest: () => getKnownModelProducts(),
     refreshUnlockStatusForTest: () => refreshUnlockStatus(),
     refreshEnhanceStatusForTest: () => refreshEnhanceStatus(),
+    refreshRehydrateStatusForTest: () => refreshRehydrateStatus(),
+    getRehydrateStateForTest: () => ({
+      currentRehydrateStatus: currentRehydrateStatus ? { ...currentRehydrateStatus } : null
+    }),
     getEnhanceStateForTest: () => ({
       currentBrandTitle,
       selectedEnhanceTier,
@@ -12787,6 +13122,7 @@
   applyStaticPanelTranslations(shadow);
   refreshRegionPresetSelectOptions();
   renderEnhanceSectionUI();
+  renderRehydrateSectionUI();
   if (inheritedHotReloadState) {
     applyInheritedHotReloadState(inheritedHotReloadState);
   }

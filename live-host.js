@@ -111,6 +111,10 @@ const ALLOWED_ROUTES = [
   '/enhance-apply',
   '/enhance-restore',
   '/restart-language-servers',
+  '/rehydrate-status',
+  '/rehydrate-apply',
+  '/rehydrate-disable',
+  '/rehydrate-restore',
   '/modules-status',
   '/toggle-module',
   '/test-proxy',
@@ -130,6 +134,7 @@ const LIVE_CAPABILITIES = {
   launchCli: true,
   contextUnlock: true,
   enhance: true,
+  rehydrate: true,
   modules: true,
   checkUpdate: true,
   applyUpdate: true,
@@ -286,6 +291,34 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         if (req.url === '/restart-language-servers') {
           const { restartLanguageServersAsync } = require('./meter-enhance');
           const result = await restartLanguageServersAsync();
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-status') {
+          const { getRehydrateStatusAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await getRehydrateStatusAsync(sanitizeRehydrateRendererOptions(request, 'status'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: result }));
+          return;
+        }
+        if (req.url === '/rehydrate-apply') {
+          const { applyRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await applyRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'apply'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-disable') {
+          const { disableRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await disableRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'disable'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-restore') {
+          const { restoreRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await restoreRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'restore'));
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;

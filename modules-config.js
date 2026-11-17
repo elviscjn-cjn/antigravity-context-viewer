@@ -68,6 +68,16 @@ const DEFAULT_CONFIG = {
       chineseTitle: null,
       lastAppliedAt: null,
       targetBuilds: {}
+    },
+    rehydrate: {
+      enabled: false,
+      managed: false,
+      baselineCaptured: false,
+      hadPreexistingHook: false,
+      preexistingHook: null,
+      hadPreexistingScript: false,
+      preexistingScriptBackupPath: null,
+      lastUpdated: null
     }
   }
 };
@@ -164,7 +174,7 @@ function validateModulesSchema(parsed) {
   if (!isPlainObject(parsed)) return { ok: false, error: '配置文件根节点必须是 JSON 对象' };
   if (!isPlainObject(parsed.modules)) return { ok: false, error: '配置文件缺少有效的 modules 对象' };
   const mods = parsed.modules;
-  for (const key of ['meter', 'chinese', 'proxy', 'enhance']) {
+  for (const key of ['meter', 'chinese', 'proxy', 'enhance', 'rehydrate']) {
     if (mods[key] !== undefined && !isPlainObject(mods[key])) {
       return { ok: false, error: `配置文件中 modules.${key} 字段格式非法` };
     }
@@ -236,6 +246,11 @@ function loadModulesConfig(options = {}) {
         {
           targetBuilds: Object.assign({}, parsed.modules.enhance?.targetBuilds || {})
         }
+      );
+      current.modules.rehydrate = Object.assign(
+        {},
+        DEFAULT_CONFIG.modules.rehydrate,
+        parsed.modules.rehydrate || {}
       );
       return current;
     } catch (e) {

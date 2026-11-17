@@ -90,6 +90,7 @@ async function queryLiveWindow() {
               version: window.__AGContextMeter?.version || null,
               hasIpcBridge: Boolean(window.contextMeterAPI?.scan && window.contextMeterAPI?.saveSettings && window.contextMeterAPI?.launchCli && window.contextMeterAPI?.getContextUnlockStatus),
               hasQuotaIpcBridge: Boolean(window.contextMeterAPI?.getQuota),
+              hasRehydrateIpcBridge: Boolean(window.contextMeterAPI?.getRehydrateStatus && (!ipcRuntimeInfo?.capabilities || ipcRuntimeInfo.capabilities.rehydrate === true)),
               hasRestartBridge: Boolean(window.contextMeterAPI?.restartHost),
               ipcBackendVersion: ipcRuntimeInfo?.backendVersion || bootBackend?.backendVersion || null,
               liveBridgeAttached: window.__AGContextMeterLive ? {
@@ -116,7 +117,13 @@ async function queryLiveWindow() {
   }
 }
 
-async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
+function hasRehydrateCapability(caps) {
+  if (Array.isArray(caps)) return caps.includes('rehydrate');
+  return Boolean(caps && typeof caps === 'object' && caps.rehydrate === true);
+}
+
+async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
+  const probeFn = typeof options?._probeLiveHost === 'function' ? options._probeLiveHost : probeLiveHostRuntimeInfo;
   const live = liveSnapshot || await queryLiveWindow();
   if (!live.running || !live.pageFound) {
     return { needed: false, ready: false, reason: 'no_running_window', liveInfo: null, previousLiveInfo: null };
@@ -147,6 +154,7 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
   const electronIpcAligned = Boolean(
     live.hasIpcBridge &&
     live.hasQuotaIpcBridge &&
+    live.hasRehydrateIpcBridge &&
     currentPkgVersion &&
     live.ipcBackendVersion === currentPkgVersion
   );
@@ -173,8 +181,8 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
     let pidAlive = false;
     try { process.kill(info.pid, 0); pidAlive = true; } catch {}
     if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion)) {
-      const probe = await probeLiveHostRuntimeInfo(info, expectedOrigins[0]);
-      if (probe && probe.ok && (!currentPkgVersion || probe.backendVersion === currentPkgVersion)) {
+      const probe = await probeFn(info, expectedOrigins[0]);
+      if (probe && probe.ok && hasRehydrateCapability(probe.capabilities) && (!currentPkgVersion || probe.backendVersion === currentPkgVersion)) {
         return {
           needed: true,
           ready: true,
@@ -275,8 +283,8 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
         const cand = JSON.parse(fs.readFileSync(stagingStamp, 'utf8'));
         if (cand && cand.pid && cand.port && cand.token) {
           process.kill(cand.pid, 0);
-          const probe = await probeLiveHostRuntimeInfo(cand, expectedOrigins[0]);
-          if (probe && probe.ok && (!currentPkgVersion || probe.backendVersion === currentPkgVersion)) {
+          const probe = await probeFn(cand, expectedOrigins[0]);
+          if (probe && probe.ok && hasRehydrateCapability(probe.capabilities) && (!currentPkgVersion || probe.backendVersion === currentPkgVersion)) {
             newInfo = {
               ...cand,
               version: probe.backendVersion || cand.version || currentPkgVersion,
@@ -512,6 +520,11 @@ async function main() {
     console.log(`     * 磁盘组件: ${disk.proxyReady ? '✅ 已注入（支持 Session 代理与环境变量拦截）' : (disk.proxy ? '⚠️ 磁盘注入不完整' : '⚪ 未注入')}`);
     console.log(`     * 生效说明: ${cfg.modules.proxy.enabled ? '🔍 需通过 node cli.js proxy:test 测试连通性' : '⚪ 跟随系统默认网络栈，可在客户端面板中随时配置并开启'}`);
     console.log(`     * 模型请求验证: 待通过真实在线会话验证 (分层标定，未发送请求前不宣称生效)`);
+    const { getRehydrateStatus } = require('./meter-rehydrate');
+    const rhSt = getRehydrateStatus();
+    console.log('   - 🩹 改善 AGY 有损压缩 (Slim-LTS):');
+    console.log(`     * 当前状态: ${rhSt.status === 'enabled' ? '✅ 已开启' : (rhSt.status === 'disabled' ? '⏸️ 已停用' : (rhSt.status === 'broken' ? '⚠️ 待修复' : (rhSt.status === 'corrupt_hooks_json' ? '❌ hooks.json 异常' : '⚪ 未开启 (默认按需开启)')))}`);
+    console.log(`     * 按需开启: 可运行 node cli.js rehydrate:enable 或在客户端面板「配置」页开启`);
     console.log(`✅ 运行中窗口热挂载状态: ${manifest.liveInjected ? (backendAligned ? '已即时生效（无需重启）' : '界面已挂载但后台需重启对齐') : '将在下次启动 Antigravity 时自动生效'}`);
     if (process.env.AG_EMIT_INSTALL_META === '1') {
       console.log('__AG_INSTALL_META__=' + JSON.stringify({
@@ -563,6 +576,23 @@ async function main() {
         }
       } catch (e) {
         console.log(`⚠️  内核还原异常: ${e.message}`);
+      }
+      try {
+        const { restoreRehydrate } = require('./meter-rehydrate');
+        const rhRes = restoreRehydrate({});
+        if (rhRes.ok) {
+          if (rhRes.skippedUnmanaged) {
+            console.log('ℹ️  保留用户独立安装的 post-compact-rehydrate Hook（非本插件托管启用，如需移除请运行 node cli.js rehydrate:remove）');
+          } else if (rhRes.changed) {
+            console.log('✅ 已同步还原本插件托管的「改善 AGY 有损压缩」Hook 状态（其他已有 Hook 已保留）！');
+          } else {
+            console.log('✅ 「改善 AGY 有损压缩」已处于默认状态（其他已有 Hook 已保留）！');
+          }
+        } else {
+          console.log(`⚠️  回水 Hook 清理未执行: ${rhRes.error}`);
+        }
+      } catch (e) {
+        console.log(`⚠️  回水 Hook 清理异常: ${e.message}`);
       }
     }
     console.log('📦 模块清理与运行时状态说明:');
@@ -691,6 +721,41 @@ async function main() {
     if (cfg.modules.proxy.migratedFrom) {
       console.log(`   - 迁移来源: ${cfg.modules.proxy.migratedFrom}`);
     }
+
+    const { getRehydrateStatus } = require('./meter-rehydrate');
+    const rhSt = getRehydrateStatus();
+    console.log('4. 改善 AGY 有损压缩 (Post-Compact Rehydration):');
+    console.log(`   - 运行状态: ${rhSt.status}`);
+    console.log(`   - 恢复脚本: ${rhSt.scriptInstalled ? `✅ ${rhSt.deployedScriptPath}` : '⚪ 未安装'}`);
+    console.log(`   - Python 3.10+: ${rhSt.pythonReady ? `✅ ${rhSt.pythonVersion} (${rhSt.pythonCommand})` : '⚪ 未检测到 Python 3.10+'}`);
+    if (rhSt.otherHookNames.length) {
+      console.log(`   - 其他配置兼容: 已保留 ${rhSt.otherHookNames.join(', ')}`);
+    }
+  } else if (cmd === 'rehydrate-status' || cmd === 'rehydrate:status') {
+    const { getRehydrateStatusAsync } = require('./meter-rehydrate');
+    const st = await getRehydrateStatusAsync();
+    console.log(JSON.stringify(st, null, 2));
+  } else if (cmd === 'rehydrate:enable') {
+    const { applyRehydrateAsync } = require('./meter-rehydrate');
+    const res = await applyRehydrateAsync();
+    if (!res.ok) throw new Error(res.error || '开启「改善 AGY 有损压缩」失败');
+    console.log(`✅ 已开启「改善 AGY 有损压缩」: ${res.status.hooksJsonPath}`);
+    console.log(`   - 恢复脚本: ${res.status.deployedScriptPath}`);
+    if (res.backupPath) console.log(`   - 原脚本备份: ${res.backupPath}`);
+    if (res.status.otherHookNames.length) {
+      console.log(`   - 已保留其他已有配置: ${res.status.otherHookNames.join(', ')}`);
+    }
+  } else if (cmd === 'rehydrate:disable') {
+    const { disableRehydrateAsync } = require('./meter-rehydrate');
+    const res = await disableRehydrateAsync();
+    if (!res.ok) throw new Error(res.error || '停用「改善 AGY 有损压缩」失败');
+    console.log(`✅ 已停用「改善 AGY 有损压缩」（脚本与其他配置均已保留）`);
+  } else if (cmd === 'rehydrate:remove' || cmd === 'rehydrate-restore') {
+    const { restoreRehydrateAsync } = require('./meter-rehydrate');
+    const res = await restoreRehydrateAsync({ force: true });
+    if (!res.ok) throw new Error(res.error || '移除「改善 AGY 有损压缩」失败');
+    console.log(`✅ 已卸载移除「改善 AGY 有损压缩」并清理脚本（其他配置均已保留）`);
+    if (res.backupPath) console.log(`   - 自定义脚本备份: ${res.backupPath}`);
   } else if (cmd === 'chinese:enable' || cmd === 'chinese:disable') {
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
     const cfg = loadModulesConfig();
@@ -755,7 +820,11 @@ async function main() {
   node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制
   node cli.js enhance-status                检查系统提示词精简与中文标题内核状态
   node cli.js enhance [--tier 0-4] [--title on|off] [--context default|512k|900k|dynamic] [--lang zh-CN|en] [--brand english|hidden|translated]
-  node cli.js enhance-restore               一键还原系统提示词、英文标题与默认上下文`);
+  node cli.js enhance-restore               一键还原系统提示词、英文标题与默认上下文
+  node cli.js rehydrate-status              检查「改善 AGY 有损压缩」与 Python 3.10+ 状态
+  node cli.js rehydrate:enable              开启「改善 AGY 有损压缩」(写入 hooks.json)
+  node cli.js rehydrate:disable             停用「改善 AGY 有损压缩」(保留脚本与其他配置)
+  node cli.js rehydrate:remove              卸载移除「改善 AGY 有损压缩」并清理脚本`);
   }
 }
 
@@ -766,4 +835,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { cmdStatus, cmdCheck, rollbackPreparedLiveBridge };
+module.exports = { cmdStatus, cmdCheck, ensureLiveBridgeIfNeeded, rollbackPreparedLiveBridge };

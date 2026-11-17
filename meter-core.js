@@ -3848,6 +3848,10 @@
           pathname === '/u/23375'
         );
       }
+      if (u.hostname === 'agy-rehydrate.pages.dev') {
+        const pathname = u.pathname.replace(/\/+$/, '');
+        return pathname === '' || pathname === '/rehydrate_after_compact.py';
+      }
       return false;
     } catch {
       return false;

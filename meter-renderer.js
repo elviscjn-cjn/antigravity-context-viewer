@@ -32,7 +32,7 @@
         const openDrawers = [];
         for (const btnId of [
           'btn-toggle-details', 'btn-toggle-card-details', 'btn-toggle-unlock-details',
-          'btn-toggle-enhance-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
+          'btn-toggle-enhance-details', 'btn-toggle-rehydrate-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
         ]) {
           if (prevRoot.getElementById(btnId)?.getAttribute?.('aria-expanded') === 'true') {
             openDrawers.push(btnId);
@@ -2682,6 +2682,13 @@
               <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>
             </div>
           </label>
+          <label class="ctx-preset-check-item">
+            <input id="chk-rec-rehydrate" type="checkbox" checked>
+            <div class="ctx-preset-check-meta">
+              <strong data-i18n="enhance.preset.itemRehydrate">改善 AGY 有损压缩</strong>
+              <span data-i18n="enhance.preset.itemRehydrateSub">压缩后自动把最初要求、最近几轮原话和刚改过的代码补回给 AI（不影响已有其他配置）。</span>
+            </div>
+          </label>
         </div>
         <div class="ctx-settings-card-actions">
           <button id="btn-enhance-preset-apply" class="unlock-btn unlock-btn-primary" type="button"
@@ -2867,6 +2874,82 @@
                 <span class="unlock-credit-lbl"
                   data-i18n="enhance.details.credit">恢复操作：点击上方“全部恢复官方默认”将无损还原官方备份模板。</span>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. 改善 AGY 有损压缩 (Slim-LTS Hook) -->
+      <div class="ctx-settings-card" id="rehydrate-hook-card">
+        <div class="ctx-settings-card-hdr">
+          <div class="ctx-settings-card-title" data-i18n="rehydrate.card.title">🩹 改善 AGY 有损压缩</div>
+          <span id="rehydrate-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+        </div>
+        <div class="ctx-plain-help"
+          style="margin:4px 0 8px 0;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;">
+          <div style="font-size:11.5px;line-height:1.55;color:var(--ag-text-primary);"
+            data-i18n="rehydrate.card.plainIntro">
+            AGY 自动压缩（或执行 /compact）只保留概括摘要，容易丢失细节。开启后会在压缩完成时自动从本地完整记录把最初要求、最近几轮原话和刚读写过的文件补回给 AI；未检测到新的压缩检查点时，不注入额外上下文。
+          </div>
+        </div>
+        <div class="ctx-enhance-status-grid">
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.hook">当前状态</div>
+            <div id="rehydrate-stat-hook" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.script">恢复脚本</div>
+            <div id="rehydrate-stat-script" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.python">Python 运行环境</div>
+            <div id="rehydrate-stat-python" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.siblings">其他配置兼容</div>
+            <div id="rehydrate-stat-siblings" class="ctx-enhance-stat-val">—</div>
+          </div>
+        </div>
+        <div class="ctx-settings-card-actions">
+          <button id="btn-rehydrate-enable" class="unlock-btn unlock-btn-primary" type="button"
+            data-i18n="rehydrate.btn.enable">开启</button>
+          <button id="btn-rehydrate-disable" class="unlock-btn unlock-btn-secondary" type="button"
+            data-i18n="rehydrate.btn.disable">停用</button>
+          <button id="btn-rehydrate-refresh" class="unlock-btn unlock-btn-secondary" type="button"
+            data-i18n="models.btn.refreshStatus">刷新状态</button>
+          <button id="btn-rehydrate-remove" class="ctx-text-action-btn" type="button"
+            data-i18n="rehydrate.btn.remove">卸载移除</button>
+        </div>
+        <div id="rehydrate-result-box" class="unlock-result-box" style="display:none;">
+          <div id="rehydrate-result-text" class="unlock-result-text"></div>
+        </div>
+        <div class="tech-drawer" id="rehydrate-details-drawer" style="margin-top:4px">
+          <button id="btn-toggle-rehydrate-details" class="drawer-trigger" aria-expanded="false" type="button">
+            <span class="drawer-trigger-left" data-i18n="rehydrate.details.toggle">原理说明与方案来源</span>
+            <span id="rehydrate-details-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+          </button>
+          <div id="rehydrate-details-body" class="drawer-body" style="display:none;">
+            <div class="unlock-panel-content">
+              <div class="unlock-notice">
+                <div class="unlock-desc" data-i18n-html="rehydrate.details.body">
+                  <strong>四层 45,000 B UTF-8 回注内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃 <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code> 声明约束）。<br><br>
+                  <strong>跨 /fork 溯源</strong>：默认 <code>explicit</code> 模式在子分支首条记录声明父字段或配置 <code>&lt;brain&gt;/fork_lineage.json</code> 时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br>
+                  <strong>安全写入范围</strong>：仅读写 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 键与 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他 Hook。
+                </div>
+              </div>
+              <div id="rehydrate-paths-meta" class="unlock-desc" style="margin-top:6px;"></div>
+              <div class="unlock-credit-bar">
+                <div class="unlock-credit-left">
+                  <span class="unlock-credit-lbl" data-i18n="rehydrate.credit.source">方案来源：</span>
+                  <a id="link-rehydrate-author" href="https://agy-rehydrate.pages.dev/" target="_blank"
+                    rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
+                    data-i18n="rehydrate.credit.author">AGY Post-Compact Rehydration 原作者 ↗</a>
+                  <button id="btn-copy-rehydrate-link" class="unlock-copy-link-btn" type="button"
+                    data-i18n="models.credit.copy">📋 复制链接</button>
+                </div>
+                <span class="unlock-adapter-note" data-i18n="rehydrate.credit.adapter">Slim-LTS · 零依赖 Python 3.10+</span>
+              </div>
+              <div id="rehydrate-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
             </div>
           </div>
         </div>
@@ -5102,11 +5185,13 @@ const PANEL_I18N = {
       'enhance.preset.itemLangSub': { 'zh-CN': '切换 Antigravity 宿主本身为简体中文（可随时切回官方英文）', 'zh-TW': '切換 Antigravity 宿主本身為簡體中文（可隨時切回官方英文）', en: 'Switches Antigravity host UI to zh-CN (reversible to English)' },
       'enhance.preset.itemCtx': { 'zh-CN': '上下文跟随模型 (推荐上限释放)', 'zh-TW': '上下文跟隨模型 (推薦上限釋放)', en: 'Follow Model Context Limit' },
       'enhance.preset.itemCtxSub': { 'zh-CN': '解除前端硬编码上限，按当前模型原生能力透传真实预算', 'zh-TW': '解除前端寫死上限，依目前模型原生能力透傳真實預算', en: 'Lifts hardcoded client cap so each model uses its native limit' },
+      'enhance.preset.itemRehydrate': { 'zh-CN': '改善 AGY 有损压缩', 'zh-TW': '改善 AGY 有損壓縮', en: 'Mitigate AGY Lossy Compaction' },
+      'enhance.preset.itemRehydrateSub': { 'zh-CN': '压缩后自动把最初要求、最近几轮原话和刚改过的代码补回给 AI（不影响已有其他配置）', 'zh-TW': '壓縮後自動把最初要求、最近幾輪原話與剛改過的程式碼補回給 AI（不影響既有其他設定）', en: 'Automatically restores initial requests, recent verbatim turns, and active files after compaction (keeps existing configs)' },
       'enhance.preset.applyBtn': { 'zh-CN': '应用所选推荐配置…', 'zh-TW': '套用所選推薦設定…', en: 'Apply Selected Preset…' },
       'enhance.restoreAll.btn': { 'zh-CN': '全部恢复官方默认…', 'zh-TW': '全部恢復官方預設…', en: 'Restore All to Stock…' },
       'enhance.confirm.go': { 'zh-CN': '确认执行', 'zh-TW': '確認執行', en: 'Confirm' },
       'enhance.confirm.presetSummary': { 'zh-CN': '即将执行以下已勾选项：{items}；未勾选项目保持不变。变更后可能需要重启语言服务或 Antigravity 客户端加载生效。', 'zh-TW': '即將執行以下已勾選項：{items}；未勾選項目維持不變。變更後可能需要重啟語言服務或 Antigravity 用戶端載入生效。', en: 'About to apply checked items: {items}; unchecked items stay untouched. A language server or client restart may be required.' },
-      'enhance.confirm.restoreSummary': { 'zh-CN': '「全部恢复官方默认」将还原以下 4 项：系统提示词(0档原版)、关闭中文会话标题、客户端英文界面及品牌(Antigravity)、宿主默认上下文行为。不会清除网络代理、面板语言及已保存的模型长度偏好。是否继续？', 'zh-TW': '「全部恢復官方預設」將還原以下 4 項：系統提示詞(0檔原版)、關閉中文工作階段標題、用戶端英文介面及品牌(Antigravity)、宿主預設上下文行為。不會清除網路代理、面板語言及已儲存的模型長度偏好。是否繼續？', en: '"Restore All to Stock" resets these 4 items: Tier 0 prompt, stock English titles, English host UI & brand (Antigravity), and native context behavior. Keeps proxy, panel language, and saved model preferences. Continue?' },
+      'enhance.confirm.restoreSummary': { 'zh-CN': '「全部恢复官方默认」将还原以下 5 项：系统提示词(0档原版)、关闭中文会话标题、客户端英文界面及品牌(Antigravity)、宿主默认上下文行为、关闭「改善 AGY 有损压缩」。不会清除网络代理、其他用户 Hook、面板语言及已保存的模型长度偏好。是否继续？', 'zh-TW': '「全部恢復官方預設」將還原以下 5 項：系統提示詞(0檔原版)、關閉中文工作階段標題、用戶端英文介面及品牌(Antigravity)、宿主預設上下文行為、關閉「改善 AGY 有損壓縮」。不會清除網路代理、其他使用者 Hook、面板語言及已儲存的模型長度偏好。是否繼續？', en: '"Restore All to Stock" resets these 5 items: Tier 0 prompt, stock English titles, English host UI & brand (Antigravity), native context behavior, and turns off Mitigate AGY Lossy Compaction. Keeps proxy, other user hooks, panel language, and saved model preferences. Continue?' },
       'enhance.confirm.noneSelected': { 'zh-CN': '请至少勾选一项要应用的配置。', 'zh-TW': '請至少勾選一項要套用的設定。', en: 'Select at least one option first.' },
       'enhance.btn.restartLs': { 'zh-CN': '重启语言服务', 'zh-TW': '重啟語言服務', en: 'Restart Language Server' },
       'enhance.brand.label': { 'zh-CN': '左上角品牌文字显示（仅作用于左上角品牌位，不影响 Logo、菜单或代码）：', 'zh-TW': '左上角品牌文字顯示（僅作用於左上角品牌位，不影響 Logo、選單或程式碼）：', en: 'Header Brand Text (applies only to top-left brand slot; does not alter logo, menus, or code):' },
@@ -5208,6 +5293,61 @@ const PANEL_I18N = {
       'enhance.result.lsRestartFail': { 'zh-CN': '重启语言服务失败：{err}', 'zh-TW': '重啟語言服務失敗：{err}', en: 'Failed to restart language server: {err}' },
       'enhance.result.noBridge': { 'zh-CN': '当前预览模式未连接到语言服务增强桥接，可通过 node cli.js enhance-status 查看或执行。', 'zh-TW': '目前預覽模式未連線到語言服務增強橋接，可透過 node cli.js enhance-status 檢視或執行。', en: 'Enhance bridge unavailable in this mode. Use `node cli.js enhance-status` via CLI.' },
       'enhance.result.fail': { 'zh-CN': '操作失败：{err}', 'zh-TW': '操作失敗：{err}', en: 'Action failed: {err}' },
+
+      // 改善 AGY 有损压缩 (Slim-LTS Hook)
+      'rehydrate.card.title': { 'zh-CN': '🩹 改善 AGY 有损压缩', 'zh-TW': '🩹 改善 AGY 有損壓縮', en: '🩹 Mitigate AGY Lossy Compaction' },
+      'rehydrate.card.plainIntro': { 'zh-CN': 'AGY 自动压缩（或执行 /compact）只保留概括摘要，容易丢失细节。开启后会在压缩完成时自动从本地完整记录把最初要求、最近几轮原话和刚读写过的文件补回给 AI；未检测到新的压缩检查点时，不注入额外上下文。', 'zh-TW': 'AGY 自動壓縮（或執行 /compact）只保留概括摘要，容易遺失細節。開啟後會在壓縮完成時自動從本機完整記錄把最初要求、最近幾輪原話與剛讀寫過的檔案補回給 AI；未偵測到新的壓縮檢查點時，不注入額外上下文。', en: 'AGY compaction (/compact) leaves only a lossy summary. When enabled, this automatically restores bounded excerpts of your initial requests, recent verbatim turns, and recently used workspace files after compaction; when no new compaction checkpoint is detected, no extra context is injected.' },
+      'rehydrate.stat.hook': { 'zh-CN': '当前状态', 'zh-TW': '目前狀態', en: 'Current Status' },
+      'rehydrate.stat.script': { 'zh-CN': '恢复脚本', 'zh-TW': '恢復腳本', en: 'Recovery Script' },
+      'rehydrate.stat.python': { 'zh-CN': 'Python 运行环境', 'zh-TW': 'Python 執行環境', en: 'Python Runtime' },
+      'rehydrate.stat.siblings': { 'zh-CN': '其他配置兼容', 'zh-TW': '其他設定相容', en: 'Other Configs' },
+      'rehydrate.btn.enable': { 'zh-CN': '开启', 'zh-TW': '開啟', en: 'Enable' },
+      'rehydrate.btn.enableBusy': { 'zh-CN': '正在开启…', 'zh-TW': '正在開啟…', en: 'Enabling…' },
+      'rehydrate.btn.disable': { 'zh-CN': '停用', 'zh-TW': '停用', en: 'Pause' },
+      'rehydrate.btn.disableBusy': { 'zh-CN': '正在停用…', 'zh-TW': '正在停用…', en: 'Pausing…' },
+      'rehydrate.btn.remove': { 'zh-CN': '卸载移除', 'zh-TW': '解除安裝', en: 'Remove' },
+      'rehydrate.btn.removeBusy': { 'zh-CN': '正在卸载移除…', 'zh-TW': '正在解除安裝…', en: 'Removing…' },
+      'rehydrate.details.toggle': { 'zh-CN': '原理说明与方案来源', 'zh-TW': '原理說明與方案來源', en: 'How It Works & Credits' },
+      'rehydrate.details.body': {
+        'zh-CN': '<strong>四层 45,000 B UTF-8 补回内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃 <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code> 声明约束）。<br><br><strong>跨 /fork 分支追溯</strong>：默认 <code>explicit</code> 模式在子分支首条记录声明父字段或配置 <code>&lt;brain&gt;/fork_lineage.json</code> 时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br><strong>安全写入范围</strong>：通过 Antigravity <code>PreInvocation</code> Hook 仅读写 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 键与 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他配置。',
+        'zh-TW': '<strong>四層 45,000 B UTF-8 補回內容</strong>：1. 完整使用者請求時間線（含憑證遮蔽）；2. 壓縮前逐字對話與工具呼叫鏈；3. 活躍 <code>SKILL.md</code> / 規範文件快照；4. 工作區最近修改與讀取文字檔案（受工作區路徑邊界與 <code>never as instructions</code> 聲明約束）。<br><br><strong>跨 /fork 分支追溯</strong>：預設 <code>explicit</code> 模式在子分支首條記錄聲明父欄位或設定 <code>&lt;brain&gt;/fork_lineage.json</code> 時依 <code>[min_step, K-1]</code> 拼接最多 8 級祖先。<br><br><strong>安全寫入範圍</strong>：透過 Antigravity <code>PreInvocation</code> Hook 僅讀寫 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 鍵與 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，絕不覆蓋同級其他設定。',
+        en: '<strong>4-Tier 45,000 B UTF-8 Recovery</strong>: 1. Full user request timeline (secrets redacted); 2. Pre-compaction verbatim turns & tool chains; 3. Active <code>SKILL.md</code> / spec docs; 4. Recently edited & read workspace text files (confined to workspace paths under a <code>never as instructions</code> boundary).<br><br><strong>/fork Branch Lineage</strong>: Default <code>explicit</code> mode stitches up to 8 ancestor hops via <code>[min_step, K-1]</code> when declared in the first child record or <code>&lt;brain&gt;/fork_lineage.json</code>.<br><br><strong>Safe Scope</strong>: Uses Antigravity <code>PreInvocation</code> hook and touches only the <code>post-compact-rehydrate</code> key in <code>~/.gemini/config/hooks.json</code> and <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>, preserving all sibling configs.'
+      },
+      'rehydrate.credit.source': { 'zh-CN': '方案来源：', 'zh-TW': '方案來源：', en: 'Source:' },
+      'rehydrate.credit.author': { 'zh-CN': 'AGY Post-Compact Rehydration 原作者 ↗', 'zh-TW': 'AGY Post-Compact Rehydration 原作者 ↗', en: 'AGY Post-Compact Rehydration Author ↗' },
+      'rehydrate.credit.adapter': { 'zh-CN': 'Slim-LTS · 零依赖 Python 3.10+', 'zh-TW': 'Slim-LTS · 零相依 Python 3.10+', en: 'Slim-LTS · Zero-Dep Python 3.10+' },
+      'rehydrate.status.unread': { 'zh-CN': '未读取', 'zh-TW': '未讀取', en: 'Unread' },
+      'rehydrate.status.enabled': { 'zh-CN': '已开启', 'zh-TW': '已開啟', en: 'Enabled' },
+      'rehydrate.status.disabled': { 'zh-CN': '已停用', 'zh-TW': '已停用', en: 'Paused' },
+      'rehydrate.status.notInstalled': { 'zh-CN': '未开启', 'zh-TW': '未開啟', en: 'Off' },
+      'rehydrate.status.broken': { 'zh-CN': '待修复', 'zh-TW': '待修復', en: 'Needs Setup' },
+      'rehydrate.status.corrupt': { 'zh-CN': '配置文件异常', 'zh-TW': '設定檔異常', en: 'Config Error' },
+      'rehydrate.state.hookEnabled': { 'zh-CN': '已开启', 'zh-TW': '已開啟', en: 'Enabled' },
+      'rehydrate.state.hookDisabled': { 'zh-CN': '已停用', 'zh-TW': '已停用', en: 'Paused' },
+      'rehydrate.state.hookNone': { 'zh-CN': '未开启', 'zh-TW': '未開啟', en: 'Off' },
+      'rehydrate.state.scriptSynced': { 'zh-CN': '已安装（最新版）', 'zh-TW': '已安裝（最新版）', en: 'Installed · Up to date' },
+      'rehydrate.state.scriptCustom': { 'zh-CN': '已安装（自定义修改版）', 'zh-TW': '已安裝（自訂修改版）', en: 'Installed · Customized' },
+      'rehydrate.state.scriptMissing': { 'zh-CN': '未安装', 'zh-TW': '未安裝', en: 'Not Installed' },
+      'rehydrate.state.pythonOk': { 'zh-CN': '✔ 已就绪 (Python {ver})', 'zh-TW': '✔ 已就緒 (Python {ver})', en: '✔ Ready (Python {ver})' },
+      'rehydrate.state.pythonOld': { 'zh-CN': '版本过低 ({ver}，需 3.10+)', 'zh-TW': '版本過低 ({ver}，需 3.10+)', en: 'Too old ({ver}, needs 3.10+)' },
+      'rehydrate.state.pythonMissing': { 'zh-CN': '未安装 Python 3.10+', 'zh-TW': '未安裝 Python 3.10+', en: 'Python 3.10+ Missing' },
+      'rehydrate.state.siblingsList': { 'zh-CN': '无冲突（已保留 {names}）', 'zh-TW': '無衝突（已保留 {names}）', en: 'Compatible (kept {names})' },
+      'rehydrate.state.siblingsNone': { 'zh-CN': '无冲突', 'zh-TW': '無衝突', en: 'No conflicts' },
+      'rehydrate.state.siblingsBlocked': { 'zh-CN': '已保护（未修改原文件）', 'zh-TW': '已保護（未修改原檔案）', en: 'Protected (unchanged)' },
+      'rehydrate.paths.summary': { 'zh-CN': '配置文件：{hooksJson} | 脚本路径：{script}', 'zh-TW': '設定檔案：{hooksJson} | 腳本路徑：{script}', en: 'Config: {hooksJson} | Script: {script}' },
+      'rehydrate.result.enabled': { 'zh-CN': '✔ 已开启「改善 AGY 有损压缩」（配置已写入 {path}，其他配置均已保留），下次对话立即生效。', 'zh-TW': '✔ 已開啟「改善 AGY 有損壓縮」（設定已寫入 {path}，其他設定均已保留），下次對話立即生效。', en: '✔ Enabled Mitigate AGY Lossy Compaction ({path}; sibling configs preserved). Active on your next turn.' },
+      'rehydrate.result.alreadyEnabled': { 'zh-CN': '✔「改善 AGY 有损压缩」已处于开启且最新状态，无需重复设置。', 'zh-TW': '✔「改善 AGY 有損壓縮」已處於開啟且最新狀態，無需重複設定。', en: '✔ Mitigate AGY Lossy Compaction is already enabled and up to date.' },
+      'rehydrate.result.disabled': { 'zh-CN': '✔ 已停用「改善 AGY 有损压缩」，脚本与其他配置均已保留。', 'zh-TW': '✔ 已停用「改善 AGY 有損壓縮」，腳本與其他設定均已保留。', en: '✔ Paused Mitigate AGY Lossy Compaction; script and sibling configs preserved.' },
+      'rehydrate.result.removed': { 'zh-CN': '✔ 已卸载移除「改善 AGY 有损压缩」并清理脚本，其他配置均已完整保留。', 'zh-TW': '✔ 已解除安裝「改善 AGY 有損壓縮」並清理腳本，其他設定均已完整保留。', en: '✔ Removed Mitigate AGY Lossy Compaction and cleaned up script; sibling configs preserved.' },
+      'rehydrate.result.fail': { 'zh-CN': '操作失败：{err}', 'zh-TW': '操作失敗：{err}', en: 'Operation failed: {err}' },
+      'rehydrate.result.noBridge': { 'zh-CN': '当前预览模式未连接到本机配置桥接，可通过 node cli.js rehydrate-status 或 rehydrate:enable 管理。', 'zh-TW': '目前預覽模式未連線到本機設定橋接，可透過 node cli.js rehydrate-status 或 rehydrate:enable 管理。', en: 'Local config bridge unavailable in this mode. Manage via `node cli.js rehydrate-status` or `rehydrate:enable`.' },
+      'rehydrate.err.noPython310': { 'zh-CN': '未检测到 Python 3.10+ 运行环境，请先安装 Python 3.10 或更高版本后再开启。', 'zh-TW': '未偵測到 Python 3.10+ 執行環境，請先安裝 Python 3.10 或更高版本後再開啟。', en: 'Python 3.10+ runtime not found. Please install Python 3.10+ before enabling.' },
+      'rehydrate.err.corruptHooksJson': { 'zh-CN': '~/.gemini/config/hooks.json 格式损坏或非合法 JSON 对象，为保护已有配置已中止写入。', 'zh-TW': '~/.gemini/config/hooks.json 格式損壞或非合法 JSON 物件，為保護既有設定已中止寫入。', en: '~/.gemini/config/hooks.json is malformed or not a JSON object; write aborted safely to protect existing configs.' },
+      'rehydrate.err.corruptModulesJson': { 'zh-CN': '插件配置文件 modules.json 已损坏，为避免重置其他设置已中止操作；请先修复或清理损坏的配置文件。', 'zh-TW': '外掛設定檔 modules.json 已損壞，為避免重設其他設定已中止操作；請先修復或清理損壞的設定檔。', en: 'Plugin config modules.json is corrupted; operation aborted to avoid resetting other settings. Repair or remove the corrupted config file first.' },
+      'rehydrate.err.symlinkBlocked': { 'zh-CN': '检测到 ~/.gemini/config 目录或目标文件为符号链接，出于安全考虑已拒绝读写。', 'zh-TW': '偵測到 ~/.gemini/config 目錄或目標檔案為符號連結，出於安全考量已拒絕讀寫。', en: 'Symlink detected in ~/.gemini/config or target files; read/write blocked for safety.' },
+      'rehydrate.err.missingScript': { 'zh-CN': '配置文件已开启该功能，但缺失恢复脚本 rehydrate_after_compact.py，请点击“开启”重新安装。', 'zh-TW': '設定檔已開啟此功能，但缺少恢復腳本 rehydrate_after_compact.py，請點擊「開啟」重新安裝。', en: 'Enabled in config, but rehydrate_after_compact.py is missing. Click Enable to reinstall it.' },
+      'rehydrate.err.missingBundledScript': { 'zh-CN': '未找到随包附带的 rehydrate_after_compact.py 脚本资源。', 'zh-TW': '未找到隨包附帶的 rehydrate_after_compact.py 腳本資源。', en: 'Bundled rehydrate_after_compact.py script resource not found.' },
+      'rehydrate.err.missingBackup': { 'zh-CN': '未找到开启前的原始脚本备份文件，为避免覆盖丢失已中止自动还原；如需直接清理可点击“卸载移除”。', 'zh-TW': '未找到開啟前的原始腳本備份檔案，為避免覆蓋遺失已中止自動還原；如需直接清理可點擊「解除安裝」。', en: 'Pre-existing script backup file is missing; automatic restore aborted safely. Click Remove if you want to uninstall directly.' },
 
   // 颜色与拾色器 & 更新弹窗补充
   'colors.swatchTitle': { 'zh-CN': '点击打开调色板', 'zh-TW': '點擊開啟調色盤', en: 'Click to pick color' },
@@ -5454,7 +5594,16 @@ const BACKEND_EXACT_TRANSLATIONS = {
   '无效的提示词档位参数': { 'zh-TW': '無效的提示詞檔位參數', en: 'Invalid prompt tier parameter' },
   '无效的中文标题补丁参数': { 'zh-TW': '無效的中文標題修補參數', en: 'Invalid Chinese title patch parameter' },
   '无效的上下文模式参数': { 'zh-TW': '無效的上下文模式參數', en: 'Invalid context mode parameter' },
-  '指定的目标文件不存在': { 'zh-TW': '指定的目標檔案不存在', en: 'Target file does not exist' }
+  '指定的目标文件不存在': { 'zh-TW': '指定的目標檔案不存在', en: 'Target file does not exist' },
+  '未检测到 Python 3.10+ 运行环境，请安装 Python 3.10 或更高版本后再启用压缩后回水 Hook': { 'zh-TW': '未偵測到 Python 3.10+ 執行環境，請先安裝 Python 3.10 或更高版本後再啟用壓縮後回水 Hook', en: 'Python 3.10+ runtime not found; install Python 3.10+ before enabling the rehydrate hook' },
+  '未检测到 Python 3.10+ 运行环境，Hook 将无法执行': { 'zh-TW': '未偵測到 Python 3.10+ 執行環境，Hook 將無法執行', en: 'Python 3.10+ runtime not found; hook cannot execute' },
+  'hooks.json 格式损坏或无法解析，为保护现有其他 Hook 配置已中止写入': { 'zh-TW': 'hooks.json 格式損壞或無法解析，為保護現有其他 Hook 設定已中止寫入', en: 'hooks.json is malformed; write aborted to preserve existing hooks' },
+  'hooks.json 根节点必须为 JSON 对象，为保护现有 Hook 配置已中止写入': { 'zh-TW': 'hooks.json 根節點必須為 JSON 物件，為保護現有 Hook 設定已中止寫入', en: 'hooks.json root must be a JSON object; write aborted safely' },
+  'hooks.json 不是常规文件，为保护配置已中止操作': { 'zh-TW': 'hooks.json 不是一般檔案，為保護設定已中止操作', en: 'hooks.json is not a regular file; operation aborted' },
+  '检测到 ~/.gemini/config 或 hooks.json 为符号链接，出于安全考虑已中止读写': { 'zh-TW': '偵測到 ~/.gemini/config 或 hooks.json 為符號連結，出於安全考量已中止讀寫', en: 'Symlink detected at ~/.gemini/config or hooks.json; access blocked' },
+  'hooks.json 已注册 post-compact-rehydrate，但缺失脚本文件 rehydrate_after_compact.py': { 'zh-TW': 'hooks.json 已註冊 post-compact-rehydrate，但缺少腳本檔案 rehydrate_after_compact.py', en: 'post-compact-rehydrate is registered in hooks.json, but rehydrate_after_compact.py is missing' },
+  '未找到随包附带的 rehydrate_after_compact.py 脚本文件': { 'zh-TW': '未找到隨包附帶的 rehydrate_after_compact.py 腳本檔案', en: 'Bundled rehydrate_after_compact.py script not found' },
+  'modules.json 配置文件已损坏，为保护其他模块设置与恢复基线已中止写入': { 'zh-TW': 'modules.json 設定檔已損壞，為保護其他模組設定與恢復基線已中止寫入', en: 'modules.json is corrupted; write aborted to preserve other module settings and baseline' }
 };
 
 function localizeBillingCycleLabel(cycle) {
@@ -7703,7 +7852,6 @@ function formatVendorLabel(vendor) {
   function hasLiveRouteCapability(routePath) {
     if (!hasLiveHttpBridge()) return false;
     const caps = window.__AGContextMeterLive?.capabilities;
-    if (!caps || typeof caps !== 'object') return true;
     const map = {
       '/quota': 'quota',
       '/scan': 'scan',
@@ -7719,6 +7867,10 @@ function formatVendorLabel(vendor) {
       '/enhance-apply': 'enhance',
       '/enhance-restore': 'enhance',
       '/restart-language-servers': 'enhance',
+      '/rehydrate-status': 'rehydrate',
+      '/rehydrate-apply': 'rehydrate',
+      '/rehydrate-disable': 'rehydrate',
+      '/rehydrate-restore': 'rehydrate',
       '/modules-status': 'modules',
       '/toggle-module': 'modules',
       '/test-proxy': 'modules',
@@ -7727,6 +7879,11 @@ function formatVendorLabel(vendor) {
     };
     const key = map[routePath];
     if (!key) return true;
+    if (key === 'rehydrate') {
+      if (!caps || typeof caps !== 'object') return false;
+      return Array.isArray(caps) ? caps.includes('rehydrate') : caps.rehydrate === true;
+    }
+    if (!caps || typeof caps !== 'object') return true;
     if (Array.isArray(caps)) return caps.includes(key);
     return caps[key] !== false;
   }
@@ -7822,7 +7979,7 @@ function formatVendorLabel(vendor) {
       syncObservedBackendMeta('electron-ipc', res?.data || res);
       return { source: 'electron-ipc', result: res };
     }
-    if (hasLiveHttpBridge() && liveRoute) {
+    if (hasLiveHttpBridge() && liveRoute && hasLiveRouteCapability(liveRoute)) {
       const res = await postLiveHttpEndpoint(liveRoute, liveBody, liveFetchOpts);
       syncObservedBackendMeta('live-host', res?.data || res);
       return { source: 'live-host', result: res };
@@ -13166,6 +13323,7 @@ function closeAllDropdowns(exceptWrap = null) {
         void refreshUnlockStatus();
       }
       if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
+      if (typeof refreshRehydrateStatus === 'function') void refreshRehydrateStatus();
     }
     positionFloatingPanels();
   }
@@ -15349,6 +15507,36 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   }
 
+  async function invokeRehydrateApi(endpoint, payload = {}) {
+    const ipcMap = {
+      status: window.contextMeterAPI?.getRehydrateStatus,
+      apply: window.contextMeterAPI?.applyRehydrate,
+      disable: window.contextMeterAPI?.disableRehydrate,
+      restore: window.contextMeterAPI?.restoreRehydrate
+    };
+    const routeMap = {
+      status: '/rehydrate-status',
+      apply: '/rehydrate-apply',
+      disable: '/rehydrate-disable',
+      restore: '/rehydrate-restore'
+    };
+    const ipcFn = typeof ipcMap[endpoint] === 'function' ? () => ipcMap[endpoint](payload) : null;
+    const liveRoute = routeMap[endpoint] || '';
+    if ((!ipcFn && !hasLiveRouteCapability(liveRoute)) || !liveRoute) {
+      return { ok: false, errorKey: 'rehydrate.result.noBridge', error: t('rehydrate.result.noBridge'), unavailable: true };
+    }
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute,
+        liveBody: payload
+      });
+      return out.result || { ok: false, errorKey: 'rehydrate.result.noBridge', error: t('rehydrate.result.noBridge'), unavailable: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('rehydrate.result.noBridge') };
+    }
+  }
+
   async function invokeModulesApi(action, name, enable, opts = {}) {
     const ipcFn = (action === 'status' && typeof window.contextMeterAPI?.getModulesStatus === 'function')
       ? () => window.contextMeterAPI.getModulesStatus()
@@ -16069,41 +16257,18 @@ function closeAllDropdowns(exceptWrap = null) {
     }, 4500);
   }
 
-  async function openUnlockAuthorPost() {
-    let opened = false;
-    try {
-      if (window.contextMeterAPI?.openExternal) {
-        const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
-        if (res && res.ok) opened = true;
-      }
-    } catch { }
-
-    if (!opened) {
-      try {
-        const w = window.open(UNLOCK_POST_URL, '_blank');
-        if (w) opened = true;
-      } catch { }
-    }
-
-    if (opened) {
-      showUnlockToast(t('models.linkOpened'));
-    } else {
-      copyUnlockPostUrl(true);
-    }
-  }
-
-  function copyUnlockPostUrl(fromFailedOpen = false) {
+  function copyUrlWithToast(targetUrl, showToastFn, fromFailedOpen = false) {
     let copied = false;
     try {
       if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(UNLOCK_POST_URL);
+        navigator.clipboard.writeText(targetUrl);
         copied = true;
       }
     } catch { }
     if (!copied) {
       try {
         const ta = document.createElement('textarea');
-        ta.value = UNLOCK_POST_URL;
+        ta.value = targetUrl;
         document.body.appendChild(ta);
         ta.select();
         document.execCommand('copy');
@@ -16111,9 +16276,38 @@ function closeAllDropdowns(exceptWrap = null) {
         copied = true;
       } catch { }
     }
-    showUnlockToast(fromFailedOpen
-      ? t('models.linkCopyFallback')
-      : t('models.copyOk'));
+    showToastFn(fromFailedOpen ? t('models.linkCopyFallback') : t('models.copyOk'));
+  }
+
+  async function openExternalWithFallback(targetUrl, showToastFn) {
+    let opened = false;
+    try {
+      if (window.contextMeterAPI?.openExternal) {
+        const res = await window.contextMeterAPI.openExternal(targetUrl);
+        if (res && res.ok) opened = true;
+      }
+    } catch { }
+
+    if (!opened) {
+      try {
+        const w = window.open(targetUrl, '_blank');
+        if (w) opened = true;
+      } catch { }
+    }
+
+    if (opened) {
+      showToastFn(t('models.linkOpened'));
+    } else {
+      copyUrlWithToast(targetUrl, showToastFn, true);
+    }
+  }
+
+  function openUnlockAuthorPost() {
+    return openExternalWithFallback(UNLOCK_POST_URL, showUnlockToast);
+  }
+
+  function copyUnlockPostUrl(fromFailedOpen = false) {
+    copyUrlWithToast(UNLOCK_POST_URL, showUnlockToast, fromFailedOpen);
   }
 
   linkUnlockAuthor?.addEventListener('click', (e) => {
@@ -16425,6 +16619,7 @@ function closeAllDropdowns(exceptWrap = null) {
   const chkPresetTitle = el('chk-rec-title');
   const chkPresetLang = el('chk-rec-lang');
   const chkPresetCtx = el('chk-rec-ctx');
+  const chkPresetRehydrate = el('chk-rec-rehydrate');
 
   const brandTitleBtns = {
     english: el('btn-brand-english'),
@@ -16459,19 +16654,44 @@ function closeAllDropdowns(exceptWrap = null) {
   const enhanceDetailsArrow = el('enhance-details-arrow');
   const enhanceBinaryList = el('enhance-binary-list');
 
+  const rehydrateBadge = el('rehydrate-badge');
+  const rehydrateStatHook = el('rehydrate-stat-hook');
+  const rehydrateStatScript = el('rehydrate-stat-script');
+  const rehydrateStatPython = el('rehydrate-stat-python');
+  const rehydrateStatSiblings = el('rehydrate-stat-siblings');
+  const btnRehydrateEnable = el('btn-rehydrate-enable');
+  const btnRehydrateDisable = el('btn-rehydrate-disable');
+  const btnRehydrateRefresh = el('btn-rehydrate-refresh');
+  const btnRehydrateRemove = el('btn-rehydrate-remove');
+  const rehydrateResultBox = el('rehydrate-result-box');
+  const rehydrateResultText = el('rehydrate-result-text');
+  const btnToggleRehydrateDetails = el('btn-toggle-rehydrate-details');
+  const rehydrateDetailsBody = el('rehydrate-details-body');
+  const rehydrateDetailsArrow = el('rehydrate-details-arrow');
+  const rehydratePathsMeta = el('rehydrate-paths-meta');
+  const linkRehydrateAuthor = el('link-rehydrate-author');
+  const btnCopyRehydrateLink = el('btn-copy-rehydrate-link');
+  const rehydrateLinkToast = el('rehydrate-link-toast');
+  const REHYDRATE_AUTHOR_URL = 'https://agy-rehydrate.pages.dev/';
+
   let currentBrandTitle = 'english';
   let currentEnhanceStatus = null;
+  let currentRehydrateStatus = null;
   let selectedEnhanceTier = 0;
   let enhanceTitleDraft = false;
   let enhanceTierDirty = false;
   let enhanceTitleDirty = false;
   let enhanceStatusReqSeq = 0;
+  let rehydrateStatusReqSeq = 0;
   let pendingEnhanceConfirmMode = null; // 'preset' | 'restore' | null
   let isEnhanceBusy = false;
+  let isRehydrateBusy = false;
   let isLsRestartBusy = false;
   let hasPendingLsReload = false;
   let enhanceGlobalResultState = null; // { ok, resolveMessage, opts }
   let enhancePromptResultState = null; // { ok, resolveMessage }
+  let rehydrateResultState = null;     // { ok, resolveMessage }
+  let rehydrateToastTimer = null;
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
 
@@ -16535,6 +16755,17 @@ function closeAllDropdowns(exceptWrap = null) {
     if (chkPresetCtx && currentUnlockStatus) {
       if (ctxUnsupported) chkPresetCtx.checked = false;
       chkPresetCtx.disabled = Boolean(isEnhanceBusy || ctxUnsupported);
+    }
+    if (chkPresetRehydrate && currentRehydrateStatus && currentRehydrateStatus.supported !== false) {
+      const rhBlocked = Boolean(
+        currentRehydrateStatus.hooksFileValid === false ||
+        currentRehydrateStatus.modulesConfigValid === false ||
+        (!currentRehydrateStatus.pythonReady && currentRehydrateStatus.status !== 'enabled')
+      );
+      if (rhBlocked) chkPresetRehydrate.checked = false;
+      chkPresetRehydrate.disabled = Boolean(isEnhanceBusy || isRehydrateBusy || rhBlocked);
+    } else if (chkPresetRehydrate) {
+      chkPresetRehydrate.disabled = Boolean(isEnhanceBusy || isRehydrateBusy);
     }
   }
 
@@ -16704,6 +16935,7 @@ function closeAllDropdowns(exceptWrap = null) {
     if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
     if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
     if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
+    if (chkPresetRehydrate?.checked) resolvers.push(() => t('enhance.preset.itemRehydrate'));
     return resolvers;
   }
 
@@ -16757,6 +16989,10 @@ function closeAllDropdowns(exceptWrap = null) {
     if (lastProxyTestState && proxyTestResult && proxyTestResult.style.display && proxyTestResult.style.display !== 'none') {
       renderProxyTestResultView();
     }
+    if (rehydrateResultState && rehydrateResultBox && rehydrateResultBox.style.display && rehydrateResultBox.style.display !== 'none') {
+      showRehydrateResult(rehydrateResultState.ok, rehydrateResultState.resolveMessage);
+    }
+    if (typeof renderRehydrateSectionUI === 'function') renderRehydrateSectionUI();
   }
 
   function applyEnhanceStatusPayload(statusData, { syncDrafts = true, forceSyncDrafts = false } = {}) {
@@ -16960,6 +17196,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const wantTitle = Boolean(chkPresetTitle?.checked);
     const wantLang = Boolean(chkPresetLang?.checked);
     const wantCtx = Boolean(chkPresetCtx?.checked);
+    const wantRehydrate = Boolean(chkPresetRehydrate?.checked);
 
     isEnhanceBusy = true;
     syncEnhanceInteractiveDisabledState();
@@ -17036,6 +17273,22 @@ function closeAllDropdowns(exceptWrap = null) {
             failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
           }
         }
+
+        if (wantRehydrate) {
+          try {
+            const rhRes = await invokeRehydrateApi('apply', {});
+            if (!rhRes || !rhRes.ok) {
+              failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${resolveSettingsErrorText(rhRes, 'msg.unknownErr')}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemRehydrate'));
+              if (rhRes.changed !== false) anyChanged = true;
+              if (rhRes.status) applyRehydrateStatusPayload(rhRes.status);
+            }
+          } catch (stepErr) {
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
+          }
+        }
       } else if (mode === 'restore') {
         const resolvePromptTitleLabel = () => `${t('enhance.preset.itemPrompt')} / ${t('enhance.preset.itemTitle')}`;
         try {
@@ -17083,6 +17336,22 @@ function closeAllDropdowns(exceptWrap = null) {
           const rawErr = stepErr?.message;
           failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
         }
+
+        const hasRehydrateBridge = Boolean(window.contextMeterAPI?.restoreRehydrate || hasLiveRouteCapability('/rehydrate-restore'));
+        if (hasRehydrateBridge) {
+          try {
+            const rhRes = await invokeRehydrateApi('restore', {});
+            if (!rhRes || !rhRes.ok) {
+              failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${resolveSettingsErrorText(rhRes, 'msg.restoreFail')}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemRehydrate'));
+              if (rhRes.status) applyRehydrateStatusPayload(rhRes.status);
+            }
+          } catch (stepErr) {
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
+          }
+        }
       }
 
       if (needsHostRestart) needsRestartAfterApply = true;
@@ -17113,9 +17382,9 @@ function closeAllDropdowns(exceptWrap = null) {
 
       if (latestEnhanceStatus) {
         applyEnhanceStatusPayload(latestEnhanceStatus, { syncDrafts: true, forceSyncDrafts: true });
-        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus()]);
+        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus(), refreshRehydrateStatus()]);
       } else {
-        await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus()]);
+        await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus(), refreshRehydrateStatus()]);
       }
     } catch (e) {
       const rawErr = e?.message;
@@ -17159,6 +17428,217 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   btnEnhanceRestartHost?.addEventListener('click', openClientRestartConfirmFlow);
+
+  // -------------------------------------------------------------
+  // 模块 3.6: 压缩后无损回水与跨 /fork 溯源 (Slim-LTS Hook) 控制器
+  // -------------------------------------------------------------
+  function showRehydrateToast(msg) {
+    if (!rehydrateLinkToast) return;
+    if (rehydrateToastTimer) clearTimeout(rehydrateToastTimer);
+    rehydrateLinkToast.textContent = msg;
+    rehydrateLinkToast.style.display = 'block';
+    rehydrateToastTimer = setTimeout(() => {
+      rehydrateLinkToast.style.display = 'none';
+    }, 4500);
+  }
+
+  function showRehydrateResult(ok, messageOrResolver) {
+    if (!rehydrateResultBox || !rehydrateResultText) return;
+    const resolveMessage = typeof messageOrResolver === 'function'
+      ? messageOrResolver
+      : () => String(messageOrResolver ?? '');
+    rehydrateResultState = { ok, resolveMessage };
+    rehydrateResultBox.style.display = 'block';
+    rehydrateResultBox.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
+    rehydrateResultText.textContent = resolveMessage();
+  }
+
+  function syncRehydrateInteractiveState() {
+    const d = currentRehydrateStatus;
+    const busy = Boolean(isRehydrateBusy || isEnhanceBusy);
+    const unavailable = Boolean(d && d.supported === false);
+    const corrupt = Boolean(d && d.hooksFileValid === false);
+    const modCfgCorrupt = Boolean(d && d.modulesConfigValid === false);
+    const pyBlocked = Boolean(d && d.supported !== false && !d.pythonReady);
+    if (btnRehydrateEnable) btnRehydrateEnable.disabled = busy || unavailable || corrupt || modCfgCorrupt || pyBlocked;
+    if (btnRehydrateDisable) btnRehydrateDisable.disabled = busy || unavailable || corrupt || modCfgCorrupt || !d?.hookRegistered || !d?.hookEnabled;
+    if (btnRehydrateRemove) btnRehydrateRemove.disabled = busy || unavailable || corrupt || (!d?.hookRegistered && !d?.scriptInstalled);
+    if (btnRehydrateRefresh) btnRehydrateRefresh.disabled = busy;
+  }
+
+  function renderRehydrateSectionUI() {
+    syncRehydrateInteractiveState();
+    const d = currentRehydrateStatus;
+    const unread = !d || d.supported === false;
+    if (rehydrateBadge) {
+      if (unread) {
+        rehydrateBadge.textContent = t('rehydrate.status.unread');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      } else if (d.status === 'enabled') {
+        rehydrateBadge.textContent = t('rehydrate.status.enabled');
+        rehydrateBadge.className = 'key-pill pill-ok';
+      } else if (d.status === 'disabled') {
+        rehydrateBadge.textContent = t('rehydrate.status.disabled');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      } else if (d.status === 'broken') {
+        rehydrateBadge.textContent = t('rehydrate.status.broken');
+        rehydrateBadge.className = 'key-pill pill-warn';
+      } else if (d.status === 'corrupt_hooks_json') {
+        rehydrateBadge.textContent = t('rehydrate.status.corrupt');
+        rehydrateBadge.className = 'key-pill pill-warn';
+      } else {
+        rehydrateBadge.textContent = t('rehydrate.status.notInstalled');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      }
+    }
+    if (rehydrateStatHook) {
+      rehydrateStatHook.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.hookRegistered ? (d.hookEnabled ? t('rehydrate.state.hookEnabled') : t('rehydrate.state.hookDisabled')) : t('rehydrate.state.hookNone'));
+    }
+    if (rehydrateStatScript) {
+      rehydrateStatScript.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.scriptInstalled ? (d.scriptMatchesBundled ? t('rehydrate.state.scriptSynced') : t('rehydrate.state.scriptCustom')) : t('rehydrate.state.scriptMissing'));
+    }
+    if (rehydrateStatPython) {
+      rehydrateStatPython.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.pythonReady ? t('rehydrate.state.pythonOk', { ver: d.pythonVersion || '3.10+' }) : (d.pythonVersion ? t('rehydrate.state.pythonOld', { ver: d.pythonVersion }) : t('rehydrate.state.pythonMissing')));
+    }
+    if (rehydrateStatSiblings) {
+      if (unread) {
+        rehydrateStatSiblings.textContent = t('rehydrate.status.unread');
+      } else if (d.hooksFileValid === false) {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsBlocked');
+      } else if (Array.isArray(d.otherHookNames) && d.otherHookNames.length > 0) {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsList', { names: d.otherHookNames.join(', ') });
+      } else {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsNone');
+      }
+    }
+    if (rehydratePathsMeta && d && (d.hooksJsonPath || d.deployedScriptPath)) {
+      rehydratePathsMeta.textContent = t('rehydrate.paths.summary', {
+        hooksJson: d.hooksJsonPath || '~/.gemini/config/hooks.json',
+        script: d.deployedScriptPath || '~/.gemini/config/hooks/rehydrate_after_compact.py'
+      });
+    }
+    if (rehydrateDetailsArrow && rehydrateDetailsBody) {
+      const open = rehydrateDetailsBody.style.display === 'block';
+      rehydrateDetailsArrow.textContent = open ? t('drawer.shortCollapse') : t('drawer.shortExpand');
+    }
+  }
+
+  function applyRehydrateStatusPayload(statusData) {
+    currentRehydrateStatus = statusData;
+    syncEnhanceInteractiveDisabledState();
+    renderRehydrateSectionUI();
+    if (statusData && (statusData.status === 'corrupt_hooks_json' || statusData.status === 'broken' || statusData.modulesConfigValid === false) && statusData.errorKey) {
+      showRehydrateResult(false, () => t(statusData.errorKey));
+    }
+  }
+
+  async function refreshRehydrateStatus() {
+    const seq = ++rehydrateStatusReqSeq;
+    try {
+      const res = await invokeRehydrateApi('status', {});
+      if (seq !== rehydrateStatusReqSeq) return;
+      if (res && res.ok && res.data) {
+        applyRehydrateStatusPayload(res.data);
+      } else if (res && res.unavailable) {
+        currentRehydrateStatus = { supported: false };
+        syncEnhanceInteractiveDisabledState();
+        renderRehydrateSectionUI();
+      } else {
+        renderRehydrateSectionUI();
+      }
+    } catch {
+      if (seq !== rehydrateStatusReqSeq) return;
+      currentRehydrateStatus = null;
+      renderRehydrateSectionUI();
+    }
+  }
+
+  async function runRehydrateAction(endpoint, btnEl, busyKey, idleKey, onSuccess, payload = {}) {
+    if (isRehydrateBusy || isEnhanceBusy) return;
+    isRehydrateBusy = true;
+    syncEnhanceInteractiveDisabledState();
+    syncRehydrateInteractiveState();
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = t(busyKey);
+    }
+    showRehydrateResult(true, () => t(busyKey));
+    try {
+      await yieldForSettingsPaint();
+      const res = await invokeRehydrateApi(endpoint, payload);
+      if (!res || !res.ok) {
+        if (res?.status) applyRehydrateStatusPayload(res.status);
+        showRehydrateResult(false, () => t('rehydrate.result.fail', { err: resolveSettingsErrorText(res, 'msg.unknownErr') }));
+      } else {
+        if (res.status) applyRehydrateStatusPayload(res.status);
+        else await refreshRehydrateStatus();
+        showRehydrateResult(true, onSuccess(res));
+      }
+    } catch (e) {
+      const rawErr = e?.message;
+      showRehydrateResult(false, () => t('rehydrate.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') }));
+    } finally {
+      isRehydrateBusy = false;
+      if (btnEl) btnEl.textContent = t(idleKey);
+      syncEnhanceInteractiveDisabledState();
+      syncRehydrateInteractiveState();
+    }
+  }
+
+  btnRehydrateEnable?.addEventListener('click', () => {
+    void runRehydrateAction('apply', btnRehydrateEnable, 'rehydrate.btn.enableBusy', 'rehydrate.btn.enable', (res) => {
+      if (res.changed === false) return () => t('rehydrate.result.alreadyEnabled');
+      const p = res.status?.hooksJsonPath || '~/.gemini/config/hooks.json';
+      return () => t('rehydrate.result.enabled', { path: p });
+    });
+  });
+
+  btnRehydrateDisable?.addEventListener('click', () => {
+    void runRehydrateAction('disable', btnRehydrateDisable, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
+  });
+
+  btnRehydrateRemove?.addEventListener('click', () => {
+    void runRehydrateAction('restore', btnRehydrateRemove, 'rehydrate.btn.removeBusy', 'rehydrate.btn.remove', () => () => t('rehydrate.result.removed'), { force: true });
+  });
+
+  btnRehydrateRefresh?.addEventListener('click', () => {
+    if (isRehydrateBusy) return;
+    void refreshRehydrateStatus();
+  });
+
+  btnToggleRehydrateDetails?.addEventListener('click', () => {
+    if (!rehydrateDetailsBody) return;
+    const isHidden = rehydrateDetailsBody.style.display === 'none' || !rehydrateDetailsBody.style.display;
+    rehydrateDetailsBody.style.display = isHidden ? 'block' : 'none';
+    btnToggleRehydrateDetails.setAttribute('aria-expanded', String(isHidden));
+    renderRehydrateSectionUI();
+  });
+
+  linkRehydrateAuthor?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast);
+  });
+
+  linkRehydrateAuthor?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast);
+    }
+  });
+
+  btnCopyRehydrateLink?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyUrlWithToast(REHYDRATE_AUTHOR_URL, showRehydrateToast, false);
+  });
 
   let selectedBrandTitle = currentBrandTitle;
 
@@ -22997,7 +23477,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     const openDrawers = [];
     for (const btnId of [
       'btn-toggle-details', 'btn-toggle-card-details', 'btn-toggle-unlock-details',
-      'btn-toggle-enhance-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
+      'btn-toggle-enhance-details', 'btn-toggle-rehydrate-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
     ]) {
       if (el(btnId)?.getAttribute?.('aria-expanded') === 'true') {
         openDrawers.push(btnId);
@@ -23205,6 +23685,10 @@ function renderHeatmapGrid(forceRebuild = false) {
     getKnownModelProductsForTest: () => getKnownModelProducts(),
     refreshUnlockStatusForTest: () => refreshUnlockStatus(),
     refreshEnhanceStatusForTest: () => refreshEnhanceStatus(),
+    refreshRehydrateStatusForTest: () => refreshRehydrateStatus(),
+    getRehydrateStateForTest: () => ({
+      currentRehydrateStatus: currentRehydrateStatus ? { ...currentRehydrateStatus } : null
+    }),
     getEnhanceStateForTest: () => ({
       currentBrandTitle,
       selectedEnhanceTier,
@@ -23357,6 +23841,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   applyStaticPanelTranslations(shadow);
   refreshRegionPresetSelectOptions();
   renderEnhanceSectionUI();
+  renderRehydrateSectionUI();
   if (inheritedHotReloadState) {
     applyInheritedHotReloadState(inheritedHotReloadState);
   }

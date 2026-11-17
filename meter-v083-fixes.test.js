@@ -810,7 +810,7 @@ test('设置页动态操作反馈三语支持与面板语言切换即时更新�
   assert.match(confirmText.textContent, /全部恢复官方默认/);
   h.elements.get('btn-top-lang-en').click();
   await new Promise(r => setTimeout(r, 25));
-  assert.match(confirmText.textContent, /"Restore All to Stock" resets these 4 items/);
+  assert.match(confirmText.textContent, /"Restore All to Stock" resets these 5 items/);
 
   h.elements.get('btn-enhance-confirm-go').click();
   await new Promise(r => setTimeout(r, 30));

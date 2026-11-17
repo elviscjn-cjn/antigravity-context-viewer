@@ -42,6 +42,7 @@ const MAIN_CAPABILITIES = {
   launchCli: true,
   contextUnlock: true,
   enhance: true,
+  rehydrate: true,
   modules: true,
   checkUpdate: true,
   applyUpdate: true,
@@ -778,6 +779,50 @@ function registerMeterIpcHandlers(ipcMain) {
     try {
       const { restartLanguageServersAsync } = require('./meter-enhance');
       return await restartLanguageServersAsync();
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-status', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getRehydrateStatusAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return { ok: true, data: await getRehydrateStatusAsync(sanitizeRehydrateRendererOptions(options, 'status')) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-apply', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { applyRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await applyRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'apply'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-disable', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { disableRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await disableRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'disable'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-restore', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { restoreRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await restoreRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'restore'));
     } catch (e) {
       return { ok: false, error: e.message };
     }
