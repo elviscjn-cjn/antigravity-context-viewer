@@ -49,7 +49,18 @@ const builtinAsar = {
     const { header, baseOffset } = readHeader(archivePath);
     const node = getNode(header, relPath);
     if (node.unpacked) {
-      return rawFs.readFileSync(path.join(archivePath + '.unpacked', relPath));
+      let unpackedSrc = path.join(archivePath + '.unpacked', relPath);
+      if (!rawFs.existsSync(unpackedSrc)) {
+        try {
+          const mainAsar = findAsarPath();
+          const candidate = path.join(mainAsar + '.unpacked', relPath);
+          if (rawFs.existsSync(candidate)) unpackedSrc = candidate;
+        } catch {}
+      }
+      if (rawFs.existsSync(unpackedSrc)) {
+        return rawFs.readFileSync(unpackedSrc);
+      }
+      return Buffer.alloc(node.size || 0);
     }
     const buf = Buffer.alloc(node.size);
     const fd = rawFs.openSync(archivePath, 'r');
@@ -93,10 +104,20 @@ const builtinAsar = {
           if (info.files) {
             walk(info, targetPath, relPath);
           } else if (info.unpacked) {
-            const unpackedSrc = path.join(archivePath + '.unpacked', relPath);
+            let unpackedSrc = path.join(archivePath + '.unpacked', relPath);
+            if (!rawFs.existsSync(unpackedSrc)) {
+              try {
+                const mainAsar = findAsarPath();
+                const candidate = path.join(mainAsar + '.unpacked', relPath);
+                if (rawFs.existsSync(candidate)) unpackedSrc = candidate;
+              } catch {}
+            }
             if (rawFs.existsSync(unpackedSrc)) {
               fs.mkdirSync(path.dirname(targetPath), { recursive: true });
               rawFs.copyFileSync(unpackedSrc, targetPath);
+            } else {
+              fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+              fs.writeFileSync(targetPath, Buffer.alloc(0));
             }
           } else {
             const buf = Buffer.alloc(info.size);

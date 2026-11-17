@@ -698,13 +698,28 @@ async function install(options = {}) {
       ].map(p => path.normalize(p));
       for (const file of originalEntries) {
         const name = path.normalize(file.slice(1));
-        const before = asar.statFile(sourceArchive, name);
-        const after = asar.statFile(packed, name);
-        if (before.files || before.link) continue;
+        let before = null;
+        let after = null;
+        try { before = asar.statFile(sourceArchive, name); } catch {}
+        try { after = asar.statFile(packed, name); } catch {}
+        if (!before || before.files || before.link) continue;
+        if (!after) throw new Error(`Target missing file after pack: ${name}`);
         if (!!before.unpacked !== !!after.unpacked) throw new Error(`Unpack flag changed: ${name}`);
         const isAllowed = allowedChanges.includes(name) || name.startsWith('dist' + path.sep + 'i18n' + path.sep);
-        if (!isAllowed && sha(asar.extractFile(sourceArchive, name)) !== sha(asar.extractFile(packed, name))) {
-          throw new Error(`Unexpected file change: ${name}`);
+        if (!isAllowed) {
+          if (!before.unpacked) {
+            if (sha(asar.extractFile(sourceArchive, name)) !== sha(asar.extractFile(packed, name))) {
+              throw new Error(`Unexpected file change: ${name}`);
+            }
+          } else {
+            let bBuf = null;
+            let aBuf = null;
+            try { bBuf = builtinAsar.extractFile(sourceArchive, name); } catch {}
+            try { aBuf = builtinAsar.extractFile(packed, name); } catch {}
+            if (bBuf && aBuf && sha(bBuf) !== sha(aBuf)) {
+              throw new Error(`Unexpected unpacked file change: ${name}`);
+            }
+          }
         }
         verified++;
       }
