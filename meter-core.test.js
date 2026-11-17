@@ -123,6 +123,47 @@ test('model output speed and duration calculated accurately from timeToFirstToke
   assert.equal(d.speed.responseTokens, 1128);
   assert.equal(d.speed.tps, 112.1);
   assert.equal(d.speed.streamingTps, 185.1);
+  assert.equal(d.speed.displayTps, 185.1);
+  assert.equal(d.speed.phase, 'settled');
+
+  // 起流初期 (<0.45s 且 <12 tokens) 与仅含 TTFT 尚无 streamingDuration 时归为 warming，抑制早期失真波动
+  const earlyChunk = summarize({
+    chatModel: {
+      timeToFirstToken: '4.5s',
+      streamingDuration: '0.08s',
+      usage: { inputTokens: '1000', outputTokens: '6' }
+    }
+  });
+  assert.equal(earlyChunk.speed.phase, 'warming');
+  assert.equal(earlyChunk.speed.streamingTps, null);
+  assert.equal(earlyChunk.speed.displayTps, null);
+
+  const ttftOnly = summarize({
+    chatModel: {
+      timeToFirstToken: '5.0s',
+      usage: { inputTokens: '1000', outputTokens: '4' }
+    }
+  });
+  assert.equal(ttftOnly.speed.phase, 'warming');
+  assert.equal(ttftOnly.speed.streamingTps, null);
+  assert.equal(ttftOnly.speed.displayTps, null);
+
+  // cacheCreationInputTokens 归入新增未命中输入，避免虚高命中率
+  const cw = summarize({
+    chatModel: {
+      timeToFirstToken: '1.0s',
+      streamingDuration: '2.0s',
+      usage: {
+        inputTokens: '500',
+        cacheCreationInputTokens: '1500',
+        cacheReadTokens: '8000',
+        outputTokens: '300'
+      }
+    }
+  });
+  assert.equal(cw.uncachedInput, 2000);
+  assert.equal(cw.cached, 8000);
+  assert.equal(cw.cacheHitRate, 80);
 });
 
 test('inline attachments and images are fully counted and parsed instead of unknown', async () => {
@@ -3682,4 +3723,270 @@ test('ELV-83: parseUserPlanStatus、resolveEffectivePlanStatus 与严格 allowed
   });
   assert.equal(unknownPlanSnap.activeStatus, 'unknown');
   assert.equal(unknownPlanSnap.pools[0]?.noPermission, false);
+});
+
+test('cache hit rate: calculateCacheHitStats, summarize cold-turn boundary, speed summary, and history breakdown', () => {
+  const {
+    calculateCacheHitStats,
+    summarizeCacheHitRecords,
+    normalizeTokenHistoryPayload
+  } = require('./meter-core');
+
+  // 1. 基础计算与边界条件（零输入返回 null 而非 0%）
+  const emptyStats = calculateCacheHitStats(0, 0);
+  assert.equal(emptyStats.hitRate, null);
+  assert.equal(emptyStats.totalPromptTokens, 0);
+
+  const coldStats = calculateCacheHitStats(15000, 0);
+  assert.equal(coldStats.hitRate, 0);
+  assert.equal(coldStats.totalPromptTokens, 15000);
+
+  const warmStats = calculateCacheHitStats(3491, 15429);
+  assert.equal(warmStats.totalPromptTokens, 18920);
+  assert.ok(Math.abs(warmStats.hitRate - (15429 / 18920) * 100) < 1e-9);
+
+  // 2. summarize 正确输出 uncachedInput / cacheHitRate 且冷启动轮次不继承上一轮缓存
+  const prevSummary = summarize(entry({ inputTokens: 1000, cacheReadTokens: 9000, outputTokens: 200 }));
+  assert.equal(prevSummary.uncachedInput, 1000);
+  assert.equal(prevSummary.cached, 9000);
+  assert.equal(prevSummary.cacheHitRate, 90);
+
+  const coldAfterWarm = summarize(
+    entry({ inputTokens: 5000, cacheReadTokens: 0, outputTokens: 100 }),
+    { previousValidContext: prevSummary }
+  );
+  assert.equal(coldAfterWarm.uncachedInput, 5000);
+  assert.equal(coldAfterWarm.cached, 0);
+  assert.equal(coldAfterWarm.cacheHitRate, 0);
+
+  const errorFallback = summarize(
+    { chatModel: { retryInfos: [{ error: 'network error' }] } },
+    { previousValidContext: prevSummary }
+  );
+  assert.equal(errorFallback.cached, 9000);
+  assert.equal(errorFallback.cacheHitRate, 90);
+
+  // 3. summarizeCacheHitRecords 与 summarizeSpeedByModel 汇总缓存命中率（含 cacheCreationInputTokens 与 medianStreamingTps）
+  const agg = summarizeCacheHitRecords([
+    { inputTokens: 1500, cacheCreationInputTokens: 500, cacheReadTokens: 8000 },
+    { inputTokens: 1000, cacheTokens: 9000 }
+  ]);
+  assert.equal(agg.totalPromptTokens, 20000);
+  assert.equal(agg.hitRate, 85);
+
+  const now = Date.now();
+  const speedSummary = summarizeSpeedByModel([
+    { callId: 'c1', model: 'Gemini 4 Hydrogen (XHigh)', modelExactId: 'gemini-4-hydrogen-xhigh', inputTokens: 2000, cacheReadTokens: 8000, outputTokens: 500, durationSec: 5, streamingSec: 2, tps: 100, status: 'final', timestamp: now - 2000 },
+    { callId: 'c2', model: 'Gemini 4 Hydrogen (XHigh)', modelExactId: 'gemini-4-hydrogen-xhigh', inputTokens: 1000, cacheReadTokens: 9000, outputTokens: 500, durationSec: 5, streamingSec: 2.5, tps: 100, status: 'final', timestamp: now - 1000 }
+  ], { nowMs: now });
+  assert.equal(speedSummary.length, 1);
+  assert.equal(speedSummary[0].cacheHitRate, 85);
+  assert.equal(speedSummary[0].medianStreamingTps, 225);
+
+  // 4. normalizeTokenHistoryPayload 按来源精确拆分今日/本年缓存命中基础字段
+  const hist = normalizeTokenHistoryPayload({
+    dailyMapBySource: {
+      all: {
+        '2026-11-01': { total: 1100, input: 100, cache: 900, output: 100, steps: 1 },
+        '2026-11-16': { total: 2200, input: 300, cache: 1700, output: 200, steps: 2 }
+      },
+      desktop: {
+        '2026-11-16': { total: 1100, input: 100, cache: 900, output: 100, steps: 1 }
+      },
+      cli: {
+        '2026-11-16': { total: 1100, input: 200, cache: 800, output: 100, steps: 1 }
+      }
+    }
+  }, { source: 'cli', todayStr: '2026-11-16' });
+  assert.equal(hist.summary.todayInputTokens, 200);
+  assert.equal(hist.summary.todayCacheTokens, 800);
+  assert.equal(hist.summary.yearInputTokens, 200);
+  assert.equal(hist.summary.yearCacheTokens, 800);
+});
+
+test('summarizeTurnTiming: multi-step executionId wall-clock duration, merged overlapping tools, and live running stopwatch', () => {
+  const { summarizeTurnTiming, formatCompactDurationSec, parseGeneratorCall } = require('./meter-core');
+
+  const baseMs = Date.parse('2026-11-17T04:00:00.000Z');
+  const iso = offsetSec => new Date(baseMs + offsetSec * 1000).toISOString();
+
+  // 包含上一轮 (eid-old) 与当前多步轮次 (eid-cur: 0s 提问 -> 108s 完成，共 3 次模型调用 + 并发工具)
+  const steps = [
+    { userInput: { userResponse: 'old' }, metadata: { executionId: 'eid-old', createdAt: iso(-200) } },
+    { plannerResponse: { response: 'old done' }, metadata: { executionId: 'eid-old', createdAt: iso(-199), finishedGeneratingAt: iso(-190), completedAt: iso(-190) } },
+    // 当前轮起点 t=0s
+    { userInput: { userResponse: 'check timing' }, metadata: { executionId: 'eid-cur', createdAt: iso(0) } },
+    // Step 1 模型推理: ttft 18s + stream 6s = 24s (t=0.2s..24.2s)
+    { plannerResponse: {}, metadata: { executionId: 'eid-cur', createdAt: iso(0.2), viewableAt: iso(18.2), finishedGeneratingAt: iso(24.2), completedAt: iso(24.2) } },
+    // Step 2 & 3 并发工具: [25s..40s] 与 [28s..45s] 并集应为 20s（而非相加 32s）
+    { viewFile: {}, metadata: { executionId: 'eid-cur', toolCall: { name: 'read_file' }, startedAt: iso(25), completedAt: iso(40) } },
+    { runCommand: {}, metadata: { executionId: 'eid-cur', toolCall: { name: 'run_command' }, startedAt: iso(28), completedAt: iso(45) } },
+    // Step 4 模型推理: ttft 22s + stream 8s = 30s (t=46s..76s)
+    { plannerResponse: {}, metadata: { executionId: 'eid-cur', createdAt: iso(46), viewableAt: iso(68), finishedGeneratingAt: iso(76), completedAt: iso(76) } },
+    // Step 5 串行工具: [77s..97s] = 20s (工具并集合计 20 + 20 = 40s)
+    { runCommand: {}, metadata: { executionId: 'eid-cur', toolCall: { name: 'run_command' }, startedAt: iso(77), completedAt: iso(97) } },
+    // Step 6 最终汇总模型推理: ttft 5s + stream 5s = 10s (t=98s..108s) —— 旧逻辑只看这最后一步的 10s！
+    { plannerResponse: { response: 'done' }, metadata: { executionId: 'eid-cur', createdAt: iso(98), viewableAt: iso(103), finishedGeneratingAt: iso(108), completedAt: iso(108) } }
+  ];
+
+  const generatorMetadata = [
+    { executionId: 'eid-old', chatModel: { timeToFirstToken: '4s', streamingDuration: '5s', usage: { outputTokens: '999' } } },
+    { executionId: 'eid-cur', chatModel: { timeToFirstToken: '18s', streamingDuration: '6s', usage: { outputTokens: '500', thinkingOutputTokens: '350', responseOutputTokens: '150' } } },
+    { executionId: 'eid-cur', chatModel: { timeToFirstToken: '22s', streamingDuration: '8s', usage: { outputTokens: '700', thinkingOutputTokens: '500', responseOutputTokens: '200' } } },
+    { executionId: 'eid-cur', chatModel: { timeToFirstToken: '5s', streamingDuration: '5s', usage: { outputTokens: '400', thinkingOutputTokens: '150', responseOutputTokens: '250' } } }
+  ];
+
+  const doneTurn = summarizeTurnTiming({
+    steps,
+    generatorMetadata,
+    cascadeStatus: 'CASCADE_RUN_STATUS_IDLE',
+    nowMs: baseMs + 150000
+  });
+  assert.equal(doneTurn.executionId, 'eid-cur');
+  assert.equal(doneTurn.isRunning, false);
+  assert.equal(doneTurn.hasAuthoritativeWallClock, true);
+  assert.equal(doneTurn.llmCalls, 3);
+  assert.equal(doneTurn.toolCalls, 3);
+  assert.equal(doneTurn.wallDurationSec, 108, '完成后定格在 108s 整轮墙钟耗时，而非最后一步 10s，且不随更晚的 nowMs 继续增长');
+  assert.equal(doneTurn.ttftSec, 45);
+  assert.equal(doneTurn.streamingSec, 19);
+  assert.equal(doneTurn.llmDurationSec, 64);
+  assert.equal(doneTurn.toolWallSec, 40, '并发工具区间应去重合并为 40s');
+  assert.equal(doneTurn.nonLlmSec, 44);
+  assert.equal(doneTurn.scheduleGapSec, 4);
+  assert.equal(doneTurn.outputTokens, 1600);
+  assert.equal(doneTurn.thinkingTokens, 1000);
+  assert.equal(doneTurn.responseTokens, 600);
+  assert.equal(formatCompactDurationSec(doneTurn.wallDurationSec), '1m 48s');
+
+  // 运行中态：nowMs = baseMs + 125s 时墙钟随 nowMs 实时推进到 125s (2m 05s)
+  const runningTurn = summarizeTurnTiming({
+    steps,
+    generatorMetadata,
+    cascadeStatus: 'CASCADE_RUN_STATUS_RUNNING',
+    nowMs: baseMs + 125400
+  });
+  assert.equal(runningTurn.isRunning, true);
+  assert.equal(runningTurn.wallDurationSec, 125.4);
+  assert.equal(formatCompactDurationSec(runningTurn.wallDurationSec, { live: true }), '2m 05s');
+
+  // 本地刚发送新消息 (fallbackTurnStartMs 晚于上一轮完成时刻)：清零上一轮耗时，开启新一轮实时计时
+  const freshDispatch = summarizeTurnTiming({
+    steps,
+    generatorMetadata,
+    cascadeStatus: 'CASCADE_RUN_STATUS_IDLE',
+    fallbackTurnStartMs: baseMs + 200000,
+    nowMs: baseMs + 214800
+  });
+  assert.equal(freshDispatch.isRunning, true);
+  assert.equal(freshDispatch.llmCalls, 0);
+  assert.equal(freshDispatch.wallDurationSec, 14.8);
+  assert.equal(formatCompactDurationSec(freshDispatch.wallDurationSec, { live: true }), '14s');
+
+  // parseGeneratorCall 保留 executionId 与 stepIndex 供同轮费用聚合
+  const parsed = parseGeneratorCall({
+    executionId: 'eid-cur',
+    stepIndices: [6],
+    status: 'final',
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      timeToFirstToken: '5s',
+      streamingDuration: '5s',
+      usage: { inputTokens: 1000, cacheReadTokens: 9000, outputTokens: 400, responseId: 'r-cur-3' }
+    }
+  }, 'cid-1', 'desktop');
+  assert.equal(parsed.executionId, 'eid-cur');
+  assert.equal(parsed.stepIndex, 6);
+});
+
+test('summarizeTurnTiming: isolates shared executionId across consecutive user turns and ignores PENDING tool streaming overlap', () => {
+  const { summarizeTurnTiming } = require('./meter-core');
+  const baseMs = Date.parse('2026-11-17T09:00:00.000Z');
+  const iso = offsetSec => new Date(baseMs + offsetSec * 1000).toISOString();
+
+  // 真实复现：第 1 轮 (step 8) 与第 2 轮 (step 10) 共享同一个 executionId = "shared-exec-id"
+  // 且工具步骤在 LLM 流式输出期间提前创建 (createdAt=t+11s, PENDING)，直到流式结束后 t+25s 才真正 startedAt 执行
+  const tailSteps = [
+    // step 8: 上一轮用户提问 (20 分钟前)
+    { userInput: { userResponse: 'turn 1' }, metadata: { executionId: 'shared-exec-id', createdAt: iso(-1200) } },
+    // step 9: 上一轮模型回复
+    { plannerResponse: { response: 'turn 1 done' }, metadata: { executionId: 'shared-exec-id', createdAt: iso(-1190), completedAt: iso(-600) } },
+    // step 10: 当前第 2 轮用户提问 (t=0s)
+    { userInput: { userResponse: 'turn 2 check tool time' }, metadata: { executionId: 'shared-exec-id', createdAt: iso(0) } },
+    // step 11: 当前轮第 1 次推理 (ttft=9s, stream=15s => 24s, t=0.5s..24.5s)
+    { plannerResponse: {}, metadata: { executionId: 'shared-exec-id', createdAt: iso(0.5), viewableAt: iso(9.5), finishedGeneratingAt: iso(24.5), completedAt: iso(24.5) } },
+    // step 12: 流式期间 t=11s 已创建为 PENDING，但实际 t=25s 才开始运行、t=31s 结束 (真实工具耗时仅 6s，而非 31-11=20s！)
+    {
+      codeAction: {},
+      metadata: {
+        executionId: 'shared-exec-id',
+        toolCall: { name: 'edit_file' },
+        createdAt: iso(11),
+        startedAt: iso(25),
+        completedAt: iso(31),
+        internalMetadata: {
+          statusTransitions: [
+            { updatedStatus: 'CORTEX_STEP_STATUS_PENDING', timestamp: iso(12) },
+            { updatedStatus: 'CORTEX_STEP_STATUS_RUNNING', timestamp: iso(25) },
+            { updatedStatus: 'CORTEX_STEP_STATUS_DONE', timestamp: iso(31) }
+          ]
+        }
+      }
+    },
+    // step 13: 仍在队列 PENDING 尚未 startedAt 的第二个工具，不应计入已运行工具耗时
+    {
+      codeAction: {},
+      metadata: {
+        executionId: 'shared-exec-id',
+        toolCall: { name: 'edit_file' },
+        createdAt: iso(15),
+        internalMetadata: {
+          statusTransitions: [
+            { updatedStatus: 'CORTEX_STEP_STATUS_PENDING', timestamp: iso(16) }
+          ]
+        }
+      }
+    }
+  ];
+
+  const generatorMetadata = [
+    // 上一轮残留的巨量同 executionId 调用（共 600s TTFT + 400s 流式），绝不能混入第 2 轮！
+    { executionId: 'shared-exec-id', stepIndices: [9], chatModel: { timeToFirstToken: '600s', streamingDuration: '400s', usage: { outputTokens: '50000' } } },
+    // 当前轮 step 11 的真实调用 (ttft=9s, stream=15s)
+    { executionId: 'shared-exec-id', stepIndices: [11, 12, 13], chatModel: { timeToFirstToken: '9s', streamingDuration: '15s', usage: { outputTokens: '320' } } }
+  ];
+
+  const turn = summarizeTurnTiming({
+    steps: tailSteps,
+    stepOffset: 8,
+    generatorMetadata,
+    cascadeStatus: 'CASCADE_RUN_STATUS_RUNNING',
+    nowMs: baseMs + 33000
+  });
+
+  assert.equal(turn.turnStartStepIndex, 10, '必须锁定最新 userInput 的全局 stepIndex=10');
+  assert.equal(turn.llmCalls, 1, '绝不能把上一轮同 executionId 的 step 9 混入当前轮');
+  assert.equal(turn.ttftSec, 9);
+  assert.equal(turn.latestTtftSec, 9);
+  assert.equal(turn.streamingSec, 15);
+  assert.equal(turn.llmDurationSec, 24);
+  assert.equal(turn.toolCalls, 2);
+  assert.equal(turn.toolWallSec, 6, '工具耗时只计真实 startedAt..completedAt (6s)，绝不计入 PENDING 流式重叠区间且不被旧轮次归零');
+  assert.equal(turn.wallDurationSec, 33);
+  assert.equal(turn.nonLlmSec, 9);
+  assert.equal(turn.scheduleGapSec, 3);
+  assert.equal(turn.outputTokens, 320);
+
+  // pollOnly 场景 (steps=[] 但携带 minStepIndex=10) 同样严禁跨轮累加旧的同 executionId 记录
+  const pollOnly = summarizeTurnTiming({
+    steps: [],
+    minStepIndex: 10,
+    turnExecutionId: 'shared-exec-id',
+    generatorMetadata,
+    cascadeStatus: 'CASCADE_RUN_STATUS_RUNNING',
+    nowMs: baseMs + 33000
+  });
+  assert.equal(pollOnly.llmCalls, 1);
+  assert.equal(pollOnly.ttftSec, 9);
+  assert.equal(pollOnly.outputTokens, 320);
 });

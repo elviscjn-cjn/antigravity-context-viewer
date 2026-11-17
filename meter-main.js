@@ -13,6 +13,7 @@ try {
 } catch {}
 const {
   collect,
+  collectTurnState,
   collectTokenHistory,
   collectTokenHistoryAsync,
   recordModelCalls,
@@ -35,6 +36,7 @@ const { PROJECT_VERSION } = require('./modules-config');
 const MAIN_STARTED_AT = Date.now();
 const MAIN_CAPABILITIES = {
   scan: true,
+  turnState: true,
   tokenHistory: true,
   quota: true,
   recordCalls: true,
@@ -506,6 +508,13 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try { return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true }) }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  });
+
+  ipcMain.handle('context-meter:turn-state', async (event, id) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try { return { ok: true, data: await collectTurnState(url.origin, id) }; }
     catch (e) { return { ok: false, error: e.message }; }
   });
 

@@ -549,6 +549,57 @@
     };
   }
 
+  /**
+   * Compute Prompt Cache Hit Rate from uncached input tokens and cache read tokens.
+   * Formula: cacheReadTokens / (uncachedInput + cacheReadTokens) * 100.
+   * Returns hitRate === null when total prompt tokens <= 0.
+   */
+  function calculateCacheHitStats(uncachedInput, cacheReadTokens) {
+    const fresh = Number(uncachedInput);
+    const cached = Number(cacheReadTokens);
+    const safeFresh = Number.isFinite(fresh) && fresh > 0 ? fresh : 0;
+    const safeCached = Number.isFinite(cached) && cached > 0 ? cached : 0;
+    const totalPrompt = safeFresh + safeCached;
+    if (totalPrompt <= 0) {
+      return {
+        uncachedInput: 0,
+        cacheReadTokens: 0,
+        totalPromptTokens: 0,
+        hitRate: null
+      };
+    }
+    return {
+      uncachedInput: safeFresh,
+      cacheReadTokens: safeCached,
+      totalPromptTokens: totalPrompt,
+      hitRate: (safeCached / totalPrompt) * 100
+    };
+  }
+
+  /**
+   * Aggregate Prompt Cache Hit Rate across call/daily records whose
+   * input/inputTokens represent uncached prompt tokens and cache/cacheTokens/cacheReadTokens
+   * represent cache-read tokens.
+   */
+  function summarizeCacheHitRecords(records) {
+    if (!Array.isArray(records) || !records.length) {
+      return calculateCacheHitStats(0, 0);
+    }
+    let fresh = 0;
+    let cached = 0;
+    for (const r of records) {
+      if (!r || typeof r !== 'object') continue;
+      const hasUncached = r.uncachedInput != null;
+      const inp = Number(r.uncachedInput ?? r.inputTokens ?? r.input ?? 0);
+      const cacheCreate = hasUncached ? 0 : Number(r.cacheWriteTokens ?? r.cacheCreationInputTokens ?? r.cacheWriteInputTokens ?? 0);
+      const cap = Number(r.cacheReadTokens ?? r.cacheTokens ?? r.cached ?? r.cache ?? 0);
+      if (Number.isFinite(inp) && inp > 0) fresh += inp;
+      if (Number.isFinite(cacheCreate) && cacheCreate > 0) fresh += cacheCreate;
+      if (Number.isFinite(cap) && cap > 0) cached += cap;
+    }
+    return calculateCacheHitStats(fresh, cached);
+  }
+
   function summarize(metadata, options = {}) {
     const m = metadata?.chatModel;
     if (!m) return null;
@@ -570,13 +621,15 @@
     const serviceLimit = classification.serviceLimit || null;
 
     const usage = lastRetry ? lastRetry.usage : m.usage;
-    const input = number(usage?.inputTokens), cached = number(usage?.cacheReadTokens), output = number(usage?.outputTokens);
+    const input = number(usage?.inputTokens);
+    const cacheWrite = number(usage?.cacheCreationInputTokens ?? usage?.cacheWriteTokens ?? usage?.cacheWriteInputTokens);
+    const cached = number(usage?.cacheReadTokens), output = number(usage?.outputTokens);
     const thinking = number(usage?.thinkingOutputTokens), responseTokens = number(usage?.responseOutputTokens);
-    const hasInput = (input || 0) + (cached || 0) > 0;
+    const hasInput = (input || 0) + (cacheWrite || 0) + (cached || 0) > 0;
 
     // 解耦维度：错误发生时不强制归零已有上下文用量
     const prevContext = options.previousValidContext || null;
-    let actual = hasInput && !error ? (input || 0) + (cached || 0) + (output || 0) : null;
+    let actual = hasInput && !error ? (input || 0) + (cacheWrite || 0) + (cached || 0) + (output || 0) : null;
     if (actual === null && prevContext && prevContext.actual != null && !exceeded) {
       actual = prevContext.actual;
     }
@@ -586,6 +639,10 @@
     const budget = number(context?.maxContextTokens) || prevContext?.budget || null;
 
     // 计算生成耗时与输出速度 (Tokens Per Second)
+    // 区分“纯流式生成速率 streamingTps”与“含首字等待端到端速率 tps”：
+    // 刚起流 (<0.45s 且 <12 tokens，或仅有首字耗时尚无 streamingDuration) 归为 warming，防止早期量化尖峰或 TTFT 稀释失真。
+    const MIN_SETTLED_STREAM_SEC = 0.45;
+    const MIN_SETTLED_STREAM_TOKENS = 12;
     const ttft = parseDurationSec(m.timeToFirstToken);
     const streamingSec = parseDurationSec(m.streamingDuration);
     const duration = (ttft !== null && streamingSec !== null) ? (ttft + streamingSec) : (ttft ?? streamingSec ?? null);
@@ -594,12 +651,22 @@
       tps = Number((output / duration).toFixed(1));
     }
     let streamingTps = null;
-    if (output && streamingSec && streamingSec > 0.05) {
+    const isSettledStream = Boolean(output && streamingSec !== null && (
+      streamingSec >= MIN_SETTLED_STREAM_SEC || (streamingSec > 0.05 && output >= MIN_SETTLED_STREAM_TOKENS)
+    ));
+    if (isSettledStream) {
       streamingTps = Number((output / streamingSec).toFixed(1));
     }
+    const isWarming = Boolean(output && output > 0 && !isSettledStream && (
+      streamingSec === null || streamingSec < MIN_SETTLED_STREAM_SEC
+    ));
+    const phase = isWarming ? 'warming' : (isSettledStream || tps !== null ? 'settled' : 'idle');
+    const displayTps = phase === 'warming' ? null : (streamingTps ?? tps ?? null);
     const speed = (tps !== null || duration !== null || output !== null) ? {
       tps,
       streamingTps,
+      displayTps,
+      phase,
       duration: duration !== null ? Number(duration.toFixed(2)) : null,
       ttft: ttft !== null ? Number(ttft.toFixed(2)) : null,
       streamingSec: streamingSec !== null ? Number(streamingSec.toFixed(2)) : null,
@@ -622,6 +689,12 @@
 
     const usedVal = actual ?? (estimate > 0 ? estimate : null);
     const percentVal = actual !== null && budget > 0 && !exceeded ? (actual / budget * 100) : null;
+    const effectiveInputTotal = hasInput ? (input || 0) + (cacheWrite || 0) + (cached || 0) : (prevContext?.input || null);
+    const effectiveCached = hasInput ? (cached || 0) : (prevContext?.cached || 0);
+    const effectiveUncached = hasInput
+      ? (input || 0) + (cacheWrite || 0)
+      : (prevContext?.uncachedInput ?? (effectiveInputTotal != null ? Math.max(0, effectiveInputTotal - effectiveCached) : null));
+    const cacheHit = calculateCacheHitStats(effectiveUncached, effectiveCached);
 
     return {
       used: usedVal,
@@ -634,8 +707,11 @@
       error,
       errorClassification: classification,
       estimated: actual === null,
-      input: hasInput ? (input || 0) + (cached || 0) : (prevContext?.input || null),
-      cached: cached || prevContext?.cached || 0,
+      input: effectiveInputTotal,
+      uncachedInput: effectiveUncached,
+      cacheWrite: cacheWrite || 0,
+      cached: effectiveCached,
+      cacheHitRate: cacheHit.hitRate,
       output: output ?? (prevContext?.output ?? null),
       percent: percentVal,
       model,
@@ -791,6 +867,403 @@
     const total = Object.values(groups).reduce(add, empty());
     const currentError = latestStepError && latestStepError.index > Math.max(lastUserAt, lastAssistantAt) ? latestStepError : null;
     return { groups, total, media: [...media.values()], steps: steps.length, userMessages, assistantMessages, currentError };
+  }
+
+  function parseTimestampMs(val) {
+    if (val === undefined || val === null || val === '') return null;
+    if (typeof val === 'number') return Number.isFinite(val) && val > 0 ? val : null;
+    const ms = Date.parse(String(val));
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
+  }
+
+  function mergeTimeIntervals(intervals) {
+    if (!Array.isArray(intervals) || !intervals.length) return 0;
+    const valid = [];
+    for (const item of intervals) {
+      if (!Array.isArray(item) || item.length < 2) continue;
+      const s = Number(item[0]);
+      const e = Number(item[1]);
+      if (Number.isFinite(s) && Number.isFinite(e) && e > s) valid.push([s, e]);
+    }
+    if (!valid.length) return 0;
+    valid.sort((a, b) => a[0] - b[0]);
+    let mergedMs = 0;
+    let curStart = valid[0][0];
+    let curEnd = valid[0][1];
+    for (let i = 1; i < valid.length; i++) {
+      const [s, e] = valid[i];
+      if (s <= curEnd) {
+        if (e > curEnd) curEnd = e;
+      } else {
+        mergedMs += curEnd - curStart;
+        curStart = s;
+        curEnd = e;
+      }
+    }
+    mergedMs += curEnd - curStart;
+    return mergedMs / 1000;
+  }
+
+  function formatCompactDurationSec(sec, options = {}) {
+    if (sec === undefined || sec === null || !Number.isFinite(Number(sec)) || Number(sec) < 0) return '—';
+    const val = Number(sec);
+    const live = options.live === true;
+    if (val < 60) {
+      if (live) return `${Math.max(0, Math.floor(val))}s`;
+      return `${Number(val.toFixed(2))}s`;
+    }
+    const totalSec = live ? Math.floor(val) : Math.round(val);
+    if (totalSec < 3600) {
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      return `${m}m ${String(s).padStart(2, '0')}s`;
+    }
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return s > 0 ? `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s` : `${h}h ${String(m).padStart(2, '0')}m`;
+  }
+
+  /**
+   * 汇总最新一轮用户交互 (基于最新 userInput stepIndex 边界) 的真实端到端墙钟耗时与去向拆解：
+   * wallDurationSec = ttftSec (各步首字等待合计) + streamingSec (各步流式生成合计) + toolWallSec (工具并发去重墙钟) + scheduleGapSec (钩子/等待/间隙)
+   */
+  function summarizeTurnTiming(options = {}) {
+    const steps = Array.isArray(options.steps) ? options.steps : [];
+    const baseStepOffset = Number.isInteger(Number(options.stepOffset)) && Number(options.stepOffset) >= 0
+      ? Number(options.stepOffset)
+      : 0;
+    const explicitMinStepIdx = options.minStepIndex !== undefined && options.minStepIndex !== null && Number.isInteger(Number(options.minStepIndex)) && Number(options.minStepIndex) >= 0
+      ? Number(options.minStepIndex)
+      : null;
+    const explicitExecId = typeof options.turnExecutionId === 'string' && options.turnExecutionId.trim()
+      ? options.turnExecutionId.trim()
+      : null;
+    const generatorMetadata = Array.isArray(options.generatorMetadata) ? options.generatorMetadata : [];
+    const cascadeStatus = typeof options.cascadeStatus === 'string' && options.cascadeStatus.trim()
+      ? options.cascadeStatus.trim()
+      : null;
+    const fallbackTurnStartMs = parseTimestampMs(options.fallbackTurnStartMs);
+    const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : (parseTimestampMs(options.nowMs) ?? Date.now());
+
+    const getStepGlobalIndex = (s, localIdx) => {
+      const rawIdx = s?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+      if (rawIdx !== undefined && rawIdx !== null && rawIdx !== '' && Number.isInteger(Number(rawIdx)) && Number(rawIdx) >= 0) {
+        return Number(rawIdx);
+      }
+      return baseStepOffset + localIdx;
+    };
+
+    const getGmStepIndices = (g) => {
+      if (!g || typeof g !== 'object') return [];
+      if (Array.isArray(g.stepIndices) && g.stepIndices.length > 0) {
+        return g.stepIndices.map(Number).filter(n => Number.isFinite(n) && n >= 0);
+      }
+      const single = g.stepIndex ?? g.step_index;
+      if (single !== undefined && single !== null && single !== '' && Number.isFinite(Number(single)) && Number(single) >= 0) {
+        return [Number(single)];
+      }
+      return [];
+    };
+
+    let lastUserIdx = -1;
+    let lastUserGlobalIdx = null;
+    let latestStepExecId = null;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      if (!s || typeof s !== 'object') continue;
+      if (s.userInput) {
+        lastUserIdx = i;
+        lastUserGlobalIdx = getStepGlobalIndex(s, i);
+      }
+      const eid = s.metadata?.executionId ? String(s.metadata.executionId).trim() : '';
+      if (eid) latestStepExecId = eid;
+    }
+
+    let turnExecutionId = explicitExecId;
+    if (lastUserIdx >= 0 && steps[lastUserIdx]?.metadata?.executionId) {
+      turnExecutionId = String(steps[lastUserIdx].metadata.executionId).trim();
+    }
+    if (latestStepExecId) {
+      turnExecutionId = latestStepExecId;
+    }
+    if (!turnExecutionId) {
+      for (let i = generatorMetadata.length - 1; i >= 0; i--) {
+        const eid = generatorMetadata[i]?.executionId ? String(generatorMetadata[i].executionId).trim() : '';
+        if (eid) {
+          turnExecutionId = eid;
+          break;
+        }
+      }
+    }
+
+    let turnStartStepIndex = explicitMinStepIdx;
+    let turnSteps = [];
+    let turnStepGlobalIndices = [];
+    if (steps.length > 0) {
+      if (lastUserIdx >= 0) {
+        turnStartStepIndex = explicitMinStepIdx !== null && lastUserGlobalIdx !== null
+          ? Math.max(explicitMinStepIdx, lastUserGlobalIdx)
+          : lastUserGlobalIdx;
+        for (let i = lastUserIdx; i < steps.length; i++) {
+          const gIdx = getStepGlobalIndex(steps[i], i);
+          if (turnStartStepIndex !== null && gIdx < turnStartStepIndex) continue;
+          if (steps[i]) {
+            turnSteps.push(steps[i]);
+            turnStepGlobalIndices.push(gIdx);
+          }
+        }
+      } else if (explicitMinStepIdx !== null) {
+        for (let i = 0; i < steps.length; i++) {
+          const gIdx = getStepGlobalIndex(steps[i], i);
+          if (gIdx >= explicitMinStepIdx && steps[i]) {
+            turnSteps.push(steps[i]);
+            turnStepGlobalIndices.push(gIdx);
+          }
+        }
+      } else if (turnExecutionId) {
+        for (let i = 0; i < steps.length; i++) {
+          if (steps[i] && String(steps[i].metadata?.executionId || '').trim() === turnExecutionId) {
+            turnSteps.push(steps[i]);
+            turnStepGlobalIndices.push(getStepGlobalIndex(steps[i], i));
+          }
+        }
+      }
+    }
+
+    let turnStartMs = null;
+    let lastActivityMs = null;
+    let hasInFlightStep = false;
+    for (const s of turnSteps) {
+      const m = s?.metadata || {};
+      const cMs = parseTimestampMs(m.createdAt);
+      if (s.userInput && cMs !== null && (turnStartMs === null || cMs < turnStartMs)) {
+        turnStartMs = cMs;
+      }
+      const candidates = [m.createdAt, m.viewableAt, m.finishedGeneratingAt, m.startedAt, m.completedAt];
+      const transitions = Array.isArray(m.internalMetadata?.statusTransitions) ? m.internalMetadata.statusTransitions : [];
+      for (const tr of transitions) {
+        if (tr?.timestamp) candidates.push(tr.timestamp);
+      }
+      for (const rawTs of candidates) {
+        const ts = parseTimestampMs(rawTs);
+        if (ts !== null) {
+          if (turnStartMs === null || ts < turnStartMs) turnStartMs = ts;
+          if (lastActivityMs === null || ts > lastActivityMs) lastActivityMs = ts;
+        }
+      }
+      const lastTrStatus = transitions.length ? String(transitions[transitions.length - 1]?.updatedStatus || '') : String(s.status || '');
+      if (
+        !s.userInput &&
+        !m.completedAt &&
+        /RUNNING|GENERATING|PENDING/i.test(lastTrStatus) &&
+        !/DONE|COMPLETED|ERROR|CANCELED|FAILED/i.test(lastTrStatus)
+      ) {
+        hasInFlightStep = true;
+      }
+    }
+
+    // 若本地刚捕获到用户发送消息 (fallbackTurnStartMs 晚于历史轮次末尾)，视为新一轮刚启动（尚在等待首步落盘/TTFT）
+    const isFreshLocalDispatch = Boolean(
+      fallbackTurnStartMs !== null &&
+      (lastActivityMs === null || fallbackTurnStartMs > lastActivityMs + 200)
+    );
+    if (isFreshLocalDispatch) {
+      turnStartMs = fallbackTurnStartMs;
+      turnExecutionId = null;
+      turnStartStepIndex = null;
+      turnSteps = [];
+      turnStepGlobalIndices = [];
+      lastActivityMs = null;
+    } else if (turnStartMs === null && fallbackTurnStartMs !== null) {
+      turnStartMs = fallbackTurnStartMs;
+    }
+
+    const tailGm = generatorMetadata.length ? generatorMetadata[generatorMetadata.length - 1] : null;
+    const tailGmStreaming = Boolean(
+      !isFreshLocalDispatch &&
+      tailGm &&
+      (tailGm.isStreaming === true || tailGm.status === 'streaming')
+    );
+
+    let isRunning = false;
+    if (cascadeStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+      isRunning = true;
+    } else if (cascadeStatus !== null) {
+      isRunning = isFreshLocalDispatch;
+    } else {
+      isRunning = Boolean(isFreshLocalDispatch || hasInFlightStep || tailGmStreaming);
+    }
+
+    // 关键边界：Antigravity 会在同一会话的多轮用户提问间复用相同 executionId；
+    // 一旦已知最新 userInput 的全局 stepIndex，优先按 g.stepIndices >= turnStartStepIndex 精确切分本轮，仅在无 stepIndices 的合成测试中回退 executionId。
+    let turnGms = [];
+    if (!isFreshLocalDispatch) {
+      if (turnStartStepIndex !== null) {
+        turnGms = generatorMetadata.filter(g => {
+          if (!g) return false;
+          const idxs = getGmStepIndices(g);
+          if (idxs.length > 0) {
+            return idxs.some(idx => idx >= turnStartStepIndex);
+          }
+          return Boolean(turnExecutionId && String(g.executionId || '').trim() === turnExecutionId);
+        });
+      } else if (turnExecutionId) {
+        turnGms = generatorMetadata.filter(g => g && String(g.executionId || '').trim() === turnExecutionId);
+      } else if (steps.length === 0 && tailGm) {
+        turnGms = [tailGm];
+      }
+    }
+
+    let ttftSec = 0;
+    let latestTtftSec = null;
+    let streamingSec = 0;
+    let llmDurationSec = 0;
+    let outputTokens = 0;
+    let thinkingTokens = 0;
+    let responseTokens = 0;
+    let maxSettledGmStepIdx = -1;
+    const settledGmStepSet = new Set();
+    for (const g of turnGms) {
+      const cm = g?.chatModel || {};
+      const lastRetry = (cm.retryInfos || []).at(-1);
+      const usage = lastRetry ? lastRetry.usage : cm.usage;
+      const tSec = parseDurationSec(cm.timeToFirstToken);
+      const sSec = parseDurationSec(cm.streamingDuration);
+      if (tSec !== null) {
+        ttftSec += tSec;
+        latestTtftSec = tSec;
+        for (const idx of getGmStepIndices(g)) {
+          settledGmStepSet.add(idx);
+          if (idx > maxSettledGmStepIdx) maxSettledGmStepIdx = idx;
+        }
+      }
+      if (sSec !== null) streamingSec += sSec;
+      if (tSec !== null || sSec !== null) llmDurationSec += (tSec || 0) + (sSec || 0);
+      const out = number(usage?.outputTokens) || 0;
+      const think = number(usage?.thinkingOutputTokens) || 0;
+      const resp = number(usage?.responseOutputTokens);
+      outputTokens += out;
+      thinkingTokens += think;
+      responseTokens += resp !== null ? resp : Math.max(0, out - think);
+    }
+
+    // 工具耗时只按真实开始执行时刻 (m.startedAt / RUNNING 状态跳变) 统计，
+    // 绝不把模型流式吐工具参数期间 (PENDING / GENERATING 时的 m.createdAt) 误算进工具执行耗时。
+    const toolIntervals = [];
+    const completedToolIntervals = [];
+    let activeToolStartMs = null;
+    let toolCallCount = 0;
+    for (const s of turnSteps) {
+      const m = s?.metadata || {};
+      const transitions = Array.isArray(m.internalMetadata?.statusTransitions) ? m.internalMetadata.statusTransitions : [];
+      const lastTrStatus = transitions.length ? String(transitions[transitions.length - 1]?.updatedStatus || '') : String(s.status || '');
+      const runningTr = transitions.find(tr => /RUNNING/i.test(String(tr?.updatedStatus || '')) && tr?.timestamp);
+      const doneTr = [...transitions].reverse().find(tr => /DONE|COMPLETED|ERROR|CANCELED|FAILED/i.test(String(tr?.updatedStatus || '')) && tr?.timestamp);
+      const isToolStep = Boolean(m.toolCall) || (!s.userInput && !s.plannerResponse && !s.checkpoint && !s.errorMessage && (m.startedAt || runningTr || m.toolSource));
+      if (!isToolStep) continue;
+      toolCallCount++;
+      const isTerminal = Boolean(m.completedAt || doneTr) || /DONE|COMPLETED|ERROR|CANCELED|FAILED/i.test(lastTrStatus);
+      const isQueuedOnly = !isTerminal && !m.startedAt && !runningTr && /GENERATING|PENDING/i.test(lastTrStatus);
+      const stMs = isQueuedOnly
+        ? null
+        : (
+          parseTimestampMs(m.startedAt) ??
+          parseTimestampMs(runningTr?.timestamp) ??
+          (isTerminal ? parseTimestampMs(m.finishedGeneratingAt ?? m.viewableAt ?? m.createdAt) : null)
+        );
+      const completedMs = parseTimestampMs(m.completedAt) ?? parseTimestampMs(doneTr?.timestamp);
+      if (stMs !== null) {
+        if (completedMs !== null && completedMs > stMs) {
+          completedToolIntervals.push([stMs, completedMs]);
+          toolIntervals.push([stMs, completedMs]);
+        } else if (completedMs === null && isRunning && !isTerminal) {
+          activeToolStartMs = activeToolStartMs === null ? stMs : Math.min(activeToolStartMs, stMs);
+          if (nowMs > stMs) {
+            toolIntervals.push([stMs, nowMs]);
+          }
+        }
+      }
+    }
+    const completedToolWallSec = mergeTimeIntervals(completedToolIntervals);
+    const rawToolWallSec = mergeTimeIntervals(toolIntervals);
+
+    // 识别当前是否正处于某一步模型推理的首字等待 (in-flight TTFT)，避免等待期间首字卡片一直停留上一步旧值
+    let inFlightTtftAnchorMs = null;
+    if (isRunning && activeToolStartMs === null && !tailGmStreaming) {
+      if (turnSteps.length === 0) {
+        inFlightTtftAnchorMs = turnStartMs;
+      } else {
+        const lastIdx = turnSteps.length - 1;
+        const lastStep = turnSteps[lastIdx];
+        const lastGlobalIdx = turnStepGlobalIndices[lastIdx];
+        const lm = lastStep?.metadata || {};
+        if (lastStep?.plannerResponse) {
+          if (!lm.viewableAt && !lm.finishedGeneratingAt && !lm.completedAt && !settledGmStepSet.has(lastGlobalIdx)) {
+            inFlightTtftAnchorMs = parseTimestampMs(lm.createdAt) ?? lastActivityMs ?? turnStartMs;
+          }
+        } else if (lastStep?.userInput) {
+          if (turnGms.length === 0) {
+            inFlightTtftAnchorMs = parseTimestampMs(lm.createdAt) ?? turnStartMs;
+          }
+        } else if (lm.completedAt && maxSettledGmStepIdx >= 0 && lastGlobalIdx > maxSettledGmStepIdx) {
+          inFlightTtftAnchorMs = parseTimestampMs(lm.completedAt) ?? lastActivityMs;
+        }
+      }
+    }
+    const inFlightTtftSec = (inFlightTtftAnchorMs !== null && nowMs >= inFlightTtftAnchorMs)
+      ? Number(((nowMs - inFlightTtftAnchorMs) / 1000).toFixed(2))
+      : null;
+
+    const minPhysicalWallSec = llmDurationSec + rawToolWallSec;
+    let wallDurationSec = null;
+    let hasAuthoritativeWallClock = false;
+    if (turnStartMs !== null) {
+      if (isRunning) {
+        wallDurationSec = Math.max(minPhysicalWallSec, Math.max(0, (nowMs - turnStartMs) / 1000));
+        hasAuthoritativeWallClock = true;
+      } else if (lastActivityMs !== null && lastActivityMs >= turnStartMs) {
+        wallDurationSec = Math.max(minPhysicalWallSec, (lastActivityMs - turnStartMs) / 1000);
+        hasAuthoritativeWallClock = true;
+      }
+    }
+    if (wallDurationSec === null && minPhysicalWallSec > 0) {
+      wallDurationSec = minPhysicalWallSec;
+    }
+
+    const nonLlmSec = wallDurationSec !== null ? Math.max(0, wallDurationSec - llmDurationSec) : 0;
+    const toolWallSec = Math.min(rawToolWallSec, nonLlmSec > 0 ? nonLlmSec : rawToolWallSec);
+    const scheduleGapSec = Math.max(0, nonLlmSec - toolWallSec);
+    const endToEndTps = (outputTokens > 0 && wallDurationSec && wallDurationSec > 0)
+      ? Number((outputTokens / wallDurationSec).toFixed(1))
+      : null;
+
+    return {
+      executionId: turnExecutionId || null,
+      turnStartStepIndex,
+      isRunning,
+      hasAuthoritativeWallClock,
+      turnStartMs,
+      lastActivityMs,
+      activeToolStartMs,
+      completedToolWallSec: Number(completedToolWallSec.toFixed(2)),
+      inFlightTtftAnchorMs,
+      inFlightTtftSec,
+      llmCalls: turnGms.length,
+      toolCalls: toolCallCount,
+      wallDurationSec: wallDurationSec !== null ? Number(wallDurationSec.toFixed(2)) : null,
+      llmDurationSec: Number(llmDurationSec.toFixed(2)),
+      ttftSec: Number(ttftSec.toFixed(2)),
+      latestTtftSec: latestTtftSec !== null ? Number(latestTtftSec.toFixed(2)) : null,
+      streamingSec: Number(streamingSec.toFixed(2)),
+      toolWallSec: Number(toolWallSec.toFixed(2)),
+      nonLlmSec: Number(nonLlmSec.toFixed(2)),
+      scheduleGapSec: Number(scheduleGapSec.toFixed(2)),
+      outputTokens,
+      thinkingTokens,
+      responseTokens,
+      endToEndTps
+    };
   }
 
   // 官方 Developer API Standard 公开费率表 (USD / 百万 Token)
@@ -1235,8 +1708,19 @@
       const streamingVal = (c.streamingSec !== undefined && c.streamingSec !== null && Number.isFinite(Number(c.streamingSec)) && Number(c.streamingSec) >= 0)
         ? Number(c.streamingSec)
         : null;
-      const inVal = (c.inputTokens != null || c.cacheReadTokens != null || c.cacheTokens != null)
-        ? (Number(c.inputTokens) || 0) + (Number(c.cacheReadTokens ?? c.cacheTokens) || 0)
+      const streamingTpsVal = (c.streamingTps !== undefined && c.streamingTps !== null && Number.isFinite(Number(c.streamingTps)) && Number(c.streamingTps) > 0)
+        ? Number(c.streamingTps)
+        : (streamingVal !== null && (streamingVal >= 0.45 || (streamingVal > 0.05 && outputTokens >= 12)))
+          ? Number((outputTokens / streamingVal).toFixed(1))
+          : null;
+      const cacheWriteVal = Number(c.cacheWriteTokens ?? c.cacheCreationInputTokens ?? c.cacheWriteInputTokens ?? 0);
+      const safeCacheWrite = Number.isFinite(cacheWriteVal) && cacheWriteVal > 0 ? cacheWriteVal : 0;
+      const uncachedVal = (c.inputTokens != null || safeCacheWrite > 0)
+        ? ((c.inputTokens != null ? (Number(c.inputTokens) || 0) : 0) + safeCacheWrite)
+        : null;
+      const cacheReadVal = (c.cacheReadTokens != null || c.cacheTokens != null) ? (Number(c.cacheReadTokens ?? c.cacheTokens) || 0) : null;
+      const inVal = (uncachedVal !== null || cacheReadVal !== null)
+        ? (uncachedVal || 0) + (cacheReadVal || 0)
         : null;
 
       if (!groups.has(exactId)) {
@@ -1255,11 +1739,14 @@
         callId: c.callId || null,
         ts,
         tps: tpsVal,
+        streamingTps: streamingTpsVal,
         ttftSec: ttftVal,
         streamingSec: streamingVal,
         durationSec,
         outputTokens,
         inputTokens: inVal,
+        uncachedInputTokens: uncachedVal,
+        cacheReadTokens: cacheReadVal,
         origin: c.origin === 'speed-test' ? 'speed-test' : 'chat'
       });
     }
@@ -1272,12 +1759,21 @@
       if (!recent.length) continue;
 
       const medTps = computeMedian(recent.map(r => r.tps));
+      const settledStreamVals = recent
+        .filter(r => r.streamingTps != null && (r.outputTokens >= 12 || (r.streamingSec != null && r.streamingSec >= 0.45)))
+        .map(r => r.streamingTps);
+      const streamVals = settledStreamVals.length ? settledStreamVals : recent.map(r => r.streamingTps).filter(v => v != null);
+      const medStreamingTps = streamVals.length ? computeMedian(streamVals) : null;
       const ttftList = recent.map(r => r.ttftSec).filter(v => v !== null);
       const medTtft = ttftList.length ? computeMedian(ttftList) : null;
       const medDur = computeMedian(recent.map(r => r.durationSec));
       const medOut = computeMedian(recent.map(r => r.outputTokens));
       const inList = recent.map(r => r.inputTokens).filter(v => v !== null && v > 0);
       const medIn = inList.length ? computeMedian(inList) : null;
+
+      const hitFreshSum = recent.reduce((acc, r) => acc + (r.uncachedInputTokens > 0 ? r.uncachedInputTokens : 0), 0);
+      const hitCacheSum = recent.reduce((acc, r) => acc + (r.cacheReadTokens > 0 ? r.cacheReadTokens : 0), 0);
+      const speedCacheHit = calculateCacheHitStats(hitFreshSum, hitCacheSum);
 
       const tsList = recent.map(r => r.ts).filter(t => t > 0);
       const minTs = tsList.length ? Math.min(...tsList) : null;
@@ -1296,10 +1792,12 @@
         count: recent.length,
         lowSample: recent.length < 3,
         medianTps: medTps !== null ? Number(medTps.toFixed(1)) : null,
+        medianStreamingTps: medStreamingTps !== null ? Number(medStreamingTps.toFixed(1)) : null,
         medianTtft: medTtft !== null ? Number(medTtft.toFixed(2)) : null,
         medianDuration: medDur !== null ? Number(medDur.toFixed(2)) : null,
         medianOutputTokens: medOut !== null ? Math.round(medOut) : null,
         medianInputTokens: medIn !== null ? Math.round(medIn) : null,
+        cacheHitRate: speedCacheHit.hitRate,
         minTs,
         maxTs,
         samples
@@ -1533,11 +2031,12 @@
     });
 
     const input = Number(u.inputTokens ?? row.inputTokens ?? row.input_tokens ?? 0);
+    const cacheWrite = Number(u.cacheCreationInputTokens ?? u.cacheWriteTokens ?? u.cacheWriteInputTokens ?? row.cacheWriteTokens ?? row.cacheCreationInputTokens ?? 0);
     const cached = Number(u.cacheReadTokens ?? row.cacheTokens ?? row.cacheReadTokens ?? row.cache_read_tokens ?? 0);
     const output = Number(u.outputTokens ?? row.outputTokens ?? row.output_tokens ?? 0);
     const thinking = Number(u.thinkingOutputTokens ?? row.thinkingTokens ?? row.thinking_output_tokens ?? 0);
     const responseTokens = Number(u.responseOutputTokens ?? row.responseTokens ?? (output - thinking > 0 ? output - thinking : output));
-    const totalTokens = input + cached + output;
+    const totalTokens = input + cacheWrite + cached + output;
 
     const rawStepIdx = row.stepIndices?.[0] ?? row.stepIndex ?? row.step_index;
     const parsedStepIdx = rawStepIdx !== undefined && rawStepIdx !== null && rawStepIdx !== '' ? Number(rawStepIdx) : NaN;
@@ -1627,7 +2126,14 @@
     const speedFields = {};
     if (status === 'final' && !isEstimated && output > 0 && durationSecRaw !== null && durationSecRaw > 0) {
       if (ttftSecRaw !== null) speedFields.ttftSec = Number(ttftSecRaw.toFixed(2));
-      if (streamingSecRaw !== null) speedFields.streamingSec = Number(streamingSecRaw.toFixed(2));
+      if (streamingSecRaw !== null) {
+        speedFields.streamingSec = Number(streamingSecRaw.toFixed(2));
+        if (streamingSecRaw >= 0.45 || (streamingSecRaw > 0.05 && output >= 12)) {
+          speedFields.streamingTps = (row.streamingTps !== undefined && row.streamingTps !== null && Number.isFinite(Number(row.streamingTps)) && Number(row.streamingTps) > 0)
+            ? Number(Number(row.streamingTps).toFixed(1))
+            : Number((output / streamingSecRaw).toFixed(1));
+        }
+      }
       speedFields.durationSec = Number(durationSecRaw.toFixed(2));
       speedFields.tps = (row.tps !== undefined && row.tps !== null && Number.isFinite(Number(row.tps)) && Number(row.tps) > 0)
         ? Number(Number(row.tps).toFixed(1))
@@ -1639,6 +2145,7 @@
       callId,
       source,
       cascadeId,
+      ...(row.executionId || cm.executionId ? { executionId: String(row.executionId || cm.executionId) } : {}),
       stepIndex,
       model,
       modelKey,
@@ -1646,6 +2153,7 @@
       modelLabel: (modelLabelRaw && modelLabelRaw !== model) ? modelLabelRaw : undefined,
       effort: productMeta.effort || undefined,
       inputTokens: input,
+      cacheWriteTokens: cacheWrite > 0 ? cacheWrite : undefined,
       cacheTokens: cached,
       cacheReadTokens: cached,
       outputTokens: output,
@@ -2490,8 +2998,12 @@
     let totalOutputTokens = 0;
     let totalCacheTokens = 0;
     let todayTokens = 0;
+    let todayInputTokens = 0;
+    let todayCacheTokens = 0;
     let monthTokens = 0;
     let yearTokens = 0;
+    let yearInputTokens = 0;
+    let yearCacheTokens = 0;
     let currentMonthInput = 0;
     let currentMonthOutput = 0;
     let currentMonthCache = 0;
@@ -2504,7 +3016,11 @@
       totalOutputTokens += rec.output;
       totalCacheTokens += rec.cache;
 
-      if (k === todayStr) todayTokens += rec.total;
+      if (k === todayStr) {
+        todayTokens += rec.total;
+        todayInputTokens += rec.input;
+        todayCacheTokens += rec.cache;
+      }
       if (k.startsWith(currentMonthPrefix)) {
         monthTokens += rec.total;
         currentMonthInput += rec.input;
@@ -2513,6 +3029,8 @@
       }
       if (k.startsWith(currentYearPrefix)) {
         yearTokens += rec.total;
+        yearInputTokens += rec.input;
+        yearCacheTokens += rec.cache;
       }
     }
 
@@ -2522,6 +3040,10 @@
       if (Number(rawSum.totalOutputTokens) > totalOutputTokens) totalOutputTokens = Number(rawSum.totalOutputTokens);
       if (Number(rawSum.totalCacheTokens) > totalCacheTokens) totalCacheTokens = Number(rawSum.totalCacheTokens);
       if (Number(rawSum.grandTotalTokens) > grandTotalTokens) grandTotalTokens = Number(rawSum.grandTotalTokens);
+      if (Number(rawSum.todayInputTokens) > todayInputTokens) todayInputTokens = Number(rawSum.todayInputTokens);
+      if (Number(rawSum.todayCacheTokens) > todayCacheTokens) todayCacheTokens = Number(rawSum.todayCacheTokens);
+      if (Number(rawSum.yearInputTokens) > yearInputTokens) yearInputTokens = Number(rawSum.yearInputTokens);
+      if (Number(rawSum.yearCacheTokens) > yearCacheTokens) yearCacheTokens = Number(rawSum.yearCacheTokens);
       if (Number(rawSum.currentMonthInput) > currentMonthInput) currentMonthInput = Number(rawSum.currentMonthInput);
       if (Number(rawSum.currentMonthOutput) > currentMonthOutput) currentMonthOutput = Number(rawSum.currentMonthOutput);
       if (Number(rawSum.currentMonthCache) > currentMonthCache) currentMonthCache = Number(rawSum.currentMonthCache);
@@ -2555,8 +3077,12 @@
       totalOutputTokens,
       totalCacheTokens,
       todayTokens,
+      todayInputTokens,
+      todayCacheTokens,
       monthTokens,
       yearTokens,
+      yearInputTokens,
+      yearCacheTokens,
       currentMonthInput,
       currentMonthOutput,
       currentMonthCache,
@@ -3856,6 +4382,8 @@
 
   const api = {
     summarize,
+    calculateCacheHitStats,
+    summarizeCacheHitRecords,
     classifyRequestError,
     resolveModelQuota,
     getModelPoolKey,
@@ -3877,6 +4405,9 @@
     empty,
     analyzeSteps,
     parseDurationSec,
+    formatCompactDurationSec,
+    mergeTimeIntervals,
+    summarizeTurnTiming,
     GEMINI_PRICING_TABLE,
     SUBSCRIPTION_ACQUISITION_PRESETS,
     SUBSCRIPTION_REGIONS_PRESET,

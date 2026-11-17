@@ -46,11 +46,16 @@
   <span id="token-hover-extra" class="sr-only"></span>
 </button>
 
-<!-- 顶部基本单元 4: 一键启动 CLI 模式 -->
-<button id="badge-cli" class="ag-unit" type="button" aria-label="启动 CLI" data-i18n-aria="badge.cli.aria"
-  title="一键启动 Antigravity CLI 终端（自动进入当前项目目录）" data-i18n-title="badge.cli.title">
-  <span class="cli-icon" aria-hidden="true">&gt;_</span>
-  <span id="cli-label">CLI</span>
+<!-- 顶部基本单元 4: Prompt 缓存命中率（替代原 CLI 位置） -->
+<button id="badge-cache-hit" class="ag-unit" type="button" aria-label="Prompt 缓存命中率"
+  data-i18n-aria="badge.cacheHit.aria" aria-expanded="false" data-hit-tier="none" data-scope="global"
+  title="Prompt 缓存命中率" data-i18n-title="badge.cacheHit.title">
+  <span class="cache-hit-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13" fill="none"
+      stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="8" cy="8" r="5.5"></circle>
+      <circle cx="8" cy="8" r="2.1"></circle>
+    </svg></span>
+  <span id="cache-hit-amount">--%</span>
 </button>
 
 <!-- 顶部基本单元 5: 窄屏溢出菜单按钮 -->
@@ -87,6 +92,10 @@
     <span class="overflow-item-label"><span class="token-fire-dot"></span><span data-i18n="overflow.tokens">Token
         用量一览</span></span>
     <span id="overflow-tokens-val" class="overflow-item-val">--</span>
+  </button>
+  <button id="overflow-cache-btn" class="overflow-item" type="button">
+    <span class="overflow-item-label"><span>◎</span><span data-i18n="overflow.cacheHit">缓存命中率</span></span>
+    <span id="overflow-cache-val" class="overflow-item-val">--%</span>
   </button>
   <button id="overflow-cli-btn" class="overflow-item" type="button">
     <span class="overflow-item-label"><span class="cli-icon">&gt;_</span><span data-i18n="overflow.cli">启动 CLI
@@ -186,6 +195,16 @@
             <div id="key-remaining" class="key-stat-val">—</div>
           </div>
         </div>
+        <div id="cache-hit-strip" class="cache-hit-strip" title="Prompt 缓存命中率 = 缓存读取 / (新增输入 + 缓存读取)"
+          data-i18n-title="session.cacheHit.title">
+          <span id="cache-hit-label" class="cache-hit-label" data-i18n="session.cacheHit.label">🎯 实时缓存</span>
+          <div class="cache-hit-values">
+            <span id="cache-hit-turn" class="cache-hit-chip">—</span>
+            <span id="cache-hit-tokens" class="cache-hit-meta" hidden></span>
+            <span id="cache-hit-session" class="cache-hit-chip">—</span>
+            <span id="cache-hit-drop" class="cache-hit-alert" hidden></span>
+          </div>
+        </div>
         <div id="key-takeaway" class="key-takeaway" data-i18n="session.keyTakeaway.loading">正在计算核心指标…</div>
       </div>
 
@@ -204,7 +223,7 @@
             </div>
           </div>
           <div class="key-stat">
-            <div class="key-stat-label" data-i18n="session.speed.duration">生成耗时</div>
+            <div class="key-stat-label" data-i18n="session.speed.duration">本轮耗时</div>
             <div id="speed-duration" class="key-stat-val">—</div>
           </div>
           <div class="key-stat">
@@ -251,6 +270,8 @@
             <dd id="request-status">—</dd>
             <dt data-i18n="session.tech.actual">模型返回输入＋输出</dt>
             <dd id="actual">—</dd>
+            <dt data-i18n="session.tech.cacheHit">Prompt 缓存命中率</dt>
+            <dd id="cache-hit-detail">—</dd>
             <dt data-i18n="session.tech.estimate">客户端估算（可能漏附件）</dt>
             <dd id="estimate">—</dd>
             <dt data-i18n="session.tech.budget">客户端预算字段</dt>
@@ -1605,7 +1626,10 @@
         <!-- 用量与参考差额指标条（注明包含缓存读取） -->
         <div
           style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin-bottom:8px">
-          <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">—</span>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">—</span>
+            <span id="cost-cache-hit-pill" class="key-pill pill-muted" style="font-size:10px">—</span>
+          </div>
           <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">—</span>
         </div>
 
@@ -1623,6 +1647,7 @@
               ($0.075/M)</div>
             <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
             <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div id="ref-cost-cache-hit" style="font-size:9.5px;color:var(--ag-text-muted)">—</div>
           </div>
           <div class="t-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.output">输出 Token</span>
@@ -1673,6 +1698,7 @@
             data-i18n="tokens.card.includeCache">含缓存读取</div>
           <div class="t-card-val" id="t-total-val">--</div>
           <div class="t-card-sub" id="t-total-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cache" id="t-total-cache-hit">—</div>
           <div class="t-card-cost" id="t-total-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
           </div>
         </div>
@@ -1681,6 +1707,7 @@
               style="color:var(--ag-custom-token-accent,#0284c7)">Today</span></div>
           <div class="t-card-val" id="t-today-val">--</div>
           <div class="t-card-sub" id="t-today-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cache" id="t-today-cache-hit">—</div>
           <div class="t-card-cost" id="t-today-cost">≈ $0.00 (¥0.00)</div>
         </div>
         <div class="t-card">
@@ -1688,6 +1715,7 @@
               style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Month</span></div>
           <div class="t-card-val" id="t-month-val">--</div>
           <div class="t-card-sub" id="t-month-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cache" id="t-month-cache-hit">—</div>
           <div class="t-card-cost" id="t-month-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
           </div>
         </div>
@@ -1696,6 +1724,7 @@
               style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Year</span></div>
           <div class="t-card-val" id="t-year-val">--</div>
           <div class="t-card-sub" id="t-year-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cache" id="t-year-cache-hit">—</div>
           <div class="t-card-cost" id="t-year-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
           </div>
         </div>
@@ -1759,6 +1788,10 @@
             <span class="heat-sum-label" data-i18n="tokens.heat.sumActiveAvg">活跃日均:</span>
             <span id="h-sum-active-avg" class="heat-sum-val" data-i18n="tokens.heat.activeAvgPlaceholder">$0.00
               (0天)</span>
+          </div>
+          <div class="heat-sum-item">
+            <span class="heat-sum-label" data-i18n="tokens.heat.sumCacheHit">缓存命中率:</span>
+            <span id="h-sum-cache-hit" class="heat-sum-val">--</span>
           </div>
           <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumSubRatio">订阅性价比:</span>
