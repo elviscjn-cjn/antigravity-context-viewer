@@ -19,6 +19,7 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 - **Model settings & context adjustment**. Save per-product context preferences (Native default restoring original client behavior, fixed 512,000 [512K] / 900,000 / 983,040 / 1,000,000 [1M], or dynamic follow), clearly distinguishing per-model saved preferences from the single shared client backend limit, with verified backup, restore, and host restart triggers. Integrates PR #3 multi-mode unlocking and cross-platform `unlock/` tools. Note: the model selector is inspection-only (**live chat model switching is not implemented**).
 - **Speed comparison**. Compare observed output rates, TTFT, and total durations per exact model ID and effort level using median bars and historical trend lines (up to 200 samples per identity, low-sample badge when < 3).
 - **Enhancement hub (PR #4)**. Configure 0–4 system prompt tiers (including anti-hallucination and tool-grounding constraints with explicit keep/clear/replace breakdown), Chinese auto session titles, client language (`zh-CN` / `en`), brand title display (`Antigravity` / hidden / translated), proxy setup, and opt-in recommended presets with full one-click restore. Normal installation never enables these changes silently.
+- **Mitigate AGY Lossy Compaction**. Integrates a clean-room MIT, stdlib-only Python 3.10+ recovery hook (`rehydrate/`), kept opt-in by default and toggleable from the Settings tab or CLI (`~/.gemini/config/hooks.json`). After compaction (`/compact`), it restores up to 45,000 UTF-8 bytes of bounded excerpts across 4 tiers (initial requests, recent verbatim turns, active `SKILL.md`/spec docs, and recently edited/read workspace files, with optional manual `fork_lineage.json` mapping); when no new compaction checkpoint is detected, no extra context is injected, while preserving all sibling hooks.
 - **Appearance**. Toolbar controls adapt to the available space, and each panel opens independently. Switch between light and dark themes, choose a heatmap preset, or set each color level.
 - **CLI and updates**. Launch the installed Antigravity CLI from the toolbar using the current workspace and proxy when available. Check for updates in the panel. The installer supports backups, integrity checks, and restoration.
 
@@ -63,6 +64,10 @@ node cli.js restore
 node cli.js enhance-status
 node cli.js enhance --tier 3 --chinese-title on --brand-title english
 node cli.js enhance-restore
+node cli.js rehydrate-status
+node cli.js rehydrate:enable
+node cli.js rehydrate:disable
+node cli.js rehydrate:remove
 ```
 
 ---
@@ -103,3 +108,4 @@ Tests cover context estimates, token aggregation, storage, proxy configuration, 
 - **Issue #17 (`cli-window-helper` Security Transparency, Hashes & CI Build Workflow)**: Reported & investigated by **[@riandycandra](https://github.com/riandycandra)**.
 - **PR #21 (Traditional Chinese UI Refinement)**: Contributed by **[@U1tr0n-Lee](https://github.com/U1tr0n-Lee)**.
 - **Issue #22 (Official Web/Atom Fallback Under GitHub API Rate Limits)**: Proposed by **[@zhao33079-zhao](https://github.com/zhao33079-zhao)**.
+- **Post-Compact Rehydration & `/fork` Lineage**: Inspired by the community **AGY Post-Compact Rehydration** design (<https://agy-rehydrate.pages.dev/>); the in-repo hook script and documentation are independently implemented under the MIT License.

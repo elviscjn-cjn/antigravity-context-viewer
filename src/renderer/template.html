@@ -779,6 +779,13 @@
               <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>
             </div>
           </label>
+          <label class="ctx-preset-check-item">
+            <input id="chk-rec-rehydrate" type="checkbox">
+            <div class="ctx-preset-check-meta">
+              <strong data-i18n="enhance.preset.itemRehydrate">改善 AGY 有损压缩</strong>
+              <span data-i18n="enhance.preset.itemRehydrateSub">压缩后自动把最初要求、最近几轮原话和刚改过的代码补回给 AI（不影响已有其他配置）。</span>
+            </div>
+          </label>
         </div>
         <div class="ctx-settings-card-actions">
           <button id="btn-enhance-preset-apply" class="unlock-btn unlock-btn-primary" type="button"
@@ -964,6 +971,82 @@
                 <span class="unlock-credit-lbl"
                   data-i18n="enhance.details.credit">恢复操作：点击上方“全部恢复官方默认”将无损还原官方备份模板。</span>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. 改善 AGY 有损压缩 (Post-Compact Rehydration Hook) -->
+      <div class="ctx-settings-card" id="rehydrate-hook-card">
+        <div class="ctx-settings-card-hdr">
+          <div class="ctx-settings-card-title" data-i18n="rehydrate.card.title">🩹 改善 AGY 有损压缩</div>
+          <span id="rehydrate-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+        </div>
+        <div class="ctx-plain-help"
+          style="margin:4px 0 8px 0;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;">
+          <div style="font-size:11.5px;line-height:1.55;color:var(--ag-text-primary);"
+            data-i18n="rehydrate.card.plainIntro">
+            AGY 自动压缩（或执行 /compact）只保留概括摘要，容易丢失细节。开启后会在压缩完成时自动从本地完整记录把最初要求、最近几轮原话和刚读写过的文件补回给 AI；未检测到新的压缩检查点时，不注入额外上下文。
+          </div>
+        </div>
+        <div class="ctx-enhance-status-grid">
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.hook">当前状态</div>
+            <div id="rehydrate-stat-hook" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.script">恢复脚本</div>
+            <div id="rehydrate-stat-script" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.python">Python 运行环境</div>
+            <div id="rehydrate-stat-python" class="ctx-enhance-stat-val">—</div>
+          </div>
+          <div class="ctx-enhance-stat">
+            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.siblings">其他配置兼容</div>
+            <div id="rehydrate-stat-siblings" class="ctx-enhance-stat-val">—</div>
+          </div>
+        </div>
+        <div class="ctx-settings-card-actions">
+          <button id="btn-rehydrate-enable" class="unlock-btn unlock-btn-primary" type="button"
+            data-i18n="rehydrate.btn.enable">开启</button>
+          <button id="btn-rehydrate-disable" class="unlock-btn unlock-btn-secondary" type="button"
+            data-i18n="rehydrate.btn.disable">停用</button>
+          <button id="btn-rehydrate-refresh" class="unlock-btn unlock-btn-secondary" type="button"
+            data-i18n="models.btn.refreshStatus">刷新状态</button>
+          <button id="btn-rehydrate-remove" class="ctx-text-action-btn" type="button"
+            data-i18n="rehydrate.btn.remove">卸载移除</button>
+        </div>
+        <div id="rehydrate-result-box" class="unlock-result-box" style="display:none;">
+          <div id="rehydrate-result-text" class="unlock-result-text"></div>
+        </div>
+        <div class="tech-drawer" id="rehydrate-details-drawer" style="margin-top:4px">
+          <button id="btn-toggle-rehydrate-details" class="drawer-trigger" aria-expanded="false" type="button">
+            <span class="drawer-trigger-left" data-i18n="rehydrate.details.toggle">原理说明与方案来源</span>
+            <span id="rehydrate-details-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+          </button>
+          <div id="rehydrate-details-body" class="drawer-body" style="display:none;">
+            <div class="unlock-panel-content">
+              <div class="unlock-notice">
+                <div class="unlock-desc" data-i18n-html="rehydrate.details.body">
+                  <strong>四层 45,000 B UTF-8 回注内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃 <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code> 声明约束）。<br><br>
+                  <strong>可选手动 /fork 衔接</strong>：当前宿主日志默认不含父会话字段，仅当手动维护 <code>&lt;brain&gt;/fork_lineage.json</code>（或首条记录含显式父 ID）时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br>
+                  <strong>安全写入范围</strong>：仅读写 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 键与 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他 Hook。
+                </div>
+              </div>
+              <div id="rehydrate-paths-meta" class="unlock-desc" style="margin-top:6px;"></div>
+              <div class="unlock-credit-bar">
+                <div class="unlock-credit-left">
+                  <span class="unlock-credit-lbl" data-i18n="rehydrate.credit.source">思路参考：</span>
+                  <a id="link-rehydrate-author" href="https://agy-rehydrate.pages.dev/" target="_blank"
+                    rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
+                    data-i18n="rehydrate.credit.author">AGY Post-Compact Rehydration 方案 ↗</a>
+                  <button id="btn-copy-rehydrate-link" class="unlock-copy-link-btn" type="button"
+                    data-i18n="models.credit.copy">📋 复制链接</button>
+                </div>
+                <span class="unlock-adapter-note" data-i18n="rehydrate.credit.adapter">MIT 独立实现 · 零依赖 Python 3.10+</span>
+              </div>
+              <div id="rehydrate-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
             </div>
           </div>
         </div>

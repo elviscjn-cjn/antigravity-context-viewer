@@ -5113,12 +5113,14 @@ const LIVE_RUNTIME_FILES = [
   'meter-cli-launcher.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
+  'meter-rehydrate.js',
   'attachment_scan.py',
   'asar-engine.js',
   'modules-config.js',
   'modular-installer.js',
   'i18n/zh-CN.json',
-  'i18n/i18n-runtime.js'
+  'i18n/i18n-runtime.js',
+  'rehydrate/rehydrate_after_compact.py'
 ];
 
 function getLiveRuntimeDir(customStateDir = null) {

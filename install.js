@@ -658,6 +658,7 @@ async function install(options = {}) {
         'meter-cli-launcher.js',
         'meter-context-unlock.js',
         'meter-enhance.js',
+        'meter-rehydrate.js',
         'local-api.js',
         'attachment_scan.py'
       ];
@@ -702,6 +703,19 @@ async function install(options = {}) {
         updatedAt: new Date().toISOString()
       }, null, 2), 'utf8');
 
+      // 拷贝 Post-Compact Rehydration 恢复 Hook 脚本至 ASAR 内部，确保客户端面板可直接离线部署与校验
+      const rehydrateSrcCandidates = [
+        path.join(__dirname, 'rehydrate', 'rehydrate_after_compact.py'),
+        path.join(__dirname, 'dist', 'rehydrate', 'rehydrate_after_compact.py'),
+        path.join(__dirname, '..', 'rehydrate', 'rehydrate_after_compact.py')
+      ];
+      const rehydrateSrcP = rehydrateSrcCandidates.find(p => fs.existsSync(p));
+      if (rehydrateSrcP) {
+        const rehydrateDstDir = path.join(staging, 'dist', 'rehydrate');
+        fs.mkdirSync(rehydrateDstDir, { recursive: true });
+        fs.copyFileSync(rehydrateSrcP, path.join(rehydrateDstDir, 'rehydrate_after_compact.py'));
+      }
+
       const originalEntries = asar.listPackage(sourceArchive);
       const unpackedPaths = collectUnpackedPaths(asar, sourceArchive);
       if (unpackedPaths.size > 0) {
@@ -717,6 +731,7 @@ async function install(options = {}) {
         'dist/meter-manifest.json',
         'dist/i18n/zh-CN.json',
         'dist/i18n/i18n-runtime.js',
+        'dist/rehydrate/rehydrate_after_compact.py',
         ...additions.map(f => 'dist/' + f)
       ].map(p => path.normalize(p));
       for (const file of originalEntries) {
@@ -725,7 +740,10 @@ async function install(options = {}) {
         const after = asar.statFile(packed, name);
         if (before.files || before.link) continue;
         if (!!before.unpacked !== !!after.unpacked) throw new Error(`Unpack flag changed: ${name}`);
-        const isAllowed = allowedChanges.includes(name) || name.startsWith('dist' + path.sep + 'i18n' + path.sep);
+        const isAllowed =
+          allowedChanges.includes(name) ||
+          name.startsWith('dist' + path.sep + 'i18n' + path.sep) ||
+          name.startsWith('dist' + path.sep + 'rehydrate' + path.sep);
         if (!isAllowed && sha(asar.extractFile(sourceArchive, name)) !== sha(asar.extractFile(packed, name))) {
           throw new Error(`Unexpected file change: ${name}`);
         }
