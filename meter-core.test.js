@@ -1153,6 +1153,48 @@ test('unrecognized server errors are marked unknown with sanitized diagnostic in
   assert.doesNotMatch(s.errorClassification.diagnostic, /https:\/\/daily-cloudcode-pa/);
 });
 
+test('plain Go cancellations are recognized without attributing them to the user', () => {
+  const messages = [
+    'stream reading error: context canceled',
+    'request failed: Post "https://example.invalid/private-api": context canceled',
+    'rpc error: code = Canceled desc = context cancelled',
+    'context canceled by user',
+    'user cancelled',
+    'request was aborted',
+    'AbortError'
+  ];
+  const previous = summarize(entry({ inputTokens: 12000, outputTokens: 200 }, { maxContextTokens: 512000 }));
+  for (const error of messages) {
+    const d = entry({}, { maxContextTokens: 512000 });
+    d.chatModel.retryInfos = [{ error }];
+    const result = summarize(d, { previousValidContext: previous });
+    assert.equal(result.status, 'canceled', error);
+    assert.equal(result.errorClassification.kind, 'canceled', error);
+    assert.equal(result.errorClassification.badgeText, '已中断');
+    assert.doesNotMatch(result.errorClassification.detail, /已由用户|用户主动|用户取消/);
+    assert.doesNotMatch(result.errorClassification.diagnostic, /https:\/\/example/);
+    assert.equal(result.actual, previous.actual);
+    assert.equal(result.budget, previous.budget);
+    assert.equal(result.exceeded, false);
+    assert.equal(result.network, false);
+  }
+  assert.equal(classifyRequestError('context deadline exceeded').kind, 'network_error');
+  assert.equal(classifyRequestError('unexpected internal error').kind, 'unknown');
+});
+
+test('cancelled requests are not relabeled exhausted from quota snapshot alone', () => {
+  const options = {
+    currentModel: 'gemini-4-argon-high',
+    cascadeModelConfigs: [{
+      modelId: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)',
+      quotaInfo: { remainingFraction: 0 }
+    }]
+  };
+  assert.equal(classifyRequestError('request failed: context canceled', options).kind, 'canceled');
+  assert.equal(classifyRequestError('weekly quota exceeded; context canceled', options).kind, 'quota_exhausted');
+  assert.equal(classifyRequestError(exceeded + '; context canceled', options).kind, 'context_overflow');
+});
+
 test('getLvlForRange: accurate thresholds for day, week and month ranges', () => {
   // 1. day: 绝对阈值 (0, <3M, <15M, <60M, >=60M)
   assert.equal(getLvlForRange(0, 'day'), 0);
