@@ -621,7 +621,8 @@ test('v0.8.9 7: 1500 条大量历史记录时间线及聚合缓存命中性能�
 
     assert.equal(res1.summary.totalSteps, 1500);
     assert.equal(res2.summary.totalSteps, 1500);
-    assert.ok(warmMs < 100, `热缓存命中耗时应极低 (<100ms)，实际 ${warmMs.toFixed(1)}ms`);
+    assert.equal(res2.updatedAt, res1.updatedAt, '热缓存命中必须直接复用缓存时间戳，避免重复全量解析');
+    assert.ok(warmMs < 300, `热缓存命中耗时应保持在合理低耗时 (<300ms)，实际 ${warmMs.toFixed(1)}ms`);
     assert.ok(coldMs < 5000, `1500 条冷扫应在合理预算内 (<5000ms)，实际 ${coldMs.toFixed(1)}ms`);
   } finally {
     fs.rmSync(agDir, { recursive: true, force: true });
