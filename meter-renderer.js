@@ -2096,6 +2096,8 @@
     .call-detail-cell{display:flex;flex-direction:column;gap:1px;min-width:0}
     .call-detail-k{font-size:9.5px;color:var(--ag-text-muted)}
     .call-detail-v{font-size:11px;font-weight:500;color:var(--ag-text-primary);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+    .call-detail-note{font-size:10px;line-height:1.4;color:var(--ag-text-secondary);margin-top:2px;overflow-wrap:anywhere;white-space:normal}
+    .tier-color-swatch{display:inline-block;width:7px;height:7px;border-radius:999px;margin-right:4px;vertical-align:middle;flex-shrink:0}
     .call-detail-error{
       margin-top:6px;padding:5px 7px;border-radius:5px;font-size:10.5px;overflow-wrap:anywhere;
       background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.28);color:#f87171;
@@ -2381,6 +2383,7 @@
             <span data-i18n="session.speedSummary.titleNoBolt">最新生成体验与速度</span>
           </span>
           <div class="speed-badge-group">
+            <span id="speed-mock-tag" class="key-pill pill-warn" hidden style="font-size:9.5px;padding:1px 5px;" data-i18n="session.speed.mockTag">模拟验收</span>
             <span id="speed-badge" class="key-pill pill-muted" data-i18n="session.speed.pending">待生成</span>
             <button id="btn-speed-breakdown-toggle" class="latest-call-link-btn" type="button" aria-expanded="false" hidden data-i18n="session.speed.details">拆解</button>
           </div>
@@ -4856,6 +4859,7 @@ const PANEL_I18N = {
   'session.speed.stabilityUnverified': { 'zh-CN': '暂不评估波动 (缺少连续采样证据)', 'zh-TW': '暫不評估波動 (缺少連續採樣證據)', en: 'Not evaluated (insufficient chunk interval samples)' },
   'session.speed.scoreSkippedSparse': { 'zh-CN': '样本过少 · 跳过综合评分', 'zh-TW': '樣本過少 · 略過綜合評分', en: 'Insufficient sample · Skipped' },
   'session.speed.scoreSkippedMissing': { 'zh-CN': '指标缺失 · 不补造评分', 'zh-TW': '指標缺失 · 不補造評分', en: 'Missing metrics · Skipped' },
+  'session.speed.mockTag': { 'zh-CN': '模拟验收', 'zh-TW': '模擬驗收', en: 'Mock Verification' },
 
   // 最新调用卡片与会话时间线
   'session.latestCall.title': { 'zh-CN': '最新调用', 'zh-TW': '最新呼叫', en: 'Latest Call' },
@@ -21325,6 +21329,11 @@ function renderHeatmapGrid(forceRebuild = false) {
     const spBreakdownDet = el('speed-breakdown-details');
     const spBreakdownGrid = el('speed-breakdown-grid');
 
+    const spMockTag = el('speed-mock-tag');
+    if (spMockTag) {
+      spMockTag.hidden = !(state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object');
+      if (!spMockTag.hidden) spMockTag.textContent = t('session.speed.mockTag');
+    }
     if (spBadge) applyElv91PillTone(spBadge, evalRes);
     if (spVal) {
       if (evalRes.phase === 'waiting') {
@@ -21377,29 +21386,72 @@ function renderHeatmapGrid(forceRebuild = false) {
         : (evalRes.stability?.reason === 'high_variance'
           ? t('session.speed.stabilityHighVar', { n: evalRes.stability.chunks, cv: evalRes.stability.intervalCv })
           : t('session.speed.stabilityUnverified'));
+      const fmtTierComment = (tier, elapsed) => (tier && tier.comment) ? String(tier.comment).replace('{elapsed}', elapsed || '—') : '';
       const cells = [
-        [t('session.speed.breakdown.eScore', { ver: evalRes.scoreRuleVersion || 'elv91-v1' }), eText],
-        [t('session.speed.breakdown.ttft'), evalRes.ttftTier ? `${evalRes.ttftFormatted} · ${evalRes.ttftTier.title}${evalRes.ttftRatioPct != null ? ` (${evalRes.ttftRatioPct}%)` : ''}` : unk],
-        [t('session.speed.breakdown.stream'), evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk],
-        [t('session.speed.breakdown.duration'), evalRes.durationTier ? `${evalRes.durationFormatted} · ${evalRes.durationTier.title}` : unk],
-        [t('session.speed.breakdown.overall'), evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk],
-        [t('session.speed.breakdown.stability'), stabText]
+        {
+          k: t('session.speed.breakdown.eScore', { ver: evalRes.scoreRuleVersion || 'elv91-v1' }),
+          v: eText,
+          color: evalRes.efficiency?.tier?.color || null,
+          note: evalRes.efficiency?.tier?.comment || ''
+        },
+        {
+          k: t('session.speed.breakdown.ttft'),
+          v: evalRes.ttftTier ? `${evalRes.ttftFormatted} · ${evalRes.ttftTier.title}${evalRes.ttftRatioPct != null ? ` (${evalRes.ttftRatioPct}%)` : ''}` : unk,
+          color: evalRes.ttftTier?.color || null,
+          note: fmtTierComment(evalRes.ttftTier, evalRes.ttftFormatted)
+        },
+        {
+          k: t('session.speed.breakdown.stream'),
+          v: evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk,
+          color: evalRes.speedTier?.color || null,
+          note: evalRes.speedTier?.comment || ''
+        },
+        {
+          k: t('session.speed.breakdown.duration'),
+          v: evalRes.durationTier ? `${evalRes.durationFormatted} · ${evalRes.durationTier.title}` : unk,
+          color: evalRes.durationTier?.color || null,
+          note: evalRes.durationTier?.comment || ''
+        },
+        { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
+        { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
       ];
       if (evalRes.efficiency?.basis) {
         const b = evalRes.efficiency.basis;
-        cells.push([t('session.speed.breakdown.basis'), `N=${b.N_work} · γ=${b.gamma} · w=[${b.w1}/${b.w2}/${b.w3}]`]);
+        cells.push({
+          k: t('session.speed.breakdown.basis'),
+          v: `N=${b.N_work} · γ=${b.gamma} · w=[${b.w1}/${b.w2}/${b.w3}]`,
+          color: null,
+          note: ''
+        });
       }
-      for (const [k, v] of cells) {
+      for (const item of cells) {
         const cell = document.createElement('div');
         cell.className = 'call-detail-cell';
         const kEl = document.createElement('span');
         kEl.className = 'call-detail-k';
-        kEl.textContent = k;
+        kEl.textContent = item.k;
         const vEl = document.createElement('span');
         vEl.className = 'call-detail-v';
-        vEl.textContent = v;
+        if (item.color) {
+          const dot = document.createElement('span');
+          dot.className = 'tier-color-swatch';
+          dot.style.backgroundColor = item.color;
+          dot.setAttribute('aria-hidden', 'true');
+          vEl.appendChild(dot);
+          const txtEl = document.createElement('span');
+          txtEl.textContent = item.v;
+          vEl.appendChild(txtEl);
+        } else {
+          vEl.textContent = item.v;
+        }
         cell.appendChild(kEl);
         cell.appendChild(vEl);
+        if (item.note) {
+          const noteEl = document.createElement('span');
+          noteEl.className = 'call-detail-note';
+          noteEl.textContent = item.note;
+          cell.appendChild(noteEl);
+        }
         spBreakdownGrid.appendChild(cell);
       }
     }

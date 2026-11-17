@@ -1941,6 +1941,8 @@
     .call-detail-cell{display:flex;flex-direction:column;gap:1px;min-width:0}
     .call-detail-k{font-size:9.5px;color:var(--ag-text-muted)}
     .call-detail-v{font-size:11px;font-weight:500;color:var(--ag-text-primary);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+    .call-detail-note{font-size:10px;line-height:1.4;color:var(--ag-text-secondary);margin-top:2px;overflow-wrap:anywhere;white-space:normal}
+    .tier-color-swatch{display:inline-block;width:7px;height:7px;border-radius:999px;margin-right:4px;vertical-align:middle;flex-shrink:0}
     .call-detail-error{
       margin-top:6px;padding:5px 7px;border-radius:5px;font-size:10.5px;overflow-wrap:anywhere;
       background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.28);color:#f87171;

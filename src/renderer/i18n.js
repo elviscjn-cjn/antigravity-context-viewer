@@ -384,6 +384,7 @@ const PANEL_I18N = {
   'session.speed.stabilityUnverified': { 'zh-CN': '暂不评估波动 (缺少连续采样证据)', 'zh-TW': '暫不評估波動 (缺少連續採樣證據)', en: 'Not evaluated (insufficient chunk interval samples)' },
   'session.speed.scoreSkippedSparse': { 'zh-CN': '样本过少 · 跳过综合评分', 'zh-TW': '樣本過少 · 略過綜合評分', en: 'Insufficient sample · Skipped' },
   'session.speed.scoreSkippedMissing': { 'zh-CN': '指标缺失 · 不补造评分', 'zh-TW': '指標缺失 · 不補造評分', en: 'Missing metrics · Skipped' },
+  'session.speed.mockTag': { 'zh-CN': '模拟验收', 'zh-TW': '模擬驗收', en: 'Mock Verification' },
 
   // 最新调用卡片与会话时间线
   'session.latestCall.title': { 'zh-CN': '最新调用', 'zh-TW': '最新呼叫', en: 'Latest Call' },

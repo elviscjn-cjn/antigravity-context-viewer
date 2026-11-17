@@ -10260,6 +10260,11 @@
     const spBreakdownDet = el('speed-breakdown-details');
     const spBreakdownGrid = el('speed-breakdown-grid');
 
+    const spMockTag = el('speed-mock-tag');
+    if (spMockTag) {
+      spMockTag.hidden = !(state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object');
+      if (!spMockTag.hidden) spMockTag.textContent = t('session.speed.mockTag');
+    }
     if (spBadge) applyElv91PillTone(spBadge, evalRes);
     if (spVal) {
       if (evalRes.phase === 'waiting') {
@@ -10312,29 +10317,72 @@
         : (evalRes.stability?.reason === 'high_variance'
           ? t('session.speed.stabilityHighVar', { n: evalRes.stability.chunks, cv: evalRes.stability.intervalCv })
           : t('session.speed.stabilityUnverified'));
+      const fmtTierComment = (tier, elapsed) => (tier && tier.comment) ? String(tier.comment).replace('{elapsed}', elapsed || '—') : '';
       const cells = [
-        [t('session.speed.breakdown.eScore', { ver: evalRes.scoreRuleVersion || 'elv91-v1' }), eText],
-        [t('session.speed.breakdown.ttft'), evalRes.ttftTier ? `${evalRes.ttftFormatted} · ${evalRes.ttftTier.title}${evalRes.ttftRatioPct != null ? ` (${evalRes.ttftRatioPct}%)` : ''}` : unk],
-        [t('session.speed.breakdown.stream'), evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk],
-        [t('session.speed.breakdown.duration'), evalRes.durationTier ? `${evalRes.durationFormatted} · ${evalRes.durationTier.title}` : unk],
-        [t('session.speed.breakdown.overall'), evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk],
-        [t('session.speed.breakdown.stability'), stabText]
+        {
+          k: t('session.speed.breakdown.eScore', { ver: evalRes.scoreRuleVersion || 'elv91-v1' }),
+          v: eText,
+          color: evalRes.efficiency?.tier?.color || null,
+          note: evalRes.efficiency?.tier?.comment || ''
+        },
+        {
+          k: t('session.speed.breakdown.ttft'),
+          v: evalRes.ttftTier ? `${evalRes.ttftFormatted} · ${evalRes.ttftTier.title}${evalRes.ttftRatioPct != null ? ` (${evalRes.ttftRatioPct}%)` : ''}` : unk,
+          color: evalRes.ttftTier?.color || null,
+          note: fmtTierComment(evalRes.ttftTier, evalRes.ttftFormatted)
+        },
+        {
+          k: t('session.speed.breakdown.stream'),
+          v: evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk,
+          color: evalRes.speedTier?.color || null,
+          note: evalRes.speedTier?.comment || ''
+        },
+        {
+          k: t('session.speed.breakdown.duration'),
+          v: evalRes.durationTier ? `${evalRes.durationFormatted} · ${evalRes.durationTier.title}` : unk,
+          color: evalRes.durationTier?.color || null,
+          note: evalRes.durationTier?.comment || ''
+        },
+        { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
+        { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
       ];
       if (evalRes.efficiency?.basis) {
         const b = evalRes.efficiency.basis;
-        cells.push([t('session.speed.breakdown.basis'), `N=${b.N_work} · γ=${b.gamma} · w=[${b.w1}/${b.w2}/${b.w3}]`]);
+        cells.push({
+          k: t('session.speed.breakdown.basis'),
+          v: `N=${b.N_work} · γ=${b.gamma} · w=[${b.w1}/${b.w2}/${b.w3}]`,
+          color: null,
+          note: ''
+        });
       }
-      for (const [k, v] of cells) {
+      for (const item of cells) {
         const cell = document.createElement('div');
         cell.className = 'call-detail-cell';
         const kEl = document.createElement('span');
         kEl.className = 'call-detail-k';
-        kEl.textContent = k;
+        kEl.textContent = item.k;
         const vEl = document.createElement('span');
         vEl.className = 'call-detail-v';
-        vEl.textContent = v;
+        if (item.color) {
+          const dot = document.createElement('span');
+          dot.className = 'tier-color-swatch';
+          dot.style.backgroundColor = item.color;
+          dot.setAttribute('aria-hidden', 'true');
+          vEl.appendChild(dot);
+          const txtEl = document.createElement('span');
+          txtEl.textContent = item.v;
+          vEl.appendChild(txtEl);
+        } else {
+          vEl.textContent = item.v;
+        }
         cell.appendChild(kEl);
         cell.appendChild(vEl);
+        if (item.note) {
+          const noteEl = document.createElement('span');
+          noteEl.className = 'call-detail-note';
+          noteEl.textContent = item.note;
+          cell.appendChild(noteEl);
+        }
         spBreakdownGrid.appendChild(cell);
       }
     }
