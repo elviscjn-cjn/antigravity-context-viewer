@@ -780,7 +780,7 @@
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-rehydrate" type="checkbox" checked>
+            <input id="chk-rec-rehydrate" type="checkbox">
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemRehydrate">改善 AGY 有损压缩</strong>
               <span data-i18n="enhance.preset.itemRehydrateSub">压缩后自动把最初要求、最近几轮原话和刚改过的代码补回给 AI（不影响已有其他配置）。</span>
@@ -976,7 +976,7 @@
         </div>
       </div>
 
-      <!-- 4. 改善 AGY 有损压缩 (Slim-LTS Hook) -->
+      <!-- 4. 改善 AGY 有损压缩 (Post-Compact Rehydration Hook) -->
       <div class="ctx-settings-card" id="rehydrate-hook-card">
         <div class="ctx-settings-card-hdr">
           <div class="ctx-settings-card-title" data-i18n="rehydrate.card.title">🩹 改善 AGY 有损压缩</div>
@@ -1030,21 +1030,21 @@
               <div class="unlock-notice">
                 <div class="unlock-desc" data-i18n-html="rehydrate.details.body">
                   <strong>四层 45,000 B UTF-8 回注内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃 <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code> 声明约束）。<br><br>
-                  <strong>跨 /fork 溯源</strong>：默认 <code>explicit</code> 模式在子分支首条记录声明父字段或配置 <code>&lt;brain&gt;/fork_lineage.json</code> 时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br>
+                  <strong>可选手动 /fork 衔接</strong>：当前宿主日志默认不含父会话字段，仅当手动维护 <code>&lt;brain&gt;/fork_lineage.json</code>（或首条记录含显式父 ID）时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br>
                   <strong>安全写入范围</strong>：仅读写 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 键与 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他 Hook。
                 </div>
               </div>
               <div id="rehydrate-paths-meta" class="unlock-desc" style="margin-top:6px;"></div>
               <div class="unlock-credit-bar">
                 <div class="unlock-credit-left">
-                  <span class="unlock-credit-lbl" data-i18n="rehydrate.credit.source">方案来源：</span>
+                  <span class="unlock-credit-lbl" data-i18n="rehydrate.credit.source">思路参考：</span>
                   <a id="link-rehydrate-author" href="https://agy-rehydrate.pages.dev/" target="_blank"
                     rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
-                    data-i18n="rehydrate.credit.author">AGY Post-Compact Rehydration 原作者 ↗</a>
+                    data-i18n="rehydrate.credit.author">AGY Post-Compact Rehydration 方案 ↗</a>
                   <button id="btn-copy-rehydrate-link" class="unlock-copy-link-btn" type="button"
                     data-i18n="models.credit.copy">📋 复制链接</button>
                 </div>
-                <span class="unlock-adapter-note" data-i18n="rehydrate.credit.adapter">Slim-LTS · 零依赖 Python 3.10+</span>
+                <span class="unlock-adapter-note" data-i18n="rehydrate.credit.adapter">MIT 独立实现 · 零依赖 Python 3.10+</span>
               </div>
               <div id="rehydrate-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
             </div>

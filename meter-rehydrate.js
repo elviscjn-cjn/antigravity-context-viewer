@@ -2,7 +2,8 @@
 // Preserve Electron ASAR support in the host process.
 
 /**
- * Antigravity 压缩后无损回水与跨 /fork 溯源 Hook 生命周期管理模块 (meter-rehydrate.js)
+ * Antigravity 压缩后上下文恢复与跨 /fork 溯源 Hook 生命周期管理模块 (meter-rehydrate.js)
+ * 思路参考 AGY Post-Compact Rehydration 方案，本仓库附带的恢复脚本与管理模块按 MIT 协议独立实现。
  * 职责：
  * 1. 管理 ~/.gemini/config/hooks/rehydrate_after_compact.py 的部署、哈希校验、备份与移除；
  * 2. 以 fail-closed 方式安全读写 ~/.gemini/config/hooks.json 中的 "post-compact-rehydrate" 条目，
@@ -15,17 +16,16 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile, execFileSync } = require('child_process');
+const childProcess = require('child_process');
 const { getStateDir } = require('./asar-engine');
 const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
 
 const HOOK_NAME = 'post-compact-rehydrate';
 const SCRIPT_FILENAME = 'rehydrate_after_compact.py';
 const REHYDRATE_AUTHOR_INFO = {
-  name: 'AGY Post-Compact Rehydration 原作者',
+  name: 'AGY Post-Compact Rehydration 方案',
   url: 'https://agy-rehydrate.pages.dev/',
-  scriptUrl: 'https://agy-rehydrate.pages.dev/rehydrate_after_compact.py',
-  credit: '原方案来源：AGY Post-Compact Rehydration (Slim-LTS)'
+  credit: '思路参考：AGY Post-Compact Rehydration（本仓库脚本按 MIT 独立实现）'
 };
 
 const PY_CHECK_CODE =
@@ -146,14 +146,85 @@ function parsePythonProbeOutput(stdout) {
   return { version, major, minor, executable, ok: major > 3 || (major === 3 && minor >= 10) };
 }
 
+const PYTHON_PROBE_CACHE_TTL_MS = 30_000;
+const pythonProbeCache = new Map();
+
+function clearPythonProbeCache() {
+  pythonProbeCache.clear();
+}
+
+function getPythonProbeCacheKey(options = {}) {
+  const platform = options.platform || process.platform;
+  const customPy = process.env.AG_METER_PYTHON || '';
+  const envPath = options.envPath ?? process.env.PATH ?? '';
+  return `${platform}|${customPy}|${envPath}`;
+}
+
+function readPythonProbeCache(cacheKey, now = Date.now()) {
+  const entry = pythonProbeCache.get(cacheKey);
+  if (!entry) return null;
+  if (now - entry.ts >= PYTHON_PROBE_CACHE_TTL_MS) {
+    pythonProbeCache.delete(cacheKey);
+    return null;
+  }
+  return { ...entry.value };
+}
+
+function writePythonProbeCache(cacheKey, result, now = Date.now()) {
+  if (!result || result.ok !== true) return;
+  pythonProbeCache.set(cacheKey, { ts: now, value: { ...result } });
+}
+
+function resolvePosixCommandInPath(cmdName, envPath = process.env.PATH) {
+  if (typeof cmdName !== 'string' || !cmdName.trim()) return null;
+  const cmd = cmdName.trim();
+  if (cmd.includes('/')) return cmd.startsWith('/') ? cmd : null;
+  for (const rawDir of String(envPath || '').split(':')) {
+    const dir = rawDir.trim();
+    if (!dir || !dir.startsWith('/')) continue;
+    const candidate = path.posix.join(dir, cmd);
+    try {
+      const st = fs.statSync(candidate);
+      if (!st.isFile()) continue;
+      if (process.platform !== 'win32') {
+        fs.accessSync(candidate, fs.constants.X_OK);
+      }
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+function formatResolvedPythonResult(cand, parsed, resolvedPosix, targetPlatform) {
+  const command = targetPlatform !== 'win32' && cand.preferBare
+    ? (resolvedPosix || parsed.executable || cand.command)
+    : (cand.preferBare ? cand.command : (parsed.executable || cand.command));
+  return {
+    ok: true,
+    command,
+    executable: parsed.executable || cand.command,
+    version: parsed.version
+  };
+}
+
 function resolvePython310(options = {}) {
   if (typeof options._pythonProbe === 'function') {
     return options._pythonProbe();
   }
+  const cacheKey = getPythonProbeCacheKey(options);
+  const cached = readPythonProbeCache(cacheKey);
+  if (cached) return cached;
+
+  const targetPlatform = options.platform || process.platform;
+  const envPath = options.envPath ?? process.env.PATH;
   let detectedOldVer = null;
   for (const cand of collectPythonCandidates(options)) {
+    const resolvedPosix = targetPlatform !== 'win32' && cand.preferBare
+      ? resolvePosixCommandInPath(cand.command, envPath)
+      : null;
+    const probeCmd = resolvedPosix || cand.command;
     try {
-      const out = execFileSync(cand.command, ['-c', PY_CHECK_CODE], {
+      const out = childProcess.execFileSync(probeCmd, ['-c', PY_CHECK_CODE], {
         encoding: 'utf8',
         timeout: 3000,
         windowsHide: true,
@@ -161,12 +232,9 @@ function resolvePython310(options = {}) {
       });
       const parsed = parsePythonProbeOutput(out);
       if (parsed && parsed.ok) {
-        return {
-          ok: true,
-          command: cand.preferBare ? cand.command : (parsed.executable || cand.command),
-          executable: parsed.executable || cand.command,
-          version: parsed.version
-        };
+        const result = formatResolvedPythonResult(cand, parsed, resolvedPosix, targetPlatform);
+        writePythonProbeCache(cacheKey, result);
+        return result;
       }
       if (parsed && !detectedOldVer) detectedOldVer = parsed.version;
     } catch (err) {
@@ -181,11 +249,21 @@ async function resolvePython310Async(options = {}) {
   if (typeof options._pythonProbe === 'function') {
     return await options._pythonProbe();
   }
+  const cacheKey = getPythonProbeCacheKey(options);
+  const cached = readPythonProbeCache(cacheKey);
+  if (cached) return cached;
+
+  const targetPlatform = options.platform || process.platform;
+  const envPath = options.envPath ?? process.env.PATH;
   let detectedOldVer = null;
   for (const cand of collectPythonCandidates(options)) {
+    const resolvedPosix = targetPlatform !== 'win32' && cand.preferBare
+      ? resolvePosixCommandInPath(cand.command, envPath)
+      : null;
+    const probeCmd = resolvedPosix || cand.command;
     const res = await new Promise((resolve) => {
-      execFile(
-        cand.command,
+      childProcess.execFile(
+        probeCmd,
         ['-c', PY_CHECK_CODE],
         { encoding: 'utf8', timeout: 3000, windowsHide: true },
         (err, stdout) => {
@@ -199,12 +277,9 @@ async function resolvePython310Async(options = {}) {
       );
     });
     if (res.hit) {
-      return {
-        ok: true,
-        command: cand.preferBare ? cand.command : (res.parsed.executable || cand.command),
-        executable: res.parsed.executable || cand.command,
-        version: res.parsed.version
-      };
+      const result = formatResolvedPythonResult(cand, res.parsed, resolvedPosix, targetPlatform);
+      writePythonProbeCache(cacheKey, result);
+      return result;
     }
     if (res.parsed && !detectedOldVer) detectedOldVer = res.parsed.version;
   }
@@ -992,12 +1067,16 @@ function executeRestoreRehydrate(options = {}, pyInfo) {
 }
 
 function restoreRehydrate(options = {}) {
-  const pyInfo = resolvePython310(options);
+  const pyInfo = options && options.skipPythonProbe === true
+    ? { ok: false, command: null, executable: null, version: null }
+    : resolvePython310(options);
   return executeRestoreRehydrate(options, pyInfo);
 }
 
 async function restoreRehydrateAsync(options = {}) {
-  const pyInfo = await resolvePython310Async(options);
+  const pyInfo = options && options.skipPythonProbe === true
+    ? { ok: false, command: null, executable: null, version: null }
+    : await resolvePython310Async(options);
   return executeRestoreRehydrate(options, pyInfo);
 }
 
@@ -1008,6 +1087,8 @@ module.exports = {
   sanitizeRehydrateRendererOptions,
   resolveGeminiConfigDir,
   resolveBundledRehydrateScript,
+  resolvePosixCommandInPath,
+  clearPythonProbeCache,
   resolvePython310,
   resolvePython310Async,
   buildHookCommand,

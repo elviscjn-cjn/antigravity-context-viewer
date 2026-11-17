@@ -151,7 +151,11 @@ function createRendererHarness() {
     __AGContextMeterCore: core,
     AbortController,
     Date,
-    setTimeout,
+    setTimeout(cb, ms, ...args) {
+      const id = setTimeout(cb, ms, ...args);
+      id.unref?.();
+      return id;
+    },
     clearTimeout,
     setInterval(cb) { timers.push(cb); return timers.length; },
     clearInterval() {},
@@ -167,37 +171,299 @@ function createRendererHarness() {
   };
 }
 
-test('1. Slim-LTS 脚本提取一致性（1,080 行）与 Python 3.10+ 语法及空负载快路径验证', (t) => {
-  const docPath = path.join(__dirname, 'rehydrate', 'AGY-rehydrate-slim-lts-release-v2.md');
+test('1. MIT 独立实现脚本头部、LF 换行、py_compile、BOM 快路径、检查点注入去重、符号链接防护与敏感文件过滤验证', (t) => {
+  const legacyDocPath = path.join(__dirname, 'rehydrate', 'AGY-rehydrate-slim-lts-release-v2.md');
+  const readmePath = path.join(__dirname, 'rehydrate', 'README.md');
   const scriptPath = path.join(__dirname, 'rehydrate', 'rehydrate_after_compact.py');
-  assert.equal(fs.existsSync(docPath), true);
+  assert.equal(fs.existsSync(legacyDocPath), false, '旧版发布文档必须已移除');
+  assert.equal(fs.existsSync(readmePath), true);
   assert.equal(fs.existsSync(scriptPath), true);
 
-  const docText = fs.readFileSync(docPath, 'utf8').replace(/\r\n/g, '\n');
-  const match = docText.match(/## 附录：完整可部署源码（`rehydrate_after_compact\.py`）\n+```python\n([\s\S]*?)\n```\s*$/);
-  assert.ok(match, '发布文档必须包含完整 Python 附录围栏');
+  const readmeText = fs.readFileSync(readmePath, 'utf8');
+  assert.equal(readmeText.includes('\r\n'), false, 'rehydrate/README.md 应保持纯 LF 换行');
+  assert.match(readmeText, /MIT/);
+  assert.match(readmeText, /fork_lineage\.json/);
 
   const scriptText = fs.readFileSync(scriptPath, 'utf8');
-  assert.equal(scriptText.includes('\r\n'), false, 'Python 脚本应保持 LF 换行');
+  assert.equal(scriptText.includes('\r\n'), false, 'Python 脚本应保持纯 LF 换行');
   assert.equal(scriptText.endsWith('\n'), true);
+  assert.ok(
+    scriptText.startsWith('#!/usr/bin/env python3\n# SPDX-License-Identifier: MIT\n'),
+    'Python 脚本必须以 #!/usr/bin/env python3 与 # SPDX-License-Identifier: MIT 开头'
+  );
 
-  const scriptLines = scriptText.slice(0, -1).split('\n');
-  assert.equal(scriptLines.length, 1080, 'Slim-LTS 脚本必须为精确 1,080 行');
-  assert.equal(scriptText, match[1] + '\n', '独立脚本必须与发布文档附录源码字节完全一致');
-
+  rehydrate.clearPythonProbeCache();
   const py = rehydrate.resolvePython310();
   if (!py.ok) {
-    t.skip('本机未安装 Python 3.10+，跳过 py_compile 与 stdin 快路径测试');
+    t.skip('本机未安装 Python 3.10+，跳过 py_compile 与运行时契约测试');
     return;
   }
 
   execFileSync(py.executable, ['-m', 'py_compile', scriptPath], { stdio: 'pipe', windowsHide: true });
-  const stdout = execFileSync(py.executable, ['-X', 'utf8', scriptPath], {
-    input: '{}',
-    encoding: 'utf8',
-    windowsHide: true
-  });
-  assert.equal(stdout.trim(), '{}');
+
+  for (const rawIn of ['{}', '\ufeff{}']) {
+    const fastOut = execFileSync(py.executable, ['-X', 'utf8', scriptPath], {
+      input: rawIn,
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    assert.equal(fastOut.trim(), '{}', `空负载应快速返回 {}: ${JSON.stringify(rawIn)}`);
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-rh-py-contract-'));
+  try {
+    const wsDir = path.join(tmpRoot, 'workspace');
+    fs.mkdirSync(path.join(wsDir, 'src'), { recursive: true });
+    const appJs = path.join(wsDir, 'src', 'app.js');
+    const skillMd = path.join(wsDir, 'SKILL.md');
+    const settingsIni = path.join(wsDir, 'settings.ini');
+    const exit0Txt = path.join(wsDir, 'exit0_ok.txt');
+    const failedTxt = path.join(wsDir, 'failed_read.txt');
+    const exit2Txt = path.join(wsDir, 'exit2_fail.txt');
+    const badPpk = path.join(wsDir, 'deploy.ppk');
+    const badP8 = path.join(wsDir, 'AuthKey_ABC.p8');
+    const badGpg = path.join(wsDir, 'vault.gpg');
+    const badToken = path.join(wsDir, 'token.json');
+    const badProdEnv = path.join(wsDir, 'prod.env');
+    const badSvcAcct = path.join(wsDir, 'gcp-service-account.json');
+    const badVaultTok = path.join(wsDir, '.vault-token');
+
+    fs.writeFileSync(
+      appJs,
+      [
+        'export const featureX = true;',
+        'const token = getToken();',
+        'const password = req.body.password;',
+        'this.password = user.password;',
+        'login(password=user_password);',
+        'const apiKey = "super_secret_literal_99";',
+        'OPENAI_API_KEY=env_secret_value_88',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(skillMd, '# Skill Spec\nFollow clean architecture.\n', 'utf8');
+    fs.writeFileSync(
+      settingsIni,
+      '[database]\nhost=127.0.0.1\npassword=s3cr3t_ini_pw\ndb.password = P@ss#9876\napi_key: yaml_unquoted_key_77\n',
+      'utf8'
+    );
+    fs.writeFileSync(exit0Txt, 'Workspace read note ok. Exit 0 result should be restored.\n', 'utf8');
+    fs.writeFileSync(failedTxt, 'SHOULD_NOT_RESTORE_FAILED_TOOL_CALL\n', 'utf8');
+    fs.writeFileSync(exit2Txt, 'SHOULD_NOT_RESTORE_NONZERO_EXIT_CALL\n', 'utf8');
+    fs.writeFileSync(badPpk, 'PPK_SECRET_PAYLOAD_DO_NOT_LEAK\n', 'utf8');
+    fs.writeFileSync(badP8, 'P8_SECRET_PAYLOAD_DO_NOT_LEAK\n', 'utf8');
+    fs.writeFileSync(badGpg, 'GPG_SECRET_PAYLOAD_DO_NOT_LEAK\n', 'utf8');
+    fs.writeFileSync(badToken, '{"token_marker":"TOKEN_JSON_DO_NOT_LEAK"}\n', 'utf8');
+    fs.writeFileSync(badProdEnv, 'PROD_ENV_SECRET_DO_NOT_LEAK\n', 'utf8');
+    fs.writeFileSync(badSvcAcct, '{"private":"SVC_ACCT_DO_NOT_LEAK"}\n', 'utf8');
+    fs.writeFileSync(badVaultTok, 'VAULT_TOKEN_DO_NOT_LEAK\n', 'utf8');
+
+    const cid = '11111111-2222-3333-4444-555555555555';
+    const logsDir = path.join(tmpRoot, 'brain', cid, '.system_generated', 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const tPath = path.join(logsDir, 'transcript.jsonl');
+    const fullPath = path.join(logsDir, 'transcript_full.jsonl');
+
+    // 使用真实 Antigravity transcript_full.jsonl 结构：无 id 的 tool_calls(args) + type:'GENERIC' + Created/Completed At 时间头
+    const tsHdr = 'Created At: 2026-11-17T08:00:03+08:00\nCompleted At: 2026-11-17T08:00:04+08:00\n';
+    const records = [
+      { step_index: 1, type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-17T08:00:01Z', content: '<USER_REQUEST>Build feature X safely</USER_REQUEST>' },
+      {
+        step_index: 2,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-17T08:00:02Z',
+        content: 'Updating src/app.js and inspecting docs.',
+        tool_calls: [
+          { name: 'run_command', args: { CommandLine: 'git status', toolSummary: 'Check git status' } },
+          { name: 'edit_file', args: { Path: appJs } },
+          { name: 'read_file', args: { Path: skillMd } },
+          { name: 'read_file', args: { Path: settingsIni } },
+          { name: 'read_file', args: { Path: exit0Txt } },
+          { name: 'read_file', args: { Path: failedTxt } },
+          { name: 'read_file', args: { Path: exit2Txt } },
+          { name: 'read_file', args: { Path: badPpk } },
+          { name: 'read_file', args: { Path: badP8 } },
+          { name: 'read_file', args: { Path: badGpg } },
+          { name: 'read_file', args: { Path: badToken } },
+          { name: 'read_file', args: { Path: badProdEnv } },
+          { name: 'read_file', args: { Path: badSvcAcct } },
+          { name: 'read_file', args: { Path: badVaultTok } }
+        ]
+      },
+      { step_index: 3, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Command exited with code 0.\n` },
+      { step_index: 4, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Made 1 replacement in ${appJs}\n` },
+      { step_index: 5, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-2 of 2\n` },
+      { step_index: 6, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-4 of 4\n` },
+      { step_index: 7, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Command exited with code 0.\n` },
+      { step_index: 8, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Error: ENOENT: failed to read ${failedTxt}\n` },
+      { step_index: 9, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Command exited with code 2.\n` },
+      { step_index: 10, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-1 of 1\n` },
+      { step_index: 11, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-1 of 1\n` },
+      { step_index: 12, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-1 of 1\n` },
+      { step_index: 13, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-1 of 1\n` },
+      { step_index: 14, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-1 of 1\n` },
+      { step_index: 15, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-1 of 1\n` },
+      { step_index: 16, type: 'GENERIC', status: 'DONE', content: `${tsHdr}Showing lines 1-1 of 1\n` },
+      { step_index: 17, type: 'CHECKPOINT', status: 'DONE', created_at: '2026-11-17T08:01:00Z', content: 'Summary' }
+    ];
+    const jsonl = records.map(r => JSON.stringify(r)).join('\n') + '\n';
+    fs.writeFileSync(tPath, jsonl, 'utf8');
+    fs.writeFileSync(fullPath, jsonl, 'utf8');
+
+    const payload = JSON.stringify({
+      transcriptPath: tPath,
+      workspacePaths: [wsDir],
+      conversationId: cid
+    });
+
+    const out1Raw = execFileSync(py.executable, ['-X', 'utf8', scriptPath], {
+      input: payload,
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    const out1 = JSON.parse(out1Raw.trim());
+    assert.equal(Array.isArray(out1.injectSteps), true, '新检查点首次调用必须返回 injectSteps');
+    assert.equal(out1.injectSteps.length, 1);
+    const msg = out1.injectSteps[0]?.systemMessage?.systemMessage || '';
+    assert.ok(msg.startsWith('[POST-COMPACT REHYDRATION v1 | checkpoint=17 |'));
+    assert.ok(Buffer.byteLength(msg, 'utf8') <= 45000, '回注 UTF-8 字节数不得超过 45000');
+    assert.match(msg, /Build feature X safely/);
+    assert.match(msg, /## 3\. Restored Active Skills & Spec Docs/);
+    assert.match(msg, /## 4\. Restored Active Workspace Files/);
+    assert.match(msg, /src\/app\.js/);
+    assert.match(msg, /SKILL\.md/);
+    assert.match(msg, /settings\.ini/);
+    assert.match(msg, /exit0_ok\.txt/);
+
+    // 源码普通变量与函数调用不得被误脱敏，引号字面量、环境变量与 INI/YAML 无引号密钥必须被遮蔽
+    assert.equal(msg.includes('const token = getToken();'), true, '普通代码 token = getToken() 不得被误脱敏破坏');
+    assert.equal(msg.includes('const password = req.body.password;'), true, '普通属性读取不得被误脱敏破坏');
+    assert.equal(msg.includes('this.password = user.password;'), true, '属性赋值不得被误脱敏破坏');
+    assert.equal(msg.includes('login(password=user_password);'), true, '关键字参数变量名不得被误脱敏破坏');
+    assert.equal(msg.includes('password=[REDACTED]'), true, 'settings.ini 中无引号 password=... 必须被遮蔽');
+    assert.equal(msg.includes('super_secret_literal_99'), false, '引号包裹的密钥字面量必须被脱敏');
+    assert.equal(msg.includes('env_secret_value_88'), false, '环境变量格式密钥赋值必须被脱敏');
+    assert.equal(msg.includes('s3cr3t_ini_pw'), false, 'INI 无引号 password=... 值不得泄露');
+    assert.equal(msg.includes('P@ss#9876'), false, 'INI/Properties 带点号键值密码不得泄露');
+    assert.equal(msg.includes('yaml_unquoted_key_77'), false, 'YAML 无引号 api_key: ... 值不得泄露');
+
+    const sec4 = msg.split('## 4. Restored Active Workspace Files')[1] || '';
+
+    // 带时间头且以 Error: 或非零退出码失败的真实 GENERIC 工具结果不得恢复进第 4 节文件快照，退出码 0 应恢复
+    assert.equal(sec4.includes('exit0_ok.txt'), true, '退出码 0 的结果不应被误判失败');
+    assert.equal(sec4.includes('failed_read.txt'), false, '报错的工具调用目标文件不得被恢复进第 4 节');
+    assert.equal(sec4.includes('exit2_fail.txt'), false, '非零退出码的工具调用目标文件不得被恢复进第 4 节');
+    assert.equal(msg.includes('### failed_read.txt'), false, '报错的工具调用文件标题不得出现');
+    assert.equal(msg.includes('### exit2_fail.txt'), false, '非零退出码文件标题不得出现');
+    assert.equal(msg.includes('SHOULD_NOT_RESTORE_FAILED_TOOL_CALL'), false);
+    assert.equal(msg.includes('SHOULD_NOT_RESTORE_NONZERO_EXIT_CALL'), false);
+
+    for (const excludedName of ['deploy.ppk', 'AuthKey_ABC.p8', 'vault.gpg', 'token.json', 'prod.env', 'gcp-service-account.json', '.vault-token']) {
+      assert.equal(sec4.includes(excludedName), false, `敏感文件不得被恢复进工作区文件段落: ${excludedName}`);
+      assert.equal(msg.includes(`### ${excludedName}`), false, `敏感文件标题不得出现在回注结果中: ${excludedName}`);
+    }
+    for (const forbidden of [
+      'PPK_SECRET_PAYLOAD_DO_NOT_LEAK',
+      'P8_SECRET_PAYLOAD_DO_NOT_LEAK',
+      'GPG_SECRET_PAYLOAD_DO_NOT_LEAK',
+      'TOKEN_JSON_DO_NOT_LEAK',
+      'PROD_ENV_SECRET_DO_NOT_LEAK',
+      'SVC_ACCT_DO_NOT_LEAK',
+      'VAULT_TOKEN_DO_NOT_LEAK'
+    ]) {
+      assert.equal(msg.includes(forbidden), false, `敏感文件内容不得出现在回注结果中: ${forbidden}`);
+    }
+
+    // 第二次立即调用必须去重返回 {}，且状态文件不得残留 in_progress_cp_token
+    const out2Raw = execFileSync(py.executable, ['-X', 'utf8', scriptPath], {
+      input: payload,
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    assert.equal(out2Raw.trim(), '{}', '同一检查点二次调用必须去重返回 {}');
+
+    const stateFile1 = path.join(logsDir, 'rehydrate_state.json');
+    const savedState1 = JSON.parse(fs.readFileSync(stateFile1, 'utf8'));
+    const savedDoneTok = savedState1.done_cp_token;
+    assert.ok(typeof savedDoneTok === 'string' && savedDoneTok.startsWith('17:'));
+    assert.equal(savedState1.in_progress_cp_token, undefined, '正常完成后应清除 in_progress_cp_token');
+
+    // 验证上一轮在重活中途被宿主强杀（仅保留 in_progress_cp_token）时，下一轮直接跳过并固化 done_cp_token
+    fs.writeFileSync(stateFile1, JSON.stringify({ in_progress_cp_token: savedDoneTok }) + '\n', 'utf8');
+    const outKilledRaw = execFileSync(py.executable, ['-X', 'utf8', scriptPath], {
+      input: payload,
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    assert.equal(outKilledRaw.trim(), '{}', '命中 in_progress_cp_token 时下一轮必须直接降级返回 {}');
+    const recoveredState = JSON.parse(fs.readFileSync(stateFile1, 'utf8'));
+    assert.equal(recoveredState.done_cp_token, savedDoneTok);
+    assert.equal(recoveredState.in_progress_cp_token, undefined);
+
+    // 验证 rehydrate_state.json 为符号链接/重解析点时拒绝覆写目标文件
+    const cid2 = '22222222-3333-4444-5555-666666666666';
+    const logsDir2 = path.join(tmpRoot, 'brain', cid2, '.system_generated', 'logs');
+    fs.mkdirSync(logsDir2, { recursive: true });
+    const tPath2 = path.join(logsDir2, 'transcript.jsonl');
+    const fullPath2 = path.join(logsDir2, 'transcript_full.jsonl');
+    const statePath2 = path.join(logsDir2, 'rehydrate_state.json');
+    fs.writeFileSync(tPath2, jsonl, 'utf8');
+    fs.writeFileSync(fullPath2, jsonl, 'utf8');
+
+    const victimFile = path.join(tmpRoot, 'victim_target.json');
+    const victimOriginal = '{"sentinel":"DO_NOT_OVERWRITE"}\n';
+    fs.writeFileSync(victimFile, victimOriginal, 'utf8');
+
+    let fileSymlinkCreated = false;
+    try {
+      fs.symlinkSync(victimFile, statePath2, 'file');
+      fileSymlinkCreated = true;
+    } catch {}
+
+    if (fileSymlinkCreated) {
+      execFileSync(py.executable, ['-X', 'utf8', scriptPath], {
+        input: JSON.stringify({ transcriptPath: tPath2, workspacePaths: [wsDir], conversationId: cid2 }),
+        encoding: 'utf8',
+        windowsHide: true
+      });
+      assert.equal(fs.readFileSync(victimFile, 'utf8'), victimOriginal, '符号链接指向的目标文件绝不能被覆写');
+    } else {
+      // Windows 非管理员环境下同时验证真实目录联接 (Junction) 拦截与 Python 层 is_symlink 原子写保护
+      const junctionTargetDir = path.join(tmpRoot, 'junction-target-dir');
+      fs.mkdirSync(junctionTargetDir, { recursive: true });
+      fs.symlinkSync(junctionTargetDir, statePath2, 'junction');
+      execFileSync(py.executable, ['-X', 'utf8', scriptPath], {
+        input: JSON.stringify({ transcriptPath: tPath2, workspacePaths: [wsDir], conversationId: cid2 }),
+        encoding: 'utf8',
+        windowsHide: true
+      });
+      assert.deepEqual(fs.readdirSync(junctionTargetDir), [], '联接目录内不得产生任何临时文件');
+      fs.rmSync(statePath2, { recursive: true, force: true });
+
+      fs.copyFileSync(victimFile, statePath2);
+      const pySymCheck = [
+        'import importlib.util, pathlib, sys',
+        'from unittest import mock',
+        'spec = importlib.util.spec_from_file_location("rh", sys.argv[1])',
+        'mod = importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(mod)',
+        'sp = pathlib.Path(sys.argv[2])',
+        'orig = pathlib.Path.is_symlink',
+        'with mock.patch.object(pathlib.Path, "is_symlink", lambda self: True if str(self) == str(sp) else orig(self)):',
+        '    ok = mod._save_state(sp, {"done_cp_token": "99:deadbeefcafe"})',
+        '    assert ok is False, "expected _save_state to refuse symlink"'
+      ].join('\n');
+      execFileSync(py.executable, ['-X', 'utf8', '-c', pySymCheck, scriptPath, statePath2], {
+        encoding: 'utf8',
+        windowsHide: true
+      });
+      assert.equal(fs.readFileSync(statePath2, 'utf8'), victimOriginal, '被判定为符号链接的目标文件绝不能被覆写');
+    }
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
 });
 
 test('2. 隔离环境完整生命周期与共存 Hook (herdr) 绝对保留验证', () => {
@@ -410,8 +676,13 @@ test('4. 测试模式强制路径隔离守卫：绝不解析到真实用户 ~/.g
 
 test('5. 渲染层界面控制、推荐配置联动、白名单链接与三语完整性校验', async () => {
   assert.equal(core.isValidExternalUrl('https://agy-rehydrate.pages.dev/'), true);
-  assert.equal(core.isValidExternalUrl('https://agy-rehydrate.pages.dev/rehydrate_after_compact.py'), true);
+  assert.equal(core.isValidExternalUrl('https://agy-rehydrate.pages.dev/rehydrate_after_compact.py'), false);
   assert.equal(core.isValidExternalUrl('https://evil.example.com/agy-rehydrate.pages.dev'), false);
+
+  const templateHtml = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const recRehydrateTag = templateHtml.match(/<input\b[^>]*\bid="chk-rec-rehydrate"[^>]*>/);
+  assert.ok(recRehydrateTag, 'template.html 必须包含 chk-rec-rehydrate 复选框');
+  assert.equal(/\bchecked\b/i.test(recRehydrateTag[0]), false, 'chk-rec-rehydrate 在推荐配置中默认必须未勾选');
 
   const h = createRendererHarness();
   try {
@@ -466,7 +737,7 @@ test('5. 渲染层界面控制、推荐配置联动、白名单链接与三语�
     assert.equal(h.elements.get('rehydrate-badge').textContent, '未开启');
     assert.match(h.elements.get('rehydrate-stat-siblings').textContent, /herdr/);
 
-    // 单独卡片启用 -> 停用 -> 显式卸载移除（应传入 { force: true }）
+    // 单独卡片启用 -> 停用 -> 二次确认显式卸载移除（首次点击仅进入确认态，二次点击才传入 { force: true }）
     h.elements.get('btn-rehydrate-enable').click();
     await h.flush();
     assert.equal(calls.apply, 1);
@@ -477,6 +748,21 @@ test('5. 渲染层界面控制、推荐配置联动、白名单链接与三语�
     assert.equal(calls.disable, 1);
     assert.equal(h.elements.get('rehydrate-badge').textContent, '已停用');
 
+    h.elements.get('btn-rehydrate-remove').click();
+    await h.flush();
+    assert.equal(calls.restore, 0, '首次点击 btn-rehydrate-remove 不得直接执行卸载');
+    assert.equal(h.elements.get('btn-rehydrate-remove').textContent, '确认卸载？');
+    assert.match(h.elements.get('rehydrate-result-text').textContent, /确认卸载/);
+
+    // 刷新状态或切换语言应自动解除二次确认态
+    h.elements.get('btn-rehydrate-refresh').click();
+    await h.flush();
+    assert.equal(h.elements.get('btn-rehydrate-remove').textContent, '卸载移除');
+    assert.equal(calls.restore, 0);
+
+    // 再次连续点击两次执行真正卸载
+    h.elements.get('btn-rehydrate-remove').click();
+    assert.equal(calls.restore, 0);
     h.elements.get('btn-rehydrate-remove').click();
     await h.flush();
     assert.equal(calls.restore, 1);
@@ -500,12 +786,25 @@ test('5. 渲染层界面控制、推荐配置联动、白名单链接与三语�
     assert.equal(calls.restore, 2);
     assert.deepEqual(restorePayloads[1], {});
 
+    // 点击参考方案外链时应显示「参考方案页面」提示，而非「原作者帖子」
+    h.sandbox.window.contextMeterAPI.openExternal = async () => ({ ok: true });
+    h.elements.get('link-rehydrate-author').trigger('click', { preventDefault() {}, stopPropagation() {} });
+    await h.flush();
+    assert.match(h.elements.get('rehydrate-link-toast').textContent, /参考方案页面/);
+    assert.doesNotMatch(h.elements.get('rehydrate-link-toast').textContent, /原作者帖子/);
+
     // 三语言检查，且英文模式绝无中文残留
     const keysToCheck = [
       'enhance.preset.itemRehydrate',
       'rehydrate.card.title',
       'rehydrate.stat.hook',
       'rehydrate.btn.enable',
+      'rehydrate.btn.removeConfirm',
+      'rehydrate.result.confirmRemoveHint',
+      'rehydrate.credit.source',
+      'rehydrate.credit.author',
+      'rehydrate.credit.linkOpened',
+      'rehydrate.credit.adapter',
       'rehydrate.result.enabled',
       'rehydrate.err.noPython310',
       'rehydrate.err.corruptHooksJson',
@@ -540,7 +839,7 @@ test('6. 安装器、卸载器与发布打包清单完整包含 rehydrate 模块
   assert.equal(restoreSrc.includes("'rehydrate'"), true);
   assert.equal(pkgRelSrc.includes("'meter-rehydrate.js'"), true);
   assert.equal(pkgRelSrc.includes("'rehydrate/rehydrate_after_compact.py'"), true);
-  assert.equal(pkgRelSrc.includes("'rehydrate/AGY-rehydrate-slim-lts-release-v2.md'"), true);
+  assert.equal(pkgRelSrc.includes('AGY-rehydrate-slim-lts-release-v2.md'), false);
   assert.equal(pkgRelSrc.includes("'rehydrate/README.md'"), true);
   assert.equal(preloadSrc.includes('getRehydrateStatus: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-status")'), true);
   assert.equal(preloadSrc.includes('applyRehydrate: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-apply")'), true);
@@ -1019,5 +1318,158 @@ test('10. v0.8.7 集成对齐：modules.json 损坏 fail-closed 保护 & 同版�
     if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
     else delete process.env.AG_METER_STATE_DIR;
     env.cleanup();
+  }
+});
+
+test('11. POSIX 词法 PATH 解析（保留 Homebrew 符号链接不落入 Cellar）、ok:true 探测缓存与 skipPythonProbe 验证', async () => {
+  const childProcess = require('node:child_process');
+  const origStatSync = fs.statSync;
+  const origAccessSync = fs.accessSync;
+  const origRealpathSync = fs.realpathSync;
+  const origExecFileSync = childProcess.execFileSync;
+  const origExecFile = childProcess.execFile;
+
+  const fakeBrewBin = '/tmp/ag-mock-brew-991/homebrew/bin';
+  const fakeBrewPy = `${fakeBrewBin}/python3`;
+  const fakeCellarPy = '/tmp/ag-mock-brew-991/homebrew/Cellar/python@3.12/3.12.7/bin/python3';
+  const mockEnvPath = `.:node_modules/.bin:/usr/local/missing:${fakeBrewBin}:/usr/bin`;
+
+  let syncSpawns = 0;
+  let asyncSpawns = 0;
+  let mockProbeOutput = `3.12|${fakeCellarPy}\n`;
+
+  try {
+    fs.statSync = (target, ...rest) => {
+      const s = String(target);
+      if (s === 'python3' || s === 'node_modules/.bin/python3' || s === fakeBrewPy || s === fakeCellarPy) {
+        return { isFile: () => true };
+      }
+      return origStatSync.call(fs, target, ...rest);
+    };
+    fs.accessSync = (target, ...rest) => {
+      const s = String(target);
+      if (s === 'python3' || s === 'node_modules/.bin/python3' || s === fakeBrewPy || s === fakeCellarPy) {
+        return undefined;
+      }
+      return origAccessSync.call(fs, target, ...rest);
+    };
+    fs.realpathSync = (target, ...rest) => {
+      if (String(target) === fakeBrewPy) {
+        throw new Error('resolvePosixCommandInPath 不得调用 realpathSync 解析 Homebrew 符号链接');
+      }
+      return origRealpathSync.call(fs, target, ...rest);
+    };
+    childProcess.execFileSync = (cmd, args, opts) => {
+      if (Array.isArray(args) && args[0] === '-c') {
+        syncSpawns++;
+        return mockProbeOutput;
+      }
+      return origExecFileSync.call(childProcess, cmd, args, opts);
+    };
+    childProcess.execFile = (cmd, args, opts, cb) => {
+      const callback = typeof opts === 'function' ? opts : cb;
+      if (Array.isArray(args) && args[0] === '-c') {
+        asyncSpawns++;
+        setImmediate(() => callback(null, mockProbeOutput, ''));
+        return {};
+      }
+      return origExecFile.call(childProcess, cmd, args, opts, cb);
+    };
+
+    assert.equal(rehydrate.resolvePosixCommandInPath('python3', mockEnvPath), fakeBrewPy);
+
+    // 1. darwin 下返回词法 Homebrew bin 路径，而非裸 'python3' 或 Cellar 物理路径
+    rehydrate.clearPythonProbeCache();
+    const res1 = rehydrate.resolvePython310({ platform: 'darwin', envPath: mockEnvPath });
+    assert.equal(res1.ok, true);
+    assert.equal(res1.command, fakeBrewPy);
+    assert.notEqual(res1.command, 'python3');
+    assert.equal(res1.command.includes('Cellar'), false);
+    assert.equal(res1.executable, fakeCellarPy);
+    assert.equal(syncSpawns, 1);
+
+    // 2. ok: true 短 TTL 内存缓存命中（同步与异步共享，不再重复拉起 Python 进程）
+    const res2 = rehydrate.resolvePython310({ platform: 'darwin', envPath: mockEnvPath });
+    const res3 = await rehydrate.resolvePython310Async({ platform: 'darwin', envPath: mockEnvPath });
+    assert.equal(res2.command, fakeBrewPy);
+    assert.equal(res3.command, fakeBrewPy);
+    assert.equal(syncSpawns, 1, 'ok: true 缓存有效期内不得再次同步拉起 Python');
+    assert.equal(asyncSpawns, 0, 'ok: true 缓存有效期内不得再次异步拉起 Python');
+
+    // 3. ok: false 不缓存，确保用户新安装 Python 3.10+ 后立即可被探测到
+    rehydrate.clearPythonProbeCache();
+    mockProbeOutput = '3.9|/usr/bin/python3\n';
+    const failProbe = rehydrate.resolvePython310({ platform: 'darwin', envPath: mockEnvPath });
+    assert.equal(failProbe.ok, false);
+    const spawnsAfterFail = syncSpawns;
+    mockProbeOutput = `3.12|${fakeCellarPy}\n`;
+    const recoveredProbe = rehydrate.resolvePython310({ platform: 'darwin', envPath: mockEnvPath });
+    assert.equal(recoveredProbe.ok, true);
+    assert.equal(recoveredProbe.command, fakeBrewPy);
+    assert.equal(syncSpawns, spawnsAfterFail + 1, 'ok: false 不得被缓存拦截后续探测');
+
+    // 4. win32 保持返回裸命令 'python'
+    rehydrate.clearPythonProbeCache();
+    mockProbeOutput = '3.12|C:\\Python312\\python.exe\n';
+    const winRes = rehydrate.resolvePython310({ platform: 'win32', envPath: 'C:\\Python312' });
+    assert.equal(winRes.ok, true);
+    assert.equal(winRes.command, 'python');
+
+    // 5. restoreRehydrate / restoreRehydrateAsync 支持 skipPythonProbe: true（零次探测调用）
+    const env = createTmpIsolatedEnv('ag-rh-skip-probe-');
+    const prevStateDir = process.env.AG_METER_STATE_DIR;
+    process.env.AG_METER_STATE_DIR = env.stateDir;
+    try {
+      const baseOpts = {
+        configDir: env.configDir,
+        stateDir: env.stateDir,
+        _pythonProbe: () => ({ ok: true, command: 'python', executable: 'python', version: '3.12' })
+      };
+      assert.equal(rehydrate.applyRehydrate(baseOpts).ok, true);
+
+      rehydrate.clearPythonProbeCache();
+      const beforeSync = syncSpawns;
+      const beforeAsync = asyncSpawns;
+      let spyCalls = 0;
+      const rSync = rehydrate.restoreRehydrate({
+        configDir: env.configDir,
+        stateDir: env.stateDir,
+        skipPythonProbe: true,
+        _pythonProbe: () => {
+          spyCalls++;
+          return { ok: true, command: 'python', executable: 'python', version: '3.12' };
+        }
+      });
+      assert.equal(rSync.ok, true);
+      assert.equal(rSync.changed, true);
+      assert.equal(spyCalls, 0, 'skipPythonProbe: true 时 restoreRehydrate 不得调用 probe');
+      assert.equal(syncSpawns, beforeSync);
+
+      assert.equal(rehydrate.applyRehydrate(baseOpts).ok, true);
+      const rAsync = await rehydrate.restoreRehydrateAsync({
+        configDir: env.configDir,
+        stateDir: env.stateDir,
+        skipPythonProbe: true,
+        _pythonProbe: async () => {
+          spyCalls++;
+          return { ok: true, command: 'python', executable: 'python', version: '3.12' };
+        }
+      });
+      assert.equal(rAsync.ok, true);
+      assert.equal(rAsync.changed, true);
+      assert.equal(spyCalls, 0, 'skipPythonProbe: true 时 restoreRehydrateAsync 不得调用 probe');
+      assert.equal(asyncSpawns, beforeAsync);
+    } finally {
+      if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+      else delete process.env.AG_METER_STATE_DIR;
+      env.cleanup();
+    }
+  } finally {
+    fs.statSync = origStatSync;
+    fs.accessSync = origAccessSync;
+    fs.realpathSync = origRealpathSync;
+    childProcess.execFileSync = origExecFileSync;
+    childProcess.execFile = origExecFile;
+    rehydrate.clearPythonProbeCache();
   }
 });

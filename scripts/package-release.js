@@ -40,7 +40,6 @@ const COMMON_FILES = [
   'i18n/zh-CN.json',
   'i18n/i18n-runtime.js',
   'rehydrate/README.md',
-  'rehydrate/AGY-rehydrate-slim-lts-release-v2.md',
   'rehydrate/rehydrate_after_compact.py',
   'unlock/README.md',
   'unlock/language-server/README.md',

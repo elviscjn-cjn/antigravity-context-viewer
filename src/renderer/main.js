@@ -6331,7 +6331,7 @@
     showToastFn(fromFailedOpen ? t('models.linkCopyFallback') : t('models.copyOk'));
   }
 
-  async function openExternalWithFallback(targetUrl, showToastFn) {
+  async function openExternalWithFallback(targetUrl, showToastFn, openedMsgKey = 'models.linkOpened') {
     let opened = false;
     try {
       if (window.contextMeterAPI?.openExternal) {
@@ -6348,7 +6348,7 @@
     }
 
     if (opened) {
-      showToastFn(t('models.linkOpened'));
+      showToastFn(t(openedMsgKey));
     } else {
       copyUrlWithToast(targetUrl, showToastFn, true);
     }
@@ -6502,6 +6502,7 @@
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
     } catch { }
     try {
+      if (typeof disarmRehydrateRemove === 'function') disarmRehydrateRemove();
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
       if (typeof rerenderSettingsFeedbacks === 'function') rerenderSettingsFeedbacks();
     } catch { }
@@ -6742,8 +6743,15 @@
   let hasPendingLsReload = false;
   let enhanceGlobalResultState = null; // { ok, resolveMessage, opts }
   let enhancePromptResultState = null; // { ok, resolveMessage }
-  let rehydrateResultState = null;     // { ok, resolveMessage }
+  let rehydrateResultState = null;     // { ok, resolveMessage, isConfirmHint }
   let rehydrateToastTimer = null;
+  let rehydrateRemoveArmed = false;
+  let rehydrateRemoveArmTimer = null;
+  earlyDisposeHooks.push(() => {
+    if (rehydrateRemoveArmTimer) { clearTimeout(rehydrateRemoveArmTimer); rehydrateRemoveArmTimer = null; }
+    if (rehydrateToastTimer) { clearTimeout(rehydrateToastTimer); rehydrateToastTimer = null; }
+    rehydrateRemoveArmed = false;
+  });
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
 
@@ -7482,7 +7490,7 @@
   btnEnhanceRestartHost?.addEventListener('click', openClientRestartConfirmFlow);
 
   // -------------------------------------------------------------
-  // 模块 3.6: 压缩后无损回水与跨 /fork 溯源 (Slim-LTS Hook) 控制器
+  // 模块 3.6: 压缩后上下文恢复与跨 /fork 溯源 (Post-Compact Rehydration Hook) 控制器
   // -------------------------------------------------------------
   function showRehydrateToast(msg) {
     if (!rehydrateLinkToast) return;
@@ -7494,15 +7502,32 @@
     }, 4500);
   }
 
-  function showRehydrateResult(ok, messageOrResolver) {
+  function showRehydrateResult(ok, messageOrResolver, opts = {}) {
     if (!rehydrateResultBox || !rehydrateResultText) return;
     const resolveMessage = typeof messageOrResolver === 'function'
       ? messageOrResolver
       : () => String(messageOrResolver ?? '');
-    rehydrateResultState = { ok, resolveMessage };
+    rehydrateResultState = { ok, resolveMessage, isConfirmHint: Boolean(opts?.isConfirmHint) };
     rehydrateResultBox.style.display = 'block';
     rehydrateResultBox.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
     rehydrateResultText.textContent = resolveMessage();
+  }
+
+  function disarmRehydrateRemove({ restoreText = true, clearConfirmHint = true } = {}) {
+    if (rehydrateRemoveArmTimer) {
+      clearTimeout(rehydrateRemoveArmTimer);
+      rehydrateRemoveArmTimer = null;
+    }
+    const wasArmed = rehydrateRemoveArmed;
+    rehydrateRemoveArmed = false;
+    if (restoreText && btnRehydrateRemove && !isRehydrateBusy) {
+      btnRehydrateRemove.textContent = t('rehydrate.btn.remove');
+    }
+    if (clearConfirmHint && rehydrateResultState?.isConfirmHint && rehydrateResultBox) {
+      rehydrateResultBox.style.display = 'none';
+      rehydrateResultState = null;
+    }
+    return wasArmed;
   }
 
   function syncRehydrateInteractiveState() {
@@ -7515,6 +7540,9 @@
     if (btnRehydrateEnable) btnRehydrateEnable.disabled = busy || unavailable || corrupt || modCfgCorrupt || pyBlocked;
     if (btnRehydrateDisable) btnRehydrateDisable.disabled = busy || unavailable || corrupt || modCfgCorrupt || !d?.hookRegistered || !d?.hookEnabled;
     if (btnRehydrateRemove) btnRehydrateRemove.disabled = busy || unavailable || corrupt || (!d?.hookRegistered && !d?.scriptInstalled);
+    if (rehydrateRemoveArmed && btnRehydrateRemove?.disabled) {
+      disarmRehydrateRemove();
+    }
     if (btnRehydrateRefresh) btnRehydrateRefresh.disabled = busy;
   }
 
@@ -7644,6 +7672,7 @@
   }
 
   btnRehydrateEnable?.addEventListener('click', () => {
+    disarmRehydrateRemove();
     void runRehydrateAction('apply', btnRehydrateEnable, 'rehydrate.btn.enableBusy', 'rehydrate.btn.enable', (res) => {
       if (res.changed === false) return () => t('rehydrate.result.alreadyEnabled');
       const p = res.status?.hooksJsonPath || '~/.gemini/config/hooks.json';
@@ -7652,15 +7681,30 @@
   });
 
   btnRehydrateDisable?.addEventListener('click', () => {
+    disarmRehydrateRemove();
     void runRehydrateAction('disable', btnRehydrateDisable, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
   });
 
   btnRehydrateRemove?.addEventListener('click', () => {
+    if (isRehydrateBusy || isEnhanceBusy) return;
+    if (!rehydrateRemoveArmed) {
+      rehydrateRemoveArmed = true;
+      if (rehydrateRemoveArmTimer) clearTimeout(rehydrateRemoveArmTimer);
+      if (btnRehydrateRemove) btnRehydrateRemove.textContent = t('rehydrate.btn.removeConfirm');
+      showRehydrateResult(true, () => t('rehydrate.result.confirmRemoveHint'), { isConfirmHint: true });
+      rehydrateRemoveArmTimer = setTimeout(() => {
+        rehydrateRemoveArmTimer = null;
+        disarmRehydrateRemove({ restoreText: true, clearConfirmHint: true });
+      }, 4500);
+      return;
+    }
+    disarmRehydrateRemove({ restoreText: false, clearConfirmHint: false });
     void runRehydrateAction('restore', btnRehydrateRemove, 'rehydrate.btn.removeBusy', 'rehydrate.btn.remove', () => () => t('rehydrate.result.removed'), { force: true });
   });
 
   btnRehydrateRefresh?.addEventListener('click', () => {
     if (isRehydrateBusy) return;
+    disarmRehydrateRemove();
     void refreshRehydrateStatus();
   });
 
@@ -7675,14 +7719,14 @@
   linkRehydrateAuthor?.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast);
+    void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast, 'rehydrate.credit.linkOpened');
   });
 
   linkRehydrateAuthor?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       e.stopPropagation();
-      void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast);
+      void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast, 'rehydrate.credit.linkOpened');
     }
   });
 

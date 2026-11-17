@@ -2683,7 +2683,7 @@
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-rehydrate" type="checkbox" checked>
+            <input id="chk-rec-rehydrate" type="checkbox">
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemRehydrate">改善 AGY 有损压缩</strong>
               <span data-i18n="enhance.preset.itemRehydrateSub">压缩后自动把最初要求、最近几轮原话和刚改过的代码补回给 AI（不影响已有其他配置）。</span>
@@ -2879,7 +2879,7 @@
         </div>
       </div>
 
-      <!-- 4. 改善 AGY 有损压缩 (Slim-LTS Hook) -->
+      <!-- 4. 改善 AGY 有损压缩 (Post-Compact Rehydration Hook) -->
       <div class="ctx-settings-card" id="rehydrate-hook-card">
         <div class="ctx-settings-card-hdr">
           <div class="ctx-settings-card-title" data-i18n="rehydrate.card.title">🩹 改善 AGY 有损压缩</div>
@@ -2933,21 +2933,21 @@
               <div class="unlock-notice">
                 <div class="unlock-desc" data-i18n-html="rehydrate.details.body">
                   <strong>四层 45,000 B UTF-8 回注内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃 <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code> 声明约束）。<br><br>
-                  <strong>跨 /fork 溯源</strong>：默认 <code>explicit</code> 模式在子分支首条记录声明父字段或配置 <code>&lt;brain&gt;/fork_lineage.json</code> 时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br>
+                  <strong>可选手动 /fork 衔接</strong>：当前宿主日志默认不含父会话字段，仅当手动维护 <code>&lt;brain&gt;/fork_lineage.json</code>（或首条记录含显式父 ID）时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br>
                   <strong>安全写入范围</strong>：仅读写 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 键与 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他 Hook。
                 </div>
               </div>
               <div id="rehydrate-paths-meta" class="unlock-desc" style="margin-top:6px;"></div>
               <div class="unlock-credit-bar">
                 <div class="unlock-credit-left">
-                  <span class="unlock-credit-lbl" data-i18n="rehydrate.credit.source">方案来源：</span>
+                  <span class="unlock-credit-lbl" data-i18n="rehydrate.credit.source">思路参考：</span>
                   <a id="link-rehydrate-author" href="https://agy-rehydrate.pages.dev/" target="_blank"
                     rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
-                    data-i18n="rehydrate.credit.author">AGY Post-Compact Rehydration 原作者 ↗</a>
+                    data-i18n="rehydrate.credit.author">AGY Post-Compact Rehydration 方案 ↗</a>
                   <button id="btn-copy-rehydrate-link" class="unlock-copy-link-btn" type="button"
                     data-i18n="models.credit.copy">📋 复制链接</button>
                 </div>
-                <span class="unlock-adapter-note" data-i18n="rehydrate.credit.adapter">Slim-LTS · 零依赖 Python 3.10+</span>
+                <span class="unlock-adapter-note" data-i18n="rehydrate.credit.adapter">MIT 独立实现 · 零依赖 Python 3.10+</span>
               </div>
               <div id="rehydrate-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
             </div>
@@ -5294,7 +5294,7 @@ const PANEL_I18N = {
       'enhance.result.noBridge': { 'zh-CN': '当前预览模式未连接到语言服务增强桥接，可通过 node cli.js enhance-status 查看或执行。', 'zh-TW': '目前預覽模式未連線到語言服務增強橋接，可透過 node cli.js enhance-status 檢視或執行。', en: 'Enhance bridge unavailable in this mode. Use `node cli.js enhance-status` via CLI.' },
       'enhance.result.fail': { 'zh-CN': '操作失败：{err}', 'zh-TW': '操作失敗：{err}', en: 'Action failed: {err}' },
 
-      // 改善 AGY 有损压缩 (Slim-LTS Hook)
+      // 改善 AGY 有损压缩 (Post-Compact Rehydration Hook)
       'rehydrate.card.title': { 'zh-CN': '🩹 改善 AGY 有损压缩', 'zh-TW': '🩹 改善 AGY 有損壓縮', en: '🩹 Mitigate AGY Lossy Compaction' },
       'rehydrate.card.plainIntro': { 'zh-CN': 'AGY 自动压缩（或执行 /compact）只保留概括摘要，容易丢失细节。开启后会在压缩完成时自动从本地完整记录把最初要求、最近几轮原话和刚读写过的文件补回给 AI；未检测到新的压缩检查点时，不注入额外上下文。', 'zh-TW': 'AGY 自動壓縮（或執行 /compact）只保留概括摘要，容易遺失細節。開啟後會在壓縮完成時自動從本機完整記錄把最初要求、最近幾輪原話與剛讀寫過的檔案補回給 AI；未偵測到新的壓縮檢查點時，不注入額外上下文。', en: 'AGY compaction (/compact) leaves only a lossy summary. When enabled, this automatically restores bounded excerpts of your initial requests, recent verbatim turns, and recently used workspace files after compaction; when no new compaction checkpoint is detected, no extra context is injected.' },
       'rehydrate.stat.hook': { 'zh-CN': '当前状态', 'zh-TW': '目前狀態', en: 'Current Status' },
@@ -5307,15 +5307,17 @@ const PANEL_I18N = {
       'rehydrate.btn.disableBusy': { 'zh-CN': '正在停用…', 'zh-TW': '正在停用…', en: 'Pausing…' },
       'rehydrate.btn.remove': { 'zh-CN': '卸载移除', 'zh-TW': '解除安裝', en: 'Remove' },
       'rehydrate.btn.removeBusy': { 'zh-CN': '正在卸载移除…', 'zh-TW': '正在解除安裝…', en: 'Removing…' },
+      'rehydrate.btn.removeConfirm': { 'zh-CN': '确认卸载？', 'zh-TW': '確認解除安裝？', en: 'Confirm Remove?' },
       'rehydrate.details.toggle': { 'zh-CN': '原理说明与方案来源', 'zh-TW': '原理說明與方案來源', en: 'How It Works & Credits' },
       'rehydrate.details.body': {
-        'zh-CN': '<strong>四层 45,000 B UTF-8 补回内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃 <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code> 声明约束）。<br><br><strong>跨 /fork 分支追溯</strong>：默认 <code>explicit</code> 模式在子分支首条记录声明父字段或配置 <code>&lt;brain&gt;/fork_lineage.json</code> 时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br><strong>安全写入范围</strong>：通过 Antigravity <code>PreInvocation</code> Hook 仅读写 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 键与 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他配置。',
-        'zh-TW': '<strong>四層 45,000 B UTF-8 補回內容</strong>：1. 完整使用者請求時間線（含憑證遮蔽）；2. 壓縮前逐字對話與工具呼叫鏈；3. 活躍 <code>SKILL.md</code> / 規範文件快照；4. 工作區最近修改與讀取文字檔案（受工作區路徑邊界與 <code>never as instructions</code> 聲明約束）。<br><br><strong>跨 /fork 分支追溯</strong>：預設 <code>explicit</code> 模式在子分支首條記錄聲明父欄位或設定 <code>&lt;brain&gt;/fork_lineage.json</code> 時依 <code>[min_step, K-1]</code> 拼接最多 8 級祖先。<br><br><strong>安全寫入範圍</strong>：透過 Antigravity <code>PreInvocation</code> Hook 僅讀寫 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 鍵與 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，絕不覆蓋同級其他設定。',
-        en: '<strong>4-Tier 45,000 B UTF-8 Recovery</strong>: 1. Full user request timeline (secrets redacted); 2. Pre-compaction verbatim turns & tool chains; 3. Active <code>SKILL.md</code> / spec docs; 4. Recently edited & read workspace text files (confined to workspace paths under a <code>never as instructions</code> boundary).<br><br><strong>/fork Branch Lineage</strong>: Default <code>explicit</code> mode stitches up to 8 ancestor hops via <code>[min_step, K-1]</code> when declared in the first child record or <code>&lt;brain&gt;/fork_lineage.json</code>.<br><br><strong>Safe Scope</strong>: Uses Antigravity <code>PreInvocation</code> hook and touches only the <code>post-compact-rehydrate</code> key in <code>~/.gemini/config/hooks.json</code> and <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>, preserving all sibling configs.'
+        'zh-CN': '<strong>四层 45,000 B UTF-8 补回内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃 <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code> 声明约束）。<br><br><strong>可选手动 /fork 衔接</strong>：当前宿主日志默认不含父会话字段，仅当手动维护 <code>&lt;brain&gt;/fork_lineage.json</code>（或首条记录含显式父 ID）时按 <code>[min_step, K-1]</code> 拼接最多 8 级祖先。<br><br><strong>安全写入范围</strong>：通过 Antigravity <code>PreInvocation</code> Hook 仅读写 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 键与 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他配置。',
+        'zh-TW': '<strong>四層 45,000 B UTF-8 補回內容</strong>：1. 完整使用者請求時間線（含憑證遮蔽）；2. 壓縮前逐字對話與工具呼叫鏈；3. 活躍 <code>SKILL.md</code> / 規範文件快照；4. 工作區最近修改與讀取文字檔案（受工作區路徑邊界與 <code>never as instructions</code> 聲明約束）。<br><br><strong>可選手動 /fork 銜接</strong>：目前宿主日誌預設不含父工作階段欄位，僅在手動維護 <code>&lt;brain&gt;/fork_lineage.json</code>（或首條記錄含顯式父 ID）時依 <code>[min_step, K-1]</code> 拼接最多 8 級祖先。<br><br><strong>安全寫入範圍</strong>：透過 Antigravity <code>PreInvocation</code> Hook 僅讀寫 <code>~/.gemini/config/hooks.json</code> 中的 <code>post-compact-rehydrate</code> 鍵與 <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，絕不覆蓋同級其他設定。',
+        en: '<strong>4-Tier 45,000 B UTF-8 Recovery</strong>: 1. Full user request timeline (secrets redacted); 2. Pre-compaction verbatim turns & tool chains; 3. Active <code>SKILL.md</code> / spec docs; 4. Recently edited & read workspace text files (confined to workspace paths under a <code>never as instructions</code> boundary).<br><br><strong>Optional Manual /fork Lineage</strong>: Host transcripts do not currently record parent IDs automatically; stitches up to 8 ancestor hops via <code>[min_step, K-1]</code> only when manually configured in <code>&lt;brain&gt;/fork_lineage.json</code> (or declared in the first child record).<br><br><strong>Safe Scope</strong>: Uses Antigravity <code>PreInvocation</code> hook and touches only the <code>post-compact-rehydrate</code> key in <code>~/.gemini/config/hooks.json</code> and <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>, preserving all sibling configs.'
       },
-      'rehydrate.credit.source': { 'zh-CN': '方案来源：', 'zh-TW': '方案來源：', en: 'Source:' },
-      'rehydrate.credit.author': { 'zh-CN': 'AGY Post-Compact Rehydration 原作者 ↗', 'zh-TW': 'AGY Post-Compact Rehydration 原作者 ↗', en: 'AGY Post-Compact Rehydration Author ↗' },
-      'rehydrate.credit.adapter': { 'zh-CN': 'Slim-LTS · 零依赖 Python 3.10+', 'zh-TW': 'Slim-LTS · 零相依 Python 3.10+', en: 'Slim-LTS · Zero-Dep Python 3.10+' },
+      'rehydrate.credit.source': { 'zh-CN': '思路参考：', 'zh-TW': '思路參考：', en: 'Inspired by:' },
+      'rehydrate.credit.author': { 'zh-CN': 'AGY Post-Compact Rehydration 方案 ↗', 'zh-TW': 'AGY Post-Compact Rehydration 方案 ↗', en: 'AGY Post-Compact Rehydration ↗' },
+      'rehydrate.credit.linkOpened': { 'zh-CN': '已在系统默认浏览器中打开参考方案页面', 'zh-TW': '已在系統預設瀏覽器中開啟參考方案頁面', en: 'Opened reference page in your default browser' },
+      'rehydrate.credit.adapter': { 'zh-CN': 'MIT 独立实现 · 零依赖 Python 3.10+', 'zh-TW': 'MIT 獨立實作 · 零相依 Python 3.10+', en: 'Clean-Room MIT · Stdlib Python 3.10+' },
       'rehydrate.status.unread': { 'zh-CN': '未读取', 'zh-TW': '未讀取', en: 'Unread' },
       'rehydrate.status.enabled': { 'zh-CN': '已开启', 'zh-TW': '已開啟', en: 'Enabled' },
       'rehydrate.status.disabled': { 'zh-CN': '已停用', 'zh-TW': '已停用', en: 'Paused' },
@@ -5339,6 +5341,7 @@ const PANEL_I18N = {
       'rehydrate.result.alreadyEnabled': { 'zh-CN': '✔「改善 AGY 有损压缩」已处于开启且最新状态，无需重复设置。', 'zh-TW': '✔「改善 AGY 有損壓縮」已處於開啟且最新狀態，無需重複設定。', en: '✔ Mitigate AGY Lossy Compaction is already enabled and up to date.' },
       'rehydrate.result.disabled': { 'zh-CN': '✔ 已停用「改善 AGY 有损压缩」，脚本与其他配置均已保留。', 'zh-TW': '✔ 已停用「改善 AGY 有損壓縮」，腳本與其他設定均已保留。', en: '✔ Paused Mitigate AGY Lossy Compaction; script and sibling configs preserved.' },
       'rehydrate.result.removed': { 'zh-CN': '✔ 已卸载移除「改善 AGY 有损压缩」并清理脚本，其他配置均已完整保留。', 'zh-TW': '✔ 已解除安裝「改善 AGY 有損壓縮」並清理腳本，其他設定均已完整保留。', en: '✔ Removed Mitigate AGY Lossy Compaction and cleaned up script; sibling configs preserved.' },
+      'rehydrate.result.confirmRemoveHint': { 'zh-CN': '再次点击「确认卸载？」将从 hooks.json 移除该条目并清理恢复脚本（自定义脚本会自动备份为 .bak）。', 'zh-TW': '再次點擊「確認解除安裝？」將從 hooks.json 移除此項目並清理恢復腳本（自訂腳本會自動備份為 .bak）。', en: 'Click "Confirm Remove?" again to delete the hook entry and script (custom scripts are backed up to .bak).' },
       'rehydrate.result.fail': { 'zh-CN': '操作失败：{err}', 'zh-TW': '操作失敗：{err}', en: 'Operation failed: {err}' },
       'rehydrate.result.noBridge': { 'zh-CN': '当前预览模式未连接到本机配置桥接，可通过 node cli.js rehydrate-status 或 rehydrate:enable 管理。', 'zh-TW': '目前預覽模式未連線到本機設定橋接，可透過 node cli.js rehydrate-status 或 rehydrate:enable 管理。', en: 'Local config bridge unavailable in this mode. Manage via `node cli.js rehydrate-status` or `rehydrate:enable`.' },
       'rehydrate.err.noPython310': { 'zh-CN': '未检测到 Python 3.10+ 运行环境，请先安装 Python 3.10 或更高版本后再开启。', 'zh-TW': '未偵測到 Python 3.10+ 執行環境，請先安裝 Python 3.10 或更高版本後再開啟。', en: 'Python 3.10+ runtime not found. Please install Python 3.10+ before enabling.' },
@@ -16279,7 +16282,7 @@ function closeAllDropdowns(exceptWrap = null) {
     showToastFn(fromFailedOpen ? t('models.linkCopyFallback') : t('models.copyOk'));
   }
 
-  async function openExternalWithFallback(targetUrl, showToastFn) {
+  async function openExternalWithFallback(targetUrl, showToastFn, openedMsgKey = 'models.linkOpened') {
     let opened = false;
     try {
       if (window.contextMeterAPI?.openExternal) {
@@ -16296,7 +16299,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     if (opened) {
-      showToastFn(t('models.linkOpened'));
+      showToastFn(t(openedMsgKey));
     } else {
       copyUrlWithToast(targetUrl, showToastFn, true);
     }
@@ -16450,6 +16453,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
     } catch { }
     try {
+      if (typeof disarmRehydrateRemove === 'function') disarmRehydrateRemove();
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
       if (typeof rerenderSettingsFeedbacks === 'function') rerenderSettingsFeedbacks();
     } catch { }
@@ -16690,8 +16694,15 @@ function closeAllDropdowns(exceptWrap = null) {
   let hasPendingLsReload = false;
   let enhanceGlobalResultState = null; // { ok, resolveMessage, opts }
   let enhancePromptResultState = null; // { ok, resolveMessage }
-  let rehydrateResultState = null;     // { ok, resolveMessage }
+  let rehydrateResultState = null;     // { ok, resolveMessage, isConfirmHint }
   let rehydrateToastTimer = null;
+  let rehydrateRemoveArmed = false;
+  let rehydrateRemoveArmTimer = null;
+  earlyDisposeHooks.push(() => {
+    if (rehydrateRemoveArmTimer) { clearTimeout(rehydrateRemoveArmTimer); rehydrateRemoveArmTimer = null; }
+    if (rehydrateToastTimer) { clearTimeout(rehydrateToastTimer); rehydrateToastTimer = null; }
+    rehydrateRemoveArmed = false;
+  });
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
 
@@ -17430,7 +17441,7 @@ function closeAllDropdowns(exceptWrap = null) {
   btnEnhanceRestartHost?.addEventListener('click', openClientRestartConfirmFlow);
 
   // -------------------------------------------------------------
-  // 模块 3.6: 压缩后无损回水与跨 /fork 溯源 (Slim-LTS Hook) 控制器
+  // 模块 3.6: 压缩后上下文恢复与跨 /fork 溯源 (Post-Compact Rehydration Hook) 控制器
   // -------------------------------------------------------------
   function showRehydrateToast(msg) {
     if (!rehydrateLinkToast) return;
@@ -17442,15 +17453,32 @@ function closeAllDropdowns(exceptWrap = null) {
     }, 4500);
   }
 
-  function showRehydrateResult(ok, messageOrResolver) {
+  function showRehydrateResult(ok, messageOrResolver, opts = {}) {
     if (!rehydrateResultBox || !rehydrateResultText) return;
     const resolveMessage = typeof messageOrResolver === 'function'
       ? messageOrResolver
       : () => String(messageOrResolver ?? '');
-    rehydrateResultState = { ok, resolveMessage };
+    rehydrateResultState = { ok, resolveMessage, isConfirmHint: Boolean(opts?.isConfirmHint) };
     rehydrateResultBox.style.display = 'block';
     rehydrateResultBox.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
     rehydrateResultText.textContent = resolveMessage();
+  }
+
+  function disarmRehydrateRemove({ restoreText = true, clearConfirmHint = true } = {}) {
+    if (rehydrateRemoveArmTimer) {
+      clearTimeout(rehydrateRemoveArmTimer);
+      rehydrateRemoveArmTimer = null;
+    }
+    const wasArmed = rehydrateRemoveArmed;
+    rehydrateRemoveArmed = false;
+    if (restoreText && btnRehydrateRemove && !isRehydrateBusy) {
+      btnRehydrateRemove.textContent = t('rehydrate.btn.remove');
+    }
+    if (clearConfirmHint && rehydrateResultState?.isConfirmHint && rehydrateResultBox) {
+      rehydrateResultBox.style.display = 'none';
+      rehydrateResultState = null;
+    }
+    return wasArmed;
   }
 
   function syncRehydrateInteractiveState() {
@@ -17463,6 +17491,9 @@ function closeAllDropdowns(exceptWrap = null) {
     if (btnRehydrateEnable) btnRehydrateEnable.disabled = busy || unavailable || corrupt || modCfgCorrupt || pyBlocked;
     if (btnRehydrateDisable) btnRehydrateDisable.disabled = busy || unavailable || corrupt || modCfgCorrupt || !d?.hookRegistered || !d?.hookEnabled;
     if (btnRehydrateRemove) btnRehydrateRemove.disabled = busy || unavailable || corrupt || (!d?.hookRegistered && !d?.scriptInstalled);
+    if (rehydrateRemoveArmed && btnRehydrateRemove?.disabled) {
+      disarmRehydrateRemove();
+    }
     if (btnRehydrateRefresh) btnRehydrateRefresh.disabled = busy;
   }
 
@@ -17592,6 +17623,7 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   btnRehydrateEnable?.addEventListener('click', () => {
+    disarmRehydrateRemove();
     void runRehydrateAction('apply', btnRehydrateEnable, 'rehydrate.btn.enableBusy', 'rehydrate.btn.enable', (res) => {
       if (res.changed === false) return () => t('rehydrate.result.alreadyEnabled');
       const p = res.status?.hooksJsonPath || '~/.gemini/config/hooks.json';
@@ -17600,15 +17632,30 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   btnRehydrateDisable?.addEventListener('click', () => {
+    disarmRehydrateRemove();
     void runRehydrateAction('disable', btnRehydrateDisable, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
   });
 
   btnRehydrateRemove?.addEventListener('click', () => {
+    if (isRehydrateBusy || isEnhanceBusy) return;
+    if (!rehydrateRemoveArmed) {
+      rehydrateRemoveArmed = true;
+      if (rehydrateRemoveArmTimer) clearTimeout(rehydrateRemoveArmTimer);
+      if (btnRehydrateRemove) btnRehydrateRemove.textContent = t('rehydrate.btn.removeConfirm');
+      showRehydrateResult(true, () => t('rehydrate.result.confirmRemoveHint'), { isConfirmHint: true });
+      rehydrateRemoveArmTimer = setTimeout(() => {
+        rehydrateRemoveArmTimer = null;
+        disarmRehydrateRemove({ restoreText: true, clearConfirmHint: true });
+      }, 4500);
+      return;
+    }
+    disarmRehydrateRemove({ restoreText: false, clearConfirmHint: false });
     void runRehydrateAction('restore', btnRehydrateRemove, 'rehydrate.btn.removeBusy', 'rehydrate.btn.remove', () => () => t('rehydrate.result.removed'), { force: true });
   });
 
   btnRehydrateRefresh?.addEventListener('click', () => {
     if (isRehydrateBusy) return;
+    disarmRehydrateRemove();
     void refreshRehydrateStatus();
   });
 
@@ -17623,14 +17670,14 @@ function closeAllDropdowns(exceptWrap = null) {
   linkRehydrateAuthor?.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast);
+    void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast, 'rehydrate.credit.linkOpened');
   });
 
   linkRehydrateAuthor?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       e.stopPropagation();
-      void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast);
+      void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast, 'rehydrate.credit.linkOpened');
     }
   });
 

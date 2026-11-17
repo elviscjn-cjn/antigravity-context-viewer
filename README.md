@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 - **费用参考.** 根据已记录用量提供 API 预估费用和订阅对比. 不代表实际订阅扣费.
 - **语言与外观.** 插件面板支持简体中文. 繁体中文和 English. 支持主题及配色调整.
 - **可选增强.** 提供客户端汉化. 免 TUN 本地代理. 提示词档位和中文会话标题等设置. 按平台及客户端能力提供支持.
-- **改善有损压缩.** 按需启用 Slim-LTS PreInvocation Hook（需 Python 3.10+）. 压缩后在默认 45,000 UTF-8 字节预算内补回会话与工作区片段及显式 /fork 历史. 未检测到新的压缩检查点时不注入额外上下文.
+- **改善有损压缩.** 按需启用 PreInvocation 恢复 Hook（需 Python 3.10+）. 压缩后在默认 45,000 UTF-8 字节预算内补回会话与工作区片段（可选通过手动 `fork_lineage.json` 衔接 /fork 历史）. 未检测到新的压缩检查点时不注入额外上下文.
 - **CLI 和更新.** 从顶栏启动已安装的 Antigravity CLI. 支持在插件面板检查更新. 安装器提供备份和完整性校验及还原.
 
 上下文设置的实际效果取决于模型和客户端及服务端限制. 不代表所有模型都能无限扩容. 模型设置列表用于配置上下文. 不会替代客户端切换实际聊天模型.
@@ -138,9 +138,9 @@ antigravity-context-viewer/
 ├── meter-core.js                           # 上下文估算、Token 统计与分词引擎
 ├── meter-context-unlock.js                 # 桌面端/CLI 上下文长度模式改写与安全还原引擎
 ├── meter-enhance.js                        # 系统提示词 0~4 档、防幻觉与中文标题等长替换引擎
-├── meter-rehydrate.js                      # 改善 AGY 有损压缩 (Slim-LTS) 与 hooks.json 安全管理器
+├── meter-rehydrate.js                      # 改善 AGY 有损压缩与 hooks.json 安全管理器
 ├── i18n/                                   # 客户端简体中文化词典与运行时 (zh-CN.json / i18n-runtime.js)
-├── rehydrate/                              # 改善 AGY 有损压缩文档与独立 Python 脚本 (Slim-LTS)
+├── rehydrate/                              # 改善 AGY 有损压缩文档与独立 MIT Python 脚本
 ├── unlock/                                 # PR #3 跨平台解锁工具与文档 (language-server & agy-cli)
 ├── meter-renderer.js                       # 渲染层构建产物 (0.8.5)
 ├── src/renderer/                           # 渲染层源码
@@ -181,7 +181,7 @@ antigravity-context-viewer/
 - **Issue #17（`cli-window-helper` VirusTotal 检测溯源、文档透明度与 Windows CI 源码构建建议）**：感谢 **[@riandycandra](https://github.com/riandycandra)**。
 - **PR #21（繁体中文面板译文精细优化）**：感谢 **[@U1tr0n-Lee](https://github.com/U1tr0n-Lee)**。
 - **Issue #22（GitHub API 限流时官方 Atom/Web 更新回退方案）**：感谢 **[@zhao33079-zhao](https://github.com/zhao33079-zhao)**。
-- **压缩后上下文回水与跨 `/fork` 溯源方案（Slim-LTS）**：感谢 **AGY Post-Compact Rehydration 原作者**（<https://agy-rehydrate.pages.dev/>）发布的方案与脚本基础。
+- **压缩后上下文恢复与跨 `/fork` 溯源方案**：感谢社区 **AGY Post-Compact Rehydration** 方案（<https://agy-rehydrate.pages.dev/>）提供的设计思路灵感；本仓库内置的 Hook 脚本与文档按 MIT 协议独立实现。
 
 
 ## 作者

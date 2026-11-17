@@ -522,7 +522,7 @@ async function main() {
     console.log(`     * 模型请求验证: 待通过真实在线会话验证 (分层标定，未发送请求前不宣称生效)`);
     const { getRehydrateStatus } = require('./meter-rehydrate');
     const rhSt = getRehydrateStatus();
-    console.log('   - 🩹 改善 AGY 有损压缩 (Slim-LTS):');
+    console.log('   - 🩹 改善 AGY 有损压缩:');
     console.log(`     * 当前状态: ${rhSt.status === 'enabled' ? '✅ 已开启' : (rhSt.status === 'disabled' ? '⏸️ 已停用' : (rhSt.status === 'broken' ? '⚠️ 待修复' : (rhSt.status === 'corrupt_hooks_json' ? '❌ hooks.json 异常' : '⚪ 未开启 (默认按需开启)')))}`);
     console.log(`     * 按需开启: 可运行 node cli.js rehydrate:enable 或在客户端面板「配置」页开启`);
     console.log(`✅ 运行中窗口热挂载状态: ${manifest.liveInjected ? (backendAligned ? '已即时生效（无需重启）' : '界面已挂载但后台需重启对齐') : '将在下次启动 Antigravity 时自动生效'}`);
@@ -579,7 +579,7 @@ async function main() {
       }
       try {
         const { restoreRehydrate } = require('./meter-rehydrate');
-        const rhRes = restoreRehydrate({});
+        const rhRes = restoreRehydrate({ skipPythonProbe: true });
         if (rhRes.ok) {
           if (rhRes.skippedUnmanaged) {
             console.log('ℹ️  保留用户独立安装的 post-compact-rehydrate Hook（非本插件托管启用，如需移除请运行 node cli.js rehydrate:remove）');
@@ -605,6 +605,9 @@ async function main() {
     console.log(`     * 上下文监控: ${res.hotDisposed ? '已通过 CDP 即时销毁运行实例' : '运行实例需重启客户端彻底清理'}`);
     console.log('     * 界面汉化: 运行中已渲染 DOM 受客户端页面内存缓存影响，需完全重启客户端彻底恢复纯净英文');
     console.log('     * 代理环境: 运行中进程已加载的 process.env 环境变量与 Electron session 代理无法即时热撤销，必须完全重启客户端以彻底退出代理环境');
+    if (!restoreAll) {
+      console.log('   - 外部配置提示: 如曾启用系统增强或「改善 AGY 有损压缩」Hook，可运行 node cli.js restore --all（或 node cli.js rehydrate:remove）一并还原');
+    }
   } else if (cmd === 'unlock-status') {
     console.log('🔍 正在检测 Antigravity 后端上下文调整状态...');
     const st = await analyzeBinaryAsync(customPath);

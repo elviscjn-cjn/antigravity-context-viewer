@@ -703,7 +703,7 @@ async function install(options = {}) {
         updatedAt: new Date().toISOString()
       }, null, 2), 'utf8');
 
-      // 拷贝 Slim-LTS 回水 Hook 脚本至 ASAR 内部，确保客户端面板可直接离线部署与校验
+      // 拷贝 Post-Compact Rehydration 恢复 Hook 脚本至 ASAR 内部，确保客户端面板可直接离线部署与校验
       const rehydrateSrcCandidates = [
         path.join(__dirname, 'rehydrate', 'rehydrate_after_compact.py'),
         path.join(__dirname, 'dist', 'rehydrate', 'rehydrate_after_compact.py'),
