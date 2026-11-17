@@ -3683,3 +3683,158 @@ test('ELV-83: parseUserPlanStatus、resolveEffectivePlanStatus 与严格 allowed
   assert.equal(unknownPlanSnap.activeStatus, 'unknown');
   assert.equal(unknownPlanSnap.pools[0]?.noPermission, false);
 });
+
+test('Collector 性能与图像解析：WebP (VP8 / VP8L / VP8X) 宽高识别与内联缓存复用', async () => {
+  const { scanFiles, getImageDimensions, inspectInlineImageMeta, INLINE_IMAGE_DIMS_CACHE } = require('./meter-collector');
+
+  const makeWebpVp8 = (width, height) => {
+    const buf = Buffer.alloc(30, 0);
+    buf.write('RIFF', 0, 'ascii');
+    buf.writeUInt32LE(22, 4);
+    buf.write('WEBP', 8, 'ascii');
+    buf.write('VP8 ', 12, 'ascii');
+    buf.writeUInt32LE(10, 16);
+    buf[20] = 0x10;
+    buf[23] = 0x9D;
+    buf[24] = 0x01;
+    buf[25] = 0x2A;
+    buf.writeUInt16LE(width & 0x3FFF, 26);
+    buf.writeUInt16LE(height & 0x3FFF, 28);
+    return buf;
+  };
+
+  const makeWebpVp8L = (width, height) => {
+    const buf = Buffer.alloc(25, 0);
+    buf.write('RIFF', 0, 'ascii');
+    buf.writeUInt32LE(17, 4);
+    buf.write('WEBP', 8, 'ascii');
+    buf.write('VP8L', 12, 'ascii');
+    buf.writeUInt32LE(5, 16);
+    buf[20] = 0x2F;
+    const packed = (((height - 1) & 0x3FFF) << 14) | ((width - 1) & 0x3FFF);
+    buf.writeUInt32LE(packed >>> 0, 21);
+    return buf;
+  };
+
+  const makeWebpVp8X = (width, height) => {
+    const buf = Buffer.alloc(30, 0);
+    buf.write('RIFF', 0, 'ascii');
+    buf.writeUInt32LE(22, 4);
+    buf.write('WEBP', 8, 'ascii');
+    buf.write('VP8X', 12, 'ascii');
+    buf.writeUInt32LE(10, 16);
+    buf.writeUIntLE(width - 1, 24, 3);
+    buf.writeUIntLE(height - 1, 27, 3);
+    return buf;
+  };
+
+  assert.deepEqual(getImageDimensions(makeWebpVp8(1280, 720)), { width: 1280, height: 720 });
+  assert.deepEqual(getImageDimensions(makeWebpVp8L(800, 600)), { width: 800, height: 600 });
+  assert.deepEqual(getImageDimensions(makeWebpVp8X(1920, 1080)), { width: 1920, height: 1080 });
+  assert.deepEqual(getImageDimensions(Buffer.from('RIFF\x00\x00\x00\x00WEBP', 'ascii')), { width: null, height: null });
+
+  INLINE_IMAGE_DIMS_CACHE.clear();
+  const bigPng = Buffer.alloc(2048, 0);
+  bigPng[0] = 0x89; bigPng[1] = 0x50; bigPng[2] = 0x4E; bigPng[3] = 0x47;
+  bigPng.writeUInt32BE(1536, 16);
+  bigPng.writeUInt32BE(768, 20);
+  const b64Png = bigPng.toString('base64');
+
+  const first = inspectInlineImageMeta('inline:webp-test-1', 'image/png', b64Png);
+  assert.equal(first.cacheHit, false);
+  assert.equal(first.width, 1536);
+  assert.equal(first.height, 768);
+  assert.equal(first.bytes, 2048);
+
+  const second = inspectInlineImageMeta('inline:webp-test-1', 'image/png', b64Png);
+  assert.equal(second.cacheHit, true);
+  assert.equal(second.width, 1536);
+
+  const webpB64 = makeWebpVp8L(1024, 768).toString('base64');
+  const [info] = await scanFiles([{ uri: 'inline:webp-1', mime: 'image/webp', inlineData: webpB64 }]);
+  assert.equal(info.status, 'parsed');
+  assert.equal(info.dimensions, '1024×768');
+  assert.ok(info.low >= 258 * 2);
+});
+
+test('Collector 性能与增量解析：transcriptFileCache 按字节增量续读、半行 UTF-8 安全缓冲与覆写回退', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { loadIncrementalTranscriptRecords } = require('./meter-collector');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-incr-transcript-'));
+  const cacheMap = new Map();
+  try {
+    const convDir = path.join(tmpDir, 'brain', 'conv-incr-01');
+    fs.mkdirSync(convDir, { recursive: true });
+    const filePath = path.join(convDir, 'transcript.jsonl');
+
+    const line0 = JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-16T08:00:00Z',
+      step_index: 0,
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_read_tokens: 4000
+    });
+    const line1 = JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-16T08:01:00Z',
+      step_index: 1,
+      input_tokens: 1200,
+      output_tokens: 150,
+      cache_read_tokens: 4800,
+      note: '中文UTF8注释测试'
+    });
+
+    const halfLine = '{"type":"PLANNER_RESPONSE","created_at":"2026-11-16T08:02:00Z","note":"截断中';
+    fs.writeFileSync(filePath, Buffer.from(`${line0}\n${halfLine}`, 'utf8'));
+    const r1 = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(r1.mode, 'full');
+    assert.equal(r1.records.length, 1);
+    assert.equal(r1.records[0].stepIndex, 0);
+
+    const rHit = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(rHit.mode, 'cache-hit');
+    assert.equal(rHit.records.length, 1);
+
+    const fullLineMid = JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-16T08:02:00Z',
+      note: '截断完成恢复',
+      input_tokens: 500,
+      output_tokens: 100,
+      cache_read_tokens: 1000
+    });
+    fs.writeFileSync(filePath, Buffer.from(`${line0}\n${fullLineMid}\n${line1}\n`, 'utf8'));
+    const r2 = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(r2.mode, 'incremental');
+    assert.equal(r2.records.length, 3);
+    assert.equal(r2.records[2].stepIndex, 1);
+
+    const freshMap = new Map();
+    const rFull = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), freshMap);
+    assert.deepEqual(r2.records.map(x => x.eventId), rFull.records.map(x => x.eventId));
+
+    const rewritten0 = JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-16T09:00:00Z',
+      step_index: 99,
+      input_tokens: 9999,
+      output_tokens: 1,
+      cache_read_tokens: 0
+    });
+    fs.writeFileSync(filePath, Buffer.from(`${rewritten0}\n${fullLineMid}\n${line1}\n${line1}\n`, 'utf8'));
+    const rRewrite = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(rRewrite.mode, 'full');
+    assert.equal(rRewrite.records[0].stepIndex, 99);
+
+    fs.writeFileSync(filePath, Buffer.from(`${line0}\n`, 'utf8'));
+    const rShrink = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(rShrink.mode, 'full');
+    assert.equal(rShrink.records.length, 1);
+    assert.equal(rShrink.records[0].stepIndex, 0);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
