@@ -239,3 +239,41 @@ print('PY_OK')
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('CLI 启动模块 9: 探测 ~/.gemini/bin/agy 与 detectCliBinary 原生二进制过滤', () => {
+  const { detectCliBinary } = require('./meter-context-unlock');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-gemini-root-bin-'));
+  try {
+    // 1. Windows: ~/.gemini/bin/agy.exe 应无需 PATH 即被识别
+    const winExe = path.join(tmpDir, '.gemini', 'bin', 'agy.exe');
+    fs.mkdirSync(path.dirname(winExe), { recursive: true });
+    fs.writeFileSync(winExe, 'MZdummy', 'utf8');
+
+    const resWin = resolveCliExecutable(null, { platform: 'win32', homeDir: tmpDir, env: {} });
+    assert.equal(resWin.ok, true);
+    assert.equal(resWin.source, 'gemini_cli_bin_exe');
+    assert.equal(path.resolve(resWin.exePath), path.resolve(winExe));
+
+    const detectedWin = detectCliBinary(null, { platform: 'win32', homeDir: tmpDir, env: {} });
+    assert.equal(path.resolve(detectedWin), path.resolve(winExe));
+
+    // 2. Windows 仅有无伴生 .exe 的 .cmd 包装脚本时，detectCliBinary 应拒绝将其送入 PE 解析
+    const cmdOnlyHome = path.join(tmpDir, 'cmd-only');
+    const winCmd = path.join(cmdOnlyHome, '.gemini', 'bin', 'agy.cmd');
+    fs.mkdirSync(path.dirname(winCmd), { recursive: true });
+    fs.writeFileSync(winCmd, '@echo off\r\necho agy wrapper\r\n', 'utf8');
+    assert.equal(detectCliBinary(null, { platform: 'win32', homeDir: cmdOnlyHome, env: {} }), null);
+
+    // 3. Linux/macOS: ~/.gemini/bin/agy 应被识别
+    const unixHome = path.join(tmpDir, 'unix-home');
+    const unixBin = path.join(unixHome, '.gemini', 'bin', 'agy');
+    fs.mkdirSync(path.dirname(unixBin), { recursive: true });
+    fs.writeFileSync(unixBin, '#!/bin/sh\necho ok\n', 'utf8');
+    const resLinux = resolveCliExecutable(null, { platform: 'linux', homeDir: unixHome, env: {} });
+    assert.equal(resLinux.ok, true);
+    assert.equal(resLinux.source, 'gemini_cli_bin');
+    assert.equal(path.resolve(resLinux.exePath), path.resolve(unixBin));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
