@@ -387,7 +387,9 @@ function resolveCliExecutable(customCliPath, options = {}) {
   if (platform === 'win32') {
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.exe'), src: 'gemini_bin_exe' },
+      { p: path.join(home, '.gemini', 'bin', 'agy.exe'), src: 'gemini_cli_bin_exe' },
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.cmd'), src: 'gemini_bin_cmd' },
+      { p: path.join(home, '.gemini', 'bin', 'agy.cmd'), src: 'gemini_cli_bin_cmd' },
       { p: path.join(appData, 'Antigravity', 'bin', 'agy.exe'), src: 'appdata_bin_exe' },
       { p: path.join(appData, 'Antigravity', 'bin', 'agy.cmd'), src: 'appdata_bin_cmd' },
       { p: path.join(localAppData, 'Programs', 'Antigravity IDE', 'bin', 'agy.exe'), src: 'ide_bin_exe' },
@@ -411,6 +413,7 @@ function resolveCliExecutable(customCliPath, options = {}) {
     }
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy'), src: 'gemini_bin' },
+      { p: path.join(home, '.gemini', 'bin', 'agy'), src: 'gemini_cli_bin' },
       { p: path.join(home, '.local', 'bin', 'agy'), src: 'local_bin' },
       { p: '/opt/homebrew/bin/agy', src: 'homebrew_bin' },
       { p: '/usr/local/bin/agy', src: 'usr_local_bin' }
@@ -418,6 +421,7 @@ function resolveCliExecutable(customCliPath, options = {}) {
   } else {
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy'), src: 'gemini_bin' },
+      { p: path.join(home, '.gemini', 'bin', 'agy'), src: 'gemini_cli_bin' },
       { p: path.join(home, '.local', 'bin', 'agy'), src: 'local_bin' },
       { p: '/usr/local/bin/agy', src: 'usr_local_bin' }
     );

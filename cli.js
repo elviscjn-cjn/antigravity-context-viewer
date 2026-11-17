@@ -19,7 +19,7 @@ const { install, findAsarPath, tryHotInject, tryHotInjectDetailed, probeLiveHost
 const { restore } = require('./restore');
 const { resolvePython, syncLiveRuntimeBundle } = require('./meter-collector');
 const { redactProxyUrl } = require('./meter-proxy');
-const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, AUTHOR_INFO } = require('./meter-context-unlock');
+const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, detectCliBinary, AUTHOR_INFO } = require('./meter-context-unlock');
 
 const asar = loadAsarEngine();
 const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -446,6 +446,30 @@ async function main() {
   const backupIdx = args.indexOf('--backup');
   const customBackup = backupIdx >= 0 ? args[backupIdx + 1] : null;
   const isForce = args.includes('--force');
+  const isCliTarget = args.includes('--cli');
+
+  const resolveUnlockCliOrCustomTarget = () => {
+    if (customPath) return customPath;
+    if (!isCliTarget) return null;
+    const cliBin = detectCliBinary(null);
+    if (!cliBin) {
+      throw new Error('未检测到 Antigravity CLI (agy) 可执行文件，请使用 --path <bin> 显式指定或将 agy 加入 PATH。');
+    }
+    return cliBin;
+  };
+
+  const printUnlockStatusBlock = (st, headerLabel) => {
+    console.log(headerLabel);
+    console.log(`- 目标文件: ${st.targetPath || '未检测到'}`);
+    console.log(`- 目标架构: ${st.arch || '未知'} (${st.format || '未知'}, ${st.mode || '未知'})`);
+    console.log(`- 磁盘模式: ${st.configuredSummary || '未知'}`);
+    console.log(`- 运行状态: [${st.statusText || st.status}] ${st.details || st.reason || ''}`);
+    if (st.scopeNotice) console.log(`- 作用范围: ${st.scopeNotice}`);
+    if (st.backupInfo) {
+      console.log(`- 备份文件: ${st.backupInfo.backupPath}${st.backupStaleReason ? ` (⚠️ ${st.backupStaleReason})` : ''}`);
+    }
+    console.log(`- ${st.author?.credit || AUTHOR_INFO.credit} (${st.author?.url || AUTHOR_INFO.url})`);
+  };
 
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
@@ -576,27 +600,35 @@ async function main() {
     console.log('     * 界面汉化: 运行中已渲染 DOM 受客户端页面内存缓存影响，需完全重启客户端彻底恢复纯净英文');
     console.log('     * 代理环境: 运行中进程已加载的 process.env 环境变量与 Electron session 代理无法即时热撤销，必须完全重启客户端以彻底退出代理环境');
   } else if (cmd === 'unlock-status') {
-    console.log('🔍 正在检测 Antigravity 后端上下文调整状态...');
-    const st = await analyzeBinaryAsync(customPath);
-    console.log(`- 目标文件: ${st.targetPath || '未检测到'}`);
-    console.log(`- 目标架构: ${st.arch || '未知'} (${st.format || '未知'}, ${st.mode || '未知'})`);
-    console.log(`- 磁盘模式: ${st.configuredSummary || '未知'}`);
-    console.log(`- 运行状态: [${st.statusText || st.status}] ${st.details || st.reason || ''}`);
-    if (st.scopeNotice) console.log(`- 作用范围: ${st.scopeNotice}`);
-    if (st.backupInfo) {
-      console.log(`- 备份文件: ${st.backupInfo.backupPath}${st.backupStaleReason ? ` (⚠️ ${st.backupStaleReason})` : ''}`);
+    const explicitTarget = resolveUnlockCliOrCustomTarget();
+    if (explicitTarget) {
+      const header = isCliTarget && !customPath
+        ? '🔍 正在检测 Antigravity CLI (agy) 上下文调整状态...'
+        : '🔍 正在检测 Antigravity 后端上下文调整状态...';
+      const st = await analyzeBinaryAsync(explicitTarget);
+      printUnlockStatusBlock(st, header);
+    } else {
+      const st = await analyzeBinaryAsync(null);
+      printUnlockStatusBlock(st, '🔍 正在检测 Antigravity 后端上下文调整状态...');
+      const cliBin = detectCliBinary(null);
+      if (cliBin && (!st.targetPath || path.resolve(cliBin) !== path.resolve(st.targetPath))) {
+        const cliSt = await analyzeBinaryAsync(cliBin);
+        console.log('');
+        printUnlockStatusBlock(cliSt, '🔍 检测到 Antigravity CLI (agy) 独立可执行文件:');
+        console.log('  💡 可通过 `node cli.js unlock --cli --mode ...` / `unlock-restore --cli` 单独管理 CLI');
+      }
     }
-    console.log(`- ${st.author?.credit || AUTHOR_INFO.credit} (${st.author?.url || AUTHOR_INFO.url})`);
   } else if (cmd === 'unlock') {
     const modeIdx = args.indexOf('--mode');
     const modeVal = modeIdx >= 0 ? args[modeIdx + 1] : undefined;
     const limitIdx = args.indexOf('--limit');
     const limitVal = limitIdx >= 0 ? args[limitIdx + 1] : undefined;
     const noCliSync = args.includes('--no-cli-sync') || args.includes('--no-sync');
-    console.log('⚡ 正在执行 Antigravity 后端上下文长度调整...');
+    const targetBin = resolveUnlockCliOrCustomTarget();
+    console.log(`⚡ 正在执行 ${isCliTarget && !customPath ? 'Antigravity CLI (agy)' : 'Antigravity 后端'}上下文长度调整...`);
     console.log(`ℹ ${AUTHOR_INFO.credit} (${AUTHOR_INFO.url})`);
     console.log(`⚠️  ${AUTHOR_INFO.disclaimer}`);
-    const res = applyUnlock({ targetPath: customPath, mode: modeVal, limitTokens: limitVal, syncConfigFiles: true, syncCliConfigs: !noCliSync });
+    const res = applyUnlock({ targetPath: targetBin, mode: modeVal, limitTokens: limitVal, syncConfigFiles: true, syncCliConfigs: !noCliSync });
     if (!res.ok) {
       throw new Error(res.error);
     }
@@ -607,8 +639,9 @@ async function main() {
     if (res.backupPath) console.log(`📁 原版备份已安全保存至: ${res.backupPath}`);
   } else if (cmd === 'unlock-restore') {
     const noCliSync = args.includes('--no-cli-sync') || args.includes('--no-sync');
-    console.log('🔄 正在恢复 Antigravity 官方原版后端二进制...');
-    const res = restoreUnlock({ targetPath: customPath, syncConfigFiles: true, syncCliConfigs: !noCliSync });
+    const targetBin = resolveUnlockCliOrCustomTarget();
+    console.log(`🔄 正在恢复 ${isCliTarget && !customPath ? 'Antigravity CLI (agy)' : 'Antigravity 官方原版'}二进制...`);
+    const res = restoreUnlock({ targetPath: targetBin, syncConfigFiles: true, syncCliConfigs: !noCliSync });
     if (!res.ok) {
       throw new Error(res.error);
     }
@@ -750,9 +783,9 @@ async function main() {
   node cli.js status                        查看安装状态与当前对话实时上下文用量
   node cli.js check                         执行前置环境健康检查
   node cli.js restore [--all]               一键无损卸载并恢复备份 (--all 含还原内核增强)
-  node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文调整状态
-  node cli.js unlock --mode <default|fixed|dynamic> [--limit N]  调整上下文长度上限
-  node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制
+  node cli.js unlock-status [--cli] [--path <bin>]  检查桌面端与 agy CLI 上下文调整状态
+  node cli.js unlock [--cli] --mode <default|fixed|dynamic> [--limit N]  调整上下文上限
+  node cli.js unlock-restore [--cli] [--path <bin>] 恢复官方原版二进制
   node cli.js enhance-status                检查系统提示词精简与中文标题内核状态
   node cli.js enhance [--tier 0-4] [--title on|off] [--context default|512k|900k|dynamic] [--lang zh-CN|en] [--brand english|hidden|translated]
   node cli.js enhance-restore               一键还原系统提示词、英文标题与默认上下文`);
