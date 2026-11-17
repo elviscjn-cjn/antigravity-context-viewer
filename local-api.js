@@ -1,25 +1,21 @@
 'use strict';
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const { getAppDataDir } = require('./asar-engine');
 
-const LOOPBACK_ORIGIN_RE = /^https:\/\/127\.0\.0\.1:\d+$/;
-
-function getAppDataDir() {
-  if (process.env.APPDATA) return process.env.APPDATA;
-  return process.platform === 'darwin'
-    ? path.join(os.homedir(), 'Library', 'Application Support')
-    : path.join(os.homedir(), '.config');
-}
+const LOOPBACK_ORIGIN_RE = /^https?:\/\/127\.0\.0\.1:(\d+)$/;
 
 function normalizeLoopbackOrigin(rawOrigin) {
   if (!rawOrigin || typeof rawOrigin !== 'string') return null;
   try {
     const parsed = new URL(rawOrigin.trim());
     const origin = parsed.origin;
-    return LOOPBACK_ORIGIN_RE.test(origin) ? origin : null;
+    const match = origin.match(LOOPBACK_ORIGIN_RE);
+    if (!match) return null;
+    const port = Number(match[1]);
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? origin : null;
   } catch {
     return null;
   }
@@ -44,9 +40,10 @@ async function connectOrigin(rawOrigin, page = null, origins = null) {
     throw new Error('非法的本机回环页面地址');
   }
   const html = await request(origin + '/');
-  const m = html.match(/window\.__APP_CONFIG__\s*=\s*(.*?);/);
-  if (!m) throw new Error('未能提取宿主 CSRF 令牌');
-  const token = JSON.parse(m[1]).csrfToken;
+  const config = html.match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s);
+  if (!config) throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+  const token = JSON.parse(config[1]).csrfToken;
+  if (!token) throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
   return {
     origin,
     page,
@@ -60,16 +57,26 @@ async function connectOrigin(rawOrigin, page = null, origins = null) {
  * 支持直接传入已知 `options.origin` 免 CDP/DevToolsActivePort 直连，亦可通过 CDP 发现所有运行窗口原点。
  */
 async function connect(options = {}) {
-  const explicitOrigin = normalizeLoopbackOrigin(options?.origin);
-  if (explicitOrigin) {
+  if (options.origin !== undefined && options.origin !== null && String(options.origin).trim() !== '') {
+    const explicitOrigin = normalizeLoopbackOrigin(options.origin);
+    if (!explicitOrigin) throw new Error('非法的本机回环页面地址');
     return connectOrigin(explicitOrigin, null, [explicitOrigin]);
   }
-  const portFile = path.join(getAppDataDir(), 'Antigravity', 'DevToolsActivePort');
-  const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+  let port;
+  try {
+    const portFile = path.join(getAppDataDir(options), 'Antigravity', 'DevToolsActivePort');
+    port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    throw new Error('Antigravity 本地连接尚未就绪，请稍后重试');
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('Antigravity 本地连接信息无效，请重新打开客户端');
+  }
   const pages = JSON.parse(await request(`http://127.0.0.1:${port}/json/list`));
-  const matchedPages = pages.filter(item => item.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(item.url));
+  const matchedPages = pages.filter(item => item && item.type === 'page' && normalizeLoopbackOrigin(item.url));
   const page = matchedPages[0];
-  if (!page) throw new Error('Antigravity window not found');
+  if (!page) throw new Error('未找到 Antigravity 主窗口，请等待窗口加载后重试');
   const origins = Array.from(new Set(matchedPages.map(item => normalizeLoopbackOrigin(item.url)).filter(Boolean)));
   const targetOrigin = normalizeLoopbackOrigin(page.url);
   return connectOrigin(targetOrigin, page, origins);

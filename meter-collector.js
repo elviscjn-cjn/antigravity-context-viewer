@@ -2264,6 +2264,9 @@ function resetQuotaHostCacheForTest() {
 function classifyQuotaFetchError(err) {
   const msg = String(err?.message || err || '未知错误').trim();
   const lower = msg.toLowerCase();
+  if (/enoent|devtoolsactiveport/i.test(lower)) {
+    return { kind: 'network', message: '本地额度服务尚未就绪，请稍后重试' };
+  }
   if (/timeout|timed out|etimedout|deadline/i.test(lower)) {
     return { kind: 'timeout', message: '请求语言服务超时' };
   }

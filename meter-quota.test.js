@@ -6,6 +6,93 @@ const vm = require('node:vm');
 const core = require('./meter-core');
 const collector = require('./meter-collector');
 const { generateMeterPreloadCode } = require('./modular-installer');
+const { connect: connectLocalApi, normalizeLoopbackOrigin } = require('./local-api');
+
+test('本地额度连接支持无 APPDATA 的 macOS、Windows 和 Linux 配置路径', () => {
+  const homeDir = '/temporary-home';
+  const { execFileSync } = require('child_process');
+  const result = execFileSync(process.execPath, ['-e', `
+    const { getAppDataDir } = require('./asar-engine');
+    const homeDir = ${JSON.stringify(homeDir)};
+    process.stdout.write(JSON.stringify(
+      ['darwin', 'win32', 'linux'].map(platform => getAppDataDir({ platform, homeDir }))
+    ));
+  `], { cwd: __dirname, env: { ...process.env, APPDATA: '', XDG_CONFIG_HOME: '' }, encoding: 'utf8' });
+  assert.deepEqual(JSON.parse(result), [
+    path.join(homeDir, 'Library', 'Application Support'),
+    path.join(homeDir, 'AppData', 'Roaming'),
+    path.join(homeDir, '.config')
+  ]);
+});
+
+test('macOS 本地连接发现 HTTP 窗口并使用宿主 CSRF 信息调用额度接口', async (t) => {
+  const os = require('os');
+  const http = require('http');
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-quota-mac-'));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  let origin;
+  let receivedRpc = false;
+  let configText = '<script>window.__APP_CONFIG__ =\n {"csrfToken":"fixture-token"};</script>';
+  const server = http.createServer((req, res) => {
+    if (req.url === '/json/list') {
+      res.end(JSON.stringify([
+        { type: 'page', url: 'https://example.com/' },
+        { type: 'page', url: origin + '/c/test-conversation' },
+        { type: 'page', url: origin + '/c/another-conversation' }
+      ]));
+    } else if (req.url === '/') {
+      res.end(configText);
+    } else {
+      receivedRpc = req.method === 'POST'
+        && req.headers['x-codeium-csrf-token'] === 'fixture-token'
+        && req.url.endsWith('/GetUserStatus');
+      res.end(JSON.stringify({ userStatus: { ready: true } }));
+    }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  origin = `http://127.0.0.1:${server.address().port}`;
+  const options = { appDataDir: path.join(homeDir, 'Library', 'Application Support') };
+  const portFile = path.join(options.appDataDir, 'Antigravity', 'DevToolsActivePort');
+  fs.mkdirSync(path.dirname(portFile), { recursive: true });
+  fs.writeFileSync(portFile, `${server.address().port}\n/devtools/browser/fixture\n`);
+  const api = await connectLocalApi(options);
+  assert.equal(api.origin, origin);
+  assert.deepEqual(api.origins, [origin]);
+  assert.deepEqual(await api.call('GetUserStatus', {}), { userStatus: { ready: true } });
+  assert.equal(receivedRpc, true);
+  const direct = await connectLocalApi({ origin, appDataDir: path.join(homeDir, 'no-port-file') });
+  assert.equal(direct.origin, origin);
+  assert.deepEqual(direct.origins, [origin]);
+  configText = 'window.__APP_CONFIG__ = {};';
+  await assert.rejects(connectLocalApi({ origin }), /鉴权信息尚未就绪/);
+  configText = '<html>Still loading</html>';
+  await assert.rejects(connectLocalApi({ origin }), /本地连接信息尚未就绪/);
+});
+
+test('保留 HTTPS 与已知窗口直连边界，拒绝非法 origin 而不回退扫描', async (t) => {
+  assert.equal(normalizeLoopbackOrigin('https://127.0.0.1:56789/c/test'), 'https://127.0.0.1:56789');
+  assert.equal(normalizeLoopbackOrigin('http://127.0.0.1:56789/c/test'), 'http://127.0.0.1:56789');
+  assert.equal(normalizeLoopbackOrigin('https://example.com:56789'), null);
+  assert.equal(normalizeLoopbackOrigin('http://127.0.0.1:0'), null);
+  const appDataDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ag-quota-origin-'));
+  t.after(() => fs.rmSync(appDataDir, { recursive: true, force: true }));
+  await assert.rejects(connectLocalApi({ origin: 'https://example.com:56789', appDataDir }), /非法/);
+});
+
+test('缺少本地连接文件时显示可读提示，不泄露文件路径或误报额度耗尽', async (t) => {
+  const homeDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ag-quota-missing-'));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  await assert.rejects(connectLocalApi({ appDataDir: homeDir }),
+    error => /尚未就绪/.test(error.message) && !/ENOENT|DevToolsActivePort|undefined/.test(error.message));
+  const result = await collector.fetchQuotaSnapshotFromHost({
+    error: new Error("ENOENT: no such file or directory, open 'undefined/Antigravity/DevToolsActivePort'")
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /尚未就绪/);
+  assert.doesNotMatch(result.error, /ENOENT|DevToolsActivePort|undefined/);
+  assert.notEqual(result.snapshot.activeStatus, 'exhausted');
+});
 
 const RENDERER_PATH = path.join(__dirname, 'meter-renderer.js');
 
