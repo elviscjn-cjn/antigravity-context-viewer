@@ -276,6 +276,7 @@ async function restore(options = {}) {
             'meter-cli-launcher.js',
             'meter-context-unlock.js',
             'meter-enhance.js',
+            'meter-accounts.js',
             'macos-binary-utils.js',
             'local-api.js',
             'attachment_scan.py',

@@ -118,6 +118,8 @@ const ALLOWED_ROUTES = [
   '/test-proxy',
   '/check-update',
   '/apply-update',
+  '/accounts-overview',
+  '/accounts-action',
   '/shutdown',
   '/restart-host'
 ];
@@ -135,6 +137,7 @@ const LIVE_CAPABILITIES = {
   contextUnlock: true,
   enhance: true,
   modules: true,
+  accounts: true,
   checkUpdate: true,
   applyUpdate: true,
   restartHost: false,
@@ -209,7 +212,13 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             res.end(JSON.stringify({ ok: false, error: `单次入账记录数超出上限（最多 ${MAX_RECORD_CALLS} 条）` }));
             return;
           }
-          const resCall = recordModelCalls(calls);
+          let confirmedAccountEmail = null;
+          try {
+            const { getSharedAccountsManager } = require('./meter-accounts');
+            const mgr = getSharedAccountsManager({ origin: reqOrigin });
+            confirmedAccountEmail = mgr.getOverviewState()?.activeAccountEmail || null;
+          } catch { }
+          const resCall = recordModelCalls(calls, confirmedAccountEmail ? { confirmedAccountEmail } : {});
           if (resCall && typeof resCall === 'object' && resCall.ok === false) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
@@ -489,8 +498,44 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             browsePoolKey: request.browsePoolKey || null
           });
           const { _raw, ...safeData } = resData || {};
+          let accountSyncResult = null;
+          try {
+            const { getSharedAccountsManager } = require('./meter-accounts');
+            const mgr = getSharedAccountsManager({ origin: targetOrigin });
+            const email = resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null;
+            if (email && resData?.snapshot) {
+              mgr.syncActiveHostQuotaSnapshot(resData, email);
+              const ov = mgr.getOverviewState();
+              if (ov.autoSwitch?.enabled && !resData.error) {
+                accountSyncResult = await mgr.evaluateAutoSwitch({
+                  activeEmail: email,
+                  activeSnapshot: resData.snapshot,
+                  syncState: 'fresh',
+                  isGenerating: Boolean(request?.isGenerating)
+                });
+              }
+            }
+          } catch { }
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, data: safeData }));
+          res.end(JSON.stringify({ ok: true, data: safeData, accountSyncResult }));
+          return;
+        }
+        if (req.url === '/accounts-overview') {
+          const { getSharedAccountsManager } = require('./meter-accounts');
+          const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
+          const mgr = getSharedAccountsManager({ origin: targetOrigin });
+          await mgr.detectCurrentActiveAccount();
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(mgr.getOverviewState()));
+          return;
+        }
+        if (req.url === '/accounts-action') {
+          const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
+          const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
+          const mgr = getSharedAccountsManager({ origin: targetOrigin });
+          const outRes = await dispatchAccountsAction(mgr, request || {});
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(outRes));
           return;
         }
         const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;

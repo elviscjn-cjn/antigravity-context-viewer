@@ -182,7 +182,11 @@ test('ELV-91 2: 四维分档精确边界（1/10/30/80/180/300 tok/s, TTFT 600s, 
   // 纯流式 7 档左闭右开边界
   assert.equal(core.classifyStreamSpeedTier(0.6).title, '彻底停滞');
   assert.equal(core.classifyStreamSpeedTier(0.6).color, '#DC2626');
-  assert.match(core.classifyStreamSpeedTier(0.6).comment, /Claude.*OpenAI.*豆包/);
+  assert.match(core.classifyStreamSpeedTier(0.6).comment, /Claude.*Codex.*豆包/);
+  assert.doesNotMatch(core.classifyStreamSpeedTier(0.6).comment, /OpenAI/);
+  assert.match(core.classifyTtftTier(360, 'zh-CN').comment, /Claude.*Codex.*豆包/);
+  assert.match(core.classifyTtftTier(700, 'en').comment, /Claude.*Codex.*Doubao/);
+  assert.match(core.classifyEfficiencyGrade(10, 'zh-TW').comment, /Claude.*Codex.*豆包/);
   assert.equal(core.classifyStreamSpeedTier(1.0).title, '濒临卡死');
   assert.match(core.classifyStreamSpeedTier(5.0).comment, /慢得批爆/);
   assert.equal(core.classifyStreamSpeedTier(10.0).title, '慢于阅读');
@@ -370,7 +374,8 @@ test('ELV-91 5: UI 面板三阶段展示、闪电颜色联动、最新卡片/时
     assert.equal(sp.durationVal, '2 分 22 秒');
     assert.match(sp.takeaway, /整体均速 3 tok\/s/);
     const gridChildren = h.elements.get('speed-breakdown-grid').children;
-    assert.ok(gridChildren.some(c => /elv91-v1/.test(c.children[0].textContent)));
+    assert.ok(gridChildren.some(c => /综合效率评分/.test(c.children[0].textContent)));
+    assert.ok(gridChildren.every(c => !/elv91-v1|ELV-91/i.test(c.children[0].textContent)), '用户可见面板不得暴露内部规则编号或 Linear 编号');
 
     // 3. 同一记录同步进入最新调用卡片与时间线且字段统一（清除 override）
     h.api.setSpeedEvaluationForTest(null, { openBreakdown: false });
@@ -440,4 +445,130 @@ test('ELV-91 6: 等待期定时轻量刷新与会话切换不触发全量历史�
   } finally {
     h.api.dispose();
   }
+});
+
+test('ELV-91 7: 短窗口样本统一显示短样本（349 tok / 4.19s / 3.89s / 0.30s -> ~1150 tok/s）、不报错说字太少且保留短窗口对照', async () => {
+  const shortCase = core.evaluateGenerationExperience({
+    phase: 'final',
+    outputTokens: 349,
+    ttftSec: 3.89,
+    streamingSec: 0.30,
+    totalDurationSec: 4.19,
+    streamSpeed: 1150.2,
+    overallTps: 83.3
+  }, 'zh-CN');
+
+  assert.equal(shortCase.isSampleSparse, true);
+  assert.equal(shortCase.lowStreamTokens, false);
+  assert.equal(shortCase.shortStreamTime, true);
+  assert.equal(shortCase.isReliableSpeed, false);
+  assert.equal(shortCase.shortWindowEstimateSpeed, 1150.2);
+  assert.equal(shortCase.efficiency.available, false);
+  assert.equal(shortCase.efficiency.skippedReason, 'insufficient_sample');
+  assert.match(shortCase.comment, /流式持续时间过短/);
+  assert.doesNotMatch(shortCase.comment, /字太少/);
+
+  const h = createSpeedUiHarness();
+  try {
+    h.api.setSpeedEvaluationForTest({
+      phase: 'final',
+      outputTokens: 349,
+      ttftSec: 3.89,
+      streamingSec: 0.30,
+      totalDurationSec: 4.19,
+      streamSpeed: 1150.2,
+      overallTps: 83.3
+    }, { openBreakdown: true });
+
+    const sp = h.api.getSpeedPanelStateForTest();
+    assert.equal(h.elements.get('speed-amount').textContent, '短样本');
+    assert.equal(h.elements.get('overflow-speed-val').textContent, '短样本');
+    assert.equal(sp.speedVal, '短样本');
+    assert.match(sp.badgeText, /流式过短/);
+    assert.doesNotMatch(sp.badgeText, /瞬时爆发|极快/);
+    const cells = h.elements.get('speed-breakdown-grid').children.map(c => `${c.children[0].textContent}=>${c.children[1].textContent}`);
+    assert.ok(cells.some(s => /短窗口估算/.test(s) && /1150\.2 tok\/s/.test(s)));
+    assert.ok(cells.some(s => /整体平均速率/.test(s) && /83\.3 tok\/s/.test(s)));
+
+    await h.api.setPanelLanguage('en', { persist: false });
+    h.api.setSpeedEvaluationForTest({
+      phase: 'final',
+      outputTokens: 349,
+      ttftSec: 3.89,
+      streamingSec: 0.30,
+      totalDurationSec: 4.19,
+      streamSpeed: 1150.2,
+      overallTps: 83.3
+    }, { openBreakdown: true });
+    assert.equal(h.elements.get('speed-amount').textContent, 'Short sample');
+    assert.equal(h.api.getSpeedPanelStateForTest().speedVal, 'Short sample');
+  } finally {
+    h.api.dispose();
+  }
+});
+
+test('ELV-91 8: 模型重复档位去重、MODEL_PLACEHOLDER_M525 映射与未映射未知处理、假轮询平稳拒绝及 5h/7d 确定性主窗口选择', () => {
+  // 1. 防止 Gemini 4 Hydrogen (High) (High) 重复档位
+  const splitRes = core.splitModelDisplayAndEffort('Gemini 4 Hydrogen (High) (High)', 'High');
+  assert.equal(splitRes.baseLabel, 'Gemini 4 Hydrogen');
+  assert.equal(splitRes.effort, 'High');
+
+  const cfgList = [
+    { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M525' }, modelId: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' }
+  ];
+  const recMapped = core.normalizeSessionCallRecord({
+    callId: 'call-m525-mapped',
+    model: 'MODEL_PLACEHOLDER_M525',
+    modelLabel: 'Gemini 4 Hydrogen (High)',
+    effort: 'High',
+    inputTokens: 1000,
+    cacheReadTokens: 2000,
+    outputTokens: 300,
+    durationSec: 4.0,
+    status: 'final'
+  }, { cascadeModelConfigs: cfgList });
+  assert.equal(recMapped.modelLabel, 'Gemini 4 Hydrogen');
+  assert.equal(recMapped.effort, 'High');
+  assert.equal(recMapped.rawPlaceholderId, 'MODEL_PLACEHOLDER_M525');
+  assert.equal(recMapped.stableModelId, 'gemini-4-hydrogen-high');
+  assert.equal(recMapped.isRoutedModelVerified, true);
+
+  // 未映射占位符不得当作已路由真实模型，UI 显示未知
+  const recUnmapped = core.normalizeSessionCallRecord({
+    callId: 'call-m525-unmapped',
+    model: 'MODEL_PLACEHOLDER_M525',
+    inputTokens: 500,
+    outputTokens: 100,
+    status: 'final'
+  }, { cascadeModelConfigs: [] });
+  assert.equal(recUnmapped.rawPlaceholderId, 'MODEL_PLACEHOLDER_M525');
+  assert.equal(recUnmapped.isPlaceholderOnly, true);
+  assert.equal(recUnmapped.isRoutedModelVerified, false);
+  assert.equal(recUnmapped.modelLabel, null);
+
+  // 2. 合成轮询间隔不得判为平稳
+  const synthPoll = core.computeStreamStability({
+    chunkCount: 20,
+    streamingSec: 5.0,
+    chunkIntervalsMs: Array(19).fill(1000),
+    sampleSource: 'poll',
+    isSyntheticPoll: true
+  });
+  assert.equal(synthPoll.isStable, false);
+  assert.equal(synthPoll.reason, 'synthetic_poll_unsupported');
+
+  // 3. 5h/7d 确定性主窗口选择（同余量优先 5h，较紧缩窗口优先）
+  const tieSel = core.selectPrimaryQuotaBucket([
+    { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.8 },
+    { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.8 }
+  ]);
+  assert.equal(tieSel.primaryBucket.windowShort, '5h');
+  assert.equal(tieSel.selectionReason, 'tie_window');
+
+  const tighterSel = core.selectPrimaryQuotaBucket([
+    { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.8 },
+    { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.45 }
+  ]);
+  assert.equal(tighterSel.primaryBucket.windowShort, '7d');
+  assert.equal(tighterSel.selectionReason, 'tighter_window');
 });

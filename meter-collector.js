@@ -1572,6 +1572,19 @@ function recordModelCalls(newCalls = [], options = {}) {
       const callCidRaw = call.cascadeId || incomingFallback?.cascadeId;
       const existing = draftCalls[targetKey];
 
+      // 严格账号归属：仅接受明确已核实账号字段或显式传入的 options.accountScopeKey / confirmedAccountEmail
+      const rawAcctEmail = (typeof call.accountEmail === 'string' && call.accountEmail.includes('@'))
+        ? call.accountEmail.trim().toLowerCase()
+        : ((typeof options.confirmedAccountEmail === 'string' && options.confirmedAccountEmail.includes('@'))
+          ? options.confirmedAccountEmail.trim().toLowerCase()
+          : '');
+      const resolvedScopeKey = (typeof call.accountScopeKey === 'string' && /^acct_[0-9a-f]{16}$/i.test(call.accountScopeKey.trim()))
+        ? call.accountScopeKey.trim()
+        : (rawAcctEmail ? buildAccountScopeKey(rawAcctEmail) : ((typeof options.accountScopeKey === 'string' && /^acct_[0-9a-f]{16}$/i.test(options.accountScopeKey.trim())) ? options.accountScopeKey.trim() : null));
+      const resolvedAttrConf = resolvedScopeKey
+        ? (call.accountAttributionConfidence || options.accountAttributionConfidence || (call.isKeepalive ? 'keepalive_bound' : 'live_confirmed_account'))
+        : (call.accountAttributionConfidence || 'unattributed');
+
       if (!existing) {
         const normalizedStep = extractCallStepNumbers(call, targetKey)[0] ?? null;
         const uInc = getCallTokenBreakdown(call);
@@ -1580,6 +1593,9 @@ function recordModelCalls(newCalls = [], options = {}) {
         const nextEntry = {
           ...call,
           callId: targetKey,
+          ...(resolvedScopeKey ? { accountScopeKey: resolvedScopeKey } : {}),
+          accountAttributionConfidence: resolvedAttrConf,
+          ...(call.isKeepalive ? { isKeepalive: true } : {}),
           ...(callCidRaw && !call.cascadeId ? { cascadeId: callCidRaw } : {}),
           ...(normalizedStep !== null && call.stepIndex == null ? { stepIndex: normalizedStep } : {}),
           ...(call.totalTokens == null && uInc.tot > 0 ? { totalTokens: uInc.tot } : {}),
@@ -1672,9 +1688,14 @@ function recordModelCalls(newCalls = [], options = {}) {
       if (!saveRes.ok) {
         return createRecordResult(false, false, saveRes.error || '保存账本落盘失败', saveRes.phase, saveRes.code);
       }
-      if (!targetDir) {
-        cachedTokenHistoryAt = 0;
+      // 同步落盘物理隔离的分账号账本目录（account_ledgers/<accountScopeKey>.json 与 unattributed.json）
+      if (!fsOpt || typeof fsOpt.fs?.writeFileSync === 'function') {
+        try {
+          syncAccountLedgerPartitions(resolvedLedgerPath, draftCalls, fsOpt?.fs || fs);
+        } catch { }
       }
+      // 账本变化时失效聚合热缓存（含按 agDir 隔离作用域的扫描缓存）
+      cachedTokenHistoryAt = 0;
     }
 
     return createRecordResult(true, changed);
@@ -1684,6 +1705,229 @@ function recordModelCalls(newCalls = [], options = {}) {
     return executeLocked();
   }
   return withFileLockSync(resolvedLedgerPath, executeLocked);
+}
+
+/**
+ * 将账本 calls 按 accountScopeKey 严格拆分为独立账号分片与 unattributed.json
+ * 不同账号数据绝不互相混合，未归属历史单独隔离。
+ */
+function syncAccountLedgerPartitions(resolvedLedgerPath, callsMap = {}, fsImpl = fs) {
+  const partDir = path.join(path.dirname(resolvedLedgerPath), 'account_ledgers');
+  if (!fsImpl.existsSync(partDir)) {
+    fsImpl.mkdirSync(partDir, { recursive: true });
+  }
+  const buckets = new Map();
+  buckets.set('unattributed', {});
+  for (const [callId, rec] of Object.entries(callsMap || {})) {
+    if (!rec || typeof rec !== 'object') continue;
+    const rawKey = (typeof rec.accountScopeKey === 'string' && /^acct_[0-9a-f]{16}$/i.test(rec.accountScopeKey.trim()))
+      ? rec.accountScopeKey.trim()
+      : 'unattributed';
+    if (!buckets.has(rawKey)) buckets.set(rawKey, {});
+    buckets.get(rawKey)[callId] = rec;
+  }
+  const nowIso = new Date().toISOString();
+  for (const [scopeKey, partCalls] of buckets.entries()) {
+    const targetFile = path.join(partDir, `${scopeKey}.json`);
+    const payload = JSON.stringify({
+      version: 1,
+      accountScopeKey: scopeKey,
+      updatedAt: nowIso,
+      callCount: Object.keys(partCalls).length,
+      calls: partCalls
+    });
+    const tmp = `${targetFile}.${process.pid}.tmp`;
+    fsImpl.writeFileSync(tmp, payload, 'utf8');
+    fsImpl.renameSync(tmp, targetFile);
+  }
+}
+
+/**
+ * 构建严格的跨账号用量隔离统计：
+ * - 只有带明确 accountScopeKey 且非 unattributed 的记录计入对应账号；
+ * - 未归属实时记录及全部无法确认原始账号的历史 .pb/.db/legacy 记录一律放入 unattributed，绝不默认算给当前登录账号。
+ * - 保活请求 (isKeepalive: true) 计入对应账号同时提供独立统计 keepaliveStats。
+ */
+function buildAccountUsageBreakdown({
+  finalCallsEntries = [],
+  resolveLedgerCallDate = (k, c) => c?.date || null,
+  dailyMapAll = {},
+  mergedDesktop = {},
+  mergedCli = {},
+  mergedLegacyUnallocated = {},
+  now = new Date()
+} = {}) {
+  const todayKey = formatLocalDateKey(now);
+  const monthPrefix = todayKey.slice(0, 7);
+  const yearPrefix = todayKey.slice(0, 4);
+
+  const ensureAcct = (scopeKey) => ({
+    accountScopeKey: scopeKey,
+    totalTokens: 0,
+    totalInputTokens: 0,
+    totalCacheTokens: 0,
+    totalOutputTokens: 0,
+    todayTokens: 0,
+    monthTokens: 0,
+    yearTokens: 0,
+    callCount: 0,
+    keepaliveRequests: 0,
+    keepaliveTokens: 0,
+    sources: { desktop: 0, cli: 0, agent: 0, ide: 0 },
+    dailyMap: {},
+    cacheItems: [],
+    calls: []
+  });
+
+  const byAccount = {};
+  const unattributedCallsMap = new Map();
+  const attributedByDay = {};
+
+  for (const [ledgerKey, call] of (Array.isArray(finalCallsEntries) ? finalCallsEntries : [])) {
+    if (!call || typeof call !== 'object') continue;
+    const scopeKey = (typeof call.accountScopeKey === 'string' && /^acct_[0-9a-f]{16}$/i.test(call.accountScopeKey.trim()) && call.accountAttributionConfidence !== 'unattributed')
+      ? call.accountScopeKey.trim()
+      : 'unattributed';
+    const dKey = resolveLedgerCallDate(ledgerKey, call) || todayKey;
+    const u = getCallTokenBreakdown(call);
+    const tot = u.tot || (u.inp + u.cap + u.out);
+    if (tot <= 0 && !call.isKeepalive) continue;
+
+    if (scopeKey === 'unattributed') {
+      unattributedCallsMap.set(ledgerKey, { call, dKey, u, tot });
+      continue;
+    }
+
+    if (!byAccount[scopeKey]) byAccount[scopeKey] = ensureAcct(scopeKey);
+    const acc = byAccount[scopeKey];
+    acc.callCount += 1;
+    acc.totalInputTokens += u.inp;
+    acc.totalCacheTokens += u.cap;
+    acc.totalOutputTokens += u.out;
+    acc.totalTokens += tot;
+    if (dKey === todayKey) acc.todayTokens += tot;
+    if (dKey.startsWith(monthPrefix)) acc.monthTokens += tot;
+    if (dKey.startsWith(yearPrefix)) acc.yearTokens += tot;
+    if (call.isKeepalive) {
+      acc.keepaliveRequests += 1;
+      acc.keepaliveTokens += tot;
+    }
+    const src = call.agentRole === 'subagent' ? 'agent' : (call.source === 'cli' ? 'cli' : (call.source === 'ide' ? 'ide' : 'desktop'));
+    acc.sources[src] = (acc.sources[src] || 0) + 1;
+
+    if (!acc.dailyMap[dKey]) {
+      acc.dailyMap[dKey] = { input: 0, cache: 0, output: 0, total: 0, steps: 0 };
+    }
+    acc.dailyMap[dKey].input += u.inp;
+    acc.dailyMap[dKey].cache += u.cap;
+    acc.dailyMap[dKey].output += u.out;
+    acc.dailyMap[dKey].total += tot;
+    acc.dailyMap[dKey].steps += 1;
+
+    acc.cacheItems.push({
+      inputTokens: u.inp,
+      cacheReadTokens: u.cap,
+      outputTokens: u.out,
+      totalTokens: tot,
+      hasInputCacheFields: true
+    });
+    acc.calls.push(call);
+
+    if (!attributedByDay[dKey]) attributedByDay[dKey] = { input: 0, cache: 0, output: 0, total: 0, steps: 0 };
+    attributedByDay[dKey].input += u.inp;
+    attributedByDay[dKey].cache += u.cap;
+    attributedByDay[dKey].output += u.out;
+    attributedByDay[dKey].total += tot;
+    attributedByDay[dKey].steps += 1;
+  }
+
+  for (const acc of Object.values(byAccount)) {
+    acc.cacheReadStats = summarizeCacheReadStats(acc.cacheItems);
+    acc.costEstimate = summarizeApiCost(acc.calls, 0, {}, 0);
+    delete acc.cacheItems;
+    delete acc.calls;
+  }
+
+  // 构建严格“未归属历史”视图：总全量历史减去已明确归属到账号的精确记录（绝不把旧未知历史划入当前账号）
+  const unattributed = ensureAcct('unattributed');
+  for (const [dKey, rec] of Object.entries(dailyMapAll || {})) {
+    if (!rec || typeof rec !== 'object') continue;
+    const attr = attributedByDay[dKey] || { input: 0, cache: 0, output: 0, total: 0, steps: 0 };
+    const remInp = Math.max(0, Number(rec.input || 0) - attr.input);
+    const remCap = Math.max(0, Number(rec.cache || 0) - attr.cache);
+    const remOut = Math.max(0, Number(rec.output || 0) - attr.output);
+    const remTot = Math.max(0, Number(rec.total || 0) - attr.total);
+    const remSteps = Math.max(0, Number(rec.steps || rec.conversations || 0) - attr.steps);
+    if (remTot <= 0 && remSteps <= 0) continue;
+    unattributed.dailyMap[dKey] = { input: remInp, cache: remCap, output: remOut, total: remTot, steps: remSteps };
+    unattributed.totalInputTokens += remInp;
+    unattributed.totalCacheTokens += remCap;
+    unattributed.totalOutputTokens += remOut;
+    unattributed.totalTokens += remTot;
+    unattributed.callCount += remSteps;
+    if (dKey === todayKey) unattributed.todayTokens += remTot;
+    if (dKey.startsWith(monthPrefix)) unattributed.monthTokens += remTot;
+    if (dKey.startsWith(yearPrefix)) unattributed.yearTokens += remTot;
+  }
+  unattributed.cacheReadStats = summarizeDailyMapCacheStats(unattributed.dailyMap);
+
+  return {
+    byAccount,
+    unattributed
+  };
+}
+
+/**
+ * 查询某账号在某模型共享池与指定时间区间内的本地实测消耗（专供 ELV-57 配额变化对照使用）
+ */
+function summarizeAccountWindowUsage({ agDir, ledgerPath, accountScopeKey, poolKey, startMs, endMs } = {}) {
+  const targetDir = ledgerPath || agDir;
+  const ledger = loadPricingLedger(targetDir);
+  const calls = ledger?.calls && typeof ledger.calls === 'object' ? Object.values(ledger.calls) : [];
+  const start = Number(startMs) || 0;
+  const end = Number(endMs) || Date.now();
+  let requestCount = 0;
+  let uncachedInputTokens = 0;
+  let cacheReadTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let keepaliveRequests = 0;
+  let keepaliveTokens = 0;
+
+  for (const call of calls) {
+    if (!call || typeof call !== 'object') continue;
+    if (accountScopeKey && call.accountScopeKey !== accountScopeKey) continue;
+    if (call.accountAttributionConfidence === 'unattributed') continue;
+    const ts = getCallSortTimestamp(call) ?? Number(call.timestamp) ?? (call.created_at ? Date.parse(call.created_at) : NaN);
+    if (!Number.isFinite(ts) || ts < start || ts > end) continue;
+    if (poolKey) {
+      const rawModel = call.modelExactId || extractModelString(call) || call.model || '';
+      const sharedKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(rawModel || call.modelLabel || '') : null;
+      const singlePoolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(rawModel, call.modelLabel || '') : null;
+      if (sharedKey !== poolKey && singlePoolKey !== poolKey) continue;
+    }
+    const u = getCallTokenBreakdown(call);
+    const tot = u.tot || (u.inp + u.cap + u.out);
+    requestCount += 1;
+    uncachedInputTokens += u.inp;
+    cacheReadTokens += u.cap;
+    outputTokens += u.out;
+    totalTokens += tot;
+    if (call.isKeepalive) {
+      keepaliveRequests += 1;
+      keepaliveTokens += tot;
+    }
+  }
+
+  return {
+    requestCount,
+    uncachedInputTokens,
+    cacheReadTokens,
+    outputTokens,
+    totalTokens,
+    keepaliveRequests,
+    keepaliveTokens
+  };
 }
 
 // ============================================================================
@@ -4841,10 +5085,26 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const prevAccountEmail = Object.prototype.hasOwnProperty.call(extraContext, 'prevAccountEmail')
     ? extraContext.prevAccountEmail
     : (collectTokenHistoryAsync._lastAccountEmail || null);
+  const accountUsageBreakdown = buildAccountUsageBreakdown({
+    finalCallsEntries,
+    resolveLedgerCallDate,
+    dailyMapAll,
+    mergedDesktop,
+    mergedCli,
+    mergedLegacyUnallocated,
+    now
+  });
   const out = {
     schemaVersion: PROJECT_VERSION,
     version: PROJECT_VERSION,
     accountScopeKey: currentAccountKey ? buildAccountScopeKey(currentAccountKey) : null,
+    currentAccountEmail: currentAccountKey || null,
+    usageByAccount: accountUsageBreakdown.byAccount,
+    unattributedUsage: accountUsageBreakdown.unattributed,
+    attributionPolicy: {
+      historicalFilesAttributed: false,
+      description: '仅带有可靠账号归属证据的请求计入对应账号；未携带账号依据的历史会话及离线日志统一保留在未归属账本，绝不默认算给当前登录账号。'
+    },
     isAccountSwitched: Boolean(
       currentAccountKey &&
       prevAccountEmail &&
@@ -5001,7 +5261,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
  */
 async function collectTokenHistoryAsync(options = {}) {
   const scopeKey = getEffectiveScanScopeKey(options);
-  if (!options.force && !options.agDir && cachedTokenHistory && cachedTokenHistoryScope === scopeKey && Date.now() - cachedTokenHistoryAt < 15000) {
+  const canCacheByScope = !options.fs && !options.hostFetcher && !options.customPlan;
+  if (!options.force && canCacheByScope && cachedTokenHistory && cachedTokenHistoryScope === scopeKey && Date.now() - cachedTokenHistoryAt < 15000) {
     return cachedTokenHistory;
   }
   if (!options.force && !options.agDir && activeScanPromise && activeScanScope === scopeKey) {
@@ -5042,8 +5303,8 @@ async function collectTokenHistoryAsync(options = {}) {
     if (result.archiveSig) {
       collectTokenHistoryAsync._lastArchiveSig = result.archiveSig;
     }
-    if (!options.agDir) {
-      if (result.accountKey) collectTokenHistoryAsync._lastAccountEmail = result.accountKey;
+    if (canCacheByScope) {
+      if (!options.agDir && result.accountKey) collectTokenHistoryAsync._lastAccountEmail = result.accountKey;
       cachedTokenHistory = result.out;
       cachedTokenHistoryScope = scopeKey;
       cachedTokenHistoryAt = Date.now();
@@ -5517,8 +5778,9 @@ if (!isMainThread && workerData && workerData.agCollectorHistoryWorker && parent
 
 function collectTokenHistory(options = {}) {
   const scopeKey = getEffectiveScanScopeKey(options);
+  const canCacheByScope = !options.fs && !options.hostFetcher && !options.customPlan;
   // 同步封装：如果缓存可用直接返回，否则启动异步刷新并返回缓存或空壳
-  if (!options.force && !options.agDir && cachedTokenHistory && cachedTokenHistoryScope === scopeKey && Date.now() - cachedTokenHistoryAt < 15000) {
+  if (!options.force && canCacheByScope && cachedTokenHistory && cachedTokenHistoryScope === scopeKey && Date.now() - cachedTokenHistoryAt < 15000) {
     return cachedTokenHistory;
   }
   // 触发异步更新
@@ -6688,6 +6950,7 @@ const LIVE_RUNTIME_FILES = [
   'meter-cli-launcher.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
+  'meter-accounts.js',
   'macos-binary-utils.js',
   'attachment_scan.py',
   'asar-engine.js',
@@ -7171,6 +7434,9 @@ module.exports = {
   formatLocalDateKey,
   recordModelCalls,
   recordModelCallsAsync,
+  syncAccountLedgerPartitions,
+  buildAccountUsageBreakdown,
+  summarizeAccountWindowUsage,
   loadPricingLedger,
   savePricingLedger,
   getPricingLedgerPath,
@@ -7209,6 +7475,8 @@ module.exports = {
   OFFICIAL_RELEASES_WEB_BASE,
   resolveNodeRuntime,
   OFFICIAL_REPO,
+  openHttpConnectTunnel,
+  openSocks5Tunnel,
   getContextUnlockStatus,
   applyContextUnlock,
   applyContextUnlockAsync,

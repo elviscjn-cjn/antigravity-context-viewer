@@ -45,6 +45,7 @@ const MAIN_CAPABILITIES = {
   contextUnlock: true,
   enhance: true,
   modules: true,
+  accounts: true,
   checkUpdate: true,
   applyUpdate: true,
   restartHost: true,
@@ -516,9 +517,16 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
+      let confirmedAccountEmail = null;
+      try {
+        const { getSharedAccountsManager } = require('./meter-accounts');
+        const mgr = getSharedAccountsManager({ origin: url.origin });
+        confirmedAccountEmail = mgr.getOverviewState()?.activeAccountEmail || null;
+      } catch { }
+      const recOpts = confirmedAccountEmail ? { confirmedAccountEmail } : {};
       const res = typeof recordModelCallsAsync === 'function'
-        ? await recordModelCallsAsync(calls)
-        : recordModelCalls(calls);
+        ? await recordModelCallsAsync(calls, recOpts)
+        : recordModelCalls(calls, recOpts);
       if (res && typeof res === 'object') {
         if (res.ok === false) {
           return {
@@ -576,7 +584,25 @@ function registerMeterIpcHandlers(ipcMain) {
       opts.backendSource = 'electron-ipc';
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
-      return { ok: true, data: safePayload };
+      let accountSyncResult = null;
+      try {
+        const { getSharedAccountsManager } = require('./meter-accounts');
+        const mgr = getSharedAccountsManager({ origin: url.origin });
+        const email = res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null;
+        if (email && res?.snapshot) {
+          mgr.syncActiveHostQuotaSnapshot(res, email);
+          const ov = mgr.getOverviewState();
+          if (ov.autoSwitch?.enabled && !res.error) {
+            accountSyncResult = await mgr.evaluateAutoSwitch({
+              activeEmail: email,
+              activeSnapshot: res.snapshot,
+              syncState: 'fresh',
+              isGenerating: Boolean(opts.isGenerating)
+            });
+          }
+        }
+      } catch { }
+      return { ok: true, data: safePayload, accountSyncResult };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -816,6 +842,31 @@ function registerMeterIpcHandlers(ipcMain) {
       const { testProxyHealth } = require('./modules-config');
       const report = await testProxyHealth(proxyUrl);
       return { ok: true, data: report };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:accounts-overview', async (event) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getSharedAccountsManager } = require('./meter-accounts');
+      const mgr = getSharedAccountsManager({ origin: url.origin });
+      await mgr.detectCurrentActiveAccount();
+      return mgr.getOverviewState();
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:accounts-action', async (event, payload) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
+      const mgr = getSharedAccountsManager({ origin: url.origin });
+      return await dispatchAccountsAction(mgr, payload || {});
     } catch (e) {
       return { ok: false, error: e.message };
     }

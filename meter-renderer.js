@@ -116,7 +116,10 @@
     getDailyModelCost,
     calculateIntervalCost,
     convertToCNY,
-    resolveEffectivePlanStatus
+    resolveEffectivePlanStatus,
+    selectPrimaryQuotaBucket,
+    splitModelDisplayAndEffort,
+    resolvePlaceholderModelInfo
   } = (globalThis.__AGContextMeterCore || {});
   const host = document.createElement('div');
   host.id = 'ag-context-meter';
@@ -404,8 +407,8 @@
       width:auto;
       min-width:28px;
       height:28px;
-      padding:0 6px 0 5px;
-      gap:4px;
+      padding:0 5px 0 4px;
+      gap:3px;
       display:inline-flex;
       align-items:center;
       justify-content:center;
@@ -428,11 +431,19 @@
     #badge-quota[data-quota-state="stale"] .quota-ring-fill{ stroke:#eab308; opacity:0.8; }
     #badge-quota[data-quota-state="error"] .quota-ring-fill{ stroke:#f97316; }
     #badge-quota[data-quota-state="unknown"] .quota-ring-fill{ stroke:var(--ag-text-muted); opacity:0.65; }
+    .quota-badge-metric{
+      display:inline-flex;
+      align-items:flex-start;
+      line-height:1;
+      gap:1px;
+    }
     .quota-badge-val{
       font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;
       color:var(--ag-text-primary);
       white-space:nowrap;
-      min-width:34px;text-align:center;
+      line-height:1.05;
+      min-width:0;
+      text-align:left;
     }
     #badge-quota[data-quota-state="exhausted"] .quota-badge-val{ color:#f87171; }
     #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#fb923c; }
@@ -441,11 +452,12 @@
     :host([data-theme="light"]) #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#ea580c; }
     :host([data-theme="light"]) #badge-quota[data-quota-state="no_permission"] .quota-badge-val{ color:#7e22ce; }
     .quota-badge-tag{
-      font-size:10px;font-weight:600;padding:0 4px;border-radius:4px;
-      background:rgba(127,127,127,0.16);color:var(--ag-text-secondary);
-      line-height:15px;white-space:nowrap;
+      font-size:8.5px;font-weight:700;padding:0;margin-left:1px;margin-top:-1px;border:none;border-radius:0;
+      background:transparent;color:var(--ag-text-secondary);
+      line-height:1;letter-spacing:-0.02em;white-space:nowrap;opacity:0.82;
+      font-variant-numeric:tabular-nums;
     }
-    :host([data-layout="compact"]) #badge-quota{ padding:0 5px 0 4px;gap:3px; }
+    :host([data-layout="compact"]) #badge-quota{ padding:0 4px 0 3px;gap:2.5px; }
     :host([data-layout="compact"]) .quota-badge-tag{ display:none!important; }
     :host([data-layout="minimal"]) #badge-quota,
     :host([data-layout="ring-only"]) #badge-quota{ display:none!important; }
@@ -1419,10 +1431,10 @@
     .key-bar-fill{height:100%;width:0%;border-radius:3px;background:var(--ag-custom-ring-used,var(--bar-color,#69c0ff));transition:width .24s ease,background-color .2s ease}
     :host([data-occupancy="warn"]) .key-bar-fill{background:var(--ag-ring-warn)}
     :host([data-occupancy="danger"]) .key-bar-fill{background:var(--ag-ring-danger)}
-    .key-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;margin-bottom:7px}
-    .key-stat{background:var(--ag-bg-subcard);padding:6px 4px;border-radius:6px;border:1px solid var(--ag-border-subcard)}
-    .key-stat-label{font-size:10px;color:var(--ag-text-muted);margin-bottom:2px}
-    .key-stat-val{font-size:12px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .key-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;margin-bottom:7px;min-width:0}
+    .key-stat{background:var(--ag-bg-subcard);padding:6px 5px;border-radius:6px;border:1px solid var(--ag-border-subcard);min-width:0}
+    .key-stat-label{font-size:10px;color:var(--ag-text-muted);margin-bottom:2px;overflow-wrap:anywhere}
+    .key-stat-val{font-size:11.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow-wrap:anywhere;word-break:break-word;white-space:normal;line-height:1.28}
     #key-used{color:var(--ag-custom-context-text,var(--ag-text-primary))}
     .key-takeaway{font-size:11px;color:var(--ag-text-secondary);padding-top:6px;border-top:1px solid var(--ag-border-subcard);line-height:1.4}
 
@@ -2090,12 +2102,12 @@
     .latest-call-summary-row[aria-expanded="true"] .latest-call-expand-caret{transform:rotate(180deg)}
     .latest-call-details{
       margin-top:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
-      border-radius:6px;padding:8px 9px;font-size:10.5px;line-height:1.45;
+      border-radius:6px;padding:8px 9px;font-size:10.5px;line-height:1.45;min-width:0;overflow:hidden;
     }
-    .call-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 10px}
+    .call-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px;min-width:0}
     .call-detail-cell{display:flex;flex-direction:column;gap:1px;min-width:0}
-    .call-detail-k{font-size:9.5px;color:var(--ag-text-muted)}
-    .call-detail-v{font-size:11px;font-weight:500;color:var(--ag-text-primary);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+    .call-detail-k{font-size:9.5px;color:var(--ag-text-muted);overflow-wrap:anywhere;white-space:normal}
+    .call-detail-v{font-size:11px;font-weight:500;color:var(--ag-text-primary);overflow-wrap:anywhere;word-break:break-word;white-space:normal;font-variant-numeric:tabular-nums}
     .call-detail-note{font-size:10px;line-height:1.4;color:var(--ag-text-secondary);margin-top:2px;overflow-wrap:anywhere;white-space:normal}
     .tier-color-swatch{display:inline-block;width:7px;height:7px;border-radius:999px;margin-right:4px;vertical-align:middle;flex-shrink:0}
     .call-detail-error{
@@ -2155,7 +2167,7 @@
     .speed-sub-label[hidden]{display:none!important}
     .speed-breakdown-details{
       margin-top:7px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
-      border-radius:6px;padding:7px 9px;font-size:10.5px;line-height:1.4;
+      border-radius:6px;padding:7px 9px;font-size:10.5px;line-height:1.4;min-width:0;overflow:hidden;
     }
     .call-score-badge{
       display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;
@@ -2168,6 +2180,9 @@
       .latest-call-metrics{gap:6px}
       .timeline-call-row.is-subagent{margin-left:8px}
       #speed-summary .key-stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+      .panel-header-bar{gap:5px}
+      .ctx-lang-top-segmented .ctx-seg-btn{padding:2px 4px;font-size:10px}
+      .panel-icon-btn{width:22px;height:22px}
     }
     @media (prefers-reduced-motion: reduce){
       *,.ag-unit,.ring-fill,.quota-ring-fill,.ctx-quota-ring-fill,.ctx-model-quota-chip,.quota-bar-fill,.quota-bar-charge-stage,.quota-bar-charge-fill,.quota-bar-charge-sheen,.quota-refresh-icon,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill,.latest-call-body,.latest-call-body.is-entering{
@@ -2181,6 +2196,51 @@
     @media(max-width:760px){
       #panel-tokens:not(.cost-compact-view){width:calc(100vw - 24px)}
     }
+
+    /* 多账号筛选条、ELV-57 配额对照、自动切号与 ELV-52 保活紧凑样式 */
+    .token-account-bar{
+      display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;
+      padding:5px 8px;border-radius:7px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      font-size:10.5px;min-width:0;
+    }
+    .token-account-lbl{color:var(--ag-text-muted);white-space:nowrap}
+    .token-account-select,.quota-compact-select,.quota-compact-input{
+      font-size:10.5px;padding:3px 6px;border-radius:5px;border:1px solid var(--ag-border-card);
+      background:var(--ag-bg-input);color:var(--ag-text-primary);max-width:100%;min-width:0;
+    }
+    .token-account-select{flex:0 1 auto;min-width:160px;overflow:hidden;text-overflow:ellipsis}
+    .token-account-note{color:var(--ag-text-muted);font-size:10px;overflow-wrap:anywhere;flex:1 1 160px}
+    .quota-accounts-section{
+      margin-top:10px;padding-top:10px;border-top:1px solid var(--ag-border-subtle);
+      display:flex;flex-direction:column;gap:6px;min-width:0;
+    }
+    .quota-subsec-header{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+    .quota-subsec-title{font-size:11.5px;font-weight:600;color:var(--ag-text-secondary)}
+    .quota-subsec-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+    .quota-accounts-list,.quota-compare-list{display:flex;flex-direction:column;gap:5px;min-width:0}
+    .quota-acct-card,.quota-subcard,.quota-compare-card{
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:7px;
+      padding:7px 9px;font-size:10.5px;display:flex;flex-direction:column;gap:4px;min-width:0;
+    }
+    .quota-acct-card.is-active{border-color:rgba(59,130,246,0.45)}
+    .quota-subcard-row{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;min-width:0}
+    .quota-acct-email{font-weight:600;color:var(--ag-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .quota-acct-meta{color:var(--ag-text-muted);font-size:10px;overflow-wrap:anywhere}
+    .quota-acct-feedback{
+      padding:5px 8px;border-radius:6px;font-size:10.5px;background:rgba(59,130,246,0.12);
+      border:1px solid rgba(59,130,246,0.3);color:var(--ag-text-primary);overflow-wrap:anywhere;
+    }
+    .quota-switch-lbl{display:inline-flex;align-items:center;gap:5px;font-weight:600;color:var(--ag-text-primary);cursor:pointer}
+    .auto-switch-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:4px}
+    .quota-field-lbl{display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--ag-text-muted);min-width:0}
+    .auto-switch-candidates-wrap,.auto-switch-save-row{grid-column:1 / -1;display:flex;flex-direction:column;gap:4px}
+    .auto-switch-save-row{flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap}
+    .auto-switch-candidates-list{display:flex;flex-wrap:wrap;gap:6px}
+    .auto-switch-cand-chip{display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:2px 6px;border-radius:4px;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);cursor:pointer}
+    .quota-muted-note{font-size:10px;line-height:1.4;color:var(--ag-text-muted);overflow-wrap:anywhere}
+    @media (max-width:440px){
+      .auto-switch-grid{grid-template-columns:1fr}
+    }
   </style>
 
   <!-- 顶部基本单元 0: 模型额度圆环入口（工具组最左侧） -->
@@ -2192,8 +2252,10 @@
     <circle id="quota-ring-fill" class="quota-ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"
       stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="10 30.84" stroke-dashoffset="0"></circle>
   </svg>
-  <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
-  <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
+  <span class="quota-badge-metric">
+    <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
+    <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
+  </span>
 </button>
 
 <!-- 顶部基本单元 1: 上下文小圆环（与速度入口紧邻） -->
@@ -2285,7 +2347,8 @@
   <div class="panel-header-bar">
     <div class="panel-title">
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
-        data-i18n="panel.ctx.title">💬 当前会话上下文</span>
+        data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
+        aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
       <span id="v">v0.8.8</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
@@ -3439,6 +3502,16 @@
       </div>
     </div>
 
+    <!-- 分账号账本筛选条（ELV-89：严格隔离各账号及未归属历史，不重复堆叠刷新入口） -->
+    <div id="token-account-bar" class="token-account-bar">
+      <span class="token-account-lbl" data-i18n="accounts.filterLabel">账本范围:</span>
+      <select id="token-account-select" class="token-account-select" aria-label="按账号筛选统计账本" data-i18n-aria="accounts.filterAria">
+        <option value="all" data-i18n="accounts.filterAll">全部已记用量（含未归属）</option>
+        <option value="unattributed" data-i18n="accounts.filterUnattributed">历史未归属（无可靠账号依据）</option>
+      </select>
+      <span id="token-account-scope-note" class="token-account-note"></span>
+    </div>
+
     <!-- 账号套餐状态摘要行 -->
     <div id="plan-summary-bar" class="plan-summary-bar">
       <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
@@ -4468,6 +4541,88 @@
       Token」按本机输入+缓存+输出原始 Token 统计，受服务端计费权重、同池模型混用、他端消耗及周期采样覆盖度影响；校准过期或样本不足时不按有效推算展示。</div>
     <div id="quota-usage-tip" class="quota-usage-tip" data-i18n="quota.usageTip">💡
       用量提示：使用前可先查看各池剩余额度，优先选择余量充足且适合当前任务的模型。</div>
+
+    <!-- 统一多账号切换、自动切号、共享额度对照(ELV-57)与缓存保活保障(ELV-52) -->
+    <div id="quota-accounts-section" class="quota-accounts-section">
+      <div class="quota-subsec-header">
+        <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
+        <div class="quota-subsec-actions">
+          <button id="btn-acct-import-current" class="switch-pill-btn" type="button" data-i18n="accounts.importCurrent">导入当前</button>
+          <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden data-i18n="accounts.importTools">导入 Tools</button>
+          <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button" data-i18n="accounts.oauthAdd">+ 登录添加</button>
+        </div>
+      </div>
+      <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
+      <div id="quota-accounts-list" class="quota-accounts-list"></div>
+
+      <!-- 阈值自动切号配置 -->
+      <div class="quota-subcard">
+        <div class="quota-subcard-row">
+          <label class="quota-switch-lbl">
+            <input id="chk-auto-switch-enabled" type="checkbox" />
+            <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号（默认关闭）</span>
+          </label>
+          <span id="auto-switch-status-pill" class="key-pill pill-muted">已关闭</span>
+        </div>
+        <div id="auto-switch-config-body" class="auto-switch-grid">
+          <label class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
+            <select id="sel-auto-switch-pool" class="quota-compact-select">
+              <option value="shared_gemini_main">Gemini 4 Hydrogen / 3.8 Flash</option>
+              <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
+              <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
+              <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
+            </select>
+          </label>
+          <label class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
+            <select id="sel-auto-switch-mode" class="quota-compact-select">
+              <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
+              <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
+            </select>
+          </label>
+          <label class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
+            <select id="sel-auto-switch-window" class="quota-compact-select">
+              <option value="primary" data-i18n="accounts.winPrimary">主窗口（最紧缩）</option>
+              <option value="5h">5h</option>
+              <option value="7d">7d</option>
+            </select>
+          </label>
+          <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
+            <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95" value="10" />
+          </label>
+          <div class="auto-switch-candidates-wrap">
+            <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
+            <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
+          </div>
+          <div class="auto-switch-save-row">
+            <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button" data-i18n="accounts.saveRule">保存切号规则</button>
+            <span id="auto-switch-last-note" class="quota-muted-note"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 本机消耗与共享账号额度变化对照 -->
+      <div class="quota-subsec-header" style="margin-top:10px">
+        <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
+      </div>
+      <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px" data-i18n="quota.compareDisclaimer">
+        按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
+      </div>
+      <div id="quota-compare-list" class="quota-compare-list"></div>
+
+      <!-- 模型 Prompt Cache 保活协议与保障 -->
+      <div class="quota-subsec-header" style="margin-top:10px">
+        <span class="quota-subsec-title" data-i18n="keepalive.title">🧊 模型缓存保活状态与协议核查</span>
+        <span id="keepalive-status-pill" class="key-pill pill-muted">默认关闭</span>
+      </div>
+      <div class="quota-subcard">
+        <div id="keepalive-protocol-summary" class="quota-muted-note"></div>
+        <div id="keepalive-experiment-summary" class="quota-muted-note" style="margin-top:4px"></div>
+        <div class="quota-subcard-row" style="margin-top:6px">
+          <span id="keepalive-runtime-note" class="quota-muted-note"></span>
+          <button id="btn-keepalive-stop" class="switch-pill-btn" type="button" hidden data-i18n="keepalive.stopBtn">立即停止保活</button>
+        </div>
+      </div>
+    </div>
   </div>
 </section>`;
 
@@ -4516,7 +4671,8 @@ const PANEL_I18N = {
 
   // 上下文面板头部与分页
   'panel.ctx.aria': { 'zh-CN': '会话与上下文详情', 'zh-TW': '對話與 Context 詳細資訊', en: 'Session & Context Details' },
-  'panel.ctx.title': { 'zh-CN': '💬 当前会话上下文', 'zh-TW': '💬 目前對話 Context', en: '💬 Current Session Context' },
+  'panel.ctx.title': { 'zh-CN': '💬 当前会话上下文', 'zh-TW': '💬 目前對話 Context', en: 'ACM' },
+  'panel.ctx.fullName': { 'zh-CN': 'Antigravity Context Meter', 'zh-TW': 'Antigravity Context Meter', en: 'Antigravity Context Meter' },
   'panel.ctx.viewModel': { 'zh-CN': '查看模型', 'zh-TW': '檢視模型', en: 'Model' },
   'panel.ctx.viewModelTitle': { 'zh-CN': '按厂商查看不同模型的上下文设置', 'zh-TW': '依廠商檢視不同模型的上下文設定', en: 'Inspect context settings by vendor and model' },
   'panel.ctx.loadingModels': { 'zh-CN': '正在读取模型…', 'zh-TW': '正在讀取模型…', en: 'Loading models…' },
@@ -4842,12 +4998,15 @@ const PANEL_I18N = {
   'tokens.cache.missingNote': { 'zh-CN': '当前来源记录缺少输入/缓存细分字段，不作零缓存推断。', 'zh-TW': '目前來源紀錄缺少輸入/快取細分欄位，不作零快取推論。', en: 'Input/cache split fields unavailable for active source; not assumed 0%.' },
   'tokens.cache.zeroInputNote': { 'zh-CN': '当前来源总输入为 0，缓存读取占比不适用。', 'zh-TW': '目前來源總輸入為 0，快取讀取佔比不適用。', en: 'Total input is 0 for active source; cache ratio is N/A.' },
 
-  // ELV-91 生成体验面板多语标签
+  // 生成体验面板多语标签
   'session.speedSummary.titleNoBolt': { 'zh-CN': '最新生成体验与速度', 'zh-TW': '最新生成體驗與速度', en: 'Latest Generation Experience' },
   'session.speed.streamRate': { 'zh-CN': '纯流式速度', 'zh-TW': '純流式速度', en: 'Stream Speed' },
+  'session.speed.shortSampleBadge': { 'zh-CN': '短样本', 'zh-TW': '短樣本', en: 'Short sample' },
+  'session.speed.shortWindowEst': { 'zh-CN': '短窗口估算 (参考)', 'zh-TW': '短視窗估算 (參考)', en: 'Short-Window Est. (Ref)' },
+  'session.speed.shortWindowNote': { 'zh-CN': '流式窗口过短（可能包含思考 Token 集中吐出），未作主速度高亮展示。', 'zh-TW': '流式視窗過短（可能含思考 Token 集中吐出），未作主速度高亮展示。', en: 'Short streaming window (may include buffered thinking tokens); omitted from headline speed.' },
   'session.speed.details': { 'zh-CN': '拆解', 'zh-TW': '拆解', en: 'Details' },
   'session.speed.hideDetails': { 'zh-CN': '收起', 'zh-TW': '收起', en: 'Hide' },
-  'session.speed.breakdown.eScore': { 'zh-CN': '综合评分 (规则 {ver})', 'zh-TW': '綜合評分 (規則 {ver})', en: 'Efficiency E ({ver})' },
+  'session.speed.breakdown.eScore': { 'zh-CN': '综合效率评分', 'zh-TW': '綜合效率評分', en: 'Efficiency E' },
   'session.speed.breakdown.ttft': { 'zh-CN': '首字延迟档位', 'zh-TW': '首字延遲檔位', en: 'TTFT Tier' },
   'session.speed.breakdown.stream': { 'zh-CN': '纯流式速度档位', 'zh-TW': '純流式速度檔位', en: 'Stream Speed Tier' },
   'session.speed.breakdown.overall': { 'zh-CN': '整体平均速率 (对照)', 'zh-TW': '整體平均速率 (對照)', en: 'Overall Avg (Ref)' },
@@ -4856,10 +5015,12 @@ const PANEL_I18N = {
   'session.speed.breakdown.basis': { 'zh-CN': '体量调节依据', 'zh-TW': '體量調節依據', en: 'Scale Basis' },
   'session.speed.stabilityOk': { 'zh-CN': '输出平稳 ({n} 块 · CV {cv})', 'zh-TW': '輸出平穩 ({n} 塊 · CV {cv})', en: 'Steady ({n} chunks · CV {cv})' },
   'session.speed.stabilityHighVar': { 'zh-CN': '波动较大 ({n} 块 · CV {cv})', 'zh-TW': '波動較大 ({n} 塊 · CV {cv})', en: 'High variance ({n} chunks · CV {cv})' },
-  'session.speed.stabilityUnverified': { 'zh-CN': '暂不评估波动 (缺少连续采样证据)', 'zh-TW': '暫不評估波動 (缺少連續採樣證據)', en: 'Not evaluated (insufficient chunk interval samples)' },
-  'session.speed.scoreSkippedSparse': { 'zh-CN': '样本过少 · 跳过综合评分', 'zh-TW': '樣本過少 · 略過綜合評分', en: 'Insufficient sample · Skipped' },
+  'session.speed.stabilityUnverified': { 'zh-CN': '暂无法评估 (未采集到足够真实流式分块间隔)', 'zh-TW': '暫無法評估 (未採集到足夠真實流式分塊間隔)', en: 'Unable to evaluate (insufficient real chunk intervals)' },
+  'session.speed.scoreSkippedSparse': { 'zh-CN': '样本不足 · 跳过综合评分', 'zh-TW': '樣本不足 · 略過綜合評分', en: 'Insufficient sample · Skipped' },
   'session.speed.scoreSkippedMissing': { 'zh-CN': '指标缺失 · 不补造评分', 'zh-TW': '指標缺失 · 不補造評分', en: 'Missing metrics · Skipped' },
   'session.speed.mockTag': { 'zh-CN': '模拟验收', 'zh-TW': '模擬驗收', en: 'Mock Verification' },
+  'session.latestCall.unknownMappedModel': { 'zh-CN': '未知模型 (无映射 · 原始 {id})', 'zh-TW': '未知模型 (無對映 · 原始 {id})', en: 'Unknown Model (Unmapped · {id})' },
+  'session.latestCall.rawIdNote': { 'zh-CN': '原始 ID: {id}', 'zh-TW': '原始 ID: {id}', en: 'Raw ID: {id}' },
 
   // 最新调用卡片与会话时间线
   'session.latestCall.title': { 'zh-CN': '最新调用', 'zh-TW': '最新呼叫', en: 'Latest Call' },
@@ -5826,6 +5987,34 @@ const PANEL_I18N = {
   'quota.est.basisCycle': { 'zh-CN': '本周期实耗推算 · 估算值', 'zh-TW': '本週期實耗推算 · 估算值', en: 'Cycle usage est. · estimate' },
   'quota.est.basisCached': { 'zh-CN': '沿用上周期校准参考（待本周期复核）', 'zh-TW': '沿用上週期校準參考（待本週期覆核）', en: 'Prior-cycle calibration ref. (unverified)' },
   'quota.est.basisStaleDivergence': { 'zh-CN': '历史校准不可靠（检测到未采集消耗）', 'zh-TW': '歷史校準不可靠（偵測到未採集消耗）', en: 'Stale calibration unreliable (external usage detected)' },
+
+  // 多账号、自动切号、ELV-57 配额对照与 ELV-52 保活
+  'accounts.filterLabel': { 'zh-CN': '账本范围:', 'zh-TW': '帳本範圍:', en: 'Account Scope:' },
+  'accounts.filterAria': { 'zh-CN': '按账号筛选统计账本', 'zh-TW': '依帳號篩選統計帳本', en: 'Filter ledger by account' },
+  'accounts.filterAll': { 'zh-CN': '全部已记用量（含未归属）', 'zh-TW': '全部已記用量（含未歸屬）', en: 'All Recorded (incl. Unattributed)' },
+  'accounts.filterUnattributed': { 'zh-CN': '历史未归属（无可靠账号依据）', 'zh-TW': '歷史未歸屬（無可靠帳號依據）', en: 'Unattributed History (No Verified Account)' },
+  'accounts.panelTitle': { 'zh-CN': '👤 多账号切换与阈值自动切号', 'zh-TW': '👤 多帳號切換與閾值自動切號', en: '👤 Accounts & Threshold Auto-Switch' },
+  'accounts.importCurrent': { 'zh-CN': '导入当前', 'zh-TW': '匯入目前帳號', en: 'Import Current' },
+  'accounts.importTools': { 'zh-CN': '导入 Tools', 'zh-TW': '匯入 Tools', en: 'Import Tools' },
+  'accounts.oauthAdd': { 'zh-CN': '+ 登录添加', 'zh-TW': '+ 登入新增', en: '+ Google Sign-In' },
+  'accounts.switchBtn': { 'zh-CN': '切号', 'zh-TW': '切號', en: 'Switch' },
+  'accounts.activeTag': { 'zh-CN': '当前', 'zh-TW': '目前', en: 'Active' },
+  'accounts.empty': { 'zh-CN': '暂无已登记账号，可点击“导入当前”或“登录添加”。', 'zh-TW': '暫無已登記帳號，可點擊「匯入目前帳號」或「登入新增」。', en: 'No accounts saved yet. Click Import Current or Google Sign-In.' },
+  'accounts.autoSwitchEnable': { 'zh-CN': '启用阈值自动切号（默认关闭）', 'zh-TW': '啟用閾值自動切號（預設關閉）', en: 'Enable threshold auto-switch (Off by default)' },
+  'accounts.poolLabel': { 'zh-CN': '监控共享池', 'zh-TW': '監控共享池', en: 'Target Pool' },
+  'accounts.metricLabel': { 'zh-CN': '判断口径', 'zh-TW': '判斷口徑', en: 'Trigger Metric' },
+  'accounts.modeRemaining': { 'zh-CN': '按剩余额度 <=', 'zh-TW': '依剩餘額度 <=', en: 'Remaining <=' },
+  'accounts.modeUsed': { 'zh-CN': '按累计已用 >=', 'zh-TW': '依累計已用 >=', en: 'Used >=' },
+  'accounts.windowLabel': { 'zh-CN': '限额窗口', 'zh-TW': '限額視窗', en: 'Window' },
+  'accounts.winPrimary': { 'zh-CN': '主窗口（最紧缩）', 'zh-TW': '主視窗（最緊縮）', en: 'Primary (Tightest)' },
+  'accounts.thresholdLabel': { 'zh-CN': '阈值 (%)', 'zh-TW': '閾值 (%)', en: 'Threshold (%)' },
+  'accounts.candidatesLabel': { 'zh-CN': '允许切入的候选账号：', 'zh-TW': '允許切入的候選帳號：', en: 'Candidate accounts allowed:' },
+  'accounts.saveRule': { 'zh-CN': '保存切号规则', 'zh-TW': '儲存切號規則', en: 'Save Rule' },
+  'quota.compareTitle': { 'zh-CN': '📊 本机消耗与共享账号额度对照', 'zh-TW': '📊 本機消耗與共享帳號額度對照', en: '📊 Local Usage vs. Shared Quota Deltas' },
+  'quota.compareDisclaimer': { 'zh-CN': '按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。', 'zh-TW': '依同一帳號與共享池統計。帳面百分點下降受多裝置使用、取整、重置與滾動恢復影響，不等同於本機單獨消耗佔比。', en: 'Scoped per account & pool. Quota percentage-point changes reflect shared multi-device usage, rounding, resets, and rolling recovery — not solely local consumption.' },
+  'quota.compareEmpty': { 'zh-CN': '暂未累积同一账号前后两次配额采样对照区间（刷新配额后自动对比）。', 'zh-TW': '暫未累積同一帳號前後兩次配額採樣對照區間（重新整理配額後自動對比）。', en: 'No completed quota comparison intervals yet. Refresh quota to capture baseline & delta.' },
+  'keepalive.title': { 'zh-CN': '🧊 模型缓存保活状态与协议核查', 'zh-TW': '🧊 模型快取保活狀態與協定核查', en: '🧊 Prompt Cache Keepalive & Protocol Check' },
+  'keepalive.stopBtn': { 'zh-CN': '立即停止保活', 'zh-TW': '立即停止保活', en: 'Stop Keepalive Now' },
   'quota.est.mixedModels': { 'zh-CN': '同池混用模型', 'zh-TW': '同池混用模型', en: 'mixed pool models' },
   'quota.est.cycleUsed': { 'zh-CN': '本周期已记 {used}', 'zh-TW': '本週期已記 {used}', en: 'Cycle used {used}' },
   'quota.state.available': { 'zh-CN': '正常可用', 'zh-TW': '正常可用', en: 'Available' },
@@ -8234,6 +8423,8 @@ function formatVendorLabel(vendor) {
       '/modules-status': 'modules',
       '/toggle-module': 'modules',
       '/test-proxy': 'modules',
+      '/accounts-overview': 'accounts',
+      '/accounts-action': 'accounts',
       '/check-update': 'checkUpdate',
       '/apply-update': 'applyUpdate'
     };
@@ -10144,6 +10335,11 @@ function formatVendorLabel(vendor) {
       if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
         void syncTokenHistoryFromHost(false);
       }
+      if (!accountsUiState?.overview && typeof refreshAccountsOverview === 'function') {
+        void refreshAccountsOverview({ silent: true });
+      } else {
+        syncTokenAccountFilterOptions?.(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+      }
     } else if (target === 'quota') {
       hideContextTooltip();
       closeColorPicker();
@@ -10159,6 +10355,8 @@ function formatVendorLabel(vendor) {
       if (pQuota) pQuota.hidden = false;
       if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
       if (typeof maybeRefreshQuotaOnOpen === 'function') void maybeRefreshQuotaOnOpen();
+      if (typeof renderAccountsOverviewSection === 'function') renderAccountsOverviewSection();
+      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
     } else if (target === 'context') {
       hideContextTooltip();
       closeColorPicker();
@@ -12148,8 +12346,16 @@ function closeAllDropdowns(exceptWrap = null) {
     return String(n);
   }
 
-  // 数据源切换（全部 / 桌面 / CLI）
+  // 数据源切换（全部 / 桌面 / CLI）与分账号账本筛选
   let activeTokenSource = 'all';
+  let activeTokenAccountFilter = 'all'; // 'all' | 'unattributed' | 'acct_xxx'
+  const accountsUiState = {
+    overview: null,
+    toolsPreview: null,
+    feedback: '',
+    feedbackTone: 'info',
+    busy: false
+  };
   function switchTokenSource(src) {
     activeTokenSource = src;
     try { localStorage?.setItem('ag_token_source_v1', src); } catch { }
@@ -17131,6 +17337,9 @@ function closeAllDropdowns(exceptWrap = null) {
     try {
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
       if (typeof rerenderSettingsFeedbacks === 'function') rerenderSettingsFeedbacks();
+      if (typeof renderAccountsOverviewSection === 'function' && accountsUiState?.overview) {
+        renderAccountsOverviewSection();
+      }
     } catch { }
     try {
       if (isChineseExpanded || isProxyExpanded || isContextSettingsView) {
@@ -19476,11 +19685,59 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     ANTIGRAVITY_TOKEN_DATA.rawPayload = payload;
+    syncTokenAccountFilterOptions(payload);
+
+    // 若选择了指定账号或“历史未归属”，构造隔离账本视图而不污染其他账号或全量原始 payload
+    let viewPayload = payload;
+    if (activeTokenAccountFilter !== 'all') {
+      const bucket = activeTokenAccountFilter === 'unattributed'
+        ? payload.unattributedUsage
+        : payload.usageByAccount?.[activeTokenAccountFilter];
+      if (bucket && typeof bucket === 'object') {
+        viewPayload = {
+          ...payload,
+          dailyMap: bucket.dailyMap || {},
+          dailyMapBySource: {
+            all: bucket.dailyMap || {},
+            desktop: activeTokenAccountFilter === 'unattributed' ? (bucket.dailyMap || {}) : {},
+            cli: {},
+            legacyUnallocated: activeTokenAccountFilter === 'unattributed' ? (bucket.dailyMap || {}) : {}
+          },
+          summary: {
+            ...(payload.summary || {}),
+            grandTotalTokens: Number(bucket.totalTokens) || 0,
+            totalInputTokens: Number(bucket.totalInputTokens) || 0,
+            totalOutputTokens: Number(bucket.totalOutputTokens) || 0,
+            totalCacheTokens: Number(bucket.totalCacheTokens) || 0,
+            todayTokens: Number(bucket.todayTokens) || 0,
+            monthTokens: Number(bucket.monthTokens) || 0,
+            yearTokens: Number(bucket.yearTokens) || 0,
+            cacheReadStats: bucket.cacheReadStats || null,
+            currentMonthCacheReadStats: bucket.cacheReadStats || null
+          },
+          costEstimate: bucket.costEstimate || null,
+          costEstimateBySource: bucket.costEstimate ? { all: bucket.costEstimate, desktop: bucket.costEstimate, cli: bucket.costEstimate } : payload.costEstimateBySource,
+          cacheReadStatsBySource: bucket.cacheReadStats ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: bucket.cacheReadStats } : payload.cacheReadStatsBySource,
+          currentMonthCacheReadStatsBySource: bucket.cacheReadStats ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: bucket.cacheReadStats } : payload.currentMonthCacheReadStatsBySource
+        };
+      } else {
+        viewPayload = {
+          ...payload,
+          dailyMap: {},
+          dailyMapBySource: { all: {}, desktop: {}, cli: {}, legacyUnallocated: {} },
+          summary: {
+            ...(payload.summary || {}),
+            grandTotalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCacheTokens: 0,
+            todayTokens: 0, monthTokens: 0, yearTokens: 0
+          }
+        };
+      }
+    }
 
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const todayStr = formatLocalYmd(new Date());
     const normalized = core && typeof core.normalizeTokenHistoryPayload === 'function'
-      ? core.normalizeTokenHistoryPayload(payload, { source: activeTokenSource, todayStr })
+      ? core.normalizeTokenHistoryPayload(viewPayload, { source: activeTokenSource, todayStr })
       : null;
 
     if (normalized) {
@@ -21302,10 +21559,14 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (cardBolt && evalRes.badge?.glyph) cardBolt.textContent = evalRes.badge.glyph;
 
     const isCompact = state.layoutMode === 'compact';
+    const shortSampleText = t('session.speed.shortSampleBadge');
     if (speedAmount) {
       if (evalRes.phase === 'waiting') {
         speedAmount.textContent = isCompact ? evalRes.elapsedFormatted : (isEn ? `Wait ${evalRes.elapsedFormatted}` : `等待 ${evalRes.elapsedFormatted}`);
         if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.elapsedFormatted}`;
+      } else if (evalRes.isSampleSparse) {
+        speedAmount.textContent = shortSampleText;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
       } else if (evalRes.streamSpeed != null) {
         speedAmount.textContent = isCompact ? `${evalRes.streamSpeed}` : `${evalRes.streamSpeed} tok/s`;
         if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.streamSpeed} tok/s`;
@@ -21338,6 +21599,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (spVal) {
       if (evalRes.phase === 'waiting') {
         spVal.textContent = isEn ? 'Waiting' : '等待首字';
+      } else if (evalRes.isSampleSparse) {
+        spVal.textContent = shortSampleText;
       } else if (evalRes.streamSpeed != null) {
         spVal.textContent = `${evalRes.streamSpeed} tok/s`;
       } else if (evalRes.overallTps != null) {
@@ -21360,7 +21623,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       }
     }
     if (spTakeaway) {
-      const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)
+      const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)))
         ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
         : '';
       spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}`;
@@ -21387,9 +21650,12 @@ function renderHeatmapGrid(forceRebuild = false) {
           ? t('session.speed.stabilityHighVar', { n: evalRes.stability.chunks, cv: evalRes.stability.intervalCv })
           : t('session.speed.stabilityUnverified'));
       const fmtTierComment = (tier, elapsed) => (tier && tier.comment) ? String(tier.comment).replace('{elapsed}', elapsed || '—') : '';
+      const streamCellVal = evalRes.isSampleSparse
+        ? `${shortSampleText}${evalRes.shortWindowEstimateSpeed != null ? ` (${evalRes.shortWindowEstimateSpeed} tok/s)` : ''}`
+        : (evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk);
       const cells = [
         {
-          k: t('session.speed.breakdown.eScore', { ver: evalRes.scoreRuleVersion || 'elv91-v1' }),
+          k: t('session.speed.breakdown.eScore'),
           v: eText,
           color: evalRes.efficiency?.tier?.color || null,
           note: evalRes.efficiency?.tier?.comment || ''
@@ -21402,9 +21668,9 @@ function renderHeatmapGrid(forceRebuild = false) {
         },
         {
           k: t('session.speed.breakdown.stream'),
-          v: evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk,
-          color: evalRes.speedTier?.color || null,
-          note: evalRes.speedTier?.comment || ''
+          v: streamCellVal,
+          color: evalRes.isSampleSparse ? null : (evalRes.speedTier?.color || null),
+          note: evalRes.isSampleSparse ? t('session.speed.shortWindowNote') : (evalRes.speedTier?.comment || '')
         },
         {
           k: t('session.speed.breakdown.duration'),
@@ -21415,6 +21681,14 @@ function renderHeatmapGrid(forceRebuild = false) {
         { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
         { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
       ];
+      if (evalRes.isSampleSparse && evalRes.shortWindowEstimateSpeed != null) {
+        cells.splice(3, 0, {
+          k: t('session.speed.shortWindowEst'),
+          v: `${evalRes.shortWindowEstimateSpeed} tok/s`,
+          color: null,
+          note: t('session.speed.shortWindowNote')
+        });
+      }
       if (evalRes.efficiency?.basis) {
         const b = evalRes.efficiency.basis;
         cells.push({
@@ -21531,10 +21805,24 @@ function renderHeatmapGrid(forceRebuild = false) {
 
   function formatCallModelTitle(call) {
     if (!call) return t('session.latestCall.unknownVal');
-    const lbl = call.modelLabel || (call.model && !/^model_/i.test(String(call.model)) ? String(call.model) : '');
-    if (lbl) return lbl;
-    if (call.modelExactId) return String(call.modelExactId);
-    if (call.model) return String(call.model);
+    if (call.isPlaceholderOnly && !call.isRoutedModelVerified) {
+      const rawId = call.rawPlaceholderId || call.modelExactId || call.model || '';
+      return rawId ? t('session.latestCall.unknownMappedModel', { id: rawId }) : t('session.latestCall.unknownVal');
+    }
+    const rawLbl = call.modelLabel || (call.model && !/^model_/i.test(String(call.model)) ? String(call.model) : '');
+    if (rawLbl) {
+      if (typeof splitModelDisplayAndEffort === 'function') {
+        const split = splitModelDisplayAndEffort(rawLbl, call.effort);
+        if (split.baseLabel) return split.baseLabel;
+      }
+      return rawLbl;
+    }
+    if (call.stableModelId && !/^model_placeholder_/i.test(String(call.stableModelId))) return String(call.stableModelId);
+    if (call.modelExactId && !/^model_placeholder_/i.test(String(call.modelExactId))) return String(call.modelExactId);
+    if (call.model && !/^model_placeholder_/i.test(String(call.model))) return String(call.model);
+    if (call.rawPlaceholderId || call.modelExactId || call.model) {
+      return t('session.latestCall.unknownMappedModel', { id: call.rawPlaceholderId || call.modelExactId || call.model });
+    }
     return t('session.latestCall.unknownVal');
   }
 
@@ -21743,6 +22031,8 @@ function renderHeatmapGrid(forceRebuild = false) {
           chunkCount: call.chunkCount,
           chunkIntervalsMs: call.chunkIntervalsMs,
           intervalCv: call.intervalCv,
+          sampleSource: call.sampleSource || null,
+          isSyntheticPoll: call.isSyntheticPoll === true,
           error: call.error
         }, currentPanelLanguage)
       : null;
@@ -21784,11 +22074,25 @@ function renderHeatmapGrid(forceRebuild = false) {
       const eDetailVal = callEval?.efficiency?.available
         ? `${callEval.efficiency.score} ${currentPanelLanguage === 'en' ? 'pts' : '分'} · ${callEval.efficiency.tier?.title || callEval.efficiency.grade}`
         : (call.eScore != null ? `${call.eScore} (${call.eGrade || '--'})` : (callEval?.efficiency?.skippedReason === 'insufficient_sample' ? t('session.speed.scoreSkippedSparse') : t('session.speed.scoreSkippedMissing')));
+      const rawIdBadge = call.rawPlaceholderId ? ` (${t('session.latestCall.rawIdNote', { id: call.rawPlaceholderId })})` : '';
+      const stableIdDisplay = (call.stableModelId && !/^model_placeholder_/i.test(String(call.stableModelId)))
+        ? `${call.stableModelId}${rawIdBadge}`
+        : ((call.modelExactId && !/^model_placeholder_/i.test(String(call.modelExactId)))
+          ? `${call.modelExactId}${rawIdBadge}`
+          : (call.rawPlaceholderId
+            ? `${unk} (${t('session.latestCall.rawIdNote', { id: call.rawPlaceholderId })})`
+            : (call.modelExactId || call.modelKey || unk)));
+      const effortSuffix = call.effort ? String(call.effort).trim() : '';
+      const hasEffortInTitle = effortSuffix && modelTitle.trim().toLowerCase().endsWith(`(${effortSuffix.toLowerCase()})`);
+      const modelAndEffortDisplay = (effortSuffix && !hasEffortInTitle) ? `${modelTitle} (${effortSuffix})` : modelTitle;
+      const callStreamDisplay = callEval?.isSampleSparse
+        ? `${t('session.speed.shortSampleBadge')}${callEval.shortWindowEstimateSpeed != null ? ` (${t('session.speed.shortWindowEst')}: ${callEval.shortWindowEstimateSpeed} tok/s)` : ''}`
+        : ((call.streamingTps ?? call.streamSpeed) != null ? `${call.streamingTps ?? call.streamSpeed} tok/s${callEval?.speedTier ? ` · ${callEval.speedTier.title}` : ''}` : unk);
       const cells = [
         [t('session.latestCall.fieldTime'), formatCallTimeStr(call)],
         [t('session.latestCall.fieldStatus'), st.text],
-        [t('session.latestCall.fieldModelId'), call.modelExactId || call.modelKey || unk],
-        [t('session.latestCall.fieldModelLabel'), `${modelTitle}${call.effort ? ` (${call.effort})` : ''}`],
+        [t('session.latestCall.fieldModelId'), stableIdDisplay],
+        [t('session.latestCall.fieldModelLabel'), modelAndEffortDisplay],
         [t('session.latestCall.fieldInput'), call.hasInputCacheFields && call.inputTokens !== null ? fmt(call.inputTokens) : unk],
         [t('session.latestCall.fieldCacheRead'), call.hasInputCacheFields && call.cacheReadTokens !== null ? fmt(call.cacheReadTokens) : unk],
         [t('session.latestCall.fieldTotalInput'), call.hasInputCacheFields && call.totalInputTokens !== null ? fmt(call.totalInputTokens) : unk],
@@ -21798,9 +22102,9 @@ function renderHeatmapGrid(forceRebuild = false) {
         [t('session.latestCall.fieldCacheRatio'), formatCallCachePctText(call)],
         [t('session.latestCall.fieldTtft'), `${fmtDurOrUnk(call.ttftSec)}${call.ttftRatioPct != null ? ` (${call.ttftRatioPct}%)` : ''}${callEval?.ttftTier ? ` · ${callEval.ttftTier.title}` : ''}`],
         [t('session.latestCall.fieldDuration'), `${fmtDurOrUnk(call.durationSec)}${callEval?.durationTier ? ` · ${callEval.durationTier.title}` : ''}`],
-        [t('session.speed.streamRate'), (call.streamingTps ?? call.streamSpeed) != null ? `${call.streamingTps ?? call.streamSpeed} tok/s${callEval?.speedTier ? ` · ${callEval.speedTier.title}` : ''}` : unk],
+        [t('session.speed.streamRate'), callStreamDisplay],
         [t('session.speed.breakdown.overall'), call.tps !== null && call.tps !== undefined ? `${call.tps} tok/s` : unk],
-        [t('session.speed.breakdown.eScore', { ver: call.scoreRuleVersion || 'elv91-v1' }), eDetailVal],
+        [t('session.speed.breakdown.eScore'), eDetailVal],
         [t('session.latestCall.fieldAgent'), agentDesc]
       ];
       for (const [k, v] of cells) {
@@ -22958,31 +23262,9 @@ function renderHeatmapGrid(forceRebuild = false) {
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
 
-      // 实时流式采样点跟踪 & 等待首字计时清除（严格限制同一单次调用，绝不跨轮混用）
+      // 清除等待首字计时器（禁止用 1000ms 轮询步进时间戳伪造服务器分块流式间隔，避免误判为“输出平稳”）
       const newestPollCall = state.sessionCalls.length ? state.sessionCalls[state.sessionCalls.length - 1] : null;
       if (newestPollCall) {
-        if (!state.streamSampleTracker) state.streamSampleTracker = { byCallId: new Map() };
-        const nowTs = Date.now();
-        let trk = state.streamSampleTracker.byCallId.get(newestPollCall.callId);
-        if (!trk) {
-          trk = { firstOutAt: newestPollCall.outputTokens > 0 ? nowTs : null, lastOutAt: nowTs, lastOutTokens: newestPollCall.outputTokens || 0, chunks: newestPollCall.outputTokens > 0 ? 1 : 0, intervalsMs: [], elapsedStreamSec: 0 };
-          if (state.streamSampleTracker.byCallId.size >= 40) {
-            const firstK = state.streamSampleTracker.byCallId.keys().next().value;
-            if (firstK) state.streamSampleTracker.byCallId.delete(firstK);
-          }
-          state.streamSampleTracker.byCallId.set(newestPollCall.callId, trk);
-        } else if (newestPollCall.status === 'streaming' && newestPollCall.outputTokens > trk.lastOutTokens) {
-          if (trk.lastOutAt) trk.intervalsMs.push(Math.max(1, nowTs - trk.lastOutAt));
-          if (!trk.firstOutAt) trk.firstOutAt = nowTs;
-          trk.lastOutAt = nowTs;
-          trk.lastOutTokens = newestPollCall.outputTokens;
-          trk.chunks += 1;
-          trk.elapsedStreamSec = Number(((nowTs - trk.firstOutAt) / 1000).toFixed(2));
-        }
-        if (trk.chunks >= 1 && trk.intervalsMs.length > 0) {
-          newestPollCall.chunkCount = trk.chunks;
-          newestPollCall.chunkIntervalsMs = trk.intervalsMs.slice();
-        }
         if (state.livePendingRequest && state.livePendingRequest.cascadeId === id) {
           const isNewCall = newestPollCall.callId !== state.livePendingRequest.baselineCallId;
           const gotFirstToken = (newestPollCall.outputTokens || 0) > 0 || newestPollCall.ttftSec != null || newestPollCall.status === 'final';
@@ -23722,12 +24004,21 @@ function renderHeatmapGrid(forceRebuild = false) {
           isResetPassed: rm.isResetPassed
         };
       });
-      const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
-      const pb = priced[0] || nextBuckets[0] || p.primaryBucket || null;
+      const sel = (typeof selectPrimaryQuotaBucket === 'function')
+        ? selectPrimaryQuotaBucket(nextBuckets)
+        : (() => {
+            const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
+            return { primaryBucket: priced[0] || nextBuckets[0] || null, selectionReason: priced.length <= 1 ? 'single_window' : 'tighter_window' };
+          })();
+      const pb = sel.primaryBucket || p.primaryBucket || null;
       return {
         ...p,
         buckets: nextBuckets,
         primaryBucket: pb,
+        selectionReason: sel.selectionReason || p.selectionReason || 'single_window',
+        remainingFraction: pb?.remainingFraction ?? p.remainingFraction ?? null,
+        percentText: pb?.percentText ?? p.percentText ?? null,
+        isExhausted: pb ? Boolean(pb.isExhausted || pb.remainingFraction === 0) : Boolean(p.isExhausted),
         hasResetTime: Boolean(pb?.hasResetTime ?? p.hasResetTime),
         resetTimeIso: pb?.resetTimeIso ?? p.resetTimeIso ?? null,
         resetAtMs: pb?.resetAtMs ?? p.resetAtMs ?? null,
@@ -24123,10 +24414,30 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (bQuota) {
       setQuotaAttrIfChanged(bQuota, 'data-quota-state', view.activeStatus || 'unknown');
       const tipModel = view.currentModel?.productLabel || t('quota.current.unmatched');
+      const matchedPoolObj = (view.pools || []).find(p => p.poolKey === view.currentModel?.poolKey) || null;
+      const reasonMap = {
+        tighter_window: currentPanelLanguage === 'en' ? 'tightest window' : (currentPanelLanguage === 'zh-TW' ? '最緊縮視窗優先' : '最紧缩窗口优先'),
+        tie_window: currentPanelLanguage === 'en' ? '5h priority on tie' : (currentPanelLanguage === 'zh-TW' ? '同餘量優先短視窗' : '同余量优先短窗口'),
+        single_window: currentPanelLanguage === 'en' ? 'single window' : (currentPanelLanguage === 'zh-TW' ? '單一限額視窗' : '单一限额窗口')
+      };
+      const winLines = (matchedPoolObj?.buckets || []).map(b => {
+        const wTag = b.windowShort || formatQuotaWindowTitle(b);
+        const wReset = b.hasResetTime ? `${b.resetTimeText} (${formatCountdownMsCompact((b.resetAtMs || 0) - nowMs)})` : t('quota.time.unknown');
+        return `${wTag}: ${b.percentText || t('quota.time.unknown')} (${wReset})`;
+      });
+      const selNote = matchedPoolObj?.primaryBucket
+        ? `${matchedPoolObj.primaryBucket.windowShort || formatQuotaWindowTitle(matchedPoolObj.primaryBucket)} · ${reasonMap[matchedPoolObj.selectionReason] || ''}`
+        : '';
+      const updatedStr = view.fetchedAtMs ? new Date(view.fetchedAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : t('quota.time.unknown');
+      const poolHeader = matchedPoolObj?.title ? ` · ${matchedPoolObj.title}` : '';
       const tipReset = view.activeReset?.hasResetTime
         ? `${view.activeReset.resetTimeText} (${formatCountdownMsCompact((view.activeReset.resetAtMs || 0) - nowMs)})`
         : t('quota.time.unknown');
-      const nextTitle = `${tipModel} · ${view.activeStatusLabel} (${view.badge.text}) · ${t('quota.time.reset')}: ${tipReset}`;
+      const nextTitle = [
+        `${tipModel}${poolHeader} · ${view.activeStatusLabel} (${view.badge.text})${selNote ? ` [${selNote}]` : ''}`,
+        winLines.length ? winLines.join(' | ') : `${t('quota.time.reset')}: ${tipReset}`,
+        `${currentPanelLanguage === 'en' ? 'Updated' : '更新'}: ${updatedStr}`
+      ].filter(Boolean).join('\n');
       if (bQuota.title !== nextTitle) bQuota.title = nextTitle;
       setQuotaAttrIfChanged(bQuota, 'aria-label', `${t('badge.quota.aria')}: ${view.badge.text} (${view.activeStatusLabel})`);
     }
@@ -24805,6 +25116,9 @@ function renderHeatmapGrid(forceRebuild = false) {
       } else {
         scheduleQuotaAutoRefresh();
       }
+      if (typeof refreshAccountsOverview === 'function') {
+        void refreshAccountsOverview({ silent: !isManual, refreshAllRemote: Boolean(isManual) });
+      }
       renderQuotaBoard(nowMs, { animate: shouldAnimateChange, chargeBars: shouldChargeBars });
       return quotaState.snapshot;
     })();
@@ -24874,6 +25188,410 @@ function renderHeatmapGrid(forceRebuild = false) {
   });
   el('btn-quota-banner-retry')?.addEventListener('click', () => {
     void syncQuotaFromHost(true, { manual: true });
+  });
+
+  // =========================================================================
+  // 多账号账本筛选、切号交互、ELV-57 配额对照表与 ELV-52 保活保障渲染
+  // =========================================================================
+
+  function syncTokenAccountFilterOptions(payload = null) {
+    const sel = el('token-account-select');
+    const noteEl = el('token-account-scope-note');
+    if (!sel) return;
+    const isEn = currentPanelLanguage === 'en';
+    const isTw = currentPanelLanguage === 'zh-TW';
+    const ov = accountsUiState.overview;
+    const acctList = Array.isArray(ov?.accounts) ? ov.accounts : [];
+    const usageMap = payload?.usageByAccount || ANTIGRAVITY_TOKEN_DATA.rawPayload?.usageByAccount || {};
+    const curScope = payload?.accountScopeKey || ov?.activeAccountScopeKey || '';
+
+    const knownMap = new Map();
+    for (const a of acctList) {
+      knownMap.set(a.accountScopeKey, a.maskedEmail || a.email || a.accountScopeKey);
+    }
+    for (const scopeK of Object.keys(usageMap)) {
+      if (!knownMap.has(scopeK)) knownMap.set(scopeK, scopeK);
+    }
+
+    const optsHtml = [];
+    optsHtml.push({ val: 'all', label: t('accounts.filterAll') });
+    for (const [scopeK, disp] of knownMap.entries()) {
+      const isCur = scopeK === curScope;
+      const suffix = isCur ? ` (${t('accounts.activeTag')})` : '';
+      optsHtml.push({ val: scopeK, label: `${disp}${suffix}` });
+    }
+    optsHtml.push({ val: 'unattributed', label: t('accounts.filterUnattributed') });
+
+    const prevVal = activeTokenAccountFilter || 'all';
+    sel.replaceChildren();
+    for (const item of optsHtml) {
+      const opt = document.createElement('option');
+      opt.value = item.val;
+      opt.textContent = item.label;
+      if (item.val === prevVal) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    if (!optsHtml.some(o => o.val === prevVal)) {
+      activeTokenAccountFilter = 'all';
+      sel.value = 'all';
+    } else {
+      sel.value = prevVal;
+    }
+
+    if (noteEl) {
+      if (activeTokenAccountFilter === 'unattributed') {
+        const unAttrTot = Number(payload?.unattributedUsage?.totalTokens ?? ANTIGRAVITY_TOKEN_DATA.rawPayload?.unattributedUsage?.totalTokens ?? 0);
+        noteEl.textContent = isEn
+          ? `Unattributed history (${formatTokensK(unAttrTot)}): offline Desktop/CLI/IDE files without verified email.`
+          : (isTw ? `歷史未歸屬 (${formatTokensK(unAttrTot)})：無帳號依據的舊檔案不計入當前帳號。` : `历史未归属 (${formatTokensK(unAttrTot)})：无账号依据的旧文件不计入当前账号。`);
+      } else if (activeTokenAccountFilter !== 'all') {
+        const b = usageMap[activeTokenAccountFilter];
+        const kaReqs = Number(b?.keepaliveRequests || 0);
+        const kaTok = Number(b?.keepaliveTokens || 0);
+        noteEl.textContent = kaReqs > 0
+          ? (isEn ? `Includes ${kaReqs} keepalive reqs (${formatTokensK(kaTok)}) tracked separately.` : `含独立保活消耗 ${kaReqs} 次 (${formatTokensK(kaTok)})。`)
+          : (isEn ? 'Isolated account ledger (zero cross-account mixing).' : (isTw ? '單帳號獨立帳本（零跨號混算）。' : '单账号独立账本（零跨号混算）。'));
+      } else {
+        const attrCount = Object.keys(usageMap).length;
+        noteEl.textContent = attrCount > 0
+          ? (isEn ? `${attrCount} attributed account(s) + isolated legacy history.` : (isTw ? `含 ${attrCount} 個已歸屬帳號 + 獨立未歸屬歷史。` : `含 ${attrCount} 个已归属账号 + 独立未归属历史。`))
+          : '';
+      }
+    }
+  }
+
+  el('token-account-select')?.addEventListener('change', (ev) => {
+    activeTokenAccountFilter = ev.target?.value || 'all';
+    if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
+      applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+    }
+  });
+
+  function isEditingAutoSwitchDraft() {
+    try {
+      const ae = shadow?.activeElement;
+      if (!ae) return false;
+      const body = el('auto-switch-config-body');
+      return Boolean(body && body.contains?.(ae));
+    } catch {
+      return false;
+    }
+  }
+
+  function renderAccountsOverviewSection() {
+    const ov = accountsUiState.overview || {
+      accounts: [],
+      autoSwitch: {},
+      autoSwitchStatus: { state: 'disabled' },
+      keepalive: {},
+      keepaliveState: {},
+      quotaIntervals: [],
+      protocolEvidence: {
+        checkedVersion: '2.32.1',
+        rpcCountChecked: 375,
+        conclusion: '在已检查的 Antigravity 2.32.1 语言服务 375 个 RPC 和响应中，未发现明确的 Prompt Cache 续期或 TTL 接口，响应亦未见 cacheWriteTokens 或 cacheTtl；因此不展示虚构到期倒计时，缓存保活保持待验证/默认关闭。',
+        minimalExperimentPlan: {
+          targetModel: 'Gemini 4 Hydrogen (High)',
+          totalRequestsPlanned: 5,
+          groupB: '实验组（3 次请求，含 1 次 "ok" 心跳）对比对照组（2 次请求，无保活），约 20K 固定只读前缀、预计总输出 60~150 tok，待维护者确认后再发实验请求。'
+        }
+      }
+    };
+    const isEn = currentPanelLanguage === 'en';
+    const isTw = currentPanelLanguage === 'zh-TW';
+
+    // 1. 工具按钮显隐与反馈横幅
+    const toolsBtn = el('btn-acct-import-tools');
+    if (toolsBtn) {
+      toolsBtn.hidden = !(accountsUiState.toolsPreview?.available && (accountsUiState.toolsPreview.count || 0) > 0);
+    }
+    const fbEl = el('quota-acct-feedback');
+    if (fbEl) {
+      fbEl.hidden = !accountsUiState.feedback;
+      fbEl.textContent = accountsUiState.feedback || '';
+    }
+
+    // 2. 账号清单
+    const listEl = el('quota-accounts-list');
+    if (listEl) {
+      listEl.replaceChildren();
+      const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
+      if (!accts.length) {
+        const empty = document.createElement('div');
+        empty.className = 'quota-muted-note';
+        empty.textContent = t('accounts.empty');
+        listEl.appendChild(empty);
+      } else {
+        for (const acc of accts) {
+          const card = document.createElement('div');
+          card.className = `quota-acct-card${acc.isActive ? ' is-active' : ''}`;
+          const topRow = document.createElement('div');
+          topRow.className = 'quota-subcard-row';
+          const left = document.createElement('span');
+          left.className = 'quota-acct-email';
+          left.textContent = `${acc.email}${acc.tierId ? ` · ${acc.tierId}` : ''}`;
+          left.title = acc.email;
+          const right = document.createElement('div');
+          right.className = 'quota-subsec-actions';
+          if (acc.isActive) {
+            const pill = document.createElement('span');
+            pill.className = 'key-pill pill-good';
+            pill.textContent = t('accounts.activeTag');
+            right.appendChild(pill);
+          } else {
+            const swBtn = document.createElement('button');
+            swBtn.className = 'switch-pill-btn';
+            swBtn.type = 'button';
+            swBtn.disabled = accountsUiState.busy || !acc.hasRefreshToken || Boolean(acc.authInvalid);
+            swBtn.textContent = t('accounts.switchBtn');
+            swBtn.addEventListener('click', () => void performAccountAction('switch', { email: acc.email }));
+            right.appendChild(swBtn);
+          }
+          topRow.appendChild(left);
+          topRow.appendChild(right);
+          card.appendChild(topRow);
+
+          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => `${p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'))}: ${p.noPermission ? 'NoPerm' : (p.percentText || '--')}`);
+          const metaRow = document.createElement('div');
+          metaRow.className = 'quota-acct-meta';
+          const upd = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';
+          const authNote = acc.authInvalid ? (isEn ? ' · Re-auth required' : ' · 需重登授权') : '';
+          metaRow.textContent = `${poolSummaries.length ? poolSummaries.join(' | ') : (isEn ? 'Quota pending' : '待刷新配额')} · ${upd}${authNote}`;
+          card.appendChild(metaRow);
+          listEl.appendChild(card);
+        }
+      }
+    }
+
+    // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿）
+    const stPill = el('auto-switch-status-pill');
+    const lastNote = el('auto-switch-last-note');
+    const stMap = {
+      disabled: isEn ? 'Off' : '已关闭',
+      watching: isEn ? 'Watching' : '监控中',
+      pending_debounce: isEn ? 'Debouncing' : '防抖确认中',
+      waiting_idle: isEn ? 'Waiting idle' : '等待当前生成完成',
+      cooldown: isEn ? 'Cooldown' : '冷却保护中',
+      switching: isEn ? 'Switching' : '切号中',
+      all_candidates_exhausted: isEn ? 'No candidate available' : '备选账号均不足',
+      blocked_untrusted_quota: isEn ? 'Skipped (Stale/Error)' : '数据不可信已跳过',
+      error: isEn ? 'Halted (Error)' : '失败已停用'
+    };
+    if (stPill) {
+      const sKey = ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled');
+      stPill.textContent = stMap[sKey] || sKey;
+      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (sKey === 'error' || sKey === 'all_candidates_exhausted' ? 'pill-warn' : 'pill-muted')}`;
+    }
+    if (lastNote) {
+      const errMsg = ov.autoSwitchStatus?.lastError;
+      lastNote.textContent = errMsg || (ov.autoSwitchStatus?.lastResult?.toEmail ? `上次切至 ${ov.autoSwitchStatus.lastResult.toEmail}` : '');
+    }
+
+    if (!isEditingAutoSwitchDraft()) {
+      const cfg = ov.autoSwitch || {};
+      const chk = el('chk-auto-switch-enabled');
+      const poolSel = el('sel-auto-switch-pool');
+      const modeSel = el('sel-auto-switch-mode');
+      const winSel = el('sel-auto-switch-window');
+      const thInp = el('inp-auto-switch-threshold');
+      if (chk) chk.checked = Boolean(cfg.enabled);
+      if (poolSel && cfg.poolKey) poolSel.value = cfg.poolKey;
+      if (modeSel && cfg.metricMode) modeSel.value = cfg.metricMode;
+      if (winSel && cfg.windowKey) winSel.value = cfg.windowKey;
+      if (thInp && cfg.thresholdPct != null) thInp.value = String(cfg.thresholdPct);
+
+      const candWrap = el('auto-switch-candidates-list');
+      if (candWrap) {
+        candWrap.replaceChildren();
+        const selectedSet = new Set(Array.isArray(cfg.candidates) ? cfg.candidates : []);
+        for (const acc of (ov.accounts || [])) {
+          const lbl = document.createElement('label');
+          lbl.className = 'auto-switch-cand-chip';
+          const box = document.createElement('input');
+          box.type = 'checkbox';
+          box.value = acc.email;
+          box.checked = selectedSet.has(acc.email);
+          box.className = 'auto-switch-cand-checkbox';
+          const span = document.createElement('span');
+          span.textContent = acc.maskedEmail || acc.email;
+          lbl.appendChild(box);
+          lbl.appendChild(span);
+          candWrap.appendChild(lbl);
+        }
+      }
+    }
+
+    // 4. ELV-57 配额变化对照表
+    const cmpEl = el('quota-compare-list');
+    if (cmpEl) {
+      cmpEl.replaceChildren();
+      const intervals = Array.isArray(ov.quotaIntervals) ? ov.quotaIntervals.slice(0, 8) : [];
+      if (!intervals.length) {
+        const emp = document.createElement('div');
+        emp.className = 'quota-muted-note';
+        emp.textContent = t('quota.compareEmpty');
+        cmpEl.appendChild(emp);
+      } else {
+        for (const iv of intervals) {
+          const card = document.createElement('div');
+          card.className = 'quota-compare-card';
+          const sign = iv.deltaPp > 0 ? `+${iv.deltaPp}` : String(iv.deltaPp);
+          const deltaLabel = iv.deltaPp < 0
+            ? (isEn ? `-${Math.abs(iv.deltaPp)} pp` : (isTw ? `下降 ${Math.abs(iv.deltaPp)} 個百分點` : `下降 ${Math.abs(iv.deltaPp)} 个百分点`))
+            : (iv.deltaPp > 0 ? (isEn ? `+${iv.deltaPp} pp` : `回升 ${iv.deltaPp} 个百分点`) : (isEn ? '0 pp' : '无变化'));
+          const splitBadge = iv.splitReason ? ` [${iv.splitReason}]` : '';
+          const sTime = new Date(iv.startAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const eTime = new Date(iv.endAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const head = document.createElement('div');
+          head.className = 'quota-subcard-row';
+          head.innerHTML = '';
+          const hLeft = document.createElement('strong');
+          hLeft.textContent = `${iv.poolTitle} (${iv.windowShort || iv.windowKey}) · ${iv.startRemainingPct}% → ${iv.endRemainingPct}% (${deltaLabel})`;
+          const hRight = document.createElement('span');
+          hRight.className = 'quota-acct-meta';
+          hRight.textContent = `${sTime}–${eTime}${splitBadge}`;
+          head.appendChild(hLeft);
+          head.appendChild(hRight);
+
+          const body = document.createElement('div');
+          body.className = 'quota-acct-meta';
+          body.textContent = isEn
+            ? `Account: ${iv.email} · Local reqs: ${iv.requestCount} | Uncached In: ${formatTokensK(iv.uncachedInputTokens)} · Cache Read: ${formatTokensK(iv.cacheReadTokens)} · Out: ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · Sampling gap detected' : ''}`
+            : `账号: ${iv.email} · 本机请求 ${iv.requestCount} 次 | 未缓存输入 ${formatTokensK(iv.uncachedInputTokens)} · 缓存读取 ${formatTokensK(iv.cacheReadTokens)} · 输出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含采样缺口已切分' : ''}`;
+          card.appendChild(head);
+          card.appendChild(body);
+          cmpEl.appendChild(card);
+        }
+      }
+    }
+
+    // 5. ELV-52 保活协议证据与安全控制
+    const kaPill = el('keepalive-status-pill');
+    const kaProto = el('keepalive-protocol-summary');
+    const kaExp = el('keepalive-experiment-summary');
+    const kaRun = el('keepalive-runtime-note');
+    const kaStopBtn = el('btn-keepalive-stop');
+    const ka = ov.keepalive || {};
+    const ks = ov.keepaliveState || {};
+    if (kaPill) {
+      kaPill.textContent = ks.running
+        ? (isEn ? 'Running' : (isTw ? '保活執行中' : '保活运行中'))
+        : (isEn ? 'Unverified · Off' : (isTw ? '待驗證 · 預設關閉' : '待验证 · 默认关闭'));
+      kaPill.className = `key-pill ${ks.running ? 'pill-warn' : 'pill-muted'}`;
+    }
+    if (kaProto && ov.protocolEvidence) {
+      kaProto.textContent = isEn
+        ? `Protocol check (Antigravity ${ov.protocolEvidence.checkedVersion}, ${ov.protocolEvidence.rpcCountChecked} RPCs): No explicit server-side cache TTL or renewal endpoint was found in checked RPCs/responses, and cacheWriteTokens/cacheTtl are omitted; keepalive stays unverified & off.`
+        : ov.protocolEvidence.conclusion;
+    }
+    if (kaExp && ov.protocolEvidence?.minimalExperimentPlan) {
+      const plan = ov.protocolEvidence.minimalExperimentPlan;
+      const reqCount = plan.totalRequestsPlanned || 5;
+      const modelName = plan.targetModel || 'Gemini 4 Hydrogen (High)';
+      kaExp.textContent = isEn
+        ? `Pending A/B plan (${reqCount} total reqs on ${modelName}, identical ~20K fixed non-tool prefix): Control (2 reqs, 0/6m) vs Keepalive (3 reqs, 0/4m "ok"/6m); collects per-call cacheReadTokens, stops on error/429/switch/limit; awaiting maintainer sign-off.`
+        : `待确认最小对照实验（${modelName}，合计 ${reqCount} 次请求，相同约 20K 只读无工具前缀）：对照组 2 次 vs 实验组 3 次（含 t=4m 仅发 1 次 "ok"，预计总输出 60~150 tok）；逐次采集 cacheReadTokens 并在异常/限流/切号/达上限时终止，等待维护者确认。`;
+    }
+    if (kaRun) {
+      kaRun.textContent = ks.blockedReason
+        ? `拦截保护: ${ks.blockedReason}`
+        : (ks.stopReason ? `最近状态: ${ks.stopReason}` : (isEn ? 'Keepalive disabled by default; requires explicit maintainer approval before any ping.' : '保活默认关闭，且切换账号/退出/达上限时自动终止。'));
+    }
+    if (kaStopBtn) kaStopBtn.hidden = !ks.running;
+
+    syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+  }
+
+  async function refreshAccountsOverview({ silent = true, refreshAllRemote = false } = {}) {
+    if (state.disposed) return null;
+    try {
+      const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getAccountsOverview === 'function';
+      const hasLive = hasLiveHttpBridge() && hasLiveRouteCapability('/accounts-overview');
+      if (!hasIpc && !hasLive) return null;
+      if (refreshAllRemote) {
+        const res = await callBackendWithPriority({
+          ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+            ? () => window.contextMeterAPI.accountsAction({ action: 'refresh_quota' })
+            : null,
+          liveRoute: '/accounts-action',
+          liveBody: { action: 'refresh_quota' }
+        });
+        const data = res?.result?.overview || res?.result;
+        if (data?.accounts) accountsUiState.overview = data;
+      } else {
+        const res = await callBackendWithPriority({
+          ipcCall: hasIpc ? () => window.contextMeterAPI.getAccountsOverview() : null,
+          liveRoute: '/accounts-overview',
+          liveBody: {}
+        });
+        const data = res?.result;
+        if (data?.ok) accountsUiState.overview = data;
+      }
+      if (!accountsUiState.toolsPreview) {
+        const prevRes = await callBackendWithPriority({
+          ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+            ? () => window.contextMeterAPI.accountsAction({ action: 'preview_tools' })
+            : null,
+          liveRoute: '/accounts-action',
+          liveBody: { action: 'preview_tools' }
+        }).catch(() => null);
+        if (prevRes?.result?.ok) accountsUiState.toolsPreview = prevRes.result;
+      }
+      renderAccountsOverviewSection();
+      return accountsUiState.overview;
+    } catch (e) {
+      if (!silent) {
+        accountsUiState.feedback = e.message;
+        renderAccountsOverviewSection();
+      }
+      return null;
+    }
+  }
+
+  async function performAccountAction(action, extraPayload = {}) {
+    if (accountsUiState.busy) return null;
+    accountsUiState.busy = true;
+    accountsUiState.feedback = currentPanelLanguage === 'en' ? 'Processing…' : '正在处理…';
+    renderAccountsOverviewSection();
+    try {
+      const res = await callBackendWithPriority({
+        ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+          ? () => window.contextMeterAPI.accountsAction({ action, ...extraPayload })
+          : null,
+        liveRoute: '/accounts-action',
+        liveBody: { action, ...extraPayload }
+      });
+      const out = res?.result || {};
+      if (out.overview) accountsUiState.overview = out.overview;
+      accountsUiState.feedback = out.message || out.error || (out.ok ? '操作已完成' : '操作失败');
+      if (action === 'switch' && out.ok) {
+        void syncQuotaFromHost(true, { manual: false });
+        void refreshTokenHistory?.(true);
+      }
+      return out;
+    } catch (e) {
+      accountsUiState.feedback = e.message || '操作失败';
+      return { ok: false, error: e.message };
+    } finally {
+      accountsUiState.busy = false;
+      renderAccountsOverviewSection();
+    }
+  }
+
+  el('btn-acct-import-current')?.addEventListener('click', () => void performAccountAction('import_current'));
+  el('btn-acct-import-tools')?.addEventListener('click', () => void performAccountAction('import_tools'));
+  el('btn-acct-oauth-add')?.addEventListener('click', () => void performAccountAction('oauth_login'));
+  el('btn-keepalive-stop')?.addEventListener('click', () => void performAccountAction('stop_keepalive', { reason: 'manual_button' }));
+  el('btn-save-auto-switch')?.addEventListener('click', () => {
+    const enabled = Boolean(el('chk-auto-switch-enabled')?.checked);
+    const poolKey = el('sel-auto-switch-pool')?.value || 'shared_gemini_main';
+    const metricMode = el('sel-auto-switch-mode')?.value || 'remaining_pct';
+    const windowKey = el('sel-auto-switch-window')?.value || 'primary';
+    const thresholdPct = Number(el('inp-auto-switch-threshold')?.value) || 10;
+    const candidates = Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked')).map(n => n.value);
+    void performAccountAction('update_auto_switch', {
+      config: { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates }
+    });
   });
   const btnQuotaBannerRestartInit = el('btn-quota-banner-restart');
   if (btnQuotaBannerRestartInit) {
@@ -25441,6 +26159,25 @@ function renderHeatmapGrid(forceRebuild = false) {
       output: el('tcb-output-val')?.textContent || '',
       ratio: el('tcb-ratio-val')?.textContent || '',
       note: el('tcb-note')?.textContent || ''
+    }),
+    setTokenAccountFilterForTest: (scopeKey) => {
+      activeTokenAccountFilter = scopeKey || 'all';
+      if (ANTIGRAVITY_TOKEN_DATA.rawPayload) applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+      return activeTokenAccountFilter;
+    },
+    setAccountsOverviewForTest: (overview) => {
+      accountsUiState.overview = overview || null;
+      renderAccountsOverviewSection();
+      return accountsUiState.overview;
+    },
+    getAccountsPanelStateForTest: () => ({
+      activeFilter: activeTokenAccountFilter,
+      filterOptions: Array.from(el('token-account-select')?.children || []).map(o => ({ val: o.value, label: o.textContent })),
+      scopeNote: el('token-account-scope-note')?.textContent || '',
+      accountCount: el('quota-accounts-list')?.children?.length || 0,
+      compareCount: el('quota-compare-list')?.children?.length || 0,
+      autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
+      keepaliveStatus: el('keepalive-status-pill')?.textContent || ''
     }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {

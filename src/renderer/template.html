@@ -7,8 +7,10 @@
     <circle id="quota-ring-fill" class="quota-ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"
       stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="10 30.84" stroke-dashoffset="0"></circle>
   </svg>
-  <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
-  <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
+  <span class="quota-badge-metric">
+    <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
+    <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
+  </span>
 </button>
 
 <!-- 顶部基本单元 1: 上下文小圆环（与速度入口紧邻） -->
@@ -100,7 +102,8 @@
   <div class="panel-header-bar">
     <div class="panel-title">
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
-        data-i18n="panel.ctx.title">💬 当前会话上下文</span>
+        data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
+        aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
       <span id="v">v0.8.5</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
@@ -1254,6 +1257,16 @@
       </div>
     </div>
 
+    <!-- 分账号账本筛选条（ELV-89：严格隔离各账号及未归属历史，不重复堆叠刷新入口） -->
+    <div id="token-account-bar" class="token-account-bar">
+      <span class="token-account-lbl" data-i18n="accounts.filterLabel">账本范围:</span>
+      <select id="token-account-select" class="token-account-select" aria-label="按账号筛选统计账本" data-i18n-aria="accounts.filterAria">
+        <option value="all" data-i18n="accounts.filterAll">全部已记用量（含未归属）</option>
+        <option value="unattributed" data-i18n="accounts.filterUnattributed">历史未归属（无可靠账号依据）</option>
+      </select>
+      <span id="token-account-scope-note" class="token-account-note"></span>
+    </div>
+
     <!-- 账号套餐状态摘要行 -->
     <div id="plan-summary-bar" class="plan-summary-bar">
       <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
@@ -2283,5 +2296,87 @@
       Token」按本机输入+缓存+输出原始 Token 统计，受服务端计费权重、同池模型混用、他端消耗及周期采样覆盖度影响；校准过期或样本不足时不按有效推算展示。</div>
     <div id="quota-usage-tip" class="quota-usage-tip" data-i18n="quota.usageTip">💡
       用量提示：使用前可先查看各池剩余额度，优先选择余量充足且适合当前任务的模型。</div>
+
+    <!-- 统一多账号切换、自动切号、共享额度对照(ELV-57)与缓存保活保障(ELV-52) -->
+    <div id="quota-accounts-section" class="quota-accounts-section">
+      <div class="quota-subsec-header">
+        <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
+        <div class="quota-subsec-actions">
+          <button id="btn-acct-import-current" class="switch-pill-btn" type="button" data-i18n="accounts.importCurrent">导入当前</button>
+          <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden data-i18n="accounts.importTools">导入 Tools</button>
+          <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button" data-i18n="accounts.oauthAdd">+ 登录添加</button>
+        </div>
+      </div>
+      <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
+      <div id="quota-accounts-list" class="quota-accounts-list"></div>
+
+      <!-- 阈值自动切号配置 -->
+      <div class="quota-subcard">
+        <div class="quota-subcard-row">
+          <label class="quota-switch-lbl">
+            <input id="chk-auto-switch-enabled" type="checkbox" />
+            <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号（默认关闭）</span>
+          </label>
+          <span id="auto-switch-status-pill" class="key-pill pill-muted">已关闭</span>
+        </div>
+        <div id="auto-switch-config-body" class="auto-switch-grid">
+          <label class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
+            <select id="sel-auto-switch-pool" class="quota-compact-select">
+              <option value="shared_gemini_main">Gemini 4 Hydrogen / 3.8 Flash</option>
+              <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
+              <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
+              <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
+            </select>
+          </label>
+          <label class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
+            <select id="sel-auto-switch-mode" class="quota-compact-select">
+              <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
+              <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
+            </select>
+          </label>
+          <label class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
+            <select id="sel-auto-switch-window" class="quota-compact-select">
+              <option value="primary" data-i18n="accounts.winPrimary">主窗口（最紧缩）</option>
+              <option value="5h">5h</option>
+              <option value="7d">7d</option>
+            </select>
+          </label>
+          <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
+            <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95" value="10" />
+          </label>
+          <div class="auto-switch-candidates-wrap">
+            <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
+            <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
+          </div>
+          <div class="auto-switch-save-row">
+            <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button" data-i18n="accounts.saveRule">保存切号规则</button>
+            <span id="auto-switch-last-note" class="quota-muted-note"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 本机消耗与共享账号额度变化对照 -->
+      <div class="quota-subsec-header" style="margin-top:10px">
+        <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
+      </div>
+      <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px" data-i18n="quota.compareDisclaimer">
+        按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
+      </div>
+      <div id="quota-compare-list" class="quota-compare-list"></div>
+
+      <!-- 模型 Prompt Cache 保活协议与保障 -->
+      <div class="quota-subsec-header" style="margin-top:10px">
+        <span class="quota-subsec-title" data-i18n="keepalive.title">🧊 模型缓存保活状态与协议核查</span>
+        <span id="keepalive-status-pill" class="key-pill pill-muted">默认关闭</span>
+      </div>
+      <div class="quota-subcard">
+        <div id="keepalive-protocol-summary" class="quota-muted-note"></div>
+        <div id="keepalive-experiment-summary" class="quota-muted-note" style="margin-top:4px"></div>
+        <div class="quota-subcard-row" style="margin-top:6px">
+          <span id="keepalive-runtime-note" class="quota-muted-note"></span>
+          <button id="btn-keepalive-stop" class="switch-pill-btn" type="button" hidden data-i18n="keepalive.stopBtn">立即停止保活</button>
+        </div>
+      </div>
+    </div>
   </div>
 </section>

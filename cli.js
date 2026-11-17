@@ -246,6 +246,7 @@ async function queryLiveWindow(options = {}) {
           version: window.__AGContextMeter?.version || null,
           hasIpcBridge: Boolean(window.contextMeterAPI?.scan && window.contextMeterAPI?.saveSettings && window.contextMeterAPI?.launchCli && window.contextMeterAPI?.getContextUnlockStatus),
           hasQuotaIpcBridge: Boolean(window.contextMeterAPI?.getQuota),
+          hasAccountsIpcBridge: Boolean(window.contextMeterAPI?.getAccountsOverview && window.contextMeterAPI?.accountsAction),
           hasRestartBridge: Boolean(window.contextMeterAPI?.restartHost),
           ipcBackendVersion: ipcRuntimeInfo?.backendVersion || bootBackend?.backendVersion || null,
           liveBridgeAttached: window.__AGContextMeterLive ? {
@@ -300,6 +301,7 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
   const electronIpcAligned = Boolean(
     live.hasIpcBridge &&
     live.hasQuotaIpcBridge &&
+    live.hasAccountsIpcBridge &&
     currentPkgVersion &&
     live.ipcBackendVersion === currentPkgVersion
   );
@@ -330,7 +332,7 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
     if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion) && infoBuildMatch) {
       const probe = await probeLiveHostRuntimeInfo(info, expectedOrigins[0]);
       const probeBuildMatch = !expectedHostBuildId || probe?.hostBuildId === expectedHostBuildId;
-      if (probe && probe.ok && (!currentPkgVersion || probe.backendVersion === currentPkgVersion) && probeBuildMatch) {
+      if (probe && probe.ok && probe.capabilities?.accounts && (!currentPkgVersion || probe.backendVersion === currentPkgVersion) && probeBuildMatch) {
         return {
           needed: true,
           ready: true,

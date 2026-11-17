@@ -114,7 +114,10 @@
     getDailyModelCost,
     calculateIntervalCost,
     convertToCNY,
-    resolveEffectivePlanStatus
+    resolveEffectivePlanStatus,
+    selectPrimaryQuotaBucket,
+    splitModelDisplayAndEffort,
+    resolvePlaceholderModelInfo
   } = (globalThis.__AGContextMeterCore || {});
   const host = document.createElement('div');
   host.id = 'ag-context-meter';
@@ -251,6 +254,8 @@
       '/modules-status': 'modules',
       '/toggle-module': 'modules',
       '/test-proxy': 'modules',
+      '/accounts-overview': 'accounts',
+      '/accounts-action': 'accounts',
       '/check-update': 'checkUpdate',
       '/apply-update': 'applyUpdate'
     };
@@ -1245,6 +1250,11 @@
       if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
         void syncTokenHistoryFromHost(false);
       }
+      if (!accountsUiState?.overview && typeof refreshAccountsOverview === 'function') {
+        void refreshAccountsOverview({ silent: true });
+      } else {
+        syncTokenAccountFilterOptions?.(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+      }
     } else if (target === 'quota') {
       hideContextTooltip();
       closeColorPicker();
@@ -1260,6 +1270,8 @@
       if (pQuota) pQuota.hidden = false;
       if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
       if (typeof maybeRefreshQuotaOnOpen === 'function') void maybeRefreshQuotaOnOpen();
+      if (typeof renderAccountsOverviewSection === 'function') renderAccountsOverviewSection();
+      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
     } else if (target === 'context') {
       hideContextTooltip();
       closeColorPicker();
@@ -1850,8 +1862,16 @@
     return String(n);
   }
 
-  // 数据源切换（全部 / 桌面 / CLI）
+  // 数据源切换（全部 / 桌面 / CLI）与分账号账本筛选
   let activeTokenSource = 'all';
+  let activeTokenAccountFilter = 'all'; // 'all' | 'unattributed' | 'acct_xxx'
+  const accountsUiState = {
+    overview: null,
+    toolsPreview: null,
+    feedback: '',
+    feedbackTone: 'info',
+    busy: false
+  };
   function switchTokenSource(src) {
     activeTokenSource = src;
     try { localStorage?.setItem('ag_token_source_v1', src); } catch { }
@@ -6833,6 +6853,9 @@
     try {
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
       if (typeof rerenderSettingsFeedbacks === 'function') rerenderSettingsFeedbacks();
+      if (typeof renderAccountsOverviewSection === 'function' && accountsUiState?.overview) {
+        renderAccountsOverviewSection();
+      }
     } catch { }
     try {
       if (isChineseExpanded || isProxyExpanded || isContextSettingsView) {
@@ -9178,11 +9201,59 @@
     }
 
     ANTIGRAVITY_TOKEN_DATA.rawPayload = payload;
+    syncTokenAccountFilterOptions(payload);
+
+    // 若选择了指定账号或“历史未归属”，构造隔离账本视图而不污染其他账号或全量原始 payload
+    let viewPayload = payload;
+    if (activeTokenAccountFilter !== 'all') {
+      const bucket = activeTokenAccountFilter === 'unattributed'
+        ? payload.unattributedUsage
+        : payload.usageByAccount?.[activeTokenAccountFilter];
+      if (bucket && typeof bucket === 'object') {
+        viewPayload = {
+          ...payload,
+          dailyMap: bucket.dailyMap || {},
+          dailyMapBySource: {
+            all: bucket.dailyMap || {},
+            desktop: activeTokenAccountFilter === 'unattributed' ? (bucket.dailyMap || {}) : {},
+            cli: {},
+            legacyUnallocated: activeTokenAccountFilter === 'unattributed' ? (bucket.dailyMap || {}) : {}
+          },
+          summary: {
+            ...(payload.summary || {}),
+            grandTotalTokens: Number(bucket.totalTokens) || 0,
+            totalInputTokens: Number(bucket.totalInputTokens) || 0,
+            totalOutputTokens: Number(bucket.totalOutputTokens) || 0,
+            totalCacheTokens: Number(bucket.totalCacheTokens) || 0,
+            todayTokens: Number(bucket.todayTokens) || 0,
+            monthTokens: Number(bucket.monthTokens) || 0,
+            yearTokens: Number(bucket.yearTokens) || 0,
+            cacheReadStats: bucket.cacheReadStats || null,
+            currentMonthCacheReadStats: bucket.cacheReadStats || null
+          },
+          costEstimate: bucket.costEstimate || null,
+          costEstimateBySource: bucket.costEstimate ? { all: bucket.costEstimate, desktop: bucket.costEstimate, cli: bucket.costEstimate } : payload.costEstimateBySource,
+          cacheReadStatsBySource: bucket.cacheReadStats ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: bucket.cacheReadStats } : payload.cacheReadStatsBySource,
+          currentMonthCacheReadStatsBySource: bucket.cacheReadStats ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: bucket.cacheReadStats } : payload.currentMonthCacheReadStatsBySource
+        };
+      } else {
+        viewPayload = {
+          ...payload,
+          dailyMap: {},
+          dailyMapBySource: { all: {}, desktop: {}, cli: {}, legacyUnallocated: {} },
+          summary: {
+            ...(payload.summary || {}),
+            grandTotalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCacheTokens: 0,
+            todayTokens: 0, monthTokens: 0, yearTokens: 0
+          }
+        };
+      }
+    }
 
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const todayStr = formatLocalYmd(new Date());
     const normalized = core && typeof core.normalizeTokenHistoryPayload === 'function'
-      ? core.normalizeTokenHistoryPayload(payload, { source: activeTokenSource, todayStr })
+      ? core.normalizeTokenHistoryPayload(viewPayload, { source: activeTokenSource, todayStr })
       : null;
 
     if (normalized) {
@@ -10233,10 +10304,14 @@
     if (cardBolt && evalRes.badge?.glyph) cardBolt.textContent = evalRes.badge.glyph;
 
     const isCompact = state.layoutMode === 'compact';
+    const shortSampleText = t('session.speed.shortSampleBadge');
     if (speedAmount) {
       if (evalRes.phase === 'waiting') {
         speedAmount.textContent = isCompact ? evalRes.elapsedFormatted : (isEn ? `Wait ${evalRes.elapsedFormatted}` : `等待 ${evalRes.elapsedFormatted}`);
         if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.elapsedFormatted}`;
+      } else if (evalRes.isSampleSparse) {
+        speedAmount.textContent = shortSampleText;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
       } else if (evalRes.streamSpeed != null) {
         speedAmount.textContent = isCompact ? `${evalRes.streamSpeed}` : `${evalRes.streamSpeed} tok/s`;
         if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.streamSpeed} tok/s`;
@@ -10269,6 +10344,8 @@
     if (spVal) {
       if (evalRes.phase === 'waiting') {
         spVal.textContent = isEn ? 'Waiting' : '等待首字';
+      } else if (evalRes.isSampleSparse) {
+        spVal.textContent = shortSampleText;
       } else if (evalRes.streamSpeed != null) {
         spVal.textContent = `${evalRes.streamSpeed} tok/s`;
       } else if (evalRes.overallTps != null) {
@@ -10291,7 +10368,7 @@
       }
     }
     if (spTakeaway) {
-      const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)
+      const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)))
         ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
         : '';
       spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}`;
@@ -10318,9 +10395,12 @@
           ? t('session.speed.stabilityHighVar', { n: evalRes.stability.chunks, cv: evalRes.stability.intervalCv })
           : t('session.speed.stabilityUnverified'));
       const fmtTierComment = (tier, elapsed) => (tier && tier.comment) ? String(tier.comment).replace('{elapsed}', elapsed || '—') : '';
+      const streamCellVal = evalRes.isSampleSparse
+        ? `${shortSampleText}${evalRes.shortWindowEstimateSpeed != null ? ` (${evalRes.shortWindowEstimateSpeed} tok/s)` : ''}`
+        : (evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk);
       const cells = [
         {
-          k: t('session.speed.breakdown.eScore', { ver: evalRes.scoreRuleVersion || 'elv91-v1' }),
+          k: t('session.speed.breakdown.eScore'),
           v: eText,
           color: evalRes.efficiency?.tier?.color || null,
           note: evalRes.efficiency?.tier?.comment || ''
@@ -10333,9 +10413,9 @@
         },
         {
           k: t('session.speed.breakdown.stream'),
-          v: evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk,
-          color: evalRes.speedTier?.color || null,
-          note: evalRes.speedTier?.comment || ''
+          v: streamCellVal,
+          color: evalRes.isSampleSparse ? null : (evalRes.speedTier?.color || null),
+          note: evalRes.isSampleSparse ? t('session.speed.shortWindowNote') : (evalRes.speedTier?.comment || '')
         },
         {
           k: t('session.speed.breakdown.duration'),
@@ -10346,6 +10426,14 @@
         { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
         { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
       ];
+      if (evalRes.isSampleSparse && evalRes.shortWindowEstimateSpeed != null) {
+        cells.splice(3, 0, {
+          k: t('session.speed.shortWindowEst'),
+          v: `${evalRes.shortWindowEstimateSpeed} tok/s`,
+          color: null,
+          note: t('session.speed.shortWindowNote')
+        });
+      }
       if (evalRes.efficiency?.basis) {
         const b = evalRes.efficiency.basis;
         cells.push({
@@ -10462,10 +10550,24 @@
 
   function formatCallModelTitle(call) {
     if (!call) return t('session.latestCall.unknownVal');
-    const lbl = call.modelLabel || (call.model && !/^model_/i.test(String(call.model)) ? String(call.model) : '');
-    if (lbl) return lbl;
-    if (call.modelExactId) return String(call.modelExactId);
-    if (call.model) return String(call.model);
+    if (call.isPlaceholderOnly && !call.isRoutedModelVerified) {
+      const rawId = call.rawPlaceholderId || call.modelExactId || call.model || '';
+      return rawId ? t('session.latestCall.unknownMappedModel', { id: rawId }) : t('session.latestCall.unknownVal');
+    }
+    const rawLbl = call.modelLabel || (call.model && !/^model_/i.test(String(call.model)) ? String(call.model) : '');
+    if (rawLbl) {
+      if (typeof splitModelDisplayAndEffort === 'function') {
+        const split = splitModelDisplayAndEffort(rawLbl, call.effort);
+        if (split.baseLabel) return split.baseLabel;
+      }
+      return rawLbl;
+    }
+    if (call.stableModelId && !/^model_placeholder_/i.test(String(call.stableModelId))) return String(call.stableModelId);
+    if (call.modelExactId && !/^model_placeholder_/i.test(String(call.modelExactId))) return String(call.modelExactId);
+    if (call.model && !/^model_placeholder_/i.test(String(call.model))) return String(call.model);
+    if (call.rawPlaceholderId || call.modelExactId || call.model) {
+      return t('session.latestCall.unknownMappedModel', { id: call.rawPlaceholderId || call.modelExactId || call.model });
+    }
     return t('session.latestCall.unknownVal');
   }
 
@@ -10674,6 +10776,8 @@
           chunkCount: call.chunkCount,
           chunkIntervalsMs: call.chunkIntervalsMs,
           intervalCv: call.intervalCv,
+          sampleSource: call.sampleSource || null,
+          isSyntheticPoll: call.isSyntheticPoll === true,
           error: call.error
         }, currentPanelLanguage)
       : null;
@@ -10715,11 +10819,25 @@
       const eDetailVal = callEval?.efficiency?.available
         ? `${callEval.efficiency.score} ${currentPanelLanguage === 'en' ? 'pts' : '分'} · ${callEval.efficiency.tier?.title || callEval.efficiency.grade}`
         : (call.eScore != null ? `${call.eScore} (${call.eGrade || '--'})` : (callEval?.efficiency?.skippedReason === 'insufficient_sample' ? t('session.speed.scoreSkippedSparse') : t('session.speed.scoreSkippedMissing')));
+      const rawIdBadge = call.rawPlaceholderId ? ` (${t('session.latestCall.rawIdNote', { id: call.rawPlaceholderId })})` : '';
+      const stableIdDisplay = (call.stableModelId && !/^model_placeholder_/i.test(String(call.stableModelId)))
+        ? `${call.stableModelId}${rawIdBadge}`
+        : ((call.modelExactId && !/^model_placeholder_/i.test(String(call.modelExactId)))
+          ? `${call.modelExactId}${rawIdBadge}`
+          : (call.rawPlaceholderId
+            ? `${unk} (${t('session.latestCall.rawIdNote', { id: call.rawPlaceholderId })})`
+            : (call.modelExactId || call.modelKey || unk)));
+      const effortSuffix = call.effort ? String(call.effort).trim() : '';
+      const hasEffortInTitle = effortSuffix && modelTitle.trim().toLowerCase().endsWith(`(${effortSuffix.toLowerCase()})`);
+      const modelAndEffortDisplay = (effortSuffix && !hasEffortInTitle) ? `${modelTitle} (${effortSuffix})` : modelTitle;
+      const callStreamDisplay = callEval?.isSampleSparse
+        ? `${t('session.speed.shortSampleBadge')}${callEval.shortWindowEstimateSpeed != null ? ` (${t('session.speed.shortWindowEst')}: ${callEval.shortWindowEstimateSpeed} tok/s)` : ''}`
+        : ((call.streamingTps ?? call.streamSpeed) != null ? `${call.streamingTps ?? call.streamSpeed} tok/s${callEval?.speedTier ? ` · ${callEval.speedTier.title}` : ''}` : unk);
       const cells = [
         [t('session.latestCall.fieldTime'), formatCallTimeStr(call)],
         [t('session.latestCall.fieldStatus'), st.text],
-        [t('session.latestCall.fieldModelId'), call.modelExactId || call.modelKey || unk],
-        [t('session.latestCall.fieldModelLabel'), `${modelTitle}${call.effort ? ` (${call.effort})` : ''}`],
+        [t('session.latestCall.fieldModelId'), stableIdDisplay],
+        [t('session.latestCall.fieldModelLabel'), modelAndEffortDisplay],
         [t('session.latestCall.fieldInput'), call.hasInputCacheFields && call.inputTokens !== null ? fmt(call.inputTokens) : unk],
         [t('session.latestCall.fieldCacheRead'), call.hasInputCacheFields && call.cacheReadTokens !== null ? fmt(call.cacheReadTokens) : unk],
         [t('session.latestCall.fieldTotalInput'), call.hasInputCacheFields && call.totalInputTokens !== null ? fmt(call.totalInputTokens) : unk],
@@ -10729,9 +10847,9 @@
         [t('session.latestCall.fieldCacheRatio'), formatCallCachePctText(call)],
         [t('session.latestCall.fieldTtft'), `${fmtDurOrUnk(call.ttftSec)}${call.ttftRatioPct != null ? ` (${call.ttftRatioPct}%)` : ''}${callEval?.ttftTier ? ` · ${callEval.ttftTier.title}` : ''}`],
         [t('session.latestCall.fieldDuration'), `${fmtDurOrUnk(call.durationSec)}${callEval?.durationTier ? ` · ${callEval.durationTier.title}` : ''}`],
-        [t('session.speed.streamRate'), (call.streamingTps ?? call.streamSpeed) != null ? `${call.streamingTps ?? call.streamSpeed} tok/s${callEval?.speedTier ? ` · ${callEval.speedTier.title}` : ''}` : unk],
+        [t('session.speed.streamRate'), callStreamDisplay],
         [t('session.speed.breakdown.overall'), call.tps !== null && call.tps !== undefined ? `${call.tps} tok/s` : unk],
-        [t('session.speed.breakdown.eScore', { ver: call.scoreRuleVersion || 'elv91-v1' }), eDetailVal],
+        [t('session.speed.breakdown.eScore'), eDetailVal],
         [t('session.latestCall.fieldAgent'), agentDesc]
       ];
       for (const [k, v] of cells) {
@@ -11889,31 +12007,9 @@
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
 
-      // 实时流式采样点跟踪 & 等待首字计时清除（严格限制同一单次调用，绝不跨轮混用）
+      // 清除等待首字计时器（禁止用 1000ms 轮询步进时间戳伪造服务器分块流式间隔，避免误判为“输出平稳”）
       const newestPollCall = state.sessionCalls.length ? state.sessionCalls[state.sessionCalls.length - 1] : null;
       if (newestPollCall) {
-        if (!state.streamSampleTracker) state.streamSampleTracker = { byCallId: new Map() };
-        const nowTs = Date.now();
-        let trk = state.streamSampleTracker.byCallId.get(newestPollCall.callId);
-        if (!trk) {
-          trk = { firstOutAt: newestPollCall.outputTokens > 0 ? nowTs : null, lastOutAt: nowTs, lastOutTokens: newestPollCall.outputTokens || 0, chunks: newestPollCall.outputTokens > 0 ? 1 : 0, intervalsMs: [], elapsedStreamSec: 0 };
-          if (state.streamSampleTracker.byCallId.size >= 40) {
-            const firstK = state.streamSampleTracker.byCallId.keys().next().value;
-            if (firstK) state.streamSampleTracker.byCallId.delete(firstK);
-          }
-          state.streamSampleTracker.byCallId.set(newestPollCall.callId, trk);
-        } else if (newestPollCall.status === 'streaming' && newestPollCall.outputTokens > trk.lastOutTokens) {
-          if (trk.lastOutAt) trk.intervalsMs.push(Math.max(1, nowTs - trk.lastOutAt));
-          if (!trk.firstOutAt) trk.firstOutAt = nowTs;
-          trk.lastOutAt = nowTs;
-          trk.lastOutTokens = newestPollCall.outputTokens;
-          trk.chunks += 1;
-          trk.elapsedStreamSec = Number(((nowTs - trk.firstOutAt) / 1000).toFixed(2));
-        }
-        if (trk.chunks >= 1 && trk.intervalsMs.length > 0) {
-          newestPollCall.chunkCount = trk.chunks;
-          newestPollCall.chunkIntervalsMs = trk.intervalsMs.slice();
-        }
         if (state.livePendingRequest && state.livePendingRequest.cascadeId === id) {
           const isNewCall = newestPollCall.callId !== state.livePendingRequest.baselineCallId;
           const gotFirstToken = (newestPollCall.outputTokens || 0) > 0 || newestPollCall.ttftSec != null || newestPollCall.status === 'final';
@@ -12653,12 +12749,21 @@
           isResetPassed: rm.isResetPassed
         };
       });
-      const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
-      const pb = priced[0] || nextBuckets[0] || p.primaryBucket || null;
+      const sel = (typeof selectPrimaryQuotaBucket === 'function')
+        ? selectPrimaryQuotaBucket(nextBuckets)
+        : (() => {
+            const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
+            return { primaryBucket: priced[0] || nextBuckets[0] || null, selectionReason: priced.length <= 1 ? 'single_window' : 'tighter_window' };
+          })();
+      const pb = sel.primaryBucket || p.primaryBucket || null;
       return {
         ...p,
         buckets: nextBuckets,
         primaryBucket: pb,
+        selectionReason: sel.selectionReason || p.selectionReason || 'single_window',
+        remainingFraction: pb?.remainingFraction ?? p.remainingFraction ?? null,
+        percentText: pb?.percentText ?? p.percentText ?? null,
+        isExhausted: pb ? Boolean(pb.isExhausted || pb.remainingFraction === 0) : Boolean(p.isExhausted),
         hasResetTime: Boolean(pb?.hasResetTime ?? p.hasResetTime),
         resetTimeIso: pb?.resetTimeIso ?? p.resetTimeIso ?? null,
         resetAtMs: pb?.resetAtMs ?? p.resetAtMs ?? null,
@@ -13054,10 +13159,30 @@
     if (bQuota) {
       setQuotaAttrIfChanged(bQuota, 'data-quota-state', view.activeStatus || 'unknown');
       const tipModel = view.currentModel?.productLabel || t('quota.current.unmatched');
+      const matchedPoolObj = (view.pools || []).find(p => p.poolKey === view.currentModel?.poolKey) || null;
+      const reasonMap = {
+        tighter_window: currentPanelLanguage === 'en' ? 'tightest window' : (currentPanelLanguage === 'zh-TW' ? '最緊縮視窗優先' : '最紧缩窗口优先'),
+        tie_window: currentPanelLanguage === 'en' ? '5h priority on tie' : (currentPanelLanguage === 'zh-TW' ? '同餘量優先短視窗' : '同余量优先短窗口'),
+        single_window: currentPanelLanguage === 'en' ? 'single window' : (currentPanelLanguage === 'zh-TW' ? '單一限額視窗' : '单一限额窗口')
+      };
+      const winLines = (matchedPoolObj?.buckets || []).map(b => {
+        const wTag = b.windowShort || formatQuotaWindowTitle(b);
+        const wReset = b.hasResetTime ? `${b.resetTimeText} (${formatCountdownMsCompact((b.resetAtMs || 0) - nowMs)})` : t('quota.time.unknown');
+        return `${wTag}: ${b.percentText || t('quota.time.unknown')} (${wReset})`;
+      });
+      const selNote = matchedPoolObj?.primaryBucket
+        ? `${matchedPoolObj.primaryBucket.windowShort || formatQuotaWindowTitle(matchedPoolObj.primaryBucket)} · ${reasonMap[matchedPoolObj.selectionReason] || ''}`
+        : '';
+      const updatedStr = view.fetchedAtMs ? new Date(view.fetchedAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : t('quota.time.unknown');
+      const poolHeader = matchedPoolObj?.title ? ` · ${matchedPoolObj.title}` : '';
       const tipReset = view.activeReset?.hasResetTime
         ? `${view.activeReset.resetTimeText} (${formatCountdownMsCompact((view.activeReset.resetAtMs || 0) - nowMs)})`
         : t('quota.time.unknown');
-      const nextTitle = `${tipModel} · ${view.activeStatusLabel} (${view.badge.text}) · ${t('quota.time.reset')}: ${tipReset}`;
+      const nextTitle = [
+        `${tipModel}${poolHeader} · ${view.activeStatusLabel} (${view.badge.text})${selNote ? ` [${selNote}]` : ''}`,
+        winLines.length ? winLines.join(' | ') : `${t('quota.time.reset')}: ${tipReset}`,
+        `${currentPanelLanguage === 'en' ? 'Updated' : '更新'}: ${updatedStr}`
+      ].filter(Boolean).join('\n');
       if (bQuota.title !== nextTitle) bQuota.title = nextTitle;
       setQuotaAttrIfChanged(bQuota, 'aria-label', `${t('badge.quota.aria')}: ${view.badge.text} (${view.activeStatusLabel})`);
     }
@@ -13736,6 +13861,9 @@
       } else {
         scheduleQuotaAutoRefresh();
       }
+      if (typeof refreshAccountsOverview === 'function') {
+        void refreshAccountsOverview({ silent: !isManual, refreshAllRemote: Boolean(isManual) });
+      }
       renderQuotaBoard(nowMs, { animate: shouldAnimateChange, chargeBars: shouldChargeBars });
       return quotaState.snapshot;
     })();
@@ -13805,6 +13933,410 @@
   });
   el('btn-quota-banner-retry')?.addEventListener('click', () => {
     void syncQuotaFromHost(true, { manual: true });
+  });
+
+  // =========================================================================
+  // 多账号账本筛选、切号交互、ELV-57 配额对照表与 ELV-52 保活保障渲染
+  // =========================================================================
+
+  function syncTokenAccountFilterOptions(payload = null) {
+    const sel = el('token-account-select');
+    const noteEl = el('token-account-scope-note');
+    if (!sel) return;
+    const isEn = currentPanelLanguage === 'en';
+    const isTw = currentPanelLanguage === 'zh-TW';
+    const ov = accountsUiState.overview;
+    const acctList = Array.isArray(ov?.accounts) ? ov.accounts : [];
+    const usageMap = payload?.usageByAccount || ANTIGRAVITY_TOKEN_DATA.rawPayload?.usageByAccount || {};
+    const curScope = payload?.accountScopeKey || ov?.activeAccountScopeKey || '';
+
+    const knownMap = new Map();
+    for (const a of acctList) {
+      knownMap.set(a.accountScopeKey, a.maskedEmail || a.email || a.accountScopeKey);
+    }
+    for (const scopeK of Object.keys(usageMap)) {
+      if (!knownMap.has(scopeK)) knownMap.set(scopeK, scopeK);
+    }
+
+    const optsHtml = [];
+    optsHtml.push({ val: 'all', label: t('accounts.filterAll') });
+    for (const [scopeK, disp] of knownMap.entries()) {
+      const isCur = scopeK === curScope;
+      const suffix = isCur ? ` (${t('accounts.activeTag')})` : '';
+      optsHtml.push({ val: scopeK, label: `${disp}${suffix}` });
+    }
+    optsHtml.push({ val: 'unattributed', label: t('accounts.filterUnattributed') });
+
+    const prevVal = activeTokenAccountFilter || 'all';
+    sel.replaceChildren();
+    for (const item of optsHtml) {
+      const opt = document.createElement('option');
+      opt.value = item.val;
+      opt.textContent = item.label;
+      if (item.val === prevVal) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    if (!optsHtml.some(o => o.val === prevVal)) {
+      activeTokenAccountFilter = 'all';
+      sel.value = 'all';
+    } else {
+      sel.value = prevVal;
+    }
+
+    if (noteEl) {
+      if (activeTokenAccountFilter === 'unattributed') {
+        const unAttrTot = Number(payload?.unattributedUsage?.totalTokens ?? ANTIGRAVITY_TOKEN_DATA.rawPayload?.unattributedUsage?.totalTokens ?? 0);
+        noteEl.textContent = isEn
+          ? `Unattributed history (${formatTokensK(unAttrTot)}): offline Desktop/CLI/IDE files without verified email.`
+          : (isTw ? `歷史未歸屬 (${formatTokensK(unAttrTot)})：無帳號依據的舊檔案不計入當前帳號。` : `历史未归属 (${formatTokensK(unAttrTot)})：无账号依据的旧文件不计入当前账号。`);
+      } else if (activeTokenAccountFilter !== 'all') {
+        const b = usageMap[activeTokenAccountFilter];
+        const kaReqs = Number(b?.keepaliveRequests || 0);
+        const kaTok = Number(b?.keepaliveTokens || 0);
+        noteEl.textContent = kaReqs > 0
+          ? (isEn ? `Includes ${kaReqs} keepalive reqs (${formatTokensK(kaTok)}) tracked separately.` : `含独立保活消耗 ${kaReqs} 次 (${formatTokensK(kaTok)})。`)
+          : (isEn ? 'Isolated account ledger (zero cross-account mixing).' : (isTw ? '單帳號獨立帳本（零跨號混算）。' : '单账号独立账本（零跨号混算）。'));
+      } else {
+        const attrCount = Object.keys(usageMap).length;
+        noteEl.textContent = attrCount > 0
+          ? (isEn ? `${attrCount} attributed account(s) + isolated legacy history.` : (isTw ? `含 ${attrCount} 個已歸屬帳號 + 獨立未歸屬歷史。` : `含 ${attrCount} 个已归属账号 + 独立未归属历史。`))
+          : '';
+      }
+    }
+  }
+
+  el('token-account-select')?.addEventListener('change', (ev) => {
+    activeTokenAccountFilter = ev.target?.value || 'all';
+    if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
+      applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+    }
+  });
+
+  function isEditingAutoSwitchDraft() {
+    try {
+      const ae = shadow?.activeElement;
+      if (!ae) return false;
+      const body = el('auto-switch-config-body');
+      return Boolean(body && body.contains?.(ae));
+    } catch {
+      return false;
+    }
+  }
+
+  function renderAccountsOverviewSection() {
+    const ov = accountsUiState.overview || {
+      accounts: [],
+      autoSwitch: {},
+      autoSwitchStatus: { state: 'disabled' },
+      keepalive: {},
+      keepaliveState: {},
+      quotaIntervals: [],
+      protocolEvidence: {
+        checkedVersion: '2.32.1',
+        rpcCountChecked: 375,
+        conclusion: '在已检查的 Antigravity 2.32.1 语言服务 375 个 RPC 和响应中，未发现明确的 Prompt Cache 续期或 TTL 接口，响应亦未见 cacheWriteTokens 或 cacheTtl；因此不展示虚构到期倒计时，缓存保活保持待验证/默认关闭。',
+        minimalExperimentPlan: {
+          targetModel: 'Gemini 4 Hydrogen (High)',
+          totalRequestsPlanned: 5,
+          groupB: '实验组（3 次请求，含 1 次 "ok" 心跳）对比对照组（2 次请求，无保活），约 20K 固定只读前缀、预计总输出 60~150 tok，待维护者确认后再发实验请求。'
+        }
+      }
+    };
+    const isEn = currentPanelLanguage === 'en';
+    const isTw = currentPanelLanguage === 'zh-TW';
+
+    // 1. 工具按钮显隐与反馈横幅
+    const toolsBtn = el('btn-acct-import-tools');
+    if (toolsBtn) {
+      toolsBtn.hidden = !(accountsUiState.toolsPreview?.available && (accountsUiState.toolsPreview.count || 0) > 0);
+    }
+    const fbEl = el('quota-acct-feedback');
+    if (fbEl) {
+      fbEl.hidden = !accountsUiState.feedback;
+      fbEl.textContent = accountsUiState.feedback || '';
+    }
+
+    // 2. 账号清单
+    const listEl = el('quota-accounts-list');
+    if (listEl) {
+      listEl.replaceChildren();
+      const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
+      if (!accts.length) {
+        const empty = document.createElement('div');
+        empty.className = 'quota-muted-note';
+        empty.textContent = t('accounts.empty');
+        listEl.appendChild(empty);
+      } else {
+        for (const acc of accts) {
+          const card = document.createElement('div');
+          card.className = `quota-acct-card${acc.isActive ? ' is-active' : ''}`;
+          const topRow = document.createElement('div');
+          topRow.className = 'quota-subcard-row';
+          const left = document.createElement('span');
+          left.className = 'quota-acct-email';
+          left.textContent = `${acc.email}${acc.tierId ? ` · ${acc.tierId}` : ''}`;
+          left.title = acc.email;
+          const right = document.createElement('div');
+          right.className = 'quota-subsec-actions';
+          if (acc.isActive) {
+            const pill = document.createElement('span');
+            pill.className = 'key-pill pill-good';
+            pill.textContent = t('accounts.activeTag');
+            right.appendChild(pill);
+          } else {
+            const swBtn = document.createElement('button');
+            swBtn.className = 'switch-pill-btn';
+            swBtn.type = 'button';
+            swBtn.disabled = accountsUiState.busy || !acc.hasRefreshToken || Boolean(acc.authInvalid);
+            swBtn.textContent = t('accounts.switchBtn');
+            swBtn.addEventListener('click', () => void performAccountAction('switch', { email: acc.email }));
+            right.appendChild(swBtn);
+          }
+          topRow.appendChild(left);
+          topRow.appendChild(right);
+          card.appendChild(topRow);
+
+          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => `${p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'))}: ${p.noPermission ? 'NoPerm' : (p.percentText || '--')}`);
+          const metaRow = document.createElement('div');
+          metaRow.className = 'quota-acct-meta';
+          const upd = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';
+          const authNote = acc.authInvalid ? (isEn ? ' · Re-auth required' : ' · 需重登授权') : '';
+          metaRow.textContent = `${poolSummaries.length ? poolSummaries.join(' | ') : (isEn ? 'Quota pending' : '待刷新配额')} · ${upd}${authNote}`;
+          card.appendChild(metaRow);
+          listEl.appendChild(card);
+        }
+      }
+    }
+
+    // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿）
+    const stPill = el('auto-switch-status-pill');
+    const lastNote = el('auto-switch-last-note');
+    const stMap = {
+      disabled: isEn ? 'Off' : '已关闭',
+      watching: isEn ? 'Watching' : '监控中',
+      pending_debounce: isEn ? 'Debouncing' : '防抖确认中',
+      waiting_idle: isEn ? 'Waiting idle' : '等待当前生成完成',
+      cooldown: isEn ? 'Cooldown' : '冷却保护中',
+      switching: isEn ? 'Switching' : '切号中',
+      all_candidates_exhausted: isEn ? 'No candidate available' : '备选账号均不足',
+      blocked_untrusted_quota: isEn ? 'Skipped (Stale/Error)' : '数据不可信已跳过',
+      error: isEn ? 'Halted (Error)' : '失败已停用'
+    };
+    if (stPill) {
+      const sKey = ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled');
+      stPill.textContent = stMap[sKey] || sKey;
+      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (sKey === 'error' || sKey === 'all_candidates_exhausted' ? 'pill-warn' : 'pill-muted')}`;
+    }
+    if (lastNote) {
+      const errMsg = ov.autoSwitchStatus?.lastError;
+      lastNote.textContent = errMsg || (ov.autoSwitchStatus?.lastResult?.toEmail ? `上次切至 ${ov.autoSwitchStatus.lastResult.toEmail}` : '');
+    }
+
+    if (!isEditingAutoSwitchDraft()) {
+      const cfg = ov.autoSwitch || {};
+      const chk = el('chk-auto-switch-enabled');
+      const poolSel = el('sel-auto-switch-pool');
+      const modeSel = el('sel-auto-switch-mode');
+      const winSel = el('sel-auto-switch-window');
+      const thInp = el('inp-auto-switch-threshold');
+      if (chk) chk.checked = Boolean(cfg.enabled);
+      if (poolSel && cfg.poolKey) poolSel.value = cfg.poolKey;
+      if (modeSel && cfg.metricMode) modeSel.value = cfg.metricMode;
+      if (winSel && cfg.windowKey) winSel.value = cfg.windowKey;
+      if (thInp && cfg.thresholdPct != null) thInp.value = String(cfg.thresholdPct);
+
+      const candWrap = el('auto-switch-candidates-list');
+      if (candWrap) {
+        candWrap.replaceChildren();
+        const selectedSet = new Set(Array.isArray(cfg.candidates) ? cfg.candidates : []);
+        for (const acc of (ov.accounts || [])) {
+          const lbl = document.createElement('label');
+          lbl.className = 'auto-switch-cand-chip';
+          const box = document.createElement('input');
+          box.type = 'checkbox';
+          box.value = acc.email;
+          box.checked = selectedSet.has(acc.email);
+          box.className = 'auto-switch-cand-checkbox';
+          const span = document.createElement('span');
+          span.textContent = acc.maskedEmail || acc.email;
+          lbl.appendChild(box);
+          lbl.appendChild(span);
+          candWrap.appendChild(lbl);
+        }
+      }
+    }
+
+    // 4. ELV-57 配额变化对照表
+    const cmpEl = el('quota-compare-list');
+    if (cmpEl) {
+      cmpEl.replaceChildren();
+      const intervals = Array.isArray(ov.quotaIntervals) ? ov.quotaIntervals.slice(0, 8) : [];
+      if (!intervals.length) {
+        const emp = document.createElement('div');
+        emp.className = 'quota-muted-note';
+        emp.textContent = t('quota.compareEmpty');
+        cmpEl.appendChild(emp);
+      } else {
+        for (const iv of intervals) {
+          const card = document.createElement('div');
+          card.className = 'quota-compare-card';
+          const sign = iv.deltaPp > 0 ? `+${iv.deltaPp}` : String(iv.deltaPp);
+          const deltaLabel = iv.deltaPp < 0
+            ? (isEn ? `-${Math.abs(iv.deltaPp)} pp` : (isTw ? `下降 ${Math.abs(iv.deltaPp)} 個百分點` : `下降 ${Math.abs(iv.deltaPp)} 个百分点`))
+            : (iv.deltaPp > 0 ? (isEn ? `+${iv.deltaPp} pp` : `回升 ${iv.deltaPp} 个百分点`) : (isEn ? '0 pp' : '无变化'));
+          const splitBadge = iv.splitReason ? ` [${iv.splitReason}]` : '';
+          const sTime = new Date(iv.startAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const eTime = new Date(iv.endAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const head = document.createElement('div');
+          head.className = 'quota-subcard-row';
+          head.innerHTML = '';
+          const hLeft = document.createElement('strong');
+          hLeft.textContent = `${iv.poolTitle} (${iv.windowShort || iv.windowKey}) · ${iv.startRemainingPct}% → ${iv.endRemainingPct}% (${deltaLabel})`;
+          const hRight = document.createElement('span');
+          hRight.className = 'quota-acct-meta';
+          hRight.textContent = `${sTime}–${eTime}${splitBadge}`;
+          head.appendChild(hLeft);
+          head.appendChild(hRight);
+
+          const body = document.createElement('div');
+          body.className = 'quota-acct-meta';
+          body.textContent = isEn
+            ? `Account: ${iv.email} · Local reqs: ${iv.requestCount} | Uncached In: ${formatTokensK(iv.uncachedInputTokens)} · Cache Read: ${formatTokensK(iv.cacheReadTokens)} · Out: ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · Sampling gap detected' : ''}`
+            : `账号: ${iv.email} · 本机请求 ${iv.requestCount} 次 | 未缓存输入 ${formatTokensK(iv.uncachedInputTokens)} · 缓存读取 ${formatTokensK(iv.cacheReadTokens)} · 输出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含采样缺口已切分' : ''}`;
+          card.appendChild(head);
+          card.appendChild(body);
+          cmpEl.appendChild(card);
+        }
+      }
+    }
+
+    // 5. ELV-52 保活协议证据与安全控制
+    const kaPill = el('keepalive-status-pill');
+    const kaProto = el('keepalive-protocol-summary');
+    const kaExp = el('keepalive-experiment-summary');
+    const kaRun = el('keepalive-runtime-note');
+    const kaStopBtn = el('btn-keepalive-stop');
+    const ka = ov.keepalive || {};
+    const ks = ov.keepaliveState || {};
+    if (kaPill) {
+      kaPill.textContent = ks.running
+        ? (isEn ? 'Running' : (isTw ? '保活執行中' : '保活运行中'))
+        : (isEn ? 'Unverified · Off' : (isTw ? '待驗證 · 預設關閉' : '待验证 · 默认关闭'));
+      kaPill.className = `key-pill ${ks.running ? 'pill-warn' : 'pill-muted'}`;
+    }
+    if (kaProto && ov.protocolEvidence) {
+      kaProto.textContent = isEn
+        ? `Protocol check (Antigravity ${ov.protocolEvidence.checkedVersion}, ${ov.protocolEvidence.rpcCountChecked} RPCs): No explicit server-side cache TTL or renewal endpoint was found in checked RPCs/responses, and cacheWriteTokens/cacheTtl are omitted; keepalive stays unverified & off.`
+        : ov.protocolEvidence.conclusion;
+    }
+    if (kaExp && ov.protocolEvidence?.minimalExperimentPlan) {
+      const plan = ov.protocolEvidence.minimalExperimentPlan;
+      const reqCount = plan.totalRequestsPlanned || 5;
+      const modelName = plan.targetModel || 'Gemini 4 Hydrogen (High)';
+      kaExp.textContent = isEn
+        ? `Pending A/B plan (${reqCount} total reqs on ${modelName}, identical ~20K fixed non-tool prefix): Control (2 reqs, 0/6m) vs Keepalive (3 reqs, 0/4m "ok"/6m); collects per-call cacheReadTokens, stops on error/429/switch/limit; awaiting maintainer sign-off.`
+        : `待确认最小对照实验（${modelName}，合计 ${reqCount} 次请求，相同约 20K 只读无工具前缀）：对照组 2 次 vs 实验组 3 次（含 t=4m 仅发 1 次 "ok"，预计总输出 60~150 tok）；逐次采集 cacheReadTokens 并在异常/限流/切号/达上限时终止，等待维护者确认。`;
+    }
+    if (kaRun) {
+      kaRun.textContent = ks.blockedReason
+        ? `拦截保护: ${ks.blockedReason}`
+        : (ks.stopReason ? `最近状态: ${ks.stopReason}` : (isEn ? 'Keepalive disabled by default; requires explicit maintainer approval before any ping.' : '保活默认关闭，且切换账号/退出/达上限时自动终止。'));
+    }
+    if (kaStopBtn) kaStopBtn.hidden = !ks.running;
+
+    syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+  }
+
+  async function refreshAccountsOverview({ silent = true, refreshAllRemote = false } = {}) {
+    if (state.disposed) return null;
+    try {
+      const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getAccountsOverview === 'function';
+      const hasLive = hasLiveHttpBridge() && hasLiveRouteCapability('/accounts-overview');
+      if (!hasIpc && !hasLive) return null;
+      if (refreshAllRemote) {
+        const res = await callBackendWithPriority({
+          ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+            ? () => window.contextMeterAPI.accountsAction({ action: 'refresh_quota' })
+            : null,
+          liveRoute: '/accounts-action',
+          liveBody: { action: 'refresh_quota' }
+        });
+        const data = res?.result?.overview || res?.result;
+        if (data?.accounts) accountsUiState.overview = data;
+      } else {
+        const res = await callBackendWithPriority({
+          ipcCall: hasIpc ? () => window.contextMeterAPI.getAccountsOverview() : null,
+          liveRoute: '/accounts-overview',
+          liveBody: {}
+        });
+        const data = res?.result;
+        if (data?.ok) accountsUiState.overview = data;
+      }
+      if (!accountsUiState.toolsPreview) {
+        const prevRes = await callBackendWithPriority({
+          ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+            ? () => window.contextMeterAPI.accountsAction({ action: 'preview_tools' })
+            : null,
+          liveRoute: '/accounts-action',
+          liveBody: { action: 'preview_tools' }
+        }).catch(() => null);
+        if (prevRes?.result?.ok) accountsUiState.toolsPreview = prevRes.result;
+      }
+      renderAccountsOverviewSection();
+      return accountsUiState.overview;
+    } catch (e) {
+      if (!silent) {
+        accountsUiState.feedback = e.message;
+        renderAccountsOverviewSection();
+      }
+      return null;
+    }
+  }
+
+  async function performAccountAction(action, extraPayload = {}) {
+    if (accountsUiState.busy) return null;
+    accountsUiState.busy = true;
+    accountsUiState.feedback = currentPanelLanguage === 'en' ? 'Processing…' : '正在处理…';
+    renderAccountsOverviewSection();
+    try {
+      const res = await callBackendWithPriority({
+        ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+          ? () => window.contextMeterAPI.accountsAction({ action, ...extraPayload })
+          : null,
+        liveRoute: '/accounts-action',
+        liveBody: { action, ...extraPayload }
+      });
+      const out = res?.result || {};
+      if (out.overview) accountsUiState.overview = out.overview;
+      accountsUiState.feedback = out.message || out.error || (out.ok ? '操作已完成' : '操作失败');
+      if (action === 'switch' && out.ok) {
+        void syncQuotaFromHost(true, { manual: false });
+        void refreshTokenHistory?.(true);
+      }
+      return out;
+    } catch (e) {
+      accountsUiState.feedback = e.message || '操作失败';
+      return { ok: false, error: e.message };
+    } finally {
+      accountsUiState.busy = false;
+      renderAccountsOverviewSection();
+    }
+  }
+
+  el('btn-acct-import-current')?.addEventListener('click', () => void performAccountAction('import_current'));
+  el('btn-acct-import-tools')?.addEventListener('click', () => void performAccountAction('import_tools'));
+  el('btn-acct-oauth-add')?.addEventListener('click', () => void performAccountAction('oauth_login'));
+  el('btn-keepalive-stop')?.addEventListener('click', () => void performAccountAction('stop_keepalive', { reason: 'manual_button' }));
+  el('btn-save-auto-switch')?.addEventListener('click', () => {
+    const enabled = Boolean(el('chk-auto-switch-enabled')?.checked);
+    const poolKey = el('sel-auto-switch-pool')?.value || 'shared_gemini_main';
+    const metricMode = el('sel-auto-switch-mode')?.value || 'remaining_pct';
+    const windowKey = el('sel-auto-switch-window')?.value || 'primary';
+    const thresholdPct = Number(el('inp-auto-switch-threshold')?.value) || 10;
+    const candidates = Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked')).map(n => n.value);
+    void performAccountAction('update_auto_switch', {
+      config: { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates }
+    });
   });
   const btnQuotaBannerRestartInit = el('btn-quota-banner-restart');
   if (btnQuotaBannerRestartInit) {
@@ -14372,6 +14904,25 @@
       output: el('tcb-output-val')?.textContent || '',
       ratio: el('tcb-ratio-val')?.textContent || '',
       note: el('tcb-note')?.textContent || ''
+    }),
+    setTokenAccountFilterForTest: (scopeKey) => {
+      activeTokenAccountFilter = scopeKey || 'all';
+      if (ANTIGRAVITY_TOKEN_DATA.rawPayload) applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+      return activeTokenAccountFilter;
+    },
+    setAccountsOverviewForTest: (overview) => {
+      accountsUiState.overview = overview || null;
+      renderAccountsOverviewSection();
+      return accountsUiState.overview;
+    },
+    getAccountsPanelStateForTest: () => ({
+      activeFilter: activeTokenAccountFilter,
+      filterOptions: Array.from(el('token-account-select')?.children || []).map(o => ({ val: o.value, label: o.textContent })),
+      scopeNote: el('token-account-scope-note')?.textContent || '',
+      accountCount: el('quota-accounts-list')?.children?.length || 0,
+      compareCount: el('quota-compare-list')?.children?.length || 0,
+      autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
+      keepaliveStatus: el('keepalive-status-pill')?.textContent || ''
     }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {

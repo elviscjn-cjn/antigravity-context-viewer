@@ -1073,6 +1073,122 @@
   }
 
   /**
+   * 拆分模型展示名与尾部重复档位括号，确保产品名与思考档位分离且不重复拼接。
+   * 例如 "Gemini 4 Hydrogen (High) (High)" -> { baseLabel: "Gemini 4 Hydrogen", effort: "High" }
+   */
+  function splitModelDisplayAndEffort(displayText, explicitEffort = null) {
+    let baseLabel = String(displayText || '').trim();
+    let extractedEffort = normalizeEffortValue(explicitEffort || '');
+    for (let i = 0; i < 4 && baseLabel; i++) {
+      const mParen = baseLabel.match(EFFORT_PAREN_RE);
+      if (mParen) {
+        baseLabel = mParen[1].trim();
+        if (!extractedEffort) extractedEffort = normalizeEffortValue(mParen[2]);
+        continue;
+      }
+      const mSuffix = baseLabel.match(EFFORT_SUFFIX_RE);
+      if (mSuffix) {
+        baseLabel = mSuffix[1].trim();
+        if (!extractedEffort) extractedEffort = normalizeEffortValue(mSuffix[2]);
+        continue;
+      }
+      break;
+    }
+    return {
+      baseLabel,
+      effort: extractedEffort || null
+    };
+  }
+
+  /**
+   * 核对 MODEL_PLACEHOLDER_* 原始 ID 与客户端配置/可用模型表的可靠映射关系：
+   * 分别输出 rawPlaceholderId、stableModelId、displayName 与 effort；
+   * 严禁把未映射的原始占位 ID 直接冒充为已验证的实际路由模型。
+   */
+  function resolvePlaceholderModelInfo(rawInput, cascadeModelConfigs = [], availableModels = null) {
+    const rawStr = typeof rawInput === 'string'
+      ? rawInput.trim()
+      : String(rawInput?.modelId || rawInput?.modelOrAlias?.model || rawInput?.modelRaw || rawInput?.model || '').trim();
+    const isPlaceholder = /^model_placeholder_/i.test(rawStr);
+    const configs = Array.isArray(cascadeModelConfigs) ? cascadeModelConfigs : [];
+    const stripPrefix = s => String(s || '').trim().toLowerCase().replace(/^model_/, '');
+
+    let matchedCfg = null;
+    if (rawStr && configs.length) {
+      const low = rawStr.toLowerCase();
+      const stripped = stripPrefix(rawStr);
+      matchedCfg = configs.find(c => {
+        const mId = String(c?.modelId || '').trim().toLowerCase();
+        const alias = String(c?.modelOrAlias?.model || '').trim().toLowerCase();
+        return (mId && (mId === low || stripPrefix(mId) === stripped))
+          || (alias && (alias === low || stripPrefix(alias) === stripped));
+      }) || null;
+    }
+
+    let matchedAvailKey = null;
+    let matchedAvailObj = null;
+    if (!matchedCfg && rawStr && availableModels && typeof availableModels === 'object') {
+      const low = rawStr.toLowerCase();
+      const stripped = stripPrefix(rawStr);
+      for (const [k, v] of Object.entries(availableModels)) {
+        const vk = String(v?.model || '').trim().toLowerCase();
+        if (k.toLowerCase() === low || (vk && (vk === low || stripPrefix(vk) === stripped))) {
+          matchedAvailKey = k;
+          matchedAvailObj = v;
+          break;
+        }
+      }
+    }
+
+    const explicitDisplay = (rawInput && typeof rawInput === 'object')
+      ? String(rawInput.modelDisplayName || rawInput.modelLabel || '').trim()
+      : '';
+    const rawRespModel = (rawInput && typeof rawInput === 'object')
+      ? String(rawInput.responseModel || rawInput.chatStartMetadata?.model || '').trim()
+      : '';
+
+    const rawDisplay = matchedCfg?.label
+      || matchedAvailObj?.displayName
+      || (explicitDisplay && !/^model_placeholder_/i.test(explicitDisplay) ? explicitDisplay : '')
+      || '';
+    const split = splitModelDisplayAndEffort(rawDisplay, (rawInput && typeof rawInput === 'object') ? rawInput.effort : null);
+
+    const stableFromCfg = matchedCfg?.modelId
+      ? String(matchedCfg.modelId).trim().toLowerCase()
+      : (matchedAvailKey ? String(matchedAvailKey).trim().toLowerCase() : null);
+    const nonPlaceholderCfgId = (stableFromCfg && !/^model_placeholder_/i.test(stableFromCfg)) ? stableFromCfg : null;
+    const rawStrSlug = (!isPlaceholder && rawStr && /\s/.test(rawStr) && matchedCfg?.modelId && !/^model_placeholder_/i.test(matchedCfg.modelId))
+      ? matchedCfg.modelId.toLowerCase()
+      : null;
+    const derivedSlug = split.baseLabel
+      ? `${split.baseLabel}${split.effort ? `-${split.effort}` : ''}`.toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-+|-+$/g, '')
+      : null;
+    const cleanNonPlaceholderRaw = (!isPlaceholder && rawStr && !/\s/.test(rawStr)) ? rawStr.toLowerCase() : null;
+    const hasReliableMapping = Boolean(
+      (matchedCfg && (matchedCfg.label || (matchedCfg.modelId && !/^model_placeholder_/i.test(matchedCfg.modelId))))
+      || (matchedAvailObj && matchedAvailObj.displayName)
+      || (rawDisplay && !/^model_placeholder_/i.test(rawDisplay))
+      || (rawRespModel && !/^model_placeholder_/i.test(rawRespModel))
+    );
+
+    const mappingSource = matchedCfg
+      ? 'cascadeModelConfigs'
+      : (matchedAvailObj ? 'availableModels' : ((rawDisplay || rawRespModel) ? 'explicit_response' : (isPlaceholder ? 'unmapped_placeholder' : 'direct_id')));
+
+    return {
+      rawPlaceholderId: isPlaceholder ? rawStr : null,
+      rawId: rawStr || null,
+      stableModelId: nonPlaceholderCfgId || rawStrSlug || cleanNonPlaceholderRaw || (hasReliableMapping ? derivedSlug : null),
+      displayName: split.baseLabel || null,
+      effort: split.effort || null,
+      isPlaceholder,
+      isMapped: hasReliableMapping,
+      isRoutedModelVerified: Boolean((rawRespModel && !/^model_placeholder_/i.test(rawRespModel)) || hasReliableMapping),
+      mappingSource
+    };
+  }
+
+  /**
    * 档位展示映射：默认/英文返回标准英文名（如 Extra High），中文面板按繁简返回对照标签
    * @param {string} effort 原始力度值
    * @param {string} [lang='en'] 语言代码（'en' | 'zh-CN' | 'zh-TW'）
@@ -2910,6 +3026,58 @@
     return { key: w || 'quota', short: '', label: '周期限额' };
   }
 
+  const QUOTA_WINDOW_TIE_ORDER = {
+    '5h': 0,
+    '24h': 1,
+    daily: 1,
+    '7d': 2,
+    weekly: 2
+  };
+
+  function resolveQuotaBucketWindowRank(bucket) {
+    if (!bucket || typeof bucket !== 'object') return 99;
+    const short = String(bucket.windowShort || '').trim().toLowerCase();
+    const key = String(bucket.windowKey || '').trim().toLowerCase();
+    const id = String(bucket.bucketId || '').trim().toLowerCase();
+    for (const candidate of [short, key]) {
+      if (candidate in QUOTA_WINDOW_TIE_ORDER) return QUOTA_WINDOW_TIE_ORDER[candidate];
+    }
+    if (id.includes('5h') || id.includes('5_hour')) return 0;
+    if (id.includes('24h') || id.includes('day') || id.includes('daily')) return 1;
+    if (id.includes('7d') || id.includes('week') || id.includes('weekly')) return 2;
+    return 10;
+  }
+
+  /**
+   * 统一选择主限额窗口（被 buildModelQuotaSnapshot 与顶栏徽章渲染共用）：
+   * 1) 优先 remainingFraction 最小的更紧缩窗口；
+   * 2) 相同剩余量按 5h -> 24h/daily -> 7d/weekly -> 其他 确定性排序；
+   * 3) 返回 { primaryBucket, selectionReason } 供悬浮详情解释选择依据。
+   */
+  function selectPrimaryQuotaBucket(buckets = []) {
+    const list = Array.isArray(buckets) ? buckets.filter(Boolean) : [];
+    if (!list.length) return { primaryBucket: null, selectionReason: 'none' };
+    const priced = list.filter(b => b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction)));
+    if (!priced.length) {
+      return { primaryBucket: list[0], selectionReason: list.length === 1 ? 'single_window' : 'unpriced_fallback' };
+    }
+    const sorted = priced.slice().sort((a, b) => {
+      const diff = Number(a.remainingFraction) - Number(b.remainingFraction);
+      if (Math.abs(diff) > 1e-6) return diff;
+      const rankDiff = resolveQuotaBucketWindowRank(a) - resolveQuotaBucketWindowRank(b);
+      if (rankDiff !== 0) return rankDiff;
+      return String(a.bucketId || '').localeCompare(String(b.bucketId || ''));
+    });
+    const best = sorted[0];
+    if (priced.length === 1) return { primaryBucket: best, selectionReason: 'single_window' };
+    const second = sorted[1];
+    const isTie = Math.abs(Number(best.remainingFraction) - Number(second.remainingFraction)) <= 1e-6;
+    return {
+      primaryBucket: best,
+      selectionReason: isTie ? 'tie_window' : 'tighter_window'
+    };
+  }
+
   /**
    * 聚合账号下各共享额度池、产品档位与当前会话模型额度状态（纯函数）
    * 严格区分：available / low / exhausted / no_permission / stale / error / unknown
@@ -3223,11 +3391,10 @@
         }
       }
 
-      // 从 buckets 中选最紧缩（最小 remainingFraction）的作为 primaryBucket
-      const pricedBuckets = pool.buckets.filter(b => b.remainingFraction !== null);
-      if (pricedBuckets.length > 0) {
-        pricedBuckets.sort((a, b) => a.remainingFraction - b.remainingFraction);
-        const pb = pricedBuckets[0];
+      // 从 buckets 中统一选出主窗口（更紧缩优先 + 5h/7d 确定性平局规则）
+      const { primaryBucket: pb, selectionReason } = selectPrimaryQuotaBucket(pool.buckets);
+      pool.selectionReason = selectionReason;
+      if (pb && pb.remainingFraction !== null && pb.remainingFraction !== undefined) {
         pool.primaryBucket = pb;
         pool.remainingFraction = pb.remainingFraction;
         pool.percentText = pb.percentText;
@@ -3248,8 +3415,7 @@
           pool.status = 'available';
           pool.statusLabel = '正常可用';
         }
-      } else if (pool.buckets.length > 0) {
-        const pb = pool.buckets[0];
+      } else if (pb) {
         pool.primaryBucket = pb;
         pool.hasResetTime = pb.hasResetTime;
         pool.resetTimeIso = pb.resetTimeIso;
@@ -4481,10 +4647,21 @@
     const callId = String(raw.callId || extractCallId(raw, raw.cascadeId || options.cascadeId || null, raw.stepIndex ?? null) || '').trim();
     if (!callId) return null;
 
+    const availableModels = options.availableModels || options.userStatus?.availableModels || null;
+    const phInfo = resolvePlaceholderModelInfo(raw, cascadeConfigs, availableModels);
     const bucket = resolveModelUsageBucket(raw, cascadeConfigs);
     const modelExactId = raw.modelExactId || resolveStableModelId(raw, cascadeConfigs) || null;
-    const modelLabel = raw.modelLabel || bucket.modelLabel || (raw.model && !/^model_/i.test(String(raw.model)) ? String(raw.model) : null) || modelExactId || null;
-    const effort = raw.effort || (bucket.variantKey && bucket.variantKey.includes(':') ? formatEffortLabel(bucket.variantKey.split(':')[1]) : null) || null;
+    const rawCandidateLabel = raw.modelLabel
+      || phInfo.displayName
+      || bucket.modelLabel
+      || (raw.model && !/^model_/i.test(String(raw.model)) ? String(raw.model) : null)
+      || (phInfo.isPlaceholder && !phInfo.isMapped ? null : modelExactId);
+    const effortCandidate = raw.effort || phInfo.effort || (bucket.variantKey && bucket.variantKey.includes(':') ? bucket.variantKey.split(':')[1] : null);
+    const splitDisp = splitModelDisplayAndEffort(rawCandidateLabel, effortCandidate);
+    const modelLabel = (phInfo.isPlaceholder && !phInfo.isMapped)
+      ? null
+      : (splitDisp.baseLabel || bucket.modelLabel || modelExactId || null);
+    const effort = splitDisp.effort ? formatEffortLabel(splitDisp.effort) : null;
     const cacheStats = computeCacheReadStats(raw);
 
     const rawError = String(raw.error || '').trim();
@@ -4580,8 +4757,14 @@
       attributionConfidence,
       source: raw.source || 'desktop',
       stepIndex,
-      model: raw.model || modelLabel || modelExactId || '',
+      model: raw.model || modelLabel || phInfo.rawPlaceholderId || modelExactId || '',
       modelKey: raw.modelKey || (bucket.isAttributed ? bucket.modelKey : null),
+      rawModelId: raw.rawModelId || phInfo.rawId || null,
+      rawPlaceholderId: raw.rawPlaceholderId || phInfo.rawPlaceholderId || null,
+      stableModelId: raw.stableModelId || phInfo.stableModelId || null,
+      isPlaceholderOnly: Boolean(raw.isPlaceholderOnly ?? (phInfo.isPlaceholder && !phInfo.isMapped)),
+      isRoutedModelVerified: Boolean(raw.isRoutedModelVerified ?? phInfo.isRoutedModelVerified),
+      modelMappingSource: raw.modelMappingSource || phInfo.mappingSource,
       modelExactId,
       modelLabel,
       effort,
@@ -4886,9 +5069,9 @@
       glyph: '✕',
       title: { 'zh-CN': '彻底停滞', 'zh-TW': '徹底停滯', en: 'Stalled' },
       comment: {
-        'zh-CN': '按帧播放. 每秒连 1 个字都憋不出来. 别耽误干活了. 这边建议先去隔壁开个 Claude、OpenAI 或豆包救救急吧.',
-        'zh-TW': '逐幀播放. 每秒連 1 個字都憋不出來. 別耽誤工作了. 這邊建議先去隔壁開個 Claude、OpenAI 或豆包應急吧.',
-        en: 'Frame-by-frame crawl (< 1 tok/s). Consider switching to another workspace or model if urgent.'
+        'zh-CN': '按帧播放. 每秒连 1 个字都憋不出来. 别耽误干活了. 这边建议先去隔壁开个 Claude、Codex 或豆包救救急吧.',
+        'zh-TW': '逐幀播放. 每秒連 1 個字都憋不出來. 別耽誤工作了. 這邊建議先去隔壁開個 Claude、Codex 或豆包應急吧.',
+        en: 'Frame-by-frame crawl (< 1 tok/s). Consider switching to Claude, Codex, or Doubao if urgent.'
       }
     },
     {
@@ -5045,9 +5228,9 @@
       glyph: '✕',
       title: { 'zh-CN': '极度漫长', 'zh-TW': '極度漫長', en: 'Extreme Wait' },
       comment: {
-        'zh-CN': '已经等了 {elapsed}. 进度条仿佛静止. 活还得干. 这边建议先去隔壁开个 Claude、OpenAI 或豆包救救急吧.',
-        'zh-TW': '已經等了 {elapsed}. 進度條彷彿靜止. 工作還得進行. 這邊建議先去隔壁開個 Claude、OpenAI 或豆包應急吧.',
-        en: 'Waited {elapsed} with a frozen progress bar; consider switching tools if work cannot wait.'
+        'zh-CN': '已经等了 {elapsed}. 进度条仿佛静止. 活还得干. 这边建议先去隔壁开个 Claude、Codex 或豆包救救急吧.',
+        'zh-TW': '已經等了 {elapsed}. 進度條彷彿靜止. 工作還得進行. 這邊建議先去隔壁開個 Claude、Codex 或豆包應急吧.',
+        en: 'Waited {elapsed} with a frozen progress bar; consider switching to Claude, Codex, or Doubao if work cannot wait.'
       }
     },
     {
@@ -5058,9 +5241,9 @@
       glyph: '✕',
       title: { 'zh-CN': '世纪等待', 'zh-TW': '世紀等待', en: 'Over 10 Minutes' },
       comment: {
-        'zh-CN': '突破十分钟大关. 已经分不清是在推理还是在挂机. 别耽误干活了. 赶紧去用 Claude、OpenAI 或豆包吧.',
-        'zh-TW': '突破十分鐘大關. 已經分不清是在推理還是在掛機. 別耽誤工作了. 趕緊去用 Claude、OpenAI 或豆包吧.',
-        en: 'Over 10 minutes without a first token; unclear if reasoning or idling.'
+        'zh-CN': '突破十分钟大关. 已经分不清是在推理还是在挂机. 别耽误干活了. 赶紧去用 Claude、Codex 或豆包吧.',
+        'zh-TW': '突破十分鐘大關. 已經分不清是在推理還是在掛機. 別耽誤工作了. 趕緊去用 Claude、Codex 或豆包吧.',
+        en: 'Over 10 minutes without a first token; unclear if reasoning or idling. Consider using Claude, Codex, or Doubao.'
       }
     }
   ];
@@ -5226,9 +5409,9 @@
       severity: 'critical',
       title: { 'zh-CN': 'F 级 · 效能崩盘', 'zh-TW': 'F 級 · 效能崩盤', en: 'Grade F · Collapsed' },
       comment: {
-        'zh-CN': '极其抽象的表现——活没干多少. 时间全耗在干等上了. 这边建议直接打开 Claude、OpenAI 或豆包救救急吧.',
-        'zh-TW': '極其抽象的表現——事沒幹多少. 時間全耗在乾等上了. 這邊建議直接打開 Claude、OpenAI 或豆包應急吧.',
-        en: 'Severe wait-to-output imbalance; consider another workspace or model if stalled.'
+        'zh-CN': '极其抽象的表现——活没干多少. 时间全耗在干等上了. 这边建议直接打开 Claude、Codex 或豆包救救急吧.',
+        'zh-TW': '極其抽象的表現——事沒幹多少. 時間全耗在乾等上了. 這邊建議直接打開 Claude、Codex 或豆包應急吧.',
+        en: 'Severe wait-to-output imbalance; consider using Claude, Codex, or Doubao if stalled.'
       }
     }
   ];
@@ -5302,6 +5485,16 @@
    * 若缺少实际间隔波动数据，严禁凭直觉或流式均速给出平稳勾选。
    */
   function computeStreamStability(input = {}) {
+    if (input && (input.isSyntheticPoll === true || input.sampleSource === 'poll' || input.sampleSource === 'synthetic')) {
+      const streamingSec = Number(input.streamingSec);
+      return {
+        isStable: false,
+        chunks: 0,
+        streamingSec: Number.isFinite(streamingSec) ? streamingSec : null,
+        intervalCv: null,
+        reason: 'synthetic_poll_unsupported'
+      };
+    }
     const chunks = Number(input.chunkCount ?? input.chunks ?? 0);
     const streamingSec = Number(input.streamingSec);
     let intervalCv = (input.intervalCv !== undefined && input.intervalCv !== null && Number.isFinite(Number(input.intervalCv)) && Number(input.intervalCv) >= 0)
@@ -5615,7 +5808,9 @@
       chunkCount: input.chunkCount ?? input.chunks,
       chunkIntervalsMs: input.chunkIntervalsMs,
       intervalCv: input.intervalCv,
-      streamingSec
+      streamingSec,
+      sampleSource: input.sampleSource,
+      isSyntheticPoll: input.isSyntheticPoll
     });
     const efficiency = phase === 'final'
       ? calculateExperienceScore({
@@ -5633,7 +5828,10 @@
     const lowStreamTokens = outputTokens !== null && outputTokens < 15;
     const shortStreamTime = streamingSec !== null && streamingSec < 0.5;
     const hasMissingSpeed = streamSpeed === null;
-    const isSampleSparse = !isLongTtft && (lowStreamTokens || shortStreamTime);
+    const isShortStreamOnly = !lowStreamTokens && shortStreamTime;
+    const isSampleSparse = lowStreamTokens || shortStreamTime;
+    const isReliableSpeed = !(isSampleSparse || hasMissingSpeed);
+    const shortWindowEstimateSpeed = (isSampleSparse && streamSpeed !== null) ? streamSpeed : null;
 
     let evalColor = '#9CA3AF';
     let evalSeverity = 'neutral';
@@ -5650,19 +5848,28 @@
       : '';
 
     if (isLongTtft) {
-      // 规则 2：首字 > 30s 木桶优先警示规则（优先保留 TTFT 警示，不因后续快或样本少而抹去长等待）
+      // 规则 2：首字 > 30s 木桶优先警示规则（若流式样本过短或无有效速率，不把短窗口突发换算当作后续极快）
       evalColor = ttftTier.color;
       evalSeverity = ttftTier.severity;
       evalGlyph = ttftTier.glyph;
       const baseWaitComment = ttftTier.comment.replace('{elapsed}', ttftFormatted);
-      if (hasMissingSpeed || (lowStreamTokens && shortStreamTime)) {
+      if (hasMissingSpeed || isSampleSparse) {
         evalTitle = ttftTier.title;
-        evalComment = isEn
-          ? `${baseWaitComment} First token took ${ttftFormatted}${ratioSuffix ? ` (${ratioSuffix})` : ''}; streaming throughput unavailable.`
-          : (isTw ? `${baseWaitComment} 首字苦等 ${ttftFormatted}${ratioSuffix ? `（${ratioSuffix}）` : ''}. 暫無有效後續流速資料.` : `${baseWaitComment} 首字苦等 ${ttftFormatted}${ratioSuffix ? `（${ratioSuffix}）` : ''}. 暂无有效后续流速数据.`);
-        subLabel = isEn
-          ? `TTFT ${ttftFormatted} · Rate unavailable`
-          : (isTw ? `首字 ${ttftFormatted} · 暫無有效流速` : `首字 ${ttftFormatted} · 暂无有效流速`);
+        if (isShortStreamOnly && shortWindowEstimateSpeed !== null) {
+          evalComment = isEn
+            ? `${baseWaitComment} First token took ${ttftFormatted}${ratioSuffix ? ` (${ratioSuffix})` : ''}; streaming window too short (${streamingSec.toFixed(2)}s across ${outputTokens} tokens), short-window speed omitted.`
+            : (isTw ? `${baseWaitComment} 首字苦等 ${ttftFormatted}${ratioSuffix ? `（${ratioSuffix}）` : ''}. 流式持續時間過短（僅 ${streamingSec.toFixed(2)}s，共輸出 ${outputTokens} tokens），不作高速評級.` : `${baseWaitComment} 首字苦等 ${ttftFormatted}${ratioSuffix ? `（${ratioSuffix}）` : ''}. 流式持续时间过短（仅 ${streamingSec.toFixed(2)}s，共输出 ${outputTokens} tokens），不作高速评级.`);
+          subLabel = isEn
+            ? `TTFT ${ttftFormatted} · Short stream (${streamingSec.toFixed(2)}s)`
+            : (isTw ? `首字 ${ttftFormatted} · 短時窗樣本 (${streamingSec.toFixed(2)}s)` : `首字 ${ttftFormatted} · 短窗口样本 (${streamingSec.toFixed(2)}s)`);
+        } else {
+          evalComment = isEn
+            ? `${baseWaitComment} First token took ${ttftFormatted}${ratioSuffix ? ` (${ratioSuffix})` : ''}; streaming throughput unavailable.`
+            : (isTw ? `${baseWaitComment} 首字苦等 ${ttftFormatted}${ratioSuffix ? `（${ratioSuffix}）` : ''}. 暫無有效後續流速資料.` : `${baseWaitComment} 首字苦等 ${ttftFormatted}${ratioSuffix ? `（${ratioSuffix}）` : ''}. 暂无有效后续流速数据.`);
+          subLabel = isEn
+            ? `TTFT ${ttftFormatted} · Rate unavailable`
+            : (isTw ? `首字 ${ttftFormatted} · 暫無有效流速` : `首字 ${ttftFormatted} · 暂无有效流速`);
+        }
       } else if (streamSpeed >= 30) {
         const fastPhrase = streamSpeed >= 80
           ? (isEn ? 'Fast Stream' : (isTw ? '後續極快' : '后续极快'))
@@ -5681,32 +5888,29 @@
         subLabel = (isEn ? `TTFT ${ttftFormatted} · Stream ${streamSpeed} tok/s` : `首字 ${ttftFormatted} · 流式 ${streamSpeed} tok/s`) + stableSuffix;
       }
     } else if (isSampleSparse || hasMissingSpeed) {
-      // 规则 3：样本/数据不足兜底（仅陈述真实成立条件，不编造“同时字少且耗时短”）
+      // 规则 3：样本/数据不足兜底（严格区分“仅输出字少”与“流式持续时间过短”）
       evalColor = '#9CA3AF';
       evalSeverity = 'neutral';
       evalGlyph = '⏳';
-      evalTitle = isEn ? 'Insufficient Sample' : (isTw ? '樣本過少' : '样本过少');
+      evalTitle = isShortStreamOnly
+        ? (isEn ? 'Short Stream Sample' : (isTw ? '流式時長過短' : '流式时长过短'))
+        : (isEn ? 'Insufficient Sample' : (isTw ? '樣本過少' : '样本过少'));
       if (hasMissingSpeed) {
         evalComment = isEn
           ? `TTFT was ${ttftFormatted}; missing effective streaming window or token count to compute throughput.`
           : (isTw ? `本次首字耗時 ${ttftFormatted}. 缺少有效流式階段耗時或輸出量. 暫不計算流式速率.` : `本次首字耗时 ${ttftFormatted}. 缺少有效流式阶段耗时或输出量. 暂不计算流式速率.`);
-      } else {
-        const partsCn = [];
-        const partsTw = [];
-        const partsEn = [];
-        if (lowStreamTokens) {
-          partsCn.push(`仅输出 ${outputTokens} tokens`);
-          partsTw.push(`僅輸出 ${outputTokens} tokens`);
-          partsEn.push(`only ${outputTokens} tokens output`);
-        }
-        if (shortStreamTime) {
-          partsCn.push(`流式耗时极短 (${streamingSec.toFixed(2)}s)`);
-          partsTw.push(`流式耗時極短 (${streamingSec.toFixed(2)}s)`);
-          partsEn.push(`streaming window too short (${streamingSec.toFixed(2)}s)`);
-        }
+      } else if (isShortStreamOnly) {
         evalComment = isEn
-          ? `Too few samples (${partsEn.join(' & ')}); speed metric is not representative.`
-          : (isTw ? `樣本過少測不準. 本次${partsTw.join('且')}. 速率指標不具備參考價值.` : `字太少测不出. 本次${partsCn.join('且')}. 速率指标不具备参考价值.`);
+          ? `Streaming duration too short (${streamingSec.toFixed(2)}s across ${outputTokens} tokens); short-window speed is omitted from main display.`
+          : (isTw ? `流式持續時間過短（僅 ${streamingSec.toFixed(2)}s，共輸出 ${outputTokens} tokens），短視窗速率易偏高，不作為主指標展示.` : `流式持续时间过短（仅 ${streamingSec.toFixed(2)}s，共输出 ${outputTokens} tokens），短窗口速率易偏高，不作为主指标展示.`);
+      } else if (lowStreamTokens && !shortStreamTime) {
+        evalComment = isEn
+          ? `Too few output tokens (only ${outputTokens} tokens); speed metric is not representative.`
+          : (isTw ? `字太少測不準. 本次僅輸出 ${outputTokens} tokens. 速率指標不具備參考價值.` : `字太少测不出. 本次仅输出 ${outputTokens} tokens. 速率指标不具备参考价值.`);
+      } else {
+        evalComment = isEn
+          ? `Insufficient sample (only ${outputTokens} tokens & short ${streamingSec.toFixed(2)}s window); speed metric is not representative.`
+          : (isTw ? `樣本過少測不準. 本次僅輸出 ${outputTokens} tokens 且流式耗時極短 (${streamingSec.toFixed(2)}s). 速率指標不具備參考價值.` : `样本不足测不出. 本次仅输出 ${outputTokens} tokens 且流式耗时极短 (${streamingSec.toFixed(2)}s). 速率指标不具备参考价值.`);
       }
       subLabel = ttftSec !== null
         ? (isEn ? `TTFT ${ttftFormatted} · Stability skipped` : (isTw ? `首字 ${ttftFormatted} · 略過穩定性評估` : `首字 ${ttftFormatted} · 跳过稳定性评估`))
@@ -5742,7 +5946,9 @@
         finalHeadline = `${efficiency.score} ${isEn ? 'pts' : '分'} · ${efficiency.tier.title}`;
         finalComment = isLongTtft ? evalComment : efficiency.tier.comment;
       } else if (efficiency.skippedReason === 'insufficient_sample') {
-        mainBadgeText = isEn ? 'Sparse · No Score' : (isTw ? '樣本過少 · 略過評分' : '样本过少 · 跳过综合评分');
+        mainBadgeText = isShortStreamOnly
+          ? (isEn ? 'Short Stream · No Score' : (isTw ? '時長過短 · 略過評分' : '流式过短 · 跳过综合评分'))
+          : (isEn ? 'Sparse · No Score' : (isTw ? '樣本過少 · 略過評分' : '样本过少 · 跳过综合评分'));
         mainBadgeColor = isLongTtft ? evalColor : '#9CA3AF';
         mainBadgeSeverity = isLongTtft ? evalSeverity : 'neutral';
         mainBadgeGlyph = isLongTtft ? evalGlyph : '⏳';
@@ -5774,6 +5980,11 @@
       streamSpeed,
       overallTps,
       outputTokens,
+      isSampleSparse,
+      lowStreamTokens,
+      shortStreamTime,
+      isReliableSpeed,
+      shortWindowEstimateSpeed,
       ttftTier,
       speedTier,
       durationTier,
@@ -5793,7 +6004,10 @@
     formatQuotaResetMeta,
     classifyModelQuotaAvailability,
     isDecorativeBadgeTagTitle,
+    selectPrimaryQuotaBucket,
     buildModelQuotaSnapshot,
+    splitModelDisplayAndEffort,
+    resolvePlaceholderModelInfo,
     formatApproxTokensShort,
     inferQuotaWindowDurationMs,
     QUOTA_CAL_TTL_MS,
