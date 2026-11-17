@@ -15,6 +15,7 @@ const {
   collect,
   collectTokenHistory,
   collectTokenHistoryAsync,
+  collectSessionTimelineAsync,
   recordModelCalls,
   recordModelCallsAsync,
   getPluginSettings,
@@ -36,6 +37,7 @@ const MAIN_STARTED_AT = Date.now();
 const MAIN_CAPABILITIES = {
   scan: true,
   tokenHistory: true,
+  sessionTimeline: true,
   quota: true,
   recordCalls: true,
   settings: true,
@@ -540,6 +542,26 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try { return { ok: true, data: await collectTokenHistoryAsync({ force: force === true }) }; }
     catch (e) { return { ok: false, error: e.message }; }
+  });
+
+  ipcMain.handle('context-meter:session-timeline', async (event, id, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const opts = options && typeof options === 'object' ? options : {};
+      const safeOpts = {
+        origin: url.origin,
+        force: opts.force === true,
+        ...(Array.isArray(opts.liveSteps) ? { liveSteps: opts.liveSteps } : {}),
+        ...(Array.isArray(opts.liveCalls) ? { liveCalls: opts.liveCalls } : {}),
+        ...(Array.isArray(opts.cascadeModelConfigs) ? { cascadeModelConfigs: opts.cascadeModelConfigs } : {}),
+        ...(opts.userStatus && typeof opts.userStatus === 'object' ? { userStatus: opts.userStatus } : {})
+      };
+      const data = await collectSessionTimelineAsync(id, safeOpts);
+      return { ok: true, data: { ...(data || {}), backendVersion: PROJECT_VERSION, backendSource: 'electron-ipc' } };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   });
 
   ipcMain.handle('context-meter:get-quota', async (event, options) => {
@@ -1423,6 +1445,7 @@ true;`;
   };
 }
 
+exports.MAIN_CAPABILITIES = MAIN_CAPABILITIES;
 exports.tryInAppHotReloadAfterUpdate = tryInAppHotReloadAfterUpdate;
 exports.handleModulesStatus = handleModulesStatus;
 exports.handleToggleModule = handleToggleModule;

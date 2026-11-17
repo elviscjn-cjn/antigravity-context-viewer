@@ -594,18 +594,35 @@
       tps = Number((output / duration).toFixed(1));
     }
     let streamingTps = null;
-    if (output && streamingSec && streamingSec > 0.05) {
+    if (output && streamingSec && streamingSec >= 0.05) {
       streamingTps = Number((output / streamingSec).toFixed(1));
     }
-    const speed = (tps !== null || duration !== null || output !== null) ? {
+    const speedInputTokens = hasInput ? ((input || 0) + (cached || 0)) : null;
+    const speedExp = (!error && output != null && ttft != null && duration != null && streamingTps != null)
+      ? calculateExperienceScore({
+          outputTokens: output,
+          totalInputTokens: speedInputTokens,
+          ttftSec: ttft,
+          streamingSec,
+          totalDurationSec: duration,
+          streamSpeed: streamingTps
+        })
+      : { available: false, score: null, grade: null, ruleVersion: ELV91_SCORE_RULE_VERSION };
+    const speed = (tps !== null || duration !== null || output !== null || ttft !== null) ? {
       tps,
       streamingTps,
+      streamSpeed: streamingTps,
       duration: duration !== null ? Number(duration.toFixed(2)) : null,
       ttft: ttft !== null ? Number(ttft.toFixed(2)) : null,
       streamingSec: streamingSec !== null ? Number(streamingSec.toFixed(2)) : null,
+      ttftRatio: (ttft !== null && duration !== null && duration > 0) ? Number(Math.min(100, Math.max(0, (ttft / duration) * 100)).toFixed(1)) : null,
       outputTokens: output ?? 0,
       thinkingTokens: thinking ?? 0,
-      responseTokens: responseTokens ?? (output ?? 0)
+      responseTokens: responseTokens ?? (output ?? 0),
+      totalInputTokens: speedInputTokens,
+      eScore: speedExp.score,
+      eGrade: speedExp.grade,
+      scoreRuleVersion: ELV91_SCORE_RULE_VERSION
     } : null;
 
     let status = 'pending';
@@ -1521,6 +1538,10 @@
     if (!row || typeof row !== 'object') return null;
     const cm = row.chatModel || {};
     const u = cm.usage || {};
+    const hasExplicitInput = u.inputTokens !== undefined || row.inputTokens !== undefined || row.input_tokens !== undefined;
+    const hasExplicitCache = u.cacheReadTokens !== undefined || row.cacheTokens !== undefined || row.cacheReadTokens !== undefined || row.cache_read_tokens !== undefined;
+    const hasExplicitOutput = u.outputTokens !== undefined || row.outputTokens !== undefined || row.output_tokens !== undefined;
+    const hasInputCacheFields = Boolean(hasExplicitInput || hasExplicitCache);
     const model = cm.modelDisplayName || cm.responseModel || cm.model || row.model || row.modelId || '';
     const modelKey = normalizeModelId(model);
     const cascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
@@ -1532,12 +1553,22 @@
       effort: cm.effort || row.effort
     });
 
-    const input = Number(u.inputTokens ?? row.inputTokens ?? row.input_tokens ?? 0);
-    const cached = Number(u.cacheReadTokens ?? row.cacheTokens ?? row.cacheReadTokens ?? row.cache_read_tokens ?? 0);
-    const output = Number(u.outputTokens ?? row.outputTokens ?? row.output_tokens ?? 0);
+    const input = hasExplicitInput ? (Number(u.inputTokens ?? row.inputTokens ?? row.input_tokens) || 0) : 0;
+    const cached = hasExplicitCache ? (Number(u.cacheReadTokens ?? row.cacheTokens ?? row.cacheReadTokens ?? row.cache_read_tokens) || 0) : 0;
+    const output = hasExplicitOutput ? (Number(u.outputTokens ?? row.outputTokens ?? row.output_tokens) || 0) : 0;
     const thinking = Number(u.thinkingOutputTokens ?? row.thinkingTokens ?? row.thinking_output_tokens ?? 0);
     const responseTokens = Number(u.responseOutputTokens ?? row.responseTokens ?? (output - thinking > 0 ? output - thinking : output));
     const totalTokens = input + cached + output;
+
+    const lastRetry = Array.isArray(cm.retryInfos) && cm.retryInfos.length ? cm.retryInfos[cm.retryInfos.length - 1] : null;
+    const rawError = String(lastRetry?.error || cm.error || row.error || '').trim();
+    const errorClassification = rawError
+      ? classifyRequestError(rawError, {
+        currentModel: modelLabelRaw || model,
+        cascadeModelConfigs: cascadeConfigs,
+        userStatus: options.userStatus || null
+      })
+      : null;
 
     const rawStepIdx = row.stepIndices?.[0] ?? row.stepIndex ?? row.step_index;
     const parsedStepIdx = rawStepIdx !== undefined && rawStepIdx !== null && rawStepIdx !== '' ? Number(rawStepIdx) : NaN;
@@ -1632,7 +1663,24 @@
       speedFields.tps = (row.tps !== undefined && row.tps !== null && Number.isFinite(Number(row.tps)) && Number(row.tps) > 0)
         ? Number(Number(row.tps).toFixed(1))
         : Number((output / durationSecRaw).toFixed(1));
+      if (streamingSecRaw !== null && streamingSecRaw > 0.05) {
+        speedFields.streamingTps = Number((output / streamingSecRaw).toFixed(1));
+      }
       speedFields.origin = row.origin === 'speed-test' ? 'speed-test' : 'chat';
+    } else {
+      if (ttftSecRaw !== null && ttftSecRaw >= 0) speedFields.ttftSec = Number(ttftSecRaw.toFixed(2));
+      if (streamingSecRaw !== null && streamingSecRaw >= 0) speedFields.streamingSec = Number(streamingSecRaw.toFixed(2));
+      if (durationSecRaw !== null && durationSecRaw > 0) speedFields.durationSec = Number(durationSecRaw.toFixed(2));
+    }
+
+    let outcomeStatus = status === 'streaming' ? 'streaming' : 'success';
+    if (rawError) {
+      outcomeStatus = (errorClassification && errorClassification.kind && errorClassification.kind !== 'none')
+        ? errorClassification.kind
+        : 'failed';
+      if (outcomeStatus === 'context_overflow') outcomeStatus = 'exceeded';
+      else if (outcomeStatus === 'network_error') outcomeStatus = 'network';
+      else if (outcomeStatus === 'unknown') outcomeStatus = 'failed';
     }
 
     const callRecord = {
@@ -1652,7 +1700,10 @@
       thinkingTokens: thinking,
       responseTokens,
       totalTokens,
+      hasInputCacheFields,
       status,
+      outcomeStatus,
+      ...(rawError ? { error: rawError, errorClassification } : {}),
       isEstimated,
       isPriced: costCalc.isPriced,
       costUSD: costCalc.costUSD ?? 0,
@@ -2549,6 +2600,16 @@
       }
     }
 
+    const allCacheStats = summarizeDailyMapCacheStats(normalizedMap);
+    const monthCacheStats = summarizeDailyMapCacheStats(normalizedMap, currentMonthPrefix);
+    const cacheReadStatsBySource = (payload.cacheReadStatsBySource && typeof payload.cacheReadStatsBySource === 'object')
+      ? payload.cacheReadStatsBySource
+      : {
+          all: summarizeDailyMapCacheStats(dailyMapBySource.all || normalizedMap),
+          desktop: summarizeDailyMapCacheStats(dailyMapBySource.desktop || {}),
+          cli: summarizeDailyMapCacheStats(dailyMapBySource.cli || {})
+        };
+
     const summary = {
       grandTotalTokens,
       totalInputTokens,
@@ -2562,7 +2623,9 @@
       currentMonthCache,
       activeDaysCount,
       totalConversations: Number(rawSum.totalConversations) || activeDaysCount,
-      firstUseDate: payload.firstUseDate || rawSum.firstUseDate || null
+      firstUseDate: payload.firstUseDate || rawSum.firstUseDate || null,
+      cacheReadStats: allCacheStats,
+      currentMonthCacheReadStats: monthCacheStats
     };
 
     let referenceCost = payload.referenceCost;
@@ -2614,6 +2677,7 @@
       costEstimateBySource: payload.costEstimateBySource || null,
       referenceCost,
       summary,
+      cacheReadStatsBySource,
       dailyMap: normalizedMap,
       dailyMapBySource,
       dailyModelMap,
@@ -4151,11 +4215,19 @@
 
     const legend = sortedWin.map(item => {
       const pct = windowTotalTokens > 0 ? (item.tokens / windowTotalTokens) * 100 : 0;
+      const cacheStats = computeCacheReadStats({
+        inputTokens: item.input,
+        cacheReadTokens: item.cache,
+        outputTokens: item.output,
+        hasInputCacheFields: (item.input > 0 || item.cache > 0 || item.output > 0)
+      });
       return {
         ...item,
         color: colorByKey.get(item.key) || '#71717a',
         pct,
-        pctLabel: formatPctLabel(pct)
+        pctLabel: formatPctLabel(pct),
+        cacheReadPct: cacheStats.cacheReadPct,
+        cacheStatus: cacheStats.cacheStatus
       };
     });
 
@@ -4165,11 +4237,20 @@
       const segs = Array.from(d.grouped.values())
         .filter(s => s.tokens > 0)
         .sort((a, b) => (orderByKey.get(a.key) ?? 999) - (orderByKey.get(b.key) ?? 999))
-        .map(s => ({
-          ...s,
-          color: colorByKey.get(s.key) || '#71717a',
-          pct: d.total > 0 ? (s.tokens / d.total) * 100 : 0
-        }));
+        .map(s => {
+          const segCache = computeCacheReadStats({
+            inputTokens: s.input,
+            cacheReadTokens: s.cache,
+            outputTokens: s.output,
+            hasInputCacheFields: (s.input > 0 || s.cache > 0 || s.output > 0)
+          });
+          return {
+            ...s,
+            color: colorByKey.get(s.key) || '#71717a',
+            pct: d.total > 0 ? (s.tokens / d.total) * 100 : 0,
+            cacheReadPct: segCache.cacheReadPct
+          };
+        });
       return {
         date: d.date,
         total: d.total,
@@ -4197,6 +4278,1508 @@
   function formatLocalDateKeyCompat(d) {
     const dt = d instanceof Date ? d : new Date(d);
     return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  }
+
+  /**
+   * 规范化单次调用或汇总对象的输入、缓存读取与输出 Token。
+   * 已通过本地 transcript.jsonl、chatModel.usage 与 pricing_ledger 实测验证：
+   * Antigravity 默认将 inputTokens/input_tokens 记为非缓存新增输入，cacheReadTokens/cache_read_tokens 记为缓存读取，
+   * 二者为互斥分项，规范总输入 = uncachedInput + cacheRead。
+   * 仅当显式标记 inputIncludesCache === true 时才从中扣除 cacheRead，避免重复计数。
+   */
+  function normalizeCallInputCacheTokens(rec) {
+    if (!rec || typeof rec !== 'object') {
+      return {
+        hasInputCacheFields: false,
+        uncachedInput: null,
+        cacheRead: null,
+        totalInput: null,
+        output: null,
+        totalTokens: null
+      };
+    }
+
+    const rawInp = rec.inputTokens ?? rec.input_tokens ?? rec.input;
+    const rawCap = rec.cacheReadTokens ?? rec.cacheTokens ?? rec.cache_read_tokens ?? rec.cached ?? rec.cache;
+    const rawOut = rec.outputTokens ?? rec.output_tokens ?? rec.output;
+    const explicitMissing = rec.hasInputCacheFields === false;
+
+    const hasInp = !explicitMissing && rawInp !== undefined && rawInp !== null && Number.isFinite(Number(rawInp));
+    const hasCap = !explicitMissing && rawCap !== undefined && rawCap !== null && Number.isFinite(Number(rawCap));
+    const hasOut = rawOut !== undefined && rawOut !== null && Number.isFinite(Number(rawOut));
+
+    // 当记录完全没有任何输入或缓存字段时，绝不将缺失伪造为 0
+    if (!hasInp && !hasCap) {
+      const rawTot = rec.totalTokens ?? rec.total;
+      const totVal = rawTot !== undefined && rawTot !== null && Number.isFinite(Number(rawTot)) ? Math.max(0, Number(rawTot)) : null;
+      return {
+        hasInputCacheFields: false,
+        uncachedInput: null,
+        cacheRead: null,
+        totalInput: null,
+        output: hasOut ? Math.max(0, Number(rawOut)) : null,
+        totalTokens: totVal
+      };
+    }
+
+    // Proto3 JSON 序列化会省略 0 值字段：当至少一个输入/缓存字段存在时，另一被省略字段按 0 处理
+    const inpVal = hasInp ? Math.max(0, Number(rawInp)) : 0;
+    const capVal = hasCap ? Math.max(0, Number(rawCap)) : 0;
+    const outVal = hasOut ? Math.max(0, Number(rawOut)) : 0;
+
+    let uncachedInput;
+    let totalInput;
+    if (rec.inputIncludesCache === true) {
+      totalInput = Math.max(inpVal, capVal);
+      uncachedInput = Math.max(0, totalInput - capVal);
+    } else {
+      uncachedInput = inpVal;
+      totalInput = inpVal + capVal;
+    }
+
+    const rawTot = rec.totalTokens ?? rec.total;
+    const computedTot = totalInput + outVal;
+    const totalTokens = rawTot !== undefined && rawTot !== null && Number.isFinite(Number(rawTot)) && Number(rawTot) > 0
+      ? Math.max(Number(rawTot), computedTot)
+      : computedTot;
+
+    return {
+      hasInputCacheFields: true,
+      uncachedInput,
+      cacheRead: capVal,
+      totalInput,
+      output: hasOut ? outVal : null,
+      totalTokens
+    };
+  }
+
+  /**
+   * 计算单条调用或桶记录的缓存读取占比。
+   * 缺失字段与分母为 0 时 cacheReadRatio / cacheReadPct 均返回 null，不伪造 0%。
+   */
+  function computeCacheReadStats(rec) {
+    const norm = normalizeCallInputCacheTokens(rec);
+    if (!norm.hasInputCacheFields || norm.totalInput === null || norm.cacheRead === null) {
+      return {
+        ...norm,
+        cacheReadRatio: null,
+        cacheReadPct: null,
+        cacheStatus: 'missing'
+      };
+    }
+    if (norm.totalInput <= 0) {
+      return {
+        ...norm,
+        cacheReadRatio: null,
+        cacheReadPct: null,
+        cacheStatus: 'zero_input'
+      };
+    }
+    const ratio = Math.max(0, Math.min(1, norm.cacheRead / norm.totalInput));
+    const pct = Number((ratio * 100).toFixed(1));
+    return {
+      ...norm,
+      cacheReadRatio: ratio,
+      cacheReadPct: pct,
+      cacheStatus: norm.cacheRead > 0 ? 'hit' : 'zero_cache'
+    };
+  }
+
+  /**
+   * 按可靠分母总量加权汇总缓存读取占比与请求缓存命中占比。
+   * - cacheReadPct：sum(cacheRead) / sum(totalInput)，绝不直接平均每条百分比。
+   * - requestHitPct：命中缓存请求数 / 可评估请求数（仅当分母 > 0 时有效）。
+   */
+  function summarizeCacheReadStats(records = []) {
+    const list = Array.isArray(records) ? records : [];
+    let totalUncachedInput = 0;
+    let totalCacheRead = 0;
+    let totalInput = 0;
+    let totalOutput = 0;
+    let evaluatedRequestCount = 0;
+    let cacheHitRequestCount = 0;
+    let missingCount = 0;
+    let zeroInputCount = 0;
+
+    for (const r of list) {
+      const st = computeCacheReadStats(r);
+      if (st.output !== null) totalOutput += st.output;
+      if (st.cacheStatus === 'missing') {
+        missingCount++;
+        continue;
+      }
+      if (st.cacheStatus === 'zero_input') {
+        zeroInputCount++;
+        continue;
+      }
+      evaluatedRequestCount++;
+      totalUncachedInput += st.uncachedInput;
+      totalCacheRead += st.cacheRead;
+      totalInput += st.totalInput;
+      if (st.cacheStatus === 'hit') {
+        cacheHitRequestCount++;
+      }
+    }
+
+    const cacheReadRatio = totalInput > 0 ? Math.max(0, Math.min(1, totalCacheRead / totalInput)) : null;
+    const cacheReadPct = cacheReadRatio !== null ? Number((cacheReadRatio * 100).toFixed(1)) : null;
+    const requestHitRatio = evaluatedRequestCount > 0 ? cacheHitRequestCount / evaluatedRequestCount : null;
+    const requestHitPct = requestHitRatio !== null ? Number((requestHitRatio * 100).toFixed(1)) : null;
+    const cacheStatus = totalInput > 0
+      ? (totalCacheRead > 0 ? 'hit' : 'zero_cache')
+      : (missingCount > 0 && zeroInputCount === 0 ? 'missing' : (zeroInputCount > 0 ? 'zero_input' : 'missing'));
+
+    return {
+      totalUncachedInput,
+      totalCacheRead,
+      totalInput,
+      totalOutput,
+      cacheReadRatio,
+      cacheReadPct,
+      cacheStatus,
+      evaluatedRequestCount,
+      cacheHitRequestCount,
+      requestHitRatio,
+      requestHitPct,
+      missingCount,
+      zeroInputCount
+    };
+  }
+
+  /**
+   * 按日汇总 Map 计算缓存读取占比（复用同一加权口径，历史无细分记录不计入分母）
+   * @param {Object} dailyMap
+   * @param {string} [datePrefix=''] - 日期前缀过滤（如 '2026-11'）
+   */
+  function summarizeDailyMapCacheStats(dailyMap = {}, datePrefix = '') {
+    if (!dailyMap || typeof dailyMap !== 'object') {
+      return summarizeCacheReadStats([]);
+    }
+    const items = [];
+    for (const [k, rec] of Object.entries(dailyMap)) {
+      if (datePrefix && !String(k).startsWith(datePrefix)) continue;
+      if (!rec || typeof rec !== 'object') continue;
+      const inp = Number(rec.input || 0);
+      const cap = Number(rec.cache || 0);
+      const out = Number(rec.output || 0);
+      const tot = Number(rec.total || 0);
+      const hasSplit = inp > 0 || cap > 0 || (tot > 0 && inp + cap + out === tot);
+      items.push(hasSplit
+        ? { inputTokens: inp, cacheReadTokens: cap, outputTokens: out, totalTokens: tot, hasInputCacheFields: true }
+        : { totalTokens: tot, hasInputCacheFields: false }
+      );
+    }
+    return summarizeCacheReadStats(items);
+  }
+
+  /**
+   * 规范化单条会话调用记录（供最新调用卡片、轮次时间线与缓存统计统一复用）。
+   */
+  function normalizeSessionCallRecord(raw, options = {}) {
+    if (!raw || typeof raw !== 'object') return null;
+    const cascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
+    const callId = String(raw.callId || extractCallId(raw, raw.cascadeId || options.cascadeId || null, raw.stepIndex ?? null) || '').trim();
+    if (!callId) return null;
+
+    const bucket = resolveModelUsageBucket(raw, cascadeConfigs);
+    const modelExactId = raw.modelExactId || resolveStableModelId(raw, cascadeConfigs) || null;
+    const modelLabel = raw.modelLabel || bucket.modelLabel || (raw.model && !/^model_/i.test(String(raw.model)) ? String(raw.model) : null) || modelExactId || null;
+    const effort = raw.effort || (bucket.variantKey && bucket.variantKey.includes(':') ? formatEffortLabel(bucket.variantKey.split(':')[1]) : null) || null;
+    const cacheStats = computeCacheReadStats(raw);
+
+    const rawError = String(raw.error || '').trim();
+    const errorClassification = raw.errorClassification || (rawError
+      ? classifyRequestError(rawError, {
+        currentModel: modelLabel || raw.model || '',
+        cascadeModelConfigs: cascadeConfigs,
+        userStatus: options.userStatus || null
+      })
+      : null);
+
+    let outcomeStatus = raw.outcomeStatus || (raw.status === 'streaming' ? 'streaming' : 'success');
+    if (rawError && (!raw.outcomeStatus || raw.outcomeStatus === 'success')) {
+      const k = errorClassification?.kind || 'failed';
+      outcomeStatus = k === 'context_overflow' ? 'exceeded' : (k === 'network_error' ? 'network' : (k === 'unknown' || k === 'none' ? 'failed' : k));
+    }
+
+    const ttftSec = raw.ttftSec !== undefined && raw.ttftSec !== null && Number.isFinite(Number(raw.ttftSec))
+      ? Number(Number(raw.ttftSec).toFixed(2))
+      : null;
+    const streamingSec = raw.streamingSec !== undefined && raw.streamingSec !== null && Number.isFinite(Number(raw.streamingSec))
+      ? Number(Number(raw.streamingSec).toFixed(2))
+      : null;
+    let durationSec = raw.durationSec !== undefined && raw.durationSec !== null && Number.isFinite(Number(raw.durationSec))
+      ? Number(Number(raw.durationSec).toFixed(2))
+      : null;
+    if (durationSec === null && (ttftSec !== null || streamingSec !== null)) {
+      durationSec = Number(((ttftSec || 0) + (streamingSec || 0)).toFixed(2));
+    }
+    const outNum = cacheStats.output ?? 0;
+    let tps = raw.tps !== undefined && raw.tps !== null && Number.isFinite(Number(raw.tps)) && Number(raw.tps) > 0
+      ? Number(Number(raw.tps).toFixed(1))
+      : null;
+    if (tps === null && outNum > 0 && durationSec !== null && durationSec > 0) {
+      tps = Number((outNum / durationSec).toFixed(1));
+    }
+    let streamingTps = raw.streamingTps !== undefined && raw.streamingTps !== null && Number.isFinite(Number(raw.streamingTps)) && Number(raw.streamingTps) > 0
+      ? Number(Number(raw.streamingTps).toFixed(1))
+      : null;
+    if (streamingTps === null && outNum > 0 && streamingSec !== null && streamingSec > 0.05) {
+      streamingTps = Number((outNum / streamingSec).toFixed(1));
+    }
+
+    let ts = Number(raw.timestamp);
+    if (!Number.isFinite(ts) || ts <= 0) {
+      ts = raw.created_at ? Date.parse(raw.created_at) : NaN;
+    }
+    if (!Number.isFinite(ts) || ts <= 0) ts = null;
+
+    const rawStep = raw.stepIndex ?? raw.step_index;
+    const stepIndex = rawStep !== undefined && rawStep !== null && rawStep !== '' && Number.isInteger(Number(rawStep)) && Number(rawStep) >= 0
+      ? Number(rawStep)
+      : null;
+
+    const thinkingTokens = raw.thinkingTokens !== undefined && raw.thinkingTokens !== null && Number.isFinite(Number(raw.thinkingTokens))
+      ? Math.max(0, Number(raw.thinkingTokens))
+      : null;
+
+    const agentRole = raw.agentRole === 'subagent' || Boolean(raw.parentCascadeId) ? 'subagent' : 'main';
+    const attributionConfidence = raw.attributionConfidence || (agentRole === 'main' ? 'main' : (raw.parentStepIndex != null ? 'verified_tool_output' : (raw.parentCascadeId ? 'verified_db_meta' : 'unidentified')));
+
+    const streamingTpsRounded = streamingTps;
+    const expScore = raw.status === 'streaming'
+      ? { available: false, score: null, grade: null, ruleVersion: ELV91_SCORE_RULE_VERSION }
+      : calculateExperienceScore({
+          outputTokens: cacheStats.output,
+          totalInputTokens: cacheStats.totalInput,
+          inputTokens: cacheStats.uncachedInput,
+          ttftSec,
+          streamingSec,
+          totalDurationSec: durationSec,
+          streamSpeed: streamingTpsRounded
+        });
+    const stabInfo = computeStreamStability({
+      chunkCount: raw.chunkCount != null ? Number(raw.chunkCount) : (Array.isArray(raw.chunkTimestamps) ? raw.chunkTimestamps.length : null),
+      chunkIntervalsMs: Array.isArray(raw.chunkIntervalsMs) ? raw.chunkIntervalsMs : null,
+      intervalCv: raw.intervalCv,
+      streamingSec
+    });
+    const ttftRatioPct = (ttftSec !== null && durationSec !== null && durationSec > 0)
+      ? Number(Math.min(100, Math.max(0, (ttftSec / durationSec) * 100)).toFixed(1))
+      : null;
+
+    return {
+      callId,
+      cascadeId: raw.cascadeId || options.cascadeId || null,
+      parentCascadeId: raw.parentCascadeId || null,
+      rootCascadeId: raw.rootCascadeId || null,
+      parentStepIndex: raw.parentStepIndex !== undefined && raw.parentStepIndex !== null ? Number(raw.parentStepIndex) : null,
+      agentRole,
+      subagentType: raw.subagentType || null,
+      subagentRole: raw.subagentRole || null,
+      attributionConfidence,
+      source: raw.source || 'desktop',
+      stepIndex,
+      model: raw.model || modelLabel || modelExactId || '',
+      modelKey: raw.modelKey || (bucket.isAttributed ? bucket.modelKey : null),
+      modelExactId,
+      modelLabel,
+      effort,
+      inputTokens: cacheStats.uncachedInput,
+      cacheReadTokens: cacheStats.cacheRead,
+      totalInputTokens: cacheStats.totalInput,
+      outputTokens: cacheStats.output,
+      thinkingTokens,
+      totalTokens: cacheStats.totalTokens,
+      hasInputCacheFields: cacheStats.hasInputCacheFields,
+      cacheReadRatio: cacheStats.cacheReadRatio,
+      cacheReadPct: cacheStats.cacheReadPct,
+      cacheStatus: cacheStats.cacheStatus,
+      ttftSec,
+      streamingSec,
+      durationSec,
+      ttftRatioPct,
+      tps,
+      streamingTps,
+      streamSpeed: streamingTps,
+      chunkCount: stabInfo.chunks,
+      chunkIntervalsMs: Array.isArray(raw.chunkIntervalsMs) ? raw.chunkIntervalsMs : null,
+      intervalCv: stabInfo.intervalCv,
+      isStableStream: stabInfo.isStable,
+      scoreRuleVersion: expScore.ruleVersion || ELV91_SCORE_RULE_VERSION,
+      eScore: raw.eScore !== undefined ? raw.eScore : expScore.score,
+      eGrade: raw.eGrade !== undefined ? raw.eGrade : expScore.grade,
+      status: raw.status === 'streaming' ? 'streaming' : 'final',
+      outcomeStatus,
+      ...(rawError ? { error: rawError, errorClassification } : {}),
+      isEstimated: Boolean(raw.isEstimated),
+      date: raw.date || (ts ? formatLocalDateKeyCompat(new Date(ts)) : null),
+      dateIsProvisional: Boolean(raw.dateIsProvisional),
+      created_at: raw.created_at || null,
+      timestamp: ts
+    };
+  }
+
+  /**
+   * 按用户轮次（Turn）将当前会话主代理调用与可验证的子代理调用分组汇总。
+   * 绝不凭时间接近猜测父子归属：未关联到父步骤的子代理调用放入独立 unlinkedSubagentCalls 列表。
+   */
+  function groupSessionCallsByTurns(turnMarkers = [], calls = [], options = {}) {
+    const cascadeId = options.cascadeId || null;
+    const cascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
+
+    // 1. 归一化全部调用并按 callId 去重（保留信息更完整的一条）
+    const dedupMap = new Map();
+    for (const raw of (Array.isArray(calls) ? calls : [])) {
+      const norm = normalizeSessionCallRecord(raw, { cascadeId, cascadeModelConfigs: cascadeConfigs, userStatus: options.userStatus });
+      if (!norm) continue;
+      const prev = dedupMap.get(norm.callId);
+      if (!prev) {
+        dedupMap.set(norm.callId, norm);
+      } else {
+        const prevTot = prev.totalTokens ?? -1;
+        const nextTot = norm.totalTokens ?? -1;
+        const preferNext = (prev.status === 'streaming' && norm.status === 'final')
+          || nextTot > prevTot
+          || (nextTot === prevTot && !prev.modelExactId && Boolean(norm.modelExactId))
+          || (nextTot === prevTot && prev.durationSec === null && norm.durationSec !== null);
+        if (preferNext) {
+          dedupMap.set(norm.callId, {
+            ...prev,
+            ...norm,
+            modelExactId: norm.modelExactId || prev.modelExactId,
+            modelLabel: norm.modelLabel || prev.modelLabel,
+            effort: norm.effort || prev.effort,
+            ttftSec: norm.ttftSec ?? prev.ttftSec,
+            streamingSec: norm.streamingSec ?? prev.streamingSec,
+            durationSec: norm.durationSec ?? prev.durationSec,
+            tps: norm.tps ?? prev.tps,
+            streamingTps: norm.streamingTps ?? prev.streamingTps,
+            parentCascadeId: norm.parentCascadeId || prev.parentCascadeId,
+            parentStepIndex: norm.parentStepIndex ?? prev.parentStepIndex,
+            subagentType: norm.subagentType || prev.subagentType,
+            subagentRole: norm.subagentRole || prev.subagentRole,
+            attributionConfidence: norm.parentStepIndex != null ? norm.attributionConfidence : prev.attributionConfidence
+          });
+        }
+      }
+    }
+
+    const allCalls = Array.from(dedupMap.values());
+    allCalls.sort((a, b) => {
+      const tsA = a.timestamp || 0;
+      const tsB = b.timestamp || 0;
+      if (tsA !== tsB) return tsA - tsB;
+      const sa = a.stepIndex ?? Number.MAX_SAFE_INTEGER;
+      const sb = b.stepIndex ?? Number.MAX_SAFE_INTEGER;
+      return sa - sb;
+    });
+
+    // 2. 构建规范化用户轮次边界（按 stepIndex 升序）
+    const sortedTurns = (Array.isArray(turnMarkers) ? turnMarkers : [])
+      .filter(t => t && (Number.isInteger(Number(t.stepIndex)) || t.timestamp || t.created_at))
+      .map((t, idx) => {
+        const stepIdx = Number.isInteger(Number(t.stepIndex)) ? Number(t.stepIndex) : null;
+        const ts = Number(t.timestamp) || (t.created_at ? Date.parse(t.created_at) : NaN);
+        return {
+          turnIndex: idx + 1,
+          stepIndex: stepIdx,
+          timestamp: Number.isFinite(ts) && ts > 0 ? ts : null,
+          created_at: t.created_at || null,
+          source: t.source || 'USER_EXPLICIT',
+          preview: t.preview ? String(t.preview).slice(0, 120) : ''
+        };
+      })
+      .sort((a, b) => {
+        if (a.stepIndex !== null && b.stepIndex !== null && a.stepIndex !== b.stepIndex) {
+          return a.stepIndex - b.stepIndex;
+        }
+        return (a.timestamp || 0) - (b.timestamp || 0);
+      })
+      .map((t, idx) => ({ ...t, turnIndex: idx + 1 }));
+
+    const buckets = sortedTurns.map(t => ({
+      ...t,
+      calls: [],
+      isImplicitInitial: false
+    }));
+    const preTurnCalls = [];
+    const unlinkedSubagentCalls = [];
+
+    const findTurnByStep = (stepIdx) => {
+      if (stepIdx === null || stepIdx === undefined || !buckets.length) return -1;
+      let matchedIdx = -1;
+      for (let i = 0; i < buckets.length; i++) {
+        if (buckets[i].stepIndex !== null && buckets[i].stepIndex <= stepIdx) {
+          matchedIdx = i;
+        }
+      }
+      return matchedIdx;
+    };
+
+    const findTurnByTimestamp = (ts) => {
+      if (!ts || !buckets.length) return -1;
+      let matchedIdx = -1;
+      for (let i = 0; i < buckets.length; i++) {
+        if (buckets[i].timestamp && buckets[i].timestamp <= ts + 2000) {
+          matchedIdx = i;
+        }
+      }
+      return matchedIdx;
+    };
+
+    for (const c of allCalls) {
+      if (c.agentRole === 'subagent') {
+        if (c.parentStepIndex !== null && c.parentStepIndex !== undefined) {
+          const tIdx = findTurnByStep(c.parentStepIndex);
+          if (tIdx >= 0) {
+            buckets[tIdx].calls.push(c);
+            continue;
+          }
+        }
+        unlinkedSubagentCalls.push(c);
+        continue;
+      }
+
+      // 主代理调用：严格优先按 stepIndex 定位轮次
+      let targetIdx = -1;
+      if (c.stepIndex !== null && (!cascadeId || !c.cascadeId || String(c.cascadeId).toLowerCase() === String(cascadeId).toLowerCase())) {
+        targetIdx = findTurnByStep(c.stepIndex);
+      } else if (c.timestamp && !c.dateIsProvisional) {
+        targetIdx = findTurnByTimestamp(c.timestamp);
+      }
+      if (targetIdx >= 0) {
+        buckets[targetIdx].calls.push(c);
+      } else {
+        preTurnCalls.push(c);
+      }
+    }
+
+    const finalizeTurnBucket = (b) => {
+      const cacheSummary = summarizeCacheReadStats(b.calls);
+      let mainCallCount = 0;
+      let subagentCallCount = 0;
+      let errorCount = 0;
+      let totalTokens = 0;
+      let hasTotalTokens = false;
+      let latestTimestamp = b.timestamp || null;
+      for (const c of b.calls) {
+        if (c.agentRole === 'subagent') subagentCallCount++;
+        else mainCallCount++;
+        if (c.outcomeStatus && c.outcomeStatus !== 'success' && c.outcomeStatus !== 'streaming') {
+          errorCount++;
+        }
+        if (c.totalTokens !== null && c.totalTokens !== undefined) {
+          totalTokens += c.totalTokens;
+          hasTotalTokens = true;
+        }
+        if (c.timestamp && (!latestTimestamp || c.timestamp > latestTimestamp)) {
+          latestTimestamp = c.timestamp;
+        }
+      }
+      return {
+        turnIndex: b.turnIndex,
+        stepIndex: b.stepIndex,
+        timestamp: b.timestamp,
+        created_at: b.created_at,
+        latestTimestamp,
+        preview: b.preview || '',
+        isImplicitInitial: Boolean(b.isImplicitInitial),
+        callCount: b.calls.length,
+        mainCallCount,
+        subagentCallCount,
+        errorCount,
+        inputTokens: cacheSummary.evaluatedRequestCount > 0 ? cacheSummary.totalUncachedInput : null,
+        cacheReadTokens: cacheSummary.evaluatedRequestCount > 0 ? cacheSummary.totalCacheRead : null,
+        totalInputTokens: cacheSummary.evaluatedRequestCount > 0 ? cacheSummary.totalInput : null,
+        outputTokens: b.calls.some(c => c.outputTokens !== null) ? cacheSummary.totalOutput : null,
+        totalTokens: hasTotalTokens ? totalTokens : null,
+        cacheReadRatio: cacheSummary.cacheReadRatio,
+        cacheReadPct: cacheSummary.cacheReadPct,
+        cacheStatus: cacheSummary.cacheStatus,
+        calls: b.calls
+      };
+    };
+
+    const resultTurns = [];
+    if (preTurnCalls.length > 0) {
+      resultTurns.push(finalizeTurnBucket({
+        turnIndex: 0,
+        stepIndex: 0,
+        timestamp: preTurnCalls[0]?.timestamp || null,
+        created_at: preTurnCalls[0]?.created_at || null,
+        preview: '',
+        isImplicitInitial: true,
+        calls: preTurnCalls
+      }));
+    }
+    for (const b of buckets) {
+      resultTurns.push(finalizeTurnBucket(b));
+    }
+
+    const overallCacheSummary = summarizeCacheReadStats(allCalls);
+    return {
+      cascadeId,
+      turns: resultTurns,
+      unlinkedSubagentCalls,
+      totalCalls: allCalls.length,
+      mainCallsCount: allCalls.filter(c => c.agentRole !== 'subagent').length,
+      subagentCallsCount: allCalls.filter(c => c.agentRole === 'subagent').length,
+      cacheSummary: overallCacheSummary,
+      latestCall: allCalls.length ? allCalls[allCalls.length - 1] : null
+    };
+  }
+
+  // =========================================================================
+  // ELV-91: 生成体验面板（纯流式速度 7 档 / TTFT 7 档 / 总耗时 7 档 / E 指数 6 档 / 三阶段）
+  // 最高采用依据：ELV-91 维护者指定终极版与 Gemini 11 页会话最终决策（左闭右开区间）
+  // =========================================================================
+
+  const ELV91_SCORE_RULE_VERSION = 'elv91-v1';
+
+  /**
+   * 格式化人性化耗时（<60s 用秒；>=60s 进位分秒；>=3600s 进位时分）
+   * 示例：138.65s -> 2 分 19 秒；4200s -> 1 小时 10 分；3599.6s -> 1 小时 0 分。
+   */
+  function formatHumanDuration(sec, lang = 'zh-CN') {
+    if (sec === null || sec === undefined || sec === '') return '—';
+    const n = Number(sec);
+    if (!Number.isFinite(n) || n < 0) return '—';
+    const isEn = lang === 'en';
+    const isTw = lang === 'zh-TW';
+    if (n >= 3600) {
+      const totalMin = Math.round(n / 60);
+      const hrs = Math.floor(totalMin / 60);
+      const mins = totalMin % 60;
+      return isEn ? `${hrs}h ${mins}m` : (isTw ? `${hrs} 小時 ${mins} 分` : `${hrs} 小时 ${mins} 分`);
+    }
+    if (n >= 59.95) {
+      const roundedSec = Math.round(n);
+      if (roundedSec >= 3600) {
+        const totalMin = Math.round(roundedSec / 60);
+        const hrs = Math.floor(totalMin / 60);
+        const mins = totalMin % 60;
+        return isEn ? `${hrs}h ${mins}m` : (isTw ? `${hrs} 小時 ${mins} 分` : `${hrs} 小时 ${mins} 分`);
+      }
+      const mins = Math.floor(roundedSec / 60);
+      const remSec = roundedSec % 60;
+      return isEn ? `${mins}m ${remSec}s` : `${mins} 分 ${remSec} 秒`;
+    }
+    const fixedStr = n >= 10 ? n.toFixed(1) : n.toFixed(2);
+    const trimmed = fixedStr.replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+    return `${trimmed}s`;
+  }
+
+  function pickI18nText(obj, lang) {
+    if (!obj || typeof obj !== 'object') return String(obj || '');
+    if (lang === 'en') return obj.en ?? obj['zh-CN'] ?? '';
+    if (lang === 'zh-TW') return obj['zh-TW'] ?? obj['zh-CN'] ?? '';
+    return obj['zh-CN'] ?? '';
+  }
+
+  const ELV91_STREAM_SPEED_TIERS = [
+    {
+      id: 'stalled',
+      maxExclusive: 1,
+      color: '#DC2626',
+      severity: 'critical',
+      glyph: '✕',
+      title: { 'zh-CN': '彻底停滞', 'zh-TW': '徹底停滯', en: 'Stalled' },
+      comment: {
+        'zh-CN': '按帧播放. 每秒连 1 个字都憋不出来. 别耽误干活了. 这边建议先去隔壁开个 Claude、OpenAI 或豆包救救急吧.',
+        'zh-TW': '逐幀播放. 每秒連 1 個字都憋不出來. 別耽誤工作了. 這邊建議先去隔壁開個 Claude、OpenAI 或豆包應急吧.',
+        en: 'Frame-by-frame crawl (< 1 tok/s). Consider switching to another workspace or model if urgent.'
+      }
+    },
+    {
+      id: 'crawling',
+      maxExclusive: 10,
+      color: '#EF4444',
+      severity: 'danger',
+      glyph: '!',
+      title: { 'zh-CN': '濒临卡死', 'zh-TW': '瀕臨卡死', en: 'Near-Stall' },
+      comment: {
+        'zh-CN': '慢得批爆. 基本处于不可用状态. 一个字往外蹦看得人血压飙升.',
+        'zh-TW': '慢得要命. 基本處於不可用狀態. 一個字往外蹦看得人血壓飆升.',
+        en: 'Painfully slow trickle; virtually unusable for interactive reading.'
+      }
+    },
+    {
+      id: 'slow',
+      maxExclusive: 30,
+      color: '#F59E0B',
+      severity: 'warn',
+      glyph: '⚡',
+      title: { 'zh-CN': '慢于阅读', 'zh-TW': '慢於閱讀', en: 'Below Reading Pace' },
+      comment: {
+        'zh-CN': '挤牙膏中. 勉强能看但确实磨叽. 急性子可能有点难熬.',
+        'zh-TW': '擠牙膏中. 勉強能看但確實磨蹭. 急性子可能有點難熬.',
+        en: 'Squeezing out tokens slower than reading pace; long answers will test patience.'
+      }
+    },
+    {
+      id: 'smooth',
+      maxExclusive: 80,
+      color: '#10B981',
+      severity: 'good',
+      glyph: '⚡',
+      title: { 'zh-CN': '流畅跟读', 'zh-TW': '流暢跟讀', en: 'Smooth Pace' },
+      comment: {
+        'zh-CN': '丝滑够用. 刚好跑赢你的眼睛. 属于比较舒服的节奏.',
+        'zh-TW': '絲滑夠用. 剛好跑贏你的眼睛. 屬於比較舒服的節奏.',
+        en: 'Silky and comfortable; easily keeps ahead of reading speed.'
+      }
+    },
+    {
+      id: 'fast',
+      maxExclusive: 180,
+      color: '#3B82F6',
+      severity: 'fast',
+      glyph: '⚡',
+      title: { 'zh-CN': '高速输出', 'zh-TW': '高速輸出', en: 'High Throughput' },
+      comment: {
+        'zh-CN': '火力全开. 字数蹭蹭往上涨. 几乎不用干等.',
+        'zh-TW': '火力全開. 字數飛快往上漲. 幾乎不用乾等.',
+        en: 'Full throttle; output flies in with minimal waiting.'
+      }
+    },
+    {
+      id: 'rapid',
+      maxExclusive: 300,
+      color: '#06B6D4',
+      severity: 'rapid',
+      glyph: '⚡',
+      title: { 'zh-CN': '疾速刷屏', 'zh-TW': '疾速刷屏', en: 'Blazing Stream' },
+      comment: {
+        'zh-CN': '手速冒烟. 屏幕直接刷出残影. 眼睛快跟不上了.',
+        'zh-TW': '手速冒煙. 螢幕直接刷出殘影. 眼睛快跟不上了.',
+        en: 'Screen-blurring token speed; faster than visual tracking.'
+      }
+    },
+    {
+      id: 'burst',
+      maxExclusive: Infinity,
+      color: '#8B5CF6',
+      severity: 'epic',
+      glyph: '⚡',
+      title: { 'zh-CN': '瞬时爆发', 'zh-TW': '瞬時爆發', en: 'Instant Burst' },
+      comment: {
+        'zh-CN': '光速交卷. 刚回车就写完了. 甚至没看清过程.',
+        'zh-TW': '光速交卷. 剛按完 Enter 就寫完了. 甚至沒看清過程.',
+        en: 'Burst throughput (>= 300 tok/s); streaming finishes almost instantaneously.'
+      }
+    }
+  ];
+
+  const ELV91_TTFT_TIERS = [
+    {
+      id: 'instant',
+      maxExclusive: 1,
+      color: '#10B981',
+      severity: 'good',
+      glyph: '⚡',
+      title: { 'zh-CN': '秒回响应', 'zh-TW': '秒回回應', en: 'Instant First Token' },
+      comment: {
+        'zh-CN': '几乎零延迟. 回车刚按下去就开始往外蹦字了.',
+        'zh-TW': '幾乎零延遲. 剛送出就開始往外蹦字了.',
+        en: 'Near-zero startup latency; tokens begin immediately.'
+      }
+    },
+    {
+      id: 'normal',
+      maxExclusive: 10,
+      color: '#10B981',
+      severity: 'good',
+      glyph: '⏳',
+      title: { 'zh-CN': '正常等待', 'zh-TW': '正常等待', en: 'Normal Wait' },
+      comment: {
+        'zh-CN': '属于常规反应时间. 稍微喘口气就来了.',
+        'zh-TW': '屬於常規反應時間. 稍微喘口氣就來了.',
+        en: 'Standard startup latency; brief breath before output begins.'
+      }
+    },
+    {
+      id: 'thinking',
+      maxExclusive: 30,
+      color: '#F59E0B',
+      severity: 'warn',
+      glyph: '⏳',
+      title: { 'zh-CN': '思考较久', 'zh-TW': '思考較久', en: 'Extended Thinking' },
+      comment: {
+        'zh-CN': '正在酝酿情绪. 遇到长上下文或深度思考时挺常见的.',
+        'zh-TW': '正在醞釀情緒. 遇到長上下文或深度思考時挺常見的.',
+        en: 'Warming up; common with long context prefill or deep reasoning.'
+      }
+    },
+    {
+      id: 'sluggish',
+      maxExclusive: 60,
+      color: '#F59E0B',
+      severity: 'warn',
+      glyph: '!',
+      title: { 'zh-CN': '明显迟缓', 'zh-TW': '明顯遲緩', en: 'Noticeably Slow' },
+      comment: {
+        'zh-CN': '半分钟过去了还没动静. 手指已经开始忍不住想点取消了.',
+        'zh-TW': '半分鐘過去了還沒動靜. 手指已經開始忍不住想點取消了.',
+        en: 'Over 30 seconds without output; finger hovering over Cancel.'
+      }
+    },
+    {
+      id: 'agonizing',
+      maxExclusive: 300,
+      color: '#EF4444',
+      severity: 'danger',
+      glyph: '!',
+      title: { 'zh-CN': '漫长煎熬', 'zh-TW': '漫長煎熬', en: 'Minute-Scale Wait' },
+      comment: {
+        'zh-CN': '等待时间正式跨入分钟级. 等得花都谢了. 别干盯着屏幕看了.',
+        'zh-TW': '等待時間正式跨入分鐘級. 等得花都謝了. 別乾盯著螢幕看了.',
+        en: 'Waiting has crossed into minutes; stop staring at the cursor.'
+      }
+    },
+    {
+      id: 'extreme',
+      maxExclusive: 600,
+      color: '#DC2626',
+      severity: 'critical',
+      glyph: '✕',
+      title: { 'zh-CN': '极度漫长', 'zh-TW': '極度漫長', en: 'Extreme Wait' },
+      comment: {
+        'zh-CN': '已经等了 {elapsed}. 进度条仿佛静止. 活还得干. 这边建议先去隔壁开个 Claude、OpenAI 或豆包救救急吧.',
+        'zh-TW': '已經等了 {elapsed}. 進度條彷彿靜止. 工作還得進行. 這邊建議先去隔壁開個 Claude、OpenAI 或豆包應急吧.',
+        en: 'Waited {elapsed} with a frozen progress bar; consider switching tools if work cannot wait.'
+      }
+    },
+    {
+      id: 'century',
+      maxExclusive: Infinity,
+      color: '#DC2626',
+      severity: 'critical',
+      glyph: '✕',
+      title: { 'zh-CN': '世纪等待', 'zh-TW': '世紀等待', en: 'Over 10 Minutes' },
+      comment: {
+        'zh-CN': '突破十分钟大关. 已经分不清是在推理还是在挂机. 别耽误干活了. 赶紧去用 Claude、OpenAI 或豆包吧.',
+        'zh-TW': '突破十分鐘大關. 已經分不清是在推理還是在掛機. 別耽誤工作了. 趕緊去用 Claude、OpenAI 或豆包吧.',
+        en: 'Over 10 minutes without a first token; unclear if reasoning or idling.'
+      }
+    }
+  ];
+
+  const ELV91_DURATION_TIERS = [
+    {
+      id: 'flash',
+      maxExclusive: 5,
+      color: '#10B981',
+      severity: 'good',
+      title: { 'zh-CN': '瞬时完成', 'zh-TW': '瞬時完成', en: 'Instant Finish' },
+      comment: {
+        'zh-CN': '刚眨眼就搞定了. 适合轻量化问答或小片段补全.',
+        'zh-TW': '剛眨眼就搞定了. 適合輕量化問答或小片段補全.',
+        en: 'Finished in a blink; well-suited for quick Q&A or short edits.'
+      }
+    },
+    {
+      id: 'routine',
+      maxExclusive: 30,
+      color: '#10B981',
+      severity: 'good',
+      title: { 'zh-CN': '常规耗时', 'zh-TW': '常規耗時', en: 'Routine Turn' },
+      comment: {
+        'zh-CN': '喝口水的功夫. 日常写段代码或改个 Bug 的正常节奏.',
+        'zh-TW': '喝口水的工夫. 日常寫段程式碼或修個 Bug 的正常節奏.',
+        en: 'Time for a sip of water; normal cadence for daily coding or bug fixes.'
+      }
+    },
+    {
+      id: 'deep',
+      maxExclusive: 120,
+      color: '#3B82F6',
+      severity: 'fast',
+      title: { 'zh-CN': '深度处理', 'zh-TW': '深度處理', en: 'Deep Work' },
+      comment: {
+        'zh-CN': '开始动真格了. 通常是在做长文输出或复杂逻辑推理.',
+        'zh-TW': '開始動真格了. 通常是在做長文輸出或複雜邏輯推理.',
+        en: 'Substantial turn duration; typical of long outputs or multi-step reasoning.'
+      }
+    },
+    {
+      id: 'long_run',
+      maxExclusive: 600,
+      color: '#F59E0B',
+      severity: 'warn',
+      title: { 'zh-CN': '长程运行', 'zh-TW': '長程運行', en: 'Long Run' },
+      comment: {
+        'zh-CN': '进入长线作战. 如果是大体量任务还算合理. 要是简单输出就有点磨叽了.',
+        'zh-TW': '進入長線作戰. 如果是大體量任務還算合理. 要是簡單輸出就有點磨蹭了.',
+        en: 'Multi-minute turn; reasonable for heavy tasks, sluggish if output was tiny.'
+      }
+    },
+    {
+      id: 'heavy',
+      maxExclusive: 1800,
+      color: '#F59E0B',
+      severity: 'warn',
+      title: { 'zh-CN': '重度攻坚', 'zh-TW': '重度攻堅', en: 'Heavy Grind' },
+      comment: {
+        'zh-CN': '跑了十几分钟大工程. 希望最终产出对得起这度电和耐心.',
+        'zh-TW': '跑了十幾分鐘大工程. 希望最終產出對得起這度電和耐心.',
+        en: '10–30 minute marathon; hopefully the result justifies the patience.'
+      }
+    },
+    {
+      id: 'marathon',
+      maxExclusive: 3600,
+      color: '#EF4444',
+      severity: 'danger',
+      title: { 'zh-CN': '超长耐久', 'zh-TW': '超長耐久', en: 'Ultra-Long' },
+      comment: {
+        'zh-CN': '半小时起步的持久战. 这已经不是在聊天. 是在跑批处理任务了.',
+        'zh-TW': '半小時起步的持久戰. 這已經不是在聊天. 是在跑批次處理任務了.',
+        en: 'Over 30 minutes; feels more like a batch pipeline than chat.'
+      }
+    },
+    {
+      id: 'overtime',
+      maxExclusive: Infinity,
+      color: '#DC2626',
+      severity: 'critical',
+      title: { 'zh-CN': '跨时鏖战', 'zh-TW': '跨時鏖戰', en: 'Over an Hour' },
+      comment: {
+        'zh-CN': '干了一个多小时. 建议结合真实进度与产出检查是否出现无意义空转.',
+        'zh-TW': '跑了一個多小時. 建議結合真實進度與產出檢查是否出現無意義空轉.',
+        en: 'Exceeded 60 minutes; worth checking actual progress vs idle stalls.'
+      }
+    }
+  ];
+
+  const ELV91_EFFICIENCY_GRADES = [
+    {
+      grade: 'S',
+      glyph: '★',
+      minInclusive: 90,
+      color: '#8B5CF6',
+      severity: 'epic',
+      title: { 'zh-CN': 'S 级 · 帕累托最优', 'zh-TW': 'S 級 · 柏拉圖最優', en: 'Grade S · Optimal' },
+      comment: {
+        'zh-CN': '响应、吞吐、体量全线拉满. 几乎零摩擦的高效生产力状态.',
+        'zh-TW': '回應、吞吐、體量全線拉滿. 幾乎零摩擦的高效生產力狀態.',
+        en: 'Top response speed, throughput, and scale efficiency with minimal friction.'
+      }
+    },
+    {
+      grade: 'A',
+      glyph: '⚡',
+      minInclusive: 75,
+      color: '#3B82F6',
+      severity: 'fast',
+      title: { 'zh-CN': 'A 级 · 高效稳健', 'zh-TW': 'A 級 · 高效穩健', en: 'Grade A · High Efficiency' },
+      comment: {
+        'zh-CN': '发挥非常扎实. 时间和算力都花在了刀刃上. 干活很顺手.',
+        'zh-TW': '發揮非常紮實. 時間和算力都花在了刀刃上. 做事很順手.',
+        en: 'Solid responsiveness and throughput; compute well spent.'
+      }
+    },
+    {
+      grade: 'B',
+      glyph: '●',
+      minInclusive: 60,
+      color: '#10B981',
+      severity: 'good',
+      title: { 'zh-CN': 'B 级 · 均衡达标', 'zh-TW': 'B 級 · 均衡達標', en: 'Grade B · Balanced' },
+      comment: {
+        'zh-CN': '整体表现中规中矩. 如果任务本身很重. 这个耗时完全在情理之中.',
+        'zh-TW': '整體表現中規中矩. 如果任務本身很重. 這個耗時完全在情理之中.',
+        en: 'Balanced overall; reasonable turnaround given task size.'
+      }
+    },
+    {
+      grade: 'C',
+      glyph: '▲',
+      minInclusive: 40,
+      color: '#F59E0B',
+      severity: 'warn',
+      title: { 'zh-CN': 'C 级 · 边际递减', 'zh-TW': 'C 級 · 邊際遞減', en: 'Grade C · Mediocre' },
+      comment: {
+        'zh-CN': '效率开始打折了. 要么是任务确实吃重. 要么是前期思考等待磨蹭了半天.',
+        'zh-TW': '效率開始打折了. 要麼是任務確實吃重. 要麼是前期思考等待磨蹭了半天.',
+        en: 'Noticeable friction from either heavy workload or long initial waiting.'
+      }
+    },
+    {
+      grade: 'D',
+      glyph: '!',
+      minInclusive: 20,
+      color: '#EF4444',
+      severity: 'danger',
+      title: { 'zh-CN': 'D 级 · 低效失衡', 'zh-TW': 'D 級 · 低效失衡', en: 'Grade D · Inefficient' },
+      comment: {
+        'zh-CN': '投入产出比偏低. 明显感觉在空转等进度. 体感已经开始烦躁了.',
+        'zh-TW': '投入產出比偏低. 明顯感覺在空轉等進度. 體感已經開始煩躁了.',
+        en: 'Low efficiency relative to wait time; frustrating idle ratio.'
+      }
+    },
+    {
+      grade: 'F',
+      glyph: '✕',
+      minInclusive: 0,
+      color: '#DC2626',
+      severity: 'critical',
+      title: { 'zh-CN': 'F 级 · 效能崩盘', 'zh-TW': 'F 級 · 效能崩盤', en: 'Grade F · Collapsed' },
+      comment: {
+        'zh-CN': '极其抽象的表现——活没干多少. 时间全耗在干等上了. 这边建议直接打开 Claude、OpenAI 或豆包救救急吧.',
+        'zh-TW': '極其抽象的表現——事沒幹多少. 時間全耗在乾等上了. 這邊建議直接打開 Claude、OpenAI 或豆包應急吧.',
+        en: 'Severe wait-to-output imbalance; consider another workspace or model if stalled.'
+      }
+    }
+  ];
+
+  function pickLeftClosedTier(tiers, value, lang = 'zh-CN') {
+    const v = Number(value);
+    if (!Number.isFinite(v) || v < 0) return null;
+    for (const tier of tiers) {
+      if (v < tier.maxExclusive) {
+        return {
+          id: tier.id,
+          color: tier.color,
+          severity: tier.severity,
+          glyph: tier.glyph || '⚡',
+          title: pickI18nText(tier.title, lang),
+          comment: pickI18nText(tier.comment, lang)
+        };
+      }
+    }
+    const last = tiers[tiers.length - 1];
+    return {
+      id: last.id,
+      color: last.color,
+      severity: last.severity,
+      glyph: last.glyph || '⚡',
+      title: pickI18nText(last.title, lang),
+      comment: pickI18nText(last.comment, lang)
+    };
+  }
+
+  function classifyStreamSpeedTier(streamSpeed, lang = 'zh-CN') {
+    return pickLeftClosedTier(ELV91_STREAM_SPEED_TIERS, streamSpeed, lang);
+  }
+
+  function classifyTtftTier(ttftSec, lang = 'zh-CN') {
+    return pickLeftClosedTier(ELV91_TTFT_TIERS, ttftSec, lang);
+  }
+
+  function classifyDurationTier(durationSec, lang = 'zh-CN') {
+    return pickLeftClosedTier(ELV91_DURATION_TIERS, durationSec, lang);
+  }
+
+  function classifyEfficiencyGrade(score, lang = 'zh-CN') {
+    const s = Number(score);
+    if (!Number.isFinite(s) || s < 0) return null;
+    for (const g of ELV91_EFFICIENCY_GRADES) {
+      if (s >= g.minInclusive) {
+        return {
+          grade: g.grade,
+          color: g.color,
+          severity: g.severity,
+          glyph: g.glyph || '⚡',
+          title: pickI18nText(g.title, lang),
+          comment: pickI18nText(g.comment, lang)
+        };
+      }
+    }
+    const last = ELV91_EFFICIENCY_GRADES[ELV91_EFFICIENCY_GRADES.length - 1];
+    return {
+      grade: last.grade,
+      color: last.color,
+      severity: last.severity,
+      glyph: last.glyph || '✕',
+      title: pickI18nText(last.title, lang),
+      comment: pickI18nText(last.comment, lang)
+    };
+  }
+
+  /**
+   * 评估流式输出稳定性（必须同时满足采样点数 >= 15、纯流式耗时 > 2.0s 且真实间隔 CV <= 0.65）。
+   * 若缺少实际间隔波动数据，严禁凭直觉或流式均速给出平稳勾选。
+   */
+  function computeStreamStability(input = {}) {
+    const chunks = Number(input.chunkCount ?? input.chunks ?? 0);
+    const streamingSec = Number(input.streamingSec);
+    let intervalCv = (input.intervalCv !== undefined && input.intervalCv !== null && Number.isFinite(Number(input.intervalCv)) && Number(input.intervalCv) >= 0)
+      ? Number(input.intervalCv)
+      : null;
+
+    if (intervalCv === null && Array.isArray(input.chunkIntervalsMs)) {
+      const valid = input.chunkIntervalsMs.map(Number).filter(v => Number.isFinite(v) && v >= 0);
+      if (valid.length >= 14) {
+        const mean = valid.reduce((s, v) => s + v, 0) / valid.length;
+        if (mean > 0) {
+          const variance = valid.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / valid.length;
+          intervalCv = Math.sqrt(variance) / mean;
+        } else {
+          intervalCv = 0;
+        }
+      }
+    }
+
+    if (!Number.isFinite(streamingSec) || streamingSec <= 2.0) {
+      return {
+        isStable: false,
+        chunks: Number.isFinite(chunks) ? chunks : 0,
+        streamingSec: Number.isFinite(streamingSec) ? streamingSec : null,
+        intervalCv: intervalCv !== null ? Number(intervalCv.toFixed(3)) : null,
+        reason: 'short_stream'
+      };
+    }
+    if (!Number.isFinite(chunks) || chunks < 15) {
+      return {
+        isStable: false,
+        chunks: Number.isFinite(chunks) ? chunks : 0,
+        streamingSec,
+        intervalCv: intervalCv !== null ? Number(intervalCv.toFixed(3)) : null,
+        reason: 'insufficient_chunks'
+      };
+    }
+    if (intervalCv === null) {
+      return {
+        isStable: false,
+        chunks,
+        streamingSec,
+        intervalCv: null,
+        reason: 'missing_interval_evidence'
+      };
+    }
+    const isStable = intervalCv <= 0.65;
+    return {
+      isStable,
+      chunks,
+      streamingSec,
+      intervalCv: Number(intervalCv.toFixed(3)),
+      reason: isStable ? 'stable' : 'high_variance'
+    };
+  }
+
+  /**
+   * 计算 ELV-91 综合体验指数 E ∈ [0, 100]（Weber-Fechner + Hill Log-Logistic + Cobb-Douglas）。
+   * 若缺少必需指标或满足极端小样本门槛（outputTokens < 15 && totalDurationSec < 2），不强行补造分数。
+   */
+  function calculateExperienceScore(input = {}, lang = 'zh-CN') {
+    const outRaw = input.outputTokens;
+    const outputTokens = (outRaw !== undefined && outRaw !== null && Number.isFinite(Number(outRaw))) ? Number(outRaw) : null;
+    const inRaw = input.totalInputTokens ?? input.inputTokens;
+    const inputTokens = (inRaw !== undefined && inRaw !== null && Number.isFinite(Number(inRaw)) && Number(inRaw) > 0) ? Number(inRaw) : null;
+    const ttftRaw = input.ttftSec ?? input.ttft;
+    const ttftSec = (ttftRaw !== undefined && ttftRaw !== null && Number.isFinite(Number(ttftRaw)) && Number(ttftRaw) >= 0) ? Number(ttftRaw) : null;
+    const durRaw = input.totalDurationSec ?? input.durationSec ?? input.duration;
+    const totalDurationSec = (durRaw !== undefined && durRaw !== null && Number.isFinite(Number(durRaw)) && Number(durRaw) > 0) ? Number(durRaw) : null;
+
+    let streamSpeed = (input.streamSpeed !== undefined && input.streamSpeed !== null && Number.isFinite(Number(input.streamSpeed)) && Number(input.streamSpeed) > 0)
+      ? Number(input.streamSpeed)
+      : ((input.streamingTps !== undefined && input.streamingTps !== null && Number.isFinite(Number(input.streamingTps)) && Number(input.streamingTps) > 0)
+        ? Number(input.streamingTps)
+        : null);
+
+    const streamSecRaw = input.streamingSec;
+    let streamingSec = (streamSecRaw !== undefined && streamSecRaw !== null && Number.isFinite(Number(streamSecRaw)) && Number(streamSecRaw) > 0)
+      ? Number(streamSecRaw)
+      : ((totalDurationSec !== null && ttftSec !== null && totalDurationSec > ttftSec + 0.01) ? Number((totalDurationSec - ttftSec).toFixed(4)) : null);
+
+    if (streamSpeed === null && outputTokens !== null && outputTokens > 0 && streamingSec !== null && streamingSec >= 0.05) {
+      streamSpeed = outputTokens / streamingSec;
+    }
+
+    if ((outputTokens !== null && outputTokens < 15) || (streamingSec !== null && streamingSec < 0.5)) {
+      return {
+        available: false,
+        skippedReason: 'insufficient_sample',
+        score: null,
+        grade: null,
+        tier: null,
+        ruleVersion: ELV91_SCORE_RULE_VERSION
+      };
+    }
+
+    if (outputTokens === null || ttftSec === null || totalDurationSec === null || streamSpeed === null || !Number.isFinite(streamSpeed) || streamSpeed <= 0) {
+      return {
+        available: false,
+        skippedReason: 'missing_metrics',
+        score: null,
+        grade: null,
+        tier: null,
+        ruleVersion: ELV91_SCORE_RULE_VERSION
+      };
+    }
+
+    const N_work = inputTokens !== null
+      ? Math.max(1, outputTokens + 0.15 * inputTokens)
+      : Math.max(1, outputTokens);
+    const C = Math.log10(1 + N_work);
+    const gamma = 1 + 0.50 * Math.max(0, C - 2.3);
+    const S_resp = 1 / (1 + Math.pow(ttftSec / (8 * gamma), 1.5));
+    const S_speed = 1 / (1 + Math.pow(35 / Math.max(streamSpeed, 0.1), 1.4));
+    const T_base = 5.0 + N_work / 25.0;
+    const S_dur = 1 / (1 + Math.pow(totalDurationSec / (T_base * gamma), 1.2));
+    const w1 = Math.min(0.40, Math.max(0.15, 0.40 - 0.10 * Math.max(0, C - 2.3)));
+    const w2 = 0.35;
+    const w3 = 1 - w1 - w2;
+    const score = Math.round(100 * Math.pow(S_resp, w1) * Math.pow(S_speed, w2) * Math.pow(S_dur, w3) * 10) / 10;
+    const clampedScore = Math.max(0, Math.min(100, score));
+    const tier = classifyEfficiencyGrade(clampedScore, lang);
+
+    return {
+      available: true,
+      skippedReason: null,
+      score: clampedScore,
+      grade: tier.grade,
+      tier,
+      ruleVersion: ELV91_SCORE_RULE_VERSION,
+      basis: {
+        N_work: Number(N_work.toFixed(1)),
+        usedInputWeight: inputTokens !== null,
+        C: Number(C.toFixed(4)),
+        gamma: Number(gamma.toFixed(4)),
+        S_resp: Number(S_resp.toFixed(4)),
+        S_speed: Number(S_speed.toFixed(4)),
+        T_base: Number(T_base.toFixed(2)),
+        S_dur: Number(S_dur.toFixed(4)),
+        w1: Number(w1.toFixed(4)),
+        w2,
+        w3: Number(w3.toFixed(4))
+      }
+    };
+  }
+
+  /**
+   * ELV-91 三阶段生成体验综合判定器。
+   * 覆盖：等待首字(waiting) / 流式生成中(streaming) / 已完成(final) / 异常(canceled, failed, exceeded, network, idle)。
+   * 严格执行：左闭右开区间、TTFT > 30s 木桶优先警示、样本不足与缺失兜底、真实间隔方差平稳判定、防错因/重连承诺。
+   */
+  function evaluateGenerationExperience(rawInput = {}, lang = 'zh-CN') {
+    const isEn = lang === 'en';
+    const isTw = lang === 'zh-TW';
+    const input = rawInput && typeof rawInput === 'object' ? rawInput : {};
+    const outcome = String(input.outcomeStatus || input.status || '').toLowerCase();
+
+    const rawElapsed = input.elapsedSec ?? input.waitingSec;
+    const elapsedSec = (rawElapsed !== undefined && rawElapsed !== null && Number.isFinite(Number(rawElapsed)) && Number(rawElapsed) >= 0) ? Number(rawElapsed) : null;
+    const rawTtft = input.ttftSec ?? input.ttft;
+    const ttftSec = (rawTtft !== undefined && rawTtft !== null && Number.isFinite(Number(rawTtft)) && Number(rawTtft) >= 0) ? Number(rawTtft) : null;
+    const rawDur = input.totalDurationSec ?? input.durationSec ?? input.duration;
+    const totalDurationSec = (rawDur !== undefined && rawDur !== null && Number.isFinite(Number(rawDur)) && Number(rawDur) > 0) ? Number(rawDur) : null;
+    const rawOut = input.outputTokens;
+    const outputTokens = (rawOut !== undefined && rawOut !== null && Number.isFinite(Number(rawOut)) && Number(rawOut) >= 0) ? Number(rawOut) : null;
+
+    let streamingSec = (input.streamingSec !== undefined && input.streamingSec !== null && Number.isFinite(Number(input.streamingSec)) && Number(input.streamingSec) >= 0)
+      ? Number(input.streamingSec)
+      : ((totalDurationSec !== null && ttftSec !== null && totalDurationSec > ttftSec) ? Number((totalDurationSec - ttftSec).toFixed(4)) : null);
+
+    let streamSpeed = (input.streamSpeed !== undefined && input.streamSpeed !== null && Number.isFinite(Number(input.streamSpeed)) && Number(input.streamSpeed) > 0)
+      ? Number(Number(input.streamSpeed).toFixed(1))
+      : ((input.streamingTps !== undefined && input.streamingTps !== null && Number.isFinite(Number(input.streamingTps)) && Number(input.streamingTps) > 0)
+        ? Number(Number(input.streamingTps).toFixed(1))
+        : null);
+    if (streamSpeed === null && outputTokens !== null && outputTokens > 0 && streamingSec !== null && streamingSec >= 0.05) {
+      streamSpeed = Number((outputTokens / streamingSec).toFixed(1));
+    }
+
+    const overallTps = (input.overallTps !== undefined && input.overallTps !== null && Number.isFinite(Number(input.overallTps)) && Number(input.overallTps) > 0)
+      ? Number(Number(input.overallTps).toFixed(1))
+      : ((outputTokens !== null && outputTokens > 0 && totalDurationSec !== null && totalDurationSec > 0) ? Number((outputTokens / totalDurationSec).toFixed(1)) : null);
+
+    const ttftRatioPct = (ttftSec !== null && totalDurationSec !== null && totalDurationSec > 0)
+      ? Number((Math.min(100, Math.max(0, (ttftSec / totalDurationSec) * 100))).toFixed(1))
+      : null;
+
+    const ttftFormatted = ttftSec !== null ? formatHumanDuration(ttftSec, lang) : '—';
+    const durationFormatted = totalDurationSec !== null ? formatHumanDuration(totalDurationSec, lang) : '—';
+    const elapsedFormatted = elapsedSec !== null ? formatHumanDuration(elapsedSec, lang) : '—';
+
+    let phase = input.phase || '';
+    if (!phase) {
+      if (outcome === 'canceled') phase = 'canceled';
+      else if (['failed', 'exceeded', 'network', 'quota_exhausted', 'rate_limited', 'auth_error', 'service_unavailable'].includes(outcome) || input.error) phase = 'failed';
+      else if (outcome === 'waiting' || (elapsedSec !== null && ttftSec === null && !outputTokens)) phase = 'waiting';
+      else if (outcome === 'streaming') phase = 'streaming';
+      else if (ttftSec !== null || totalDurationSec !== null || streamSpeed !== null || (outputTokens !== null && outputTokens > 0)) phase = 'final';
+      else phase = 'idle';
+    }
+
+    // 异常 / 取消 / 空闲状态处理（绝不制造评分或速率）
+    if (phase === 'idle') {
+      return {
+        phase: 'idle',
+        scoreRuleVersion: ELV91_SCORE_RULE_VERSION,
+        badge: {
+          text: isEn ? 'Standby' : (isTw ? '待生成' : '待生成'),
+          color: '#9CA3AF',
+          severity: 'neutral',
+          glyph: '⚡'
+        },
+        shortTitle: isEn ? 'Standby' : '待生成',
+        comment: isEn
+          ? 'Waiting for model output to evaluate first-token wait and streaming throughput.'
+          : (isTw ? '等待首次模型輸出產生首字延遲與純流式速度評估.' : '等待首次模型输出产生首字延迟与纯流式速度评估.'),
+        subLabel: isEn ? 'No data yet' : (isTw ? '暫無即時生成資料' : '暂无本次生成数据'),
+        elapsedFormatted: '—',
+        ttftFormatted: '—',
+        durationFormatted: '—',
+        ttftRatioPct: null,
+        streamSpeed: null,
+        overallTps: null,
+        ttftTier: null,
+        speedTier: null,
+        durationTier: null,
+        stability: computeStreamStability({}),
+        efficiency: { available: false, skippedReason: 'idle', score: null, grade: null, tier: null, ruleVersion: ELV91_SCORE_RULE_VERSION }
+      };
+    }
+
+    if (phase === 'canceled' || phase === 'failed') {
+      const isCanc = phase === 'canceled';
+      const baseColor = isCanc ? '#9CA3AF' : '#EF4444';
+      const titleTxt = isCanc
+        ? (isEn ? 'Interrupted' : (isTw ? '已中斷' : '已中断'))
+        : (isEn ? 'Request Failed' : (isTw ? '請求失敗' : '请求失败'));
+      const reasonTxt = input.error ? String(input.error).slice(0, 120) : '';
+      return {
+        phase,
+        scoreRuleVersion: ELV91_SCORE_RULE_VERSION,
+        badge: { text: titleTxt, color: baseColor, severity: isCanc ? 'neutral' : 'danger', glyph: isCanc ? '⏸' : '✕' },
+        shortTitle: titleTxt,
+        comment: isCanc
+          ? (isEn ? 'The request was canceled before normal completion; efficiency score is omitted.' : (isTw ? '本次請求未正常完成即中斷. 略過綜合評分.' : '本次请求未正常完成即中断. 跳过综合效率评分.'))
+          : (reasonTxt || (isEn ? 'Request failed; throughput and efficiency score are omitted.' : (isTw ? '本次請求異常結束. 略過速度與綜合評分.' : '本次请求异常结束. 跳过速度与综合评分.'))),
+        subLabel: ttftSec !== null
+          ? (isEn ? `TTFT ${ttftFormatted} · Score omitted` : (isTw ? `首字 ${ttftFormatted} · 略過評分` : `首字 ${ttftFormatted} · 跳过综合评分`))
+          : (isEn ? 'Score omitted' : (isTw ? '略過綜合評分' : '跳过综合评分')),
+        elapsedFormatted,
+        ttftFormatted,
+        durationFormatted,
+        ttftRatioPct,
+        streamSpeed,
+        overallTps,
+        ttftTier: ttftSec !== null ? classifyTtftTier(ttftSec, lang) : null,
+        speedTier: null,
+        durationTier: totalDurationSec !== null ? classifyDurationTier(totalDurationSec, lang) : null,
+        stability: computeStreamStability({}),
+        efficiency: { available: false, skippedReason: phase, score: null, grade: null, tier: null, ruleVersion: ELV91_SCORE_RULE_VERSION }
+      };
+    }
+
+    // 阶段 1：仍在等待首字 (waiting)
+    if (phase === 'waiting') {
+      const waitSec = elapsedSec ?? 0;
+      const waitFmt = formatHumanDuration(waitSec, lang);
+      const tTier = classifyTtftTier(waitSec, lang);
+      let color = '#9CA3AF';
+      let severity = 'neutral';
+      let glyph = '⏳';
+      let shortTitle = isEn ? 'Awaiting First Token' : '等待首字';
+      let comment = isEn
+        ? `Waiting for response (${waitSec.toFixed(1)}s elapsed); rate evaluation paused.`
+        : (isTw ? `正在等待回應. 已等待 ${waitSec.toFixed(1)}s. 尚未收到首個字元. 暫不評估速率.` : `正在等待响应. 已等待 ${waitSec.toFixed(1)}s. 尚未收到首个字符. 暂不评估速率.`);
+      if (waitSec >= 10 && tTier) {
+        color = tTier.color;
+        severity = tTier.severity;
+        glyph = tTier.glyph;
+        shortTitle = tTier.title;
+        const tplComment = tTier.comment.replace('{elapsed}', waitFmt);
+        const suffix = isEn ? ` (${waitFmt} elapsed).` : (isTw ? ` 已累計等待 ${waitFmt}.` : ` 已累计等待 ${waitFmt}.`);
+        comment = `${tplComment}${suffix}`;
+      }
+      return {
+        phase: 'waiting',
+        scoreRuleVersion: ELV91_SCORE_RULE_VERSION,
+        badge: { text: shortTitle, color, severity, glyph },
+        shortTitle,
+        comment,
+        subLabel: isEn ? 'First token pending · Timing' : (isTw ? '首字未達 · 計時中' : '首字未达 · 计时中'),
+        elapsedFormatted: waitFmt,
+        ttftFormatted: waitFmt,
+        durationFormatted: '—',
+        ttftRatioPct: null,
+        streamSpeed: null,
+        overallTps: null,
+        ttftTier: tTier,
+        speedTier: null,
+        durationTier: null,
+        stability: computeStreamStability({}),
+        efficiency: { available: false, skippedReason: 'waiting', score: null, grade: null, tier: null, ruleVersion: ELV91_SCORE_RULE_VERSION }
+      };
+    }
+
+    // 已拿到首字之后（streaming 或 final）先算核心组件
+    const ttftTier = ttftSec !== null ? classifyTtftTier(ttftSec, lang) : null;
+    const speedTier = streamSpeed !== null ? classifyStreamSpeedTier(streamSpeed, lang) : null;
+    const durationTier = totalDurationSec !== null ? classifyDurationTier(totalDurationSec, lang) : null;
+    const stability = computeStreamStability({
+      chunkCount: input.chunkCount ?? input.chunks,
+      chunkIntervalsMs: input.chunkIntervalsMs,
+      intervalCv: input.intervalCv,
+      streamingSec
+    });
+    const efficiency = phase === 'final'
+      ? calculateExperienceScore({
+          outputTokens,
+          inputTokens: input.totalInputTokens ?? input.inputTokens,
+          ttftSec,
+          streamingSec,
+          totalDurationSec,
+          streamSpeed
+        }, lang)
+      : { available: false, skippedReason: 'streaming', score: null, grade: null, tier: null, ruleVersion: ELV91_SCORE_RULE_VERSION };
+
+    // 按规则 2 / 3 / 4 判断实时速度与首字等待展示评价
+    const isLongTtft = ttftSec !== null && ttftSec > 30;
+    const lowStreamTokens = outputTokens !== null && outputTokens < 15;
+    const shortStreamTime = streamingSec !== null && streamingSec < 0.5;
+    const hasMissingSpeed = streamSpeed === null;
+    const isSampleSparse = !isLongTtft && (lowStreamTokens || shortStreamTime);
+
+    let evalColor = '#9CA3AF';
+    let evalSeverity = 'neutral';
+    let evalGlyph = '⚡';
+    let evalTitle = '';
+    let evalComment = '';
+    let subLabel = '';
+
+    const ratioSuffix = ttftRatioPct !== null
+      ? (isEn ? ` (${ttftRatioPct}% of turn)` : (isTw ? `佔總耗時 ${ttftRatioPct}%` : `占用了 ${ttftRatioPct}% 的时间`))
+      : '';
+    const stableSuffix = stability.isStable
+      ? (isEn ? ' · Steady output' : (isTw ? ' · 輸出平穩' : ' · 输出平稳'))
+      : '';
+
+    if (isLongTtft) {
+      // 规则 2：首字 > 30s 木桶优先警示规则（优先保留 TTFT 警示，不因后续快或样本少而抹去长等待）
+      evalColor = ttftTier.color;
+      evalSeverity = ttftTier.severity;
+      evalGlyph = ttftTier.glyph;
+      const baseWaitComment = ttftTier.comment.replace('{elapsed}', ttftFormatted);
+      if (hasMissingSpeed || (lowStreamTokens && shortStreamTime)) {
+        evalTitle = ttftTier.title;
+        evalComment = isEn
+          ? `${baseWaitComment} First token took ${ttftFormatted}${ratioSuffix ? ` (${ratioSuffix})` : ''}; streaming throughput unavailable.`
+          : (isTw ? `${baseWaitComment} 首字苦等 ${ttftFormatted}${ratioSuffix ? `（${ratioSuffix}）` : ''}. 暫無有效後續流速資料.` : `${baseWaitComment} 首字苦等 ${ttftFormatted}${ratioSuffix ? `（${ratioSuffix}）` : ''}. 暂无有效后续流速数据.`);
+        subLabel = isEn
+          ? `TTFT ${ttftFormatted} · Rate unavailable`
+          : (isTw ? `首字 ${ttftFormatted} · 暫無有效流速` : `首字 ${ttftFormatted} · 暂无有效流速`);
+      } else if (streamSpeed >= 30) {
+        const fastPhrase = streamSpeed >= 80
+          ? (isEn ? 'Fast Stream' : (isTw ? '後續極快' : '后续极快'))
+          : (isEn ? 'Steady Stream' : (isTw ? '後續流暢' : '后续流畅'));
+        evalTitle = `${ttftTier.title} · ${fastPhrase}`;
+        evalComment = isEn
+          ? `${baseWaitComment} Though streaming reached ${streamSpeed} tok/s, waiting ${ttftFormatted} took ${ttftRatioPct != null ? ttftRatioPct + '%' : 'most'} of total time.`
+          : (isTw ? `${baseWaitComment} 雖然開始吐字後速率達 ${streamSpeed} tok/s. 但首字苦等 ${ttftFormatted}${ratioSuffix ? ` ${ratioSuffix}` : ''}.` : `${baseWaitComment} 虽然开始吐字后速率达 ${streamSpeed} tok/s. 但首字苦等 ${ttftFormatted}${ratioSuffix ? ` ${ratioSuffix}` : ''}.`);
+        subLabel = (isEn ? `TTFT ${ttftFormatted} · Stream ${streamSpeed} tok/s` : `首字 ${ttftFormatted} · 流式 ${streamSpeed} tok/s`) + stableSuffix;
+      } else {
+        const worseTitle = streamSpeed < 1 && speedTier ? speedTier.title : `${ttftTier.title} · ${isEn ? 'Slow Stream' : (isTw ? '後續也慢' : '后续也慢')}`;
+        evalTitle = worseTitle;
+        evalComment = isEn
+          ? `${baseWaitComment} Subsequent streaming also crawled at ${streamSpeed} tok/s.`
+          : (isTw ? `${baseWaitComment} 開始吐字後速率也僅有 ${streamSpeed} tok/s.` : `${baseWaitComment} 开始吐字后速率也仅有 ${streamSpeed} tok/s.`);
+        subLabel = (isEn ? `TTFT ${ttftFormatted} · Stream ${streamSpeed} tok/s` : `首字 ${ttftFormatted} · 流式 ${streamSpeed} tok/s`) + stableSuffix;
+      }
+    } else if (isSampleSparse || hasMissingSpeed) {
+      // 规则 3：样本/数据不足兜底（仅陈述真实成立条件，不编造“同时字少且耗时短”）
+      evalColor = '#9CA3AF';
+      evalSeverity = 'neutral';
+      evalGlyph = '⏳';
+      evalTitle = isEn ? 'Insufficient Sample' : (isTw ? '樣本過少' : '样本过少');
+      if (hasMissingSpeed) {
+        evalComment = isEn
+          ? `TTFT was ${ttftFormatted}; missing effective streaming window or token count to compute throughput.`
+          : (isTw ? `本次首字耗時 ${ttftFormatted}. 缺少有效流式階段耗時或輸出量. 暫不計算流式速率.` : `本次首字耗时 ${ttftFormatted}. 缺少有效流式阶段耗时或输出量. 暂不计算流式速率.`);
+      } else {
+        const partsCn = [];
+        const partsTw = [];
+        const partsEn = [];
+        if (lowStreamTokens) {
+          partsCn.push(`仅输出 ${outputTokens} tokens`);
+          partsTw.push(`僅輸出 ${outputTokens} tokens`);
+          partsEn.push(`only ${outputTokens} tokens output`);
+        }
+        if (shortStreamTime) {
+          partsCn.push(`流式耗时极短 (${streamingSec.toFixed(2)}s)`);
+          partsTw.push(`流式耗時極短 (${streamingSec.toFixed(2)}s)`);
+          partsEn.push(`streaming window too short (${streamingSec.toFixed(2)}s)`);
+        }
+        evalComment = isEn
+          ? `Too few samples (${partsEn.join(' & ')}); speed metric is not representative.`
+          : (isTw ? `樣本過少測不準. 本次${partsTw.join('且')}. 速率指標不具備參考價值.` : `字太少测不出. 本次${partsCn.join('且')}. 速率指标不具备参考价值.`);
+      }
+      subLabel = ttftSec !== null
+        ? (isEn ? `TTFT ${ttftFormatted} · Stability skipped` : (isTw ? `首字 ${ttftFormatted} · 略過穩定性評估` : `首字 ${ttftFormatted} · 跳过稳定性评估`))
+        : (isEn ? 'Stability skipped' : (isTw ? '略過穩定性評估' : '跳过稳定性评估'));
+    } else {
+      // 规则 4：常规组合（TTFT <= 30s 且样本充足）
+      evalColor = speedTier.color;
+      evalSeverity = speedTier.severity;
+      evalGlyph = speedTier.glyph;
+      evalTitle = speedTier.title;
+      const ttftExtra = (ttftSec !== null && ttftSec >= 10)
+        ? (isEn ? ` (First token waited ${ttftFormatted}.)` : (isTw ? ` (首字等待了 ${ttftFormatted}.)` : ` (首字等待了 ${ttftFormatted}.)`))
+        : '';
+      evalComment = `${speedTier.comment}${ttftExtra}`;
+      const ttftPart = ttftSec !== null ? `${isEn ? 'TTFT' : '首字'} ${ttftFormatted} · ` : '';
+      subLabel = `${ttftPart}${isEn ? 'Stream' : '流式'} ${streamSpeed} tok/s${stableSuffix}`;
+    }
+
+    // 阶段 3 完成态主徽章：若 E 有效显示 E 分与等级；样本过少或缺失时显式兜底；流式进行中显示实时流速主档位
+    let mainBadgeText = evalTitle;
+    let mainBadgeColor = evalColor;
+    let mainBadgeSeverity = evalSeverity;
+    let mainBadgeGlyph = evalGlyph;
+    let finalHeadline = evalTitle;
+    let finalComment = evalComment;
+
+    if (phase === 'final') {
+      if (efficiency.available && efficiency.tier) {
+        mainBadgeText = `${efficiency.score} ${isEn ? 'pts' : '分'} · ${efficiency.grade}`;
+        mainBadgeColor = efficiency.tier.color;
+        mainBadgeSeverity = efficiency.tier.severity;
+        mainBadgeGlyph = efficiency.tier.glyph;
+        finalHeadline = `${efficiency.score} ${isEn ? 'pts' : '分'} · ${efficiency.tier.title}`;
+        finalComment = isLongTtft ? evalComment : efficiency.tier.comment;
+      } else if (efficiency.skippedReason === 'insufficient_sample') {
+        mainBadgeText = isEn ? 'Sparse · No Score' : (isTw ? '樣本過少 · 略過評分' : '样本过少 · 跳过综合评分');
+        mainBadgeColor = isLongTtft ? evalColor : '#9CA3AF';
+        mainBadgeSeverity = isLongTtft ? evalSeverity : 'neutral';
+        mainBadgeGlyph = isLongTtft ? evalGlyph : '⏳';
+        finalHeadline = mainBadgeText;
+      } else {
+        mainBadgeText = evalTitle;
+      }
+    }
+
+    return {
+      phase,
+      scoreRuleVersion: ELV91_SCORE_RULE_VERSION,
+      badge: {
+        text: mainBadgeText,
+        color: mainBadgeColor,
+        severity: mainBadgeSeverity,
+        glyph: mainBadgeGlyph
+      },
+      shortTitle: finalHeadline,
+      speedShortTitle: evalTitle,
+      speedColor: evalColor,
+      comment: finalComment,
+      speedComment: evalComment,
+      subLabel,
+      elapsedFormatted,
+      ttftFormatted,
+      durationFormatted,
+      ttftRatioPct,
+      streamSpeed,
+      overallTps,
+      outputTokens,
+      ttftTier,
+      speedTier,
+      durationTier,
+      stability,
+      efficiency
+    };
   }
 
   const api = {
@@ -4234,6 +5817,21 @@
     resolveModelUsageBucket,
     getModelChartColor,
     summarizeModelUsageWindow,
+    normalizeCallInputCacheTokens,
+    computeCacheReadStats,
+    summarizeCacheReadStats,
+    summarizeDailyMapCacheStats,
+    normalizeSessionCallRecord,
+    groupSessionCallsByTurns,
+    ELV91_SCORE_RULE_VERSION,
+    formatHumanDuration,
+    classifyStreamSpeedTier,
+    classifyTtftTier,
+    classifyDurationTier,
+    classifyEfficiencyGrade,
+    computeStreamStability,
+    calculateExperienceScore,
+    evaluateGenerationExperience,
     EFFORT_WHITELIST,
     formatEffortLabel,
     detectModelVendor,

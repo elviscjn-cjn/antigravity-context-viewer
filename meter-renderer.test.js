@@ -181,15 +181,15 @@ test('speed badge and speed summary card accurately render model output speed an
     chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
   }));
   await h.flush();
-  assert.equal(h.elements.get('speed-amount').textContent, '112.1 tok/s');
+  assert.equal(h.elements.get('speed-amount').textContent, '185.1 tok/s');
   assert.match(h.elements.get('speed-hover-extra').textContent, /21\.3s/);
-  assert.match(h.elements.get('badge-speed').title, /112\.1 tok\/s/);
-  assert.equal(h.elements.get('speed-val').textContent, '112.1 tok/s');
+  assert.match(h.elements.get('badge-speed').title, /185\.1 tok\/s/);
+  assert.equal(h.elements.get('speed-val').textContent, '185.1 tok/s');
   assert.equal(h.elements.get('speed-duration').textContent, '21.3s');
   assert.equal(h.elements.get('speed-ttft').textContent, '8.4s');
   assert.match(h.elements.get('speed-tokens').textContent, /2,388 tok/);
-  assert.equal(h.elements.get('speed-badge').textContent, '极速');
-  assert.match(h.elements.get('speed-takeaway').textContent, /112\.1 tok\/s/);
+  assert.equal(h.elements.get('speed-badge').textContent, '⚡ 83.7 分 · A');
+  assert.match(h.elements.get('speed-takeaway').textContent, /83\.8 分|整体均速 112\.1 tok\/s/);
   h.sandbox.__AGContextMeter.dispose();
 });
 test('drawer toggle controls secondary technical details visibility', () => {
@@ -2013,7 +2013,8 @@ test('插件面板三语言切换、持久化、动态文案、模型名保留�
   assert.equal(savedSettingsPayload.contextPreferences, undefined, '切换面板语言不得改写上下文偏好');
   assert.equal(restartCalls, 0, '切换面板语言不得触发重启');
   assert.equal(h.elements.get('model').textContent, 'Gemini 3.1 Pro (High)', '模型正式名称应保持原样不被翻译');
-  assert.equal(h.elements.get('speed-badge').textContent, '流暢');
+  assert.equal(h.elements.get('speed-badge').textContent, '⚡ 82.7 分 · A');
+  assert.match(h.elements.get('speed-sub-label').textContent, /流式 56\.3 tok\/s/);
 
   // 验证静态属性遍历器在标准 DOM 下会同步更新 data-i18n 节点
   const mockStaticNode = {
@@ -2036,7 +2037,9 @@ test('插件面板三语言切换、持久化、动态文案、模型名保留�
   assert.equal(h.elements.get('speed-bar-title').textContent, 'Output Speed Comparison');
   assert.equal(h.elements.get('panel-lang-save-badge').textContent, api.translateForTest('settings.panelLang.saved'));
   assert.equal(h.elements.get('model').textContent, 'Gemini 3.1 Pro (High)', '切换为 English 后模型正式名称应保持原样');
-  assert.equal(h.elements.get('speed-badge').textContent, 'Smooth');
+  assert.equal(h.elements.get('speed-badge').textContent, '⚡ 82.7 pts · A');
+  assert.match(h.elements.get('speed-sub-label').textContent, /Stream 56\.3 tok\/s/);
+  assert.doesNotMatch(h.elements.get('speed-takeaway').textContent, /[\u4e00-\u9fa5]/, '英文模式速度评语不得夹带中文');
   assert.equal(storedSettings.contextPreferences['gemini-3-1-pro'].limitTokens, 512000, '已有模型上下文偏好必须保持原值');
 
   // 4. 模拟重启恢复：重新挂载并从 getSettings 恢复为 en

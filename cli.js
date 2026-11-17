@@ -321,13 +321,16 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
     return expectedOrigins.every(o => covered.has(o));
   };
 
+  const expectedHostBuildId = getHostCoreBuildId(__dirname);
   if (existingInfo && existingInfo.pid) {
     const info = existingInfo;
     let pidAlive = false;
     try { process.kill(info.pid, 0); pidAlive = true; } catch {}
-    if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion)) {
+    const infoBuildMatch = !expectedHostBuildId || info.hostBuildId === expectedHostBuildId;
+    if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion) && infoBuildMatch) {
       const probe = await probeLiveHostRuntimeInfo(info, expectedOrigins[0]);
-      if (probe && probe.ok && (!currentPkgVersion || probe.backendVersion === currentPkgVersion)) {
+      const probeBuildMatch = !expectedHostBuildId || probe?.hostBuildId === expectedHostBuildId;
+      if (probe && probe.ok && (!currentPkgVersion || probe.backendVersion === currentPkgVersion) && probeBuildMatch) {
         return {
           needed: true,
           ready: true,

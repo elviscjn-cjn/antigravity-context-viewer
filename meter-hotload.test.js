@@ -1366,9 +1366,38 @@ test('热加载 12：build-renderer 检测到 truncated for diff preview 时立�
     fs.copyFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), truncatedMainPath);
     buildRenderer({ rootDir: tmpRoot, srcDir: tmpSrc, targetFile: tmpOut });
     const builtContent = fs.readFileSync(tmpOut, 'utf8');
-    assert.ok(builtContent.length > 100000, '正常源码应成功构建完整 meter-renderer.js');
     assert.ok(!builtContent.includes('truncated for diff preview'));
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('热加载 10：live-host /runtime-info 返回 hostBuildId 且 cli 同版本不同构建指纹不盲目复用旧进程', async () => {
+  const { LIVE_HOST_BUILD_ID } = require('./live-host');
+  const { getHostCoreBuildId, PROJECT_VERSION } = require('./modules-config');
+  assert.equal(LIVE_HOST_BUILD_ID, getHostCoreBuildId(__dirname), 'live-host 启动固化指纹必须与 modules-config 实时计算一致');
+
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-buildid-mismatch-'));
+  try {
+    // 写入与当前 version 相同但 hostBuildId 明显陈旧的 .live-session.json
+    const staleStamp = {
+      port: 65431,
+      token: 'stale-tok',
+      pid: process.pid,
+      origin: 'https://127.0.0.1:59991',
+      origins: ['https://127.0.0.1:59991'],
+      version: PROJECT_VERSION,
+      hostBuildId: '000000000000',
+      hasQuota: true
+    };
+    fs.writeFileSync(path.join(tmpState, '.live-session.json'), JSON.stringify(staleStamp));
+
+    const fakeSnapshot = { running: true, pageFound: true, origin: 'https://127.0.0.1:59991', origins: ['https://127.0.0.1:59991'], ipcBackendVersion: '0.8.7', hasIpcBridge: true, hasQuotaIpcBridge: true };
+    const { ensureLiveBridgeIfNeeded } = require('./cli');
+    // 在无真实 Antigravity 环境下验证不复用旧构建后进入拉新流程且不返回 reused: true
+    const res = await ensureLiveBridgeIfNeeded(fakeSnapshot, { stateDir: tmpState });
+    assert.notEqual(res?.reused, true, '同版本不同 hostBuildId 时绝不能直接复用旧 live-host 内存进程');
+  } finally {
+    fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });

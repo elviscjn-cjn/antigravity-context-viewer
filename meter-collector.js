@@ -65,6 +65,11 @@ const {
   resolveStableModelId,
   UNATTRIBUTED_MODEL_KEY,
   resolveModelUsageBucket,
+  computeCacheReadStats,
+  summarizeCacheReadStats,
+  summarizeDailyMapCacheStats,
+  normalizeSessionCallRecord,
+  groupSessionCallsByTurns,
   isValidSpeedSample,
   MAX_SPEED_SAMPLES_PER_MODEL,
   calculateRequestApiCost,
@@ -626,11 +631,13 @@ async function collect(origin, id, options = {}) {
       let latest = null;
       const count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
       const tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 3), includeMessages: false });
+      let cachedHostUserStatus = cachedUserStatusByOrigin.get(normalizeQuotaOriginScope({ origin }))?.status || null;
       let knownCascadeConfigs = Array.isArray(cachedHostUserStatus?.cascadeModelConfigs) ? cachedHostUserStatus.cascadeModelConfigs : [];
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
         try {
           const freshStatus = await fetchUserStatusFromHost({ origin });
+          if (freshStatus) cachedHostUserStatus = freshStatus;
           if (Array.isArray(freshStatus?.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
             knownCascadeConfigs = freshStatus.cascadeModelConfigs;
           }
@@ -643,12 +650,24 @@ async function collect(origin, id, options = {}) {
       );
       let latestModel = null;
       let latestCallId = null;
+      let latestCallRecord = null;
+      const recentGeneratorCalls = [];
+      for (const m of (tail.generatorMetadata || [])) {
+        const callMeta = parseGeneratorCall(m, id, 'desktop', { cascadeModelConfigs: mergedCascadeConfigs });
+        if (callMeta) {
+          const normCall = normalizeSessionCallRecord(callMeta, { cascadeId: id, cascadeModelConfigs: mergedCascadeConfigs });
+          if (normCall) recentGeneratorCalls.push(normCall);
+        }
+      }
       for (const m of (tail.generatorMetadata || []).slice().reverse()) {
         latest = summarize(m, { cascadeModelConfigs: mergedCascadeConfigs });
         if (latest) {
           latestModel = m.chatModel;
           const callMeta = parseGeneratorCall(m, id, 'desktop', { cascadeModelConfigs: mergedCascadeConfigs });
           latestCallId = callMeta?.callId || null;
+          if (callMeta) {
+            latestCallRecord = normalizeSessionCallRecord(callMeta, { cascadeId: id, cascadeModelConfigs: mergedCascadeConfigs });
+          }
           break;
         }
       }
@@ -683,7 +702,7 @@ async function collect(origin, id, options = {}) {
       ...(cachedHostUserStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
-    const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     if (isSuperseded()) {
       conversations.delete(key);
       return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
@@ -2743,10 +2762,13 @@ function collectGeminiDirsFromLinuxRoot(rootDir, options = {}) {
   };
 }
 
+const WSL_DISCOVERY_CACHE_TTL_MS = 45000;
+let wslDiscoveryCache = { scopeKey: '', at: 0, value: null };
+
 function discoverWslGeminiDirs(options = {}) {
   const platform = options.platform || process.platform;
   if (options.includeWsl === false || process.env.AG_DISABLE_WSL_SCAN === '1') {
-    return { distros: [], roots: [], desktopDirs: [], cliDirs: [] };
+    return { distros: [], roots: [], desktopDirs: [], cliDirs: [], skippedRoots: [] };
   }
   const hasExplicitPrimary = Boolean(options.agDir || options.agCliDir || process.env.AG_DIR || process.env.AG_CLI_DIR);
   const allowAutoDistros = options.includeWsl === true ||
@@ -2754,9 +2776,15 @@ function discoverWslGeminiDirs(options = {}) {
 
   const distros = allowAutoDistros ? listRegisteredWslDistros(options) : [];
   const discoveredRoots = [];
+  const skippedRoots = [];
   for (const d of distros) {
-    const uncRoot = resolveWslDistroUncRoot(d.name, options);
-    if (uncRoot) discoveredRoots.push(uncRoot);
+    try {
+      const uncRoot = resolveWslDistroUncRoot(d.name, options);
+      if (uncRoot) discoveredRoots.push(uncRoot);
+      else skippedRoots.push({ target: d.name, reason: 'unreachable' });
+    } catch (e) {
+      skippedRoots.push({ target: d.name, reason: e?.code || e?.message || 'error' });
+    }
   }
   const explicitRoots = Array.isArray(options.wslRoots) ? options.wslRoots : [];
   const roots = dedupeScanPaths([...discoveredRoots, ...explicitRoots], platform);
@@ -2764,22 +2792,156 @@ function discoverWslGeminiDirs(options = {}) {
   const desktopDirs = [];
   const cliDirs = [];
   for (const r of roots) {
-    const found = collectGeminiDirsFromLinuxRoot(r, options);
-    desktopDirs.push(...found.desktopDirs);
-    cliDirs.push(...found.cliDirs);
+    try {
+      const found = collectGeminiDirsFromLinuxRoot(r, options);
+      desktopDirs.push(...found.desktopDirs);
+      cliDirs.push(...found.cliDirs);
+    } catch (e) {
+      skippedRoots.push({ target: r, reason: e?.code || e?.message || 'error' });
+    }
   }
   return {
     distros: distros.map(d => d.name),
     roots,
     desktopDirs: dedupeScanPaths(desktopDirs, platform),
-    cliDirs: dedupeScanPaths(cliDirs, platform)
+    cliDirs: dedupeScanPaths(cliDirs, platform),
+    skippedRoots
   };
 }
 
-function getEffectiveScanScopeKey(options = {}) {
+/**
+ * 带超时保护与缓存的异步 WSL 目录发现：
+ * - 对慢 UNC/休眠发行版施加有界超时（默认 1500ms），不阻塞主循环或拖慢 UI；
+ * - 不执行任何写入或主动拉起未运行发行版，权限不足/不可达时记录 skippedRoots 并安全跳过。
+ */
+async function discoverWslGeminiDirsAsync(options = {}) {
+  const platform = options.platform || process.platform;
+  if (options.includeWsl === false || process.env.AG_DISABLE_WSL_SCAN === '1') {
+    return { distros: [], roots: [], desktopDirs: [], cliDirs: [], skippedRoots: [] };
+  }
+  const hasCustomOverride = Boolean(options.fs || options.wslDistros || options.wslProbeFn || options.wslProbeTimeoutMs);
+  const scopeKey = getEffectiveScanScopeKey(options);
+  if (!hasCustomOverride && !options.force && wslDiscoveryCache.value && wslDiscoveryCache.scopeKey === scopeKey && (Date.now() - wslDiscoveryCache.at) < WSL_DISCOVERY_CACHE_TTL_MS) {
+    return wslDiscoveryCache.value;
+  }
+
+  const hasExplicitPrimary = Boolean(options.agDir || options.agCliDir || process.env.AG_DIR || process.env.AG_CLI_DIR);
+  const allowAutoDistros = options.includeWsl === true ||
+    (platform === 'win32' && !hasExplicitPrimary && process.env.AG_METER_TEST_MODE !== '1');
+
+  const distros = allowAutoDistros ? listRegisteredWslDistros(options) : [];
+  const timeoutMs = Number.isFinite(Number(options.wslProbeTimeoutMs)) && Number(options.wslProbeTimeoutMs) > 0
+    ? Number(options.wslProbeTimeoutMs)
+    : 1500;
+  const fsPromises = options.fs?.promises || fs.promises;
+  const pathMod = platform === 'win32' ? path.win32 : path;
+
+  const runWithBoundedTimeout = async (promiseFactory, targetLabel) => {
+    let timer = null;
+    try {
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const err = new Error(`WSL 探测超时 (${timeoutMs}ms): ${targetLabel}`);
+          err.code = 'ETIMEDOUT';
+          reject(err);
+        }, timeoutMs);
+        if (typeof timer.unref === 'function') timer.unref();
+      });
+      return await Promise.race([promiseFactory(), timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  const probeDistroAsync = async (d) => {
+    if (typeof options.wslProbeFn === 'function') {
+      return await runWithBoundedTimeout(() => Promise.resolve(options.wslProbeFn(d)), d.name);
+    }
+    if (options.fs && !options.fs.promises) {
+      return resolveWslDistroUncRoot(d.name, options);
+    }
+    return await runWithBoundedTimeout(async () => {
+      for (const prefix of ['\\\\wsl.localhost', '\\\\wsl$']) {
+        const candidate = `${prefix}\\${d.name}`;
+        for (const sub of ['root', 'home']) {
+          try {
+            await fsPromises.access(pathMod.join(candidate, sub));
+            return candidate;
+          } catch { }
+        }
+      }
+      return null;
+    }, d.name);
+  };
+
+  const discoveredRoots = [];
+  const skippedRoots = [];
+  const probeResults = await Promise.all(distros.map(async (d) => {
+    try {
+      const root = await probeDistroAsync(d);
+      return { name: d.name, root, error: null };
+    } catch (e) {
+      return { name: d.name, root: null, error: e };
+    }
+  }));
+
+  for (const r of probeResults) {
+    if (r.error) {
+      skippedRoots.push({ target: r.name, reason: r.error.code === 'ETIMEDOUT' ? 'timeout' : (r.error.code || r.error.message || 'error') });
+    } else if (r.root) {
+      discoveredRoots.push(r.root);
+    } else {
+      skippedRoots.push({ target: r.name, reason: 'unreachable' });
+    }
+  }
+
+  const explicitRoots = Array.isArray(options.wslRoots) ? options.wslRoots : [];
+  const roots = dedupeScanPaths([...discoveredRoots, ...explicitRoots], platform);
+
+  const desktopDirs = [];
+  const cliDirs = [];
+  for (const r of roots) {
+    try {
+      const found = await runWithBoundedTimeout(
+        () => Promise.resolve(collectGeminiDirsFromLinuxRoot(r, options)),
+        r
+      );
+      desktopDirs.push(...found.desktopDirs);
+      cliDirs.push(...found.cliDirs);
+    } catch (e) {
+      skippedRoots.push({ target: r, reason: e?.code === 'ETIMEDOUT' ? 'timeout' : (e?.code || e?.message || 'error') });
+    }
+  }
+
+  const result = {
+    distros: distros.map(d => d.name),
+    roots,
+    desktopDirs: dedupeScanPaths(desktopDirs, platform),
+    cliDirs: dedupeScanPaths(cliDirs, platform),
+    skippedRoots
+  };
+  if (!hasCustomOverride) {
+    wslDiscoveryCache = { scopeKey, at: Date.now(), value: result };
+  }
+  return result;
+}
+
+function resolvePrimaryGeminiDirs(options = {}) {
   const home = process.env.USERPROFILE || os.homedir();
-  const agDir = path.resolve(options.agDir || process.env.AG_DIR || path.join(home, '.gemini', 'antigravity'));
-  const agCliDir = path.resolve(options.agCliDir || process.env.AG_CLI_DIR || path.join(home, '.gemini', 'antigravity-cli'));
+  const explicitAg = options.agDir || process.env.AG_DIR || null;
+  const agDir = explicitAg || path.join(home, '.gemini', 'antigravity');
+  const agCliDir = options.agCliDir || process.env.AG_CLI_DIR || (
+    explicitAg
+      ? path.join(path.dirname(path.resolve(explicitAg)), 'antigravity-cli')
+      : path.join(home, '.gemini', 'antigravity-cli')
+  );
+  return { home, agDir, agCliDir };
+}
+
+function getEffectiveScanScopeKey(options = {}) {
+  const resolved = resolvePrimaryGeminiDirs(options);
+  const agDir = path.resolve(resolved.agDir);
+  const agCliDir = path.resolve(resolved.agCliDir);
   const extraDesk = dedupeScanPaths(Array.isArray(options.extraAgDirs) ? options.extraAgDirs : []);
   const extraCli = dedupeScanPaths(Array.isArray(options.extraAgCliDirs) ? options.extraAgCliDirs : []);
   const wslRoots = dedupeScanPaths(Array.isArray(options.wslRoots) ? options.wslRoots : []);
@@ -3017,6 +3179,15 @@ function getNodeDatabaseSync() {
   return cachedNodeDatabaseSync;
 }
 
+function buildSqliteUriWithQuery(dbPath, query) {
+  const normalized = String(dbPath || '').replace(/\\/g, '/');
+  const encoded = encodeURI(normalized).replace(/#/g, '%23').replace(/\?/g, '%3F');
+  if (encoded.startsWith('//')) {
+    return `file://${encoded}?${query}`;
+  }
+  return `file:///${encoded.replace(/^\/+/, '')}?${query}`;
+}
+
 /**
  * 构建 SQLite 只读 immutable URI，兼容 Windows 盘符、UNC (\\wsl.localhost\...) 与 POSIX 路径。
  * 必须显式使用 file:////wsl.localhost/...?immutable=1，否则 9P 共享目录会报 database is locked。
@@ -3024,12 +3195,11 @@ function getNodeDatabaseSync() {
  * @returns {string}
  */
 function buildSqliteImmutableUri(dbPath) {
-  const normalized = String(dbPath || '').replace(/\\/g, '/');
-  const encoded = encodeURI(normalized).replace(/#/g, '%23').replace(/\?/g, '%3F');
-  if (encoded.startsWith('//')) {
-    return `file://${encoded}?immutable=1`;
-  }
-  return `file:///${encoded.replace(/^\/+/, '')}?immutable=1`;
+  return buildSqliteUriWithQuery(dbPath, 'immutable=1');
+}
+
+function buildSqliteModeRoUri(dbPath) {
+  return buildSqliteUriWithQuery(dbPath, 'mode=ro');
 }
 
 function readPbVarint(buf, offset, end = buf.length) {
@@ -3084,18 +3254,36 @@ function walkPbFields(buf, start, end, onField) {
   }
 }
 
+function parsePbDurationSec(buf, start, end) {
+  let seconds = 0;
+  let nanos = 0;
+  let hasField = false;
+  walkPbFields(buf, start, end, (fn, wt, val) => {
+    if (wt !== 0) return;
+    if (fn === 1) { seconds = val; hasField = true; }
+    else if (fn === 2) { nanos = val; hasField = true; }
+  });
+  if (!hasField) return null;
+  const secVal = seconds + nanos / 1e9;
+  return Number.isFinite(secVal) && secVal >= 0 ? Number(secVal.toFixed(2)) : null;
+}
+
 /**
- * 从会话数据库 gen_metadata.data 的 Protobuf 负载提取 stepIndex -> model/label 映射。
- * 顶层字段 2 为 stepIndices（单个 varint 或 packed varint），字段 1 内的 19 为 rawModel、21 为展示标签。
- * @param {Buffer|Uint8Array} rawData
- * @returns {Array<{stepIndex: number, model: string}>}
+ * 从 gen_metadata.data 的 Protobuf 负载提取完整的步骤元数据（兼容模型 ID、展示标签、耗时、responseId 与父子关联）。
  */
-function extractStepModelsFromGenMetadataBlob(rawData) {
+function extractStepMetaFromGenMetadataBlob(rawData) {
   if (!rawData || !rawData.length) return [];
   const buf = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
   const steps = [];
   let rawModel = '';
   let label = '';
+  let modelEnum = '';
+  let responseId = '';
+  let ttftSec = null;
+  let streamingSec = null;
+  let parentCascadeId = '';
+  let rootCascadeId = '';
+  let subagentType = '';
 
   walkPbFields(buf, 0, buf.length, (fn, wt, val, vs, ve) => {
     if (fn === 2) {
@@ -3115,9 +3303,34 @@ function extractStepModelsFromGenMetadataBlob(rawData) {
     } else if (fn === 1 && wt === 2) {
       walkPbFields(buf, vs, ve, (cfn, cwt, _cval, cvs, cve) => {
         if (cwt !== 2) return;
-        if (cfn === 19) {
+        if (cfn === 4) {
+          walkPbFields(buf, cvs, cve, (ufn, uwt, _uval, uvs, uve) => {
+            if (ufn === 7 && uwt === 2) {
+              const str = buf.toString('utf8', uvs, uve).trim();
+              if (str) responseId = str;
+            }
+          });
+        } else if (cfn === 11) {
+          const d = parsePbDurationSec(buf, cvs, cve);
+          if (d !== null) ttftSec = d;
+        } else if (cfn === 12) {
+          const d = parsePbDurationSec(buf, cvs, cve);
+          if (d !== null) streamingSec = d;
+        } else if (cfn === 19) {
           const str = buf.toString('utf8', cvs, cve).trim();
           if (str) rawModel = str;
+        } else if (cfn === 20) {
+          let k = '';
+          let v = '';
+          walkPbFields(buf, cvs, cve, (kfn, kwt, _kval, kvs, kve) => {
+            if (kwt !== 2) return;
+            if (kfn === 1) k = buf.toString('utf8', kvs, kve).trim();
+            else if (kfn === 2) v = buf.toString('utf8', kvs, kve).trim();
+          });
+          if (k === 'model_enum' && v) modelEnum = v;
+          else if (k === 'parent_cascade_id' && v) parentCascadeId = v;
+          else if (k === 'root_cascade_id' && v) rootCascadeId = v;
+          else if (k === 'subagent_type' && v) subagentType = v;
         } else if (cfn === 21) {
           const str = buf.toString('utf8', cvs, cve).trim();
           if (str) label = str;
@@ -3126,66 +3339,280 @@ function extractStepModelsFromGenMetadataBlob(rawData) {
     }
   });
 
-  const resolved = label || rawModel;
-  if (!resolved || !steps.length) return [];
-  return steps.map(stepIndex => ({ stepIndex, model: resolved }));
+  const resolvedModel = label || rawModel || modelEnum;
+  const resolvedExactId = modelEnum || rawModel || '';
+  if (!steps.length) return [];
+  if (!resolvedModel && !resolvedExactId && !responseId && ttftSec === null && streamingSec === null && !parentCascadeId && !rootCascadeId) {
+    return [];
+  }
+  return steps.map(stepIndex => ({
+    stepIndex,
+    model: resolvedModel,
+    rawModel,
+    modelLabel: label,
+    modelExactId: resolvedExactId,
+    responseId,
+    ttftSec,
+    streamingSec,
+    parentCascadeId,
+    rootCascadeId,
+    subagentType
+  }));
 }
 
-function loadStepModelMapFromSqlite(dbPath) {
-  const stepToModel = new Map();
-  if (!dbPath || !origFsMethods.existsSync(dbPath)) return stepToModel;
+/**
+ * 从会话数据库 gen_metadata.data 的 Protobuf 负载提取 stepIndex -> model/label 映射（保持兼容旧签名）。
+ * 顶层字段 2 为 stepIndices（单个 varint 或 packed varint），字段 1 内的 19 为 rawModel、21 为展示标签。
+ * @param {Buffer|Uint8Array} rawData
+ * @returns {Array<{stepIndex: number, model: string}>}
+ */
+function extractStepModelsFromGenMetadataBlob(rawData) {
+  return extractStepMetaFromGenMetadataBlob(rawData)
+    .filter(item => Boolean(item.model))
+    .map(item => ({ stepIndex: item.stepIndex, model: item.model }));
+}
+
+function extractTrajectoryBlobMeta(rawData, selfCascadeId = '') {
+  const out = { parentCascadeId: '', rootCascadeId: '', subagentType: '', subagentRole: '' };
+  if (!rawData || !rawData.length) return out;
+  const buf = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
+  const selfNorm = String(selfCascadeId || '').trim().toLowerCase();
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  walkPbFields(buf, 0, buf.length, (fn, wt, _val, vs, ve) => {
+    if (wt !== 2) return;
+    if (fn === 4) {
+      walkPbFields(buf, vs, ve, (cfn, cwt, _cval, cvs, cve) => {
+        if (cwt !== 2) return;
+        if (cfn === 1) {
+          const s = buf.toString('utf8', cvs, cve).trim();
+          if (s && s.length < 64) out.subagentType = s;
+        } else if (cfn === 2) {
+          const s = buf.toString('utf8', cvs, cve).trim();
+          if (s && s.length < 120) out.subagentRole = s;
+        }
+      });
+    } else if (fn === 5) {
+      const s = buf.toString('utf8', vs, ve).trim();
+      if (uuidRe.test(s) && s.toLowerCase() !== selfNorm) out.parentCascadeId = s;
+    } else if (fn === 6) {
+      const s = buf.toString('utf8', vs, ve).trim();
+      if (uuidRe.test(s) && s.toLowerCase() !== selfNorm) out.rootCascadeId = s;
+    }
+  });
+  return out;
+}
+
+const conversationDbMetaCache = new Map();
+const MAX_CONVERSATION_DB_CACHE_ENTRIES = 500;
+
+function getDbFileCacheSig(dbPath) {
+  try {
+    const stDb = origFsMethods.statSync(dbPath);
+    if (!stDb.isFile()) return null;
+    const walPath = `${dbPath}-wal`;
+    const shmPath = `${dbPath}-shm`;
+    let walSize = 0;
+    let walMtimeMs = 0;
+    let hasWal = false;
+    let hasShm = false;
+    try {
+      if (origFsMethods.existsSync(walPath)) {
+        const stWal = origFsMethods.statSync(walPath);
+        hasWal = stWal.isFile();
+        walSize = stWal.size || 0;
+        walMtimeMs = stWal.mtimeMs || 0;
+      }
+    } catch { }
+    try {
+      hasShm = origFsMethods.existsSync(shmPath) && origFsMethods.statSync(shmPath).isFile();
+    } catch { }
+    return {
+      sig: `${stDb.size}:${stDb.mtimeMs}:${hasWal ? 1 : 0}:${walSize}:${walMtimeMs}:${hasShm ? 1 : 0}`,
+      hasWal,
+      walSize,
+      hasShm
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 严格只读且兼顾 WAL 一致性地读取会话 .db（不修改 .db / -wal / -shm，不以 immutable 绕过活跃锁读取撕裂页）：
+ * - 当不存在非空 -wal 时，使用 ?immutable=1（零写零锁，且兼容 WSL UNC）；
+ * - 当存在非空 -wal 且存在 -shm 时，使用 ?mode=ro（遵守 SQLite 锁读取一致 WAL 快照，不创建新伴生文件）；
+ * - 当存在非空 -wal 但缺少 -shm 或只读受锁阻断时，安全降级返回空（保留未知，等待后续 checkpoint 后再回填）。
+ */
+function loadConversationDbMeta(dbPath, selfCascadeId = '') {
+  const emptyResult = {
+    stepMetaMap: new Map(),
+    stepToModel: new Map(),
+    parentCascadeId: '',
+    rootCascadeId: '',
+    subagentType: '',
+    subagentRole: '',
+    readMode: 'skipped',
+    skippedReason: null
+  };
+  if (!dbPath || !origFsMethods.existsSync(dbPath)) {
+    return { ...emptyResult, skippedReason: 'missing' };
+  }
   const DatabaseSync = getNodeDatabaseSync();
-  if (!DatabaseSync) return stepToModel;
+  if (!DatabaseSync) {
+    return { ...emptyResult, skippedReason: 'sqlite_unavailable' };
+  }
+  const sigInfo = getDbFileCacheSig(dbPath);
+  if (!sigInfo) {
+    return { ...emptyResult, skippedReason: 'stat_failed' };
+  }
+
+  const cacheKey = process.platform === 'win32' ? String(dbPath).toLowerCase() : String(dbPath);
+  const cached = conversationDbMetaCache.get(cacheKey);
+  if (cached && cached.sig === sigInfo.sig) {
+    return cached.value;
+  }
+
+  let targetUri = null;
+  let readMode = 'immutable';
+  if (!sigInfo.hasWal || sigInfo.walSize === 0) {
+    targetUri = buildSqliteImmutableUri(dbPath);
+    readMode = 'immutable';
+  } else if (sigInfo.hasShm) {
+    targetUri = buildSqliteModeRoUri(dbPath);
+    readMode = 'mode_ro_wal';
+  } else {
+    return { ...emptyResult, readMode: 'skipped', skippedReason: 'wal_without_shm' };
+  }
+
+  const stepMetaMap = new Map();
+  const stepToModel = new Map();
+  let parentCascadeId = '';
+  let rootCascadeId = '';
+  let subagentType = '';
+  let subagentRole = '';
+
   let db = null;
   try {
-    db = new DatabaseSync(buildSqliteImmutableUri(dbPath), { readOnly: true });
-    const rows = db.prepare('SELECT data FROM gen_metadata').all();
-    for (const row of rows) {
-      const entries = extractStepModelsFromGenMetadataBlob(row?.data);
-      for (const item of entries) {
-        if (item && Number.isInteger(item.stepIndex) && item.model) {
-          stepToModel.set(item.stepIndex, item.model);
+    db = new DatabaseSync(targetUri, { readOnly: true });
+    try {
+      const rows = db.prepare('SELECT data FROM gen_metadata').all();
+      for (const row of rows) {
+        const entries = extractStepMetaFromGenMetadataBlob(row?.data);
+        for (const item of entries) {
+          if (!item || !Number.isInteger(item.stepIndex)) continue;
+          stepMetaMap.set(item.stepIndex, item);
+          if (item.model) stepToModel.set(item.stepIndex, item.model);
+          if (!parentCascadeId && item.parentCascadeId) parentCascadeId = item.parentCascadeId;
+          if (!rootCascadeId && item.rootCascadeId) rootCascadeId = item.rootCascadeId;
+          if (!subagentType && item.subagentType) subagentType = item.subagentType;
         }
       }
+    } catch {
+      // 忽略缺失 gen_metadata 表或非预期 schema
     }
-  } catch {
-    // 忽略损坏文件、缺失表或非预期 schema
+    try {
+      const tmbRows = db.prepare('SELECT data FROM trajectory_metadata_blob LIMIT 2').all();
+      for (const row of tmbRows) {
+        const tm = extractTrajectoryBlobMeta(row?.data, selfCascadeId);
+        if (!parentCascadeId && tm.parentCascadeId) parentCascadeId = tm.parentCascadeId;
+        if (!rootCascadeId && tm.rootCascadeId) rootCascadeId = tm.rootCascadeId;
+        if (!subagentType && tm.subagentType) subagentType = tm.subagentType;
+        if (!subagentRole && tm.subagentRole) subagentRole = tm.subagentRole;
+      }
+    } catch {
+      // 旧库可能没有 trajectory_metadata_blob
+    }
+  } catch (err) {
+    return {
+      ...emptyResult,
+      readMode: 'skipped',
+      skippedReason: err?.code || err?.message || 'sqlite_open_error'
+    };
   } finally {
     if (db) {
       try { db.close(); } catch { }
     }
   }
-  return stepToModel;
+
+  const out = {
+    stepMetaMap,
+    stepToModel,
+    parentCascadeId,
+    rootCascadeId,
+    subagentType,
+    subagentRole,
+    readMode,
+    skippedReason: null
+  };
+  if (conversationDbMetaCache.size >= MAX_CONVERSATION_DB_CACHE_ENTRIES) {
+    const oldest = conversationDbMetaCache.keys().next().value;
+    if (oldest) conversationDbMetaCache.delete(oldest);
+  }
+  conversationDbMetaCache.set(cacheKey, { sig: sigInfo.sig, value: out });
+  return out;
+}
+
+function loadStepModelMapFromSqlite(dbPath) {
+  return loadConversationDbMeta(dbPath).stepToModel;
 }
 
 function backfillMissingModelsFromConversationDb(records, convDir, options = {}) {
   if (!Array.isArray(records) || !records.length || !convDir || options.fs || isFsMonkeyPatched()) return 0;
 
-  const missingByCascade = new Map();
+  const targetByCascade = new Map();
   for (const rec of records) {
-    if (!rec || rec.model || !(rec.tot > 0)) continue;
+    if (!rec || !(rec.tot > 0)) continue;
+    const needsModel = !rec.model;
+    const needsMeta = !rec.modelExactId || rec.ttftSec == null || rec.streamingSec == null;
+    if (!needsModel && !needsMeta) continue;
     if (!Number.isInteger(rec.stepIndex) || rec.stepIndex < 0) continue;
     const cid = String(rec.cascadeId || '').trim();
     if (!cid || cid.includes('..') || cid.includes('/') || cid.includes('\\')) continue;
-    let list = missingByCascade.get(cid);
+    let list = targetByCascade.get(cid);
     if (!list) {
       list = [];
-      missingByCascade.set(cid, list);
+      targetByCascade.set(cid, list);
     }
     list.push(rec);
   }
-  if (missingByCascade.size === 0) return 0;
+  if (targetByCascade.size === 0) return 0;
 
   let filledCount = 0;
-  for (const [cid, recs] of missingByCascade.entries()) {
+  for (const [cid, recs] of targetByCascade.entries()) {
     const dbPath = path.join(convDir, `${cid}.db`);
-    const stepModelMap = loadStepModelMapFromSqlite(dbPath);
-    if (stepModelMap.size === 0) continue;
+    const dbMeta = loadConversationDbMeta(dbPath, cid);
+    if (dbMeta.stepMetaMap.size === 0) continue;
     for (const rec of recs) {
-      const recovered = stepModelMap.get(rec.stepIndex);
-      if (recovered) {
-        rec.model = recovered;
+      const recovered = dbMeta.stepMetaMap.get(rec.stepIndex);
+      if (!recovered) continue;
+      if (!rec.model && recovered.model) {
+        rec.model = recovered.model;
         filledCount++;
+      }
+      if (!rec.modelExactId && recovered.modelExactId) {
+        rec.modelExactId = recovered.modelExactId;
+      }
+      if (!rec.modelLabel && recovered.modelLabel) {
+        rec.modelLabel = recovered.modelLabel;
+      }
+      if (rec.ttftSec == null && recovered.ttftSec != null) {
+        rec.ttftSec = recovered.ttftSec;
+      }
+      if (rec.streamingSec == null && recovered.streamingSec != null) {
+        rec.streamingSec = recovered.streamingSec;
+      }
+      if (!rec.responseId && recovered.responseId) {
+        rec.responseId = recovered.responseId;
+      }
+      if (!rec.parentCascadeId && (recovered.parentCascadeId || dbMeta.parentCascadeId)) {
+        rec.parentCascadeId = recovered.parentCascadeId || dbMeta.parentCascadeId;
+      }
+      if (!rec.rootCascadeId && (recovered.rootCascadeId || dbMeta.rootCascadeId)) {
+        rec.rootCascadeId = recovered.rootCascadeId || dbMeta.rootCascadeId;
+      }
+      if (!rec.subagentType && (recovered.subagentType || dbMeta.subagentType)) {
+        rec.subagentType = recovered.subagentType || dbMeta.subagentType;
       }
     }
   }
@@ -3236,11 +3663,17 @@ function buildDailyModelBreakdown(params) {
   const modelMetaByKey = { ...(archiveV2?.modelMetaByKey || {}) };
   const matchedModels = { desktop: {}, cli: {} };
   const extraModels = { desktop: {}, cli: {} };
+  const bucketMemo = new Map();
 
   const addModelBucket = (srcMap, dateKey, callObj, inp, cap, outp, tot, steps = 1) => {
     if (!dateKey || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return;
     if (tot <= 0 && steps <= 0) return;
-    const bucket = resolveModelUsageBucket(callObj, compactModelConfigs);
+    const memoKey = `${callObj.model || ''}\0${callObj.modelExactId || ''}\0${callObj.modelLabel || ''}\0${callObj.effort || ''}`;
+    let bucket = bucketMemo.get(memoKey);
+    if (!bucket) {
+      bucket = resolveModelUsageBucket(callObj, compactModelConfigs);
+      if (bucketMemo.size < 2000) bucketMemo.set(memoKey, bucket);
+    }
     const vKey = bucket.variantKey || UNATTRIBUTED_MODEL_KEY;
     if (bucket.isAttributed && vKey !== UNATTRIBUTED_MODEL_KEY) {
       modelMetaByKey[vKey] = {
@@ -3380,9 +3813,7 @@ function buildDailyModelBreakdown(params) {
  * @param {object} extraContext
  */
 async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
-  const home = process.env.USERPROFILE || os.homedir();
-  const agDir = options.agDir || process.env.AG_DIR || path.join(home, '.gemini', 'antigravity');
-  const agCliDir = options.agCliDir || process.env.AG_CLI_DIR || path.join(home, '.gemini', 'antigravity-cli');
+  const { home, agDir, agCliDir } = resolvePrimaryGeminiDirs(options);
 
   const archivePathV1 = path.join(agDir, 'token_usage_archive_v1.json');
   const archivePathV2 = path.join(agDir, 'token_usage_archive_v2.json');
@@ -3429,8 +3860,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   };
 
-  // 3. 扫描桌面端与 CLI 会话文件（含 Windows 自动探测的 WSL 发行版目录，忽略伴生文件并按文件名去重）
-  const extraWsl = discoverWslGeminiDirs(options);
+  // 3. 扫描桌面端与 CLI 会话文件（含 Windows 异步探测的 WSL 发行版目录，忽略伴生文件并仅对标准 UUID 跨根去重）
+  const extraWsl = await discoverWslGeminiDirsAsync(options);
   const desktopAgDirs = dedupeScanPaths([
     agDir,
     ...(Array.isArray(options.extraAgDirs) ? options.extraAgDirs : []),
@@ -3446,21 +3877,44 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   let cliPbCount = 0;
   const seenDesktopConvs = new Set();
   const seenCliConvs = new Set();
-  const scanSessionDir = (dir, seenSet = null) => {
+  const nonUuidConvDirsBySource = {
+    desktop: new Map(),
+    cli: new Map()
+  };
+  const UUID_SESSION_FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:db|pb)$/i;
+  const scanSessionDir = (dir, sourceName, seenSet = null) => {
     let count = 0;
     try {
       if (!fs.existsSync(dir)) return 0;
+      const normDirKey = process.platform === 'win32' ? path.resolve(dir).toLowerCase() : path.resolve(dir);
       for (const name of fs.readdirSync(dir)) {
         if (isCompanionOrTempFile(name)) continue;
         if (!name.endsWith('.pb') && !name.endsWith('.db')) continue;
-        const dedupeKey = process.platform === 'win32' ? name.toLowerCase() : name;
-        if (seenSet && seenSet.has(dedupeKey)) continue;
         const p = path.join(dir, name);
+        const isUuid = UUID_SESSION_FILE_RE.test(name);
+        let dedupeKey;
+        if (isUuid) {
+          dedupeKey = process.platform === 'win32' ? name.toLowerCase() : name;
+        } else {
+          // 非 UUID 会话不仅靠文件名合并，仅在真实路径相同时视作同一个文件，或后续通过共享 responseId 事件确认镜像
+          let realFile = p;
+          try { realFile = fs.realpathSync(p); } catch { }
+          dedupeKey = process.platform === 'win32' ? realFile.toLowerCase() : realFile;
+        }
+        if (seenSet && seenSet.has(dedupeKey)) continue;
         try {
           const st = fs.statSync(p);
           if (st.isFile()) {
             if (seenSet) seenSet.add(dedupeKey);
             count++;
+            if (!isUuid) {
+              const baseLower = name.replace(/\.(?:db|pb)$/i, '').toLowerCase();
+              const dirMap = nonUuidConvDirsBySource[sourceName];
+              if (dirMap) {
+                if (!dirMap.has(baseLower)) dirMap.set(baseLower, new Set());
+                dirMap.get(baseLower).add(normDirKey);
+              }
+            }
             const ts = st.birthtimeMs && st.birthtimeMs > 946684800000 ? Math.min(st.birthtimeMs, st.mtimeMs) : st.mtimeMs;
             if (ts > 946684800000) registerDate(formatLocalDateKey(new Date(ts)));
           }
@@ -3471,10 +3925,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   };
 
   for (const dDir of desktopAgDirs) {
-    desktopPbCount += scanSessionDir(path.join(dDir, 'conversations'), seenDesktopConvs);
+    desktopPbCount += scanSessionDir(path.join(dDir, 'conversations'), 'desktop', seenDesktopConvs);
   }
   for (const cDir of cliAgDirs) {
-    cliPbCount += scanSessionDir(path.join(cDir, 'conversations'), seenCliConvs);
+    cliPbCount += scanSessionDir(path.join(cDir, 'conversations'), 'cli', seenCliConvs);
   }
 
   // 4. 多目录遍历扫描 transcript.jsonl（跳过 steps/scratch 重型目录，软链接与环路去重）
@@ -3543,7 +3997,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     desktop: {},
     cli: {}
   };
-  const seenEvents = new Set();
+  const seenEvents = new Map();
   const recentRequests = [];
 
   for (let jIdx = 0; jIdx < transcriptJobs.length; jIdx++) {
@@ -3584,6 +4038,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
 
           let inp = 0, outp = 0, cap = 0, thinking = 0;
           const model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
+          const modelExactId = event.chatModel?.modelId || event.modelId || '';
+          const modelLabel = event.chatModel?.modelDisplayName || '';
 
           if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
             inp = Number(event.input_tokens || 0);
@@ -3613,6 +4069,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
               cascadeId,
               stepIndex,
               model,
+              ...(modelExactId ? { modelExactId } : {}),
+              ...(modelLabel ? { modelLabel } : {}),
               inp,
               outp,
               cap,
@@ -3635,6 +4093,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         transcriptFileCache.set(job.path, { size: st.size, mtimeMs: st.mtimeMs, records: fileRecords });
       }
 
+      const jobConvNorm = job.convDir ? (process.platform === 'win32' ? path.resolve(job.convDir).toLowerCase() : path.resolve(job.convDir)) : '';
       for (let rIdx = 0; rIdx < fileRecords.length; rIdx++) {
         const rec = fileRecords[rIdx];
         const parsedDate = new Date(rec.created_at);
@@ -3642,8 +4101,41 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         const dateKey = formatLocalDateKey(parsedDate);
         registerDate(dateKey);
         if (!rec.tot || !rec.eventId) continue;
-        if (seenEvents.has(rec.eventId)) continue;
-        seenEvents.add(rec.eventId);
+
+        const existingReq = seenEvents.get(rec.eventId);
+        if (existingReq) {
+          // 跨根重复事件绝不重复累加 Token；仅当新根回填/保留了更优模型标识时就地富化原记录
+          if (getCollectorModelRank(rec.model) > getCollectorModelRank(existingReq.model)) {
+            existingReq.model = rec.model;
+            existingReq.modelKey = normalizeModelId(rec.model);
+            const enrichedCost = calculateRequestApiCost(existingReq);
+            existingReq.isPriced = enrichedCost.isPriced;
+            existingReq.costUSD = enrichedCost.costUSD ?? 0;
+          }
+          if (!existingReq.modelExactId && rec.modelExactId) existingReq.modelExactId = rec.modelExactId;
+          if (!existingReq.modelLabel && rec.modelLabel) existingReq.modelLabel = rec.modelLabel;
+          // 若两个不同 convDir 下的非 UUID 同名会话共享同一真实 responseId（非 step 拼接键），证明是同一镜像会话
+          if (
+            !String(rec.eventId).includes('#') &&
+            existingReq.source === job.source &&
+            existingReq._convDirNorm &&
+            jobConvNorm &&
+            existingReq._convDirNorm !== jobConvNorm &&
+            existingReq.cascadeId &&
+            existingReq.cascadeId === rec.cascadeId &&
+            !UUID_SESSION_FILE_RE.test(`${rec.cascadeId}.db`)
+          ) {
+            const baseLower = String(rec.cascadeId).toLowerCase();
+            const mirrorKey = `${job.source}|${jobConvNorm}|${baseLower}`;
+            const convDirSet = nonUuidConvDirsBySource[job.source]?.get(baseLower);
+            if (convDirSet && convDirSet.has(existingReq._convDirNorm) && convDirSet.has(jobConvNorm) && !seenEvents.has(`__mirror_dedup:${mirrorKey}`)) {
+              seenEvents.set(`__mirror_dedup:${mirrorKey}`, true);
+              if (job.source === 'cli' && cliPbCount > 1) cliPbCount--;
+              else if (job.source === 'desktop' && desktopPbCount > 1) desktopPbCount--;
+            }
+          }
+          continue;
+        }
 
         const srcMap = scannedBySource[job.source] || scannedBySource.desktop;
         if (!srcMap[dateKey]) {
@@ -3659,9 +4151,12 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         const reqObj = {
           callId: rec.eventId,
           source: job.source,
+          _convDirNorm: jobConvNorm,
           cascadeId: rec.cascadeId,
           stepIndex: rec.stepIndex,
           model: rec.model,
+          ...(rec.modelExactId ? { modelExactId: rec.modelExactId } : {}),
+          ...(rec.modelLabel ? { modelLabel: rec.modelLabel } : {}),
           modelKey,
           inputTokens: rec.inp,
           cacheTokens: rec.cap,
@@ -3681,6 +4176,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         reqObj.isPriced = costCalc.isPriced;
         reqObj.costUSD = costCalc.costUSD ?? 0;
 
+        seenEvents.set(rec.eventId, reqObj);
         recentRequests.push(reqObj);
       }
     } catch { }
@@ -4335,6 +4831,13 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     compactModelConfigs
   });
 
+  const cacheReadStatsAll = summarizeDailyMapCacheStats(dailyMapAll);
+  const cacheReadStatsDesktop = summarizeDailyMapCacheStats(mergedDesktop);
+  const cacheReadStatsCli = summarizeDailyMapCacheStats(mergedCli);
+  const currentMonthCacheReadStatsAll = summarizeDailyMapCacheStats(dailyMapAll, monthPrefix);
+  const currentMonthCacheReadStatsDesktop = summarizeDailyMapCacheStats(mergedDesktop, monthPrefix);
+  const currentMonthCacheReadStatsCli = summarizeDailyMapCacheStats(mergedCli, monthPrefix);
+
   const prevAccountEmail = Object.prototype.hasOwnProperty.call(extraContext, 'prevAccountEmail')
     ? extraContext.prevAccountEmail
     : (collectTokenHistoryAsync._lastAccountEmail || null);
@@ -4373,7 +4876,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       wsl: {
         distros: extraWsl.distros,
         desktopDirsCount: extraWsl.desktopDirs.length,
-        cliDirsCount: extraWsl.cliDirs.length
+        cliDirsCount: extraWsl.cliDirs.length,
+        skippedRoots: Array.isArray(extraWsl.skippedRoots) ? extraWsl.skippedRoots : []
       }
     },
     planStatus: effectivePlanStatus,
@@ -4386,6 +4890,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       all: costEstimateAll,
       desktop: costEstimateDesktop,
       cli: costEstimateCli
+    },
+    cacheReadStatsBySource: {
+      all: cacheReadStatsAll,
+      desktop: cacheReadStatsDesktop,
+      cli: cacheReadStatsCli
+    },
+    currentMonthCacheReadStatsBySource: {
+      all: currentMonthCacheReadStatsAll,
+      desktop: currentMonthCacheReadStatsDesktop,
+      cli: currentMonthCacheReadStatsCli
     },
     referenceCost: {
       all: referenceCostAll,
@@ -4404,6 +4918,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       currentMonthInput,
       currentMonthOutput,
       currentMonthCache,
+      cacheReadStats: cacheReadStatsAll,
+      currentMonthCacheReadStats: currentMonthCacheReadStatsAll,
       totalSteps,
       totalConversations,
       firstUseDate: earliestDate,
@@ -4549,6 +5065,406 @@ async function collectTokenHistoryAsync(options = {}) {
   return runner;
 }
 
+/**
+ * 从单个 transcript.jsonl 提取用户轮次标记、模型调用记录与可验证的子代理调用关联。
+ */
+function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, sourceName = 'desktop', extraOpts = {}) {
+  const turns = [];
+  const calls = [];
+  const subagentLinks = [];
+  const uuidExtractRe = /"conversationId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/gi;
+
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return { turns, calls, subagentLinks };
+  }
+
+  let content = '';
+  try {
+    content = fs.readFileSync(transcriptPath, 'utf8');
+  } catch {
+    return { turns, calls, subagentLinks };
+  }
+
+  const dbMeta = convDir && !extraOpts.fs && !isFsMonkeyPatched()
+    ? loadConversationDbMeta(path.join(convDir, `${cascadeId}.db`), cascadeId)
+    : null;
+
+  const lines = content.split(/\r?\n/);
+  const explicitUserTurns = [];
+  const fallbackUserTurns = [];
+  const pendingInvokes = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    let event = null;
+    try { event = JSON.parse(line); } catch { continue; }
+
+    const rawStep = event.step_index ?? event.stepIndex;
+    const parsedStep = rawStep !== undefined && rawStep !== null && rawStep !== '' ? Number(rawStep) : NaN;
+    const stepIndex = Number.isInteger(parsedStep) && parsedStep >= 0 ? parsedStep : null;
+    const createdAt = event.created_at || event.createdAt || null;
+    const ts = createdAt ? Date.parse(createdAt) : NaN;
+    const validTs = Number.isFinite(ts) && ts > 0 ? ts : null;
+
+    if (event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user') {
+      const textBody = typeof event.content === 'string' ? event.content : (typeof event.text === 'string' ? event.text : '');
+      const rawPreview = textBody.replace(/\s+/g, ' ').trim().slice(0, 120);
+      const turnEntry = {
+        stepIndex,
+        timestamp: validTs,
+        created_at: createdAt,
+        source: event.source || 'USER_EXPLICIT',
+        preview: rawPreview
+      };
+      if (event.source === 'SYSTEM_SDK') {
+        fallbackUserTurns.push(turnEntry);
+      } else {
+        explicitUserTurns.push(turnEntry);
+      }
+      continue;
+    }
+
+    if (Array.isArray(event.tool_calls)) {
+      for (const tc of event.tool_calls) {
+        if (!tc || !tc.name) continue;
+        if (tc.name === 'invoke_subagent' || tc.name === 'send_message') {
+          const cleanArg = (v) => (typeof v === 'string' ? v.replace(/^"|"$/g, '').trim() : '');
+          pendingInvokes.push({
+            stepIndex,
+            toolName: tc.name,
+            role: cleanArg(tc.args?.Role),
+            typeName: cleanArg(tc.args?.TypeName),
+            recipient: cleanArg(tc.args?.Recipient)
+          });
+        }
+      }
+    }
+
+    if (typeof event.content === 'string' && event.content.includes('conversationId')) {
+      let m;
+      uuidExtractRe.lastIndex = 0;
+      while ((m = uuidExtractRe.exec(event.content)) !== null) {
+        const childCid = m[1];
+        if (!childCid || childCid.toLowerCase() === String(cascadeId).toLowerCase()) continue;
+        // 寻找紧邻前文的 invoke_subagent 调用以定位准确父步骤和 Role/TypeName
+        let matchedInvoke = null;
+        for (let pIdx = pendingInvokes.length - 1; pIdx >= 0; pIdx--) {
+          const inv = pendingInvokes[pIdx];
+          if (inv.toolName === 'invoke_subagent' && (stepIndex === null || inv.stepIndex === null || Math.abs(stepIndex - inv.stepIndex) <= 15)) {
+            matchedInvoke = inv;
+            break;
+          }
+        }
+        const alreadyLinked = subagentLinks.find(l => l.childCid.toLowerCase() === childCid.toLowerCase());
+        if (!alreadyLinked) {
+          subagentLinks.push({
+            childCid,
+            parentCascadeId: cascadeId,
+            parentStepIndex: matchedInvoke?.stepIndex ?? stepIndex,
+            subagentRole: matchedInvoke?.role || '',
+            subagentType: matchedInvoke?.typeName || '',
+            confidence: 'verified_tool_output'
+          });
+        }
+      }
+    }
+
+    const u = event.chatModel?.usage || null;
+    const hasTokenFields = event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null || u != null;
+    if (!hasTokenFields && !event.error && event.type !== 'PLANNER_RESPONSE') continue;
+
+    const inp = event.input_tokens != null ? Number(event.input_tokens || 0) : (u?.inputTokens != null ? Number(u.inputTokens || 0) : null);
+    const outp = event.output_tokens != null ? Number(event.output_tokens || 0) : (u?.outputTokens != null ? Number(u.outputTokens || 0) : null);
+    const cap = event.cache_read_tokens != null ? Number(event.cache_read_tokens || 0) : (u?.cacheReadTokens != null ? Number(u.cacheReadTokens || 0) : null);
+    const thinking = event.thinking_output_tokens != null ? Number(event.thinking_output_tokens || 0) : (u?.thinkingOutputTokens != null ? Number(u.thinkingOutputTokens || 0) : 0);
+
+    const dbStep = (dbMeta && stepIndex !== null) ? dbMeta.stepMetaMap.get(stepIndex) : null;
+    const model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || dbStep?.model || '';
+    const modelExactId = event.chatModel?.modelId || event.modelId || dbStep?.modelExactId || '';
+    const modelLabel = event.chatModel?.modelDisplayName || dbStep?.modelLabel || '';
+
+    const callId = dbStep?.responseId || extractCallId(event, cascadeId, stepIndex ?? i);
+    if (!callId) continue;
+
+    const hasUsageNums = inp !== null || cap !== null || outp !== null;
+    if (!hasUsageNums && !event.error) continue;
+
+    calls.push({
+      callId,
+      cascadeId,
+      source: sourceName,
+      stepIndex,
+      model,
+      ...(modelExactId ? { modelExactId } : {}),
+      ...(modelLabel ? { modelLabel } : {}),
+      inputTokens: inp,
+      cacheReadTokens: cap,
+      cacheTokens: cap,
+      outputTokens: outp,
+      thinkingTokens: thinking,
+      totalTokens: hasUsageNums ? ((inp || 0) + (cap || 0) + (outp || 0)) : null,
+      hasInputCacheFields: inp !== null || cap !== null,
+      ttftSec: dbStep?.ttftSec ?? null,
+      streamingSec: dbStep?.streamingSec ?? null,
+      status: event.status === 'RUNNING' ? 'streaming' : 'final',
+      ...(event.error ? { error: String(event.error) } : {}),
+      date: validTs ? formatLocalDateKey(new Date(validTs)) : null,
+      dateSource: 'transcript',
+      dateIsProvisional: false,
+      created_at: createdAt,
+      timestamp: validTs
+    });
+  }
+
+  const chosenTurns = explicitUserTurns.length ? explicitUserTurns : fallbackUserTurns;
+  for (const t of chosenTurns) turns.push(t);
+  return { turns, calls, subagentLinks, dbMeta };
+}
+
+const subagentParentIndexCache = { dirMtimesKey: '', byParent: new Map(), at: 0 };
+
+/**
+ * 基于目录签名缓存扫描所有可用根目录 conversations/*.db，查找显式记录了 parentCascadeId / rootCascadeId 的子代理会话。
+ */
+function findSubagentChildrenFromConvDirs(parentCascadeId, convDirs = [], options = {}) {
+  if (!parentCascadeId || options.fs || isFsMonkeyPatched()) return [];
+  const normParent = String(parentCascadeId).trim().toLowerCase();
+  const dirSigParts = [];
+  const uniqueConvDirs = dedupeScanPaths(convDirs);
+  for (const d of uniqueConvDirs) {
+    try {
+      if (origFsMethods.existsSync(d)) {
+        const st = origFsMethods.statSync(d);
+        dirSigParts.push(`${d}:${st.mtimeMs}`);
+      }
+    } catch { }
+  }
+  const dirKey = dirSigParts.join('|');
+  if (subagentParentIndexCache.dirMtimesKey !== dirKey || (Date.now() - subagentParentIndexCache.at) > 60000) {
+    const nextByParent = new Map();
+    for (const cDir of uniqueConvDirs) {
+      try {
+        if (!origFsMethods.existsSync(cDir)) continue;
+        for (const name of origFsMethods.readdirSync(cDir)) {
+          if (!name.endsWith('.db')) continue;
+          const cid = name.slice(0, -3);
+          const dbMeta = loadConversationDbMeta(path.join(cDir, name), cid);
+          const pRaw = String(dbMeta.parentCascadeId || '').trim();
+          const rRaw = String(dbMeta.rootCascadeId || '').trim();
+          const parentKeys = new Set([pRaw.toLowerCase(), rRaw.toLowerCase()].filter(k => k && k !== cid.toLowerCase()));
+          for (const pk of parentKeys) {
+            let list = nextByParent.get(pk);
+            if (!list) { list = []; nextByParent.set(pk, list); }
+            if (!list.some(item => item.childCid === cid && item.convDir === cDir)) {
+              list.push({
+                childCid: cid,
+                parentCascadeId: pRaw || rRaw,
+                rootCascadeId: rRaw || pRaw,
+                subagentType: dbMeta.subagentType || '',
+                subagentRole: dbMeta.subagentRole || '',
+                convDir: cDir
+              });
+            }
+          }
+        }
+      } catch { }
+    }
+    subagentParentIndexCache.dirMtimesKey = dirKey;
+    subagentParentIndexCache.byParent = nextByParent;
+    subagentParentIndexCache.at = Date.now();
+  }
+  return subagentParentIndexCache.byParent.get(normParent) || [];
+}
+
+/**
+ * 聚合指定会话的按用户轮次请求时间线与可验证子代理调用（仅只读访问，复用现有本地目录与账本）。
+ */
+async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
+  const cid = String(cascadeId || '').trim();
+  if (!cid || cid.includes('..') || cid.includes('/') || cid.includes('\\')) {
+    return { cascadeId: cid, turns: [], unlinkedSubagentCalls: [], totalCalls: 0, mainCallsCount: 0, subagentCallsCount: 0, cacheSummary: summarizeCacheReadStats([]), latestCall: null, subagentLinks: [] };
+  }
+
+  const { agDir, agCliDir } = resolvePrimaryGeminiDirs(options);
+  const extraWsl = await discoverWslGeminiDirsAsync(options);
+
+  const rootEntries = [
+    ...dedupeScanPaths([agDir, ...(Array.isArray(options.extraAgDirs) ? options.extraAgDirs : []), ...extraWsl.desktopDirs]).map(d => ({ dir: d, source: 'desktop' })),
+    ...dedupeScanPaths([agCliDir, ...(Array.isArray(options.extraAgCliDirs) ? options.extraAgCliDirs : []), ...extraWsl.cliDirs]).map(d => ({ dir: d, source: 'cli' }))
+  ];
+
+  const allTurns = [];
+  const allCalls = [];
+  const subagentMap = new Map();
+  let mainDbMeta = null;
+
+  const findTranscriptForCid = (targetCid) => {
+    for (const r of rootEntries) {
+      const candidates = [
+        path.join(r.dir, 'brain', targetCid, '.system_generated', 'logs', 'transcript.jsonl'),
+        path.join(r.dir, 'brain', targetCid, 'transcript.jsonl')
+      ];
+      for (const tp of candidates) {
+        if (fs.existsSync(tp)) {
+          return { path: tp, convDir: path.join(r.dir, 'conversations'), source: r.source };
+        }
+      }
+    }
+    return null;
+  };
+
+  // 1. 解析主会话自身 transcript + .db
+  const mainFile = findTranscriptForCid(cid);
+  if (mainFile) {
+    const parsed = parseTranscriptForSessionTimeline(mainFile.path, cid, mainFile.convDir, mainFile.source, options);
+    allTurns.push(...parsed.turns);
+    allCalls.push(...parsed.calls);
+    if (parsed.dbMeta) mainDbMeta = parsed.dbMeta;
+    for (const link of parsed.subagentLinks) {
+      subagentMap.set(link.childCid.toLowerCase(), link);
+    }
+  } else if (!options.fs && !isFsMonkeyPatched()) {
+    for (const r of rootEntries) {
+      const dbP = path.join(r.dir, 'conversations', `${cid}.db`);
+      if (fs.existsSync(dbP)) {
+        mainDbMeta = loadConversationDbMeta(dbP, cid);
+        break;
+      }
+    }
+  }
+
+  // 2. 合并前端 / RPC 传入的 liveSteps（识别当前尚未写入磁盘的最新轮次与 invoke_subagent 调用）
+  if (Array.isArray(options.liveSteps) && options.liveSteps.length) {
+    for (let idx = 0; idx < options.liveSteps.length; idx++) {
+      const s = options.liveSteps[idx];
+      if (!s || typeof s !== 'object') continue;
+      const stepIndex = Number.isInteger(Number(s.stepIndex ?? s.idx)) ? Number(s.stepIndex ?? s.idx) : idx;
+      if (s.userInput) {
+        const u = s.userInput;
+        const rawPreview = String(u.userResponse || (u.items || []).map(item => item.text || '').join(' ') || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        const already = allTurns.some(t => t.stepIndex === stepIndex);
+        if (!already) {
+          allTurns.push({
+            stepIndex,
+            timestamp: s.timestamp || (s.createdAt ? Date.parse(s.createdAt) : null),
+            created_at: s.createdAt || null,
+            source: u.source || 'USER_EXPLICIT',
+            preview: rawPreview
+          });
+        }
+      }
+    }
+  }
+
+  // 3. 合并来自当前会话 RPC / 前端传来的 liveCalls
+  const cascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
+  if (Array.isArray(options.liveCalls)) {
+    for (const c of options.liveCalls) {
+      if (!c || typeof c !== 'object') continue;
+      if (c.cascadeId && String(c.cascadeId).toLowerCase() !== cid.toLowerCase()) continue;
+      const dbStep = (mainDbMeta && Number.isInteger(Number(c.stepIndex)))
+        ? mainDbMeta.stepMetaMap.get(Number(c.stepIndex))
+        : null;
+      allCalls.push({
+        ...c,
+        cascadeId: c.cascadeId || cid,
+        modelExactId: c.modelExactId || dbStep?.modelExactId || resolveStableModelId(c, cascadeConfigs) || undefined,
+        modelLabel: c.modelLabel || dbStep?.modelLabel || undefined
+      });
+    }
+  }
+
+  // 4. 合并本地 pricing_ledger_v1.json 中当前会话（及其子代理）的持久化记录
+  const ledger = loadPricingLedger(agDir, options.fs ? { fs: options.fs } : undefined);
+  const ledgerCalls = ledger && ledger.calls && typeof ledger.calls === 'object' ? Object.values(ledger.calls) : [];
+  const normCid = cid.toLowerCase();
+  for (const lc of ledgerCalls) {
+    if (!lc || !lc.cascadeId) continue;
+    if (String(lc.cascadeId).toLowerCase() === normCid) {
+      allCalls.push(lc);
+    }
+  }
+
+  // 5. 发现基于 .db parent_cascade_id / root_cascade_id 的可验证子代理会话
+  const dbChildren = findSubagentChildrenFromConvDirs(cid, rootEntries.map(r => path.join(r.dir, 'conversations')), options);
+  for (const dc of dbChildren) {
+    const k = dc.childCid.toLowerCase();
+    const existing = subagentMap.get(k);
+    if (!existing) {
+      subagentMap.set(k, {
+        childCid: dc.childCid,
+        parentCascadeId: dc.parentCascadeId || cid,
+        parentStepIndex: null,
+        subagentRole: dc.subagentRole || '',
+        subagentType: dc.subagentType || '',
+        confidence: 'verified_db_meta'
+      });
+    } else if (!existing.subagentType && dc.subagentType) {
+      existing.subagentType = dc.subagentType;
+    }
+  }
+
+  // 6. 读取所有已验证关联子代理的 transcript + .db + ledger 调用
+  const subagentLinks = Array.from(subagentMap.values());
+  for (const link of subagentLinks) {
+    const childFile = findTranscriptForCid(link.childCid);
+    const childNorm = link.childCid.toLowerCase();
+    if (childFile) {
+      const childParsed = parseTranscriptForSessionTimeline(childFile.path, link.childCid, childFile.convDir, childFile.source, options);
+      for (const cc of childParsed.calls) {
+        allCalls.push({
+          ...cc,
+          agentRole: 'subagent',
+          parentCascadeId: link.parentCascadeId || cid,
+          parentStepIndex: link.parentStepIndex ?? null,
+          subagentType: link.subagentType || childParsed.dbMeta?.subagentType || '',
+          subagentRole: link.subagentRole || childParsed.dbMeta?.subagentRole || '',
+          attributionConfidence: link.confidence
+        });
+      }
+    }
+    for (const lc of ledgerCalls) {
+      if (!lc || !lc.cascadeId) continue;
+      if (String(lc.cascadeId).toLowerCase() === childNorm) {
+        allCalls.push({
+          ...lc,
+          agentRole: 'subagent',
+          parentCascadeId: link.parentCascadeId || cid,
+          parentStepIndex: link.parentStepIndex ?? null,
+          subagentType: link.subagentType || '',
+          subagentRole: link.subagentRole || '',
+          attributionConfidence: link.confidence
+        });
+      }
+    }
+  }
+
+  const grouped = groupSessionCallsByTurns(allTurns, allCalls, {
+    cascadeId: cid,
+    cascadeModelConfigs: cascadeConfigs,
+    userStatus: options.userStatus || null
+  });
+  return {
+    ...grouped,
+    subagentLinks,
+    subagentNote: mainDbMeta?.skippedReason ? `db_${mainDbMeta.skippedReason}` : null
+  };
+}
+
+async function collectSessionTimelineAsync(cascadeId, options = {}) {
+  if (canUseHistoryWorker(options)) {
+    const workerResp = await runHistoryWorkerTask({
+      cascadeId,
+      options: cloneCollectorOptionsForWorker(options)
+    }, 'collectSessionTimeline', options);
+    if (workerResp && workerResp._workerHandled && workerResp.result) {
+      return workerResp.result;
+    }
+  }
+  return collectSessionTimelineCoreAsync(cascadeId, options);
+}
+
 if (!isMainThread && workerData && workerData.agCollectorHistoryWorker && parentPort) {
   parentPort.on('message', async (msg) => {
     const { id, cmd, payload, env } = msg || {};
@@ -4581,6 +5497,10 @@ if (!isMainThread && workerData && workerData.agCollectorHistoryWorker && parent
           ...(result?.code ? { code: result.code } : {})
         };
         parentPort.postMessage({ id, ok: true, result: plainResult });
+      } else if (cmd === 'collectSessionTimeline') {
+        const opts = { ...(payload?.options || {}), _inWorker: true };
+        const result = await collectSessionTimelineCoreAsync(payload?.cascadeId || '', opts);
+        parentPort.postMessage({ id, ok: true, result });
       } else {
         throw new Error(`Unknown collector worker command: ${cmd}`);
       }
@@ -6233,11 +7153,17 @@ module.exports = {
   resolveWslDistroUncRoot,
   collectGeminiDirsFromLinuxRoot,
   discoverWslGeminiDirs,
+  discoverWslGeminiDirsAsync,
   getEffectiveScanScopeKey,
   buildSqliteImmutableUri,
   extractStepModelsFromGenMetadataBlob,
+  extractStepMetaFromGenMetadataBlob,
+  extractTrajectoryBlobMeta,
+  loadConversationDbMeta,
   loadStepModelMapFromSqlite,
   backfillMissingModelsFromConversationDb,
+  collectSessionTimelineCoreAsync,
+  collectSessionTimelineAsync,
   scanFiles,
   pythonScan,
   resolvePython,

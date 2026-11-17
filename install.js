@@ -14,7 +14,7 @@ const http = require('http');
 const crypto = require('crypto');
 const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, getAppDataDir, isIsolatedTestPath, findAsarPath } = require('./asar-engine');
 const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
-const { loadModulesConfig, saveModulesConfig, acquireFileLock } = require('./modules-config');
+const { loadModulesConfig, saveModulesConfig, acquireFileLock, getHostCoreBuildId } = require('./modules-config');
 const {
   TAGS,
   validateSyntax,
@@ -868,20 +868,6 @@ function getRendererBuildId(filePath = null) {
     const p = filePath || path.join(__dirname, 'meter-renderer.js');
     if (!fs.existsSync(p)) return null;
     return sha(fs.readFileSync(p)).slice(0, 12);
-  } catch {
-    return null;
-  }
-}
-
-function getHostCoreBuildId(baseDir = null) {
-  try {
-    const root = baseDir || __dirname;
-    const h = crypto.createHash('sha256');
-    for (const f of ['cli.js', 'install.js', 'restore.js', 'live-host.js', 'local-api.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-context-unlock.js', 'meter-enhance.js', 'macos-binary-utils.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
-      const p = path.join(root, f);
-      if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
-    }
-    return h.digest('hex').slice(0, 12);
   } catch {
     return null;
   }

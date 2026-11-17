@@ -101,6 +101,15 @@
     isValidSpeedSample,
     computeMedian,
     summarizeSpeedByModel,
+    computeCacheReadStats,
+    summarizeCacheReadStats,
+    normalizeSessionCallRecord,
+    groupSessionCallsByTurns,
+    ELV91_SCORE_RULE_VERSION,
+    formatHumanDuration,
+    computeStreamStability,
+    calculateExperienceScore,
+    evaluateGenerationExperience,
     getLvlForRange,
     getDailyModelCost,
     calculateIntervalCost,
@@ -176,7 +185,15 @@
     disposed: false, layoutMode: 'wide', tooltipOpen: false,
     callsHydrated: false, syncedFinalMap: new Map(), pendingFinalCalls: new Map(),
     quarantinedOversizeMap: new Map(), flushFinalsBusy: false, pendingFlushForceSync: false,
-    nextFlushRetryAt: 0, nextOversizeRetryAt: 0
+    nextFlushRetryAt: 0, nextOversizeRetryAt: 0,
+    displayedCallRecord: null, displayedCallSig: '', pendingLatestCallRecord: null,
+    pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
+    historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
+    timelineError: '', expandedTurnKeys: new Set(), timelinePageLimit: 10,
+    lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
+    callEnterAnimTimer: null,
+    speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
+    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
   };
   const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
   let activeHeatView = 'daily';
@@ -2873,11 +2890,17 @@
     if (txResult.targetMode === 'fixed' || txResult.targetMode === 'dynamic' || txResult.targetMode === 'default') {
       scheduleConfirmTimeoutCheck();
     }
+    if (state.route && (!txResult.cascadeId || txResult.cascadeId === state.route)) {
+      startLivePendingRequestWait(txResult.cascadeId || state.route);
+    }
     refreshBudgetUiAfterDispatch();
     return rec;
   }
 
   function finishDispatchOutcome(dispatchId, ok, err) {
+    if (!ok) {
+      clearLivePendingRequestWait();
+    }
     if (!dispatchId || !budgetTracker) return;
     if (!ok) {
       const errMsg = String(err?.message || err || '');
@@ -9140,10 +9163,16 @@
     }
 
     const hasExistingData = Number(ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens) > 0;
-    const incomingKeys = Object.keys(payload.dailyMap || {});
-    const incomingTotal = Number(payload.summary?.grandTotalTokens) || incomingKeys.reduce((acc, k) => acc + (Number(payload.dailyMap[k]?.total) || 0), 0);
+    const incomingAllMap = payload.dailyMapBySource?.[activeTokenSource] || payload.dailyMapBySource?.all || payload.dailyMap || {};
+    const incomingKeys = Object.keys(incomingAllMap);
+    const incomingTotal = Number(payload.summary?.grandTotalTokens) || incomingKeys.reduce((acc, k) => acc + (Number(incomingAllMap[k]?.total) || 0), 0);
+    const hasIncomingBySourceData = Boolean(
+      payload.dailyMapBySource &&
+      typeof payload.dailyMapBySource === 'object' &&
+      Object.values(payload.dailyMapBySource).some(m => m && typeof m === 'object' && Object.keys(m).length > 0)
+    );
     const hasIncomingRefCost = Boolean(payload.referenceCost?.currentMonth?.totalCostUSD || payload.referenceCost?.all?.totalCostUSD);
-    const hasIncomingPayloadContent = incomingKeys.length > 0 || incomingTotal > 0 || hasIncomingRefCost;
+    const hasIncomingPayloadContent = incomingKeys.length > 0 || hasIncomingBySourceData || incomingTotal > 0 || hasIncomingRefCost;
     if (hasExistingData && !hasIncomingPayloadContent && !payload.isAccountSwitched && !payload.forceReset) {
       return false;
     }
@@ -9323,6 +9352,46 @@
     if (tMonthSub) tMonthSub.textContent = t('tokens.card.monthSub', { val: fmtCardM(avgMonth) });
     if (tYearVal) tYearVal.textContent = fmtCardM(yearTokens);
     if (tYearSub) tYearSub.textContent = t('tokens.card.yearSub', { n: totalDays });
+
+    const cs = sum.cacheReadStats || {
+      cacheStatus: (sum.totalInputTokens > 0 || sum.totalCacheTokens > 0) ? 'hit' : 'missing',
+      totalUncachedInput: Number(sum.totalInputTokens) || 0,
+      totalCacheRead: Number(sum.totalCacheTokens) || 0,
+      totalInput: (Number(sum.totalInputTokens) || 0) + (Number(sum.totalCacheTokens) || 0),
+      totalOutput: Number(sum.totalOutputTokens) || 0,
+      cacheReadPct: ((Number(sum.totalInputTokens) || 0) + (Number(sum.totalCacheTokens) || 0)) > 0
+        ? Number(((Number(sum.totalCacheTokens || 0) / ((Number(sum.totalInputTokens) || 0) + (Number(sum.totalCacheTokens) || 0))) * 100).toFixed(1))
+        : null,
+      missingCount: 0
+    };
+    const tcbInp = el('tcb-input-val');
+    const tcbCache = el('tcb-cache-val');
+    const tcbTotInp = el('tcb-total-input-val');
+    const tcbOut = el('tcb-output-val');
+    const tcbRatio = el('tcb-ratio-val');
+    const tcbNote = el('tcb-note');
+    const unknownText = t('tokens.cache.unknown');
+    if (tcbInp) tcbInp.textContent = cs.cacheStatus === 'missing' ? unknownText : fmtCardM(cs.totalUncachedInput);
+    if (tcbCache) tcbCache.textContent = cs.cacheStatus === 'missing' ? unknownText : fmtCardM(cs.totalCacheRead);
+    if (tcbTotInp) tcbTotInp.textContent = cs.cacheStatus === 'missing' ? unknownText : fmtCardM(cs.totalInput);
+    if (tcbOut) tcbOut.textContent = fmtCardM(sum.totalOutputTokens || cs.totalOutput || 0);
+    if (tcbRatio) {
+      if (cs.cacheStatus === 'missing') tcbRatio.textContent = unknownText;
+      else if (cs.cacheStatus === 'zero_input') tcbRatio.textContent = t('tokens.cache.na');
+      else tcbRatio.textContent = cs.cacheReadPct !== null ? `${cs.cacheReadPct}%` : unknownText;
+    }
+    if (tcbNote) {
+      tcbNote.hidden = false;
+      if (cs.cacheStatus === 'missing') {
+        tcbNote.textContent = t('tokens.cache.missingNote');
+      } else if (cs.cacheStatus === 'zero_input') {
+        tcbNote.textContent = t('tokens.cache.zeroInputNote');
+      } else if (cs.missingCount > 0) {
+        tcbNote.textContent = t('tokens.cache.partialNote', { n: cs.missingCount });
+      } else {
+        tcbNote.textContent = t('tokens.cache.weightedNote');
+      }
+    }
 
     // 聚合全周期各区间预估费用
     const allDateKeys = Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap || {});
@@ -10036,7 +10105,272 @@
     if (state.tooltipOpen) positionContextTooltip();
   }
 
+  function stopLiveWaitTickTimer() {
+    if (state.liveWaitTickTimer) {
+      clearInterval(state.liveWaitTickTimer);
+      state.liveWaitTickTimer = null;
+    }
+  }
+
+  function clearLivePendingRequestWait() {
+    state.livePendingRequest = null;
+    stopLiveWaitTickTimer();
+  }
+  earlyDisposeHooks.push(clearLivePendingRequestWait);
+
+  function resolveSpeedEvaluationInput() {
+    if (state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object') {
+      return state.speedOverrideForTest;
+    }
+    if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
+      const elapsedSec = Math.max(0, (Date.now() - state.livePendingRequest.startedAtMs) / 1000);
+      return {
+        phase: 'waiting',
+        status: 'waiting',
+        elapsedSec
+      };
+    }
+    const d = state.latest;
+    if (!d) return { phase: 'idle', status: 'idle' };
+    const latestRec = resolveLatestSessionCallRecord();
+    const sameActiveCall = latestRec && (!d.speed || !latestRec.outputTokens || Math.abs(Number(latestRec.outputTokens) - Number(d.speed?.outputTokens || 0)) <= 50 || latestRec.status === 'streaming');
+    const trackedSamples = (latestRec && state.streamSampleTracker?.byCallId?.get?.(latestRec.callId)) || null;
+
+    if (d.status === 'canceled' || d.errorClassification?.kind === 'canceled') {
+      return {
+        phase: 'canceled',
+        status: 'canceled',
+        outcomeStatus: 'canceled',
+        ttftSec: d.speed?.ttft ?? null,
+        totalDurationSec: d.speed?.duration ?? null,
+        outputTokens: d.speed?.outputTokens ?? null,
+        error: d.error || ''
+      };
+    }
+    if (d.exceeded || d.network || d.error || ['failed', 'quota_exhausted', 'rate_limited', 'auth_error', 'service_unavailable'].includes(d.status)) {
+      return {
+        phase: 'failed',
+        status: d.status || 'failed',
+        outcomeStatus: d.status || 'failed',
+        ttftSec: d.speed?.ttft ?? null,
+        totalDurationSec: d.speed?.duration ?? null,
+        outputTokens: d.speed?.outputTokens ?? null,
+        error: d.error || ''
+      };
+    }
+    if (latestRec && latestRec.status === 'streaming' && latestRec.outputTokens > 0) {
+      return {
+        phase: 'streaming',
+        status: 'streaming',
+        ttftSec: latestRec.ttftSec ?? d.speed?.ttft ?? null,
+        streamingSec: latestRec.streamingSec ?? d.speed?.streamingSec ?? trackedSamples?.elapsedStreamSec ?? null,
+        totalDurationSec: latestRec.durationSec ?? d.speed?.duration ?? null,
+        streamSpeed: latestRec.streamingTps ?? d.speed?.streamingTps ?? null,
+        overallTps: latestRec.tps ?? d.speed?.tps ?? null,
+        outputTokens: latestRec.outputTokens ?? d.speed?.outputTokens ?? 0,
+        totalInputTokens: latestRec.totalInputTokens ?? d.input ?? null,
+        chunkCount: trackedSamples?.chunks ?? latestRec.chunkCount ?? null,
+        chunkIntervalsMs: trackedSamples?.intervalsMs ?? latestRec.chunkIntervalsMs ?? null
+      };
+    }
+    if (d.speed) {
+      return {
+        phase: 'final',
+        status: 'final',
+        ttftSec: d.speed.ttft ?? null,
+        streamingSec: d.speed.streamingSec ?? null,
+        totalDurationSec: d.speed.duration ?? null,
+        streamSpeed: d.speed.streamingTps ?? d.speed.streamSpeed ?? null,
+        overallTps: d.speed.tps ?? null,
+        outputTokens: d.speed.outputTokens ?? null,
+        totalInputTokens: d.speed.totalInputTokens ?? d.input ?? null,
+        chunkCount: (sameActiveCall && trackedSamples?.chunks) || (sameActiveCall && latestRec?.chunkCount) || null,
+        chunkIntervalsMs: (sameActiveCall && trackedSamples?.intervalsMs) || (sameActiveCall && latestRec?.chunkIntervalsMs) || null
+      };
+    }
+    if (latestRec && (latestRec.ttftSec != null || latestRec.durationSec != null || latestRec.outputTokens > 0)) {
+      return {
+        phase: latestRec.status === 'streaming' ? 'streaming' : 'final',
+        status: latestRec.status,
+        ttftSec: latestRec.ttftSec ?? null,
+        streamingSec: latestRec.streamingSec ?? null,
+        totalDurationSec: latestRec.durationSec ?? null,
+        streamSpeed: latestRec.streamingTps ?? null,
+        overallTps: latestRec.tps ?? null,
+        outputTokens: latestRec.outputTokens ?? null,
+        totalInputTokens: latestRec.totalInputTokens ?? null,
+        chunkCount: trackedSamples?.chunks ?? latestRec.chunkCount ?? null,
+        chunkIntervalsMs: trackedSamples?.intervalsMs ?? latestRec.chunkIntervalsMs ?? null
+      };
+    }
+    return { phase: 'idle', status: 'idle' };
+  }
+
+  function applyElv91PillTone(badgeEl, evalRes) {
+    if (!badgeEl || !evalRes?.badge) return;
+    const sev = evalRes.badge.severity || 'neutral';
+    const cls = (sev === 'good' || sev === 'fast' || sev === 'rapid' || sev === 'epic')
+      ? 'pill-good'
+      : (sev === 'warn' ? 'pill-warn' : ((sev === 'danger' || sev === 'critical') ? 'pill-danger' : 'pill-muted'));
+    badgeEl.className = `key-pill ${cls}`;
+    badgeEl.style.color = evalRes.badge.color || '';
+    badgeEl.textContent = `${evalRes.badge.glyph ? evalRes.badge.glyph + ' ' : ''}${evalRes.badge.text}`;
+  }
+
+  function renderSpeedExperienceInPlace(evalRes) {
+    if (!evalRes) return;
+    const isEn = currentPanelLanguage === 'en';
+    const isTw = currentPanelLanguage === 'zh-TW';
+    const activeColor = evalRes.badge?.color || '';
+
+    const speedAmount = el('speed-amount');
+    const overflowSpeedVal = el('overflow-speed-val');
+    const topBolt = el('badge-speed-icon');
+    const cardBolt = el('speed-summary-bolt');
+    if (topBolt) topBolt.style.color = activeColor;
+    if (cardBolt) cardBolt.style.color = activeColor;
+    if (topBolt && evalRes.badge?.glyph) topBolt.textContent = evalRes.badge.glyph;
+    if (cardBolt && evalRes.badge?.glyph) cardBolt.textContent = evalRes.badge.glyph;
+
+    const isCompact = state.layoutMode === 'compact';
+    if (speedAmount) {
+      if (evalRes.phase === 'waiting') {
+        speedAmount.textContent = isCompact ? evalRes.elapsedFormatted : (isEn ? `Wait ${evalRes.elapsedFormatted}` : `等待 ${evalRes.elapsedFormatted}`);
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.elapsedFormatted}`;
+      } else if (evalRes.streamSpeed != null) {
+        speedAmount.textContent = isCompact ? `${evalRes.streamSpeed}` : `${evalRes.streamSpeed} tok/s`;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.streamSpeed} tok/s`;
+      } else if (evalRes.overallTps != null) {
+        speedAmount.textContent = isCompact ? `${evalRes.overallTps}` : `${evalRes.overallTps} tok/s`;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.overallTps} tok/s`;
+      } else {
+        speedAmount.textContent = isCompact ? '--' : '-- tok/s';
+        if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
+      }
+    }
+
+    const spBadge = el('speed-badge');
+    const spVal = el('speed-val');
+    const spDur = el('speed-duration');
+    const spTtft = el('speed-ttft');
+    const spTokens = el('speed-tokens');
+    const spSub = el('speed-sub-label');
+    const spTakeaway = el('speed-takeaway');
+    const spToggleBtn = el('btn-speed-breakdown-toggle');
+    const spBreakdownDet = el('speed-breakdown-details');
+    const spBreakdownGrid = el('speed-breakdown-grid');
+
+    if (spBadge) applyElv91PillTone(spBadge, evalRes);
+    if (spVal) {
+      if (evalRes.phase === 'waiting') {
+        spVal.textContent = isEn ? 'Waiting' : '等待首字';
+      } else if (evalRes.streamSpeed != null) {
+        spVal.textContent = `${evalRes.streamSpeed} tok/s`;
+      } else if (evalRes.overallTps != null) {
+        spVal.textContent = `${evalRes.overallTps} tok/s`;
+      } else {
+        spVal.textContent = '—';
+      }
+    }
+    if (spDur) spDur.textContent = evalRes.durationFormatted || '—';
+    if (spTtft) spTtft.textContent = evalRes.ttftFormatted || '—';
+    if (spTokens) spTokens.textContent = evalRes.outputTokens != null ? `${fmt(evalRes.outputTokens)} tok` : '—';
+
+    if (spSub) {
+      if (evalRes.subLabel && evalRes.phase !== 'idle') {
+        spSub.hidden = false;
+        spSub.textContent = evalRes.subLabel;
+      } else {
+        spSub.hidden = true;
+        spSub.textContent = '';
+      }
+    }
+    if (spTakeaway) {
+      const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)
+        ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
+        : '';
+      spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}`;
+    }
+
+    const canShowBreakdown = evalRes.phase === 'final' || evalRes.phase === 'streaming';
+    if (spToggleBtn) {
+      spToggleBtn.hidden = !canShowBreakdown;
+      spToggleBtn.textContent = state.speedBreakdownOpen ? t('session.speed.hideDetails') : t('session.speed.details');
+      spToggleBtn.setAttribute?.('aria-expanded', state.speedBreakdownOpen ? 'true' : 'false');
+    }
+    if (spBreakdownDet) {
+      spBreakdownDet.style.display = (canShowBreakdown && state.speedBreakdownOpen) ? 'block' : 'none';
+    }
+    if (spBreakdownGrid && canShowBreakdown && state.speedBreakdownOpen) {
+      spBreakdownGrid.replaceChildren();
+      const unk = t('session.latestCall.unknownVal');
+      const eText = evalRes.efficiency?.available
+        ? `${evalRes.efficiency.score} ${isEn ? 'pts' : '分'} · ${evalRes.efficiency.tier?.title || evalRes.efficiency.grade}`
+        : (evalRes.efficiency?.skippedReason === 'insufficient_sample' ? t('session.speed.scoreSkippedSparse') : t('session.speed.scoreSkippedMissing'));
+      const stabText = evalRes.stability?.isStable
+        ? t('session.speed.stabilityOk', { n: evalRes.stability.chunks, cv: evalRes.stability.intervalCv })
+        : (evalRes.stability?.reason === 'high_variance'
+          ? t('session.speed.stabilityHighVar', { n: evalRes.stability.chunks, cv: evalRes.stability.intervalCv })
+          : t('session.speed.stabilityUnverified'));
+      const cells = [
+        [t('session.speed.breakdown.eScore', { ver: evalRes.scoreRuleVersion || 'elv91-v1' }), eText],
+        [t('session.speed.breakdown.ttft'), evalRes.ttftTier ? `${evalRes.ttftFormatted} · ${evalRes.ttftTier.title}${evalRes.ttftRatioPct != null ? ` (${evalRes.ttftRatioPct}%)` : ''}` : unk],
+        [t('session.speed.breakdown.stream'), evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk],
+        [t('session.speed.breakdown.duration'), evalRes.durationTier ? `${evalRes.durationFormatted} · ${evalRes.durationTier.title}` : unk],
+        [t('session.speed.breakdown.overall'), evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk],
+        [t('session.speed.breakdown.stability'), stabText]
+      ];
+      if (evalRes.efficiency?.basis) {
+        const b = evalRes.efficiency.basis;
+        cells.push([t('session.speed.breakdown.basis'), `N=${b.N_work} · γ=${b.gamma} · w=[${b.w1}/${b.w2}/${b.w3}]`]);
+      }
+      for (const [k, v] of cells) {
+        const cell = document.createElement('div');
+        cell.className = 'call-detail-cell';
+        const kEl = document.createElement('span');
+        kEl.className = 'call-detail-k';
+        kEl.textContent = k;
+        const vEl = document.createElement('span');
+        vEl.className = 'call-detail-v';
+        vEl.textContent = v;
+        cell.appendChild(kEl);
+        cell.appendChild(vEl);
+        spBreakdownGrid.appendChild(cell);
+      }
+    }
+    state.lastSpeedEval = evalRes;
+  }
+
+  function startLivePendingRequestWait(cascadeId) {
+    const cid = cascadeId || state.route;
+    if (!cid) return;
+    const latestRec = resolveLatestSessionCallRecord();
+    state.livePendingRequest = {
+      cascadeId: cid,
+      startedAtMs: Date.now(),
+      baselineCallId: latestRec?.callId || null,
+      baselineCount: state.count || 0
+    };
+    const updateWaitOnly = () => {
+      if (state.disposed || !state.livePendingRequest || state.livePendingRequest.cascadeId !== state.route) {
+        stopLiveWaitTickTimer();
+        return;
+      }
+      if (typeof evaluateGenerationExperience === 'function') {
+        renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
+      }
+    };
+    updateWaitOnly();
+    stopLiveWaitTickTimer();
+    state.liveWaitTickTimer = setInterval(updateWaitOnly, 1000);
+  }
+
   function syncSpeedBadgeText() {
+    if (typeof evaluateGenerationExperience === 'function') {
+      const evalRes = evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage);
+      renderSpeedExperienceInPlace(evalRes);
+      return;
+    }
     const sp = state.latest?.speed;
     const speedAmount = el('speed-amount');
     const overflowSpeedVal = el('overflow-speed-val');
@@ -10055,6 +10389,670 @@
     }
   }
 
+  let lastCallCardLang = '';
+  let timelineFetchController = null;
+  let timelineFetchSeq = 0;
+
+  function prefersReducedMotionNow() {
+    try {
+      return Boolean(typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch {
+      return false;
+    }
+  }
+
+  function formatCallTimeStr(call) {
+    if (!call) return '—';
+    const rawTs = call.timestamp || (call.created_at ? Date.parse(call.created_at) : NaN);
+    if (!Number.isFinite(rawTs) || rawTs <= 0) return t('session.latestCall.unknownVal');
+    try {
+      return new Date(rawTs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    } catch {
+      return new Date(rawTs).toLocaleTimeString();
+    }
+  }
+
+  function formatCallModelTitle(call) {
+    if (!call) return t('session.latestCall.unknownVal');
+    const lbl = call.modelLabel || (call.model && !/^model_/i.test(String(call.model)) ? String(call.model) : '');
+    if (lbl) return lbl;
+    if (call.modelExactId) return String(call.modelExactId);
+    if (call.model) return String(call.model);
+    return t('session.latestCall.unknownVal');
+  }
+
+  function buildCallDisplaySignature(call) {
+    if (!call) return '';
+    return [
+      call.callId || '',
+      call.outcomeStatus || call.status || '',
+      call.inputTokens ?? '',
+      call.cacheReadTokens ?? '',
+      call.outputTokens ?? '',
+      call.totalTokens ?? '',
+      call.modelExactId || call.model || '',
+      call.modelLabel || '',
+      call.effort || '',
+      call.durationSec ?? '',
+      call.ttftSec ?? '',
+      call.error || '',
+      call.agentRole || ''
+    ].join('|');
+  }
+
+  function resolveLatestSessionCallRecord() {
+    if (!state.route) return null;
+    const rawPool = [];
+    if (Array.isArray(state.sessionCalls)) {
+      for (const c of state.sessionCalls) {
+        if (c) rawPool.push(c);
+      }
+    }
+    if (Array.isArray(state.scan?.recentGeneratorCalls)) {
+      for (const c of state.scan.recentGeneratorCalls) {
+        if (c) rawPool.push(c);
+      }
+    }
+    if (state.scan?.latestCallRecord) {
+      rawPool.push(state.scan.latestCallRecord);
+    }
+    if (!rawPool.length) return null;
+
+    const mergedById = new Map();
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    for (const raw of rawPool) {
+      const norm = typeof normalizeSessionCallRecord === 'function'
+        ? normalizeSessionCallRecord(raw, { cascadeId: state.route, cascadeModelConfigs: configs })
+        : raw;
+      if (!norm || !norm.callId) continue;
+      const prev = mergedById.get(norm.callId);
+      if (!prev) {
+        mergedById.set(norm.callId, norm);
+        continue;
+      }
+      // 同一 callId 从不同源补齐耗时、精确模型或状态，不产生第二条
+      mergedById.set(norm.callId, {
+        ...prev,
+        ...norm,
+        modelExactId: norm.modelExactId || prev.modelExactId || null,
+        modelLabel: norm.modelLabel || prev.modelLabel || null,
+        effort: norm.effort || prev.effort || null,
+        ttftSec: norm.ttftSec ?? prev.ttftSec ?? null,
+        durationSec: norm.durationSec ?? prev.durationSec ?? null,
+        tps: norm.tps ?? prev.tps ?? null,
+        streamingTps: norm.streamingTps ?? prev.streamingTps ?? null,
+        error: norm.error || prev.error || null,
+        errorClassification: norm.errorClassification || prev.errorClassification || null,
+        hasInputCacheFields: Boolean(norm.hasInputCacheFields || prev.hasInputCacheFields),
+        inputTokens: norm.hasInputCacheFields ? norm.inputTokens : (prev.hasInputCacheFields ? prev.inputTokens : norm.inputTokens),
+        cacheReadTokens: norm.hasInputCacheFields ? norm.cacheReadTokens : (prev.hasInputCacheFields ? prev.cacheReadTokens : norm.cacheReadTokens),
+        totalInputTokens: norm.hasInputCacheFields ? norm.totalInputTokens : (prev.hasInputCacheFields ? prev.totalInputTokens : norm.totalInputTokens),
+        outputTokens: Math.max(Number(norm.outputTokens) || 0, Number(prev.outputTokens) || 0) || norm.outputTokens,
+        totalTokens: Math.max(Number(norm.totalTokens) || 0, Number(prev.totalTokens) || 0) || norm.totalTokens,
+        timestamp: norm.timestamp || prev.timestamp || null,
+        created_at: norm.created_at || prev.created_at || null,
+        stepIndex: norm.stepIndex ?? prev.stepIndex ?? null
+      });
+    }
+
+    const candidates = Array.from(mergedById.values());
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => {
+      const ta = Number(a.timestamp) || 0;
+      const tb = Number(b.timestamp) || 0;
+      if (ta !== tb) return ta - tb;
+      const sa = a.stepIndex != null ? Number(a.stepIndex) : -1;
+      const sb = b.stepIndex != null ? Number(b.stepIndex) : -1;
+      if (sa !== sb) return sa - sb;
+      if (a.status === 'streaming' && b.status !== 'streaming') return 1;
+      if (b.status === 'streaming' && a.status !== 'streaming') return -1;
+      return 0;
+    });
+    return candidates[candidates.length - 1];
+  }
+
+  function isElementActivelyInspected() {
+    try {
+      const det = el('latest-call-details');
+      const tl = el('session-timeline-drawer');
+      if (det && state.latestCallDetailOpen && typeof det.matches === 'function' && det.matches(':hover')) return true;
+      if (tl && state.historyDrawerOpen && typeof tl.matches === 'function' && tl.matches(':hover')) return true;
+      const activeEl = shadow?.activeElement || document?.activeElement;
+      if (activeEl && ((det && det.contains?.(activeEl)) || (tl && tl.contains?.(activeEl)))) return true;
+      const sel = shadow?.getSelection?.() || window?.getSelection?.();
+      if (sel && String(sel.toString() || '').trim().length > 0 && sel.anchorNode) {
+        const card = el('latest-call-card');
+        if (card && card.contains?.(sel.anchorNode)) return true;
+      }
+    } catch { }
+    return false;
+  }
+
+  function isCallCardReadingProtected(incomingCall) {
+    if (!state.displayedCallRecord || !incomingCall) return false;
+    if (state.pinnedCallRecord) return true;
+    const differentCall = incomingCall.callId !== state.displayedCallRecord.callId;
+    if (!differentCall) return false;
+    if (state.latestCallDetailOpen && state.displayedCallRecord.status !== 'streaming') return true;
+    if (isElementActivelyInspected()) return true;
+    return false;
+  }
+
+  function resolveCallStatusDisplay(call) {
+    const out = call?.outcomeStatus || call?.status || 'unknown';
+    if (out === 'streaming') return { text: t('session.latestCall.statusStreaming'), cls: 'key-pill pill-warn' };
+    if (out === 'canceled') return { text: t('session.latestCall.statusCanceled'), cls: 'key-pill pill-muted' };
+    if (out === 'success' || out === 'final') return { text: t('session.latestCall.statusSuccess'), cls: 'key-pill pill-good' };
+    if (out === 'quota_exhausted' || out === 'context_overflow' || out === 'exceeded' || out === 'network' || out === 'network_error' || out === 'rate_limit' || out === 'failed' || call?.error) {
+      return { text: t('session.latestCall.statusFailed'), cls: 'key-pill pill-danger' };
+    }
+    return { text: t('session.latestCall.statusUnknown'), cls: 'key-pill pill-muted' };
+  }
+
+  function formatCallCachePctText(call) {
+    if (!call) return t('session.latestCall.unknownVal');
+    if (call.cacheStatus === 'missing' || !call.hasInputCacheFields) return t('session.latestCall.unknownVal');
+    if (call.cacheStatus === 'zero_input') return t('session.latestCall.naVal');
+    if (call.cacheReadPct !== null && call.cacheReadPct !== undefined) return `${call.cacheReadPct}%`;
+    return t('session.latestCall.unknownVal');
+  }
+
+  function applyLatestCallRecordToDom(call, { playAnim = false } = {}) {
+    const card = el('latest-call-card');
+    if (!card) return;
+    const statusPill = el('latest-call-status-pill');
+    const agentPill = el('latest-call-agent-pill');
+    const timeEl = el('latest-call-time');
+    const modelEl = el('latest-call-model');
+    const effortEl = el('latest-call-effort');
+    const tokInline = el('latest-call-tokens-inline');
+    const cacheInline = el('latest-call-cache-inline');
+    const durInline = el('latest-call-duration-inline');
+    const detailGrid = el('latest-call-detail-grid');
+    const errorBox = el('latest-call-error-box');
+    const bodyEl = el('latest-call-body');
+
+    const st = resolveCallStatusDisplay(call);
+    if (statusPill) {
+      statusPill.textContent = st.text;
+      statusPill.className = st.cls;
+    }
+
+    if (agentPill) {
+      if (call.agentRole === 'subagent') {
+        agentPill.hidden = false;
+        agentPill.className = 'call-agent-badge is-subagent';
+        agentPill.textContent = call.subagentType ? `${t('session.latestCall.agentSub')} · ${call.subagentType}` : t('session.latestCall.agentSub');
+      } else if (call.attributionConfidence === 'unidentified') {
+        agentPill.hidden = false;
+        agentPill.className = 'call-agent-badge is-unknown';
+        agentPill.textContent = t('session.latestCall.agentUnknown');
+      } else {
+        agentPill.hidden = false;
+        agentPill.className = 'call-agent-badge';
+        agentPill.textContent = t('session.latestCall.agentMain');
+      }
+    }
+
+    if (timeEl) timeEl.textContent = formatCallTimeStr(call);
+    const modelTitle = formatCallModelTitle(call);
+    if (modelEl) {
+      modelEl.textContent = modelTitle;
+      modelEl.title = call.modelExactId ? `${modelTitle} (${call.modelExactId})` : modelTitle;
+    }
+    if (effortEl) {
+      if (call.effort) {
+        effortEl.hidden = false;
+        effortEl.textContent = call.effort;
+      } else {
+        effortEl.hidden = true;
+        effortEl.textContent = '';
+      }
+    }
+
+    const unk = t('session.latestCall.unknownVal');
+    const scoreInline = el('latest-call-score-inline');
+    const callEval = (typeof evaluateGenerationExperience === 'function')
+      ? evaluateGenerationExperience({
+          phase: call.status === 'streaming' ? 'streaming' : (call.outcomeStatus === 'canceled' ? 'canceled' : (call.error ? 'failed' : 'final')),
+          outcomeStatus: call.outcomeStatus,
+          ttftSec: call.ttftSec,
+          streamingSec: call.streamingSec,
+          totalDurationSec: call.durationSec,
+          streamSpeed: call.streamingTps ?? call.streamSpeed,
+          overallTps: call.tps,
+          outputTokens: call.outputTokens,
+          totalInputTokens: call.totalInputTokens,
+          chunkCount: call.chunkCount,
+          chunkIntervalsMs: call.chunkIntervalsMs,
+          intervalCv: call.intervalCv,
+          error: call.error
+        }, currentPanelLanguage)
+      : null;
+
+    if (scoreInline) {
+      if (callEval && callEval.efficiency?.available) {
+        scoreInline.hidden = false;
+        scoreInline.textContent = `${callEval.efficiency.score}${currentPanelLanguage === 'en' ? ' pts' : '分'} · ${callEval.efficiency.grade}`;
+        scoreInline.style.color = callEval.efficiency.tier?.color || '';
+        scoreInline.style.borderColor = callEval.efficiency.tier?.color || '';
+        scoreInline.title = callEval.shortTitle || '';
+      } else if (call.eScore != null && call.eGrade) {
+        scoreInline.hidden = false;
+        scoreInline.textContent = `${call.eScore}${currentPanelLanguage === 'en' ? ' pts' : '分'} · ${call.eGrade}`;
+        scoreInline.style.color = callEval?.badge?.color || '';
+        scoreInline.style.borderColor = callEval?.badge?.color || '';
+      } else {
+        scoreInline.hidden = true;
+        scoreInline.textContent = '—';
+        scoreInline.style.color = '';
+        scoreInline.style.borderColor = '';
+      }
+    }
+
+    const inpStr = call.hasInputCacheFields && call.inputTokens !== null ? short(call.inputTokens) : unk;
+    const outStr = call.outputTokens !== null && call.outputTokens !== undefined ? short(call.outputTokens) : unk;
+    if (tokInline) tokInline.textContent = t('session.latestCall.inlineTokens', { inp: inpStr, out: outStr });
+    if (cacheInline) cacheInline.textContent = t('session.latestCall.inlineCache', { val: formatCallCachePctText(call) });
+    if (durInline) durInline.textContent = call.durationSec !== null && call.durationSec !== undefined
+      ? (typeof formatHumanDuration === 'function' ? formatHumanDuration(call.durationSec, currentPanelLanguage) : `${call.durationSec}s`)
+      : '—';
+
+    if (detailGrid) {
+      detailGrid.replaceChildren();
+      const agentDesc = call.agentRole === 'subagent'
+        ? `${t('session.latestCall.agentSub')}${call.subagentRole ? ` (${call.subagentRole})` : (call.subagentType ? ` (${call.subagentType})` : '')}${call.parentCascadeId ? ` · parent ${String(call.parentCascadeId).slice(0, 8)}` : ''}`
+        : (call.attributionConfidence === 'unidentified' ? t('session.latestCall.agentUnknown') : t('session.latestCall.agentMain'));
+      const fmtDurOrUnk = (v) => (v !== null && v !== undefined) ? (typeof formatHumanDuration === 'function' ? formatHumanDuration(v, currentPanelLanguage) : `${v}s`) : unk;
+      const eDetailVal = callEval?.efficiency?.available
+        ? `${callEval.efficiency.score} ${currentPanelLanguage === 'en' ? 'pts' : '分'} · ${callEval.efficiency.tier?.title || callEval.efficiency.grade}`
+        : (call.eScore != null ? `${call.eScore} (${call.eGrade || '--'})` : (callEval?.efficiency?.skippedReason === 'insufficient_sample' ? t('session.speed.scoreSkippedSparse') : t('session.speed.scoreSkippedMissing')));
+      const cells = [
+        [t('session.latestCall.fieldTime'), formatCallTimeStr(call)],
+        [t('session.latestCall.fieldStatus'), st.text],
+        [t('session.latestCall.fieldModelId'), call.modelExactId || call.modelKey || unk],
+        [t('session.latestCall.fieldModelLabel'), `${modelTitle}${call.effort ? ` (${call.effort})` : ''}`],
+        [t('session.latestCall.fieldInput'), call.hasInputCacheFields && call.inputTokens !== null ? fmt(call.inputTokens) : unk],
+        [t('session.latestCall.fieldCacheRead'), call.hasInputCacheFields && call.cacheReadTokens !== null ? fmt(call.cacheReadTokens) : unk],
+        [t('session.latestCall.fieldTotalInput'), call.hasInputCacheFields && call.totalInputTokens !== null ? fmt(call.totalInputTokens) : unk],
+        [t('session.latestCall.fieldOutput'), call.outputTokens !== null && call.outputTokens !== undefined
+          ? `${fmt(call.outputTokens)}${call.thinkingTokens ? ` (${fmt(call.thinkingTokens)})` : ''}`
+          : unk],
+        [t('session.latestCall.fieldCacheRatio'), formatCallCachePctText(call)],
+        [t('session.latestCall.fieldTtft'), `${fmtDurOrUnk(call.ttftSec)}${call.ttftRatioPct != null ? ` (${call.ttftRatioPct}%)` : ''}${callEval?.ttftTier ? ` · ${callEval.ttftTier.title}` : ''}`],
+        [t('session.latestCall.fieldDuration'), `${fmtDurOrUnk(call.durationSec)}${callEval?.durationTier ? ` · ${callEval.durationTier.title}` : ''}`],
+        [t('session.speed.streamRate'), (call.streamingTps ?? call.streamSpeed) != null ? `${call.streamingTps ?? call.streamSpeed} tok/s${callEval?.speedTier ? ` · ${callEval.speedTier.title}` : ''}` : unk],
+        [t('session.speed.breakdown.overall'), call.tps !== null && call.tps !== undefined ? `${call.tps} tok/s` : unk],
+        [t('session.speed.breakdown.eScore', { ver: call.scoreRuleVersion || 'elv91-v1' }), eDetailVal],
+        [t('session.latestCall.fieldAgent'), agentDesc]
+      ];
+      for (const [k, v] of cells) {
+        const cell = document.createElement('div');
+        cell.className = 'call-detail-cell';
+        const kEl = document.createElement('span');
+        kEl.className = 'call-detail-k';
+        kEl.textContent = k;
+        const vEl = document.createElement('span');
+        vEl.className = 'call-detail-v';
+        vEl.textContent = v;
+        cell.appendChild(kEl);
+        cell.appendChild(vEl);
+        detailGrid.appendChild(cell);
+      }
+    }
+
+    if (errorBox) {
+      if (call.error || st.cls.includes('pill-danger')) {
+        errorBox.hidden = false;
+        const reason = call.errorClassification?.reason || '';
+        errorBox.textContent = [reason, call.error].filter(Boolean).join(' · ') || st.text;
+      } else {
+        errorBox.hidden = true;
+        errorBox.textContent = '';
+      }
+    }
+
+    if (bodyEl && playAnim && !prefersReducedMotionNow()) {
+      if (state.callEnterAnimTimer) {
+        clearTimeout(state.callEnterAnimTimer);
+        state.callEnterAnimTimer = null;
+      }
+      bodyEl.classList?.remove?.('is-entering');
+      void bodyEl.offsetWidth;
+      bodyEl.classList?.add?.('is-entering');
+      state.callEnterAnimTimer = setTimeout(() => {
+        state.callEnterAnimTimer = null;
+        bodyEl.classList?.remove?.('is-entering');
+      }, 250);
+    }
+  }
+
+  function syncLatestCallDetailsVisibility() {
+    const det = el('latest-call-details');
+    const row = el('latest-call-summary-row');
+    if (det) det.style.display = state.latestCallDetailOpen ? 'block' : 'none';
+    if (row) row.setAttribute?.('aria-expanded', state.latestCallDetailOpen ? 'true' : 'false');
+  }
+
+  function renderLatestCallCard({ fromUserAction = false, skipAnim = false } = {}) {
+    const card = el('latest-call-card');
+    if (!card) return;
+    if (!state.route) {
+      card.hidden = true;
+      return;
+    }
+
+    const incoming = resolveLatestSessionCallRecord();
+    const target = state.pinnedCallRecord || incoming;
+    if (!target) {
+      card.hidden = !state.historyDrawerOpen;
+      return;
+    }
+    card.hidden = false;
+
+    const newBanner = el('latest-call-new-banner');
+    if (!fromUserAction && isCallCardReadingProtected(incoming)) {
+      if (incoming && (!state.pendingLatestCallRecord || buildCallDisplaySignature(incoming) !== buildCallDisplaySignature(state.pendingLatestCallRecord))) {
+        state.pendingLatestCallRecord = incoming;
+      }
+      if (newBanner) newBanner.hidden = false;
+      if (state.pinnedCallRecord && lastCallCardLang !== currentPanelLanguage) {
+        applyLatestCallRecordToDom(state.pinnedCallRecord, { playAnim: false });
+        lastCallCardLang = currentPanelLanguage;
+      }
+      syncLatestCallDetailsVisibility();
+      return;
+    }
+
+    if (newBanner) newBanner.hidden = true;
+    state.pendingLatestCallRecord = null;
+
+    const nextSig = buildCallDisplaySignature(target);
+    const langChanged = lastCallCardLang !== currentPanelLanguage;
+    if (nextSig === state.displayedCallSig && !langChanged) {
+      syncLatestCallDetailsVisibility();
+      return;
+    }
+
+    const hadPrev = Boolean(state.displayedCallRecord);
+    const isRealReplacement = hadPrev && nextSig !== state.lastAnimatedCallSig && target.status !== 'streaming';
+    const shouldAnimate = !skipAnim && isRealReplacement && nextSig !== state.displayedCallSig;
+
+    state.displayedCallRecord = target;
+    state.displayedCallSig = nextSig;
+    if (target.status !== 'streaming') {
+      state.lastAnimatedCallSig = nextSig;
+    }
+    lastCallCardLang = currentPanelLanguage;
+    applyLatestCallRecordToDom(target, { playAnim: shouldAnimate });
+    syncLatestCallDetailsVisibility();
+  }
+
+  function renderSessionTimeline() {
+    const drawer = el('session-timeline-drawer');
+    const toggleBtn = el('btn-session-history-toggle');
+    if (toggleBtn) {
+      toggleBtn.textContent = state.historyDrawerOpen ? t('session.timeline.hideHistory') : t('session.timeline.viewHistory');
+      toggleBtn.setAttribute?.('aria-expanded', state.historyDrawerOpen ? 'true' : 'false');
+    }
+    if (!drawer) return;
+    drawer.style.display = state.historyDrawerOpen ? 'flex' : 'none';
+    if (!state.historyDrawerOpen) return;
+
+    const sumEl = el('session-timeline-summary');
+    const listEl = el('session-timeline-list');
+    const unlinkedEl = el('session-timeline-unlinked');
+    const moreWrap = el('session-timeline-more-wrap');
+    const moreBtn = el('btn-timeline-load-more');
+
+    if (state.timelineLoading && !state.sessionTimeline) {
+      if (sumEl) sumEl.textContent = t('session.timeline.loading');
+      if (listEl) listEl.replaceChildren();
+      if (unlinkedEl) unlinkedEl.hidden = true;
+      if (moreWrap) moreWrap.hidden = true;
+      return;
+    }
+
+    const tl = state.sessionTimeline;
+    if (!tl || (!tl.turns?.length && !tl.unlinkedSubagentCalls?.length)) {
+      if (sumEl) sumEl.textContent = state.timelineError ? translateBackendText(state.timelineError) : t('session.timeline.empty');
+      if (listEl) listEl.replaceChildren();
+      if (unlinkedEl) unlinkedEl.hidden = true;
+      if (moreWrap) moreWrap.hidden = true;
+      return;
+    }
+
+    const turns = Array.isArray(tl.turns) ? tl.turns : [];
+    const cacheText = tl.cacheSummary && tl.cacheSummary.cacheStatus !== 'missing'
+      ? (tl.cacheSummary.cacheStatus === 'zero_input' ? t('session.latestCall.naVal') : `${tl.cacheSummary.cacheReadPct}%`)
+      : t('session.latestCall.unknownVal');
+    if (sumEl) {
+      sumEl.replaceChildren();
+      const sLine = document.createElement('div');
+      sLine.textContent = t('session.timeline.summary', {
+        turns: turns.length,
+        calls: tl.totalCalls || 0,
+        main: tl.mainCallsCount || 0,
+        sub: tl.subagentCallsCount || 0,
+        cache: cacheText
+      });
+      const noteLine = document.createElement('div');
+      noteLine.style.marginTop = '2px';
+      noteLine.textContent = t('session.timeline.windowNote');
+      sumEl.appendChild(sLine);
+      sumEl.appendChild(noteLine);
+    }
+
+    if (listEl) {
+      listEl.replaceChildren();
+      const resolveTurnKey = (tObj) => tObj?.turnKey || `turn-${tObj?.turnIndex ?? 'x'}-${tObj?.stepIndex ?? 'na'}`;
+      const descTurns = [...turns].reverse();
+      if (descTurns.length > 0 && state.expandedTurnKeys.size === 0) {
+        state.expandedTurnKeys.add(resolveTurnKey(descTurns[0]));
+      }
+      const limit = Math.max(5, Number(state.timelinePageLimit) || 10);
+      const visibleTurns = descTurns.slice(0, limit);
+
+      const createCallRow = (call) => {
+        const row = document.createElement('div');
+        const isSelected = state.pinnedCallRecord && state.pinnedCallRecord.callId === call.callId;
+        row.className = `timeline-call-row${call.agentRole === 'subagent' ? ' is-subagent' : ''}${isSelected ? ' is-selected' : ''}`;
+        row.setAttribute('role', 'button');
+        row.setAttribute('tabindex', '0');
+
+        const main = document.createElement('div');
+        main.className = 'timeline-call-main';
+        const roleBadge = document.createElement('span');
+        roleBadge.className = `call-agent-badge${call.agentRole === 'subagent' ? ' is-subagent' : (call.attributionConfidence === 'unidentified' ? ' is-unknown' : '')}`;
+        roleBadge.textContent = call.agentRole === 'subagent'
+          ? (call.subagentType ? `${t('session.latestCall.agentSub')}·${call.subagentType}` : t('session.latestCall.agentSub'))
+          : (call.attributionConfidence === 'unidentified' ? t('session.latestCall.agentUnknown') : t('session.latestCall.agentMain'));
+        const mName = document.createElement('span');
+        mName.className = 'timeline-turn-prompt';
+        const baseModelTitle = formatCallModelTitle(call);
+        const effortText = call.effort ? String(call.effort).trim() : '';
+        const hasEffortParen = effortText && baseModelTitle.trim().toLowerCase().endsWith(`(${effortText.toLowerCase()})`);
+        mName.textContent = (effortText && !hasEffortParen) ? `${baseModelTitle} (${effortText})` : baseModelTitle;
+        main.appendChild(roleBadge);
+        main.appendChild(mName);
+
+        const stats = document.createElement('div');
+        stats.className = 'timeline-call-stats';
+        const st = resolveCallStatusDisplay(call);
+        const inpTxt = call.hasInputCacheFields ? short(call.totalInputTokens) : t('session.latestCall.unknownVal');
+        const eTag = (call.eScore != null && call.eGrade)
+          ? (currentPanelLanguage === 'en' ? ` · ${call.eScore}pt(${call.eGrade})` : ` · ${call.eScore}分(${call.eGrade})`)
+          : '';
+        stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 缓${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        if (currentPanelLanguage === 'en') {
+          stats.textContent = `${formatCallTimeStr(call)} · In ${inpTxt}/Out ${short(call.outputTokens || 0)} · Cache ${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        }
+
+        row.appendChild(main);
+        row.appendChild(stats);
+        const inspectCall = () => {
+          state.pinnedCallRecord = call;
+          state.latestCallDetailOpen = true;
+          renderLatestCallCard({ fromUserAction: true, skipAnim: false });
+          renderSessionTimeline();
+        };
+        row.addEventListener('click', inspectCall);
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inspectCall(); }
+        });
+        return row;
+      };
+
+      for (const turn of visibleTurns) {
+        const turnKey = resolveTurnKey(turn);
+        const isOpen = state.expandedTurnKeys.has(turnKey);
+        const cardEl = document.createElement('div');
+        cardEl.className = 'timeline-turn-card';
+
+        const hdrBtn = document.createElement('button');
+        hdrBtn.type = 'button';
+        hdrBtn.className = 'timeline-turn-hdr';
+        hdrBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+
+        const left = document.createElement('div');
+        left.className = 'timeline-turn-left';
+        const idxEl = document.createElement('span');
+        idxEl.className = 'timeline-turn-idx';
+        idxEl.textContent = t('session.timeline.turnLabel', { n: turn.turnIndex });
+        const promptText = turn.preview || turn.userPromptPreview || '';
+        const promptEl = document.createElement('span');
+        promptEl.className = 'timeline-turn-prompt';
+        promptEl.textContent = promptText || t('session.timeline.turnNoPrompt');
+        if (promptText) promptEl.title = promptText;
+        left.appendChild(idxEl);
+        left.appendChild(promptEl);
+
+        const metaEl = document.createElement('span');
+        metaEl.className = 'timeline-turn-meta';
+        metaEl.textContent = t('session.timeline.turnSummary', {
+          calls: turn.calls?.length || 0,
+          inp: short(turn.inputTokens || 0),
+          cap: short(turn.cacheReadTokens || 0),
+          out: short(turn.outputTokens || 0)
+        });
+
+        hdrBtn.appendChild(left);
+        hdrBtn.appendChild(metaEl);
+        hdrBtn.addEventListener('click', () => {
+          if (state.expandedTurnKeys.has(turnKey)) state.expandedTurnKeys.delete(turnKey);
+          else state.expandedTurnKeys.add(turnKey);
+          renderSessionTimeline();
+        });
+        cardEl.appendChild(hdrBtn);
+
+        if (isOpen && Array.isArray(turn.calls)) {
+          const bodyEl = document.createElement('div');
+          bodyEl.className = 'timeline-turn-body';
+          for (const call of turn.calls) {
+            bodyEl.appendChild(createCallRow(call));
+          }
+          cardEl.appendChild(bodyEl);
+        }
+        listEl.appendChild(cardEl);
+      }
+
+      if (moreWrap && moreBtn) {
+        const remaining = descTurns.length - visibleTurns.length;
+        if (remaining > 0) {
+          moreWrap.hidden = false;
+          moreBtn.textContent = t('session.timeline.loadMore', { n: remaining });
+        } else {
+          moreWrap.hidden = true;
+        }
+      }
+
+      if (unlinkedEl) {
+        const unlinked = Array.isArray(tl.unlinkedSubagentCalls) ? tl.unlinkedSubagentCalls : [];
+        if (unlinked.length > 0) {
+          unlinkedEl.hidden = false;
+          unlinkedEl.replaceChildren();
+          const uTitle = document.createElement('div');
+          uTitle.className = 'session-timeline-unlinked-title';
+          uTitle.textContent = t('session.timeline.unlinkedTitle', { n: unlinked.length });
+          unlinkedEl.appendChild(uTitle);
+          for (const uCall of unlinked) {
+            unlinkedEl.appendChild(createCallRow(uCall));
+          }
+        } else {
+          unlinkedEl.hidden = true;
+          unlinkedEl.replaceChildren();
+        }
+      }
+    }
+  }
+
+  async function fetchSessionTimeline(id, { force = false } = {}) {
+    if (!id || state.disposed || id !== state.route) return null;
+    if (!force && state.timelineLoading) return null;
+    const seq = ++timelineFetchSeq;
+    const gen = state.generation;
+    state.timelineLoading = true;
+    state.timelineError = '';
+    if (state.historyDrawerOpen) renderSessionTimeline();
+
+    try {
+      if (timelineFetchController) {
+        try { timelineFetchController.abort(); } catch { }
+      }
+      timelineFetchController = typeof AbortController === 'function' ? new AbortController() : null;
+      const liveCalls = Array.isArray(state.sessionCalls) ? state.sessionCalls : [];
+      const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+      const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getSessionTimeline === 'function';
+      let timelineData = null;
+
+      if (hasIpc || hasLiveHttpBridge()) {
+        const out = await callBackendWithPriority({
+          ipcCall: hasIpc ? () => window.contextMeterAPI.getSessionTimeline(id, { force, liveCalls, cascadeModelConfigs: configs }) : null,
+          liveRoute: '/session-timeline',
+          liveBody: { id, force, liveCalls, cascadeModelConfigs: configs },
+          liveFetchOpts: timelineFetchController ? { signal: timelineFetchController.signal } : {}
+        });
+        const res = out?.result;
+        if (res?.ok && res.data) {
+          timelineData = res.data;
+        } else if (res && !res.ok) {
+          state.timelineError = res.error || '';
+        }
+      } else if (typeof groupSessionCallsByTurns === 'function') {
+        timelineData = groupSessionCallsByTurns([], liveCalls, { cascadeId: id, cascadeModelConfigs: configs });
+      }
+
+      if (gen !== state.generation || seq !== timelineFetchSeq || state.disposed) return null;
+      if (timelineData) {
+        state.sessionTimeline = timelineData;
+        state.lastTimelineFetchAt = Date.now();
+      }
+    } catch (e) {
+      if (e?.name !== 'AbortError' && gen === state.generation && !state.disposed) {
+        state.timelineError = e?.message || String(e || '');
+      }
+    } finally {
+      if (seq === timelineFetchSeq && !state.disposed) {
+        state.timelineLoading = false;
+        if (state.historyDrawerOpen) renderSessionTimeline();
+      }
+    }
+    return state.sessionTimeline;
+  }
+
+  function scheduleLatestCallRefresh({ allowTimelineRefresh = false } = {}) {
+    if (state.disposed) return;
+    if (allowTimelineRefresh && state.historyDrawerOpen && state.route) {
+      const latest = resolveLatestSessionCallRecord();
+      const sig = buildCallDisplaySignature(latest);
+      if (sig && sig !== state.lastTimelineCallSig && Date.now() - state.lastTimelineFetchAt > 1200) {
+        state.lastTimelineCallSig = sig;
+        void fetchSessionTimeline(state.route);
+      }
+    }
+    renderLatestCallCard();
+  }
+
   // 渲染上下文与全局状态（无论在主页 / 还是会话页 /c/<id>，始终保持插件栏挂载与可用）
   function render() {
     host.hidden = false;
@@ -10071,6 +11069,8 @@
       syncSpeedBadgeText();
       el('badge-tokens').title = t('badge.tokensTitle');
       syncContextModelSelectionFromState();
+      renderLatestCallCard({ skipAnim: true });
+      renderSessionTimeline();
       return;
     }
     renderSessionCost();
@@ -10245,43 +11245,48 @@
     }
 
     if (el('speed-summary')) {
-      const spBadge = el('speed-badge');
-      const spVal = el('speed-val');
-      const spDur = el('speed-duration');
-      const spTtft = el('speed-ttft');
-      const spTokens = el('speed-tokens');
-      const spTakeaway = el('speed-takeaway');
-
-      if (sp?.tps != null) {
-        if (spBadge) {
-          if (sp.tps >= 80) { spBadge.textContent = t('speed.pill.fast'); spBadge.className = 'key-pill pill-good'; }
-          else if (sp.tps >= 35) { spBadge.textContent = t('speed.pill.smooth'); spBadge.className = 'key-pill pill-good'; }
-          else if (sp.tps >= 15) { spBadge.textContent = t('speed.pill.good'); spBadge.className = 'key-pill pill-warn'; }
-          else { spBadge.textContent = t('speed.pill.slow'); spBadge.className = 'key-pill pill-danger'; }
-        }
-        if (spVal) spVal.textContent = `${sp.tps} tok/s`;
-        if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
-        if (spTtft) spTtft.textContent = sp.ttft ? `${sp.ttft}s` : '—';
-        if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
-        if (spTakeaway) {
-          const modelStr = d?.model ? `（${d.model}）` : '';
-          const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
-          spTakeaway.textContent = t('speed.takeaway.ok', {
-            tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
-            tps: sp.tps,
-            stream: streamInfo,
-            dur: sp.duration,
-            tok: fmt(sp.outputTokens),
-            model: modelStr
-          });
-        }
+      if (typeof evaluateGenerationExperience === 'function') {
+        const evalRes = state.lastSpeedEval || evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage);
+        renderSpeedExperienceInPlace(evalRes);
       } else {
-        if (spBadge) { spBadge.textContent = state.requestBusy ? t('speed.pill.calc') : t('speed.pill.idle'); spBadge.className = 'key-pill pill-muted'; }
-        if (spVal) spVal.textContent = '—';
-        if (spDur) spDur.textContent = '—';
-        if (spTtft) spTtft.textContent = '—';
-        if (spTokens) spTokens.textContent = '—';
-        if (spTakeaway) spTakeaway.textContent = t('speed.takeaway.idle');
+        const spBadge = el('speed-badge');
+        const spVal = el('speed-val');
+        const spDur = el('speed-duration');
+        const spTtft = el('speed-ttft');
+        const spTokens = el('speed-tokens');
+        const spTakeaway = el('speed-takeaway');
+
+        if (sp?.tps != null) {
+          if (spBadge) {
+            if (sp.tps >= 80) { spBadge.textContent = t('speed.pill.fast'); spBadge.className = 'key-pill pill-good'; }
+            else if (sp.tps >= 35) { spBadge.textContent = t('speed.pill.smooth'); spBadge.className = 'key-pill pill-good'; }
+            else if (sp.tps >= 15) { spBadge.textContent = t('speed.pill.good'); spBadge.className = 'key-pill pill-warn'; }
+            else { spBadge.textContent = t('speed.pill.slow'); spBadge.className = 'key-pill pill-danger'; }
+          }
+          if (spVal) spVal.textContent = `${sp.tps} tok/s`;
+          if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
+          if (spTtft) spTtft.textContent = sp.ttft ? `${sp.ttft}s` : '—';
+          if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
+          if (spTakeaway) {
+            const modelStr = d?.model ? `（${d.model}）` : '';
+            const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
+            spTakeaway.textContent = t('speed.takeaway.ok', {
+              tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
+              tps: sp.tps,
+              stream: streamInfo,
+              dur: sp.duration,
+              tok: fmt(sp.outputTokens),
+              model: modelStr
+            });
+          }
+        } else {
+          if (spBadge) { spBadge.textContent = state.requestBusy ? t('speed.pill.calc') : t('speed.pill.idle'); spBadge.className = 'key-pill pill-muted'; }
+          if (spVal) spVal.textContent = '—';
+          if (spDur) spDur.textContent = '—';
+          if (spTtft) spTtft.textContent = '—';
+          if (spTokens) spTokens.textContent = '—';
+          if (spTakeaway) spTakeaway.textContent = t('speed.takeaway.idle');
+        }
       }
     }
 
@@ -10315,6 +11320,8 @@
       scan: state.scan ? new Date(state.scan.scannedAt).toLocaleTimeString() : t('tech.unfinished')
     });
     el('refresh').disabled = state.scanBusy;
+    scheduleLatestCallRefresh({ allowTimelineRefresh: false });
+    if (state.historyDrawerOpen) renderSessionTimeline();
   }
 
   const MAX_FLUSH_BATCH_CALLS = 500;
@@ -10833,6 +11840,41 @@
       state.callsHydrated = true;
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
+
+      // 实时流式采样点跟踪 & 等待首字计时清除（严格限制同一单次调用，绝不跨轮混用）
+      const newestPollCall = state.sessionCalls.length ? state.sessionCalls[state.sessionCalls.length - 1] : null;
+      if (newestPollCall) {
+        if (!state.streamSampleTracker) state.streamSampleTracker = { byCallId: new Map() };
+        const nowTs = Date.now();
+        let trk = state.streamSampleTracker.byCallId.get(newestPollCall.callId);
+        if (!trk) {
+          trk = { firstOutAt: newestPollCall.outputTokens > 0 ? nowTs : null, lastOutAt: nowTs, lastOutTokens: newestPollCall.outputTokens || 0, chunks: newestPollCall.outputTokens > 0 ? 1 : 0, intervalsMs: [], elapsedStreamSec: 0 };
+          if (state.streamSampleTracker.byCallId.size >= 40) {
+            const firstK = state.streamSampleTracker.byCallId.keys().next().value;
+            if (firstK) state.streamSampleTracker.byCallId.delete(firstK);
+          }
+          state.streamSampleTracker.byCallId.set(newestPollCall.callId, trk);
+        } else if (newestPollCall.status === 'streaming' && newestPollCall.outputTokens > trk.lastOutTokens) {
+          if (trk.lastOutAt) trk.intervalsMs.push(Math.max(1, nowTs - trk.lastOutAt));
+          if (!trk.firstOutAt) trk.firstOutAt = nowTs;
+          trk.lastOutAt = nowTs;
+          trk.lastOutTokens = newestPollCall.outputTokens;
+          trk.chunks += 1;
+          trk.elapsedStreamSec = Number(((nowTs - trk.firstOutAt) / 1000).toFixed(2));
+        }
+        if (trk.chunks >= 1 && trk.intervalsMs.length > 0) {
+          newestPollCall.chunkCount = trk.chunks;
+          newestPollCall.chunkIntervalsMs = trk.intervalsMs.slice();
+        }
+        if (state.livePendingRequest && state.livePendingRequest.cascadeId === id) {
+          const isNewCall = newestPollCall.callId !== state.livePendingRequest.baselineCallId;
+          const gotFirstToken = (newestPollCall.outputTokens || 0) > 0 || newestPollCall.ttftSec != null || newestPollCall.status === 'final';
+          if ((isNewCall && gotFirstToken) || (state.count > (state.livePendingRequest.baselineCount || 0) && gotFirstToken) || newestPollCall.error) {
+            clearLivePendingRequestWait();
+          }
+        }
+      }
+
       if (hasNewOrProgressedPending) {
         state.nextFlushRetryAt = 0;
       }
@@ -10853,8 +11895,20 @@
         }
       }
       state.requestAt = Date.now(); state.requestError = '';
+      if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
     } catch (e) { if (generation === state.generation && !state.disposed) state.requestError = e.name === 'AbortError' ? '读取超时' : e.message; }
-    finally { clearTimeout(timeout); state.controllers.delete(controller); if (generation === state.generation && !state.disposed) { state.requestBusy = false; state.requestNext = Date.now() + (document.hidden ? 15000 : 3000); render(); } }
+    finally {
+      clearTimeout(timeout);
+      state.controllers.delete(controller);
+      if (generation === state.generation && !state.disposed) {
+        state.requestBusy = false;
+        const latestRecNow = resolveLatestSessionCallRecord();
+        const isStreamingNow = Boolean(latestRecNow && latestRecNow.status === 'streaming');
+        const nextDelay = document.hidden ? 15000 : (isStreamingNow ? 1000 : 3000);
+        state.requestNext = Date.now() + nextDelay;
+        render();
+      }
+    }
   }
 
   async function scan(generation, id, force = false) {
@@ -10903,6 +11957,7 @@
       }
       state.latest = withStepError(state.latest);
       renderFiles(result.data.session);
+      if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
     } catch (e) { if (generation === state.generation && !state.disposed) state.scanError = e.message; }
     finally { if (generation === state.generation && !state.disposed) { state.scanBusy = false; state.scanNext = Date.now() + (document.hidden ? 60000 : 20000); render(); } }
   }
@@ -12645,6 +13700,58 @@
     }
   }
 
+  el('btn-speed-breakdown-toggle')?.addEventListener('click', () => {
+    state.speedBreakdownOpen = !state.speedBreakdownOpen;
+    if (typeof evaluateGenerationExperience === 'function') {
+      renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
+    }
+    positionFloatingPanels();
+  });
+
+  el('latest-call-summary-row')?.addEventListener('click', () => {
+    state.latestCallDetailOpen = !state.latestCallDetailOpen;
+    if (!state.latestCallDetailOpen && state.pinnedCallRecord) {
+      state.pinnedCallRecord = null;
+      renderSessionTimeline();
+    }
+    if (!state.latestCallDetailOpen && state.pendingLatestCallRecord) {
+      renderLatestCallCard({ fromUserAction: true });
+    } else {
+      syncLatestCallDetailsVisibility();
+    }
+    positionFloatingPanels();
+  });
+  el('latest-call-summary-row')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      el('latest-call-summary-row')?.click();
+    }
+  });
+  el('latest-call-new-banner')?.addEventListener('click', () => {
+    state.pinnedCallRecord = null;
+    state.pendingLatestCallRecord = null;
+    renderLatestCallCard({ fromUserAction: true });
+    if (state.historyDrawerOpen) renderSessionTimeline();
+    positionFloatingPanels();
+  });
+  el('btn-session-history-toggle')?.addEventListener('click', () => {
+    state.historyDrawerOpen = !state.historyDrawerOpen;
+    if (!state.historyDrawerOpen && state.pinnedCallRecord) {
+      state.pinnedCallRecord = null;
+      renderLatestCallCard({ fromUserAction: true, skipAnim: true });
+    }
+    renderSessionTimeline();
+    if (state.historyDrawerOpen && state.route) {
+      void fetchSessionTimeline(state.route, { force: !state.sessionTimeline });
+    }
+    positionFloatingPanels();
+  });
+  el('btn-timeline-load-more')?.addEventListener('click', () => {
+    state.timelinePageLimit = (Number(state.timelinePageLimit) || 10) + 10;
+    renderSessionTimeline();
+    positionFloatingPanels();
+  });
+
   el('btn-quota-refresh')?.addEventListener('click', () => {
     void syncQuotaFromHost(true, { manual: true });
   });
@@ -12673,11 +13780,24 @@
     const id = route();
     if (id !== state.route) {
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
+      if (timelineFetchController) {
+        try { timelineFetchController.abort(); } catch { }
+        timelineFetchController = null;
+      }
+      if (state.callRenderTimer) { clearTimeout(state.callRenderTimer); state.callRenderTimer = null; }
+      if (state.callEnterAnimTimer) { clearTimeout(state.callEnterAnimTimer); state.callEnterAnimTimer = null; }
+      clearLivePendingRequestWait();
       if (state.sessionCallsMap) state.sessionCallsMap.clear();
+      if (state.expandedTurnKeys) state.expandedTurnKeys.clear();
       Object.assign(state, {
         route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
         callsHydrated: false, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
-        scanBusy: false, scanNext: 0, scanError: '', scan: null
+        scanBusy: false, scanNext: 0, scanError: '', scan: null,
+        displayedCallRecord: null, displayedCallSig: '', pendingLatestCallRecord: null,
+        pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
+        historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
+        timelineError: '', timelinePageLimit: 10, lastTimelineFetchAt: 0, lastTimelineCallSig: '',
+        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
       });
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
       if (lastHistorySync > 0) {
@@ -13131,11 +14251,92 @@
       backendVersionMismatch: backendStatus.backendVersionMismatch,
       lastQuotaDurationMs: backendStatus.lastQuotaDurationMs
     }),
+    getLatestCallCardStateForTest: () => ({
+      route: state.route,
+      displayedCall: state.displayedCallRecord,
+      pendingLatestCall: state.pendingLatestCallRecord,
+      pinnedCall: state.pinnedCallRecord,
+      detailOpen: state.latestCallDetailOpen,
+      historyOpen: state.historyDrawerOpen,
+      bannerVisible: Boolean(el('latest-call-new-banner') && !el('latest-call-new-banner').hidden),
+      isEntering: Boolean(el('latest-call-body')?.classList?.contains?.('is-entering'))
+    }),
+    setSessionCallsForTest: (calls, opts = {}) => {
+      if (opts.route && state.route !== opts.route) {
+        state.route = opts.route;
+        state.displayedCallRecord = null;
+        state.displayedCallSig = '';
+        state.pendingLatestCallRecord = null;
+        state.pinnedCallRecord = null;
+        state.latestCallDetailOpen = false;
+        state.lastAnimatedCallSig = '';
+      }
+      if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
+      if (opts.replace) state.sessionCallsMap.clear();
+      for (const c of (Array.isArray(calls) ? calls : [])) {
+        if (c && c.callId) state.sessionCallsMap.set(c.callId, c);
+      }
+      state.sessionCalls = Array.from(state.sessionCallsMap.values());
+      render();
+      return {
+        displayedCall: state.displayedCallRecord,
+        pendingLatestCall: state.pendingLatestCallRecord,
+        bannerVisible: Boolean(el('latest-call-new-banner') && !el('latest-call-new-banner').hidden)
+      };
+    },
+    setSessionTimelineForTest: (tl) => {
+      state.sessionTimeline = tl;
+      if (state.historyDrawerOpen) renderSessionTimeline();
+    },
+    toggleSessionHistoryForTest: (open) => {
+      state.historyDrawerOpen = open !== undefined ? Boolean(open) : !state.historyDrawerOpen;
+      renderSessionTimeline();
+      return state.historyDrawerOpen;
+    },
+    setSpeedEvaluationForTest: (mockInput, opts = {}) => {
+      state.speedOverrideForTest = mockInput || null;
+      if (opts.openBreakdown !== undefined) state.speedBreakdownOpen = Boolean(opts.openBreakdown);
+      if (typeof evaluateGenerationExperience === 'function') {
+        const res = evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage);
+        renderSpeedExperienceInPlace(res);
+        return res;
+      }
+      return null;
+    },
+    getSpeedPanelStateForTest: () => ({
+      badgeText: el('speed-badge')?.textContent || '',
+      badgeColor: el('speed-badge')?.style?.color || '',
+      boltColor: el('badge-speed-icon')?.style?.color || '',
+      summaryBoltColor: el('speed-summary-bolt')?.style?.color || '',
+      speedVal: el('speed-val')?.textContent || '',
+      durationVal: el('speed-duration')?.textContent || '',
+      ttftVal: el('speed-ttft')?.textContent || '',
+      tokensVal: el('speed-tokens')?.textContent || '',
+      subLabel: el('speed-sub-label')?.textContent || '',
+      takeaway: el('speed-takeaway')?.textContent || '',
+      breakdownOpen: state.speedBreakdownOpen,
+      lastEval: state.lastSpeedEval
+    }),
+    getTokenCacheBreakdownForTest: () => ({
+      input: el('tcb-input-val')?.textContent || '',
+      cacheRead: el('tcb-cache-val')?.textContent || '',
+      totalInput: el('tcb-total-input-val')?.textContent || '',
+      output: el('tcb-output-val')?.textContent || '',
+      ratio: el('tcb-ratio-val')?.textContent || '',
+      note: el('tcb-note')?.textContent || ''
+    }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
       earlyForceDispose();
       clearQuotaTimers();
       clearInterval(timer);
+      clearLivePendingRequestWait();
+      if (timelineFetchController) {
+        try { timelineFetchController.abort(); } catch { }
+        timelineFetchController = null;
+      }
+      if (state.callRenderTimer) { clearTimeout(state.callRenderTimer); state.callRenderTimer = null; }
+      if (state.callEnterAnimTimer) { clearTimeout(state.callEnterAnimTimer); state.callEnterAnimTimer = null; }
       try { globalThis.removeEventListener?.('popstate', scheduleImmediateRouteTick); } catch { }
       try {
         if (wrappedPushState && globalThis.history?.pushState === wrappedPushState && origPushState) {

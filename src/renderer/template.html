@@ -30,7 +30,7 @@
 <!-- 顶部基本单元 2: 输出速度 (tok/s) -->
 <button id="badge-speed" class="ag-unit" type="button" aria-label="模型输出速度与耗时统计" data-i18n-aria="badge.speed.aria"
   aria-expanded="false">
-  <span class="speed-icon" aria-hidden="true">⚡</span>
+  <span id="badge-speed-icon" class="speed-icon" aria-hidden="true">⚡</span>
   <span id="speed-amount">-- tok/s</span>
   <span id="speed-hover-extra" class="sr-only"></span>
 </button>
@@ -189,17 +189,22 @@
         <div id="key-takeaway" class="key-takeaway" data-i18n="session.keyTakeaway.loading">正在计算核心指标…</div>
       </div>
 
-      <!-- 卡片 2: 输出速度与延迟速览 -->
+      <!-- 卡片 2: 生成体验、纯流式速度与 E 评分速览 -->
       <div id="speed-summary"
         style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:8px 0 10px;">
         <div class="key-header">
-          <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));"
-            data-i18n="session.speedSummary.title">⚡ 最新生成速度与耗时</span>
-          <span id="speed-badge" class="key-pill pill-muted" data-i18n="session.speed.pending">待生成</span>
+          <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));">
+            <span id="speed-summary-bolt" class="speed-bolt-icon" aria-hidden="true">⚡</span>
+            <span data-i18n="session.speedSummary.titleNoBolt">最新生成体验与速度</span>
+          </span>
+          <div class="speed-badge-group">
+            <span id="speed-badge" class="key-pill pill-muted" data-i18n="session.speed.pending">待生成</span>
+            <button id="btn-speed-breakdown-toggle" class="latest-call-link-btn" type="button" aria-expanded="false" hidden data-i18n="session.speed.details">拆解</button>
+          </div>
         </div>
         <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
           <div class="key-stat">
-            <div class="key-stat-label" data-i18n="session.speed.rate">输出速度</div>
+            <div class="key-stat-label" id="speed-val-label" data-i18n="session.speed.streamRate">纯流式速度</div>
             <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—
             </div>
           </div>
@@ -216,7 +221,58 @@
             <div id="speed-tokens" class="key-stat-val">—</div>
           </div>
         </div>
+        <div id="speed-sub-label" class="speed-sub-label" hidden></div>
         <div id="speed-takeaway" class="key-takeaway" data-i18n="session.speed.wait">等待首次模型输出产生速度统计…</div>
+        <div id="speed-breakdown-details" class="speed-breakdown-details" style="display:none;">
+          <div class="call-detail-grid" id="speed-breakdown-grid"></div>
+        </div>
+      </div>
+
+      <!-- 最新模型调用与当前会话请求时间线 -->
+      <div id="latest-call-card" class="latest-call-card" hidden>
+        <div class="latest-call-header">
+          <div class="latest-call-title-wrap">
+            <span class="latest-call-title" data-i18n="session.latestCall.title">最新调用</span>
+            <span id="latest-call-status-pill" class="key-pill pill-muted">--</span>
+            <span id="latest-call-agent-pill" class="call-agent-badge" hidden>主代理</span>
+          </div>
+          <div class="latest-call-actions">
+            <span id="latest-call-time" class="latest-call-time">—</span>
+            <button id="btn-session-history-toggle" class="latest-call-link-btn" type="button" aria-expanded="false" data-i18n="session.timeline.viewHistory">查看历史</button>
+          </div>
+        </div>
+
+        <button id="latest-call-new-banner" class="latest-call-new-banner" type="button" hidden data-i18n="session.latestCall.newAvailable">有新调用完成 · 点击查看最新</button>
+
+        <div id="latest-call-body" class="latest-call-body">
+          <div id="latest-call-summary-row" class="latest-call-summary-row" role="button" tabindex="0" aria-expanded="false">
+            <div class="latest-call-model-wrap">
+              <span id="latest-call-model" class="latest-call-model">—</span>
+              <span id="latest-call-effort" class="call-effort-tag" hidden>—</span>
+            </div>
+            <div class="latest-call-metrics">
+              <span id="latest-call-score-inline" class="call-score-badge" hidden>—</span>
+              <span id="latest-call-tokens-inline" class="latest-call-metric-item">—</span>
+              <span id="latest-call-cache-inline" class="latest-call-metric-item">—</span>
+              <span id="latest-call-duration-inline" class="latest-call-metric-item">—</span>
+            </div>
+            <span id="btn-latest-call-toggle" class="latest-call-expand-caret" aria-hidden="true">▾</span>
+          </div>
+
+          <div id="latest-call-details" class="latest-call-details" style="display:none;">
+            <div class="call-detail-grid" id="latest-call-detail-grid"></div>
+            <div id="latest-call-error-box" class="call-detail-error" hidden></div>
+          </div>
+        </div>
+
+        <div id="session-timeline-drawer" class="session-timeline-drawer" style="display:none;">
+          <div id="session-timeline-summary" class="session-timeline-summary"></div>
+          <div id="session-timeline-list" class="session-timeline-list"></div>
+          <div id="session-timeline-unlinked" class="session-timeline-unlinked" hidden></div>
+          <div id="session-timeline-more-wrap" class="session-timeline-more-wrap" hidden>
+            <button id="btn-timeline-load-more" class="ctx-compact-link-btn" type="button" data-i18n="session.timeline.loadMore">加载更多轮次</button>
+          </div>
+        </div>
       </div>
 
       <!-- 紧凑上下文设置入口卡片 -->
@@ -1753,6 +1809,31 @@
           <div class="t-card-cost" id="t-year-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
           </div>
         </div>
+      </div>
+
+      <!-- 按当前来源汇总的输入/输出/缓存读取占比明细条 -->
+      <div id="token-cache-breakdown" class="token-cache-breakdown">
+        <div class="tcb-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.uncachedInput">输入</span>
+          <strong class="tcb-val" id="tcb-input-val">--</strong>
+        </div>
+        <div class="tcb-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.cacheRead">缓存读取</span>
+          <strong class="tcb-val" id="tcb-cache-val">--</strong>
+        </div>
+        <div class="tcb-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.totalInput">总输入(输入+缓存)</span>
+          <strong class="tcb-val" id="tcb-total-input-val">--</strong>
+        </div>
+        <div class="tcb-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.output">输出</span>
+          <strong class="tcb-val" id="tcb-output-val">--</strong>
+        </div>
+        <div class="tcb-item tcb-ratio-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.ratio">缓存读取占比</span>
+          <strong class="tcb-val tcb-ratio-val" id="tcb-ratio-val">--</strong>
+        </div>
+        <div class="tcb-note" id="tcb-note" hidden></div>
       </div>
 
       <div class="heatmap-section">

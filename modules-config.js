@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const { getStateDir } = require('./asar-engine');
 const { safeWriteJsonSync } = require('./meter-storage');
 const { parseAndValidateProxyUrl } = require('./meter-proxy');
@@ -734,6 +735,23 @@ function inspectDiskModules(customPath = null, options = {}) {
   return result;
 }
 
+/**
+ * 计算后台核心运行文件组合的 SHA-256 指纹（12 位 hex），用于同版本不同构建热重载识别。
+ */
+function getHostCoreBuildId(baseDir = null) {
+  try {
+    const root = baseDir || __dirname;
+    const h = crypto.createHash('sha256');
+    for (const f of ['cli.js', 'install.js', 'restore.js', 'live-host.js', 'local-api.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-context-unlock.js', 'meter-enhance.js', 'macos-binary-utils.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+      const p = path.join(root, f);
+      if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
+    }
+    return h.digest('hex').slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   SCHEMA_VERSION,
   PROJECT_VERSION,
@@ -748,5 +766,6 @@ module.exports = {
   testProxyHealth,
   acquireFileLock,
   inspectDiskModules,
-  invalidateDiskModulesCache
+  invalidateDiskModulesCache,
+  getHostCoreBuildId
 };
