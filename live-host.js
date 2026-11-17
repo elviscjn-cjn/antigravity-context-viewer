@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api');
 const {
   collect,
+  collectTurnState,
   collectTokenHistoryAsync,
   fetchQuotaSnapshotFromHost,
   checkUpdateAsync,
@@ -98,6 +99,7 @@ const MAX_RECORD_CALLS = 500; // 单批次最大记录数
 const ALLOWED_ROUTES = [
   '/runtime-info',
   '/scan',
+  '/turn-state',
   '/token-history',
   '/quota',
   '/record-calls',
@@ -123,6 +125,7 @@ const ALLOWED_ROUTES = [
 const LIVE_HOST_STARTED_AT = Date.now();
 const LIVE_CAPABILITIES = {
   scan: true,
+  turnState: true,
   tokenHistory: true,
   quota: true,
   recordCalls: true,
@@ -466,6 +469,19 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         }
         const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
         const effectiveOrigin = allowedSet.has(scanOrigin) ? scanOrigin : reqOrigin;
+        if (req.url === '/turn-state') {
+          const data = await collectTurnState(effectiveOrigin, request.id);
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            data: {
+              ...(data || {}),
+              backendVersion: PROJECT_VERSION,
+              backendSource: 'live-host'
+            }
+          }));
+          return;
+        }
         const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
@@ -626,6 +642,7 @@ async function startLiveHost() {
       backendSource: 'live-host',
       hasQuota: true,
       hasRuntimeInfo: true,
+      hasTurnState: true,
       capabilities: Object.keys(LIVE_CAPABILITIES).filter(k => LIVE_CAPABILITIES[k]),
       startedAt: LIVE_HOST_STARTED_AT
     };

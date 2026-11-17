@@ -92,6 +92,10 @@
   } catch { }
   const {
     summarize,
+    summarizeTurnTiming,
+    formatCompactDurationSec,
+    calculateCacheHitStats,
+    summarizeCacheHitRecords,
     parseGeneratorCall,
     calculateRequestApiCost,
     normalizeModelId,
@@ -126,8 +130,14 @@
       totalOutputTokens: 0,
       totalCacheTokens: 0,
       todayTokens: 0,
+      todayInputTokens: 0,
+      todayCacheTokens: 0,
       monthTokens: 0,
+      currentMonthInput: 0,
+      currentMonthCache: 0,
       yearTokens: 0,
+      yearInputTokens: 0,
+      yearCacheTokens: 0,
       totalSteps: 0,
       totalConversations: 0,
       firstUseDate: null,
@@ -515,35 +525,52 @@
       color: #18181b !important;
     }
 
-    /* 单元 4: 一键启动 CLI 按钮 */
-    #badge-cli{
+    /* 单元 4: Prompt 缓存命中率（替代原 CLI 按钮位） */
+    #badge-cache-hit{
       color:var(--ag-toolbar-fg);
-      min-width:44px;
+      min-width:56px;
       padding:0 6px;
-      gap:3px;
-      justify-content:center;
-      transition: transform 0.08s cubic-bezier(0.2, 0, 0, 1), background-color 0.12s ease, opacity 0.12s ease;
-      user-select: none;
-      -webkit-user-select: none;
+      gap:4px;
+      justify-content:flex-start;
     }
-    #badge-cli:hover,#badge-cli:focus-visible{
+    #badge-cache-hit:hover,#badge-cache-hit:focus-visible,#badge-cache-hit[aria-expanded="true"]{
       color:var(--ag-toolbar-fg-hover);
     }
-    #badge-cli:active,
-    #badge-cli[data-pressed="true"]{
-      transform: scale(0.92);
+    #badge-cache-hit:active,
+    #overflow-cli-btn:active,
+    #overflow-cli-btn[data-pressed="true"]{
+      transform: scale(0.96);
       background: rgba(127, 127, 127, 0.16);
     }
-    #badge-cli[data-busy="true"]{
+    #overflow-cli-btn[data-busy="true"]{
       cursor: wait;
       pointer-events: none;
     }
-    #badge-cli[data-busy="true"] .cli-icon{
+    #overflow-cli-btn[data-busy="true"] .cli-icon{
       animation: ag-cli-pulse 0.8s ease-in-out infinite alternate;
     }
     @keyframes ag-cli-pulse {
       0% { transform: scale(0.9); opacity: 0.6; }
       100% { transform: scale(1.15); opacity: 1; }
+    }
+    #badge-cache-hit[data-hit-tier="high"]{color:#52c41a}
+    #badge-cache-hit[data-hit-tier="mid"]{color:#38bdf8}
+    #badge-cache-hit[data-hit-tier="low"]{color:#faad14}
+    #badge-cache-hit[data-scope="global"]{opacity:0.86}
+    :host([data-theme="light"]) #badge-cache-hit[data-hit-tier="high"]{color:#389e0d}
+    :host([data-theme="light"]) #badge-cache-hit[data-hit-tier="mid"]{color:#0284c7}
+    :host([data-theme="light"]) #badge-cache-hit[data-hit-tier="low"]{color:#d46b08}
+    .cache-hit-icon{
+      width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;
+      flex-shrink:0;opacity:0.92;
+    }
+    #cache-hit-amount{
+      font-variant-numeric:tabular-nums;
+      display:inline-block;
+      min-width:34px;
+      white-space:nowrap;
+      text-align:left;
+      color:inherit;
     }
     .cli-icon{
       font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
@@ -586,12 +613,12 @@
     }
     :host([data-layout="compact"]) #badge-speed,
     :host([data-layout="compact"]) #badge-tokens,
-    :host([data-layout="compact"]) #badge-cli{
+    :host([data-layout="compact"]) #badge-cache-hit{
       padding:0 5px;font-size:11.5px;gap:3px;
     }
     :host([data-layout="minimal"]) #badge-speed,
     :host([data-layout="minimal"]) #badge-tokens,
-    :host([data-layout="minimal"]) #badge-cli{
+    :host([data-layout="minimal"]) #badge-cache-hit{
       display:none!important;
     }
     :host([data-layout="minimal"]) #badge-overflow{
@@ -599,7 +626,7 @@
     }
     :host([data-layout="ring-only"]) #badge-speed,
     :host([data-layout="ring-only"]) #badge-tokens,
-    :host([data-layout="ring-only"]) #badge-cli,
+    :host([data-layout="ring-only"]) #badge-cache-hit,
     :host([data-layout="ring-only"]) #badge-overflow{
       display:none!important;
     }
@@ -1297,6 +1324,20 @@
     .key-stat-label{font-size:10px;color:var(--ag-text-muted);margin-bottom:2px}
     .key-stat-val{font-size:12px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     #key-used{color:var(--ag-custom-context-text,var(--ag-text-primary))}
+    .cache-hit-strip{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 7px;margin-bottom:7px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);font-size:11px}
+    .cache-hit-label{color:var(--ag-text-muted);font-size:10.5px;white-space:nowrap}
+    .cache-hit-values{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;font-variant-numeric:tabular-nums}
+    .cache-hit-chip{font-size:11px;font-weight:600;color:var(--ag-text-primary);white-space:nowrap}
+    .cache-hit-meta{font-size:10px;font-weight:500;color:var(--ag-text-muted);white-space:nowrap}
+    .cache-hit-alert{font-size:10px;font-weight:600;padding:1px 5px;border-radius:4px;background:rgba(250,173,20,0.14);border:1px solid rgba(250,173,20,0.32);color:#faad14;white-space:nowrap}
+    .cache-hit-chip[data-hit-tier="high"]{color:#52c41a}
+    .cache-hit-chip[data-hit-tier="mid"]{color:#38bdf8}
+    .cache-hit-chip[data-hit-tier="low"]{color:#faad14}
+    .cache-hit-chip[data-hit-tier="none"]{color:var(--ag-text-muted);font-weight:500}
+    :host([data-theme="light"]) .cache-hit-chip[data-hit-tier="high"]{color:#389e0d}
+    :host([data-theme="light"]) .cache-hit-chip[data-hit-tier="mid"]{color:#0284c7}
+    :host([data-theme="light"]) .cache-hit-chip[data-hit-tier="low"]{color:#d46b08}
+    :host([data-theme="light"]) .cache-hit-alert{background:rgba(212,107,8,0.1);border-color:rgba(212,107,8,0.28);color:#d46b08}
     .key-takeaway{font-size:11px;color:var(--ag-text-secondary);padding-top:6px;border-top:1px solid var(--ag-border-subcard);line-height:1.4}
 
     #status{padding:7px 10px;border:0;border-left:2.5px solid var(--tone,#666);border-radius:4px;background:var(--ag-bg-status);color:var(--ag-text-status);font-weight:500;font-size:11.5px}
@@ -1323,6 +1364,14 @@
     #t-total-val{color:var(--ag-custom-token-total,var(--ag-text-primary))}
     #t-today-val{color:var(--ag-custom-token-accent,var(--ag-text-primary))}
     .t-card-sub{font-size:10px;color:var(--ag-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .t-card-cache{font-size:9.5px;color:#52c41a;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .t-card-cache[data-hit-tier="mid"]{color:#38bdf8}
+    .t-card-cache[data-hit-tier="low"]{color:#faad14}
+    .t-card-cache[data-hit-tier="none"]{color:var(--ag-text-muted)}
+    :host([data-theme="light"]) .t-card-cache{color:#389e0d}
+    :host([data-theme="light"]) .t-card-cache[data-hit-tier="mid"]{color:#0284c7}
+    :host([data-theme="light"]) .t-card-cache[data-hit-tier="low"]{color:#d46b08}
+    :host([data-theme="light"]) .t-card-cache[data-hit-tier="none"]{color:var(--ag-text-muted)}
     .t-card-cost{font-size:9.5px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 
     .heatmap-section{background:var(--ag-heat-bg);border:1px solid var(--ag-border-card);border-radius:10px;padding:12px}
@@ -1949,11 +1998,16 @@
   <span id="token-hover-extra" class="sr-only"></span>
 </button>
 
-<!-- 顶部基本单元 4: 一键启动 CLI 模式 -->
-<button id="badge-cli" class="ag-unit" type="button" aria-label="启动 CLI" data-i18n-aria="badge.cli.aria"
-  title="一键启动 Antigravity CLI 终端（自动进入当前项目目录）" data-i18n-title="badge.cli.title">
-  <span class="cli-icon" aria-hidden="true">&gt;_</span>
-  <span id="cli-label">CLI</span>
+<!-- 顶部基本单元 4: Prompt 缓存命中率（替代原 CLI 位置） -->
+<button id="badge-cache-hit" class="ag-unit" type="button" aria-label="Prompt 缓存命中率"
+  data-i18n-aria="badge.cacheHit.aria" aria-expanded="false" data-hit-tier="none" data-scope="global"
+  title="Prompt 缓存命中率" data-i18n-title="badge.cacheHit.title">
+  <span class="cache-hit-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13" fill="none"
+      stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="8" cy="8" r="5.5"></circle>
+      <circle cx="8" cy="8" r="2.1"></circle>
+    </svg></span>
+  <span id="cache-hit-amount">--%</span>
 </button>
 
 <!-- 顶部基本单元 5: 窄屏溢出菜单按钮 -->
@@ -1990,6 +2044,10 @@
     <span class="overflow-item-label"><span class="token-fire-dot"></span><span data-i18n="overflow.tokens">Token
         用量一览</span></span>
     <span id="overflow-tokens-val" class="overflow-item-val">--</span>
+  </button>
+  <button id="overflow-cache-btn" class="overflow-item" type="button">
+    <span class="overflow-item-label"><span>◎</span><span data-i18n="overflow.cacheHit">缓存命中率</span></span>
+    <span id="overflow-cache-val" class="overflow-item-val">--%</span>
   </button>
   <button id="overflow-cli-btn" class="overflow-item" type="button">
     <span class="overflow-item-label"><span class="cli-icon">&gt;_</span><span data-i18n="overflow.cli">启动 CLI
@@ -2089,6 +2147,16 @@
             <div id="key-remaining" class="key-stat-val">—</div>
           </div>
         </div>
+        <div id="cache-hit-strip" class="cache-hit-strip" title="Prompt 缓存命中率 = 缓存读取 / (新增输入 + 缓存读取)"
+          data-i18n-title="session.cacheHit.title">
+          <span id="cache-hit-label" class="cache-hit-label" data-i18n="session.cacheHit.label">🎯 实时缓存</span>
+          <div class="cache-hit-values">
+            <span id="cache-hit-turn" class="cache-hit-chip">—</span>
+            <span id="cache-hit-tokens" class="cache-hit-meta" hidden></span>
+            <span id="cache-hit-session" class="cache-hit-chip">—</span>
+            <span id="cache-hit-drop" class="cache-hit-alert" hidden></span>
+          </div>
+        </div>
         <div id="key-takeaway" class="key-takeaway" data-i18n="session.keyTakeaway.loading">正在计算核心指标…</div>
       </div>
 
@@ -2107,7 +2175,7 @@
             </div>
           </div>
           <div class="key-stat">
-            <div class="key-stat-label" data-i18n="session.speed.duration">生成耗时</div>
+            <div class="key-stat-label" data-i18n="session.speed.duration">本轮耗时</div>
             <div id="speed-duration" class="key-stat-val">—</div>
           </div>
           <div class="key-stat">
@@ -2154,6 +2222,8 @@
             <dd id="request-status">—</dd>
             <dt data-i18n="session.tech.actual">模型返回输入＋输出</dt>
             <dd id="actual">—</dd>
+            <dt data-i18n="session.tech.cacheHit">Prompt 缓存命中率</dt>
+            <dd id="cache-hit-detail">—</dd>
             <dt data-i18n="session.tech.estimate">客户端估算（可能漏附件）</dt>
             <dd id="estimate">—</dd>
             <dt data-i18n="session.tech.budget">客户端预算字段</dt>
@@ -3508,7 +3578,10 @@
         <!-- 用量与参考差额指标条（注明包含缓存读取） -->
         <div
           style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin-bottom:8px">
-          <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">—</span>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">—</span>
+            <span id="cost-cache-hit-pill" class="key-pill pill-muted" style="font-size:10px">—</span>
+          </div>
           <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">—</span>
         </div>
 
@@ -3526,6 +3599,7 @@
               ($0.075/M)</div>
             <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
             <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div id="ref-cost-cache-hit" style="font-size:9.5px;color:var(--ag-text-muted)">—</div>
           </div>
           <div class="t-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.output">输出 Token</span>
@@ -3576,6 +3650,7 @@
             data-i18n="tokens.card.includeCache">含缓存读取</div>
           <div class="t-card-val" id="t-total-val">--</div>
           <div class="t-card-sub" id="t-total-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cache" id="t-total-cache-hit">—</div>
           <div class="t-card-cost" id="t-total-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
           </div>
         </div>
@@ -3584,6 +3659,7 @@
               style="color:var(--ag-custom-token-accent,#0284c7)">Today</span></div>
           <div class="t-card-val" id="t-today-val">--</div>
           <div class="t-card-sub" id="t-today-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cache" id="t-today-cache-hit">—</div>
           <div class="t-card-cost" id="t-today-cost">≈ $0.00 (¥0.00)</div>
         </div>
         <div class="t-card">
@@ -3591,6 +3667,7 @@
               style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Month</span></div>
           <div class="t-card-val" id="t-month-val">--</div>
           <div class="t-card-sub" id="t-month-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cache" id="t-month-cache-hit">—</div>
           <div class="t-card-cost" id="t-month-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
           </div>
         </div>
@@ -3599,6 +3676,7 @@
               style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Year</span></div>
           <div class="t-card-val" id="t-year-val">--</div>
           <div class="t-card-sub" id="t-year-sub" data-i18n="common.loading">读取中...</div>
+          <div class="t-card-cache" id="t-year-cache-hit">—</div>
           <div class="t-card-cost" id="t-year-cost" data-i18n="tokens.card.costPlaceholder">≈ $0.00 (¥0.00) · 日均 $0.00
           </div>
         </div>
@@ -3662,6 +3740,10 @@
             <span class="heat-sum-label" data-i18n="tokens.heat.sumActiveAvg">活跃日均:</span>
             <span id="h-sum-active-avg" class="heat-sum-val" data-i18n="tokens.heat.activeAvgPlaceholder">$0.00
               (0天)</span>
+          </div>
+          <div class="heat-sum-item">
+            <span class="heat-sum-label" data-i18n="tokens.heat.sumCacheHit">缓存命中率:</span>
+            <span id="h-sum-cache-hit" class="heat-sum-val">--</span>
           </div>
           <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumSubRatio">订阅性价比:</span>
@@ -4081,6 +4163,13 @@ const PANEL_I18N = {
   'badge.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
   'badge.speed.aria': { 'zh-CN': '模型输出速度与耗时统计', 'zh-TW': '模型輸出速度與耗時統計', en: 'Model output speed and latency' },
   'badge.tokens.aria': { 'zh-CN': 'Token 用量一览', 'zh-TW': 'Token 用量總覽', en: 'Token usage overview' },
+  'badge.cacheHit.aria': { 'zh-CN': 'Prompt 缓存命中率', 'zh-TW': 'Prompt 快取命中率', en: 'Prompt cache hit rate' },
+  'badge.cacheHit.title': { 'zh-CN': '当前对话实时缓存命中率（点击查看详情）', 'zh-TW': '目前對話即時快取命中率（點擊檢視詳情）', en: 'Live chat cache hit rate (click for details)' },
+  'badge.cacheHit.globalLabel': { 'zh-CN': '今日 {rate}', 'zh-TW': '今日 {rate}', en: 'Today {rate}' },
+  'badge.cacheHit.titleToday': { 'zh-CN': '今日全部来源累计缓存：{rate}', 'zh-TW': '今日全部來源累計快取：{rate}', en: 'Today cache hit (all sources): {rate}' },
+  'badge.cacheHit.titleTodayGlobal': { 'zh-CN': '当前未打开具体对话 · 显示今日全部来源累计缓存命中：{rate}', 'zh-TW': '目前未開啟具體對話 · 顯示今日全部來源累計快取命中：{rate}', en: 'No active chat open · Today all-source cache hit: {rate}' },
+  'badge.cacheHit.titleTurnCarried': { 'zh-CN': '当前步骤生成中，沿用上一步命中：{rate}（缓存 {cached} / 总输入 {total}，新增 {fresh}）', 'zh-TW': '目前步驟生成中，沿用上一步命中：{rate}（快取 {cached} / 總輸入 {total}，新增 {fresh}）', en: 'Step in progress, carrying previous turn hit: {rate} ({cached} cached / {total} prompt, +{fresh} new)' },
+  'badge.cacheHit.clickHint': { 'zh-CN': '点击展开缓存命中明细', 'zh-TW': '點擊展開快取命中明細', en: 'Click to view cache hit details' },
   'badge.cli.aria': { 'zh-CN': '启动 CLI', 'zh-TW': '啟動 CLI', en: 'Launch CLI' },
   'badge.cli.title': { 'zh-CN': '一键启动 Antigravity CLI 终端（自动进入当前项目目录）', 'zh-TW': '一鍵啟動 Antigravity CLI 終端機（自動進入目前專案目錄）', en: 'Launch Antigravity CLI in the current workspace' },
   'badge.overflow.aria': { 'zh-CN': '更多统计指标', 'zh-TW': '更多統計指標', en: 'More metrics' },
@@ -4090,6 +4179,7 @@ const PANEL_I18N = {
   'overflow.aria': { 'zh-CN': '更多统计快捷菜单', 'zh-TW': '更多統計快捷選單', en: 'More metrics menu' },
   'overflow.speed': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output speed' },
   'overflow.tokens': { 'zh-CN': 'Token 用量一览', 'zh-TW': 'Token 用量總覽', en: 'Token usage' },
+  'overflow.cacheHit': { 'zh-CN': '缓存命中率', 'zh-TW': '快取命中率', en: 'Cache hit rate' },
   'overflow.cli': { 'zh-CN': '启动 CLI 终端', 'zh-TW': '啟動 CLI 終端機', en: 'Launch CLI' },
   'cli.launching': { 'zh-CN': '正在打开 Antigravity CLI…', 'zh-TW': '正在開啟 Antigravity CLI…', en: 'Opening Antigravity CLI…' },
   'cli.launched': { 'zh-CN': '已启动 CLI：{path}', 'zh-TW': '已啟動 CLI：{path}', en: 'CLI launched: {path}' },
@@ -4127,11 +4217,21 @@ const PANEL_I18N = {
   'session.stat.used': { 'zh-CN': '当前已用', 'zh-TW': '目前已用', en: 'Used' },
   'session.stat.limit': { 'zh-CN': '预算上限', 'zh-TW': '預算上限', en: 'Budget Limit' },
   'session.stat.remaining': { 'zh-CN': '剩余可用', 'zh-TW': '剩餘可用', en: 'Remaining' },
+  'session.cacheHit.label': { 'zh-CN': '🎯 实时缓存', 'zh-TW': '🎯 即時快取', en: '🎯 Live Cache' },
+  'session.cacheHit.labelGlobal': { 'zh-CN': '🎯 今日全局', 'zh-TW': '🎯 今日全域', en: '🎯 Today All' },
+  'session.cacheHit.title': { 'zh-CN': 'Prompt 缓存命中率 = 缓存读取 / (新增输入 + 缓存读取)', 'zh-TW': 'Prompt 快取命中率 = 快取讀取 / (新增輸入 + 快取讀取)', en: 'Prompt cache hit rate = cache read / (new input + cache read)' },
+  'session.cacheHit.turn': { 'zh-CN': '当前步 {rate}', 'zh-TW': '目前步 {rate}', en: 'Step {rate}' },
+  'session.cacheHit.session': { 'zh-CN': '本对话 {rate}', 'zh-TW': '本對話 {rate}', en: 'Chat {rate}' },
+  'session.cacheHit.tokensInline': { 'zh-CN': '({cached}/+{fresh})', 'zh-TW': '({cached}/+{fresh})', en: '({cached}/+{fresh})' },
+  'session.cacheHit.dropAlert': { 'zh-CN': '⚠ 重算 -{delta}%', 'zh-TW': '⚠ 重算 -{delta}%', en: '⚠ Rebuilt -{delta}%' },
+  'session.cacheHit.dropTip': { 'zh-CN': '缓存命中率较上一步骤下降 {delta}%（{prev} → {curr}），可能因系统提示、压缩或工具清单变更触发了前缀重算。', 'zh-TW': '快取命中率較上一步驟下降 {delta}%（{prev} → {curr}），可能因系統提示、壓縮或工具清單變更觸發了前綴重算。', en: 'Cache hit dropped {delta}% vs previous step ({prev} → {curr}), likely due to prompt prefix/tool changes or compaction.' },
+  'session.cacheHit.turnTip': { 'zh-CN': '当前步缓存命中：{rate}（缓存 {cached} / 总输入 {total}，新增 {fresh}）', 'zh-TW': '目前步快取命中：{rate}（快取 {cached} / 總輸入 {total}，新增 {fresh}）', en: 'Step cache hit: {rate} (cache {cached} / prompt {total}, new {fresh})' },
+  'session.cacheHit.sessionTip': { 'zh-CN': '本对话累计命中：{rate}（共 {calls} 次调用 · 缓存 {cached} / 总输入 {total}，新增 {fresh}）', 'zh-TW': '本對話累計命中：{rate}（共 {calls} 次呼叫 · 快取 {cached} / 總輸入 {total}，新增 {fresh}）', en: 'Chat cumulative hit: {rate} ({calls} call(s) · cache {cached} / prompt {total}, new {fresh})' },
   'session.keyTakeaway.loading': { 'zh-CN': '正在计算核心指标…', 'zh-TW': '正在計算核心指標…', en: 'Calculating key metrics…' },
   'session.speedSummary.title': { 'zh-CN': '⚡ 最新生成速度与耗时', 'zh-TW': '⚡ 最新生成速度與耗時', en: '⚡ Latest Speed & Latency' },
   'session.speed.pending': { 'zh-CN': '待生成', 'zh-TW': '待生成', en: 'Idle' },
-  'session.speed.rate': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output Speed' },
-  'session.speed.duration': { 'zh-CN': '生成耗时', 'zh-TW': '生成耗時', en: 'Duration' },
+  'session.speed.rate': { 'zh-CN': '纯生成速率', 'zh-TW': '純生成速率', en: 'Gen Speed' },
+  'session.speed.duration': { 'zh-CN': '本轮耗时', 'zh-TW': '本輪耗時', en: 'Turn Time' },
   'session.speed.ttft': { 'zh-CN': '首字延迟', 'zh-TW': '首字延遲', en: 'TTFT' },
   'session.speed.tokens': { 'zh-CN': '本次输出', 'zh-TW': '本次輸出', en: 'Output' },
   'session.speed.wait': { 'zh-CN': '等待首次模型输出产生速度统计…', 'zh-TW': '等待首次模型輸出產生速度統計…', en: 'Waiting for the first model response…' },
@@ -4146,6 +4246,8 @@ const PANEL_I18N = {
   'session.tech.latestReq': { 'zh-CN': '最近一次模型请求', 'zh-TW': '最近一次模型請求', en: 'Latest Model Request' },
   'session.tech.reqStatus': { 'zh-CN': '请求状态', 'zh-TW': '請求狀態', en: 'Request status' },
   'session.tech.actual': { 'zh-CN': '模型返回输入＋输出', 'zh-TW': '模型回傳輸入＋輸出', en: 'Returned input + output' },
+  'session.tech.cacheHit': { 'zh-CN': 'Prompt 缓存命中率', 'zh-TW': 'Prompt 快取命中率', en: 'Prompt cache hit rate' },
+  'session.tech.cacheHitVal': { 'zh-CN': '{rate}（缓存 {cached} / 总输入 {total}，新增 {fresh}）', 'zh-TW': '{rate}（快取 {cached} / 總輸入 {total}，新增 {fresh}）', en: '{rate} (cache {cached} / prompt {total}, new {fresh})' },
   'session.tech.estimate': { 'zh-CN': '客户端估算（可能漏附件）', 'zh-TW': '用戶端估算（可能漏附件）', en: 'Client estimate (may miss files)' },
   'session.tech.budget': { 'zh-CN': '客户端预算字段', 'zh-TW': '用戶端預算欄位', en: 'Client budget field' },
   'session.tech.serviceLimit': { 'zh-CN': '该次报错的服务端限制', 'zh-TW': '該次報錯的伺服器端限制', en: 'Server limit from error' },
@@ -4324,10 +4426,10 @@ const PANEL_I18N = {
   'speed.metric.aria': { 'zh-CN': '对比指标', 'zh-TW': '對比指標', en: 'Metric' },
   'speed.metric.tps': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Speed' },
   'speed.metric.ttft': { 'zh-CN': '首字延迟', 'zh-TW': '首字延遲', en: 'TTFT' },
-  'speed.metric.duration': { 'zh-CN': '总耗时', 'zh-TW': '總耗時', en: 'Duration' },
+  'speed.metric.duration': { 'zh-CN': '单步耗时', 'zh-TW': '單步耗時', en: 'Step Time' },
   'speed.barTitle.tps': { 'zh-CN': '输出速度对比', 'zh-TW': '輸出速度對比', en: 'Output Speed Comparison' },
   'speed.barTitle.ttft': { 'zh-CN': '首字延迟对比', 'zh-TW': '首字延遲對比', en: 'First-Token Latency (TTFT)' },
-  'speed.barTitle.duration': { 'zh-CN': '总耗时对比', 'zh-TW': '總耗時對比', en: 'Total Duration Comparison' },
+  'speed.barTitle.duration': { 'zh-CN': '单步推理耗时对比', 'zh-TW': '單步推理耗時對比', en: 'Per-Step Duration Comparison' },
   'speed.empty': { 'zh-CN': '还没有可用的速度记录。正常对话后会自动积累。', 'zh-TW': '還沒有可用的速度記錄。正常對話後會自動累積。', en: 'No speed samples yet. Samples are recorded automatically during normal chats.' },
   'speed.barNote': { 'zh-CN': '以各模型与档位的中位数统计；不足 3 条标注“样本少”。总耗时受输出长度影响，条件相近时才可比较。', 'zh-TW': '以各模型與檔位的中位數統計；不足 3 筆標註「樣本少」。總耗時受輸出長度影響，條件相近時才可比較。', en: 'Bars show median per model & effort; <3 samples are marked "Low n". Total duration depends on output length.' },
   'speed.lineTitle': { 'zh-CN': '单模型速度趋势', 'zh-TW': '單模型速度趨勢', en: 'Model Speed Trend' },
@@ -4396,6 +4498,8 @@ const PANEL_I18N = {
   'tokens.card.today': { 'zh-CN': '今日使用', 'zh-TW': '今日使用', en: 'Today' },
   'tokens.card.month': { 'zh-CN': '本月使用', 'zh-TW': '本月使用', en: 'This Month' },
   'tokens.card.year': { 'zh-CN': '年度使用', 'zh-TW': '年度使用', en: 'This Year' },
+  'tokens.card.cacheHit': { 'zh-CN': '缓存命中 {rate}', 'zh-TW': '快取命中 {rate}', en: 'Cache hit {rate}' },
+  'tokens.card.cacheHitTip': { 'zh-CN': '缓存命中 {rate}：缓存读取 {cached} / 总输入 {total}（新增 {fresh}）', 'zh-TW': '快取命中 {rate}：快取讀取 {cached} / 總輸入 {total}（新增 {fresh}）', en: 'Cache hit {rate}: {cached} cached / {total} prompt ({fresh} new)' },
   'tokens.heat.title': { 'zh-CN': 'Token 活动', 'zh-TW': 'Token 活動', en: 'Token Activity' },
   'tokens.heat.daily': { 'zh-CN': '每天', 'zh-TW': '每天', en: 'Daily' },
   'tokens.heat.weekly': { 'zh-CN': '每周', 'zh-TW': '每週', en: 'Weekly' },
@@ -4407,6 +4511,7 @@ const PANEL_I18N = {
   'tokens.heat.sumDailyAvg': { 'zh-CN': '折合每天:', 'zh-TW': '折合每天:', en: 'Daily avg:' },
   'tokens.heat.sumActiveAvg': { 'zh-CN': '活跃日均:', 'zh-TW': '活躍日均:', en: 'Active avg:' },
   'tokens.heat.sumSubRatio': { 'zh-CN': '订阅性价比:', 'zh-TW': '訂閱性價比:', en: 'Plan value:' },
+  'tokens.heat.sumCacheHit': { 'zh-CN': '缓存命中率:', 'zh-TW': '快取命中率:', en: 'Cache hit:' },
   'tokens.heat.disclaimer': { 'zh-CN': '注：按日聚合按基础档估算，未拆分长上下文分档，结果偏下限。有逐请求记录时优先精确入账。', 'zh-TW': '註：按日彙總依基礎檔估算，未拆分長上下文分檔，結果偏下限。有逐請求記錄時優先精確入帳。', en: 'Note: Daily aggregates use base tier pricing (lower bound) unless per-request records are available.' },
   'tokens.heat.tip': { 'zh-CN': '点击或悬浮格子查看当日详细 Token 构成', 'zh-TW': '點擊或懸停格子查看當日詳細 Token 結構', en: 'Click or hover a cell to view daily token breakdown' },
   'tokens.heat.less': { 'zh-CN': '少', 'zh-TW': '少', en: 'Less' },
@@ -4433,10 +4538,11 @@ const PANEL_I18N = {
   'cost.streamingEst': { 'zh-CN': '生成中暂估', 'zh-TW': '生成中暫估', en: 'Streaming est.' },
   'cost.returnedEst': { 'zh-CN': '按已返回用量估算', 'zh-TW': '依已回應用量估算', en: 'Based on returned usage' },
   'cost.latestTurn': { 'zh-CN': '最近调用 {val} · {label}', 'zh-TW': '最近呼叫 {val} · {label}', en: 'Latest turn {val} · {label}' },
+  'cost.latestTurnMulti': { 'zh-CN': '本轮合计 {val}（{steps} 步）· {label}', 'zh-TW': '本輪合計 {val}（{steps} 步）· {label}', en: 'This turn {val} ({steps} steps) · {label}' },
   'cost.unpriced': { 'zh-CN': '最近调用：模型费率未收录', 'zh-TW': '最近呼叫：模型費率未收錄', en: 'Latest turn: unpriced model' },
   'cost.latestDash': { 'zh-CN': '最近调用估值：—', 'zh-TW': '最近呼叫估值：—', en: 'Latest turn: —' },
   'cost.sessionTotal': { 'zh-CN': '当前会话合计约 ${val}', 'zh-TW': '目前工作階段合計約 ${val}', en: 'Session total ≈ ${val}' },
-  'cost.modelTip': { 'zh-CN': '模型：{model}\n输入：{input} tok\n缓存：{cache} tok\n输出：{output} tok\n参考金额：${cost}', 'zh-TW': '模型：{model}\n輸入：{input} tok\n快取：{cache} tok\n輸出：{output} tok\n參考金額：${cost}', en: 'Model: {model}\nInput: {input} tok\nCache: {cache} tok\nOutput: {output} tok\nEst. cost: ${cost}' },
+  'cost.modelTip': { 'zh-CN': '模型：{model}\n输入：{input} tok\n缓存：{cache} tok\n缓存命中：{hitRate}\n输出：{output} tok\n参考金额：${cost}', 'zh-TW': '模型：{model}\n輸入：{input} tok\n快取：{cache} tok\n快取命中：{hitRate}\n輸出：{output} tok\n參考金額：${cost}', en: 'Model: {model}\nInput: {input} tok\nCache: {cache} tok\nCache hit: {hitRate}\nOutput: {output} tok\nEst. cost: ${cost}' },
   'cost.unpricedTip': { 'zh-CN': '模型：{model}（公开费率未收录）', 'zh-TW': '模型：{model}（公開費率未收錄）', en: 'Model: {model} (public rate unavailable)' },
   'cost.missingModel': { 'zh-CN': '缺少模型信息', 'zh-TW': '缺少模型資訊', en: 'Missing model info' },
 
@@ -4540,6 +4646,8 @@ const PANEL_I18N = {
   'speed.tip.timeRange': { 'zh-CN': '时间范围：{range}', 'zh-TW': '時間範圍：{range}', en: 'Range: {range}' },
   'speed.tip.medOut': { 'zh-CN': '输出 tokens 中位数：{val}', 'zh-TW': '輸出 tokens 中位數：{val}', en: 'Median output tokens: {val}' },
   'speed.tip.medIn': { 'zh-CN': '输入 tokens 中位数：{val}', 'zh-TW': '輸入 tokens 中位數：{val}', en: 'Median input tokens: {val}' },
+  'speed.tip.medStream': { 'zh-CN': '纯生成速率中位数：{val} tok/s（含首字等待：{overall} tok/s）', 'zh-TW': '純生成速率中位數：{val} tok/s（含首字等待：{overall} tok/s）', en: 'Median gen speed: {val} tok/s ({overall} tok/s w/ TTFT)' },
+  'speed.tip.cacheHit': { 'zh-CN': '缓存命中率：{val}', 'zh-TW': '快取命中率：{val}', en: 'Cache hit rate: {val}' },
   'speed.tip.time': { 'zh-CN': '时间：{val}', 'zh-TW': '時間：{val}', en: 'Time: {val}' },
   'speed.tip.output': { 'zh-CN': '输出：{val} tokens', 'zh-TW': '輸出：{val} tokens', en: 'Output: {val} tokens' },
   'speed.tip.ttft': { 'zh-CN': '首字延迟：{val}', 'zh-TW': '首字延遲：{val}', en: 'TTFT: {val}' },
@@ -4578,10 +4686,17 @@ const PANEL_I18N = {
   'badge.actualUnknown': { 'zh-CN': '真实量未知', 'zh-TW': '真實量未知', en: 'Actual unknown' },
   'badge.tokensTitle': { 'zh-CN': 'Token 用量一览（点击展开详情）', 'zh-TW': 'Token 用量總覽（點擊展開詳細資訊）', en: 'Token Usage Overview (click to open)' },
   'badge.speedCalc': { 'zh-CN': '计算中…', 'zh-TW': '計算中…', en: 'Calculating…' },
+  'badge.speedWarm': { 'zh-CN': '测速中…', 'zh-TW': '測速中…', en: 'Warming…' },
   'badge.speedHoverIdle': { 'zh-CN': ' · 待生成', 'zh-TW': ' · 待生成', en: ' · Idle' },
   'badge.speedTitleIdle': { 'zh-CN': '模型输出速度与耗时 (tok/s)', 'zh-TW': '模型輸出速度與耗時 (tok/s)', en: 'Model output speed & latency (tok/s)' },
   'badge.speedTitleWait': { 'zh-CN': '正在等待模型返回或计算生成指标…', 'zh-TW': '正在等待模型回傳或計算生成指標…', en: 'Waiting for model response or metrics…' },
-  'badge.speedTitleDetail': { 'zh-CN': '最新模型输出速度：{tps} tok/s{streaming}\n总耗时：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次产出：{output} tokens', 'zh-TW': '最新模型輸出速度：{tps} tok/s{streaming}\n總耗時：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次產出：{output} tokens', en: 'Latest output speed: {tps} tok/s{streaming}\nTotal: {duration}s (TTFT {ttft}s + streaming {streamSec}s)\nOutput: {output} tokens' },
+  'badge.speedTitleWarm': { 'zh-CN': '模型刚起流输出（已生成 {output} tokens），等待采样稳定（≥0.45s 或 ≥12 tokens）…', 'zh-TW': '模型剛開始串流輸出（已產生 {output} tokens），等待取樣穩定（≥0.45s 或 ≥12 tokens）…', en: 'Stream warming up ({output} tokens); waiting for stable rate (≥0.45s or ≥12 tok)…' },
+  'badge.speedTitleDetail': { 'zh-CN': '纯生成速度：{tps} tok/s{overall}\n总耗时：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次产出：{output} tokens', 'zh-TW': '純生成速度：{tps} tok/s{overall}\n總耗時：{duration}s (首字 {ttft}s + 串流 {streamSec}s)\n本次產出：{output} tokens', en: 'Generation speed: {tps} tok/s{overall}\nTotal: {duration}s (TTFT {ttft}s + streaming {streamSec}s)\nOutput: {output} tokens' },
+  'badge.speedRunning': { 'zh-CN': '⏳ {dur}', 'zh-TW': '⏳ {dur}', en: '⏳ {dur}' },
+  'badge.speedWithTurn': { 'zh-CN': '{tps} tok/s · {dur}', 'zh-TW': '{tps} tok/s · {dur}', en: '{tps} tok/s · {dur}' },
+  'badge.speedTitleRunning': { 'zh-CN': '本轮已运行：{dur}{stepsPart}\n耗时拆解：首字等待 {ttft} + 流式吐字 {streamSec} + 工具执行 {tool} + 调度间隙 {gap}\n本轮已产出：{output} tokens', 'zh-TW': '本輪已執行：{dur}{stepsPart}\n耗時拆解：首字等待 {ttft} + 串流吐字 {streamSec} + 工具執行 {tool} + 調度間隙 {gap}\n本輪已產出：{output} tokens', en: 'Turn elapsed: {dur}{stepsPart}\nBreakdown: TTFT {ttft} + streaming {streamSec} + tools {tool} + sched {gap}\nTurn output: {output} tokens' },
+  'badge.speedTitleTurnDetail': { 'zh-CN': '纯生成速度：{tps} tok/s{overall}\n本轮总耗时：{turnDur}{stepsPart} (首字等待 {ttft} + 流式吐字 {streamSec} + 工具执行 {tool} + 调度间隙 {gap})\n本轮产出：{output} tokens', 'zh-TW': '純生成速度：{tps} tok/s{overall}\n本輪總耗時：{turnDur}{stepsPart} (首字等待 {ttft} + 串流吐字 {streamSec} + 工具執行 {tool} + 調度間隙 {gap})\n本輪產出：{output} tokens', en: 'Generation speed: {tps} tok/s{overall}\nTurn total: {turnDur}{stepsPart} (TTFT {ttft} + streaming {streamSec} + tools {tool} + sched {gap})\nTurn output: {output} tokens' },
+  'badge.speedOverallPart': { 'zh-CN': ' · 含首字 {tps} tok/s', 'zh-TW': ' · 含首字 {tps} tok/s', en: ' · {tps} tok/s w/ TTFT' },
   'badge.speedStreamingPart': { 'zh-CN': ' (流式 {tps} tok/s)', 'zh-TW': ' (流式 {tps} tok/s)', en: ' (streaming {tps} tok/s)' },
   'badge.corpus.range': { 'zh-CN': '会话{range}{inc}', 'zh-TW': '工作階段{range}{inc}', en: 'Chat {range}{inc}' },
   'badge.corpus.incPlus': { 'zh-CN': '＋未知', 'zh-TW': '＋未知', en: '+unknown' },
@@ -4646,11 +4761,21 @@ const PANEL_I18N = {
   'speed.pill.smooth': { 'zh-CN': '流畅', 'zh-TW': '流暢', en: 'Smooth' },
   'speed.pill.good': { 'zh-CN': '良好', 'zh-TW': '良好', en: 'Good' },
   'speed.pill.slow': { 'zh-CN': '偏慢', 'zh-TW': '偏慢', en: 'Slow' },
+  'speed.pill.warm': { 'zh-CN': '测速中', 'zh-TW': '測速中', en: 'Warming' },
+  'speed.pill.running': { 'zh-CN': '计时中', 'zh-TW': '計時中', en: 'Running' },
   'speed.pill.calc': { 'zh-CN': '计算中', 'zh-TW': '計算中', en: 'Calculating' },
   'speed.pill.idle': { 'zh-CN': '待生成', 'zh-TW': '待生成', en: 'Idle' },
-  'speed.takeaway.ok': { 'zh-CN': '✔ 输出{tone}（{tps} tok/s{stream}），总耗时 {dur}s 内生成 {tok} tokens{model}。', 'zh-TW': '✔ 輸出{tone}（{tps} tok/s{stream}），總耗時 {dur}s 內產生 {tok} tokens{model}。', en: '✔ Output {tone} ({tps} tok/s{stream}), generated {tok} tokens in {dur}s{model}.' },
+  'speed.stepsParen': { 'zh-CN': '（共 {n} 步）', 'zh-TW': '（共 {n} 步）', en: ' ({n} steps)' },
+  'speed.ttftMultiTip': { 'zh-CN': '最近一步首字延迟：{latest}\n本轮 {n} 步累计首字等待：{total}', 'zh-TW': '最近一步首字延遲：{latest}\n本輪 {n} 步累計首字等待：{total}', en: 'Latest step TTFT: {latest}\nTurn cumulative TTFT ({n} steps): {total}' },
+  'speed.ttftWaitingTip': { 'zh-CN': '当前步骤正在等待首字返回：{live}{prevPart}', 'zh-TW': '目前步驟正在等待首字回傳：{live}{prevPart}', en: 'Awaiting first token for current step: {live}{prevPart}' },
+  'speed.ttftPrevPart': { 'zh-CN': '\n本轮已完成步骤累计首字：{total}', 'zh-TW': '\n本輪已完成步驟累計首字：{total}', en: '\nCompleted steps cumulative TTFT: {total}' },
+  'speed.takeaway.ok': { 'zh-CN': '✔ 纯生成{tone}（{tps} tok/s{stream}），总耗时 {dur}s 内生成 {tok} tokens{model}。', 'zh-TW': '✔ 純生成{tone}（{tps} tok/s{stream}），總耗時 {dur}s 內產生 {tok} tokens{model}。', en: '✔ Gen {tone} ({tps} tok/s{stream}), {tok} tokens in {dur}s{model}.' },
+  'speed.takeaway.turnOk': { 'zh-CN': '✔ 纯生成{tone}（{tps} tok/s{stream}），本轮总耗时 {dur}{stepsPart}（首字等待 {ttft} + 流式吐字 {streamDur} + 工具执行 {tool} + 调度间隙 {gap}），共生成 {tok} tokens{model}。', 'zh-TW': '✔ 純生成{tone}（{tps} tok/s{stream}），本輪總耗時 {dur}{stepsPart}（首字等待 {ttft} + 串流吐字 {streamDur} + 工具執行 {tool} + 調度間隙 {gap}），共產生 {tok} tokens{model}。', en: '✔ Gen {tone} ({tps} tok/s{stream}), turn total {dur}{stepsPart} (TTFT {ttft} + stream {streamDur} + tools {tool} + sched {gap}), {tok} tokens{model}.' },
+  'speed.takeaway.running': { 'zh-CN': '⏳ 本轮已运行 {dur}{stepsPart}：首字等待 {ttft} + 流式吐字 {stream} + 工具执行 {tool} + 调度间隙 {gap}（已产出 {tok} tokens）…', 'zh-TW': '⏳ 本輪已執行 {dur}{stepsPart}：首字等待 {ttft} + 串流吐字 {stream} + 工具執行 {tool} + 調度間隙 {gap}（已產出 {tok} tokens）…', en: '⏳ Turn running {dur}{stepsPart}: TTFT {ttft} + stream {stream} + tools {tool} + sched {gap} ({tok} tokens)…' },
+  'speed.takeaway.warm': { 'zh-CN': '⏳ 模型刚起流输出（已生成 {tok} tokens），等待采样稳定后显示纯生成速率…', 'zh-TW': '⏳ 模型剛開始串流輸出（已產生 {tok} tokens），等待取樣穩定後顯示純生成速率…', en: '⏳ Stream warming up ({tok} tokens); waiting for stable generation rate…' },
   'speed.tone.smooth': { 'zh-CN': '流畅', 'zh-TW': '流暢', en: 'smooth' },
   'speed.tone.steady': { 'zh-CN': '平稳', 'zh-TW': '平穩', en: 'steady' },
+  'speed.overallPart': { 'zh-CN': '，含首字等待 {tps} tok/s', 'zh-TW': '，含首字等待 {tps} tok/s', en: ', {tps} tok/s w/ TTFT' },
   'speed.streamPart': { 'zh-CN': '，纯流式传输达 {tps} tok/s', 'zh-TW': '，純串流傳輸達 {tps} tok/s', en: ', streaming {tps} tok/s' },
   'speed.takeaway.idle': { 'zh-CN': 'ℹ 等待当前或下一次模型输出完成，将自动计算精确输出速度 (tok/s)、首字延迟与总耗时。', 'zh-TW': 'ℹ 等待目前或下一次模型輸出完成，將自動計算精確輸出速度 (tok/s)、首字延遲與總耗時。', en: 'ℹ Waiting for the next model response to measure output speed (tok/s), TTFT, and duration.' },
   'tech.modelPlaceholder': { 'zh-CN': '模型标识：{id}', 'zh-TW': '模型識別：{id}', en: 'Model ID: {id}' },
@@ -4703,6 +4828,8 @@ const PANEL_I18N = {
   'heat.prompt': { 'zh-CN': '提示词', 'zh-TW': '提示詞', en: 'Prompt' },
   'heat.output': { 'zh-CN': '输出', 'zh-TW': '輸出', en: 'Output' },
   'heat.cache': { 'zh-CN': '缓存', 'zh-TW': '快取', en: 'Cache' },
+  'heat.cacheHit': { 'zh-CN': '命中率', 'zh-TW': '命中率', en: 'Hit rate' },
+  'heat.cacheHitInline': { 'zh-CN': ' · 缓存命中 {rate}', 'zh-TW': ' · 快取命中 {rate}', en: ' · Cache hit {rate}' },
   'heat.weeklyTotal': { 'zh-CN': 'Weekly Total · 周累计 (折合日均 ${avg})', 'zh-TW': 'Weekly Total · 週累計 (折合日均 ${avg})', en: 'Weekly Total (daily avg ${avg})' },
   'heat.cumSuffix': { 'zh-CN': ' (累计)', 'zh-TW': ' (累計)', en: ' (Cumulative)' },
   'heat.cumTotal': { 'zh-CN': 'Cumulative Total · 截至当日累计 (折合日均 ${avg})', 'zh-TW': 'Cumulative Total · 截至當日累計 (折合日均 ${avg})', en: 'Cumulative Total to Date (daily avg ${avg})' },
@@ -4847,6 +4974,7 @@ const PANEL_I18N = {
   'cost.tokCacheDiscount': { 'zh-CN': '{tok} tok (优惠)', 'zh-TW': '{tok} tok (優惠)', en: '{tok} tok (disc.)' },
   'cost.tokResidual': { 'zh-CN': '剩余 {tok} tok', 'zh-TW': '剩餘 {tok} tok', en: 'Rem. {tok} tok' },
   'cost.usageSummary': { 'zh-CN': '累计处理 Token: {total} (含 {cache} 缓存读取)', 'zh-TW': '累計處理 Token: {total} (含 {cache} 快取讀取)', en: 'Total tokens: {total} (incl. {cache} cache)' },
+  'cost.cacheHitPill': { 'zh-CN': '缓存命中 {rate}', 'zh-TW': '快取命中 {rate}', en: 'Cache hit {rate}' },
   'cost.diffAll': { 'zh-CN': '全量累计不直接与单月费用做差额比较 · 避免跨月虚高', 'zh-TW': '全量累計不直接與單月費用做差額比較 · 避免跨月虛高', en: 'All-time totals are not compared against monthly fees' },
   'cost.diffFree': { 'zh-CN': '与此 API 方案参考差额 约 +${val} (免费权益使用中 · 不计算无限倍数)', 'zh-TW': '與此 API 方案參考差額 約 +${val} (免費權益使用中 · 不計算無限倍數)', en: 'Diff vs API: ~+${val} (free promo active)' },
   'cost.diffPaid': { 'zh-CN': '与此 API 方案参考差额 {sign}${val} (API折算 - 实际支出 · 仅供参考比较)', 'zh-TW': '與此 API 方案參考差額 {sign}${val} (API換算 - 實際支出 · 僅供參考比較)', en: 'Diff vs API: {sign}${val} (API est. - paid · reference only)' },
@@ -7658,7 +7786,9 @@ function formatVendorLabel(vendor) {
   const range = value => value ? `≈ ${short(value.low)}–${short(value.high)}` : '—';
   const token = value => value == null ? t('common.notProvided') : `${fmt(value)} tokens`;
   const state = {
-    route: null, count: 0, latest: null, requestAt: 0, requestError: '',
+    route: null, count: 0, latest: null, liveSpeed: null, rawGeneratorRows: [],
+    turnState: null, turnStateBusy: false, turnStateNext: 0, localTurnDispatch: null, lastTurnClockSec: -1,
+    requestAt: 0, requestError: '',
     requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0,
     scanError: '', scan: null, generation: 0, controllers: new Set(),
     disposed: false, layoutMode: 'wide', tooltipOpen: false,
@@ -7707,6 +7837,7 @@ function formatVendorLabel(vendor) {
     const map = {
       '/quota': 'quota',
       '/scan': 'scan',
+      '/turn-state': 'turnState',
       '/token-history': 'tokenHistory',
       '/record-calls': 'recordCalls',
       '/get-settings': 'settings',
@@ -9225,6 +9356,119 @@ function formatVendorLabel(vendor) {
     return 400;
   }
 
+  function computeCacheHitStats(uncachedInput, cacheReadTokens) {
+    if (typeof calculateCacheHitStats === 'function') {
+      return calculateCacheHitStats(uncachedInput, cacheReadTokens);
+    }
+    const fresh = Number(uncachedInput);
+    const cached = Number(cacheReadTokens);
+    const safeFresh = Number.isFinite(fresh) && fresh > 0 ? fresh : 0;
+    const safeCached = Number.isFinite(cached) && cached > 0 ? cached : 0;
+    const totalPrompt = safeFresh + safeCached;
+    if (totalPrompt <= 0) {
+      return { uncachedInput: 0, cacheReadTokens: 0, totalPromptTokens: 0, hitRate: null };
+    }
+    return {
+      uncachedInput: safeFresh,
+      cacheReadTokens: safeCached,
+      totalPromptTokens: totalPrompt,
+      hitRate: (safeCached / totalPrompt) * 100
+    };
+  }
+
+  function formatCacheHitRate(hitRate) {
+    if (hitRate == null || !Number.isFinite(Number(hitRate))) return '—';
+    return `${Number(hitRate).toFixed(1)}%`;
+  }
+
+  function getCacheHitTier(hitRate) {
+    if (hitRate == null || !Number.isFinite(Number(hitRate))) return 'none';
+    const val = Number(hitRate);
+    if (val >= 80) return 'high';
+    if (val >= 40) return 'mid';
+    return 'low';
+  }
+
+  function summarizeSessionCacheHit(sessionCalls) {
+    const calls = Array.isArray(sessionCalls) ? sessionCalls : [];
+    let fresh = 0;
+    let cached = 0;
+    let callsWithPrompt = 0;
+    for (const c of calls) {
+      if (!c || typeof c !== 'object') continue;
+      const inp = Number(c.inputTokens ?? 0);
+      const cw = Number(c.cacheWriteTokens ?? c.cacheCreationInputTokens ?? c.cacheWriteInputTokens ?? 0);
+      const cap = Number(c.cacheReadTokens ?? c.cacheTokens ?? 0);
+      const safeIn = (Number.isFinite(inp) && inp > 0 ? inp : 0) + (Number.isFinite(cw) && cw > 0 ? cw : 0);
+      const safeCap = Number.isFinite(cap) && cap > 0 ? cap : 0;
+      if (safeIn + safeCap > 0) {
+        fresh += safeIn;
+        cached += safeCap;
+        callsWithPrompt += 1;
+      }
+    }
+    const stats = typeof summarizeCacheHitRecords === 'function'
+      ? summarizeCacheHitRecords(calls)
+      : computeCacheHitStats(fresh, cached);
+    return { ...stats, callsWithPrompt };
+  }
+
+  function getCallPromptTokens(c) {
+    if (!c || typeof c !== 'object') return { fresh: 0, cached: 0, total: 0 };
+    const inp = Number(c.inputTokens ?? 0);
+    const cw = Number(c.cacheWriteTokens ?? c.cacheCreationInputTokens ?? c.cacheWriteInputTokens ?? 0);
+    const cap = Number(c.cacheReadTokens ?? c.cacheTokens ?? 0);
+    const fresh = (Number.isFinite(inp) && inp > 0 ? inp : 0) + (Number.isFinite(cw) && cw > 0 ? cw : 0);
+    const cached = Number.isFinite(cap) && cap > 0 ? cap : 0;
+    return { fresh, cached, total: fresh + cached };
+  }
+
+  function resolveLatestTurnCacheStats(d, latestCall, sessionCalls = null) {
+    if (d && (d.uncachedInput != null || (d.input != null && d.input > 0))) {
+      const totalPrompt = d.input != null ? Number(d.input) : ((Number(d.uncachedInput) || 0) + (Number(d.cached) || 0));
+      const cached = Number(d.cached) || 0;
+      const uncached = d.uncachedInput != null ? Number(d.uncachedInput) : Math.max(0, totalPrompt - cached);
+      const stats = computeCacheHitStats(uncached, cached);
+      if (stats.totalPromptTokens > 0) return { ...stats, isCarried: false };
+    }
+    if (latestCall) {
+      const p = getCallPromptTokens(latestCall);
+      if (p.total > 0) return { ...computeCacheHitStats(p.fresh, p.cached), isCarried: false };
+    }
+    if (Array.isArray(sessionCalls) && sessionCalls.length) {
+      for (let i = sessionCalls.length - 1; i >= 0; i--) {
+        const p = getCallPromptTokens(sessionCalls[i]);
+        if (p.total > 0) return { ...computeCacheHitStats(p.fresh, p.cached), isCarried: true };
+      }
+    }
+    return { ...computeCacheHitStats(0, 0), isCarried: false };
+  }
+
+  function findPreviousTurnCacheStats(sessionCalls) {
+    const calls = Array.isArray(sessionCalls) ? sessionCalls : [];
+    let foundLatest = false;
+    for (let i = calls.length - 1; i >= 0; i--) {
+      const p = getCallPromptTokens(calls[i]);
+      if (p.total <= 0) continue;
+      if (!foundLatest) {
+        foundLatest = true;
+        continue;
+      }
+      return computeCacheHitStats(p.fresh, p.cached);
+    }
+    return null;
+  }
+
+  function getTodayCacheHitStats() {
+    const todayStr = formatLocalYmd(new Date());
+    const todayRawRec = ANTIGRAVITY_TOKEN_DATA.rawPayload?.dailyMapBySource?.all?.[todayStr]
+      || ANTIGRAVITY_TOKEN_DATA.rawPayload?.dailyMap?.[todayStr]
+      || ANTIGRAVITY_TOKEN_DATA.dailyMap?.[todayStr];
+    return todayRawRec
+      ? computeCacheHitStats(todayRawRec.input, todayRawRec.cache)
+      : computeCacheHitStats(ANTIGRAVITY_TOKEN_DATA.summary?.todayInputTokens, ANTIGRAVITY_TOKEN_DATA.summary?.todayCacheTokens);
+  }
+
   function renderSessionCost() {
     const roundCostBar = el('round-cost-bar');
     const roundCostText = el('round-cost-text');
@@ -9233,16 +9477,47 @@ function formatVendorLabel(vendor) {
     const activeCalls = state.sessionCalls || [];
     const latestCall = activeCalls[activeCalls.length - 1];
     const sessTotal = state.sessionCostTotal || 0;
-    if (latestCall && latestCall.isPriced) {
-      const roundCost = latestCall.costUSD || 0;
+    const effTurn = resolveEffectiveTurnTiming();
+    const minTurnStepIdx = Number.isInteger(effTurn?.turnStartStepIndex) ? effTurn.turnStartStepIndex : null;
+    const latestEid = latestCall?.executionId ? String(latestCall.executionId).trim() : '';
+    const turnCalls = minTurnStepIdx !== null
+      ? activeCalls.filter(c => {
+        if (!c) return false;
+        if (Number.isInteger(c.stepIndex)) return c.stepIndex >= minTurnStepIdx;
+        return latestEid ? String(c.executionId || '').trim() === latestEid : c === latestCall;
+      })
+      : (latestEid
+        ? activeCalls.filter(c => c && String(c.executionId || '').trim() === latestEid)
+        : (latestCall ? [latestCall] : []));
+    const pricedTurnCalls = turnCalls.filter(c => c && c.isPriced);
+    if (latestCall && pricedTurnCalls.length > 0) {
+      const roundCost = pricedTurnCalls.reduce((sum, c) => sum + (c.costUSD || 0), 0);
       const roundCostStr = roundCost < 0.01 ? '<$0.01' : `≈$${roundCost.toFixed(4)}`;
-      const estLabel = latestCall.status === 'streaming' ? t('cost.streamingEst') : t('cost.returnedEst');
-      roundCostText.textContent = t('cost.latestTurn', { val: roundCostStr, label: estLabel });
+      const isAnyStreaming = turnCalls.some(c => c.status === 'streaming') || Boolean(effTurn?.isRunning);
+      const estLabel = isAnyStreaming ? t('cost.streamingEst') : t('cost.returnedEst');
+      let freshSum = 0;
+      let cachedSum = 0;
+      let inputSum = 0;
+      let cacheTokSum = 0;
+      let outSum = 0;
+      for (const tc of turnCalls) {
+        const p = getCallPromptTokens(tc);
+        freshSum += p.fresh || 0;
+        cachedSum += p.cached || 0;
+        inputSum += Number(tc.inputTokens || 0);
+        cacheTokSum += Number(tc.cacheTokens ?? tc.cacheReadTokens ?? 0);
+        outSum += Number(tc.outputTokens || 0);
+      }
+      const turnHit = computeCacheHitStats(freshSum, cachedSum);
+      roundCostText.textContent = turnCalls.length > 1
+        ? t('cost.latestTurnMulti', { val: roundCostStr, steps: turnCalls.length, label: estLabel })
+        : t('cost.latestTurn', { val: roundCostStr, label: estLabel });
       roundCostText.title = t('cost.modelTip', {
         model: latestCall.model,
-        input: fmt(latestCall.inputTokens),
-        cache: fmt(latestCall.cacheTokens),
-        output: fmt(latestCall.outputTokens),
+        input: fmt(inputSum),
+        cache: fmt(cacheTokSum),
+        hitRate: formatCacheHitRate(turnHit.hitRate),
+        output: fmt(outSum),
         cost: roundCost.toFixed(6)
       });
     } else if (latestCall) {
@@ -9598,6 +9873,7 @@ function formatVendorLabel(vendor) {
     const bContext = el('badge');
     const bSpeed = el('badge-speed');
     const bTokens = el('badge-tokens');
+    const bCacheHit = el('badge-cache-hit');
     const bQuota = el('badge-quota');
     const bOverflow = el('badge-overflow');
 
@@ -9616,7 +9892,8 @@ function formatVendorLabel(vendor) {
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bQuota?.setAttribute('aria-expanded', 'false');
-      bTokens.setAttribute('aria-expanded', 'true');
+      bTokens.setAttribute('aria-expanded', String(activeTokensAnchorId === 'badge-tokens'));
+      bCacheHit?.setAttribute('aria-expanded', String(activeTokensAnchorId === 'badge-cache-hit'));
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pTokens.hidden = false;
@@ -9634,6 +9911,7 @@ function formatVendorLabel(vendor) {
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
+      bCacheHit?.setAttribute('aria-expanded', 'false');
       bQuota?.setAttribute('aria-expanded', 'true');
       syncHostStackingElevation(true);
       positionFloatingPanels();
@@ -9648,6 +9926,7 @@ function formatVendorLabel(vendor) {
       if (pQuota) pQuota.hidden = true;
       bContext.setAttribute('aria-expanded', String(activeContextAnchorId === 'badge'));
       bSpeed?.setAttribute('aria-expanded', String(activeContextAnchorId === 'badge-speed'));
+      bCacheHit?.setAttribute('aria-expanded', String(activeContextAnchorId === 'badge-cache-hit'));
       bTokens.setAttribute('aria-expanded', 'false');
       bQuota?.setAttribute('aria-expanded', 'false');
       syncHostStackingElevation(true);
@@ -9670,6 +9949,7 @@ function formatVendorLabel(vendor) {
       if (pQuota) pQuota.hidden = true;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
+      bCacheHit?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
       bQuota?.setAttribute('aria-expanded', 'false');
       closeColorPicker();
@@ -11689,12 +11969,9 @@ function closeAllDropdowns(exceptWrap = null) {
 
   function switchTokenView(v) {
     activeTokenView = v;
+    if (typeof hidePopover === 'function') hidePopover();
     // 离开 Token 统计视图时关闭订阅详情与表单
-    if (v !== 'tokens') {
-      setPlanDetailExpanded(false, { skipReposition: true });
-    } else {
-      setPlanDetailExpanded(false, { skipReposition: true });
-    }
+    setPlanDetailExpanded(false, { skipReposition: true });
     setPillActive(el('tok-view-tokens'), v === 'tokens');
     setPillActive(el('tok-view-cost'), v === 'cost');
     const costCard = el('cost-estimate-card');
@@ -11760,10 +12037,8 @@ function closeAllDropdowns(exceptWrap = null) {
       return { ok: false, error: t('cli.busy') };
     }
     cliLaunchBusy = true;
-    const btn = el('badge-cli');
-    const label = el('cli-label');
-    btn?.setAttribute('data-busy', 'true');
-    if (label) label.textContent = '…';
+    const cliBtn = el('overflow-cli-btn');
+    cliBtn?.setAttribute('data-busy', 'true');
     try {
       if (typeof document !== 'undefined' && document.activeElement?.blur) {
         document.activeElement.blur();
@@ -11821,30 +12096,47 @@ function closeAllDropdowns(exceptWrap = null) {
       return lastCliLaunchResult;
     } finally {
       cliLaunchBusy = false;
-      btn?.removeAttribute('data-busy');
-      btn?.removeAttribute('data-pressed');
-      if (label) label.textContent = 'CLI';
+      cliBtn?.removeAttribute('data-busy');
+      cliBtn?.removeAttribute('data-pressed');
     }
   }
 
-  const badgeCliEl = el('badge-cli');
-  if (badgeCliEl) {
-    const releasePress = () => {
-      badgeCliEl.removeAttribute('data-pressed');
-    };
-    badgeCliEl.addEventListener('pointerdown', () => {
-      badgeCliEl.setAttribute('data-pressed', 'true');
+  function handleCacheHitBadgeActivate(anchorId) {
+    if (state.route) {
+      if (el('panel').hidden && typeof setActiveContextTab === 'function' && isContextSettingsView) {
+        isContextSettingsView = false;
+      }
+      toggleContext(anchorId);
+    } else {
+      toggleTokens(anchorId);
+    }
+  }
+
+  el('badge-cache-hit')?.addEventListener('click', () => handleCacheHitBadgeActivate('badge-cache-hit'));
+  el('overflow-cache-btn')?.addEventListener('click', () => {
+    if (state.route) {
+      activeContextAnchorId = 'badge-overflow';
+      showPanel('context');
+    } else {
+      activeTokensAnchorId = 'badge-overflow';
+      showPanel('tokens');
+    }
+  });
+  const overflowCliBtnEl = el('overflow-cli-btn');
+  if (overflowCliBtnEl) {
+    const clearCliPressed = () => overflowCliBtnEl.removeAttribute('data-pressed');
+    overflowCliBtnEl.addEventListener('pointerdown', (e) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      overflowCliBtnEl.setAttribute('data-pressed', 'true');
     });
-    badgeCliEl.addEventListener('pointerup', releasePress);
-    badgeCliEl.addEventListener('pointercancel', releasePress);
-    badgeCliEl.addEventListener('mouseleave', releasePress);
-    badgeCliEl.addEventListener('blur', releasePress);
-    badgeCliEl.addEventListener('click', () => {
-      releasePress();
+    for (const ev of ['pointerup', 'pointercancel', 'mouseleave', 'blur']) {
+      overflowCliBtnEl.addEventListener(ev, clearCliPressed);
+    }
+    overflowCliBtnEl.addEventListener('click', () => {
+      clearCliPressed();
       void triggerLaunchCli();
     });
   }
-  el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
   el('badge-quota')?.addEventListener('click', () => toggleQuota('badge-quota'));
   el('badge').addEventListener('click', () => toggleContext('badge'));
@@ -11889,6 +12181,7 @@ function closeAllDropdowns(exceptWrap = null) {
   el('badge').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
+  el('badge-cache-hit')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
   // =========================================================================
   // 模块 3: 上下文面板分页、设置视图、模型产品偏好、重启验证与速度对比
@@ -12287,6 +12580,23 @@ function closeAllDropdowns(exceptWrap = null) {
     };
   }
 
+  function markLocalTurnDispatched(cascadeId, startedAtMs = Date.now(), dispatchId = null) {
+    const effId = cascadeId || state.route || null;
+    state.localTurnDispatch = {
+      cascadeId: effId,
+      startedAtMs: Number.isFinite(Number(startedAtMs)) ? Number(startedAtMs) : Date.now(),
+      dispatchId: dispatchId || null,
+      baselineCount: state.count || 0,
+      baselineLastCallKey: state.liveSpeed?.callKey || null,
+      active: true
+    };
+    state.lastTurnClockSec = -1;
+    state.turnStateNext = 0;
+    if (!state.disposed && state.route && (!effId || effId === state.route)) {
+      render();
+    }
+  }
+
   function recordBudgetTransformDispatch(txResult) {
     if (!txResult || !txResult.handled || !budgetTracker) return null;
     if (txResult.uninjectable) {
@@ -12303,6 +12613,7 @@ function closeAllDropdowns(exceptWrap = null) {
         status: 'uninjectable',
         reason: txResult.reason || 'uninjectable'
       });
+      markLocalTurnDispatched(txResult.cascadeId, Date.now(), rec?.dispatchId);
       refreshBudgetUiAfterDispatch();
       return rec;
     }
@@ -12324,6 +12635,7 @@ function closeAllDropdowns(exceptWrap = null) {
       channel: txResult.channel || 'http',
       status: 'dispatched'
     });
+    markLocalTurnDispatched(txResult.cascadeId, Date.now(), rec?.dispatchId);
     if (txResult.targetMode === 'fixed' || txResult.targetMode === 'dynamic' || txResult.targetMode === 'default') {
       scheduleConfirmTimeoutCheck();
     }
@@ -12332,6 +12644,10 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   function finishDispatchOutcome(dispatchId, ok, err) {
+    if (dispatchId && !ok && state.localTurnDispatch?.dispatchId === dispatchId) {
+      state.localTurnDispatch.active = false;
+      if (!state.disposed) render();
+    }
     if (!dispatchId || !budgetTracker) return;
     if (!ok) {
       const errMsg = String(err?.message || err || '');
@@ -14588,10 +14904,11 @@ function closeAllDropdowns(exceptWrap = null) {
       for (const m of members) {
         const stat = summaryByExact.get(m.modelId);
         const prefix = m.effort ? `${formatEffortZh(m.effort)} ` : '';
-        if (stat && stat.medianTps != null) {
+        if (stat && (stat.medianStreamingTps != null || stat.medianTps != null)) {
+          const shownTps = stat.medianStreamingTps ?? stat.medianTps;
           const tStr = stat.maxTs ? ` · ${formatMonthDayTime(stat.maxTs)}` : '';
           const lowNote = stat.lowSample ? t('models.card.lowSampleParen') : '';
-          lines.push(t('models.card.speedLineText', { prefix, tps: stat.medianTps, count: stat.count, low: lowNote, ts: tStr }));
+          lines.push(t('models.card.speedLineText', { prefix, tps: shownTps, count: stat.count, low: lowNote, ts: tStr }));
         } else {
           lines.push(`${prefix}${t('models.card.observedSpeedNone')}`);
         }
@@ -15769,7 +16086,11 @@ function closeAllDropdowns(exceptWrap = null) {
     svg.setAttribute('width', String(width));
     svg.setAttribute('height', String(height));
 
-    const getVal = g => speedMetric === 'ttft' ? g.medianTtft : speedMetric === 'duration' ? g.medianDuration : g.medianTps;
+    const getVal = g => speedMetric === 'ttft'
+      ? g.medianTtft
+      : speedMetric === 'duration'
+        ? g.medianDuration
+        : (g.medianStreamingTps ?? g.medianTps);
     const maxVal = Math.max(...groups.map(g => getVal(g) || 0), 0.1);
 
     const nodes = [];
@@ -15836,10 +16157,14 @@ function closeAllDropdowns(exceptWrap = null) {
             : '—';
           tooltip.innerHTML =
             `<strong>${displayLabel}</strong><br>` +
+            (g.medianStreamingTps != null && g.medianTps != null
+              ? `${t('speed.tip.medStream', { val: g.medianStreamingTps, overall: g.medianTps })}<br>`
+              : '') +
             `${t('speed.tip.samples', { n: g.count, low: g.lowSample ? t('models.card.lowSampleParen') : '' })}<br>` +
             `${t('speed.tip.timeRange', { range: rangeTxt })}<br>` +
             `${t('speed.tip.medOut', { val: fmt(g.medianOutputTokens) })}<br>` +
-            `${t('speed.tip.medIn', { val: fmt(g.medianInputTokens) })}`;
+            `${t('speed.tip.medIn', { val: fmt(g.medianInputTokens) })}<br>` +
+            `${t('speed.tip.cacheHit', { val: formatCacheHitRate(g.cacheHitRate) })}`;
           tooltip.hidden = false;
           if (tooltip.style) {
             tooltip.style.top = `${Math.max(4, y - 4)}px`;
@@ -15865,7 +16190,8 @@ function closeAllDropdowns(exceptWrap = null) {
     const emptyEl = el('speed-line-empty');
     const tooltip = el('speed-line-tooltip');
 
-    const samples = (selectedGroup?.samples || []).filter(s => s && s.tps > 0);
+    const getSampleSpeed = s => Number(s.streamingTps || s.tps || 0);
+    const samples = (selectedGroup?.samples || []).filter(s => s && getSampleSpeed(s) > 0);
     if (!samples.length) {
       if (emptyEl) emptyEl.hidden = false;
       if (wrap) wrap.hidden = true;
@@ -15888,8 +16214,8 @@ function closeAllDropdowns(exceptWrap = null) {
     svg.setAttribute('width', String(width));
     svg.setAttribute('height', String(height));
 
-    const maxTps = Math.max(...samples.map(s => Number(s.tps) || 0), 10);
-    const minTps = Math.max(0, Math.min(...samples.map(s => Number(s.tps) || 0)) * 0.8);
+    const maxTps = Math.max(...samples.map(getSampleSpeed), 10);
+    const minTps = Math.max(0, Math.min(...samples.map(getSampleSpeed)) * 0.8);
     const spanTps = Math.max(1, maxTps - minTps);
 
     const nodes = [];
@@ -15912,7 +16238,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
     const pts = samples.map((s, idx) => {
       const x = samples.length === 1 ? padL + plotW / 2 : padL + (idx / (samples.length - 1)) * plotW;
-      const y = padT + plotH * (1 - ((Number(s.tps) - minTps) / spanTps));
+      const y = padT + plotH * (1 - ((getSampleSpeed(s) - minTps) / spanTps));
       return { x, y, sample: s };
     });
 
@@ -15943,7 +16269,7 @@ function closeAllDropdowns(exceptWrap = null) {
           const originTxt = s.origin === 'speed-test' ? t('speed.originProbe') : t('speed.origin.chat');
           const ttftTxt = s.ttftSec != null ? t('speed.unitSec', { val: s.ttftSec }) : t('speed.unknown');
           tooltip.innerHTML =
-            `<strong>${t('speed.tip.tpsLine', { idx: idx + 1, tps: s.tps })}</strong><br>` +
+            `<strong>${t('speed.tip.tpsLine', { idx: idx + 1, tps: getSampleSpeed(s) })}</strong><br>` +
             `${t('speed.tip.time', { val: formatMonthDayTime(s.ts || s.createdAt) || '—' })}<br>` +
             `${t('speed.tip.output', { val: fmt(s.outputTokens) })}<br>` +
             `${t('speed.tip.ttft', { val: ttftTxt })}<br>` +
@@ -18135,8 +18461,32 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     // 4. 用量与参考差额指标条（注明累计处理 Token，含缓存读取）
+    const hitSourceIn = costModelMode === 'identified' ? Number(curIdentified.byCategory?.inputTokens || 0) : curIn;
+    const hitSourceCa = costModelMode === 'identified' ? Number(curIdentified.byCategory?.cacheTokens || 0) : curCa;
+    const costCacheStats = computeCacheHitStats(hitSourceIn, hitSourceCa);
+    const costHitStr = formatCacheHitRate(costCacheStats.hitRate);
+    const costHitTier = getCacheHitTier(costCacheStats.hitRate);
+
     if (usageSummary) {
       usageSummary.textContent = t('cost.usageSummary', { total: fmtYi(curTotal), cache: fmtYi(curCa) });
+    }
+    const costCacheHitPill = el('cost-cache-hit-pill');
+    if (costCacheHitPill) {
+      costCacheHitPill.textContent = t('cost.cacheHitPill', { rate: costHitStr });
+      const pillTone = costHitTier === 'high' ? 'pill-good' : costHitTier === 'mid' ? 'pill-info' : costHitTier === 'low' ? 'pill-warn' : 'pill-muted';
+      costCacheHitPill.className = `key-pill ${pillTone}`;
+      costCacheHitPill.title = costCacheStats.hitRate != null
+        ? t('tokens.card.cacheHitTip', {
+          rate: costHitStr,
+          cached: fmtYi(costCacheStats.cacheReadTokens),
+          total: fmtYi(costCacheStats.totalPromptTokens),
+          fresh: fmtYi(costCacheStats.uncachedInput)
+        })
+        : t('session.cacheHit.title');
+    }
+    const refCostCacheHit = el('ref-cost-cache-hit');
+    if (refCostCacheHit) {
+      refCostCacheHit.textContent = t('cost.cacheHitPill', { rate: costHitStr });
     }
     if (diffSummary) {
       if (!isPeriod) {
@@ -18638,7 +18988,9 @@ function closeAllDropdowns(exceptWrap = null) {
       const yearPrefix = todayStr.slice(0, 4);
       let totalTokens = 0, todayTokens = 0, monthTokens = 0, yearTokens = 0, monthDays = 0;
       let totalInput = 0, totalOutput = 0, totalCache = 0;
+      let todayInput = 0, todayCache = 0;
       let curMonthInput = 0, curMonthOutput = 0, curMonthCache = 0;
+      let yearInput = 0, yearCache = 0;
       for (const k of keys) {
         const r = newMap[k];
         const t = Number(r.total) || 0;
@@ -18646,7 +18998,11 @@ function closeAllDropdowns(exceptWrap = null) {
         totalInput += Number(r.input) || 0;
         totalOutput += Number(r.output) || 0;
         totalCache += Number(r.cache) || 0;
-        if (k === todayStr) todayTokens += t;
+        if (k === todayStr) {
+          todayTokens += t;
+          todayInput += Number(r.input) || 0;
+          todayCache += Number(r.cache) || 0;
+        }
         if (k.startsWith(monthPrefix)) {
           monthTokens += t;
           curMonthInput += Number(r.input) || 0;
@@ -18654,15 +19010,23 @@ function closeAllDropdowns(exceptWrap = null) {
           curMonthCache += Number(r.cache) || 0;
           monthDays += 1;
         }
-        if (k.startsWith(yearPrefix)) yearTokens += t;
+        if (k.startsWith(yearPrefix)) {
+          yearTokens += t;
+          yearInput += Number(r.input) || 0;
+          yearCache += Number(r.cache) || 0;
+        }
       }
       const rawSum = payload.summary || {};
       ANTIGRAVITY_TOKEN_DATA.summary = {
         grandTotalTokens: Math.max(totalTokens, Number(rawSum.grandTotalTokens) || 0),
         totalTokens: Math.max(totalTokens, Number(rawSum.grandTotalTokens) || 0),
         todayTokens: todayTokens > 0 ? todayTokens : (Number(rawSum.todayTokens) || 0),
+        todayInputTokens: Math.max(todayInput, Number(rawSum.todayInputTokens) || 0),
+        todayCacheTokens: Math.max(todayCache, Number(rawSum.todayCacheTokens) || 0),
         monthTokens: Math.max(monthTokens, Number(rawSum.monthTokens) || 0),
         yearTokens: Math.max(yearTokens, Number(rawSum.yearTokens) || 0),
+        yearInputTokens: Math.max(yearInput, Number(rawSum.yearInputTokens) || 0),
+        yearCacheTokens: Math.max(yearCache, Number(rawSum.yearCacheTokens) || 0),
         totalInputTokens: Math.max(totalInput, Number(rawSum.totalInputTokens) || 0),
         totalOutputTokens: Math.max(totalOutput, Number(rawSum.totalOutputTokens) || 0),
         totalCacheTokens: Math.max(totalCache, Number(rawSum.totalCacheTokens) || 0),
@@ -18768,7 +19132,41 @@ function closeAllDropdowns(exceptWrap = null) {
     const thisMonthPrefix = nowYmd.slice(0, 7);
     const thisYearPrefix = nowYmd.slice(0, 4);
 
-    const todayCostInfo = getDailyModelCost(ANTIGRAVITY_TOKEN_DATA.dailyMap[nowYmd], nowYmd, activeCostModel, { mode: activeCostMode });
+    const todayRec = ANTIGRAVITY_TOKEN_DATA.dailyMap?.[nowYmd];
+    const yearKeys = allDateKeys.filter(k => k.startsWith(thisYearPrefix) && k <= nowYmd);
+    let fallbackYearIn = 0, fallbackYearCa = 0;
+    if (sum.yearInputTokens == null || sum.yearCacheTokens == null) {
+      for (const k of yearKeys) {
+        const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[k];
+        if (!rec) continue;
+        fallbackYearIn += Number(rec.input) || 0;
+        fallbackYearCa += Number(rec.cache) || 0;
+      }
+    }
+    const cardHitSpecs = [
+      ['t-total-cache-hit', sum.totalInputTokens, sum.totalCacheTokens],
+      ['t-today-cache-hit', sum.todayInputTokens ?? (todayRec?.input || 0), sum.todayCacheTokens ?? (todayRec?.cache || 0)],
+      ['t-month-cache-hit', sum.currentMonthInput, sum.currentMonthCache],
+      ['t-year-cache-hit', sum.yearInputTokens ?? fallbackYearIn, sum.yearCacheTokens ?? fallbackYearCa]
+    ];
+    for (const [elId, inpVal, caVal] of cardHitSpecs) {
+      const node = el(elId);
+      if (!node) continue;
+      const stats = computeCacheHitStats(inpVal, caVal);
+      const rateStr = formatCacheHitRate(stats.hitRate);
+      node.textContent = t('tokens.card.cacheHit', { rate: rateStr });
+      node.setAttribute?.('data-hit-tier', getCacheHitTier(stats.hitRate));
+      node.title = stats.hitRate != null
+        ? t('tokens.card.cacheHitTip', {
+          rate: rateStr,
+          cached: fmtYi(stats.cacheReadTokens),
+          total: fmtYi(stats.totalPromptTokens),
+          fresh: fmtYi(stats.uncachedInput)
+        })
+        : t('session.cacheHit.title');
+    }
+
+    const todayCostInfo = getDailyModelCost(todayRec, nowYmd, activeCostModel, { mode: activeCostMode });
     const todayCostCny = convertToCNY(todayCostInfo.costUSD, 'USD');
 
     const totalCostAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, allDateKeys, activeCostModel, { mode: activeCostMode, todayStr: nowYmd });
@@ -18778,7 +19176,6 @@ function closeAllDropdowns(exceptWrap = null) {
     const monthCostAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, monthKeys, activeCostModel, { mode: activeCostMode, todayStr: nowYmd });
     const monthCostCny = convertToCNY(monthCostAgg.totalCostUSD, 'USD');
 
-    const yearKeys = allDateKeys.filter(k => k.startsWith(thisYearPrefix) && k <= nowYmd);
     const yearCostAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, yearKeys, activeCostModel, { mode: activeCostMode, todayStr: nowYmd });
     const yearCostCny = convertToCNY(yearCostAgg.totalCostUSD, 'USD');
 
@@ -18805,6 +19202,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
     computeTimelineWindow();
     renderActiveHeatView(true);
+    syncCacheHitBadge();
     return true;
   }
 
@@ -19358,7 +19756,20 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
-function renderHeatmapGrid(forceRebuild = false) {
+function computeIntervalCacheHit(dateKeys) {
+    const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
+    let inp = 0;
+    let ca = 0;
+    for (const k of dateKeys) {
+      const rec = map[k];
+      if (!rec) continue;
+      inp += Number(rec.input) || 0;
+      ca += Number(rec.cache) || 0;
+    }
+    return computeCacheHitStats(inp, ca);
+  }
+
+  function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
     if (!colsBox || !monthsBox) return;
@@ -19415,10 +19826,12 @@ function renderHeatmapGrid(forceRebuild = false) {
           const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
           heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heat.future') : '0 Tokens');
           if (item.rec) {
+            const dayHit = computeCacheHitStats(item.rec.input, item.rec.cache);
             heatPopDet.innerHTML = `
               <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
               <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(item.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
               <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(item.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
+              <div class="pop-det-col"><span class="pop-det-val">Hit: ${formatCacheHitRate(dayHit.hitRate)}</span><span class="pop-det-trans">${t('heat.cacheHit')}</span></div>
             `.trim();
             heatPopDet.style.display = 'flex';
           } else {
@@ -19499,9 +19912,11 @@ function renderHeatmapGrid(forceRebuild = false) {
         });
         const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
         const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const weekHit = computeIntervalCacheHit(weekDates);
+        const hitInline = weekHit.hitRate != null ? t('heat.cacheHitInline', { rate: formatCacheHitRate(weekHit.hitRate) }) : '';
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : '0 Tokens';
-        heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
+        heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}${hitInline}</span>`;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
         heatPop.style.left = `${r.left + r.width / 2}px`;
@@ -19597,27 +20012,45 @@ function renderHeatmapGrid(forceRebuild = false) {
     ctx.lineWidth = 2;
     ctx.stroke();
 
+    const sortedMapKeys = Object.keys(map).filter(Boolean).sort();
+    const cumMetaCache = new Array(points.length);
+
     cvs.onmousemove = e => {
       const r = cvs.getBoundingClientRect();
       const mouseX = e.clientX - r.left;
       const idx = points.length === 1 ? 0 : Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
       const pt = points[idx];
-      const cumDates = [];
-      for (const k of Object.keys(map)) {
-        if (k <= pt.key) cumDates.push(k);
+      let cachedMeta = cumMetaCache[idx];
+      if (!cachedMeta) {
+        let lo = 0;
+        let hi = sortedMapKeys.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (sortedMapKeys[mid] <= pt.key) lo = mid + 1;
+          else hi = mid;
+        }
+        const cumDates = sortedMapKeys.slice(0, lo);
+        const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
+          mode: activeCostMode,
+          todayStr: formatLocalYmd(win.today)
+        });
+        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const cumDateLabel = currentPanelLanguage === 'en'
+          ? `${pt.date.getFullYear()}-${String(pt.date.getMonth() + 1).padStart(2, '0')}-${String(pt.date.getDate()).padStart(2, '0')}`
+          : `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日`;
+        const cumHit = computeIntervalCacheHit(cumDates);
+        const cumHitInline = cumHit.hitRate != null ? t('heat.cacheHitInline', { rate: formatCacheHitRate(cumHit.hitRate) }) : '';
+        cachedMeta = {
+          dateText: `${cumDateLabel}${t('heat.cumSuffix')}`,
+          valText: `${fmtYi(pt.val)} Tokens${costStr}`,
+          detHtml: `<span>${t('heat.cumTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}${cumHitInline}</span>`
+        };
+        cumMetaCache[idx] = cachedMeta;
       }
-      const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
-        mode: activeCostMode,
-        todayStr: formatLocalYmd(win.today)
-      });
-      const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-      const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-      const cumDateLabel = currentPanelLanguage === 'en'
-        ? `${pt.date.getFullYear()}-${String(pt.date.getMonth() + 1).padStart(2, '0')}-${String(pt.date.getDate()).padStart(2, '0')}`
-        : `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日`;
-      heatPopDate.textContent = `${cumDateLabel}${t('heat.cumSuffix')}`;
-      heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
-      heatPopDet.innerHTML = `<span>${t('heat.cumTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
+      heatPopDate.textContent = cachedMeta.dateText;
+      heatPopVal.textContent = cachedMeta.valText;
+      heatPopDet.innerHTML = cachedMeta.detHtml;
       heatPopDet.style.display = 'block';
       heatPop.style.left = `${e.clientX}px`;
       heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 12)) - 6}px`;
@@ -19651,6 +20084,20 @@ function renderHeatmapGrid(forceRebuild = false) {
     sumCostEl.textContent = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
     sumDailyAvgEl.textContent = `$${costAgg.dailyAverageUSD.toFixed(2)}`;
     sumActiveAvgEl.textContent = t('heat.activeDays', { avg: costAgg.activeDailyAverageUSD.toFixed(2), days: costAgg.activeDays });
+    const sumCacheHitEl = el('h-sum-cache-hit');
+    if (sumCacheHitEl) {
+      const intervalHit = computeIntervalCacheHit(dateKeys);
+      const rateStr = formatCacheHitRate(intervalHit.hitRate);
+      sumCacheHitEl.textContent = rateStr;
+      sumCacheHitEl.title = intervalHit.hitRate != null
+        ? t('tokens.card.cacheHitTip', {
+          rate: rateStr,
+          cached: fmtYi(intervalHit.cacheReadTokens),
+          total: fmtYi(intervalHit.totalPromptTokens),
+          fresh: fmtYi(intervalHit.uncachedInput)
+        })
+        : t('session.cacheHit.title');
+    }
 
     if ((viewType === 'monthly' || viewType === 'yearly') && subRatioWrapEl && subRatioEl) {
       const plan = resolveEffectivePlanStatus(ANTIGRAVITY_TOKEN_DATA.planStatus, ANTIGRAVITY_TOKEN_DATA.customPlanSettings);
@@ -19754,10 +20201,12 @@ function renderHeatmapGrid(forceRebuild = false) {
         heatPopDate.textContent = `${mDateLabel}${isToday ? t('heat.today') : ''}`;
         heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? t('heat.future') : '0 Tokens');
         if (rec) {
+          const monthDayHit = computeCacheHitStats(rec.input, rec.cache);
           heatPopDet.innerHTML = `
             <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
             <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
             <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
+            <div class="pop-det-col"><span class="pop-det-val">Hit: ${formatCacheHitRate(monthDayHit.hitRate)}</span><span class="pop-det-trans">${t('heat.cacheHit')}</span></div>
           `.trim();
           heatPopDet.style.display = 'flex';
         } else {
@@ -19928,9 +20377,11 @@ function renderHeatmapGrid(forceRebuild = false) {
         const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
         const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
         const yearMonthLabel = currentPanelLanguage === 'en' ? `${item.monthName} ${targetYear}` : `${targetYear}年${item.monthName}`;
+        const monthHit = computeIntervalCacheHit(item.dates);
+        const monthHitInline = monthHit.hitRate != null ? t('heat.cacheHitInline', { rate: formatCacheHitRate(monthHit.hitRate) }) : '';
         heatPopDate.textContent = `${yearMonthLabel}${item.isCurrent ? t('heatmap.pop.inProgress') : (item.monthIndex === peakMonthIndex ? t('heatmap.pop.peak') : '')}`;
         heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heatmap.pop.future') : '0 Tokens');
-        heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}</span>`;
+        heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}${monthHitInline}</span>`;
         heatPopDet.style.display = 'block';
 
         const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
@@ -20230,15 +20681,272 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (state.tooltipOpen) positionContextTooltip();
   }
 
-  function syncSpeedBadgeText() {
+  function updateLiveSpeedTracker(routeId, row, summary, callInfo) {
+    if (!routeId || !row || !summary?.speed) {
+      state.liveSpeed = null;
+      return { isActivelyStreaming: false };
+    }
+    const cm = row.chatModel || {};
+    const sp = summary.speed;
+    const callKey = callInfo?.callId || cm.usage?.responseId || String(row.stepIndices?.[0] ?? row.stepIndex ?? 'latest');
+    const curOut = Number(sp.outputTokens || 0);
+    const curStreamSec = sp.streamingSec != null ? Number(sp.streamingSec) : null;
+    const explicitStreaming = Boolean(row.isStreaming === true || row.status === 'streaming');
+    const explicitFinal = Boolean(row.status === 'final' || row.status === 'completed' || cm.finishReason || row.finishReason || row.done === true);
+
+    const prev = state.liveSpeed && state.liveSpeed.routeId === routeId && state.liveSpeed.callKey === callKey
+      ? state.liveSpeed
+      : null;
+    const dOut = prev ? (curOut - prev.prevOut) : 0;
+    const dStream = (prev && curStreamSec != null && prev.prevStreamSec != null) ? (curStreamSec - prev.prevStreamSec) : 0;
+    const isGrowing = dOut > 0 || dStream > 0;
+
+    let emaTps = prev ? prev.emaTps : null;
+    if (sp.phase === 'warming') {
+      emaTps = null;
+    } else if (!explicitFinal && isGrowing && dStream >= 0.25 && dOut >= 4) {
+      const instTps = dOut / dStream;
+      const anchor = sp.streamingTps || emaTps || instTps;
+      const clamped = anchor > 0 ? Math.min(Math.max(instTps, anchor * 0.35), anchor * 2.5) : instTps;
+      const base = emaTps ?? sp.streamingTps ?? clamped;
+      emaTps = Number((base * 0.55 + clamped * 0.45).toFixed(1));
+    } else if (explicitFinal || (!explicitStreaming && prev && !isGrowing)) {
+      emaTps = null;
+    }
+
+    const isActivelyStreaming = Boolean(
+      !explicitFinal && (explicitStreaming || sp.phase === 'warming' || isGrowing)
+    );
+    state.liveSpeed = {
+      routeId,
+      callKey,
+      prevOut: curOut,
+      prevStreamSec: curStreamSec,
+      emaTps,
+      isActivelyStreaming
+    };
+    return { isActivelyStreaming };
+  }
+
+  function fmtTurnDur(sec, live = false) {
+    if (sec === undefined || sec === null || !Number.isFinite(Number(sec)) || Number(sec) < 0) return '—';
+    if (typeof formatCompactDurationSec === 'function') {
+      return formatCompactDurationSec(sec, { live });
+    }
+    const v = Number(sec);
+    if (v < 60) return live ? `${Math.max(0, Math.floor(v))}s` : `${Number(v.toFixed(2))}s`;
+    const tot = live ? Math.floor(v) : Math.round(v);
+    return `${Math.floor(tot / 60)}m ${String(tot % 60).padStart(2, '0')}s`;
+  }
+
+  function hasLiveTurnStateCapability() {
+    if (!hasLiveHttpBridge()) return false;
+    const live = window.__AGContextMeterLive;
+    if (live?.hasTurnState === true) return true;
+    const caps = live?.capabilities;
+    if (Array.isArray(caps)) return caps.includes('turnState');
+    if (caps && typeof caps === 'object') return caps.turnState === true;
+    return false;
+  }
+
+  function hasTurnStateBridge() {
+    return Boolean(
+      (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTurnState === 'function') ||
+      hasLiveTurnStateCapability()
+    );
+  }
+
+  function resolveEffectiveTurnTiming(nowMs = Date.now()) {
+    if (!state.route) return null;
+    const tsSnap = state.turnState && state.turnState.turnTiming ? state.turnState : null;
+    const scanSnap = state.scan && state.scan.turnTiming ? state.scan : null;
+    let baseSource = null;
+    if (tsSnap && scanSnap) {
+      baseSource = (Number(tsSnap.fetchedAt || 0) >= Number(scanSnap.scannedAt || 0)) ? tsSnap : scanSnap;
+    } else {
+      baseSource = tsSnap || scanSnap || null;
+    }
+
+    const localDisp = (
+      state.localTurnDispatch &&
+      state.localTurnDispatch.active &&
+      (!state.localTurnDispatch.cascadeId || state.localTurnDispatch.cascadeId === state.route)
+    ) ? state.localTurnDispatch : null;
+
+    if (localDisp && baseSource?.turnTiming) {
+      const serverDone = Boolean(baseSource.cascadeStatus && baseSource.cascadeStatus !== 'CASCADE_RUN_STATUS_RUNNING');
+      const serverSawTurn = (baseSource.turnTiming.lastActivityMs || 0) >= localDisp.startedAtMs - 2000
+        || (baseSource.turnTiming.turnStartMs || 0) >= localDisp.startedAtMs - 2000;
+      if (serverDone && serverSawTurn) {
+        localDisp.active = false;
+      }
+    }
+
+    const activeLocalStartMs = (localDisp && localDisp.active) ? localDisp.startedAtMs : null;
+    const rawRows = Array.isArray(state.rawGeneratorRows) ? state.rawGeneratorRows : [];
+
+    // 若本地刚发出新消息（晚于上一轮最后活动时间），立即以本地发送时刻开启新轮次秒表，清零上一轮旧耗时
+    if (activeLocalStartMs !== null) {
+      const prevEndMs = baseSource?.turnTiming?.lastActivityMs || 0;
+      const baseStartMs = baseSource?.turnTiming?.turnStartMs || 0;
+      const serverNotYetOnNewTurn = !baseSource?.turnTiming || (activeLocalStartMs > prevEndMs + 200 && activeLocalStartMs > baseStartMs + 200);
+      if (serverNotYetOnNewTurn) {
+        const hasNewRowsSinceSend = state.count > (localDisp?.baselineCount || 0) && rawRows.length > 0;
+        if (typeof summarizeTurnTiming === 'function') {
+          return summarizeTurnTiming({
+            steps: [],
+            generatorMetadata: hasNewRowsSinceSend ? rawRows.slice(Math.max(0, rawRows.length - (state.count - (localDisp?.baselineCount || 0)))) : [],
+            cascadeStatus: 'CASCADE_RUN_STATUS_RUNNING',
+            fallbackTurnStartMs: activeLocalStartMs,
+            nowMs
+          });
+        }
+        const elapsed = Math.max(0, (nowMs - activeLocalStartMs) / 1000);
+        return {
+          executionId: null,
+          isRunning: true,
+          hasAuthoritativeWallClock: true,
+          turnStartMs: activeLocalStartMs,
+          lastActivityMs: null,
+          llmCalls: 0,
+          toolCalls: 0,
+          wallDurationSec: Number(elapsed.toFixed(2)),
+          llmDurationSec: 0,
+          ttftSec: 0,
+          streamingSec: 0,
+          toolWallSec: 0,
+          nonLlmSec: Number(elapsed.toFixed(2)),
+          scheduleGapSec: Number(elapsed.toFixed(2)),
+          outputTokens: 0,
+          thinkingTokens: 0,
+          responseTokens: 0,
+          endToEndTps: null
+        };
+      }
+    }
+
+    if (baseSource?.turnTiming) {
+      const base = { ...baseSource.turnTiming };
+      // 若高频 requestPoll 抓到了本轮 (stepIndex >= turnStartStepIndex) 更新的流式/完成统计，用最新 LLM 指标融合（绝不跨轮合并复用的 executionId）
+      if (rawRows.length > 0 && typeof summarizeTurnTiming === 'function' && (base.turnStartStepIndex != null || base.executionId)) {
+        const pollOnly = summarizeTurnTiming({
+          steps: [],
+          minStepIndex: base.turnStartStepIndex ?? null,
+          turnExecutionId: base.executionId || null,
+          generatorMetadata: rawRows,
+          cascadeStatus: baseSource.cascadeStatus || null,
+          nowMs
+        });
+        const sameScope = base.turnStartStepIndex != null
+          ? pollOnly.llmCalls > 0
+          : (pollOnly.executionId === base.executionId);
+        if (sameScope && (pollOnly.llmCalls >= base.llmCalls || pollOnly.outputTokens > base.outputTokens)) {
+          if (pollOnly.llmCalls > base.llmCalls) {
+            base.inFlightTtftAnchorMs = null;
+            base.inFlightTtftSec = null;
+          }
+          base.llmCalls = Math.max(base.llmCalls, pollOnly.llmCalls);
+          base.ttftSec = Math.max(base.ttftSec, pollOnly.ttftSec);
+          if (pollOnly.latestTtftSec != null) {
+            base.latestTtftSec = pollOnly.latestTtftSec;
+          }
+          base.streamingSec = Math.max(base.streamingSec, pollOnly.streamingSec);
+          base.llmDurationSec = Math.max(base.llmDurationSec, pollOnly.llmDurationSec);
+          base.outputTokens = Math.max(base.outputTokens, pollOnly.outputTokens);
+          base.thinkingTokens = Math.max(base.thinkingTokens, pollOnly.thinkingTokens);
+          base.responseTokens = Math.max(base.responseTokens, pollOnly.responseTokens);
+        }
+      }
+      if (base.isRunning) {
+        if (base.activeToolStartMs != null && nowMs > base.activeToolStartMs) {
+          const liveActiveSec = (nowMs - base.activeToolStartMs) / 1000;
+          base.toolWallSec = Number(Math.max(base.toolWallSec || 0, (base.completedToolWallSec || 0) + liveActiveSec).toFixed(2));
+        }
+        if (base.inFlightTtftAnchorMs != null && nowMs >= base.inFlightTtftAnchorMs && !state.liveSpeed?.isActivelyStreaming) {
+          base.inFlightTtftSec = Number(((nowMs - base.inFlightTtftAnchorMs) / 1000).toFixed(2));
+        } else if (state.liveSpeed?.isActivelyStreaming) {
+          base.inFlightTtftSec = null;
+        }
+      }
+      const minPhysicalWall = (base.llmDurationSec || 0) + (base.toolWallSec || 0);
+      if (base.isRunning && base.turnStartMs) {
+        const liveWall = Math.max(minPhysicalWall, Math.max(0, (nowMs - base.turnStartMs) / 1000));
+        base.wallDurationSec = Number(liveWall.toFixed(2));
+        base.hasAuthoritativeWallClock = true;
+      } else if (base.wallDurationSec != null) {
+        base.wallDurationSec = Number(Math.max(base.wallDurationSec, minPhysicalWall).toFixed(2));
+      }
+      if (base.wallDurationSec != null) {
+        const nonLlm = Math.max(0, base.wallDurationSec - (base.llmDurationSec || 0));
+        base.nonLlmSec = Number(nonLlm.toFixed(2));
+        base.toolWallSec = Number(Math.min(base.toolWallSec || 0, nonLlm).toFixed(2));
+        base.scheduleGapSec = Number(Math.max(0, nonLlm - base.toolWallSec).toFixed(2));
+        base.endToEndTps = base.outputTokens > 0 && base.wallDurationSec > 0
+          ? Number((base.outputTokens / base.wallDurationSec).toFixed(1))
+          : null;
+      }
+      return base;
+    }
+
+    if (rawRows.length > 0 && typeof summarizeTurnTiming === 'function') {
+      return summarizeTurnTiming({
+        steps: [],
+        generatorMetadata: rawRows,
+        cascadeStatus: null,
+        fallbackTurnStartMs: activeLocalStartMs,
+        nowMs
+      });
+    }
+    return null;
+  }
+
+  function isCurrentTurnRunning(nowMs = Date.now()) {
+    const turn = resolveEffectiveTurnTiming(nowMs);
+    return Boolean(turn?.isRunning || state.liveSpeed?.isActivelyStreaming);
+  }
+
+  function getEffectiveSpeedTps(sp) {
+    if (!sp) return null;
+    if (sp.phase === 'warming') return null;
+    if (state.liveSpeed?.isActivelyStreaming && state.liveSpeed.emaTps != null) {
+      return state.liveSpeed.emaTps;
+    }
+    return sp.displayTps ?? sp.streamingTps ?? sp.tps ?? null;
+  }
+
+  function syncSpeedBadgeText(turnOverride = undefined) {
     const sp = state.latest?.speed;
+    const effTps = getEffectiveSpeedTps(sp);
+    const turn = turnOverride !== undefined ? turnOverride : resolveEffectiveTurnTiming();
     const speedAmount = el('speed-amount');
     const overflowSpeedVal = el('overflow-speed-val');
     if (!speedAmount) return;
     const isCompact = state.layoutMode === 'compact';
-    if (sp?.tps != null) {
-      speedAmount.textContent = isCompact ? `${sp.tps}` : `${sp.tps} tok/s`;
-      if (overflowSpeedVal) overflowSpeedVal.textContent = `${sp.tps} tok/s`;
+    const isActivelyStreamingNow = Boolean(state.liveSpeed?.isActivelyStreaming && effTps != null);
+
+    // 当整轮仍在运行但当前未处于稳定吐字阶段（如等待 15~30s 首字思考、刚起流或正在执行工具/命令）时，实时跳动本轮墙钟秒表，绝不卡死在上一步旧数值
+    if (turn?.isRunning && turn.hasAuthoritativeWallClock && !isActivelyStreamingNow) {
+      const liveDurStr = fmtTurnDur(turn.wallDurationSec ?? 0, true);
+      const runText = t('badge.speedRunning', { dur: liveDurStr });
+      speedAmount.textContent = isCompact ? liveDurStr : runText;
+      if (overflowSpeedVal) overflowSpeedVal.textContent = runText;
+      return;
+    }
+
+    if (effTps != null) {
+      if (turn?.hasAuthoritativeWallClock && turn.wallDurationSec != null) {
+        const durStr = fmtTurnDur(turn.wallDurationSec, Boolean(turn.isRunning));
+        const combined = t('badge.speedWithTurn', { tps: effTps, dur: durStr });
+        speedAmount.textContent = isCompact ? `${effTps}` : combined;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = combined;
+      } else {
+        speedAmount.textContent = isCompact ? `${effTps}` : `${effTps} tok/s`;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${effTps} tok/s`;
+      }
+    } else if (sp?.phase === 'warming') {
+      const warmText = t('badge.speedWarm');
+      speedAmount.textContent = isCompact ? '…' : warmText;
+      if (overflowSpeedVal) overflowSpeedVal.textContent = warmText;
     } else if (state.requestBusy) {
       const calcText = t('badge.speedCalc');
       speedAmount.textContent = isCompact ? '…' : calcText;
@@ -20246,6 +20954,67 @@ function renderHeatmapGrid(forceRebuild = false) {
     } else {
       speedAmount.textContent = isCompact ? '--' : '-- tok/s';
       if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
+    }
+  }
+
+  function syncCacheHitBadge(turnCacheStats = null, sessCacheStats = null) {
+    const badgeEl = el('badge-cache-hit');
+    const amountEl = el('cache-hit-amount');
+    const overflowValEl = el('overflow-cache-val');
+    if (!badgeEl && !amountEl && !overflowValEl) return;
+
+    const todayStats = getTodayCacheHitStats();
+
+    let effectiveTurn = turnCacheStats;
+    let effectiveSess = sessCacheStats;
+    if (state.route && (!effectiveTurn || !effectiveSess)) {
+      const activeCalls = state.sessionCalls || [];
+      const latestCall = activeCalls[activeCalls.length - 1] || null;
+      if (!effectiveTurn) effectiveTurn = resolveLatestTurnCacheStats(state.latest, latestCall, activeCalls);
+      if (!effectiveSess) effectiveSess = summarizeSessionCacheHit(activeCalls);
+    }
+
+    const isLiveScope = Boolean(state.route);
+    const displayStats = isLiveScope ? effectiveTurn : todayStats;
+    const hitRate = displayStats?.hitRate ?? null;
+    const formattedRate = formatCacheHitRate(hitRate);
+    const badgeText = isLiveScope
+      ? (hitRate != null ? formattedRate : '--%')
+      : (hitRate != null ? t('badge.cacheHit.globalLabel', { rate: formattedRate }) : '--%');
+    const tier = getCacheHitTier(hitRate);
+
+    if (amountEl) amountEl.textContent = badgeText;
+    if (overflowValEl) overflowValEl.textContent = badgeText;
+    if (badgeEl) {
+      badgeEl.setAttribute?.('data-hit-tier', tier);
+      badgeEl.setAttribute?.('data-scope', isLiveScope ? 'live' : 'global');
+      const lines = [];
+      if (isLiveScope) {
+        if (effectiveTurn?.hitRate != null) {
+          lines.push(t(effectiveTurn.isCarried ? 'badge.cacheHit.titleTurnCarried' : 'session.cacheHit.turnTip', {
+            rate: formatCacheHitRate(effectiveTurn.hitRate),
+            cached: fmt(effectiveTurn.cacheReadTokens),
+            total: fmt(effectiveTurn.totalPromptTokens),
+            fresh: fmt(effectiveTurn.uncachedInput)
+          }));
+        } else {
+          lines.push(t('badge.cacheHit.title'));
+        }
+        if (effectiveSess?.hitRate != null) {
+          lines.push(t('session.cacheHit.sessionTip', {
+            rate: formatCacheHitRate(effectiveSess.hitRate),
+            calls: effectiveSess.callsWithPrompt,
+            cached: fmt(effectiveSess.cacheReadTokens),
+            total: fmt(effectiveSess.totalPromptTokens),
+            fresh: fmt(effectiveSess.uncachedInput)
+          }));
+        }
+      }
+      if (todayStats.hitRate != null) {
+        lines.push(t(isLiveScope ? 'badge.cacheHit.titleToday' : 'badge.cacheHit.titleTodayGlobal', { rate: formatCacheHitRate(todayStats.hitRate) }));
+      }
+      lines.push(t('badge.cacheHit.clickHint'));
+      badgeEl.title = lines.join('\n');
     }
   }
 
@@ -20263,7 +21032,58 @@ function renderHeatmapGrid(forceRebuild = false) {
       el('amount').textContent = t('badge.noSession');
       setHoverExtra(t('badge.clickOpenCli'));
       syncSpeedBadgeText();
+      syncCacheHitBadge();
       el('badge-tokens').title = t('badge.tokensTitle');
+      const todayStats = getTodayCacheHitStats();
+      const hitLabelEl = el('cache-hit-label');
+      const hitTurnEl = el('cache-hit-turn');
+      const hitTokEl = el('cache-hit-tokens');
+      const hitSessEl = el('cache-hit-session');
+      const hitDropEl = el('cache-hit-drop');
+      const hitDetEl = el('cache-hit-detail');
+      if (hitLabelEl) hitLabelEl.textContent = t('session.cacheHit.labelGlobal');
+      if (hitTurnEl) {
+        const rateText = formatCacheHitRate(todayStats.hitRate);
+        hitTurnEl.textContent = todayStats.hitRate != null
+          ? t('badge.cacheHit.globalLabel', { rate: rateText })
+          : t('session.cacheHit.turn', { rate: '—' });
+        hitTurnEl.setAttribute?.('data-hit-tier', getCacheHitTier(todayStats.hitRate));
+        hitTurnEl.title = todayStats.hitRate != null
+          ? t('badge.cacheHit.titleTodayGlobal', { rate: rateText })
+          : '';
+      }
+      if (hitTokEl) {
+        if (todayStats.totalPromptTokens > 0) {
+          hitTokEl.textContent = t('session.cacheHit.tokensInline', {
+            cached: short(todayStats.cacheReadTokens),
+            fresh: short(todayStats.uncachedInput)
+          });
+          hitTokEl.hidden = false;
+        } else {
+          hitTokEl.textContent = '';
+          hitTokEl.hidden = true;
+        }
+      }
+      if (hitSessEl) {
+        hitSessEl.textContent = t('session.cacheHit.session', { rate: '—' });
+        hitSessEl.setAttribute?.('data-hit-tier', 'none');
+        hitSessEl.title = '';
+        hitSessEl.hidden = true;
+      }
+      if (hitDropEl) {
+        hitDropEl.textContent = '';
+        hitDropEl.hidden = true;
+      }
+      if (hitDetEl) {
+        hitDetEl.textContent = todayStats.hitRate != null
+          ? t('session.tech.cacheHitVal', {
+            rate: formatCacheHitRate(todayStats.hitRate),
+            cached: fmt(todayStats.cacheReadTokens),
+            total: fmt(todayStats.totalPromptTokens),
+            fresh: fmt(todayStats.uncachedInput)
+          })
+          : '—';
+      }
       syncContextModelSelectionFromState();
       return;
     }
@@ -20340,24 +21160,74 @@ function renderHeatmapGrid(forceRebuild = false) {
 
     el('badge-tokens').title = t('badge.tokensTitle');
 
-    // 渲染输出速度 (统一使用 tok/s)
+    // 渲染输出速度与整轮真实墙钟耗时（区分单步纯吐字速率与整轮端到端墙钟拆解）
     const sp = d?.speed;
+    const effTps = getEffectiveSpeedTps(sp);
+    const turn = resolveEffectiveTurnTiming();
+    const useTurnBreakdown = Boolean(
+      turn && (turn.isRunning || turn.hasAuthoritativeWallClock || turn.llmCalls > 1 || turn.nonLlmSec >= 0.5)
+    );
+    const isActivelyStreamingNow = Boolean(state.liveSpeed?.isActivelyStreaming && effTps != null);
     const speedBadge = el('badge-speed');
     const speedHoverExtra = el('speed-hover-extra');
-    syncSpeedBadgeText();
+    syncSpeedBadgeText(turn);
     if (speedBadge) {
-      if (sp?.tps != null) {
+      const stepsPart = turn && turn.llmCalls > 1 ? t('speed.stepsParen', { n: turn.llmCalls }) : '';
+      if (turn?.isRunning && turn.hasAuthoritativeWallClock && !isActivelyStreamingNow) {
+        const liveDur = fmtTurnDur(turn.wallDurationSec ?? 0, true);
         if (speedHoverExtra) {
-          speedHoverExtra.textContent = `${sp.duration ? ` · ${sp.duration}s` : ''}${sp.outputTokens ? ` · ${short(sp.outputTokens)} tok` : ''}`;
+          speedHoverExtra.textContent = ` · ${liveDur}${turn.outputTokens ? ` · ${short(turn.outputTokens)} tok` : ''}`;
         }
-        speedBadge.title = t('badge.speedTitleDetail', {
-          tps: sp.tps,
-          streaming: sp.streamingTps ? t('badge.speedStreamingPart', { tps: sp.streamingTps }) : '',
-          duration: sp.duration || '—',
-          ttft: sp.ttft || '—',
-          streamSec: sp.streamingSec || '—',
-          output: fmt(sp.outputTokens)
+        speedBadge.title = t('badge.speedTitleRunning', {
+          dur: liveDur,
+          stepsPart,
+          ttft: fmtTurnDur(turn.ttftSec, false),
+          streamSec: fmtTurnDur(turn.streamingSec, false),
+          tool: fmtTurnDur(turn.toolWallSec ?? 0, Boolean(turn.activeToolStartMs != null)),
+          gap: fmtTurnDur(turn.scheduleGapSec ?? 0, true),
+          output: fmt(turn.outputTokens || 0)
         });
+      } else if (effTps != null) {
+        if (useTurnBreakdown && turn?.wallDurationSec != null) {
+          const turnDurStr = fmtTurnDur(turn.wallDurationSec, Boolean(turn.isRunning));
+          const turnOutTok = turn.outputTokens > 0 ? turn.outputTokens : (sp?.outputTokens || 0);
+          if (speedHoverExtra) {
+            speedHoverExtra.textContent = ` · ${turnDurStr}${turnOutTok ? ` · ${short(turnOutTok)} tok` : ''}`;
+          }
+          const e2eTps = turn.endToEndTps ?? sp.tps;
+          const overallStr = (e2eTps != null && Math.abs(e2eTps - effTps) >= 0.5)
+            ? t('badge.speedOverallPart', { tps: e2eTps })
+            : '';
+          speedBadge.title = t('badge.speedTitleTurnDetail', {
+            tps: effTps,
+            overall: overallStr,
+            turnDur: turnDurStr,
+            stepsPart,
+            ttft: fmtTurnDur(turn.ttftSec, false),
+            streamSec: fmtTurnDur(turn.streamingSec, false),
+            tool: fmtTurnDur(turn.toolWallSec ?? 0, Boolean(turn.isRunning && turn.activeToolStartMs != null)),
+            gap: fmtTurnDur(turn.scheduleGapSec ?? 0, Boolean(turn.isRunning)),
+            output: fmt(turnOutTok)
+          });
+        } else {
+          if (speedHoverExtra) {
+            speedHoverExtra.textContent = `${sp.duration ? ` · ${sp.duration}s` : ''}${sp.outputTokens ? ` · ${short(sp.outputTokens)} tok` : ''}`;
+          }
+          const overallStr = (sp.tps != null && Math.abs(sp.tps - effTps) >= 0.5)
+            ? t('badge.speedOverallPart', { tps: sp.tps })
+            : '';
+          speedBadge.title = t('badge.speedTitleDetail', {
+            tps: effTps,
+            overall: overallStr,
+            duration: sp.duration || '—',
+            ttft: sp.ttft || '—',
+            streamSec: sp.streamingSec || '—',
+            output: fmt(sp.outputTokens)
+          });
+        }
+      } else if (sp?.phase === 'warming') {
+        if (speedHoverExtra) speedHoverExtra.textContent = sp.outputTokens ? ` · ${short(sp.outputTokens)} tok` : '';
+        speedBadge.title = t('badge.speedTitleWarm', { output: fmt(sp.outputTokens || 0) });
       } else if (state.requestBusy) {
         if (speedHoverExtra) speedHoverExtra.textContent = '';
         speedBadge.title = t('badge.speedTitleWait');
@@ -20367,6 +21237,13 @@ function renderHeatmapGrid(forceRebuild = false) {
       }
     }
 
+    const activeCalls = state.sessionCalls || [];
+    const latestCall = activeCalls[activeCalls.length - 1] || null;
+    const turnCacheStats = resolveLatestTurnCacheStats(d, latestCall, activeCalls);
+    const sessCacheStats = summarizeSessionCacheHit(activeCalls);
+    const prevTurnCacheStats = findPreviousTurnCacheStats(activeCalls);
+    syncCacheHitBadge(turnCacheStats, sessCacheStats);
+
     if (el('key-summary')) {
       const keyBar = el('key-bar-fill');
       const keyBadge = el('key-badge');
@@ -20374,6 +21251,72 @@ function renderHeatmapGrid(forceRebuild = false) {
       const keyLimit = el('key-limit');
       const keyRemaining = el('key-remaining');
       const keyTakeaway = el('key-takeaway');
+      const hitLabelEl = el('cache-hit-label');
+      const hitTurnEl = el('cache-hit-turn');
+      const hitTokEl = el('cache-hit-tokens');
+      const hitSessEl = el('cache-hit-session');
+      const hitDropEl = el('cache-hit-drop');
+
+      if (hitLabelEl) hitLabelEl.textContent = t('session.cacheHit.label');
+      if (hitTurnEl) {
+        const turnRateStr = formatCacheHitRate(turnCacheStats.hitRate);
+        hitTurnEl.textContent = t('session.cacheHit.turn', { rate: turnRateStr });
+        hitTurnEl.setAttribute?.('data-hit-tier', getCacheHitTier(turnCacheStats.hitRate));
+        hitTurnEl.title = turnCacheStats.hitRate != null
+          ? t(turnCacheStats.isCarried ? 'badge.cacheHit.titleTurnCarried' : 'session.cacheHit.turnTip', {
+            rate: turnRateStr,
+            cached: fmt(turnCacheStats.cacheReadTokens),
+            total: fmt(turnCacheStats.totalPromptTokens),
+            fresh: fmt(turnCacheStats.uncachedInput)
+          })
+          : t('session.cacheHit.title');
+      }
+      if (hitTokEl) {
+        if (turnCacheStats.totalPromptTokens > 0) {
+          hitTokEl.textContent = t('session.cacheHit.tokensInline', {
+            cached: short(turnCacheStats.cacheReadTokens),
+            fresh: short(turnCacheStats.uncachedInput)
+          });
+          hitTokEl.hidden = false;
+        } else {
+          hitTokEl.textContent = '';
+          hitTokEl.hidden = true;
+        }
+      }
+      if (hitSessEl) {
+        const sessRateStr = formatCacheHitRate(sessCacheStats.hitRate);
+        hitSessEl.textContent = t('session.cacheHit.session', { rate: sessRateStr });
+        hitSessEl.setAttribute?.('data-hit-tier', getCacheHitTier(sessCacheStats.hitRate));
+        hitSessEl.hidden = false;
+        hitSessEl.title = sessCacheStats.hitRate != null
+          ? t('session.cacheHit.sessionTip', {
+            rate: sessRateStr,
+            calls: sessCacheStats.callsWithPrompt,
+            cached: fmt(sessCacheStats.cacheReadTokens),
+            total: fmt(sessCacheStats.totalPromptTokens),
+            fresh: fmt(sessCacheStats.uncachedInput)
+          })
+          : t('session.cacheHit.title');
+      }
+      if (hitDropEl) {
+        const dropPts = (prevTurnCacheStats?.hitRate != null && turnCacheStats.hitRate != null)
+          ? (prevTurnCacheStats.hitRate - turnCacheStats.hitRate)
+          : 0;
+        if (dropPts >= 25) {
+          const roundedDelta = Math.round(dropPts);
+          hitDropEl.textContent = t('session.cacheHit.dropAlert', { delta: roundedDelta });
+          hitDropEl.title = t('session.cacheHit.dropTip', {
+            delta: roundedDelta,
+            prev: formatCacheHitRate(prevTurnCacheStats.hitRate),
+            curr: formatCacheHitRate(turnCacheStats.hitRate)
+          });
+          hitDropEl.hidden = false;
+        } else {
+          hitDropEl.textContent = '';
+          hitDropEl.title = '';
+          hitDropEl.hidden = true;
+        }
+      }
 
       if (keyBar) keyBar.style.width = pct != null ? `${pct}%` : (d?.exceeded ? '100%' : '0%');
 
@@ -20445,35 +21388,114 @@ function renderHeatmapGrid(forceRebuild = false) {
       const spTtft = el('speed-ttft');
       const spTokens = el('speed-tokens');
       const spTakeaway = el('speed-takeaway');
+      const stepsPart = turn && turn.llmCalls > 1 ? t('speed.stepsParen', { n: turn.llmCalls }) : '';
 
-      if (sp?.tps != null) {
-        if (spBadge) {
-          if (sp.tps >= 80) { spBadge.textContent = t('speed.pill.fast'); spBadge.className = 'key-pill pill-good'; }
-          else if (sp.tps >= 35) { spBadge.textContent = t('speed.pill.smooth'); spBadge.className = 'key-pill pill-good'; }
-          else if (sp.tps >= 15) { spBadge.textContent = t('speed.pill.good'); spBadge.className = 'key-pill pill-warn'; }
-          else { spBadge.textContent = t('speed.pill.slow'); spBadge.className = 'key-pill pill-danger'; }
+      const applyTurnTtftDisplay = (fallbackTtft) => {
+        if (!spTtft) return;
+        const singleSec = turn?.latestTtftSec != null ? turn.latestTtftSec : (turn?.ttftSec > 0 ? turn.ttftSec : null);
+        if (turn?.isRunning && turn.inFlightTtftSec != null && turn.inFlightTtftSec >= 0.5 && !isActivelyStreamingNow) {
+          const liveWait = fmtTurnDur(turn.inFlightTtftSec, true);
+          spTtft.textContent = t('badge.speedRunning', { dur: liveWait });
+          const prevPart = turn.ttftSec > 0 ? t('speed.ttftPrevPart', { total: fmtTurnDur(turn.ttftSec, false) }) : '';
+          spTtft.title = t('speed.ttftWaitingTip', { live: liveWait, prevPart });
+          return;
         }
-        if (spVal) spVal.textContent = `${sp.tps} tok/s`;
-        if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
-        if (spTtft) spTtft.textContent = sp.ttft ? `${sp.ttft}s` : '—';
-        if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
+        if (singleSec != null && singleSec > 0) {
+          const singleStr = fmtTurnDur(singleSec, false);
+          spTtft.textContent = singleStr;
+          spTtft.title = (turn?.llmCalls > 1 && turn.ttftSec > 0)
+            ? t('speed.ttftMultiTip', { latest: singleStr, total: fmtTurnDur(turn.ttftSec, false), n: turn.llmCalls })
+            : '';
+        } else {
+          spTtft.textContent = fallbackTtft ? `${fallbackTtft}s` : '—';
+          spTtft.title = '';
+        }
+      };
+
+      if (turn?.isRunning && turn.hasAuthoritativeWallClock && !isActivelyStreamingNow) {
+        const liveDur = fmtTurnDur(turn.wallDurationSec ?? 0, true);
+        if (spBadge) { spBadge.textContent = t('speed.pill.running'); spBadge.className = 'key-pill pill-warn'; }
+        if (spVal) spVal.textContent = effTps != null ? `${effTps} tok/s` : (sp?.phase === 'warming' ? t('badge.speedWarm') : t('badge.speedRunning', { dur: liveDur }));
+        if (spDur) spDur.textContent = t('badge.speedRunning', { dur: liveDur });
+        applyTurnTtftDisplay(sp?.ttft);
+        if (spTokens) spTokens.textContent = `${fmt(turn.outputTokens || 0)} tok`;
         if (spTakeaway) {
-          const modelStr = d?.model ? `（${d.model}）` : '';
-          const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
-          spTakeaway.textContent = t('speed.takeaway.ok', {
-            tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
-            tps: sp.tps,
-            stream: streamInfo,
-            dur: sp.duration,
-            tok: fmt(sp.outputTokens),
-            model: modelStr
+          spTakeaway.textContent = t('speed.takeaway.running', {
+            dur: liveDur,
+            stepsPart,
+            ttft: fmtTurnDur(turn.ttftSec, false),
+            stream: fmtTurnDur(turn.streamingSec, false),
+            tool: fmtTurnDur(turn.toolWallSec ?? 0, Boolean(turn.activeToolStartMs != null)),
+            gap: fmtTurnDur(turn.scheduleGapSec ?? 0, true),
+            tok: fmt(turn.outputTokens || 0)
           });
         }
+      } else if (effTps != null) {
+        if (spBadge) {
+          if (turn?.isRunning) { spBadge.textContent = t('speed.pill.running'); spBadge.className = 'key-pill pill-good'; }
+          else if (effTps >= 80) { spBadge.textContent = t('speed.pill.fast'); spBadge.className = 'key-pill pill-good'; }
+          else if (effTps >= 35) { spBadge.textContent = t('speed.pill.smooth'); spBadge.className = 'key-pill pill-good'; }
+          else if (effTps >= 15) { spBadge.textContent = t('speed.pill.good'); spBadge.className = 'key-pill pill-warn'; }
+          else { spBadge.textContent = t('speed.pill.slow'); spBadge.className = 'key-pill pill-danger'; }
+        }
+        if (spVal) spVal.textContent = `${effTps} tok/s`;
+        if (useTurnBreakdown && turn?.wallDurationSec != null) {
+          const turnDurStr = fmtTurnDur(turn.wallDurationSec, Boolean(turn.isRunning));
+          const turnOutTok = turn.outputTokens > 0 ? turn.outputTokens : (sp?.outputTokens || 0);
+          if (spDur) spDur.textContent = turn.isRunning ? t('badge.speedRunning', { dur: turnDurStr }) : turnDurStr;
+          applyTurnTtftDisplay(sp?.ttft);
+          if (spTokens) spTokens.textContent = `${fmt(turnOutTok)} tok`;
+          if (spTakeaway) {
+            const modelStr = d?.model ? `（${d.model}）` : '';
+            const e2eTps = turn.endToEndTps ?? sp.tps;
+            const overallInfo = (e2eTps != null && Math.abs(e2eTps - effTps) >= 0.5)
+              ? t('speed.overallPart', { tps: e2eTps })
+              : '';
+            spTakeaway.textContent = t('speed.takeaway.turnOk', {
+              tone: effTps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
+              tps: effTps,
+              stream: overallInfo,
+              dur: turnDurStr,
+              stepsPart,
+              ttft: fmtTurnDur(turn.ttftSec, false),
+              streamDur: fmtTurnDur(turn.streamingSec, false),
+              tool: fmtTurnDur(turn.toolWallSec ?? 0, Boolean(turn.isRunning && turn.activeToolStartMs != null)),
+              gap: fmtTurnDur(turn.scheduleGapSec ?? 0, Boolean(turn.isRunning)),
+              tok: fmt(turnOutTok),
+              model: modelStr
+            });
+          }
+        } else {
+          if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
+          if (spTtft) { spTtft.textContent = sp.ttft ? `${sp.ttft}s` : '—'; spTtft.title = ''; }
+          if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
+          if (spTakeaway) {
+            const modelStr = d?.model ? `（${d.model}）` : '';
+            const overallInfo = (sp.tps != null && Math.abs(sp.tps - effTps) >= 0.5)
+              ? t('speed.overallPart', { tps: sp.tps })
+              : '';
+            spTakeaway.textContent = t('speed.takeaway.ok', {
+              tone: effTps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
+              tps: effTps,
+              stream: overallInfo,
+              dur: sp.duration,
+              tok: fmt(sp.outputTokens),
+              model: modelStr
+            });
+          }
+        }
+      } else if (sp?.phase === 'warming') {
+        if (spBadge) { spBadge.textContent = t('speed.pill.warm'); spBadge.className = 'key-pill pill-muted'; }
+        if (spVal) spVal.textContent = t('badge.speedWarm');
+        if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
+        if (spTtft) { spTtft.textContent = sp.ttft ? `${sp.ttft}s` : '—'; spTtft.title = ''; }
+        if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
+        if (spTakeaway) spTakeaway.textContent = t('speed.takeaway.warm', { tok: fmt(sp.outputTokens || 0) });
       } else {
         if (spBadge) { spBadge.textContent = state.requestBusy ? t('speed.pill.calc') : t('speed.pill.idle'); spBadge.className = 'key-pill pill-muted'; }
         if (spVal) spVal.textContent = '—';
         if (spDur) spDur.textContent = '—';
-        if (spTtft) spTtft.textContent = '—';
+        if (spTtft) { spTtft.textContent = '—'; spTtft.title = ''; }
         if (spTokens) spTokens.textContent = '—';
         if (spTakeaway) spTakeaway.textContent = t('speed.takeaway.idle');
       }
@@ -20483,6 +21505,17 @@ function renderHeatmapGrid(forceRebuild = false) {
     el('request-status').textContent = d?.exceeded ? t('tech.req.exceeded') : d?.network ? t('tech.req.network') : d?.error ? t('tech.req.failed') : d?.status === 'reported' ? t('tech.req.reported') : d?.status === 'estimated' ? t('tech.req.estimated') : t('tech.req.waiting');
     el('actual').textContent = d?.actual != null ? token(d.actual) : d?.exceeded ? t('tech.actual.exceeded', { val: fmt(d.serviceLimit || 0) }) : t('tech.actual.unknown');
     if (d?.exceeded && !d.serviceLimit) el('actual').textContent = t('tech.actual.exceededNoLim');
+    const hitDetEl = el('cache-hit-detail');
+    if (hitDetEl) {
+      hitDetEl.textContent = turnCacheStats.hitRate != null
+        ? t('session.tech.cacheHitVal', {
+          rate: formatCacheHitRate(turnCacheStats.hitRate),
+          cached: fmt(turnCacheStats.cacheReadTokens),
+          total: fmt(turnCacheStats.totalPromptTokens),
+          fresh: fmt(turnCacheStats.uncachedInput)
+        })
+        : '—';
+    }
     el('estimate').textContent = d?.estimate ? t('tech.est.val', { val: fmt(d.estimate), note: d.exceeded ? t('tech.est.under') : t('tech.est.ref') }) : t('tech.est.none');
     el('budget').textContent = token(d?.budget);
     el('service-limit').textContent = d?.serviceLimit ? t('tech.svcLim.val', { val: fmt(d.serviceLimit) }) : t('tech.svcLim.none');
@@ -20714,6 +21747,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     const takePrevUsage = usageCmp < 0 || (usageCmp === 0 && revCmp < 0);
     if (takePrevUsage) {
       merged.inputTokens = prevCall.inputTokens;
+      merged.cacheWriteTokens = prevCall.cacheWriteTokens;
       merged.cacheTokens = prevCall.cacheTokens;
       merged.cacheReadTokens = prevCall.cacheReadTokens;
       merged.outputTokens = prevCall.outputTokens;
@@ -20905,6 +21939,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     state.requestBusy = true;
     const controller = new AbortController(); state.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 12000);
+    let pollIsStreaming = false;
     try {
       const csrf = window.__APP_CONFIG__?.csrfToken; if (!csrf) throw new Error('后台尚未就绪');
       const offset = Math.max(0, state.count - 3);
@@ -20912,6 +21947,15 @@ function renderHeatmapGrid(forceRebuild = false) {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json(); if (generation !== state.generation || state.disposed) return;
       const rows = data.generatorMetadata || [];
+      if (!Array.isArray(state.rawGeneratorRows)) state.rawGeneratorRows = [];
+      if (rows.length) {
+        for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+          state.rawGeneratorRows[offset + rIdx] = rows[rIdx];
+        }
+        state.rawGeneratorRows.length = offset + rows.length;
+      } else if (offset === 0) {
+        state.rawGeneratorRows = [];
+      }
       state.count = rows.length ? offset + rows.length : 0;
       if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
       if (!state.syncedFinalMap) state.syncedFinalMap = new Map();
@@ -21038,6 +22082,8 @@ function renderHeatmapGrid(forceRebuild = false) {
         if (value) {
           state.latest = withStepError(value, rows[i]);
           const callInfo = parseGeneratorCall ? parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: modelConfigsList }) : null;
+          const speedTrack = updateLiveSpeedTracker(id, rows[i], state.latest, callInfo);
+          pollIsStreaming = speedTrack.isActivelyStreaming;
           recordObservationFromSummary(state.latest, id, {
             callId: callInfo?.callId || null,
             stepCount: state.count,
@@ -21046,9 +22092,56 @@ function renderHeatmapGrid(forceRebuild = false) {
           break;
         }
       }
+      if (state.localTurnDispatch?.active && (!state.localTurnDispatch.cascadeId || state.localTurnDispatch.cascadeId === id)) {
+        const hasNewRow = state.count > (state.localTurnDispatch.baselineCount || 0);
+        if (hasNewRow && !pollIsStreaming && !hasTurnStateBridge()) {
+          state.localTurnDispatch.active = false;
+        }
+      }
       state.requestAt = Date.now(); state.requestError = '';
     } catch (e) { if (generation === state.generation && !state.disposed) state.requestError = e.name === 'AbortError' ? '读取超时' : e.message; }
-    finally { clearTimeout(timeout); state.controllers.delete(controller); if (generation === state.generation && !state.disposed) { state.requestBusy = false; state.requestNext = Date.now() + (document.hidden ? 15000 : 3000); render(); } }
+    finally { clearTimeout(timeout); state.controllers.delete(controller); if (generation === state.generation && !state.disposed) { state.requestBusy = false; const fastPoll = pollIsStreaming || Boolean(resolveEffectiveTurnTiming()?.isRunning); state.requestNext = Date.now() + (document.hidden ? 15000 : (fastPoll ? 1200 : 3000)); render(); } }
+  }
+
+  async function pollTurnState(generation, id) {
+    if (!hasTurnStateBridge()) return;
+    state.turnStateBusy = true;
+    const controller = new AbortController();
+    state.controllers.add(controller);
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const hasIpcTurn = typeof window?.contextMeterAPI?.getTurnState === 'function';
+      const canLiveTurn = hasLiveTurnStateCapability();
+      const originHint = typeof window?.location?.origin === 'string' ? window.location.origin : '';
+      let result = null;
+      if (canLiveTurn && (!hasIpcTurn || shouldPreferLiveHost(hasIpcTurn, '/turn-state'))) {
+        try {
+          result = await postLiveHttpEndpoint('/turn-state', { id, origin: originHint }, { signal: controller.signal });
+          syncObservedBackendMeta('live-host', result?.data || result);
+        } catch (liveErr) {
+          if (liveErr?.name === 'AbortError') throw liveErr;
+          if (hasIpcTurn) {
+            result = await window.contextMeterAPI.getTurnState(id);
+          }
+        }
+      } else if (hasIpcTurn) {
+        result = await window.contextMeterAPI.getTurnState(id);
+      }
+      if (generation !== state.generation || state.disposed) return;
+      if (result?.ok && result.data) {
+        state.turnState = result.data;
+      }
+    } catch { }
+    finally {
+      clearTimeout(timeout);
+      state.controllers.delete(controller);
+      if (generation === state.generation && !state.disposed) {
+        state.turnStateBusy = false;
+        const activeRun = isCurrentTurnRunning();
+        state.turnStateNext = Date.now() + (document.hidden ? 15000 : (activeRun ? 1500 : 3000));
+        render();
+      }
+    }
   }
 
   async function scan(generation, id, force = false) {
@@ -22868,8 +23961,11 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (id !== state.route) {
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       if (state.sessionCallsMap) state.sessionCallsMap.clear();
+      const keepLocalDisp = state.localTurnDispatch?.active && state.localTurnDispatch.cascadeId === id ? state.localTurnDispatch : null;
       Object.assign(state, {
-        route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
+        route: id, count: 0, latest: null, liveSpeed: null, rawGeneratorRows: [],
+        turnState: null, turnStateBusy: false, turnStateNext: 0, localTurnDispatch: keepLocalDisp, lastTurnClockSec: -1,
+        sessionCalls: [], sessionCostTotal: 0,
         callsHydrated: false, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
         scanBusy: false, scanNext: 0, scanError: '', scan: null
       });
@@ -22880,7 +23976,17 @@ function renderHeatmapGrid(forceRebuild = false) {
       toggle(false); hideContextTooltip(); renderFiles(null); render();
     }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
+    if (id && hasTurnStateBridge() && !state.turnStateBusy && Date.now() >= (state.turnStateNext || 0)) void pollTurnState(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
+    if (id && isCurrentTurnRunning()) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (nowSec !== state.lastTurnClockSec) {
+        state.lastTurnClockSec = nowSec;
+        render();
+      }
+    } else if (state.lastTurnClockSec !== -1) {
+      state.lastTurnClockSec = -1;
+    }
     if (!state.disposed && state.pendingFinalCalls?.size && !state.flushFinalsBusy && Date.now() >= (state.nextFlushRetryAt || 0)) {
       void flushPendingFinalCalls(false);
     }
@@ -23304,7 +24410,12 @@ function renderHeatmapGrid(forceRebuild = false) {
       showPanel(open ? 'quota' : 'none');
       return !el('panel-quota')?.hidden;
     },
-    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
+    setTurnStateForTest: (turnStatePayload) => {
+      state.turnState = turnStatePayload;
+      render();
+      return resolveEffectiveTurnTiming();
+    },
+    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, turnTiming: resolveEffectiveTurnTiming(), scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     captureHotReloadState,
     verifyHotReloadAndRefreshQuota,
     getBackendStatusForTest: () => ({

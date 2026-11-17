@@ -646,10 +646,10 @@ test('顶栏入口顺序、独立弹窗锚点、防底裁切 maxHeight 与 Notic
   const idxBadge = tpl.indexOf('id="badge"');
   const idxSpeed = tpl.indexOf('id="badge-speed"');
   const idxTokens = tpl.indexOf('id="badge-tokens"');
-  const idxCli = tpl.indexOf('id="badge-cli"');
+  const idxCacheHit = tpl.indexOf('id="badge-cache-hit"');
   const idxOverflow = tpl.indexOf('id="badge-overflow"');
   assert.ok(idxQuota > 0 && idxQuota < idxBadge, '额度入口必须位于工具组最左侧');
-  assert.ok(idxBadge < idxSpeed && idxSpeed < idxTokens && idxTokens < idxCli && idxCli < idxOverflow);
+  assert.ok(idxBadge < idxSpeed && idxSpeed < idxTokens && idxTokens < idxCacheHit && idxCacheHit < idxOverflow);
   const betweenBadgeAndSpeed = tpl.slice(idxBadge, idxSpeed);
   assert.equal(betweenBadgeAndSpeed.includes('badge-quota'), false, '上下文与速度必须紧邻，不能被额度入口隔开');
   assert.ok(tpl.includes('id="quota-usage-tip"'), '面板底部应包含简短用量贴士节点');

@@ -181,14 +181,16 @@ test('speed badge and speed summary card accurately render model output speed an
     chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
   }));
   await h.flush();
-  assert.equal(h.elements.get('speed-amount').textContent, '112.1 tok/s');
+  assert.equal(h.elements.get('speed-amount').textContent, '185.1 tok/s');
   assert.match(h.elements.get('speed-hover-extra').textContent, /21\.3s/);
+  assert.match(h.elements.get('badge-speed').title, /185\.1 tok\/s/);
   assert.match(h.elements.get('badge-speed').title, /112\.1 tok\/s/);
-  assert.equal(h.elements.get('speed-val').textContent, '112.1 tok/s');
+  assert.equal(h.elements.get('speed-val').textContent, '185.1 tok/s');
   assert.equal(h.elements.get('speed-duration').textContent, '21.3s');
   assert.equal(h.elements.get('speed-ttft').textContent, '8.4s');
   assert.match(h.elements.get('speed-tokens').textContent, /2,388 tok/);
   assert.equal(h.elements.get('speed-badge').textContent, '极速');
+  assert.match(h.elements.get('speed-takeaway').textContent, /185\.1 tok\/s/);
   assert.match(h.elements.get('speed-takeaway').textContent, /112\.1 tok\/s/);
   h.sandbox.__AGContextMeter.dispose();
 });
@@ -1118,16 +1120,16 @@ test('tray/root startup visibility, settings save/restore (country, subscription
   collapseBottomBtn.click();
   assert.equal(detailCard.style.display, 'none');
 
-  // 4. 验证一键启动 CLI 按钮成功与失败反馈
+  // 4. 验证溢出菜单 CLI 入口成功与失败反馈（顶栏原 CLI 位已让位于缓存命中率徽章）
   let cliMockResult = { ok: true, cwd: 'C:\\Projects\\测试 空格 目录', cliPath: 'C:\\Tools\\agy\\agy.exe' };
   h.sandbox.window.contextMeterAPI.launchCli = async (opts) => ({ ...cliMockResult, receivedOpts: opts });
-  h.elements.get('badge-cli').click();
+  h.elements.get('overflow-cli-btn').click();
   await h.flush();
   assert.equal(api.getLastCliLaunchResult().ok, true);
   assert.match(h.elements.get('cli-launch-toast').textContent, /已启动 Antigravity CLI/);
 
   cliMockResult = { ok: false, error: '未找到 agy.exe' };
-  h.elements.get('badge-cli').click();
+  h.elements.get('overflow-cli-btn').click();
   await h.flush();
   assert.equal(api.getLastCliLaunchResult().ok, false);
   assert.match(h.elements.get('cli-launch-toast').textContent, /启动 CLI 失败.*未找到 agy\.exe/);
@@ -4824,5 +4826,588 @@ test('ELV-84: 静止浮层避免常驻合成层与冗余模糊，混合 DPI 坐�
   } finally {
     ctx.__AGContextMeter.dispose();
     assert.ok(mqlRemoved >= 1, 'dispose() 时必须取消 DPI matchMedia 监听');
+  }
+});
+
+test('cache hit rate UI: session strip, tech drawer, token cards, heatmap summary/popover, cost card, and 3-language switch', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    // 1. 当前会话冷启动轮 (0.0%) -> 热命中轮 (90.0%) -> 会话累计 (75.0%)
+    h.finishScan();
+    h.pending[0].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          {
+            stepIndices: [0],
+            status: 'final',
+            created_at: '2026-11-16T06:00:00Z',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+              usage: { inputTokens: 2000, cacheReadTokens: 0, outputTokens: 200, responseId: 'resp_hit_1' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          },
+          {
+            stepIndices: [1],
+            status: 'final',
+            created_at: '2026-11-16T06:01:00Z',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+              usage: { inputTokens: 1000, cacheReadTokens: 9000, outputTokens: 300, responseId: 'resp_hit_2' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          }
+        ]
+      })
+    });
+    await h.flush();
+
+    assert.equal(h.elements.get('cache-hit-amount').textContent, '90.0%');
+    assert.equal(h.elements.get('overflow-cache-val').textContent, '90.0%');
+    assert.equal(h.elements.get('badge-cache-hit').getAttribute('data-hit-tier'), 'high');
+    assert.equal(h.elements.get('badge-cache-hit').getAttribute('data-scope'), 'live');
+    assert.doesNotMatch(source, /id="badge-cli"/);
+    assert.match(h.elements.get('badge-cache-hit').title, /当前步缓存命中：90\.0%/);
+    assert.match(h.elements.get('badge-cache-hit').title, /本对话累计命中：75\.0%/);
+
+    // 点击顶栏缓存命中率按钮展开并收起会话详情面板
+    h.elements.get('badge-cache-hit').click();
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(h.elements.get('badge-cache-hit').getAttribute('aria-expanded'), 'true');
+    h.elements.get('badge-cache-hit').click();
+    assert.equal(h.elements.get('panel').hidden, true);
+    assert.equal(h.elements.get('badge-cache-hit').getAttribute('aria-expanded'), 'false');
+
+    assert.equal(h.elements.get('cache-hit-label').textContent, '🎯 实时缓存');
+    assert.equal(h.elements.get('cache-hit-turn').textContent, '当前步 90.0%');
+    assert.equal(h.elements.get('cache-hit-turn').getAttribute('data-hit-tier'), 'high');
+    assert.equal(h.elements.get('cache-hit-tokens').hidden, false);
+    assert.equal(h.elements.get('cache-hit-tokens').textContent, '(9K/+1K)');
+    assert.equal(h.elements.get('cache-hit-session').textContent, '本对话 75.0%');
+    assert.equal(h.elements.get('cache-hit-session').getAttribute('data-hit-tier'), 'mid');
+    assert.equal(h.elements.get('cache-hit-drop').hidden, true);
+    assert.match(h.elements.get('cache-hit-detail').textContent, /90\.0%（缓存 9,000 \/ 总输入 10,000，新增 1,000）/);
+    assert.match(h.elements.get('round-cost-text').title, /缓存命中：90\.0%/);
+
+    // 2. Token 面板：4 张卡片 + 来源切换 (desktop/cli) + 热力图汇总与悬浮浮层 + 费用卡片
+    const now = new Date();
+    const todayYmd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const monthPrefix = todayYmd.slice(0, 7);
+    const prevMonthYmd = monthPrefix === `${now.getFullYear()}-01`
+      ? `${now.getFullYear() - 1}-12-15`
+      : `${now.getFullYear()}-${String(now.getMonth()).padStart(2, '0')}-15`;
+
+    api.setTokenHistoryForTest({
+      firstUseDate: prevMonthYmd,
+      dailyMap: {
+        [prevMonthYmd]: { total: 1100, input: 100, cache: 900, output: 100, steps: 1 },
+        [todayYmd]: { total: 10200, input: 1000, cache: 9000, output: 200, steps: 2 }
+      },
+      dailyMapBySource: {
+        all: {
+          [prevMonthYmd]: { total: 1100, input: 100, cache: 900, output: 100, steps: 1 },
+          [todayYmd]: { total: 10200, input: 1000, cache: 9000, output: 200, steps: 2 }
+        },
+        desktop: {
+          [prevMonthYmd]: { total: 1100, input: 100, cache: 900, output: 100, steps: 1 },
+          [todayYmd]: { total: 5100, input: 100, cache: 4900, output: 100, steps: 1 }
+        },
+        cli: {
+          [todayYmd]: { total: 5100, input: 900, cache: 4100, output: 100, steps: 1 }
+        }
+      },
+      costEstimate: {
+        pricedCostUSD: 0.12,
+        pricedRequestsCount: 2,
+        unpricedRequestsCount: 0,
+        coveragePercent: 100,
+        byCategory: { inputTokens: 1100, cacheTokens: 9900, outputTokens: 300 },
+        byModel: { 'gemini-4-hydrogen': { costUSD: 0.12, tokens: 11300 } }
+      },
+      costEstimateCurrentMonth: {
+        pricedCostUSD: 0.1,
+        pricedRequestsCount: 1,
+        unpricedRequestsCount: 0,
+        coveragePercent: 100,
+        byCategory: { inputTokens: 2000, cacheTokens: 6000, outputTokens: 200 },
+        byModel: { 'gemini-4-hydrogen': { costUSD: 0.1, tokens: 8200 } }
+      }
+    });
+
+    h.elements.get('badge-tokens').click();
+    assert.equal(h.elements.get('t-total-cache-hit').textContent, '缓存命中 90.0%');
+    assert.equal(h.elements.get('t-today-cache-hit').textContent, '缓存命中 90.0%');
+    assert.equal(h.elements.get('t-month-cache-hit').textContent, '缓存命中 90.0%');
+    assert.equal(h.elements.get('h-sum-cache-hit').textContent, '90.0%');
+
+    // 切换到 CLI 来源：命中率按 CLI 口径独立刷新 (4100 / 5000 = 82.0%)
+    h.elements.get('src-tab-cli').click();
+    assert.equal(h.elements.get('t-today-cache-hit').textContent, '缓存命中 82.0%');
+    assert.equal(h.elements.get('h-sum-cache-hit').textContent, '82.0%');
+
+    // 切回 All 并点击今日热力图格子验证浮层包含 Hit 与命中率
+    h.elements.get('src-tab-all').click();
+    const colsBox = h.elements.get('h-grid-cols');
+    let todayCell = null;
+    for (const col of colsBox.children) {
+      for (const cell of col.children) {
+        if (cell.getAttribute('data-date') === todayYmd) todayCell = cell;
+      }
+    }
+    assert.ok(todayCell, 'today cell should exist in heatmap grid');
+    todayCell.click();
+    assert.match(h.elements.get('heat-pop-det').innerHTML, /Hit:\s*90\.0%[\s\S]*?<span class="pop-det-trans">命中率<\/span>/);
+
+    // 切换到 API 参考金额视图与「仅已识别模型」模式
+    h.elements.get('tok-view-cost').click();
+    assert.equal(h.elements.get('cost-cache-hit-pill').textContent, '缓存命中 90.0%');
+    assert.equal(h.elements.get('ref-cost-cache-hit').textContent, '缓存命中 90.0%');
+    h.elements.get('cost-btn-mode-identified').click();
+    assert.equal(h.elements.get('cost-cache-hit-pill').textContent, '缓存命中 75.0%');
+
+    // 3. 切换英文与繁体中文确认三语言刷新正常
+    h.elements.get('btn-top-lang-en').click();
+    await h.flush();
+    assert.equal(h.elements.get('cache-hit-turn').textContent, 'Step 90.0%');
+    assert.equal(h.elements.get('cache-hit-session').textContent, 'Chat 75.0%');
+    assert.equal(h.elements.get('t-today-cache-hit').textContent, 'Cache hit 90.0%');
+    assert.equal(h.elements.get('cost-cache-hit-pill').textContent, 'Cache hit 75.0%');
+
+    h.elements.get('btn-top-lang-zh-TW').click();
+    await h.flush();
+    assert.equal(h.elements.get('cache-hit-turn').textContent, '目前步 90.0%');
+    assert.equal(h.elements.get('t-today-cache-hit').textContent, '快取命中 90.0%');
+
+    // 4. 回到主页 (/) 时顶栏显式标注“今日 90.0%”(global scope)，点击跳转到 Token 统计面板
+    h.sandbox.location.pathname = '/';
+    h.tick();
+    assert.equal(h.elements.get('badge-cache-hit').getAttribute('data-scope'), 'global');
+    assert.equal(h.elements.get('cache-hit-amount').textContent, '今日 90.0%');
+    assert.equal(h.elements.get('cache-hit-label').textContent, '🎯 今日全域');
+    h.elements.get('badge-cache-hit').click();
+    assert.equal(h.elements.get('panel-tokens').hidden, false);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('live streaming speed stabilization: warming suppression, 1200ms streaming poll EMA, and settled pure streamingTps', async () => {
+  const realDateNow = Date.now;
+  let fakeNow = 2_000_000_000_000;
+  Date.now = () => fakeNow;
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+
+    // Step 1: 刚起流 (<0.45s 且 <12 tok) -> 显示“测速中…”而不是夸张或过低失真速率，并加速到 1200ms 轮询
+    h.pending[0].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          stepIndices: [1],
+          isStreaming: true,
+          status: 'streaming',
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+            timeToFirstToken: '5.5s',
+            streamingDuration: '0.08s',
+            usage: { inputTokens: 2000, cacheReadTokens: 8000, outputTokens: 6, responseId: 'resp-stream-1' },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }]
+      })
+    });
+    await h.flush();
+    assert.equal(h.elements.get('speed-amount').textContent, '测速中…');
+    assert.equal(h.elements.get('speed-val').textContent, '测速中…');
+    assert.equal(h.elements.get('speed-badge').textContent, '测速中');
+
+    // +1200ms 应触发第二次流式采集，进入 EMA 平滑区间
+    fakeNow += 1200;
+    h.tick();
+    assert.equal(h.pending.length, 2, '主动流式输出中应在 1200ms 后发起下一次轮询');
+    h.pending[1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          stepIndices: [1],
+          isStreaming: true,
+          status: 'streaming',
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+            timeToFirstToken: '5.5s',
+            streamingDuration: '1.2s',
+            usage: { inputTokens: 2000, cacheReadTokens: 8000, outputTokens: 240, responseId: 'resp-stream-1' },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }]
+      })
+    });
+    await h.flush();
+    // 累计平均 200, 首步后增量 (240-6)/(1.2-0.08)=208.9 -> EMA(0.55*200 + 0.45*208.9 = 204.0)
+    assert.equal(h.elements.get('speed-amount').textContent, '204 tok/s');
+
+    fakeNow += 1200;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    h.pending[2].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          stepIndices: [1],
+          isStreaming: true,
+          status: 'streaming',
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+            timeToFirstToken: '5.5s',
+            streamingDuration: '2.4s',
+            usage: { inputTokens: 2000, cacheReadTokens: 8000, outputTokens: 540, responseId: 'resp-stream-1' },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }]
+      })
+    });
+    await h.flush();
+    // 增量 300/1.2 = 250 -> EMA(0.55*204.0 + 0.45*250 = 224.7)
+    assert.equal(h.elements.get('speed-amount').textContent, '224.7 tok/s');
+
+    // 最终稳定 (status=final, 750 tok / 3.0s -> 纯生成 250 tok/s; 含 5.5s TTFT 则是 88.2 tok/s)
+    fakeNow += 1200;
+    h.tick();
+    assert.equal(h.pending.length, 4);
+    h.pending[3].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          stepIndices: [1],
+          status: 'final',
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+            timeToFirstToken: '5.5s',
+            streamingDuration: '3.0s',
+            usage: { inputTokens: 2000, cacheReadTokens: 8000, outputTokens: 750, responseId: 'resp-stream-1' },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }]
+      })
+    });
+    await h.flush();
+    assert.equal(h.elements.get('speed-amount').textContent, '250 tok/s');
+    assert.equal(h.elements.get('speed-val').textContent, '250 tok/s');
+    assert.match(h.elements.get('speed-takeaway').textContent, /88\.2 tok\/s/);
+
+    // 完成后恢复常规 3000ms 节流（1500ms 不应触发额外轮询）
+    fakeNow += 1500;
+    h.tick();
+    assert.equal(h.pending.length, 4, 'settled 完成后应恢复 3000ms 常规轮询节流');
+  } finally {
+    Date.now = realDateNow;
+    api.dispose();
+  }
+});
+
+test('cache hit scope isolation, cold-start 0% fidelity, in-flight carry-forward, and sharp cache drop alert', async () => {
+  const realDateNow = Date.now;
+  let fakeNow = 2_000_005_000_000;
+  Date.now = () => fakeNow;
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+    const todayD = new Date();
+    const todayYmd = `${todayD.getFullYear()}-${String(todayD.getMonth() + 1).padStart(2, '0')}-${String(todayD.getDate()).padStart(2, '0')}`;
+    api.setTokenHistoryForTest({
+      firstUseDate: todayYmd,
+      dailyMap: { [todayYmd]: { total: 10000, input: 540, cache: 9460, output: 100, steps: 1 } },
+      dailyMapBySource: {
+        all: { [todayYmd]: { total: 10000, input: 540, cache: 9460, output: 100, steps: 1 } }
+      }
+    });
+
+    // 1. 当前对话尚无任何用量时，严格显示 live scope --%，绝不泄露今日全局 94.6%
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [] }) });
+    await h.flush();
+    assert.equal(h.elements.get('badge-cache-hit').getAttribute('data-scope'), 'live');
+    assert.equal(h.elements.get('cache-hit-amount').textContent, '--%');
+
+    // 2. 回到主页才显示“今日 94.6%”
+    h.sandbox.location.pathname = '/';
+    h.tick();
+    assert.equal(h.elements.get('badge-cache-hit').getAttribute('data-scope'), 'global');
+    assert.equal(h.elements.get('cache-hit-amount').textContent, '今日 94.6%');
+
+    // 3. 切回新对话并经历：冷启动 0.0% -> 热命中 95.0% -> 空用量占位步沿用 95.0% -> 重算骤降至 20.0% (-75%)
+    const chatId = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    h.sandbox.location.pathname = `/c/${chatId}`;
+    h.tick();
+    const poll1 = h.pending[h.pending.length - 1];
+    poll1.resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          stepIndices: [0],
+          status: 'final',
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+            usage: { inputTokens: 5000, cacheReadTokens: 0, outputTokens: 120, responseId: 'c_s1' },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }]
+      })
+    });
+    await h.flush();
+    assert.equal(h.elements.get('cache-hit-amount').textContent, '0.0%', '真实冷启动 0% 不得被历史沿用掩盖');
+    assert.equal(h.elements.get('cache-hit-drop').hidden, true);
+
+    fakeNow += 3500;
+    h.tick();
+    const poll2 = h.pending[h.pending.length - 1];
+    poll2.resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          {
+            stepIndices: [0],
+            status: 'final',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+              usage: { inputTokens: 5000, cacheReadTokens: 0, outputTokens: 120, responseId: 'c_s1' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          },
+          {
+            stepIndices: [1],
+            status: 'final',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+              usage: { inputTokens: 500, cacheReadTokens: 9500, outputTokens: 180, responseId: 'c_s2' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          },
+          {
+            stepIndices: [2],
+            isStreaming: true,
+            status: 'streaming',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+              usage: { inputTokens: 0, cacheReadTokens: 0, outputTokens: 10, responseId: 'c_s3_pending' }
+            }
+          }
+        ]
+      })
+    });
+    await h.flush();
+    assert.equal(h.elements.get('cache-hit-amount').textContent, '95.0%', '空用量占位步骤应平滑沿用同对话上一步有效命中率');
+    assert.match(h.elements.get('badge-cache-hit').title, /沿用上一步命中：95\.0%/);
+
+    fakeNow += 3500;
+    h.tick();
+    const poll3 = h.pending[h.pending.length - 1];
+    poll3.resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          {
+            stepIndices: [1],
+            status: 'final',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+              usage: { inputTokens: 500, cacheReadTokens: 9500, outputTokens: 180, responseId: 'c_s2' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          },
+          {
+            stepIndices: [2],
+            status: 'final',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Hydrogen (XHigh)',
+              usage: { inputTokens: 8000, cacheReadTokens: 2000, outputTokens: 200, responseId: 'c_s3_rebuilt' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          }
+        ]
+      })
+    });
+    await h.flush();
+    assert.equal(h.elements.get('cache-hit-amount').textContent, '20.0%');
+    assert.equal(h.elements.get('cache-hit-drop').hidden, false);
+    assert.equal(h.elements.get('cache-hit-drop').textContent, '⚠ 重算 -75%');
+  } finally {
+    Date.now = realDateNow;
+    api.dispose();
+  }
+});
+
+test('turn wall-clock timing: live 1s stopwatch during long TTFT/tool wait, multi-step breakdown, and executionId round cost', async () => {
+  const realDateNow = Date.now;
+  let fakeNow = 2_000_010_000_000;
+  Date.now = () => fakeNow;
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    let serverTurnState = {
+      conversation: '11111111-1111-1111-1111-111111111111',
+      cascadeStatus: 'CASCADE_RUN_STATUS_RUNNING',
+      fetchedAt: fakeNow,
+      turnTiming: {
+        executionId: 'exec-multi-1',
+        isRunning: true,
+        hasAuthoritativeWallClock: true,
+        turnStartMs: fakeNow - 28000,
+        lastActivityMs: fakeNow - 5000,
+        llmCalls: 1,
+        toolCalls: 2,
+        wallDurationSec: 28,
+        llmDurationSec: 15,
+        ttftSec: 11,
+        streamingSec: 4,
+        toolWallSec: 12,
+        nonLlmSec: 13,
+        scheduleGapSec: 1,
+        outputTokens: 420,
+        thinkingTokens: 300,
+        responseTokens: 120,
+        endToEndTps: 15
+      }
+    };
+    h.sandbox.window.contextMeterAPI.getTurnState = async () => ({ ok: true, data: serverTurnState });
+    h.finishScan();
+
+    // Step 1 已完成，当前正卡在工具执行或第 2 步漫长首字等待 (28s)，顶栏与卡片必须实时显示本轮秒表而不是卡死在上一步 105 tok/s
+    h.pending[0].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          executionId: 'exec-multi-1',
+          stepIndices: [1],
+          status: 'final',
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Carbon (High)',
+            timeToFirstToken: '11s',
+            streamingDuration: '4s',
+            usage: { inputTokens: 10000, cacheReadTokens: 40000, outputTokens: 420, responseId: 'resp-m1' },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }]
+      })
+    });
+    h.tick();
+    await h.flush();
+
+    assert.equal(h.elements.get('speed-amount').textContent, '⏳ 28s');
+    assert.equal(h.elements.get('speed-duration').textContent, '⏳ 28s');
+    assert.equal(h.elements.get('speed-badge').textContent, '计时中');
+    assert.match(h.elements.get('speed-takeaway').textContent, /本轮已运行 28s/);
+
+    // 推进 1 秒 (无需新网络响应)，本地秒表自动跳字到 29s
+    fakeNow += 1000;
+    h.tick();
+    assert.equal(h.elements.get('speed-amount').textContent, '⏳ 29s');
+    assert.equal(h.elements.get('speed-duration').textContent, '⏳ 29s');
+
+    // 整轮 3 步全部结束：墙钟共 108s (1m 48s)，即使最后第 3 步单步推理仅 10s (5s+5s)，界面也必须展示 1m 48s 与三段拆解
+    fakeNow += 79000; // 距 turnStartMs 共 108s
+    serverTurnState = {
+      conversation: '11111111-1111-1111-1111-111111111111',
+      cascadeStatus: 'CASCADE_RUN_STATUS_IDLE',
+      fetchedAt: fakeNow,
+      turnTiming: {
+        executionId: 'exec-multi-1',
+        turnStartStepIndex: 10,
+        isRunning: false,
+        hasAuthoritativeWallClock: true,
+        turnStartMs: fakeNow - 108000,
+        lastActivityMs: fakeNow,
+        llmCalls: 3,
+        toolCalls: 4,
+        wallDurationSec: 108,
+        llmDurationSec: 64,
+        ttftSec: 45,
+        latestTtftSec: 5,
+        streamingSec: 19,
+        toolWallSec: 40,
+        nonLlmSec: 44,
+        scheduleGapSec: 4,
+        outputTokens: 1620,
+        thinkingTokens: 1000,
+        responseTokens: 620,
+        endToEndTps: 15
+      }
+    };
+    h.tick();
+    const latestPoll = h.pending[h.pending.length - 1];
+    latestPoll.resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          // 上一轮遗留的同 executionId 记录 (stepIndices: [2] < turnStartStepIndex 10)，绝不能污染本轮首字与本轮费用！
+          {
+            executionId: 'exec-multi-1',
+            stepIndices: [2],
+            status: 'final',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Carbon (High)',
+              timeToFirstToken: '600s',
+              streamingDuration: '300s',
+              usage: { inputTokens: 90000, cacheReadTokens: 200000, outputTokens: 9000, responseId: 'resp-old-turn' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          },
+          {
+            executionId: 'exec-multi-1',
+            stepIndices: [11],
+            status: 'final',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Carbon (High)',
+              timeToFirstToken: '11s',
+              streamingDuration: '4s',
+              usage: { inputTokens: 10000, cacheReadTokens: 40000, outputTokens: 420, responseId: 'resp-m1' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          },
+          {
+            executionId: 'exec-multi-1',
+            stepIndices: [14],
+            status: 'final',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Carbon (High)',
+              timeToFirstToken: '29s',
+              streamingDuration: '10s',
+              usage: { inputTokens: 15000, cacheReadTokens: 50000, outputTokens: 700, responseId: 'resp-m2' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          },
+          {
+            executionId: 'exec-multi-1',
+            stepIndices: [17],
+            status: 'final',
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Carbon (High)',
+              timeToFirstToken: '5s',
+              streamingDuration: '5s',
+              usage: { inputTokens: 20000, cacheReadTokens: 65000, outputTokens: 500, responseId: 'resp-m3' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+            }
+          }
+        ]
+      })
+    });
+    await h.flush();
+
+    assert.equal(h.elements.get('speed-amount').textContent, '100 tok/s · 1m 48s');
+    assert.equal(h.elements.get('speed-duration').textContent, '1m 48s');
+    assert.equal(h.elements.get('speed-ttft').textContent, '5s', '首字延迟卡片显示最近单步 TTFT (5s)，不把多步累计或历史轮次混成几分钟');
+    assert.match(h.elements.get('speed-ttft').title, /45s/, '悬浮提示保留本轮 3 步累计首字等待 45s');
+    assert.equal(h.elements.get('speed-tokens').textContent, '1,620 tok');
+    assert.match(h.elements.get('speed-takeaway').textContent, /本轮总耗时 1m 48s（共 3 步）/);
+    assert.match(h.elements.get('speed-takeaway').textContent, /首字等待 45s \+ 流式吐字 19s \+ 工具执行 40s \+ 调度间隙 4s/);
+    assert.match(h.elements.get('badge-speed').title, /工具执行 40s \+ 调度间隙 4s/);
+    assert.match(h.elements.get('round-cost-text').textContent, /本轮合计 .*（3 步）/, '本轮费用同样按 turnStartStepIndex 隔离，不混入上一轮同 executionId 的第 4 条记录');
+  } finally {
+    Date.now = realDateNow;
+    api.dispose();
   }
 });

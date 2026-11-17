@@ -43,6 +43,7 @@ const {
 const {
   analyzeSteps,
   summarize,
+  summarizeTurnTiming,
   add,
   empty,
   measure,
@@ -675,7 +676,31 @@ async function collect(origin, id, options = {}) {
       ...(cachedHostUserStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
-    const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const scannedAt = Date.now();
+    let lastUserStepIdx = -1;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i]?.userInput) { lastUserStepIdx = i; break; }
+    }
+    let turnGmRows = tail.generatorMetadata || [];
+    if (lastUserStepIdx >= 0 && count > 40 && turnGmRows.length > 0) {
+      const firstGmStep = turnGmRows[0]?.stepIndices?.[0] ?? turnGmRows[0]?.stepIndex ?? null;
+      if (firstGmStep !== null && Number(firstGmStep) > lastUserStepIdx) {
+        try {
+          const wider = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 160), includeMessages: false });
+          if (Array.isArray(wider?.generatorMetadata) && wider.generatorMetadata.length > turnGmRows.length) {
+            turnGmRows = wider.generatorMetadata;
+          }
+        } catch { }
+      }
+    }
+    const turnTiming = summarizeTurnTiming({
+      steps,
+      stepOffset: 0,
+      generatorMetadata: turnGmRows,
+      cascadeStatus: full.status || null,
+      nowMs: scannedAt
+    });
+    const result = { version: PROJECT_VERSION, conversation: id, cascadeStatus: full.status || null, turnTiming, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt, errors: [] };
     if (isSuperseded()) {
       conversations.delete(key);
       return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
@@ -691,6 +716,105 @@ async function collect(origin, id, options = {}) {
   })();
   setBoundedMap(conversations, key, { ...previous, pending: task }, CONVERSATIONS_CACHE_MAX_ENTRIES);
   try { return await task; } catch (e) { conversations.delete(key); throw e; }
+}
+
+/**
+ * 轻量级轮次状态与墙钟耗时探测（不扫描附件、不拉取消息正文，专供运行中秒表与多步拆解高频同步）
+ */
+async function collectTurnState(origin, id) {
+  if (!/^https:\/\/127\.0\.0\.1:\d+$/.test(origin) || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
+  let token = csrfTokenByOrigin.get(origin) || null;
+  if (!token) {
+    const html = await request(origin);
+    token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+    csrfTokenByOrigin.set(origin, token);
+  }
+  const call = async (method, body) => {
+    try {
+      return await request(origin, method, body, token);
+    } catch (err) {
+      if (err && /HTTP 40[13]/.test(String(err.message || ''))) {
+        csrfTokenByOrigin.delete(origin);
+        const html = await request(origin);
+        token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+        csrfTokenByOrigin.set(origin, token);
+        return await request(origin, method, body, token);
+      }
+      throw err;
+    }
+  };
+
+  const head = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 0 });
+  const totalSteps = Number(head.numTotalSteps ?? head.trajectory?.steps?.length ?? 0);
+  const totalGm = Number(head.numTotalGeneratorMetadata ?? head.trajectory?.generatorMetadata?.length ?? 0);
+  const stepWindow = 80;
+  let stepOffset = Math.max(0, totalSteps - stepWindow);
+  const [stepsPage, gmPage] = await Promise.all([
+    totalSteps > 0
+      ? call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset, trajectoryVerbosity: 1 })
+      : Promise.resolve({ steps: [] }),
+    totalGm > 0
+      ? call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, totalGm - 40), includeMessages: false })
+      : Promise.resolve({ generatorMetadata: [] })
+  ]);
+
+  let tailSteps = Array.isArray(stepsPage?.steps) ? stepsPage.steps : [];
+  let tailGm = Array.isArray(gmPage?.generatorMetadata) ? gmPage.generatorMetadata : [];
+
+  // 若单轮超过 80 步（尾部窗口内尚无 userInput），向前回溯补齐到最近一条真实 userInput 起点（切勿按跨轮复用的 executionId 聚合旧轮次）
+  if (stepOffset > 0 && !tailSteps.some(s => s?.userInput)) {
+    let backOffset = stepOffset;
+    for (let hop = 0; hop < 4 && backOffset > 0; hop++) {
+      const nextOff = Math.max(0, backOffset - 160);
+      const olderPage = await call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: nextOff, trajectoryVerbosity: 1 });
+      const olderSteps = Array.isArray(olderPage?.steps) ? olderPage.steps.slice(0, backOffset - nextOff) : [];
+      if (!olderSteps.length) break;
+      tailSteps = olderSteps.concat(tailSteps);
+      backOffset = nextOff;
+      stepOffset = nextOff;
+      if (olderSteps.some(s => s?.userInput)) break;
+    }
+  }
+
+  let minTurnStepIdx = null;
+  for (let i = tailSteps.length - 1; i >= 0; i--) {
+    if (tailSteps[i]?.userInput) {
+      const rawIdx = tailSteps[i]?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+      minTurnStepIdx = Number.isInteger(Number(rawIdx)) && Number(rawIdx) >= 0 ? Number(rawIdx) : (stepOffset + i);
+      break;
+    }
+  }
+
+  // 若单轮模型调用数 > 40，按最新 userInput 的 stepIndex 补齐本轮更早的 generatorMetadata
+  if (minTurnStepIdx !== null && totalGm > 40 && tailGm.length > 0) {
+    const firstGmIdx = tailGm[0]?.stepIndices?.[0] ?? tailGm[0]?.stepIndex ?? null;
+    if (firstGmIdx !== null && Number(firstGmIdx) > minTurnStepIdx) {
+      const gmStartOff = Math.max(0, totalGm - 160);
+      if (gmStartOff < totalGm - 40) {
+        const olderGmPage = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: gmStartOff, includeMessages: false });
+        const olderGm = Array.isArray(olderGmPage?.generatorMetadata) ? olderGmPage.generatorMetadata : [];
+        if (olderGm.length > tailGm.length) tailGm = olderGm;
+      }
+    }
+  }
+
+  const nowMs = Date.now();
+  const turnTiming = summarizeTurnTiming({
+    steps: tailSteps,
+    stepOffset,
+    generatorMetadata: tailGm,
+    cascadeStatus: head.status || null,
+    nowMs
+  });
+
+  return {
+    conversation: id,
+    cascadeStatus: head.status || null,
+    numTotalSteps: totalSteps,
+    numTotalGeneratorMetadata: totalGm,
+    turnTiming,
+    fetchedAt: nowMs
+  };
 }
 
 let cachedTokenHistory = null;
@@ -3109,7 +3233,9 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   if (!earliestDate) earliestDate = todayKey;
 
   let grandTotalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCacheTokens = 0, totalSteps = 0;
-  let todayTokens = 0, monthTokens = 0, yearTokens = 0;
+  let todayTokens = 0, todayInputTokens = 0, todayCacheTokens = 0;
+  let monthTokens = 0, yearTokens = 0, yearInputTokens = 0, yearCacheTokens = 0;
+  let currentMonthInput = 0, currentMonthOutput = 0, currentMonthCache = 0, currentMonthSteps = 0;
 
   for (const [k, v] of Object.entries(dailyMapAll)) {
     if (!v) continue;
@@ -3118,19 +3244,22 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     totalOutputTokens += v.output || 0;
     totalCacheTokens += v.cache || 0;
     totalSteps += v.steps || 0;
-    if (k === todayKey) todayTokens += v.total || 0;
-    if (k.startsWith(monthPrefix)) monthTokens += v.total || 0;
-    if (k.startsWith(yearPrefix)) yearTokens += v.total || 0;
-  }
-
-  // 计算本期（本月自然月）分类汇总与步骤数
-  let currentMonthInput = 0, currentMonthOutput = 0, currentMonthCache = 0, currentMonthSteps = 0;
-  for (const [k, v] of Object.entries(dailyMapAll)) {
-    if (k.startsWith(monthPrefix) && v) {
+    if (k === todayKey) {
+      todayTokens += v.total || 0;
+      todayInputTokens += v.input || 0;
+      todayCacheTokens += v.cache || 0;
+    }
+    if (k.startsWith(monthPrefix)) {
+      monthTokens += v.total || 0;
       currentMonthInput += v.input || 0;
       currentMonthOutput += v.output || 0;
       currentMonthCache += v.cache || 0;
       currentMonthSteps += v.steps || 0;
+    }
+    if (k.startsWith(yearPrefix)) {
+      yearTokens += v.total || 0;
+      yearInputTokens += v.input || 0;
+      yearCacheTokens += v.cache || 0;
     }
   }
 
@@ -3752,8 +3881,12 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       totalOutputTokens,
       totalCacheTokens,
       todayTokens,
+      todayInputTokens,
+      todayCacheTokens,
       monthTokens,
       yearTokens,
+      yearInputTokens,
+      yearCacheTokens,
       currentMonthInput,
       currentMonthOutput,
       currentMonthCache,
@@ -5570,6 +5703,7 @@ module.exports = {
   buildAccountScopeKey,
   resetQuotaHostCacheForTest,
   collect,
+  collectTurnState,
   collectTokenHistory,
   collectTokenHistoryAsync,
   scanFiles,

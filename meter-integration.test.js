@@ -242,7 +242,7 @@ test('CLI 启动器具备以 Antigravity 触发窗口为基准居中、多显示
 // ============================================================================
 // 8. 验证渲染层 CLI 按钮按压即刻回弹、启动防重入与状态恢复
 // ============================================================================
-test('渲染层顶部 CLI 按钮解耦按压反馈与启动加载态，松开即刻回弹且防重入', () => {
+test('渲染层收起菜单 CLI 按钮解耦按压反馈与启动加载态，松开即刻回弹且防重入', () => {
   const src = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
   assert.ok(src.includes('data-pressed'), '必须支持 data-pressed 即刻按压反馈');
   assert.ok(src.includes('pointerdown'), '必须监听 pointerdown 触发按压态');
@@ -254,8 +254,8 @@ test('渲染层顶部 CLI 按钮解耦按压反馈与启动加载态，松开即
   assert.ok(src.includes('showCliToast'), '启动失败或启动中必须提供明确可读提示');
 
   const css = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
-  assert.ok(css.includes('#badge-cli:active') || css.includes('[data-pressed="true"]'), '样式必须包含轻量按压缩放与高亮反馈');
-  assert.ok(!css.includes('#badge-cli[data-busy="true"]{\n      opacity:0.65;'), '不能仅将整个按钮变灰代替启动过程');
+  assert.ok(css.includes('#overflow-cli-btn:active') || css.includes('[data-pressed="true"]'), '样式必须包含轻量按压缩放与高亮反馈');
+  assert.ok(!css.includes('#overflow-cli-btn[data-busy="true"]{\n      opacity:0.65;'), '不能仅将整个按钮变灰代替启动过程');
 });
 
 // ============================================================================

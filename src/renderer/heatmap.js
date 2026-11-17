@@ -1,3 +1,16 @@
+  function computeIntervalCacheHit(dateKeys) {
+    const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
+    let inp = 0;
+    let ca = 0;
+    for (const k of dateKeys) {
+      const rec = map[k];
+      if (!rec) continue;
+      inp += Number(rec.input) || 0;
+      ca += Number(rec.cache) || 0;
+    }
+    return computeCacheHitStats(inp, ca);
+  }
+
   function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
@@ -55,10 +68,12 @@
           const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
           heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heat.future') : '0 Tokens');
           if (item.rec) {
+            const dayHit = computeCacheHitStats(item.rec.input, item.rec.cache);
             heatPopDet.innerHTML = `
               <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
               <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(item.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
               <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(item.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
+              <div class="pop-det-col"><span class="pop-det-val">Hit: ${formatCacheHitRate(dayHit.hitRate)}</span><span class="pop-det-trans">${t('heat.cacheHit')}</span></div>
             `.trim();
             heatPopDet.style.display = 'flex';
           } else {
@@ -139,9 +154,11 @@
         });
         const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
         const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const weekHit = computeIntervalCacheHit(weekDates);
+        const hitInline = weekHit.hitRate != null ? t('heat.cacheHitInline', { rate: formatCacheHitRate(weekHit.hitRate) }) : '';
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : '0 Tokens';
-        heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
+        heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}${hitInline}</span>`;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
         heatPop.style.left = `${r.left + r.width / 2}px`;
@@ -237,27 +254,45 @@
     ctx.lineWidth = 2;
     ctx.stroke();
 
+    const sortedMapKeys = Object.keys(map).filter(Boolean).sort();
+    const cumMetaCache = new Array(points.length);
+
     cvs.onmousemove = e => {
       const r = cvs.getBoundingClientRect();
       const mouseX = e.clientX - r.left;
       const idx = points.length === 1 ? 0 : Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
       const pt = points[idx];
-      const cumDates = [];
-      for (const k of Object.keys(map)) {
-        if (k <= pt.key) cumDates.push(k);
+      let cachedMeta = cumMetaCache[idx];
+      if (!cachedMeta) {
+        let lo = 0;
+        let hi = sortedMapKeys.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (sortedMapKeys[mid] <= pt.key) lo = mid + 1;
+          else hi = mid;
+        }
+        const cumDates = sortedMapKeys.slice(0, lo);
+        const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
+          mode: activeCostMode,
+          todayStr: formatLocalYmd(win.today)
+        });
+        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const cumDateLabel = currentPanelLanguage === 'en'
+          ? `${pt.date.getFullYear()}-${String(pt.date.getMonth() + 1).padStart(2, '0')}-${String(pt.date.getDate()).padStart(2, '0')}`
+          : `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日`;
+        const cumHit = computeIntervalCacheHit(cumDates);
+        const cumHitInline = cumHit.hitRate != null ? t('heat.cacheHitInline', { rate: formatCacheHitRate(cumHit.hitRate) }) : '';
+        cachedMeta = {
+          dateText: `${cumDateLabel}${t('heat.cumSuffix')}`,
+          valText: `${fmtYi(pt.val)} Tokens${costStr}`,
+          detHtml: `<span>${t('heat.cumTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}${cumHitInline}</span>`
+        };
+        cumMetaCache[idx] = cachedMeta;
       }
-      const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
-        mode: activeCostMode,
-        todayStr: formatLocalYmd(win.today)
-      });
-      const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-      const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-      const cumDateLabel = currentPanelLanguage === 'en'
-        ? `${pt.date.getFullYear()}-${String(pt.date.getMonth() + 1).padStart(2, '0')}-${String(pt.date.getDate()).padStart(2, '0')}`
-        : `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日`;
-      heatPopDate.textContent = `${cumDateLabel}${t('heat.cumSuffix')}`;
-      heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
-      heatPopDet.innerHTML = `<span>${t('heat.cumTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
+      heatPopDate.textContent = cachedMeta.dateText;
+      heatPopVal.textContent = cachedMeta.valText;
+      heatPopDet.innerHTML = cachedMeta.detHtml;
       heatPopDet.style.display = 'block';
       heatPop.style.left = `${e.clientX}px`;
       heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 12)) - 6}px`;
@@ -291,6 +326,20 @@
     sumCostEl.textContent = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
     sumDailyAvgEl.textContent = `$${costAgg.dailyAverageUSD.toFixed(2)}`;
     sumActiveAvgEl.textContent = t('heat.activeDays', { avg: costAgg.activeDailyAverageUSD.toFixed(2), days: costAgg.activeDays });
+    const sumCacheHitEl = el('h-sum-cache-hit');
+    if (sumCacheHitEl) {
+      const intervalHit = computeIntervalCacheHit(dateKeys);
+      const rateStr = formatCacheHitRate(intervalHit.hitRate);
+      sumCacheHitEl.textContent = rateStr;
+      sumCacheHitEl.title = intervalHit.hitRate != null
+        ? t('tokens.card.cacheHitTip', {
+          rate: rateStr,
+          cached: fmtYi(intervalHit.cacheReadTokens),
+          total: fmtYi(intervalHit.totalPromptTokens),
+          fresh: fmtYi(intervalHit.uncachedInput)
+        })
+        : t('session.cacheHit.title');
+    }
 
     if ((viewType === 'monthly' || viewType === 'yearly') && subRatioWrapEl && subRatioEl) {
       const plan = resolveEffectivePlanStatus(ANTIGRAVITY_TOKEN_DATA.planStatus, ANTIGRAVITY_TOKEN_DATA.customPlanSettings);
@@ -394,10 +443,12 @@
         heatPopDate.textContent = `${mDateLabel}${isToday ? t('heat.today') : ''}`;
         heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? t('heat.future') : '0 Tokens');
         if (rec) {
+          const monthDayHit = computeCacheHitStats(rec.input, rec.cache);
           heatPopDet.innerHTML = `
             <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
             <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
             <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
+            <div class="pop-det-col"><span class="pop-det-val">Hit: ${formatCacheHitRate(monthDayHit.hitRate)}</span><span class="pop-det-trans">${t('heat.cacheHit')}</span></div>
           `.trim();
           heatPopDet.style.display = 'flex';
         } else {
@@ -568,9 +619,11 @@
         const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
         const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
         const yearMonthLabel = currentPanelLanguage === 'en' ? `${item.monthName} ${targetYear}` : `${targetYear}年${item.monthName}`;
+        const monthHit = computeIntervalCacheHit(item.dates);
+        const monthHitInline = monthHit.hitRate != null ? t('heat.cacheHitInline', { rate: formatCacheHitRate(monthHit.hitRate) }) : '';
         heatPopDate.textContent = `${yearMonthLabel}${item.isCurrent ? t('heatmap.pop.inProgress') : (item.monthIndex === peakMonthIndex ? t('heatmap.pop.peak') : '')}`;
         heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heatmap.pop.future') : '0 Tokens');
-        heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}</span>`;
+        heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}${monthHitInline}</span>`;
         heatPopDet.style.display = 'block';
 
         const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
