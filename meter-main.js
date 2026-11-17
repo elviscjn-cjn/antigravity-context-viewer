@@ -871,19 +871,6 @@ function registerMeterIpcHandlers(ipcMain) {
       return { ok: false, error: e.message };
     }
   });
-
-  ipcMain.handle('context-meter:restore-window', async (event) => {
-    try {
-      const targetWin = resolveTargetWindow(event.sender);
-      if (targetWin) {
-        wakeWindowToForeground(targetWin);
-        return { ok: true };
-      }
-      return { ok: false, error: 'target window not found' };
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  });
 }
 
 function getWindowWebContents(win) {
@@ -1095,31 +1082,6 @@ exports.installContextMeter = function (win) {
   }
 };
 
-function wakeWindowToForeground(win) {
-  if (!win || win.isDestroyed?.()) return;
-  try {
-    if (typeof win.isMinimized === 'function' && win.isMinimized()) {
-      win.restore();
-    }
-    if (typeof win.show === 'function') {
-      win.show();
-    }
-    if (typeof win.restore === 'function') {
-      win.restore();
-    }
-    if (typeof win.focus === 'function') {
-      win.focus();
-    }
-    if (process.platform === 'win32') {
-      try {
-        win.setAlwaysOnTop(true);
-        win.setAlwaysOnTop(false);
-      } catch {}
-    }
-  } catch {}
-}
-exports.wakeWindowToForeground = wakeWindowToForeground;
-
 try {
   if (app && typeof app.on === 'function') {
     app.on('before-quit', () => {
@@ -1141,7 +1103,6 @@ try {
         const utils = require('./utils');
         const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
         for (const w of wins) {
-          wakeWindowToForeground(w);
           exports.installContextMeter(w);
           void ensureMeterInjected(w, { force: true });
         }
@@ -1150,16 +1111,10 @@ try {
     app.on('second-instance', () => {
       try {
         const utils = require('./utils');
-        console.log('[AntigravityContextMeter:Main] Received second-instance trigger, waking windows to foreground...');
-        const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
-        for (const w of wins) {
-          wakeWindowToForeground(w);
-        }
         setTimeout(() => {
           try {
             const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
             for (const w of wins) {
-              wakeWindowToForeground(w);
               exports.installContextMeter(w);
               void ensureMeterInjected(w, { force: true });
             }
