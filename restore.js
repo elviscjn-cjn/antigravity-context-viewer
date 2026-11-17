@@ -60,7 +60,7 @@ async function tryHotDispose() {
     const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
     if (!port) return false;
     const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
+      const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
         let body = '';
         res.on('data', c => body += c);
         res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
@@ -295,7 +295,8 @@ async function restore(options = {}) {
             'meter-context-unlock.js',
             'meter-enhance.js',
             'local-api.js',
-            'attachment_scan.py'
+            'attachment_scan.py',
+            'meter-manifest.json'
           ];
           for (const f of additions) {
             const p = path.join(staging, 'dist', f);

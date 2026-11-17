@@ -22,6 +22,8 @@ const {
   launchCliSession,
   checkUpdateAsync,
   applyUpdateAsync,
+  resolveNodeRuntime,
+  getLiveRuntimeDir,
   getContextUnlockStatus,
   applyContextUnlock,
   applyContextUnlockAsync,
@@ -29,6 +31,23 @@ const {
   restoreContextUnlockAsync
 } = require('./meter-collector');
 const { isValidExternalUrl } = require('./meter-core');
+const { PROJECT_VERSION } = require('./modules-config');
+const MAIN_STARTED_AT = Date.now();
+const MAIN_CAPABILITIES = {
+  scan: true,
+  tokenHistory: true,
+  quota: true,
+  recordCalls: true,
+  settings: true,
+  launchCli: true,
+  contextUnlock: true,
+  enhance: true,
+  modules: true,
+  checkUpdate: true,
+  applyUpdate: true,
+  restartHost: true,
+  hotReload: true
+};
 
 const {
   applyProxyEnvironment,
@@ -123,11 +142,21 @@ function ensureProxyEnvironment(targetEnv = process.env) {
 ensureProxyEnvironment(process.env);
 exports.ensureProxyEnvironment = ensureProxyEnvironment;
 
+function buildBootBackendPayload() {
+  return {
+    backendVersion: PROJECT_VERSION,
+    backendSource: 'electron-ipc',
+    pid: process.pid,
+    startedAt: MAIN_STARTED_AT,
+    capabilities: { ...MAIN_CAPABILITIES }
+  };
+}
+
 function getMeterSource() {
   try {
     const coreCode = fs.readFileSync(path.join(__dirname, 'meter-core.js'), 'utf8');
     const rendererCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-    let bootstrap = '';
+    let bootstrap = `window.__AGContextMeterBootBackend = ${JSON.stringify(buildBootBackendPayload())};\n`;
     try {
       const settingsSnap = getPluginSettings();
       if (settingsSnap && settingsSnap.ok) {
@@ -464,6 +493,15 @@ function registerIpcOnce() {
 function registerMeterIpcHandlers(ipcMain) {
   if (!ipcMain) return;
 
+  ipcMain.handle('context-meter:runtime-info', async (event) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    return {
+      ok: true,
+      ...buildBootBackendPayload()
+    };
+  });
+
   ipcMain.handle('context-meter:scan', async (event, id, force) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
@@ -511,6 +549,8 @@ function registerMeterIpcHandlers(ipcMain) {
       const opts = typeof options === 'boolean'
         ? { force: options }
         : (options && typeof options === 'object' ? { ...options } : {});
+      if (!opts.origin) opts.origin = url.origin;
+      opts.backendSource = 'electron-ipc';
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       return { ok: true, data: safePayload };
@@ -615,8 +655,12 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:apply-update', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return await applyUpdateAsync(options || {}); }
-    catch (e) { return { ok: false, error: e.message }; }
+    try {
+      const updateRes = await applyUpdateAsync(options || {});
+      return await tryInAppHotReloadAfterUpdate(updateRes, options || {});
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   });
 
   ipcMain.handle('context-meter:open-external', async (event, targetUrl) => {
@@ -1068,6 +1112,317 @@ function shouldInterceptWindowClose(win, options = {}) {
   }
 }
 
+function defaultPostLiveHttpJson(port, token, routePath, origin, body = {}, timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    try {
+      const http = require('http');
+      const net = require('net');
+      const dataStr = JSON.stringify(body || {});
+      const numPort = Number(port);
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: numPort,
+        path: routePath,
+        method: 'POST',
+        agent: false,
+        createConnection: () => net.connect(numPort, '127.0.0.1'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(dataStr),
+          'Origin': origin,
+          'X-AG-Context-Token': String(token || '')
+        }
+      }, res => {
+        let raw = '';
+        res.on('data', c => raw += c);
+        res.on('end', () => {
+          try { resolve({ statusCode: res.statusCode, ...JSON.parse(raw || '{}') }); }
+          catch { resolve({ ok: false, statusCode: res.statusCode }); }
+        });
+      });
+      req.setTimeout(timeoutMs, () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+      req.on('error', e => resolve({ ok: false, error: e.message }));
+      req.end(dataStr);
+    } catch (e) {
+      resolve({ ok: false, error: e.message });
+    }
+  });
+}
+
+/**
+ * 在应用内更新写盘成功后执行免 CDP/多窗口安全热加载：
+ * 1. 先从新版 live-runtime 启动独立 live-host 并校验 /runtime-info；
+ * 2. 确认新版后台就绪后向全部活跃 Hub 窗口注入新版渲染器并核验额度；
+ * 3. 成功后再优雅退出旧版 live-host；任意环节失败则安全保留原连接并准确提示需重启。
+ */
+async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
+  if (!updateRes || !updateRes.ok || !updateRes.diskInstalled) {
+    return updateRes;
+  }
+  const targetVer = updateRes.version || updateRes.installedVersion;
+  if (updateRes.liveInjected && updateRes.backendHotReloaded && updateRes.backendVersion === targetVer) {
+    return updateRes;
+  }
+  const stateDir = options._stateDir || getStateDir();
+  const runtimeDir = updateRes.liveRuntimeDir || getLiveRuntimeDir(stateDir);
+  if (
+    !runtimeDir ||
+    !fs.existsSync(path.join(runtimeDir, 'live-host.js')) ||
+    !fs.existsSync(path.join(runtimeDir, 'meter-core.js')) ||
+    !fs.existsSync(path.join(runtimeDir, 'meter-renderer.js'))
+  ) {
+    return {
+      ...updateRes,
+      liveInjected: false,
+      backendHotReloaded: false,
+      restartRequired: true,
+      hotReloadReason: 'missing_live_runtime'
+    };
+  }
+
+  let wins = [];
+  if (typeof options._getHubWindows === 'function') {
+    wins = options._getHubWindows() || [];
+  } else {
+    try {
+      const utils = require('./utils');
+      wins = typeof utils.getHubWindows === 'function' ? (utils.getHubWindows() || []) : [];
+    } catch {}
+  }
+  const activeTargets = [];
+  for (const w of wins) {
+    const wc = getWindowWebContents(w);
+    if (!wc || wc.isDestroyed?.() || typeof wc.executeJavaScript !== 'function') continue;
+    const rawUrl = wc.getURL?.() || '';
+    if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(rawUrl)) continue;
+    try {
+      activeTargets.push({ win: w, wc, origin: new URL(rawUrl).origin });
+    } catch {}
+  }
+  if (!activeTargets.length) {
+    return {
+      ...updateRes,
+      liveInjected: false,
+      backendHotReloaded: false,
+      restartRequired: true,
+      hotReloadReason: 'no_active_hub_windows'
+    };
+  }
+
+  const origins = Array.from(new Set(activeTargets.map(t => t.origin)));
+  const liveSessionPath = path.join(stateDir, '.live-session.json');
+  let previousLiveInfo = null;
+  try {
+    if (fs.existsSync(liveSessionPath)) {
+      previousLiveInfo = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
+    }
+  } catch {}
+
+  const probeFn = typeof options._probeLiveHost === 'function'
+    ? options._probeLiveHost
+    : (info, origin) => defaultPostLiveHttpJson(info.port, info.token, '/runtime-info', origin, {}, 2500);
+  const shutdownFn = typeof options._shutdownLiveHost === 'function'
+    ? options._shutdownLiveHost
+    : async (info) => {
+      if (!info) return;
+      const o = info.origin || (Array.isArray(info.origins) && info.origins[0]) || origins[0];
+      if (info.port && info.token) {
+        await defaultPostLiveHttpJson(info.port, info.token, '/shutdown', o, {}, 1200);
+      }
+      if (info.pid) {
+        try { process.kill(info.pid); } catch {}
+      }
+    };
+
+  let newLiveInfo = null;
+  let stagingStamp = null;
+  let spawnedChild = null;
+  if (typeof options._startLiveHost === 'function') {
+    newLiveInfo = await options._startLiveHost({ runtimeDir, origins, targetVer, stateDir });
+  } else {
+    stagingStamp = path.join(stateDir, `.live-session.inapp.${process.pid}.${Date.now()}.json`);
+    const rt = (typeof options._resolveNodeRuntime === 'function' ? options._resolveNodeRuntime() : resolveNodeRuntime());
+    const spawner = options._spawn || require('child_process').spawn;
+    const childEnv = {
+      ...(rt.env || process.env),
+      AG_LIVE_STAMP_PATH: stagingStamp,
+      AG_LIVE_ORIGINS: JSON.stringify(origins),
+      AG_LIVE_HOST_PID: String(process.pid)
+    };
+    try {
+      spawnedChild = spawner(rt.runtime, [...(rt.args || []), path.join(runtimeDir, 'live-host.js')], {
+        cwd: runtimeDir,
+        env: childEnv,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      });
+      spawnedChild.unref?.();
+    } catch (e) {
+      return {
+        ...updateRes,
+        liveInjected: false,
+        backendHotReloaded: false,
+        restartRequired: true,
+        hotReloadReason: `spawn_live_host_failed:${e.message}`
+      };
+    }
+
+    const deadline = Date.now() + (options._probeTimeoutMs || 6000);
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 150));
+      if (!fs.existsSync(stagingStamp)) continue;
+      try {
+        const cand = JSON.parse(fs.readFileSync(stagingStamp, 'utf8'));
+        if (cand && cand.port && cand.token) {
+          const probe = await probeFn(cand, origins[0]);
+          if (probe && probe.ok && (!targetVer || probe.backendVersion === targetVer)) {
+            newLiveInfo = {
+              ...cand,
+              version: probe.backendVersion || cand.version || targetVer,
+              backendSource: 'live-host',
+              capabilities: probe.capabilities || cand.capabilities || null,
+              origins: probe.origins || cand.origins || origins
+            };
+            break;
+          }
+        }
+      } catch {}
+    }
+    try { if (fs.existsSync(stagingStamp)) fs.unlinkSync(stagingStamp); } catch {}
+  }
+
+  if (!newLiveInfo || !newLiveInfo.port || !newLiveInfo.token) {
+    if (spawnedChild?.pid) {
+      try { process.kill(spawnedChild.pid); } catch {}
+    }
+    return {
+      ...updateRes,
+      liveInjected: false,
+      backendHotReloaded: false,
+      restartRequired: true,
+      hotReloadReason: 'live_host_unavailable'
+    };
+  }
+
+  // 确认新版可用后再原子替换 .live-session.json 并注入所有运行窗口
+  try {
+    const tmpMain = `${liveSessionPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpMain, JSON.stringify(newLiveInfo, null, 2));
+    fs.renameSync(tmpMain, liveSessionPath);
+  } catch {
+    try { fs.writeFileSync(liveSessionPath, JSON.stringify(newLiveInfo, null, 2)); } catch {}
+  }
+
+  let injectedCount = 0;
+  let backendVerified = false;
+  try {
+    const coreCode = fs.readFileSync(path.join(runtimeDir, 'meter-core.js'), 'utf8');
+    const rendererCode = fs.readFileSync(path.join(runtimeDir, 'meter-renderer.js'), 'utf8');
+    let settingsBootstrap = '';
+    try {
+      const settingsSnap = getPluginSettings();
+      if (settingsSnap && settingsSnap.ok) {
+        settingsBootstrap = `window.__AGContextMeterSettings = ${JSON.stringify(settingsSnap)};\n`;
+      }
+    } catch {}
+    let chineseBootstrap = '';
+    try {
+      const { loadModulesConfig } = require('./modules-config');
+      const mCfg = loadModulesConfig();
+      if (mCfg?.modules?.chinese) {
+        chineseBootstrap = `window.__AGY_CHINESE_CONFIG__ = ${JSON.stringify(mCfg.modules.chinese)};\n`;
+      }
+    } catch {}
+
+    for (const target of activeTargets) {
+      const liveBridgeObj = {
+        port: newLiveInfo.port,
+        token: newLiveInfo.token,
+        origin: target.origin,
+        origins: newLiveInfo.origins || origins,
+        version: newLiveInfo.version || targetVer,
+        backendSource: 'live-host',
+        capabilities: newLiveInfo.capabilities || null,
+        verified: true
+      };
+      const hotCtxObj = {
+        expectedVersion: targetVer,
+        source: 'in-app-update',
+        hotInjectedAt: Date.now(),
+        preferLiveHost: true
+      };
+      const injectScript = `
+window.__AGContextMeterLive = ${JSON.stringify(liveBridgeObj)};
+window.__AGContextMeterHotReloadContext = ${JSON.stringify(hotCtxObj)};
+${settingsBootstrap}${chineseBootstrap}
+${coreCode}
+${rendererCode}
+true;`;
+      const resExec = await target.wc.executeJavaScript(injectScript);
+      if (resExec !== false) {
+        injectedCount++;
+        try {
+          const verify = await target.wc.executeJavaScript(`(async () => {
+            const api = window.__AGContextMeter;
+            if (!api) return null;
+            if (typeof api.verifyHotReloadAndRefreshQuota === 'function') {
+              return await api.verifyHotReloadAndRefreshQuota();
+            }
+            return { rendererVersion: api.version || null };
+          })()`);
+          if (verify && (!targetVer || verify.backendVersion === targetVer)) {
+            backendVerified = true;
+          }
+        } catch {}
+      }
+    }
+  } catch (injectErr) {
+    if (injectedCount === 0) {
+      await shutdownFn(newLiveInfo).catch(() => {});
+      if (previousLiveInfo) {
+        try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch {}
+      }
+      return {
+        ...updateRes,
+        liveInjected: false,
+        backendHotReloaded: false,
+        restartRequired: true,
+        hotReloadReason: `window_inject_failed:${injectErr.message}`
+      };
+    }
+  }
+
+  if (injectedCount === 0) {
+    await shutdownFn(newLiveInfo).catch(() => {});
+    if (previousLiveInfo) {
+      try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch {}
+    }
+    return {
+      ...updateRes,
+      liveInjected: false,
+      backendHotReloaded: false,
+      restartRequired: true,
+      hotReloadReason: 'no_windows_injected'
+    };
+  }
+
+  if (previousLiveInfo && (!previousLiveInfo.pid || previousLiveInfo.pid !== newLiveInfo.pid)) {
+    await shutdownFn(previousLiveInfo).catch(() => {});
+  }
+
+  return {
+    ...updateRes,
+    liveInjected: true,
+    backendHotReloaded: Boolean(backendVerified || newLiveInfo.version === targetVer),
+    backendVersion: newLiveInfo.version || targetVer,
+    backendSource: 'live-host',
+    injectedWindowCount: injectedCount,
+    totalWindowCount: activeTargets.length
+  };
+}
+
+exports.tryInAppHotReloadAfterUpdate = tryInAppHotReloadAfterUpdate;
 exports.handleModulesStatus = handleModulesStatus;
 exports.handleToggleModule = handleToggleModule;
 exports.handleRestartHost = handleRestartHost;

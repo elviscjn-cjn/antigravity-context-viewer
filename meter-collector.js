@@ -18,7 +18,7 @@ const origFsMethods = {
   existsSync: fs.existsSync
 };
 const { safeWriteJsonSync, safeReadJsonSync, withFileLockSync } = require('./meter-storage');
-const { buildCliProxyEnv, detectProxyConfig, parseAndValidateProxyUrl, matchesNoProxy } = require('./meter-proxy');
+const { buildCliProxyEnv, detectProxyConfig, parseAndValidateProxyUrl, matchesNoProxy, redactProxyUrl } = require('./meter-proxy');
 const {
   conversationWorkspaces,
   extractWorkspacePathFromUri,
@@ -622,7 +622,7 @@ async function collect(origin, id, options = {}) {
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
         try {
-          const freshStatus = await fetchUserStatusFromHost();
+          const freshStatus = await fetchUserStatusFromHost({ origin });
           if (Array.isArray(freshStatus?.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
             knownCascadeConfigs = freshStatus.cascadeModelConfigs;
           }
@@ -2240,9 +2240,14 @@ function savePluginSettings(payload = {}, options = {}) {
   };
 }
 
-let cachedHostUserStatus = null;
-let cachedHostUserStatusAt = 0;
-let lastHostAccountScopeKey = null;
+const cachedUserStatusByOrigin = new Map();
+const cachedQuotaStateByOrigin = new Map();
+const activeQuotaFetchByOrigin = new Map();
+
+function normalizeQuotaOriginScope(options = {}) {
+  const raw = typeof options.origin === 'string' ? options.origin.trim() : '';
+  return raw || '__default__';
+}
 
 function buildAccountScopeKey(emailOrId) {
   const raw = typeof emailOrId === 'string' ? emailOrId.trim().toLowerCase() : '';
@@ -2250,15 +2255,10 @@ function buildAccountScopeKey(emailOrId) {
   return 'acct_' + crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 
-let cachedQuotaState = null;
-let activeQuotaFetchPromise = null;
-
 function resetQuotaHostCacheForTest() {
-  cachedHostUserStatus = null;
-  cachedHostUserStatusAt = 0;
-  lastHostAccountScopeKey = null;
-  cachedQuotaState = null;
-  activeQuotaFetchPromise = null;
+  cachedUserStatusByOrigin.clear();
+  cachedQuotaStateByOrigin.clear();
+  activeQuotaFetchByOrigin.clear();
 }
 
 function classifyQuotaFetchError(err) {
@@ -2280,23 +2280,37 @@ function classifyQuotaFetchError(err) {
 }
 
 /**
- * 并发拉取宿主模型额度池与可用模型详情，带并发去重、短缓存、失败分级及账号切换检测
- * @param {Object} options - 支持 force / userStatus / quotaSummary / connect 等测试注入参数
+ * 并发拉取宿主模型额度池与可用模型详情，带多窗口 origin 隔离、并发去重、短缓存、失败分级及账号切换检测
+ * @param {Object} options - 支持 force / origin / backendSource / userStatus / quotaSummary / connect 等参数
  */
 async function fetchQuotaSnapshotFromHost(options = {}) {
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
   const force = options.force === true;
   const hasStaticFixture = options.userStatus !== undefined || options.quotaSummary !== undefined || options.error !== undefined;
+  const originScope = normalizeQuotaOriginScope(options);
+  const backendSource = typeof options.backendSource === 'string' && options.backendSource.trim()
+    ? options.backendSource.trim()
+    : 'host';
 
-  // 短缓存防刷（仅在非强制刷新且无静态测试桩时生效，15s 内复用结果）
-  if (!force && !hasStaticFixture && !options.agDir && cachedQuotaState && (nowMs - cachedQuotaState.fetchedAtMs < 15000)) {
-    return cachedQuotaState;
+  // 短缓存防刷（仅在非强制刷新且无静态测试桩时生效，15s 内复用同 origin 结果）
+  const prevCachedQuota = cachedQuotaStateByOrigin.get(originScope) || null;
+  if (!force && !hasStaticFixture && !options.agDir && prevCachedQuota && (nowMs - prevCachedQuota.fetchedAtMs < 15000)) {
+    if (prevCachedQuota.backendSource === backendSource && prevCachedQuota.collectorVersion === PROJECT_VERSION) {
+      return prevCachedQuota;
+    }
+    return {
+      ...prevCachedQuota,
+      collectorVersion: PROJECT_VERSION,
+      backendVersion: PROJECT_VERSION,
+      backendSource
+    };
   }
 
-  // 如果已有相同请求进行中，直接合并等待，避免重复请求
-  if (!hasStaticFixture && activeQuotaFetchPromise) {
-    if (!force) return activeQuotaFetchPromise;
-    try { await activeQuotaFetchPromise; } catch { }
+  // 如果已有相同 origin 请求进行中，直接合并等待，避免重复请求
+  const activePromise = activeQuotaFetchByOrigin.get(originScope) || null;
+  if (!hasStaticFixture && activePromise) {
+    if (!force) return activePromise;
+    try { await activePromise; } catch { }
   }
 
   const runFetch = async () => {
@@ -2315,7 +2329,7 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     } else {
       try {
         const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
-        const api = await connector();
+        const api = await connector(options.origin ? { origin: options.origin } : undefined);
         const [uRes, qRes] = await Promise.allSettled([
           api.call('GetUserStatus', {}),
           api.call('RetrieveUserQuotaSummary', {})
@@ -2348,26 +2362,33 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       : [];
     const parsedPlan = userStatusRes ? parseUserPlanStatus(userStatusRes) : null;
     const rawEmail = parsedPlan?.email || userStatusRes?.userStatus?.email || '';
-    const nextScopeKey = rawEmail ? buildAccountScopeKey(rawEmail) : (cachedQuotaState?.accountScopeKey || 'anonymous');
+    const scopeQuotaState = cachedQuotaStateByOrigin.get(originScope) || null;
+    const scopeUserEntry = cachedUserStatusByOrigin.get(originScope) || null;
+    const prevAccountScopeKey = scopeUserEntry?.accountScopeKey || scopeQuotaState?.accountScopeKey || null;
+    const nextScopeKey = rawEmail ? buildAccountScopeKey(rawEmail) : (prevAccountScopeKey || 'anonymous');
 
-    // 账号切换检测：一旦发现账号作用域变化，立即清掉旧账号缓存，绝不跨账号残留旧额度
+    // 账号切换检测：一旦发现同 origin 作用域下账号变化，立即清掉旧账号缓存，绝不跨账号残留旧额度
     const accountSwitched = Boolean(
       rawEmail &&
-      lastHostAccountScopeKey &&
-      nextScopeKey !== lastHostAccountScopeKey
+      prevAccountScopeKey &&
+      nextScopeKey !== prevAccountScopeKey
     );
     if (accountSwitched) {
-      cachedQuotaState = null;
-      cachedHostUserStatus = null;
-      cachedHostUserStatusAt = 0;
+      cachedQuotaStateByOrigin.delete(originScope);
+      cachedUserStatusByOrigin.delete(originScope);
     }
     if (rawEmail) {
-      lastHostAccountScopeKey = nextScopeKey;
+      const existingEntry = cachedUserStatusByOrigin.get(originScope) || {};
+      cachedUserStatusByOrigin.set(originScope, {
+        ...existingEntry,
+        accountScopeKey: nextScopeKey
+      });
     }
 
     if (fetchError) {
-      // 保留同账号最后一次有效原始响应以产出 stale 状态（而非误报耗尽）；无旧数据时产出 error 状态
-      const prevRaw = (!accountSwitched && cachedQuotaState?._raw) ? cachedQuotaState._raw : null;
+      // 保留同 origin 同账号最后一次有效原始响应以产出 stale 状态；无旧数据时产出 error 状态
+      const curScoped = cachedQuotaStateByOrigin.get(originScope) || null;
+      const prevRaw = (!accountSwitched && curScoped?._raw) ? curScoped._raw : null;
       const snapshot = buildModelQuotaSnapshot({
         cascadeModelConfigs: prevRaw?.cascadeModelConfigs || [],
         quotaSummaryRes: prevRaw?.quotaSummaryRes || null,
@@ -2384,6 +2405,9 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       const out = {
         ok: false,
         collectorVersion: PROJECT_VERSION,
+        backendVersion: PROJECT_VERSION,
+        backendSource,
+        originScope,
         accountScopeKey: prevRaw?.accountScopeKey || nextScopeKey,
         accountSwitched,
         fetchedAtMs: doneAtMs,
@@ -2401,8 +2425,8 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
         snapshot,
         _raw: prevRaw
       };
-      if (!hasStaticFixture && !options.agDir && cachedQuotaState) {
-        cachedQuotaState = { ...cachedQuotaState, error: fetchError, errorKind, snapshot };
+      if (!hasStaticFixture && !options.agDir && curScoped) {
+        cachedQuotaStateByOrigin.set(originScope, { ...curScoped, error: fetchError, errorKind, snapshot });
       }
       return out;
     }
@@ -2432,6 +2456,9 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     const out = {
       ok: true,
       collectorVersion: PROJECT_VERSION,
+      backendVersion: PROJECT_VERSION,
+      backendSource,
+      originScope,
       accountScopeKey: nextScopeKey,
       accountSwitched,
       fetchedAtMs: doneAtMs,
@@ -2452,16 +2479,16 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     };
 
     if (!hasStaticFixture && !options.agDir) {
-      cachedQuotaState = out;
+      cachedQuotaStateByOrigin.set(originScope, out);
     }
     return out;
   };
 
   if (!hasStaticFixture) {
     const p = runFetch().finally(() => {
-      if (activeQuotaFetchPromise === p) activeQuotaFetchPromise = null;
+      if (activeQuotaFetchByOrigin.get(originScope) === p) activeQuotaFetchByOrigin.delete(originScope);
     });
-    activeQuotaFetchPromise = p;
+    activeQuotaFetchByOrigin.set(originScope, p);
     return p;
   }
   return runFetch();
@@ -2479,12 +2506,14 @@ async function fetchUserStatusFromHost(options = {}) {
     }
     return parsed;
   }
-  if (!options.agDir && !options.force && cachedHostUserStatus && Date.now() - cachedHostUserStatusAt < 60000) {
-    return cachedHostUserStatus;
+  const originScope = normalizeQuotaOriginScope(options);
+  const cachedEntry = cachedUserStatusByOrigin.get(originScope) || null;
+  if (!options.agDir && !options.force && cachedEntry?.status && Date.now() - (cachedEntry.fetchedAt || 0) < 60000) {
+    return cachedEntry.status;
   }
   try {
     const { connect } = require('./local-api');
-    const api = await connect();
+    const api = await connect(options.origin ? { origin: options.origin } : undefined);
     const [res, availRes] = await Promise.all([
       api.call('GetUserStatus', {}),
       api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
@@ -2498,16 +2527,19 @@ async function fetchUserStatusFromHost(options = {}) {
     }
     if (parsed && !options.agDir) {
       const nextScope = parsed.email ? buildAccountScopeKey(parsed.email) : null;
-      if (nextScope && lastHostAccountScopeKey && nextScope !== lastHostAccountScopeKey) {
-        cachedQuotaState = null;
+      const prevScope = cachedEntry?.accountScopeKey || null;
+      if (nextScope && prevScope && nextScope !== prevScope) {
+        cachedQuotaStateByOrigin.delete(originScope);
       }
-      if (nextScope) lastHostAccountScopeKey = nextScope;
-      cachedHostUserStatus = parsed;
-      cachedHostUserStatusAt = Date.now();
+      cachedUserStatusByOrigin.set(originScope, {
+        status: parsed,
+        fetchedAt: Date.now(),
+        accountScopeKey: nextScope || prevScope || null
+      });
     }
     return parsed;
   } catch {
-    return cachedHostUserStatus || null;
+    return cachedEntry?.status || null;
   }
 }
 
@@ -2614,7 +2646,6 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
   const w = new Worker(targetScript, {
     workerData: { agCollectorHistoryWorker: true }
   });
-  w.unref();
   w.on('message', (msg) => {
     if (!msg || !msg.id) return;
     const entry = historyWorkerPending.get(msg.id);
@@ -2622,6 +2653,9 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
     historyWorkerPending.delete(msg.id);
     if (entry.timer) clearTimeout(entry.timer);
     historyWorkerConsecutiveErrors = 0;
+    if (historyWorkerPending.size === 0) {
+      try { w.unref(); } catch { }
+    }
     scheduleHistoryWorkerIdleCleanup();
     if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result });
     else entry.resolve({ _workerHandled: false, error: msg.error || 'Worker 执行失败' });
@@ -2651,6 +2685,8 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
     if (historyWorkerInstance === w) historyWorkerInstance = null;
     clearAllHistoryWorkerPending(w, code !== 0 ? `worker_exit_${code}` : null);
   });
+  // Node.js v24 注册 message 监听会隐式 ref 底层 MessagePort，必须在全部监听绑定之后再 unref
+  try { w.unref(); } catch { }
   historyWorkerInstance = w;
   return w;
 }
@@ -2720,9 +2756,13 @@ async function runHistoryWorkerTask(payload, cmd = 'collectTokenHistory', taskOp
       if (typeof entry.timer.unref === 'function') entry.timer.unref();
       historyWorkerPending.set(id, entry);
       try {
+        try { w.ref(); } catch { }
         w.postMessage({ id, cmd, payload, env: captureCollectorEnvSnapshot() });
       } catch {
         historyWorkerPending.delete(id);
+        if (historyWorkerPending.size === 0) {
+          try { w.unref(); } catch { }
+        }
         if (entry.timer) clearTimeout(entry.timer);
         resolve(null);
       }
@@ -4230,9 +4270,33 @@ function openHttpConnectTunnel(proxyParsed, targetHost, targetPort, timeoutMs, p
   });
 }
 
+function classifyRequestTimeoutPhase(err, usedProxyTunnel) {
+  const msg = String(err?.message || '').toLowerCase();
+  const code = String(err?.code || '').toUpperCase();
+  if (/proxy_tunnel|connect 失败|代理.*超时|socks5/i.test(msg)) {
+    return 'proxy_tunnel_connect';
+  }
+  if (usedProxyTunnel && (/请求超时/.test(msg) || code === 'ETIMEDOUT')) {
+    return 'tls_or_response';
+  }
+  if (code === 'ETIMEDOUT' || code === 'ECONNREFUSED' || /connect etimedout|connect econnrefused/i.test(msg)) {
+    return 'tcp_connect';
+  }
+  if (/请求超时|timeout|aborted|socket hang up|econnreset/i.test(msg)) {
+    return 'tls_or_response';
+  }
+  return null;
+}
+
+function sanitizeDiagnosticErrorText(err) {
+  const msg = String(err?.message || err || '请求失败');
+  return msg.replace(/([a-zA-Z0-9+.-]+:\/\/)([^/@\s]+@)/g, '$1');
+}
+
 function requestGithubUrl(rawUrl, options = {}) {
   return new Promise((resolve, reject) => {
     try {
+      const startMs = Date.now();
       const timeoutMs = options.timeout || 8000;
       const redirectCount = options.redirectCount || 0;
       const parsedUrl = new URL(rawUrl);
@@ -4240,6 +4304,8 @@ function requestGithubUrl(rawUrl, options = {}) {
       const maxBytes = Number.isFinite(options.maxBytes) && options.maxBytes > 0
         ? options.maxBytes
         : (options.streamTo ? MAX_GITHUB_STREAM_BYTES : MAX_GITHUB_TEXT_BYTES);
+      const phase = options.phase || (isApiHost ? 'release_query' : (options.streamTo ? 'download_asset' : 'request'));
+      const hopTrace = Array.isArray(options._hopTrace) ? options._hopTrace : [];
 
       // 认证信息仅允许发送至 api.github.com，绝不透传给网页、重定向目标或外部 CDN
       const rawHeaders = Object.assign({}, options.headers || {});
@@ -4257,26 +4323,84 @@ function requestGithubUrl(rawUrl, options = {}) {
         headers.Authorization = `Bearer ${String(token).trim()}`;
       }
 
+      const proxyInfo = options.useProxy === false
+        ? null
+        : detectProxyConfig(options.proxyConfigOptions || {});
+      const pluginProxyConfigured = Boolean(proxyInfo && proxyInfo.enabled && proxyInfo.httpProxy);
+      const bypassMatched = pluginProxyConfigured
+        ? Boolean(matchesNoProxy(parsedUrl.hostname, proxyInfo.noProxy))
+        : false;
+      const parsedProxy = pluginProxyConfigured && !bypassMatched
+        ? parseAndValidateProxyUrl(proxyInfo.httpProxy)
+        : null;
+      const willUseProxyTunnel = Boolean(pluginProxyConfigured && !bypassMatched);
+      const hopEntry = {
+        phase,
+        hop: redirectCount + 1,
+        host: parsedUrl.hostname,
+        port: Number(parsedUrl.port) || 443,
+        proxySource: willUseProxyTunnel
+          ? 'plugin_config'
+          : (bypassMatched ? 'plugin_bypass' : (options.useProxy === false ? 'disabled' : 'direct')),
+        proxyProtocol: parsedProxy?.ok ? parsedProxy.protocol : 'direct',
+        proxyEndpoint: (pluginProxyConfigured && !bypassMatched) ? redactProxyUrl(proxyInfo.httpProxy) : null,
+        bypassMatched,
+        outcome: 'pending',
+        timeoutPhase: null,
+        durationMs: 0,
+        error: null
+      };
+      hopTrace.push(hopEntry);
+
       let settledOuter = false;
       const finishResolve = val => {
         if (settledOuter) return;
         settledOuter = true;
+        hopEntry.durationMs = Date.now() - startMs;
+        if (hopEntry.outcome === 'pending') hopEntry.outcome = 'ok';
         resolve(val);
       };
       const finishReject = err => {
         if (settledOuter) return;
         settledOuter = true;
+        hopEntry.durationMs = Date.now() - startMs;
+        hopEntry.outcome = 'error';
+        hopEntry.timeoutPhase = hopEntry.timeoutPhase || classifyRequestTimeoutPhase(err, willUseProxyTunnel);
+        hopEntry.error = sanitizeDiagnosticErrorText(err);
+        if (err && typeof err === 'object' && !err.diagnostics) {
+          err.diagnostics = {
+            phase,
+            targetHost: hopEntry.host,
+            targetPort: hopEntry.port,
+            proxySource: hopEntry.proxySource,
+            proxyProtocol: hopEntry.proxyProtocol,
+            proxyEndpoint: hopEntry.proxyEndpoint,
+            bypassMatched: hopEntry.bypassMatched,
+            timeoutPhase: hopEntry.timeoutPhase,
+            hops: hopTrace.map(h => ({ ...h }))
+          };
+        }
+        try {
+          console.warn('[Update Diagnostics]', JSON.stringify({
+            phase: hopEntry.phase,
+            hop: hopEntry.hop,
+            host: hopEntry.host,
+            port: hopEntry.port,
+            proxySource: hopEntry.proxySource,
+            proxyProtocol: hopEntry.proxyProtocol,
+            proxyEndpoint: hopEntry.proxyEndpoint,
+            bypassMatched: hopEntry.bypassMatched,
+            timeoutPhase: hopEntry.timeoutPhase,
+            durationMs: hopEntry.durationMs,
+            error: hopEntry.error
+          }));
+        } catch { }
         reject(err);
       };
 
-      const proxyInfo = options.useProxy === false
-        ? null
-        : detectProxyConfig(options.proxyConfigOptions || {});
-
-      if (proxyInfo && proxyInfo.enabled && proxyInfo.httpProxy && !matchesNoProxy(parsedUrl.hostname, proxyInfo.noProxy)) {
-        const parsedProxy = parseAndValidateProxyUrl(proxyInfo.httpProxy);
-        if (!parsedProxy.ok) {
-          return finishReject(new Error(`代理配置无效: ${parsedProxy.error || '无法解析代理地址'}`));
+      if (willUseProxyTunnel) {
+        if (!parsedProxy || !parsedProxy.ok) {
+          return finishReject(new Error(`代理配置无效: ${parsedProxy?.error || '无法解析代理地址'}`));
         }
         const targetPort = Number(parsedUrl.port) || 443;
         const tunnelPromise = (parsedProxy.protocol === 'socks5:' || parsedProxy.protocol === 'socks5h:')
@@ -4288,7 +4412,10 @@ function requestGithubUrl(rawUrl, options = {}) {
         // 代理已启用且未命中绕过规则时，隧道失败必须立即报错，绝不静默改走直连
         tunnelPromise.then(
           socket => doRequest(socket),
-          err => finishReject(err)
+          err => {
+            hopEntry.timeoutPhase = 'proxy_tunnel_connect';
+            finishReject(err);
+          }
         );
         return;
       }
@@ -4357,13 +4484,18 @@ function requestGithubUrl(rawUrl, options = {}) {
               return settleReject(new Error(`下载重定向地址不受信任或协议不安全: ${rawLocation}`));
             }
             // 剥离旧 headers 与 Authorization，按新目标域名重新决定是否附带凭据与代理绕过
+            hopEntry.outcome = 'redirect';
+            hopEntry.durationMs = Date.now() - startMs;
+            try { hopEntry.redirectToHost = new URL(nextUrlStr).hostname; } catch {}
             const nextHeaders = Object.assign({}, options.headers || {});
             for (const hKey of Object.keys(nextHeaders)) {
               if (hKey.toLowerCase() === 'authorization') delete nextHeaders[hKey];
             }
             const nextOptions = Object.assign({}, options, {
               headers: nextHeaders,
-              redirectCount: redirectCount + 1
+              redirectCount: redirectCount + 1,
+              phase,
+              _hopTrace: hopTrace
             });
             releaseUnusedTunnel();
             return requestGithubUrl(nextUrlStr, nextOptions).then(finishResolve, finishReject);
@@ -4903,7 +5035,8 @@ async function checkUpdateAsync(options = {}) {
       currentVersion: runtimeVersion,
       installedVersion,
       htmlUrl: OFFICIAL_RELEASES_WEB_BASE,
-      error: err.message
+      error: sanitizeDiagnosticErrorText(err),
+      ...(err?.diagnostics ? { diagnostics: err.diagnostics } : {})
     };
   }
 }
@@ -4965,6 +5098,174 @@ function waitWritableStreamClose(stream) {
       // writableFinished 为 true 时 autoClose 会紧接着 emit close
     }
   });
+}
+
+const LIVE_RUNTIME_FILES = [
+  'package.json',
+  'cli.js',
+  'install.js',
+  'restore.js',
+  'live-host.js',
+  'local-api.js',
+  'meter-main.js',
+  'meter-core.js',
+  'meter-renderer.js',
+  'meter-collector.js',
+  'meter-storage.js',
+  'meter-proxy.js',
+  'meter-cli-launcher.js',
+  'meter-context-unlock.js',
+  'meter-enhance.js',
+  'attachment_scan.py',
+  'asar-engine.js',
+  'modules-config.js',
+  'modular-installer.js',
+  'i18n/zh-CN.json',
+  'i18n/i18n-runtime.js'
+];
+
+function getLiveRuntimeDir(customStateDir = null) {
+  const { getStateDir } = require('./asar-engine');
+  const stateDir = customStateDir || getStateDir();
+  return path.join(stateDir, 'live-runtime');
+}
+
+/**
+ * 将运行外置 live-host 所需的纯 JS/配置运行时文件原子同步至 stateDir/live-runtime。
+ * 保证在线更新清理临时目录或安装目录变动后，热加载后台进程仍能稳定运行至客户端重启。
+ */
+function syncLiveRuntimeBundle(sourceDir, options = {}) {
+  try {
+    if (!sourceDir || !fs.existsSync(path.join(sourceDir, 'live-host.js')) || !fs.existsSync(path.join(sourceDir, 'meter-core.js'))) {
+      return null;
+    }
+    const { getStateDir } = require('./asar-engine');
+    const stateDir = options.stateDir || getStateDir();
+    if ((process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') && !options.stateDir) {
+      const lowerState = stateDir.toLowerCase();
+      const lowerTmp = os.tmpdir().toLowerCase();
+      if (!lowerState.includes(lowerTmp)) {
+        return null;
+      }
+    }
+    const targetDir = getLiveRuntimeDir(stateDir);
+    fs.mkdirSync(targetDir, { recursive: true });
+    let copiedCount = 0;
+    for (const rel of LIVE_RUNTIME_FILES) {
+      const src = path.join(sourceDir, rel);
+      if (!fs.existsSync(src)) continue;
+      const dst = path.join(targetDir, rel);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      const tmpDst = `${dst}.tmp-${process.pid}-${Date.now()}`;
+      fs.copyFileSync(src, tmpDst);
+      fs.renameSync(tmpDst, dst);
+      copiedCount++;
+    }
+    let pkgVersion = options.version || null;
+    try {
+      if (!pkgVersion && fs.existsSync(path.join(sourceDir, 'package.json'))) {
+        pkgVersion = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf8')).version || null;
+      }
+    } catch {}
+    safeWriteJsonSync(path.join(targetDir, '.runtime-manifest.json'), {
+      version: pkgVersion || PROJECT_VERSION,
+      copiedCount,
+      updatedAt: new Date().toISOString()
+    });
+    return targetDir;
+  } catch {
+    return null;
+  }
+}
+
+function parseInstallStdoutMeta(stdout = '') {
+  try {
+    const lines = String(stdout || '').split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const idx = lines[i].indexOf('__AG_INSTALL_META__=');
+      if (idx >= 0) {
+        const jsonPart = lines[i].slice(idx + '__AG_INSTALL_META__='.length).trim();
+        return JSON.parse(jsonPart);
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function isTransientUpdateDownloadError(err) {
+  const msg = String(err?.message || err || '');
+  const code = String(err?.code || '').toUpperCase();
+  if (/代理配置无效|认证失败|不受信任|协议不安全|checksums|sha-?256|拒绝安装/i.test(msg)) {
+    return false;
+  }
+  const statusCode = Number(err?.statusCode);
+  if ([400, 401, 403, 404, 410, 451].includes(statusCode)) {
+    return false;
+  }
+  if ([429, 500, 502, 503, 504].includes(statusCode)) {
+    return true;
+  }
+  return ['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'EPIPE', 'EAI_AGAIN'].includes(code) ||
+    /ETIMEDOUT|ECONNRESET|EPIPE|ESOCKETTIMEDOUT|请求超时|意外中断|意外关闭|未完整结束|长度不完整|socket hang up/i.test(msg);
+}
+
+async function downloadAssetFileWithRetry(url, filePath, fetcher, options = {}) {
+  const maxRetries = Number.isInteger(options.maxRetries) ? Math.max(0, options.maxRetries) : 2;
+  const baseRetryDelayMs = Number.isFinite(Number(options.retryDelayMs))
+    ? Number(options.retryDelayMs)
+    : ((process.env.NODE_ENV === 'test' || process.env.AG_METER_TEST_MODE === '1') ? 10 : 600);
+  const attempts = [];
+  let lastErr = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { }
+    const stream = fs.createWriteStream(filePath);
+    stream.on('error', () => { });
+    const hopTrace = [];
+    try {
+      await fetcher(url, {
+        timeout: options.timeout || 15000,
+        streamTo: stream,
+        phase: options.phase || 'download_asset',
+        _hopTrace: hopTrace,
+        ...(options.proxyConfigOptions ? { proxyConfigOptions: options.proxyConfigOptions } : {})
+      });
+      await waitWritableStreamClose(stream);
+      return {
+        stream,
+        attemptsCount: attempt + 1,
+        diagnostics: {
+          phase: options.phase || 'download_asset',
+          attemptsCount: attempt + 1,
+          hops: hopTrace
+        }
+      };
+    } catch (err) {
+      lastErr = err;
+      await safeCloseStream(stream).catch(() => { });
+      try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { }
+      attempts.push({
+        attempt: attempt + 1,
+        error: sanitizeDiagnosticErrorText(err),
+        diagnostics: err?.diagnostics || (hopTrace.length ? { phase: options.phase, hops: hopTrace } : null)
+      });
+      if (attempt < maxRetries && isTransientUpdateDownloadError(err)) {
+        const delayMs = baseRetryDelayMs * (attempt + 1);
+        if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+      if (lastErr && typeof lastErr === 'object') {
+        lastErr.diagnostics = {
+          ...(lastErr.diagnostics || {}),
+          phase: options.phase || lastErr.diagnostics?.phase || 'download_asset',
+          attemptsCount: attempt + 1,
+          attempts
+        };
+      }
+      throw lastErr;
+    }
+  }
+  throw lastErr;
 }
 
 async function applyUpdateAsync(options = {}) {
@@ -5058,15 +5359,33 @@ async function applyUpdateAsync(options = {}) {
     const checksumPath = path.join(tmpDir, 'checksums.txt');
     const extractDir = path.join(tmpDir, 'extracted');
 
-    checksumStream = fs.createWriteStream(checksumPath);
-    checksumStream.on('error', () => { });
-    await fetcher(checksumAsset.browser_download_url, { timeout: 15000, streamTo: checksumStream });
-    await waitWritableStreamClose(checksumStream);
+    const checksumDl = await downloadAssetFileWithRetry(
+      checksumAsset.browser_download_url,
+      checksumPath,
+      fetcher,
+      {
+        timeout: options._checksumTimeoutMs || 15000,
+        phase: 'download_checksums',
+        maxRetries: options._maxDownloadRetries,
+        retryDelayMs: options._retryDelayMs,
+        proxyConfigOptions: options.proxyConfigOptions
+      }
+    );
+    checksumStream = checksumDl.stream;
 
-    zipStream = fs.createWriteStream(zipPath);
-    zipStream.on('error', () => { });
-    await fetcher(packageAsset.browser_download_url, { timeout: 60000, streamTo: zipStream });
-    await waitWritableStreamClose(zipStream);
+    const packageDl = await downloadAssetFileWithRetry(
+      packageAsset.browser_download_url,
+      zipPath,
+      fetcher,
+      {
+        timeout: options._packageTimeoutMs || 60000,
+        phase: 'download_package',
+        maxRetries: options._maxDownloadRetries,
+        retryDelayMs: options._retryDelayMs,
+        proxyConfigOptions: options.proxyConfigOptions
+      }
+    );
+    zipStream = packageDl.stream;
 
     const checksumContent = fs.readFileSync(checksumPath, 'utf8');
     const lines = checksumContent.split(/\r?\n/);
@@ -5169,7 +5488,7 @@ async function applyUpdateAsync(options = {}) {
       try {
         child = spawner(runtimeInfo.runtime, subArgs, {
           cwd: extractDir,
-          env: runtimeInfo.env,
+          env: { ...(runtimeInfo.env || {}), AG_EMIT_INSTALL_META: '1' },
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true
         });
@@ -5199,17 +5518,39 @@ async function applyUpdateAsync(options = {}) {
     cachedUpdateCheck = null;
     cachedUpdateCheckAt = 0;
 
-    const liveInjected = execRes.stdout.includes('已即时生效（无需重启）') || execRes.stdout.includes('"liveInjected": true');
+    const liveRuntimeDir = syncLiveRuntimeBundle(extractDir, {
+      version: targetRelease.version,
+      stateDir: options.stateDir
+    });
+    const installMeta = parseInstallStdoutMeta(execRes.stdout);
+    const liveInjected = Boolean(
+      installMeta?.liveInjected === true ||
+      execRes.stdout.includes('已即时生效（无需重启）') ||
+      execRes.stdout.includes('"liveInjected": true')
+    );
     const finalInstalledVer = getInstalledMeterVersion(options) || targetRelease.version;
     return {
       ok: true,
       diskInstalled: true,
-      liveInjected: Boolean(liveInjected),
+      liveInjected,
+      backendHotReloaded: Boolean(installMeta?.backendHotReloaded),
+      backendVersion: installMeta?.backendVersion || null,
+      backendSource: installMeta?.backendSource || null,
+      hotReloadReport: installMeta || null,
+      liveRuntimeDir: liveRuntimeDir || null,
       version: targetRelease.version,
-      installedVersion: finalInstalledVer
+      installedVersion: finalInstalledVer,
+      diagnostics: {
+        checksums: checksumDl.diagnostics,
+        package: packageDl.diagnostics
+      }
     };
   } catch (err) {
-    return { ok: false, error: `更新安装异常: ${err.message}` };
+    return {
+      ok: false,
+      error: `更新安装异常: ${sanitizeDiagnosticErrorText(err)}`,
+      ...(err?.diagnostics ? { diagnostics: err.diagnostics } : {})
+    };
   } finally {
     isApplyingUpdate = false;
     try {
@@ -5264,6 +5605,9 @@ module.exports = {
   SUBSCRIPTION_ACQUISITION_PRESETS,
   checkUpdateAsync,
   applyUpdateAsync,
+  LIVE_RUNTIME_FILES,
+  getLiveRuntimeDir,
+  syncLiveRuntimeBundle,
   parseReleasesAtom,
   parseLatestReleaseHtml,
   parseExpandedAssetsHtml,

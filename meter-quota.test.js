@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const core = require('./meter-core');
 const collector = require('./meter-collector');
 const { generateMeterPreloadCode } = require('./modular-installer');
-const { connect: connectLocalApi } = require('./local-api');
+const { connect: connectLocalApi, normalizeLoopbackOrigin } = require('./local-api');
 
 test('本地额度连接支持无 APPDATA 的 macOS、Windows 和 Linux 配置路径', () => {
   const homeDir = '/temporary-home';
@@ -32,14 +32,16 @@ test('macOS 本地连接发现 HTTP 窗口并使用宿主 CSRF 信息调用额�
   t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
   let origin;
   let receivedRpc = false;
+  let configText = '<script>window.__APP_CONFIG__ =\n {"csrfToken":"fixture-token"};</script>';
   const server = http.createServer((req, res) => {
     if (req.url === '/json/list') {
       res.end(JSON.stringify([
         { type: 'page', url: 'https://example.com/' },
-        { type: 'page', url: origin + '/c/test-conversation' }
+        { type: 'page', url: origin + '/c/test-conversation' },
+        { type: 'page', url: origin + '/c/another-conversation' }
       ]));
     } else if (req.url === '/') {
-      res.end('<script>window.__APP_CONFIG__ = {"csrfToken":"fixture-token"};</script>');
+      res.end(configText);
     } else {
       receivedRpc = req.method === 'POST'
         && req.headers['x-codeium-csrf-token'] === 'fixture-token'
@@ -56,8 +58,26 @@ test('macOS 本地连接发现 HTTP 窗口并使用宿主 CSRF 信息调用额�
   fs.writeFileSync(portFile, `${server.address().port}\n/devtools/browser/fixture\n`);
   const api = await connectLocalApi(options);
   assert.equal(api.origin, origin);
+  assert.deepEqual(api.origins, [origin]);
   assert.deepEqual(await api.call('GetUserStatus', {}), { userStatus: { ready: true } });
   assert.equal(receivedRpc, true);
+  const direct = await connectLocalApi({ origin, appDataDir: path.join(homeDir, 'no-port-file') });
+  assert.equal(direct.origin, origin);
+  assert.deepEqual(direct.origins, [origin]);
+  configText = 'window.__APP_CONFIG__ = {};';
+  await assert.rejects(connectLocalApi({ origin }), /鉴权信息尚未就绪/);
+  configText = '<html>Still loading</html>';
+  await assert.rejects(connectLocalApi({ origin }), /本地连接信息尚未就绪/);
+});
+
+test('保留 HTTPS 与已知窗口直连边界，拒绝非法 origin 而不回退扫描', async (t) => {
+  assert.equal(normalizeLoopbackOrigin('https://127.0.0.1:56789/c/test'), 'https://127.0.0.1:56789');
+  assert.equal(normalizeLoopbackOrigin('http://127.0.0.1:56789/c/test'), 'http://127.0.0.1:56789');
+  assert.equal(normalizeLoopbackOrigin('https://example.com:56789'), null);
+  assert.equal(normalizeLoopbackOrigin('http://127.0.0.1:0'), null);
+  const appDataDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ag-quota-origin-'));
+  t.after(() => fs.rmSync(appDataDir, { recursive: true, force: true }));
+  await assert.rejects(connectLocalApi({ origin: 'https://example.com:56789', appDataDir }), /非法/);
 });
 
 test('缺少本地连接文件时显示可读提示，不泄露文件路径或误报额度耗尽', async (t) => {

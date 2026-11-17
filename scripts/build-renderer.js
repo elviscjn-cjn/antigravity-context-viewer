@@ -19,21 +19,56 @@ const rootDir = path.resolve(__dirname, '..');
 const srcDir = path.join(rootDir, 'src', 'renderer');
 const targetFile = path.join(rootDir, 'meter-renderer.js');
 
-function buildRenderer() {
-  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+const TRUNCATION_PATTERN = /truncated for diff preview/i;
+
+/**
+ * 检查源码文件是否混入编辑器/工具预览截断标记；
+ * 一旦发现立即抛出带准确文件路径与行号的错误中止构建，绝不自动覆盖源码或写入产物。
+ */
+function assertNoTruncationMarker(filePath, content) {
+  const match = TRUNCATION_PATTERN.exec(content);
+  if (!match) return;
+  const idx = match.index;
+  const prefix = content.slice(0, idx);
+  const lines = prefix.split(/\r?\n/);
+  const lineNum = lines.length;
+  const colNum = lines[lines.length - 1].length + 1;
+  const err = new Error(
+    `[构建中止] 检测到源码截断标记 (truncated for diff preview): ${filePath}:${lineNum}:${colNum}。已保留现场文件与未提交修改，请先备份并比较后再执行独立恢复。`
+  );
+  err.code = 'ERR_SOURCE_TRUNCATED';
+  err.filePath = filePath;
+  err.line = lineNum;
+  err.column = colNum;
+  throw err;
+}
+
+function readVerifiedRendererSource(dir, fileName) {
+  const fullPath = path.join(dir, fileName);
+  const raw = fs.readFileSync(fullPath, 'utf8');
+  assertNoTruncationMarker(fullPath, raw);
+  return raw;
+}
+
+function buildRenderer(options = {}) {
+  const effRootDir = options.rootDir ? path.resolve(options.rootDir) : rootDir;
+  const effSrcDir = options.srcDir ? path.resolve(options.srcDir) : path.join(effRootDir, 'src', 'renderer');
+  const effTargetFile = options.targetFile ? path.resolve(options.targetFile) : path.join(effRootDir, 'meter-renderer.js');
+
+  const pkg = JSON.parse(fs.readFileSync(path.join(effRootDir, 'package.json'), 'utf8'));
   const meterVersion = pkg.version || '0.8.5';
 
-  const styles = fs.readFileSync(path.join(srcDir, 'styles.css'), 'utf8').trim();
-  let template = fs.readFileSync(path.join(srcDir, 'template.html'), 'utf8').trim();
+  const styles = readVerifiedRendererSource(effSrcDir, 'styles.css').trim();
+  let template = readVerifiedRendererSource(effSrcDir, 'template.html').trim();
   template = template.replace(/<span id="v">v[^<]*<\/span>/g, `<span id="v">v${meterVersion}</span>`);
   template = template.replace(/<span id="up-pop-ver"[^>]*>v[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v${meterVersion}</span>`);
 
-  const colors = fs.readFileSync(path.join(srcDir, 'colors.js'), 'utf8').trim();
-  const i18n = fs.readFileSync(path.join(srcDir, 'i18n.js'), 'utf8').trim();
-  const budgetEngine = fs.readFileSync(path.join(srcDir, 'context-budget-engine.js'), 'utf8').trim();
-  const dropdown = fs.readFileSync(path.join(srcDir, 'dropdown.js'), 'utf8').trim();
-  const heatmap = fs.readFileSync(path.join(srcDir, 'heatmap.js'), 'utf8').trim();
-  let mainTemplate = fs.readFileSync(path.join(srcDir, 'main.js'), 'utf8');
+  const colors = readVerifiedRendererSource(effSrcDir, 'colors.js').trim();
+  const i18n = readVerifiedRendererSource(effSrcDir, 'i18n.js').trim();
+  const budgetEngine = readVerifiedRendererSource(effSrcDir, 'context-budget-engine.js').trim();
+  const dropdown = readVerifiedRendererSource(effSrcDir, 'dropdown.js').trim();
+  const heatmap = readVerifiedRendererSource(effSrcDir, 'heatmap.js').trim();
+  let mainTemplate = readVerifiedRendererSource(effSrcDir, 'main.js');
 
   // 注入或同步构建期版本常量
   const versionConst = `  const METER_VERSION = '${meterVersion}';\n`;
@@ -53,12 +88,12 @@ function buildRenderer() {
     .replace('  /* @INSERT_DROPDOWN_MODULE */', () => dropdown)
     .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap);
 
-  fs.writeFileSync(targetFile, output, 'utf8');
-  console.log(`[构建成功] 渲染层构建完成: ${targetFile} (v${meterVersion}, ${Buffer.byteLength(output, 'utf8')} 字节)`);
+  fs.writeFileSync(effTargetFile, output, 'utf8');
+  console.log(`[构建成功] 渲染层构建完成: ${effTargetFile} (v${meterVersion}, ${Buffer.byteLength(output, 'utf8')} 字节)`);
 }
 
 if (require.main === module) {
   buildRenderer();
 }
 
-module.exports = { buildRenderer };
+module.exports = { buildRenderer, assertNoTruncationMarker };

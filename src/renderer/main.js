@@ -1,6 +1,64 @@
 (function () {
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
+
+  // 在替换或重载旧实例之前捕获当前打开面板、滚动位置与未保存设置草稿（同时兼容无 captureHotReloadState 的旧版本）
+  let inheritedHotReloadState = null;
+  try {
+    if (typeof globalThis.__AGContextMeter?.captureHotReloadState === 'function') {
+      inheritedHotReloadState = globalThis.__AGContextMeter.captureHotReloadState();
+    } else if (typeof document !== 'undefined') {
+      const prevHost = document.getElementById('ag-context-meter');
+      const prevRoot = prevHost?.shadowRoot;
+      if (prevRoot) {
+        const readVal = id => prevRoot.getElementById(id)?.value;
+        const readChk = id => Boolean(prevRoot.getElementById(id)?.checked);
+        const pCtx = prevRoot.getElementById('panel');
+        const pTokens = prevRoot.getElementById('panel-tokens');
+        const pQuota = prevRoot.getElementById('panel-quota');
+        const openPanel = (pQuota && !pQuota.hidden) ? 'quota'
+          : ((pTokens && !pTokens.hidden) ? 'tokens'
+            : ((pCtx && !pCtx.hidden) ? 'context' : 'none'));
+        const activeTab = ['session', 'models', 'speed', 'settings'].find(
+          k => prevRoot.getElementById(`tab-ctx-${k}`)?.classList?.contains('active')
+        ) || null;
+        const scrollTops = {};
+        for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body']) {
+          const n = prevRoot.getElementById(sId);
+          if (n && Number(n.scrollTop) > 0) scrollTops[sId] = Number(n.scrollTop);
+        }
+        const openDrawers = [];
+        for (const btnId of [
+          'btn-toggle-details', 'btn-toggle-card-details', 'btn-toggle-unlock-details',
+          'btn-toggle-enhance-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
+        ]) {
+          if (prevRoot.getElementById(btnId)?.getAttribute?.('aria-expanded') === 'true') {
+            openDrawers.push(btnId);
+          }
+        }
+        const proxySaveBtn = prevRoot.getElementById('btn-save-proxy-config');
+        const enhanceSaveBtn = prevRoot.getElementById('btn-enhance-preset-apply');
+        inheritedHotReloadState = {
+          capturedAt: Date.now(),
+          openPanel,
+          activeContextTab: activeTab,
+          isContextSettingsView: activeTab === 'settings',
+          scrollTops,
+          openDrawers,
+          drafts: {
+            proxyInputDirty: Boolean(proxySaveBtn && !proxySaveBtn.hidden),
+            proxyUrl: readVal('input-proxy-url'),
+            proxyBypass: readVal('input-proxy-bypass'),
+            ctxDraftDirty: Boolean(readVal('ctx-custom-limit-input')),
+            ctxCustomValue: readVal('ctx-custom-limit-input'),
+            enhanceTitleDirty: Boolean(enhanceSaveBtn && !enhanceSaveBtn.hidden),
+            enhanceTitleDraft: readChk('chk-enhance-chinese-title')
+          }
+        };
+      }
+    }
+  } catch { }
+
   globalThis.__AGContextMeter?.dispose?.();
   const activeDisposers = (globalThis.__AGContextMeterDisposers = globalThis.__AGContextMeterDisposers || new Set());
   for (const fn of Array.from(activeDisposers)) {
@@ -126,6 +184,182 @@
   let activeCostMode = 'ref';
   let autoCheckUpdate = true;
   let cachedLatestRelease = null;
+
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
+  const backendStatus = {
+    rendererVersion: METER_RENDERER_VERSION,
+    backendSource: null,
+    backendVersion: null,
+    backendPid: null,
+    ipcBackendVersion: (typeof window !== 'undefined' && window.__AGContextMeterBootBackend?.backendVersion)
+      ? String(window.__AGContextMeterBootBackend.backendVersion)
+      : null,
+    liveHostVersion: (typeof window !== 'undefined' && window.__AGContextMeterLive?.version)
+      ? String(window.__AGContextMeterLive.version)
+      : null,
+    liveHealthy: null,
+    hotReloadFallback: false,
+    backendVersionMismatch: false,
+    lastVerifiedAtMs: null,
+    lastQuotaDurationMs: null,
+    lastError: null
+  };
+
+  function hasLiveHttpBridge() {
+    return typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port && window.__AGContextMeterLive?.token);
+  }
+
+  function hasLiveRouteCapability(routePath) {
+    if (!hasLiveHttpBridge()) return false;
+    const caps = window.__AGContextMeterLive?.capabilities;
+    if (!caps || typeof caps !== 'object') return true;
+    const map = {
+      '/quota': 'quota',
+      '/scan': 'scan',
+      '/token-history': 'tokenHistory',
+      '/record-calls': 'recordCalls',
+      '/get-settings': 'settings',
+      '/save-settings': 'settings',
+      '/launch-cli': 'launchCli',
+      '/context-unlock-status': 'contextUnlock',
+      '/context-unlock-apply': 'contextUnlock',
+      '/context-unlock-restore': 'contextUnlock',
+      '/enhance-status': 'enhance',
+      '/enhance-apply': 'enhance',
+      '/enhance-restore': 'enhance',
+      '/restart-language-servers': 'enhance',
+      '/modules-status': 'modules',
+      '/toggle-module': 'modules',
+      '/test-proxy': 'modules',
+      '/check-update': 'checkUpdate',
+      '/apply-update': 'applyUpdate'
+    };
+    const key = map[routePath];
+    if (!key) return true;
+    if (Array.isArray(caps)) return caps.includes(key);
+    return caps[key] !== false;
+  }
+
+  function shouldPreferLiveHost(ipcAvailable = false, routePath = '') {
+    if (!hasLiveHttpBridge()) return false;
+    if (routePath && !hasLiveRouteCapability(routePath)) return false;
+    if (!ipcAvailable) return true;
+    if (backendStatus.liveHealthy === false) return false;
+    const live = window.__AGContextMeterLive || {};
+    if (backendStatus.ipcBackendVersion === METER_RENDERER_VERSION) {
+      return false;
+    }
+    if (live.version && live.version === METER_RENDERER_VERSION) {
+      return true;
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterHotReloadContext?.preferLiveHost) {
+      return true;
+    }
+    return false;
+  }
+
+  async function postLiveHttpEndpoint(routePath, body = {}, opts = {}) {
+    const live = typeof window !== 'undefined' ? window.__AGContextMeterLive : null;
+    if (!live?.port || !live?.token) {
+      throw new Error('LIVE_BRIDGE_UNAVAILABLE');
+    }
+    const headers = { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token };
+    const fetchOpts = {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body || {})
+    };
+    if (opts.signal) fetchOpts.signal = opts.signal;
+    const r = await fetch(`http://127.0.0.1:${live.port}${routePath}`, fetchOpts);
+    if (!r.ok) {
+      const errBody = typeof r.json === 'function' ? await r.json().catch(() => null) : null;
+      const err = new Error(errBody?.error || `HTTP ${r.status}`);
+      err.httpStatus = r.status;
+      err.responseData = errBody;
+      throw err;
+    }
+    return await r.json();
+  }
+
+  function syncObservedBackendMeta(source, payloadOrRes, durationMs = null) {
+    if (Number.isFinite(durationMs)) backendStatus.lastQuotaDurationMs = durationMs;
+    const ver = payloadOrRes?.collectorVersion || payloadOrRes?.backendVersion || payloadOrRes?.version || payloadOrRes?.data?.collectorVersion || payloadOrRes?.data?.backendVersion || null;
+    if (source === 'live-host') {
+      backendStatus.liveHealthy = true;
+      backendStatus.backendSource = 'live-host';
+      backendStatus.hotReloadFallback = false;
+      if (ver) {
+        backendStatus.backendVersion = String(ver);
+        backendStatus.liveHostVersion = String(ver);
+      } else if (window.__AGContextMeterLive?.version) {
+        backendStatus.backendVersion = String(window.__AGContextMeterLive.version);
+      }
+      if (payloadOrRes?.pid) backendStatus.backendPid = payloadOrRes.pid;
+    } else if (source === 'electron-ipc') {
+      backendStatus.backendSource = 'electron-ipc';
+      if (ver) {
+        backendStatus.backendVersion = String(ver);
+        backendStatus.ipcBackendVersion = String(ver);
+      }
+    }
+    backendStatus.backendVersionMismatch = Boolean(
+      backendStatus.backendVersion &&
+      backendStatus.backendVersion !== METER_RENDERER_VERSION
+    );
+    backendStatus.lastVerifiedAtMs = Date.now();
+  }
+
+  async function callBackendWithPriority({ ipcCall = null, liveRoute = '', liveBody = {}, liveFetchOpts = {}, onFallback = null } = {}) {
+    const hasIpc = typeof ipcCall === 'function';
+    const preferLive = shouldPreferLiveHost(hasIpc, liveRoute);
+    if (preferLive && liveRoute) {
+      try {
+        const res = await postLiveHttpEndpoint(liveRoute, liveBody, liveFetchOpts);
+        syncObservedBackendMeta('live-host', res?.data || res);
+        return { source: 'live-host', result: res };
+      } catch (liveErr) {
+        if (liveErr?.name === 'AbortError') throw liveErr;
+        backendStatus.liveHealthy = false;
+        backendStatus.lastError = liveErr?.message || String(liveErr || '');
+        if (!hasIpc) throw liveErr;
+        backendStatus.hotReloadFallback = true;
+        if (typeof onFallback === 'function') onFallback(liveErr);
+      }
+    }
+    if (hasIpc) {
+      const res = await ipcCall();
+      syncObservedBackendMeta('electron-ipc', res?.data || res);
+      return { source: 'electron-ipc', result: res };
+    }
+    if (hasLiveHttpBridge() && liveRoute) {
+      const res = await postLiveHttpEndpoint(liveRoute, liveBody, liveFetchOpts);
+      syncObservedBackendMeta('live-host', res?.data || res);
+      return { source: 'live-host', result: res };
+    }
+    return { source: 'none', result: null };
+  }
+
+  /**
+   * 获取当前有效设备像素比，用于跨屏混合 DPI 下的物理像素网格对齐
+   */
+  function getEffectiveDpr() {
+    try {
+      const dpr = typeof window !== 'undefined' ? Number(window.devicePixelRatio) : 1;
+      return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  /**
+   * 将 CSS 逻辑坐标对齐到最近的物理设备像素边界，防止 100%/175% 混合缩放下出现亚像素偏移发虚
+   */
+  function snapToDevicePixel(px) {
+    const num = Number(px);
+    if (!Number.isFinite(num)) return 0;
+    const dpr = getEffectiveDpr();
+    return Math.round(num * dpr) / dpr;
+  }
 
   /* @INSERT_COLORS_MODULE */
   // =========================================================================
@@ -686,10 +920,10 @@
         top = bRect.bottom + gap;
         tip.setAttribute('data-placement', 'bottom');
       }
-      top = Math.max(6, Math.min(vh - tipH - 6, Math.round(top)));
+      top = snapToDevicePixel(Math.max(6, Math.min(vh - tipH - 6, top)));
 
-      let left = Math.round(bRect.left + bRect.width / 2 - tipW / 2);
-      left = Math.max(8, Math.min(vw - tipW - 8, left));
+      let left = bRect.left + bRect.width / 2 - tipW / 2;
+      left = snapToDevicePixel(Math.max(8, Math.min(vw - tipW - 8, left)));
 
       tip.style.top = `${top}px`;
       tip.style.left = `${left}px`;
@@ -758,20 +992,21 @@
         const bRect = (anchorBtn && anchorBtn.getBoundingClientRect && anchorBtn !== host && anchorBtn.getBoundingClientRect().right > hRect.left)
           ? anchorBtn.getBoundingClientRect()
           : hRect;
-        const top = Math.max(36, Math.min(vh - 120, Math.round((bRect.bottom || hRect.bottom) + 6)));
+        const dpr = getEffectiveDpr();
+        const top = snapToDevicePixel(Math.max(36, Math.min(vh - 120, (bRect.bottom || hRect.bottom) + 6)));
         const isCompact = panelEl.classList?.contains?.('cost-compact-view') || panelEl.getAttribute?.('class')?.includes?.('cost-compact-view');
         const effW = isCompact ? 400 : targetW;
         const maxAvailW = Math.max(260, vw - minLeft - 12);
         const finalW = Math.min(effW, maxAvailW);
 
-        // 核心锚点：右侧精确对齐到触发按钮右边缘，确保任何视口宽度下右边缘绝不溢出
-        let left = Math.round(bRect.right - finalW);
-        left = Math.min(left, vw - finalW - 12);
-        left = Math.max(minLeft, left);
+        // 核心锚点：右侧精确对齐到触发按钮右边缘，并按当前 DPI 物理像素网格对齐
+        let left = snapToDevicePixel(bRect.right - finalW);
+        left = Math.min(left, snapToDevicePixel(vw - finalW - 12));
+        left = Math.max(snapToDevicePixel(minLeft), left);
 
         const maxWidthPx = Math.max(260, vw - left - 12);
         const maxHeightPx = Math.max(160, vh - top - 16);
-        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}`;
+        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${dpr}`;
         if (panelEl._lastPlacedGeomKey === geomKey) return;
         panelEl._lastPlacedGeomKey = geomKey;
 
@@ -845,6 +1080,49 @@
   } catch { }
 
   const onWindowResize = () => updateResponsiveLayout(true);
+  const handleDpiOrZoomChange = () => {
+    try {
+      for (const id of ['panel', 'panel-quota', 'panel-tokens', 'overflow-menu']) {
+        const node = el(id);
+        if (node) node._lastPlacedGeomKey = '';
+      }
+      layoutMeasurementDirty = true;
+      updateResponsiveLayout(true);
+      const upPop = el('update-popover');
+      if (upPop && upPop.style.display === 'block') {
+        positionUpdatePopover();
+      }
+      if (state.tooltipOpen) positionContextTooltip();
+    } catch { }
+  };
+  let removeDpiWatcher = null;
+  const attachDpiWatcher = () => {
+    try {
+      if (removeDpiWatcher) {
+        removeDpiWatcher();
+        removeDpiWatcher = null;
+      }
+      if (state.disposed || typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+      const mql = window.matchMedia(`(resolution: ${getEffectiveDpr()}dppx)`);
+      if (!mql) return;
+      const onChange = () => {
+        if (state.disposed) return;
+        attachDpiWatcher();
+        handleDpiOrZoomChange();
+      };
+      if (typeof mql.addEventListener === 'function') {
+        mql.addEventListener('change', onChange);
+        removeDpiWatcher = () => {
+          try { mql.removeEventListener?.('change', onChange); } catch { }
+        };
+      } else if (typeof mql.addListener === 'function') {
+        mql.addListener(onChange);
+        removeDpiWatcher = () => {
+          try { mql.removeListener?.(onChange); } catch { }
+        };
+      }
+    } catch { }
+  };
   const onWindowFocus = () => {
     host.setAttribute('data-window-active', 'true');
     if (typeof onQuotaWindowFocus === 'function') onQuotaWindowFocus();
@@ -858,12 +1136,17 @@
     window.addEventListener?.('focus', onWindowFocus);
     window.addEventListener?.('blur', onWindowBlur);
     navigator?.windowControlsOverlay?.addEventListener?.('geometrychange', onWindowResize);
+    attachDpiWatcher();
     earlyDisposeHooks.push(() => {
       try {
         window.removeEventListener?.('resize', onWindowResize);
         window.removeEventListener?.('focus', onWindowFocus);
         window.removeEventListener?.('blur', onWindowBlur);
         navigator?.windowControlsOverlay?.removeEventListener?.('geometrychange', onWindowResize);
+        if (removeDpiWatcher) {
+          removeDpiWatcher();
+          removeDpiWatcher = null;
+        }
         if (hostModelSyncTimer) { clearTimeout(hostModelSyncTimer); hostModelSyncTimer = null; }
         if (domMutationThrottleTimer) { clearTimeout(domMutationThrottleTimer); domMutationThrottleTimer = null; }
       } catch { }
@@ -1703,16 +1986,20 @@
     };
     try {
       let res = null;
-      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.launchCli === 'function') {
-        res = await window.contextMeterAPI.launchCli(reqOpts);
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-        const live = window.__AGContextMeterLive;
-        const r = await fetch(`http://127.0.0.1:${live.port}/launch-cli`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify(reqOpts)
-        });
-        res = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+      const ipcFn = typeof window !== 'undefined' && typeof window.contextMeterAPI?.launchCli === 'function'
+        ? () => window.contextMeterAPI.launchCli(reqOpts)
+        : null;
+      if (ipcFn || hasLiveHttpBridge()) {
+        try {
+          const out = await callBackendWithPriority({
+            ipcCall: ipcFn,
+            liveRoute: '/launch-cli',
+            liveBody: reqOpts
+          });
+          res = out.result;
+        } catch (err) {
+          res = { ok: false, error: err?.message || t('cli.notFound') };
+        }
       } else {
         res = { ok: false, code: 'NO_BRIDGE', error: t('cli.noBridge') };
       }
@@ -4948,19 +5235,22 @@
   });
 
   async function saveSettingsPayloadBridge(payload = {}) {
-    if (window.contextMeterAPI?.saveSettings) {
-      return await window.contextMeterAPI.saveSettings(payload);
+    const ipcFn = window.contextMeterAPI?.saveSettings
+      ? () => window.contextMeterAPI.saveSettings(payload)
+      : null;
+    if (!ipcFn && !hasLiveHttpBridge()) {
+      return { ok: false, error: t('msg.noHostBridge') };
     }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const r = await fetch(`http://127.0.0.1:${live.port}/save-settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-        body: JSON.stringify(payload)
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute: '/save-settings',
+        liveBody: payload
       });
-      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+      return out.result || { ok: false, error: t('msg.noHostBridge') };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('msg.noHostBridge') };
     }
-    return { ok: false, error: t('msg.noHostBridge') };
   }
 
   function showUnlockResultBox(isSuccess, html, opts = {}) {
@@ -5195,96 +5485,92 @@
   btnModePerModel?.addEventListener('click', () => setScopeMode('per_model'));
 
   async function invokeUnlockApi(endpoint, payload = {}) {
-    if (endpoint === 'status' && window.contextMeterAPI?.getContextUnlockStatus) {
-      return await window.contextMeterAPI.getContextUnlockStatus(payload);
+    const ipcMap = {
+      status: window.contextMeterAPI?.getContextUnlockStatus,
+      apply: window.contextMeterAPI?.applyContextUnlock,
+      restore: window.contextMeterAPI?.restoreContextUnlock
+    };
+    const ipcFn = typeof ipcMap[endpoint] === 'function' ? () => ipcMap[endpoint](payload) : null;
+    if (!ipcFn && !hasLiveHttpBridge()) {
+      return { ok: false, error: t('models.err.noApplyBridge') };
     }
-    if (endpoint === 'apply' && window.contextMeterAPI?.applyContextUnlock) {
-      return await window.contextMeterAPI.applyContextUnlock(payload);
-    }
-    if (endpoint === 'restore' && window.contextMeterAPI?.restoreContextUnlock) {
-      return await window.contextMeterAPI.restoreContextUnlock(payload);
-    }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const r = await fetch(`http://127.0.0.1:${live.port}/context-unlock-${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-        body: JSON.stringify(payload)
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute: `/context-unlock-${endpoint}`,
+        liveBody: payload
       });
-      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+      return out.result || { ok: false, error: t('models.err.noApplyBridge') };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('models.err.noApplyBridge') };
     }
-    return { ok: false, error: t('models.err.noApplyBridge') };
   }
 
   async function invokeRestartHostApi() {
     if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.restartHost === 'function') {
       return await window.contextMeterAPI.restartHost();
     }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const r = await fetch(`http://127.0.0.1:${live.port}/restart-host`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-        body: '{}'
-      });
-      return await r.json().catch(() => ({ ok: true, supported: false }));
+    if (hasLiveHttpBridge()) {
+      try {
+        return await postLiveHttpEndpoint('/restart-host', {});
+      } catch {
+        return { ok: true, supported: false };
+      }
     }
     return { ok: true, supported: false };
   }
 
   async function invokeEnhanceApi(endpoint, payload = {}) {
-    if (endpoint === 'status' && window.contextMeterAPI?.getEnhanceStatus) {
-      return await window.contextMeterAPI.getEnhanceStatus(payload);
+    const ipcMap = {
+      status: window.contextMeterAPI?.getEnhanceStatus,
+      apply: window.contextMeterAPI?.applyEnhancePatch,
+      restore: window.contextMeterAPI?.restoreAllEnhance,
+      'restart-ls': window.contextMeterAPI?.restartLanguageServers
+    };
+    const routeMap = {
+      status: '/enhance-status',
+      apply: '/enhance-apply',
+      restore: '/enhance-restore',
+      'restart-ls': '/restart-language-servers'
+    };
+    const ipcFn = typeof ipcMap[endpoint] === 'function' ? () => ipcMap[endpoint](payload) : null;
+    const liveRoute = routeMap[endpoint] || '';
+    if ((!ipcFn && !hasLiveHttpBridge()) || !liveRoute) {
+      return { ok: false, errorKey: 'enhance.result.noBridge', error: t('enhance.result.noBridge'), unavailable: true };
     }
-    if (endpoint === 'apply' && window.contextMeterAPI?.applyEnhancePatch) {
-      return await window.contextMeterAPI.applyEnhancePatch(payload);
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute,
+        liveBody: payload
+      });
+      return out.result || { ok: false, errorKey: 'enhance.result.noBridge', error: t('enhance.result.noBridge'), unavailable: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('enhance.result.noBridge') };
     }
-    if (endpoint === 'restore' && window.contextMeterAPI?.restoreAllEnhance) {
-      return await window.contextMeterAPI.restoreAllEnhance(payload);
-    }
-    if (endpoint === 'restart-ls' && window.contextMeterAPI?.restartLanguageServers) {
-      return await window.contextMeterAPI.restartLanguageServers(payload);
-    }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const routeMap = {
-        status: '/enhance-status',
-        apply: '/enhance-apply',
-        restore: '/enhance-restore',
-        'restart-ls': '/restart-language-servers'
-      };
-      const path = routeMap[endpoint];
-      if (path) {
-        const r = await fetch(`http://127.0.0.1:${live.port}${path}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify(payload)
-        });
-        return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
-      }
-    }
-    return { ok: false, errorKey: 'enhance.result.noBridge', error: t('enhance.result.noBridge'), unavailable: true };
   }
 
   async function invokeModulesApi(action, name, enable, opts = {}) {
-    if (action === 'status' && window.contextMeterAPI?.getModulesStatus) {
-      return await window.contextMeterAPI.getModulesStatus();
+    const ipcFn = (action === 'status' && typeof window.contextMeterAPI?.getModulesStatus === 'function')
+      ? () => window.contextMeterAPI.getModulesStatus()
+      : ((action === 'toggle' && typeof window.contextMeterAPI?.toggleModule === 'function')
+        ? () => window.contextMeterAPI.toggleModule(name, enable, opts)
+        : null);
+    const liveRoute = action === 'status' ? '/modules-status' : '/toggle-module';
+    const liveBody = action === 'status' ? {} : { name, enable, opts };
+    if (!ipcFn && !hasLiveHttpBridge()) {
+      return { ok: false, error: t('msg.noHostBridge'), unavailable: true };
     }
-    if (action === 'toggle' && window.contextMeterAPI?.toggleModule) {
-      return await window.contextMeterAPI.toggleModule(name, enable, opts);
-    }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const route = action === 'status' ? '/modules-status' : '/toggle-module';
-      const body = action === 'status' ? {} : { name, enable, opts };
-      const r = await fetch(`http://127.0.0.1:${live.port}${route}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-        body: JSON.stringify(body)
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute,
+        liveBody
       });
-      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+      return out.result || { ok: false, error: t('msg.noHostBridge'), unavailable: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('msg.noHostBridge') };
     }
-    return { ok: false, error: t('msg.noHostBridge'), unavailable: true };
   }
 
   async function refreshUnlockStatus() {
@@ -6291,19 +6577,22 @@
   });
 
   async function invokeTestProxyApi(proxyUrl) {
-    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.testProxy === 'function') {
-      return await window.contextMeterAPI.testProxy(proxyUrl);
+    const ipcFn = (typeof window !== 'undefined' && typeof window.contextMeterAPI?.testProxy === 'function')
+      ? () => window.contextMeterAPI.testProxy(proxyUrl)
+      : null;
+    if (!ipcFn && !hasLiveHttpBridge()) {
+      return { ok: false, error: t('msg.noHostBridge'), unavailable: true };
     }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const r = await fetch(`http://127.0.0.1:${live.port}/test-proxy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-        body: JSON.stringify({ proxyUrl })
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute: '/test-proxy',
+        liveBody: { proxyUrl }
       });
-      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+      return out.result || { ok: false, error: t('msg.noHostBridge'), unavailable: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('msg.noHostBridge') };
     }
-    return { ok: false, error: t('msg.noHostBridge'), unavailable: true };
   }
 
   btnToggleProxy?.addEventListener('click', () => {
@@ -8152,8 +8441,8 @@
     renderActiveHeatView(true);
     updateHeatTabThumb();
 
-    if (save && typeof window !== 'undefined' && typeof window.contextMeterAPI?.saveSettings === 'function') {
-      window.contextMeterAPI.saveSettings({ savedHeatView: view });
+    if (save && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ savedHeatView: view });
     }
   }
 
@@ -8724,43 +9013,37 @@
   async function recordModelCallsRemote(calls) {
     if (!calls || !calls.length) return { ok: false, changed: false };
     try {
-      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls === 'function') {
-        const res = await window.contextMeterAPI.recordCalls(calls);
-        if (res && res.ok === false) {
-          console.warn('Context Meter: 记录调用入账失败', res.error);
-        }
-        return res || { ok: false, changed: false };
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-        const live = window.__AGContextMeterLive;
-        const resp = await fetch(`http://127.0.0.1:${live.port}/record-calls`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify({ calls })
-        });
-        if (!resp.ok) {
-          const errBody = typeof resp.json === 'function' ? await resp.json().catch(() => null) : null;
-          console.warn(`Context Meter: 实时通道 record-calls 响应异常 HTTP ${resp.status}`);
-          return {
-            ok: false,
-            changed: false,
-            status: resp.status,
-            ...(errBody?.error ? { error: errBody.error } : {}),
-            ...(errBody?.phase ? { phase: errBody.phase } : {}),
-            ...(errBody?.code ? { code: errBody.code } : {})
-          };
-        } else {
-          const res = await resp.json().catch(() => null);
-          if (res && res.ok === false) {
-            console.warn('Context Meter: 实时通道 record-calls 失败', res.error);
-          }
-          return res || { ok: false, changed: false, status: resp.status };
-        }
+      const ipcFn = (typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls === 'function')
+        ? () => window.contextMeterAPI.recordCalls(calls)
+        : null;
+      if (!ipcFn && !hasLiveHttpBridge()) {
+        return { ok: false, changed: false };
       }
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute: '/record-calls',
+        liveBody: { calls }
+      });
+      const res = out.result;
+      if (res && res.ok === false) {
+        console.warn('Context Meter: 记录调用入账失败', res.error);
+      }
+      return res || { ok: false, changed: false };
     } catch (err) {
+      if (err?.httpStatus) {
+        console.warn(`Context Meter: 实时通道 record-calls 响应异常 HTTP ${err.httpStatus}`);
+        return {
+          ok: false,
+          changed: false,
+          status: err.httpStatus,
+          ...(err.responseData?.error ? { error: err.responseData.error } : {}),
+          ...(err.responseData?.phase ? { phase: err.responseData.phase } : {}),
+          ...(err.responseData?.code ? { code: err.responseData.code } : {})
+        };
+      }
       console.warn('Context Meter: 调用入账发生异常', err);
       return { ok: false, changed: false, error: err?.message || String(err || '') };
     }
-    return { ok: false, changed: false };
   }
 
   async function restoreSettingsFromHost() {
@@ -8772,17 +9055,20 @@
       const currentEmail = ANTIGRAVITY_TOKEN_DATA.planStatus?.email || 'default';
 
       // 权威配置同步：宿主通信桥接可用时，以宿主最新持久化配置为准，避免启动快照覆盖最新状态
-      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getSettings === 'function') {
-        settingsRes = await window.contextMeterAPI.getSettings({ email: currentEmail });
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-        const live = window.__AGContextMeterLive;
-        const r = await fetch(`http://127.0.0.1:${live.port}/get-settings`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify({ email: currentEmail })
-        });
-        if (r.ok) settingsRes = await r.json().catch(() => null);
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
+      const ipcFn = (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getSettings === 'function')
+        ? () => window.contextMeterAPI.getSettings({ email: currentEmail })
+        : null;
+      if (ipcFn || hasLiveHttpBridge()) {
+        try {
+          const out = await callBackendWithPriority({
+            ipcCall: ipcFn,
+            liveRoute: '/get-settings',
+            liveBody: { email: currentEmail }
+          });
+          settingsRes = out.result;
+        } catch { }
+      }
+      if (!settingsRes && typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
         settingsRes = window.__AGContextMeterSettings;
       }
 
@@ -8905,21 +9191,20 @@
     lastHistorySync = Date.now();
     try {
       const fetchHistoryAsync = async () => {
-        if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') {
-          return await window.contextMeterAPI.getTokenHistory(forceFlag);
-        }
-        if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-          const live = window.__AGContextMeterLive;
-          const r = await fetch(`http://127.0.0.1:${live.port}/token-history`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-            body: JSON.stringify({ force: forceFlag })
+        const ipcFn = (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function')
+          ? () => window.contextMeterAPI.getTokenHistory(forceFlag)
+          : null;
+        if (!ipcFn && !hasLiveHttpBridge()) return null;
+        try {
+          const out = await callBackendWithPriority({
+            ipcCall: ipcFn,
+            liveRoute: '/token-history',
+            liveBody: { force: forceFlag }
           });
-          if (r.ok) {
-            return await r.json();
-          }
+          return out.result || null;
+        } catch {
+          return null;
         }
-        return null;
       };
       const restoreStep = startupRestorePromise
         ? startupRestorePromise
@@ -8979,8 +9264,8 @@
       top = Math.max(10, rect.top - 230);
     }
     pop.style.position = 'fixed';
-    pop.style.top = `${Math.round(top)}px`;
-    pop.style.right = `${Math.round(right)}px`;
+    pop.style.top = `${snapToDevicePixel(top)}px`;
+    pop.style.right = `${snapToDevicePixel(right)}px`;
     pop.style.left = 'auto';
   }
 
@@ -8997,12 +9282,16 @@
     if (pop) pop.style.display = 'none';
   }
 
+  const onUpdatePopoverResize = () => {
+    const pop = el('update-popover');
+    if (pop && pop.style.display === 'block') {
+      positionUpdatePopover();
+    }
+  };
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-    window.addEventListener('resize', () => {
-      const pop = el('update-popover');
-      if (pop && pop.style.display === 'block') {
-        positionUpdatePopover();
-      }
+    window.addEventListener('resize', onUpdatePopoverResize);
+    earlyDisposeHooks.push(() => {
+      try { window.removeEventListener?.('resize', onUpdatePopoverResize); } catch { }
     });
   }
 
@@ -9024,8 +9313,9 @@
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.6';
-    const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
+    const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
+    const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
       cachedLatestRelease = null;
       if (dot) dot.style.display = 'none';
@@ -9052,7 +9342,13 @@
     }
 
     try {
-      const res = await window.contextMeterAPI.checkUpdate({ force: manual, currentVersion: currentVer });
+      const checkReq = { force: manual, currentVersion: currentVer };
+      const out = await callBackendWithPriority({
+        ipcCall: hasIpcUpdateBridge ? () => window.contextMeterAPI.checkUpdate(checkReq) : null,
+        liveRoute: '/check-update',
+        liveBody: checkReq
+      });
+      const res = out.result;
 
       // 返回 null、非对象或 ok: false 均为检查失败，严禁显示“最新”
       if (!res || res.ok === false) {
@@ -9148,38 +9444,53 @@
 
     try {
       let res = null;
-      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.applyUpdate === 'function') {
-        res = await window.contextMeterAPI.applyUpdate({ version: cachedLatestRelease.latestVersion });
+      const hasIpcApply = typeof window !== 'undefined' && typeof window.contextMeterAPI?.applyUpdate === 'function';
+      const hasLiveApply = hasLiveHttpBridge() && hasLiveRouteCapability('/apply-update');
+      if (hasIpcApply || hasLiveApply) {
+        const out = await callBackendWithPriority({
+          ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate({ version: cachedLatestRelease.latestVersion }) : null,
+          liveRoute: '/apply-update',
+          liveBody: { version: cachedLatestRelease.latestVersion }
+        });
+        res = out.result;
       } else {
         throw new Error(t('update.noApi'));
       }
+      if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.6';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
-        if (vEl) vEl.textContent = `v${nextVer}`;
+        if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;
 
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
 
-        pendingUpdateRestart = true;
+        const fullyHotReloaded = Boolean(res.liveInjected && res.backendHotReloaded);
+        pendingUpdateRestart = !fullyHotReloaded;
         if (titleEl) titleEl.textContent = t('update.doneTitle');
         if (verEl) verEl.textContent = t('update.doneVer', { ver: nextVer });
         if (bodyEl) {
-          bodyEl.textContent = res.liveInjected
-            ? t('update.doneHot', { ver: nextVer })
-            : t('update.doneDisk', { ver: nextVer });
+          bodyEl.textContent = fullyHotReloaded
+            ? t('update.doneHotFull', { ver: nextVer })
+            : (res.liveInjected ? t('update.doneHot', { ver: nextVer }) : t('update.doneDisk', { ver: nextVer }));
         }
         if (applyBtn) {
           applyBtn.textContent = t('update.btnUpdated');
           applyBtn.disabled = false;
         }
-        if (restartBtn && hostSupportsRestart) {
-          restartBtn.hidden = false;
-          if (restartBtn.style) restartBtn.style.display = 'inline-block';
+        if (restartBtn) {
+          const showRestart = Boolean(!fullyHotReloaded && hostSupportsRestart);
+          restartBtn.hidden = !showRestart;
+          if (restartBtn.style) restartBtn.style.display = showRestart ? 'inline-block' : 'none';
         }
 
-        if (res.liveInjected) {
+        if (fullyHotReloaded) {
+          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextVer });
+          if (backendStatus.backendVersion === nextVer) {
+            backendStatus.backendVersionMismatch = false;
+          }
+        } else if (res.liveInjected) {
           if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextVer });
         } else {
           if (statusEl) {
@@ -9243,8 +9554,8 @@
 
   el('check-auto-update')?.addEventListener('change', e => {
     autoCheckUpdate = e.target.checked;
-    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.saveSettings === 'function') {
-      window.contextMeterAPI.saveSettings({ autoCheckUpdate });
+    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+      void saveSettingsPayloadBridge({ autoCheckUpdate });
     }
   });
 
@@ -9966,8 +10277,8 @@
         for (const item of oversizedItems) {
           if (state.disposed) break;
           if (!state.pendingFinalCalls.has(item.call.callId)) continue;
-          const isLiveHttpMode = !(typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls === 'function')
-            && Boolean(typeof window !== 'undefined' && window.__AGContextMeterLive?.port);
+          const isLiveHttpMode = (typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls !== 'function' && hasLiveHttpBridge())
+            || shouldPreferLiveHost(typeof window?.contextMeterAPI?.recordCalls === 'function', '/record-calls');
           if (isLiveHttpMode && item.singleBytes > MAX_LIVE_RECORD_BODY_BYTES) {
             quarantineOversizedEntry(item.call.callId, item.wm);
             console.warn(`Context Meter: 单条调用记录超过实时通道 1MiB 上限 (${item.singleBytes} bytes)，已隔离跳过: ${item.call.callId}`);
@@ -10174,13 +10485,24 @@
     state.scanBusy = true; render();
     try {
       let result;
-      if (window.contextMeterAPI?.scan) result = await window.contextMeterAPI.scan(id, force);
-      else if (window.__AGContextMeterLive) {
-        const live = window.__AGContextMeterLive, controller = new AbortController(); state.controllers.add(controller);
-        const timeout = setTimeout(() => controller.abort(), 180000);
-        try { const response = await fetch(`http://127.0.0.1:${live.port}/scan`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token }, body: JSON.stringify({ id, force }), signal: controller.signal }); if (!response.ok) throw new Error(`HTTP ${response.status}`); result = await response.json(); }
-        finally { clearTimeout(timeout); state.controllers.delete(controller); }
-      } else throw new Error('完整重启 Antigravity 后启用附件扫描');
+      const hasIpcScan = typeof window !== 'undefined' && typeof window.contextMeterAPI?.scan === 'function';
+      if (!hasIpcScan && !hasLiveHttpBridge()) {
+        throw new Error('完整重启 Antigravity 后启用附件扫描');
+      }
+      const controller = new AbortController(); state.controllers.add(controller);
+      const timeout = setTimeout(() => controller.abort(), 180000);
+      try {
+        const out = await callBackendWithPriority({
+          ipcCall: hasIpcScan ? () => window.contextMeterAPI.scan(id, force) : null,
+          liveRoute: '/scan',
+          liveBody: { id, force },
+          liveFetchOpts: { signal: controller.signal }
+        });
+        result = out.result;
+      } finally {
+        clearTimeout(timeout);
+        state.controllers.delete(controller);
+      }
       if (generation !== state.generation || state.disposed) return;
       if (result?.data?.abortedStale) return;
       if (!result?.ok) throw new Error(result?.error || '扫描未返回有效结果');
@@ -11347,14 +11669,22 @@
     const bannerRetryBtn = el('btn-quota-banner-retry');
     const bannerRestartBtn = el('btn-quota-banner-restart');
     if (bannerEl && bannerTextEl) {
-      const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.6';
+      const currentVer = METER_RENDERER_VERSION;
       const isBridgeMissing = quotaState.errorKind === 'bridge_unavailable';
+      const observedBackendVer = backendStatus.backendVersion || quotaState.collectorVersion || null;
       const isStaleCollectorAfterUpdate = Boolean(
         pendingUpdateRestart &&
         (!quotaState.collectorVersion || quotaState.collectorVersion !== currentVer) &&
         (Boolean(quotaState.error) || view.activeStatus === 'no_permission' || view.activeStatus === 'unknown')
       );
-      const needsRestartAction = isBridgeMissing || isStaleCollectorAfterUpdate;
+      const isExplicitBackendMismatch = Boolean(
+        !isBridgeMissing &&
+        !isStaleCollectorAfterUpdate &&
+        observedBackendVer &&
+        observedBackendVer !== currentVer &&
+        (backendStatus.hotReloadFallback || pendingUpdateRestart || backendStatus.backendVersionMismatch)
+      );
+      const needsRestartAction = isBridgeMissing || isStaleCollectorAfterUpdate || isExplicitBackendMismatch;
       if (bannerRestartBtn) {
         setQuotaHiddenIfChanged(bannerRestartBtn, !(needsRestartAction && hostSupportsRestart));
       }
@@ -11375,6 +11705,16 @@
         const msg = hostSupportsRestart
           ? t('quota.pendingRestartBanner')
           : `${t('quota.pendingRestartBanner')} ${t('client.restart.hostNotSupported')}`;
+        setQuotaTextIfChanged(bannerTextEl, msg);
+      } else if (isExplicitBackendMismatch) {
+        setQuotaHiddenIfChanged(bannerEl, false);
+        setQuotaAttrIfChanged(bannerEl, 'data-tone', 'warn');
+        const baseMsg = t('quota.backendMismatchBanner', {
+          uiVer: currentVer,
+          backendVer: `v${observedBackendVer}`,
+          source: backendStatus.backendSource || 'host'
+        });
+        const msg = hostSupportsRestart ? baseMsg : `${baseMsg} ${t('client.restart.hostNotSupported')}`;
         setQuotaTextIfChanged(bannerTextEl, msg);
       } else if (view.syncState === 'error' && view.lastError) {
         setQuotaHiddenIfChanged(bannerEl, false);
@@ -11805,32 +12145,32 @@
       let payload = null;
       let rpcErr = null;
       let missingBridge = false;
+      let usedBackendSource = null;
+      const reqStartMs = Date.now();
       try {
         const hasIpcGetQuota = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getQuota === 'function';
-        const hasLivePort = typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port);
-        if (hasIpcGetQuota) {
-          const res = await window.contextMeterAPI.getQuota({ force: Boolean(force) });
-          if (res?.ok && res.data) payload = res.data;
-          else if (res?.error) rpcErr = res.error;
-        } else if (hasLivePort) {
-          const live = window.__AGContextMeterLive;
-          quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
-          const r = await fetch(`http://127.0.0.1:${live.port}/quota`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-            body: JSON.stringify({ force: Boolean(force) }),
-            signal: quotaAbortController?.signal
-          });
-          if (r.ok) {
-            const j = await r.json();
-            if (j?.ok && j.data) payload = j.data;
-            else if (j?.error) rpcErr = j.error;
-          } else {
-            rpcErr = `HTTP ${r.status}`;
-          }
-        } else {
+        const hasLivePort = hasLiveHttpBridge() && hasLiveRouteCapability('/quota');
+        if (!hasIpcGetQuota && !hasLivePort) {
           missingBridge = true;
           rpcErr = t('quota.bridgeMissing');
+        } else {
+          quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          const out = await callBackendWithPriority({
+            ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force) }) : null,
+            liveRoute: '/quota',
+            liveBody: {
+              force: Boolean(force),
+              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined
+            },
+            liveFetchOpts: { signal: quotaAbortController?.signal }
+          });
+          usedBackendSource = out.source;
+          const resObj = out.result;
+          if (resObj?.ok && resObj.data) {
+            payload = resObj.data;
+          } else if (resObj?.error) {
+            rpcErr = resObj.error;
+          }
         }
       } catch (e) {
         if (e?.name !== 'AbortError') {
@@ -11842,6 +12182,7 @@
 
       if (state.disposed) return null;
       const nowMs = Date.now();
+      const quotaDurationMs = nowMs - reqStartMs;
       quotaState.busy = false;
       quotaState.lastFetchedAtMs = nowMs;
 
@@ -11857,6 +12198,12 @@
         }
         if (payload.accountScopeKey) quotaState.accountScopeKey = payload.accountScopeKey;
         if (payload.collectorVersion) quotaState.collectorVersion = payload.collectorVersion;
+        if (usedBackendSource) {
+          syncObservedBackendMeta(usedBackendSource, payload, quotaDurationMs);
+          if (backendStatus.backendVersion === METER_RENDERER_VERSION && !backendStatus.backendVersionMismatch) {
+            pendingUpdateRestart = false;
+          }
+        }
 
         if (payload.ok !== false) {
           quotaState.snapshot = payload.snapshot || null;
@@ -12026,8 +12373,152 @@
       try { globalThis.history.replaceState = wrappedReplaceState; } catch { wrappedReplaceState = null; }
     }
   }
+  async function verifyHotReloadAndRefreshQuota() {
+    if (state.disposed) return null;
+    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getRuntimeInfo === 'function') {
+      try {
+        const rt = await window.contextMeterAPI.getRuntimeInfo();
+        if (rt && rt.ok && rt.backendVersion) {
+          backendStatus.ipcBackendVersion = String(rt.backendVersion);
+        }
+      } catch { }
+    }
+    if (hasLiveHttpBridge() && shouldPreferLiveHost(typeof window?.contextMeterAPI?.getQuota === 'function', '/runtime-info')) {
+      try {
+        const liveRt = await postLiveHttpEndpoint('/runtime-info', {});
+        if (liveRt && liveRt.ok) {
+          syncObservedBackendMeta('live-host', liveRt);
+        }
+      } catch {
+        backendStatus.liveHealthy = false;
+      }
+    }
+    const snap = await syncQuotaFromHost(true);
+    return {
+      rendererVersion: METER_RENDERER_VERSION,
+      backendSource: backendStatus.backendSource,
+      backendVersion: backendStatus.backendVersion,
+      backendPid: backendStatus.backendPid,
+      ipcBackendVersion: backendStatus.ipcBackendVersion,
+      liveHostVersion: backendStatus.liveHostVersion,
+      hotReloadFallback: backendStatus.hotReloadFallback,
+      backendVersionMismatch: backendStatus.backendVersionMismatch,
+      pendingUpdateRestart,
+      quotaAttempted: Boolean(quotaState.lastFetchedAtMs),
+      quotaOk: Boolean(snap && !quotaState.error),
+      quotaActiveStatus: computeEffectiveQuotaView(Date.now()).activeStatus,
+      lastQuotaDurationMs: backendStatus.lastQuotaDurationMs
+    };
+  }
+
+  function captureHotReloadState() {
+    if (inheritedHotReloadState) return inheritedHotReloadState;
+    const pCtx = el('panel');
+    const pTokens = el('panel-tokens');
+    const pQuota = el('panel-quota');
+    const openPanel = (pQuota && !pQuota.hidden) ? 'quota'
+      : ((pTokens && !pTokens.hidden) ? 'tokens'
+        : ((pCtx && !pCtx.hidden) ? 'context' : 'none'));
+    const scrollTops = {};
+    for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body']) {
+      const n = el(sId);
+      if (n && Number(n.scrollTop) > 0) scrollTops[sId] = Number(n.scrollTop);
+    }
+    const openDrawers = [];
+    for (const btnId of [
+      'btn-toggle-details', 'btn-toggle-card-details', 'btn-toggle-unlock-details',
+      'btn-toggle-enhance-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
+    ]) {
+      if (el(btnId)?.getAttribute?.('aria-expanded') === 'true') {
+        openDrawers.push(btnId);
+      }
+    }
+    return {
+      capturedAt: Date.now(),
+      openPanel,
+      activeContextTab,
+      isContextSettingsView,
+      browsePoolKey: quotaState.browsePoolKey || null,
+      scrollTops,
+      openDrawers,
+      drafts: {
+        proxyInputDirty: Boolean(proxyInputDirty),
+        proxyUrl: inputProxyUrl ? inputProxyUrl.value : null,
+        proxyBypass: inputProxyBypass ? inputProxyBypass.value : null,
+        ctxDraftDirty: Boolean(ctxDraftDirty),
+        ctxCustomValue: ctxCustomInput ? ctxCustomInput.value : null,
+        enhanceTierDirty: Boolean(enhanceTierDirty),
+        selectedEnhanceTier: selectedEnhanceTier ?? null,
+        enhanceTitleDirty: Boolean(enhanceTitleDirty),
+        enhanceTitleDraft: enhanceTitleDraft ?? null
+      }
+    };
+  }
+
+  function applyInheritedHotReloadState(saved) {
+    if (!saved || typeof saved !== 'object' || state.disposed) return;
+    const d = saved.drafts || {};
+    if (d.proxyInputDirty) {
+      if (inputProxyUrl && typeof d.proxyUrl === 'string') inputProxyUrl.value = d.proxyUrl;
+      if (inputProxyBypass && typeof d.proxyBypass === 'string') inputProxyBypass.value = d.proxyBypass;
+      proxyInputDirty = true;
+      syncProxySaveButtonState();
+    }
+    if (d.ctxDraftDirty && ctxCustomInput && typeof d.ctxCustomValue === 'string') {
+      ctxCustomInput.value = d.ctxCustomValue;
+      ctxDraftDirty = true;
+    }
+    if (d.enhanceTierDirty && d.selectedEnhanceTier != null) {
+      selectedEnhanceTier = d.selectedEnhanceTier;
+      enhanceTierDirty = true;
+    }
+    if (d.enhanceTitleDirty && d.enhanceTitleDraft != null) {
+      enhanceTitleDraft = d.enhanceTitleDraft;
+      if (enhanceChineseTitleCheck && typeof d.enhanceTitleDraft === 'boolean') {
+        enhanceChineseTitleCheck.checked = d.enhanceTitleDraft;
+      }
+      enhanceTitleDirty = true;
+    }
+    if (d.enhanceTierDirty || d.enhanceTitleDirty) {
+      renderEnhanceSectionUI();
+    }
+    if (saved.browsePoolKey) {
+      quotaState.browsePoolKey = saved.browsePoolKey;
+    }
+    if (saved.openPanel && saved.openPanel !== 'none') {
+      showPanel(saved.openPanel);
+      if (saved.openPanel === 'context' && saved.activeContextTab) {
+        switchContextTab(saved.activeContextTab);
+      } else if (saved.openPanel === 'context' && saved.isContextSettingsView) {
+        switchContextTab('settings');
+      }
+    }
+    if (Array.isArray(saved.openDrawers)) {
+      for (const btnId of saved.openDrawers) {
+        const btn = el(btnId);
+        if (btn && btn.getAttribute?.('aria-expanded') !== 'true') {
+          try { btn.click(); } catch { }
+        }
+      }
+    }
+    const scrollTops = saved.scrollTops || {};
+    const restoreScrolls = () => {
+      if (state.disposed) return;
+      for (const [sId, topVal] of Object.entries(scrollTops)) {
+        const node = el(sId);
+        if (node && Number(topVal) > 0) node.scrollTop = Number(topVal);
+      }
+    };
+    restoreScrolls();
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(restoreScrolls);
+    }
+    setTimeout(restoreScrolls, 40);
+    setTimeout(restoreScrolls, 140);
+  }
+
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5',
+    version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
       ensureHostDocked();
@@ -12244,6 +12735,27 @@
       return !el('panel-quota')?.hidden;
     },
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
+    captureHotReloadState,
+    verifyHotReloadAndRefreshQuota,
+    getBackendStatusForTest: () => ({
+      ...backendStatus,
+      collectorVersion: quotaState.collectorVersion,
+      pendingUpdateRestart,
+      hasLiveHttpBridge: hasLiveHttpBridge(),
+      shouldPreferLiveHost: shouldPreferLiveHost(typeof window?.contextMeterAPI?.getQuota === 'function', '/quota')
+    }),
+    getRuntimeVersionReport: () => ({
+      rendererVersion: METER_RENDERER_VERSION,
+      backendSource: backendStatus.backendSource,
+      backendVersion: backendStatus.backendVersion,
+      backendPid: backendStatus.backendPid,
+      ipcBackendVersion: backendStatus.ipcBackendVersion,
+      liveHostVersion: backendStatus.liveHostVersion,
+      hotReloadFallback: backendStatus.hotReloadFallback,
+      backendVersionMismatch: backendStatus.backendVersionMismatch,
+      lastQuotaDurationMs: backendStatus.lastQuotaDurationMs
+    }),
+    isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
       earlyForceDispose();
       clearQuotaTimers();
@@ -12275,8 +12787,15 @@
   applyStaticPanelTranslations(shadow);
   refreshRegionPresetSelectOptions();
   renderEnhanceSectionUI();
+  if (inheritedHotReloadState) {
+    applyInheritedHotReloadState(inheritedHotReloadState);
+  }
   startupRestorePromise = restoreSettingsFromHost().finally(() => {
     startupRestorePromise = null;
+    if (inheritedHotReloadState) {
+      applyInheritedHotReloadState(inheritedHotReloadState);
+      inheritedHotReloadState = null;
+    }
   });
   installRequestInterceptor();
   render();
