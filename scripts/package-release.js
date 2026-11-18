@@ -72,31 +72,53 @@ function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
-function ensureWindowsHelper() {
-  const helperPath = path.join(ROOT_DIR, 'scripts', 'cli-window-helper.exe');
+function supportsCscDeterministicFlag(cscExe) {
+  if (!cscExe || !fs.existsSync(cscExe)) return false;
+  try {
+    const out = execFileSync(cscExe, ['/help'], { encoding: 'utf8', stdio: 'pipe', windowsHide: true });
+    return /(?:^|\s)[/-]deterministic\b/i.test(String(out || ''));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 本地编译 Windows 窗口辅助程序时输出至系统临时目录，避免污染或覆盖仓库追踪的 scripts/cli-window-helper.exe。
+ */
+function ensureWindowsHelper(opts = {}) {
+  const repoHelperPath = path.join(ROOT_DIR, 'scripts', 'cli-window-helper.exe');
   const csSrc = path.join(ROOT_DIR, 'scripts', 'cli-window-helper.cs');
 
-  const cscCandidates = [
+  const cscCandidates = Array.isArray(opts.cscCandidates) ? opts.cscCandidates : [
     'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
     'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
   ];
-  let cscExe = cscCandidates.find(p => fs.existsSync(p));
+  const cscExe = cscCandidates.find(p => fs.existsSync(p));
 
   if (cscExe && fs.existsSync(csSrc)) {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-win-helper-'));
+    const tempHelperPath = path.join(tempDir, 'cli-window-helper.exe');
     try {
-      execFileSync(cscExe, ['/nologo', '/target:exe', '/platform:anycpu', '/optimize+', `/out:${helperPath}`, csSrc], { stdio: 'pipe' });
-      if (fs.existsSync(helperPath) && fs.statSync(helperPath).size > 0) {
-        console.log(`[Packaging] scripts/cli-window-helper.exe 源码编译成功 (${fs.statSync(helperPath).size} 字节, SHA-256: ${sha256File(helperPath)})`);
-        return true;
+      const cscArgs = ['/nologo', '/target:exe', '/platform:anycpu', '/optimize+'];
+      if (supportsCscDeterministicFlag(cscExe)) {
+        cscArgs.push('/deterministic');
       }
+      cscArgs.push(`/out:${tempHelperPath}`, csSrc);
+      execFileSync(cscExe, cscArgs, { stdio: 'pipe', windowsHide: true });
+      if (fs.existsSync(tempHelperPath) && fs.statSync(tempHelperPath).size > 0) {
+        console.log(`[Packaging] cli-window-helper.exe 已在临时目录源码编译 (${fs.statSync(tempHelperPath).size} 字节, SHA-256: ${sha256File(tempHelperPath)})`);
+        return { helperPath: tempHelperPath, tempDir, compiled: true };
+      }
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { }
     } catch (e) {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { }
       console.warn(`[Packaging Warning] 调用 csc 重新编译失败: ${e.message}`);
     }
   }
 
-  if (fs.existsSync(helperPath) && fs.statSync(helperPath).size > 0) {
-    console.log(`[Packaging] 复用当前 scripts/cli-window-helper.exe (SHA-256: ${sha256File(helperPath)})`);
-    return true;
+  if (fs.existsSync(repoHelperPath) && fs.statSync(repoHelperPath).size > 0) {
+    console.log(`[Packaging] 复用当前 scripts/cli-window-helper.exe (SHA-256: ${sha256File(repoHelperPath)})`);
+    return { helperPath: repoHelperPath, tempDir: null, compiled: false };
   }
 
   throw new Error('缺少必需的 Windows 原生组件 scripts/cli-window-helper.exe，且无法自动编译！');
@@ -107,19 +129,23 @@ function getVersion() {
   return pkg.version || '0.8.5';
 }
 
-function packagePlatform(plat, version) {
+function packagePlatform(plat, version, options = {}) {
   const platName = plat.name;
+  const targetDistDir = options.distDir ? path.resolve(options.distDir) : DIST_DIR;
   const zipFilename = `antigravity-context-viewer_${version}_${platName}.zip`;
-  const zipPath = path.join(DIST_DIR, zipFilename);
+  const zipPath = path.join(targetDistDir, zipFilename);
 
   const stamp = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   const stagingDir = path.join(os.tmpdir(), `ag-pkg-${platName}-${stamp}`);
   fs.mkdirSync(stagingDir, { recursive: true });
+  fs.mkdirSync(targetDistDir, { recursive: true });
 
   try {
     const fileList = [...COMMON_FILES, ...plat.scripts];
     for (const rel of fileList) {
-      const src = path.join(ROOT_DIR, rel);
+      const src = (rel === 'scripts/cli-window-helper.exe' && options.helperPath)
+        ? path.resolve(options.helperPath)
+        : path.join(ROOT_DIR, rel);
       if (!fs.existsSync(src)) {
         throw new Error(`缺少必需的发布文件: ${rel}，拒绝打包！`);
       }
@@ -183,32 +209,41 @@ function packagePlatform(plat, version) {
   }
 }
 
-function main() {
-  ensureWindowsHelper();
+function main(options = {}) {
+  const helperInfo = ensureWindowsHelper(options);
+  const targetDistDir = options.distDir ? path.resolve(options.distDir) : DIST_DIR;
 
-  console.log('[Packaging] Building latest meter-renderer.js from src/renderer/...');
-  execFileSync('node', [path.join(ROOT_DIR, 'scripts', 'build-renderer.js')], { stdio: 'inherit' });
+  try {
+    if (!options.skipBuild) {
+      console.log('[Packaging] Building latest meter-renderer.js from src/renderer/...');
+      execFileSync('node', [path.join(ROOT_DIR, 'scripts', 'build-renderer.js')], { stdio: 'inherit' });
+    }
 
-  const version = getVersion();
-  fs.mkdirSync(DIST_DIR, { recursive: true });
+    const version = getVersion();
+    fs.mkdirSync(targetDistDir, { recursive: true });
 
-  const results = [];
-  for (const plat of PLATFORMS) {
-    const r = packagePlatform(plat, version);
-    results.push(r);
+    const results = [];
+    for (const plat of PLATFORMS) {
+      const r = packagePlatform(plat, version, { distDir: targetDistDir, helperPath: helperInfo.helperPath });
+      results.push(r);
+    }
+
+    const checksumLines = results.map(r => `${r.sha256}  ${r.name}`).join('\n') + '\n';
+    const checksumFile = path.join(targetDistDir, 'checksums.txt');
+    fs.writeFileSync(checksumFile, checksumLines, 'utf8');
+    console.log(`[Packaging] 已生成 checksums.txt (共 ${results.length} 个资产包)`);
+
+    return results;
+  } finally {
+    if (helperInfo?.tempDir) {
+      try { fs.rmSync(helperInfo.tempDir, { recursive: true, force: true }); } catch { }
+    }
   }
-
-  const checksumLines = results.map(r => `${r.sha256}  ${r.name}`).join('\n') + '\n';
-  const checksumFile = path.join(DIST_DIR, 'checksums.txt');
-  fs.writeFileSync(checksumFile, checksumLines, 'utf8');
-  console.log(`[Packaging] 已生成 checksums.txt (共 ${results.length} 个资产包)`);
-
-  return results;
 }
 
 if (require.main === module) {
   main();
 }
 
-module.exports = { main, packagePlatform };
+module.exports = { main, packagePlatform, ensureWindowsHelper, supportsCscDeterministicFlag };
 

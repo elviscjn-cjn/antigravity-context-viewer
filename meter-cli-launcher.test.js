@@ -411,3 +411,42 @@ test('cli.js rejects --help, -h, and unknown args/commands with non-zero exit, p
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('打包脚本回归: package-release 编译 helper 输出至临时目录且不覆盖仓库 cli-window-helper.exe', () => {
+  const { ensureWindowsHelper, packagePlatform, supportsCscDeterministicFlag } = require('./scripts/package-release');
+  const repoHelperPath = path.join(__dirname, 'scripts', 'cli-window-helper.exe');
+  const beforeStat = fs.statSync(repoHelperPath);
+  const beforeSha = crypto.createHash('sha256').update(fs.readFileSync(repoHelperPath)).digest('hex');
+
+  const tmpOut = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pkg-test-'));
+  let helperInfo = null;
+  try {
+    helperInfo = ensureWindowsHelper();
+    assert.ok(fs.existsSync(helperInfo.helperPath), '必须返回可用的 helperPath');
+    if (process.platform === 'win32' && helperInfo.compiled) {
+      assert.notEqual(
+        path.resolve(helperInfo.helperPath),
+        path.resolve(repoHelperPath),
+        '本地编译输出必须位于临时目录，绝不能覆盖仓库里的 scripts/cli-window-helper.exe'
+      );
+      assert.ok(helperInfo.tempDir && helperInfo.helperPath.startsWith(path.resolve(os.tmpdir())));
+    }
+    const afterStat = fs.statSync(repoHelperPath);
+    const afterSha = crypto.createHash('sha256').update(fs.readFileSync(repoHelperPath)).digest('hex');
+    assert.equal(afterSha, beforeSha, '仓库 tracking 的 scripts/cli-window-helper.exe 内容绝不能被改写');
+    assert.equal(afterStat.mtimeMs, beforeStat.mtimeMs, '仓库 scripts/cli-window-helper.exe 修改时间绝不能被改写');
+
+    const res = packagePlatform(
+      { name: 'windows_amd64', scripts: ['install.bat', 'uninstall.bat', 'scripts/cli-window-helper.exe'] },
+      '0.8.8-test',
+      { distDir: tmpOut, helperPath: helperInfo.helperPath }
+    );
+    assert.ok(fs.existsSync(res.path) && res.size > 0);
+    assert.equal(typeof supportsCscDeterministicFlag('Z:/missing/csc.exe'), 'boolean');
+  } finally {
+    if (helperInfo?.tempDir) {
+      try { fs.rmSync(helperInfo.tempDir, { recursive: true, force: true }); } catch {}
+    }
+    try { fs.rmSync(tmpOut, { recursive: true, force: true }); } catch {}
+  }
+});
