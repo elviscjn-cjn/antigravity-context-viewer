@@ -4636,3 +4636,130 @@ test('Orchestrator & GetAvailableModels resolution: maps M667/M681/gemini-flash-
   assert.equal(win.legend[1].label, 'Gemini 4 Hydrogen');
   assert.equal(win.legend[1].tokens, 200);
 });
+
+test('PR #30 supplement: archive dirty key re-bucketing, existing modelExactId label backfill, worker IDs, and conservation', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { DatabaseSync } = require('node:sqlite');
+  const { resolveModelUsageBucket, lookupModelDisplayLabel } = require('./meter-core');
+  const { buildDailyModelBreakdown, needsDbLabelEnrichment, backfillMissingModelsFromConversationDb } = require('./meter-collector');
+
+  // 1. Worker / Orchestrator 显示名映射
+  assert.equal(lookupModelDisplayLabel({ model: 'gemini-flash-worker-agy' }), 'Gemini 4 Hydrogen (Orchestrator)');
+  assert.equal(lookupModelDisplayLabel({ modelExactId: 'MODEL_PLACEHOLDER_M669' }), 'Gemini 4 Hydrogen (Orchestrator)');
+  assert.equal(lookupModelDisplayLabel({ model: 'model_placeholder_m667' }), 'Orchestrator (Carbon)');
+  assert.equal(lookupModelDisplayLabel({ model: 'placeholder-m668' }), 'Orchestrator (Argon)');
+  assert.equal(lookupModelDisplayLabel({ model: 'placeholder-m681' }), 'Orchestrator (Argon)');
+  assert.equal(resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M668' }).variantLabel, 'Orchestrator (Argon)');
+
+  // 2. 旧归档脏 key 合并与总量守恒
+  const archiveV2 = {
+    modelMetaByKey: {
+      'placeholder-m402': { modelKey: 'placeholder-m402', modelLabel: 'placeholder-m402', variantKey: 'placeholder-m402', variantLabel: 'placeholder-m402' },
+      'gemini-flash-worker-agy': { modelKey: 'gemini-flash-worker-agy', modelLabel: 'gemini-flash-worker-agy', variantKey: 'gemini-flash-worker-agy', variantLabel: 'gemini-flash-worker-agy' },
+      'model_placeholder_m667': { modelKey: 'model_placeholder_m667', modelLabel: 'model_placeholder_m667', variantKey: 'model_placeholder_m667', variantLabel: 'model_placeholder_m667' },
+      'placeholder-m681': { modelKey: 'placeholder-m681', modelLabel: 'placeholder-m681', variantKey: 'placeholder-m681', variantLabel: 'placeholder-m681' }
+    },
+    dailyModelMapBySource: {
+      desktop: {
+        '2026-11-10': {
+          'placeholder-m402': { total: 1000, input: 300, cache: 600, output: 100, steps: 2 },
+          'claude-opus-5-5:high': { total: 500, input: 100, cache: 350, output: 50, steps: 1 },
+          'gemini-flash-worker-agy': { total: 800, input: 200, cache: 500, output: 100, steps: 3 },
+          'model_placeholder_m667': { total: 400, input: 100, cache: 250, output: 50, steps: 1 }
+        }
+      },
+      cli: {
+        '2026-11-10': {
+          'placeholder-m681': { total: 300, input: 80, cache: 180, output: 40, steps: 1 }
+        }
+      }
+    }
+  };
+  const breakdown = buildDailyModelBreakdown({
+    recentRequests: [],
+    finalCallsEntries: [],
+    matchedTranscriptReqs: new Set(),
+    matchedLedgerKeys: new Set(),
+    resolveLedgerCallDate: () => null,
+    mergedDesktop: { '2026-11-10': { total: 2700, input: 700, cache: 1700, output: 300, steps: 7 } },
+    mergedCli: { '2026-11-10': { total: 300, input: 80, cache: 180, output: 40, steps: 1 } },
+    mergedLegacyUnallocated: {},
+    archiveV2,
+    compactModelConfigs: [],
+    availableModelDetails: null
+  });
+
+  const dayAll = breakdown.dailyModelMapBySource.all['2026-11-10'];
+  assert.equal(dayAll['placeholder-m402'], undefined);
+  assert.equal(dayAll['gemini-flash-worker-agy'], undefined);
+  assert.equal(dayAll['model_placeholder_m667'], undefined);
+  assert.equal(dayAll['placeholder-m681'], undefined);
+  assert.deepEqual(dayAll['claude-opus-5-5:high'], { total: 1500, input: 400, cache: 950, output: 150, steps: 3 });
+  assert.deepEqual(dayAll['gemini-4-hydrogen:orchestrator'], { total: 800, input: 200, cache: 500, output: 100, steps: 3 });
+  assert.deepEqual(dayAll['orchestrator:carbon'], { total: 400, input: 100, cache: 250, output: 50, steps: 1 });
+  assert.deepEqual(dayAll['orchestrator:argon'], { total: 300, input: 80, cache: 180, output: 40, steps: 1 });
+
+  // 验证重新归类前后总量守恒
+  const sumVals = Object.values(dayAll).reduce((acc, r) => ({
+    total: acc.total + r.total,
+    input: acc.input + r.input,
+    cache: acc.cache + r.cache,
+    output: acc.output + r.output,
+    steps: acc.steps + r.steps
+  }), { total: 0, input: 0, cache: 0, output: 0, steps: 0 });
+  assert.deepEqual(sumVals, { total: 3000, input: 780, cache: 1880, output: 340, steps: 8 });
+  assert.equal(breakdown.modelMetaByKey['placeholder-m402'], undefined);
+  assert.equal(breakdown.modelMetaByKey['claude-opus-5-5:high'].variantLabel, 'Claude Opus 5.5 (High)');
+
+  // 3. 已有 modelExactId 但缺少 modelLabel 时触发 needsDbLabelEnrichment 并回填显示名
+  const recNeedLabel = {
+    tot: 500,
+    cascadeId: '66666666-6666-6666-6666-666666666666',
+    stepIndex: 1,
+    model: 'gemini-flash-worker-agy',
+    modelExactId: 'MODEL_PLACEHOLDER_M669',
+    ttftSec: 0.45,
+    streamingSec: 1.25
+  };
+  assert.equal(needsDbLabelEnrichment(recNeedLabel), true);
+  assert.equal(needsDbLabelEnrichment({ tot: 500, model: 'gemini-flash-worker-agy', modelLabel: 'Gemini 4 Hydrogen (Orchestrator)' }), false);
+
+  const encVarint = (n) => {
+    let v = BigInt(n >>> 0);
+    const out = [];
+    while (v >= 0x80n) { out.push(Number((v & 0x7fn) | 0x80n)); v >>= 7n; }
+    out.push(Number(v));
+    return Buffer.from(out);
+  };
+  const encLen = (f, buf) => {
+    const b = Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf), 'utf8');
+    return Buffer.concat([encVarint((f << 3) | 2), encVarint(b.length), b]);
+  };
+  const encVi = (f, v) => Buffer.concat([encVarint((f << 3) | 0), encVarint(v)]);
+  const metaBlob = Buffer.concat([
+    encLen(1, Buffer.concat([encLen(19, 'gemini-flash-worker-agy'), encLen(21, 'Gemini 4 Hydrogen (Orchestrator)')])),
+    encVi(2, 1)
+  ]);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pr30-db-'));
+  let db = null;
+  try {
+    const dbPath = path.join(tmpDir, `${recNeedLabel.cascadeId}.db`);
+    db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE gen_metadata (data BLOB);');
+    db.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(metaBlob);
+    db.close();
+    db = null;
+
+    const filled = backfillMissingModelsFromConversationDb([recNeedLabel], tmpDir);
+    assert.equal(filled, 1);
+    assert.equal(recNeedLabel.modelLabel, 'Gemini 4 Hydrogen (Orchestrator)');
+    assert.equal(recNeedLabel.modelExactId, 'MODEL_PLACEHOLDER_M669');
+    assert.equal(recNeedLabel.ttftSec, 0.45);
+  } finally {
+    if (db) { try { db.close(); } catch {} }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

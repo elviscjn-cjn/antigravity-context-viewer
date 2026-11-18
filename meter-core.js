@@ -5131,7 +5131,7 @@
     let effort = prod.effort || null;
     if (!effort) {
       const effProbe = `${effectiveLabel} ${rawStr} ${resolvedStable || ''}`;
-      const mEff = effProbe.match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?(?=$|\s)/i);
+      const mEff = effProbe.match(/[:\-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?(?=$|\s)/i);
       if (mEff) effort = formatEffortLabel(mEff[1]);
     }
     const variantKey = effort ? `${modelKey}:${effort.toLowerCase().replace(/\s+/g, '')}` : modelKey;
