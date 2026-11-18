@@ -5368,3 +5368,47 @@ test('v0.8.8 α 版本展示与更新比较隔离: 界面展示 0.8.8 α 且无�
     }
   }
 });
+
+test('i18n completeness: all static t()/data-i18n keys and known dynamic keys exist in zh-CN/zh-TW/en', () => {
+  const vm = require('node:vm');
+  const i18nSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'i18n.js'), 'utf8');
+  const ctx = {};
+  vm.runInNewContext(`${i18nSrc}\nthis.__I18N = PANEL_I18N;`, ctx);
+  const dict = ctx.__I18N;
+  const langs = ['zh-CN', 'zh-TW', 'en'];
+
+  const files = ['main.js', 'heatmap.js', 'colors.js', 'dropdown.js', 'context-budget-engine.js', 'template.html'];
+  const staticKeys = new Set();
+  const reT = /\bt\(\s*'([^']+)'/g;
+  const reAttr = /data-i18n(?:-title|-aria|-placeholder|-html)?="([^"]+)"/g;
+  for (const rel of files) {
+    const src = fs.readFileSync(path.join(__dirname, 'src', 'renderer', rel), 'utf8');
+    let m;
+    while ((m = reT.exec(src))) staticKeys.add(m[1]);
+    while ((m = reAttr.exec(src))) staticKeys.add(m[1]);
+  }
+
+  // 补充扫描到的动态模板键值
+  for (let i = 0; i <= 4; i++) {
+    ['desc', 'keeps', 'clears', 'replaces', 'meaning'].forEach(p => staticKeys.add(`enhance.tier.${i}.${p}`));
+    if (i >= 1) staticKeys.add(`enhance.tier.${i}.short`);
+  }
+  ['exhausted', 'no_permission', 'error', 'stale', 'unknown'].forEach(s => staticKeys.add(`quota.short.${s}`));
+  ['disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown', 'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota', 'error'].forEach(s => staticKeys.add(`accounts.status.${s}`));
+  ['account_switched', 'quota_reset', 'rolling_recovery', 'sampling_gap'].forEach(s => staticKeys.add(`quota.split.${s}`));
+  for (let i = 0; i <= 4; i++) staticKeys.add(`colors.lvl${i}`);
+
+  const missing = [];
+  for (const key of staticKeys) {
+    const entry = dict[key];
+    for (const lang of langs) {
+      if (!entry || typeof entry[lang] !== 'string' || !entry[lang].trim()) {
+        missing.push(`${key}:${lang}`);
+      }
+    }
+  }
+  assert.deepEqual(missing, [], `发现缺失的 i18n 词条: ${missing.join(', ')}`);
+  assert.equal(dict['tokens.cum.zeroDayBadge']['zh-CN'], '0 用量');
+  assert.equal(dict['tokens.cum.zeroDayBadge']['en'], '0 Tokens');
+  assert.equal(dict['models.btnRestartHost']['en'], 'Restart Client');
+});
