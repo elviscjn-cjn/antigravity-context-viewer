@@ -11880,7 +11880,7 @@
       }
     }
 
-    const status = disp.isError
+    const status = disp.isError || disp.kind === 'canceled'
       ? disp.statusText
       : stale ? t('badge.status.stale')
         : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })
