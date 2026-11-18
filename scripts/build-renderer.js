@@ -57,7 +57,8 @@ function buildRenderer(options = {}) {
 
   const pkg = JSON.parse(fs.readFileSync(path.join(effRootDir, 'package.json'), 'utf8'));
   const meterVersion = pkg.version || '0.8.5';
-  const displayVersion = meterVersion === '0.8.8' ? '0.8.8 α' : `v${meterVersion}`;
+  const rawDisplay = typeof pkg.displayVersion === 'string' ? pkg.displayVersion.trim() : '';
+  const displayVersion = rawDisplay || `v${meterVersion}`;
 
   const styles = readVerifiedRendererSource(effSrcDir, 'styles.css').trim();
   let template = readVerifiedRendererSource(effSrcDir, 'template.html').trim();
