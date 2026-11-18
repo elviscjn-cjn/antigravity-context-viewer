@@ -181,6 +181,10 @@ const builtinAsar = {
     } finally {
       rawFs.closeSync(fd);
     }
+  },
+
+  async createPackage(srcDir, destAsar) {
+    return this.createPackageWithOptions(srcDir, destAsar, {});
   }
 };
 

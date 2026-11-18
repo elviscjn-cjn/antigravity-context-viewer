@@ -86,14 +86,15 @@ const bootChineseSnapshots = new Map();
 /**
  * 解析当前进程启动瞬间的宿主汉化状态快照（同一 stateDir 生命周期内保持不变，防止受隔离上下文或用户项目名误判）
  */
-function resolveBootChineseSnapshot() {
-  const key = String(process.env.AG_METER_STATE_DIR || '__default__');
+function resolveBootChineseSnapshot(customAsarPath = null) {
+  const asarTarget = customAsarPath || process.env.AG_METER_TEST_HOST_ASAR || null;
+  const key = `${String(process.env.AG_METER_STATE_DIR || '__default__')}::${String(asarTarget || '__default_asar__')}`;
   if (bootChineseSnapshots.has(key)) return bootChineseSnapshots.get(key);
   let snap = { enabled: false, language: 'en' };
   try {
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
     const cfg = loadModulesConfig();
-    const disk = inspectDiskModules();
+    const disk = inspectDiskModules(asarTarget);
     const ch = cfg?.modules?.chinese || {};
     const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
     const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
@@ -107,7 +108,7 @@ function resolveBootChineseSnapshot() {
 }
 try { resolveBootChineseSnapshot(); } catch {}
 
-function buildRuntimeModulesMeta(cfg) {
+function buildRuntimeModulesMeta(cfg, customAsarPath = null) {
   const diskProxy = cfg?.modules?.proxy || {};
   const diskEnabled = Boolean(diskProxy.enabled);
   const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
@@ -117,7 +118,7 @@ function buildRuntimeModulesMeta(cfg) {
   const runtimeBypass = normalizeBypassListForCompare(bootProxySnapshot.bypassList || '');
   const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
     (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || diskBypass !== runtimeBypass));
-  const bootZh = resolveBootChineseSnapshot();
+  const bootZh = resolveBootChineseSnapshot(customAsarPath);
   const diskCh = cfg?.modules?.chinese || {};
   const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
   return {
@@ -299,7 +300,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     // 结果类型 1: 已有完整运行时可通过配置切换 (config_toggled)
     if (hasDiskCapability) {
       // 在任何写盘修改之前先锁定本生命周期的启动汉化快照，防止先 toggle 后读盘自欺
-      resolveBootChineseSnapshot();
+      resolveBootChineseSnapshot(extraOpts?.asarPath);
       const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
       const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
       if (moduleName === 'proxy' && extraOpts) {
@@ -311,7 +312,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
               status: 'invalid_config',
               data: cfg,
               disk,
-              runtime: buildRuntimeModulesMeta(cfg),
+              runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
               error: check.error,
               restartRequired: false
             };
@@ -323,7 +324,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
             status: 'invalid_config',
             data: cfg,
             disk,
-            runtime: buildRuntimeModulesMeta(cfg),
+            runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
             error: '开启免 TUN 前请填写有效的本地代理地址',
             restartRequired: false
           };
@@ -362,7 +363,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         } catch {}
       }
 
-      const runtime = buildRuntimeModulesMeta(cfg);
+      const runtime = buildRuntimeModulesMeta(cfg, extraOpts?.asarPath);
       const langChanged = moduleName === 'chinese' && (
         Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
         cfg.modules.chinese.language !== prevChineseLang
