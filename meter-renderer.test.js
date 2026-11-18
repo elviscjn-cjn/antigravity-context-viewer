@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), vm = require('node:vm'), core = require('./meter-core');
 const source = fs.readFileSync(require('node:path').join(__dirname, 'meter-renderer.js'), 'utf8');
 function session(unknown = 0) { return { groups: Object.fromEntries(['user','assistant','thinking','tools','summaries','system','definitions'].map(k => [k,core.empty()])), total: { chars: 100, low: 10, high: 50 }, attachmentTotal: core.empty(), attachments: unknown ? [{ name: '<img onerror=bad>', status: 'unknown', unknownParts: ['图像 token 未知'], chars: 0, source: 'user' }] : [], unknownFiles: unknown, steps: 10, userMessages: 2, assistantMessages: 3 }; }
-function harness(scanSession = session()) {
+function harness(scanSession = session(), extraSandbox = null) {
   const elements = new Map();
   const docElements = new Map();
   const listeners = new Map();
@@ -94,7 +94,7 @@ function harness(scanSession = session()) {
   };
   const host = element(); host.attachShadow = () => ({ set innerHTML(value) {}, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
   const pending = [], scans = [], timers = [];
-  const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), getElementById: id => docElements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); } };
+  const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), getElementById: id => docElements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); }, ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {}) };
   // First createElement call is the host; later calls are safe text-only file rows.
   let first = true; sandbox.document.createElement = () => { if (first) { first = false; return host; } return element(); };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
@@ -5411,4 +5411,85 @@ test('i18n completeness: all static t()/data-i18n keys and known dynamic keys ex
   assert.equal(dict['tokens.cum.zeroDayBadge']['zh-CN'], '0 用量');
   assert.equal(dict['tokens.cum.zeroDayBadge']['en'], '0 Tokens');
   assert.equal(dict['models.btnRestartHost']['en'], 'Restart Client');
+});
+
+test('cumulative ResizeObserver auto-toggles is-narrow across 460px threshold without redundant rerenders and disconnects on dispose', () => {
+  const observerInstances = [];
+  class MockResizeObserver {
+    constructor(cb) {
+      this.cb = cb;
+      this.observed = [];
+      this.disconnected = false;
+      observerInstances.push(this);
+    }
+    observe(target) { this.observed.push(target); }
+    disconnect() { this.disconnected = true; }
+    trigger() { if (!this.disconnected) this.cb([]); }
+  }
+
+  const h = harness(session(), { ResizeObserver: MockResizeObserver });
+  const api = h.sandbox.__AGContextMeter;
+  const origCreateEl = h.sandbox.document.createElement;
+  h.sandbox.document.createElementNS = (_ns, tag) => {
+    const node = origCreateEl();
+    node.tagName = tag;
+    return node;
+  };
+
+  let mockWidth = 670;
+  const scrollBox = h.elements.get('h-scroll-box');
+  const panelTokens = h.elements.get('panel-tokens');
+  scrollBox.getBoundingClientRect = () => ({ left: 0, top: 0, width: mockWidth, height: 120, right: mockWidth, bottom: 120 });
+  panelTokens.getBoundingClientRect = () => ({ left: 0, top: 0, width: mockWidth + 56, height: 420, right: mockWidth + 56, bottom: 420 });
+
+  const today = new Date();
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const d0 = fmt(today);
+  const d1 = fmt(new Date(today.getTime() - 86400000));
+  const dm = {
+    [d1]: { total: 10e6, input: 1e6, cache: 8e6, output: 1e6 },
+    [d0]: { total: 20e6, input: 2e6, cache: 16e6, output: 2e6 }
+  };
+
+  try {
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: d1,
+      dailyMap: dm,
+      dailyMapBySource: { all: dm },
+      summary: { firstUseDate: d1, grandTotalTokens: 30e6 }
+    });
+    api.switchHeatView('cum');
+
+    const cumBox = h.elements.get('h-cum-box');
+    const panelObserver = observerInstances.find(inst => inst.observed.includes(panelTokens));
+    assert.ok(panelObserver, '#panel-tokens 必须被 ResizeObserver 监听');
+
+    const rootWide1 = cumBox.children[0];
+    assert.equal(String(rootWide1.className || '').includes('is-narrow'), false);
+
+    // 仍在 >=460px 同一侧收缩，不应触发冗余重绘（DOM 根节点引用不变）
+    mockWidth = 520;
+    panelObserver.trigger();
+    assert.equal(cumBox.children[0], rootWide1);
+
+    // 跨过 460px 阈值降至 360px：自动重绘并加上 .is-narrow
+    mockWidth = 360;
+    panelObserver.trigger();
+    const rootNarrow = cumBox.children[0];
+    assert.notEqual(rootNarrow, rootWide1);
+    assert.ok(String(rootNarrow.className || '').includes('is-narrow'));
+
+    // 再从 360px 恢复至 670px：自动重绘并移除 .is-narrow
+    mockWidth = 670;
+    panelObserver.trigger();
+    const rootWide2 = cumBox.children[0];
+    assert.notEqual(rootWide2, rootNarrow);
+    assert.equal(String(rootWide2.className || '').includes('is-narrow'), false);
+
+    api.dispose();
+    assert.equal(panelObserver.disconnected, true, 'dispose 时必须断开 panelTokensResizeObserver');
+  } finally {
+    try { api.dispose(); } catch {}
+  }
 });

@@ -1145,7 +1145,10 @@
     }
   } catch { }
 
-  const onWindowResize = () => updateResponsiveLayout(true);
+  const onWindowResize = () => {
+    updateResponsiveLayout(true);
+    try { syncCumResponsiveNarrowState(); } catch { }
+  };
   const handleDpiOrZoomChange = () => {
     try {
       for (const id of ['panel', 'panel-quota', 'panel-tokens', 'overflow-menu']) {
@@ -9197,6 +9200,47 @@
 
   // 初始化默认热力图视图状态与药丸滑块
   switchHeatView('daily', false);
+
+  /**
+   * 仅在累计页可见宽度跨过 460px 窄窗阈值时重绘，自动切换 .is-narrow
+   */
+  function syncCumResponsiveNarrowState() {
+    if (state.disposed || activeHeatView !== 'cum') return false;
+    const cumBox = el('h-cum-box');
+    const scrollBox = el('h-scroll-box') || cumBox?.parentElement;
+    const panelTokens = el('panel-tokens');
+    const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
+    const panelRect = panelTokens && typeof panelTokens.getBoundingClientRect === 'function' ? panelTokens.getBoundingClientRect() : null;
+    let width = (rect && rect.width > 120) ? rect.width : 0;
+    if (!width && panelRect && panelRect.width > 120) {
+      width = Math.max(121, panelRect.width - 56);
+    }
+    if (!width) return false;
+    const nextNarrow = width < 460;
+    const cumRoot = cumBox?.querySelector?.('.cum-root') || (cumBox?.children?.[0] || null);
+    if (!cumRoot) return false;
+    const curNarrow = hasClass(cumRoot, 'is-narrow');
+    if (curNarrow === nextNarrow) return false;
+    renderActiveHeatView(true);
+    return true;
+  }
+
+  let panelTokensResizeObserver = null;
+  if (typeof ResizeObserver === 'function') {
+    const pTokensObsTarget = el('panel-tokens');
+    const hScrollObsTarget = el('h-scroll-box');
+    if (pTokensObsTarget) {
+      panelTokensResizeObserver = new ResizeObserver(() => {
+        syncCumResponsiveNarrowState();
+      });
+      panelTokensResizeObserver.observe(pTokensObsTarget);
+      if (hScrollObsTarget) panelTokensResizeObserver.observe(hScrollObsTarget);
+      earlyDisposeHooks.push(() => {
+        try { panelTokensResizeObserver?.disconnect?.(); } catch { }
+        panelTokensResizeObserver = null;
+      });
+    }
+  }
 
   el('h-page-prev')?.addEventListener('click', () => {
     if (activeHeatView === 'monthly') {
