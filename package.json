@@ -40,5 +40,32 @@
     "gemini",
     "ai-agent"
   ],
+  "contributors": [
+    {
+      "name": "Lopution",
+      "email": "70460628+Lopution@users.noreply.github.com",
+      "url": "https://github.com/Lopution"
+    },
+    {
+      "name": "huron09280",
+      "email": "136592427+huron09280@users.noreply.github.com",
+      "url": "https://github.com/huron09280"
+    },
+    {
+      "name": "kyrie21z",
+      "email": "176404210+kyrie21z@users.noreply.github.com",
+      "url": "https://github.com/kyrie21z"
+    },
+    {
+      "name": "startips",
+      "email": "28948400+startips@users.noreply.github.com",
+      "url": "https://github.com/startips"
+    },
+    {
+      "name": "x1051445024",
+      "email": "186909410+x1051445024@users.noreply.github.com",
+      "url": "https://github.com/x1051445024"
+    }
+  ],
   "license": "MIT"
 }
