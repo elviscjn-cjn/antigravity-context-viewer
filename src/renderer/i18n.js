@@ -1826,7 +1826,7 @@ function translateBackendText(text) {
   }
   // 防止英文模式下未知中文后端文本泄漏造成中英混杂拼接
   if (currentPanelLanguage === 'en' && /[\u4e00-\u9fa5]/.test(trimmed)) {
-    return 'Backend operation notice (see desktop log for details)';
+    return 'Backend operation failed (see desktop log for details)';
   }
   return str;
 }

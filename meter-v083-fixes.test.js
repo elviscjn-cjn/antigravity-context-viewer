@@ -442,8 +442,19 @@ test('0.8.3 修复验证 5: 订阅二级菜单英文与繁体无中文残留（�
   const detPrice = h.elements.get('p-det-price');
   assert.match(detAcq.textContent, /Standard (paid subscription|Paid Plan)/i, '英文下订阅来源必须为英文，绝不显示正常付费订阅');
   assert.match(detPrice.textContent, /Monthly/, '英文下计费周期必须为 Monthly，绝不显示月付');
-  assert.match(detPrice.textContent, /approx\./, '英文下折合必须显示为 approx.，绝不显示折合');
+  assert.doesNotMatch(detPrice.textContent, /CNY|¥/, 'en 下默认 USD 订阅不再展示人民币 CNY');
   assert.equal(/正常付费|月付|折合/.test(detPrice.textContent), false, '英文价格字段内绝无中文残留');
+
+  // 非 USD 订阅在 en 下才附带 approx. $... USD
+  api.setTokenHistoryForTest({
+    summary: { grandTotalTokens: 10000, todayTokens: 1000 },
+    planStatus: { ...testPlan, currency: 'JPY', currencySymbol: '¥', actualPricePaid: 2900, region: '日本 (JPY)', cnyFormatted: '折合 ≈ ¥123.3 CNY' }
+  });
+  assert.match(detPrice.textContent, /approx\.\s*\$\d+\.\d{2}\s*USD/, 'en 下非 USD 订阅必须附带 approx. $... USD');
+  api.setTokenHistoryForTest({
+    summary: { grandTotalTokens: 10000, todayTokens: 1000 },
+    planStatus: testPlan
+  });
 
   // 2. 切换为繁体
   api.setPanelLanguage('zh-TW');

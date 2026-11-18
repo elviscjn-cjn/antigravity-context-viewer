@@ -5493,3 +5493,524 @@ test('cumulative ResizeObserver auto-toggles is-narrow across 460px threshold wi
     try { api.dispose(); } catch {}
   }
 });
+
+function htmlAwareRendererHarness(extraSandbox = null) {
+  const elements = new Map();
+  const docElements = new Map();
+  const listeners = new Map();
+  let shadowRootNode = null;
+
+  const makeEl = (tagName = 'div') => {
+    const attrs = new Map();
+    const props = new Map();
+    let _innerHTML = '';
+    const el = {
+      tagName: String(tagName).toUpperCase(),
+      style: {
+        display: '',
+        opacity: '',
+        setProperty(k, v) { props.set(k, v); },
+        removeProperty(k) { props.delete(k); },
+        getPropertyValue(k) { return props.get(k) || ''; }
+      },
+      children: [],
+      hidden: false,
+      textContent: '',
+      value: '',
+      checked: false,
+      disabled: false,
+      get options() {
+        return this.children.filter(c => String(c.tagName).toUpperCase() === 'OPTION');
+      },
+      get selectedOptions() {
+        return this.options.filter(o => o.value === this.value);
+      },
+      get innerHTML() { return _innerHTML; },
+      set innerHTML(v) {
+        _innerHTML = String(v || '');
+        if (!shadowRootNode || this !== shadowRootNode) return;
+        const bodyHtml = _innerHTML
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<!--[\s\S]*?-->/g, '');
+        const VOID_TAGS = new Set(['INPUT', 'BR', 'HR', 'IMG', 'META', 'LINK', 'PATH', 'CIRCLE', 'RECT', 'LINE', 'POLYLINE', 'POLYGON']);
+        const stack = [shadowRootNode];
+        const tokRe = /<(\/?)([a-zA-Z0-9-]+)((?:[^>"']|"[^"]*"|'[^']*')*?)\s*(\/?)>|([^<]+)/g;
+        let m;
+        while ((m = tokRe.exec(bodyHtml))) {
+          if (m[5] !== undefined) {
+            const txt = m[5].replace(/\s+/g, ' ');
+            const curParent = stack[stack.length - 1];
+            if (txt.trim() && curParent && !curParent.children.length) {
+              curParent.textContent = (curParent.textContent ? curParent.textContent + ' ' : '') + txt.trim();
+            } else if (txt.trim() && curParent) {
+              curParent.textContent = (curParent.textContent ? curParent.textContent + ' ' : '') + txt.trim();
+            }
+            continue;
+          }
+          const isClose = m[1] === '/';
+          const tName = m[2].toUpperCase();
+          const attrStr = m[3] || '';
+          const selfClose = m[4] === '/' || VOID_TAGS.has(tName);
+          if (isClose) {
+            while (stack.length > 1) {
+              const popped = stack.pop();
+              if (popped.tagName === tName) break;
+            }
+            continue;
+          }
+          const node = makeEl(tName);
+          const attrRe = /([a-zA-Z0-9_:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+          let am;
+          while ((am = attrRe.exec(attrStr))) {
+            const ak = am[1];
+            const av = am[2] ?? am[3] ?? am[4] ?? '';
+            node.setAttribute(ak, av);
+            if (ak === 'value') node.value = av;
+            if (ak === 'hidden') node.hidden = true;
+            if (ak === 'disabled') node.disabled = true;
+            if (ak === 'style') {
+              const dispMatch = /display\s*:\s*([^;]+)/i.exec(av);
+              if (dispMatch) node.style.display = dispMatch[1].trim();
+            }
+          }
+          const parent = stack[stack.length - 1];
+          parent.appendChild(node);
+          if (node.id) elements.set(node.id, node);
+          if (!selfClose) stack.push(node);
+        }
+      },
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); if (v) { docElements.set(String(v), el); elements.set(String(v), el); } },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      classList: {
+        add(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+          if (!cur.includes(c)) cur.push(c);
+          attrs.set('class', cur.join(' '));
+        },
+        remove(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c);
+          attrs.set('class', cur.join(' '));
+        },
+        contains(c) {
+          return (attrs.get('class') || '').split(/\s+/).includes(c);
+        }
+      },
+      addEventListener(type, fn) {
+        if (!listeners.has(el)) listeners.set(el, []);
+        listeners.get(el).push({ type, fn });
+      },
+      dispatchEvent(ev) {
+        const type = ev?.type || ev;
+        const handlers = listeners.get(el) || [];
+        for (const h of handlers) {
+          if (h.type === type) h.fn({ target: el, ...ev });
+        }
+      },
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id' && v) { docElements.set(String(v), el); elements.set(String(v), el); }
+      },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      closest(sel) {
+        const cl = String(sel || '').replace(/^\./, '');
+        let cur = this;
+        while (cur) {
+          if (cur.classList?.contains?.(cl)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      appendChild(x) {
+        if (x) {
+          x.parentElement = this;
+          this.children.push(x);
+          const xId = x.id || x.getAttribute?.('id');
+          if (xId) { docElements.set(xId, x); elements.set(xId, x); }
+        }
+      },
+      insertBefore(x, ref) {
+        if (!x) return;
+        x.parentElement = this;
+        const idx = ref ? this.children.indexOf(ref) : -1;
+        if (idx >= 0) this.children.splice(idx, 0, x);
+        else this.children.push(x);
+        const xId = x.id || x.getAttribute?.('id');
+        if (xId) { docElements.set(xId, x); elements.set(xId, x); }
+      },
+      replaceChildren(...nodes) {
+        this.children = [];
+        for (const n of nodes) this.appendChild(n);
+      },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const res = [];
+        const walk = (n) => {
+          if (!n || n === this) {
+            for (const c of (n?.children || [])) walk(c);
+            return;
+          }
+          let ok = false;
+          if (sel.startsWith('[') && sel.endsWith(']')) {
+            const inner = sel.slice(1, -1);
+            const eq = inner.indexOf('=');
+            if (eq > 0) {
+              const ak = inner.slice(0, eq).trim();
+              const av = inner.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+              ok = n.getAttribute?.(ak) === av;
+            } else {
+              ok = n.getAttribute?.(inner) !== null;
+            }
+          } else if (sel.startsWith('.')) {
+            const parts = sel.split('.').filter(Boolean);
+            ok = parts.every(p => n.classList?.contains?.(p));
+          } else if (sel.startsWith('#')) {
+            ok = n.id === sel.slice(1);
+          } else if (/^input\[type="date"\]$/i.test(sel)) {
+            ok = n.tagName === 'INPUT' && n.getAttribute?.('type') === 'date';
+          } else {
+            ok = n.tagName === sel.toUpperCase();
+          }
+          if (ok) res.push(n);
+          for (const c of (n.children || [])) walk(c);
+        };
+        walk(this);
+        return res;
+      },
+      click() {
+        const handlers = listeners.get(el) || [];
+        for (const h of handlers) {
+          if (h.type === 'click') h.fn({ target: el, stopPropagation() {} });
+        }
+      },
+      trigger(type, ev = {}) {
+        const handlers = listeners.get(el) || [];
+        for (const h of handlers) {
+          if (h.type === type) h.fn({ target: el, preventDefault() {}, stopPropagation() {}, ...ev });
+        }
+      },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 120, height: 26, right: 220, bottom: 126 }; },
+      get nextSibling() {
+        if (!this.parentElement) return null;
+        const i = this.parentElement.children.indexOf(this);
+        return i >= 0 ? (this.parentElement.children[i + 1] || null) : null;
+      },
+      remove() {
+        if (this.parentElement && Array.isArray(this.parentElement.children)) {
+          const i = this.parentElement.children.indexOf(this);
+          if (i >= 0) this.parentElement.children.splice(i, 1);
+        }
+      }
+    };
+    return el;
+  };
+
+  const host = makeEl('div');
+  host.attachShadow = () => {
+    shadowRootNode = makeEl('shadow-root');
+    shadowRootNode.getElementById = (id) => {
+      if (!elements.has(id)) elements.set(id, makeEl('div'));
+      return elements.get(id);
+    };
+    return shadowRootNode;
+  };
+
+  const savedSettings = [];
+  const docListeners = [];
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    document: {
+      createElement: (tag) => makeEl(tag || 'div'),
+      createElementNS: (_ns, tag) => makeEl(tag || 'svg'),
+      getElementById: id => docElements.get(id) || null,
+      documentElement: { appendChild() {} },
+      addEventListener(type, fn) { docListeners.push({ type, fn }); },
+      removeEventListener() {},
+      hidden: false
+    },
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      innerWidth: 1000,
+      innerHeight: 800,
+      contextMeterAPI: {
+        scan: () => Promise.resolve(null),
+        saveSettings: async (payload) => { savedSettings.push(payload); return { ok: true, settings: payload }; },
+        getSettings: async () => ({}),
+        checkUpdate: async () => ({ ok: true, currentVersion: '0.8.8', latestVersion: '0.8.8', hasUpdate: false, tagName: 'v0.8.8' })
+      }
+    },
+    __AGContextMeterCore: core,
+    AbortController,
+    Date,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1,
+    clearInterval() {},
+    fetch: () => new Promise(() => {}),
+    ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {})
+  };
+  let first = true;
+  sandbox.document.createElement = (tag) => { if (first) { first = false; return host; } return makeEl(tag || 'div'); };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  return { sandbox, host, get shadow() { return shadowRootNode; }, elements, savedSettings };
+}
+
+test('v0.8.8 英文界面完整去汉字回归、地区预设自动转换与零 native input[type="date"] 门禁', async () => {
+  const h = htmlAwareRendererHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const today = new Date();
+    const ym = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    const d0 = `${ym}-10`;
+    const d1 = `${ym}-09`;
+    const oldDates = [];
+    for (let i = 100; i >= 1; i--) {
+      const dt = new Date(today.getTime() - i * 86400000);
+      oldDates.push(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`);
+    }
+    const dm = {
+      [d1]: { total: 40e6, input: 10e6, cache: 25e6, output: 5e6, costUSD: 20.5 },
+      [d0]: { total: 80e6, input: 20e6, cache: 50e6, output: 10e6, costUSD: 40.0 }
+    };
+    dm[oldDates[0]] = { total: 5e6, input: 1e6, cache: 3e6, output: 1e6, costUSD: 2.0 };
+
+    // 1. 先在简体中文环境下注入完整真实场景数据并打开各主要子面板/自定义表单/日期选择器
+    await api.setPanelLanguage('zh-CN', { persist: false });
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      currentPeriod: { key: ym, periodType: 'calendar_month', label: ym, isCurrentMonth: true },
+      firstUseDate: oldDates[0],
+      dailyMap: dm,
+      dailyMapBySource: { all: dm },
+      summary: {
+        firstUseDate: oldDates[0],
+        grandTotalTokens: 125e6,
+        totalInputTokens: 31e6,
+        totalCacheTokens: 78e6,
+        totalOutputTokens: 16e6,
+        monthTokens: 120e6,
+        currentMonthInput: 30e6,
+        currentMonthCache: 75e6,
+        currentMonthOutput: 15e6,
+        todayTokens: 80e6
+      },
+      planStatus: {
+        tierKey: 'pro',
+        tierName: 'Google AI Pro',
+        email: 'elvis@example.com',
+        country: '美国 (US)',
+        countrySource: 'custom',
+        region: '美国 (USD)',
+        subscriptionRegion: '美国 (USD)',
+        regionSource: 'custom',
+        currency: 'USD',
+        currencySymbol: '$',
+        actualPricePaid: 19.99,
+        billingCycle: '月付',
+        validEndDate: `${ym}-28`,
+        acquisitionSource: 'normal_paid',
+        acquisitionSourceName: '正常付费订阅',
+        priceMode: 'preset',
+        priceSource: 'preset_region'
+      },
+      byModel: {
+        'gemini-3.8-flash': { modelLabel: 'Gemini 3.8 Flash', totalTokens: 80e6, inputTokens: 20e6, cacheTokens: 50e6, outputTokens: 10e6, requestCount: 12 },
+        'claude-opus-4-7': { modelLabel: 'Claude Opus 4.7', totalTokens: 45e6, inputTokens: 11e6, cacheTokens: 28e6, outputTokens: 6e6, requestCount: 8 }
+      }
+    });
+
+    h.elements.get('badge-tokens').click();
+    h.elements.get('tok-view-models').click();
+    h.elements.get('tok-view-tokens').click();
+    h.elements.get('tok-view-cost').click();
+    h.elements.get('btn-plan-detail-toggle').click();
+    h.elements.get('btn-edit-plan-custom').click();
+    h.elements.get('valid-end-trigger').click();
+    api.switchHeatView('cum');
+
+    // 2. 切换为英文（en），验证所有可见节点与控件值、提示属性零汉字残留
+    await api.setPanelLanguage('en', { persist: false });
+
+    assert.equal(h.shadow.querySelectorAll('input[type="date"]').length, 0, '不允许存在原生 input[type="date"]');
+    assert.equal(h.elements.get('input-custom-country').value, 'United States (US)');
+    assert.equal(h.elements.get('input-custom-region').value, 'United States (USD)');
+    assert.equal(h.elements.get('cost-period-tag').textContent, `${ym} (Calendar Month)`);
+    assert.doesNotMatch(h.elements.get('cost-scope-desc').textContent, /[\u4e00-\u9fff]/);
+    assert.doesNotMatch(h.elements.get('plan-summary-price-val').textContent, /[\u4e00-\u9fff]/);
+    assert.equal(h.elements.get('plan-summary-price-cny').textContent, '', 'en 下默认 USD 订阅不显示人民币换算');
+    assert.doesNotMatch(h.elements.get('p-det-price').textContent, /CNY|¥/);
+
+    const leaks = [];
+    const ALLOWED_SWITCHER_IDS = new Set(['btn-top-lang-zh-CN', 'btn-top-lang-zh-TW', 'btn-lang-zh-CN', 'btn-lang-zh-TW', 'btn-ctx-lang-zh-CN', 'btn-ctx-lang-zh-TW']);
+    const isInsideHiddenOrOption = (node) => {
+      if (node.tagName === 'OPTION') return true;
+      let cur = node;
+      while (cur) {
+        if (cur.style?.display === 'none' || cur.hidden) return true;
+        if (ALLOWED_SWITCHER_IDS.has(cur.id)) return true;
+        cur = cur.parentElement;
+      }
+      return false;
+    };
+    const walkShadow = (node) => {
+      if (!node) return;
+      if (isInsideHiddenOrOption(node)) return;
+      const fields = [
+        ['textContent', node.textContent],
+        ['value', node.value],
+        ['title', node.getAttribute?.('title')],
+        ['placeholder', node.getAttribute?.('placeholder')],
+        ['aria-label', node.getAttribute?.('aria-label')]
+      ];
+      for (const [fName, val] of fields) {
+        if (typeof val === 'string' && /[\u4e00-\u9fff]/.test(val)) {
+          leaks.push({ id: node.id || node.className || node.tagName, field: fName, val });
+        }
+      }
+      for (const child of (node.children || [])) walkShadow(child);
+    };
+    // 将主看板全部设为可见以便全量遍历
+    h.elements.get('panel-tokens').style.display = 'flex';
+    h.elements.get('plan-detail-card').style.display = 'block';
+    h.elements.get('plan-custom-form').style.display = 'block';
+    h.elements.get('valid-end-popover').style.display = 'block';
+    h.elements.get('cost-details-pane').style.display = 'block';
+    walkShadow(h.shadow);
+    assert.deepEqual(leaks, [], `en 模式下发现汉字泄露: ${JSON.stringify(leaks, null, 2)}`);
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});
+
+test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四币种且零简体）与自定义日期选择器全流程', async () => {
+  const h = htmlAwareRendererHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const today = new Date();
+    const pad2 = n => String(n).padStart(2, '0');
+    const todayYmd = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+    const ym = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}`;
+    const d0 = `${ym}-${pad2(Math.max(1, today.getDate()))}`;
+    const dm = { [d0]: { total: 50e6, input: 10e6, cache: 35e6, output: 5e6, costUSD: 100.0 } };
+
+    const basePayload = {
+      schemaVersion: '0.8.5',
+      currentPeriod: { key: ym, periodType: 'calendar_month', label: ym, isCurrentMonth: true },
+      firstUseDate: d0,
+      dailyMap: dm,
+      dailyMapBySource: { all: dm },
+      summary: {
+        firstUseDate: d0,
+        grandTotalTokens: 50e6,
+        totalInputTokens: 10e6,
+        totalCacheTokens: 35e6,
+        totalOutputTokens: 5e6,
+        monthTokens: 50e6,
+        currentMonthInput: 10e6,
+        currentMonthCache: 35e6,
+        currentMonthOutput: 5e6,
+        todayTokens: 50e6
+      },
+      planStatus: {
+        tierKey: 'pro',
+        tierName: 'Google AI Pro',
+        country: '美国 (US)',
+        region: '美国 (USD)',
+        currency: 'USD',
+        currencySymbol: '$',
+        actualPricePaid: 19.99,
+        billingCycle: '月付',
+        priceMode: 'custom',
+        priceSource: 'custom'
+      }
+    };
+
+    // A. en: 纯 USD，绝无 ¥ / CNY；非 USD 订阅展示 approx. $... USD
+    await api.setPanelLanguage('en', { persist: false });
+    api.applyTokenHistoryPayload(basePayload);
+    h.elements.get('tok-view-cost').click();
+    assert.doesNotMatch(h.elements.get('t-total-cost').textContent, /¥|CNY/);
+    assert.doesNotMatch(h.elements.get('t-today-cost').textContent, /¥|CNY/);
+    assert.doesNotMatch(h.elements.get('t-month-cost').textContent, /¥|CNY/);
+    assert.doesNotMatch(h.elements.get('t-year-cost').textContent, /¥|CNY/);
+    assert.doesNotMatch(h.elements.get('cost-grand-val').textContent, /¥|CNY/);
+    assert.equal(h.elements.get('plan-summary-price-cny').textContent, '');
+
+    api.applyTokenHistoryPayload({
+      ...basePayload,
+      planStatus: { ...basePayload.planStatus, region: '日本 (JPY)', currency: 'JPY', currencySymbol: '¥', actualPricePaid: 2900 }
+    });
+    assert.match(h.elements.get('plan-summary-price-cny').textContent, /approx\. \$\d+\.\d{2} USD/);
+
+    // B. zh-CN: USD + CNY (¥)
+    await api.setPanelLanguage('zh-CN', { persist: false });
+    api.applyTokenHistoryPayload(basePayload);
+    assert.match(h.elements.get('t-total-cost').textContent, /≈ \$.*\(¥/);
+    assert.match(h.elements.get('p-det-price').textContent, /¥[\d.]+ CNY/);
+
+    // C. zh-TW: 紧凑卡片 USD + HK$/NT$；详情四币种 USD/HKD/TWD/CNY；地区转繁体且零简体字
+    await api.setPanelLanguage('zh-TW', { persist: false });
+    api.applyTokenHistoryPayload(basePayload);
+    assert.match(h.elements.get('t-total-cost').textContent, /HK\$[\d.]+.*NT\$[\d.]+/);
+    assert.match(h.elements.get('cost-grand-val').textContent, /HK\$.*NT\$.*¥[\d.]+ CNY/);
+    assert.match(h.elements.get('cost-sub-line').textContent, /HK\$.*NT\$.*¥[\d.]+ CNY/);
+
+    h.elements.get('btn-plan-detail-toggle').click();
+    h.elements.get('btn-edit-plan-custom').click();
+    assert.equal(h.elements.get('input-custom-country').value, '美國 (US)');
+    assert.equal(h.elements.get('input-custom-region').value, '美國 (USD)');
+
+    // 扫描 PANEL_I18N zh-TW 全字典不含明确简体专属字
+    const simpOnlyRe = /[国韩亚欧乌罗马联东陆区宾兰达尔义书买云亿仅从仓优会体佣储兑划创删剂剑劝办务动励劳势协单卖卫却压厌双变叠叶号叹启员响哑唤严丰临举么乐习乡乱亏亚产亲们价众伙伞伟传伤伦伪侣侦侧侨俩仓个倾偿催傲傻]/;
+    const i18nSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'i18n.js'), 'utf8');
+    const iCtx = {};
+    vm.runInNewContext(`${i18nSrc}\nthis.__I18N = PANEL_I18N;`, iCtx);
+    const twSimpHits = [];
+    for (const [k, v] of Object.entries(iCtx.__I18N)) {
+      if (typeof v['zh-TW'] === 'string' && simpOnlyRe.test(v['zh-TW'])) {
+        twSimpHits.push(`${k}: ${v['zh-TW']}`);
+      }
+    }
+    assert.deepEqual(twSimpHits, [], `zh-TW 字典存在简体字: ${twSimpHits.join('; ')}`);
+
+    // D. 自定义日期选择器全流程：英文表头、选日、清空、今天、保存持久化
+    await api.setPanelLanguage('en', { persist: false });
+    const dpTrigger = h.elements.get('valid-end-trigger');
+    const dpPopover = h.elements.get('valid-end-popover');
+    const dpHidden = h.elements.get('input-valid-end');
+    const dpLabel = h.elements.get('valid-end-label');
+
+    dpTrigger.click();
+    assert.equal(dpPopover.style.display, 'block');
+    const wkTexts = dpPopover.querySelectorAll('.ag-dp-weekday').map(n => n.textContent);
+    assert.deepEqual(wkTexts, ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']);
+
+    const targetCell = dpPopover.querySelectorAll('.ag-dp-day').find(b => b.getAttribute('data-date') === d0);
+    assert.ok(targetCell, `应存在日期格 ${d0}`);
+    targetCell.click();
+    assert.equal(dpHidden.value, d0);
+    assert.equal(dpLabel.textContent, d0);
+    assert.equal(dpPopover.style.display, 'none');
+
+    // 重新打开点 Clear
+    dpTrigger.click();
+    dpPopover.querySelector('[data-dp-action="clear"]').click();
+    assert.equal(dpHidden.value, '');
+    assert.equal(dpLabel.textContent, 'YYYY-MM-DD');
+
+    // 重新打开点 Today 并保存
+    dpTrigger.click();
+    dpPopover.querySelector('[data-dp-action="today"]').click();
+    assert.equal(dpHidden.value, todayYmd);
+    assert.equal(dpLabel.textContent, todayYmd);
+
+    h.elements.get('btn-custom-plan-save').click();
+    const lastSave = h.savedSettings[h.savedSettings.length - 1];
+    assert.equal(lastSave?.customPlan?.validEndDate, todayYmd);
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});

@@ -6855,7 +6855,7 @@ function translateBackendText(text) {
   }
   // 防止英文模式下未知中文后端文本泄漏造成中英混杂拼接
   if (currentPanelLanguage === 'en' && /[\u4e00-\u9fa5]/.test(trimmed)) {
-    return 'Backend operation notice (see desktop log for details)';
+    return 'Backend operation failed (see desktop log for details)';
   }
   return str;
 }
@@ -11905,7 +11905,8 @@ function closeAllDropdowns(exceptWrap = null) {
         if (nextAria) trigger.setAttribute?.('aria-label', nextAria);
         // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
         if (!hasClass(wrap, 'is-open')) {
-          const optsSig = `${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
+          const langTag = typeof currentPanelLanguage !== 'undefined' ? currentPanelLanguage : 'zh-CN';
+          const optsSig = `${langTag}|${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
           if (optsSig !== lastClosedMenuSig) {
             lastClosedMenuSig = optsSig;
             renderMenu('', { scrollSelected: false });
@@ -12512,6 +12513,7 @@ function closeAllDropdowns(exceptWrap = null) {
       labelId: 'direct-country-label',
       menuId: 'direct-country-menu',
       selectId: 'direct-country-select',
+      getAriaLabel: () => t('plan.form.countryLabel'),
       searchPlaceholder: () => t('dropdown.countrySearch'),
       getOptions: () => COUNTRY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
       getSelectedValue: () => {
@@ -12534,6 +12536,7 @@ function closeAllDropdowns(exceptWrap = null) {
       triggerId: 'direct-region-trigger',
       labelId: 'direct-region-label',
       menuId: 'direct-region-menu',
+      getAriaLabel: () => t('plan.form.regionLabel'),
       searchPlaceholder: () => t('dropdown.regionSearch'),
       getOptions: () => {
         return presets.map(p => {
@@ -12582,6 +12585,7 @@ function closeAllDropdowns(exceptWrap = null) {
       labelId: 'direct-currency-label',
       menuId: 'direct-currency-menu',
       selectId: 'direct-currency-select',
+      getAriaLabel: () => String(t('plan.dt.currency') || 'Currency').replace(/[：:]\s*$/, ''),
       searchPlaceholder: () => t('dropdown.currencySearch'),
       getOptions: () => CURRENCY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
       getSelectedValue: () => {
@@ -12761,6 +12765,9 @@ function closeAllDropdowns(exceptWrap = null) {
     for (const spec of NATIVE_DROPDOWN_SPECS) {
       const ctrl = enhancedDropdowns.get(spec.selectId) || initNativeSelectDropdown(spec.selectId, spec);
       ctrl?.refresh?.();
+    }
+    for (const wrapId of ['direct-country-wrap', 'direct-region-wrap', 'direct-currency-wrap']) {
+      el(wrapId)?._controller?.refresh?.();
     }
   }
 
@@ -13208,18 +13215,19 @@ function closeAllDropdowns(exceptWrap = null) {
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
     const acq = el('select-custom-acq')?.value || 'normal_paid';
-    const acqName = el('input-custom-acq-name')?.value?.trim() || '';
+    const acqName = String(el('input-custom-acq-name')?.value ?? '').trim();
     const isZero = Boolean(el('check-zero-extra')?.checked);
     const countryInputEl = el('input-custom-country');
-    const countryVal = countryInputEl ? countryInputEl.value.trim() : (prevCustom.accountRegion || prevCustom.country || '');
+    const countryVal = countryInputEl ? String(countryInputEl.value ?? '').trim() : (prevCustom.accountRegion || prevCustom.country || '');
     const regInputEl = el('input-custom-region');
-    const reg = regInputEl ? regInputEl.value.trim() : (prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || '');
-    const rawPaid = el('input-custom-paid')?.value?.trim();
+    const reg = regInputEl ? String(regInputEl.value ?? '').trim() : (prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || '');
+    const rawPaidVal = el('input-custom-paid')?.value;
+    const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
     const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
     const cur = el('select-custom-currency')?.value || prevCustom.subscriptionCurrency || prevCustom.currency || 'USD';
     const cycle = el('select-custom-cycle')?.value || (isZero ? '随套餐赠送/免费' : '月付');
-    const validEnd = el('input-valid-end')?.value?.trim() || '';
-    const note = el('input-custom-note')?.value?.trim() || '';
+    const validEnd = String(el('input-valid-end')?.value ?? '').trim();
+    const note = String(el('input-custom-note')?.value ?? '').trim();
 
     const customObj = {
       ...prevCustom,
