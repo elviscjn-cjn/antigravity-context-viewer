@@ -1,5 +1,6 @@
 (function () {
   const METER_VERSION = '0.8.8';
+  const METER_DISPLAY_VERSION = '0.8.8 α';
 
   'use strict';
   if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
@@ -2505,7 +2506,7 @@
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
-      <span id="v">v0.8.8</span>
+      <span id="v">0.8.8 α</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -4656,7 +4657,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.8</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.8.8 α</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -5553,17 +5554,17 @@ const PANEL_I18N = {
   'update.applyNow': { 'zh-CN': '立即更新', 'zh-TW': '立即更新', en: 'Update Now' },
   'update.connecting': { 'zh-CN': '正在连接 GitHub 检测最新版本…', 'zh-TW': '正在連接 GitHub 檢測最新版本…', en: 'Connecting to GitHub to check for updates…' },
   'update.failedTitle': { 'zh-CN': '⚠️ 检查更新失败', 'zh-TW': '⚠️ 檢查更新失敗', en: '⚠️ Update Check Failed' },
-  'update.failedVer': { 'zh-CN': 'v{ver} (检查失败)', 'zh-TW': 'v{ver} (檢查失敗)', en: 'v{ver} (Check failed)' },
+  'update.failedVer': { 'zh-CN': '{ver} (检查失败)', 'zh-TW': '{ver} (檢查失敗)', en: '{ver} (Check failed)' },
   'update.failedFetch': { 'zh-CN': '未能获取有效的版本数据', 'zh-TW': '未能取得有效的版本資料', en: 'Failed to retrieve valid release metadata' },
   'update.failedBody': { 'zh-CN': '检查更新失败: {err}。请检查网络代理设置或前往 GitHub 查看。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路代理設定或前往 GitHub 檢視。', en: 'Update check failed: {err}. Please check your proxy or visit GitHub.' },
   'update.failedNetBody': { 'zh-CN': '检查更新失败: {err}。请检查网络连接或稍后重试。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路連線或稍後重試。', en: 'Update check failed: {err}. Please check your network and try again.' },
   'update.foundTitle': { 'zh-CN': '🚀 发现新版本', 'zh-TW': '🚀 發現新版本', en: '🚀 Update Available' },
-  'update.foundBody': { 'zh-CN': '发现新版本 v{ver}！\n\n更新说明：\n{notes}', 'zh-TW': '發現新版本 v{ver}！\n\n更新說明：\n{notes}', en: 'Version v{ver} is available!\n\nRelease notes:\n{notes}' },
+  'update.foundBody': { 'zh-CN': '发现新版本 {ver}！\n\n更新说明：\n{notes}', 'zh-TW': '發現新版本 {ver}！\n\n更新說明：\n{notes}', en: 'Version {ver} is available!\n\nRelease notes:\n{notes}' },
   'update.defaultNotes': { 'zh-CN': '性能优化与体验改进', 'zh-TW': '效能最佳化與體驗改進', en: 'Performance and usability improvements' },
   'update.latestTitle': { 'zh-CN': '✅ 已是最新版本', 'zh-TW': '✅ 已是最新版本', en: '✅ Up to Date' },
-  'update.latestVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Latest)' },
-  'update.diskPending': { 'zh-CN': '已完成磁盘安装至最新版本 (v{ver})，待重启客户端后主进程完整生效。', 'zh-TW': '已完成磁碟安裝至最新版本 (v{ver})，待重新啟動用戶端後主行程完整生效。', en: 'v{ver} has been installed on disk. Restart the client for main-process changes to take effect.' },
-  'update.latestBody': { 'zh-CN': '当前已是最新版本 (v{ver})。已通过 GitHub Releases 确认。', 'zh-TW': '目前已是最新版本 (v{ver})。已透過 GitHub Releases 確認。', en: 'You are on the latest version (v{ver}), verified via GitHub Releases.' },
+  'update.latestVer': { 'zh-CN': '{ver} (已是最新)', 'zh-TW': '{ver} (已是最新)', en: '{ver} (Latest)' },
+  'update.diskPending': { 'zh-CN': '已完成磁盘安装至最新版本 ({ver})，待重启客户端后主进程完整生效。', 'zh-TW': '已完成磁碟安裝至最新版本 ({ver})，待重新啟動用戶端後主行程完整生效。', en: '{ver} has been installed on disk. Restart the client for main-process changes to take effect.' },
+  'update.latestBody': { 'zh-CN': '当前已是最新版本 ({ver})。已通过 GitHub Releases 确认。', 'zh-TW': '目前已是最新版本 ({ver})。已透過 GitHub Releases 確認。', en: 'You are on the latest version ({ver}), verified via GitHub Releases.' },
   'update.updatingBtn': { 'zh-CN': '正在更新...', 'zh-TW': '正在更新...', en: 'Updating…' },
   'update.downloading': { 'zh-CN': '正在下载安装包并校验 SHA-256...', 'zh-TW': '正在下載安裝套件並校驗 SHA-256...', en: 'Downloading package and verifying SHA-256…' },
   'update.noApi': { 'zh-CN': '更新接口不可用', 'zh-TW': '更新介面無法使用', en: 'Update API unavailable' },
@@ -6022,15 +6023,15 @@ const PANEL_I18N = {
   'settings.proxy.resModel': { 'zh-CN': '模型请求', 'zh-TW': '模型請求', en: 'Model request' },
 
   'update.unavailableTitle': { 'zh-CN': 'ℹ️ 更新不可用', 'zh-TW': 'ℹ️ 更新不可用', en: 'ℹ️ Update Unavailable' },
-  'update.unavailableVer': { 'zh-CN': 'v{ver} (更新不可用)', 'zh-TW': 'v{ver} (更新不可用)', en: 'v{ver} (Unavailable)' },
+  'update.unavailableVer': { 'zh-CN': '{ver} (更新不可用)', 'zh-TW': '{ver} (更新不可用)', en: '{ver} (Unavailable)' },
   'update.unavailableBody': { 'zh-CN': '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。', 'zh-TW': '目前環境未提供更新橋接介面（如純前端除錯或免安裝熱掛載模式），無法線上檢查更新。請前往 GitHub Releases 頁面查看最新發布。', en: 'Update bridge unavailable in this mode. Check GitHub Releases for the latest version.' },
   'update.checkingTitle': { 'zh-CN': '🔄 检查更新中', 'zh-TW': '🔄 檢查更新中', en: '🔄 Checking for Updates' },
-  'update.checkingVer': { 'zh-CN': 'v{ver} (正在检查…)', 'zh-TW': 'v{ver} (正在檢查…)', en: 'v{ver} (Checking…)' },
+  'update.checkingVer': { 'zh-CN': '{ver} (正在检查…)', 'zh-TW': '{ver} (正在檢查…)', en: '{ver} (Checking…)' },
   'update.doneTitle': { 'zh-CN': '🎉 更新已完成', 'zh-TW': '🎉 更新已完成', en: '🎉 Update Complete' },
-  'update.doneVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Up to date)' },
-  'update.doneHot': { 'zh-CN': '已成功在线更新至 v{ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 v{ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to v{ver}. UI hot-injected immediately; restart client for main-process changes.' },
-  'update.doneHotFull': { 'zh-CN': '已成功在线更新至 v{ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 v{ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to v{ver}. Both UI and backend service hot-reloaded and verified without restart.' },
-  'update.doneDisk': { 'zh-CN': '已成功完成 v{ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 v{ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to v{ver} complete. Restart Antigravity to apply.' },
+  'update.doneVer': { 'zh-CN': '{ver} (已是最新)', 'zh-TW': '{ver} (已是最新)', en: '{ver} (Up to date)' },
+  'update.doneHot': { 'zh-CN': '已成功在线更新至 {ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 {ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to {ver}. UI hot-injected immediately; restart client for main-process changes.' },
+  'update.doneHotFull': { 'zh-CN': '已成功在线更新至 {ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 {ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to {ver}. Both UI and backend service hot-reloaded and verified without restart.' },
+  'update.doneDisk': { 'zh-CN': '已成功完成 {ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 {ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to {ver} complete. Restart Antigravity to apply.' },
   'update.restartBtn': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },
   'update.btnRetry': { 'zh-CN': '重试更新', 'zh-TW': '重試更新', en: 'Retry Update' },
@@ -8769,6 +8770,12 @@ function formatVendorLabel(vendor) {
   let cachedLatestRelease = null;
 
   const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
+  function formatDisplayVersion(rawVer) {
+    const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
+    if (!clean) return '0.8.8 α';
+    if (clean === '0.8.8') return '0.8.8 α';
+    return `v${clean}`;
+  }
   const backendStatus = {
     rendererVersion: METER_RENDERER_VERSION,
     backendSource: null,
@@ -21254,6 +21261,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
     const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
+    const currentDisplayVer = formatDisplayVersion(currentVer);
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
@@ -21261,7 +21269,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.unavailableTitle');
-      if (verEl) verEl.textContent = t('update.unavailableVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.unavailableVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.unavailableBody');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -21274,7 +21282,7 @@ function closeAllDropdowns(exceptWrap = null) {
       cachedLatestRelease = null;
       showUpdatePopover(trigger);
       if (titleEl) titleEl.textContent = t('update.checkingTitle');
-      if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.connecting');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -21296,7 +21304,7 @@ function closeAllDropdowns(exceptWrap = null) {
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = t('update.failedTitle');
-        if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
+        if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
         const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
         if (bodyEl) bodyEl.textContent = t('update.failedBody', { err: errMsg });
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -21307,12 +21315,13 @@ function closeAllDropdowns(exceptWrap = null) {
 
       if (res.hasUpdate && res.latestVersion) {
         cachedLatestRelease = res;
+        const nextDisplayVer = formatDisplayVersion(res.latestVersion);
         if (dot) dot.style.display = 'block';
         if (dotCtx) dotCtx.style.display = 'block';
         if (titleEl) titleEl.textContent = t('update.foundTitle');
-        if (verEl) verEl.textContent = `v${res.currentVersion || currentVer} → v${res.latestVersion}`;
+        if (verEl) verEl.textContent = `${formatDisplayVersion(res.currentVersion || currentVer)} → ${nextDisplayVer}`;
         if (bodyEl) {
-          bodyEl.textContent = t('update.foundBody', { ver: res.latestVersion, notes: res.releaseNotes || t('update.defaultNotes') });
+          bodyEl.textContent = t('update.foundBody', { ver: nextDisplayVer, notes: res.releaseNotes || t('update.defaultNotes') });
         }
         if (applyBtn) {
           applyBtn.disabled = false;
@@ -21327,14 +21336,15 @@ function closeAllDropdowns(exceptWrap = null) {
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = t('update.latestTitle');
         const effectiveCurrent = res.installedVersion || res.currentVersion || currentVer;
-        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveCurrent });
+        const effectiveDisplayVer = formatDisplayVersion(effectiveCurrent);
+        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveDisplayVer });
         const needsDiskRestart = Boolean(res.diskPendingRestart);
         if (needsDiskRestart) {
           pendingUpdateRestart = true;
         }
         const updateStatusText = needsDiskRestart
-          ? t('update.diskPending', { ver: effectiveCurrent })
-          : t('update.latestBody', { ver: effectiveCurrent });
+          ? t('update.diskPending', { ver: effectiveDisplayVer })
+          : t('update.latestBody', { ver: effectiveDisplayVer });
         if (bodyEl) bodyEl.textContent = updateStatusText;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         setUpdateRestartVisible(needsDiskRestart);
@@ -21349,7 +21359,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.failedTitle');
-      if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: translateBackendText(err.message) });
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       setUpdateRestartVisible(false);
@@ -21400,8 +21410,9 @@ function closeAllDropdowns(exceptWrap = null) {
       if (res && res.ok) {
         const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
+        const nextDisplayVer = formatDisplayVersion(nextVer);
         const vEl = el('v');
-        if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;
+        if (vEl && res.liveInjected) vEl.textContent = nextDisplayVer;
 
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
@@ -21409,11 +21420,11 @@ function closeAllDropdowns(exceptWrap = null) {
         const fullyHotReloaded = Boolean(res.liveInjected && res.backendHotReloaded);
         pendingUpdateRestart = !fullyHotReloaded;
         if (titleEl) titleEl.textContent = t('update.doneTitle');
-        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextVer });
+        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
         if (bodyEl) {
           bodyEl.textContent = fullyHotReloaded
-            ? t('update.doneHotFull', { ver: nextVer })
-            : (res.liveInjected ? t('update.doneHot', { ver: nextVer }) : t('update.doneDisk', { ver: nextVer }));
+            ? t('update.doneHotFull', { ver: nextDisplayVer })
+            : (res.liveInjected ? t('update.doneHot', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer }));
         }
         if (applyBtn) {
           applyBtn.textContent = t('update.btnUpdated');
@@ -21426,17 +21437,17 @@ function closeAllDropdowns(exceptWrap = null) {
         }
 
         if (fullyHotReloaded) {
-          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextVer });
+          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextDisplayVer });
           if (backendStatus.backendVersion === nextVer) {
             backendStatus.backendVersionMismatch = false;
           }
         } else if (res.liveInjected) {
-          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextVer });
+          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextDisplayVer });
         } else {
           if (statusEl) {
             statusEl.textContent = hostSupportsRestart
-              ? t('update.doneDisk', { ver: nextVer })
-              : `${t('update.doneDisk', { ver: nextVer })} ${t('client.restart.hostNotSupported')}`;
+              ? t('update.doneDisk', { ver: nextDisplayVer })
+              : `${t('update.doneDisk', { ver: nextDisplayVer })} ${t('client.restart.hostNotSupported')}`;
           }
         }
         if (typeof renderQuotaBoard === 'function') {

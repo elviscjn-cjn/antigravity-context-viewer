@@ -5313,3 +5313,58 @@ test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-
     api.dispose();
   }
 });
+
+test('v0.8.8 α 版本展示与更新比较隔离: 界面展示 0.8.8 α 且无正式版字样, 0.8.8==0.8.8 判最新, 0.8.9 判有更新', async () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  assert.equal(pkg.version, '0.8.8');
+
+  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.8.8 α，且渲染源码中不含“正式版”字样
+  const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  assert.match(builtCode, /<span id="v">0\.8\.8 α<\/span>/);
+  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.8\.8 α<\/span>/);
+  assert.equal(builtCode.includes('正式版'), false);
+
+  // 2. 0.8.8 vs 0.8.8 判为已是最新，且文案展示 0.8.8 α
+  {
+    const h = harness();
+    const api = h.sandbox.__AGContextMeter;
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      checkUpdate: async (req) => {
+        assert.equal(req.currentVersion, '0.8.8');
+        return { ok: true, hasUpdate: false, currentVersion: '0.8.8', installedVersion: '0.8.8' };
+      }
+    };
+    try {
+      await api.checkUpdate(true);
+      await h.flush();
+      assert.equal(h.elements.get('up-pop-ver').textContent, '0.8.8 α (已是最新)');
+      assert.match(h.elements.get('up-pop-body').textContent, /0\.8\.8 α/);
+      assert.equal(h.elements.get('up-pop-body').textContent.includes('正式版'), false);
+    } finally {
+      api.dispose();
+    }
+  }
+
+  // 3. 0.8.8 vs 0.8.9 判为有更新，且展示 0.8.8 α → v0.8.9
+  {
+    const h = harness();
+    const api = h.sandbox.__AGContextMeter;
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      checkUpdate: async (req) => {
+        assert.equal(req.currentVersion, '0.8.8');
+        return { ok: true, hasUpdate: true, currentVersion: '0.8.8', latestVersion: '0.8.9', releaseNotes: 'v0.8.9 test' };
+      }
+    };
+    try {
+      await api.checkUpdate(true);
+      await h.flush();
+      assert.equal(h.elements.get('up-pop-ver').textContent, '0.8.8 α → v0.8.9');
+      assert.match(h.elements.get('up-pop-body').textContent, /v0\.8\.9/);
+      assert.equal(h.elements.get('btn-apply-update').style.display, 'inline-block');
+    } finally {
+      api.dispose();
+    }
+  }
+});

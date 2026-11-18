@@ -1238,6 +1238,8 @@ test('semver & update filtering: strictly accepts v0.x tags, ignores asset filen
   assert.equal(compareVersions('0.8.1', '0.8.0'), 1);
   assert.equal(compareVersions('0.8.0', '0.8.0'), 0);
   assert.equal(compareVersions('0.7.0', '0.8.0'), -1);
+  assert.equal(compareVersions('0.8.8', '0.8.8'), 0);
+  assert.equal(compareVersions('0.8.9', '0.8.8'), 1);
 
   // Release 过滤测试：包含历史 Release（ZIP 中仍可能带有 2.7.x 文件名）
   const mockReleases = [
@@ -1252,6 +1254,17 @@ test('semver & update filtering: strictly accepts v0.x tags, ignores asset filen
   assert.equal(valid.length, 2);
   assert.equal(valid[0].version, '0.9.0');
   assert.equal(valid[1].version, '0.8.1');
+
+  // 0.8.8 比较：同版本 v0.8.8 (title: 'v0.8.8 α') 判无更新；存在 v0.8.9 判有更新
+  assert.equal(filterReleases([
+    { tag_name: 'v0.8.8', name: 'v0.8.8 α', draft: false, prerelease: false, html_url: 'https://github.com/.../v0.8.8', assets: [] }
+  ], '0.8.8').length, 0);
+  const valid089 = filterReleases([
+    { tag_name: 'v0.8.8', name: 'v0.8.8 α', draft: false, prerelease: false, html_url: 'https://github.com/.../v0.8.8', assets: [] },
+    { tag_name: 'v0.8.9', name: 'v0.8.9', draft: false, prerelease: false, html_url: 'https://github.com/.../v0.8.9', assets: [] }
+  ], '0.8.8');
+  assert.equal(valid089.length, 1);
+  assert.equal(valid089[0].version, '0.8.9');
 
   // 资产匹配测试（即使历史文件名带 2.7.x 也能基于 platform/arch 正确解析）
   const mockAssets = [

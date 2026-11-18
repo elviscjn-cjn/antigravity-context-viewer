@@ -211,6 +211,12 @@
   let cachedLatestRelease = null;
 
   const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
+  function formatDisplayVersion(rawVer) {
+    const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
+    if (!clean) return '0.8.8 α';
+    if (clean === '0.8.8') return '0.8.8 α';
+    return `v${clean}`;
+  }
   const backendStatus = {
     rendererVersion: METER_RENDERER_VERSION,
     backendSource: null,
@@ -10277,6 +10283,7 @@
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
     const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
+    const currentDisplayVer = formatDisplayVersion(currentVer);
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
@@ -10284,7 +10291,7 @@
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.unavailableTitle');
-      if (verEl) verEl.textContent = t('update.unavailableVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.unavailableVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.unavailableBody');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -10297,7 +10304,7 @@
       cachedLatestRelease = null;
       showUpdatePopover(trigger);
       if (titleEl) titleEl.textContent = t('update.checkingTitle');
-      if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.connecting');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -10319,7 +10326,7 @@
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = t('update.failedTitle');
-        if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
+        if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
         const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
         if (bodyEl) bodyEl.textContent = t('update.failedBody', { err: errMsg });
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -10330,12 +10337,13 @@
 
       if (res.hasUpdate && res.latestVersion) {
         cachedLatestRelease = res;
+        const nextDisplayVer = formatDisplayVersion(res.latestVersion);
         if (dot) dot.style.display = 'block';
         if (dotCtx) dotCtx.style.display = 'block';
         if (titleEl) titleEl.textContent = t('update.foundTitle');
-        if (verEl) verEl.textContent = `v${res.currentVersion || currentVer} → v${res.latestVersion}`;
+        if (verEl) verEl.textContent = `${formatDisplayVersion(res.currentVersion || currentVer)} → ${nextDisplayVer}`;
         if (bodyEl) {
-          bodyEl.textContent = t('update.foundBody', { ver: res.latestVersion, notes: res.releaseNotes || t('update.defaultNotes') });
+          bodyEl.textContent = t('update.foundBody', { ver: nextDisplayVer, notes: res.releaseNotes || t('update.defaultNotes') });
         }
         if (applyBtn) {
           applyBtn.disabled = false;
@@ -10350,14 +10358,15 @@
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = t('update.latestTitle');
         const effectiveCurrent = res.installedVersion || res.currentVersion || currentVer;
-        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveCurrent });
+        const effectiveDisplayVer = formatDisplayVersion(effectiveCurrent);
+        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveDisplayVer });
         const needsDiskRestart = Boolean(res.diskPendingRestart);
         if (needsDiskRestart) {
           pendingUpdateRestart = true;
         }
         const updateStatusText = needsDiskRestart
-          ? t('update.diskPending', { ver: effectiveCurrent })
-          : t('update.latestBody', { ver: effectiveCurrent });
+          ? t('update.diskPending', { ver: effectiveDisplayVer })
+          : t('update.latestBody', { ver: effectiveDisplayVer });
         if (bodyEl) bodyEl.textContent = updateStatusText;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         setUpdateRestartVisible(needsDiskRestart);
@@ -10372,7 +10381,7 @@
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.failedTitle');
-      if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: translateBackendText(err.message) });
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       setUpdateRestartVisible(false);
@@ -10423,8 +10432,9 @@
       if (res && res.ok) {
         const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
+        const nextDisplayVer = formatDisplayVersion(nextVer);
         const vEl = el('v');
-        if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;
+        if (vEl && res.liveInjected) vEl.textContent = nextDisplayVer;
 
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
@@ -10432,11 +10442,11 @@
         const fullyHotReloaded = Boolean(res.liveInjected && res.backendHotReloaded);
         pendingUpdateRestart = !fullyHotReloaded;
         if (titleEl) titleEl.textContent = t('update.doneTitle');
-        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextVer });
+        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
         if (bodyEl) {
           bodyEl.textContent = fullyHotReloaded
-            ? t('update.doneHotFull', { ver: nextVer })
-            : (res.liveInjected ? t('update.doneHot', { ver: nextVer }) : t('update.doneDisk', { ver: nextVer }));
+            ? t('update.doneHotFull', { ver: nextDisplayVer })
+            : (res.liveInjected ? t('update.doneHot', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer }));
         }
         if (applyBtn) {
           applyBtn.textContent = t('update.btnUpdated');
@@ -10449,17 +10459,17 @@
         }
 
         if (fullyHotReloaded) {
-          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextVer });
+          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextDisplayVer });
           if (backendStatus.backendVersion === nextVer) {
             backendStatus.backendVersionMismatch = false;
           }
         } else if (res.liveInjected) {
-          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextVer });
+          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextDisplayVer });
         } else {
           if (statusEl) {
             statusEl.textContent = hostSupportsRestart
-              ? t('update.doneDisk', { ver: nextVer })
-              : `${t('update.doneDisk', { ver: nextVer })} ${t('client.restart.hostNotSupported')}`;
+              ? t('update.doneDisk', { ver: nextDisplayVer })
+              : `${t('update.doneDisk', { ver: nextDisplayVer })} ${t('client.restart.hostNotSupported')}`;
           }
         }
         if (typeof renderQuotaBoard === 'function') {
