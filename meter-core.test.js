@@ -4763,3 +4763,31 @@ test('PR #30 supplement: archive dirty key re-bucketing, existing modelExactId l
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('v0.8.8 i18n/货币基础能力: 48国预设含完整 nameTw/nameEn 且无简体残留，支持 USD/HKD/TWD/CNY 互转与结构化 currentPeriod', () => {
+  const {
+    SUBSCRIPTION_REGIONS_PRESET,
+    findRegionPreset,
+    convertCurrency,
+    normalizeTokenHistoryPayload
+  } = require('./meter-core');
+  assert.ok(SUBSCRIPTION_REGIONS_PRESET.length >= 40);
+  const simpChars = /[国韩亚欧乌罗马联东陆区宾兰达尔义]/;
+  for (const r of SUBSCRIPTION_REGIONS_PRESET) {
+    assert.ok(r.nameEn && /^[ -~]+$/.test(r.nameEn), `preset ${r.id} missing pure ASCII nameEn: ${r.nameEn}`);
+    assert.ok(r.nameTw && r.nameTw.length > 0, `preset ${r.id} missing nameTw`);
+    assert.equal(simpChars.test(r.nameTw), false, `preset ${r.id} nameTw has simplified chars: ${r.nameTw}`);
+  }
+  assert.equal(findRegionPreset('United States (US)')?.id, 'US');
+  assert.equal(findRegionPreset('美國 (USD)')?.id, 'US');
+  assert.equal(findRegionPreset('Taiwan (TWD)')?.id, 'TW');
+
+  assert.equal(convertCurrency(10, 'USD', 'CNY'), 67.2);
+  assert.equal(convertCurrency(1, 'USD', 'TWD'), 32);
+  assert.equal(convertCurrency(1, 'USD', 'HKD'), Number((6.72 / 0.857).toFixed(2)));
+  assert.equal(convertCurrency(158, 'HKD', 'USD'), Number(((158 * 0.857) / 6.72).toFixed(2)));
+
+  const norm = normalizeTokenHistoryPayload({ dailyMap: {}, dailyMapBySource: { all: {}, desktop: {}, cli: {} } });
+  assert.equal(norm.currentPeriod.periodType, 'calendar_month');
+  assert.doesNotMatch(norm.currentPeriod.label, /[\u4e00-\u9fff]/);
+});

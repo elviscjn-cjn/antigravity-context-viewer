@@ -2250,82 +2250,121 @@
   // 订阅地区参考价与静态汇率，供本地估算使用 (基准货币: CNY)
   const SUBSCRIPTION_REGIONS_PRESET = [
     // 亚太与大洋洲
-    { id: 'TW', name: '中国台湾', flag: '🇹🇼', currency: 'TWD', symbol: 'NT$', monthlyPrice: 650, rateToCNY: 0.21, aliases: ['tw', 'ntd', 'twd', 'taiwan', '台湾', '中国台湾', '台区'] },
-    { id: 'HK', name: '中国香港', flag: '🇭🇰', currency: 'HKD', symbol: 'HK$', monthlyPrice: 158.00, rateToCNY: 0.857, aliases: ['hk', 'hong kong', '香港', '中国香港', '港区'] },
-    { id: 'JP', name: '日本', flag: '🇯🇵', currency: 'JPY', symbol: '¥', monthlyPrice: 2900, rateToCNY: 0.0425, aliases: ['jp', 'japan', '日本', '日区'] },
-    { id: 'KR', name: '韩国', flag: '🇰🇷', currency: 'KRW', symbol: '₩', monthlyPrice: 29000, rateToCNY: 0.0051, aliases: ['kr', 'korea', 'south korea', '韩国', '韩区'] },
-    { id: 'AU', name: '澳大利亚 (澳区)', flag: '🇦🇺', currency: 'AUD', symbol: 'AU$', monthlyPrice: 32.99, rateToCNY: 4.45, aliases: ['au', 'aud', 'australia', '澳大利亚', '澳洲', '澳区'] },
-    { id: 'NZ', name: '新西兰', flag: '🇳🇿', currency: 'NZD', symbol: 'NZ$', monthlyPrice: 34.99, rateToCNY: 4.05, aliases: ['nz', 'nzd', 'new zealand', '新西兰'] },
-    { id: 'SG', name: '新加坡', flag: '🇸🇬', currency: 'SGD', symbol: 'S$', monthlyPrice: 27.99, rateToCNY: 5.12, aliases: ['sg', 'singapore', '新加坡', '星洲'] },
-    { id: 'MY', name: '马来西亚', flag: '🇲🇾', currency: 'MYR', symbol: 'RM ', monthlyPrice: 97.99, rateToCNY: 1.55, aliases: ['my', 'myr', 'malaysia', '马来西亚', '大马'] },
-    { id: 'TH', name: '泰国', flag: '🇹🇭', currency: 'THB', symbol: '฿', monthlyPrice: 750, rateToCNY: 0.20, aliases: ['th', 'thb', 'thailand', '泰国'] },
-    { id: 'VN', name: '越南', flag: '🇻🇳', currency: 'VND', symbol: '₫', monthlyPrice: 489000, rateToCNY: 0.00028, aliases: ['vn', 'vnd', 'vietnam', '越南'] },
-    { id: 'ID', name: '印度尼西亚', flag: '🇮🇩', currency: 'IDR', symbol: 'Rp ', monthlyPrice: 309000, rateToCNY: 0.00044, aliases: ['id', 'idr', 'indonesia', '印度尼西亚', '印尼'] },
-    { id: 'PH', name: '菲律宾', flag: '🇵🇭', currency: 'PHP', symbol: '₱', monthlyPrice: 1100, rateToCNY: 0.117, aliases: ['ph', 'php', 'philippines', '菲律宾'] },
-    { id: 'IN', name: '印度', flag: '🇮🇳', currency: 'INR', symbol: '₹', monthlyPrice: 1950, rateToCNY: 0.076, aliases: ['in', 'inr', 'india', '印度', '印区'] },
-    { id: 'PK', name: '巴基斯坦', flag: '🇵🇰', currency: 'PKR', symbol: '₨ ', monthlyPrice: 5600, rateToCNY: 0.024, aliases: ['pk', 'pkr', 'pakistan', '巴基斯坦'] },
+    { id: 'TW', name: '中国台湾', nameTw: '中國台灣', nameEn: 'Taiwan', flag: '🇹🇼', currency: 'TWD', symbol: 'NT$', monthlyPrice: 650, rateToCNY: 0.21, aliases: ['tw', 'ntd', 'twd', 'taiwan', '台湾', '台灣', '中国台湾', '中國台灣', '台区', '台區'] },
+    { id: 'HK', name: '中国香港', nameTw: '中國香港', nameEn: 'Hong Kong', flag: '🇭🇰', currency: 'HKD', symbol: 'HK$', monthlyPrice: 158.00, rateToCNY: 0.857, aliases: ['hk', 'hong kong', '香港', '中国香港', '中國香港', '港区', '港區'] },
+    { id: 'JP', name: '日本', nameTw: '日本', nameEn: 'Japan', flag: '🇯🇵', currency: 'JPY', symbol: '¥', monthlyPrice: 2900, rateToCNY: 0.0425, aliases: ['jp', 'japan', '日本', '日区', '日區'] },
+    { id: 'KR', name: '韩国', nameTw: '韓國', nameEn: 'South Korea', flag: '🇰🇷', currency: 'KRW', symbol: '₩', monthlyPrice: 29000, rateToCNY: 0.0051, aliases: ['kr', 'korea', 'south korea', '韩国', '韓國', '韩区', '韓區'] },
+    { id: 'AU', name: '澳大利亚 (澳区)', nameTw: '澳洲 (澳區)', nameEn: 'Australia', flag: '🇦🇺', currency: 'AUD', symbol: 'AU$', monthlyPrice: 32.99, rateToCNY: 4.45, aliases: ['au', 'aud', 'australia', '澳大利亚', '澳洲', '澳大利亞', '澳区', '澳區'] },
+    { id: 'NZ', name: '新西兰', nameTw: '紐西蘭', nameEn: 'New Zealand', flag: '🇳🇿', currency: 'NZD', symbol: 'NZ$', monthlyPrice: 34.99, rateToCNY: 4.05, aliases: ['nz', 'nzd', 'new zealand', '新西兰', '紐西蘭'] },
+    { id: 'SG', name: '新加坡', nameTw: '新加坡', nameEn: 'Singapore', flag: '🇸🇬', currency: 'SGD', symbol: 'S$', monthlyPrice: 27.99, rateToCNY: 5.12, aliases: ['sg', 'singapore', '新加坡', '星洲'] },
+    { id: 'MY', name: '马来西亚', nameTw: '馬來西亞', nameEn: 'Malaysia', flag: '🇲🇾', currency: 'MYR', symbol: 'RM ', monthlyPrice: 97.99, rateToCNY: 1.55, aliases: ['my', 'myr', 'malaysia', '马来西亚', '馬來西亞', '大马', '大馬'] },
+    { id: 'TH', name: '泰国', nameTw: '泰國', nameEn: 'Thailand', flag: '🇹🇭', currency: 'THB', symbol: '฿', monthlyPrice: 750, rateToCNY: 0.20, aliases: ['th', 'thb', 'thailand', '泰国', '泰國'] },
+    { id: 'VN', name: '越南', nameTw: '越南', nameEn: 'Vietnam', flag: '🇻🇳', currency: 'VND', symbol: '₫', monthlyPrice: 489000, rateToCNY: 0.00028, aliases: ['vn', 'vnd', 'vietnam', '越南'] },
+    { id: 'ID', name: '印度尼西亚', nameTw: '印度尼西亞', nameEn: 'Indonesia', flag: '🇮🇩', currency: 'IDR', symbol: 'Rp ', monthlyPrice: 309000, rateToCNY: 0.00044, aliases: ['id', 'idr', 'indonesia', '印度尼西亚', '印度尼西亞', '印尼'] },
+    { id: 'PH', name: '菲律宾', nameTw: '菲律賓', nameEn: 'Philippines', flag: '🇵🇭', currency: 'PHP', symbol: '₱', monthlyPrice: 1100, rateToCNY: 0.117, aliases: ['ph', 'php', 'philippines', '菲律宾', '菲律賓'] },
+    { id: 'IN', name: '印度', nameTw: '印度', nameEn: 'India', flag: '🇮🇳', currency: 'INR', symbol: '₹', monthlyPrice: 1950, rateToCNY: 0.076, aliases: ['in', 'inr', 'india', '印度', '印区', '印區'] },
+    { id: 'PK', name: '巴基斯坦', nameTw: '巴基斯坦', nameEn: 'Pakistan', flag: '🇵🇰', currency: 'PKR', symbol: '₨ ', monthlyPrice: 5600, rateToCNY: 0.024, aliases: ['pk', 'pkr', 'pakistan', '巴基斯坦'] },
 
     // 北美与拉美
-    { id: 'US', name: '美国', flag: '🇺🇸', currency: 'USD', symbol: '$', monthlyPrice: 19.99, rateToCNY: 6.72, aliases: ['us', 'usa', 'united states', '美国', '美区'] },
-    { id: 'CA', name: '加拿大', flag: '🇨🇦', currency: 'CAD', symbol: 'CA$', monthlyPrice: 26.99, rateToCNY: 4.88, aliases: ['ca', 'cad', 'canada', '加拿大'] },
-    { id: 'MX', name: '墨西哥', flag: '🇲🇽', currency: 'MXN', symbol: '$', monthlyPrice: 395, rateToCNY: 0.36, aliases: ['mx', 'mxn', 'mexico', '墨西哥'] },
-    { id: 'BR', name: '巴西', flag: '🇧🇷', currency: 'BRL', symbol: 'R$', monthlyPrice: 96.99, rateToCNY: 1.18, aliases: ['br', 'brl', 'brazil', '巴西'] },
-    { id: 'TR', name: '土耳其', flag: '🇹🇷', currency: 'TRY', symbol: '₺', monthlyPrice: 869.99, rateToCNY: 0.133, aliases: ['tr', 'try', 'turkey', '土耳其', '土区'] },
-    { id: 'AR', name: '阿根廷', flag: '🇦🇷', currency: 'ARS', symbol: '$', monthlyPrice: 19999, rateToCNY: 0.0065, aliases: ['ar', 'ars', 'argentina', '阿根廷'] },
-    { id: 'CL', name: '智利', flag: '🇨🇱', currency: 'CLP', symbol: '$', monthlyPrice: 18990, rateToCNY: 0.0072, aliases: ['cl', 'clp', 'chile', '智利'] },
-    { id: 'CO', name: '哥伦比亚', flag: '🇨🇴', currency: 'COP', symbol: '$', monthlyPrice: 84900, rateToCNY: 0.0016, aliases: ['co', 'cop', 'colombia', '哥伦比亚'] },
-    { id: 'PE', name: '秘鲁', flag: '🇵🇪', currency: 'PEN', symbol: 'S/ ', monthlyPrice: 76.90, rateToCNY: 1.82, aliases: ['pe', 'pen', 'peru', '秘鲁'] },
+    { id: 'US', name: '美国', nameTw: '美國', nameEn: 'United States', flag: '🇺🇸', currency: 'USD', symbol: '$', monthlyPrice: 19.99, rateToCNY: 6.72, aliases: ['us', 'usa', 'united states', '美国', '美國', '美区', '美區'] },
+    { id: 'CA', name: '加拿大', nameTw: '加拿大', nameEn: 'Canada', flag: '🇨🇦', currency: 'CAD', symbol: 'CA$', monthlyPrice: 26.99, rateToCNY: 4.88, aliases: ['ca', 'cad', 'canada', '加拿大'] },
+    { id: 'MX', name: '墨西哥', nameTw: '墨西哥', nameEn: 'Mexico', flag: '🇲🇽', currency: 'MXN', symbol: '$', monthlyPrice: 395, rateToCNY: 0.36, aliases: ['mx', 'mxn', 'mexico', '墨西哥'] },
+    { id: 'BR', name: '巴西', nameTw: '巴西', nameEn: 'Brazil', flag: '🇧🇷', currency: 'BRL', symbol: 'R$', monthlyPrice: 96.99, rateToCNY: 1.18, aliases: ['br', 'brl', 'brazil', '巴西'] },
+    { id: 'TR', name: '土耳其', nameTw: '土耳其', nameEn: 'Turkey', flag: '🇹🇷', currency: 'TRY', symbol: '₺', monthlyPrice: 869.99, rateToCNY: 0.133, aliases: ['tr', 'try', 'turkey', '土耳其', '土区', '土區'] },
+    { id: 'AR', name: '阿根廷', nameTw: '阿根廷', nameEn: 'Argentina', flag: '🇦🇷', currency: 'ARS', symbol: '$', monthlyPrice: 19999, rateToCNY: 0.0065, aliases: ['ar', 'ars', 'argentina', '阿根廷'] },
+    { id: 'CL', name: '智利', nameTw: '智利', nameEn: 'Chile', flag: '🇨🇱', currency: 'CLP', symbol: '$', monthlyPrice: 18990, rateToCNY: 0.0072, aliases: ['cl', 'clp', 'chile', '智利'] },
+    { id: 'CO', name: '哥伦比亚', nameTw: '哥倫比亞', nameEn: 'Colombia', flag: '🇨🇴', currency: 'COP', symbol: '$', monthlyPrice: 84900, rateToCNY: 0.0016, aliases: ['co', 'cop', 'colombia', '哥伦比亚', '哥倫比亞'] },
+    { id: 'PE', name: '秘鲁', nameTw: '秘魯', nameEn: 'Peru', flag: '🇵🇪', currency: 'PEN', symbol: 'S/ ', monthlyPrice: 76.90, rateToCNY: 1.82, aliases: ['pe', 'pen', 'peru', '秘鲁', '秘魯'] },
 
     // 欧洲与欧亚
-    { id: 'GB', name: '英国', flag: '🇬🇧', currency: 'GBP', symbol: '£', monthlyPrice: 18.99, rateToCNY: 8.75, aliases: ['gb', 'uk', 'gbp', 'united kingdom', '英国', '英区'] },
-    { id: 'EU', name: '欧洲/欧盟 (德法意西荷等)', flag: '🇪🇺', currency: 'EUR', symbol: '€', monthlyPrice: 21.99, rateToCNY: 7.52, aliases: ['eu', 'eur', 'euro', 'europe', '欧洲', '欧盟', '德国', '法国', '意大利', '西班牙', '荷兰'] },
-    { id: 'CH', name: '瑞士', flag: '🇨🇭', currency: 'CHF', symbol: 'CHF ', monthlyPrice: 17.00, rateToCNY: 7.85, aliases: ['ch', 'chf', 'switzerland', '瑞士'] },
-    { id: 'UA', name: '乌克兰', flag: '🇺🇦', currency: 'UAH', symbol: '₴', monthlyPrice: 900, rateToCNY: 0.162, aliases: ['ua', 'uah', 'ukraine', '乌克兰'] },
-    { id: 'PL', name: '波兰', flag: '🇵🇱', currency: 'PLN', symbol: 'zł ', monthlyPrice: 97.99, rateToCNY: 1.72, aliases: ['pl', 'pln', 'poland', '波兰'] },
-    { id: 'SE', name: '瑞典', flag: '🇸🇪', currency: 'SEK', symbol: 'kr ', monthlyPrice: 239, rateToCNY: 0.65, aliases: ['se', 'sek', 'sweden', '瑞典'] },
-    { id: 'NO', name: '挪威', flag: '🇳🇴', currency: 'NOK', symbol: 'kr ', monthlyPrice: 239, rateToCNY: 0.63, aliases: ['no', 'nok', 'norway', '挪威'] },
-    { id: 'DK', name: '丹麦', flag: '🇩🇰', currency: 'DKK', symbol: 'kr ', monthlyPrice: 169, rateToCNY: 1.01, aliases: ['dk', 'dkk', 'denmark', '丹麦'] },
-    { id: 'CZ', name: '捷克', flag: '🇨🇿', currency: 'CZK', symbol: 'Kč ', monthlyPrice: 529, rateToCNY: 0.30, aliases: ['cz', 'czk', 'czech', '捷克'] },
-    { id: 'HU', name: '匈牙利', flag: '🇭🇺', currency: 'HUF', symbol: 'Ft ', monthlyPrice: 8990, rateToCNY: 0.0185, aliases: ['hu', 'huf', 'hungary', '匈牙利'] },
-    { id: 'RO', name: '罗马尼亚', flag: '🇷🇴', currency: 'RON', symbol: 'lei ', monthlyPrice: 109.99, rateToCNY: 1.51, aliases: ['ro', 'ron', 'romania', '罗马尼亚'] },
+    { id: 'GB', name: '英国', nameTw: '英國', nameEn: 'United Kingdom', flag: '🇬🇧', currency: 'GBP', symbol: '£', monthlyPrice: 18.99, rateToCNY: 8.75, aliases: ['gb', 'uk', 'gbp', 'united kingdom', '英国', '英國', '英区', '英區'] },
+    { id: 'EU', name: '欧洲/欧盟 (德法意西荷等)', nameTw: '歐洲/歐盟 (德法義西荷等)', nameEn: 'Europe / EU', flag: '🇪🇺', currency: 'EUR', symbol: '€', monthlyPrice: 21.99, rateToCNY: 7.52, aliases: ['eu', 'eur', 'euro', 'europe', 'europe / eu', '欧洲', '歐洲', '欧盟', '歐盟', '德国', '德國', '法国', '法國', '意大利', '義大利', '西班牙', '荷兰', '荷蘭'] },
+    { id: 'CH', name: '瑞士', nameTw: '瑞士', nameEn: 'Switzerland', flag: '🇨🇭', currency: 'CHF', symbol: 'CHF ', monthlyPrice: 17.00, rateToCNY: 7.85, aliases: ['ch', 'chf', 'switzerland', '瑞士'] },
+    { id: 'UA', name: '乌克兰', nameTw: '烏克蘭', nameEn: 'Ukraine', flag: '🇺🇦', currency: 'UAH', symbol: '₴', monthlyPrice: 900, rateToCNY: 0.162, aliases: ['ua', 'uah', 'ukraine', '乌克兰', '烏克蘭'] },
+    { id: 'PL', name: '波兰', nameTw: '波蘭', nameEn: 'Poland', flag: '🇵🇱', currency: 'PLN', symbol: 'zł ', monthlyPrice: 97.99, rateToCNY: 1.72, aliases: ['pl', 'pln', 'poland', '波兰', '波蘭'] },
+    { id: 'SE', name: '瑞典', nameTw: '瑞典', nameEn: 'Sweden', flag: '🇸🇪', currency: 'SEK', symbol: 'kr ', monthlyPrice: 239, rateToCNY: 0.65, aliases: ['se', 'sek', 'sweden', '瑞典'] },
+    { id: 'NO', name: '挪威', nameTw: '挪威', nameEn: 'Norway', flag: '🇳🇴', currency: 'NOK', symbol: 'kr ', monthlyPrice: 239, rateToCNY: 0.63, aliases: ['no', 'nok', 'norway', '挪威'] },
+    { id: 'DK', name: '丹麦', nameTw: '丹麥', nameEn: 'Denmark', flag: '🇩🇰', currency: 'DKK', symbol: 'kr ', monthlyPrice: 169, rateToCNY: 1.01, aliases: ['dk', 'dkk', 'denmark', '丹麦', '丹麥'] },
+    { id: 'CZ', name: '捷克', nameTw: '捷克', nameEn: 'Czechia', flag: '🇨🇿', currency: 'CZK', symbol: 'Kč ', monthlyPrice: 529, rateToCNY: 0.30, aliases: ['cz', 'czk', 'czech', 'czechia', '捷克'] },
+    { id: 'HU', name: '匈牙利', nameTw: '匈牙利', nameEn: 'Hungary', flag: '🇭🇺', currency: 'HUF', symbol: 'Ft ', monthlyPrice: 8990, rateToCNY: 0.0185, aliases: ['hu', 'huf', 'hungary', '匈牙利'] },
+    { id: 'RO', name: '罗马尼亚', nameTw: '羅馬尼亞', nameEn: 'Romania', flag: '🇷🇴', currency: 'RON', symbol: 'lei ', monthlyPrice: 109.99, rateToCNY: 1.51, aliases: ['ro', 'ron', 'romania', '罗马尼亚', '羅馬尼亞'] },
 
     // 中东与非洲
-    { id: 'NG', name: '尼日利亚', flag: '🇳🇬', currency: 'NGN', symbol: '₦', monthlyPrice: 28500, rateToCNY: 0.0042, aliases: ['ng', 'ngn', 'nigeria', '尼日利亚', '尼区'] },
-    { id: 'ZA', name: '南非', flag: '🇿🇦', currency: 'ZAR', symbol: 'R ', monthlyPrice: 429.99, rateToCNY: 0.38, aliases: ['za', 'zar', 'south africa', '南非'] },
-    { id: 'EG', name: '埃及', flag: '🇪🇬', currency: 'EGP', symbol: 'E£ ', monthlyPrice: 999, rateToCNY: 0.136, aliases: ['eg', 'egp', 'egypt', '埃及'] },
-    { id: 'KE', name: '肯尼亚', flag: '🇰🇪', currency: 'KES', symbol: 'KSh ', monthlyPrice: 2800, rateToCNY: 0.052, aliases: ['ke', 'kes', 'kenya', '肯尼亚'] },
-    { id: 'AE', name: '阿联酋', flag: '🇦🇪', currency: 'AED', symbol: 'AED ', monthlyPrice: 76.99, rateToCNY: 1.83, aliases: ['ae', 'aed', 'uae', 'emirates', '阿联酋', '迪拜'] },
-    { id: 'SA', name: '沙特阿拉伯', flag: '🇸🇦', currency: 'SAR', symbol: 'SAR ', monthlyPrice: 85.99, rateToCNY: 1.79, aliases: ['sa', 'sar', 'saudi', '沙特', '沙特阿拉伯'] },
-    { id: 'IL', name: '以色列', flag: '🇮🇱', currency: 'ILS', symbol: '₪ ', monthlyPrice: 79.90, rateToCNY: 1.85, aliases: ['il', 'ils', 'israel', '以色列'] },
+    { id: 'NG', name: '尼日利亚', nameTw: '奈及利亞', nameEn: 'Nigeria', flag: '🇳🇬', currency: 'NGN', symbol: '₦', monthlyPrice: 28500, rateToCNY: 0.0042, aliases: ['ng', 'ngn', 'nigeria', '尼日利亚', '奈及利亞', '尼区', '尼區'] },
+    { id: 'ZA', name: '南非', nameTw: '南非', nameEn: 'South Africa', flag: '🇿🇦', currency: 'ZAR', symbol: 'R ', monthlyPrice: 429.99, rateToCNY: 0.38, aliases: ['za', 'zar', 'south africa', '南非'] },
+    { id: 'EG', name: '埃及', nameTw: '埃及', nameEn: 'Egypt', flag: '🇪🇬', currency: 'EGP', symbol: 'E£ ', monthlyPrice: 999, rateToCNY: 0.136, aliases: ['eg', 'egp', 'egypt', '埃及'] },
+    { id: 'KE', name: '肯尼亚', nameTw: '肯亞', nameEn: 'Kenya', flag: '🇰🇪', currency: 'KES', symbol: 'KSh ', monthlyPrice: 2800, rateToCNY: 0.052, aliases: ['ke', 'kes', 'kenya', '肯尼亚', '肯亞'] },
+    { id: 'AE', name: '阿联酋', nameTw: '阿聯酋', nameEn: 'United Arab Emirates', flag: '🇦🇪', currency: 'AED', symbol: 'AED ', monthlyPrice: 76.99, rateToCNY: 1.83, aliases: ['ae', 'aed', 'uae', 'emirates', 'united arab emirates', '阿联酋', '阿聯酋', '迪拜', '杜拜'] },
+    { id: 'SA', name: '沙特阿拉伯', nameTw: '沙烏地阿拉伯', nameEn: 'Saudi Arabia', flag: '🇸🇦', currency: 'SAR', symbol: 'SAR ', monthlyPrice: 85.99, rateToCNY: 1.79, aliases: ['sa', 'sar', 'saudi', 'saudi arabia', '沙特', '沙特阿拉伯', '沙烏地阿拉伯'] },
+    { id: 'IL', name: '以色列', nameTw: '以色列', nameEn: 'Israel', flag: '🇮🇱', currency: 'ILS', symbol: '₪ ', monthlyPrice: 79.90, rateToCNY: 1.85, aliases: ['il', 'ils', 'israel', '以色列'] },
 
     // 大中华区/人民币与自定义
-    { id: 'CN', name: '中国大陆 (CNY)', flag: '🇨🇳', currency: 'CNY', symbol: '¥', monthlyPrice: 140.00, rateToCNY: 1.0, aliases: ['cn', 'cny', 'china', '中国', '人民币', '国内'] }
+    { id: 'CN', name: '中国大陆 (CNY)', nameTw: '中國大陸 (CNY)', nameEn: 'China Mainland', flag: '🇨🇳', currency: 'CNY', symbol: '¥', monthlyPrice: 140.00, rateToCNY: 1.0, aliases: ['cn', 'cny', 'china', 'china mainland', '中国', '中國', '中国大陆', '中國大陸', '人民币', '人民幣', '国内', '國內'] }
   ];
 
   function findRegionPreset(regionQuery) {
     if (!regionQuery || typeof regionQuery !== 'string') return null;
-    const q = regionQuery.trim().toLowerCase();
+    const raw = regionQuery.trim();
+    if (!raw) return null;
+    const q = raw.toLowerCase();
+    const stripped = raw.replace(/\s*\([A-Za-z]{2,4}\)\s*$/i, '').trim().toLowerCase();
     return SUBSCRIPTION_REGIONS_PRESET.find(r =>
       r.id.toLowerCase() === q ||
       r.name.toLowerCase() === q ||
+      (r.nameTw && r.nameTw.toLowerCase() === q) ||
+      (r.nameEn && r.nameEn.toLowerCase() === q) ||
+      (stripped && (
+        r.name.toLowerCase() === stripped ||
+        (r.nameTw && r.nameTw.toLowerCase() === stripped) ||
+        (r.nameEn && r.nameEn.toLowerCase() === stripped)
+      )) ||
       r.aliases.some(a => a.toLowerCase() === q || q.includes(a.toLowerCase()))
     ) || null;
+  }
+
+  function resolveCurrencyRateToCNY(currency, regionQuery = null) {
+    let cur = String(currency || '').toUpperCase();
+    if (cur === 'NTD') cur = 'TWD';
+    if (cur === 'CNY') return 1.0;
+    let preset = findRegionPreset(regionQuery);
+    if (!preset || (cur && preset.currency !== cur)) {
+      preset = SUBSCRIPTION_REGIONS_PRESET.find(r => r.currency === cur);
+    }
+    if (preset && preset.rateToCNY) return preset.rateToCNY;
+    if (cur === 'USD') return 6.72;
+    if (cur === 'HKD') return 0.857;
+    if (cur === 'TWD') return 0.21;
+    if (cur === 'JPY') return 0.0425;
+    if (cur === 'EUR') return 7.52;
+    if (cur === 'GBP') return 8.75;
+    return null;
   }
 
   function convertToCNY(amount, currency, regionQuery = null) {
     if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return null;
     const num = Number(amount);
     if (num === 0) return 0;
-    const cur = String(currency || '').toUpperCase();
-    if (cur === 'CNY') return Number(num.toFixed(2));
-
-    let preset = findRegionPreset(regionQuery);
-    if (!preset || (cur && preset.currency !== cur)) {
-      preset = SUBSCRIPTION_REGIONS_PRESET.find(r => r.currency === cur);
-    }
-    const rate = preset ? preset.rateToCNY : (cur === 'USD' ? 6.72 : (cur === 'HKD' ? 0.857 : (cur === 'JPY' ? 0.0425 : (cur === 'EUR' ? 7.52 : (cur === 'GBP' ? 8.75 : null)))));
+    const rate = resolveCurrencyRateToCNY(currency, regionQuery);
     if (!rate) return null;
     return Number((num * rate).toFixed(2));
+  }
+
+  /**
+   * 跨币种通用换算（依托 CNY 基准静态汇率，支持 USD / HKD / TWD / CNY 及全部预设地区币种）。
+   */
+  function convertCurrency(amount, fromCurrency, toCurrency, regionQuery = null) {
+    if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return null;
+    const num = Number(amount);
+    if (num === 0) return 0;
+    let from = String(fromCurrency || 'USD').trim().toUpperCase();
+    let to = String(toCurrency || 'USD').trim().toUpperCase();
+    if (from === 'NTD') from = 'TWD';
+    if (to === 'NTD') to = 'TWD';
+    if (from === to) return Number(num.toFixed(2));
+    const fromRate = resolveCurrencyRateToCNY(from, regionQuery);
+    const toRate = resolveCurrencyRateToCNY(to, null);
+    if (!fromRate || !toRate) return null;
+    return Number(((num * fromRate) / toRate).toFixed(2));
   }
 
   function resolveEffectivePlanStatus(livePlanStatus, customSettings, options = {}) {
@@ -2569,6 +2608,7 @@
       ? matchedRegionPreset.rateToCNY
       : (matchedCurrencyPreset ? matchedCurrencyPreset.rateToCNY : (currency === 'USD' ? 6.72 : (currency === 'HKD' ? 0.857 : (currency === 'JPY' ? 0.0425 : (currency === 'CNY' ? 1.0 : null)))));
     const actualPricePaidCNY = actualPricePaid !== null ? convertToCNY(actualPricePaid, currency, rateRegion) : null;
+    const actualPricePaidUSD = actualPricePaid !== null ? convertCurrency(actualPricePaid, currency, 'USD', rateRegion) : null;
     const cnyFormatted = actualPricePaidCNY !== null ? (currency === 'CNY' ? ('¥' + actualPricePaidCNY) : ('折合 ≈ ¥' + actualPricePaidCNY.toFixed(1) + ' CNY')) : null;
 
     if (actualPricePaidCNY !== null && actualPricePaid > 0 && currency !== 'CNY') {
@@ -2595,6 +2635,7 @@
       currency,
       currencySource,
       currencySymbol: curSymbol,
+      actualPricePaidUSD,
       actualPricePaidCNY,
       cnyFormatted,
       exchangeRateToCNY: effectiveRate,
@@ -2806,7 +2847,8 @@
       firstUseDate: summary.firstUseDate,
       currentPeriod: payload.currentPeriod || {
         key: currentMonthPrefix,
-        label: `${currentMonthPrefix} (自然月)`,
+        periodType: 'calendar_month',
+        label: currentMonthPrefix,
         isCurrentMonth: true
       },
       planStatus: payload.planStatus || null,
@@ -7009,6 +7051,7 @@
     SUBSCRIPTION_REGIONS_PRESET,
     findRegionPreset,
     convertToCNY,
+    convertCurrency,
     CURRENCY_SYMBOLS,
     normalizeModelId,
     resolveStableModelId,

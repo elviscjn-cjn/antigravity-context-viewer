@@ -6074,7 +6074,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     modelCapabilitiesById: livePlanStatus?.availableModelDetails || null,
     currentPeriod: {
       key: monthPrefix,
-      label: `${monthPrefix} (自然月)`,
+      periodType: 'calendar_month',
+      label: monthPrefix,
       isCurrentMonth: true
     },
     sources: {
