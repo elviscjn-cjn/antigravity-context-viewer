@@ -15,9 +15,10 @@ const http = require('http');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { loadAsarEngine, getStateDir } = require('./asar-engine');
-const { install, findAsarPath, tryHotInject } = require('./install');
+const { install, findAsarPath, tryHotInject, tryHotInjectDetailed, probeLiveHostRuntimeInfo, shutdownLiveHostGracefully, extractAsarFile } = require('./install');
 const { restore } = require('./restore');
-const { resolvePython } = require('./meter-collector');
+const { resolvePython, syncLiveRuntimeBundle } = require('./meter-collector');
+const { redactProxyUrl } = require('./meter-proxy');
 const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, AUTHOR_INFO } = require('./meter-context-unlock');
 
 const asar = loadAsarEngine();
@@ -38,7 +39,7 @@ async function queryLiveWindow() {
   if (!port) return { running: false };
   try {
     const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
+      const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
         let body = '';
         res.on('data', c => body += c);
         res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
@@ -46,9 +47,11 @@ async function queryLiveWindow() {
       req.setTimeout(2500, () => req.destroy(new Error('timeout')));
       req.on('error', reject);
     });
-    const target = pages.find(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
-    if (!target) return { running: true, cdpPort: port, pageFound: false };
+    const matchedTargets = pages.filter(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
+    const target = matchedTargets[0];
+    if (!target) return { running: true, cdpPort: port, pageFound: false, origins: [] };
     const origin = new URL(target.url).origin;
+    const origins = Array.from(new Set(matchedTargets.map(p => { try { return new URL(p.url).origin; } catch { return null; } }).filter(Boolean)));
 
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
@@ -68,105 +71,343 @@ async function queryLiveWindow() {
         id: 1,
         method: 'Runtime.evaluate',
         params: {
-          expression: `(() => {
+          expression: `(async () => {
             const s = window.__AGContextMeter?.snapshot();
             const root = document.getElementById('ag-context-meter')?.shadowRoot;
+            let ipcRuntimeInfo = null;
+            if (typeof window.contextMeterAPI?.getRuntimeInfo === 'function') {
+              try { ipcRuntimeInfo = await window.contextMeterAPI.getRuntimeInfo(); } catch {}
+            }
+            const bootBackend = window.__AGContextMeterBootBackend || null;
+            const backendStatus = typeof window.__AGContextMeter?.getBackendStatusForTest === 'function'
+              ? window.__AGContextMeter.getBackendStatusForTest()
+              : null;
+            const quotaState = typeof window.__AGContextMeter?.getModelQuotaStateForTest === 'function'
+              ? window.__AGContextMeter.getModelQuotaStateForTest()
+              : null;
             return {
               active: Boolean(window.__AGContextMeter),
               version: window.__AGContextMeter?.version || null,
               hasIpcBridge: Boolean(window.contextMeterAPI?.scan && window.contextMeterAPI?.saveSettings && window.contextMeterAPI?.launchCli && window.contextMeterAPI?.getContextUnlockStatus),
+              hasQuotaIpcBridge: Boolean(window.contextMeterAPI?.getQuota),
+              hasRestartBridge: Boolean(window.contextMeterAPI?.restartHost),
+              ipcBackendVersion: ipcRuntimeInfo?.backendVersion || bootBackend?.backendVersion || null,
+              liveBridgeAttached: window.__AGContextMeterLive ? {
+                version: window.__AGContextMeterLive.version || null,
+                port: window.__AGContextMeterLive.port || null,
+                backendSource: window.__AGContextMeterLive.backendSource || 'live-host'
+              } : null,
+              effectiveBackendSource: backendStatus?.backendSource || (ipcRuntimeInfo?.backendVersion ? 'electron-ipc' : null),
+              effectiveBackendVersion: backendStatus?.backendVersion || quotaState?.state?.collectorVersion || ipcRuntimeInfo?.backendVersion || null,
               badgeText: root?.getElementById('amount')?.textContent || null,
               route: s?.route || null,
               latest: s?.latest || null
             };
           })()`,
-          returnByValue: true
+          returnByValue: true,
+          awaitPromise: true
         }
       }));
     });
     ws.close();
-    return { running: true, cdpPort: port, pageFound: true, origin, ...status };
+    return { running: true, cdpPort: port, pageFound: true, origin, origins, windowCount: matchedTargets.length, ...status };
   } catch (e) {
     return { running: false, error: e.message };
   }
 }
 
-async function ensureLiveBridgeIfNeeded() {
-  const live = await queryLiveWindow();
-  if (!live.running || !live.pageFound || live.hasIpcBridge) return;
+async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
+  const live = liveSnapshot || await queryLiveWindow();
+  if (!live.running || !live.pageFound) {
+    return { needed: false, ready: false, reason: 'no_running_window', liveInfo: null, previousLiveInfo: null };
+  }
+  let currentPkgVersion = null;
+  try {
+    currentPkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
+  } catch {}
+
   const stateDir = getStateDir();
   const statePath = path.join(stateDir, '.live-session.json');
   const legacyPath = path.join(__dirname, '.live-session.json');
   const liveSessionPath = fs.existsSync(statePath) ? statePath : legacyPath;
 
-  let alive = false;
   let existingInfo = null;
   if (fs.existsSync(liveSessionPath)) {
     try {
-      const info = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
-      existingInfo = info;
-      process.kill(info.pid, 0);
-      if (!live.origin || info.origin === live.origin) {
-        alive = true;
-      }
+      existingInfo = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
     } catch {}
   }
-  if (!alive) {
-    if (existingInfo?.pid) {
-      try { process.kill(existingInfo.pid); } catch {}
-    }
-    try { if (fs.existsSync(statePath)) fs.unlinkSync(statePath); } catch {}
-    try { if (fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath); } catch {}
 
-    const child = spawn(process.execPath, [path.join(__dirname, 'live-host.js')], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    });
-    child.unref();
+  const expectedOrigins = Array.isArray(live.origins) && live.origins.length
+    ? live.origins
+    : (live.origin ? [live.origin] : []);
 
-    const maxWaitMs = 5000;
-    const intervalMs = 150;
-    const deadline = Date.now() + maxWaitMs;
-    while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, intervalMs));
-      const checkPath = fs.existsSync(statePath) ? statePath : (fs.existsSync(legacyPath) ? legacyPath : null);
-      if (checkPath) {
-        try {
-          const info = JSON.parse(fs.readFileSync(checkPath, 'utf8'));
-          if (info && info.pid && (!live.origin || info.origin === live.origin)) {
-            process.kill(info.pid, 0);
-            alive = true;
-            break;
-          }
-        } catch {}
+  // 绝不能因 hasIpcBridge && hasQuotaIpcBridge 为真就跳过后台版本检查：
+  // 只有确认 Electron 主进程 IPC 后台本身已是目标版本且无旧 live-host 残留时，才无需外置 live-host。
+  const electronIpcAligned = Boolean(
+    live.hasIpcBridge &&
+    live.hasQuotaIpcBridge &&
+    currentPkgVersion &&
+    live.ipcBackendVersion === currentPkgVersion
+  );
+  if (electronIpcAligned) {
+    return {
+      needed: false,
+      ready: true,
+      backendSource: 'electron-ipc',
+      backendVersion: live.ipcBackendVersion,
+      clearStaleLiveBridge: true,
+      liveInfo: null,
+      previousLiveInfo: existingInfo
+    };
+  }
+
+  const coversAllOrigins = (info) => {
+    if (!info) return false;
+    const covered = new Set([...(Array.isArray(info.origins) ? info.origins : []), info.origin].filter(Boolean));
+    return expectedOrigins.every(o => covered.has(o));
+  };
+
+  if (existingInfo && existingInfo.pid) {
+    const info = existingInfo;
+    let pidAlive = false;
+    try { process.kill(info.pid, 0); pidAlive = true; } catch {}
+    if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion)) {
+      const probe = await probeLiveHostRuntimeInfo(info, expectedOrigins[0]);
+      if (probe && probe.ok && (!currentPkgVersion || probe.backendVersion === currentPkgVersion)) {
+        return {
+          needed: true,
+          ready: true,
+          reused: true,
+          backendSource: 'live-host',
+          backendVersion: probe.backendVersion || info.version,
+          liveInfo: { ...info, capabilities: probe.capabilities || info.capabilities },
+          previousLiveInfo: null
+        };
       }
     }
   }
+
+  // 安全平滑启动新版 live-host：先写入 staging stamp 并验证 /runtime-info 健康，验证通过前绝不毁掉旧连接
+  const stagingStamp = path.join(stateDir, `.live-session.staging.${process.pid}.${Date.now()}.json`);
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    if (fs.existsSync(stagingStamp)) fs.unlinkSync(stagingStamp);
+  } catch {}
+
+  const liveRuntimeScript = path.join(stateDir, 'live-runtime', 'live-host.js');
+  // 在从临时解压目录安装或升级前先同步持久化 live-runtime，避免触发进程删除临时目录后影响后台按需加载
+  let syncedRuntimeDir = null;
+  try {
+    syncedRuntimeDir = syncLiveRuntimeBundle(__dirname, { version: currentPkgVersion, stateDir });
+  } catch {}
+  const hostEntryScript = (syncedRuntimeDir && fs.existsSync(liveRuntimeScript))
+    ? liveRuntimeScript
+    : (fs.existsSync(liveRuntimeScript) && !__dirname.toLowerCase().includes(os.tmpdir().toLowerCase())
+      ? liveRuntimeScript
+      : path.join(__dirname, 'live-host.js'));
+
+  const childEnv = {
+    ...process.env,
+    AG_LIVE_STAMP_PATH: stagingStamp,
+    ...(expectedOrigins.length ? { AG_LIVE_ORIGINS: JSON.stringify(expectedOrigins) } : {})
+  };
+  delete childEnv.ELECTRON_RUN_AS_NODE;
+
+  const originsB64 = expectedOrigins.length
+    ? Buffer.from(JSON.stringify(expectedOrigins), 'utf8').toString('base64')
+    : '';
+  const hostArgs = [hostEntryScript, '--stamp', stagingStamp];
+  if (originsB64) hostArgs.push('--origins-b64', originsB64);
+
+  let spawnedChild = null;
+  let spawnedPid = null;
+  let newInfo = null;
+  try {
+    const canBreakawayWmi = process.platform === 'win32'
+      && process.env.AG_METER_TEST_MODE !== '1'
+      && process.env.NODE_ENV !== 'test'
+      && !process.env.AG_METER_STATE_DIR;
+    if (canBreakawayWmi) {
+      try {
+        const { spawnSync } = require('child_process');
+        const cmdLine = [process.execPath, ...hostArgs]
+          .map(a => `"${String(a).replace(/"/g, '""')}"`)
+          .join(' ');
+        const psCmd = `
+          $si = [CimInstance](New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly)
+          $si.ShowWindow = 0
+          $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+            CommandLine = '${cmdLine.replace(/'/g, "''")}'
+            CurrentDirectory = '${path.dirname(hostEntryScript).replace(/'/g, "''")}'
+            ProcessStartupInformation = $si
+          }
+          if ($r.ReturnValue -eq 0 -and $r.ProcessId) { Write-Output $r.ProcessId }
+        `;
+        const wmiRes = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], {
+          windowsHide: true,
+          timeout: 4000,
+          encoding: 'utf8'
+        });
+        const parsedPid = Number(String(wmiRes.stdout || '').trim().split(/\r?\n/).pop());
+        if (Number.isInteger(parsedPid) && parsedPid > 0) {
+          spawnedPid = parsedPid;
+        }
+      } catch {}
+    }
+    if (!spawnedPid) {
+      spawnedChild = spawn(process.execPath, hostArgs, {
+        cwd: path.dirname(hostEntryScript),
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: childEnv
+      });
+      spawnedChild.unref();
+      spawnedPid = spawnedChild.pid || null;
+    }
+
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 150));
+      if (!fs.existsSync(stagingStamp)) continue;
+      try {
+        const cand = JSON.parse(fs.readFileSync(stagingStamp, 'utf8'));
+        if (cand && cand.pid && cand.port && cand.token) {
+          process.kill(cand.pid, 0);
+          const probe = await probeLiveHostRuntimeInfo(cand, expectedOrigins[0]);
+          if (probe && probe.ok && (!currentPkgVersion || probe.backendVersion === currentPkgVersion)) {
+            newInfo = {
+              ...cand,
+              version: probe.backendVersion || cand.version || currentPkgVersion,
+              backendSource: 'live-host',
+              capabilities: probe.capabilities || cand.capabilities || null,
+              origins: probe.origins || cand.origins || expectedOrigins
+            };
+            break;
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+
+  try { if (fs.existsSync(stagingStamp)) fs.unlinkSync(stagingStamp); } catch {}
+
+  if (!newInfo) {
+    const killPid = spawnedPid || spawnedChild?.pid;
+    if (killPid) {
+      try { process.kill(killPid); } catch {}
+    }
+    return {
+      needed: true,
+      ready: false,
+      reason: 'live_host_probe_failed',
+      liveInfo: null,
+      previousLiveInfo: existingInfo
+    };
+  }
+
+  // 新服务已通过 /runtime-info 实测可用，原子切换正式 .live-session.json 并将旧实例留待注入后再关闭
+  try {
+    const tmpMain = `${statePath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpMain, JSON.stringify(newInfo, null, 2));
+    fs.renameSync(tmpMain, statePath);
+  } catch {
+    try { fs.writeFileSync(statePath, JSON.stringify(newInfo, null, 2)); } catch {}
+  }
+
+  const prevToShutdown = (existingInfo && existingInfo.pid && existingInfo.pid !== newInfo.pid)
+    ? existingInfo
+    : null;
+  return {
+    needed: true,
+    ready: true,
+    reused: false,
+    backendSource: 'live-host',
+    backendVersion: newInfo.version,
+    liveInfo: newInfo,
+    previousLiveInfo: prevToShutdown,
+    statePath
+  };
+}
+
+/**
+ * 若本次新建了 live-host 但随后安装或窗口注入失败，关闭新建后台并还原 .live-session.json
+ */
+async function rollbackPreparedLiveBridge(bridgePrep) {
+  if (!bridgePrep || bridgePrep.reused || !bridgePrep.liveInfo) return { rolledBack: false };
+  const statePath = bridgePrep.statePath || path.join(getStateDir(), '.live-session.json');
+  try {
+    await shutdownLiveHostGracefully(bridgePrep.liveInfo);
+  } catch {}
+  try {
+    if (bridgePrep.previousLiveInfo) {
+      const tmpRestore = `${statePath}.rollback-${process.pid}`;
+      fs.writeFileSync(tmpRestore, JSON.stringify(bridgePrep.previousLiveInfo, null, 2));
+      fs.renameSync(tmpRestore, statePath);
+    } else if (fs.existsSync(statePath)) {
+      const cur = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      if (cur && cur.pid === bridgePrep.liveInfo.pid) {
+        fs.unlinkSync(statePath);
+      }
+    }
+  } catch {}
+  return { rolledBack: true };
 }
 
 async function cmdStatus(customPath) {
   let asarPath = null;
   let version = null;
   let asarPatched = false;
+  let diskVersion = null;
   let pluginVersion = null;
   try {
     pluginVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
   } catch {}
   try {
     asarPath = findAsarPath(customPath);
-    version = JSON.parse(asar.extractFile(asarPath, 'package.json').toString('utf8')).version;
-    const utilsSource = asar.extractFile(asarPath, 'dist/utils.js').toString('utf8');
+    version = JSON.parse(extractAsarFile(asarPath, 'package.json').toString('utf8')).version;
+    const utilsSource = extractAsarFile(asarPath, 'dist/utils.js').toString('utf8');
     asarPatched = utilsSource.includes('installContextMeter(win)');
+    try {
+      const manifestRaw = extractAsarFile(asarPath, 'dist/meter-manifest.json');
+      const mObj = JSON.parse(manifestRaw.toString('utf8'));
+      if (mObj?.version) diskVersion = mObj.version;
+    } catch {}
+    if (!diskVersion && asarPatched) {
+      const mPath = path.join(getStateDir(), 'installation.json');
+      if (fs.existsSync(mPath)) {
+        const inst = JSON.parse(fs.readFileSync(mPath, 'utf8'));
+        if (inst?.meterVersion) diskVersion = inst.meterVersion;
+      }
+    }
   } catch {}
 
   const live = await queryLiveWindow();
+  let liveSessionInfo = null;
+  try {
+    const lp = path.join(getStateDir(), '.live-session.json');
+    if (fs.existsSync(lp)) {
+      const raw = JSON.parse(fs.readFileSync(lp, 'utf8'));
+      liveSessionInfo = { port: raw.port, pid: raw.pid, version: raw.version, backendSource: raw.backendSource || 'live-host', origins: raw.origins || (raw.origin ? [raw.origin] : []) };
+    }
+  } catch {}
   const py = resolvePython();
   const report = {
     pluginVersion,
+    diskVersion: diskVersion || null,
     asarPath,
     antigravityVersion: version,
     asarPatched,
+    versions: {
+      diskVersion: diskVersion || null,
+      rendererVersion: live.version || null,
+      ipcBackendVersion: live.ipcBackendVersion || null,
+      liveHostVersion: liveSessionInfo?.version || null,
+      effectiveBackendSource: live.effectiveBackendSource || live.liveBridgeAttached?.backendSource || null,
+      effectiveBackendVersion: live.effectiveBackendVersion || live.liveBridgeAttached?.version || null
+    },
+    liveSession: liveSessionInfo,
     liveWindow: live,
     pythonAttachmentScanner: py || 'unavailable (optional)'
   };
@@ -209,9 +450,41 @@ async function main() {
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
     console.log(`🚀 [Antigravity 对话上下文查看器 v${meterVersion}] 正在安装上下文可视化组件...`);
-    await ensureLiveBridgeIfNeeded();
-    const manifest = await install({ path: customPath, backup: customBackup, force: isForce });
-    await tryHotInject();
+    const liveBefore = await queryLiveWindow();
+    const bridgePrep = await ensureLiveBridgeIfNeeded(liveBefore);
+    const hotInjectOptions = {
+      source: 'cli-install',
+      liveInfo: bridgePrep.liveInfo || null,
+      liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
+      preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
+      clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
+    };
+    let manifest;
+    try {
+      manifest = await install({ path: customPath, backup: customBackup, force: isForce, hotInjectOptions });
+    } catch (installErr) {
+      await rollbackPreparedLiveBridge(bridgePrep);
+      throw installErr;
+    }
+
+    if (manifest.liveInjected && bridgePrep.previousLiveInfo) {
+      await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
+    } else if (!manifest.liveInjected) {
+      await rollbackPreparedLiveBridge(bridgePrep);
+    }
+
+    const reportBackendVersion = manifest.hotInjectReport?.backendVersion || bridgePrep.backendVersion || null;
+    const reportBackendSource = manifest.hotInjectReport?.backendSource || bridgePrep.backendSource || null;
+    const backendAligned = Boolean(
+      manifest.liveInjected &&
+      reportBackendVersion === meterVersion
+    );
+    const hasStaleMainProcess = Boolean(
+      manifest.liveInjected &&
+      !backendAligned &&
+      liveBefore.running &&
+      liveBefore.hasIpcBridge
+    );
     console.log(`✅ 插件 v${manifest.meterVersion} 安装完成 (Antigravity 宿主 v${manifest.version})`);
     console.log(`✅ ASAR 持久化注入完成: ${manifest.installed} (校验 ${manifest.originalFilesVerified} 个原文件)`);
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
@@ -220,8 +493,14 @@ async function main() {
     console.log('📦 模块状态分层报告:');
     console.log('   - ⚡ 上下文与 Token 监控:');
     console.log(`     * 配置状态: [配置: ${cfg.modules.meter.enabled ? '已开启' : '已关闭'}]`);
-    console.log(`     * 磁盘注入: ${disk.meter ? '✅ 已注入' : '⚪ 未注入'}`);
-    console.log(`     * 运行中加载: ${manifest.liveInjected ? '✅ 已即时挂载生效（无需重启）' : '⏳ 待下次启动客户端时生效'}`);
+    console.log(`     * 磁盘注入: ${disk.meter ? '✅ 已注入' : '⚪ 未注入'} (磁盘版本 v${manifest.meterVersion})`);
+    if (manifest.liveInjected && backendAligned) {
+      console.log(`     * 运行中加载: ✅ 界面与后台已同步热加载为 v${meterVersion} (${reportBackendSource === 'live-host' ? '外置 Live-Host 接管，无需重启' : 'Electron IPC 已对齐，无需重启'})`);
+    } else if (manifest.liveInjected) {
+      console.log(`     * 运行中加载: ⚠️ 界面已热挂载为 v${meterVersion}，但当前后台仍为旧版 (${reportBackendVersion || liveBefore.version || '未知'}，请重启客户端以加载新版主进程模块)`);
+    } else {
+      console.log('     * 运行中加载: ⏳ 未连接到支持热挂载的运行中窗口（如客户端未使用调试端口启动），请重启客户端后生效');
+    }
 
     console.log('   - 🇨🇳 客户端界面汉化 (桌面客户端):');
     console.log(`     * 配置状态: [配置: ${cfg.modules.chinese.enabled ? '已开启' : '已关闭'}]`);
@@ -229,16 +508,46 @@ async function main() {
     console.log(`     * 生效说明: ${cfg.modules.chinese.enabled ? '⏳ 重启 Antigravity 客户端后加载中文' : '⚪ 默认保持官方原生英文，可在客户端面板中随时开启并重启生效'}`);
 
     console.log('   - 🌐 免 TUN 网络直连 (本地代理):');
-    console.log(`     * 配置状态: [配置: ${cfg.modules.proxy.enabled ? '已开启' : '已关闭'}] (代理: ${cfg.modules.proxy.proxyUrl || '未配置'})`);
+    console.log(`     * 配置状态: [配置: ${cfg.modules.proxy.enabled ? '已开启' : '已关闭'}] (代理: ${redactProxyUrl(cfg.modules.proxy.proxyUrl) || '未配置'})`);
     console.log(`     * 磁盘组件: ${disk.proxyReady ? '✅ 已注入（支持 Session 代理与环境变量拦截）' : (disk.proxy ? '⚠️ 磁盘注入不完整' : '⚪ 未注入')}`);
     console.log(`     * 生效说明: ${cfg.modules.proxy.enabled ? '🔍 需通过 node cli.js proxy:test 测试连通性' : '⚪ 跟随系统默认网络栈，可在客户端面板中随时配置并开启'}`);
     console.log(`     * 模型请求验证: 待通过真实在线会话验证 (分层标定，未发送请求前不宣称生效)`);
-    console.log(`✅ 运行中窗口热挂载状态: ${manifest.liveInjected ? '已即时生效（无需重启）' : '将在下次启动 Antigravity 时自动生效'}`);
+    console.log(`✅ 运行中窗口热挂载状态: ${manifest.liveInjected ? (backendAligned ? '已即时生效（无需重启）' : '界面已挂载但后台需重启对齐') : '将在下次启动 Antigravity 时自动生效'}`);
+    if (process.env.AG_EMIT_INSTALL_META === '1') {
+      console.log('__AG_INSTALL_META__=' + JSON.stringify({
+        meterVersion: manifest.meterVersion,
+        liveInjected: Boolean(manifest.liveInjected),
+        backendHotReloaded: Boolean(backendAligned),
+        backendVersion: reportBackendVersion,
+        backendSource: reportBackendSource,
+        hasStaleMainProcess,
+        hotInjectReport: manifest.hotInjectReport || null
+      }));
+    }
   } else if (cmd === 'live') {
-    await ensureLiveBridgeIfNeeded();
-    const ok = await tryHotInject();
-    if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
-    console.log('✅ 已通过 CDP 热注入当前运行的 Antigravity 窗口！');
+    const liveBefore = await queryLiveWindow();
+    const bridgePrep = await ensureLiveBridgeIfNeeded(liveBefore);
+    let report;
+    try {
+      report = await tryHotInjectDetailed({
+        source: 'cli-live',
+        liveInfo: bridgePrep.liveInfo || null,
+        liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
+        preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
+        clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
+      });
+    } catch (liveErr) {
+      await rollbackPreparedLiveBridge(bridgePrep);
+      throw liveErr;
+    }
+    if (!report.ok) {
+      await rollbackPreparedLiveBridge(bridgePrep);
+      throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
+    }
+    if (bridgePrep.previousLiveInfo) {
+      await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
+    }
+    console.log(`✅ 已通过 CDP 热注入当前运行的 ${report.injectedCount}/${report.windowCount} 个 Antigravity 窗口！`);
   } else if (cmd === 'restore' || cmd === 'uninstall') {
     const restoreAll = args.includes('--all');
     const res = await restore({ path: customPath, force: isForce });
@@ -457,4 +766,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { cmdStatus, cmdCheck };
+module.exports = { cmdStatus, cmdCheck, rollbackPreparedLiveBridge };

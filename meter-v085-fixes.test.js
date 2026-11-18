@@ -914,7 +914,8 @@ test('6. Worker 异常/超时不永久卡死或永久禁用 & 多子进程并发
         agDir: path.join(sb.root, 'empty-ag'),
         useMainThread: true
       });
-      assert.equal(normalHist.version, '0.8.5');
+      const pkgVersion = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version;
+      assert.equal(normalHist.version, pkgVersion);
     });
 
     // C. 4 个并发子进程向同一隔离目录下的 pricing_ledger_v1.json 高并发写 4*25=100 条唯一 callId

@@ -314,8 +314,23 @@ function normalizeBypassListForCompare(rawVal) {
     .join(',');
 }
 
+/**
+ * 对代理地址进行脱敏，剥离账号及密码凭据仅保留协议与主机端口。
+ */
+function redactProxyUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  try {
+    const u = new URL(normalizeProxyUrl(rawUrl));
+    if (!u.protocol || !u.host) return null;
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return String(rawUrl).replace(/\/\/[^/@\s]+@/, '//') || null;
+  }
+}
+
 module.exports = {
   DEFAULT_NO_PROXY,
+  redactProxyUrl,
   normalizeProxyUrl,
   normalizeBypassListForCompare,
   parseAndValidateProxyUrl,

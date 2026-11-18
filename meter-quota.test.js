@@ -1991,3 +1991,371 @@ test('上下文面板后台刷新与下拉展开不触发 scrollIntoView，scrol
     try { h.sandbox.__AGContextMeter.dispose(); } catch { }
   }
 });
+
+test('g1-ultra-tier 搭配 TEAMS_TIER_PRO 与 allowedTiers/New 角标不得误判为无权限', () => {
+  const nowIso = '2026-11-16T02:32:00Z';
+  const future5hIso = '2026-11-16T05:39:51Z';
+  const futureWeekIso = '2026-11-21T01:38:49Z';
+  const userStatusRes = {
+    userStatus: {
+      email: 'ultra.test@example.com',
+      userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra', description: 'Google AI Ultra' },
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' } },
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          {
+            modelId: 'gemini-4-hydrogen-xhigh',
+            label: 'Gemini 4 Hydrogen (XHigh)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M528' },
+            tagTitle: 'New',
+            disabled: false,
+            allowedTiers: [
+              'TEAMS_TIER_PRO',
+              'TEAMS_TIER_TEAMS',
+              'TEAMS_TIER_ENTERPRISE_SELF_HOSTED',
+              'TEAMS_TIER_ENTERPRISE_SAAS',
+              'TEAMS_TIER_HYBRID',
+              'TEAMS_TIER_PRO_ULTIMATE'
+            ],
+            quotaInfo: { remainingFraction: 0.942896, resetTime: future5hIso }
+          },
+          {
+            modelId: 'claude-sonnet-5-5-high',
+            label: 'Claude Sonnet 5.5 (High)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M405' },
+            tagTitle: 'New',
+            disabled: false,
+            allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_PRO_ULTIMATE'],
+            quotaInfo: { remainingFraction: 1, resetTime: future5hIso }
+          }
+        ]
+      }
+    }
+  };
+  const quotaSummaryRes = {
+    response: {
+      groups: [
+        {
+          groupId: 'gemini',
+          displayName: 'Gemini Models',
+          description: 'Models within this group: Gemini 4 Hydrogen',
+          buckets: [
+            { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.942896, resetTime: future5hIso },
+            { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.9264349, resetTime: futureWeekIso }
+          ]
+        },
+        {
+          groupId: '3p',
+          displayName: 'Claude and GPT models',
+          description: 'Models within this group: Claude Sonnet 5.5',
+          buckets: [
+            { bucketId: '3p-5h', window: '5h', remainingFraction: 1, resetTime: future5hIso }
+          ]
+        }
+      ]
+    }
+  };
+
+  const parsedPlan = core.parseUserPlanStatus(userStatusRes);
+  assert.equal(parsedPlan.tierId, 'g1-ultra-tier');
+  assert.equal(parsedPlan.teamsTier, 'TEAMS_TIER_PRO');
+
+  const snap = core.buildModelQuotaSnapshot({
+    userStatusRes,
+    quotaSummaryRes,
+    currentModel: 'MODEL_PLACEHOLDER_M528',
+    nowMs: Date.parse(nowIso)
+  });
+
+  assert.equal(snap.activeStatus, 'available');
+  assert.equal(snap.badge.text, '93%');
+  const geminiPool = snap.pools.find(p => p.poolKey === 'shared_gemini_main');
+  const claudePool = snap.pools.find(p => p.poolKey === 'shared_3p_pool');
+  assert.equal(geminiPool?.noPermission, false);
+  assert.equal(claudePool?.noPermission, false);
+  assert.equal(geminiPool?.models[0]?.noPermission, false);
+  assert.equal(claudePool?.models[0]?.noPermission, false);
+
+  // Ultra 在缺少 teamsTier 时面对 TEAMS_TIER_PRO_ULTIMATE 也应放行
+  const ultraNoTeams = core.classifyModelQuotaAvailability(
+    { label: 'Gemini 4 Carbon', tagTitle: 'New', allowedTiers: ['TEAMS_TIER_PRO_ULTIMATE'] },
+    { tierId: 'g1-ultra-tier', tierKey: 'ultra', teamsTier: null }
+  );
+  assert.equal(ultraNoTeams.noPermission, false);
+
+  // 真正不在 allowedTiers 内的套餐应拦截且优先给出套餐原因而非装饰性 New 标签
+  const freeBlocked = core.classifyModelQuotaAvailability(
+    { label: 'Gemini 4 Carbon', tagTitle: 'New', allowedTiers: ['TEAMS_TIER_PRO_ULTIMATE'] },
+    { tierId: 'free-tier', tierKey: 'free', teamsTier: 'TEAMS_TIER_FREE' }
+  );
+  assert.equal(freeBlocked.noPermission, true);
+  assert.match(freeBlocked.reason || '', /TEAMS_TIER_PRO_ULTIMATE/);
+});
+
+test('ELV-83 全矩阵回归：Carbon/Hydrogen/Sonnet 权限校验、同账号缓存与切号隔离、三端一致性、首次桥接缺失与待重启边界', async () => {
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
+  const nowMs = Date.now();
+  const future5hIso = new Date(nowMs + 3 * 3600000).toISOString();
+  const futureWeekIso = new Date(nowMs + 4 * 86400000).toISOString();
+
+  // 1. sanitizeCascadeModelConfig 必须剥离被装饰标签 New 污染的 unavailabilityReason
+  const sanitizedDisabledNew = collector.sanitizeCascadeModelConfig({
+    modelId: 'gemini-4-carbon-xhigh',
+    label: 'Gemini 4 Carbon (XHigh)',
+    tagTitle: 'New',
+    disabled: true,
+    unavailabilityReason: 'New',
+    quotaInfo: { remainingFraction: 0.9, resetTime: future5hIso }
+  });
+  assert.equal(sanitizedDisabledNew.unavailable, true);
+  assert.equal(sanitizedDisabledNew.unavailabilityReason, null);
+  const availFromSanitized = core.classifyModelQuotaAvailability(sanitizedDisabledNew, {
+    status: 'identified',
+    tierKey: 'ultra',
+    tierId: 'g1-ultra-tier',
+    teamsTier: 'TEAMS_TIER_PRO'
+  });
+  assert.equal(availFromSanitized.noPermission, true, '服务端 disabled=true 即使带 90% 额度与匹配套餐也不得放行');
+  assert.equal(availFromSanitized.reason, '当前套餐无权访问该模型');
+
+  // 2. fetchQuotaSnapshotFromHost 同账号缓存与账号切换彻底隔离（含 Carbon/Hydrogen/Sonnet 全模型）
+  collector.resetQuotaHostCacheForTest();
+  let callIndex = 0;
+  const ultraUserStatus = {
+    userStatus: {
+      email: 'ultra.acct@example.com',
+      userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' } },
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          {
+            modelId: 'gemini-4-carbon-xhigh',
+            label: 'Gemini 4 Carbon (XHigh)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M670' },
+            tagTitle: 'New',
+            disabled: false,
+            allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_PRO_ULTIMATE'],
+            quotaInfo: { remainingFraction: 0.86, resetTime: future5hIso }
+          },
+          {
+            modelId: 'gemini-4-hydrogen-xhigh',
+            label: 'Gemini 4 Hydrogen (XHigh)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M528' },
+            tagTitle: 'New',
+            disabled: false,
+            allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_PRO_ULTIMATE'],
+            quotaInfo: { remainingFraction: 0.94, resetTime: future5hIso }
+          },
+          {
+            modelId: 'claude-sonnet-5-5-high',
+            label: 'Claude Sonnet 5.5 (High)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M405' },
+            tagTitle: 'New',
+            disabled: false,
+            allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_PRO_ULTIMATE'],
+            quotaInfo: { remainingFraction: 0, resetTime: futureWeekIso }
+          }
+        ]
+      }
+    }
+  };
+  const freeUserStatus = {
+    userStatus: {
+      email: 'free.acct@example.com',
+      userTier: { id: 'free-tier', name: 'Free' },
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_FREE', planName: 'Free' } },
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          {
+            modelId: 'gemini-4-carbon-xhigh',
+            label: 'Gemini 4 Carbon (XHigh)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M670' },
+            tagTitle: 'New',
+            disabled: false,
+            allowedTiers: ['TEAMS_TIER_PRO_ULTIMATE'],
+            quotaInfo: { remainingFraction: 0.5, resetTime: future5hIso }
+          },
+          {
+            modelId: 'gemini-4-hydrogen-xhigh',
+            label: 'Gemini 4 Hydrogen (XHigh)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M528' },
+            tagTitle: 'New',
+            disabled: false,
+            allowedTiers: ['TEAMS_TIER_PRO'],
+            quotaInfo: { remainingFraction: 0.5, resetTime: future5hIso }
+          }
+        ]
+      }
+    }
+  };
+  const ultraQuotaSummary = {
+    response: {
+      groups: [
+        {
+          groupId: 'carbon',
+          displayName: 'Gemini 4 Carbon',
+          description: 'Models within this group: Gemini 4 Carbon',
+          buckets: [{ bucketId: 'carbon-5h', window: '5h', remainingFraction: 0.86, resetTime: future5hIso }]
+        },
+        {
+          groupId: 'gemini',
+          displayName: 'Gemini Models',
+          description: 'Models within this group: Gemini 4 Hydrogen',
+          buckets: [{ bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.94, resetTime: future5hIso }]
+        },
+        {
+          groupId: '3p',
+          displayName: 'Claude and GPT models',
+          description: 'Models within this group: Claude Sonnet 5.5',
+          buckets: [{ bucketId: '3p-5h', window: '5h', remainingFraction: 0, resetTime: futureWeekIso }]
+        }
+      ]
+    }
+  };
+
+  const mockConnect = async () => ({
+    call: async (method) => {
+      if (callIndex === 0) {
+        return method === 'GetUserStatus' ? ultraUserStatus : ultraQuotaSummary;
+      }
+      if (callIndex === 1) {
+        throw new Error('connect ETIMEDOUT 127.0.0.1');
+      }
+      if (callIndex === 2) {
+        return method === 'GetUserStatus' ? freeUserStatus : { response: { groups: [] } };
+      }
+      throw new Error('ECONNREFUSED');
+    }
+  });
+
+  // 2a. 首次 Ultra 账号获取：Carbon(86%) / Hydrogen(94%) 正常可用，Sonnet(0%) 为耗尽而非无权限
+  const resUltra = await collector.fetchQuotaSnapshotFromHost({ connect: mockConnect, nowMs, currentModel: 'MODEL_PLACEHOLDER_M670' });
+  assert.equal(resUltra.ok, true);
+  assert.equal(resUltra.collectorVersion, pkgVersion);
+  assert.equal(resUltra.planTierSummary.teamsTier, 'TEAMS_TIER_PRO');
+  assert.equal(resUltra.snapshot.activeStatus, 'available');
+  assert.equal(resUltra.snapshot.badge.text, '86%');
+  const carbonPool = resUltra.snapshot.pools.find(p => p.poolKey === 'shared_gemini_carbon');
+  const hydroPool = resUltra.snapshot.pools.find(p => p.poolKey === 'shared_gemini_main');
+  const sonnetPool = resUltra.snapshot.pools.find(p => p.poolKey === 'shared_3p_pool');
+  assert.equal(carbonPool?.noPermission, false);
+  assert.equal(hydroPool?.noPermission, false);
+  assert.equal(sonnetPool?.noPermission, false);
+  assert.equal(sonnetPool?.status, 'exhausted');
+
+  // 2b. 15s 内走同账号短缓存命中（不会触发错误路径）
+  callIndex = 1;
+  const resCached = await collector.fetchQuotaSnapshotFromHost({ connect: mockConnect, nowMs: nowMs + 5000 });
+  assert.equal(resCached.ok, true);
+  assert.equal(resCached.snapshot.pools.find(p => p.poolKey === 'shared_gemini_carbon')?.noPermission, false);
+
+  // 2c. 强制刷新遇到网络失败：保留同账号最后有效快照并标为 stale
+  const resStale = await collector.fetchQuotaSnapshotFromHost({ connect: mockConnect, force: true, nowMs: nowMs + 20000 });
+  assert.equal(resStale.ok, false);
+  assert.equal(resStale.errorKind, 'timeout');
+  assert.equal(resStale.snapshot.syncState, 'stale');
+
+  // 2d. 账号切换至 Free 受限账号：立即清掉 Ultra 旧缓存，所有受限模型切为 no_permission
+  callIndex = 2;
+  const resFree = await collector.fetchQuotaSnapshotFromHost({ connect: mockConnect, force: true, nowMs: nowMs + 30000, currentModel: 'MODEL_PLACEHOLDER_M670' });
+  assert.equal(resFree.ok, true);
+  assert.equal(resFree.accountSwitched, true);
+  assert.equal(resFree.snapshot.activeStatus, 'no_permission');
+  assert.equal(resFree.snapshot.pools.find(p => p.poolKey === 'shared_gemini_carbon')?.noPermission, true);
+  assert.equal(resFree.snapshot.pools.find(p => p.poolKey === 'shared_gemini_main')?.noPermission, true);
+  collector.resetQuotaHostCacheForTest();
+
+  // 3. 渲染层三端一致性 + 桥接缺失 / 待重启提示 / 已重启不掩盖验证
+  const h = createQuotaRendererHarness();
+  try {
+    for (const req of h.quotaRequests) {
+      req.resolve({ ok: true, data: resUltra });
+    }
+    await h.flush();
+    const api = h.sandbox.__AGContextMeter;
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Carbon (XHigh)', modelId: 'MODEL_PLACEHOLDER_M670', actual: 1000, budget: 256000 },
+      resUltra.cascadeModelConfigs
+    );
+    api.switchContextTabForTest('models');
+    api.showQuotaPanelForTest(true);
+    await h.flush();
+
+    const listEl = h.elements.get('ctx-model-list');
+    const findChipByPart = part => {
+      for (const grp of (listEl.children || [])) {
+        for (const row of (grp.children || []).slice(1)) {
+          const left = (row.children || []).find(c => c.className === 'ctx-product-row-left');
+          const nameText = String((left?.children || [])[0]?.textContent || '').toLowerCase();
+          if (nameText.includes(part.toLowerCase())) {
+            const right = (row.children || []).find(c => c.className === 'ctx-product-row-right');
+            return (right?.children || []).find(c => String(c.className || '').includes('ctx-model-quota-chip'));
+          }
+        }
+      }
+      return null;
+    };
+    const chipVal = chip => String((chip?.children || []).find(c => c.className === 'ctx-model-quota-val')?.textContent || '');
+
+    // 3a. 顶栏、额度看板、上下文模型列表三端全部一致（Carbon 86%, Hydrogen 94%, Sonnet 耗尽）
+    assert.equal(h.elements.get('quota-badge-val').textContent, '86%');
+    assert.equal(h.elements.get('quota-cur-status').textContent, '正常可用');
+    assert.equal(h.elements.get('quota-banner').hidden, true);
+    assert.equal(h.elements.get('btn-quota-banner-restart').hidden, true);
+    assert.equal(chipVal(findChipByPart('carbon')), '86%');
+    assert.equal(chipVal(findChipByPart('hydrogen')), '94%');
+    assert.equal(chipVal(findChipByPart('sonnet')), '耗尽');
+
+    // 3b. 切换到受限 Free 账号：三端同时变为无权限，且已重启版本对齐下不得出现重启提示掩盖
+    h.sandbox.window.contextMeterAPI.getQuota = async () => ({ ok: true, data: resFree });
+    await api.refreshQuotaForTest(true);
+    await h.flush();
+    assert.equal(h.elements.get('quota-badge-val').textContent, '无权限');
+    assert.equal(h.elements.get('quota-cur-status').textContent, '权限不足');
+    assert.equal(chipVal(findChipByPart('carbon')), '无权限');
+    assert.equal(chipVal(findChipByPart('hydrogen')), '无权限');
+    assert.equal(h.elements.get('quota-banner').hidden, true, '版本已对齐且无待重启时，权限不足不得靠重启提示掩盖');
+    assert.equal(h.elements.get('btn-quota-banner-restart').hidden, true);
+
+    // 3c. 模拟应用内更新尚未重启（pendingUpdateRestart + 旧主进程版本）：才展示待重启横幅与重启按钮
+    api.setPendingUpdateRestartForTest(true);
+    h.sandbox.window.contextMeterAPI.getQuota = async () => ({
+      ok: true,
+      data: { ...resFree, collectorVersion: '0.8.5' }
+    });
+    await api.refreshQuotaForTest(true);
+    await h.flush();
+    assert.equal(h.elements.get('quota-banner').hidden, false);
+    assert.equal(h.elements.get('btn-quota-banner-restart').hidden, false);
+    assert.match(h.elements.get('quota-banner-text').textContent, /重启/);
+
+    // 3d. 缺少任何额度桥接时：明确报 bridge_unavailable 并给出重启按钮，不卡在“未知”
+    api.setPendingUpdateRestartForTest(false);
+    delete h.sandbox.window.contextMeterAPI.getQuota;
+    delete h.sandbox.window.__AGContextMeterLive;
+    await api.refreshQuotaForTest(true);
+    await h.flush();
+    assert.equal(api.getModelQuotaStateForTest().state.errorKind, 'bridge_unavailable');
+    assert.equal(h.elements.get('quota-banner').hidden, false);
+    assert.equal(h.elements.get('btn-quota-banner-restart').hidden, false);
+    assert.equal(h.elements.get('btn-quota-banner-retry').hidden, true);
+    assert.match(h.elements.get('quota-banner-text').textContent, /桥接尚未加载|重启/);
+  } finally {
+    try { h.sandbox.__AGContextMeter.dispose(); } catch { }
+  }
+});
+
+test('ELV-83 安装与热加载桥接核验：live-host 版本元数据、cli.js 不重复热注入且识别 getQuota 桥接', () => {
+  const cliSrc = fs.readFileSync(path.join(__dirname, 'cli.js'), 'utf8');
+  const liveHostSrc = fs.readFileSync(path.join(__dirname, 'live-host.js'), 'utf8');
+
+  assert.match(liveHostSrc, /version:\s*PROJECT_VERSION/);
+  assert.match(liveHostSrc, /hasQuota:\s*true/);
+  assert.match(cliSrc, /hasQuotaIpcBridge:\s*Boolean\(window\.contextMeterAPI\?\.getQuota\)/);
+  assert.match(cliSrc, /info\.hasQuota\s*&&\s*\(!currentPkgVersion\s*\|\|\s*info\.version\s*===\s*currentPkgVersion\)/);
+
+  // cli.js install 命令不应在 install() 内部 tryHotInject 之后再重复调用第二次 tryHotInject
+  const installSectionMatch = cliSrc.match(/if \(cmd === 'install'\) \{([\s\S]*?)\} else if \(cmd === 'live'\)/);
+  assert.ok(installSectionMatch);
+  assert.equal((installSectionMatch[1].match(/tryHotInject\(/g) || []).length, 0, 'cli.js install 分支不得重复触发第二次 tryHotInject');
+});

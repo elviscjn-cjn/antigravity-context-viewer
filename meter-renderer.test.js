@@ -375,7 +375,8 @@ test('6 independent custom color slots support custom values, reset to theme def
 test('window controls overlay spacer, convPane flex-grow self-healing, and clean dispose', () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
-  assert.equal(api.version, '0.8.5');
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
+  assert.equal(api.version, pkgVersion);
 
   // 1. Antigravity 1.x: class contains 'top-0'
   const cluster1x = h.sandbox.document.createElement();
@@ -4614,10 +4615,11 @@ test('PR #13 & PR #21: 弹窗动态锚点定位、首帧显示前预设坐标、
   }
 });
 
-test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报错，更新成功后状态与版本 UI 正常刷新', async () => {
+test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报错，且按 liveInjected 状态安全刷新版本 UI', async () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
   try {
+    let mockLiveInjected = false;
     h.sandbox.window.contextMeterAPI = {
       ...h.sandbox.window.contextMeterAPI,
       checkUpdate: async () => ({
@@ -4633,7 +4635,8 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
         ok: true,
         version: '0.9.1',
         installedVersion: '0.9.1',
-        liveInjected: false
+        liveInjected: mockLiveInjected,
+        backendHotReloaded: mockLiveInjected
       })
     };
 
@@ -4644,10 +4647,15 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
     h.elements.get('btn-apply-update').click();
     await h.flush();
 
-    assert.equal(h.elements.get('v').textContent, 'v0.9.1');
+    assert.equal(h.elements.get('v').textContent, '');
     assert.match(h.elements.get('up-pop-ver').textContent, /0\.9\.1/);
     assert.doesNotMatch(h.elements.get('up-pop-status').textContent, /currentVer|异常|失败/i);
     assert.match(h.elements.get('up-pop-status').textContent, /0\.9\.1/);
+
+    mockLiveInjected = true;
+    h.elements.get('btn-apply-update').click();
+    await h.flush();
+    assert.equal(h.elements.get('v').textContent, 'v0.9.1');
   } finally {
     api.dispose();
   }
@@ -4780,5 +4788,171 @@ test('By Model usage view: renders stacked bars, percentages, 7d/30d, variant/ca
     assert.equal(legendEl.children[0].children[0].style.background, '#a78bfa');
   } finally {
     api.dispose();
+  }
+});
+
+test('ELV-84: 静止浮层避免常驻合成层与冗余模糊，混合 DPI 坐标对齐像素网格并在跨屏变更时重排与清理', async () => {
+  // 1. CSS 静态防虚契约断言（构建产物 meter-renderer.js）
+  assert.match(source, /font:12px\/1\.4 [^;]*"Microsoft YaHei UI"/, '应优先使用 Microsoft YaHei UI 改善 100% 缩放 ClearType');
+  assert.match(source, /\.ag-panel\{[^}]*transform:none;[^}]*\}/, '.ag-panel 静止打开态必须回退到 transform:none');
+  assert.doesNotMatch(source, /\.ag-panel\{[^}]*will-change:opacity,transform;/, '.ag-panel 不应常驻 will-change:opacity,transform');
+  assert.doesNotMatch(source, /\.ag-panel\{[^}]*contain:layout paint;/, '.ag-panel 不应常驻 contain:layout paint');
+  assert.match(source, /#context-tooltip\[data-visible="true"\]\{[^}]*transform:none;/, '悬停气泡可见态应使用 transform:none');
+  assert.doesNotMatch(source, /#overflow-menu\{[^}]*will-change:opacity,transform;/, '溢出菜单不应常驻 will-change');
+  assert.match(source, /\.ag-dropdown-wrapper\.is-open \.ag-dropdown-menu\{[^}]*transform:none;/, '打开的下拉列表应使用 transform:none');
+  assert.doesNotMatch(source, /\.ag-dropdown-menu\{[^}]*backdrop-filter:blur\(24px\)/, '不透明背景的下拉列表不得叠加 backdrop-filter:blur(24px)');
+  assert.match(source, /@keyframes agSmoothExpand\{\s*0%\{[^}]*\}\s*100%\{[^}]*transform:none;/, '展开关键帧结束态应使用 transform:none');
+  assert.doesNotMatch(source, /animation:\s*agSmoothExpand[^;]*forwards/, '折叠展开动画不得使用 forwards 永久锁定合成层');
+  assert.match(source, /\.view-pane-fade\{[^}]*transform:none/, '视图切换容器静止态应使用 transform:none');
+
+  // 2. 运行态设备像素网格对齐与跨屏 DPI change 事件测试
+  const ctx = {};
+  const winListeners = new Map();
+  const mqlListeners = new Map();
+  let mqlRemoved = 0;
+  const mockHost = {
+    style: { setProperty() {}, removeProperty() {}, top: '', right: '', left: '', zIndex: '' },
+    setAttribute() {},
+    getAttribute() { return null; },
+    removeAttribute() {},
+    remove() {},
+    getBoundingClientRect: () => ({ left: 1210.4, top: 6.3, right: 1410.3, bottom: 34.1, width: 199.9, height: 27.8 }),
+    attachShadow() {
+      return {
+        _innerHTML: '',
+        set innerHTML(v) { this._innerHTML = v; },
+        get innerHTML() { return this._innerHTML; },
+        getElementById: id => {
+          if (!mockElements.has(id)) mockElements.set(id, makeEl(id));
+          return mockElements.get(id);
+        },
+        querySelector: () => null,
+        querySelectorAll: () => []
+      };
+    }
+  };
+  const makeEl = id => {
+    const attrs = new Map([['id', id]]);
+    return {
+      id,
+      hidden: id.startsWith('panel') || id === 'overflow-menu' || id === 'color-picker-popover',
+      textContent: '',
+      value: '',
+      children: [],
+      style: { display: '', top: '', left: '', right: '', maxWidth: '', maxHeight: '', transformOrigin: '', setProperty() {}, removeProperty() {} },
+      classList: { add() {}, remove() {}, contains() { return false; } },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      addEventListener() {},
+      removeEventListener() {},
+      replaceChildren() {},
+      appendChild() {},
+      querySelectorAll: () => [],
+      getBoundingClientRect: () => ({ left: 1300.3, top: 6.2, right: 1410.3, bottom: 34.1, width: 110, height: 27.9 })
+    };
+  };
+  const mockElements = new Map();
+  for (const id of ['badge', 'badge-quota', 'badge-tokens', 'badge-overflow', 'panel', 'panel-quota', 'panel-tokens', 'overflow-menu', 'update-popover', 'btn-check-update', 'context-tooltip', 'color-picker-popover', 'v']) {
+    mockElements.set(id, makeEl(id));
+  }
+  const winObj = {
+    devicePixelRatio: 1.75,
+    innerWidth: 1646,
+    innerHeight: 1029,
+    addEventListener(type, fn) { winListeners.set(type, fn); },
+    removeEventListener(type, fn) { if (winListeners.get(type) === fn) winListeners.delete(type); },
+    matchMedia(query) {
+      return {
+        media: query,
+        matches: true,
+        addEventListener(type, fn) { if (type === 'change') mqlListeners.set(query, fn); },
+        removeEventListener(type, fn) { if (type === 'change' && mqlListeners.get(query) === fn) { mqlListeners.delete(query); mqlRemoved++; } }
+      };
+    }
+  };
+  let isFirstCreate = true;
+  const docObj = {
+    body: { appendChild() {}, children: [] },
+    documentElement: { appendChild() {} },
+    createElement: () => {
+      if (isFirstCreate) {
+        isFirstCreate = false;
+        return mockHost;
+      }
+      return makeEl('dyn');
+    },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
+    getElementById: () => null
+  };
+  Object.assign(ctx, {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    __AGContextMeterCore: core,
+    window: Object.assign(winObj, { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: async () => ({ ok: true, data: { session: session(), scannedAt: Date.now(), latest: null } }) } }),
+    document: docObj,
+    globalThis: null,
+    navigator: {},
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1,
+    clearInterval() {},
+    fetch: () => new Promise(() => {}),
+    AbortController,
+    URL,
+    Date,
+    Math,
+    Number,
+    String,
+    Array,
+    Object,
+    Map,
+    Set,
+    Promise,
+    Error,
+    getComputedStyle: () => ({ color: '', backgroundColor: '' })
+  });
+  ctx.globalThis = ctx;
+  ctx.window.window = winObj;
+  vm.runInNewContext(source, ctx);
+  try {
+    const panel = mockElements.get('panel');
+    panel.hidden = false;
+    // 1.75x 下验证物理像素对齐：val * 1.75 应为整数
+    const top175 = parseFloat(panel.style.top);
+    const left175 = parseFloat(panel.style.left);
+    assert.ok(Number.isFinite(top175) && Number.isFinite(left175), '175% DPI 下应计算出面板坐标');
+    assert.equal(Math.round(top175 * 1.75), top175 * 1.75, '175% DPI 下 top 必须落在物理像素边界上');
+    assert.equal(Math.round(left175 * 1.75), left175 * 1.75, '175% DPI 下 left 必须落在物理像素边界上');
+    const prevGeomKey = panel._lastPlacedGeomKey;
+    assert.match(prevGeomKey, /\|1\.75$/, 'geomKey 应记录当前 dpr');
+
+    // 模拟拖到 1920x1080 @ 100% 屏幕：触发 resolution: 1.75dppx 的 change
+    const changeFn = mqlListeners.get('(resolution: 1.75dppx)');
+    assert.equal(typeof changeFn, 'function', '应注册当前 DPI 的 matchMedia 监听');
+    winObj.devicePixelRatio = 1;
+    winObj.innerWidth = 1920;
+    winObj.innerHeight = 1080;
+    mockElements.get('badge').getBoundingClientRect = () => ({ left: 1700.4, top: 6.2, right: 1810.4, bottom: 34.4, width: 110, height: 28.2 });
+    const upPop = mockElements.get('update-popover');
+    upPop.style.display = 'block';
+    mockElements.get('btn-check-update').getBoundingClientRect = () => ({ left: 1750.3, right: 1790.7, top: 45.2, bottom: 68.6, width: 40.4, height: 23.4 });
+
+    changeFn();
+    const top100 = parseFloat(panel.style.top);
+    const left100 = parseFloat(panel.style.left);
+    assert.equal(Math.floor(top100), top100, '100% DPI 下 top 必须严格取整');
+    assert.equal(Math.floor(left100), left100, '100% DPI 下 left 必须严格取整');
+    assert.match(panel._lastPlacedGeomKey, /\|1$/, '切换 DPI 后应重算并更新 geomKey');
+    assert.equal(Math.floor(parseFloat(upPop.style.top)), parseFloat(upPop.style.top), '100% DPI 下 update-popover top 必须取整');
+    assert.equal(Math.floor(parseFloat(upPop.style.right)), parseFloat(upPop.style.right), '100% DPI 下 update-popover right 必须取整');
+    assert.equal(typeof mqlListeners.get('(resolution: 1dppx)'), 'function', '变更后应重新订阅新 DPI (1dppx) 的监听');
+  } finally {
+    ctx.__AGContextMeter.dispose();
+    assert.ok(mqlRemoved >= 1, 'dispose() 时必须取消 DPI matchMedia 监听');
   }
 });

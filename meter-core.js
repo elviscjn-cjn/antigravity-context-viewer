@@ -196,28 +196,98 @@
     };
   }
 
+  const DECORATIVE_BADGE_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|hot|popular|最新|预览|預覽|推荐|推薦)$/i;
+
+  /**
+   * 判断模型角标文本是否仅为装饰性标签，不能作为不可用或故障原因
+   */
+  function isDecorativeBadgeTagTitle(tagTitle) {
+    return typeof tagTitle === 'string' && DECORATIVE_BADGE_TAG_RE.test(tagTitle.trim());
+  }
+
+  /**
+   * 将账号套餐字段规范化为精确允许匹配的套餐标识集合，禁止宽泛子串误放行受限账号
+   */
+  function buildAllowedTierMatchSet(planStatus) {
+    if (!planStatus || typeof planStatus !== 'object') return null;
+    const rawTierKey = typeof planStatus.tierKey === 'string' ? planStatus.tierKey.trim().toLowerCase() : '';
+    const rawTierId = typeof planStatus.tierId === 'string' ? planStatus.tierId.trim().toLowerCase() : '';
+    const rawTeamsTier = typeof planStatus.teamsTier === 'string' ? planStatus.teamsTier.trim().toLowerCase() : '';
+
+    // 套餐尚未识别且无任何具体层级标识时，不执行 allowedTiers 猜测拦截
+    if (planStatus.status === 'unidentified' || ((!rawTierKey || rawTierKey === 'unknown') && !rawTierId && !rawTeamsTier)) {
+      return null;
+    }
+
+    const tokens = new Set();
+    if (rawTierId) tokens.add(rawTierId);
+    if (rawTeamsTier) tokens.add(rawTeamsTier);
+    if (rawTierKey && rawTierKey !== 'unknown' && rawTierKey !== 'custom') tokens.add(rawTierKey);
+
+    const isUltraTier = rawTierKey === 'ultra' ||
+      rawTierId === 'g1-ultra-tier' ||
+      rawTeamsTier === 'teams_tier_pro_ultimate' ||
+      rawTeamsTier === 'teams_tier_ultra';
+    const isProTier = !isUltraTier && (
+      rawTierKey === 'pro' ||
+      rawTierId === 'g1-pro-tier' ||
+      rawTeamsTier === 'teams_tier_pro'
+    );
+    const isPlusTier = rawTierKey === 'plus' ||
+      rawTierId === 'g1-plus-tier' ||
+      rawTeamsTier === 'teams_tier_plus';
+    const isFreeTier = rawTierKey === 'free' ||
+      rawTierId === 'free-tier' ||
+      rawTeamsTier === 'teams_tier_free';
+
+    if (isUltraTier) {
+      // Ultra 账号向上覆盖 Ultimate，并兼容上游可能回传或缺失 TEAMS_TIER_PRO 的情况；不放行未声明的企业专享档位
+      tokens.add('ultra');
+      tokens.add('g1-ultra-tier');
+      tokens.add('teams_tier_pro_ultimate');
+      tokens.add('teams_tier_ultra');
+      tokens.add('ultimate');
+      tokens.add('teams_tier_pro');
+      tokens.add('g1-pro-tier');
+      tokens.add('pro');
+    } else if (isProTier) {
+      tokens.add('pro');
+      tokens.add('g1-pro-tier');
+      tokens.add('teams_tier_pro');
+    } else if (isPlusTier) {
+      tokens.add('plus');
+      tokens.add('g1-plus-tier');
+      tokens.add('teams_tier_plus');
+    } else if (isFreeTier) {
+      tokens.add('free');
+      tokens.add('free-tier');
+      tokens.add('teams_tier_free');
+    }
+
+    return tokens.size > 0 ? tokens : null;
+  }
+
   function classifyModelQuotaAvailability(config, planStatus = null) {
     if (!config || typeof config !== 'object') {
       return { noPermission: false, unavailable: false, reason: null, noticeTitle: null, noticeText: null };
     }
     const tagTitle = typeof config.tagTitle === 'string' ? config.tagTitle.trim() : '';
     const tagDesc = typeof config.tagDescription === 'string' ? config.tagDescription.trim() : '';
-    const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用/i.test(tagTitle);
-    const isDecorativeBadgeTag = /^(new|beta|preview|alpha|experimental|recommended|最新|预览|預覽|推荐|推薦)$/i.test(tagTitle);
+    const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle);
+    const isDecorativeBadgeTag = isDecorativeBadgeTagTitle(tagTitle);
     const isExplicitNoticeTag = /^notice$/i.test(tagTitle);
     const isTagNotice = !isTagUnavailable && (Boolean(tagDesc) || isExplicitNoticeTag || (Boolean(tagTitle) && !isDecorativeBadgeTag));
 
     let tierBlocked = false;
     let tierReason = null;
-    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus && (planStatus.tierId || planStatus.teamsTier)) {
-      const myIds = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey]
-        .filter(Boolean)
-        .map(v => String(v).toLowerCase());
-      const allowedLower = config.allowedTiers.map(v => String(v).toLowerCase());
-      const hit = myIds.some(id => allowedLower.some(a => a === id || a.includes(id) || id.includes(a)));
-      if (!hit) {
-        tierBlocked = true;
-        tierReason = `仅限 ${config.allowedTiers.join(' / ')} 套餐可用`;
+    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0) {
+      const allowedTokens = buildAllowedTierMatchSet(planStatus);
+      if (allowedTokens) {
+        const hit = config.allowedTiers.some(v => allowedTokens.has(String(v || '').trim().toLowerCase()));
+        if (!hit) {
+          tierBlocked = true;
+          tierReason = `仅限 ${config.allowedTiers.join(' / ')} 套餐可用`;
+        }
       }
     }
 
@@ -236,16 +306,25 @@
       ? (tagDesc || (!isDecorativeBadgeTag ? tagTitle : null))
       : (hasConfigNotice ? config.notice.trim() : null);
 
+    // 清洗服务端或上游缓存中可能被装饰角标污染的 reason，确保真实故障原因不被 New 等角标覆盖
+    const rawConfigReason = typeof config.unavailabilityReason === 'string' ? config.unavailabilityReason.trim() : '';
+    const cleanConfigReason = (rawConfigReason && !isDecorativeBadgeTagTitle(rawConfigReason)) ? rawConfigReason : '';
+    const nonDecorativeTagTitle = (!isDecorativeBadgeTag && tagTitle) ? tagTitle : null;
+
+    const unavailabilityReason = tierBlocked
+      ? (cleanConfigReason || tierReason || tagDesc || nonDecorativeTagTitle || '当前套餐无权访问该模型')
+      : (cleanConfigReason || tagDesc || nonDecorativeTagTitle || tierReason || '当前套餐无权访问该模型');
+
     return {
       noPermission: explicitlyDisabled,
       unavailable: explicitlyDisabled,
-      reason: explicitlyDisabled ? (config.unavailabilityReason || tagDesc || tagTitle || tierReason || '当前套餐无权访问该模型') : null,
+      reason: explicitlyDisabled ? unavailabilityReason : null,
       noticeTitle: (noticeText && (isTagNotice || hasConfigNotice)) ? (tagTitle || 'Notice') : null,
       noticeText: noticeText || null
     };
   }
 
-  function resolveModelQuota(modelIdOrName, cascadeModelConfigs) {
+  function resolveModelQuota(modelIdOrName, cascadeModelConfigs, options = {}) {
     if (!Array.isArray(cascadeModelConfigs) || !cascadeModelConfigs.length || !modelIdOrName) {
       return null;
     }
@@ -275,7 +354,7 @@
 
     if (!matched) return null;
 
-    const avail = classifyModelQuotaAvailability(matched);
+    const avail = classifyModelQuotaAvailability(matched, options?.planStatus || null);
     const qi = matched.quotaInfo || {};
     const parsed = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
     const poolNames = {
@@ -1595,6 +1674,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: null,
         planName: '未知',
         email: null,
         region: '未知',
@@ -1621,6 +1701,7 @@
     const hasTierEvidence = Boolean(
       rawTierName ||
       userTier.id ||
+      planInfo.teamsTier ||
       planStatus.availablePromptCredits !== undefined ||
       planInfo.monthlyPromptCredits !== undefined
     );
@@ -1631,6 +1712,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: null,
         planName: '未知',
         email,
         region: '未知',
@@ -1651,8 +1733,9 @@
     let tierDisplayName = '未知';
     let officialPrice = null;
     let priceRange = null;
+    const rawTeamsTier = typeof planInfo.teamsTier === 'string' ? planInfo.teamsTier.trim() : '';
 
-    if (/ultra/i.test(rawTierName) || /ultra/i.test(userTier.id || '')) {
+    if (/ultra/i.test(rawTierName) || /ultra/i.test(userTier.id || '') || /pro_ultimate|teams_tier_ultra/i.test(rawTeamsTier)) {
       tierKey = 'ultra';
       const subTierMatch = rawTierName.match(/ultra\s*([0-9a-zA-Z\-_]+)/i);
       if (subTierMatch && !['plan', 'tier'].includes(subTierMatch[1].toLowerCase())) {
@@ -1664,24 +1747,24 @@
         officialPrice = null;
         priceRange = '参考区间 $99.99 ~ $249.99/月（子档未知）';
       }
-    } else if (/pro/i.test(rawTierName) || /pro/i.test(userTier.id || '')) {
+    } else if (/pro/i.test(rawTierName) || /pro/i.test(userTier.id || '') || /^teams_tier_pro$/i.test(rawTeamsTier)) {
       tierKey = 'pro';
       tierDisplayName = 'Google AI Pro';
       officialPrice = 19.99;
       priceRange = '$19.99/月（公开参考）';
-    } else if (/plus/i.test(rawTierName) || /plus/i.test(userTier.id || '')) {
+    } else if (/plus/i.test(rawTierName) || /plus/i.test(userTier.id || '') || /^teams_tier_plus$/i.test(rawTeamsTier)) {
       tierKey = 'plus';
       tierDisplayName = 'Google AI Plus';
       officialPrice = 4.99;
       priceRange = '$4.99/月（公开参考）';
-    } else if (/free/i.test(rawTierName) || /free/i.test(userTier.id || '')) {
+    } else if (/free/i.test(rawTierName) || /free/i.test(userTier.id || '') || /^teams_tier_free$/i.test(rawTeamsTier)) {
       tierKey = 'free';
       tierDisplayName = 'Free';
       officialPrice = 0;
       priceRange = '$0/月（公开参考）';
     } else {
       tierKey = 'custom';
-      tierDisplayName = rawTierName || '未知套餐';
+      tierDisplayName = rawTierName || rawTeamsTier || '未知套餐';
       officialPrice = null;
       priceRange = '费率未知';
     }
@@ -1691,6 +1774,7 @@
       tierKey,
       tierName: tierDisplayName,
       tierId: userTier.id || null,
+      teamsTier: planInfo.teamsTier || null,
       planName: planInfo.planName || tierDisplayName,
       email,
       region: '未知',
@@ -2097,6 +2181,7 @@
     let tierKey = 'unknown';
     let tierName = '未知';
     let tierId = null;
+    let teamsTier = null;
     let planName = '未知';
     let tierSource = 'unknown';
 
@@ -2105,12 +2190,15 @@
       tierKey = rawLive.tierKey;
       tierName = rawLive.tierName;
       tierId = rawLive.tierId;
+      teamsTier = rawLive.teamsTier || null;
       planName = rawLive.planName || rawLive.tierName;
       tierSource = 'live';
     } else if (effectiveCustom && effectiveCustom.tierName) {
       status = 'custom';
       tierKey = effectiveCustom.tierKey || 'custom';
       tierName = effectiveCustom.tierName;
+      tierId = effectiveCustom.tierId || rawLive?.tierId || cachedLive?.tierId || null;
+      teamsTier = effectiveCustom.teamsTier || rawLive?.teamsTier || cachedLive?.teamsTier || null;
       planName = effectiveCustom.tierName;
       tierSource = 'custom';
     } else if (cachedLive && cachedLive.status === 'identified' && cachedLive.tierKey !== 'unknown') {
@@ -2118,6 +2206,7 @@
       tierKey = cachedLive.tierKey;
       tierName = cachedLive.tierName;
       tierId = cachedLive.tierId;
+      teamsTier = cachedLive.teamsTier || null;
       planName = cachedLive.planName || cachedLive.tierName;
       tierSource = 'cached_live';
     }
@@ -2320,6 +2409,7 @@
       tierKey,
       tierName,
       tierId,
+      teamsTier,
       planName,
       email: currentEmail,
       accountRegion: country,
@@ -2507,8 +2597,8 @@
       : (payload.dailyModelMap || {});
 
     return {
-      schemaVersion: payload.schemaVersion || '0.8.5',
-      version: payload.version || '0.8.5',
+      schemaVersion: payload.schemaVersion || '0.8.7',
+      version: payload.version || '0.8.7',
       updatedAt: payload.updatedAt || '',
       firstUseDate: summary.firstUseDate,
       currentPeriod: payload.currentPeriod || {
@@ -2680,7 +2770,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.8.5') {
+  function filterReleases(releasesList, currentVersion = '0.8.7') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {
@@ -3257,6 +3347,9 @@
       activeReset: activeResetMeta,
       browsePoolKey: browsePool?.poolKey || null,
       planTierName: planStatus?.tierName || planStatus?.planName || null,
+      planTierKey: planStatus?.tierKey || null,
+      planTierId: planStatus?.tierId || null,
+      planTeamsTier: planStatus?.teamsTier || null,
       pools,
       basisNote: '仅依据宿主接口返回的剩余比例与重置时间展示，不凭空换算剩余 Token 数量。'
     };
@@ -3776,6 +3869,7 @@
     'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
     'gemini-4-argon': 'Gemini 4 Argon',
     'gemini-4-carbon': 'Gemini 4 Carbon',
+    'orchestrator': 'Orchestrator',
     'gemini-3.8-flash': 'Gemini 3.8 Flash',
     'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
     'gemini-3.5-flash-lite': 'Gemini 3.5 Flash-Lite',
@@ -3789,6 +3883,7 @@
     'gemini-4-argon': '#6366f1',
     'gemini-3.8-flash': '#38bdf8',
     'gemini-4-carbon': '#e879f9',
+    'orchestrator': '#f472b6',
     'claude-opus-5-5': '#f59e0b',
     'claude-sonnet-5-5': '#fbbf24',
     'gpt-oss-120b': '#10b981',
@@ -3802,6 +3897,7 @@
     'gemini-4-argon': '#4f46e5',
     'gemini-3.8-flash': '#0284c7',
     'gemini-4-carbon': '#c026d3',
+    'orchestrator': '#db2777',
     'claude-opus-5-5': '#d97706',
     'claude-sonnet-5-5': '#b45309',
     'gpt-oss-120b': '#059669',
@@ -3810,10 +3906,158 @@
     'gemini-2.5-pro': '#6d28d9',
     [UNATTRIBUTED_MODEL_KEY]: 'rgba(113, 113, 122, 0.24)'
   };
-  const MODEL_FALLBACK_PALETTE_DARK = ['#a78bfa', '#38bdf8', '#6366f1', '#2dd4bf', '#f59e0b', '#e879f9', '#10b981', '#818cf8'];
-  const MODEL_FALLBACK_PALETTE_LIGHT = ['#7c3aed', '#0284c7', '#4f46e5', '#0d9488', '#d97706', '#c026d3', '#059669', '#4338ca'];
+  const MODEL_FALLBACK_PALETTE_DARK = ['#a78bfa', '#38bdf8', '#6366f1', '#2dd4bf', '#f59e0b', '#e879f9', '#10b981', '#f472b6'];
+  const MODEL_FALLBACK_PALETTE_LIGHT = ['#7c3aed', '#0284c7', '#4f46e5', '#0d9488', '#d97706', '#c026d3', '#059669', '#db2777'];
+  const MODEL_USAGE_ID_FALLBACK_LABELS = {
+    'gemini-flash-worker-agy': 'Gemini 4 Hydrogen (Orchestrator)',
+    'model_placeholder_m669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'placeholder-m669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'm669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'model_placeholder_m667': 'Orchestrator (Carbon)',
+    'placeholder-m667': 'Orchestrator (Carbon)',
+    'm667': 'Orchestrator (Carbon)',
+    'model_placeholder_m681': 'Orchestrator (Argon)',
+    'placeholder-m681': 'Orchestrator (Argon)',
+    'm681': 'Orchestrator (Argon)',
+    'model_placeholder_m668': 'Orchestrator (Argon)',
+    'placeholder-m668': 'Orchestrator (Argon)',
+    'm668': 'Orchestrator (Argon)',
+    'model_placeholder_m670': 'Gemini 4 Carbon',
+    'placeholder-m670': 'Gemini 4 Carbon',
+    'm670': 'Gemini 4 Carbon',
+    'gemini-4-hydrogen-sonar': 'Gemini 4 Hydrogen',
+    'model_placeholder_m578': 'Gemini 4 Hydrogen',
+    'm578': 'Gemini 4 Hydrogen',
+    'gemini-4-hydrogen-tiered-high': 'Gemini 4 Hydrogen (High)',
+    'model_placeholder_m530': 'Gemini 4 Hydrogen (High)',
+    'm530': 'Gemini 4 Hydrogen (High)',
+    'gemini-4-hydrogen-tiered-xhigh': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m531': 'Gemini 4 Hydrogen (XHigh)',
+    'm531': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m525': 'Gemini 4 Hydrogen (High)',
+    'm525': 'Gemini 4 Hydrogen (High)',
+    'model_placeholder_m526': 'Gemini 4 Hydrogen (Medium)',
+    'm526': 'Gemini 4 Hydrogen (Medium)',
+    'model_placeholder_m527': 'Gemini 4 Hydrogen (Low)',
+    'm527': 'Gemini 4 Hydrogen (Low)',
+    'model_placeholder_m528': 'Gemini 4 Hydrogen (XHigh)',
+    'm528': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m417': 'Gemini 4 Argon (High)',
+    'm417': 'Gemini 4 Argon (High)',
+    'model_placeholder_m418': 'Gemini 4 Argon (Medium)',
+    'm418': 'Gemini 4 Argon (Medium)',
+    'model_placeholder_m419': 'Gemini 4 Argon (Low)',
+    'm419': 'Gemini 4 Argon (Low)',
+    'model_placeholder_m427': 'Gemini 4 Carbon (High)',
+    'm427': 'Gemini 4 Carbon (High)',
+    'model_placeholder_m437': 'Gemini 4 Carbon (Medium)',
+    'm437': 'Gemini 4 Carbon (Medium)',
+    'model_placeholder_m438': 'Gemini 4 Carbon (Low)',
+    'm438': 'Gemini 4 Carbon (Low)',
+    'gemini-3.8-flash-tiered': 'Gemini 3.8 Flash',
+    'model_placeholder_m322': 'Gemini 3.8 Flash',
+    'm322': 'Gemini 3.8 Flash',
+    'model_placeholder_m318': 'Gemini 3.8 Flash (High)',
+    'm318': 'Gemini 3.8 Flash (High)',
+    'model_placeholder_m319': 'Gemini 3.8 Flash (Medium)',
+    'm319': 'Gemini 3.8 Flash (Medium)',
+    'model_placeholder_m320': 'Gemini 3.8 Flash (Low)',
+    'm320': 'Gemini 3.8 Flash (Low)',
+    'model_placeholder_m400': 'Claude Opus 5.5 (Low)',
+    'm400': 'Claude Opus 5.5 (Low)',
+    'model_placeholder_m401': 'Claude Opus 5.5 (Medium)',
+    'm401': 'Claude Opus 5.5 (Medium)',
+    'model_placeholder_m402': 'Claude Opus 5.5 (High)',
+    'm402': 'Claude Opus 5.5 (High)',
+    'model_placeholder_m403': 'Claude Sonnet 5.5 (Low)',
+    'm403': 'Claude Sonnet 5.5 (Low)',
+    'model_placeholder_m404': 'Claude Sonnet 5.5 (Medium)',
+    'm404': 'Claude Sonnet 5.5 (Medium)',
+    'model_placeholder_m405': 'Claude Sonnet 5.5 (High)',
+    'm405': 'Claude Sonnet 5.5 (High)',
+    'model_placeholder_m198': 'Gemini 3.5 Flash-Lite',
+    'm198': 'Gemini 3.5 Flash-Lite',
+    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash-Lite',
+    'model_placeholder_m50': 'Gemini 3.1 Flash-Lite',
+    'm50': 'Gemini 3.1 Flash-Lite',
+    'gemini-3-flash': 'Gemini 3 Flash',
+    'model_placeholder_m18': 'Gemini 3 Flash',
+    'm18': 'Gemini 3 Flash'
+  };
 
-  function resolveModelUsageBucket(call, cascadeModelConfigs = []) {
+  function isOpaqueModelToken(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return true;
+    if (/^(?:model_placeholder_|placeholder[-_]|model_)/i.test(s)) return true;
+    return !/[A-Z\s()]/.test(s);
+  }
+
+  function buildLookupKeysForModel(val) {
+    const clean = String(val || '').trim().toLowerCase();
+    if (!clean) return [];
+    const stripped = clean.replace(/^model_/, '');
+    const keys = [clean, stripped];
+    const mPh = stripped.match(/placeholder[_-]?(m\d+)$/);
+    if (mPh) keys.push(`model_placeholder_${mPh[1]}`, `placeholder-${mPh[1]}`, mPh[1]);
+    return Array.from(new Set(keys));
+  }
+
+  function lookupModelDisplayLabel(call, cascadeModelConfigs = [], availableModelDetails = null) {
+    const rawCandidates = [
+      call?.modelExactId,
+      call?.modelOrAlias?.model,
+      call?.modelId,
+      call?.chatModel?.modelId,
+      call?.modelRaw,
+      call?.model
+    ].filter(v => typeof v === 'string' && v.trim());
+
+    const candKeySet = new Set();
+    for (const rc of rawCandidates) {
+      for (const k of buildLookupKeysForModel(rc)) candKeySet.add(k);
+    }
+    if (candKeySet.size === 0) return '';
+
+    if (Array.isArray(cascadeModelConfigs)) {
+      for (const cfg of cascadeModelConfigs) {
+        if (!cfg || typeof cfg !== 'object') continue;
+        const lbl = String(cfg.label || cfg.displayName || '').trim();
+        if (!lbl || isOpaqueModelToken(lbl)) continue;
+        const cfgKeys = [
+          ...buildLookupKeysForModel(cfg.modelId),
+          ...buildLookupKeysForModel(cfg.modelOrAlias?.model),
+          ...buildLookupKeysForModel(cfg.model)
+        ];
+        if (cfgKeys.some(k => candKeySet.has(k))) return lbl;
+      }
+    }
+
+    if (availableModelDetails && typeof availableModelDetails === 'object') {
+      for (const ck of candKeySet) {
+        const direct = availableModelDetails[ck];
+        const directName = String(direct?.displayName || direct?.label || '').trim();
+        if (directName && !isOpaqueModelToken(directName)) return directName;
+      }
+      for (const [aKey, detail] of Object.entries(availableModelDetails)) {
+        if (!detail || typeof detail !== 'object') continue;
+        const dName = String(detail.displayName || detail.label || '').trim();
+        if (!dName || isOpaqueModelToken(dName)) continue;
+        const dKeys = [
+          ...buildLookupKeysForModel(aKey),
+          ...buildLookupKeysForModel(detail.modelId),
+          ...buildLookupKeysForModel(detail.normalizedId)
+        ];
+        if (dKeys.some(k => candKeySet.has(k))) return dName;
+      }
+    }
+
+    for (const ck of candKeySet) {
+      if (MODEL_USAGE_ID_FALLBACK_LABELS[ck]) return MODEL_USAGE_ID_FALLBACK_LABELS[ck];
+    }
+    return '';
+  }
+
+  function resolveModelUsageBucket(call, cascadeModelConfigs = [], availableModelDetails = null) {
     if (!call || typeof call !== 'object') {
       return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
     }
@@ -3822,19 +4066,71 @@
       return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
     }
     const resolvedStable = resolveStableModelId(call, cascadeModelConfigs);
-    const probeText = `${rawStr} ${resolvedStable || ''} ${call.modelLabel || ''}`.trim();
-    let modelKey = normalizeModelId(probeText);
-    if (!modelKey) {
-      const lower = probeText.toLowerCase();
-      if (lower.includes('gpt-oss')) modelKey = 'gpt-oss-120b';
+    const dynamicOrFallbackLabel = lookupModelDisplayLabel(
+      { ...call, modelExactId: call.modelExactId || resolvedStable },
+      cascadeModelConfigs,
+      availableModelDetails
+    );
+    const explicitHumanLabel = (call.modelLabel && !isOpaqueModelToken(call.modelLabel))
+      ? String(call.modelLabel).trim()
+      : (call.chatModel?.modelDisplayName && !isOpaqueModelToken(call.chatModel.modelDisplayName))
+        ? String(call.chatModel.modelDisplayName).trim()
+        : '';
+    const effectiveLabel = dynamicOrFallbackLabel || explicitHumanLabel || (!isOpaqueModelToken(rawStr) ? rawStr : '');
+    const probeText = `${effectiveLabel} ${rawStr} ${resolvedStable || ''}`.trim();
+    const probeLower = probeText.toLowerCase();
+
+    // Orchestrator 与 Worker 子模型专用归属：
+    // - gemini-flash-worker-agy / M669 / Gemini 4 Hydrogen (Orchestrator) 归入 Gemini 4 Hydrogen，档位标为 (Orchestrator)
+    // - Orchestrator (Carbon / Argon) 归入独立 Orchestrator 模型家族，按档位展开 Carbon / Argon
+    if (
+      probeLower.includes('worker-agy') ||
+      /\bm669\b/.test(probeLower) ||
+      (probeLower.includes('hydrogen') && probeLower.includes('orchestrator'))
+    ) {
+      return {
+        modelKey: 'gemini-4-hydrogen',
+        modelLabel: 'Gemini 4 Hydrogen',
+        variantKey: 'gemini-4-hydrogen:orchestrator',
+        variantLabel: 'Gemini 4 Hydrogen (Orchestrator)',
+        isAttributed: true
+      };
+    }
+
+    if (
+      probeLower.includes('orchestrator') ||
+      /\b(?:model_placeholder_|placeholder[-_])?m(?:667|668|681)\b/.test(probeLower)
+    ) {
+      let tier = null;
+      let tierLabel = null;
+      const lblLower = effectiveLabel.toLowerCase();
+      if (lblLower.includes('carbon') || probeLower.includes('carbon') || /\b(?:model_placeholder_|placeholder[-_])?m(?:667|670)\b/.test(probeLower)) {
+        tier = 'carbon';
+        tierLabel = 'Orchestrator (Carbon)';
+      } else if (lblLower.includes('argon') || probeLower.includes('argon') || /\b(?:model_placeholder_|placeholder[-_])?m(?:668|681)\b/.test(probeLower)) {
+        tier = 'argon';
+        tierLabel = 'Orchestrator (Argon)';
+      }
+      return {
+        modelKey: 'orchestrator',
+        modelLabel: 'Orchestrator',
+        variantKey: tier ? `orchestrator:${tier}` : 'orchestrator',
+        variantLabel: tierLabel || 'Orchestrator',
+        isAttributed: true
+      };
+    }
+
+    let modelKey = (effectiveLabel ? normalizeModelId(effectiveLabel) : null) || normalizeModelId(rawStr) || normalizeModelId(probeText);
+    if (!modelKey && probeLower.includes('gpt-oss')) {
+      modelKey = 'gpt-oss-120b';
     }
     const prod = groupModelProduct({
       modelId: resolvedStable || call.modelExactId || call.modelId || rawStr,
-      label: call.modelLabel || (/[A-Z\s()]/.test(rawStr) ? rawStr : ''),
+      label: effectiveLabel,
       effort: call.effort
     });
     if (!modelKey) {
-      const slug = String(prod.productLabel || resolvedStable || rawStr)
+      const slug = String(prod.productLabel || effectiveLabel || resolvedStable || rawStr)
         .toLowerCase()
         .replace(/^model_/, '')
         .replace(/[^a-z0-9.\u4e00-\u9fa5]+/g, '-')
@@ -3847,8 +4143,8 @@
     const modelLabel = MODEL_PRODUCT_DISPLAY_NAMES[modelKey] || prod.productLabel || modelKey;
     let effort = prod.effort || null;
     if (!effort) {
-      const mEff = rawStr.match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?$/i)
-        || (resolvedStable || '').match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?$/i);
+      const effProbe = `${effectiveLabel} ${rawStr} ${resolvedStable || ''}`;
+      const mEff = effProbe.match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?(?=$|\s)/i);
       if (mEff) effort = formatEffortLabel(mEff[1]);
     }
     const variantKey = effort ? `${modelKey}:${effort.toLowerCase().replace(/\s+/g, '')}` : modelKey;
@@ -3907,6 +4203,7 @@
     if (baseKey.includes('flash')) return fixedTable['gemini-3.8-flash'];
     if (baseKey.includes('argon')) return fixedTable['gemini-4-argon'];
     if (baseKey.includes('carbon')) return fixedTable['gemini-4-carbon'];
+    if (baseKey.includes('orchestrator')) return fixedTable['orchestrator'];
     if (baseKey.includes('hydrogen')) return accentHex || fixedTable['gemini-4-hydrogen'];
     let hash = 0;
     for (let i = 0; i < baseKey.length; i++) {
@@ -3926,10 +4223,10 @@
     const baseColor = resolveBaseModelColor(baseKey, rankIdx, options);
 
     if (!effortPart) return baseColor;
-    // 同模型家族内按档位做同色系明度阶梯区分
+    // 同模型家族内按档位或特殊角色（如 Orchestrator）做同色系明度阶梯区分
     const shadeOffsetByEffort = isLight
-      ? { xhigh: -0.24, extrahigh: -0.24, max: -0.24, high: -0.05, medium: 0.16, low: 0.34, minimal: 0.42 }
-      : { xhigh: -0.22, extrahigh: -0.22, max: -0.22, high: -0.04, medium: 0.18, low: 0.34, minimal: 0.42 };
+      ? { xhigh: -0.24, extrahigh: -0.24, max: -0.24, orchestrator: -0.14, carbon: -0.14, high: -0.05, medium: 0.16, argon: 0.16, low: 0.34, minimal: 0.42 }
+      : { xhigh: -0.22, extrahigh: -0.22, max: -0.22, orchestrator: -0.12, carbon: -0.14, high: -0.04, medium: 0.18, argon: 0.16, low: 0.34, minimal: 0.42 };
     const offset = shadeOffsetByEffort[effortPart];
     return offset !== undefined ? shiftHexShade(baseColor, offset) : baseColor;
   }
@@ -4116,6 +4413,7 @@
     formatQuotaPercentText,
     formatQuotaResetMeta,
     classifyModelQuotaAvailability,
+    isDecorativeBadgeTagTitle,
     buildModelQuotaSnapshot,
     formatApproxTokensShort,
     inferQuotaWindowDurationMs,

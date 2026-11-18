@@ -17,8 +17,32 @@ const { getStateDir } = require('./asar-engine');
 const { safeWriteJsonSync } = require('./meter-storage');
 const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
-const SCHEMA_VERSION = '0.8.5';
-const PROJECT_VERSION = '0.8.5';
+const SCHEMA_VERSION = '0.8.7';
+const FALLBACK_PROJECT_VERSION = '0.8.7';
+
+function resolveProjectVersion() {
+  for (const pkgPath of [
+    path.join(__dirname, 'package.json'),
+    path.join(__dirname, '..', 'package.json')
+  ]) {
+    try {
+      if (fs.existsSync(pkgPath)) {
+        const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (
+          parsed &&
+          parsed.name === 'antigravity-context-viewer' &&
+          typeof parsed.version === 'string' &&
+          parsed.version.trim()
+        ) {
+          return parsed.version.trim();
+        }
+      }
+    } catch {}
+  }
+  return FALLBACK_PROJECT_VERSION;
+}
+
+const PROJECT_VERSION = resolveProjectVersion();
 
 const DEFAULT_CONFIG = {
   schemaVersion: SCHEMA_VERSION,

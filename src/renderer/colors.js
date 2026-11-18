@@ -630,20 +630,21 @@
           }
         }
       }
-      let left = Math.round((vw - popW) / 2);
+      const snapPx = typeof snapToDevicePixel === 'function' ? snapToDevicePixel : Math.round;
+      let left = snapPx((vw - popW) / 2);
       let top = 90;
       if (activePickerAnchor?.getBoundingClientRect) {
         const ar = activePickerAnchor.getBoundingClientRect();
         if (ar.width > 0 || ar.height > 0) {
-          left = Math.round(ar.right - popW);
-          top = Math.round(ar.bottom + 6);
+          left = snapPx(ar.right - popW);
+          top = snapPx(ar.bottom + 6);
           if (top + popH > vh - 12 && ar.top > popH + 12) {
-            top = Math.round(ar.top - popH - 6);
+            top = snapPx(ar.top - popH - 6);
           }
         }
       }
-      left = Math.max(minLeft, Math.min(vw - popW - 12, left));
-      top = Math.max(42, Math.min(vh - popH - 12, top));
+      left = snapPx(Math.max(minLeft, Math.min(vw - popW - 12, left)));
+      top = snapPx(Math.max(42, Math.min(vh - popH - 12, top)));
       pop.style.left = `${left}px`;
       pop.style.top = `${top}px`;
     } catch {}

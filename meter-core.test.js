@@ -285,6 +285,8 @@ test('parseUserPlanStatus extracts Pro plan and credits correctly while keeping 
   assert.equal(plan.status, 'identified');
   assert.equal(plan.tierKey, 'pro');
   assert.equal(plan.tierName, 'Google AI Pro');
+  assert.equal(plan.tierId, 'g1-pro-tier');
+  assert.equal(plan.teamsTier, 'TEAMS_TIER_PRO');
   assert.equal(plan.planName, 'Pro');
   assert.equal(plan.email, 'test@example.com');
   assert.equal(plan.officialPriceMonthly, 19.99);
@@ -3754,6 +3756,7 @@ test('Conversation DB gen_metadata backfill recovers missing transcript models a
 
   const blobA = encodeGenBlob({ steps: [2, 3], rawModel: 'MODEL_PLACEHOLDER_M18', label: 'Gemini 3.8 Flash (High)', packed: true });
   const blobB = encodeGenBlob({ steps: [5], rawModel: 'gemini-3.8-flash-n', packed: false });
+  const blobC = encodeGenBlob({ steps: [7], rawModel: 'MODEL_PLACEHOLDER_M667', label: 'Orchestrator (Carbon)', packed: true });
   assert.deepEqual(extractStepModelsFromGenMetadataBlob(blobA), [
     { stepIndex: 2, model: 'Gemini 3.8 Flash (High)' },
     { stepIndex: 3, model: 'Gemini 3.8 Flash (High)' }
@@ -3789,6 +3792,7 @@ test('Conversation DB gen_metadata backfill recovers missing transcript models a
     const insertStmt = db.prepare('INSERT INTO gen_metadata (idx, data, size) VALUES (?, ?, ?)');
     insertStmt.run(1, blobA, blobA.length);
     insertStmt.run(2, blobB, blobB.length);
+    insertStmt.run(3, blobC, blobC.length);
   } finally {
     db.close();
   }
@@ -3796,6 +3800,7 @@ test('Conversation DB gen_metadata backfill recovers missing transcript models a
   fsMod.writeFileSync(pathMod.join(logsDir, 'transcript.jsonl'), [
     JSON.stringify({ step_index: 2, created_at: todayIso, input_tokens: 1000, cache_read_tokens: 2000, output_tokens: 300 }),
     JSON.stringify({ step_index: 5, created_at: todayIso, input_tokens: 400, cache_read_tokens: 500, output_tokens: 100 }),
+    JSON.stringify({ step_index: 7, model: 'gemini-pro-orchestrator', created_at: todayIso, input_tokens: 500, cache_read_tokens: 100, output_tokens: 50 }),
     JSON.stringify({ step_index: 9, created_at: todayIso, input_tokens: 100, cache_read_tokens: 0, output_tokens: 50 })
   ].join('\n'), 'utf8');
 
@@ -3808,17 +3813,204 @@ test('Conversation DB gen_metadata backfill recovers missing transcript models a
     const dayModels = res1.dailyModelMapBySource?.desktop?.[todayKey] || {};
     assert.equal(dayModels['gemini-3.8-flash:high']?.total, 3300);
     assert.equal(dayModels['gemini-3.8-flash']?.total, 1000);
+    assert.equal(dayModels['orchestrator:carbon']?.total, 650);
     assert.equal(dayModels.__unattributed__?.total, 150);
 
     const archiveV2 = JSON.parse(fsMod.readFileSync(pathMod.join(agDir, 'token_usage_archive_v2.json'), 'utf8'));
     assert.equal(archiveV2.dailyModelMapBySource?.desktop?.[todayKey]?.['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(archiveV2.dailyModelMapBySource?.desktop?.[todayKey]?.['orchestrator:carbon']?.total, 650);
 
     const res2 = await collectTokenHistoryAsync({
       agDir,
       agCliDir
     });
     assert.equal(res2.dailyModelMapBySource?.desktop?.[todayKey]?.['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(res2.dailyModelMapBySource?.desktop?.[todayKey]?.['orchestrator:carbon']?.total, 650);
   } finally {
     fsMod.rmSync(tmpRoot, { recursive: true, force: true });
   }
+});
+
+test('ELV-83: parseUserPlanStatus、resolveEffectivePlanStatus 与严格 allowedTiers 权限矩阵验证', () => {
+  const {
+    classifyModelQuotaAvailability,
+    buildModelQuotaSnapshot
+  } = require('./meter-core');
+
+  // 1. 保留与透传 teamsTier（live / cached_live / custom 补充场景）
+  const ultraFeedbackPlan = parseUserPlanStatus({
+    userStatus: {
+      email: 'ultra.user@example.com',
+      userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' } }
+    }
+  });
+  assert.equal(ultraFeedbackPlan.status, 'identified');
+  assert.equal(ultraFeedbackPlan.tierKey, 'ultra');
+  assert.equal(ultraFeedbackPlan.tierId, 'g1-ultra-tier');
+  assert.equal(ultraFeedbackPlan.teamsTier, 'TEAMS_TIER_PRO');
+
+  const effLive = resolveEffectivePlanStatus(ultraFeedbackPlan, { subscriptionRegion: '美国 (US)' });
+  assert.equal(effLive.teamsTier, 'TEAMS_TIER_PRO');
+  assert.equal(effLive.tierId, 'g1-ultra-tier');
+
+  const effCached = resolveEffectivePlanStatus(null, null, { cachedLivePlan: ultraFeedbackPlan });
+  assert.equal(effCached.teamsTier, 'TEAMS_TIER_PRO');
+  assert.equal(effCached.tierId, 'g1-ultra-tier');
+
+  // 仅凭 planInfo.teamsTier 也可识别套餐
+  const onlyTeamsTier = parseUserPlanStatus({
+    userStatus: {
+      email: 'teams@example.com',
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO_ULTIMATE' } }
+    }
+  });
+  assert.equal(onlyTeamsTier.status, 'identified');
+  assert.equal(onlyTeamsTier.tierKey, 'ultra');
+  assert.equal(onlyTeamsTier.teamsTier, 'TEAMS_TIER_PRO_ULTIMATE');
+
+  // 2. Pro 套餐面对仅限 Ultra 的 TEAMS_TIER_PRO_ULTIMATE 必须拦截（禁止子串 includes 误放行）
+  const proPlan = { status: 'identified', tierKey: 'pro', tierId: 'g1-pro-tier', teamsTier: 'TEAMS_TIER_PRO' };
+  const ultraOnlyModel = {
+    label: 'Gemini 4 Carbon (XHigh)',
+    tagTitle: 'New',
+    allowedTiers: ['TEAMS_TIER_PRO_ULTIMATE'],
+    quotaInfo: { remainingFraction: 0.9 }
+  };
+  const proOnUltraModel = classifyModelQuotaAvailability(ultraOnlyModel, proPlan);
+  assert.equal(proOnUltraModel.noPermission, true, 'Pro 不得因 TEAMS_TIER_PRO_ULTIMATE 包含 TEAMS_TIER_PRO 而被误放行');
+  assert.match(proOnUltraModel.reason || '', /TEAMS_TIER_PRO_ULTIMATE/);
+  assert.notEqual(proOnUltraModel.reason, 'New');
+
+  // Pro 面对 TEAMS_TIER_PRO 模型应正常放行（含缺少 teamsTier 时按 tierKey 推导）
+  const proSharedModel = { label: 'Gemini 4 Hydrogen', tagTitle: 'New', allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_PRO_ULTIMATE'] };
+  assert.equal(classifyModelQuotaAvailability(proSharedModel, proPlan).noPermission, false);
+  assert.equal(classifyModelQuotaAvailability(proSharedModel, { status: 'identified', tierKey: 'pro', tierId: 'g1-pro-tier', teamsTier: null }).noPermission, false);
+
+  // 3. Ultra 账号（含 TEAMS_TIER_PRO 与缺失 teamsTier）允许 Carbon / Hydrogen / Sonnet，但拦截企业专享模型
+  assert.equal(classifyModelQuotaAvailability(ultraOnlyModel, ultraFeedbackPlan).noPermission, false);
+  assert.equal(classifyModelQuotaAvailability(ultraOnlyModel, { status: 'identified', tierKey: 'ultra', tierId: 'g1-ultra-tier', teamsTier: null }).noPermission, false);
+  const entOnly = classifyModelQuotaAvailability(
+    { label: 'Enterprise Private', tagTitle: 'New', allowedTiers: ['TEAMS_TIER_ENTERPRISE_SAAS'] },
+    ultraFeedbackPlan
+  );
+  assert.equal(entOnly.noPermission, true);
+  assert.match(entOnly.reason || '', /TEAMS_TIER_ENTERPRISE_SAAS/);
+
+  // 4. 真正受限套餐（Free 无 ID / Free 有 ID / 名称包含 ultra 的过期或非官方 custom 套餐）必须拦截
+  assert.equal(classifyModelQuotaAvailability(proSharedModel, { status: 'identified', tierKey: 'free', tierId: null, teamsTier: null }).noPermission, true);
+  assert.equal(classifyModelQuotaAvailability(proSharedModel, { status: 'identified', tierKey: 'free', tierId: 'free-tier', teamsTier: 'TEAMS_TIER_FREE' }).noPermission, true);
+  assert.equal(classifyModelQuotaAvailability(ultraOnlyModel, { status: 'identified', tierKey: 'custom', tierId: 'ultra_expired', teamsTier: null }).noPermission, true);
+
+  // 5. 服务端明确禁用时，即使套餐允许且 quotaInfo 返回剩余百分比，也必须判无权限且 New 不覆盖故障原因
+  const serverDisabledWithPct = classifyModelQuotaAvailability(
+    {
+      label: 'Gemini 4 Carbon',
+      tagTitle: 'New',
+      disabled: true,
+      unavailabilityReason: 'New',
+      allowedTiers: ['TEAMS_TIER_PRO', 'TEAMS_TIER_PRO_ULTIMATE'],
+      quotaInfo: { remainingFraction: 0.88 }
+    },
+    ultraFeedbackPlan
+  );
+  assert.equal(serverDisabledWithPct.noPermission, true);
+  assert.equal(serverDisabledWithPct.reason, '当前套餐无权访问该模型');
+
+  // 6. 未知套餐不按 allowedTiers 猜测误判无权限，保持 unknown 状态
+  const unknownPlanSnap = buildModelQuotaSnapshot({
+    userStatusRes: {
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            { modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen', allowedTiers: ['TEAMS_TIER_PRO'] }
+          ]
+        }
+      }
+    },
+    currentModel: 'gemini-4-hydrogen'
+  });
+  assert.equal(unknownPlanSnap.activeStatus, 'unknown');
+  assert.equal(unknownPlanSnap.pools[0]?.noPermission, false);
+});
+
+test('Orchestrator & GetAvailableModels resolution: maps M667/M681/gemini-flash-worker-agy cleanly without raw placeholders', () => {
+  const {
+    resolveModelUsageBucket,
+    summarizeModelUsageWindow,
+    getModelChartColor
+  } = require('./meter-core');
+
+  const configs = [
+    { modelId: 'MODEL_PLACEHOLDER_M667', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M667' }, label: 'Orchestrator (Carbon)' },
+    { modelId: 'MODEL_PLACEHOLDER_M681', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M681' }, label: 'Orchestrator (Argon)' }
+  ];
+  const availDetails = {
+    'gemini-flash-worker-agy': { modelId: 'MODEL_PLACEHOLDER_M669', displayName: 'Gemini 4 Hydrogen (Orchestrator)' },
+    model_placeholder_m669: { modelId: 'MODEL_PLACEHOLDER_M669', displayName: 'Gemini 4 Hydrogen (Orchestrator)' },
+    'gemini-pro-orchestrator': { modelId: 'MODEL_PLACEHOLDER_M667', displayName: 'Orchestrator (Carbon)' },
+    model_placeholder_m667: { modelId: 'MODEL_PLACEHOLDER_M667', displayName: 'Orchestrator (Carbon)' },
+    'gemini-future-worker': { modelId: 'MODEL_PLACEHOLDER_M999', displayName: 'Gemini 4 Hydrogen (XHigh)' }
+  };
+
+  const workerDyn = resolveModelUsageBucket({ model: 'gemini-flash-worker-agy' }, configs, availDetails);
+  assert.equal(workerDyn.modelKey, 'gemini-4-hydrogen');
+  assert.equal(workerDyn.modelLabel, 'Gemini 4 Hydrogen');
+  assert.equal(workerDyn.variantKey, 'gemini-4-hydrogen:orchestrator');
+  assert.equal(workerDyn.variantLabel, 'Gemini 4 Hydrogen (Orchestrator)');
+
+  const workerOffline = resolveModelUsageBucket({ model: 'gemini-flash-worker-agy' });
+  assert.equal(workerOffline.modelKey, 'gemini-4-hydrogen');
+  assert.equal(workerOffline.variantKey, 'gemini-4-hydrogen:orchestrator');
+  assert.equal(workerOffline.variantLabel, 'Gemini 4 Hydrogen (Orchestrator)');
+
+  const m667Bucket = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M667', modelLabel: 'MODEL_PLACEHOLDER_M667' }, configs, availDetails);
+  assert.equal(m667Bucket.modelKey, 'orchestrator');
+  assert.equal(m667Bucket.modelLabel, 'Orchestrator');
+  assert.equal(m667Bucket.variantKey, 'orchestrator:carbon');
+  assert.equal(m667Bucket.variantLabel, 'Orchestrator (Carbon)');
+
+  const orchOffline = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M667' });
+  assert.equal(orchOffline.variantKey, 'orchestrator:carbon');
+  assert.equal(orchOffline.variantLabel, 'Orchestrator (Carbon)');
+
+  const cliOrchCarbon = resolveModelUsageBucket({ model: 'gemini-pro-orchestrator' }, configs, availDetails);
+  assert.equal(cliOrchCarbon.modelKey, 'orchestrator');
+  assert.equal(cliOrchCarbon.variantKey, 'orchestrator:carbon');
+  assert.equal(cliOrchCarbon.variantLabel, 'Orchestrator (Carbon)');
+
+  const orchArgon = resolveModelUsageBucket({ model: 'gemini-pro-orchestrator-argon' }, configs, availDetails);
+  assert.equal(orchArgon.modelKey, 'orchestrator');
+  assert.equal(orchArgon.variantKey, 'orchestrator:argon');
+  assert.equal(orchArgon.variantLabel, 'Orchestrator (Argon)');
+
+  const futureDyn = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M999' }, configs, availDetails);
+  assert.equal(futureDyn.modelKey, 'gemini-4-hydrogen');
+  assert.equal(futureDyn.variantKey, 'gemini-4-hydrogen:xhigh');
+
+  assert.equal(getModelChartColor('orchestrator', 0, { theme: 'dark' }), '#f472b6');
+  assert.notEqual(getModelChartColor('orchestrator:carbon', 0, { theme: 'dark' }), getModelChartColor('orchestrator:argon', 1, { theme: 'dark' }));
+  assert.notEqual(getModelChartColor('gemini-4-hydrogen:orchestrator', 0, { theme: 'dark' }), getModelChartColor('gemini-4-hydrogen:xhigh', 1, { theme: 'dark' }));
+
+  const win = summarizeModelUsageWindow({
+    '2026-11-17': {
+      'orchestrator:carbon': { total: 500, input: 100, cache: 350, output: 50, steps: 2 },
+      'orchestrator:argon': { total: 300, input: 100, cache: 150, output: 50, steps: 1 },
+      'gemini-4-hydrogen:orchestrator': { total: 200, input: 50, cache: 100, output: 50, steps: 2 }
+    }
+  }, {
+    periodDays: 7,
+    endDate: '2026-11-18',
+    groupBy: 'model',
+    modelMetaByKey: {
+      'orchestrator:carbon': { modelKey: 'orchestrator', modelLabel: 'Orchestrator', variantKey: 'orchestrator:carbon', variantLabel: 'Orchestrator (Carbon)' },
+      'orchestrator:argon': { modelKey: 'orchestrator', modelLabel: 'Orchestrator', variantKey: 'orchestrator:argon', variantLabel: 'Orchestrator (Argon)' },
+      'gemini-4-hydrogen:orchestrator': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:orchestrator', variantLabel: 'Gemini 4 Hydrogen (Orchestrator)' }
+    }
+  });
+  assert.equal(win.legend.length, 2);
+  assert.equal(win.legend[0].label, 'Orchestrator');
+  assert.equal(win.legend[0].tokens, 800);
+  assert.equal(win.legend[1].label, 'Gemini 4 Hydrogen');
+  assert.equal(win.legend[1].tokens, 200);
 });

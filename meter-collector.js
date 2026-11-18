@@ -18,7 +18,7 @@ const origFsMethods = {
   existsSync: fs.existsSync
 };
 const { safeWriteJsonSync, safeReadJsonSync, withFileLockSync } = require('./meter-storage');
-const { buildCliProxyEnv, detectProxyConfig, parseAndValidateProxyUrl, matchesNoProxy } = require('./meter-proxy');
+const { buildCliProxyEnv, detectProxyConfig, parseAndValidateProxyUrl, matchesNoProxy, redactProxyUrl } = require('./meter-proxy');
 const {
   conversationWorkspaces,
   extractWorkspacePathFromUri,
@@ -53,6 +53,7 @@ const {
   CURRENCY_SYMBOLS,
   parseUserPlanStatus,
   buildModelQuotaSnapshot,
+  isDecorativeBadgeTagTitle,
   getModelPoolKey,
   getSharedQuotaGroupKey,
   extractCallId,
@@ -69,6 +70,7 @@ const {
   findReleaseAsset,
   compareVersions
 } = require('./meter-core');
+const { PROJECT_VERSION } = require('./modules-config');
 
 let cachedPython = undefined;
 function resolvePython() {
@@ -276,7 +278,8 @@ function sanitizeCascadeModelConfig(c) {
   if (!c || typeof c !== 'object') return null;
   const tagTitle = typeof c.tagTitle === 'string' ? c.tagTitle.trim() : '';
   const tagDesc = typeof c.tagDescription === 'string' ? c.tagDescription.trim() : '';
-  const isTagUnavailable = /unavailable|disabled|不可用/i.test(tagTitle);
+  const isTagUnavailable = /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle);
+  const isDecoTag = isDecorativeBadgeTagTitle(tagTitle);
   const isUnavail = Boolean(
     c.unavailable === true ||
     c.isUnavailable === true ||
@@ -292,6 +295,9 @@ function sanitizeCascadeModelConfig(c) {
     c.isDeprecated === true ||
     (typeof c.label === 'string' && /\(legacy\)|\(deprecated\)|\(old\)/i.test(c.label))
   );
+  const rawReason = String(c.unavailabilityReason || c.disabledReason || c.reason || '').trim();
+  const safeReason = (rawReason && !isDecorativeBadgeTagTitle(rawReason)) ? rawReason : null;
+  const fallbackTagReason = isUnavail ? (tagDesc || (!isDecoTag && tagTitle ? tagTitle : null)) : null;
   return {
     modelId: c.modelId || c.model || '',
     label: c.label || c.modelDisplayName || c.modelId || '',
@@ -318,8 +324,8 @@ function sanitizeCascadeModelConfig(c) {
     disabled: c.disabled === true,
     allowedTiers: Array.isArray(c.allowedTiers) ? c.allowedTiers.slice() : undefined,
     unavailable: isUnavail,
-    unavailabilityReason: c.unavailabilityReason || c.disabledReason || c.reason || (isUnavail ? (tagDesc || tagTitle || null) : null),
-    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && tagTitle ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : null),
+    unavailabilityReason: safeReason || fallbackTagReason || null,
+    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && tagTitle && (!isDecoTag || tagDesc) ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : null),
     isHistorical: isHist,
     releaseDate: c.releaseDate || null,
     family: c.family || null,
@@ -571,7 +577,7 @@ async function collect(origin, id, options = {}) {
       let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
       if (!token) {
         const html = await request(origin, null, null, null, signal);
-        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
         token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
         csrfTokenByOrigin.set(origin, token);
       }
@@ -590,7 +596,7 @@ async function collect(origin, id, options = {}) {
         }
       };
       const full = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 3 });
-      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const trajectory = full.trajectory;
       if (!trajectory) throw new Error('未取得会话历史，无法完整统计');
       const wsPath = extractWorkspaceFromTrajectory(trajectory);
@@ -598,16 +604,16 @@ async function collect(origin, id, options = {}) {
       const steps = trajectory.steps || [];
       const expected = Number(full.numTotalSteps ?? steps.length);
       while (steps.length < expected) {
-        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
         const page = await call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: steps.length, trajectoryVerbosity: 3 });
         if (!page.steps?.length) throw new Error(`历史仅取得 ${steps.length}/${expected} 步，扫描未完成`);
         steps.push(...page.steps);
       }
-      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const session = analyzeSteps(steps);
       const stepCapabilities = extractObservedModelInfoFromSteps(steps);
       const attachments = await scanFiles(session.media, { signal });
-      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const attachmentTotal = empty();
       for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
       const total = add({ ...session.total }, attachmentTotal);
@@ -618,7 +624,7 @@ async function collect(origin, id, options = {}) {
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
         try {
-          const freshStatus = await fetchUserStatusFromHost();
+          const freshStatus = await fetchUserStatusFromHost({ origin });
           if (Array.isArray(freshStatus?.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
             knownCascadeConfigs = freshStatus.cascadeModelConfigs;
           }
@@ -671,16 +677,16 @@ async function collect(origin, id, options = {}) {
       ...(cachedHostUserStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
-    const result = { version: '0.8.5', conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     if (isSuperseded()) {
       conversations.delete(key);
-      return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
     }
     setBoundedMap(conversations, key, { result, at: Date.now() }, CONVERSATIONS_CACHE_MAX_ENTRIES);
     return result;
     } catch (err) {
       if (isSuperseded() || (err && err.name === 'AbortError' && signal?.aborted)) {
-        return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       }
       throw err;
     }
@@ -2236,9 +2242,14 @@ function savePluginSettings(payload = {}, options = {}) {
   };
 }
 
-let cachedHostUserStatus = null;
-let cachedHostUserStatusAt = 0;
-let lastHostAccountScopeKey = null;
+const cachedUserStatusByOrigin = new Map();
+const cachedQuotaStateByOrigin = new Map();
+const activeQuotaFetchByOrigin = new Map();
+
+function normalizeQuotaOriginScope(options = {}) {
+  const raw = typeof options.origin === 'string' ? options.origin.trim() : '';
+  return raw || '__default__';
+}
 
 function buildAccountScopeKey(emailOrId) {
   const raw = typeof emailOrId === 'string' ? emailOrId.trim().toLowerCase() : '';
@@ -2246,15 +2257,10 @@ function buildAccountScopeKey(emailOrId) {
   return 'acct_' + crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 
-let cachedQuotaState = null;
-let activeQuotaFetchPromise = null;
-
 function resetQuotaHostCacheForTest() {
-  cachedHostUserStatus = null;
-  cachedHostUserStatusAt = 0;
-  lastHostAccountScopeKey = null;
-  cachedQuotaState = null;
-  activeQuotaFetchPromise = null;
+  cachedUserStatusByOrigin.clear();
+  cachedQuotaStateByOrigin.clear();
+  activeQuotaFetchByOrigin.clear();
 }
 
 function classifyQuotaFetchError(err) {
@@ -2273,23 +2279,37 @@ function classifyQuotaFetchError(err) {
 }
 
 /**
- * 并发拉取宿主模型额度池与可用模型详情，带并发去重、短缓存、失败分级及账号切换检测
- * @param {Object} options - 支持 force / userStatus / quotaSummary / connect 等测试注入参数
+ * 并发拉取宿主模型额度池与可用模型详情，带多窗口 origin 隔离、并发去重、短缓存、失败分级及账号切换检测
+ * @param {Object} options - 支持 force / origin / backendSource / userStatus / quotaSummary / connect 等参数
  */
 async function fetchQuotaSnapshotFromHost(options = {}) {
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
   const force = options.force === true;
   const hasStaticFixture = options.userStatus !== undefined || options.quotaSummary !== undefined || options.error !== undefined;
+  const originScope = normalizeQuotaOriginScope(options);
+  const backendSource = typeof options.backendSource === 'string' && options.backendSource.trim()
+    ? options.backendSource.trim()
+    : 'host';
 
-  // 短缓存防刷（仅在非强制刷新且无静态测试桩时生效，15s 内复用结果）
-  if (!force && !hasStaticFixture && !options.agDir && cachedQuotaState && (nowMs - cachedQuotaState.fetchedAtMs < 15000)) {
-    return cachedQuotaState;
+  // 短缓存防刷（仅在非强制刷新且无静态测试桩时生效，15s 内复用同 origin 结果）
+  const prevCachedQuota = cachedQuotaStateByOrigin.get(originScope) || null;
+  if (!force && !hasStaticFixture && !options.agDir && prevCachedQuota && (nowMs - prevCachedQuota.fetchedAtMs < 15000)) {
+    if (prevCachedQuota.backendSource === backendSource && prevCachedQuota.collectorVersion === PROJECT_VERSION) {
+      return prevCachedQuota;
+    }
+    return {
+      ...prevCachedQuota,
+      collectorVersion: PROJECT_VERSION,
+      backendVersion: PROJECT_VERSION,
+      backendSource
+    };
   }
 
-  // 如果已有相同请求进行中，直接合并等待，避免重复请求
-  if (!hasStaticFixture && activeQuotaFetchPromise) {
-    if (!force) return activeQuotaFetchPromise;
-    try { await activeQuotaFetchPromise; } catch { }
+  // 如果已有相同 origin 请求进行中，直接合并等待，避免重复请求
+  const activePromise = activeQuotaFetchByOrigin.get(originScope) || null;
+  if (!hasStaticFixture && activePromise) {
+    if (!force) return activePromise;
+    try { await activePromise; } catch { }
   }
 
   const runFetch = async () => {
@@ -2308,7 +2328,7 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     } else {
       try {
         const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
-        const api = await connector();
+        const api = await connector(options.origin ? { origin: options.origin } : undefined);
         const [uRes, qRes] = await Promise.allSettled([
           api.call('GetUserStatus', {}),
           api.call('RetrieveUserQuotaSummary', {})
@@ -2341,26 +2361,33 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       : [];
     const parsedPlan = userStatusRes ? parseUserPlanStatus(userStatusRes) : null;
     const rawEmail = parsedPlan?.email || userStatusRes?.userStatus?.email || '';
-    const nextScopeKey = rawEmail ? buildAccountScopeKey(rawEmail) : (cachedQuotaState?.accountScopeKey || 'anonymous');
+    const scopeQuotaState = cachedQuotaStateByOrigin.get(originScope) || null;
+    const scopeUserEntry = cachedUserStatusByOrigin.get(originScope) || null;
+    const prevAccountScopeKey = scopeUserEntry?.accountScopeKey || scopeQuotaState?.accountScopeKey || null;
+    const nextScopeKey = rawEmail ? buildAccountScopeKey(rawEmail) : (prevAccountScopeKey || 'anonymous');
 
-    // 账号切换检测：一旦发现账号作用域变化，立即清掉旧账号缓存，绝不跨账号残留旧额度
+    // 账号切换检测：一旦发现同 origin 作用域下账号变化，立即清掉旧账号缓存，绝不跨账号残留旧额度
     const accountSwitched = Boolean(
       rawEmail &&
-      lastHostAccountScopeKey &&
-      nextScopeKey !== lastHostAccountScopeKey
+      prevAccountScopeKey &&
+      nextScopeKey !== prevAccountScopeKey
     );
     if (accountSwitched) {
-      cachedQuotaState = null;
-      cachedHostUserStatus = null;
-      cachedHostUserStatusAt = 0;
+      cachedQuotaStateByOrigin.delete(originScope);
+      cachedUserStatusByOrigin.delete(originScope);
     }
     if (rawEmail) {
-      lastHostAccountScopeKey = nextScopeKey;
+      const existingEntry = cachedUserStatusByOrigin.get(originScope) || {};
+      cachedUserStatusByOrigin.set(originScope, {
+        ...existingEntry,
+        accountScopeKey: nextScopeKey
+      });
     }
 
     if (fetchError) {
-      // 保留同账号最后一次有效原始响应以产出 stale 状态（而非误报耗尽）；无旧数据时产出 error 状态
-      const prevRaw = (!accountSwitched && cachedQuotaState?._raw) ? cachedQuotaState._raw : null;
+      // 保留同 origin 同账号最后一次有效原始响应以产出 stale 状态；无旧数据时产出 error 状态
+      const curScoped = cachedQuotaStateByOrigin.get(originScope) || null;
+      const prevRaw = (!accountSwitched && curScoped?._raw) ? curScoped._raw : null;
       const snapshot = buildModelQuotaSnapshot({
         cascadeModelConfigs: prevRaw?.cascadeModelConfigs || [],
         quotaSummaryRes: prevRaw?.quotaSummaryRes || null,
@@ -2376,17 +2403,29 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       });
       const out = {
         ok: false,
+        collectorVersion: PROJECT_VERSION,
+        backendVersion: PROJECT_VERSION,
+        backendSource,
+        originScope,
         accountScopeKey: prevRaw?.accountScopeKey || nextScopeKey,
         accountSwitched,
         fetchedAtMs: doneAtMs,
         lastSuccessAtMs: prevRaw?.fetchedAtMs || null,
         error: fetchError,
         errorKind,
+        planTierSummary: prevRaw?.planStatus ? {
+          status: prevRaw.planStatus.status,
+          tierKey: prevRaw.planStatus.tierKey,
+          tierId: prevRaw.planStatus.tierId || null,
+          teamsTier: prevRaw.planStatus.teamsTier || null,
+          tierName: prevRaw.planStatus.tierName || null,
+          planName: prevRaw.planStatus.planName || null
+        } : null,
         snapshot,
         _raw: prevRaw
       };
-      if (!hasStaticFixture && !options.agDir && cachedQuotaState) {
-        cachedQuotaState = { ...cachedQuotaState, error: fetchError, errorKind, snapshot };
+      if (!hasStaticFixture && !options.agDir && curScoped) {
+        cachedQuotaStateByOrigin.set(originScope, { ...curScoped, error: fetchError, errorKind, snapshot });
       }
       return out;
     }
@@ -2415,28 +2454,40 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
 
     const out = {
       ok: true,
+      collectorVersion: PROJECT_VERSION,
+      backendVersion: PROJECT_VERSION,
+      backendSource,
+      originScope,
       accountScopeKey: nextScopeKey,
       accountSwitched,
       fetchedAtMs: doneAtMs,
       lastSuccessAtMs: doneAtMs,
       error: null,
       errorKind: null,
+      planTierSummary: parsedPlan ? {
+        status: parsedPlan.status,
+        tierKey: parsedPlan.tierKey,
+        tierId: parsedPlan.tierId || null,
+        teamsTier: parsedPlan.teamsTier || null,
+        tierName: parsedPlan.tierName || null,
+        planName: parsedPlan.planName || null
+      } : null,
       snapshot,
       cascadeModelConfigs: sanitizedConfigs,
       _raw: rawRecord
     };
 
     if (!hasStaticFixture && !options.agDir) {
-      cachedQuotaState = out;
+      cachedQuotaStateByOrigin.set(originScope, out);
     }
     return out;
   };
 
   if (!hasStaticFixture) {
     const p = runFetch().finally(() => {
-      if (activeQuotaFetchPromise === p) activeQuotaFetchPromise = null;
+      if (activeQuotaFetchByOrigin.get(originScope) === p) activeQuotaFetchByOrigin.delete(originScope);
     });
-    activeQuotaFetchPromise = p;
+    activeQuotaFetchByOrigin.set(originScope, p);
     return p;
   }
   return runFetch();
@@ -2454,12 +2505,14 @@ async function fetchUserStatusFromHost(options = {}) {
     }
     return parsed;
   }
-  if (!options.agDir && !options.force && cachedHostUserStatus && Date.now() - cachedHostUserStatusAt < 60000) {
-    return cachedHostUserStatus;
+  const originScope = normalizeQuotaOriginScope(options);
+  const cachedEntry = cachedUserStatusByOrigin.get(originScope) || null;
+  if (!options.agDir && !options.force && cachedEntry?.status && Date.now() - (cachedEntry.fetchedAt || 0) < 60000) {
+    return cachedEntry.status;
   }
   try {
     const { connect } = require('./local-api');
-    const api = await connect();
+    const api = await connect(options.origin ? { origin: options.origin } : undefined);
     const [res, availRes] = await Promise.all([
       api.call('GetUserStatus', {}),
       api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
@@ -2472,12 +2525,20 @@ async function fetchUserStatusFromHost(options = {}) {
       if (configs.length) parsed.cascadeModelConfigs = mergeModelCapabilitiesIntoConfigs(configs, availMap);
     }
     if (parsed && !options.agDir) {
-      cachedHostUserStatus = parsed;
-      cachedHostUserStatusAt = Date.now();
+      const nextScope = parsed.email ? buildAccountScopeKey(parsed.email) : null;
+      const prevScope = cachedEntry?.accountScopeKey || null;
+      if (nextScope && prevScope && nextScope !== prevScope) {
+        cachedQuotaStateByOrigin.delete(originScope);
+      }
+      cachedUserStatusByOrigin.set(originScope, {
+        status: parsed,
+        fetchedAt: Date.now(),
+        accountScopeKey: nextScope || prevScope || null
+      });
     }
     return parsed;
   } catch {
-    return cachedHostUserStatus || null;
+    return cachedEntry?.status || null;
   }
 }
 
@@ -2584,7 +2645,6 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
   const w = new Worker(targetScript, {
     workerData: { agCollectorHistoryWorker: true }
   });
-  w.unref();
   w.on('message', (msg) => {
     if (!msg || !msg.id) return;
     const entry = historyWorkerPending.get(msg.id);
@@ -2592,6 +2652,9 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
     historyWorkerPending.delete(msg.id);
     if (entry.timer) clearTimeout(entry.timer);
     historyWorkerConsecutiveErrors = 0;
+    if (historyWorkerPending.size === 0) {
+      try { w.unref(); } catch { }
+    }
     scheduleHistoryWorkerIdleCleanup();
     if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result });
     else entry.resolve({ _workerHandled: false, error: msg.error || 'Worker 执行失败' });
@@ -2621,6 +2684,8 @@ function getOrStartHistoryWorker(workerEntry = __filename) {
     if (historyWorkerInstance === w) historyWorkerInstance = null;
     clearAllHistoryWorkerPending(w, code !== 0 ? `worker_exit_${code}` : null);
   });
+  // Node.js v24 注册 message 监听会隐式 ref 底层 MessagePort，必须在全部监听绑定之后再 unref
+  try { w.unref(); } catch { }
   historyWorkerInstance = w;
   return w;
 }
@@ -2690,9 +2755,13 @@ async function runHistoryWorkerTask(payload, cmd = 'collectTokenHistory', taskOp
       if (typeof entry.timer.unref === 'function') entry.timer.unref();
       historyWorkerPending.set(id, entry);
       try {
+        try { w.ref(); } catch { }
         w.postMessage({ id, cmd, payload, env: captureCollectorEnvSnapshot() });
       } catch {
         historyWorkerPending.delete(id);
+        if (historyWorkerPending.size === 0) {
+          try { w.unref(); } catch { }
+        }
         if (entry.timer) clearTimeout(entry.timer);
         resolve(null);
       }
@@ -2855,12 +2924,20 @@ function loadStepModelMapFromSqlite(dbPath) {
   return stepToModel;
 }
 
+function needsDbLabelEnrichment(rec) {
+  if (!rec || !(rec.tot > 0)) return false;
+  if (!rec.model) return true;
+  if (/^model_/i.test(rec.model)) return true;
+  if (!rec.modelLabel && !/[A-Z\s()]/.test(rec.model)) return true;
+  return false;
+}
+
 function backfillMissingModelsFromConversationDb(records, convDir, options = {}) {
   if (!Array.isArray(records) || !records.length || !convDir || options.fs || isFsMonkeyPatched()) return 0;
 
   const missingByCascade = new Map();
   for (const rec of records) {
-    if (!rec || rec.model || !(rec.tot > 0)) continue;
+    if (!needsDbLabelEnrichment(rec)) continue;
     if (!Number.isInteger(rec.stepIndex) || rec.stepIndex < 0) continue;
     const cid = String(rec.cascadeId || '').trim();
     if (!cid || cid.includes('..') || cid.includes('/') || cid.includes('\\')) continue;
@@ -2881,7 +2958,12 @@ function backfillMissingModelsFromConversationDb(records, convDir, options = {})
     for (const rec of recs) {
       const recovered = stepModelMap.get(rec.stepIndex);
       if (recovered) {
-        rec.model = recovered;
+        if (!rec.model || /^model_/i.test(rec.model)) {
+          rec.model = recovered;
+        }
+        if (/[A-Z\s()]/.test(recovered)) {
+          rec.modelLabel = recovered;
+        }
         filledCount++;
       }
     }
@@ -2927,17 +3009,21 @@ function buildDailyModelBreakdown(params) {
     mergedCli,
     mergedLegacyUnallocated,
     archiveV2,
-    compactModelConfigs
+    compactModelConfigs,
+    availableModelDetails
   } = params;
 
-  const modelMetaByKey = { ...(archiveV2?.modelMetaByKey || {}) };
+  const modelMetaByKey = {};
+  const archivedMetaByKey = (archiveV2?.modelMetaByKey && typeof archiveV2.modelMetaByKey === 'object')
+    ? archiveV2.modelMetaByKey
+    : {};
   const matchedModels = { desktop: {}, cli: {} };
   const extraModels = { desktop: {}, cli: {} };
 
   const addModelBucket = (srcMap, dateKey, callObj, inp, cap, outp, tot, steps = 1) => {
     if (!dateKey || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return;
     if (tot <= 0 && steps <= 0) return;
-    const bucket = resolveModelUsageBucket(callObj, compactModelConfigs);
+    const bucket = resolveModelUsageBucket(callObj, compactModelConfigs, availableModelDetails);
     const vKey = bucket.variantKey || UNATTRIBUTED_MODEL_KEY;
     if (bucket.isAttributed && vKey !== UNATTRIBUTED_MODEL_KEY) {
       modelMetaByKey[vKey] = {
@@ -3026,7 +3112,34 @@ function buildDailyModelBreakdown(params) {
         appendScaledDayBuckets(dayOut, extraDay, authRec.total, state);
       } else if (archivedModels[dateKey]) {
         for (const [mKey, rec] of Object.entries(archivedModels[dateKey])) {
-          dayOut[mKey] = { ...rec };
+          if (!rec || typeof rec !== 'object') continue;
+          let effKey = mKey;
+          if (mKey !== UNATTRIBUTED_MODEL_KEY) {
+            const oldMeta = archivedMetaByKey[mKey] || null;
+            const probeLabel = oldMeta?.variantLabel || oldMeta?.modelLabel || '';
+            const reBucket = resolveModelUsageBucket(
+              { model: mKey, ...(probeLabel ? { modelLabel: probeLabel } : {}) },
+              compactModelConfigs,
+              availableModelDetails
+            );
+            effKey = reBucket.variantKey || mKey;
+            if (reBucket.isAttributed && effKey !== UNATTRIBUTED_MODEL_KEY) {
+              modelMetaByKey[effKey] = {
+                modelKey: reBucket.modelKey,
+                modelLabel: reBucket.modelLabel,
+                variantKey: effKey,
+                variantLabel: reBucket.variantLabel
+              };
+            } else if (oldMeta && !modelMetaByKey[effKey]) {
+              modelMetaByKey[effKey] = oldMeta;
+            }
+          }
+          if (!dayOut[effKey]) dayOut[effKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+          dayOut[effKey].total += rec.total;
+          dayOut[effKey].input += rec.input;
+          dayOut[effKey].output += rec.output;
+          dayOut[effKey].cache += rec.cache;
+          dayOut[effKey].steps += rec.steps;
           state.sumTot += rec.total;
           state.sumInp += rec.input;
           state.sumOut += rec.output;
@@ -3336,6 +3449,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
           cascadeId: rec.cascadeId,
           stepIndex: rec.stepIndex,
           model: rec.model,
+          ...(rec.modelLabel ? { modelLabel: rec.modelLabel } : {}),
           modelKey,
           inputTokens: rec.inp,
           cacheTokens: rec.cap,
@@ -4006,15 +4120,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     mergedCli,
     mergedLegacyUnallocated,
     archiveV2,
-    compactModelConfigs
+    compactModelConfigs,
+    availableModelDetails: livePlanStatus?.availableModelDetails || null
   });
 
   const prevAccountEmail = Object.prototype.hasOwnProperty.call(extraContext, 'prevAccountEmail')
     ? extraContext.prevAccountEmail
     : (collectTokenHistoryAsync._lastAccountEmail || null);
   const out = {
-    schemaVersion: '0.8.5',
-    version: '0.8.5',
+    schemaVersion: PROJECT_VERSION,
+    version: PROJECT_VERSION,
     accountScopeKey: currentAccountKey ? buildAccountScopeKey(currentAccountKey) : null,
     isAccountSwitched: Boolean(
       currentAccountKey &&
@@ -4101,7 +4216,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     (acc, dayRec) => acc + (Number(dayRec?.[UNATTRIBUTED_MODEL_KEY]?.total) || 0),
     0
   );
-  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|m:${Object.keys(modelBreakdown.modelMetaByKey).length}|u:${unattributedModelTokens}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
+  const modelMetaSig = Object.keys(modelBreakdown.modelMetaByKey).sort().join(',');
+  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|m:${modelMetaSig}|u:${unattributedModelTokens}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.tierId || ''}|${effectivePlanStatus?.teamsTier || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
   const isStaleCheck = typeof extraContext.isStale === 'function' ? extraContext.isStale : null;
   if (isStaleCheck && isStaleCheck()) {
     return { out, archiveSig: null, accountKey: currentAccountKey || null, stale: true };
@@ -4273,8 +4389,8 @@ function collectTokenHistory(options = {}) {
   // 触发异步更新
   void collectTokenHistoryAsync(options);
   return (cachedTokenHistory && cachedTokenHistoryScope === scopeKey) ? cachedTokenHistory : {
-    schemaVersion: '0.8.5',
-    version: '0.8.5',
+    schemaVersion: PROJECT_VERSION,
+    version: PROJECT_VERSION,
     loading: true,
     updatedAt: '',
     firstUseDate: null,
@@ -4591,9 +4707,33 @@ function openHttpConnectTunnel(proxyParsed, targetHost, targetPort, timeoutMs, p
   });
 }
 
+function classifyRequestTimeoutPhase(err, usedProxyTunnel) {
+  const msg = String(err?.message || '').toLowerCase();
+  const code = String(err?.code || '').toUpperCase();
+  if (/proxy_tunnel|connect 失败|代理.*超时|socks5/i.test(msg)) {
+    return 'proxy_tunnel_connect';
+  }
+  if (usedProxyTunnel && (/请求超时/.test(msg) || code === 'ETIMEDOUT')) {
+    return 'tls_or_response';
+  }
+  if (code === 'ETIMEDOUT' || code === 'ECONNREFUSED' || /connect etimedout|connect econnrefused/i.test(msg)) {
+    return 'tcp_connect';
+  }
+  if (/请求超时|timeout|aborted|socket hang up|econnreset/i.test(msg)) {
+    return 'tls_or_response';
+  }
+  return null;
+}
+
+function sanitizeDiagnosticErrorText(err) {
+  const msg = String(err?.message || err || '请求失败');
+  return msg.replace(/([a-zA-Z0-9+.-]+:\/\/)([^/@\s]+@)/g, '$1');
+}
+
 function requestGithubUrl(rawUrl, options = {}) {
   return new Promise((resolve, reject) => {
     try {
+      const startMs = Date.now();
       const timeoutMs = options.timeout || 8000;
       const redirectCount = options.redirectCount || 0;
       const parsedUrl = new URL(rawUrl);
@@ -4601,6 +4741,8 @@ function requestGithubUrl(rawUrl, options = {}) {
       const maxBytes = Number.isFinite(options.maxBytes) && options.maxBytes > 0
         ? options.maxBytes
         : (options.streamTo ? MAX_GITHUB_STREAM_BYTES : MAX_GITHUB_TEXT_BYTES);
+      const phase = options.phase || (isApiHost ? 'release_query' : (options.streamTo ? 'download_asset' : 'request'));
+      const hopTrace = Array.isArray(options._hopTrace) ? options._hopTrace : [];
 
       // 认证信息仅允许发送至 api.github.com，绝不透传给网页、重定向目标或外部 CDN
       const rawHeaders = Object.assign({}, options.headers || {});
@@ -4610,7 +4752,7 @@ function requestGithubUrl(rawUrl, options = {}) {
         }
       }
       const headers = Object.assign({
-        'User-Agent': 'AntigravityContextMeter/0.8.5',
+        'User-Agent': `AntigravityContextMeter/${PROJECT_VERSION}`,
         'Accept': isApiHost ? 'application/vnd.github.v3+json' : (options.accept || '*/*')
       }, rawHeaders);
       const token = options.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -4618,38 +4760,99 @@ function requestGithubUrl(rawUrl, options = {}) {
         headers.Authorization = `Bearer ${String(token).trim()}`;
       }
 
+      const proxyInfo = options.useProxy === false
+        ? null
+        : detectProxyConfig(options.proxyConfigOptions || {});
+      const pluginProxyConfigured = Boolean(proxyInfo && proxyInfo.enabled && proxyInfo.httpProxy);
+      const bypassMatched = pluginProxyConfigured
+        ? Boolean(matchesNoProxy(parsedUrl.hostname, proxyInfo.noProxy))
+        : false;
+      const parsedProxy = pluginProxyConfigured && !bypassMatched
+        ? parseAndValidateProxyUrl(proxyInfo.httpProxy)
+        : null;
+      const willUseProxyTunnel = Boolean(pluginProxyConfigured && !bypassMatched);
+      const hopEntry = {
+        phase,
+        hop: redirectCount + 1,
+        host: parsedUrl.hostname,
+        port: Number(parsedUrl.port) || 443,
+        proxySource: willUseProxyTunnel
+          ? 'plugin_config'
+          : (bypassMatched ? 'plugin_bypass' : (options.useProxy === false ? 'disabled' : 'direct')),
+        proxyProtocol: parsedProxy?.ok ? parsedProxy.protocol : 'direct',
+        proxyEndpoint: (pluginProxyConfigured && !bypassMatched) ? redactProxyUrl(proxyInfo.httpProxy) : null,
+        bypassMatched,
+        outcome: 'pending',
+        timeoutPhase: null,
+        durationMs: 0,
+        error: null
+      };
+      hopTrace.push(hopEntry);
+
       let settledOuter = false;
       const finishResolve = val => {
         if (settledOuter) return;
         settledOuter = true;
+        hopEntry.durationMs = Date.now() - startMs;
+        if (hopEntry.outcome === 'pending') hopEntry.outcome = 'ok';
         resolve(val);
       };
       const finishReject = err => {
         if (settledOuter) return;
         settledOuter = true;
+        hopEntry.durationMs = Date.now() - startMs;
+        hopEntry.outcome = 'error';
+        hopEntry.timeoutPhase = hopEntry.timeoutPhase || classifyRequestTimeoutPhase(err, willUseProxyTunnel);
+        hopEntry.error = sanitizeDiagnosticErrorText(err);
+        if (err && typeof err === 'object' && !err.diagnostics) {
+          err.diagnostics = {
+            phase,
+            targetHost: hopEntry.host,
+            targetPort: hopEntry.port,
+            proxySource: hopEntry.proxySource,
+            proxyProtocol: hopEntry.proxyProtocol,
+            proxyEndpoint: hopEntry.proxyEndpoint,
+            bypassMatched: hopEntry.bypassMatched,
+            timeoutPhase: hopEntry.timeoutPhase,
+            hops: hopTrace.map(h => ({ ...h }))
+          };
+        }
+        try {
+          console.warn('[Update Diagnostics]', JSON.stringify({
+            phase: hopEntry.phase,
+            hop: hopEntry.hop,
+            host: hopEntry.host,
+            port: hopEntry.port,
+            proxySource: hopEntry.proxySource,
+            proxyProtocol: hopEntry.proxyProtocol,
+            proxyEndpoint: hopEntry.proxyEndpoint,
+            bypassMatched: hopEntry.bypassMatched,
+            timeoutPhase: hopEntry.timeoutPhase,
+            durationMs: hopEntry.durationMs,
+            error: hopEntry.error
+          }));
+        } catch { }
         reject(err);
       };
 
-      const proxyInfo = options.useProxy === false
-        ? null
-        : detectProxyConfig(options.proxyConfigOptions || {});
-
-      if (proxyInfo && proxyInfo.enabled && proxyInfo.httpProxy && !matchesNoProxy(parsedUrl.hostname, proxyInfo.noProxy)) {
-        const parsedProxy = parseAndValidateProxyUrl(proxyInfo.httpProxy);
-        if (!parsedProxy.ok) {
-          return finishReject(new Error(`代理配置无效: ${parsedProxy.error || '无法解析代理地址'}`));
+      if (willUseProxyTunnel) {
+        if (!parsedProxy || !parsedProxy.ok) {
+          return finishReject(new Error(`代理配置无效: ${parsedProxy?.error || '无法解析代理地址'}`));
         }
         const targetPort = Number(parsedUrl.port) || 443;
         const tunnelPromise = (parsedProxy.protocol === 'socks5:' || parsedProxy.protocol === 'socks5h:')
           ? openSocks5Tunnel(parsedProxy, parsedUrl.hostname, targetPort, timeoutMs)
           : openHttpConnectTunnel(parsedProxy, parsedUrl.hostname, targetPort, timeoutMs, {
-              ca: options.proxyCa || options.ca,
-              rejectUnauthorized: options.proxyRejectUnauthorized
-            });
+            ca: options.proxyCa || options.ca,
+            rejectUnauthorized: options.proxyRejectUnauthorized
+          });
         // 代理已启用且未命中绕过规则时，隧道失败必须立即报错，绝不静默改走直连
         tunnelPromise.then(
           socket => doRequest(socket),
-          err => finishReject(err)
+          err => {
+            hopEntry.timeoutPhase = 'proxy_tunnel_connect';
+            finishReject(err);
+          }
         );
         return;
       }
@@ -4718,13 +4921,18 @@ function requestGithubUrl(rawUrl, options = {}) {
               return settleReject(new Error(`下载重定向地址不受信任或协议不安全: ${rawLocation}`));
             }
             // 剥离旧 headers 与 Authorization，按新目标域名重新决定是否附带凭据与代理绕过
+            hopEntry.outcome = 'redirect';
+            hopEntry.durationMs = Date.now() - startMs;
+            try { hopEntry.redirectToHost = new URL(nextUrlStr).hostname; } catch {}
             const nextHeaders = Object.assign({}, options.headers || {});
             for (const hKey of Object.keys(nextHeaders)) {
               if (hKey.toLowerCase() === 'authorization') delete nextHeaders[hKey];
             }
             const nextOptions = Object.assign({}, options, {
               headers: nextHeaders,
-              redirectCount: redirectCount + 1
+              redirectCount: redirectCount + 1,
+              phase,
+              _hopTrace: hopTrace
             });
             releaseUnusedTunnel();
             return requestGithubUrl(nextUrlStr, nextOptions).then(finishResolve, finishReject);
@@ -5108,7 +5316,7 @@ function shouldUseWebFallback(err, rawData) {
 }
 
 async function fetchOfficialReleasesWithFallback(options = {}) {
-  const effectiveCurrentVersion = options.currentVersion || '0.8.5';
+  const effectiveCurrentVersion = options.currentVersion || PROJECT_VERSION;
   const fetcher = options._requestGithubUrl || requestGithubUrl;
   const timeout = options.timeout || 8000;
   let primaryErr = null;
@@ -5184,7 +5392,7 @@ async function resolveAssetsForWebRelease(targetRelease, fetcher, timeout = 8000
 }
 
 async function checkUpdateAsync(options = {}) {
-  const runtimeVersion = options.currentVersion || '0.8.5';
+  const runtimeVersion = options.currentVersion || PROJECT_VERSION;
   const diskVersion = getInstalledMeterVersion(options);
   const effectiveCurrentVersion = (diskVersion && compareVersions(diskVersion, runtimeVersion) > 0)
     ? diskVersion
@@ -5264,7 +5472,8 @@ async function checkUpdateAsync(options = {}) {
       currentVersion: runtimeVersion,
       installedVersion,
       htmlUrl: OFFICIAL_RELEASES_WEB_BASE,
-      error: err.message
+      error: sanitizeDiagnosticErrorText(err),
+      ...(err?.diagnostics ? { diagnostics: err.diagnostics } : {})
     };
   }
 }
@@ -5328,13 +5537,181 @@ function waitWritableStreamClose(stream) {
   });
 }
 
+const LIVE_RUNTIME_FILES = [
+  'package.json',
+  'cli.js',
+  'install.js',
+  'restore.js',
+  'live-host.js',
+  'local-api.js',
+  'meter-main.js',
+  'meter-core.js',
+  'meter-renderer.js',
+  'meter-collector.js',
+  'meter-storage.js',
+  'meter-proxy.js',
+  'meter-cli-launcher.js',
+  'meter-context-unlock.js',
+  'meter-enhance.js',
+  'attachment_scan.py',
+  'asar-engine.js',
+  'modules-config.js',
+  'modular-installer.js',
+  'i18n/zh-CN.json',
+  'i18n/i18n-runtime.js'
+];
+
+function getLiveRuntimeDir(customStateDir = null) {
+  const { getStateDir } = require('./asar-engine');
+  const stateDir = customStateDir || getStateDir();
+  return path.join(stateDir, 'live-runtime');
+}
+
+/**
+ * 将运行外置 live-host 所需的纯 JS/配置运行时文件原子同步至 stateDir/live-runtime。
+ * 保证在线更新清理临时目录或安装目录变动后，热加载后台进程仍能稳定运行至客户端重启。
+ */
+function syncLiveRuntimeBundle(sourceDir, options = {}) {
+  try {
+    if (!sourceDir || !fs.existsSync(path.join(sourceDir, 'live-host.js')) || !fs.existsSync(path.join(sourceDir, 'meter-core.js'))) {
+      return null;
+    }
+    const { getStateDir } = require('./asar-engine');
+    const stateDir = options.stateDir || getStateDir();
+    if ((process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') && !options.stateDir) {
+      const lowerState = stateDir.toLowerCase();
+      const lowerTmp = os.tmpdir().toLowerCase();
+      if (!lowerState.includes(lowerTmp)) {
+        return null;
+      }
+    }
+    const targetDir = getLiveRuntimeDir(stateDir);
+    fs.mkdirSync(targetDir, { recursive: true });
+    let copiedCount = 0;
+    for (const rel of LIVE_RUNTIME_FILES) {
+      const src = path.join(sourceDir, rel);
+      if (!fs.existsSync(src)) continue;
+      const dst = path.join(targetDir, rel);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      const tmpDst = `${dst}.tmp-${process.pid}-${Date.now()}`;
+      fs.copyFileSync(src, tmpDst);
+      fs.renameSync(tmpDst, dst);
+      copiedCount++;
+    }
+    let pkgVersion = options.version || null;
+    try {
+      if (!pkgVersion && fs.existsSync(path.join(sourceDir, 'package.json'))) {
+        pkgVersion = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf8')).version || null;
+      }
+    } catch {}
+    safeWriteJsonSync(path.join(targetDir, '.runtime-manifest.json'), {
+      version: pkgVersion || PROJECT_VERSION,
+      copiedCount,
+      updatedAt: new Date().toISOString()
+    });
+    return targetDir;
+  } catch {
+    return null;
+  }
+}
+
+function parseInstallStdoutMeta(stdout = '') {
+  try {
+    const lines = String(stdout || '').split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const idx = lines[i].indexOf('__AG_INSTALL_META__=');
+      if (idx >= 0) {
+        const jsonPart = lines[i].slice(idx + '__AG_INSTALL_META__='.length).trim();
+        return JSON.parse(jsonPart);
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function isTransientUpdateDownloadError(err) {
+  const msg = String(err?.message || err || '');
+  const code = String(err?.code || '').toUpperCase();
+  if (/代理配置无效|认证失败|不受信任|协议不安全|checksums|sha-?256|拒绝安装/i.test(msg)) {
+    return false;
+  }
+  const statusCode = Number(err?.statusCode);
+  if ([400, 401, 403, 404, 410, 451].includes(statusCode)) {
+    return false;
+  }
+  if ([429, 500, 502, 503, 504].includes(statusCode)) {
+    return true;
+  }
+  return ['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'EPIPE', 'EAI_AGAIN'].includes(code) ||
+    /ETIMEDOUT|ECONNRESET|EPIPE|ESOCKETTIMEDOUT|请求超时|意外中断|意外关闭|未完整结束|长度不完整|socket hang up/i.test(msg);
+}
+
+async function downloadAssetFileWithRetry(url, filePath, fetcher, options = {}) {
+  const maxRetries = Number.isInteger(options.maxRetries) ? Math.max(0, options.maxRetries) : 2;
+  const baseRetryDelayMs = Number.isFinite(Number(options.retryDelayMs))
+    ? Number(options.retryDelayMs)
+    : ((process.env.NODE_ENV === 'test' || process.env.AG_METER_TEST_MODE === '1') ? 10 : 600);
+  const attempts = [];
+  let lastErr = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { }
+    const stream = fs.createWriteStream(filePath);
+    stream.on('error', () => { });
+    const hopTrace = [];
+    try {
+      await fetcher(url, {
+        timeout: options.timeout || 15000,
+        streamTo: stream,
+        phase: options.phase || 'download_asset',
+        _hopTrace: hopTrace,
+        ...(options.proxyConfigOptions ? { proxyConfigOptions: options.proxyConfigOptions } : {})
+      });
+      await waitWritableStreamClose(stream);
+      return {
+        stream,
+        attemptsCount: attempt + 1,
+        diagnostics: {
+          phase: options.phase || 'download_asset',
+          attemptsCount: attempt + 1,
+          hops: hopTrace
+        }
+      };
+    } catch (err) {
+      lastErr = err;
+      await safeCloseStream(stream).catch(() => { });
+      try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { }
+      attempts.push({
+        attempt: attempt + 1,
+        error: sanitizeDiagnosticErrorText(err),
+        diagnostics: err?.diagnostics || (hopTrace.length ? { phase: options.phase, hops: hopTrace } : null)
+      });
+      if (attempt < maxRetries && isTransientUpdateDownloadError(err)) {
+        const delayMs = baseRetryDelayMs * (attempt + 1);
+        if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+      if (lastErr && typeof lastErr === 'object') {
+        lastErr.diagnostics = {
+          ...(lastErr.diagnostics || {}),
+          phase: options.phase || lastErr.diagnostics?.phase || 'download_asset',
+          attemptsCount: attempt + 1,
+          attempts
+        };
+      }
+      throw lastErr;
+    }
+  }
+  throw lastErr;
+}
+
 async function applyUpdateAsync(options = {}) {
   if (isApplyingUpdate) {
     return { ok: false, error: '更新任务正在执行中，请勿重复操作' };
   }
   isApplyingUpdate = true;
 
-  const currentVersion = options.currentVersion || '0.8.5';
+  const currentVersion = options.currentVersion || PROJECT_VERSION;
   let tmpDir = null;
   let checksumStream = null;
   let zipStream = null;
@@ -5419,15 +5796,33 @@ async function applyUpdateAsync(options = {}) {
     const checksumPath = path.join(tmpDir, 'checksums.txt');
     const extractDir = path.join(tmpDir, 'extracted');
 
-    checksumStream = fs.createWriteStream(checksumPath);
-    checksumStream.on('error', () => { });
-    await fetcher(checksumAsset.browser_download_url, { timeout: 15000, streamTo: checksumStream });
-    await waitWritableStreamClose(checksumStream);
+    const checksumDl = await downloadAssetFileWithRetry(
+      checksumAsset.browser_download_url,
+      checksumPath,
+      fetcher,
+      {
+        timeout: options._checksumTimeoutMs || 15000,
+        phase: 'download_checksums',
+        maxRetries: options._maxDownloadRetries,
+        retryDelayMs: options._retryDelayMs,
+        proxyConfigOptions: options.proxyConfigOptions
+      }
+    );
+    checksumStream = checksumDl.stream;
 
-    zipStream = fs.createWriteStream(zipPath);
-    zipStream.on('error', () => { });
-    await fetcher(packageAsset.browser_download_url, { timeout: 60000, streamTo: zipStream });
-    await waitWritableStreamClose(zipStream);
+    const packageDl = await downloadAssetFileWithRetry(
+      packageAsset.browser_download_url,
+      zipPath,
+      fetcher,
+      {
+        timeout: options._packageTimeoutMs || 60000,
+        phase: 'download_package',
+        maxRetries: options._maxDownloadRetries,
+        retryDelayMs: options._retryDelayMs,
+        proxyConfigOptions: options.proxyConfigOptions
+      }
+    );
+    zipStream = packageDl.stream;
 
     const checksumContent = fs.readFileSync(checksumPath, 'utf8');
     const lines = checksumContent.split(/\r?\n/);
@@ -5530,7 +5925,7 @@ async function applyUpdateAsync(options = {}) {
       try {
         child = spawner(runtimeInfo.runtime, subArgs, {
           cwd: extractDir,
-          env: runtimeInfo.env,
+          env: { ...(runtimeInfo.env || {}), AG_EMIT_INSTALL_META: '1' },
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true
         });
@@ -5560,17 +5955,39 @@ async function applyUpdateAsync(options = {}) {
     cachedUpdateCheck = null;
     cachedUpdateCheckAt = 0;
 
-    const liveInjected = execRes.stdout.includes('已即时生效（无需重启）') || execRes.stdout.includes('"liveInjected": true');
+    const liveRuntimeDir = syncLiveRuntimeBundle(extractDir, {
+      version: targetRelease.version,
+      stateDir: options.stateDir
+    });
+    const installMeta = parseInstallStdoutMeta(execRes.stdout);
+    const liveInjected = Boolean(
+      installMeta?.liveInjected === true ||
+      execRes.stdout.includes('已即时生效（无需重启）') ||
+      execRes.stdout.includes('"liveInjected": true')
+    );
     const finalInstalledVer = getInstalledMeterVersion(options) || targetRelease.version;
     return {
       ok: true,
       diskInstalled: true,
-      liveInjected: Boolean(liveInjected),
+      liveInjected,
+      backendHotReloaded: Boolean(installMeta?.backendHotReloaded),
+      backendVersion: installMeta?.backendVersion || null,
+      backendSource: installMeta?.backendSource || null,
+      hotReloadReport: installMeta || null,
+      liveRuntimeDir: liveRuntimeDir || null,
       version: targetRelease.version,
-      installedVersion: finalInstalledVer
+      installedVersion: finalInstalledVer,
+      diagnostics: {
+        checksums: checksumDl.diagnostics,
+        package: packageDl.diagnostics
+      }
     };
   } catch (err) {
-    return { ok: false, error: `更新安装异常: ${err.message}` };
+    return {
+      ok: false,
+      error: `更新安装异常: ${sanitizeDiagnosticErrorText(err)}`,
+      ...(err?.diagnostics ? { diagnostics: err.diagnostics } : {})
+    };
   } finally {
     isApplyingUpdate = false;
     try {
@@ -5629,6 +6046,9 @@ module.exports = {
   SUBSCRIPTION_ACQUISITION_PRESETS,
   checkUpdateAsync,
   applyUpdateAsync,
+  LIVE_RUNTIME_FILES,
+  getLiveRuntimeDir,
+  syncLiveRuntimeBundle,
   parseReleasesAtom,
   parseLatestReleaseHtml,
   parseExpandedAssetsHtml,
