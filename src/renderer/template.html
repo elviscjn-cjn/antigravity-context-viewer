@@ -1260,10 +1260,19 @@
     <!-- 分账号账本筛选条（ELV-89：严格隔离各账号及未归属历史，不重复堆叠刷新入口） -->
     <div id="token-account-bar" class="token-account-bar">
       <span class="token-account-lbl" data-i18n="accounts.filterLabel">账本范围:</span>
-      <select id="token-account-select" class="token-account-select" aria-label="按账号筛选统计账本" data-i18n-aria="accounts.filterAria">
+      <select id="token-account-select" class="token-account-select" aria-label="按账号筛选统计账本" data-i18n-aria="accounts.filterAria" style="display:none">
         <option value="all" data-i18n="accounts.filterAll">全部已记用量（含未归属）</option>
         <option value="unattributed" data-i18n="accounts.filterUnattributed">历史未归属（无可靠账号依据）</option>
       </select>
+      <div id="token-account-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact token-account-dropdown">
+        <div id="token-account-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+          <span id="token-account-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.filterAll">全部已记用量（含未归属）</span>
+          <div class="ag-dropdown-arrow">
+            <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+          </div>
+        </div>
+        <div id="token-account-dropdown-menu" class="ag-dropdown-menu"></div>
+      </div>
       <span id="token-account-scope-note" class="token-account-note"></span>
     </div>
 
@@ -1274,10 +1283,10 @@
         <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · ...</span>
       </div>
       <!-- 黄框位置：实时联动的订阅费与汇率胶囊 -->
-      <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)"
+      <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前订阅费用与最新汇率折算 (点击展开/收起详情)"
         data-i18n-title="plan.summary.priceBadgeTitle">
-        <span id="plan-summary-price-val">$19.99/月</span>
-        <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
+        <span id="plan-summary-price-val" data-i18n="plan.summary.priceUnsetShort">待设置月费</span>
+        <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400"></span>
       </div>
       <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 6px;flex-shrink:0"
         data-i18n="plan.detail.toggleOpen">详情 ▼</button>
@@ -1454,11 +1463,10 @@
           设置当前账号订阅信息
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.acqLabel">获取方式 / 活动来源</label>
-            <select id="select-custom-acq"
-              style="width:100%;font-size:11px;padding:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <select id="select-custom-acq" aria-label="获取方式 / 活动来源" data-i18n-aria="plan.form.acqLabel" style="display:none">
               <option value="normal_paid" data-i18n="plan.acqOpt.normal_paid">正常付费订阅</option>
               <option value="student_offer" data-i18n="plan.acqOpt.student_offer">学生认证优惠</option>
               <option value="pixel_bundle" data-i18n="plan.acqOpt.pixel_bundle">Google Pixel 设备赠送</option>
@@ -1470,8 +1478,17 @@
               <option value="official_promo" data-i18n="plan.acqOpt.official_promo">官方限时试用 / 促销活动</option>
               <option value="custom_source" data-i18n="plan.acqOpt.custom_source">其他 / 自由命名</option>
             </select>
+            <div id="select-custom-acq-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="select-custom-acq-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="select-custom-acq-dropdown-label" class="ag-dropdown-label" data-i18n="plan.acqOpt.normal_paid">正常付费订阅</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="select-custom-acq-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.acqCustomLabel">自定义活动 / 合作方名称</label>
             <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送"
@@ -1492,8 +1509,7 @@
               (可选快捷套用)</label>
             <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
           </div>
-          <select id="select-custom-region-preset"
-            style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+          <select id="select-custom-region-preset" aria-label="预设订阅国家与汇率" data-i18n-aria="plan.form.presetLabel" style="display:none">
             <option value="" data-i18n="plan.form.presetPlaceholder">-- 选择预设地区 (自动填入价格与汇率) --</option>
             <option value="US">🇺🇸 美国 (US) · $19.99/月 (折合 ≈ ¥134.3)</option>
             <option value="KR">🇰🇷 韩国 (KR) · ₩29,000/月 (折合 ≈ ¥147.9)</option>
@@ -1514,9 +1530,18 @@
             <option value="CN">🇨🇳 中国大陆/自定义 (CNY) · ¥140/月</option>
             <option value="custom" data-i18n="plan.form.presetCustom">✎ 自定义输入地区</option>
           </select>
+          <div id="select-custom-region-preset-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact" style="margin-bottom:4px">
+            <div id="select-custom-region-preset-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+              <span id="select-custom-region-preset-dropdown-label" class="ag-dropdown-label" data-i18n="plan.form.presetPlaceholder">-- 选择预设地区 (自动填入价格与汇率) --</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+              </div>
+            </div>
+            <div id="select-custom-region-preset-dropdown-menu" class="ag-dropdown-menu"></div>
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.countryLabel">账号所在地区 (仅本地记录)</label>
             <input id="input-custom-country" type="text" placeholder="例如：美国 (US)"
@@ -1524,19 +1549,18 @@
               data-i18n-title="plan.country.title"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.regionLabel">订阅国家 (购买/结算地区)</label>
             <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚"
               data-i18n-placeholder="plan.form.regionPh" title="实际购买或支付订阅所在的国家或地区" data-i18n-title="plan.region.title"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.currencyLabel">订阅币种与实付金额</label>
-            <div style="display:flex;gap:4px">
-              <select id="select-custom-currency" title="订阅计价/结算币种" data-i18n-title="plan.currency.title"
-                style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <div style="display:flex;gap:4px;align-items:center">
+              <select id="select-custom-currency" title="订阅计价/结算币种" data-i18n-title="plan.currency.title" aria-label="订阅币种" data-i18n-aria="plan.currency.aria" style="display:none">
                 <option value="USD">USD</option>
                 <option value="KRW">KRW</option>
                 <option value="HKD">HKD</option>
@@ -1555,24 +1579,41 @@
                 <option value="AUD">AUD</option>
                 <option value="MYR">MYR</option>
               </select>
+              <div id="select-custom-currency-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact" style="flex:0 0 82px;min-width:72px">
+                <div id="select-custom-currency-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                  <span id="select-custom-currency-dropdown-label" class="ag-dropdown-label">USD</span>
+                  <div class="ag-dropdown-arrow">
+                    <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                  </div>
+                </div>
+                <div id="select-custom-currency-dropdown-menu" class="ag-dropdown-menu"></div>
+              </div>
               <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额"
                 data-i18n-placeholder="plan.form.paidPh"
-                style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                style="flex:1;min-width:0;width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
             </div>
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.cycleLabel">计费周期</label>
-            <select id="select-custom-cycle"
-              style="width:100%;font-size:11px;padding:4px 6px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <select id="select-custom-cycle" aria-label="计费周期" data-i18n-aria="plan.form.cycleLabel" style="display:none">
               <option value="月付" data-i18n="plan.cycleOpt.monthly">月付</option>
               <option value="年付" data-i18n="plan.cycleOpt.yearly">年付</option>
               <option value="免费/赠送" data-i18n="plan.cycleOpt.free">免费 / 促销赠送</option>
               <option value="随套餐包含" data-i18n="plan.cycleOpt.included">随套餐包含</option>
               <option value="其他周期" data-i18n="plan.cycleOpt.other">其他周期</option>
             </select>
+            <div id="select-custom-cycle-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="select-custom-cycle-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="select-custom-cycle-dropdown-label" class="ag-dropdown-label" data-i18n="plan.cycleOpt.monthly">月付</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="select-custom-cycle-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
           </div>
           <div>
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
@@ -1683,24 +1724,36 @@
         <!-- 分类单价与公式明细卡片（输入、缓存读取、输出） -->
         <div id="ref-cost-breakdown-cards"
           style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.input">输入 Token</span>
               ($0.75/M)</div>
             <div id="ref-cost-input-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-            <div id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-input-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-input-bar" class="ref-cost-share-fill ref-cost-fill-input" style="width:0%"></div></div>
           </div>
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.cache">缓存读取 (优惠)</span>
               ($0.075/M)</div>
             <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-            <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-cache-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-cache-bar" class="ref-cost-share-fill ref-cost-fill-cache" style="width:0%"></div></div>
           </div>
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.output">输出 Token</span>
               ($3.75/M)</div>
             <div id="ref-cost-output-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00
             </div>
-            <div id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-output-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-output-bar" class="ref-cost-share-fill ref-cost-fill-output" style="width:0%"></div></div>
           </div>
         </div>
 
@@ -1757,6 +1810,10 @@
             <button id="model-metric-total" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.metricTotal">含缓存</button>
             <button id="model-metric-nocache" class="switch-pill-btn" type="button" data-i18n="modelsUsage.metricNoCache">不含缓存</button>
           </div>
+          <div class="source-switch-bar">
+            <button id="model-scale-mixed" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.scaleMixed">量级刻度</button>
+            <button id="model-scale-linear" class="switch-pill-btn" type="button" data-i18n="modelsUsage.scaleLinear">线性比例</button>
+          </div>
           <button id="model-toggle-unattr" class="switch-pill-btn model-unattr-btn" type="button" style="display:none" data-i18n="modelsUsage.hideUnattr">隐藏未标明</button>
         </div>
       </div>
@@ -1773,7 +1830,7 @@
       </div>
 
       <div id="model-usage-chart-wrap" class="model-usage-chart-wrap">
-        <div class="model-usage-gridlines" aria-hidden="true">
+        <div id="model-usage-gridlines" class="model-usage-gridlines" aria-hidden="true">
           <div class="model-usage-gridline"><span id="model-chart-max-lbl" class="model-chart-max-lbl"></span></div>
           <div class="model-usage-gridline"></div>
           <div class="model-usage-gridline"></div>
@@ -1847,6 +1904,9 @@
           <span class="tcb-lbl" data-i18n="tokens.cache.ratio">缓存读取占比</span>
           <strong class="tcb-val tcb-ratio-val" id="tcb-ratio-val">--</strong>
         </div>
+        <div class="tcb-ratio-bar-track" id="tcb-ratio-bar-track" aria-hidden="true">
+          <div class="tcb-ratio-bar-fill" id="tcb-ratio-bar-fill" style="width:0%"></div>
+        </div>
         <div class="tcb-note" id="tcb-note" hidden></div>
       </div>
 
@@ -1887,16 +1947,14 @@
           <div id="h-weekly-box" style="display:none"></div>
           <div id="h-monthly-box" style="display:none"></div>
           <div id="h-yearly-box" style="display:none"></div>
-          <div id="h-cum-box" style="display:none">
-            <canvas id="h-cum-canvas"></canvas>
-          </div>
+          <div id="h-cum-box" style="display:none"></div>
         </div>
         <div id="h-summary-bar" class="heat-summary-bar">
-          <div class="heat-sum-item">
+          <div id="h-sum-tokens-wrap" class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumTokens">区间合计:</span>
             <span id="h-sum-tokens" class="heat-sum-val">-- Tokens</span>
           </div>
-          <div class="heat-sum-item">
+          <div id="h-sum-cost-wrap" class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumCost">预估费用:</span>
             <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
           </div>
@@ -2277,7 +2335,7 @@
           <div id="quota-cur-pool" class="quota-cur-pool-sub"></div>
           <div id="quota-cur-est" class="quota-cur-est" hidden></div>
         </div>
-        <span id="quota-cur-status" class="key-pill pill-muted">未知</span>
+        <span id="quota-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
       </div>
       <div id="quota-cur-alert" class="quota-cur-alert" hidden></div>
       <div id="quota-cur-buckets" class="quota-buckets-list"></div>
@@ -2317,30 +2375,57 @@
             <input id="chk-auto-switch-enabled" type="checkbox" />
             <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号（默认关闭）</span>
           </label>
-          <span id="auto-switch-status-pill" class="key-pill pill-muted">已关闭</span>
+          <span id="auto-switch-status-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
         </div>
         <div id="auto-switch-config-body" class="auto-switch-grid">
-          <label class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
-            <select id="sel-auto-switch-pool" class="quota-compact-select">
+          <div class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
+            <select id="sel-auto-switch-pool" class="quota-compact-select" aria-label="监控共享池" data-i18n-aria="accounts.poolLabel" style="display:none">
               <option value="shared_gemini_main">Gemini 4 Hydrogen / 3.8 Flash</option>
               <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
               <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
               <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
             </select>
-          </label>
-          <label class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
-            <select id="sel-auto-switch-mode" class="quota-compact-select">
+            <div id="sel-auto-switch-pool-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-pool-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-pool-dropdown-label" class="ag-dropdown-label">Gemini 4 Hydrogen / 3.8 Flash</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-pool-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
+          <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
+            <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径" data-i18n-aria="accounts.metricLabel" style="display:none">
               <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
               <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
             </select>
-          </label>
-          <label class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
-            <select id="sel-auto-switch-window" class="quota-compact-select">
+            <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
+          <div class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
+            <select id="sel-auto-switch-window" class="quota-compact-select" aria-label="限额窗口" data-i18n-aria="accounts.windowLabel" style="display:none">
               <option value="primary" data-i18n="accounts.winPrimary">主窗口（最紧缩）</option>
               <option value="5h">5h</option>
               <option value="7d">7d</option>
             </select>
-          </label>
+            <div id="sel-auto-switch-window-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-window-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-window-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.winPrimary">主窗口（最紧缩）</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-window-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
           <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
             <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95" value="10" />
           </label>
@@ -2367,7 +2452,7 @@
       <!-- 模型 Prompt Cache 保活协议与保障 -->
       <div class="quota-subsec-header" style="margin-top:10px">
         <span class="quota-subsec-title" data-i18n="keepalive.title">🧊 模型缓存保活状态与协议核查</span>
-        <span id="keepalive-status-pill" class="key-pill pill-muted">默认关闭</span>
+        <span id="keepalive-status-pill" class="key-pill pill-muted" data-i18n="accounts.keepaliveOff">默认关闭</span>
       </div>
       <div class="quota-subcard">
         <div id="keepalive-protocol-summary" class="quota-muted-note"></div>
@@ -2376,6 +2461,22 @@
           <span id="keepalive-runtime-note" class="quota-muted-note"></span>
           <button id="btn-keepalive-stop" class="switch-pill-btn" type="button" hidden data-i18n="keepalive.stopBtn">立即停止保活</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 移除账号二次确认模态弹窗（移除插件凭证与切号候选，保留历史本地用量与归属） -->
+  <div id="account-remove-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
+    aria-labelledby="modal-account-remove-title">
+    <div class="ag-modal-card">
+      <div id="modal-account-remove-title" class="ag-modal-title" data-i18n="accounts.removeModal.title">移除账号</div>
+      <div id="modal-account-remove-text" class="ag-modal-body"></div>
+      <div id="modal-account-remove-feedback" class="ag-modal-feedback" hidden></div>
+      <div class="ag-modal-actions">
+        <button id="btn-modal-account-remove-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+          data-i18n="accounts.removeModal.cancel">取消</button>
+        <button id="btn-modal-account-remove-confirm" class="unlock-btn unlock-btn-danger" type="button"
+          data-i18n="accounts.removeModal.confirm">确认移除</button>
       </div>
     </div>
   </div>

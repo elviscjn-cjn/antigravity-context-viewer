@@ -87,16 +87,20 @@ const bootProxySnapshot = resolveBootProxySnapshot();
 const bootChineseSnapshots = new Map();
 
 /**
- * 解析当前进程启动瞬间的宿主汉化状态快照（同一 stateDir 生命周期内保持不变，防止受隔离上下文或用户项目名误判）
+ * 解析当前进程启动瞬间的宿主汉化状态快照（同一 stateDir 与目标 ASAR 生命周期内保持不变，防止受隔离上下文或用户项目名误判）
  */
-function resolveBootChineseSnapshot() {
-  const key = String(process.env.AG_METER_STATE_DIR || '__default__');
+function resolveBootChineseSnapshot(customAsarPath = null) {
+  const rawAsarTarget = customAsarPath || process.env.AG_METER_TEST_HOST_ASAR || null;
+  const asarKey = rawAsarTarget
+    ? (process.platform === 'win32' ? path.resolve(String(rawAsarTarget)).toLowerCase() : path.resolve(String(rawAsarTarget)))
+    : '__default_asar__';
+  const key = `${String(process.env.AG_METER_STATE_DIR || '__default__')}::${asarKey}`;
   if (bootChineseSnapshots.has(key)) return bootChineseSnapshots.get(key);
   let snap = { enabled: false, language: 'en' };
   try {
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
     const cfg = loadModulesConfig();
-    const disk = inspectDiskModules();
+    const disk = inspectDiskModules(rawAsarTarget);
     const ch = cfg?.modules?.chinese || {};
     const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
     const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
@@ -110,7 +114,7 @@ function resolveBootChineseSnapshot() {
 }
 try { resolveBootChineseSnapshot(); } catch {}
 
-function buildRuntimeModulesMeta(cfg) {
+function buildRuntimeModulesMeta(cfg, customAsarPath = null) {
   const diskProxy = cfg?.modules?.proxy || {};
   const diskEnabled = Boolean(diskProxy.enabled);
   const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
@@ -120,7 +124,7 @@ function buildRuntimeModulesMeta(cfg) {
   const runtimeBypass = normalizeBypassListForCompare(bootProxySnapshot.bypassList || '');
   const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
     (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || diskBypass !== runtimeBypass));
-  const bootZh = resolveBootChineseSnapshot();
+  const bootZh = resolveBootChineseSnapshot(customAsarPath);
   const diskCh = cfg?.modules?.chinese || {};
   const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
   return {
@@ -233,7 +237,7 @@ async function handleModulesStatus(event, customAsar = null) {
       ok: true,
       data: cfg,
       disk: inspectDiskModules(customAsar),
-      runtime: buildRuntimeModulesMeta(cfg),
+      runtime: buildRuntimeModulesMeta(cfg, customAsar),
       configCorrupted: Boolean(cfg.__configCorrupted),
       configError: cfg.__configError || null,
       corruptedConfigPath: cfg.__corruptedConfigPath || null
@@ -303,7 +307,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     // 结果类型 1: 已有完整运行时可通过配置切换 (config_toggled)
     if (hasDiskCapability) {
       // 在任何写盘修改之前先锁定本生命周期的启动汉化快照，防止先 toggle 后读盘自欺
-      resolveBootChineseSnapshot();
+      resolveBootChineseSnapshot(extraOpts?.asarPath);
       const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
       const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
       if (moduleName === 'proxy' && extraOpts) {
@@ -315,7 +319,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
               status: 'invalid_config',
               data: cfg,
               disk,
-              runtime: buildRuntimeModulesMeta(cfg),
+              runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
               error: check.error,
               restartRequired: false
             };
@@ -327,7 +331,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
             status: 'invalid_config',
             data: cfg,
             disk,
-            runtime: buildRuntimeModulesMeta(cfg),
+            runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
             error: '开启免 TUN 前请填写有效的本地代理地址',
             restartRequired: false
           };
@@ -366,7 +370,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         } catch {}
       }
 
-      const runtime = buildRuntimeModulesMeta(cfg);
+      const runtime = buildRuntimeModulesMeta(cfg, extraOpts?.asarPath);
       const langChanged = moduleName === 'chinese' && (
         Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
         cfg.modules.chinese.language !== prevChineseLang
@@ -430,7 +434,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         status: 'config_toggled',
         data: cfg,
         disk,
-        runtime: buildRuntimeModulesMeta(cfg),
+        runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
         restartRequired: false,
         message: '模块未注入，配置保持关闭'
       };
@@ -451,7 +455,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       status: 'install_failed',
       data: cfg,
       disk,
-      runtime: buildRuntimeModulesMeta(cfg),
+      runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
       error: `当前客户端磁盘 ASAR 未注入${modLabel}组件（或组件不完整）。${detailSuffix}请先从系统托盘/菜单彻底退出 Antigravity（仅点关闭按钮可能后台驻留锁定 app.asar），然后${cmdHint} 完成注入后再重启。`,
       restartRequired: false
     };
@@ -517,13 +521,28 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      let confirmedAccountEmail = null;
+      let recOpts = {};
       try {
         const { getSharedAccountsManager } = require('./meter-accounts');
         const mgr = getSharedAccountsManager({ origin: url.origin });
-        confirmedAccountEmail = mgr.getOverviewState()?.activeAccountEmail || null;
+        const ov = mgr.getOverviewState();
+        const activeEmail = ov?.activeAccountEmail || null;
+        const sessions = Array.isArray(ov?.accountSessions) ? ov.accountSessions : [];
+        const openSess = activeEmail
+          ? sessions.slice().reverse().find(s => String(s.email).toLowerCase() === String(activeEmail).toLowerCase() && s.endAtMs == null)
+          : null;
+        recOpts = {
+          accountSessions: sessions,
+          ...(activeEmail ? {
+            confirmedAccountEmail: activeEmail,
+            liveConfirmedAccount: {
+              email: activeEmail,
+              verifiedAtMs: openSess?.lastVerifiedAtMs || Date.now(),
+              sessionStartMs: openSess?.startAtMs || Date.now()
+            }
+          } : {})
+        };
       } catch { }
-      const recOpts = confirmedAccountEmail ? { confirmedAccountEmail } : {};
       const res = typeof recordModelCallsAsync === 'function'
         ? await recordModelCallsAsync(calls, recOpts)
         : recordModelCalls(calls, recOpts);

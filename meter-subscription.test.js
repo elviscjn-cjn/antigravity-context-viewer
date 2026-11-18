@@ -450,3 +450,63 @@ test('独立配置目录持久化、多账号隔离与重启后显示与落盘�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+// ============================================================================
+// 验收测试 5: Google AI Ultra (g1-ultra-lite-tier) 预设模式绝不套用 Pro $19.99 / Official price
+// ============================================================================
+test('Google AI Ultra 套餐预设模式与多语言下不误套 Pro $19.99 与 Official price', async () => {
+  const ultraLive = core.parseUserPlanStatus({
+    userStatus: {
+      email: 'ultra.lite@example.com',
+      userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra' }
+    }
+  });
+  assert.equal(ultraLive.tierKey, 'ultra');
+  assert.equal(ultraLive.officialPriceMonthly, null);
+
+  // 即使用户在 preset 模式下选了美国 / 韩国等订阅地区，也绝不可赋予 Pro $19.99 参考价
+  const effUltra = core.resolveEffectivePlanStatus(ultraLive, {
+    priceMode: 'preset',
+    subscriptionCountry: '美国 (US)',
+    subscriptionRegion: '美国 (US)'
+  });
+  assert.equal(effUltra.actualPricePaid, null);
+  assert.equal(effUltra.officialPriceMonthly, null);
+  assert.equal(effUltra.priceSource, 'unknown');
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    api.applyTokenHistoryPayload({
+      planStatus: effUltra,
+      rawPlanStatus: ultraLive,
+      dailyMap: {}
+    });
+    assert.doesNotMatch(h.elements.get('plan-summary-price-val').textContent, /19\.99/);
+    assert.match(h.elements.get('plan-summary-price-val').textContent, /待设置月费/);
+    assert.equal(h.elements.get('p-det-price-tag').textContent, '待设置');
+
+    await api.setPanelLanguage('en', { persist: false });
+    api.applyTokenHistoryPayload({
+      planStatus: effUltra,
+      rawPlanStatus: ultraLive,
+      dailyMap: {}
+    });
+    assert.doesNotMatch(h.elements.get('plan-summary-price-val').textContent, /19\.99/);
+    assert.equal(h.elements.get('plan-summary-price-val').textContent, 'Fee unset');
+    assert.equal(h.elements.get('p-det-price-tag').textContent, 'Unset');
+    assert.notEqual(h.elements.get('p-det-price-tag').textContent, 'Official price');
+    assert.equal(h.elements.get('p-det-name').textContent, 'Google AI Ultra (Sub-tier unknown)');
+
+    await api.setPanelLanguage('zh-TW', { persist: false });
+    api.applyTokenHistoryPayload({
+      planStatus: effUltra,
+      rawPlanStatus: ultraLive,
+      dailyMap: {}
+    });
+    assert.equal(h.elements.get('p-det-name').textContent, 'Google AI Ultra（子檔未知）');
+    assert.equal(h.elements.get('p-det-price-tag').textContent, '待設定');
+  } finally {
+    api.dispose();
+  }
+});

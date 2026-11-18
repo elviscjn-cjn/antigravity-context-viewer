@@ -106,6 +106,7 @@
     computeCacheReadStats,
     summarizeCacheReadStats,
     normalizeSessionCallRecord,
+    sanitizeTurnPreviewText,
     groupSessionCallsByTurns,
     ELV91_SCORE_RULE_VERSION,
     formatHumanDuration,
@@ -615,17 +616,15 @@
     }
     :host([data-layout="minimal"]) #badge-speed,
     :host([data-layout="minimal"]) #badge-tokens,
-    :host([data-layout="minimal"]) #badge-cli{
-      display:none!important;
-    }
-    :host([data-layout="minimal"]) #badge-overflow{
-      display:inline-flex!important;
-    }
+    :host([data-layout="minimal"]) #badge-cli,
     :host([data-layout="ring-only"]) #badge-speed,
     :host([data-layout="ring-only"]) #badge-tokens,
-    :host([data-layout="ring-only"]) #badge-cli,
-    :host([data-layout="ring-only"]) #badge-overflow{
+    :host([data-layout="ring-only"]) #badge-cli{
       display:none!important;
+    }
+    :host([data-layout="minimal"]) #badge-overflow,
+    :host([data-layout="ring-only"]) #badge-overflow{
+      display:inline-flex!important;
     }
 
     /* 上下文悬停信息气泡（严格还原参考图三层结构） */
@@ -799,28 +798,43 @@
       position:relative;padding-top:10px;margin-bottom:14px;
     }
     .model-usage-gridlines{
-      position:absolute;left:0;right:0;top:10px;height:148px;
-      display:flex;flex-direction:column;justify-content:space-between;pointer-events:none;
+      position:absolute;left:0;right:0;top:10px;height:140px;
+      pointer-events:none;
     }
     .model-usage-gridline{
       position:relative;border-top:1px solid rgba(148,163,184,0.14);width:100%;
+    }
+    .model-usage-tick-line{
+      position:absolute;left:0;right:0;border-top:1px dashed rgba(148,163,184,0.22);pointer-events:none;
+    }
+    .model-usage-tick-lbl{
+      position:absolute;right:2px;top:-11px;font-size:9px;color:var(--ag-text-muted);opacity:0.86;background:transparent;
     }
     .model-chart-max-lbl{
       position:absolute;right:0;top:-14px;font-size:9.5px;color:var(--ag-text-muted);opacity:0.85;
     }
     .model-usage-bars{
-      position:relative;z-index:1;height:148px;
-      display:flex;align-items:flex-end;gap:8px;padding:0 6px;
+      position:relative;z-index:1;height:140px;
+      display:flex;align-items:flex-end;gap:8px;padding:0 36px 0 6px;
     }
     .model-usage-bars.compact-30{
-      gap:3px;padding:0 2px;
+      gap:3px;padding:0 34px 0 2px;
     }
     .model-usage-col{
       flex:1;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;cursor:pointer;
     }
     .model-usage-stack{
-      width:100%;max-width:44px;display:flex;flex-direction:column;overflow:hidden;
-      border-radius:3px 3px 0 0;transition:filter .14s,transform .14s;
+      position:relative;width:100%;max-width:44px;display:flex;flex-direction:column-reverse;overflow:hidden;
+      border-radius:3px 3px 0 0;transition:filter .14s,transform .14s,opacity .14s;
+    }
+    .model-usage-stack::after{
+      content:'';position:absolute;left:0;right:0;top:0;height:1px;background:rgba(255,255,255,0.48);pointer-events:none;
+    }
+    .model-usage-stack.is-overflow{
+      box-shadow:0 -2px 8px rgba(232,121,249,0.55);
+    }
+    .model-usage-stack.is-overflow::after{
+      height:2px;background:#e879f9;
     }
     .model-usage-bars.compact-30 .model-usage-stack{
       max-width:18px;border-radius:3px 3px 0 0;
@@ -829,22 +843,25 @@
       filter:brightness(1.1);
     }
     .model-usage-seg{
-      width:100%;min-height:2px;opacity:0.9;transition:height .2s cubic-bezier(0.16,1,0.3,1),opacity .14s;
+      width:100%;opacity:0.92;transition:height .2s cubic-bezier(0.16,1,0.3,1),opacity .14s;flex-shrink:0;
     }
-    .model-usage-col:hover .model-usage-seg{
+    .model-usage-seg.is-dimmed{
+      opacity:0.16!important;
+    }
+    .model-usage-col:hover .model-usage-seg:not(.is-dimmed){
       opacity:1;
     }
     .model-usage-empty-bar{
-      width:100%;max-width:44px;height:2px;border-radius:2px 2px 0 0;background:rgba(148,163,184,0.16);
+      width:100%;max-width:44px;height:1px;border-radius:1px 1px 0 0;background:rgba(148,163,184,0.18);
     }
     .model-usage-bars.compact-30 .model-usage-empty-bar{
       max-width:18px;
     }
     .model-usage-xaxis{
-      display:flex;align-items:center;gap:8px;padding:6px 6px 0;border-top:1px solid rgba(148,163,184,0.18);
+      display:flex;align-items:center;gap:8px;padding:6px 36px 0 6px;border-top:1px solid rgba(148,163,184,0.18);
     }
     .model-usage-xaxis.compact-30{
-      gap:3px;padding:6px 2px 0;
+      gap:3px;padding:6px 34px 0 2px;
     }
     .model-usage-xlabel{
       flex:1;min-width:0;text-align:center;font-size:10.5px;color:var(--ag-text-muted);white-space:nowrap;
@@ -856,7 +873,16 @@
       display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 14px;padding-top:4px;
     }
     .model-legend-item{
-      display:flex;align-items:stretch;gap:9px;min-width:0;
+      display:flex;align-items:stretch;gap:9px;min-width:0;cursor:pointer;border-radius:4px;padding:2px 3px;transition:opacity .14s,background-color .14s;
+    }
+    .model-legend-item:hover{
+      background:rgba(148,163,184,0.08);
+    }
+    .model-legend-item.is-dimmed{
+      opacity:0.35;
+    }
+    .model-legend-item.is-locked{
+      background:rgba(167,139,250,0.12);
     }
     .model-legend-bar{
       width:3px;border-radius:999px;flex-shrink:0;min-height:30px;
@@ -1021,18 +1047,38 @@
 
     /* Antigravity 原生定制下拉组件样式与动效 */
     .ag-dropdown-wrapper{
-      position:relative;width:100%;box-sizing:border-box;
+      position:relative;width:100%;box-sizing:border-box;min-width:0;
     }
     .ag-dropdown-trigger{
-      width:100%;box-sizing:border-box;
+      width:100%;box-sizing:border-box;min-width:0;
       display:flex;align-items:center;justify-content:space-between;gap:6px;
       padding:5px 8px;font-size:11px;
       color:var(--ag-text-primary);
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);
       border-radius:5px;
-      cursor:pointer;user-select:none;
+      cursor:pointer;user-select:none;outline:none;
       transition:background .15s cubic-bezier(0.16,1,0.3,1),border-color .15s cubic-bezier(0.16,1,0.3,1),box-shadow .15s cubic-bezier(0.16,1,0.3,1);
+    }
+    .ag-dropdown-trigger:focus-visible{
+      border-color:var(--ag-token-accent-default,#a78bfa);
+      box-shadow:0 0 0 2px rgba(167,139,250,0.22);
+    }
+    .ag-dropdown-label{
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;text-align:left;
+    }
+    .ag-dropdown-compact .ag-dropdown-trigger{
+      padding:3.5px 8px;font-size:10.5px;min-height:24px;border-radius:5px;
+      border-color:var(--ag-border-card);
+    }
+    .ag-dropdown-wrapper.align-right .ag-dropdown-menu{
+      left:auto;right:0;min-width:max(100%, 190px);max-width:min(300px, calc(100vw - 28px));
+    }
+    .ag-dropdown-item-text{
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;
+    }
+    .token-account-dropdown{
+      flex:0 1 240px;min-width:150px;max-width:260px;width:auto;
     }
     .ag-dropdown-trigger:hover{
       background:rgba(255,255,255,0.08);
@@ -1507,12 +1553,15 @@
     .heat-tab-btn:focus-visible{box-shadow:0 0 0 1.5px var(--ag-token-accent-default,#a78bfa)}
 
     .heat-scroll-box{overflow-x:auto;overflow-y:hidden;padding:6px 6px 4px 6px}
+    .heat-scroll-box.is-cum-active{overflow:visible}
     .heat-grid-cols{display:flex;gap:3px}
     .heat-week-col{display:flex;flex-direction:column;gap:3px}
     .heat-cell{width:10px;height:10px;border-radius:2px;background:var(--ag-heat-lvl-0);cursor:pointer;transition:transform .12s ease}
     .heat-cell:hover{transform:scale(1.3);z-index:5;outline:1.5px solid var(--ag-heat-outline)}
     .heat-cell.is-future{opacity:0.36}
+    .heat-cell.is-unactivated{opacity:0.35}
     .heat-cell.is-today{outline:1.5px solid var(--ag-custom-token-accent,var(--ag-token-accent-default));outline-offset:0.5px}
+    .heat-cell.is-cum-linked{outline:2px solid #e879f9;outline-offset:1px;transform:scale(1.28);z-index:6;box-shadow:0 0 8px rgba(232,121,249,0.75)}
     .lvl-0{background:var(--ag-heat-lvl-0)}
     .lvl-1{background:var(--ag-heat-lvl-1)}
     .lvl-2{background:var(--ag-heat-lvl-2)}
@@ -1522,20 +1571,107 @@
     .heat-months{position:relative;height:18px;margin-top:4px;font-size:11px;color:var(--ag-text-muted);overflow:hidden}
     .heat-month-item{position:absolute;white-space:nowrap}
 
-    #h-weekly-box{display:none;height:105px;align-items:flex-end;gap:3px;border-bottom:1px solid var(--ag-border-subtle);padding-bottom:3px}
-    .w-bar-col{flex:1;height:100%;display:flex;align-items:flex-end;cursor:pointer}
-    .w-bar-fill{width:100%;border-radius:2px 2px 0 0;background:var(--ag-heat-lvl-0);min-height:3px;transition:height .22s ease,background-color .14s ease}
-    .w-bar-col:hover .w-bar-fill{background:var(--ag-custom-token-accent,var(--ag-heat-lvl-4))!important}
+    #h-weekly-box{position:relative;display:none;height:105px;align-items:flex-end;gap:3px;border-bottom:1px solid var(--ag-border-subtle);padding:6px 34px 3px 0}
+    .w-bar-col{flex:1;height:100%;display:flex;align-items:flex-end;cursor:pointer;position:relative;z-index:1}
+    .w-bar-fill{position:relative;width:100%;border-radius:2px 2px 0 0;background:var(--ag-heat-lvl-0);transition:height .22s ease,background-color .14s ease}
+    .w-bar-fill.is-empty{height:1px!important;background:rgba(148,163,184,0.25);border-radius:0}
+    .w-bar-fill.is-overflow::after{content:'';position:absolute;left:0;right:0;top:0;height:2px;background:#e879f9;box-shadow:0 -1px 6px rgba(232,121,249,0.65)}
+    .w-bar-col:hover .w-bar-fill:not(.is-empty){filter:brightness(1.14)}
+    .w-ref-line{position:absolute;left:0;right:0;border-top:1px dashed rgba(148,163,184,0.2);pointer-events:none}
+    .w-ref-lbl{position:absolute;right:0;top:-10px;font-size:8.5px;color:var(--ag-text-muted);opacity:0.82}
 
     #h-monthly-box{display:none;height:105px;width:100%;box-sizing:border-box;align-items:center;justify-content:center}
     .heat-month-grid{display:grid;width:100%;height:100%;align-content:center;justify-content:center}
     .heat-month-cell{display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;transition:transform .12s ease}
+    .heat-month-cell.is-unactivated{opacity:0.35}
+    .heat-month-cell.is-future{opacity:0.36}
     .heat-month-cell:hover{transform:scale(1.18);z-index:5;outline:1.5px solid var(--ag-heat-outline,#fff)}
     .heat-month-cell-num{font-size:9.5px;font-weight:600;color:rgba(255,255,255,0.9);text-shadow:0 1px 2px rgba(0,0,0,0.65);pointer-events:none}
     :host([data-theme="light"]) .heat-month-cell-num{color:#18181b;text-shadow:none}
 
     #h-yearly-box{display:none;height:105px;width:100%;box-sizing:border-box;align-items:center;justify-content:center}
     .heat-yearly-svg{width:100%;height:105px;display:block;overflow:visible}
+
+    /* 累计总量 (A+C 推荐方案：摘要头 + 跨账号对数量级尺 + 比例时间带) */
+    #h-cum-box{display:none;width:100%;height:auto;min-height:0;overflow:visible;position:relative;box-sizing:border-box}
+    .cum-root{display:flex;flex-direction:column;gap:8px;width:100%;padding:2px 2px 4px;box-sizing:border-box}
+    .cum-summary-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px 12px}
+    .cum-head-left{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 10px}
+    .cum-total-big{font-size:19px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.3px;font-variant-numeric:tabular-nums}
+    .cum-meta-text{font-size:11px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
+    .cum-head-cost{font-size:12px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));font-variant-numeric:tabular-nums;white-space:nowrap}
+
+    .cum-ruler-card{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard)}
+    .cum-ruler-top{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--ag-text-muted);gap:6px}
+    .cum-ruler-badge{font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums}
+    .cum-ruler-badge.is-below-min{color:#eab308}
+    .cum-ruler-badge.is-above-max{color:#e879f9}
+    .cum-ruler-badge.is-zero{color:var(--ag-text-muted)}
+    .cum-ruler-track-wrap{position:relative;height:26px;margin:2px 8px 0}
+    .cum-ruler-track{position:absolute;left:0;right:0;top:10px;height:4px;border-radius:999px;background:rgba(148,163,184,0.22)}
+    .cum-ruler-tick{position:absolute;top:7px;width:1px;height:10px;background:rgba(148,163,184,0.48);transform:translateX(-0.5px)}
+    .cum-ruler-tick-lbl{position:absolute;top:13px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--ag-text-muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+    .cum-ruler-tick[data-edge="start"] .cum-ruler-tick-lbl{left:0;transform:none}
+    .cum-ruler-tick[data-edge="end"] .cum-ruler-tick-lbl{left:auto;right:0;transform:none}
+    .cum-ruler-marker{position:absolute;top:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;pointer-events:none}
+    .cum-ruler-tri{width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));filter:drop-shadow(0 0 4px rgba(167,139,250,0.65))}
+    .cum-ruler-marker.is-below-min .cum-ruler-tri{border-top-color:#eab308;filter:none}
+    .cum-ruler-marker.is-above-max .cum-ruler-tri{border-top-color:#e879f9;filter:drop-shadow(0 0 6px rgba(232,121,249,0.85))}
+    .cum-ruler-marker.is-zero{opacity:0.45}
+
+    .cum-strip-section{display:flex;flex-direction:column;gap:3px}
+    .cum-peak-chips{display:flex;flex-wrap:wrap;align-items:center;gap:5px;min-height:16px}
+    .cum-peak-chip{display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(167,139,250,0.14);border:1px solid rgba(167,139,250,0.32);color:var(--ag-text-primary);cursor:pointer;font-variant-numeric:tabular-nums}
+    .cum-peak-chip:hover,.cum-peak-chip.is-active{background:rgba(167,139,250,0.28);border-color:#a78bfa}
+    .cum-group-hint{margin-left:auto;font-size:9.5px;color:var(--ag-text-muted)}
+
+    .cum-strip{display:flex;width:100%;height:26px;border-radius:5px;overflow:hidden;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);box-sizing:border-box}
+    .cum-seg{position:relative;height:100%;min-width:1px;border:0;padding:0;margin:0;cursor:pointer;box-sizing:border-box;border-right:1px solid rgba(15,23,42,0.28);display:flex;align-items:center;justify-content:center;overflow:hidden;transition:filter .12s ease,opacity .12s ease;outline:none}
+    :host([data-theme="light"]) .cum-seg{border-right:1px solid rgba(255,255,255,0.5)}
+    .cum-seg:last-child{border-right:0}
+    .cum-seg-lbl{font-size:9.5px;font-weight:600;color:rgba(255,255,255,0.92);text-shadow:0 1px 2px rgba(0,0,0,0.6);white-space:nowrap;padding:0 3px;pointer-events:none;overflow:hidden;text-overflow:ellipsis}
+    :host([data-theme="light"]) .cum-seg-lbl{color:#fff;text-shadow:0 1px 1px rgba(0,0,0,0.35)}
+    .cum-seg.is-peak{box-shadow:inset 0 2px 0 rgba(255,255,255,0.45)}
+    .cum-seg:hover,.cum-seg:focus-visible{filter:brightness(1.16);z-index:2;box-shadow:inset 0 0 0 1.5px #fff}
+    .cum-seg.is-active{filter:brightness(1.22);z-index:3;box-shadow:inset 0 0 0 1.5px #e879f9}
+    .cum-seg.is-dimmed{opacity:0.42}
+
+    .cum-connectors-svg{width:100%;height:18px;display:block;overflow:visible}
+    .cum-conn-line{stroke:rgba(148,163,184,0.3);stroke-width:1;fill:none;transition:stroke .12s ease,stroke-width .12s ease}
+    .cum-conn-line.is-active{stroke:#e879f9;stroke-width:1.8}
+
+    .cum-axis-row{position:relative;width:100%;height:26px}
+    .cum-axis-slot{position:absolute;top:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;cursor:pointer;padding:0 2px;border:0;background:transparent;color:var(--ag-text-muted);outline:none}
+    .cum-axis-slot:focus-visible .cum-axis-dot,.cum-axis-slot:hover .cum-axis-dot,.cum-axis-slot.is-active .cum-axis-dot{transform:scale(1.6);background:#e879f9}
+    .cum-axis-dot{width:4px;height:4px;border-radius:999px;background:rgba(148,163,184,0.6);margin-top:2px;transition:transform .12s ease,background-color .12s ease}
+    .cum-axis-dot.is-peak{width:5px;height:5px;background:#a78bfa}
+    .cum-axis-zero{font-size:9px;line-height:10px;font-weight:700;color:var(--ag-text-muted);margin-top:-1px}
+    .cum-axis-slot.is-active .cum-axis-zero,.cum-axis-slot:hover .cum-axis-zero,.cum-axis-slot:focus-visible .cum-axis-zero{color:#e879f9}
+    .cum-axis-lbl{font-size:9px;color:var(--ag-text-muted);white-space:nowrap;margin-top:3px;font-variant-numeric:tabular-nums}
+
+    .cum-conclusion-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;font-size:11px;color:var(--ag-text-secondary);padding:5px 8px;border-radius:6px;background:rgba(167,139,250,0.07);border:1px solid rgba(167,139,250,0.18)}
+    .cum-conclusion-row strong{color:var(--ag-text-primary);font-weight:600}
+    .cum-conclusion-row.is-insufficient{color:var(--ag-text-muted);background:var(--ag-bg-subcard);border-color:var(--ag-border-subcard)}
+
+    .cum-inspector{display:flex;flex-direction:column;gap:6px;padding:7px 9px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid rgba(167,139,250,0.38);font-size:11px}
+    .cum-insp-top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px}
+    .cum-insp-metrics{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;font-variant-numeric:tabular-nums;color:var(--ag-text-secondary)}
+    .cum-insp-metrics strong{color:var(--ag-text-primary)}
+    .cum-insp-actions{display:flex;align-items:center;gap:5px}
+    .cum-mini-btn{border:1px solid var(--ag-border-subcard);background:var(--ag-bg-card);color:var(--ag-text-primary);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer;white-space:nowrap}
+    .cum-mini-btn:hover{border-color:#a78bfa;background:rgba(167,139,250,0.14)}
+    .cum-week-days{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:4px;padding-top:4px;border-top:1px dashed var(--ag-border-subtle)}
+    .cum-day-row-btn{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;border:1px solid var(--ag-border-subcard);background:var(--ag-bg-card);color:var(--ag-text-secondary);font-size:10px;cursor:pointer;font-variant-numeric:tabular-nums}
+    .cum-day-row-btn:hover,.cum-day-row-btn.is-active{border-color:#a78bfa;color:var(--ag-text-primary);background:rgba(167,139,250,0.14)}
+
+    .cum-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:18px 12px;border-radius:6px;background:var(--ag-bg-subcard);border:1px dashed var(--ag-border-subcard);text-align:center}
+    .cum-empty-title{font-size:12px;font-weight:600;color:var(--ag-text-primary)}
+    .cum-empty-sub{font-size:10.5px;color:var(--ag-text-muted)}
+
+    .cum-root.is-narrow .cum-connectors-svg,
+    .cum-root.is-narrow .cum-axis-row,
+    .cum-root.is-narrow .cum-seg-lbl,
+    .cum-root.is-narrow .cum-ruler-tick[data-mid="true"] .cum-ruler-tick-lbl{display:none}
     @keyframes bubblePopIn{0%{transform:scale(0.6);opacity:0}100%{transform:scale(1);opacity:1}}
     .heat-yearly-bubble-group{transform-origin:center center;animation:bubblePopIn 0.22s cubic-bezier(0.16,1,0.3,1) both;cursor:pointer}
     /* 上下文加长面板样式 */
@@ -1602,9 +1738,6 @@
 
     @media (prefers-reduced-motion: reduce){.heat-yearly-bubble-group{animation:none!important}}
     .heat-yearly-bubble-group:hover circle.bubble-main{filter:brightness(1.22);stroke:var(--ag-text-primary);stroke-width:1.5px}
-
-    #h-cum-box{display:none;height:105px;position:relative}
-    canvas#h-cum-canvas{width:100%;height:105px;display:block}
 
     .heat-summary-bar{
       display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
@@ -2041,8 +2174,16 @@
     .tcb-val{color:var(--ag-text-primary);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
     .tcb-ratio-item{margin-left:auto}
     .tcb-ratio-val{color:var(--ag-custom-token-accent,var(--ag-token-accent-default))}
+    .tcb-ratio-bar-track{flex:1 1 100%;height:3px;border-radius:999px;background:rgba(148,163,184,0.18);overflow:hidden;margin-top:1px}
+    .tcb-ratio-bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#6d28d9,#a855f7,#d8b4fe);transition:width .24s ease}
     .tcb-note{flex:1 1 100%;font-size:10px;color:var(--ag-text-muted);margin-top:1px}
     .tcb-note[hidden]{display:none!important}
+    .ref-cost-share-lbl{font-size:9px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
+    .ref-cost-share-track{height:3px;width:100%;border-radius:999px;background:rgba(148,163,184,0.16);overflow:hidden;margin-top:4px}
+    .ref-cost-share-fill{height:100%;border-radius:999px;transition:width .24s ease}
+    .ref-cost-fill-input{background:#38bdf8}
+    .ref-cost-fill-cache{background:#34d399}
+    .ref-cost-fill-output{background:#a78bfa}
 
     /* 最新调用卡片与当前会话请求时间线 */
     @keyframes agCallEnter{
@@ -2122,16 +2263,16 @@
       display:flex;flex-direction:column;gap:7px;min-width:0;
     }
     .session-timeline-summary{
-      font-size:10px;color:var(--ag-text-muted);line-height:1.45;background:var(--ag-bg-subcard);
+      flex:0 0 auto;font-size:10px;color:var(--ag-text-muted);line-height:1.45;background:var(--ag-bg-subcard);
       border:1px solid var(--ag-border-subcard);border-radius:6px;padding:6px 8px;
     }
-    .session-timeline-list{display:flex;flex-direction:column;gap:6px;max-height:360px;overflow-y:auto;padding-right:2px}
+    .session-timeline-list{display:flex;flex-direction:column;gap:6px;flex:0 0 auto;max-height:min(360px,46vh);min-height:0;overflow-y:auto;overscroll-behavior:auto;padding-right:2px}
     .timeline-turn-card{
-      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;overflow:hidden;min-width:0;
+      flex:0 0 auto;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;overflow:visible;min-width:0;
     }
     .timeline-turn-hdr{
-      width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;
-      background:transparent;border:none;color:inherit;cursor:pointer;text-align:left;min-width:0;
+      width:100%;flex:0 0 auto;min-height:28px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;
+      background:transparent;border:none;border-radius:6px;color:inherit;cursor:pointer;text-align:left;min-width:0;
     }
     .timeline-turn-hdr:hover{background:var(--ag-bg-card-hover)}
     .timeline-turn-left{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
@@ -2140,7 +2281,7 @@
     .timeline-turn-meta{font-size:10px;color:var(--ag-text-muted);white-space:nowrap;flex-shrink:0;font-variant-numeric:tabular-nums}
     .timeline-turn-body{padding:0 8px 7px;display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--ag-border-subtle)}
     .timeline-call-row{
-      display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;margin-top:4px;
+      flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;margin-top:4px;
       border-radius:5px;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);
       font-size:10.5px;cursor:pointer;min-width:0;flex-wrap:wrap;
     }
@@ -2150,11 +2291,11 @@
     .timeline-call-main{display:flex;align-items:center;gap:5px;min-width:0;flex:1 1 130px}
     .timeline-call-stats{display:flex;align-items:center;gap:6px;color:var(--ag-text-secondary);font-size:10px;font-variant-numeric:tabular-nums;flex-wrap:wrap}
     .session-timeline-unlinked{
-      background:var(--ag-bg-subcard);border:1px dashed var(--ag-border-subcard);border-radius:6px;padding:6px 8px;
+      flex:0 0 auto;background:var(--ag-bg-subcard);border:1px dashed var(--ag-border-subcard);border-radius:6px;padding:6px 8px;
       display:flex;flex-direction:column;gap:4px;
     }
     .session-timeline-unlinked-title{font-size:10px;font-weight:600;color:var(--ag-text-muted)}
-    .session-timeline-more-wrap{display:flex;justify-content:center;padding-top:2px}
+    .session-timeline-more-wrap{flex:0 0 auto;display:flex;justify-content:center;padding-top:2px}
     .session-timeline-more-wrap[hidden],.session-timeline-unlinked[hidden]{display:none!important}
 
     /* ELV-91 生成体验面板联动样式（闪电颜色、副标签、E评分徽章与拆解网格） */
@@ -2224,12 +2365,27 @@
     }
     .quota-acct-card.is-active{border-color:rgba(59,130,246,0.45)}
     .quota-subcard-row{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;min-width:0}
-    .quota-acct-email{font-weight:600;color:var(--ag-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .quota-acct-email{font-weight:600;color:var(--ag-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
     .quota-acct-meta{color:var(--ag-text-muted);font-size:10px;overflow-wrap:anywhere}
+    .quota-acct-error{color:#f59e0b;font-size:10px;overflow-wrap:anywhere;padding:3px 6px;border-radius:4px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25)}
+    .quota-acct-refresh-btn{font-size:10px;padding:2px 6px}
+    .quota-acct-remove-btn{font-size:10px;padding:2px 7px;border-radius:4px;color:#f87171;border:1px solid rgba(239,68,68,0.28);background:rgba(239,68,68,0.08);cursor:pointer;transition:background-color .12s,border-color .12s,opacity .12s}
+    .quota-acct-remove-btn:hover:not(:disabled){background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.45);color:#fca5a5}
+    .quota-acct-remove-btn:disabled{opacity:0.45;cursor:not-allowed}
+    :host([data-theme="light"]) .quota-acct-remove-btn{color:#dc2626}
+    :host([data-theme="light"]) .quota-acct-remove-btn:hover:not(:disabled){color:#b91c1c}
     .quota-acct-feedback{
       padding:5px 8px;border-radius:6px;font-size:10.5px;background:rgba(59,130,246,0.12);
       border:1px solid rgba(59,130,246,0.3);color:var(--ag-text-primary);overflow-wrap:anywhere;
     }
+    .quota-acct-feedback.is-error{
+      background:rgba(239,68,68,0.1);border-color:rgba(239,68,68,0.35);color:#fca5a5;
+    }
+    .quota-acct-feedback.is-success{
+      background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.35);color:#86efac;
+    }
+    :host([data-theme="light"]) .quota-acct-feedback.is-error{color:#dc2626}
+    :host([data-theme="light"]) .quota-acct-feedback.is-success{color:#15803d}
     .quota-switch-lbl{display:inline-flex;align-items:center;gap:5px;font-weight:600;color:var(--ag-text-primary);cursor:pointer}
     .auto-switch-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:4px}
     .quota-field-lbl{display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--ag-text-muted);min-width:0}
@@ -3505,10 +3661,19 @@
     <!-- 分账号账本筛选条（ELV-89：严格隔离各账号及未归属历史，不重复堆叠刷新入口） -->
     <div id="token-account-bar" class="token-account-bar">
       <span class="token-account-lbl" data-i18n="accounts.filterLabel">账本范围:</span>
-      <select id="token-account-select" class="token-account-select" aria-label="按账号筛选统计账本" data-i18n-aria="accounts.filterAria">
+      <select id="token-account-select" class="token-account-select" aria-label="按账号筛选统计账本" data-i18n-aria="accounts.filterAria" style="display:none">
         <option value="all" data-i18n="accounts.filterAll">全部已记用量（含未归属）</option>
         <option value="unattributed" data-i18n="accounts.filterUnattributed">历史未归属（无可靠账号依据）</option>
       </select>
+      <div id="token-account-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact token-account-dropdown">
+        <div id="token-account-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+          <span id="token-account-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.filterAll">全部已记用量（含未归属）</span>
+          <div class="ag-dropdown-arrow">
+            <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+          </div>
+        </div>
+        <div id="token-account-dropdown-menu" class="ag-dropdown-menu"></div>
+      </div>
       <span id="token-account-scope-note" class="token-account-note"></span>
     </div>
 
@@ -3519,10 +3684,10 @@
         <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · ...</span>
       </div>
       <!-- 黄框位置：实时联动的订阅费与汇率胶囊 -->
-      <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)"
+      <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前订阅费用与最新汇率折算 (点击展开/收起详情)"
         data-i18n-title="plan.summary.priceBadgeTitle">
-        <span id="plan-summary-price-val">$19.99/月</span>
-        <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
+        <span id="plan-summary-price-val" data-i18n="plan.summary.priceUnsetShort">待设置月费</span>
+        <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400"></span>
       </div>
       <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 6px;flex-shrink:0"
         data-i18n="plan.detail.toggleOpen">详情 ▼</button>
@@ -3699,11 +3864,10 @@
           设置当前账号订阅信息
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.acqLabel">获取方式 / 活动来源</label>
-            <select id="select-custom-acq"
-              style="width:100%;font-size:11px;padding:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <select id="select-custom-acq" aria-label="获取方式 / 活动来源" data-i18n-aria="plan.form.acqLabel" style="display:none">
               <option value="normal_paid" data-i18n="plan.acqOpt.normal_paid">正常付费订阅</option>
               <option value="student_offer" data-i18n="plan.acqOpt.student_offer">学生认证优惠</option>
               <option value="pixel_bundle" data-i18n="plan.acqOpt.pixel_bundle">Google Pixel 设备赠送</option>
@@ -3715,8 +3879,17 @@
               <option value="official_promo" data-i18n="plan.acqOpt.official_promo">官方限时试用 / 促销活动</option>
               <option value="custom_source" data-i18n="plan.acqOpt.custom_source">其他 / 自由命名</option>
             </select>
+            <div id="select-custom-acq-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="select-custom-acq-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="select-custom-acq-dropdown-label" class="ag-dropdown-label" data-i18n="plan.acqOpt.normal_paid">正常付费订阅</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="select-custom-acq-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.acqCustomLabel">自定义活动 / 合作方名称</label>
             <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送"
@@ -3737,8 +3910,7 @@
               (可选快捷套用)</label>
             <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
           </div>
-          <select id="select-custom-region-preset"
-            style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+          <select id="select-custom-region-preset" aria-label="预设订阅国家与汇率" data-i18n-aria="plan.form.presetLabel" style="display:none">
             <option value="" data-i18n="plan.form.presetPlaceholder">-- 选择预设地区 (自动填入价格与汇率) --</option>
             <option value="US">🇺🇸 美国 (US) · $19.99/月 (折合 ≈ ¥134.3)</option>
             <option value="KR">🇰🇷 韩国 (KR) · ₩29,000/月 (折合 ≈ ¥147.9)</option>
@@ -3759,9 +3931,18 @@
             <option value="CN">🇨🇳 中国大陆/自定义 (CNY) · ¥140/月</option>
             <option value="custom" data-i18n="plan.form.presetCustom">✎ 自定义输入地区</option>
           </select>
+          <div id="select-custom-region-preset-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact" style="margin-bottom:4px">
+            <div id="select-custom-region-preset-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+              <span id="select-custom-region-preset-dropdown-label" class="ag-dropdown-label" data-i18n="plan.form.presetPlaceholder">-- 选择预设地区 (自动填入价格与汇率) --</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+              </div>
+            </div>
+            <div id="select-custom-region-preset-dropdown-menu" class="ag-dropdown-menu"></div>
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.countryLabel">账号所在地区 (仅本地记录)</label>
             <input id="input-custom-country" type="text" placeholder="例如：美国 (US)"
@@ -3769,19 +3950,18 @@
               data-i18n-title="plan.country.title"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.regionLabel">订阅国家 (购买/结算地区)</label>
             <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚"
               data-i18n-placeholder="plan.form.regionPh" title="实际购买或支付订阅所在的国家或地区" data-i18n-title="plan.region.title"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.currencyLabel">订阅币种与实付金额</label>
-            <div style="display:flex;gap:4px">
-              <select id="select-custom-currency" title="订阅计价/结算币种" data-i18n-title="plan.currency.title"
-                style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <div style="display:flex;gap:4px;align-items:center">
+              <select id="select-custom-currency" title="订阅计价/结算币种" data-i18n-title="plan.currency.title" aria-label="订阅币种" data-i18n-aria="plan.currency.aria" style="display:none">
                 <option value="USD">USD</option>
                 <option value="KRW">KRW</option>
                 <option value="HKD">HKD</option>
@@ -3800,24 +3980,41 @@
                 <option value="AUD">AUD</option>
                 <option value="MYR">MYR</option>
               </select>
+              <div id="select-custom-currency-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact" style="flex:0 0 82px;min-width:72px">
+                <div id="select-custom-currency-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                  <span id="select-custom-currency-dropdown-label" class="ag-dropdown-label">USD</span>
+                  <div class="ag-dropdown-arrow">
+                    <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                  </div>
+                </div>
+                <div id="select-custom-currency-dropdown-menu" class="ag-dropdown-menu"></div>
+              </div>
               <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额"
                 data-i18n-placeholder="plan.form.paidPh"
-                style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                style="flex:1;min-width:0;width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
             </div>
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.cycleLabel">计费周期</label>
-            <select id="select-custom-cycle"
-              style="width:100%;font-size:11px;padding:4px 6px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <select id="select-custom-cycle" aria-label="计费周期" data-i18n-aria="plan.form.cycleLabel" style="display:none">
               <option value="月付" data-i18n="plan.cycleOpt.monthly">月付</option>
               <option value="年付" data-i18n="plan.cycleOpt.yearly">年付</option>
               <option value="免费/赠送" data-i18n="plan.cycleOpt.free">免费 / 促销赠送</option>
               <option value="随套餐包含" data-i18n="plan.cycleOpt.included">随套餐包含</option>
               <option value="其他周期" data-i18n="plan.cycleOpt.other">其他周期</option>
             </select>
+            <div id="select-custom-cycle-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="select-custom-cycle-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="select-custom-cycle-dropdown-label" class="ag-dropdown-label" data-i18n="plan.cycleOpt.monthly">月付</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="select-custom-cycle-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
           </div>
           <div>
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
@@ -3928,24 +4125,36 @@
         <!-- 分类单价与公式明细卡片（输入、缓存读取、输出） -->
         <div id="ref-cost-breakdown-cards"
           style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.input">输入 Token</span>
               ($0.75/M)</div>
             <div id="ref-cost-input-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-            <div id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-input-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-input-bar" class="ref-cost-share-fill ref-cost-fill-input" style="width:0%"></div></div>
           </div>
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.cache">缓存读取 (优惠)</span>
               ($0.075/M)</div>
             <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-            <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-cache-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-cache-bar" class="ref-cost-share-fill ref-cost-fill-cache" style="width:0%"></div></div>
           </div>
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.output">输出 Token</span>
               ($3.75/M)</div>
             <div id="ref-cost-output-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00
             </div>
-            <div id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-output-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-output-bar" class="ref-cost-share-fill ref-cost-fill-output" style="width:0%"></div></div>
           </div>
         </div>
 
@@ -4002,6 +4211,10 @@
             <button id="model-metric-total" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.metricTotal">含缓存</button>
             <button id="model-metric-nocache" class="switch-pill-btn" type="button" data-i18n="modelsUsage.metricNoCache">不含缓存</button>
           </div>
+          <div class="source-switch-bar">
+            <button id="model-scale-mixed" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.scaleMixed">量级刻度</button>
+            <button id="model-scale-linear" class="switch-pill-btn" type="button" data-i18n="modelsUsage.scaleLinear">线性比例</button>
+          </div>
           <button id="model-toggle-unattr" class="switch-pill-btn model-unattr-btn" type="button" style="display:none" data-i18n="modelsUsage.hideUnattr">隐藏未标明</button>
         </div>
       </div>
@@ -4018,7 +4231,7 @@
       </div>
 
       <div id="model-usage-chart-wrap" class="model-usage-chart-wrap">
-        <div class="model-usage-gridlines" aria-hidden="true">
+        <div id="model-usage-gridlines" class="model-usage-gridlines" aria-hidden="true">
           <div class="model-usage-gridline"><span id="model-chart-max-lbl" class="model-chart-max-lbl"></span></div>
           <div class="model-usage-gridline"></div>
           <div class="model-usage-gridline"></div>
@@ -4092,6 +4305,9 @@
           <span class="tcb-lbl" data-i18n="tokens.cache.ratio">缓存读取占比</span>
           <strong class="tcb-val tcb-ratio-val" id="tcb-ratio-val">--</strong>
         </div>
+        <div class="tcb-ratio-bar-track" id="tcb-ratio-bar-track" aria-hidden="true">
+          <div class="tcb-ratio-bar-fill" id="tcb-ratio-bar-fill" style="width:0%"></div>
+        </div>
         <div class="tcb-note" id="tcb-note" hidden></div>
       </div>
 
@@ -4132,16 +4348,14 @@
           <div id="h-weekly-box" style="display:none"></div>
           <div id="h-monthly-box" style="display:none"></div>
           <div id="h-yearly-box" style="display:none"></div>
-          <div id="h-cum-box" style="display:none">
-            <canvas id="h-cum-canvas"></canvas>
-          </div>
+          <div id="h-cum-box" style="display:none"></div>
         </div>
         <div id="h-summary-bar" class="heat-summary-bar">
-          <div class="heat-sum-item">
+          <div id="h-sum-tokens-wrap" class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumTokens">区间合计:</span>
             <span id="h-sum-tokens" class="heat-sum-val">-- Tokens</span>
           </div>
-          <div class="heat-sum-item">
+          <div id="h-sum-cost-wrap" class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumCost">预估费用:</span>
             <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
           </div>
@@ -4522,7 +4736,7 @@
           <div id="quota-cur-pool" class="quota-cur-pool-sub"></div>
           <div id="quota-cur-est" class="quota-cur-est" hidden></div>
         </div>
-        <span id="quota-cur-status" class="key-pill pill-muted">未知</span>
+        <span id="quota-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
       </div>
       <div id="quota-cur-alert" class="quota-cur-alert" hidden></div>
       <div id="quota-cur-buckets" class="quota-buckets-list"></div>
@@ -4562,30 +4776,57 @@
             <input id="chk-auto-switch-enabled" type="checkbox" />
             <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号（默认关闭）</span>
           </label>
-          <span id="auto-switch-status-pill" class="key-pill pill-muted">已关闭</span>
+          <span id="auto-switch-status-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
         </div>
         <div id="auto-switch-config-body" class="auto-switch-grid">
-          <label class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
-            <select id="sel-auto-switch-pool" class="quota-compact-select">
+          <div class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
+            <select id="sel-auto-switch-pool" class="quota-compact-select" aria-label="监控共享池" data-i18n-aria="accounts.poolLabel" style="display:none">
               <option value="shared_gemini_main">Gemini 4 Hydrogen / 3.8 Flash</option>
               <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
               <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
               <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
             </select>
-          </label>
-          <label class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
-            <select id="sel-auto-switch-mode" class="quota-compact-select">
+            <div id="sel-auto-switch-pool-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-pool-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-pool-dropdown-label" class="ag-dropdown-label">Gemini 4 Hydrogen / 3.8 Flash</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-pool-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
+          <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
+            <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径" data-i18n-aria="accounts.metricLabel" style="display:none">
               <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
               <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
             </select>
-          </label>
-          <label class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
-            <select id="sel-auto-switch-window" class="quota-compact-select">
+            <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
+          <div class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
+            <select id="sel-auto-switch-window" class="quota-compact-select" aria-label="限额窗口" data-i18n-aria="accounts.windowLabel" style="display:none">
               <option value="primary" data-i18n="accounts.winPrimary">主窗口（最紧缩）</option>
               <option value="5h">5h</option>
               <option value="7d">7d</option>
             </select>
-          </label>
+            <div id="sel-auto-switch-window-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-window-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-window-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.winPrimary">主窗口（最紧缩）</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-window-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
           <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
             <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95" value="10" />
           </label>
@@ -4612,7 +4853,7 @@
       <!-- 模型 Prompt Cache 保活协议与保障 -->
       <div class="quota-subsec-header" style="margin-top:10px">
         <span class="quota-subsec-title" data-i18n="keepalive.title">🧊 模型缓存保活状态与协议核查</span>
-        <span id="keepalive-status-pill" class="key-pill pill-muted">默认关闭</span>
+        <span id="keepalive-status-pill" class="key-pill pill-muted" data-i18n="accounts.keepaliveOff">默认关闭</span>
       </div>
       <div class="quota-subcard">
         <div id="keepalive-protocol-summary" class="quota-muted-note"></div>
@@ -4621,6 +4862,22 @@
           <span id="keepalive-runtime-note" class="quota-muted-note"></span>
           <button id="btn-keepalive-stop" class="switch-pill-btn" type="button" hidden data-i18n="keepalive.stopBtn">立即停止保活</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 移除账号二次确认模态弹窗（移除插件凭证与切号候选，保留历史本地用量与归属） -->
+  <div id="account-remove-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
+    aria-labelledby="modal-account-remove-title">
+    <div class="ag-modal-card">
+      <div id="modal-account-remove-title" class="ag-modal-title" data-i18n="accounts.removeModal.title">移除账号</div>
+      <div id="modal-account-remove-text" class="ag-modal-body"></div>
+      <div id="modal-account-remove-feedback" class="ag-modal-feedback" hidden></div>
+      <div class="ag-modal-actions">
+        <button id="btn-modal-account-remove-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+          data-i18n="accounts.removeModal.cancel">取消</button>
+        <button id="btn-modal-account-remove-confirm" class="unlock-btn unlock-btn-danger" type="button"
+          data-i18n="accounts.removeModal.confirm">确认移除</button>
       </div>
     </div>
   </div>
@@ -4981,6 +5238,10 @@ const PANEL_I18N = {
   'modelsUsage.nextTitle': { 'zh-CN': '查看更新时间段', 'zh-TW': '檢視更新時段', en: 'Next period' },
   'modelsUsage.empty': { 'zh-CN': '当前时间窗暂无 Token 用量记录', 'zh-TW': '目前時間窗尚無 Token 用量紀錄', en: 'No token usage recorded in this period' },
   'modelsUsage.stepsSuffix': { 'zh-CN': '{n} 次', 'zh-TW': '{n} 次', en: '{n} reqs' },
+  'modelsUsage.scaleMixed': { 'zh-CN': '量级刻度', 'zh-TW': '量級刻度', en: 'Log-Pow Scale' },
+  'modelsUsage.scaleLinear': { 'zh-CN': '线性比例', 'zh-TW': '線性比例', en: 'Linear Scale' },
+  'modelsUsage.otherSeries': { 'zh-CN': '其他模型/档位', 'zh-TW': '其他模型/檔位', en: 'Other' },
+  'cost.card.shareFmt': { 'zh-CN': '占总费用 {pct}%', 'zh-TW': '佔總費用 {pct}%', en: '{pct}% of cost' },
   'tokens.card.total': { 'zh-CN': '累计处理 Token', 'zh-TW': '累計處理 Token', en: 'Total Tokens' },
   'tokens.card.includeCache': { 'zh-CN': '含缓存读取', 'zh-TW': '含快取讀取', en: 'Incl. cache reads' },
   'tokens.card.today': { 'zh-CN': '今日使用', 'zh-TW': '今日使用', en: 'Today' },
@@ -5032,7 +5293,8 @@ const PANEL_I18N = {
   'session.latestCall.statusUnknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
   'session.latestCall.agentMain': { 'zh-CN': '主代理', 'zh-TW': '主代理', en: 'Main' },
   'session.latestCall.agentSub': { 'zh-CN': '子代理', 'zh-TW': '子代理', en: 'Subagent' },
-  'session.latestCall.agentUnknown': { 'zh-CN': '未知归属', 'zh-TW': '未知歸屬', en: 'Unattributed' },
+  'session.latestCall.agentUnknown': { 'zh-CN': '未知归属 (缺可靠身份字段)', 'zh-TW': '未知歸屬 (缺可靠身分欄位)', en: 'Unattributed (missing agent field)' },
+  'session.latestCall.missingParentStep': { 'zh-CN': '缺可靠父步骤字段', 'zh-TW': '缺可靠父步驟欄位', en: 'missing parent step field' },
   'session.latestCall.inlineTokens': { 'zh-CN': '入 {inp} · 出 {out}', 'zh-TW': '入 {inp} · 出 {out}', en: 'In {inp} · Out {out}' },
   'session.latestCall.inlineCache': { 'zh-CN': '缓存 {val}', 'zh-TW': '快取 {val}', en: 'Cache {val}' },
   'session.latestCall.fieldTime': { 'zh-CN': '调用时间', 'zh-TW': '呼叫時間', en: 'Call Time' },
@@ -5061,6 +5323,7 @@ const PANEL_I18N = {
   'session.timeline.turnNoPrompt': { 'zh-CN': '（用户轮次记录）', 'zh-TW': '（使用者輪次紀錄）', en: '(User turn)' },
   'session.timeline.turnSummary': { 'zh-CN': '{calls} 次 · 入 {inp} / 缓 {cap} / 出 {out}', 'zh-TW': '{calls} 次 · 入 {inp} / 快 {cap} / 出 {out}', en: '{calls} · In {inp} / Cache {cap} / Out {out}' },
   'session.timeline.unlinkedTitle': { 'zh-CN': '未归属到具体轮次的调用 / 子代理 ({n})', 'zh-TW': '未歸屬至具體輪次的呼叫 / 子代理 ({n})', en: 'Unlinked / Unattributed Calls ({n})' },
+  'session.timeline.dbMissingNote': { 'zh-CN': '缺可靠子代理库字段（{reason}），仅展示已确认调用。', 'zh-TW': '缺可靠子代理庫欄位（{reason}），僅顯示已確認呼叫。', en: 'Missing subagent DB evidence ({reason}); showing confirmed calls only.' },
   'tokens.heat.title': { 'zh-CN': 'Token 活动', 'zh-TW': 'Token 活動', en: 'Token Activity' },
   'tokens.heat.daily': { 'zh-CN': '每天', 'zh-TW': '每天', en: 'Daily' },
   'tokens.heat.weekly': { 'zh-CN': '每周', 'zh-TW': '每週', en: 'Weekly' },
@@ -5076,6 +5339,32 @@ const PANEL_I18N = {
   'tokens.heat.tip': { 'zh-CN': '点击或悬浮格子查看当日详细 Token 构成', 'zh-TW': '點擊或懸停格子查看當日詳細 Token 結構', en: 'Click or hover a cell to view daily token breakdown' },
   'tokens.heat.less': { 'zh-CN': '少', 'zh-TW': '少', en: 'Less' },
   'tokens.heat.more': { 'zh-CN': '多', 'zh-TW': '多', en: 'More' },
+  'tokens.heat.unactivatedTip': { 'zh-CN': '未开启记录', 'zh-TW': '未開啟紀錄', en: 'Before first record' },
+  'tokens.heat.futureTip': { 'zh-CN': '未来日期', 'zh-TW': '未來日期', en: 'Future' },
+  'tokens.heat.peakBadge': { 'zh-CN': '峰值', 'zh-TW': '峰值', en: 'Peak' },
+  'tokens.heat.cumDeltaLbl': { 'zh-CN': '当日增量', 'zh-TW': '當日增量', en: 'Daily' },
+  'tokens.heat.cumTotalLbl': { 'zh-CN': '截止累计', 'zh-TW': '截止累計', en: 'Cumulative' },
+  'tokens.cum.daysMeta': { 'zh-CN': '{start} – {end} · {total} 天', 'zh-TW': '{start} – {end} · {total} 天', en: '{start} – {end} · {total}d' },
+  'tokens.cum.activeMeta': { 'zh-CN': '活跃 {active} 天 · 0 用量 {zero} 天', 'zh-TW': '活躍 {active} 天 · 0 用量 {zero} 天', en: '{active} active · {zero} zero' },
+  'tokens.cum.recordDaysShort': { 'zh-CN': '记录 {total} 天', 'zh-TW': '紀錄 {total} 天', en: 'Recorded {total}d' },
+  'tokens.cum.rulerLabel': { 'zh-CN': '跨账号量级尺', 'zh-TW': '跨帳號量級尺', en: 'Magnitude' },
+  'tokens.cum.belowMin': { 'zh-CN': '<10M ({val})', 'zh-TW': '<10M ({val})', en: '<10M ({val})' },
+  'tokens.cum.aboveMax': { 'zh-CN': '>100B ({val})', 'zh-TW': '>100B ({val})', en: '>100B ({val})' },
+  'tokens.cum.zeroVal': { 'zh-CN': '0 用量', 'zh-TW': '0 用量', en: '0 Tokens' },
+  'tokens.cum.peakSpanFmt': { 'zh-CN': '高峰 {range} 占 {pct}%', 'zh-TW': '高峰 {range} 佔 {pct}%', en: 'Peak {range} ({pct}%)' },
+  'tokens.cum.concLine': { 'zh-CN': '50% 用量集中在 {start} – {end}（{n} 天 · 占 {pct}%）', 'zh-TW': '50% 用量集中在 {start} – {end}（{n} 天 · 佔 {pct}%）', en: '50% usage in {start} – {end} ({n}d · {pct}%)' },
+  'tokens.cum.concInsufficient': { 'zh-CN': '记录不足 7 天，暂不计算集中度', 'zh-TW': '紀錄不足 7 天，暫不計算集中度', en: 'Under 7 days; concentration omitted' },
+  'tokens.cum.peakDayFmt': { 'zh-CN': '峰值 {date} {val} ({pct}%)', 'zh-TW': '峰值 {date} {val} ({pct}%)', en: 'Peak {date} {val} ({pct}%)' },
+  'tokens.cum.peakWeekFmt': { 'zh-CN': '峰值周 {range} {val} ({pct}%)', 'zh-TW': '峰值週 {range} {val} ({pct}%)', en: 'Peak wk {range} {val} ({pct}%)' },
+  'tokens.cum.emptyTitle': { 'zh-CN': '当前区间暂无 Token 用量记录', 'zh-TW': '目前區間尚無 Token 用量紀錄', en: 'No token usage in this interval' },
+  'tokens.cum.emptySub': { 'zh-CN': '共 {days} 天 · 0 用量 {days} 天', 'zh-TW': '共 {days} 天 · 0 用量 {days} 天', en: '{days} days · {days} zero' },
+  'tokens.cum.shareLbl': { 'zh-CN': '占比', 'zh-TW': '佔比', en: 'Share' },
+  'tokens.cum.locateDaily': { 'zh-CN': '定位到「每天」', 'zh-TW': '定位至「每天」', en: 'Locate in Daily' },
+  'tokens.cum.clearLock': { 'zh-CN': '取消 (Esc)', 'zh-TW': '取消 (Esc)', en: 'Clear (Esc)' },
+  'tokens.cum.expandDays': { 'zh-CN': '展开日明细 ({n}天)', 'zh-TW': '展開日明細 ({n}天)', en: 'Show {n} days' },
+  'tokens.cum.collapseDays': { 'zh-CN': '收起日明细', 'zh-TW': '收合日明細', en: 'Hide days' },
+  'tokens.cum.weekGroupHint': { 'zh-CN': '按 7 天分组 ({n} 段)', 'zh-TW': '依 7 天分組 ({n} 段)', en: 'Grouped 7d ({n} segs)' },
+  'tokens.cum.weekSumLbl': { 'zh-CN': '周增量', 'zh-TW': '週增量', en: 'Weekly' },
   'tokens.colors.title': { 'zh-CN': '🎨 热力图色阶与面板外观自定义（默认跟随主题）', 'zh-TW': '🎨 熱力圖色階與面板外觀自訂（預設跟隨佈景主題）', en: '🎨 Heatmap Palette & Panel Appearance' },
   'tokens.update.title': { 'zh-CN': '更新设置', 'zh-TW': '更新設定', en: 'Update Settings' },
   'tokens.update.auto': { 'zh-CN': '启动时自动检查更新（不自动安装）', 'zh-TW': '啟動時自動檢查更新（不自動安裝）', en: 'Check for updates on startup (manual install)' },
@@ -5395,6 +5684,9 @@ const PANEL_I18N = {
   'plan.summary.justNow': { 'zh-CN': '刚刚更新', 'zh-TW': '剛剛更新', en: 'Just now' },
   'plan.summary.perMonth': { 'zh-CN': '/月', 'zh-TW': '/月', en: '/mo' },
   'plan.summary.freeWithPlan': { 'zh-CN': '(随套餐免费)', 'zh-TW': '(隨方案免費)', en: '(Included)' },
+  'plan.summary.priceUnsetShort': { 'zh-CN': '待设置月费', 'zh-TW': '待設定月費', en: 'Fee unset' },
+  'plan.summary.priceUnsetCny': { 'zh-CN': '(待填写实付)', 'zh-TW': '(待填寫實付)', en: '(not set)' },
+  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅费用与最新汇率折算 (点击展开/收起详情)', 'zh-TW': '目前訂閱費用與最新匯率換算 (點擊展開/收起詳細資訊)', en: 'Current subscription fee and FX estimate (click to toggle details)' },
   'plan.dt.plan': { 'zh-CN': '当前套餐：', 'zh-TW': '目前方案：', en: 'Plan:' },
   'plan.dt.account': { 'zh-CN': '当前账号：', 'zh-TW': '目前帳號：', en: 'Account:' },
   'plan.dt.country': { 'zh-CN': '账号所在地区：', 'zh-TW': '帳號所在地區：', en: 'Account country:' },
@@ -5418,6 +5710,9 @@ const PANEL_I18N = {
   'plan.tag.official': { 'zh-CN': '官方定价', 'zh-TW': '官方定價', en: 'Official price' },
   'plan.tag.publicRef': { 'zh-CN': '公开参考价', 'zh-TW': '公開參考價', en: 'Public ref' },
   'plan.tag.regionRef': { 'zh-CN': '地区参考价', 'zh-TW': '地區參考價', en: 'Regional ref' },
+  'plan.tag.unset': { 'zh-CN': '待设置', 'zh-TW': '待設定', en: 'Unset' },
+  'plan.priceUnsetNote': { 'zh-CN': '待设置实付月费（不套用 Pro $19.99）', 'zh-TW': '待設定實付月費（不套用 Pro $19.99）', en: 'Monthly fee unset (Pro $19.99 ref not applied)' },
+  'plan.ultraSubtierUnknown': { 'zh-CN': 'Google AI Ultra（子档未知）', 'zh-TW': 'Google AI Ultra（子檔未知）', en: 'Google AI Ultra (Sub-tier unknown)' },
   'plan.acq.normal': { 'zh-CN': '正常付费订阅', 'zh-TW': '正常付費訂閱', en: 'Standard Paid Plan' },
   'plan.cycle.monthly': { 'zh-CN': '月付', 'zh-TW': '月繳', en: 'Monthly' },
   'plan.cycle.yearly': { 'zh-CN': '年付', 'zh-TW': '年繳', en: 'Yearly' },
@@ -6040,7 +6335,92 @@ const PANEL_I18N = {
   'quota.modelChip.tooltip': { 'zh-CN': '{model} · 池: {pool} · {status} ({value})', 'zh-TW': '{model} · 池: {pool} · {status} ({value})', en: '{model} · Pool: {pool} · {status} ({value})' },
   'quota.modelChip.unpooled': { 'zh-CN': '未归属当前账号额度池', 'zh-TW': '未歸屬目前帳號額度池', en: 'Not in active quota pools' },
   'quota.modelChip.resetPart': { 'zh-CN': '重置: {reset}', 'zh-TW': '重設: {reset}', en: 'Reset: {reset}' },
-  'quota.modelChip.historyHint': { 'zh-CN': '仅历史记录 / 本地配置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / local preference only' }
+  'quota.modelChip.historyHint': { 'zh-CN': '仅历史记录 / 本地配置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / local preference only' },
+  'accounts.poolNoAccess': { 'zh-CN': '无模型权限', 'zh-TW': '無模型權限', en: 'No model access' },
+  'accounts.poolUnknown': { 'zh-CN': '权限/额度未知', 'zh-TW': '權限/額度未知', en: 'Quota unknown' },
+  'accounts.poolPending': { 'zh-CN': '额度暂不可用', 'zh-TW': '額度暫不可用', en: 'Quota unavailable' },
+  'accounts.retryQuota': { 'zh-CN': '刷新/重试额度', 'zh-TW': '重試額度', en: 'Retry quota' },
+  'accounts.reauthRequired': { 'zh-CN': '需重登授权', 'zh-TW': '需重新登入授權', en: 'Re-auth required' },
+  'accounts.removeBtn': { 'zh-CN': '移除账号', 'zh-TW': '移除帳號', en: 'Remove' },
+  'accounts.removeModal.title': { 'zh-CN': '移除账号', 'zh-TW': '移除帳號', en: 'Remove account' },
+  'accounts.removeModal.body': {
+    'zh-CN': '确定移除 {email} 吗？这会移除插件保存的登录凭据和自动切号候选，本机历史用量与原有账号归属会保留。',
+    'zh-TW': '確定移除 {email} 嗎？這會移除外掛儲存的登入憑證與自動切號候選，本機歷史用量與原有帳號歸屬會保留。',
+    en: 'Remove {email}? Stored plugin credentials and auto-switch candidacy will be removed. Local usage history and existing attribution are preserved.'
+  },
+  'accounts.removeModal.bodyActive': {
+    'zh-CN': '确定移除当前活跃账号 {email} 吗？这会移除插件保存的登录凭据和自动切号候选，本机历史用量与原有账号归属会保留，不会自动切换其他账号。',
+    'zh-TW': '確定移除目前使用中的帳號 {email} 嗎？這會移除外掛儲存的登入憑證與自動切號候選，本機歷史用量與原有帳號歸屬會保留，不會自動切換其他帳號。',
+    en: 'Remove currently active account {email}? Stored plugin credentials and auto-switch candidacy will be removed. Local usage history and existing attribution are preserved without switching accounts.'
+  },
+  'accounts.removeModal.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
+  'accounts.removeModal.confirm': { 'zh-CN': '确认移除', 'zh-TW': '確認移除', en: 'Confirm Remove' },
+  'accounts.removeModal.removing': { 'zh-CN': '移除中…', 'zh-TW': '移除中…', en: 'Removing…' },
+  'accounts.removeModal.failed': { 'zh-CN': '移除失败：{detail}', 'zh-TW': '移除失敗：{detail}', en: 'Remove failed: {detail}' },
+  'accounts.removeSuccess': { 'zh-CN': '已移除 {email}（历史用量及归属已保留）。', 'zh-TW': '已移除 {email}（歷史用量與歸屬已保留）。', en: 'Removed {email} (historical usage and attribution preserved).' },
+  'accounts.quotaStageErr': { 'zh-CN': '本次刷新失败（上次快照已保留）：{detail}', 'zh-TW': '本次重新整理失敗（上次快照已保留）：{detail}', en: 'Quota fetch failed (previous snapshot kept): {detail}' },
+  'accounts.lastSnapshotTime': { 'zh-CN': '上次快照 {time}', 'zh-TW': '上次快照 {time}', en: 'Last snapshot {time}' },
+  'accounts.status.disabled': { 'zh-CN': '已关闭', 'zh-TW': '已關閉', en: 'Off' },
+  'accounts.status.watching': { 'zh-CN': '监控中', 'zh-TW': '監控中', en: 'Watching' },
+  'accounts.status.pending_debounce': { 'zh-CN': '防抖确认中', 'zh-TW': '防抖確認中', en: 'Debouncing' },
+  'accounts.status.waiting_idle': { 'zh-CN': '等待当前生成完成', 'zh-TW': '等待目前生成完成', en: 'Waiting idle' },
+  'accounts.status.cooldown': { 'zh-CN': '冷却保护中', 'zh-TW': '冷卻保護中', en: 'Cooldown' },
+  'accounts.status.switching': { 'zh-CN': '切号中', 'zh-TW': '切號中', en: 'Switching' },
+  'accounts.status.all_candidates_exhausted': { 'zh-CN': '备选账号均不足', 'zh-TW': '備選帳號皆不足', en: 'All candidates exhausted' },
+  'accounts.status.blocked_untrusted_quota': { 'zh-CN': '数据不可信已跳过', 'zh-TW': '資料不可信已跳過', en: 'Skipped (Stale/Error)' },
+  'accounts.status.error': { 'zh-CN': '失败已停用', 'zh-TW': '失敗已停用', en: 'Halted (Error)' },
+  'accounts.lastSwitchedTo': { 'zh-CN': '上次切至 {email}', 'zh-TW': '上次切至 {email}', en: 'Last switched to {email}' },
+  'accounts.actionBusy': { 'zh-CN': '正在处理…', 'zh-TW': '處理中…', en: 'Processing…' },
+  'accounts.actionDone': { 'zh-CN': '操作已完成', 'zh-TW': '操作已完成', en: 'Completed' },
+  'accounts.actionFail': { 'zh-CN': '操作失败', 'zh-TW': '操作失敗', en: 'Operation failed' },
+  'accounts.filterNoData': { 'zh-CN': '该账号在本机尚无已归属 Token 记录。', 'zh-TW': '此帳號在本機尚無已歸屬 Token 記錄。', en: 'No attributed local usage records for this account.' },
+  'accounts.keepaliveOff': { 'zh-CN': '默认关闭', 'zh-TW': '預設關閉', en: 'Off' },
+  'accounts.filterKeepaliveNote': { 'zh-CN': '含独立保活消耗 {reqs} 次 ({tok})。', 'zh-TW': '含獨立保活消耗 {reqs} 次 ({tok})。', en: 'Includes {reqs} keepalive reqs ({tok}) tracked separately.' },
+  'tokens.noAccountCost': { 'zh-CN': '暂无此账号记录', 'zh-TW': '暫無此帳號記錄', en: 'No records for account' },
+  'quota.split.account_switched': { 'zh-CN': '已切号分段', 'zh-TW': '已切號分段', en: 'Account switched' },
+  'quota.split.quota_reset': { 'zh-CN': '额度重置', 'zh-TW': '額度重設', en: 'Quota reset' },
+  'quota.split.rolling_recovery': { 'zh-CN': '滚动恢复', 'zh-TW': '滾動恢復', en: 'Rolling recovery' },
+  'quota.split.sampling_gap': { 'zh-CN': '采样缺口切分', 'zh-TW': '採樣缺口切分', en: 'Sampling gap' },
+  'keepalive.protocolSummary': { 'zh-CN': '协议核查（Antigravity {ver}，已检查 {rpcs} 个 RPC）：在已检查的 RPC 与响应中未发现明确的服务端缓存续期或 TTL 接口，响应亦未见 cacheWriteTokens / cacheTtl；因此不展示虚构到期倒计时，缓存保活保持待验证与默认关闭。', 'zh-TW': '協定核查（Antigravity {ver}，已檢查 {rpcs} 個 RPC）：在已檢查的 RPC 與回應中未發現明確的伺服器端快取續期或 TTL 介面，回應亦未見 cacheWriteTokens / cacheTtl；因此不顯示虛構到期倒數，快取保活維持待驗證與預設關閉。', en: 'Protocol check (Antigravity {ver}, {rpcs} RPCs): No explicit server-side cache TTL or renewal endpoint was found in checked RPCs/responses, and cacheWriteTokens/cacheTtl are omitted; keepalive stays unverified & off.' },
+  'keepalive.experimentSummary': { 'zh-CN': '待确认最小对照实验（{model}，合计 {reqs} 次请求，相同约 20K 只读无工具前缀）：对照组 2 次（0m / 6m）对比实验组 3 次（0m / 4m 仅发 "ok" / 6m），预计总输出 60~150 tok；逐次采集 cacheReadTokens 并在异常/限流/切号/达上限时终止，等待维护者确认。', 'zh-TW': '待確認最小對照實驗（{model}，合計 {reqs} 次請求，相同約 20K 唯讀無工具前綴）：對照組 2 次（0m / 6m）對比實驗組 3 次（0m / 4m 僅發 "ok" / 6m），預計總輸出 60~150 tok；逐次採集 cacheReadTokens 並於異常/限流/切號/達上限時終止，等待維護者確認。', en: 'Pending A/B plan ({reqs} total reqs on {model}, identical ~20K fixed non-tool prefix): Control (2 reqs, 0/6m) vs Keepalive (3 reqs, 0/4m "ok"/6m); collects per-call cacheReadTokens, stops on error/429/switch/limit; awaiting maintainer sign-off.' },
+  'keepalive.blockedReason': { 'zh-CN': '拦截保护：{reason}', 'zh-TW': '攔截保護：{reason}', en: 'Blocked: {reason}' },
+  'keepalive.stopReason': { 'zh-CN': '最近状态：{reason}', 'zh-TW': '最近狀態：{reason}', en: 'Last state: {reason}' },
+  'keepalive.defaultNote': { 'zh-CN': '保活默认关闭，且切换账号/退出/达上限时自动终止。', 'zh-TW': '保活預設關閉，且切換帳號/結束/達上限時自動終止。', en: 'Keepalive disabled by default; stops on account switch, exit, or limit.' },
+  'models.summary.pendingConfirm': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
+  'models.cap.metaUnknown': { 'zh-CN': '未知（待获取元数据）', 'zh-TW': '未知（待取得中繼資料）', en: 'Unknown (pending metadata)' },
+  'models.cap.policyUnknown': { 'zh-CN': '未知（待读取运行策略）', 'zh-TW': '未知（待讀取執行策略）', en: 'Unknown (pending policy)' },
+  'models.cap.policyPendingRestart': { 'zh-CN': '待重启（磁盘={disk}）', 'zh-TW': '待重啟（磁碟={disk}）', en: 'Restart needed (disk={disk})' },
+  'models.cap.policyUnconfirmed': { 'zh-CN': '进程未确认（磁盘={disk}）', 'zh-TW': '程序未確認（磁碟={disk}）', en: 'Unconfirmed (disk={disk})' },
+  'models.cap.policyPartial': { 'zh-CN': '部分异常（运行限制未知）', 'zh-TW': '部分異常（執行限制未知）', en: 'Partial error (limit unknown)' },
+  'models.cap.policyDynamic': { 'zh-CN': 'Dynamic 动态跟随（按模型上限）', 'zh-TW': 'Dynamic 動態跟隨（依模型上限）', en: 'Dynamic (follows model limit)' },
+  'models.cap.policyFixed': { 'zh-CN': '固定限制 {limit} tokens', 'zh-TW': '固定限制 {limit} tokens', en: 'Fixed {limit} tokens' },
+  'models.cap.policyDefault': { 'zh-CN': '默认限制 256,000 tokens', 'zh-TW': '預設限制 256,000 tokens', en: 'Default limit 256,000 tokens' },
+  'models.cap.stratDynamic': { 'zh-CN': '（Dynamic 默认）', 'zh-TW': '（Dynamic 預設）', en: ' (Dynamic default)' },
+  'models.cap.stratFixed': { 'zh-CN': '（受固定限制 {limit} 约束）', 'zh-TW': '（受固定限制 {limit} 約束）', en: ' (capped by fixed {limit})' },
+  'models.cap.stratDefault': { 'zh-CN': '（受默认 256,000 约束）', 'zh-TW': '（受預設 256,000 約束）', en: ' (capped by 256,000 default)' },
+  'models.cap.defaultUnknownPolicy': { 'zh-CN': '未知（运行策略待确认）', 'zh-TW': '未知（執行策略待確認）', en: 'Unknown (policy unconfirmed)' },
+  'models.cap.rangeUnknownPolicyMax': { 'zh-CN': '运行策略未知（模型理论上限 {max}）', 'zh-TW': '執行策略未知（模型理論上限 {max}）', en: 'Policy unknown (model max {max})' },
+  'models.cap.rangeUnknownPolicyEng': { 'zh-CN': '运行策略未知（工程范围 {min} – {max}）', 'zh-TW': '執行策略未知（工程範圍 {min} – {max}）', en: 'Policy unknown (range {min} – {max})' },
+  'models.cap.rangeUnknownModelMax': { 'zh-CN': '{min} – {max}（模型上限未知）', 'zh-TW': '{min} – {max}（模型上限未知）', en: '{min} – {max} (model max unknown)' },
+  'models.cap.noneVerified': { 'zh-CN': '尚无本次验证', 'zh-TW': '尚無本次驗證', en: 'Not verified yet' },
+  'models.cap.clientPartialAlert': { 'zh-CN': '部分异常（请核对客户端状态）', 'zh-TW': '部分異常（請核對用戶端狀態）', en: 'Partial anomaly (check client state)' },
+  'models.cap.clientDynamicOk': { 'zh-CN': '动态跟随已确认运行（各模型独立）', 'zh-TW': '動態跟隨已確認執行（各模型獨立）', en: 'Dynamic mode active (per model)' },
+  'models.preset.unifiedDisabled': { 'zh-CN': '统一模式下各模型不同（已禁用）', 'zh-TW': '統一模式下各模型不同（已停用）', en: 'Varies by model in unified mode (disabled)' },
+  'models.preset.envMax': { 'zh-CN': '当前环境最大可采纳：{val} tokens', 'zh-TW': '目前環境最大可採納：{val} tokens', en: 'Max effective here: {val} tokens' },
+  'models.preset.policyUnconfirmed': { 'zh-CN': '运行策略未确认（模型理论上限 {val}，暂不可用）', 'zh-TW': '執行策略未確認（模型理論上限 {val}，暫不可用）', en: 'Policy unconfirmed (model max {val}, unavailable)' },
+  'models.preset.metaPending': { 'zh-CN': '模型元数据待获取（暂不可用）', 'zh-TW': '模型中繼資料待取得（暫不可用）', en: 'Pending model metadata (unavailable)' },
+  'models.validation.defaultDesc': { 'zh-CN': '恢复客户端默认：请求将清除 maxTokenLimit 覆盖，由当前语言服务全局模式决定（若已开 Dynamic 则按动态默认）。', 'zh-TW': '還原用戶端預設：請求將清除 maxTokenLimit 覆寫，由目前語言服務全域模式決定（若已開 Dynamic 則依動態預設）。', en: 'Restore client default: clears maxTokenLimit override and defers to global language-server policy (Dynamic default if unlocked).' },
+  'models.unified.projTitle': { 'zh-CN': '统一模式各模型预计采用预算（预测值，非实机已确认）：', 'zh-TW': '統一模式各模型預計採用預算（預測值，非實機已確認）：', en: 'Projected per-model budgets in Unified mode (estimated, unverified):' },
+  'models.cap.tierStandard': { 'zh-CN': '标准', 'zh-TW': '標準', en: 'Standard' },
+  'models.cap.tierWin': { 'zh-CN': '窗口 {val}', 'zh-TW': '視窗 {val}', en: 'Window {val}' },
+  'models.cap.tierWinUnk': { 'zh-CN': '窗口未知', 'zh-TW': '視窗未知', en: 'Window unknown' },
+  'models.cap.tierOut': { 'zh-CN': '最大输出 {val}', 'zh-TW': '最大輸出 {val}', en: 'Max output {val}' },
+  'models.cap.tierOutUnk': { 'zh-CN': '输出未知', 'zh-TW': '輸出未知', en: 'Output unknown' },
+  'models.cap.tierAdj': { 'zh-CN': '可调上限 {val}', 'zh-TW': '可調上限 {val}', en: 'Max limit {val}' },
+  'models.cap.tierAdjUnk': { 'zh-CN': '上限未知', 'zh-TW': '上限未知', en: 'Cap unknown' },
+  'models.cap.diskPending': { 'zh-CN': '磁盘为 {disk}（待重启生效）', 'zh-TW': '磁碟為 {disk}（待重啟生效）', en: 'Disk: {disk} (restart pending)' },
+  'models.cap.diskUnconfirmed': { 'zh-CN': '磁盘为 {disk}（运行态未确认）', 'zh-TW': '磁碟為 {disk}（執行態未確認）', en: 'Disk: {disk} (runtime unconfirmed)' },
+  'models.cap.fixedAdvice': { 'zh-CN': '固定单一上限模式 ({val}，建议升级为动态跟随)', 'zh-TW': '固定單一上限模式 ({val}，建議升級為動態跟隨)', en: 'Fixed single limit ({val}, Dynamic mode recommended)' }
 };
 
 function t(key, vars = null) {
@@ -6271,6 +6651,16 @@ function translateBackendText(text) {
     return 'Backend operation failed (check desktop log for details)';
   }
   return str;
+}
+
+function localizePlanTierName(name) {
+  if (!name) return t('speed.unknown');
+  const s = String(name).trim();
+  if (s === 'Google AI Ultra（子档未知）' || s === 'Google AI Ultra (子档未知)') {
+    return t('plan.ultraSubtierUnknown');
+  }
+  if (s === '未知') return t('speed.unknown');
+  return s;
 }
 
 function formatVendorLabel(vendor) {
@@ -8362,6 +8752,7 @@ function formatVendorLabel(vendor) {
     pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
     historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
     timelineError: '', expandedTurnKeys: new Set(), timelinePageLimit: 10,
+    timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
@@ -8974,9 +9365,54 @@ function formatVendorLabel(vendor) {
     }
   }
 
+  function getContinuousScaleStops() {
+    const scale = getEffectiveHeatmapScale();
+    const isLight = typeof resolveEffectiveTheme === 'function' && resolveEffectiveTheme() === 'light';
+    const hasCustomHeat = Boolean(
+      customColors.heatLow ||
+      customColors.heatHigh ||
+      customColors.heatLvl1 ||
+      customColors.heatLvl2 ||
+      customColors.heatLvl3 ||
+      customColors.heatLvl4
+    );
+    if (!isLight && heatPreset === 'purple' && !hasCustomHeat) {
+      return ['#2E1A47', '#6D28D9', '#9333EA', '#D8B4FE'];
+    }
+    return [scale[1], scale[2], scale[3], scale[4]].filter(Boolean);
+  }
+
+  function getContinuousHeatColor(value, modeOrAnchor = 'heat') {
+    const v = Number(value) || 0;
+    if (v <= 0) return null;
+    const core = globalThis.__AGContextMeterCore || {};
+    let resp = 0;
+    if (typeof modeOrAnchor === 'string') {
+      resp = typeof core.computeColorScaleResponse === 'function'
+        ? core.computeColorScaleResponse(v, modeOrAnchor)
+        : (typeof core.computeMixedScaleResponse === 'function' ? core.computeMixedScaleResponse(v, 100e6) : 0.5);
+    } else {
+      const anchor = Number(modeOrAnchor) || 100e6;
+      resp = typeof core.computeMixedScaleResponse === 'function'
+        ? core.computeMixedScaleResponse(v, anchor)
+        : Math.max(0, Math.min(1, Math.pow(Math.min(v, anchor) / anchor, 0.42)));
+    }
+    const stops = getContinuousScaleStops();
+    if (typeof core.interpolateScaleColorHsl === 'function') {
+      return core.interpolateScaleColorHsl(resp, stops);
+    }
+    return stops[stops.length - 1] || '#9333ea';
+  }
+
+  let __chartsReady = false;
+
   function refreshActiveChartViews() {
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    if (!__chartsReady) return;
+    if (activeHeatView === 'daily' && typeof renderHeatmapGrid === 'function') renderHeatmapGrid(true);
+    else if (activeHeatView === 'weekly' && typeof renderHeatmapWeekly === 'function') renderHeatmapWeekly();
+    else if (activeHeatView === 'monthly' && typeof renderHeatmapMonthly === 'function') renderHeatmapMonthly();
+    else if (activeHeatView === 'yearly' && typeof renderHeatmapYearly === 'function') renderHeatmapYearly();
+    else if (activeHeatView === 'cum' && typeof renderHeatmapCum === 'function') renderHeatmapCum();
     const modelViewEl = el('model-usage-view');
     if (modelViewEl && modelViewEl.style && modelViewEl.style.display === 'block' && typeof renderModelUsageView === 'function') {
       renderModelUsageView();
@@ -9668,6 +10104,26 @@ function formatVendorLabel(vendor) {
         }
       }
 
+      // 主对话区顶栏若处于窗口最顶行（无独立菜单栏，top < 20）且靠最右边，需同步避让系统控制按钮及右侧独立浮动簇
+      let titlebarWcoPad = 0;
+      const titlebar = findHostTitlebar();
+      if (titlebar?.getBoundingClientRect) {
+        const tbRect = titlebar.getBoundingClientRect();
+        const vw = (typeof window !== 'undefined' && window.innerWidth) || 0;
+        if (tbRect.height > 0 && tbRect.top < 20 && (vw <= 0 || tbRect.right >= vw - 16)) {
+          const baseWco = computeWindowControlsWidth(titlebar);
+          if (baseWco > 0) {
+            titlebarWcoPad = baseWco;
+            if (topRight && topRight !== titlebar && !titlebar.contains?.(topRight) && topRight.getBoundingClientRect) {
+              const trRect = topRight.getBoundingClientRect();
+              if (trRect.width > 0 && trRect.top < 20 && vw > 0 && trRect.left < vw) {
+                titlebarWcoPad = Math.max(titlebarWcoPad, Math.ceil(vw - trRect.left) + 6);
+              }
+            }
+          }
+        }
+      }
+
       if (typeof document.head !== 'undefined' && document.head && typeof document.createElement === 'function') {
         let styleEl = typeof document.getElementById === 'function' ? document.getElementById('ag-topbar-host-fix') : null;
         if (!styleEl) {
@@ -9675,11 +10131,17 @@ function formatVendorLabel(vendor) {
           styleEl.id = 'ag-topbar-host-fix';
           document.head.appendChild(styleEl);
         }
+        const activeWco = wcoWidth > 0 || titlebarWcoPad > 0;
         const cssText = [
           '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id] {',
           '  padding-right: calc(var(--right-cluster-width, 140px) - 4px) !important;',
           '}',
-          wcoWidth > 0 ? [
+          titlebarWcoPad > 0 ? [
+            '[class*="@container/titlebar"] {',
+            `  padding-right: ${titlebarWcoPad}px !important;`,
+            '}'
+          ].join('\n') : '',
+          activeWco ? [
             '[class*="@container/titlebar"],',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child {',
@@ -9887,9 +10349,15 @@ function formatVendorLabel(vendor) {
             ? Math.max(8, titleInner.getBoundingClientRect().left - tbRect.left)
             : (tbRect.left < 168 ? (168 - tbRect.left) : 12);
           const titleRealW = titleEl?.scrollWidth ? Math.min(320, titleEl.scrollWidth) : 160;
-          const minTitleWidth = Math.max(150, titleRealW);
+          const minTitleWidth = tbRect.width < 760
+            ? Math.max(96, Math.min(180, titleRealW))
+            : Math.max(150, titleRealW);
           let nativeButtonsWidth = 64;
           let rightPad = 8;
+          let titlebarOwnPadRight = 0;
+          if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+            titlebarOwnPadRight = parseFloat(window.getComputedStyle(titlebar).paddingRight) || 0;
+          }
           const rightGroup = host.parentElement;
           if (rightGroup && rightGroup !== titlebar) {
             const auxOpen = typeof document.querySelector === 'function'
@@ -9915,7 +10383,8 @@ function formatVendorLabel(vendor) {
               if (sum > 0) nativeButtonsWidth = sum + 6;
             }
           }
-          const avail = tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          const effectiveRightReserve = Math.max(rightPad, titlebarOwnPadRight);
+          const avail = tbRect.width - contentStart - minTitleWidth - effectiveRightReserve - nativeButtonsWidth;
           cachedMeasuredAvailWidth = avail;
           cachedMeasuredAvailAt = now;
           cachedMeasuredWinWidth = curWinW;
@@ -9971,7 +10440,7 @@ function formatVendorLabel(vendor) {
     state.layoutMode = nextMode;
     host.setAttribute('data-layout', nextMode);
     if (prev !== nextMode) {
-      if (nextMode !== 'minimal') {
+      if (nextMode !== 'minimal' && nextMode !== 'ring-only') {
         const om = el('overflow-menu');
         if (om) om.hidden = true;
         el('badge-overflow')?.setAttribute('aria-expanded', 'false');
@@ -10564,7 +11033,10 @@ function closeAllDropdowns(exceptWrap = null) {
     const rootScope = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : (typeof document !== 'undefined' ? document : null);
     try {
       rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => {
-        if (w !== exceptWrap) removeClass(w, 'is-open');
+        if (w !== exceptWrap) {
+          removeClass(w, 'is-open');
+          w.querySelector?.('.ag-dropdown-trigger')?.setAttribute?.('aria-expanded', 'false');
+        }
       });
     } catch {}
   }
@@ -10578,6 +11050,13 @@ function closeAllDropdowns(exceptWrap = null) {
     if (!wrap || !trigger || !label || !menu) return null;
     if (trigger._bound) return wrap._controller || null;
     trigger._bound = true;
+
+    trigger.setAttribute?.('role', 'combobox');
+    trigger.setAttribute?.('aria-haspopup', 'listbox');
+    trigger.setAttribute?.('aria-expanded', 'false');
+    const ariaLbl = cfg.ariaLabel || linkedSelect?.getAttribute?.('aria-label');
+    if (ariaLbl) trigger.setAttribute?.('aria-label', ariaLbl);
+    menu.setAttribute?.('role', 'listbox');
 
     let keyboardFocusIndex = -1;
     let listScrollTimer = null;
@@ -10637,21 +11116,28 @@ function closeAllDropdowns(exceptWrap = null) {
       if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
       keyboardFocusIndex = -1;
 
-      // 1. 搜索框
-      const searchWrap = document.createElement('div');
-      searchWrap.className = 'ag-dropdown-search-wrap';
-      const searchInput = document.createElement('input');
-      searchInput.type = 'text';
-      searchInput.className = 'ag-dropdown-search-input';
-      searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
-      searchInput.value = kw;
-      searchWrap.appendChild(searchInput);
-      menu.appendChild(searchWrap);
+      const allItemsForSearch = cfg.getOptions();
+      const selectableCount = allItemsForSearch.filter(x => x && !x.isGroupHeader).length;
+      const showSearch = cfg.searchable === true || (cfg.searchable !== false && selectableCount > 6);
 
-      searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
-      searchInput.addEventListener('input', (e) => {
-        renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
-      });
+      // 1. 搜索框（超过 6 项或显式启用时展示，短列表直接展示整洁选项）
+      let searchInput = null;
+      if (showSearch) {
+        const searchWrap = document.createElement('div');
+        searchWrap.className = 'ag-dropdown-search-wrap';
+        searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.className = 'ag-dropdown-search-input';
+        searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
+        searchInput.value = kw;
+        searchWrap.appendChild(searchInput);
+        menu.appendChild(searchWrap);
+
+        searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
+        searchInput.addEventListener('input', (e) => {
+          renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
+        });
+      }
 
       // 2. 列表容器
       const listContainer = document.createElement('div');
@@ -10742,11 +11228,14 @@ function closeAllDropdowns(exceptWrap = null) {
           const itemEl = document.createElement('div');
           const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
           itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
+          itemEl.setAttribute?.('role', 'option');
+          itemEl.setAttribute?.('aria-selected', isSelected ? 'true' : 'false');
           itemEl.setAttribute?.('data-index', String(idx));
           itemEl.setAttribute?.('data-value', String(opt.value || ''));
-          if (opt.tooltip) itemEl.title = opt.tooltip;
+          itemEl.title = opt.tooltip || opt.displayLeft || opt.label || '';
 
           const leftSpan = document.createElement('span');
+          leftSpan.className = 'ag-dropdown-item-text';
           leftSpan.textContent = opt.displayLeft || opt.label;
           itemEl.appendChild(leftSpan);
 
@@ -10805,8 +11294,10 @@ function closeAllDropdowns(exceptWrap = null) {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
         const text = cfg.getLabelText ? cfg.getLabelText(opt) : (opt.label || opt.value);
         label.textContent = text;
+        label.title = text || '';
         if (linkedSelect) {
           runWithUiHydration(() => {
             linkedSelect.value = opt.value;
@@ -10839,12 +11330,14 @@ function closeAllDropdowns(exceptWrap = null) {
           clearListScrollTimer();
           clearInputFocusTimer();
           removeClass(wrap, 'is-open');
+          trigger.setAttribute?.('aria-expanded', 'false');
           focusNoScroll(trigger);
         }
       };
 
-      searchInput.addEventListener('keydown', keyHandler);
+      if (searchInput) searchInput.addEventListener('keydown', keyHandler);
       menu.addEventListener('keydown', keyHandler);
+      wrap._activeKeyHandler = keyHandler;
     }
 
     let inputFocusTimer = null;
@@ -10864,31 +11357,42 @@ function closeAllDropdowns(exceptWrap = null) {
         closeAllDropdowns(wrap);
         clearInputFocusTimer();
 
-        // 空间不足检测，自适应展开方向
+        // 上下空间与左右边缘防裁剪自适应展开方向
         try {
-          const rect = trigger.getBoundingClientRect?.() || { bottom: 0, top: 0 };
+          const rect = trigger.getBoundingClientRect?.() || { bottom: 0, top: 0, left: 0, right: 0, width: 0 };
           const spaceBelow = (typeof window !== 'undefined' ? (window.innerHeight || 800) : 800) - rect.bottom;
           if (spaceBelow < 240 && rect.top > 240) {
             addClass(wrap, 'open-up');
           } else {
             removeClass(wrap, 'open-up');
           }
+          const containerEl = wrap.closest?.('#panel, #panel-tokens, #panel-quota, #panel-settings') || null;
+          const cRect = containerEl?.getBoundingClientRect?.() || { left: 8, right: (typeof window !== 'undefined' ? (window.innerWidth || 1000) : 1000) - 8 };
+          const estW = Math.max(rect.width || 0, cfg.minMenuWidth || 190);
+          if (rect.left + estW > cRect.right - 6 && (rect.right - estW) >= cRect.left - 6) {
+            addClass(wrap, 'align-right');
+          } else {
+            removeClass(wrap, 'align-right');
+          }
         } catch {
           removeClass(wrap, 'open-up');
+          removeClass(wrap, 'align-right');
         }
 
         addClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'true');
         renderMenu('', { scrollSelected: true });
         inputFocusTimer = setTimeout(() => {
           inputFocusTimer = null;
           if (!hasClass(wrap, 'is-open')) return;
           const input = menu.querySelector ? menu.querySelector('.ag-dropdown-search-input') : null;
-          focusNoScroll(input);
+          if (input) focusNoScroll(input);
         }, 50);
       } else {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       }
     }
 
@@ -10900,11 +11404,24 @@ function closeAllDropdowns(exceptWrap = null) {
     trigger.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault?.();
-        toggleOpen();
+        if (hasClass(wrap, 'is-open') && e.key === 'Enter' && typeof wrap._activeKeyHandler === 'function') {
+          wrap._activeKeyHandler(e);
+        } else {
+          toggleOpen();
+        }
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (!hasClass(wrap, 'is-open')) {
+          e.preventDefault?.();
+          toggleOpen();
+        }
+        if (typeof wrap._activeKeyHandler === 'function') {
+          wrap._activeKeyHandler(e);
+        }
       } else if (e.key === 'Escape') {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       }
     });
 
@@ -10919,6 +11436,9 @@ function closeAllDropdowns(exceptWrap = null) {
         if (nextText != null && label.textContent !== nextText) {
           label.textContent = nextText;
         }
+        label.title = label.textContent || '';
+        const nextAria = cfg.getAriaLabel ? cfg.getAriaLabel() : (linkedSelect?.getAttribute?.('aria-label') || cfg.ariaLabel);
+        if (nextAria) trigger.setAttribute?.('aria-label', nextAria);
         // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
         if (!hasClass(wrap, 'is-open')) {
           const optsSig = `${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
@@ -10939,8 +11459,10 @@ function closeAllDropdowns(exceptWrap = null) {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       },
-      open: () => toggleOpen()
+      open: () => toggleOpen(),
+      wrap
     };
     wrap._controller = controller;
     return controller;
@@ -11250,18 +11772,19 @@ function closeAllDropdowns(exceptWrap = null) {
       // 切换为「跟随订阅国家参考价」：实时根据当前订阅国家派生官方参考价与币种
       const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
       const matched = core?.findRegionPreset ? core.findRegionPreset(currentReg) : core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === currentReg || p.name === currentReg);
+      const isUltraTier = ps.tierKey === 'ultra';
       const curCode = matched ? matched.currency : (prevCustom.subscriptionCurrency || prevCustom.currency || 'USD');
       const curSymbol = matched ? matched.symbol : (core?.CURRENCY_SYMBOLS?.[curCode] || '$');
-      const paid = matched ? matched.monthlyPrice : null;
+      const paid = (matched && !isUltraTier) ? matched.monthlyPrice : null;
 
       customObj = {
         ...prevCustom,
         priceMode: 'preset',
-        priceSource: 'preset_region',
+        priceSource: (matched && !isUltraTier) ? 'preset_region' : 'unknown',
         actualPricePaid: paid,
         subscriptionCurrency: curCode,
         currency: curCode,
-        currencySource: 'preset_region',
+        currencySource: matched ? 'preset_region' : (prevCustom.currencySource || 'default'),
         currencySymbol: curSymbol,
         billingCycle: '月付',
         isZeroExtraCost: false,
@@ -11319,11 +11842,12 @@ function closeAllDropdowns(exceptWrap = null) {
       priceSource = 'custom';
       cycle = isZero ? '随套餐赠送/免费' : (prevCustom.billingCycle || '月付');
     } else {
-      // 跟随订阅国家参考价模式：实时从预设派生定价、币种与周期
+      // 跟随订阅国家参考价模式：仅 Pro 等有统一区域参考表时派生价格；Ultra 不套用 Pro 参考价
+      const isUltraTier = ps.tierKey === 'ultra';
       curCode = regionItem.currency;
       curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
-      paid = regionItem.monthlyPrice;
-      priceSource = 'preset_region';
+      paid = isUltraTier ? null : regionItem.monthlyPrice;
+      priceSource = isUltraTier ? 'unknown' : 'preset_region';
       isZero = false;
       cycle = '月付';
     }
@@ -11652,137 +12176,135 @@ function closeAllDropdowns(exceptWrap = null) {
     setPlanDetailExpanded(false);
   });
 
-  // 原生质感自定义下拉选择增强器
+  // 统一基于 initDropdownController 将原生 <select> 改造为高端自定义下拉组件（全界面风格与交互 100% 一致）
   const enhancedDropdowns = new Map();
-  function enhanceCustomSelect(selectId) {
+  const NATIVE_DROPDOWN_SPECS = [
+    { selectId: 'token-account-select', wrapId: 'token-account-dropdown-wrap', triggerId: 'token-account-dropdown-trigger', labelId: 'token-account-dropdown-label', menuId: 'token-account-dropdown-menu', compact: true },
+    { selectId: 'select-custom-acq', wrapId: 'select-custom-acq-dropdown-wrap', triggerId: 'select-custom-acq-dropdown-trigger', labelId: 'select-custom-acq-dropdown-label', menuId: 'select-custom-acq-dropdown-menu', compact: true },
+    { selectId: 'select-custom-region-preset', wrapId: 'select-custom-region-preset-dropdown-wrap', triggerId: 'select-custom-region-preset-dropdown-trigger', labelId: 'select-custom-region-preset-dropdown-label', menuId: 'select-custom-region-preset-dropdown-menu', compact: true, searchable: true },
+    { selectId: 'select-custom-currency', wrapId: 'select-custom-currency-dropdown-wrap', triggerId: 'select-custom-currency-dropdown-trigger', labelId: 'select-custom-currency-dropdown-label', menuId: 'select-custom-currency-dropdown-menu', compact: true, searchable: true, minMenuWidth: 130 },
+    { selectId: 'select-custom-cycle', wrapId: 'select-custom-cycle-dropdown-wrap', triggerId: 'select-custom-cycle-dropdown-trigger', labelId: 'select-custom-cycle-dropdown-label', menuId: 'select-custom-cycle-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-pool', wrapId: 'sel-auto-switch-pool-dropdown-wrap', triggerId: 'sel-auto-switch-pool-dropdown-trigger', labelId: 'sel-auto-switch-pool-dropdown-label', menuId: 'sel-auto-switch-pool-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-mode', wrapId: 'sel-auto-switch-mode-dropdown-wrap', triggerId: 'sel-auto-switch-mode-dropdown-trigger', labelId: 'sel-auto-switch-mode-dropdown-label', menuId: 'sel-auto-switch-mode-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-window', wrapId: 'sel-auto-switch-window-dropdown-wrap', triggerId: 'sel-auto-switch-window-dropdown-trigger', labelId: 'sel-auto-switch-window-dropdown-label', menuId: 'sel-auto-switch-window-dropdown-menu', compact: true }
+  ];
+
+  function initNativeSelectDropdown(selectId, opts = {}) {
     const sel = el(selectId);
-    if (!sel || !sel.parentNode) return null;
+    if (!sel) return null;
     if (enhancedDropdowns.has(selectId)) {
       const existing = enhancedDropdowns.get(selectId);
-      existing.refresh();
+      existing?.refresh?.();
       return existing;
     }
 
-    sel.style.display = 'none';
+    if (sel.style) sel.style.display = 'none';
+    sel.setAttribute?.('aria-hidden', 'true');
+    sel.setAttribute?.('tabindex', '-1');
 
-    const wrap = document.createElement('div');
-    wrap.className = 'ag-dropdown-wrapper';
-    wrap.setAttribute('data-target-select', selectId);
+    const preset = NATIVE_DROPDOWN_SPECS.find(s => s.selectId === selectId) || {};
+    const wrapId = opts.wrapId || preset.wrapId || `${selectId}-dropdown-wrap`;
+    const triggerId = opts.triggerId || preset.triggerId || `${selectId}-dropdown-trigger`;
+    const labelId = opts.labelId || preset.labelId || `${selectId}-dropdown-label`;
+    const menuId = opts.menuId || preset.menuId || `${selectId}-dropdown-menu`;
 
-    const trigger = document.createElement('div');
-    trigger.className = 'ag-dropdown-trigger';
-    trigger.setAttribute('tabindex', '0');
+    let wrap = el(wrapId);
+    if (!wrap && sel.parentNode && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      wrap = document.createElement('div');
+      wrap.id = wrapId;
+      wrap.className = `ag-dropdown-wrapper${opts.compact !== false && preset.compact !== false ? ' ag-dropdown-compact' : ''}`;
+      wrap.setAttribute?.('data-target-select', selectId);
 
-    const label = document.createElement('span');
-    label.className = 'ag-dropdown-label';
-    label.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1';
+      const trigger = document.createElement('div');
+      trigger.id = triggerId;
+      trigger.className = 'ag-dropdown-trigger';
+      trigger.setAttribute?.('tabindex', '0');
 
-    const arrow = document.createElement('div');
-    arrow.className = 'ag-dropdown-arrow';
-    arrow.innerHTML = '<svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>';
+      const label = document.createElement('span');
+      label.id = labelId;
+      label.className = 'ag-dropdown-label';
 
-    trigger.appendChild(label);
-    trigger.appendChild(arrow);
-    wrap.appendChild(trigger);
+      const arrow = document.createElement('div');
+      arrow.className = 'ag-dropdown-arrow';
+      arrow.innerHTML = '<svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>';
 
-    const menu = document.createElement('div');
-    menu.className = 'ag-dropdown-menu';
-    wrap.appendChild(menu);
+      trigger.appendChild?.(label);
+      trigger.appendChild?.(arrow);
+      wrap.appendChild?.(trigger);
 
-    const renderOptions = () => {
-      menu.innerHTML = '';
-      const selectedVal = sel.value;
-      const opts = Array.from(sel.options);
-      let activeText = '';
+      const menu = document.createElement('div');
+      menu.id = menuId;
+      menu.className = 'ag-dropdown-menu';
+      wrap.appendChild?.(menu);
 
-      opts.forEach((opt) => {
-        const item = document.createElement('div');
-        item.className = 'ag-dropdown-item' + (opt.value === selectedVal ? ' is-selected' : '');
+      sel.parentNode.insertBefore?.(wrap, sel.nextSibling);
+    }
 
-        const textSpan = document.createElement('span');
-        if (opt.text.includes(' · ')) {
-          const parts = opt.text.split(' · ');
-          textSpan.textContent = parts[0];
-          const subSpan = document.createElement('span');
-          subSpan.className = 'ag-dropdown-item-sub';
-          subSpan.textContent = parts.slice(1).join(' · ');
-          item.appendChild(textSpan);
-          item.appendChild(subSpan);
-        } else {
-          textSpan.textContent = opt.text;
-          item.appendChild(textSpan);
-        }
+    if (!wrap || !el(triggerId) || !el(labelId) || !el(menuId)) {
+      return null;
+    }
 
-        const check = document.createElement('span');
-        check.className = 'ag-dropdown-item-check';
-        check.textContent = '✓';
-        item.appendChild(check);
-
-        if (opt.value === selectedVal) {
-          activeText = opt.text;
-        }
-
-        item.addEventListener('click', (e) => {
-          e?.stopPropagation?.();
-          sel.value = opt.value;
-          renderOptions();
-          wrap?.classList?.remove?.('is-open');
-          if (typeof Event !== 'undefined') sel.dispatchEvent(new Event('change', { bubbles: true })); else sel.dispatchEvent?.({ type: 'change' });
-        });
-
-        menu.appendChild(item);
-      });
-
-      label.textContent = activeText || sel.selectedOptions[0]?.text || sel.options[0]?.text || '';
-    };
-
-    renderOptions();
-
-    trigger.addEventListener('click', (e) => {
-      e?.stopPropagation?.();
-      const isOpen = Boolean(wrap?.classList?.contains?.('is-open'));
-      const rootScope = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : (typeof document !== 'undefined' ? document : null);
-      rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => {
-        if (w !== wrap) w.classList.remove('is-open');
-      });
-      if (!isOpen) {
-        renderOptions();
-        wrap?.classList?.add?.('is-open');
-      } else {
-        wrap?.classList?.remove?.('is-open');
+    wrap.setAttribute?.('data-target-select', selectId);
+    const controller = initDropdownController({
+      wrapId,
+      triggerId,
+      labelId,
+      menuId,
+      selectId,
+      searchable: opts.searchable ?? preset.searchable,
+      minMenuWidth: opts.minMenuWidth ?? preset.minMenuWidth,
+      ariaLabel: sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
+      getAriaLabel: () => sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
+      emptyLabel: () => (sel.selectedOptions?.[0]?.textContent || sel.options?.[0]?.textContent || ''),
+      getSelectedValue: () => sel.value || '',
+      getOptions: () => Array.from(sel.options || []).map(o => {
+        const rawText = String(o.textContent || o.text || o.value || '').trim();
+        const dotIdx = rawText.indexOf(' · ');
+        return {
+          value: o.value,
+          label: rawText,
+          displayLeft: dotIdx > 0 ? rawText.slice(0, dotIdx) : rawText,
+          displayRight: dotIdx > 0 ? rawText.slice(dotIdx + 3) : '',
+          tooltip: rawText
+        };
+      }),
+      onSelect: (opt) => {
+        sel.value = opt.value;
+        if (typeof Event !== 'undefined') sel.dispatchEvent?.(new Event('change', { bubbles: true }));
+        else sel.dispatchEvent?.({ type: 'change', target: sel });
       }
     });
 
-    trigger.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        trigger.click();
-      } else if (e.key === 'Escape') {
-        wrap?.classList?.remove?.('is-open');
+    if (controller) {
+      if (!sel._dropdownSyncBound) {
+        sel._dropdownSyncBound = true;
+        sel.addEventListener?.('change', () => controller.refresh());
       }
-    });
-
-    sel.parentNode.insertBefore(wrap, sel.nextSibling);
-
-    sel.addEventListener('change', () => {
-      renderOptions();
-    });
-
-    const handler = {
-      wrap,
-      refresh: renderOptions
-    };
-    enhancedDropdowns.set(selectId, handler);
-    return handler;
+      controller.refresh();
+      enhancedDropdowns.set(selectId, controller);
+    }
+    return controller;
   }
 
-  // 点击外部自动收起下拉浮层
+  function enhanceCustomSelect(selectId) {
+    return initNativeSelectDropdown(selectId);
+  }
+
+  function syncAllNativeSelectDropdowns() {
+    for (const spec of NATIVE_DROPDOWN_SPECS) {
+      const ctrl = enhancedDropdowns.get(spec.selectId) || initNativeSelectDropdown(spec.selectId, spec);
+      ctrl?.refresh?.();
+    }
+  }
+
+  syncAllNativeSelectDropdowns();
+
+  // 点击外部自动收起下拉浮层（closeAllDropdowns 同步更新 aria-expanded）
   if (typeof document !== 'undefined' && document.addEventListener) {
     document.addEventListener('click', (e) => {
       try {
         if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
-          const root = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : document;
-          root.querySelectorAll('.ag-dropdown-wrapper.is-open').forEach(w => w.classList.remove('is-open'));
+          closeAllDropdowns();
         }
       } catch {}
     });
@@ -11874,10 +12396,16 @@ function closeAllDropdowns(exceptWrap = null) {
       if (zeroCheck) zeroCheck.checked = false;
       if (paidInput) {
         paidInput.disabled = false;
-        if (!paidInput.value || paidInput.value === '0') paidInput.value = '19.99';
+        const curTierKey = ANTIGRAVITY_TOKEN_DATA?.planStatus?.tierKey;
+        if ((!paidInput.value || paidInput.value === '0') && curTierKey !== 'ultra') paidInput.value = '19.99';
       }
-      if (cycleSelect) cycleSelect.value = '月付';
+      if (cycleSelect) {
+        cycleSelect.value = '月付';
+        enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+      }
     }
+    enhancedDropdowns.get('select-custom-acq')?.refresh?.();
+    enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
   });
 
   el('btn-mode-preset')?.addEventListener('click', () => switchPlanPriceMode('preset'));
@@ -11977,6 +12505,19 @@ function closeAllDropdowns(exceptWrap = null) {
     if (activeBadgeRafId && typeof cancelAnimationFrame === 'function') {
       cancelAnimationFrame(activeBadgeRafId);
       activeBadgeRafId = null;
+    }
+
+    if (targetNum === null || targetNum === undefined) {
+      const displayStr = targetSymbol || t('plan.summary.priceUnsetShort');
+      if (typeof priceValEl.replaceChildren === 'function') {
+        priceValEl.textContent = displayStr;
+      } else {
+        priceValEl.textContent = displayStr;
+      }
+      if (priceCnyEl) priceCnyEl.textContent = targetCnyText || '';
+      if (badgeEl && badgeEl.classList) badgeEl.classList.remove('is-animating');
+      lastBadgePriceState = null;
+      return;
     }
 
     const formattedFinalNum = targetNum !== null && targetNum !== undefined
@@ -12110,20 +12651,21 @@ function closeAllDropdowns(exceptWrap = null) {
   function renderPlanDetail(ps) {
     if (!ps) return;
     const sumTxt = el('plan-summary-text');
+    const tierDisplay = typeof localizePlanTierName === 'function' ? localizePlanTierName(ps.tierName || 'Pro') : (ps.tierName || 'Pro');
     if (sumTxt) {
       const modeTxt = ps.status === 'identified'
         ? t('plan.summary.identified')
         : ps.hasCustomSettings
           ? t('plan.summary.custom')
           : t('plan.summary.unknown');
-      sumTxt.textContent = `${ps.tierName || 'Pro'} · ${modeTxt} · ${t('plan.summary.justNow')}`;
+      sumTxt.textContent = `${tierDisplay} · ${modeTxt} · ${t('plan.summary.justNow')}`;
     }
-    // 实时联动更新黄框位置的订阅费与汇率胶囊 (支持动效与符号消散)
+    // 实时联动更新黄框位置的订阅费与汇率胶囊（Ultra 等无公开统一定价时不回退 Pro $19.99）
     const curSymbol = ps.currencySymbol || '$';
     let targetSymbol = '$';
-    let targetNum = 19.99;
+    let targetNum = null;
     let targetCycle = t('plan.summary.perMonth');
-    let targetCny = '(≈ ¥134.3 CNY)';
+    let targetCny = '';
 
     if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
       targetSymbol = curSymbol;
@@ -12147,18 +12689,20 @@ function closeAllDropdowns(exceptWrap = null) {
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = t('plan.summary.perMonth');
-      targetCny = '(≈ ¥134.3 CNY)';
+      targetCny = currentPanelLanguage === 'en' ? '(approx. ¥134.3 CNY)' : '(≈ ¥134.3 CNY)';
     } else {
-      targetSymbol = '$';
-      targetNum = 19.99;
-      targetCycle = t('plan.summary.perMonth');
-      targetCny = '(≈ ¥134.3 CNY)';
+      targetSymbol = t('plan.summary.priceUnsetShort');
+      targetNum = null;
+      targetCycle = '';
+      targetCny = t('plan.summary.priceUnsetCny');
     }
 
     renderPlanSummaryPriceBadge(targetSymbol, targetNum, targetCycle, targetCny);
 
     const detName = el('p-det-name');
-    if (detName) detName.textContent = ps.tierName || 'Google AI Pro';
+    if (detName) detName.textContent = typeof localizePlanTierName === 'function'
+      ? localizePlanTierName(ps.tierName || 'Google AI Pro')
+      : (ps.tierName || 'Google AI Pro');
     const detAcc = el('p-det-account');
     if (detAcc) detAcc.textContent = ps.email || t('plan.account.unknown');
 
@@ -12248,6 +12792,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
     if (detPrice) {
       const cycleText = localizeBillingCycleLabel(ps.billingCycle);
+      const acqLabel = localizeAcquisitionSource(ps.acquisitionSource || ps.acquisitionSourceName);
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         detPrice.textContent = `${curSymbol}0 · ${cycleText}`;
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
@@ -12258,12 +12803,10 @@ function closeAllDropdowns(exceptWrap = null) {
         }
         const paidFormatted = Number(ps.actualPricePaid) % 1 === 0 ? Number(ps.actualPricePaid) : Number(ps.actualPricePaid).toFixed(2);
         detPrice.textContent = `${curSymbol}${paidFormatted} · ${cycleText}${cnyPart}`;
-      } else if (ps.priceRangeNote && ps.priceRangeNote !== '未知') {
-        detPrice.textContent = ps.priceRangeNote.replace(/[（\(][^）\)]*[）\)]/g, '').trim();
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         detPrice.textContent = `${t('plan.tag.publicRef')} $${ps.officialPriceMonthly}${t('plan.summary.perMonth')}`;
       } else {
-        detPrice.textContent = '—';
+        detPrice.textContent = `${acqLabel} · ${t('plan.priceUnsetNote')}`;
       }
     }
     if (tagPrice) {
@@ -12272,10 +12815,12 @@ function closeAllDropdowns(exceptWrap = null) {
         tagPrice.textContent = t('plan.tag.manualFree');
       } else if (ps.priceMode === 'custom' || ps.priceSource === 'custom') {
         tagPrice.textContent = t('plan.tag.userPaid');
-      } else if (ps.priceSource === 'preset_region' || isPresetMode) {
+      } else if (ps.priceSource === 'preset_region' && ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         tagPrice.textContent = t('plan.tag.official');
-      } else {
+      } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         tagPrice.textContent = t('plan.tag.publicRef');
+      } else {
+        tagPrice.textContent = t('plan.tag.unset');
       }
     }
 
@@ -12354,11 +12899,29 @@ function closeAllDropdowns(exceptWrap = null) {
     toolsPreview: null,
     feedback: '',
     feedbackTone: 'info',
-    busy: false
+    busy: false,
+    removeModal: {
+      open: false,
+      email: '',
+      scopeKey: '',
+      isActive: false,
+      busy: false,
+      error: ''
+    }
   };
+  function resetAccountScopedViewOffsets() {
+    heatPageOffset = 0;
+    heatMonthOffset = 0;
+    heatYearOffset = 0;
+    modelUsageOffsetDays = 0;
+    modelUsageLockedKey = null;
+    modelUsageHoveredKey = null;
+    if (typeof resetCumSelectionState === 'function') resetCumSelectionState();
+  }
   function switchTokenSource(src) {
     activeTokenSource = src;
     try { localStorage?.setItem('ag_token_source_v1', src); } catch { }
+    if (typeof resetCumSelectionState === 'function') resetCumSelectionState();
     setPillActive(el('src-tab-all'), src === 'all');
     setPillActive(el('src-tab-desktop'), src === 'desktop');
     setPillActive(el('src-tab-cli'), src === 'cli');
@@ -12429,6 +12992,10 @@ function closeAllDropdowns(exceptWrap = null) {
   let modelUsageGroupBy = 'model';
   let modelUsageMetric = 'total';
   let modelUsageHideUnattr = false;
+  let modelUsageScaleMode = 'mixed'; // 'mixed' | 'linear'
+  let modelUsageLockedKey = null;
+  let modelUsageHoveredKey = null;
+  const OTHER_SERIES_KEY = '__other_series__';
 
   function formatModelDateShort(dateStr) {
     const parts = String(dateStr || '').split('-').map(Number);
@@ -12460,6 +13027,37 @@ function closeAllDropdowns(exceptWrap = null) {
       : `${startStr} – ${endStr}`;
   }
 
+  function setClassFlag(node, cls, active) {
+    if (!node || !node.classList) return;
+    if (active) node.classList.add(cls);
+    else node.classList.remove(cls);
+  }
+
+  function applyModelSeriesFocusHighlight() {
+    const focusKey = modelUsageHoveredKey || modelUsageLockedKey || null;
+    const barsEl = el('model-usage-bars');
+    const legendEl = el('model-usage-legend');
+    if (barsEl && barsEl.children) {
+      for (const col of Array.from(barsEl.children)) {
+        for (const child of Array.from(col.children || [])) {
+          if (String(child.className || '').includes('model-usage-stack')) {
+            for (const seg of Array.from(child.children || [])) {
+              const k = seg.getAttribute?.('data-series-key');
+              setClassFlag(seg, 'is-dimmed', Boolean(focusKey && k !== focusKey));
+            }
+          }
+        }
+      }
+    }
+    if (legendEl && legendEl.children) {
+      for (const card of Array.from(legendEl.children)) {
+        const k = card.getAttribute?.('data-series-key');
+        setClassFlag(card, 'is-dimmed', Boolean(focusKey && k !== focusKey));
+        setClassFlag(card, 'is-locked', Boolean(modelUsageLockedKey && k === modelUsageLockedKey));
+      }
+    }
+  }
+
   function renderModelUsageView() {
     const viewEl = el('model-usage-view');
     if (!viewEl) return;
@@ -12470,6 +13068,8 @@ function closeAllDropdowns(exceptWrap = null) {
     setPillActive(el('model-group-variant'), modelUsageGroupBy === 'variant');
     setPillActive(el('model-metric-total'), modelUsageMetric === 'total');
     setPillActive(el('model-metric-nocache'), modelUsageMetric === 'noCache');
+    setPillActive(el('model-scale-mixed'), modelUsageScaleMode === 'mixed');
+    setPillActive(el('model-scale-linear'), modelUsageScaleMode === 'linear');
 
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     if (!core || typeof core.summarizeModelUsageWindow !== 'function') return;
@@ -12498,6 +13098,37 @@ function closeAllDropdowns(exceptWrap = null) {
       unattributedLabel: t('modelsUsage.unattributed')
     });
 
+    // 长尾折叠：图例大于 6 项时保留 Top 5 独立颜色 + 第 6 项「其他模型/档位」
+    let effectiveLegend = Array.isArray(summary.legend) ? summary.legend.slice() : [];
+    const foldedKeys = new Set();
+    if (effectiveLegend.length > 6) {
+      const top5 = effectiveLegend.slice(0, 5);
+      const tail = effectiveLegend.slice(5);
+      let otherTokens = 0;
+      let otherSteps = 0;
+      tail.forEach(item => {
+        foldedKeys.add(item.key);
+        otherTokens += Number(item.tokens) || 0;
+        otherSteps += Number(item.steps) || 0;
+      });
+      const winTot = Math.max(1, Number(summary.windowTotalTokens) || 0);
+      const otherPct = (otherTokens / winTot) * 100;
+      top5.push({
+        key: '__other_series__',
+        label: t('modelsUsage.otherSeries'),
+        color: '#71717a',
+        tokens: otherTokens,
+        steps: otherSteps,
+        pct: otherPct,
+        pctLabel: otherPct < 0.1 && otherTokens > 0 ? '<0.1%' : `${otherPct.toFixed(1)}%`
+      });
+      effectiveLegend = top5;
+    }
+
+    if (modelUsageLockedKey && !effectiveLegend.some(it => it.key === modelUsageLockedKey)) {
+      modelUsageLockedKey = null;
+    }
+
     const rangeLbl = el('model-usage-range-label');
     if (rangeLbl) rangeLbl.textContent = formatModelRangeLabel(summary.startDate, summary.endDate);
     const winTotEl = el('model-usage-window-total');
@@ -12519,8 +13150,57 @@ function closeAllDropdowns(exceptWrap = null) {
     if (prevBtn) prevBtn.disabled = Boolean(earliestKnown && summary.startDate <= earliestKnown);
     if (nextBtn) nextBtn.disabled = modelUsageOffsetDays <= 0;
 
+    const chartPxHeight = 140;
+    const env = typeof core.resolveScaleEnvelope === 'function'
+      ? core.resolveScaleEnvelope(summary.maxDayTotal, 'dailyBar')
+      : { tier: '500M', anchor: 500e6, hCap: 1.0, refTicks: [1e6, 10e6, 100e6, 500e6], overflowThreshold: 500e6 };
+
+    const gridWrap = el('model-usage-gridlines');
     const maxLblEl = el('model-chart-max-lbl');
-    if (maxLblEl) {
+    if (gridWrap) {
+      const childrenArr = Array.from(gridWrap.children || []);
+      const baseLines = [];
+      childrenArr.forEach(node => {
+        const cls = String(node.className || '');
+        if (cls.includes('model-usage-tick-line')) {
+          node.remove?.();
+        } else {
+          baseLines.push(node);
+        }
+      });
+      if (modelUsageScaleMode === 'mixed' && typeof core.mapBarHeightPx === 'function') {
+        gridWrap.style.display = 'block';
+        baseLines.forEach(gl => { gl.style.display = 'none'; });
+        const ticks = Array.isArray(env.refTicks) ? env.refTicks : [];
+        const lastTick = ticks.length ? ticks[ticks.length - 1] : 0;
+        ticks.forEach(tVal => {
+          if (!(tVal > 0)) return;
+          const pos = core.mapBarHeightPx(tVal, env, chartPxHeight, { mode: 'mixed', scaleKind: 'dailyBar' });
+          const tickLine = document.createElement('div');
+          tickLine.className = 'model-usage-tick-line';
+          tickLine.style.bottom = `${pos.height.toFixed(1)}px`;
+          const tickLbl = document.createElement('span');
+          tickLbl.className = 'model-usage-tick-lbl';
+          const isOverflowTop = Boolean(env.overflow && tVal === lastTick);
+          tickLbl.textContent = isOverflowTop ? `${formatCompactTokenCount(tVal)}+` : formatCompactTokenCount(tVal);
+          tickLine.appendChild(tickLbl);
+          gridWrap.appendChild(tickLine);
+        });
+        if (maxLblEl) {
+          maxLblEl.textContent = (env.overflow && summary.maxDayTotal > 0)
+            ? formatCompactTokenCount(summary.maxDayTotal)
+            : '';
+        }
+      } else {
+        gridWrap.style.display = 'flex';
+        gridWrap.style.flexDirection = 'column';
+        gridWrap.style.justifyContent = 'space-between';
+        baseLines.forEach(gl => { gl.style.display = 'block'; });
+        if (maxLblEl) {
+          maxLblEl.textContent = summary.maxDayTotal > 0 ? formatCompactTokenCount(summary.maxDayTotal) : '';
+        }
+      }
+    } else if (maxLblEl) {
       maxLblEl.textContent = summary.maxDayTotal > 0 ? formatCompactTokenCount(summary.maxDayTotal) : '';
     }
 
@@ -12533,6 +13213,8 @@ function closeAllDropdowns(exceptWrap = null) {
     const hasAnyData = summary.windowTotalTokens > 0;
     if (emptyEl) emptyEl.style.display = hasAnyData ? 'none' : 'block';
     if (chartWrap) chartWrap.style.display = hasAnyData ? 'block' : 'none';
+    if (chartWrap) chartWrap.setAttribute('data-scale-mode', modelUsageScaleMode);
+    if (chartWrap) chartWrap.setAttribute('data-scale-tier', env.tier || '');
 
     const isCompact30 = modelUsagePeriodDays === 30;
     if (barsEl) {
@@ -12549,28 +13231,64 @@ function closeAllDropdowns(exceptWrap = null) {
     const anchorIndices = isCompact30
       ? new Set([0, 7, 14, 21, 29])
       : new Set([0, 1, 2, 3, 4, 5, 6]);
-    const chartPxHeight = 140;
+    const focusKey = modelUsageHoveredKey || modelUsageLockedKey || null;
 
     summary.days.forEach((day, idx) => {
       if (barsEl) {
         const col = document.createElement('div');
         col.className = 'model-usage-col';
-        if (day.total > 0 && summary.maxDayTotal > 0 && day.segments.length > 0) {
-          const totalH = Math.max(4, Math.round((day.total / summary.maxDayTotal) * chartPxHeight));
-          const stack = document.createElement('div');
-          stack.className = 'model-usage-stack';
-          stack.style.height = `${totalH}px`;
+        col.setAttribute('data-date', day.date);
+        col.setAttribute('data-tokens', String(day.total || 0));
 
-          let allocatedH = 0;
-          day.segments.forEach((seg, sIdx) => {
+        // 折叠长尾段并保持真实 Top 顺序（column-reverse 下 index 0 在零基线底部）
+        const segList = [];
+        let otherSegTok = 0;
+        (day.segments || []).forEach(seg => {
+          if (foldedKeys.has(seg.key)) {
+            otherSegTok += Number(seg.tokens) || 0;
+          } else {
+            segList.push({ ...seg, value: Number(seg.tokens) || 0 });
+          }
+        });
+        if (otherSegTok > 0) {
+          segList.push({
+            key: '__other_series__',
+            label: t('modelsUsage.otherSeries'),
+            color: '#71717a',
+            tokens: otherSegTok,
+            value: otherSegTok,
+            pct: day.total > 0 ? (otherSegTok / day.total) * 100 : 0
+          });
+        }
+        // 点击锁定单系列时将该系列移至 0 基线底部（数组首位）
+        if (modelUsageLockedKey) {
+          const lockIdx = segList.findIndex(s => s.key === modelUsageLockedKey);
+          if (lockIdx > 0) {
+            const [lockedSeg] = segList.splice(lockIdx, 1);
+            segList.unshift(lockedSeg);
+          }
+        }
+
+        if (day.total > 0 && summary.maxDayTotal > 0 && segList.length > 0) {
+          const barInfo = typeof core.mapBarHeightPx === 'function'
+            ? core.mapBarHeightPx(day.total, env, chartPxHeight, { mode: modelUsageScaleMode, linearMax: summary.maxDayTotal, scaleKind: 'dailyBar' })
+            : { height: Math.max(4, (day.total / summary.maxDayTotal) * chartPxHeight), overflow: false };
+          const totalH = barInfo.height;
+          const stack = document.createElement('div');
+          stack.className = `model-usage-stack${barInfo.overflow && modelUsageScaleMode === 'mixed' ? ' is-overflow' : ''}`;
+          stack.style.height = `${totalH.toFixed(4)}px`;
+          stack.setAttribute('data-total-height', totalH.toFixed(4));
+
+          const alloc = typeof core.allocateStackedSegmentHeights === 'function'
+            ? core.allocateStackedSegmentHeights(segList, totalH, 1.5)
+            : segList.map(s => ({ ...s, heightPx: (s.value / Math.max(1, day.total)) * totalH, rawRatio: s.value / Math.max(1, day.total) }));
+
+          alloc.forEach(seg => {
             const segEl = document.createElement('div');
-            segEl.className = 'model-usage-seg';
-            let segH = Math.max(2, Math.round((seg.tokens / day.total) * totalH));
-            if (sIdx === day.segments.length - 1) {
-              segH = Math.max(2, totalH - allocatedH);
-            }
-            allocatedH += segH;
-            segEl.style.height = `${segH}px`;
+            segEl.className = `model-usage-seg${focusKey && seg.key !== focusKey ? ' is-dimmed' : ''}`;
+            segEl.setAttribute('data-series-key', seg.key);
+            segEl.setAttribute('data-raw-pct', (seg.rawRatio * 100).toFixed(2));
+            segEl.style.height = `${seg.heightPx.toFixed(4)}px`;
             segEl.style.background = seg.color;
             stack.appendChild(segEl);
           });
@@ -12645,9 +13363,10 @@ function closeAllDropdowns(exceptWrap = null) {
 
     if (legendEl) {
       legendEl.replaceChildren();
-      summary.legend.forEach(item => {
+      effectiveLegend.forEach(item => {
         const card = document.createElement('div');
-        card.className = 'model-legend-item';
+        card.className = `model-legend-item${focusKey && item.key !== focusKey ? ' is-dimmed' : ''}${modelUsageLockedKey === item.key ? ' is-locked' : ''}`;
+        card.setAttribute('data-series-key', item.key);
         const bar = document.createElement('div');
         bar.className = 'model-legend-bar';
         bar.style.background = item.color;
@@ -12677,6 +13396,19 @@ function closeAllDropdowns(exceptWrap = null) {
         textWrap.appendChild(valRow);
         card.appendChild(bar);
         card.appendChild(textWrap);
+
+        card.addEventListener('mouseenter', () => {
+          modelUsageHoveredKey = item.key;
+          applyModelSeriesFocusHighlight();
+        });
+        card.addEventListener('mouseleave', () => {
+          if (modelUsageHoveredKey === item.key) modelUsageHoveredKey = null;
+          applyModelSeriesFocusHighlight();
+        });
+        card.addEventListener('click', () => {
+          modelUsageLockedKey = (modelUsageLockedKey === item.key) ? null : item.key;
+          renderModelUsageView();
+        });
         legendEl.appendChild(card);
       });
     }
@@ -12763,6 +13495,14 @@ function closeAllDropdowns(exceptWrap = null) {
   });
   el('model-metric-nocache')?.addEventListener('click', () => {
     modelUsageMetric = 'noCache';
+    renderModelUsageView();
+  });
+  el('model-scale-mixed')?.addEventListener('click', () => {
+    modelUsageScaleMode = 'mixed';
+    renderModelUsageView();
+  });
+  el('model-scale-linear')?.addEventListener('click', () => {
+    modelUsageScaleMode = 'linear';
     renderModelUsageView();
   });
   el('model-toggle-unattr')?.addEventListener('click', () => {
@@ -13195,6 +13935,32 @@ function closeAllDropdowns(exceptWrap = null) {
     const lang = typeof getPanelLanguage === 'function' ? getPanelLanguage() : 'zh-CN';
     if (typeof formatEffortLabel === 'function') return formatEffortLabel(effort, lang);
     return String(effort);
+  }
+
+  /**
+   * 合并模型产品名与档位后缀，严格剥离尾部重复档位括号，避免出现 "(High) (High)"。
+   */
+  function formatProductDisplayWithEffort(rawLabel, explicitEffort = null) {
+    const text = String(rawLabel || '').trim();
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    if (core && typeof core.splitModelDisplayAndEffort === 'function') {
+      const split = core.splitModelDisplayAndEffort(text, explicitEffort || null);
+      const base = split.baseLabel || text;
+      const eff = explicitEffort || split.effort;
+      if (!eff) return base;
+      const effDisp = formatEffortZh(eff);
+      if (!effDisp) return base;
+      return `${base} (${effDisp})`;
+    }
+    if (!explicitEffort) return text;
+    const effDisp = formatEffortZh(explicitEffort);
+    if (!effDisp) return text;
+    const low = text.toLowerCase();
+    const rawEff = String(explicitEffort).trim().toLowerCase();
+    if (low.endsWith(`(${rawEff})`) || low.endsWith(`(${effDisp.toLowerCase()})`)) {
+      return text;
+    }
+    return `${text} (${effDisp})`;
   }
 
   function groupProductSafe(input) {
@@ -15284,7 +16050,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (ctxCardEffortsList) ctxCardEffortsList.textContent = t('models.card.effortsEmpty');
       if (ctxCardSessionEffort) ctxCardSessionEffort.hidden = true;
       if (ctxConflictBanner) ctxConflictBanner.hidden = true;
-      if (ctxSummaryModelEl) ctxSummaryModelEl.textContent = '待确认';
+      if (ctxSummaryModelEl) ctxSummaryModelEl.textContent = t('models.summary.pendingConfirm');
       if (ctxSummaryLengthEl) ctxSummaryLengthEl.textContent = '—';
       if (ctxSummaryStatusPillEl) ctxSummaryStatusPillEl.hidden = true;
       return;
@@ -15387,40 +16153,40 @@ function closeAllDropdowns(exceptWrap = null) {
     if (ctxCapModelMaxEl) {
       ctxCapModelMaxEl.textContent = capSummary?.modelTheoreticalMaxTokens != null
         ? `${fmt(capSummary.modelTheoreticalMaxTokens)} tokens`
-        : '未知（待获取元数据）';
+        : t('models.cap.metaUnknown');
     }
     if (ctxCapClientPolicyEl) {
       if (!runtimePolicy || runtimePolicy.runtimeState === 'unknown') {
-        ctxCapClientPolicyEl.textContent = '未知（待读取运行策略）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyUnknown');
       } else if (runtimePolicy.runtimeState === 'pending_restart') {
-        ctxCapClientPolicyEl.textContent = `待重启（磁盘=${formatDiskPolicyText(runtimePolicy)}）`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyPendingRestart', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy.runtimeState === 'runtime_unconfirmed') {
-        ctxCapClientPolicyEl.textContent = `进程未确认（磁盘=${formatDiskPolicyText(runtimePolicy)}）`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyUnconfirmed', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy.runtimeState === 'partial') {
-        ctxCapClientPolicyEl.textContent = '部分异常（运行限制未知）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyPartial');
       } else if (runtimePolicy.runtimeMode === 'dynamic') {
-        ctxCapClientPolicyEl.textContent = 'Dynamic 动态跟随（按模型上限）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyDynamic');
       } else if (runtimePolicy.runtimeMode === 'fixed' && runtimePolicy.currentClientLimitTokens != null) {
-        ctxCapClientPolicyEl.textContent = `固定限制 ${fmt(runtimePolicy.currentClientLimitTokens)} tokens`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyFixed', { limit: fmt(runtimePolicy.currentClientLimitTokens) });
       } else {
-        ctxCapClientPolicyEl.textContent = '默认限制 256,000 tokens';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyDefault');
       }
     }
     if (ctxCapDefaultEl) {
       if (capSummary?.currentStrategyDefaultBudget != null && runtimePolicy?.policyKnown) {
         let stratNote = '';
         if (runtimePolicy.runtimeMode === 'dynamic') {
-          stratNote = '（Dynamic 默认）';
+          stratNote = t('models.cap.stratDynamic');
         } else if (runtimePolicy.runtimeMode === 'fixed') {
-          stratNote = `（受固定限制 ${fmt(runtimePolicy.currentClientLimitTokens)} 约束）`;
+          stratNote = t('models.cap.stratFixed', { limit: fmt(runtimePolicy.currentClientLimitTokens) });
         } else {
-          stratNote = '（受默认 256,000 约束）';
+          stratNote = t('models.cap.stratDefault');
         }
         ctxCapDefaultEl.textContent = `${fmt(capSummary.currentStrategyDefaultBudget)} tokens${stratNote}`;
       } else if (runtimePolicy && !runtimePolicy.policyKnown) {
-        ctxCapDefaultEl.textContent = '未知（运行策略待确认）';
+        ctxCapDefaultEl.textContent = t('models.cap.defaultUnknownPolicy');
       } else {
-        ctxCapDefaultEl.textContent = '未知';
+        ctxCapDefaultEl.textContent = t('speed.unknown');
       }
     }
     if (ctxCapRangeEl) {
@@ -15428,33 +16194,51 @@ function closeAllDropdowns(exceptWrap = null) {
         ctxCapRangeEl.textContent = `${fmt(capSummary.rangeMin || CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(capSummary.maxAdjustableTokens)} tokens`;
       } else if (runtimePolicy && !runtimePolicy.policyKnown) {
         ctxCapRangeEl.textContent = capSummary?.modelTheoreticalMaxTokens != null
-          ? `运行策略未知（模型理论上限 ${fmt(capSummary.modelTheoreticalMaxTokens)}）`
-          : `运行策略未知（工程范围 ${fmt(CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(CTX_MAX_ENGINEERING_TOKENS)}）`;
+          ? t('models.cap.rangeUnknownPolicyMax', { max: fmt(capSummary.modelTheoreticalMaxTokens) })
+          : t('models.cap.rangeUnknownPolicyEng', { min: fmt(CTX_MIN_ENGINEERING_TOKENS), max: fmt(CTX_MAX_ENGINEERING_TOKENS) });
       } else {
-        ctxCapRangeEl.textContent = `${fmt(CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(CTX_MAX_ENGINEERING_TOKENS)}（模型上限未知）`;
+        ctxCapRangeEl.textContent = t('models.cap.rangeUnknownModelMax', { min: fmt(CTX_MIN_ENGINEERING_TOKENS), max: fmt(CTX_MAX_ENGINEERING_TOKENS) });
       }
     }
     if (ctxCapFormulaEl) {
       const parts = [];
       if (capSummary?.sources?.length) {
-        const srcText = capSummary.sources.map(s => (s === 'get_available_models' ? 'GetAvailableModels 目录' : (s === 'step_model_info' ? '会话 Step ModelInfo' : s))).join(' + ');
-        parts.push(`来源：${srcText}`);
+        const srcText = capSummary.sources.map(s => (
+          s === 'get_available_models'
+            ? (currentPanelLanguage === 'en' ? 'GetAvailableModels Catalog' : (currentPanelLanguage === 'zh-TW' ? 'GetAvailableModels 目錄' : 'GetAvailableModels 目录'))
+            : (s === 'step_model_info'
+              ? (currentPanelLanguage === 'en' ? 'Session Step ModelInfo' : (currentPanelLanguage === 'zh-TW' ? '工作階段 Step ModelInfo' : '会话 Step ModelInfo'))
+              : s)
+        )).join(' + ');
+        parts.push(currentPanelLanguage === 'en' ? `Source: ${srcText}` : `来源：${srcText}`);
       }
       if (capSummary?.formulaNote) {
-        parts.push(capSummary.formulaNote);
+        parts.push(typeof translateBackendText === 'function' ? translateBackendText(capSummary.formulaNote) : capSummary.formulaNote);
       } else {
-        parts.push('尚未获取到当前账号/步骤的模型窗口与最大输出元数据（不按模型名称推测上限）。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Window & max output metadata not received for current account/step (never inferred from name).'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '尚未取得目前帳號/步驟的模型視窗與最大輸出中繼資料（不依模型名稱推測上限）。'
+            : '尚未获取到当前账号/步骤的模型窗口与最大输出元数据（不按模型名称推测上限）。'));
       }
       if (capSummary?.policyNote) {
-        parts.push(capSummary.policyNote);
+        parts.push(typeof translateBackendText === 'function' ? translateBackendText(capSummary.policyNote) : capSummary.policyNote);
       }
       if (capSummary?.hasTierVariance) {
-        parts.push('注意：该模型不同力度档位报告了不同容量/最大输出，可调上限取安全交集，详情见下方「档位能力」。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Note: effort tiers report varying window/output caps; adjustable limit uses safe intersection (see Tier Capabilities below).'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '注意：該模型不同力度檔位回報了不同容量/最大輸出，可調上限取安全交集，詳情見下方「檔位能力」。'
+            : '注意：该模型不同力度档位报告了不同容量/最大输出，可调上限取安全交集，详情见下方「档位能力」。'));
       }
       if (runtimePolicy?.diskVsRuntimeMismatch) {
-        parts.push('磁盘配置与运行中进程尚未确认一致：以下预测与默认预算均按未确认处理，请勿当作已实机生效。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Disk config and running process not yet verified consistent: projections are treated as unconfirmed.'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '磁碟設定與執行中程序尚未確認一致：以下預測與預設預算均依未確認處理，請勿當作已實機生效。'
+            : '磁盘配置与运行中进程尚未确认一致：以下预测与默认预算均按未确认处理，请勿当作已实机生效。'));
       }
-      ctxCapFormulaEl.textContent = parts.join('；');
+      ctxCapFormulaEl.textContent = parts.join(currentPanelLanguage === 'en' ? '; ' : '；');
     }
     if (ctxRefSavedEl) {
       const targetSavedLabel = getContextScopeMode() === 'unified'
@@ -15463,10 +16247,10 @@ function closeAllDropdowns(exceptWrap = null) {
       ctxRefSavedEl.textContent = targetSavedLabel;
     }
     if (ctxRefSentEl) {
-      ctxRefSentEl.textContent = evalResult.requestText || '尚无本次验证';
+      ctxRefSentEl.textContent = evalResult.requestText || t('models.cap.noneVerified');
     }
     if (ctxRefAdoptedEl) {
-      ctxRefAdoptedEl.textContent = evalResult.observedText || '尚无本次验证';
+      ctxRefAdoptedEl.textContent = evalResult.observedText || t('models.cap.noneVerified');
     }
 
     if (ctxUnifiedProjEl) {
@@ -15476,8 +16260,10 @@ function closeAllDropdowns(exceptWrap = null) {
         if (projections.length > 0 && typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxUnifiedProjEl.replaceChildren === 'function') {
           const titleDiv = document.createElement('div');
           titleDiv.className = 'ctx-unified-proj-title';
-          titleDiv.textContent = '统一模式各模型预计采用预算（预测值，非实机已确认）：';
+          titleDiv.textContent = t('models.unified.projTitle');
           const rowNodes = [titleDiv];
+          const isEnProj = currentPanelLanguage === 'en';
+          const isTwProj = currentPanelLanguage === 'zh-TW';
           for (const pr of projections.slice(0, 8)) {
             const row = document.createElement('div');
             const isWarnRow = pr.outcome === 'clamped_to_model_max' || pr.outcome === 'exceeds_client_policy' || pr.outcome === 'clamped_by_client_policy' || pr.outcome === 'pending_restart_unconfirmed' || pr.outcome === 'partial_policy_unconfirmed' || pr.outcome === 'runtime_unconfirmed';
@@ -15486,29 +16272,29 @@ function closeAllDropdowns(exceptWrap = null) {
             lbl.textContent = pr.productLabel;
             const val = document.createElement('strong');
             if (pr.outcome === 'clamped_to_model_max') {
-              val.textContent = `受模型上限限制 -> 预计 ${fmt(pr.projectedTokens)}（最大可用）`;
+              val.textContent = isEnProj ? `Capped by model max -> ~${fmt(pr.projectedTokens)}` : (isTwProj ? `受模型上限限制 -> 預計 ${fmt(pr.projectedTokens)}（最大可用）` : `受模型上限限制 -> 预计 ${fmt(pr.projectedTokens)}（最大可用）`);
             } else if (pr.outcome === 'exceeds_client_policy') {
-              val.textContent = `超出当前客户端限制 -> 预计仅保底 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
+              val.textContent = isEnProj ? `Exceeds policy -> ~${fmt(pr.projectedTokens)} (limit ${fmt(pr.clientLimitTokens)})` : `超出当前客户端限制 -> 预计仅保底 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
             } else if (pr.outcome === 'clamped_by_client_policy') {
-              val.textContent = `受当前客户端限制 -> 预计 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
+              val.textContent = isEnProj ? `Capped by policy -> ~${fmt(pr.projectedTokens)} (limit ${fmt(pr.clientLimitTokens)})` : `受当前客户端限制 -> 预计 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
             } else if (pr.outcome === 'pending_restart_unconfirmed') {
-              val.textContent = '待验证（磁盘已改，客户端未重启）';
+              val.textContent = isEnProj ? 'Pending restart (disk updated)' : (isTwProj ? '待重啟確認（磁碟已改）' : '待验证（磁盘已改，客户端未重启）');
             } else if (pr.outcome === 'runtime_unconfirmed') {
-              val.textContent = '待验证（运行中进程未确认）';
+              val.textContent = isEnProj ? 'Pending (runtime unconfirmed)' : (isTwProj ? '待驗證（執行中程序未確認）' : '待验证（运行中进程未确认）');
             } else if (pr.outcome === 'partial_policy_unconfirmed') {
-              val.textContent = '未知（客户端处于部分异常状态）';
+              val.textContent = t('models.cap.policyPartial');
             } else if (pr.outcome === 'unknown_policy') {
-              val.textContent = '未知（运行策略待读取）';
+              val.textContent = t('models.cap.policyUnknown');
             } else if (pr.outcome === 'unknown_cap') {
-              val.textContent = '模型上限未知';
+              val.textContent = isEnProj ? 'Model cap unknown' : '模型上限未知';
             } else if (pr.outcome === 'client_default' && pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens（当前策略默认）`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens (Policy default)` : `预计 ${fmt(pr.projectedTokens)} tokens（当前策略默认）`;
             } else if (pr.outcome === 'dynamic_follow' && pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens（Dynamic 默认）`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens (Dynamic default)` : `预计 ${fmt(pr.projectedTokens)} tokens（Dynamic 默认）`;
             } else if (pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens` : `预计 ${fmt(pr.projectedTokens)} tokens`;
             } else {
-              val.textContent = '待验证';
+              val.textContent = t('models.summary.pendingConfirm');
             }
             row.appendChild(lbl);
             row.appendChild(val);
@@ -15528,12 +16314,12 @@ function closeAllDropdowns(exceptWrap = null) {
       if (capSummary?.tierDetails?.length) {
         ctxCardTierCapsRowEl.hidden = false;
         const lines = capSummary.tierDetails.map(td => {
-          const tierName = td.effort ? formatEffortZh(td.effort) : (td.modelId || '标准');
-          const winTxt = td.maxTokens ? `窗口 ${fmt(td.maxTokens)}` : '窗口未知';
-          const outTxt = td.maxOutputTokens != null ? `最大输出 ${fmt(td.maxOutputTokens)}` : '输出未知';
+          const tierName = td.effort ? formatEffortZh(td.effort) : (td.modelId || t('models.cap.tierStandard'));
+          const winTxt = td.maxTokens ? t('models.cap.tierWin', { val: fmt(td.maxTokens) }) : t('models.cap.tierWinUnk');
+          const outTxt = td.maxOutputTokens != null ? t('models.cap.tierOut', { val: fmt(td.maxOutputTokens) }) : t('models.cap.tierOutUnk');
           const maxInTxt = (td.maxTokens && td.maxOutputTokens != null && td.maxTokens > td.maxOutputTokens)
-            ? `可调上限 ${fmt(td.maxTokens - td.maxOutputTokens)}`
-            : '上限未知';
+            ? t('models.cap.tierAdj', { val: fmt(td.maxTokens - td.maxOutputTokens) })
+            : t('models.cap.tierAdjUnk');
           return `${tierName}：${winTxt} / ${outTxt} / ${maxInTxt}`;
         });
         if (typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxCardTierCapsEl.replaceChildren === 'function') {
@@ -15585,15 +16371,15 @@ function closeAllDropdowns(exceptWrap = null) {
       } else if (!currentUnlockStatus) {
         ctxCardClientEl.textContent = t('status.badge.reading');
       } else if (runtimePolicy?.runtimeState === 'pending_restart') {
-        ctxCardClientEl.textContent = `磁盘为 ${formatDiskPolicyText(runtimePolicy)}（待重启生效）`;
+        ctxCardClientEl.textContent = t('models.cap.diskPending', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy?.runtimeState === 'runtime_unconfirmed') {
-        ctxCardClientEl.textContent = `磁盘为 ${formatDiskPolicyText(runtimePolicy)}（运行态未确认）`;
+        ctxCardClientEl.textContent = t('models.cap.diskUnconfirmed', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy?.runtimeState === 'partial') {
-        ctxCardClientEl.textContent = '部分异常（请核对客户端状态）';
+        ctxCardClientEl.textContent = t('models.cap.clientPartialAlert');
       } else if (runtimePolicy?.policyKnown && runtimePolicy.runtimeMode === 'dynamic') {
-        ctxCardClientEl.textContent = '动态跟随已确认运行（各模型独立）';
+        ctxCardClientEl.textContent = t('models.cap.clientDynamicOk');
       } else if (runtimePolicy?.policyKnown && runtimePolicy.runtimeMode === 'fixed' && runtimePolicy.currentClientLimitTokens != null) {
-        ctxCardClientEl.textContent = `固定单一上限模式 (${formatKShort(runtimePolicy.currentClientLimitTokens)}，建议升级为动态跟随)`;
+        ctxCardClientEl.textContent = t('models.cap.fixedAdvice', { val: formatKShort(runtimePolicy.currentClientLimitTokens) });
       } else {
         ctxCardClientEl.textContent = describeClientModeValue(currentUnlockStatus);
       }
@@ -15747,7 +16533,7 @@ function closeAllDropdowns(exceptWrap = null) {
       } else if (product) {
         ctxSummaryModelEl.textContent = product.productLabel;
       } else {
-        ctxSummaryModelEl.textContent = '待确认';
+        ctxSummaryModelEl.textContent = t('models.summary.pendingConfirm');
       }
     }
     if (ctxSummaryLengthEl) {
@@ -15782,13 +16568,13 @@ function closeAllDropdowns(exceptWrap = null) {
 
     if (ctxPresetModelMaxSubEl) {
       if (isUnified) {
-        ctxPresetModelMaxSubEl.textContent = '统一模式下各模型不同（已禁用）';
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.unifiedDisabled');
       } else if (knownEnvMax != null) {
-        ctxPresetModelMaxSubEl.textContent = `当前环境最大可采纳：${fmt(knownEnvMax)} tokens`;
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.envMax', { val: fmt(knownEnvMax) });
       } else if (!policyKnown && knownModelMax != null) {
-        ctxPresetModelMaxSubEl.textContent = `运行策略未确认（模型理论上限 ${fmt(knownModelMax)}，暂不可用）`;
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.policyUnconfirmed', { val: fmt(knownModelMax) });
       } else {
-        ctxPresetModelMaxSubEl.textContent = '模型元数据待获取（暂不可用）';
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.metaPending');
       }
     }
 
@@ -15869,7 +16655,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     if (ctxDraft.mode === 'default') {
       ctxValidationEl.className = 'ctx-validation-msg';
-      ctxValidationEl.textContent = '恢复客户端默认：请求将清除 maxTokenLimit 覆盖，由当前语言服务全局模式决定（若已开 Dynamic 则按动态默认）。';
+      ctxValidationEl.textContent = t('models.validation.defaultDesc');
       return;
     }
     const rawVal = ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== ''
@@ -16856,8 +17642,7 @@ function closeAllDropdowns(exceptWrap = null) {
       const y = padTop + idx * rowH;
       const val = getVal(g) || 0;
       const w = Math.max(4, (val / maxVal) * barAreaW);
-      const effText = g.effort ? ` (${formatEffortZh(g.effort)})` : '';
-      const displayLabel = `${g.productLabel}${effText}`;
+      const displayLabel = formatProductDisplayWithEffort(g.productLabel, g.effort);
       const unitStr = speedMetric === 'tps' ? `${val} tok/s` : t('speed.unitSec', { val });
 
       const rowGrp = createSvgEl('g', { style: 'cursor:pointer' });
@@ -17074,8 +17859,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const speedDropLabel = el('speed-model-dropdown-label');
     if (speedDropLabel) {
       if (chosenGroup) {
-        const effStr = chosenGroup.effort ? ` (${formatEffortZh(chosenGroup.effort)})` : '';
-        speedDropLabel.textContent = `${chosenGroup.productLabel}${effStr}`;
+        speedDropLabel.textContent = formatProductDisplayWithEffort(chosenGroup.productLabel, chosenGroup.effort);
       } else {
         speedDropLabel.textContent = t('speed.lineNoModel');
       }
@@ -17098,10 +17882,9 @@ function closeAllDropdowns(exceptWrap = null) {
           renderSpeedComparisonTab();
         },
         getOptions: () => lastSpeedGroups.map(g => {
-          const effStr = g.effort ? ` (${formatEffortZh(g.effort)})` : '';
           return {
             value: g.modelExactId,
-            label: `${g.productLabel}${effStr}`,
+            label: formatProductDisplayWithEffort(g.productLabel, g.effort),
             displayRight: t('speed.samples', { n: g.count })
           };
         })
@@ -17333,6 +18116,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
+      if (typeof syncAllNativeSelectDropdowns === 'function') syncAllNativeSelectDropdowns();
     } catch { }
     try {
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
@@ -17350,8 +18134,9 @@ function closeAllDropdowns(exceptWrap = null) {
       }
     } catch { }
     try {
-      if (typeof applyTokenHistoryPayload === 'function' && ANTIGRAVITY_TOKEN_DATA) {
-        applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA);
+      const basePayload = ANTIGRAVITY_TOKEN_DATA?.rawPayload || ANTIGRAVITY_TOKEN_DATA;
+      if (typeof applyTokenHistoryPayload === 'function' && basePayload) {
+        applyTokenHistoryPayload(basePayload);
       }
     } catch { }
 
@@ -19044,6 +19829,14 @@ function closeAllDropdowns(exceptWrap = null) {
     let pillText = t('cost.covFull');
     let pillClass = 'key-pill pill-good';
 
+    const inShare = el('ref-cost-input-share');
+    const inBar = el('ref-cost-input-bar');
+    const caShare = el('ref-cost-cache-share');
+    const caBar = el('ref-cost-cache-bar');
+    const outShare = el('ref-cost-output-share');
+    const outBar = el('ref-cost-output-bar');
+    let cInUSD = 0, cCaUSD = 0, cOutUSD = 0;
+
     // 2. 估值模式计算
     let effectiveRef = curRef;
     if ((effectiveRef.totalCostUSD === undefined || effectiveRef.totalCostUSD === null) && curTotal > 0) {
@@ -19081,6 +19874,9 @@ function closeAllDropdowns(exceptWrap = null) {
         } else if (curTotal > 0 && curIn === 0 && curCa === 0 && curOut === 0) {
           grandVal.textContent = t('cost.notReady');
           grandVal.title = t('cost.notReady');
+        } else if (activeTokenAccountFilter !== 'all' && curTotal === 0) {
+          grandVal.textContent = t('cost.noRecords');
+          grandVal.title = t('accounts.filterNoData');
         } else {
           grandVal.textContent = '$0.00';
           grandVal.title = t('cost.noRecords');
@@ -19097,11 +19893,14 @@ function closeAllDropdowns(exceptWrap = null) {
       pillText = t('cost.modeRef');
       pillClass = 'key-pill pill-muted';
 
-      if (inVal) inVal.textContent = `$${Number(effectiveRef.inputCostUSD || (curIn * rateIn / 1e6)).toFixed(2)}`;
+      cInUSD = Number(effectiveRef.inputCostUSD || (curIn * rateIn / 1e6));
+      cCaUSD = Number(effectiveRef.cacheCostUSD || (curCa * rateCa / 1e6));
+      cOutUSD = Number(effectiveRef.outputCostUSD || (curOut * rateOut / 1e6));
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = `${fmtYi(curIn)} tok`;
-      if (caVal) caVal.textContent = `$${Number(effectiveRef.cacheCostUSD || (curCa * rateCa / 1e6)).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = t('cost.tokCacheDiscount', { tok: fmtYi(curCa) });
-      if (outVal) outVal.textContent = `$${Number(effectiveRef.outputCostUSD || (curOut * rateOut / 1e6)).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = `${fmtYi(curOut)} tok`;
     } else if (costModelMode === 'hybrid') {
       const h = curHybrid.hybrid || {};
@@ -19120,11 +19919,14 @@ function closeAllDropdowns(exceptWrap = null) {
       pillClass = 'key-pill pill-muted';
 
       const rb = h.residualTokensBreakdown || {};
-      if (inVal) inVal.textContent = `$${Number(rb.inputCostUSD || (Number(rb.input || 0) * rateIn / 1e6)).toFixed(2)}`;
+      cInUSD = Number(rb.inputCostUSD || (Number(rb.input || 0) * rateIn / 1e6));
+      cCaUSD = Number(rb.cacheCostUSD || (Number(rb.cache || 0) * rateCa / 1e6));
+      cOutUSD = Number(rb.outputCostUSD || (Number(rb.output || 0) * rateOut / 1e6));
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.input || 0) });
-      if (caVal) caVal.textContent = `$${Number(rb.cacheCostUSD || (Number(rb.cache || 0) * rateCa / 1e6)).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.cache || 0) });
-      if (outVal) outVal.textContent = `$${Number(rb.outputCostUSD || (Number(rb.output || 0) * rateOut / 1e6)).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.output || 0) });
     } else {
       // 仅已识别真实模型
@@ -19161,13 +19963,27 @@ function closeAllDropdowns(exceptWrap = null) {
         pillClass = `key-pill ${pct >= 100 ? 'pill-good' : 'pill-warn'}`;
       }
 
-      if (inVal) inVal.textContent = `$${((curIdentified.byCategory?.inputTokens || 0) * rateIn / 1e6).toFixed(2)}`;
+      cInUSD = (curIdentified.byCategory?.inputTokens || 0) * rateIn / 1e6;
+      cCaUSD = (curIdentified.byCategory?.cacheTokens || 0) * rateCa / 1e6;
+      cOutUSD = (curIdentified.byCategory?.outputTokens || 0) * rateOut / 1e6;
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = `${fmtYi(curIdentified.byCategory?.inputTokens || 0)} tok`;
-      if (caVal) caVal.textContent = `$${((curIdentified.byCategory?.cacheTokens || 0) * rateCa / 1e6).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = `${fmtYi(curIdentified.byCategory?.cacheTokens || 0)} tok`;
-      if (outVal) outVal.textContent = `$${((curIdentified.byCategory?.outputTokens || 0) * rateOut / 1e6).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = `${fmtYi(curIdentified.byCategory?.outputTokens || 0)} tok`;
     }
+
+    const cSumUSD = cInUSD + cCaUSD + cOutUSD;
+    const pctIn = cSumUSD > 0 ? Math.max(0, Math.min(100, (cInUSD / cSumUSD) * 100)) : 0;
+    const pctCa = cSumUSD > 0 ? Math.max(0, Math.min(100, (cCaUSD / cSumUSD) * 100)) : 0;
+    const pctOut = cSumUSD > 0 ? Math.max(0, Math.min(100, (cOutUSD / cSumUSD) * 100)) : 0;
+    if (inShare) inShare.textContent = `${pctIn.toFixed(1)}%`;
+    if (inBar) inBar.style.width = `${pctIn.toFixed(1)}%`;
+    if (caShare) caShare.textContent = `${pctCa.toFixed(1)}%`;
+    if (caBar) caBar.style.width = `${pctCa.toFixed(1)}%`;
+    if (outShare) outShare.textContent = `${pctOut.toFixed(1)}%`;
+    if (outBar) outBar.style.width = `${pctOut.toFixed(1)}%`;
 
     if (covPill) {
       covPill.textContent = pillText;
@@ -19318,6 +20134,8 @@ function closeAllDropdowns(exceptWrap = null) {
       }
     });
 
+    setClassFlag(el('h-scroll-box'), 'is-cum-active', view === 'cum');
+
     hidePopover();
     renderActiveHeatView(true);
     updateHeatTabThumb();
@@ -19396,6 +20214,14 @@ function closeAllDropdowns(exceptWrap = null) {
   };
   const escape = e => {
     if (e.key === 'Escape') {
+      if (accountsUiState.removeModal?.open) {
+        if (!accountsUiState.removeModal.busy) closeRemoveAccountModal();
+        return;
+      }
+      if (activeHeatView === 'cum' && typeof hasActiveCumLock === 'function' && hasActiveCumLock()) {
+        if (typeof clearCumLockAndRefresh === 'function') clearCumLockAndRefresh();
+        return;
+      }
       const pop = el('color-picker-popover');
       const isEscClosing = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute('data-closing') === 'true';
       if (pop && !pop.hidden && !isEscClosing) {
@@ -19544,13 +20370,17 @@ function closeAllDropdowns(exceptWrap = null) {
   function getFirstUseDateStr() {
     const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
     const keys = Object.keys(map).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && (map[k]?.total > 0)).sort();
+    const isScopedView = activeTokenAccountFilter !== 'all' || activeTokenSource !== 'all';
+    if (isScopedView) {
+      return keys.length ? keys[0] : null;
+    }
     const declared = ANTIGRAVITY_TOKEN_DATA.firstUseDate;
     if (declared && /^\d{4}-\d{2}-\d{2}$/.test(declared)) {
       if (keys.length && keys[0] < declared) return keys[0];
       return declared;
     }
     if (keys.length) return keys[0];
-    return formatLocalYmd(new Date());
+    return null;
   }
 
   // 计算从「实际首次使用日」起算的 12 个月（52 周 = 364 天）展示窗口，绝不展示首次使用日之前的日期
@@ -19558,7 +20388,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const firstStr = getFirstUseDateStr();
-    const firstDate = parseLocalYmd(firstStr) || today;
+    const firstDate = firstStr ? (parseLocalYmd(firstStr) || today) : today;
     const totalDays = 52 * 7; // 364 天（12 个月 / 52 周）
     const elapsedDays = Math.max(0, Math.floor((today.getTime() - firstDate.getTime()) / 86400000)) + 1;
 
@@ -19589,7 +20419,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     const firstBadge = el('first-use-badge');
-    if (firstBadge) firstBadge.textContent = t('tokens.firstUse', { date: formatZhYmd(firstStr) });
+    if (firstBadge) firstBadge.textContent = firstStr ? t('tokens.firstUse', { date: formatZhYmd(firstStr) }) : t('tokens.firstUseNone');
     const rangeEl = el('h-win-range');
     const prevBtn = el('h-page-prev');
     const nextBtn = el('h-page-next');
@@ -19687,24 +20517,68 @@ function closeAllDropdowns(exceptWrap = null) {
     ANTIGRAVITY_TOKEN_DATA.rawPayload = payload;
     syncTokenAccountFilterOptions(payload);
 
-    // 若选择了指定账号或“历史未归属”，构造隔离账本视图而不污染其他账号或全量原始 payload
+    // 若选择了指定账号或“历史未归属”，构造彻底隔离的账本视图（全量指标、热力图、按模型与费用同步切换，绝不泄漏全局总量）
+    const isScopedAccountFilter = activeTokenAccountFilter !== 'all';
     let viewPayload = payload;
-    if (activeTokenAccountFilter !== 'all') {
+    if (isScopedAccountFilter) {
+      const zeroCostEstimate = {
+        pricedCostUSD: 0,
+        pricedRequestsCount: 0,
+        unpricedRequestsCount: 0,
+        pricedTokens: 0,
+        unpricedTokens: 0,
+        coveragePercent: null,
+        byModel: {},
+        byCategory: {}
+      };
+      const zeroRefCost = {
+        totalCostUSD: 0,
+        inputCostUSD: 0,
+        cacheCostUSD: 0,
+        outputCostUSD: 0,
+        inputTokens: 0,
+        cacheTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        modelDisplayName: 'Gemini 3.8 Flash',
+        matchedTier: { inputPerMillion: 0.75, cacheReadPerMillion: 0.075, outputPerMillion: 3.75 }
+      };
       const bucket = activeTokenAccountFilter === 'unattributed'
         ? payload.unattributedUsage
         : payload.usageByAccount?.[activeTokenAccountFilter];
       if (bucket && typeof bucket === 'object') {
+        const bDaily = bucket.dailyMap || {};
+        const bDailyBySrc = bucket.dailyMapBySource || {
+          all: bDaily,
+          desktop: activeTokenAccountFilter === 'unattributed' ? bDaily : {},
+          cli: {},
+          legacyUnallocated: activeTokenAccountFilter === 'unattributed' ? bDaily : {}
+        };
+        const bModelsBySrc = bucket.dailyModelMapBySource || {
+          all: {},
+          desktop: {},
+          cli: {}
+        };
+        const bCostEst = bucket.costEstimate || zeroCostEstimate;
+        const bCostMonth = bucket.costEstimateCurrentMonth || bCostEst;
+        const bCostBySrc = bucket.costEstimateBySource || {
+          all: bCostEst,
+          desktop: bCostEst,
+          cli: zeroCostEstimate
+        };
+        const bCacheBySrc = bucket.cacheReadStatsBySource || (bucket.cacheReadStats
+          ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: null }
+          : { all: null, desktop: null, cli: null });
+        const bMonthCacheBySrc = bucket.currentMonthCacheReadStatsBySource || bCacheBySrc;
         viewPayload = {
           ...payload,
-          dailyMap: bucket.dailyMap || {},
-          dailyMapBySource: {
-            all: bucket.dailyMap || {},
-            desktop: activeTokenAccountFilter === 'unattributed' ? (bucket.dailyMap || {}) : {},
-            cli: {},
-            legacyUnallocated: activeTokenAccountFilter === 'unattributed' ? (bucket.dailyMap || {}) : {}
-          },
+          scopedAccountView: true,
+          firstUseDate: bucket.firstUseDate || null,
+          dailyMap: bDaily,
+          dailyMapBySource: bDailyBySrc,
+          dailyModelMapBySource: bModelsBySrc,
+          modelMetaByKey: bucket.modelMetaByKey || {},
           summary: {
-            ...(payload.summary || {}),
             grandTotalTokens: Number(bucket.totalTokens) || 0,
             totalInputTokens: Number(bucket.totalInputTokens) || 0,
             totalOutputTokens: Number(bucket.totalOutputTokens) || 0,
@@ -19712,23 +20586,65 @@ function closeAllDropdowns(exceptWrap = null) {
             todayTokens: Number(bucket.todayTokens) || 0,
             monthTokens: Number(bucket.monthTokens) || 0,
             yearTokens: Number(bucket.yearTokens) || 0,
+            currentMonthInput: Number(bucket.currentMonthInput) || 0,
+            currentMonthOutput: Number(bucket.currentMonthOutput) || 0,
+            currentMonthCache: Number(bucket.currentMonthCache) || 0,
+            activeDaysCount: Number(bucket.activeDaysCount) || Object.keys(bDaily).length,
+            totalConversations: Number(bucket.totalConversations ?? bucket.callCount) || 0,
+            totalSteps: Number(bucket.totalSteps ?? bucket.callCount) || 0,
+            firstUseDate: bucket.firstUseDate || null,
             cacheReadStats: bucket.cacheReadStats || null,
-            currentMonthCacheReadStats: bucket.cacheReadStats || null
+            currentMonthCacheReadStats: bucket.currentMonthCacheReadStats || bucket.cacheReadStats || null
           },
-          costEstimate: bucket.costEstimate || null,
-          costEstimateBySource: bucket.costEstimate ? { all: bucket.costEstimate, desktop: bucket.costEstimate, cli: bucket.costEstimate } : payload.costEstimateBySource,
-          cacheReadStatsBySource: bucket.cacheReadStats ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: bucket.cacheReadStats } : payload.cacheReadStatsBySource,
-          currentMonthCacheReadStatsBySource: bucket.cacheReadStats ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: bucket.cacheReadStats } : payload.currentMonthCacheReadStatsBySource
+          costEstimate: bCostEst,
+          costEstimateCurrentMonth: bCostMonth,
+          costEstimateBySource: bCostBySrc,
+          cacheReadStatsBySource: bCacheBySrc,
+          currentMonthCacheReadStatsBySource: bMonthCacheBySrc,
+          referenceCost: bucket.referenceCost || {
+            all: { ...zeroRefCost },
+            currentMonth: { ...zeroRefCost },
+            hybrid: { ...zeroRefCost },
+            currentMonthHybrid: { ...zeroRefCost }
+          }
         };
       } else {
         viewPayload = {
           ...payload,
+          scopedAccountView: true,
+          firstUseDate: null,
           dailyMap: {},
           dailyMapBySource: { all: {}, desktop: {}, cli: {}, legacyUnallocated: {} },
+          dailyModelMapBySource: { all: {}, desktop: {}, cli: {} },
+          modelMetaByKey: {},
           summary: {
-            ...(payload.summary || {}),
-            grandTotalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCacheTokens: 0,
-            todayTokens: 0, monthTokens: 0, yearTokens: 0
+            grandTotalTokens: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalCacheTokens: 0,
+            todayTokens: 0,
+            monthTokens: 0,
+            yearTokens: 0,
+            currentMonthInput: 0,
+            currentMonthOutput: 0,
+            currentMonthCache: 0,
+            activeDaysCount: 0,
+            totalConversations: 0,
+            totalSteps: 0,
+            firstUseDate: null,
+            cacheReadStats: null,
+            currentMonthCacheReadStats: null
+          },
+          costEstimate: { ...zeroCostEstimate },
+          costEstimateCurrentMonth: { ...zeroCostEstimate },
+          costEstimateBySource: { all: { ...zeroCostEstimate }, desktop: { ...zeroCostEstimate }, cli: { ...zeroCostEstimate } },
+          cacheReadStatsBySource: { all: null, desktop: null, cli: null },
+          currentMonthCacheReadStatsBySource: { all: null, desktop: null, cli: null },
+          referenceCost: {
+            all: { ...zeroRefCost },
+            currentMonth: { ...zeroRefCost },
+            hybrid: { ...zeroRefCost },
+            currentMonthHybrid: { ...zeroRefCost }
           }
         };
       }
@@ -19737,19 +20653,26 @@ function closeAllDropdowns(exceptWrap = null) {
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const todayStr = formatLocalYmd(new Date());
     const normalized = core && typeof core.normalizeTokenHistoryPayload === 'function'
-      ? core.normalizeTokenHistoryPayload(viewPayload, { source: activeTokenSource, todayStr })
+      ? core.normalizeTokenHistoryPayload(viewPayload, { source: activeTokenSource, todayStr, scopedAccountView: isScopedAccountFilter })
       : null;
 
     if (normalized) {
       ANTIGRAVITY_TOKEN_DATA.dailyMap = normalized.dailyMap;
       ANTIGRAVITY_TOKEN_DATA.dailyMapBySource = normalized.dailyMapBySource;
       ANTIGRAVITY_TOKEN_DATA.dailyModelMap = normalized.dailyModelMap || {};
-      ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource = normalized.dailyModelMapBySource || payload.dailyModelMapBySource || null;
-      ANTIGRAVITY_TOKEN_DATA.modelMetaByKey = normalized.modelMetaByKey || payload.modelMetaByKey || null;
+      ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource = normalized.dailyModelMapBySource || (isScopedAccountFilter ? viewPayload.dailyModelMapBySource : payload.dailyModelMapBySource) || null;
+      ANTIGRAVITY_TOKEN_DATA.modelMetaByKey = normalized.modelMetaByKey || (isScopedAccountFilter ? viewPayload.modelMetaByKey : payload.modelMetaByKey) || null;
       ANTIGRAVITY_TOKEN_DATA.summary = normalized.summary;
       ANTIGRAVITY_TOKEN_DATA.referenceCost = normalized.referenceCost;
       ANTIGRAVITY_TOKEN_DATA.currentPeriod = normalized.currentPeriod;
-      if (normalized.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate;
+      if (isScopedAccountFilter) {
+        ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate || viewPayload.firstUseDate || null;
+        ANTIGRAVITY_TOKEN_DATA.costEstimate = viewPayload.costEstimate;
+        ANTIGRAVITY_TOKEN_DATA.costEstimateCurrentMonth = viewPayload.costEstimateCurrentMonth;
+        ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = viewPayload.costEstimateBySource;
+      } else {
+        if (normalized.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate;
+      }
       if (normalized.updatedAt) ANTIGRAVITY_TOKEN_DATA.updatedAt = normalized.updatedAt;
     } else {
       const newMap = {};
@@ -19850,15 +20773,15 @@ function closeAllDropdowns(exceptWrap = null) {
       renderPlanDetail(mergedPlan);
     }
 
-    if (payload.costEstimate) {
+    if (payload.costEstimate && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimate = payload.costEstimate;
     }
-    if (payload.costEstimateCurrentMonth) {
+    if (payload.costEstimateCurrentMonth && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateCurrentMonth = payload.costEstimateCurrentMonth;
     }
-    if (payload.costEstimateBySource) {
+    if (payload.costEstimateBySource && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = payload.costEstimateBySource;
-    } else if (payload.costEstimate) {
+    } else if (payload.costEstimate && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = {
         all: payload.costEstimate,
         desktop: payload.costEstimate,
@@ -19924,6 +20847,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const tcbTotInp = el('tcb-total-input-val');
     const tcbOut = el('tcb-output-val');
     const tcbRatio = el('tcb-ratio-val');
+    const tcbRatioFill = el('tcb-ratio-bar-fill');
     const tcbNote = el('tcb-note');
     const unknownText = t('tokens.cache.unknown');
     if (tcbInp) tcbInp.textContent = cs.cacheStatus === 'missing' ? unknownText : fmtCardM(cs.totalUncachedInput);
@@ -19934,6 +20858,12 @@ function closeAllDropdowns(exceptWrap = null) {
       if (cs.cacheStatus === 'missing') tcbRatio.textContent = unknownText;
       else if (cs.cacheStatus === 'zero_input') tcbRatio.textContent = t('tokens.cache.na');
       else tcbRatio.textContent = cs.cacheReadPct !== null ? `${cs.cacheReadPct}%` : unknownText;
+    }
+    if (tcbRatioFill) {
+      const pctNum = (cs.cacheStatus === 'missing' || cs.cacheStatus === 'zero_input' || cs.cacheReadPct === null)
+        ? 0
+        : Math.max(0, Math.min(100, Number(cs.cacheReadPct) || 0));
+      tcbRatioFill.style.width = `${pctNum.toFixed(1)}%`;
     }
     if (tcbNote) {
       tcbNote.hidden = false;
@@ -19973,17 +20903,27 @@ function closeAllDropdowns(exceptWrap = null) {
     const tMonthCost = el('t-month-cost');
     const tYearCost = el('t-year-cost');
 
+    const isScopedEmptyAccount = isScopedAccountFilter && totalTokens === 0;
+    const noAcctCostStr = t('tokens.noAccountCost');
     if (tTotalCost) {
-      tTotalCost.textContent = `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tTotalCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
     if (tTodayCost) {
-      tTodayCost.textContent = `≈ $${todayCostInfo.costUSD.toFixed(2)}${todayCostCny !== null ? ` (¥${todayCostCny.toFixed(2)})` : ''}`;
+      tTodayCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `≈ $${todayCostInfo.costUSD.toFixed(2)}${todayCostCny !== null ? ` (¥${todayCostCny.toFixed(2)})` : ''}`;
     }
     if (tMonthCost) {
-      tMonthCost.textContent = `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tMonthCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
     if (tYearCost) {
-      tYearCost.textContent = `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tYearCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
@@ -20559,12 +21499,72 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
-function renderHeatmapGrid(forceRebuild = false) {
+var cumLockedKey = null;
+  var cumHoveredKey = null;
+  var cumExpandedWeekKey = null;
+  var cumLinkedDailyDate = null;
+  var _lastCumSummary = null;
+
+  function resetCumSelectionState() {
+    cumLockedKey = null;
+    cumHoveredKey = null;
+    cumExpandedWeekKey = null;
+    cumLinkedDailyDate = null;
+  }
+
+  function hasActiveCumLock() {
+    return Boolean(cumLockedKey);
+  }
+
+  function clearCumLockAndRefresh() {
+    if (!cumLockedKey) return false;
+    cumLockedKey = null;
+    cumExpandedWeekKey = null;
+    cumLinkedDailyDate = null;
+    if (typeof hidePopover === 'function') hidePopover();
+    if (activeHeatView === 'cum') renderHeatmapCum();
+    return true;
+  }
+
+  function formatCumShortDate(ymd) {
+    const parts = String(ymd || '').split('-');
+    if (parts.length !== 3) return String(ymd || '');
+    return `${parts[1]}.${parts[2]}`;
+  }
+
+  function locateDayInDailyHeatmap(ymd) {
+    if (!ymd) return;
+    cumLinkedDailyDate = ymd;
+    switchHeatView('daily');
+    const colsBox = el('h-grid-cols');
+    if (colsBox) {
+      const cells = [];
+      for (const col of Array.from(colsBox.children || [])) {
+        for (const c of Array.from(col.children || [])) {
+          if (c.getAttribute?.('data-date') === ymd) cells.push(c);
+        }
+      }
+      if (cells.length === 0 && typeof heatPageOffset !== 'undefined') {
+        // 如果目标日因旧分页偏移不在当前页，回到最新页或定位并重绘
+        heatPageOffset = 0;
+        renderHeatmapGrid(true);
+      }
+      const targetCell = (Array.from(colsBox.children || [])
+        .flatMap(col => Array.from(col.children || []))
+        .find(c => c.getAttribute?.('data-date') === ymd));
+      if (targetCell) {
+        targetCell.scrollIntoView?.({ inline: 'center', block: 'nearest' });
+        targetCell.click?.();
+      }
+    }
+  }
+
+  function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
     if (!colsBox || !monthsBox) return;
     const win = computeTimelineWindow();
-    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}`;
+    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}:${cumLinkedDailyDate || ''}`;
     if (!forceRebuild && colsBox.children.length > 0 && colsBox.getAttribute('data-sig') === sig) return;
 
     colsBox.replaceChildren();
@@ -20572,13 +21572,16 @@ function renderHeatmapGrid(forceRebuild = false) {
     colsBox.setAttribute('data-sig', sig);
 
     const todayKey = formatLocalYmd(win.today);
+    const firstKey = win.firstStr && win.firstStr !== '--' ? win.firstStr : '';
     const list = [];
     for (let i = 0; i < win.totalDays; i++) {
       const d = addDays(win.winStart, i);
       const key = formatLocalYmd(d);
       const isFuture = d.getTime() > win.today.getTime();
       const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[key];
-      list.push({ date: d, key, tokens: rec ? rec.total : 0, rec, isFuture, isToday: key === todayKey });
+      const tokens = rec ? rec.total : 0;
+      const isUnactivated = !isFuture && tokens === 0 && Boolean(firstKey && key < firstKey);
+      list.push({ date: d, key, tokens, rec, isFuture, isToday: key === todayKey, isUnactivated });
     }
 
     const monthMarkers = [];
@@ -20601,7 +21604,15 @@ function renderHeatmapGrid(forceRebuild = false) {
       slice.forEach(item => {
         const cell = document.createElement('div');
         const lvl = getLvl(item.tokens);
-        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isToday ? ' is-today' : ''}`;
+        const isLinked = Boolean(cumLinkedDailyDate && item.key === cumLinkedDailyDate);
+        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isUnactivated ? ' is-unactivated' : ''}${item.isToday ? ' is-today' : ''}${isLinked ? ' is-cum-linked' : ''}`;
+        if (item.tokens > 0 && typeof getContinuousHeatColor === 'function') {
+          const contCol = getContinuousHeatColor(item.tokens, 'heat');
+          if (contCol) {
+            cell.style.backgroundColor = contCol;
+            cell.setAttribute('data-heat-color', contCol);
+          }
+        }
         cell.setAttribute('data-date', item.key);
         cell.setAttribute('data-tokens', String(item.tokens));
 
@@ -20609,12 +21620,16 @@ function renderHeatmapGrid(forceRebuild = false) {
           const d = item.date;
           const dateLabel = currentPanelLanguage === 'en'
             ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-            : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+            : (currentPanelLanguage === 'zh-TW'
+              ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
+              : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
           heatPopDate.textContent = `${dateLabel}${item.isToday ? t('heat.today') : (item.key === win.firstStr ? t('heat.firstUse') : '')}`;
           const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
           const cny = convertToCNY(costInfo.costUSD, 'USD');
           const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-          heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heat.future') : '0 Tokens');
+          heatPopVal.textContent = item.tokens > 0
+            ? `${fmtYi(item.tokens)} Tokens${costStr}`
+            : (item.isFuture ? t('heat.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
           if (item.rec) {
             heatPopDet.innerHTML = `
               <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
@@ -20658,11 +21673,12 @@ function renderHeatmapGrid(forceRebuild = false) {
     box.replaceChildren();
 
     const scale = getEffectiveHeatmapScale();
-    const [cEmpty, c1, c2, c3, c4] = scale;
+    const [cEmpty] = scale;
     const win = computeTimelineWindow();
+    const todayTs = win.today.getTime();
     const totalWeeks = 52;
     const weeksData = [];
-    let max = 1;
+    let maxWeekTokens = 0;
 
     for (let c = 0; c < totalWeeks; c++) {
       let sum = 0;
@@ -20675,20 +21691,57 @@ function renderHeatmapGrid(forceRebuild = false) {
         const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[k];
         if (rec) sum += rec.total;
       }
-      if (sum > max) max = sum;
-      weeksData.push({ sum, sDate, eDate, startKey: formatLocalYmd(sDate) });
+      const isFutureWeek = Boolean(sDate && sDate.getTime() > todayTs && sum === 0);
+      if (!isFutureWeek && sum > maxWeekTokens) maxWeekTokens = sum;
+      weeksData.push({ sum, sDate, eDate, startKey: formatLocalYmd(sDate), isFutureWeek });
     }
+
+    const core = globalThis.__AGContextMeterCore || {};
+    const chartPxHeight = 96;
+    const env = typeof core.resolveScaleEnvelope === 'function'
+      ? core.resolveScaleEnvelope(maxWeekTokens, 'weekly')
+      : { tier: '400M', anchor: 400e6, hCap: 0.84, refTicks: [4e6, 40e6, 400e6], overflowThreshold: 2e9 };
+    box.setAttribute('data-scale-tier', env.tier || '');
+
+    // 绘制右侧量级参考线（统一调用 mapBarHeightPx，确保刻度与柱图位置精确一致）
+    const ticks = Array.isArray(env.refTicks) ? env.refTicks : [];
+    const lastTickVal = ticks.length ? ticks[ticks.length - 1] : 0;
+    const visibleTicks = ticks.length > 3 ? [ticks[0], ticks[ticks.length - 2], lastTickVal] : ticks;
+    visibleTicks.forEach(tickVal => {
+      if (!(tickVal > 0) || typeof core.mapBarHeightPx !== 'function') return;
+      const tickRes = core.mapBarHeightPx(tickVal, env, chartPxHeight, { minPx: 3.0, scaleKind: 'weekly' });
+      const line = document.createElement('div');
+      line.className = 'w-ref-line';
+      line.style.bottom = `${(3 + tickRes.height).toFixed(2)}px`;
+      const lbl = document.createElement('span');
+      lbl.className = 'w-ref-lbl';
+      const isCeilingOverflowTick = Boolean(env.overflow && tickVal === lastTickVal);
+      lbl.textContent = isCeilingOverflowTick ? `${formatCompactTokenCount(tickVal)}+` : formatCompactTokenCount(tickVal);
+      line.appendChild(lbl);
+      box.appendChild(line);
+    });
 
     weeksData.forEach(w => {
       const col = document.createElement('div');
       col.className = 'w-bar-col';
       col.setAttribute('data-week-start', w.startKey);
+      col.setAttribute('data-tokens', String(w.sum));
       const fill = document.createElement('div');
-      fill.className = 'w-bar-fill';
-      const pct = Math.max(3, (w.sum / max) * 100);
-      fill.style.height = `${pct}%`;
-      const lvl = getLvlForRange(w.sum, 'week', max);
-      fill.style.backgroundColor = w.sum === 0 ? cEmpty : (scale[lvl] || c4);
+      if (w.sum <= 0 || w.isFutureWeek) {
+        fill.className = 'w-bar-fill is-empty';
+        fill.style.height = '1px';
+        fill.style.backgroundColor = cEmpty;
+      } else {
+        const barRes = typeof core.mapBarHeightPx === 'function'
+          ? core.mapBarHeightPx(w.sum, env, chartPxHeight, { minPx: 3.0, scaleKind: 'weekly' })
+          : { height: Math.max(3, (w.sum / Math.max(1, maxWeekTokens)) * chartPxHeight), overflow: false };
+        fill.className = `w-bar-fill${barRes.overflow ? ' is-overflow' : ''}`;
+        fill.style.height = `${barRes.height.toFixed(2)}px`;
+        const colHex = typeof getContinuousHeatColor === 'function'
+          ? getContinuousHeatColor(w.sum, 'weekly')
+          : scale[4];
+        fill.style.backgroundColor = colHex || scale[4];
+      }
       col.appendChild(fill);
 
       const showPop = () => {
@@ -20701,7 +21754,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
         const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
-        heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : '0 Tokens';
+        heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : (w.isFutureWeek ? t('tokens.heat.futureTip') : '0 Tokens');
         heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
@@ -20723,122 +21776,553 @@ function renderHeatmapGrid(forceRebuild = false) {
   }
 
   function renderHeatmapCum() {
-    const cvs = el('h-cum-canvas');
-    if (!cvs || !cvs.getContext) return;
-    const ctx = cvs.getContext('2d');
-    const rect = cvs.getBoundingClientRect ? cvs.getBoundingClientRect() : { width: 670 };
-    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-    const width = (rect.width || 670);
-    const height = 100;
-    cvs.width = width * dpr;
-    cvs.height = height * dpr;
-    ctx.scale(dpr, dpr);
+    const box = el('h-cum-box');
+    if (!box) return;
+    box.replaceChildren();
 
-    ctx.clearRect(0, 0, width, height);
-
+    const core = globalThis.__AGContextMeterCore || {};
     const win = computeTimelineWindow();
     const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
-    const winStartKey = formatLocalYmd(win.winStart);
-    // 计算窗口起点之前的历史滚存基数（支持跨年翻页时累计曲线连续）
-    let running = 0;
-    for (const [k, rec] of Object.entries(map)) {
-      if (k < winStartKey && rec?.total > 0) running += rec.total;
-    }
-
+    const todayKey = formatLocalYmd(win.today);
+    // 当前窗口截断到今天；历史翻页窗口展示到该区间末日
     const activeEnd = win.winEnd.getTime() > win.today.getTime() ? win.today : win.winEnd;
-    const plotDays = Math.max(1, Math.floor((activeEnd.getTime() - win.winStart.getTime()) / 86400000) + 1);
-    const points = [];
+    const startKey = formatLocalYmd(win.winStart);
+    const endKey = formatLocalYmd(activeEnd);
 
-    for (let i = 0; i < plotDays; i++) {
-      const d = addDays(win.winStart, i);
-      const k = formatLocalYmd(d);
-      const rec = map[k];
-      if (rec) running += rec.total;
-      points.push({ date: d, key: k, val: running });
+    const rangeEl = el('h-win-range');
+    if (rangeEl) rangeEl.textContent = `${formatDotYmd(win.winStart)} – ${formatDotYmd(activeEnd)}`;
+
+    const summary = typeof core.computeCumulativeStripSummary === 'function'
+      ? core.computeCumulativeStripSummary(map, startKey, endKey)
+      : {
+        startDate: startKey, endDate: endKey, totalDays: 0, activeDays: 0, zeroDays: 0,
+        intervalTotal: 0, grouping: 'daily', dailyEntries: [], segments: [], topPeaks: [],
+        mergedPeakSpans: [], peakDay: null, peakWeek: null, concentration: null,
+        concentrationOmittedReason: 'empty', ruler: { status: 'zero', pct: 0, value: 0, ticks: [] }
+      };
+    _lastCumSummary = summary;
+
+    // 切换账号/区间后若锁定键不再属于当前窗口，自动清理失效选中项
+    if (cumLockedKey && !summary.segments.some(s => s.key === cumLockedKey)) {
+      cumLockedKey = null;
+      cumExpandedWeekKey = null;
+    }
+    if (cumHoveredKey && !summary.segments.some(s => s.key === cumHoveredKey)) {
+      cumHoveredKey = null;
     }
 
-    const max = running || 1;
-    const denom = Math.max(1, points.length - 1);
-    const step = points.length === 1 ? width : (width / denom);
-
-    const scale = getEffectiveHeatmapScale();
-    const strokeColor = customColors.tokenAccent || scale[4];
-    const strokeRgb = hexToRgb(normalizeHex(strokeColor)) || { r: 192, g: 132, b: 252 };
-    const grad = ctx.createLinearGradient(0, 0, 0, height);
-    grad.addColorStop(0, `rgba(${strokeRgb.r}, ${strokeRgb.g}, ${strokeRgb.b}, 0.36)`);
-    grad.addColorStop(1, `rgba(${strokeRgb.r}, ${strokeRgb.g}, ${strokeRgb.b}, 0.02)`);
-
-    ctx.beginPath();
-    ctx.moveTo(0, height);
-    points.forEach((pt, idx) => {
-      const x = points.length === 1 ? width / 2 : idx * step;
-      const y = height - (pt.val / max) * (height - 12);
-      ctx.lineTo(x, y);
+    const rangeDates = summary.dailyEntries.map(d => d.date);
+    const costAgg = calculateIntervalCost(map, rangeDates, activeCostModel, {
+      mode: activeCostMode,
+      todayStr: todayKey
     });
-    if (points.length === 1) {
-      const y = height - (points[0].val / max) * (height - 12);
-      ctx.lineTo(width, y);
-    }
-    ctx.lineTo(width, height);
-    ctx.fillStyle = grad;
-    ctx.fill();
+    const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+    const costText = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
 
-    ctx.beginPath();
-    points.forEach((pt, idx) => {
-      const x = points.length === 1 ? 0 : idx * step;
-      const y = height - (pt.val / max) * (height - 12);
-      if (idx === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    const scrollBox = el('h-scroll-box') || box.parentElement;
+    const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
+    const W = (rect && rect.width > 120) ? rect.width : 670;
+    const isNarrow = W < 460;
+
+    const rootEl = document.createElement('div');
+    rootEl.className = `cum-root${isNarrow ? ' is-narrow' : ''}`;
+    rootEl.setAttribute('data-grouping', summary.grouping);
+    rootEl.setAttribute('data-total-days', String(summary.totalDays));
+    rootEl.setAttribute('data-interval-total', String(summary.intervalTotal));
+
+    // 1. 顶部数字行（总量与参考金额各只在此处显示一次）
+    const headRow = document.createElement('div');
+    headRow.className = 'cum-summary-head';
+
+    const headLeft = document.createElement('div');
+    headLeft.className = 'cum-head-left';
+
+    const totalBig = document.createElement('span');
+    totalBig.className = 'cum-total-big';
+    totalBig.id = 'cum-head-total';
+    totalBig.textContent = `${fmtYi(summary.intervalTotal)} Tokens`;
+    totalBig.title = `${summary.intervalTotal.toLocaleString()} Tokens`;
+
+    const metaText = document.createElement('span');
+    metaText.className = 'cum-meta-text';
+    metaText.id = 'cum-head-meta';
+    const rangeTxt = t('tokens.cum.daysMeta', {
+      start: formatCumShortDate(summary.startDate),
+      end: formatCumShortDate(summary.endDate),
+      total: summary.totalDays
     });
-    if (points.length === 1) {
-      const y = height - (points[0].val / max) * (height - 12);
-      ctx.lineTo(width, y);
-    }
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    const activeTxt = t('tokens.cum.activeMeta', { active: summary.activeDays, zero: summary.zeroDays });
+    metaText.textContent = summary.totalDays < 7
+      ? `${rangeTxt} · ${t('tokens.cum.recordDaysShort', { total: summary.totalDays })} · ${activeTxt}`
+      : `${rangeTxt} · ${activeTxt}`;
 
-    cvs.onmousemove = e => {
-      const r = cvs.getBoundingClientRect();
-      const mouseX = e.clientX - r.left;
-      const idx = points.length === 1 ? 0 : Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
-      const pt = points[idx];
-      const cumDates = [];
-      for (const k of Object.keys(map)) {
-        if (k <= pt.key) cumDates.push(k);
-      }
-      const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
-        mode: activeCostMode,
-        todayStr: formatLocalYmd(win.today)
+    headLeft.appendChild(totalBig);
+    headLeft.appendChild(metaText);
+
+    const headCost = document.createElement('span');
+    headCost.className = 'cum-head-cost';
+    headCost.id = 'cum-head-cost';
+    headCost.textContent = costText;
+
+    headRow.appendChild(headLeft);
+    headRow.appendChild(headCost);
+    rootEl.appendChild(headRow);
+
+    // 2. 跨账号共用的对数量级尺 (10M / 100M / 1B / 10B / 100B)
+    const rulerCard = document.createElement('div');
+    rulerCard.className = 'cum-ruler-card';
+    rulerCard.setAttribute('data-ruler-status', summary.ruler.status);
+
+    const rulerTop = document.createElement('div');
+    rulerTop.className = 'cum-ruler-top';
+    const rulerLbl = document.createElement('span');
+    rulerLbl.textContent = t('tokens.cum.rulerLabel');
+    const rulerBadge = document.createElement('span');
+    rulerBadge.className = 'cum-ruler-badge';
+    rulerBadge.id = 'cum-ruler-badge';
+    if (summary.ruler.status === 'zero') {
+      rulerBadge.classList.add('is-zero');
+      rulerBadge.textContent = t('tokens.cum.zeroVal');
+    } else if (summary.ruler.status === 'below_min') {
+      rulerBadge.classList.add('is-below-min');
+      rulerBadge.textContent = t('tokens.cum.belowMin', { val: fmtYi(summary.intervalTotal) });
+    } else if (summary.ruler.status === 'above_max') {
+      rulerBadge.classList.add('is-above-max');
+      rulerBadge.textContent = t('tokens.cum.aboveMax', { val: fmtYi(summary.intervalTotal) });
+    } else {
+      rulerBadge.textContent = fmtYi(summary.intervalTotal);
+    }
+    rulerTop.appendChild(rulerLbl);
+    rulerTop.appendChild(rulerBadge);
+    rulerCard.appendChild(rulerTop);
+
+    const rulerWrap = document.createElement('div');
+    rulerWrap.className = 'cum-ruler-track-wrap';
+    const rulerTrack = document.createElement('div');
+    rulerTrack.className = 'cum-ruler-track';
+    rulerWrap.appendChild(rulerTrack);
+
+    (summary.ruler.ticks || []).forEach((tk, idx, arr) => {
+      const tickEl = document.createElement('div');
+      tickEl.className = 'cum-ruler-tick';
+      tickEl.style.left = `${tk.pct}%`;
+      if (idx === 0) tickEl.setAttribute('data-edge', 'start');
+      else if (idx === arr.length - 1) tickEl.setAttribute('data-edge', 'end');
+      if (idx === 1 || idx === 3) tickEl.setAttribute('data-mid', 'true');
+      const tickLbl = document.createElement('span');
+      tickLbl.className = 'cum-ruler-tick-lbl';
+      tickLbl.textContent = tk.label;
+      tickEl.appendChild(tickLbl);
+      rulerWrap.appendChild(tickEl);
+    });
+
+    const marker = document.createElement('div');
+    marker.className = `cum-ruler-marker${summary.ruler.status === 'below_min' ? ' is-below-min' : ''}${summary.ruler.status === 'above_max' ? ' is-above-max' : ''}${summary.ruler.status === 'zero' ? ' is-zero' : ''}`;
+    marker.id = 'cum-ruler-marker';
+    marker.style.left = `${summary.ruler.pct.toFixed(2)}%`;
+    marker.setAttribute('data-ruler-pct', summary.ruler.pct.toFixed(2));
+    marker.setAttribute('data-ruler-status', summary.ruler.status);
+    const tri = document.createElement('div');
+    tri.className = 'cum-ruler-tri';
+    marker.appendChild(tri);
+    rulerWrap.appendChild(marker);
+    rulerCard.appendChild(rulerWrap);
+    rootEl.appendChild(rulerCard);
+
+    // 3. 空态处理（总量为 0，避免除零）
+    if (summary.intervalTotal <= 0) {
+      const emptyBox = document.createElement('div');
+      emptyBox.className = 'cum-empty-state';
+      emptyBox.id = 'cum-empty-state';
+      const emptyTitle = document.createElement('div');
+      emptyTitle.className = 'cum-empty-title';
+      emptyTitle.textContent = t('tokens.cum.emptyTitle');
+      const emptySub = document.createElement('div');
+      emptySub.className = 'cum-empty-sub';
+      emptySub.textContent = t('tokens.cum.emptySub', { days: summary.totalDays });
+      emptyBox.appendChild(emptyTitle);
+      emptyBox.appendChild(emptySub);
+      rootEl.appendChild(emptyBox);
+      box.appendChild(rootEl);
+      updateSummaryBar('cum', rangeDates);
+      return;
+    }
+
+    // 4. 主图：比例时间带 + 高峰标签 + 连接线 + 等距日期轴
+    const stripSection = document.createElement('div');
+    stripSection.className = 'cum-strip-section';
+
+    const peakChipsRow = document.createElement('div');
+    peakChipsRow.className = 'cum-peak-chips';
+    peakChipsRow.id = 'cum-peak-chips';
+    summary.mergedPeakSpans.forEach(sp => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `cum-peak-chip${cumLockedKey && sp.itemKeys.includes(cumLockedKey) ? ' is-active' : ''}`;
+      const rangeStr = sp.startDate === sp.endDate
+        ? formatCumShortDate(sp.startDate)
+        : `${formatCumShortDate(sp.startDate)}–${formatCumShortDate(sp.endDate)}`;
+      chip.textContent = t('tokens.cum.peakSpanFmt', {
+        range: rangeStr,
+        pct: sp.sharePct >= 10 ? sp.sharePct.toFixed(0) : sp.sharePct.toFixed(1)
       });
-      const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-      const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-      const cumDateLabel = currentPanelLanguage === 'en'
-        ? `${pt.date.getFullYear()}-${String(pt.date.getMonth() + 1).padStart(2, '0')}-${String(pt.date.getDate()).padStart(2, '0')}`
-        : `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日`;
-      heatPopDate.textContent = `${cumDateLabel}${t('heat.cumSuffix')}`;
-      heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
-      heatPopDet.innerHTML = `<span>${t('heat.cumTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
+      chip.addEventListener('click', () => {
+        const firstKey = sp.itemKeys[0];
+        cumLockedKey = (cumLockedKey === firstKey) ? null : firstKey;
+        if (summary.grouping === 'weekly') cumExpandedWeekKey = cumLockedKey;
+        renderHeatmapCum();
+      });
+      peakChipsRow.appendChild(chip);
+    });
+    if (summary.grouping === 'weekly') {
+      const grpHint = document.createElement('span');
+      grpHint.className = 'cum-group-hint';
+      grpHint.textContent = t('tokens.cum.weekGroupHint', { n: summary.segments.length });
+      peakChipsRow.appendChild(grpHint);
+    }
+    stripSection.appendChild(peakChipsRow);
+
+    const stripEl = document.createElement('div');
+    stripEl.className = 'cum-strip';
+    stripEl.id = 'cum-strip';
+
+    const createSvgNode = tag => {
+      if (typeof document !== 'undefined' && typeof document.createElementNS === 'function') {
+        return document.createElementNS('http://www.w3.org/2000/svg', tag);
+      }
+      return document.createElement(tag);
+    };
+    const connSvg = createSvgNode('svg');
+    connSvg.setAttribute('class', 'cum-connectors-svg');
+    connSvg.setAttribute('viewBox', '0 0 1000 18');
+    connSvg.setAttribute('preserveAspectRatio', 'none');
+
+    const axisRow = document.createElement('div');
+    axisRow.className = 'cum-axis-row';
+    axisRow.id = 'cum-axis-row';
+
+    const isLight = typeof resolveEffectiveTheme === 'function' && resolveEffectiveTheme() === 'light';
+    const segPaletteDark = ['#4c1d95', '#5b21b6', '#6d28d9', '#7c3aed'];
+    const segPaletteLight = ['#7c3aed', '#6d28d9', '#8b5cf6', '#5b21b6'];
+    const segPalette = isLight ? segPaletteLight : segPaletteDark;
+
+    const showSegPop = (seg, anchorNode) => {
+      const segDates = seg.days.map(d => d.date);
+      const segCost = calculateIntervalCost(map, segDates, activeCostModel, { mode: activeCostMode, todayStr: todayKey });
+      const segCny = convertToCNY(segCost.totalCostUSD, 'USD');
+      const costSuffix = segCost.totalCostUSD > 0 ? ` · ≈ $${segCost.totalCostUSD.toFixed(2)}${segCny !== null ? ` (¥${segCny.toFixed(2)})` : ''}` : '';
+      const dateTitle = seg.startDate === seg.endDate
+        ? seg.startDate
+        : `${seg.startDate} – ${seg.endDate} (${seg.daysCount}d)`;
+      heatPopDate.textContent = `${dateTitle}${t('heat.cumSuffix')}`;
+      const deltaPrefix = summary.grouping === 'weekly' ? t('tokens.cum.weekSumLbl') : t('tokens.heat.cumDeltaLbl');
+      heatPopVal.textContent = seg.tokens > 0
+        ? `${deltaPrefix}: +${fmtYi(seg.tokens)} (${seg.sharePct.toFixed(1)}%)${costSuffix}`
+        : `0 Tokens (0.0%)`;
+      heatPopDet.innerHTML = `<span>${t('tokens.heat.cumTotalLbl')}: ${fmtYi(seg.cumulativeTokens)} Tokens (${summary.intervalTotal > 0 ? ((seg.cumulativeTokens / summary.intervalTotal) * 100).toFixed(1) : '0.0'}%)</span>`;
       heatPopDet.style.display = 'block';
-      heatPop.style.left = `${e.clientX}px`;
-      heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 12)) - 6}px`;
+      const r = anchorNode && anchorNode.getBoundingClientRect ? anchorNode.getBoundingClientRect() : { left: 100, top: 100, width: 20 };
+      heatPop.style.left = `${r.left + (r.width || 0) / 2}px`;
+      heatPop.style.top = `${r.top - 6}px`;
       heatPop.style.opacity = '1';
     };
-    cvs.onmouseleave = hidePopover;
 
-    const allWinDates = [];
-    for (let i = 0; i < win.totalDays; i++) allWinDates.push(formatLocalYmd(addDays(win.winStart, i)));
-    updateSummaryBar('cum', allWinDates);
+    const segNodeMap = new Map();
+    const axisNodeMap = new Map();
+    const connNodeMap = new Map();
+
+    const syncCumActiveVisuals = () => {
+      const focusKey = cumHoveredKey || cumLockedKey || null;
+      summary.segments.forEach(s => {
+        const segEl = segNodeMap.get(s.key);
+        const axEl = axisNodeMap.get(s.key);
+        const lnEl = connNodeMap.get(s.key);
+        const isAct = Boolean(focusKey && s.key === focusKey);
+        const isDim = Boolean(focusKey && s.key !== focusKey);
+        if (segEl) {
+          segEl.classList?.toggle?.('is-active', isAct);
+          if (!segEl.classList?.toggle) {
+            if (isAct) segEl.classList?.add?.('is-active'); else segEl.classList?.remove?.('is-active');
+          }
+          if (isDim) segEl.classList?.add?.('is-dimmed'); else segEl.classList?.remove?.('is-dimmed');
+        }
+        if (axEl) {
+          if (isAct) axEl.classList?.add?.('is-active'); else axEl.classList?.remove?.('is-active');
+        }
+        if (lnEl) {
+          const curCls = lnEl.getAttribute('class') || 'cum-conn-line';
+          lnEl.setAttribute('class', isAct ? 'cum-conn-line is-active' : 'cum-conn-line');
+        }
+      });
+    };
+
+    let activeBarIdx = 0;
+    let lastShownLblPct = -999;
+    const totalSegs = summary.segments.length;
+
+    summary.segments.forEach((seg, sIdx) => {
+      const isActiveFocus = Boolean((cumHoveredKey || cumLockedKey) === seg.key);
+
+      // 横带仅含非零日/周；零用量日不占宽
+      if (seg.tokens > 0 && seg.stripWidthPct > 0) {
+        const segBtn = document.createElement('button');
+        segBtn.type = 'button';
+        segBtn.className = `cum-seg${seg.isPeak ? ' is-peak' : ''}${isActiveFocus ? ' is-active' : ''}`;
+        segBtn.style.width = `${seg.stripWidthPct.toFixed(6)}%`;
+        const colBg = seg.isPeak
+          ? (isLight ? '#7c3aed' : '#9333ea')
+          : segPalette[(seg.weekIdx * 2 + (activeBarIdx % 2)) % segPalette.length];
+        segBtn.style.backgroundColor = colBg;
+        segBtn.setAttribute('data-cum-key', seg.key);
+        segBtn.setAttribute('data-tokens', String(seg.tokens));
+        segBtn.setAttribute('data-width-pct', seg.stripWidthPct.toFixed(4));
+        segBtn.setAttribute('data-cum-tokens', String(seg.cumulativeTokens));
+        segBtn.setAttribute('aria-label', `${seg.startDate === seg.endDate ? seg.startDate : `${seg.startDate}–${seg.endDate}`}: ${fmtYi(seg.tokens)} (${seg.sharePct.toFixed(1)}%), ${t('tokens.heat.cumTotalLbl')} ${fmtYi(seg.cumulativeTokens)}`);
+
+        if (!isNarrow && seg.stripWidthPct >= 10) {
+          const lbl = document.createElement('span');
+          lbl.className = 'cum-seg-lbl';
+          lbl.textContent = seg.isPeak
+            ? `${formatCumShortDate(seg.startDate)} ${seg.sharePct.toFixed(0)}%`
+            : formatCumShortDate(seg.startDate);
+          segBtn.appendChild(lbl);
+        }
+
+        const onEnter = () => {
+          cumHoveredKey = seg.key;
+          syncCumActiveVisuals();
+          showSegPop(seg, segBtn);
+        };
+        const onLeave = () => {
+          if (cumHoveredKey === seg.key) cumHoveredKey = null;
+          syncCumActiveVisuals();
+          hidePopover();
+        };
+        const onClick = () => {
+          cumLockedKey = (cumLockedKey === seg.key) ? null : seg.key;
+          cumExpandedWeekKey = cumLockedKey && summary.grouping === 'weekly' ? cumLockedKey : null;
+          renderHeatmapCum();
+        };
+        segBtn.addEventListener('mouseenter', onEnter);
+        segBtn.addEventListener('focus', onEnter);
+        segBtn.addEventListener('mouseleave', onLeave);
+        segBtn.addEventListener('blur', onLeave);
+        segBtn.addEventListener('click', onClick);
+
+        stripEl.appendChild(segBtn);
+        segNodeMap.set(seg.key, segBtn);
+        activeBarIdx += 1;
+
+        // 细连接线（仅连接非零有效段到等距刻度点）
+        const connLine = createSvgNode('line');
+        connLine.setAttribute('class', `cum-conn-line${isActiveFocus ? ' is-active' : ''}`);
+        connLine.setAttribute('data-cum-key', seg.key);
+        connLine.setAttribute('x1', (seg.stripCenterPct * 10).toFixed(2));
+        connLine.setAttribute('y1', '0');
+        connLine.setAttribute('x2', (seg.equidistantPct * 10).toFixed(2));
+        connLine.setAttribute('y2', '18');
+        connSvg.appendChild(connLine);
+        connNodeMap.set(seg.key, connLine);
+      }
+
+      // 等距日期轴（含 0 用量日 ✕ 标记）
+      const slotBtn = document.createElement('button');
+      slotBtn.type = 'button';
+      slotBtn.className = `cum-axis-slot${seg.isZero ? ' is-zero' : ''}${isActiveFocus ? ' is-active' : ''}`;
+      slotBtn.style.left = `${seg.equidistantPct.toFixed(4)}%`;
+      slotBtn.setAttribute('data-cum-key', seg.key);
+      if (seg.isZero) slotBtn.setAttribute('data-zero', 'true');
+      slotBtn.setAttribute('aria-label', `${seg.startDate}: ${seg.isZero ? '0 Tokens' : fmtYi(seg.tokens)}`);
+
+      if (seg.isZero) {
+        const zMark = document.createElement('span');
+        zMark.className = 'cum-axis-zero';
+        zMark.textContent = '✕';
+        slotBtn.appendChild(zMark);
+      } else {
+        const dot = document.createElement('span');
+        dot.className = `cum-axis-dot${seg.isPeak ? ' is-peak' : ''}`;
+        slotBtn.appendChild(dot);
+      }
+
+      const isFirst = sIdx === 0;
+      const isLast = sIdx === totalSegs - 1;
+      const canPlaceMid = !isFirst && !isLast && (seg.equidistantPct - lastShownLblPct >= 14) && (100 - seg.equidistantPct >= 11);
+      if (isFirst || isLast || (canPlaceMid && (seg.isZero || seg.isPeak))) {
+        const lbl = document.createElement('span');
+        lbl.className = 'cum-axis-lbl';
+        lbl.textContent = seg.isZero ? `${formatCumShortDate(seg.startDate)}(0)` : formatCumShortDate(seg.startDate);
+        slotBtn.appendChild(lbl);
+        lastShownLblPct = seg.equidistantPct;
+      }
+
+      const onAxisEnter = () => {
+        cumHoveredKey = seg.key;
+        syncCumActiveVisuals();
+        showSegPop(seg, slotBtn);
+      };
+      const onAxisLeave = () => {
+        if (cumHoveredKey === seg.key) cumHoveredKey = null;
+        syncCumActiveVisuals();
+        hidePopover();
+      };
+      const onAxisClick = () => {
+        cumLockedKey = (cumLockedKey === seg.key) ? null : seg.key;
+        cumExpandedWeekKey = cumLockedKey && summary.grouping === 'weekly' ? cumLockedKey : null;
+        renderHeatmapCum();
+      };
+      slotBtn.addEventListener('mouseenter', onAxisEnter);
+      slotBtn.addEventListener('focus', onAxisEnter);
+      slotBtn.addEventListener('mouseleave', onAxisLeave);
+      slotBtn.addEventListener('blur', onAxisLeave);
+      slotBtn.addEventListener('click', onAxisClick);
+
+      axisRow.appendChild(slotBtn);
+      axisNodeMap.set(seg.key, slotBtn);
+    });
+
+    stripSection.appendChild(stripEl);
+    stripSection.appendChild(connSvg);
+    stripSection.appendChild(axisRow);
+    rootEl.appendChild(stripSection);
+
+    // 5. 结论行（基于真实数据计算，不写死）
+    const concRow = document.createElement('div');
+    concRow.className = `cum-conclusion-row${summary.concentrationOmittedReason === 'insufficient_days' ? ' is-insufficient' : ''}`;
+    concRow.id = 'cum-conclusion-row';
+    const concParts = [];
+    if (summary.concentration) {
+      concParts.push(t('tokens.cum.concLine', {
+        start: formatCumShortDate(summary.concentration.startDate),
+        end: formatCumShortDate(summary.concentration.endDate),
+        n: summary.concentration.daysCount,
+        pct: summary.concentration.sharePct.toFixed(1)
+      }));
+    } else if (summary.concentrationOmittedReason === 'insufficient_days') {
+      concParts.push(t('tokens.cum.concInsufficient'));
+    }
+    if (summary.grouping === 'weekly' && summary.peakWeek) {
+      concParts.push(t('tokens.cum.peakWeekFmt', {
+        range: `${formatCumShortDate(summary.peakWeek.startDate)}–${formatCumShortDate(summary.peakWeek.endDate)}`,
+        val: fmtYi(summary.peakWeek.tokens),
+        pct: summary.peakWeek.sharePct.toFixed(1)
+      }));
+    } else if (summary.peakDay) {
+      concParts.push(t('tokens.cum.peakDayFmt', {
+        date: formatCumShortDate(summary.peakDay.date),
+        val: fmtYi(summary.peakDay.tokens),
+        pct: summary.peakDay.sharePct.toFixed(1)
+      }));
+    }
+    concRow.textContent = concParts.join(' · ');
+    rootEl.appendChild(concRow);
+
+    // 6. 锁定详情与联动「每天」热力图 / 周展开到日
+    const lockedSeg = cumLockedKey ? summary.segments.find(s => s.key === cumLockedKey) : null;
+    if (lockedSeg) {
+      const insp = document.createElement('div');
+      insp.className = 'cum-inspector';
+      insp.id = 'cum-inspector';
+
+      const inspTop = document.createElement('div');
+      inspTop.className = 'cum-insp-top';
+
+      const metrics = document.createElement('div');
+      metrics.className = 'cum-insp-metrics';
+      const titleDate = lockedSeg.startDate === lockedSeg.endDate
+        ? lockedSeg.startDate
+        : `${lockedSeg.startDate} – ${lockedSeg.endDate}`;
+      const deltaTitle = summary.grouping === 'weekly' ? t('tokens.cum.weekSumLbl') : t('tokens.heat.cumDeltaLbl');
+      metrics.innerHTML = `<strong>${titleDate}</strong><span>${deltaTitle}: <strong>+${fmtYi(lockedSeg.tokens)}</strong></span><span>${t('tokens.cum.shareLbl')}: <strong>${lockedSeg.sharePct.toFixed(1)}%</strong></span><span>${t('tokens.heat.cumTotalLbl')}: <strong>${fmtYi(lockedSeg.cumulativeTokens)}</strong></span>`;
+
+      const actions = document.createElement('div');
+      actions.className = 'cum-insp-actions';
+
+      if (summary.grouping === 'weekly' && lockedSeg.days.length > 0) {
+        const isExpanded = cumExpandedWeekKey === lockedSeg.key;
+        const expBtn = document.createElement('button');
+        expBtn.type = 'button';
+        expBtn.className = 'cum-mini-btn';
+        expBtn.id = 'cum-btn-expand-days';
+        expBtn.textContent = isExpanded
+          ? t('tokens.cum.collapseDays')
+          : t('tokens.cum.expandDays', { n: lockedSeg.days.length });
+        expBtn.addEventListener('click', () => {
+          cumExpandedWeekKey = isExpanded ? null : lockedSeg.key;
+          renderHeatmapCum();
+        });
+        actions.appendChild(expBtn);
+      }
+
+      const locBtn = document.createElement('button');
+      locBtn.type = 'button';
+      locBtn.className = 'cum-mini-btn';
+      locBtn.id = 'cum-btn-locate-daily';
+      locBtn.textContent = t('tokens.cum.locateDaily');
+      locBtn.addEventListener('click', () => {
+        const targetDay = lockedSeg.days && lockedSeg.days.length
+          ? lockedSeg.days.slice().sort((a, b) => b.tokens - a.tokens)[0].date
+          : lockedSeg.startDate;
+        locateDayInDailyHeatmap(targetDay);
+      });
+      actions.appendChild(locBtn);
+
+      const clrBtn = document.createElement('button');
+      clrBtn.type = 'button';
+      clrBtn.className = 'cum-mini-btn';
+      clrBtn.id = 'cum-btn-clear-lock';
+      clrBtn.textContent = t('tokens.cum.clearLock');
+      clrBtn.addEventListener('click', () => { clearCumLockAndRefresh(); });
+      actions.appendChild(clrBtn);
+
+      inspTop.appendChild(metrics);
+      inspTop.appendChild(actions);
+      insp.appendChild(inspTop);
+
+      if (summary.grouping === 'weekly' && cumExpandedWeekKey === lockedSeg.key && lockedSeg.days.length > 0) {
+        const daysList = document.createElement('div');
+        daysList.className = 'cum-week-days';
+        daysList.id = 'cum-week-days';
+        lockedSeg.days.forEach(dayObj => {
+          const dayBtn = document.createElement('button');
+          dayBtn.type = 'button';
+          dayBtn.className = `cum-day-row-btn${cumLinkedDailyDate === dayObj.date ? ' is-active' : ''}`;
+          dayBtn.setAttribute('data-day-date', dayObj.date);
+          const leftD = document.createElement('span');
+          leftD.textContent = formatCumShortDate(dayObj.date);
+          const rightD = document.createElement('span');
+          rightD.textContent = dayObj.tokens > 0
+            ? `${fmtYi(dayObj.tokens)} (${dayObj.sharePct.toFixed(1)}%)`
+            : t('tokens.cum.zeroDayBadge');
+          dayBtn.appendChild(leftD);
+          dayBtn.appendChild(rightD);
+          dayBtn.addEventListener('click', () => locateDayInDailyHeatmap(dayObj.date));
+          daysList.appendChild(dayBtn);
+        });
+        insp.appendChild(daysList);
+      }
+
+      rootEl.appendChild(insp);
+    }
+
+    box.appendChild(rootEl);
+    updateSummaryBar('cum', rangeDates);
   }
 
   function updateSummaryBar(viewType, dateKeys = []) {
     const sumTokensEl = el('h-sum-tokens');
     const sumCostEl = el('h-sum-cost');
+    const sumTokensWrap = el('h-sum-tokens-wrap');
+    const sumCostWrap = el('h-sum-cost-wrap');
     const sumDailyAvgEl = el('h-sum-daily-avg');
     const sumActiveAvgEl = el('h-sum-active-avg');
     const subRatioWrapEl = el('h-sum-sub-ratio-wrap');
     const subRatioEl = el('h-sum-sub-ratio');
     if (!sumTokensEl || !sumCostEl) return;
+
+    const isCum = viewType === 'cum';
+    if (sumTokensWrap) sumTokensWrap.style.display = isCum ? 'none' : '';
+    if (sumCostWrap) sumCostWrap.style.display = isCum ? 'none' : '';
 
     const win = computeTimelineWindow();
     const todayStr = formatLocalYmd(win.today);
@@ -20920,6 +22404,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     grid.style.height = `${H}px`;
 
     const dateKeys = [];
+    const firstKey = win.firstStr && win.firstStr !== '--' ? win.firstStr : '';
     for (let day = 1; day <= daysInMonth; day++) {
       const d = new Date(targetYear, targetMonth, day);
       const k = formatLocalYmd(d);
@@ -20928,13 +22413,18 @@ function renderHeatmapGrid(forceRebuild = false) {
       const isToday = k === todayKey;
       const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[k];
       const tokens = rec ? rec.total : 0;
+      const isUnactivated = !isFuture && tokens === 0 && Boolean(firstKey && k < firstKey);
       const lvl = getLvl(tokens);
+      const contCol = (!isFuture && tokens > 0 && typeof getContinuousHeatColor === 'function')
+        ? getContinuousHeatColor(tokens, 'heat')
+        : null;
 
       const cell = document.createElement('div');
-      cell.className = `heat-month-cell heat-cell lvl-${lvl}${isFuture ? ' is-future' : ''}${isToday ? ' is-today' : ''}`;
+      cell.className = `heat-month-cell heat-cell lvl-${lvl}${isFuture ? ' is-future' : ''}${isUnactivated ? ' is-unactivated' : ''}${isToday ? ' is-today' : ''}`;
       cell.style.width = `${bestS}px`;
       cell.style.height = `${bestS}px`;
-      cell.style.backgroundColor = scale[lvl];
+      cell.style.backgroundColor = contCol || scale[lvl];
+      if (contCol) cell.setAttribute('data-heat-color', contCol);
       cell.setAttribute('data-date', k);
       cell.setAttribute('data-tokens', String(tokens));
 
@@ -20951,9 +22441,13 @@ function renderHeatmapGrid(forceRebuild = false) {
         const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
         const mDateLabel = currentPanelLanguage === 'en'
           ? `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-          : `${targetYear}年${targetMonth + 1}月${day}日`;
+          : (currentPanelLanguage === 'zh-TW'
+            ? `${targetYear} 年 ${targetMonth + 1} 月 ${day} 日`
+            : `${targetYear}年${targetMonth + 1}月${day}日`);
         heatPopDate.textContent = `${mDateLabel}${isToday ? t('heat.today') : ''}`;
-        heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? t('heat.future') : '0 Tokens');
+        heatPopVal.textContent = tokens > 0
+          ? `${fmtYi(tokens)} Tokens${costStr}`
+          : (isFuture ? t('heat.future') : (isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
         if (rec) {
           heatPopDet.innerHTML = `
             <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
@@ -20989,7 +22483,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     const scrollBox = el('h-scroll-box') || box.parentElement;
     const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
     const W = (rect && rect.width > 200) ? Math.floor(rect.width - 16) : 670;
-    const H = 95;
+    const H = 98;
 
     const scale = getEffectiveHeatmapScale();
     const win = computeTimelineWindow();
@@ -20997,10 +22491,11 @@ function renderHeatmapGrid(forceRebuild = false) {
     const thisYear = today.getFullYear();
     const thisMonth = today.getMonth();
     const targetYear = thisYear + heatYearOffset;
+    const firstYm = (win.firstStr && win.firstStr.length >= 7 && win.firstStr !== '--') ? win.firstStr.slice(0, 7) : '';
 
     const monthsData = [];
     const allYearDates = [];
-    let maxMonthTokens = 1;
+    let maxMonthTokens = 0;
 
     for (let m = 0; m < 12; m++) {
       const daysCount = new Date(targetYear, m + 1, 0).getDate();
@@ -21016,6 +22511,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       }
       const isCurrent = (targetYear === thisYear && m === thisMonth);
       const isFuture = (targetYear > thisYear || (targetYear === thisYear && m > thisMonth));
+      const ym = `${targetYear}-${String(m + 1).padStart(2, '0')}`;
+      const isUnactivated = !isFuture && mTokens === 0 && Boolean(firstYm && ym < firstYm);
       if (!isFuture && mTokens > maxMonthTokens) {
         maxMonthTokens = mTokens;
       }
@@ -21026,9 +22523,16 @@ function renderHeatmapGrid(forceRebuild = false) {
         tokens: mTokens,
         dates: mDates,
         isCurrent,
-        isFuture
+        isFuture,
+        isUnactivated
       });
     }
+
+    const core = globalThis.__AGContextMeterCore || {};
+    const env = typeof core.resolveScaleEnvelope === 'function'
+      ? core.resolveScaleEnvelope(maxMonthTokens, 'yearly')
+      : { tier: '1B', label: '1B', anchor: 1e9, dCap: 58, refRings: [1e6, 10e6, 100e6, 1e9], overflowThreshold: 1e9 };
+    box.setAttribute('data-scale-tier', env.tier || '');
 
     const createSvgNode = tag => {
       if (typeof document !== 'undefined' && typeof document.createElementNS === 'function') {
@@ -21043,42 +22547,118 @@ function renderHeatmapGrid(forceRebuild = false) {
     svg.setAttribute('width', String(W));
     svg.setAttribute('height', String(H));
 
-    const Rmin = 6;
-    const Rmax = 24;
-    const colW = W / 12;
-    const cy = 42;
+    // 右侧留出同心参考环独立区域，保证窄窗不挤压或遮挡任何月份标签
+    const refZoneW = Math.min(70, Math.max(52, Math.round(W * 0.11)));
+    const monthsWidth = Math.max(200, W - refZoneW);
+    const colW = monthsWidth / 12;
+    const cy = 40;
+    const labelY = H - 7;
 
-    let peakMonthIndex = -1;
+    // 判定双门槛 Peak 徽标（活跃非零月 >= 2 且最大值 >= 10M）
+    const nonFutureTokens = monthsData.filter(x => !x.isFuture).map(x => x.tokens);
+    const allowPeak = typeof core.shouldShowYearlyPeakBadge === 'function'
+      ? core.shouldShowYearlyPeakBadge(nonFutureTokens)
+      : false;
+
+    let rawPeakIdx = -1;
     let peakTokens = 0;
     monthsData.forEach(item => {
       if (!item.isFuture && item.tokens > peakTokens) {
         peakTokens = item.tokens;
-        peakMonthIndex = item.monthIndex;
+        rawPeakIdx = item.monthIndex;
       }
     });
+    const peakMonthIndex = allowPeak ? rawPeakIdx : -1;
 
+    // 1. 先渲染右侧背景同心参考圆（1M / 10M / 100M / 1B 中匹配当前包络的物理大小）
+    const refGroup = createSvgNode('g');
+    refGroup.setAttribute('class', 'yearly-ref-rings');
+    const refCx = monthsWidth + refZoneW / 2;
+    const ringsList = Array.isArray(env.refRings) && env.refRings.length ? env.refRings : [env.anchor];
+    ringsList.forEach(ringVal => {
+      const rInfo = typeof core.mapBubbleDiameter === 'function'
+        ? core.mapBubbleDiameter(ringVal, env)
+        : { radius: 20 };
+      const ringCircle = createSvgNode('circle');
+      ringCircle.setAttribute('cx', String(refCx));
+      ringCircle.setAttribute('cy', String(cy));
+      ringCircle.setAttribute('r', rInfo.radius.toFixed(2));
+      ringCircle.setAttribute('fill', 'none');
+      ringCircle.setAttribute('stroke', 'rgba(148,163,184,0.28)');
+      ringCircle.setAttribute('stroke-width', '1');
+      ringCircle.setAttribute('stroke-dasharray', '2,2');
+      refGroup.appendChild(ringCircle);
+    });
+    const refCaption = createSvgNode('text');
+    refCaption.setAttribute('x', String(refCx));
+    refCaption.setAttribute('y', String(labelY));
+    refCaption.setAttribute('text-anchor', 'middle');
+    refCaption.setAttribute('font-size', '9');
+    refCaption.setAttribute('fill', 'var(--ag-text-muted)');
+    refCaption.textContent = env.label || '';
+    refGroup.appendChild(refCaption);
+    svg.appendChild(refGroup);
+
+    // 2. 渲染 12 个月气泡、状态描边与全列点击热区
     monthsData.forEach((item, idx) => {
       const cx = colW * idx + colW / 2;
       const g = createSvgNode('g');
       g.setAttribute('class', 'heat-yearly-bubble-group');
+      g.setAttribute('data-month', String(item.monthIndex + 1));
+      g.setAttribute('data-tokens', String(item.tokens));
       g.style.animationDelay = `${idx * 20}ms`;
 
-      let radius = Rmin;
-      if (!item.isFuture && item.tokens > 0) {
-        const ratio = Math.sqrt(item.tokens / maxMonthTokens);
-        radius = Rmin + ratio * (Rmax - Rmin);
+      // 全列交互热区，确保 5px 零值点或极小气泡可轻松悬浮与点击
+      const hitRect = createSvgNode('rect');
+      hitRect.setAttribute('class', 'bubble-hit-area');
+      hitRect.setAttribute('x', String(colW * idx));
+      hitRect.setAttribute('y', '0');
+      hitRect.setAttribute('width', String(colW));
+      hitRect.setAttribute('height', String(H));
+      hitRect.setAttribute('fill', 'transparent');
+      g.appendChild(hitRect);
+
+      let radius = 2.5;
+      let fillCol = scale[0] || '#27272a';
+      let isOverflow = false;
+      if (item.isFuture) {
+        radius = 8.0;
+        fillCol = 'transparent';
+      } else if (item.tokens > 0) {
+        const bInfo = typeof core.mapBubbleDiameter === 'function'
+          ? core.mapBubbleDiameter(item.tokens, env)
+          : { radius: 14, diameter: 28, overflow: false };
+        radius = bInfo.radius;
+        isOverflow = Boolean(bInfo.overflow);
+        fillCol = (typeof getContinuousHeatColor === 'function' ? getContinuousHeatColor(item.tokens, 'yearly') : null) || scale[2];
       }
 
-      const lvl = item.isFuture ? 0 : getLvlForRange(item.tokens, 'month', maxMonthTokens);
-      const fillCol = item.isFuture ? 'transparent' : (scale[lvl] || scale[0]);
+      if (isOverflow) {
+        const glowRing = createSvgNode('circle');
+        glowRing.setAttribute('class', 'bubble-overflow-glow');
+        glowRing.setAttribute('cx', String(cx));
+        glowRing.setAttribute('cy', String(cy));
+        glowRing.setAttribute('r', (radius + 2.5).toFixed(2));
+        glowRing.setAttribute('fill', 'none');
+        glowRing.setAttribute('stroke', '#E879F9');
+        glowRing.setAttribute('stroke-width', '2');
+        glowRing.setAttribute('opacity', '0.88');
+        g.appendChild(glowRing);
+      }
 
       const circle = createSvgNode('circle');
       circle.setAttribute('class', 'bubble-main');
       circle.setAttribute('cx', String(cx));
       circle.setAttribute('cy', String(cy));
-      circle.setAttribute('r', String(radius));
+      circle.setAttribute('r', radius.toFixed(2));
+      circle.setAttribute('data-diameter', (radius * 2).toFixed(2));
       circle.setAttribute('fill', fillCol);
-      circle.setAttribute('stroke', item.isFuture ? 'rgba(255,255,255,0.18)' : (item.monthIndex === peakMonthIndex ? 'var(--ag-text-primary)' : 'rgba(255,255,255,0.08)'));
+      if (item.isUnactivated) {
+        circle.setAttribute('opacity', '0.35');
+      }
+      circle.setAttribute('stroke', item.isFuture
+        ? '#3F3F46'
+        : (item.monthIndex === peakMonthIndex ? 'var(--ag-text-primary)' : 'rgba(255,255,255,0.10)'));
       circle.setAttribute('stroke-width', item.monthIndex === peakMonthIndex ? '2' : '1');
 
       if (item.isFuture) {
@@ -21089,9 +22669,10 @@ function renderHeatmapGrid(forceRebuild = false) {
 
       if (item.isCurrent) {
         const activeRing = createSvgNode('circle');
+        activeRing.setAttribute('class', 'bubble-current-ring');
         activeRing.setAttribute('cx', String(cx));
         activeRing.setAttribute('cy', String(cy));
-        activeRing.setAttribute('r', String(radius + 4));
+        activeRing.setAttribute('r', (radius + 3.5).toFixed(2));
         activeRing.setAttribute('fill', 'none');
         activeRing.setAttribute('stroke', 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))');
         activeRing.setAttribute('stroke-width', '1.5');
@@ -21101,21 +22682,23 @@ function renderHeatmapGrid(forceRebuild = false) {
 
       if (item.monthIndex === peakMonthIndex && item.tokens > 0) {
         const peakBadge = createSvgNode('text');
+        peakBadge.setAttribute('class', 'bubble-peak-badge');
         peakBadge.setAttribute('x', String(cx));
-        peakBadge.setAttribute('y', String(cy - radius - 5));
+        peakBadge.setAttribute('y', String(Math.max(8, cy - radius - 4)));
         peakBadge.setAttribute('text-anchor', 'middle');
         peakBadge.setAttribute('font-size', '8.5');
         peakBadge.setAttribute('font-weight', '600');
         peakBadge.setAttribute('fill', 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))');
-        peakBadge.textContent = t('heat.peak');
+        peakBadge.textContent = t('tokens.heat.peakBadge');
         g.appendChild(peakBadge);
       }
 
       const text = createSvgNode('text');
+      text.setAttribute('class', 'bubble-month-lbl');
       text.setAttribute('x', String(cx));
-      text.setAttribute('y', String(H - 12));
+      text.setAttribute('y', String(labelY));
       text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('font-size', '10');
+      text.setAttribute('font-size', colW < 34 ? '8.5' : '10');
       text.setAttribute('fill', item.isCurrent ? 'var(--ag-text-primary)' : 'var(--ag-text-muted)');
       text.setAttribute('font-weight', item.isCurrent ? '600' : '400');
       text.textContent = item.monthName;
@@ -21130,7 +22713,9 @@ function renderHeatmapGrid(forceRebuild = false) {
         const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
         const yearMonthLabel = currentPanelLanguage === 'en' ? `${item.monthName} ${targetYear}` : `${targetYear}年${item.monthName}`;
         heatPopDate.textContent = `${yearMonthLabel}${item.isCurrent ? t('heatmap.pop.inProgress') : (item.monthIndex === peakMonthIndex ? t('heatmap.pop.peak') : '')}`;
-        heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heatmap.pop.future') : '0 Tokens');
+        heatPopVal.textContent = item.tokens > 0
+          ? `${fmtYi(item.tokens)} Tokens${costStr}`
+          : (item.isFuture ? t('heatmap.pop.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
         heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}</span>`;
         heatPopDet.style.display = 'block';
 
@@ -22068,7 +23653,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (detailGrid) {
       detailGrid.replaceChildren();
       const agentDesc = call.agentRole === 'subagent'
-        ? `${t('session.latestCall.agentSub')}${call.subagentRole ? ` (${call.subagentRole})` : (call.subagentType ? ` (${call.subagentType})` : '')}${call.parentCascadeId ? ` · parent ${String(call.parentCascadeId).slice(0, 8)}` : ''}`
+        ? `${t('session.latestCall.agentSub')}${call.subagentRole ? ` (${call.subagentRole})` : (call.subagentType ? ` (${call.subagentType})` : '')}${call.parentCascadeId ? ` · parent ${String(call.parentCascadeId).slice(0, 8)}` : ''}${call.parentStepIndex != null ? ` · step #${call.parentStepIndex}` : ` · ${t('session.latestCall.missingParentStep')}`}`
         : (call.attributionConfidence === 'unidentified' ? t('session.latestCall.agentUnknown') : t('session.latestCall.agentMain'));
       const fmtDurOrUnk = (v) => (v !== null && v !== undefined) ? (typeof formatHumanDuration === 'function' ? formatHumanDuration(v, currentPanelLanguage) : `${v}s`) : unk;
       const eDetailVal = callEval?.efficiency?.available
@@ -22082,9 +23667,7 @@ function renderHeatmapGrid(forceRebuild = false) {
           : (call.rawPlaceholderId
             ? `${unk} (${t('session.latestCall.rawIdNote', { id: call.rawPlaceholderId })})`
             : (call.modelExactId || call.modelKey || unk)));
-      const effortSuffix = call.effort ? String(call.effort).trim() : '';
-      const hasEffortInTitle = effortSuffix && modelTitle.trim().toLowerCase().endsWith(`(${effortSuffix.toLowerCase()})`);
-      const modelAndEffortDisplay = (effortSuffix && !hasEffortInTitle) ? `${modelTitle} (${effortSuffix})` : modelTitle;
+      const modelAndEffortDisplay = formatProductDisplayWithEffort(modelTitle, call.effort);
       const callStreamDisplay = callEval?.isSampleSparse
         ? `${t('session.speed.shortSampleBadge')}${callEval.shortWindowEstimateSpeed != null ? ` (${t('session.speed.shortWindowEst')}: ${callEval.shortWindowEstimateSpeed} tok/s)` : ''}`
         : ((call.streamingTps ?? call.streamSpeed) != null ? `${call.streamingTps ?? call.streamSpeed} tok/s${callEval?.speedTier ? ` · ${callEval.speedTier.title}` : ''}` : unk);
@@ -22262,14 +23845,27 @@ function renderHeatmapGrid(forceRebuild = false) {
       noteLine.textContent = t('session.timeline.windowNote');
       sumEl.appendChild(sLine);
       sumEl.appendChild(noteLine);
+      if (tl.subagentNote) {
+        const dbNoteLine = document.createElement('div');
+        dbNoteLine.style.marginTop = '2px';
+        dbNoteLine.textContent = t('session.timeline.dbMissingNote', { reason: tl.subagentNote });
+        sumEl.appendChild(dbNoteLine);
+      }
     }
 
     if (listEl) {
+      const curRouteKey = state.route || '';
+      const sameTimelineRoute = state.timelineRenderedRoute === curRouteKey;
+      const prevScrollTop = sameTimelineRoute ? Number(listEl.scrollTop || 0) : 0;
       listEl.replaceChildren();
+      state.timelineRenderedRoute = curRouteKey;
       const resolveTurnKey = (tObj) => tObj?.turnKey || `turn-${tObj?.turnIndex ?? 'x'}-${tObj?.stepIndex ?? 'na'}`;
       const descTurns = [...turns].reverse();
-      if (descTurns.length > 0 && state.expandedTurnKeys.size === 0) {
-        state.expandedTurnKeys.add(resolveTurnKey(descTurns[0]));
+      if (descTurns.length > 0 && state.timelineAutoExpandedRoute !== curRouteKey) {
+        state.timelineAutoExpandedRoute = curRouteKey;
+        if (state.expandedTurnKeys.size === 0) {
+          state.expandedTurnKeys.add(resolveTurnKey(descTurns[0]));
+        }
       }
       const limit = Math.max(5, Number(state.timelinePageLimit) || 10);
       const visibleTurns = descTurns.slice(0, limit);
@@ -22340,7 +23936,8 @@ function renderHeatmapGrid(forceRebuild = false) {
         const idxEl = document.createElement('span');
         idxEl.className = 'timeline-turn-idx';
         idxEl.textContent = t('session.timeline.turnLabel', { n: turn.turnIndex });
-        const promptText = turn.preview || turn.userPromptPreview || '';
+        const rawTurnPrompt = turn.preview || turn.userPromptPreview || '';
+        const promptText = typeof sanitizeTurnPreviewText === 'function' ? sanitizeTurnPreviewText(rawTurnPrompt, 120) : rawTurnPrompt;
         const promptEl = document.createElement('span');
         promptEl.className = 'timeline-turn-prompt';
         promptEl.textContent = promptText || t('session.timeline.turnNoPrompt');
@@ -22403,6 +24000,10 @@ function renderHeatmapGrid(forceRebuild = false) {
           unlinkedEl.hidden = true;
           unlinkedEl.replaceChildren();
         }
+      }
+      if (prevScrollTop > 0) {
+        const maxScroll = Math.max(0, (listEl.scrollHeight || 0) - (listEl.clientHeight || 0));
+        listEl.scrollTop = maxScroll > 0 ? Math.min(prevScrollTop, maxScroll) : prevScrollTop;
       }
     }
   }
@@ -23164,6 +24765,18 @@ function renderHeatmapGrid(forceRebuild = false) {
           let effectiveCall = (prevSessionCall && call.status === 'final' && prevSessionCall.status === 'final')
             ? mergePendingCallData(prevSessionCall, call)
             : call;
+          const isNewLiveObservation = Boolean(
+            (wasHydrated && !prevSessionCall) ||
+            prevSessionCall?.liveRealtimeConfirmed === true ||
+            (state.livePendingRequest && state.livePendingRequest.cascadeId === id && call.callId !== state.livePendingRequest.baselineCallId)
+          );
+          if (isNewLiveObservation) {
+            effectiveCall = {
+              ...effectiveCall,
+              liveRealtimeConfirmed: true,
+              liveObservedAtMs: prevSessionCall?.liveObservedAtMs || Date.now()
+            };
+          }
           if (prevPending && effectiveCall.status === 'final' && prevPending.status === 'final') {
             effectiveCall = mergePendingCallData(prevPending, effectiveCall);
           }
@@ -25243,14 +26856,19 @@ function renderHeatmapGrid(forceRebuild = false) {
         const unAttrTot = Number(payload?.unattributedUsage?.totalTokens ?? ANTIGRAVITY_TOKEN_DATA.rawPayload?.unattributedUsage?.totalTokens ?? 0);
         noteEl.textContent = isEn
           ? `Unattributed history (${formatTokensK(unAttrTot)}): offline Desktop/CLI/IDE files without verified email.`
-          : (isTw ? `歷史未歸屬 (${formatTokensK(unAttrTot)})：無帳號依據的舊檔案不計入當前帳號。` : `历史未归属 (${formatTokensK(unAttrTot)})：无账号依据的旧文件不计入当前账号。`);
+          : (isTw ? `歷史未歸屬 (${formatTokensK(unAttrTot)})：無帳號依據的舊檔案不計入當前帳號。` : `历史未归属 (${formatTokensK(unAttrTot)}): 无账号依据的旧文件不计入当前账号。`);
       } else if (activeTokenAccountFilter !== 'all') {
         const b = usageMap[activeTokenAccountFilter];
+        const bTot = Number(b?.totalTokens || 0);
         const kaReqs = Number(b?.keepaliveRequests || 0);
         const kaTok = Number(b?.keepaliveTokens || 0);
-        noteEl.textContent = kaReqs > 0
-          ? (isEn ? `Includes ${kaReqs} keepalive reqs (${formatTokensK(kaTok)}) tracked separately.` : `含独立保活消耗 ${kaReqs} 次 (${formatTokensK(kaTok)})。`)
-          : (isEn ? 'Isolated account ledger (zero cross-account mixing).' : (isTw ? '單帳號獨立帳本（零跨號混算）。' : '单账号独立账本（零跨号混算）。'));
+        if (bTot <= 0 && kaReqs <= 0) {
+          noteEl.textContent = t('accounts.filterNoData');
+        } else if (kaReqs > 0) {
+          noteEl.textContent = t('accounts.filterKeepaliveNote', { reqs: kaReqs, tok: formatTokensK(kaTok) });
+        } else {
+          noteEl.textContent = isEn ? 'Isolated account ledger (zero cross-account mixing).' : (isTw ? '單帳號獨立帳本（零跨號混算）。' : '单账号独立账本（零跨号混算）。');
+        }
       } else {
         const attrCount = Object.keys(usageMap).length;
         noteEl.textContent = attrCount > 0
@@ -25258,10 +26876,14 @@ function renderHeatmapGrid(forceRebuild = false) {
           : '';
       }
     }
+    if (typeof enhancedDropdowns !== 'undefined' && enhancedDropdowns?.get) {
+      enhancedDropdowns.get('token-account-select')?.refresh?.();
+    }
   }
 
   el('token-account-select')?.addEventListener('change', (ev) => {
     activeTokenAccountFilter = ev.target?.value || 'all';
+    resetAccountScopedViewOffsets();
     if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
       applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
     }
@@ -25309,11 +26931,14 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (fbEl) {
       fbEl.hidden = !accountsUiState.feedback;
       fbEl.textContent = accountsUiState.feedback || '';
+      const tone = accountsUiState.feedbackTone;
+      fbEl.className = `quota-acct-feedback${tone === 'error' ? ' is-error' : (tone === 'success' ? ' is-success' : '')}`;
     }
 
     // 2. 账号清单
     const listEl = el('quota-accounts-list');
     if (listEl) {
+      const prevScrollTop = Number(listEl.scrollTop || 0);
       listEl.replaceChildren();
       const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
       if (!accts.length) {
@@ -25333,6 +26958,15 @@ function renderHeatmapGrid(forceRebuild = false) {
           left.title = acc.email;
           const right = document.createElement('div');
           right.className = 'quota-subsec-actions';
+          if (acc.hasRefreshToken) {
+            const refBtn = document.createElement('button');
+            refBtn.className = 'switch-pill-btn quota-acct-refresh-btn';
+            refBtn.type = 'button';
+            refBtn.disabled = accountsUiState.busy;
+            refBtn.textContent = t('accounts.retryQuota');
+            refBtn.addEventListener('click', () => void performAccountAction('refresh_quota', { email: acc.email }));
+            right.appendChild(refBtn);
+          }
           if (acc.isActive) {
             const pill = document.createElement('span');
             pill.className = 'key-pill pill-good';
@@ -25342,49 +26976,76 @@ function renderHeatmapGrid(forceRebuild = false) {
             const swBtn = document.createElement('button');
             swBtn.className = 'switch-pill-btn';
             swBtn.type = 'button';
-            swBtn.disabled = accountsUiState.busy || !acc.hasRefreshToken || Boolean(acc.authInvalid);
+            swBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy) || !acc.hasRefreshToken || Boolean(acc.authInvalid);
             swBtn.textContent = t('accounts.switchBtn');
             swBtn.addEventListener('click', () => void performAccountAction('switch', { email: acc.email }));
             right.appendChild(swBtn);
           }
+          const rmBtn = document.createElement('button');
+          rmBtn.className = 'quota-acct-remove-btn';
+          rmBtn.type = 'button';
+          rmBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy);
+          rmBtn.textContent = t('accounts.removeBtn');
+          if (rmBtn.dataset) rmBtn.dataset.removeEmail = acc.email;
+          rmBtn.addEventListener('click', () => openRemoveAccountModal(acc));
+          right.appendChild(rmBtn);
           topRow.appendChild(left);
           topRow.appendChild(right);
           card.appendChild(topRow);
 
-          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => `${p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'))}: ${p.noPermission ? 'NoPerm' : (p.percentText || '--')}`);
+          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => {
+            const pName = p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'));
+            const pVal = p.noPermission
+              ? t('accounts.poolNoAccess')
+              : (p.percentText && p.percentText !== '未知' ? p.percentText : t('accounts.poolUnknown'));
+            return `${pName}: ${pVal}`;
+          });
           const metaRow = document.createElement('div');
           metaRow.className = 'quota-acct-meta';
-          const upd = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';
-          const authNote = acc.authInvalid ? (isEn ? ' · Re-auth required' : ' · 需重登授权') : '';
-          metaRow.textContent = `${poolSummaries.length ? poolSummaries.join(' | ') : (isEn ? 'Quota pending' : '待刷新配额')} · ${upd}${authNote}`;
+          const updRaw = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';
+          const upd = (acc.quotaSnapshot && acc.lastQuotaError && acc.lastQuotaUpdatedAtMs)
+            ? t('accounts.lastSnapshotTime', { time: updRaw })
+            : updRaw;
+          const authNote = acc.authInvalid ? ` · ${t('accounts.reauthRequired')}` : '';
+          const emptyPoolText = acc.lastQuotaError ? t('accounts.poolPending') : t('accounts.poolUnknown');
+          metaRow.textContent = `${poolSummaries.length ? poolSummaries.join(' | ') : emptyPoolText} · ${upd}${authNote}`;
           card.appendChild(metaRow);
+          if (acc.lastQuotaError) {
+            const errRow = document.createElement('div');
+            errRow.className = 'quota-acct-error';
+            const meta = acc.lastQuotaErrorMeta;
+            const detailParts = [];
+            if (meta?.stage) detailParts.push(meta.stage);
+            if (meta?.targetHost) detailParts.push(meta.targetHost);
+            if (meta?.httpStatus != null) detailParts.push(`HTTP ${meta.httpStatus}`);
+            const translatedErr = typeof translateBackendText === 'function' ? translateBackendText(acc.lastQuotaError) : acc.lastQuotaError;
+            const detailStr = detailParts.length ? `[${detailParts.join(' · ')}] ${translatedErr}` : translatedErr;
+            errRow.textContent = t('accounts.quotaStageErr', { detail: detailStr });
+            card.appendChild(errRow);
+          }
           listEl.appendChild(card);
         }
+      }
+      if (prevScrollTop > 0) {
+        const maxScroll = Math.max(0, (listEl.scrollHeight || 0) - (listEl.clientHeight || 0));
+        listEl.scrollTop = maxScroll > 0 ? Math.min(prevScrollTop, maxScroll) : prevScrollTop;
       }
     }
 
     // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿）
     const stPill = el('auto-switch-status-pill');
     const lastNote = el('auto-switch-last-note');
-    const stMap = {
-      disabled: isEn ? 'Off' : '已关闭',
-      watching: isEn ? 'Watching' : '监控中',
-      pending_debounce: isEn ? 'Debouncing' : '防抖确认中',
-      waiting_idle: isEn ? 'Waiting idle' : '等待当前生成完成',
-      cooldown: isEn ? 'Cooldown' : '冷却保护中',
-      switching: isEn ? 'Switching' : '切号中',
-      all_candidates_exhausted: isEn ? 'No candidate available' : '备选账号均不足',
-      blocked_untrusted_quota: isEn ? 'Skipped (Stale/Error)' : '数据不可信已跳过',
-      error: isEn ? 'Halted (Error)' : '失败已停用'
-    };
+    const stKeys = new Set(['disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown', 'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota', 'error']);
     if (stPill) {
       const sKey = ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled');
-      stPill.textContent = stMap[sKey] || sKey;
+      stPill.textContent = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
       stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (sKey === 'error' || sKey === 'all_candidates_exhausted' ? 'pill-warn' : 'pill-muted')}`;
     }
     if (lastNote) {
       const errMsg = ov.autoSwitchStatus?.lastError;
-      lastNote.textContent = errMsg || (ov.autoSwitchStatus?.lastResult?.toEmail ? `上次切至 ${ov.autoSwitchStatus.lastResult.toEmail}` : '');
+      lastNote.textContent = errMsg
+        ? (typeof translateBackendText === 'function' ? translateBackendText(errMsg) : errMsg)
+        : (ov.autoSwitchStatus?.lastResult?.toEmail ? t('accounts.lastSwitchedTo', { email: ov.autoSwitchStatus.lastResult.toEmail }) : '');
     }
 
     if (!isEditingAutoSwitchDraft()) {
@@ -25399,6 +27060,11 @@ function renderHeatmapGrid(forceRebuild = false) {
       if (modeSel && cfg.metricMode) modeSel.value = cfg.metricMode;
       if (winSel && cfg.windowKey) winSel.value = cfg.windowKey;
       if (thInp && cfg.thresholdPct != null) thInp.value = String(cfg.thresholdPct);
+      if (typeof enhancedDropdowns !== 'undefined' && enhancedDropdowns?.get) {
+        enhancedDropdowns.get('sel-auto-switch-pool')?.refresh?.();
+        enhancedDropdowns.get('sel-auto-switch-mode')?.refresh?.();
+        enhancedDropdowns.get('sel-auto-switch-window')?.refresh?.();
+      }
 
       const candWrap = el('auto-switch-candidates-list');
       if (candWrap) {
@@ -25435,11 +27101,13 @@ function renderHeatmapGrid(forceRebuild = false) {
         for (const iv of intervals) {
           const card = document.createElement('div');
           card.className = 'quota-compare-card';
-          const sign = iv.deltaPp > 0 ? `+${iv.deltaPp}` : String(iv.deltaPp);
           const deltaLabel = iv.deltaPp < 0
             ? (isEn ? `-${Math.abs(iv.deltaPp)} pp` : (isTw ? `下降 ${Math.abs(iv.deltaPp)} 個百分點` : `下降 ${Math.abs(iv.deltaPp)} 个百分点`))
-            : (iv.deltaPp > 0 ? (isEn ? `+${iv.deltaPp} pp` : `回升 ${iv.deltaPp} 个百分点`) : (isEn ? '0 pp' : '无变化'));
-          const splitBadge = iv.splitReason ? ` [${iv.splitReason}]` : '';
+            : (iv.deltaPp > 0 ? (isEn ? `+${iv.deltaPp} pp` : (isTw ? `回升 ${iv.deltaPp} 個百分點` : `回升 ${iv.deltaPp} 个百分点`)) : (isEn ? '0 pp' : (isTw ? '無變化' : '无变化')));
+          const splitText = iv.splitReason
+            ? (t(`quota.split.${iv.splitReason}`) !== `quota.split.${iv.splitReason}` ? t(`quota.split.${iv.splitReason}`) : iv.splitReason)
+            : '';
+          const splitBadge = splitText ? ` [${splitText}]` : '';
           const sTime = new Date(iv.startAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           const eTime = new Date(iv.endAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           const head = document.createElement('div');
@@ -25456,8 +27124,10 @@ function renderHeatmapGrid(forceRebuild = false) {
           const body = document.createElement('div');
           body.className = 'quota-acct-meta';
           body.textContent = isEn
-            ? `Account: ${iv.email} · Local reqs: ${iv.requestCount} | Uncached In: ${formatTokensK(iv.uncachedInputTokens)} · Cache Read: ${formatTokensK(iv.cacheReadTokens)} · Out: ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · Sampling gap detected' : ''}`
-            : `账号: ${iv.email} · 本机请求 ${iv.requestCount} 次 | 未缓存输入 ${formatTokensK(iv.uncachedInputTokens)} · 缓存读取 ${formatTokensK(iv.cacheReadTokens)} · 输出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含采样缺口已切分' : ''}`;
+            ? `Account: ${iv.email} · Local reqs: ${iv.requestCount} | Uncached In: ${formatTokensK(iv.uncachedInputTokens)} · Cache Read: ${formatTokensK(iv.cacheReadTokens)} · Out: ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · Sampling gap split' : ''}`
+            : (isTw
+              ? `帳號: ${iv.email} · 本機請求 ${iv.requestCount} 次 | 未快取輸入 ${formatTokensK(iv.uncachedInputTokens)} · 快取讀取 ${formatTokensK(iv.cacheReadTokens)} · 輸出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含採樣缺口已切分' : ''}`
+              : `账号: ${iv.email} · 本机请求 ${iv.requestCount} 次 | 未缓存输入 ${formatTokensK(iv.uncachedInputTokens)} · 缓存读取 ${formatTokensK(iv.cacheReadTokens)} · 输出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含采样缺口已切分' : ''}`);
           card.appendChild(head);
           card.appendChild(body);
           cmpEl.appendChild(card);
@@ -25480,26 +27150,27 @@ function renderHeatmapGrid(forceRebuild = false) {
       kaPill.className = `key-pill ${ks.running ? 'pill-warn' : 'pill-muted'}`;
     }
     if (kaProto && ov.protocolEvidence) {
-      kaProto.textContent = isEn
-        ? `Protocol check (Antigravity ${ov.protocolEvidence.checkedVersion}, ${ov.protocolEvidence.rpcCountChecked} RPCs): No explicit server-side cache TTL or renewal endpoint was found in checked RPCs/responses, and cacheWriteTokens/cacheTtl are omitted; keepalive stays unverified & off.`
-        : ov.protocolEvidence.conclusion;
+      kaProto.textContent = t('keepalive.protocolSummary', {
+        ver: ov.protocolEvidence.checkedVersion || '2.32.1',
+        rpcs: ov.protocolEvidence.rpcCountChecked || 375
+      });
     }
     if (kaExp && ov.protocolEvidence?.minimalExperimentPlan) {
       const plan = ov.protocolEvidence.minimalExperimentPlan;
-      const reqCount = plan.totalRequestsPlanned || 5;
-      const modelName = plan.targetModel || 'Gemini 4 Hydrogen (High)';
-      kaExp.textContent = isEn
-        ? `Pending A/B plan (${reqCount} total reqs on ${modelName}, identical ~20K fixed non-tool prefix): Control (2 reqs, 0/6m) vs Keepalive (3 reqs, 0/4m "ok"/6m); collects per-call cacheReadTokens, stops on error/429/switch/limit; awaiting maintainer sign-off.`
-        : `待确认最小对照实验（${modelName}，合计 ${reqCount} 次请求，相同约 20K 只读无工具前缀）：对照组 2 次 vs 实验组 3 次（含 t=4m 仅发 1 次 "ok"，预计总输出 60~150 tok）；逐次采集 cacheReadTokens 并在异常/限流/切号/达上限时终止，等待维护者确认。`;
+      kaExp.textContent = t('keepalive.experimentSummary', {
+        reqs: plan.totalRequestsPlanned || 5,
+        model: plan.targetModel || 'Gemini 4 Hydrogen (High)'
+      });
     }
     if (kaRun) {
       kaRun.textContent = ks.blockedReason
-        ? `拦截保护: ${ks.blockedReason}`
-        : (ks.stopReason ? `最近状态: ${ks.stopReason}` : (isEn ? 'Keepalive disabled by default; requires explicit maintainer approval before any ping.' : '保活默认关闭，且切换账号/退出/达上限时自动终止。'));
+        ? t('keepalive.blockedReason', { reason: ks.blockedReason })
+        : (ks.stopReason ? t('keepalive.stopReason', { reason: ks.stopReason }) : t('keepalive.defaultNote'));
     }
     if (kaStopBtn) kaStopBtn.hidden = !ks.running;
 
     syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+    if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
   }
 
   async function refreshAccountsOverview({ silent = true, refreshAllRemote = false } = {}) {
@@ -25516,8 +27187,18 @@ function renderHeatmapGrid(forceRebuild = false) {
           liveRoute: '/accounts-action',
           liveBody: { action: 'refresh_quota' }
         });
-        const data = res?.result?.overview || res?.result;
+        const out = res?.result || {};
+        const data = out.overview || out;
         if (data?.accounts) accountsUiState.overview = data;
+        if (out.ok === false) {
+          const errRaw = out.error || out.message || t('accounts.actionFail');
+          accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errRaw) : errRaw;
+          accountsUiState.feedbackTone = 'error';
+        } else if (out.ok === true && accountsUiState.feedbackTone === 'error') {
+          const msgRaw = out.message || t('accounts.actionDone');
+          accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(msgRaw) : msgRaw;
+          accountsUiState.feedbackTone = 'success';
+        }
       } else {
         const res = await callBackendWithPriority({
           ipcCall: hasIpc ? () => window.contextMeterAPI.getAccountsOverview() : null,
@@ -25542,16 +27223,132 @@ function renderHeatmapGrid(forceRebuild = false) {
     } catch (e) {
       if (!silent) {
         accountsUiState.feedback = e.message;
+        accountsUiState.feedbackTone = 'error';
         renderAccountsOverviewSection();
       }
       return null;
     }
   }
 
+  function renderAccountRemoveModal() {
+    const modal = el('account-remove-modal');
+    const titleEl = el('modal-account-remove-title');
+    const textEl = el('modal-account-remove-text');
+    const fbEl = el('modal-account-remove-feedback');
+    const cancelBtn = el('btn-modal-account-remove-cancel');
+    const confirmBtn = el('btn-modal-account-remove-confirm');
+    const st = accountsUiState.removeModal || {};
+    if (!modal) return;
+    modal.hidden = !st.open;
+    if (!st.open) return;
+    if (titleEl) titleEl.textContent = t('accounts.removeModal.title');
+    if (textEl) {
+      textEl.textContent = st.isActive
+        ? t('accounts.removeModal.bodyActive', { email: st.email || '' })
+        : t('accounts.removeModal.body', { email: st.email || '' });
+    }
+    if (fbEl) {
+      fbEl.hidden = !st.error;
+      fbEl.textContent = st.error || '';
+    }
+    if (cancelBtn) {
+      cancelBtn.textContent = t('accounts.removeModal.cancel');
+      cancelBtn.disabled = Boolean(st.busy);
+    }
+    if (confirmBtn) {
+      confirmBtn.textContent = st.busy ? t('accounts.removeModal.removing') : t('accounts.removeModal.confirm');
+      confirmBtn.disabled = Boolean(st.busy) || !st.email;
+    }
+  }
+
+  function openRemoveAccountModal(acc) {
+    if (!acc || !acc.email || accountsUiState.busy || accountsUiState.removeModal?.busy) return;
+    const scopeKey = acc.accountScopeKey || String(acc.email).trim().toLowerCase();
+    accountsUiState.removeModal = {
+      open: true,
+      email: acc.email,
+      scopeKey,
+      isActive: Boolean(acc.isActive),
+      busy: false,
+      error: ''
+    };
+    renderAccountRemoveModal();
+  }
+
+  function closeRemoveAccountModal(forceClose = false) {
+    if (!forceClose && accountsUiState.removeModal?.busy) return;
+    accountsUiState.removeModal = {
+      open: false,
+      email: '',
+      scopeKey: '',
+      isActive: false,
+      busy: false,
+      error: ''
+    };
+    renderAccountRemoveModal();
+  }
+
+  async function confirmRemoveAccountModal() {
+    const st = accountsUiState.removeModal;
+    if (!st?.open || !st.email || st.busy || accountsUiState.busy) return null;
+    const targetEmail = st.email;
+    const targetScopeKey = st.scopeKey || String(targetEmail).trim().toLowerCase();
+    st.busy = true;
+    st.error = '';
+    renderAccountRemoveModal();
+    renderAccountsOverviewSection();
+    try {
+      const out = await performAccountAction('remove', { email: targetEmail });
+      if (out && out.ok) {
+        const effectiveRemovedScope = out.removedScopeKey || targetScopeKey;
+        closeRemoveAccountModal(true);
+        accountsUiState.feedback = t('accounts.removeSuccess', { email: targetEmail });
+        accountsUiState.feedbackTone = 'success';
+        if (activeTokenAccountFilter && activeTokenAccountFilter === effectiveRemovedScope) {
+          activeTokenAccountFilter = 'all';
+          resetAccountScopedViewOffsets();
+        }
+        if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
+          applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+        }
+        renderAccountsOverviewSection();
+        void refreshAccountsOverview({ silent: true });
+        void syncTokenHistoryFromHost(true);
+        return out;
+      }
+      const errDetail = translateBackendText(out?.error || t('accounts.actionFail'));
+      accountsUiState.removeModal = {
+        ...accountsUiState.removeModal,
+        open: true,
+        busy: false,
+        error: t('accounts.removeModal.failed', { detail: errDetail })
+      };
+      renderAccountRemoveModal();
+      return out || { ok: false, error: errDetail };
+    } catch (err) {
+      const errDetail = translateBackendText(err?.message || t('accounts.actionFail'));
+      accountsUiState.removeModal = {
+        ...accountsUiState.removeModal,
+        open: true,
+        busy: false,
+        error: t('accounts.removeModal.failed', { detail: errDetail })
+      };
+      renderAccountRemoveModal();
+      return { ok: false, error: errDetail };
+    }
+  }
+
+  el('btn-modal-account-remove-cancel')?.addEventListener('click', () => closeRemoveAccountModal());
+  el('btn-modal-account-remove-confirm')?.addEventListener('click', () => void confirmRemoveAccountModal());
+  el('account-remove-modal')?.addEventListener('click', (ev) => {
+    if (ev.target === el('account-remove-modal')) closeRemoveAccountModal();
+  });
+
   async function performAccountAction(action, extraPayload = {}) {
     if (accountsUiState.busy) return null;
     accountsUiState.busy = true;
-    accountsUiState.feedback = currentPanelLanguage === 'en' ? 'Processing…' : '正在处理…';
+    accountsUiState.feedback = t('accounts.actionBusy');
+    accountsUiState.feedbackTone = 'info';
     renderAccountsOverviewSection();
     try {
       const res = await callBackendWithPriority({
@@ -25563,14 +27360,24 @@ function renderHeatmapGrid(forceRebuild = false) {
       });
       const out = res?.result || {};
       if (out.overview) accountsUiState.overview = out.overview;
-      accountsUiState.feedback = out.message || out.error || (out.ok ? '操作已完成' : '操作失败');
-      if (action === 'switch' && out.ok) {
+      const isOk = out.ok === true;
+      const isPartialOAuthQuotaWarn = isOk && action === 'oauth_login' && out.quotaOk === false && Boolean(out.quotaError);
+      const rawFb = isPartialOAuthQuotaWarn
+        ? `${out.account?.email ? `${out.account.email} ` : ''}${translateBackendText(out.quotaError)}`
+        : (isOk
+          ? (out.message || t('accounts.actionDone'))
+          : (out.error || out.message || t('accounts.actionFail')));
+      accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(rawFb) : rawFb;
+      accountsUiState.feedbackTone = isOk ? (isPartialOAuthQuotaWarn ? 'info' : 'success') : 'error';
+      if (action === 'switch' && isOk) {
         void syncQuotaFromHost(true, { manual: false });
-        void refreshTokenHistory?.(true);
+        void syncTokenHistoryFromHost(true);
       }
       return out;
     } catch (e) {
-      accountsUiState.feedback = e.message || '操作失败';
+      const errTxt = e.message || t('accounts.actionFail');
+      accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errTxt) : errTxt;
+      accountsUiState.feedbackTone = 'error';
       return { ok: false, error: e.message };
     } finally {
       accountsUiState.busy = false;
@@ -25631,7 +27438,8 @@ function renderHeatmapGrid(forceRebuild = false) {
         displayedCallRecord: null, displayedCallSig: '', pendingLatestCallRecord: null,
         pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
         historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
-        timelineError: '', timelinePageLimit: 10, lastTimelineFetchAt: 0, lastTimelineCallSig: '',
+        timelineError: '', timelinePageLimit: 10, timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
+        lastTimelineFetchAt: 0, lastTimelineCallSig: '',
         speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
       });
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
@@ -26158,13 +27966,32 @@ function renderHeatmapGrid(forceRebuild = false) {
       totalInput: el('tcb-total-input-val')?.textContent || '',
       output: el('tcb-output-val')?.textContent || '',
       ratio: el('tcb-ratio-val')?.textContent || '',
+      ratioBarWidth: el('tcb-ratio-bar-fill')?.style?.width || '',
       note: el('tcb-note')?.textContent || ''
+    }),
+    getModelUsageScaleForTest: () => ({
+      scaleMode: modelUsageScaleMode,
+      lockedKey: modelUsageLockedKey,
+      setScaleMode: (m) => { modelUsageScaleMode = m === 'linear' ? 'linear' : 'mixed'; renderModelUsageView(); },
+      setLockedKey: (k) => { modelUsageLockedKey = k || null; renderModelUsageView(); }
+    }),
+    getCumulativeViewStateForTest: () => ({
+      summary: _lastCumSummary,
+      lockedKey: cumLockedKey,
+      expandedWeekKey: cumExpandedWeekKey,
+      linkedDailyDate: cumLinkedDailyDate,
+      pressEscape: () => escape({ key: 'Escape' })
     }),
     setTokenAccountFilterForTest: (scopeKey) => {
       activeTokenAccountFilter = scopeKey || 'all';
+      resetAccountScopedViewOffsets();
       if (ANTIGRAVITY_TOKEN_DATA.rawPayload) applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
       return activeTokenAccountFilter;
     },
+    getRemoveAccountModalStateForTest: () => ({ ...(accountsUiState.removeModal || {}) }),
+    openRemoveAccountModalForTest: (acc) => openRemoveAccountModal(acc),
+    confirmRemoveAccountModalForTest: () => confirmRemoveAccountModal(),
+    closeRemoveAccountModalForTest: () => closeRemoveAccountModal(),
     setAccountsOverviewForTest: (overview) => {
       accountsUiState.overview = overview || null;
       renderAccountsOverviewSection();
@@ -26174,6 +28001,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       activeFilter: activeTokenAccountFilter,
       filterOptions: Array.from(el('token-account-select')?.children || []).map(o => ({ val: o.value, label: o.textContent })),
       scopeNote: el('token-account-scope-note')?.textContent || '',
+      feedback: accountsUiState.feedback || '',
+      feedbackTone: accountsUiState.feedbackTone || 'info',
       accountCount: el('quota-accounts-list')?.children?.length || 0,
       compareCount: el('quota-compare-list')?.children?.length || 0,
       autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
@@ -26229,6 +28058,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
   });
   installRequestInterceptor();
+  __chartsReady = true;
   render();
   tick();
 })();

@@ -417,9 +417,54 @@
     }
   }
 
+  function getContinuousScaleStops() {
+    const scale = getEffectiveHeatmapScale();
+    const isLight = typeof resolveEffectiveTheme === 'function' && resolveEffectiveTheme() === 'light';
+    const hasCustomHeat = Boolean(
+      customColors.heatLow ||
+      customColors.heatHigh ||
+      customColors.heatLvl1 ||
+      customColors.heatLvl2 ||
+      customColors.heatLvl3 ||
+      customColors.heatLvl4
+    );
+    if (!isLight && heatPreset === 'purple' && !hasCustomHeat) {
+      return ['#2E1A47', '#6D28D9', '#9333EA', '#D8B4FE'];
+    }
+    return [scale[1], scale[2], scale[3], scale[4]].filter(Boolean);
+  }
+
+  function getContinuousHeatColor(value, modeOrAnchor = 'heat') {
+    const v = Number(value) || 0;
+    if (v <= 0) return null;
+    const core = globalThis.__AGContextMeterCore || {};
+    let resp = 0;
+    if (typeof modeOrAnchor === 'string') {
+      resp = typeof core.computeColorScaleResponse === 'function'
+        ? core.computeColorScaleResponse(v, modeOrAnchor)
+        : (typeof core.computeMixedScaleResponse === 'function' ? core.computeMixedScaleResponse(v, 100e6) : 0.5);
+    } else {
+      const anchor = Number(modeOrAnchor) || 100e6;
+      resp = typeof core.computeMixedScaleResponse === 'function'
+        ? core.computeMixedScaleResponse(v, anchor)
+        : Math.max(0, Math.min(1, Math.pow(Math.min(v, anchor) / anchor, 0.42)));
+    }
+    const stops = getContinuousScaleStops();
+    if (typeof core.interpolateScaleColorHsl === 'function') {
+      return core.interpolateScaleColorHsl(resp, stops);
+    }
+    return stops[stops.length - 1] || '#9333ea';
+  }
+
+  let __chartsReady = false;
+
   function refreshActiveChartViews() {
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    if (!__chartsReady) return;
+    if (activeHeatView === 'daily' && typeof renderHeatmapGrid === 'function') renderHeatmapGrid(true);
+    else if (activeHeatView === 'weekly' && typeof renderHeatmapWeekly === 'function') renderHeatmapWeekly();
+    else if (activeHeatView === 'monthly' && typeof renderHeatmapMonthly === 'function') renderHeatmapMonthly();
+    else if (activeHeatView === 'yearly' && typeof renderHeatmapYearly === 'function') renderHeatmapYearly();
+    else if (activeHeatView === 'cum' && typeof renderHeatmapCum === 'function') renderHeatmapCum();
     const modelViewEl = el('model-usage-view');
     if (modelViewEl && modelViewEl.style && modelViewEl.style.display === 'block' && typeof renderModelUsageView === 'function') {
       renderModelUsageView();

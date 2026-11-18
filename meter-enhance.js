@@ -1150,7 +1150,8 @@ async function checkLanguageServerRunningAsync(options = {}) {
   return { running, startTimeMs: earliestStartMs };
 }
 
-function restartLanguageServers() {
+function restartLanguageServers(options = {}) {
+  const includeCli = options?.includeCli !== false;
   if (process.platform === 'darwin') {
     const procs = listMacProcessesSync();
     const killed = [];
@@ -1168,8 +1169,11 @@ function restartLanguageServers() {
   if (process.platform !== 'win32') {
     return { ok: false, killed: [], error: '仅支持 Windows / macOS 平台重启后台语言服务' };
   }
+  const images = includeCli
+    ? ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']
+    : ['language_server.exe', 'language_server_windows_x64.exe'];
   const killed = [];
-  for (const img of ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']) {
+  for (const img of images) {
     try {
       execFileSync('taskkill.exe', ['/F', '/IM', img], {
         encoding: 'utf8',
@@ -1184,7 +1188,8 @@ function restartLanguageServers() {
   return { ok: true, killed };
 }
 
-async function restartLanguageServersAsync() {
+async function restartLanguageServersAsync(options = {}) {
+  const includeCli = options?.includeCli !== false;
   if (process.platform === 'darwin') {
     const procs = await listMacProcessesAsync();
     const killed = [];
@@ -1202,7 +1207,9 @@ async function restartLanguageServersAsync() {
   if (process.platform !== 'win32') {
     return { ok: false, killed: [], error: '仅支持 Windows / macOS 平台重启后台语言服务' };
   }
-  const images = ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe'];
+  const images = includeCli
+    ? ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']
+    : ['language_server.exe', 'language_server_windows_x64.exe'];
   const killed = [];
   await Promise.all(images.map((img) => new Promise((resolve) => {
     execFile('taskkill.exe', ['/F', '/IM', img], {

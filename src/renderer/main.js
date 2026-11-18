@@ -104,6 +104,7 @@
     computeCacheReadStats,
     summarizeCacheReadStats,
     normalizeSessionCallRecord,
+    sanitizeTurnPreviewText,
     groupSessionCallsByTurns,
     ELV91_SCORE_RULE_VERSION,
     formatHumanDuration,
@@ -193,6 +194,7 @@
     pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
     historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
     timelineError: '', expandedTurnKeys: new Set(), timelinePageLimit: 10,
+    timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
@@ -583,6 +585,26 @@
         }
       }
 
+      // 主对话区顶栏若处于窗口最顶行（无独立菜单栏，top < 20）且靠最右边，需同步避让系统控制按钮及右侧独立浮动簇
+      let titlebarWcoPad = 0;
+      const titlebar = findHostTitlebar();
+      if (titlebar?.getBoundingClientRect) {
+        const tbRect = titlebar.getBoundingClientRect();
+        const vw = (typeof window !== 'undefined' && window.innerWidth) || 0;
+        if (tbRect.height > 0 && tbRect.top < 20 && (vw <= 0 || tbRect.right >= vw - 16)) {
+          const baseWco = computeWindowControlsWidth(titlebar);
+          if (baseWco > 0) {
+            titlebarWcoPad = baseWco;
+            if (topRight && topRight !== titlebar && !titlebar.contains?.(topRight) && topRight.getBoundingClientRect) {
+              const trRect = topRight.getBoundingClientRect();
+              if (trRect.width > 0 && trRect.top < 20 && vw > 0 && trRect.left < vw) {
+                titlebarWcoPad = Math.max(titlebarWcoPad, Math.ceil(vw - trRect.left) + 6);
+              }
+            }
+          }
+        }
+      }
+
       if (typeof document.head !== 'undefined' && document.head && typeof document.createElement === 'function') {
         let styleEl = typeof document.getElementById === 'function' ? document.getElementById('ag-topbar-host-fix') : null;
         if (!styleEl) {
@@ -590,11 +612,17 @@
           styleEl.id = 'ag-topbar-host-fix';
           document.head.appendChild(styleEl);
         }
+        const activeWco = wcoWidth > 0 || titlebarWcoPad > 0;
         const cssText = [
           '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id] {',
           '  padding-right: calc(var(--right-cluster-width, 140px) - 4px) !important;',
           '}',
-          wcoWidth > 0 ? [
+          titlebarWcoPad > 0 ? [
+            '[class*="@container/titlebar"] {',
+            `  padding-right: ${titlebarWcoPad}px !important;`,
+            '}'
+          ].join('\n') : '',
+          activeWco ? [
             '[class*="@container/titlebar"],',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child {',
@@ -802,9 +830,15 @@
             ? Math.max(8, titleInner.getBoundingClientRect().left - tbRect.left)
             : (tbRect.left < 168 ? (168 - tbRect.left) : 12);
           const titleRealW = titleEl?.scrollWidth ? Math.min(320, titleEl.scrollWidth) : 160;
-          const minTitleWidth = Math.max(150, titleRealW);
+          const minTitleWidth = tbRect.width < 760
+            ? Math.max(96, Math.min(180, titleRealW))
+            : Math.max(150, titleRealW);
           let nativeButtonsWidth = 64;
           let rightPad = 8;
+          let titlebarOwnPadRight = 0;
+          if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+            titlebarOwnPadRight = parseFloat(window.getComputedStyle(titlebar).paddingRight) || 0;
+          }
           const rightGroup = host.parentElement;
           if (rightGroup && rightGroup !== titlebar) {
             const auxOpen = typeof document.querySelector === 'function'
@@ -830,7 +864,8 @@
               if (sum > 0) nativeButtonsWidth = sum + 6;
             }
           }
-          const avail = tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          const effectiveRightReserve = Math.max(rightPad, titlebarOwnPadRight);
+          const avail = tbRect.width - contentStart - minTitleWidth - effectiveRightReserve - nativeButtonsWidth;
           cachedMeasuredAvailWidth = avail;
           cachedMeasuredAvailAt = now;
           cachedMeasuredWinWidth = curWinW;
@@ -886,7 +921,7 @@
     state.layoutMode = nextMode;
     host.setAttribute('data-layout', nextMode);
     if (prev !== nextMode) {
-      if (nextMode !== 'minimal') {
+      if (nextMode !== 'minimal' && nextMode !== 'ring-only') {
         const om = el('overflow-menu');
         if (om) om.hidden = true;
         el('badge-overflow')?.setAttribute('aria-expanded', 'false');
@@ -1495,6 +1530,19 @@
       activeBadgeRafId = null;
     }
 
+    if (targetNum === null || targetNum === undefined) {
+      const displayStr = targetSymbol || t('plan.summary.priceUnsetShort');
+      if (typeof priceValEl.replaceChildren === 'function') {
+        priceValEl.textContent = displayStr;
+      } else {
+        priceValEl.textContent = displayStr;
+      }
+      if (priceCnyEl) priceCnyEl.textContent = targetCnyText || '';
+      if (badgeEl && badgeEl.classList) badgeEl.classList.remove('is-animating');
+      lastBadgePriceState = null;
+      return;
+    }
+
     const formattedFinalNum = targetNum !== null && targetNum !== undefined
       ? (Number(targetNum) % 1 === 0 ? String(Number(targetNum)) : Number(targetNum).toFixed(2))
       : '';
@@ -1626,20 +1674,21 @@
   function renderPlanDetail(ps) {
     if (!ps) return;
     const sumTxt = el('plan-summary-text');
+    const tierDisplay = typeof localizePlanTierName === 'function' ? localizePlanTierName(ps.tierName || 'Pro') : (ps.tierName || 'Pro');
     if (sumTxt) {
       const modeTxt = ps.status === 'identified'
         ? t('plan.summary.identified')
         : ps.hasCustomSettings
           ? t('plan.summary.custom')
           : t('plan.summary.unknown');
-      sumTxt.textContent = `${ps.tierName || 'Pro'} · ${modeTxt} · ${t('plan.summary.justNow')}`;
+      sumTxt.textContent = `${tierDisplay} · ${modeTxt} · ${t('plan.summary.justNow')}`;
     }
-    // 实时联动更新黄框位置的订阅费与汇率胶囊 (支持动效与符号消散)
+    // 实时联动更新黄框位置的订阅费与汇率胶囊（Ultra 等无公开统一定价时不回退 Pro $19.99）
     const curSymbol = ps.currencySymbol || '$';
     let targetSymbol = '$';
-    let targetNum = 19.99;
+    let targetNum = null;
     let targetCycle = t('plan.summary.perMonth');
-    let targetCny = '(≈ ¥134.3 CNY)';
+    let targetCny = '';
 
     if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
       targetSymbol = curSymbol;
@@ -1663,18 +1712,20 @@
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = t('plan.summary.perMonth');
-      targetCny = '(≈ ¥134.3 CNY)';
+      targetCny = currentPanelLanguage === 'en' ? '(approx. ¥134.3 CNY)' : '(≈ ¥134.3 CNY)';
     } else {
-      targetSymbol = '$';
-      targetNum = 19.99;
-      targetCycle = t('plan.summary.perMonth');
-      targetCny = '(≈ ¥134.3 CNY)';
+      targetSymbol = t('plan.summary.priceUnsetShort');
+      targetNum = null;
+      targetCycle = '';
+      targetCny = t('plan.summary.priceUnsetCny');
     }
 
     renderPlanSummaryPriceBadge(targetSymbol, targetNum, targetCycle, targetCny);
 
     const detName = el('p-det-name');
-    if (detName) detName.textContent = ps.tierName || 'Google AI Pro';
+    if (detName) detName.textContent = typeof localizePlanTierName === 'function'
+      ? localizePlanTierName(ps.tierName || 'Google AI Pro')
+      : (ps.tierName || 'Google AI Pro');
     const detAcc = el('p-det-account');
     if (detAcc) detAcc.textContent = ps.email || t('plan.account.unknown');
 
@@ -1764,6 +1815,7 @@
 
     if (detPrice) {
       const cycleText = localizeBillingCycleLabel(ps.billingCycle);
+      const acqLabel = localizeAcquisitionSource(ps.acquisitionSource || ps.acquisitionSourceName);
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         detPrice.textContent = `${curSymbol}0 · ${cycleText}`;
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
@@ -1774,12 +1826,10 @@
         }
         const paidFormatted = Number(ps.actualPricePaid) % 1 === 0 ? Number(ps.actualPricePaid) : Number(ps.actualPricePaid).toFixed(2);
         detPrice.textContent = `${curSymbol}${paidFormatted} · ${cycleText}${cnyPart}`;
-      } else if (ps.priceRangeNote && ps.priceRangeNote !== '未知') {
-        detPrice.textContent = ps.priceRangeNote.replace(/[（\(][^）\)]*[）\)]/g, '').trim();
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         detPrice.textContent = `${t('plan.tag.publicRef')} $${ps.officialPriceMonthly}${t('plan.summary.perMonth')}`;
       } else {
-        detPrice.textContent = '—';
+        detPrice.textContent = `${acqLabel} · ${t('plan.priceUnsetNote')}`;
       }
     }
     if (tagPrice) {
@@ -1788,10 +1838,12 @@
         tagPrice.textContent = t('plan.tag.manualFree');
       } else if (ps.priceMode === 'custom' || ps.priceSource === 'custom') {
         tagPrice.textContent = t('plan.tag.userPaid');
-      } else if (ps.priceSource === 'preset_region' || isPresetMode) {
+      } else if (ps.priceSource === 'preset_region' && ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         tagPrice.textContent = t('plan.tag.official');
-      } else {
+      } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         tagPrice.textContent = t('plan.tag.publicRef');
+      } else {
+        tagPrice.textContent = t('plan.tag.unset');
       }
     }
 
@@ -1870,11 +1922,29 @@
     toolsPreview: null,
     feedback: '',
     feedbackTone: 'info',
-    busy: false
+    busy: false,
+    removeModal: {
+      open: false,
+      email: '',
+      scopeKey: '',
+      isActive: false,
+      busy: false,
+      error: ''
+    }
   };
+  function resetAccountScopedViewOffsets() {
+    heatPageOffset = 0;
+    heatMonthOffset = 0;
+    heatYearOffset = 0;
+    modelUsageOffsetDays = 0;
+    modelUsageLockedKey = null;
+    modelUsageHoveredKey = null;
+    if (typeof resetCumSelectionState === 'function') resetCumSelectionState();
+  }
   function switchTokenSource(src) {
     activeTokenSource = src;
     try { localStorage?.setItem('ag_token_source_v1', src); } catch { }
+    if (typeof resetCumSelectionState === 'function') resetCumSelectionState();
     setPillActive(el('src-tab-all'), src === 'all');
     setPillActive(el('src-tab-desktop'), src === 'desktop');
     setPillActive(el('src-tab-cli'), src === 'cli');
@@ -1945,6 +2015,10 @@
   let modelUsageGroupBy = 'model';
   let modelUsageMetric = 'total';
   let modelUsageHideUnattr = false;
+  let modelUsageScaleMode = 'mixed'; // 'mixed' | 'linear'
+  let modelUsageLockedKey = null;
+  let modelUsageHoveredKey = null;
+  const OTHER_SERIES_KEY = '__other_series__';
 
   function formatModelDateShort(dateStr) {
     const parts = String(dateStr || '').split('-').map(Number);
@@ -1976,6 +2050,37 @@
       : `${startStr} – ${endStr}`;
   }
 
+  function setClassFlag(node, cls, active) {
+    if (!node || !node.classList) return;
+    if (active) node.classList.add(cls);
+    else node.classList.remove(cls);
+  }
+
+  function applyModelSeriesFocusHighlight() {
+    const focusKey = modelUsageHoveredKey || modelUsageLockedKey || null;
+    const barsEl = el('model-usage-bars');
+    const legendEl = el('model-usage-legend');
+    if (barsEl && barsEl.children) {
+      for (const col of Array.from(barsEl.children)) {
+        for (const child of Array.from(col.children || [])) {
+          if (String(child.className || '').includes('model-usage-stack')) {
+            for (const seg of Array.from(child.children || [])) {
+              const k = seg.getAttribute?.('data-series-key');
+              setClassFlag(seg, 'is-dimmed', Boolean(focusKey && k !== focusKey));
+            }
+          }
+        }
+      }
+    }
+    if (legendEl && legendEl.children) {
+      for (const card of Array.from(legendEl.children)) {
+        const k = card.getAttribute?.('data-series-key');
+        setClassFlag(card, 'is-dimmed', Boolean(focusKey && k !== focusKey));
+        setClassFlag(card, 'is-locked', Boolean(modelUsageLockedKey && k === modelUsageLockedKey));
+      }
+    }
+  }
+
   function renderModelUsageView() {
     const viewEl = el('model-usage-view');
     if (!viewEl) return;
@@ -1986,6 +2091,8 @@
     setPillActive(el('model-group-variant'), modelUsageGroupBy === 'variant');
     setPillActive(el('model-metric-total'), modelUsageMetric === 'total');
     setPillActive(el('model-metric-nocache'), modelUsageMetric === 'noCache');
+    setPillActive(el('model-scale-mixed'), modelUsageScaleMode === 'mixed');
+    setPillActive(el('model-scale-linear'), modelUsageScaleMode === 'linear');
 
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     if (!core || typeof core.summarizeModelUsageWindow !== 'function') return;
@@ -2014,6 +2121,37 @@
       unattributedLabel: t('modelsUsage.unattributed')
     });
 
+    // 长尾折叠：图例大于 6 项时保留 Top 5 独立颜色 + 第 6 项「其他模型/档位」
+    let effectiveLegend = Array.isArray(summary.legend) ? summary.legend.slice() : [];
+    const foldedKeys = new Set();
+    if (effectiveLegend.length > 6) {
+      const top5 = effectiveLegend.slice(0, 5);
+      const tail = effectiveLegend.slice(5);
+      let otherTokens = 0;
+      let otherSteps = 0;
+      tail.forEach(item => {
+        foldedKeys.add(item.key);
+        otherTokens += Number(item.tokens) || 0;
+        otherSteps += Number(item.steps) || 0;
+      });
+      const winTot = Math.max(1, Number(summary.windowTotalTokens) || 0);
+      const otherPct = (otherTokens / winTot) * 100;
+      top5.push({
+        key: '__other_series__',
+        label: t('modelsUsage.otherSeries'),
+        color: '#71717a',
+        tokens: otherTokens,
+        steps: otherSteps,
+        pct: otherPct,
+        pctLabel: otherPct < 0.1 && otherTokens > 0 ? '<0.1%' : `${otherPct.toFixed(1)}%`
+      });
+      effectiveLegend = top5;
+    }
+
+    if (modelUsageLockedKey && !effectiveLegend.some(it => it.key === modelUsageLockedKey)) {
+      modelUsageLockedKey = null;
+    }
+
     const rangeLbl = el('model-usage-range-label');
     if (rangeLbl) rangeLbl.textContent = formatModelRangeLabel(summary.startDate, summary.endDate);
     const winTotEl = el('model-usage-window-total');
@@ -2035,8 +2173,57 @@
     if (prevBtn) prevBtn.disabled = Boolean(earliestKnown && summary.startDate <= earliestKnown);
     if (nextBtn) nextBtn.disabled = modelUsageOffsetDays <= 0;
 
+    const chartPxHeight = 140;
+    const env = typeof core.resolveScaleEnvelope === 'function'
+      ? core.resolveScaleEnvelope(summary.maxDayTotal, 'dailyBar')
+      : { tier: '500M', anchor: 500e6, hCap: 1.0, refTicks: [1e6, 10e6, 100e6, 500e6], overflowThreshold: 500e6 };
+
+    const gridWrap = el('model-usage-gridlines');
     const maxLblEl = el('model-chart-max-lbl');
-    if (maxLblEl) {
+    if (gridWrap) {
+      const childrenArr = Array.from(gridWrap.children || []);
+      const baseLines = [];
+      childrenArr.forEach(node => {
+        const cls = String(node.className || '');
+        if (cls.includes('model-usage-tick-line')) {
+          node.remove?.();
+        } else {
+          baseLines.push(node);
+        }
+      });
+      if (modelUsageScaleMode === 'mixed' && typeof core.mapBarHeightPx === 'function') {
+        gridWrap.style.display = 'block';
+        baseLines.forEach(gl => { gl.style.display = 'none'; });
+        const ticks = Array.isArray(env.refTicks) ? env.refTicks : [];
+        const lastTick = ticks.length ? ticks[ticks.length - 1] : 0;
+        ticks.forEach(tVal => {
+          if (!(tVal > 0)) return;
+          const pos = core.mapBarHeightPx(tVal, env, chartPxHeight, { mode: 'mixed', scaleKind: 'dailyBar' });
+          const tickLine = document.createElement('div');
+          tickLine.className = 'model-usage-tick-line';
+          tickLine.style.bottom = `${pos.height.toFixed(1)}px`;
+          const tickLbl = document.createElement('span');
+          tickLbl.className = 'model-usage-tick-lbl';
+          const isOverflowTop = Boolean(env.overflow && tVal === lastTick);
+          tickLbl.textContent = isOverflowTop ? `${formatCompactTokenCount(tVal)}+` : formatCompactTokenCount(tVal);
+          tickLine.appendChild(tickLbl);
+          gridWrap.appendChild(tickLine);
+        });
+        if (maxLblEl) {
+          maxLblEl.textContent = (env.overflow && summary.maxDayTotal > 0)
+            ? formatCompactTokenCount(summary.maxDayTotal)
+            : '';
+        }
+      } else {
+        gridWrap.style.display = 'flex';
+        gridWrap.style.flexDirection = 'column';
+        gridWrap.style.justifyContent = 'space-between';
+        baseLines.forEach(gl => { gl.style.display = 'block'; });
+        if (maxLblEl) {
+          maxLblEl.textContent = summary.maxDayTotal > 0 ? formatCompactTokenCount(summary.maxDayTotal) : '';
+        }
+      }
+    } else if (maxLblEl) {
       maxLblEl.textContent = summary.maxDayTotal > 0 ? formatCompactTokenCount(summary.maxDayTotal) : '';
     }
 
@@ -2049,6 +2236,8 @@
     const hasAnyData = summary.windowTotalTokens > 0;
     if (emptyEl) emptyEl.style.display = hasAnyData ? 'none' : 'block';
     if (chartWrap) chartWrap.style.display = hasAnyData ? 'block' : 'none';
+    if (chartWrap) chartWrap.setAttribute('data-scale-mode', modelUsageScaleMode);
+    if (chartWrap) chartWrap.setAttribute('data-scale-tier', env.tier || '');
 
     const isCompact30 = modelUsagePeriodDays === 30;
     if (barsEl) {
@@ -2065,28 +2254,64 @@
     const anchorIndices = isCompact30
       ? new Set([0, 7, 14, 21, 29])
       : new Set([0, 1, 2, 3, 4, 5, 6]);
-    const chartPxHeight = 140;
+    const focusKey = modelUsageHoveredKey || modelUsageLockedKey || null;
 
     summary.days.forEach((day, idx) => {
       if (barsEl) {
         const col = document.createElement('div');
         col.className = 'model-usage-col';
-        if (day.total > 0 && summary.maxDayTotal > 0 && day.segments.length > 0) {
-          const totalH = Math.max(4, Math.round((day.total / summary.maxDayTotal) * chartPxHeight));
-          const stack = document.createElement('div');
-          stack.className = 'model-usage-stack';
-          stack.style.height = `${totalH}px`;
+        col.setAttribute('data-date', day.date);
+        col.setAttribute('data-tokens', String(day.total || 0));
 
-          let allocatedH = 0;
-          day.segments.forEach((seg, sIdx) => {
+        // 折叠长尾段并保持真实 Top 顺序（column-reverse 下 index 0 在零基线底部）
+        const segList = [];
+        let otherSegTok = 0;
+        (day.segments || []).forEach(seg => {
+          if (foldedKeys.has(seg.key)) {
+            otherSegTok += Number(seg.tokens) || 0;
+          } else {
+            segList.push({ ...seg, value: Number(seg.tokens) || 0 });
+          }
+        });
+        if (otherSegTok > 0) {
+          segList.push({
+            key: '__other_series__',
+            label: t('modelsUsage.otherSeries'),
+            color: '#71717a',
+            tokens: otherSegTok,
+            value: otherSegTok,
+            pct: day.total > 0 ? (otherSegTok / day.total) * 100 : 0
+          });
+        }
+        // 点击锁定单系列时将该系列移至 0 基线底部（数组首位）
+        if (modelUsageLockedKey) {
+          const lockIdx = segList.findIndex(s => s.key === modelUsageLockedKey);
+          if (lockIdx > 0) {
+            const [lockedSeg] = segList.splice(lockIdx, 1);
+            segList.unshift(lockedSeg);
+          }
+        }
+
+        if (day.total > 0 && summary.maxDayTotal > 0 && segList.length > 0) {
+          const barInfo = typeof core.mapBarHeightPx === 'function'
+            ? core.mapBarHeightPx(day.total, env, chartPxHeight, { mode: modelUsageScaleMode, linearMax: summary.maxDayTotal, scaleKind: 'dailyBar' })
+            : { height: Math.max(4, (day.total / summary.maxDayTotal) * chartPxHeight), overflow: false };
+          const totalH = barInfo.height;
+          const stack = document.createElement('div');
+          stack.className = `model-usage-stack${barInfo.overflow && modelUsageScaleMode === 'mixed' ? ' is-overflow' : ''}`;
+          stack.style.height = `${totalH.toFixed(4)}px`;
+          stack.setAttribute('data-total-height', totalH.toFixed(4));
+
+          const alloc = typeof core.allocateStackedSegmentHeights === 'function'
+            ? core.allocateStackedSegmentHeights(segList, totalH, 1.5)
+            : segList.map(s => ({ ...s, heightPx: (s.value / Math.max(1, day.total)) * totalH, rawRatio: s.value / Math.max(1, day.total) }));
+
+          alloc.forEach(seg => {
             const segEl = document.createElement('div');
-            segEl.className = 'model-usage-seg';
-            let segH = Math.max(2, Math.round((seg.tokens / day.total) * totalH));
-            if (sIdx === day.segments.length - 1) {
-              segH = Math.max(2, totalH - allocatedH);
-            }
-            allocatedH += segH;
-            segEl.style.height = `${segH}px`;
+            segEl.className = `model-usage-seg${focusKey && seg.key !== focusKey ? ' is-dimmed' : ''}`;
+            segEl.setAttribute('data-series-key', seg.key);
+            segEl.setAttribute('data-raw-pct', (seg.rawRatio * 100).toFixed(2));
+            segEl.style.height = `${seg.heightPx.toFixed(4)}px`;
             segEl.style.background = seg.color;
             stack.appendChild(segEl);
           });
@@ -2161,9 +2386,10 @@
 
     if (legendEl) {
       legendEl.replaceChildren();
-      summary.legend.forEach(item => {
+      effectiveLegend.forEach(item => {
         const card = document.createElement('div');
-        card.className = 'model-legend-item';
+        card.className = `model-legend-item${focusKey && item.key !== focusKey ? ' is-dimmed' : ''}${modelUsageLockedKey === item.key ? ' is-locked' : ''}`;
+        card.setAttribute('data-series-key', item.key);
         const bar = document.createElement('div');
         bar.className = 'model-legend-bar';
         bar.style.background = item.color;
@@ -2193,6 +2419,19 @@
         textWrap.appendChild(valRow);
         card.appendChild(bar);
         card.appendChild(textWrap);
+
+        card.addEventListener('mouseenter', () => {
+          modelUsageHoveredKey = item.key;
+          applyModelSeriesFocusHighlight();
+        });
+        card.addEventListener('mouseleave', () => {
+          if (modelUsageHoveredKey === item.key) modelUsageHoveredKey = null;
+          applyModelSeriesFocusHighlight();
+        });
+        card.addEventListener('click', () => {
+          modelUsageLockedKey = (modelUsageLockedKey === item.key) ? null : item.key;
+          renderModelUsageView();
+        });
         legendEl.appendChild(card);
       });
     }
@@ -2279,6 +2518,14 @@
   });
   el('model-metric-nocache')?.addEventListener('click', () => {
     modelUsageMetric = 'noCache';
+    renderModelUsageView();
+  });
+  el('model-scale-mixed')?.addEventListener('click', () => {
+    modelUsageScaleMode = 'mixed';
+    renderModelUsageView();
+  });
+  el('model-scale-linear')?.addEventListener('click', () => {
+    modelUsageScaleMode = 'linear';
     renderModelUsageView();
   });
   el('model-toggle-unattr')?.addEventListener('click', () => {
@@ -2711,6 +2958,32 @@
     const lang = typeof getPanelLanguage === 'function' ? getPanelLanguage() : 'zh-CN';
     if (typeof formatEffortLabel === 'function') return formatEffortLabel(effort, lang);
     return String(effort);
+  }
+
+  /**
+   * 合并模型产品名与档位后缀，严格剥离尾部重复档位括号，避免出现 "(High) (High)"。
+   */
+  function formatProductDisplayWithEffort(rawLabel, explicitEffort = null) {
+    const text = String(rawLabel || '').trim();
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    if (core && typeof core.splitModelDisplayAndEffort === 'function') {
+      const split = core.splitModelDisplayAndEffort(text, explicitEffort || null);
+      const base = split.baseLabel || text;
+      const eff = explicitEffort || split.effort;
+      if (!eff) return base;
+      const effDisp = formatEffortZh(eff);
+      if (!effDisp) return base;
+      return `${base} (${effDisp})`;
+    }
+    if (!explicitEffort) return text;
+    const effDisp = formatEffortZh(explicitEffort);
+    if (!effDisp) return text;
+    const low = text.toLowerCase();
+    const rawEff = String(explicitEffort).trim().toLowerCase();
+    if (low.endsWith(`(${rawEff})`) || low.endsWith(`(${effDisp.toLowerCase()})`)) {
+      return text;
+    }
+    return `${text} (${effDisp})`;
   }
 
   function groupProductSafe(input) {
@@ -4800,7 +5073,7 @@
       if (ctxCardEffortsList) ctxCardEffortsList.textContent = t('models.card.effortsEmpty');
       if (ctxCardSessionEffort) ctxCardSessionEffort.hidden = true;
       if (ctxConflictBanner) ctxConflictBanner.hidden = true;
-      if (ctxSummaryModelEl) ctxSummaryModelEl.textContent = '待确认';
+      if (ctxSummaryModelEl) ctxSummaryModelEl.textContent = t('models.summary.pendingConfirm');
       if (ctxSummaryLengthEl) ctxSummaryLengthEl.textContent = '—';
       if (ctxSummaryStatusPillEl) ctxSummaryStatusPillEl.hidden = true;
       return;
@@ -4903,40 +5176,40 @@
     if (ctxCapModelMaxEl) {
       ctxCapModelMaxEl.textContent = capSummary?.modelTheoreticalMaxTokens != null
         ? `${fmt(capSummary.modelTheoreticalMaxTokens)} tokens`
-        : '未知（待获取元数据）';
+        : t('models.cap.metaUnknown');
     }
     if (ctxCapClientPolicyEl) {
       if (!runtimePolicy || runtimePolicy.runtimeState === 'unknown') {
-        ctxCapClientPolicyEl.textContent = '未知（待读取运行策略）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyUnknown');
       } else if (runtimePolicy.runtimeState === 'pending_restart') {
-        ctxCapClientPolicyEl.textContent = `待重启（磁盘=${formatDiskPolicyText(runtimePolicy)}）`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyPendingRestart', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy.runtimeState === 'runtime_unconfirmed') {
-        ctxCapClientPolicyEl.textContent = `进程未确认（磁盘=${formatDiskPolicyText(runtimePolicy)}）`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyUnconfirmed', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy.runtimeState === 'partial') {
-        ctxCapClientPolicyEl.textContent = '部分异常（运行限制未知）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyPartial');
       } else if (runtimePolicy.runtimeMode === 'dynamic') {
-        ctxCapClientPolicyEl.textContent = 'Dynamic 动态跟随（按模型上限）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyDynamic');
       } else if (runtimePolicy.runtimeMode === 'fixed' && runtimePolicy.currentClientLimitTokens != null) {
-        ctxCapClientPolicyEl.textContent = `固定限制 ${fmt(runtimePolicy.currentClientLimitTokens)} tokens`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyFixed', { limit: fmt(runtimePolicy.currentClientLimitTokens) });
       } else {
-        ctxCapClientPolicyEl.textContent = '默认限制 256,000 tokens';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyDefault');
       }
     }
     if (ctxCapDefaultEl) {
       if (capSummary?.currentStrategyDefaultBudget != null && runtimePolicy?.policyKnown) {
         let stratNote = '';
         if (runtimePolicy.runtimeMode === 'dynamic') {
-          stratNote = '（Dynamic 默认）';
+          stratNote = t('models.cap.stratDynamic');
         } else if (runtimePolicy.runtimeMode === 'fixed') {
-          stratNote = `（受固定限制 ${fmt(runtimePolicy.currentClientLimitTokens)} 约束）`;
+          stratNote = t('models.cap.stratFixed', { limit: fmt(runtimePolicy.currentClientLimitTokens) });
         } else {
-          stratNote = '（受默认 256,000 约束）';
+          stratNote = t('models.cap.stratDefault');
         }
         ctxCapDefaultEl.textContent = `${fmt(capSummary.currentStrategyDefaultBudget)} tokens${stratNote}`;
       } else if (runtimePolicy && !runtimePolicy.policyKnown) {
-        ctxCapDefaultEl.textContent = '未知（运行策略待确认）';
+        ctxCapDefaultEl.textContent = t('models.cap.defaultUnknownPolicy');
       } else {
-        ctxCapDefaultEl.textContent = '未知';
+        ctxCapDefaultEl.textContent = t('speed.unknown');
       }
     }
     if (ctxCapRangeEl) {
@@ -4944,33 +5217,51 @@
         ctxCapRangeEl.textContent = `${fmt(capSummary.rangeMin || CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(capSummary.maxAdjustableTokens)} tokens`;
       } else if (runtimePolicy && !runtimePolicy.policyKnown) {
         ctxCapRangeEl.textContent = capSummary?.modelTheoreticalMaxTokens != null
-          ? `运行策略未知（模型理论上限 ${fmt(capSummary.modelTheoreticalMaxTokens)}）`
-          : `运行策略未知（工程范围 ${fmt(CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(CTX_MAX_ENGINEERING_TOKENS)}）`;
+          ? t('models.cap.rangeUnknownPolicyMax', { max: fmt(capSummary.modelTheoreticalMaxTokens) })
+          : t('models.cap.rangeUnknownPolicyEng', { min: fmt(CTX_MIN_ENGINEERING_TOKENS), max: fmt(CTX_MAX_ENGINEERING_TOKENS) });
       } else {
-        ctxCapRangeEl.textContent = `${fmt(CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(CTX_MAX_ENGINEERING_TOKENS)}（模型上限未知）`;
+        ctxCapRangeEl.textContent = t('models.cap.rangeUnknownModelMax', { min: fmt(CTX_MIN_ENGINEERING_TOKENS), max: fmt(CTX_MAX_ENGINEERING_TOKENS) });
       }
     }
     if (ctxCapFormulaEl) {
       const parts = [];
       if (capSummary?.sources?.length) {
-        const srcText = capSummary.sources.map(s => (s === 'get_available_models' ? 'GetAvailableModels 目录' : (s === 'step_model_info' ? '会话 Step ModelInfo' : s))).join(' + ');
-        parts.push(`来源：${srcText}`);
+        const srcText = capSummary.sources.map(s => (
+          s === 'get_available_models'
+            ? (currentPanelLanguage === 'en' ? 'GetAvailableModels Catalog' : (currentPanelLanguage === 'zh-TW' ? 'GetAvailableModels 目錄' : 'GetAvailableModels 目录'))
+            : (s === 'step_model_info'
+              ? (currentPanelLanguage === 'en' ? 'Session Step ModelInfo' : (currentPanelLanguage === 'zh-TW' ? '工作階段 Step ModelInfo' : '会话 Step ModelInfo'))
+              : s)
+        )).join(' + ');
+        parts.push(currentPanelLanguage === 'en' ? `Source: ${srcText}` : `来源：${srcText}`);
       }
       if (capSummary?.formulaNote) {
-        parts.push(capSummary.formulaNote);
+        parts.push(typeof translateBackendText === 'function' ? translateBackendText(capSummary.formulaNote) : capSummary.formulaNote);
       } else {
-        parts.push('尚未获取到当前账号/步骤的模型窗口与最大输出元数据（不按模型名称推测上限）。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Window & max output metadata not received for current account/step (never inferred from name).'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '尚未取得目前帳號/步驟的模型視窗與最大輸出中繼資料（不依模型名稱推測上限）。'
+            : '尚未获取到当前账号/步骤的模型窗口与最大输出元数据（不按模型名称推测上限）。'));
       }
       if (capSummary?.policyNote) {
-        parts.push(capSummary.policyNote);
+        parts.push(typeof translateBackendText === 'function' ? translateBackendText(capSummary.policyNote) : capSummary.policyNote);
       }
       if (capSummary?.hasTierVariance) {
-        parts.push('注意：该模型不同力度档位报告了不同容量/最大输出，可调上限取安全交集，详情见下方「档位能力」。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Note: effort tiers report varying window/output caps; adjustable limit uses safe intersection (see Tier Capabilities below).'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '注意：該模型不同力度檔位回報了不同容量/最大輸出，可調上限取安全交集，詳情見下方「檔位能力」。'
+            : '注意：该模型不同力度档位报告了不同容量/最大输出，可调上限取安全交集，详情见下方「档位能力」。'));
       }
       if (runtimePolicy?.diskVsRuntimeMismatch) {
-        parts.push('磁盘配置与运行中进程尚未确认一致：以下预测与默认预算均按未确认处理，请勿当作已实机生效。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Disk config and running process not yet verified consistent: projections are treated as unconfirmed.'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '磁碟設定與執行中程序尚未確認一致：以下預測與預設預算均依未確認處理，請勿當作已實機生效。'
+            : '磁盘配置与运行中进程尚未确认一致：以下预测与默认预算均按未确认处理，请勿当作已实机生效。'));
       }
-      ctxCapFormulaEl.textContent = parts.join('；');
+      ctxCapFormulaEl.textContent = parts.join(currentPanelLanguage === 'en' ? '; ' : '；');
     }
     if (ctxRefSavedEl) {
       const targetSavedLabel = getContextScopeMode() === 'unified'
@@ -4979,10 +5270,10 @@
       ctxRefSavedEl.textContent = targetSavedLabel;
     }
     if (ctxRefSentEl) {
-      ctxRefSentEl.textContent = evalResult.requestText || '尚无本次验证';
+      ctxRefSentEl.textContent = evalResult.requestText || t('models.cap.noneVerified');
     }
     if (ctxRefAdoptedEl) {
-      ctxRefAdoptedEl.textContent = evalResult.observedText || '尚无本次验证';
+      ctxRefAdoptedEl.textContent = evalResult.observedText || t('models.cap.noneVerified');
     }
 
     if (ctxUnifiedProjEl) {
@@ -4992,8 +5283,10 @@
         if (projections.length > 0 && typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxUnifiedProjEl.replaceChildren === 'function') {
           const titleDiv = document.createElement('div');
           titleDiv.className = 'ctx-unified-proj-title';
-          titleDiv.textContent = '统一模式各模型预计采用预算（预测值，非实机已确认）：';
+          titleDiv.textContent = t('models.unified.projTitle');
           const rowNodes = [titleDiv];
+          const isEnProj = currentPanelLanguage === 'en';
+          const isTwProj = currentPanelLanguage === 'zh-TW';
           for (const pr of projections.slice(0, 8)) {
             const row = document.createElement('div');
             const isWarnRow = pr.outcome === 'clamped_to_model_max' || pr.outcome === 'exceeds_client_policy' || pr.outcome === 'clamped_by_client_policy' || pr.outcome === 'pending_restart_unconfirmed' || pr.outcome === 'partial_policy_unconfirmed' || pr.outcome === 'runtime_unconfirmed';
@@ -5002,29 +5295,29 @@
             lbl.textContent = pr.productLabel;
             const val = document.createElement('strong');
             if (pr.outcome === 'clamped_to_model_max') {
-              val.textContent = `受模型上限限制 -> 预计 ${fmt(pr.projectedTokens)}（最大可用）`;
+              val.textContent = isEnProj ? `Capped by model max -> ~${fmt(pr.projectedTokens)}` : (isTwProj ? `受模型上限限制 -> 預計 ${fmt(pr.projectedTokens)}（最大可用）` : `受模型上限限制 -> 预计 ${fmt(pr.projectedTokens)}（最大可用）`);
             } else if (pr.outcome === 'exceeds_client_policy') {
-              val.textContent = `超出当前客户端限制 -> 预计仅保底 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
+              val.textContent = isEnProj ? `Exceeds policy -> ~${fmt(pr.projectedTokens)} (limit ${fmt(pr.clientLimitTokens)})` : `超出当前客户端限制 -> 预计仅保底 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
             } else if (pr.outcome === 'clamped_by_client_policy') {
-              val.textContent = `受当前客户端限制 -> 预计 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
+              val.textContent = isEnProj ? `Capped by policy -> ~${fmt(pr.projectedTokens)} (limit ${fmt(pr.clientLimitTokens)})` : `受当前客户端限制 -> 预计 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
             } else if (pr.outcome === 'pending_restart_unconfirmed') {
-              val.textContent = '待验证（磁盘已改，客户端未重启）';
+              val.textContent = isEnProj ? 'Pending restart (disk updated)' : (isTwProj ? '待重啟確認（磁碟已改）' : '待验证（磁盘已改，客户端未重启）');
             } else if (pr.outcome === 'runtime_unconfirmed') {
-              val.textContent = '待验证（运行中进程未确认）';
+              val.textContent = isEnProj ? 'Pending (runtime unconfirmed)' : (isTwProj ? '待驗證（執行中程序未確認）' : '待验证（运行中进程未确认）');
             } else if (pr.outcome === 'partial_policy_unconfirmed') {
-              val.textContent = '未知（客户端处于部分异常状态）';
+              val.textContent = t('models.cap.policyPartial');
             } else if (pr.outcome === 'unknown_policy') {
-              val.textContent = '未知（运行策略待读取）';
+              val.textContent = t('models.cap.policyUnknown');
             } else if (pr.outcome === 'unknown_cap') {
-              val.textContent = '模型上限未知';
+              val.textContent = isEnProj ? 'Model cap unknown' : '模型上限未知';
             } else if (pr.outcome === 'client_default' && pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens（当前策略默认）`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens (Policy default)` : `预计 ${fmt(pr.projectedTokens)} tokens（当前策略默认）`;
             } else if (pr.outcome === 'dynamic_follow' && pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens（Dynamic 默认）`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens (Dynamic default)` : `预计 ${fmt(pr.projectedTokens)} tokens（Dynamic 默认）`;
             } else if (pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens` : `预计 ${fmt(pr.projectedTokens)} tokens`;
             } else {
-              val.textContent = '待验证';
+              val.textContent = t('models.summary.pendingConfirm');
             }
             row.appendChild(lbl);
             row.appendChild(val);
@@ -5044,12 +5337,12 @@
       if (capSummary?.tierDetails?.length) {
         ctxCardTierCapsRowEl.hidden = false;
         const lines = capSummary.tierDetails.map(td => {
-          const tierName = td.effort ? formatEffortZh(td.effort) : (td.modelId || '标准');
-          const winTxt = td.maxTokens ? `窗口 ${fmt(td.maxTokens)}` : '窗口未知';
-          const outTxt = td.maxOutputTokens != null ? `最大输出 ${fmt(td.maxOutputTokens)}` : '输出未知';
+          const tierName = td.effort ? formatEffortZh(td.effort) : (td.modelId || t('models.cap.tierStandard'));
+          const winTxt = td.maxTokens ? t('models.cap.tierWin', { val: fmt(td.maxTokens) }) : t('models.cap.tierWinUnk');
+          const outTxt = td.maxOutputTokens != null ? t('models.cap.tierOut', { val: fmt(td.maxOutputTokens) }) : t('models.cap.tierOutUnk');
           const maxInTxt = (td.maxTokens && td.maxOutputTokens != null && td.maxTokens > td.maxOutputTokens)
-            ? `可调上限 ${fmt(td.maxTokens - td.maxOutputTokens)}`
-            : '上限未知';
+            ? t('models.cap.tierAdj', { val: fmt(td.maxTokens - td.maxOutputTokens) })
+            : t('models.cap.tierAdjUnk');
           return `${tierName}：${winTxt} / ${outTxt} / ${maxInTxt}`;
         });
         if (typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxCardTierCapsEl.replaceChildren === 'function') {
@@ -5101,15 +5394,15 @@
       } else if (!currentUnlockStatus) {
         ctxCardClientEl.textContent = t('status.badge.reading');
       } else if (runtimePolicy?.runtimeState === 'pending_restart') {
-        ctxCardClientEl.textContent = `磁盘为 ${formatDiskPolicyText(runtimePolicy)}（待重启生效）`;
+        ctxCardClientEl.textContent = t('models.cap.diskPending', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy?.runtimeState === 'runtime_unconfirmed') {
-        ctxCardClientEl.textContent = `磁盘为 ${formatDiskPolicyText(runtimePolicy)}（运行态未确认）`;
+        ctxCardClientEl.textContent = t('models.cap.diskUnconfirmed', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy?.runtimeState === 'partial') {
-        ctxCardClientEl.textContent = '部分异常（请核对客户端状态）';
+        ctxCardClientEl.textContent = t('models.cap.clientPartialAlert');
       } else if (runtimePolicy?.policyKnown && runtimePolicy.runtimeMode === 'dynamic') {
-        ctxCardClientEl.textContent = '动态跟随已确认运行（各模型独立）';
+        ctxCardClientEl.textContent = t('models.cap.clientDynamicOk');
       } else if (runtimePolicy?.policyKnown && runtimePolicy.runtimeMode === 'fixed' && runtimePolicy.currentClientLimitTokens != null) {
-        ctxCardClientEl.textContent = `固定单一上限模式 (${formatKShort(runtimePolicy.currentClientLimitTokens)}，建议升级为动态跟随)`;
+        ctxCardClientEl.textContent = t('models.cap.fixedAdvice', { val: formatKShort(runtimePolicy.currentClientLimitTokens) });
       } else {
         ctxCardClientEl.textContent = describeClientModeValue(currentUnlockStatus);
       }
@@ -5263,7 +5556,7 @@
       } else if (product) {
         ctxSummaryModelEl.textContent = product.productLabel;
       } else {
-        ctxSummaryModelEl.textContent = '待确认';
+        ctxSummaryModelEl.textContent = t('models.summary.pendingConfirm');
       }
     }
     if (ctxSummaryLengthEl) {
@@ -5298,13 +5591,13 @@
 
     if (ctxPresetModelMaxSubEl) {
       if (isUnified) {
-        ctxPresetModelMaxSubEl.textContent = '统一模式下各模型不同（已禁用）';
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.unifiedDisabled');
       } else if (knownEnvMax != null) {
-        ctxPresetModelMaxSubEl.textContent = `当前环境最大可采纳：${fmt(knownEnvMax)} tokens`;
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.envMax', { val: fmt(knownEnvMax) });
       } else if (!policyKnown && knownModelMax != null) {
-        ctxPresetModelMaxSubEl.textContent = `运行策略未确认（模型理论上限 ${fmt(knownModelMax)}，暂不可用）`;
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.policyUnconfirmed', { val: fmt(knownModelMax) });
       } else {
-        ctxPresetModelMaxSubEl.textContent = '模型元数据待获取（暂不可用）';
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.metaPending');
       }
     }
 
@@ -5385,7 +5678,7 @@
     }
     if (ctxDraft.mode === 'default') {
       ctxValidationEl.className = 'ctx-validation-msg';
-      ctxValidationEl.textContent = '恢复客户端默认：请求将清除 maxTokenLimit 覆盖，由当前语言服务全局模式决定（若已开 Dynamic 则按动态默认）。';
+      ctxValidationEl.textContent = t('models.validation.defaultDesc');
       return;
     }
     const rawVal = ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== ''
@@ -6372,8 +6665,7 @@
       const y = padTop + idx * rowH;
       const val = getVal(g) || 0;
       const w = Math.max(4, (val / maxVal) * barAreaW);
-      const effText = g.effort ? ` (${formatEffortZh(g.effort)})` : '';
-      const displayLabel = `${g.productLabel}${effText}`;
+      const displayLabel = formatProductDisplayWithEffort(g.productLabel, g.effort);
       const unitStr = speedMetric === 'tps' ? `${val} tok/s` : t('speed.unitSec', { val });
 
       const rowGrp = createSvgEl('g', { style: 'cursor:pointer' });
@@ -6590,8 +6882,7 @@
     const speedDropLabel = el('speed-model-dropdown-label');
     if (speedDropLabel) {
       if (chosenGroup) {
-        const effStr = chosenGroup.effort ? ` (${formatEffortZh(chosenGroup.effort)})` : '';
-        speedDropLabel.textContent = `${chosenGroup.productLabel}${effStr}`;
+        speedDropLabel.textContent = formatProductDisplayWithEffort(chosenGroup.productLabel, chosenGroup.effort);
       } else {
         speedDropLabel.textContent = t('speed.lineNoModel');
       }
@@ -6614,10 +6905,9 @@
           renderSpeedComparisonTab();
         },
         getOptions: () => lastSpeedGroups.map(g => {
-          const effStr = g.effort ? ` (${formatEffortZh(g.effort)})` : '';
           return {
             value: g.modelExactId,
-            label: `${g.productLabel}${effStr}`,
+            label: formatProductDisplayWithEffort(g.productLabel, g.effort),
             displayRight: t('speed.samples', { n: g.count })
           };
         })
@@ -6849,6 +7139,7 @@
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
+      if (typeof syncAllNativeSelectDropdowns === 'function') syncAllNativeSelectDropdowns();
     } catch { }
     try {
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
@@ -6866,8 +7157,9 @@
       }
     } catch { }
     try {
-      if (typeof applyTokenHistoryPayload === 'function' && ANTIGRAVITY_TOKEN_DATA) {
-        applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA);
+      const basePayload = ANTIGRAVITY_TOKEN_DATA?.rawPayload || ANTIGRAVITY_TOKEN_DATA;
+      if (typeof applyTokenHistoryPayload === 'function' && basePayload) {
+        applyTokenHistoryPayload(basePayload);
       }
     } catch { }
 
@@ -8560,6 +8852,14 @@
     let pillText = t('cost.covFull');
     let pillClass = 'key-pill pill-good';
 
+    const inShare = el('ref-cost-input-share');
+    const inBar = el('ref-cost-input-bar');
+    const caShare = el('ref-cost-cache-share');
+    const caBar = el('ref-cost-cache-bar');
+    const outShare = el('ref-cost-output-share');
+    const outBar = el('ref-cost-output-bar');
+    let cInUSD = 0, cCaUSD = 0, cOutUSD = 0;
+
     // 2. 估值模式计算
     let effectiveRef = curRef;
     if ((effectiveRef.totalCostUSD === undefined || effectiveRef.totalCostUSD === null) && curTotal > 0) {
@@ -8597,6 +8897,9 @@
         } else if (curTotal > 0 && curIn === 0 && curCa === 0 && curOut === 0) {
           grandVal.textContent = t('cost.notReady');
           grandVal.title = t('cost.notReady');
+        } else if (activeTokenAccountFilter !== 'all' && curTotal === 0) {
+          grandVal.textContent = t('cost.noRecords');
+          grandVal.title = t('accounts.filterNoData');
         } else {
           grandVal.textContent = '$0.00';
           grandVal.title = t('cost.noRecords');
@@ -8613,11 +8916,14 @@
       pillText = t('cost.modeRef');
       pillClass = 'key-pill pill-muted';
 
-      if (inVal) inVal.textContent = `$${Number(effectiveRef.inputCostUSD || (curIn * rateIn / 1e6)).toFixed(2)}`;
+      cInUSD = Number(effectiveRef.inputCostUSD || (curIn * rateIn / 1e6));
+      cCaUSD = Number(effectiveRef.cacheCostUSD || (curCa * rateCa / 1e6));
+      cOutUSD = Number(effectiveRef.outputCostUSD || (curOut * rateOut / 1e6));
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = `${fmtYi(curIn)} tok`;
-      if (caVal) caVal.textContent = `$${Number(effectiveRef.cacheCostUSD || (curCa * rateCa / 1e6)).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = t('cost.tokCacheDiscount', { tok: fmtYi(curCa) });
-      if (outVal) outVal.textContent = `$${Number(effectiveRef.outputCostUSD || (curOut * rateOut / 1e6)).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = `${fmtYi(curOut)} tok`;
     } else if (costModelMode === 'hybrid') {
       const h = curHybrid.hybrid || {};
@@ -8636,11 +8942,14 @@
       pillClass = 'key-pill pill-muted';
 
       const rb = h.residualTokensBreakdown || {};
-      if (inVal) inVal.textContent = `$${Number(rb.inputCostUSD || (Number(rb.input || 0) * rateIn / 1e6)).toFixed(2)}`;
+      cInUSD = Number(rb.inputCostUSD || (Number(rb.input || 0) * rateIn / 1e6));
+      cCaUSD = Number(rb.cacheCostUSD || (Number(rb.cache || 0) * rateCa / 1e6));
+      cOutUSD = Number(rb.outputCostUSD || (Number(rb.output || 0) * rateOut / 1e6));
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.input || 0) });
-      if (caVal) caVal.textContent = `$${Number(rb.cacheCostUSD || (Number(rb.cache || 0) * rateCa / 1e6)).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.cache || 0) });
-      if (outVal) outVal.textContent = `$${Number(rb.outputCostUSD || (Number(rb.output || 0) * rateOut / 1e6)).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.output || 0) });
     } else {
       // 仅已识别真实模型
@@ -8677,13 +8986,27 @@
         pillClass = `key-pill ${pct >= 100 ? 'pill-good' : 'pill-warn'}`;
       }
 
-      if (inVal) inVal.textContent = `$${((curIdentified.byCategory?.inputTokens || 0) * rateIn / 1e6).toFixed(2)}`;
+      cInUSD = (curIdentified.byCategory?.inputTokens || 0) * rateIn / 1e6;
+      cCaUSD = (curIdentified.byCategory?.cacheTokens || 0) * rateCa / 1e6;
+      cOutUSD = (curIdentified.byCategory?.outputTokens || 0) * rateOut / 1e6;
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = `${fmtYi(curIdentified.byCategory?.inputTokens || 0)} tok`;
-      if (caVal) caVal.textContent = `$${((curIdentified.byCategory?.cacheTokens || 0) * rateCa / 1e6).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = `${fmtYi(curIdentified.byCategory?.cacheTokens || 0)} tok`;
-      if (outVal) outVal.textContent = `$${((curIdentified.byCategory?.outputTokens || 0) * rateOut / 1e6).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = `${fmtYi(curIdentified.byCategory?.outputTokens || 0)} tok`;
     }
+
+    const cSumUSD = cInUSD + cCaUSD + cOutUSD;
+    const pctIn = cSumUSD > 0 ? Math.max(0, Math.min(100, (cInUSD / cSumUSD) * 100)) : 0;
+    const pctCa = cSumUSD > 0 ? Math.max(0, Math.min(100, (cCaUSD / cSumUSD) * 100)) : 0;
+    const pctOut = cSumUSD > 0 ? Math.max(0, Math.min(100, (cOutUSD / cSumUSD) * 100)) : 0;
+    if (inShare) inShare.textContent = `${pctIn.toFixed(1)}%`;
+    if (inBar) inBar.style.width = `${pctIn.toFixed(1)}%`;
+    if (caShare) caShare.textContent = `${pctCa.toFixed(1)}%`;
+    if (caBar) caBar.style.width = `${pctCa.toFixed(1)}%`;
+    if (outShare) outShare.textContent = `${pctOut.toFixed(1)}%`;
+    if (outBar) outBar.style.width = `${pctOut.toFixed(1)}%`;
 
     if (covPill) {
       covPill.textContent = pillText;
@@ -8834,6 +9157,8 @@
       }
     });
 
+    setClassFlag(el('h-scroll-box'), 'is-cum-active', view === 'cum');
+
     hidePopover();
     renderActiveHeatView(true);
     updateHeatTabThumb();
@@ -8912,6 +9237,14 @@
   };
   const escape = e => {
     if (e.key === 'Escape') {
+      if (accountsUiState.removeModal?.open) {
+        if (!accountsUiState.removeModal.busy) closeRemoveAccountModal();
+        return;
+      }
+      if (activeHeatView === 'cum' && typeof hasActiveCumLock === 'function' && hasActiveCumLock()) {
+        if (typeof clearCumLockAndRefresh === 'function') clearCumLockAndRefresh();
+        return;
+      }
       const pop = el('color-picker-popover');
       const isEscClosing = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute('data-closing') === 'true';
       if (pop && !pop.hidden && !isEscClosing) {
@@ -9060,13 +9393,17 @@
   function getFirstUseDateStr() {
     const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
     const keys = Object.keys(map).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && (map[k]?.total > 0)).sort();
+    const isScopedView = activeTokenAccountFilter !== 'all' || activeTokenSource !== 'all';
+    if (isScopedView) {
+      return keys.length ? keys[0] : null;
+    }
     const declared = ANTIGRAVITY_TOKEN_DATA.firstUseDate;
     if (declared && /^\d{4}-\d{2}-\d{2}$/.test(declared)) {
       if (keys.length && keys[0] < declared) return keys[0];
       return declared;
     }
     if (keys.length) return keys[0];
-    return formatLocalYmd(new Date());
+    return null;
   }
 
   // 计算从「实际首次使用日」起算的 12 个月（52 周 = 364 天）展示窗口，绝不展示首次使用日之前的日期
@@ -9074,7 +9411,7 @@
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const firstStr = getFirstUseDateStr();
-    const firstDate = parseLocalYmd(firstStr) || today;
+    const firstDate = firstStr ? (parseLocalYmd(firstStr) || today) : today;
     const totalDays = 52 * 7; // 364 天（12 个月 / 52 周）
     const elapsedDays = Math.max(0, Math.floor((today.getTime() - firstDate.getTime()) / 86400000)) + 1;
 
@@ -9105,7 +9442,7 @@
     }
 
     const firstBadge = el('first-use-badge');
-    if (firstBadge) firstBadge.textContent = t('tokens.firstUse', { date: formatZhYmd(firstStr) });
+    if (firstBadge) firstBadge.textContent = firstStr ? t('tokens.firstUse', { date: formatZhYmd(firstStr) }) : t('tokens.firstUseNone');
     const rangeEl = el('h-win-range');
     const prevBtn = el('h-page-prev');
     const nextBtn = el('h-page-next');
@@ -9203,24 +9540,68 @@
     ANTIGRAVITY_TOKEN_DATA.rawPayload = payload;
     syncTokenAccountFilterOptions(payload);
 
-    // 若选择了指定账号或“历史未归属”，构造隔离账本视图而不污染其他账号或全量原始 payload
+    // 若选择了指定账号或“历史未归属”，构造彻底隔离的账本视图（全量指标、热力图、按模型与费用同步切换，绝不泄漏全局总量）
+    const isScopedAccountFilter = activeTokenAccountFilter !== 'all';
     let viewPayload = payload;
-    if (activeTokenAccountFilter !== 'all') {
+    if (isScopedAccountFilter) {
+      const zeroCostEstimate = {
+        pricedCostUSD: 0,
+        pricedRequestsCount: 0,
+        unpricedRequestsCount: 0,
+        pricedTokens: 0,
+        unpricedTokens: 0,
+        coveragePercent: null,
+        byModel: {},
+        byCategory: {}
+      };
+      const zeroRefCost = {
+        totalCostUSD: 0,
+        inputCostUSD: 0,
+        cacheCostUSD: 0,
+        outputCostUSD: 0,
+        inputTokens: 0,
+        cacheTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        modelDisplayName: 'Gemini 3.8 Flash',
+        matchedTier: { inputPerMillion: 0.75, cacheReadPerMillion: 0.075, outputPerMillion: 3.75 }
+      };
       const bucket = activeTokenAccountFilter === 'unattributed'
         ? payload.unattributedUsage
         : payload.usageByAccount?.[activeTokenAccountFilter];
       if (bucket && typeof bucket === 'object') {
+        const bDaily = bucket.dailyMap || {};
+        const bDailyBySrc = bucket.dailyMapBySource || {
+          all: bDaily,
+          desktop: activeTokenAccountFilter === 'unattributed' ? bDaily : {},
+          cli: {},
+          legacyUnallocated: activeTokenAccountFilter === 'unattributed' ? bDaily : {}
+        };
+        const bModelsBySrc = bucket.dailyModelMapBySource || {
+          all: {},
+          desktop: {},
+          cli: {}
+        };
+        const bCostEst = bucket.costEstimate || zeroCostEstimate;
+        const bCostMonth = bucket.costEstimateCurrentMonth || bCostEst;
+        const bCostBySrc = bucket.costEstimateBySource || {
+          all: bCostEst,
+          desktop: bCostEst,
+          cli: zeroCostEstimate
+        };
+        const bCacheBySrc = bucket.cacheReadStatsBySource || (bucket.cacheReadStats
+          ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: null }
+          : { all: null, desktop: null, cli: null });
+        const bMonthCacheBySrc = bucket.currentMonthCacheReadStatsBySource || bCacheBySrc;
         viewPayload = {
           ...payload,
-          dailyMap: bucket.dailyMap || {},
-          dailyMapBySource: {
-            all: bucket.dailyMap || {},
-            desktop: activeTokenAccountFilter === 'unattributed' ? (bucket.dailyMap || {}) : {},
-            cli: {},
-            legacyUnallocated: activeTokenAccountFilter === 'unattributed' ? (bucket.dailyMap || {}) : {}
-          },
+          scopedAccountView: true,
+          firstUseDate: bucket.firstUseDate || null,
+          dailyMap: bDaily,
+          dailyMapBySource: bDailyBySrc,
+          dailyModelMapBySource: bModelsBySrc,
+          modelMetaByKey: bucket.modelMetaByKey || {},
           summary: {
-            ...(payload.summary || {}),
             grandTotalTokens: Number(bucket.totalTokens) || 0,
             totalInputTokens: Number(bucket.totalInputTokens) || 0,
             totalOutputTokens: Number(bucket.totalOutputTokens) || 0,
@@ -9228,23 +9609,65 @@
             todayTokens: Number(bucket.todayTokens) || 0,
             monthTokens: Number(bucket.monthTokens) || 0,
             yearTokens: Number(bucket.yearTokens) || 0,
+            currentMonthInput: Number(bucket.currentMonthInput) || 0,
+            currentMonthOutput: Number(bucket.currentMonthOutput) || 0,
+            currentMonthCache: Number(bucket.currentMonthCache) || 0,
+            activeDaysCount: Number(bucket.activeDaysCount) || Object.keys(bDaily).length,
+            totalConversations: Number(bucket.totalConversations ?? bucket.callCount) || 0,
+            totalSteps: Number(bucket.totalSteps ?? bucket.callCount) || 0,
+            firstUseDate: bucket.firstUseDate || null,
             cacheReadStats: bucket.cacheReadStats || null,
-            currentMonthCacheReadStats: bucket.cacheReadStats || null
+            currentMonthCacheReadStats: bucket.currentMonthCacheReadStats || bucket.cacheReadStats || null
           },
-          costEstimate: bucket.costEstimate || null,
-          costEstimateBySource: bucket.costEstimate ? { all: bucket.costEstimate, desktop: bucket.costEstimate, cli: bucket.costEstimate } : payload.costEstimateBySource,
-          cacheReadStatsBySource: bucket.cacheReadStats ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: bucket.cacheReadStats } : payload.cacheReadStatsBySource,
-          currentMonthCacheReadStatsBySource: bucket.cacheReadStats ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: bucket.cacheReadStats } : payload.currentMonthCacheReadStatsBySource
+          costEstimate: bCostEst,
+          costEstimateCurrentMonth: bCostMonth,
+          costEstimateBySource: bCostBySrc,
+          cacheReadStatsBySource: bCacheBySrc,
+          currentMonthCacheReadStatsBySource: bMonthCacheBySrc,
+          referenceCost: bucket.referenceCost || {
+            all: { ...zeroRefCost },
+            currentMonth: { ...zeroRefCost },
+            hybrid: { ...zeroRefCost },
+            currentMonthHybrid: { ...zeroRefCost }
+          }
         };
       } else {
         viewPayload = {
           ...payload,
+          scopedAccountView: true,
+          firstUseDate: null,
           dailyMap: {},
           dailyMapBySource: { all: {}, desktop: {}, cli: {}, legacyUnallocated: {} },
+          dailyModelMapBySource: { all: {}, desktop: {}, cli: {} },
+          modelMetaByKey: {},
           summary: {
-            ...(payload.summary || {}),
-            grandTotalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCacheTokens: 0,
-            todayTokens: 0, monthTokens: 0, yearTokens: 0
+            grandTotalTokens: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalCacheTokens: 0,
+            todayTokens: 0,
+            monthTokens: 0,
+            yearTokens: 0,
+            currentMonthInput: 0,
+            currentMonthOutput: 0,
+            currentMonthCache: 0,
+            activeDaysCount: 0,
+            totalConversations: 0,
+            totalSteps: 0,
+            firstUseDate: null,
+            cacheReadStats: null,
+            currentMonthCacheReadStats: null
+          },
+          costEstimate: { ...zeroCostEstimate },
+          costEstimateCurrentMonth: { ...zeroCostEstimate },
+          costEstimateBySource: { all: { ...zeroCostEstimate }, desktop: { ...zeroCostEstimate }, cli: { ...zeroCostEstimate } },
+          cacheReadStatsBySource: { all: null, desktop: null, cli: null },
+          currentMonthCacheReadStatsBySource: { all: null, desktop: null, cli: null },
+          referenceCost: {
+            all: { ...zeroRefCost },
+            currentMonth: { ...zeroRefCost },
+            hybrid: { ...zeroRefCost },
+            currentMonthHybrid: { ...zeroRefCost }
           }
         };
       }
@@ -9253,19 +9676,26 @@
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const todayStr = formatLocalYmd(new Date());
     const normalized = core && typeof core.normalizeTokenHistoryPayload === 'function'
-      ? core.normalizeTokenHistoryPayload(viewPayload, { source: activeTokenSource, todayStr })
+      ? core.normalizeTokenHistoryPayload(viewPayload, { source: activeTokenSource, todayStr, scopedAccountView: isScopedAccountFilter })
       : null;
 
     if (normalized) {
       ANTIGRAVITY_TOKEN_DATA.dailyMap = normalized.dailyMap;
       ANTIGRAVITY_TOKEN_DATA.dailyMapBySource = normalized.dailyMapBySource;
       ANTIGRAVITY_TOKEN_DATA.dailyModelMap = normalized.dailyModelMap || {};
-      ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource = normalized.dailyModelMapBySource || payload.dailyModelMapBySource || null;
-      ANTIGRAVITY_TOKEN_DATA.modelMetaByKey = normalized.modelMetaByKey || payload.modelMetaByKey || null;
+      ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource = normalized.dailyModelMapBySource || (isScopedAccountFilter ? viewPayload.dailyModelMapBySource : payload.dailyModelMapBySource) || null;
+      ANTIGRAVITY_TOKEN_DATA.modelMetaByKey = normalized.modelMetaByKey || (isScopedAccountFilter ? viewPayload.modelMetaByKey : payload.modelMetaByKey) || null;
       ANTIGRAVITY_TOKEN_DATA.summary = normalized.summary;
       ANTIGRAVITY_TOKEN_DATA.referenceCost = normalized.referenceCost;
       ANTIGRAVITY_TOKEN_DATA.currentPeriod = normalized.currentPeriod;
-      if (normalized.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate;
+      if (isScopedAccountFilter) {
+        ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate || viewPayload.firstUseDate || null;
+        ANTIGRAVITY_TOKEN_DATA.costEstimate = viewPayload.costEstimate;
+        ANTIGRAVITY_TOKEN_DATA.costEstimateCurrentMonth = viewPayload.costEstimateCurrentMonth;
+        ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = viewPayload.costEstimateBySource;
+      } else {
+        if (normalized.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate;
+      }
       if (normalized.updatedAt) ANTIGRAVITY_TOKEN_DATA.updatedAt = normalized.updatedAt;
     } else {
       const newMap = {};
@@ -9366,15 +9796,15 @@
       renderPlanDetail(mergedPlan);
     }
 
-    if (payload.costEstimate) {
+    if (payload.costEstimate && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimate = payload.costEstimate;
     }
-    if (payload.costEstimateCurrentMonth) {
+    if (payload.costEstimateCurrentMonth && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateCurrentMonth = payload.costEstimateCurrentMonth;
     }
-    if (payload.costEstimateBySource) {
+    if (payload.costEstimateBySource && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = payload.costEstimateBySource;
-    } else if (payload.costEstimate) {
+    } else if (payload.costEstimate && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = {
         all: payload.costEstimate,
         desktop: payload.costEstimate,
@@ -9440,6 +9870,7 @@
     const tcbTotInp = el('tcb-total-input-val');
     const tcbOut = el('tcb-output-val');
     const tcbRatio = el('tcb-ratio-val');
+    const tcbRatioFill = el('tcb-ratio-bar-fill');
     const tcbNote = el('tcb-note');
     const unknownText = t('tokens.cache.unknown');
     if (tcbInp) tcbInp.textContent = cs.cacheStatus === 'missing' ? unknownText : fmtCardM(cs.totalUncachedInput);
@@ -9450,6 +9881,12 @@
       if (cs.cacheStatus === 'missing') tcbRatio.textContent = unknownText;
       else if (cs.cacheStatus === 'zero_input') tcbRatio.textContent = t('tokens.cache.na');
       else tcbRatio.textContent = cs.cacheReadPct !== null ? `${cs.cacheReadPct}%` : unknownText;
+    }
+    if (tcbRatioFill) {
+      const pctNum = (cs.cacheStatus === 'missing' || cs.cacheStatus === 'zero_input' || cs.cacheReadPct === null)
+        ? 0
+        : Math.max(0, Math.min(100, Number(cs.cacheReadPct) || 0));
+      tcbRatioFill.style.width = `${pctNum.toFixed(1)}%`;
     }
     if (tcbNote) {
       tcbNote.hidden = false;
@@ -9489,17 +9926,27 @@
     const tMonthCost = el('t-month-cost');
     const tYearCost = el('t-year-cost');
 
+    const isScopedEmptyAccount = isScopedAccountFilter && totalTokens === 0;
+    const noAcctCostStr = t('tokens.noAccountCost');
     if (tTotalCost) {
-      tTotalCost.textContent = `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tTotalCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
     if (tTodayCost) {
-      tTodayCost.textContent = `≈ $${todayCostInfo.costUSD.toFixed(2)}${todayCostCny !== null ? ` (¥${todayCostCny.toFixed(2)})` : ''}`;
+      tTodayCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `≈ $${todayCostInfo.costUSD.toFixed(2)}${todayCostCny !== null ? ` (¥${todayCostCny.toFixed(2)})` : ''}`;
     }
     if (tMonthCost) {
-      tMonthCost.textContent = `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tMonthCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
     if (tYearCost) {
-      tYearCost.textContent = `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tYearCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
@@ -10813,7 +11260,7 @@
     if (detailGrid) {
       detailGrid.replaceChildren();
       const agentDesc = call.agentRole === 'subagent'
-        ? `${t('session.latestCall.agentSub')}${call.subagentRole ? ` (${call.subagentRole})` : (call.subagentType ? ` (${call.subagentType})` : '')}${call.parentCascadeId ? ` · parent ${String(call.parentCascadeId).slice(0, 8)}` : ''}`
+        ? `${t('session.latestCall.agentSub')}${call.subagentRole ? ` (${call.subagentRole})` : (call.subagentType ? ` (${call.subagentType})` : '')}${call.parentCascadeId ? ` · parent ${String(call.parentCascadeId).slice(0, 8)}` : ''}${call.parentStepIndex != null ? ` · step #${call.parentStepIndex}` : ` · ${t('session.latestCall.missingParentStep')}`}`
         : (call.attributionConfidence === 'unidentified' ? t('session.latestCall.agentUnknown') : t('session.latestCall.agentMain'));
       const fmtDurOrUnk = (v) => (v !== null && v !== undefined) ? (typeof formatHumanDuration === 'function' ? formatHumanDuration(v, currentPanelLanguage) : `${v}s`) : unk;
       const eDetailVal = callEval?.efficiency?.available
@@ -10827,9 +11274,7 @@
           : (call.rawPlaceholderId
             ? `${unk} (${t('session.latestCall.rawIdNote', { id: call.rawPlaceholderId })})`
             : (call.modelExactId || call.modelKey || unk)));
-      const effortSuffix = call.effort ? String(call.effort).trim() : '';
-      const hasEffortInTitle = effortSuffix && modelTitle.trim().toLowerCase().endsWith(`(${effortSuffix.toLowerCase()})`);
-      const modelAndEffortDisplay = (effortSuffix && !hasEffortInTitle) ? `${modelTitle} (${effortSuffix})` : modelTitle;
+      const modelAndEffortDisplay = formatProductDisplayWithEffort(modelTitle, call.effort);
       const callStreamDisplay = callEval?.isSampleSparse
         ? `${t('session.speed.shortSampleBadge')}${callEval.shortWindowEstimateSpeed != null ? ` (${t('session.speed.shortWindowEst')}: ${callEval.shortWindowEstimateSpeed} tok/s)` : ''}`
         : ((call.streamingTps ?? call.streamSpeed) != null ? `${call.streamingTps ?? call.streamSpeed} tok/s${callEval?.speedTier ? ` · ${callEval.speedTier.title}` : ''}` : unk);
@@ -11007,14 +11452,27 @@
       noteLine.textContent = t('session.timeline.windowNote');
       sumEl.appendChild(sLine);
       sumEl.appendChild(noteLine);
+      if (tl.subagentNote) {
+        const dbNoteLine = document.createElement('div');
+        dbNoteLine.style.marginTop = '2px';
+        dbNoteLine.textContent = t('session.timeline.dbMissingNote', { reason: tl.subagentNote });
+        sumEl.appendChild(dbNoteLine);
+      }
     }
 
     if (listEl) {
+      const curRouteKey = state.route || '';
+      const sameTimelineRoute = state.timelineRenderedRoute === curRouteKey;
+      const prevScrollTop = sameTimelineRoute ? Number(listEl.scrollTop || 0) : 0;
       listEl.replaceChildren();
+      state.timelineRenderedRoute = curRouteKey;
       const resolveTurnKey = (tObj) => tObj?.turnKey || `turn-${tObj?.turnIndex ?? 'x'}-${tObj?.stepIndex ?? 'na'}`;
       const descTurns = [...turns].reverse();
-      if (descTurns.length > 0 && state.expandedTurnKeys.size === 0) {
-        state.expandedTurnKeys.add(resolveTurnKey(descTurns[0]));
+      if (descTurns.length > 0 && state.timelineAutoExpandedRoute !== curRouteKey) {
+        state.timelineAutoExpandedRoute = curRouteKey;
+        if (state.expandedTurnKeys.size === 0) {
+          state.expandedTurnKeys.add(resolveTurnKey(descTurns[0]));
+        }
       }
       const limit = Math.max(5, Number(state.timelinePageLimit) || 10);
       const visibleTurns = descTurns.slice(0, limit);
@@ -11085,7 +11543,8 @@
         const idxEl = document.createElement('span');
         idxEl.className = 'timeline-turn-idx';
         idxEl.textContent = t('session.timeline.turnLabel', { n: turn.turnIndex });
-        const promptText = turn.preview || turn.userPromptPreview || '';
+        const rawTurnPrompt = turn.preview || turn.userPromptPreview || '';
+        const promptText = typeof sanitizeTurnPreviewText === 'function' ? sanitizeTurnPreviewText(rawTurnPrompt, 120) : rawTurnPrompt;
         const promptEl = document.createElement('span');
         promptEl.className = 'timeline-turn-prompt';
         promptEl.textContent = promptText || t('session.timeline.turnNoPrompt');
@@ -11148,6 +11607,10 @@
           unlinkedEl.hidden = true;
           unlinkedEl.replaceChildren();
         }
+      }
+      if (prevScrollTop > 0) {
+        const maxScroll = Math.max(0, (listEl.scrollHeight || 0) - (listEl.clientHeight || 0));
+        listEl.scrollTop = maxScroll > 0 ? Math.min(prevScrollTop, maxScroll) : prevScrollTop;
       }
     }
   }
@@ -11909,6 +12372,18 @@
           let effectiveCall = (prevSessionCall && call.status === 'final' && prevSessionCall.status === 'final')
             ? mergePendingCallData(prevSessionCall, call)
             : call;
+          const isNewLiveObservation = Boolean(
+            (wasHydrated && !prevSessionCall) ||
+            prevSessionCall?.liveRealtimeConfirmed === true ||
+            (state.livePendingRequest && state.livePendingRequest.cascadeId === id && call.callId !== state.livePendingRequest.baselineCallId)
+          );
+          if (isNewLiveObservation) {
+            effectiveCall = {
+              ...effectiveCall,
+              liveRealtimeConfirmed: true,
+              liveObservedAtMs: prevSessionCall?.liveObservedAtMs || Date.now()
+            };
+          }
           if (prevPending && effectiveCall.status === 'final' && prevPending.status === 'final') {
             effectiveCall = mergePendingCallData(prevPending, effectiveCall);
           }
@@ -13988,14 +14463,19 @@
         const unAttrTot = Number(payload?.unattributedUsage?.totalTokens ?? ANTIGRAVITY_TOKEN_DATA.rawPayload?.unattributedUsage?.totalTokens ?? 0);
         noteEl.textContent = isEn
           ? `Unattributed history (${formatTokensK(unAttrTot)}): offline Desktop/CLI/IDE files without verified email.`
-          : (isTw ? `歷史未歸屬 (${formatTokensK(unAttrTot)})：無帳號依據的舊檔案不計入當前帳號。` : `历史未归属 (${formatTokensK(unAttrTot)})：无账号依据的旧文件不计入当前账号。`);
+          : (isTw ? `歷史未歸屬 (${formatTokensK(unAttrTot)})：無帳號依據的舊檔案不計入當前帳號。` : `历史未归属 (${formatTokensK(unAttrTot)}): 无账号依据的旧文件不计入当前账号。`);
       } else if (activeTokenAccountFilter !== 'all') {
         const b = usageMap[activeTokenAccountFilter];
+        const bTot = Number(b?.totalTokens || 0);
         const kaReqs = Number(b?.keepaliveRequests || 0);
         const kaTok = Number(b?.keepaliveTokens || 0);
-        noteEl.textContent = kaReqs > 0
-          ? (isEn ? `Includes ${kaReqs} keepalive reqs (${formatTokensK(kaTok)}) tracked separately.` : `含独立保活消耗 ${kaReqs} 次 (${formatTokensK(kaTok)})。`)
-          : (isEn ? 'Isolated account ledger (zero cross-account mixing).' : (isTw ? '單帳號獨立帳本（零跨號混算）。' : '单账号独立账本（零跨号混算）。'));
+        if (bTot <= 0 && kaReqs <= 0) {
+          noteEl.textContent = t('accounts.filterNoData');
+        } else if (kaReqs > 0) {
+          noteEl.textContent = t('accounts.filterKeepaliveNote', { reqs: kaReqs, tok: formatTokensK(kaTok) });
+        } else {
+          noteEl.textContent = isEn ? 'Isolated account ledger (zero cross-account mixing).' : (isTw ? '單帳號獨立帳本（零跨號混算）。' : '单账号独立账本（零跨号混算）。');
+        }
       } else {
         const attrCount = Object.keys(usageMap).length;
         noteEl.textContent = attrCount > 0
@@ -14003,10 +14483,14 @@
           : '';
       }
     }
+    if (typeof enhancedDropdowns !== 'undefined' && enhancedDropdowns?.get) {
+      enhancedDropdowns.get('token-account-select')?.refresh?.();
+    }
   }
 
   el('token-account-select')?.addEventListener('change', (ev) => {
     activeTokenAccountFilter = ev.target?.value || 'all';
+    resetAccountScopedViewOffsets();
     if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
       applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
     }
@@ -14054,11 +14538,14 @@
     if (fbEl) {
       fbEl.hidden = !accountsUiState.feedback;
       fbEl.textContent = accountsUiState.feedback || '';
+      const tone = accountsUiState.feedbackTone;
+      fbEl.className = `quota-acct-feedback${tone === 'error' ? ' is-error' : (tone === 'success' ? ' is-success' : '')}`;
     }
 
     // 2. 账号清单
     const listEl = el('quota-accounts-list');
     if (listEl) {
+      const prevScrollTop = Number(listEl.scrollTop || 0);
       listEl.replaceChildren();
       const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
       if (!accts.length) {
@@ -14078,6 +14565,15 @@
           left.title = acc.email;
           const right = document.createElement('div');
           right.className = 'quota-subsec-actions';
+          if (acc.hasRefreshToken) {
+            const refBtn = document.createElement('button');
+            refBtn.className = 'switch-pill-btn quota-acct-refresh-btn';
+            refBtn.type = 'button';
+            refBtn.disabled = accountsUiState.busy;
+            refBtn.textContent = t('accounts.retryQuota');
+            refBtn.addEventListener('click', () => void performAccountAction('refresh_quota', { email: acc.email }));
+            right.appendChild(refBtn);
+          }
           if (acc.isActive) {
             const pill = document.createElement('span');
             pill.className = 'key-pill pill-good';
@@ -14087,49 +14583,76 @@
             const swBtn = document.createElement('button');
             swBtn.className = 'switch-pill-btn';
             swBtn.type = 'button';
-            swBtn.disabled = accountsUiState.busy || !acc.hasRefreshToken || Boolean(acc.authInvalid);
+            swBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy) || !acc.hasRefreshToken || Boolean(acc.authInvalid);
             swBtn.textContent = t('accounts.switchBtn');
             swBtn.addEventListener('click', () => void performAccountAction('switch', { email: acc.email }));
             right.appendChild(swBtn);
           }
+          const rmBtn = document.createElement('button');
+          rmBtn.className = 'quota-acct-remove-btn';
+          rmBtn.type = 'button';
+          rmBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy);
+          rmBtn.textContent = t('accounts.removeBtn');
+          if (rmBtn.dataset) rmBtn.dataset.removeEmail = acc.email;
+          rmBtn.addEventListener('click', () => openRemoveAccountModal(acc));
+          right.appendChild(rmBtn);
           topRow.appendChild(left);
           topRow.appendChild(right);
           card.appendChild(topRow);
 
-          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => `${p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'))}: ${p.noPermission ? 'NoPerm' : (p.percentText || '--')}`);
+          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => {
+            const pName = p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'));
+            const pVal = p.noPermission
+              ? t('accounts.poolNoAccess')
+              : (p.percentText && p.percentText !== '未知' ? p.percentText : t('accounts.poolUnknown'));
+            return `${pName}: ${pVal}`;
+          });
           const metaRow = document.createElement('div');
           metaRow.className = 'quota-acct-meta';
-          const upd = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';
-          const authNote = acc.authInvalid ? (isEn ? ' · Re-auth required' : ' · 需重登授权') : '';
-          metaRow.textContent = `${poolSummaries.length ? poolSummaries.join(' | ') : (isEn ? 'Quota pending' : '待刷新配额')} · ${upd}${authNote}`;
+          const updRaw = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';
+          const upd = (acc.quotaSnapshot && acc.lastQuotaError && acc.lastQuotaUpdatedAtMs)
+            ? t('accounts.lastSnapshotTime', { time: updRaw })
+            : updRaw;
+          const authNote = acc.authInvalid ? ` · ${t('accounts.reauthRequired')}` : '';
+          const emptyPoolText = acc.lastQuotaError ? t('accounts.poolPending') : t('accounts.poolUnknown');
+          metaRow.textContent = `${poolSummaries.length ? poolSummaries.join(' | ') : emptyPoolText} · ${upd}${authNote}`;
           card.appendChild(metaRow);
+          if (acc.lastQuotaError) {
+            const errRow = document.createElement('div');
+            errRow.className = 'quota-acct-error';
+            const meta = acc.lastQuotaErrorMeta;
+            const detailParts = [];
+            if (meta?.stage) detailParts.push(meta.stage);
+            if (meta?.targetHost) detailParts.push(meta.targetHost);
+            if (meta?.httpStatus != null) detailParts.push(`HTTP ${meta.httpStatus}`);
+            const translatedErr = typeof translateBackendText === 'function' ? translateBackendText(acc.lastQuotaError) : acc.lastQuotaError;
+            const detailStr = detailParts.length ? `[${detailParts.join(' · ')}] ${translatedErr}` : translatedErr;
+            errRow.textContent = t('accounts.quotaStageErr', { detail: detailStr });
+            card.appendChild(errRow);
+          }
           listEl.appendChild(card);
         }
+      }
+      if (prevScrollTop > 0) {
+        const maxScroll = Math.max(0, (listEl.scrollHeight || 0) - (listEl.clientHeight || 0));
+        listEl.scrollTop = maxScroll > 0 ? Math.min(prevScrollTop, maxScroll) : prevScrollTop;
       }
     }
 
     // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿）
     const stPill = el('auto-switch-status-pill');
     const lastNote = el('auto-switch-last-note');
-    const stMap = {
-      disabled: isEn ? 'Off' : '已关闭',
-      watching: isEn ? 'Watching' : '监控中',
-      pending_debounce: isEn ? 'Debouncing' : '防抖确认中',
-      waiting_idle: isEn ? 'Waiting idle' : '等待当前生成完成',
-      cooldown: isEn ? 'Cooldown' : '冷却保护中',
-      switching: isEn ? 'Switching' : '切号中',
-      all_candidates_exhausted: isEn ? 'No candidate available' : '备选账号均不足',
-      blocked_untrusted_quota: isEn ? 'Skipped (Stale/Error)' : '数据不可信已跳过',
-      error: isEn ? 'Halted (Error)' : '失败已停用'
-    };
+    const stKeys = new Set(['disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown', 'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota', 'error']);
     if (stPill) {
       const sKey = ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled');
-      stPill.textContent = stMap[sKey] || sKey;
+      stPill.textContent = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
       stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (sKey === 'error' || sKey === 'all_candidates_exhausted' ? 'pill-warn' : 'pill-muted')}`;
     }
     if (lastNote) {
       const errMsg = ov.autoSwitchStatus?.lastError;
-      lastNote.textContent = errMsg || (ov.autoSwitchStatus?.lastResult?.toEmail ? `上次切至 ${ov.autoSwitchStatus.lastResult.toEmail}` : '');
+      lastNote.textContent = errMsg
+        ? (typeof translateBackendText === 'function' ? translateBackendText(errMsg) : errMsg)
+        : (ov.autoSwitchStatus?.lastResult?.toEmail ? t('accounts.lastSwitchedTo', { email: ov.autoSwitchStatus.lastResult.toEmail }) : '');
     }
 
     if (!isEditingAutoSwitchDraft()) {
@@ -14144,6 +14667,11 @@
       if (modeSel && cfg.metricMode) modeSel.value = cfg.metricMode;
       if (winSel && cfg.windowKey) winSel.value = cfg.windowKey;
       if (thInp && cfg.thresholdPct != null) thInp.value = String(cfg.thresholdPct);
+      if (typeof enhancedDropdowns !== 'undefined' && enhancedDropdowns?.get) {
+        enhancedDropdowns.get('sel-auto-switch-pool')?.refresh?.();
+        enhancedDropdowns.get('sel-auto-switch-mode')?.refresh?.();
+        enhancedDropdowns.get('sel-auto-switch-window')?.refresh?.();
+      }
 
       const candWrap = el('auto-switch-candidates-list');
       if (candWrap) {
@@ -14180,11 +14708,13 @@
         for (const iv of intervals) {
           const card = document.createElement('div');
           card.className = 'quota-compare-card';
-          const sign = iv.deltaPp > 0 ? `+${iv.deltaPp}` : String(iv.deltaPp);
           const deltaLabel = iv.deltaPp < 0
             ? (isEn ? `-${Math.abs(iv.deltaPp)} pp` : (isTw ? `下降 ${Math.abs(iv.deltaPp)} 個百分點` : `下降 ${Math.abs(iv.deltaPp)} 个百分点`))
-            : (iv.deltaPp > 0 ? (isEn ? `+${iv.deltaPp} pp` : `回升 ${iv.deltaPp} 个百分点`) : (isEn ? '0 pp' : '无变化'));
-          const splitBadge = iv.splitReason ? ` [${iv.splitReason}]` : '';
+            : (iv.deltaPp > 0 ? (isEn ? `+${iv.deltaPp} pp` : (isTw ? `回升 ${iv.deltaPp} 個百分點` : `回升 ${iv.deltaPp} 个百分点`)) : (isEn ? '0 pp' : (isTw ? '無變化' : '无变化')));
+          const splitText = iv.splitReason
+            ? (t(`quota.split.${iv.splitReason}`) !== `quota.split.${iv.splitReason}` ? t(`quota.split.${iv.splitReason}`) : iv.splitReason)
+            : '';
+          const splitBadge = splitText ? ` [${splitText}]` : '';
           const sTime = new Date(iv.startAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           const eTime = new Date(iv.endAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           const head = document.createElement('div');
@@ -14201,8 +14731,10 @@
           const body = document.createElement('div');
           body.className = 'quota-acct-meta';
           body.textContent = isEn
-            ? `Account: ${iv.email} · Local reqs: ${iv.requestCount} | Uncached In: ${formatTokensK(iv.uncachedInputTokens)} · Cache Read: ${formatTokensK(iv.cacheReadTokens)} · Out: ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · Sampling gap detected' : ''}`
-            : `账号: ${iv.email} · 本机请求 ${iv.requestCount} 次 | 未缓存输入 ${formatTokensK(iv.uncachedInputTokens)} · 缓存读取 ${formatTokensK(iv.cacheReadTokens)} · 输出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含采样缺口已切分' : ''}`;
+            ? `Account: ${iv.email} · Local reqs: ${iv.requestCount} | Uncached In: ${formatTokensK(iv.uncachedInputTokens)} · Cache Read: ${formatTokensK(iv.cacheReadTokens)} · Out: ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · Sampling gap split' : ''}`
+            : (isTw
+              ? `帳號: ${iv.email} · 本機請求 ${iv.requestCount} 次 | 未快取輸入 ${formatTokensK(iv.uncachedInputTokens)} · 快取讀取 ${formatTokensK(iv.cacheReadTokens)} · 輸出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含採樣缺口已切分' : ''}`
+              : `账号: ${iv.email} · 本机请求 ${iv.requestCount} 次 | 未缓存输入 ${formatTokensK(iv.uncachedInputTokens)} · 缓存读取 ${formatTokensK(iv.cacheReadTokens)} · 输出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含采样缺口已切分' : ''}`);
           card.appendChild(head);
           card.appendChild(body);
           cmpEl.appendChild(card);
@@ -14225,26 +14757,27 @@
       kaPill.className = `key-pill ${ks.running ? 'pill-warn' : 'pill-muted'}`;
     }
     if (kaProto && ov.protocolEvidence) {
-      kaProto.textContent = isEn
-        ? `Protocol check (Antigravity ${ov.protocolEvidence.checkedVersion}, ${ov.protocolEvidence.rpcCountChecked} RPCs): No explicit server-side cache TTL or renewal endpoint was found in checked RPCs/responses, and cacheWriteTokens/cacheTtl are omitted; keepalive stays unverified & off.`
-        : ov.protocolEvidence.conclusion;
+      kaProto.textContent = t('keepalive.protocolSummary', {
+        ver: ov.protocolEvidence.checkedVersion || '2.32.1',
+        rpcs: ov.protocolEvidence.rpcCountChecked || 375
+      });
     }
     if (kaExp && ov.protocolEvidence?.minimalExperimentPlan) {
       const plan = ov.protocolEvidence.minimalExperimentPlan;
-      const reqCount = plan.totalRequestsPlanned || 5;
-      const modelName = plan.targetModel || 'Gemini 4 Hydrogen (High)';
-      kaExp.textContent = isEn
-        ? `Pending A/B plan (${reqCount} total reqs on ${modelName}, identical ~20K fixed non-tool prefix): Control (2 reqs, 0/6m) vs Keepalive (3 reqs, 0/4m "ok"/6m); collects per-call cacheReadTokens, stops on error/429/switch/limit; awaiting maintainer sign-off.`
-        : `待确认最小对照实验（${modelName}，合计 ${reqCount} 次请求，相同约 20K 只读无工具前缀）：对照组 2 次 vs 实验组 3 次（含 t=4m 仅发 1 次 "ok"，预计总输出 60~150 tok）；逐次采集 cacheReadTokens 并在异常/限流/切号/达上限时终止，等待维护者确认。`;
+      kaExp.textContent = t('keepalive.experimentSummary', {
+        reqs: plan.totalRequestsPlanned || 5,
+        model: plan.targetModel || 'Gemini 4 Hydrogen (High)'
+      });
     }
     if (kaRun) {
       kaRun.textContent = ks.blockedReason
-        ? `拦截保护: ${ks.blockedReason}`
-        : (ks.stopReason ? `最近状态: ${ks.stopReason}` : (isEn ? 'Keepalive disabled by default; requires explicit maintainer approval before any ping.' : '保活默认关闭，且切换账号/退出/达上限时自动终止。'));
+        ? t('keepalive.blockedReason', { reason: ks.blockedReason })
+        : (ks.stopReason ? t('keepalive.stopReason', { reason: ks.stopReason }) : t('keepalive.defaultNote'));
     }
     if (kaStopBtn) kaStopBtn.hidden = !ks.running;
 
     syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+    if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
   }
 
   async function refreshAccountsOverview({ silent = true, refreshAllRemote = false } = {}) {
@@ -14261,8 +14794,18 @@
           liveRoute: '/accounts-action',
           liveBody: { action: 'refresh_quota' }
         });
-        const data = res?.result?.overview || res?.result;
+        const out = res?.result || {};
+        const data = out.overview || out;
         if (data?.accounts) accountsUiState.overview = data;
+        if (out.ok === false) {
+          const errRaw = out.error || out.message || t('accounts.actionFail');
+          accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errRaw) : errRaw;
+          accountsUiState.feedbackTone = 'error';
+        } else if (out.ok === true && accountsUiState.feedbackTone === 'error') {
+          const msgRaw = out.message || t('accounts.actionDone');
+          accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(msgRaw) : msgRaw;
+          accountsUiState.feedbackTone = 'success';
+        }
       } else {
         const res = await callBackendWithPriority({
           ipcCall: hasIpc ? () => window.contextMeterAPI.getAccountsOverview() : null,
@@ -14287,16 +14830,132 @@
     } catch (e) {
       if (!silent) {
         accountsUiState.feedback = e.message;
+        accountsUiState.feedbackTone = 'error';
         renderAccountsOverviewSection();
       }
       return null;
     }
   }
 
+  function renderAccountRemoveModal() {
+    const modal = el('account-remove-modal');
+    const titleEl = el('modal-account-remove-title');
+    const textEl = el('modal-account-remove-text');
+    const fbEl = el('modal-account-remove-feedback');
+    const cancelBtn = el('btn-modal-account-remove-cancel');
+    const confirmBtn = el('btn-modal-account-remove-confirm');
+    const st = accountsUiState.removeModal || {};
+    if (!modal) return;
+    modal.hidden = !st.open;
+    if (!st.open) return;
+    if (titleEl) titleEl.textContent = t('accounts.removeModal.title');
+    if (textEl) {
+      textEl.textContent = st.isActive
+        ? t('accounts.removeModal.bodyActive', { email: st.email || '' })
+        : t('accounts.removeModal.body', { email: st.email || '' });
+    }
+    if (fbEl) {
+      fbEl.hidden = !st.error;
+      fbEl.textContent = st.error || '';
+    }
+    if (cancelBtn) {
+      cancelBtn.textContent = t('accounts.removeModal.cancel');
+      cancelBtn.disabled = Boolean(st.busy);
+    }
+    if (confirmBtn) {
+      confirmBtn.textContent = st.busy ? t('accounts.removeModal.removing') : t('accounts.removeModal.confirm');
+      confirmBtn.disabled = Boolean(st.busy) || !st.email;
+    }
+  }
+
+  function openRemoveAccountModal(acc) {
+    if (!acc || !acc.email || accountsUiState.busy || accountsUiState.removeModal?.busy) return;
+    const scopeKey = acc.accountScopeKey || String(acc.email).trim().toLowerCase();
+    accountsUiState.removeModal = {
+      open: true,
+      email: acc.email,
+      scopeKey,
+      isActive: Boolean(acc.isActive),
+      busy: false,
+      error: ''
+    };
+    renderAccountRemoveModal();
+  }
+
+  function closeRemoveAccountModal(forceClose = false) {
+    if (!forceClose && accountsUiState.removeModal?.busy) return;
+    accountsUiState.removeModal = {
+      open: false,
+      email: '',
+      scopeKey: '',
+      isActive: false,
+      busy: false,
+      error: ''
+    };
+    renderAccountRemoveModal();
+  }
+
+  async function confirmRemoveAccountModal() {
+    const st = accountsUiState.removeModal;
+    if (!st?.open || !st.email || st.busy || accountsUiState.busy) return null;
+    const targetEmail = st.email;
+    const targetScopeKey = st.scopeKey || String(targetEmail).trim().toLowerCase();
+    st.busy = true;
+    st.error = '';
+    renderAccountRemoveModal();
+    renderAccountsOverviewSection();
+    try {
+      const out = await performAccountAction('remove', { email: targetEmail });
+      if (out && out.ok) {
+        const effectiveRemovedScope = out.removedScopeKey || targetScopeKey;
+        closeRemoveAccountModal(true);
+        accountsUiState.feedback = t('accounts.removeSuccess', { email: targetEmail });
+        accountsUiState.feedbackTone = 'success';
+        if (activeTokenAccountFilter && activeTokenAccountFilter === effectiveRemovedScope) {
+          activeTokenAccountFilter = 'all';
+          resetAccountScopedViewOffsets();
+        }
+        if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
+          applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+        }
+        renderAccountsOverviewSection();
+        void refreshAccountsOverview({ silent: true });
+        void syncTokenHistoryFromHost(true);
+        return out;
+      }
+      const errDetail = translateBackendText(out?.error || t('accounts.actionFail'));
+      accountsUiState.removeModal = {
+        ...accountsUiState.removeModal,
+        open: true,
+        busy: false,
+        error: t('accounts.removeModal.failed', { detail: errDetail })
+      };
+      renderAccountRemoveModal();
+      return out || { ok: false, error: errDetail };
+    } catch (err) {
+      const errDetail = translateBackendText(err?.message || t('accounts.actionFail'));
+      accountsUiState.removeModal = {
+        ...accountsUiState.removeModal,
+        open: true,
+        busy: false,
+        error: t('accounts.removeModal.failed', { detail: errDetail })
+      };
+      renderAccountRemoveModal();
+      return { ok: false, error: errDetail };
+    }
+  }
+
+  el('btn-modal-account-remove-cancel')?.addEventListener('click', () => closeRemoveAccountModal());
+  el('btn-modal-account-remove-confirm')?.addEventListener('click', () => void confirmRemoveAccountModal());
+  el('account-remove-modal')?.addEventListener('click', (ev) => {
+    if (ev.target === el('account-remove-modal')) closeRemoveAccountModal();
+  });
+
   async function performAccountAction(action, extraPayload = {}) {
     if (accountsUiState.busy) return null;
     accountsUiState.busy = true;
-    accountsUiState.feedback = currentPanelLanguage === 'en' ? 'Processing…' : '正在处理…';
+    accountsUiState.feedback = t('accounts.actionBusy');
+    accountsUiState.feedbackTone = 'info';
     renderAccountsOverviewSection();
     try {
       const res = await callBackendWithPriority({
@@ -14308,14 +14967,24 @@
       });
       const out = res?.result || {};
       if (out.overview) accountsUiState.overview = out.overview;
-      accountsUiState.feedback = out.message || out.error || (out.ok ? '操作已完成' : '操作失败');
-      if (action === 'switch' && out.ok) {
+      const isOk = out.ok === true;
+      const isPartialOAuthQuotaWarn = isOk && action === 'oauth_login' && out.quotaOk === false && Boolean(out.quotaError);
+      const rawFb = isPartialOAuthQuotaWarn
+        ? `${out.account?.email ? `${out.account.email} ` : ''}${translateBackendText(out.quotaError)}`
+        : (isOk
+          ? (out.message || t('accounts.actionDone'))
+          : (out.error || out.message || t('accounts.actionFail')));
+      accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(rawFb) : rawFb;
+      accountsUiState.feedbackTone = isOk ? (isPartialOAuthQuotaWarn ? 'info' : 'success') : 'error';
+      if (action === 'switch' && isOk) {
         void syncQuotaFromHost(true, { manual: false });
-        void refreshTokenHistory?.(true);
+        void syncTokenHistoryFromHost(true);
       }
       return out;
     } catch (e) {
-      accountsUiState.feedback = e.message || '操作失败';
+      const errTxt = e.message || t('accounts.actionFail');
+      accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errTxt) : errTxt;
+      accountsUiState.feedbackTone = 'error';
       return { ok: false, error: e.message };
     } finally {
       accountsUiState.busy = false;
@@ -14376,7 +15045,8 @@
         displayedCallRecord: null, displayedCallSig: '', pendingLatestCallRecord: null,
         pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
         historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
-        timelineError: '', timelinePageLimit: 10, lastTimelineFetchAt: 0, lastTimelineCallSig: '',
+        timelineError: '', timelinePageLimit: 10, timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
+        lastTimelineFetchAt: 0, lastTimelineCallSig: '',
         speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
       });
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
@@ -14903,13 +15573,32 @@
       totalInput: el('tcb-total-input-val')?.textContent || '',
       output: el('tcb-output-val')?.textContent || '',
       ratio: el('tcb-ratio-val')?.textContent || '',
+      ratioBarWidth: el('tcb-ratio-bar-fill')?.style?.width || '',
       note: el('tcb-note')?.textContent || ''
+    }),
+    getModelUsageScaleForTest: () => ({
+      scaleMode: modelUsageScaleMode,
+      lockedKey: modelUsageLockedKey,
+      setScaleMode: (m) => { modelUsageScaleMode = m === 'linear' ? 'linear' : 'mixed'; renderModelUsageView(); },
+      setLockedKey: (k) => { modelUsageLockedKey = k || null; renderModelUsageView(); }
+    }),
+    getCumulativeViewStateForTest: () => ({
+      summary: _lastCumSummary,
+      lockedKey: cumLockedKey,
+      expandedWeekKey: cumExpandedWeekKey,
+      linkedDailyDate: cumLinkedDailyDate,
+      pressEscape: () => escape({ key: 'Escape' })
     }),
     setTokenAccountFilterForTest: (scopeKey) => {
       activeTokenAccountFilter = scopeKey || 'all';
+      resetAccountScopedViewOffsets();
       if (ANTIGRAVITY_TOKEN_DATA.rawPayload) applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
       return activeTokenAccountFilter;
     },
+    getRemoveAccountModalStateForTest: () => ({ ...(accountsUiState.removeModal || {}) }),
+    openRemoveAccountModalForTest: (acc) => openRemoveAccountModal(acc),
+    confirmRemoveAccountModalForTest: () => confirmRemoveAccountModal(),
+    closeRemoveAccountModalForTest: () => closeRemoveAccountModal(),
     setAccountsOverviewForTest: (overview) => {
       accountsUiState.overview = overview || null;
       renderAccountsOverviewSection();
@@ -14919,6 +15608,8 @@
       activeFilter: activeTokenAccountFilter,
       filterOptions: Array.from(el('token-account-select')?.children || []).map(o => ({ val: o.value, label: o.textContent })),
       scopeNote: el('token-account-scope-note')?.textContent || '',
+      feedback: accountsUiState.feedback || '',
+      feedbackTone: accountsUiState.feedbackTone || 'info',
       accountCount: el('quota-accounts-list')?.children?.length || 0,
       compareCount: el('quota-compare-list')?.children?.length || 0,
       autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
@@ -14974,6 +15665,7 @@
     }
   });
   installRequestInterceptor();
+  __chartsReady = true;
   render();
   tick();
 })();

@@ -991,7 +991,6 @@ test('instant region switch to Australia & Korea, price badge dynamic animation 
   // 点击澳大利亚
   auItem.click();
 
-
   // 3. 验证立即更新（0延迟保存与上面立即更改）
   assert.match(priceVal.textContent, /AU\$32\.99/);
   assert.match(priceVal.textContent, /月/);
@@ -4011,7 +4010,6 @@ test('[P2] renderer watermark re-sends when RPC upgrades provisional date to aut
   }
 });
 
-
 test('[P3] provisional Carbon call crossing 11-30 -> 12-01 rate-hike midnight does not trigger spurious cost-growth re-send', async () => {
   const fs = require('node:fs');
   const os = require('node:os');
@@ -4170,7 +4168,6 @@ test('[P3] provisional Carbon call crossing 11-30 -> 12-01 rate-hike midnight do
     try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
   }
 });
-
 
 test('[P2] same-rank authoritative created_at revision updates persisted ledger date & costUSD and settles cleanly', async () => {
   const fs = require('node:fs');
@@ -4956,6 +4953,362 @@ test('By Model usage view: renders stacked bars, percentages, 7d/30d, variant/ca
 
     h.sandbox.__AGContextMeter.setTheme('dark');
     assert.equal(legendEl.children[0].children[0].style.background, '#a78bfa');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.8.8 顶栏收尾回归: ring-only 保留溢出菜单入口，无菜单栏贴顶时主标题栏右侧自动避让 WCO', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const stylesCssText = fs.readFileSync(path.join(__dirname, 'src/renderer/styles.css'), 'utf8');
+  try {
+    // 1. ring-only 模式下 CSS 与布局保持溢出按钮与已打开溢出菜单可用
+    assert.match(stylesCssText, /:host\(\[data-layout="ring-only"\]\)\s*#badge-overflow\{\s*display:inline-flex!important;/);
+    assert.doesNotMatch(stylesCssText, /:host\(\[data-layout="ring-only"\]\)[^}]*#badge-overflow[^}]*display:\s*none/);
+
+    api.setAvailableWidthForTest(90); // minimal
+    h.elements.get('badge-overflow').click();
+    assert.equal(h.elements.get('overflow-menu').hidden, false);
+    assert.equal(api.setAvailableWidthForTest(40), 'ring-only');
+    assert.equal(h.elements.get('overflow-menu').hidden, false, '切换到 ring-only 时不得强行关闭溢出菜单');
+
+    // 2. 无独立菜单栏行（titlebar top < 20 且贴窗口最右边）时，自动注入 padding-right 避让原生 138px 窗口控制区
+    if (!h.sandbox.document.head) {
+      h.sandbox.document.head = h.sandbox.document.createElement();
+    }
+    h.sandbox.navigator = { platform: 'Win32' };
+    h.sandbox.window.innerWidth = 1440;
+    h.sandbox.window.outerWidth = 1440;
+    const tb = h.sandbox.document.createElement();
+    tb.className = 'flex w-full min-w-0 select-none items-center justify-between overflow-hidden @container/titlebar';
+    tb.getBoundingClientRect = () => ({ top: 0, left: 256, right: 1440, bottom: 40, width: 1184, height: 40 });
+    h.sandbox.document.querySelector = sel => (sel.includes('@container/titlebar') ? tb : null);
+
+    api.syncWindowControlsOverlayForTest();
+    const fixEl = h.sandbox.document.getElementById('ag-topbar-host-fix');
+    assert.ok(fixEl, '应创建 #ag-topbar-host-fix 样式节点');
+    assert.match(fixEl.textContent, /\[class\*="@container\/titlebar"\][\s\S]*padding-right:\s*138px\s*!important/);
+
+    // 3. 当顶部有独立菜单栏行（titlebar top >= 20）时，立即撤销 titlebar padding-right 避让规则
+    tb.getBoundingClientRect = () => ({ top: 35, left: 256, right: 1440, bottom: 75, width: 1184, height: 40 });
+    api.syncWindowControlsOverlayForTest();
+    assert.doesNotMatch(fixEl.textContent, /\[class\*="@container\/titlebar"\]\s*\{\s*padding-right:/);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-tier monotonic invariance, cumulative A+C strip/ruler/lock, stacked bars and theme/narrow', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // 为 yearly/cum SVG 提供 createElementNS 与测量追踪能力
+  api.switchHeatView('cum');
+  api.switchHeatView('yearly');
+  api.switchHeatView('daily');
+  const origCreateEl = h.sandbox.document.createElement;
+  h.sandbox.document.createElementNS = (_ns, tag) => {
+    const node = origCreateEl();
+    node.tagName = tag;
+    return node;
+  };
+
+  const scrollBox = h.elements.get('h-scroll-box');
+  let mockChartWidth = 670;
+  scrollBox.getBoundingClientRect = () => ({ left: 0, top: 0, width: mockChartWidth, height: 120, right: mockChartWidth, bottom: 120 });
+
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  const pad = n => String(n).padStart(2, '0');
+  const todayStr = `${y}-${pad(m + 1)}-${pad(today.getDate())}`;
+  const ymCur = `${y}-${pad(m + 1)}`;
+
+  const findAll = (root, pred) => {
+    const out = [];
+    const walk = n => {
+      if (!n) return;
+      if (pred(n)) out.push(n);
+      if (Array.isArray(n.children)) n.children.forEach(walk);
+    };
+    walk(root);
+    return out;
+  };
+
+  try {
+    // 场景 1: 全年单月 1.82M（今天所在月，早先为未启用，未来为虚线）
+    const activeDay = `${ymCur}-${pad(Math.min(28, Math.max(1, today.getDate())))}`;
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: activeDay,
+      dailyMap: { [activeDay]: { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3 } },
+      dailyMapBySource: { all: { [activeDay]: { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3 } } },
+      summary: {
+        firstUseDate: activeDay,
+        grandTotalTokens: 1.82e6,
+        totalInputTokens: 100e3,
+        totalCacheTokens: 1.7e6,
+        totalOutputTokens: 20e3,
+        cacheReadStats: {
+          cacheStatus: 'hit',
+          totalUncachedInput: 100e3,
+          totalCacheRead: 1.7e6,
+          totalInput: 1.8e6,
+          totalOutput: 20e3,
+          cacheReadPct: 94.4,
+          missingCount: 0
+        }
+      },
+      dailyModelMap: { [activeDay]: { 'gemini-4-hydrogen': { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3, steps: 2 } } },
+      dailyModelMapBySource: { all: { [activeDay]: { 'gemini-4-hydrogen': { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3, steps: 2 } } } }
+    });
+
+    // 缓存占比条与 API 明细卡微进度条
+    const tcbState = api.getTokenCacheBreakdownForTest();
+    assert.equal(tcbState.ratio, '94.4%');
+    assert.equal(tcbState.ratioBarWidth, '94.4%');
+    h.elements.get('tok-view-cost').click();
+    assert.match(h.elements.get('ref-cost-output-share').textContent, /%$/);
+    h.elements.get('tok-view-tokens').click();
+
+    // 「今年」视图：单月 1.82M 直径 33.64px、无峰值圈、同心参考环、三态区分
+    api.switchHeatView('yearly');
+    const yearlyBox = h.elements.get('h-yearly-box');
+    assert.equal(yearlyBox.getAttribute('data-scale-tier'), '10M');
+    const svg = yearlyBox.children[0];
+    assert.equal(findAll(svg, n => String(n.className || '').includes('bubble-peak-badge')).length, 0);
+    assert.equal(findAll(svg, n => String(n.className || '').includes('yearly-ref-rings')).length, 1);
+    const monthGroups = findAll(svg, n => String(n.className || '').includes('heat-yearly-bubble-group'));
+    const curCircle182 = findAll(monthGroups[m], n => String(n.className || '').includes('bubble-main'))[0];
+    const diam182Single = Number(curCircle182.getAttribute('data-diameter'));
+    const color182Single = curCircle182.getAttribute('fill');
+    assert.ok(Math.abs(diam182Single - 33.64) < 0.08, `连续分锚点映射下 1.82M 气泡应约 33.64px，实测 ${diam182Single}`);
+
+    // 窄窗 (W=360) 验证：同心参考环不挡月份标签
+    mockChartWidth = 360;
+    api.switchHeatView('yearly');
+    const monthLbls = findAll(h.elements.get('h-yearly-box').children[0], n => String(n.className || '').includes('bubble-month-lbl'));
+    assert.ok(Number(monthLbls[11].getAttribute('x')) < 360 - 52);
+    mockChartWidth = 670;
+
+    // 场景 2: 同一张图跨 100M -> 1B+ 边界：其他同值月 1.82M 与 100M 的尺寸与颜色绝不缩小！
+    const otherMonth = m > 0 ? 0 : 1;
+    const mPad = pad(otherMonth + 1);
+    const crossDm = {
+      [`${y}-${mPad}-05`]: { total: 100e6, input: 10e6, cache: 85e6, output: 5e6 }
+    };
+    crossDm[activeDay] = { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3 };
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: `${y}-01-01`,
+      dailyMap: crossDm,
+      dailyMapBySource: { all: crossDm },
+      summary: { firstUseDate: `${y}-01-01`, grandTotalTokens: 101.82e6 }
+    });
+    api.switchHeatView('yearly');
+    assert.equal(h.elements.get('h-yearly-box').getAttribute('data-scale-tier'), '100M');
+    let mGroupsCross = findAll(h.elements.get('h-yearly-box').children[0], n => String(n.className || '').includes('heat-yearly-bubble-group'));
+    const d100M_at100M = Number(findAll(mGroupsCross[otherMonth], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('data-diameter'));
+    const c100M_at100M = findAll(mGroupsCross[otherMonth], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('fill');
+    assert.equal(d100M_at100M, 49.0);
+    // 同值 1.82M 在 100M 包络下与 10M 包络下像素/颜色完全相等
+    assert.equal(Number(findAll(mGroupsCross[m], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('data-diameter')), diam182Single);
+    assert.equal(findAll(mGroupsCross[m], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('fill'), color182Single);
+
+    // 将 otherMonth 增加到 100M + 1 -> 跨入 1B 包络，此时自身不得缩小且 1.82M 也不得缩小！
+    crossDm[`${y}-${mPad}-06`] = { total: 1, input: 1, cache: 0, output: 0 };
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: `${y}-01-01`,
+      dailyMap: crossDm,
+      dailyMapBySource: { all: crossDm },
+      summary: { firstUseDate: `${y}-01-01`, grandTotalTokens: 101.82e6 + 1 }
+    });
+    api.switchHeatView('yearly');
+    assert.equal(h.elements.get('h-yearly-box').getAttribute('data-scale-tier'), '1B');
+    mGroupsCross = findAll(h.elements.get('h-yearly-box').children[0], n => String(n.className || '').includes('heat-yearly-bubble-group'));
+    const d100M_at1B = Number(findAll(mGroupsCross[otherMonth], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('data-diameter'));
+    const c100M_at1B = findAll(mGroupsCross[otherMonth], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('fill');
+    assert.ok(d100M_at1B >= d100M_at100M, `100M+1 (${d100M_at1B}) 不得小于 100M (${d100M_at100M})`);
+    assert.equal(c100M_at1B, c100M_at100M);
+    assert.equal(Number(findAll(mGroupsCross[m], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('data-diameter')), diam182Single);
+
+    // 场景 3: 重做「累计总量」A+C — 30 天 ~4.86B（含 4 个零用量日 + 3 个连续高峰日）
+    const d30End = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const d30Start = new Date(d30End.getTime() - 29 * 86400000);
+    const fmtD = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const dm30 = {};
+    const zeroIdxSet = new Set([4, 13, 19, 20]);
+    const peakIdxMap = { 9: 620e6, 10: 710e6, 11: 580e6 };
+    let sum30 = 0;
+    for (let i = 0; i < 30; i++) {
+      const ds = fmtD(new Date(d30Start.getTime() + i * 86400000));
+      if (zeroIdxSet.has(i)) continue;
+      const val = peakIdxMap[i] || (i >= 7 && i <= 12 ? 220e6 : 100e6);
+      sum30 += val;
+      dm30[ds] = { total: val, input: Math.round(val * 0.1), cache: Math.round(val * 0.85), output: Math.round(val * 0.05) };
+    }
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: fmtD(d30Start),
+      dailyMap: dm30,
+      dailyMapBySource: { all: dm30 },
+      summary: { firstUseDate: fmtD(d30Start), grandTotalTokens: sum30 }
+    });
+    api.switchHeatView('cum');
+    const cumBox = h.elements.get('h-cum-box');
+    const byId = id => findAll(cumBox, n => n.id === id)[0];
+    const cumState30 = api.getCumulativeViewStateForTest();
+    assert.equal(cumState30.summary.totalDays, 30);
+    assert.equal(cumState30.summary.activeDays, 26);
+    assert.equal(cumState30.summary.zeroDays, 4);
+    assert.equal(cumState30.summary.grouping, 'daily');
+    assert.equal(h.elements.get('h-sum-tokens-wrap').style.display, 'none', '累计页顶部已显示总量，底部区间合计必须隐藏防重复');
+    assert.equal(h.elements.get('h-sum-cost-wrap').style.display, 'none', '累计页顶部已显示参考金额，底部预估费用必须隐藏防重复');
+    assert.equal(byId('cum-ruler-marker').getAttribute('data-ruler-status'), 'in_range');
+    const stripSegs = byId('cum-strip').children;
+    assert.equal(stripSegs.length, 26, '横带仅包含 26 个活跃日，4 个 0 用量日不占宽度');
+    const pctTotal = stripSegs.reduce((acc, el) => acc + parseFloat(el.getAttribute('data-width-pct')), 0);
+    assert.ok(Math.abs(pctTotal - 100) < 0.02);
+    const axisZeroSlots = byId('cum-axis-row').children.filter(el => el.getAttribute('data-zero') === 'true');
+    assert.equal(axisZeroSlots.length, 4, '等距日期轴应标出 4 个 0 用量日的 ✕ 标记');
+    assert.ok(byId('cum-peak-chips').children.length >= 1);
+    assert.match(byId('cum-conclusion-row').textContent, /50%/);
+
+    // 点击锁定某段 -> 出现详情与定位按钮 -> 按 Esc 取消锁定但不关闭面板 -> 再锁定并点击定位「每天」热力图高亮
+    const peakKey = cumState30.summary.peakDay.date;
+    const peakSegEl = stripSegs.find(el => el.getAttribute('data-cum-key') === peakKey);
+    peakSegEl.click();
+    assert.equal(api.getCumulativeViewStateForTest().lockedKey, peakKey);
+    assert.ok(byId('cum-inspector'));
+    api.getCumulativeViewStateForTest().pressEscape();
+    assert.equal(api.getCumulativeViewStateForTest().lockedKey, null, 'Esc 应取消累计段锁定');
+    // 再次点击锁定并定位到「每天」
+    byId('cum-strip').children.find(el => el.getAttribute('data-cum-key') === peakKey).click();
+    byId('cum-btn-locate-daily').click();
+    assert.equal(api.getActiveHeatView(), 'daily');
+    const linkedCell = findAll(h.elements.get('h-grid-cols'), n => n.getAttribute?.('data-date') === peakKey)[0];
+    assert.ok(linkedCell && String(linkedCell.className || '').includes('is-cum-linked'), '跳转「每天」后应高亮联动同一天格子');
+
+    // 场景 4: 3 天轻量账号 -> 省略集中度结论，保留峰值与 <10M 量级尺提示，切换清理旧锁定
+    const d3Start = new Date(d30End.getTime() - 2 * 86400000);
+    const dm3 = {};
+    for (let i = 0; i < 3; i++) {
+      dm3[fmtD(new Date(d3Start.getTime() + i * 86400000))] = { total: (i + 1) * 5000, input: 1000, cache: 3000, output: 1000 };
+    }
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: fmtD(d3Start),
+      dailyMap: dm3,
+      dailyMapBySource: { all: dm3 },
+      summary: { firstUseDate: fmtD(d3Start), grandTotalTokens: 30000 }
+    });
+    api.switchHeatView('cum');
+    const cum3State = api.getCumulativeViewStateForTest();
+    assert.equal(cum3State.lockedKey, null, '切换账号数据后应清理失效锁定');
+    assert.equal(cum3State.summary.totalDays, 3);
+    assert.equal(cum3State.summary.concentration, null);
+    assert.equal(byId('cum-ruler-marker').getAttribute('data-ruler-status'), 'below_min');
+
+    // 场景 5: 0 用量空态（避免除零）
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      isAccountSwitched: true,
+      firstUseDate: fmtD(d3Start),
+      dailyMap: {},
+      dailyMapBySource: { all: {} },
+      summary: { firstUseDate: fmtD(d3Start), grandTotalTokens: 0 }
+    });
+    api.switchHeatView('cum');
+    assert.ok(byId('cum-empty-state'));
+    assert.equal(byId('cum-ruler-marker').getAttribute('data-ruler-status'), 'zero');
+
+    // 场景 6: 超过 90 天 + 历史翻页 + 按周分组展开到日 + 窄窗 + 深浅主题切换
+    const d400Start = new Date(d30End.getTime() - 420 * 86400000);
+    const dmLong = {};
+    for (let i = 0; i <= 420; i += 3) {
+      dmLong[fmtD(new Date(d400Start.getTime() + i * 86400000))] = { total: 50e6, input: 5e6, cache: 40e6, output: 5e6 };
+    }
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: fmtD(d400Start),
+      dailyMap: dmLong,
+      dailyMapBySource: { all: dmLong },
+      summary: { firstUseDate: fmtD(d400Start), grandTotalTokens: 7e9 }
+    });
+    api.switchHeatView('cum');
+    assert.equal(api.getCumulativeViewStateForTest().summary.grouping, 'weekly');
+    // 点击第 1 段周分组并展开日明细
+    byId('cum-strip').children[0].click();
+    assert.ok(byId('cum-week-days'), '按周分组选中后可展开日明细');
+    // 历史翻页：保留历史窗口末日，不强制改成今天
+    h.elements.get('h-page-prev').click();
+    const pagedCum = api.getCumulativeViewStateForTest().summary;
+    assert.ok(pagedCum.endDate < todayStr, `历史翻页区间末日 (${pagedCum.endDate}) 应早于今天 (${todayStr})`);
+    // 窄窗模式 & 浅色主题切换
+    mockChartWidth = 360;
+    api.switchHeatView('cum');
+    assert.ok(String(cumBox.children[0].className || '').includes('is-narrow'));
+    h.sandbox.__AGContextMeter.setTheme('light');
+    assert.equal(h.elements.get('h-cum-box').style.display, 'block');
+    h.sandbox.__AGContextMeter.setTheme('dark');
+    mockChartWidth = 670;
+
+    // 场景 7: 按模型 100 vs 418.3M -> 跨 500M+ 与 800M 边界柱高单调 + 1.5px 微段保底 & 求和恒等 + 图例折叠与锁定
+    const modelDayMap = {};
+    for (let k = 0; k < 7; k++) {
+      modelDayMap[`series-${k}`] = { total: k === 0 ? 418.3e6 : (k === 1 ? 100 : (7 - k) * 1e6), input: 10, cache: 10, output: 10, steps: 1 };
+    }
+    const dayMinorKey = fmtD(new Date(today.getTime() - 86400000));
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: fmtD(d3Start),
+      dailyMap: dm30,
+      dailyMapBySource: { all: dm30 },
+      summary: { firstUseDate: fmtD(d3Start), grandTotalTokens: sum30 },
+      dailyModelMap: {
+        [todayStr]: modelDayMap,
+        [dayMinorKey]: { 'series-0': { total: 100, input: 40, cache: 40, output: 20, steps: 1 } }
+      },
+      dailyModelMapBySource: {
+        all: {
+          [todayStr]: modelDayMap,
+          [dayMinorKey]: { 'series-0': { total: 100, input: 40, cache: 40, output: 20, steps: 1 } }
+        }
+      }
+    });
+    h.elements.get('tok-view-models').click();
+    const mLegend = h.elements.get('model-usage-legend');
+    assert.equal(mLegend.children.length, 6);
+    assert.equal(mLegend.children[5].getAttribute('data-series-key'), '__other_series__');
+
+    const mBars = h.elements.get('model-usage-bars');
+    const todayStack = mBars.children[mBars.children.length - 1].children[0];
+    const todayTotalH = parseFloat(todayStack.getAttribute('data-total-height'));
+    const segHeights = todayStack.children.map(seg => parseFloat(seg.style.height));
+    assert.ok(Math.abs(segHeights.reduce((a, b) => a + b, 0) - todayTotalH) < 0.01);
+    assert.ok(segHeights.every(sh => sh >= 1.49));
+
+    const minorBarH_mixed = parseFloat(mBars.children[mBars.children.length - 2].children[0].getAttribute('data-total-height'));
+    h.elements.get('model-scale-linear').click();
+    const minorBarH_linear = parseFloat(mBars.children[mBars.children.length - 2].children[0].getAttribute('data-total-height'));
+    assert.ok(minorBarH_mixed > minorBarH_linear + 5);
+    h.elements.get('model-scale-mixed').click();
+
+    const targetLegendKey = mLegend.children[1].getAttribute('data-series-key');
+    mLegend.children[1].click();
+    assert.equal(api.getModelUsageScaleForTest().lockedKey, targetLegendKey);
+    assert.equal(mBars.children[mBars.children.length - 1].children[0].children[0].getAttribute('data-series-key'), targetLegendKey);
+
+    // 场景 8: 累计页容器不被 height:105px 或 overflow-y:hidden 裁切，切回其他页正确还原
+    const stylesSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+    assert.ok(!/#h-cum-box\s*\{[^}]*height\s*:\s*105px/i.test(stylesSrc), '#h-cum-box 不得存在 height:105px 覆盖规则');
+    assert.ok(/\.heat-scroll-box\.is-cum-active\s*\{\s*overflow\s*:\s*visible\s*\}/i.test(stylesSrc), '缺少 .heat-scroll-box.is-cum-active{overflow:visible}');
+    api.switchHeatView('cum');
+    assert.ok(String(h.elements.get('h-scroll-box').className || '').includes('is-cum-active'));
+    api.switchHeatView('daily');
+    assert.ok(!String(h.elements.get('h-scroll-box').className || '').includes('is-cum-active'));
   } finally {
     api.dispose();
   }

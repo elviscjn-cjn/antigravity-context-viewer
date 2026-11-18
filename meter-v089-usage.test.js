@@ -628,3 +628,145 @@ test('v0.8.9 7: 1500 条大量历史记录时间线及聚合缓存命中性能�
     fs.rmSync(agDir, { recursive: true, force: true });
   }
 });
+
+test('v0.8.8 请求时间线回归: 11 轮 105 调用防压扁滚动契约、<USER_REQUEST> 标签清洗与多轮折叠保留滚动', async () => {
+  const agDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-v088-tl-'));
+  try {
+    const cid = '11111111-2222-3333-4444-555555555555';
+    const logDir = path.join(agDir, 'brain', cid, '.system_generated', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+
+    const lines = [];
+    let stepIdx = 0;
+    const rawUserPrompts = [
+      '<USER_REQUEST>\n  <ADDITIONAL_METADATA>\n    {"editor":"main.js"}\n  </ADDITIONAL_METADATA>\n请帮我检查渲染层布局为什么被压扁了？\n</USER_REQUEST>',
+      '<USER_REQUEST>\n<USER_SETTINGS_CHANGE>\n{"theme":"dark"}\n</USER_SETTINGS_CHANGE>\n继续构建并核对测试结果，第一行\n第二行详细补充说明与极长上下文描述：' + '详细内容'.repeat(40) + '\n</USER_REQUEST>'
+    ];
+    for (let tIdx = 0; tIdx < 11; tIdx++) {
+      const promptContent = rawUserPrompts[tIdx] || `<USER_REQUEST>\n第 ${tIdx + 1} 轮用户真实指令内容\n</USER_REQUEST>`;
+      lines.push(JSON.stringify({
+        step_index: stepIdx,
+        type: 'USER_INPUT',
+        source: 'USER_EXPLICIT',
+        created_at: `2026-11-18T01:${String(tIdx).padStart(2, '0')}:00Z`,
+        content: promptContent
+      }));
+      stepIdx++;
+      // 前 6 轮每轮 10 次调用 + 后 5 轮每轮 9 次调用 = 105 次调用
+      const callPerTurn = tIdx < 6 ? 10 : 9;
+      for (let c = 0; c < callPerTurn; c++) {
+        lines.push(JSON.stringify({
+          step_index: stepIdx,
+          type: 'PLANNER_RESPONSE',
+          created_at: `2026-11-18T01:${String(tIdx).padStart(2, '0')}:${String(10 + c).padStart(2, '0')}Z`,
+          model: 'gemini-4-hydrogen',
+          input_tokens: 1200 + c * 10,
+          cache_read_tokens: 8000,
+          output_tokens: 240,
+          responseId: `req_tl_${tIdx}_${c}`
+        }));
+        stepIdx++;
+      }
+    }
+    const transcriptFile = path.join(logDir, 'transcript.jsonl');
+    const rawBefore = lines.join('\n') + '\n';
+    fs.writeFileSync(transcriptFile, rawBefore, 'utf8');
+
+    const tl = await collector.collectSessionTimelineAsync(cid, { agDir, wslRoots: [], force: true });
+    assert.equal(tl.turns.length, 11);
+    assert.equal(tl.totalCalls, 105);
+    assert.equal(fs.readFileSync(transcriptFile, 'utf8'), rawBefore, '底层 transcript 原文件绝不能被清洗修改');
+
+    for (const turn of tl.turns) {
+      assert.doesNotMatch(turn.preview, /<\/?(USER_REQUEST|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)/i, '标题必须彻底剥离内部包装标签');
+      assert.ok(turn.preview.length > 0 && turn.preview.length <= 120);
+    }
+    assert.equal(tl.turns[0].preview, '请帮我检查渲染层布局为什么被压扁了？');
+    assert.match(tl.turns[1].preview, /^继续构建并核对测试结果，第一行 第二行详细补充说明/);
+
+    // UI 渲染与多轮连续展开、滚动恢复、折叠验证
+    const h = createV089DomSandbox({ pathname: `/c/${cid}` });
+    try {
+      h.api.toggleSessionHistoryForTest(true);
+      h.api.setSessionTimelineForTest(tl);
+      const listEl = h.elements.get('session-timeline-list');
+      // 模拟加载全部 11 轮
+      h.elements.get('btn-timeline-load-more').click();
+      assert.equal(listEl.children.length, 11, '应展开呈现全部 11 轮');
+
+      // 连续展开多个轮次并验证 scrollTop 保持、各轮标题完整且均可收回
+      listEl.scrollTop = 280;
+      for (let i = 0; i < 4; i++) {
+        const hdr = listEl.children[i].children[0];
+        const card = listEl.children[i];
+        const wasOpen = card.children.length === 2;
+        if (!wasOpen) hdr.click();
+      }
+      assert.equal(listEl.scrollTop, 280, '同会话连续点击展开/折叠轮次不得把列表滚动条强行重置回顶部');
+      for (let i = 0; i < 4; i++) {
+        assert.equal(listEl.children[i].children.length, 2, `第 ${i} 张轮次卡应处于展开态且含明细区`);
+      }
+      for (let i = 0; i < 11; i++) {
+        const idxEl = listEl.children[i].children[0].children[0].children[0];
+        const promptEl = listEl.children[i].children[0].children[0].children[1];
+        assert.ok(idxEl.textContent && promptEl.textContent, '每轮标题都必须保持完整可读');
+        assert.doesNotMatch(promptEl.textContent, /<USER_REQUEST>/);
+      }
+      // 逐轮折叠收回（包括最后一张展开卡）后全部保持收回状态，不得反弹重展开
+      for (let i = 0; i < 4; i++) {
+        listEl.children[i].children[0].click();
+        assert.equal(listEl.children[i].children.length, 1, '每轮应随时可折叠收回');
+      }
+      for (let i = 0; i < 11; i++) {
+        assert.equal(listEl.children[i].children.length, 1, `全部收回后第 ${i} 轮不得自动反弹重展开`);
+      }
+
+      // 缺失可靠父步骤或子代理库字段时明确标注，且转义形式 &lt;USER_REQUEST&gt; 同步清洗
+      assert.equal(core.sanitizeTurnPreviewText('&lt;USER_REQUEST&gt;\n请验证清洗\n&lt;/USER_REQUEST&gt;&lt;ADDITIONAL_METADATA&gt;noise&lt;/ADDITIONAL_METADATA&gt;', 120), '请验证清洗');
+      h.api.setSessionTimelineForTest({
+        ...tl,
+        subagentNote: 'db_sqlite_unavailable',
+        unlinkedSubagentCalls: [
+          {
+            callId: 'sub_unlinked_1',
+            agentRole: 'subagent',
+            parentCascadeId: cid,
+            parentStepIndex: null,
+            subagentType: 'research',
+            attributionConfidence: 'verified_db_meta',
+            model: 'gemini-4-hydrogen',
+            inputTokens: 100,
+            cacheReadTokens: 200,
+            outputTokens: 50,
+            hasInputCacheFields: true,
+            status: 'final',
+            outcomeStatus: 'success',
+            timestamp: Date.now()
+          }
+        ]
+      });
+      const collectTexts = (node) => {
+        if (!node) return '';
+        const kids = Array.isArray(node.children) ? node.children.map(collectTexts).join(' ') : '';
+        return [node.textContent || '', kids].filter(Boolean).join(' ');
+      };
+      const sumText = collectTexts(h.elements.get('session-timeline-summary'));
+      assert.match(sumText, /db_sqlite_unavailable/, '缺失可靠子代理库字段时须在摘要区写明');
+      const unlinkedBox = h.elements.get('session-timeline-unlinked');
+      assert.equal(unlinkedBox.hidden, false);
+      unlinkedBox.children[1].click();
+      const detailJson = collectTexts(h.elements.get('latest-call-detail-grid'));
+      assert.match(detailJson, /缺可靠父步骤字段/, '缺失可靠父步骤字段时应在详情明确写明');
+    } finally {
+      h.api.dispose();
+    }
+
+    // 静态 CSS 契约断言：防止 .timeline-turn-card / .session-timeline-list 丢失 flex:0 0 auto 被压成一条缝
+    const cssSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+    assert.match(cssSrc, /\.session-timeline-list\{[^}]*flex:0 0 auto;[^}]*max-height:min\(360px,46vh\)[^}]*overflow-y:auto/);
+    assert.match(cssSrc, /\.timeline-turn-card\{\s*flex:0 0 auto;/);
+    assert.match(RENDERER_SOURCE, /\.timeline-turn-card\{[^}]*flex:0 0 auto;/);
+  } finally {
+    fs.rmSync(agDir, { recursive: true, force: true });
+  }
+});

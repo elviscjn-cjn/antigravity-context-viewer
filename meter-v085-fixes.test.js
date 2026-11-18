@@ -1054,3 +1054,63 @@ test('7. Windows 中文/带空格路径 .cmd UTF-8 编码、install 误传参数
     try { fs.rmSync(sb.root, { recursive: true, force: true }); } catch {}
   }
 });
+
+test('8. PR #40 补充: builtinAsar.createPackage 与测试 ASAR 路径透传至启动快照及运行时元信息', async () => {
+  const sb = makeTempSandbox('ag-pr40-asar-');
+  try {
+    await withIsolatedEnv(sb, async () => {
+      // 1. 复用 builtinAsar.createPackage 打包两个不同状态的隔离宿主 ASAR（A: 待安装注入；B: 保持纯净未注入）
+      const dirA = path.join(sb.root, 'host-a');
+      const dirB = path.join(sb.root, 'host-b');
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.mkdirSync(dirB, { recursive: true });
+      const baseA = await createHostAsarFixture(dirA, { version: '2.32.2', includeExtraFile: true });
+      const baseB = await createHostAsarFixture(dirB, { version: '2.32.2', includeExtraFile: true });
+      const asarA = path.join(dirA, 'packaged-a.asar');
+      const asarB = path.join(dirB, 'packaged-b.asar');
+      const extA = path.join(dirA, 'ext-a');
+      const extB = path.join(dirB, 'ext-b');
+      asar.extractAll(baseA, extA);
+      asar.extractAll(baseB, extB);
+      await builtinAsar.createPackage(extA, asarA);
+      await builtinAsar.createPackage(extB, asarB);
+      assert.ok(fs.existsSync(asarA) && fs.existsSync(asarB));
+
+      // 对 asarA 完成安装，使 asarA 具备完整插件+汉化磁盘能力，而 asarB 保持未注入状态
+      await install({ path: asarA });
+      const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
+      const initCfg = loadModulesConfig();
+      initCfg.modules.chinese.enabled = true;
+      initCfg.modules.chinese.language = 'zh-CN';
+      saveModulesConfig(initCfg);
+      const fakeEvent = { senderFrame: { url: 'https://127.0.0.1:12345/' } };
+
+      // 2. 分别向 handleModulesStatus 和 handleToggleModule 传入显式 ASAR 路径，校验各自独立启动快照与运行时缓存不串
+      const statusA = await handleModulesStatus(fakeEvent, asarA);
+      assert.equal(statusA.ok, true);
+      assert.equal(statusA.disk.chineseReady, true);
+      assert.equal(statusA.runtime.chineseActive, true, '显式 asarA 具备汉化组件时启动快照与运行时应为激活');
+
+      const statusB = await handleModulesStatus(fakeEvent, asarB);
+      assert.equal(statusB.ok, true);
+      assert.equal(statusB.disk.chineseReady, false);
+      assert.equal(statusB.runtime.chineseActive, false, '未注入的 asarB 不得串用 asarA 的启动汉化快照缓存');
+
+      const stToggleA = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: asarA, language: 'zh-CN' });
+      assert.equal(stToggleA.ok, true);
+      assert.equal(stToggleA.runtime.chineseActive, true);
+
+      const toggleFailB = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: asarB, language: 'zh-CN' });
+      assert.equal(toggleFailB.ok, false);
+      assert.equal(toggleFailB.status, 'install_failed');
+      assert.equal(toggleFailB.runtime.chineseActive, false);
+
+      // 3. 验证默认宿主路径探测仍正常（不传 customAsar 时不抛错且返回结构完整）
+      const defaultStatus = await handleModulesStatus(fakeEvent);
+      assert.equal(defaultStatus.ok, true);
+      assert.equal(typeof defaultStatus.runtime.chineseActive, 'boolean');
+    });
+  } finally {
+    try { fs.rmSync(sb.root, { recursive: true, force: true }); } catch {}
+  }
+});

@@ -5,11 +5,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const http = require('node:http');
+const net = require('node:net');
 const vm = require('node:vm');
 
 const core = require('./meter-core');
 const collector = require('./meter-collector');
 const accountsMod = require('./meter-accounts');
+const proxyMod = require('./meter-proxy');
 
 const RENDERER_SOURCE = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
 
@@ -539,5 +542,1373 @@ test('UI 整合验证: 英文面板标题 ACM (+ Antigravity Context Meter toolt
     assert.equal(explicitOAuth.source, 'explicit_option');
   } finally {
     api.dispose();
+  }
+});
+
+test('ELV-89 OAuth 代理隧道与本地直连隔离 + 身份入列/额度分离 + 脱敏日志与同名邮箱遮罩区分', async () => {
+  const tmpDir = makeTempDir('acm-oauth-proxy-');
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  // 1. 掩码需区分同前缀不同末尾邮箱
+  assert.notEqual(accountsMod.maskEmail('elvisnanisbest@gmail.com'), accountsMod.maskEmail('elvisbeiyong123@gmail.com'));
+  assert.equal(accountsMod.maskEmail('elvisnanisbest@gmail.com'), 'el***st@gmail.com');
+  assert.equal(accountsMod.maskEmail('elvisbeiyong123@gmail.com'), 'el***23@gmail.com');
+
+  // 2. 验证 requestWithProxyTunnel: 本机 127.0.0.1 强制直连，外部主机显式走 HTTP 代理 CONNECT（且绝不静默直连）
+  const connectSeen = [];
+  const targetSrv = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, path: req.url }));
+  });
+  await new Promise(resolve => targetSrv.listen(0, '127.0.0.1', resolve));
+  const targetPort = targetSrv.address().port;
+
+  const proxySrv = http.createServer((req, res) => {
+    connectSeen.push(`HTTP:${req.url}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ proxied: true }));
+  });
+  proxySrv.on('connect', (req, clientSocket, head) => {
+    connectSeen.push(`CONNECT:${req.url}`);
+    const [, portStr] = String(req.url || '').split(':');
+    const upstream = net.connect(Number(portStr) || targetPort, '127.0.0.1', () => {
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head && head.length) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+    });
+    upstream.on('error', () => clientSocket.destroy());
+  });
+  await new Promise(resolve => proxySrv.listen(0, '127.0.0.1', resolve));
+  const proxyPort = proxySrv.address().port;
+
+  try {
+    // loopback URL 必须强制直连，connectSeen 不得增加
+    const cfgDir = path.join(tmpDir, 'proxy-cfg');
+    fs.mkdirSync(cfgDir, { recursive: true });
+    const fakeCfgPath = path.join(cfgDir, 'modules.json');
+    fs.writeFileSync(fakeCfgPath, JSON.stringify({ modules: { proxy: { enabled: true, httpProxy: `http://127.0.0.1:${proxyPort}`, noProxy: 'localhost,127.0.0.1' } } }));
+
+    const directResp = await proxyMod.requestWithProxyTunnel(`http://127.0.0.1:${targetPort}/cb`, {
+      method: 'GET',
+      proxyConfigOptions: { candidates: [fakeCfgPath] }
+    });
+    assert.equal(directResp.status, 200);
+    assert.equal(connectSeen.length, 0, '本机 loopback 回调绝对不得走远端代理');
+
+    // 外部域通过配置 HTTP CONNECT 隧道转发至本地目标桩
+    const tunnelResp = await proxyMod.requestWithProxyTunnel(`http://example.invalid:${targetPort}/tunnel-ok`, {
+      method: 'GET',
+      timeoutMs: 3000,
+      proxyConfigOptions: { candidates: [fakeCfgPath] }
+    });
+    assert.equal(tunnelResp.status, 200);
+    assert.equal(tunnelResp.diagnostics.proxySource, 'plugin_config');
+    assert.ok(connectSeen.some(s => s.startsWith('CONNECT:example.invalid:')));
+
+    // 外部域指向不可用端口插件代理，验证严格经代理连接失败且绝不静默直连真实外网
+    const deadCfgPath = path.join(cfgDir, 'dead-modules.json');
+    fs.writeFileSync(deadCfgPath, JSON.stringify({ modules: { proxy: { enabled: true, httpProxy: 'http://127.0.0.1:1', noProxy: '' } } }));
+    await assert.rejects(
+      () => proxyMod.requestWithProxyTunnel('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        timeoutMs: 1500,
+        proxyConfigOptions: { candidates: [deadCfgPath] }
+      }),
+      (err) => err && err.diagnostics?.proxySource === 'plugin_config' && err.diagnostics?.targetHost === 'oauth2.googleapis.com'
+    );
+
+    // 3. 完整 OAuth 阶段隔离测试：Token + UserInfo 成功入列后，CloudCode 503 配额失败不得把整个账号丢弃
+    let failQuota = true;
+    const customFetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.includes('oauth2.googleapis.com/token')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            access_token: 'secret_access_tok_xyz',
+            refresh_token: 'secret_refresh_tok_xyz',
+            expires_in: 3600,
+            id_token: 'eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjEyMTM4MTExMTIyMjJlbHZpc0BnbWFpbC5jb20ifQ.sig'
+          })
+        };
+      }
+      if (u.includes('googleapis.com/oauth2/v2/userinfo')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ email: '1213811112222elvis@gmail.com', name: 'NewAcct' })
+        };
+      }
+      if (u.includes('cloudcode-pa.googleapis.com')) {
+        if (failQuota) {
+          return {
+            ok: false,
+            status: 503,
+            text: async () => JSON.stringify({ error: { message: 'upstream unavailable' } })
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            cloudaicompanionProject: { id: 'proj-new-1' },
+            currentTier: { id: 'g1-pro-tier' },
+            models: {}
+          })
+        };
+      }
+      throw new Error(`Unexpected fetch URL: ${u}`);
+    };
+
+    let launchedAuthUrl = '';
+    const mgr = accountsMod.createAccountsManager({
+      stateDir,
+      credentialStore: makeMockCredStore(),
+      fetch: customFetch,
+      oauthClientId: 'mock-oauth-client-id',
+      oauthClientSecret: 'mock-super-client-secret-999',
+      openExternal: (authUrl) => {
+        launchedAuthUrl = authUrl;
+        const parsed = new URL(authUrl);
+        const redirectUri = parsed.searchParams.get('redirect_uri');
+        const state = parsed.searchParams.get('state');
+        // 异步模拟浏览器完成授权回调本地 127.0.0.1 端口
+        setTimeout(() => {
+          http.get(`${redirectUri}?code=mock_auth_code_777&state=${encodeURIComponent(state)}`, { agent: false }).on('error', () => {});
+        }, 40);
+      }
+    });
+
+    const addRes = await mgr.startOAuthLogin();
+    assert.equal(addRes.ok, true, '身份与凭据保存成功后不得误报整体添加失败');
+    assert.equal(addRes.quotaOk, false);
+    assert.equal(addRes.stage, 'quota_fetch');
+    assert.equal(addRes.targetHost, 'cloudcode-pa.googleapis.com');
+    assert.equal(addRes.httpStatus, 503);
+    assert.equal(addRes.account.email, '1213811112222elvis@gmail.com');
+    assert.ok(addRes.account.lastQuotaError);
+
+    // 重新实例检查持久化与列表可见性
+    const mgrReload = accountsMod.createAccountsManager({ stateDir, credentialStore: makeMockCredStore(), fetch: customFetch });
+    const persistedAcct = mgrReload.getOverviewState().accounts.find(a => a.email === '1213811112222elvis@gmail.com');
+    assert.ok(persistedAcct, '重启后新添加账号必须持久化在列表中');
+    assert.equal(persistedAcct.hasRefreshToken, true);
+
+    // 恢复额度接口，执行单账号重试
+    failQuota = false;
+    const retryRes = await mgr.refreshAccountQuota('1213811112222elvis@gmail.com');
+    assert.equal(retryRes.ok, true);
+    assert.equal(retryRes.account.lastQuotaError, null);
+
+    // 验证脱敏诊断日志绝不泄露任何敏感值
+    const diagFile = path.join(stateDir, 'oauth_diagnostics.jsonl');
+    assert.equal(fs.existsSync(diagFile), true);
+    const diagContent = fs.readFileSync(diagFile, 'utf8');
+    assert.doesNotMatch(diagContent, /mock_auth_code_777|secret_access_tok_xyz|secret_refresh_tok_xyz|mock-super-client-secret-999/);
+    assert.match(diagContent, /cloudcode-pa\.googleapis\.com/);
+    assert.ok(launchedAuthUrl.includes('accounts.google.com/o/oauth2/auth'));
+  } finally {
+    proxySrv.closeAllConnections?.();
+    targetSrv.closeAllConnections?.();
+    proxySrv.close();
+    targetSrv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('ELV-89 时间窗严格归属、IDE 拦截、幂等账本纠偏及 ALL == SUM(attributed) + unattributed 守恒与片段合并', async () => {
+  const tmpDir = makeTempDir('acm-repair-attr-');
+  const agDir = path.join(tmpDir, 'ag');
+  const cliDir = path.join(tmpDir, 'cli');
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(agDir, { recursive: true });
+  fs.mkdirSync(cliDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  const scopeA = collector.buildAccountScopeKey('a@example.com');
+  const scopeB = collector.buildAccountScopeKey('b@example.com');
+  const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+  const day = collector.formatLocalDateKey(new Date());
+
+  const t0 = Date.now() - 3600 * 1000; // 早于追踪起点
+  const tAStart = Date.now() - 1800 * 1000;
+  const tAEnd = Date.now() - 1200 * 1000;
+  const tBStart = Date.now() - 900 * 1000;
+
+  const accountSessions = [
+    { email: 'a@example.com', accountScopeKey: scopeA, source: 'desktop', startAtMs: tAStart, lastVerifiedAtMs: tAEnd, endAtMs: tAEnd, evidence: 'host_user_status' },
+    { email: 'b@example.com', accountScopeKey: scopeB, source: 'desktop', startAtMs: tBStart, lastVerifiedAtMs: Date.now(), endAtMs: null, evidence: 'account_switch_verified' }
+  ];
+
+  // 1. 种子坏数据：模拟旧 bug 把早期记录、缺时间记录及 IDE 记录错标成当前账号 B
+  collector.savePricingLedger({
+    version: 1,
+    calls: {
+      old_before_track: {
+        callId: 'old_before_track',
+        source: 'desktop',
+        model: 'Gemini 4 Hydrogen (High)',
+        inputTokens: 4000,
+        cacheReadTokens: 1000,
+        outputTokens: 500,
+        totalTokens: 5500,
+        date: day,
+        created_at: new Date(t0).toISOString(),
+        accountScopeKey: scopeB,
+        accountAttributionConfidence: 'live_confirmed_account'
+      },
+      ide_unverified: {
+        callId: 'ide_unverified',
+        source: 'ide',
+        model: 'Gemini 4 Hydrogen (High)',
+        inputTokens: 1000,
+        cacheReadTokens: 0,
+        outputTokens: 200,
+        totalTokens: 1200,
+        date: day,
+        created_at: new Date(tBStart + 5000).toISOString(),
+        accountScopeKey: scopeB,
+        accountAttributionConfidence: 'live_confirmed_account'
+      },
+      in_window_a: {
+        callId: 'in_window_a',
+        source: 'desktop',
+        model: 'Claude Opus 5.5',
+        inputTokens: 2000,
+        cacheReadTokens: 3000,
+        outputTokens: 500,
+        totalTokens: 5500,
+        date: day,
+        created_at: new Date(tAStart + 10000).toISOString()
+      },
+      cross_boundary: {
+        callId: 'cross_boundary',
+        source: 'desktop',
+        model: 'Gemini 4 Carbon',
+        inputTokens: 700,
+        cacheReadTokens: 0,
+        outputTokens: 100,
+        totalTokens: 800,
+        date: day,
+        requestStartMs: tAEnd - 1000,
+        requestEndMs: tBStart + 1000,
+        accountScopeKey: scopeB
+      },
+      in_window_b: {
+        callId: 'in_window_b',
+        source: 'desktop',
+        model: 'Gemini 4 Hydrogen (High)',
+        inputTokens: 1000,
+        cacheReadTokens: 2000,
+        outputTokens: 300,
+        totalTokens: 3300,
+        date: day,
+        created_at: new Date(tBStart + 20000).toISOString(),
+        accountScopeKey: scopeB
+      }
+    }
+  }, ledgerPath);
+
+  // 2. 首次执行修复迁移（验证自动备份 + 精准拆清/回填）
+  const rep1 = collector.repairAndMigrateAccountLedger({ ledgerPath, accountSessions, backupSuffix: 'unit1' });
+  assert.equal(rep1.ok, true);
+  assert.ok(fs.existsSync(rep1.backupPath), '必须先备份原账本');
+  assert.equal(rep1.after.attributed[scopeA], 1, '窗口 A 调用被回填归入 A');
+  assert.equal(rep1.after.attributed[scopeB], 1, '仅窗口 B 内有效调用保留在 B');
+  assert.equal(rep1.after.unattributed, 3, '起点前 + IDE + 跨边界记录必须归入未归属');
+
+  // 再次执行必须完全幂等
+  const rep2 = collector.repairAndMigrateAccountLedger({ ledgerPath, accountSessions, backupSuffix: 'unit2' });
+  assert.equal(rep2.ok, true);
+  assert.equal(rep2.updatedCount, 0, '二次迁移必须零修改且幂等');
+
+  // 3. 验证后续扫描带 trustTranscriptDate 时绝不吞噬未归属或跨窗口，并写入与账本匹配的日归档以供完整守恒核对
+  collector.recordModelCalls([
+    { callId: 'late_no_ts', source: 'desktop', model: 'Gemini 4 Carbon', inputTokens: 200, outputTokens: 50, totalTokens: 250, date: day }
+  ], { ledgerPath, trustTranscriptDate: true, accountSessions });
+
+  fs.writeFileSync(path.join(agDir, 'token_usage_archive_v1.json'), JSON.stringify({
+    firstUseDate: day,
+    dailyMap: {
+      [day]: { input: 8900, cache: 6000, output: 1650, total: 16550, steps: 6 }
+    }
+  }));
+
+  // 4. 全量聚合与严格守恒核对
+  const hist = await collector.collectTokenHistoryAsync({
+    agDir,
+    agCliDir: cliDir,
+    stateDir,
+    accountSessions,
+    skipWslDiscovery: true
+  });
+  const totA = hist.usageByAccount[scopeA].totalTokens;
+  const totB = hist.usageByAccount[scopeB].totalTokens;
+  const totUnattr = hist.unattributedUsage.totalTokens;
+  assert.equal(totA, 5500);
+  assert.equal(totB, 3300);
+  assert.equal(totUnattr, 7750);
+  assert.equal(totA + totB + totUnattr, hist.summary.grandTotalTokens, '全部 == 已归属各账号总和 + 未归属');
+  assert.ok(hist.usageByAccount[scopeA].dailyModelMapBySource?.all?.[day], '分账号统计必须带有逐日逐模型分布');
+  assert.ok(hist.unattributedUsage.dailyModelMapBySource?.all?.[day], '未归属历史也必须保留按模型分布');
+
+  // 5. 验证连续采样同池区间自动就地合并（不生成海量 0pp 碎片）
+  const mgr = accountsMod.createAccountsManager({
+    stateDir,
+    credentialStore: makeMockCredStore(),
+    collector: { summarizeAccountWindowUsage: (q) => collector.summarizeAccountWindowUsage({ ...q, ledgerPath }) }
+  });
+  mgr.addAccountWithCredential({ email: 'b@example.com', accessToken: 'tb', refreshToken: 'rb', expiresAt: new Date(Date.now() + 3600000).toISOString() });
+  const baseT = tBStart + 10000;
+  await mgr.refreshAccountQuota('b@example.com', { mockQuotaSnapshot: buildMockQuotaSnapshot(0.90), nowMs: baseT });
+  await mgr.refreshAccountQuota('b@example.com', { mockQuotaSnapshot: buildMockQuotaSnapshot(0.88), nowMs: baseT + 30000 });
+  await mgr.refreshAccountQuota('b@example.com', { mockQuotaSnapshot: buildMockQuotaSnapshot(0.85), nowMs: baseT + 60000 });
+  const mainIntervals = mgr.getOverviewState().quotaIntervals.filter(i => i.poolKey === 'shared_gemini_main');
+  assert.equal(mainIntervals.length, 1, '连续无断点采样应自动合并为一条区间而非碎片');
+  assert.equal(mainIntervals[0].startRemainingPct, 90);
+  assert.equal(mainIntervals[0].endRemainingPct, 85);
+  assert.equal(mainIntervals[0].deltaPp, -5);
+  assert.equal(mainIntervals[0].requestCount, 1);
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('UI 深度回归: 8 处统一下拉规范、零用量账号归零、NoPerm 移除、(High) 去重与三语零泄露', async () => {
+  const elements = new Map();
+  const makeNode = (id) => {
+    const attrs = new Map();
+    const evs = new Map();
+    const clsSet = new Set();
+    const n = {
+      id: id || '',
+      style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; }, display: '' },
+      children: [],
+      options: [],
+      selectedOptions: [],
+      hidden: false,
+      disabled: false,
+      textContent: '',
+      value: '',
+      title: '',
+      className: '',
+      classList: {
+        add(c) { clsSet.add(c); n.className = Array.from(clsSet).join(' '); },
+        remove(c) { clsSet.delete(c); n.className = Array.from(clsSet).join(' '); },
+        contains(c) { return clsSet.has(c); }
+      },
+      addEventListener(k, fn) { if (!evs.has(k)) evs.set(k, []); evs.get(k).push(fn); },
+      dispatchEvent(ev) { for (const fn of (evs.get(ev?.type) || [])) fn(ev); },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      appendChild(c) { if (c) { n.children.push(c); if (n.options) n.options.push(c); } },
+      replaceChildren(...items) { n.children = items.filter(Boolean); if (n.options) n.options = items.filter(Boolean); },
+      remove() {},
+      contains() { return false; },
+      matches() { return false; },
+      closest() { return null; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 140, height: 24, right: 240, bottom: 124 }; }
+    };
+    if (id) elements.set(id, n);
+    return n;
+  };
+  const selectIds = [
+    'token-account-select',
+    'select-custom-acq',
+    'select-custom-region-preset',
+    'select-custom-currency',
+    'select-custom-cycle',
+    'sel-auto-switch-pool',
+    'sel-auto-switch-mode',
+    'sel-auto-switch-window'
+  ];
+  for (const sid of selectIds) makeNode(sid);
+
+  const host = makeNode('ag-host');
+  host.attachShadow = () => ({
+    set innerHTML(_v) {},
+    getElementById(id) { return elements.get(id) || makeNode(id); },
+    querySelectorAll() { return []; }
+  });
+  let first = true;
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    document: {
+      createElement: () => (first ? (first = false, host) : makeNode()),
+      getElementById: id => elements.get(id) || null,
+      documentElement: { appendChild() {} },
+      addEventListener() {},
+      removeEventListener() {},
+      hidden: false
+    },
+    window: { __APP_CONFIG__: { csrfToken: 't' }, contextMeterAPI: {} },
+    matchMedia: () => ({ matches: false }),
+    __AGContextMeterCore: core,
+    AbortController,
+    Date,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1,
+    clearInterval() {},
+    fetch: async () => ({ ok: true, json: async () => ({ generatorMetadata: [] }) })
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(RENDERER_SOURCE, sandbox);
+
+  const api = sandbox.__AGContextMeter;
+  try {
+    // 1. 确认 template.html 与 RENDERER_SOURCE 中已全部升级 8 处自定义下拉组件且绑定 ARIA 属性
+    for (const sid of selectIds) {
+      const trig = elements.get(`${sid === 'token-account-select' ? 'token-account' : sid}-dropdown-trigger`);
+      const menu = elements.get(`${sid === 'token-account-select' ? 'token-account' : sid}-dropdown-menu`);
+      assert.equal(elements.get(sid).style.display, 'none', `${sid} 原生 select 必须隐藏`);
+      assert.equal(trig.getAttribute('role'), 'combobox', `${sid} 下拉触发器必须声明 role="combobox"`);
+      assert.equal(trig.getAttribute('aria-haspopup'), 'listbox');
+      assert.equal(menu.getAttribute('role'), 'listbox');
+    }
+
+    // 2. 筛选零用量账号时，累计 / 今日 / 本月 / 年度 / 按模型 / 费用必须全部同步归零，绝不保留全局 4.59B / 3.40B
+    const keyZero = collector.buildAccountScopeKey('zero@example.com');
+    const keyUsed = collector.buildAccountScopeKey('used@example.com');
+    const today = collector.formatLocalDateKey(new Date());
+    api.setAccountsOverviewForTest({
+      activeAccountEmail: 'zero@example.com',
+      activeAccountScopeKey: keyZero,
+      accounts: [
+        {
+          email: 'zero@example.com',
+          maskedEmail: 'ze***om@example.com',
+          accountScopeKey: keyZero,
+          isActive: true,
+          hasRefreshToken: true,
+          lastQuotaError: 'quota fetch timeout',
+          lastQuotaErrorMeta: { stage: 'quota_fetch', targetHost: 'cloudcode-pa.googleapis.com', httpStatus: 503 },
+          quotaSnapshot: { pools: [{ poolKey: 'shared_gemini_carbon', title: 'Carbon', noPermission: true, remainingFraction: null }] }
+        },
+        { email: 'used@example.com', maskedEmail: 'us***om@example.com', accountScopeKey: keyUsed, isActive: false, hasRefreshToken: true }
+      ],
+      autoSwitch: { enabled: false },
+      autoSwitchStatus: { state: 'disabled' },
+      keepalive: { enabled: false },
+      keepaliveState: { running: false },
+      quotaIntervals: [],
+      protocolEvidence: accountsMod.ELV52_PROTOCOL_EVIDENCE
+    });
+
+    api.applyTokenHistoryPayload({
+      accountScopeKey: keyZero,
+      dailyMap: { [today]: { input: 100000000, cache: 4400000000, output: 90000000, total: 4590000000, steps: 500 } },
+      dailyMapBySource: { all: { [today]: { input: 100000000, cache: 4400000000, output: 90000000, total: 4590000000, steps: 500 } } },
+      referenceCost: {
+        all: { inputTokens: 100000000, cacheTokens: 4400000000, outputTokens: 90000000, totalTokens: 4590000000, totalCostUSD: 999 },
+        currentMonth: { inputTokens: 50000000, cacheTokens: 3300000000, outputTokens: 50000000, totalTokens: 3400000000, totalCostUSD: 777 }
+      },
+      summary: { grandTotalTokens: 4590000000, todayTokens: 1000000, monthTokens: 3400000000, yearTokens: 4590000000 },
+      usageByAccount: {
+        [keyUsed]: {
+          totalTokens: 1500, todayTokens: 1500, monthTokens: 1500, yearTokens: 1500,
+          totalInputTokens: 500, totalCacheTokens: 800, totalOutputTokens: 200,
+          dailyMap: { [today]: { input: 500, cache: 800, output: 200, total: 1500, steps: 1 } }
+        }
+      },
+      unattributedUsage: {
+        totalTokens: 4589998500, todayTokens: 998500, monthTokens: 3399998500, yearTokens: 4589998500,
+        dailyMap: { [today]: { input: 99999500, cache: 4399999200, output: 89999800, total: 4589998500, steps: 499 } }
+      }
+    });
+
+    api.setTokenAccountFilterForTest(keyZero);
+    assert.equal(elements.get('t-total-val').textContent, '0');
+    assert.equal(elements.get('t-today-val').textContent, '0');
+    assert.equal(elements.get('t-month-val').textContent, '0');
+    assert.equal(elements.get('t-year-val').textContent, '0');
+    assert.equal(elements.get('token-amount').textContent, '0');
+    assert.doesNotMatch(elements.get('t-total-cost').textContent, /\$0\.00/);
+    assert.match(elements.get('t-total-cost').textContent, /暂无此账号记录/);
+
+    // 3. 验证三语下无 NoPerm、英文模式下界面账号/保活/费用等动态文案无中文泄漏
+    await api.setPanelLanguage('en', { persist: false });
+    assert.match(elements.get('t-total-cost').textContent, /No records for account/);
+    const acctListJsonEn = JSON.stringify(elements.get('quota-accounts-list').children);
+    assert.doesNotMatch(acctListJsonEn, /NoPerm/, '界面绝不能出现原始 NoPerm');
+    assert.match(acctListJsonEn, /No model access/);
+    assert.match(acctListJsonEn, /Quota fetch failed/);
+    assert.doesNotMatch(elements.get('keepalive-protocol-summary').textContent, /[\u4e00-\u9fa5]/);
+    assert.doesNotMatch(elements.get('keepalive-experiment-summary').textContent, /[\u4e00-\u9fa5]/);
+    assert.doesNotMatch(elements.get('keepalive-runtime-note').textContent, /[\u4e00-\u9fa5]/);
+    assert.doesNotMatch(elements.get('token-account-scope-note').textContent, /[\u4e00-\u9fa5]/);
+
+    await api.setPanelLanguage('zh-TW', { persist: false });
+    const acctListJsonTw = JSON.stringify(elements.get('quota-accounts-list').children);
+    assert.match(acctListJsonTw, /無模型權限/);
+    assert.doesNotMatch(elements.get('keepalive-protocol-summary').textContent, /协议核查|默认关闭/);
+
+    // 4. 模型括号档位去重验证（确认 splitModelDisplayAndEffort 集成效果）
+    const dedup = core.splitModelDisplayAndEffort('Gemini 4 Hydrogen (High) (High)', 'High');
+    assert.equal(dedup.baseLabel, 'Gemini 4 Hydrogen');
+    assert.equal(dedup.effort, 'High');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.8.8 账本回归: 旧账号历史 + 新账号首次登录自动纠偏、空态/全在今天与切换零残留', async () => {
+  const agDir = makeTempDir('acm-v088-ag-');
+  const stateDir = makeTempDir('acm-v088-st-');
+  try {
+    const oldEmail = 'old@example.com';
+    const newEmail = 'newultra@example.com';
+    const oldScope = accountsMod.buildAccountScopeKey(oldEmail);
+    const newScope = accountsMod.buildAccountScopeKey(newEmail);
+    const nowMs = Date.now();
+    const tOldStart = nowMs - 2 * 86400000;
+    const tOldEnd = nowMs - 86400000;
+    const tNewStart = nowMs - 600000; // 10 分钟前首次登录新号
+    const today = collector.formatLocalDateKey(new Date(nowMs));
+
+    const cidOld = 'aaaaaaaa-0000-0000-0000-000000000001';
+    const cidNew = 'bbbbbbbb-0000-0000-0000-000000000002';
+    const legacyCreatedAt = '2026-10-26T13:44:29.000Z';
+    const oldWindowCreatedAt = new Date(tOldStart + 120000).toISOString();
+    const newWindowCreatedAt = new Date(tNewStart + 60000).toISOString();
+
+    // 建立对应会话 transcript 文件（模拟真实场景：2026-10-26 历史记录 + 旧账号记录 + 新账号今天记录）
+    const logDirOld = path.join(agDir, 'brain', cidOld, '.system_generated', 'logs');
+    const logDirNew = path.join(agDir, 'brain', cidNew, '.system_generated', 'logs');
+    fs.mkdirSync(logDirOld, { recursive: true });
+    fs.mkdirSync(logDirNew, { recursive: true });
+    fs.writeFileSync(path.join(logDirOld, 'transcript.jsonl'), [
+      JSON.stringify({
+        step_index: 1, type: 'PLANNER_RESPONSE', created_at: legacyCreatedAt,
+        model: 'claude-opus-4-5-thinking', responseId: 'req_legacy_misattr',
+        input_tokens: 100000, cache_read_tokens: 200000, output_tokens: 10000
+      }),
+      JSON.stringify({
+        step_index: 2, type: 'PLANNER_RESPONSE', created_at: oldWindowCreatedAt,
+        model: 'gemini-3.8-flash', responseId: 'req_old_valid',
+        input_tokens: 5000, cache_read_tokens: 10000, output_tokens: 500
+      })
+    ].join('\n') + '\n');
+    fs.writeFileSync(path.join(logDirNew, 'transcript.jsonl'), JSON.stringify({
+      step_index: 1, type: 'PLANNER_RESPONSE', created_at: newWindowCreatedAt,
+      model: 'gemini-4-hydrogen', responseId: 'req_new_today',
+      input_tokens: 2000, cache_read_tokens: 3000, output_tokens: 500
+    }) + '\n');
+
+    // 建立账号存储及活跃时段窗口
+    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify({
+      version: 1,
+      activeAccountEmail: newEmail,
+      accounts: {
+        [oldEmail]: { email: oldEmail, accessToken: 'tok-old', refreshToken: 'ref-old' },
+        [newEmail]: { email: newEmail, accessToken: 'tok-new', refreshToken: 'ref-new' }
+      },
+      accountSessions: [
+        { accountScopeKey: oldScope, email: oldEmail, startAtMs: tOldStart, endAtMs: tOldEnd, source: 'test' },
+        { accountScopeKey: newScope, email: newEmail, startAtMs: tNewStart, endAtMs: null, source: 'test' }
+      ]
+    }));
+
+    // 写入混合账本：1) 无可靠时间/早于窗口却错标为新号的 2026-10-26 旧记录 2) 旧账号真实记录 3) 仅今天属于新号的真实记录
+    fs.writeFileSync(path.join(agDir, 'pricing_ledger_v1.json'), JSON.stringify({
+      version: 1,
+      calls: {
+        req_legacy_misattr: {
+          callId: 'req_legacy_misattr',
+          cascadeId: cidOld,
+          stepIndex: 1,
+          source: 'desktop',
+          model: 'claude-opus-4-5-thinking',
+          modelKey: 'claude-opus-4-5-thinking',
+          isPriced: true,
+          inputTokens: 100000,
+          cacheTokens: 200000,
+          outputTokens: 10000,
+          totalTokens: 310000,
+          date: '2026-10-26',
+          created_at: legacyCreatedAt,
+          timestamp: Date.parse('2026-11-17T19:25:00.000Z'),
+          updatedAt: '2026-11-17T19:25:03.000Z',
+          accountScopeKey: newScope,
+          accountAttributionConfidence: 'live_confirmed_account'
+        },
+        req_old_valid: {
+          callId: 'req_old_valid',
+          cascadeId: cidOld,
+          stepIndex: 2,
+          source: 'desktop',
+          model: 'gemini-3.8-flash',
+          modelKey: 'gemini-3.8-flash',
+          isPriced: true,
+          inputTokens: 5000,
+          cacheTokens: 10000,
+          outputTokens: 500,
+          totalTokens: 15500,
+          date: collector.formatLocalDateKey(new Date(tOldStart + 120000)),
+          created_at: oldWindowCreatedAt,
+          accountScopeKey: oldScope,
+          accountAttributionConfidence: 'live_confirmed_account'
+        },
+        req_new_today: {
+          callId: 'req_new_today',
+          cascadeId: cidNew,
+          stepIndex: 1,
+          source: 'desktop',
+          model: 'gemini-4-hydrogen',
+          modelKey: 'gemini-4-hydrogen',
+          isPriced: true,
+          inputTokens: 2000,
+          cacheTokens: 3000,
+          outputTokens: 500,
+          totalTokens: 5500,
+          date: today,
+          created_at: newWindowCreatedAt,
+          accountScopeKey: newScope,
+          accountAttributionConfidence: 'live_confirmed_account'
+        }
+      }
+    }));
+
+    // 1. 首次历史采集自动触发 elv89-v2 纠偏，生成 .bak-pre-elv89 备份，且二次执行结果完全不变
+    const res1 = await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    const res2 = await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+
+    const bakFiles = fs.readdirSync(agDir).filter(f => f.includes('.bak-pre-elv89-'));
+    assert.ok(bakFiles.length >= 1, '自动纠偏前必须先写入 pricing_ledger 备份');
+
+    assert.equal(res1.summary.grandTotalTokens, 331000);
+    assert.equal(res1.usageByAccount[oldScope].totalTokens, 15500);
+    assert.equal(res1.usageByAccount[newScope].totalTokens, 5500);
+    assert.equal(res1.usageByAccount[newScope].firstUseDate, today);
+    assert.equal(res1.unattributedUsage.totalTokens, 310000);
+    assert.equal(
+      res1.summary.grandTotalTokens,
+      res1.usageByAccount[oldScope].totalTokens + res1.usageByAccount[newScope].totalTokens + res1.unattributedUsage.totalTokens,
+      '全量必须严格等于各账号 + 未归属之和'
+    );
+    // 重复执行幂等不变
+    assert.deepEqual(res2.usageByAccount[newScope], res1.usageByAccount[newScope]);
+    assert.deepEqual(res2.unattributedUsage, res1.unattributedUsage);
+
+    // 2. UI 验证：新账号记录全在今天 -> 四个卡片与今天相等、首次使用=今天；零记录账号 -> 0 与 首次使用：--；来回切换无残留
+    const elements = new Map();
+    const makeNode = (id) => {
+      const attrs = new Map();
+      const evs = new Map();
+      const clsSet = new Set();
+      const n = {
+        id: id || '',
+        style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; }, display: '' },
+        children: [], options: [], selectedOptions: [], hidden: false, disabled: false,
+        textContent: '', value: '', title: '', className: '',
+        classList: {
+          add(c) { clsSet.add(c); n.className = Array.from(clsSet).join(' '); },
+          remove(c) { clsSet.delete(c); n.className = Array.from(clsSet).join(' '); },
+          contains(c) { return clsSet.has(c); }
+        },
+        addEventListener(k, fn) { if (!evs.has(k)) evs.set(k, []); evs.get(k).push(fn); },
+        dispatchEvent(ev) { for (const fn of (evs.get(ev?.type) || [])) fn(ev); },
+        setAttribute(k, v) { attrs.set(k, String(v)); },
+        getAttribute(k) { return attrs.get(k) ?? null; },
+        removeAttribute(k) { attrs.delete(k); },
+        appendChild(c) { if (c) { n.children.push(c); if (n.options) n.options.push(c); } },
+        replaceChildren(...items) { n.children = items.filter(Boolean); if (n.options) n.options = items.filter(Boolean); },
+        remove() {}, contains() { return false; }, matches() { return false; }, closest() { return null; },
+        querySelector() { return null; }, querySelectorAll() { return []; },
+        getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 24, right: 100, bottom: 24 }; }
+      };
+      if (id) elements.set(id, n);
+      return n;
+    };
+    const host = makeNode('ag-host');
+    host.attachShadow = () => ({
+      set innerHTML(_v) {},
+      getElementById(id) { return elements.get(id) || makeNode(id); },
+      querySelectorAll() { return []; }
+    });
+    let first = true;
+    const brandNewScope = accountsMod.buildAccountScopeKey('brandnew@example.com');
+    const sandbox = {
+      location: { protocol: 'https:', hostname: '127.0.0.1', pathname: `/c/${cidNew}` },
+      document: {
+        createElement: () => (first ? (first = false, host) : makeNode()),
+        getElementById: id => elements.get(id) || null,
+        documentElement: { appendChild() {} },
+        addEventListener() {}, removeEventListener() {}, hidden: false
+      },
+      window: { __APP_CONFIG__: { csrfToken: 't' }, contextMeterAPI: {} },
+      matchMedia: () => ({ matches: false }),
+      __AGContextMeterCore: core, AbortController, Date,
+      setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+      fetch: async () => ({ ok: true, json: async () => ({ generatorMetadata: [] }) })
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(RENDERER_SOURCE, sandbox);
+    const api = sandbox.__AGContextMeter;
+    try {
+      api.setAccountsOverviewForTest({
+        activeAccountEmail: newEmail,
+        activeAccountScopeKey: newScope,
+        accounts: [
+          { email: oldEmail, accountScopeKey: oldScope, isActive: false },
+          { email: newEmail, accountScopeKey: newScope, isActive: true },
+          { email: 'brandnew@example.com', accountScopeKey: brandNewScope, isActive: false }
+        ]
+      });
+      api.applyTokenHistoryPayload(res1);
+
+      // 切到全在今天的新号 -> 4 卡片均等于 5500（5.5K）
+      const [ty, tm, td] = today.split('-').map(Number);
+      api.setTokenAccountFilterForTest(newScope);
+      assert.equal(elements.get('t-total-val').textContent, '5.5K');
+      assert.equal(elements.get('t-today-val').textContent, '5.5K');
+      assert.equal(elements.get('t-month-val').textContent, '5.5K');
+      assert.equal(elements.get('t-year-val').textContent, '5.5K');
+      assert.equal(elements.get('token-amount').textContent, '5.5K');
+      assert.equal(elements.get('first-use-badge').textContent, `首次使用：${ty}年${tm}月${td}日`);
+
+      // 切到没有任何可靠记录的全新号 -> 全 0 且首次使用：--
+      api.setTokenAccountFilterForTest(brandNewScope);
+      assert.equal(elements.get('t-total-val').textContent, '0');
+      assert.equal(elements.get('t-today-val').textContent, '0');
+      assert.equal(elements.get('t-month-val').textContent, '0');
+      assert.equal(elements.get('t-year-val').textContent, '0');
+      assert.equal(elements.get('token-amount').textContent, '0');
+      assert.equal(elements.get('first-use-badge').textContent, '首次使用：--');
+
+      // 切到老号 -> 老号独立数据 15.5K，再切回 brandNew -> 仍为 0 与 --，无残留
+      api.setTokenAccountFilterForTest(oldScope);
+      assert.equal(elements.get('t-total-val').textContent, '15.5K');
+      api.setTokenAccountFilterForTest(brandNewScope);
+      assert.equal(elements.get('t-total-val').textContent, '0');
+      assert.equal(elements.get('first-use-badge').textContent, '首次使用：--');
+
+      // 切回全账号 -> 331.0K
+      api.setTokenAccountFilterForTest('all');
+      assert.equal(elements.get('t-total-val').textContent, '331.0K');
+    } finally {
+      api.dispose();
+    }
+  } finally {
+    fs.rmSync(agDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('v0.8.8 移除账号回归: 取消/防重/失败重试/筛选复位/活跃与最后账号边界及保留历史用量', async () => {
+  const agDir = makeTempDir('acm-rm-ag-');
+  const stateDir = makeTempDir('acm-rm-st-');
+  try {
+    const emailA = 'active@example.com';
+    const emailB = 'backup@example.com';
+    const scopeA = accountsMod.buildAccountScopeKey(emailA);
+    const scopeB = accountsMod.buildAccountScopeKey(emailB);
+    const nowMs = Date.now();
+    const today = collector.formatLocalDateKey(new Date(nowMs));
+    const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+
+    // 先写入归属到 active@example.com 的本机用量
+    collector.recordModelCalls([
+      {
+        callId: 'req_rm_keep_1',
+        cascadeId: 'cccccccc-0000-0000-0000-000000000001',
+        source: 'desktop',
+        model: 'gemini-4-hydrogen',
+        isPriced: true,
+        inputTokens: 4000,
+        cacheTokens: 6000,
+        outputTokens: 1000,
+        totalTokens: 11000,
+        date: today,
+        created_at: new Date(nowMs - 5000).toISOString(),
+        liveRealtimeConfirmed: true
+      }
+    ], { agDir, confirmedAccountEmail: emailA });
+
+    const credStore = makeMockCredStore();
+    let switchCalled = 0;
+    const mgr = accountsMod.createAccountsManager({
+      stateDir,
+      restartLanguageServers: async () => ({ ok: true }),
+      credentialStore: {
+        ...credStore,
+        applyCredential: (c) => { switchCalled++; return credStore.applyCredential(c); }
+      }
+    });
+    mgr.addAccountWithCredential({ email: emailA, accessToken: 'ta', refreshToken: 'ra', expiresAt: new Date(nowMs + 3600000).toISOString() });
+    mgr.addAccountWithCredential({ email: emailB, accessToken: 'tb', refreshToken: 'rb', expiresAt: new Date(nowMs + 3600000).toISOString() });
+    // 将 A 置为当前活跃账号，再清零 switchCalled 以严格验证移除期间绝不触发切号
+    await mgr.switchActiveAccount(emailA, { forceWhileBusy: true, assumeVerifiedInDryRun: true });
+    switchCalled = 0;
+    mgr.updateAutoSwitchConfig({ enabled: true, candidates: [emailA, emailB] });
+
+    // 1. 后端移除当前活跃账号 active@example.com：凭据与候选清除、不擅自切到 B、历史账本原归属保留
+    const rm1 = await accountsMod.dispatchAccountsAction(mgr, { action: 'remove', email: emailA });
+    assert.equal(rm1.ok, true);
+    assert.equal(rm1.wasActive, true);
+    assert.equal(rm1.removedScopeKey, scopeA);
+    assert.equal(switchCalled, 0, '移除当前活跃账号绝不能擅自自动切号');
+    assert.equal(rm1.overview.activeAccountEmail, null);
+    assert.deepEqual(rm1.overview.autoSwitch.candidates, [emailB]);
+    assert.equal(rm1.overview.accounts.length, 1);
+
+    // 移除最后一个账号 B：autoSwitch 自动收拢关闭，历史账本依旧保留原归属
+    const rm2 = await accountsMod.dispatchAccountsAction(mgr, { action: 'remove', email: emailB });
+    assert.equal(rm2.ok, true);
+    assert.equal(rm2.remainingCount, 0);
+    assert.equal(rm2.overview.accounts.length, 0);
+    assert.equal(rm2.overview.autoSwitch.enabled, false);
+    assert.equal(rm2.overview.autoSwitchStatus.state, 'disabled');
+    const persistedLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(persistedLedger.calls.req_rm_keep_1.accountScopeKey, scopeA, '移除账号后原账本归属与用量必须完整保留');
+    assert.equal(persistedLedger.calls.req_rm_keep_1.totalTokens, 11000);
+
+    // 重新建一个 2 账号经理供 UI 弹窗交互与失败重试测试
+    const mgrUi = accountsMod.createAccountsManager({
+      stateDir: makeTempDir('acm-rm-ui-'),
+      credentialStore: makeMockCredStore(),
+      restartLanguageServers: async () => ({ ok: true })
+    });
+    mgrUi.addAccountWithCredential({ email: emailA, accessToken: 'ta', refreshToken: 'ra', expiresAt: new Date(nowMs + 3600000).toISOString() });
+    mgrUi.addAccountWithCredential({ email: emailB, accessToken: 'tb', refreshToken: 'rb', expiresAt: new Date(nowMs + 3600000).toISOString() });
+    await mgrUi.switchActiveAccount(emailA, { forceWhileBusy: true, assumeVerifiedInDryRun: true });
+    mgrUi.updateAutoSwitchConfig({ enabled: false, candidates: [emailA, emailB] });
+
+    const elements = new Map();
+    const makeNode = (id) => {
+      const attrs = new Map();
+      const evs = new Map();
+      const clsSet = new Set();
+      const n = {
+        id: id || '',
+        style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; }, display: '' },
+        children: [], options: [], selectedOptions: [], hidden: false, disabled: false,
+        textContent: '', value: '', title: '', className: '', dataset: {},
+        classList: {
+          add(c) { clsSet.add(c); n.className = Array.from(clsSet).join(' '); },
+          remove(c) { clsSet.delete(c); n.className = Array.from(clsSet).join(' '); },
+          contains(c) { return clsSet.has(c); }
+        },
+        addEventListener(k, fn) { if (!evs.has(k)) evs.set(k, []); evs.get(k).push(fn); },
+        dispatchEvent(ev) { for (const fn of (evs.get(ev?.type) || [])) fn(ev || { type: '' }); },
+        setAttribute(k, v) { attrs.set(k, String(v)); },
+        getAttribute(k) { return attrs.get(k) ?? null; },
+        removeAttribute(k) { attrs.delete(k); },
+        appendChild(c) { if (c) { n.children.push(c); if (n.options) n.options.push(c); } },
+        replaceChildren(...items) { n.children = items.filter(Boolean); if (n.options) n.options = items.filter(Boolean); },
+        remove() {}, contains() { return false; }, matches() { return false; }, closest() { return null; },
+        querySelector() { return null; }, querySelectorAll() { return []; },
+        getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 24, right: 100, bottom: 24 }; }
+      };
+      if (id) elements.set(id, n);
+      return n;
+    };
+    const host = makeNode('ag-host');
+    host.attachShadow = () => ({
+      set innerHTML(_v) {},
+      getElementById(id) { return elements.get(id) || makeNode(id); },
+      querySelectorAll() { return []; }
+    });
+
+    let failRemoveOnce = true;
+    let ipcCalls = 0;
+    let releaseDelay = null;
+    let first = true;
+    const sandbox = {
+      location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+      document: {
+        createElement: () => (first ? (first = false, host) : makeNode()),
+        getElementById: id => elements.get(id) || null,
+        documentElement: { appendChild() {} },
+        addEventListener() {}, removeEventListener() {}, hidden: false
+      },
+      window: {
+        __APP_CONFIG__: { csrfToken: 't' },
+        contextMeterAPI: {
+          getAccountsOverview: async () => mgrUi.getOverviewState(),
+          accountsAction: async (payload) => {
+            if (payload?.action === 'remove') {
+              ipcCalls += 1;
+              if (releaseDelay) await new Promise(r => { releaseDelay = r; });
+              if (failRemoveOnce) {
+                failRemoveOnce = false;
+                return { ok: false, error: '模拟磁盘忙，移除失败' };
+              }
+            }
+            return await accountsMod.dispatchAccountsAction(mgrUi, payload);
+          }
+        }
+      },
+      matchMedia: () => ({ matches: false }),
+      __AGContextMeterCore: core, AbortController, Date,
+      setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+      fetch: async () => ({ ok: true, json: async () => ({ generatorMetadata: [] }) })
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(RENDERER_SOURCE, sandbox);
+    const api = sandbox.__AGContextMeter;
+    try {
+      api.setAccountsOverviewForTest(mgrUi.getOverviewState());
+      api.applyTokenHistoryPayload({
+        dailyMap: { [today]: { total: 11000, input: 4000, cache: 6000, output: 1000 } },
+        dailyMapBySource: { all: { [today]: { total: 11000, input: 4000, cache: 6000, output: 1000 } } },
+        summary: { grandTotalTokens: 11000, todayTokens: 11000, monthTokens: 11000, yearTokens: 11000 },
+        usageByAccount: {
+          [scopeA]: {
+            totalTokens: 11000, todayTokens: 11000, monthTokens: 11000, yearTokens: 11000, firstUseDate: today,
+            dailyMap: { [today]: { total: 11000, input: 4000, cache: 6000, output: 1000 } }
+          }
+        },
+        unattributedUsage: { totalTokens: 0, todayTokens: 0, monthTokens: 0, yearTokens: 0, dailyMap: {} }
+      });
+
+      // 正在筛选 active@example.com
+      api.setTokenAccountFilterForTest(scopeA);
+      assert.equal(api.getAccountsPanelStateForTest().activeFilter, scopeA);
+
+      // 2. 打开确认框 -> 取消不修改任何状态且支持三语确认文案
+      const findRemoveBtn = (email) => {
+        for (const card of elements.get('quota-accounts-list').children) {
+          const topRow = card.children?.[0];
+          const right = topRow?.children?.[1];
+          for (const btn of (right?.children || [])) {
+            if (btn.dataset?.removeEmail === email) return btn;
+          }
+        }
+        return null;
+      };
+      const rmBtnA = findRemoveBtn(emailA);
+      assert.ok(rmBtnA, '每张账号卡必须渲染移除账号按钮');
+      rmBtnA.dispatchEvent({ type: 'click' });
+      assert.equal(elements.get('account-remove-modal').hidden, false);
+      assert.match(elements.get('modal-account-remove-text').textContent, /登录凭据.*自动切号候选.*历史用量与原有账号归属会保留/);
+      assert.match(elements.get('modal-account-remove-text').textContent, /不会自动切换/);
+
+      await api.setPanelLanguage('zh-TW', { persist: false });
+      assert.match(elements.get('modal-account-remove-text').textContent, /登入憑證.*自動切號候選.*歷史用量與原有帳號歸屬會保留/);
+      await api.setPanelLanguage('en', { persist: false });
+      assert.match(elements.get('modal-account-remove-text').textContent, /credentials.*auto-switch candidacy.*usage history and existing attribution are preserved/i);
+      await api.setPanelLanguage('zh-CN', { persist: false });
+
+      elements.get('btn-modal-account-remove-cancel').dispatchEvent({ type: 'click' });
+      assert.equal(elements.get('account-remove-modal').hidden, true);
+      assert.equal(ipcCalls, 0);
+      assert.equal(api.getAccountsPanelStateForTest().activeFilter, scopeA);
+
+      // 3. 重新打开并点击确认 -> 首次模拟失败可重试
+      rmBtnA.dispatchEvent({ type: 'click' });
+      const failRes = await api.confirmRemoveAccountModalForTest();
+      assert.equal(failRes.ok, false);
+      assert.equal(elements.get('account-remove-modal').hidden, false, '失败后弹窗应保持开启供重试');
+      assert.equal(elements.get('btn-modal-account-remove-confirm').disabled, false, '失败后确认按钮恢复可重试');
+      assert.match(elements.get('modal-account-remove-feedback').textContent, /模拟磁盘忙/);
+
+      // 4. 重试触发期间防止并发二次提交
+      releaseDelay = () => {};
+      const p1 = api.confirmRemoveAccountModalForTest();
+      const p2 = api.confirmRemoveAccountModalForTest();
+      assert.equal(await p2, null, '确认移除提交期间必须防重复提交');
+      const rDone = releaseDelay;
+      releaseDelay = null;
+      rDone();
+      const okRes = await p1;
+      assert.equal(okRes.ok, true);
+      assert.equal(ipcCalls, 2);
+      assert.equal(elements.get('account-remove-modal').hidden, true);
+      assert.equal(api.getAccountsPanelStateForTest().accountCount, 1);
+      assert.equal(api.getAccountsPanelStateForTest().activeFilter, 'all', '正在筛选被移除账号时必须自动回到全账号');
+    } finally {
+      api.dispose();
+    }
+  } finally {
+    fs.rmSync(agDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('v0.8.8 OAuth配对与切号刷新闭环: 401 client_secret 错配不误标 authInvalid / 真正 invalid_grant 标记重授 / 切号失败回滚保留原活跃号 / 失败不显示操作已完成', async () => {
+  const stateDir = makeTempDir('acm-oauth-401-');
+  try {
+    // 1. 若宿主安装了 Antigravity 二进制，校验官方配对表里 clientId 与 clientSecret 严格配对（不再把 107100... 配给 GOCSPX-9Y...）
+    const pairs = accountsMod.resolveAllAntigravityOAuthConfigs();
+    if (pairs.length >= 2 && pairs[0].source === 'antigravity_host_binary') {
+      const defPair = pairs.find(p => p.key === 'antigravity_default');
+      const entPair = pairs.find(p => p.key === 'antigravity_enterprise');
+      assert.ok(defPair && entPair);
+      assert.notEqual(defPair.clientId, entPair.clientId);
+      assert.notEqual(defPair.clientSecret, entPair.clientSecret);
+    }
+
+    // 2. 模拟历史因 401 client secret is invalid 误标的账号自动自愈 + 401 invalid_client 不误标 authInvalid 且保留上次快照
+    const preHealPath = path.join(stateDir, 'accounts_v1.json');
+    fs.writeFileSync(preHealPath, JSON.stringify({
+      version: 1,
+      activeAccountEmail: 'keep@example.com',
+      accounts: {
+        'keep@example.com': {
+          email: 'keep@example.com',
+          source: 'client_import',
+          credential: { accessToken: 'tok-keep', refreshToken: 'ref-keep', expiresAt: new Date(Date.now() + 3600000).toISOString() },
+          authInvalid: false
+        },
+        'healed@example.com': {
+          email: 'healed@example.com',
+          source: 'antigravity_tools_import',
+          credential: { accessToken: 'tok-old', refreshToken: 'ref-valid', expiresAt: '2020-01-01T00:00:00.000Z' },
+          authInvalid: true,
+          authError: '刷新 Token 失败 (HTTP 401): The provided client secret is invalid.',
+          quotaSnapshot: buildMockQuotaSnapshot(0.82),
+          lastQuotaUpdatedAtMs: 1760000000000
+        },
+        'revoked@example.com': {
+          email: 'revoked@example.com',
+          source: 'oauth_login',
+          credential: { accessToken: 'tok-rev', refreshToken: 'ref-revoked', expiresAt: '2020-01-01T00:00:00.000Z' },
+          authInvalid: false
+        }
+      }
+    }));
+
+    let fetchMode = 'refresh_success';
+    let hostActiveEmail = 'keep@example.com';
+    const credStore = makeMockCredStore();
+    credStore.applyCredential({ email: 'keep@example.com', accessToken: 'tok-keep', refreshToken: 'ref-keep', expiresAt: new Date(Date.now() + 3600000).toISOString() });
+
+    const mockFetch = async (url, init) => {
+      if (String(url).includes('oauth2.googleapis.com/token')) {
+        const body = String(init?.body || '');
+        if (fetchMode === 'http401_client_secret') {
+          return {
+            ok: false,
+            status: 401,
+            text: async () => JSON.stringify({ error: 'invalid_client', error_description: 'The provided client secret is invalid.' })
+          };
+        }
+        if (body.includes('ref-revoked')) {
+          return {
+            ok: false,
+            status: 400,
+            text: async () => JSON.stringify({ error: 'invalid_grant', error_description: 'Token has been expired or revoked.' })
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ access_token: 'tok-refreshed-new', expires_in: 3600 })
+        };
+      }
+      if (String(url).includes('loadCodeAssist')) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ cloudaicompanionProject: 'proj-1', currentTier: { id: 'g1-ultra-tier' } }) };
+      }
+      if (String(url).includes('fetchAvailableModels')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            models: {
+              'gemini-4-hydrogen': { displayName: 'Gemini 4 Hydrogen', quotaInfo: { remainingFraction: 0.91, resetTime: '2026-11-19T00:00:00Z' } }
+            }
+          })
+        };
+      }
+      return { ok: true, status: 200, text: async () => '{}' };
+    };
+
+    const mgr = accountsMod.createAccountsManager({
+      stateDir,
+      oauthClientId: 'mock-cid',
+      oauthClientSecret: 'mock-sec',
+      credentialStore: credStore,
+      fetch: mockFetch,
+      getHostUserStatus: async () => ({ email: hostActiveEmail }),
+      restartLanguageServers: async () => ({ ok: true })
+    });
+
+    // 加载即自愈误标 authInvalid
+    const ovInit = mgr.getOverviewState();
+    const healedInit = ovInit.accounts.find(a => a.email === 'healed@example.com');
+    assert.equal(healedInit.authInvalid, false, '历史 client_secret 401 误标应自动清除');
+
+    // A) 模拟刷新遇到 HTTP 401 invalid_client：不误标 authInvalid，保留上次快照，并返回明确错误
+    fetchMode = 'http401_client_secret';
+    const fail401 = await accountsMod.dispatchAccountsAction(mgr, { action: 'refresh_quota', email: 'healed@example.com' });
+    assert.equal(fail401.ok, false);
+    assert.equal(fail401.httpStatus, 401);
+    assert.equal(fail401.stage, 'token_refresh');
+    assert.equal(fail401.authInvalid, false, 'HTTP 401 client_secret 错误绝不能误标用户需重新授权');
+    assert.equal(fail401.isClientMismatch, true);
+    const after401 = fail401.overview.accounts.find(a => a.email === 'healed@example.com');
+    assert.equal(after401.authInvalid, false);
+    assert.equal(after401.quotaSnapshot.pools[0].remainingFraction, 0.82, '刷新失败必须完整保留上次额度快照');
+    assert.equal(after401.lastQuotaUpdatedAtMs, 1760000000000);
+    assert.match(after401.lastQuotaError, /HTTP 401/);
+
+    // B) 真正 invalid_grant 才标记 authInvalid = true 并允许切号拒绝
+    fetchMode = 'refresh_success';
+    const failGrant = await accountsMod.dispatchAccountsAction(mgr, { action: 'refresh_quota', email: 'revoked@example.com' });
+    assert.equal(failGrant.ok, false);
+    assert.equal(failGrant.authInvalid, true);
+    assert.equal(failGrant.overview.accounts.find(a => a.email === 'revoked@example.com').authInvalid, true);
+
+    // C) 批量刷新只要有失败项，绝不返回 ok:true（否则前端会显示"操作已完成"）
+    fetchMode = 'refresh_success';
+    const batchRes = await accountsMod.dispatchAccountsAction(mgr, { action: 'refresh_quota' });
+    assert.equal(batchRes.ok, false, '含失败项的批量刷新不能返回 ok:true');
+    assert.equal(batchRes.failCount, 1);
+    assert.ok(batchRes.successCount >= 2);
+    assert.match(batchRes.error, /失败 1/);
+    const healedNow = batchRes.overview.accounts.find(a => a.email === 'healed@example.com');
+    assert.equal(healedNow.quotaSnapshot.pools[0].remainingFraction, 0.91, '成功刷新必须更新为最新额度快照');
+    assert.equal(healedNow.lastQuotaError, null);
+
+    // D) 手动切号验证失败（GetUserStatus 仍返回原账号）时自动回滚凭据，界面保持原活跃账号且提示失败
+    const swFail = await accountsMod.dispatchAccountsAction(mgr, { action: 'switch', email: 'healed@example.com', forceWhileBusy: true, verifyTimeoutMs: 60 });
+    assert.equal(swFail.ok, false);
+    assert.equal(swFail.rolledBack, true);
+    assert.equal(credStore.getApplied().email, 'keep@example.com');
+    assert.equal(swFail.overview.activeAccountEmail, 'keep@example.com', '切号失败必须继续保持原活跃账号');
+
+    // E) UI 验证：失败操作绝不显示"操作已完成"且 feedbackTone === 'error'
+    const elements = new Map();
+    const makeNode = (id) => {
+      const attrs = new Map(); const evs = new Map(); const clsSet = new Set();
+      const n = {
+        id: id || '', style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; }, display: '' },
+        children: [], options: [], selectedOptions: [], hidden: false, disabled: false, textContent: '', value: '', title: '', className: '', dataset: {},
+        classList: {
+          add(c) { clsSet.add(c); n.className = Array.from(clsSet).join(' '); },
+          remove(c) { clsSet.delete(c); n.className = Array.from(clsSet).join(' '); },
+          contains(c) { return clsSet.has(c); }
+        },
+        addEventListener(k, fn) { if (!evs.has(k)) evs.set(k, []); evs.get(k).push(fn); },
+        dispatchEvent(ev) { for (const fn of (evs.get(ev?.type) || [])) fn(ev || { type: '' }); },
+        setAttribute(k, v) { attrs.set(k, String(v)); }, getAttribute(k) { return attrs.get(k) ?? null; }, removeAttribute(k) { attrs.delete(k); },
+        appendChild(c) { if (c) { n.children.push(c); if (n.options) n.options.push(c); } },
+        replaceChildren(...items) { n.children = items.filter(Boolean); if (n.options) n.options = items.filter(Boolean); },
+        remove() {}, contains() { return false; }, matches() { return false; }, closest() { return null; }, querySelector() { return null; }, querySelectorAll() { return []; },
+        getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 24, right: 100, bottom: 24 }; }
+      };
+      if (id) elements.set(id, n);
+      return n;
+    };
+    const host = makeNode('ag-host');
+    host.attachShadow = () => ({ set innerHTML(_v) {}, getElementById: id => elements.get(id) || makeNode(id), querySelectorAll: () => [] });
+    let first = true;
+    const sandbox = {
+      location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+      document: { createElement: () => (first ? (first = false, host) : makeNode()), getElementById: id => elements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false },
+      window: {
+        __APP_CONFIG__: { csrfToken: 't' },
+        contextMeterAPI: {
+          getAccountsOverview: async () => mgr.getOverviewState(),
+          accountsAction: async (payload) => await accountsMod.dispatchAccountsAction(mgr, {
+            ...payload,
+            ...(payload?.action === 'switch' ? { verifyTimeoutMs: 60 } : {})
+          })
+        }
+      },
+      matchMedia: () => ({ matches: false }),
+      __AGContextMeterCore: core, AbortController, Date,
+      setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {},
+      fetch: async () => ({ ok: true, json: async () => ({ generatorMetadata: [] }) })
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(RENDERER_SOURCE, sandbox);
+    const api = sandbox.__AGContextMeter;
+    try {
+      api.setAccountsOverviewForTest(mgr.getOverviewState());
+      const findSwitchBtn = (email) => {
+        for (const card of elements.get('quota-accounts-list').children) {
+          const titleEmail = card.children?.[0]?.children?.[0]?.title;
+          if (titleEmail !== email) continue;
+          const right = card.children?.[0]?.children?.[1];
+          for (const btn of (right?.children || [])) {
+            if (btn.textContent === '切号') return btn;
+          }
+        }
+        return null;
+      };
+      // 点切号失败
+      const swBtn = findSwitchBtn('healed@example.com');
+      assert.ok(swBtn);
+      swBtn.dispatchEvent({ type: 'click' });
+      for (let w = 0; w < 40; w++) {
+        if (api.getAccountsPanelStateForTest().feedbackTone === 'error') break;
+        await new Promise(r => setTimeout(r, 25));
+      }
+      assert.equal(api.getAccountsPanelStateForTest().feedbackTone, 'error');
+      assert.doesNotMatch(api.getAccountsPanelStateForTest().feedback, /操作已完成/);
+      assert.match(api.getAccountsPanelStateForTest().feedback, /凭据验证未生效|回滚/);
+
+      // 真实切号成功后再验证 UI 变为成功且切换活跃账号
+      hostActiveEmail = 'healed@example.com';
+      const swSuccess = await accountsMod.dispatchAccountsAction(mgr, { action: 'switch', email: 'healed@example.com', forceWhileBusy: true, verifyTimeoutMs: 60 });
+      assert.equal(swSuccess.ok, true);
+      assert.equal(swSuccess.overview.activeAccountEmail, 'healed@example.com');
+    } finally {
+      api.dispose();
+    }
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('v0.8.8 账本与切号补充回归: 二次污染 elv89-v2 自动升级纠偏、来源切换首次日期隔离与 LS 换端口发现', async () => {
+  const agDir = makeTempDir('acm-elv89-v3-ag-');
+  const stateDir = makeTempDir('acm-elv89-v3-st-');
+  try {
+    const emailNew = 'ultra@example.com';
+    const scopeNew = accountsMod.buildAccountScopeKey(emailNew);
+    const nowMs = Date.now();
+    const tNewStart = nowMs - 600000;
+    const today = collector.formatLocalDateKey(new Date(nowMs));
+    const cidOld = 'cccccccc-0000-0000-0000-000000000003';
+    const cidNew = 'dddddddd-0000-0000-0000-000000000004';
+    const oldIso = '2026-10-25T09:31:21.000Z';
+    const newIso = new Date(tNewStart + 60000).toISOString();
+
+    fs.mkdirSync(path.join(agDir, 'brain', cidOld, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agDir, 'brain', cidNew, '.system_generated', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(agDir, 'brain', cidOld, '.system_generated', 'logs', 'transcript.jsonl'), JSON.stringify({
+      step_index: 1, type: 'PLANNER_RESPONSE', created_at: oldIso,
+      model: 'gemini-3.8-flash', responseId: 'req_polluted_v2',
+      input_tokens: 20000, cache_read_tokens: 0, output_tokens: 2000
+    }) + '\n');
+    fs.writeFileSync(path.join(agDir, 'brain', cidNew, '.system_generated', 'logs', 'transcript.jsonl'), JSON.stringify({
+      step_index: 1, type: 'PLANNER_RESPONSE', created_at: newIso,
+      model: 'gemini-4-hydrogen', responseId: 'req_clean_today',
+      input_tokens: 3000, cache_read_tokens: 7000, output_tokens: 500
+    }) + '\n');
+
+    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify({
+      version: 1,
+      activeAccountEmail: emailNew,
+      accounts: {
+        [emailNew]: { email: emailNew, credential: { accessToken: 'tok', refreshToken: 'ref' } }
+      },
+      accountSessions: [
+        { accountScopeKey: scopeNew, email: emailNew, startAtMs: tNewStart, endAtMs: null, source: 'desktop' }
+      ]
+    }));
+
+    // 模拟被旧版错写且残存 attributionRepairVersion: 'elv89-v2' 的旧记录和 provisional 记录
+    fs.writeFileSync(path.join(agDir, 'pricing_ledger_v1.json'), JSON.stringify({
+      version: 1,
+      calls: {
+        req_polluted_v2: {
+          callId: 'req_polluted_v2',
+          cascadeId: cidOld,
+          stepIndex: 1,
+          source: 'desktop',
+          model: 'gemini-3.8-flash',
+          isPriced: true,
+          inputTokens: 20000,
+          cacheTokens: 0,
+          outputTokens: 2000,
+          totalTokens: 22000,
+          date: '2026-10-25',
+          created_at: oldIso,
+          timestamp: Date.parse(oldIso),
+          accountScopeKey: scopeNew,
+          accountAttributionConfidence: 'session_window_verified',
+          accountAttributionEvidence: 'desktop_state_db',
+          attributionRepairVersion: 'elv89-v2'
+        },
+        req_clean_today: {
+          callId: 'req_clean_today',
+          cascadeId: cidNew,
+          stepIndex: 1,
+          source: 'desktop',
+          model: 'gemini-4-hydrogen',
+          isPriced: true,
+          inputTokens: 3000,
+          cacheTokens: 7000,
+          outputTokens: 500,
+          totalTokens: 10500,
+          date: today,
+          created_at: newIso,
+          timestamp: Date.parse(newIso),
+          accountScopeKey: scopeNew,
+          accountAttributionConfidence: 'session_window_verified',
+          attributionRepairVersion: 'elv89-v2'
+        }
+      }
+    }));
+
+    const r1 = await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(r1.usageByAccount[scopeNew].totalTokens, 10500);
+    assert.equal(r1.usageByAccount[scopeNew].firstUseDate, today);
+    assert.equal(r1.unattributedUsage.totalTokens, 22000);
+    assert.equal(r1.summary.grandTotalTokens, r1.usageByAccount[scopeNew].totalTokens + r1.unattributedUsage.totalTokens);
+
+    // 验证 core.normalizeTokenHistoryPayload 在 cli 来源下（0 记录）firstUseDate 为 null，不泄漏 desktop 首日
+    const normCli = core.normalizeTokenHistoryPayload({
+      ...r1,
+      scopedAccountView: true,
+      firstUseDate: r1.usageByAccount[scopeNew].firstUseDate,
+      dailyMap: r1.usageByAccount[scopeNew].dailyMap,
+      dailyMapBySource: r1.usageByAccount[scopeNew].dailyMapBySource
+    }, { source: 'cli', todayStr: today, scopedAccountView: true });
+    assert.equal(normCli.firstUseDate, null);
+    assert.equal(normCli.summary.grandTotalTokens, 0);
+
+    // 验证 getSharedAccountsManager 在 LS 端口切换时自动重新 CDP 发现且切号默认 includeCli: false
+    let cdpCalls = 0;
+    let lsKilledIncludeCli = null;
+    const credStore = makeMockCredStore();
+    const sharedMgr = accountsMod.getSharedAccountsManager({
+      forceNew: true,
+      stateDir,
+      origin: 'https://127.0.0.1:50001',
+      oauthClientId: 'mock-cid',
+      oauthClientSecret: 'mock-sec',
+      credentialStore: credStore,
+      restartLanguageServers: async (opts) => {
+        lsKilledIncludeCli = opts?.includeCli;
+        return { ok: true };
+      },
+      localApi: {
+        async connect(connOpts) {
+          if (connOpts?.origin === 'https://127.0.0.1:50001') {
+            throw new Error('connect ECONNREFUSED 127.0.0.1:50001');
+          }
+          cdpCalls++;
+          return {
+            origin: 'https://127.0.0.1:50099',
+            async call(method) {
+              if (method === 'GetUserStatus') return { userStatus: { email: 'switch-target@example.com' } };
+              return {};
+            }
+          };
+        }
+      }
+    });
+    const st = JSON.parse(fs.readFileSync(path.join(stateDir, 'accounts_v1.json'), 'utf8'));
+    st.accounts['switch-target@example.com'] = {
+      email: 'switch-target@example.com',
+      credential: {
+        accessToken: 'tok-target',
+        refreshToken: 'ref-target',
+        expiresAt: new Date(Date.now() + 3600000).toISOString()
+      }
+    };
+    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify(st));
+    const swRes = await sharedMgr.switchActiveAccount('switch-target@example.com', {
+      forceWhileBusy: true,
+      skipTokenRefresh: true,
+      verifyTimeoutMs: 500
+    });
+    assert.equal(swRes.ok, true);
+    assert.ok(cdpCalls >= 1, '旧 origin 失联时必须回退 CDP 重新发现新 LS 端口');
+    const det = await sharedMgr.detectCurrentActiveAccount();
+    assert.equal(det.email, 'switch-target@example.com');
+  } finally {
+    fs.rmSync(agDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
   }
 });

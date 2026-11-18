@@ -2531,9 +2531,10 @@
         priceRangeNote = `${acquisitionSourceName} · 待设置实付金额`;
       }
     } else {
-      // priceMode === 'preset' (跟随订阅国家参考价)
+      // priceMode === 'preset' (跟随订阅国家参考价：仅 Pro 等单一公开标准价套餐套用地区参考表，Ultra 等不适用 Pro $19.99 参考价)
       priceMode = 'preset';
-      if (matchedRegionPreset) {
+      const isUltraTier = tierKey === 'ultra';
+      if (matchedRegionPreset && !isUltraTier) {
         actualPricePaid = Number(matchedRegionPreset.monthlyPrice);
         isPriceEstimated = true;
         priceSource = 'preset_region';
@@ -2546,9 +2547,12 @@
         priceRangeNote = `${acquisitionSourceName} · 公开参考价 $${officialPriceMonthly}/月`;
       } else {
         actualPricePaid = null;
+        isPriceEstimated = false;
         priceSource = 'unknown';
-        billingCycle = '未知';
-        priceRangeNote = `${acquisitionSourceName} · 待设置订阅国家与价格`;
+        billingCycle = isUltraTier ? (effectiveCustom?.billingCycle || '月付') : '未知';
+        priceRangeNote = isUltraTier
+          ? `${acquisitionSourceName} · Google AI Ultra 待设置实付月费`
+          : `${acquisitionSourceName} · 待设置订阅国家与价格`;
       }
     }
 
@@ -2684,7 +2688,8 @@
     }
 
     const rawSum = payload.summary || {};
-    if (source === 'all') {
+    const isScopedAccountView = Boolean(options.scopedAccountView || payload.scopedAccountView);
+    if (source === 'all' && !isScopedAccountView) {
       if (Number(rawSum.totalInputTokens) > totalInputTokens) totalInputTokens = Number(rawSum.totalInputTokens);
       if (Number(rawSum.totalOutputTokens) > totalOutputTokens) totalOutputTokens = Number(rawSum.totalOutputTokens);
       if (Number(rawSum.totalCacheTokens) > totalCacheTokens) totalCacheTokens = Number(rawSum.totalCacheTokens);
@@ -2697,7 +2702,7 @@
 
     const refMonth = payload.referenceCost?.currentMonth;
     const refAll = payload.referenceCost?.all;
-    if (refMonth) {
+    if (refMonth && !isScopedAccountView) {
       if (refMonth.inputTokens && !currentMonthInput) currentMonthInput = Number(refMonth.inputTokens);
       if (refMonth.cacheTokens && !currentMonthCache) currentMonthCache = Number(refMonth.cacheTokens);
       if (refMonth.outputTokens && !currentMonthOutput) currentMonthOutput = Number(refMonth.outputTokens);
@@ -2706,7 +2711,7 @@
         monthTokens = currentMonthInput + currentMonthOutput + currentMonthCache;
       }
     }
-    if (refAll) {
+    if (refAll && !isScopedAccountView) {
       if (refAll.inputTokens && !totalInputTokens) totalInputTokens = Number(refAll.inputTokens);
       if (refAll.cacheTokens && !totalCacheTokens) totalCacheTokens = Number(refAll.cacheTokens);
       if (refAll.outputTokens && !totalOutputTokens) totalOutputTokens = Number(refAll.outputTokens);
@@ -2726,6 +2731,25 @@
           cli: summarizeDailyMapCacheStats(dailyMapBySource.cli || {})
         };
 
+    const rawConvs = Object.prototype.hasOwnProperty.call(rawSum, 'totalConversations')
+      ? Number(rawSum.totalConversations)
+      : null;
+    const activeKeysSorted = Object.keys(normalizedMap)
+      .filter(k => normalizedMap[k] && normalizedMap[k].total > 0)
+      .sort();
+    const computedFirstUseDate = activeKeysSorted.length > 0 ? activeKeysSorted[0] : null;
+    const declaredFirstUseDate = Object.prototype.hasOwnProperty.call(payload, 'firstUseDate')
+      ? (payload.firstUseDate || null)
+      : (rawSum.firstUseDate || null);
+    // 切换账号或切换数据来源时，首次记录日期必须严格收敛到当前筛选范围的真实有效日期
+    const effectiveFirstUseDate = (isScopedAccountView || source !== 'all')
+      ? computedFirstUseDate
+      : (declaredFirstUseDate && computedFirstUseDate
+        ? (computedFirstUseDate < declaredFirstUseDate ? computedFirstUseDate : declaredFirstUseDate)
+        : (declaredFirstUseDate || computedFirstUseDate || null));
+    const effectiveConversations = (source !== 'all' && grandTotalTokens === 0 && activeDaysCount === 0)
+      ? 0
+      : ((rawConvs !== null && Number.isFinite(rawConvs)) ? rawConvs : activeDaysCount);
     const summary = {
       grandTotalTokens,
       totalInputTokens,
@@ -2738,8 +2762,8 @@
       currentMonthOutput,
       currentMonthCache,
       activeDaysCount,
-      totalConversations: Number(rawSum.totalConversations) || activeDaysCount,
-      firstUseDate: payload.firstUseDate || rawSum.firstUseDate || null,
+      totalConversations: effectiveConversations,
+      firstUseDate: effectiveFirstUseDate,
       cacheReadStats: allCacheStats,
       currentMonthCacheReadStats: monthCacheStats
     };
@@ -2830,6 +2854,739 @@
     if (ratio <= 0.50) return 2;
     if (ratio <= 0.75) return 3;
     return 4;
+  }
+
+  /**
+   * 计算 PDF v0.8.8 最终推荐的混合非线性响应 f(V, V_anchor) ∈ [0, 1]
+   * 公式: f(V) = 0.35 * ((log10(max(c, 10)) - 1) / (log10(Va) - 1)) + 0.65 * (c / Va)^0.42
+   * 其中 c = min(V, Va)
+   */
+  function computeMixedScaleResponse(value, anchor = 100e6) {
+    const v = Number(value);
+    const va = Number(anchor);
+    if (!Number.isFinite(v) || v <= 0 || !Number.isFinite(va) || va <= 10) return 0;
+    const c = Math.min(v, va);
+    const denom = Math.log10(va) - 1;
+    if (denom <= 0) return 0;
+    const logTerm = Math.max(0, (Math.log10(Math.max(c, 10)) - 1) / denom);
+    const powTerm = Math.pow(c / va, 0.42);
+    const f = 0.35 * logTerm + 0.65 * powTerm;
+    if (!Number.isFinite(f)) return 0;
+    return Math.max(0, Math.min(1, f));
+  }
+
+  const YEARLY_BUBBLE_ANCHORS = [
+    { anchor: 100e3, sizePx: 24 },
+    { anchor: 1e6, sizePx: 32 },
+    { anchor: 10e6, sizePx: 40 },
+    { anchor: 100e6, sizePx: 49 },
+    { anchor: 1e9, sizePx: 58 }
+  ];
+
+  const DAILY_BAR_ANCHORS = [
+    { anchor: 100e3, ratio: 0.38 },
+    { anchor: 1e6, ratio: 0.52 },
+    { anchor: 10e6, ratio: 0.68 },
+    { anchor: 100e6, ratio: 0.84 },
+    { anchor: 500e6, ratio: 1.0 }
+  ];
+
+  const WEEKLY_BAR_ANCHORS = [
+    { anchor: 400e3, ratio: 0.38 },
+    { anchor: 4e6, ratio: 0.52 },
+    { anchor: 40e6, ratio: 0.68 },
+    { anchor: 400e6, ratio: 0.84 },
+    { anchor: 2e9, ratio: 1.0 }
+  ];
+
+  /**
+   * 跨档单调分锚点连续插值核心：
+   * 保留 35% 对数 + 65% 幂律 (0.42 指数) 混合形态；每段均从上一个锚点尺寸平滑接起，
+   * 不因窗口跨入更高包络而缩小自身或其它同值数据点，达到物理上限后封顶并标记 overflow。
+   */
+  function computePiecewiseAnchorScale(value, anchors, minPx, zeroPx = 0) {
+    const v = Number(value);
+    if (!Number.isFinite(v) || v <= 0) {
+      return { size: zeroPx, response: 0, overflow: false };
+    }
+    const list = Array.isArray(anchors) && anchors.length ? anchors : [{ anchor: 1e9, size: 58 }];
+    const topItem = list[list.length - 1];
+    const topAnchor = topItem.anchor;
+    const topSize = topItem.size;
+    const overflow = v > topAnchor;
+    const clamped = Math.min(v, topAnchor);
+
+    let outSize = topSize;
+    for (let i = 0; i < list.length; i++) {
+      const curr = list[i];
+      if (clamped <= curr.anchor) {
+        const prevA = i === 0 ? 0 : list[i - 1].anchor;
+        const prevY = i === 0 ? minPx : list[i - 1].size;
+        let t = 0;
+        if (i === 0) {
+          const denom = Math.log10(curr.anchor) - 1;
+          const lt = (clamped <= 10 || denom <= 0)
+            ? 0
+            : Math.max(0, (Math.log10(clamped) - 1) / denom);
+          const pt = Math.pow(clamped / curr.anchor, 0.42);
+          t = 0.35 * lt + 0.65 * pt;
+        } else {
+          const lt = (Math.log10(clamped) - Math.log10(prevA)) / (Math.log10(curr.anchor) - Math.log10(prevA));
+          const pPrev = Math.pow(prevA, 0.42);
+          const pCurr = Math.pow(curr.anchor, 0.42);
+          const pt = (Math.pow(clamped, 0.42) - pPrev) / (pCurr - pPrev);
+          t = 0.35 * lt + 0.65 * pt;
+        }
+        t = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+        outSize = prevY + (curr.size - prevY) * t;
+        break;
+      }
+    }
+    const span = Math.max(1e-6, topSize - minPx);
+    return {
+      size: outSize,
+      response: Math.max(0, Math.min(1, (outSize - minPx) / span)),
+      overflow
+    };
+  }
+
+  /**
+   * 固定色彩插值响应 f ∈ [0, 1]（不随当前窗口最大包络变化而褪色或降档）
+   */
+  function computeColorScaleResponse(value, mode = 'heat') {
+    const v = Number(value) || 0;
+    if (v <= 0) return 0;
+    if (mode === 'yearly') {
+      const anchors = YEARLY_BUBBLE_ANCHORS.map((x) => ({ anchor: x.anchor, size: x.sizePx }));
+      return computePiecewiseAnchorScale(v, anchors, 8.0, 5.0).response;
+    }
+    if (mode === 'weekly') {
+      const anchors = WEEKLY_BAR_ANCHORS.map((x) => ({ anchor: x.anchor, size: x.ratio * 96 }));
+      return computePiecewiseAnchorScale(v, anchors, 3.0, 0).response;
+    }
+    return computeMixedScaleResponse(v, 100e6);
+  }
+
+  /**
+   * 按当前窗口最大值返回量级包络参数：
+   * 包络决定参考圆、右侧刻度线与超量标识；图形尺寸与刻度线坐标均调用同一套连续分锚点映射。
+   * mode: 'yearly' | 'dailyBar' | 'weekly' | 'heat'
+   */
+  function resolveScaleEnvelope(windowMax, mode = 'yearly') {
+    const maxVal = Math.max(0, Number(windowMax) || 0);
+    if (mode === 'heat') {
+      return {
+        mode: 'heat',
+        tier: 'heat-100M',
+        label: '100M',
+        anchor: 100e6,
+        dCap: 58,
+        hCap: 1.0,
+        overflow: maxVal > 100e6,
+        overflowThreshold: 100e6,
+        refTicks: [100e3, 1e6, 10e6, 100e6]
+      };
+    }
+
+    if (mode === 'weekly') {
+      if (maxVal <= 400e3) {
+        return { mode: 'weekly', tier: '400K', label: '400K', anchor: 400e3, hCap: 0.38, overflow: false, overflowThreshold: 2e9, refTicks: [40e3, 400e3] };
+      }
+      if (maxVal <= 4e6) {
+        return { mode: 'weekly', tier: '4M', label: '4M', anchor: 4e6, hCap: 0.52, overflow: false, overflowThreshold: 2e9, refTicks: [400e3, 4e6] };
+      }
+      if (maxVal <= 40e6) {
+        return { mode: 'weekly', tier: '40M', label: '40M', anchor: 40e6, hCap: 0.68, overflow: false, overflowThreshold: 2e9, refTicks: [4e6, 40e6] };
+      }
+      if (maxVal <= 400e6) {
+        return { mode: 'weekly', tier: '400M', label: '400M', anchor: 400e6, hCap: 0.84, overflow: false, overflowThreshold: 2e9, refTicks: [4e6, 40e6, 400e6] };
+      }
+      if (maxVal <= 2e9) {
+        return { mode: 'weekly', tier: '2B', label: '2B', anchor: 2e9, hCap: 1.0, overflow: false, overflowThreshold: 2e9, refTicks: [4e6, 40e6, 400e6, 2e9] };
+      }
+      return { mode: 'weekly', tier: '2B+', label: '2B+', anchor: 2e9, hCap: 1.0, overflow: true, overflowThreshold: 2e9, refTicks: [4e6, 40e6, 400e6, 2e9] };
+    }
+
+    if (mode === 'dailyBar') {
+      if (maxVal <= 100e3) {
+        return { mode: 'dailyBar', tier: '100K', label: '100K', anchor: 100e3, hCap: 0.38, overflow: false, overflowThreshold: 500e6, refTicks: [10e3, 100e3] };
+      }
+      if (maxVal <= 1e6) {
+        return { mode: 'dailyBar', tier: '1M', label: '1M', anchor: 1e6, hCap: 0.52, overflow: false, overflowThreshold: 500e6, refTicks: [10e3, 100e3, 1e6] };
+      }
+      if (maxVal <= 10e6) {
+        return { mode: 'dailyBar', tier: '10M', label: '10M', anchor: 10e6, hCap: 0.68, overflow: false, overflowThreshold: 500e6, refTicks: [100e3, 1e6, 10e6] };
+      }
+      if (maxVal <= 100e6) {
+        return { mode: 'dailyBar', tier: '100M', label: '100M', anchor: 100e6, hCap: 0.84, overflow: false, overflowThreshold: 500e6, refTicks: [1e6, 10e6, 100e6] };
+      }
+      if (maxVal <= 500e6) {
+        return { mode: 'dailyBar', tier: '500M', label: '500M', anchor: 500e6, hCap: 1.0, overflow: false, overflowThreshold: 500e6, refTicks: [1e6, 10e6, 100e6, 500e6] };
+      }
+      return { mode: 'dailyBar', tier: '500M+', label: '500M+', anchor: 500e6, hCap: 1.0, overflow: true, overflowThreshold: 500e6, refTicks: [1e6, 10e6, 100e6, 500e6] };
+    }
+
+    // 默认 'yearly'
+    if (maxVal <= 100e3) {
+      return { mode: 'yearly', tier: '100K', label: '100K', anchor: 100e3, dCap: 24, hCap: 0.38, overflow: false, overflowThreshold: 1e9, refRings: [100e3] };
+    }
+    if (maxVal <= 1e6) {
+      return { mode: 'yearly', tier: '1M', label: '1M', anchor: 1e6, dCap: 32, hCap: 0.52, overflow: false, overflowThreshold: 1e9, refRings: [100e3, 1e6] };
+    }
+    if (maxVal <= 10e6) {
+      return { mode: 'yearly', tier: '10M', label: '10M', anchor: 10e6, dCap: 40, hCap: 0.68, overflow: false, overflowThreshold: 1e9, refRings: [1e6, 10e6] };
+    }
+    if (maxVal <= 100e6) {
+      return { mode: 'yearly', tier: '100M', label: '100M', anchor: 100e6, dCap: 49, hCap: 0.84, overflow: false, overflowThreshold: 1e9, refRings: [1e6, 10e6, 100e6] };
+    }
+    if (maxVal <= 1e9) {
+      return { mode: 'yearly', tier: '1B', label: '1B', anchor: 1e9, dCap: 58, hCap: 1.0, overflow: false, overflowThreshold: 1e9, refRings: [1e6, 10e6, 100e6, 1e9] };
+    }
+    return { mode: 'yearly', tier: '1B+', label: '1B+', anchor: 1e9, dCap: 58, hCap: 1.0, overflow: true, overflowThreshold: 1e9, refRings: [1e6, 10e6, 100e6, 1e9] };
+  }
+
+  /**
+   * 映射今年月度气泡直径 (保留浮点精度，共用连续分锚点映射，跨包络不缩小)
+   * V <= 0 返回 D = 5.0px (R = 2.5px)；V > 1B 封顶 D = 58.0px 并标记 overflow
+   */
+  function mapBubbleDiameter(value, _envelope) {
+    const v = Number(value) || 0;
+    if (v <= 0) {
+      return { diameter: 5.0, radius: 2.5, response: 0, overflow: false };
+    }
+    const anchors = YEARLY_BUBBLE_ANCHORS.map((x) => ({ anchor: x.anchor, size: x.sizePx }));
+    const res = computePiecewiseAnchorScale(v, anchors, 8.0, 5.0);
+    return {
+      diameter: res.size,
+      radius: res.size / 2,
+      response: res.response,
+      overflow: res.overflow
+    };
+  }
+
+  /**
+   * 映射每日/每周柱状图总像素高度 (保留浮点精度，共用连续分锚点映射，跨包络不缩小)
+   * linear 模式: V > 0 -> minPx + (chartHeightPx - minPx) * clamp(V / linearMax, 0, 1)
+   */
+  function mapBarHeightPx(value, envelope, chartHeightPx = 140, options = {}) {
+    const v = Number(value) || 0;
+    const heightPx = Math.max(1, Number(chartHeightPx) || 140);
+    const minPx = Number.isFinite(Number(options.minPx)) ? Number(options.minPx) : 4.0;
+    const mode = options.mode === 'linear' ? 'linear' : 'mixed';
+    if (v <= 0) {
+      return { height: 0, response: 0, overflow: false };
+    }
+    if (mode === 'linear') {
+      const linearMax = Math.max(1, Number(options.linearMax) || (envelope && envelope.anchor) || v);
+      const response = Math.max(0, Math.min(1, v / linearMax));
+      return {
+        height: minPx + (heightPx - minPx) * response,
+        response,
+        overflow: false
+      };
+    }
+    const isWeekly = options.scaleKind === 'weekly'
+      || (envelope && envelope.mode === 'weekly')
+      || (envelope && /^(400K|4M|40M|400M|2B\+?)$/.test(String(envelope.tier || '')));
+    const rawAnchors = isWeekly ? WEEKLY_BAR_ANCHORS : DAILY_BAR_ANCHORS;
+    const anchors = rawAnchors.map((x) => ({
+      anchor: x.anchor,
+      size: Math.max(minPx, x.ratio * heightPx)
+    }));
+    const res = computePiecewiseAnchorScale(v, anchors, minPx, 0);
+    return {
+      height: res.size,
+      response: res.response,
+      overflow: res.overflow
+    };
+  }
+
+  /**
+   * 计算堆叠柱内部各非零分段高度：
+   * 非零最小保底 minSegPx (默认 1.5px)，且严格保证 sum(heightPx) === totalHeightPx，
+   * 原始占比 rawRatio 始终按真实数值 value / sum 计算。
+   */
+  function allocateStackedSegmentHeights(segments, totalHeightPx, minSegPx = 1.5) {
+    const list = Array.isArray(segments) ? segments : [];
+    const targetH = Math.max(0, Number(totalHeightPx) || 0);
+    const rawSum = list.reduce((acc, item) => acc + Math.max(0, Number(item && item.value) || 0), 0);
+    if (rawSum <= 0 || targetH <= 0) {
+      return list.map((item) => ({ ...item, heightPx: 0, rawRatio: 0, floored: false }));
+    }
+
+    const activeIdx = [];
+    for (let i = 0; i < list.length; i++) {
+      if ((Number(list[i] && list[i].value) || 0) > 0) activeIdx.push(i);
+    }
+    const n = activeIdx.length;
+    const heights = new Array(list.length).fill(0);
+    const flooredFlags = new Array(list.length).fill(false);
+
+    if (n === 1) {
+      heights[activeIdx[0]] = targetH;
+    } else if (n > 1) {
+      const effFloor = Math.min(Math.max(0, Number(minSegPx) || 0), targetH / n);
+      const locked = new Set();
+      let remPx = targetH;
+      let remValSum = rawSum;
+      let changed = true;
+
+      while (changed) {
+        changed = false;
+        if (remValSum <= 0) break;
+        for (const idx of activeIdx) {
+          if (locked.has(idx)) continue;
+          const v = Math.max(0, Number(list[idx].value) || 0);
+          const est = (v / remValSum) * remPx;
+          if (est < effFloor) {
+            locked.add(idx);
+            heights[idx] = effFloor;
+            flooredFlags[idx] = true;
+            remPx -= effFloor;
+            remValSum -= v;
+            changed = true;
+          }
+        }
+      }
+
+      if (remValSum > 0 && remPx > 0) {
+        for (const idx of activeIdx) {
+          if (locked.has(idx)) continue;
+          const v = Math.max(0, Number(list[idx].value) || 0);
+          heights[idx] = (v / remValSum) * remPx;
+        }
+      } else {
+        const unlocked = activeIdx.filter((idx) => !locked.has(idx));
+        if (unlocked.length > 0) {
+          const share = Math.max(0, remPx) / unlocked.length;
+          for (const idx of unlocked) heights[idx] = share;
+        }
+      }
+
+      // 将浮点舍入误差微调回最高柱段，确保 sum === targetH
+      const sumH = heights.reduce((a, b) => a + b, 0);
+      const diff = targetH - sumH;
+      if (Math.abs(diff) > 1e-12) {
+        let maxIdx = activeIdx[0];
+        for (const idx of activeIdx) {
+          if (heights[idx] > heights[maxIdx]) maxIdx = idx;
+        }
+        heights[maxIdx] = Math.max(0, heights[maxIdx] + diff);
+      }
+    }
+
+    return list.map((item, idx) => {
+      const v = Math.max(0, Number(item && item.value) || 0);
+      return {
+        ...item,
+        heightPx: heights[idx],
+        rawRatio: v > 0 ? v / rawSum : 0,
+        floored: flooredFlags[idx]
+      };
+    });
+  }
+
+  function _hexToRgbNorm(hex) {
+    const clean = String(hex || '').trim().replace(/^#/, '');
+    let full = clean;
+    if (clean.length === 3) {
+      full = clean.split('').map((c) => c + c).join('');
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(full)) return null;
+    const n = parseInt(full, 16);
+    return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255 };
+  }
+
+  function _rgbNormToHsl({ r, g, b }) {
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    if (max === min) return { h: 0, s: 0, l };
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h = 0;
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    return { h: h * 60, s, l };
+  }
+
+  function _hslToHex({ h, s, l }) {
+    const hh = (((Number(h) || 0) % 360) + 360) % 360;
+    const ss = Math.max(0, Math.min(1, Number(s) || 0));
+    const ll = Math.max(0, Math.min(1, Number(l) || 0));
+    const c = (1 - Math.abs(2 * ll - 1)) * ss;
+    const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+    const m = ll - c / 2;
+    let r1 = 0, g1 = 0, b1 = 0;
+    if (hh < 60) { r1 = c; g1 = x; }
+    else if (hh < 120) { r1 = x; g1 = c; }
+    else if (hh < 180) { g1 = c; b1 = x; }
+    else if (hh < 240) { g1 = x; b1 = c; }
+    else if (hh < 300) { r1 = x; b1 = c; }
+    else { r1 = c; b1 = x; }
+    const toByte = (v) => Math.max(0, Math.min(255, Math.round((v + m) * 255))).toString(16).padStart(2, '0');
+    return `#${toByte(r1)}${toByte(g1)}${toByte(b1)}`;
+  }
+
+  /**
+   * HSL 色彩空间两点短弧插值
+   */
+  function interpolateHslHex(hexA, hexB, t) {
+    const rgbA = _hexToRgbNorm(hexA);
+    const rgbB = _hexToRgbNorm(hexB);
+    if (!rgbA) return String(hexB || '#9333ea');
+    if (!rgbB) return String(hexA || '#2e1a47');
+    const ratio = Math.max(0, Math.min(1, Number(t) || 0));
+    const hslA = _rgbNormToHsl(rgbA);
+    const hslB = _rgbNormToHsl(rgbB);
+    let hA = hslA.h;
+    let hB = hslB.h;
+    if (hslA.s < 0.01) hA = hB;
+    else if (hslB.s < 0.01) hB = hA;
+    let dh = hB - hA;
+    if (dh > 180) dh -= 360;
+    else if (dh < -180) dh += 360;
+    return _hslToHex({
+      h: hA + dh * ratio,
+      s: hslA.s + (hslB.s - hslA.s) * ratio,
+      l: hslA.l + (hslB.l - hslA.l) * ratio
+    });
+  }
+
+  /**
+   * 依据归一化响应 f ∈ [0, 1] 与连续色停靠点列表做连续 HSL 颜色映射
+   */
+  function interpolateScaleColorHsl(response, nonZeroStops) {
+    const stops = Array.isArray(nonZeroStops) ? nonZeroStops.filter(Boolean) : [];
+    if (stops.length === 0) return '#9333ea';
+    if (stops.length === 1) return stops[0];
+    const r = Math.max(0, Math.min(1, Number(response) || 0));
+    const maxIdx = stops.length - 1;
+    const pos = r * maxIdx;
+    const idx = Math.min(maxIdx - 1, Math.floor(pos));
+    const localT = pos - idx;
+    return interpolateHslHex(stops[idx], stops[idx + 1], localT);
+  }
+
+  /**
+   * 年图「峰值」高亮圈双门槛判定 (PDF 第 14、29 页):
+   * 仅当当年至少有 2 个非零非未来月份，且最大非未来月用量 >= 10M 时才显示 Peak 圈
+   */
+  function shouldShowYearlyPeakBadge(nonFutureMonthTokens) {
+    const arr = Array.isArray(nonFutureMonthTokens) ? nonFutureMonthTokens : [];
+    let nonZeroCount = 0;
+    let maxVal = 0;
+    for (const raw of arr) {
+      const v = Number(raw) || 0;
+      if (v > 0) {
+        nonZeroCount += 1;
+        if (v > maxVal) maxVal = v;
+      }
+    }
+    return nonZeroCount >= 2 && maxVal >= 10e6;
+  }
+
+  /**
+   * 跨账号对数量级尺位置计算 ([10M, 100B])
+   * status: 'zero' | 'below_min' | 'in_range' | 'above_max'
+   */
+  function computeLogRulerPosition(totalTokens) {
+    const v = Math.max(0, Number(totalTokens) || 0);
+    const ticks = [
+      { value: 10e6, label: '10M', pct: 0 },
+      { value: 100e6, label: '100M', pct: 25 },
+      { value: 1e9, label: '1B', pct: 50 },
+      { value: 10e9, label: '10B', pct: 75 },
+      { value: 100e9, label: '100B', pct: 100 }
+    ];
+    if (v <= 0) {
+      return { status: 'zero', pct: 0, value: 0, ticks };
+    }
+    if (v < 10e6) {
+      return { status: 'below_min', pct: 0, value: v, ticks };
+    }
+    if (v > 100e9) {
+      return { status: 'above_max', pct: 100, value: v, ticks };
+    }
+    const pct = Math.max(0, Math.min(100, ((Math.log10(v) - 7) / 4) * 100));
+    return { status: 'in_range', pct, value: v, ticks };
+  }
+
+  function _parseYmdUtcMs(ymd) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
+    if (!m) return NaN;
+    return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+
+  function _formatUtcMsYmd(ms) {
+    const d = new Date(ms);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  /**
+   * 计算「累计总量」A+C 视图完整汇总：
+   * - 精确区间天数、活跃天数、0 用量天数、每日占比与截止累计
+   * - 超过 90 天按起点每 7 天分周组，详情含展开的日列表
+   * - 前 3 名峰值与相邻高峰合并
+   * - 至少 50% 用量的最短连续日期区间（并列取最早，不足 7 天或总量为 0 省略）
+   */
+  function computeCumulativeStripSummary(dailyMap, startYmd, endYmd) {
+    const map = dailyMap || {};
+    const startMs = _parseYmdUtcMs(startYmd);
+    const endMs = _parseYmdUtcMs(endYmd);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+      return {
+        startDate: startYmd || '',
+        endDate: endYmd || '',
+        totalDays: 0,
+        activeDays: 0,
+        zeroDays: 0,
+        intervalTotal: 0,
+        grouping: 'daily',
+        dailyEntries: [],
+        segments: [],
+        topPeaks: [],
+        mergedPeakSpans: [],
+        peakDay: null,
+        peakWeek: null,
+        concentration: null,
+        concentrationOmittedReason: 'empty',
+        ruler: computeLogRulerPosition(0)
+      };
+    }
+
+    const totalDays = Math.floor((endMs - startMs) / 86400000) + 1;
+    const dailyEntries = [];
+    let intervalTotal = 0;
+    let activeDays = 0;
+
+    for (let i = 0; i < totalDays; i++) {
+      const dateStr = _formatUtcMsYmd(startMs + i * 86400000);
+      const rec = map[dateStr];
+      const tokens = Math.max(0, Number(rec && rec.total) || 0);
+      const input = Math.max(0, Number(rec && rec.input) || 0);
+      const cache = Math.max(0, Number(rec && rec.cache) || 0);
+      const output = Math.max(0, Number(rec && rec.output) || 0);
+      intervalTotal += tokens;
+      if (tokens > 0) activeDays += 1;
+      dailyEntries.push({
+        idx: i,
+        key: dateStr,
+        date: dateStr,
+        dayNumber: i + 1,
+        tokens,
+        input,
+        cache,
+        output,
+        isZero: tokens === 0,
+        cumulativeTokens: intervalTotal,
+        sharePct: 0
+      });
+    }
+
+    let peakDay = null;
+    dailyEntries.forEach((d) => {
+      d.sharePct = intervalTotal > 0 ? (d.tokens / intervalTotal) * 100 : 0;
+      if (d.tokens > 0 && (!peakDay || d.tokens > peakDay.tokens)) {
+        peakDay = { date: d.date, tokens: d.tokens, sharePct: d.sharePct, dayNumber: d.dayNumber };
+      }
+    });
+
+    const zeroDays = totalDays - activeDays;
+    const grouping = totalDays > 90 ? 'weekly' : 'daily';
+
+    const rawItems = [];
+    if (grouping === 'daily') {
+      dailyEntries.forEach((d, idx) => {
+        rawItems.push({
+          idx,
+          key: d.date,
+          startDate: d.date,
+          endDate: d.date,
+          daysCount: 1,
+          dayNumber: d.dayNumber,
+          tokens: d.tokens,
+          cumulativeTokens: d.cumulativeTokens,
+          sharePct: d.sharePct,
+          isZero: d.isZero,
+          weekIdx: Math.floor(idx / 7),
+          days: [d]
+        });
+      });
+    } else {
+      const weekCount = Math.ceil(totalDays / 7);
+      for (let w = 0; w < weekCount; w++) {
+        const slice = dailyEntries.slice(w * 7, Math.min((w + 1) * 7, totalDays));
+        const weekTokens = slice.reduce((sum, x) => sum + x.tokens, 0);
+        const lastDay = slice[slice.length - 1];
+        const sharePct = intervalTotal > 0 ? (weekTokens / intervalTotal) * 100 : 0;
+        rawItems.push({
+          idx: w,
+          key: slice[0].date,
+          startDate: slice[0].date,
+          endDate: lastDay.date,
+          daysCount: slice.length,
+          dayNumber: w + 1,
+          tokens: weekTokens,
+          cumulativeTokens: lastDay.cumulativeTokens,
+          sharePct,
+          isZero: weekTokens === 0,
+          weekIdx: w,
+          days: slice
+        });
+      }
+    }
+
+    let peakWeek = null;
+    if (grouping === 'weekly') {
+      rawItems.forEach((wItem) => {
+        if (wItem.tokens > 0 && (!peakWeek || wItem.tokens > peakWeek.tokens)) {
+          peakWeek = {
+            startDate: wItem.startDate,
+            endDate: wItem.endDate,
+            tokens: wItem.tokens,
+            sharePct: wItem.sharePct
+          };
+        }
+      });
+    }
+
+    // 分配比例横带起止百分比 & 等距轴位置百分比
+    const itemCount = rawItems.length;
+    let accPct = 0;
+    const segments = rawItems.map((item, idx) => {
+      const equidistantPct = itemCount <= 1 ? 50 : ((idx + 0.5) / itemCount) * 100;
+      const widthPct = intervalTotal > 0 && item.tokens > 0 ? (item.tokens / intervalTotal) * 100 : 0;
+      const startPct = accPct;
+      accPct += widthPct;
+      const endPct = accPct;
+      const centerPct = widthPct > 0 ? startPct + widthPct / 2 : equidistantPct;
+      return {
+        ...item,
+        equidistantPct,
+        stripWidthPct: widthPct,
+        stripStartPct: startPct,
+        stripEndPct: endPct,
+        stripCenterPct: centerPct,
+        isPeak: false,
+        peakRank: 0
+      };
+    });
+
+    // 选出前 3 名峰值并标记，按时间序合并相邻高峰
+    const activeSorted = segments
+      .filter((s) => s.tokens > 0)
+      .slice()
+      .sort((a, b) => (b.tokens - a.tokens) || (a.idx - b.idx));
+    const topPeaks = activeSorted.slice(0, 3);
+    topPeaks.forEach((p, rankIdx) => {
+      segments[p.idx].isPeak = true;
+      segments[p.idx].peakRank = rankIdx + 1;
+    });
+
+    const topChronological = topPeaks.slice().sort((a, b) => a.idx - b.idx);
+    const mergedPeakSpans = [];
+    for (const seg of topChronological) {
+      const last = mergedPeakSpans[mergedPeakSpans.length - 1];
+      if (last && seg.idx === last._lastIdx + 1) {
+        last.endDate = seg.endDate;
+        last.tokens += seg.tokens;
+        last.sharePct = intervalTotal > 0 ? (last.tokens / intervalTotal) * 100 : 0;
+        last.count += 1;
+        last.isMerged = true;
+        last.itemKeys.push(seg.key);
+        last._lastIdx = seg.idx;
+      } else {
+        mergedPeakSpans.push({
+          startDate: seg.startDate,
+          endDate: seg.endDate,
+          tokens: seg.tokens,
+          sharePct: seg.sharePct,
+          count: 1,
+          isMerged: false,
+          itemKeys: [seg.key],
+          _lastIdx: seg.idx
+        });
+      }
+    }
+    mergedPeakSpans.forEach((sp) => delete sp._lastIdx);
+
+    // 计算达到 >= 50% 区间总量的最短连续日期区间（并列取最早，不足 7 天省略）
+    let concentration = null;
+    let concentrationOmittedReason = null;
+    if (intervalTotal <= 0) {
+      concentrationOmittedReason = 'empty';
+    } else if (totalDays < 7) {
+      concentrationOmittedReason = 'insufficient_days';
+    } else {
+      const target = intervalTotal * 0.5;
+      const eps = Math.max(1e-6, intervalTotal * 1e-12);
+      let bestL = -1;
+      let bestR = -1;
+      let bestLen = Infinity;
+      let bestSum = 0;
+      let left = 0;
+      let curSum = 0;
+
+      for (let right = 0; right < dailyEntries.length; right++) {
+        curSum += dailyEntries[right].tokens;
+        while (left <= right && curSum + eps >= target) {
+          const len = right - left + 1;
+          if (len < bestLen) {
+            bestLen = len;
+            bestL = left;
+            bestR = right;
+            bestSum = curSum;
+          }
+          if (curSum - dailyEntries[left].tokens + eps >= target) {
+            curSum -= dailyEntries[left].tokens;
+            left += 1;
+          } else {
+            break;
+          }
+        }
+      }
+
+      if (bestL >= 0) {
+        concentration = {
+          startDate: dailyEntries[bestL].date,
+          endDate: dailyEntries[bestR].date,
+          daysCount: bestLen,
+          tokens: bestSum,
+          sharePct: (bestSum / intervalTotal) * 100
+        };
+      }
+    }
+
+    return {
+      startDate: _formatUtcMsYmd(startMs),
+      endDate: _formatUtcMsYmd(endMs),
+      totalDays,
+      activeDays,
+      zeroDays,
+      intervalTotal,
+      grouping,
+      dailyEntries,
+      segments,
+      topPeaks: topPeaks.map((p) => ({
+        key: p.key,
+        startDate: p.startDate,
+        endDate: p.endDate,
+        tokens: p.tokens,
+        sharePct: p.sharePct,
+        rank: p.peakRank
+      })),
+      mergedPeakSpans,
+      peakDay,
+      peakWeek,
+      concentration,
+      concentrationOmittedReason,
+      ruler: computeLogRulerPosition(intervalTotal)
+    };
   }
 
   const _dailyCostCache = new Map();
@@ -4720,8 +5477,15 @@
       ? Math.max(0, Number(raw.thinkingTokens))
       : null;
 
-    const agentRole = raw.agentRole === 'subagent' || Boolean(raw.parentCascadeId) ? 'subagent' : 'main';
-    const attributionConfidence = raw.attributionConfidence || (agentRole === 'main' ? 'main' : (raw.parentStepIndex != null ? 'verified_tool_output' : (raw.parentCascadeId ? 'verified_db_meta' : 'unidentified')));
+    const agentRole = raw.agentRole === 'subagent' || Boolean(raw.parentCascadeId)
+      ? 'subagent'
+      : (raw.agentRole === 'unknown' ? 'unknown' : 'main');
+    const hasSessionEvidence = Boolean(raw.cascadeId || options.cascadeId || raw.parentCascadeId);
+    const attributionConfidence = raw.attributionConfidence || (
+      agentRole === 'subagent'
+        ? (raw.parentStepIndex != null ? 'verified_tool_output' : (raw.parentCascadeId ? 'verified_db_meta' : 'unidentified'))
+        : ((agentRole === 'unknown' || !hasSessionEvidence) ? 'unidentified' : 'main')
+    );
 
     const streamingTpsRounded = streamingTps;
     const expScore = raw.status === 'streaming'
@@ -4804,6 +5568,23 @@
   }
 
   /**
+   * 清洗对话轮次标题预览中的 XML/系统包装标签（如 <USER_REQUEST>、<ADDITIONAL_METADATA>），
+   * 仅作用于前端展示预览，不改动任何底层原始记录。
+   */
+  function sanitizeTurnPreviewText(rawText, maxLen = 120) {
+    if (rawText == null) return '';
+    let text = String(rawText);
+    // 兼容 HTML 转义形式并移除成对及截断残留的系统元信息块
+    text = text.replace(/&lt;\s*(\/?)\s*(USER_REQUEST|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|EPHEMERAL_MESSAGE|SYSTEM_INSTRUCTION)\b[^&]*&gt;/gi, '<$1$2>');
+    text = text.replace(/<\s*(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|EPHEMERAL_MESSAGE|SYSTEM_INSTRUCTION)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, ' ');
+    text = text.replace(/<\s*(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|EPHEMERAL_MESSAGE|SYSTEM_INSTRUCTION)\b[^>]*>[\s\S]*$/gi, ' ');
+    text = text.replace(/<\s*\/?\s*(USER_REQUEST|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|EPHEMERAL_MESSAGE|SYSTEM_INSTRUCTION)\b[^>]*>/gi, ' ');
+    text = text.replace(/\s+/g, ' ').trim();
+    const limit = Number.isFinite(Number(maxLen)) && Number(maxLen) > 0 ? Math.floor(Number(maxLen)) : 120;
+    return text.slice(0, limit);
+  }
+
+  /**
    * 按用户轮次（Turn）将当前会话主代理调用与可验证的子代理调用分组汇总。
    * 绝不凭时间接近猜测父子归属：未关联到父步骤的子代理调用放入独立 unlinkedSubagentCalls 列表。
    */
@@ -4870,7 +5651,7 @@
           timestamp: Number.isFinite(ts) && ts > 0 ? ts : null,
           created_at: t.created_at || null,
           source: t.source || 'USER_EXPLICIT',
-          preview: t.preview ? String(t.preview).slice(0, 120) : ''
+          preview: t.preview ? sanitizeTurnPreviewText(t.preview, 120) : ''
         };
       })
       .sort((a, b) => {
@@ -6036,6 +6817,7 @@
     summarizeCacheReadStats,
     summarizeDailyMapCacheStats,
     normalizeSessionCallRecord,
+    sanitizeTurnPreviewText,
     groupSessionCallsByTurns,
     ELV91_SCORE_RULE_VERSION,
     formatHumanDuration,
@@ -6065,6 +6847,18 @@
     extractModelString,
     normalizeTokenHistoryPayload,
     getLvlForRange,
+    computeMixedScaleResponse,
+    computePiecewiseAnchorScale,
+    computeColorScaleResponse,
+    resolveScaleEnvelope,
+    mapBubbleDiameter,
+    mapBarHeightPx,
+    allocateStackedSegmentHeights,
+    interpolateHslHex,
+    interpolateScaleColorHsl,
+    shouldShowYearlyPeakBadge,
+    computeLogRulerPosition,
+    computeCumulativeStripSummary,
     getDailyModelCost,
     calculateIntervalCost,
     clearDailyCostCache,

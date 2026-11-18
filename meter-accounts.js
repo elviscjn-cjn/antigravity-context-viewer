@@ -22,22 +22,43 @@ const { execFileSync, spawnSync } = require('child_process');
 
 const { getStateDir, getAppDataDir } = require('./asar-engine');
 const { buildModelQuotaSnapshot, selectPrimaryQuotaBucket, getModelPoolKey, getSharedQuotaGroupKey } = require('./meter-core');
-const { applyProxyEnvironment } = require('./meter-proxy');
+const {
+  applyProxyEnvironment,
+  requestWithProxyTunnel,
+  sanitizeDiagnosticErrorText,
+  detectProxyConfig,
+  redactProxyUrl
+} = require('./meter-proxy');
 
-// 宿主官方 OAuth Client 配置非敏感摘要锚点（严禁在源码硬编码 OAuth 客户端密钥字面量，运行时按需从本机已安装的 Antigravity 二进制/环境变量读取）
-const OFFICIAL_OAUTH_CLIENT_ID_SHA256 = 'bf00c418024ba6bf606ccdc37120976e41bc429dd1d46ecf16a729aa532626ea';
-const OFFICIAL_OAUTH_CLIENT_SECRET_SHA256 = 'a2ddedc84850a9c48b7e01d61700848083bf0e10fb8d6c99c496803e8b48ced0';
+// 宿主官方 OAuth Client 成对非敏感摘要锚点（严禁在源码硬编码 OAuth 客户端密钥字面量，运行时按需从本机已安装的 Antigravity 二进制/环境变量读取）
+// 注意：每个 client_id 与其对应 client_secret 必须严格成对绑定，不可交叉混配
+const OFFICIAL_OAUTH_CLIENT_PAIRS = Object.freeze([
+  {
+    key: 'antigravity_default',
+    clientIdSha256: 'bf00c418024ba6bf606ccdc37120976e41bc429dd1d46ecf16a729aa532626ea',
+    clientSecretSha256: '1d2f041093fd95aa8995a038c711d50a7960da09a505381c09a745d6ad0ecc60'
+  },
+  {
+    key: 'antigravity_enterprise',
+    clientIdSha256: '69dee430c4e956f6b672b99a846566d6a86814999fc3b3b050697c0d65ea80c3',
+    clientSecretSha256: 'a2ddedc84850a9c48b7e01d61700848083bf0e10fb8d6c99c496803e8b48ced0'
+  }
+]);
 const OAUTH_GOOGLE_SUFFIX = '.apps.googleusercontent.com';
 const OAUTH_SECRET_TAG = 'GOCSP' + 'X-';
-let cachedHostOAuthConfig = null;
+let cachedHostOAuthPairs = null;
+let cachedHostOAuthBinPath = '';
 
-function streamScanLanguageServerOAuth(binPath) {
-  if (!binPath || !fs.existsSync(binPath)) return null;
+function streamScanLanguageServerOAuthPairs(binPath) {
+  if (!binPath || !fs.existsSync(binPath)) return [];
   const CHUNK_SIZE = 4 * 1024 * 1024;
   const OVERLAP = 512;
   const fd = fs.openSync(binPath, 'r');
-  let foundId = '';
-  let foundSecret = '';
+  const idByHash = new Map();
+  const secByHash = new Map();
+  const wantedIdHashes = new Set(OFFICIAL_OAUTH_CLIENT_PAIRS.map(p => p.clientIdSha256));
+  const wantedSecHashes = new Set(OFFICIAL_OAUTH_CLIENT_PAIRS.map(p => p.clientSecretSha256));
+
   try {
     const stat = fs.fstatSync(fd);
     let offset = 0;
@@ -45,40 +66,38 @@ function streamScanLanguageServerOAuth(binPath) {
     const idAnchor = Buffer.from(OAUTH_GOOGLE_SUFFIX, 'utf8');
     const secAnchor = Buffer.from(OAUTH_SECRET_TAG, 'utf8');
 
-    while (offset < stat.size && (!foundId || !foundSecret)) {
+    while (offset < stat.size && (idByHash.size < wantedIdHashes.size || secByHash.size < wantedSecHashes.size)) {
       const readLen = Math.min(CHUNK_SIZE, stat.size - offset);
       const chunk = Buffer.allocUnsafe(readLen);
       const bytesRead = fs.readSync(fd, chunk, 0, readLen, offset);
       if (bytesRead <= 0) break;
       const work = tailBuf.length > 0 ? Buffer.concat([tailBuf, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead);
 
-      if (!foundId) {
+      if (idByHash.size < wantedIdHashes.size) {
         let idx = 0;
         while ((idx = work.indexOf(idAnchor, idx)) !== -1) {
           const sliceStart = Math.max(0, idx - 64);
           const candidateWindow = work.subarray(sliceStart, idx + idAnchor.length).toString('utf8');
-          const m = candidateWindow.match(/[0-9]{10,}-[a-z0-9]+\.apps\.googleusercontent\.com$/);
+          const m = candidateWindow.match(/[0-9]{10,}-[a-z0-9_-]+\.apps\.googleusercontent\.com$/);
           if (m) {
             const h = crypto.createHash('sha256').update(m[0]).digest('hex');
-            if (h === OFFICIAL_OAUTH_CLIENT_ID_SHA256) {
-              foundId = m[0];
-              break;
+            if (wantedIdHashes.has(h) && !idByHash.has(h)) {
+              idByHash.set(h, m[0]);
             }
           }
           idx += idAnchor.length;
         }
       }
 
-      if (!foundSecret) {
+      if (secByHash.size < wantedSecHashes.size) {
         let idx = 0;
         while ((idx = work.indexOf(secAnchor, idx)) !== -1) {
           if (idx + 35 <= work.length) {
             const cand = work.subarray(idx, idx + 35).toString('utf8');
             if (/^[A-Za-z0-9_-]{35}$/.test(cand)) {
               const h = crypto.createHash('sha256').update(cand).digest('hex');
-              if (h === OFFICIAL_OAUTH_CLIENT_SECRET_SHA256) {
-                foundSecret = cand;
-                break;
+              if (wantedSecHashes.has(h) && !secByHash.has(h)) {
+                secByHash.set(h, cand);
               }
             }
           }
@@ -92,33 +111,79 @@ function streamScanLanguageServerOAuth(binPath) {
   } finally {
     fs.closeSync(fd);
   }
-  return (foundId && foundSecret) ? { clientId: foundId, clientSecret: foundSecret, source: 'antigravity_host_binary' } : null;
+
+  const pairs = [];
+  for (const spec of OFFICIAL_OAUTH_CLIENT_PAIRS) {
+    const clientId = idByHash.get(spec.clientIdSha256);
+    const clientSecret = secByHash.get(spec.clientSecretSha256);
+    if (clientId && clientSecret) {
+      pairs.push({
+        key: spec.key,
+        clientId,
+        clientSecret,
+        source: 'antigravity_host_binary'
+      });
+    }
+  }
+  return pairs;
 }
 
-function resolveAntigravityOAuthConfig(options = {}) {
-  const optId = typeof options.oauthClientId === 'string' ? options.oauthClientId.trim() : '';
-  const optSec = typeof options.oauthClientSecret === 'string' ? options.oauthClientSecret.trim() : '';
-  if (optId && optSec) {
-    return { clientId: optId, clientSecret: optSec, source: 'explicit_option' };
-  }
-  const envId = String(process.env.ANTIGRAVITY_OAUTH_CLIENT_ID || process.env.AG_OAUTH_CLIENT_ID || '').trim();
-  const envSec = String(process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET || process.env.AG_OAUTH_CLIENT_SECRET || '').trim();
-  if (envId && envSec) {
-    return { clientId: envId, clientSecret: envSec, source: 'environment' };
-  }
-  if (cachedHostOAuthConfig) return cachedHostOAuthConfig;
+function getHostBinaryOAuthPairs(options = {}) {
   try {
     const { detectTargetBinary } = require('./meter-context-unlock');
     const lsPath = typeof detectTargetBinary === 'function' ? detectTargetBinary(options.languageServerPath) : null;
     if (lsPath) {
-      const scanned = streamScanLanguageServerOAuth(lsPath);
-      if (scanned) {
-        cachedHostOAuthConfig = scanned;
+      if (cachedHostOAuthPairs && cachedHostOAuthBinPath === lsPath) return cachedHostOAuthPairs;
+      const scanned = streamScanLanguageServerOAuthPairs(lsPath);
+      if (scanned.length) {
+        cachedHostOAuthPairs = scanned;
+        cachedHostOAuthBinPath = lsPath;
         return scanned;
       }
     }
   } catch { }
-  return null;
+  return cachedHostOAuthPairs || [];
+}
+
+function resolveAllAntigravityOAuthConfigs(options = {}) {
+  const optId = typeof options.oauthClientId === 'string' ? options.oauthClientId.trim() : '';
+  const optSec = typeof options.oauthClientSecret === 'string' ? options.oauthClientSecret.trim() : '';
+  if (optId && optSec) {
+    return [{
+      key: options.oauthClientKey || 'explicit_option',
+      clientId: optId,
+      clientSecret: optSec,
+      source: 'explicit_option'
+    }];
+  }
+  const envId = String(process.env.ANTIGRAVITY_OAUTH_CLIENT_ID || process.env.AG_OAUTH_CLIENT_ID || '').trim();
+  const envSec = String(process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET || process.env.AG_OAUTH_CLIENT_SECRET || '').trim();
+  if (envId && envSec) {
+    return [{
+      key: 'environment',
+      clientId: envId,
+      clientSecret: envSec,
+      source: 'environment'
+    }];
+  }
+  const pairs = getHostBinaryOAuthPairs(options);
+  if (!pairs.length) return [];
+
+  const preferredKey = typeof options.oauthClientKey === 'string' ? options.oauthClientKey.trim() : '';
+  const preferredId = typeof options.preferredClientId === 'string' ? options.preferredClientId.trim() : '';
+  if (!preferredKey && !preferredId) return pairs;
+
+  const sorted = [...pairs].sort((a, b) => {
+    const aHit = (preferredId && a.clientId === preferredId) || (preferredKey && a.key === preferredKey) ? 1 : 0;
+    const bHit = (preferredId && b.clientId === preferredId) || (preferredKey && b.key === preferredKey) ? 1 : 0;
+    return bHit - aHit;
+  });
+  return sorted;
+}
+
+function resolveAntigravityOAuthConfig(options = {}) {
+  const list = resolveAllAntigravityOAuthConfigs(options);
+  return list.length ? list[0] : null;
 }
 const ANTIGRAVITY_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/cloud-platform',
@@ -249,7 +314,205 @@ function maskEmail(email) {
   const [local, domain] = clean.split('@');
   if (!domain) return clean;
   if (local.length <= 2) return `${local[0] || '*'}*@${domain}`;
-  return `${local.slice(0, 2)}***@${domain}`;
+  if (local.length <= 5) return `${local.slice(0, 2)}***@${domain}`;
+  return `${local.slice(0, 2)}***${local.slice(-2)}@${domain}`;
+}
+
+/**
+ * 清理账号诊断信息中的一切敏感字段（授权码、Token、Secret、URL 查询参数等），仅保留阶段/主机/状态等排障元数据。
+ */
+function redactAccountDiagnosticEntry(entry = {}) {
+  const cleanMsg = sanitizeDiagnosticErrorText(entry.message || entry.error || '');
+  let cleanProxy = null;
+  if (entry.proxyEndpoint) {
+    cleanProxy = redactProxyUrl(String(entry.proxyEndpoint)) || null;
+  }
+  return {
+    at: entry.at || new Date().toISOString(),
+    action: String(entry.action || 'oauth'),
+    stage: String(entry.stage || 'unknown'),
+    targetHost: entry.targetHost ? String(entry.targetHost).split(/[/?#]/)[0] : null,
+    proxySource: entry.proxySource || 'direct',
+    proxyProtocol: entry.proxyProtocol || 'direct',
+    proxyEndpoint: cleanProxy,
+    httpStatus: Number.isFinite(Number(entry.httpStatus)) ? Number(entry.httpStatus) : null,
+    errorCode: entry.errorCode ? String(entry.errorCode) : null,
+    ok: Boolean(entry.ok),
+    message: cleanMsg.slice(0, 300)
+  };
+}
+
+function appendAccountDiagnostic(stateDir, entry = {}) {
+  const clean = redactAccountDiagnosticEntry(entry);
+  if (!stateDir) return clean;
+  try {
+    ensureDir(stateDir);
+    const diagPath = path.join(stateDir, 'oauth_diagnostics.jsonl');
+    fs.appendFileSync(diagPath, JSON.stringify(clean) + '\n', 'utf8');
+  } catch { }
+  return clean;
+}
+
+/**
+ * 在已有连续配额采样区间与账号使用时间戳的基础上，派生已核实宿主活跃会话窗口。
+ */
+function deriveAccountSessionsFromStore(store) {
+  const existing = Array.isArray(store?.accountSessions) ? store.accountSessions.filter(Boolean) : [];
+  if (existing.length > 0) return existing;
+  const intervals = Array.isArray(store?.quotaIntervals) ? store.quotaIntervals : [];
+  if (!intervals.length) return [];
+
+  const sorted = intervals
+    .filter(iv => iv && iv.email && Number.isFinite(Number(iv.startAtMs)) && Number.isFinite(Number(iv.endAtMs)))
+    .slice()
+    .sort((a, b) => Number(a.startAtMs) - Number(b.startAtMs));
+
+  const sessions = [];
+  for (const iv of sorted) {
+    const email = normalizeEmail(iv.email);
+    if (!email) continue;
+    const sMs = Number(iv.startAtMs);
+    const eMs = Math.max(sMs, Number(iv.endAtMs));
+    const scopeKey = buildAccountScopeKey(email);
+    const last = sessions[sessions.length - 1];
+    if (last && last.email === email && sMs - last.lastVerifiedAtMs <= 30 * 60 * 1000) {
+      last.startAtMs = Math.min(last.startAtMs, sMs);
+      last.lastVerifiedAtMs = Math.max(last.lastVerifiedAtMs, eMs);
+      last.endAtMs = last.lastVerifiedAtMs;
+    } else {
+      if (last && last.endAtMs == null) last.endAtMs = last.lastVerifiedAtMs;
+      sessions.push({
+        email,
+        accountScopeKey: scopeKey,
+        source: 'desktop',
+        startAtMs: sMs,
+        lastVerifiedAtMs: eMs,
+        endAtMs: eMs,
+        evidence: 'quota_intervals_derived'
+      });
+    }
+  }
+  const activeEmail = normalizeEmail(store?.activeAccountEmail || '');
+  const lastSess = sessions[sessions.length - 1];
+  if (lastSess && activeEmail && lastSess.email === activeEmail) {
+    lastSess.endAtMs = null;
+  }
+  return sessions;
+}
+
+function recordVerifiedAccountSession(store, { email, nowMs = Date.now(), source = 'desktop', evidence = 'host_user_status', forceNew = false } = {}) {
+  const cleanEmail = normalizeEmail(email);
+  if (!cleanEmail || !store || typeof store !== 'object') return null;
+  if (!Array.isArray(store.accountSessions)) {
+    store.accountSessions = deriveAccountSessionsFromStore(store);
+  }
+  const ts = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  const scopeKey = buildAccountScopeKey(cleanEmail);
+  const sessions = store.accountSessions;
+  const last = sessions[sessions.length - 1];
+
+  if (!forceNew && last && last.email === cleanEmail && (ts - last.lastVerifiedAtMs) <= 30 * 60 * 1000 && last.endAtMs == null) {
+    last.lastVerifiedAtMs = Math.max(last.lastVerifiedAtMs, ts);
+    return last;
+  }
+  if (last && last.endAtMs == null) {
+    last.endAtMs = Math.min(last.lastVerifiedAtMs, ts);
+  }
+  const nextSess = {
+    email: cleanEmail,
+    accountScopeKey: scopeKey,
+    source: source || 'desktop',
+    startAtMs: ts,
+    lastVerifiedAtMs: ts,
+    endAtMs: null,
+    evidence
+  };
+  sessions.push(nextSess);
+  if (sessions.length > 200) {
+    store.accountSessions = sessions.slice(-200);
+  }
+  return nextSess;
+}
+
+function closeActiveAccountSessions(store, endAtMs = Date.now()) {
+  if (!store || !Array.isArray(store.accountSessions)) return;
+  const ts = Number.isFinite(Number(endAtMs)) ? Number(endAtMs) : Date.now();
+  for (const s of store.accountSessions) {
+    if (s && s.endAtMs == null) {
+      s.endAtMs = Math.max(s.startAtMs, Math.min(s.lastVerifiedAtMs || ts, ts));
+    }
+  }
+}
+
+/**
+ * 根据请求的权威开始/完成时间与已核实账号活跃窗口，判断可靠归属：
+ * - 绝不根据当前登录态或会话标题猜归属；
+ * - 无可靠时间戳、早于账号追踪起点、跨越切号边界或来自未核实历史源时，统一返回 unattributed 及具体原因。
+ */
+function resolveAccountForTimestamp({ reqStartMs, reqEndMs, source = 'desktop', accountSessions = [] } = {}) {
+  const normSource = String(source || 'desktop').toLowerCase();
+  if (normSource === 'ide') {
+    return { accountScopeKey: null, email: null, confidence: 'unattributed', unattributedReason: 'unverified_source_ide' };
+  }
+  const start = Number(reqStartMs);
+  const end = Number.isFinite(Number(reqEndMs)) ? Number(reqEndMs) : start;
+  if (!Number.isFinite(start) || start <= 0 || !Number.isFinite(end) || end <= 0) {
+    return { accountScopeKey: null, email: null, confidence: 'unattributed', unattributedReason: 'missing_request_timestamp' };
+  }
+  const rStart = Math.min(start, end);
+  const rEnd = Math.max(start, end);
+  const sessions = Array.isArray(accountSessions) ? accountSessions.filter(s => s && s.email && Number.isFinite(s.startAtMs)) : [];
+  if (!sessions.length) {
+    return { accountScopeKey: null, email: null, confidence: 'unattributed', unattributedReason: 'before_account_tracking' };
+  }
+
+  let earliestStart = Infinity;
+  const matching = [];
+  for (const s of sessions) {
+    if (s.startAtMs < earliestStart) earliestStart = s.startAtMs;
+    const winStart = s.startAtMs - 5000;
+    const winEnd = s.endAtMs != null ? (s.endAtMs + 5000) : (Math.max(s.lastVerifiedAtMs || s.startAtMs, s.startAtMs) + 180000);
+    // 判断请求整个生命周期是否完全位于该已核实活跃窗口内部
+    if (rStart >= winStart && rEnd <= winEnd) {
+      matching.push(s);
+    }
+  }
+
+  if (matching.length === 1) {
+    return {
+      accountScopeKey: matching[0].accountScopeKey || buildAccountScopeKey(matching[0].email),
+      email: normalizeEmail(matching[0].email),
+      confidence: 'verified_session_window',
+      attributionSource: 'host_user_status_window'
+    };
+  }
+  if (matching.length > 1) {
+    const distinctEmails = new Set(matching.map(m => normalizeEmail(m.email)));
+    if (distinctEmails.size === 1) {
+      const m = matching[0];
+      return {
+        accountScopeKey: m.accountScopeKey || buildAccountScopeKey(m.email),
+        email: normalizeEmail(m.email),
+        confidence: 'verified_session_window',
+        attributionSource: 'host_user_status_window'
+      };
+    }
+    return { accountScopeKey: null, email: null, confidence: 'unattributed', unattributedReason: 'cross_switch_boundary' };
+  }
+
+  // 检查是否跨越两个不同账号窗口边界
+  const touched = sessions.filter(s => {
+    const winStart = s.startAtMs - 5000;
+    const winEnd = s.endAtMs != null ? (s.endAtMs + 5000) : (Math.max(s.lastVerifiedAtMs || s.startAtMs, s.startAtMs) + 180000);
+    return rEnd >= winStart && rStart <= winEnd;
+  });
+  if (touched.length > 0) {
+    return { accountScopeKey: null, email: null, confidence: 'unattributed', unattributedReason: 'cross_switch_boundary' };
+  }
+  if (rEnd < earliestStart - 5000) {
+    return { accountScopeKey: null, email: null, confidence: 'unattributed', unattributedReason: 'before_account_tracking' };
+  }
+  return { accountScopeKey: null, email: null, confidence: 'unattributed', unattributedReason: 'outside_verified_window' };
 }
 
 function ensureDir(dirPath) {
@@ -531,6 +794,7 @@ function writeStateDbItems(dbPath, entriesMap) {
   if (DatabaseSync) {
     const db = new DatabaseSync(dbPath);
     try {
+      db.exec('PRAGMA busy_timeout = 5000;');
       db.exec('BEGIN IMMEDIATE');
       const upsert = db.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)');
       const del = db.prepare('DELETE FROM ItemTable WHERE key = ?');
@@ -551,7 +815,7 @@ function writeStateDbItems(dbPath, entriesMap) {
   if (!nodeBin) return { ok: false, error: '当前运行环境及系统均不可用 node:sqlite' };
   const res = spawnSync(nodeBin, [
     '-e',
-    'const{DatabaseSync}=require("node:sqlite"),p=JSON.parse(process.argv[1]);const db=new DatabaseSync(p.db);db.exec("BEGIN IMMEDIATE");const up=db.prepare("INSERT OR REPLACE INTO ItemTable (key,value) VALUES (?,?)"),dl=db.prepare("DELETE FROM ItemTable WHERE key=?");for(const[k,v]of Object.entries(p.entries)){if(v===null||v===undefined)dl.run(k);else up.run(k,String(v));}db.exec("COMMIT");db.close();',
+    'const{DatabaseSync}=require("node:sqlite"),p=JSON.parse(process.argv[1]);const db=new DatabaseSync(p.db);db.exec("PRAGMA busy_timeout = 5000;");db.exec("BEGIN IMMEDIATE");const up=db.prepare("INSERT OR REPLACE INTO ItemTable (key,value) VALUES (?,?)"),dl=db.prepare("DELETE FROM ItemTable WHERE key=?");for(const[k,v]of Object.entries(p.entries)){if(v===null||v===undefined)dl.run(k);else up.run(k,String(v));}db.exec("COMMIT");db.close();',
     JSON.stringify({ db: dbPath, entries: entriesMap })
   ], { encoding: 'utf8', timeout: 6000, windowsHide: true });
   return res.status === 0
@@ -728,8 +992,8 @@ function createDefaultSystemCredentialStore(dirs = {}) {
       const expirySeconds = Math.floor((Number.isFinite(expiryMs) ? expiryMs : Date.now() + 3600000) / 1000);
       const isoExpiry = new Date(expirySeconds * 1000).toISOString();
 
-      // 1. OS 共享系统凭据（Antigravity 2.x + CLI 共用格式）
-      const systemPayload = {
+      // 1. OS 共享系统凭据（Antigravity 2.x + CLI 共用格式；Windows Credential Blob 上限 2560B，超限时自动省略冗余 id_token）
+      let systemPayload = {
         token: {
           access_token: accessToken,
           token_type: 'Bearer',
@@ -737,8 +1001,16 @@ function createDefaultSystemCredentialStore(dirs = {}) {
           expiry: isoExpiry
         },
         auth_method: 'consumer',
+        ...(email ? { id_token_email: email } : {}),
         ...(idToken ? { id_token: idToken } : {})
       };
+      if (process.platform === 'win32' && idToken && Buffer.byteLength(JSON.stringify(systemPayload), 'utf8') > 2500) {
+        systemPayload = {
+          token: systemPayload.token,
+          auth_method: 'consumer',
+          ...(email ? { id_token_email: email } : {})
+        };
+      }
 
       const stepResults = {};
       if (process.platform === 'win32') {
@@ -832,33 +1104,99 @@ function createDefaultSystemCredentialStore(dirs = {}) {
 // Google OAuth2 & CloudCode Quota API 客户端（适配自 MIT vscode-antigravity-cockpit）
 // =========================================================================
 
-async function fetchJsonWithProxy(urlStr, opts = {}, customFetch = null) {
-  applyProxyEnvironment(process.env, { overrideExisting: false });
-  const doFetch = customFetch || globalThis.fetch;
-  if (typeof doFetch !== 'function') throw new Error('当前环境缺少 fetch API');
+/**
+ * 统一通过显式代理隧道（HTTP CONNECT / SOCKS5）或本机直连执行远端 HTTP/HTTPS JSON 请求，
+ * 彻底绕开 Electron/Node 在进程启动后才设置 NODE_USE_ENV_PROXY=1 被 undici 忽略的问题。
+ */
+async function fetchJsonWithProxy(urlStr, opts = {}, customFetch = null, proxyConfigOptions = {}) {
+  const stage = opts.stage || 'http_request';
   const timeoutMs = Number(opts.timeoutMs) || 15000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let targetHost = '';
   try {
-    const res = await doFetch(urlStr, {
-      method: opts.method || 'GET',
-      headers: opts.headers || {},
-      body: opts.body,
-      signal: controller.signal
-    });
-    const text = await res.text();
-    let json = null;
-    try { json = text ? JSON.parse(text) : null; } catch { }
-    return { ok: res.ok, status: res.status, text, json };
-  } finally {
-    clearTimeout(timer);
+    targetHost = new URL(urlStr).hostname;
+  } catch { }
+
+  if (typeof customFetch === 'function') {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const startMs = Date.now();
+    try {
+      const res = await customFetch(urlStr, {
+        method: opts.method || 'GET',
+        headers: opts.headers || {},
+        body: opts.body,
+        signal: controller.signal
+      });
+      const text = await res.text();
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch { }
+      return {
+        ok: res.ok,
+        status: res.status,
+        text,
+        json,
+        diagnostics: {
+          stage,
+          targetHost,
+          proxySource: 'custom_fetch',
+          proxyProtocol: 'custom',
+          proxyEndpoint: null,
+          bypassMatched: false,
+          httpStatus: res.status,
+          durationMs: Date.now() - startMs
+        }
+      };
+    } catch (e) {
+      const err = (e instanceof Error) ? e : new Error(String(e || '请求失败'));
+      err.stage = err.stage || stage;
+      err.targetHost = err.targetHost || targetHost;
+      if (!err.diagnostics) {
+        err.diagnostics = {
+          stage,
+          targetHost,
+          proxySource: 'custom_fetch',
+          proxyProtocol: 'custom',
+          proxyEndpoint: null,
+          httpStatus: null,
+          errorCode: err.code || 'FETCH_ERROR',
+          durationMs: Date.now() - startMs
+        };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  return await requestWithProxyTunnel(urlStr, {
+    method: opts.method || 'GET',
+    headers: opts.headers || {},
+    body: opts.body,
+    timeoutMs,
+    stage,
+    proxyConfigOptions
+  });
 }
 
-async function exchangeOAuthCode(code, redirectUri, customFetch = null, oauthConfig = null) {
+function attachStageErrorMeta(err, stage, targetHost, httpStatus, diagnostics) {
+  const targetErr = (err instanceof Error) ? err : new Error(String(err || '请求失败'));
+  targetErr.stage = targetErr.stage || stage;
+  targetErr.targetHost = targetErr.targetHost || targetHost || diagnostics?.targetHost || null;
+  if (httpStatus != null && targetErr.httpStatus == null) targetErr.httpStatus = httpStatus;
+  if (diagnostics && !targetErr.diagnostics) targetErr.diagnostics = diagnostics;
+  return targetErr;
+}
+
+async function exchangeOAuthCode(code, redirectUri, customFetch = null, oauthConfig = null, proxyConfigOptions = {}) {
   const cfg = oauthConfig || resolveAntigravityOAuthConfig();
   if (!cfg?.clientId || !cfg?.clientSecret) {
-    throw new Error('未检测到可用 OAuth 客户端配置；可通过“导入当前”或“导入 Tools”添加账号，或配置 AG_OAUTH_CLIENT_ID / AG_OAUTH_CLIENT_SECRET。');
+    throw attachStageErrorMeta(
+      new Error('未检测到可用 OAuth 客户端配置；可通过“导入当前”或“导入 Tools”添加账号，或配置 AG_OAUTH_CLIENT_ID / AG_OAUTH_CLIENT_SECRET。'),
+      'oauth_config',
+      'oauth2.googleapis.com',
+      null,
+      null
+    );
   }
   const params = new URLSearchParams({
     client_id: cfg.clientId,
@@ -867,21 +1205,49 @@ async function exchangeOAuthCode(code, redirectUri, customFetch = null, oauthCon
     redirect_uri: redirectUri,
     grant_type: 'authorization_code'
   });
-  const res = await fetchJsonWithProxy(OAUTH_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString()
-  }, customFetch);
-  if (!res.ok || !res.json?.access_token) {
-    throw new Error(`OAuth Token 交换失败 (${res.status}): ${res.json?.error_description || res.text || 'unknown'}`);
+  let res;
+  try {
+    res = await fetchJsonWithProxy(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      stage: 'token_exchange',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    }, customFetch, proxyConfigOptions);
+  } catch (e) {
+    const diag = e?.diagnostics || {};
+    const host = diag.targetHost || 'oauth2.googleapis.com';
+    const cleanMsg = sanitizeDiagnosticErrorText(e);
+    throw attachStageErrorMeta(
+      new Error(`授权码换取 Token 网络失败 (${host}, 阶段: token_exchange): ${cleanMsg}`),
+      'token_exchange',
+      host,
+      null,
+      diag
+    );
   }
-  return res.json;
+  if (!res.ok || !res.json?.access_token) {
+    const detail = sanitizeDiagnosticErrorText(res.json?.error_description || res.json?.error || res.text || 'unknown');
+    throw attachStageErrorMeta(
+      new Error(`OAuth Token 交换失败 (HTTP ${res.status}): ${detail.slice(0, 160)}`),
+      'token_exchange',
+      res.diagnostics?.targetHost || 'oauth2.googleapis.com',
+      res.status,
+      res.diagnostics
+    );
+  }
+  return { ...res.json, _diagnostics: res.diagnostics || null };
 }
 
-async function refreshOAuthAccessToken(refreshToken, customFetch = null, oauthConfig = null) {
+async function refreshOAuthAccessToken(refreshToken, customFetch = null, oauthConfig = null, proxyConfigOptions = {}) {
   const cfg = oauthConfig || resolveAntigravityOAuthConfig();
   if (!cfg?.clientId || !cfg?.clientSecret) {
-    throw new Error('未检测到可用 OAuth 客户端配置，无法刷新 Token。');
+    throw attachStageErrorMeta(
+      new Error('未检测到可用 OAuth 客户端配置，无法刷新 Token。'),
+      'token_refresh',
+      'oauth2.googleapis.com',
+      null,
+      null
+    );
   }
   const params = new URLSearchParams({
     client_id: cfg.clientId,
@@ -889,15 +1255,50 @@ async function refreshOAuthAccessToken(refreshToken, customFetch = null, oauthCo
     refresh_token: refreshToken,
     grant_type: 'refresh_token'
   });
-  const res = await fetchJsonWithProxy(OAUTH_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString()
-  }, customFetch);
+  let res;
+  try {
+    res = await fetchJsonWithProxy(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      stage: 'token_refresh',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    }, customFetch, proxyConfigOptions);
+  } catch (e) {
+    const diag = e?.diagnostics || {};
+    throw attachStageErrorMeta(
+      new Error(`刷新 Token 网络失败 (${diag.targetHost || 'oauth2.googleapis.com'}): ${sanitizeDiagnosticErrorText(e)}`),
+      'token_refresh',
+      diag.targetHost || 'oauth2.googleapis.com',
+      null,
+      diag
+    );
+  }
   if (!res.ok || !res.json?.access_token) {
+    const errCode = String(res.json?.error || '').trim().toLowerCase();
+    const errDesc = String(res.json?.error_description || '').trim().toLowerCase();
     const lower = String(res.text || '').toLowerCase();
-    const isInvalidGrant = lower.includes('invalid_grant') || res.status === 400 || res.status === 401;
-    const err = new Error(`刷新 Token 失败 (${res.status}): ${res.json?.error_description || res.text || 'unknown'}`);
+    const isClientMismatch = errCode === 'invalid_client'
+      || errCode === 'unauthorized_client'
+      || errDesc.includes('client secret is invalid')
+      || errDesc.includes('invalid client')
+      || lower.includes('invalid_client')
+      || (res.status === 401 && errCode !== 'invalid_grant' && !errDesc.includes('expired or revoked'));
+    const isInvalidGrant = !isClientMismatch && (
+      errCode === 'invalid_grant'
+      || lower.includes('invalid_grant')
+      || errDesc.includes('token has been expired or revoked')
+      || errDesc.includes('bad_refresh_token')
+    );
+    const detail = sanitizeDiagnosticErrorText(res.json?.error_description || res.json?.error || res.text || 'unknown');
+    const err = attachStageErrorMeta(
+      new Error(`刷新 Token 失败 (HTTP ${res.status}): ${detail.slice(0, 160)}`),
+      'token_refresh',
+      res.diagnostics?.targetHost || 'oauth2.googleapis.com',
+      res.status,
+      res.diagnostics
+    );
+    err.oauthErrorCode = errCode || null;
+    err.isClientMismatch = isClientMismatch;
     err.isAuthInvalid = isInvalidGrant;
     throw err;
   }
@@ -905,16 +1306,37 @@ async function refreshOAuthAccessToken(refreshToken, customFetch = null, oauthCo
     accessToken: res.json.access_token,
     refreshToken: res.json.refresh_token || refreshToken,
     expiresAt: new Date(Date.now() + (Number(res.json.expires_in) || 3600) * 1000).toISOString(),
-    idToken: res.json.id_token || ''
+    idToken: res.json.id_token || '',
+    oauthClientId: cfg.clientId,
+    oauthClientKey: cfg.key || null
   };
 }
 
-async function fetchGoogleUserInfo(accessToken, customFetch = null) {
-  const res = await fetchJsonWithProxy(OAUTH_USERINFO_URL, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  }, customFetch);
+async function fetchGoogleUserInfo(accessToken, customFetch = null, proxyConfigOptions = {}) {
+  let res;
+  try {
+    res = await fetchJsonWithProxy(OAUTH_USERINFO_URL, {
+      stage: 'userinfo_fetch',
+      headers: { Authorization: `Bearer ${accessToken}` }
+    }, customFetch, proxyConfigOptions);
+  } catch (e) {
+    const diag = e?.diagnostics || {};
+    throw attachStageErrorMeta(
+      new Error(`获取账号身份失败 (${diag.targetHost || 'www.googleapis.com'}): ${sanitizeDiagnosticErrorText(e)}`),
+      'userinfo_fetch',
+      diag.targetHost || 'www.googleapis.com',
+      null,
+      diag
+    );
+  }
   if (!res.ok || !res.json?.email) {
-    throw new Error(`获取 Google 用户信息失败 (${res.status})`);
+    throw attachStageErrorMeta(
+      new Error(`获取 Google 用户信息失败 (HTTP ${res.status})`),
+      'userinfo_fetch',
+      res.diagnostics?.targetHost || 'www.googleapis.com',
+      res.status,
+      res.diagnostics
+    );
   }
   return {
     email: normalizeEmail(res.json.email),
@@ -924,8 +1346,12 @@ async function fetchGoogleUserInfo(accessToken, customFetch = null) {
 
 async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   const customFetch = options.fetch || null;
+  const proxyConfigOptions = options.proxyConfigOptions || {};
+  const quotaStage = options.stage || 'quota_fetch';
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
   const baseUrl = options.useDaily ? CLOUDCODE_DAILY_URL : CLOUDCODE_PROD_URL;
+  let targetHost = 'cloudcode-pa.googleapis.com';
+  try { targetHost = new URL(baseUrl).hostname; } catch { }
   const ua = `antigravity/2.32.1 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
   const headers = {
     Authorization: `Bearer ${accessToken}`,
@@ -938,6 +1364,7 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   try {
     const loadRes = await fetchJsonWithProxy(`${baseUrl}/v1internal:loadCodeAssist`, {
       method: 'POST',
+      stage: quotaStage,
       headers,
       body: JSON.stringify({
         metadata: {
@@ -949,7 +1376,7 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
         mode: 'FULL_ELIGIBILITY_CHECK',
         ...(projectId ? { cloudaicompanionProject: projectId } : {})
       })
-    }, customFetch);
+    }, customFetch, proxyConfigOptions);
     if (loadRes.ok && loadRes.json) {
       if (typeof loadRes.json.cloudaicompanionProject === 'string' && loadRes.json.cloudaicompanionProject) {
         projectId = loadRes.json.cloudaicompanionProject;
@@ -958,7 +1385,13 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
       }
       tierId = loadRes.json.paidTier?.id || loadRes.json.currentTier?.id || null;
     } else if (loadRes.status === 401 || loadRes.status === 403) {
-      const err = new Error(`CloudCode 鉴权失效 (${loadRes.status})`);
+      const err = attachStageErrorMeta(
+        new Error(`CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
+        quotaStage,
+        targetHost,
+        loadRes.status,
+        loadRes.diagnostics
+      );
       err.isAuthInvalid = true;
       throw err;
     }
@@ -967,14 +1400,33 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   }
 
   const payload = projectId ? { project: projectId } : {};
-  const [availRes, summaryRes] = await Promise.all([
-    fetchJsonWithProxy(`${baseUrl}/v1internal:fetchAvailableModels`, { method: 'POST', headers, body: JSON.stringify(payload) }, customFetch),
-    fetchJsonWithProxy(`${baseUrl}/v1internal:retrieveUserQuotaSummary`, { method: 'POST', headers, body: JSON.stringify(payload) }, customFetch)
-  ]);
+  let availRes;
+  let summaryRes;
+  try {
+    [availRes, summaryRes] = await Promise.all([
+      fetchJsonWithProxy(`${baseUrl}/v1internal:fetchAvailableModels`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions),
+      fetchJsonWithProxy(`${baseUrl}/v1internal:retrieveUserQuotaSummary`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions)
+    ]);
+  } catch (e) {
+    const diag = e?.diagnostics || {};
+    throw attachStageErrorMeta(
+      new Error(`CloudCode 配额请求网络失败 (${diag.targetHost || targetHost}): ${sanitizeDiagnosticErrorText(e)}`),
+      quotaStage,
+      diag.targetHost || targetHost,
+      null,
+      diag
+    );
+  }
 
   if (!availRes.ok && !summaryRes.ok) {
     const st = availRes.status || summaryRes.status;
-    const err = new Error(`CloudCode 配额请求失败 (${st})`);
+    const err = attachStageErrorMeta(
+      new Error(`CloudCode 配额请求失败 (HTTP ${st})`),
+      quotaStage,
+      targetHost,
+      st,
+      availRes.diagnostics || summaryRes.diagnostics
+    );
     if (st === 401 || st === 403) err.isAuthInvalid = true;
     throw err;
   }
@@ -1023,7 +1475,7 @@ function createAccountsManager(options = {}) {
     ideDbPath: options.ideDbPath
   });
   const customFetch = options.fetch || null;
-  const restartLanguageServersFn = options.restartLanguageServers || (() => require('./meter-enhance').restartLanguageServersAsync());
+  const restartLanguageServersFn = options.restartLanguageServers || (() => require('./meter-enhance').restartLanguageServersAsync({ includeCli: false }));
   const getHostUserStatusFn = options.getHostUserStatus || null;
   const checkHostBusyFn = options.checkHostBusy || null;
   const collector = options.collector || null;
@@ -1067,10 +1519,12 @@ function createAccountsManager(options = {}) {
           lastError: null,
           backoffUntilMs: 0
         },
-        quotaIntervals: [] // ELV-57 配额对照区间历史
+        quotaIntervals: [], // ELV-57 配额对照区间历史
+        accountSessions: [], // 已核实账号活跃时间窗口
+        lastDiagnostics: [] // 脱敏诊断记录
       };
     }
-    return {
+    const loaded = {
       version: 1,
       activeAccountEmail: raw.activeAccountEmail || null,
       accounts: raw.accounts && typeof raw.accounts === 'object' ? raw.accounts : {},
@@ -1096,8 +1550,43 @@ function createAccountsManager(options = {}) {
         backoffUntilMs: 0,
         ...(raw.keepaliveState || {})
       },
-      quotaIntervals: Array.isArray(raw.quotaIntervals) ? raw.quotaIntervals : []
+      quotaIntervals: Array.isArray(raw.quotaIntervals) ? raw.quotaIntervals : [],
+      accountSessions: Array.isArray(raw.accountSessions) ? raw.accountSessions : [],
+      lastDiagnostics: Array.isArray(raw.lastDiagnostics) ? raw.lastDiagnostics : []
     };
+    if (!loaded.accountSessions.length && loaded.quotaIntervals.length) {
+      loaded.accountSessions = deriveAccountSessionsFromStore(loaded);
+    }
+    // 清理旧版本因 OAuth Client 密钥错配 ("The provided client secret is invalid" / invalid_client) 误打上的 authInvalid 标记
+    let healedFalseAuthInvalid = false;
+    for (const acc of Object.values(loaded.accounts)) {
+      if (!acc || !acc.authInvalid) continue;
+      const errLower = String(acc.authError || '').toLowerCase();
+      const isFalseClientMismatch = Boolean(acc.credential?.refreshToken) && (
+        errLower.includes('client secret is invalid')
+        || errLower.includes('invalid_client')
+        || errLower.includes('unauthorized_client')
+      );
+      if (isFalseClientMismatch) {
+        acc.authInvalid = false;
+        acc.authError = null;
+        healedFalseAuthInvalid = true;
+      }
+    }
+    if (healedFalseAuthInvalid) {
+      try { atomicWriteJson(storePath, loaded); } catch { }
+    }
+    return loaded;
+  }
+
+  function recordDiag(store, entry) {
+    const clean = appendAccountDiagnostic(stateDir, entry);
+    if (store && typeof store === 'object') {
+      if (!Array.isArray(store.lastDiagnostics)) store.lastDiagnostics = [];
+      store.lastDiagnostics.push(clean);
+      if (store.lastDiagnostics.length > 20) store.lastDiagnostics = store.lastDiagnostics.slice(-20);
+    }
+    return clean;
   }
 
   function saveStore(store) {
@@ -1140,6 +1629,7 @@ function createAccountsManager(options = {}) {
       accountScopeKey: rec.accountScopeKey || buildAccountScopeKey(rec.email),
       name: rec.name || rec.email.split('@')[0],
       source: rec.source || 'manual',
+      oauthClientKey: rec.oauthClientKey || null,
       isActive: Boolean(activeEmail && normalizeEmail(activeEmail) === normalizeEmail(rec.email)),
       hasRefreshToken: Boolean(rec.credential?.refreshToken),
       expiresAt: rec.credential?.expiresAt || null,
@@ -1150,6 +1640,7 @@ function createAccountsManager(options = {}) {
       quotaSnapshot: rec.quotaSnapshot || null,
       lastQuotaUpdatedAtMs: rec.lastQuotaUpdatedAtMs || null,
       lastQuotaError: rec.lastQuotaError || null,
+      lastQuotaErrorMeta: rec.lastQuotaErrorMeta || null,
       addedAtMs: rec.addedAtMs || null,
       lastUsedAtMs: rec.lastUsedAtMs || null
     };
@@ -1175,8 +1666,11 @@ function createAccountsManager(options = {}) {
       quotaSnapshot: data.quotaSnapshot !== undefined ? data.quotaSnapshot : (prev.quotaSnapshot || null),
       lastQuotaUpdatedAtMs: data.lastQuotaUpdatedAtMs ?? prev.lastQuotaUpdatedAtMs ?? null,
       lastQuotaError: data.lastQuotaError !== undefined ? data.lastQuotaError : (prev.lastQuotaError || null),
+      lastQuotaErrorMeta: data.lastQuotaErrorMeta !== undefined ? data.lastQuotaErrorMeta : (prev.lastQuotaErrorMeta || null),
       authInvalid: data.authInvalid !== undefined ? Boolean(data.authInvalid) : Boolean(prev.authInvalid),
       authError: data.authError !== undefined ? data.authError : (prev.authError || null),
+      oauthClientKey: data.oauthClientKey !== undefined ? (data.oauthClientKey || null) : (prev.oauthClientKey || null),
+      oauthClientId: data.oauthClientId !== undefined ? (data.oauthClientId || null) : (prev.oauthClientId || null),
       addedAtMs: prev.addedAtMs || Date.now(),
       lastUsedAtMs: data.lastUsedAtMs ?? prev.lastUsedAtMs ?? null
     };
@@ -1185,7 +1679,7 @@ function createAccountsManager(options = {}) {
   }
 
   /**
-   * 检测当前客户端实际登录账号，并与内部状态对齐
+   * 检测当前客户端实际登录账号，并与内部状态及活跃会话窗口对齐
    */
   async function detectCurrentActiveAccount() {
     let hostEmail = '';
@@ -1213,10 +1707,21 @@ function createAccountsManager(options = {}) {
     const resolved = hostEmail || dbEmail || gaEmail || null;
     if (resolved) {
       const store = loadStore();
+      let dirty = false;
       if (store.activeAccountEmail !== resolved) {
         store.activeAccountEmail = resolved;
-        saveStore(store);
+        dirty = true;
       }
+      if (hostEmail || dbEmail) {
+        recordVerifiedAccountSession(store, {
+          email: resolved,
+          nowMs: Date.now(),
+          source: 'desktop',
+          evidence: hostEmail ? 'host_user_status' : 'desktop_state_db'
+        });
+        dirty = true;
+      }
+      if (dirty) saveStore(store);
     }
     return {
       email: resolved,
@@ -1271,15 +1776,25 @@ function createAccountsManager(options = {}) {
       return { ok: false, error: '已找到本地 Token 但未能识别所属邮箱，请使用 Google OAuth 登录导入' };
     }
 
+    const nowMs = Date.now();
     const store = loadStore();
     upsertAccountRecord(store, {
       email,
       name,
       source: 'client_import',
+      oauthClientKey: 'antigravity_default',
       credential: { accessToken, refreshToken, expiresAt, idToken },
-      lastUsedAtMs: Date.now()
+      authInvalid: false,
+      authError: null,
+      lastUsedAtMs: nowMs
     });
     store.activeAccountEmail = email;
+    recordVerifiedAccountSession(store, {
+      email,
+      nowMs,
+      source: 'desktop',
+      evidence: 'client_import'
+    });
     saveStore(store);
     return { ok: true, account: sanitizeAccountForView(store.accounts[email], store.activeAccountEmail) };
   }
@@ -1331,7 +1846,11 @@ function createAccountsManager(options = {}) {
         email,
         name: meta.name || email.split('@')[0],
         source: 'antigravity_tools_import',
-        credential: { accessToken, refreshToken, expiresAt, idToken }
+        oauthClientKey: tok.oauth_client_key || 'antigravity_enterprise',
+        oauthClientId: tok.client_id || null,
+        credential: { accessToken, refreshToken, expiresAt, idToken },
+        authInvalid: false,
+        authError: null
       });
       imported.push(email);
     }
@@ -1344,127 +1863,242 @@ function createAccountsManager(options = {}) {
   }
 
   /**
-   * 启动 OAuth2 本地回环授权流程并添加账号（在 120s 内等待回调）
+   * 启动 OAuth2 本地回环授权流程并添加账号（分阶段报错与脱敏记录；凭据持久化成功后不随初始配额失败回滚）
    */
-  async function startOAuthLogin({ openExternal = null, timeoutMs = 120000 } = {}) {
+  async function startOAuthLogin({ openExternal = options.openExternal || null, timeoutMs = 120000 } = {}) {
     const stateStr = crypto.randomBytes(16).toString('hex');
     let server = null;
     let boundPort = 0;
+    let curStage = 'oauth_callback_bind';
 
-    const codePromise = new Promise((resolve, reject) => {
-      let port = CALLBACK_PORT_START;
-      let tries = 0;
-      const timer = setTimeout(() => {
-        try { server?.close(); } catch { }
-        reject(new Error('OAuth 授权超时'));
-      }, timeoutMs);
-
-      const handleReq = (req, res) => {
-        try {
-          const reqUrl = new URL(req.url || '/', `http://127.0.0.1:${boundPort}`);
-          const errParam = reqUrl.searchParams.get('error');
-          const codeParam = reqUrl.searchParams.get('code');
-          const stParam = reqUrl.searchParams.get('state');
-          if (errParam) {
-            res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end('<html><body><h3>OAuth 授权失败</h3><p>您可以关闭此标签页。</p></body></html>');
-            clearTimeout(timer);
-            try { server?.close(); } catch { }
-            reject(new Error(`OAuth 拒绝或失败: ${errParam}`));
-            return;
-          }
-          if (codeParam && stParam === stateStr) {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end('<html><body><h3>✅ 授权成功，请返回 Antigravity Context Meter。</h3><script>setTimeout(()=>window.close(),1500)</script></body></html>');
-            clearTimeout(timer);
-            try { server?.close(); } catch { }
-            resolve(codeParam);
-            return;
-          }
-          res.writeHead(400);
-          res.end('Invalid callback');
-        } catch (e) {
-          res.writeHead(500);
-          res.end('Error');
-        }
+    const logFailAndReturn = (stage, err, extraDiag = {}) => {
+      const diag = err?.diagnostics || {};
+      const entry = {
+        action: 'oauth_login',
+        stage: err?.stage || stage,
+        targetHost: err?.targetHost || diag.targetHost || extraDiag.targetHost || null,
+        proxySource: diag.proxySource || extraDiag.proxySource || 'direct',
+        proxyProtocol: diag.proxyProtocol || extraDiag.proxyProtocol || 'direct',
+        proxyEndpoint: diag.proxyEndpoint || extraDiag.proxyEndpoint || null,
+        httpStatus: err?.httpStatus ?? diag.httpStatus ?? null,
+        errorCode: diag.errorCode || err?.code || null,
+        ok: false,
+        message: sanitizeDiagnosticErrorText(err)
       };
+      const st = loadStore();
+      const recorded = recordDiag(st, entry);
+      saveStore(st);
+      return {
+        ok: false,
+        stage: recorded.stage,
+        targetHost: recorded.targetHost,
+        httpStatus: recorded.httpStatus,
+        proxySource: recorded.proxySource,
+        proxyEndpoint: recorded.proxyEndpoint,
+        errorCode: recorded.errorCode,
+        error: recorded.message,
+        diagnostics: recorded
+      };
+    };
 
-      const tryNextPort = () => {
-        if (tries >= CALLBACK_PORT_RANGE) {
-          clearTimeout(timer);
-          reject(new Error('无法绑定本地 OAuth 回调端口'));
-          return;
-        }
-        const s = http.createServer(handleReq);
-        s.on('error', err => {
-          try { s.close(); } catch { }
-          if (err.code === 'EADDRINUSE') {
-            port++;
-            tries++;
-            tryNextPort();
-          } else {
-            clearTimeout(timer);
-            reject(err);
+    let code = '';
+    try {
+      code = await new Promise((resolve, reject) => {
+        let port = CALLBACK_PORT_START;
+        let tries = 0;
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try { server?.close(); } catch { }
+          reject(attachStageErrorMeta(new Error('OAuth 授权超时（请重新点击登录添加后在浏览器完成授权）'), curStage, '127.0.0.1', null, null));
+        }, timeoutMs);
+
+        const handleReq = (req, res) => {
+          try {
+            const reqUrl = new URL(req.url || '/', `http://127.0.0.1:${boundPort}`);
+            if (reqUrl.pathname === '/favicon.ico') {
+              res.writeHead(204);
+              res.end();
+              return;
+            }
+            const errParam = reqUrl.searchParams.get('error');
+            const codeParam = reqUrl.searchParams.get('code');
+            const stParam = reqUrl.searchParams.get('state');
+            if (errParam) {
+              res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end('<html><body><h3>OAuth 授权失败</h3><p>您可以关闭此标签页。</p></body></html>');
+              if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                try { server?.close(); } catch { }
+                reject(attachStageErrorMeta(new Error(`OAuth 拒绝或失败: ${errParam}`), 'loopback_callback', '127.0.0.1', 400, null));
+              }
+              return;
+            }
+            if (codeParam && stParam === stateStr) {
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end('<html><body><h3>✅ 授权回调已接收，正在返回 Antigravity Context Meter…</h3><script>setTimeout(()=>window.close(),1500)</script></body></html>');
+              if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                try { server?.close(); } catch { }
+                resolve(codeParam);
+              }
+              return;
+            }
+            res.writeHead(400);
+            res.end('Invalid callback');
+          } catch (e) {
+            res.writeHead(500);
+            res.end('Error');
           }
-        });
-        s.listen(port, '127.0.0.1', () => {
-          const oauthCfg = resolveAntigravityOAuthConfig(oauthResolveOpts);
-          if (!oauthCfg?.clientId || !oauthCfg?.clientSecret) {
-            clearTimeout(timer);
+        };
+
+        const tryNextPort = () => {
+          if (tries >= CALLBACK_PORT_RANGE) {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              reject(attachStageErrorMeta(new Error('无法绑定本地 OAuth 回调端口'), 'oauth_callback_bind', '127.0.0.1', null, null));
+            }
+            return;
+          }
+          const s = http.createServer(handleReq);
+          s.on('error', err => {
             try { s.close(); } catch { }
-            reject(new Error('未检测到可用 OAuth 客户端配置；可通过“导入当前”或“导入 Tools”添加账号，或设置 AG_OAUTH_CLIENT_ID / AG_OAUTH_CLIENT_SECRET。'));
-            return;
-          }
-          server = s;
-          boundPort = port;
-          const redirectUri = `http://127.0.0.1:${boundPort}`;
-          const params = new URLSearchParams({
-            client_id: oauthCfg.clientId,
-            redirect_uri: redirectUri,
-            response_type: 'code',
-            scope: ANTIGRAVITY_OAUTH_SCOPES.join(' '),
-            access_type: 'offline',
-            prompt: 'consent',
-            state: stateStr
+            if (err.code === 'EADDRINUSE') {
+              port++;
+              tries++;
+              tryNextPort();
+            } else if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              reject(attachStageErrorMeta(err, 'oauth_callback_bind', '127.0.0.1', null, null));
+            }
           });
-          const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
-          if (typeof openExternal === 'function') {
-            Promise.resolve(openExternal(authUrl)).catch(() => { });
-          } else {
-            try {
-              const { shell } = require('electron');
-              shell?.openExternal?.(authUrl);
-            } catch { }
-          }
-        });
-      };
-      tryNextPort();
-    });
+          s.listen(port, '127.0.0.1', () => {
+            const oauthCfg = resolveAntigravityOAuthConfig(oauthResolveOpts);
+            if (!oauthCfg?.clientId || !oauthCfg?.clientSecret) {
+              if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                try { s.close(); } catch { }
+                reject(attachStageErrorMeta(
+                  new Error('未检测到可用 OAuth 客户端配置；可通过“导入当前”或“导入 Tools”添加账号，或设置 AG_OAUTH_CLIENT_ID / AG_OAUTH_CLIENT_SECRET。'),
+                  'oauth_config',
+                  null,
+                  null,
+                  null
+                ));
+              }
+              return;
+            }
+            server = s;
+            boundPort = port;
+            curStage = 'loopback_callback';
+            const redirectUri = `http://127.0.0.1:${boundPort}`;
+            const params = new URLSearchParams({
+              client_id: oauthCfg.clientId,
+              redirect_uri: redirectUri,
+              response_type: 'code',
+              scope: ANTIGRAVITY_OAUTH_SCOPES.join(' '),
+              access_type: 'offline',
+              prompt: 'consent',
+              state: stateStr
+            });
+            const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
+            if (typeof openExternal === 'function') {
+              Promise.resolve(openExternal(authUrl)).catch(() => { });
+            } else {
+              try {
+                const { shell } = require('electron');
+                shell?.openExternal?.(authUrl);
+              } catch { }
+            }
+          });
+        };
+        tryNextPort();
+      });
+    } catch (e) {
+      return logFailAndReturn(e?.stage || curStage, e, { targetHost: '127.0.0.1', proxySource: 'loopback_direct' });
+    }
 
-    const code = await codePromise;
     const redirectUri = `http://127.0.0.1:${boundPort}`;
-    const tokData = await exchangeOAuthCode(code, redirectUri, customFetch, resolveAntigravityOAuthConfig(oauthResolveOpts));
-    const userInfo = await fetchGoogleUserInfo(tokData.access_token, customFetch);
-    const store = loadStore();
-    const rec = upsertAccountRecord(store, {
-      email: userInfo.email,
-      name: userInfo.name,
-      source: 'oauth_login',
-      credential: {
-        accessToken: tokData.access_token,
-        refreshToken: tokData.refresh_token || '',
-        expiresAt: new Date(Date.now() + (Number(tokData.expires_in) || 3600) * 1000).toISOString(),
-        idToken: tokData.id_token || ''
-      },
-      authInvalid: false,
-      authError: null
-    });
-    saveStore(store);
+    const loginOAuthCfg = resolveAntigravityOAuthConfig(oauthResolveOpts);
+    let tokData;
+    try {
+      curStage = 'token_exchange';
+      tokData = await exchangeOAuthCode(code, redirectUri, customFetch, loginOAuthCfg);
+    } catch (e) {
+      return logFailAndReturn('token_exchange', e, { targetHost: 'oauth2.googleapis.com' });
+    }
 
-    // 顺便拉取新账号初始配额（失败不影响添加）
-    try { await refreshAccountQuota(userInfo.email); } catch { }
+    let userInfo;
+    try {
+      curStage = 'userinfo_fetch';
+      userInfo = await fetchGoogleUserInfo(tokData.access_token, customFetch);
+    } catch (e) {
+      return logFailAndReturn('userinfo_fetch', e, { targetHost: 'www.googleapis.com' });
+    }
+
+    // 阶段 5：凭据已成功换取并验证身份，原子落盘（不更改当前活跃账号，不触发切号）
+    let rec;
+    try {
+      curStage = 'credential_persist';
+      const store = loadStore();
+      rec = upsertAccountRecord(store, {
+        email: userInfo.email,
+        name: userInfo.name,
+        source: 'oauth_login',
+        oauthClientKey: loginOAuthCfg?.key || 'antigravity_default',
+        oauthClientId: loginOAuthCfg?.clientId || null,
+        credential: {
+          accessToken: tokData.access_token,
+          refreshToken: tokData.refresh_token || '',
+          expiresAt: new Date(Date.now() + (Number(tokData.expires_in) || 3600) * 1000).toISOString(),
+          idToken: tokData.id_token || ''
+        },
+        authInvalid: false,
+        authError: null
+      });
+      recordDiag(store, {
+        action: 'oauth_login',
+        stage: 'credential_persist',
+        targetHost: 'local_store',
+        proxySource: tokData?._diagnostics?.proxySource || 'plugin_config',
+        proxyProtocol: tokData?._diagnostics?.proxyProtocol || 'direct',
+        proxyEndpoint: tokData?._diagnostics?.proxyEndpoint || null,
+        httpStatus: 200,
+        ok: true,
+        message: `凭据已保存 (${maskEmail(userInfo.email)})`
+      });
+      saveStore(store);
+    } catch (e) {
+      return logFailAndReturn('credential_persist', e, { targetHost: 'local_store' });
+    }
+
+    // 阶段 6：拉取新账号初始配额（即使额度查询失败也保留账号并返回部分成功与重试状态）
+    const quotaRes = await refreshAccountQuota(userInfo.email, { stage: 'initial_quota_fetch' });
     const freshStore = loadStore();
-    return { ok: true, account: sanitizeAccountForView(freshStore.accounts[userInfo.email] || rec, freshStore.activeAccountEmail) };
+    const viewAccount = sanitizeAccountForView(freshStore.accounts[userInfo.email] || rec, freshStore.activeAccountEmail);
+    if (!quotaRes.ok) {
+      return {
+        ok: true,
+        quotaOk: false,
+        stage: quotaRes.stage || 'initial_quota_fetch',
+        targetHost: quotaRes.targetHost || 'cloudcode-pa.googleapis.com',
+        httpStatus: quotaRes.httpStatus ?? null,
+        quotaError: quotaRes.error || '初始额度查询暂不可用',
+        account: viewAccount
+      };
+    }
+    return {
+      ok: true,
+      quotaOk: true,
+      stage: 'completed',
+      account: viewAccount
+    };
   }
 
   /**
@@ -1491,11 +2125,58 @@ function createAccountsManager(options = {}) {
     if (!clean) return { ok: false, error: '无效邮箱' };
     const store = loadStore();
     if (!store.accounts[clean]) return { ok: false, error: '账号不存在' };
+
+    const removedScopeKey = store.accounts[clean].accountScopeKey || buildAccountScopeKey(clean);
+    const wasActive = store.activeAccountEmail === clean;
+
     delete store.accounts[clean];
     store.autoSwitch.candidates = (store.autoSwitch.candidates || []).filter(e => normalizeEmail(e) !== clean);
-    if (store.activeAccountEmail === clean) store.activeAccountEmail = null;
+
+    // 清理该账号相关的防抖计数；若移除了活跃账号则整组重置防抖，避免基于失效账号触发误切换
+    for (const k of Array.from(debounceState.keys())) {
+      if (k === clean || k.startsWith(`${clean}:`)) debounceState.delete(k);
+    }
+
+    if (wasActive) {
+      store.activeAccountEmail = null;
+      debounceState.clear();
+      if (store.autoSwitchStatus && store.autoSwitchStatus.state === 'pending_idle') {
+        store.autoSwitchStatus.state = store.autoSwitch.enabled ? 'watching' : 'disabled';
+        store.autoSwitchStatus.blockedReason = null;
+      }
+    }
+
+    // 同步停止并解绑指向被移除账号或活跃已移除账号的保活配置，避免残留失效状态
+    if (store.keepalive) {
+      const targetEmail = normalizeEmail(store.keepalive.targetAccountEmail);
+      if (targetEmail === clean || (wasActive && !targetEmail)) {
+        store.keepalive.enabled = false;
+        store.keepalive.targetAccountEmail = null;
+        store.keepaliveState = {
+          ...(store.keepaliveState || {}),
+          running: false,
+          stopReason: 'account_removed'
+        };
+        try { if (fs.existsSync(keepaliveLockPath)) fs.unlinkSync(keepaliveLockPath); } catch { }
+      }
+    }
+
+    // 移除最后一个账号时收拢自动切号运行状态，不擅自修改或残留等待态
+    const remainingCount = Object.keys(store.accounts).length;
+    if (remainingCount === 0) {
+      store.activeAccountEmail = null;
+      store.autoSwitch.enabled = false;
+      store.autoSwitchStatus = {
+        ...(store.autoSwitchStatus || {}),
+        state: 'disabled',
+        blockedReason: null
+      };
+      debounceState.clear();
+    }
+
+    // 注意：有意保留 store.accountSessions 与本地 pricing_ledger_v1.json 历史归属记录，不做擦除或迁移
     saveStore(store);
-    return { ok: true };
+    return { ok: true, removedEmail: clean, removedScopeKey, wasActive, remainingCount };
   }
 
   /**
@@ -1512,34 +2193,69 @@ function createAccountsManager(options = {}) {
     if (!rec.credential?.refreshToken) {
       throw Object.assign(new Error('缺少 refresh_token，需要重新授权'), { isAuthInvalid: true });
     }
-    try {
-      const refreshed = await refreshOAuthAccessToken(rec.credential.refreshToken, customFetch, resolveAntigravityOAuthConfig(oauthResolveOpts));
-      const nextStore = loadStore();
-      if (nextStore.accounts[clean]) {
-        nextStore.accounts[clean].credential = { ...nextStore.accounts[clean].credential, ...refreshed };
-        nextStore.accounts[clean].authInvalid = false;
-        nextStore.accounts[clean].authError = null;
-        saveStore(nextStore);
-      }
-      return refreshed;
-    } catch (e) {
-      if (e.isAuthInvalid) {
+    const candidates = resolveAllAntigravityOAuthConfigs({
+      ...oauthResolveOpts,
+      oauthClientKey: rec.oauthClientKey || (rec.source === 'antigravity_tools_import' ? 'antigravity_enterprise' : ''),
+      preferredClientId: rec.oauthClientId || ''
+    });
+    const configsToTry = candidates.length ? candidates : [null];
+    let lastErr = null;
+    for (let i = 0; i < configsToTry.length; i++) {
+      const cfg = configsToTry[i];
+      try {
+        const refreshed = await refreshOAuthAccessToken(rec.credential.refreshToken, customFetch, cfg);
         const nextStore = loadStore();
         if (nextStore.accounts[clean]) {
-          nextStore.accounts[clean].authInvalid = true;
-          nextStore.accounts[clean].authError = e.message;
+          nextStore.accounts[clean].credential = { ...nextStore.accounts[clean].credential, ...refreshed };
+          if (refreshed.oauthClientId) nextStore.accounts[clean].oauthClientId = refreshed.oauthClientId;
+          if (refreshed.oauthClientKey) nextStore.accounts[clean].oauthClientKey = refreshed.oauthClientKey;
+          nextStore.accounts[clean].authInvalid = false;
+          nextStore.accounts[clean].authError = null;
           saveStore(nextStore);
         }
+        return refreshed;
+      } catch (e) {
+        lastErr = e;
+        const canRetryNextOfficialPair = (i + 1 < configsToTry.length) && (e.isClientMismatch || e.isAuthInvalid);
+        if (canRetryNextOfficialPair) continue;
+        break;
       }
-      throw e;
     }
+    if (lastErr?.isAuthInvalid) {
+      const nextStore = loadStore();
+      if (nextStore.accounts[clean]) {
+        nextStore.accounts[clean].authInvalid = true;
+        nextStore.accounts[clean].authError = lastErr.message;
+        saveStore(nextStore);
+      }
+    }
+    throw lastErr;
   }
 
   /**
-   * ELV-57 核心纯逻辑：根据新旧配额快照与归属本机账本记录，构建/切分对照区间。
+   * ELV-57 核心纯逻辑：根据新旧配额快照与归属本机账本记录，构建/切分/合并对照区间。
+   * - 同账号同池且连续无断点（无切号、无重置/恢复、采样间隔 <= gapSplitMs）时就地合并延续，避免产生海量 0pp 碎片；
    * - 切号、重置/滚动恢复、断网/过期缺口 (>30m 或错误态) 必须结束或切分，不拼成一段；
    * - 绝不把百分点变化直接认定为“本机消耗了该账号的 X%”。
    */
+  function queryIntervalLocalUsage(scopeKey, poolKey, startMs, endMs, options = {}) {
+    let localStats = {
+      requestCount: 0,
+      uncachedInputTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      keepaliveRequests: 0,
+      keepaliveTokens: 0
+    };
+    if (typeof options.queryLocalUsageInWindow === 'function') {
+      localStats = { ...localStats, ...(options.queryLocalUsageInWindow({ accountScopeKey: scopeKey, poolKey, startMs, endMs }) || {}) };
+    } else if (collector && typeof collector.summarizeAccountWindowUsage === 'function') {
+      localStats = { ...localStats, ...(collector.summarizeAccountWindowUsage({ accountScopeKey: scopeKey, poolKey, startMs, endMs }) || {}) };
+    }
+    return localStats;
+  }
+
   function recordQuotaComparisonSample(store, email, prevSnapshot, prevAtMs, nextSnapshot, nextAtMs, options = {}) {
     const cleanEmail = normalizeEmail(email);
     if (!cleanEmail || !nextSnapshot || !Array.isArray(nextSnapshot.pools)) return;
@@ -1573,21 +2289,46 @@ function createAccountsManager(options = {}) {
       else if (isResetOrRecovery) splitReason = endPct >= 99 ? 'quota_reset' : 'rolling_recovery';
       else if (hasGap) splitReason = 'sampling_gap';
 
-      // 查询本机在同一账号、同一模型池、同一时间段的实测流量
-      let localStats = {
-        requestCount: 0,
-        uncachedInputTokens: 0,
-        cacheReadTokens: 0,
-        outputTokens: 0,
-        totalTokens: 0,
-        keepaliveRequests: 0,
-        keepaliveTokens: 0
-      };
-      if (typeof options.queryLocalUsageInWindow === 'function') {
-        localStats = { ...localStats, ...(options.queryLocalUsageInWindow({ accountScopeKey: scopeKey, poolKey: pool.poolKey, startMs: prevAtMs, endMs: nowMs }) || {}) };
-      } else if (collector && typeof collector.summarizeAccountWindowUsage === 'function') {
-        localStats = { ...localStats, ...(collector.summarizeAccountWindowUsage({ accountScopeKey: scopeKey, poolKey: pool.poolKey, startMs: prevAtMs, endMs: nowMs }) || {}) };
+      // 若本次连续无断点，优先查找可合并的最近一条同账号同池活跃连续区间（防止 30s 轮询制造数百条无意义碎片）
+      if (!splitReason && !hasGap) {
+        let mergeIdx = -1;
+        for (let i = store.quotaIntervals.length - 1; i >= 0; i--) {
+          const cand = store.quotaIntervals[i];
+          if (!cand || cand.poolKey !== pool.poolKey) continue;
+          // 遇到其他账号在更晚结束的同池区间，则不再跨账号向前回溯合并
+          if (cand.accountScopeKey !== scopeKey) break;
+          if (!cand.splitReason && !cand.hasSamplingGap && cand.isReliableContinuous !== false
+            && Number.isFinite(cand.endAtMs) && cand.endAtMs <= nowMs
+            && (nowMs - cand.endAtMs) <= gapSplitMs
+            && (cand.endAtMs === prevAtMs || Math.abs(cand.endAtMs - prevAtMs) <= gapSplitMs)) {
+            mergeIdx = i;
+          }
+          break;
+        }
+        if (mergeIdx >= 0) {
+          const baseIv = store.quotaIntervals[mergeIdx];
+          const mergedStartMs = baseIv.startAtMs;
+          const mergedStats = queryIntervalLocalUsage(scopeKey, pool.poolKey, mergedStartMs, nowMs, options);
+          store.quotaIntervals[mergeIdx] = {
+            ...baseIv,
+            endAtMs: nowMs,
+            endRemainingPct: endPct,
+            deltaPp: Number((endPct - baseIv.startRemainingPct).toFixed(2)),
+            requestCount: mergedStats.requestCount || 0,
+            uncachedInputTokens: mergedStats.uncachedInputTokens || 0,
+            cacheReadTokens: mergedStats.cacheReadTokens || 0,
+            outputTokens: mergedStats.outputTokens || 0,
+            totalTokens: mergedStats.totalTokens || 0,
+            keepaliveRequests: mergedStats.keepaliveRequests || 0,
+            keepaliveTokens: mergedStats.keepaliveTokens || 0,
+            updatedAtMs: nowMs
+          };
+          continue;
+        }
       }
+
+      // 查询本机在同一账号、同一模型池、同一时间段的实测流量
+      const localStats = queryIntervalLocalUsage(scopeKey, pool.poolKey, prevAtMs, nowMs, options);
 
       const deltaPp = Number((endPct - startPct).toFixed(2));
       const interval = {
@@ -1623,6 +2364,55 @@ function createAccountsManager(options = {}) {
     if (store.quotaIntervals.length > 200) {
       store.quotaIntervals = store.quotaIntervals.slice(-200);
     }
+  }
+
+  /**
+   * 从历史记录中归并连续 30s 无断点碎片，并按最新归属账本重算每个对照区间的本机调用统计
+   */
+  function rebuildQuotaIntervalsFromHistory(options = {}) {
+    const gapSplitMs = Number(options.gapSplitMs) || 30 * 60 * 1000;
+    const store = loadStore();
+    const rawList = Array.isArray(store.quotaIntervals) ? store.quotaIntervals.slice() : [];
+    const sorted = rawList
+      .filter(iv => iv && iv.accountScopeKey && iv.poolKey && Number.isFinite(iv.startAtMs) && Number.isFinite(iv.endAtMs))
+      .sort((a, b) => (a.startAtMs - b.startAtMs) || (a.endAtMs - b.endAtMs));
+
+    const merged = [];
+    for (const cur of sorted) {
+      const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+      const canMerge = prev
+        && prev.accountScopeKey === cur.accountScopeKey
+        && prev.poolKey === cur.poolKey
+        && !prev.splitReason && !prev.hasSamplingGap && prev.isReliableContinuous !== false
+        && !cur.splitReason && !cur.hasSamplingGap && cur.isReliableContinuous !== false
+        && cur.startAtMs >= prev.startAtMs
+        && (cur.startAtMs - prev.endAtMs) <= gapSplitMs
+        && cur.endRemainingPct <= (cur.startRemainingPct + 1.0);
+
+      if (canMerge) {
+        prev.endAtMs = Math.max(prev.endAtMs, cur.endAtMs);
+        prev.endRemainingPct = cur.endRemainingPct;
+        prev.deltaPp = Number((prev.endRemainingPct - prev.startRemainingPct).toFixed(2));
+        prev.updatedAtMs = Math.max(prev.updatedAtMs || 0, cur.updatedAtMs || cur.endAtMs);
+      } else {
+        merged.push({ ...cur });
+      }
+    }
+
+    for (const iv of merged) {
+      const localStats = queryIntervalLocalUsage(iv.accountScopeKey, iv.poolKey, iv.startAtMs, iv.endAtMs, options);
+      iv.requestCount = localStats.requestCount || 0;
+      iv.uncachedInputTokens = localStats.uncachedInputTokens || 0;
+      iv.cacheReadTokens = localStats.cacheReadTokens || 0;
+      iv.outputTokens = localStats.outputTokens || 0;
+      iv.totalTokens = localStats.totalTokens || 0;
+      iv.keepaliveRequests = localStats.keepaliveRequests || 0;
+      iv.keepaliveTokens = localStats.keepaliveTokens || 0;
+    }
+
+    store.quotaIntervals = merged.slice(-200);
+    saveStore(store);
+    return { ok: true, beforeCount: rawList.length, afterCount: store.quotaIntervals.length, intervals: store.quotaIntervals };
   }
 
   async function refreshAccountQuota(email, opts = {}) {
@@ -1677,19 +2467,46 @@ function createAccountsManager(options = {}) {
       targetRec.quotaSnapshot = quotaData.snapshot;
       targetRec.lastQuotaUpdatedAtMs = quotaData.fetchedAtMs || nowMs;
       targetRec.lastQuotaError = null;
+      targetRec.lastQuotaErrorMeta = null;
+      targetRec.authInvalid = false;
+      targetRec.authError = null;
       saveStore(freshStore);
       return { ok: true, account: sanitizeAccountForView(targetRec, freshStore.activeAccountEmail) };
     } catch (e) {
       const freshStore = loadStore();
+      const diagEntry = recordDiag(freshStore, {
+        at: new Date().toISOString(),
+        flow: 'refresh_quota',
+        stage: e.stage || 'quota_fetch',
+        targetHost: e.targetHost || 'cloudcode-pa.googleapis.com',
+        httpStatus: Number.isFinite(Number(e.httpStatus)) ? Number(e.httpStatus) : null,
+        proxySource: e.proxySource || null,
+        proxyEndpoint: e.proxyEndpoint || null,
+        errorCode: e.errorCode || e.code || null,
+        error: e.message || String(e),
+        emailMasked: maskEmail(clean)
+      });
       if (freshStore.accounts[clean]) {
         freshStore.accounts[clean].lastQuotaError = e.message;
+        freshStore.accounts[clean].lastQuotaErrorMeta = diagEntry;
         if (e.isAuthInvalid) {
           freshStore.accounts[clean].authInvalid = true;
           freshStore.accounts[clean].authError = e.message;
         }
         saveStore(freshStore);
+      } else {
+        saveStore(freshStore);
       }
-      return { ok: false, error: e.message, authInvalid: Boolean(e.isAuthInvalid) };
+      return {
+        ok: false,
+        error: e.message,
+        stage: diagEntry.stage,
+        targetHost: diagEntry.targetHost,
+        httpStatus: diagEntry.httpStatus,
+        diagnostics: diagEntry,
+        authInvalid: Boolean(e.isAuthInvalid),
+        isClientMismatch: Boolean(e.isClientMismatch)
+      };
     }
   }
 
@@ -1721,8 +2538,19 @@ function createAccountsManager(options = {}) {
     rec.quotaSnapshot = hostQuotaResult.snapshot;
     rec.lastQuotaUpdatedAtMs = nowMs;
     rec.lastQuotaError = hostQuotaResult.error || null;
+    if (!hostQuotaResult.error) rec.lastQuotaErrorMeta = null;
     if (hostQuotaResult.planStatus?.tierName) rec.tierId = hostQuotaResult.planStatus.tierName;
     rec.lastUsedAtMs = nowMs;
+    if (accountSwitched) {
+      closeActiveAccountSessions(store, nowMs);
+    }
+    recordVerifiedAccountSession(store, {
+      email: clean,
+      nowMs,
+      source: 'desktop',
+      evidence: 'host_quota_sync',
+      forceNew: accountSwitched
+    });
     store.activeAccountEmail = clean;
     saveStore(store);
     return sanitizeAccountForView(rec, store.activeAccountEmail);
@@ -1927,7 +2755,7 @@ function createAccountsManager(options = {}) {
           freshCred = await ensureFreshTokenForAccount(cleanTarget);
         }
 
-        // 3. 保存切换前系统凭据快照用于失败回滚
+        // 3. 保存切换前系统凭据快照用于失败回滚（仅在确认切换生效后才切割账本活跃时段）
         preSnap = credStore.captureSnapshot();
 
         // 4. 原子同步写入 OS 共享凭据、Desktop/IDE state.vscdb 及 CLI ~/.gemini
@@ -1959,7 +2787,10 @@ function createAccountsManager(options = {}) {
         let verifiedEmail = '';
         let verifiedEffective = false;
         if (typeof getHostUserStatusFn === 'function') {
-          const deadline = Date.now() + (Number(opts.verifyTimeoutMs) || 6000);
+          if (lsRestarted) {
+            await new Promise(r => setTimeout(r, 350));
+          }
+          const deadline = Date.now() + (Number(opts.verifyTimeoutMs) || 15000);
           while (Date.now() <= deadline) {
             try {
               const hs = await getHostUserStatusFn({ force: true });
@@ -1980,8 +2811,16 @@ function createAccountsManager(options = {}) {
         const nextStore = loadStore();
         if (verifiedEffective) {
           const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+          closeActiveAccountSessions(nextStore, nowMs);
           nextStore.activeAccountEmail = cleanTarget;
           if (nextStore.accounts[cleanTarget]) nextStore.accounts[cleanTarget].lastUsedAtMs = nowMs;
+          recordVerifiedAccountSession(nextStore, {
+            email: cleanTarget,
+            nowMs,
+            source: 'desktop',
+            evidence: 'account_switch_verified',
+            forceNew: true
+          });
           nextStore.autoSwitchStatus = {
             ...nextStore.autoSwitchStatus,
             lastSwitchAtMs: nowMs,
@@ -2002,16 +2841,26 @@ function createAccountsManager(options = {}) {
           };
         }
 
-        // 若 LS 未在校验时间内确认切换为目标邮箱，如实报告“未确认生效”（不虚报成功！）
-        if (opts.rollbackOnVerifyMismatch && preSnap) {
-          credStore.restoreSnapshot(preSnap);
+        // 若 LS 未在校验时间内确认切换为目标邮箱，默认自动回滚并保持原活跃账号，不虚报成功！
+        let rolledBack = false;
+        if (opts.rollbackOnVerifyMismatch !== false && preSnap) {
+          try {
+            const rb = credStore.restoreSnapshot(preSnap);
+            rolledBack = Boolean(rb?.ok !== false);
+          } catch { }
+        }
+        if (verifiedEmail && verifiedEmail !== cleanTarget && nextStore.accounts[verifiedEmail]) {
+          nextStore.activeAccountEmail = verifiedEmail;
+          saveStore(nextStore);
         }
         return {
           ok: false,
           verifiedEffective: false,
+          rolledBack,
           lsRestarted,
           observedEmail: verifiedEmail || null,
-          error: `凭据已写入，但宿主 GetUserStatus 暂未确认切换为 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}。请重载或重启 Antigravity 客户端后重试。`
+          activeAccountEmail: nextStore.activeAccountEmail || null,
+          error: `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`
         };
       } catch (e) {
         if (preSnap) {
@@ -2237,11 +3086,23 @@ function createAccountsManager(options = {}) {
     const store = loadStore();
     const list = Object.values(store.accounts || {}).map(rec => sanitizeAccountForView(rec, store.activeAccountEmail));
     list.sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0) || String(a.email).localeCompare(String(b.email)));
+    const accountSessions = (store.accountSessions || []).map(s => ({
+      email: s.email,
+      accountScopeKey: s.accountScopeKey || buildAccountScopeKey(s.email),
+      source: s.source || 'desktop',
+      startAtMs: s.startAtMs,
+      lastVerifiedAtMs: s.lastVerifiedAtMs,
+      endAtMs: s.endAtMs ?? null,
+      evidence: s.evidence || 'unknown'
+    }));
     return {
       ok: true,
       activeAccountEmail: store.activeAccountEmail || null,
       activeAccountScopeKey: store.activeAccountEmail ? buildAccountScopeKey(store.activeAccountEmail) : null,
       accounts: list,
+      accountSessions,
+      diagnosticsPath: path.join(stateDir, 'oauth_diagnostics.jsonl'),
+      lastDiagnostics: (store.lastDiagnostics || []).slice(-10),
       autoSwitch: store.autoSwitch,
       autoSwitchStatus: store.autoSwitchStatus,
       keepalive: store.keepalive,
@@ -2272,7 +3133,8 @@ function createAccountsManager(options = {}) {
     updateKeepaliveConfig,
     stopKeepalive,
     evaluateKeepaliveTick,
-    recordQuotaComparisonSample
+    recordQuotaComparisonSample,
+    rebuildQuotaIntervalsFromHistory
   };
 }
 
@@ -2281,18 +3143,34 @@ function getSharedAccountsManager(opts = {}) {
   if (!sharedAccountsMgr || opts.forceNew) {
     const collector = opts.collector || require('./meter-collector');
     const localApi = opts.localApi || require('./local-api');
+    let currentOrigin = opts.origin || '';
     const mgr = createAccountsManager({
       ...opts,
       collector,
-      getHostUserStatus: opts.getHostUserStatus || (async () => {
-        try {
-          const api = await localApi.connect(opts.origin ? { origin: opts.origin } : undefined);
+      getHostUserStatus: opts.getHostUserStatus || (async (callOpts = {}) => {
+        // 重启语言服务后其随机 HTTPS 端口会重新分配：force 或已知 origin 失联时自动回退 CDP 重新发现活跃端口
+        const tryConnect = async (useOrigin) => {
+          const api = await localApi.connect(useOrigin ? { origin: useOrigin } : undefined);
+          if (api?.origin) currentOrigin = api.origin;
           const u = await api.call('GetUserStatus', {});
           return {
             email: u?.userStatus?.email || '',
             userStatus: u?.userStatus || null
           };
+        };
+        try {
+          if (!callOpts?.force && currentOrigin) {
+            try {
+              return await tryConnect(currentOrigin);
+            } catch {
+              return await tryConnect('');
+            }
+          }
+          return await tryConnect('');
         } catch {
+          if (currentOrigin) {
+            try { return await tryConnect(currentOrigin); } catch { }
+          }
           return null;
         }
       })
@@ -2325,19 +3203,53 @@ async function dispatchAccountsAction(mgr, payload = {}) {
       const targetEmail = payload.email ? normalizeEmail(payload.email) : '';
       if (targetEmail) {
         const res = await mgr.refreshAccountQuota(targetEmail);
-        return { ...res, overview: mgr.getOverviewState() };
+        return {
+          ...res,
+          ...(res.ok ? { message: `已刷新 ${targetEmail} 最新额度快照。` } : {}),
+          overview: mgr.getOverviewState()
+        };
       }
       const st = mgr.getOverviewState();
       const results = [];
+      let successCount = 0;
+      let failCount = 0;
+      let firstError = '';
       for (const acc of st.accounts) {
         if (!acc.hasRefreshToken) continue;
-        results.push({ email: acc.email, ...(await mgr.refreshAccountQuota(acc.email)) });
+        const r = await mgr.refreshAccountQuota(acc.email);
+        results.push({ email: acc.email, ...r });
+        if (r.ok) successCount += 1;
+        else {
+          failCount += 1;
+          if (!firstError) firstError = r.error || '刷新失败';
+        }
       }
-      return { ok: true, results, overview: mgr.getOverviewState() };
+      if (failCount > 0) {
+        return {
+          ok: false,
+          partialOk: successCount > 0,
+          successCount,
+          failCount,
+          error: `额度刷新部分或全部失败（成功 ${successCount} / 失败 ${failCount}）：${firstError}`,
+          results,
+          overview: mgr.getOverviewState()
+        };
+      }
+      return {
+        ok: true,
+        successCount,
+        failCount: 0,
+        message: successCount > 0 ? `已刷新全部 ${successCount} 个账号最新额度快照。` : '当前无可刷新账号。',
+        results,
+        overview: mgr.getOverviewState()
+      };
     }
     case 'switch':
       return {
-        ...(await mgr.switchActiveAccount(payload.email, { forceWhileBusy: Boolean(payload.forceWhileBusy) })),
+        ...(await mgr.switchActiveAccount(payload.email, {
+          forceWhileBusy: Boolean(payload.forceWhileBusy),
+          ...(payload.verifyTimeoutMs != null ? { verifyTimeoutMs: payload.verifyTimeoutMs } : {})
+        })),
         overview: mgr.getOverviewState()
       };
     case 'update_auto_switch':
@@ -2354,7 +3266,9 @@ async function dispatchAccountsAction(mgr, payload = {}) {
 }
 
 module.exports = {
+  OFFICIAL_OAUTH_CLIENT_PAIRS,
   resolveAntigravityOAuthConfig,
+  resolveAllAntigravityOAuthConfigs,
   SOURCE_ATTRIBUTION_CAPABILITIES,
   ELV52_PROTOCOL_EVIDENCE,
   DEFAULT_AUTO_SWITCH_CONFIG,
@@ -2362,6 +3276,12 @@ module.exports = {
   normalizeEmail,
   buildAccountScopeKey,
   maskEmail,
+  redactAccountDiagnosticEntry,
+  appendAccountDiagnostic,
+  deriveAccountSessionsFromStore,
+  recordVerifiedAccountSession,
+  closeActiveAccountSessions,
+  resolveAccountForTimestamp,
   buildUnifiedOAuthTokenTopicBase64,
   parseUnifiedOAuthTokenTopicBase64,
   buildUnifiedUserStatusTopicBase64,

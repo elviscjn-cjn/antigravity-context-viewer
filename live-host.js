@@ -212,13 +212,29 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             res.end(JSON.stringify({ ok: false, error: `单次入账记录数超出上限（最多 ${MAX_RECORD_CALLS} 条）` }));
             return;
           }
-          let confirmedAccountEmail = null;
+          let recOpts = {};
           try {
             const { getSharedAccountsManager } = require('./meter-accounts');
             const mgr = getSharedAccountsManager({ origin: reqOrigin });
-            confirmedAccountEmail = mgr.getOverviewState()?.activeAccountEmail || null;
+            const ov = mgr.getOverviewState();
+            const activeEmail = ov?.activeAccountEmail || null;
+            const sessions = Array.isArray(ov?.accountSessions) ? ov.accountSessions : [];
+            const openSess = activeEmail
+              ? sessions.slice().reverse().find(s => String(s.email).toLowerCase() === String(activeEmail).toLowerCase() && s.endAtMs == null)
+              : null;
+            recOpts = {
+              accountSessions: sessions,
+              ...(activeEmail ? {
+                confirmedAccountEmail: activeEmail,
+                liveConfirmedAccount: {
+                  email: activeEmail,
+                  verifiedAtMs: openSess?.lastVerifiedAtMs || Date.now(),
+                  sessionStartMs: openSess?.startAtMs || Date.now()
+                }
+              } : {})
+            };
           } catch { }
-          const resCall = recordModelCalls(calls, confirmedAccountEmail ? { confirmedAccountEmail } : {});
+          const resCall = recordModelCalls(calls, recOpts);
           if (resCall && typeof resCall === 'object' && resCall.ok === false) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({

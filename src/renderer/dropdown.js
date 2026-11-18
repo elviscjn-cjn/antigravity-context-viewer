@@ -2,7 +2,10 @@
     const rootScope = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : (typeof document !== 'undefined' ? document : null);
     try {
       rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => {
-        if (w !== exceptWrap) removeClass(w, 'is-open');
+        if (w !== exceptWrap) {
+          removeClass(w, 'is-open');
+          w.querySelector?.('.ag-dropdown-trigger')?.setAttribute?.('aria-expanded', 'false');
+        }
       });
     } catch {}
   }
@@ -16,6 +19,13 @@
     if (!wrap || !trigger || !label || !menu) return null;
     if (trigger._bound) return wrap._controller || null;
     trigger._bound = true;
+
+    trigger.setAttribute?.('role', 'combobox');
+    trigger.setAttribute?.('aria-haspopup', 'listbox');
+    trigger.setAttribute?.('aria-expanded', 'false');
+    const ariaLbl = cfg.ariaLabel || linkedSelect?.getAttribute?.('aria-label');
+    if (ariaLbl) trigger.setAttribute?.('aria-label', ariaLbl);
+    menu.setAttribute?.('role', 'listbox');
 
     let keyboardFocusIndex = -1;
     let listScrollTimer = null;
@@ -75,21 +85,28 @@
       if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
       keyboardFocusIndex = -1;
 
-      // 1. 搜索框
-      const searchWrap = document.createElement('div');
-      searchWrap.className = 'ag-dropdown-search-wrap';
-      const searchInput = document.createElement('input');
-      searchInput.type = 'text';
-      searchInput.className = 'ag-dropdown-search-input';
-      searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
-      searchInput.value = kw;
-      searchWrap.appendChild(searchInput);
-      menu.appendChild(searchWrap);
+      const allItemsForSearch = cfg.getOptions();
+      const selectableCount = allItemsForSearch.filter(x => x && !x.isGroupHeader).length;
+      const showSearch = cfg.searchable === true || (cfg.searchable !== false && selectableCount > 6);
 
-      searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
-      searchInput.addEventListener('input', (e) => {
-        renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
-      });
+      // 1. 搜索框（超过 6 项或显式启用时展示，短列表直接展示整洁选项）
+      let searchInput = null;
+      if (showSearch) {
+        const searchWrap = document.createElement('div');
+        searchWrap.className = 'ag-dropdown-search-wrap';
+        searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.className = 'ag-dropdown-search-input';
+        searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
+        searchInput.value = kw;
+        searchWrap.appendChild(searchInput);
+        menu.appendChild(searchWrap);
+
+        searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
+        searchInput.addEventListener('input', (e) => {
+          renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
+        });
+      }
 
       // 2. 列表容器
       const listContainer = document.createElement('div');
@@ -180,11 +197,14 @@
           const itemEl = document.createElement('div');
           const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
           itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
+          itemEl.setAttribute?.('role', 'option');
+          itemEl.setAttribute?.('aria-selected', isSelected ? 'true' : 'false');
           itemEl.setAttribute?.('data-index', String(idx));
           itemEl.setAttribute?.('data-value', String(opt.value || ''));
-          if (opt.tooltip) itemEl.title = opt.tooltip;
+          itemEl.title = opt.tooltip || opt.displayLeft || opt.label || '';
 
           const leftSpan = document.createElement('span');
+          leftSpan.className = 'ag-dropdown-item-text';
           leftSpan.textContent = opt.displayLeft || opt.label;
           itemEl.appendChild(leftSpan);
 
@@ -243,8 +263,10 @@
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
         const text = cfg.getLabelText ? cfg.getLabelText(opt) : (opt.label || opt.value);
         label.textContent = text;
+        label.title = text || '';
         if (linkedSelect) {
           runWithUiHydration(() => {
             linkedSelect.value = opt.value;
@@ -277,12 +299,14 @@
           clearListScrollTimer();
           clearInputFocusTimer();
           removeClass(wrap, 'is-open');
+          trigger.setAttribute?.('aria-expanded', 'false');
           focusNoScroll(trigger);
         }
       };
 
-      searchInput.addEventListener('keydown', keyHandler);
+      if (searchInput) searchInput.addEventListener('keydown', keyHandler);
       menu.addEventListener('keydown', keyHandler);
+      wrap._activeKeyHandler = keyHandler;
     }
 
     let inputFocusTimer = null;
@@ -302,31 +326,42 @@
         closeAllDropdowns(wrap);
         clearInputFocusTimer();
 
-        // 空间不足检测，自适应展开方向
+        // 上下空间与左右边缘防裁剪自适应展开方向
         try {
-          const rect = trigger.getBoundingClientRect?.() || { bottom: 0, top: 0 };
+          const rect = trigger.getBoundingClientRect?.() || { bottom: 0, top: 0, left: 0, right: 0, width: 0 };
           const spaceBelow = (typeof window !== 'undefined' ? (window.innerHeight || 800) : 800) - rect.bottom;
           if (spaceBelow < 240 && rect.top > 240) {
             addClass(wrap, 'open-up');
           } else {
             removeClass(wrap, 'open-up');
           }
+          const containerEl = wrap.closest?.('#panel, #panel-tokens, #panel-quota, #panel-settings') || null;
+          const cRect = containerEl?.getBoundingClientRect?.() || { left: 8, right: (typeof window !== 'undefined' ? (window.innerWidth || 1000) : 1000) - 8 };
+          const estW = Math.max(rect.width || 0, cfg.minMenuWidth || 190);
+          if (rect.left + estW > cRect.right - 6 && (rect.right - estW) >= cRect.left - 6) {
+            addClass(wrap, 'align-right');
+          } else {
+            removeClass(wrap, 'align-right');
+          }
         } catch {
           removeClass(wrap, 'open-up');
+          removeClass(wrap, 'align-right');
         }
 
         addClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'true');
         renderMenu('', { scrollSelected: true });
         inputFocusTimer = setTimeout(() => {
           inputFocusTimer = null;
           if (!hasClass(wrap, 'is-open')) return;
           const input = menu.querySelector ? menu.querySelector('.ag-dropdown-search-input') : null;
-          focusNoScroll(input);
+          if (input) focusNoScroll(input);
         }, 50);
       } else {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       }
     }
 
@@ -338,11 +373,24 @@
     trigger.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault?.();
-        toggleOpen();
+        if (hasClass(wrap, 'is-open') && e.key === 'Enter' && typeof wrap._activeKeyHandler === 'function') {
+          wrap._activeKeyHandler(e);
+        } else {
+          toggleOpen();
+        }
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (!hasClass(wrap, 'is-open')) {
+          e.preventDefault?.();
+          toggleOpen();
+        }
+        if (typeof wrap._activeKeyHandler === 'function') {
+          wrap._activeKeyHandler(e);
+        }
       } else if (e.key === 'Escape') {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       }
     });
 
@@ -357,6 +405,9 @@
         if (nextText != null && label.textContent !== nextText) {
           label.textContent = nextText;
         }
+        label.title = label.textContent || '';
+        const nextAria = cfg.getAriaLabel ? cfg.getAriaLabel() : (linkedSelect?.getAttribute?.('aria-label') || cfg.ariaLabel);
+        if (nextAria) trigger.setAttribute?.('aria-label', nextAria);
         // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
         if (!hasClass(wrap, 'is-open')) {
           const optsSig = `${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
@@ -377,8 +428,10 @@
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       },
-      open: () => toggleOpen()
+      open: () => toggleOpen(),
+      wrap
     };
     wrap._controller = controller;
     return controller;
@@ -688,18 +741,19 @@
       // 切换为「跟随订阅国家参考价」：实时根据当前订阅国家派生官方参考价与币种
       const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
       const matched = core?.findRegionPreset ? core.findRegionPreset(currentReg) : core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === currentReg || p.name === currentReg);
+      const isUltraTier = ps.tierKey === 'ultra';
       const curCode = matched ? matched.currency : (prevCustom.subscriptionCurrency || prevCustom.currency || 'USD');
       const curSymbol = matched ? matched.symbol : (core?.CURRENCY_SYMBOLS?.[curCode] || '$');
-      const paid = matched ? matched.monthlyPrice : null;
+      const paid = (matched && !isUltraTier) ? matched.monthlyPrice : null;
 
       customObj = {
         ...prevCustom,
         priceMode: 'preset',
-        priceSource: 'preset_region',
+        priceSource: (matched && !isUltraTier) ? 'preset_region' : 'unknown',
         actualPricePaid: paid,
         subscriptionCurrency: curCode,
         currency: curCode,
-        currencySource: 'preset_region',
+        currencySource: matched ? 'preset_region' : (prevCustom.currencySource || 'default'),
         currencySymbol: curSymbol,
         billingCycle: '月付',
         isZeroExtraCost: false,
@@ -757,11 +811,12 @@
       priceSource = 'custom';
       cycle = isZero ? '随套餐赠送/免费' : (prevCustom.billingCycle || '月付');
     } else {
-      // 跟随订阅国家参考价模式：实时从预设派生定价、币种与周期
+      // 跟随订阅国家参考价模式：仅 Pro 等有统一区域参考表时派生价格；Ultra 不套用 Pro 参考价
+      const isUltraTier = ps.tierKey === 'ultra';
       curCode = regionItem.currency;
       curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
-      paid = regionItem.monthlyPrice;
-      priceSource = 'preset_region';
+      paid = isUltraTier ? null : regionItem.monthlyPrice;
+      priceSource = isUltraTier ? 'unknown' : 'preset_region';
       isZero = false;
       cycle = '月付';
     }
@@ -1090,137 +1145,135 @@
     setPlanDetailExpanded(false);
   });
 
-  // 原生质感自定义下拉选择增强器
+  // 统一基于 initDropdownController 将原生 <select> 改造为高端自定义下拉组件（全界面风格与交互 100% 一致）
   const enhancedDropdowns = new Map();
-  function enhanceCustomSelect(selectId) {
+  const NATIVE_DROPDOWN_SPECS = [
+    { selectId: 'token-account-select', wrapId: 'token-account-dropdown-wrap', triggerId: 'token-account-dropdown-trigger', labelId: 'token-account-dropdown-label', menuId: 'token-account-dropdown-menu', compact: true },
+    { selectId: 'select-custom-acq', wrapId: 'select-custom-acq-dropdown-wrap', triggerId: 'select-custom-acq-dropdown-trigger', labelId: 'select-custom-acq-dropdown-label', menuId: 'select-custom-acq-dropdown-menu', compact: true },
+    { selectId: 'select-custom-region-preset', wrapId: 'select-custom-region-preset-dropdown-wrap', triggerId: 'select-custom-region-preset-dropdown-trigger', labelId: 'select-custom-region-preset-dropdown-label', menuId: 'select-custom-region-preset-dropdown-menu', compact: true, searchable: true },
+    { selectId: 'select-custom-currency', wrapId: 'select-custom-currency-dropdown-wrap', triggerId: 'select-custom-currency-dropdown-trigger', labelId: 'select-custom-currency-dropdown-label', menuId: 'select-custom-currency-dropdown-menu', compact: true, searchable: true, minMenuWidth: 130 },
+    { selectId: 'select-custom-cycle', wrapId: 'select-custom-cycle-dropdown-wrap', triggerId: 'select-custom-cycle-dropdown-trigger', labelId: 'select-custom-cycle-dropdown-label', menuId: 'select-custom-cycle-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-pool', wrapId: 'sel-auto-switch-pool-dropdown-wrap', triggerId: 'sel-auto-switch-pool-dropdown-trigger', labelId: 'sel-auto-switch-pool-dropdown-label', menuId: 'sel-auto-switch-pool-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-mode', wrapId: 'sel-auto-switch-mode-dropdown-wrap', triggerId: 'sel-auto-switch-mode-dropdown-trigger', labelId: 'sel-auto-switch-mode-dropdown-label', menuId: 'sel-auto-switch-mode-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-window', wrapId: 'sel-auto-switch-window-dropdown-wrap', triggerId: 'sel-auto-switch-window-dropdown-trigger', labelId: 'sel-auto-switch-window-dropdown-label', menuId: 'sel-auto-switch-window-dropdown-menu', compact: true }
+  ];
+
+  function initNativeSelectDropdown(selectId, opts = {}) {
     const sel = el(selectId);
-    if (!sel || !sel.parentNode) return null;
+    if (!sel) return null;
     if (enhancedDropdowns.has(selectId)) {
       const existing = enhancedDropdowns.get(selectId);
-      existing.refresh();
+      existing?.refresh?.();
       return existing;
     }
 
-    sel.style.display = 'none';
+    if (sel.style) sel.style.display = 'none';
+    sel.setAttribute?.('aria-hidden', 'true');
+    sel.setAttribute?.('tabindex', '-1');
 
-    const wrap = document.createElement('div');
-    wrap.className = 'ag-dropdown-wrapper';
-    wrap.setAttribute('data-target-select', selectId);
+    const preset = NATIVE_DROPDOWN_SPECS.find(s => s.selectId === selectId) || {};
+    const wrapId = opts.wrapId || preset.wrapId || `${selectId}-dropdown-wrap`;
+    const triggerId = opts.triggerId || preset.triggerId || `${selectId}-dropdown-trigger`;
+    const labelId = opts.labelId || preset.labelId || `${selectId}-dropdown-label`;
+    const menuId = opts.menuId || preset.menuId || `${selectId}-dropdown-menu`;
 
-    const trigger = document.createElement('div');
-    trigger.className = 'ag-dropdown-trigger';
-    trigger.setAttribute('tabindex', '0');
+    let wrap = el(wrapId);
+    if (!wrap && sel.parentNode && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      wrap = document.createElement('div');
+      wrap.id = wrapId;
+      wrap.className = `ag-dropdown-wrapper${opts.compact !== false && preset.compact !== false ? ' ag-dropdown-compact' : ''}`;
+      wrap.setAttribute?.('data-target-select', selectId);
 
-    const label = document.createElement('span');
-    label.className = 'ag-dropdown-label';
-    label.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1';
+      const trigger = document.createElement('div');
+      trigger.id = triggerId;
+      trigger.className = 'ag-dropdown-trigger';
+      trigger.setAttribute?.('tabindex', '0');
 
-    const arrow = document.createElement('div');
-    arrow.className = 'ag-dropdown-arrow';
-    arrow.innerHTML = '<svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>';
+      const label = document.createElement('span');
+      label.id = labelId;
+      label.className = 'ag-dropdown-label';
 
-    trigger.appendChild(label);
-    trigger.appendChild(arrow);
-    wrap.appendChild(trigger);
+      const arrow = document.createElement('div');
+      arrow.className = 'ag-dropdown-arrow';
+      arrow.innerHTML = '<svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>';
 
-    const menu = document.createElement('div');
-    menu.className = 'ag-dropdown-menu';
-    wrap.appendChild(menu);
+      trigger.appendChild?.(label);
+      trigger.appendChild?.(arrow);
+      wrap.appendChild?.(trigger);
 
-    const renderOptions = () => {
-      menu.innerHTML = '';
-      const selectedVal = sel.value;
-      const opts = Array.from(sel.options);
-      let activeText = '';
+      const menu = document.createElement('div');
+      menu.id = menuId;
+      menu.className = 'ag-dropdown-menu';
+      wrap.appendChild?.(menu);
 
-      opts.forEach((opt) => {
-        const item = document.createElement('div');
-        item.className = 'ag-dropdown-item' + (opt.value === selectedVal ? ' is-selected' : '');
+      sel.parentNode.insertBefore?.(wrap, sel.nextSibling);
+    }
 
-        const textSpan = document.createElement('span');
-        if (opt.text.includes(' · ')) {
-          const parts = opt.text.split(' · ');
-          textSpan.textContent = parts[0];
-          const subSpan = document.createElement('span');
-          subSpan.className = 'ag-dropdown-item-sub';
-          subSpan.textContent = parts.slice(1).join(' · ');
-          item.appendChild(textSpan);
-          item.appendChild(subSpan);
-        } else {
-          textSpan.textContent = opt.text;
-          item.appendChild(textSpan);
-        }
+    if (!wrap || !el(triggerId) || !el(labelId) || !el(menuId)) {
+      return null;
+    }
 
-        const check = document.createElement('span');
-        check.className = 'ag-dropdown-item-check';
-        check.textContent = '✓';
-        item.appendChild(check);
-
-        if (opt.value === selectedVal) {
-          activeText = opt.text;
-        }
-
-        item.addEventListener('click', (e) => {
-          e?.stopPropagation?.();
-          sel.value = opt.value;
-          renderOptions();
-          wrap?.classList?.remove?.('is-open');
-          if (typeof Event !== 'undefined') sel.dispatchEvent(new Event('change', { bubbles: true })); else sel.dispatchEvent?.({ type: 'change' });
-        });
-
-        menu.appendChild(item);
-      });
-
-      label.textContent = activeText || sel.selectedOptions[0]?.text || sel.options[0]?.text || '';
-    };
-
-    renderOptions();
-
-    trigger.addEventListener('click', (e) => {
-      e?.stopPropagation?.();
-      const isOpen = Boolean(wrap?.classList?.contains?.('is-open'));
-      const rootScope = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : (typeof document !== 'undefined' ? document : null);
-      rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => {
-        if (w !== wrap) w.classList.remove('is-open');
-      });
-      if (!isOpen) {
-        renderOptions();
-        wrap?.classList?.add?.('is-open');
-      } else {
-        wrap?.classList?.remove?.('is-open');
+    wrap.setAttribute?.('data-target-select', selectId);
+    const controller = initDropdownController({
+      wrapId,
+      triggerId,
+      labelId,
+      menuId,
+      selectId,
+      searchable: opts.searchable ?? preset.searchable,
+      minMenuWidth: opts.minMenuWidth ?? preset.minMenuWidth,
+      ariaLabel: sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
+      getAriaLabel: () => sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
+      emptyLabel: () => (sel.selectedOptions?.[0]?.textContent || sel.options?.[0]?.textContent || ''),
+      getSelectedValue: () => sel.value || '',
+      getOptions: () => Array.from(sel.options || []).map(o => {
+        const rawText = String(o.textContent || o.text || o.value || '').trim();
+        const dotIdx = rawText.indexOf(' · ');
+        return {
+          value: o.value,
+          label: rawText,
+          displayLeft: dotIdx > 0 ? rawText.slice(0, dotIdx) : rawText,
+          displayRight: dotIdx > 0 ? rawText.slice(dotIdx + 3) : '',
+          tooltip: rawText
+        };
+      }),
+      onSelect: (opt) => {
+        sel.value = opt.value;
+        if (typeof Event !== 'undefined') sel.dispatchEvent?.(new Event('change', { bubbles: true }));
+        else sel.dispatchEvent?.({ type: 'change', target: sel });
       }
     });
 
-    trigger.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        trigger.click();
-      } else if (e.key === 'Escape') {
-        wrap?.classList?.remove?.('is-open');
+    if (controller) {
+      if (!sel._dropdownSyncBound) {
+        sel._dropdownSyncBound = true;
+        sel.addEventListener?.('change', () => controller.refresh());
       }
-    });
-
-    sel.parentNode.insertBefore(wrap, sel.nextSibling);
-
-    sel.addEventListener('change', () => {
-      renderOptions();
-    });
-
-    const handler = {
-      wrap,
-      refresh: renderOptions
-    };
-    enhancedDropdowns.set(selectId, handler);
-    return handler;
+      controller.refresh();
+      enhancedDropdowns.set(selectId, controller);
+    }
+    return controller;
   }
 
-  // 点击外部自动收起下拉浮层
+  function enhanceCustomSelect(selectId) {
+    return initNativeSelectDropdown(selectId);
+  }
+
+  function syncAllNativeSelectDropdowns() {
+    for (const spec of NATIVE_DROPDOWN_SPECS) {
+      const ctrl = enhancedDropdowns.get(spec.selectId) || initNativeSelectDropdown(spec.selectId, spec);
+      ctrl?.refresh?.();
+    }
+  }
+
+  syncAllNativeSelectDropdowns();
+
+  // 点击外部自动收起下拉浮层（closeAllDropdowns 同步更新 aria-expanded）
   if (typeof document !== 'undefined' && document.addEventListener) {
     document.addEventListener('click', (e) => {
       try {
         if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
-          const root = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : document;
-          root.querySelectorAll('.ag-dropdown-wrapper.is-open').forEach(w => w.classList.remove('is-open'));
+          closeAllDropdowns();
         }
       } catch {}
     });
@@ -1312,10 +1365,16 @@
       if (zeroCheck) zeroCheck.checked = false;
       if (paidInput) {
         paidInput.disabled = false;
-        if (!paidInput.value || paidInput.value === '0') paidInput.value = '19.99';
+        const curTierKey = ANTIGRAVITY_TOKEN_DATA?.planStatus?.tierKey;
+        if ((!paidInput.value || paidInput.value === '0') && curTierKey !== 'ultra') paidInput.value = '19.99';
       }
-      if (cycleSelect) cycleSelect.value = '月付';
+      if (cycleSelect) {
+        cycleSelect.value = '月付';
+        enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+      }
     }
+    enhancedDropdowns.get('select-custom-acq')?.refresh?.();
+    enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
   });
 
   el('btn-mode-preset')?.addEventListener('click', () => switchPlanPriceMode('preset'));

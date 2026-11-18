@@ -20,7 +20,17 @@ const origFsMethods = {
   existsSync: fs.existsSync
 };
 const { safeWriteJsonSync, safeReadJsonSync, withFileLockSync } = require('./meter-storage');
-const { buildCliProxyEnv, detectProxyConfig, parseAndValidateProxyUrl, matchesNoProxy, redactProxyUrl } = require('./meter-proxy');
+const {
+  buildCliProxyEnv,
+  detectProxyConfig,
+  parseAndValidateProxyUrl,
+  matchesNoProxy,
+  redactProxyUrl,
+  openSocks5Tunnel,
+  openHttpConnectTunnel,
+  classifyRequestTimeoutPhase,
+  sanitizeDiagnosticErrorText
+} = require('./meter-proxy');
 const {
   conversationWorkspaces,
   extractWorkspacePathFromUri,
@@ -69,6 +79,7 @@ const {
   summarizeCacheReadStats,
   summarizeDailyMapCacheStats,
   normalizeSessionCallRecord,
+  sanitizeTurnPreviewText,
   groupSessionCallsByTurns,
   isValidSpeedSample,
   MAX_SPEED_SAMPLES_PER_MODEL,
@@ -1294,6 +1305,9 @@ function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitSt
       }
       : {});
 
+  // 保留账号归属元数据，避免后续无账号扫描富化抹除已确认的账号归属
+  const attributionMerged = mergeAccountAttributionFields(baseEntry, incomingEntry);
+
   const merged = {
     ...baseEntry,
     ...(!incomingIsStaleStatus && takeIncUsage ? incomingEntry : {}),
@@ -1319,8 +1333,18 @@ function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitSt
     dateIsProvisional: Boolean(chosenDateInfo.dateIsProvisional),
     ...(mergedRev !== null ? { sourceRevision: mergedRev } : {}),
     ...keepSpeed,
+    ...attributionMerged,
     updatedAt: Date.now()
   };
+  if (!attributionMerged.accountScopeKey) {
+    delete merged.accountScopeKey;
+  }
+  if (!attributionMerged.accountAttributionEvidence) {
+    delete merged.accountAttributionEvidence;
+  }
+  if (!attributionMerged.unattributedReason) {
+    delete merged.unattributedReason;
+  }
   if (!chosenDateInfo.dateSource) {
     delete merged.dateSource;
   }
@@ -1387,7 +1411,10 @@ function callSemanticSignature(c) {
     String(c.created_at || ''),
     String(c.dateSource || ''),
     Boolean(c.dateIsProvisional),
-    rev ?? ''
+    rev ?? '',
+    String(c.accountScopeKey || ''),
+    String(c.accountAttributionConfidence || ''),
+    String(c.unattributedReason || '')
   ].join('|');
 }
 
@@ -1532,6 +1559,363 @@ function reconcileConfirmableDuplicateStepCalls(callsObj) {
   return reconciled;
 }
 
+const SCOPE_KEY_REGEX = /^acct_[0-9a-f]{16}$/i;
+
+function isValidAccountScopeKey(val) {
+  return typeof val === 'string' && SCOPE_KEY_REGEX.test(val.trim());
+}
+
+function getAccountAttributionRank(conf) {
+  switch (String(conf || '')) {
+    case 'explicit_account_email':
+    case 'keepalive_bound':
+      return 4;
+    case 'session_window_verified':
+      return 3;
+    case 'repaired_session_window':
+    case 'live_confirmed_account':
+      return 2;
+    case 'unattributed':
+    default:
+      return 0;
+  }
+}
+
+function parseTimestampToMs(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw) || raw <= 0) return null;
+    return raw < 1e11 ? Math.round(raw * 1000) : Math.round(raw);
+  }
+  const str = String(raw).trim();
+  if (!str) return null;
+  // 纯日期 YYYY-MM-DD 缺少精确时刻，不得视为请求精确时间窗边界
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+  if (/^\d+(\.\d+)?$/.test(str)) {
+    const num = Number(str);
+    if (!Number.isFinite(num) || num <= 0) return null;
+    return num < 1e11 ? Math.round(num * 1000) : Math.round(num);
+  }
+  const parsed = Date.parse(str);
+  return (Number.isFinite(parsed) && parsed > 0) ? parsed : null;
+}
+
+function extractCallTimeBoundsMs(call) {
+  if (!call || typeof call !== 'object') return { startMs: null, endMs: null };
+  // 临时轮询时间戳 (dateIsProvisional / dateSource === 'provisional') 是点开旧会话时填入的浏览时刻 Date.now()，绝不可当作请求真实发生时间
+  const isProvisional = Boolean(call.dateIsProvisional || call.dateSource === 'provisional');
+  const allowRawTimestamp = !isProvisional;
+  const liveObsMs = call.liveRealtimeConfirmed === true ? parseTimestampToMs(call.liveObservedAtMs) : null;
+  const startCand = parseTimestampToMs(call.requestStartMs)
+    ?? parseTimestampToMs(call.startTimeMs)
+    ?? parseTimestampToMs(call.startTime)
+    ?? parseTimestampToMs(call.startedAt)
+    ?? parseTimestampToMs(call.created_at)
+    ?? parseTimestampToMs(call.createdAt)
+    ?? (allowRawTimestamp ? parseTimestampToMs(call.timestamp) : null)
+    ?? liveObsMs;
+  const endCand = parseTimestampToMs(call.requestEndMs)
+    ?? parseTimestampToMs(call.endTimeMs)
+    ?? parseTimestampToMs(call.endTime)
+    ?? parseTimestampToMs(call.completedAt)
+    ?? (allowRawTimestamp ? parseTimestampToMs(call.timestamp) : null)
+    ?? parseTimestampToMs(call.created_at)
+    ?? liveObsMs
+    ?? startCand;
+  if (startCand == null && endCand == null) return { startMs: null, endMs: null };
+  const s = startCand ?? endCand;
+  const e = endCand ?? startCand;
+  return { startMs: Math.min(s, e), endMs: Math.max(s, e) };
+}
+
+function mergeAccountAttributionFields(baseEntry = {}, incomingEntry = {}) {
+  const bScope = isValidAccountScopeKey(baseEntry.accountScopeKey) && baseEntry.accountAttributionConfidence !== 'unattributed'
+    ? baseEntry.accountScopeKey.trim()
+    : null;
+  const iScope = isValidAccountScopeKey(incomingEntry.accountScopeKey) && incomingEntry.accountAttributionConfidence !== 'unattributed'
+    ? incomingEntry.accountScopeKey.trim()
+    : null;
+  const bRank = bScope ? Math.max(1, getAccountAttributionRank(baseEntry.accountAttributionConfidence)) : 0;
+  const iRank = iScope ? Math.max(1, getAccountAttributionRank(incomingEntry.accountAttributionConfidence)) : 0;
+
+  if (bScope && iScope) {
+    if (bScope === iScope) {
+      const winner = iRank >= bRank ? incomingEntry : baseEntry;
+      return {
+        accountScopeKey: bScope,
+        accountAttributionConfidence: winner.accountAttributionConfidence || baseEntry.accountAttributionConfidence || incomingEntry.accountAttributionConfidence || 'live_confirmed_account',
+        accountAttributionEvidence: winner.accountAttributionEvidence || baseEntry.accountAttributionEvidence || incomingEntry.accountAttributionEvidence || null,
+        unattributedReason: null
+      };
+    }
+    if (iRank > bRank) {
+      return {
+        accountScopeKey: iScope,
+        accountAttributionConfidence: incomingEntry.accountAttributionConfidence,
+        accountAttributionEvidence: incomingEntry.accountAttributionEvidence || null,
+        unattributedReason: null
+      };
+    }
+    if (bRank > iRank) {
+      return {
+        accountScopeKey: bScope,
+        accountAttributionConfidence: baseEntry.accountAttributionConfidence,
+        accountAttributionEvidence: baseEntry.accountAttributionEvidence || null,
+        unattributedReason: null
+      };
+    }
+    // 同一置信度指向不同账号时拒绝猜测，降级未归属冲突
+    return {
+      accountScopeKey: null,
+      accountAttributionConfidence: 'unattributed',
+      accountAttributionEvidence: null,
+      unattributedReason: 'account_conflict'
+    };
+  }
+
+  if (bScope && !iScope) {
+    const baseIsHardBound = baseEntry.accountAttributionConfidence === 'explicit_account_email'
+      || baseEntry.accountAttributionConfidence === 'keepalive_bound';
+    if (!baseIsHardBound && incomingEntry.forceUnattributed && incomingEntry.unattributedReason) {
+      return {
+        accountScopeKey: null,
+        accountAttributionConfidence: 'unattributed',
+        accountAttributionEvidence: null,
+        unattributedReason: incomingEntry.unattributedReason
+      };
+    }
+    return {
+      accountScopeKey: bScope,
+      accountAttributionConfidence: baseEntry.accountAttributionConfidence || 'live_confirmed_account',
+      accountAttributionEvidence: baseEntry.accountAttributionEvidence || null,
+      unattributedReason: null
+    };
+  }
+
+  if (!bScope && iScope) {
+    return {
+      accountScopeKey: iScope,
+      accountAttributionConfidence: incomingEntry.accountAttributionConfidence || 'live_confirmed_account',
+      accountAttributionEvidence: incomingEntry.accountAttributionEvidence || null,
+      unattributedReason: null
+    };
+  }
+
+  return {
+    accountScopeKey: null,
+    accountAttributionConfidence: 'unattributed',
+    accountAttributionEvidence: incomingEntry.accountAttributionEvidence || baseEntry.accountAttributionEvidence || null,
+    unattributedReason: incomingEntry.unattributedReason || baseEntry.unattributedReason || null
+  };
+}
+
+function matchTimestampAgainstSessions(startMs, endMs, source, accountSessions = [], matchOpts = {}) {
+  const normSource = String(source || 'desktop').toLowerCase();
+  if (normSource === 'ide') {
+    return { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'unverified_source_ide' };
+  }
+  if (!Number.isFinite(startMs) || startMs <= 0) {
+    return { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'missing_request_timestamp' };
+  }
+  const rStart = Math.min(startMs, Number.isFinite(endMs) ? endMs : startMs);
+  const rEnd = Math.max(startMs, Number.isFinite(endMs) ? endMs : startMs);
+  const sessions = Array.isArray(accountSessions)
+    ? accountSessions.filter(s => s && s.email && Number.isFinite(Number(s.startAtMs)))
+    : [];
+  if (!sessions.length) {
+    return { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'before_account_tracking' };
+  }
+
+  const openVerifiedMs = Number.isFinite(Number(matchOpts.openSessionVerifiedUntilMs))
+    ? Number(matchOpts.openSessionVerifiedUntilMs)
+    : 0;
+  const openEmailNorm = typeof matchOpts.openSessionEmail === 'string'
+    ? matchOpts.openSessionEmail.trim().toLowerCase()
+    : '';
+
+  const getSessionWinEnd = (s) => {
+    const sStart = Number(s.startAtMs);
+    const sLast = Number.isFinite(Number(s.lastVerifiedAtMs)) ? Number(s.lastVerifiedAtMs) : sStart;
+    if (s.endAtMs != null) return Number(s.endAtMs) + 5000;
+    const isMatchedOpen = openVerifiedMs > 0 && (!openEmailNorm || String(s.email).trim().toLowerCase() === openEmailNorm);
+    const effLast = isMatchedOpen ? Math.max(sLast, sStart, openVerifiedMs) : Math.max(sLast, sStart);
+    return effLast + 180000;
+  };
+
+  let earliestStart = Infinity;
+  const matching = [];
+  for (const s of sessions) {
+    const sStart = Number(s.startAtMs);
+    if (sStart < earliestStart) earliestStart = sStart;
+    const winStart = sStart - 5000;
+    const winEnd = getSessionWinEnd(s);
+    if (rStart >= winStart && rEnd <= winEnd) {
+      matching.push(s);
+    }
+  }
+  if (matching.length > 0) {
+    const distinct = new Set(matching.map(m => String(m.email).trim().toLowerCase()));
+    if (distinct.size === 1) {
+      const m = matching[0];
+      return {
+        accountScopeKey: isValidAccountScopeKey(m.accountScopeKey) ? m.accountScopeKey.trim() : buildAccountScopeKey(m.email),
+        confidence: 'session_window_verified',
+        evidence: m.evidence || 'host_user_status_window'
+      };
+    }
+    return { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'cross_switch_boundary' };
+  }
+  const touched = sessions.filter(s => {
+    const sStart = Number(s.startAtMs);
+    const winStart = sStart - 5000;
+    const winEnd = getSessionWinEnd(s);
+    return rEnd >= winStart && rStart <= winEnd;
+  });
+  if (touched.length > 0) {
+    return { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'cross_switch_boundary' };
+  }
+  if (rEnd < earliestStart - 5000) {
+    return { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'before_account_tracking' };
+  }
+  return { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'outside_verified_window' };
+}
+
+function resolveCallAccountAttribution(call, options = {}, existing = null) {
+  if (call.accountAttributionConfidence === 'unattributed' && !call.accountEmail) {
+    return {
+      accountScopeKey: null,
+      accountAttributionConfidence: 'unattributed',
+      unattributedReason: call.unattributedReason || 'explicit_unattributed',
+      forceUnattributed: Boolean(call.forceUnattributed)
+    };
+  }
+  const explicitEmail = (typeof call.accountEmail === 'string' && call.accountEmail.includes('@'))
+    ? call.accountEmail.trim().toLowerCase()
+    : '';
+  const explicitScope = isValidAccountScopeKey(call.accountScopeKey) ? call.accountScopeKey.trim() : null;
+  const isHardBound = Boolean(explicitEmail || (explicitScope && (call.isKeepalive || call.accountAttributionConfidence === 'explicit_account_email' || call.accountAttributionConfidence === 'keepalive_bound')));
+  if (isHardBound || (explicitScope && !Array.isArray(options.accountSessions))) {
+    return {
+      accountScopeKey: explicitScope || buildAccountScopeKey(explicitEmail),
+      accountAttributionConfidence: call.accountAttributionConfidence || (call.isKeepalive ? 'keepalive_bound' : 'explicit_account_email'),
+      accountAttributionEvidence: call.accountAttributionEvidence || (explicitEmail ? 'call_account_email' : 'call_account_scope_key'),
+      unattributedReason: null
+    };
+  }
+
+  const callSource = String(call.source || existing?.source || 'desktop').toLowerCase();
+  if (Array.isArray(options.accountSessions)) {
+    if (callSource === 'ide') {
+      return {
+        accountScopeKey: null,
+        accountAttributionConfidence: 'unattributed',
+        unattributedReason: 'unverified_source_ide',
+        forceUnattributed: true
+      };
+    }
+    // 优先采用非临时的权威请求时间戳（若入参为点开旧会话产生的 provisional 浏览记录，必须使用账本已有 existing 的权威时间）
+    const callBounds = extractCallTimeBoundsMs(call);
+    const existBounds = existing ? extractCallTimeBoundsMs(existing) : { startMs: null, endMs: null };
+    const authBounds = callBounds.startMs != null ? callBounds : existBounds;
+    const hasExactTs = authBounds.startMs != null;
+
+    if (hasExactTs && options.accountSessions.length > 0) {
+      const liveAcct = options.liveConfirmedAccount;
+      const m = matchTimestampAgainstSessions(authBounds.startMs, authBounds.endMs, callSource, options.accountSessions, {
+        openSessionEmail: liveAcct?.email || null,
+        openSessionVerifiedUntilMs: liveAcct?.verifiedAtMs || null
+      });
+      if (m.accountScopeKey) {
+        return {
+          accountScopeKey: m.accountScopeKey,
+          accountAttributionConfidence: m.confidence,
+          accountAttributionEvidence: m.evidence || 'host_user_status_window',
+          unattributedReason: null
+        };
+      }
+      return {
+        accountScopeKey: null,
+        accountAttributionConfidence: 'unattributed',
+        unattributedReason: m.unattributedReason || 'outside_verified_window',
+        forceUnattributed: true
+      };
+    }
+
+    if (hasExactTs && options.accountSessions.length === 0) {
+      return {
+        accountScopeKey: null,
+        accountAttributionConfidence: 'unattributed',
+        unattributedReason: 'before_account_tracking',
+        forceUnattributed: true
+      };
+    }
+
+    // 尚无 transcript 精确时间时：仅对前端明确确认为“会话水合后实时新产生/流式刚结束”的本机请求归入当前已验证活跃账号；
+    // 点开历史旧会话首次水合出来的旧步骤严禁按当前登录账号猜测归属！
+    const liveAcct = options.liveConfirmedAccount;
+    const isOfflineScan = Boolean(options.trustTranscriptDate || call.fromTranscriptScan);
+    if (!hasExactTs && !isOfflineScan && call.liveRealtimeConfirmed === true && callSource === 'desktop' && liveAcct && typeof liveAcct.email === 'string' && liveAcct.email.includes('@')) {
+      const nowMs = Date.now();
+      const verifiedAt = Number(liveAcct.verifiedAtMs) || nowMs;
+      if (nowMs <= verifiedAt + 180000) {
+        return {
+          accountScopeKey: buildAccountScopeKey(liveAcct.email),
+          accountAttributionConfidence: 'live_confirmed_account',
+          accountAttributionEvidence: 'live_ipc_confirmed_account',
+          unattributedReason: null
+        };
+      }
+    }
+
+    // 若既无精确时间也非实时确认新请求，保持现有有效归属或暂列未归属（等待 transcript 权威时间落盘裁决）
+    if (existing && isValidAccountScopeKey(existing.accountScopeKey) && existing.accountAttributionConfidence !== 'unattributed') {
+      return {
+        accountScopeKey: existing.accountScopeKey.trim(),
+        accountAttributionConfidence: existing.accountAttributionConfidence,
+        accountAttributionEvidence: existing.accountAttributionEvidence || null,
+        unattributedReason: null
+      };
+    }
+
+    return {
+      accountScopeKey: null,
+      accountAttributionConfidence: 'unattributed',
+      unattributedReason: 'pending_authoritative_timestamp'
+    };
+  }
+
+  // 未提供 accountSessions 时：历史离线扫描严禁按当前账号强行归属；保留测试或明确传参兼容性
+  if (options.trustTranscriptDate || call.fromTranscriptScan) {
+    return {
+      accountScopeKey: null,
+      accountAttributionConfidence: 'unattributed',
+      unattributedReason: 'history_scan_without_sessions'
+    };
+  }
+
+  const fallbackEmail = (typeof options.confirmedAccountEmail === 'string' && options.confirmedAccountEmail.includes('@'))
+    ? options.confirmedAccountEmail.trim().toLowerCase()
+    : '';
+  const fallbackScope = fallbackEmail
+    ? buildAccountScopeKey(fallbackEmail)
+    : (isValidAccountScopeKey(options.accountScopeKey) ? options.accountScopeKey.trim() : null);
+
+  if (fallbackScope) {
+    return {
+      accountScopeKey: fallbackScope,
+      accountAttributionConfidence: options.accountAttributionConfidence || 'live_confirmed_account',
+      accountAttributionEvidence: options.accountAttributionEvidence || 'confirmed_account_email_option',
+      unattributedReason: null
+    };
+  }
+
+  return {
+    accountScopeKey: null,
+    accountAttributionConfidence: 'unattributed',
+    unattributedReason: 'missing_account_context'
+  };
+}
+
 function recordModelCalls(newCalls = [], options = {}) {
   if (!Array.isArray(newCalls) || !newCalls.length) return createRecordResult(true, false);
   const targetDir = typeof options === 'string' ? options : (options.ledgerPath || options.agDir);
@@ -1572,29 +1956,36 @@ function recordModelCalls(newCalls = [], options = {}) {
       const callCidRaw = call.cascadeId || incomingFallback?.cascadeId;
       const existing = draftCalls[targetKey];
 
-      // 严格账号归属：仅接受明确已核实账号字段或显式传入的 options.accountScopeKey / confirmedAccountEmail
-      const rawAcctEmail = (typeof call.accountEmail === 'string' && call.accountEmail.includes('@'))
-        ? call.accountEmail.trim().toLowerCase()
-        : ((typeof options.confirmedAccountEmail === 'string' && options.confirmedAccountEmail.includes('@'))
-          ? options.confirmedAccountEmail.trim().toLowerCase()
-          : '');
-      const resolvedScopeKey = (typeof call.accountScopeKey === 'string' && /^acct_[0-9a-f]{16}$/i.test(call.accountScopeKey.trim()))
-        ? call.accountScopeKey.trim()
-        : (rawAcctEmail ? buildAccountScopeKey(rawAcctEmail) : ((typeof options.accountScopeKey === 'string' && /^acct_[0-9a-f]{16}$/i.test(options.accountScopeKey.trim())) ? options.accountScopeKey.trim() : null));
-      const resolvedAttrConf = resolvedScopeKey
-        ? (call.accountAttributionConfidence || options.accountAttributionConfidence || (call.isKeepalive ? 'keepalive_bound' : 'live_confirmed_account'))
-        : (call.accountAttributionConfidence || 'unattributed');
+      // 严格账号归属：结合会话活跃时间窗或显式已核实账号，绝不把离线扫描旧记录或跨号边界错记到当前账号
+      const attrRes = resolveCallAccountAttribution(call, options, existing);
+      const resolvedScopeKey = attrRes.accountScopeKey;
+      const resolvedAttrConf = attrRes.accountAttributionConfidence;
+      const resolvedAttrEvidence = attrRes.accountAttributionEvidence || null;
+      const resolvedUnattrReason = attrRes.unattributedReason || null;
+      const callWithAttr = {
+        ...call,
+        ...(resolvedScopeKey ? { accountScopeKey: resolvedScopeKey } : {}),
+        accountAttributionConfidence: resolvedAttrConf,
+        ...(resolvedAttrEvidence ? { accountAttributionEvidence: resolvedAttrEvidence } : {}),
+        ...(resolvedUnattrReason ? { unattributedReason: resolvedUnattrReason } : {}),
+        ...(attrRes.forceUnattributed ? { forceUnattributed: true } : {})
+      };
+      if (!resolvedScopeKey) {
+        delete callWithAttr.accountScopeKey;
+      }
 
       if (!existing) {
-        const normalizedStep = extractCallStepNumbers(call, targetKey)[0] ?? null;
-        const uInc = getCallTokenBreakdown(call);
-        const dInfo = extractNormalizedDateInfo(call);
-        const incRev = extractSourceRevision(call);
+        const normalizedStep = extractCallStepNumbers(callWithAttr, targetKey)[0] ?? null;
+        const uInc = getCallTokenBreakdown(callWithAttr);
+        const dInfo = extractNormalizedDateInfo(callWithAttr);
+        const incRev = extractSourceRevision(callWithAttr);
         const nextEntry = {
-          ...call,
+          ...callWithAttr,
           callId: targetKey,
           ...(resolvedScopeKey ? { accountScopeKey: resolvedScopeKey } : {}),
           accountAttributionConfidence: resolvedAttrConf,
+          ...(resolvedAttrEvidence ? { accountAttributionEvidence: resolvedAttrEvidence } : {}),
+          ...(resolvedUnattrReason ? { unattributedReason: resolvedUnattrReason } : {}),
           ...(call.isKeepalive ? { isKeepalive: true } : {}),
           ...(callCidRaw && !call.cascadeId ? { cascadeId: callCidRaw } : {}),
           ...(normalizedStep !== null && call.stepIndex == null ? { stepIndex: normalizedStep } : {}),
@@ -1658,12 +2049,26 @@ function recordModelCalls(newCalls = [], options = {}) {
         || (recalcExist.isPriced && Number(existing.costUSD || 0) !== Number(recalcExist.costUSD || 0));
       const pricingProgressed = costOutOfSync || ((!existing.isPriced || !existing.costUSD) && Boolean((call.isPriced && call.costUSD > 0) || normalizeModelId(call.model || existing.model)));
       const resolvedStepIndex = existing.stepIndex ?? call.stepIndex ?? extractCallStepNumbers(existing, targetKey)[0] ?? extractCallStepNumbers(call, targetKey)[0] ?? null;
-      const metaProgressed = (existing.stepIndex == null && resolvedStepIndex != null) || (!existing.cascadeId && Boolean(callCidRaw)) || modelExactProgressed;
+      const existScopeClean = isValidAccountScopeKey(existing.accountScopeKey) && existing.accountAttributionConfidence !== 'unattributed'
+        ? existing.accountScopeKey.trim()
+        : null;
+      const existRank = existScopeClean ? Math.max(1, getAccountAttributionRank(existing.accountAttributionConfidence)) : 0;
+      const incRank = resolvedScopeKey ? Math.max(1, getAccountAttributionRank(resolvedAttrConf)) : 0;
+      const existBaseHardBound = existing.accountAttributionConfidence === 'explicit_account_email'
+        || existing.accountAttributionConfidence === 'keepalive_bound';
+      const attributionProgressed = Boolean(
+        (!existScopeClean && resolvedScopeKey)
+        || (existScopeClean && resolvedScopeKey && existScopeClean === resolvedScopeKey && incRank > existRank)
+        || (existScopeClean && resolvedScopeKey && existScopeClean !== resolvedScopeKey && incRank >= existRank)
+        || (existScopeClean && !resolvedScopeKey && attrRes.forceUnattributed && !existBaseHardBound)
+        || (!existScopeClean && !existing.unattributedReason && resolvedUnattrReason)
+      );
+      const metaProgressed = (existing.stepIndex == null && resolvedStepIndex != null) || (!existing.cascadeId && Boolean(callCidRaw)) || modelExactProgressed || attributionProgressed;
 
       if (modelProgressed || metaProgressed || dateProgressed || (!isUsageRollback && (stateProgressed || usageProgressed || revisionUsageProgressed || revisionMetaProgressed || pricingProgressed || speedProgressed))) {
         draftCalls[targetKey] = mergeSameCallRecords(
           existing,
-          call,
+          callWithAttr,
           targetKey,
           resolvedStepIndex,
           !isUsageRollback && revCmp >= 0,
@@ -1740,12 +2145,67 @@ function syncAccountLedgerPartitions(resolvedLedgerPath, callsMap = {}, fsImpl =
     fsImpl.writeFileSync(tmp, payload, 'utf8');
     fsImpl.renameSync(tmp, targetFile);
   }
+  // 清理纠偏后已不再包含任何归属记录的陈旧 acct_*.json 分片文件，保证分片目录与主账本 100% 一致
+  if (typeof fsImpl.readdirSync === 'function' && typeof fsImpl.unlinkSync === 'function') {
+    try {
+      for (const fName of fsImpl.readdirSync(partDir)) {
+        if (!/^acct_[0-9a-f]{16}\.json$/i.test(fName)) continue;
+        const sk = fName.slice(0, -5);
+        if (!buckets.has(sk)) {
+          fsImpl.unlinkSync(path.join(partDir, fName));
+        }
+      }
+    } catch { }
+  }
+}
+
+function accumulateDayBucket(map, dKey, u, tot, steps = 1) {
+  if (!dKey) return;
+  if (!map[dKey]) {
+    map[dKey] = { input: 0, cache: 0, output: 0, total: 0, steps: 0 };
+  }
+  map[dKey].input += u.inp;
+  map[dKey].cache += u.cap;
+  map[dKey].output += u.out;
+  map[dKey].total += tot;
+  map[dKey].steps += steps;
+}
+
+function accumulateModelDayBucket(srcMap, dKey, vKey, u, tot, steps = 1) {
+  if (!dKey || !vKey) return;
+  if (!srcMap[dKey]) srcMap[dKey] = {};
+  if (!srcMap[dKey][vKey]) {
+    srcMap[dKey][vKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+  }
+  srcMap[dKey][vKey].total += tot;
+  srcMap[dKey][vKey].input += u.inp;
+  srcMap[dKey][vKey].output += u.out;
+  srcMap[dKey][vKey].cache += u.cap;
+  srcMap[dKey][vKey].steps += steps;
+}
+
+function buildRefCostBundle(inp, outp, cap, tot, mInp, mOutp, mCap, mTot, costAll, costMonth) {
+  return {
+    all: calculateReferenceModelCost({ inputTokens: inp, outputTokens: outp, cacheTokens: cap, totalTokens: tot }, 'gemini-3.8-flash', { pricingDate: '2026-11-08', mode: 'all' }),
+    currentMonth: calculateReferenceModelCost({ inputTokens: mInp, outputTokens: mOutp, cacheTokens: mCap, totalTokens: mTot }, 'gemini-3.8-flash', { pricingDate: '2026-11-08', mode: 'all' }),
+    hybrid: calculateReferenceModelCost({ inputTokens: inp, outputTokens: outp, cacheTokens: cap, totalTokens: tot }, 'gemini-3.8-flash', {
+      pricingDate: '2026-11-09',
+      mode: 'unpriced_only',
+      knownUsage: { byCategory: costAll?.byCategory, costUSD: costAll?.pricedCostUSD || 0 }
+    }),
+    currentMonthHybrid: calculateReferenceModelCost({ inputTokens: mInp, outputTokens: mOutp, cacheTokens: mCap, totalTokens: mTot }, 'gemini-3.8-flash', {
+      pricingDate: '2026-11-09',
+      mode: 'unpriced_only',
+      knownUsage: { byCategory: costMonth?.byCategory, costUSD: costMonth?.pricedCostUSD || 0 }
+    })
+  };
 }
 
 /**
  * 构建严格的跨账号用量隔离统计：
  * - 只有带明确 accountScopeKey 且非 unattributed 的记录计入对应账号；
- * - 未归属实时记录及全部无法确认原始账号的历史 .pb/.db/legacy 记录一律放入 unattributed，绝不默认算给当前登录账号。
+ * - 为每个账号完整生成 dailyMapBySource / dailyModelMapBySource / 费用 / 缓存 / 对话数，确保全界面任意筛选项严密同步；
+ * - 未归属记录与旧档案按照「全量 - 已归属各账号总和」精确对账并入 unattributed，绝不默认算给当前账号。
  * - 保活请求 (isKeepalive: true) 计入对应账号同时提供独立统计 keepaliveStats。
  */
 function buildAccountUsageBreakdown({
@@ -1755,6 +2215,11 @@ function buildAccountUsageBreakdown({
   mergedDesktop = {},
   mergedCli = {},
   mergedLegacyUnallocated = {},
+  dailyModelMapBySource = null,
+  modelMetaByKey = {},
+  compactModelConfigs = [],
+  totalConversationsAll = 0,
+  unpricedSummaryBySource = null,
   now = new Date()
 } = {}) {
   const todayKey = formatLocalDateKey(now);
@@ -1770,22 +2235,52 @@ function buildAccountUsageBreakdown({
     todayTokens: 0,
     monthTokens: 0,
     yearTokens: 0,
+    currentMonthInput: 0,
+    currentMonthCache: 0,
+    currentMonthOutput: 0,
     callCount: 0,
+    totalSteps: 0,
+    totalConversations: 0,
+    activeDaysCount: 0,
+    firstUseDate: null,
     keepaliveRequests: 0,
     keepaliveTokens: 0,
     sources: { desktop: 0, cli: 0, agent: 0, ide: 0 },
     dailyMap: {},
-    cacheItems: [],
-    calls: []
+    dailyMapBySource: { all: {}, desktop: {}, cli: {}, legacyUnallocated: {} },
+    dailyModelMapBySource: { all: {}, desktop: {}, cli: {} },
+    modelMetaByKey: {},
+    _convIds: new Set(),
+    _cacheItems: [],
+    _monthCacheItems: [],
+    _calls: [],
+    _monthCalls: [],
+    _desktopCalls: [],
+    _cliCalls: []
   });
 
   const byAccount = {};
   const unattributedCallsMap = new Map();
-  const attributedByDay = {};
+  const attributedByDayAll = {};
+  const attributedByDayDesktop = {};
+  const attributedByDayCli = {};
+  const attributedModelByDay = { all: {}, desktop: {}, cli: {} };
+  const attributedConvIds = new Set();
+  const bucketMemo = new Map();
+
+  const resolveCallModelBucket = (callObj) => {
+    const memoKey = `${callObj.model || ''}\0${callObj.modelExactId || ''}\0${callObj.modelLabel || ''}\0${callObj.effort || ''}`;
+    let bucket = bucketMemo.get(memoKey);
+    if (!bucket) {
+      bucket = resolveModelUsageBucket(callObj, compactModelConfigs);
+      if (bucketMemo.size < 2000) bucketMemo.set(memoKey, bucket);
+    }
+    return bucket;
+  };
 
   for (const [ledgerKey, call] of (Array.isArray(finalCallsEntries) ? finalCallsEntries : [])) {
     if (!call || typeof call !== 'object') continue;
-    const scopeKey = (typeof call.accountScopeKey === 'string' && /^acct_[0-9a-f]{16}$/i.test(call.accountScopeKey.trim()) && call.accountAttributionConfidence !== 'unattributed')
+    const scopeKey = (typeof call.accountScopeKey === 'string' && SCOPE_KEY_REGEX.test(call.accountScopeKey.trim()) && call.accountAttributionConfidence !== 'unattributed')
       ? call.accountScopeKey.trim()
       : 'unattributed';
     const dKey = resolveLedgerCallDate(ledgerKey, call) || todayKey;
@@ -1801,80 +2296,413 @@ function buildAccountUsageBreakdown({
     if (!byAccount[scopeKey]) byAccount[scopeKey] = ensureAcct(scopeKey);
     const acc = byAccount[scopeKey];
     acc.callCount += 1;
+    acc.totalSteps += 1;
     acc.totalInputTokens += u.inp;
     acc.totalCacheTokens += u.cap;
     acc.totalOutputTokens += u.out;
     acc.totalTokens += tot;
+    if (!acc.firstUseDate || dKey < acc.firstUseDate) acc.firstUseDate = dKey;
     if (dKey === todayKey) acc.todayTokens += tot;
-    if (dKey.startsWith(monthPrefix)) acc.monthTokens += tot;
+    if (dKey.startsWith(monthPrefix)) {
+      acc.monthTokens += tot;
+      acc.currentMonthInput += u.inp;
+      acc.currentMonthCache += u.cap;
+      acc.currentMonthOutput += u.out;
+      acc._monthCacheItems.push({ inputTokens: u.inp, cacheReadTokens: u.cap, outputTokens: u.out, totalTokens: tot, hasInputCacheFields: true });
+      acc._monthCalls.push(call);
+    }
     if (dKey.startsWith(yearPrefix)) acc.yearTokens += tot;
     if (call.isKeepalive) {
       acc.keepaliveRequests += 1;
       acc.keepaliveTokens += tot;
     }
-    const src = call.agentRole === 'subagent' ? 'agent' : (call.source === 'cli' ? 'cli' : (call.source === 'ide' ? 'ide' : 'desktop'));
-    acc.sources[src] = (acc.sources[src] || 0) + 1;
 
-    if (!acc.dailyMap[dKey]) {
-      acc.dailyMap[dKey] = { input: 0, cache: 0, output: 0, total: 0, steps: 0 };
+    const roleSrc = call.agentRole === 'subagent' ? 'agent' : (call.source === 'cli' ? 'cli' : (call.source === 'ide' ? 'ide' : 'desktop'));
+    acc.sources[roleSrc] = (acc.sources[roleSrc] || 0) + 1;
+
+    const srcKey = call.source === 'cli' ? 'cli' : 'desktop';
+    const convKey = call.cascadeId ? `${srcKey}:${String(call.cascadeId).toLowerCase()}` : `call:${ledgerKey}`;
+    acc._convIds.add(convKey);
+    attributedConvIds.add(convKey);
+
+    accumulateDayBucket(acc.dailyMap, dKey, u, tot, 1);
+    accumulateDayBucket(acc.dailyMapBySource.all, dKey, u, tot, 1);
+    accumulateDayBucket(acc.dailyMapBySource[srcKey], dKey, u, tot, 1);
+    accumulateDayBucket(attributedByDayAll, dKey, u, tot, 1);
+    accumulateDayBucket(srcKey === 'cli' ? attributedByDayCli : attributedByDayDesktop, dKey, u, tot, 1);
+
+    const bucket = resolveCallModelBucket(call);
+    const vKey = bucket.variantKey || UNATTRIBUTED_MODEL_KEY;
+    if (bucket.isAttributed && vKey !== UNATTRIBUTED_MODEL_KEY) {
+      acc.modelMetaByKey[vKey] = modelMetaByKey[vKey] || {
+        modelKey: bucket.modelKey,
+        modelLabel: bucket.modelLabel,
+        variantKey: vKey,
+        variantLabel: bucket.variantLabel
+      };
     }
-    acc.dailyMap[dKey].input += u.inp;
-    acc.dailyMap[dKey].cache += u.cap;
-    acc.dailyMap[dKey].output += u.out;
-    acc.dailyMap[dKey].total += tot;
-    acc.dailyMap[dKey].steps += 1;
+    accumulateModelDayBucket(acc.dailyModelMapBySource.all, dKey, vKey, u, tot, 1);
+    accumulateModelDayBucket(acc.dailyModelMapBySource[srcKey], dKey, vKey, u, tot, 1);
+    accumulateModelDayBucket(attributedModelByDay.all, dKey, vKey, u, tot, 1);
+    accumulateModelDayBucket(attributedModelByDay[srcKey], dKey, vKey, u, tot, 1);
 
-    acc.cacheItems.push({
-      inputTokens: u.inp,
-      cacheReadTokens: u.cap,
-      outputTokens: u.out,
-      totalTokens: tot,
-      hasInputCacheFields: true
-    });
-    acc.calls.push(call);
-
-    if (!attributedByDay[dKey]) attributedByDay[dKey] = { input: 0, cache: 0, output: 0, total: 0, steps: 0 };
-    attributedByDay[dKey].input += u.inp;
-    attributedByDay[dKey].cache += u.cap;
-    attributedByDay[dKey].output += u.out;
-    attributedByDay[dKey].total += tot;
-    attributedByDay[dKey].steps += 1;
+    acc._cacheItems.push({ inputTokens: u.inp, cacheReadTokens: u.cap, outputTokens: u.out, totalTokens: tot, hasInputCacheFields: true });
+    acc._calls.push(call);
+    if (srcKey === 'cli') acc._cliCalls.push(call);
+    else acc._desktopCalls.push(call);
   }
 
   for (const acc of Object.values(byAccount)) {
-    acc.cacheReadStats = summarizeCacheReadStats(acc.cacheItems);
-    acc.costEstimate = summarizeApiCost(acc.calls, 0, {}, 0);
-    delete acc.cacheItems;
-    delete acc.calls;
+    acc.activeDaysCount = Object.keys(acc.dailyMap).length;
+    acc.totalConversations = acc._convIds.size;
+    acc.cacheReadStats = summarizeCacheReadStats(acc._cacheItems);
+    acc.currentMonthCacheReadStats = summarizeCacheReadStats(acc._monthCacheItems);
+    acc.cacheReadStatsBySource = {
+      all: acc.cacheReadStats,
+      desktop: summarizeDailyMapCacheStats(acc.dailyMapBySource.desktop),
+      cli: summarizeDailyMapCacheStats(acc.dailyMapBySource.cli)
+    };
+    acc.currentMonthCacheReadStatsBySource = {
+      all: acc.currentMonthCacheReadStats,
+      desktop: summarizeDailyMapCacheStats(acc.dailyMapBySource.desktop, monthPrefix),
+      cli: summarizeDailyMapCacheStats(acc.dailyMapBySource.cli, monthPrefix)
+    };
+    acc.costEstimate = summarizeApiCost(acc._calls, 0, {}, 0);
+    acc.costEstimateCurrentMonth = summarizeApiCost(acc._monthCalls, 0, {}, 0);
+    acc.costEstimateBySource = {
+      all: acc.costEstimate,
+      desktop: summarizeApiCost(acc._desktopCalls, 0, {}, 0),
+      cli: summarizeApiCost(acc._cliCalls, 0, {}, 0)
+    };
+    acc.referenceCost = buildRefCostBundle(
+      acc.totalInputTokens, acc.totalOutputTokens, acc.totalCacheTokens, acc.totalTokens,
+      acc.currentMonthInput, acc.currentMonthOutput, acc.currentMonthCache, acc.monthTokens,
+      acc.costEstimate, acc.costEstimateCurrentMonth
+    );
+    delete acc._convIds;
+    delete acc._cacheItems;
+    delete acc._monthCacheItems;
+    delete acc._calls;
+    delete acc._monthCalls;
+    delete acc._desktopCalls;
+    delete acc._cliCalls;
   }
 
-  // 构建严格“未归属历史”视图：总全量历史减去已明确归属到账号的精确记录（绝不把旧未知历史划入当前账号）
+  // 构建严格“未归属历史”视图：严格遵循「全量 - SUM(已归属账号)」守恒公式
   const unattributed = ensureAcct('unattributed');
-  for (const [dKey, rec] of Object.entries(dailyMapAll || {})) {
-    if (!rec || typeof rec !== 'object') continue;
-    const attr = attributedByDay[dKey] || { input: 0, cache: 0, output: 0, total: 0, steps: 0 };
-    const remInp = Math.max(0, Number(rec.input || 0) - attr.input);
-    const remCap = Math.max(0, Number(rec.cache || 0) - attr.cache);
-    const remOut = Math.max(0, Number(rec.output || 0) - attr.output);
-    const remTot = Math.max(0, Number(rec.total || 0) - attr.total);
-    const remSteps = Math.max(0, Number(rec.steps || rec.conversations || 0) - attr.steps);
-    if (remTot <= 0 && remSteps <= 0) continue;
-    unattributed.dailyMap[dKey] = { input: remInp, cache: remCap, output: remOut, total: remTot, steps: remSteps };
-    unattributed.totalInputTokens += remInp;
-    unattributed.totalCacheTokens += remCap;
-    unattributed.totalOutputTokens += remOut;
-    unattributed.totalTokens += remTot;
-    unattributed.callCount += remSteps;
-    if (dKey === todayKey) unattributed.todayTokens += remTot;
-    if (dKey.startsWith(monthPrefix)) unattributed.monthTokens += remTot;
-    if (dKey.startsWith(yearPrefix)) unattributed.yearTokens += remTot;
+  unattributed.unattributedReasonCounts = {};
+  unattributed.unattributedReasonTokens = {};
+
+  const subtractSourceDailyMap = (fullMap, attrMap, targetMap) => {
+    for (const [dKey, rec] of Object.entries(fullMap || {})) {
+      if (!rec || typeof rec !== 'object') continue;
+      const attr = attrMap[dKey] || { input: 0, cache: 0, output: 0, total: 0, steps: 0 };
+      const remInp = Math.max(0, Number(rec.input || 0) - attr.input);
+      const remCap = Math.max(0, Number(rec.cache || 0) - attr.cache);
+      const remOut = Math.max(0, Number(rec.output || 0) - attr.output);
+      const remTot = Math.max(0, Number(rec.total || 0) - attr.total);
+      const remSteps = Math.max(0, Number(rec.steps || rec.conversations || 0) - attr.steps);
+      if (remTot <= 0 && remSteps <= 0) continue;
+      targetMap[dKey] = { input: remInp, cache: remCap, output: remOut, total: remTot, steps: remSteps };
+    }
+  };
+
+  subtractSourceDailyMap(dailyMapAll, attributedByDayAll, unattributed.dailyMap);
+  unattributed.dailyMapBySource.all = unattributed.dailyMap;
+  subtractSourceDailyMap(mergedDesktop, attributedByDayDesktop, unattributed.dailyMapBySource.desktop);
+  subtractSourceDailyMap(mergedCli, attributedByDayCli, unattributed.dailyMapBySource.cli);
+  unattributed.dailyMapBySource.legacyUnallocated = { ...(mergedLegacyUnallocated || {}) };
+
+  for (const [dKey, rec] of Object.entries(unattributed.dailyMap)) {
+    if (!unattributed.firstUseDate || dKey < unattributed.firstUseDate) unattributed.firstUseDate = dKey;
+    unattributed.totalInputTokens += rec.input;
+    unattributed.totalCacheTokens += rec.cache;
+    unattributed.totalOutputTokens += rec.output;
+    unattributed.totalTokens += rec.total;
+    unattributed.callCount += rec.steps;
+    unattributed.totalSteps += rec.steps;
+    if (dKey === todayKey) unattributed.todayTokens += rec.total;
+    if (dKey.startsWith(monthPrefix)) {
+      unattributed.monthTokens += rec.total;
+      unattributed.currentMonthInput += rec.input;
+      unattributed.currentMonthCache += rec.cache;
+      unattributed.currentMonthOutput += rec.output;
+    }
+    if (dKey.startsWith(yearPrefix)) unattributed.yearTokens += rec.total;
   }
+
+  const subtractSourceModelMap = (srcName, authDailyMap) => {
+    const fullSrcModel = dailyModelMapBySource?.[srcName] || {};
+    const attrSrcModel = attributedModelByDay[srcName] || {};
+    const out = {};
+    for (const [dKey, authRec] of Object.entries(authDailyMap || {})) {
+      if (!authRec || authRec.total <= 0) continue;
+      const fullDay = fullSrcModel[dKey] || {};
+      const attrDay = attrSrcModel[dKey] || {};
+      const dayOut = {};
+      let sumTot = 0, sumInp = 0, sumCap = 0, sumOut = 0, sumSteps = 0;
+      for (const [vKey, fRec] of Object.entries(fullDay)) {
+        const aRec = attrDay[vKey] || { total: 0, input: 0, cache: 0, output: 0, steps: 0 };
+        const rTot = Math.max(0, Number(fRec.total || 0) - aRec.total);
+        if (rTot <= 0) continue;
+        const rInp = Math.max(0, Number(fRec.input || 0) - aRec.input);
+        const rCap = Math.max(0, Number(fRec.cache || 0) - aRec.cache);
+        const rOut = Math.max(0, Number(fRec.output || 0) - aRec.output);
+        const rStp = Math.max(0, Number(fRec.steps || 0) - aRec.steps);
+        dayOut[vKey] = { total: rTot, input: rInp, output: rOut, cache: rCap, steps: rStp };
+        if (modelMetaByKey?.[vKey]) unattributed.modelMetaByKey[vKey] = modelMetaByKey[vKey];
+        sumTot += rTot; sumInp += rInp; sumCap += rCap; sumOut += rOut; sumSteps += rStp;
+      }
+      const diffTot = Math.max(0, authRec.total - sumTot);
+      if (diffTot > 0) {
+        if (!dayOut[UNATTRIBUTED_MODEL_KEY]) {
+          dayOut[UNATTRIBUTED_MODEL_KEY] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+        }
+        dayOut[UNATTRIBUTED_MODEL_KEY].total += diffTot;
+        dayOut[UNATTRIBUTED_MODEL_KEY].input += Math.max(0, authRec.input - sumInp);
+        dayOut[UNATTRIBUTED_MODEL_KEY].cache += Math.max(0, authRec.cache - sumCap);
+        dayOut[UNATTRIBUTED_MODEL_KEY].output += Math.max(0, authRec.output - sumOut);
+        dayOut[UNATTRIBUTED_MODEL_KEY].steps += Math.max(0, authRec.steps - sumSteps);
+      }
+      if (Object.keys(dayOut).length > 0) out[dKey] = dayOut;
+    }
+    unattributed.dailyModelMapBySource[srcName] = out;
+  };
+  subtractSourceModelMap('all', unattributed.dailyMapBySource.all);
+  subtractSourceModelMap('desktop', unattributed.dailyMapBySource.desktop);
+  subtractSourceModelMap('cli', unattributed.dailyMapBySource.cli);
+
+  const unattrCalls = [], unattrMonthCalls = [], unattrDesktopCalls = [], unattrCliCalls = [];
+  for (const { call, dKey, tot } of unattributedCallsMap.values()) {
+    const reason = call.unattributedReason || (call.source === 'ide' ? 'unverified_source_ide' : 'before_account_tracking');
+    unattributed.unattributedReasonCounts[reason] = (unattributed.unattributedReasonCounts[reason] || 0) + 1;
+    unattributed.unattributedReasonTokens[reason] = (unattributed.unattributedReasonTokens[reason] || 0) + tot;
+    unattrCalls.push(call);
+    if (dKey.startsWith(monthPrefix)) unattrMonthCalls.push(call);
+    if (call.source === 'cli') unattrCliCalls.push(call);
+    else unattrDesktopCalls.push(call);
+  }
+
+  unattributed.activeDaysCount = Object.keys(unattributed.dailyMap).length;
+  unattributed.totalConversations = Math.max(0, (Number(totalConversationsAll) || unattributed.activeDaysCount) - attributedConvIds.size);
   unattributed.cacheReadStats = summarizeDailyMapCacheStats(unattributed.dailyMap);
+  unattributed.currentMonthCacheReadStats = summarizeDailyMapCacheStats(unattributed.dailyMap, monthPrefix);
+  unattributed.cacheReadStatsBySource = {
+    all: unattributed.cacheReadStats,
+    desktop: summarizeDailyMapCacheStats(unattributed.dailyMapBySource.desktop),
+    cli: summarizeDailyMapCacheStats(unattributed.dailyMapBySource.cli)
+  };
+  unattributed.currentMonthCacheReadStatsBySource = {
+    all: unattributed.currentMonthCacheReadStats,
+    desktop: summarizeDailyMapCacheStats(unattributed.dailyMapBySource.desktop, monthPrefix),
+    cli: summarizeDailyMapCacheStats(unattributed.dailyMapBySource.cli, monthPrefix)
+  };
+  unattributed.costEstimate = summarizeApiCost(
+    unattrCalls,
+    unpricedSummaryBySource?.all?.count || 0,
+    unpricedSummaryBySource?.all?.reasons || {},
+    unpricedSummaryBySource?.all?.tokens || 0
+  );
+  unattributed.costEstimateCurrentMonth = summarizeApiCost(
+    unattrMonthCalls,
+    unpricedSummaryBySource?.currentMonth?.count || 0,
+    unpricedSummaryBySource?.currentMonth?.reasons || {},
+    unpricedSummaryBySource?.currentMonth?.tokens || 0
+  );
+  unattributed.costEstimateBySource = {
+    all: unattributed.costEstimate,
+    desktop: summarizeApiCost(
+      unattrDesktopCalls,
+      unpricedSummaryBySource?.desktop?.count || 0,
+      unpricedSummaryBySource?.desktop?.reasons || {},
+      unpricedSummaryBySource?.desktop?.tokens || 0
+    ),
+    cli: summarizeApiCost(
+      unattrCliCalls,
+      unpricedSummaryBySource?.cli?.count || 0,
+      unpricedSummaryBySource?.cli?.reasons || {},
+      unpricedSummaryBySource?.cli?.tokens || 0
+    )
+  };
+  unattributed.referenceCost = buildRefCostBundle(
+    unattributed.totalInputTokens, unattributed.totalOutputTokens, unattributed.totalCacheTokens, unattributed.totalTokens,
+    unattributed.currentMonthInput, unattributed.currentMonthOutput, unattributed.currentMonthCache, unattributed.monthTokens,
+    unattributed.costEstimate, unattributed.costEstimateCurrentMonth
+  );
+  delete unattributed._convIds;
+  delete unattributed._cacheItems;
+  delete unattributed._monthCacheItems;
+  delete unattributed._calls;
+  delete unattributed._monthCalls;
+  delete unattributed._desktopCalls;
+  delete unattributed._cliCalls;
 
   return {
     byAccount,
     unattributed
   };
+}
+
+const CURRENT_ATTRIBUTION_REPAIR_VERSION = 'elv89-v3';
+
+/**
+ * 幂等账本账号归属迁移与纠偏：
+ * - 先对原 pricing_ledger_v1.json 做 .bak 备份；
+ * - 对带有精确时间戳且落在单一已核实 accountSessions 窗口内的记录准确归属；
+ * - 剥离早于追踪起点、缺时间戳、IDE 未核实或跨切号边界却被错误标为当前账号的 accountScopeKey；
+ * - 写入 attributionRepairVersion: CURRENT_ATTRIBUTION_REPAIR_VERSION，多次执行保持幂等不重复计数。
+ */
+function repairAndMigrateAccountLedger({
+  agDir = null,
+  ledgerPath = null,
+  accountSessions = [],
+  force = false,
+  dryRun = false,
+  backupSuffix = null
+} = {}) {
+  const targetDir = ledgerPath || agDir;
+  const resolvedLedgerPath = path.resolve(getPricingLedgerPath(targetDir));
+
+  const runLocked = () => {
+    ledgerCacheByPath.delete(normalizeLedgerKey(resolvedLedgerPath));
+    const ledger = loadPricingLedger(targetDir);
+    if (!ledger || ledger.__corrupted || ledger.__unreadable) {
+      return { ok: false, error: ledger?.__error || '账本不可读或已损坏' };
+    }
+    const calls = ledger.calls || {};
+    const nextCalls = { ...calls };
+
+    const summarizeCounts = (map) => {
+      const counts = { total: 0, attributed: {}, unattributed: 0 };
+      for (const rec of Object.values(map)) {
+        if (!rec || typeof rec !== 'object') continue;
+        counts.total += 1;
+        const sk = isValidAccountScopeKey(rec.accountScopeKey) && rec.accountAttributionConfidence !== 'unattributed'
+          ? rec.accountScopeKey.trim()
+          : null;
+        if (sk) counts.attributed[sk] = (counts.attributed[sk] || 0) + 1;
+        else counts.unattributed += 1;
+      }
+      return counts;
+    };
+
+    const before = summarizeCounts(calls);
+    let updatedCount = 0;
+    let clearedCount = 0;
+    let attributedOrFixedCount = 0;
+    const unattributedReasons = {};
+
+    for (const [k, rec] of Object.entries(calls)) {
+      if (!rec || typeof rec !== 'object') continue;
+      if (!force && rec.attributionRepairVersion === CURRENT_ATTRIBUTION_REPAIR_VERSION) continue;
+
+      const copy = { ...rec };
+      const curScope = isValidAccountScopeKey(copy.accountScopeKey) && copy.accountAttributionConfidence !== 'unattributed'
+        ? copy.accountScopeKey.trim()
+        : null;
+
+      // 保护极近期（3分钟内）实时确认的新增调用，避免在 transcript 落盘前或窗口同步间隙被误清除（不写入修复版本号以便稳定后复核）
+      if (copy.accountAttributionConfidence === 'live_confirmed_account' && curScope && !force) {
+        const obsMs = Number(copy.liveObservedAtMs) || (copy.updatedAt ? Date.parse(copy.updatedAt) : NaN) || Number(copy.timestamp);
+        if (Number.isFinite(obsMs) && (Date.now() - obsMs) >= 0 && (Date.now() - obsMs) < 180000) {
+          nextCalls[k] = copy;
+          continue;
+        }
+      }
+
+      // 显式保留用户/实验硬绑定的账号记录（keepalive / explicit email），其余均依据权威时间戳严格复核
+      if (copy.isKeepalive && curScope && copy.accountAttributionConfidence === 'keepalive_bound') {
+        copy.attributionRepairVersion = CURRENT_ATTRIBUTION_REPAIR_VERSION;
+        nextCalls[k] = copy;
+        continue;
+      }
+      if (copy.accountEmail && typeof copy.accountEmail === 'string' && copy.accountEmail.includes('@')) {
+        copy.accountScopeKey = buildAccountScopeKey(copy.accountEmail);
+        copy.accountAttributionConfidence = 'explicit_account_email';
+        copy.accountAttributionEvidence = copy.accountAttributionEvidence || 'call_account_email';
+        delete copy.unattributedReason;
+        copy.attributionRepairVersion = CURRENT_ATTRIBUTION_REPAIR_VERSION;
+        nextCalls[k] = copy;
+        if (curScope !== copy.accountScopeKey) updatedCount++;
+        continue;
+      }
+
+      const { startMs, endMs } = extractCallTimeBoundsMs(copy);
+      const src = String(copy.source || 'desktop').toLowerCase();
+      let verdict;
+      if (src === 'ide') {
+        verdict = { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'unverified_source_ide' };
+      } else if (startMs != null) {
+        verdict = matchTimestampAgainstSessions(startMs, endMs, src, accountSessions);
+      } else {
+        verdict = { accountScopeKey: null, confidence: 'unattributed', unattributedReason: 'missing_request_timestamp' };
+      }
+
+      if (verdict.accountScopeKey) {
+        if (curScope !== verdict.accountScopeKey || copy.accountAttributionConfidence !== 'repaired_session_window') {
+          attributedOrFixedCount += 1;
+          updatedCount += 1;
+        }
+        copy.accountScopeKey = verdict.accountScopeKey;
+        copy.accountAttributionConfidence = 'repaired_session_window';
+        copy.accountAttributionEvidence = verdict.evidence || 'session_window_repair';
+        delete copy.unattributedReason;
+      } else {
+        if (curScope) {
+          clearedCount += 1;
+          updatedCount += 1;
+        } else if (copy.accountAttributionConfidence !== 'unattributed' || !copy.unattributedReason) {
+          updatedCount += 1;
+        }
+        delete copy.accountScopeKey;
+        copy.accountAttributionConfidence = 'unattributed';
+        copy.unattributedReason = verdict.unattributedReason || 'before_account_tracking';
+        delete copy.accountAttributionEvidence;
+        unattributedReasons[copy.unattributedReason] = (unattributedReasons[copy.unattributedReason] || 0) + 1;
+      }
+      copy.attributionRepairVersion = CURRENT_ATTRIBUTION_REPAIR_VERSION;
+      nextCalls[k] = copy;
+    }
+
+    const after = summarizeCounts(nextCalls);
+    let backupPath = null;
+    if (!dryRun && fs.existsSync(resolvedLedgerPath)) {
+      const tsTag = backupSuffix || `${Date.now()}`;
+      backupPath = `${resolvedLedgerPath}.bak-pre-elv89-${tsTag}`;
+      fs.copyFileSync(resolvedLedgerPath, backupPath);
+    }
+
+    if (!dryRun && (updatedCount > 0 || force)) {
+      const draftLedger = {
+        ...ledger,
+        calls: nextCalls,
+        updatedAt: new Date().toISOString()
+      };
+      const saveRes = savePricingLedger(draftLedger, targetDir);
+      if (!saveRes.ok) {
+        return { ok: false, error: saveRes.error || '修复后账本保存失败', backupPath };
+      }
+      try {
+        syncAccountLedgerPartitions(resolvedLedgerPath, nextCalls, fs);
+      } catch { }
+      cachedTokenHistoryAt = 0;
+    }
+
+    return {
+      ok: true,
+      dryRun: Boolean(dryRun),
+      ledgerPath: resolvedLedgerPath,
+      backupPath,
+      updatedCount,
+      clearedCount,
+      attributedOrFixedCount,
+      unattributedReasons,
+      before,
+      after
+    };
+  };
+
+  return withFileLockSync(resolvedLedgerPath, runLocked);
 }
 
 /**
@@ -4526,6 +5354,52 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     currentEmail: currentAccountKey
   });
 
+  // 加载可用于历史补扫归属校验的账号活跃时段（仅在使用默认宿主目录或显式传入时读取，隔离测试不读宿主真实账号）
+  let sessionWindowsForHistory = Array.isArray(extraContext.accountSessions)
+    ? extraContext.accountSessions
+    : (Array.isArray(options.accountSessions) ? options.accountSessions : null);
+  let hasRealAccountStore = false;
+  if (!sessionWindowsForHistory || !options.skipAutoRepair) {
+    try {
+      const defaultAgDir = path.resolve(path.join(os.homedir(), '.gemini', 'antigravity'));
+      const isDefaultHostAg = path.resolve(agDir) === defaultAgDir;
+      if (isDefaultHostAg || options.stateDir) {
+        const { getStateDir } = require('./asar-engine');
+        const stDir = options.stateDir || getStateDir();
+        const acctStorePath = path.join(stDir, 'accounts_v1.json');
+        if (fs.existsSync(acctStorePath)) {
+          hasRealAccountStore = true;
+          const parsedAcct = JSON.parse(fs.readFileSync(acctStorePath, 'utf8'));
+          if (!sessionWindowsForHistory && Array.isArray(parsedAcct?.accountSessions) && parsedAcct.accountSessions.length > 0) {
+            sessionWindowsForHistory = parsedAcct.accountSessions;
+          }
+        }
+      } else if (Array.isArray(options.accountSessions) && options.accountSessions.length > 0) {
+        hasRealAccountStore = true;
+      }
+    } catch { }
+  }
+
+  // 在任何 transcript 对齐或富化写入覆盖之前，先对未经历最新归属版本校验且带有账号归属的账本执行一次带备份的幂等纠偏
+  if (hasRealAccountStore && !options.skipAutoRepair && (!options.fs || options.fs === fs)) {
+    try {
+      const preRepairCalls = (loadPricingLedger(agDir).calls || {});
+      const needsAttributionRepair = Object.values(preRepairCalls).some(rec =>
+        rec &&
+        typeof rec === 'object' &&
+        rec.attributionRepairVersion !== CURRENT_ATTRIBUTION_REPAIR_VERSION &&
+        isValidAccountScopeKey(rec.accountScopeKey) &&
+        rec.accountAttributionConfidence !== 'unattributed'
+      );
+      if (needsAttributionRepair) {
+        repairAndMigrateAccountLedger({
+          agDir,
+          accountSessions: Array.isArray(sessionWindowsForHistory) ? sessionWindowsForHistory : []
+        });
+      }
+    } catch { }
+  }
+
   // 结合持久化逐请求账本与本次扫描调用：先与既有账本做双阶段 1-to-1 对齐与富化，再仅将未匹配的已计价扫描请求落盘
   const initialCallsMap = loadPricingLedger(agDir).calls || {};
   const matchedTranscriptReqs = new Set();
@@ -4734,13 +5608,32 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const unmatchedPricedTranscriptReqs = recentRequests.filter(r => !matchedTranscriptReqs.has(r) && r.isPriced && r.callId);
   const ledgerUpdates = [...ledgerEnrichmentCalls, ...unmatchedPricedTranscriptReqs];
   if (ledgerUpdates.length) {
-    recordModelCalls(ledgerUpdates, { agDir, trustTranscriptDate: true });
+    recordModelCalls(ledgerUpdates, {
+      agDir,
+      trustTranscriptDate: true,
+      ...(sessionWindowsForHistory ? { accountSessions: sessionWindowsForHistory } : {})
+    });
   }
 
   const effectiveCallsMap = { ...(loadPricingLedger(agDir).calls || {}) };
   for (const [origKey, { targetCallId, merged }] of inMemoryEnrichments.entries()) {
     if (effectiveCallsMap[targetCallId]) {
-      effectiveCallsMap[targetCallId] = mergeSameCallRecords(effectiveCallsMap[targetCallId], merged, targetCallId, merged.stepIndex, false, true);
+      const diskRec = effectiveCallsMap[targetCallId];
+      const nextMerged = mergeSameCallRecords(diskRec, merged, targetCallId, merged.stepIndex, false, true);
+      if (diskRec.attributionRepairVersion === CURRENT_ATTRIBUTION_REPAIR_VERSION) {
+        nextMerged.attributionRepairVersion = diskRec.attributionRepairVersion;
+        if (diskRec.accountAttributionConfidence === 'unattributed') {
+          delete nextMerged.accountScopeKey;
+          delete nextMerged.accountAttributionEvidence;
+          nextMerged.accountAttributionConfidence = 'unattributed';
+          if (diskRec.unattributedReason) nextMerged.unattributedReason = diskRec.unattributedReason;
+        } else if (isValidAccountScopeKey(diskRec.accountScopeKey)) {
+          nextMerged.accountScopeKey = diskRec.accountScopeKey;
+          nextMerged.accountAttributionConfidence = diskRec.accountAttributionConfidence;
+          if (diskRec.accountAttributionEvidence) nextMerged.accountAttributionEvidence = diskRec.accountAttributionEvidence;
+        }
+      }
+      effectiveCallsMap[targetCallId] = nextMerged;
     } else if (effectiveCallsMap[origKey]) {
       if (targetCallId !== origKey) delete effectiveCallsMap[origKey];
       effectiveCallsMap[targetCallId] = merged;
@@ -5092,6 +5985,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     mergedDesktop,
     mergedCli,
     mergedLegacyUnallocated,
+    dailyModelMapBySource: modelBreakdown.dailyModelMapBySource,
+    modelMetaByKey: modelBreakdown.modelMetaByKey,
+    compactModelConfigs,
+    totalConversationsAll: totalConversations,
+    unpricedSummaryBySource: {
+      all: { count: totalUnpricedCount, reasons: totalUnpricedReasons, tokens: totalUnpricedTokens },
+      desktop: deskUnpriced,
+      cli: cliUnpriced,
+      currentMonth: monthUnpriced
+    },
     now
   });
   const out = {
@@ -5370,7 +6273,7 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
 
     if (event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user') {
       const textBody = typeof event.content === 'string' ? event.content : (typeof event.text === 'string' ? event.text : '');
-      const rawPreview = textBody.replace(/\s+/g, ' ').trim().slice(0, 120);
+      const rawPreview = sanitizeTurnPreviewText(textBody, 120);
       const turnEntry = {
         stepIndex,
         timestamp: validTs,
@@ -5603,7 +6506,8 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
       const stepIndex = Number.isInteger(Number(s.stepIndex ?? s.idx)) ? Number(s.stepIndex ?? s.idx) : idx;
       if (s.userInput) {
         const u = s.userInput;
-        const rawPreview = String(u.userResponse || (u.items || []).map(item => item.text || '').join(' ') || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        const rawText = String(u.userResponse || (u.items || []).map(item => item.text || '').join(' ') || '');
+        const rawPreview = sanitizeTurnPreviewText(rawText, 120);
         const already = allTurns.some(t => t.stepIndex === stepIndex);
         if (!already) {
           allTurns.push({
@@ -5888,244 +6792,8 @@ function resolveNodeRuntime() {
   };
 }
 
-/**
- * 通过 SOCKS5 (RFC 1928 / 1929) 建立到目标主机端口的 TCP 隧道（支持无认证及用户名密码认证）。
- * 握手失败或超时后立即销毁底层 socket 并抛出明确错误。
- */
-function openSocks5Tunnel(proxyParsed, targetHost, targetPort, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const net = require('net');
-    const socket = net.connect({ host: proxyParsed.hostname, port: proxyParsed.port });
-    let settled = false;
-    let stage = 'greeting';
-    let recvBuf = Buffer.alloc(0);
+// 隧道建立与超时分类助手已统一收敛至 meter-proxy.js 导出并在本文件顶部引入复用。
 
-    const timer = setTimeout(() => {
-      fail(new Error(`SOCKS5 代理握手超时 (${proxyParsed.hostname}:${proxyParsed.port}, ${timeoutMs}ms)`));
-    }, timeoutMs);
-
-    function cleanupListeners() {
-      clearTimeout(timer);
-      socket.removeListener('connect', onConnect);
-      socket.removeListener('data', onData);
-      socket.removeListener('error', onError);
-      socket.removeListener('close', onClose);
-    }
-
-    function fail(err) {
-      if (settled) return;
-      settled = true;
-      cleanupListeners();
-      try { socket.destroy(); } catch { }
-      reject(err);
-    }
-
-    function succeed(leftover) {
-      if (settled) return;
-      settled = true;
-      cleanupListeners();
-      if (leftover && leftover.length > 0) {
-        socket.unshift(leftover);
-      }
-      resolve(socket);
-    }
-
-    function sendConnectRequest() {
-      stage = 'connect';
-      const portBuf = Buffer.allocUnsafe(2);
-      portBuf.writeUInt16BE(Number(targetPort) || 443, 0);
-      let addrPart;
-      if (net.isIPv4(targetHost)) {
-        const octets = targetHost.split('.').map(n => Number(n));
-        addrPart = Buffer.from([0x01, ...octets]);
-      } else {
-        const hostBuf = Buffer.from(String(targetHost), 'utf8');
-        if (hostBuf.length === 0 || hostBuf.length > 255) {
-          return fail(new Error(`SOCKS5 目标主机名长度非法: ${targetHost}`));
-        }
-        addrPart = Buffer.concat([Buffer.from([0x03, hostBuf.length]), hostBuf]);
-      }
-      const reqPacket = Buffer.concat([Buffer.from([0x05, 0x01, 0x00]), addrPart, portBuf]);
-      socket.write(reqPacket);
-    }
-
-    function onConnect() {
-      const hasAuth = Boolean(proxyParsed.username || proxyParsed.password);
-      const greeting = hasAuth
-        ? Buffer.from([0x05, 0x02, 0x00, 0x02])
-        : Buffer.from([0x05, 0x01, 0x00]);
-      socket.write(greeting);
-    }
-
-    function onData(chunk) {
-      recvBuf = recvBuf.length ? Buffer.concat([recvBuf, chunk]) : chunk;
-      while (!settled) {
-        if (stage === 'greeting') {
-          if (recvBuf.length < 2) return;
-          const ver = recvBuf[0];
-          const method = recvBuf[1];
-          recvBuf = recvBuf.subarray(2);
-          if (ver !== 0x05) {
-            return fail(new Error(`SOCKS5 代理版本响应异常: 0x${ver.toString(16)}`));
-          }
-          if (method === 0x00) {
-            sendConnectRequest();
-            continue;
-          }
-          if (method === 0x02) {
-            stage = 'auth';
-            const uBuf = Buffer.from(decodeURIComponent(proxyParsed.username || ''), 'utf8');
-            const pBuf = Buffer.from(decodeURIComponent(proxyParsed.password || ''), 'utf8');
-            if (uBuf.length > 255 || pBuf.length > 255) {
-              return fail(new Error('SOCKS5 认证用户名或密码过长'));
-            }
-            const authPacket = Buffer.concat([
-              Buffer.from([0x01, uBuf.length]),
-              uBuf,
-              Buffer.from([pBuf.length]),
-              pBuf
-            ]);
-            socket.write(authPacket);
-            continue;
-          }
-          return fail(new Error(`SOCKS5 代理拒绝认证协商 (method=0x${method.toString(16)})`));
-        }
-
-        if (stage === 'auth') {
-          if (recvBuf.length < 2) return;
-          const authVer = recvBuf[0];
-          const status = recvBuf[1];
-          recvBuf = recvBuf.subarray(2);
-          if (authVer !== 0x01 || status !== 0x00) {
-            return fail(new Error(`SOCKS5 代理用户名密码认证失败 (status=${status})`));
-          }
-          sendConnectRequest();
-          continue;
-        }
-
-        if (stage === 'connect') {
-          if (recvBuf.length < 4) return;
-          const ver = recvBuf[0];
-          const rep = recvBuf[1];
-          const atyp = recvBuf[3];
-          if (ver !== 0x05) {
-            return fail(new Error(`SOCKS5 响应版本异常: 0x${ver.toString(16)}`));
-          }
-          if (rep !== 0x00) {
-            return fail(new Error(`SOCKS5 代理 CONNECT 失败 (reply=0x${rep.toString(16)})`));
-          }
-          let totalReplyLen = 0;
-          if (atyp === 0x01) totalReplyLen = 4 + 4 + 2;
-          else if (atyp === 0x04) totalReplyLen = 4 + 16 + 2;
-          else if (atyp === 0x03) {
-            if (recvBuf.length < 5) return;
-            totalReplyLen = 4 + 1 + recvBuf[4] + 2;
-          } else {
-            return fail(new Error(`SOCKS5 响应地址类型未知: 0x${atyp.toString(16)}`));
-          }
-          if (recvBuf.length < totalReplyLen) return;
-          const leftover = recvBuf.subarray(totalReplyLen);
-          succeed(leftover);
-          return;
-        }
-        return;
-      }
-    }
-
-    function onError(err) {
-      fail(new Error(`SOCKS5 代理连接失败: ${err?.message || String(err)}`));
-    }
-    function onClose() {
-      fail(new Error('SOCKS5 代理连接在握手完成前意外关闭'));
-    }
-
-    socket.on('connect', onConnect);
-    socket.on('data', onData);
-    socket.on('error', onError);
-    socket.on('close', onClose);
-  });
-}
-
-/**
- * 通过 HTTP / HTTPS 代理 CONNECT 方法建立 TLS 隧道。
- * CONNECT 失败、返回非 200 或超时均直接 reject，不静默回落直连。
- */
-function openHttpConnectTunnel(proxyParsed, targetHost, targetPort, timeoutMs, proxyTlsOpts = {}) {
-  return new Promise((resolve, reject) => {
-    const httpMod = proxyParsed.protocol === 'https:' ? https : require('http');
-    let settled = false;
-    const reqHeaders = {};
-    if (proxyParsed.username || proxyParsed.password) {
-      const cred = `${decodeURIComponent(proxyParsed.username || '')}:${decodeURIComponent(proxyParsed.password || '')}`;
-      reqHeaders['Proxy-Authorization'] = `Basic ${Buffer.from(cred, 'utf8').toString('base64')}`;
-    }
-    const connectOpts = {
-      host: proxyParsed.hostname,
-      port: proxyParsed.port,
-      method: 'CONNECT',
-      path: `${targetHost}:${targetPort}`,
-      headers: reqHeaders
-    };
-    if (proxyParsed.protocol === 'https:') {
-      if (proxyTlsOpts.ca) connectOpts.ca = proxyTlsOpts.ca;
-      if (typeof proxyTlsOpts.rejectUnauthorized === 'boolean') {
-        connectOpts.rejectUnauthorized = proxyTlsOpts.rejectUnauthorized;
-      }
-    }
-
-    const connectReq = httpMod.request(connectOpts);
-    const finishErr = (err) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
-    };
-
-    connectReq.on('connect', (res, socket) => {
-      if (settled) {
-        try { socket.destroy(); } catch { }
-        return;
-      }
-      if (res.statusCode === 200) {
-        settled = true;
-        resolve(socket);
-      } else {
-        try { socket.destroy(); } catch { }
-        finishErr(new Error(`HTTP 代理 CONNECT 失败: HTTP ${res.statusCode}`));
-      }
-    });
-    connectReq.on('error', err => {
-      finishErr(new Error(`HTTP 代理连接失败: ${err?.message || String(err)}`));
-    });
-    connectReq.setTimeout(timeoutMs, () => {
-      try { connectReq.destroy(); } catch { }
-      finishErr(new Error(`HTTP 代理 CONNECT 超时 (${timeoutMs}ms)`));
-    });
-    connectReq.end();
-  });
-}
-
-function classifyRequestTimeoutPhase(err, usedProxyTunnel) {
-  const msg = String(err?.message || '').toLowerCase();
-  const code = String(err?.code || '').toUpperCase();
-  if (/proxy_tunnel|connect 失败|代理.*超时|socks5/i.test(msg)) {
-    return 'proxy_tunnel_connect';
-  }
-  if (usedProxyTunnel && (/请求超时/.test(msg) || code === 'ETIMEDOUT')) {
-    return 'tls_or_response';
-  }
-  if (code === 'ETIMEDOUT' || code === 'ECONNREFUSED' || /connect etimedout|connect econnrefused/i.test(msg)) {
-    return 'tcp_connect';
-  }
-  if (/请求超时|timeout|aborted|socket hang up|econnreset/i.test(msg)) {
-    return 'tls_or_response';
-  }
-  return null;
-}
-
-function sanitizeDiagnosticErrorText(err) {
-  const msg = String(err?.message || err || '请求失败');
-  return msg.replace(/([a-zA-Z0-9+.-]+:\/\/)([^/@\s]+@)/g, '$1');
-}
 
 function requestGithubUrl(rawUrl, options = {}) {
   return new Promise((resolve, reject) => {
@@ -7434,9 +8102,11 @@ module.exports = {
   formatLocalDateKey,
   recordModelCalls,
   recordModelCallsAsync,
+  resolveCallAccountAttribution,
   syncAccountLedgerPartitions,
   buildAccountUsageBreakdown,
   summarizeAccountWindowUsage,
+  repairAndMigrateAccountLedger,
   loadPricingLedger,
   savePricingLedger,
   getPricingLedgerPath,

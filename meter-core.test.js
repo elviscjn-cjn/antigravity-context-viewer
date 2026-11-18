@@ -4138,3 +4138,157 @@ test('Conversation DB gen_metadata backfill recovers missing transcript models a
     fsMod.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('v0.8.8 chart visual scale: continuous piecewise anchor interpolation (zero cross-tier shrink), monotonic boundaries, overflow cap and cumulative A+C summary', () => {
+  const {
+    computeMixedScaleResponse,
+    computeColorScaleResponse,
+    resolveScaleEnvelope,
+    mapBubbleDiameter,
+    mapBarHeightPx,
+    allocateStackedSegmentHeights,
+    interpolateScaleColorHsl,
+    shouldShowYearlyPeakBadge,
+    computeLogRulerPosition,
+    computeCumulativeStripSummary
+  } = require('./meter-core');
+
+  // 1. 同一气泡/日柱/周柱跨所有包络边界 (a-1, a, a+1) 必须严格连续单调不缩小，且跨包络切换后同值像素/颜色完全稳定
+  const bubbleBoundaries = [100e3, 1e6, 10e6, 100e6, 1e9];
+  const expectedBubbleCaps = [24, 32, 40, 49, 58];
+  bubbleBoundaries.forEach((b, idx) => {
+    const envLo = resolveScaleEnvelope(b - 1, 'yearly');
+    const envAt = resolveScaleEnvelope(b, 'yearly');
+    const envHi = resolveScaleEnvelope(b + 1, 'yearly');
+    const dLo = mapBubbleDiameter(b - 1, envLo).diameter;
+    const dAt = mapBubbleDiameter(b, envAt).diameter;
+    const dHi = mapBubbleDiameter(b + 1, envHi).diameter;
+    assert.ok(Math.abs(dAt - expectedBubbleCaps[idx]) < 1e-6, `气泡锚点 ${b} 应精确等于 ${expectedBubbleCaps[idx]}px`);
+    assert.ok(dLo <= dAt && dAt <= dHi, `气泡边界 ${b}: ${dLo} <= ${dAt} <= ${dHi} 不得跨档缩小`);
+    // 验证同值点 1.82M / 100K / 100M 在更高包络下绝对尺寸与颜色不变
+    assert.equal(mapBubbleDiameter(1.82e6, envLo).diameter, mapBubbleDiameter(1.82e6, envHi).diameter);
+    assert.equal(computeColorScaleResponse(100e6, 'yearly'), computeColorScaleResponse(100e6, 'yearly'));
+  });
+  const env100M = resolveScaleEnvelope(100e6, 'yearly');
+  const env1B = resolveScaleEnvelope(1e9, 'yearly');
+  assert.equal(mapBubbleDiameter(100e6, env100M).diameter, 49.0);
+  assert.equal(mapBubbleDiameter(100e6, env1B).diameter, 49.0, '100M 气泡跨入 1B 包络后必须保持 49.0px，严禁跌落 35.7px');
+  assert.ok(Math.abs(mapBubbleDiameter(1.82e6, env1B).diameter - 33.6403) < 0.05);
+  assert.equal(mapBubbleDiameter(3.64e9, resolveScaleEnvelope(3.64e9, 'yearly')).diameter, 58.0);
+  assert.equal(mapBubbleDiameter(3.64e9, resolveScaleEnvelope(3.64e9, 'yearly')).overflow, true);
+
+  const dayBoundaries = [100e3, 1e6, 10e6, 100e6, 500e6];
+  const expectedDayCaps = [0.38 * 140, 0.52 * 140, 0.68 * 140, 0.84 * 140, 140];
+  dayBoundaries.forEach((b, idx) => {
+    const hLo = mapBarHeightPx(b - 1, resolveScaleEnvelope(b - 1, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height;
+    const hAt = mapBarHeightPx(b, resolveScaleEnvelope(b, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height;
+    const hHi = mapBarHeightPx(b + 1, resolveScaleEnvelope(b + 1, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height;
+    assert.ok(Math.abs(hAt - expectedDayCaps[idx]) < 1e-6);
+    assert.ok(hLo <= hAt && hAt <= hHi, `日柱边界 ${b}: ${hLo} <= ${hAt} <= ${hHi} 不得跨档缩小`);
+    assert.equal(
+      mapBarHeightPx(1.82e6, resolveScaleEnvelope(b - 1, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height,
+      mapBarHeightPx(1.82e6, resolveScaleEnvelope(b + 1, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height
+    );
+  });
+  assert.equal(mapBarHeightPx(800e6, resolveScaleEnvelope(800e6, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height, 140);
+  assert.equal(mapBarHeightPx(800e6, resolveScaleEnvelope(800e6, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).overflow, true);
+
+  const weekBoundaries = [400e3, 4e6, 40e6, 400e6, 2e9];
+  const expectedWeekCaps = [0.38 * 96, 0.52 * 96, 0.68 * 96, 0.84 * 96, 96];
+  weekBoundaries.forEach((b, idx) => {
+    const hLo = mapBarHeightPx(b - 1, resolveScaleEnvelope(b - 1, 'weekly'), 96, { minPx: 3.0, scaleKind: 'weekly' }).height;
+    const hAt = mapBarHeightPx(b, resolveScaleEnvelope(b, 'weekly'), 96, { minPx: 3.0, scaleKind: 'weekly' }).height;
+    const hHi = mapBarHeightPx(b + 1, resolveScaleEnvelope(b + 1, 'weekly'), 96, { minPx: 3.0, scaleKind: 'weekly' }).height;
+    assert.ok(Math.abs(hAt - expectedWeekCaps[idx]) < 1e-6);
+    assert.ok(hLo <= hAt && hAt <= hHi, `周柱边界 ${b}: ${hLo} <= ${hAt} <= ${hHi} 不得跨档缩小`);
+  });
+  assert.equal(mapBarHeightPx(3.64e9, resolveScaleEnvelope(3.64e9, 'weekly'), 96, { minPx: 3.0, scaleKind: 'weekly' }).overflow, true);
+
+  // 2. 堆叠柱 1.5px 微段保底 & 严格总和恒等 & 原始百分比不被保底篡改
+  const barMixedH = mapBarHeightPx(100e6 + 100, resolveScaleEnvelope(100e6 + 100, 'dailyBar'), 140).height;
+  const allocated = allocateStackedSegmentHeights([
+    { key: 'major', value: 100e6 },
+    { key: 'tinyA', value: 100 },
+    { key: 'tinyB', value: 500 },
+    { key: 'zeroC', value: 0 }
+  ], barMixedH, 1.5);
+  assert.equal(allocated[1].heightPx, 1.5);
+  assert.equal(allocated[2].heightPx, 1.5);
+  assert.equal(allocated[3].heightPx, 0);
+  const segSum = allocated.reduce((acc, s) => acc + s.heightPx, 0);
+  assert.ok(Math.abs(segSum - barMixedH) < 1e-9);
+  assert.ok(allocated[1].rawRatio < 0.00001);
+
+  // 3. 连续 HSL 插值 & 双门槛峰值
+  const stops = ['#2E1A47', '#6D28D9', '#9333EA', '#D8B4FE'];
+  const c18 = interpolateScaleColorHsl(computeColorScaleResponse(18e6, 'yearly'), stops);
+  const c29 = interpolateScaleColorHsl(computeColorScaleResponse(29e6, 'yearly'), stops);
+  assert.notEqual(c18, c29);
+  assert.equal(shouldShowYearlyPeakBadge([1.82e6, 0, 0]), false);
+  assert.equal(shouldShowYearlyPeakBadge([100, 10e6, 0]), true);
+
+  // 4. 累计总量 A+C 核心算法验证：30 天含 0 用量与相邻高峰合并 + 最短 >=50% 集中区间 + 不足 7 天 + >90 天分周 + 0 空态 + log 尺
+  const dm30 = {};
+  const zeroDates = new Set(['2026-10-24', '2026-11-02', '2026-11-08', '2026-11-09']);
+  const peakMap = { '2026-10-29': 620e6, '2026-10-30': 710e6, '2026-10-31': 580e6 };
+  const sMs = Date.UTC(2026, 9, 20);
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(sMs + i * 86400000);
+    const k = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    if (zeroDates.has(k)) continue;
+    const tok = peakMap[k] || (i >= 7 && i <= 12 ? 220e6 : 100e6);
+    dm30[k] = { total: tok, input: tok * 0.1, cache: tok * 0.85, output: tok * 0.05 };
+  }
+  const cum30 = computeCumulativeStripSummary(dm30, '2026-10-20', '2026-11-18');
+  assert.equal(cum30.totalDays, 30);
+  assert.equal(cum30.activeDays, 26);
+  assert.equal(cum30.zeroDays, 4);
+  assert.equal(cum30.grouping, 'daily');
+  assert.equal(cum30.peakDay.date, '2026-10-30');
+  assert.equal(cum30.mergedPeakSpans.length, 1, '10.29-10.31 连续前 3 高峰应合并为一个高亮区间');
+  assert.equal(cum30.mergedPeakSpans[0].startDate, '2026-10-29');
+  assert.equal(cum30.mergedPeakSpans[0].endDate, '2026-10-31');
+  const widthSum = cum30.segments.reduce((acc, s) => acc + s.stripWidthPct, 0);
+  assert.ok(Math.abs(widthSum - 100) < 1e-6);
+  assert.equal(cum30.dailyEntries[29].cumulativeTokens, cum30.intervalTotal);
+  assert.ok(cum30.concentration && cum30.concentration.sharePct >= 50);
+
+  // 并列最短 50% 集中区间必须取最早区间
+  const dmTie = {
+    '2026-11-01': { total: 250 },
+    '2026-11-02': { total: 250 },
+    '2026-11-03': { total: 0 },
+    '2026-11-04': { total: 0 },
+    '2026-11-05': { total: 250 },
+    '2026-11-06': { total: 250 },
+    '2026-11-07': { total: 0 }
+  };
+  const cumTie = computeCumulativeStripSummary(dmTie, '2026-11-01', '2026-11-07');
+  assert.equal(cumTie.concentration.startDate, '2026-11-01');
+  assert.equal(cumTie.concentration.endDate, '2026-11-02');
+  assert.equal(cumTie.concentration.daysCount, 2);
+
+  // 3 天记录不足 7 天：保留峰值，省略集中度
+  const cum3d = computeCumulativeStripSummary(
+    { '2026-11-17': { total: 1000 }, '2026-11-18': { total: 5000 }, '2026-11-19': { total: 6500 } },
+    '2026-11-17',
+    '2026-11-19'
+  );
+  assert.equal(cum3d.totalDays, 3);
+  assert.equal(cum3d.concentration, null);
+  assert.equal(cum3d.concentrationOmittedReason, 'insufficient_days');
+  assert.equal(cum3d.peakDay.date, '2026-11-19');
+  assert.equal(cum3d.ruler.status, 'below_min');
+
+  // 0 总量防除零 & 超 100B 量级尺
+  const cumEmpty = computeCumulativeStripSummary({}, '2026-11-01', '2026-11-10');
+  assert.equal(cumEmpty.intervalTotal, 0);
+  assert.equal(cumEmpty.ruler.status, 'zero');
+  assert.equal(computeLogRulerPosition(150e9).status, 'above_max');
+  assert.equal(computeLogRulerPosition(150e9).pct, 100);
+
+  // 超过 90 天自动按起点每 7 天分组
+  const cumLong = computeCumulativeStripSummary(dm30, '2026-07-01', '2026-11-18');
+  assert.equal(cumLong.grouping, 'weekly');
+  assert.ok(cumLong.segments.length >= 20 && cumLong.segments[0].days.length === 7);
+});
