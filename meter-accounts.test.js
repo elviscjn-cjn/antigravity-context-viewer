@@ -1857,57 +1857,396 @@ test('v0.8.8 账本与切号补充回归: 二次污染 elv89-v2 自动升级纠�
     assert.equal(normCli.firstUseDate, null);
     assert.equal(normCli.summary.grandTotalTokens, 0);
 
-    // 验证 getSharedAccountsManager 在 LS 端口切换时自动重新 CDP 发现且切号默认 includeCli: false
-    let cdpCalls = 0;
+    // 验证无 CDP 场景下的活跃端口发现：首选 Electron 活跃窗口 URL，次选 currentOrigin 更新，再后备 daemon/hub_*.json（pid 存活 + mtimeMs 最新），绝不走无参 CDP
+    let cdpCalled = false;
     let lsKilledIncludeCli = null;
-    const credStore = makeMockCredStore();
-    const sharedMgr = accountsMod.getSharedAccountsManager({
-      forceNew: true,
+    const daemonDir = makeTempDir('acm-daemon-hub-');
+    try {
+      const deadHubFile = path.join(daemonDir, 'hub_59001.json');
+      fs.writeFileSync(deadHubFile, JSON.stringify({ pid: 999991, httpsPort: 59001, httpPort: 59002, csrfToken: 'tok-dead' }));
+      const deadTime = new Date(Date.now() + 20000);
+      fs.utimesSync(deadHubFile, deadTime, deadTime);
+
+      const oldAliveHubFile = path.join(daemonDir, 'hub_59011.json');
+      fs.writeFileSync(oldAliveHubFile, JSON.stringify({ pid: 41001, httpsPort: 59011, httpPort: 59012, csrfToken: 'tok-old' }));
+      const oldTime = new Date(Date.now() - 10000);
+      fs.utimesSync(oldAliveHubFile, oldTime, oldTime);
+
+      const latestAliveHubFile = path.join(daemonDir, 'hub_59099.json');
+      fs.writeFileSync(latestAliveHubFile, JSON.stringify({ pid: 42002, httpsPort: 59099, httpPort: 59100, csrfToken: 'tok-latest' }));
+      const newTime = new Date(Date.now() - 1000);
+      fs.utimesSync(latestAliveHubFile, newTime, newTime);
+
+      const discoveredHubs = accountsMod.discoverDaemonHubOrigins({
+        daemonDir,
+        isPidAlive: (pid) => pid === 41001 || pid === 42002
+      });
+      assert.equal(discoveredHubs.length, 2, '已退出进程 pid 的 hub_*.json 必须过滤');
+      assert.equal(discoveredHubs[0].origin, 'https://127.0.0.1:59099', '必须优先返回 mtimeMs 最新的存活 hub');
+
+      const credStore = makeMockCredStore();
+      let liveWinOrigin = 'https://127.0.0.1:50001';
+      const usedOrigins = [];
+      const sharedMgr = accountsMod.getSharedAccountsManager({
+        forceNew: true,
+        stateDir,
+        origin: 'https://127.0.0.1:50001',
+        daemonDir,
+        isPidAlive: (pid) => pid === 41001 || pid === 42002,
+        getLiveOrigins: () => [liveWinOrigin],
+        oauthClientId: 'mock-cid',
+        oauthClientSecret: 'mock-sec',
+        credentialStore: credStore,
+        restartLanguageServers: async (opts) => {
+          lsKilledIncludeCli = opts?.includeCli;
+          liveWinOrigin = 'https://127.0.0.1:50099';
+          return { ok: true };
+        },
+        directRequestFn: async (origin, token) => {
+          usedOrigins.push(`direct:${origin}:${token}`);
+          throw new Error('force window origin first');
+        },
+        localApi: {
+          async connect(connOpts) {
+            if (!connOpts || !connOpts.origin) {
+              cdpCalled = true;
+              throw new Error('绝不能调用无 origin 的 CDP 发现');
+            }
+            usedOrigins.push(`window:${connOpts.origin}`);
+            if (connOpts.origin === 'https://127.0.0.1:50001') {
+              throw new Error('connect ECONNREFUSED 127.0.0.1:50001');
+            }
+            return {
+              origin: connOpts.origin,
+              async call(method) {
+                if (method === 'GetUserStatus') return { userStatus: { email: 'switch-target@example.com' } };
+                return {};
+              }
+            };
+          }
+        }
+      });
+      const st = JSON.parse(fs.readFileSync(path.join(stateDir, 'accounts_v1.json'), 'utf8'));
+      st.accounts['switch-target@example.com'] = {
+        email: 'switch-target@example.com',
+        credential: {
+          accessToken: 'tok-target',
+          refreshToken: 'ref-target',
+          expiresAt: new Date(Date.now() + 3600000).toISOString()
+        }
+      };
+      fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify(st));
+      const swRes = await sharedMgr.switchActiveAccount('switch-target@example.com', {
+        forceWhileBusy: true,
+        skipTokenRefresh: true,
+        verifyTimeoutMs: 500
+      });
+      assert.equal(swRes.ok, true);
+      assert.equal(lsKilledIncludeCli, false);
+      assert.equal(cdpCalled, false, '非 CDP 路径绝不能调用无参 CDP');
+      assert.ok(usedOrigins.includes('window:https://127.0.0.1:50099'), 'LS 重启端口变化后必须从活跃窗口读取新端口完成校验');
+      const det = await sharedMgr.detectCurrentActiveAccount();
+      assert.equal(det.email, 'switch-target@example.com');
+    } finally {
+      fs.rmSync(daemonDir, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(agDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('v0.8.8 非 CDP 切号与回滚对称: shared origin 更新、daemon hub 后备、新建 token 文件删除、临时会话清理、重载展示与防错记', async () => {
+  const agDir = makeTempDir('acm-noncdp-ag-');
+  const stateDir = makeTempDir('acm-noncdp-st-');
+  const daemonDir = makeTempDir('acm-noncdp-hub-');
+  const homeDir = makeTempDir('acm-noncdp-home-');
+  try {
+    // 1. 验证 createDefaultSystemCredentialStore 回滚会删除切号前不存在的 jetski/cli token 文件
+    const realCredStore = accountsMod.createDefaultSystemCredentialStore({
+      homeDir,
+      appDataDir: homeDir,
+      desktopDbPath: path.join(homeDir, 'missing-desktop.vscdb'),
+      ideDbPath: path.join(homeDir, 'missing-ide.vscdb')
+    });
+    // 测试沙箱绝对不读写宿主真实 Windows 凭据管理器
+    realCredStore.readWindowsSystemCredential = () => null;
+    realCredStore.writeWindowsSystemCredential = () => ({ ok: true, skipped: true });
+    const realPaths = realCredStore.getPaths();
+    fs.mkdirSync(path.dirname(realPaths.googleAccountsPath), { recursive: true });
+    fs.mkdirSync(path.dirname(realPaths.cliTokenPath), { recursive: true });
+    fs.writeFileSync(realPaths.googleAccountsPath, JSON.stringify({ active: 'before@example.com', old: [] }));
+    fs.writeFileSync(realPaths.oauthCredsPath, JSON.stringify({ access_token: 'old-a', refresh_token: 'old-r' }));
+
+    const preSnap = realCredStore.captureSnapshot();
+    assert.equal(preSnap.jetskiTokenRaw, null);
+    assert.equal(preSnap.cliTokenRaw, null);
+    // 模拟切号过程中写出了新建的 jetski/cli token 文件
+    fs.writeFileSync(realPaths.jetskiTokenPath, '{"access_token":"tmp-j"}');
+    fs.writeFileSync(realPaths.cliTokenPath, '{"access_token":"tmp-c"}');
+    assert.equal(fs.existsSync(realPaths.jetskiTokenPath), true);
+    assert.equal(fs.existsSync(realPaths.cliTokenPath), true);
+    const rbRes = realCredStore.restoreSnapshot(preSnap);
+    assert.equal(rbRes.ok, true);
+    assert.equal(fs.existsSync(realPaths.jetskiTokenPath), false, '回滚时必须删除本次切号新建的 jetski token 文件');
+    assert.equal(fs.existsSync(realPaths.cliTokenPath), false, '回滚时必须删除本次切号新建的 cli token 文件');
+
+    // 2. 验证 getSharedAccountsManager 多次传新 origin 会更新 currentOrigin，并在无窗口 URL 时走 daemon hub_*.json 后备
+    let observedTokens = [];
+    let hubAlive = { pid: 55100, httpsPort: 61111, httpPort: 61112, csrfToken: 'hub-csrf-new' };
+    fs.writeFileSync(path.join(daemonDir, 'hub_61112.json'), JSON.stringify(hubAlive));
+
+    const mgrA = accountsMod.getSharedAccountsManager({
       stateDir,
-      origin: 'https://127.0.0.1:50001',
-      oauthClientId: 'mock-cid',
-      oauthClientSecret: 'mock-sec',
-      credentialStore: credStore,
-      restartLanguageServers: async (opts) => {
-        lsKilledIncludeCli = opts?.includeCli;
-        return { ok: true };
+      origin: 'https://127.0.0.1:61001',
+      daemonDir,
+      homeDir,
+      isPidAlive: (pid) => pid === 55100,
+      getLiveOrigins: () => [],
+      directRequestFn: async (origin, token) => {
+        observedTokens.push(`${origin}#${token}`);
+        return { email: 'hub-fallback@example.com', userStatus: { email: 'hub-fallback@example.com' } };
       },
       localApi: {
         async connect(connOpts) {
-          if (connOpts?.origin === 'https://127.0.0.1:50001') {
-            throw new Error('connect ECONNREFUSED 127.0.0.1:50001');
+          assert.ok(connOpts && connOpts.origin, '绝不调用无 origin CDP');
+          observedTokens.push(`conn:${connOpts.origin}`);
+          if (connOpts.origin === 'https://127.0.0.1:61001') {
+            throw new Error('old origin refused');
           }
-          cdpCalls++;
           return {
-            origin: 'https://127.0.0.1:50099',
-            async call(method) {
-              if (method === 'GetUserStatus') return { userStatus: { email: 'switch-target@example.com' } };
-              return {};
+            origin: connOpts.origin,
+            async call() {
+              return { userStatus: { email: 'updated-origin@example.com' } };
             }
           };
         }
       }
     });
-    const st = JSON.parse(fs.readFileSync(path.join(stateDir, 'accounts_v1.json'), 'utf8'));
-    st.accounts['switch-target@example.com'] = {
-      email: 'switch-target@example.com',
-      credential: {
-        accessToken: 'tok-target',
-        refreshToken: 'ref-target',
+    // 第二次调用更换 origin，必须更新 sharedRuntime.currentOrigin 而不是停在 61001
+    const mgrB = accountsMod.getSharedAccountsManager({ origin: 'https://127.0.0.1:61002' });
+    assert.equal(mgrB, mgrA);
+    const detUpdated = await mgrB.detectCurrentActiveAccount();
+    assert.equal(detUpdated.email, 'updated-origin@example.com', '再次调用 getSharedAccountsManager 传入新 origin 必须刷新 currentOrigin');
+    assert.ok(observedTokens.includes('conn:https://127.0.0.1:61002'));
+
+    // 当所有已知 origin 失联时，必须后备走 daemon/hub_*.json 拿到 hub-fallback@example.com（仍不走 CDP）
+    observedTokens = [];
+    const mgrC = accountsMod.getSharedAccountsManager({ origin: 'https://127.0.0.1:61001' });
+    const detHub = await mgrC.detectCurrentActiveAccount();
+    assert.equal(detHub.email, 'hub-fallback@example.com');
+    assert.ok(observedTokens.includes('https://127.0.0.1:61111#hub-csrf-new'));
+
+    // 3. 验证切号失败回滚对称：activeAccountEmail 恢复、切号窗口临时会话关闭、切号期与回滚窗口流量绝不归属到目标账号、且窗口重载后 UI 显示失败+回滚与成功结果
+    const isolatedStateDir = makeTempDir('acm-noncdp-rb-');
+    try {
+      const credStore2 = makeMockCredStore();
+      let liveEmail = 'acct-a@example.com';
+      let hostStatusPauseResolve = null;
+      const nowBase = Date.now() - 10000;
+      const mgrRb = accountsMod.createAccountsManager({
+        stateDir: isolatedStateDir,
+        credentialStore: credStore2,
+        oauthClientId: 'mock-cid',
+        oauthClientSecret: 'mock-sec',
+        getHostUserStatus: async () => {
+          if (hostStatusPauseResolve) {
+            await new Promise((resolve) => {
+              const prev = hostStatusPauseResolve;
+              hostStatusPauseResolve = () => { prev(); resolve(); };
+            });
+          }
+          return { email: liveEmail };
+        },
+        restartLanguageServers: async () => {
+          // 模拟切号进行中窗口意外重载调用 detectCurrentActiveAccount：此时决不能把目标 acct-b 写成活跃或新建会话！
+          await mgrRb.detectCurrentActiveAccount();
+          return { ok: true };
+        }
+      });
+      mgrRb.addAccountWithCredential({
+        email: 'acct-a@example.com',
+        accessToken: 'ta',
+        refreshToken: 'ra',
         expiresAt: new Date(Date.now() + 3600000).toISOString()
-      }
-    };
-    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify(st));
-    const swRes = await sharedMgr.switchActiveAccount('switch-target@example.com', {
-      forceWhileBusy: true,
-      skipTokenRefresh: true,
-      verifyTimeoutMs: 500
-    });
-    assert.equal(swRes.ok, true);
-    assert.ok(cdpCalls >= 1, '旧 origin 失联时必须回退 CDP 重新发现新 LS 端口');
-    const det = await sharedMgr.detectCurrentActiveAccount();
-    assert.equal(det.email, 'switch-target@example.com');
+      });
+      mgrRb.addAccountWithCredential({
+        email: 'acct-b@example.com',
+        accessToken: 'tb',
+        refreshToken: 'rb',
+        expiresAt: new Date(Date.now() + 3600000).toISOString()
+      });
+      const initSt = mgrRb.loadStore();
+      initSt.activeAccountEmail = 'acct-a@example.com';
+      initSt.accountSessions = [{
+        email: 'acct-a@example.com',
+        accountScopeKey: accountsMod.buildAccountScopeKey('acct-a@example.com'),
+        source: 'desktop',
+        startAtMs: nowBase - 60000,
+        lastVerifiedAtMs: nowBase,
+        endAtMs: null,
+        evidence: 'host_user_status'
+      }];
+      mgrRb.saveStore(initSt);
+
+      // 制造“校验始终回报原账号 acct-a”的失败并触发回滚
+      const failSw = await mgrRb.switchActiveAccount('acct-b@example.com', {
+        forceWhileBusy: true,
+        skipTokenRefresh: true,
+        verifyTimeoutMs: 60
+      });
+      assert.equal(failSw.ok, false);
+      assert.equal(failSw.rolledBack, true);
+
+      const postFailOv = mgrRb.getOverviewState();
+      assert.equal(postFailOv.activeAccountEmail, 'acct-a@example.com', '回滚后必须恢复 activeAccountEmail 为切号前的 A');
+      assert.equal(postFailOv.accountSessions.some(s => s.email === 'acct-b@example.com'), false, '中途或未核验目标会话必须清理，不能留在 accountSessions');
+      assert.equal(postFailOv.autoSwitchStatus?.lastResult?.ok, false);
+      assert.equal(postFailOv.autoSwitchStatus?.lastResult?.rolledBack, true);
+
+      // 模拟切号期间与回滚后产生的用量入账：绝不能被归属到目标账号 acct-b
+      const scopeB = accountsMod.buildAccountScopeKey('acct-b@example.com');
+      const isoLedgerFile = path.join(isolatedStateDir, 'pricing_ledger_v1.json');
+      const recRes = collector.recordModelCalls([{
+        callId: 'req_during_rollback_1',
+        cascadeId: 'dddddddd-0000-0000-0000-000000000004',
+        stepIndex: 0,
+        source: 'desktop',
+        model: 'gemini-4-hydrogen',
+        inputTokens: 1000,
+        cacheTokens: 0,
+        outputTokens: 200,
+        timestamp: Date.now(),
+        liveRealtimeConfirmed: true
+      }], {
+        ledgerPath: isoLedgerFile,
+        accountSessions: postFailOv.accountSessions,
+        // 切号锁激活期间 meter-main 会省略 liveConfirmedAccount
+        liveConfirmedAccount: null
+      });
+      assert.equal(recRes.ok, true);
+      const isoLedger = JSON.parse(fs.readFileSync(isoLedgerFile, 'utf8'));
+      const entryRb = isoLedger.calls['req_during_rollback_1'];
+      assert.ok(entryRb);
+      assert.notEqual(entryRb.accountScopeKey, scopeB, '回滚窗口内用量绝不能被兜底记到目标账号 B');
+
+      // 窗口重载模拟：全新 RENDERER_SOURCE VM 加载 overview，必须立即看到失败原因和回滚状态
+      const createUiAndInspect = (ovSnapshot) => {
+        const els = new Map();
+        const mk = (id) => {
+          const attrs = new Map(); const cls = new Set();
+          const n = {
+            id: id || '', style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; }, display: '' },
+            children: [], options: [], selectedOptions: [], hidden: false, disabled: false, textContent: '', value: '', title: '', className: '', dataset: {},
+            classList: { add(c) { cls.add(c); n.className = Array.from(cls).join(' '); }, remove(c) { cls.delete(c); n.className = Array.from(cls).join(' '); }, contains(c) { return cls.has(c); } },
+            addEventListener() {}, dispatchEvent() {}, setAttribute(k, v) { attrs.set(k, String(v)); }, getAttribute(k) { return attrs.get(k) ?? null; }, removeAttribute(k) { attrs.delete(k); },
+            appendChild(c) { if (c) { n.children.push(c); if (n.options) n.options.push(c); } },
+            replaceChildren(...xs) { n.children = xs.filter(Boolean); if (n.options) n.options = xs.filter(Boolean); },
+            remove() {}, contains() { return false; }, matches() { return false; }, closest() { return null; }, querySelector() { return null; }, querySelectorAll() { return []; },
+            getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 24, right: 100, bottom: 24 }; }
+          };
+          if (id) els.set(id, n);
+          return n;
+        };
+        const host = mk('ag-host');
+        host.attachShadow = () => ({ set innerHTML(_v) {}, getElementById: id => els.get(id) || mk(id), querySelectorAll: () => [] });
+        let firstEl = true;
+        const sb = {
+          location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111112' },
+          document: { createElement: () => (firstEl ? (firstEl = false, host) : mk()), getElementById: id => els.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false },
+          window: { __APP_CONFIG__: { csrfToken: 't' } },
+          matchMedia: () => ({ matches: false }),
+          __AGContextMeterCore: core, AbortController, Date,
+          setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {},
+          fetch: async () => ({ ok: true, json: async () => ({ generatorMetadata: [] }) })
+        };
+        vm.createContext(sb);
+        vm.runInContext(RENDERER_SOURCE, sb);
+        const uiApi = sb.__AGContextMeter;
+        try {
+          uiApi.setAccountsOverviewForTest(ovSnapshot);
+          return {
+            feedbackText: els.get('quota-acct-feedback')?.textContent || '',
+            feedbackHidden: els.get('quota-acct-feedback')?.hidden,
+            lastNoteText: els.get('auto-switch-last-note')?.textContent || ''
+          };
+        } finally {
+          uiApi.dispose();
+        }
+      };
+
+      const reloadedFailUi = createUiAndInspect(postFailOv);
+      assert.equal(reloadedFailUi.feedbackHidden, false, '窗口重载后应展示持久化失败反馈横幅');
+      assert.match(reloadedFailUi.feedbackText, /回滚|验证未生效/);
+      assert.match(reloadedFailUi.lastNoteText, /回滚|验证未生效/);
+
+      // 切号成功且重载后 UI 也能看到成功结果
+      liveEmail = 'acct-b@example.com';
+      const okSw = await mgrRb.switchActiveAccount('acct-b@example.com', {
+        forceWhileBusy: true,
+        skipTokenRefresh: true,
+        verifyTimeoutMs: 500
+      });
+      assert.equal(okSw.ok, true);
+      const okOv = mgrRb.getOverviewState();
+      assert.equal(okOv.autoSwitchStatus?.lastResult?.ok, true);
+      assert.equal(okOv.autoSwitchStatus?.lastResult?.rolledBack, false);
+      const reloadedOkUi = createUiAndInspect(okOv);
+      assert.equal(reloadedOkUi.feedbackHidden, false);
+      assert.match(reloadedOkUi.feedbackText, /acct-b@example\.com/);
+      assert.match(reloadedOkUi.lastNoteText, /acct-b@example\.com/);
+      assert.ok(accountsMod.DEFAULT_SWITCH_VERIFY_TIMEOUT_MS >= 20000);
+
+      // 4. 验证切号进行中（inFlightSwitch lock 生效期间）概览状态显式标记 switchInProgress=true 且 meter-main 暴露 getActiveHubWindowOrigins
+      const meterMain = require('./meter-main');
+      assert.equal(typeof meterMain.getActiveHubWindowOrigins, 'function');
+      assert.deepEqual(meterMain.getActiveHubWindowOrigins(), []);
+
+      let switchProceedResolve;
+      hostStatusPauseResolve = () => {};
+      let sawSwitchInFlightDuringVerify = false;
+      liveEmail = 'acct-a@example.com';
+      const pendingSw = mgrRb.switchActiveAccount('acct-a@example.com', {
+        forceWhileBusy: true,
+        skipTokenRefresh: true,
+        verifyTimeoutMs: 5000
+      });
+      await new Promise(r => setTimeout(r, 400));
+      const midOv = mgrRb.getOverviewState();
+      sawSwitchInFlightDuringVerify = Boolean(mgrRb.isSwitchInFlight() && midOv.switchInProgress);
+      assert.equal(sawSwitchInFlightDuringVerify, true, '切号进行中 isSwitchInFlight 与 switchInProgress 必须为 true');
+      // 切号进行中产生的调用（不带 liveConfirmedAccount）绝不能记到未核验账号
+      collector.recordModelCalls([{
+        callId: 'req_mid_switch_inflight',
+        cascadeId: 'eeeeeeee-0000-0000-0000-000000000005',
+        stepIndex: 0,
+        source: 'desktop',
+        model: 'gemini-4-hydrogen',
+        inputTokens: 500,
+        cacheTokens: 0,
+        outputTokens: 100,
+        timestamp: Date.now(),
+        liveRealtimeConfirmed: true
+      }], {
+        ledgerPath: isoLedgerFile,
+        accountSessions: midOv.accountSessions,
+        liveConfirmedAccount: null
+      });
+      const midLedger = JSON.parse(fs.readFileSync(isoLedgerFile, 'utf8'));
+      const midEntry = midLedger.calls['req_mid_switch_inflight'];
+      assert.ok(midEntry);
+      assert.equal(midEntry.accountScopeKey ?? null, null, '切号进行中无确认前不能兜底记入任何账号');
+      switchProceedResolve = hostStatusPauseResolve;
+      hostStatusPauseResolve = null;
+      switchProceedResolve();
+      const finalSw = await pendingSw;
+      assert.equal(finalSw.ok, true);
+    } finally {
+      fs.rmSync(isolatedStateDir, { recursive: true, force: true });
+    }
   } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+    fs.rmSync(daemonDir, { recursive: true, force: true });
     fs.rmSync(agDir, { recursive: true, force: true });
     fs.rmSync(stateDir, { recursive: true, force: true });
   }

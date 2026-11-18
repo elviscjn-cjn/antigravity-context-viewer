@@ -14589,11 +14589,39 @@
       toolsBtn.hidden = !(accountsUiState.toolsPreview?.available && (accountsUiState.toolsPreview.count || 0) > 0);
     }
     const fbEl = el('quota-acct-feedback');
+    const lr = ov.autoSwitchStatus?.lastResult;
+    const rawLastErr = (lr?.ok === false && lr?.error) ? lr.error : ov.autoSwitchStatus?.lastError;
+    const formatPersistedError = (raw) => {
+      if (!raw) return '';
+      const txt = typeof translateBackendText === 'function' ? translateBackendText(raw) : String(raw);
+      if (lr?.rolledBack && !/(回滚|rolled back)/i.test(txt)) {
+        return t('accounts.lastSwitchRolledBack', { detail: txt });
+      }
+      return txt;
+    };
+    const hasRecentPersistedResult = Boolean(
+      !accountsUiState.feedback
+      && !accountsUiState.busy
+      && lr
+      && (lr.ok === false || (lr.atMs != null && Math.abs(Date.now() - Number(lr.atMs)) <= 15 * 60 * 1000))
+    );
+    let displayFeedback = accountsUiState.feedback || '';
+    let displayTone = accountsUiState.feedbackTone;
+    if (!displayFeedback && hasRecentPersistedResult) {
+      if (lr.ok === false) {
+        displayFeedback = formatPersistedError(rawLastErr || t('accounts.actionFail'));
+        displayTone = 'error';
+      } else if (lr.ok === true && (lr.message || lr.toEmail)) {
+        displayFeedback = lr.message
+          ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
+          : t('accounts.lastSwitchedTo', { email: lr.toEmail });
+        displayTone = 'success';
+      }
+    }
     if (fbEl) {
-      fbEl.hidden = !accountsUiState.feedback;
-      fbEl.textContent = accountsUiState.feedback || '';
-      const tone = accountsUiState.feedbackTone;
-      fbEl.className = `quota-acct-feedback${tone === 'error' ? ' is-error' : (tone === 'success' ? ' is-success' : '')}`;
+      fbEl.hidden = !displayFeedback;
+      fbEl.textContent = displayFeedback;
+      fbEl.className = `quota-acct-feedback${displayTone === 'error' ? ' is-error' : (displayTone === 'success' ? ' is-success' : '')}`;
     }
 
     // 2. 账号清单
@@ -14703,10 +14731,13 @@
       stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (sKey === 'error' || sKey === 'all_candidates_exhausted' ? 'pill-warn' : 'pill-muted')}`;
     }
     if (lastNote) {
-      const errMsg = ov.autoSwitchStatus?.lastError;
-      lastNote.textContent = errMsg
-        ? (typeof translateBackendText === 'function' ? translateBackendText(errMsg) : errMsg)
-        : (ov.autoSwitchStatus?.lastResult?.toEmail ? t('accounts.lastSwitchedTo', { email: ov.autoSwitchStatus.lastResult.toEmail }) : '');
+      if (rawLastErr) {
+        lastNote.textContent = formatPersistedError(rawLastErr);
+      } else if (lr?.ok === false) {
+        lastNote.textContent = formatPersistedError(t('accounts.actionFail'));
+      } else {
+        lastNote.textContent = lr?.toEmail ? t('accounts.lastSwitchedTo', { email: lr.toEmail }) : '';
+      }
     }
 
     if (!isEditingAutoSwitchDraft()) {

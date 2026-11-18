@@ -524,16 +524,17 @@ function registerMeterIpcHandlers(ipcMain) {
       let recOpts = {};
       try {
         const { getSharedAccountsManager } = require('./meter-accounts');
-        const mgr = getSharedAccountsManager({ origin: url.origin });
+        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
         const ov = mgr.getOverviewState();
-        const activeEmail = ov?.activeAccountEmail || null;
+        const switchInFlight = Boolean(mgr.isSwitchInFlight?.() || ov?.switchInProgress);
+        const activeEmail = !switchInFlight ? (ov?.activeAccountEmail || null) : null;
         const sessions = Array.isArray(ov?.accountSessions) ? ov.accountSessions : [];
         const openSess = activeEmail
           ? sessions.slice().reverse().find(s => String(s.email).toLowerCase() === String(activeEmail).toLowerCase() && s.endAtMs == null)
           : null;
         recOpts = {
           accountSessions: sessions,
-          ...(activeEmail ? {
+          ...(!switchInFlight && activeEmail ? {
             confirmedAccountEmail: activeEmail,
             liveConfirmedAccount: {
               email: activeEmail,
@@ -606,9 +607,12 @@ function registerMeterIpcHandlers(ipcMain) {
       let accountSyncResult = null;
       try {
         const { getSharedAccountsManager } = require('./meter-accounts');
-        const mgr = getSharedAccountsManager({ origin: url.origin });
-        const email = res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null;
-        if (email && res?.snapshot) {
+        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+        const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
+        const email = !switchInFlight
+          ? (res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+          : null;
+        if (!switchInFlight && email && res?.snapshot) {
           mgr.syncActiveHostQuotaSnapshot(res, email);
           const ov = mgr.getOverviewState();
           if (ov.autoSwitch?.enabled && !res.error) {
@@ -871,7 +875,7 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { getSharedAccountsManager } = require('./meter-accounts');
-      const mgr = getSharedAccountsManager({ origin: url.origin });
+      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
       await mgr.detectCurrentActiveAccount();
       return mgr.getOverviewState();
     } catch (e) {
@@ -884,7 +888,7 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
-      const mgr = getSharedAccountsManager({ origin: url.origin });
+      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
       return await dispatchAccountsAction(mgr, payload || {});
     } catch (e) {
       return { ok: false, error: e.message };
@@ -928,6 +932,39 @@ function getWindowWebContents(win) {
     }
   } catch {}
   return null;
+}
+
+/**
+ * 在 Electron 主进程内直读所有活跃 Hub 窗口的本地原点 URL（免 CDP / DevToolsActivePort）
+ */
+function getActiveHubWindowOrigins() {
+  const origins = [];
+  const pushUrl = (rawUrl) => {
+    if (!rawUrl || typeof rawUrl !== 'string') return;
+    try {
+      const m = rawUrl.trim().match(/^https?:\/\/127\.0\.0\.1:\d+/i);
+      if (!m) return;
+      const o = new URL(rawUrl.trim()).origin;
+      if (o && !origins.includes(o)) origins.push(o);
+    } catch { }
+  };
+  try {
+    const utils = require('./utils');
+    const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
+    for (const win of wins) {
+      const wc = getWindowWebContents(win);
+      if (wc && !wc.isDestroyed?.()) pushUrl(wc.getURL?.());
+    }
+  } catch { }
+  try {
+    const { BrowserWindow } = require('electron');
+    const allWins = typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : [];
+    for (const win of allWins) {
+      const wc = getWindowWebContents(win);
+      if (wc && !wc.isDestroyed?.()) pushUrl(wc.getURL?.());
+    }
+  } catch { }
+  return origins;
 }
 
 
@@ -1526,3 +1563,4 @@ exports.getAppQuitting = getAppQuitting;
 exports.shouldInterceptWindowClose = shouldInterceptWindowClose;
 exports.isHostRunInBackgroundEnabled = isHostRunInBackgroundEnabled;
 exports.getWindowWebContents = getWindowWebContents;
+exports.getActiveHubWindowOrigins = getActiveHubWindowOrigins;

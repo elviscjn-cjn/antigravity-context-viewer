@@ -16,6 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
 const { execFileSync, spawnSync } = require('child_process');
@@ -1085,12 +1086,18 @@ function createDefaultSystemCredentialStore(dirs = {}) {
           writeStateDbItems(ideDbPath, snap.ideDbRows);
         }
         if (snap.googleAccountsRaw !== null) fs.writeFileSync(googleAccountsPath, snap.googleAccountsRaw, 'utf8');
+        else if (fs.existsSync(googleAccountsPath)) { try { fs.unlinkSync(googleAccountsPath); } catch { } }
         if (snap.oauthCredsRaw !== null) fs.writeFileSync(oauthCredsPath, snap.oauthCredsRaw, 'utf8');
+        else if (fs.existsSync(oauthCredsPath)) { try { fs.unlinkSync(oauthCredsPath); } catch { } }
         if (snap.jetskiTokenRaw !== null && fs.existsSync(path.dirname(jetskiTokenPath))) {
           fs.writeFileSync(jetskiTokenPath, snap.jetskiTokenRaw, 'utf8');
+        } else if (snap.jetskiTokenRaw === null && fs.existsSync(jetskiTokenPath)) {
+          try { fs.unlinkSync(jetskiTokenPath); } catch { }
         }
         if (snap.cliTokenRaw !== null && fs.existsSync(path.dirname(cliTokenPath))) {
           fs.writeFileSync(cliTokenPath, snap.cliTokenRaw, 'utf8');
+        } else if (snap.cliTokenRaw === null && fs.existsSync(cliTokenPath)) {
+          try { fs.unlinkSync(cliTokenPath); } catch { }
         }
         return { ok: true };
       } catch (e) {
@@ -1492,6 +1499,17 @@ function createAccountsManager(options = {}) {
   const debounceState = new Map(); // accountKey -> { firstSeenMs }
   let inFlightSwitch = null;
 
+  function isSwitchLockActive() {
+    if (inFlightSwitch) return true;
+    try {
+      if (!fs.existsSync(switchLockPath)) return false;
+      const existing = readJsonSafe(switchLockPath, null);
+      return Boolean(existing && (Date.now() - Number(existing.acquiredAtMs || 0)) <= 25000);
+    } catch {
+      return false;
+    }
+  }
+
   function loadStore() {
     const raw = readJsonSafe(storePath, null);
     if (!raw || typeof raw !== 'object') {
@@ -1682,6 +1700,17 @@ function createAccountsManager(options = {}) {
    * 检测当前客户端实际登录账号，并与内部状态及活跃会话窗口对齐
    */
   async function detectCurrentActiveAccount() {
+    if (isSwitchLockActive()) {
+      const lockedStore = loadStore();
+      const lockedEmail = lockedStore.activeAccountEmail || null;
+      return {
+        email: lockedEmail,
+        accountScopeKey: lockedEmail ? buildAccountScopeKey(lockedEmail) : null,
+        switchInProgress: true,
+        skippedWrite: true,
+        sources: { hostEmail: null, dbEmail: null, cliEmail: null }
+      };
+    }
     let hostEmail = '';
     if (typeof getHostUserStatusFn === 'function') {
       try {
@@ -2514,6 +2543,7 @@ function createAccountsManager(options = {}) {
    * 同步主面板通过本地 Language Server 拉取到的当前登录账号额度快照（避免重复轮询！共用同一条刷新链路）
    */
   function syncActiveHostQuotaSnapshot(hostQuotaResult, hostEmail, opts = {}) {
+    if (isSwitchLockActive()) return null;
     const clean = normalizeEmail(hostEmail);
     if (!clean || !hostQuotaResult?.snapshot) return null;
     const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : (hostQuotaResult.fetchedAtMs || Date.now());
@@ -2743,6 +2773,55 @@ function createAccountsManager(options = {}) {
       }
 
       let preSnap = null;
+      const preStore = loadStore();
+      const preActiveEmail = preStore.activeAccountEmail || null;
+      const switchStartMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+      const preOpenSessions = (preStore.accountSessions || [])
+        .filter(s => s && s.endAtMs == null && normalizeEmail(s.email) === normalizeEmail(preActiveEmail))
+        .map(s => ({ startAtMs: s.startAtMs, source: s.source || 'desktop' }));
+
+      // 统一回滚记账与 UI 持久反馈：还原切号前活跃账号、清理中途意外生成的目标临时会话、写入失败与回滚结果
+      const finalizeFailureStore = ({ errMsg, rolledBack, verifiedEmail, atMs }) => {
+        const failStore = loadStore();
+        const fallbackActive = (verifiedEmail && verifiedEmail !== cleanTarget && failStore.accounts[verifiedEmail])
+          ? verifiedEmail
+          : preActiveEmail;
+        failStore.activeAccountEmail = fallbackActive || null;
+        if (Array.isArray(failStore.accountSessions)) {
+          const nextSessions = [];
+          for (const s of failStore.accountSessions) {
+            if (!s) continue;
+            const sEmail = normalizeEmail(s.email);
+            const isProvisionalTarget = sEmail === cleanTarget
+              && Number(s.startAtMs || 0) >= (switchStartMs - 1000)
+              && s.evidence !== 'account_switch_verified';
+            if (isProvisionalTarget) continue;
+            if (rolledBack && preActiveEmail && sEmail === normalizeEmail(preActiveEmail)
+              && preOpenSessions.some(po => po.startAtMs === s.startAtMs && po.source === (s.source || 'desktop'))) {
+              s.endAtMs = null;
+              s.lastVerifiedAtMs = Math.max(Number(s.lastVerifiedAtMs || 0), atMs);
+            }
+            nextSessions.push(s);
+          }
+          failStore.accountSessions = nextSessions;
+        }
+        failStore.autoSwitchStatus = {
+          ...failStore.autoSwitchStatus,
+          lastResult: {
+            ok: false,
+            fromEmail: preActiveEmail,
+            toEmail: cleanTarget,
+            atMs,
+            trigger: opts.trigger || 'manual',
+            rolledBack: Boolean(rolledBack),
+            error: errMsg
+          },
+          lastError: errMsg
+        };
+        saveStore(failStore);
+        return failStore;
+      };
+
       try {
         // 1. 协调停止旧账号保活，切号期间新账号尚未确认生效前不允许继续保活
         stopKeepalive('pre_account_switch');
@@ -2768,29 +2847,35 @@ function createAccountsManager(options = {}) {
           idToken: freshCred.idToken
         });
         if (!writeRes.ok) {
-          credStore.restoreSnapshot(preSnap);
+          const rb = credStore.restoreSnapshot(preSnap);
+          const rolledBack = Boolean(rb?.ok !== false);
+          const errMsg = `写入客户端凭据失败（阶段: ${writeRes.stage}）：${writeRes.error || '未知错误'}，已自动回滚至切换前状态`;
+          finalizeFailureStore({ errMsg, rolledBack, verifiedEmail: '', atMs: Date.now() });
           return {
             ok: false,
-            error: `写入客户端凭据失败（阶段: ${writeRes.stage}）：${writeRes.error || '未知错误'}，已自动回滚至切换前状态`,
-            rolledBack: true
+            error: errMsg,
+            rolledBack
           };
         }
 
         // 5. 重启语言服务使其加载新凭据（不暴力 kill 主 Electron UI 进程，如实告知重启 LS 行为）
         let lsRestarted = false;
         if (opts.restartLanguageServer !== false) {
-          const lsRes = await Promise.resolve(restartLanguageServersFn());
+          const lsRes = await Promise.resolve(restartLanguageServersFn({ includeCli: false }));
           lsRestarted = Boolean(lsRes && lsRes.ok !== false);
         }
 
         // 6. 切换完成后必须通过 GetUserStatus 验证真实生效邮箱，未验证前不将后续流量记入目标账号！
+        // 超时默认值 DEFAULT_SWITCH_VERIFY_TIMEOUT_MS (20000ms) 依据：
+        // 宿主 Auto-Restart 冷却 2000ms + Go 语言服务拉起与本地 TLS/状态初始化 2000~5000ms + 窗口 reload / daemon hub_*.json 落盘与轮询余量。
         let verifiedEmail = '';
         let verifiedEffective = false;
         if (typeof getHostUserStatusFn === 'function') {
           if (lsRestarted) {
             await new Promise(r => setTimeout(r, 350));
           }
-          const deadline = Date.now() + (Number(opts.verifyTimeoutMs) || 15000);
+          const verifyTimeout = Number(opts.verifyTimeoutMs) || DEFAULT_SWITCH_VERIFY_TIMEOUT_MS;
+          const deadline = Date.now() + verifyTimeout;
           while (Date.now() <= deadline) {
             try {
               const hs = await getHostUserStatusFn({ force: true });
@@ -2809,8 +2894,8 @@ function createAccountsManager(options = {}) {
         }
 
         const nextStore = loadStore();
+        const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
         if (verifiedEffective) {
-          const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
           closeActiveAccountSessions(nextStore, nowMs);
           nextStore.activeAccountEmail = cleanTarget;
           if (nextStore.accounts[cleanTarget]) nextStore.accounts[cleanTarget].lastUsedAtMs = nowMs;
@@ -2821,10 +2906,21 @@ function createAccountsManager(options = {}) {
             evidence: 'account_switch_verified',
             forceNew: true
           });
+          const okMessage = lsRestarted
+            ? `已切换至 ${cleanTarget}，语言服务已重启并通过 GetUserStatus 核验生效。`
+            : `已写入 ${cleanTarget} 凭据并通过生效校验（部分桌面扩展若仍显示旧缓存，建议重载窗口）。`;
           nextStore.autoSwitchStatus = {
             ...nextStore.autoSwitchStatus,
             lastSwitchAtMs: nowMs,
-            lastResult: { ok: true, toEmail: cleanTarget, atMs: nowMs, trigger: opts.trigger || 'manual' },
+            lastResult: {
+              ok: true,
+              fromEmail: preActiveEmail,
+              toEmail: cleanTarget,
+              atMs: nowMs,
+              trigger: opts.trigger || 'manual',
+              rolledBack: false,
+              message: okMessage
+            },
             lastError: null
           };
           saveStore(nextStore);
@@ -2835,9 +2931,7 @@ function createAccountsManager(options = {}) {
             lsRestarted,
             verifiedEffective: true,
             requiresWindowReloadHint: !lsRestarted,
-            message: lsRestarted
-              ? `已切换至 ${cleanTarget}，语言服务已重启并通过 GetUserStatus 核验生效。`
-              : `已写入 ${cleanTarget} 凭据并通过生效校验（部分桌面扩展若仍显示旧缓存，建议重载窗口）。`
+            message: okMessage
           };
         }
 
@@ -2849,30 +2943,28 @@ function createAccountsManager(options = {}) {
             rolledBack = Boolean(rb?.ok !== false);
           } catch { }
         }
-        if (verifiedEmail && verifiedEmail !== cleanTarget && nextStore.accounts[verifiedEmail]) {
-          nextStore.activeAccountEmail = verifiedEmail;
-          saveStore(nextStore);
-        }
+        const failErrMsg = `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`;
+        const savedFailStore = finalizeFailureStore({ errMsg: failErrMsg, rolledBack, verifiedEmail, atMs: nowMs });
         return {
           ok: false,
           verifiedEffective: false,
           rolledBack,
           lsRestarted,
           observedEmail: verifiedEmail || null,
-          activeAccountEmail: nextStore.activeAccountEmail || null,
-          error: `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`
+          activeAccountEmail: savedFailStore.activeAccountEmail || null,
+          error: failErrMsg
         };
       } catch (e) {
+        let rolledBack = false;
         if (preSnap) {
-          try { credStore.restoreSnapshot(preSnap); } catch { }
+          try {
+            const rb = credStore.restoreSnapshot(preSnap);
+            rolledBack = Boolean(rb?.ok !== false);
+          } catch { }
         }
-        const failStore = loadStore();
-        failStore.autoSwitchStatus = {
-          ...failStore.autoSwitchStatus,
-          lastError: e.message
-        };
-        saveStore(failStore);
-        return { ok: false, error: e.message, rolledBack: Boolean(preSnap), authInvalid: Boolean(e.isAuthInvalid) };
+        const errMsg = e.message || String(e);
+        finalizeFailureStore({ errMsg, rolledBack, verifiedEmail: '', atMs: Date.now() });
+        return { ok: false, error: errMsg, rolledBack, authInvalid: Boolean(e.isAuthInvalid) };
       } finally {
         lock.release();
       }
@@ -3099,6 +3191,7 @@ function createAccountsManager(options = {}) {
       ok: true,
       activeAccountEmail: store.activeAccountEmail || null,
       activeAccountScopeKey: store.activeAccountEmail ? buildAccountScopeKey(store.activeAccountEmail) : null,
+      switchInProgress: isSwitchLockActive(),
       accounts: list,
       accountSessions,
       diagnosticsPath: path.join(stateDir, 'oauth_diagnostics.jsonl'),
@@ -3134,50 +3227,239 @@ function createAccountsManager(options = {}) {
     stopKeepalive,
     evaluateKeepaliveTick,
     recordQuotaComparisonSample,
-    rebuildQuotaIntervalsFromHistory
+    rebuildQuotaIntervalsFromHistory,
+    isSwitchInFlight: isSwitchLockActive
   };
 }
 
+// 2000ms LS 重启冷却 + ~2-5s Go LS 绑定及状态初始化 + 窗口/daemon 刷新与网络轮询余量
+const DEFAULT_SWITCH_VERIFY_TIMEOUT_MS = 20000;
+
+function defaultIsPidAlive(pid) {
+  const num = Number(pid);
+  if (!Number.isInteger(num) || num <= 0) return false;
+  try {
+    process.kill(num, 0);
+    return true;
+  } catch (e) {
+    return e?.code === 'EPERM';
+  }
+}
+
+/**
+ * 后备发现：从 ~/.gemini/antigravity/daemon/hub_*.json 扫描存活语言服务（pid 存活且按 mtimeMs 最新优先），
+ * 仅在主进程无法通过活跃窗口 webContents 读取 URL 或旧端口失联时使用，不依赖 CDP / DevToolsActivePort。
+ */
+function discoverDaemonHubOrigins(opts = {}) {
+  const daemonDir = opts.daemonDir || path.join(opts.homeDir || os.homedir(), '.gemini', 'antigravity', 'daemon');
+  const isPidAlive = typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive;
+  const out = [];
+  try {
+    if (!fs.existsSync(daemonDir)) return out;
+    const files = fs.readdirSync(daemonDir);
+    for (const name of files) {
+      if (!/^hub_.*\.json$/i.test(name)) continue;
+      const filePath = path.join(daemonDir, name);
+      try {
+        const st = fs.statSync(filePath);
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const pid = Number(raw?.pid);
+        const httpsPort = Number(raw?.httpsPort);
+        const csrfToken = typeof raw?.csrfToken === 'string' ? raw.csrfToken.trim() : '';
+        if (!Number.isInteger(httpsPort) || httpsPort < 1 || httpsPort > 65535) continue;
+        if (!csrfToken) continue;
+        if (!isPidAlive(pid)) continue;
+        out.push({
+          origin: `https://127.0.0.1:${httpsPort}`,
+          httpsPort,
+          csrfToken,
+          pid,
+          filePath,
+          mtimeMs: Number(st.mtimeMs) || 0
+        });
+      } catch { }
+    }
+  } catch { }
+  out.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (b.httpsPort - a.httpsPort));
+  return out;
+}
+
+/**
+ * 使用已知 origin 与 csrfToken 直接向本地 Antigravity Hub / LanguageServerService 发起 GetUserStatus，完全免 CDP。
+ */
+function requestGetUserStatusDirect(origin, csrfToken, timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    try {
+      const targetUrl = new URL('/exa.language_server_pb.LanguageServerService/GetUserStatus', origin);
+      const client = targetUrl.protocol === 'https:' ? https : http;
+      const bodyStr = '{}';
+      const req = client.request(
+        targetUrl,
+        {
+          agent: false,
+          rejectUnauthorized: false,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': String(Buffer.byteLength(bodyStr)),
+            'Connect-Protocol-Version': '1',
+            ...(csrfToken ? { 'x-codeium-csrf-token': csrfToken } : {})
+          }
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', c => chunks.push(c));
+          res.on('end', () => {
+            const raw = Buffer.concat(chunks).toString('utf8');
+            if ((res.statusCode || 0) >= 400) {
+              return reject(new Error(`GetUserStatus HTTP ${res.statusCode}`));
+            }
+            try {
+              const parsed = JSON.parse(raw || '{}');
+              resolve({
+                email: parsed?.userStatus?.email || '',
+                userStatus: parsed?.userStatus || null
+              });
+            } catch (err) {
+              reject(err);
+            }
+          });
+        }
+      );
+      req.setTimeout(Number(timeoutMs) || 4000, () => {
+        req.destroy(new Error('GetUserStatus 请求超时'));
+      });
+      req.on('error', reject);
+      req.end(bodyStr);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
 let sharedAccountsMgr = null;
+const sharedMgrRuntime = {
+  currentOrigin: '',
+  getLiveOrigins: null,
+  localApi: null,
+  daemonDir: undefined,
+  homeDir: undefined,
+  isPidAlive: undefined,
+  directRequestFn: null
+};
+
 function getSharedAccountsManager(opts = {}) {
+  const applyRuntimeOpts = (targetRuntime, srcOpts) => {
+    if (srcOpts.origin && typeof srcOpts.origin === 'string') {
+      targetRuntime.currentOrigin = srcOpts.origin.trim();
+    }
+    if (typeof srcOpts.getLiveOrigins === 'function') {
+      targetRuntime.getLiveOrigins = srcOpts.getLiveOrigins;
+    }
+    if (srcOpts.localApi) {
+      targetRuntime.localApi = srcOpts.localApi;
+    }
+    if (srcOpts.daemonDir !== undefined) {
+      targetRuntime.daemonDir = srcOpts.daemonDir;
+    }
+    if (srcOpts.homeDir !== undefined) {
+      targetRuntime.homeDir = srcOpts.homeDir;
+    }
+    if (typeof srcOpts.isPidAlive === 'function') {
+      targetRuntime.isPidAlive = srcOpts.isPidAlive;
+    }
+    if (typeof srcOpts.directRequestFn === 'function') {
+      targetRuntime.directRequestFn = srcOpts.directRequestFn;
+    }
+  };
+
   if (!sharedAccountsMgr || opts.forceNew) {
     const collector = opts.collector || require('./meter-collector');
-    const localApi = opts.localApi || require('./local-api');
-    let currentOrigin = opts.origin || '';
+    const localRuntime = opts.forceNew
+      ? {
+          currentOrigin: '',
+          getLiveOrigins: null,
+          localApi: null,
+          daemonDir: undefined,
+          homeDir: undefined,
+          isPidAlive: undefined,
+          directRequestFn: null
+        }
+      : sharedMgrRuntime;
+    applyRuntimeOpts(localRuntime, opts);
+
     const mgr = createAccountsManager({
       ...opts,
       collector,
       getHostUserStatus: opts.getHostUserStatus || (async (callOpts = {}) => {
-        // 重启语言服务后其随机 HTTPS 端口会重新分配：force 或已知 origin 失联时自动回退 CDP 重新发现活跃端口
-        const tryConnect = async (useOrigin) => {
-          const api = await localApi.connect(useOrigin ? { origin: useOrigin } : undefined);
-          if (api?.origin) currentOrigin = api.origin;
-          const u = await api.call('GetUserStatus', {});
-          return {
-            email: u?.userStatus?.email || '',
-            userStatus: u?.userStatus || null
-          };
+        const localApi = localRuntime.localApi || require('./local-api');
+        const directFn = localRuntime.directRequestFn || requestGetUserStatusDirect;
+        // 严格按非 CDP 优先级收集候选：
+        // 1) Electron 主进程活跃窗口 webContents URL（最新实况）
+        // 2) 最近已确认的 currentOrigin
+        // 3) daemon/hub_*.json 后备（校验 pid 存活 + mtimeMs 最新）
+        const candidates = [];
+        const seen = new Set();
+        const pushCandidate = (origin, csrfToken = '', fromSource = '') => {
+          if (!origin || typeof origin !== 'string') return;
+          const cleanOrigin = origin.trim();
+          if (!cleanOrigin) return;
+          const key = `${cleanOrigin}|${csrfToken ? 'tok' : 'notok'}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          candidates.push({ origin: cleanOrigin, csrfToken, fromSource });
         };
-        try {
-          if (!callOpts?.force && currentOrigin) {
-            try {
-              return await tryConnect(currentOrigin);
-            } catch {
-              return await tryConnect('');
-            }
-          }
-          return await tryConnect('');
-        } catch {
-          if (currentOrigin) {
-            try { return await tryConnect(currentOrigin); } catch { }
-          }
-          return null;
+
+        let liveOrigins = [];
+        if (typeof localRuntime.getLiveOrigins === 'function') {
+          try {
+            const rawLive = localRuntime.getLiveOrigins();
+            if (Array.isArray(rawLive)) liveOrigins = rawLive;
+          } catch { }
         }
+        const hubBackups = discoverDaemonHubOrigins({
+          daemonDir: localRuntime.daemonDir,
+          homeDir: localRuntime.homeDir,
+          isPidAlive: localRuntime.isPidAlive
+        });
+
+        if (callOpts?.force) {
+          for (const lo of liveOrigins) pushCandidate(lo, '', 'electron_window');
+          if (localRuntime.currentOrigin) pushCandidate(localRuntime.currentOrigin, '', 'current_origin');
+          for (const hub of hubBackups) pushCandidate(hub.origin, hub.csrfToken, 'daemon_hub');
+        } else {
+          if (localRuntime.currentOrigin) pushCandidate(localRuntime.currentOrigin, '', 'current_origin');
+          for (const lo of liveOrigins) pushCandidate(lo, '', 'electron_window');
+          for (const hub of hubBackups) pushCandidate(hub.origin, hub.csrfToken, 'daemon_hub');
+        }
+
+        for (const cand of candidates) {
+          try {
+            if (cand.csrfToken) {
+              try {
+                const res = await directFn(cand.origin, cand.csrfToken);
+                localRuntime.currentOrigin = cand.origin;
+                return res;
+              } catch { }
+            }
+            if (typeof localApi?.connect === 'function') {
+              const api = await localApi.connect({ origin: cand.origin });
+              if (api?.origin) localRuntime.currentOrigin = api.origin;
+              const u = await api.call('GetUserStatus', {});
+              return {
+                email: u?.userStatus?.email || '',
+                userStatus: u?.userStatus || null
+              };
+            }
+          } catch { }
+        }
+        return null;
       })
     });
     if (!opts.forceNew) sharedAccountsMgr = mgr;
     return mgr;
   }
+  applyRuntimeOpts(sharedMgrRuntime, opts);
   return sharedAccountsMgr;
 }
 
@@ -3273,6 +3555,9 @@ module.exports = {
   ELV52_PROTOCOL_EVIDENCE,
   DEFAULT_AUTO_SWITCH_CONFIG,
   DEFAULT_KEEPALIVE_CONFIG,
+  DEFAULT_SWITCH_VERIFY_TIMEOUT_MS,
+  discoverDaemonHubOrigins,
+  requestGetUserStatusDirect,
   normalizeEmail,
   buildAccountScopeKey,
   maskEmail,

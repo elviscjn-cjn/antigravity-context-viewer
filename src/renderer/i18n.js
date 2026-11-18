@@ -1485,6 +1485,7 @@ const PANEL_I18N = {
   'accounts.status.blocked_untrusted_quota': { 'zh-CN': '数据不可信已跳过', 'zh-TW': '資料不可信已跳過', en: 'Skipped (Stale/Error)' },
   'accounts.status.error': { 'zh-CN': '失败已停用', 'zh-TW': '失敗已停用', en: 'Halted (Error)' },
   'accounts.lastSwitchedTo': { 'zh-CN': '上次切至 {email}', 'zh-TW': '上次切至 {email}', en: 'Last switched to {email}' },
+  'accounts.lastSwitchRolledBack': { 'zh-CN': '已自动回滚：{detail}', 'zh-TW': '已自動回滾：{detail}', en: 'Rolled back: {detail}' },
   'accounts.actionBusy': { 'zh-CN': '正在处理…', 'zh-TW': '處理中…', en: 'Processing…' },
   'accounts.actionDone': { 'zh-CN': '操作已完成', 'zh-TW': '操作已完成', en: 'Completed' },
   'accounts.actionFail': { 'zh-CN': '操作失败', 'zh-TW': '操作失敗', en: 'Operation failed' },
