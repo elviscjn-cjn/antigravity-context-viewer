@@ -7004,8 +7004,9 @@ function requestGithubUrl(rawUrl, options = {}) {
         }
         if (tunnelSocket) {
           const tls = require('tls');
-          reqOpts.agent = false;
-          reqOpts.createConnection = () => {
+          // Node https.request 在 agent:false 时会忽略 reqOpts.createConnection，必须绑定带 createConnection 的专属 Agent
+          const tunnelAgent = new https.Agent({ keepAlive: false });
+          tunnelAgent.createConnection = () => {
             tunnelConsumed = true;
             const tlsOpts = { socket: tunnelSocket, servername: parsedUrl.hostname };
             if (options.ca) tlsOpts.ca = options.ca;
@@ -7014,6 +7015,7 @@ function requestGithubUrl(rawUrl, options = {}) {
             }
             return tls.connect(tlsOpts);
           };
+          reqOpts.agent = tunnelAgent;
         }
 
         const req = https.request(reqOpts, res => {

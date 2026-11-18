@@ -388,8 +388,12 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
   let httpConnectHits = 0;
   let socks5Hits = 0;
   let forceTruncateNext = false;
+  const seenSniHosts = [];
+  const seenHostHeaders = [];
 
   const tlsServer = https.createServer({ key, cert }, (req, res) => {
+    if (req.socket?.servername) seenSniHosts.push(req.socket.servername);
+    if (req.headers?.host) seenHostHeaders.push(req.headers.host);
     if (req.url === '/ok-json') {
       directHitCount++;
       const body = JSON.stringify([{ tag_name: 'v0.8.9', ok: true }]);
@@ -427,7 +431,8 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
   httpProxyServer.on('connect', (req, clientSocket, head) => {
     httpConnectHits++;
     const [host, portStr] = String(req.url || '').split(':');
-    const upstream = net.connect(Number(portStr), host, () => {
+    const dialHost = host === 'proxy-only-check.invalid' ? '127.0.0.1' : host;
+    const upstream = net.connect(Number(portStr), dialHost, () => {
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head && head.length) upstream.write(head);
       upstream.pipe(clientSocket);
@@ -508,7 +513,8 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
           stage = 'tunnel';
           socks5Hits++;
           clientSocket.removeListener('data', handleData);
-          upstream = net.connect(port, host, () => {
+          const dialHost = host === 'proxy-only-check.invalid' ? '127.0.0.1' : host;
+          upstream = net.connect(port, dialHost, () => {
             clientSocket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0]));
             if (leftover.length) upstream.write(leftover);
             upstream.pipe(clientSocket);
@@ -543,22 +549,37 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
       cfg.modules.proxy.enabled = true;
       cfg.modules.proxy.bypassList = 'localhost';
 
-      // A. HTTP CONNECT 代理下载与 SHA-256 校验
+      // A. HTTP CONNECT 代理下载与 SHA-256 校验（使用不可直连的 .invalid 域名确保流量真经隧道 Agent 转发）
       cfg.modules.proxy.proxyUrl = `http://127.0.0.1:${httpProxyPort}`;
       saveModulesConfig(cfg);
       const outHttpZip = path.join(sb.root, 'dl-http.zip');
       const wsHttp = fs.createWriteStream(outHttpZip);
-      await requestGithubUrl(`https://127.0.0.1:${tlsPort}/zip`, { ca: cert, streamTo: wsHttp });
+      await requestGithubUrl(`https://proxy-only-check.invalid:${tlsPort}/zip`, { rejectUnauthorized: false, streamTo: wsHttp });
       assert.equal(httpConnectHits, 1);
       assert.equal(sha256(outHttpZip), payloadSha);
+      assert.ok(seenSniHosts.includes('proxy-only-check.invalid'));
+      assert.ok(seenHostHeaders.includes(`proxy-only-check.invalid:${tlsPort}`));
 
-      // B. SOCKS5 认证代理 + 无认证 SOCKS5h
+      // B. SOCKS5 认证代理 + 无认证 SOCKS5h（同样使用不可直连 .invalid 域名断言真走代理隧道）
       requireSocksAuth = true;
       cfg.modules.proxy.proxyUrl = `socks5h://u1:p1@127.0.0.1:${socksPort}`;
       saveModulesConfig(cfg);
-      const jsonViaSocks = await requestGithubUrl(`https://127.0.0.1:${tlsPort}/ok-json`, { ca: cert });
+      const jsonViaSocks = await requestGithubUrl(`https://proxy-only-check.invalid:${tlsPort}/ok-json`, { rejectUnauthorized: false });
       assert.equal(socks5Hits, 1);
       assert.equal(JSON.parse(jsonViaSocks)[0].tag_name, 'v0.8.9');
+      assert.equal(seenSniHosts.filter(h => h === 'proxy-only-check.invalid').length, 2);
+
+      // 无代理直连 .invalid 必败，反证只有经过代理隧道才能连接成功
+      cfg.modules.proxy.bypassList = 'proxy-only-check.invalid';
+      saveModulesConfig(cfg);
+      const beforeDirectInvalidCalls = directHitCount;
+      await assert.rejects(
+        () => requestGithubUrl(`https://proxy-only-check.invalid:${tlsPort}/ok-json`, { rejectUnauthorized: false, timeout: 800 }),
+        /ENOTFOUND|EAI_AGAIN|getaddrinfo|请求超时|直连/i
+      );
+      assert.equal(directHitCount, beforeDirectInvalidCalls);
+      cfg.modules.proxy.bypassList = 'localhost';
+      saveModulesConfig(cfg);
 
       // C. 重定向按新目标域名判定 bypassList（127.0.0.1 走 SOCKS5 -> 302 到 localhost 命中 bypass 直连）
       const socksBeforeRedir = socks5Hits;
