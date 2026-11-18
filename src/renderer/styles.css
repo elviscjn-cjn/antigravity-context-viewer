@@ -2238,3 +2238,133 @@
     @media (max-width:440px){
       .auto-switch-grid{grid-template-columns:1fr}
     }
+
+    /* 订阅设置表单统一聚焦样式与自定义日期选择器（对齐 .ag-dropdown 设计语言） */
+    .ag-sub-input{
+      outline:none !important;
+      transition:border-color 0.15s cubic-bezier(0.16,1,0.3,1),box-shadow 0.15s cubic-bezier(0.16,1,0.3,1),background 0.15s ease;
+    }
+    .ag-sub-input:hover:not(:disabled){
+      border-color:rgba(255,255,255,0.22) !important;
+    }
+    :host([data-theme="light"]) .ag-sub-input:hover:not(:disabled){
+      border-color:rgba(0,0,0,0.22) !important;
+    }
+    .ag-sub-input:focus,.ag-sub-input:focus-visible{
+      outline:none !important;
+      border-color:#a78bfa !important;
+      box-shadow:0 0 0 2px rgba(139,92,246,0.28) !important;
+    }
+    .quota-compact-input:focus,.quota-compact-input:focus-visible{
+      outline:none;
+      border-color:#a78bfa;
+      box-shadow:0 0 0 2px rgba(139,92,246,0.25);
+    }
+
+    .ag-datepicker-wrapper{
+      position:relative;width:100%;box-sizing:border-box;min-width:0;
+    }
+    .ag-datepicker-trigger{
+      padding:3.5px 8px;font-size:11px;min-height:24px;border-radius:5px;
+    }
+    .ag-datepicker-label.is-placeholder{
+      color:var(--ag-text-muted);
+    }
+    .ag-datepicker-icon{
+      display:inline-flex;align-items:center;justify-content:center;
+      color:var(--ag-text-muted);flex-shrink:0;opacity:0.8;
+    }
+    .ag-datepicker-trigger:hover .ag-datepicker-icon,
+    .ag-datepicker-wrapper.is-open .ag-datepicker-icon{
+      color:#a78bfa;opacity:1;
+    }
+    .ag-datepicker-popover{
+      position:absolute;top:calc(100% + 4px);right:0;left:auto;
+      width:236px;max-width:calc(100vw - 24px);max-height:none;overflow:visible;
+      padding:10px;border-radius:8px;
+      background:var(--ag-unified-bg,#1e1e24);
+      border:1px solid var(--ag-float-border,rgba(255,255,255,0.14));
+      box-shadow:0 16px 40px rgba(0,0,0,0.65),0 4px 12px rgba(0,0,0,0.4);
+      z-index:2147483647 !important;
+      user-select:none;
+    }
+    .ag-datepicker-wrapper.open-up .ag-datepicker-popover{
+      top:auto;bottom:calc(100% + 4px);
+    }
+    .ag-dp-header{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;
+    }
+    .ag-dp-nav-btn{
+      width:24px;height:24px;border-radius:5px;border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-input);color:var(--ag-text-secondary);
+      display:inline-flex;align-items:center;justify-content:center;
+      cursor:pointer;font-size:12px;line-height:1;padding:0;
+      transition:border-color .14s ease,background .14s ease,color .14s ease;
+    }
+    .ag-dp-nav-btn:hover{
+      border-color:rgba(167,139,250,0.55);color:var(--ag-text-primary);
+      background:rgba(139,92,246,0.14);
+    }
+    .ag-dp-nav-btn:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }
+    .ag-dp-month-title{
+      font-size:11.5px;font-weight:600;color:var(--ag-text-primary);text-align:center;flex:1;
+    }
+    .ag-dp-weekdays{
+      display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px;
+    }
+    .ag-dp-weekday{
+      font-size:9.5px;font-weight:600;color:var(--ag-text-muted);text-align:center;padding:2px 0;
+    }
+    .ag-dp-grid{
+      display:grid;grid-template-columns:repeat(7,1fr);gap:2px;
+    }
+    .ag-dp-day{
+      height:26px;border-radius:6px;border:1px solid transparent;
+      background:transparent;color:var(--ag-text-primary);font-size:10.5px;
+      display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;
+      transition:background .12s ease,border-color .12s ease,color .12s ease;
+    }
+    .ag-dp-day.is-outside{
+      color:var(--ag-text-muted);opacity:0.45;
+    }
+    .ag-dp-day:hover{
+      background:rgba(167,139,250,0.16);color:var(--ag-text-primary);
+    }
+    .ag-dp-day.is-today:not(.is-selected){
+      border-color:#a855f7;color:#c4b5fd;font-weight:600;
+    }
+    :host([data-theme="light"]) .ag-dp-day.is-today:not(.is-selected){
+      color:#7c3aed;border-color:#8b5cf6;
+    }
+    .ag-dp-day.is-selected{
+      background:linear-gradient(135deg,#8b5cf6,#a855f7);
+      border-color:#a855f7;color:#ffffff;font-weight:600;
+      box-shadow:0 2px 8px rgba(139,92,246,0.35);
+    }
+    .ag-dp-day:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }
+    .ag-dp-footer{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;
+      margin-top:8px;padding-top:7px;border-top:1px solid var(--ag-border-subcard);
+    }
+    .ag-dp-action-btn{
+      font-size:10.5px;padding:3px 9px;border-radius:5px;border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-input);color:var(--ag-text-secondary);cursor:pointer;
+      transition:border-color .14s ease,color .14s ease,background .14s ease;
+    }
+    .ag-dp-action-btn:hover{
+      border-color:rgba(167,139,250,0.55);color:var(--ag-text-primary);
+      background:rgba(139,92,246,0.12);
+    }
+    .ag-dp-action-btn.is-today-btn{
+      color:#c4b5fd;border-color:rgba(139,92,246,0.38);
+    }
+    :host([data-theme="light"]) .ag-dp-action-btn.is-today-btn{
+      color:#7c3aed;
+    }
+    .ag-dp-action-btn:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }

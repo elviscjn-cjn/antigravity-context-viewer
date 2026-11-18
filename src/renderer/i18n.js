@@ -134,6 +134,7 @@ const PANEL_I18N = {
   'models.card.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
   'models.card.savedSide': { 'zh-CN': '为这个模型记下的长度', 'zh-TW': '為此模型記下的長度', en: 'Saved limit for this model' },
   'models.card.request': { 'zh-CN': '请求携带', 'zh-TW': '請求攜帶', en: 'Request Attached' },
+  'models.card.requestDefault': { 'zh-CN': '恢复客户端默认', 'zh-TW': '還原用戶端預設', en: 'Client Default' },
   'models.mode.aria': { 'zh-CN': '上下文设置模式', 'zh-TW': '上下文設定模式', en: 'Context setting mode' },
   'models.mode.unifiedTitle': { 'zh-CN': '所有模型统一设置', 'zh-TW': '所有模型統一設定', en: 'Unified for All Models' },
   'models.mode.unifiedDesc': { 'zh-CN': '设置一次，所有模型使用相同的上下文长度。', 'zh-TW': '設定一次，所有模型使用相同的上下文長度。', en: 'Set once; all models use the same context length.' },
@@ -150,7 +151,9 @@ const PANEL_I18N = {
   'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
   'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
   'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.convoIdSide': { 'zh-CN': '发生调用的会话标识', 'zh-TW': '觸發呼叫的工作階段識別碼', en: 'Conversation ID of call' },
   'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.diagnosisSide': { 'zh-CN': '目标值与观测值比对结果', 'zh-TW': '目標值與觀測值比對結果', en: 'Target vs. observed comparison' },
   'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
   'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
   'models.summary.unconfirmed': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
@@ -223,7 +226,9 @@ const PANEL_I18N = {
   'models.meta.backup': { 'zh-CN': '原版备份状态', 'zh-TW': '原版備份狀態', en: 'Original Backup' },
   'models.credit.source': { 'zh-CN': '方案来源：', 'zh-TW': '方案來源：', en: 'Source:' },
   'models.credit.author': { 'zh-CN': '原作者帖子 (Linux.do @23375) ↗', 'zh-TW': '原作者文章 (Linux.do @23375) ↗', en: 'Original Post (Linux.do @23375) ↗' },
+  'models.credit.authorTitle': { 'zh-CN': '点击在系统默认浏览器中打开原作者帖子', 'zh-TW': '點擊在系統預設瀏覽器中開啟原作者文章', en: 'Open original post in default browser' },
   'models.credit.copy': { 'zh-CN': '📋 复制链接', 'zh-TW': '📋 複製連結', en: '📋 Copy Link' },
+  'models.credit.copyTitle': { 'zh-CN': '复制原作者帖子链接', 'zh-TW': '複製原作者文章連結', en: 'Copy original post link' },
   'models.credit.adapter': { 'zh-CN': '本项目负责 Node.js 适配与集成', 'zh-TW': '本專案負責 Node.js 適配與整合', en: 'Node.js adaptation & integration by this project' },
 
   // 状态与反馈通用
@@ -801,7 +806,7 @@ const PANEL_I18N = {
   'plan.summary.freeWithPlan': { 'zh-CN': '(随套餐免费)', 'zh-TW': '(隨方案免費)', en: '(Included)' },
   'plan.summary.priceUnsetShort': { 'zh-CN': '待设置月费', 'zh-TW': '待設定月費', en: 'Fee unset' },
   'plan.summary.priceUnsetCny': { 'zh-CN': '(待填写实付)', 'zh-TW': '(待填寫實付)', en: '(not set)' },
-  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅费用与最新汇率折算 (点击展开/收起详情)', 'zh-TW': '目前訂閱費用與最新匯率換算 (點擊展開/收起詳細資訊)', en: 'Current subscription fee and FX estimate (click to toggle details)' },
+  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅费用与最新汇率换算参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱費用與最新匯率換算參考 (點擊展開/收起詳細資訊)', en: 'Current subscription fee and FX estimate (click to toggle details)' },
   'plan.dt.plan': { 'zh-CN': '当前套餐：', 'zh-TW': '目前方案：', en: 'Plan:' },
   'plan.dt.account': { 'zh-CN': '当前账号：', 'zh-TW': '目前帳號：', en: 'Account:' },
   'plan.dt.country': { 'zh-CN': '账号所在地区：', 'zh-TW': '帳號所在地區：', en: 'Account country:' },
@@ -861,6 +866,8 @@ const PANEL_I18N = {
   // API 参考金额与展开详情
   'cost.title': { 'zh-CN': '💰 本期 API 参考金额', 'zh-TW': '💰 本期 API 參考金額', en: '💰 Period API Reference Cost' },
   'cost.periodTag': { 'zh-CN': '本月自然月', 'zh-TW': '本月自然月', en: 'This Calendar Month' },
+  'cost.calendarMonth': { 'zh-CN': '自然月', 'zh-TW': '自然月', en: 'Calendar Month' },
+  'cost.periodTagFmt': { 'zh-CN': '{ym} (自然月)', 'zh-TW': '{ym} (自然月)', en: '{ym} (Calendar Month)' },
   'cost.nonPaidBadge': { 'zh-CN': 'API折算 · 非实付', 'zh-TW': 'API換算 · 非實付', en: 'API Est. · Not Billed' },
   'cost.subUnknown': { 'zh-CN': '订阅实付：未填写', 'zh-TW': '訂閱實付：未填寫', en: 'Plan paid: Not set' },
   'cost.btnFill': { 'zh-CN': '补充', 'zh-TW': '補充', en: 'Edit' },
@@ -944,7 +951,9 @@ const PANEL_I18N = {
   'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
   'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
   'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.convoIdSide': { 'zh-CN': '发生调用的会话标识', 'zh-TW': '觸發呼叫的工作階段識別碼', en: 'Conversation ID of call' },
   'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.diagnosisSide': { 'zh-CN': '目标值与观测值比对结果', 'zh-TW': '目標值與觀測值比對結果', en: 'Target vs. observed comparison' },
   'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
   'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
   'models.pref.none': { 'zh-CN': '未单独设置（使用默认）', 'zh-TW': '未單獨設定（使用預設）', en: 'Not set (Default)' },
@@ -1058,7 +1067,8 @@ const PANEL_I18N = {
   'common.notProvided': { 'zh-CN': '未提供', 'zh-TW': '未提供', en: 'Not provided' },
   'common.loading': { 'zh-CN': '读取中...', 'zh-TW': '讀取中...', en: 'Loading...' },
   'tokens.heat.firstUsePlaceholder': { 'zh-CN': '首次使用：--', 'zh-TW': '首次使用：--', en: 'First use: --' },
-  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (¥0.00) · 日均 $0.00', en: '≈ $0.00 (¥0.00) · $0.00/d' },
+  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (HK$0 / NT$0) · 日均 $0.00', en: '≈ $0.00 · Avg $0.00/d' },
+  'tokens.heat.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00)', 'zh-TW': '≈ $0.00 (HK$0 / NT$0)', en: '≈ $0.00' },
   'tokens.heat.activeAvgPlaceholder': { 'zh-CN': '$0.00 (0天)', 'zh-TW': '$0.00 (0天)', en: '$0.00 (0d)' },
   'tokens.card.todaySub': { 'zh-CN': '{n} 会话实时累加', 'zh-TW': '{n} 會話即時累加', en: '{n} chat(s) live' },
   'tokens.card.monthSub': { 'zh-CN': '日均约 {val}', 'zh-TW': '日均約 {val}', en: '~{val}/day avg' },
@@ -1302,16 +1312,25 @@ const PANEL_I18N = {
   'cp.copyHsl': { 'zh-CN': '复制 HSL', 'zh-TW': '複製 HSL', en: 'Copy HSL' },
   'update.dialogAria': { 'zh-CN': '软件更新', 'zh-TW': '軟體更新', en: 'Software Update' },
 
-  // 订阅表单与热力图补充
-  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅月费及人民币折合汇率参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱月費及人民幣折合匯率參考 (點擊展開/收起詳情)', en: 'Current monthly fee & CNY estimate (click to toggle details)' },
+  // 订阅表单、自定义日期选择器与热力图补充
   'plan.country.title': { 'zh-CN': '仅作为本地显示记录，不修改实际 Google 账号', 'zh-TW': '僅作為本機顯示記錄，不修改實際 Google 帳號', en: 'Local display record only; does not change your Google account' },
   'plan.region.title': { 'zh-CN': '实际购买或支付订阅所在的国家或地区', 'zh-TW': '實際購買或支付訂閱所在的國家或地區', en: 'Country/region where the subscription is billed' },
   'plan.currency.aria': { 'zh-CN': '选择订阅币种', 'zh-TW': '選擇訂閱幣別', en: 'Select subscription currency' },
   'plan.currency.title': { 'zh-CN': '订阅计价/结算币种', 'zh-TW': '訂閱計價/結算幣別', en: 'Subscription billing currency' },
   'plan.country.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
   'plan.region.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '折合 ≈ ¥{val} CNY/月', en: '≈ ¥{val} CNY/mo' },
-  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '≈ ¥{val} CNY', en: '≈ ¥{val} CNY' },
+  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '約合 ≈ ¥{val} CNY/月', en: '≈ ${val}/mo' },
+  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '約 ¥{val} CNY', en: 'approx. ${val} USD' },
+  'plan.usdApprox': { 'zh-CN': '折合 ≈ ${val} USD', 'zh-TW': '約合 ≈ ${val} USD', en: 'approx. ${val} USD' },
+  'plan.usdApproxMo': { 'zh-CN': '折合 ≈ ${val} USD/月', 'zh-TW': '約合 ≈ ${val} USD/月', en: 'approx. ${val} USD/mo' },
+  'datePicker.placeholder': { 'zh-CN': '年 / 月 / 日', 'zh-TW': '年 / 月 / 日', en: 'YYYY-MM-DD' },
+  'datePicker.clear': { 'zh-CN': '清除', 'zh-TW': '清除', en: 'Clear' },
+  'datePicker.today': { 'zh-CN': '今天', 'zh-TW': '今天', en: 'Today' },
+  'datePicker.prevMonth': { 'zh-CN': '上个月', 'zh-TW': '上個月', en: 'Previous month' },
+  'datePicker.nextMonth': { 'zh-CN': '下个月', 'zh-TW': '下個月', en: 'Next month' },
+  'datePicker.weekdays': { 'zh-CN': '日,一,二,三,四,五,六', 'zh-TW': '日,一,二,三,四,五,六', en: 'Su,Mo,Tu,We,Th,Fr,Sa' },
+  'datePicker.monthTitle': { 'zh-CN': '{y}年{m}月', 'zh-TW': '{y}年{m}月', en: '{monthEn} {y}' },
+  'datePicker.ariaLabel': { 'zh-CN': '选择权益到期日期', 'zh-TW': '選擇權益到期日期', en: 'Choose expiration date' },
   'plan.acqOpt.normal_paid': { 'zh-CN': '正常官方付费订阅', 'zh-TW': '正常官方付費訂閱', en: 'Standard paid subscription' },
   'plan.acqOpt.student_offer': { 'zh-CN': '学生教育优惠 (Google AI Pro 学生方案)', 'zh-TW': '學生教育優惠 (Google AI Pro 學生方案)', en: 'Student discount (Google AI Pro)' },
   'plan.acqOpt.pixel_bundle': { 'zh-CN': 'Pixel 手机购机赠送权益', 'zh-TW': 'Pixel 手機購機贈送權益', en: 'Pixel phone bundle perk' },
@@ -1326,8 +1345,8 @@ const PANEL_I18N = {
   'plan.form.presetCustom': { 'zh-CN': '✎ 自定义输入地区', 'zh-TW': '✎ 自訂輸入地區', en: '✎ Custom region' },
   'plan.form.countryPh': { 'zh-CN': '例如：美国 (US)', 'zh-TW': '例如：美國 (US)', en: 'e.g. United States (US)' },
   'plan.form.regionPh': { 'zh-CN': '例如：韩国 / 澳大利亚', 'zh-TW': '例如：韓國 / 澳洲', en: 'e.g. South Korea / Australia' },
-  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', en: '{flag} {name} ({id}) · {sym}{price}/mo (≈ ¥{cny})' },
-  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月', en: '{flag} {name} (CNY) · ¥{price}/mo' },
+  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月{conv}', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月{conv}', en: '{flag} {name} ({id}) · {sym}{price}/mo{conv}' },
+  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月{conv}', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月{conv}', en: '{flag} {name} (CNY) · ¥{price}/mo{conv}' },
   'plan.cycleOpt.monthly': { 'zh-CN': '月付', 'zh-TW': '月付', en: 'Monthly' },
   'plan.cycleOpt.yearly': { 'zh-CN': '年付', 'zh-TW': '年付', en: 'Yearly' },
   'plan.cycleOpt.free': { 'zh-CN': '免费 / 促销赠送', 'zh-TW': '免費 / 促銷贈送', en: 'Free / Promo' },
@@ -1762,9 +1781,52 @@ function translateBackendText(text) {
       return `${prefixHit[currentPanelLanguage]}${sep}${translateBackendText(rest)}`;
     }
   }
+  // 模式化翻译：账号切换成功、验证未生效/回滚、刷新额度与客户端限制明细
+  const switchOkMatch = trimmed.match(/^已切换至\s+(\S+?)，语言服务已重启并通过 GetUserStatus 核验生效。$/);
+  if (switchOkMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Switched to ${switchOkMatch[1]}; language server restarted and verified via GetUserStatus.`
+      : `已切換至 ${switchOkMatch[1]}，語言服務已重啟並通過 GetUserStatus 核驗生效。`;
+  }
+  const switchCredMatch = trimmed.match(/^已写入\s+(\S+?)\s+凭据并通过生效校验（部分桌面扩展若仍显示旧缓存，建议重载窗口）。$/);
+  if (switchCredMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Credentials for ${switchCredMatch[1]} applied and verified (reload window if extensions still cache previous state).`
+      : `已寫入 ${switchCredMatch[1]} 憑據並通過生效校驗（部分桌面擴充若仍顯示舊快取，建議重載視窗）。`;
+  }
+  const switchFailMatch = trimmed.match(/^凭据验证未生效，宿主暂未切换至\s+(\S+?)(?:（当前仍回报\s+(.+?)）)?(，已自动回滚原凭据)?。请重载或重启 Antigravity 客户端后重试。$/);
+  if (switchFailMatch) {
+    const targetEm = switchFailMatch[1];
+    const obsEm = switchFailMatch[2];
+    const hasRb = Boolean(switchFailMatch[3]);
+    if (currentPanelLanguage === 'en') {
+      return `Credential verification failed: host has not switched to ${targetEm}${obsEm ? ` (still reports ${obsEm})` : ''}${hasRb ? '; rolled back automatically' : ''}. Reload or restart Antigravity and retry.`;
+    }
+    return `憑據驗證未生效，宿主暫未切換至 ${targetEm}${obsEm ? `（目前仍回報 ${obsEm}）` : ''}${hasRb ? '，已自動回滾原憑據' : ''}。請重載或重啟 Antigravity 用戶端後重試。`;
+  }
+  const refreshAllMatch = trimmed.match(/^已刷新全部\s+(\d+)\s+个账号最新额度快照。$/);
+  if (refreshAllMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Refreshed latest quota snapshots for all ${refreshAllMatch[1]} account(s).`
+      : `已重新整理全部 ${refreshAllMatch[1]} 個帳號最新額度快照。`;
+  }
+  const refreshOneMatch = trimmed.match(/^已刷新\s+(\S+?)\s+最新额度快照。$/);
+  if (refreshOneMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Refreshed latest quota snapshot for ${refreshOneMatch[1]}.`
+      : `已重新整理 ${refreshOneMatch[1]} 最新額度快照。`;
+  }
+  const quotaRefreshPartialMatch = trimmed.match(/^额度刷新部分或全部失败（成功\s+(\d+)\s+\/\s+失败\s+(\d+)）：(.+)$/);
+  if (quotaRefreshPartialMatch) {
+    const [, okN, failN, detail] = quotaRefreshPartialMatch;
+    const translatedDetail = translateBackendText(detail);
+    return currentPanelLanguage === 'en'
+      ? `Quota refresh failed (${okN} ok / ${failN} failed): ${translatedDetail}`
+      : `額度重新整理部分或全部失敗（成功 ${okN} / 失敗 ${failN}）：${translatedDetail}`;
+  }
   // 防止英文模式下未知中文后端文本泄漏造成中英混杂拼接
   if (currentPanelLanguage === 'en' && /[\u4e00-\u9fa5]/.test(trimmed)) {
-    return 'Backend operation failed (check desktop log for details)';
+    return 'Backend operation notice (see desktop log for details)';
   }
   return str;
 }
@@ -1780,7 +1842,261 @@ function localizePlanTierName(name) {
 }
 
 function formatVendorLabel(vendor) {
-  if (!vendor) return currentPanelLanguage === 'en' ? 'Other' : '其他';
-  if (vendor === '其他') return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  if (!vendor || vendor === '其他' || vendor === 'Other') {
+    return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  }
   return vendor;
 }
+
+// =========================================================================
+// 全局货币换算与三语差异化格式化中心 + 预设地区本地化映射
+// =========================================================================
+const FALLBACK_RATES_TO_CNY = {
+  CNY: 1.0,
+  USD: 6.72,
+  HKD: 0.857,
+  TWD: 0.21,
+  NTD: 0.21,
+  JPY: 0.0425,
+  KRW: 0.0051,
+  EUR: 7.52,
+  GBP: 8.75,
+  AUD: 4.45,
+  CAD: 4.88,
+  SGD: 5.12,
+  MYR: 1.55,
+  INR: 0.076,
+  PHP: 0.117,
+  TRY: 0.133,
+  NGN: 0.0042,
+  BRL: 1.18
+};
+
+const EXTRA_COUNTRY_LOCALES = {
+  DE: { name: '德国', nameTw: '德國', nameEn: 'Germany' },
+  UK: { name: '英国', nameTw: '英國', nameEn: 'United Kingdom' },
+  CN: { name: '中国大陆', nameTw: '中國大陸', nameEn: 'China Mainland' },
+  EU: { name: '欧洲/欧盟', nameTw: '歐洲/歐盟', nameEn: 'Europe / EU' },
+  AU: { name: '澳大利亚', nameTw: '澳洲', nameEn: 'Australia' }
+};
+
+function convertCurrencyUi(amount, fromCurrency, toCurrency, regionQuery = null) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return null;
+  const num = Number(amount);
+  if (num === 0) return 0;
+  let from = String(fromCurrency || 'USD').trim().toUpperCase();
+  let to = String(toCurrency || 'USD').trim().toUpperCase();
+  if (from === 'NTD') from = 'TWD';
+  if (to === 'NTD') to = 'TWD';
+  if (from === to) return Number(num.toFixed(2));
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  if (core && typeof core.convertCurrency === 'function') {
+    const res = core.convertCurrency(num, from, to, regionQuery);
+    if (res !== null && Number.isFinite(res)) return res;
+  }
+  const fromRate = FALLBACK_RATES_TO_CNY[from];
+  const toRate = FALLBACK_RATES_TO_CNY[to];
+  if (!fromRate || !toRate) return null;
+  return Number(((num * fromRate) / toRate).toFixed(2));
+}
+
+function formatCompactRefNum(val, cur) {
+  const num = Number(val || 0);
+  if (!Number.isFinite(num)) return '0';
+  if (cur === 'CNY') return num.toFixed(2);
+  if (num === 0) return '0';
+  if (Math.abs(num) < 10) return num.toFixed(2);
+  if (Math.abs(num) < 100) return num.toFixed(1);
+  return String(Math.round(num));
+}
+
+/**
+ * 统一格式化 USD API 估算费用（三语差异化规则）：
+ * - en: 纯 USD（不含任何 ¥ / CNY）
+ * - zh-CN: USD + CNY（≈ $618.53 (¥4156.54)）
+ * - zh-TW: 紧凑单行模式 USD + HKD/TWD（≈ $618.53 (HK$4850 / NT$19793)）；detail=true 完整四币种 USD+HKD+TWD+CNY
+ */
+function formatUsdMetricDisplay(usdAmount, options = {}) {
+  const num = Number(usdAmount || 0);
+  const safeUsd = Number.isFinite(num) ? num : 0;
+  const prefix = options.withPrefix === false ? '' : '≈ ';
+  const usdStr = `${prefix}$${safeUsd.toFixed(2)}`;
+  const lang = options.lang || currentPanelLanguage;
+  if (lang === 'en') {
+    return usdStr;
+  }
+  if (lang === 'zh-TW') {
+    const hkd = convertCurrencyUi(safeUsd, 'USD', 'HKD') ?? (safeUsd * 7.84);
+    const twd = convertCurrencyUi(safeUsd, 'USD', 'TWD') ?? (safeUsd * 32.0);
+    const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+    if (options.detail) {
+      return `${usdStr} (HK$${formatCompactRefNum(hkd, 'HKD')} · NT$${formatCompactRefNum(twd, 'TWD')} · ¥${cny.toFixed(2)} CNY)`;
+    }
+    return `${usdStr} (HK$${formatCompactRefNum(hkd, 'HKD')} / NT$${formatCompactRefNum(twd, 'TWD')})`;
+  }
+  const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+  return `${usdStr} (¥${cny.toFixed(2)})`;
+}
+
+function formatUsdMetricTooltip(usdAmount) {
+  const num = Number(usdAmount || 0);
+  const safeUsd = Number.isFinite(num) ? num : 0;
+  if (currentPanelLanguage === 'en') {
+    return `USD $${safeUsd.toFixed(2)}`;
+  }
+  const hkd = convertCurrencyUi(safeUsd, 'USD', 'HKD') ?? (safeUsd * 7.84);
+  const twd = convertCurrencyUi(safeUsd, 'USD', 'TWD') ?? (safeUsd * 32.0);
+  const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+  if (currentPanelLanguage === 'zh-TW') {
+    return `USD $${safeUsd.toFixed(2)} · HKD HK$${hkd.toFixed(1)} · TWD NT$${Math.round(twd)} · CNY ¥${cny.toFixed(2)}`;
+  }
+  return `USD $${safeUsd.toFixed(2)} · CNY ¥${cny.toFixed(2)}`;
+}
+
+/**
+ * 统一格式化订阅价格的辅助换算文本（不含外层括号）：
+ * - en: 默认 USD 返回 ''；非 USD 返回 "approx. $X.XX USD"（或带 /mo）
+ * - zh-CN: CNY 返回 ''；非 CNY 返回 "折合 ≈ ¥X.X CNY" / "≈ ¥X.X CNY"
+ * - zh-TW: detail=true 时返回完整四币种（跳过自身）对照；紧凑模式返回紧凑多币参考
+ */
+function formatSubscriptionSecondaryConversion(amount, currency, regionQuery = null, options = {}) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount)) || Number(amount) === 0) return '';
+  let cur = String(currency || 'USD').trim().toUpperCase();
+  if (cur === 'NTD') cur = 'TWD';
+  const lang = options.lang || currentPanelLanguage;
+  const suffixMo = options.perMonth ? t('plan.summary.perMonth') : '';
+
+  if (lang === 'en') {
+    if (cur === 'USD') return '';
+    const usd = convertCurrencyUi(amount, cur, 'USD', regionQuery);
+    if (usd === null) return '';
+    return `approx. $${usd.toFixed(2)} USD${suffixMo}`;
+  }
+
+  if (lang === 'zh-TW') {
+    const usd = cur === 'USD' ? Number(amount) : convertCurrencyUi(amount, cur, 'USD', regionQuery);
+    const hkd = cur === 'HKD' ? Number(amount) : convertCurrencyUi(amount, cur, 'HKD', regionQuery);
+    const twd = cur === 'TWD' ? Number(amount) : convertCurrencyUi(amount, cur, 'TWD', regionQuery);
+    const cny = cur === 'CNY' ? Number(amount) : convertCurrencyUi(amount, cur, 'CNY', regionQuery);
+    const parts = [];
+    if (cur !== 'USD' && usd !== null) parts.push(`US$${usd.toFixed(2)}`);
+    if (cur !== 'HKD' && hkd !== null) parts.push(`HK$${formatCompactRefNum(hkd, 'HKD')}`);
+    if (cur !== 'TWD' && twd !== null) parts.push(`NT$${formatCompactRefNum(twd, 'TWD')}`);
+    if (options.detail && cur !== 'CNY' && cny !== null) parts.push(`¥${cny.toFixed(1)} CNY`);
+    else if (!options.detail && cur !== 'CNY' && parts.length < 2 && cny !== null) parts.push(`¥${cny.toFixed(1)} CNY`);
+    if (!parts.length) return '';
+    const joined = parts.join(' · ');
+    return options.short ? `≈ ${joined}${suffixMo}` : `約合 ≈ ${joined}${suffixMo}`;
+  }
+
+  // zh-CN: USD + CNY 双币参考
+  if (cur === 'CNY') return '';
+  const cny = convertCurrencyUi(amount, cur, 'CNY', regionQuery);
+  if (cny === null) return '';
+  const cnyTxt = `${Number(cny).toFixed(1)} CNY`;
+  if (options.perMonth) return t('plan.cnyApprox', { val: Number(cny).toFixed(1) });
+  return options.short ? `≈ ¥${cnyTxt}` : `折合 ≈ ¥${cnyTxt}`;
+}
+
+function getLocalizedPresetName(presetOrCode, lang = currentPanelLanguage) {
+  if (!presetOrCode) return '';
+  const normLang = normalizePanelLanguage(lang);
+  if (typeof presetOrCode === 'string') {
+    const key = presetOrCode.trim().toUpperCase();
+    const extra = EXTRA_COUNTRY_LOCALES[key];
+    if (extra) {
+      return normLang === 'en' ? extra.nameEn : (normLang === 'zh-TW' ? extra.nameTw : extra.name);
+    }
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const matched = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === key);
+    if (matched) return getLocalizedPresetName(matched, normLang);
+    return presetOrCode;
+  }
+  if (normLang === 'en') return presetOrCode.nameEn || presetOrCode.id || presetOrCode.name || '';
+  if (normLang === 'zh-TW') return presetOrCode.nameTw || presetOrCode.name || '';
+  return presetOrCode.name || '';
+}
+
+/**
+ * 将任意已存储或输入框中的常见预设地区名称（含 "美国 (US)" / "美国 (USD)" / "澳大利亚" 等）
+ * 映射转换为当前面板语言对应的本地化地区文本；无法识别的纯自定义输入保持原样。
+ */
+function localizeRegionDisplayValue(raw, lang = currentPanelLanguage) {
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '未知' || trimmed === 'Unknown' || trimmed.includes('未在当前会话中获取')) {
+    return '';
+  }
+  const normLang = normalizePanelLanguage(lang);
+  const parenMatch = trimmed.match(/^(.*?)\s*\(([A-Za-z0-9]{2,5})\)\s*$/);
+  const suffixCode = parenMatch ? parenMatch[2].toUpperCase() : '';
+  const baseText = parenMatch ? parenMatch[1].trim() : trimmed;
+  const baseLower = baseText.toLowerCase();
+
+  // 1. 优先查特例（含 "澳大利亚 (US)" / "英国 (UK)" / "德国 (DE)" / "中国大陆 (CN)" 等）
+  for (const [id, loc] of Object.entries(EXTRA_COUNTRY_LOCALES)) {
+    const names = [loc.name.toLowerCase(), loc.nameTw.toLowerCase(), loc.nameEn.toLowerCase()];
+    if (names.includes(baseLower) || (!parenMatch && id === trimmed.toUpperCase())) {
+      const targetName = normLang === 'en' ? loc.nameEn : (normLang === 'zh-TW' ? loc.nameTw : loc.name);
+      return suffixCode ? `${targetName} (${suffixCode})` : targetName;
+    }
+  }
+
+  // 2. 查询 SUBSCRIPTION_REGIONS_PRESET
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+  let matched = presets.find(p => {
+    const cleanCn = String(p.name || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    const cleanTw = String(p.nameTw || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    const cleanEn = String(p.nameEn || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    return (
+      p.name.toLowerCase() === baseLower ||
+      (p.nameTw && p.nameTw.toLowerCase() === baseLower) ||
+      (p.nameEn && p.nameEn.toLowerCase() === baseLower) ||
+      cleanCn === baseLower ||
+      cleanTw === baseLower ||
+      cleanEn === baseLower
+    );
+  });
+  if (!matched && core?.findRegionPreset) {
+    matched = core.findRegionPreset(baseText) || (suffixCode && ['US', 'JP', 'KR', 'TW', 'HK', 'AU', 'SG', 'CA', 'TR', 'NG', 'PH', 'IN', 'MY', 'BR', 'CN', 'GB', 'EU', 'UK'].includes(suffixCode)
+      ? core.findRegionPreset(suffixCode === 'UK' ? 'GB' : suffixCode)
+      : null);
+  }
+  if (matched) {
+    let targetName = normLang === 'en' ? (matched.nameEn || matched.id) : (normLang === 'zh-TW' ? (matched.nameTw || matched.name) : matched.name);
+    if (suffixCode) {
+      targetName = targetName.replace(/\s*\((?:CNY|澳区|澳區|德法[意義]西荷等)\)\s*/gi, '').trim();
+      return `${targetName} (${suffixCode})`;
+    }
+    return targetName;
+  }
+
+  return trimmed;
+}
+
+function formatPresetRegionLineParts(preset, lang = currentPanelLanguage) {
+  if (!preset) return { left: '', right: '', full: '' };
+  const curCode = preset.currency === 'TWD' ? 'NTD' : preset.currency;
+  const dispName = getLocalizedPresetName(preset, lang).replace(/\s*\(CNY\)\s*$/i, '').trim();
+  const left = `${preset.flag || '🌏'} ${dispName} (${curCode})`;
+  const priceText = preset.currency === 'CNY'
+    ? `¥${preset.monthlyPrice}${t('plan.summary.perMonth')}`
+    : `${preset.symbol}${preset.monthlyPrice}${t('plan.summary.perMonth')}`;
+  const sec = formatSubscriptionSecondaryConversion(preset.monthlyPrice, preset.currency, preset.name, { short: true, lang });
+  const right = sec ? `${priceText} · ${sec}` : priceText;
+  const full = sec ? `${left} · ${priceText} (${sec})` : `${left} · ${priceText}`;
+  return { left, right, full };
+}
+
+function formatPeriodCalendarLabel(currentPeriod) {
+  if (!currentPeriod) return t('cost.periodTag');
+  const raw = String(currentPeriod.periodKey || currentPeriod.key || currentPeriod.label || '').trim();
+  const ymMatch = raw.match(/^(\d{4}-\d{2})/);
+  if (ymMatch) {
+    return t('cost.periodTagFmt', { ym: ymMatch[1] });
+  }
+  if (!raw || raw.includes('自然月') || raw === '本月自然月') return t('cost.periodTag');
+  return raw;
+}
+
