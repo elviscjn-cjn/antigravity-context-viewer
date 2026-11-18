@@ -276,3 +276,72 @@ print('PY_OK')
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('local-api exports parseExplicitPort and cli.js status / runtime-check.js --port 58321 parse it cleanly with mock', async () => {
+  const { spawnSync } = require('node:child_process');
+  const { loadAsarEngine } = require('./asar-engine');
+  const localApi = require('./local-api');
+  assert.equal(typeof localApi.parseExplicitPort, 'function');
+  assert.equal(localApi.parseExplicitPort('58321'), 58321);
+  assert.equal(localApi.parseExplicitPort('0'), null);
+  assert.equal(localApi.parseExplicitPort('70000'), null);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-port-parse-'));
+  try {
+    const srcDir = path.join(tmpDir, 'asar-src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'package.json'), JSON.stringify({ name: 'antigravity', version: '2.33.0' }), 'utf8');
+    const fakeAsar = path.join(tmpDir, 'fake-app.asar');
+    await loadAsarEngine().createPackageWithOptions(srcDir, fakeAsar, {});
+
+    const logFile = path.join(tmpDir, 'cdp-calls.json');
+    const hookFile = path.join(tmpDir, 'mock-local-api.js');
+    fs.writeFileSync(hookFile, `
+      'use strict';
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const localApiPath = path.resolve(${JSON.stringify(path.join(__dirname, 'local-api.js'))});
+      const api = require(localApiPath);
+      const logPath = ${JSON.stringify(logFile)};
+      api.discoverAntigravityCdp = async (opts = {}) => {
+        const list = fs.existsSync(logPath) ? JSON.parse(fs.readFileSync(logPath, 'utf8')) : [];
+        list.push(opts);
+        fs.writeFileSync(logPath, JSON.stringify(list), 'utf8');
+        return { port: opts.port || null, pages: [], page: null, allPages: [] };
+      };
+    `, 'utf8');
+
+    const isolatedEnv = {
+      ...process.env,
+      AG_METER_STATE_DIR: path.join(tmpDir, 'state'),
+      AG_METER_TEST_MODE: '1',
+      APPDATA: path.join(tmpDir, 'appdata'),
+      LOCALAPPDATA: path.join(tmpDir, 'localappdata')
+    };
+
+    const statusRun = spawnSync(
+      process.execPath,
+      ['-r', hookFile, path.join(__dirname, 'cli.js'), 'status', '--port', '58321', '--path', fakeAsar],
+      { cwd: __dirname, env: isolatedEnv, encoding: 'utf8', windowsHide: true }
+    );
+    assert.equal(statusRun.status, 0, `cli.js status stderr: ${statusRun.stderr}`);
+    assert.doesNotMatch(statusRun.stderr + statusRun.stdout, /parseExplicitPort is not a function/);
+    const statusJson = JSON.parse(statusRun.stdout);
+    assert.equal(statusJson.liveWindow.cdpPort, 58321);
+
+    const rcRun = spawnSync(
+      process.execPath,
+      ['-r', hookFile, path.join(__dirname, 'runtime-check.js'), '--port', '58321'],
+      { cwd: __dirname, env: isolatedEnv, encoding: 'utf8', windowsHide: true }
+    );
+    assert.doesNotMatch(rcRun.stderr + rcRun.stdout, /parseExplicitPort is not a function/);
+    assert.match(rcRun.stderr, /Expected exactly one Antigravity page/);
+
+    const recorded = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+    assert.ok(recorded.length >= 2);
+    assert.deepEqual(recorded[0], { port: 58321, strictPort: true });
+    assert.deepEqual(recorded[recorded.length - 1], { port: 58321 });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

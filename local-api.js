@@ -633,6 +633,7 @@ module.exports = {
   connect,
   connectOrigin,
   normalizeLoopbackOrigin,
+  parseExplicitPort,
   getAppDataDir,
   getDevToolsActivePort,
   getCandidateCdpPorts,
