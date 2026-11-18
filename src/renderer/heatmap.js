@@ -124,8 +124,7 @@
               : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
           heatPopDate.textContent = `${dateLabel}${item.isToday ? t('heat.today') : (item.key === win.firstStr ? t('heat.firstUse') : '')}`;
           const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const cny = convertToCNY(costInfo.costUSD, 'USD');
-          const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
           heatPopVal.textContent = item.tokens > 0
             ? `${fmtYi(item.tokens)} Tokens${costStr}`
             : (item.isFuture ? t('heat.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
@@ -250,8 +249,7 @@
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
         });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costAgg.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(costAgg.totalCostUSD, { detail: true })}` : '';
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : (w.isFutureWeek ? t('tokens.heat.futureTip') : '0 Tokens');
         heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
@@ -315,8 +313,7 @@
       mode: activeCostMode,
       todayStr: todayKey
     });
-    const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-    const costText = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
+    const costText = formatUsdMetricDisplay(costAgg.totalCostUSD);
 
     const scrollBox = el('h-scroll-box') || box.parentElement;
     const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
@@ -362,6 +359,7 @@
     headCost.className = 'cum-head-cost';
     headCost.id = 'cum-head-cost';
     headCost.textContent = costText;
+    headCost.title = formatUsdMetricTooltip(costAgg.totalCostUSD);
 
     headRow.appendChild(headLeft);
     headRow.appendChild(headCost);
@@ -508,8 +506,7 @@
     const showSegPop = (seg, anchorNode) => {
       const segDates = seg.days.map(d => d.date);
       const segCost = calculateIntervalCost(map, segDates, activeCostModel, { mode: activeCostMode, todayStr: todayKey });
-      const segCny = convertToCNY(segCost.totalCostUSD, 'USD');
-      const costSuffix = segCost.totalCostUSD > 0 ? ` · ≈ $${segCost.totalCostUSD.toFixed(2)}${segCny !== null ? ` (¥${segCny.toFixed(2)})` : ''}` : '';
+      const costSuffix = segCost.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(segCost.totalCostUSD, { detail: true })}` : '';
       const dateTitle = seg.startDate === seg.endDate
         ? seg.startDate
         : `${seg.startDate} – ${seg.endDate} (${seg.daysCount}d)`;
@@ -830,9 +827,9 @@
       todayStr
     });
 
-    const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
     sumTokensEl.textContent = `${fmtYi(costAgg.totalTokens)} Tokens`;
-    sumCostEl.textContent = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
+    sumCostEl.textContent = formatUsdMetricDisplay(costAgg.totalCostUSD);
+    sumCostEl.title = formatUsdMetricTooltip(costAgg.totalCostUSD);
     sumDailyAvgEl.textContent = `$${costAgg.dailyAverageUSD.toFixed(2)}`;
     sumActiveAvgEl.textContent = t('heat.activeDays', { avg: costAgg.activeDailyAverageUSD.toFixed(2), days: costAgg.activeDays });
 
@@ -841,7 +838,8 @@
       const paidVal = plan.actualPricePaid ?? plan.pricePaid ?? plan.officialPriceMonthly ?? null;
       const isZeroCost = plan.isZeroExtraCost || paidVal === 0;
       if (!isZeroCost && paidVal > 0 && costAgg.totalCostUSD > 0) {
-        const subMonthlyUSD = plan.currency === 'USD' ? paidVal : (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : paidVal);
+        const subMonthlyUSD = convertCurrencyUi(paidVal, plan.currency || 'USD', 'USD', plan.region)
+          ?? (plan.actualPricePaidUSD || (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : paidVal));
         if (subMonthlyUSD > 0) {
           const ratio = (costAgg.totalCostUSD / (viewType === 'yearly' ? subMonthlyUSD * 12 : subMonthlyUSD)).toFixed(1);
           subRatioEl.textContent = t('heat.roi', { ratio });
@@ -936,8 +934,7 @@
 
       const showPop = () => {
         const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
-        const cny = convertToCNY(costInfo.costUSD, 'USD');
-        const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
         const mDateLabel = currentPanelLanguage === 'en'
           ? `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
           : (currentPanelLanguage === 'zh-TW'
@@ -1208,8 +1205,7 @@
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
         });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costAgg.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(costAgg.totalCostUSD, { detail: true })}` : '';
         const yearMonthLabel = currentPanelLanguage === 'en' ? `${item.monthName} ${targetYear}` : `${targetYear}年${item.monthName}`;
         heatPopDate.textContent = `${yearMonthLabel}${item.isCurrent ? t('heatmap.pop.inProgress') : (item.monthIndex === peakMonthIndex ? t('heatmap.pop.peak') : '')}`;
         heatPopVal.textContent = item.tokens > 0

@@ -8,6 +8,12 @@
         }
       });
     } catch {}
+    if (typeof closeValidEndDatePicker === 'function') {
+      const dpWrap = el('valid-end-picker-wrap');
+      if (!exceptWrap || exceptWrap !== dpWrap) {
+        closeValidEndDatePicker();
+      }
+    }
   }
 
   function initDropdownController(cfg) {
@@ -459,9 +465,17 @@
   function refreshDirectCountryDisplay(currentCountryVal) {
     const label = el('direct-country-label');
     if (!label) return;
-    const val = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '未知';
-    const matched = COUNTRY_OPTIONS.find(o => o.value === val);
-    label.textContent = matched ? formatOptionLabelByLang(matched) : (val !== '未知' ? `🌐 ${val}` : t('plan.country.auto'));
+    const rawVal = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '';
+    const val = (!rawVal || rawVal === '未知' || rawVal === 'Unknown') ? '未知' : String(rawVal).trim();
+    const matched = COUNTRY_OPTIONS.find(o => o.value === val || o.label === val || o.labelTw === val || o.labelEn === val)
+      || (val !== '未知' ? COUNTRY_OPTIONS.find(o => o.value !== '未知' && localizeRegionDisplayValue(o.value, currentPanelLanguage) === localizeRegionDisplayValue(val, currentPanelLanguage)) : null);
+    if (matched) {
+      label.textContent = formatOptionLabelByLang(matched);
+    } else if (val !== '未知') {
+      label.textContent = `🌐 ${localizeRegionDisplayValue(val) || val}`;
+    } else {
+      label.textContent = t('plan.country.auto');
+    }
   }
 
   // 刷新订阅地区直接选择器显示
@@ -471,18 +485,14 @@
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
     const reg = currentRegionText || ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知';
-    const matched = core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg);
+    const isUnk = !reg || reg === '未知' || reg === 'Unknown' || String(reg).includes('未在当前会话中获取');
+    const matched = !isUnk
+      ? (core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg || p.nameTw === reg || p.nameEn === reg))
+      : null;
     if (matched) {
-      const curCode = matched.currency === 'TWD' ? 'NTD' : matched.currency;
-      const cny = core?.convertToCNY ? core.convertToCNY(matched.monthlyPrice, matched.currency, matched.name) : (matched.monthlyPrice * matched.rateToCNY);
-      const dispName = currentPanelLanguage === 'en' ? (matched.nameEn || matched.id || matched.name) : matched.name;
-      if (matched.currency === 'CNY') {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ¥' + matched.monthlyPrice + t('dropdown.perMonth');
-      } else {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ' + matched.symbol + matched.monthlyPrice + ' (' + t('plan.cnyShort', { val: Number(cny).toFixed(1) }) + ')';
-      }
-    } else if (reg && reg !== '未知') {
-      directLabel.textContent = '🌏 ' + reg;
+      directLabel.textContent = formatPresetRegionLineParts(matched, currentPanelLanguage).full;
+    } else if (!isUnk) {
+      directLabel.textContent = '🌏 ' + (localizeRegionDisplayValue(reg) || reg);
     } else {
       directLabel.textContent = t('dropdown.regionUnknownShort');
     }
@@ -787,7 +797,8 @@
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
-    const regionName = regionItem.name + ' (' + (regionItem.currency === 'TWD' ? 'NTD' : regionItem.currency) + ')';
+    const localizedName = getLocalizedPresetName(regionItem, currentPanelLanguage).replace(/\s*\(CNY\)\s*$/i, '').trim();
+    const regionName = localizedName + ' (' + (regionItem.currency === 'TWD' ? 'NTD' : regionItem.currency) + ')';
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
 
     const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
@@ -857,7 +868,7 @@
         const curSelect = el('select-custom-currency');
         const paidInput = el('input-custom-paid');
         const zeroCheck = el('check-zero-extra');
-        if (regInput) regInput.value = regionName;
+        if (regInput) regInput.value = localizeRegionDisplayValue(regionName) || regionName;
         if (curSelect) {
           curSelect.value = curCode;
           enhancedDropdowns.get('select-custom-currency')?.refresh?.();
@@ -866,9 +877,12 @@
           paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
         }
         const prevEl = el('region-cny-preview');
-        if (prevEl && paid !== null && regionItem.rateToCNY) {
-          const cny = (paid * regionItem.rateToCNY).toFixed(1);
-          prevEl.textContent = t('plan.cnyApprox', { val: cny });
+        if (prevEl) {
+          if (paid !== null && paid !== undefined && Number(paid) > 0) {
+            prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, regionItem.name, { perMonth: true, detail: true }) || '';
+          } else {
+            prevEl.textContent = '';
+          }
         }
       }
     });
@@ -882,7 +896,7 @@
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
-    const cleanCountry = (newCountryVal && newCountryVal !== '未知') ? String(newCountryVal).trim() : '';
+    const cleanCountry = (newCountryVal && newCountryVal !== '未知' && newCountryVal !== 'Unknown') ? String(newCountryVal).trim() : '';
 
     const customObj = {
       ...prevCustom,
@@ -899,7 +913,7 @@
 
     runWithUiHydration(() => {
       const countryInput = el('input-custom-country');
-      if (countryInput) countryInput.value = cleanCountry;
+      if (countryInput) countryInput.value = cleanCountry ? (localizeRegionDisplayValue(cleanCountry) || cleanCountry) : '';
       const directCountrySel = el('direct-country-select');
       if (directCountrySel) directCountrySel.value = cleanCountry || '未知';
     });
@@ -977,6 +991,14 @@
       if (paidInput && !isZero) {
         paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
       }
+      const prevEl = el('region-cny-preview');
+      if (prevEl) {
+        if (!isZero && paid !== null && paid !== undefined && Number(paid) > 0) {
+          prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, customObj.region, { perMonth: true, detail: true }) || '';
+        } else {
+          prevEl.textContent = '';
+        }
+      }
     });
 
     applyCustomPlanObjectLocally(customObj, email);
@@ -1027,23 +1049,16 @@
       getOptions: () => {
         return presets.map(p => {
           const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-          const dispName = currentPanelLanguage === 'en' ? (p.id || p.name) : p.name;
-          let displayRight = '';
-          if (p.currency === 'CNY') {
-            displayRight = p.symbol + p.monthlyPrice + t('dropdown.perMonth');
-          } else {
-            const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-            displayRight = p.symbol + p.monthlyPrice + t('dropdown.perMonth') + ' · ≈ ¥' + Number(cny).toFixed(1) + ' CNY';
-          }
+          const parts = formatPresetRegionLineParts(p, currentPanelLanguage);
           return {
             value: p.id,
             rawItem: p,
-            label: (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ')',
-            displayLeft: (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ')',
-            displayRight,
+            label: parts.left,
+            displayLeft: parts.left,
+            displayRight: parts.right,
             code: p.id,
             currency: curCode,
-            aliases: p.aliases || []
+            aliases: [p.name, p.nameTw, p.nameEn, ...(p.aliases || [])].filter(Boolean)
           };
         });
       },
@@ -1062,13 +1077,7 @@
       getLabelText: (opt) => {
         const p = opt.rawItem;
         if (!p) return opt.label;
-        const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-        const dispName = currentPanelLanguage === 'en' ? (p.id || p.name) : p.name;
-        if (p.currency === 'CNY') {
-          return (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ¥' + p.monthlyPrice + t('dropdown.perMonth');
-        }
-        const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-        return (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ' + p.symbol + p.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
+        return formatPresetRegionLineParts(p, currentPanelLanguage).full;
       },
       onSelect: (opt) => {
         if (opt.rawItem) applyDirectRegionSelection(opt.rawItem);
@@ -1279,6 +1288,302 @@
     });
   }
 
+  function updateRegionCnyPreviewFromForm() {
+    const prevEl = el('region-cny-preview');
+    if (!prevEl) return;
+    const isZero = Boolean(el('check-zero-extra')?.checked);
+    const rawPaidVal = el('input-custom-paid')?.value;
+    const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
+    const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
+    const cur = el('select-custom-currency')?.value || 'USD';
+    const regVal = el('input-custom-region')?.value;
+    const reg = (regVal !== undefined && regVal !== null) ? String(regVal).trim() : '';
+    if (isZero || paid === null || paid <= 0) {
+      prevEl.textContent = '';
+      return;
+    }
+    prevEl.textContent = formatSubscriptionSecondaryConversion(paid, cur, reg, { perMonth: true, detail: true }) || '';
+  }
+
+  function normalizeBillingCycleValue(rawCycle) {
+    if (!rawCycle) return '';
+    const cleaned = String(rawCycle).replace(/[（(].*[）)]/g, '').trim();
+    if (!cleaned || cleaned === '未知' || cleaned === 'Unknown') return '';
+    if (cleaned === '月付' || cleaned === '月繳' || cleaned === 'Monthly' || cleaned === 'monthly') return '月付';
+    if (cleaned === '年付' || cleaned === '年繳' || cleaned === 'Yearly' || cleaned === 'yearly') return '年付';
+    if (cleaned === '免费/赠送' || cleaned === '免費/贈送' || cleaned === 'Free / Promo' || cleaned === '随套餐赠送/免费') return '免费/赠送';
+    if (cleaned === '随套餐包含' || cleaned === '隨方案包含' || cleaned === 'Included in bundle') return '随套餐包含';
+    if (cleaned === '其他周期' || cleaned === '其他週期' || cleaned === 'Other cycle') return '其他周期';
+    return cleaned;
+  }
+
+  const DP_EN_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  let validEndDpState = null;
+
+  function formatLocalYmdDate(dt) {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  function closeValidEndDatePicker() {
+    if (!validEndDpState) return;
+    validEndDpState.isOpen = false;
+    removeClass(validEndDpState.wrap, 'is-open');
+    removeClass(validEndDpState.wrap, 'open-up');
+    if (validEndDpState.popover) validEndDpState.popover.style.display = 'none';
+    validEndDpState.trigger?.setAttribute?.('aria-expanded', 'false');
+  }
+
+  function syncValidEndDatePickerLabel() {
+    const labelEl = el('valid-end-label');
+    const hiddenEl = el('input-valid-end');
+    const triggerEl = el('valid-end-trigger');
+    if (triggerEl) triggerEl.setAttribute?.('aria-label', t('datePicker.ariaLabel'));
+    if (!labelEl) return;
+    const raw = String(hiddenEl?.value || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      labelEl.textContent = raw;
+      removeClass(labelEl, 'is-placeholder');
+    } else {
+      labelEl.textContent = t('datePicker.placeholder');
+      addClass(labelEl, 'is-placeholder');
+    }
+  }
+
+  function refreshValidEndDatePicker() {
+    syncValidEndDatePickerLabel();
+    if (validEndDpState?.isOpen) {
+      validEndDpState.renderCalendar();
+    }
+  }
+
+  function initValidEndDatePicker() {
+    const wrap = el('valid-end-picker-wrap');
+    const trigger = el('valid-end-trigger');
+    const popover = el('valid-end-popover');
+    const hiddenInput = el('input-valid-end');
+    if (!wrap || !trigger || !popover || !hiddenInput) return null;
+    if (trigger._dpBound) {
+      refreshValidEndDatePicker();
+      return validEndDpState;
+    }
+    trigger._dpBound = true;
+
+    const now = new Date();
+    validEndDpState = {
+      wrap,
+      trigger,
+      popover,
+      hiddenInput,
+      isOpen: false,
+      viewYear: now.getFullYear(),
+      viewMonth: now.getMonth(),
+      renderCalendar: () => {}
+    };
+
+    const dispatchHiddenChange = () => {
+      if (typeof Event !== 'undefined') hiddenInput.dispatchEvent?.(new Event('change', { bubbles: true }));
+      else hiddenInput.dispatchEvent?.({ type: 'change', target: hiddenInput });
+    };
+
+    const commitDateValue = (ymd) => {
+      hiddenInput.value = ymd || '';
+      syncValidEndDatePickerLabel();
+      dispatchHiddenChange();
+      closeValidEndDatePicker();
+    };
+
+    const renderCalendar = () => {
+      const y = validEndDpState.viewYear;
+      const m = validEndDpState.viewMonth;
+      const todayYmd = formatLocalYmdDate(new Date());
+      const selRaw = String(hiddenInput.value || '').trim();
+      const selectedYmd = /^\d{4}-\d{2}-\d{2}$/.test(selRaw) ? selRaw : '';
+
+      if (typeof popover.replaceChildren === 'function') popover.replaceChildren();
+      else popover.innerHTML = '';
+
+      if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+
+      const header = document.createElement('div');
+      header.className = 'ag-dp-header';
+
+      const prevBtn = document.createElement('button');
+      prevBtn.type = 'button';
+      prevBtn.className = 'ag-dp-nav-btn';
+      prevBtn.textContent = '‹';
+      prevBtn.setAttribute('aria-label', t('datePicker.prevMonth'));
+      prevBtn.title = t('datePicker.prevMonth');
+      prevBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        if (validEndDpState.viewMonth === 0) {
+          validEndDpState.viewMonth = 11;
+          validEndDpState.viewYear -= 1;
+        } else {
+          validEndDpState.viewMonth -= 1;
+        }
+        renderCalendar();
+      });
+
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ag-dp-month-title';
+      titleSpan.textContent = t('datePicker.monthTitle', { y, m: m + 1, monthEn: DP_EN_MONTHS[m] });
+
+      const nextBtn = document.createElement('button');
+      nextBtn.type = 'button';
+      nextBtn.className = 'ag-dp-nav-btn';
+      nextBtn.textContent = '›';
+      nextBtn.setAttribute('aria-label', t('datePicker.nextMonth'));
+      nextBtn.title = t('datePicker.nextMonth');
+      nextBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        if (validEndDpState.viewMonth === 11) {
+          validEndDpState.viewMonth = 0;
+          validEndDpState.viewYear += 1;
+        } else {
+          validEndDpState.viewMonth += 1;
+        }
+        renderCalendar();
+      });
+
+      header.appendChild(prevBtn);
+      header.appendChild(titleSpan);
+      header.appendChild(nextBtn);
+      popover.appendChild(header);
+
+      const weekdaysRow = document.createElement('div');
+      weekdaysRow.className = 'ag-dp-weekdays';
+      const wkLabels = String(t('datePicker.weekdays')).split(',');
+      for (const wk of wkLabels) {
+        const wCell = document.createElement('div');
+        wCell.className = 'ag-dp-weekday';
+        wCell.textContent = wk;
+        weekdaysRow.appendChild(wCell);
+      }
+      popover.appendChild(weekdaysRow);
+
+      const grid = document.createElement('div');
+      grid.className = 'ag-dp-grid';
+      const firstDow = new Date(y, m, 1).getDay();
+      for (let i = 0; i < 42; i++) {
+        const cellDate = new Date(y, m, 1 - firstDow + i);
+        const ymd = formatLocalYmdDate(cellDate);
+        const inCurMonth = cellDate.getMonth() === m && cellDate.getFullYear() === y;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        let cls = 'ag-dp-day';
+        if (!inCurMonth) cls += ' is-outside';
+        if (ymd === todayYmd) cls += ' is-today';
+        if (ymd === selectedYmd) cls += ' is-selected';
+        btn.className = cls;
+        btn.setAttribute('data-date', ymd);
+        btn.setAttribute('aria-label', ymd);
+        btn.textContent = String(cellDate.getDate());
+        btn.addEventListener('click', (e) => {
+          e?.stopPropagation?.();
+          commitDateValue(ymd);
+        });
+        grid.appendChild(btn);
+      }
+      popover.appendChild(grid);
+
+      const footer = document.createElement('div');
+      footer.className = 'ag-dp-footer';
+
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.className = 'ag-dp-action-btn';
+      clearBtn.setAttribute('data-dp-action', 'clear');
+      clearBtn.textContent = t('datePicker.clear');
+      clearBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        commitDateValue('');
+      });
+
+      const todayBtn = document.createElement('button');
+      todayBtn.type = 'button';
+      todayBtn.className = 'ag-dp-action-btn is-today-btn';
+      todayBtn.setAttribute('data-dp-action', 'today');
+      todayBtn.textContent = t('datePicker.today');
+      todayBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        const tNow = new Date();
+        validEndDpState.viewYear = tNow.getFullYear();
+        validEndDpState.viewMonth = tNow.getMonth();
+        commitDateValue(formatLocalYmdDate(tNow));
+      });
+
+      footer.appendChild(clearBtn);
+      footer.appendChild(todayBtn);
+      popover.appendChild(footer);
+    };
+
+    validEndDpState.renderCalendar = renderCalendar;
+
+    const openPicker = () => {
+      closeAllDropdowns(wrap);
+      const curVal = String(hiddenInput.value || '').trim();
+      const m = curVal.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m) {
+        validEndDpState.viewYear = Number(m[1]);
+        validEndDpState.viewMonth = Math.max(0, Math.min(11, Number(m[2]) - 1));
+      } else {
+        const curNow = new Date();
+        validEndDpState.viewYear = curNow.getFullYear();
+        validEndDpState.viewMonth = curNow.getMonth();
+      }
+      renderCalendar();
+      validEndDpState.isOpen = true;
+      addClass(wrap, 'is-open');
+      try {
+        const tRect = trigger.getBoundingClientRect?.();
+        if (tRect && typeof window !== 'undefined' && window.innerHeight && tRect.bottom + 240 > window.innerHeight && tRect.top > 240) {
+          addClass(wrap, 'open-up');
+        } else {
+          removeClass(wrap, 'open-up');
+        }
+      } catch {}
+      popover.style.display = 'block';
+      trigger.setAttribute?.('aria-expanded', 'true');
+    };
+
+    trigger.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      if (validEndDpState.isOpen) closeValidEndDatePicker();
+      else openPicker();
+    });
+
+    trigger.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        if (validEndDpState.isOpen) closeValidEndDatePicker();
+        else openPicker();
+      } else if (e.key === 'Escape' && validEndDpState.isOpen) {
+        e.preventDefault();
+        closeValidEndDatePicker();
+      }
+    });
+
+    popover.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeValidEndDatePicker();
+        trigger.focus?.();
+      }
+    });
+
+    popover.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+    });
+
+    syncValidEndDatePickerLabel();
+    return validEndDpState;
+  }
+
+  initValidEndDatePicker();
+
   // 就地行内自定义订阅表单交互（实际读取优先于手填，支持官方依据活动来源）
   function togglePlanCustomForm(forceOpen) {
     const form = el('plan-custom-form');
@@ -1286,6 +1591,9 @@
     const curHidden = form.style.display === 'none' || !form.style.display;
     const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
     form.style.display = next ? 'block' : 'none';
+    if (!next) {
+      closeValidEndDatePicker();
+    }
     if (next) {
       const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
       const acqSelect = el('select-custom-acq');
@@ -1303,22 +1611,44 @@
         if (acqSelect && ps.acquisitionSource) acqSelect.value = ps.acquisitionSource;
         if (acqNameInput) acqNameInput.value = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅') ? ps.acquisitionSourceName : '';
         if (zeroCheck) zeroCheck.checked = Boolean(ps.isZeroExtraCost || ps.actualPricePaid === 0);
-        if (countryInput) countryInput.value = (ps.country && !ps.country.includes('未知')) ? ps.country : '';
-        if (regInput) regInput.value = (ps.region && !ps.region.includes('未知')) ? ps.region : '';
+        if (countryInput) {
+          const cVal = (ps.country && !String(ps.country).includes('未知') && ps.country !== 'Unknown') ? ps.country : '';
+          countryInput.value = cVal ? (localizeRegionDisplayValue(cVal) || cVal) : '';
+        }
+        if (regInput) {
+          const rVal = (ps.region && !String(ps.region).includes('未知') && ps.region !== 'Unknown') ? ps.region : '';
+          regInput.value = rVal ? (localizeRegionDisplayValue(rVal) || rVal) : '';
+        }
         if (paidInput) {
           paidInput.value = (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) ? ps.actualPricePaid : (zeroCheck?.checked ? '0' : '');
           paidInput.disabled = Boolean(zeroCheck?.checked);
         }
         if (curSelect && ps.currency) curSelect.value = ps.currency;
-        if (cycleSelect && ps.billingCycle && !ps.billingCycle.includes('未知')) cycleSelect.value = ps.billingCycle.replace(/（.*）/, '').trim();
+        if (cycleSelect && ps.billingCycle) {
+          const normCycle = normalizeBillingCycleValue(ps.billingCycle);
+          if (normCycle) cycleSelect.value = normCycle;
+        }
         if (validEndInput) validEndInput.value = ps.validEndDate || '';
+        initValidEndDatePicker();
+        refreshValidEndDatePicker();
         if (noteInput) noteInput.value = ps.customNote || '';
+        updateRegionCnyPreviewFromForm();
         ['select-custom-acq', 'select-custom-region-preset', 'select-custom-currency', 'select-custom-cycle'].forEach(id => enhanceCustomSelect(id));
       });
       regInput?.focus?.();
     }
     positionFloatingPanels();
   }
+
+  el('input-custom-paid')?.addEventListener('input', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
+  el('select-custom-currency')?.addEventListener('change', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
+  el('input-custom-region')?.addEventListener('input', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
 
   el('select-custom-region-preset')?.addEventListener('change', (e) => {
     if (isHydratingUiControls) return;
@@ -1345,6 +1675,7 @@
         if (paidInput.value === '0') paidInput.value = '';
       }
     }
+    updateRegionCnyPreviewFromForm();
   });
 
   el('select-custom-acq')?.addEventListener('change', (e) => {
@@ -1440,6 +1771,9 @@
 
   el('btn-custom-plan-clear')?.addEventListener('click', () => {
     ++userActionSeq;
+    const validEndInput = el('input-valid-end');
+    if (validEndInput) validEndInput.value = '';
+    refreshValidEndDatePicker();
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const rawLive = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus || null;

@@ -1460,25 +1460,14 @@
     if (!sel || !sel.options) return;
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+    const curLang = getPanelLanguage();
     for (let i = 0; i < sel.options.length; i++) {
       const opt = sel.options[i];
       if (!opt || opt.value === '' || opt.value === 'custom') continue;
       const p = presets.find(item => item.id === opt.value);
       if (!p) continue;
-      const dispName = getPanelLanguage() === 'en' ? (p.nameEn || p.id || p.name) : p.name;
-      if (p.currency === 'CNY') {
-        opt.textContent = t('plan.form.presetLineCny', { flag: p.flag || '🌏', name: dispName, price: p.monthlyPrice });
-      } else {
-        const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-        opt.textContent = t('plan.form.presetLine', {
-          flag: p.flag || '🌏',
-          name: dispName,
-          id: p.id,
-          sym: p.symbol,
-          price: p.monthlyPrice,
-          cny: Number(cny).toFixed(1)
-        });
-      }
+      const parts = formatPresetRegionLineParts(p, curLang);
+      opt.textContent = parts.full || '';
     }
   }
 
@@ -1708,20 +1697,14 @@
       targetSymbol = curSymbol;
       targetNum = Number(ps.actualPricePaid);
       targetCycle = t('plan.summary.perMonth');
-      if (ps.currency === 'CNY') {
-        targetCny = '';
-      } else if (ps.cnyFormatted) {
-        const cnyClean = String(ps.cnyFormatted).replace(/^[折合約\s≈()（）]+/, '').replace(/[()（）]/g, '').trim();
-        const prefix = currentPanelLanguage === 'en' ? 'approx. ' : '≈ ';
-        targetCny = cnyClean ? `(${prefix}${cnyClean})` : '';
-      } else {
-        targetCny = '';
-      }
+      const sec = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { short: true });
+      targetCny = sec ? `(${sec})` : '';
     } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = t('plan.summary.perMonth');
-      targetCny = currentPanelLanguage === 'en' ? '(approx. ¥134.3 CNY)' : '(≈ ¥134.3 CNY)';
+      const sec = formatSubscriptionSecondaryConversion(targetNum, 'USD', ps.region, { short: true });
+      targetCny = sec ? `(${sec})` : '';
     } else {
       targetSymbol = t('plan.summary.priceUnsetShort');
       targetNum = null;
@@ -1748,8 +1731,11 @@
     const detCountry = el('p-det-country');
     const tagCountry = el('p-det-country-tag');
     const directCountrySel = el('direct-country-select');
-    const countryText = (ps.country && !String(ps.country).includes('未知')) ? String(ps.country).trim() : '未知';
-    if (detCountry) detCountry.textContent = countryText === '未知' ? t('plan.country.unknown') : countryText;
+    const rawCountryStr = ps.country ? String(ps.country).trim() : '';
+    const isCountryUnknown = !rawCountryStr || rawCountryStr === '未知' || rawCountryStr === 'Unknown' || rawCountryStr.includes('未设置');
+    const countryText = isCountryUnknown ? '未知' : rawCountryStr;
+    const countryDisplay = countryText === '未知' ? t('plan.country.unknown') : (localizeRegionDisplayValue(countryText) || countryText);
+    if (detCountry) detCountry.textContent = countryDisplay;
     if (tagCountry) {
       tagCountry.style.display = ps.countrySource === 'custom' ? 'inline-block' : 'none';
       tagCountry.textContent = ps.countrySource === 'custom' ? t('plan.tag.custom') : '';
@@ -1758,8 +1744,9 @@
     const detReg = el('p-det-region');
     const tagReg = el('p-det-region-tag');
     let regText = ps.subscriptionRegion || ps.region || '未知';
-    if (regText.includes('未在当前会话中获取') || regText.trim() === '未知') regText = '未知';
-    if (detReg) detReg.textContent = regText === '未知' ? t('plan.region.unknown') : regText;
+    if (regText.includes('未在当前会话中获取') || regText.trim() === '未知' || regText.trim() === 'Unknown') regText = '未知';
+    const regDisplay = regText === '未知' ? t('plan.region.unknown') : (localizeRegionDisplayValue(regText) || regText);
+    if (detReg) detReg.textContent = regDisplay;
     if (tagReg) {
       tagReg.style.display = ps.regionSource === 'custom' ? 'inline-block' : 'none';
       tagReg.textContent = ps.regionSource === 'custom' ? t('plan.tag.custom') : '';
@@ -1783,7 +1770,7 @@
           if (!exists && typeof document.createElement === 'function') {
             const opt = document.createElement('option');
             opt.value = countryText;
-            opt.textContent = '🌐 ' + countryText;
+            opt.textContent = '🌐 ' + (localizeRegionDisplayValue(countryText) || countryText);
             directCountrySel.appendChild?.(opt);
           }
         }
@@ -1828,13 +1815,9 @@
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         detPrice.textContent = `${curSymbol}0 · ${cycleText}`;
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
-        let cnyPart = '';
-        if (ps.currency !== 'CNY' && ps.cnyFormatted) {
-          const locCny = localizeCnyFormatted(ps.cnyFormatted);
-          cnyPart = locCny ? ` (${locCny})` : '';
-        }
+        const secPart = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { detail: true });
         const paidFormatted = Number(ps.actualPricePaid) % 1 === 0 ? Number(ps.actualPricePaid) : Number(ps.actualPricePaid).toFixed(2);
-        detPrice.textContent = `${curSymbol}${paidFormatted} · ${cycleText}${cnyPart}`;
+        detPrice.textContent = secPart ? `${curSymbol}${paidFormatted} · ${cycleText} (${secPart})` : `${curSymbol}${paidFormatted} · ${cycleText}`;
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         detPrice.textContent = `${t('plan.tag.publicRef')} $${ps.officialPriceMonthly}${t('plan.summary.perMonth')}`;
       } else {
@@ -4912,12 +4895,14 @@
   }
 
   function evaluateModelContextStatus(product) {
+    const isEnEval = currentPanelLanguage === 'en';
+    const isTwEval = currentPanelLanguage === 'zh-TW';
     if (!product) {
       return {
         status: 'unconfirmed',
-        badge: t('panel.ctx.currentModelUnconfirmed') || '待确认',
+        badge: t('panel.ctx.currentModelUnconfirmed') || (isEnEval ? 'Unconfirmed' : (isTwEval ? '待確認' : '待确认')),
         pillClass: 'pill-muted',
-        diagnosis: '未获取到模型信息',
+        diagnosis: isEnEval ? 'Model metadata unavailable' : (isTwEval ? '未取得模型資訊' : '未获取到模型信息'),
         targetText: '—',
         requestText: '—',
         observedText: '—',
@@ -4932,11 +4917,14 @@
     const targetLimit = (targetMode === 'fixed') ? Number(activePref?.limitTokens) : null;
     const capSummary = getProductCapabilitySummary(product);
 
-    let targetText = t('status.savedDefault') || '恢复客户端默认';
+    let targetText = t('status.savedDefault') || (isEnEval ? 'Client Default' : (isTwEval ? '還原用戶端預設' : '恢复客户端默认'));
     if (targetMode === 'dynamic') {
-      targetText = t('models.preset.dynamic') || '动态跟随';
+      targetText = t('models.preset.dynamic') || (isEnEval ? 'Dynamic' : (isTwEval ? '動態跟隨' : '动态跟随'));
     } else if (targetMode === 'fixed' && targetLimit) {
-      targetText = (targetLimit === 512000) ? '512K（512,000 tokens）' : `${formatKShort(targetLimit)}（${fmt(targetLimit)} tokens）`;
+      targetText = (targetLimit === 512000) ? `512K (512,000 tokens)` : `${formatKShort(targetLimit)} (${fmt(targetLimit)} tokens)`;
+      if (!isEnEval) {
+        targetText = (targetLimit === 512000) ? '512K（512,000 tokens）' : `${formatKShort(targetLimit)}（${fmt(targetLimit)} tokens）`;
+      }
     }
 
     const activeConvId = state.activeConversationId || state.conversationId || state.route || null;
@@ -4961,18 +4949,24 @@
     const obs = evalCore.observation;
     const obsBudget = Number(obs?.budget || 0);
 
-    let requestText = dispatched ? '默认透传（未附加自定义参数）' : '尚无本次验证';
+    const noVerifyText = isEnEval ? 'Not verified in this session' : (isTwEval ? '尚無本次驗證' : '尚无本次验证');
+    let requestText = dispatched
+      ? (isEnEval ? 'Default passthrough (no override)' : (isTwEval ? '預設透傳（未附加自訂參數）' : '默认透传（未附加自定义参数）'))
+      : noVerifyText;
     if (dispatched) {
       if (dispatched.status === 'send_failed') {
-        requestText = `发送失败（${dispatched.errorMessage || '请求未完成'}）`;
+        const errPart = dispatched.errorMessage ? translateBackendText(dispatched.errorMessage) : (isEnEval ? 'Request incomplete' : (isTwEval ? '請求未完成' : '请求未完成'));
+        requestText = isEnEval ? `Send failed (${errPart})` : (isTwEval ? `發送失敗（${errPart}）` : `发送失败（${dispatched.errorMessage || '请求未完成'}）`);
       } else if (dispatched.status === 'aborted') {
-        requestText = '已取消发送';
+        requestText = isEnEval ? 'Aborted' : (isTwEval ? '已取消發送' : '已取消发送');
       } else if (dispatched.status === 'uninjectable') {
-        requestText = '透传未注入（缺少可靠模型/不支持帧）';
+        requestText = isEnEval ? 'Passthrough (missing model identity / frame)' : (isTwEval ? '透傳未注入（缺少可靠模型/不支援影格）' : '透传未注入（缺少可靠模型/不支持帧）');
       } else if (dispatched.sentMode === 'fixed' && dispatched.sentLimitTokens) {
-        requestText = `${formatKShort(dispatched.sentLimitTokens)}（${fmt(dispatched.sentLimitTokens)} tokens）`;
+        requestText = isEnEval
+          ? `${formatKShort(dispatched.sentLimitTokens)} (${fmt(dispatched.sentLimitTokens)} tokens)`
+          : `${formatKShort(dispatched.sentLimitTokens)}（${fmt(dispatched.sentLimitTokens)} tokens）`;
       } else if (dispatched.sentMode === 'dynamic') {
-        requestText = '动态跟随（已清除固定数值）';
+        requestText = isEnEval ? 'Dynamic (fixed limit cleared)' : (isTwEval ? '動態跟隨（已清除固定數值）' : '动态跟随（已清除固定数值）');
       }
       if (dispatched.timestamp) {
         requestText += ` · ${formatMonthDayTime(dispatched.timestamp)}`;
@@ -4986,14 +4980,20 @@
         || (st === 'default' && diagCode === 'default_confirmed');
     }
 
-    let observedText = '尚无本次验证';
+    let observedText = noVerifyText;
     if (obsBudget > 0 && statusUsesExistingObs(evalCore.status, evalCore.diagnosisCode)) {
       const effTxt = obs.effort ? ` · ${formatEffortZh(obs.effort)}` : '';
       const tTxt = obs.ts ? ` · ${formatMonthDayTime(obs.ts)}` : '';
-      observedText = `${formatKShort(obsBudget)}（${fmt(obsBudget)} tokens）${effTxt}${tTxt}`;
+      observedText = isEnEval
+        ? `${formatKShort(obsBudget)} (${fmt(obsBudget)} tokens)${effTxt}${tTxt}`
+        : `${formatKShort(obsBudget)}（${fmt(obsBudget)} tokens）${effTxt}${tTxt}`;
     } else if (obsBudget > 0) {
       const effTxt = obs.effort ? ` · ${formatEffortZh(obs.effort)}` : '';
-      observedText = `仅见历史观测 ${fmt(obsBudget)} tokens${effTxt}（当前设置尚无本次验证）`;
+      observedText = isEnEval
+        ? `Historical only: ${fmt(obsBudget)} tokens${effTxt} (current setting unverified)`
+        : (isTwEval
+          ? `僅見歷史觀測 ${fmt(obsBudget)} tokens${effTxt}（目前設定尚無本次驗證）`
+          : `仅见历史观测 ${fmt(obsBudget)} tokens${effTxt}（当前设置尚无本次验证）`);
     }
 
     const convoId = evalCore.convoId || activeConvId || '—';
@@ -5001,65 +5001,92 @@
     let status = evalCore.status;
     let badge = t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用';
     let pillClass = 'pill-muted';
-    let diagnosis = '已保存目标参数，将在下次发起请求时自动注入并发送。';
+    let diagnosis = isEnEval
+      ? 'Saved target limit; it will be injected automatically on the next request.'
+      : (isTwEval
+        ? '已儲存目標參數，將在下次發起請求時自動注入並發送。'
+        : '已保存目标参数，将在下次发起请求时自动注入并发送。');
 
     if (status === 'default') {
       if (evalCore.diagnosisCode === 'default_confirmed') {
         badge = t('status.savedDefault') || '使用模型默认值';
         pillClass = 'pill-good';
-        diagnosis = `本次请求已按客户端默认透传（未附加自定义覆盖），收到新回复确认实际采用 ${fmt(obsBudget)} tokens。`;
+        diagnosis = isEnEval
+          ? `Passed through as client default (no override); reply confirmed ${fmt(obsBudget)} tokens.`
+          : (isTwEval
+            ? `本次請求已依用戶端預設透傳（未附加自訂覆寫），收到新回覆確認實際採用 ${fmt(obsBudget)} tokens。`
+            : `本次请求已按客户端默认透传（未附加自定义覆盖），收到新回复确认实际采用 ${fmt(obsBudget)} tokens。`);
       } else {
         badge = t('status.savedDefault') || '使用模型默认值';
         pillClass = 'pill-muted';
-        diagnosis = '已恢复/保持客户端默认（不附加覆盖参数），将在下一次发送时生效并验证实际采用值。';
+        diagnosis = isEnEval
+          ? 'Client default active (no override); verified on next request.'
+          : (isTwEval
+            ? '已還原/維持用戶端預設（不附加覆寫參數），將在下一次發送時生效並驗證實際採用值。'
+            : '已恢复/保持客户端默认（不附加覆盖参数），将在下一次发送时生效并验证实际采用值。');
       }
     } else if (status === 'send_failed') {
-      badge = '发送失败（未确认）';
+      badge = isEnEval ? 'Send failed (unconfirmed)' : (isTwEval ? '發送失敗（未確認）' : '发送失败（未确认）');
       pillClass = 'pill-bad';
-      diagnosis = `本次请求发送失败（${evalCore.errorMessage || '网络或传输错误'}），因此无法确认实际预算。`;
+      const errMsg = evalCore.errorMessage ? translateBackendText(evalCore.errorMessage) : (isEnEval ? 'network or transport error' : (isTwEval ? '網路或傳輸錯誤' : '网络或传输错误'));
+      diagnosis = isEnEval
+        ? `Request failed (${errMsg}); actual budget could not be confirmed.`
+        : (isTwEval ? `本次請求發送失敗（${errMsg}），因此無法確認實際預算。` : `本次请求发送失败（${evalCore.errorMessage || '网络或传输错误'}），因此无法确认实际预算。`);
     } else if (status === 'aborted') {
-      badge = '已取消（未确认）';
+      badge = isEnEval ? 'Aborted (unconfirmed)' : (isTwEval ? '已取消（未確認）' : '已取消（未确认）');
       pillClass = 'pill-muted';
-      diagnosis = '本次请求在完成前被取消，未收到新回复。';
+      diagnosis = isEnEval ? 'Request was cancelled before a reply was received.' : (isTwEval ? '本次請求在完成前被取消，未收到新回覆。' : '本次请求在完成前被取消，未收到新回复。');
     } else if (status === 'uninjectable') {
-      badge = '本次未注入（已透传）';
+      badge = isEnEval ? 'Not injected (passthrough)' : (isTwEval ? '本次未注入（已透傳）' : '本次未注入（已透传）');
       pillClass = 'pill-warn';
-      diagnosis = `未能向本次请求自动注入参数（${evalCore.diagnosisCode || '缺少可靠模型身份或协议格式不支持'}），已保持原样透传。`;
+      const reasonTxt = evalCore.diagnosisCode || (isEnEval ? 'missing model identity or unsupported frame' : (isTwEval ? '缺少可靠模型身分或協定格式不支援' : '缺少可靠模型身份或协议格式不支持'));
+      diagnosis = isEnEval
+        ? `Could not inject override (${reasonTxt}); passed through unchanged.`
+        : (isTwEval ? `未能向本次請求自動注入參數（${reasonTxt}），已保持原樣透傳。` : `未能向本次请求自动注入参数（${evalCore.diagnosisCode || '缺少可靠模型身份或协议格式不支持'}），已保持原样透传。`);
     } else if (status === 'confirmed') {
       badge = t('models.status.confirmed') || '实际预算已确认';
       pillClass = 'pill-good';
       diagnosis = targetMode === 'dynamic'
-        ? `已启用动态跟随模式，本次发送后实测返回预算 ${fmt(obsBudget)} tokens。`
-        : `请求实际携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次发送后服务端返回预算 ${fmt(obsBudget)} tokens，完全吻合。`;
+        ? (isEnEval ? `Dynamic mode active; observed response budget ${fmt(obsBudget)} tokens.` : (isTwEval ? `已啟用動態跟隨模式，本次發送後實測回傳預算 ${fmt(obsBudget)} tokens。` : `已启用动态跟随模式，本次发送后实测返回预算 ${fmt(obsBudget)} tokens。`))
+        : (isEnEval ? `Sent ${fmt(dispatched?.sentLimitTokens || targetLimit)}; server confirmed ${fmt(obsBudget)} tokens.` : (isTwEval ? `請求實際攜帶 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次發送後伺服器端回傳預算 ${fmt(obsBudget)} tokens，完全吻合。` : `请求实际携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次发送后服务端返回预算 ${fmt(obsBudget)} tokens，完全吻合。`));
     } else if (status === 'clamped_by_model_limit') {
-      badge = '受模型上限限制';
+      badge = isEnEval ? 'Clamped by model cap' : (isTwEval ? '受模型上限限制' : '受模型上限限制');
       pillClass = 'pill-warn';
-      diagnosis = `请求携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/服务端上限（${fmt(evalCore.knownCap)} tokens）限制，实际采用 ${fmt(obsBudget)} tokens。`;
+      diagnosis = isEnEval
+        ? `Sent ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens, clamped to ${fmt(obsBudget)} tokens by known cap (${fmt(evalCore.knownCap)} tokens).`
+        : (isTwEval ? `請求攜帶 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/伺服器端上限（${fmt(evalCore.knownCap)} tokens）限制，實際採用 ${fmt(obsBudget)} tokens。` : `请求携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/服务端上限（${fmt(evalCore.knownCap)} tokens）限制，实际采用 ${fmt(obsBudget)} tokens。`);
     } else if (status === 'mismatch') {
       badge = t('models.status.mismatch') || '未生效：目标值与观测值不一致';
       pillClass = 'pill-bad';
-      let detail = `目标设置（${fmt(targetLimit)} tokens）与发送后实际观测预算（${fmt(obsBudget)} tokens）不一致，原因待确认。`;
+      let detail = isEnEval
+        ? `Target (${fmt(targetLimit)} tokens) differs from observed budget (${fmt(obsBudget)} tokens).`
+        : (isTwEval ? `目標設定（${fmt(targetLimit)} tokens）與發送後實際觀測預算（${fmt(obsBudget)} tokens）不一致，原因待確認。` : `目标设置（${fmt(targetLimit)} tokens）与发送后实际观测预算（${fmt(obsBudget)} tokens）不一致，原因待确认。`);
       if (product.unavailable && product.unavailabilityReason) {
-        detail += `（模型可用性说明：${product.unavailabilityReason}）`;
+        detail += isEnEval ? ` (${product.unavailabilityReason})` : `（模型可用性說明：${product.unavailabilityReason}）`;
       }
       diagnosis = detail;
     } else if (status === 'timeout_unconfirmed') {
-      badge = '确认超时（未观测到新回复）';
+      badge = isEnEval ? 'Timed out (unconfirmed)' : (isTwEval ? '確認逾時（未觀測到新回覆）' : '确认超时（未观测到新回复）');
       pillClass = 'pill-warn';
+      const secWait = Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000);
       diagnosis = targetMode === 'default'
-        ? `已按客户端默认透传发送请求，但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`
-        : `已在请求中携带设置（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`;
+        ? (isEnEval ? `Sent with client default, but no budget confirmation arrived within ${secWait}s.` : (isTwEval ? `已依用戶端預設透傳發送請求，但超過 ${secWait} 秒未觀測到新回覆中的預算回傳。` : `已按客户端默认透传发送请求，但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`))
+        : (isEnEval ? `Sent override (${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : 'Dynamic'}), but no reply arrived within ${secWait}s.` : (isTwEval ? `已在請求中攜帶設定（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '動態跟隨'}），但超過 ${secWait} 秒未觀測到新回覆中的預算回傳。` : `已在请求中携带设置（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`));
     } else if (status === 'dispatched_pending_confirm') {
-      badge = targetMode === 'default' ? '已默认透传，等待确认' : (t('models.status.dispatchedPendingConfirm') || '已发送设置，等待确认');
+      badge = targetMode === 'default'
+        ? (isEnEval ? 'Passthrough sent; awaiting confirm' : (isTwEval ? '已預設透傳，等待確認' : '已默认透传，等待确认'))
+        : (t('models.status.dispatchedPendingConfirm') || '已发送设置，等待确认');
       pillClass = 'pill-warn';
       diagnosis = targetMode === 'default'
-        ? '已按客户端默认透传发出请求（未附加覆盖参数），等待收到新回复以确认服务端实际预算。'
-        : `已在本次请求中成功注入参数（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），等待收到新回复以确认实际分配预算。`;
+        ? (isEnEval ? 'Sent with client default (no override); awaiting reply to confirm allocated budget.' : (isTwEval ? '已依用戶端預設透傳發出請求（未附加覆寫參數），等待收到新回覆以確認伺服器端實際預算。' : '已按客户端默认透传发出请求（未附加覆盖参数），等待收到新回复以确认服务端实际预算。'))
+        : (isEnEval ? `Injected (${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : 'Dynamic'}); awaiting reply to confirm budget.` : (isTwEval ? `已在本次請求中成功注入參數（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '動態跟隨'}），等待收到新回覆以確認實際分配預算。` : `已在本次请求中成功注入参数（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），等待收到新回复以确认实际分配预算。`));
     } else {
       status = 'saved_pending_dispatch';
       badge = t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用';
       pillClass = 'pill-muted';
-      diagnosis = `已保存目标设置（${targetText}），下一次在对应模型发起发送时将自动注入。`;
+      diagnosis = isEnEval
+        ? `Saved (${targetText}); will be injected on the next request for this model.`
+        : (isTwEval ? `已儲存目標設定（${targetText}），下一次在對應模型發起發送時將自動注入。` : `已保存目标设置（${targetText}），下一次在对应模型发起发送时将自动注入。`);
     }
 
     return {
@@ -5619,20 +5646,38 @@
 
       let disabled = false;
       let disableReason = '';
+      const isEnPre = currentPanelLanguage === 'en';
+      const isTwPre = currentPanelLanguage === 'zh-TW';
       if (bMode === 'model_max') {
         if (isUnified) {
           disabled = true;
-          disableReason = '统一模式下各模型最大可用上限不同，请切换到按模型分别设置或填写具体数值。';
+          disableReason = isEnPre
+            ? 'Max capacity varies per model in unified mode. Switch to Per-Model or enter a specific number.'
+            : (isTwPre
+              ? '統一模式下各模型最大可用上限不同，請切換為依模型個別設定或填寫具體數值。'
+              : '统一模式下各模型最大可用上限不同，请切换到按模型分别设置或填写具体数值。');
         } else if (knownModelMax == null) {
           disabled = true;
-          disableReason = '尚未获取到该模型的上下文窗口与最大输出元数据，无法计算最大可用值。';
+          disableReason = isEnPre
+            ? 'Context window and max output metadata not loaded yet for this model.'
+            : (isTwPre
+              ? '尚未取得此模型的上下文視窗與最大輸出中繼資料，無法計算最大可用值。'
+              : '尚未获取到该模型的上下文窗口与最大输出元数据，无法计算最大可用值。');
         } else if (!policyKnown || knownEnvMax == null) {
           disabled = true;
-          disableReason = '当前客户端运行策略未知或待重启确认，暂无法确定当前环境最大可用上限。';
+          disableReason = isEnPre
+            ? 'Client runtime policy is unknown or pending restart; environment max cannot be verified yet.'
+            : (isTwPre
+              ? '目前用戶端執行策略未知或待重啟確認，暫無法確定目前環境最大可用上限。'
+              : '当前客户端运行策略未知或待重启确认，暂无法确定当前环境最大可用上限。');
         }
       } else if (bMode === 'fixed' && bLim && knownModelMax != null && bLim > knownModelMax) {
         disabled = true;
-        disableReason = `预设 ${fmt(bLim)} 超出当前模型理论输入上限 ${fmt(knownModelMax)}（总窗口 - 最大输出）。`;
+        disableReason = isEnPre
+          ? `Preset ${fmt(bLim)} exceeds model theoretical input cap ${fmt(knownModelMax)} (window - max output).`
+          : (isTwPre
+            ? `預設 ${fmt(bLim)} 超出目前模型理論輸入上限 ${fmt(knownModelMax)}（總視窗 - 最大輸出）。`
+            : `预设 ${fmt(bLim)} 超出当前模型理论输入上限 ${fmt(knownModelMax)}（总窗口 - 最大输出）。`);
       }
 
       if ('disabled' in btn) btn.disabled = disabled;
@@ -7144,10 +7189,22 @@
           pv.textContent = `$19.99${t('plan.summary.perMonth')}`;
         }
       }
+      const countryInp = el('input-custom-country');
+      if (countryInp && countryInp.value) {
+        const locCountry = localizeRegionDisplayValue(countryInp.value);
+        if (locCountry) countryInp.value = locCountry;
+      }
+      const regInp = el('input-custom-region');
+      if (regInp && regInp.value) {
+        const locReg = localizeRegionDisplayValue(regInp.value);
+        if (locReg) regInp.value = locReg;
+      }
       if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
+      if (typeof refreshValidEndDatePicker === 'function') refreshValidEndDatePicker();
+      if (typeof updateRegionCnyPreviewFromForm === 'function') updateRegionCnyPreviewFromForm();
       if (typeof syncAllNativeSelectDropdowns === 'function') syncAllNativeSelectDropdowns();
     } catch { }
     try {
@@ -8826,7 +8883,7 @@
 
     if (titleEl) titleEl.textContent = isPeriod ? t('cost.title') : t('cost.titleAll');
     if (periodTag) {
-      const pKey = ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || t('cost.periodTag');
+      const pKey = formatPeriodCalendarLabel(ANTIGRAVITY_TOKEN_DATA.currentPeriod);
       periodTag.textContent = isPeriod ? pKey : t('cost.allHistory');
     }
 
@@ -8891,7 +8948,7 @@
     const scopeDescEl = el('cost-scope-desc');
     if (scopeDescEl) {
       const srcName = activeTokenSource === 'desktop' ? t('tokens.srcDesktopLabel') : activeTokenSource === 'cli' ? 'CLI' : t('tokens.srcAllLabel');
-      const pLabel = isPeriod ? (ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || t('cost.periodTag')) : t('cost.allHistory');
+      const pLabel = isPeriod ? formatPeriodCalendarLabel(ANTIGRAVITY_TOKEN_DATA.currentPeriod) : t('cost.allHistory');
       scopeDescEl.textContent = `${srcName} · ${pLabel}`;
     }
     const nonPaidBadge = el('cost-non-paid-badge');
@@ -8901,8 +8958,10 @@
       apiCost = Number(effectiveRef.totalCostUSD || 0);
       if (grandVal) {
         if (apiCost > 0) {
-          grandVal.textContent = t('cost.approx', { val: apiCost.toFixed(2) });
-          grandVal.title = `$${apiCost.toFixed(4)}`;
+          grandVal.textContent = currentPanelLanguage === 'zh-CN'
+            ? t('cost.approx', { val: apiCost.toFixed(2) })
+            : formatUsdMetricDisplay(apiCost, { detail: currentPanelLanguage === 'zh-TW' });
+          grandVal.title = formatUsdMetricTooltip(apiCost);
         } else if (curTotal > 0 && curIn === 0 && curCa === 0 && curOut === 0) {
           grandVal.textContent = t('cost.notReady');
           grandVal.title = t('cost.notReady');
@@ -8938,8 +8997,10 @@
       const h = curHybrid.hybrid || {};
       apiCost = Number(h.combinedTotalUSD || effectiveRef.totalCostUSD || 0);
       if (grandVal) {
-        grandVal.textContent = t('cost.approx', { val: apiCost.toFixed(2) });
-        grandVal.title = t('cost.hybridSub', { known: h.knownCostUSD || 0, res: h.unpricedResidualCostUSD || 0 });
+        grandVal.textContent = currentPanelLanguage === 'zh-CN'
+          ? t('cost.approx', { val: apiCost.toFixed(2) })
+          : formatUsdMetricDisplay(apiCost, { detail: currentPanelLanguage === 'zh-TW' });
+        grandVal.title = `${t('cost.hybridSub', { known: Number(h.knownCostUSD || 0).toFixed(2), res: Number(h.unpricedResidualCostUSD || 0).toFixed(2) })} | ${formatUsdMetricTooltip(apiCost)}`;
       }
       if (grandSub) {
         grandSub.textContent = t('cost.hybridSub', {
@@ -8977,8 +9038,10 @@
           grandVal.textContent = '<$0.01';
           grandVal.title = `$${apiCost.toFixed(6)}`;
         } else {
-          grandVal.textContent = `$${apiCost.toFixed(2)}`;
-          grandVal.title = `$${apiCost.toFixed(4)}`;
+          grandVal.textContent = currentPanelLanguage === 'zh-TW'
+            ? formatUsdMetricDisplay(apiCost, { withPrefix: false, detail: true })
+            : `$${apiCost.toFixed(2)}`;
+          grandVal.title = formatUsdMetricTooltip(apiCost);
         }
       }
       if (grandSub) {
@@ -9029,14 +9092,18 @@
     if (subSpendLbl) subSpendLbl.textContent = t('cost.subSpendLabel');
 
     const extraNoCompare = isPeriod ? '' : t('cost.allNoCompare');
+    const resolvedAcqLabel = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅')
+      ? localizeAcquisitionSource(ps.acquisitionSourceName)
+      : localizeAcquisitionSource(ps.acquisitionSource || 'normal_paid');
+    const resolvedCycleLabel = ps.billingCycle ? localizeBillingCycleLabel(ps.billingCycle) : t('plan.summary.perMonth');
     if (subSpendVal && subNote) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         subSpendVal.textContent = `${curSymbol}0`;
-        subNote.textContent = t('cost.freeActive', { src: ps.acquisitionSourceName || t('cost.freePromo'), extra: extraNoCompare });
+        subNote.textContent = t('cost.freeActive', { src: resolvedAcqLabel || t('cost.freePromo'), extra: extraNoCompare });
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         subSpendVal.textContent = `${curSymbol}${Number(ps.actualPricePaid).toFixed(2)}`;
         const expTag = ps.isExpired ? t('cost.expiredTag') : '';
-        subNote.textContent = `${ps.acquisitionSourceName || t('cost.subSpend')} · ${t('cost.paidLabel')} (${ps.billingCycle || t('plan.summary.perMonth')})${expTag}${extraNoCompare}`;
+        subNote.textContent = `${resolvedAcqLabel || t('cost.subSpend')} · ${t('cost.paidLabel')} (${resolvedCycleLabel})${expTag}${extraNoCompare}`;
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         subSpendVal.textContent = t('cost.paidUnknown');
         subNote.textContent = `${t('cost.publicRefMonthly', { p: ps.officialPriceMonthly })}${extraNoCompare}`;
@@ -9049,14 +9116,15 @@
     const subLine = el('cost-sub-line');
     if (subLine) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
-        subLine.textContent = t('cost.subLineFree', { sym: curSymbol, src: ps.acquisitionSourceName || t('plan.tag.promo') });
+        subLine.textContent = t('cost.subLineFree', { sym: curSymbol, src: resolvedAcqLabel || t('plan.tag.promo') });
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
-        const cnyPart = (ps.currency !== 'CNY' && ps.cnyFormatted) ? ` (${ps.cnyFormatted})` : '';
+        const secPart = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { detail: true });
+        const cnyPart = secPart ? ` (${secPart})` : '';
         subLine.textContent = t('cost.subLinePaid', {
           sym: curSymbol,
           val: Number(ps.actualPricePaid).toFixed(2),
           cny: cnyPart,
-          cycle: ps.billingCycle || t('plan.summary.perMonth'),
+          cycle: resolvedCycleLabel,
           exp: ps.isExpired ? ' · ⚠️' : ''
         });
       } else {
@@ -9073,9 +9141,16 @@
         diffSummary.textContent = t('cost.diffAll');
       } else if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         diffSummary.textContent = t('cost.diffFree', { val: apiCost.toFixed(2) });
-      } else if (ps.actualPricePaid !== null && ps.currency === 'USD') {
-        const diff = apiCost - Number(ps.actualPricePaid);
-        diffSummary.textContent = t('cost.diffPaid', { sign: diff >= 0 ? '+' : '', val: diff.toFixed(2) });
+      } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
+        const paidUsd = (ps.currency || 'USD') === 'USD'
+          ? Number(ps.actualPricePaid)
+          : convertCurrencyUi(ps.actualPricePaid, ps.currency || 'USD', 'USD', ps.region);
+        if (paidUsd !== null && Number.isFinite(paidUsd)) {
+          const diff = apiCost - paidUsd;
+          diffSummary.textContent = t('cost.diffPaid', { sign: diff >= 0 ? '+' : '', val: diff.toFixed(2) });
+        } else {
+          diffSummary.textContent = t('cost.diffUnknown');
+        }
       } else {
         diffSummary.textContent = t('cost.diffUnknown');
       }
@@ -9093,7 +9168,12 @@
 
     // 6. 兼容性辅助隐藏层同步
     const refGrand = el('ref-cost-grand-val');
-    if (refGrand) refGrand.textContent = t('cost.refApprox', { val: Number(curRef.totalCostUSD || 0).toFixed(2) });
+    if (refGrand) {
+      const refNum = Number(curRef.totalCostUSD || 0);
+      refGrand.textContent = currentPanelLanguage === 'zh-TW'
+        ? formatUsdMetricDisplay(refNum, { detail: true })
+        : t('cost.refApprox', { val: refNum.toFixed(2) });
+    }
   }
 
   const heatPop = el('heat-pop');
@@ -9981,22 +10061,26 @@
     if (tTotalCost) {
       tTotalCost.textContent = isScopedEmptyAccount
         ? noAcctCostStr
-        : `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
+        : `${formatUsdMetricDisplay(totalCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tTotalCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(totalCostAgg.totalCostUSD);
     }
     if (tTodayCost) {
       tTodayCost.textContent = isScopedEmptyAccount
         ? noAcctCostStr
-        : `≈ $${todayCostInfo.costUSD.toFixed(2)}${todayCostCny !== null ? ` (¥${todayCostCny.toFixed(2)})` : ''}`;
+        : formatUsdMetricDisplay(todayCostInfo.costUSD);
+      tTodayCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(todayCostInfo.costUSD);
     }
     if (tMonthCost) {
       tMonthCost.textContent = isScopedEmptyAccount
         ? noAcctCostStr
-        : `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
+        : `${formatUsdMetricDisplay(monthCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tMonthCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(monthCostAgg.totalCostUSD);
     }
     if (tYearCost) {
       tYearCost.textContent = isScopedEmptyAccount
         ? noAcctCostStr
-        : `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
+        : `${formatUsdMetricDisplay(yearCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tYearCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(yearCostAgg.totalCostUSD);
     }
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
@@ -11561,9 +11645,12 @@
         const eTag = (call.eScore != null && call.eGrade)
           ? (currentPanelLanguage === 'en' ? ` · ${call.eScore}pt(${call.eGrade})` : ` · ${call.eScore}分(${call.eGrade})`)
           : '';
-        stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 缓${formatCallCachePctText(call)}${eTag} · ${st.text}`;
         if (currentPanelLanguage === 'en') {
           stats.textContent = `${formatCallTimeStr(call)} · In ${inpTxt}/Out ${short(call.outputTokens || 0)} · Cache ${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        } else if (currentPanelLanguage === 'zh-TW') {
+          stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 緩${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        } else {
+          stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 缓${formatCallCachePctText(call)}${eTag} · ${st.text}`;
         }
 
         row.appendChild(main);
@@ -13123,8 +13210,9 @@
       if (m > 0) return `${m}m`;
       return `${s}s`;
     }
-    if (d > 0) return `${d}天${h}小时`;
-    if (h > 0) return `${h}小时${m}分`;
+    const hrUnit = currentPanelLanguage === 'zh-TW' ? '小時' : '小时';
+    if (d > 0) return `${d}天${h}${hrUnit}`;
+    if (h > 0) return `${h}${hrUnit}${m}分`;
     if (m > 0) return `${m}分`;
     return `${s}秒`;
   }
@@ -14594,7 +14682,7 @@
     const formatPersistedError = (raw) => {
       if (!raw) return '';
       const txt = typeof translateBackendText === 'function' ? translateBackendText(raw) : String(raw);
-      if (lr?.rolledBack && !/(回滚|rolled back)/i.test(txt)) {
+      if (lr?.rolledBack && !/(回滚|回滾|rolled back)/i.test(txt)) {
         return t('accounts.lastSwitchRolledBack', { detail: txt });
       }
       return txt;
@@ -14855,9 +14943,11 @@
       });
     }
     if (kaRun) {
-      kaRun.textContent = ks.blockedReason
-        ? t('keepalive.blockedReason', { reason: ks.blockedReason })
-        : (ks.stopReason ? t('keepalive.stopReason', { reason: ks.stopReason }) : t('keepalive.defaultNote'));
+      const blockedTxt = ks.blockedReason && typeof translateBackendText === 'function' ? translateBackendText(ks.blockedReason) : ks.blockedReason;
+      const stopTxt = ks.stopReason && typeof translateBackendText === 'function' ? translateBackendText(ks.stopReason) : ks.stopReason;
+      kaRun.textContent = blockedTxt
+        ? t('keepalive.blockedReason', { reason: blockedTxt })
+        : (stopTxt ? t('keepalive.stopReason', { reason: stopTxt }) : t('keepalive.defaultNote'));
     }
     if (kaStopBtn) kaStopBtn.hidden = !ks.running;
 

@@ -2398,11 +2398,141 @@
     @media (max-width:440px){
       .auto-switch-grid{grid-template-columns:1fr}
     }
+
+    /* 订阅设置表单统一聚焦样式与自定义日期选择器（对齐 .ag-dropdown 设计语言） */
+    .ag-sub-input{
+      outline:none !important;
+      transition:border-color 0.15s cubic-bezier(0.16,1,0.3,1),box-shadow 0.15s cubic-bezier(0.16,1,0.3,1),background 0.15s ease;
+    }
+    .ag-sub-input:hover:not(:disabled){
+      border-color:rgba(255,255,255,0.22) !important;
+    }
+    :host([data-theme="light"]) .ag-sub-input:hover:not(:disabled){
+      border-color:rgba(0,0,0,0.22) !important;
+    }
+    .ag-sub-input:focus,.ag-sub-input:focus-visible{
+      outline:none !important;
+      border-color:#a78bfa !important;
+      box-shadow:0 0 0 2px rgba(139,92,246,0.28) !important;
+    }
+    .quota-compact-input:focus,.quota-compact-input:focus-visible{
+      outline:none;
+      border-color:#a78bfa;
+      box-shadow:0 0 0 2px rgba(139,92,246,0.25);
+    }
+
+    .ag-datepicker-wrapper{
+      position:relative;width:100%;box-sizing:border-box;min-width:0;
+    }
+    .ag-datepicker-trigger{
+      padding:3.5px 8px;font-size:11px;min-height:24px;border-radius:5px;
+    }
+    .ag-datepicker-label.is-placeholder{
+      color:var(--ag-text-muted);
+    }
+    .ag-datepicker-icon{
+      display:inline-flex;align-items:center;justify-content:center;
+      color:var(--ag-text-muted);flex-shrink:0;opacity:0.8;
+    }
+    .ag-datepicker-trigger:hover .ag-datepicker-icon,
+    .ag-datepicker-wrapper.is-open .ag-datepicker-icon{
+      color:#a78bfa;opacity:1;
+    }
+    .ag-datepicker-popover{
+      position:absolute;top:calc(100% + 4px);right:0;left:auto;
+      width:236px;max-width:calc(100vw - 24px);max-height:none;overflow:visible;
+      padding:10px;border-radius:8px;
+      background:var(--ag-unified-bg,#1e1e24);
+      border:1px solid var(--ag-float-border,rgba(255,255,255,0.14));
+      box-shadow:0 16px 40px rgba(0,0,0,0.65),0 4px 12px rgba(0,0,0,0.4);
+      z-index:2147483647 !important;
+      user-select:none;
+    }
+    .ag-datepicker-wrapper.open-up .ag-datepicker-popover{
+      top:auto;bottom:calc(100% + 4px);
+    }
+    .ag-dp-header{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;
+    }
+    .ag-dp-nav-btn{
+      width:24px;height:24px;border-radius:5px;border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-input);color:var(--ag-text-secondary);
+      display:inline-flex;align-items:center;justify-content:center;
+      cursor:pointer;font-size:12px;line-height:1;padding:0;
+      transition:border-color .14s ease,background .14s ease,color .14s ease;
+    }
+    .ag-dp-nav-btn:hover{
+      border-color:rgba(167,139,250,0.55);color:var(--ag-text-primary);
+      background:rgba(139,92,246,0.14);
+    }
+    .ag-dp-nav-btn:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }
+    .ag-dp-month-title{
+      font-size:11.5px;font-weight:600;color:var(--ag-text-primary);text-align:center;flex:1;
+    }
+    .ag-dp-weekdays{
+      display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px;
+    }
+    .ag-dp-weekday{
+      font-size:9.5px;font-weight:600;color:var(--ag-text-muted);text-align:center;padding:2px 0;
+    }
+    .ag-dp-grid{
+      display:grid;grid-template-columns:repeat(7,1fr);gap:2px;
+    }
+    .ag-dp-day{
+      height:26px;border-radius:6px;border:1px solid transparent;
+      background:transparent;color:var(--ag-text-primary);font-size:10.5px;
+      display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;
+      transition:background .12s ease,border-color .12s ease,color .12s ease;
+    }
+    .ag-dp-day.is-outside{
+      color:var(--ag-text-muted);opacity:0.45;
+    }
+    .ag-dp-day:hover{
+      background:rgba(167,139,250,0.16);color:var(--ag-text-primary);
+    }
+    .ag-dp-day.is-today:not(.is-selected){
+      border-color:#a855f7;color:#c4b5fd;font-weight:600;
+    }
+    :host([data-theme="light"]) .ag-dp-day.is-today:not(.is-selected){
+      color:#7c3aed;border-color:#8b5cf6;
+    }
+    .ag-dp-day.is-selected{
+      background:linear-gradient(135deg,#8b5cf6,#a855f7);
+      border-color:#a855f7;color:#ffffff;font-weight:600;
+      box-shadow:0 2px 8px rgba(139,92,246,0.35);
+    }
+    .ag-dp-day:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }
+    .ag-dp-footer{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;
+      margin-top:8px;padding-top:7px;border-top:1px solid var(--ag-border-subcard);
+    }
+    .ag-dp-action-btn{
+      font-size:10.5px;padding:3px 9px;border-radius:5px;border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-input);color:var(--ag-text-secondary);cursor:pointer;
+      transition:border-color .14s ease,color .14s ease,background .14s ease;
+    }
+    .ag-dp-action-btn:hover{
+      border-color:rgba(167,139,250,0.55);color:var(--ag-text-primary);
+      background:rgba(139,92,246,0.12);
+    }
+    .ag-dp-action-btn.is-today-btn{
+      color:#c4b5fd;border-color:rgba(139,92,246,0.38);
+    }
+    :host([data-theme="light"]) .ag-dp-action-btn.is-today-btn{
+      color:#7c3aed;
+    }
+    .ag-dp-action-btn:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }
   </style>
 
   <!-- 顶部基本单元 0: 模型额度圆环入口（工具组最左侧） -->
 <button id="badge-quota" class="ag-unit ag-unit-quota" type="button" aria-label="模型剩余额度与重置状态"
-  data-i18n-aria="badge.quota.aria" aria-expanded="false" data-quota-state="unknown" title="模型额度看板">
+  data-i18n-aria="badge.quota.aria" aria-expanded="false" data-quota-state="unknown" title="模型额度看板" data-i18n-title="quota.panel.aria">
   <svg id="quota-ring-svg" class="quota-ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
     <circle id="quota-ring-track" class="quota-ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1">
     </circle>
@@ -2640,7 +2770,7 @@
           <div class="latest-call-title-wrap">
             <span class="latest-call-title" data-i18n="session.latestCall.title">最新调用</span>
             <span id="latest-call-status-pill" class="key-pill pill-muted">--</span>
-            <span id="latest-call-agent-pill" class="call-agent-badge" hidden>主代理</span>
+            <span id="latest-call-agent-pill" class="call-agent-badge" hidden data-i18n="session.latestCall.agentMain">主代理</span>
           </div>
           <div class="latest-call-actions">
             <span id="latest-call-time" class="latest-call-time">—</span>
@@ -2687,9 +2817,9 @@
           <div class="ctx-compact-title" data-i18n="session.compact.title">上下文设置</div>
           <div class="ctx-compact-meta">
             <span><span data-i18n="session.compact.savedLabel">本模型已保存：</span><strong
-                id="ctx-compact-saved">未单独设置（使用默认）</strong></span>
+                id="ctx-compact-saved" data-i18n="status.savedDefault">未单独设置（使用默认）</strong></span>
             <span><span data-i18n="session.compact.clientLabel">客户端当前使用：</span><strong
-                id="ctx-compact-client">状态读取中…</strong></span>
+                id="ctx-compact-client" data-i18n="status.badge.reading">状态读取中…</strong></span>
           </div>
         </div>
         <button id="btn-goto-model-settings" class="ctx-compact-link-btn" type="button"
@@ -2871,7 +3001,7 @@
             <div class="ctx-summary-length-row">
               <span class="ctx-summary-value ctx-length-val" id="ctx-summary-length"
                 data-i18n="models.summary.modelDefault">使用模型默认值</span>
-              <span class="key-pill pill-muted" id="ctx-summary-status-pill" hidden>待重启生效</span>
+              <span class="key-pill pill-muted" id="ctx-summary-status-pill" hidden data-i18n="models.summary.pendingRestart">待重启生效</span>
             </div>
           </div>
         </div>
@@ -2905,16 +3035,16 @@
             </div>
             <div class="ctx-cap-item ctx-cap-item-wide">
               <span class="ctx-cap-lbl" data-i18n="models.cap.formulaLbl">来源与计算说明</span>
-              <span class="ctx-cap-sub" id="ctx-cap-formula">等待读取模型元数据…</span>
+              <span class="ctx-cap-sub" id="ctx-cap-formula">—</span>
             </div>
           </div>
           <div class="ctx-cap-verify-strip" id="ctx-cap-verify-strip">
             <span class="ctx-cap-v-cell"><em data-i18n="models.cap.saved">已保存</em> <strong
                 id="ctx-ref-saved">—</strong></span>
             <span class="ctx-cap-v-cell"><em data-i18n="models.cap.sent">最近请求携带</em> <strong
-                id="ctx-ref-sent">尚无本次验证</strong></span>
+                id="ctx-ref-sent" data-i18n="models.cap.noneVerified">尚无本次验证</strong></span>
             <span class="ctx-cap-v-cell"><em data-i18n="models.cap.adopted">后端实际采用</em> <strong
-                id="ctx-ref-adopted">尚无本次验证</strong></span>
+                id="ctx-ref-adopted" data-i18n="models.cap.noneVerified">尚无本次验证</strong></span>
           </div>
           <div class="ctx-unified-proj" id="ctx-unified-projection" hidden></div>
         </div>
@@ -2935,7 +3065,7 @@
               </div>
               <div class="ctx-metric-row ctx-metric-request">
                 <span class="ctx-metric-label" data-i18n="models.card.request">请求携带</span>
-                <span class="ctx-metric-value" id="ctx-card-request">默认透传</span>
+                <span class="ctx-metric-value" id="ctx-card-request" data-i18n="models.card.requestDefault">默认透传</span>
                 <span class="ctx-metric-side" data-i18n="models.card.requestSide">本次请求发送给底座的参数</span>
               </div>
               <div class="ctx-metric-row ctx-metric-client">
@@ -2960,12 +3090,12 @@
               <div class="ctx-metric-row ctx-metric-convo">
                 <span class="ctx-metric-label" data-i18n="models.card.convoIdTitle">对应会话</span>
                 <span class="ctx-metric-value" id="ctx-card-convo">—</span>
-                <span class="ctx-metric-side">发生调用的会话标识</span>
+                <span class="ctx-metric-side" data-i18n="models.card.convoIdSide">发生调用的会话标识</span>
               </div>
               <div class="ctx-metric-row ctx-metric-diagnosis">
                 <span class="ctx-metric-label" data-i18n="models.card.diagnosisTitle">生效诊断</span>
                 <span class="ctx-metric-value" id="ctx-card-diagnosis">—</span>
-                <span class="ctx-metric-side">目标值与观测值比对结果</span>
+                <span class="ctx-metric-side" data-i18n="models.card.diagnosisSide">目标值与观测值比对结果</span>
               </div>
               <div class="ctx-metric-row ctx-metric-observed">
                 <span class="ctx-metric-label" data-i18n="models.card.observedSpeed">实测速度</span>
@@ -3116,9 +3246,9 @@
                 <span class="unlock-credit-lbl" data-i18n="models.credit.source">方案来源：</span>
                 <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank"
                   rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
-                  title="点击在系统默认浏览器中打开原作者帖子" data-i18n="models.credit.author">原作者帖子 (Linux.do @23375) ↗</a>
+                  title="点击在系统默认浏览器中打开原作者帖子" data-i18n-title="models.credit.authorTitle" data-i18n="models.credit.author">原作者帖子 (Linux.do @23375) ↗</a>
                 <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接"
-                  data-i18n="models.credit.copy">📋 复制链接</button>
+                  data-i18n-title="models.credit.copyTitle" data-i18n="models.credit.copy">📋 复制链接</button>
               </div>
               <span class="unlock-adapter-note" data-i18n="models.credit.adapter">本项目负责 Node.js 适配与集成</span>
             </div>
@@ -3714,7 +3844,7 @@
         <dt data-i18n="plan.dt.country">账号所在地区：</dt>
         <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
           <span id="p-det-country" style="display:none">未知</span>
-          <select id="direct-country-select" aria-label="账号所在地区 (仅本地记录)" style="display:none">
+          <select id="direct-country-select" aria-label="账号所在地区 (仅本地记录)" data-i18n-aria="plan.form.countryLabel" style="display:none">
             <option value="未知">🌐 未设置 / 自动</option>
             <option value="美国 (US)">🇺🇸 美国 (US)</option>
             <option value="日本 (JP)">🇯🇵 日本 (JP)</option>
@@ -3893,7 +4023,7 @@
           <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.acqCustomLabel">自定义活动 / 合作方名称</label>
-            <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送"
+            <input id="input-custom-acq-name" class="ag-sub-input" type="text" placeholder="选填，如 Pixel 11 Pro 赠送"
               data-i18n-placeholder="plan.form.acqCustomPh"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
@@ -3946,7 +4076,7 @@
           <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.countryLabel">账号所在地区 (仅本地记录)</label>
-            <input id="input-custom-country" type="text" placeholder="例如：美国 (US)"
+            <input id="input-custom-country" class="ag-sub-input" type="text" placeholder="例如：美国 (US)"
               data-i18n-placeholder="plan.form.countryPh" title="仅作为本地显示记录，不修改实际 Google 账号"
               data-i18n-title="plan.country.title"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
@@ -3954,7 +4084,7 @@
           <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.regionLabel">订阅国家 (购买/结算地区)</label>
-            <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚"
+            <input id="input-custom-region" class="ag-sub-input" type="text" placeholder="例如：韩国 / 澳大利亚"
               data-i18n-placeholder="plan.form.regionPh" title="实际购买或支付订阅所在的国家或地区" data-i18n-title="plan.region.title"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
@@ -3990,7 +4120,7 @@
                 </div>
                 <div id="select-custom-currency-dropdown-menu" class="ag-dropdown-menu"></div>
               </div>
-              <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额"
+              <input id="input-custom-paid" class="ag-sub-input" type="number" step="0.01" placeholder="实付金额"
                 data-i18n-placeholder="plan.form.paidPh"
                 style="flex:1;min-width:0;width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
             </div>
@@ -4020,14 +4150,25 @@
           <div>
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.validEndLabel">权益到期日</label>
-            <input id="input-valid-end" type="date"
-              style="width:100%;font-size:11px;padding:3px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <input id="input-valid-end" type="hidden" value="">
+            <div id="valid-end-picker-wrap" class="ag-dropdown-wrapper ag-datepicker-wrapper">
+              <div id="valid-end-trigger" class="ag-dropdown-trigger ag-datepicker-trigger" tabindex="0" role="button" aria-haspopup="dialog" aria-expanded="false">
+                <span id="valid-end-label" class="ag-dropdown-label ag-datepicker-label is-placeholder" data-i18n="datePicker.placeholder">年 / 月 / 日</span>
+                <span class="ag-datepicker-icon" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="12" height="11" rx="2" />
+                    <path d="M5 1.8v2.4M11 1.8v2.4M2 6.5h12" />
+                  </svg>
+                </span>
+              </div>
+              <div id="valid-end-popover" class="ag-datepicker-popover" style="display:none" role="dialog"></div>
+            </div>
           </div>
         </div>
         <div style="margin-bottom:6px">
           <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
             data-i18n="plan.form.noteLabel">补充说明备注</label>
-          <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车"
+          <input id="input-custom-note" class="ag-sub-input" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车"
             data-i18n-placeholder="plan.form.notePh"
             style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
         </div>
@@ -4182,7 +4323,7 @@
       <!-- 隐藏辅助兼容层 -->
       <div id="ref-cost-drawer-body" style="display:none">
         <span id="ref-cost-grand-val">$0.00</span>
-        <span id="ref-cost-mode-label">参考模型折算</span>
+        <span id="ref-cost-mode-label" data-i18n="cost.modeRef">参考模型估算</span>
         <button id="btn-toggle-ref-cost-drawer" type="button" style="display:none"></button>
         <button id="btn-ref-mode-all" type="button" style="display:none"></button>
         <button id="btn-ref-mode-hybrid" type="button" style="display:none"></button>
@@ -4358,7 +4499,7 @@
           </div>
           <div id="h-sum-cost-wrap" class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumCost">预估费用:</span>
-            <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
+            <span id="h-sum-cost" class="heat-sum-val" data-i18n="tokens.heat.costPlaceholder">≈ $0.00 (¥0.00)</span>
           </div>
           <div class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumDailyAvg">折合每天:</span>
@@ -4679,8 +4820,8 @@
 
 <!-- 热力图浮动 Tooltip -->
 <div class="heat-popover" id="heat-pop">
-  <div class="pop-date" id="heat-pop-date">10月24日</div>
-  <div class="pop-val" id="heat-pop-val">2.47亿 个 Token</div>
+  <div class="pop-date" id="heat-pop-date">--</div>
+  <div class="pop-val" id="heat-pop-val">0 Tokens</div>
   <div class="pop-det" id="heat-pop-det"></div>
 </div>
 
@@ -5022,6 +5163,7 @@ const PANEL_I18N = {
   'models.card.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
   'models.card.savedSide': { 'zh-CN': '为这个模型记下的长度', 'zh-TW': '為此模型記下的長度', en: 'Saved limit for this model' },
   'models.card.request': { 'zh-CN': '请求携带', 'zh-TW': '請求攜帶', en: 'Request Attached' },
+  'models.card.requestDefault': { 'zh-CN': '恢复客户端默认', 'zh-TW': '還原用戶端預設', en: 'Client Default' },
   'models.mode.aria': { 'zh-CN': '上下文设置模式', 'zh-TW': '上下文設定模式', en: 'Context setting mode' },
   'models.mode.unifiedTitle': { 'zh-CN': '所有模型统一设置', 'zh-TW': '所有模型統一設定', en: 'Unified for All Models' },
   'models.mode.unifiedDesc': { 'zh-CN': '设置一次，所有模型使用相同的上下文长度。', 'zh-TW': '設定一次，所有模型使用相同的上下文長度。', en: 'Set once; all models use the same context length.' },
@@ -5038,7 +5180,9 @@ const PANEL_I18N = {
   'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
   'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
   'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.convoIdSide': { 'zh-CN': '发生调用的会话标识', 'zh-TW': '觸發呼叫的工作階段識別碼', en: 'Conversation ID of call' },
   'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.diagnosisSide': { 'zh-CN': '目标值与观测值比对结果', 'zh-TW': '目標值與觀測值比對結果', en: 'Target vs. observed comparison' },
   'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
   'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
   'models.summary.unconfirmed': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
@@ -5111,7 +5255,9 @@ const PANEL_I18N = {
   'models.meta.backup': { 'zh-CN': '原版备份状态', 'zh-TW': '原版備份狀態', en: 'Original Backup' },
   'models.credit.source': { 'zh-CN': '方案来源：', 'zh-TW': '方案來源：', en: 'Source:' },
   'models.credit.author': { 'zh-CN': '原作者帖子 (Linux.do @23375) ↗', 'zh-TW': '原作者文章 (Linux.do @23375) ↗', en: 'Original Post (Linux.do @23375) ↗' },
+  'models.credit.authorTitle': { 'zh-CN': '点击在系统默认浏览器中打开原作者帖子', 'zh-TW': '點擊在系統預設瀏覽器中開啟原作者文章', en: 'Open original post in default browser' },
   'models.credit.copy': { 'zh-CN': '📋 复制链接', 'zh-TW': '📋 複製連結', en: '📋 Copy Link' },
+  'models.credit.copyTitle': { 'zh-CN': '复制原作者帖子链接', 'zh-TW': '複製原作者文章連結', en: 'Copy original post link' },
   'models.credit.adapter': { 'zh-CN': '本项目负责 Node.js 适配与集成', 'zh-TW': '本專案負責 Node.js 適配與整合', en: 'Node.js adaptation & integration by this project' },
 
   // 状态与反馈通用
@@ -5689,7 +5835,7 @@ const PANEL_I18N = {
   'plan.summary.freeWithPlan': { 'zh-CN': '(随套餐免费)', 'zh-TW': '(隨方案免費)', en: '(Included)' },
   'plan.summary.priceUnsetShort': { 'zh-CN': '待设置月费', 'zh-TW': '待設定月費', en: 'Fee unset' },
   'plan.summary.priceUnsetCny': { 'zh-CN': '(待填写实付)', 'zh-TW': '(待填寫實付)', en: '(not set)' },
-  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅费用与最新汇率折算 (点击展开/收起详情)', 'zh-TW': '目前訂閱費用與最新匯率換算 (點擊展開/收起詳細資訊)', en: 'Current subscription fee and FX estimate (click to toggle details)' },
+  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅费用与最新汇率换算参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱費用與最新匯率換算參考 (點擊展開/收起詳細資訊)', en: 'Current subscription fee and FX estimate (click to toggle details)' },
   'plan.dt.plan': { 'zh-CN': '当前套餐：', 'zh-TW': '目前方案：', en: 'Plan:' },
   'plan.dt.account': { 'zh-CN': '当前账号：', 'zh-TW': '目前帳號：', en: 'Account:' },
   'plan.dt.country': { 'zh-CN': '账号所在地区：', 'zh-TW': '帳號所在地區：', en: 'Account country:' },
@@ -5749,6 +5895,8 @@ const PANEL_I18N = {
   // API 参考金额与展开详情
   'cost.title': { 'zh-CN': '💰 本期 API 参考金额', 'zh-TW': '💰 本期 API 參考金額', en: '💰 Period API Reference Cost' },
   'cost.periodTag': { 'zh-CN': '本月自然月', 'zh-TW': '本月自然月', en: 'This Calendar Month' },
+  'cost.calendarMonth': { 'zh-CN': '自然月', 'zh-TW': '自然月', en: 'Calendar Month' },
+  'cost.periodTagFmt': { 'zh-CN': '{ym} (自然月)', 'zh-TW': '{ym} (自然月)', en: '{ym} (Calendar Month)' },
   'cost.nonPaidBadge': { 'zh-CN': 'API折算 · 非实付', 'zh-TW': 'API換算 · 非實付', en: 'API Est. · Not Billed' },
   'cost.subUnknown': { 'zh-CN': '订阅实付：未填写', 'zh-TW': '訂閱實付：未填寫', en: 'Plan paid: Not set' },
   'cost.btnFill': { 'zh-CN': '补充', 'zh-TW': '補充', en: 'Edit' },
@@ -5832,7 +5980,9 @@ const PANEL_I18N = {
   'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
   'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
   'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.convoIdSide': { 'zh-CN': '发生调用的会话标识', 'zh-TW': '觸發呼叫的工作階段識別碼', en: 'Conversation ID of call' },
   'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.diagnosisSide': { 'zh-CN': '目标值与观测值比对结果', 'zh-TW': '目標值與觀測值比對結果', en: 'Target vs. observed comparison' },
   'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
   'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
   'models.pref.none': { 'zh-CN': '未单独设置（使用默认）', 'zh-TW': '未單獨設定（使用預設）', en: 'Not set (Default)' },
@@ -5946,7 +6096,8 @@ const PANEL_I18N = {
   'common.notProvided': { 'zh-CN': '未提供', 'zh-TW': '未提供', en: 'Not provided' },
   'common.loading': { 'zh-CN': '读取中...', 'zh-TW': '讀取中...', en: 'Loading...' },
   'tokens.heat.firstUsePlaceholder': { 'zh-CN': '首次使用：--', 'zh-TW': '首次使用：--', en: 'First use: --' },
-  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (¥0.00) · 日均 $0.00', en: '≈ $0.00 (¥0.00) · $0.00/d' },
+  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (HK$0 / NT$0) · 日均 $0.00', en: '≈ $0.00 · Avg $0.00/d' },
+  'tokens.heat.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00)', 'zh-TW': '≈ $0.00 (HK$0 / NT$0)', en: '≈ $0.00' },
   'tokens.heat.activeAvgPlaceholder': { 'zh-CN': '$0.00 (0天)', 'zh-TW': '$0.00 (0天)', en: '$0.00 (0d)' },
   'tokens.card.todaySub': { 'zh-CN': '{n} 会话实时累加', 'zh-TW': '{n} 會話即時累加', en: '{n} chat(s) live' },
   'tokens.card.monthSub': { 'zh-CN': '日均约 {val}', 'zh-TW': '日均約 {val}', en: '~{val}/day avg' },
@@ -6190,16 +6341,25 @@ const PANEL_I18N = {
   'cp.copyHsl': { 'zh-CN': '复制 HSL', 'zh-TW': '複製 HSL', en: 'Copy HSL' },
   'update.dialogAria': { 'zh-CN': '软件更新', 'zh-TW': '軟體更新', en: 'Software Update' },
 
-  // 订阅表单与热力图补充
-  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅月费及人民币折合汇率参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱月費及人民幣折合匯率參考 (點擊展開/收起詳情)', en: 'Current monthly fee & CNY estimate (click to toggle details)' },
+  // 订阅表单、自定义日期选择器与热力图补充
   'plan.country.title': { 'zh-CN': '仅作为本地显示记录，不修改实际 Google 账号', 'zh-TW': '僅作為本機顯示記錄，不修改實際 Google 帳號', en: 'Local display record only; does not change your Google account' },
   'plan.region.title': { 'zh-CN': '实际购买或支付订阅所在的国家或地区', 'zh-TW': '實際購買或支付訂閱所在的國家或地區', en: 'Country/region where the subscription is billed' },
   'plan.currency.aria': { 'zh-CN': '选择订阅币种', 'zh-TW': '選擇訂閱幣別', en: 'Select subscription currency' },
   'plan.currency.title': { 'zh-CN': '订阅计价/结算币种', 'zh-TW': '訂閱計價/結算幣別', en: 'Subscription billing currency' },
   'plan.country.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
   'plan.region.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '折合 ≈ ¥{val} CNY/月', en: '≈ ¥{val} CNY/mo' },
-  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '≈ ¥{val} CNY', en: '≈ ¥{val} CNY' },
+  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '約合 ≈ ¥{val} CNY/月', en: '≈ ${val}/mo' },
+  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '約 ¥{val} CNY', en: 'approx. ${val} USD' },
+  'plan.usdApprox': { 'zh-CN': '折合 ≈ ${val} USD', 'zh-TW': '約合 ≈ ${val} USD', en: 'approx. ${val} USD' },
+  'plan.usdApproxMo': { 'zh-CN': '折合 ≈ ${val} USD/月', 'zh-TW': '約合 ≈ ${val} USD/月', en: 'approx. ${val} USD/mo' },
+  'datePicker.placeholder': { 'zh-CN': '年 / 月 / 日', 'zh-TW': '年 / 月 / 日', en: 'YYYY-MM-DD' },
+  'datePicker.clear': { 'zh-CN': '清除', 'zh-TW': '清除', en: 'Clear' },
+  'datePicker.today': { 'zh-CN': '今天', 'zh-TW': '今天', en: 'Today' },
+  'datePicker.prevMonth': { 'zh-CN': '上个月', 'zh-TW': '上個月', en: 'Previous month' },
+  'datePicker.nextMonth': { 'zh-CN': '下个月', 'zh-TW': '下個月', en: 'Next month' },
+  'datePicker.weekdays': { 'zh-CN': '日,一,二,三,四,五,六', 'zh-TW': '日,一,二,三,四,五,六', en: 'Su,Mo,Tu,We,Th,Fr,Sa' },
+  'datePicker.monthTitle': { 'zh-CN': '{y}年{m}月', 'zh-TW': '{y}年{m}月', en: '{monthEn} {y}' },
+  'datePicker.ariaLabel': { 'zh-CN': '选择权益到期日期', 'zh-TW': '選擇權益到期日期', en: 'Choose expiration date' },
   'plan.acqOpt.normal_paid': { 'zh-CN': '正常官方付费订阅', 'zh-TW': '正常官方付費訂閱', en: 'Standard paid subscription' },
   'plan.acqOpt.student_offer': { 'zh-CN': '学生教育优惠 (Google AI Pro 学生方案)', 'zh-TW': '學生教育優惠 (Google AI Pro 學生方案)', en: 'Student discount (Google AI Pro)' },
   'plan.acqOpt.pixel_bundle': { 'zh-CN': 'Pixel 手机购机赠送权益', 'zh-TW': 'Pixel 手機購機贈送權益', en: 'Pixel phone bundle perk' },
@@ -6214,8 +6374,8 @@ const PANEL_I18N = {
   'plan.form.presetCustom': { 'zh-CN': '✎ 自定义输入地区', 'zh-TW': '✎ 自訂輸入地區', en: '✎ Custom region' },
   'plan.form.countryPh': { 'zh-CN': '例如：美国 (US)', 'zh-TW': '例如：美國 (US)', en: 'e.g. United States (US)' },
   'plan.form.regionPh': { 'zh-CN': '例如：韩国 / 澳大利亚', 'zh-TW': '例如：韓國 / 澳洲', en: 'e.g. South Korea / Australia' },
-  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', en: '{flag} {name} ({id}) · {sym}{price}/mo (≈ ¥{cny})' },
-  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月', en: '{flag} {name} (CNY) · ¥{price}/mo' },
+  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月{conv}', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月{conv}', en: '{flag} {name} ({id}) · {sym}{price}/mo{conv}' },
+  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月{conv}', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月{conv}', en: '{flag} {name} (CNY) · ¥{price}/mo{conv}' },
   'plan.cycleOpt.monthly': { 'zh-CN': '月付', 'zh-TW': '月付', en: 'Monthly' },
   'plan.cycleOpt.yearly': { 'zh-CN': '年付', 'zh-TW': '年付', en: 'Yearly' },
   'plan.cycleOpt.free': { 'zh-CN': '免费 / 促销赠送', 'zh-TW': '免費 / 促銷贈送', en: 'Free / Promo' },
@@ -6650,9 +6810,52 @@ function translateBackendText(text) {
       return `${prefixHit[currentPanelLanguage]}${sep}${translateBackendText(rest)}`;
     }
   }
+  // 模式化翻译：账号切换成功、验证未生效/回滚、刷新额度与客户端限制明细
+  const switchOkMatch = trimmed.match(/^已切换至\s+(\S+?)，语言服务已重启并通过 GetUserStatus 核验生效。$/);
+  if (switchOkMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Switched to ${switchOkMatch[1]}; language server restarted and verified via GetUserStatus.`
+      : `已切換至 ${switchOkMatch[1]}，語言服務已重啟並通過 GetUserStatus 核驗生效。`;
+  }
+  const switchCredMatch = trimmed.match(/^已写入\s+(\S+?)\s+凭据并通过生效校验（部分桌面扩展若仍显示旧缓存，建议重载窗口）。$/);
+  if (switchCredMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Credentials for ${switchCredMatch[1]} applied and verified (reload window if extensions still cache previous state).`
+      : `已寫入 ${switchCredMatch[1]} 憑據並通過生效校驗（部分桌面擴充若仍顯示舊快取，建議重載視窗）。`;
+  }
+  const switchFailMatch = trimmed.match(/^凭据验证未生效，宿主暂未切换至\s+(\S+?)(?:（当前仍回报\s+(.+?)）)?(，已自动回滚原凭据)?。请重载或重启 Antigravity 客户端后重试。$/);
+  if (switchFailMatch) {
+    const targetEm = switchFailMatch[1];
+    const obsEm = switchFailMatch[2];
+    const hasRb = Boolean(switchFailMatch[3]);
+    if (currentPanelLanguage === 'en') {
+      return `Credential verification failed: host has not switched to ${targetEm}${obsEm ? ` (still reports ${obsEm})` : ''}${hasRb ? '; rolled back automatically' : ''}. Reload or restart Antigravity and retry.`;
+    }
+    return `憑據驗證未生效，宿主暫未切換至 ${targetEm}${obsEm ? `（目前仍回報 ${obsEm}）` : ''}${hasRb ? '，已自動回滾原憑據' : ''}。請重載或重啟 Antigravity 用戶端後重試。`;
+  }
+  const refreshAllMatch = trimmed.match(/^已刷新全部\s+(\d+)\s+个账号最新额度快照。$/);
+  if (refreshAllMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Refreshed latest quota snapshots for all ${refreshAllMatch[1]} account(s).`
+      : `已重新整理全部 ${refreshAllMatch[1]} 個帳號最新額度快照。`;
+  }
+  const refreshOneMatch = trimmed.match(/^已刷新\s+(\S+?)\s+最新额度快照。$/);
+  if (refreshOneMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Refreshed latest quota snapshot for ${refreshOneMatch[1]}.`
+      : `已重新整理 ${refreshOneMatch[1]} 最新額度快照。`;
+  }
+  const quotaRefreshPartialMatch = trimmed.match(/^额度刷新部分或全部失败（成功\s+(\d+)\s+\/\s+失败\s+(\d+)）：(.+)$/);
+  if (quotaRefreshPartialMatch) {
+    const [, okN, failN, detail] = quotaRefreshPartialMatch;
+    const translatedDetail = translateBackendText(detail);
+    return currentPanelLanguage === 'en'
+      ? `Quota refresh failed (${okN} ok / ${failN} failed): ${translatedDetail}`
+      : `額度重新整理部分或全部失敗（成功 ${okN} / 失敗 ${failN}）：${translatedDetail}`;
+  }
   // 防止英文模式下未知中文后端文本泄漏造成中英混杂拼接
   if (currentPanelLanguage === 'en' && /[\u4e00-\u9fa5]/.test(trimmed)) {
-    return 'Backend operation failed (check desktop log for details)';
+    return 'Backend operation notice (see desktop log for details)';
   }
   return str;
 }
@@ -6668,9 +6871,262 @@ function localizePlanTierName(name) {
 }
 
 function formatVendorLabel(vendor) {
-  if (!vendor) return currentPanelLanguage === 'en' ? 'Other' : '其他';
-  if (vendor === '其他') return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  if (!vendor || vendor === '其他' || vendor === 'Other') {
+    return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  }
   return vendor;
+}
+
+// =========================================================================
+// 全局货币换算与三语差异化格式化中心 + 预设地区本地化映射
+// =========================================================================
+const FALLBACK_RATES_TO_CNY = {
+  CNY: 1.0,
+  USD: 6.72,
+  HKD: 0.857,
+  TWD: 0.21,
+  NTD: 0.21,
+  JPY: 0.0425,
+  KRW: 0.0051,
+  EUR: 7.52,
+  GBP: 8.75,
+  AUD: 4.45,
+  CAD: 4.88,
+  SGD: 5.12,
+  MYR: 1.55,
+  INR: 0.076,
+  PHP: 0.117,
+  TRY: 0.133,
+  NGN: 0.0042,
+  BRL: 1.18
+};
+
+const EXTRA_COUNTRY_LOCALES = {
+  DE: { name: '德国', nameTw: '德國', nameEn: 'Germany' },
+  UK: { name: '英国', nameTw: '英國', nameEn: 'United Kingdom' },
+  CN: { name: '中国大陆', nameTw: '中國大陸', nameEn: 'China Mainland' },
+  EU: { name: '欧洲/欧盟', nameTw: '歐洲/歐盟', nameEn: 'Europe / EU' },
+  AU: { name: '澳大利亚', nameTw: '澳洲', nameEn: 'Australia' }
+};
+
+function convertCurrencyUi(amount, fromCurrency, toCurrency, regionQuery = null) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return null;
+  const num = Number(amount);
+  if (num === 0) return 0;
+  let from = String(fromCurrency || 'USD').trim().toUpperCase();
+  let to = String(toCurrency || 'USD').trim().toUpperCase();
+  if (from === 'NTD') from = 'TWD';
+  if (to === 'NTD') to = 'TWD';
+  if (from === to) return Number(num.toFixed(2));
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  if (core && typeof core.convertCurrency === 'function') {
+    const res = core.convertCurrency(num, from, to, regionQuery);
+    if (res !== null && Number.isFinite(res)) return res;
+  }
+  const fromRate = FALLBACK_RATES_TO_CNY[from];
+  const toRate = FALLBACK_RATES_TO_CNY[to];
+  if (!fromRate || !toRate) return null;
+  return Number(((num * fromRate) / toRate).toFixed(2));
+}
+
+function formatCompactRefNum(val, cur) {
+  const num = Number(val || 0);
+  if (!Number.isFinite(num)) return '0';
+  if (cur === 'CNY') return num.toFixed(2);
+  if (num === 0) return '0';
+  if (Math.abs(num) < 10) return num.toFixed(2);
+  if (Math.abs(num) < 100) return num.toFixed(1);
+  return String(Math.round(num));
+}
+
+/**
+ * 统一格式化 USD API 估算费用（三语差异化规则）：
+ * - en: 纯 USD（不含任何 ¥ / CNY）
+ * - zh-CN: USD + CNY（≈ $618.53 (¥4156.54)）
+ * - zh-TW: 紧凑单行模式 USD + HKD/TWD（≈ $618.53 (HK$4850 / NT$19793)）；detail=true 完整四币种 USD+HKD+TWD+CNY
+ */
+function formatUsdMetricDisplay(usdAmount, options = {}) {
+  const num = Number(usdAmount || 0);
+  const safeUsd = Number.isFinite(num) ? num : 0;
+  const prefix = options.withPrefix === false ? '' : '≈ ';
+  const usdStr = `${prefix}$${safeUsd.toFixed(2)}`;
+  const lang = options.lang || currentPanelLanguage;
+  if (lang === 'en') {
+    return usdStr;
+  }
+  if (lang === 'zh-TW') {
+    const hkd = convertCurrencyUi(safeUsd, 'USD', 'HKD') ?? (safeUsd * 7.84);
+    const twd = convertCurrencyUi(safeUsd, 'USD', 'TWD') ?? (safeUsd * 32.0);
+    const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+    if (options.detail) {
+      return `${usdStr} (HK$${formatCompactRefNum(hkd, 'HKD')} · NT$${formatCompactRefNum(twd, 'TWD')} · ¥${cny.toFixed(2)} CNY)`;
+    }
+    return `${usdStr} (HK$${formatCompactRefNum(hkd, 'HKD')} / NT$${formatCompactRefNum(twd, 'TWD')})`;
+  }
+  const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+  return `${usdStr} (¥${cny.toFixed(2)})`;
+}
+
+function formatUsdMetricTooltip(usdAmount) {
+  const num = Number(usdAmount || 0);
+  const safeUsd = Number.isFinite(num) ? num : 0;
+  if (currentPanelLanguage === 'en') {
+    return `USD $${safeUsd.toFixed(2)}`;
+  }
+  const hkd = convertCurrencyUi(safeUsd, 'USD', 'HKD') ?? (safeUsd * 7.84);
+  const twd = convertCurrencyUi(safeUsd, 'USD', 'TWD') ?? (safeUsd * 32.0);
+  const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+  if (currentPanelLanguage === 'zh-TW') {
+    return `USD $${safeUsd.toFixed(2)} · HKD HK$${hkd.toFixed(1)} · TWD NT$${Math.round(twd)} · CNY ¥${cny.toFixed(2)}`;
+  }
+  return `USD $${safeUsd.toFixed(2)} · CNY ¥${cny.toFixed(2)}`;
+}
+
+/**
+ * 统一格式化订阅价格的辅助换算文本（不含外层括号）：
+ * - en: 默认 USD 返回 ''；非 USD 返回 "approx. $X.XX USD"（或带 /mo）
+ * - zh-CN: CNY 返回 ''；非 CNY 返回 "折合 ≈ ¥X.X CNY" / "≈ ¥X.X CNY"
+ * - zh-TW: detail=true 时返回完整四币种（跳过自身）对照；紧凑模式返回紧凑多币参考
+ */
+function formatSubscriptionSecondaryConversion(amount, currency, regionQuery = null, options = {}) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount)) || Number(amount) === 0) return '';
+  let cur = String(currency || 'USD').trim().toUpperCase();
+  if (cur === 'NTD') cur = 'TWD';
+  const lang = options.lang || currentPanelLanguage;
+  const suffixMo = options.perMonth ? t('plan.summary.perMonth') : '';
+
+  if (lang === 'en') {
+    if (cur === 'USD') return '';
+    const usd = convertCurrencyUi(amount, cur, 'USD', regionQuery);
+    if (usd === null) return '';
+    return `approx. $${usd.toFixed(2)} USD${suffixMo}`;
+  }
+
+  if (lang === 'zh-TW') {
+    const usd = cur === 'USD' ? Number(amount) : convertCurrencyUi(amount, cur, 'USD', regionQuery);
+    const hkd = cur === 'HKD' ? Number(amount) : convertCurrencyUi(amount, cur, 'HKD', regionQuery);
+    const twd = cur === 'TWD' ? Number(amount) : convertCurrencyUi(amount, cur, 'TWD', regionQuery);
+    const cny = cur === 'CNY' ? Number(amount) : convertCurrencyUi(amount, cur, 'CNY', regionQuery);
+    const parts = [];
+    if (cur !== 'USD' && usd !== null) parts.push(`US$${usd.toFixed(2)}`);
+    if (cur !== 'HKD' && hkd !== null) parts.push(`HK$${formatCompactRefNum(hkd, 'HKD')}`);
+    if (cur !== 'TWD' && twd !== null) parts.push(`NT$${formatCompactRefNum(twd, 'TWD')}`);
+    if (options.detail && cur !== 'CNY' && cny !== null) parts.push(`¥${cny.toFixed(1)} CNY`);
+    else if (!options.detail && cur !== 'CNY' && parts.length < 2 && cny !== null) parts.push(`¥${cny.toFixed(1)} CNY`);
+    if (!parts.length) return '';
+    const joined = parts.join(' · ');
+    return options.short ? `≈ ${joined}${suffixMo}` : `約合 ≈ ${joined}${suffixMo}`;
+  }
+
+  // zh-CN: USD + CNY 双币参考
+  if (cur === 'CNY') return '';
+  const cny = convertCurrencyUi(amount, cur, 'CNY', regionQuery);
+  if (cny === null) return '';
+  const cnyTxt = `${Number(cny).toFixed(1)} CNY`;
+  if (options.perMonth) return t('plan.cnyApprox', { val: Number(cny).toFixed(1) });
+  return options.short ? `≈ ¥${cnyTxt}` : `折合 ≈ ¥${cnyTxt}`;
+}
+
+function getLocalizedPresetName(presetOrCode, lang = currentPanelLanguage) {
+  if (!presetOrCode) return '';
+  const normLang = normalizePanelLanguage(lang);
+  if (typeof presetOrCode === 'string') {
+    const key = presetOrCode.trim().toUpperCase();
+    const extra = EXTRA_COUNTRY_LOCALES[key];
+    if (extra) {
+      return normLang === 'en' ? extra.nameEn : (normLang === 'zh-TW' ? extra.nameTw : extra.name);
+    }
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const matched = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === key);
+    if (matched) return getLocalizedPresetName(matched, normLang);
+    return presetOrCode;
+  }
+  if (normLang === 'en') return presetOrCode.nameEn || presetOrCode.id || presetOrCode.name || '';
+  if (normLang === 'zh-TW') return presetOrCode.nameTw || presetOrCode.name || '';
+  return presetOrCode.name || '';
+}
+
+/**
+ * 将任意已存储或输入框中的常见预设地区名称（含 "美国 (US)" / "美国 (USD)" / "澳大利亚" 等）
+ * 映射转换为当前面板语言对应的本地化地区文本；无法识别的纯自定义输入保持原样。
+ */
+function localizeRegionDisplayValue(raw, lang = currentPanelLanguage) {
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '未知' || trimmed === 'Unknown' || trimmed.includes('未在当前会话中获取')) {
+    return '';
+  }
+  const normLang = normalizePanelLanguage(lang);
+  const parenMatch = trimmed.match(/^(.*?)\s*\(([A-Za-z0-9]{2,5})\)\s*$/);
+  const suffixCode = parenMatch ? parenMatch[2].toUpperCase() : '';
+  const baseText = parenMatch ? parenMatch[1].trim() : trimmed;
+  const baseLower = baseText.toLowerCase();
+
+  // 1. 优先查特例（含 "澳大利亚 (US)" / "英国 (UK)" / "德国 (DE)" / "中国大陆 (CN)" 等）
+  for (const [id, loc] of Object.entries(EXTRA_COUNTRY_LOCALES)) {
+    const names = [loc.name.toLowerCase(), loc.nameTw.toLowerCase(), loc.nameEn.toLowerCase()];
+    if (names.includes(baseLower) || (!parenMatch && id === trimmed.toUpperCase())) {
+      const targetName = normLang === 'en' ? loc.nameEn : (normLang === 'zh-TW' ? loc.nameTw : loc.name);
+      return suffixCode ? `${targetName} (${suffixCode})` : targetName;
+    }
+  }
+
+  // 2. 查询 SUBSCRIPTION_REGIONS_PRESET
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+  let matched = presets.find(p => {
+    const cleanCn = String(p.name || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    const cleanTw = String(p.nameTw || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    const cleanEn = String(p.nameEn || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    return (
+      p.name.toLowerCase() === baseLower ||
+      (p.nameTw && p.nameTw.toLowerCase() === baseLower) ||
+      (p.nameEn && p.nameEn.toLowerCase() === baseLower) ||
+      cleanCn === baseLower ||
+      cleanTw === baseLower ||
+      cleanEn === baseLower
+    );
+  });
+  if (!matched && core?.findRegionPreset) {
+    matched = core.findRegionPreset(baseText) || (suffixCode && ['US', 'JP', 'KR', 'TW', 'HK', 'AU', 'SG', 'CA', 'TR', 'NG', 'PH', 'IN', 'MY', 'BR', 'CN', 'GB', 'EU', 'UK'].includes(suffixCode)
+      ? core.findRegionPreset(suffixCode === 'UK' ? 'GB' : suffixCode)
+      : null);
+  }
+  if (matched) {
+    let targetName = normLang === 'en' ? (matched.nameEn || matched.id) : (normLang === 'zh-TW' ? (matched.nameTw || matched.name) : matched.name);
+    if (suffixCode) {
+      targetName = targetName.replace(/\s*\((?:CNY|澳区|澳區|德法[意義]西荷等)\)\s*/gi, '').trim();
+      return `${targetName} (${suffixCode})`;
+    }
+    return targetName;
+  }
+
+  return trimmed;
+}
+
+function formatPresetRegionLineParts(preset, lang = currentPanelLanguage) {
+  if (!preset) return { left: '', right: '', full: '' };
+  const curCode = preset.currency === 'TWD' ? 'NTD' : preset.currency;
+  const dispName = getLocalizedPresetName(preset, lang).replace(/\s*\(CNY\)\s*$/i, '').trim();
+  const left = `${preset.flag || '🌏'} ${dispName} (${curCode})`;
+  const priceText = preset.currency === 'CNY'
+    ? `¥${preset.monthlyPrice}${t('plan.summary.perMonth')}`
+    : `${preset.symbol}${preset.monthlyPrice}${t('plan.summary.perMonth')}`;
+  const sec = formatSubscriptionSecondaryConversion(preset.monthlyPrice, preset.currency, preset.name, { short: true, lang });
+  const right = sec ? `${priceText} · ${sec}` : priceText;
+  const full = sec ? `${left} · ${priceText} (${sec})` : `${left} · ${priceText}`;
+  return { left, right, full };
+}
+
+function formatPeriodCalendarLabel(currentPeriod) {
+  if (!currentPeriod) return t('cost.periodTag');
+  const raw = String(currentPeriod.periodKey || currentPeriod.key || currentPeriod.label || '').trim();
+  const ymMatch = raw.match(/^(\d{4}-\d{2})/);
+  if (ymMatch) {
+    return t('cost.periodTagFmt', { ym: ymMatch[1] });
+  }
+  if (!raw || raw.includes('自然月') || raw === '本月自然月') return t('cost.periodTag');
+  return raw;
 }
 (function (root) {
   'use strict';
@@ -10983,25 +11439,14 @@ function formatVendorLabel(vendor) {
     if (!sel || !sel.options) return;
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+    const curLang = getPanelLanguage();
     for (let i = 0; i < sel.options.length; i++) {
       const opt = sel.options[i];
       if (!opt || opt.value === '' || opt.value === 'custom') continue;
       const p = presets.find(item => item.id === opt.value);
       if (!p) continue;
-      const dispName = getPanelLanguage() === 'en' ? (p.nameEn || p.id || p.name) : p.name;
-      if (p.currency === 'CNY') {
-        opt.textContent = t('plan.form.presetLineCny', { flag: p.flag || '🌏', name: dispName, price: p.monthlyPrice });
-      } else {
-        const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-        opt.textContent = t('plan.form.presetLine', {
-          flag: p.flag || '🌏',
-          name: dispName,
-          id: p.id,
-          sym: p.symbol,
-          price: p.monthlyPrice,
-          cny: Number(cny).toFixed(1)
-        });
-      }
+      const parts = formatPresetRegionLineParts(p, curLang);
+      opt.textContent = parts.full || '';
     }
   }
 
@@ -11052,6 +11497,12 @@ function closeAllDropdowns(exceptWrap = null) {
         }
       });
     } catch {}
+    if (typeof closeValidEndDatePicker === 'function') {
+      const dpWrap = el('valid-end-picker-wrap');
+      if (!exceptWrap || exceptWrap !== dpWrap) {
+        closeValidEndDatePicker();
+      }
+    }
   }
 
   function initDropdownController(cfg) {
@@ -11503,9 +11954,17 @@ function closeAllDropdowns(exceptWrap = null) {
   function refreshDirectCountryDisplay(currentCountryVal) {
     const label = el('direct-country-label');
     if (!label) return;
-    const val = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '未知';
-    const matched = COUNTRY_OPTIONS.find(o => o.value === val);
-    label.textContent = matched ? formatOptionLabelByLang(matched) : (val !== '未知' ? `🌐 ${val}` : t('plan.country.auto'));
+    const rawVal = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '';
+    const val = (!rawVal || rawVal === '未知' || rawVal === 'Unknown') ? '未知' : String(rawVal).trim();
+    const matched = COUNTRY_OPTIONS.find(o => o.value === val || o.label === val || o.labelTw === val || o.labelEn === val)
+      || (val !== '未知' ? COUNTRY_OPTIONS.find(o => o.value !== '未知' && localizeRegionDisplayValue(o.value, currentPanelLanguage) === localizeRegionDisplayValue(val, currentPanelLanguage)) : null);
+    if (matched) {
+      label.textContent = formatOptionLabelByLang(matched);
+    } else if (val !== '未知') {
+      label.textContent = `🌐 ${localizeRegionDisplayValue(val) || val}`;
+    } else {
+      label.textContent = t('plan.country.auto');
+    }
   }
 
   // 刷新订阅地区直接选择器显示
@@ -11515,18 +11974,14 @@ function closeAllDropdowns(exceptWrap = null) {
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
     const reg = currentRegionText || ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知';
-    const matched = core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg);
+    const isUnk = !reg || reg === '未知' || reg === 'Unknown' || String(reg).includes('未在当前会话中获取');
+    const matched = !isUnk
+      ? (core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg || p.nameTw === reg || p.nameEn === reg))
+      : null;
     if (matched) {
-      const curCode = matched.currency === 'TWD' ? 'NTD' : matched.currency;
-      const cny = core?.convertToCNY ? core.convertToCNY(matched.monthlyPrice, matched.currency, matched.name) : (matched.monthlyPrice * matched.rateToCNY);
-      const dispName = currentPanelLanguage === 'en' ? (matched.nameEn || matched.id || matched.name) : matched.name;
-      if (matched.currency === 'CNY') {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ¥' + matched.monthlyPrice + t('dropdown.perMonth');
-      } else {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ' + matched.symbol + matched.monthlyPrice + ' (' + t('plan.cnyShort', { val: Number(cny).toFixed(1) }) + ')';
-      }
-    } else if (reg && reg !== '未知') {
-      directLabel.textContent = '🌏 ' + reg;
+      directLabel.textContent = formatPresetRegionLineParts(matched, currentPanelLanguage).full;
+    } else if (!isUnk) {
+      directLabel.textContent = '🌏 ' + (localizeRegionDisplayValue(reg) || reg);
     } else {
       directLabel.textContent = t('dropdown.regionUnknownShort');
     }
@@ -11831,7 +12286,8 @@ function closeAllDropdowns(exceptWrap = null) {
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
-    const regionName = regionItem.name + ' (' + (regionItem.currency === 'TWD' ? 'NTD' : regionItem.currency) + ')';
+    const localizedName = getLocalizedPresetName(regionItem, currentPanelLanguage).replace(/\s*\(CNY\)\s*$/i, '').trim();
+    const regionName = localizedName + ' (' + (regionItem.currency === 'TWD' ? 'NTD' : regionItem.currency) + ')';
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
 
     const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
@@ -11901,7 +12357,7 @@ function closeAllDropdowns(exceptWrap = null) {
         const curSelect = el('select-custom-currency');
         const paidInput = el('input-custom-paid');
         const zeroCheck = el('check-zero-extra');
-        if (regInput) regInput.value = regionName;
+        if (regInput) regInput.value = localizeRegionDisplayValue(regionName) || regionName;
         if (curSelect) {
           curSelect.value = curCode;
           enhancedDropdowns.get('select-custom-currency')?.refresh?.();
@@ -11910,9 +12366,12 @@ function closeAllDropdowns(exceptWrap = null) {
           paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
         }
         const prevEl = el('region-cny-preview');
-        if (prevEl && paid !== null && regionItem.rateToCNY) {
-          const cny = (paid * regionItem.rateToCNY).toFixed(1);
-          prevEl.textContent = t('plan.cnyApprox', { val: cny });
+        if (prevEl) {
+          if (paid !== null && paid !== undefined && Number(paid) > 0) {
+            prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, regionItem.name, { perMonth: true, detail: true }) || '';
+          } else {
+            prevEl.textContent = '';
+          }
         }
       }
     });
@@ -11926,7 +12385,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
-    const cleanCountry = (newCountryVal && newCountryVal !== '未知') ? String(newCountryVal).trim() : '';
+    const cleanCountry = (newCountryVal && newCountryVal !== '未知' && newCountryVal !== 'Unknown') ? String(newCountryVal).trim() : '';
 
     const customObj = {
       ...prevCustom,
@@ -11943,7 +12402,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
     runWithUiHydration(() => {
       const countryInput = el('input-custom-country');
-      if (countryInput) countryInput.value = cleanCountry;
+      if (countryInput) countryInput.value = cleanCountry ? (localizeRegionDisplayValue(cleanCountry) || cleanCountry) : '';
       const directCountrySel = el('direct-country-select');
       if (directCountrySel) directCountrySel.value = cleanCountry || '未知';
     });
@@ -12021,6 +12480,14 @@ function closeAllDropdowns(exceptWrap = null) {
       if (paidInput && !isZero) {
         paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
       }
+      const prevEl = el('region-cny-preview');
+      if (prevEl) {
+        if (!isZero && paid !== null && paid !== undefined && Number(paid) > 0) {
+          prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, customObj.region, { perMonth: true, detail: true }) || '';
+        } else {
+          prevEl.textContent = '';
+        }
+      }
     });
 
     applyCustomPlanObjectLocally(customObj, email);
@@ -12071,23 +12538,16 @@ function closeAllDropdowns(exceptWrap = null) {
       getOptions: () => {
         return presets.map(p => {
           const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-          const dispName = currentPanelLanguage === 'en' ? (p.id || p.name) : p.name;
-          let displayRight = '';
-          if (p.currency === 'CNY') {
-            displayRight = p.symbol + p.monthlyPrice + t('dropdown.perMonth');
-          } else {
-            const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-            displayRight = p.symbol + p.monthlyPrice + t('dropdown.perMonth') + ' · ≈ ¥' + Number(cny).toFixed(1) + ' CNY';
-          }
+          const parts = formatPresetRegionLineParts(p, currentPanelLanguage);
           return {
             value: p.id,
             rawItem: p,
-            label: (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ')',
-            displayLeft: (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ')',
-            displayRight,
+            label: parts.left,
+            displayLeft: parts.left,
+            displayRight: parts.right,
             code: p.id,
             currency: curCode,
-            aliases: p.aliases || []
+            aliases: [p.name, p.nameTw, p.nameEn, ...(p.aliases || [])].filter(Boolean)
           };
         });
       },
@@ -12106,13 +12566,7 @@ function closeAllDropdowns(exceptWrap = null) {
       getLabelText: (opt) => {
         const p = opt.rawItem;
         if (!p) return opt.label;
-        const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-        const dispName = currentPanelLanguage === 'en' ? (p.id || p.name) : p.name;
-        if (p.currency === 'CNY') {
-          return (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ¥' + p.monthlyPrice + t('dropdown.perMonth');
-        }
-        const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-        return (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ' + p.symbol + p.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
+        return formatPresetRegionLineParts(p, currentPanelLanguage).full;
       },
       onSelect: (opt) => {
         if (opt.rawItem) applyDirectRegionSelection(opt.rawItem);
@@ -12323,6 +12777,302 @@ function closeAllDropdowns(exceptWrap = null) {
     });
   }
 
+  function updateRegionCnyPreviewFromForm() {
+    const prevEl = el('region-cny-preview');
+    if (!prevEl) return;
+    const isZero = Boolean(el('check-zero-extra')?.checked);
+    const rawPaidVal = el('input-custom-paid')?.value;
+    const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
+    const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
+    const cur = el('select-custom-currency')?.value || 'USD';
+    const regVal = el('input-custom-region')?.value;
+    const reg = (regVal !== undefined && regVal !== null) ? String(regVal).trim() : '';
+    if (isZero || paid === null || paid <= 0) {
+      prevEl.textContent = '';
+      return;
+    }
+    prevEl.textContent = formatSubscriptionSecondaryConversion(paid, cur, reg, { perMonth: true, detail: true }) || '';
+  }
+
+  function normalizeBillingCycleValue(rawCycle) {
+    if (!rawCycle) return '';
+    const cleaned = String(rawCycle).replace(/[（(].*[）)]/g, '').trim();
+    if (!cleaned || cleaned === '未知' || cleaned === 'Unknown') return '';
+    if (cleaned === '月付' || cleaned === '月繳' || cleaned === 'Monthly' || cleaned === 'monthly') return '月付';
+    if (cleaned === '年付' || cleaned === '年繳' || cleaned === 'Yearly' || cleaned === 'yearly') return '年付';
+    if (cleaned === '免费/赠送' || cleaned === '免費/贈送' || cleaned === 'Free / Promo' || cleaned === '随套餐赠送/免费') return '免费/赠送';
+    if (cleaned === '随套餐包含' || cleaned === '隨方案包含' || cleaned === 'Included in bundle') return '随套餐包含';
+    if (cleaned === '其他周期' || cleaned === '其他週期' || cleaned === 'Other cycle') return '其他周期';
+    return cleaned;
+  }
+
+  const DP_EN_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  let validEndDpState = null;
+
+  function formatLocalYmdDate(dt) {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  function closeValidEndDatePicker() {
+    if (!validEndDpState) return;
+    validEndDpState.isOpen = false;
+    removeClass(validEndDpState.wrap, 'is-open');
+    removeClass(validEndDpState.wrap, 'open-up');
+    if (validEndDpState.popover) validEndDpState.popover.style.display = 'none';
+    validEndDpState.trigger?.setAttribute?.('aria-expanded', 'false');
+  }
+
+  function syncValidEndDatePickerLabel() {
+    const labelEl = el('valid-end-label');
+    const hiddenEl = el('input-valid-end');
+    const triggerEl = el('valid-end-trigger');
+    if (triggerEl) triggerEl.setAttribute?.('aria-label', t('datePicker.ariaLabel'));
+    if (!labelEl) return;
+    const raw = String(hiddenEl?.value || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      labelEl.textContent = raw;
+      removeClass(labelEl, 'is-placeholder');
+    } else {
+      labelEl.textContent = t('datePicker.placeholder');
+      addClass(labelEl, 'is-placeholder');
+    }
+  }
+
+  function refreshValidEndDatePicker() {
+    syncValidEndDatePickerLabel();
+    if (validEndDpState?.isOpen) {
+      validEndDpState.renderCalendar();
+    }
+  }
+
+  function initValidEndDatePicker() {
+    const wrap = el('valid-end-picker-wrap');
+    const trigger = el('valid-end-trigger');
+    const popover = el('valid-end-popover');
+    const hiddenInput = el('input-valid-end');
+    if (!wrap || !trigger || !popover || !hiddenInput) return null;
+    if (trigger._dpBound) {
+      refreshValidEndDatePicker();
+      return validEndDpState;
+    }
+    trigger._dpBound = true;
+
+    const now = new Date();
+    validEndDpState = {
+      wrap,
+      trigger,
+      popover,
+      hiddenInput,
+      isOpen: false,
+      viewYear: now.getFullYear(),
+      viewMonth: now.getMonth(),
+      renderCalendar: () => {}
+    };
+
+    const dispatchHiddenChange = () => {
+      if (typeof Event !== 'undefined') hiddenInput.dispatchEvent?.(new Event('change', { bubbles: true }));
+      else hiddenInput.dispatchEvent?.({ type: 'change', target: hiddenInput });
+    };
+
+    const commitDateValue = (ymd) => {
+      hiddenInput.value = ymd || '';
+      syncValidEndDatePickerLabel();
+      dispatchHiddenChange();
+      closeValidEndDatePicker();
+    };
+
+    const renderCalendar = () => {
+      const y = validEndDpState.viewYear;
+      const m = validEndDpState.viewMonth;
+      const todayYmd = formatLocalYmdDate(new Date());
+      const selRaw = String(hiddenInput.value || '').trim();
+      const selectedYmd = /^\d{4}-\d{2}-\d{2}$/.test(selRaw) ? selRaw : '';
+
+      if (typeof popover.replaceChildren === 'function') popover.replaceChildren();
+      else popover.innerHTML = '';
+
+      if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+
+      const header = document.createElement('div');
+      header.className = 'ag-dp-header';
+
+      const prevBtn = document.createElement('button');
+      prevBtn.type = 'button';
+      prevBtn.className = 'ag-dp-nav-btn';
+      prevBtn.textContent = '‹';
+      prevBtn.setAttribute('aria-label', t('datePicker.prevMonth'));
+      prevBtn.title = t('datePicker.prevMonth');
+      prevBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        if (validEndDpState.viewMonth === 0) {
+          validEndDpState.viewMonth = 11;
+          validEndDpState.viewYear -= 1;
+        } else {
+          validEndDpState.viewMonth -= 1;
+        }
+        renderCalendar();
+      });
+
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ag-dp-month-title';
+      titleSpan.textContent = t('datePicker.monthTitle', { y, m: m + 1, monthEn: DP_EN_MONTHS[m] });
+
+      const nextBtn = document.createElement('button');
+      nextBtn.type = 'button';
+      nextBtn.className = 'ag-dp-nav-btn';
+      nextBtn.textContent = '›';
+      nextBtn.setAttribute('aria-label', t('datePicker.nextMonth'));
+      nextBtn.title = t('datePicker.nextMonth');
+      nextBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        if (validEndDpState.viewMonth === 11) {
+          validEndDpState.viewMonth = 0;
+          validEndDpState.viewYear += 1;
+        } else {
+          validEndDpState.viewMonth += 1;
+        }
+        renderCalendar();
+      });
+
+      header.appendChild(prevBtn);
+      header.appendChild(titleSpan);
+      header.appendChild(nextBtn);
+      popover.appendChild(header);
+
+      const weekdaysRow = document.createElement('div');
+      weekdaysRow.className = 'ag-dp-weekdays';
+      const wkLabels = String(t('datePicker.weekdays')).split(',');
+      for (const wk of wkLabels) {
+        const wCell = document.createElement('div');
+        wCell.className = 'ag-dp-weekday';
+        wCell.textContent = wk;
+        weekdaysRow.appendChild(wCell);
+      }
+      popover.appendChild(weekdaysRow);
+
+      const grid = document.createElement('div');
+      grid.className = 'ag-dp-grid';
+      const firstDow = new Date(y, m, 1).getDay();
+      for (let i = 0; i < 42; i++) {
+        const cellDate = new Date(y, m, 1 - firstDow + i);
+        const ymd = formatLocalYmdDate(cellDate);
+        const inCurMonth = cellDate.getMonth() === m && cellDate.getFullYear() === y;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        let cls = 'ag-dp-day';
+        if (!inCurMonth) cls += ' is-outside';
+        if (ymd === todayYmd) cls += ' is-today';
+        if (ymd === selectedYmd) cls += ' is-selected';
+        btn.className = cls;
+        btn.setAttribute('data-date', ymd);
+        btn.setAttribute('aria-label', ymd);
+        btn.textContent = String(cellDate.getDate());
+        btn.addEventListener('click', (e) => {
+          e?.stopPropagation?.();
+          commitDateValue(ymd);
+        });
+        grid.appendChild(btn);
+      }
+      popover.appendChild(grid);
+
+      const footer = document.createElement('div');
+      footer.className = 'ag-dp-footer';
+
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.className = 'ag-dp-action-btn';
+      clearBtn.setAttribute('data-dp-action', 'clear');
+      clearBtn.textContent = t('datePicker.clear');
+      clearBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        commitDateValue('');
+      });
+
+      const todayBtn = document.createElement('button');
+      todayBtn.type = 'button';
+      todayBtn.className = 'ag-dp-action-btn is-today-btn';
+      todayBtn.setAttribute('data-dp-action', 'today');
+      todayBtn.textContent = t('datePicker.today');
+      todayBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        const tNow = new Date();
+        validEndDpState.viewYear = tNow.getFullYear();
+        validEndDpState.viewMonth = tNow.getMonth();
+        commitDateValue(formatLocalYmdDate(tNow));
+      });
+
+      footer.appendChild(clearBtn);
+      footer.appendChild(todayBtn);
+      popover.appendChild(footer);
+    };
+
+    validEndDpState.renderCalendar = renderCalendar;
+
+    const openPicker = () => {
+      closeAllDropdowns(wrap);
+      const curVal = String(hiddenInput.value || '').trim();
+      const m = curVal.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m) {
+        validEndDpState.viewYear = Number(m[1]);
+        validEndDpState.viewMonth = Math.max(0, Math.min(11, Number(m[2]) - 1));
+      } else {
+        const curNow = new Date();
+        validEndDpState.viewYear = curNow.getFullYear();
+        validEndDpState.viewMonth = curNow.getMonth();
+      }
+      renderCalendar();
+      validEndDpState.isOpen = true;
+      addClass(wrap, 'is-open');
+      try {
+        const tRect = trigger.getBoundingClientRect?.();
+        if (tRect && typeof window !== 'undefined' && window.innerHeight && tRect.bottom + 240 > window.innerHeight && tRect.top > 240) {
+          addClass(wrap, 'open-up');
+        } else {
+          removeClass(wrap, 'open-up');
+        }
+      } catch {}
+      popover.style.display = 'block';
+      trigger.setAttribute?.('aria-expanded', 'true');
+    };
+
+    trigger.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      if (validEndDpState.isOpen) closeValidEndDatePicker();
+      else openPicker();
+    });
+
+    trigger.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        if (validEndDpState.isOpen) closeValidEndDatePicker();
+        else openPicker();
+      } else if (e.key === 'Escape' && validEndDpState.isOpen) {
+        e.preventDefault();
+        closeValidEndDatePicker();
+      }
+    });
+
+    popover.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeValidEndDatePicker();
+        trigger.focus?.();
+      }
+    });
+
+    popover.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+    });
+
+    syncValidEndDatePickerLabel();
+    return validEndDpState;
+  }
+
+  initValidEndDatePicker();
+
   // 就地行内自定义订阅表单交互（实际读取优先于手填，支持官方依据活动来源）
   function togglePlanCustomForm(forceOpen) {
     const form = el('plan-custom-form');
@@ -12330,6 +13080,9 @@ function closeAllDropdowns(exceptWrap = null) {
     const curHidden = form.style.display === 'none' || !form.style.display;
     const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
     form.style.display = next ? 'block' : 'none';
+    if (!next) {
+      closeValidEndDatePicker();
+    }
     if (next) {
       const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
       const acqSelect = el('select-custom-acq');
@@ -12347,22 +13100,44 @@ function closeAllDropdowns(exceptWrap = null) {
         if (acqSelect && ps.acquisitionSource) acqSelect.value = ps.acquisitionSource;
         if (acqNameInput) acqNameInput.value = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅') ? ps.acquisitionSourceName : '';
         if (zeroCheck) zeroCheck.checked = Boolean(ps.isZeroExtraCost || ps.actualPricePaid === 0);
-        if (countryInput) countryInput.value = (ps.country && !ps.country.includes('未知')) ? ps.country : '';
-        if (regInput) regInput.value = (ps.region && !ps.region.includes('未知')) ? ps.region : '';
+        if (countryInput) {
+          const cVal = (ps.country && !String(ps.country).includes('未知') && ps.country !== 'Unknown') ? ps.country : '';
+          countryInput.value = cVal ? (localizeRegionDisplayValue(cVal) || cVal) : '';
+        }
+        if (regInput) {
+          const rVal = (ps.region && !String(ps.region).includes('未知') && ps.region !== 'Unknown') ? ps.region : '';
+          regInput.value = rVal ? (localizeRegionDisplayValue(rVal) || rVal) : '';
+        }
         if (paidInput) {
           paidInput.value = (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) ? ps.actualPricePaid : (zeroCheck?.checked ? '0' : '');
           paidInput.disabled = Boolean(zeroCheck?.checked);
         }
         if (curSelect && ps.currency) curSelect.value = ps.currency;
-        if (cycleSelect && ps.billingCycle && !ps.billingCycle.includes('未知')) cycleSelect.value = ps.billingCycle.replace(/（.*）/, '').trim();
+        if (cycleSelect && ps.billingCycle) {
+          const normCycle = normalizeBillingCycleValue(ps.billingCycle);
+          if (normCycle) cycleSelect.value = normCycle;
+        }
         if (validEndInput) validEndInput.value = ps.validEndDate || '';
+        initValidEndDatePicker();
+        refreshValidEndDatePicker();
         if (noteInput) noteInput.value = ps.customNote || '';
+        updateRegionCnyPreviewFromForm();
         ['select-custom-acq', 'select-custom-region-preset', 'select-custom-currency', 'select-custom-cycle'].forEach(id => enhanceCustomSelect(id));
       });
       regInput?.focus?.();
     }
     positionFloatingPanels();
   }
+
+  el('input-custom-paid')?.addEventListener('input', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
+  el('select-custom-currency')?.addEventListener('change', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
+  el('input-custom-region')?.addEventListener('input', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
 
   el('select-custom-region-preset')?.addEventListener('change', (e) => {
     if (isHydratingUiControls) return;
@@ -12389,6 +13164,7 @@ function closeAllDropdowns(exceptWrap = null) {
         if (paidInput.value === '0') paidInput.value = '';
       }
     }
+    updateRegionCnyPreviewFromForm();
   });
 
   el('select-custom-acq')?.addEventListener('change', (e) => {
@@ -12484,6 +13260,9 @@ function closeAllDropdowns(exceptWrap = null) {
 
   el('btn-custom-plan-clear')?.addEventListener('click', () => {
     ++userActionSeq;
+    const validEndInput = el('input-valid-end');
+    if (validEndInput) validEndInput.value = '';
+    refreshValidEndDatePicker();
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const rawLive = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus || null;
@@ -12689,20 +13468,14 @@ function closeAllDropdowns(exceptWrap = null) {
       targetSymbol = curSymbol;
       targetNum = Number(ps.actualPricePaid);
       targetCycle = t('plan.summary.perMonth');
-      if (ps.currency === 'CNY') {
-        targetCny = '';
-      } else if (ps.cnyFormatted) {
-        const cnyClean = String(ps.cnyFormatted).replace(/^[折合約\s≈()（）]+/, '').replace(/[()（）]/g, '').trim();
-        const prefix = currentPanelLanguage === 'en' ? 'approx. ' : '≈ ';
-        targetCny = cnyClean ? `(${prefix}${cnyClean})` : '';
-      } else {
-        targetCny = '';
-      }
+      const sec = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { short: true });
+      targetCny = sec ? `(${sec})` : '';
     } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = t('plan.summary.perMonth');
-      targetCny = currentPanelLanguage === 'en' ? '(approx. ¥134.3 CNY)' : '(≈ ¥134.3 CNY)';
+      const sec = formatSubscriptionSecondaryConversion(targetNum, 'USD', ps.region, { short: true });
+      targetCny = sec ? `(${sec})` : '';
     } else {
       targetSymbol = t('plan.summary.priceUnsetShort');
       targetNum = null;
@@ -12729,8 +13502,11 @@ function closeAllDropdowns(exceptWrap = null) {
     const detCountry = el('p-det-country');
     const tagCountry = el('p-det-country-tag');
     const directCountrySel = el('direct-country-select');
-    const countryText = (ps.country && !String(ps.country).includes('未知')) ? String(ps.country).trim() : '未知';
-    if (detCountry) detCountry.textContent = countryText === '未知' ? t('plan.country.unknown') : countryText;
+    const rawCountryStr = ps.country ? String(ps.country).trim() : '';
+    const isCountryUnknown = !rawCountryStr || rawCountryStr === '未知' || rawCountryStr === 'Unknown' || rawCountryStr.includes('未设置');
+    const countryText = isCountryUnknown ? '未知' : rawCountryStr;
+    const countryDisplay = countryText === '未知' ? t('plan.country.unknown') : (localizeRegionDisplayValue(countryText) || countryText);
+    if (detCountry) detCountry.textContent = countryDisplay;
     if (tagCountry) {
       tagCountry.style.display = ps.countrySource === 'custom' ? 'inline-block' : 'none';
       tagCountry.textContent = ps.countrySource === 'custom' ? t('plan.tag.custom') : '';
@@ -12739,8 +13515,9 @@ function closeAllDropdowns(exceptWrap = null) {
     const detReg = el('p-det-region');
     const tagReg = el('p-det-region-tag');
     let regText = ps.subscriptionRegion || ps.region || '未知';
-    if (regText.includes('未在当前会话中获取') || regText.trim() === '未知') regText = '未知';
-    if (detReg) detReg.textContent = regText === '未知' ? t('plan.region.unknown') : regText;
+    if (regText.includes('未在当前会话中获取') || regText.trim() === '未知' || regText.trim() === 'Unknown') regText = '未知';
+    const regDisplay = regText === '未知' ? t('plan.region.unknown') : (localizeRegionDisplayValue(regText) || regText);
+    if (detReg) detReg.textContent = regDisplay;
     if (tagReg) {
       tagReg.style.display = ps.regionSource === 'custom' ? 'inline-block' : 'none';
       tagReg.textContent = ps.regionSource === 'custom' ? t('plan.tag.custom') : '';
@@ -12764,7 +13541,7 @@ function closeAllDropdowns(exceptWrap = null) {
           if (!exists && typeof document.createElement === 'function') {
             const opt = document.createElement('option');
             opt.value = countryText;
-            opt.textContent = '🌐 ' + countryText;
+            opt.textContent = '🌐 ' + (localizeRegionDisplayValue(countryText) || countryText);
             directCountrySel.appendChild?.(opt);
           }
         }
@@ -12809,13 +13586,9 @@ function closeAllDropdowns(exceptWrap = null) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         detPrice.textContent = `${curSymbol}0 · ${cycleText}`;
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
-        let cnyPart = '';
-        if (ps.currency !== 'CNY' && ps.cnyFormatted) {
-          const locCny = localizeCnyFormatted(ps.cnyFormatted);
-          cnyPart = locCny ? ` (${locCny})` : '';
-        }
+        const secPart = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { detail: true });
         const paidFormatted = Number(ps.actualPricePaid) % 1 === 0 ? Number(ps.actualPricePaid) : Number(ps.actualPricePaid).toFixed(2);
-        detPrice.textContent = `${curSymbol}${paidFormatted} · ${cycleText}${cnyPart}`;
+        detPrice.textContent = secPart ? `${curSymbol}${paidFormatted} · ${cycleText} (${secPart})` : `${curSymbol}${paidFormatted} · ${cycleText}`;
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         detPrice.textContent = `${t('plan.tag.publicRef')} $${ps.officialPriceMonthly}${t('plan.summary.perMonth')}`;
       } else {
@@ -15893,12 +16666,14 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   function evaluateModelContextStatus(product) {
+    const isEnEval = currentPanelLanguage === 'en';
+    const isTwEval = currentPanelLanguage === 'zh-TW';
     if (!product) {
       return {
         status: 'unconfirmed',
-        badge: t('panel.ctx.currentModelUnconfirmed') || '待确认',
+        badge: t('panel.ctx.currentModelUnconfirmed') || (isEnEval ? 'Unconfirmed' : (isTwEval ? '待確認' : '待确认')),
         pillClass: 'pill-muted',
-        diagnosis: '未获取到模型信息',
+        diagnosis: isEnEval ? 'Model metadata unavailable' : (isTwEval ? '未取得模型資訊' : '未获取到模型信息'),
         targetText: '—',
         requestText: '—',
         observedText: '—',
@@ -15913,11 +16688,14 @@ function closeAllDropdowns(exceptWrap = null) {
     const targetLimit = (targetMode === 'fixed') ? Number(activePref?.limitTokens) : null;
     const capSummary = getProductCapabilitySummary(product);
 
-    let targetText = t('status.savedDefault') || '恢复客户端默认';
+    let targetText = t('status.savedDefault') || (isEnEval ? 'Client Default' : (isTwEval ? '還原用戶端預設' : '恢复客户端默认'));
     if (targetMode === 'dynamic') {
-      targetText = t('models.preset.dynamic') || '动态跟随';
+      targetText = t('models.preset.dynamic') || (isEnEval ? 'Dynamic' : (isTwEval ? '動態跟隨' : '动态跟随'));
     } else if (targetMode === 'fixed' && targetLimit) {
-      targetText = (targetLimit === 512000) ? '512K（512,000 tokens）' : `${formatKShort(targetLimit)}（${fmt(targetLimit)} tokens）`;
+      targetText = (targetLimit === 512000) ? `512K (512,000 tokens)` : `${formatKShort(targetLimit)} (${fmt(targetLimit)} tokens)`;
+      if (!isEnEval) {
+        targetText = (targetLimit === 512000) ? '512K（512,000 tokens）' : `${formatKShort(targetLimit)}（${fmt(targetLimit)} tokens）`;
+      }
     }
 
     const activeConvId = state.activeConversationId || state.conversationId || state.route || null;
@@ -15942,18 +16720,24 @@ function closeAllDropdowns(exceptWrap = null) {
     const obs = evalCore.observation;
     const obsBudget = Number(obs?.budget || 0);
 
-    let requestText = dispatched ? '默认透传（未附加自定义参数）' : '尚无本次验证';
+    const noVerifyText = isEnEval ? 'Not verified in this session' : (isTwEval ? '尚無本次驗證' : '尚无本次验证');
+    let requestText = dispatched
+      ? (isEnEval ? 'Default passthrough (no override)' : (isTwEval ? '預設透傳（未附加自訂參數）' : '默认透传（未附加自定义参数）'))
+      : noVerifyText;
     if (dispatched) {
       if (dispatched.status === 'send_failed') {
-        requestText = `发送失败（${dispatched.errorMessage || '请求未完成'}）`;
+        const errPart = dispatched.errorMessage ? translateBackendText(dispatched.errorMessage) : (isEnEval ? 'Request incomplete' : (isTwEval ? '請求未完成' : '请求未完成'));
+        requestText = isEnEval ? `Send failed (${errPart})` : (isTwEval ? `發送失敗（${errPart}）` : `发送失败（${dispatched.errorMessage || '请求未完成'}）`);
       } else if (dispatched.status === 'aborted') {
-        requestText = '已取消发送';
+        requestText = isEnEval ? 'Aborted' : (isTwEval ? '已取消發送' : '已取消发送');
       } else if (dispatched.status === 'uninjectable') {
-        requestText = '透传未注入（缺少可靠模型/不支持帧）';
+        requestText = isEnEval ? 'Passthrough (missing model identity / frame)' : (isTwEval ? '透傳未注入（缺少可靠模型/不支援影格）' : '透传未注入（缺少可靠模型/不支持帧）');
       } else if (dispatched.sentMode === 'fixed' && dispatched.sentLimitTokens) {
-        requestText = `${formatKShort(dispatched.sentLimitTokens)}（${fmt(dispatched.sentLimitTokens)} tokens）`;
+        requestText = isEnEval
+          ? `${formatKShort(dispatched.sentLimitTokens)} (${fmt(dispatched.sentLimitTokens)} tokens)`
+          : `${formatKShort(dispatched.sentLimitTokens)}（${fmt(dispatched.sentLimitTokens)} tokens）`;
       } else if (dispatched.sentMode === 'dynamic') {
-        requestText = '动态跟随（已清除固定数值）';
+        requestText = isEnEval ? 'Dynamic (fixed limit cleared)' : (isTwEval ? '動態跟隨（已清除固定數值）' : '动态跟随（已清除固定数值）');
       }
       if (dispatched.timestamp) {
         requestText += ` · ${formatMonthDayTime(dispatched.timestamp)}`;
@@ -15967,14 +16751,20 @@ function closeAllDropdowns(exceptWrap = null) {
         || (st === 'default' && diagCode === 'default_confirmed');
     }
 
-    let observedText = '尚无本次验证';
+    let observedText = noVerifyText;
     if (obsBudget > 0 && statusUsesExistingObs(evalCore.status, evalCore.diagnosisCode)) {
       const effTxt = obs.effort ? ` · ${formatEffortZh(obs.effort)}` : '';
       const tTxt = obs.ts ? ` · ${formatMonthDayTime(obs.ts)}` : '';
-      observedText = `${formatKShort(obsBudget)}（${fmt(obsBudget)} tokens）${effTxt}${tTxt}`;
+      observedText = isEnEval
+        ? `${formatKShort(obsBudget)} (${fmt(obsBudget)} tokens)${effTxt}${tTxt}`
+        : `${formatKShort(obsBudget)}（${fmt(obsBudget)} tokens）${effTxt}${tTxt}`;
     } else if (obsBudget > 0) {
       const effTxt = obs.effort ? ` · ${formatEffortZh(obs.effort)}` : '';
-      observedText = `仅见历史观测 ${fmt(obsBudget)} tokens${effTxt}（当前设置尚无本次验证）`;
+      observedText = isEnEval
+        ? `Historical only: ${fmt(obsBudget)} tokens${effTxt} (current setting unverified)`
+        : (isTwEval
+          ? `僅見歷史觀測 ${fmt(obsBudget)} tokens${effTxt}（目前設定尚無本次驗證）`
+          : `仅见历史观测 ${fmt(obsBudget)} tokens${effTxt}（当前设置尚无本次验证）`);
     }
 
     const convoId = evalCore.convoId || activeConvId || '—';
@@ -15982,65 +16772,92 @@ function closeAllDropdowns(exceptWrap = null) {
     let status = evalCore.status;
     let badge = t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用';
     let pillClass = 'pill-muted';
-    let diagnosis = '已保存目标参数，将在下次发起请求时自动注入并发送。';
+    let diagnosis = isEnEval
+      ? 'Saved target limit; it will be injected automatically on the next request.'
+      : (isTwEval
+        ? '已儲存目標參數，將在下次發起請求時自動注入並發送。'
+        : '已保存目标参数，将在下次发起请求时自动注入并发送。');
 
     if (status === 'default') {
       if (evalCore.diagnosisCode === 'default_confirmed') {
         badge = t('status.savedDefault') || '使用模型默认值';
         pillClass = 'pill-good';
-        diagnosis = `本次请求已按客户端默认透传（未附加自定义覆盖），收到新回复确认实际采用 ${fmt(obsBudget)} tokens。`;
+        diagnosis = isEnEval
+          ? `Passed through as client default (no override); reply confirmed ${fmt(obsBudget)} tokens.`
+          : (isTwEval
+            ? `本次請求已依用戶端預設透傳（未附加自訂覆寫），收到新回覆確認實際採用 ${fmt(obsBudget)} tokens。`
+            : `本次请求已按客户端默认透传（未附加自定义覆盖），收到新回复确认实际采用 ${fmt(obsBudget)} tokens。`);
       } else {
         badge = t('status.savedDefault') || '使用模型默认值';
         pillClass = 'pill-muted';
-        diagnosis = '已恢复/保持客户端默认（不附加覆盖参数），将在下一次发送时生效并验证实际采用值。';
+        diagnosis = isEnEval
+          ? 'Client default active (no override); verified on next request.'
+          : (isTwEval
+            ? '已還原/維持用戶端預設（不附加覆寫參數），將在下一次發送時生效並驗證實際採用值。'
+            : '已恢复/保持客户端默认（不附加覆盖参数），将在下一次发送时生效并验证实际采用值。');
       }
     } else if (status === 'send_failed') {
-      badge = '发送失败（未确认）';
+      badge = isEnEval ? 'Send failed (unconfirmed)' : (isTwEval ? '發送失敗（未確認）' : '发送失败（未确认）');
       pillClass = 'pill-bad';
-      diagnosis = `本次请求发送失败（${evalCore.errorMessage || '网络或传输错误'}），因此无法确认实际预算。`;
+      const errMsg = evalCore.errorMessage ? translateBackendText(evalCore.errorMessage) : (isEnEval ? 'network or transport error' : (isTwEval ? '網路或傳輸錯誤' : '网络或传输错误'));
+      diagnosis = isEnEval
+        ? `Request failed (${errMsg}); actual budget could not be confirmed.`
+        : (isTwEval ? `本次請求發送失敗（${errMsg}），因此無法確認實際預算。` : `本次请求发送失败（${evalCore.errorMessage || '网络或传输错误'}），因此无法确认实际预算。`);
     } else if (status === 'aborted') {
-      badge = '已取消（未确认）';
+      badge = isEnEval ? 'Aborted (unconfirmed)' : (isTwEval ? '已取消（未確認）' : '已取消（未确认）');
       pillClass = 'pill-muted';
-      diagnosis = '本次请求在完成前被取消，未收到新回复。';
+      diagnosis = isEnEval ? 'Request was cancelled before a reply was received.' : (isTwEval ? '本次請求在完成前被取消，未收到新回覆。' : '本次请求在完成前被取消，未收到新回复。');
     } else if (status === 'uninjectable') {
-      badge = '本次未注入（已透传）';
+      badge = isEnEval ? 'Not injected (passthrough)' : (isTwEval ? '本次未注入（已透傳）' : '本次未注入（已透传）');
       pillClass = 'pill-warn';
-      diagnosis = `未能向本次请求自动注入参数（${evalCore.diagnosisCode || '缺少可靠模型身份或协议格式不支持'}），已保持原样透传。`;
+      const reasonTxt = evalCore.diagnosisCode || (isEnEval ? 'missing model identity or unsupported frame' : (isTwEval ? '缺少可靠模型身分或協定格式不支援' : '缺少可靠模型身份或协议格式不支持'));
+      diagnosis = isEnEval
+        ? `Could not inject override (${reasonTxt}); passed through unchanged.`
+        : (isTwEval ? `未能向本次請求自動注入參數（${reasonTxt}），已保持原樣透傳。` : `未能向本次请求自动注入参数（${evalCore.diagnosisCode || '缺少可靠模型身份或协议格式不支持'}），已保持原样透传。`);
     } else if (status === 'confirmed') {
       badge = t('models.status.confirmed') || '实际预算已确认';
       pillClass = 'pill-good';
       diagnosis = targetMode === 'dynamic'
-        ? `已启用动态跟随模式，本次发送后实测返回预算 ${fmt(obsBudget)} tokens。`
-        : `请求实际携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次发送后服务端返回预算 ${fmt(obsBudget)} tokens，完全吻合。`;
+        ? (isEnEval ? `Dynamic mode active; observed response budget ${fmt(obsBudget)} tokens.` : (isTwEval ? `已啟用動態跟隨模式，本次發送後實測回傳預算 ${fmt(obsBudget)} tokens。` : `已启用动态跟随模式，本次发送后实测返回预算 ${fmt(obsBudget)} tokens。`))
+        : (isEnEval ? `Sent ${fmt(dispatched?.sentLimitTokens || targetLimit)}; server confirmed ${fmt(obsBudget)} tokens.` : (isTwEval ? `請求實際攜帶 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次發送後伺服器端回傳預算 ${fmt(obsBudget)} tokens，完全吻合。` : `请求实际携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次发送后服务端返回预算 ${fmt(obsBudget)} tokens，完全吻合。`));
     } else if (status === 'clamped_by_model_limit') {
-      badge = '受模型上限限制';
+      badge = isEnEval ? 'Clamped by model cap' : (isTwEval ? '受模型上限限制' : '受模型上限限制');
       pillClass = 'pill-warn';
-      diagnosis = `请求携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/服务端上限（${fmt(evalCore.knownCap)} tokens）限制，实际采用 ${fmt(obsBudget)} tokens。`;
+      diagnosis = isEnEval
+        ? `Sent ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens, clamped to ${fmt(obsBudget)} tokens by known cap (${fmt(evalCore.knownCap)} tokens).`
+        : (isTwEval ? `請求攜帶 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/伺服器端上限（${fmt(evalCore.knownCap)} tokens）限制，實際採用 ${fmt(obsBudget)} tokens。` : `请求携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/服务端上限（${fmt(evalCore.knownCap)} tokens）限制，实际采用 ${fmt(obsBudget)} tokens。`);
     } else if (status === 'mismatch') {
       badge = t('models.status.mismatch') || '未生效：目标值与观测值不一致';
       pillClass = 'pill-bad';
-      let detail = `目标设置（${fmt(targetLimit)} tokens）与发送后实际观测预算（${fmt(obsBudget)} tokens）不一致，原因待确认。`;
+      let detail = isEnEval
+        ? `Target (${fmt(targetLimit)} tokens) differs from observed budget (${fmt(obsBudget)} tokens).`
+        : (isTwEval ? `目標設定（${fmt(targetLimit)} tokens）與發送後實際觀測預算（${fmt(obsBudget)} tokens）不一致，原因待確認。` : `目标设置（${fmt(targetLimit)} tokens）与发送后实际观测预算（${fmt(obsBudget)} tokens）不一致，原因待确认。`);
       if (product.unavailable && product.unavailabilityReason) {
-        detail += `（模型可用性说明：${product.unavailabilityReason}）`;
+        detail += isEnEval ? ` (${product.unavailabilityReason})` : `（模型可用性說明：${product.unavailabilityReason}）`;
       }
       diagnosis = detail;
     } else if (status === 'timeout_unconfirmed') {
-      badge = '确认超时（未观测到新回复）';
+      badge = isEnEval ? 'Timed out (unconfirmed)' : (isTwEval ? '確認逾時（未觀測到新回覆）' : '确认超时（未观测到新回复）');
       pillClass = 'pill-warn';
+      const secWait = Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000);
       diagnosis = targetMode === 'default'
-        ? `已按客户端默认透传发送请求，但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`
-        : `已在请求中携带设置（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`;
+        ? (isEnEval ? `Sent with client default, but no budget confirmation arrived within ${secWait}s.` : (isTwEval ? `已依用戶端預設透傳發送請求，但超過 ${secWait} 秒未觀測到新回覆中的預算回傳。` : `已按客户端默认透传发送请求，但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`))
+        : (isEnEval ? `Sent override (${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : 'Dynamic'}), but no reply arrived within ${secWait}s.` : (isTwEval ? `已在請求中攜帶設定（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '動態跟隨'}），但超過 ${secWait} 秒未觀測到新回覆中的預算回傳。` : `已在请求中携带设置（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`));
     } else if (status === 'dispatched_pending_confirm') {
-      badge = targetMode === 'default' ? '已默认透传，等待确认' : (t('models.status.dispatchedPendingConfirm') || '已发送设置，等待确认');
+      badge = targetMode === 'default'
+        ? (isEnEval ? 'Passthrough sent; awaiting confirm' : (isTwEval ? '已預設透傳，等待確認' : '已默认透传，等待确认'))
+        : (t('models.status.dispatchedPendingConfirm') || '已发送设置，等待确认');
       pillClass = 'pill-warn';
       diagnosis = targetMode === 'default'
-        ? '已按客户端默认透传发出请求（未附加覆盖参数），等待收到新回复以确认服务端实际预算。'
-        : `已在本次请求中成功注入参数（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），等待收到新回复以确认实际分配预算。`;
+        ? (isEnEval ? 'Sent with client default (no override); awaiting reply to confirm allocated budget.' : (isTwEval ? '已依用戶端預設透傳發出請求（未附加覆寫參數），等待收到新回覆以確認伺服器端實際預算。' : '已按客户端默认透传发出请求（未附加覆盖参数），等待收到新回复以确认服务端实际预算。'))
+        : (isEnEval ? `Injected (${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : 'Dynamic'}); awaiting reply to confirm budget.` : (isTwEval ? `已在本次請求中成功注入參數（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '動態跟隨'}），等待收到新回覆以確認實際分配預算。` : `已在本次请求中成功注入参数（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），等待收到新回复以确认实际分配预算。`));
     } else {
       status = 'saved_pending_dispatch';
       badge = t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用';
       pillClass = 'pill-muted';
-      diagnosis = `已保存目标设置（${targetText}），下一次在对应模型发起发送时将自动注入。`;
+      diagnosis = isEnEval
+        ? `Saved (${targetText}); will be injected on the next request for this model.`
+        : (isTwEval ? `已儲存目標設定（${targetText}），下一次在對應模型發起發送時將自動注入。` : `已保存目标设置（${targetText}），下一次在对应模型发起发送时将自动注入。`);
     }
 
     return {
@@ -16600,20 +17417,38 @@ function closeAllDropdowns(exceptWrap = null) {
 
       let disabled = false;
       let disableReason = '';
+      const isEnPre = currentPanelLanguage === 'en';
+      const isTwPre = currentPanelLanguage === 'zh-TW';
       if (bMode === 'model_max') {
         if (isUnified) {
           disabled = true;
-          disableReason = '统一模式下各模型最大可用上限不同，请切换到按模型分别设置或填写具体数值。';
+          disableReason = isEnPre
+            ? 'Max capacity varies per model in unified mode. Switch to Per-Model or enter a specific number.'
+            : (isTwPre
+              ? '統一模式下各模型最大可用上限不同，請切換為依模型個別設定或填寫具體數值。'
+              : '统一模式下各模型最大可用上限不同，请切换到按模型分别设置或填写具体数值。');
         } else if (knownModelMax == null) {
           disabled = true;
-          disableReason = '尚未获取到该模型的上下文窗口与最大输出元数据，无法计算最大可用值。';
+          disableReason = isEnPre
+            ? 'Context window and max output metadata not loaded yet for this model.'
+            : (isTwPre
+              ? '尚未取得此模型的上下文視窗與最大輸出中繼資料，無法計算最大可用值。'
+              : '尚未获取到该模型的上下文窗口与最大输出元数据，无法计算最大可用值。');
         } else if (!policyKnown || knownEnvMax == null) {
           disabled = true;
-          disableReason = '当前客户端运行策略未知或待重启确认，暂无法确定当前环境最大可用上限。';
+          disableReason = isEnPre
+            ? 'Client runtime policy is unknown or pending restart; environment max cannot be verified yet.'
+            : (isTwPre
+              ? '目前用戶端執行策略未知或待重啟確認，暫無法確定目前環境最大可用上限。'
+              : '当前客户端运行策略未知或待重启确认，暂无法确定当前环境最大可用上限。');
         }
       } else if (bMode === 'fixed' && bLim && knownModelMax != null && bLim > knownModelMax) {
         disabled = true;
-        disableReason = `预设 ${fmt(bLim)} 超出当前模型理论输入上限 ${fmt(knownModelMax)}（总窗口 - 最大输出）。`;
+        disableReason = isEnPre
+          ? `Preset ${fmt(bLim)} exceeds model theoretical input cap ${fmt(knownModelMax)} (window - max output).`
+          : (isTwPre
+            ? `預設 ${fmt(bLim)} 超出目前模型理論輸入上限 ${fmt(knownModelMax)}（總視窗 - 最大輸出）。`
+            : `预设 ${fmt(bLim)} 超出当前模型理论输入上限 ${fmt(knownModelMax)}（总窗口 - 最大输出）。`);
       }
 
       if ('disabled' in btn) btn.disabled = disabled;
@@ -18125,10 +18960,22 @@ function closeAllDropdowns(exceptWrap = null) {
           pv.textContent = `$19.99${t('plan.summary.perMonth')}`;
         }
       }
+      const countryInp = el('input-custom-country');
+      if (countryInp && countryInp.value) {
+        const locCountry = localizeRegionDisplayValue(countryInp.value);
+        if (locCountry) countryInp.value = locCountry;
+      }
+      const regInp = el('input-custom-region');
+      if (regInp && regInp.value) {
+        const locReg = localizeRegionDisplayValue(regInp.value);
+        if (locReg) regInp.value = locReg;
+      }
       if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
+      if (typeof refreshValidEndDatePicker === 'function') refreshValidEndDatePicker();
+      if (typeof updateRegionCnyPreviewFromForm === 'function') updateRegionCnyPreviewFromForm();
       if (typeof syncAllNativeSelectDropdowns === 'function') syncAllNativeSelectDropdowns();
     } catch { }
     try {
@@ -19807,7 +20654,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
     if (titleEl) titleEl.textContent = isPeriod ? t('cost.title') : t('cost.titleAll');
     if (periodTag) {
-      const pKey = ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || t('cost.periodTag');
+      const pKey = formatPeriodCalendarLabel(ANTIGRAVITY_TOKEN_DATA.currentPeriod);
       periodTag.textContent = isPeriod ? pKey : t('cost.allHistory');
     }
 
@@ -19872,7 +20719,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const scopeDescEl = el('cost-scope-desc');
     if (scopeDescEl) {
       const srcName = activeTokenSource === 'desktop' ? t('tokens.srcDesktopLabel') : activeTokenSource === 'cli' ? 'CLI' : t('tokens.srcAllLabel');
-      const pLabel = isPeriod ? (ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || t('cost.periodTag')) : t('cost.allHistory');
+      const pLabel = isPeriod ? formatPeriodCalendarLabel(ANTIGRAVITY_TOKEN_DATA.currentPeriod) : t('cost.allHistory');
       scopeDescEl.textContent = `${srcName} · ${pLabel}`;
     }
     const nonPaidBadge = el('cost-non-paid-badge');
@@ -19882,8 +20729,10 @@ function closeAllDropdowns(exceptWrap = null) {
       apiCost = Number(effectiveRef.totalCostUSD || 0);
       if (grandVal) {
         if (apiCost > 0) {
-          grandVal.textContent = t('cost.approx', { val: apiCost.toFixed(2) });
-          grandVal.title = `$${apiCost.toFixed(4)}`;
+          grandVal.textContent = currentPanelLanguage === 'zh-CN'
+            ? t('cost.approx', { val: apiCost.toFixed(2) })
+            : formatUsdMetricDisplay(apiCost, { detail: currentPanelLanguage === 'zh-TW' });
+          grandVal.title = formatUsdMetricTooltip(apiCost);
         } else if (curTotal > 0 && curIn === 0 && curCa === 0 && curOut === 0) {
           grandVal.textContent = t('cost.notReady');
           grandVal.title = t('cost.notReady');
@@ -19919,8 +20768,10 @@ function closeAllDropdowns(exceptWrap = null) {
       const h = curHybrid.hybrid || {};
       apiCost = Number(h.combinedTotalUSD || effectiveRef.totalCostUSD || 0);
       if (grandVal) {
-        grandVal.textContent = t('cost.approx', { val: apiCost.toFixed(2) });
-        grandVal.title = t('cost.hybridSub', { known: h.knownCostUSD || 0, res: h.unpricedResidualCostUSD || 0 });
+        grandVal.textContent = currentPanelLanguage === 'zh-CN'
+          ? t('cost.approx', { val: apiCost.toFixed(2) })
+          : formatUsdMetricDisplay(apiCost, { detail: currentPanelLanguage === 'zh-TW' });
+        grandVal.title = `${t('cost.hybridSub', { known: Number(h.knownCostUSD || 0).toFixed(2), res: Number(h.unpricedResidualCostUSD || 0).toFixed(2) })} | ${formatUsdMetricTooltip(apiCost)}`;
       }
       if (grandSub) {
         grandSub.textContent = t('cost.hybridSub', {
@@ -19958,8 +20809,10 @@ function closeAllDropdowns(exceptWrap = null) {
           grandVal.textContent = '<$0.01';
           grandVal.title = `$${apiCost.toFixed(6)}`;
         } else {
-          grandVal.textContent = `$${apiCost.toFixed(2)}`;
-          grandVal.title = `$${apiCost.toFixed(4)}`;
+          grandVal.textContent = currentPanelLanguage === 'zh-TW'
+            ? formatUsdMetricDisplay(apiCost, { withPrefix: false, detail: true })
+            : `$${apiCost.toFixed(2)}`;
+          grandVal.title = formatUsdMetricTooltip(apiCost);
         }
       }
       if (grandSub) {
@@ -20010,14 +20863,18 @@ function closeAllDropdowns(exceptWrap = null) {
     if (subSpendLbl) subSpendLbl.textContent = t('cost.subSpendLabel');
 
     const extraNoCompare = isPeriod ? '' : t('cost.allNoCompare');
+    const resolvedAcqLabel = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅')
+      ? localizeAcquisitionSource(ps.acquisitionSourceName)
+      : localizeAcquisitionSource(ps.acquisitionSource || 'normal_paid');
+    const resolvedCycleLabel = ps.billingCycle ? localizeBillingCycleLabel(ps.billingCycle) : t('plan.summary.perMonth');
     if (subSpendVal && subNote) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         subSpendVal.textContent = `${curSymbol}0`;
-        subNote.textContent = t('cost.freeActive', { src: ps.acquisitionSourceName || t('cost.freePromo'), extra: extraNoCompare });
+        subNote.textContent = t('cost.freeActive', { src: resolvedAcqLabel || t('cost.freePromo'), extra: extraNoCompare });
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         subSpendVal.textContent = `${curSymbol}${Number(ps.actualPricePaid).toFixed(2)}`;
         const expTag = ps.isExpired ? t('cost.expiredTag') : '';
-        subNote.textContent = `${ps.acquisitionSourceName || t('cost.subSpend')} · ${t('cost.paidLabel')} (${ps.billingCycle || t('plan.summary.perMonth')})${expTag}${extraNoCompare}`;
+        subNote.textContent = `${resolvedAcqLabel || t('cost.subSpend')} · ${t('cost.paidLabel')} (${resolvedCycleLabel})${expTag}${extraNoCompare}`;
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         subSpendVal.textContent = t('cost.paidUnknown');
         subNote.textContent = `${t('cost.publicRefMonthly', { p: ps.officialPriceMonthly })}${extraNoCompare}`;
@@ -20030,14 +20887,15 @@ function closeAllDropdowns(exceptWrap = null) {
     const subLine = el('cost-sub-line');
     if (subLine) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
-        subLine.textContent = t('cost.subLineFree', { sym: curSymbol, src: ps.acquisitionSourceName || t('plan.tag.promo') });
+        subLine.textContent = t('cost.subLineFree', { sym: curSymbol, src: resolvedAcqLabel || t('plan.tag.promo') });
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
-        const cnyPart = (ps.currency !== 'CNY' && ps.cnyFormatted) ? ` (${ps.cnyFormatted})` : '';
+        const secPart = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { detail: true });
+        const cnyPart = secPart ? ` (${secPart})` : '';
         subLine.textContent = t('cost.subLinePaid', {
           sym: curSymbol,
           val: Number(ps.actualPricePaid).toFixed(2),
           cny: cnyPart,
-          cycle: ps.billingCycle || t('plan.summary.perMonth'),
+          cycle: resolvedCycleLabel,
           exp: ps.isExpired ? ' · ⚠️' : ''
         });
       } else {
@@ -20054,9 +20912,16 @@ function closeAllDropdowns(exceptWrap = null) {
         diffSummary.textContent = t('cost.diffAll');
       } else if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         diffSummary.textContent = t('cost.diffFree', { val: apiCost.toFixed(2) });
-      } else if (ps.actualPricePaid !== null && ps.currency === 'USD') {
-        const diff = apiCost - Number(ps.actualPricePaid);
-        diffSummary.textContent = t('cost.diffPaid', { sign: diff >= 0 ? '+' : '', val: diff.toFixed(2) });
+      } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
+        const paidUsd = (ps.currency || 'USD') === 'USD'
+          ? Number(ps.actualPricePaid)
+          : convertCurrencyUi(ps.actualPricePaid, ps.currency || 'USD', 'USD', ps.region);
+        if (paidUsd !== null && Number.isFinite(paidUsd)) {
+          const diff = apiCost - paidUsd;
+          diffSummary.textContent = t('cost.diffPaid', { sign: diff >= 0 ? '+' : '', val: diff.toFixed(2) });
+        } else {
+          diffSummary.textContent = t('cost.diffUnknown');
+        }
       } else {
         diffSummary.textContent = t('cost.diffUnknown');
       }
@@ -20074,7 +20939,12 @@ function closeAllDropdowns(exceptWrap = null) {
 
     // 6. 兼容性辅助隐藏层同步
     const refGrand = el('ref-cost-grand-val');
-    if (refGrand) refGrand.textContent = t('cost.refApprox', { val: Number(curRef.totalCostUSD || 0).toFixed(2) });
+    if (refGrand) {
+      const refNum = Number(curRef.totalCostUSD || 0);
+      refGrand.textContent = currentPanelLanguage === 'zh-TW'
+        ? formatUsdMetricDisplay(refNum, { detail: true })
+        : t('cost.refApprox', { val: refNum.toFixed(2) });
+    }
   }
 
   const heatPop = el('heat-pop');
@@ -20962,22 +21832,26 @@ function closeAllDropdowns(exceptWrap = null) {
     if (tTotalCost) {
       tTotalCost.textContent = isScopedEmptyAccount
         ? noAcctCostStr
-        : `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
+        : `${formatUsdMetricDisplay(totalCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tTotalCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(totalCostAgg.totalCostUSD);
     }
     if (tTodayCost) {
       tTodayCost.textContent = isScopedEmptyAccount
         ? noAcctCostStr
-        : `≈ $${todayCostInfo.costUSD.toFixed(2)}${todayCostCny !== null ? ` (¥${todayCostCny.toFixed(2)})` : ''}`;
+        : formatUsdMetricDisplay(todayCostInfo.costUSD);
+      tTodayCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(todayCostInfo.costUSD);
     }
     if (tMonthCost) {
       tMonthCost.textContent = isScopedEmptyAccount
         ? noAcctCostStr
-        : `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
+        : `${formatUsdMetricDisplay(monthCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tMonthCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(monthCostAgg.totalCostUSD);
     }
     if (tYearCost) {
       tYearCost.textContent = isScopedEmptyAccount
         ? noAcctCostStr
-        : `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
+        : `${formatUsdMetricDisplay(yearCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tYearCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(yearCostAgg.totalCostUSD);
     }
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
@@ -21683,8 +22557,7 @@ var cumLockedKey = null;
               : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
           heatPopDate.textContent = `${dateLabel}${item.isToday ? t('heat.today') : (item.key === win.firstStr ? t('heat.firstUse') : '')}`;
           const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const cny = convertToCNY(costInfo.costUSD, 'USD');
-          const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
           heatPopVal.textContent = item.tokens > 0
             ? `${fmtYi(item.tokens)} Tokens${costStr}`
             : (item.isFuture ? t('heat.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
@@ -21809,8 +22682,7 @@ var cumLockedKey = null;
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
         });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costAgg.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(costAgg.totalCostUSD, { detail: true })}` : '';
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : (w.isFutureWeek ? t('tokens.heat.futureTip') : '0 Tokens');
         heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
@@ -21874,8 +22746,7 @@ var cumLockedKey = null;
       mode: activeCostMode,
       todayStr: todayKey
     });
-    const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-    const costText = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
+    const costText = formatUsdMetricDisplay(costAgg.totalCostUSD);
 
     const scrollBox = el('h-scroll-box') || box.parentElement;
     const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
@@ -21921,6 +22792,7 @@ var cumLockedKey = null;
     headCost.className = 'cum-head-cost';
     headCost.id = 'cum-head-cost';
     headCost.textContent = costText;
+    headCost.title = formatUsdMetricTooltip(costAgg.totalCostUSD);
 
     headRow.appendChild(headLeft);
     headRow.appendChild(headCost);
@@ -22067,8 +22939,7 @@ var cumLockedKey = null;
     const showSegPop = (seg, anchorNode) => {
       const segDates = seg.days.map(d => d.date);
       const segCost = calculateIntervalCost(map, segDates, activeCostModel, { mode: activeCostMode, todayStr: todayKey });
-      const segCny = convertToCNY(segCost.totalCostUSD, 'USD');
-      const costSuffix = segCost.totalCostUSD > 0 ? ` · ≈ $${segCost.totalCostUSD.toFixed(2)}${segCny !== null ? ` (¥${segCny.toFixed(2)})` : ''}` : '';
+      const costSuffix = segCost.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(segCost.totalCostUSD, { detail: true })}` : '';
       const dateTitle = seg.startDate === seg.endDate
         ? seg.startDate
         : `${seg.startDate} – ${seg.endDate} (${seg.daysCount}d)`;
@@ -22389,9 +23260,9 @@ var cumLockedKey = null;
       todayStr
     });
 
-    const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
     sumTokensEl.textContent = `${fmtYi(costAgg.totalTokens)} Tokens`;
-    sumCostEl.textContent = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
+    sumCostEl.textContent = formatUsdMetricDisplay(costAgg.totalCostUSD);
+    sumCostEl.title = formatUsdMetricTooltip(costAgg.totalCostUSD);
     sumDailyAvgEl.textContent = `$${costAgg.dailyAverageUSD.toFixed(2)}`;
     sumActiveAvgEl.textContent = t('heat.activeDays', { avg: costAgg.activeDailyAverageUSD.toFixed(2), days: costAgg.activeDays });
 
@@ -22400,7 +23271,8 @@ var cumLockedKey = null;
       const paidVal = plan.actualPricePaid ?? plan.pricePaid ?? plan.officialPriceMonthly ?? null;
       const isZeroCost = plan.isZeroExtraCost || paidVal === 0;
       if (!isZeroCost && paidVal > 0 && costAgg.totalCostUSD > 0) {
-        const subMonthlyUSD = plan.currency === 'USD' ? paidVal : (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : paidVal);
+        const subMonthlyUSD = convertCurrencyUi(paidVal, plan.currency || 'USD', 'USD', plan.region)
+          ?? (plan.actualPricePaidUSD || (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : paidVal));
         if (subMonthlyUSD > 0) {
           const ratio = (costAgg.totalCostUSD / (viewType === 'yearly' ? subMonthlyUSD * 12 : subMonthlyUSD)).toFixed(1);
           subRatioEl.textContent = t('heat.roi', { ratio });
@@ -22495,8 +23367,7 @@ var cumLockedKey = null;
 
       const showPop = () => {
         const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
-        const cny = convertToCNY(costInfo.costUSD, 'USD');
-        const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
         const mDateLabel = currentPanelLanguage === 'en'
           ? `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
           : (currentPanelLanguage === 'zh-TW'
@@ -22767,8 +23638,7 @@ var cumLockedKey = null;
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
         });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costAgg.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(costAgg.totalCostUSD, { detail: true })}` : '';
         const yearMonthLabel = currentPanelLanguage === 'en' ? `${item.monthName} ${targetYear}` : `${targetYear}年${item.monthName}`;
         heatPopDate.textContent = `${yearMonthLabel}${item.isCurrent ? t('heatmap.pop.inProgress') : (item.monthIndex === peakMonthIndex ? t('heatmap.pop.peak') : '')}`;
         heatPopVal.textContent = item.tokens > 0
@@ -23958,9 +24828,12 @@ var cumLockedKey = null;
         const eTag = (call.eScore != null && call.eGrade)
           ? (currentPanelLanguage === 'en' ? ` · ${call.eScore}pt(${call.eGrade})` : ` · ${call.eScore}分(${call.eGrade})`)
           : '';
-        stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 缓${formatCallCachePctText(call)}${eTag} · ${st.text}`;
         if (currentPanelLanguage === 'en') {
           stats.textContent = `${formatCallTimeStr(call)} · In ${inpTxt}/Out ${short(call.outputTokens || 0)} · Cache ${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        } else if (currentPanelLanguage === 'zh-TW') {
+          stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 緩${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        } else {
+          stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 缓${formatCallCachePctText(call)}${eTag} · ${st.text}`;
         }
 
         row.appendChild(main);
@@ -25520,8 +26393,9 @@ var cumLockedKey = null;
       if (m > 0) return `${m}m`;
       return `${s}s`;
     }
-    if (d > 0) return `${d}天${h}小时`;
-    if (h > 0) return `${h}小时${m}分`;
+    const hrUnit = currentPanelLanguage === 'zh-TW' ? '小時' : '小时';
+    if (d > 0) return `${d}天${h}${hrUnit}`;
+    if (h > 0) return `${h}${hrUnit}${m}分`;
     if (m > 0) return `${m}分`;
     return `${s}秒`;
   }
@@ -26991,7 +27865,7 @@ var cumLockedKey = null;
     const formatPersistedError = (raw) => {
       if (!raw) return '';
       const txt = typeof translateBackendText === 'function' ? translateBackendText(raw) : String(raw);
-      if (lr?.rolledBack && !/(回滚|rolled back)/i.test(txt)) {
+      if (lr?.rolledBack && !/(回滚|回滾|rolled back)/i.test(txt)) {
         return t('accounts.lastSwitchRolledBack', { detail: txt });
       }
       return txt;
@@ -27252,9 +28126,11 @@ var cumLockedKey = null;
       });
     }
     if (kaRun) {
-      kaRun.textContent = ks.blockedReason
-        ? t('keepalive.blockedReason', { reason: ks.blockedReason })
-        : (ks.stopReason ? t('keepalive.stopReason', { reason: ks.stopReason }) : t('keepalive.defaultNote'));
+      const blockedTxt = ks.blockedReason && typeof translateBackendText === 'function' ? translateBackendText(ks.blockedReason) : ks.blockedReason;
+      const stopTxt = ks.stopReason && typeof translateBackendText === 'function' ? translateBackendText(ks.stopReason) : ks.stopReason;
+      kaRun.textContent = blockedTxt
+        ? t('keepalive.blockedReason', { reason: blockedTxt })
+        : (stopTxt ? t('keepalive.stopReason', { reason: stopTxt }) : t('keepalive.defaultNote'));
     }
     if (kaStopBtn) kaStopBtn.hidden = !ks.running;
 
