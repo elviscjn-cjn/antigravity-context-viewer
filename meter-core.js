@@ -4856,6 +4856,7 @@
     'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
     'gemini-4-argon': 'Gemini 4 Argon',
     'gemini-4-carbon': 'Gemini 4 Carbon',
+    'orchestrator': 'Orchestrator',
     'gemini-3.8-flash': 'Gemini 3.8 Flash',
     'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
     'gemini-3.5-flash-lite': 'Gemini 3.5 Flash-Lite',
@@ -4869,6 +4870,7 @@
     'gemini-4-argon': '#6366f1',
     'gemini-3.8-flash': '#38bdf8',
     'gemini-4-carbon': '#e879f9',
+    'orchestrator': '#f472b6',
     'claude-opus-5-5': '#f59e0b',
     'claude-sonnet-5-5': '#fbbf24',
     'gpt-oss-120b': '#10b981',
@@ -4882,6 +4884,7 @@
     'gemini-4-argon': '#4f46e5',
     'gemini-3.8-flash': '#0284c7',
     'gemini-4-carbon': '#c026d3',
+    'orchestrator': '#db2777',
     'claude-opus-5-5': '#d97706',
     'claude-sonnet-5-5': '#b45309',
     'gpt-oss-120b': '#059669',
@@ -4890,10 +4893,158 @@
     'gemini-2.5-pro': '#6d28d9',
     [UNATTRIBUTED_MODEL_KEY]: 'rgba(113, 113, 122, 0.24)'
   };
-  const MODEL_FALLBACK_PALETTE_DARK = ['#a78bfa', '#38bdf8', '#6366f1', '#2dd4bf', '#f59e0b', '#e879f9', '#10b981', '#818cf8'];
-  const MODEL_FALLBACK_PALETTE_LIGHT = ['#7c3aed', '#0284c7', '#4f46e5', '#0d9488', '#d97706', '#c026d3', '#059669', '#4338ca'];
+  const MODEL_FALLBACK_PALETTE_DARK = ['#a78bfa', '#38bdf8', '#6366f1', '#2dd4bf', '#f59e0b', '#e879f9', '#10b981', '#f472b6'];
+  const MODEL_FALLBACK_PALETTE_LIGHT = ['#7c3aed', '#0284c7', '#4f46e5', '#0d9488', '#d97706', '#c026d3', '#059669', '#db2777'];
+  const MODEL_USAGE_ID_FALLBACK_LABELS = {
+    'gemini-flash-worker-agy': 'Gemini 4 Hydrogen (Orchestrator)',
+    'model_placeholder_m669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'placeholder-m669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'm669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'model_placeholder_m667': 'Orchestrator (Carbon)',
+    'placeholder-m667': 'Orchestrator (Carbon)',
+    'm667': 'Orchestrator (Carbon)',
+    'model_placeholder_m681': 'Orchestrator (Argon)',
+    'placeholder-m681': 'Orchestrator (Argon)',
+    'm681': 'Orchestrator (Argon)',
+    'model_placeholder_m668': 'Orchestrator (Argon)',
+    'placeholder-m668': 'Orchestrator (Argon)',
+    'm668': 'Orchestrator (Argon)',
+    'model_placeholder_m670': 'Gemini 4 Carbon',
+    'placeholder-m670': 'Gemini 4 Carbon',
+    'm670': 'Gemini 4 Carbon',
+    'gemini-4-hydrogen-sonar': 'Gemini 4 Hydrogen',
+    'model_placeholder_m578': 'Gemini 4 Hydrogen',
+    'm578': 'Gemini 4 Hydrogen',
+    'gemini-4-hydrogen-tiered-high': 'Gemini 4 Hydrogen (High)',
+    'model_placeholder_m530': 'Gemini 4 Hydrogen (High)',
+    'm530': 'Gemini 4 Hydrogen (High)',
+    'gemini-4-hydrogen-tiered-xhigh': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m531': 'Gemini 4 Hydrogen (XHigh)',
+    'm531': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m525': 'Gemini 4 Hydrogen (High)',
+    'm525': 'Gemini 4 Hydrogen (High)',
+    'model_placeholder_m526': 'Gemini 4 Hydrogen (Medium)',
+    'm526': 'Gemini 4 Hydrogen (Medium)',
+    'model_placeholder_m527': 'Gemini 4 Hydrogen (Low)',
+    'm527': 'Gemini 4 Hydrogen (Low)',
+    'model_placeholder_m528': 'Gemini 4 Hydrogen (XHigh)',
+    'm528': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m417': 'Gemini 4 Argon (High)',
+    'm417': 'Gemini 4 Argon (High)',
+    'model_placeholder_m418': 'Gemini 4 Argon (Medium)',
+    'm418': 'Gemini 4 Argon (Medium)',
+    'model_placeholder_m419': 'Gemini 4 Argon (Low)',
+    'm419': 'Gemini 4 Argon (Low)',
+    'model_placeholder_m427': 'Gemini 4 Carbon (High)',
+    'm427': 'Gemini 4 Carbon (High)',
+    'model_placeholder_m437': 'Gemini 4 Carbon (Medium)',
+    'm437': 'Gemini 4 Carbon (Medium)',
+    'model_placeholder_m438': 'Gemini 4 Carbon (Low)',
+    'm438': 'Gemini 4 Carbon (Low)',
+    'gemini-3.8-flash-tiered': 'Gemini 3.8 Flash',
+    'model_placeholder_m322': 'Gemini 3.8 Flash',
+    'm322': 'Gemini 3.8 Flash',
+    'model_placeholder_m318': 'Gemini 3.8 Flash (High)',
+    'm318': 'Gemini 3.8 Flash (High)',
+    'model_placeholder_m319': 'Gemini 3.8 Flash (Medium)',
+    'm319': 'Gemini 3.8 Flash (Medium)',
+    'model_placeholder_m320': 'Gemini 3.8 Flash (Low)',
+    'm320': 'Gemini 3.8 Flash (Low)',
+    'model_placeholder_m400': 'Claude Opus 5.5 (Low)',
+    'm400': 'Claude Opus 5.5 (Low)',
+    'model_placeholder_m401': 'Claude Opus 5.5 (Medium)',
+    'm401': 'Claude Opus 5.5 (Medium)',
+    'model_placeholder_m402': 'Claude Opus 5.5 (High)',
+    'm402': 'Claude Opus 5.5 (High)',
+    'model_placeholder_m403': 'Claude Sonnet 5.5 (Low)',
+    'm403': 'Claude Sonnet 5.5 (Low)',
+    'model_placeholder_m404': 'Claude Sonnet 5.5 (Medium)',
+    'm404': 'Claude Sonnet 5.5 (Medium)',
+    'model_placeholder_m405': 'Claude Sonnet 5.5 (High)',
+    'm405': 'Claude Sonnet 5.5 (High)',
+    'model_placeholder_m198': 'Gemini 3.5 Flash-Lite',
+    'm198': 'Gemini 3.5 Flash-Lite',
+    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash-Lite',
+    'model_placeholder_m50': 'Gemini 3.1 Flash-Lite',
+    'm50': 'Gemini 3.1 Flash-Lite',
+    'gemini-3-flash': 'Gemini 3 Flash',
+    'model_placeholder_m18': 'Gemini 3 Flash',
+    'm18': 'Gemini 3 Flash'
+  };
 
-  function resolveModelUsageBucket(call, cascadeModelConfigs = []) {
+  function isOpaqueModelToken(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return true;
+    if (/^(?:model_placeholder_|placeholder[-_]|model_)/i.test(s)) return true;
+    return !/[A-Z\s()]/.test(s);
+  }
+
+  function buildLookupKeysForModel(val) {
+    const clean = String(val || '').trim().toLowerCase();
+    if (!clean) return [];
+    const stripped = clean.replace(/^model_/, '');
+    const keys = [clean, stripped];
+    const mPh = stripped.match(/placeholder[_-]?(m\d+)$/);
+    if (mPh) keys.push(`model_placeholder_${mPh[1]}`, `placeholder-${mPh[1]}`, mPh[1]);
+    return Array.from(new Set(keys));
+  }
+
+  function lookupModelDisplayLabel(call, cascadeModelConfigs = [], availableModelDetails = null) {
+    const rawCandidates = [
+      call?.modelExactId,
+      call?.modelOrAlias?.model,
+      call?.modelId,
+      call?.chatModel?.modelId,
+      call?.modelRaw,
+      call?.model
+    ].filter(v => typeof v === 'string' && v.trim());
+
+    const candKeySet = new Set();
+    for (const rc of rawCandidates) {
+      for (const k of buildLookupKeysForModel(rc)) candKeySet.add(k);
+    }
+    if (candKeySet.size === 0) return '';
+
+    if (Array.isArray(cascadeModelConfigs)) {
+      for (const cfg of cascadeModelConfigs) {
+        if (!cfg || typeof cfg !== 'object') continue;
+        const lbl = String(cfg.label || cfg.displayName || '').trim();
+        if (!lbl || isOpaqueModelToken(lbl)) continue;
+        const cfgKeys = [
+          ...buildLookupKeysForModel(cfg.modelId),
+          ...buildLookupKeysForModel(cfg.modelOrAlias?.model),
+          ...buildLookupKeysForModel(cfg.model)
+        ];
+        if (cfgKeys.some(k => candKeySet.has(k))) return lbl;
+      }
+    }
+
+    if (availableModelDetails && typeof availableModelDetails === 'object') {
+      for (const ck of candKeySet) {
+        const direct = availableModelDetails[ck];
+        const directName = String(direct?.displayName || direct?.label || '').trim();
+        if (directName && !isOpaqueModelToken(directName)) return directName;
+      }
+      for (const [aKey, detail] of Object.entries(availableModelDetails)) {
+        if (!detail || typeof detail !== 'object') continue;
+        const dName = String(detail.displayName || detail.label || '').trim();
+        if (!dName || isOpaqueModelToken(dName)) continue;
+        const dKeys = [
+          ...buildLookupKeysForModel(aKey),
+          ...buildLookupKeysForModel(detail.modelId),
+          ...buildLookupKeysForModel(detail.normalizedId)
+        ];
+        if (dKeys.some(k => candKeySet.has(k))) return dName;
+      }
+    }
+
+    for (const ck of candKeySet) {
+      if (MODEL_USAGE_ID_FALLBACK_LABELS[ck]) return MODEL_USAGE_ID_FALLBACK_LABELS[ck];
+    }
+    return '';
+  }
+
+  function resolveModelUsageBucket(call, cascadeModelConfigs = [], availableModelDetails = null) {
     if (!call || typeof call !== 'object') {
       return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
     }
@@ -4902,19 +5053,71 @@
       return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
     }
     const resolvedStable = resolveStableModelId(call, cascadeModelConfigs);
-    const probeText = `${rawStr} ${resolvedStable || ''} ${call.modelLabel || ''}`.trim();
-    let modelKey = normalizeModelId(probeText);
-    if (!modelKey) {
-      const lower = probeText.toLowerCase();
-      if (lower.includes('gpt-oss')) modelKey = 'gpt-oss-120b';
+    const dynamicOrFallbackLabel = lookupModelDisplayLabel(
+      { ...call, modelExactId: call.modelExactId || resolvedStable },
+      cascadeModelConfigs,
+      availableModelDetails
+    );
+    const explicitHumanLabel = (call.modelLabel && !isOpaqueModelToken(call.modelLabel))
+      ? String(call.modelLabel).trim()
+      : (call.chatModel?.modelDisplayName && !isOpaqueModelToken(call.chatModel.modelDisplayName))
+        ? String(call.chatModel.modelDisplayName).trim()
+        : '';
+    const effectiveLabel = dynamicOrFallbackLabel || explicitHumanLabel || (!isOpaqueModelToken(rawStr) ? rawStr : '');
+    const probeText = `${effectiveLabel} ${rawStr} ${resolvedStable || ''}`.trim();
+    const probeLower = probeText.toLowerCase();
+
+    // Orchestrator 与 Worker 子模型专用归属：
+    // - gemini-flash-worker-agy / M669 / Gemini 4 Hydrogen (Orchestrator) 归入 Gemini 4 Hydrogen，档位标为 (Orchestrator)
+    // - Orchestrator (Carbon / Argon) 归入独立 Orchestrator 模型家族，按档位展开 Carbon / Argon
+    if (
+      probeLower.includes('worker-agy') ||
+      /\bm669\b/.test(probeLower) ||
+      (probeLower.includes('hydrogen') && probeLower.includes('orchestrator'))
+    ) {
+      return {
+        modelKey: 'gemini-4-hydrogen',
+        modelLabel: 'Gemini 4 Hydrogen',
+        variantKey: 'gemini-4-hydrogen:orchestrator',
+        variantLabel: 'Gemini 4 Hydrogen (Orchestrator)',
+        isAttributed: true
+      };
+    }
+
+    if (
+      probeLower.includes('orchestrator') ||
+      /\b(?:model_placeholder_|placeholder[-_])?m(?:667|668|681)\b/.test(probeLower)
+    ) {
+      let tier = null;
+      let tierLabel = null;
+      const lblLower = effectiveLabel.toLowerCase();
+      if (lblLower.includes('carbon') || probeLower.includes('carbon') || /\b(?:model_placeholder_|placeholder[-_])?m(?:667|670)\b/.test(probeLower)) {
+        tier = 'carbon';
+        tierLabel = 'Orchestrator (Carbon)';
+      } else if (lblLower.includes('argon') || probeLower.includes('argon') || /\b(?:model_placeholder_|placeholder[-_])?m(?:668|681)\b/.test(probeLower)) {
+        tier = 'argon';
+        tierLabel = 'Orchestrator (Argon)';
+      }
+      return {
+        modelKey: 'orchestrator',
+        modelLabel: 'Orchestrator',
+        variantKey: tier ? `orchestrator:${tier}` : 'orchestrator',
+        variantLabel: tierLabel || 'Orchestrator',
+        isAttributed: true
+      };
+    }
+
+    let modelKey = (effectiveLabel ? normalizeModelId(effectiveLabel) : null) || normalizeModelId(rawStr) || normalizeModelId(probeText);
+    if (!modelKey && probeLower.includes('gpt-oss')) {
+      modelKey = 'gpt-oss-120b';
     }
     const prod = groupModelProduct({
       modelId: resolvedStable || call.modelExactId || call.modelId || rawStr,
-      label: call.modelLabel || (/[A-Z\s()]/.test(rawStr) ? rawStr : ''),
+      label: effectiveLabel,
       effort: call.effort
     });
     if (!modelKey) {
-      const slug = String(prod.productLabel || resolvedStable || rawStr)
+      const slug = String(prod.productLabel || effectiveLabel || resolvedStable || rawStr)
         .toLowerCase()
         .replace(/^model_/, '')
         .replace(/[^a-z0-9.\u4e00-\u9fa5]+/g, '-')
@@ -4927,8 +5130,8 @@
     const modelLabel = MODEL_PRODUCT_DISPLAY_NAMES[modelKey] || prod.productLabel || modelKey;
     let effort = prod.effort || null;
     if (!effort) {
-      const mEff = rawStr.match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?$/i)
-        || (resolvedStable || '').match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?$/i);
+      const effProbe = `${effectiveLabel} ${rawStr} ${resolvedStable || ''}`;
+      const mEff = effProbe.match(/[-_\s(（](x[-_]?high|extra[-_]?high|low|medium|high|minimal|max)[)）]?(?=$|\s)/i);
       if (mEff) effort = formatEffortLabel(mEff[1]);
     }
     const variantKey = effort ? `${modelKey}:${effort.toLowerCase().replace(/\s+/g, '')}` : modelKey;
@@ -4987,6 +5190,7 @@
     if (baseKey.includes('flash')) return fixedTable['gemini-3.8-flash'];
     if (baseKey.includes('argon')) return fixedTable['gemini-4-argon'];
     if (baseKey.includes('carbon')) return fixedTable['gemini-4-carbon'];
+    if (baseKey.includes('orchestrator')) return fixedTable['orchestrator'];
     if (baseKey.includes('hydrogen')) return accentHex || fixedTable['gemini-4-hydrogen'];
     let hash = 0;
     for (let i = 0; i < baseKey.length; i++) {
@@ -5006,10 +5210,10 @@
     const baseColor = resolveBaseModelColor(baseKey, rankIdx, options);
 
     if (!effortPart) return baseColor;
-    // 同模型家族内按档位做同色系明度阶梯区分
+    // 同模型家族内按档位或特殊角色（如 Orchestrator）做同色系明度阶梯区分
     const shadeOffsetByEffort = isLight
-      ? { xhigh: -0.24, extrahigh: -0.24, max: -0.24, high: -0.05, medium: 0.16, low: 0.34, minimal: 0.42 }
-      : { xhigh: -0.22, extrahigh: -0.22, max: -0.22, high: -0.04, medium: 0.18, low: 0.34, minimal: 0.42 };
+      ? { xhigh: -0.24, extrahigh: -0.24, max: -0.24, orchestrator: -0.14, carbon: -0.14, high: -0.05, medium: 0.16, argon: 0.16, low: 0.34, minimal: 0.42 }
+      : { xhigh: -0.22, extrahigh: -0.22, max: -0.22, orchestrator: -0.12, carbon: -0.14, high: -0.04, medium: 0.18, argon: 0.16, low: 0.34, minimal: 0.42 };
     const offset = shadeOffsetByEffort[effortPart];
     return offset !== undefined ? shiftHexShade(baseColor, offset) : baseColor;
   }
@@ -6809,6 +7013,7 @@
     normalizeModelId,
     resolveStableModelId,
     UNATTRIBUTED_MODEL_KEY,
+    lookupModelDisplayLabel,
     resolveModelUsageBucket,
     getModelChartColor,
     summarizeModelUsageWindow,

@@ -2218,6 +2218,7 @@ function buildAccountUsageBreakdown({
   dailyModelMapBySource = null,
   modelMetaByKey = {},
   compactModelConfigs = [],
+  availableModelDetails = null,
   totalConversationsAll = 0,
   unpricedSummaryBySource = null,
   now = new Date()
@@ -2272,7 +2273,7 @@ function buildAccountUsageBreakdown({
     const memoKey = `${callObj.model || ''}\0${callObj.modelExactId || ''}\0${callObj.modelLabel || ''}\0${callObj.effort || ''}`;
     let bucket = bucketMemo.get(memoKey);
     if (!bucket) {
-      bucket = resolveModelUsageBucket(callObj, compactModelConfigs);
+      bucket = resolveModelUsageBucket(callObj, compactModelConfigs, availableModelDetails);
       if (bucketMemo.size < 2000) bucketMemo.set(memoKey, bucket);
     }
     return bucket;
@@ -4629,15 +4630,23 @@ function loadStepModelMapFromSqlite(dbPath) {
   return loadConversationDbMeta(dbPath).stepToModel;
 }
 
+function needsDbLabelEnrichment(rec) {
+  if (!rec || !(rec.tot > 0)) return false;
+  if (!rec.model) return true;
+  if (/^model_/i.test(rec.model)) return true;
+  if (!rec.modelLabel && !/[A-Z\s()]/.test(rec.model)) return true;
+  return false;
+}
+
 function backfillMissingModelsFromConversationDb(records, convDir, options = {}) {
   if (!Array.isArray(records) || !records.length || !convDir || options.fs || isFsMonkeyPatched()) return 0;
 
   const targetByCascade = new Map();
   for (const rec of records) {
     if (!rec || !(rec.tot > 0)) continue;
-    const needsModel = !rec.model;
+    const needsLabel = needsDbLabelEnrichment(rec);
     const needsMeta = !rec.modelExactId || rec.ttftSec == null || rec.streamingSec == null;
-    if (!needsModel && !needsMeta) continue;
+    if (!needsLabel && !needsMeta) continue;
     if (!Number.isInteger(rec.stepIndex) || rec.stepIndex < 0) continue;
     const cid = String(rec.cascadeId || '').trim();
     if (!cid || cid.includes('..') || cid.includes('/') || cid.includes('\\')) continue;
@@ -4658,16 +4667,20 @@ function backfillMissingModelsFromConversationDb(records, convDir, options = {})
     for (const rec of recs) {
       const recovered = dbMeta.stepMetaMap.get(rec.stepIndex);
       if (!recovered) continue;
-      if (!rec.model && recovered.model) {
+      let modelOrLabelFilled = false;
+      if (recovered.model && (!rec.model || (/^model_/i.test(rec.model) && recovered.model !== rec.model))) {
         rec.model = recovered.model;
-        filledCount++;
+        modelOrLabelFilled = true;
       }
       if (!rec.modelExactId && recovered.modelExactId) {
         rec.modelExactId = recovered.modelExactId;
       }
-      if (!rec.modelLabel && recovered.modelLabel) {
-        rec.modelLabel = recovered.modelLabel;
+      const recoveredLabel = recovered.modelLabel || (recovered.model && /[A-Z\s()]/.test(recovered.model) ? recovered.model : '');
+      if (!rec.modelLabel && recoveredLabel) {
+        rec.modelLabel = recoveredLabel;
+        modelOrLabelFilled = true;
       }
+      if (modelOrLabelFilled) filledCount++;
       if (rec.ttftSec == null && recovered.ttftSec != null) {
         rec.ttftSec = recovered.ttftSec;
       }
@@ -4729,10 +4742,14 @@ function buildDailyModelBreakdown(params) {
     mergedCli,
     mergedLegacyUnallocated,
     archiveV2,
-    compactModelConfigs
+    compactModelConfigs,
+    availableModelDetails
   } = params;
 
-  const modelMetaByKey = { ...(archiveV2?.modelMetaByKey || {}) };
+  const modelMetaByKey = {};
+  const archivedMetaByKey = (archiveV2?.modelMetaByKey && typeof archiveV2.modelMetaByKey === 'object')
+    ? archiveV2.modelMetaByKey
+    : {};
   const matchedModels = { desktop: {}, cli: {} };
   const extraModels = { desktop: {}, cli: {} };
   const bucketMemo = new Map();
@@ -4743,7 +4760,7 @@ function buildDailyModelBreakdown(params) {
     const memoKey = `${callObj.model || ''}\0${callObj.modelExactId || ''}\0${callObj.modelLabel || ''}\0${callObj.effort || ''}`;
     let bucket = bucketMemo.get(memoKey);
     if (!bucket) {
-      bucket = resolveModelUsageBucket(callObj, compactModelConfigs);
+      bucket = resolveModelUsageBucket(callObj, compactModelConfigs, availableModelDetails);
       if (bucketMemo.size < 2000) bucketMemo.set(memoKey, bucket);
     }
     const vKey = bucket.variantKey || UNATTRIBUTED_MODEL_KEY;
@@ -4834,12 +4851,44 @@ function buildDailyModelBreakdown(params) {
         appendScaledDayBuckets(dayOut, extraDay, authRec.total, state);
       } else if (archivedModels[dateKey]) {
         for (const [mKey, rec] of Object.entries(archivedModels[dateKey])) {
-          dayOut[mKey] = { ...rec };
-          state.sumTot += rec.total;
-          state.sumInp += rec.input;
-          state.sumOut += rec.output;
-          state.sumCap += rec.cache;
-          state.sumSteps += rec.steps;
+          if (!rec || typeof rec !== 'object') continue;
+          const addTot = Number(rec.total) || 0;
+          const addInp = Number(rec.input) || 0;
+          const addOut = Number(rec.output) || 0;
+          const addCap = Number(rec.cache) || 0;
+          const addSteps = Number(rec.steps) || 0;
+          let effKey = mKey;
+          if (mKey !== UNATTRIBUTED_MODEL_KEY) {
+            const oldMeta = archivedMetaByKey[mKey] || null;
+            const probeLabel = oldMeta?.variantLabel || oldMeta?.modelLabel || '';
+            const reBucket = resolveModelUsageBucket(
+              { model: mKey, ...(probeLabel ? { modelLabel: probeLabel } : {}) },
+              compactModelConfigs,
+              availableModelDetails
+            );
+            effKey = reBucket.variantKey || mKey;
+            if (reBucket.isAttributed && effKey !== UNATTRIBUTED_MODEL_KEY) {
+              modelMetaByKey[effKey] = {
+                modelKey: reBucket.modelKey,
+                modelLabel: reBucket.modelLabel,
+                variantKey: effKey,
+                variantLabel: reBucket.variantLabel
+              };
+            } else if (oldMeta && !modelMetaByKey[effKey]) {
+              modelMetaByKey[effKey] = oldMeta;
+            }
+          }
+          if (!dayOut[effKey]) dayOut[effKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+          dayOut[effKey].total += addTot;
+          dayOut[effKey].input += addInp;
+          dayOut[effKey].output += addOut;
+          dayOut[effKey].cache += addCap;
+          dayOut[effKey].steps += addSteps;
+          state.sumTot += addTot;
+          state.sumInp += addInp;
+          state.sumOut += addOut;
+          state.sumCap += addCap;
+          state.sumSteps += addSteps;
         }
       }
 
@@ -5965,7 +6014,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     mergedCli,
     mergedLegacyUnallocated,
     archiveV2,
-    compactModelConfigs
+    compactModelConfigs,
+    availableModelDetails: livePlanStatus?.availableModelDetails || null
   });
 
   const cacheReadStatsAll = summarizeDailyMapCacheStats(dailyMapAll);
@@ -5988,6 +6038,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     dailyModelMapBySource: modelBreakdown.dailyModelMapBySource,
     modelMetaByKey: modelBreakdown.modelMetaByKey,
     compactModelConfigs,
+    availableModelDetails: livePlanStatus?.availableModelDetails || null,
     totalConversationsAll: totalConversations,
     unpricedSummaryBySource: {
       all: { count: totalUnpricedCount, reasons: totalUnpricedReasons, tokens: totalUnpricedTokens },
@@ -6111,7 +6162,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     (acc, dayRec) => acc + (Number(dayRec?.[UNATTRIBUTED_MODEL_KEY]?.total) || 0),
     0
   );
-  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|m:${Object.keys(modelBreakdown.modelMetaByKey).length}|u:${unattributedModelTokens}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.tierId || ''}|${effectivePlanStatus?.teamsTier || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
+  const modelMetaSig = Object.keys(modelBreakdown.modelMetaByKey).sort().join(',');
+  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|m:${modelMetaSig}|u:${unattributedModelTokens}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.tierId || ''}|${effectivePlanStatus?.teamsTier || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
   const isStaleCheck = typeof extraContext.isStale === 'function' ? extraContext.isStale : null;
   if (isStaleCheck && isStaleCheck()) {
     return { out, archiveSig: null, accountKey: currentAccountKey || null, stale: true };
@@ -8092,7 +8144,9 @@ module.exports = {
   extractTrajectoryBlobMeta,
   loadConversationDbMeta,
   loadStepModelMapFromSqlite,
+  needsDbLabelEnrichment,
   backfillMissingModelsFromConversationDb,
+  buildDailyModelBreakdown,
   collectSessionTimelineCoreAsync,
   collectSessionTimelineAsync,
   scanFiles,

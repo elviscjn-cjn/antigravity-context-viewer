@@ -3593,6 +3593,256 @@ test('Gemini 4 Hydrogen 四档模型识别、1M 统一单档计价、配额池�
     fs.rmSync(cliDir, { recursive: true, force: true });
   }
 });
+test('Model usage breakdown: unifies desktop & CLI model variants and summarizes 7d/30d windows accurately', () => {
+  const {
+    resolveModelUsageBucket,
+    summarizeModelUsageWindow,
+    UNATTRIBUTED_MODEL_KEY
+  } = require('./meter-core');
+
+  const deskBucket = resolveModelUsageBucket({
+    model: 'Gemini 4 Hydrogen (Medium)',
+    modelExactId: 'MODEL_PLACEHOLDER_M526'
+  });
+  const cliBucket = resolveModelUsageBucket({
+    model: 'gemini-4-hydrogen-medium'
+  });
+  assert.equal(deskBucket.modelKey, 'gemini-4-hydrogen');
+  assert.equal(cliBucket.modelKey, 'gemini-4-hydrogen');
+  assert.equal(deskBucket.variantKey, 'gemini-4-hydrogen:medium');
+  assert.equal(cliBucket.variantKey, 'gemini-4-hydrogen:medium');
+  assert.equal(deskBucket.variantLabel, 'Gemini 4 Hydrogen (Medium)');
+  assert.equal(cliBucket.variantLabel, 'Gemini 4 Hydrogen (Medium)');
+
+  const unattr = resolveModelUsageBucket({ model: '' });
+  assert.equal(unattr.modelKey, UNATTRIBUTED_MODEL_KEY);
+  assert.equal(unattr.isAttributed, false);
+
+  const sampleMap = {
+    '2026-11-14': {
+      'gemini-4-hydrogen:medium': { total: 800, input: 100, cache: 600, output: 100, steps: 2 },
+      'gemini-4-argon:high': { total: 200, input: 50, cache: 100, output: 50, steps: 1 }
+    },
+    '2026-11-15': {
+      'gemini-4-hydrogen:xhigh': { total: 500, input: 100, cache: 300, output: 100, steps: 1 },
+      [UNATTRIBUTED_MODEL_KEY]: { total: 500, input: 50, cache: 400, output: 50, steps: 2 }
+    }
+  };
+  const meta = {
+    'gemini-4-hydrogen:medium': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:medium', variantLabel: 'Gemini 4 Hydrogen (Medium)' },
+    'gemini-4-hydrogen:xhigh': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:xhigh', variantLabel: 'Gemini 4 Hydrogen (XHigh)' },
+    'gemini-4-argon:high': { modelKey: 'gemini-4-argon', modelLabel: 'Gemini 4 Argon', variantKey: 'gemini-4-argon:high', variantLabel: 'Gemini 4 Argon (High)' }
+  };
+
+  const winModel = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 7,
+    endDate: '2026-11-16',
+    groupBy: 'model',
+    metric: 'total',
+    modelMetaByKey: meta
+  });
+  assert.equal(winModel.days.length, 7);
+  assert.equal(winModel.windowTotalTokens, 2000);
+  assert.equal(winModel.hasUnattributed, true);
+  assert.equal(winModel.legend[0].key, 'gemini-4-hydrogen');
+  assert.equal(winModel.legend[0].tokens, 1300);
+  assert.equal(winModel.legend[0].pctLabel, '65%');
+  assert.equal(winModel.legend[1].key, 'gemini-4-argon');
+  assert.equal(winModel.legend[1].pctLabel, '10%');
+  assert.equal(winModel.legend[2].key, UNATTRIBUTED_MODEL_KEY);
+  assert.equal(winModel.legend[2].pctLabel, '25%');
+
+  const winNoCacheVar = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 30,
+    endDate: '2026-11-16',
+    groupBy: 'variant',
+    metric: 'noCache',
+    hideUnattributed: true,
+    modelMetaByKey: meta
+  });
+  assert.equal(winNoCacheVar.days.length, 30);
+  assert.equal(winNoCacheVar.windowTotalTokens, 500); // (100+100) + (50+50) + (100+100)
+  assert.equal(winNoCacheVar.legend.length, 3);
+  assert.equal(winNoCacheVar.legend[0].label, 'Gemini 4 Hydrogen (Medium)');
+  assert.equal(winNoCacheVar.legend[0].pctLabel, '40%');
+});
+
+test('Model usage chart palette: native theme colors, custom accent, effort gradients and Claude amber', () => {
+  const {
+    getModelChartColor,
+    summarizeModelUsageWindow,
+    UNATTRIBUTED_MODEL_KEY
+  } = require('./meter-core');
+
+  const hexLuminance = (hex) => {
+    const clean = hex.replace('#', '');
+    const n = parseInt(clean, 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  };
+
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'dark' }), '#a78bfa');
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'light' }), '#7c3aed');
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'dark', accentColor: '#22d3ee' }), '#22d3ee');
+  assert.equal(getModelChartColor('claude-opus-4.6-thinking', 0, { theme: 'dark' }), '#f59e0b');
+  assert.equal(getModelChartColor('claude-opus-4.6-thinking', 0, { theme: 'light' }), '#d97706');
+  assert.equal(getModelChartColor(UNATTRIBUTED_MODEL_KEY, 1, { theme: 'dark' }), 'rgba(161, 161, 170, 0.28)');
+  assert.equal(getModelChartColor(UNATTRIBUTED_MODEL_KEY, 1, { theme: 'light' }), 'rgba(113, 113, 122, 0.24)');
+
+  const cXHigh = getModelChartColor('gemini-4-hydrogen:xhigh', 0, { theme: 'dark' });
+  const cHigh = getModelChartColor('gemini-4-hydrogen:high', 0, { theme: 'dark' });
+  const cMedium = getModelChartColor('gemini-4-hydrogen:medium', 0, { theme: 'dark' });
+  assert.notEqual(cXHigh, cHigh);
+  assert.notEqual(cHigh, cMedium);
+  assert.ok(hexLuminance(cMedium) > hexLuminance(cHigh));
+  assert.ok(hexLuminance(cHigh) > hexLuminance(cXHigh));
+
+  // 当主模型使用与 gpt-oss 默认色冲突的自定义 accentColor 时，次模型应自动避让不撞色
+  const sampleMap = {
+    '2026-11-15': {
+      'gemini-4-hydrogen:medium': { total: 800, input: 100, cache: 600, output: 100, steps: 1 },
+      'gpt-oss-120b': { total: 200, input: 50, cache: 100, output: 50, steps: 1 }
+    }
+  };
+  const win = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 7,
+    endDate: '2026-11-16',
+    theme: 'dark',
+    accentColor: '#10b981'
+  });
+  assert.equal(win.legend[0].color, '#10b981');
+  assert.notEqual(win.legend[1].color, '#10b981');
+});
+
+test('Conversation DB gen_metadata backfill recovers missing transcript models and preserves v2 archive', async (t) => {
+  const fsMod = require('fs');
+  const osMod = require('os');
+  const pathMod = require('path');
+  const {
+    collectTokenHistoryAsync,
+    buildSqliteImmutableUri,
+    extractStepModelsFromGenMetadataBlob
+  } = require('./meter-collector');
+
+  const encodeVarint = (n) => {
+    const out = [];
+    let v = Number(n);
+    while (v >= 0x80) {
+      out.push((v % 128) | 0x80);
+      v = Math.floor(v / 128);
+    }
+    out.push(v);
+    return Buffer.from(out);
+  };
+  const encodeFieldBytes = (fn, payload) => Buffer.concat([
+    encodeVarint(fn * 8 + 2),
+    encodeVarint(payload.length),
+    payload
+  ]);
+  const encodeFieldVarint = (fn, val) => Buffer.concat([
+    encodeVarint(fn * 8 + 0),
+    encodeVarint(val)
+  ]);
+  const encodeGenBlob = ({ steps, rawModel, label, packed = true }) => {
+    const inner = [];
+    if (rawModel) inner.push(encodeFieldBytes(19, Buffer.from(rawModel, 'utf8')));
+    if (label) inner.push(encodeFieldBytes(21, Buffer.from(label, 'utf8')));
+    const parts = [encodeFieldBytes(1, Buffer.concat(inner))];
+    if (packed) {
+      parts.push(encodeFieldBytes(2, Buffer.concat(steps.map(encodeVarint))));
+    } else {
+      steps.forEach(s => parts.push(encodeFieldVarint(2, s)));
+    }
+    return Buffer.concat(parts);
+  };
+
+  assert.equal(
+    buildSqliteImmutableUri('\\\\wsl.localhost\\Ubuntu-26.04\\home\\u\\.gemini\\antigravity-cli\\conversations\\c1.db'),
+    'file:////wsl.localhost/Ubuntu-26.04/home/u/.gemini/antigravity-cli/conversations/c1.db?immutable=1'
+  );
+  assert.equal(
+    buildSqliteImmutableUri('C:\\dir with space\\a#1.db'),
+    'file:///C:/dir%20with%20space/a%231.db?immutable=1'
+  );
+
+  const blobA = encodeGenBlob({ steps: [2, 3], rawModel: 'MODEL_PLACEHOLDER_M18', label: 'Gemini 3.8 Flash (High)', packed: true });
+  const blobB = encodeGenBlob({ steps: [5], rawModel: 'gemini-3.8-flash-n', packed: false });
+  const blobC = encodeGenBlob({ steps: [7], rawModel: 'MODEL_PLACEHOLDER_M667', label: 'Orchestrator (Carbon)', packed: true });
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(blobA), [
+    { stepIndex: 2, model: 'Gemini 3.8 Flash (High)' },
+    { stepIndex: 3, model: 'Gemini 3.8 Flash (High)' }
+  ]);
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(blobB), [
+    { stepIndex: 5, model: 'gemini-3.8-flash-n' }
+  ]);
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(Buffer.from([0xff, 0xff])), []);
+
+  let DatabaseSync = null;
+  try { DatabaseSync = require('node:sqlite').DatabaseSync; } catch { }
+  if (!DatabaseSync) {
+    t.skip('node:sqlite unavailable in current Node runtime');
+    return;
+  }
+
+  const tmpRoot = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'ag-db-backfill-'));
+  const agDir = pathMod.join(tmpRoot, 'ag');
+  const agCliDir = pathMod.join(tmpRoot, 'ag-cli');
+  const cid = '11111111-2222-3333-4444-555555555555';
+  const logsDir = pathMod.join(agDir, 'brain', cid, '.system_generated', 'logs');
+  const convDir = pathMod.join(agDir, 'conversations');
+  fsMod.mkdirSync(logsDir, { recursive: true });
+  fsMod.mkdirSync(convDir, { recursive: true });
+  fsMod.mkdirSync(agCliDir, { recursive: true });
+
+  const todayIso = new Date().toISOString();
+  const todayKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
+  const dbPath = pathMod.join(convDir, `${cid}.db`);
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER)');
+    const insertStmt = db.prepare('INSERT INTO gen_metadata (idx, data, size) VALUES (?, ?, ?)');
+    insertStmt.run(1, blobA, blobA.length);
+    insertStmt.run(2, blobB, blobB.length);
+    insertStmt.run(3, blobC, blobC.length);
+  } finally {
+    db.close();
+  }
+
+  fsMod.writeFileSync(pathMod.join(logsDir, 'transcript.jsonl'), [
+    JSON.stringify({ step_index: 2, created_at: todayIso, input_tokens: 1000, cache_read_tokens: 2000, output_tokens: 300 }),
+    JSON.stringify({ step_index: 5, created_at: todayIso, input_tokens: 400, cache_read_tokens: 500, output_tokens: 100 }),
+    JSON.stringify({ step_index: 7, model: 'gemini-pro-orchestrator', created_at: todayIso, input_tokens: 500, cache_read_tokens: 100, output_tokens: 50 }),
+    JSON.stringify({ step_index: 9, created_at: todayIso, input_tokens: 100, cache_read_tokens: 0, output_tokens: 50 })
+  ].join('\n'), 'utf8');
+
+  try {
+    const res1 = await collectTokenHistoryAsync({
+      agDir,
+      agCliDir,
+      force: true
+    });
+    const dayModels = res1.dailyModelMapBySource?.desktop?.[todayKey] || {};
+    assert.equal(dayModels['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(dayModels['gemini-3.8-flash']?.total, 1000);
+    assert.equal(dayModels['orchestrator:carbon']?.total, 650);
+    assert.equal(dayModels.__unattributed__?.total, 150);
+
+    const archiveV2 = JSON.parse(fsMod.readFileSync(pathMod.join(agDir, 'token_usage_archive_v2.json'), 'utf8'));
+    assert.equal(archiveV2.dailyModelMapBySource?.desktop?.[todayKey]?.['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(archiveV2.dailyModelMapBySource?.desktop?.[todayKey]?.['orchestrator:carbon']?.total, 650);
+
+    const res2 = await collectTokenHistoryAsync({
+      agDir,
+      agCliDir
+    });
+    assert.equal(res2.dailyModelMapBySource?.desktop?.[todayKey]?.['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(res2.dailyModelMapBySource?.desktop?.[todayKey]?.['orchestrator:carbon']?.total, 650);
+  } finally {
+    fsMod.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
 
 test('ELV-83: parseUserPlanStatus、resolveEffectivePlanStatus 与严格 allowedTiers 权限矩阵验证', () => {
   const {
@@ -4304,4 +4554,85 @@ test('v0.8.8 chart visual scale: continuous piecewise anchor interpolation (zero
   const cumLong = computeCumulativeStripSummary(dm30, '2026-07-01', '2026-11-18');
   assert.equal(cumLong.grouping, 'weekly');
   assert.ok(cumLong.segments.length >= 20 && cumLong.segments[0].days.length === 7);
+});
+
+test('Orchestrator & GetAvailableModels resolution: maps M667/M681/gemini-flash-worker-agy cleanly without raw placeholders', () => {
+  const {
+    resolveModelUsageBucket,
+    summarizeModelUsageWindow,
+    getModelChartColor
+  } = require('./meter-core');
+
+  const configs = [
+    { modelId: 'MODEL_PLACEHOLDER_M667', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M667' }, label: 'Orchestrator (Carbon)' },
+    { modelId: 'MODEL_PLACEHOLDER_M681', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M681' }, label: 'Orchestrator (Argon)' }
+  ];
+  const availDetails = {
+    'gemini-flash-worker-agy': { modelId: 'MODEL_PLACEHOLDER_M669', displayName: 'Gemini 4 Hydrogen (Orchestrator)' },
+    model_placeholder_m669: { modelId: 'MODEL_PLACEHOLDER_M669', displayName: 'Gemini 4 Hydrogen (Orchestrator)' },
+    'gemini-pro-orchestrator': { modelId: 'MODEL_PLACEHOLDER_M667', displayName: 'Orchestrator (Carbon)' },
+    model_placeholder_m667: { modelId: 'MODEL_PLACEHOLDER_M667', displayName: 'Orchestrator (Carbon)' },
+    'gemini-future-worker': { modelId: 'MODEL_PLACEHOLDER_M999', displayName: 'Gemini 4 Hydrogen (XHigh)' }
+  };
+
+  const workerDyn = resolveModelUsageBucket({ model: 'gemini-flash-worker-agy' }, configs, availDetails);
+  assert.equal(workerDyn.modelKey, 'gemini-4-hydrogen');
+  assert.equal(workerDyn.modelLabel, 'Gemini 4 Hydrogen');
+  assert.equal(workerDyn.variantKey, 'gemini-4-hydrogen:orchestrator');
+  assert.equal(workerDyn.variantLabel, 'Gemini 4 Hydrogen (Orchestrator)');
+
+  const workerOffline = resolveModelUsageBucket({ model: 'gemini-flash-worker-agy' });
+  assert.equal(workerOffline.modelKey, 'gemini-4-hydrogen');
+  assert.equal(workerOffline.variantKey, 'gemini-4-hydrogen:orchestrator');
+  assert.equal(workerOffline.variantLabel, 'Gemini 4 Hydrogen (Orchestrator)');
+
+  const m667Bucket = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M667', modelLabel: 'MODEL_PLACEHOLDER_M667' }, configs, availDetails);
+  assert.equal(m667Bucket.modelKey, 'orchestrator');
+  assert.equal(m667Bucket.modelLabel, 'Orchestrator');
+  assert.equal(m667Bucket.variantKey, 'orchestrator:carbon');
+  assert.equal(m667Bucket.variantLabel, 'Orchestrator (Carbon)');
+
+  const orchOffline = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M667' });
+  assert.equal(orchOffline.variantKey, 'orchestrator:carbon');
+  assert.equal(orchOffline.variantLabel, 'Orchestrator (Carbon)');
+
+  const cliOrchCarbon = resolveModelUsageBucket({ model: 'gemini-pro-orchestrator' }, configs, availDetails);
+  assert.equal(cliOrchCarbon.modelKey, 'orchestrator');
+  assert.equal(cliOrchCarbon.variantKey, 'orchestrator:carbon');
+  assert.equal(cliOrchCarbon.variantLabel, 'Orchestrator (Carbon)');
+
+  const orchArgon = resolveModelUsageBucket({ model: 'gemini-pro-orchestrator-argon' }, configs, availDetails);
+  assert.equal(orchArgon.modelKey, 'orchestrator');
+  assert.equal(orchArgon.variantKey, 'orchestrator:argon');
+  assert.equal(orchArgon.variantLabel, 'Orchestrator (Argon)');
+
+  const futureDyn = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M999' }, configs, availDetails);
+  assert.equal(futureDyn.modelKey, 'gemini-4-hydrogen');
+  assert.equal(futureDyn.variantKey, 'gemini-4-hydrogen:xhigh');
+
+  assert.equal(getModelChartColor('orchestrator', 0, { theme: 'dark' }), '#f472b6');
+  assert.notEqual(getModelChartColor('orchestrator:carbon', 0, { theme: 'dark' }), getModelChartColor('orchestrator:argon', 1, { theme: 'dark' }));
+  assert.notEqual(getModelChartColor('gemini-4-hydrogen:orchestrator', 0, { theme: 'dark' }), getModelChartColor('gemini-4-hydrogen:xhigh', 1, { theme: 'dark' }));
+
+  const win = summarizeModelUsageWindow({
+    '2026-11-17': {
+      'orchestrator:carbon': { total: 500, input: 100, cache: 350, output: 50, steps: 2 },
+      'orchestrator:argon': { total: 300, input: 100, cache: 150, output: 50, steps: 1 },
+      'gemini-4-hydrogen:orchestrator': { total: 200, input: 50, cache: 100, output: 50, steps: 2 }
+    }
+  }, {
+    periodDays: 7,
+    endDate: '2026-11-18',
+    groupBy: 'model',
+    modelMetaByKey: {
+      'orchestrator:carbon': { modelKey: 'orchestrator', modelLabel: 'Orchestrator', variantKey: 'orchestrator:carbon', variantLabel: 'Orchestrator (Carbon)' },
+      'orchestrator:argon': { modelKey: 'orchestrator', modelLabel: 'Orchestrator', variantKey: 'orchestrator:argon', variantLabel: 'Orchestrator (Argon)' },
+      'gemini-4-hydrogen:orchestrator': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:orchestrator', variantLabel: 'Gemini 4 Hydrogen (Orchestrator)' }
+    }
+  });
+  assert.equal(win.legend.length, 2);
+  assert.equal(win.legend[0].label, 'Orchestrator');
+  assert.equal(win.legend[0].tokens, 800);
+  assert.equal(win.legend[1].label, 'Gemini 4 Hydrogen');
+  assert.equal(win.legend[1].tokens, 200);
 });
