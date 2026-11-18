@@ -345,3 +345,69 @@ test('local-api exports parseExplicitPort and cli.js status / runtime-check.js -
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('cli.js rejects --help, -h, and unknown args/commands with non-zero exit, prints usage only, and performs zero writes or live injection', () => {
+  const { spawnSync } = require('node:child_process');
+  const { parseCliArgs } = require('./cli');
+
+  assert.equal(parseCliArgs([]).cmd, 'install');
+  assert.equal(parseCliArgs(['--path', 'a.asar']).cmd, 'install');
+  assert.equal(parseCliArgs(['status', '--port', '58321']).cmd, 'status');
+  assert.equal(parseCliArgs(['proxy:set', 'http://127.0.0.1:7890', '--path', 'a.asar']).cmd, 'proxy:set');
+  assert.equal(parseCliArgs(['--help']).showHelp, true);
+  assert.equal(parseCliArgs(['--help']).exitCode, 1);
+  assert.equal(parseCliArgs(['-h']).showHelp, true);
+  assert.equal(parseCliArgs(['--unknown']).showHelp, true);
+  assert.equal(parseCliArgs(['unknown-cmd']).showHelp, true);
+  assert.equal(parseCliArgs(['status', '--unknown']).showHelp, true);
+  assert.equal(parseCliArgs(['install', '--port']).reason, 'missing_value');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-help-'));
+  try {
+    const spyFile = path.join(tmpDir, 'spy-no-op.js');
+    const triggerLog = path.join(tmpDir, 'triggers.txt');
+    fs.writeFileSync(spyFile, `
+      'use strict';
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const log = (tag) => fs.appendFileSync(${JSON.stringify(triggerLog)}, tag + '\\n');
+      const installMod = require(path.resolve(${JSON.stringify(path.join(__dirname, 'install.js'))}));
+      installMod.install = async () => { log('install'); throw new Error('must not call install'); };
+      installMod.tryHotInject = async () => { log('tryHotInject'); throw new Error('must not call tryHotInject'); };
+      installMod.tryHotInjectDetailed = async () => { log('tryHotInjectDetailed'); throw new Error('must not call tryHotInjectDetailed'); };
+      const localApi = require(path.resolve(${JSON.stringify(path.join(__dirname, 'local-api.js'))}));
+      localApi.discoverAntigravityCdp = async () => { log('discoverCdp'); throw new Error('must not call discoverCdp'); };
+    `, 'utf8');
+
+    const env = {
+      ...process.env,
+      AG_METER_STATE_DIR: path.join(tmpDir, 'state'),
+      AG_METER_TEST_MODE: '1',
+      APPDATA: path.join(tmpDir, 'appdata'),
+      LOCALAPPDATA: path.join(tmpDir, 'localappdata')
+    };
+
+    const cases = [
+      ['--help'],
+      ['-h'],
+      ['--unknown-flag'],
+      ['unknown-subcommand'],
+      ['status', '--unknown-flag'],
+      ['install', '--bad-arg']
+    ];
+    for (const argv of cases) {
+      const res = spawnSync(
+        process.execPath,
+        ['-r', spyFile, path.join(__dirname, 'cli.js'), ...argv],
+        { cwd: __dirname, env, encoding: 'utf8', windowsHide: true }
+      );
+      assert.notEqual(res.status, 0, `args ${JSON.stringify(argv)} must exit non-zero`);
+      assert.match(res.stdout, /用法:/, `args ${JSON.stringify(argv)} must print usage`);
+      assert.doesNotMatch(res.stdout, /正在安装|已通过 CDP 热注入/, `args ${JSON.stringify(argv)} must not trigger install/live`);
+    }
+    assert.equal(fs.existsSync(triggerLog), false, 'Help/unknown args must trigger zero install/live/CDP calls');
+    assert.equal(fs.existsSync(path.join(tmpDir, 'state')), false, 'Help/unknown args must not create stateDir files');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

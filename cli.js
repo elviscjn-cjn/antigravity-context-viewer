@@ -949,24 +949,98 @@ async function cmdCheck(customPath, cdpOptions = {}) {
   console.log('✅ 环境预检通过！');
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const VALUE_FLAGS = new Set([
-    '--path', '--backup', '--port', '--proxy-url',
-    '--mode', '--limit', '--tier', '--title', '--context', '--brand', '--lang'
-  ]);
-  let cmd = 'install';
+const CLI_VALUE_FLAGS = new Set([
+  '--path', '--backup', '--port', '--proxy-url',
+  '--mode', '--limit', '--tier', '--title', '--context', '--brand', '--lang'
+]);
+
+const CLI_BOOLEAN_FLAGS = new Set([
+  '--force', '--all', '--no-cli-sync', '--no-sync', '--previous', '--in-place'
+]);
+
+const CLI_KNOWN_COMMANDS = new Set([
+  'install', 'live', 'watch', 'stop-watch', 'restore', 'uninstall',
+  'unlock-status', 'unlock', 'unlock-restore',
+  'enhance-status', 'enhance', 'enhance-restore',
+  'modules', 'chinese:enable', 'chinese:disable',
+  'proxy:enable', 'proxy:disable', 'proxy:set', 'proxy:test',
+  'status', 'check'
+]);
+
+const CLI_POS_ARG_COMMANDS = new Set(['proxy:set', 'proxy:test']);
+
+function printUsage() {
+  console.log(`用法:
+  node cli.js watch [--port <port>]         免改盘后台守护模式（随客户端启动自动挂载，关闭后自动退出）
+  node cli.js stop-watch                    停止正在运行的 watch 守护进程与本地桥接服务
+  node cli.js live [--port <port>]          免改盘 CDP 热挂载到当前运行窗口
+  node cli.js install [--path <app.asar>]   一键持久化安装并热注入当前运行窗口
+  node cli.js status [--port <port>]        查看安装状态与当前对话实时上下文用量
+  node cli.js check [--port <port>]         执行前置环境健康检查
+  node cli.js restore [--all]               一键无损卸载并恢复备份 (--all 含还原内核增强)
+  node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文调整状态
+  node cli.js unlock --mode <default|fixed|dynamic> [--limit N]  调整上下文长度上限
+  node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制
+  node cli.js enhance-status                检查系统提示词精简与中文标题内核状态
+  node cli.js enhance [--tier 0-4] [--title on|off] [--context default|512k|900k|dynamic] [--lang zh-CN|en] [--brand english|hidden|translated]
+  node cli.js enhance-restore               一键还原系统提示词、英文标题与默认上下文`);
+}
+
+/**
+ * 严格解析 CLI 参数：遇到 --help / -h 或任何未知命令/未知参数时立即返回帮助状态与非 0 退出码，绝不回落至 install 写盘或热注入。
+ */
+function parseCliArgs(args = []) {
+  let cmd = null;
+  let positionalExtraCount = 0;
+
   for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (VALUE_FLAGS.has(a)) {
-      i++;
+    const a = String(args[i] ?? '');
+    if (a === '--help' || a === '-h') {
+      return { cmd: 'help', showHelp: true, exitCode: 1, reason: 'help', unknownArg: null };
+    }
+    if (a.startsWith('-')) {
+      if (CLI_VALUE_FLAGS.has(a)) {
+        if (i + 1 >= args.length) {
+          return { cmd: 'unknown', showHelp: true, exitCode: 1, reason: 'missing_value', unknownArg: a };
+        }
+        i++;
+        continue;
+      }
+      if (CLI_BOOLEAN_FLAGS.has(a)) {
+        continue;
+      }
+      return { cmd: 'unknown', showHelp: true, exitCode: 1, reason: 'unknown_flag', unknownArg: a };
+    }
+    if (!cmd) {
+      const lower = a.toLowerCase();
+      if (!CLI_KNOWN_COMMANDS.has(lower)) {
+        return { cmd: 'unknown', showHelp: true, exitCode: 1, reason: 'unknown_command', unknownArg: a };
+      }
+      cmd = lower;
       continue;
     }
-    if (!a.startsWith('-')) {
-      cmd = a.toLowerCase();
-      break;
+    if (CLI_POS_ARG_COMMANDS.has(cmd) && positionalExtraCount === 0) {
+      positionalExtraCount++;
+      continue;
     }
+    return { cmd: 'unknown', showHelp: true, exitCode: 1, reason: 'unexpected_arg', unknownArg: a };
   }
+
+  return { cmd: cmd || 'install', showHelp: false, exitCode: 0, reason: null, unknownArg: null };
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const parsedArgs = parseCliArgs(args);
+  if (parsedArgs.showHelp) {
+    if (parsedArgs.unknownArg) {
+      console.error(`❌ 未知或无效参数: ${parsedArgs.unknownArg}`);
+    }
+    printUsage();
+    process.exitCode = parsedArgs.exitCode || 1;
+    return;
+  }
+  const cmd = parsedArgs.cmd;
   const pathIdx = args.indexOf('--path');
   const customPath = pathIdx >= 0 ? args[pathIdx + 1] : null;
   const backupIdx = args.indexOf('--backup');
@@ -1292,20 +1366,8 @@ async function main() {
   } else if (cmd === 'check') {
     await cmdCheck(customPath, cdpOptions);
   } else {
-    console.log(`用法:
-  node cli.js watch [--port <port>]         免改盘后台守护模式（随客户端启动自动挂载，关闭后自动退出）
-  node cli.js stop-watch                    停止正在运行的 watch 守护进程与本地桥接服务
-  node cli.js live [--port <port>]          免改盘 CDP 热挂载到当前运行窗口
-  node cli.js install [--path <app.asar>]   一键持久化安装并热注入当前运行窗口
-  node cli.js status [--port <port>]        查看安装状态与当前对话实时上下文用量
-  node cli.js check [--port <port>]         执行前置环境健康检查
-  node cli.js restore [--all]               一键无损卸载并恢复备份 (--all 含还原内核增强)
-  node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文调整状态
-  node cli.js unlock --mode <default|fixed|dynamic> [--limit N]  调整上下文长度上限
-  node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制
-  node cli.js enhance-status                检查系统提示词精简与中文标题内核状态
-  node cli.js enhance [--tier 0-4] [--title on|off] [--context default|512k|900k|dynamic] [--lang zh-CN|en] [--brand english|hidden|translated]
-  node cli.js enhance-restore               一键还原系统提示词、英文标题与默认上下文`);
+    printUsage();
+    process.exitCode = 1;
   }
 }
 
@@ -1317,6 +1379,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  parseCliArgs,
   cmdStatus,
   cmdCheck,
   queryLiveWindow,
