@@ -2368,3 +2368,13 @@
     .ag-dp-action-btn:focus-visible{
       outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
     }
+
+/* Effective-state labels stay distinct from the user's unsaved checkbox draft. */
+.rec-effective-state {
+  font-size: 10px;
+  color: var(--ag-text-muted);
+  white-space: nowrap;
+}
+.rec-effective-state[data-state="on"] { color: var(--ag-ok, #34a875); }
+.rec-effective-state[data-state="pendingRestart"],
+.rec-effective-state[data-state="error"] { color: var(--ag-warn, #d99b32); }

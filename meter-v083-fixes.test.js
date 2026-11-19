@@ -811,10 +811,10 @@ test('设置页动态操作反馈三语支持与面板语言切换即时更新�
   h.elements.get('chk-rec-title').checked = true;
   h.elements.get('btn-enhance-preset-apply').click();
   const confirmText = h.elements.get('enhance-preset-confirm-text');
-  assert.match(confirmText.textContent, /About to apply checked items: .*, /);
+  assert.match(confirmText.textContent, /Enable: .*, .*; disable \(restore item\):/);
   h.elements.get('btn-top-lang-zh-CN').click();
   await new Promise(r => setTimeout(r, 25));
-  assert.match(confirmText.textContent, /即将执行以下已勾选项：.*、/);
+  assert.match(confirmText.textContent, /将开启：.*、.*；将关闭/);
 
   // 恢复默认触发部分失败，随后切换 EN 验证全部条目与分隔符重译
   h.elements.get('btn-enhance-restore-all').click();

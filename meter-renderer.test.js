@@ -2204,7 +2204,9 @@ test('0.8.3 增强设置中心全流程：品牌三态、0~4档矩阵、推荐�
   h.elements.get('btn-enhance-confirm-go').click();
   await h.flush();
   assert.equal(calls.enhanceApply[0].promptTier, 4);
-  assert.equal(calls.enhanceApply[0].chineseTitle, true);
+  assert.equal(calls.enhanceApply[0].chineseTitle, undefined);
+  assert.equal(calls.enhanceApply[1].chineseTitle, true);
+  assert.equal(calls.enhanceApply[1].promptTier, undefined);
   assert.equal(calls.toggleMod.some(c => c.name === 'chinese' && c.enable === true), true);
   assert.equal(calls.unlockApply[0].mode, 'dynamic');
   assert.equal(h.elements.get('btn-enhance-restart-ls').hidden, false);

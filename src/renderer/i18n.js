@@ -19,6 +19,15 @@ function getPanelLanguage() {
 }
 
 const PANEL_I18N = {
+      'enhance.effective.noDiff': {"zh-CN": "没有需要应用的变更。", "zh-TW": "沒有需要套用的變更。", "en": "No changes to apply."},
+      'enhance.effective.unsaved': {"zh-CN": "有未保存修改；点击应用并确认后才会写入。", "zh-TW": "有未儲存修改；點擊套用並確認後才會寫入。", "en": "Unsaved changes; apply and confirm to write."},
+      'enhance.effective.error': {"zh-CN": "读取失败", "zh-TW": "讀取失敗", "en": "Read failed"},
+      'enhance.effective.unsupported': {"zh-CN": "不支持", "zh-TW": "不支援", "en": "Unsupported"},
+      'enhance.effective.unknown': {"zh-CN": "状态未确认", "zh-TW": "狀態未確認", "en": "Unconfirmed"},
+      'enhance.effective.pendingRestart': {"zh-CN": "待重启", "zh-TW": "待重新啟動", "en": "Pending restart"},
+      'enhance.effective.off': {"zh-CN": "未启用", "zh-TW": "未啟用", "en": "Off"},
+      'enhance.effective.on': {"zh-CN": "已生效", "zh-TW": "已生效", "en": "Active"},
+      'enhance.effective.loading': {"zh-CN": "读取中…", "zh-TW": "讀取中…", "en": "Reading…"},
   // 顶部入口单元与气泡
   'badge.aria': { 'zh-CN': '会话与上下文统计', 'zh-TW': '對話與 Context 統計', en: 'Session and context statistics' },
   'badge.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
@@ -1178,7 +1187,7 @@ const PANEL_I18N = {
 
       // 推荐配置 / 提示词档位 / 品牌标题 / 增强设置
       'enhance.preset.title': { 'zh-CN': '✨ 推荐配置（按需主动应用）', 'zh-TW': '✨ 推薦設定（依需求主動套用）', en: '✨ Recommended Setup (Opt-In)' },
-      'enhance.preset.desc': { 'zh-CN': '只安装插件不会暗中改写您的提示词、标题、语言或上下文。勾选需要开启的能力，点击下方按钮查看改动清单并确认后再执行。', 'zh-TW': '僅安裝外掛不會暗中改寫您的提示詞、標題、語言或上下文。勾選需要開啟的功能，點擊下方按鈕檢視變更清單並確認後再執行。', en: 'Installing never alters prompts, titles, UI language, or context secretly. Select items below and confirm the preview before applying.' },
+      'enhance.preset.desc': {"zh-CN": "复选框显示实际生效状态。修改后仅应用差异：勾选将开启，取消勾选将恢复该项；待重启不代表已生效。确认前不会写入。", "zh-TW": "核取方塊顯示實際生效狀態。修改後僅套用差異：勾選將開啟，取消勾選將恢復該項；待重新啟動不代表已生效。確認前不會寫入。", "en": "Checkboxes reflect effective state. Only changes are applied: check to enable, uncheck to restore that item. Pending restart is not active. Nothing is written before confirmation."},
       'enhance.preset.itemPrompt': { 'zh-CN': '精简防幻觉增强提示词 (4档)', 'zh-TW': '精簡防幻覺增強提示詞 (4檔)', en: 'Lean Anti-Hallucination Prompt (Tier 4)' },
       'enhance.preset.itemPromptSub': { 'zh-CN': '保留原生任务工具规范，注入工具契约与事实校验准则（写入验证，非保证模型不出错）', 'zh-TW': '保留原生任務工具規範，注入工具契約與事實校驗準則（寫入驗證，非保證模型不出錯）', en: 'Keeps native tools, adds verification & tool discipline (template write only; does not guarantee zero errors)' },
       'enhance.preset.itemTitle': { 'zh-CN': '自动中文会话标题', 'zh-TW': '自動中文工作階段標題', en: 'Auto Chinese Chat Titles' },
@@ -1190,7 +1199,7 @@ const PANEL_I18N = {
       'enhance.preset.applyBtn': { 'zh-CN': '应用所选推荐配置…', 'zh-TW': '套用所選推薦設定…', en: 'Apply Selected Preset…' },
       'enhance.restoreAll.btn': { 'zh-CN': '全部恢复官方默认…', 'zh-TW': '全部恢復官方預設…', en: 'Restore All to Stock…' },
       'enhance.confirm.go': { 'zh-CN': '确认执行', 'zh-TW': '確認執行', en: 'Confirm' },
-      'enhance.confirm.presetSummary': { 'zh-CN': '即将执行以下已勾选项：{items}；未勾选项目保持不变。变更后可能需要重启语言服务或 Antigravity 客户端加载生效。', 'zh-TW': '即將執行以下已勾選項：{items}；未勾選項目維持不變。變更後可能需要重啟語言服務或 Antigravity 用戶端載入生效。', en: 'About to apply checked items: {items}; unchecked items stay untouched. A language server or client restart may be required.' },
+      'enhance.confirm.presetSummary': {"zh-CN": "将开启：{enabling}；将关闭（恢复该项）：{disabling}。仅执行这些差异；变更后可能需要重启语言服务或 Antigravity 客户端。", "zh-TW": "將開啟：{enabling}；將關閉（恢復該項）：{disabling}。僅執行這些差異；變更後可能需要重新啟動語言服務或 Antigravity 用戶端。", "en": "Enable: {enabling}; disable (restore item): {disabling}. Only these changes will be applied. A language server or Antigravity restart may be required."},
       'enhance.confirm.restoreSummary': { 'zh-CN': '「全部恢复官方默认」将还原以下 4 项：系统提示词(0档原版)、关闭中文会话标题、客户端英文界面及品牌(Antigravity)、宿主默认上下文行为。不会清除网络代理、面板语言及已保存的模型长度偏好。是否继续？', 'zh-TW': '「全部恢復官方預設」將還原以下 4 項：系統提示詞(0檔原版)、關閉中文工作階段標題、用戶端英文介面及品牌(Antigravity)、宿主預設上下文行為。不會清除網路代理、面板語言及已儲存的模型長度偏好。是否繼續？', en: '"Restore All to Stock" resets these 4 items: Tier 0 prompt, stock English titles, English host UI & brand (Antigravity), and native context behavior. Keeps proxy, panel language, and saved model preferences. Continue?' },
       'enhance.confirm.noneSelected': { 'zh-CN': '请至少勾选一项要应用的配置。', 'zh-TW': '請至少勾選一項要套用的設定。', en: 'Select at least one option first.' },
       'enhance.btn.restartLs': { 'zh-CN': '重启语言服务', 'zh-TW': '重啟語言服務', en: 'Restart Language Server' },
@@ -1602,6 +1611,17 @@ function applyStaticPanelTranslations(rootNode = shadow) {
 }
 
 const BACKEND_EXACT_TRANSLATIONS = {
+  "没有需要应用的变更。": {"zh-TW": "沒有需要套用的變更。", "en": "No changes to apply."},
+  "有未保存修改；点击应用并确认后才会写入。": {"zh-TW": "有未儲存修改；點擊套用並確認後才會寫入。", "en": "Unsaved changes; apply and confirm to write."},
+  "读取失败": {"zh-TW": "讀取失敗", "en": "Read failed"},
+  "不支持": {"zh-TW": "不支援", "en": "Unsupported"},
+  "状态未确认": {"zh-TW": "狀態未確認", "en": "Unconfirmed"},
+  "待重启": {"zh-TW": "待重新啟動", "en": "Pending restart"},
+  "未启用": {"zh-TW": "未啟用", "en": "Off"},
+  "已生效": {"zh-TW": "已生效", "en": "Active"},
+  "读取中…": {"zh-TW": "讀取中…", "en": "Reading…"},
+  "将开启：{enabling}；将关闭（恢复该项）：{disabling}。仅执行这些差异；变更后可能需要重启语言服务或 Antigravity 客户端。": {"zh-TW": "將開啟：{enabling}；將關閉（恢復該項）：{disabling}。僅執行這些差異；變更後可能需要重新啟動語言服務或 Antigravity 用戶端。", "en": "Enable: {enabling}; disable (restore item): {disabling}. Only these changes will be applied. A language server or Antigravity restart may be required."},
+  "复选框显示实际生效状态。修改后仅应用差异：勾选将开启，取消勾选将恢复该项；待重启不代表已生效。确认前不会写入。": {"zh-TW": "核取方塊顯示實際生效狀態。修改後僅套用差異：勾選將開啟，取消勾選將恢復該項；待重新啟動不代表已生效。確認前不會寫入。", "en": "Checkboxes reflect effective state. Only changes are applied: check to enable, uncheck to restore that item. Pending restart is not active. Nothing is written before confirmation."},
   '未知错误': { 'zh-TW': '未知錯誤', en: 'Unknown error' },
   '无效的设置参数': { 'zh-TW': '無效的設定參數', en: 'Invalid settings payload' },
   '宿主暂不支持重启': { 'zh-TW': '宿主暫不支援重新啟動', en: 'Host restart is not supported' },

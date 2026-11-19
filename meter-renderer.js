@@ -2528,6 +2528,16 @@
     .ag-dp-action-btn:focus-visible{
       outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
     }
+
+/* Effective-state labels stay distinct from the user's unsaved checkbox draft. */
+.rec-effective-state {
+  font-size: 10px;
+  color: var(--ag-text-muted);
+  white-space: nowrap;
+}
+.rec-effective-state[data-state="on"] { color: var(--ag-ok, #34a875); }
+.rec-effective-state[data-state="pendingRestart"],
+.rec-effective-state[data-state="error"] { color: var(--ag-warn, #d99b32); }
   </style>
 
   <!-- 顶部基本单元 0: 模型额度圆环入口（工具组最左侧） -->
@@ -3340,32 +3350,37 @@
           <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
           <span id="enhance-global-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
         </div>
-        <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">正常安装默认保持客户端原样。下方列出推荐增强组合；只有你勾选并确认后才会实际写入。
+        <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">复选框显示实际生效状态。修改后仅应用差异：勾选将开启，取消勾选将恢复该项；待重启不代表已生效。确认前不会写入。
         </div>
+        <div id="rec-draft-note" class="ctx-settings-card-desc" role="status" hidden data-i18n="enhance.effective.unsaved">有未保存修改；点击应用并确认后才会写入。</div>
         <div class="ctx-preset-checklist">
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-prompt" type="checkbox" checked>
+            <input id="chk-rec-prompt" type="checkbox" disabled>
+            <span id="rec-prompt-state" class="rec-effective-state" aria-live="polite" data-i18n="enhance.effective.loading">读取中…</span>
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemPrompt">系统提示词 4 档（极简防幻觉）</strong>
               <span data-i18n="enhance.preset.itemPromptSub">精简模板套话并保留真实工具契约；仅作用于系统提示，不能保证模型永不犯错。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-title" type="checkbox" checked>
+            <input id="chk-rec-title" type="checkbox" disabled>
+            <span id="rec-title-state" class="rec-effective-state" aria-live="polite" data-i18n="enhance.effective.loading">读取中…</span>
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemTitle">自动中文会话标题</strong>
               <span data-i18n="enhance.preset.itemTitleSub">新会话自动生成简体中文标题（等长替换指令文本，不破坏结构）。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-lang" type="checkbox" checked>
+            <input id="chk-rec-lang" type="checkbox" disabled>
+            <span id="rec-lang-state" class="rec-effective-state" aria-live="polite" data-i18n="enhance.effective.loading">读取中…</span>
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemLang">客户端简体中文界面（Antigravity 本身）</strong>
               <span data-i18n="enhance.preset.itemLangSub">仅改变桌面端壳层中文，不影响你选择的插件面板语言。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-ctx" type="checkbox" checked>
+            <input id="chk-rec-ctx" type="checkbox" disabled>
+            <span id="rec-ctx-state" class="rec-effective-state" aria-live="polite" data-i18n="enhance.effective.loading">读取中…</span>
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemCtx">上下文模式：跟随模型</strong>
               <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>
@@ -5048,6 +5063,15 @@ function getPanelLanguage() {
 }
 
 const PANEL_I18N = {
+      'enhance.effective.noDiff': {"zh-CN": "没有需要应用的变更。", "zh-TW": "沒有需要套用的變更。", "en": "No changes to apply."},
+      'enhance.effective.unsaved': {"zh-CN": "有未保存修改；点击应用并确认后才会写入。", "zh-TW": "有未儲存修改；點擊套用並確認後才會寫入。", "en": "Unsaved changes; apply and confirm to write."},
+      'enhance.effective.error': {"zh-CN": "读取失败", "zh-TW": "讀取失敗", "en": "Read failed"},
+      'enhance.effective.unsupported': {"zh-CN": "不支持", "zh-TW": "不支援", "en": "Unsupported"},
+      'enhance.effective.unknown': {"zh-CN": "状态未确认", "zh-TW": "狀態未確認", "en": "Unconfirmed"},
+      'enhance.effective.pendingRestart': {"zh-CN": "待重启", "zh-TW": "待重新啟動", "en": "Pending restart"},
+      'enhance.effective.off': {"zh-CN": "未启用", "zh-TW": "未啟用", "en": "Off"},
+      'enhance.effective.on': {"zh-CN": "已生效", "zh-TW": "已生效", "en": "Active"},
+      'enhance.effective.loading': {"zh-CN": "读取中…", "zh-TW": "讀取中…", "en": "Reading…"},
   // 顶部入口单元与气泡
   'badge.aria': { 'zh-CN': '会话与上下文统计', 'zh-TW': '對話與 Context 統計', en: 'Session and context statistics' },
   'badge.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
@@ -6207,7 +6231,7 @@ const PANEL_I18N = {
 
       // 推荐配置 / 提示词档位 / 品牌标题 / 增强设置
       'enhance.preset.title': { 'zh-CN': '✨ 推荐配置（按需主动应用）', 'zh-TW': '✨ 推薦設定（依需求主動套用）', en: '✨ Recommended Setup (Opt-In)' },
-      'enhance.preset.desc': { 'zh-CN': '只安装插件不会暗中改写您的提示词、标题、语言或上下文。勾选需要开启的能力，点击下方按钮查看改动清单并确认后再执行。', 'zh-TW': '僅安裝外掛不會暗中改寫您的提示詞、標題、語言或上下文。勾選需要開啟的功能，點擊下方按鈕檢視變更清單並確認後再執行。', en: 'Installing never alters prompts, titles, UI language, or context secretly. Select items below and confirm the preview before applying.' },
+      'enhance.preset.desc': {"zh-CN": "复选框显示实际生效状态。修改后仅应用差异：勾选将开启，取消勾选将恢复该项；待重启不代表已生效。确认前不会写入。", "zh-TW": "核取方塊顯示實際生效狀態。修改後僅套用差異：勾選將開啟，取消勾選將恢復該項；待重新啟動不代表已生效。確認前不會寫入。", "en": "Checkboxes reflect effective state. Only changes are applied: check to enable, uncheck to restore that item. Pending restart is not active. Nothing is written before confirmation."},
       'enhance.preset.itemPrompt': { 'zh-CN': '精简防幻觉增强提示词 (4档)', 'zh-TW': '精簡防幻覺增強提示詞 (4檔)', en: 'Lean Anti-Hallucination Prompt (Tier 4)' },
       'enhance.preset.itemPromptSub': { 'zh-CN': '保留原生任务工具规范，注入工具契约与事实校验准则（写入验证，非保证模型不出错）', 'zh-TW': '保留原生任務工具規範，注入工具契約與事實校驗準則（寫入驗證，非保證模型不出錯）', en: 'Keeps native tools, adds verification & tool discipline (template write only; does not guarantee zero errors)' },
       'enhance.preset.itemTitle': { 'zh-CN': '自动中文会话标题', 'zh-TW': '自動中文工作階段標題', en: 'Auto Chinese Chat Titles' },
@@ -6219,7 +6243,7 @@ const PANEL_I18N = {
       'enhance.preset.applyBtn': { 'zh-CN': '应用所选推荐配置…', 'zh-TW': '套用所選推薦設定…', en: 'Apply Selected Preset…' },
       'enhance.restoreAll.btn': { 'zh-CN': '全部恢复官方默认…', 'zh-TW': '全部恢復官方預設…', en: 'Restore All to Stock…' },
       'enhance.confirm.go': { 'zh-CN': '确认执行', 'zh-TW': '確認執行', en: 'Confirm' },
-      'enhance.confirm.presetSummary': { 'zh-CN': '即将执行以下已勾选项：{items}；未勾选项目保持不变。变更后可能需要重启语言服务或 Antigravity 客户端加载生效。', 'zh-TW': '即將執行以下已勾選項：{items}；未勾選項目維持不變。變更後可能需要重啟語言服務或 Antigravity 用戶端載入生效。', en: 'About to apply checked items: {items}; unchecked items stay untouched. A language server or client restart may be required.' },
+      'enhance.confirm.presetSummary': {"zh-CN": "将开启：{enabling}；将关闭（恢复该项）：{disabling}。仅执行这些差异；变更后可能需要重启语言服务或 Antigravity 客户端。", "zh-TW": "將開啟：{enabling}；將關閉（恢復該項）：{disabling}。僅執行這些差異；變更後可能需要重新啟動語言服務或 Antigravity 用戶端。", "en": "Enable: {enabling}; disable (restore item): {disabling}. Only these changes will be applied. A language server or Antigravity restart may be required."},
       'enhance.confirm.restoreSummary': { 'zh-CN': '「全部恢复官方默认」将还原以下 4 项：系统提示词(0档原版)、关闭中文会话标题、客户端英文界面及品牌(Antigravity)、宿主默认上下文行为。不会清除网络代理、面板语言及已保存的模型长度偏好。是否继续？', 'zh-TW': '「全部恢復官方預設」將還原以下 4 項：系統提示詞(0檔原版)、關閉中文工作階段標題、用戶端英文介面及品牌(Antigravity)、宿主預設上下文行為。不會清除網路代理、面板語言及已儲存的模型長度偏好。是否繼續？', en: '"Restore All to Stock" resets these 4 items: Tier 0 prompt, stock English titles, English host UI & brand (Antigravity), and native context behavior. Keeps proxy, panel language, and saved model preferences. Continue?' },
       'enhance.confirm.noneSelected': { 'zh-CN': '请至少勾选一项要应用的配置。', 'zh-TW': '請至少勾選一項要套用的設定。', en: 'Select at least one option first.' },
       'enhance.btn.restartLs': { 'zh-CN': '重启语言服务', 'zh-TW': '重啟語言服務', en: 'Restart Language Server' },
@@ -6631,6 +6655,17 @@ function applyStaticPanelTranslations(rootNode = shadow) {
 }
 
 const BACKEND_EXACT_TRANSLATIONS = {
+  "没有需要应用的变更。": {"zh-TW": "沒有需要套用的變更。", "en": "No changes to apply."},
+  "有未保存修改；点击应用并确认后才会写入。": {"zh-TW": "有未儲存修改；點擊套用並確認後才會寫入。", "en": "Unsaved changes; apply and confirm to write."},
+  "读取失败": {"zh-TW": "讀取失敗", "en": "Read failed"},
+  "不支持": {"zh-TW": "不支援", "en": "Unsupported"},
+  "状态未确认": {"zh-TW": "狀態未確認", "en": "Unconfirmed"},
+  "待重启": {"zh-TW": "待重新啟動", "en": "Pending restart"},
+  "未启用": {"zh-TW": "未啟用", "en": "Off"},
+  "已生效": {"zh-TW": "已生效", "en": "Active"},
+  "读取中…": {"zh-TW": "讀取中…", "en": "Reading…"},
+  "将开启：{enabling}；将关闭（恢复该项）：{disabling}。仅执行这些差异；变更后可能需要重启语言服务或 Antigravity 客户端。": {"zh-TW": "將開啟：{enabling}；將關閉（恢復該項）：{disabling}。僅執行這些差異；變更後可能需要重新啟動語言服務或 Antigravity 用戶端。", "en": "Enable: {enabling}; disable (restore item): {disabling}. Only these changes will be applied. A language server or Antigravity restart may be required."},
+  "复选框显示实际生效状态。修改后仅应用差异：勾选将开启，取消勾选将恢复该项；待重启不代表已生效。确认前不会写入。": {"zh-TW": "核取方塊顯示實際生效狀態。修改後僅套用差異：勾選將開啟，取消勾選將恢復該項；待重新啟動不代表已生效。確認前不會寫入。", "en": "Checkboxes reflect effective state. Only changes are applied: check to enable, uncheck to restore that item. Pending restart is not active. Nothing is written before confirmation."},
   '未知错误': { 'zh-TW': '未知錯誤', en: 'Unknown error' },
   '无效的设置参数': { 'zh-TW': '無效的設定參數', en: 'Invalid settings payload' },
   '宿主暂不支持重启': { 'zh-TW': '宿主暫不支援重新啟動', en: 'Host restart is not supported' },
@@ -11317,6 +11352,8 @@ function formatPeriodCalendarLabel(currentPeriod) {
       }
       if (isContextSettingsView) {
         void refreshModulesDisplay();
+        void refreshEnhanceStatus();
+        void refreshUnlockStatus();
       }
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
@@ -15795,9 +15832,7 @@ function closeAllDropdowns(exceptWrap = null) {
       renderSpeedComparisonTab();
     } else if (tabName === 'settings') {
       void refreshModulesDisplay();
-      if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
-        void refreshUnlockStatus();
-      }
+      void refreshUnlockStatus();
       if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
     }
     positionFloatingPanels();
@@ -18094,16 +18129,18 @@ function closeAllDropdowns(exceptWrap = null) {
 
   async function refreshUnlockStatus() {
     const thisSeq = ++unlockReqSeq;
+    observeRecommended('ctx', 'loading');
     try {
       const currentObservedBudget = (state.latest?.budget && state.latest.budget > 0)
         ? state.latest.budget
         : undefined;
-      const res = await invokeUnlockApi('status', { currentBudget: currentObservedBudget });
+      const res = await readRecommendedStatus(() => invokeUnlockApi('status', { currentBudget: currentObservedBudget }));
       if (thisSeq !== unlockReqSeq) return;
 
       if (!res || !res.ok || !res.data) {
         unlockStatusFetchError = true;
         currentUnlockStatus = null;
+        observeContextRecommended(null, res?.unavailable || res?.timedOut ? 'unknown' : 'error');
         if (unlockStatusDesc) unlockStatusDesc.textContent = t('status.client.unavailable');
         renderCompactSessionCard();
         renderClientStatusBar();
@@ -18137,6 +18174,7 @@ function closeAllDropdowns(exceptWrap = null) {
         }
       }
 
+      observeContextRecommended(data);
       const statusInfo = mapUnlockDisplayStatus(data);
       if (unlockStatusDesc) {
         unlockStatusDesc.textContent = t('models.status.line', { badge: statusInfo.badge, mode: describeClientModeValue(data) });
@@ -18202,6 +18240,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (thisSeq !== unlockReqSeq) return;
       unlockStatusFetchError = true;
       currentUnlockStatus = null;
+      observeContextRecommended(null, 'error');
       renderCompactSessionCard();
       renderClientStatusBar();
     }
@@ -19210,6 +19249,137 @@ function closeAllDropdowns(exceptWrap = null) {
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
 
+  // Observations never stand in for saved preferences. Drafts survive background reads.
+  const recommendedItems = Object.fromEntries([
+    ['prompt', chkPresetPrompt], ['title', chkPresetTitle],
+    ['lang', chkPresetLang], ['ctx', chkPresetCtx]
+  ].map(([key, checkbox]) => [key, {
+    checkbox, observed: 'loading', dirty: false, draft: false, renderedChecked: false
+  }]));
+  let pendingPresetDiff = [];
+
+  function renderRecommendedStates() {
+    for (const [key, item] of Object.entries(recommendedItems)) {
+      const box = item.checkbox;
+      if (!box) continue;
+      const unsupported = item.observed === 'unsupported';
+      box.checked = !unsupported && (item.dirty ? item.draft : item.observed === 'on');
+      box.indeterminate = !unsupported && !item.dirty && !['on', 'off'].includes(item.observed);
+      box.disabled = Boolean(isEnhanceBusy || unsupported || item.observed === 'loading');
+      box.setAttribute?.('aria-busy', String(item.observed === 'loading'));
+      item.renderedChecked = box.checked;
+      const label = el(`rec-${key}-state`);
+      if (label) {
+        label.textContent = t(`enhance.effective.${item.observed}`);
+        label.setAttribute?.('data-state', item.observed);
+      }
+    }
+    const note = el('rec-draft-note');
+    if (note) {
+      note.hidden = !Object.values(recommendedItems).some(item => item.dirty);
+      note.textContent = t('enhance.effective.unsaved');
+    }
+  }
+
+  function observeRecommended(key, observed) {
+    recommendedItems[key].observed = observed;
+    renderRecommendedStates();
+  }
+
+  function invalidateRecommendedConfirm() {
+    if (pendingEnhanceConfirmMode !== 'preset') return;
+    pendingEnhanceConfirmMode = null;
+    pendingPresetDiff = [];
+    if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
+  }
+
+  for (const item of Object.values(recommendedItems)) {
+    item.checkbox?.addEventListener('change', () => {
+      if (isEnhanceBusy || item.checkbox.disabled) return;
+      item.draft = Boolean(item.checkbox.checked);
+      item.dirty = (item.observed === 'on' || item.observed === 'off')
+        ? item.draft !== (item.observed === 'on')
+        : true;
+      invalidateRecommendedConfirm();
+      renderRecommendedStates();
+    });
+  }
+  renderRecommendedStates();
+
+  function observeEnhanceRecommended(data, fallback = 'unknown') {
+    const s = data?.summary;
+    for (const key of ['prompt', 'title']) {
+      let value = fallback;
+      if (data?.supported === false) value = 'unsupported';
+      else if (s) {
+        const diskOn = key === 'prompt' ? s.promptTier === 4 : s.chineseTitleMode === 'zh';
+        const diskKnown = key === 'prompt'
+          ? [0, 1, 2, 3, 4].includes(s.promptTier)
+          : ['zh', 'en'].includes(s.chineseTitleMode);
+        if (s.languageServerRunning === false && !s.pendingLsRestart && !hasPendingLsReload) {
+          value = 'unknown';
+        } else if (s.pendingLsRestart || hasPendingLsReload || ['pending_ls_restart', 'disk_only_patched'].includes(s.syncState)) {
+          value = 'pendingRestart';
+        } else if (diskKnown && s.syncState === 'runtime_confirmed') {
+          value = diskOn ? 'on' : 'off';
+        } else if (diskKnown && !diskOn && s.languageServerRunning === true && s.syncState === 'stock') {
+          value = 'off';
+        }
+      }
+      observeRecommended(key, value);
+    }
+  }
+
+  function observeContextRecommended(data, fallback = 'unknown') {
+    let value = fallback;
+    if (data?.isPlatformSupported === false && data.status === 'unsupported') value = 'unsupported';
+    else if (data) {
+      const status = data.status;
+      const mode = data.configuredMode;
+      const restartDetected = data.runtimeEvidence?.restartDetected;
+      const loaded = mapUnlockDisplayStatus(data).effectiveLoaded;
+      if (status === 'failed' || status === 'partial_match') value = 'error';
+      else if (status === 'patched_pending_restart') value = 'pendingRestart';
+      else if (mode === 'dynamic') {
+        if (loaded) value = 'on';
+        else if (status === 'patched_runtime_unconfirmed') value = 'unknown';
+        else value = 'pendingRestart';
+      } else if (mode === 'fixed' || mode === 'default' || status === 'not_patched') {
+        if (restartDetected === false) value = 'pendingRestart';
+        else if (loaded || restartDetected === true) value = 'off';
+        else value = 'unknown';
+      }
+    }
+    observeRecommended('ctx', value);
+  }
+
+  // A stalled IPC must not leave the controls pretending to have an answer.
+  async function readRecommendedStatus(read) {
+    let timer;
+    try {
+      return await Promise.race([
+        read(),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ ok: false, timedOut: true }), 10000); })
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
+  function getRecommendedDiff() {
+    const diff = [];
+    for (const [key, item] of Object.entries(recommendedItems)) {
+      // Also support callers that set .checked directly before clicking Apply.
+      if (item.checkbox && Boolean(item.checkbox.checked) !== item.renderedChecked) {
+        item.draft = Boolean(item.checkbox.checked);
+        item.dirty = true;
+      }
+      if (!item.dirty || ['unsupported', 'loading'].includes(item.observed)) continue;
+      if ((item.observed === 'on' && item.draft) || (item.observed === 'off' && !item.draft)) continue;
+      diff.push({ key, enabled: item.draft });
+    }
+    renderRecommendedStates();
+    return diff;
+  }
+
   function syncBrandTitleButtons(mode = currentBrandTitle) {
     for (const [k, btn] of Object.entries(brandTitleBtns)) {
       if (!btn) continue;
@@ -19252,25 +19422,14 @@ function closeAllDropdowns(exceptWrap = null) {
     if (btnEnhanceRestoreAll) btnEnhanceRestoreAll.disabled = Boolean(isEnhanceBusy);
     if (btnEnhanceConfirmGo) btnEnhanceConfirmGo.disabled = Boolean(isEnhanceBusy);
 
-    if (currentEnhanceStatus) {
-      if (chkPresetPrompt) {
-        if (unsupported) chkPresetPrompt.checked = false;
-        chkPresetPrompt.disabled = lockPromptControls;
-      }
-      if (chkPresetTitle) {
-        if (unsupported) chkPresetTitle.checked = false;
-        chkPresetTitle.disabled = lockPromptControls;
-      }
+    if (unsupported) {
+      recommendedItems.prompt.observed = 'unsupported';
+      recommendedItems.title.observed = 'unsupported';
     }
-    const ctxUnsupported = Boolean(
-      currentUnlockStatus &&
-      currentUnlockStatus.isPlatformSupported === false &&
-      currentUnlockStatus.status === 'unsupported'
-    );
-    if (chkPresetCtx && currentUnlockStatus) {
-      if (ctxUnsupported) chkPresetCtx.checked = false;
-      chkPresetCtx.disabled = Boolean(isEnhanceBusy || ctxUnsupported);
+    if (currentUnlockStatus?.isPlatformSupported === false && currentUnlockStatus.status === 'unsupported') {
+      recommendedItems.ctx.observed = 'unsupported';
     }
+    renderRecommendedStates();
   }
 
   function renderEnhanceSectionUI() {
@@ -19433,20 +19592,16 @@ function closeAllDropdowns(exceptWrap = null) {
     enhancePromptResultText.textContent = resolveMessage();
   }
 
-  function getSelectedPresetLabelResolvers() {
-    const resolvers = [];
-    if (chkPresetPrompt?.checked) resolvers.push(() => t('enhance.preset.itemPrompt'));
-    if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
-    if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
-    if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
-    return resolvers;
+  function recommendedLabel(key) {
+    return t(`enhance.preset.item${key === 'ctx' ? 'Ctx' : key[0].toUpperCase() + key.slice(1)}`);
   }
 
   function renderEnhancePresetConfirmText() {
     if (!enhancePresetConfirm || enhancePresetConfirm.hidden || !enhanceConfirmTitle || !pendingEnhanceConfirmMode) return;
     if (pendingEnhanceConfirmMode === 'preset') {
-      const items = getSelectedPresetLabelResolvers().map(fn => fn()).join(t('list.sep'));
-      enhanceConfirmTitle.textContent = t('enhance.confirm.presetSummary', { items });
+      const enabling = pendingPresetDiff.filter(item => item.enabled).map(item => recommendedLabel(item.key)).join(t('list.sep')) || '—';
+      const disabling = pendingPresetDiff.filter(item => !item.enabled).map(item => recommendedLabel(item.key)).join(t('list.sep')) || '—';
+      enhanceConfirmTitle.textContent = t('enhance.confirm.presetSummary', { enabling, disabling });
     } else if (pendingEnhanceConfirmMode === 'restore') {
       enhanceConfirmTitle.textContent = t('enhance.confirm.restoreSummary');
     }
@@ -19479,6 +19634,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
   /** 面板语言切换后，同步更新设置页当前仍可见的动态操作反馈与确认提示 */
   function rerenderSettingsFeedbacks() {
+    renderRecommendedStates();
     renderEnhancePresetConfirmText();
     if (enhanceGlobalResultState && enhanceGlobalResult && enhanceGlobalResult.style.display && enhanceGlobalResult.style.display !== 'none') {
       showEnhanceResultBox(enhanceGlobalResultState.ok, enhanceGlobalResultState.resolveMessage, enhanceGlobalResultState.opts);
@@ -19500,6 +19656,7 @@ function closeAllDropdowns(exceptWrap = null) {
     if (s && s.pendingLsRestart !== undefined) {
       hasPendingLsReload = Boolean(s.pendingLsRestart);
     }
+    observeEnhanceRecommended(statusData);
     const useSavedAfterUpdate = Boolean(s?.clientUpdatedSinceSave && [0, 1, 2, 3, 4].includes(Number(s?.savedPromptTier)));
     if (syncDrafts && s && statusData?.supported !== false) {
       if (forceSyncDrafts || !enhanceTierDirty) {
@@ -19528,20 +19685,26 @@ function closeAllDropdowns(exceptWrap = null) {
 
   async function refreshEnhanceStatus(syncDrafts = true, { forceSyncDrafts = false, forceRefresh = false } = {}) {
     const seq = ++enhanceStatusReqSeq;
+    observeRecommended('prompt', 'loading');
+    observeRecommended('title', 'loading');
     try {
-      const res = await invokeEnhanceApi('status', forceRefresh ? { forceRefresh: true } : {});
+      const res = await readRecommendedStatus(() => invokeEnhanceApi('status', forceRefresh ? { forceRefresh: true } : {}));
       if (seq !== enhanceStatusReqSeq) return;
       if (res && res.ok && res.data) {
         applyEnhanceStatusPayload(res.data, { syncDrafts, forceSyncDrafts });
       } else if (res && res.unavailable) {
-        currentEnhanceStatus = { supported: false };
+        currentEnhanceStatus = null;
+        observeEnhanceRecommended(null);
         renderEnhanceSectionUI();
       } else {
+        currentEnhanceStatus = null;
+        observeEnhanceRecommended(null, res?.timedOut ? 'unknown' : 'error');
         renderEnhanceSectionUI();
       }
     } catch {
       if (seq !== enhanceStatusReqSeq) return;
       currentEnhanceStatus = null;
+      observeEnhanceRecommended(null, 'error');
       renderEnhanceSectionUI();
     }
   }
@@ -19629,6 +19792,8 @@ function closeAllDropdowns(exceptWrap = null) {
         hasPendingLsReload = needLsRestart;
         enhanceTierDirty = false;
         enhanceTitleDirty = false;
+        recommendedItems.prompt.dirty = false;
+        recommendedItems.title.dirty = false;
 
         const resolveSuccess = (!changedAny && !needLsRestart)
           ? () => t('enhance.result.alreadyApplied', {
@@ -19652,6 +19817,7 @@ function closeAllDropdowns(exceptWrap = null) {
       const resolveErr = () => t('enhance.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') });
       showEnhancePromptResult(false, resolveErr);
       showEnhanceResultBox(false, resolveErr);
+      await refreshEnhanceStatus(false);
     } finally {
       isEnhanceBusy = false;
       if (btnApplyEnhancePrompt) {
@@ -19663,9 +19829,11 @@ function closeAllDropdowns(exceptWrap = null) {
 
   btnEnhancePresetApply?.addEventListener('click', () => {
     if (isEnhanceBusy) return;
-    const selectedResolvers = getSelectedPresetLabelResolvers();
-    if (!selectedResolvers.length) {
-      showEnhanceResultBox(false, () => t('enhance.confirm.noneSelected'));
+    pendingPresetDiff = getRecommendedDiff();
+    if (!pendingPresetDiff.length) {
+      pendingEnhanceConfirmMode = null;
+      if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
+      showEnhanceResultBox(true, () => t('enhance.effective.noDiff'));
       return;
     }
     pendingEnhanceConfirmMode = 'preset';
@@ -19691,10 +19859,12 @@ function closeAllDropdowns(exceptWrap = null) {
     if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
     if (!mode || isEnhanceBusy) return;
 
-    const wantPrompt = Boolean(chkPresetPrompt?.checked);
-    const wantTitle = Boolean(chkPresetTitle?.checked);
-    const wantLang = Boolean(chkPresetLang?.checked);
-    const wantCtx = Boolean(chkPresetCtx?.checked);
+    const submittedDiff = pendingPresetDiff;
+    pendingPresetDiff = [];
+    if (mode === 'preset' && !submittedDiff.length) return;
+    ++enhanceStatusReqSeq;
+    ++modulesStatusReqSeq;
+    ++unlockReqSeq;
 
     isEnhanceBusy = true;
     syncEnhanceInteractiveDisabledState();
@@ -19710,65 +19880,29 @@ function closeAllDropdowns(exceptWrap = null) {
       let latestEnhanceStatus = null;
 
       if (mode === 'preset') {
-        if (wantPrompt || wantTitle) {
-          const resolveItemLabel = () => [wantPrompt ? t('enhance.preset.itemPrompt') : '', wantTitle ? t('enhance.preset.itemTitle') : ''].filter(Boolean).join(t('list.sep'));
+        for (const { key, enabled } of submittedDiff) {
           try {
-            const payload = {};
-            if (wantPrompt) payload.promptTier = 4;
-            if (wantTitle) payload.chineseTitle = true;
-            const eRes = await invokeEnhanceApi('apply', payload);
-            if (!eRes || !eRes.ok) {
-              const errPayload = eRes;
-              failedResolvers.push(() => `${resolveItemLabel()}: ${resolveSettingsErrorText(errPayload, 'msg.unknownErr')}`);
-            } else {
-              if (wantPrompt) doneResolvers.push(() => t('enhance.preset.itemPrompt'));
-              if (wantTitle) doneResolvers.push(() => t('enhance.preset.itemTitle'));
-              if (eRes.changed !== false) anyChanged = true;
-              if (eRes.needsRestart !== false) needsLsRestart = true;
-              if (eRes.status) latestEnhanceStatus = eRes.status;
-              enhanceTierDirty = false;
-              enhanceTitleDirty = false;
-            }
-          } catch (stepErr) {
-            const rawErr = stepErr?.message;
-            failedResolvers.push(() => `${resolveItemLabel()}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
-          }
-        }
-
-        if (wantLang) {
-          try {
-            const lRes = await invokeModulesApi('toggle', 'chinese', true, {
-              language: 'zh-CN',
-              brandTitle: currentBrandTitle
+            let res;
+            if (key === 'prompt') res = await invokeEnhanceApi('apply', { promptTier: enabled ? 4 : 0 });
+            else if (key === 'title') res = await invokeEnhanceApi('apply', { chineseTitle: enabled });
+            else if (key === 'lang') res = await invokeModulesApi('toggle', 'chinese', enabled, {
+              language: enabled ? 'zh-CN' : 'en', brandTitle: currentBrandTitle
             });
-            if (!lRes || !lRes.ok) {
-              const errPayload = lRes;
-              failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail')}`);
-            } else {
-              doneResolvers.push(() => t('enhance.preset.itemLang'));
-              anyChanged = true;
-              if (lRes.restartRequired !== false) needsHostRestart = true;
+            else res = await invokeUnlockApi(enabled ? 'apply' : 'restore', enabled ? { mode: 'dynamic', limitTokens: null } : {});
+            if (!res?.ok) {
+              failedResolvers.push(() => `${recommendedLabel(key)}: ${resolveSettingsErrorText(res)}`);
+              continue;
+            }
+            recommendedItems[key].dirty = false;
+            doneResolvers.push(() => recommendedLabel(key));
+            if (res.changed !== false && !res.alreadyMatched) anyChanged = true;
+            if (key === 'prompt' || key === 'title') {
+              if (res.needsRestart !== false) needsLsRestart = true;
+            } else if (key === 'lang' ? res.restartRequired !== false : res.needsRestart) {
+              needsHostRestart = true;
             }
           } catch (stepErr) {
-            const rawErr = stepErr?.message;
-            failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${translateBackendText(rawErr) || t('mod.zh.toggleFail')}`);
-          }
-        }
-
-        if (wantCtx) {
-          try {
-            const cRes = await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null });
-            if (!cRes || !cRes.ok) {
-              const rawErr = cRes?.error;
-              failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
-            } else {
-              doneResolvers.push(() => t('enhance.preset.itemCtx'));
-              if (!cRes.alreadyMatched) anyChanged = true;
-              if (cRes.needsRestart) needsHostRestart = true;
-            }
-          } catch (stepErr) {
-            const rawErr = stepErr?.message;
-            failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
+            failedResolvers.push(() => `${recommendedLabel(key)}: ${resolveSettingsErrorText(stepErr?.message)}`);
           }
         }
       } else if (mode === 'restore') {
@@ -19779,6 +19913,8 @@ function closeAllDropdowns(exceptWrap = null) {
             const errPayload = rRes;
             failedResolvers.push(() => `${resolvePromptTitleLabel()}: ${resolveSettingsErrorText(errPayload, 'msg.restoreFail')}`);
           } else {
+            recommendedItems.prompt.dirty = false;
+            recommendedItems.title.dirty = false;
             doneResolvers.push(resolvePromptTitleLabel);
             if (rRes.needsRestart) needsLsRestart = true;
             if (rRes.status) latestEnhanceStatus = rRes.status;
@@ -19797,6 +19933,7 @@ function closeAllDropdowns(exceptWrap = null) {
             failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail')}`);
           } else {
             currentBrandTitle = 'english';
+            recommendedItems.lang.dirty = false;
             doneResolvers.push(() => t('enhance.preset.itemLang'));
             if (lRes.restartRequired !== false) needsHostRestart = true;
           }
@@ -19811,6 +19948,7 @@ function closeAllDropdowns(exceptWrap = null) {
             const rawErr = cRes?.error;
             failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
           } else {
+            recommendedItems.ctx.dirty = false;
             doneResolvers.push(() => t('enhance.preset.itemCtx'));
             if (cRes.needsRestart) needsHostRestart = true;
           }
@@ -19848,7 +19986,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
       if (latestEnhanceStatus) {
         applyEnhanceStatusPayload(latestEnhanceStatus, { syncDrafts: true, forceSyncDrafts: true });
-        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus()]);
+        await Promise.all([refreshEnhanceStatus(false), refreshModulesDisplay(), refreshUnlockStatus()]);
       } else {
         await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus()]);
       }
@@ -20171,10 +20309,12 @@ function closeAllDropdowns(exceptWrap = null) {
 
   async function refreshModulesDisplay({ forceProxySync = false } = {}) {
     const seq = ++modulesStatusReqSeq;
+    observeRecommended('lang', 'loading');
     try {
-      const res = await invokeModulesApi('status');
+      const res = await readRecommendedStatus(() => invokeModulesApi('status'));
       if (seq !== modulesStatusReqSeq) return;
       if (!res || !res.ok || !res.data) {
+        observeRecommended('lang', res?.unavailable || res?.timedOut ? 'unknown' : 'error');
         const errMsg = (res && res.error) ? translateBackendText(res.error) : t('msg.unknownErr');
         if (chineseBadge) {
           chineseBadge.textContent = t('mod.readFail');
@@ -20241,6 +20381,20 @@ function closeAllDropdowns(exceptWrap = null) {
       const disk = res.disk || {};
       const isChineseDiskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
       const isChinesePartial = Boolean(disk.chinese && disk.chineseReady === false);
+      const hasChineseRuntimeEvidence = isDomTranslated ||
+        Boolean(window.__AGY_I18N_CONFIG__ && typeof window.__AGY_I18N_CONFIG__.enabled === 'boolean') ||
+        typeof runtimeMeta?.chineseActive === 'boolean';
+      const hasChineseConfig = typeof cfg.modules?.chinese?.enabled === 'boolean';
+      let chineseEffective = 'unknown';
+      if (hasChineseConfig) {
+        if (runtimeMeta?.chineseNeedsRestart === true || (!currentChineseEnabled && isDomTranslated) ||
+          (currentChineseEnabled && isChineseDiskReady && hasChineseRuntimeEvidence && !isDomTranslated)) chineseEffective = 'pendingRestart';
+        else if (hasChineseRuntimeEvidence) {
+          if (currentChineseEnabled && isChineseDiskReady && isDomTranslated) chineseEffective = 'on';
+          else if (!currentChineseEnabled && !isDomTranslated) chineseEffective = 'off';
+        }
+      }
+      observeRecommended('lang', chineseEffective);
       const isProxyDiskReady = disk.proxyReady !== undefined ? Boolean(disk.proxyReady) : Boolean(disk.proxy);
       const isProxyPartial = Boolean(disk.proxy && disk.proxyReady === false);
 
@@ -20357,6 +20511,7 @@ function closeAllDropdowns(exceptWrap = null) {
       syncProxySaveButtonState();
     } catch (err) {
       if (seq !== modulesStatusReqSeq) return;
+      observeRecommended('lang', 'error');
       const errMsg = err?.message || String(err);
       if (chineseBadge) {
         chineseBadge.textContent = t('mod.readErr');
@@ -20407,10 +20562,10 @@ function closeAllDropdowns(exceptWrap = null) {
           );
         }
       }
-      await refreshModulesDisplay();
     } catch (e) {
       showEnhanceResultBox(false, () => `${t('mod.zh.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`);
     } finally {
+      await refreshModulesDisplay();
       if (btnToggleChineseModule) {
         btnToggleChineseModule.disabled = false;
         btnToggleChineseModule.textContent = currentChineseEnabled ? t('mod.zh.btnDisable') : t('mod.zh.btnEnable');
@@ -28747,6 +28902,7 @@ var cumLockedKey = null;
     getKnownModelProductsForTest: () => getKnownModelProducts(),
     refreshUnlockStatusForTest: () => refreshUnlockStatus(),
     refreshEnhanceStatusForTest: () => refreshEnhanceStatus(),
+    refreshModulesStatusForTest: () => refreshModulesDisplay(),
     getEnhanceStateForTest: () => ({
       currentBrandTitle,
       selectedEnhanceTier,

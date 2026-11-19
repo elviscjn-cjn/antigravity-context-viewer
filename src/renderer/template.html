@@ -808,32 +808,37 @@
           <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
           <span id="enhance-global-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
         </div>
-        <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">正常安装默认保持客户端原样。下方列出推荐增强组合；只有你勾选并确认后才会实际写入。
+        <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">复选框显示实际生效状态。修改后仅应用差异：勾选将开启，取消勾选将恢复该项；待重启不代表已生效。确认前不会写入。
         </div>
+        <div id="rec-draft-note" class="ctx-settings-card-desc" role="status" hidden data-i18n="enhance.effective.unsaved">有未保存修改；点击应用并确认后才会写入。</div>
         <div class="ctx-preset-checklist">
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-prompt" type="checkbox" checked>
+            <input id="chk-rec-prompt" type="checkbox" disabled>
+            <span id="rec-prompt-state" class="rec-effective-state" aria-live="polite" data-i18n="enhance.effective.loading">读取中…</span>
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemPrompt">系统提示词 4 档（极简防幻觉）</strong>
               <span data-i18n="enhance.preset.itemPromptSub">精简模板套话并保留真实工具契约；仅作用于系统提示，不能保证模型永不犯错。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-title" type="checkbox" checked>
+            <input id="chk-rec-title" type="checkbox" disabled>
+            <span id="rec-title-state" class="rec-effective-state" aria-live="polite" data-i18n="enhance.effective.loading">读取中…</span>
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemTitle">自动中文会话标题</strong>
               <span data-i18n="enhance.preset.itemTitleSub">新会话自动生成简体中文标题（等长替换指令文本，不破坏结构）。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-lang" type="checkbox" checked>
+            <input id="chk-rec-lang" type="checkbox" disabled>
+            <span id="rec-lang-state" class="rec-effective-state" aria-live="polite" data-i18n="enhance.effective.loading">读取中…</span>
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemLang">客户端简体中文界面（Antigravity 本身）</strong>
               <span data-i18n="enhance.preset.itemLangSub">仅改变桌面端壳层中文，不影响你选择的插件面板语言。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-ctx" type="checkbox" checked>
+            <input id="chk-rec-ctx" type="checkbox" disabled>
+            <span id="rec-ctx-state" class="rec-effective-state" aria-live="polite" data-i18n="enhance.effective.loading">读取中…</span>
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemCtx">上下文模式：跟随模型</strong>
               <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>

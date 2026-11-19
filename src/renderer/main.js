@@ -1338,6 +1338,8 @@
       }
       if (isContextSettingsView) {
         void refreshModulesDisplay();
+        void refreshEnhanceStatus();
+        void refreshUnlockStatus();
       }
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
@@ -4016,9 +4018,7 @@
       renderSpeedComparisonTab();
     } else if (tabName === 'settings') {
       void refreshModulesDisplay();
-      if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
-        void refreshUnlockStatus();
-      }
+      void refreshUnlockStatus();
       if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
     }
     positionFloatingPanels();
@@ -6315,16 +6315,18 @@
 
   async function refreshUnlockStatus() {
     const thisSeq = ++unlockReqSeq;
+    observeRecommended('ctx', 'loading');
     try {
       const currentObservedBudget = (state.latest?.budget && state.latest.budget > 0)
         ? state.latest.budget
         : undefined;
-      const res = await invokeUnlockApi('status', { currentBudget: currentObservedBudget });
+      const res = await readRecommendedStatus(() => invokeUnlockApi('status', { currentBudget: currentObservedBudget }));
       if (thisSeq !== unlockReqSeq) return;
 
       if (!res || !res.ok || !res.data) {
         unlockStatusFetchError = true;
         currentUnlockStatus = null;
+        observeContextRecommended(null, res?.unavailable || res?.timedOut ? 'unknown' : 'error');
         if (unlockStatusDesc) unlockStatusDesc.textContent = t('status.client.unavailable');
         renderCompactSessionCard();
         renderClientStatusBar();
@@ -6358,6 +6360,7 @@
         }
       }
 
+      observeContextRecommended(data);
       const statusInfo = mapUnlockDisplayStatus(data);
       if (unlockStatusDesc) {
         unlockStatusDesc.textContent = t('models.status.line', { badge: statusInfo.badge, mode: describeClientModeValue(data) });
@@ -6423,6 +6426,7 @@
       if (thisSeq !== unlockReqSeq) return;
       unlockStatusFetchError = true;
       currentUnlockStatus = null;
+      observeContextRecommended(null, 'error');
       renderCompactSessionCard();
       renderClientStatusBar();
     }
@@ -7431,6 +7435,137 @@
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
 
+  // Observations never stand in for saved preferences. Drafts survive background reads.
+  const recommendedItems = Object.fromEntries([
+    ['prompt', chkPresetPrompt], ['title', chkPresetTitle],
+    ['lang', chkPresetLang], ['ctx', chkPresetCtx]
+  ].map(([key, checkbox]) => [key, {
+    checkbox, observed: 'loading', dirty: false, draft: false, renderedChecked: false
+  }]));
+  let pendingPresetDiff = [];
+
+  function renderRecommendedStates() {
+    for (const [key, item] of Object.entries(recommendedItems)) {
+      const box = item.checkbox;
+      if (!box) continue;
+      const unsupported = item.observed === 'unsupported';
+      box.checked = !unsupported && (item.dirty ? item.draft : item.observed === 'on');
+      box.indeterminate = !unsupported && !item.dirty && !['on', 'off'].includes(item.observed);
+      box.disabled = Boolean(isEnhanceBusy || unsupported || item.observed === 'loading');
+      box.setAttribute?.('aria-busy', String(item.observed === 'loading'));
+      item.renderedChecked = box.checked;
+      const label = el(`rec-${key}-state`);
+      if (label) {
+        label.textContent = t(`enhance.effective.${item.observed}`);
+        label.setAttribute?.('data-state', item.observed);
+      }
+    }
+    const note = el('rec-draft-note');
+    if (note) {
+      note.hidden = !Object.values(recommendedItems).some(item => item.dirty);
+      note.textContent = t('enhance.effective.unsaved');
+    }
+  }
+
+  function observeRecommended(key, observed) {
+    recommendedItems[key].observed = observed;
+    renderRecommendedStates();
+  }
+
+  function invalidateRecommendedConfirm() {
+    if (pendingEnhanceConfirmMode !== 'preset') return;
+    pendingEnhanceConfirmMode = null;
+    pendingPresetDiff = [];
+    if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
+  }
+
+  for (const item of Object.values(recommendedItems)) {
+    item.checkbox?.addEventListener('change', () => {
+      if (isEnhanceBusy || item.checkbox.disabled) return;
+      item.draft = Boolean(item.checkbox.checked);
+      item.dirty = (item.observed === 'on' || item.observed === 'off')
+        ? item.draft !== (item.observed === 'on')
+        : true;
+      invalidateRecommendedConfirm();
+      renderRecommendedStates();
+    });
+  }
+  renderRecommendedStates();
+
+  function observeEnhanceRecommended(data, fallback = 'unknown') {
+    const s = data?.summary;
+    for (const key of ['prompt', 'title']) {
+      let value = fallback;
+      if (data?.supported === false) value = 'unsupported';
+      else if (s) {
+        const diskOn = key === 'prompt' ? s.promptTier === 4 : s.chineseTitleMode === 'zh';
+        const diskKnown = key === 'prompt'
+          ? [0, 1, 2, 3, 4].includes(s.promptTier)
+          : ['zh', 'en'].includes(s.chineseTitleMode);
+        if (s.languageServerRunning === false && !s.pendingLsRestart && !hasPendingLsReload) {
+          value = 'unknown';
+        } else if (s.pendingLsRestart || hasPendingLsReload || ['pending_ls_restart', 'disk_only_patched'].includes(s.syncState)) {
+          value = 'pendingRestart';
+        } else if (diskKnown && s.syncState === 'runtime_confirmed') {
+          value = diskOn ? 'on' : 'off';
+        } else if (diskKnown && !diskOn && s.languageServerRunning === true && s.syncState === 'stock') {
+          value = 'off';
+        }
+      }
+      observeRecommended(key, value);
+    }
+  }
+
+  function observeContextRecommended(data, fallback = 'unknown') {
+    let value = fallback;
+    if (data?.isPlatformSupported === false && data.status === 'unsupported') value = 'unsupported';
+    else if (data) {
+      const status = data.status;
+      const mode = data.configuredMode;
+      const restartDetected = data.runtimeEvidence?.restartDetected;
+      const loaded = mapUnlockDisplayStatus(data).effectiveLoaded;
+      if (status === 'failed' || status === 'partial_match') value = 'error';
+      else if (status === 'patched_pending_restart') value = 'pendingRestart';
+      else if (mode === 'dynamic') {
+        if (loaded) value = 'on';
+        else if (status === 'patched_runtime_unconfirmed') value = 'unknown';
+        else value = 'pendingRestart';
+      } else if (mode === 'fixed' || mode === 'default' || status === 'not_patched') {
+        if (restartDetected === false) value = 'pendingRestart';
+        else if (loaded || restartDetected === true) value = 'off';
+        else value = 'unknown';
+      }
+    }
+    observeRecommended('ctx', value);
+  }
+
+  // A stalled IPC must not leave the controls pretending to have an answer.
+  async function readRecommendedStatus(read) {
+    let timer;
+    try {
+      return await Promise.race([
+        read(),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ ok: false, timedOut: true }), 10000); })
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
+  function getRecommendedDiff() {
+    const diff = [];
+    for (const [key, item] of Object.entries(recommendedItems)) {
+      // Also support callers that set .checked directly before clicking Apply.
+      if (item.checkbox && Boolean(item.checkbox.checked) !== item.renderedChecked) {
+        item.draft = Boolean(item.checkbox.checked);
+        item.dirty = true;
+      }
+      if (!item.dirty || ['unsupported', 'loading'].includes(item.observed)) continue;
+      if ((item.observed === 'on' && item.draft) || (item.observed === 'off' && !item.draft)) continue;
+      diff.push({ key, enabled: item.draft });
+    }
+    renderRecommendedStates();
+    return diff;
+  }
+
   function syncBrandTitleButtons(mode = currentBrandTitle) {
     for (const [k, btn] of Object.entries(brandTitleBtns)) {
       if (!btn) continue;
@@ -7473,25 +7608,14 @@
     if (btnEnhanceRestoreAll) btnEnhanceRestoreAll.disabled = Boolean(isEnhanceBusy);
     if (btnEnhanceConfirmGo) btnEnhanceConfirmGo.disabled = Boolean(isEnhanceBusy);
 
-    if (currentEnhanceStatus) {
-      if (chkPresetPrompt) {
-        if (unsupported) chkPresetPrompt.checked = false;
-        chkPresetPrompt.disabled = lockPromptControls;
-      }
-      if (chkPresetTitle) {
-        if (unsupported) chkPresetTitle.checked = false;
-        chkPresetTitle.disabled = lockPromptControls;
-      }
+    if (unsupported) {
+      recommendedItems.prompt.observed = 'unsupported';
+      recommendedItems.title.observed = 'unsupported';
     }
-    const ctxUnsupported = Boolean(
-      currentUnlockStatus &&
-      currentUnlockStatus.isPlatformSupported === false &&
-      currentUnlockStatus.status === 'unsupported'
-    );
-    if (chkPresetCtx && currentUnlockStatus) {
-      if (ctxUnsupported) chkPresetCtx.checked = false;
-      chkPresetCtx.disabled = Boolean(isEnhanceBusy || ctxUnsupported);
+    if (currentUnlockStatus?.isPlatformSupported === false && currentUnlockStatus.status === 'unsupported') {
+      recommendedItems.ctx.observed = 'unsupported';
     }
+    renderRecommendedStates();
   }
 
   function renderEnhanceSectionUI() {
@@ -7654,20 +7778,16 @@
     enhancePromptResultText.textContent = resolveMessage();
   }
 
-  function getSelectedPresetLabelResolvers() {
-    const resolvers = [];
-    if (chkPresetPrompt?.checked) resolvers.push(() => t('enhance.preset.itemPrompt'));
-    if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
-    if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
-    if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
-    return resolvers;
+  function recommendedLabel(key) {
+    return t(`enhance.preset.item${key === 'ctx' ? 'Ctx' : key[0].toUpperCase() + key.slice(1)}`);
   }
 
   function renderEnhancePresetConfirmText() {
     if (!enhancePresetConfirm || enhancePresetConfirm.hidden || !enhanceConfirmTitle || !pendingEnhanceConfirmMode) return;
     if (pendingEnhanceConfirmMode === 'preset') {
-      const items = getSelectedPresetLabelResolvers().map(fn => fn()).join(t('list.sep'));
-      enhanceConfirmTitle.textContent = t('enhance.confirm.presetSummary', { items });
+      const enabling = pendingPresetDiff.filter(item => item.enabled).map(item => recommendedLabel(item.key)).join(t('list.sep')) || '—';
+      const disabling = pendingPresetDiff.filter(item => !item.enabled).map(item => recommendedLabel(item.key)).join(t('list.sep')) || '—';
+      enhanceConfirmTitle.textContent = t('enhance.confirm.presetSummary', { enabling, disabling });
     } else if (pendingEnhanceConfirmMode === 'restore') {
       enhanceConfirmTitle.textContent = t('enhance.confirm.restoreSummary');
     }
@@ -7700,6 +7820,7 @@
 
   /** 面板语言切换后，同步更新设置页当前仍可见的动态操作反馈与确认提示 */
   function rerenderSettingsFeedbacks() {
+    renderRecommendedStates();
     renderEnhancePresetConfirmText();
     if (enhanceGlobalResultState && enhanceGlobalResult && enhanceGlobalResult.style.display && enhanceGlobalResult.style.display !== 'none') {
       showEnhanceResultBox(enhanceGlobalResultState.ok, enhanceGlobalResultState.resolveMessage, enhanceGlobalResultState.opts);
@@ -7721,6 +7842,7 @@
     if (s && s.pendingLsRestart !== undefined) {
       hasPendingLsReload = Boolean(s.pendingLsRestart);
     }
+    observeEnhanceRecommended(statusData);
     const useSavedAfterUpdate = Boolean(s?.clientUpdatedSinceSave && [0, 1, 2, 3, 4].includes(Number(s?.savedPromptTier)));
     if (syncDrafts && s && statusData?.supported !== false) {
       if (forceSyncDrafts || !enhanceTierDirty) {
@@ -7749,20 +7871,26 @@
 
   async function refreshEnhanceStatus(syncDrafts = true, { forceSyncDrafts = false, forceRefresh = false } = {}) {
     const seq = ++enhanceStatusReqSeq;
+    observeRecommended('prompt', 'loading');
+    observeRecommended('title', 'loading');
     try {
-      const res = await invokeEnhanceApi('status', forceRefresh ? { forceRefresh: true } : {});
+      const res = await readRecommendedStatus(() => invokeEnhanceApi('status', forceRefresh ? { forceRefresh: true } : {}));
       if (seq !== enhanceStatusReqSeq) return;
       if (res && res.ok && res.data) {
         applyEnhanceStatusPayload(res.data, { syncDrafts, forceSyncDrafts });
       } else if (res && res.unavailable) {
-        currentEnhanceStatus = { supported: false };
+        currentEnhanceStatus = null;
+        observeEnhanceRecommended(null);
         renderEnhanceSectionUI();
       } else {
+        currentEnhanceStatus = null;
+        observeEnhanceRecommended(null, res?.timedOut ? 'unknown' : 'error');
         renderEnhanceSectionUI();
       }
     } catch {
       if (seq !== enhanceStatusReqSeq) return;
       currentEnhanceStatus = null;
+      observeEnhanceRecommended(null, 'error');
       renderEnhanceSectionUI();
     }
   }
@@ -7850,6 +7978,8 @@
         hasPendingLsReload = needLsRestart;
         enhanceTierDirty = false;
         enhanceTitleDirty = false;
+        recommendedItems.prompt.dirty = false;
+        recommendedItems.title.dirty = false;
 
         const resolveSuccess = (!changedAny && !needLsRestart)
           ? () => t('enhance.result.alreadyApplied', {
@@ -7873,6 +8003,7 @@
       const resolveErr = () => t('enhance.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') });
       showEnhancePromptResult(false, resolveErr);
       showEnhanceResultBox(false, resolveErr);
+      await refreshEnhanceStatus(false);
     } finally {
       isEnhanceBusy = false;
       if (btnApplyEnhancePrompt) {
@@ -7884,9 +8015,11 @@
 
   btnEnhancePresetApply?.addEventListener('click', () => {
     if (isEnhanceBusy) return;
-    const selectedResolvers = getSelectedPresetLabelResolvers();
-    if (!selectedResolvers.length) {
-      showEnhanceResultBox(false, () => t('enhance.confirm.noneSelected'));
+    pendingPresetDiff = getRecommendedDiff();
+    if (!pendingPresetDiff.length) {
+      pendingEnhanceConfirmMode = null;
+      if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
+      showEnhanceResultBox(true, () => t('enhance.effective.noDiff'));
       return;
     }
     pendingEnhanceConfirmMode = 'preset';
@@ -7912,10 +8045,12 @@
     if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
     if (!mode || isEnhanceBusy) return;
 
-    const wantPrompt = Boolean(chkPresetPrompt?.checked);
-    const wantTitle = Boolean(chkPresetTitle?.checked);
-    const wantLang = Boolean(chkPresetLang?.checked);
-    const wantCtx = Boolean(chkPresetCtx?.checked);
+    const submittedDiff = pendingPresetDiff;
+    pendingPresetDiff = [];
+    if (mode === 'preset' && !submittedDiff.length) return;
+    ++enhanceStatusReqSeq;
+    ++modulesStatusReqSeq;
+    ++unlockReqSeq;
 
     isEnhanceBusy = true;
     syncEnhanceInteractiveDisabledState();
@@ -7931,65 +8066,29 @@
       let latestEnhanceStatus = null;
 
       if (mode === 'preset') {
-        if (wantPrompt || wantTitle) {
-          const resolveItemLabel = () => [wantPrompt ? t('enhance.preset.itemPrompt') : '', wantTitle ? t('enhance.preset.itemTitle') : ''].filter(Boolean).join(t('list.sep'));
+        for (const { key, enabled } of submittedDiff) {
           try {
-            const payload = {};
-            if (wantPrompt) payload.promptTier = 4;
-            if (wantTitle) payload.chineseTitle = true;
-            const eRes = await invokeEnhanceApi('apply', payload);
-            if (!eRes || !eRes.ok) {
-              const errPayload = eRes;
-              failedResolvers.push(() => `${resolveItemLabel()}: ${resolveSettingsErrorText(errPayload, 'msg.unknownErr')}`);
-            } else {
-              if (wantPrompt) doneResolvers.push(() => t('enhance.preset.itemPrompt'));
-              if (wantTitle) doneResolvers.push(() => t('enhance.preset.itemTitle'));
-              if (eRes.changed !== false) anyChanged = true;
-              if (eRes.needsRestart !== false) needsLsRestart = true;
-              if (eRes.status) latestEnhanceStatus = eRes.status;
-              enhanceTierDirty = false;
-              enhanceTitleDirty = false;
-            }
-          } catch (stepErr) {
-            const rawErr = stepErr?.message;
-            failedResolvers.push(() => `${resolveItemLabel()}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
-          }
-        }
-
-        if (wantLang) {
-          try {
-            const lRes = await invokeModulesApi('toggle', 'chinese', true, {
-              language: 'zh-CN',
-              brandTitle: currentBrandTitle
+            let res;
+            if (key === 'prompt') res = await invokeEnhanceApi('apply', { promptTier: enabled ? 4 : 0 });
+            else if (key === 'title') res = await invokeEnhanceApi('apply', { chineseTitle: enabled });
+            else if (key === 'lang') res = await invokeModulesApi('toggle', 'chinese', enabled, {
+              language: enabled ? 'zh-CN' : 'en', brandTitle: currentBrandTitle
             });
-            if (!lRes || !lRes.ok) {
-              const errPayload = lRes;
-              failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail')}`);
-            } else {
-              doneResolvers.push(() => t('enhance.preset.itemLang'));
-              anyChanged = true;
-              if (lRes.restartRequired !== false) needsHostRestart = true;
+            else res = await invokeUnlockApi(enabled ? 'apply' : 'restore', enabled ? { mode: 'dynamic', limitTokens: null } : {});
+            if (!res?.ok) {
+              failedResolvers.push(() => `${recommendedLabel(key)}: ${resolveSettingsErrorText(res)}`);
+              continue;
+            }
+            recommendedItems[key].dirty = false;
+            doneResolvers.push(() => recommendedLabel(key));
+            if (res.changed !== false && !res.alreadyMatched) anyChanged = true;
+            if (key === 'prompt' || key === 'title') {
+              if (res.needsRestart !== false) needsLsRestart = true;
+            } else if (key === 'lang' ? res.restartRequired !== false : res.needsRestart) {
+              needsHostRestart = true;
             }
           } catch (stepErr) {
-            const rawErr = stepErr?.message;
-            failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${translateBackendText(rawErr) || t('mod.zh.toggleFail')}`);
-          }
-        }
-
-        if (wantCtx) {
-          try {
-            const cRes = await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null });
-            if (!cRes || !cRes.ok) {
-              const rawErr = cRes?.error;
-              failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
-            } else {
-              doneResolvers.push(() => t('enhance.preset.itemCtx'));
-              if (!cRes.alreadyMatched) anyChanged = true;
-              if (cRes.needsRestart) needsHostRestart = true;
-            }
-          } catch (stepErr) {
-            const rawErr = stepErr?.message;
-            failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
+            failedResolvers.push(() => `${recommendedLabel(key)}: ${resolveSettingsErrorText(stepErr?.message)}`);
           }
         }
       } else if (mode === 'restore') {
@@ -8000,6 +8099,8 @@
             const errPayload = rRes;
             failedResolvers.push(() => `${resolvePromptTitleLabel()}: ${resolveSettingsErrorText(errPayload, 'msg.restoreFail')}`);
           } else {
+            recommendedItems.prompt.dirty = false;
+            recommendedItems.title.dirty = false;
             doneResolvers.push(resolvePromptTitleLabel);
             if (rRes.needsRestart) needsLsRestart = true;
             if (rRes.status) latestEnhanceStatus = rRes.status;
@@ -8018,6 +8119,7 @@
             failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail')}`);
           } else {
             currentBrandTitle = 'english';
+            recommendedItems.lang.dirty = false;
             doneResolvers.push(() => t('enhance.preset.itemLang'));
             if (lRes.restartRequired !== false) needsHostRestart = true;
           }
@@ -8032,6 +8134,7 @@
             const rawErr = cRes?.error;
             failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
           } else {
+            recommendedItems.ctx.dirty = false;
             doneResolvers.push(() => t('enhance.preset.itemCtx'));
             if (cRes.needsRestart) needsHostRestart = true;
           }
@@ -8069,7 +8172,7 @@
 
       if (latestEnhanceStatus) {
         applyEnhanceStatusPayload(latestEnhanceStatus, { syncDrafts: true, forceSyncDrafts: true });
-        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus()]);
+        await Promise.all([refreshEnhanceStatus(false), refreshModulesDisplay(), refreshUnlockStatus()]);
       } else {
         await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus()]);
       }
@@ -8392,10 +8495,12 @@
 
   async function refreshModulesDisplay({ forceProxySync = false } = {}) {
     const seq = ++modulesStatusReqSeq;
+    observeRecommended('lang', 'loading');
     try {
-      const res = await invokeModulesApi('status');
+      const res = await readRecommendedStatus(() => invokeModulesApi('status'));
       if (seq !== modulesStatusReqSeq) return;
       if (!res || !res.ok || !res.data) {
+        observeRecommended('lang', res?.unavailable || res?.timedOut ? 'unknown' : 'error');
         const errMsg = (res && res.error) ? translateBackendText(res.error) : t('msg.unknownErr');
         if (chineseBadge) {
           chineseBadge.textContent = t('mod.readFail');
@@ -8462,6 +8567,20 @@
       const disk = res.disk || {};
       const isChineseDiskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
       const isChinesePartial = Boolean(disk.chinese && disk.chineseReady === false);
+      const hasChineseRuntimeEvidence = isDomTranslated ||
+        Boolean(window.__AGY_I18N_CONFIG__ && typeof window.__AGY_I18N_CONFIG__.enabled === 'boolean') ||
+        typeof runtimeMeta?.chineseActive === 'boolean';
+      const hasChineseConfig = typeof cfg.modules?.chinese?.enabled === 'boolean';
+      let chineseEffective = 'unknown';
+      if (hasChineseConfig) {
+        if (runtimeMeta?.chineseNeedsRestart === true || (!currentChineseEnabled && isDomTranslated) ||
+          (currentChineseEnabled && isChineseDiskReady && hasChineseRuntimeEvidence && !isDomTranslated)) chineseEffective = 'pendingRestart';
+        else if (hasChineseRuntimeEvidence) {
+          if (currentChineseEnabled && isChineseDiskReady && isDomTranslated) chineseEffective = 'on';
+          else if (!currentChineseEnabled && !isDomTranslated) chineseEffective = 'off';
+        }
+      }
+      observeRecommended('lang', chineseEffective);
       const isProxyDiskReady = disk.proxyReady !== undefined ? Boolean(disk.proxyReady) : Boolean(disk.proxy);
       const isProxyPartial = Boolean(disk.proxy && disk.proxyReady === false);
 
@@ -8578,6 +8697,7 @@
       syncProxySaveButtonState();
     } catch (err) {
       if (seq !== modulesStatusReqSeq) return;
+      observeRecommended('lang', 'error');
       const errMsg = err?.message || String(err);
       if (chineseBadge) {
         chineseBadge.textContent = t('mod.readErr');
@@ -8628,10 +8748,10 @@
           );
         }
       }
-      await refreshModulesDisplay();
     } catch (e) {
       showEnhanceResultBox(false, () => `${t('mod.zh.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`);
     } finally {
+      await refreshModulesDisplay();
       if (btnToggleChineseModule) {
         btnToggleChineseModule.disabled = false;
         btnToggleChineseModule.textContent = currentChineseEnabled ? t('mod.zh.btnDisable') : t('mod.zh.btnEnable');
@@ -15556,6 +15676,7 @@
     getKnownModelProductsForTest: () => getKnownModelProducts(),
     refreshUnlockStatusForTest: () => refreshUnlockStatus(),
     refreshEnhanceStatusForTest: () => refreshEnhanceStatus(),
+    refreshModulesStatusForTest: () => refreshModulesDisplay(),
     getEnhanceStateForTest: () => ({
       currentBrandTitle,
       selectedEnhanceTier,

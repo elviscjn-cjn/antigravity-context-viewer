@@ -1043,3 +1043,42 @@ test('macOS Mach-O 安全边界：Intel Mac(x86-64)、Fat Binary、头部截断�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('状态查询不得因已加载而把 manifest.needsRestart 写回磁盘', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-status-ro-'));
+  try {
+    const target = path.join(tmpDir, 'language_server.exe');
+    const backupDir = path.join(tmpDir, 'backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const manifestPath = path.join(backupDir, 'manifest.json');
+    const before = JSON.stringify({ needsRestart: true, targetPath: target }, null, 2);
+    fs.writeFileSync(manifestPath, before);
+    const writes = [];
+    const origWrite = fs.writeFileSync;
+    fs.writeFileSync = function (p, ...rest) {
+      writes.push(String(p));
+      return origWrite.call(this, p, ...rest);
+    };
+    try {
+      const { synthesizeAnalysisStatus } = require('./meter-context-unlock');
+      const now = Date.now();
+      const synth = synthesizeAnalysisStatus({
+        gate3a: { status: 'patched', mode: 'dynamic' },
+        gate3b: { status: 'patched' },
+        proc: { isRunning: true, path: target, startTimeMs: now },
+        manifest: { needsRestart: true, targetPath: target, patchedSha256: 'abc', patchedAt: new Date(now - 5000).toISOString() },
+        target,
+        currentSha256: 'abc',
+        stats: { mtimeMs: now - 5000 },
+        backupDir
+      });
+      assert.equal(synth.overallStatus, 'patched_loaded');
+      assert.equal(writes.length, 0, 'status synthesis must not persist manifest');
+      assert.equal(fs.readFileSync(manifestPath, 'utf8'), before);
+    } finally {
+      fs.writeFileSync = origWrite;
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

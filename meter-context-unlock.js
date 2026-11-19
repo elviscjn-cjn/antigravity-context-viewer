@@ -1409,7 +1409,7 @@ function synthesizeAnalysisStatus(options = {}) {
       overallStatus = 'patched_loaded';
       statusText = '已加载，待长请求实测';
       details = `${modeNote}；目标进程 (PID ${proc?.pid || '未知'}) 启动时间晚于修改时间${unverifiedTail}`;
-      if (manifest && manifest.needsRestart) {
+      if (manifest && manifest.needsRestart && options.persistManifest === true) {
         manifest.needsRestart = false;
         try { saveManifest(manifest, options.backupDir); } catch {}
       }
