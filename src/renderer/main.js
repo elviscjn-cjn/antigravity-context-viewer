@@ -90,6 +90,9 @@
   } catch { }
   const {
     summarize,
+    extractGeneratorMaxStep,
+    isCheckpointNewerThanGenerator,
+    buildPostCompactSummary,
     parseGeneratorCall,
     calculateRequestApiCost,
     normalizeModelId,
@@ -198,7 +201,10 @@
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
-    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
+    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null,
+    compacting: null, compactProbeTimer: null, pendingCompactForceScan: false,
+    lastCompactForceScanAt: 0, hostContextWindowUsage: null,
+    lastDomCompactingActive: false, lastDomCompactedBannerCount: -1
   };
   const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
   let activeHeatView = 'daily';
@@ -1115,6 +1121,70 @@
     } catch { }
   }
 
+  // 兼容宿主压缩提示及其动态读秒后缀（如 "Compacting"、"Compacting · 46s"、"Compacting · 1m 12s"、"正在压缩上下文 · 46s" 等）
+  const HOST_COMPACTING_TIMER_TAIL = '(?:\\s*(?:[·•|\\-–—]|\\()\\s*<?\\d[\\d\\s.:hms分秒钟鐘小时小時/]*\\)?|\\s+\\(?<?\\d+(?:\\.\\d+)?\\s*(?:h|hr|m|min|s|sec|秒|分(?:钟|鐘)?)[\\d\\s.:hms分秒钟鐘]*\\)?)?';
+  const HOST_COMPACTING_TEXT_RE = new RegExp(
+    `^(?:compacting(?:\\s+(?:conversation|context))?(?:\\.{1,3}|…)?${HOST_COMPACTING_TIMER_TAIL}|正在压缩(?:上下文|对话|会话)?(?:\\.{1,3}|…)?${HOST_COMPACTING_TIMER_TAIL}|正在壓縮(?:上下文|對話|工作階段)?(?:\\.{1,3}|…)?${HOST_COMPACTING_TIMER_TAIL})$`,
+    'i'
+  );
+
+  function checkHostDomCompactionSignals() {
+    if (state.disposed || !state.route || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+    try {
+      const nodes = document.querySelectorAll('span, div, p');
+      if (!Array.isArray(nodes) && typeof nodes?.length !== 'number') return;
+      let sawCompacting = false;
+      let compactedBannerCount = 0;
+      const totalNodes = nodes.length;
+      const minIdx = Math.max(0, totalNodes - 4000);
+      for (let i = totalNodes - 1; i >= minIdx; i--) {
+        const n = nodes[i];
+        if (!n || n === host || (typeof host.contains === 'function' && host.contains(n))) continue;
+        if (n.children && n.children.length > 40) continue;
+        const txt = typeof n.textContent === 'string' ? n.textContent.replace(/[\u200b-\u200d\ufeff]/g, '').trim() : '';
+        if (!txt || txt.length > 120) continue;
+        if (HOST_COMPACTING_TEXT_RE.test(txt)) {
+          // 若父节点与子节点均包含相同文本，仅需标记布尔位即可，不受重复嵌套影响
+          sawCompacting = true;
+        } else if (
+          (!n.children || n.children.length <= 3) && (
+            txt.includes('The conversation was compacted') ||
+            txt.includes('会话已被压缩以适应上下文窗口') ||
+            txt.includes('会话上下文已执行压缩') ||
+            txt.includes('工作階段已被壓縮以適應上下文視窗')
+          )
+        ) {
+          compactedBannerCount++;
+        }
+      }
+      const prevCompacting = Boolean(state.lastDomCompactingActive);
+      state.lastDomCompactingActive = sawCompacting;
+      let needUrgentCompactScan = false;
+      if (sawCompacting) {
+        if (!state.compacting || state.compacting.cascadeId !== state.route) {
+          beginCompactingTransition(state.route);
+        } else {
+          state.compacting.domEndedAtMs = 0;
+          state.compacting.postDomEndScans = 0;
+        }
+      } else if (prevCompacting) {
+        if (state.compacting && state.compacting.cascadeId === state.route) {
+          state.compacting.domEndedAtMs = Date.now();
+          state.compacting.postDomEndScans = 0;
+        }
+        needUrgentCompactScan = true;
+      }
+      const prevBanners = state.lastDomCompactedBannerCount;
+      state.lastDomCompactedBannerCount = compactedBannerCount;
+      if (prevBanners >= 0 && compactedBannerCount > prevBanners) {
+        needUrgentCompactScan = true;
+      }
+      if (needUrgentCompactScan) {
+        triggerImmediateCompactScan(state.route, { urgent: true });
+      }
+    } catch { }
+  }
+
   function flushHostDomMutationCheck() {
     domMutationThrottleTimer = null;
     if (state.disposed) return;
@@ -1122,6 +1192,7 @@
       scheduleLayoutSync();
     }
     scheduleHostModelSync();
+    checkHostDomCompactionSignals();
   }
 
   try {
@@ -1138,7 +1209,7 @@
           scheduleLayoutSync();
         }
         if (!domMutationThrottleTimer) {
-          domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 180);
+          domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 60);
         }
       });
       hostDomObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label'] });
@@ -1230,7 +1301,12 @@
   function withStepError(value, metadata) {
     const error = state.scan?.session?.currentError;
     if (!error || value?.error) return value;
-    const lastStep = Math.max(-1, ...(metadata?.stepIndices || []), metadata?.chatModel?.chatStartMetadata?.startStepIndex ?? -1);
+    const lastStep = Math.max(
+      -1,
+      ...(metadata?.stepIndices || []),
+      metadata?.chatModel?.chatStartMetadata?.startStepIndex ?? -1,
+      (value?.compacted && Number.isInteger(value?.checkpointIndex)) ? value.checkpointIndex : -1
+    );
     if (lastStep > error.index) return value;
     const failure = summarize({ chatModel: { retryInfos: [{ error: error.text }] } }, {
       currentModel: value?.model || state.latest?.model || '',
@@ -3182,7 +3258,336 @@
     return rec;
   }
 
+  let compactDispatchSeq = 0;
+  let activeScanSeq = 0;
+  let activeScanController = null;
+  let compactThrottleTimer = null;
+  const compactDispatches = new Map();
+  const hookedWebSockets = new Set();
+
+  function clearCompactingTransition() {
+    if (state.compactProbeTimer) {
+      clearInterval(state.compactProbeTimer);
+      state.compactProbeTimer = null;
+    }
+    if (compactThrottleTimer) {
+      clearTimeout(compactThrottleTimer);
+      compactThrottleTimer = null;
+    }
+    state.compacting = null;
+  }
+  earlyDisposeHooks.push(clearCompactingTransition);
+
+  function triggerImmediateCompactScan(cascadeId = null, opts = {}) {
+    if (state.disposed) return;
+    const cid = cascadeId || state.route;
+    if (!cid || cid !== state.route) return;
+    const now = Date.now();
+    const urgent = Boolean(opts && opts.urgent);
+    if (urgent) {
+      if (compactThrottleTimer) {
+        clearTimeout(compactThrottleTimer);
+        compactThrottleTimer = null;
+      }
+      if (activeScanController) {
+        try { activeScanController.abort(); } catch { }
+        activeScanController = null;
+      }
+      state.pendingCompactForceScan = false;
+      state.lastCompactForceScanAt = now;
+      void scan(state.generation, cid, true);
+      return;
+    }
+    if (state.scanBusy) {
+      state.pendingCompactForceScan = true;
+      return;
+    }
+    if (now - (state.lastCompactForceScanAt || 0) < 250) {
+      state.pendingCompactForceScan = true;
+      if (!compactThrottleTimer) {
+        compactThrottleTimer = setTimeout(() => {
+          compactThrottleTimer = null;
+          if (!state.disposed && state.pendingCompactForceScan && state.route === cid && !state.scanBusy) {
+            state.pendingCompactForceScan = false;
+            state.lastCompactForceScanAt = Date.now();
+            void scan(state.generation, cid, true);
+          }
+        }, 260);
+      }
+      return;
+    }
+    state.pendingCompactForceScan = false;
+    state.lastCompactForceScanAt = now;
+    void scan(state.generation, cid, true);
+  }
+
+  function beginCompactingTransition(cascadeId = null) {
+    if (state.disposed) return;
+    const cid = cascadeId || state.route;
+    if (!cid || cid !== state.route) return;
+    clearLivePendingRequestWait();
+    const nowMs = Date.now();
+    if (state.compacting && state.compacting.cascadeId === cid) {
+      if (state.lastDomCompactingActive) {
+        state.compacting.domEndedAtMs = 0;
+        state.compacting.postDomEndScans = 0;
+      }
+      render();
+      return;
+    }
+    const hasBaselineScan = Boolean(state.scan?.session);
+    const prevCpIdx = hasBaselineScan && Number.isInteger(state.scan.session.lastCheckpointIndex)
+      ? state.scan.session.lastCheckpointIndex
+      : -1;
+    state.compacting = {
+      cascadeId: cid,
+      startedAtMs: nowMs,
+      domEndedAtMs: 0,
+      postDomEndScans: 0,
+      baselineHydrated: hasBaselineScan,
+      baselineCheckpointIndex: prevCpIdx
+    };
+    if (state.compactProbeTimer) clearInterval(state.compactProbeTimer);
+    state.compactProbeTimer = setInterval(() => {
+      if (state.disposed || !state.compacting || state.compacting.cascadeId !== state.route) {
+        clearCompactingTransition();
+        return;
+      }
+      checkHostDomCompactionSignals();
+      if (!state.compacting) return;
+      const now = Date.now();
+      const backendCpRunning = Number.isInteger(state.scan?.session?.inProgressCheckpointIndex)
+        && state.scan.session.inProgressCheckpointIndex >= 0;
+      const hostActivelyCompacting = Boolean(state.lastDomCompactingActive || backendCpRunning);
+      if (hostActivelyCompacting) {
+        if (now - state.compacting.startedAtMs > 300000) {
+          clearCompactingTransition();
+          triggerImmediateCompactScan(state.route, { urgent: true });
+          render();
+          return;
+        }
+        if (!state.scanBusy && now - (state.lastCompactForceScanAt || 0) >= 3500) {
+          triggerImmediateCompactScan(state.route);
+        }
+        return;
+      }
+      if (state.compacting.domEndedAtMs > 0) {
+        if ((state.compacting.postDomEndScans || 0) >= 5 && now - state.compacting.domEndedAtMs > 25000) {
+          clearCompactingTransition();
+          render();
+          return;
+        }
+      } else if (now - state.compacting.startedAtMs > 180000) {
+        clearCompactingTransition();
+        triggerImmediateCompactScan(state.route, { urgent: true });
+        render();
+        return;
+      }
+      if (!state.scanBusy) {
+        triggerImmediateCompactScan(state.route);
+      }
+    }, 1500);
+    render();
+  }
+
+  function isCompactCommandName(val) {
+    if (typeof val !== 'string') return false;
+    const clean = val.trim().toLowerCase();
+    return clean === 'compact' || clean === '/compact';
+  }
+
+  function isSlashCompactTextString(str) {
+    if (typeof str !== 'string') return false;
+    const trimmed = str.trim();
+    return Boolean(
+      trimmed && (
+        /^\/compact(?:\s|$)/i.test(trimmed) ||
+        /^\[\/?compact\]\(slash_command:\/\/compact\)(?:\s|$)/i.test(trimmed) ||
+        trimmed.toLowerCase() === 'slash_command://compact'
+      )
+    );
+  }
+
+  function hasNestedCompactSlashScopeItem(node, depth = 0) {
+    if (!node || typeof node !== 'object' || depth > 5) return false;
+    const sc = node.slashCommand || node.slash_command || (node.case === 'slashCommand' ? node.value : null);
+    if (sc && typeof sc === 'object') {
+      const info = sc.info || sc;
+      if ([info?.name, info?.displayName, info?.display_name, sc.name, sc.command].some(isCompactCommandName)) {
+        return true;
+      }
+    }
+    for (const subKey of ['item', 'chunk', 'value', 'scopeItem', 'scope_item']) {
+      if (node[subKey] && typeof node[subKey] === 'object' && hasNestedCompactSlashScopeItem(node[subKey], depth + 1)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function extractSlashCompactFromObject(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const cascadeId = payload.cascadeId || payload.cascade_id || state.route || null;
+    if (hasNestedCompactSlashScopeItem(payload, 0)) return { isCompact: true, cascadeId };
+    const parts = [];
+    for (const k of ['userResponse', 'user_response', 'messageText', 'message_text', 'text']) {
+      if (typeof payload[k] === 'string' && payload[k].trim()) {
+        if (isSlashCompactTextString(payload[k])) return { isCompact: true, cascadeId };
+        parts.push(payload[k]);
+      }
+    }
+    if (Array.isArray(payload.items)) {
+      for (const it of payload.items) {
+        if (!it || typeof it !== 'object') continue;
+        if (hasNestedCompactSlashScopeItem(it, 0)) return { isCompact: true, cascadeId };
+        const txt = typeof it.text === 'string'
+          ? it.text
+          : (typeof it.chunk?.text === 'string'
+            ? it.chunk.text
+            : (it.chunk?.case === 'text' && typeof it.chunk.value === 'string' ? it.chunk.value : it.item?.text));
+        if (typeof txt === 'string') parts.push(txt);
+      }
+    }
+    return isSlashCompactTextString(parts.join('\n')) ? { isCompact: true, cascadeId } : null;
+  }
+
+  function containsAsciiCompactWord(bytes) {
+    if (!bytes || bytes.length < 7) return false;
+    for (let i = 0; i <= bytes.length - 7; i++) {
+      if (
+        (bytes[i] | 0x20) === 0x63 && (bytes[i + 1] | 0x20) === 0x6f &&
+        (bytes[i + 2] | 0x20) === 0x6d && (bytes[i + 3] | 0x20) === 0x70 &&
+        (bytes[i + 4] | 0x20) === 0x61 && (bytes[i + 5] | 0x20) === 0x63 &&
+        (bytes[i + 6] | 0x20) === 0x74
+      ) return true;
+    }
+    return false;
+  }
+
+  function hasProtoCompactPayload(bytes, decoder, depth = 0) {
+    if (!bytes || !bytes.length || depth > 5 || typeof budgetEngine.parseProtoFields !== 'function') return false;
+    try {
+      for (const f of budgetEngine.parseProtoFields(bytes)) {
+        if (f.wireType !== 2 || !f.bytesValue?.length) continue;
+        if (depth === 0) {
+          if (f.fieldNumber === 2 && isSlashCompactTextString(decoder.decode(f.bytesValue))) return true;
+          if (f.fieldNumber === 3 && containsAsciiCompactWord(f.bytesValue) && hasProtoCompactPayload(f.bytesValue, decoder, 1)) return true;
+        } else {
+          if (f.fieldNumber === 1) {
+            const s = decoder.decode(f.bytesValue).trim();
+            if (depth === 1 ? isSlashCompactTextString(s) : (f.bytesValue.length <= 16 && isCompactCommandName(s))) return true;
+          }
+          if (containsAsciiCompactWord(f.bytesValue) && hasProtoCompactPayload(f.bytesValue, decoder, depth + 1)) return true;
+        }
+      }
+    } catch { }
+    return false;
+  }
+
+  function detectOutgoingCompactCommand(rawInput, channel = 'http', urlOrProcedure = '', contentType = '') {
+    try {
+      if (!rawInput) return null;
+      if (channel === 'client_object') return extractSlashCompactFromObject(rawInput);
+      if (typeof budgetEngine.unpackTransportPayload !== 'function') return null;
+      if (typeof rawInput === 'string') {
+        if (!rawInput.toLowerCase().includes('compact')) return null;
+      } else {
+        const view = rawInput instanceof Uint8Array
+          ? rawInput
+          : (rawInput instanceof ArrayBuffer
+            ? new Uint8Array(rawInput)
+            : (ArrayBuffer.isView?.(rawInput) ? new Uint8Array(rawInput.buffer, rawInput.byteOffset, rawInput.byteLength) : null));
+        if (!view || !containsAsciiCompactWord(view)) return null;
+      }
+      const unpacked = budgetEngine.unpackTransportPayload(rawInput, { channel, urlOrProcedure, contentType });
+      if (!unpacked) return null;
+      if (channel === 'ws_frame' && (!unpacked.procedure || !budgetEngine.isTargetBudgetRpc?.(unpacked.procedure))) return null;
+      if (unpacked.payload) return extractSlashCompactFromObject(unpacked.payload);
+      if ((unpacked.format === 'connect_proto_envelope' || unpacked.format === 'raw_binary_proto') && typeof TextDecoder === 'function') {
+        const protoBytes = unpacked.format === 'connect_proto_envelope' ? unpacked.rawInner : unpacked.rawBytes;
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        if (hasProtoCompactPayload(protoBytes, decoder, 0)) {
+          return { isCompact: true, cascadeId: unpacked.protoMeta?.cascadeId || state.route || null };
+        }
+      }
+    } catch { }
+    return null;
+  }
+
+  function registerCompactDispatch(compactInfo) {
+    const cid = compactInfo?.cascadeId || state.route || null;
+    beginCompactingTransition(cid);
+    const dispatchId = `compact_${++compactDispatchSeq}`;
+    compactDispatches.set(dispatchId, { cascadeId: cid, at: Date.now() });
+    if (compactDispatches.size > 32) {
+      const firstKey = compactDispatches.keys().next().value;
+      if (firstKey) compactDispatches.delete(firstKey);
+    }
+    return { dispatchId, isCompact: true, cascadeId: cid };
+  }
+
+  function handlePassiveHostWsMessage(ev) {
+    if (state.disposed || !state.route || typeof ev?.data !== 'string') return;
+    const raw = ev.data;
+    const hasCwu = raw.includes('contextWindowUsage') || raw.includes('context_window_usage');
+    const hasCheckpoint = raw.includes('"checkpoint"');
+    if (!hasCwu && !hasCheckpoint) return;
+    try {
+      const parsed = JSON.parse(raw);
+      const envelopePayload = (parsed && typeof parsed === 'object' && parsed.payload && typeof parsed.payload === 'object')
+        ? parsed.payload
+        : parsed;
+      const update = (envelopePayload && typeof envelopePayload === 'object' && envelopePayload.update && typeof envelopePayload.update === 'object')
+        ? envelopePayload.update
+        : envelopePayload;
+      if (!update || typeof update !== 'object') return;
+      const convId = update.conversationId || update.conversation_id || update.cascadeId || update.cascade_id || state.route;
+      if (!convId || String(convId).toLowerCase() !== String(state.route).toLowerCase()) return;
+
+      const cwu = update.contextWindowUsage || update.context_window_usage;
+      if (cwu && typeof cwu === 'object') {
+        const estUsed = Number(cwu.estimatedTokensUsed ?? cwu.estimated_tokens_used);
+        const maxCtx = Number(cwu.maxContextTokens ?? cwu.max_context_tokens);
+        const lastStep = Number(cwu.lastStepIndex ?? cwu.last_step_index);
+        const genIdx = Number(cwu.generatorMetadataIndex ?? cwu.generator_metadata_index);
+        const afterCompact = Boolean(cwu.estimatedAfterCompaction ?? cwu.estimated_after_compaction);
+        state.hostContextWindowUsage = {
+          cascadeId: state.route,
+          estimatedTokensUsed: Number.isFinite(estUsed) && estUsed >= 0 ? estUsed : null,
+          maxContextTokens: Number.isFinite(maxCtx) && maxCtx > 0 ? maxCtx : null,
+          lastStepIndex: Number.isInteger(lastStep) && lastStep >= 0 ? lastStep : -1,
+          generatorMetadataIndex: Number.isInteger(genIdx) && genIdx >= 0 ? genIdx : -1,
+          estimatedAfterCompaction: afterCompact,
+          at: Date.now()
+        };
+        if (afterCompact) {
+          clearCompactingTransition();
+          state.latest = resolveEffectiveLatestWithCompaction(state.latest);
+          state.requestAt = Date.now();
+          state.requestError = '';
+          render();
+          triggerImmediateCompactScan(state.route);
+          return;
+        }
+      }
+      if (hasCheckpoint) {
+        triggerImmediateCompactScan(state.route, { urgent: true });
+      }
+    } catch { }
+  }
+
   function finishDispatchOutcome(dispatchId, ok, err) {
+    if (dispatchId && compactDispatches.has(dispatchId)) {
+      const info = compactDispatches.get(dispatchId);
+      compactDispatches.delete(dispatchId);
+      if (!ok) {
+        clearCompactingTransition();
+        render();
+      } else {
+        triggerImmediateCompactScan(info?.cascadeId || state.route);
+      }
+      return;
+    }
     if (!ok) {
       clearLivePendingRequestWait();
     }
@@ -3206,7 +3611,21 @@
     globalThis.__AG_METER_ON_SEND_MESSAGE__ = function (req, channel = 'client_object') {
       try {
         if (!req || typeof req !== 'object' || typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
+        const compactCmd = detectOutgoingCompactCommand(req, 'client_object', 'SendUserCascadeMessage');
         const tx = budgetEngine.transformOutgoingSendRequest(req, buildInterceptorContext(channel, 'SendUserCascadeMessage'));
+        if (compactCmd?.isCompact) {
+          const cRec = registerCompactDispatch(compactCmd);
+          lastDecoratorDispatchHint = {
+            ts: Date.now(),
+            cascadeId: cRec.cascadeId || tx?.cascadeId || null,
+            productKey: tx?.productKey || null,
+            sentMode: tx?.sentMode || 'default',
+            sentLimitTokens: tx?.sentLimitTokens ?? null,
+            dispatchId: cRec.dispatchId,
+            isCompact: true
+          };
+          return { dispatchId: cRec.dispatchId };
+        }
         if (!tx || !tx.handled) return null;
         const rec = recordBudgetTransformDispatch(tx);
         lastDecoratorDispatchHint = {
@@ -3231,13 +3650,34 @@
       if (!lastDecoratorDispatchHint) return false;
       const age = Date.now() - lastDecoratorDispatchHint.ts;
       if (age < 0 || age > 400) return false;
+      if (lastDecoratorDispatchHint.isCompact) {
+        return !tx?.cascadeId || !lastDecoratorDispatchHint.cascadeId || lastDecoratorDispatchHint.cascadeId === tx.cascadeId;
+      }
       const sameConv = (lastDecoratorDispatchHint.cascadeId || null) === (tx.cascadeId || null);
       const sameMode = lastDecoratorDispatchHint.sentMode === tx.sentMode
         && (lastDecoratorDispatchHint.sentLimitTokens ?? null) === (tx.sentLimitTokens ?? null);
       return sameConv && sameMode;
     };
 
-    // 1. WebSocket.prototype.send interceptor (覆盖 Lcc ws://<host>/connect-websocket JSON 帧)
+    const processOutgoingBody = (rawBody, channel, urlOrProc, contentType = '') => {
+      const compactCmd = detectOutgoingCompactCommand(rawBody, channel, urlOrProc, contentType);
+      const tx = typeof budgetEngine.transformOutgoingSendRequest === 'function'
+        ? budgetEngine.transformOutgoingSendRequest(rawBody, buildInterceptorContext(channel, urlOrProc, contentType))
+        : null;
+      let body = rawBody;
+      let rec = null;
+      if (tx && tx.handled) {
+        if (tx.modified && tx.output !== undefined) body = tx.output;
+        if (!isCoveredByRecentDecorator(tx)) {
+          rec = compactCmd?.isCompact ? registerCompactDispatch(compactCmd) : recordBudgetTransformDispatch(tx);
+        }
+      } else if (compactCmd?.isCompact && !isCoveredByRecentDecorator({ cascadeId: compactCmd.cascadeId })) {
+        rec = registerCompactDispatch(compactCmd);
+      }
+      return { body, rec };
+    };
+
+    // 1. WebSocket.prototype.send interceptor (覆盖 Lcc ws://<host>/connect-websocket JSON 帧 + 被动监听服务端状态推送)
     if (typeof window.WebSocket === 'function' && window.WebSocket.prototype && typeof window.WebSocket.prototype.send === 'function') {
       const origWsSend = window.WebSocket.prototype.send;
       window.__agOrigWsSend = origWsSend;
@@ -3245,17 +3685,14 @@
         let nextData = data;
         let rec = null;
         try {
-          if (typeof budgetEngine.transformOutgoingSendRequest === 'function') {
-            const tx = budgetEngine.transformOutgoingSendRequest(data, buildInterceptorContext('ws_frame', this?.url || ''));
-            if (tx && tx.handled) {
-              if (tx.modified && tx.output !== undefined) {
-                nextData = tx.output;
-              }
-              if (!isCoveredByRecentDecorator(tx)) {
-                rec = recordBudgetTransformDispatch(tx);
-              }
-            }
+          if (this && !this.__agMeterWsMessageHooked && typeof this.addEventListener === 'function') {
+            this.__agMeterWsMessageHooked = true;
+            this.addEventListener('message', handlePassiveHostWsMessage);
+            hookedWebSockets.add(this);
           }
+          const out = processOutgoingBody(data, 'ws_frame', this?.url || '');
+          nextData = out.body;
+          rec = out.rec;
         } catch (err) {
           console.warn('[ContextMeter] WebSocket interceptor error:', err);
         }
@@ -3268,6 +3705,59 @@
       };
     }
 
+    // 1.5 Request 构造器旁路监听（覆盖 live 热注入模式下 @connectrpc/connect 已提前绑定 fetchFn 但每次新建 Request 的场景）
+    if (typeof window.Request === 'function' && !window.__agOrigRequest) {
+      const OrigRequest = window.Request;
+      window.__agOrigRequest = OrigRequest;
+      const WrappedRequest = function (input, init) {
+        const reqObj = new.target
+          ? Reflect.construct(OrigRequest, [input, init], new.target)
+          : new OrigRequest(input, init);
+        try {
+          const urlStr = typeof input === 'string' ? input : (reqObj?.url || '');
+          if (urlStr && typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
+            const ct = reqObj?.headers?.get?.('content-type') || init?.headers?.['content-type'] || init?.headers?.['Content-Type'] || '';
+            const reqSignal = init?.signal || reqObj?.signal;
+            const onCompactDetected = (cmd) => {
+              const targetCid = cmd.cascadeId || state.route;
+              try { Object.defineProperty(reqObj, '__agCompactCmd', { value: cmd, configurable: true }); } catch { }
+              if (!state.compacting) beginCompactingTransition(targetCid);
+              if (reqSignal && typeof reqSignal.addEventListener === 'function') {
+                const onAbort = () => {
+                  if (!state.disposed && state.compacting && state.compacting.cascadeId === (targetCid || state.route)) {
+                    clearCompactingTransition();
+                    render();
+                  }
+                };
+                if (reqSignal.aborted) onAbort();
+                else reqSignal.addEventListener('abort', onAbort, { once: true });
+              }
+            };
+            const directBody = init?.body;
+            if (typeof directBody === 'string' || directBody instanceof Uint8Array || directBody instanceof ArrayBuffer || ArrayBuffer.isView?.(directBody)) {
+              const syncCmd = detectOutgoingCompactCommand(directBody, 'fetch', urlStr, ct);
+              if (syncCmd?.isCompact) onCompactDetected(syncCmd);
+            } else if (typeof reqObj?.clone === 'function') {
+              const cloned = reqObj.clone();
+              if (typeof cloned?.arrayBuffer === 'function') {
+                cloned.arrayBuffer().then((ab) => {
+                  if (state.disposed || !ab || !ab.byteLength) return;
+                  const asyncCmd = detectOutgoingCompactCommand(new Uint8Array(ab), 'fetch', urlStr, ct);
+                  if (asyncCmd?.isCompact) onCompactDetected(asyncCmd);
+                }).catch(() => { });
+              }
+            }
+          }
+        } catch { }
+        return reqObj;
+      };
+      try {
+        WrappedRequest.prototype = OrigRequest.prototype;
+        Object.setPrototypeOf(WrappedRequest, OrigRequest);
+        window.Request = WrappedRequest;
+      } catch { }
+    }
+
     // 2. window.fetch interceptor (仅处理 SendUserCascadeMessage；严禁猜测 StartCascade)
     const origFetch = window.fetch;
     if (typeof origFetch === 'function') {
@@ -3278,24 +3768,20 @@
           const urlStr = typeof resource === 'string'
             ? resource
             : (resource && resource.url ? resource.url : String(resource || ''));
-          if (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr) && init?.body) {
-            const headersObj = init?.headers;
+          if (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
+            const headersObj = init?.headers || resource?.headers;
             let contentType = '';
             if (headersObj) {
-              if (typeof headersObj.get === 'function') {
-                contentType = headersObj.get('content-type') || headersObj.get('Content-Type') || '';
-              } else if (typeof headersObj === 'object') {
-                contentType = headersObj['content-type'] || headersObj['Content-Type'] || '';
-              }
+              contentType = typeof headersObj.get === 'function'
+                ? (headersObj.get('content-type') || headersObj.get('Content-Type') || '')
+                : (headersObj['content-type'] || headersObj['Content-Type'] || '');
             }
-            const tx = budgetEngine.transformOutgoingSendRequest(init.body, buildInterceptorContext('fetch', urlStr, contentType));
-            if (tx && tx.handled) {
-              if (tx.modified && tx.output !== undefined) {
-                init = { ...init, body: tx.output };
-              }
-              if (!isCoveredByRecentDecorator(tx)) {
-                rec = recordBudgetTransformDispatch(tx);
-              }
+            if (init?.body) {
+              const out = processOutgoingBody(init.body, 'fetch', urlStr, contentType);
+              if (out.body !== init.body) init = { ...init, body: out.body };
+              rec = out.rec;
+            } else if (resource?.__agCompactCmd?.isCompact && !isCoveredByRecentDecorator({ cascadeId: resource.__agCompactCmd.cascadeId })) {
+              rec = registerCompactDispatch(resource.__agCompactCmd);
             }
           }
         } catch (err) {
@@ -3303,8 +3789,12 @@
         }
         try {
           const response = await origFetch.call(this, resource, init);
-          if (rec && response && response.ok === false) {
-            finishDispatchOutcome(rec.dispatchId, false, new Error(`HTTP ${response.status || 'error'}`));
+          if (rec) {
+            if (response && response.ok === false) {
+              finishDispatchOutcome(rec.dispatchId, false, new Error(`HTTP ${response.status || 'error'}`));
+            } else if (rec.isCompact) {
+              finishDispatchOutcome(rec.dispatchId, true, null);
+            }
           }
           return response;
         } catch (fetchErr) {
@@ -3347,27 +3837,23 @@
         try {
           const urlStr = this.__agRequestUrl || '';
           if (body && typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
-            const contentType = this.__agRequestHeaders?.['content-type'] || '';
-            const tx = budgetEngine.transformOutgoingSendRequest(body, buildInterceptorContext('xhr', urlStr, contentType));
-            if (tx && tx.handled) {
-              if (tx.modified && tx.output !== undefined) {
-                body = tx.output;
-              }
-              if (!isCoveredByRecentDecorator(tx)) {
-                rec = recordBudgetTransformDispatch(tx);
-              }
-            }
+            const out = processOutgoingBody(body, 'xhr', urlStr, this.__agRequestHeaders?.['content-type'] || '');
+            body = out.body;
+            rec = out.rec;
           }
         } catch (err) {
           console.warn('[ContextMeter] XHR request interceptor error:', err);
         }
         if (rec && typeof this.addEventListener === 'function') {
           const dId = rec.dispatchId;
+          const isCompactRec = Boolean(rec.isCompact);
           this.addEventListener('error', () => finishDispatchOutcome(dId, false, new Error('XHR network error')), { once: true });
           this.addEventListener('abort', () => finishDispatchOutcome(dId, false, Object.assign(new Error('XHR aborted'), { name: 'AbortError' })), { once: true });
           this.addEventListener('load', () => {
             if (typeof this.status === 'number' && this.status >= 400) {
               finishDispatchOutcome(dId, false, new Error(`HTTP ${this.status}`));
+            } else if (isCompactRec) {
+              finishDispatchOutcome(dId, true, null);
             }
           }, { once: true });
         }
@@ -3389,9 +3875,21 @@
     delete globalThis.__AG_METER_ON_SEND_RESULT__;
     for (const tId of pendingConfirmTimers) clearTimeout(tId);
     pendingConfirmTimers.clear();
+    compactDispatches.clear();
+    for (const ws of hookedWebSockets) {
+      try {
+        ws.removeEventListener?.('message', handlePassiveHostWsMessage);
+        delete ws.__agMeterWsMessageHooked;
+      } catch { }
+    }
+    hookedWebSockets.clear();
     if (window.__agOrigWsSend && window.WebSocket?.prototype) {
       window.WebSocket.prototype.send = window.__agOrigWsSend;
       delete window.__agOrigWsSend;
+    }
+    if (window.__agOrigRequest) {
+      window.Request = window.__agOrigRequest;
+      delete window.__agOrigRequest;
     }
     if (window.__agOrigFetch) {
       window.fetch = window.__agOrigFetch;
@@ -10661,7 +11159,7 @@
   });
 
   /* @INSERT_HEATMAP_MODULE */
-  function updateRingAndBubble(d, session, pct, danger, stale, incomplete) {
+  function updateRingAndBubble(d, session, pct, danger, stale, incomplete, disp, isCompactingNow) {
     const ringFill = el('ring-fill');
     const tipTitle = el('ctx-tip-title');
     const tipPct = el('ctx-tip-pct');
@@ -10703,11 +11201,20 @@
     // 2. 悬停信息气泡三层文案（标题 — 使用比例 — 用量与容量）
     if (!tipTitle || !tipPct || !tipDetail) return;
 
-    const disp = resolveDisplayStatus(d, session);
     if (disp.isError || disp.kind === 'canceled') {
       tipTitle.textContent = disp.tipTitle;
       tipPct.textContent = disp.tipPct;
       tipDetail.textContent = disp.tipDetail;
+    } else if (isCompactingNow) {
+      tipTitle.textContent = t('tip.title.compacting');
+      tipPct.textContent = t('tip.pct.compacting');
+      if (d?.actual != null && d?.budget) {
+        tipDetail.textContent = t('tip.detail.usedOfBudget', { used: fmtBubbleToken(d.actual), budget: fmtBubbleToken(d.budget), inc: '' });
+      } else if (d?.compacted && d?.postCompactEstimate != null && d?.budget) {
+        tipDetail.textContent = t('tip.detail.compacted', { used: fmtBubbleToken(d.postCompactEstimate), budget: fmtBubbleToken(d.budget) });
+      } else {
+        tipDetail.textContent = t('tip.detail.waitBg');
+      }
     } else if (stale && d?.actual != null && d?.budget) {
       const usedRound = Math.min(100, Math.max(0, Math.round((d.actual / d.budget) * 100)));
       const remRound = Math.max(0, 100 - usedRound);
@@ -10720,6 +11227,20 @@
       tipDetail.textContent = session?.total
         ? t('tip.detail.sessionEst', { low: fmtBubbleToken(session.total.low), high: fmtBubbleToken(session.total.high) })
         : t('tip.detail.waitBg');
+    } else if (d?.compacted && d?.postCompactEstimate != null && d?.budget) {
+      const rawPct = pct != null ? pct : (d.postCompactEstimate / d.budget) * 100;
+      const usedRound = rawPct > 0 && rawPct < 1 ? 1 : Math.min(100, Math.max(0, Math.round(rawPct)));
+      const remRound = Math.max(0, 100 - usedRound);
+      tipTitle.textContent = t('tip.title.compacted');
+      tipPct.textContent = t('tip.pct.compacted', { used: usedRound, rem: remRound });
+      tipDetail.textContent = t('tip.detail.compacted', {
+        used: fmtBubbleToken(d.postCompactEstimate),
+        budget: fmtBubbleToken(d.budget)
+      });
+    } else if (d?.compacted && d?.postCompactEstimate != null && !d?.budget) {
+      tipTitle.textContent = t('tip.title.compacted');
+      tipPct.textContent = t('tip.pct.noBudget');
+      tipDetail.textContent = t('tip.detail.compactedNoBudget', { used: fmtBubbleToken(d.postCompactEstimate) });
     } else if (d?.actual != null && d?.budget) {
       const rawPct = pct != null ? pct : (d.actual / d.budget) * 100;
       const usedRound = rawPct > 0 && rawPct < 1 ? 1 : Math.min(100, Math.max(0, Math.round(rawPct)));
@@ -11829,6 +12350,7 @@
     host.setAttribute('data-has-session', state.route ? 'true' : 'false');
     ensureHostDocked();
     if (!state.route) {
+      host.setAttribute('data-compacting', 'false');
       hideContextTooltip();
       const barFill = el('bar-fill');
       if (barFill) barFill.style.width = '0%';
@@ -11861,14 +12383,15 @@
     }
 
     const barColor = danger ? '#ff4d4f' : pct != null && pct >= 90 ? '#ff4d4f' : pct != null && pct >= 75 || stale || incomplete ? '#faad14' : '#69c0ff';
-    const tone = danger ? '#ff9292' : stale || incomplete || d?.estimated ? '#f2c46d' : '#b7c1ff';
+    const tone = danger ? '#ff9292' : stale || incomplete || (d?.estimated && !d?.compacted) ? '#f2c46d' : '#b7c1ff';
     host.style.setProperty('--tone', tone);
     host.style.setProperty('--bar-color', barColor);
 
     const barFill = el('bar-fill');
     if (barFill) barFill.style.width = pct != null ? `${pct}%` : (d?.exceeded ? '100%' : '0%');
+    const isCompactingNow = Boolean(state.compacting && state.compacting.cascadeId === state.route && !disp.isError);
 
-    updateRingAndBubble(d, session, pct, danger, stale, incomplete);
+    updateRingAndBubble(d, session, pct, danger, stale, incomplete, disp, isCompactingNow);
 
     syncContextModelSelectionFromState();
 
@@ -11880,13 +12403,16 @@
       }
     }
 
+    host.setAttribute('data-compacting', isCompactingNow ? 'true' : 'false');
     const status = disp.isError
       ? disp.statusText
-      : stale ? t('badge.status.stale')
-        : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })
-          : incomplete ? t('badge.status.incomplete', { count: session.unknownFiles })
-            : d?.estimated ? t('badge.status.estimated')
-              : t('badge.status.normal');
+      : isCompactingNow ? t('badge.status.compacting')
+        : stale ? t('badge.status.stale')
+          : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })
+            : incomplete ? t('badge.status.incomplete', { count: session.unknownFiles })
+              : d?.compacted ? t('badge.status.compacted')
+                : d?.estimated ? t('badge.status.estimated')
+                  : t('badge.status.normal');
     el('status').textContent = status;
 
     const corpus = session?.total
@@ -11898,10 +12424,23 @@
       el('amount').textContent = disp.amountText;
       if (badgePctVal) badgePctVal.textContent = disp.badgeText;
       setHoverExtra(disp.hoverExtra);
+    } else if (isCompactingNow) {
+      const curTok = d?.actual != null ? d.actual : (d?.postCompactEstimate ?? null);
+      el('amount').textContent = curTok != null ? `${short(curTok)} (${t('badge.pct.compacting')})` : t('badge.pct.compacting');
+      if (badgePctVal) badgePctVal.textContent = t('badge.pct.compacting');
+      const budgetStr = d?.budget ? ` / ${short(d.budget)}` : '';
+      setHoverExtra(`${budgetStr} · ${corpus}`);
     } else if (stale) {
       el('amount').textContent = t('badge.delayed');
       if (badgePctVal) badgePctVal.textContent = pct != null ? `${pct.toFixed(0)}%` : '--%';
       setHoverExtra(` · ${corpus}`);
+    } else if (d?.compacted && d?.postCompactEstimate != null) {
+      const pctRound = pct != null ? (pct > 0 && pct < 1 ? 1 : Math.round(pct)) : null;
+      const pctStr = pctRound != null ? ` (${pctRound}%)` : '';
+      el('amount').textContent = `~${short(d.postCompactEstimate)}${pctStr}`;
+      if (badgePctVal) badgePctVal.textContent = pctRound != null ? `~${pctRound}%` : '--%';
+      const budgetStr = d?.budget ? ` / ${short(d.budget)}` : '';
+      setHoverExtra(`${budgetStr} · ${corpus}`);
     } else if (d?.actual != null) {
       const pctStr = pct != null ? ` (${pct.toFixed(0)}%)` : '';
       el('amount').textContent = `${short(d.actual)}${pctStr}`;
@@ -11983,6 +12522,53 @@
           }
         }
         if (keyTakeaway) keyTakeaway.textContent = disp.keyTakeaway;
+      } else if (isCompactingNow) {
+        if (keyBadge) {
+          keyBadge.textContent = t('key.pill.compacting');
+          keyBadge.className = 'key-pill pill-info';
+        }
+        const curUsed = d?.actual != null ? d.actual : (d?.postCompactEstimate ?? d?.estimate ?? null);
+        if (keyUsed) {
+          keyUsed.textContent = curUsed != null
+            ? `${d?.actual != null ? '' : '~'}${short(curUsed)}${pct != null ? ` (${pct.toFixed(1)}%)` : ''}`
+            : '—';
+        }
+        if (keyLimit) keyLimit.textContent = d?.budget ? short(d.budget) : '—';
+        if (keyRemaining) {
+          if (curUsed != null && d?.budget && pct != null) {
+            const rem = Math.max(0, d.budget - curUsed);
+            const remPct = Math.max(0, 100 - pct);
+            keyRemaining.textContent = `${short(rem)} (${remPct.toFixed(1)}%)`;
+          } else {
+            keyRemaining.textContent = t('key.pending');
+          }
+        }
+        if (keyTakeaway) keyTakeaway.textContent = t('key.takeaway.compacting');
+      } else if (d?.compacted && d?.postCompactEstimate != null) {
+        if (pct != null) {
+          const limitVal = d.budget || 256000;
+          const remainVal = Math.max(0, limitVal - d.postCompactEstimate);
+          const remainPct = Math.max(0, 100 - pct);
+          if (keyBadge) {
+            keyBadge.textContent = t('key.pill.compacted');
+            keyBadge.className = pct >= 90 ? 'key-pill pill-danger' : (pct >= 75 ? 'key-pill pill-warn' : 'key-pill pill-good');
+          }
+          if (keyUsed) keyUsed.textContent = `~${short(d.postCompactEstimate)} (${pct.toFixed(1)}%)`;
+          if (keyLimit) keyLimit.textContent = short(limitVal);
+          if (keyRemaining) keyRemaining.textContent = `~${short(remainVal)} (${remainPct.toFixed(1)}%)`;
+          if (keyTakeaway) {
+            keyTakeaway.textContent = t('key.takeaway.compacted', { pct: pct.toFixed(1), rem: short(remainVal) });
+          }
+        } else {
+          if (keyBadge) {
+            keyBadge.textContent = t('key.pill.compacted');
+            keyBadge.className = 'key-pill pill-good';
+          }
+          if (keyUsed) keyUsed.textContent = `~${short(d.postCompactEstimate)}`;
+          if (keyLimit) keyLimit.textContent = d?.budget ? short(d.budget) : '—';
+          if (keyRemaining) keyRemaining.textContent = t('key.pending');
+          if (keyTakeaway) keyTakeaway.textContent = t('badge.status.compacted');
+        }
       } else if (d?.actual != null && pct != null) {
         const limitVal = d.budget || 256000;
         const remainVal = Math.max(0, limitVal - d.actual);
@@ -12061,16 +12647,28 @@
     }
 
     el('model').textContent = d?.model?.startsWith('MODEL_PLACEHOLDER') ? t('tech.modelPlaceholder', { id: d.model }) : d?.model || t('tech.modelMissing');
-    el('request-status').textContent = d?.exceeded ? t('tech.req.exceeded') : d?.network ? t('tech.req.network') : d?.error ? t('tech.req.failed') : d?.status === 'reported' ? t('tech.req.reported') : d?.status === 'estimated' ? t('tech.req.estimated') : t('tech.req.waiting');
-    el('actual').textContent = d?.actual != null ? token(d.actual) : d?.exceeded ? t('tech.actual.exceeded', { val: fmt(d.serviceLimit || 0) }) : t('tech.actual.unknown');
+    el('request-status').textContent = d?.exceeded ? t('tech.req.exceeded') : d?.network ? t('tech.req.network') : d?.error ? t('tech.req.failed') : isCompactingNow ? t('tech.req.compacting') : d?.compacted ? t('tech.req.compacted') : d?.status === 'reported' ? t('tech.req.reported') : d?.status === 'estimated' ? t('tech.req.estimated') : t('tech.req.waiting');
+    el('actual').textContent = d?.actual != null ? token(d.actual) : d?.exceeded ? t('tech.actual.exceeded', { val: fmt(d.serviceLimit || 0) }) : d?.compacted ? t('tech.actual.compacted') : t('tech.actual.unknown');
     if (d?.exceeded && !d.serviceLimit) el('actual').textContent = t('tech.actual.exceededNoLim');
-    el('estimate').textContent = d?.estimate ? t('tech.est.val', { val: fmt(d.estimate), note: d.exceeded ? t('tech.est.under') : t('tech.est.ref') }) : t('tech.est.none');
+    el('estimate').textContent = d?.estimate ? t('tech.est.val', { val: fmt(d.estimate), note: d.exceeded ? t('tech.est.under') : (d.compacted ? t('tech.est.compacted') : t('tech.est.ref')) }) : t('tech.est.none');
     el('budget').textContent = token(d?.budget);
     el('service-limit').textContent = d?.serviceLimit ? t('tech.svcLim.val', { val: fmt(d.serviceLimit) }) : t('tech.svcLim.none');
-    el('percent').textContent = d?.percent != null && !danger && !stale ? t('tech.pct.val', { pct: d.percent.toFixed(1) }) : t('tech.pct.none');
+    el('percent').textContent = d?.percent != null && !danger && !stale
+      ? (d.compacted ? t('tech.pct.compactedVal', { pct: d.percent.toFixed(1) }) : t('tech.pct.val', { pct: d.percent.toFixed(1) }))
+      : t('tech.pct.none');
     el('session-total').textContent = session?.total ? range(session.total) + (incomplete ? t('tech.plusUnknown') : '') : state.scanError ? t('tech.scanIncomplete') : t('tech.scanning');
     el('characters').textContent = session?.total ? fmt(session.total.chars) : '—';
-    for (const name of ['user', 'assistant', 'thinking', 'tools', 'summaries']) el(name).textContent = session?.groups ? range(session.groups[name]) : '—';
+    for (const name of ['user', 'assistant', 'thinking', 'tools', 'summaries']) {
+      if (name === 'summaries' && session?.groups?.summaries && Number(session.checkpointCount) > 0 && Number.isInteger(session.lastCheckpointIndex) && session.lastCheckpointIndex >= 0) {
+        el(name).textContent = t('tech.summaries.withCheckpoints', {
+          range: range(session.groups.summaries),
+          count: session.checkpointCount,
+          step: session.lastCheckpointIndex
+        });
+      } else {
+        el(name).textContent = session?.groups ? range(session.groups[name]) : '—';
+      }
+    }
     el('system').textContent = session?.groups ? range({ low: (session.groups.system?.low || 0) + (session.groups.definitions?.low || 0), high: (session.groups.system?.high || 0) + (session.groups.definitions?.high || 0) }) : '—';
     el('attachment-total').textContent = session?.attachmentTotal ? range(session.attachmentTotal) + (incomplete ? t('tech.plusUnknownShort') : '') : '—';
     el('steps').textContent = session?.steps != null ? t('tech.stepsVal', { steps: fmt(session.steps), user: session.userMessages, assistant: session.assistantMessages }) : t('tech.stepsNone');
@@ -12484,6 +13082,88 @@
     }
   }
 
+  function resolveDefaultBudgetFallbackForCompaction(baseLatest) {
+    if (baseLatest?.budget && baseLatest.budget > 0) return baseLatest.budget;
+    if (state.scan?.preCompactLatest?.budget && state.scan.preCompactLatest.budget > 0) {
+      return state.scan.preCompactLatest.budget;
+    }
+    if (state.latest?.budget && state.latest.budget > 0) return state.latest.budget;
+    return null;
+  }
+
+  function resolveEffectiveLatestWithCompaction(candidateLatest, candidateMeta = null, candidateGenIndex = -1) {
+    const scanSession = state.scan?.session || null;
+    const scanCpIdx = Number.isInteger(scanSession?.lastCheckpointIndex) ? scanSession.lastCheckpointIndex : -1;
+    const scanGenCount = Number.isFinite(Number(state.scan?.generatorCount)) ? Number(state.scan.generatorCount) : -1;
+    const hCwu = (state.hostContextWindowUsage && state.hostContextWindowUsage.cascadeId === state.route)
+      ? state.hostContextWindowUsage
+      : null;
+    const hostCpActive = Boolean(hCwu?.estimatedAfterCompaction);
+    const hostStepIdx = Number.isInteger(hCwu?.lastStepIndex) ? hCwu.lastStepIndex : -1;
+    const hostGenIdx = Number.isInteger(hCwu?.generatorMetadataIndex) ? hCwu.generatorMetadataIndex : -1;
+
+    const effectiveCpIdx = Math.max(scanCpIdx, hostCpActive ? Math.max(0, hostStepIdx) : -1);
+    if (effectiveCpIdx < 0 && !hostCpActive) {
+      return withStepError(candidateLatest, candidateMeta);
+    }
+
+    if (candidateLatest && !candidateLatest.compacted) {
+      const rowMaxStep = typeof extractGeneratorMaxStep === 'function'
+        ? extractGeneratorMaxStep(candidateMeta)
+        : -1;
+      const hasOutcome = candidateLatest.actual !== null || Boolean(candidateLatest.error);
+      if (rowMaxStep >= 0) {
+        if (rowMaxStep > effectiveCpIdx && hasOutcome) {
+          if (hCwu && hCwu.estimatedAfterCompaction && (hostStepIdx < 0 || rowMaxStep > hostStepIdx)) {
+            hCwu.estimatedAfterCompaction = false;
+          }
+          return withStepError(candidateLatest, candidateMeta);
+        }
+      } else if (hasOutcome) {
+        const lastModelStep = Number.isInteger(scanSession?.lastModelStepAt)
+          ? scanSession.lastModelStepAt
+          : (Number.isInteger(scanSession?.lastAssistantAt) ? scanSession.lastAssistantAt : -1);
+        // 若旧检查点之后已存在真实模型/工具步，证明 scanCpIdx 是早先已被超越的历史检查点（二次压缩期间亦应保持压缩前真实用量，避免误拿旧检查点重算）
+        const scanAlreadyHasPostModelStep = scanCpIdx >= 0 && lastModelStep > scanCpIdx && !hostCpActive;
+        const isCompactingCurrentRoute = Boolean(state.compacting && state.compacting.cascadeId === state.route);
+        const genAdvancedPastScan = !isCompactingCurrentRoute && scanCpIdx >= 0 && scanGenCount > 0 && candidateGenIndex >= scanGenCount && !hostCpActive;
+        const genAdvancedPastHost = !isCompactingCurrentRoute && hostCpActive && hostGenIdx >= 0 && candidateGenIndex > hostGenIdx;
+        if (scanAlreadyHasPostModelStep || genAdvancedPastScan || genAdvancedPastHost) {
+          if (hCwu && hCwu.estimatedAfterCompaction) {
+            hCwu.estimatedAfterCompaction = false;
+          }
+          return withStepError(candidateLatest, candidateMeta);
+        }
+      }
+    }
+
+    if (typeof buildPostCompactSummary === 'function') {
+      const baseRef = (candidateLatest && !candidateLatest.compacted)
+        ? {
+            ...(state.scan?.preCompactLatest || state.latest || {}),
+            ...candidateLatest,
+            budget: candidateLatest.budget || resolveDefaultBudgetFallbackForCompaction(candidateLatest),
+            model: candidateLatest.model || state.scan?.preCompactLatest?.model || state.latest?.model || '',
+            modelId: candidateLatest.modelId || state.scan?.preCompactLatest?.modelId || state.latest?.modelId || null,
+            modelRaw: candidateLatest.modelRaw || state.scan?.preCompactLatest?.modelRaw || state.latest?.modelRaw || '',
+            speed: candidateLatest.speed || state.latest?.speed || state.scan?.preCompactLatest?.speed || null
+          }
+        : (state.scan?.preCompactLatest || candidateLatest || state.latest || null);
+      const compactedObj = buildPostCompactSummary({
+        session: scanSession,
+        postCheckpointAttachmentTotal: scanSession?.postCheckpointAttachmentTotal,
+        system: scanSession?.groups?.system,
+        definitions: scanSession?.groups?.definitions,
+        previousLatest: baseRef,
+        hostContextWindowUsage: hCwu,
+        defaultBudgetFallback: resolveDefaultBudgetFallbackForCompaction(baseRef)
+      });
+      return withStepError(compactedObj, null);
+    }
+
+    return withStepError(candidateLatest, candidateMeta);
+  }
+
   async function requestPoll(generation, id) {
     state.requestBusy = true;
     const controller = new AbortController(); state.controllers.add(controller);
@@ -12641,18 +13321,28 @@
       if (state.pendingFinalCalls.size > 0) {
         void flushPendingFinalCalls(wasHydrated);
       }
+      let matchedPollRow = false;
       for (let i = rows.length - 1; i >= 0; i--) {
         const value = summarize(rows[i], { cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [] });
         if (value) {
-          state.latest = withStepError(value, rows[i]);
+          matchedPollRow = true;
+          state.latest = resolveEffectiveLatestWithCompaction(value, rows[i], offset + i);
           const callInfo = parseGeneratorCall ? parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: modelConfigsList }) : null;
-          recordObservationFromSummary(state.latest, id, {
-            callId: callInfo?.callId || null,
-            stepCount: state.count,
-            ts: Date.now()
-          });
+          if (!state.latest?.compacted || state.latest?.postCompactSource === 'host_context_window_usage') {
+            recordObservationFromSummary(state.latest, id, {
+              callId: state.latest?.compacted ? null : (callInfo?.callId || null),
+              stepCount: state.count,
+              ts: Date.now()
+            });
+          }
           break;
         }
+      }
+      if (!matchedPollRow && state.latest?.compacted) {
+        state.latest = resolveEffectiveLatestWithCompaction(state.latest, null, -1);
+      }
+      if (rows.some(r => r && !r.chatModel) && !state.scanBusy && Date.now() - (state.lastCompactForceScanAt || 0) > 1500) {
+        triggerImmediateCompactScan(id);
       }
       state.requestAt = Date.now(); state.requestError = '';
       if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
@@ -12663,7 +13353,7 @@
       if (generation === state.generation && !state.disposed) {
         state.requestBusy = false;
         const latestRecNow = resolveLatestSessionCallRecord();
-        const isStreamingNow = Boolean(latestRecNow && latestRecNow.status === 'streaming');
+        const isStreamingNow = Boolean((latestRecNow && latestRecNow.status === 'streaming') || state.compacting);
         const nextDelay = document.hidden ? 15000 : (isStreamingNow ? 1000 : 3000);
         state.requestNext = Date.now() + nextDelay;
         render();
@@ -12672,6 +13362,8 @@
   }
 
   async function scan(generation, id, force = false) {
+    const myScanSeq = ++activeScanSeq;
+    const scanStartedAtMs = Date.now();
     state.scanBusy = true; render();
     try {
       let result;
@@ -12679,7 +13371,9 @@
       if (!hasIpcScan && !hasLiveHttpBridge()) {
         throw new Error('完整重启 Antigravity 后启用附件扫描');
       }
-      const controller = new AbortController(); state.controllers.add(controller);
+      const controller = new AbortController();
+      activeScanController = controller;
+      state.controllers.add(controller);
       const timeout = setTimeout(() => controller.abort(), 180000);
       try {
         const out = await callBackendWithPriority({
@@ -12692,11 +13386,39 @@
       } finally {
         clearTimeout(timeout);
         state.controllers.delete(controller);
+        if (activeScanController === controller) activeScanController = null;
       }
-      if (generation !== state.generation || state.disposed) return;
+      if (generation !== state.generation || state.disposed || myScanSeq !== activeScanSeq) return;
       if (result?.data?.abortedStale) return;
       if (!result?.ok) throw new Error(result?.error || '扫描未返回有效结果');
       state.scan = result.data; state.scanError = '';
+      const scannedCpIdx = Number.isInteger(result.data.session?.lastCheckpointIndex)
+        ? result.data.session.lastCheckpointIndex
+        : -1;
+      const scannedInProgressCpIdx = Number.isInteger(result.data.session?.inProgressCheckpointIndex)
+        ? result.data.session.inProgressCheckpointIndex
+        : -1;
+      if (scannedInProgressCpIdx >= 0 && !state.compacting && id === state.route) {
+        beginCompactingTransition(id);
+      }
+      if (state.compacting && state.compacting.cascadeId === id) {
+        if (!state.compacting.baselineHydrated) {
+          const firstScanAlreadyCompacted = scannedCpIdx >= 0
+            && Boolean(result.data.latest?.compacted)
+            && !state.lastDomCompactingActive
+            && scannedInProgressCpIdx < 0;
+          if (firstScanAlreadyCompacted) {
+            clearCompactingTransition();
+          } else {
+            state.compacting.baselineCheckpointIndex = scannedCpIdx;
+            state.compacting.baselineHydrated = true;
+          }
+        } else if (scannedCpIdx > state.compacting.baselineCheckpointIndex && scannedInProgressCpIdx < 0) {
+          clearCompactingTransition();
+        } else if (state.compacting.domEndedAtMs > 0 && scanStartedAtMs >= state.compacting.domEndedAtMs) {
+          state.compacting.postDomEndScans = (state.compacting.postDomEndScans || 0) + 1;
+        }
+      }
       if (result.data.modelCapabilitiesById && typeof result.data.modelCapabilitiesById === 'object') {
         mergeCapabilitiesMapClient(result.data.modelCapabilitiesById);
       }
@@ -12709,17 +13431,57 @@
         const genSteps = Number(result.data.generatorCount);
         const msgSteps = Number(result.data.session?.userMessages || 0) + Number(result.data.session?.assistantMessages || 0);
         const resolvedStepCount = Number.isFinite(genSteps) && genSteps >= 0 ? genSteps : (msgSteps > 0 ? msgSteps : state.count);
-        recordObservationFromSummary(state.latest, id, {
-          callId: result.data.latestCallId || null,
-          stepCount: resolvedStepCount,
-          ts: Number(result.data.scannedAt || Date.now())
-        });
+        if (!state.latest?.compacted) {
+          recordObservationFromSummary(state.latest, id, {
+            callId: result.data.latestCallId || null,
+            stepCount: resolvedStepCount,
+            ts: Number(result.data.scannedAt || Date.now())
+          });
+        }
       }
-      state.latest = withStepError(state.latest);
+      state.latest = resolveEffectiveLatestWithCompaction(
+        state.latest || result.data.latest || null,
+        null,
+        state.count > 0 ? state.count - 1 : -1
+      );
+      if (state.latest?.compacted && !state.requestAt) {
+        state.requestAt = Number(result.data.scannedAt || Date.now());
+      }
       renderFiles(result.data.session);
       if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
-    } catch (e) { if (generation === state.generation && !state.disposed) state.scanError = e.message; }
-    finally { if (generation === state.generation && !state.disposed) { state.scanBusy = false; state.scanNext = Date.now() + (document.hidden ? 60000 : 20000); render(); } }
+    } catch (e) {
+      if (generation === state.generation && !state.disposed && myScanSeq === activeScanSeq) {
+        state.scanError = e.message;
+      }
+    }
+    finally {
+      if (generation === state.generation && !state.disposed && myScanSeq === activeScanSeq) {
+        state.scanBusy = false;
+        if (state.pendingCompactForceScan && id === state.route) {
+          state.pendingCompactForceScan = false;
+          state.lastCompactForceScanAt = Date.now();
+          void scan(state.generation, id, true);
+          return;
+        }
+        if (
+          state.compacting
+          && state.compacting.cascadeId === id
+          && state.compacting.domEndedAtMs > 0
+          && (state.compacting.postDomEndScans || 0) >= 1
+          && (state.compacting.postDomEndScans || 0) <= 3
+          && !compactThrottleTimer
+        ) {
+          compactThrottleTimer = setTimeout(() => {
+            compactThrottleTimer = null;
+            if (!state.disposed && state.compacting && state.compacting.cascadeId === id && state.route === id && !state.scanBusy) {
+              triggerImmediateCompactScan(id);
+            }
+          }, 350);
+        }
+        state.scanNext = Date.now() + (document.hidden ? 60000 : 20000);
+        render();
+      }
+    }
   }
 
   let lastAvailableModelsSync = 0;
@@ -15211,6 +15973,7 @@
       if (state.callRenderTimer) { clearTimeout(state.callRenderTimer); state.callRenderTimer = null; }
       if (state.callEnterAnimTimer) { clearTimeout(state.callEnterAnimTimer); state.callEnterAnimTimer = null; }
       clearLivePendingRequestWait();
+      clearCompactingTransition();
       if (state.sessionCallsMap) state.sessionCallsMap.clear();
       if (state.expandedTurnKeys) state.expandedTurnKeys.clear();
       Object.assign(state, {
@@ -15222,7 +15985,9 @@
         historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
         timelineError: '', timelinePageLimit: 10, timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
         lastTimelineFetchAt: 0, lastTimelineCallSig: '',
-        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
+        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null,
+        pendingCompactForceScan: false, lastCompactForceScanAt: 0, hostContextWindowUsage: null,
+        lastDomCompactingActive: false, lastDomCompactedBannerCount: -1
       });
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
       if (lastHistorySync > 0) {
@@ -15230,6 +15995,7 @@
       }
       toggle(false); hideContextTooltip(); renderFiles(null); render();
     }
+    if (id && !document.hidden) checkHostDomCompactionSignals();
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
     if (!state.disposed && state.pendingFinalCalls?.size && !state.flushFinalsBusy && Date.now() >= (state.nextFlushRetryAt || 0)) {
@@ -15655,7 +16421,9 @@
       showPanel(open ? 'quota' : 'none');
       return !el('panel-quota')?.hidden;
     },
-    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
+    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, compacting: state.compacting, hostContextWindowUsage: state.hostContextWindowUsage, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
+    simulateHostWsMessageForTest: (rawFrame) => handlePassiveHostWsMessage({ data: typeof rawFrame === 'string' ? rawFrame : JSON.stringify(rawFrame) }),
+    checkHostDomCompactionForTest: () => checkHostDomCompactionSignals(),
     captureHotReloadState,
     verifyHotReloadAndRefreshQuota,
     getBackendStatusForTest: () => ({

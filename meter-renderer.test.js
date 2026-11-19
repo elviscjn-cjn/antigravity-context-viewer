@@ -6014,3 +6014,546 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
     try { api.dispose(); } catch {}
   }
 });
+
+test('/compact 端到端闭环：压缩中稳态提示、完成后强制重扫回落圆环、轮询防倒灌、三语切换与新消息无缝恢复实测', async () => {
+  let nowMs = 1763500000000;
+  class MockDate extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [nowMs]));
+    }
+    static now() {
+      return nowMs;
+    }
+  }
+  const cascadeId = '11111111-1111-1111-1111-111111111111';
+  const h = harness(session(), { Date: MockDate });
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI.scan = (id, force = false) =>
+    new Promise(resolve => h.scans.push({ id, force, resolve }));
+
+  try {
+    // 1. 初始压缩前 80% 偏高状态（204,800 / 256,000）
+    const preSession = {
+      ...session(),
+      total: { chars: 480000, low: 150000, high: 210000 },
+      steps: 3,
+      userMessages: 1,
+      assistantMessages: 1,
+      lastModelStepAt: 1,
+      checkpointCount: 0,
+      lastCheckpointIndex: -1
+    };
+    const preTurnRow = {
+      stepIndices: [1],
+      chatModel: {
+        model: 'MODEL_GOOGLE_GEMINI_4_HYDROGEN_HIGH',
+        modelDisplayName: 'Gemini 4 Hydrogen (High)',
+        usage: { inputTokens: 202800, outputTokens: 2000 },
+        timeToFirstToken: '1.0s',
+        streamingDuration: '4.0s',
+        chatStartMetadata: {
+          startStepIndex: 1,
+          contextWindowMetadata: { estimatedTokensUsed: 202000, maxContextTokens: 256000 }
+        }
+      }
+    };
+    h.scans[0].resolve({ ok: true, data: { session: preSession, scannedAt: nowMs, generatorCount: 1, latest: null } });
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [preTurnRow] }) });
+    await h.flush();
+
+    assert.equal(h.host.getAttribute('data-occupancy'), 'warn');
+    assert.equal(h.elements.get('ring-fill').getAttribute('data-ring-state'), 'determinate');
+    const preArcDash = h.elements.get('ring-fill').getAttribute('stroke-dasharray');
+    assert.equal(h.elements.get('amount').textContent, '204.8K (80%)');
+    assert.equal(h.elements.get('key-badge').textContent, '偏高');
+    assert.equal(h.elements.get('speed-amount').textContent, '500 tok/s');
+
+    // 2. 用户输入 /compact：进入压缩过渡态，圆环弧长保持稳定不乱跳，速度徽章不误入“等待首字”
+    nowMs += 500;
+    const dispatchTok = h.sandbox.__AG_METER_ON_SEND_MESSAGE__({
+      cascadeId,
+      items: [{ text: '/compact' }]
+    });
+    assert.ok(dispatchTok?.dispatchId?.startsWith('compact_'), '应识别 /compact 指令并返回专属 dispatchId');
+    assert.equal(api.snapshot().compacting?.cascadeId, cascadeId);
+    assert.equal(h.elements.get('ring-fill').getAttribute('stroke-dasharray'), preArcDash, '压缩进行中圆环弧长应保持稳定');
+    assert.equal(h.elements.get('speed-amount').textContent, '500 tok/s', '/compact 不应污染速度徽章为等待首字');
+    assert.equal(h.elements.get('status').textContent, '正在压缩会话上下文，完成后圆环与剩余空间将自动同步更新…');
+    assert.equal(h.host.getAttribute('data-compacting'), 'true', '压缩进行中宿主节点必须标记 data-compacting="true" 驱动呼吸动效');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…', '顶栏圆环旁胶囊在压缩进行中必须即时显示“压缩中…”反馈');
+    assert.equal(h.elements.get('key-badge').textContent, '压缩中…');
+    assert.equal(h.elements.get('request-status').textContent, '正在压缩上下文…');
+    assert.equal(h.elements.get('ctx-tip-title').textContent, '上下文窗口（正在压缩…）：');
+    assert.equal(h.elements.get('ctx-tip-pct').textContent, '正在生成压缩摘要，完成后自动更新');
+
+    // 3. /compact RPC 完成：立即触发 scan(id, force=true) 绕过 20s 周期与 12s 缓存
+    nowMs += 600;
+    h.sandbox.__AG_METER_ON_SEND_RESULT__(dispatchTok.dispatchId, true, null);
+    assert.equal(h.scans.length, 2, '压缩完成应立即发起新扫描');
+    assert.equal(h.scans[1].id, cascadeId);
+    assert.equal(h.scans[1].force, true, '压缩后扫描必须传入 force=true 绕过缓存');
+
+    const postSession = {
+      ...preSession,
+      steps: 4,
+      userMessages: 2,
+      checkpointCount: 1,
+      lastCheckpointIndex: 3,
+      lastCheckpointFailed: false,
+      groups: {
+        ...preSession.groups,
+        summaries: { chars: 1200, low: 400, high: 800 }
+      },
+      postCheckpoint: {
+        textTotal: { chars: 42000, low: 14000, high: 18000 },
+        mediaRefs: {}
+      },
+      postCompactActiveTotal: { chars: 50000, low: 16000, high: 20000 }
+    };
+    const postLatest = core.buildPostCompactSummary({
+      session: postSession,
+      previousLatest: {
+        budget: 256000,
+        model: 'Gemini 4 Hydrogen (High)',
+        speed: { tps: 500, streamingTps: 500, duration: 4, ttft: 1, outputTokens: 2000 }
+      }
+    });
+    h.scans[1].resolve({
+      ok: true,
+      data: {
+        session: postSession,
+        scannedAt: nowMs,
+        generatorCount: 2,
+        preCompactLatest: { budget: 256000, model: 'Gemini 4 Hydrogen (High)' },
+        latest: postLatest
+      }
+    });
+    await h.flush();
+
+    assert.equal(api.snapshot().compacting, null, '读取到新检查点后应清除压缩过渡态');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal', '压缩回落后应清除 80% 橙色告警');
+    assert.equal(h.elements.get('ring-fill').getAttribute('data-ring-state'), 'determinate');
+    const postArcLen = parseFloat(h.elements.get('ring-fill').getAttribute('stroke-dasharray'));
+    assert.ok(postArcLen > 1.8 && postArcLen < 5, `压缩后圆环弧长应回落至 ~7%（实测 ${postArcLen}）`);
+    assert.equal(h.elements.get('amount').textContent, '~18K (7%)');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '~7%');
+    assert.equal(h.elements.get('ctx-tip-title').textContent, '上下文窗口（已压缩 · 预估）：');
+    assert.equal(h.elements.get('ctx-tip-pct').textContent, '约 7% 已用（剩余约 93% · 已压缩）');
+    assert.equal(h.elements.get('ctx-tip-detail').textContent, '压缩后预估 ≈ 18k / 256k token（发新消息后切换精确值）');
+    assert.equal(h.elements.get('key-badge').textContent, '已压缩 · 预估');
+    assert.equal(h.elements.get('key-used').textContent, '~18K (7.0%)');
+    assert.equal(h.elements.get('key-remaining').textContent, '~238K (93.0%)');
+    assert.equal(h.elements.get('request-status').textContent, '已压缩（待下一轮实测校准）');
+    assert.equal(h.elements.get('actual').textContent, '待压缩后首条消息返回');
+    assert.equal(h.elements.get('percent').textContent, '~7.0%（按压缩后估算）');
+    assert.match(h.elements.get('summaries').textContent, /共 1 次压缩（最近 #3）/);
+    assert.match(h.elements.get('session-total').textContent, /150K–210K/, '技术明细抽屉应继续保留会话累计历史');
+
+    // 4. 轮询防倒灌：后续 3s 轮询返回压缩前轮次 (#1) 与内部摘要器调用 (#3, 195K 输入) 时，绝不回跳至 80%
+    nowMs += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 2);
+    const summarizerRow = {
+      stepIndices: [3],
+      chatModel: {
+        model: 'MODEL_FLASH_SUMMARIZER_INTERNAL',
+        modelDisplayName: 'Internal Summarizer',
+        usage: { inputTokens: 195000, outputTokens: 1500 }
+      }
+    };
+    h.pending[1].resolve({ ok: true, json: async () => ({ generatorMetadata: [preTurnRow, summarizerRow] }) });
+    await h.flush();
+
+    assert.equal(api.snapshot().latest.compacted, true, '轮询到 <= lastCheckpointIndex 的记录不得覆盖压缩后状态');
+    assert.equal(h.elements.get('amount').textContent, '~18K (7%)');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal');
+
+    // 5. 三语实时切换验证（zh-TW 繁体无简体残留 / en 纯英文无汉字泄漏）
+    h.elements.get('btn-top-lang-zh-TW').click();
+    await h.flush();
+    assert.equal(h.elements.get('key-badge').textContent, '已壓縮 · 預估');
+    assert.equal(h.elements.get('ctx-tip-title').textContent, '上下文視窗（已壓縮 · 預估）：');
+    assert.equal(h.elements.get('request-status').textContent, '已壓縮（待下一輪實測校準）');
+    assert.equal(h.elements.get('actual').textContent, '待壓縮後首則訊息回傳');
+
+    h.elements.get('btn-top-lang-en').click();
+    await h.flush();
+    assert.equal(h.elements.get('key-badge').textContent, 'Compacted · Est.');
+    assert.equal(h.elements.get('ctx-tip-title').textContent, 'Context window (compacted · est.):');
+    assert.equal(h.elements.get('request-status').textContent, 'Compacted (awaiting next turn calibration)');
+    assert.equal(h.elements.get('actual').textContent, 'Pending first post-compact message');
+    assert.match(h.elements.get('summaries').textContent, /1 compaction\(s\) \(latest #3\)/);
+    assert.doesNotMatch(h.elements.get('key-takeaway').textContent, /[\u4e00-\u9fff]/);
+
+    h.elements.get('btn-top-lang-zh-CN').click();
+    await h.flush();
+
+    // 6. 发送压缩后首条新消息（stepIndices=[5] > 3）：自动褪去 ~ 预估前缀，无缝切回服务端精确上报
+    nowMs += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    const postCompactReplyRow = {
+      stepIndices: [5],
+      chatModel: {
+        model: 'MODEL_GOOGLE_GEMINI_4_HYDROGEN_HIGH',
+        modelDisplayName: 'Gemini 4 Hydrogen (High)',
+        usage: { inputTokens: 20000, outputTokens: 480 },
+        timeToFirstToken: '0.8s',
+        streamingDuration: '2.0s',
+        chatStartMetadata: {
+          startStepIndex: 5,
+          contextWindowMetadata: { estimatedTokensUsed: 19800, maxContextTokens: 256000 }
+        }
+      }
+    };
+    h.pending[2].resolve({ ok: true, json: async () => ({ generatorMetadata: [preTurnRow, summarizerRow, postCompactReplyRow] }) });
+    await h.flush();
+
+    assert.equal(Boolean(api.snapshot().latest.compacted), false, '收到压缩后新回复应退出 compacted 态');
+    assert.equal(api.snapshot().latest.status, 'reported');
+    assert.equal(h.elements.get('amount').textContent, '20.5K (8%)');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '8%');
+    assert.equal(h.elements.get('key-badge').textContent, '正常');
+    assert.equal(h.elements.get('request-status').textContent, '已返回实际统计');
+    assert.equal(h.elements.get('actual').textContent, '20,480 tokens');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('/compact 100% 溢出自救与双通道感知：被动 WebSocket ContextWindowUsage 0ms 回落及宿主 DOM 横幅兜底触发', async () => {
+  let nowMs = 1763510000000;
+  class MockDate extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [nowMs]));
+    }
+    static now() {
+      return nowMs;
+    }
+  }
+  const cascadeId = '11111111-1111-1111-1111-111111111111';
+  const overflowSession = {
+    ...session(),
+    steps: 11,
+    checkpointCount: 1,
+    lastCheckpointIndex: 4,
+    currentError: {
+      index: 10,
+      text: 'The input token count exceeds the maximum number of tokens allowed 1048576.'
+    }
+  };
+  const h = harness(overflowSession, { Date: MockDate });
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI.scan = (id, force = false) =>
+    new Promise(resolve => h.scans.push({ id, force, resolve }));
+
+  try {
+    h.scans[0].resolve({ ok: true, data: { session: overflowSession, scannedAt: nowMs, generatorCount: 3, latest: null } });
+    h.pending[0].resolve(response({
+      retryInfos: [{ error: 'The input token count exceeds the maximum number of tokens allowed 1048576.' }]
+    }));
+    await h.flush();
+
+    assert.equal(h.elements.get('amount').textContent, '服务端超限');
+    assert.equal(h.elements.get('ring-fill').getAttribute('data-ring-state'), 'exceeded');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'danger');
+
+    // 1. 宿主在 #12 步完成第二次压缩并通过 WebSocket 推送 ContextWindowUsage（此时后台 scan 尚未返回）
+    nowMs += 800;
+    api.simulateHostWsMessageForTest({
+      payload: {
+        update: {
+          conversationId: cascadeId,
+          contextWindowUsage: {
+            estimatedTokensUsed: 15360,
+            maxContextTokens: 256000,
+            lastStepIndex: 12,
+            generatorMetadataIndex: 4,
+            estimatedAfterCompaction: true
+          }
+        }
+      }
+    });
+
+    // 0ms 即刻清除 100% 超限红环并回落至 15.4K (6%)，同时触发后台强制扫描
+    assert.equal(h.elements.get('ring-fill').getAttribute('data-ring-state'), 'determinate');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal');
+    assert.equal(h.elements.get('amount').textContent, '~15.4K (6%)');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '~6%');
+    assert.equal(h.elements.get('key-badge').textContent, '已压缩 · 预估');
+    assert.equal(h.scans.length, 2);
+    assert.equal(h.scans[1].force, true);
+
+    const recoveredSession = {
+      ...overflowSession,
+      steps: 13,
+      checkpointCount: 2,
+      lastCheckpointIndex: 12,
+      currentError: null,
+      postCompactActiveTotal: { chars: 40000, low: 12000, high: 16000 }
+    };
+    h.scans[1].resolve({
+      ok: true,
+      data: {
+        session: recoveredSession,
+        scannedAt: nowMs,
+        generatorCount: 4,
+        latest: core.buildPostCompactSummary({ session: recoveredSession, previousLatest: { budget: 256000 } })
+      }
+    });
+    await h.flush();
+    // 宿主 ContextWindowUsage (15,360) 优先级高于本地区间中位值 (14,000)
+    assert.equal(h.elements.get('amount').textContent, '~15.4K (6%)');
+
+    // 2. 宿主 DOM 自动压缩横幅兜底探测：覆盖长会话 (>900 个前置节点) + 逐字闪烁 span (children.length === 10)
+    const leadingHistoryNodes = Array.from({ length: 900 }, (_, idx) => ({ textContent: `history row ${idx}`, children: [] }));
+    const shimmerChars = Array.from('Compacting').map(ch => ({ textContent: ch, children: [] }));
+    let mockDomNodes = [
+      ...leadingHistoryNodes,
+      { textContent: 'Compacting', children: shimmerChars }
+    ];
+    h.sandbox.document.querySelectorAll = () => mockDomNodes;
+    nowMs += 1000;
+    api.checkHostDomCompactionForTest();
+    assert.equal(api.snapshot().compacting?.cascadeId, cascadeId, '长会话底部逐字闪烁的 Compacting 提示必须被逆序探测命中');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-badge').textContent, '压缩中…');
+
+    mockDomNodes = [
+      ...leadingHistoryNodes,
+      { textContent: 'The conversation was compacted to fit within the context window.', children: [] }
+    ];
+    nowMs += 1000;
+    api.checkHostDomCompactionForTest();
+    assert.equal(h.scans.length, 3, '宿主压缩横幅出现且 Compacting 消失时应触发强制扫描');
+    assert.equal(h.scans[2].force, true);
+    h.scans[2].resolve({
+      ok: true,
+      data: {
+        session: { ...recoveredSession, checkpointCount: 3, lastCheckpointIndex: 14 },
+        scannedAt: nowMs,
+        generatorCount: 4,
+        latest: core.buildPostCompactSummary({ session: { ...recoveredSession, checkpointCount: 3, lastCheckpointIndex: 14 }, previousLatest: { budget: 256000 } })
+      }
+    });
+    await h.flush();
+    assert.equal(api.snapshot().compacting, null);
+
+    // 3. SlashCommandScopeItem（Antigravity [>< compact] 胶囊：info.name = "compact"，无前导斜杠）直击检测
+    const slashPillTok = h.sandbox.__AG_METER_ON_SEND_MESSAGE__({
+      cascadeId,
+      items: [{ item: { slashCommand: { info: { name: 'compact', displayName: 'compact' } } } }]
+    });
+    assert.ok(slashPillTok?.dispatchId?.startsWith('compact_'), 'SlashCommandScopeItem(name="compact") 必须立即触发压缩过渡态');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-badge').textContent, '压缩中…');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('/compact 二次长时压缩防闪回回归：保持压缩前 94% 用量不误算 7.35M、超 45s 宿主仍在压缩时不闪回 94%、完成直达 ~6%', async () => {
+  let nowMs = 1763520000000;
+  class MockDate extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [nowMs]));
+    }
+    static now() {
+      return nowMs;
+    }
+  }
+  const intervalCallbacks = [];
+  const cascadeId = '11111111-1111-1111-1111-111111111111';
+
+  // 模拟已有历史检查点 (step 229) 且后续又累积了 207 步对话/大文件读取的真实长会话
+  const preSecondCompactSession = {
+    ...session(),
+    steps: 437,
+    checkpointCount: 1,
+    lastCheckpointIndex: 229,
+    lastCheckpointFailed: false,
+    inProgressCheckpointIndex: -1,
+    lastAssistantAt: 436,
+    lastModelStepAt: 436,
+    postCheckpoint: {
+      checkpointIndex: 229,
+      textTotal: { chars: 20000000, bytes: 24000000, low: 6000000, high: 8700000 },
+      mediaRefs: {}
+    },
+    postCompactActiveTotal: { chars: 20000000, bytes: 24000000, low: 6000000, high: 8700000 }
+  };
+
+  const preCompactRealLatest = {
+    used: 483235,
+    actual: 483235,
+    estimate: 461654,
+    budget: 512000,
+    percent: (483235 / 512000) * 100,
+    compacted: false,
+    estimated: false,
+    status: 'reported',
+    model: 'Gemini 4 Carbon (High)',
+    modelId: 'MODEL_GOOGLE_GEMINI_4_CARBON_HIGH',
+    speed: { tps: 82.5, streamingTps: 82.5, duration: 32.6, ttft: 8.95, outputTokens: 1954 }
+  };
+
+  const h = harness(preSecondCompactSession, {
+    Date: MockDate,
+    setInterval(cb) {
+      intervalCallbacks.push(cb);
+      return intervalCallbacks.length;
+    }
+  });
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI.scan = (id, force = false) =>
+    new Promise(resolve => h.scans.push({ id, force, resolve }));
+
+  try {
+    // 1. 初始状态：展示压缩前 94% (483.2K / 512K)，无 stepIndices 的轻量轮询
+    h.scans[0].resolve({
+      ok: true,
+      data: {
+        session: preSecondCompactSession,
+        scannedAt: nowMs,
+        generatorCount: 48,
+        preCompactLatest: preCompactRealLatest,
+        latest: preCompactRealLatest
+      }
+    });
+    h.pending[0].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          // 注意：模拟真实 GetCascadeTrajectoryGeneratorMetadata(includeMessages:false) 无 stepIndices
+          chatModel: {
+            model: 'MODEL_GOOGLE_GEMINI_4_CARBON_HIGH',
+            modelDisplayName: 'Gemini 4 Carbon (High)',
+            usage: { inputTokens: 481281, outputTokens: 1954 },
+            chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 461654, maxContextTokens: 512000 } }
+          }
+        }]
+      })
+    });
+    await h.flush();
+    assert.equal(h.elements.get('badge-pct-val').textContent, '94%');
+    assert.equal(h.elements.get('key-used').textContent, '483.2K (94.4%)');
+
+    // 2. 用户发起第二次 /compact，且宿主 DOM 显示 Compacting
+    let mockDomNodes = [{ textContent: 'Compacting', children: [] }];
+    h.sandbox.document.querySelectorAll = () => mockDomNodes;
+    h.sandbox.__AG_METER_ON_SEND_MESSAGE__({
+      cascadeId,
+      items: [{ item: { slashCommand: { info: { name: 'compact' } } } }]
+    });
+    api.checkHostDomCompactionForTest();
+
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-badge').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-used').textContent, '483.2K (94.4%)', '二次压缩开始时应保留 483.2K');
+
+    // 压缩期间触发一次轮询 + 一次后台扫描（新检查点尚未落盘，scan 仍返回旧检查点 229）
+    nowMs += 4000;
+    const compactProbeCb = intervalCallbacks[intervalCallbacks.length - 1];
+    compactProbeCb();
+    assert.equal(h.scans.length, 2);
+    h.scans[1].resolve({
+      ok: true,
+      data: {
+        session: preSecondCompactSession,
+        scannedAt: nowMs,
+        generatorCount: 48,
+        preCompactLatest: preCompactRealLatest,
+        latest: preCompactRealLatest
+      }
+    });
+    await h.flush();
+
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-used').textContent, '483.2K (94.4%)', '二次压缩期间严禁回退旧检查点 229 误算出 ~7.35M (100.0%)');
+
+    // 3. 宿主动态读秒后缀演进 ("Compacting" -> "Compacting · 46s" -> "Compacting · 1m 5s")：
+    //    绝不能把读秒后缀误判为 Compacting 消失，更不能触发 domEndedAtMs 提前退回 94%/47%！
+    mockDomNodes = [{ textContent: 'Compacting · 46s', children: [] }];
+    nowMs += 42000;
+    compactProbeCb();
+    if (h.scans.length > 2) {
+      h.scans[h.scans.length - 1].resolve({
+        ok: true,
+        data: {
+          session: preSecondCompactSession,
+          scannedAt: nowMs,
+          generatorCount: 48,
+          preCompactLatest: preCompactRealLatest,
+          latest: preCompactRealLatest
+        }
+      });
+      await h.flush();
+    }
+    assert.equal(api.snapshot().compacting?.domEndedAtMs, 0, '"Compacting · 46s" 必须被识别为仍在压缩中，domEndedAtMs 必须保持为 0');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+
+    mockDomNodes = [{ textContent: 'Compacting · 1m 5s', children: [] }];
+    nowMs += 19000;
+    compactProbeCb();
+    if (h.scans.length > 3) {
+      h.scans[h.scans.length - 1].resolve({
+        ok: true,
+        data: {
+          session: preSecondCompactSession,
+          scannedAt: nowMs,
+          generatorCount: 48,
+          preCompactLatest: preCompactRealLatest,
+          latest: preCompactRealLatest
+        }
+      });
+      await h.flush();
+    }
+    assert.ok(api.snapshot().compacting, '宿主显示 "Compacting · 1m 5s" 时超过 60s 绝不能提前退出压缩中状态');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…', '严禁在压缩完成前闪回显示压缩前百分比');
+
+    // 4. 手动 /compact 完成瞬间：宿主不输出横幅，仅移除 "Compacting · 1m 5s" 并渲染 "1m ago"，
+    //    必须凭下降沿 (!sawCompacting && prevCompacting) 0ms 发起 urgent scan，直接从“压缩中…”切到“~6%”，不等 20s 轮询！
+    mockDomNodes = [{ textContent: '1m ago', children: [] }];
+    nowMs += 1000;
+    const scansBeforeDone = h.scans.length;
+    api.checkHostDomCompactionForTest();
+    assert.equal(h.scans.length, scansBeforeDone + 1, 'Compacting · Xs 消失瞬间即使无横幅也必须立即发起一次强制扫描');
+    // 在强制扫描返回前的短暂窗口内仍保持“压缩中…”，不闪回 94%
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+
+    const postSecondCompactSession = {
+      ...preSecondCompactSession,
+      steps: 439,
+      checkpointCount: 2,
+      lastCheckpointIndex: 438,
+      postCheckpoint: {
+        checkpointIndex: 438,
+        textTotal: { chars: 12000, bytes: 15000, low: 3500, high: 5500 },
+        mediaRefs: {}
+      },
+      postCompactActiveTotal: { chars: 96000, bytes: 110000, low: 26000, high: 35000 }
+    };
+    const postSecondCompactLatest = core.buildPostCompactSummary({
+      session: postSecondCompactSession,
+      previousLatest: preCompactRealLatest
+    });
+    h.scans[h.scans.length - 1].resolve({
+      ok: true,
+      data: {
+        session: postSecondCompactSession,
+        scannedAt: nowMs,
+        generatorCount: 49,
+        preCompactLatest: preCompactRealLatest,
+        latest: postSecondCompactLatest
+      }
+    });
+    await h.flush();
+
+    assert.equal(api.snapshot().compacting, null, '新检查点 438 扫描返回后立即结束过渡态');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '~6%');
+    assert.equal(h.elements.get('key-badge').textContent, '已压缩 · 预估');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal');
+  } finally {
+    api.dispose();
+  }
+});

@@ -54,6 +54,9 @@ const {
 } = require('./meter-context-unlock');
 const {
   analyzeSteps,
+  extractGeneratorMaxStep,
+  isCheckpointNewerThanGenerator,
+  buildPostCompactSummary,
   summarize,
   add,
   empty,
@@ -567,6 +570,7 @@ async function scanFiles(media, scanOptions = {}) {
 }
 
 let collectSeqCounter = 0;
+let collectTaskSeq = 0;
 const latestCollectSeqByOrigin = new Map();
 
 async function collect(origin, id, options = {}) {
@@ -590,13 +594,14 @@ async function collect(origin, id, options = {}) {
     return Boolean((latest && latest.seq > mySeq && latest.id !== id) || abortController?.signal?.aborted);
   };
   const previous = conversations.get(key);
-  if (previous?.pending) return previous.pending;
-  if (options.force) filesCache.clear();
+  if (previous?.pending && !options.force) return previous.pending;
+  if (options.clearFilesCache) filesCache.clear();
   if (!options.force && previous?.result && Date.now() - previous.at < 12000) return previous.result;
+  const taskSeq = ++collectTaskSeq;
   const task = (async () => {
     const signal = abortController?.signal || null;
     try {
-      let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
+      let token = csrfTokenByOrigin.get(origin) || null;
       if (!token) {
         const html = await request(origin, null, null, null, signal);
         if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
@@ -638,6 +643,17 @@ async function collect(origin, id, options = {}) {
       if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const attachmentTotal = empty();
       for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
+      const postCheckpointAttachmentTotal = empty();
+      if (session.postCheckpoint?.mediaRefs) {
+        for (let idx = 0; idx < attachments.length; idx++) {
+          const origMedia = session.media[idx];
+          const a = attachments[idx];
+          const postRefs = origMedia?.uri ? (session.postCheckpoint.mediaRefs[origMedia.uri] || 0) : 0;
+          if (postRefs > 0 && a) {
+            add(postCheckpointAttachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * postRefs])));
+          }
+        }
+      }
       const total = add({ ...session.total }, attachmentTotal);
       let latest = null;
       const count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
@@ -660,6 +676,7 @@ async function collect(origin, id, options = {}) {
         stepCapabilities
       );
       let latestModel = null;
+      let latestGeneratorMeta = null;
       let latestCallId = null;
       let latestCallRecord = null;
       const recentGeneratorCalls = [];
@@ -670,9 +687,11 @@ async function collect(origin, id, options = {}) {
           if (normCall) recentGeneratorCalls.push(normCall);
         }
       }
-      for (const m of (tail.generatorMetadata || []).slice().reverse()) {
+      const reversedTail = (tail.generatorMetadata || []).slice().reverse();
+      for (const m of reversedTail) {
         latest = summarize(m, { cascadeModelConfigs: mergedCascadeConfigs });
         if (latest) {
+          latestGeneratorMeta = m;
           latestModel = m.chatModel;
           const callMeta = parseGeneratorCall(m, id, 'desktop', { cascadeModelConfigs: mergedCascadeConfigs });
           latestCallId = callMeta?.callId || null;
@@ -682,10 +701,47 @@ async function collect(origin, id, options = {}) {
           break;
         }
       }
-      const system = latestModel ? measure((latestModel.promptSections || []).map(p => p.content || '').join('\n') || latestModel.systemPrompt || '') : empty();
-      const definitions = latestModel ? measure(JSON.stringify(latestModel.tools || [])) : empty();
+      let referenceLatest = latest ? { ...latest } : null;
+      let referenceChatModel = latestModel;
+      if (session.lastCheckpointIndex >= 0 && reversedTail.length > 1) {
+        const isSummarizerMeta = latestGeneratorMeta && extractGeneratorMaxStep(latestGeneratorMeta) === session.lastCheckpointIndex;
+        for (const m of reversedTail) {
+          if (m === latestGeneratorMeta) continue;
+          const candSum = summarize(m, { cascadeModelConfigs: mergedCascadeConfigs });
+          if (!candSum) continue;
+          if (referenceLatest && !referenceLatest.budget && candSum.budget) {
+            referenceLatest.budget = candSum.budget;
+          }
+          if (isSummarizerMeta) {
+            if (candSum.model) {
+              referenceLatest.model = candSum.model;
+              referenceLatest.modelId = candSum.modelId || referenceLatest.modelId;
+              referenceLatest.modelRaw = candSum.modelRaw || referenceLatest.modelRaw;
+            }
+            if (m.chatModel && (!referenceChatModel?.tools?.length && m.chatModel.tools?.length)) {
+              referenceChatModel = m.chatModel;
+            }
+          }
+          if (referenceLatest?.budget && (!isSummarizerMeta || referenceChatModel?.tools?.length)) break;
+        }
+      }
+      const systemSourceModel = referenceChatModel || latestModel;
+      const system = systemSourceModel ? measure((systemSourceModel.promptSections || []).map(p => p.content || '').join('\n') || systemSourceModel.systemPrompt || '') : empty();
+      const definitions = systemSourceModel ? measure(JSON.stringify(systemSourceModel.tools || [])) : empty();
       session.groups.system = system; session.groups.definitions = definitions;
       add(total, system); add(total, definitions);
+      const postCompactActiveTotal = session.postCheckpoint
+        ? add(add(add({ ...session.postCheckpoint.textTotal }, postCheckpointAttachmentTotal), system), definitions)
+        : null;
+      if (!session.currentError && isCheckpointNewerThanGenerator(session, latestGeneratorMeta, latest)) {
+        latest = buildPostCompactSummary({
+          session: { ...session, postCompactActiveTotal },
+          postCheckpointAttachmentTotal,
+          system,
+          definitions,
+          previousLatest: referenceLatest || latest
+        });
+      }
       if (session.currentError) {
         const fromStep = summarize({ chatModel: { retryInfos: [{ error: session.currentError.text }] } }, {
           currentModel: latest?.model || latestModel?.modelDisplayName || latestModel?.model || '',
@@ -713,12 +769,18 @@ async function collect(origin, id, options = {}) {
       ...(cachedHostUserStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
-    const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, preCompactLatest: referenceLatest || null, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, postCheckpointAttachmentTotal, postCompactActiveTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     if (isSuperseded()) {
-      conversations.delete(key);
+      const curSup = conversations.get(key);
+      if (!curSup || !curSup.taskSeq || curSup.taskSeq <= taskSeq) {
+        conversations.delete(key);
+      }
       return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
     }
-    setBoundedMap(conversations, key, { result, at: Date.now() }, CONVERSATIONS_CACHE_MAX_ENTRIES);
+    const curDone = conversations.get(key);
+    if (!curDone || !curDone.taskSeq || curDone.taskSeq <= taskSeq) {
+      setBoundedMap(conversations, key, { result, at: Date.now(), taskSeq }, CONVERSATIONS_CACHE_MAX_ENTRIES);
+    }
     return result;
     } catch (err) {
       if (isSuperseded() || (err && err.name === 'AbortError' && signal?.aborted)) {
@@ -727,8 +789,16 @@ async function collect(origin, id, options = {}) {
       throw err;
     }
   })();
-  setBoundedMap(conversations, key, { ...previous, pending: task }, CONVERSATIONS_CACHE_MAX_ENTRIES);
-  try { return await task; } catch (e) { conversations.delete(key); throw e; }
+  setBoundedMap(conversations, key, { ...previous, pending: task, taskSeq }, CONVERSATIONS_CACHE_MAX_ENTRIES);
+  try {
+    return await task;
+  } catch (e) {
+    const curErr = conversations.get(key);
+    if (!curErr || !curErr.taskSeq || curErr.taskSeq <= taskSeq) {
+      conversations.delete(key);
+    }
+    throw e;
+  }
 }
 
 let cachedTokenHistory = null;
