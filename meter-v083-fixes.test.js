@@ -811,10 +811,10 @@ test('设置页动态操作反馈三语支持与面板语言切换即时更新�
   h.elements.get('chk-rec-title').checked = true;
   h.elements.get('btn-enhance-preset-apply').click();
   const confirmText = h.elements.get('enhance-preset-confirm-text');
-  assert.match(confirmText.textContent, /About to apply checked items: .*, /);
+  assert.match(confirmText.textContent, /About to apply checked items: /);
   h.elements.get('btn-top-lang-zh-CN').click();
   await new Promise(r => setTimeout(r, 25));
-  assert.match(confirmText.textContent, /即将执行以下已勾选项：.*、/);
+  assert.match(confirmText.textContent, /即将执行以下已勾选项：/);
 
   // 恢复默认触发部分失败，随后切换 EN 验证全部条目与分隔符重译
   h.elements.get('btn-enhance-restore-all').click();
@@ -2099,6 +2099,128 @@ test('ELV-47 & ELV-60: Electron 沙箱隔离且侧边栏含中文项目名时，
     h.elements.get('btn-toggle-chinese-module').click();
     await new Promise(r => setTimeout(r, 50));
     assert.equal(h.elements.get('chinese-badge').textContent, '⏳ 待重启客户端生效');
+  } finally {
+    h.api.dispose();
+  }
+});
+
+test('PR #47 / Issue #46: 推荐配置复选框按磁盘真实开关同步、仅提交差异、取消已开启项走恢复且不冲掉用户草稿', async () => {
+  const applyEnhanceCalls = [];
+  const toggleCalls = [];
+  const unlockCalls = [];
+  const restoreUnlockCalls = [];
+  const h = createTestHarness({
+    setupSandbox(sb) {
+      sb.window.contextMeterAPI.getEnhanceStatus = async () => ({
+        ok: true,
+        data: {
+          supported: true,
+          summary: {
+            promptTier: 4,
+            chineseTitleEnabled: false,
+            chineseTitleMode: 'default',
+            pendingLsRestart: false
+          }
+        }
+      });
+      sb.window.contextMeterAPI.getContextUnlockStatus = async () => ({
+        ok: true,
+        data: {
+          isPlatformSupported: true,
+          status: 'applied',
+          configuredMode: 'dynamic',
+          configuredLimitTokens: null
+        }
+      });
+      sb.window.contextMeterAPI.getModulesStatus = async () => ({
+        ok: true,
+        data: {
+          modules: {
+            chinese: { enabled: false, language: 'en', brandTitle: 'english' },
+            proxy: { enabled: false, proxyUrl: '' }
+          }
+        },
+        disk: { chinese: true, chineseReady: true, proxy: true, proxyReady: true },
+        runtime: { chineseActive: false, chineseNeedsRestart: false, proxyActive: false, proxyNeedsRestart: false }
+      });
+      sb.window.contextMeterAPI.applyEnhancePatch = async (payload) => {
+        applyEnhanceCalls.push(payload);
+        return {
+          ok: true,
+          changed: true,
+          needsRestart: true,
+          status: {
+            supported: true,
+            summary: {
+              promptTier: payload.promptTier ?? 4,
+              chineseTitleEnabled: Boolean(payload.chineseTitle),
+              chineseTitleMode: payload.chineseTitle ? 'zh' : 'default'
+            }
+          }
+        };
+      };
+      sb.window.contextMeterAPI.toggleModule = async (name, enable, opts) => {
+        toggleCalls.push({ name, enable, opts });
+        return {
+          ok: true,
+          status: 'config_toggled',
+          data: { modules: { chinese: { enabled: Boolean(enable), language: opts?.language || 'en', brandTitle: opts?.brandTitle || 'english' }, proxy: { enabled: false } } },
+          disk: { chinese: true, chineseReady: true, proxy: true, proxyReady: true },
+          runtime: { chineseActive: false, chineseNeedsRestart: Boolean(enable) }
+        };
+      };
+      sb.window.contextMeterAPI.applyContextUnlock = async (payload) => {
+        unlockCalls.push(payload);
+        return { ok: true, data: { isPlatformSupported: true, status: 'applied', configuredMode: payload.mode } };
+      };
+      sb.window.contextMeterAPI.restoreContextUnlock = async () => {
+        restoreUnlockCalls.push(true);
+        return { ok: true, data: { isPlatformSupported: true, status: 'not_patched', configuredMode: 'default' } };
+      };
+    }
+  });
+  try {
+    h.elements.get('btn-ctx-settings').click();
+    await new Promise(r => setTimeout(r, 80));
+
+    // 1. 磁盘上仅 promptTier=4 与 configuredMode='dynamic' 为开启，复选框必须按磁盘真实同步
+    const chkPrompt = h.elements.get('chk-rec-prompt');
+    const chkTitle = h.elements.get('chk-rec-title');
+    const chkLang = h.elements.get('chk-rec-lang');
+    const chkCtx = h.elements.get('chk-rec-ctx');
+    assert.equal(chkPrompt.checked, true);
+    assert.equal(chkTitle.checked, false);
+    assert.equal(chkLang.checked, false);
+    assert.equal(chkCtx.checked, true);
+
+    // 2. 用户未做任何改动直接点应用：差异为空，确认前绝不写入
+    h.elements.get('btn-enhance-preset-apply').click();
+    assert.equal(applyEnhanceCalls.length, 0);
+    assert.equal(toggleCalls.length, 0);
+    assert.equal(restoreUnlockCalls.length, 0);
+
+    // 3. 用户取消勾选已开启的 ctx，并勾选未开启的 title；触发 change 标记 dirty 后，后台状态刷新不能冲掉用户草稿
+    chkCtx.checked = false;
+    chkCtx.trigger('change', { target: chkCtx });
+    chkTitle.checked = true;
+    chkTitle.trigger('change', { target: chkTitle });
+
+    await h.api.refreshEnhanceStatusForTest();
+    assert.equal(chkCtx.checked, false, '用户已编辑的复选框不能被后台刷新冲掉');
+    assert.equal(chkTitle.checked, true, '用户已编辑的复选框不能被后台刷新冲掉');
+
+    // 4. 点应用再点确认：仅提交差异项（title 开启、ctx 恢复），未变动的 prompt 与 lang 不触发写入
+    h.elements.get('btn-enhance-preset-apply').click();
+    assert.equal(h.elements.get('enhance-preset-confirm').hidden, false);
+    assert.equal(applyEnhanceCalls.length, 0, '确认前绝不写入磁盘');
+    h.elements.get('btn-enhance-confirm-go').click();
+    await new Promise(r => setTimeout(r, 60));
+
+    assert.equal(applyEnhanceCalls.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(applyEnhanceCalls[0])), { chineseTitle: true });
+    assert.equal(toggleCalls.length, 0, '未变更的客户端语言不得被写入');
+    assert.equal(unlockCalls.length, 0);
+    assert.equal(restoreUnlockCalls.length, 1, '取消已开启的上下文跟随模型必须走 restore');
   } finally {
     h.api.dispose();
   }

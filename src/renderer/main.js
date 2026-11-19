@@ -6325,6 +6325,7 @@
       if (!res || !res.ok || !res.data) {
         unlockStatusFetchError = true;
         currentUnlockStatus = null;
+        syncRecommendedCheckboxes();
         if (unlockStatusDesc) unlockStatusDesc.textContent = t('status.client.unavailable');
         renderCompactSessionCard();
         renderClientStatusBar();
@@ -6335,6 +6336,7 @@
       unlockStatusFetchError = false;
       const data = res.data;
       currentUnlockStatus = data;
+      syncRecommendedCheckboxes();
       lastPartialReason = data.partialMatchReason || data.error || '';
       if (typeof data.hostSupportsRestart === 'boolean') {
         hostSupportsRestart = data.hostSupportsRestart;
@@ -7430,6 +7432,56 @@
   let enhancePromptResultState = null; // { ok, resolveMessage }
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
+  const recDirty = { prompt: false, title: false, lang: false, ctx: false };
+
+  function recommendedPromptOn() {
+    const s = currentEnhanceStatus?.summary || currentEnhanceStatus;
+    return Number(s?.promptTier) === 4;
+  }
+  function recommendedTitleOn() {
+    const s = currentEnhanceStatus?.summary || currentEnhanceStatus;
+    return s?.chineseTitleMode === 'zh';
+  }
+  function recommendedLangOn() {
+    return Boolean(currentChineseEnabled);
+  }
+  function recommendedCtxOn() {
+    return currentUnlockStatus?.configuredMode === 'dynamic';
+  }
+
+  function getRecommendedDiff() {
+    const diff = [];
+    if (Boolean(chkPresetPrompt?.checked) !== recommendedPromptOn()) diff.push({ key: 'prompt', enable: Boolean(chkPresetPrompt?.checked) });
+    if (Boolean(chkPresetTitle?.checked) !== recommendedTitleOn()) diff.push({ key: 'title', enable: Boolean(chkPresetTitle?.checked) });
+    if (Boolean(chkPresetLang?.checked) !== recommendedLangOn()) diff.push({ key: 'lang', enable: Boolean(chkPresetLang?.checked) });
+    if (Boolean(chkPresetCtx?.checked) !== recommendedCtxOn()) diff.push({ key: 'ctx', enable: Boolean(chkPresetCtx?.checked) });
+    return diff;
+  }
+
+  function syncRecommendedCheckboxes({ force = false } = {}) {
+    const unsupported = Boolean(currentEnhanceStatus && currentEnhanceStatus.supported === false);
+    const ctxUnsupported = Boolean(
+      currentUnlockStatus &&
+      currentUnlockStatus.isPlatformSupported === false &&
+      currentUnlockStatus.status === 'unsupported'
+    );
+    if (chkPresetPrompt && (force || !recDirty.prompt)) {
+      chkPresetPrompt.checked = !unsupported && recommendedPromptOn();
+      if (force) recDirty.prompt = false;
+    }
+    if (chkPresetTitle && (force || !recDirty.title)) {
+      chkPresetTitle.checked = !unsupported && recommendedTitleOn();
+      if (force) recDirty.title = false;
+    }
+    if (chkPresetLang && (force || !recDirty.lang)) {
+      chkPresetLang.checked = recommendedLangOn();
+      if (force) recDirty.lang = false;
+    }
+    if (chkPresetCtx && (force || !recDirty.ctx)) {
+      chkPresetCtx.checked = !ctxUnsupported && recommendedCtxOn();
+      if (force) recDirty.ctx = false;
+    }
+  }
 
   function syncBrandTitleButtons(mode = currentBrandTitle) {
     for (const [k, btn] of Object.entries(brandTitleBtns)) {
@@ -7655,12 +7707,13 @@
   }
 
   function getSelectedPresetLabelResolvers() {
-    const resolvers = [];
-    if (chkPresetPrompt?.checked) resolvers.push(() => t('enhance.preset.itemPrompt'));
-    if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
-    if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
-    if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
-    return resolvers;
+    const labels = {
+      prompt: () => t('enhance.preset.itemPrompt'),
+      title: () => t('enhance.preset.itemTitle'),
+      lang: () => t('enhance.preset.itemLang'),
+      ctx: () => t('enhance.preset.itemCtx')
+    };
+    return getRecommendedDiff().map((item) => labels[item.key]);
   }
 
   function renderEnhancePresetConfirmText() {
@@ -7744,6 +7797,7 @@
         }));
       }
     }
+    syncRecommendedCheckboxes({ force: forceSyncDrafts });
     renderEnhanceSectionUI();
   }
 
@@ -7882,6 +7936,12 @@
     }
   });
 
+  [['prompt', chkPresetPrompt], ['title', chkPresetTitle], ['lang', chkPresetLang], ['ctx', chkPresetCtx]].forEach(([key, box]) => {
+    box?.addEventListener('change', () => {
+      recDirty[key] = true;
+    });
+  });
+
   btnEnhancePresetApply?.addEventListener('click', () => {
     if (isEnhanceBusy) return;
     const selectedResolvers = getSelectedPresetLabelResolvers();
@@ -7912,10 +7972,11 @@
     if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
     if (!mode || isEnhanceBusy) return;
 
-    const wantPrompt = Boolean(chkPresetPrompt?.checked);
-    const wantTitle = Boolean(chkPresetTitle?.checked);
-    const wantLang = Boolean(chkPresetLang?.checked);
-    const wantCtx = Boolean(chkPresetCtx?.checked);
+    const presetDiff = mode === 'preset' ? getRecommendedDiff() : [];
+    const wantPrompt = presetDiff.find((item) => item.key === 'prompt');
+    const wantTitle = presetDiff.find((item) => item.key === 'title');
+    const wantLang = presetDiff.find((item) => item.key === 'lang');
+    const wantCtx = presetDiff.find((item) => item.key === 'ctx');
 
     isEnhanceBusy = true;
     syncEnhanceInteractiveDisabledState();
@@ -7935,8 +7996,8 @@
           const resolveItemLabel = () => [wantPrompt ? t('enhance.preset.itemPrompt') : '', wantTitle ? t('enhance.preset.itemTitle') : ''].filter(Boolean).join(t('list.sep'));
           try {
             const payload = {};
-            if (wantPrompt) payload.promptTier = 4;
-            if (wantTitle) payload.chineseTitle = true;
+            if (wantPrompt) payload.promptTier = wantPrompt.enable ? 4 : 0;
+            if (wantTitle) payload.chineseTitle = Boolean(wantTitle.enable);
             const eRes = await invokeEnhanceApi('apply', payload);
             if (!eRes || !eRes.ok) {
               const errPayload = eRes;
@@ -7958,9 +8019,9 @@
 
         if (wantLang) {
           try {
-            const lRes = await invokeModulesApi('toggle', 'chinese', true, {
-              language: 'zh-CN',
-              brandTitle: currentBrandTitle
+            const lRes = await invokeModulesApi('toggle', 'chinese', Boolean(wantLang.enable), {
+              language: wantLang.enable ? 'zh-CN' : 'en',
+              brandTitle: wantLang.enable ? currentBrandTitle : 'english'
             });
             if (!lRes || !lRes.ok) {
               const errPayload = lRes;
@@ -7978,7 +8039,9 @@
 
         if (wantCtx) {
           try {
-            const cRes = await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null });
+            const cRes = wantCtx.enable
+              ? await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null })
+              : await invokeUnlockApi('restore', {});
             if (!cRes || !cRes.ok) {
               const rawErr = cRes?.error;
               failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
@@ -8419,6 +8482,7 @@
       }
 
       currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
+      syncRecommendedCheckboxes();
       currentBrandTitle = cfg.modules?.chinese?.brandTitle || 'english';
       syncBrandTitleButtons(currentBrandTitle);
       syncRuntimeBrandConfig(currentBrandTitle);

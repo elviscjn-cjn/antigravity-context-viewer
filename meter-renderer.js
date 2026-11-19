@@ -3340,32 +3340,32 @@
           <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
           <span id="enhance-global-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
         </div>
-        <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">正常安装默认保持客户端原样。下方列出推荐增强组合；只有你勾选并确认后才会实际写入。
+        <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">勾选为开，未勾选为关。安装默认全部关闭；只有磁盘上已经打开的项才会显示为开。确认前不会写入。
         </div>
         <div class="ctx-preset-checklist">
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-prompt" type="checkbox" checked>
+            <input id="chk-rec-prompt" type="checkbox">
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemPrompt">系统提示词 4 档（极简防幻觉）</strong>
               <span data-i18n="enhance.preset.itemPromptSub">精简模板套话并保留真实工具契约；仅作用于系统提示，不能保证模型永不犯错。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-title" type="checkbox" checked>
+            <input id="chk-rec-title" type="checkbox">
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemTitle">自动中文会话标题</strong>
               <span data-i18n="enhance.preset.itemTitleSub">新会话自动生成简体中文标题（等长替换指令文本，不破坏结构）。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-lang" type="checkbox" checked>
+            <input id="chk-rec-lang" type="checkbox">
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemLang">客户端简体中文界面（Antigravity 本身）</strong>
               <span data-i18n="enhance.preset.itemLangSub">仅改变桌面端壳层中文，不影响你选择的插件面板语言。</span>
             </div>
           </label>
           <label class="ctx-preset-check-item">
-            <input id="chk-rec-ctx" type="checkbox" checked>
+            <input id="chk-rec-ctx" type="checkbox">
             <div class="ctx-preset-check-meta">
               <strong data-i18n="enhance.preset.itemCtx">上下文模式：跟随模型</strong>
               <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>
@@ -6207,7 +6207,7 @@ const PANEL_I18N = {
 
       // 推荐配置 / 提示词档位 / 品牌标题 / 增强设置
       'enhance.preset.title': { 'zh-CN': '✨ 推荐配置（按需主动应用）', 'zh-TW': '✨ 推薦設定（依需求主動套用）', en: '✨ Recommended Setup (Opt-In)' },
-      'enhance.preset.desc': { 'zh-CN': '只安装插件不会暗中改写您的提示词、标题、语言或上下文。勾选需要开启的能力，点击下方按钮查看改动清单并确认后再执行。', 'zh-TW': '僅安裝外掛不會暗中改寫您的提示詞、標題、語言或上下文。勾選需要開啟的功能，點擊下方按鈕檢視變更清單並確認後再執行。', en: 'Installing never alters prompts, titles, UI language, or context secretly. Select items below and confirm the preview before applying.' },
+      'enhance.preset.desc': { 'zh-CN': '勾选为开，未勾选为关。安装默认全部关闭；只有磁盘上已经打开的项才会显示为开。确认前不会写入。', 'zh-TW': '勾選為開，未勾選為關。安裝預設全部關閉；只有磁碟上已經開啟的項才會顯示為開。確認前不會寫入。', en: 'Checked is on, unchecked is off. Install defaults to all off; only items already written on disk show as on. Nothing is written before confirmation.' },
       'enhance.preset.itemPrompt': { 'zh-CN': '精简防幻觉增强提示词 (4档)', 'zh-TW': '精簡防幻覺增強提示詞 (4檔)', en: 'Lean Anti-Hallucination Prompt (Tier 4)' },
       'enhance.preset.itemPromptSub': { 'zh-CN': '保留原生任务工具规范，注入工具契约与事实校验准则（写入验证，非保证模型不出错）', 'zh-TW': '保留原生任務工具規範，注入工具契約與事實校驗準則（寫入驗證，非保證模型不出錯）', en: 'Keeps native tools, adds verification & tool discipline (template write only; does not guarantee zero errors)' },
       'enhance.preset.itemTitle': { 'zh-CN': '自动中文会话标题', 'zh-TW': '自動中文工作階段標題', en: 'Auto Chinese Chat Titles' },
@@ -18104,6 +18104,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (!res || !res.ok || !res.data) {
         unlockStatusFetchError = true;
         currentUnlockStatus = null;
+        syncRecommendedCheckboxes();
         if (unlockStatusDesc) unlockStatusDesc.textContent = t('status.client.unavailable');
         renderCompactSessionCard();
         renderClientStatusBar();
@@ -18114,6 +18115,7 @@ function closeAllDropdowns(exceptWrap = null) {
       unlockStatusFetchError = false;
       const data = res.data;
       currentUnlockStatus = data;
+      syncRecommendedCheckboxes();
       lastPartialReason = data.partialMatchReason || data.error || '';
       if (typeof data.hostSupportsRestart === 'boolean') {
         hostSupportsRestart = data.hostSupportsRestart;
@@ -19209,6 +19211,56 @@ function closeAllDropdowns(exceptWrap = null) {
   let enhancePromptResultState = null; // { ok, resolveMessage }
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
+  const recDirty = { prompt: false, title: false, lang: false, ctx: false };
+
+  function recommendedPromptOn() {
+    const s = currentEnhanceStatus?.summary || currentEnhanceStatus;
+    return Number(s?.promptTier) === 4;
+  }
+  function recommendedTitleOn() {
+    const s = currentEnhanceStatus?.summary || currentEnhanceStatus;
+    return s?.chineseTitleMode === 'zh';
+  }
+  function recommendedLangOn() {
+    return Boolean(currentChineseEnabled);
+  }
+  function recommendedCtxOn() {
+    return currentUnlockStatus?.configuredMode === 'dynamic';
+  }
+
+  function getRecommendedDiff() {
+    const diff = [];
+    if (Boolean(chkPresetPrompt?.checked) !== recommendedPromptOn()) diff.push({ key: 'prompt', enable: Boolean(chkPresetPrompt?.checked) });
+    if (Boolean(chkPresetTitle?.checked) !== recommendedTitleOn()) diff.push({ key: 'title', enable: Boolean(chkPresetTitle?.checked) });
+    if (Boolean(chkPresetLang?.checked) !== recommendedLangOn()) diff.push({ key: 'lang', enable: Boolean(chkPresetLang?.checked) });
+    if (Boolean(chkPresetCtx?.checked) !== recommendedCtxOn()) diff.push({ key: 'ctx', enable: Boolean(chkPresetCtx?.checked) });
+    return diff;
+  }
+
+  function syncRecommendedCheckboxes({ force = false } = {}) {
+    const unsupported = Boolean(currentEnhanceStatus && currentEnhanceStatus.supported === false);
+    const ctxUnsupported = Boolean(
+      currentUnlockStatus &&
+      currentUnlockStatus.isPlatformSupported === false &&
+      currentUnlockStatus.status === 'unsupported'
+    );
+    if (chkPresetPrompt && (force || !recDirty.prompt)) {
+      chkPresetPrompt.checked = !unsupported && recommendedPromptOn();
+      if (force) recDirty.prompt = false;
+    }
+    if (chkPresetTitle && (force || !recDirty.title)) {
+      chkPresetTitle.checked = !unsupported && recommendedTitleOn();
+      if (force) recDirty.title = false;
+    }
+    if (chkPresetLang && (force || !recDirty.lang)) {
+      chkPresetLang.checked = recommendedLangOn();
+      if (force) recDirty.lang = false;
+    }
+    if (chkPresetCtx && (force || !recDirty.ctx)) {
+      chkPresetCtx.checked = !ctxUnsupported && recommendedCtxOn();
+      if (force) recDirty.ctx = false;
+    }
+  }
 
   function syncBrandTitleButtons(mode = currentBrandTitle) {
     for (const [k, btn] of Object.entries(brandTitleBtns)) {
@@ -19434,12 +19486,13 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   function getSelectedPresetLabelResolvers() {
-    const resolvers = [];
-    if (chkPresetPrompt?.checked) resolvers.push(() => t('enhance.preset.itemPrompt'));
-    if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
-    if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
-    if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
-    return resolvers;
+    const labels = {
+      prompt: () => t('enhance.preset.itemPrompt'),
+      title: () => t('enhance.preset.itemTitle'),
+      lang: () => t('enhance.preset.itemLang'),
+      ctx: () => t('enhance.preset.itemCtx')
+    };
+    return getRecommendedDiff().map((item) => labels[item.key]);
   }
 
   function renderEnhancePresetConfirmText() {
@@ -19523,6 +19576,7 @@ function closeAllDropdowns(exceptWrap = null) {
         }));
       }
     }
+    syncRecommendedCheckboxes({ force: forceSyncDrafts });
     renderEnhanceSectionUI();
   }
 
@@ -19661,6 +19715,12 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
+  [['prompt', chkPresetPrompt], ['title', chkPresetTitle], ['lang', chkPresetLang], ['ctx', chkPresetCtx]].forEach(([key, box]) => {
+    box?.addEventListener('change', () => {
+      recDirty[key] = true;
+    });
+  });
+
   btnEnhancePresetApply?.addEventListener('click', () => {
     if (isEnhanceBusy) return;
     const selectedResolvers = getSelectedPresetLabelResolvers();
@@ -19691,10 +19751,11 @@ function closeAllDropdowns(exceptWrap = null) {
     if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
     if (!mode || isEnhanceBusy) return;
 
-    const wantPrompt = Boolean(chkPresetPrompt?.checked);
-    const wantTitle = Boolean(chkPresetTitle?.checked);
-    const wantLang = Boolean(chkPresetLang?.checked);
-    const wantCtx = Boolean(chkPresetCtx?.checked);
+    const presetDiff = mode === 'preset' ? getRecommendedDiff() : [];
+    const wantPrompt = presetDiff.find((item) => item.key === 'prompt');
+    const wantTitle = presetDiff.find((item) => item.key === 'title');
+    const wantLang = presetDiff.find((item) => item.key === 'lang');
+    const wantCtx = presetDiff.find((item) => item.key === 'ctx');
 
     isEnhanceBusy = true;
     syncEnhanceInteractiveDisabledState();
@@ -19714,8 +19775,8 @@ function closeAllDropdowns(exceptWrap = null) {
           const resolveItemLabel = () => [wantPrompt ? t('enhance.preset.itemPrompt') : '', wantTitle ? t('enhance.preset.itemTitle') : ''].filter(Boolean).join(t('list.sep'));
           try {
             const payload = {};
-            if (wantPrompt) payload.promptTier = 4;
-            if (wantTitle) payload.chineseTitle = true;
+            if (wantPrompt) payload.promptTier = wantPrompt.enable ? 4 : 0;
+            if (wantTitle) payload.chineseTitle = Boolean(wantTitle.enable);
             const eRes = await invokeEnhanceApi('apply', payload);
             if (!eRes || !eRes.ok) {
               const errPayload = eRes;
@@ -19737,9 +19798,9 @@ function closeAllDropdowns(exceptWrap = null) {
 
         if (wantLang) {
           try {
-            const lRes = await invokeModulesApi('toggle', 'chinese', true, {
-              language: 'zh-CN',
-              brandTitle: currentBrandTitle
+            const lRes = await invokeModulesApi('toggle', 'chinese', Boolean(wantLang.enable), {
+              language: wantLang.enable ? 'zh-CN' : 'en',
+              brandTitle: wantLang.enable ? currentBrandTitle : 'english'
             });
             if (!lRes || !lRes.ok) {
               const errPayload = lRes;
@@ -19757,7 +19818,9 @@ function closeAllDropdowns(exceptWrap = null) {
 
         if (wantCtx) {
           try {
-            const cRes = await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null });
+            const cRes = wantCtx.enable
+              ? await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null })
+              : await invokeUnlockApi('restore', {});
             if (!cRes || !cRes.ok) {
               const rawErr = cRes?.error;
               failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
@@ -20198,6 +20261,7 @@ function closeAllDropdowns(exceptWrap = null) {
       }
 
       currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
+      syncRecommendedCheckboxes();
       currentBrandTitle = cfg.modules?.chinese?.brandTitle || 'english';
       syncBrandTitleButtons(currentBrandTitle);
       syncRuntimeBrandConfig(currentBrandTitle);
