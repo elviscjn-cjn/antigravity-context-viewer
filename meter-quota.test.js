@@ -2633,3 +2633,126 @@ test('隔离额度请求遇到窗口未就绪、CSRF 缺失及 401/403 鉴权失
   assert.notEqual(authFailRes.snapshot.activeStatus, 'exhausted');
   assert.notEqual(authFailRes.snapshot.activeStatus, 'no_permission');
 });
+
+test('Antigravity v2.33 合并 Gemini 池与 Gemini 4 Neon / Orchestrator (Neon) 顶栏额度准确匹配', async () => {
+  assert.equal(core.getModelPoolKey('Gemini 4 Neon (High)'), 'gemini-4-neon');
+  assert.equal(core.getModelPoolKey('gemini-4-neon-high'), 'gemini-4-neon');
+  assert.equal(core.getModelPoolKey('Orchestrator (Neon)'), 'gemini-4-neon');
+  assert.equal(core.getModelPoolKey('gemini-pro-orchestrator-neon'), 'gemini-4-neon');
+  assert.equal(core.getSharedQuotaGroupKey('Gemini 4 Neon (High)'), 'shared_gemini_main');
+  assert.equal(core.getSharedQuotaGroupKey('Orchestrator (Neon)'), 'shared_gemini_main');
+  // 保持 Argon 独立映射语义不变
+  assert.equal(core.getModelPoolKey('Orchestrator (Argon)'), 'gemini-4-argon');
+  assert.equal(core.getSharedQuotaGroupKey('Orchestrator (Argon)'), 'shared_gemini_argon');
+
+  const nowIso = '2026-11-19T14:03:30Z';
+  const nowMs = Date.parse(nowIso);
+  const future5hIso = '2026-11-19T17:53:00Z';
+  const futureWeekIso = '2026-11-26T05:09:00Z';
+
+  const v233Configs = [
+    { label: 'Gemini 4 Neon (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M701' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Gemini 4 Neon (Low)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M702' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Gemini 4 Hydrogen (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M28' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Orchestrator (Neon)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M705' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Orchestrator (Argon)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M668' }, modelId: 'gemini-pro-orchestrator-g1-pro', quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Gemini 3.8 Flash (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M39' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Claude Opus 5.5 (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' }, quotaInfo: { remainingFraction: 1.0, resetTime: futureWeekIso } }
+  ];
+
+  const v233Summary = {
+    response: {
+      groups: [
+        {
+          groupId: 'gemini',
+          displayName: 'Gemini Models',
+          description: 'Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Argon), Gemini 3.8 Flash',
+          buckets: [
+            { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.81, resetTime: futureWeekIso },
+            { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.95, resetTime: future5hIso }
+          ]
+        },
+        {
+          groupId: '3p',
+          displayName: 'Claude & GPT',
+          description: 'Models within this group: Claude Opus 5.5',
+          buckets: [
+            { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 1.0, resetTime: futureWeekIso }
+          ]
+        }
+      ]
+    }
+  };
+
+  // 1. 合并池包含 Orchestrator (Argon) 与 Neon/Hydrogen/Flash 时，应归为 shared_gemini_main 而非 shared_gemini_argon
+  const snap = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: v233Configs,
+    quotaSummaryRes: v233Summary,
+    currentModel: { modelId: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' },
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+  const geminiPool = snap.pools.find(p => p.poolKey === 'shared_gemini_main');
+  assert.ok(geminiPool, '合并后的 Gemini 池应保持 shared_gemini_main 键名');
+  assert.equal(snap.activeStatus, 'available');
+  assert.equal(snap.badge.text, '81%');
+  assert.equal(snap.currentModel?.productLabel, 'Gemini 4 Neon');
+
+  // 2. modelId 为未知占位符但 label 可匹配产品名时（兼容未来新模型），也能准确匹配所在池
+  const snapByLabel = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: [
+      ...v233Configs,
+      { label: 'Gemini 4 Krypton (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M990' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } }
+    ],
+    quotaSummaryRes: {
+      response: {
+        groups: [
+          {
+            ...v233Summary.response.groups[0],
+            description: v233Summary.response.groups[0].description + ', Gemini 4 Krypton'
+          },
+          v233Summary.response.groups[1]
+        ]
+      }
+    },
+    currentModel: { modelId: 'MODEL_PLACEHOLDER_UNKNOWN_999', label: 'Gemini 4 Krypton (High)' },
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+  assert.equal(snapByLabel.activeStatus, 'available');
+  assert.equal(snapByLabel.badge.text, '81%');
+  assert.equal(snapByLabel.currentModel?.productLabel, 'Gemini 4 Krypton');
+
+  // 3. 渲染层仅拿到标准化 snapshot（无 rawInput）且当前会话为 gemini-4-neon-high 时，顶栏显示 81% 而非未知
+  const snapWithoutCurrent = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: v233Configs,
+    quotaSummaryRes: v233Summary,
+    currentModel: null,
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+  const h = createQuotaRendererHarness();
+  try {
+    for (const req of h.quotaRequests) {
+      req.resolve({
+        ok: true,
+        data: {
+          snapshot: snapWithoutCurrent,
+          cascadeModelConfigs: v233Configs,
+          fetchedAtMs: nowMs,
+          nextRefreshAtMs: nowMs + 60000
+        }
+      });
+    }
+    await h.flush();
+    const api = h.sandbox.__AGContextMeter;
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', actual: 18000, budget: 256000 },
+      v233Configs
+    );
+    await h.flush();
+    assert.equal(h.elements.get('quota-badge-val').textContent, '81%');
+  } finally {
+    try { h.sandbox.__AGContextMeter.dispose(); } catch { }
+  }
+});
