@@ -369,3 +369,85 @@ test('stopWatchDaemon 清理锁文件并支持单实例接管信号中断', asyn
   assert.equal(stopRes.ok, true);
   assert.equal(stopRes.watchPid, null);
 });
+
+test('Issue #42: v2.33 免 CDP 时通过 daemon hub 发现运行中 origin、不自动杀进程且仅提示手动带端口重启', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-issue42-nocdp-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const daemonDir = path.join(tmpDir, 'daemon');
+  const appSupportDir = path.join(tmpDir, 'AppSupport');
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(daemonDir, { recursive: true });
+  fs.mkdirSync(path.join(appSupportDir, 'Antigravity'), { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  // 1. 模拟 v2.33.0 macOS 正常启动：无 DevToolsActivePort，但 ~/.gemini/antigravity/daemon/hub_*.json 存在存活语言服务
+  fs.writeFileSync(path.join(daemonDir, 'hub_1.json'), JSON.stringify({
+    pid: process.pid,
+    httpsPort: 54399,
+    csrfToken: 'mock-daemon-csrf'
+  }), 'utf8');
+
+  const liveSnap = await cli.queryLiveWindow({
+    appDataDir: appSupportDir,
+    daemonDir,
+    stateDir,
+    includeCandidatePorts: false
+  });
+  assert.equal(liveSnap.running, true);
+  assert.equal(liveSnap.cdpEnabled, false);
+  assert.equal(liveSnap.pageFound, false);
+  assert.equal(liveSnap.discoverySource, 'daemon_hub');
+  assert.deepEqual(liveSnap.origins, ['https://127.0.0.1:54399']);
+
+  // 2. runLiveCommand 在 running && cdpEnabled===false 时不自动结束进程，只抛出含手动重启命令的提示
+  await assert.rejects(
+    cli.runLiveCommand({
+      platform: 'darwin',
+      _hostTarget: { platform: 'darwin', appBundlePath: '/Applications/Antigravity.app', execPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity' },
+      _queryLiveWindow: async () => liveSnap
+    }),
+    (err) => {
+      assert.equal(err.code, 'CDP_NOT_ENABLED');
+      assert.match(err.message, /不会自动结束您的客户端进程/);
+      assert.match(err.message, /open -a Antigravity --args --remote-debugging-port=58321/);
+      return true;
+    }
+  );
+
+  // 3. watch 在前两轮看到 running && !cdpEnabled 时仅提示手动操作，用户手动带端口重启后第三轮顺利接入注入
+  let cycle = 0;
+  let injected = 0;
+  const watchRes = await cli.runWatchDaemon({
+    stateDir,
+    silent: true,
+    handleSignals: false,
+    pollIntervalMs: 5,
+    startupPollMs: 5,
+    startupTimeoutMs: 500,
+    maxConsecutiveMisses: 1,
+    maxCycles: 5,
+    _discoverWindow: async () => {
+      cycle++;
+      if (cycle <= 2) return liveSnap;
+      if (cycle === 3) {
+        return {
+          running: true,
+          cdpEnabled: true,
+          pageFound: true,
+          active: false,
+          origin: 'https://127.0.0.1:54399',
+          origins: ['https://127.0.0.1:54399'],
+          hasIpcBridge: false
+        };
+      }
+      return { running: false, pageFound: false };
+    },
+    _ensureBridge: async () => ({ ready: true, reused: true, backendSource: 'live-host', backendVersion: '0.8.8', liveInfo: { pid: process.pid, port: 54321, token: 't', origins: ['https://127.0.0.1:54399'] } }),
+    _hotInject: async () => { injected++; return { ok: true, injectedCount: 1, windowCount: 1 }; },
+    _hotDispose: async () => true
+  });
+  assert.equal(watchRes.ok, true);
+  assert.equal(watchRes.cdpPromptCount, 1, '连续无 CDP 轮询期间仅提示一次手动重启');
+  assert.equal(injected, 1, '用户手动带端口重启后 watch 自动恢复热挂载');
+  assert.equal(watchRes.exitReason, 'window_closed');
+});
