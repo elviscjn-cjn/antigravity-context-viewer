@@ -182,10 +182,11 @@ async function queryCliUsage(options = {}) {
   const modelQuery = options.model ? String(options.model).trim() : null;
   const now = options.now instanceof Date ? options.now : new Date();
 
+  // 强制 CLI 查询只读，绝不回退写入或清理备份
   const history = options._history || await collector.collectTokenHistoryAsync({
     ...options,
     force: options.force !== false,
-    readOnly: options.readOnly !== false
+    readOnly: true
   });
 
   const emailMap = resolveAccountEmailMap(options.stateDir);

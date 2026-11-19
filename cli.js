@@ -1677,7 +1677,8 @@ async function main() {
       intervalMs: intervalVal ? Number(intervalVal) : 2000,
       agDir: getVal('--ag-dir') || undefined,
       agCliDir: getVal('--cli-dir') || undefined,
-      stateDir: getVal('--state-dir') || undefined
+      stateDir: getVal('--state-dir') || undefined,
+      readOnly: true
     });
   } else if (cmd === 'launch-cli') {
     const { resolveCliExecutable, launchCliSession } = require('./meter-cli-launcher');

@@ -2636,10 +2636,14 @@ function cleanupUpgradeLedgerBackups({
   stateDir = null,
   keep = 1,
   force = false,
+  readOnly = false,
   fs: fsImpl = fs
 } = {}) {
   const targetDir = ledgerPath || agDir;
   const resolvedLedgerPath = path.resolve(getPricingLedgerPath(targetDir));
+  if (readOnly) {
+    return { ok: true, skipped: true, reason: 'read_only', ledgerPath: resolvedLedgerPath, removedCount: 0 };
+  }
   const markerDir = stateDir || path.dirname(resolvedLedgerPath);
   const markerPath = path.join(markerDir, '.pricing_ledger_backup_cleanup_v1.json');
 
@@ -3114,7 +3118,8 @@ function sanitizeContextPreferencesMap(rawMap) {
   return out;
 }
 
-function loadCustomPlanSettings(overridePathOrDir) {
+function loadCustomPlanSettings(overridePathOrDir, options = {}) {
+  const readOnly = Boolean(options?.readOnly);
   const p = getCustomPlanPath(overridePathOrDir);
   const def = {
     version: '1.1.0',
@@ -3134,11 +3139,13 @@ function loadCustomPlanSettings(overridePathOrDir) {
     try {
       raw = JSON.parse(content);
     } catch (parseErr) {
-      // 配置文件损坏时自动隔离备份并恢复默认结构，防止崩溃
-      try {
-        const bakCorrupt = p.replace(/\.json$/i, '') + '.corrupt.bak.json';
-        fs.copyFileSync(p, bakCorrupt);
-      } catch { }
+      // 配置文件损坏时自动隔离备份并恢复默认结构，防止崩溃（只读模式绝不写盘）
+      if (!readOnly) {
+        try {
+          const bakCorrupt = p.replace(/\.json$/i, '') + '.corrupt.bak.json';
+          fs.copyFileSync(p, bakCorrupt);
+        } catch { }
+      }
       return { ...def, recoveredFromCorruption: true };
     }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -5139,14 +5146,17 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const archivePathV1 = path.join(agDir, 'token_usage_archive_v1.json');
   const archivePathV2 = path.join(agDir, 'token_usage_archive_v2.json');
 
-  // 1. 读取旧 v1 归档（并在首次迁移时自动生成 .bak 备份）
+  // 1. 读取旧 v1 归档（非只读模式下首次迁移生成 .bak 备份）
   const bakPathV1 = path.join(agDir, 'token_usage_archive_v1.bak.json');
-  const readV1 = safeReadJsonSync(archivePathV1, null, { backupPath: bakPathV1 });
+  const readV1 = safeReadJsonSync(archivePathV1, null, {
+    backupPath: bakPathV1,
+    quarantineCorrupt: !options.readOnly
+  });
   let legacyV1Archive = { firstUseDate: null, dailyMap: {}, maxConversations: 0 };
   if (readV1.exists) {
     if (readV1.ok && readV1.data && typeof readV1.data === 'object') {
       legacyV1Archive = readV1.data;
-      if (!fs.existsSync(bakPathV1)) {
+      if (!options.readOnly && !fs.existsSync(bakPathV1)) {
         try { fs.copyFileSync(archivePathV1, bakPathV1); } catch { }
       }
     }
@@ -5154,7 +5164,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
 
   // 2. 读取已有的 v2 归档
   const bakPathV2 = path.join(agDir, 'token_usage_archive_v2.bak.json');
-  const readV2 = safeReadJsonSync(archivePathV2, null, { backupPath: bakPathV2 });
+  const readV2 = safeReadJsonSync(archivePathV2, null, {
+    backupPath: bakPathV2,
+    quarantineCorrupt: !options.readOnly
+  });
   let archiveV2 = {
     version: '2.0.0',
     firstUseDate: legacyV1Archive.firstUseDate || null,
@@ -5168,7 +5181,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   if (readV2.exists) {
     if (readV2.ok && readV2.data && typeof readV2.data === 'object') {
       archiveV2 = { ...archiveV2, ...readV2.data };
-      if (!fs.existsSync(bakPathV2)) {
+      if (!options.readOnly && !fs.existsSync(bakPathV2)) {
         try { fs.copyFileSync(archivePathV2, bakPathV2); } catch { }
       }
     }
@@ -5594,7 +5607,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     livePlanStatus = archiveV2.planStatus || parseUserPlanStatus(null);
   }
 
-  const customSettingsAll = loadCustomPlanSettings(agDir);
+  const customSettingsAll = loadCustomPlanSettings(agDir, { readOnly: Boolean(options.readOnly) });
   const currentAccountKey = livePlanStatus?.email || archiveV2.planStatus?.email || null;
   const currentCustom = resolveAccountCustomPlan(customSettingsAll, currentAccountKey);
 

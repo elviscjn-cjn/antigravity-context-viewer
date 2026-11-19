@@ -407,3 +407,158 @@ test('ELV-33: 双路径启动验证 (PowerShell 直启 wrapper 与插件 IPC 入
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('readOnly: true 严格零写零删 — usage 与 monitor 不触发备份清理、账本写回或归档落盘', async () => {
+  const crypto = require('node:crypto');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-ro-guard-'));
+  try {
+    const agDir = path.join(tmpDir, 'antigravity');
+    const agCliDir = path.join(tmpDir, 'antigravity-cli');
+    const stateDir = path.join(tmpDir, 'state');
+    const cliUuid = '44444444-4444-4444-8444-444444444444';
+    fs.mkdirSync(path.join(agDir, 'conversations'), { recursive: true });
+    fs.mkdirSync(path.join(agCliDir, 'brain', cliUuid, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    // 1. 预置账本（含未升级 attributionRepairVersion）、6 份 .bak-pre-elv89-* 历史备份、未建 .bak 的归档与损坏配置
+    const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+    const ledgerBody = JSON.stringify({
+      version: '1.0.0',
+      updatedAt: '2026-11-19T12:00:00.000Z',
+      calls: {
+        'ro-call-1': {
+          callId: 'ro-call-1',
+          cascadeId: cliUuid,
+          stepIndex: 1,
+          model: 'gemini-4-hydrogen:high',
+          inputTokens: 1200,
+          cacheReadTokens: 800,
+          outputTokens: 300,
+          totalTokens: 2300,
+          date: '2026-11-19',
+          timestamp: Date.parse('2026-11-19T12:00:00.000Z'),
+          source: 'cli',
+          accountScopeKey: collector.buildAccountScopeKey('ro-tester@example.com'),
+          accountAttributionConfidence: 'live_confirmed_account',
+          attributionRepairVersion: 'elv89-v1',
+          created_at: '2026-11-19T12:00:00.000Z'
+        }
+      }
+    }, null, 2);
+    fs.writeFileSync(ledgerPath, ledgerBody, 'utf8');
+    fs.writeFileSync(path.join(agDir, 'custom_plan_settings.json'), '{broken json', 'utf8');
+
+    for (let i = 1; i <= 6; i++) {
+      fs.writeFileSync(`${ledgerPath}.bak-pre-elv89-${1795100000000 + i * 1000}`, ledgerBody, 'utf8');
+    }
+
+    // 缺少 .bak.json 的 v1/v2 归档 + 可触发配对的新 transcript
+    fs.writeFileSync(path.join(agDir, 'token_usage_archive_v1.json'), JSON.stringify({
+      firstUseDate: '2026-11-18',
+      dailyMap: { '2026-11-18': { total: 500, input: 300, output: 100, cache: 100, steps: 1 } },
+      maxConversations: 1
+    }), 'utf8');
+    fs.writeFileSync(path.join(agCliDir, 'brain', cliUuid, '.system_generated', 'logs', 'transcript.jsonl'),
+      [
+        JSON.stringify({
+          step_index: 1,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          responseId: 'ro-call-1',
+          created_at: '2026-11-19T12:00:00.000Z',
+          model: 'gemini-4-hydrogen-high',
+          chatModel: { modelDisplayName: 'Gemini 4 Hydrogen (High)' },
+          input_tokens: 1200,
+          cache_read_tokens: 800,
+          output_tokens: 300
+        }),
+        JSON.stringify({
+          step_index: 2,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          responseId: 'ro-call-2',
+          created_at: '2026-11-19T12:05:00.000Z',
+          model: 'gemini-4-hydrogen-high',
+          chatModel: { modelDisplayName: 'Gemini 4 Hydrogen (High)' },
+          input_tokens: 400,
+          cache_read_tokens: 100,
+          output_tokens: 50
+        })
+      ].join('\n') + '\n',
+      'utf8'
+    );
+    const roScope = collector.buildAccountScopeKey('ro-tester@example.com');
+    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify({
+      version: 1,
+      accounts: { [roScope]: { accountScopeKey: roScope, email: 'ro-tester@example.com' } },
+      accountSessions: [{ accountScopeKey: roScope, startMs: 0, endMs: Date.now() + 86400000, verified: true }]
+    }), 'utf8');
+
+    const snapshotTree = (rootDir) => {
+      const entries = {};
+      const walk = (dir) => {
+        for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, ent.name);
+          const rel = path.relative(rootDir, full);
+          if (ent.isDirectory()) {
+            walk(full);
+          } else {
+            const buf = fs.readFileSync(full);
+            const st = fs.statSync(full);
+            entries[rel] = {
+              size: st.size,
+              mtimeMs: st.mtimeMs,
+              sha256: crypto.createHash('sha256').update(buf).digest('hex')
+            };
+          }
+        }
+      };
+      walk(rootDir);
+      return entries;
+    };
+
+    const beforeSnap = snapshotTree(tmpDir);
+
+    // 2. 执行 readOnly collectTokenHistoryAsync + queryCliUsage + runCliMonitor + CLI usage 子进程
+    const collectorRes = await collector.collectTokenHistoryAsync({
+      agDir,
+      agCliDir,
+      stateDir,
+      wslRoots: [],
+      force: true,
+      readOnly: true
+    });
+    assert.ok(collectorRes.summary.grandTotalTokens >= 2300);
+
+    const usageRes = await cliMonitor.queryCliUsage({ agDir, agCliDir, stateDir, wslRoots: [], period: 'all' });
+    assert.equal(usageRes.ok, true);
+    assert.equal(usageRes.readOnly, true);
+
+    const chunks = [];
+    const monRes = await cliMonitor.runCliMonitor({
+      agDir,
+      agCliDir,
+      stateDir,
+      once: true,
+      json: true,
+      stdout: { write: s => chunks.push(s), isTTY: false }
+    });
+    assert.equal(monRes.ok, true);
+
+    const cliRun = spawnSync(process.execPath, [
+      path.join(__dirname, 'cli.js'),
+      'usage', '--all', '--json', '--ag-dir', agDir, '--cli-dir', agCliDir, '--state-dir', stateDir
+    ], { encoding: 'utf8', env: { ...process.env, AG_METER_TEST_MODE: '1' } });
+    assert.equal(cliRun.status, 0, cliRun.stderr);
+    const cliJson = JSON.parse(cliRun.stdout);
+    assert.equal(cliJson.ok, true);
+    assert.equal(cliJson.readOnly, true);
+
+    const afterSnap = snapshotTree(tmpDir);
+    assert.deepEqual(afterSnap, beforeSnap, 'readOnly: true 下任何路径都不允许新增、删除或修改目录内文件');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
