@@ -1178,7 +1178,7 @@ const PANEL_I18N = {
 
       // 推荐配置 / 提示词档位 / 品牌标题 / 增强设置
       'enhance.preset.title': { 'zh-CN': '✨ 推荐配置（按需主动应用）', 'zh-TW': '✨ 推薦設定（依需求主動套用）', en: '✨ Recommended Setup (Opt-In)' },
-      'enhance.preset.desc': { 'zh-CN': '只安装插件不会暗中改写您的提示词、标题、语言或上下文。勾选需要开启的能力，点击下方按钮查看改动清单并确认后再执行。', 'zh-TW': '僅安裝外掛不會暗中改寫您的提示詞、標題、語言或上下文。勾選需要開啟的功能，點擊下方按鈕檢視變更清單並確認後再執行。', en: 'Installing never alters prompts, titles, UI language, or context secretly. Select items below and confirm the preview before applying.' },
+      'enhance.preset.desc': { 'zh-CN': '勾选为开，未勾选为关。安装默认全部关闭；只有磁盘上已经打开的项才会显示为开。确认前不会写入。', 'zh-TW': '勾選為開，未勾選為關。安裝預設全部關閉；只有磁碟上已經開啟的項才會顯示為開。確認前不會寫入。', en: 'Checked is on, unchecked is off. Install defaults to all off; only items already written on disk show as on. Nothing is written before confirmation.' },
       'enhance.preset.itemPrompt': { 'zh-CN': '精简防幻觉增强提示词 (4档)', 'zh-TW': '精簡防幻覺增強提示詞 (4檔)', en: 'Lean Anti-Hallucination Prompt (Tier 4)' },
       'enhance.preset.itemPromptSub': { 'zh-CN': '保留原生任务工具规范，注入工具契约与事实校验准则（写入验证，非保证模型不出错）', 'zh-TW': '保留原生任務工具規範，注入工具契約與事實校驗準則（寫入驗證，非保證模型不出錯）', en: 'Keeps native tools, adds verification & tool discipline (template write only; does not guarantee zero errors)' },
       'enhance.preset.itemTitle': { 'zh-CN': '自动中文会话标题', 'zh-TW': '自動中文工作階段標題', en: 'Auto Chinese Chat Titles' },
