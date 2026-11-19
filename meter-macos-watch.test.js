@@ -369,3 +369,178 @@ test('stopWatchDaemon 清理锁文件并支持单实例接管信号中断', asyn
   assert.equal(stopRes.ok, true);
   assert.equal(stopRes.watchPid, null);
 });
+
+test('Antigravity v2.33.0+ 无默认 CDP 场景：live 自动带端口启动、已裸开时优雅重开挂载及内部会话安全护栏', async () => {
+  const mockTarget = {
+    platform: 'darwin',
+    asarPath: '/Applications/Antigravity.app/Contents/Resources/app.asar',
+    appBundlePath: '/Applications/Antigravity.app',
+    execPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+  };
+
+  // 1. 客户端未运行：node cli.js live 自动带 --remote-debugging-port=58321 启动并完成热注入
+  {
+    let hostRunning = false;
+    let launchedArgs = null;
+    const liveRes = await cli.cmdLive(null, {}, {
+      silent: true,
+      env: {},
+      launchPollMs: 5,
+      launchTimeoutMs: 500,
+      _hostTarget: mockTarget,
+      _isHostRunning: async () => hostRunning,
+      _launchHost: async (target, port) => {
+        launchedArgs = { target, port };
+        hostRunning = true;
+      },
+      _queryLiveWindow: async () => (
+        hostRunning
+          ? { running: true, pageFound: true, cdpPort: 58321, origin: 'https://127.0.0.1:61000', origins: ['https://127.0.0.1:61000'] }
+          : { running: false }
+      ),
+      _ensureBridge: async () => ({ ready: true, backendSource: 'live-host', liveInfo: { port: 59001, token: 'tok' } }),
+      _hotInject: async (opts) => ({ ok: true, injectedCount: 1, windowCount: 1, port: opts.port })
+    });
+    assert.equal(liveRes.ok, true);
+    assert.equal(liveRes.action, 'launched');
+    assert.equal(launchedArgs.port, 58321);
+    assert.equal(launchedArgs.target.appBundlePath, '/Applications/Antigravity.app');
+  }
+
+  // 2. 客户端已裸开（无 CDP 端口）：外部交互确认（或 --relaunch）后优雅退出并带端口重开挂载
+  {
+    let hostRunning = true;
+    let cdpEnabled = false;
+    const events = [];
+    const liveRes = await cli.cmdLive(null, {}, {
+      silent: true,
+      env: {},
+      quitPollMs: 5,
+      quitTimeoutMs: 500,
+      relaunchSettleMs: 0,
+      launchPollMs: 5,
+      launchTimeoutMs: 500,
+      _hostTarget: mockTarget,
+      _isHostRunning: async () => hostRunning,
+      _confirmRelaunch: async () => {
+        events.push('confirm');
+        return true;
+      },
+      _quitHost: async () => {
+        events.push('quit');
+        hostRunning = false;
+      },
+      _launchHost: async (_target, port) => {
+        events.push(`launch:${port}`);
+        hostRunning = true;
+        cdpEnabled = true;
+      },
+      _queryLiveWindow: async () => (
+        hostRunning && cdpEnabled
+          ? { running: true, pageFound: true, cdpPort: 58321, origin: 'https://127.0.0.1:61001', origins: ['https://127.0.0.1:61001'] }
+          : { running: false }
+      ),
+      _ensureBridge: async () => ({ ready: true, backendSource: 'live-host', liveInfo: { port: 59002, token: 'tok2' } }),
+      _hotInject: async () => ({ ok: true, injectedCount: 1, windowCount: 1 })
+    });
+    assert.equal(liveRes.ok, true);
+    assert.equal(liveRes.action, 'relaunched');
+    assert.deepEqual(events, ['confirm', 'quit', 'launch:58321']);
+  }
+
+  // 3. 安全护栏：若位于 Antigravity 内部代理会话（如存在 ANTIGRAVITY_AGENT），即使传 --relaunch 也严禁关闭宿主
+  {
+    let quitCalled = false;
+    await assert.rejects(
+      () => cli.cmdLive(null, {}, {
+        silent: true,
+        relaunch: true,
+        env: { ANTIGRAVITY_AGENT: '1' },
+        _hostTarget: mockTarget,
+        _isHostRunning: async () => true,
+        _quitHost: async () => { quitCalled = true; },
+        _queryLiveWindow: async () => ({ running: false })
+      }),
+      /当前位于客户端内部会话.*--relaunch/
+    );
+    assert.equal(quitCalled, false, '内部会话安全护栏必须阻止关闭宿主进程');
+  }
+});
+
+test('watch 与 parseCliArgs 支持 --relaunch / --no-launch 且在宿主未开 CDP 时给出明确诊断', async (t) => {
+  assert.equal(cli.parseCliArgs(['live', '--relaunch']).cmd, 'live');
+  assert.equal(cli.parseCliArgs(['live', '--relaunch']).showHelp, false);
+  assert.equal(cli.parseCliArgs(['watch', '--no-launch']).cmd, 'watch');
+  assert.equal(cli.parseCliArgs(['watch', '--no-launch']).showHelp, false);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-watch-nocdp-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const res = await cli.runWatchDaemon({
+      stateDir,
+      silent: false,
+      handleSignals: false,
+      autoBootstrapHost: true,
+      relaunch: false,
+      env: {},
+      stdin: { isTTY: false },
+      stdout: { isTTY: false },
+      startupPollMs: 5,
+      startupTimeoutMs: 20,
+      _hostTarget: {
+        platform: 'darwin',
+        appBundlePath: '/Applications/Antigravity.app',
+        execPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+      },
+      _isHostRunning: async () => true,
+      _discoverWindow: async () => ({ running: false, pageFound: false })
+    });
+    assert.equal(res.exitReason, 'startup_timeout');
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.equal(warnings.length, 2, '只输出一次双行未开启 CDP 诊断提示，不重复刷屏');
+  assert.match(warnings[0], /未开启 CDP 调试端口/);
+  assert.match(warnings[1], /--remote-debugging-port=58321/);
+
+  // 验证 cmdCheck 区分“客户端未运行”与“客户端正在运行但未开启 CDP 调试端口”
+  const fakeAsarPath = path.join(tmpDir, 'fake.asar');
+  const fakeSrcDir = path.join(tmpDir, 'fake-src');
+  fs.mkdirSync(fakeSrcDir, { recursive: true });
+  fs.writeFileSync(path.join(fakeSrcDir, 'package.json'), JSON.stringify({ name: 'antigravity', version: '2.33.0' }));
+  await require('./asar-engine').builtinAsar.createPackage(fakeSrcDir, fakeAsarPath);
+
+  const checkLogsRunning = [];
+  const checkLogsStopped = [];
+  const origLog = console.log;
+  try {
+    console.log = (...args) => checkLogsRunning.push(args.join(' '));
+    await cli.cmdCheck(fakeAsarPath, {
+      _queryLiveWindow: async () => ({ running: false }),
+      _isHostRunning: async () => true,
+      _hostTarget: {
+        platform: 'darwin',
+        appBundlePath: '/Applications/Antigravity.app',
+        execPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+      }
+    });
+
+    console.log = (...args) => checkLogsStopped.push(args.join(' '));
+    await cli.cmdCheck(fakeAsarPath, {
+      _queryLiveWindow: async () => ({ running: false }),
+      _isHostRunning: async () => false
+    });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(checkLogsRunning.some(l => l.includes('客户端正在运行，但未开启 CDP 调试端口') && l.includes('--relaunch')));
+  assert.ok(checkLogsStopped.some(l => l.includes('客户端未运行')));
+});
