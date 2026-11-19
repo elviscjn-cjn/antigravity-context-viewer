@@ -6071,14 +6071,14 @@ const PANEL_I18N = {
   'diag.svc.tipDetail': { 'zh-CN': '服务端暂时过载或维护中，请稍后重试', 'zh-TW': '伺服器端暫時過載或維護中，請稍後重試', en: 'Server overloaded or under maintenance. Retry later.' },
   'diag.svc.status': { 'zh-CN': '模型服务暂不可用或处于高负载（503/Overloaded），请稍后重试。', 'zh-TW': '模型服務暫無法使用或處於高負載（503/Overloaded），請稍後重試。', en: 'Model service unavailable or overloaded (503). Retry later.' },
   'diag.svc.takeaway': { 'zh-CN': '⚠ 服务端暂时不可用或处于高负载（503/Overloaded），请稍后重试。', 'zh-TW': '⚠ 伺服器端暫時不可用或處於高負載（503/Overloaded），請稍後重試。', en: '⚠ Service unavailable or overloaded (503). Retry later.' },
-  'diag.cancel.badge': { 'zh-CN': '已取消', 'zh-TW': '已取消', en: 'Cancelled' },
-  'diag.cancel.amount': { 'zh-CN': '请求取消', 'zh-TW': '請求取消', en: 'Cancelled' },
-  'diag.cancel.hover': { 'zh-CN': ' · 请求已取消', 'zh-TW': ' · 請求已取消', en: ' · Request cancelled' },
-  'diag.cancel.tipTitle': { 'zh-CN': '请求状态（已取消）：', 'zh-TW': '請求狀態（已取消）：', en: 'Request Status (Cancelled):' },
-  'diag.cancel.tipPct': { 'zh-CN': '本次请求被中止或取消', 'zh-TW': '本次請求被中止或取消', en: 'Request aborted or cancelled' },
-  'diag.cancel.tipDetail': { 'zh-CN': '本次生成已被用户取消或中断，可重新发送消息', 'zh-TW': '本次生成已被使用者取消或中斷，可重新發送訊息', en: 'Generation cancelled. Resend message if needed.' },
-  'diag.cancel.status': { 'zh-CN': '请求已取消：当前轮次生成被中断。', 'zh-TW': '請求已取消：目前輪次生成被中斷。', en: 'Request cancelled: current generation aborted.' },
-  'diag.cancel.takeaway': { 'zh-CN': 'ℹ 本轮生成已被用户取消或中断，未完整输出。', 'zh-TW': 'ℹ 本輪生成已被使用者取消或中斷，未完整輸出。', en: 'ℹ Generation cancelled before completion.' },
+  'diag.cancel.badge': { 'zh-CN': '已中断', 'zh-TW': '已中斷', en: 'Interrupted' },
+  'diag.cancel.amount': { 'zh-CN': '上次中断', 'zh-TW': '上次中斷', en: 'Interrupted' },
+  'diag.cancel.hover': { 'zh-CN': ' · 最近一次请求已中断', 'zh-TW': ' · 最近一次請求已中斷', en: ' · Last recorded request interrupted' },
+  'diag.cancel.tipTitle': { 'zh-CN': '最近一次请求（已中断）：', 'zh-TW': '最近一次請求（已中斷）：', en: 'Last recorded request (Interrupted):' },
+  'diag.cancel.tipPct': { 'zh-CN': '该请求已中断或取消', 'zh-TW': '該請求已中斷或取消', en: 'That request was interrupted or cancelled' },
+  'diag.cancel.tipDetail': { 'zh-CN': '仅凭此记录无法确定取消来源或当前请求状态。', 'zh-TW': '僅憑此記錄無法確定取消來源或目前請求狀態。', en: 'This record does not identify who cancelled the request or describe the current request.' },
+  'diag.cancel.status': { 'zh-CN': '最近一次请求已中断；当前请求状态请以聊天界面为准。', 'zh-TW': '最近一次請求已中斷；目前請求狀態請以聊天介面為準。', en: 'Last recorded request interrupted; check the chat for the current request state.' },
+  'diag.cancel.takeaway': { 'zh-CN': 'ℹ 最近一次记录为请求中断，不代表当前请求失败。', 'zh-TW': 'ℹ 最近一次記錄為請求中斷，不代表目前請求失敗。', en: 'ℹ A recorded request was interrupted; check the chat for the current request state.' },
   'diag.quota.defPool': { 'zh-CN': '当前模型', 'zh-TW': '目前模型', en: 'Current model' },
   'diag.unknown.badge': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Error' },
   'diag.unknown.amount': { 'zh-CN': '请求异常', 'zh-TW': '請求異常', en: 'Request Error' },
@@ -25135,7 +25135,7 @@ var cumLockedKey = null;
       }
     }
 
-    const status = disp.isError
+    const status = disp.isError || disp.kind === 'canceled'
       ? disp.statusText
       : stale ? t('badge.status.stale')
         : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })

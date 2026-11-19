@@ -429,9 +429,12 @@
       };
     }
 
+    // 取消只证明请求已中断，不证明由谁取消；普通 Go context 取消也属于此类。
+    const canceledMatch = /(?:\bcontext cancel(?:l)?ed\b|\buser cancel(?:l)?ed\b|request was aborted|AbortError)/i.test(error);
+
     // 2. 模型或额度池耗尽 (Quota Exhausted)
     const explicitQuotaMatch = /(?:quota\s*(?:exceeded|reached|limit|exhausted)|out\s+of\s+quota|exhausted.*(?:capacity|quota)|resource_exhausted.*(?:quota|capacity|billing)|free\s+tier\s+quota|daily\s+quota|weekly\s+quota)/i.test(error);
-    const quotaZeroEvidence = Boolean(modelQuota && typeof modelQuota.remainingFraction === 'number' && modelQuota.remainingFraction <= 0.0001);
+    const quotaZeroEvidence = !canceledMatch && Boolean(modelQuota && typeof modelQuota.remainingFraction === 'number' && modelQuota.remainingFraction <= 0.0001);
 
     if (explicitQuotaMatch || quotaZeroEvidence) {
       const resetTimeZh = modelQuota?.resetTime ? formatResetTimeZh(modelQuota.resetTime) : null;
@@ -468,14 +471,13 @@
       };
     }
 
-    // 4. 用户主动取消或请求中断 (Canceled)
-    const canceledMatch = /(?:context canceled by user|user cancelled|request was aborted|AbortError)/i.test(error);
+    // 4. 请求取消或中断 (Canceled)，不推断取消发起方或当前轮次状态。
     if (canceledMatch) {
       return {
         kind: 'canceled',
-        title: '已取消',
-        badgeText: '已取消',
-        detail: '本次生成请求已由用户或系统主动取消',
+        title: '请求中断',
+        badgeText: '已中断',
+        detail: '最近一次生成请求已中断，无法仅凭此记录确定取消来源或当前请求状态',
         serviceLimit: null,
         retryAfterSec: null,
         resetTime: null,

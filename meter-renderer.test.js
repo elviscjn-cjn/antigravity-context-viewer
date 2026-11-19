@@ -1280,6 +1280,49 @@ test('network errors are consistently displayed across badge, tooltip, and key s
   h.sandbox.__AGContextMeter.dispose();
 });
 
+test('cancellation status is muted, describes the recorded request, and clears after success', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  h.finishScan();
+  h.pending[0].resolve(response({
+    usage: { inputTokens: 12000, outputTokens: 200 },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+  }));
+  await h.flush();
+  try {
+    const previous = api.snapshot().latest;
+    const canceled = core.summarize({ chatModel: {
+      retryInfos: [{ error: 'request failed: Post "https://example.invalid/api": context canceled' }],
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    } }, { previousValidContext: previous });
+    api.setContextLatestForTest(canceled);
+    h.elements.get('badge').trigger('mouseenter');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '已中断');
+    assert.equal(h.elements.get('amount').textContent, '上次中断');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal');
+    assert.equal(h.elements.get('key-badge').className, 'key-pill pill-muted');
+    assert.match(h.elements.get('ctx-tip-title').textContent, /最近一次/);
+    assert.match(h.elements.get('ctx-tip-detail').textContent, /无法确定/);
+    assert.doesNotMatch(h.elements.get('ctx-tip-detail').textContent, /用户取消|重新发送/);
+    assert.match(h.elements.get('status').textContent, /最近一次.*中断/);
+    assert.notEqual(h.elements.get('key-used').textContent, '—');
+    assert.equal(h.elements.get('key-limit').textContent, '512K');
+    assert.equal(api.snapshot().latest.actual, previous.actual);
+    for (const [language, title] of [['en', /Last recorded request/], ['zh-TW', /最近一次/]]) {
+      api.setPanelLanguage(language, { persist: false });
+      h.elements.get('badge').trigger('mouseenter');
+      assert.match(h.elements.get('ctx-tip-title').textContent, title);
+      assert.equal(h.elements.get('key-badge').className, 'key-pill pill-muted');
+    }
+    api.setPanelLanguage('zh-CN', { persist: false });
+    api.setContextLatestForTest(previous);
+    assert.doesNotMatch(h.elements.get('badge-pct-val').textContent, /中断|待确认/);
+    assert.doesNotMatch(h.elements.get('key-takeaway').textContent, /中断|原因未知/);
+  } finally {
+    api.dispose();
+  }
+});
+
 test('quota exhaustion status across badge, tooltip, and summary displays affected pool and reset time', async () => {
   const h = harness();
   h.finishScan();
