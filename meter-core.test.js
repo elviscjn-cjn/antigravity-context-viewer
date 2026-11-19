@@ -4898,3 +4898,50 @@ test('Issue #41 & ELV-94 settings: selectPrimaryQuotaBucket supports auto/5h/wee
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('Issue #49: parseUserPlanStatus 自动提取 5x/20x 倍率子档与 resolveEffectivePlanStatus 手动覆盖', () => {
+  // 1. 服务端返回 5x 明确子档倍率（字符串）
+  const res5x = parseUserPlanStatus({
+    userStatus: {
+      userTier: { id: 'g1-ultra-5x-tier', name: 'Google AI Ultra 5x' }
+    }
+  });
+  assert.equal(res5x.tierKey, 'ultra');
+  assert.equal(res5x.tierName, 'Google AI Ultra (5x)');
+  assert.equal(res5x.multiplier, 5);
+
+  // 2. 服务端返回 20x 明确子档倍率（数值 multiplier）
+  const res20x = parseUserPlanStatus({
+    userStatus: {
+      userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra', multiplier: 20 }
+    }
+  });
+  assert.equal(res20x.tierKey, 'ultra');
+  assert.equal(res20x.tierName, 'Google AI Ultra (20x)');
+  assert.equal(res20x.multiplier, 20);
+
+  // 3. 用户手动选择覆盖：优先于服务端返回值
+  const effManual5x = resolveEffectivePlanStatus(res20x, {
+    planTierOverride: 'ultra_5x'
+  });
+  assert.equal(effManual5x.tierKey, 'ultra');
+  assert.equal(effManual5x.tierName, 'Google AI Ultra (5x)');
+  assert.equal(effManual5x.multiplier, 5);
+  assert.equal(effManual5x.sources.tier, 'custom');
+
+  // 4. 手动覆盖为 Free / Pro / Ultra 20x
+  const effFree = resolveEffectivePlanStatus(res20x, { planTierOverride: 'free' });
+  assert.equal(effFree.tierKey, 'free');
+  assert.equal(effFree.tierName, 'Free');
+
+  const effPro = resolveEffectivePlanStatus(res20x, { planTierOverride: 'pro' });
+  assert.equal(effPro.tierKey, 'pro');
+  assert.equal(effPro.tierName, 'Google AI Pro');
+
+  // 5. 手动选择 auto 时，恢复以服务端返回为准
+  const effAuto = resolveEffectivePlanStatus(res20x, { planTierOverride: 'auto' });
+  assert.equal(effAuto.tierKey, 'ultra');
+  assert.equal(effAuto.tierName, 'Google AI Ultra (20x)');
+  assert.equal(effAuto.multiplier, 20);
+  assert.equal(effAuto.sources.tier, 'live');
+});

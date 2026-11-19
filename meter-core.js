@@ -1908,10 +1908,36 @@
     let priceRange = null;
     const rawTeamsTier = typeof planInfo.teamsTier === 'string' ? planInfo.teamsTier.trim() : '';
 
+    let multiplier = null;
+    if (Number.isFinite(Number(userTier.multiplier)) && Number(userTier.multiplier) > 0) {
+      multiplier = Number(userTier.multiplier);
+    } else if (Number.isFinite(Number(planInfo.multiplier)) && Number(planInfo.multiplier) > 0) {
+      multiplier = Number(planInfo.multiplier);
+    } else if (Number.isFinite(Number(planStatus.quotaMultiplier)) && Number(planStatus.quotaMultiplier) > 0) {
+      multiplier = Number(planStatus.quotaMultiplier);
+    } else if (Number.isFinite(Number(userTier.tierMultiplier)) && Number(userTier.tierMultiplier) > 0) {
+      multiplier = Number(userTier.tierMultiplier);
+    }
+
     if (/ultra/i.test(rawTierName) || /ultra/i.test(userTier.id || '') || /pro_ultimate|teams_tier_ultra/i.test(rawTeamsTier)) {
       tierKey = 'ultra';
+      // 检查明确的倍率子档，如 5x / 20x / 5X / 20X
+      let detectedMultiplierStr = null;
+      const combinedMeta = `${rawTierName} ${userTier.id || ''} ${rawTeamsTier}`;
+      const multStrMatch = combinedMeta.match(/(?:ultra)?[_\-\s]*(\d+x)\b/i);
+      if (multStrMatch) {
+        detectedMultiplierStr = multStrMatch[1].toLowerCase();
+        if (!multiplier) multiplier = parseInt(detectedMultiplierStr, 10);
+      } else if (multiplier) {
+        detectedMultiplierStr = `${multiplier}x`;
+      }
+
       const subTierMatch = rawTierName.match(/ultra\s*([0-9a-zA-Z\-_]+)/i);
-      if (subTierMatch && !['plan', 'tier'].includes(subTierMatch[1].toLowerCase())) {
+      if (detectedMultiplierStr) {
+        tierDisplayName = `Google AI Ultra (${detectedMultiplierStr})`;
+        officialPrice = null;
+        priceRange = `Google AI Ultra (${detectedMultiplierStr}) 子档`;
+      } else if (subTierMatch && !['plan', 'tier'].includes(subTierMatch[1].toLowerCase())) {
         tierDisplayName = `Google AI Ultra (${subTierMatch[1]})`;
         officialPrice = null;
         priceRange = '子档定制费率未知';
@@ -1946,6 +1972,7 @@
       status: 'identified',
       tierKey,
       tierName: tierDisplayName,
+      multiplier,
       tierId: userTier.id || null,
       teamsTier: planInfo.teamsTier || null,
       planName: planInfo.planName || tierDisplayName,
@@ -2396,8 +2423,67 @@
     let teamsTier = null;
     let planName = '未知';
     let tierSource = 'unknown';
+    let multiplier = rawLive?.multiplier || cachedLive?.multiplier || null;
 
-    if (rawLive && rawLive.status === 'identified' && rawLive.tierKey !== 'unknown') {
+    const rawTierOverride = effectiveCustom?.planTierOverride || effectiveCustom?.tierOverride || effectiveCustom?.planTier || null;
+    const normTierOverride = (typeof rawTierOverride === 'string' && rawTierOverride.trim() && rawTierOverride.trim().toLowerCase() !== 'auto')
+      ? rawTierOverride.trim()
+      : null;
+
+    if (normTierOverride) {
+      status = (rawLive && rawLive.status === 'identified') ? 'identified' : 'custom';
+      tierSource = 'custom';
+      tierId = rawLive?.tierId || cachedLive?.tierId || null;
+      teamsTier = rawLive?.teamsTier || cachedLive?.teamsTier || null;
+      const lowerOverride = normTierOverride.toLowerCase();
+
+      if (lowerOverride === 'free' || lowerOverride === 'teams_tier_free') {
+        tierKey = 'free';
+        tierName = 'Free';
+        planName = 'Free';
+        multiplier = null;
+      } else if (lowerOverride === 'pro' || lowerOverride === 'teams_tier_pro') {
+        tierKey = 'pro';
+        tierName = 'Google AI Pro';
+        planName = 'Google AI Pro';
+        multiplier = null;
+      } else if (lowerOverride === 'plus' || lowerOverride === 'teams_tier_plus') {
+        tierKey = 'plus';
+        tierName = 'Google AI Plus';
+        planName = 'Google AI Plus';
+        multiplier = null;
+      } else if (lowerOverride === 'ultra_5x' || lowerOverride === 'ultra 5x' || lowerOverride === 'ultra-5x' || lowerOverride === '5x') {
+        tierKey = 'ultra';
+        tierName = 'Google AI Ultra (5x)';
+        planName = 'Google AI Ultra (5x)';
+        multiplier = 5;
+      } else if (lowerOverride === 'ultra_20x' || lowerOverride === 'ultra 20x' || lowerOverride === 'ultra-20x' || lowerOverride === '20x') {
+        tierKey = 'ultra';
+        tierName = 'Google AI Ultra (20x)';
+        planName = 'Google AI Ultra (20x)';
+        multiplier = 20;
+      } else if (lowerOverride === 'ultra' || lowerOverride === 'google ai ultra') {
+        tierKey = 'ultra';
+        tierName = 'Google AI Ultra';
+        planName = 'Google AI Ultra';
+        multiplier = null;
+      } else {
+        const multMatch = normTierOverride.match(/(\d+x)/i);
+        if (/ultra/i.test(normTierOverride)) {
+          tierKey = 'ultra';
+          if (multMatch) {
+            multiplier = parseInt(multMatch[1], 10);
+            tierName = `Google AI Ultra (${multMatch[1].toLowerCase()})`;
+          } else {
+            tierName = normTierOverride;
+          }
+        } else {
+          tierKey = 'custom';
+          tierName = normTierOverride;
+        }
+        planName = tierName;
+      }
+    } else if (rawLive && rawLive.status === 'identified' && rawLive.tierKey !== 'unknown') {
       status = 'identified';
       tierKey = rawLive.tierKey;
       tierName = rawLive.tierName;
@@ -2405,6 +2491,7 @@
       teamsTier = rawLive.teamsTier || null;
       planName = rawLive.planName || rawLive.tierName;
       tierSource = 'live';
+      multiplier = rawLive.multiplier || multiplier;
     } else if (effectiveCustom && effectiveCustom.tierName) {
       status = 'custom';
       tierKey = effectiveCustom.tierKey || 'custom';
@@ -2421,6 +2508,7 @@
       teamsTier = cachedLive.teamsTier || null;
       planName = cachedLive.planName || cachedLive.tierName;
       tierSource = 'cached_live';
+      multiplier = cachedLive.multiplier || multiplier;
     }
 
     // 2A. 账号所在地区 (accountRegion / country) 独立取值：仅表示本地记录，不影响订阅国家与币种
@@ -2628,6 +2716,8 @@
       tierId,
       teamsTier,
       planName,
+      planTierOverride: normTierOverride || 'auto',
+      multiplier: multiplier || null,
       email: currentEmail,
       accountRegion: country,
       country,
@@ -2670,7 +2760,7 @@
         price: priceSource,
         acquisition: effectiveCustom?.acquisitionSource ? 'custom' : 'default'
       },
-      hasCustomSettings: Boolean(effectiveCustom && (effectiveCustom.country || effectiveCustom.region || effectiveCustom.subscriptionRegion || effectiveCustom.currency || effectiveCustom.actualPricePaid !== undefined || effectiveCustom.customNote || effectiveCustom.acquisitionSource)),
+      hasCustomSettings: Boolean(effectiveCustom && (normTierOverride || effectiveCustom.country || effectiveCustom.region || effectiveCustom.subscriptionRegion || effectiveCustom.currency || effectiveCustom.actualPricePaid !== undefined || effectiveCustom.customNote || effectiveCustom.acquisitionSource)),
       pricingTableVerifiedDate: '2026-11-09',
       updatedAt: rawLive?.updatedAt || new Date().toISOString()
     };

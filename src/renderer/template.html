@@ -1328,7 +1328,34 @@
       </div>
       <dl class="plan-detail-dl">
         <dt data-i18n="plan.dt.plan">当前套餐：</dt>
-        <dd id="p-det-name" style="font-weight:600">Google AI Pro</dd>
+        <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
+          <span id="p-det-name" style="display:none">Google AI Pro</span>
+          <select id="direct-tier-select" aria-label="套餐规格与子档覆盖" data-i18n-aria="plan.tier.aria" style="display:none">
+            <option value="auto" data-i18n="plan.tier.auto">✨ 自动检测 (Auto-detect)</option>
+            <option value="free" data-i18n="plan.tier.free">Free</option>
+            <option value="pro" data-i18n="plan.tier.pro">Google AI Pro</option>
+            <option value="ultra" data-i18n="plan.tier.ultra">Google AI Ultra</option>
+            <option value="ultra_5x" data-i18n="plan.tier.ultra5x">Google AI Ultra (5x)</option>
+            <option value="ultra_20x" data-i18n="plan.tier.ultra20x">Google AI Ultra (20x)</option>
+          </select>
+          <div id="direct-tier-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
+            <div id="direct-tier-trigger" class="ag-dropdown-trigger" tabindex="0"
+              title="套餐规格与子档覆盖 (可手动指定 5x/20x 子档或自动检测)" data-i18n-title="plan.tier.title">
+              <span id="direct-tier-label" class="ag-dropdown-label"
+                style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" data-i18n="plan.tier.auto">✨ 自动检测 (Auto-detect)</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </div>
+            </div>
+            <div id="direct-tier-menu" class="ag-dropdown-menu"></div>
+          </div>
+          <span id="p-det-tier-tag" class="key-pill pill-muted"
+            style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap"
+            data-i18n="plan.tag.custom">自定义</span>
+        </dd>
         <dt data-i18n="plan.dt.account">当前账号：</dt>
         <dd id="p-det-account">—</dd>
         <dt data-i18n="plan.dt.country">账号所在地区：</dt>

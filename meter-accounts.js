@@ -1509,6 +1509,7 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   return {
     projectId: projectId || null,
     tierId,
+    tierName: snapshot?.planStatus?.tierName || tierId || null,
     snapshot,
     fetchedAtMs: nowMs
   };
@@ -1700,6 +1701,7 @@ function createAccountsManager(options = {}) {
       authInvalid: Boolean(rec.authInvalid),
       authError: rec.authError || null,
       tierId: rec.tierId || null,
+      tierName: rec.tierName || rec.quotaSnapshot?.planStatus?.tierName || null,
       projectId: rec.projectId || null,
       quotaSnapshot: rec.quotaSnapshot || null,
       lastQuotaUpdatedAtMs: rec.lastQuotaUpdatedAtMs || null,
@@ -2539,6 +2541,7 @@ function createAccountsManager(options = {}) {
 
       targetRec.projectId = quotaData.projectId ?? targetRec.projectId;
       targetRec.tierId = quotaData.tierId ?? targetRec.tierId;
+      targetRec.tierName = quotaData.tierName || quotaData.snapshot?.planStatus?.tierName || targetRec.tierName || null;
       targetRec.quotaSnapshot = quotaData.snapshot;
       targetRec.lastQuotaUpdatedAtMs = quotaData.fetchedAtMs || nowMs;
       targetRec.lastQuotaError = null;

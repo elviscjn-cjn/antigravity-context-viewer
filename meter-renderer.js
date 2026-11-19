@@ -3983,7 +3983,34 @@
       </div>
       <dl class="plan-detail-dl">
         <dt data-i18n="plan.dt.plan">当前套餐：</dt>
-        <dd id="p-det-name" style="font-weight:600">Google AI Pro</dd>
+        <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
+          <span id="p-det-name" style="display:none">Google AI Pro</span>
+          <select id="direct-tier-select" aria-label="套餐规格与子档覆盖" data-i18n-aria="plan.tier.aria" style="display:none">
+            <option value="auto" data-i18n="plan.tier.auto">✨ 自动检测 (Auto-detect)</option>
+            <option value="free" data-i18n="plan.tier.free">Free</option>
+            <option value="pro" data-i18n="plan.tier.pro">Google AI Pro</option>
+            <option value="ultra" data-i18n="plan.tier.ultra">Google AI Ultra</option>
+            <option value="ultra_5x" data-i18n="plan.tier.ultra5x">Google AI Ultra (5x)</option>
+            <option value="ultra_20x" data-i18n="plan.tier.ultra20x">Google AI Ultra (20x)</option>
+          </select>
+          <div id="direct-tier-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
+            <div id="direct-tier-trigger" class="ag-dropdown-trigger" tabindex="0"
+              title="套餐规格与子档覆盖 (可手动指定 5x/20x 子档或自动检测)" data-i18n-title="plan.tier.title">
+              <span id="direct-tier-label" class="ag-dropdown-label"
+                style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" data-i18n="plan.tier.auto">✨ 自动检测 (Auto-detect)</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </div>
+            </div>
+            <div id="direct-tier-menu" class="ag-dropdown-menu"></div>
+          </div>
+          <span id="p-det-tier-tag" class="key-pill pill-muted"
+            style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap"
+            data-i18n="plan.tag.custom">自定义</span>
+        </dd>
         <dt data-i18n="plan.dt.account">当前账号：</dt>
         <dd id="p-det-account">—</dd>
         <dt data-i18n="plan.dt.country">账号所在地区：</dt>
@@ -6001,6 +6028,14 @@ const PANEL_I18N = {
   'plan.summary.priceUnsetShort': { 'zh-CN': '待设置月费', 'zh-TW': '待設定月費', en: 'Fee unset' },
   'plan.summary.priceUnsetCny': { 'zh-CN': '(待填写实付)', 'zh-TW': '(待填寫實付)', en: '(not set)' },
   'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅费用与最新汇率换算参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱費用與最新匯率換算參考 (點擊展開/收起詳細資訊)', en: 'Current subscription fee and FX estimate (click to toggle details)' },
+  'plan.tier.aria': { 'zh-CN': '套餐规格与子档覆盖', 'zh-TW': '方案規格與子檔覆蓋', en: 'Plan tier and sub-tier override' },
+  'plan.tier.title': { 'zh-CN': '套餐规格与子档覆盖 (可手动指定 5x/20x 子档或自动检测)', 'zh-TW': '方案規格與子檔覆蓋 (可手動指定 5x/20x 子檔或自動檢測)', en: 'Plan tier and sub-tier override (select 5x/20x or auto-detect)' },
+  'plan.tier.auto': { 'zh-CN': '✨ 自动检测 (Auto-detect)', 'zh-TW': '✨ 自動檢測 (Auto-detect)', en: '✨ Auto-detect' },
+  'plan.tier.free': { 'zh-CN': 'Free (免费版)', 'zh-TW': 'Free (免費版)', en: 'Free' },
+  'plan.tier.pro': { 'zh-CN': 'Google AI Pro', 'zh-TW': 'Google AI Pro', en: 'Google AI Pro' },
+  'plan.tier.ultra': { 'zh-CN': 'Google AI Ultra', 'zh-TW': 'Google AI Ultra', en: 'Google AI Ultra' },
+  'plan.tier.ultra5x': { 'zh-CN': 'Google AI Ultra (5x)', 'zh-TW': 'Google AI Ultra (5x)', en: 'Google AI Ultra (5x)' },
+  'plan.tier.ultra20x': { 'zh-CN': 'Google AI Ultra (20x)', 'zh-TW': 'Google AI Ultra (20x)', en: 'Google AI Ultra (20x)' },
   'plan.dt.plan': { 'zh-CN': '当前套餐：', 'zh-TW': '目前方案：', en: 'Plan:' },
   'plan.dt.account': { 'zh-CN': '当前账号：', 'zh-TW': '目前帳號：', en: 'Account:' },
   'plan.dt.country': { 'zh-CN': '账号所在地区：', 'zh-TW': '帳號所在地區：', en: 'Account country:' },
@@ -6302,6 +6337,8 @@ const PANEL_I18N = {
   'colors.copied': { 'zh-CN': '✔ 已复制 {label}: {val}', 'zh-TW': '✔ 已複製 {label}: {val}', en: '✔ Copied {label}: {val}' },
   'dropdown.countrySearch': { 'zh-CN': '🔍 搜索账号所在地区或代码 (如: 美国、TW、JP)...', 'zh-TW': '🔍 搜尋帳號所在地區或代碼 (如: 美國、TW、JP)...', en: '🔍 Search country or code (e.g. US, TW, JP)...' },
   'dropdown.countryEmpty': { 'zh-CN': '未找到匹配的账号所在地区', 'zh-TW': '找不到相符的帳號所在地區', en: 'No matching country found' },
+  'dropdown.tierSearch': { 'zh-CN': '🔍 搜索套餐规格与子档 (如: Ultra、5x、Pro)...', 'zh-TW': '🔍 搜尋方案規格與子檔 (如: Ultra、5x、Pro)...', en: '🔍 Search plan tier or sub-tier (e.g. Ultra, 5x, Pro)...' },
+  'dropdown.tierEmpty': { 'zh-CN': '未找到匹配的套餐规格', 'zh-TW': '找不到相符的方案規格', en: 'No matching plan tier found' },
   'dropdown.regionSearch': { 'zh-CN': '🔍 搜索订阅国家/地区、货币或缩写 (如: 台湾、澳、USD)...', 'zh-TW': '🔍 搜尋訂閱國家/地區、幣別或縮寫 (如: 台灣、澳、USD)...', en: '🔍 Search billing region or currency (e.g. TW, USD)...' },
   'dropdown.regionEmpty': { 'zh-CN': '未找到匹配的订阅国家/地区', 'zh-TW': '找不到相符的訂閱國家/地區', en: 'No matching billing region found' },
   'dropdown.currencySearch': { 'zh-CN': '🔍 搜索币种名称或代码 (如: USD、NTD、人民币)...', 'zh-TW': '🔍 搜尋幣別名稱或代碼 (如: USD、NTD、台幣)...', en: '🔍 Search currency code or name (e.g. USD, CNY)...' },
@@ -12312,6 +12349,34 @@ function closeAllDropdowns(exceptWrap = null) {
     return opt.label;
   }
 
+  const PLAN_TIER_OPTIONS = [
+    { value: 'auto', label: '✨ 自动检测 (Auto-detect)', labelZh: '✨ 自动检测 (Auto-detect)', labelTw: '✨ 自動檢測 (Auto-detect)', labelEn: '✨ Auto-detect' },
+    { value: 'free', label: 'Free (免费版)', labelZh: 'Free (免费版)', labelTw: 'Free (免費版)', labelEn: 'Free' },
+    { value: 'pro', label: 'Google AI Pro', labelZh: 'Google AI Pro', labelTw: 'Google AI Pro', labelEn: 'Google AI Pro' },
+    { value: 'ultra', label: 'Google AI Ultra', labelZh: 'Google AI Ultra', labelTw: 'Google AI Ultra', labelEn: 'Google AI Ultra' },
+    { value: 'ultra_5x', label: 'Google AI Ultra (5x)', labelZh: 'Google AI Ultra (5x)', labelTw: 'Google AI Ultra (5x)', labelEn: 'Google AI Ultra (5x)' },
+    { value: 'ultra_20x', label: 'Google AI Ultra (20x)', labelZh: 'Google AI Ultra (20x)', labelTw: 'Google AI Ultra (20x)', labelEn: 'Google AI Ultra (20x)' }
+  ];
+
+  // 刷新套餐规格直接选择器显示
+  function refreshDirectPlanTierDisplay(currentVal) {
+    const label = el('direct-tier-label');
+    const tag = el('p-det-tier-tag');
+    if (!label) return;
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const email = ps.email || 'default';
+    const effectiveCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+    const override = currentVal || ps.planTierOverride || effectiveCustom?.planTierOverride || 'auto';
+    const matched = PLAN_TIER_OPTIONS.find(o => o.value === override);
+    if (override && override !== 'auto') {
+      label.textContent = matched ? formatOptionLabelByLang(matched) : override;
+      if (tag) tag.style.display = 'inline-block';
+    } else {
+      label.textContent = formatOptionLabelByLang(PLAN_TIER_OPTIONS[0]);
+      if (tag) tag.style.display = 'none';
+    }
+  }
+
   // 刷新国家直接选择器显示
   function refreshDirectCountryDisplay(currentCountryVal) {
     const label = el('direct-country-label');
@@ -12856,6 +12921,53 @@ function closeAllDropdowns(exceptWrap = null) {
     void persistSettingsToHost({ email, customPlan: customObj });
   }
 
+  function applyDirectPlanTierSelection(tierVal) {
+    ++userActionSeq;
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const email = ps.email || 'default';
+    const prevCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+    const customObj = {
+      ...(prevCustom || {})
+    };
+    if (tierVal && tierVal !== 'auto') {
+      customObj.planTierOverride = tierVal;
+    } else {
+      delete customObj.planTierOverride;
+    }
+    applyCustomPlanObjectLocally(customObj, email);
+    void persistSettingsToHost({ email, customPlan: customObj });
+    refreshDirectPlanTierDisplay(tierVal);
+  }
+
+  el('direct-tier-select')?.addEventListener('change', (e) => {
+    if (isHydratingUiControls) return;
+    applyDirectPlanTierSelection(e.target?.value || 'auto');
+  });
+
+  function initDirectPlanTierDropdown() {
+    return initDropdownController({
+      wrapId: 'direct-tier-wrap',
+      triggerId: 'direct-tier-trigger',
+      labelId: 'direct-tier-label',
+      menuId: 'direct-tier-menu',
+      selectId: 'direct-tier-select',
+      getAriaLabel: () => t('plan.tier.aria'),
+      searchPlaceholder: () => t('dropdown.tierSearch'),
+      getOptions: () => PLAN_TIER_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
+      getSelectedValue: () => {
+        const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+        const email = ps.email || 'default';
+        const effectiveCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+        return ps.planTierOverride || effectiveCustom?.planTierOverride || 'auto';
+      },
+      getLabelText: (opt) => formatOptionLabelByLang(opt),
+      onSelect: (opt) => {
+        applyDirectPlanTierSelection(opt.value);
+      },
+      emptyText: () => t('dropdown.tierEmpty')
+    });
+  }
+
   el('direct-country-select')?.addEventListener('change', (e) => {
     if (isHydratingUiControls) return;
     applyDirectCountrySelection(e.target?.value || '');
@@ -12971,7 +13083,8 @@ function closeAllDropdowns(exceptWrap = null) {
     });
   }
 
-  // 立即触发初始化三大原生定制下拉
+  // 立即触发初始化四大原生定制下拉
+  initDirectPlanTierDropdown();
   initDirectCountryDropdown();
   initDirectRegionDropdown();
   initDirectCurrencyDropdown();
@@ -13121,7 +13234,7 @@ function closeAllDropdowns(exceptWrap = null) {
       const ctrl = enhancedDropdowns.get(spec.selectId) || initNativeSelectDropdown(spec.selectId, spec);
       ctrl?.refresh?.();
     }
-    for (const wrapId of ['direct-country-wrap', 'direct-region-wrap', 'direct-currency-wrap']) {
+    for (const wrapId of ['direct-country-wrap', 'direct-region-wrap', 'direct-currency-wrap', 'direct-tier-wrap']) {
       el(wrapId)?._controller?.refresh?.();
     }
   }
@@ -13864,6 +13977,13 @@ function closeAllDropdowns(exceptWrap = null) {
 
     const detCountry = el('p-det-country');
     const tagCountry = el('p-det-country-tag');
+    const tagTier = el('p-det-tier-tag');
+    if (tagTier) {
+      const isCustomTier = ps.sources?.tier === 'custom' || (ps.planTierOverride && ps.planTierOverride !== 'auto');
+      tagTier.style.display = isCustomTier ? 'inline-block' : 'none';
+      tagTier.textContent = isCustomTier ? t('plan.tag.custom') : '';
+    }
+    const directTierSel = el('direct-tier-select');
     const directCountrySel = el('direct-country-select');
     const rawCountryStr = ps.country ? String(ps.country).trim() : '';
     const isCountryUnknown = !rawCountryStr || rawCountryStr === '未知' || rawCountryStr === 'Unknown' || rawCountryStr.includes('未设置');
@@ -13898,6 +14018,9 @@ function closeAllDropdowns(exceptWrap = null) {
 
     // 使用纯同步回填守卫同步更新详情面板内的下拉控件值
     runWithUiHydration(() => {
+      if (directTierSel) {
+        directTierSel.value = ps.planTierOverride || 'auto';
+      }
       if (directCountrySel) {
         if (countryText !== '未知' && directCountrySel.options) {
           const exists = Array.from(directCountrySel.options).some(o => o.value === countryText);
@@ -13915,7 +14038,10 @@ function closeAllDropdowns(exceptWrap = null) {
       }
     });
 
-    // 刷新国家、订阅地区与币种直接选择器标签与选中高亮
+    // 刷新套餐规格、国家、订阅地区与币种直接选择器标签与选中高亮
+    if (typeof refreshDirectPlanTierDisplay === 'function') {
+      refreshDirectPlanTierDisplay(ps.planTierOverride || 'auto');
+    }
     if (typeof refreshDirectCountryDisplay === 'function') {
       refreshDirectCountryDisplay(countryText);
     }
@@ -13924,6 +14050,18 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     if (typeof refreshDirectCurrencyDisplay === 'function') {
       refreshDirectCurrencyDisplay(curText);
+    }
+
+    // 同步更新额度面板顶部套餐胶囊 (#quota-plan-tier-pill)
+    const tierPill = el('quota-plan-tier-pill');
+    if (tierPill && ps.tierName && ps.tierName !== '未知') {
+      setQuotaHiddenIfChanged(tierPill, false);
+      setQuotaTextIfChanged(tierPill, ps.tierName);
+    }
+
+    // 同步刷新多账号列表中展示的套餐名
+    if (typeof renderAccountsOverviewSection === 'function' && accountsUiState?.overview) {
+      try { renderAccountsOverviewSection(); } catch {}
     }
 
     const detAcq = el('p-det-acq');
@@ -19378,6 +19516,7 @@ function closeAllDropdowns(exceptWrap = null) {
         if (locReg) regInp.value = locReg;
       }
       if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
+      if (typeof refreshDirectPlanTierDisplay === 'function') refreshDirectPlanTierDisplay();
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
@@ -28554,7 +28693,17 @@ var cumLockedKey = null;
           topRow.className = 'quota-subcard-row';
           const left = document.createElement('span');
           left.className = 'quota-acct-email';
-          left.textContent = `${acc.email}${acc.tierId ? ` · ${acc.tierId}` : ''}`;
+          const resolveAccountTierLabel = (a) => {
+            if (!a) return '';
+            const curEmail = ANTIGRAVITY_TOKEN_DATA.planStatus?.email;
+            if (a.isActive && curEmail && (typeof normalizeEmail === 'function' ? normalizeEmail(a.email) === normalizeEmail(curEmail) : a.email === curEmail)) {
+              const curName = ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName;
+              if (curName && curName !== '未知') return curName;
+            }
+            return a.tierName || a.tierId || '';
+          };
+          const accTierLabel = resolveAccountTierLabel(acc);
+          left.textContent = `${acc.email}${accTierLabel ? ` · ${accTierLabel}` : ''}`;
           left.title = acc.email;
           const right = document.createElement('div');
           right.className = 'quota-subsec-actions';

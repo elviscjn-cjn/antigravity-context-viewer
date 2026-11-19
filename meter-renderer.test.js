@@ -6429,3 +6429,78 @@ test('多账号卡片配额展示回归: Pro/Free 账号不出现假 Carbon、Ul
     try { api.dispose(); } catch {}
   }
 });
+
+test('Issue #49: 套餐规格与 5x/20x 子档覆盖下拉选择、立即保存及三端 UI 同步展示', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  let savedSettingsPayload = null;
+  h.sandbox.window.contextMeterAPI.saveSettings = async (payload) => {
+    savedSettingsPayload = payload;
+    return { ok: true, customPlan: payload.customPlan };
+  };
+
+  try {
+    const mockPlan = {
+      status: 'identified',
+      tierKey: 'ultra',
+      tierName: 'Google AI Ultra',
+      email: 'ultra-user@example.com'
+    };
+    api.applyTokenHistoryPayload({
+      planStatus: mockPlan,
+      rawPlanStatus: mockPlan,
+      dailyMap: {}
+    });
+
+    // 1. 验证存在紫光风格下拉选择器包裹容器与 trigger
+    const wrap = h.elements.get('direct-tier-wrap');
+    assert.ok(wrap, '必须渲染 direct-tier-wrap 下拉包裹器');
+    const labelEl = h.elements.get('direct-tier-label');
+    assert.ok(labelEl, '必须渲染 direct-tier-label');
+
+    // 2. 选择 Google AI Ultra (5x) 并触发 change
+    const sel = h.elements.get('direct-tier-select');
+    assert.ok(sel, '必须存在原生 direct-tier-select');
+    sel.value = 'ultra_5x';
+    sel.trigger('change', { target: { value: 'ultra_5x' } });
+
+    // 3. 验证触发了 saveSettings 保存，且 customPlan 包含 planTierOverride
+    assert.ok(savedSettingsPayload, '必须调用 saveSettings');
+    assert.equal(savedSettingsPayload.customPlan.planTierOverride, 'ultra_5x');
+
+    // 4. 验证 Token 面板订阅摘要条展示带子档套餐名
+    const sumTxt = h.elements.get('plan-summary-text');
+    assert.match(sumTxt.textContent, /Google AI Ultra \(5x\)/);
+
+    // 5. 验证额度面板顶部套餐胶囊展示带子档套餐名
+    const quotaPill = h.elements.get('quota-plan-tier-pill');
+    assert.equal(quotaPill.hidden, false);
+    assert.equal(quotaPill.textContent, 'Google AI Ultra (5x)');
+
+    // 6. 验证多账号列表展示带子档套餐名
+    const mockOverview = {
+      accounts: [
+        {
+          email: 'ultra-user@example.com',
+          isActive: true,
+          hasRefreshToken: true,
+          tierId: 'g1-ultra-tier',
+          quotaSnapshot: { pools: [] }
+        }
+      ]
+    };
+    api.setAccountsOverviewForTest(mockOverview);
+    const listEl = h.elements.get('quota-accounts-list');
+    assert.ok(listEl.children.length > 0);
+    const acctEmail = listEl.children[0].children.find(c => c.className === 'quota-subcard-row')?.children?.find(c => c.className === 'quota-acct-email');
+    assert.ok(acctEmail);
+    assert.match(acctEmail.textContent, /ultra-user@example\.com · Google AI Ultra \(5x\)/);
+
+    // 7. 验证切换英文 en 模式下，全 DOM 零汉字门禁通过
+    await api.setPanelLanguage('en', { persist: false });
+    assert.doesNotMatch(labelEl.textContent, /[\u4e00-\u9fff]/);
+    assert.doesNotMatch(sumTxt.textContent, /[\u4e00-\u9fff]/);
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});

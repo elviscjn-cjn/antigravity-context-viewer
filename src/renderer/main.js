@@ -1942,6 +1942,13 @@
 
     const detCountry = el('p-det-country');
     const tagCountry = el('p-det-country-tag');
+    const tagTier = el('p-det-tier-tag');
+    if (tagTier) {
+      const isCustomTier = ps.sources?.tier === 'custom' || (ps.planTierOverride && ps.planTierOverride !== 'auto');
+      tagTier.style.display = isCustomTier ? 'inline-block' : 'none';
+      tagTier.textContent = isCustomTier ? t('plan.tag.custom') : '';
+    }
+    const directTierSel = el('direct-tier-select');
     const directCountrySel = el('direct-country-select');
     const rawCountryStr = ps.country ? String(ps.country).trim() : '';
     const isCountryUnknown = !rawCountryStr || rawCountryStr === '未知' || rawCountryStr === 'Unknown' || rawCountryStr.includes('未设置');
@@ -1976,6 +1983,9 @@
 
     // 使用纯同步回填守卫同步更新详情面板内的下拉控件值
     runWithUiHydration(() => {
+      if (directTierSel) {
+        directTierSel.value = ps.planTierOverride || 'auto';
+      }
       if (directCountrySel) {
         if (countryText !== '未知' && directCountrySel.options) {
           const exists = Array.from(directCountrySel.options).some(o => o.value === countryText);
@@ -1993,7 +2003,10 @@
       }
     });
 
-    // 刷新国家、订阅地区与币种直接选择器标签与选中高亮
+    // 刷新套餐规格、国家、订阅地区与币种直接选择器标签与选中高亮
+    if (typeof refreshDirectPlanTierDisplay === 'function') {
+      refreshDirectPlanTierDisplay(ps.planTierOverride || 'auto');
+    }
     if (typeof refreshDirectCountryDisplay === 'function') {
       refreshDirectCountryDisplay(countryText);
     }
@@ -2002,6 +2015,18 @@
     }
     if (typeof refreshDirectCurrencyDisplay === 'function') {
       refreshDirectCurrencyDisplay(curText);
+    }
+
+    // 同步更新额度面板顶部套餐胶囊 (#quota-plan-tier-pill)
+    const tierPill = el('quota-plan-tier-pill');
+    if (tierPill && ps.tierName && ps.tierName !== '未知') {
+      setQuotaHiddenIfChanged(tierPill, false);
+      setQuotaTextIfChanged(tierPill, ps.tierName);
+    }
+
+    // 同步刷新多账号列表中展示的套餐名
+    if (typeof renderAccountsOverviewSection === 'function' && accountsUiState?.overview) {
+      try { renderAccountsOverviewSection(); } catch {}
     }
 
     const detAcq = el('p-det-acq');
@@ -7456,6 +7481,7 @@
         if (locReg) regInp.value = locReg;
       }
       if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
+      if (typeof refreshDirectPlanTierDisplay === 'function') refreshDirectPlanTierDisplay();
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
@@ -15220,7 +15246,17 @@
           topRow.className = 'quota-subcard-row';
           const left = document.createElement('span');
           left.className = 'quota-acct-email';
-          left.textContent = `${acc.email}${acc.tierId ? ` · ${acc.tierId}` : ''}`;
+          const resolveAccountTierLabel = (a) => {
+            if (!a) return '';
+            const curEmail = ANTIGRAVITY_TOKEN_DATA.planStatus?.email;
+            if (a.isActive && curEmail && (typeof normalizeEmail === 'function' ? normalizeEmail(a.email) === normalizeEmail(curEmail) : a.email === curEmail)) {
+              const curName = ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName;
+              if (curName && curName !== '未知') return curName;
+            }
+            return a.tierName || a.tierId || '';
+          };
+          const accTierLabel = resolveAccountTierLabel(acc);
+          left.textContent = `${acc.email}${accTierLabel ? ` · ${accTierLabel}` : ''}`;
           left.title = acc.email;
           const right = document.createElement('div');
           right.className = 'quota-subsec-actions';

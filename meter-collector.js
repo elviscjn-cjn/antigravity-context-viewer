@@ -3067,6 +3067,15 @@ function sanitizeAccountPlanEntry(entry, accountKey = 'default') {
     }
   }
 
+  if (out.planTierOverride !== undefined) {
+    const rawTier = String(out.planTierOverride || '').trim();
+    if (!rawTier || rawTier.toLowerCase() === 'auto') {
+      delete out.planTierOverride;
+    } else {
+      out.planTierOverride = rawTier;
+    }
+  }
+
   return out;
 }
 
@@ -3360,6 +3369,9 @@ function savePluginSettings(payload = {}, options = {}) {
       delete mergedRaw.currency;
       delete mergedRaw.subscriptionCurrency;
       delete mergedRaw.currencySymbol;
+    }
+    if (inputPlan.planTierOverride === null || inputPlan.planTierOverride === '' || String(inputPlan.planTierOverride).toLowerCase() === 'auto') {
+      delete mergedRaw.planTierOverride;
     }
 
     const sanitized = sanitizeAccountPlanEntry(mergedRaw, key);
