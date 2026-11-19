@@ -9833,7 +9833,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
 
   function getContinuousScaleStops() {
     const scale = getEffectiveHeatmapScale();
-    const isLight = typeof resolveEffectiveTheme === 'function' && resolveEffectiveTheme() === 'light';
+    const isLight = resolveTheme() === 'light';
     const hasCustomHeat = Boolean(
       customColors.heatLow ||
       customColors.heatHigh ||
