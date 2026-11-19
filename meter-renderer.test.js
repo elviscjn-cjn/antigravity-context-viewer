@@ -542,6 +542,45 @@ test('custom background color (panelBg), custom Color Picker HEX->RGB/HSL sync, 
   api.dispose();
 });
 
+test('daily heatmap repaints low and high usage with the active purple theme', t => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  t.after(() => api.dispose());
+
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const lowDay = yesterday.toLocaleDateString('en-CA');
+  const highDay = today.toLocaleDateString('en-CA');
+  api.setTokenHistoryForTest({
+    firstUseDate: lowDay,
+    dailyMap: { [lowDay]: { total: 145700 }, [highDay]: { total: 131110000 } }
+  });
+  api.switchHeatView('daily');
+
+  function cellColors() {
+    const cells = h.elements.get('h-grid-cols').children.flatMap(col => col.children);
+    return [lowDay, highDay].map(day =>
+      cells.find(cell => cell.getAttribute('data-date') === day).style.backgroundColor);
+  }
+
+  api.setTheme('dark');
+  assert.deepEqual(cellColors(), ['#5f27b2', '#d8b4fe']);
+
+  api.setTheme('light');
+  const legendStops = [1, 2, 3, 4].map(i => h.elements.get(`heat-leg-${i}`).style.background);
+  const lowResponse = core.computeColorScaleResponse(145700, 'heat');
+  const lightColors = [core.interpolateScaleColorHsl(lowResponse, legendStops), legendStops[3]];
+  assert.deepEqual(cellColors(), lightColors);
+
+  h.sandbox.document.documentElement.style = { colorScheme: 'dark' };
+  api.setTheme('auto');
+  assert.deepEqual(cellColors(), ['#5f27b2', '#d8b4fe']);
+  h.sandbox.document.documentElement.style.colorScheme = 'light';
+  api.setTheme('auto');
+  assert.deepEqual(cellColors(), lightColors);
+});
+
 test('timeline starts at actual firstUseDate with zero leading blank cells and supports multi-year archive pagination', () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
