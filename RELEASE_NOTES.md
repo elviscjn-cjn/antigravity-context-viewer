@@ -1,45 +1,49 @@
-# v0.8.8 α
+# v0.8.9 β
 
 **简体中文** · [English](#english)
 
 <details open>
 <summary><b>简体中文</b></summary>
 
-本次版本重点新增多账号隔离与可控切号. 按模型每日堆叠统计. 累计总量图表改版. 请求时间线与速度体验评分. 并完善跨平台兼容与三语界面本地化.
+本次测试版本聚焦稳定性修复. 终端 CLI 用量与会话监视主线能力. 以及客户端插件界面精简与停靠定制升级.
 
-- 新增多账号与分账号用量隔离. 历史未归属请求统一保留在未归属账本. 绝不默认计入当前账号.
-- 新增受控手动与阈值自动切号及配额对照. 内置防抖. 冷却. 生成中等待. 多窗口锁与无 CDP 主进程核验失败回滚保护.
-- 新增按模型每日堆叠柱图. 支持 7 天或 30 天视图. 思考档位与来源筛选. 从会话数据库回填缺失模型显示名. 并支持 Orchestrator 与后台 worker 映射清洗.
-- 统一用量图表与年度气泡混合对数-幂律连续刻度. 修正跨档变小问题. 大于 1B 年度气泡封顶 58px 并保留外环提示.
-- 新增累计总量看板. 支持摘要卡片. 量级尺. 比例时间带. 零用量日标记与 460px 以下窄窗口自适应.
-- 新增缓存读取占比统计. 可折叠会话请求时间线. 最新调用动态替换与首字等待及纯流式速度评分.
-- 统一中简. 中繁与英文三语界面及货币显示规则. 英文下仅显示美元并支持预设地区自动转换. 替换日期输入为统一主题自定义日历选择器.
-- 界面展示版本为 0.8.8 α. 内部语义化版本号保持 0.8.8. 已安装 0.8.8 测试版的用户请先完全退出 Antigravity 客户端后执行 node cli.js install 覆盖安装. 也可运行 node cli.js watch 启用免改盘守护模式.
-- 感谢 @Lopution 提交 PR #26 贡献 Windows 下 WSL 发行版桌面端与 CLI 用量采集方案.
-- 感谢 @huron09280 提交 PR #28 贡献 macOS Apple Silicon arm64 的 Mach-O 增强. 上下文解锁与本地 API 适配.
-- 感谢 @kyrie21z 提交 PR #30 贡献按模型每日堆叠统计. 模型显示名回填. Orchestrator 与 worker 映射及旧归档清洗方案.
-- 感谢 @startips 提交 PR #31 贡献 runtime-check.js 跨平台端口路径修复与预发布测试期间问题反馈.
-- 感谢 @x1051445024 提交 PR #40 贡献 builtinAsar.createPackage 标准接口兼容与测试沙箱 ASAR 路径隔离.
+- 修复账本归属纠偏无限生成 .bak 备份问题. 仅在账本语义内容或版本号变更时备份. 单账本最多轮转保留最近 3 份. 并在升级安装时清理历史堆积仅保留最新 1 份.
+- 将账本与设置目录文件锁改为异步非阻塞机制. 支持超时控制. 空锁保护与过期或死进程锁自动回收. 消除事件循环阻塞.
+- 新增免 CDP 主进程 origin 探测复用能力. 客户端未开启调试端口时不再误报未运行. 而是提供对应系统的手动重启命令指引且绝不强杀用户进程.
+- 新增终端用量查询命令 `node cli.js usage`. 支持按日. 周. 月. 全量以及按账号与模型筛选输出. 数据与面板严格共用同一账本且全程 `readOnly` 零写入零删档.
+- 新增终端多会话实时监视 `node cli.js monitor`. 一键拉起 CLI 终端 `node cli.js launch-cli`. 以及按模型上下文预算管理 `node cli.js context-set` 与 `context-status`. 支持 Antigravity CLI 128K 与 256K Gate 3A 解锁控制.
+- 精简面板标题栏与重复卡片信息. 将语言切换. 调色入口. 检查更新与文档链接收口至配置标签页. 新增 `flow` / `fixed` / `aux` / `page` / `hide` 五档停靠模式与唤醒入口.
+- 新增顶栏配额圆环四态窗口模式切换. 支持通过右键或配置标签页在 `auto` / `5h` / `weekly` / `both` 间切换并持久化. 双窗口池下支持 5h 与 7d 双行微缩展示.
+- 将请求首字等待阶段的顶栏状态改为纯 SVG 沙漏动效. 消除每秒跳秒文字导致的横向宽度抖动.
+- 新增 Gemini 4 Neon 模型识别与 Antigravity 2.33 统一 Gemini 配额池匹配. 修复浅色主题连续热力图配色方向. 同步推荐配置复选框真实磁盘状态. 并将上下文取消归类为中性中断.
+- 内部语义化版本号为 `0.8.9-beta.1`. 界面展示为 `0.8.9 β`. 支持预发布版本号对比与测试版更新通道开关. 安装或升级前请先完全退出 Antigravity 桌面客户端后执行 `node cli.js install`.
+- 感谢 @feizaodemon 提交 PR #52 贡献 Gemini 4 Neon 支持与 2.33 统一 Gemini 配额池匹配实现.
+- 感谢 @Tswatery 提交 PR #53 与 PR #38 贡献浅色主题热力图配色修复及上下文取消中性中断归类实现.
+- 感谢 @Kisaragi-Mio-0127 提交 PR #47 修复推荐配置复选框与磁盘实际持久化状态的同步.
+- 感谢 @JYPYYy 提交 PR #35 贡献 Antigravity CLI 上下文解锁定位思路与 128K Gate 3A 机制参考.
+- 感谢 @Nymph-Beta 提交 Issue #42 与 PR #43 协助定位 macOS 2.33 无 CDP 窗口探测问题与解决方向.
 
 </details>
 
 <details id="english">
 <summary><b>English</b></summary>
 
-This release introduces multi-account usage isolation with controlled account switching. daily stacked per-model usage charts. a redesigned cumulative usage view. collapsible turn timelines with speed scoring. cross-platform enhancements. and full trilingual localization.
+This beta release focuses on storage reliability fixes. full terminal CLI usage and live session monitoring workflows. and streamlined client UI with customizable docking and quota display modes.
 
-- Added multi-account and per-account usage isolation. Historical unattributed calls remain in the unattributed ledger and are never assigned to the active account by default.
-- Added controlled manual and threshold-based automatic account switching alongside quota interval comparison. Includes debounce. cooldown. busy-generation wait. multi-window lock. and non-CDP main-process rollback protection on verification failure.
-- Added daily stacked per-model usage bars with 7-day and 30-day ranges. effort and source filters. missing model display name backfill from conversation databases. and Orchestrator plus background worker bucket normalization.
-- Unified chart bar heights and yearly bubble diameters with a continuous hybrid log-power scale to fix cross-tier shrinking. Yearly bubbles above 1B are capped at 58px with an outer glow ring.
-- Added the Cumulative Usage view featuring summary cards. a logarithmic magnitude ruler. proportional time strips. zero-usage day markers. and responsive layout below 460px.
-- Added weighted cache-read ratio telemetry. collapsible per-turn request timelines. dynamic latest-call card transitions. and TTFT plus pure-streaming speed scoring.
-- Unified Simplified Chinese. Traditional Chinese. and English UI copy plus currency display rules. English displays USD only for API estimates and converts preset regions automatically. Replaced native date inputs with a custom theme-matched calendar picker.
-- Displayed version is 0.8.8 α while internal semantic version remains 0.8.8. Users on 0.8.8 pre-release builds should fully quit Antigravity first and run node cli.js install to upgrade cleanly. You can also run node cli.js watch for patch-free background monitoring.
-- Thanks to @Lopution for PR #26 adding WSL desktop and CLI usage collection on Windows.
-- Thanks to @huron09280 for PR #28 adding macOS Apple Silicon arm64 Mach-O prompt enhancement. context unlock. and local API adaptation.
-- Thanks to @kyrie21z for PR #30 adding daily per-model stacked charts. database model label backfill. Orchestrator and worker mappings. and legacy archive cleanup.
-- Thanks to @startips for PR #31 fixing cross-platform port path resolution in runtime-check.js and reporting issues during pre-release testing.
-- Thanks to @x1051445024 for PR #40 implementing builtinAsar.createPackage compatibility and test sandbox ASAR path isolation.
+- Fixed unbounded `.bak` accumulation during ledger attribution repair. Backups now trigger only on actual ledger content or repair-version changes. retain the latest 3 copies per ledger. and prune historical backlog to the latest 1 copy on upgrade.
+- Replaced blocking lock waits with an asynchronous non-blocking file lock featuring timeout handling. empty-lock grace protection. and stale or dead-process reclamation.
+- Reused CDP-free main-process origin discovery when debugging ports are disabled in Antigravity 2.33. Reports clear manual launch instructions without killing running user processes.
+- Added `node cli.js usage` for terminal token and cost queries across day. week. month. all-time. account. and model filters. Reads the shared ledger under strict `readOnly` zero-write guarantees.
+- Added `node cli.js monitor` for live terminal session monitoring. `node cli.js launch-cli` to open external CLI sessions. and `node cli.js context-set` / `context-status` with per-model context budgets and 128K / 256K CLI Gate 3A unlock support.
+- Streamlined panel headers and redundant status cards. consolidated language switches. palette drawer. update checks. and repo links into the Settings tab. and added 5-mode docking across `flow`. `fixed`. `aux`. `page`. and `hide`.
+- Added 4-mode quota badge window switching across `auto`. `5h`. `weekly`. and `both` via right-click or Settings. displaying compact 5h/7d dual rows on dual-window pools.
+- Replaced per-second waiting text in the top bar speed badge with a pure SVG hourglass animation to eliminate horizontal jitter.
+- Added Gemini 4 Neon model matching and unified 2.33 Gemini quota pool detection. fixed light-theme heatmap polarity. synced recommended settings checkboxes with disk state. and classified context cancellations as neutral interruptions.
+- Semantic version is `0.8.9-beta.1` and display version is `0.8.9 β` with prerelease comparison and beta update channel support. Fully quit Antigravity desktop before running `node cli.js install`.
+- Thanks to @feizaodemon for PR #52 adding Gemini 4 Neon support and 2.33 unified Gemini quota pool matching.
+- Thanks to @Tswatery for PR #53 and PR #38 fixing light-theme continuous heatmap colors and classifying context cancellations as neutral interruptions.
+- Thanks to @Kisaragi-Mio-0127 for PR #47 syncing recommended settings checkboxes with actual on-disk state.
+- Thanks to @JYPYYy for PR #35 contributing Antigravity CLI context unlock analysis and 128K Gate 3A references.
+- Thanks to @Nymph-Beta for Issue #42 and PR #43 helping diagnose CDP-free window discovery on macOS 2.33.
 
 </details>
