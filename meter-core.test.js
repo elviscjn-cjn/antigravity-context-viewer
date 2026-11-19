@@ -4791,3 +4791,143 @@ test('v0.8.8 i18n/货币基础能力: 48国预设含完整 nameTw/nameEn 且无�
   assert.equal(norm.currentPeriod.periodType, 'calendar_month');
   assert.doesNotMatch(norm.currentPeriod.label, /[\u4e00-\u9fff]/);
 });
+
+test('/compact & checkpoint 核心因果判定：检查点切片、摘要调用隔离、宿主 ContextWindowUsage 优先级与超限报错自救恢复', () => {
+  const {
+    analyzeSteps,
+    measure,
+    isCheckpointNewerThanGenerator,
+    buildPostCompactSummary,
+    summarize
+  } = require('./meter-core');
+
+  const overflowErr = {
+    errorMessage: {
+      error: { shortError: 'The input token count exceeds the maximum number of tokens allowed 256000.' }
+    }
+  };
+
+  // 1. 超限报错后紧跟成功的 checkpoint -> 自动清除旧超限报错，并准确切片检查点及后续内容
+  const stepsAfterCompact = [
+    { userInput: { userResponse: 'x'.repeat(40000), media: [{ uri: 'file:///old.txt', mimeType: 'text/plain' }] } },
+    { plannerResponse: { response: 'y'.repeat(40000), thinking: 't'.repeat(10000) } },
+    overflowErr,
+    {
+      checkpoint: {
+        sessionSummary: 'Summary of prior 80K chars',
+        codeChangeSummary: 'Edited foo.js',
+        userIntent: 'Fix ring sync after compact'
+      }
+    }
+  ];
+  const s1 = analyzeSteps(stepsAfterCompact);
+  assert.equal(s1.checkpointCount, 1);
+  assert.equal(s1.lastCheckpointIndex, 3);
+  assert.equal(s1.lastCheckpointFailed, false);
+  assert.equal(s1.currentError, null, '成功的检查点应清除此前的超限错误');
+  assert.ok(s1.postCheckpoint, '应生成压缩后活跃切片');
+  assert.deepEqual(s1.postCheckpoint.mediaRefs, {}, '检查点之前的旧附件引用不应计入压缩后窗口');
+  assert.ok(s1.postCheckpoint.textTotal.chars < 200, '压缩后切片仅包含检查点摘要文本，不包含前序 80K 历史');
+  assert.ok(s1.total.chars > 80000, '全量累计统计仍完整保留整场历史');
+
+  // 2. 失败的 checkpoint (modelSummarizationFailed: true) 不清除前序超限报错
+  const stepsFailedCompact = [
+    { userInput: { userResponse: 'hello' } },
+    overflowErr,
+    { checkpoint: { sessionSummary: '', modelSummarizationFailed: true } }
+  ];
+  const sFail = analyzeSteps(stepsFailedCompact);
+  assert.equal(sFail.checkpointCount, 0);
+  assert.equal(sFail.lastCheckpointIndex, -1);
+  assert.equal(sFail.lastCheckpointFailed, true);
+  assert.ok(sFail.currentError, '摘要生成失败时必须保留前序超限错误');
+
+  // 3. 检查点之后再次发生的新错误仍正常保留
+  const sPostErr = analyzeSteps([...stepsAfterCompact, overflowErr]);
+  assert.ok(sPostErr.currentError, '检查点之后新发生的错误必须正常告警');
+
+  // 4. 因果时序判定：压缩前旧调用 (step 1) 与摘要生成调用本身 (step 3 === checkpointIndex) 均判定为压缩态
+  const preMeta = {
+    stepIndices: [1],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      usage: { inputTokens: 195000, outputTokens: 2000 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }
+  };
+  const summarizerMeta = {
+    stepIndices: [3],
+    chatModel: {
+      modelDisplayName: 'Gemini 3.8 Flash',
+      usage: { inputTokens: 197000, outputTokens: 1200 }
+    }
+  };
+  assert.equal(isCheckpointNewerThanGenerator(s1, preMeta, summarize(preMeta)), true);
+  assert.equal(isCheckpointNewerThanGenerator(s1, summarizerMeta, summarize(summarizerMeta)), true);
+
+  // 5. 本地兜底中位值 vs 宿主 ContextWindowUsage 优先级
+  const sysM = measure('System instructions '.repeat(200));
+  const defM = measure('Tool definitions '.repeat(200));
+  const localPost = buildPostCompactSummary({
+    session: s1,
+    system: sysM,
+    definitions: defM,
+    previousLatest: summarize(preMeta)
+  });
+  assert.equal(localPost.compacted, true);
+  assert.equal(localPost.status, 'compacted');
+  assert.equal(localPost.actual, null, '压缩后待校准态严禁伪造服务端实测 actual');
+  assert.equal(localPost.postCompactSource, 'local_post_checkpoint_midpoint');
+  assert.equal(localPost.budget, 256000);
+  assert.ok(localPost.postCompactEstimate > 0 && localPost.postCompactEstimate < 10000);
+  assert.equal(localPost.percent, (localPost.postCompactEstimate / 256000) * 100);
+
+  const hostPost = buildPostCompactSummary({
+    session: s1,
+    system: sysM,
+    definitions: defM,
+    previousLatest: summarize(preMeta),
+    hostContextWindowUsage: {
+      estimatedTokensUsed: 18432,
+      maxContextTokens: 256000,
+      lastStepIndex: 3,
+      estimatedAfterCompaction: true
+    }
+  });
+  assert.equal(hostPost.postCompactSource, 'host_context_window_usage');
+  assert.equal(hostPost.postCompactEstimate, 18432);
+  assert.equal(hostPost.percent, (18432 / 256000) * 100);
+
+  // 6. 检查点之后产生新对话实测 (step 5 > 3) -> 自动退出压缩态
+  const nextTurnMeta = {
+    stepIndices: [5],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      usage: { inputTokens: 19200, outputTokens: 600 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }
+  };
+  assert.equal(isCheckpointNewerThanGenerator(s1, nextTurnMeta, summarize(nextTurnMeta)), false);
+
+  // 7. 进行中 (RUNNING) 与已取消 (CANCELED) 的 checkpoint 步骤状态隔离：不提前覆盖旧检查点基线
+  const runningSteps = [
+    ...stepsAfterCompact,
+    { userInput: { userResponse: '二次对话输入' } },
+    { plannerResponse: { modifiedResponse: '二次对话回复' } },
+    { userInput: { userResponse: '/compact' } },
+    { status: 'CORTEX_STEP_STATUS_RUNNING', checkpoint: { sessionSummary: '' } }
+  ];
+  const sRunning = analyzeSteps(runningSteps);
+  assert.equal(sRunning.lastCheckpointIndex, 3, 'RUNNING 状态的摘要检查点未落盘前不得提前推进 lastCheckpointIndex');
+  assert.equal(sRunning.inProgressCheckpointIndex, 7, '应准确暴露进行中的 checkpoint 步序');
+  assert.equal(sRunning.checkpointCount, 1);
+
+  const canceledSteps = [
+    ...stepsAfterCompact,
+    { status: 'CORTEX_STEP_STATUS_CANCELED', checkpoint: { sessionSummary: '' } }
+  ];
+  const sCanceled = analyzeSteps(canceledSteps);
+  assert.equal(sCanceled.lastCheckpointIndex, 3);
+  assert.equal(sCanceled.lastCheckpointFailed, true);
+  assert.equal(sCanceled.inProgressCheckpointIndex, -1);
+});

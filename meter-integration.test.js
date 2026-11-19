@@ -11,7 +11,8 @@ const {
   loadCustomPlanSettings,
   savePluginSettings,
   getPluginSettings,
-  launchCliSession
+  launchCliSession,
+  collect
 } = require('./meter-collector');
 
 const rendererSource = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
@@ -388,5 +389,225 @@ test('单元测试：BaseWindow / WebContentsView 架构适配与 WebContents �
   // 模拟窗口在挂载完成前被关闭
   if (typeof closedListener === 'function') {
     assert.doesNotThrow(() => closedListener(), '窗口关闭时清理探测定时器绝不抛错');
+  }
+});
+
+// ============================================================================
+// 12. 集成测试：collect() 在 /compact 后（无摘要调用 / 含摘要调用 / 下一轮新回复）端到端状态演进
+// ============================================================================
+test('集成测试：collect() 在 /compact 检查点后隔离压缩前大账单与摘要器调用，并在新消息后无缝恢复实测', async () => {
+  const http = require('node:http');
+  const cascadeId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  let mockSteps = [];
+  let mockGeneratorMetadata = [];
+
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<html><script>window.__APP_CONFIG__ = {"csrfToken":"mock-csrf-compact"};</script></html>');
+      return;
+    }
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.url.endsWith('/GetCascadeTrajectory')) {
+        res.end(JSON.stringify({
+          numTotalSteps: mockSteps.length,
+          numTotalGeneratorMetadata: mockGeneratorMetadata.length,
+          trajectory: {
+            steps: mockSteps,
+            generatorMetadata: mockGeneratorMetadata
+          }
+        }));
+      } else if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+        res.end(JSON.stringify({ generatorMetadata: mockGeneratorMetadata }));
+      } else if (req.url.endsWith('/GetUserStatus')) {
+        res.end(JSON.stringify({
+          userStatus: {
+            cascadeModelConfigs: [
+              { label: 'Gemini 4 Hydrogen (High)', modelOrAlias: { model: 'MODEL_GOOGLE_GEMINI_4_HYDROGEN_HIGH' }, maxTokens: 1048576 }
+            ]
+          }
+        }));
+      } else {
+        res.end(JSON.stringify({}));
+      }
+    });
+  });
+
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const origin = `http://127.0.0.1:${port}`;
+
+  try {
+    const bigPreCompactText = '长对话历史内容 '.repeat(8000);
+    const baseSteps = [
+      { userInput: { userResponse: bigPreCompactText } },
+      { plannerResponse: { modifiedResponse: bigPreCompactText, thinking: '详细推理 '.repeat(2000) } },
+      { userInput: { userResponse: '/compact' } },
+      {
+        checkpoint: {
+          sessionSummary: '已完成前序模块重构，待编写集成测试。',
+          codeChangeSummary: 'Modified meter-core.js and meter-collector.js.',
+          userIntent: '修复 /compact 后上下文圆环不及时回落的问题。',
+          memorySummary: '遵循 AGENTS.md 构建与测试规范。',
+          modelSummarizationFailed: false
+        }
+      }
+    ];
+    const preCompactTurnMeta = {
+      stepIndices: [1],
+      chatModel: {
+        model: 'MODEL_GOOGLE_GEMINI_4_HYDROGEN_HIGH',
+        modelDisplayName: 'Gemini 4 Hydrogen (High)',
+        systemPrompt: 'You are Antigravity assistant.',
+        tools: [{ name: 'read_file', description: 'Read file content from workspace' }],
+        usage: { inputTokens: 190000, outputTokens: 2000, cacheReadInputTokens: 150000 },
+        chatStartMetadata: {
+          startStepIndex: 1,
+          contextWindowMetadata: { estimatedTokensUsed: 189000, maxContextTokens: 256000 }
+        },
+        timeToFirstToken: '1.2s',
+        streamingDuration: '4.0s'
+      }
+    };
+
+    // 形态 A：steps 已写入 checkpoint (#3)，generatorMetadata 仍停留在压缩前轮次 (#1)
+    mockSteps = baseSteps;
+    mockGeneratorMetadata = [preCompactTurnMeta];
+    const resA = await collect(origin, cascadeId, { force: true });
+    assert.equal(resA.session.checkpointCount, 1);
+    assert.equal(resA.session.lastCheckpointIndex, 3);
+    assert.equal(resA.latest.compacted, true, '检查点晚于最近模型调用时必须进入 compacted 状态');
+    assert.equal(resA.latest.status, 'compacted');
+    assert.equal(resA.latest.actual, null, '压缩后尚未发新消息，actual 必须严格为 null');
+    assert.equal(resA.latest.budget, 256000, '应继承当前会话已确认的上下文预算');
+    assert.ok(resA.latest.postCompactEstimate > 0 && resA.latest.postCompactEstimate < 5000, '压缩后预估应回落至摘要切片量级而非 192K');
+    assert.ok(resA.latest.percent > 0 && resA.latest.percent < 5, '压缩后百分比应回落至低位');
+    assert.ok(resA.session.total.high > 40000, '全量历史抽屉仍完整保留压缩前累计字数与估算区间');
+
+    // 形态 B：/compact 内部摘要器调用写入了一条 stepIndices=[3]（等于 checkpoint 步序）、inputTokens=190000 且无 tools/budget 的记录
+    const summarizerMeta = {
+      stepIndices: [3],
+      chatModel: {
+        model: 'MODEL_FLASH_SUMMARIZER_INTERNAL',
+        modelDisplayName: 'Internal Summarizer',
+        tools: [],
+        usage: { inputTokens: 190000, outputTokens: 1500 }
+      }
+    };
+    mockGeneratorMetadata = [preCompactTurnMeta, summarizerMeta];
+    const resB = await collect(origin, cascadeId, { force: true });
+    assert.equal(resB.latest.compacted, true, '摘要器调用（stepIndices===lastCheckpointIndex）绝不能把圆环拉回 191.5K');
+    assert.equal(resB.latest.actual, null);
+    assert.equal(resB.latest.budget, 256000, '摘要器缺失 budget 时必须回溯继承前序对话轮次的 256K 预算');
+    assert.equal(resB.latest.model, 'Gemini 4 Hydrogen (High)', '当前活跃对话模型名称不应被内部摘要器覆盖');
+    assert.ok(resB.session.groups.definitions.chars > 10, '工具定义开销应从真实对话轮次回溯保留而非置空');
+    assert.equal(resB.latest.postCompactEstimate, resA.latest.postCompactEstimate, '摘要器记录不影响压缩后活跃切片预估值');
+    assert.equal(resB.recentGeneratorCalls.length, 2, '全局 Token 账本与调用流水仍完整保留摘要器真实消耗');
+
+    // 形态 C：压缩后发送新消息并获得新回复（stepIndices=[5] > lastCheckpointIndex）
+    mockSteps = [
+      ...baseSteps,
+      { userInput: { userResponse: '继续下一步' } },
+      { plannerResponse: { modifiedResponse: '好的，已完成验证。' } }
+    ];
+    mockGeneratorMetadata = [
+      preCompactTurnMeta,
+      summarizerMeta,
+      {
+        stepIndices: [5],
+        chatModel: {
+          model: 'MODEL_GOOGLE_GEMINI_4_HYDROGEN_HIGH',
+          modelDisplayName: 'Gemini 4 Hydrogen (High)',
+          usage: { inputTokens: 18500, outputTokens: 420 },
+          chatStartMetadata: {
+            startStepIndex: 5,
+            contextWindowMetadata: { estimatedTokensUsed: 18200, maxContextTokens: 256000 }
+          }
+        }
+      }
+    ];
+    const resC = await collect(origin, cascadeId, { force: true });
+    assert.equal(Boolean(resC.latest.compacted), false, '压缩后新消息返回实测账单后应退出 compacted 预估态');
+    assert.equal(resC.latest.status, 'reported');
+    assert.equal(resC.latest.actual, 18920);
+    assert.equal(resC.latest.budget, 256000);
+
+    // 形态 D：在途旧扫描（落盘前启动）与压缩完成瞬间 force=true 新扫描并发时，force 不得复用旧 pending，且慢速旧扫描不得倒灌覆盖新缓存
+    let holdFirstTrajectoryResolve = null;
+    let trajectoryCallSeq = 0;
+    const origListeners = server.listeners('request').slice();
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      let raw = '';
+      req.on('data', c => { raw += c; });
+      req.on('end', async () => {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<html><script>window.__APP_CONFIG__ = {"csrfToken":"mock-csrf-compact"};</script></html>');
+          return;
+        }
+        if (req.url.endsWith('/GetCascadeTrajectory')) {
+          const myCall = ++trajectoryCallSeq;
+          if (myCall === 1) {
+            const snapSteps = mockSteps.slice();
+            const snapGenLen = mockGeneratorMetadata.length;
+            await new Promise(r => { holdFirstTrajectoryResolve = r; });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              trajectory: { steps: snapSteps },
+              numTotalSteps: snapSteps.length,
+              numTotalGeneratorMetadata: snapGenLen
+            }));
+            return;
+          }
+        }
+        // 其余请求委托回原处理器逻辑
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (req.url.endsWith('/GetCascadeTrajectory')) {
+          res.end(JSON.stringify({
+            trajectory: { steps: mockSteps },
+            numTotalSteps: mockSteps.length,
+            numTotalGeneratorMetadata: mockGeneratorMetadata.length
+          }));
+        } else if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+          res.end(JSON.stringify({ generatorMetadata: mockGeneratorMetadata }));
+        } else if (req.url.endsWith('/GetUserStatus')) {
+          res.end(JSON.stringify({ userStatus: { cascadeModelConfigs: [] } }));
+        } else {
+          res.end('{}');
+        }
+      });
+    });
+
+    // 1) 启动一个在检查点落盘前的慢扫描（无 force，使用无缓存的新会话 ID）
+    const cascadeIdRace = 'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const staleInFlightPromise = collect(origin, cascadeIdRace, { force: false });
+    await new Promise(r => setTimeout(r, 30));
+
+    // 2) 此时后端落盘新的二次压缩检查点，前端立即触发 collect(..., { force: true })
+    mockSteps = [
+      ...mockSteps,
+      { userInput: { userResponse: '/compact' } },
+      { checkpoint: { sessionSummary: '二次压缩后的精简摘要', modelSummarizationFailed: false } }
+    ];
+    const freshForcedPromise = collect(origin, cascadeIdRace, { force: true });
+    const freshRes = await freshForcedPromise;
+    assert.equal(freshRes.latest.compacted, true, 'force=true 必须穿透在途旧扫描并立即返回新检查点的压缩预估态');
+    assert.equal(freshRes.session.lastCheckpointIndex, 7);
+
+    // 3) 放行慢速旧扫描结束，验证其不会倒灌覆盖缓存中的新压缩快照
+    if (holdFirstTrajectoryResolve) holdFirstTrajectoryResolve();
+    await staleInFlightPromise;
+    const cachedAfterStale = await collect(origin, cascadeIdRace, { force: false });
+    assert.equal(cachedAfterStale.latest.compacted, true, '较晚完成的旧扫描绝不能覆盖 force 扫描写入的新检查点缓存');
+    assert.equal(cachedAfterStale.session.lastCheckpointIndex, 7);
+
+    server.removeAllListeners('request');
+    for (const fn of origListeners) server.on('request', fn);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
   }
 });

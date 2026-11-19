@@ -732,26 +732,42 @@
         accumulateContent(value[key], acc);
       }
     }
+    let checkpointCount = 0, lastCheckpointIndex = -1, lastCheckpointFailed = false, inProgressCheckpointIndex = -1, lastModelStepAt = -1;
+    let postCheckpointText = empty();
+    let postCheckpointMediaRefs = new Map();
+    function recordPostCheckpointMedia(uriKey) {
+      if (lastCheckpointIndex >= 0 && uriKey) {
+        postCheckpointMediaRefs.set(uriKey, (postCheckpointMediaRefs.get(uriKey) || 0) + 1);
+      }
+    }
     function attachments(value, source, withinStep = new Set()) {
       if (!value || typeof value !== 'object') return;
       if (Array.isArray(value)) { for (const v of value) attachments(v, source, withinStep); return; }
       if (value.uri && (value.mimeType || value.inlineData !== undefined)) {
         const key = String(value.uri);
-        if (!withinStep.has(key)) { withinStep.add(key); const prior = media.get(key); if (prior) prior.references++; else media.set(key, { uri: key, name: String(value.description || key.split(/[\\/]/).pop()), mime: String(value.mimeType || ''), references: 1, source }); }
+        if (!withinStep.has(key)) {
+          withinStep.add(key);
+          const prior = media.get(key);
+          if (prior) prior.references++;
+          else media.set(key, { uri: key, name: String(value.description || key.split(/[\\/]/).pop()), mime: String(value.mimeType || ''), references: 1, source });
+          recordPostCheckpointMedia(key);
+        }
       } else if (value.inlineData && !value.uri) {
         const key = `inline-${media.size}`;
         const rawData = typeof value.inlineData === 'string' ? value.inlineData : (value.inlineData.data || '');
         const mime = String(value.mimeType || value.inlineData.mimeType || '');
         if (!withinStep.has(key)) {
           withinStep.add(key);
+          const inlineUri = `inline:${key}`;
           media.set(key, {
-            uri: `inline:${key}`,
+            uri: inlineUri,
             inlineData: rawData,
             name: String(value.description || (mime.startsWith('image/') ? '内嵌图像' : '内嵌附件')),
             mime,
             references: 1,
             source
           });
+          recordPostCheckpointMedia(inlineUri);
         }
       }
       for (const [key, v] of Object.entries(value)) if (!skip.has(key) || key === 'media') attachments(v, source, withinStep);
@@ -761,19 +777,48 @@
       if (s.userInput) {
         userMessages++; lastUserAt = i;
         const u = s.userInput;
-        add(groups.user, measure(u.userResponse || (u.items || []).map(item => item.text || '').join('\n')));
+        const uMeasured = measure(u.userResponse || (u.items || []).map(item => item.text || '').join('\n'));
+        add(groups.user, uMeasured);
+        if (lastCheckpointIndex >= 0) add(postCheckpointText, uMeasured);
         // Canonical media and item inline previews represent the same upload.
         attachments(u.media?.length ? u.media : u.items, 'user');
       } else if (s.plannerResponse) {
-        assistantMessages++; lastAssistantAt = i;
-        add(groups.assistant, measure(s.plannerResponse.modifiedResponse || s.plannerResponse.response || ''));
-        add(groups.thinking, measure(s.plannerResponse.thinking || ''));
+        assistantMessages++; lastAssistantAt = i; lastModelStepAt = i;
+        const aMeasured = measure(s.plannerResponse.modifiedResponse || s.plannerResponse.response || '');
+        const tMeasured = measure(s.plannerResponse.thinking || '');
+        add(groups.assistant, aMeasured);
+        add(groups.thinking, tMeasured);
+        if (lastCheckpointIndex >= 0) {
+          add(postCheckpointText, aMeasured);
+          add(postCheckpointText, tMeasured);
+        }
         attachments(s.plannerResponse, 'assistant');
       } else if (s.errorMessage) {
         const e = s.errorMessage.error || {};
         latestStepError = { index: i, text: e.modelErrorMessage || e.shortError || e.fullError || '', id: e.errorId || '' };
       } else if (s.checkpoint) {
-        add(groups.summaries, measure(s.checkpoint.sessionSummary || ''));
+        const cp = s.checkpoint;
+        const rawStepStatus = String(s.status || s.metadata?.status || '').trim().toUpperCase();
+        const isCpInProgress = Boolean(rawStepStatus && /(?:^|_)(?:RUNNING|PENDING|GENERATING|IN_PROGRESS|STREAMING|QUEUED)$/.test(rawStepStatus));
+        const isCpStepFailed = Boolean(rawStepStatus && /(?:^|_)(?:ERROR|FAILED|CANCELED|CANCELLED|ABORTED)$/.test(rawStepStatus));
+        const cpText = [cp.sessionSummary, cp.codeChangeSummary, cp.userIntent, cp.memorySummary]
+          .filter(v => typeof v === 'string' && v.length > 0)
+          .join('\n');
+        const cpMeasured = measure(cpText);
+        add(groups.summaries, cpMeasured);
+        if (isCpInProgress) {
+          inProgressCheckpointIndex = i;
+        } else if (cp.modelSummarizationFailed === true || isCpStepFailed) {
+          lastCheckpointFailed = true;
+          inProgressCheckpointIndex = -1;
+        } else {
+          checkpointCount++;
+          lastCheckpointIndex = i;
+          lastCheckpointFailed = false;
+          inProgressCheckpointIndex = -1;
+          postCheckpointText = { ...cpMeasured };
+          postCheckpointMediaRefs = new Map();
+        }
       } else {
         toolAcc.chars = 0; toolAcc.bytes = 0; toolAcc.cjk = 0;
         const stepKeys = Object.keys(s);
@@ -795,19 +840,185 @@
           }
         }
         if (toolAcc.chars > 0 || toolAcc.bytes > 0) {
+          lastModelStepAt = i;
           const middle = (toolAcc.chars - toolAcc.cjk) / 4 + toolAcc.cjk * 1.2;
-          add(groups.tools, {
+          const toolMeasured = {
             chars: toolAcc.chars,
             bytes: toolAcc.bytes,
             low: Math.ceil(middle * .7),
             high: Math.ceil(Math.max(middle * 1.6, toolAcc.bytes / 2))
-          });
+          };
+          add(groups.tools, toolMeasured);
+          if (lastCheckpointIndex >= 0) add(postCheckpointText, toolMeasured);
         }
       }
     }
     const total = Object.values(groups).reduce(add, empty());
-    const currentError = latestStepError && latestStepError.index > Math.max(lastUserAt, lastAssistantAt) ? latestStepError : null;
-    return { groups, total, media: [...media.values()], steps: steps.length, userMessages, assistantMessages, currentError };
+    const currentError = latestStepError && latestStepError.index > Math.max(lastUserAt, lastAssistantAt, lastCheckpointIndex)
+      ? latestStepError
+      : null;
+    const postCheckpoint = lastCheckpointIndex >= 0 ? {
+      checkpointIndex: lastCheckpointIndex,
+      textTotal: postCheckpointText,
+      mediaRefs: Object.fromEntries(postCheckpointMediaRefs)
+    } : null;
+    return {
+      groups,
+      total,
+      media: [...media.values()],
+      steps: steps.length,
+      userMessages,
+      assistantMessages,
+      lastUserAt,
+      lastAssistantAt,
+      lastModelStepAt,
+      checkpointCount,
+      lastCheckpointIndex,
+      lastCheckpointFailed,
+      inProgressCheckpointIndex,
+      postCheckpoint,
+      currentError
+    };
+  }
+
+  /**
+   * 提取单条 CortexStepGeneratorMetadata 关联的最大步序号；缺失时返回 -1
+   */
+  function extractGeneratorMaxStep(metadata) {
+    if (!metadata || typeof metadata !== 'object') return -1;
+    let maxStep = -1;
+    if (Array.isArray(metadata.stepIndices)) {
+      for (const raw of metadata.stepIndices) {
+        const n = Number(raw);
+        if (Number.isInteger(n) && n >= 0 && n > maxStep) maxStep = n;
+      }
+    }
+    for (const cand of [metadata.stepIndex, metadata.step_index, metadata.chatModel?.chatStartMetadata?.startStepIndex]) {
+      if (cand !== undefined && cand !== null && cand !== '') {
+        const n = Number(cand);
+        if (Number.isInteger(n) && n >= 0 && n > maxStep) maxStep = n;
+      }
+    }
+    return maxStep;
+  }
+
+  /**
+   * 判定会话最新成功的压缩检查点是否晚于（或恰好对应）最近一次模型调用，
+   * 即当前是否处于“已完成压缩、尚未产生压缩后新对话实测账单”状态。
+   */
+  function isCheckpointNewerThanGenerator(session, latestGeneratorMeta = null, summarizedLatest = null) {
+    const cpIdx = Number.isInteger(session?.lastCheckpointIndex) ? session.lastCheckpointIndex : -1;
+    if (cpIdx < 0) return false;
+    if (!latestGeneratorMeta) return true;
+    const genMaxStep = extractGeneratorMaxStep(latestGeneratorMeta);
+    if (genMaxStep >= 0) {
+      if (genMaxStep <= cpIdx) return true;
+      // 步序已越过检查点，但新推理尚在流式首包前（无实测 actual 且无错误）时暂保压缩态防闪烁
+      const hasPostCompactOutcome = Boolean(
+        summarizedLatest && (summarizedLatest.actual !== null || Boolean(summarizedLatest.error))
+      );
+      return !hasPostCompactOutcome;
+    }
+    // 元数据未携带 stepIndices 时，回退核对轨迹中检查点之后是否出现过任何模型响应或工具步骤
+    const lastModelStep = Number.isInteger(session?.lastModelStepAt)
+      ? session.lastModelStepAt
+      : (Number.isInteger(session?.lastAssistantAt) ? session.lastAssistantAt : -1);
+    return lastModelStep <= cpIdx;
+  }
+
+  /**
+   * 构建压缩后（Post-Compact）上下文窗口状态快照：
+   * - 优先采信宿主当前步序对应的 ContextWindowUsage.estimatedTokensUsed；
+   * - 本地兜底采用 [system + definitions + 最新 checkpoint 摘要 + 检查点后步骤与附件] 的区间中位值；
+   * - actual 严格保持 null（不冒充服务端返回账单），同时提供 postCompactEstimate 与 percent 驱动圆环回落。
+   */
+  function buildPostCompactSummary(options = {}) {
+    const session = options.session || null;
+    const prev = options.previousLatest || null;
+    const hCwu = options.hostContextWindowUsage || null;
+    const cpIdx = Number.isInteger(session?.lastCheckpointIndex) ? session.lastCheckpointIndex : -1;
+
+    let activeRange = null;
+    if (session?.postCompactActiveTotal) {
+      activeRange = { ...session.postCompactActiveTotal };
+    } else if (session?.postCheckpoint?.textTotal) {
+      activeRange = add(
+        add(
+          add({ ...session.postCheckpoint.textTotal }, options.postCheckpointAttachmentTotal || empty()),
+          options.system || session?.groups?.system || empty()
+        ),
+        options.definitions || session?.groups?.definitions || empty()
+      );
+    }
+
+    let localMidpoint = null;
+    if (activeRange) {
+      const low = Number(activeRange.low) || 0;
+      const high = Number(activeRange.high) || 0;
+      const mid = Math.round((low + high) / 2);
+      localMidpoint = (activeRange.chars > 0 && mid <= 0) ? 1 : mid;
+    }
+
+    const hostUsed = number(hCwu?.estimatedTokensUsed ?? hCwu?.estimated_tokens_used);
+    const hostStep = Number.isInteger(Number(hCwu?.lastStepIndex ?? hCwu?.last_step_index))
+      ? Number(hCwu.lastStepIndex ?? hCwu.last_step_index)
+      : -1;
+    const hostAfterCompact = Boolean(hCwu?.estimatedAfterCompaction ?? hCwu?.estimated_after_compaction);
+    const canUseHostUsage = hostUsed !== null && hostUsed > 0 && (
+      hostAfterCompact || (cpIdx >= 0 && hostStep >= cpIdx)
+    );
+
+    const estimatedUsed = canUseHostUsage
+      ? Math.round(hostUsed)
+      : localMidpoint;
+    const estimateSource = canUseHostUsage
+      ? 'host_context_window_usage'
+      : (localMidpoint !== null ? 'local_post_checkpoint_midpoint' : 'unknown');
+
+    const hostBudget = number(hCwu?.maxContextTokens ?? hCwu?.max_context_tokens);
+    const budget = (hostBudget && hostBudget > 0)
+      ? hostBudget
+      : ((prev?.budget && prev.budget > 0)
+        ? prev.budget
+        : (number(options.defaultBudgetFallback) > 0 ? number(options.defaultBudgetFallback) : null));
+
+    const percentVal = (estimatedUsed !== null && budget && budget > 0)
+      ? (estimatedUsed / budget * 100)
+      : null;
+
+    const effectiveCpIdx = Math.max(cpIdx, hostAfterCompact ? hostStep : -1);
+    const resolvedCpIndex = effectiveCpIdx >= 0 ? effectiveCpIdx : null;
+    const resolvedCpCount = Number(session?.checkpointCount) > 0
+      ? Number(session.checkpointCount) + (cpIdx >= 0 && hostAfterCompact && hostStep > cpIdx ? 1 : 0)
+      : (hostAfterCompact || resolvedCpIndex !== null ? 1 : 0);
+
+    return {
+      used: estimatedUsed,
+      actual: null,
+      estimate: estimatedUsed,
+      postCompactEstimate: estimatedUsed,
+      postCompactRange: activeRange,
+      postCompactSource: estimateSource,
+      compacted: true,
+      checkpointIndex: resolvedCpIndex,
+      checkpointCount: resolvedCpCount,
+      budget: budget && budget > 0 ? budget : null,
+      serviceLimit: null,
+      exceeded: false,
+      network: false,
+      error: '',
+      errorClassification: { kind: 'none' },
+      estimated: true,
+      input: null,
+      cached: 0,
+      output: null,
+      percent: percentVal,
+      model: prev?.model || '',
+      modelId: prev?.modelId || null,
+      modelRaw: prev?.modelRaw || '',
+      status: 'compacted',
+      speed: prev?.speed || null
+    };
   }
 
   // 官方 Developer API Standard 公开费率表 (USD / 百万 Token)
@@ -7045,6 +7256,9 @@
     add,
     empty,
     analyzeSteps,
+    extractGeneratorMaxStep,
+    isCheckpointNewerThanGenerator,
+    buildPostCompactSummary,
     parseDurationSec,
     GEMINI_PRICING_TABLE,
     SUBSCRIPTION_ACQUISITION_PRESETS,

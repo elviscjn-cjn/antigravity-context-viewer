@@ -243,6 +243,19 @@
     :host([data-occupancy="danger"]) .ring-fill{
       stroke:var(--ag-ring-danger);
     }
+    @keyframes agCompactRingPulse{
+      0%,100%{opacity:1}
+      50%{opacity:0.36}
+    }
+    :host([data-compacting="true"]) .ring-fill{
+      animation:agCompactRingPulse 1.2s ease-in-out infinite;
+    }
+    :host([data-compacting="true"]) #badge-pct-val{
+      color:#60a5fa;
+    }
+    :host([data-theme="light"][data-compacting="true"]) #badge-pct-val{
+      color:#2563eb;
+    }
 
     /* 单元 1B: 模型额度圆环入口 */
     #badge-quota.ag-unit-quota{
