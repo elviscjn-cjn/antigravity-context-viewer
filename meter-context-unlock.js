@@ -74,6 +74,25 @@ const CLAMP_256K_X64 = Buffer.from('81fa00e80300be00e803000f42f2', 'hex');
 const PATCH_256K_X64 = Buffer.concat([Buffer.from('89d6', 'hex'), Buffer.alloc(12, 0x90)]);
 const DEF_ORIG_X64 = Buffer.from('c7400c00e80300', 'hex'); // mov dword [rax+0xc], 256000 (7B)
 const DEF_PREFIX_X64 = Buffer.from('c7400c', 'hex');
+// 已知 x86-64 Gate 3A clamp 寄存器与原版上限变体表：
+// - language_server.exe: cmp edx, 256000; mov esi, 256000; cmovb esi, edx
+// - agy.exe CLI:         cmp ecx, 128000; mov edx, 128000; cmovb edx, ecx
+const X64_CLAMP_VARIANTS = [
+  {
+    id: 'edx_esi_256k',
+    origLimit: 256000,
+    origBuf: CLAMP_256K_X64,
+    dynBuf: PATCH_256K_X64,
+    constOpcode: 0xbe // mov esi, imm32
+  },
+  {
+    id: 'ecx_edx_128k',
+    origLimit: 128000,
+    origBuf: Buffer.from('81f900f40100ba00f401000f42d1', 'hex'),
+    dynBuf: Buffer.concat([Buffer.from('89ca', 'hex'), Buffer.alloc(12, 0x90)]), // mov edx, ecx + 12 NOP
+    constOpcode: 0xba // mov edx, imm32
+  }
+];
 // populateContextWindowMetadata 前端显示上限门禁 (20B, PR #4 cli_serializer_max_ctx)
 const SERIALIZER_STOCK_X64 = Buffer.from('4889442470488b8c24a80100008908b830000000', 'hex');
 const SERIALIZER_HEAD_X64 = Buffer.from('4889442470c700', 'hex');
@@ -129,9 +148,25 @@ function decodeArm64BlTarget(instr, pcVA) {
   return pcVA + BigInt(imm26 * 4);
 }
 
-function buildClampConstX64(limitTokens) {
+/** 根据变体 ID 或 gate3a 对象查找对应的 x86-64 clamp 指令模板 */
+function findClampVariant(variantOrGate3a) {
+  const variantId = typeof variantOrGate3a === 'string'
+    ? variantOrGate3a
+    : variantOrGate3a?.clampVariant;
+  return X64_CLAMP_VARIANTS.find((v) => v.id === variantId) || X64_CLAMP_VARIANTS[0];
+}
+
+function buildClampOrigX64(variantOrGate3a) {
+  return findClampVariant(variantOrGate3a).origBuf;
+}
+
+function buildClampDynX64(variantOrGate3a) {
+  return findClampVariant(variantOrGate3a).dynBuf;
+}
+
+function buildClampConstX64(limitTokens, variantOrGate3a) {
   const out = Buffer.alloc(14, 0x90);
-  out[0] = 0xbe; // mov esi, imm32
+  out[0] = findClampVariant(variantOrGate3a).constOpcode;
   out.writeUInt32LE(limitTokens >>> 0, 1);
   return out;
 }
@@ -261,6 +296,29 @@ function detectTargetBinary(customPath) {
     if (fs.existsSync(p)) return p;
   }
   return null;
+}
+
+/**
+ * 探测本机独立 Antigravity CLI (agy) 原生可执行文件路径
+ */
+function detectCliBinary(customPath, options = {}) {
+  if (customPath) {
+    const resolved = path.resolve(customPath);
+    if (fs.existsSync(resolved)) return resolved;
+    throw new Error(`指定的目标文件不存在: ${customPath}`);
+  }
+  const { resolveCliExecutable } = require('./meter-cli-launcher');
+  const res = resolveCliExecutable(null, options);
+  if (!res || !res.ok) return null;
+  let candidate = res.exePath || res.cliPath;
+  if (!candidate) return null;
+  const lower = String(candidate).toLowerCase();
+  if (lower.endsWith('.cmd') || lower.endsWith('.bat')) {
+    const sib = path.join(path.dirname(candidate), 'agy.exe');
+    if (fs.existsSync(sib)) candidate = sib;
+    else return null;
+  }
+  return fs.existsSync(candidate) ? path.resolve(candidate) : null;
 }
 
 /**
@@ -573,23 +631,45 @@ function checkGate3A(buf, textOff, sym, arch, options = {}) {
     };
   }
 
-  // x86-64: 在 utils.GetCheckpointConfig 函数体内搜寻所有 CLAMP 候选
+  // x86-64: 在 utils.GetCheckpointConfig 函数体内搜寻所有 CLAMP 候选（兼容 256K edx/esi 与 agy 128K ecx/edx）
   const clampHits = [];
   for (let i = 0; i <= body.length - 14; i++) {
     const slice = body.subarray(i, i + 14);
-    if (slice.equals(CLAMP_256K_X64)) {
-      clampHits.push({ state: 'ORIG', mode: 'default', limit: DEFAULT_CHECKPOINT_TOKENS, offset: fnOff + i });
-    } else if (slice.equals(PATCH_256K_X64)) {
-      clampHits.push({ state: 'DYN', mode: 'dynamic', limit: null, offset: fnOff + i });
-    } else if (slice[0] === 0xbe) {
-      let allNops = true;
-      for (let j = 5; j < 14; j++) {
-        if (slice[j] !== 0x90) { allNops = false; break; }
+    for (const variant of X64_CLAMP_VARIANTS) {
+      if (slice.equals(variant.origBuf)) {
+        clampHits.push({
+          state: 'ORIG',
+          mode: 'default',
+          limit: variant.origLimit,
+          origLimit: variant.origLimit,
+          clampVariant: variant.id,
+          offset: fnOff + i
+        });
+        break;
       }
-      if (allNops) {
+      if (slice.equals(variant.dynBuf)) {
+        clampHits.push({
+          state: 'DYN',
+          mode: 'dynamic',
+          limit: null,
+          origLimit: variant.origLimit,
+          clampVariant: variant.id,
+          offset: fnOff + i
+        });
+        break;
+      }
+      if (slice[0] === variant.constOpcode && slice.subarray(5, 14).every((b) => b === 0x90)) {
         const imm = slice.readUInt32LE(1);
         if (imm >= 4096 && imm <= 16 * 1024 * 1024) {
-          clampHits.push({ state: 'CONST', mode: 'fixed', limit: imm, offset: fnOff + i });
+          clampHits.push({
+            state: 'CONST',
+            mode: 'fixed',
+            limit: imm,
+            origLimit: variant.origLimit,
+            clampVariant: variant.id,
+            offset: fnOff + i
+          });
+          break;
         }
       }
     }
@@ -695,11 +775,14 @@ function checkGate3A(buf, textOff, sym, arch, options = {}) {
   }
 
   const hasDefaultSite = Boolean(chosenDef);
+  const origLimit = chosenClamp.origLimit || DEFAULT_CHECKPOINT_TOKENS;
   const baseInfo = {
     offset: chosenClamp.offset,
     length: 14,
     mode: chosenClamp.mode,
     limit: chosenClamp.limit,
+    origLimit,
+    clampVariant: chosenClamp.clampVariant || 'edx_esi_256k',
     clampState: chosenClamp.state,
     defaultOffset: chosenDef ? chosenDef.offset : null,
     defaultLength: chosenDef ? 7 : 0,
@@ -713,7 +796,7 @@ function checkGate3A(buf, textOff, sym, arch, options = {}) {
   // 一致性验证：若 clamp 与 default 状态矛盾，必须报告 partial 状态，禁止盲目覆盖
   if (hasDefaultSite) {
     if (chosenClamp.state === 'ORIG' && chosenDef.state !== 'ORIG') {
-      return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp 为官方默认 (256,000)，但 default 站点为 ${chosenDef.limit.toLocaleString('en-US')}` };
+      return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp 为官方默认 (${origLimit.toLocaleString('en-US')})，但 default 站点为 ${chosenDef.limit.toLocaleString('en-US')}` };
     }
     if (chosenClamp.state === 'DYN' && chosenDef.state !== 'ORIG') {
       return { ...baseInfo, status: 'partial', reason: `Gate 3A 部分匹配：clamp 为动态透传 (DYN)，但 default 站点未处于官方默认值 (实测 ${chosenDef.limit.toLocaleString('en-US')})` };
@@ -1545,6 +1628,12 @@ function buildAnalysisResult({
   };
 }
 
+function resolveBinaryModeLabel(funcs, targetPath) {
+  const isServerOnly = (!funcs[FUNC_OFFERS] && !funcs[FUNC_STORE_CW]);
+  const isAgyCliName = Boolean(targetPath && /^agy(\.exe)?$/i.test(path.basename(String(targetPath))));
+  return (isServerOnly && !isAgyCliName) ? 'standalone language_server' : 'agy CLI';
+}
+
 const unlockStaticCache = new Map();
 const unlockTargetWriteQueues = new Map();
 
@@ -1721,8 +1810,7 @@ async function analyzeBinaryAsync(filePath, options = {}) {
     }
 
     const { funcs, totalSymbols } = funcsData;
-    const isServerOnly = (!funcs[FUNC_OFFERS] && !funcs[FUNC_STORE_CW]);
-    const mode = isServerOnly ? 'standalone language_server' : 'agy CLI';
+    const mode = resolveBinaryModeLabel(funcs, target);
 
     const symCheckpoint = funcs[FUNC_CHECKPOINT];
     const symExp = funcs[FUNC_EXP_CHECKPOINT];
@@ -1857,8 +1945,7 @@ function analyzeBinary(filePath, options = {}) {
   }
 
   const { funcs, totalSymbols } = funcsData;
-  const isServerOnly = (!funcs[FUNC_OFFERS] && !funcs[FUNC_STORE_CW]);
-  const mode = isServerOnly ? 'standalone language_server' : 'agy CLI';
+  const mode = resolveBinaryModeLabel(funcs, target);
 
   const symCheckpoint = funcs[FUNC_CHECKPOINT];
   const symExp = funcs[FUNC_EXP_CHECKPOINT];
@@ -2186,7 +2273,7 @@ function applyUnlock(options = {}) {
       alreadyRestored: true,
       alreadyMatched: true,
       configuredMode: 'default',
-      configuredLimitTokens: DEFAULT_CHECKPOINT_TOKENS,
+      configuredLimitTokens: analysis.gate3a?.origLimit || DEFAULT_CHECKPOINT_TOKENS,
       needsRestart: false,
       message: '当前已经处于宿主默认状态，无需重复切换。',
       analysis
@@ -2301,6 +2388,8 @@ function applyUnlock(options = {}) {
       origSize: fileSize,
       backupPath: backupFile,
       backupSha256: beforeSha256,
+      gate3aVariant: gate3a.clampVariant || 'edx_esi_256k',
+      gate3aOrigLimit: gate3a.origLimit || DEFAULT_CHECKPOINT_TOKENS,
       gate3bOrigHex: gate3b.origHex || null,
       gate3bLength: gate3b.length || null,
       gate3bOffset: gate3b.offset ?? null,
@@ -2325,11 +2414,15 @@ function applyUnlock(options = {}) {
 
   const syncedConfigs = syncExternalContextConfigs(targetSpec.mode, targetSpec.limitTokens, options);
 
+  const effectiveLimitTokens = targetSpec.mode === 'default'
+    ? (gate3a.origLimit || DEFAULT_CHECKPOINT_TOKENS)
+    : targetSpec.limitTokens;
+
   if (manifestToSave) {
     manifestToSave.patchedSha256 = afterSha256;
     manifestToSave.patchedAt = new Date().toISOString();
     manifestToSave.configuredMode = targetSpec.mode;
-    manifestToSave.configuredLimitTokens = targetSpec.limitTokens;
+    manifestToSave.configuredLimitTokens = effectiveLimitTokens;
     manifestToSave.needsRestart = true;
     saveManifest(manifestToSave, options.backupDir);
   }
@@ -2437,7 +2530,7 @@ function restoreUnlock(options = {}) {
 
     manifest.needsRestart = true;
     manifest.configuredMode = 'default';
-    manifest.configuredLimitTokens = DEFAULT_CHECKPOINT_TOKENS;
+    manifest.configuredLimitTokens = manifest.gate3aOrigLimit || DEFAULT_CHECKPOINT_TOKENS;
     saveManifest(manifest, options.backupDir);
     const syncedConfigs = syncExternalContextConfigs('default', null, options);
 
@@ -2465,7 +2558,7 @@ function restoreUnlock(options = {}) {
     analysis.gate3b?.status === 'patched' &&
     doesSidecarMatchTarget(sidecar, target, container, analysis.gate3b)
   ) {
-    patchUnlockBuffer(currentBuf, { mode: 'default', limitTokens: DEFAULT_CHECKPOINT_TOKENS }, analysis.gate3a, analysis.gate3b, analysis.serializerGate, Buffer.from(sidecar.origHex, 'hex'), container.arch);
+    restoreBufferBySidecar(currentBuf, analysis, sidecar, container.arch);
 
     const writeRes = atomicWriteBinary(target, currentBuf, 'rev', {
       skipCodesign: options.skipCodesign === true,
@@ -2564,7 +2657,7 @@ function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate
   };
 
   if (targetSpec.mode === 'default') {
-    buf.set(isArm64 ? CLAMP_256K_ARM64 : CLAMP_256K_X64, gate3a.offset);
+    buf.set(isArm64 ? CLAMP_256K_ARM64 : buildClampOrigX64(gate3a), gate3a.offset);
     if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
       buf.set(isArm64 ? DEF_ORIG_ARM64 : DEF_ORIG_X64, gate3a.defaultOffset);
     }
@@ -2576,7 +2669,7 @@ function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate
       serializerPatched = true;
     }
   } else if (targetSpec.mode === 'fixed') {
-    buf.set(isArm64 ? buildClampConstArm64(targetSpec.limitTokens) : buildClampConstX64(targetSpec.limitTokens), gate3a.offset);
+    buf.set(isArm64 ? buildClampConstArm64(targetSpec.limitTokens) : buildClampConstX64(targetSpec.limitTokens, gate3a), gate3a.offset);
     if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
       buf.set(isArm64 ? buildDefConstArm64(targetSpec.limitTokens) : buildDefConstX64(targetSpec.limitTokens), gate3a.defaultOffset);
     }
@@ -2588,7 +2681,7 @@ function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate
       serializerPatched = true;
     }
   } else if (targetSpec.mode === 'dynamic') {
-    buf.set(isArm64 ? PATCH_256K_ARM64 : PATCH_256K_X64, gate3a.offset);
+    buf.set(isArm64 ? PATCH_256K_ARM64 : buildClampDynX64(gate3a), gate3a.offset);
     if (gate3a.hasDefaultSite && gate3a.defaultOffset !== null) {
       buf.set(isArm64 ? DEF_ORIG_ARM64 : DEF_ORIG_X64, gate3a.defaultOffset);
     }
@@ -2601,6 +2694,21 @@ function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate
     }
   }
   return serializerPatched;
+}
+
+/**
+ * 复用：通过同构建 sidecar 记录就地还原 Gate 3A/3B 与 Serializer 至宿主原版字节
+ */
+function restoreBufferBySidecar(buf, analysis, sidecar, arch = 'x86-64') {
+  return patchUnlockBuffer(
+    buf,
+    { mode: 'default', limitTokens: analysis.gate3a?.origLimit || DEFAULT_CHECKPOINT_TOKENS },
+    analysis.gate3a,
+    analysis.gate3b,
+    analysis.serializerGate,
+    Buffer.from(sidecar.origHex, 'hex'),
+    arch
+  );
 }
 
 /**
@@ -2747,6 +2855,8 @@ async function applyUnlockAsync(options = {}) {
         origSize: fileSize,
         backupPath: backupFile,
         backupSha256: beforeSha256,
+        gate3aVariant: gate3a.clampVariant || 'edx_esi_256k',
+        gate3aOrigLimit: gate3a.origLimit || DEFAULT_CHECKPOINT_TOKENS,
         gate3bOrigHex: gate3b.origHex || null,
         gate3bLength: gate3b.length || null,
         gate3bOffset: gate3b.offset ?? null,
@@ -2771,11 +2881,15 @@ async function applyUnlockAsync(options = {}) {
 
     const syncedConfigs = syncExternalContextConfigs(targetSpec.mode, targetSpec.limitTokens, options);
 
+    const effectiveLimitTokens = targetSpec.mode === 'default'
+      ? (gate3a.origLimit || DEFAULT_CHECKPOINT_TOKENS)
+      : targetSpec.limitTokens;
+
     if (manifestToSave) {
       manifestToSave.patchedSha256 = afterSha256;
       manifestToSave.patchedAt = new Date().toISOString();
       manifestToSave.configuredMode = targetSpec.mode;
-      manifestToSave.configuredLimitTokens = targetSpec.limitTokens;
+      manifestToSave.configuredLimitTokens = effectiveLimitTokens;
       manifestToSave.needsRestart = true;
       saveManifest(manifestToSave, options.backupDir);
     }
@@ -2889,7 +3003,7 @@ async function restoreUnlockAsync(options = {}) {
 
       manifest.needsRestart = true;
       manifest.configuredMode = 'default';
-      manifest.configuredLimitTokens = DEFAULT_CHECKPOINT_TOKENS;
+      manifest.configuredLimitTokens = manifest.gate3aOrigLimit || DEFAULT_CHECKPOINT_TOKENS;
       saveManifest(manifest, options.backupDir);
       const syncedConfigs = syncExternalContextConfigs('default', null, options);
 
@@ -2921,7 +3035,7 @@ async function restoreUnlockAsync(options = {}) {
       analysis.gate3b?.status === 'patched' &&
       doesSidecarMatchTarget(sidecar, target, container, analysis.gate3b)
     ) {
-      patchUnlockBuffer(currentBuf, { mode: 'default', limitTokens: DEFAULT_CHECKPOINT_TOKENS }, analysis.gate3a, analysis.gate3b, analysis.serializerGate, Buffer.from(sidecar.origHex, 'hex'), container.arch);
+      restoreBufferBySidecar(currentBuf, analysis, sidecar, container.arch);
 
       const writeRes = await atomicWriteBinaryAsync(target, currentBuf, 'rev', {
         skipCodesign: options.skipCodesign === true,
@@ -3179,6 +3293,7 @@ module.exports = {
   KNOWN_LIMIT_PRESETS,
   validateContextLimit,
   detectTargetBinary,
+  detectCliBinary,
   findTextSection,
   findPclntab,
   buildFunctions,

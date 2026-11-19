@@ -30,6 +30,7 @@ const COMMON_FILES = [
   'meter-storage.js',
   'meter-proxy.js',
   'meter-cli-launcher.js',
+  'meter-cli-monitor.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
   'meter-accounts.js',

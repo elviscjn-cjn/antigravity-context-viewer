@@ -1043,3 +1043,57 @@ test('macOS Mach-O 安全边界：Intel Mac(x86-64)、Fat Binary、头部截断�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('agy CLI (128K ecx/edx clamp) 识别、固定/动态互切及无备份 sidecar 原生字节还原', async () => {
+  const { applyUnlockAsync, restoreUnlockAsync } = require('./meter-context-unlock');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-unlock-agy128-'));
+  try {
+    const agyPath = path.join(tmpDir, 'agy.exe');
+    const backupDir = path.join(tmpDir, 'backups');
+    const orig128 = Buffer.from('81f900f40100ba00f401000f42d1', 'hex');
+    const clamp256 = Buffer.from('81fa00e80300be00e803000f42f2', 'hex');
+
+    const buf = createMockGoBinary({ isPatched: false, withDefaultSite: false });
+    const clampOff = buf.indexOf(clamp256);
+    assert.ok(clampOff > 0);
+    orig128.copy(buf, clampOff);
+    fs.writeFileSync(agyPath, buf);
+
+    // 1. 初始识别应为 agy CLI + not_patched + 128000 原生上限
+    const initial = await analyzeBinaryAsync(agyPath, { backupDir, skipProcessCheck: true });
+    assert.equal(initial.status, 'not_patched');
+    assert.equal(initial.mode, 'agy CLI');
+    assert.equal(initial.gate3a.status, 'unpatched');
+    assert.equal(initial.gate3a.clampVariant, 'ecx_edx_128k');
+    assert.equal(initial.gate3a.origLimit, 128000);
+    assert.equal(initial.gate3a.limit, 128000);
+
+    // 2. 应用 fixed 512000：必须生成 `ba <imm32> + 9 NOPs`（写入 edx），绝不能误写成 `be` (esi)
+    const rFixed = await applyUnlockAsync({ targetPath: agyPath, backupDir, mode: 'fixed', limitTokens: 512000, skipProcessCheck: true });
+    assert.equal(rFixed.ok, true, rFixed.error);
+    const patchedFixedSlice = fs.readFileSync(agyPath).subarray(clampOff, clampOff + 14);
+    assert.equal(patchedFixedSlice[0], 0xba);
+    assert.equal(patchedFixedSlice.readUInt32LE(1), 512000);
+    assert.ok(patchedFixedSlice.subarray(5, 14).every((b) => b === 0x90));
+
+    // 3. 切到 dynamic：必须生成 `89ca + 12 NOPs`（mov edx, ecx），绝不能误写成 `89d6` (mov esi, edx)
+    const rDyn = await applyUnlockAsync({ targetPath: agyPath, backupDir, mode: 'dynamic', skipProcessCheck: true });
+    assert.equal(rDyn.ok, true, rDyn.error);
+    const patchedDynSlice = fs.readFileSync(agyPath).subarray(clampOff, clampOff + 14);
+    assert.equal(patchedDynSlice.subarray(0, 2).toString('hex'), '89ca');
+    assert.ok(patchedDynSlice.subarray(2, 14).every((b) => b === 0x90));
+
+    // 4. 删除整包备份，仅凭同构建 sidecar 验证 restoreUnlockAsync 能否无损还原为 128K ecx/edx 原版字节
+    fs.unlinkSync(rFixed.backupPath);
+    const rSidecarRestore = await restoreUnlockAsync({ targetPath: agyPath, backupDir, skipProcessCheck: true });
+    assert.equal(rSidecarRestore.ok, true, rSidecarRestore.error);
+    const restoredBuf = fs.readFileSync(agyPath);
+    assert.equal(Buffer.compare(restoredBuf.subarray(clampOff, clampOff + 14), orig128), 0);
+
+    const finalSt = await analyzeBinaryAsync(agyPath, { backupDir, skipProcessCheck: true });
+    assert.equal(finalSt.status, 'not_patched');
+    assert.equal(finalSt.gate3a.origLimit, 128000);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

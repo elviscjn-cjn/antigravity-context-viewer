@@ -335,14 +335,34 @@ function extractWorkspaceFromTranscriptFile(transcriptPath) {
       const buf = Buffer.alloc(16384);
       const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
       const head = buf.slice(0, bytes).toString('utf8');
-      const m1 = head.match(/Command Working Directory:\s*([^\r\n\\"]+)/i);
+      // 优先按 JSONL 逐行解析 content，确保 Windows 反斜杠转义路径 (C:\\foo\\bar) 完整还原
+      for (const rawLine of head.split(/\r?\n/)) {
+        const trimmed = rawLine.trim();
+        if (!trimmed || !trimmed.startsWith('{')) continue;
+        try {
+          const obj = JSON.parse(trimmed);
+          const text = typeof obj?.content === 'string' ? obj.content : '';
+          if (!text) continue;
+          const jm1 = text.match(/Command Working Directory:\s*([^\r\n"]+)/i);
+          if (jm1 && jm1[1]) {
+            const cand = jm1[1].trim();
+            if (fs.existsSync(cand) && fs.statSync(cand).isDirectory()) return path.resolve(cand);
+          }
+          const jm2 = text.match(/Active Workspaces:\s*\r?\n\s*-\s*([^\r\n"]+)/i);
+          if (jm2 && jm2[1]) {
+            const cand = jm2[1].trim();
+            if (fs.existsSync(cand) && fs.statSync(cand).isDirectory()) return path.resolve(cand);
+          }
+        } catch {}
+      }
+      const m1 = head.match(/Command Working Directory:\s*([^\r\n"]+)/i);
       if (m1 && m1[1]) {
-        const cand = m1[1].trim();
+        const cand = m1[1].replace(/\\\\/g, '\\').trim();
         if (fs.existsSync(cand) && fs.statSync(cand).isDirectory()) return path.resolve(cand);
       }
-      const m2 = head.match(/Active Workspaces:\s*(?:\\n|\r?\n)\s*-\s*([^\r\n\\"]+)/i);
+      const m2 = head.match(/Active Workspaces:\s*(?:\\n|\r?\n)\s*-\s*([^\r\n"]+)/i);
       if (m2 && m2[1]) {
-        const cand = m2[1].trim();
+        const cand = m2[1].replace(/\\\\/g, '\\').trim();
         if (fs.existsSync(cand) && fs.statSync(cand).isDirectory()) return path.resolve(cand);
       }
     } finally {
@@ -350,6 +370,26 @@ function extractWorkspaceFromTranscriptFile(transcriptPath) {
     }
   } catch {}
   return null;
+}
+
+function unwrapCmdTargetExe(candidatePath) {
+  let exePath = candidatePath;
+  if (!candidatePath) return exePath;
+  const lower = candidatePath.toLowerCase();
+  if (lower.endsWith('.cmd') || lower.endsWith('.bat')) {
+    try {
+      const content = fs.readFileSync(candidatePath, 'utf8');
+      const m = content.match(/"([^"]*agy\.exe)"/i);
+      if (m && m[1]) {
+        const resolvedM = m[1].replace(/%~dp0/gi, path.dirname(candidatePath) + path.sep);
+        if (fs.existsSync(resolvedM)) exePath = path.resolve(resolvedM);
+      } else {
+        const sib = path.join(path.dirname(candidatePath), 'agy.exe');
+        if (fs.existsSync(sib)) exePath = sib;
+      }
+    } catch {}
+  }
+  return exePath;
 }
 
 /**
@@ -362,11 +402,7 @@ function resolveCliExecutable(customCliPath, options = {}) {
     const explicit = path.resolve(String(customCliPath).trim());
     try {
       if (fs.existsSync(explicit) && fs.statSync(explicit).isFile()) {
-        const dir = path.dirname(explicit);
-        const siblingExe = path.join(dir, 'agy.exe');
-        const directExe = explicit.toLowerCase().endsWith('.exe')
-          ? explicit
-          : (platform === 'win32' && fs.existsSync(siblingExe) ? siblingExe : explicit);
+        const directExe = explicit.toLowerCase().endsWith('.exe') ? explicit : unwrapCmdTargetExe(explicit);
         return { ok: true, cliPath: explicit, exePath: directExe, source: 'explicit' };
       }
     } catch {}
@@ -387,7 +423,9 @@ function resolveCliExecutable(customCliPath, options = {}) {
   if (platform === 'win32') {
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.exe'), src: 'gemini_bin_exe' },
+      { p: path.join(home, '.gemini', 'bin', 'agy.exe'), src: 'gemini_cli_bin_exe' },
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.cmd'), src: 'gemini_bin_cmd' },
+      { p: path.join(home, '.gemini', 'bin', 'agy.cmd'), src: 'gemini_cli_bin_cmd' },
       { p: path.join(appData, 'Antigravity', 'bin', 'agy.exe'), src: 'appdata_bin_exe' },
       { p: path.join(appData, 'Antigravity', 'bin', 'agy.cmd'), src: 'appdata_bin_cmd' },
       { p: path.join(localAppData, 'Programs', 'Antigravity IDE', 'bin', 'agy.exe'), src: 'ide_bin_exe' },
@@ -413,6 +451,7 @@ function resolveCliExecutable(customCliPath, options = {}) {
     }
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy'), src: 'gemini_bin' },
+      { p: path.join(home, '.gemini', 'bin', 'agy'), src: 'gemini_cli_bin' },
       { p: path.join(home, '.local', 'bin', 'agy'), src: 'local_bin' },
       { p: '/opt/homebrew/bin/agy', src: 'homebrew_bin' },
       { p: '/usr/local/bin/agy', src: 'usr_local_bin' }
@@ -420,6 +459,7 @@ function resolveCliExecutable(customCliPath, options = {}) {
   } else {
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy'), src: 'gemini_bin' },
+      { p: path.join(home, '.gemini', 'bin', 'agy'), src: 'gemini_cli_bin' },
       { p: path.join(home, '.local', 'bin', 'agy'), src: 'local_bin' },
       { p: '/usr/local/bin/agy', src: 'usr_local_bin' }
     );
@@ -428,18 +468,7 @@ function resolveCliExecutable(customCliPath, options = {}) {
   for (const item of candidates) {
     try {
       if (item.p && fs.existsSync(item.p) && fs.statSync(item.p).isFile()) {
-        let exePath = item.p;
-        if (item.p.toLowerCase().endsWith('.cmd') || item.p.toLowerCase().endsWith('.bat')) {
-          const content = fs.readFileSync(item.p, 'utf8');
-          const m = content.match(/"([^"]*agy\.exe)"/i);
-          if (m && m[1]) {
-            const resolvedM = m[1].replace(/%~dp0/gi, path.dirname(item.p) + path.sep);
-            if (fs.existsSync(resolvedM)) exePath = path.resolve(resolvedM);
-          } else {
-            const sib = path.join(path.dirname(item.p), 'agy.exe');
-            if (fs.existsSync(sib)) exePath = sib;
-          }
-        }
+        const exePath = unwrapCmdTargetExe(item.p);
         return {
           ok: true,
           cliPath: item.launcher && fs.existsSync(item.launcher) ? item.launcher : item.p,
@@ -458,7 +487,7 @@ function resolveCliExecutable(customCliPath, options = {}) {
       const full = path.join(d, b);
       try {
         if (fs.existsSync(full) && fs.statSync(full).isFile()) {
-          return { ok: true, cliPath: full, exePath: full, source: 'PATH' };
+          return { ok: true, cliPath: full, exePath: unwrapCmdTargetExe(full), source: 'PATH' };
         }
       } catch {}
     }
@@ -689,6 +718,39 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
   env.TERM = 'xterm-256color';
   env.COLORTERM = 'truecolor';
 
+  // 按模型读取桌面端共享上下文偏好并隔离注入本次 CLI 启动会话（互不污染并行会话）
+  let modelContextPreference = null;
+  try {
+    const { getPluginSettings } = require('./meter-collector');
+    const settingsSnap = getPluginSettings({ stateDir: options.stateDir });
+    const prefs = settingsSnap?.contextPreferences || {};
+    const mLower = model.toLowerCase();
+    for (const [k, pref] of Object.entries(prefs)) {
+      if (!pref || typeof pref !== 'object') continue;
+      if (String(k).toLowerCase() === mLower || mLower.includes(String(k).toLowerCase())) {
+        modelContextPreference = pref;
+        break;
+      }
+    }
+    if (!modelContextPreference && settingsSnap?.contextUnifiedPreference?.mode && settingsSnap.contextUnifiedPreference.mode !== 'default') {
+      modelContextPreference = settingsSnap.contextUnifiedPreference;
+    }
+    if (modelContextPreference) {
+      env.AG_METER_CLI_MODEL_CONTEXT = JSON.stringify({
+        sessionId: options.sessionId || null,
+        model,
+        mode: modelContextPreference.mode,
+        limitTokens: modelContextPreference.limitTokens ?? null
+      });
+      if (modelContextPreference.mode === 'fixed' && Number.isFinite(Number(modelContextPreference.limitTokens))) {
+        env.AG_CONTEXT_LIMIT = String(Math.round(Number(modelContextPreference.limitTokens)));
+      }
+    }
+  } catch {}
+  if (options.sessionId) {
+    env.AG_CLI_SESSION_ID = String(options.sessionId);
+  }
+
   if (options.dryRun === true) {
     return {
       ok: true,
@@ -699,13 +761,17 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       cwd,
       cwdSource: wsInfo.source,
       model,
+      modelContextPreference,
       args: cliArgs,
       env: {
         NO_COLOR: env.NO_COLOR,
         TERM: env.TERM,
         COLORTERM: env.COLORTERM,
         HTTP_PROXY: env.HTTP_PROXY,
-        HTTPS_PROXY: env.HTTPS_PROXY
+        HTTPS_PROXY: env.HTTPS_PROXY,
+        AG_METER_CLI_MODEL_CONTEXT: env.AG_METER_CLI_MODEL_CONTEXT,
+        AG_CONTEXT_LIMIT: env.AG_CONTEXT_LIMIT,
+        AG_CLI_SESSION_ID: env.AG_CLI_SESSION_ID
       }
     };
   }
@@ -722,13 +788,18 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       try { if (fs.existsSync(probeFile)) fs.unlinkSync(probeFile); } catch {}
 
       const extraArgsStr = extraArgs.map(a => `"${String(a).replace(/"/g, '')}"`).join(' ');
+      const launchTarget = cliInfo.cliPath || cliInfo.exePath;
+      const isWrapperScript = /\.(cmd|bat)$/i.test(String(launchTarget));
+      const invokeLine = isWrapperScript
+        ? `call "${launchTarget}" --model "${model}" ${extraArgsStr}`
+        : `"${launchTarget}" --model "${model}" ${extraArgsStr}`;
       const batContent = [
         '@echo off',
         'chcp 65001 >nul',
         'if defined AG_CLI_PROBE_FILE (',
         '  > "%AG_CLI_PROBE_FILE%" echo %CD%',
         ')',
-        `"${cliInfo.exePath}" --model "${model}" ${extraArgsStr}`
+        invokeLine
       ].join('\r\n') + '\r\n';
       fs.writeFileSync(runnerBat, batContent, 'utf8');
 

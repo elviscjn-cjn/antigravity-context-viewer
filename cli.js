@@ -32,7 +32,7 @@ const { restore, tryHotDispose } = require('./restore');
 const { resolvePython, syncLiveRuntimeBundle, OFFICIAL_REPO } = require('./meter-collector');
 const { PROJECT_VERSION } = require('./modules-config');
 const { redactProxyUrl } = require('./meter-proxy');
-const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, AUTHOR_INFO } = require('./meter-context-unlock');
+const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, detectCliBinary, AUTHOR_INFO } = require('./meter-context-unlock');
 
 const asar = loadAsarEngine();
 
@@ -1199,11 +1199,15 @@ async function runLiveCommand(cdpOptions = {}, customPath = null) {
 
 const CLI_VALUE_FLAGS = new Set([
   '--path', '--backup', '--port', '--proxy-url',
-  '--mode', '--limit', '--tier', '--title', '--context', '--brand', '--lang'
+  '--mode', '--limit', '--tier', '--title', '--context', '--brand', '--lang',
+  '--account', '--model', '--session', '--cwd', '--interval', '--cli-path',
+  '--ag-dir', '--cli-dir', '--state-dir'
 ]);
 
 const CLI_BOOLEAN_FLAGS = new Set([
-  '--force', '--all', '--no-cli-sync', '--no-sync', '--previous', '--in-place'
+  '--force', '--all', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place',
+  '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
+  '--clear', '--sync-cli-settings'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
@@ -1212,6 +1216,7 @@ const CLI_KNOWN_COMMANDS = new Set([
   'enhance-status', 'enhance', 'enhance-restore',
   'modules', 'chinese:enable', 'chinese:disable',
   'proxy:enable', 'proxy:disable', 'proxy:set', 'proxy:test',
+  'usage', 'monitor', 'launch-cli', 'context-set', 'context-status',
   'status', 'check'
 ]);
 
@@ -1219,6 +1224,16 @@ const CLI_POS_ARG_COMMANDS = new Set(['proxy:set', 'proxy:test']);
 
 function printUsage() {
   console.log(`用法:
+  node cli.js usage [--today|--week|--month|--all] [--account <q>] [--model <q>] [--json]
+                                            在终端只读查询累计 Token 消耗 (口径与面板一致)
+  node cli.js monitor [--session <id>] [--cwd <dir>] [--compact] [--interval <ms>] [--once] [--json]
+                                            终端常驻监视 CLI 会话上下文与用量 (独立于桌面客户端)
+  node cli.js launch-cli [--model <id>] [--cwd <dir>] [--dry-run] [--json]
+                                            探测已安装的 agy CLI 并按工作区与模型偏好打开终端
+  node cli.js context-set --model <id> --mode <default|fixed|dynamic> [--limit N] [--clear] [--sync-cli-settings]
+                                            配置 CLI 按模型自定义上下文偏好
+  node cli.js context-status [--model <id>] [--json]
+                                            查看 CLI 按模型上下文偏好与二进制门禁状态
   node cli.js watch [--port <port>]         免改盘后台守护模式（随客户端启动自动挂载，关闭后自动退出）
   node cli.js stop-watch                    停止正在运行的 watch 守护进程与本地桥接服务
   node cli.js live [--port <port>]          免改盘 CDP 热挂载到当前运行窗口
@@ -1226,9 +1241,9 @@ function printUsage() {
   node cli.js status [--port <port>]        查看安装状态与当前对话实时上下文用量
   node cli.js check [--port <port>]         执行前置环境健康检查
   node cli.js restore [--all]               一键无损卸载并恢复备份 (--all 含还原内核增强)
-  node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文调整状态
-  node cli.js unlock --mode <default|fixed|dynamic> [--limit N]  调整上下文长度上限
-  node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制
+  node cli.js unlock-status [--cli] [--path <bin>]  检查桌面端与 agy CLI 上下文调整状态
+  node cli.js unlock [--cli] --mode <default|fixed|dynamic> [--limit N]  调整上下文长度上限
+  node cli.js unlock-restore [--cli] [--path <bin>] 恢复官方原版二进制
   node cli.js enhance-status                检查系统提示词精简与中文标题内核状态
   node cli.js enhance [--tier 0-4] [--title on|off] [--context default|512k|900k|dynamic] [--lang zh-CN|en] [--brand english|hidden|translated]
   node cli.js enhance-restore               一键还原系统提示词、英文标题与默认上下文`);
@@ -1300,6 +1315,30 @@ async function main() {
   }
   const cdpOptions = explicitPort ? { port: explicitPort, strictPort: true } : {};
   const isForce = args.includes('--force');
+  const isCliTarget = args.includes('--cli');
+
+  const resolveUnlockCliOrCustomTarget = () => {
+    if (customPath) return customPath;
+    if (!isCliTarget) return null;
+    const cliBin = detectCliBinary(null);
+    if (!cliBin) {
+      throw new Error('未检测到 Antigravity CLI (agy) 可执行文件，请使用 --path <bin> 显式指定或将 agy 加入 PATH。');
+    }
+    return cliBin;
+  };
+
+  const printUnlockStatusBlock = (st, headerLabel) => {
+    console.log(headerLabel);
+    console.log(`- 目标文件: ${st.targetPath || '未检测到'}`);
+    console.log(`- 目标架构: ${st.arch || '未知'} (${st.format || '未知'}, ${st.mode || '未知'})`);
+    console.log(`- 磁盘模式: ${st.configuredSummary || '未知'}`);
+    console.log(`- 运行状态: [${st.statusText || st.status}] ${st.details || st.reason || ''}`);
+    if (st.scopeNotice) console.log(`- 作用范围: ${st.scopeNotice}`);
+    if (st.backupInfo) {
+      console.log(`- 备份文件: ${st.backupInfo.backupPath}${st.backupStaleReason ? ` (⚠️ ${st.backupStaleReason})` : ''}`);
+    }
+    console.log(`- ${st.author?.credit || AUTHOR_INFO.credit} (${st.author?.url || AUTHOR_INFO.url})`);
+  };
 
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
@@ -1424,27 +1463,35 @@ async function main() {
     console.log('     * 界面汉化: 运行中已渲染 DOM 受客户端页面内存缓存影响，需完全重启客户端彻底恢复纯净英文');
     console.log('     * 代理环境: 运行中进程已加载的 process.env 环境变量与 Electron session 代理无法即时热撤销，必须完全重启客户端以彻底退出代理环境');
   } else if (cmd === 'unlock-status') {
-    console.log('🔍 正在检测 Antigravity 后端上下文调整状态...');
-    const st = await analyzeBinaryAsync(customPath);
-    console.log(`- 目标文件: ${st.targetPath || '未检测到'}`);
-    console.log(`- 目标架构: ${st.arch || '未知'} (${st.format || '未知'}, ${st.mode || '未知'})`);
-    console.log(`- 磁盘模式: ${st.configuredSummary || '未知'}`);
-    console.log(`- 运行状态: [${st.statusText || st.status}] ${st.details || st.reason || ''}`);
-    if (st.scopeNotice) console.log(`- 作用范围: ${st.scopeNotice}`);
-    if (st.backupInfo) {
-      console.log(`- 备份文件: ${st.backupInfo.backupPath}${st.backupStaleReason ? ` (⚠️ ${st.backupStaleReason})` : ''}`);
+    const explicitTarget = resolveUnlockCliOrCustomTarget();
+    if (explicitTarget) {
+      const header = isCliTarget && !customPath
+        ? '🔍 正在检测 Antigravity CLI (agy) 上下文调整状态...'
+        : '🔍 正在检测 Antigravity 后端上下文调整状态...';
+      const st = await analyzeBinaryAsync(explicitTarget);
+      printUnlockStatusBlock(st, header);
+    } else {
+      const st = await analyzeBinaryAsync(null);
+      printUnlockStatusBlock(st, '🔍 正在检测 Antigravity 后端上下文调整状态...');
+      const cliBin = detectCliBinary(null);
+      if (cliBin && (!st.targetPath || path.resolve(cliBin) !== path.resolve(st.targetPath))) {
+        const cliSt = await analyzeBinaryAsync(cliBin);
+        console.log('');
+        printUnlockStatusBlock(cliSt, '🔍 检测到 Antigravity CLI (agy) 独立可执行文件:');
+        console.log('  💡 可通过 `node cli.js unlock --cli --mode ...` / `unlock-restore --cli` 单独管理 CLI');
+      }
     }
-    console.log(`- ${st.author?.credit || AUTHOR_INFO.credit} (${st.author?.url || AUTHOR_INFO.url})`);
   } else if (cmd === 'unlock') {
     const modeIdx = args.indexOf('--mode');
     const modeVal = modeIdx >= 0 ? args[modeIdx + 1] : undefined;
     const limitIdx = args.indexOf('--limit');
     const limitVal = limitIdx >= 0 ? args[limitIdx + 1] : undefined;
     const noCliSync = args.includes('--no-cli-sync') || args.includes('--no-sync');
-    console.log('⚡ 正在执行 Antigravity 后端上下文长度调整...');
+    const targetBin = resolveUnlockCliOrCustomTarget();
+    console.log(`⚡ 正在执行 ${isCliTarget && !customPath ? 'Antigravity CLI (agy)' : 'Antigravity 后端'}上下文长度调整...`);
     console.log(`ℹ ${AUTHOR_INFO.credit} (${AUTHOR_INFO.url})`);
     console.log(`⚠️  ${AUTHOR_INFO.disclaimer}`);
-    const res = applyUnlock({ targetPath: customPath, mode: modeVal, limitTokens: limitVal, syncConfigFiles: true, syncCliConfigs: !noCliSync });
+    const res = applyUnlock({ targetPath: targetBin, mode: modeVal, limitTokens: limitVal, syncConfigFiles: true, syncCliConfigs: !noCliSync });
     if (!res.ok) {
       throw new Error(res.error);
     }
@@ -1455,8 +1502,9 @@ async function main() {
     if (res.backupPath) console.log(`📁 原版备份已安全保存至: ${res.backupPath}`);
   } else if (cmd === 'unlock-restore') {
     const noCliSync = args.includes('--no-cli-sync') || args.includes('--no-sync');
-    console.log('🔄 正在恢复 Antigravity 官方原版后端二进制...');
-    const res = restoreUnlock({ targetPath: customPath, syncConfigFiles: true, syncCliConfigs: !noCliSync });
+    const targetBin = resolveUnlockCliOrCustomTarget();
+    console.log(`🔄 正在恢复 ${isCliTarget && !customPath ? 'Antigravity CLI (agy)' : 'Antigravity 官方原版'}二进制...`);
+    const res = restoreUnlock({ targetPath: targetBin, syncConfigFiles: true, syncCliConfigs: !noCliSync });
     if (!res.ok) {
       throw new Error(res.error);
     }
@@ -1587,6 +1635,151 @@ async function main() {
     console.log(`  - 3. 实际网络连通: ${r.internetReachable ? '✅ 可访问公网' : '⚠️ 无法访问公网 (可能节点无境外连接)'}`);
     console.log(`  - 4. 真实模型请求: 待通过真实在线会话验证 (分层标定)`);
     if (r.error) console.log(`  ⚠️ 诊断提示: ${r.error}`);
+  } else if (cmd === 'usage') {
+    const { queryCliUsage, formatCliUsageText } = require('./meter-cli-monitor');
+    const getVal = (flag) => {
+      const idx = args.indexOf(flag);
+      return idx >= 0 ? args[idx + 1] : null;
+    };
+    let period = 'all';
+    if (args.includes('--today')) period = 'today';
+    else if (args.includes('--week')) period = 'week';
+    else if (args.includes('--month')) period = 'month';
+    const wantJson = args.includes('--json');
+    const res = await queryCliUsage({
+      period,
+      account: getVal('--account'),
+      model: getVal('--model'),
+      agDir: getVal('--ag-dir') || undefined,
+      agCliDir: getVal('--cli-dir') || undefined,
+      stateDir: getVal('--state-dir') || undefined,
+      readOnly: true
+    });
+    if (wantJson) {
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.log(formatCliUsageText(res));
+    }
+    if (!res.ok) process.exitCode = 1;
+  } else if (cmd === 'monitor') {
+    const { runCliMonitor } = require('./meter-cli-monitor');
+    const getVal = (flag) => {
+      const idx = args.indexOf(flag);
+      return idx >= 0 ? args[idx + 1] : null;
+    };
+    const intervalVal = getVal('--interval');
+    await runCliMonitor({
+      sessionFilter: getVal('--session'),
+      cwdFilter: getVal('--cwd'),
+      compact: args.includes('--compact'),
+      once: args.includes('--once'),
+      json: args.includes('--json'),
+      intervalMs: intervalVal ? Number(intervalVal) : 2000,
+      agDir: getVal('--ag-dir') || undefined,
+      agCliDir: getVal('--cli-dir') || undefined,
+      stateDir: getVal('--state-dir') || undefined
+    });
+  } else if (cmd === 'launch-cli') {
+    const { resolveCliExecutable, launchCliSession } = require('./meter-cli-launcher');
+    const getVal = (flag) => {
+      const idx = args.indexOf(flag);
+      return idx >= 0 ? args[idx + 1] : null;
+    };
+    const cliPathArg = getVal('--cli-path');
+    const cwdArg = getVal('--cwd');
+    const modelArg = getVal('--model');
+    const dryRun = args.includes('--dry-run');
+    const wantJson = args.includes('--json');
+    const detectRes = resolveCliExecutable(cliPathArg);
+    if (!detectRes.ok) {
+      if (wantJson) console.log(JSON.stringify(detectRes, null, 2));
+      else console.error(`❌ ${detectRes.error}`);
+      process.exitCode = 1;
+      return;
+    }
+    const launchRes = await launchCliSession({
+      cliPath: detectRes.cliPath,
+      cwd: cwdArg || process.cwd(),
+      model: modelArg || undefined,
+      stateDir: getVal('--state-dir') || undefined,
+      dryRun
+    });
+    if (wantJson) {
+      console.log(JSON.stringify(launchRes, null, 2));
+    } else if (launchRes.ok) {
+      console.log(`✅ CLI ${dryRun ? '预检' : '启动'}成功: ${launchRes.cliPath} (工作区: ${launchRes.cwd}, 模型: ${launchRes.model})`);
+    } else {
+      console.error(`❌ CLI 启动失败: ${launchRes.error}`);
+    }
+    if (!launchRes.ok) process.exitCode = 1;
+  } else if (cmd === 'context-set') {
+    const { saveCliModelContextPreference } = require('./meter-cli-monitor');
+    const getVal = (flag) => {
+      const idx = args.indexOf(flag);
+      return idx >= 0 ? args[idx + 1] : null;
+    };
+    const modelArg = getVal('--model');
+    const modeArg = getVal('--mode') || 'fixed';
+    const limitArg = getVal('--limit');
+    const clearFlag = args.includes('--clear');
+    const syncCli = args.includes('--sync-cli-settings');
+    const wantJson = args.includes('--json');
+    const res = saveCliModelContextPreference({
+      model: modelArg,
+      mode: modeArg,
+      limitTokens: limitArg ? Number(limitArg) : null,
+      clear: clearFlag,
+      syncCliSettings: syncCli,
+      stateDir: getVal('--state-dir') || undefined,
+      agCliDir: getVal('--cli-dir') || undefined
+    });
+    if (wantJson) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (res.ok) {
+      console.log(`✅ 已立即保存模型 ${res.model} 的 CLI 上下文偏好 (${res.mode}${res.limitTokens ? `: ${res.limitTokens}` : ''}).`);
+      console.log(`   生效时机: ${res.effectiveTiming.explanation}`);
+    } else {
+      console.error(`❌ 保存失败: ${res.error}`);
+    }
+    if (!res.ok) process.exitCode = 1;
+  } else if (cmd === 'context-status') {
+    const { resolveCliModelContextBudget } = require('./meter-cli-monitor');
+    const { getPluginSettings } = require('./meter-collector');
+    const getVal = (flag) => {
+      const idx = args.indexOf(flag);
+      return idx >= 0 ? args[idx + 1] : null;
+    };
+    const modelArg = getVal('--model');
+    const stateDirArg = getVal('--state-dir') || undefined;
+    const cliDirArg = getVal('--cli-dir') || undefined;
+    const wantJson = args.includes('--json');
+    const cliBin = detectCliBinary(null);
+    const cliGate = cliBin ? await analyzeBinaryAsync(cliBin) : null;
+    const settingsSnap = getPluginSettings({ stateDir: stateDirArg });
+    const resolved = modelArg
+      ? resolveCliModelContextBudget(modelArg, { stateDir: stateDirArg, agCliDir: cliDirArg })
+      : null;
+    const report = {
+      ok: true,
+      cliBinary: cliBin || null,
+      binaryGate: cliGate ? {
+        status: cliGate.status,
+        mode: cliGate.mode,
+        origLimit: cliGate.gate3a?.origLimit || null,
+        currentLimit: cliGate.gate3a?.limit ?? null
+      } : null,
+      contextPreferences: settingsSnap?.contextPreferences || {},
+      ...(resolved ? { selectedModelBudget: resolved } : {})
+    };
+    if (wantJson) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(`🔍 CLI 上下文状态 | 二进制: ${cliBin || '未检测到'}${cliGate ? ` (${cliGate.status}, Gate3A=${cliGate.gate3a?.limit ?? '动态'})` : ''}`);
+      if (resolved) {
+        console.log(`   模型 ${resolved.model}: 有效上限=${resolved.limitTokens ?? '未知'} (来源: ${resolved.budgetSource})`);
+      }
+      console.log(`   已保存按模型偏好数: ${Object.keys(report.contextPreferences).length}`);
+    }
   } else if (cmd === 'status') {
     await cmdStatus(customPath, cdpOptions);
   } else if (cmd === 'check') {

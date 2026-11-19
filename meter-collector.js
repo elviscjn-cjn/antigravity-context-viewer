@@ -884,6 +884,7 @@ function loadPricingLedger(overridePathOrDir, options = {}) {
   const readRes = safeReadJsonSync(p, null, {
     fs: fsImpl,
     backupPath: bakPath,
+    quarantineCorrupt: !options?.readOnly,
     validate: (data) => data && typeof data === 'object' && typeof data.calls === 'object'
   });
 
@@ -913,7 +914,7 @@ function loadPricingLedger(overridePathOrDir, options = {}) {
       break;
     }
   }
-  if (hasSynthetic) {
+  if (hasSynthetic && !options?.readOnly) {
     quarantineSyntheticCalls(overridePathOrDir, options);
     const cleanedRes = safeReadJsonSync(p, null, { fs: fsImpl });
     if (cleanedRes.exists && cleanedRes.ok && cleanedRes.data && typeof cleanedRes.data === 'object') {
@@ -927,8 +928,8 @@ function loadPricingLedger(overridePathOrDir, options = {}) {
     Object.defineProperty(ledger, '__hadDuplicateStepKeys', { value: true, configurable: true });
   }
 
-  // 正常落盘数据建立自动滚动备份，供损坏时恢复
-  if (!readRes.corrupted) {
+  // 正常落盘数据建立自动滚动备份，供损坏时恢复（只读模式绝不写盘）
+  if (!readRes.corrupted && !options?.readOnly) {
     try {
       if (!fsImpl.existsSync(bakPath) || Math.random() < 0.1) {
         fsImpl.copyFileSync(p, bakPath);
@@ -5623,7 +5624,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   }
 
   // 在任何 transcript 对齐或富化写入覆盖之前，先清理历史堆积的旧版本备份，并对未经历最新归属版本校验的账本执行幂等纠偏
-  if (!options.skipAutoRepair && (!options.fs || options.fs === fs)) {
+  if (!options.readOnly && !options.skipAutoRepair && (!options.fs || options.fs === fs)) {
     try {
       cleanupUpgradeLedgerBackups({
         agDir,
@@ -5632,7 +5633,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       });
     } catch { }
   }
-  if (hasRealAccountStore && !options.skipAutoRepair && (!options.fs || options.fs === fs)) {
+  if (!options.readOnly && hasRealAccountStore && !options.skipAutoRepair && (!options.fs || options.fs === fs)) {
     try {
       const preRepairCalls = (loadPricingLedger(agDir).calls || {});
       const needsAttributionRepair = Object.values(preRepairCalls).some(rec =>
@@ -5653,7 +5654,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   }
 
   // 结合持久化逐请求账本与本次扫描调用：先与既有账本做双阶段 1-to-1 对齐与富化，再仅将未匹配的已计价扫描请求落盘
-  const initialCallsMap = loadPricingLedger(agDir).calls || {};
+  const ledgerReadOpt = options.readOnly ? { readOnly: true } : undefined;
+  const initialCallsMap = loadPricingLedger(agDir, ledgerReadOpt).calls || {};
   const matchedTranscriptReqs = new Set();
   const matchedLedgerKeys = new Set();
   const callEffectiveDate = new Map();
@@ -5859,7 +5861,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   // 向账本写入既有记录的富化更新（补齐 model / 最新完整用量 / stepIndex）以及未匹配的已计价扫描调用
   const unmatchedPricedTranscriptReqs = recentRequests.filter(r => !matchedTranscriptReqs.has(r) && r.isPriced && r.callId);
   const ledgerUpdates = [...ledgerEnrichmentCalls, ...unmatchedPricedTranscriptReqs];
-  if (ledgerUpdates.length) {
+  if (!options.readOnly && ledgerUpdates.length) {
     await recordModelCallsLockedAsync(ledgerUpdates, {
       agDir,
       trustTranscriptDate: true,
@@ -5867,7 +5869,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     });
   }
 
-  const effectiveCallsMap = { ...(loadPricingLedger(agDir).calls || {}) };
+  const effectiveCallsMap = { ...(loadPricingLedger(agDir, ledgerReadOpt).calls || {}) };
   for (const [origKey, { targetCallId, merged }] of inMemoryEnrichments.entries()) {
     if (effectiveCallsMap[targetCallId]) {
       const diskRec = effectiveCallsMap[targetCallId];
@@ -6378,7 +6380,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     ? extraContext.prevArchiveSig
     : collectTokenHistoryAsync._lastArchiveSig;
   try {
-    const shouldWriteArchive = options.agDir || archiveSig !== prevArchiveSig || !fs.existsSync(archivePathV2) || !fs.existsSync(archivePathV1);
+    const shouldWriteArchive = !options.readOnly && (options.agDir || archiveSig !== prevArchiveSig || !fs.existsSync(archivePathV2) || !fs.existsSync(archivePathV1));
     if (shouldWriteArchive) {
       const v2Payload = {
         version: '2.0.0',
