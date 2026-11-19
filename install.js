@@ -851,8 +851,11 @@ async function install(options = {}) {
 
         installCommitted = true;
         try {
-          const { syncLiveRuntimeBundle } = require('./meter-collector');
+          const { syncLiveRuntimeBundle, cleanupUpgradeLedgerBackups } = require('./meter-collector');
           syncLiveRuntimeBundle(__dirname, { version: manifest.meterVersion });
+          if (!options.customAsarPath && !isIsolatedTestPath(installed)) {
+            cleanupUpgradeLedgerBackups({ keep: 1, stateDir });
+          }
         } catch { }
         const hotInjectReport = await tryHotInjectDetailed(options.hotInjectOptions || {});
         return { ...manifest, liveInjected: hotInjectReport.ok, hotInjectReport };

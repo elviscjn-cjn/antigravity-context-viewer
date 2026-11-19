@@ -2251,3 +2251,130 @@ test('v0.8.8 非 CDP 切号与回滚对称: shared origin 更新、daemon hub �
     fs.rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test('Issue #50: 仅账本内容变化时备份、单账本最多保留 N=3 份、升级清理只留最新 1 份且幂等运行 100 次零新增', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-issue50-bak-'));
+  const agDir = path.join(tmpDir, 'ag');
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(agDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+
+  const countBackups = () => fs.readdirSync(agDir).filter(f => f.startsWith('pricing_ledger_v1.json.bak-pre-elv89-'));
+
+  try {
+    const scopeA = 'email:a@example.com';
+    const tBase = Date.parse('2026-11-18T10:00:00.000Z');
+    const accountSessions = [{
+      sessionId: 'sess-50-1',
+      accountScopeKey: scopeA,
+      email: 'a@example.com',
+      startedAtMs: tBase - 600000,
+      endedAtMs: tBase + 6000000
+    }];
+
+    // 1. 模拟升级前已堆积 12 份旧版本 .bak-pre-elv89-* 备份
+    collector.savePricingLedger({
+      version: 1,
+      calls: {
+        call_old_1: {
+          callId: 'call_old_1',
+          source: 'desktop',
+          model: 'gemini-4-hydrogen',
+          inputTokens: 1000,
+          outputTokens: 200,
+          totalTokens: 1200,
+          date: '2026-11-18',
+          created_at: new Date(tBase).toISOString(),
+          accountScopeKey: scopeA
+        },
+        call_recent_live: {
+          callId: 'call_recent_live',
+          source: 'desktop',
+          model: 'gemini-4-hydrogen',
+          inputTokens: 500,
+          outputTokens: 100,
+          totalTokens: 600,
+          date: '2026-11-19',
+          created_at: new Date(Date.now() - 10000).toISOString(),
+          liveObservedAtMs: Date.now() - 10000,
+          accountScopeKey: scopeA,
+          accountAttributionConfidence: 'live_confirmed_account'
+        }
+      }
+    }, ledgerPath);
+
+    for (let i = 1; i <= 12; i++) {
+      fs.writeFileSync(
+        path.join(agDir, `pricing_ledger_v1.json.bak-pre-elv89-${1795000000000 + i * 1000}`),
+        `{"legacy":${i}}`
+      );
+    }
+    assert.equal(countBackups().length, 12);
+
+    // 升级清理只保留最新 1 份
+    const upgRes = collector.cleanupUpgradeLedgerBackups({ ledgerPath, stateDir, keep: 1 });
+    assert.equal(upgRes.ok, true);
+    assert.equal(upgRes.removedCount, 11);
+    assert.deepEqual(countBackups(), ['pricing_ledger_v1.json.bak-pre-elv89-1795000012000']);
+
+    // 2. 首次有内容变化的纠偏触发 1 份备份，随后连续 100 次幂等运行（含 live_confirmed_account 未满 3 分钟的场景）均不得新增任何备份
+    const firstRepair = collector.repairAndMigrateAccountLedger({ ledgerPath, accountSessions, stateDir, backupSuffix: '1795000020000' });
+    assert.equal(firstRepair.ok, true);
+    assert.equal(firstRepair.changed, true);
+    assert.ok(firstRepair.backupPath && fs.existsSync(firstRepair.backupPath));
+    const afterFirstCount = countBackups().length;
+    assert.equal(afterFirstCount, 2);
+
+    for (let i = 0; i < 100; i++) {
+      const rep = collector.repairAndMigrateAccountLedger({
+        ledgerPath,
+        accountSessions,
+        stateDir,
+        force: i % 10 === 0,
+        backupSuffix: `179500003${String(i).padStart(4, '0')}`
+      });
+      assert.equal(rep.ok, true);
+      assert.equal(rep.changed, false);
+      assert.equal(rep.backupPath, null);
+    }
+    assert.equal(countBackups().length, afterFirstCount, '幂等运行 100 次后备份数量不得增长');
+
+    // 3. 当账本内容确实发生变化并触发多次新备份时，同一账本最多保留最近 N=3 份
+    for (let round = 1; round <= 5; round++) {
+      const curLedger = collector.loadPricingLedger(ledgerPath);
+      curLedger.calls[`call_mut_${round}`] = {
+        callId: `call_mut_${round}`,
+        source: 'desktop',
+        model: 'gemini-4-hydrogen',
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        date: '2026-11-18',
+        created_at: new Date(tBase + round * 1000).toISOString(),
+        accountScopeKey: scopeA
+      };
+      collector.savePricingLedger(curLedger, ledgerPath);
+      const r = collector.repairAndMigrateAccountLedger({
+        ledgerPath,
+        accountSessions,
+        stateDir,
+        backupSuffix: `${1795000100000 + round * 1000}`
+      });
+      assert.equal(r.ok, true);
+      assert.equal(r.changed, true);
+      assert.ok(r.backupPath);
+      assert.ok(countBackups().length <= collector.MAX_LEDGER_REPAIR_BACKUPS, `备份数必须 <= ${collector.MAX_LEDGER_REPAIR_BACKUPS}`);
+    }
+    assert.deepEqual(
+      countBackups().sort(),
+      [
+        'pricing_ledger_v1.json.bak-pre-elv89-1795000103000',
+        'pricing_ledger_v1.json.bak-pre-elv89-1795000104000',
+        'pricing_ledger_v1.json.bak-pre-elv89-1795000105000'
+      ]
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

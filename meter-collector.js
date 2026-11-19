@@ -2545,10 +2545,136 @@ function buildAccountUsageBreakdown({
 }
 
 const CURRENT_ATTRIBUTION_REPAIR_VERSION = 'elv89-v3';
+/**
+ * 同一账本最多保留最近 N=3 份归属纠偏备份：
+ * 1 份用于最近一次变更的即时回滚，另 2 份覆盖跨版本纠偏迁移，避免多实例与周期扫描导致磁盘无限膨胀。
+ */
+const MAX_LEDGER_REPAIR_BACKUPS = 3;
+const LEDGER_BACKUP_CLEANUP_MARKER_VERSION = '0.8.9';
+
+/**
+ * 列出指定账本对应的 .bak-pre-elv89-* 备份文件（按时间从新到旧排序）
+ */
+function listLedgerRepairBackups(resolvedLedgerPath, fsImpl = fs) {
+  const dir = path.dirname(resolvedLedgerPath);
+  const prefix = `${path.basename(resolvedLedgerPath)}.bak-pre-elv89-`;
+  if (!fsImpl.existsSync(dir)) return [];
+  const entries = fsImpl.readdirSync(dir, { withFileTypes: true });
+  const items = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
+    const fullPath = path.join(dir, entry.name);
+    const suffix = entry.name.slice(prefix.length);
+    const numericTs = /^\d{10,16}$/.test(suffix) ? Number(suffix) : NaN;
+    let mtimeMs = 0;
+    let size = 0;
+    try {
+      const st = fsImpl.statSync(fullPath);
+      mtimeMs = Number(st.mtimeMs) || 0;
+      size = Number(st.size) || 0;
+    } catch { }
+    items.push({ name: entry.name, path: fullPath, numericTs, mtimeMs, size });
+  }
+  items.sort((a, b) => {
+    const aHasTs = Number.isFinite(a.numericTs);
+    const bHasTs = Number.isFinite(b.numericTs);
+    if (aHasTs && bHasTs && b.numericTs !== a.numericTs) return b.numericTs - a.numericTs;
+    if (b.mtimeMs !== a.mtimeMs) return b.mtimeMs - a.mtimeMs;
+    return b.name.localeCompare(a.name);
+  });
+  return items;
+}
+
+/**
+ * 裁剪同一账本的历史备份，只保留最新的 keep 份
+ */
+function pruneLedgerRepairBackups(resolvedLedgerPath, { keep = MAX_LEDGER_REPAIR_BACKUPS, fs: fsImpl = fs } = {}) {
+  const keepCount = Math.max(0, Number.isFinite(Number(keep)) ? Math.floor(Number(keep)) : MAX_LEDGER_REPAIR_BACKUPS);
+  const all = listLedgerRepairBackups(resolvedLedgerPath, fsImpl);
+  const kept = all.slice(0, keepCount);
+  const toRemove = all.slice(keepCount);
+  const removed = [];
+  let removedBytes = 0;
+  for (const item of toRemove) {
+    try {
+      fsImpl.unlinkSync(item.path);
+      removed.push(item.path);
+      removedBytes += item.size;
+    } catch { }
+  }
+  return {
+    totalBefore: all.length,
+    keptCount: kept.length,
+    keptPaths: kept.map(x => x.path),
+    removedCount: removed.length,
+    removedPaths: removed,
+    removedBytes
+  };
+}
+
+/**
+ * 升级时清理历史堆积的 .bak-pre-elv89-* 备份，只保留最新 1 份
+ */
+function cleanupUpgradeLedgerBackups({
+  agDir = null,
+  ledgerPath = null,
+  stateDir = null,
+  keep = 1,
+  force = false,
+  fs: fsImpl = fs
+} = {}) {
+  const targetDir = ledgerPath || agDir;
+  const resolvedLedgerPath = path.resolve(getPricingLedgerPath(targetDir));
+  const markerDir = stateDir || path.dirname(resolvedLedgerPath);
+  const markerPath = path.join(markerDir, '.pricing_ledger_backup_cleanup_v1.json');
+
+  try {
+    if (!force && fsImpl.existsSync(markerPath)) {
+      const parsed = JSON.parse(fsImpl.readFileSync(markerPath, 'utf8'));
+      if (parsed && parsed.cleanedVersion === LEDGER_BACKUP_CLEANUP_MARKER_VERSION &&
+          parsed.ledgerPath === resolvedLedgerPath) {
+        return { ok: true, skipped: true, reason: 'already_cleaned', ledgerPath: resolvedLedgerPath, removedCount: 0 };
+      }
+    }
+  } catch { }
+
+  const existing = listLedgerRepairBackups(resolvedLedgerPath, fsImpl);
+  if (existing.length <= Math.max(1, keep) && !force) {
+    return {
+      ok: true,
+      skipped: false,
+      ledgerPath: resolvedLedgerPath,
+      totalBefore: existing.length,
+      keptCount: existing.length,
+      removedCount: 0,
+      removedPaths: [],
+      removedBytes: 0
+    };
+  }
+
+  const pruneRes = pruneLedgerRepairBackups(resolvedLedgerPath, { keep, fs: fsImpl });
+  try {
+    fsImpl.mkdirSync(markerDir, { recursive: true });
+    fsImpl.writeFileSync(markerPath, JSON.stringify({
+      cleanedVersion: LEDGER_BACKUP_CLEANUP_MARKER_VERSION,
+      ledgerPath: resolvedLedgerPath,
+      cleanedAt: new Date().toISOString(),
+      keptPaths: pruneRes.keptPaths,
+      removedCount: pruneRes.removedCount
+    }, null, 2));
+  } catch { }
+
+  return {
+    ok: true,
+    skipped: false,
+    ledgerPath: resolvedLedgerPath,
+    ...pruneRes
+  };
+}
 
 /**
  * 幂等账本账号归属迁移与纠偏：
- * - 先对原 pricing_ledger_v1.json 做 .bak 备份；
+ * - 仅在账本内容确实发生变化时才对原 pricing_ledger_v1.json 做 .bak 备份，并按 N=3 上限轮转清理；
  * - 对带有精确时间戳且落在单一已核实 accountSessions 窗口内的记录准确归属；
  * - 剥离早于追踪起点、缺时间戳、IDE 未核实或跨切号边界却被错误标为当前账号的 accountScopeKey；
  * - 写入 attributionRepairVersion: CURRENT_ATTRIBUTION_REPAIR_VERSION，多次执行保持幂等不重复计数。
@@ -2559,12 +2685,19 @@ function repairAndMigrateAccountLedger({
   accountSessions = [],
   force = false,
   dryRun = false,
-  backupSuffix = null
+  backupSuffix = null,
+  maxBackups = MAX_LEDGER_REPAIR_BACKUPS,
+  stateDir = null
 } = {}) {
   const targetDir = ledgerPath || agDir;
   const resolvedLedgerPath = path.resolve(getPricingLedgerPath(targetDir));
 
   const runLocked = () => {
+    if (!dryRun) {
+      try {
+        cleanupUpgradeLedgerBackups({ agDir, ledgerPath, stateDir, keep: 1 });
+      } catch { }
+    }
     ledgerCacheByPath.delete(normalizeLedgerKey(resolvedLedgerPath));
     const ledger = loadPricingLedger(targetDir);
     if (!ledger || ledger.__corrupted || ledger.__unreadable) {
@@ -2591,6 +2724,7 @@ function repairAndMigrateAccountLedger({
     let updatedCount = 0;
     let clearedCount = 0;
     let attributedOrFixedCount = 0;
+    let hasContentChange = false;
     const unattributedReasons = {};
 
     for (const [k, rec] of Object.entries(calls)) {
@@ -2613,14 +2747,28 @@ function repairAndMigrateAccountLedger({
 
       // 显式保留用户/实验硬绑定的账号记录（keepalive / explicit email），其余均依据权威时间戳严格复核
       if (copy.isKeepalive && curScope && copy.accountAttributionConfidence === 'keepalive_bound') {
-        copy.attributionRepairVersion = CURRENT_ATTRIBUTION_REPAIR_VERSION;
+        if (copy.attributionRepairVersion !== CURRENT_ATTRIBUTION_REPAIR_VERSION) {
+          copy.attributionRepairVersion = CURRENT_ATTRIBUTION_REPAIR_VERSION;
+          hasContentChange = true;
+        }
         nextCalls[k] = copy;
         continue;
       }
       if (copy.accountEmail && typeof copy.accountEmail === 'string' && copy.accountEmail.includes('@')) {
-        copy.accountScopeKey = buildAccountScopeKey(copy.accountEmail);
+        const nextScopeKey = buildAccountScopeKey(copy.accountEmail);
+        const nextEvidence = copy.accountAttributionEvidence || 'call_account_email';
+        if (
+          copy.accountScopeKey !== nextScopeKey ||
+          copy.accountAttributionConfidence !== 'explicit_account_email' ||
+          copy.accountAttributionEvidence !== nextEvidence ||
+          copy.unattributedReason !== undefined ||
+          copy.attributionRepairVersion !== CURRENT_ATTRIBUTION_REPAIR_VERSION
+        ) {
+          hasContentChange = true;
+        }
+        copy.accountScopeKey = nextScopeKey;
         copy.accountAttributionConfidence = 'explicit_account_email';
-        copy.accountAttributionEvidence = copy.accountAttributionEvidence || 'call_account_email';
+        copy.accountAttributionEvidence = nextEvidence;
         delete copy.unattributedReason;
         copy.attributionRepairVersion = CURRENT_ATTRIBUTION_REPAIR_VERSION;
         nextCalls[k] = copy;
@@ -2640,24 +2788,42 @@ function repairAndMigrateAccountLedger({
       }
 
       if (verdict.accountScopeKey) {
+        const nextEvidence = verdict.evidence || 'session_window_repair';
         if (curScope !== verdict.accountScopeKey || copy.accountAttributionConfidence !== 'repaired_session_window') {
           attributedOrFixedCount += 1;
           updatedCount += 1;
+          hasContentChange = true;
+        } else if (
+          copy.accountAttributionEvidence !== nextEvidence ||
+          copy.unattributedReason !== undefined ||
+          copy.attributionRepairVersion !== CURRENT_ATTRIBUTION_REPAIR_VERSION
+        ) {
+          hasContentChange = true;
         }
         copy.accountScopeKey = verdict.accountScopeKey;
         copy.accountAttributionConfidence = 'repaired_session_window';
-        copy.accountAttributionEvidence = verdict.evidence || 'session_window_repair';
+        copy.accountAttributionEvidence = nextEvidence;
         delete copy.unattributedReason;
       } else {
+        const nextReason = verdict.unattributedReason || 'before_account_tracking';
         if (curScope) {
           clearedCount += 1;
           updatedCount += 1;
+          hasContentChange = true;
         } else if (copy.accountAttributionConfidence !== 'unattributed' || !copy.unattributedReason) {
           updatedCount += 1;
+          hasContentChange = true;
+        } else if (
+          copy.accountScopeKey !== undefined ||
+          copy.accountAttributionEvidence !== undefined ||
+          copy.unattributedReason !== nextReason ||
+          copy.attributionRepairVersion !== CURRENT_ATTRIBUTION_REPAIR_VERSION
+        ) {
+          hasContentChange = true;
         }
         delete copy.accountScopeKey;
         copy.accountAttributionConfidence = 'unattributed';
-        copy.unattributedReason = verdict.unattributedReason || 'before_account_tracking';
+        copy.unattributedReason = nextReason;
         delete copy.accountAttributionEvidence;
         unattributedReasons[copy.unattributedReason] = (unattributedReasons[copy.unattributedReason] || 0) + 1;
       }
@@ -2667,13 +2833,14 @@ function repairAndMigrateAccountLedger({
 
     const after = summarizeCounts(nextCalls);
     let backupPath = null;
-    if (!dryRun && fs.existsSync(resolvedLedgerPath)) {
-      const tsTag = backupSuffix || `${Date.now()}`;
-      backupPath = `${resolvedLedgerPath}.bak-pre-elv89-${tsTag}`;
-      fs.copyFileSync(resolvedLedgerPath, backupPath);
-    }
-
-    if (!dryRun && (updatedCount > 0 || force)) {
+    let prunedBackups = null;
+    if (!dryRun && hasContentChange) {
+      if (fs.existsSync(resolvedLedgerPath)) {
+        const tsTag = backupSuffix || `${Date.now()}`;
+        backupPath = `${resolvedLedgerPath}.bak-pre-elv89-${tsTag}`;
+        fs.copyFileSync(resolvedLedgerPath, backupPath);
+        prunedBackups = pruneLedgerRepairBackups(resolvedLedgerPath, { keep: maxBackups });
+      }
       const draftLedger = {
         ...ledger,
         calls: nextCalls,
@@ -2692,8 +2859,10 @@ function repairAndMigrateAccountLedger({
     return {
       ok: true,
       dryRun: Boolean(dryRun),
+      changed: hasContentChange,
       ledgerPath: resolvedLedgerPath,
       backupPath,
+      prunedBackups,
       updatedCount,
       clearedCount,
       attributedOrFixedCount,
@@ -5429,7 +5598,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     } catch { }
   }
 
-  // 在任何 transcript 对齐或富化写入覆盖之前，先对未经历最新归属版本校验且带有账号归属的账本执行一次带备份的幂等纠偏
+  // 在任何 transcript 对齐或富化写入覆盖之前，先清理历史堆积的旧版本备份，并对未经历最新归属版本校验的账本执行幂等纠偏
+  if (!options.skipAutoRepair && (!options.fs || options.fs === fs)) {
+    try {
+      cleanupUpgradeLedgerBackups({
+        agDir,
+        stateDir: options.stateDir || null,
+        keep: 1
+      });
+    } catch { }
+  }
   if (hasRealAccountStore && !options.skipAutoRepair && (!options.fs || options.fs === fs)) {
     try {
       const preRepairCalls = (loadPricingLedger(agDir).calls || {});
@@ -5443,6 +5621,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       if (needsAttributionRepair) {
         repairAndMigrateAccountLedger({
           agDir,
+          stateDir: options.stateDir || null,
           accountSessions: Array.isArray(sessionWindowsForHistory) ? sessionWindowsForHistory : []
         });
       }
@@ -8164,6 +8343,10 @@ module.exports = {
   buildAccountUsageBreakdown,
   summarizeAccountWindowUsage,
   repairAndMigrateAccountLedger,
+  MAX_LEDGER_REPAIR_BACKUPS,
+  listLedgerRepairBackups,
+  pruneLedgerRepairBackups,
+  cleanupUpgradeLedgerBackups,
   loadPricingLedger,
   savePricingLedger,
   getPricingLedgerPath,
