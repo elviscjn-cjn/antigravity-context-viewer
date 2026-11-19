@@ -3896,15 +3896,47 @@
     return 10;
   }
 
+  function resolveQuotaWindowBucketPair(buckets = []) {
+    const list = Array.isArray(buckets) ? buckets.filter(Boolean) : [];
+    const findWindow = (targetKey, targetShort) => {
+      const candidates = list.filter(b => {
+        const wk = String(b.windowKey || '').trim().toLowerCase();
+        const ws = String(b.windowShort || '').trim().toLowerCase();
+        return wk === targetKey || ws === targetShort;
+      });
+      if (!candidates.length) return null;
+      const priced = candidates.filter(b => b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction)));
+      if (priced.length) {
+        return priced.slice().sort((a, b) => Number(a.remainingFraction) - Number(b.remainingFraction))[0];
+      }
+      return candidates[0];
+    };
+    return {
+      bucket5h: findWindow('5h', '5h'),
+      bucket7d: findWindow('weekly', '7d')
+    };
+  }
+
   /**
    * 统一选择主限额窗口（被 buildModelQuotaSnapshot 与顶栏徽章渲染共用）：
-   * 1) 优先 remainingFraction 最小的更紧缩窗口；
+   * 1) 支持 preferredMode: 'auto' (最紧缩优先) | '5h' | 'weekly' | 'both'；
    * 2) 相同剩余量按 5h -> 24h/daily -> 7d/weekly -> 其他 确定性排序；
    * 3) 返回 { primaryBucket, selectionReason } 供悬浮详情解释选择依据。
    */
-  function selectPrimaryQuotaBucket(buckets = []) {
+  function selectPrimaryQuotaBucket(buckets = [], preferredMode = 'auto') {
     const list = Array.isArray(buckets) ? buckets.filter(Boolean) : [];
     if (!list.length) return { primaryBucket: null, selectionReason: 'none' };
+    const mode = String(preferredMode || 'auto').trim().toLowerCase();
+    if (mode === '5h' || mode === 'weekly') {
+      const pair = resolveQuotaWindowBucketPair(list);
+      const picked = mode === '5h' ? pair.bucket5h : pair.bucket7d;
+      if (picked && picked.remainingFraction !== null && picked.remainingFraction !== undefined && Number.isFinite(Number(picked.remainingFraction))) {
+        return {
+          primaryBucket: picked,
+          selectionReason: list.length === 1 ? 'single_window' : (mode === '5h' ? 'user_5h' : 'user_weekly')
+        };
+      }
+    }
     const priced = list.filter(b => b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction)));
     if (!priced.length) {
       return { primaryBucket: list[0], selectionReason: list.length === 1 ? 'single_window' : 'unpriced_fallback' };
@@ -7091,6 +7123,7 @@
     classifyModelQuotaAvailability,
     isDecorativeBadgeTagTitle,
     selectPrimaryQuotaBucket,
+    resolveQuotaWindowBucketPair,
     buildModelQuotaSnapshot,
     splitModelDisplayAndEffort,
     resolvePlaceholderModelInfo,

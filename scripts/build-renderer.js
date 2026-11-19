@@ -62,7 +62,8 @@ function buildRenderer(options = {}) {
 
   const styles = readVerifiedRendererSource(effSrcDir, 'styles.css').trim();
   let template = readVerifiedRendererSource(effSrcDir, 'template.html').trim();
-  template = template.replace(/<span id="v">[^<]*<\/span>/g, `<span id="v">${displayVersion}</span>`);
+  template = template.replace(/(<span id="v"[^>]*>)[^<]*(<\/span>)/g, `$1${displayVersion}$2`);
+  template = template.replace(/(<span id="v-tokens"[^>]*>)[^<]*(<\/span>)/g, `$1${displayVersion}$2`);
   template = template.replace(/<span id="up-pop-ver"[^>]*>[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">${displayVersion}</span>`);
 
   const colors = readVerifiedRendererSource(effSrcDir, 'colors.js').trim();

@@ -4866,3 +4866,35 @@ test('v0.8.8 i18n/货币基础能力: 48国预设含完整 nameTw/nameEn 且无�
   assert.equal(norm.currentPeriod.periodType, 'calendar_month');
   assert.doesNotMatch(norm.currentPeriod.label, /[\u4e00-\u9fff]/);
 });
+
+test('Issue #41 & ELV-94 settings: selectPrimaryQuotaBucket supports auto/5h/weekly and dockPosition/quotaBadgeWindowMode persist safely', () => {
+  const { selectPrimaryQuotaBucket, resolveQuotaWindowBucketPair } = require('./meter-core');
+  const { getPluginSettings, savePluginSettings } = require('./meter-collector');
+  const buckets = [
+    { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.92 },
+    { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.64 }
+  ];
+  assert.equal(selectPrimaryQuotaBucket(buckets, 'auto').primaryBucket.windowShort, '7d');
+  assert.equal(selectPrimaryQuotaBucket(buckets, '5h').primaryBucket.windowShort, '5h');
+  assert.equal(selectPrimaryQuotaBucket(buckets, 'weekly').primaryBucket.windowShort, '7d');
+  const pair = resolveQuotaWindowBucketPair(buckets);
+  assert.equal(pair.bucket5h.remainingFraction, 0.92);
+  assert.equal(pair.bucket7d.remainingFraction, 0.64);
+
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ui-prefs-'));
+  try {
+    const defSettings = getPluginSettings({ agDir: tmpDir });
+    assert.equal(defSettings.dockPosition, 'flow');
+    assert.equal(defSettings.quotaBadgeWindowMode, 'auto');
+
+    savePluginSettings({ dockPosition: 'aux', quotaBadgeWindowMode: 'both' }, { agDir: tmpDir });
+    const next = getPluginSettings({ agDir: tmpDir });
+    assert.equal(next.dockPosition, 'aux');
+    assert.equal(next.quotaBadgeWindowMode, 'both');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

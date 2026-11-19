@@ -719,7 +719,9 @@ test('顶栏入口顺序、独立弹窗锚点、防底裁切 maxHeight 与 Notic
   assert.ok(idxBadge < idxSpeed && idxSpeed < idxTokens && idxTokens < idxCli && idxCli < idxOverflow);
   const betweenBadgeAndSpeed = tpl.slice(idxBadge, idxSpeed);
   assert.equal(betweenBadgeAndSpeed.includes('badge-quota'), false, '上下文与速度必须紧邻，不能被额度入口隔开');
-  assert.ok(tpl.includes('id="quota-usage-tip"'), '面板底部应包含简短用量贴士节点');
+  assert.equal(tpl.includes('id="quota-usage-tip"'), false, 'v0.8.9 精简应移除冗余 quota-usage-tip 占位');
+  assert.equal(tpl.includes('id="quota-basis-note"'), false, 'v0.8.9 精简应移除大段 quota-basis-note');
+  assert.ok(tpl.includes('id="quota-basis-help"'), '应保留 (?) 悬浮提示按钮替代静态大段说明');
 
   // 2. 验证纯 New/Beta 装饰角标不触发 Notice: New 占地，而真实警示意图保留
   const availNew = core.classifyModelQuotaAvailability({

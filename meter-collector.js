@@ -3274,6 +3274,8 @@ function getPluginSettings(options = {}) {
   const customPlan = resolveAccountCustomPlan(settings, email);
   const uiPrefs = settings.uiPreferences || {};
   const contextPreferences = settings.contextPreferences || {};
+  const validDockPositions = new Set(['flow', 'fixed', 'aux', 'page', 'hide']);
+  const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
   return {
     ok: true,
     customPlan,
@@ -3284,6 +3286,8 @@ function getPluginSettings(options = {}) {
     savedHeatView: uiPrefs.savedHeatView,
     autoCheckUpdate: uiPrefs.autoCheckUpdate,
     allowBetaUpdates: uiPrefs.allowBetaUpdates === true,
+    dockPosition: validDockPositions.has(uiPrefs.dockPosition) ? uiPrefs.dockPosition : 'flow',
+    quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
     panelLanguage: uiPrefs.panelLanguage || 'zh-CN',
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
@@ -3372,6 +3376,8 @@ function savePluginSettings(payload = {}, options = {}) {
     topLevelUiPrefs.savedHeatView = payload.savedHeatView;
   }
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
+  const validDockPositions = new Set(['flow', 'fixed', 'aux', 'page', 'hide']);
+  const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
   if (typeof payload.autoCheckUpdate === 'boolean') {
     topLevelUiPrefs.autoCheckUpdate = payload.autoCheckUpdate;
   }
@@ -3379,6 +3385,12 @@ function savePluginSettings(payload = {}, options = {}) {
     topLevelUiPrefs.allowBetaUpdates = payload.allowBetaUpdates;
     cachedUpdateCheck = null;
     cachedUpdateCheckAt = 0;
+  }
+  if (typeof payload.dockPosition === 'string' && validDockPositions.has(payload.dockPosition)) {
+    topLevelUiPrefs.dockPosition = payload.dockPosition;
+  }
+  if (typeof payload.quotaBadgeWindowMode === 'string' && validQuotaWindowModes.has(payload.quotaBadgeWindowMode)) {
+    topLevelUiPrefs.quotaBadgeWindowMode = payload.quotaBadgeWindowMode;
   }
   if (typeof payload.panelLanguage === 'string' && validPanelLanguages.has(payload.panelLanguage)) {
     topLevelUiPrefs.panelLanguage = payload.panelLanguage;

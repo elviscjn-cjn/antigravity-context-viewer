@@ -1100,11 +1100,10 @@ test('tray/root startup visibility, settings save/restore (country, subscription
   assert.match(h.elements.get('plan-save-feedback').textContent, /保存失败.*模拟磁盘只读/);
   shouldFailSave = false;
 
-  // 3. 验证 AI Pro 详情展开、手动“详情收回”按钮、切换预估费用自动关闭详情及异步返回防重开
+  // 3. 验证 AI Pro 详情单入口展开/收起、切换预估费用自动关闭详情及异步返回防重开
   h.elements.get('badge-tokens').click();
   const detailCard = h.elements.get('plan-detail-card');
   const toggleBtn = h.elements.get('btn-plan-detail-toggle');
-  const collapseTopBtn = h.elements.get('btn-plan-detail-collapse-top');
   const collapseBottomBtn = h.elements.get('btn-plan-detail-collapse');
   const customForm = h.elements.get('plan-custom-form');
 
@@ -1117,8 +1116,8 @@ test('tray/root startup visibility, settings save/restore (country, subscription
   h.elements.get('btn-edit-plan-custom').click();
   assert.equal(customForm.style.display, 'block');
 
-  // 点击顶部“详情收回 ▲”按钮手动关闭
-  collapseTopBtn.click();
+  // 再次点击单一展开/收起按钮手动关闭
+  toggleBtn.click();
   assert.equal(detailCard.style.display, 'none');
   assert.equal(customForm.style.display, 'none');
   assert.equal(api.getPlanDetailExpanded(), false);
@@ -5403,7 +5402,7 @@ test('v0.8.9 β (0.8.9-beta.1) 版本展示与预发布更新比较隔离', asyn
 
   // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.8.9 β，且 beta 通道开关默认未勾选
   const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-  assert.match(builtCode, /<span id="v">0\.8\.9 β<\/span>/);
+  assert.match(builtCode, /<span id="v"[^>]*>0\.8\.9 β<\/span>/);
   assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.8\.9 β<\/span>/);
   assert.equal(builtCode.includes('id="check-allow-beta-updates"'), true);
 
@@ -6106,6 +6105,156 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
     h.elements.get('btn-custom-plan-save').click();
     const lastSave = h.savedSettings[h.savedSettings.length - 1];
     assert.equal(lastSave?.customPlan?.validEndDate, todayYmd);
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});
+
+test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠、Issue #41 额度窗口四态、ELV-93 纯 SVG 等待沙漏', async () => {
+  const tpl = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  // 1. 面板瘦身结构断言
+  assert.equal(tpl.includes('id="ctx-compact-card"'), false, '应移除独立 #ctx-compact-card 并合并入 #key-summary 头部胶囊');
+  assert.equal(tpl.includes('id="speed-active-test-note"'), false, '应移除 #speed-active-test-note');
+  assert.equal(tpl.includes('id="quota-usage-tip"'), false, '应移除 #quota-usage-tip');
+  assert.equal(tpl.includes('id="quota-basis-note"'), false, '应移除静态大段 #quota-basis-note');
+  assert.equal(tpl.includes('id="btn-plan-detail-collapse-top"'), false, '应移除重复的 #btn-plan-detail-collapse-top');
+  assert.equal(tpl.includes('id="btn-check-update-ctx"'), false, '应从主面板标题栏移除重复更新按钮');
+  assert.equal(tpl.includes('id="btn-github-repo-ctx"'), false, '应从主面板标题栏移除重复 GitHub 按钮');
+  assert.ok(tpl.includes('id="settings-about-update-card"'), '配置 Tab 应包含统一的更新与项目链接卡');
+  assert.ok(tpl.includes('id="ui-slim-prefs-card"'), '配置 Tab 应包含外观、停靠与顶栏偏好卡');
+  assert.ok(tpl.includes('id="badge-speed-wait-svg"'), '顶栏速度单元应包含等待态纯 SVG 沙漏容器');
+
+  // 2. #key-takeaway 仅告警/异常时显示（<75% 隐藏，>=75% 显示），点击 #v 直达设置更新
+  const savedPayloads = [];
+  const auxContainer = {
+    children: [],
+    appendChild(n) { this.children.push(n); n.parentElement = this; },
+    insertBefore(n) { this.children.unshift(n); n.parentElement = this; },
+    removeChild(n) { this.children = this.children.filter(x => x !== n); }
+  };
+  const pageContainer = {
+    children: [],
+    appendChild(n) { this.children.push(n); n.parentElement = this; },
+    insertBefore(n) { this.children.unshift(n); n.parentElement = this; },
+    removeChild(n) { this.children = this.children.filter(x => x !== n); }
+  };
+  let mockQueryMode = 'none';
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.document.querySelector = (sel) => {
+    if (mockQueryMode === 'aux' && sel.includes('aux-sidebar')) return auxContainer;
+    if (mockQueryMode === 'page' && sel.includes('workbench.parts.editor')) return pageContainer;
+    return null;
+  };
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    saveSettings: async (payload) => { savedPayloads.push(payload); return { ok: true }; }
+  };
+  try {
+    h.finishScan();
+    // 50% 安全状态 -> #key-takeaway 隐藏
+    h.pending[0].resolve(response({ usage: { inputTokens: 128000 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } }));
+    await h.flush();
+    assert.equal(h.elements.get('key-takeaway').hidden, true, '正常 <75% 占用时 #key-takeaway 应隐藏');
+
+    // 点击版本号胶囊 #v 自动展开主面板并切至设置 Tab
+    assert.equal(h.elements.get('panel').hidden, true);
+    h.elements.get('v').click();
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
+
+    // 3. ELV-94 5 档停靠位置切换（aux/page 占位，缺失时平滑回退 fixed，hide 显示唤醒点）
+    mockQueryMode = 'none';
+    api.setDockPosition('aux');
+    assert.equal(api.getDockPosition().dockPosition, 'aux');
+    assert.equal(api.getDockPosition().actualDock, 'fixed', '缺少辅助栏容器时应平滑回退 fixed');
+    assert.equal(h.elements.get('dock-fallback-note').hidden, false);
+
+    mockQueryMode = 'aux';
+    api.setDockPosition('aux');
+    assert.equal(api.getDockPosition().actualDock, 'aux');
+    assert.equal(h.elements.get('panel').getAttribute('data-panel-docked'), 'true');
+    assert.equal(h.elements.get('dock-fallback-note').hidden, true);
+
+    mockQueryMode = 'page';
+    api.setDockPosition('page');
+    assert.equal(api.getDockPosition().actualDock, 'page');
+    assert.equal(h.elements.get('panel').getAttribute('data-panel-docked'), 'true');
+
+    api.setDockPosition('hide');
+    assert.equal(api.getDockPosition().actualDock, 'hide');
+    assert.equal(h.elements.get('badge-dock-wake').hidden, false);
+
+    api.setDockPosition('flow');
+    assert.equal(h.elements.get('badge-dock-wake').hidden, true);
+    assert.ok(savedPayloads.some(p => p.dockPosition === 'hide'));
+
+    // 4. Issue #41 顶栏额度窗口模式 4 选 1 (auto / 5h / weekly / both) 与右键/Alt+点击切换
+    const nowQuotaTs = Date.now();
+    api.setContextLatestForTest({ model: 'Gemini 4 Hydrogen (High)', modelId: 'gemini-4-hydrogen-high', actual: 12000, budget: 256000 });
+    api.setQuotaSnapshotForTest({
+      snapshot: {
+        fetchedAtMs: nowQuotaTs,
+        currentModel: { productKey: 'product:google:gemini-4-hydrogen', productLabel: 'Gemini 4 Hydrogen (High)', poolKey: 'shared_gemini_main' },
+        activeStatus: 'available',
+        pools: [{
+          poolKey: 'shared_gemini_main',
+          title: 'Gemini 模型',
+          models: [{ productKey: 'product:google:gemini-4-hydrogen', productLabel: 'Gemini 4 Hydrogen', modelIds: ['gemini-4-hydrogen-high'] }],
+          buckets: [
+            { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.92, percentText: '92%' },
+            { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.64, percentText: '64%' }
+          ]
+        }]
+      }
+    }, nowQuotaTs);
+    assert.equal(h.elements.get('quota-badge-val').textContent, '64%', 'auto 模式默认显示更紧缩的 7d 64%');
+
+    api.setQuotaBadgeWindowMode('5h');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '92%');
+    assert.equal(h.elements.get('quota-badge-tag').textContent, '5h');
+
+    api.setQuotaBadgeWindowMode('weekly');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '64%');
+    assert.equal(h.elements.get('quota-badge-tag').textContent, '7d');
+
+    api.setQuotaBadgeWindowMode('both');
+    assert.equal(h.elements.get('quota-badge-dual').hidden, false);
+    assert.equal(h.elements.get('quota-badge-dual').children[0].textContent, '5h 92%');
+    assert.equal(h.elements.get('quota-badge-dual').children[1].textContent, '7d 64%');
+
+    // 右键 #badge-quota 从 both 轮回 auto
+    h.elements.get('badge-quota').trigger('contextmenu', { preventDefault() {} });
+    assert.equal(api.getQuotaBadgeWindowMode(), 'auto');
+    assert.equal(h.elements.get('quota-badge-dual').hidden, true);
+    // Alt+点击 #badge-quota 切换到 5h 且不打开额度面板
+    assert.equal(h.elements.get('panel-quota').hidden, true);
+    h.elements.get('badge-quota').trigger('click', { altKey: true, preventDefault() {} });
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    assert.equal(h.elements.get('panel-quota').hidden, true);
+    assert.ok(savedPayloads.some(p => p.quotaBadgeWindowMode === 'both'));
+
+    // 5. ELV-93 顶栏等待状态改为纯 SVG 沙漏动效（去除 Wait Xs / 等待 Xs 文本抖动）
+    api.setSpeedEvaluationForTest({ phase: 'waiting', elapsedSec: 4 });
+    const spWait = api.getSpeedPanelStateForTest();
+    assert.equal(spWait.topSpeedPhase, 'waiting');
+    assert.equal(spWait.topWaitSvgVisible, true);
+    assert.equal(spWait.topSpeedText, '', '等待期顶栏不得显示每秒跳动文字');
+    assert.match(h.elements.get('badge-speed').title, /4s/);
+
+    api.setSpeedEvaluationForTest({
+      phase: 'final',
+      ttftSec: 0.7,
+      streamingSec: 2.0,
+      totalDurationSec: 2.7,
+      streamSpeed: 145.2,
+      overallTps: 108.0,
+      outputTokens: 290
+    });
+    const spDone = api.getSpeedPanelStateForTest();
+    assert.equal(spDone.topSpeedPhase, null);
+    assert.equal(spDone.topWaitSvgVisible, false);
+    assert.match(spDone.topSpeedText, /145\.2/);
   } finally {
     try { api.dispose(); } catch {}
   }

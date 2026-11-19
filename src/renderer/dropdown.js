@@ -1142,17 +1142,11 @@
     });
   }
 
-  // 套餐详情卡片展开与收回（统一走 setPlanDetailExpanded）
-  el('plan-summary-price-badge')?.addEventListener('click', () => {
-    setPlanDetailExpanded(!planDetailExpanded);
-  });
+  // 套餐详情卡片展开与收回（统一单入口 #btn-plan-detail-toggle 与底部 #btn-plan-detail-collapse）
   el('btn-plan-detail-toggle')?.addEventListener('click', () => {
     const card = el('plan-detail-card');
     const currentlyHidden = !card || card.style.display === 'none' || !card.style.display;
     setPlanDetailExpanded(currentlyHidden);
-  });
-  el('btn-plan-detail-collapse-top')?.addEventListener('click', () => {
-    setPlanDetailExpanded(false);
   });
   el('btn-plan-detail-collapse')?.addEventListener('click', () => {
     setPlanDetailExpanded(false);

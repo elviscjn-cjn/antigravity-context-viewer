@@ -1132,7 +1132,7 @@ test('热加载 7：PROJECT_VERSION 精确跟随本插件 package.json 但不误
     });
     const vEl = h.shadowElements.get('v');
     vEl.textContent = 'v0.8.8';
-    h.shadowElements.get('btn-check-update-ctx').click();
+    h.shadowElements.get('btn-check-update').click();
     await h.flush(40);
     h.shadowElements.get('btn-apply-update').click();
     await h.flush(60);

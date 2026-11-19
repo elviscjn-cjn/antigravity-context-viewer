@@ -10,6 +10,7 @@
   <span class="quota-badge-metric">
     <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
     <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
+    <span id="quota-badge-dual" class="quota-badge-dual" hidden></span>
   </span>
 </button>
 
@@ -29,10 +30,18 @@
   <span id="hover-wrap" class="sr-only"><span id="hover-extra"></span></span>
 </button>
 
-<!-- 顶部基本单元 2: 输出速度 (tok/s) -->
+<!-- 顶部基本单元 2: 输出速度 (tok/s) / 等待纯动效沙漏 -->
 <button id="badge-speed" class="ag-unit" type="button" aria-label="模型输出速度与耗时统计" data-i18n-aria="badge.speed.aria"
   aria-expanded="false">
   <span id="badge-speed-icon" class="speed-icon" aria-hidden="true">⚡</span>
+  <span id="badge-speed-wait-svg" class="speed-wait-svg" hidden aria-hidden="true">
+    <svg class="ag-hourglass-svg" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3.2 2.2h7.6M3.2 11.8h7.6M4 2.2c0 2.5 3 4.2 3 4.8s-3 2.3-3 4.8M10 2.2c0 2.5-3 4.2-3 4.8s3 2.3 3 4.8" opacity="0.88" />
+      <path class="ag-hourglass-sand-top" d="M4.8 3.2h4.4L7 6.1z" fill="currentColor" stroke="none" />
+      <line class="ag-hourglass-stream" x1="7" y1="6.7" x2="7" y2="9.4" stroke-dasharray="1 1.2" stroke-width="1.2" />
+      <path class="ag-hourglass-sand-bot" d="M4.8 11.1h4.4L7 8.4z" fill="currentColor" stroke="none" />
+    </svg>
+  </span>
   <span id="speed-amount">-- tok/s</span>
   <span id="speed-hover-extra" class="sr-only"></span>
 </button>
@@ -64,6 +73,10 @@
     <circle cx="12.5" cy="8" r="1.25"></circle>
   </svg>
 </button>
+
+<!-- hide 模式下轻量边缘唤醒按钮 -->
+<button id="badge-dock-wake" class="ag-unit ag-dock-wake" type="button" hidden aria-label="唤醒插件菜单与设置"
+  data-i18n-aria="settings.dock.wakeAria" title="顶栏已隐藏 · 点击打开快捷菜单或恢复显示" data-i18n-title="settings.dock.wakeTitle">◔</button>
 
 <!-- CLI 启动反馈提示气泡 -->
 <div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
@@ -104,38 +117,11 @@
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
-      <span id="v">v0.8.5</span>
+      <span id="v" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
+        data-i18n-title="header.versionBtn.title">v0.8.5</span>
+      <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none;position:static"></span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
-      <!-- 插件面板三语言快速切换分段按钮 -->
-      <div id="panel-lang-top-segmented" class="ctx-segmented ctx-lang-top-segmented" role="group" aria-label="插件面板语言"
-        data-i18n-aria="settings.panelLang.aria">
-        <button id="btn-top-lang-zh-CN" class="ctx-seg-btn active" type="button" data-panel-lang="zh-CN" title="简体中文"
-          aria-label="简体中文">简</button>
-        <button id="btn-top-lang-zh-TW" class="ctx-seg-btn" type="button" data-panel-lang="zh-TW" title="繁體中文"
-          aria-label="繁體中文">繁</button>
-        <button id="btn-top-lang-en" class="ctx-seg-btn" type="button" data-panel-lang="en" title="English"
-          aria-label="English">EN</button>
-      </div>
-      <button id="btn-github-repo-ctx" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库"
-        data-i18n-aria="header.github.aria" title="打开 GitHub 仓库" data-i18n-title="header.github.aria">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
-          <path
-            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
-          </path>
-        </svg>
-      </button>
-      <button id="btn-check-update-ctx" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新"
-        data-i18n-aria="header.update.aria" title="检查插件更新" data-i18n-title="header.update.aria"
-        style="position:relative">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"
-          stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path>
-        </svg>
-        <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
-      </button>
-      <button id="btn-panel-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置"
-        data-i18n-aria="header.palette.aria" title="外观与调色设置" data-i18n-title="header.palette.aria">🎨</button>
       <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
         data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）"
         data-i18n-title="header.theme.title">🌓</button>
@@ -170,8 +156,19 @@
 
       <!-- 卡片 1: 核心用量速览 -->
       <div id="key-summary">
-        <div class="key-header"><span class="key-title" data-i18n="session.keySummary.title">⭐ 核心用量速览</span><span
-            id="key-badge" class="key-pill pill-muted" data-i18n="session.badge.reading">读取中</span></div>
+        <div class="key-header" style="gap:6px;flex-wrap:wrap">
+          <span class="key-title" data-i18n="session.keySummary.title">⭐ 核心用量速览</span>
+          <div style="display:flex;align-items:center;gap:6px;margin-left:auto;min-width:0">
+            <button id="btn-goto-model-settings" class="ctx-compact-pill-btn" type="button"
+              title="去模型设置 ›" data-i18n-title="session.compact.gotoModels">
+              <span id="ctx-compact-saved" data-i18n="status.savedDefault">未单独设置（使用默认）</span>
+              <span class="ctx-compact-sep">·</span>
+              <span id="ctx-compact-client" data-i18n="status.badge.reading">状态读取中…</span>
+              <span aria-hidden="true">›</span>
+            </button>
+            <span id="key-badge" class="key-pill pill-muted" data-i18n="session.badge.reading">读取中</span>
+          </div>
+        </div>
         <div class="key-bar-track">
           <div id="key-bar-fill" class="key-bar-fill"></div>
         </div>
@@ -189,7 +186,7 @@
             <div id="key-remaining" class="key-stat-val">—</div>
           </div>
         </div>
-        <div id="key-takeaway" class="key-takeaway" data-i18n="session.keyTakeaway.loading">正在计算核心指标…</div>
+        <div id="key-takeaway" class="key-takeaway" hidden style="display:none" data-i18n="session.keyTakeaway.loading">正在计算核心指标…</div>
       </div>
 
       <!-- 卡片 2: 生成体验、纯流式速度与 E 评分速览 -->
@@ -277,21 +274,6 @@
             <button id="btn-timeline-load-more" class="ctx-compact-link-btn" type="button" data-i18n="session.timeline.loadMore">加载更多轮次</button>
           </div>
         </div>
-      </div>
-
-      <!-- 紧凑上下文设置入口卡片 -->
-      <div id="ctx-compact-card" class="ctx-compact-card">
-        <div class="ctx-compact-info">
-          <div class="ctx-compact-title" data-i18n="session.compact.title">上下文设置</div>
-          <div class="ctx-compact-meta">
-            <span><span data-i18n="session.compact.savedLabel">本模型已保存：</span><strong
-                id="ctx-compact-saved" data-i18n="status.savedDefault">未单独设置（使用默认）</strong></span>
-            <span><span data-i18n="session.compact.clientLabel">客户端当前使用：</span><strong
-                id="ctx-compact-client" data-i18n="status.badge.reading">状态读取中…</strong></span>
-          </div>
-        </div>
-        <button id="btn-goto-model-settings" class="ctx-compact-link-btn" type="button"
-          data-i18n="session.compact.gotoModels">去模型设置 ›</button>
       </div>
 
       <!-- 底层技术参数与附件审计 -->
@@ -796,12 +778,47 @@
         </div>
       </div>
 
-      <div id="speed-active-test-note" class="ctx-active-test-note" data-i18n="speed.activeTestNote">
-        主动测试：未接通。目前没有可靠的指定模型调用入口，暂时只能使用日常对话的实测记录。</div>
     </div>
 
     <!-- 设置与系统配置 (第四分页: 配置 / setting) -->
     <div id="pane-ctx-settings" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-settings" hidden>
+      <!-- 0. 插件外观、停靠位置与顶栏偏好 (ELV-94 & Issue #41) -->
+      <div class="ctx-settings-card" id="ui-slim-prefs-card">
+        <div class="ctx-settings-card-hdr">
+          <div class="ctx-settings-card-title" data-i18n="settings.appearance.title">🎨 外观、停靠位置与顶栏偏好</div>
+        </div>
+        <div class="ctx-small-label" data-i18n="settings.dock.label">面板与顶栏停靠位置</div>
+        <div id="dock-pos-segmented" class="ctx-segmented ctx-seg-wrap" role="group" aria-label="面板停靠位置">
+          <button id="btn-dock-flow" class="ctx-seg-btn active" type="button" data-dock-mode="flow" data-i18n="settings.dock.flow">标题栏 (flow)</button>
+          <button id="btn-dock-fixed" class="ctx-seg-btn" type="button" data-dock-mode="fixed" data-i18n="settings.dock.fixed">右上悬浮 (fixed)</button>
+          <button id="btn-dock-aux" class="ctx-seg-btn" type="button" data-dock-mode="aux" data-i18n="settings.dock.aux">右侧辅助栏 (aux)</button>
+          <button id="btn-dock-page" class="ctx-seg-btn" type="button" data-dock-mode="page" data-i18n="settings.dock.page">编辑区整页 (page)</button>
+          <button id="btn-dock-hide" class="ctx-seg-btn" type="button" data-dock-mode="hide" data-i18n="settings.dock.hide">隐藏</button>
+        </div>
+        <div id="dock-fallback-note" class="ctx-dock-note" hidden></div>
+        <div class="ctx-small-label" style="margin-top:8px" data-i18n="settings.quotaBadgeMode.label">顶栏额度窗口显示（右键/Alt+点击切换）</div>
+        <div id="quota-mode-segmented" class="ctx-segmented ctx-seg-wrap" role="group" aria-label="顶栏额度窗口">
+          <button id="btn-quota-mode-auto" class="ctx-seg-btn active" type="button" data-quota-window-mode="auto" data-i18n="settings.quotaBadgeMode.auto">自动 (最紧缩)</button>
+          <button id="btn-quota-mode-5h" class="ctx-seg-btn" type="button" data-quota-window-mode="5h" data-i18n="settings.quotaBadgeMode.5h">5h 窗口</button>
+          <button id="btn-quota-mode-weekly" class="ctx-seg-btn" type="button" data-quota-window-mode="weekly" data-i18n="settings.quotaBadgeMode.weekly">周额度</button>
+          <button id="btn-quota-mode-both" class="ctx-seg-btn" type="button" data-quota-window-mode="both" data-i18n="settings.quotaBadgeMode.both">5h+周双显</button>
+        </div>
+        <div class="ctx-small-label" style="margin-top:8px" data-i18n="settings.langAndPalette.label">面板语言与主题调色</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div id="panel-lang-top-segmented" class="ctx-segmented ctx-lang-top-segmented" role="group" aria-label="插件面板语言"
+            data-i18n-aria="settings.panelLang.aria">
+            <button id="btn-top-lang-zh-CN" class="ctx-seg-btn active" type="button" data-panel-lang="zh-CN" title="简体中文"
+              aria-label="简体中文">简</button>
+            <button id="btn-top-lang-zh-TW" class="ctx-seg-btn" type="button" data-panel-lang="zh-TW" title="繁體中文"
+              aria-label="繁體中文">繁</button>
+            <button id="btn-top-lang-en" class="ctx-seg-btn" type="button" data-panel-lang="en" title="English"
+              aria-label="English">EN</button>
+          </div>
+          <button id="btn-panel-palette" class="unlock-btn unlock-btn-secondary" type="button" style="padding:3px 9px;font-size:11px"
+            data-i18n="settings.palette.openBtn">🎨 调色与外观</button>
+        </div>
+      </div>
+
       <!-- 1. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
       <div class="ctx-settings-card" id="enhance-preset-card">
         <div class="ctx-settings-card-hdr">
@@ -1177,6 +1194,30 @@
       </div>
     </div>
   </div>
+
+  <!-- 7. 版本更新与项目链接 -->
+  <div class="ctx-settings-card" id="settings-about-update-card">
+    <div class="ctx-settings-card-hdr">
+      <div class="ctx-settings-card-title" data-i18n="settings.aboutUpdate.title">🔄 版本更新与项目链接</div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <button id="btn-check-update" class="unlock-btn unlock-btn-secondary update-btn" type="button"
+          style="position:relative;padding:3px 9px;font-size:11px" data-i18n="settings.aboutUpdate.checkBtn">检查插件更新<span
+            id="update-badge-dot" class="update-badge-dot" style="display:none"></span></button>
+        <button id="btn-github-repo" class="unlock-btn unlock-btn-secondary" type="button"
+          style="padding:3px 9px;font-size:11px" data-i18n="settings.aboutUpdate.githubBtn">打开 GitHub 仓库</button>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:11px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
+        <input id="check-auto-update" type="checkbox" checked>
+        <span data-i18n="tokens.update.auto">启动时自动检查更新（不自动安装）</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
+        <input id="check-allow-beta-updates" type="checkbox">
+        <span data-i18n="tokens.update.allowBeta">接收预发布版本推送（Beta 通道）</span>
+      </label>
+    </div>
+  </div>
   </div>
   </div>
 
@@ -1211,27 +1252,10 @@
       <span id="panel-tokens-title"
         style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"
         data-i18n="tokens.title">本机已记录用量</span>
+      <span id="v-tokens" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
+        data-i18n-title="header.versionBtn.title">0.8.9 β</span>
     </div>
     <div class="panel-header-actions">
-      <button id="btn-github-repo" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库"
-        data-i18n-aria="header.github.aria" title="打开 GitHub 仓库" data-i18n-title="header.github.aria">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
-          <path
-            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
-          </path>
-        </svg>
-      </button>
-      <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新"
-        data-i18n-aria="header.update.aria" title="检查插件更新" data-i18n-title="header.update.aria"
-        style="position:relative">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"
-          stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path>
-        </svg>
-        <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
-      </button>
-      <button id="btn-panel-tokens-palette" class="panel-icon-btn" type="button" aria-label="外观与调色设置"
-        data-i18n-aria="header.palette.aria" title="外观与调色设置" data-i18n-title="header.palette.aria">🎨</button>
       <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
         data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）"
         data-i18n-title="header.theme.title">🌓</button>
@@ -1301,8 +1325,6 @@
             AI 订阅与额度详情</span>
           <span id="plan-save-feedback" style="font-size:10px;color:var(--ag-text-muted);display:none"></span>
         </div>
-        <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button"
-          style="padding:2px 8px;font-size:10.5px" data-i18n="plan.detail.toggleClose">详情收回 ▲</button>
       </div>
       <dl class="plan-detail-dl">
         <dt data-i18n="plan.dt.plan">当前套餐：</dt>
@@ -2172,21 +2194,6 @@
             </div>
           </div>
 
-          <div
-            style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px dashed var(--ag-border-subcard);font-size:11px">
-            <span style="color:var(--ag-text-primary);font-weight:500" data-i18n="tokens.update.title">更新设置</span>
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
-              <input id="check-auto-update" type="checkbox" checked>
-              <span data-i18n="tokens.update.auto">启动时自动检查更新（不自动安装）</span>
-            </label>
-          </div>
-          <div
-            style="display:flex;align-items:center;justify-content:flex-end;margin-top:6px;font-size:11px">
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
-              <input id="check-allow-beta-updates" type="checkbox">
-              <span data-i18n="tokens.update.allowBeta">接收预发布版本推送（Beta 通道）</span>
-            </label>
-          </div>
         </div>
       </div>
     </div><!-- end #tokens-main-view -->
@@ -2353,7 +2360,12 @@
           <div id="quota-cur-pool" class="quota-cur-pool-sub"></div>
           <div id="quota-cur-est" class="quota-cur-est" hidden></div>
         </div>
-        <span id="quota-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
+        <div style="display:flex;align-items:center;gap:5px;flex-shrink:0">
+          <button id="quota-basis-help" class="quota-help-btn" type="button"
+            data-i18n-title="quota.basisNote" data-i18n-aria="quota.basisNote"
+            title="百分比与重置时间来自宿主接口；「约剩余 Token」按本机输入+缓存+输出原始 Token 统计。">?</button>
+          <span id="quota-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
+        </div>
       </div>
       <div id="quota-cur-alert" class="quota-cur-alert" hidden></div>
       <div id="quota-cur-buckets" class="quota-buckets-list"></div>
@@ -2367,11 +2379,6 @@
         data-i18n="quota.pools.browseHint">点击可查看详情（不切换当前会话模型）</span>
     </div>
     <div id="quota-pools-list" class="quota-pools-list"></div>
-
-    <div id="quota-basis-note" class="quota-basis-note" data-i18n="quota.basisNote">百分比与重置时间来自宿主接口；「约剩余
-      Token」按本机输入+缓存+输出原始 Token 统计，受服务端计费权重、同池模型混用、他端消耗及周期采样覆盖度影响；校准过期或样本不足时不按有效推算展示。</div>
-    <div id="quota-usage-tip" class="quota-usage-tip" data-i18n="quota.usageTip">💡
-      用量提示：使用前可先查看各池剩余额度，优先选择余量充足且适合当前任务的模型。</div>
 
     <!-- 统一多账号切换、自动切号、共享额度对照(ELV-57)与缓存保活保障(ELV-52) -->
     <div id="quota-accounts-section" class="quota-accounts-section">
