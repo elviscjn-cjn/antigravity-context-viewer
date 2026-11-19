@@ -26582,22 +26582,30 @@ var cumLockedKey = null;
     });
 
     // 针对实时切换后的会话模型重新匹配池与模型
-    const tStr = currentModelInput
-      ? String(currentModelInput.modelId || currentModelInput.label || '').trim().toLowerCase()
-      : '';
-    const tStripped = tStr.replace(/^model_/, '');
+    const targetCandidates = currentModelInput
+      ? (typeof currentModelInput === 'object'
+          ? [currentModelInput.modelId, currentModelInput.modelOrAlias?.model, currentModelInput.label, currentModelInput.model]
+          : [String(currentModelInput)]
+        ).filter(v => typeof v === 'string' && v.trim())
+      : [];
+    const targetLowers = targetCandidates.map(v => v.trim().toLowerCase());
+    const targetStripped = targetLowers.map(v => v.replace(/^model_/, ''));
+    const normFn = core?.normalizeModelLookupName;
+    const targetNorms = normFn
+      ? [...new Set(targetCandidates.map(v => normFn(v)).filter(Boolean))]
+      : [];
     let matchedPool = null;
     let matchedModel = null;
-    if (tStr) {
+    if (targetLowers.length > 0 || currentModelInput?.productKey) {
       for (const p of updatedPools) {
         for (const m of (p.models || [])) {
           const allIds = [...(m.modelIds || []), ...(m.aliases || [])].map(x => String(x).toLowerCase());
-          if (allIds.some(id => id === tStr || id.replace(/^model_/, '') === tStripped)) {
+          if (allIds.some(id => targetLowers.includes(id) || targetStripped.includes(id.replace(/^model_/, '')))) {
             matchedPool = p;
             matchedModel = m;
             break;
           }
-          if (m.productLabel && m.productLabel.toLowerCase() === tStr) {
+          if (m.productLabel && targetLowers.includes(m.productLabel.toLowerCase())) {
             matchedPool = p;
             matchedModel = m;
             break;
@@ -26606,6 +26614,14 @@ var cumLockedKey = null;
             matchedPool = p;
             matchedModel = m;
             break;
+          }
+          if (normFn && m.productLabel) {
+            const mNorm = normFn(m.productLabel);
+            if (mNorm && targetNorms.includes(mNorm)) {
+              matchedPool = p;
+              matchedModel = m;
+              break;
+            }
           }
         }
         if (matchedPool) break;

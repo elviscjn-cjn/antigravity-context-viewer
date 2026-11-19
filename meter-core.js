@@ -24,6 +24,9 @@
     if (s.includes('argon') || s.includes('gemini-4-argon') || s.includes('m668') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?(?![a-z0-9-])/.test(s)) {
       return 'gemini-4-argon';
     }
+    if (s.includes('neon') || s.includes('gemini-4-neon')) {
+      return 'gemini-4-neon';
+    }
     if (s.includes('hydrogen') || s.includes('gemini-4-hydrogen')) {
       return 'gemini-4-hydrogen';
     }
@@ -42,7 +45,7 @@
 
   function getSharedQuotaGroupKey(raw) {
     const pk = getModelPoolKey(raw);
-    if (pk === 'gemini-4-hydrogen' || pk === 'gemini-3.8-flash') return 'shared_gemini_main';
+    if (pk === 'gemini-4-neon' || pk === 'gemini-4-hydrogen' || pk === 'gemini-3.8-flash') return 'shared_gemini_main';
     if (pk === 'claude-opus-5-5' || pk === 'claude-sonnet-5-5' || pk === 'gpt-oss-120b') return 'shared_3p_pool';
     if (pk === 'gemini-4-argon') return 'shared_gemini_argon';
     if (pk === 'gemini-4-carbon') return 'shared_gemini_carbon';
@@ -359,6 +362,7 @@
     const parsed = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
     const poolNames = {
       'gemini-4-argon': 'Gemini 4 Argon 配额池（周限额）',
+      'gemini-4-neon': 'Gemini 4 Neon / Hydrogen / 3.8 Flash 共享池',
       'gemini-4-hydrogen': 'Gemini 4 Hydrogen / 3.8 Flash 共享池',
       'gemini-3.8-flash': 'Gemini 3.8 Flash / Hydrogen 共享池',
       'gemini-4-carbon': 'Gemini 4 Carbon 配额池',
@@ -3936,12 +3940,12 @@
       const joinedHints = [g.groupId, title, desc, ...explicitModelNames].filter(Boolean).join(' ').toLowerCase();
       if (joinedHints.includes('3p') || joinedHints.includes('claude') || joinedHints.includes('gpt-oss')) {
         sharedKey = 'shared_3p_pool';
+      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('neon') || joinedHints.includes('flash')) {
+        sharedKey = 'shared_gemini_main';
       } else if (joinedHints.includes('argon')) {
         sharedKey = 'shared_gemini_argon';
       } else if (joinedHints.includes('carbon')) {
         sharedKey = 'shared_gemini_carbon';
-      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('flash')) {
-        sharedKey = 'shared_gemini_main';
       } else {
         sharedKey = `group_${g.groupId || normalizeModelLookupName(title) || idx}`;
       }
@@ -4242,20 +4246,29 @@
     // 4. 匹配当前会话模型与浏览查看池（浏览不修改 currentModel）
     const findMatchedForTarget = (targetInput) => {
       if (!targetInput) return { pool: null, model: null };
-      const targetStr = typeof targetInput === 'object'
-        ? String(targetInput.modelId || targetInput.modelOrAlias?.model || targetInput.label || targetInput.model || '')
-        : String(targetInput);
-      const tLower = targetStr.trim().toLowerCase();
-      const tStripped = tLower.replace(/^model_/, '');
-      const tNorm = normalizeModelLookupName(targetStr);
+      const targetCandidates = typeof targetInput === 'object'
+        ? [targetInput.modelId, targetInput.modelOrAlias?.model, targetInput.label, targetInput.model]
+            .filter(v => typeof v === 'string' && v.trim())
+        : [String(targetInput)].filter(v => v.trim());
+      const targetProductKey = typeof targetInput === 'object' && targetInput.productKey
+        ? String(targetInput.productKey).trim()
+        : '';
+      if (targetCandidates.length === 0 && !targetProductKey) return { pool: null, model: null };
+      const targetLowers = targetCandidates.map(v => v.trim().toLowerCase());
+      const targetStripped = targetLowers.map(v => v.replace(/^model_/, ''));
+      const targetNorms = [...new Set(targetCandidates.map(normalizeModelLookupName).filter(Boolean))];
 
       for (const pool of pools) {
         for (const m of pool.models) {
           const allIds = [...m.modelIds, ...m.aliases].map(x => x.toLowerCase());
-          if (allIds.some(id => id === tLower || id.replace(/^model_/, '') === tStripped)) {
+          if (allIds.some(id => targetLowers.includes(id) || targetStripped.includes(id.replace(/^model_/, '')))) {
             return { pool, model: m };
           }
-          if (tNorm && normalizeModelLookupName(m.productLabel) === tNorm) {
+          if (targetProductKey && m.productKey && m.productKey === targetProductKey) {
+            return { pool, model: m };
+          }
+          const mNorm = normalizeModelLookupName(m.productLabel);
+          if (mNorm && targetNorms.includes(mNorm)) {
             return { pool, model: m };
           }
         }
@@ -7026,6 +7039,7 @@
     resolveModelQuota,
     getModelPoolKey,
     getSharedQuotaGroupKey,
+    normalizeModelLookupName,
     parseQuotaFraction,
     formatQuotaPercentText,
     formatQuotaResetMeta,
