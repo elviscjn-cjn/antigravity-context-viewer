@@ -1,5 +1,10 @@
 # v0.8.8 α
 
+**简体中文** · [English](#english)
+
+<details open>
+<summary><b>简体中文</b></summary>
+
 本次版本重点新增多账号隔离与可控切号. 按模型每日堆叠统计. 累计总量图表改版. 请求时间线与速度体验评分. 并完善跨平台兼容与三语界面本地化.
 
 - 新增多账号与分账号用量隔离. 历史未归属请求统一保留在未归属账本. 绝不默认计入当前账号.
@@ -16,3 +21,25 @@
 - 感谢 @startips 提交 PR #31 贡献 runtime-check.js 跨平台端口路径修复与预发布测试期间问题反馈.
 - 感谢 @x1051445024 提交 PR #40 贡献 builtinAsar.createPackage 标准接口兼容与测试沙箱 ASAR 路径隔离.
 
+</details>
+
+<details id="english">
+<summary><b>English</b></summary>
+
+This release introduces multi-account usage isolation with controlled account switching. daily stacked per-model usage charts. a redesigned cumulative usage view. collapsible turn timelines with speed scoring. cross-platform enhancements. and full trilingual localization.
+
+- Added multi-account and per-account usage isolation. Historical unattributed calls remain in the unattributed ledger and are never assigned to the active account by default.
+- Added controlled manual and threshold-based automatic account switching alongside quota interval comparison. Includes debounce. cooldown. busy-generation wait. multi-window lock. and non-CDP main-process rollback protection on verification failure.
+- Added daily stacked per-model usage bars with 7-day and 30-day ranges. effort and source filters. missing model display name backfill from conversation databases. and Orchestrator plus background worker bucket normalization.
+- Unified chart bar heights and yearly bubble diameters with a continuous hybrid log-power scale to fix cross-tier shrinking. Yearly bubbles above 1B are capped at 58px with an outer glow ring.
+- Added the Cumulative Usage view featuring summary cards. a logarithmic magnitude ruler. proportional time strips. zero-usage day markers. and responsive layout below 460px.
+- Added weighted cache-read ratio telemetry. collapsible per-turn request timelines. dynamic latest-call card transitions. and TTFT plus pure-streaming speed scoring.
+- Unified Simplified Chinese. Traditional Chinese. and English UI copy plus currency display rules. English displays USD only for API estimates and converts preset regions automatically. Replaced native date inputs with a custom theme-matched calendar picker.
+- Displayed version is 0.8.8 α while internal semantic version remains 0.8.8. Users on 0.8.8 pre-release builds should fully quit Antigravity first and run node cli.js install to upgrade cleanly. You can also run node cli.js watch for patch-free background monitoring.
+- Thanks to @Lopution for PR #26 adding WSL desktop and CLI usage collection on Windows.
+- Thanks to @huron09280 for PR #28 adding macOS Apple Silicon arm64 Mach-O prompt enhancement. context unlock. and local API adaptation.
+- Thanks to @kyrie21z for PR #30 adding daily per-model stacked charts. database model label backfill. Orchestrator and worker mappings. and legacy archive cleanup.
+- Thanks to @startips for PR #31 fixing cross-platform port path resolution in runtime-check.js and reporting issues during pre-release testing.
+- Thanks to @x1051445024 for PR #40 implementing builtinAsar.createPackage compatibility and test sandbox ASAR path isolation.
+
+</details>
