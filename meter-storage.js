@@ -217,59 +217,226 @@ const LOCK_SLEEP_BUF = typeof SharedArrayBuffer === 'function'
   ? new Int32Array(new SharedArrayBuffer(4))
   : null;
 
+const DEFAULT_FILE_LOCK_TIMEOUT_MS = 15000;
+const DEFAULT_FILE_LOCK_STALE_MS = 30000;
+const DEFAULT_EMPTY_LOCK_GRACE_MS = 50;
+const DEFAULT_FILE_LOCK_POLL_MS = 15;
+
 function sleepSyncMs(ms) {
   if (LOCK_SLEEP_BUF) {
     try {
       Atomics.wait(LOCK_SLEEP_BUF, 0, 0, ms);
-      return;
     } catch {}
   }
-  const until = Date.now() + ms;
-  while (Date.now() < until) {}
+}
+
+function isLockPidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === 'EPERM';
+  }
+}
+
+function parseLockFileMetadata(raw) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return { validOwner: false, emptyOrCorrupt: true, pid: null, createdAtMs: null, nonce: null };
+  }
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      const pid = Number(parsed?.pid);
+      const createdAtMs = Number(parsed?.createdAtMs);
+      const nonce = typeof parsed?.nonce === 'string' && parsed.nonce ? parsed.nonce : null;
+      if (Number.isInteger(pid) && pid > 0) {
+        return {
+          validOwner: true,
+          emptyOrCorrupt: false,
+          pid,
+          createdAtMs: Number.isFinite(createdAtMs) && createdAtMs > 0 ? createdAtMs : null,
+          nonce
+        };
+      }
+    } catch { }
+    return { validOwner: false, emptyOrCorrupt: true, pid: null, createdAtMs: null, nonce: null };
+  }
+  const parts = text.split(':');
+  const pid = parseInt(parts[0], 10);
+  const ts = parts[1] ? Number(parts[1]) : NaN;
+  if (Number.isInteger(pid) && pid > 0) {
+    return {
+      validOwner: true,
+      emptyOrCorrupt: false,
+      pid,
+      createdAtMs: Number.isFinite(ts) && ts > 0 ? ts : null,
+      nonce: null
+    };
+  }
+  return { validOwner: false, emptyOrCorrupt: true, pid: null, createdAtMs: null, nonce: null };
+}
+
+function tryReclaimStaleFileLock(lockFile, options = {}) {
+  const staleMs = Number.isFinite(Number(options.staleMs)) && Number(options.staleMs) > 0
+    ? Number(options.staleMs)
+    : DEFAULT_FILE_LOCK_STALE_MS;
+  const emptyGraceMs = Number.isFinite(Number(options.emptyGraceMs)) && Number(options.emptyGraceMs) >= 0
+    ? Number(options.emptyGraceMs)
+    : DEFAULT_EMPTY_LOCK_GRACE_MS;
+  const nowMs = Date.now();
+
+  let st;
+  try {
+    st = fs.statSync(lockFile);
+  } catch (err) {
+    return Boolean(err && err.code === 'ENOENT');
+  }
+
+  let raw = '';
+  try {
+    raw = fs.readFileSync(lockFile, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return true;
+    if (nowMs - (Number(st.mtimeMs) || 0) >= emptyGraceMs) {
+      try { fs.unlinkSync(lockFile); return true; } catch { }
+    }
+    return false;
+  }
+
+  const meta = parseLockFileMetadata(raw);
+  const lockAgeMs = Math.max(0, nowMs - (meta.createdAtMs || Number(st.mtimeMs) || 0));
+
+  if (meta.emptyOrCorrupt) {
+    if (Math.max(0, nowMs - (Number(st.mtimeMs) || 0)) >= emptyGraceMs) {
+      try { fs.unlinkSync(lockFile); return true; } catch { }
+    }
+    return false;
+  }
+
+  if (!isLockPidAlive(meta.pid) || lockAgeMs >= staleMs) {
+    try { fs.unlinkSync(lockFile); return true; } catch { }
+  }
+  return false;
+}
+
+function tryAcquireFileLockOnce(lockFile) {
+  const nonce = crypto.randomBytes(6).toString('hex');
+  const payload = JSON.stringify({
+    pid: process.pid,
+    createdAtMs: Date.now(),
+    nonce
+  });
+  const fd = fs.openSync(lockFile, 'wx');
+  try {
+    fs.writeSync(fd, payload, 0, 'utf8');
+  } catch (writeErr) {
+    try { fs.closeSync(fd); } catch {}
+    try { fs.unlinkSync(lockFile); } catch {}
+    throw writeErr;
+  }
+  fs.closeSync(fd);
+  return {
+    lockFile,
+    pid: process.pid,
+    nonce,
+    release: () => {
+      try {
+        if (!fs.existsSync(lockFile)) return;
+        const cur = parseLockFileMetadata(fs.readFileSync(lockFile, 'utf8'));
+        if (cur.nonce && cur.nonce !== nonce) return;
+        if (!cur.nonce && cur.pid && cur.pid !== process.pid) return;
+        fs.unlinkSync(lockFile);
+      } catch {}
+    }
+  };
+}
+
+function normalizeLockOptions(timeoutOrOptions = DEFAULT_FILE_LOCK_TIMEOUT_MS) {
+  if (typeof timeoutOrOptions === 'number') {
+    return {
+      timeoutMs: timeoutOrOptions,
+      staleMs: DEFAULT_FILE_LOCK_STALE_MS,
+      emptyGraceMs: DEFAULT_EMPTY_LOCK_GRACE_MS,
+      pollMs: DEFAULT_FILE_LOCK_POLL_MS
+    };
+  }
+  const opts = timeoutOrOptions && typeof timeoutOrOptions === 'object' ? timeoutOrOptions : {};
+  return {
+    timeoutMs: Number.isFinite(Number(opts.timeoutMs)) && Number(opts.timeoutMs) > 0
+      ? Number(opts.timeoutMs)
+      : DEFAULT_FILE_LOCK_TIMEOUT_MS,
+    staleMs: Number.isFinite(Number(opts.staleMs)) && Number(opts.staleMs) > 0
+      ? Number(opts.staleMs)
+      : DEFAULT_FILE_LOCK_STALE_MS,
+    emptyGraceMs: Number.isFinite(Number(opts.emptyGraceMs)) && Number(opts.emptyGraceMs) >= 0
+      ? Number(opts.emptyGraceMs)
+      : DEFAULT_EMPTY_LOCK_GRACE_MS,
+    pollMs: Number.isFinite(Number(opts.pollMs)) && Number(opts.pollMs) > 0
+      ? Number(opts.pollMs)
+      : DEFAULT_FILE_LOCK_POLL_MS
+  };
 }
 
 /**
- * 跨进程文件互斥锁（同步版本，用于协调多进程读-改-写账本，避免丢失更新）
+ * 跨进程文件互斥锁（异步非阻塞版本，使用事件循环定时器退避，绝不阻塞主进程）
  */
-function acquireSyncFileLock(targetPath, timeoutMs = 15000) {
+async function acquireFileLockAsync(targetPath, timeoutOrOptions = DEFAULT_FILE_LOCK_TIMEOUT_MS) {
+  const opts = normalizeLockOptions(timeoutOrOptions);
   const resolved = path.resolve(targetPath);
   const lockFile = `${resolved}.lock`;
   try { fs.mkdirSync(path.dirname(lockFile), { recursive: true }); } catch {}
   const start = Date.now();
   while (true) {
     try {
-      const fd = fs.openSync(lockFile, 'wx');
-      fs.writeFileSync(fd, `${process.pid}:${Date.now()}`, 'utf8');
-      fs.closeSync(fd);
-      return {
-        lockFile,
-        release: () => {
-          try { fs.unlinkSync(lockFile); } catch {}
-        }
-      };
+      return tryAcquireFileLockOnce(lockFile);
     } catch {
-      if (Date.now() - start >= timeoutMs) {
+      if (Date.now() - start >= opts.timeoutMs) {
         throw new Error(`获取文件写锁超时 (${lockFile})`);
       }
-      try {
-        const content = fs.readFileSync(lockFile, 'utf8');
-        const pid = parseInt(String(content).split(':')[0], 10);
-        if (pid && !isNaN(pid)) {
-          let running = true;
-          try { process.kill(pid, 0); } catch { running = false; }
-          if (!running) {
-            try { fs.unlinkSync(lockFile); } catch {}
-            continue;
-          }
-        }
-      } catch {}
-      sleepSyncMs(12);
+      const reclaimed = tryReclaimStaleFileLock(lockFile, opts);
+      if (reclaimed) continue;
+      await new Promise(resolve => setTimeout(resolve, opts.pollMs));
     }
   }
 }
 
-function withFileLockSync(targetPath, fn, timeoutMs = 15000) {
-  const lock = acquireSyncFileLock(targetPath, timeoutMs);
+async function withFileLockAsync(targetPath, fn, timeoutOrOptions = DEFAULT_FILE_LOCK_TIMEOUT_MS) {
+  const lock = await acquireFileLockAsync(targetPath, timeoutOrOptions);
+  try {
+    return await fn();
+  } finally {
+    lock.release();
+  }
+}
+
+/**
+ * 跨进程文件互斥锁（同步版本，供 Worker 线程或同步兼容调用使用；同样支持空锁与过期锁回收）
+ */
+function acquireSyncFileLock(targetPath, timeoutOrOptions = DEFAULT_FILE_LOCK_TIMEOUT_MS) {
+  const opts = normalizeLockOptions(timeoutOrOptions);
+  const resolved = path.resolve(targetPath);
+  const lockFile = `${resolved}.lock`;
+  try { fs.mkdirSync(path.dirname(lockFile), { recursive: true }); } catch {}
+  const start = Date.now();
+  while (true) {
+    try {
+      return tryAcquireFileLockOnce(lockFile);
+    } catch {
+      if (Date.now() - start >= opts.timeoutMs) {
+        throw new Error(`获取文件写锁超时 (${lockFile})`);
+      }
+      const reclaimed = tryReclaimStaleFileLock(lockFile, opts);
+      if (reclaimed) continue;
+      sleepSyncMs(opts.pollMs);
+    }
+  }
+}
+
+function withFileLockSync(targetPath, fn, timeoutOrOptions = DEFAULT_FILE_LOCK_TIMEOUT_MS) {
+  const lock = acquireSyncFileLock(targetPath, timeoutOrOptions);
   try {
     return fn();
   } finally {
@@ -280,5 +447,9 @@ function withFileLockSync(targetPath, fn, timeoutMs = 15000) {
 module.exports = {
   safeWriteJsonSync,
   safeReadJsonSync,
-  withFileLockSync
+  withFileLockSync,
+  acquireSyncFileLock,
+  withFileLockAsync,
+  acquireFileLockAsync,
+  parseLockFileMetadata
 };

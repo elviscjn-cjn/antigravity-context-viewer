@@ -19,7 +19,7 @@ const origFsMethods = {
   statSync: fs.statSync,
   existsSync: fs.existsSync
 };
-const { safeWriteJsonSync, safeReadJsonSync, withFileLockSync } = require('./meter-storage');
+const { safeWriteJsonSync, safeReadJsonSync, withFileLockSync, withFileLockAsync } = require('./meter-storage');
 const {
   buildCliProxyEnv,
   detectProxyConfig,
@@ -1916,8 +1916,7 @@ function resolveCallAccountAttribution(call, options = {}, existing = null) {
   };
 }
 
-function recordModelCalls(newCalls = [], options = {}) {
-  if (!Array.isArray(newCalls) || !newCalls.length) return createRecordResult(true, false);
+function buildRecordModelCallsLockedExecutor(newCalls = [], options = {}) {
   const targetDir = typeof options === 'string' ? options : (options.ledgerPath || options.agDir);
   const fsOpt = (options && typeof options === 'object' && options.fs) ? { fs: options.fs } : undefined;
   const resolvedLedgerPath = path.resolve(getPricingLedgerPath(targetDir));
@@ -2106,10 +2105,25 @@ function recordModelCalls(newCalls = [], options = {}) {
     return createRecordResult(true, changed);
   };
 
+  return { fsOpt, resolvedLedgerPath, executeLocked };
+}
+
+function recordModelCalls(newCalls = [], options = {}) {
+  if (!Array.isArray(newCalls) || !newCalls.length) return createRecordResult(true, false);
+  const { fsOpt, resolvedLedgerPath, executeLocked } = buildRecordModelCallsLockedExecutor(newCalls, options);
   if (fsOpt) {
     return executeLocked();
   }
-  return withFileLockSync(resolvedLedgerPath, executeLocked);
+  return withFileLockSync(resolvedLedgerPath, executeLocked, options.lockOptions);
+}
+
+async function recordModelCallsLockedAsync(newCalls = [], options = {}) {
+  if (!Array.isArray(newCalls) || !newCalls.length) return createRecordResult(true, false);
+  const { fsOpt, resolvedLedgerPath, executeLocked } = buildRecordModelCallsLockedExecutor(newCalls, options);
+  if (fsOpt) {
+    return executeLocked();
+  }
+  return withFileLockAsync(resolvedLedgerPath, executeLocked, options.lockOptions);
 }
 
 /**
@@ -2679,7 +2693,7 @@ function cleanupUpgradeLedgerBackups({
  * - 剥离早于追踪起点、缺时间戳、IDE 未核实或跨切号边界却被错误标为当前账号的 accountScopeKey；
  * - 写入 attributionRepairVersion: CURRENT_ATTRIBUTION_REPAIR_VERSION，多次执行保持幂等不重复计数。
  */
-function repairAndMigrateAccountLedger({
+function buildRepairAndMigrateLedgerExecutor({
   agDir = null,
   ledgerPath = null,
   accountSessions = [],
@@ -2872,7 +2886,17 @@ function repairAndMigrateAccountLedger({
     };
   };
 
-  return withFileLockSync(resolvedLedgerPath, runLocked);
+  return { resolvedLedgerPath, runLocked };
+}
+
+function repairAndMigrateAccountLedger(options = {}) {
+  const { resolvedLedgerPath, runLocked } = buildRepairAndMigrateLedgerExecutor(options);
+  return withFileLockSync(resolvedLedgerPath, runLocked, options.lockOptions);
+}
+
+async function repairAndMigrateAccountLedgerAsync(options = {}) {
+  const { resolvedLedgerPath, runLocked } = buildRepairAndMigrateLedgerExecutor(options);
+  return withFileLockAsync(resolvedLedgerPath, runLocked, options.lockOptions);
 }
 
 /**
@@ -4358,7 +4382,7 @@ async function recordModelCallsAsync(newCalls = [], options = {}) {
         return res;
       }
     }
-    const res = recordModelCalls(newCalls, optsObj);
+    const res = await recordModelCallsLockedAsync(newCalls, optsObj);
     if (res && res.changed) {
       invalidateHostLedgerAndHistoryCaches();
     }
@@ -5619,7 +5643,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         rec.accountAttributionConfidence !== 'unattributed'
       );
       if (needsAttributionRepair) {
-        repairAndMigrateAccountLedger({
+        await repairAndMigrateAccountLedgerAsync({
           agDir,
           stateDir: options.stateDir || null,
           accountSessions: Array.isArray(sessionWindowsForHistory) ? sessionWindowsForHistory : []
@@ -5836,7 +5860,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const unmatchedPricedTranscriptReqs = recentRequests.filter(r => !matchedTranscriptReqs.has(r) && r.isPriced && r.callId);
   const ledgerUpdates = [...ledgerEnrichmentCalls, ...unmatchedPricedTranscriptReqs];
   if (ledgerUpdates.length) {
-    recordModelCalls(ledgerUpdates, {
+    await recordModelCallsLockedAsync(ledgerUpdates, {
       agDir,
       trustTranscriptDate: true,
       ...(sessionWindowsForHistory ? { accountSessions: sessionWindowsForHistory } : {})
@@ -8338,11 +8362,13 @@ module.exports = {
   formatLocalDateKey,
   recordModelCalls,
   recordModelCallsAsync,
+  recordModelCallsLockedAsync,
   resolveCallAccountAttribution,
   syncAccountLedgerPartitions,
   buildAccountUsageBreakdown,
   summarizeAccountWindowUsage,
   repairAndMigrateAccountLedger,
+  repairAndMigrateAccountLedgerAsync,
   MAX_LEDGER_REPAIR_BACKUPS,
   listLedgerRepairBackups,
   pruneLedgerRepairBackups,

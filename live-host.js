@@ -12,7 +12,7 @@ const {
   fetchQuotaSnapshotFromHost,
   checkUpdateAsync,
   applyUpdateAsync,
-  recordModelCalls,
+  recordModelCallsAsync,
   getPluginSettings,
   savePluginSettings,
   launchCliSession,
@@ -234,7 +234,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
               } : {})
             };
           } catch { }
-          const resCall = recordModelCalls(calls, recOpts);
+          const resCall = await recordModelCallsAsync(calls, recOpts);
           if (resCall && typeof resCall === 'object' && resCall.ok === false) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({

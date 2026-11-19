@@ -821,3 +821,118 @@ test('meter-main.js 模块 IPC: 跨平台提示无 install.bat、代理校验与
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('Issue #51: 锁文件残留/空锁/跨进程竞争下事件循环阻塞 < 100ms 且支持超时与过期回收', async () => {
+  const { spawn } = require('child_process');
+  const { withFileLockAsync, parseLockFileMetadata } = require('./meter-storage');
+  const { recordModelCallsLockedAsync, repairAndMigrateAccountLedgerAsync } = require('./meter-collector');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-issue51-lock-'));
+  const targetPath = path.join(tempDir, 'pricing_ledger_v1.json');
+  const lockPath = `${targetPath}.lock`;
+  fs.writeFileSync(targetPath, JSON.stringify({ version: 1, calls: {} }), 'utf8');
+
+  async function measureEventLoopMaxLag(fn) {
+    let maxLagMs = 0;
+    let lastTick = Date.now();
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const lag = Math.max(0, now - lastTick - 10);
+      if (lag > maxLagMs) maxLagMs = lag;
+      lastTick = now;
+    }, 10);
+    const immStart = Date.now();
+    let immLagMs = 0;
+    setImmediate(() => {
+      immLagMs = Date.now() - immStart;
+    });
+    try {
+      const res = await fn();
+      return { res, maxLagMs: Math.max(maxLagMs, immLagMs) };
+    } finally {
+      clearInterval(timer);
+    }
+  }
+
+  try {
+    // 1. 锁文件残留（不存在的 PID 999999）
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, createdAtMs: Date.now() - 5000, nonce: 'dead' }), 'utf8');
+    const rDead = await measureEventLoopMaxLag(() =>
+      withFileLockAsync(targetPath, async () => 'ok-dead', { timeoutMs: 2000 })
+    );
+    assert.equal(rDead.res, 'ok-dead');
+    assert.ok(rDead.maxLagMs < 100, `死锁残留回收期间事件循环阻塞应 < 100ms，实际 ${rDead.maxLagMs}ms`);
+    assert.equal(fs.existsSync(lockPath), false);
+
+    // 2. 锁文件为空（0 字节残留空锁，曾导致 15s 卡死）
+    fs.writeFileSync(lockPath, '', 'utf8');
+    const rEmpty = await measureEventLoopMaxLag(() =>
+      withFileLockAsync(targetPath, async () => 'ok-empty', { timeoutMs: 2000, emptyGraceMs: 40 })
+    );
+    assert.equal(rEmpty.res, 'ok-empty');
+    assert.ok(rEmpty.maxLagMs < 100, `空锁回收期间事件循环阻塞应 < 100ms，实际 ${rEmpty.maxLagMs}ms`);
+    assert.equal(fs.existsSync(lockPath), false);
+
+    // 3. 跨进程竞争（真实子进程持有锁 ~220ms 后释放，主进程异步等锁不得阻塞事件循环）
+    const holderReadyFile = path.join(tempDir, 'holder.ready');
+    const childCode = `
+      const fs = require('fs');
+      const { withFileLockSync } = require(${JSON.stringify(path.join(__dirname, 'meter-storage.js'))});
+      withFileLockSync(${JSON.stringify(targetPath)}, () => {
+        fs.writeFileSync(${JSON.stringify(holderReadyFile)}, '1', 'utf8');
+        const end = Date.now() + 220;
+        while (Date.now() < end) {}
+      }, { timeoutMs: 5000 });
+    `;
+    const child = spawn(process.execPath, ['-e', childCode], { stdio: 'ignore' });
+    while (!fs.existsSync(holderReadyFile)) {
+      await new Promise(r => setTimeout(r, 10));
+    }
+    const rContend = await measureEventLoopMaxLag(() =>
+      withFileLockAsync(targetPath, async () => {
+        const meta = parseLockFileMetadata(fs.readFileSync(lockPath, 'utf8'));
+        assert.equal(meta.validOwner, true);
+        assert.equal(meta.pid, process.pid);
+        return 'ok-contend';
+      }, { timeoutMs: 5000, staleMs: 10000 })
+    );
+    await new Promise(resolve => child.once('exit', resolve));
+    assert.equal(rContend.res, 'ok-contend');
+    assert.ok(rContend.maxLagMs < 100, `跨进程等锁期间事件循环阻塞应 < 100ms，实际 ${rContend.maxLagMs}ms`);
+
+    // 4. 过期回收（即使持锁 PID 是当前存活进程，超过 staleMs 也应回收）+ 超时报错
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAtMs: Date.now() - 1000, nonce: 'expired' }), 'utf8');
+    const rStale = await withFileLockAsync(targetPath, async () => 'ok-stale', { timeoutMs: 1000, staleMs: 200 });
+    assert.equal(rStale, 'ok-stale');
+
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAtMs: Date.now(), nonce: 'active' }), 'utf8');
+    await assert.rejects(
+      withFileLockAsync(targetPath, async () => 'never', { timeoutMs: 120, staleMs: 30000 }),
+      /获取文件写锁超时/
+    );
+    fs.unlinkSync(lockPath);
+
+    // 5. 主进程异步账本写入与纠偏 API 在空锁存在时同样 < 100ms 阻塞并正常落盘
+    fs.writeFileSync(lockPath, '', 'utf8');
+    const recRes = await measureEventLoopMaxLag(() =>
+      recordModelCallsLockedAsync([{
+        callId: 'call_issue51_async_1',
+        source: 'desktop',
+        model: 'gemini-4-hydrogen',
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        date: '2026-11-19',
+        allowSynthetic: true
+      }], { ledgerPath: targetPath, allowSynthetic: true, lockOptions: { timeoutMs: 2000, emptyGraceMs: 40 } })
+    );
+    assert.equal(recRes.res.ok, true);
+    assert.equal(recRes.res.changed, true);
+    assert.ok(recRes.maxLagMs < 100);
+
+    const repRes = await repairAndMigrateAccountLedgerAsync({ ledgerPath: targetPath, lockOptions: { timeoutMs: 2000 } });
+    assert.equal(repRes.ok, true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
