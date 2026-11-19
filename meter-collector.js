@@ -3268,7 +3268,9 @@ function resolveAccountCustomPlan(customSettingsAll, currentAccountKey) {
 }
 
 function getPluginSettings(options = {}) {
-  const targetDir = typeof options === 'string' ? options : options?.agDir;
+  const targetDir = typeof options === 'string'
+    ? options
+    : (options?.targetDir || options?.agDir || options?.stateDir);
   const settings = loadCustomPlanSettings(targetDir);
   const email = options?.email || cachedTokenHistory?.planStatus?.email || null;
   const customPlan = resolveAccountCustomPlan(settings, email);
@@ -3299,7 +3301,9 @@ function savePluginSettings(payload = {}, options = {}) {
   if (!payload || typeof payload !== 'object') {
     return { ok: false, error: '无效的设置参数' };
   }
-  const targetDir = typeof options === 'string' ? options : (options?.targetDir || options?.agDir || payload?.targetDir || payload?.agDir);
+  const targetDir = typeof options === 'string'
+    ? options
+    : (options?.targetDir || options?.agDir || options?.stateDir || payload?.targetDir || payload?.agDir || payload?.stateDir);
   const settings = loadCustomPlanSettings(targetDir);
   const rawKey = payload.account || payload.email || cachedTokenHistory?.planStatus?.email || settings.lastAccount || 'default';
   const key = String(rawKey).trim().toLowerCase() || 'default';
@@ -7919,6 +7923,7 @@ const LIVE_RUNTIME_FILES = [
   'meter-storage.js',
   'meter-proxy.js',
   'meter-cli-launcher.js',
+  'meter-cli-monitor.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
   'meter-accounts.js',

@@ -562,3 +562,217 @@ test('readOnly: true 严格零写零删 — usage 与 monitor 不触发备份清
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('P1 修复验证 1: CLI --state-dir 严格隔离 custom_plan_v1.json，不读写默认 ~/.gemini/antigravity 配置', () => {
+  const crypto = require('node:crypto');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-p1-statedir-'));
+  try {
+    const fakeHome = path.join(tmpDir, 'fake-home');
+    const fakeAgDir = path.join(fakeHome, '.gemini', 'antigravity');
+    const customStateDir = path.join(tmpDir, 'isolated-state');
+    const cliDir = path.join(tmpDir, 'isolated-cli');
+    const wsDir = path.join(tmpDir, 'ws');
+    fs.mkdirSync(fakeAgDir, { recursive: true });
+    fs.mkdirSync(customStateDir, { recursive: true });
+    fs.mkdirSync(cliDir, { recursive: true });
+    fs.mkdirSync(wsDir, { recursive: true });
+
+    // 在模拟用户默认 HOME 写入哨兵模型偏好，验证传入 --state-dir 时绝不读取或覆盖该文件
+    const sentinelPath = path.join(fakeAgDir, 'custom_plan_v1.json');
+    const sentinelContent = JSON.stringify({
+      version: '1.1.0',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      lastAccount: 'default',
+      accounts: {},
+      uiPreferences: {},
+      contextPreferences: {
+        'sentinel-only-model': {
+          modelId: 'sentinel-only-model',
+          label: 'sentinel-only-model',
+          mode: 'fixed',
+          limitTokens: 321000,
+          updatedAt: '2026-01-01T00:00:00.000Z'
+        },
+        'gemini-4-hydrogen-high': {
+          modelId: 'gemini-4-hydrogen-high',
+          label: 'gemini-4-hydrogen-high',
+          mode: 'fixed',
+          limitTokens: 999000,
+          updatedAt: '2026-01-01T00:00:00.000Z'
+        }
+      }
+    }, null, 2);
+    fs.writeFileSync(sentinelPath, sentinelContent, 'utf8');
+    const sentinelStatBefore = fs.statSync(sentinelPath);
+    const sentinelHashBefore = crypto.createHash('sha256').update(fs.readFileSync(sentinelPath)).digest('hex');
+
+    // 同时对宿主机真实 ~/.gemini/antigravity/custom_plan_v1.json 做存在性与哈希快照
+    const realHome = process.env.USERPROFILE || os.homedir();
+    const realPlanPath = path.join(realHome, '.gemini', 'antigravity', 'custom_plan_v1.json');
+    const realExistedBefore = fs.existsSync(realPlanPath);
+    const realHashBefore = realExistedBefore
+      ? crypto.createHash('sha256').update(fs.readFileSync(realPlanPath)).digest('hex')
+      : null;
+
+    const wrapperCmd = process.platform === 'win32'
+      ? path.join(tmpDir, 'agy-dummy.cmd')
+      : path.join(tmpDir, 'agy-dummy');
+    fs.writeFileSync(wrapperCmd, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\n', { mode: 0o755 });
+
+    const isoEnv = {
+      ...process.env,
+      AG_METER_TEST_MODE: '1',
+      USERPROFILE: fakeHome,
+      HOME: fakeHome,
+      AG_DIR: ''
+    };
+    delete isoEnv.AG_DIR;
+
+    const cliJs = path.join(__dirname, 'cli.js');
+
+    // 1. context-set 仅写入 --state-dir，不可篡改默认 HOME 配置
+    const setRes = spawnSync(process.execPath, [
+      cliJs, 'context-set',
+      '--model', 'gemini-4-hydrogen-high',
+      '--mode', 'fixed',
+      '--limit', '256000',
+      '--state-dir', customStateDir,
+      '--cli-dir', cliDir,
+      '--json'
+    ], { encoding: 'utf8', env: isoEnv, windowsHide: true });
+    assert.equal(setRes.status, 0, setRes.stderr);
+    const setJson = JSON.parse(setRes.stdout);
+    assert.equal(setJson.ok, true);
+
+    const isolatedPlanPath = path.join(customStateDir, 'custom_plan_v1.json');
+    assert.equal(fs.existsSync(isolatedPlanPath), true, '--state-dir 目录下应生成隔离 custom_plan_v1.json');
+    const isolatedData = JSON.parse(fs.readFileSync(isolatedPlanPath, 'utf8'));
+    assert.equal(isolatedData.contextPreferences['gemini-4-hydrogen-high'].limitTokens, 256000);
+    assert.equal(isolatedData.contextPreferences['sentinel-only-model'], undefined);
+
+    // 2. context-status 读取 --state-dir：不得混入 sentinel-only-model，且 gemini-4-hydrogen-high 必须为 256000 而非哨兵值 999000
+    const statusRes = spawnSync(process.execPath, [
+      cliJs, 'context-status',
+      '--model', 'gemini-4-hydrogen-high',
+      '--state-dir', customStateDir,
+      '--cli-dir', cliDir,
+      '--json'
+    ], { encoding: 'utf8', env: isoEnv, windowsHide: true });
+    assert.equal(statusRes.status, 0, statusRes.stderr);
+    const statusJson = JSON.parse(statusRes.stdout);
+    assert.equal(statusJson.contextPreferences['sentinel-only-model'], undefined, 'context-status 不得泄露默认 HOME 偏好');
+    assert.equal(statusJson.selectedModelBudget.limitTokens, 256000);
+
+    // 3. launch-cli --dry-run 读取 --state-dir 的 256000 并屏蔽默认 HOME 的 321000/999000
+    const launchRes = spawnSync(process.execPath, [
+      cliJs, 'launch-cli',
+      '--cli-path', wrapperCmd,
+      '--cwd', wsDir,
+      '--model', 'gemini-4-hydrogen-high',
+      '--state-dir', customStateDir,
+      '--dry-run', '--json'
+    ], { encoding: 'utf8', env: isoEnv, windowsHide: true });
+    assert.equal(launchRes.status, 0, launchRes.stderr);
+    const launchJson = JSON.parse(launchRes.stdout);
+    assert.equal(launchJson.ok, true);
+    assert.equal(launchJson.env.AG_CONTEXT_LIMIT, '256000');
+
+    const launchSentinelRes = spawnSync(process.execPath, [
+      cliJs, 'launch-cli',
+      '--cli-path', wrapperCmd,
+      '--cwd', wsDir,
+      '--model', 'sentinel-only-model',
+      '--state-dir', customStateDir,
+      '--dry-run', '--json'
+    ], { encoding: 'utf8', env: isoEnv, windowsHide: true });
+    assert.equal(launchSentinelRes.status, 0, launchSentinelRes.stderr);
+    const launchSentinelJson = JSON.parse(launchSentinelRes.stdout);
+    assert.equal(launchSentinelJson.modelContextPreference, null, '传入 --state-dir 时 launch-cli 不得读取默认 HOME 偏好');
+    assert.equal(launchSentinelJson.env.AG_CONTEXT_LIMIT, undefined);
+
+    // 4. 断言默认哨兵文件与真实 ~/.gemini/antigravity/custom_plan_v1.json 零写入零篡改
+    const sentinelStatAfter = fs.statSync(sentinelPath);
+    const sentinelHashAfter = crypto.createHash('sha256').update(fs.readFileSync(sentinelPath)).digest('hex');
+    assert.equal(sentinelHashAfter, sentinelHashBefore);
+    assert.equal(sentinelStatAfter.mtimeMs, sentinelStatBefore.mtimeMs);
+
+    const realExistedAfter = fs.existsSync(realPlanPath);
+    assert.equal(realExistedAfter, realExistedBefore);
+    if (realExistedBefore) {
+      const realHashAfter = crypto.createHash('sha256').update(fs.readFileSync(realPlanPath)).digest('hex');
+      assert.equal(realHashAfter, realHashBefore);
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('P1 修复验证 2: 沙箱 ASAR 安装注入 dist/meter-cli-monitor.js 且与工作区逐字节一致', async () => {
+  const { builtinAsar } = require('./asar-engine');
+  const { install } = require('./install');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-p1-asar-mon-'));
+  const keys = ['AG_METER_TEST_MODE', 'AG_METER_STATE_DIR', 'APPDATA', 'LOCALAPPDATA', 'HOME', 'USERPROFILE'];
+  const prevEnv = {};
+  for (const k of keys) prevEnv[k] = process.env[k];
+
+  try {
+    const sbHome = path.join(tmpDir, 'home');
+    const sbState = path.join(tmpDir, 'state');
+    const sbAppData = path.join(tmpDir, 'appdata');
+    const sbLocal = path.join(tmpDir, 'localappdata');
+    const hostSrc = path.join(tmpDir, 'host-src');
+    const hostDist = path.join(hostSrc, 'dist');
+    fs.mkdirSync(sbHome, { recursive: true });
+    fs.mkdirSync(sbState, { recursive: true });
+    fs.mkdirSync(sbAppData, { recursive: true });
+    fs.mkdirSync(sbLocal, { recursive: true });
+    fs.mkdirSync(hostDist, { recursive: true });
+
+    fs.writeFileSync(path.join(hostSrc, 'package.json'), JSON.stringify({
+      name: 'antigravity-test-host',
+      version: '2.33.0',
+      main: 'dist/utils.js'
+    }, null, 2));
+    fs.writeFileSync(path.join(hostDist, 'utils.js'), `'use strict';
+function setupNodeWrapper(env) { return env; }
+function createWindow(win, url) {
+    void win.loadURL(url);
+}
+exports.setupNodeWrapper = setupNodeWrapper;
+exports.createWindow = createWindow;
+exports.getHubWindows = () => [];
+`);
+    fs.writeFileSync(path.join(hostDist, 'preload.js'), `'use strict';
+const { contextBridge } = require('electron');
+contextBridge.exposeInMainWorld('__HOST__', {});
+`);
+
+    const sandboxAsar = path.join(tmpDir, 'app.asar');
+    await builtinAsar.createPackage(hostSrc, sandboxAsar);
+
+    process.env.AG_METER_TEST_MODE = '1';
+    process.env.AG_METER_STATE_DIR = sbState;
+    process.env.APPDATA = sbAppData;
+    process.env.LOCALAPPDATA = sbLocal;
+    process.env.HOME = sbHome;
+    process.env.USERPROFILE = sbHome;
+
+    await install({ path: sandboxAsar, customAsarPath: sandboxAsar });
+
+    const extractedMonitor = builtinAsar.extractFile(sandboxAsar, 'dist/meter-cli-monitor.js');
+    const workspaceMonitor = fs.readFileSync(path.join(__dirname, 'meter-cli-monitor.js'));
+    assert.equal(extractedMonitor.equals(workspaceMonitor), true, 'app.asar 内 dist/meter-cli-monitor.js 必须与工作区逐字节一致');
+
+    for (const coreFile of ['meter-renderer.js', 'meter-core.js', 'meter-collector.js', 'meter-cli-launcher.js', 'meter-context-unlock.js']) {
+      const extBuf = builtinAsar.extractFile(sandboxAsar, `dist/${coreFile}`);
+      const wsBuf = fs.readFileSync(path.join(__dirname, coreFile));
+      assert.equal(extBuf.equals(wsBuf), true, `app.asar 内 dist/${coreFile} 必须与工作区逐字节一致`);
+    }
+  } finally {
+    for (const k of keys) {
+      if (prevEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = prevEnv[k];
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
