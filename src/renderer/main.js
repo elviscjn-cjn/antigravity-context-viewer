@@ -15259,13 +15259,66 @@
           topRow.appendChild(right);
           card.appendChild(topRow);
 
-          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => {
-            const pName = p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'));
-            const pVal = p.noPermission
-              ? t('accounts.poolNoAccess')
-              : (p.percentText && p.percentText !== '未知' ? p.percentText : t('accounts.poolUnknown'));
-            return `${pName}: ${pVal}`;
-          });
+          const CORE_POOL_NAMES = {
+            shared_gemini_main: 'Hydrogen',
+            shared_3p_pool: 'Claude/3P',
+            shared_gemini_argon: 'Argon',
+            shared_gemini_carbon: 'Carbon'
+          };
+
+          const poolSummaries = [];
+          for (const p of (acc.quotaSnapshot?.pools || [])) {
+            if (!p || typeof p !== 'object') continue;
+            const pName = CORE_POOL_NAMES[p.poolKey];
+            // 严禁使用 else 'Carbon' 兜底！只展示四大核心共享池，过滤掉历史快照中已残留的 shared_chat_* / shared_gemini-25-pro* 等非核心杂项池
+            if (!pName) continue;
+
+            // Carbon 显示规则：
+            // 当 shared_gemini_carbon 具有真实可用权限（!p.noPermission 且有配额数据，即 Ultra 用户）时，必须正常显示 Carbon 额度；
+            // 当 p.noPermission === true（无权限，如 Free / Pro 用户）时，在多账号卡片摘要行中直接隐藏该无权限项，不显示 "Carbon: 无模型权限"，更不能把别的池显示成 Carbon。
+            if (p.poolKey === 'shared_gemini_carbon') {
+              if (p.noPermission) continue;
+              const hasQuotaData = (Array.isArray(p.buckets) && p.buckets.some(b => b && b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction))))
+                || (p.remainingFraction !== null && p.remainingFraction !== undefined && Number.isFinite(Number(p.remainingFraction)));
+              if (!hasQuotaData) continue;
+            }
+
+            if (p.noPermission) {
+              poolSummaries.push(`${pName}: ${t('accounts.poolNoAccess')}`);
+              continue;
+            }
+
+            const buckets = Array.isArray(p.buckets) ? p.buckets.filter(Boolean) : [];
+            const b5h = buckets.find(b => b.windowKey === '5h' || b.windowShort === '5h') || null;
+            const b7d = buckets.find(b => b.windowKey === 'weekly' || b.windowShort === '7d') || null;
+
+            const formatBucketPct = (b) => {
+              if (!b) return '';
+              if (b.percentText && b.percentText !== '未知') return b.percentText;
+              if (b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction))) {
+                return `${Math.round(b.remainingFraction * 100)}%`;
+              }
+              return '—';
+            };
+
+            if (b5h && b7d) {
+              // 若同时存在 5h 与 7d 桶，格式明确显示为 "Hydrogen: 5h 0% / 7d 70%"、"Claude/3P: 5h 100% / 7d 87%"
+              poolSummaries.push(`${pName}: 5h ${formatBucketPct(b5h)} / 7d ${formatBucketPct(b7d)}`);
+            } else if (b5h) {
+              const tag = b5h.windowShort || '5h';
+              poolSummaries.push(`${pName}: ${tag} ${formatBucketPct(b5h)}`);
+            } else if (b7d) {
+              // 若仅存在单一窗口桶（如 Argon 仅有 7d 桶，或 free-tier 仅有 7d 桶），明确带上窗口短标显示为 "Argon: 7d 70%"、"Hydrogen: 7d 100%"
+              const tag = b7d.windowShort || '7d';
+              poolSummaries.push(`${pName}: ${tag} ${formatBucketPct(b7d)}`);
+            } else if (buckets.length === 1 && buckets[0]?.windowShort) {
+              poolSummaries.push(`${pName}: ${buckets[0].windowShort} ${formatBucketPct(buckets[0])}`);
+            } else {
+              // 仅在 bucket 无 windowShort 时回退 p.percentText
+              const pVal = p.percentText && p.percentText !== '未知' ? p.percentText : t('accounts.poolUnknown');
+              poolSummaries.push(`${pName}: ${pVal}`);
+            }
+          }
           const metaRow = document.createElement('div');
           metaRow.className = 'quota-acct-meta';
           const updRaw = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';

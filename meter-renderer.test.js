@@ -6259,3 +6259,173 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
     try { api.dispose(); } catch {}
   }
 });
+
+test('多账号卡片配额展示回归: Pro/Free 账号不出现假 Carbon、Ultra 账号正常显示 Carbon 5h/7d、双窗口与单窗口格式对齐、过滤历史残留杂项池', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const mockOverview = {
+      accounts: [
+        // 1. Pro 账号：Hydrogen 双窗口 (5h 0%, 7d 70%), Claude/3P 双窗口 (5h 100%, 7d 87%), Argon 单窗口 (7d 70%), Carbon 无权限 (noPermission: true),
+        // 且包含历史残留 shared_chat_23310 与 shared_gemini-25-pro 杂项池
+        {
+          email: 'pro-user@example.com',
+          isActive: true,
+          hasRefreshToken: true,
+          tierId: 'g1-pro-tier',
+          lastQuotaUpdatedAtMs: 1760000000000,
+          quotaSnapshot: {
+            pools: [
+              {
+                poolKey: 'shared_gemini_main',
+                title: 'Gemini 4 Hydrogen',
+                percentText: '0%',
+                buckets: [
+                  { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0, percentText: '0%' },
+                  { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.70, percentText: '70%' }
+                ]
+              },
+              {
+                poolKey: 'shared_3p_pool',
+                title: 'Claude/3P',
+                percentText: '87%',
+                buckets: [
+                  { bucketId: 'b5h_3p', windowKey: '5h', windowShort: '5h', remainingFraction: 1.0, percentText: '100%' },
+                  { bucketId: 'b7d_3p', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.87, percentText: '87%' }
+                ]
+              },
+              {
+                poolKey: 'shared_gemini_argon',
+                title: 'Gemini 4 Argon',
+                percentText: '70%',
+                buckets: [
+                  { bucketId: 'barg', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.70, percentText: '70%' }
+                ]
+              },
+              {
+                poolKey: 'shared_gemini_carbon',
+                title: 'Gemini 4 Carbon',
+                noPermission: true,
+                remainingFraction: null,
+                percentText: '无权限',
+                buckets: []
+              },
+              {
+                poolKey: 'shared_chat_23310',
+                title: 'Internal Chat 23310',
+                remainingFraction: 1.0,
+                percentText: '100%',
+                buckets: []
+              },
+              {
+                poolKey: 'shared_gemini-25-pro',
+                title: 'Gemini 2.5 Pro',
+                remainingFraction: 1.0,
+                percentText: '100%',
+                buckets: []
+              }
+            ]
+          }
+        },
+        // 2. Free 账号：仅有 Hydrogen 单窗口 7d 100%，Carbon 无权限
+        {
+          email: 'free-user@example.com',
+          isActive: false,
+          hasRefreshToken: true,
+          tierId: 'free-tier',
+          lastQuotaUpdatedAtMs: 1760000000000,
+          quotaSnapshot: {
+            pools: [
+              {
+                poolKey: 'shared_gemini_main',
+                title: 'Gemini 4 Hydrogen',
+                percentText: '100%',
+                buckets: [
+                  { bucketId: 'bfree_7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 1.0, percentText: '100%' }
+                ]
+              },
+              {
+                poolKey: 'shared_gemini_carbon',
+                title: 'Gemini 4 Carbon',
+                noPermission: true,
+                remainingFraction: null,
+                percentText: '无权限',
+                buckets: []
+              }
+            ]
+          }
+        },
+        // 3. Ultra 账号：Carbon 具有真实可用权限且存在双窗口配额 (5h 100%, 7d 100%)
+        {
+          email: 'ultra-user@example.com',
+          isActive: false,
+          hasRefreshToken: true,
+          tierId: 'g1-ultra-tier',
+          lastQuotaUpdatedAtMs: 1760000000000,
+          quotaSnapshot: {
+            pools: [
+              {
+                poolKey: 'shared_gemini_main',
+                title: 'Gemini 4 Hydrogen',
+                percentText: '90%',
+                buckets: [
+                  { bucketId: 'u_5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.90, percentText: '90%' },
+                  { bucketId: 'u_7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.95, percentText: '95%' }
+                ]
+              },
+              {
+                poolKey: 'shared_gemini_carbon',
+                title: 'Gemini 4 Carbon',
+                noPermission: false,
+                remainingFraction: 1.0,
+                percentText: '100%',
+                buckets: [
+                  { bucketId: 'c_5h', windowKey: '5h', windowShort: '5h', remainingFraction: 1.0, percentText: '100%' },
+                  { bucketId: 'c_7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 1.0, percentText: '100%' }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    };
+
+    api.setAccountsOverviewForTest(mockOverview);
+    const listEl = h.elements.get('quota-accounts-list');
+    assert.equal(listEl.children.length, 3);
+
+    // 1) 验证 Pro 账号卡片
+    const proCard = listEl.children[0];
+    const proMeta = proCard.children.find(c => c.className === 'quota-acct-meta');
+    assert.ok(proMeta, 'Pro 卡片应有 meta 摘要行');
+    const proText = proMeta.textContent;
+    // 验证双窗口与单窗口格式
+    assert.match(proText, /Hydrogen: 5h 0% \/ 7d 70%/);
+    assert.match(proText, /Claude\/3P: 5h 100% \/ 7d 87%/);
+    assert.match(proText, /Argon: 7d 70%/);
+    // 严禁出现假 Carbon（shared_chat_23310 或 gemini-2.5-pro 绝不能变成 Carbon）
+    assert.doesNotMatch(proText, /Carbon: 100%/);
+    // Pro 用户无 Carbon 权限，Carbon 应直接隐藏，不显示 "Carbon: 无模型权限"
+    assert.doesNotMatch(proText, /Carbon/);
+    assert.doesNotMatch(proText, /chat_23310/);
+    assert.doesNotMatch(proText, /gemini-25-pro/);
+
+    // 2) 验证 Free 账号卡片
+    const freeCard = listEl.children[1];
+    const freeMeta = freeCard.children.find(c => c.className === 'quota-acct-meta');
+    assert.ok(freeMeta);
+    const freeText = freeMeta.textContent;
+    assert.match(freeText, /Hydrogen: 7d 100%/);
+    assert.doesNotMatch(freeText, /Carbon/);
+
+    // 3) 验证 Ultra 账号卡片
+    const ultraCard = listEl.children[2];
+    const ultraMeta = ultraCard.children.find(c => c.className === 'quota-acct-meta');
+    assert.ok(ultraMeta);
+    const ultraText = ultraMeta.textContent;
+    assert.match(ultraText, /Hydrogen: 5h 90% \/ 7d 95%/);
+    assert.match(ultraText, /Carbon: 5h 100% \/ 7d 100%/);
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});

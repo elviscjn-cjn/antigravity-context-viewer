@@ -988,7 +988,12 @@ test('UI 深度回归: 8 处统一下拉规范、零用量账号归零、NoPerm 
           hasRefreshToken: true,
           lastQuotaError: 'quota fetch timeout',
           lastQuotaErrorMeta: { stage: 'quota_fetch', targetHost: 'cloudcode-pa.googleapis.com', httpStatus: 503 },
-          quotaSnapshot: { pools: [{ poolKey: 'shared_gemini_carbon', title: 'Carbon', noPermission: true, remainingFraction: null }] }
+          quotaSnapshot: {
+            pools: [
+              { poolKey: 'shared_3p_pool', title: 'Claude/3P', noPermission: true, remainingFraction: null },
+              { poolKey: 'shared_gemini_carbon', title: 'Carbon', noPermission: true, remainingFraction: null }
+            ]
+          }
         },
         { email: 'used@example.com', maskedEmail: 'us***om@example.com', accountScopeKey: keyUsed, isActive: false, hasRefreshToken: true }
       ],
@@ -2377,4 +2382,129 @@ test('Issue #50: 仅账本内容变化时备份、单账本最多保留 N=3 份�
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('CloudCode 配额拉取回归: 默认优先 daily、失败回退 prod、UA 对齐 2.33.0、过滤内部杂项池 (chat_23310 / chat_20706 / tab / gemini-2.5-pro)', async () => {
+  const requestedUrls = [];
+  const requestedUas = [];
+  let dailyFailed = false;
+
+  const mockFetch = async (url, init = {}) => {
+    const u = String(url);
+    requestedUrls.push(u);
+    const ua = init.headers?.['User-Agent'] || '';
+    if (ua) requestedUas.push(ua);
+
+    if (u.includes('daily-cloudcode-pa.googleapis.com')) {
+      dailyFailed = true;
+      // 模拟 daily 端点故障 (HTTP 503)，触发回退至 prod
+      return {
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify({ error: { message: 'daily temporarily unavailable' } })
+      };
+    }
+
+    if (u.includes('loadCodeAssist')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          cloudaicompanionProject: 'test-proj-fallback',
+          currentTier: { id: 'g1-pro-tier' }
+        })
+      };
+    }
+
+    if (u.includes('fetchAvailableModels')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          agentModelSorts: ['gemini-4-hydrogen', 'gemini-4-argon', 'claude-3-7-sonnet'],
+          models: {
+            'gemini-4-hydrogen': { displayName: 'Gemini 4 Hydrogen', quotaInfo: { remainingFraction: 0.90 } },
+            'gemini-4-argon': { displayName: 'Gemini 4 Argon', quotaInfo: { remainingFraction: 0.80 } },
+            'claude-3-7-sonnet': { displayName: 'Claude 3.7 Sonnet', model: 'claude-sonnet-5-5', quotaInfo: { remainingFraction: 0.85 } },
+            'chat_23310': { displayName: 'Internal Chat 23310', quotaInfo: { remainingFraction: 1.0 } },
+            'chat_20706': { displayName: 'Internal Chat 20706', isInternal: true, quotaInfo: { remainingFraction: 1.0 } },
+            'tab_flash_lite_preview': { displayName: 'Tab Flash Lite', quotaInfo: { remainingFraction: 1.0 } },
+            'gemini-2.5-pro': { displayName: 'Gemini 2.5 Pro', quotaInfo: { remainingFraction: 1.0 } }
+          }
+        })
+      };
+    }
+
+    if (u.includes('retrieveUserQuotaSummary')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          response: {
+            groups: [
+              {
+                groupId: 'hydrogen-group',
+                displayName: 'Gemini 4 Hydrogen',
+                buckets: [
+                  { bucketId: 'b5h', window: '5h', remainingFraction: 0.90 },
+                  { bucketId: 'b7d', window: 'weekly', remainingFraction: 0.95 }
+                ]
+              },
+              {
+                groupId: 'argon-group',
+                displayName: 'Gemini 4 Argon',
+                buckets: [
+                  { bucketId: 'barg', window: 'weekly', remainingFraction: 0.80 }
+                ]
+              }
+            ]
+          }
+        })
+      };
+    }
+
+    return { ok: true, status: 200, text: async () => '{}' };
+  };
+
+  const quotaRes = await accountsMod.fetchAccountQuotaViaCloudCode('mock-access-token', {
+    fetch: mockFetch,
+    email: 'fallback-test@example.com'
+  });
+
+  // 1. 验证 daily 优先请求并成功触发回退 prod
+  assert.equal(dailyFailed, true, '必须优先尝试 daily 端点');
+  assert.ok(requestedUrls.some(u => u.includes('daily-cloudcode-pa.googleapis.com')));
+  assert.ok(requestedUrls.some(u => u.includes('cloudcode-pa.googleapis.com')));
+  // 2. 验证 User-Agent 对齐 2.33.0
+  assert.ok(requestedUas.length > 0);
+  assert.ok(requestedUas.every(ua => ua.startsWith('antigravity/2.33.0')));
+
+  // 3. 验证杂项池严格过滤，仅保留四大核心共享池
+  const poolKeys = quotaRes.snapshot.pools.map(p => p.poolKey);
+  assert.ok(poolKeys.includes('shared_gemini_main'));
+  assert.ok(poolKeys.includes('shared_gemini_argon'));
+  assert.doesNotMatch(poolKeys.join(' '), /shared_chat_23310|shared_chat_20706|shared_gemini-25-pro|shared_tab/);
+
+  // 4. 验证直接向 buildModelQuotaSnapshot 传入含杂项 models 也不会生成独立杂项池
+  const directSnap = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: [
+      { modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen', quotaInfo: { remainingFraction: 0.9 } },
+      { modelId: 'chat_23310', label: 'chat_23310', quotaInfo: { remainingFraction: 1.0 } },
+      { modelId: 'chat_20706', isInternal: true, label: 'chat_20706', quotaInfo: { remainingFraction: 1.0 } },
+      { modelId: 'tab_flash_lite_preview', label: 'tab_flash_lite_preview', quotaInfo: { remainingFraction: 1.0 } },
+      { modelId: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', quotaInfo: { remainingFraction: 1.0 } }
+    ],
+    userStatusRes: null,
+    quotaSummaryRes: null
+  });
+  const directPoolKeys = directSnap.pools.map(p => p.poolKey);
+  assert.deepEqual(directPoolKeys, ['shared_gemini_main']);
+});
+
+test('OAuth 权限作用域: ANTIGRAVITY_OAUTH_SCOPES 包含 aicode 权限作用域', () => {
+  assert.ok(Array.isArray(accountsMod.ANTIGRAVITY_OAUTH_SCOPES));
+  assert.ok(
+    accountsMod.ANTIGRAVITY_OAUTH_SCOPES.includes('https://www.googleapis.com/auth/aicode'),
+    '必须包含 aicode 权限作用域以防止模型降级与配额返回旧模型'
+  );
 });

@@ -4046,10 +4046,16 @@
       shared_gemini_argon: 'Gemini 4 Argon / Orchestrator',
       shared_gemini_carbon: 'Gemini 4 Carbon'
     };
+    const CORE_SHARED_POOLS = new Set(Object.keys(fallbackGroupNames));
 
     for (const cfg of rawConfigs) {
       if (!cfg || typeof cfg !== 'object') continue;
       if (cfg.isHistorical === true) continue;
+      if (cfg.isInternal === true) continue;
+      const rawMId = String(cfg.modelId || cfg.model || '').trim().toLowerCase();
+      const rawMAlias = String(cfg.modelOrAlias?.model || '').trim().toLowerCase();
+      if ((rawMId.startsWith('chat_') && /^chat_\d+$/.test(rawMId)) || (rawMAlias.startsWith('chat_') && /^chat_\d+$/.test(rawMAlias))) continue;
+      if (rawMId.startsWith('tab_') || rawMAlias.startsWith('tab_')) continue;
       const gInfo = groupModelProduct(cfg);
       const avail = classifyModelQuotaAvailability(cfg, planStatus);
       const qi = cfg.quotaInfo || {};
@@ -4068,6 +4074,8 @@
       }) || null;
 
       const resolvedSharedKey = matchedSummaryGroup ? matchedSummaryGroup.sharedKey : defaultSharedKey;
+      if (!CORE_SHARED_POOLS.has(resolvedSharedKey)) continue;
+
       const pKey = `${resolvedSharedKey}::${gInfo.productKey}`;
 
       let prod = productMap.get(pKey);
@@ -4179,11 +4187,14 @@
     };
 
     for (const pg of parsedGroups) {
-      ensurePool(pg.sharedKey, pg.title, pg);
+      if (CORE_SHARED_POOLS.has(pg.sharedKey)) {
+        ensurePool(pg.sharedKey, pg.title, pg);
+      }
     }
 
     for (const prod of productMap.values()) {
       const sKey = prod.sharedGroupKey;
+      if (!CORE_SHARED_POOLS.has(sKey)) continue;
       const summaryGroup = parsedGroups.find(pg => pg.sharedKey === sKey) || null;
       const pool = ensurePool(sKey, prod.productLabel, summaryGroup);
       pool.models.push({

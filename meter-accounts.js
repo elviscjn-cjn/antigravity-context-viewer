@@ -191,7 +191,8 @@ const ANTIGRAVITY_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/cclog',
-  'https://www.googleapis.com/auth/experimentsandconfigs'
+  'https://www.googleapis.com/auth/experimentsandconfigs',
+  'https://www.googleapis.com/auth/aicode'
 ];
 const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/auth';
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -1356,95 +1357,140 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   const proxyConfigOptions = options.proxyConfigOptions || {};
   const quotaStage = options.stage || 'quota_fetch';
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
-  const baseUrl = options.useDaily ? CLOUDCODE_DAILY_URL : CLOUDCODE_PROD_URL;
-  let targetHost = 'cloudcode-pa.googleapis.com';
-  try { targetHost = new URL(baseUrl).hostname; } catch { }
-  const ua = `antigravity/2.32.1 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
+  const ua = `antigravity/2.33.0 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     'User-Agent': ua,
     'Content-Type': 'application/json'
   };
 
-  let projectId = options.projectId || '';
-  let tierId = null;
-  try {
-    const loadRes = await fetchJsonWithProxy(`${baseUrl}/v1internal:loadCodeAssist`, {
-      method: 'POST',
-      stage: quotaStage,
-      headers,
-      body: JSON.stringify({
-        metadata: {
-          ideName: 'antigravity',
-          ideType: 'ANTIGRAVITY',
-          pluginType: 'GEMINI',
-          updateChannel: 'stable'
-        },
-        mode: 'FULL_ELIGIBILITY_CHECK',
-        ...(projectId ? { cloudaicompanionProject: projectId } : {})
-      })
-    }, customFetch, proxyConfigOptions);
-    if (loadRes.ok && loadRes.json) {
-      if (typeof loadRes.json.cloudaicompanionProject === 'string' && loadRes.json.cloudaicompanionProject) {
-        projectId = loadRes.json.cloudaicompanionProject;
-      } else if (loadRes.json.cloudaicompanionProject?.id) {
-        projectId = loadRes.json.cloudaicompanionProject.id;
+  const initialBaseUrl = options.baseUrl || (options.useDaily === false ? CLOUDCODE_PROD_URL : CLOUDCODE_DAILY_URL);
+  const allowFallback = !options.baseUrl && options.useDaily !== false && initialBaseUrl !== CLOUDCODE_PROD_URL;
+
+  const tryRequest = async (baseUrl) => {
+    let targetHost = 'cloudcode-pa.googleapis.com';
+    try { targetHost = new URL(baseUrl).hostname; } catch { }
+    let projectId = options.projectId || '';
+    let tierId = null;
+    try {
+      const loadRes = await fetchJsonWithProxy(`${baseUrl}/v1internal:loadCodeAssist`, {
+        method: 'POST',
+        stage: quotaStage,
+        headers,
+        body: JSON.stringify({
+          metadata: {
+            ideName: 'antigravity',
+            ideType: 'ANTIGRAVITY',
+            pluginType: 'GEMINI',
+            updateChannel: 'stable'
+          },
+          mode: 'FULL_ELIGIBILITY_CHECK',
+          ...(projectId ? { cloudaicompanionProject: projectId } : {})
+        })
+      }, customFetch, proxyConfigOptions);
+      if (loadRes.ok && loadRes.json) {
+        if (typeof loadRes.json.cloudaicompanionProject === 'string' && loadRes.json.cloudaicompanionProject) {
+          projectId = loadRes.json.cloudaicompanionProject;
+        } else if (loadRes.json.cloudaicompanionProject?.id) {
+          projectId = loadRes.json.cloudaicompanionProject.id;
+        }
+        tierId = loadRes.json.paidTier?.id || loadRes.json.currentTier?.id || null;
+      } else if (loadRes.status === 401 || loadRes.status === 403) {
+        const err = attachStageErrorMeta(
+          new Error(`CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
+          quotaStage,
+          targetHost,
+          loadRes.status,
+          loadRes.diagnostics
+        );
+        err.isAuthInvalid = true;
+        throw err;
       }
-      tierId = loadRes.json.paidTier?.id || loadRes.json.currentTier?.id || null;
-    } else if (loadRes.status === 401 || loadRes.status === 403) {
+    } catch (e) {
+      if (e.isAuthInvalid) throw e;
+    }
+
+    const payload = projectId ? { project: projectId } : {};
+    let availRes;
+    let summaryRes;
+    try {
+      [availRes, summaryRes] = await Promise.all([
+        fetchJsonWithProxy(`${baseUrl}/v1internal:fetchAvailableModels`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions),
+        fetchJsonWithProxy(`${baseUrl}/v1internal:retrieveUserQuotaSummary`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions)
+      ]);
+    } catch (e) {
+      const diag = e?.diagnostics || {};
+      throw attachStageErrorMeta(
+        new Error(`CloudCode 配额请求网络失败 (${diag.targetHost || targetHost}): ${sanitizeDiagnosticErrorText(e)}`),
+        quotaStage,
+        diag.targetHost || targetHost,
+        null,
+        diag
+      );
+    }
+
+    if (!availRes.ok && !summaryRes.ok) {
+      const st = availRes.status || summaryRes.status;
       const err = attachStageErrorMeta(
-        new Error(`CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
+        new Error(`CloudCode 配额请求失败 (HTTP ${st})`),
         quotaStage,
         targetHost,
-        loadRes.status,
-        loadRes.diagnostics
+        st,
+        availRes.diagnostics || summaryRes.diagnostics
       );
-      err.isAuthInvalid = true;
+      if (st === 401 || st === 403) err.isAuthInvalid = true;
       throw err;
     }
-  } catch (e) {
-    if (e.isAuthInvalid) throw e;
-  }
 
-  const payload = projectId ? { project: projectId } : {};
-  let availRes;
-  let summaryRes;
+    return { projectId, tierId, availRes, summaryRes, targetHost };
+  };
+
+  let reqRes;
   try {
-    [availRes, summaryRes] = await Promise.all([
-      fetchJsonWithProxy(`${baseUrl}/v1internal:fetchAvailableModels`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions),
-      fetchJsonWithProxy(`${baseUrl}/v1internal:retrieveUserQuotaSummary`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions)
-    ]);
-  } catch (e) {
-    const diag = e?.diagnostics || {};
-    throw attachStageErrorMeta(
-      new Error(`CloudCode 配额请求网络失败 (${diag.targetHost || targetHost}): ${sanitizeDiagnosticErrorText(e)}`),
-      quotaStage,
-      diag.targetHost || targetHost,
-      null,
-      diag
-    );
+    reqRes = await tryRequest(initialBaseUrl);
+  } catch (err) {
+    if (err.isAuthInvalid || !allowFallback) throw err;
+    reqRes = await tryRequest(CLOUDCODE_PROD_URL);
   }
 
-  if (!availRes.ok && !summaryRes.ok) {
-    const st = availRes.status || summaryRes.status;
-    const err = attachStageErrorMeta(
-      new Error(`CloudCode 配额请求失败 (HTTP ${st})`),
-      quotaStage,
-      targetHost,
-      st,
-      availRes.diagnostics || summaryRes.diagnostics
-    );
-    if (st === 401 || st === 403) err.isAuthInvalid = true;
-    throw err;
-  }
-
+  const { projectId, tierId, availRes, summaryRes } = reqRes;
   const modelsObj = availRes.json?.models && typeof availRes.json.models === 'object' ? availRes.json.models : {};
-  const clientModelConfigs = Object.entries(modelsObj).map(([k, v]) => ({
-    modelId: k,
-    label: v.displayName || k,
-    modelOrAlias: { model: v.model || k },
-    quotaInfo: v.quotaInfo || null
-  }));
+  const agentSorts = Array.isArray(availRes.json?.agentModelSorts) && availRes.json.agentModelSorts.length > 0
+    ? new Set(availRes.json.agentModelSorts.map(s => String(s).trim().toLowerCase()))
+    : null;
+  const CORE_POOLS = new Set(['shared_gemini_main', 'shared_3p_pool', 'shared_gemini_argon', 'shared_gemini_carbon']);
+
+  const clientModelConfigs = [];
+  for (const [k, v] of Object.entries(modelsObj)) {
+    if (!v || typeof v !== 'object') continue;
+    if (v.isInternal === true) continue;
+    const mKey = String(k || '').trim().toLowerCase();
+    const mModel = String(v.model || '').trim().toLowerCase();
+    if ((mKey.startsWith('chat_') && /^chat_\d+$/.test(mKey)) || (mModel.startsWith('chat_') && /^chat_\d+$/.test(mModel))) {
+      continue;
+    }
+    if (mKey.startsWith('tab_') || mModel.startsWith('tab_')) {
+      continue;
+    }
+
+    const cfg = {
+      modelId: k,
+      label: v.displayName || k,
+      modelOrAlias: { model: v.model || k },
+      quotaInfo: v.quotaInfo || null
+    };
+
+    const poolKey = getSharedQuotaGroupKey(cfg);
+    if (!CORE_POOLS.has(poolKey)) {
+      continue;
+    }
+    if (agentSorts && !agentSorts.has(mKey) && !agentSorts.has(mModel) && !agentSorts.has(poolKey)) {
+      // 若有显式 agentModelSorts 且不在核心列表内则过滤
+    }
+
+    clientModelConfigs.push(cfg);
+  }
+
   const quotaSummaryData = summaryRes.json?.response || summaryRes.json || null;
   const userStatusCompat = {
     userStatus: {
@@ -3574,5 +3620,9 @@ module.exports = {
   createDefaultSystemCredentialStore,
   createAccountsManager,
   getSharedAccountsManager,
-  dispatchAccountsAction
+  dispatchAccountsAction,
+  fetchAccountQuotaViaCloudCode,
+  CLOUDCODE_DAILY_URL,
+  CLOUDCODE_PROD_URL,
+  ANTIGRAVITY_OAUTH_SCOPES
 };
