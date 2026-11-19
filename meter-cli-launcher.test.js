@@ -5,11 +5,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 
 const {
   resolveCliExecutable,
   resolveCliWorkspace,
   resolveHelperExecutable,
+  resolveCliAccountProfile,
   escapePosixArg,
   launchCliSession
 } = require('./meter-cli-launcher');
@@ -486,5 +488,128 @@ test('打包脚本回归: package-release 编译 helper 输出至临时目录且
       try { fs.rmSync(helperInfo.tempDir, { recursive: true, force: true }); } catch {}
     }
     try { fs.rmSync(tmpOut, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('CLI 启动模块 10: resolveCliAccountProfile 独立账号解析、凭据提取与 profile 目录隔离', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-acc-'));
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const storeFile = path.join(stateDir, 'accounts_v1.json');
+    const profilesDir = path.join(tmpDir, 'cli-profiles');
+
+    // 1. 无指定账号时保持未隔离
+    const resNone = await resolveCliAccountProfile(null, { stateDir, cliProfilesDir: profilesDir });
+    assert.equal(resNone.ok, true);
+    assert.equal(resNone.isolated, false);
+    assert.equal(resNone.email, null);
+
+    // 2. 账号库存在但查询不存在的账号
+    const fakeStore = {
+      version: 1,
+      accounts: {
+        'alpha@example.com': {
+          email: 'alpha@example.com',
+          credential: { accessToken: 'mock_token_alpha', refreshToken: 'mock_refresh_alpha' }
+        },
+        'beta@example.com': {
+          email: 'beta@example.com',
+          credential: {}
+        }
+      }
+    };
+    fs.writeFileSync(storeFile, JSON.stringify(fakeStore), 'utf8');
+
+    const resMissing = await resolveCliAccountProfile('gamma@example.com', { stateDir, cliProfilesDir: profilesDir });
+    assert.equal(resMissing.ok, false);
+    assert.equal(resMissing.code, 'ACCOUNT_NOT_FOUND');
+    assert.match(resMissing.error, /未在多账号管理器中找到指定账号/);
+
+    // 3. 账号存在但无凭据
+    const resNoCred = await resolveCliAccountProfile('beta@example.com', { stateDir, cliProfilesDir: profilesDir });
+    assert.equal(resNoCred.ok, false);
+    assert.equal(resNoCred.code, 'ACCOUNT_NO_CREDENTIALS');
+
+    // 4. 正常账号成功生成隔离 profile 与 token 文件
+    const resAlpha = await resolveCliAccountProfile('alpha@example.com', { stateDir, cliProfilesDir: profilesDir });
+    assert.equal(resAlpha.ok, true);
+    assert.equal(resAlpha.isolated, true);
+    assert.equal(resAlpha.email, 'alpha@example.com');
+    assert.ok(fs.existsSync(resAlpha.isolatedDir));
+    assert.ok(fs.existsSync(resAlpha.tokenFile));
+    assert.ok(fs.existsSync(path.join(resAlpha.isolatedDir, 'keyring-marker-disabled')));
+
+    const parsedToken = JSON.parse(fs.readFileSync(resAlpha.tokenFile, 'utf8'));
+    assert.equal(parsedToken.token.access_token, 'mock_token_alpha');
+    assert.equal(parsedToken.token.refresh_token, 'mock_refresh_alpha');
+    assert.equal(parsedToken.id_token_email, 'alpha@example.com');
+    assert.equal(parsedToken.auth_method, 'consumer');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('CLI 启动模块 11: launchCliSession 与 cli.js launch-cli --account 隔离环境变量与 -keyring-unavailable 注入', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-launch-acc-'));
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const storeFile = path.join(stateDir, 'accounts_v1.json');
+    const profilesDir = path.join(tmpDir, 'cli-profiles');
+    const fakeCli = path.join(tmpDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
+    fs.writeFileSync(fakeCli, 'stub', { mode: 0o755 });
+
+    const fakeStore = {
+      version: 1,
+      accounts: {
+        'isolated_user@gmail.com': {
+          email: 'isolated_user@gmail.com',
+          credential: { accessToken: 'mock_token_iso', refreshToken: 'mock_refresh_iso' }
+        }
+      }
+    };
+    fs.writeFileSync(storeFile, JSON.stringify(fakeStore), 'utf8');
+
+    // 1. launchCliSession dryRun 验证
+    const dryRes = await launchCliSession({
+      cliPath: fakeCli,
+      cwd: tmpDir,
+      account: 'isolated_user@gmail.com',
+      stateDir,
+      cliProfilesDir: profilesDir,
+      dryRun: true
+    });
+    assert.equal(dryRes.ok, true);
+    assert.equal(dryRes.account, 'isolated_user@gmail.com');
+    assert.equal(dryRes.keyringBypassed, true);
+    assert.ok(dryRes.args.includes('-keyring-unavailable'));
+    assert.equal(dryRes.env.JETSKI_APP_DATA_DIR, dryRes.isolatedDir);
+    assert.equal(dryRes.env.JETSKI_OAUTH_TOKEN, 'mock_token_iso');
+    assert.equal(dryRes.env.AG_CLI_ACCOUNT_EMAIL, 'isolated_user@gmail.com');
+
+    // 2. 通过 cli.js 命令行进程解析验证
+    const resCli = spawnSync(
+      process.execPath,
+      [
+        path.join(__dirname, 'cli.js'),
+        'launch-cli',
+        '--cli-path', fakeCli,
+        '--cwd', tmpDir,
+        '--account', 'isolated_user@gmail.com',
+        '--state-dir', stateDir,
+        '--dry-run',
+        '--json'
+      ],
+      { cwd: __dirname, encoding: 'utf8', windowsHide: true }
+    );
+    assert.equal(resCli.status, 0, resCli.stderr);
+    const parsedOut = JSON.parse(resCli.stdout.trim());
+    assert.equal(parsedOut.ok, true);
+    assert.equal(parsedOut.account, 'isolated_user@gmail.com');
+    assert.equal(parsedOut.keyringBypassed, true);
+    assert.ok(parsedOut.args.includes('-keyring-unavailable'));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

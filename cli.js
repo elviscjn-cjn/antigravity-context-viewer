@@ -1200,7 +1200,7 @@ async function runLiveCommand(cdpOptions = {}, customPath = null) {
 const CLI_VALUE_FLAGS = new Set([
   '--path', '--backup', '--port', '--proxy-url',
   '--mode', '--limit', '--tier', '--title', '--context', '--brand', '--lang',
-  '--account', '--model', '--session', '--cwd', '--interval', '--cli-path',
+  '--account', '-a', '--model', '--session', '--cwd', '--interval', '--cli-path',
   '--ag-dir', '--cli-dir', '--state-dir'
 ]);
 
@@ -1228,8 +1228,8 @@ function printUsage() {
                                             在终端只读查询累计 Token 消耗 (口径与面板一致)
   node cli.js monitor [--session <id>] [--cwd <dir>] [--compact] [--interval <ms>] [--once] [--json]
                                             终端常驻监视 CLI 会话上下文与用量 (独立于桌面客户端)
-  node cli.js launch-cli [--model <id>] [--cwd <dir>] [--dry-run] [--json]
-                                            探测已安装的 agy CLI 并按工作区与模型偏好打开终端
+  node cli.js launch-cli [--account <email>] [--model <id>] [--cwd <dir>] [--dry-run] [--json]
+                                            以指定账号独立启动 agy CLI（凭据隔离，不覆盖桌面客户端）
   node cli.js context-set --model <id> --mode <default|fixed|dynamic> [--limit N] [--clear] [--sync-cli-settings]
                                             配置 CLI 按模型自定义上下文偏好
   node cli.js context-status [--model <id>] [--json]
@@ -1689,6 +1689,7 @@ async function main() {
     const cliPathArg = getVal('--cli-path');
     const cwdArg = getVal('--cwd');
     const modelArg = getVal('--model');
+    const accountArg = getVal('--account') || getVal('-a');
     const dryRun = args.includes('--dry-run');
     const wantJson = args.includes('--json');
     const detectRes = resolveCliExecutable(cliPathArg);
@@ -1702,13 +1703,18 @@ async function main() {
       cliPath: detectRes.cliPath,
       cwd: cwdArg || process.cwd(),
       model: modelArg || undefined,
+      account: accountArg || undefined,
       stateDir: getVal('--state-dir') || undefined,
       dryRun
     });
     if (wantJson) {
       console.log(JSON.stringify(launchRes, null, 2));
     } else if (launchRes.ok) {
-      console.log(`✅ CLI ${dryRun ? '预检' : '启动'}成功: ${launchRes.cliPath} (工作区: ${launchRes.cwd}, 模型: ${launchRes.model})`);
+      const accLabel = launchRes.account ? `, 独立账号: ${launchRes.account}` : '';
+      console.log(`✅ CLI ${dryRun ? '预检' : '启动'}成功: ${launchRes.cliPath} (工作区: ${launchRes.cwd}, 模型: ${launchRes.model}${accLabel})`);
+      if (launchRes.isolatedDir) {
+        console.log(`   凭据隔离: ${launchRes.isolatedDir} (已隔离系统 Keyring，互不覆盖)`);
+      }
     } else {
       console.error(`❌ CLI 启动失败: ${launchRes.error}`);
     }

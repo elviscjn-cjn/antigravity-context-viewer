@@ -690,6 +690,111 @@ function resolveHelperExecutable(options = {}) {
 }
 
 /**
+ * 解析并准备 CLI 独立运行账号与隔离 profile 凭据环境
+ * 实现与桌面客户端账号完全隔离并行运行，互不覆盖凭据或干扰
+ */
+async function resolveCliAccountProfile(accountQuery, options = {}) {
+  const home = options.homeDir || process.env.USERPROFILE || os.homedir();
+  const cliAppDataDir = options.cliAppDataDir || path.join(home, '.gemini', 'antigravity-cli');
+  const profilesBaseDir = options.cliProfilesDir || path.join(cliAppDataDir, 'profiles');
+
+  let targetAccount = accountQuery || options.account || options.email || null;
+  if (!targetAccount) {
+    try {
+      const { getPluginSettings } = require('./meter-collector');
+      const settingsSnap = getPluginSettings({ stateDir: options.stateDir });
+      if (settingsSnap?.cliAccountEmail) {
+        targetAccount = settingsSnap.cliAccountEmail;
+      }
+    } catch {}
+  }
+
+  if (!targetAccount || typeof targetAccount !== 'string' || !targetAccount.trim()) {
+    return { ok: true, isolated: false, email: null, isolatedDir: null, accountRecord: null };
+  }
+
+  const queryRaw = targetAccount.trim();
+  const { getSharedAccountsManager, normalizeEmail } = require('./meter-accounts');
+  const mgr = getSharedAccountsManager({ stateDir: options.stateDir, forceNew: Boolean(options.stateDir) });
+  const store = mgr.loadStore();
+  const accounts = store.accounts || {};
+
+  const queryNorm = normalizeEmail(queryRaw);
+  let matchedAccount = null;
+  if (accounts[queryNorm]) {
+    matchedAccount = accounts[queryNorm];
+  } else {
+    const qLower = queryRaw.toLowerCase();
+    for (const [accEmail, acc] of Object.entries(accounts)) {
+      const el = accEmail.toLowerCase();
+      if (el === qLower || el.startsWith(qLower) || el.split('@')[0] === qLower) {
+        matchedAccount = acc;
+        break;
+      }
+    }
+  }
+
+  if (!matchedAccount) {
+    const available = Object.keys(accounts);
+    return {
+      ok: false,
+      code: 'ACCOUNT_NOT_FOUND',
+      error: `未在多账号管理器中找到指定账号: ${queryRaw}${available.length > 0 ? ` (可用账号: ${available.join(', ')})` : ' (暂无已配置账号)'}`,
+      targetAccount: queryRaw
+    };
+  }
+
+  const cred = matchedAccount.credential || {};
+  if (!cred.accessToken && !cred.refreshToken) {
+    return {
+      ok: false,
+      code: 'ACCOUNT_NO_CREDENTIALS',
+      error: `账号 ${matchedAccount.email} 暂无可用凭据，请先在面板多账号管理中登录或重新授权`,
+      email: matchedAccount.email
+    };
+  }
+
+  const safeDirName = matchedAccount.email.toLowerCase().replace(/[@.]/g, '_');
+  const isolatedDir = path.resolve(profilesBaseDir, safeDirName);
+  try {
+    fs.mkdirSync(isolatedDir, { recursive: true });
+    const tokenFile = path.join(isolatedDir, 'antigravity-oauth-token');
+    const tokenPayload = {
+      token: {
+        access_token: cred.accessToken || '',
+        token_type: 'Bearer',
+        refresh_token: cred.refreshToken || '',
+        expiry: cred.expiresAt ? new Date(cred.expiresAt).toISOString() : new Date(Date.now() + 3600000).toISOString()
+      },
+      auth_method: 'consumer',
+      id_token_email: matchedAccount.email,
+      id_token: cred.idToken || ''
+    };
+    fs.writeFileSync(tokenFile, JSON.stringify(tokenPayload, null, 2), 'utf8');
+
+    // 写入 keyring-marker 标记，彻底强制禁用系统 OS Keyring 读写，回退纯文件存储
+    const markerFile = path.join(isolatedDir, 'keyring-marker-disabled');
+    fs.writeFileSync(markerFile, '1', 'utf8');
+
+    return {
+      ok: true,
+      isolated: true,
+      email: matchedAccount.email,
+      accountRecord: matchedAccount,
+      isolatedDir,
+      tokenFile
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'PROFILE_PREPARE_ERROR',
+      error: `准备独立账号运行目录失败: ${err?.message || err}`,
+      email: matchedAccount.email
+    };
+  }
+}
+
+/**
  * 组装启动环境并调度启动 Antigravity CLI 会话
  */
 async function launchCliSession(options = {}, ownerHwnd = 0) {
@@ -703,6 +808,11 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
     return wsInfo;
   }
 
+  const accProfile = await resolveCliAccountProfile(options.account || options.email, options);
+  if (!accProfile.ok) {
+    return accProfile;
+  }
+
   const cwd = wsInfo.cwd;
   const model = (typeof options.model === 'string' && /^[a-zA-Z0-9._-]+$/.test(options.model.trim()))
     ? options.model.trim()
@@ -713,6 +823,20 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
 
   const cliArgs = ['--model', model, ...extraArgs];
   const env = buildCliProxyEnv(options.env || process.env, options);
+
+  if (accProfile.isolated) {
+    env.JETSKI_APP_DATA_DIR = accProfile.isolatedDir;
+    env.AG_CLI_ACCOUNT_EMAIL = accProfile.email;
+    if (accProfile.accountRecord?.credential?.accessToken) {
+      env.JETSKI_OAUTH_TOKEN = accProfile.accountRecord.credential.accessToken;
+    }
+    if (!cliArgs.includes('-keyring-unavailable')) {
+      cliArgs.push('-keyring-unavailable');
+    }
+    if (!extraArgs.includes('-keyring-unavailable')) {
+      extraArgs.push('-keyring-unavailable');
+    }
+  }
   // 跨平台恢复交互式 CLI 子进程环境的原生彩虹渐变 Logo 与颜色能力（隔离宿主环境的 NO_COLOR/dumb）
   delete env.NO_COLOR;
   env.TERM = 'xterm-256color';
@@ -761,6 +885,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       cwd,
       cwdSource: wsInfo.source,
       model,
+      account: accProfile.isolated ? accProfile.email : null,
+      isolatedDir: accProfile.isolated ? accProfile.isolatedDir : null,
+      keyringBypassed: accProfile.isolated === true,
       modelContextPreference,
       args: cliArgs,
       env: {
@@ -771,7 +898,10 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
         HTTPS_PROXY: env.HTTPS_PROXY,
         AG_METER_CLI_MODEL_CONTEXT: env.AG_METER_CLI_MODEL_CONTEXT,
         AG_CONTEXT_LIMIT: env.AG_CONTEXT_LIMIT,
-        AG_CLI_SESSION_ID: env.AG_CLI_SESSION_ID
+        AG_CLI_SESSION_ID: env.AG_CLI_SESSION_ID,
+        JETSKI_APP_DATA_DIR: env.JETSKI_APP_DATA_DIR,
+        JETSKI_OAUTH_TOKEN: env.JETSKI_OAUTH_TOKEN,
+        AG_CLI_ACCOUNT_EMAIL: env.AG_CLI_ACCOUNT_EMAIL
       }
     };
   }
@@ -796,6 +926,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       const batContent = [
         '@echo off',
         'chcp 65001 >nul',
+        ...(accProfile.isolated ? [`set "JETSKI_APP_DATA_DIR=${accProfile.isolatedDir}"`] : []),
         'if defined AG_CLI_PROBE_FILE (',
         '  > "%AG_CLI_PROBE_FILE%" echo %CD%',
         ')',
@@ -908,6 +1039,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
               cwd,
               cwdSource: wsInfo.source,
               model,
+              account: accProfile.isolated ? accProfile.email : null,
+              isolatedDir: accProfile.isolated ? accProfile.isolatedDir : null,
+              keyringBypassed: accProfile.isolated === true,
               args: cliArgs,
               telemetry: helperResult,
               runtimeInfo
@@ -931,6 +1065,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
             cliPath: cliInfo.cliPath,
             exePath: cliInfo.exePath,
             cwd,
+            account: accProfile.isolated ? accProfile.email : null,
+            isolatedDir: accProfile.isolated ? accProfile.isolatedDir : null,
+            keyringBypassed: accProfile.isolated === true,
             telemetry: helperResult,
             runtimeInfo
           };
@@ -963,6 +1100,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
           cwd,
           cwdSource: wsInfo.source,
           model,
+          account: accProfile.isolated ? accProfile.email : null,
+          isolatedDir: accProfile.isolated ? accProfile.isolatedDir : null,
+          keyringBypassed: accProfile.isolated === true,
           args: cliArgs,
           telemetry: helperResult,
           runtimeInfo
@@ -996,6 +1136,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
         cwd,
         cwdSource: wsInfo.source,
         model,
+        account: accProfile.isolated ? accProfile.email : null,
+        isolatedDir: accProfile.isolated ? accProfile.isolatedDir : null,
+        keyringBypassed: accProfile.isolated === true,
         args: cliArgs,
         runtimeInfo: {
           launcherModulePath: __filename,
@@ -1017,6 +1160,13 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
         `TERM=${escapePosixArg(env.TERM)}`,
         `COLORTERM=${escapePosixArg(env.COLORTERM)}`
       ];
+      if (accProfile.isolated) {
+        envAssigns.push(`JETSKI_APP_DATA_DIR=${escapePosixArg(accProfile.isolatedDir)}`);
+        envAssigns.push(`AG_CLI_ACCOUNT_EMAIL=${escapePosixArg(accProfile.email)}`);
+        if (accProfile.accountRecord?.credential?.accessToken) {
+          envAssigns.push(`JETSKI_OAUTH_TOKEN=${escapePosixArg(accProfile.accountRecord.credential.accessToken)}`);
+        }
+      }
       for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY']) {
         if (env[k]) envAssigns.push(`${k}=${escapePosixArg(env[k])}`);
       }
@@ -1038,6 +1188,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
           cwd,
           cwdSource: wsInfo.source,
           model,
+          account: accProfile.isolated ? accProfile.email : null,
+          isolatedDir: accProfile.isolated ? accProfile.isolatedDir : null,
+          keyringBypassed: accProfile.isolated === true,
           args: cliArgs
         };
       }
@@ -1063,6 +1216,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
         cwd,
         cwdSource: wsInfo.source,
         model,
+        account: accProfile.isolated ? accProfile.email : null,
+        isolatedDir: accProfile.isolated ? accProfile.isolatedDir : null,
+        keyringBypassed: accProfile.isolated === true,
         args: cliArgs
       };
     } else if (runtimePlatform === 'linux') {
@@ -1124,6 +1280,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
         cwd,
         cwdSource: wsInfo.source,
         model,
+        account: accProfile.isolated ? accProfile.email : null,
+        isolatedDir: accProfile.isolated ? accProfile.isolatedDir : null,
+        keyringBypassed: accProfile.isolated === true,
         args: cliArgs
       };
     } else {
@@ -1155,6 +1314,7 @@ module.exports = {
   resolveCliExecutable,
   resolveCliWorkspace,
   resolveHelperExecutable,
+  resolveCliAccountProfile,
   escapePosixArg,
   launchCliSession
 };

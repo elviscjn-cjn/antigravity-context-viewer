@@ -3387,6 +3387,7 @@ function requestGetUserStatusDirect(origin, csrfToken, timeoutMs = 4000) {
 }
 
 let sharedAccountsMgr = null;
+let sharedMgrStateDir = null;
 const sharedMgrRuntime = {
   currentOrigin: '',
   getLiveOrigins: null,
@@ -3422,7 +3423,9 @@ function getSharedAccountsManager(opts = {}) {
     }
   };
 
-  if (!sharedAccountsMgr || opts.forceNew) {
+  const stateDirDiffers = Boolean(opts.stateDir && opts.stateDir !== sharedMgrStateDir);
+  if (!sharedAccountsMgr || opts.forceNew || stateDirDiffers) {
+    if (!opts.forceNew && opts.stateDir) sharedMgrStateDir = opts.stateDir;
     const collector = opts.collector || require('./meter-collector');
     const localRuntime = opts.forceNew
       ? {

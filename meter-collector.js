@@ -3300,6 +3300,7 @@ function getPluginSettings(options = {}) {
     dockPosition: validDockPositions.has(uiPrefs.dockPosition) ? uiPrefs.dockPosition : 'flow',
     quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
     panelLanguage: uiPrefs.panelLanguage || 'zh-CN',
+    cliAccountEmail: uiPrefs.cliAccountEmail || null,
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
     recoveredFromCorruption: Boolean(settings.recoveredFromCorruption)
@@ -3410,6 +3411,11 @@ function savePluginSettings(payload = {}, options = {}) {
   }
   if (typeof payload.panelLanguage === 'string' && validPanelLanguages.has(payload.panelLanguage)) {
     topLevelUiPrefs.panelLanguage = payload.panelLanguage;
+  }
+  if (typeof payload.cliAccountEmail === 'string') {
+    topLevelUiPrefs.cliAccountEmail = payload.cliAccountEmail.trim() || null;
+  } else if (payload.cliAccountEmail === null) {
+    topLevelUiPrefs.cliAccountEmail = null;
   }
   const incomingUiPrefs = (payload.uiPreferences && typeof payload.uiPreferences === 'object' && !Array.isArray(payload.uiPreferences))
     ? { ...payload.uiPreferences, ...topLevelUiPrefs }
