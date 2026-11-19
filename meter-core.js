@@ -3727,18 +3727,50 @@
   }
 
   /**
-   * 解析严格 v0.x.x 格式的语义化版本
-   * 防御性要求：只接受 ^v0\.\d+\.\d+$，任何 v2.x 或其他前缀均返回 null
+   * 解析严格 v0.x.x(-prerelease) 格式的语义化版本
+   * 防御性要求：只接受 ^v?0\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$，任何 v2.x 或其他前缀均返回 null
    */
   function parseSemver(tag) {
     if (!tag || typeof tag !== 'string') return null;
-    const m = tag.trim().match(/^v?0\.(\d+)\.(\d+)$/);
+    const m = tag.trim().match(/^v?0\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/);
     if (!m) return null;
-    return { major: 0, minor: parseInt(m[1], 10), patch: parseInt(m[2], 10) };
+    const parsed = { major: 0, minor: parseInt(m[1], 10), patch: parseInt(m[2], 10) };
+    if (m[3]) parsed.prerelease = m[3];
+    return parsed;
   }
 
   /**
-   * 语义化版本对比
+   * 对比 SemVer 预发布标识符序列
+   */
+  function comparePrereleaseIdentifiers(preA, preB) {
+    if (!preA && !preB) return 0;
+    if (!preA && preB) return 1;
+    if (preA && !preB) return -1;
+    const partsA = String(preA).split('.');
+    const partsB = String(preB).split('.');
+    const len = Math.max(partsA.length, partsB.length);
+    for (let i = 0; i < len; i += 1) {
+      if (i >= partsA.length) return -1;
+      if (i >= partsB.length) return 1;
+      const a = partsA[i];
+      const b = partsB[i];
+      if (a === b) continue;
+      const aNum = /^\d+$/.test(a);
+      const bNum = /^\d+$/.test(b);
+      if (aNum && bNum) {
+        const diff = parseInt(a, 10) - parseInt(b, 10);
+        if (diff !== 0) return diff > 0 ? 1 : -1;
+      } else if (aNum !== bNum) {
+        return aNum ? -1 : 1;
+      } else {
+        return a > b ? 1 : -1;
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * 语义化版本对比（支持预发布后缀：0.8.8 < 0.8.9-beta.1 < 0.8.9-beta.2 < 0.8.9）
    * @returns {number} 1 (vA > vB), -1 (vA < vB), 0 (相等或无法对比)
    */
   function compareVersions(vA, vB) {
@@ -3749,24 +3781,35 @@
     if (!b) return 1;
     if (a.minor !== b.minor) return a.minor > b.minor ? 1 : -1;
     if (a.patch !== b.patch) return a.patch > b.patch ? 1 : -1;
-    return 0;
+    return comparePrereleaseIdentifiers(a.prerelease, b.prerelease);
   }
 
   /**
    * 过滤并筛选可用更新 Release
+   * - 正式版用户默认（allowBetaUpdates !== true）不推送预发布版本
+   * - 预发布用户（如 0.8.9-beta.1）可识别并升级到后续 beta 或正式版（如 0.8.9）
    */
-  function filterReleases(releasesList, currentVersion = '0.8.8') {
+  function filterReleases(releasesList, currentVersion = '0.8.8', options = {}) {
     if (!Array.isArray(releasesList)) return [];
+    const allowBetaUpdates = options?.allowBetaUpdates === true;
+    const currentParsed = parseSemver(currentVersion);
+    const isCurrentBeta = Boolean(currentParsed && currentParsed.prerelease);
+    const acceptPrerelease = allowBetaUpdates || isCurrentBeta;
     const valid = [];
     for (const rel of releasesList) {
-      if (!rel || rel.draft || rel.prerelease) continue;
+      if (!rel || rel.draft) continue;
       const parsed = parseSemver(rel.tag_name);
       if (!parsed) continue; // 忽略非 v0.x 编号
-      const verStr = `0.${parsed.minor}.${parsed.patch}`;
+      const isRelPrerelease = Boolean(rel.prerelease || parsed.prerelease);
+      if (isRelPrerelease && !acceptPrerelease) continue;
+      const verStr = parsed.prerelease
+        ? `0.${parsed.minor}.${parsed.patch}-${parsed.prerelease}`
+        : `0.${parsed.minor}.${parsed.patch}`;
       if (compareVersions(verStr, currentVersion) > 0) {
         valid.push({
           tagName: rel.tag_name,
           version: verStr,
+          prerelease: isRelPrerelease,
           htmlUrl: rel.html_url,
           body: rel.body || '',
           publishedAt: rel.published_at || '',

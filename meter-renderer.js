@@ -1,6 +1,6 @@
 (function () {
-  const METER_VERSION = '0.8.8';
-  const METER_DISPLAY_VERSION = '0.8.8 α';
+  const METER_VERSION = '0.8.9-beta.1';
+  const METER_DISPLAY_VERSION = '0.8.9 β';
 
   'use strict';
   if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
@@ -2636,7 +2636,7 @@
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
-      <span id="v">0.8.8 α</span>
+      <span id="v">0.8.9 β</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -4712,6 +4712,13 @@
               <span data-i18n="tokens.update.auto">启动时自动检查更新（不自动安装）</span>
             </label>
           </div>
+          <div
+            style="display:flex;align-items:center;justify-content:flex-end;margin-top:6px;font-size:11px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
+              <input id="check-allow-beta-updates" type="checkbox">
+              <span data-i18n="tokens.update.allowBeta">接收预发布版本推送（Beta 通道）</span>
+            </label>
+          </div>
         </div>
       </div>
     </div><!-- end #tokens-main-view -->
@@ -4798,7 +4805,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.8.8 α</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.8.9 β</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -5517,6 +5524,7 @@ const PANEL_I18N = {
   'tokens.colors.title': { 'zh-CN': '🎨 热力图色阶与面板外观自定义（默认跟随主题）', 'zh-TW': '🎨 熱力圖色階與面板外觀自訂（預設跟隨佈景主題）', en: '🎨 Heatmap Palette & Panel Appearance' },
   'tokens.update.title': { 'zh-CN': '更新设置', 'zh-TW': '更新設定', en: 'Update Settings' },
   'tokens.update.auto': { 'zh-CN': '启动时自动检查更新（不自动安装）', 'zh-TW': '啟動時自動檢查更新（不自動安裝）', en: 'Check for updates on startup (manual install)' },
+  'tokens.update.allowBeta': { 'zh-CN': '接收预发布版本推送（Beta 通道）', 'zh-TW': '接收預發布版本推送（Beta 通道）', en: 'Receive pre-release updates (Beta channel)' },
   'cp.title': { 'zh-CN': '🎨 颜色选取器', 'zh-TW': '🎨 顏色選擇器', en: '🎨 Color Picker' },
   'cp.eyedropper': { 'zh-CN': '🖊 取色', 'zh-TW': '🖊 滴管取色', en: '🖊 Pick' },
   'cp.moreFormats': { 'zh-CN': '更多格式 (RGB / HSL)', 'zh-TW': '更多格式 (RGB / HSL)', en: 'More formats (RGB / HSL)' },
@@ -9226,13 +9234,23 @@ function formatPeriodCalendarLabel(currentPeriod) {
   let activeCostModel = 'gemini-3.8-flash';
   let activeCostMode = 'ref';
   let autoCheckUpdate = true;
+  let allowBetaUpdates = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.9-beta.1';
   function formatDisplayVersion(rawVer) {
     const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
-    if (!clean) return '0.8.8 α';
+    const buildDisplay = typeof METER_DISPLAY_VERSION !== 'undefined' && METER_DISPLAY_VERSION
+      ? String(METER_DISPLAY_VERSION).trim()
+      : '0.8.9 β';
+    if (!clean) return buildDisplay;
+    const normalizedCurrent = String(METER_RENDERER_VERSION || '').replace(/^v/i, '').trim();
+    if (normalizedCurrent && clean === normalizedCurrent) return buildDisplay;
     if (clean === '0.8.8') return '0.8.8 α';
+    const betaMatch = clean.match(/^(\d+\.\d+\.\d+)-beta(?:\.(\d+))?$/i);
+    if (betaMatch) {
+      return betaMatch[2] && betaMatch[2] !== '1' ? `${betaMatch[1]} β.${betaMatch[2]}` : `${betaMatch[1]} β`;
+    }
     return `v${clean}`;
   }
   const backendStatus = {
@@ -22051,6 +22069,14 @@ function closeAllDropdowns(exceptWrap = null) {
           const chk = el('check-auto-update');
           if (chk) chk.checked = autoCheckUpdate;
         }
+        const savedAllowBeta = settingsRes.allowBetaUpdates !== undefined
+          ? settingsRes.allowBetaUpdates
+          : settingsRes.uiPreferences?.allowBetaUpdates;
+        if (savedAllowBeta !== undefined) {
+          allowBetaUpdates = savedAllowBeta === true;
+          const chkBeta = el('check-allow-beta-updates');
+          if (chkBeta) chkBeta.checked = allowBetaUpdates;
+        }
         const savedLang = settingsRes.panelLanguage || settingsRes.uiPreferences?.panelLanguage;
         if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang) && savedLang !== currentPanelLanguage) {
           await applyPanelLanguage(savedLang, { persist: false });
@@ -22283,7 +22309,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     try {
-      const checkReq = { force: manual, currentVersion: currentVer };
+      const checkReq = { force: manual, currentVersion: currentVer, allowBetaUpdates };
       const out = await callBackendWithPriority({
         ipcCall: hasIpcUpdateBridge ? () => window.contextMeterAPI.checkUpdate(checkReq) : null,
         liveRoute: '/check-update',
@@ -22502,6 +22528,17 @@ function closeAllDropdowns(exceptWrap = null) {
       void saveSettingsPayloadBridge({ autoCheckUpdate });
     }
   });
+
+  const chkBetaInit = el('check-allow-beta-updates');
+  if (chkBetaInit) {
+    chkBetaInit.checked = allowBetaUpdates;
+    chkBetaInit.addEventListener('change', e => {
+      allowBetaUpdates = e.target.checked === true;
+      if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+        void saveSettingsPayloadBridge({ allowBetaUpdates });
+      }
+    });
+  }
 
 var cumLockedKey = null;
   var cumHoveredKey = null;

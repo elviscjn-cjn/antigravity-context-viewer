@@ -208,13 +208,23 @@
   let activeCostModel = 'gemini-3.8-flash';
   let activeCostMode = 'ref';
   let autoCheckUpdate = true;
+  let allowBetaUpdates = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.9-beta.1';
   function formatDisplayVersion(rawVer) {
     const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
-    if (!clean) return '0.8.8 α';
+    const buildDisplay = typeof METER_DISPLAY_VERSION !== 'undefined' && METER_DISPLAY_VERSION
+      ? String(METER_DISPLAY_VERSION).trim()
+      : '0.8.9 β';
+    if (!clean) return buildDisplay;
+    const normalizedCurrent = String(METER_RENDERER_VERSION || '').replace(/^v/i, '').trim();
+    if (normalizedCurrent && clean === normalizedCurrent) return buildDisplay;
     if (clean === '0.8.8') return '0.8.8 α';
+    const betaMatch = clean.match(/^(\d+\.\d+\.\d+)-beta(?:\.(\d+))?$/i);
+    if (betaMatch) {
+      return betaMatch[2] && betaMatch[2] !== '1' ? `${betaMatch[1]} β.${betaMatch[2]}` : `${betaMatch[1]} β`;
+    }
     return `v${clean}`;
   }
   const backendStatus = {
@@ -10272,6 +10282,14 @@
           const chk = el('check-auto-update');
           if (chk) chk.checked = autoCheckUpdate;
         }
+        const savedAllowBeta = settingsRes.allowBetaUpdates !== undefined
+          ? settingsRes.allowBetaUpdates
+          : settingsRes.uiPreferences?.allowBetaUpdates;
+        if (savedAllowBeta !== undefined) {
+          allowBetaUpdates = savedAllowBeta === true;
+          const chkBeta = el('check-allow-beta-updates');
+          if (chkBeta) chkBeta.checked = allowBetaUpdates;
+        }
         const savedLang = settingsRes.panelLanguage || settingsRes.uiPreferences?.panelLanguage;
         if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang) && savedLang !== currentPanelLanguage) {
           await applyPanelLanguage(savedLang, { persist: false });
@@ -10504,7 +10522,7 @@
     }
 
     try {
-      const checkReq = { force: manual, currentVersion: currentVer };
+      const checkReq = { force: manual, currentVersion: currentVer, allowBetaUpdates };
       const out = await callBackendWithPriority({
         ipcCall: hasIpcUpdateBridge ? () => window.contextMeterAPI.checkUpdate(checkReq) : null,
         liveRoute: '/check-update',
@@ -10723,6 +10741,17 @@
       void saveSettingsPayloadBridge({ autoCheckUpdate });
     }
   });
+
+  const chkBetaInit = el('check-allow-beta-updates');
+  if (chkBetaInit) {
+    chkBetaInit.checked = allowBetaUpdates;
+    chkBetaInit.addEventListener('change', e => {
+      allowBetaUpdates = e.target.checked === true;
+      if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+        void saveSettingsPayloadBridge({ allowBetaUpdates });
+      }
+    });
+  }
 
   /* @INSERT_HEATMAP_MODULE */
   function updateRingAndBubble(d, session, pct, danger, stale, incomplete) {

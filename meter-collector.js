@@ -3276,6 +3276,7 @@ function getPluginSettings(options = {}) {
     contextUnifiedPreference: settings.contextUnifiedPreference || { mode: 'default', limitTokens: null },
     savedHeatView: uiPrefs.savedHeatView,
     autoCheckUpdate: uiPrefs.autoCheckUpdate,
+    allowBetaUpdates: uiPrefs.allowBetaUpdates === true,
     panelLanguage: uiPrefs.panelLanguage || 'zh-CN',
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
@@ -3366,6 +3367,11 @@ function savePluginSettings(payload = {}, options = {}) {
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
   if (typeof payload.autoCheckUpdate === 'boolean') {
     topLevelUiPrefs.autoCheckUpdate = payload.autoCheckUpdate;
+  }
+  if (typeof payload.allowBetaUpdates === 'boolean') {
+    topLevelUiPrefs.allowBetaUpdates = payload.allowBetaUpdates;
+    cachedUpdateCheck = null;
+    cachedUpdateCheckAt = 0;
   }
   if (typeof payload.panelLanguage === 'string' && validPanelLanguages.has(payload.panelLanguage)) {
     topLevelUiPrefs.panelLanguage = payload.panelLanguage;
@@ -7524,7 +7530,7 @@ function parseReleasesAtom(xmlText) {
     }
     if (!tagName && titleMatch) {
       const titleText = decodeHtmlEntities(titleMatch[1]).trim();
-      const verToken = titleText.match(/\bv?\d+\.\d+\.\d+\b/);
+      const verToken = titleText.match(/\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\b/);
       if (verToken) tagName = verToken[0];
     }
     if (!tagName) continue;
@@ -7695,7 +7701,9 @@ async function fetchOfficialReleasesWithFallback(options = {}) {
     throw primaryErr || new Error('未能获取有效的官方版本列表');
   }
 
-  const valid = filterReleases(releasesList, effectiveCurrentVersion);
+  const valid = filterReleases(releasesList, effectiveCurrentVersion, {
+    allowBetaUpdates: options.allowBetaUpdates === true
+  });
   return {
     releases: valid,
     source: usedSource,
@@ -7723,12 +7731,18 @@ async function checkUpdateAsync(options = {}) {
     ? diskVersion
     : runtimeVersion;
   const installedVersion = diskVersion || runtimeVersion;
+  const resolvedAllowBeta = typeof options.allowBetaUpdates === 'boolean'
+    ? options.allowBetaUpdates
+    : getPluginSettings(options).allowBetaUpdates === true;
 
   const now = Date.now();
   const cacheTtl = 6 * 3600 * 1000;
   if (!options.force && cachedUpdateCheck && (now - cachedUpdateCheckAt < cacheTtl)) {
-    // 若当前运行时版本与缓存中的运行时版本不一致（例如重启后运行版本对齐），缓存立即失效
-    if (cachedUpdateCheck.currentVersion && cachedUpdateCheck.currentVersion !== runtimeVersion) {
+    // 若预发布通道开关或运行时版本与缓存不一致，缓存立即失效
+    if (Boolean(cachedUpdateCheck.allowBetaUpdates) !== resolvedAllowBeta) {
+      cachedUpdateCheck = null;
+      cachedUpdateCheckAt = 0;
+    } else if (cachedUpdateCheck.currentVersion && cachedUpdateCheck.currentVersion !== runtimeVersion) {
       cachedUpdateCheck = null;
       cachedUpdateCheckAt = 0;
     } else if (cachedUpdateCheck.hasUpdate && cachedUpdateCheck.latestVersion) {
@@ -7748,6 +7762,7 @@ async function checkUpdateAsync(options = {}) {
     const fetcher = options._requestGithubUrl || requestGithubUrl;
     const { releases: valid, source } = await fetchOfficialReleasesWithFallback({
       currentVersion: effectiveCurrentVersion,
+      allowBetaUpdates: resolvedAllowBeta,
       _requestGithubUrl: fetcher,
       timeout: 8000
     });
@@ -7768,6 +7783,8 @@ async function checkUpdateAsync(options = {}) {
         currentVersion: runtimeVersion,
         installedVersion,
         latestVersion: latest.version,
+        prerelease: Boolean(latest.prerelease),
+        allowBetaUpdates: resolvedAllowBeta,
         tagName: latest.tagName,
         releaseNotes: bodyLines,
         htmlUrl: latest.htmlUrl || `${OFFICIAL_RELEASES_WEB_BASE}/tag/${encodeURIComponent(latest.tagName)}`,
@@ -7785,6 +7802,7 @@ async function checkUpdateAsync(options = {}) {
       currentVersion: runtimeVersion,
       installedVersion,
       latestVersion: effectiveCurrentVersion,
+      allowBetaUpdates: resolvedAllowBeta,
       diskPendingRestart: compareVersions(installedVersion, runtimeVersion) > 0,
       source
     };

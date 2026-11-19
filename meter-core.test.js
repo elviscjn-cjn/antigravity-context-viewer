@@ -1283,6 +1283,39 @@ test('semver & update filtering: strictly accepts v0.x tags, ignores asset filen
   assert.equal(compareVersions('0.8.8', '0.8.8'), 0);
   assert.equal(compareVersions('0.8.9', '0.8.8'), 1);
 
+  // 预发布版本比较规则：0.8.8 < 0.8.9-beta.1 < 0.8.9-beta.2 < 0.8.9
+  assert.deepEqual(parseSemver('v0.8.9-beta.1'), { major: 0, minor: 8, patch: 9, prerelease: 'beta.1' });
+  assert.equal(compareVersions('0.8.8', '0.8.9-beta.1'), -1);
+  assert.equal(compareVersions('0.8.9-beta.1', '0.8.9-beta.2'), -1);
+  assert.equal(compareVersions('0.8.9-beta.2', '0.8.9'), -1);
+  assert.equal(compareVersions('0.8.9', '0.8.9-beta.2'), 1);
+  assert.equal(compareVersions('0.8.9-beta.1', '0.8.9-beta.1'), 0);
+  assert.equal(compareVersions('0.8.9-beta.10', '0.8.9-beta.2'), 1);
+
+  // Release 通道隔离与 beta 升级到正式版
+  const preReleases = [
+    { tag_name: 'v0.8.9-beta.1', draft: false, prerelease: true, html_url: 'https://github.com/.../v0.8.9-beta.1', assets: [] },
+    { tag_name: 'v0.8.9-beta.2', draft: false, prerelease: true, html_url: 'https://github.com/.../v0.8.9-beta.2', assets: [] }
+  ];
+  // 正式版用户默认不推送 beta
+  assert.equal(filterReleases(preReleases, '0.8.8').length, 0);
+  assert.equal(filterReleases(preReleases, '0.8.8', { allowBetaUpdates: false }).length, 0);
+  // 正式版用户开启 beta 开关时可收到 beta.2
+  const optInForStable = filterReleases(preReleases, '0.8.8', { allowBetaUpdates: true });
+  assert.equal(optInForStable.length, 2);
+  assert.equal(optInForStable[0].version, '0.8.9-beta.2');
+  // beta.1 用户可升级到 beta.2 与正式版 0.8.9（且 0.8.9 排在最前）
+  const withStable = [
+    ...preReleases,
+    { tag_name: 'v0.8.9', draft: false, prerelease: false, html_url: 'https://github.com/.../v0.8.9', assets: [] }
+  ];
+  const forBetaUser = filterReleases(withStable, '0.8.9-beta.1');
+  assert.equal(forBetaUser.length, 2);
+  assert.equal(forBetaUser[0].version, '0.8.9');
+  assert.equal(forBetaUser[0].prerelease, false);
+  assert.equal(forBetaUser[1].version, '0.8.9-beta.2');
+  assert.equal(forBetaUser[1].prerelease, true);
+
   // Release 过滤测试：包含历史 Release（ZIP 中仍可能带有 2.7.x 文件名）
   const mockReleases = [
     { tag_name: 'v2.7.4', draft: false, prerelease: false }, // 应忽略

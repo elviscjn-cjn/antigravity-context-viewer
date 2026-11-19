@@ -677,3 +677,87 @@ test('Issue #22: requestGithubUrl 相对重定向跟随、Authorization 不泄�
     else process.env.GITHUB_TOKEN = origGhToken;
   }
 });
+
+test('交付验证 8: 预发布与正式版通道隔离、beta 升级正式版、release.yml 配置检查', async () => {
+  const { getPluginSettings, savePluginSettings } = require('./meter-collector');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-beta-channel-'));
+  try {
+    const preAndStableReleases = [
+      {
+        tag_name: 'v0.8.9-beta.2',
+        draft: false,
+        prerelease: true,
+        published_at: '2026-11-20T01:00:00Z',
+        html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9-beta.2',
+        body: 'Beta 2',
+        assets: []
+      },
+      {
+        tag_name: 'v0.8.9-beta.1',
+        draft: false,
+        prerelease: true,
+        published_at: '2026-11-19T01:00:00Z',
+        html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9-beta.1',
+        body: 'Beta 1',
+        assets: []
+      }
+    ];
+
+    // 1. 默认设置：allowBetaUpdates 必须为 false，正式版 0.8.8 不应收到 beta.1 / beta.2
+    assert.equal(getPluginSettings({ agDir: tmpDir }).allowBetaUpdates, false);
+    const stableDefaultCheck = await checkUpdateAsync({
+      agDir: tmpDir,
+      currentVersion: '0.8.8',
+      installedVersion: '0.8.8',
+      force: true,
+      _requestGithubUrl: async () => JSON.stringify(preAndStableReleases)
+    });
+    assert.equal(stableDefaultCheck.ok, true);
+    assert.equal(stableDefaultCheck.hasUpdate, false);
+
+    // 2. 开启 allowBetaUpdates 后，正式版 0.8.8 可以检测到 beta.2（且缓存随开关自动失效）
+    const saved = savePluginSettings({ allowBetaUpdates: true }, { agDir: tmpDir });
+    assert.equal(saved.ok, true);
+    assert.equal(getPluginSettings({ agDir: tmpDir }).allowBetaUpdates, true);
+    const stableOptInCheck = await checkUpdateAsync({
+      agDir: tmpDir,
+      currentVersion: '0.8.8',
+      installedVersion: '0.8.8',
+      _requestGithubUrl: async () => JSON.stringify(preAndStableReleases)
+    });
+    assert.equal(stableOptInCheck.hasUpdate, true);
+    assert.equal(stableOptInCheck.latestVersion, '0.8.9-beta.2');
+
+    // 3. beta.1 用户面对包含正式版 0.8.9 的列表应优先识别并升级到 0.8.9
+    const betaToStableCheck = await checkUpdateAsync({
+      agDir: tmpDir,
+      currentVersion: '0.8.9-beta.1',
+      installedVersion: '0.8.9-beta.1',
+      allowBetaUpdates: false,
+      force: true,
+      _requestGithubUrl: async () => JSON.stringify([
+        ...preAndStableReleases,
+        {
+          tag_name: 'v0.8.9',
+          draft: false,
+          prerelease: false,
+          published_at: '2026-11-25T01:00:00Z',
+          html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9',
+          body: 'Stable 0.8.9',
+          assets: []
+        }
+      ])
+    });
+    assert.equal(betaToStableCheck.hasUpdate, true);
+    assert.equal(betaToStableCheck.latestVersion, '0.8.9');
+    assert.equal(betaToStableCheck.prerelease, false);
+
+    // 4. release.yml 必须支持 -beta 按 prerelease 发布并使用 displayVersion 作为标题
+    const releaseYml = fs.readFileSync(path.join(__dirname, '.github', 'workflows', 'release.yml'), 'utf8');
+    assert.match(releaseYml, /is_prerelease/);
+    assert.match(releaseYml, /prerelease:\s*\$\{\{\s*steps\.meta\.outputs\.is_prerelease\s*\}\}/);
+    assert.match(releaseYml, /p\.displayVersion/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
