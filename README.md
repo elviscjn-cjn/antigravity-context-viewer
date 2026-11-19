@@ -80,8 +80,13 @@ node cli.js check
 # 2. 一键安装（ASAR 持久化注入 + 当前运行窗口 CDP 即时热生效）
 node cli.js install
 
-# 3. 仅对当前运行窗口进行 CDP 免改盘热挂载
+# 3. 免改盘 CDP 热挂载（客户端未启动时自动带调试端口拉起；v2.33.0+ 已裸开时支持交互重开或 --relaunch）
 node cli.js live
+node cli.js live --relaunch
+
+# 3b. 免改盘后台守护模式（macOS 推荐，保留官方原始签名；随窗口刷新自动重挂，关闭后自动退出）
+node cli.js watch
+node cli.js stop-watch
 
 # 4. 查看当前安装状态与实时会话上下文用量
 node cli.js status
