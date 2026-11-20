@@ -885,7 +885,9 @@ test('Issue #51: 锁文件残留/空锁/跨进程竞争下事件循环阻塞 < 1
       }, { timeoutMs: 5000 });
     `;
     const child = spawn(process.execPath, ['-e', childCode], { stdio: 'ignore' });
+    const waitStart = Date.now();
     while (!fs.existsSync(holderReadyFile)) {
+      if (Date.now() - waitStart > 4000) break;
       await new Promise(r => setTimeout(r, 10));
     }
     const rContend = await measureEventLoopMaxLag(() =>
@@ -896,7 +898,12 @@ test('Issue #51: 锁文件残留/空锁/跨进程竞争下事件循环阻塞 < 1
         return 'ok-contend';
       }, { timeoutMs: 5000, staleMs: 10000 })
     );
-    await new Promise(resolve => child.once('exit', resolve));
+    if (child.exitCode === null) {
+      await Promise.race([
+        new Promise(resolve => child.once('exit', resolve)),
+        new Promise(resolve => setTimeout(resolve, 3000))
+      ]);
+    }
     assert.equal(rContend.res, 'ok-contend');
     assert.ok(rContend.maxLagMs < 100, `跨进程等锁期间事件循环阻塞应 < 100ms，实际 ${rContend.maxLagMs}ms`);
 

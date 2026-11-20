@@ -2775,9 +2775,35 @@
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
       <span id="v" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
         data-i18n-title="header.versionBtn.title">0.8.9 β</span>
-      <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none;position:static"></span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
+      <!-- 插件面板三语言快速切换分段按钮 -->
+      <div id="panel-lang-top-segmented" class="ctx-segmented ctx-lang-top-segmented" role="group" aria-label="插件面板语言"
+        data-i18n-aria="settings.panelLang.aria">
+        <button id="btn-top-lang-zh-CN" class="ctx-seg-btn active" type="button" data-panel-lang="zh-CN" title="简体中文"
+          aria-label="简体中文">简</button>
+        <button id="btn-top-lang-zh-TW" class="ctx-seg-btn" type="button" data-panel-lang="zh-TW" title="繁體中文"
+          aria-label="繁體中文">繁</button>
+        <button id="btn-top-lang-en" class="ctx-seg-btn" type="button" data-panel-lang="en" title="English"
+          aria-label="English">EN</button>
+      </div>
+      <button id="btn-github-repo" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库"
+        data-i18n-aria="header.github.aria" title="打开 GitHub 仓库" data-i18n-title="header.github.aria">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
+          </path>
+        </svg>
+      </button>
+      <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新"
+        data-i18n-aria="header.update.aria" title="检查插件更新" data-i18n-title="header.update.aria"
+        style="position:relative">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path>
+        </svg>
+        <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
+      </button>
       <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
         data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）"
         data-i18n-title="header.theme.title">🌓</button>
@@ -3454,17 +3480,8 @@
           <button id="btn-quota-mode-weekly" class="ctx-seg-btn" type="button" data-quota-window-mode="weekly" data-i18n="settings.quotaBadgeMode.weekly">周额度</button>
           <button id="btn-quota-mode-both" class="ctx-seg-btn" type="button" data-quota-window-mode="both" data-i18n="settings.quotaBadgeMode.both">5h+周双显</button>
         </div>
-        <div class="ctx-small-label" style="margin-top:8px" data-i18n="settings.langAndPalette.label">面板语言与主题调色</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-          <div id="panel-lang-top-segmented" class="ctx-segmented ctx-lang-top-segmented" role="group" aria-label="插件面板语言"
-            data-i18n-aria="settings.panelLang.aria">
-            <button id="btn-top-lang-zh-CN" class="ctx-seg-btn active" type="button" data-panel-lang="zh-CN" title="简体中文"
-              aria-label="简体中文">简</button>
-            <button id="btn-top-lang-zh-TW" class="ctx-seg-btn" type="button" data-panel-lang="zh-TW" title="繁體中文"
-              aria-label="繁體中文">繁</button>
-            <button id="btn-top-lang-en" class="ctx-seg-btn" type="button" data-panel-lang="en" title="English"
-              aria-label="English">EN</button>
-          </div>
+        <div class="ctx-small-label" style="margin-top:8px" data-i18n="settings.palette.label">主题调色与外观定制</div>
+        <div style="display:flex;align-items:center;justify-content:flex-start;gap:8px">
           <button id="btn-panel-palette" class="unlock-btn unlock-btn-secondary" type="button" style="padding:3px 9px;font-size:11px"
             data-i18n="settings.palette.openBtn">🎨 调色与外观</button>
         </div>
@@ -3849,14 +3866,7 @@
   <!-- 7. 版本更新与项目链接 -->
   <div class="ctx-settings-card" id="settings-about-update-card">
     <div class="ctx-settings-card-hdr">
-      <div class="ctx-settings-card-title" data-i18n="settings.aboutUpdate.title">🔄 版本更新与项目链接</div>
-      <div style="display:flex;align-items:center;gap:6px">
-        <button id="btn-check-update" class="unlock-btn unlock-btn-secondary update-btn" type="button"
-          style="position:relative;padding:3px 9px;font-size:11px" data-i18n="settings.aboutUpdate.checkBtn">检查插件更新<span
-            id="update-badge-dot" class="update-badge-dot" style="display:none"></span></button>
-        <button id="btn-github-repo" class="unlock-btn unlock-btn-secondary" type="button"
-          style="padding:3px 9px;font-size:11px" data-i18n="settings.aboutUpdate.githubBtn">打开 GitHub 仓库</button>
-      </div>
+      <div class="ctx-settings-card-title" data-i18n="settings.aboutUpdate.channelTitle">🔄 版本更新通道与设置</div>
     </div>
     <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:11px">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
@@ -5186,7 +5196,16 @@
 </section>`;
 
   (document.body || document.documentElement).appendChild(host);
-  const el = id => shadow.getElementById(id);
+  const el = id => {
+    let node = shadow.getElementById(id);
+    if (!node) {
+      if (id === 'btn-github-repo-ctx') node = shadow.getElementById('btn-github-repo');
+      else if (id === 'btn-check-update-ctx') node = shadow.getElementById('btn-check-update');
+      else if (id === 'btn-github-repo') node = shadow.getElementById('btn-github-repo-ctx');
+      else if (id === 'btn-check-update') node = shadow.getElementById('btn-check-update-ctx');
+    }
+    return node;
+  };
 // =========================================================================
 // 模块 0: 插件面板三语言国际化 (简体中文 / 繁體中文 / English)
 // =========================================================================
@@ -5688,8 +5707,10 @@ const PANEL_I18N = {
   'settings.quotaBadgeMode.weekly': { 'zh-CN': '周额度', 'zh-TW': '週額度', en: 'Weekly' },
   'settings.quotaBadgeMode.both': { 'zh-CN': '5h+周双显', 'zh-TW': '5h+週雙顯', en: 'Dual 5h+7d' },
   'settings.langAndPalette.label': { 'zh-CN': '面板语言与主题调色', 'zh-TW': '面板語言與佈景調色', en: 'Panel Language & Palette' },
+  'settings.palette.label': { 'zh-CN': '主题调色与外观定制', 'zh-TW': '佈景調色與外觀自訂', en: 'Theme Colors & Appearance' },
   'settings.palette.openBtn': { 'zh-CN': '🎨 调色与外观', 'zh-TW': '🎨 調色與外觀', en: '🎨 Colors & Theme' },
   'settings.aboutUpdate.title': { 'zh-CN': '🔄 版本更新与项目链接', 'zh-TW': '🔄 版本更新與專案連結', en: '🔄 Updates & Project Links' },
+  'settings.aboutUpdate.channelTitle': { 'zh-CN': '🔄 版本更新通道与设置', 'zh-TW': '🔄 版本更新通道與設定', en: '🔄 Update Channel & Preferences' },
   'settings.aboutUpdate.checkBtn': { 'zh-CN': '检查插件更新', 'zh-TW': '檢查外掛更新', en: 'Check Updates' },
   'settings.aboutUpdate.githubBtn': { 'zh-CN': '打开 GitHub 仓库', 'zh-TW': '開啟 GitHub 儲存庫', en: 'GitHub Repo' },
   'quota.modeTag.auto': { 'zh-CN': '自动最紧缩', 'zh-TW': '自動最緊縮', en: 'Auto Tightest' },

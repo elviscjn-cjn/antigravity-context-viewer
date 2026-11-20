@@ -17,7 +17,7 @@
 - 新增免 CDP 主进程 origin 探测复用能力. 客户端未开启调试端口时不再误报未运行. 而是提供对应系统的手动重启命令指引且绝不强杀用户进程.
 - 新增终端用量查询命令 `node cli.js usage`. 支持按日. 周. 月. 全量以及按账号与模型筛选输出. 数据与面板严格共用同一账本且全程 `readOnly` 零写入零删档.
 - 新增终端多会话实时监视 `node cli.js monitor`. 一键拉起 CLI 终端 `node cli.js launch-cli`. 以及按模型上下文预算管理 `node cli.js context-set` 与 `context-status`. 支持 Antigravity CLI 128K 与 256K Gate 3A 解锁控制.
-- 精简面板标题栏与重复卡片信息. 将语言切换. 调色入口. 检查更新与文档链接收口至配置标签页.
+- 弹窗顶栏操作区布局回迁. 面板语言切换（简 繁 EN）. GitHub 仓库入口与检查更新按钮统一置于顶部标题栏右侧与主题切换紧凑并排. 并清理配置页中重复区块保持清爽.
 - 新增顶栏配额圆环四态窗口模式切换. 支持通过右键或配置标签页在 `auto` / `5h` / `weekly` / `both` 间切换并持久化. 双窗口池下支持 5h 与 7d 双行微缩展示.
 - 将请求首字等待阶段的顶栏状态改为纯 SVG 沙漏动效. 消除每秒跳秒文字导致的横向宽度抖动.
 - 新增 Gemini 4 Neon 模型识别与 Antigravity 2.33 统一 Gemini 配额池匹配. 修复浅色主题连续热力图配色方向. 同步推荐配置复选框真实磁盘状态. 并将上下文取消归类为中性中断.
@@ -46,7 +46,7 @@ This beta release focuses on storage reliability fixes. full terminal CLI usage 
 - Reused CDP-free main-process origin discovery when debugging ports are disabled in Antigravity 2.33. Reports clear manual launch instructions without killing running user processes.
 - Added `node cli.js usage` for terminal token and cost queries across day. week. month. all-time. account. and model filters. Reads the shared ledger under strict `readOnly` zero-write guarantees.
 - Added `node cli.js monitor` for live terminal session monitoring. `node cli.js launch-cli` to open external CLI sessions. and `node cli.js context-set` / `context-status` with per-model context budgets and 128K / 256K CLI Gate 3A unlock support.
-- Streamlined panel headers and redundant status cards. consolidated language switches. palette drawer. update checks. and repo links into the Settings tab.
+- Restored top bar action layout in panel header. Panel language switches (SC. TC. EN). GitHub repo link. and check updates entry are compactly arranged alongside theme toggle on the top right. with duplicate sections in the Settings tab cleanly pruned.
 - Added 4-mode quota badge window switching across `auto`. `5h`. `weekly`. and `both` via right-click or Settings. displaying compact 5h/7d dual rows on dual-window pools.
 - Replaced per-second waiting text in the top bar speed badge with a pure SVG hourglass animation to eliminate horizontal jitter.
 - Added Gemini 4 Neon model matching and unified 2.33 Gemini quota pool detection. fixed light-theme heatmap polarity. synced recommended settings checkboxes with disk state. and classified context cancellations as neutral interruptions.

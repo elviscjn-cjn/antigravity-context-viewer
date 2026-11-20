@@ -176,7 +176,16 @@
   /* @INSERT_STYLES_AND_TEMPLATE */
 
   (document.body || document.documentElement).appendChild(host);
-  const el = id => shadow.getElementById(id);
+  const el = id => {
+    let node = shadow.getElementById(id);
+    if (!node) {
+      if (id === 'btn-github-repo-ctx') node = shadow.getElementById('btn-github-repo');
+      else if (id === 'btn-check-update-ctx') node = shadow.getElementById('btn-check-update');
+      else if (id === 'btn-github-repo') node = shadow.getElementById('btn-github-repo-ctx');
+      else if (id === 'btn-check-update') node = shadow.getElementById('btn-check-update-ctx');
+    }
+    return node;
+  };
   /* @INSERT_I18N_MODULE */
   /* @INSERT_BUDGET_ENGINE_MODULE */
   const budgetEngine = globalThis.__AGContextBudgetEngine || {};

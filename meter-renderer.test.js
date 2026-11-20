@@ -6150,8 +6150,9 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
   assert.equal(tpl.includes('id="quota-usage-tip"'), false, '应移除 #quota-usage-tip');
   assert.equal(tpl.includes('id="quota-basis-note"'), false, '应移除静态大段 #quota-basis-note');
   assert.equal(tpl.includes('id="btn-plan-detail-collapse-top"'), false, '应移除重复的 #btn-plan-detail-collapse-top');
-  assert.equal(tpl.includes('id="btn-check-update-ctx"'), false, '应从主面板标题栏移除重复更新按钮');
-  assert.equal(tpl.includes('id="btn-github-repo-ctx"'), false, '应从主面板标题栏移除重复 GitHub 按钮');
+  assert.ok(tpl.includes('id="btn-check-update"'), '主面板标题栏应回迁检查更新按钮');
+  assert.ok(tpl.includes('id="btn-github-repo"'), '主面板标题栏应回迁 GitHub 按钮');
+  assert.ok(tpl.includes('id="panel-lang-top-segmented"'), '主面板标题栏应回迁三语言切换按钮');
   assert.ok(tpl.includes('id="settings-about-update-card"'), '配置 Tab 应包含统一的更新与项目链接卡');
   assert.ok(tpl.includes('id="ui-slim-prefs-card"'), '配置 Tab 应包含外观、停靠与顶栏偏好卡');
   assert.ok(tpl.includes('id="badge-speed-wait-svg"'), '顶栏速度单元应包含等待态纯 SVG 沙漏容器');
@@ -6705,6 +6706,88 @@ test('停靠模式最小化收口: 历史写入 hide 或 aux 自动安全回退�
     assert.ok(!templateHtml.includes('id="dock-fallback-note"'), '必须移除 dock-fallback-note');
     assert.ok(!templateHtml.includes('id="badge-dock-wake"'), '必须移除 badge-dock-wake');
     assert.ok(!templateHtml.includes('id="dock-toast"'), '必须移除 dock-toast');
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});
+
+test('弹窗顶栏布局回迁: 简繁EN语言切换、GitHub入口与检查更新按钮紧凑并排且点击可用, 配置页无重复区块', async () => {
+  let openedUrl = null;
+  let checkedUpdateOpts = null;
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    openExternal: url => { openedUrl = url; },
+    checkUpdate: opts => {
+      checkedUpdateOpts = opts;
+      return {
+        hasUpdate: true,
+        version: '0.8.9-beta.1',
+        tagName: 'v0.8.9-beta.1',
+        releaseNotes: '新特性说明',
+        htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9-beta.1'
+      };
+    }
+  };
+  const api = h.sandbox.__AGContextMeter;
+
+  try {
+    // 1. 结构与位置断言：读取 template.html 验证 #panel 标题栏容器包含回迁的组件
+    const templatePath = path.resolve(__dirname, 'src/renderer/template.html');
+    const templateHtml = fs.readFileSync(templatePath, 'utf8');
+    const panelHeaderMatch = templateHtml.match(/<section id="panel"[\s\S]*?<div id="view-context">/);
+    assert.ok(panelHeaderMatch, '必须存在 #panel 顶部区域');
+    const headerHtml = panelHeaderMatch[0];
+
+    assert.ok(headerHtml.includes('id="panel-lang-top-segmented"'), '顶栏必须包含三语言分段按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-zh-CN"'), '顶栏必须包含简中按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-zh-TW"'), '顶栏必须包含繁中按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-en"'), '顶栏必须包含EN按钮');
+    assert.ok(headerHtml.includes('id="btn-github-repo"'), '顶栏必须包含 GitHub 按钮');
+    assert.ok(headerHtml.includes('id="btn-check-update"'), '顶栏必须包含检查更新按钮');
+    assert.ok(headerHtml.includes('id="theme-toggle"'), '顶栏必须包含主题切换按钮');
+    assert.ok(headerHtml.includes('id="close"'), '顶栏必须包含关闭按钮');
+
+    // 2. 配置页清理断言：配置页内不得存在重复的语言分段按钮和重复的 GitHub/更新按钮
+    const settingsPaneMatch = templateHtml.match(/<div id="pane-ctx-settings"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/);
+    assert.ok(settingsPaneMatch, '必须存在配置页容器');
+    const settingsHtml = settingsPaneMatch[0];
+    assert.equal(settingsHtml.includes('id="panel-lang-top-segmented"'), false, '配置页内不得残留重复的语言分段按钮');
+    assert.equal(settingsHtml.includes('id="btn-top-lang-zh-CN"'), false, '配置页内不得残留重复简中按钮');
+    assert.equal(settingsHtml.includes('id="btn-check-update"'), false, '配置页卡片内不得残留重复检查更新按钮');
+    assert.equal(settingsHtml.includes('id="btn-github-repo"'), false, '配置页卡片内不得残留重复 GitHub 按钮');
+
+    // 3. 点击可用性验证：点击 GitHub 入口
+    const btnGithub = h.elements.get('btn-github-repo');
+    assert.ok(btnGithub, 'DOM 中必须解析出 btn-github-repo');
+    btnGithub.click();
+    assert.equal(openedUrl, 'https://github.com/elviscjn-cjn/antigravity-context-viewer');
+
+    // 4. 点击可用性验证：点击检查更新入口
+    const btnUpdate = h.elements.get('btn-check-update');
+    assert.ok(btnUpdate, 'DOM 中必须解析出 btn-check-update');
+    btnUpdate.click();
+    await h.flush();
+    assert.ok(checkedUpdateOpts, '点击检查更新必须触发更新检查逻辑');
+    assert.equal(checkedUpdateOpts.force, true);
+
+    // 5. 点击可用性验证：语言切换简 繁 EN
+    const btnEn = h.elements.get('btn-top-lang-en');
+    const btnTw = h.elements.get('btn-top-lang-zh-TW');
+    const btnCn = h.elements.get('btn-top-lang-zh-CN');
+    assert.ok(btnEn && btnTw && btnCn, 'DOM 中必须解析出三语言切换按钮');
+
+    btnEn.click();
+    await h.flush();
+    assert.equal(api.getPanelLanguage(), 'en');
+
+    btnTw.click();
+    await h.flush();
+    assert.equal(api.getPanelLanguage(), 'zh-TW');
+
+    btnCn.click();
+    await h.flush();
+    assert.equal(api.getPanelLanguage(), 'zh-CN');
   } finally {
     try { api.dispose(); } catch {}
   }
