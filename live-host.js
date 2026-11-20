@@ -653,8 +653,21 @@ async function startLiveHost() {
   let currentOrigins = envOrigins;
   let api = null;
   if (currentOrigins.length > 0) {
-    api = await connect({ origin: currentOrigins[0] });
-    api.origins = currentOrigins;
+    let lastConnectErr = null;
+    for (const candOrigin of currentOrigins) {
+      try {
+        api = await connect({ origin: candOrigin });
+        break;
+      } catch (err) {
+        lastConnectErr = err;
+      }
+    }
+    if (!api) {
+      throw lastConnectErr || new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+    }
+    api.origins = currentOrigins.includes(api.origin)
+      ? currentOrigins
+      : [api.origin, ...currentOrigins];
   } else {
     api = await connect();
     currentOrigins = Array.isArray(api.origins) && api.origins.length ? api.origins : [api.origin];

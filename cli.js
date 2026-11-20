@@ -435,7 +435,7 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
         const cand = JSON.parse(fs.readFileSync(stagingStamp, 'utf8'));
         if (cand && cand.pid && cand.port && cand.token) {
           process.kill(cand.pid, 0);
-          const probe = await probeLiveHostRuntimeInfo(cand, expectedOrigins[0]);
+          const probe = await probeLiveHostRuntimeInfo(cand, cand.origin || expectedOrigins[0]);
           if (probe && probe.ok && (!currentPkgVersion || probe.backendVersion === currentPkgVersion)) {
             newInfo = {
               ...cand,
