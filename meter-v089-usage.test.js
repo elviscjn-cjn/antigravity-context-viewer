@@ -770,3 +770,579 @@ test('v0.8.8 请求时间线回归: 11 轮 105 调用防压扁滚动契约、<US
     fs.rmSync(agDir, { recursive: true, force: true });
   }
 });
+
+test('Magpie 风格实时请求统计：后端 .db 耗时回填 + recentRequestLogs 排序去重 + 13 列渲染/筛选/分页/三语验证', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req-live-'));
+  const agDir = path.join(rootDir, 'desktop');
+  const cliDir = path.join(rootDir, 'cli');
+  const cidDesk = 'aaaaaaaa-1111-4111-8111-111111111111';
+  const cidCli = 'bbbbbbbb-2222-4222-8222-222222222222';
+  try {
+    fs.mkdirSync(path.join(agDir, 'brain', cidDesk, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agDir, 'conversations'), { recursive: true });
+    fs.mkdirSync(path.join(cliDir, 'brain', cidCli, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(cliDir, 'conversations'), { recursive: true });
+
+    // 写入桌面端 transcript + SQLite gen_metadata（回填 TTFT=4s, stream=1s -> dur=5s）
+    const deskTs = '2026-11-20T01:41:03.000Z';
+    fs.writeFileSync(
+      path.join(agDir, 'brain', cidDesk, '.system_generated', 'logs', 'transcript.jsonl'),
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        created_at: deskTs,
+        model: 'gemini-4-hydrogen',
+        input_tokens: 19500,
+        cache_read_tokens: 0,
+        output_tokens: 184
+      }) + '\n',
+      'utf8'
+    );
+    const deskDb = new DatabaseSync(path.join(agDir, 'conversations', `${cidDesk}.db`));
+    deskDb.exec('CREATE TABLE gen_metadata (id INTEGER PRIMARY KEY, data BLOB)');
+    deskDb.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(
+      buildGenMetadataRowBlob({ stepIndex: 1, responseId: 'resp-desk-1', model: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen (High)', ttftSec: 4, streamSec: 1 })
+    );
+    deskDb.close();
+
+    // 写入 CLI transcript + SQLite gen_metadata（回填 TTFT=5s, stream=29s -> dur=34s）
+    const cliTs = '2026-11-20T01:12:37.000Z';
+    fs.writeFileSync(
+      path.join(cliDir, 'brain', cidCli, '.system_generated', 'logs', 'transcript.jsonl'),
+      JSON.stringify({
+        step_index: 2,
+        type: 'PLANNER_RESPONSE',
+        created_at: cliTs,
+        model: 'gemini-4-carbon',
+        input_tokens: 4000,
+        cache_read_tokens: 396000,
+        output_tokens: 3828
+      }) + '\n',
+      'utf8'
+    );
+    const cliDb = new DatabaseSync(path.join(cliDir, 'conversations', `${cidCli}.db`));
+    cliDb.exec('CREATE TABLE gen_metadata (id INTEGER PRIMARY KEY, data BLOB)');
+    cliDb.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(
+      buildGenMetadataRowBlob({ stepIndex: 2, responseId: 'resp-cli-1', model: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon (High)', ttftSec: 5, streamSec: 29 })
+    );
+    cliDb.close();
+
+    const history = await collector.collectTokenHistoryAsync({
+      agDir,
+      agCliDir: cliDir,
+      force: true,
+      useWorker: false,
+      hostFetcher: async () => null
+    });
+
+    assert.ok(Array.isArray(history.recentRequestLogs), 'recentRequestLogs 必须存在');
+    assert.equal(history.recentRequestLogs.length, 2, '应合并 Desktop 与 CLI 共 2 条请求');
+    const [firstLog, secondLog] = history.recentRequestLogs;
+    assert.equal(firstLog.source, 'desktop', '按时间倒序桌面端更新的请求应排首位');
+    assert.equal(firstLog.ttftSec, 4);
+    assert.equal(firstLog.streamingSec, 1);
+    assert.equal(firstLog.durationSec, 5);
+    assert.equal(firstLog.cacheReadPct, 0);
+    assert.equal(secondLog.source, 'cli');
+    assert.equal(secondLog.ttftSec, 5);
+    assert.equal(secondLog.streamingSec, 29);
+    assert.equal(secondLog.durationSec, 34);
+    assert.equal(secondLog.streamingTps, 132);
+    assert.equal(secondLog.cacheReadPct, 99);
+    assert.equal(secondLog.isPriced, true);
+    assert.ok(secondLog.costUSD > 0);
+
+    // 渲染层 13 列、筛选、宽屏类、分页与三语验证
+    const h = createV089DomSandbox();
+    try {
+      const nowMs = Date.now();
+      const extraRows = [
+        {
+          callId: 'req-live-stream',
+          cascadeId: cidDesk,
+          timestamp: nowMs,
+          date: '2026-11-20',
+          source: 'desktop',
+          modelKey: 'gemini-4-hydrogen',
+          modelLabel: 'Gemini 4 Hydrogen',
+          inputTokens: 19500,
+          cacheReadTokens: 0,
+          outputTokens: 184,
+          totalTokens: 19684,
+          cacheReadPct: 0,
+          costUSD: 0.031,
+          isPriced: true,
+          ttftSec: 4.2,
+          streamingSec: 0.1,
+          durationSec: 4.3,
+          streamingTps: null,
+          status: 'final',
+          outcomeStatus: 'success',
+          accountScopeKey: 'acct_1111111111111111'
+        },
+        {
+          callId: 'req-cli-slow',
+          cascadeId: cidCli,
+          timestamp: nowMs - 60000,
+          date: '2026-11-20',
+          source: 'cli',
+          modelKey: 'gemini-4-neon',
+          modelLabel: 'Gemini 4 Neon',
+          inputTokens: 4000,
+          cacheReadTokens: 396000,
+          outputTokens: 3800,
+          totalTokens: 403800,
+          cacheReadPct: 99,
+          costUSD: 0.137,
+          isPriced: true,
+          ttftSec: 5.2,
+          streamingSec: 28.8,
+          durationSec: 34,
+          streamingTps: 132,
+          status: 'final',
+          outcomeStatus: 'success',
+          accountScopeKey: null
+        },
+        {
+          callId: 'req-cli-err',
+          cascadeId: cidCli,
+          timestamp: nowMs - 120000,
+          date: '2026-11-20',
+          source: 'cli',
+          modelKey: 'gemini-4-neon',
+          inputTokens: 2000,
+          cacheReadTokens: 398000,
+          outputTokens: 317,
+          totalTokens: 400317,
+          cacheReadPct: 99.5,
+          costUSD: 0.078,
+          isPriced: true,
+          ttftSec: 6.4,
+          streamingSec: 5.6,
+          durationSec: 12,
+          streamingTps: 200,
+          status: 'final',
+          outcomeStatus: 'rate_limited',
+          error: '429 Too Many Requests',
+          accountScopeKey: null
+        }
+      ];
+      const dm = { '2026-11-20': { total: 423484, input: 25500, cache: 794000, output: 4301, steps: 3 } };
+      h.api.applyTokenHistoryPayload({
+        schemaVersion: '0.8.8',
+        firstUseDate: '2026-11-20',
+        dailyMap: dm,
+        dailyMapBySource: { all: dm, desktop: dm, cli: dm },
+        summary: { grandTotalTokens: 423484, todayTokens: 423484 },
+        recentRequestLogs: extraRows
+      });
+
+      h.api.switchTokenViewForTest('requests');
+      let st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.activeView, 'requests');
+      assert.equal(st.wideClass, true, '切入实时请求视图应启用宽屏 class requests-wide-view');
+      assert.equal(st.rowCount, 3);
+      assert.equal(st.emptyVisible, false);
+
+      // 核对第一行（Desktop，0.1s 极短流速度应显示 —，4.3s 绿、0% 缓存、$0.031）
+      assert.equal(st.rows[0].length, 13, '表格每行必须包含完整 13 列');
+      assert.equal(st.rows[0][1], 'Antigravity');
+      assert.equal(st.rows[0][2], '—');
+      assert.equal(st.rows[0][3], '本地会话');
+      assert.equal(st.rows[0][4], 'gemini-4-hydrogen');
+      assert.equal(st.rows[0][5], '19.5K');
+      assert.equal(st.rows[0][6], '184');
+      assert.equal(st.rows[0][7], '0%');
+      assert.equal(st.rows[0][8], '$0.031');
+      assert.equal(st.rows[0][9], '≈4.2 秒');
+      assert.equal(st.rows[0][10], '≈4.3 秒');
+      assert.equal(st.rows[0][11], '—');
+      assert.equal(st.rows[0][12], '成功');
+
+      // 核对第二行（Antigravity CLI，99% 缓存，$0.137，132 token/秒）
+      assert.equal(st.rows[1][1], 'Antigravity CLI');
+      assert.equal(st.rows[1][4], 'gemini-4-neon');
+      assert.equal(st.rows[1][5], '4.0K');
+      assert.equal(st.rows[1][6], '3.8K');
+      assert.equal(st.rows[1][7], '99%');
+      assert.equal(st.rows[1][8], '$0.137');
+      assert.equal(st.rows[1][10], '≈34 秒');
+      assert.equal(st.rows[1][11], '132 token/秒');
+
+      // 核对第三行（99.5% 缓存，限流状态）
+      assert.equal(st.rows[2][7], '99.5%');
+      assert.equal(st.rows[2][10], '≈12 秒');
+      assert.equal(st.rows[2][12], '限流');
+
+      // 状态过滤：仅看异常 -> 1 条
+      h.elements.get('req-filter-error').click();
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rowCount, 1);
+      assert.equal(st.rows[0][12], '限流');
+
+      // 来源过滤：切桌面端 + 异常 -> 空态
+      h.elements.get('src-tab-desktop').click();
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rowCount, 0);
+      assert.equal(st.emptyVisible, true);
+
+      // 切回全部来源 + 全部状态 -> 3 条
+      h.elements.get('src-tab-all').click();
+      h.elements.get('req-filter-all').click();
+      assert.equal(h.api.getRequestsViewStateForTest().rowCount, 3);
+
+      // 英文切换零汉字验证
+      await h.api.setPanelLanguage('en', { persist: false });
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rows[0][3], 'Local Session');
+      assert.equal(st.rows[0][9], '≈4.2s');
+      assert.equal(st.rows[1][11], '132 tok/s');
+      assert.equal(st.rows[0][12], 'Success');
+      assert.equal(st.rows[2][12], 'Rate Limited');
+      for (const row of st.rows) {
+        assert.doesNotMatch(row.join(' '), /[\u4e00-\u9fff]/, '英文模式下实时请求表不得泄露中文');
+      }
+
+      // 离开实时请求切回 Token 统计应移除宽屏 class
+      h.api.switchTokenViewForTest('tokens');
+      assert.equal(h.api.getRequestsViewStateForTest().wideClass, false);
+
+      // 分页加载更多验证（60 条数据 -> 首屏 50 条 -> 点加载更多显示全部 60 条）
+      await h.api.setPanelLanguage('zh-CN', { persist: false });
+      const manyRows = Array.from({ length: 60 }, (_, idx) => ({
+        callId: `bulk-${idx}`,
+        cascadeId: cidDesk,
+        timestamp: nowMs - idx * 1000,
+        date: '2026-11-20',
+        source: idx % 2 === 0 ? 'desktop' : 'cli',
+        modelKey: 'gemini-4-neon',
+        inputTokens: 1000 + idx,
+        cacheReadTokens: 9000,
+        outputTokens: 500,
+        totalTokens: 10500 + idx,
+        cacheReadPct: 90,
+        costUSD: 0.012,
+        isPriced: true,
+        ttftSec: 2.1,
+        streamingSec: 3.0,
+        durationSec: 5.1,
+        streamingTps: 166,
+        status: 'final',
+        outcomeStatus: 'success'
+      }));
+      h.api.applyTokenHistoryPayload({
+        schemaVersion: '0.8.8',
+        firstUseDate: '2026-11-20',
+        dailyMap: dm,
+        dailyMapBySource: { all: dm, desktop: dm, cli: dm },
+        summary: { grandTotalTokens: 630000, todayTokens: 630000 },
+        recentRequestLogs: manyRows
+      });
+      h.api.switchTokenViewForTest('requests');
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rowCount, 50);
+      assert.equal(st.moreVisible, true);
+      h.elements.get('btn-req-live-more').click();
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rowCount, 60);
+      assert.equal(st.moreVisible, false);
+    } finally {
+      h.api.dispose();
+    }
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('动态价格目录：gemini-4-neon 内置价目、models.dev/LiteLLM 双源解析合并、容灾回退、custom_pricing 覆写与历史账本自动补算', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pricing-sync-'));
+  const agDir = path.join(rootDir, 'antigravity');
+  const stateDir = path.join(rootDir, 'state');
+  fs.mkdirSync(agDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  try {
+    // 1. gemini-4-neon 离线内置基线校验 ($3.00 / $0.15 / $15.00)
+    assert.equal(core.normalizeModelId('Gemini 4 Neon (XHigh)'), 'gemini-4-neon');
+    assert.equal(core.normalizeModelId('gemini/gemini-4-neon'), 'gemini-4-neon');
+    const neonCost = core.calculateRequestApiCost({
+      model: 'Gemini 4 Neon (XHigh)',
+      inputTokens: 40000,
+      cacheReadTokens: 200000,
+      outputTokens: 5000,
+      thinkingTokens: 3000,
+      date: '2026-11-20'
+    });
+    assert.equal(neonCost.isPriced, true);
+    assert.equal(neonCost.modelKey, 'gemini-4-neon');
+    // 40k * 3 / 1e6 + 200k * 0.15 / 1e6 + 5k * 15 / 1e6 = 0.12 + 0.03 + 0.075 = 0.225
+    assert.ok(Math.abs(neonCost.costUSD - 0.225) < 1e-9, `unexpected neon cost: ${neonCost.costUSD}`);
+
+    // 2. 双源解析与合并：models.dev 优先，LiteLLM 补齐缺失 cache_read / >200K 阶梯与新模型
+    const mockModelsDev = {
+      google: {
+        models: {
+          'gemini-5-quartz': {
+            id: 'gemini-5-quartz',
+            cost: { input: 2.5, output: 12.0 }
+          }
+        }
+      },
+      anthropic: {
+        models: {
+          'claude-sonnet-6': {
+            id: 'claude-sonnet-6',
+            cost: {
+              input: 3.0,
+              output: 15.0,
+              cache_read: 0.3,
+              context_over_200k: { input: 6.0, output: 22.5, cache_read: 0.6 }
+            }
+          }
+        }
+      }
+    };
+    const mockLiteLlm = {
+      'gemini/gemini-5-quartz': {
+        litellm_provider: 'gemini',
+        mode: 'chat',
+        input_cost_per_token: 0.0000025,
+        output_cost_per_token: 0.000012,
+        cache_read_input_token_cost: 0.00000025,
+        input_cost_per_token_above_200k_tokens: 0.000005,
+        output_cost_per_token_above_200k_tokens: 0.000024,
+        cache_read_input_token_cost_above_200k_tokens: 0.0000005
+      },
+      'gemini/gemini-5-quartz:batch': {
+        litellm_provider: 'gemini',
+        mode: 'chat',
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000004
+      },
+      'openai/gpt-6-orbit': {
+        litellm_provider: 'openai',
+        mode: 'chat',
+        input_cost_per_token: 0.000004,
+        output_cost_per_token: 0.000016,
+        cache_read_input_token_cost: 0.0000004
+      }
+    };
+
+    const parsedMd = core.parseModelsDevPricingCatalog(mockModelsDev);
+    const parsedLl = core.parseLiteLlmPricingCatalog(mockLiteLlm);
+    assert.ok(parsedMd['gemini-5-quartz']);
+    assert.equal(parsedMd['claude-sonnet-6'].length, 2);
+    assert.equal(parsedLl['gemini-5-quartz'].length, 2);
+    assert.equal(parsedLl['gemini-5-quartz:batch'], undefined);
+
+    const merged = core.mergePricingCatalogs(parsedMd, parsedLl);
+    // models.dev 缺 cache_read，merge 后应由 LiteLLM 补齐 0.25
+    assert.equal(merged['gemini-5-quartz'][0].cacheReadPerMillion, 0.25);
+    assert.equal(merged['gpt-6-orbit'][0].inputPerMillion, 4);
+
+    // 3. 写入未计价的新模型历史账本记录（gemini-5-quartz）
+    const ledgerPath = collector.getPricingLedgerPath(agDir);
+    const unpricedCall = {
+      callId: 'req-quartz-1',
+      cascadeId: 'c1111111-1111-1111-1111-111111111111',
+      timestamp: Date.parse('2026-11-20T12:00:00.000Z'),
+      created_at: '2026-11-20T12:00:00.000Z',
+      date: '2026-11-20',
+      source: 'desktop',
+      model: 'Gemini 5 Quartz (High)',
+      modelExactId: 'gemini-5-quartz',
+      modelKey: 'unattributed',
+      inputTokens: 100000,
+      cacheReadTokens: 100000,
+      outputTokens: 10000,
+      totalTokens: 210000,
+      isPriced: false,
+      costUSD: null
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify({ version: '1.0.0', calls: { 'req-quartz-1': unpricedCall } }, null, 2));
+
+    // 同步前未知新模型仍保持未计价
+    core.setDynamicPricingCatalog(null);
+    core.setCustomPricingCatalog({});
+    const beforeCalc = core.calculateRequestApiCost(unpricedCall);
+    assert.equal(beforeCalc.isPriced, false);
+
+    // 4. 主源失败自动回退到 LiteLLM 备源 + 持久化缓存 + 自动补算历史账本
+    let fetchCount = 0;
+    const syncRes = await collector.syncPricingCatalogAsync({
+      stateDir,
+      agDir,
+      force: true,
+      fetcher: async (url) => {
+        fetchCount++;
+        if (url.includes('models.dev')) throw new Error('simulated_primary_timeout');
+        return mockLiteLlm;
+      }
+    });
+    assert.equal(syncRes.ok, true);
+    assert.deepEqual(syncRes.sources, ['litellm']);
+    assert.equal(syncRes.repricedCount, 1);
+    assert.equal(fetchCount, 2);
+    assert.equal(fs.existsSync(collector.getPricingCatalogCachePath(stateDir)), true);
+
+    // 验证账本已自动落盘补算（100k*2.5 + 100k*0.25 + 10k*12）/ 1e6 = 0.25 + 0.025 + 0.12 = 0.395
+    const updatedLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(updatedLedger.calls['req-quartz-1'].isPriced, true);
+    assert.equal(updatedLedger.calls['req-quartz-1'].modelKey, 'gemini-5-quartz');
+    assert.ok(Math.abs(updatedLedger.calls['req-quartz-1'].costUSD - 0.395) < 1e-9);
+
+    // TTL 缓存命中：非强制同步不再发起网络请求
+    const cachedRes = await collector.syncPricingCatalogAsync({
+      stateDir,
+      agDir,
+      force: false,
+      fetcher: async () => { throw new Error('should_not_fetch_within_ttl'); }
+    });
+    assert.equal(cachedRes.ok, true);
+    assert.equal(cachedRes.cached, true);
+    assert.equal(cachedRes.skipped, true);
+
+    // 5. 清空内存后通过 collectTokenHistoryAsync 从磁盘恢复缓存目录，且未收录模型依然不乱估价
+    core.setDynamicPricingCatalog(null);
+    const historyOut = await collector.collectTokenHistoryAsync({ agDir, stateDir, force: true });
+    assert.ok(historyOut.dynamicPricingCatalog);
+    assert.ok(historyOut.dynamicPricingCatalog.modelCount >= 2);
+    assert.ok(historyOut.dynamicPricingCatalog.models['gemini-5-quartz']);
+    assert.equal(core.calculateRequestApiCost({
+      model: 'gemini-pro-orchestrator-xenon',
+      inputTokens: 1000,
+      outputTokens: 500
+    }).isPriced, false);
+
+    // 6. custom_pricing.json 本地覆写优先级高于内置与远程目录
+    fs.writeFileSync(collector.getCustomPricingPath(stateDir), JSON.stringify({
+      'gemini-4-neon': { inputPerMillion: 1.0, outputPerMillion: 5.0, cacheReadPerMillion: 0.1 }
+    }, null, 2));
+    collector.loadPersistedPricingCatalog({ stateDir });
+    const overridden = core.calculateRequestApiCost({
+      model: 'gemini-4-neon',
+      inputTokens: 1000000,
+      cacheReadTokens: 0,
+      outputTokens: 0
+    });
+    assert.equal(overridden.isPriced, true);
+    assert.ok(Math.abs(overridden.costUSD - 1.0) < 1e-9);
+  } finally {
+    core.setDynamicPricingCatalog(null);
+    core.setCustomPricingCatalog({});
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('动态价格前端交互：dynamicPricingCatalog 水合即时回算未计价行 + 一键同步价格按钮与三语反馈', async () => {
+  const dm = { '2026-11-20': { total: 210000, input: 100000, output: 10000, cache: 100000 } };
+  let syncCalls = 0;
+  let historyCalls = 0;
+
+  const h = createV089DomSandbox();
+  try {
+    core.setDynamicPricingCatalog(null);
+    core.setCustomPricingCatalog({});
+
+    const baseUnpricedRow = {
+      callId: 'req-future-1',
+      cascadeId: 'a1111111-1111-1111-1111-111111111111',
+      timestamp: Date.parse('2026-11-20T12:15:00.000Z'),
+      date: '2026-11-20',
+      source: 'desktop',
+      model: 'Gemini 5 Nova (High)',
+      modelExactId: 'gemini-5-nova',
+      modelKey: 'gemini-5-nova',
+      inputTokens: 100000,
+      cacheReadTokens: 100000,
+      outputTokens: 10000,
+      totalTokens: 210000,
+      cacheReadPct: 50,
+      costUSD: null,
+      isPriced: false,
+      ttftSec: 1.2,
+      streamingSec: 2.0,
+      durationSec: 3.2,
+      streamingTps: 120,
+      status: 'final',
+      outcomeStatus: 'success'
+    };
+
+    const syncedCatalog = {
+      updatedAt: '2026-11-20T12:20:00.000Z',
+      fetchedAtMs: Date.parse('2026-11-20T12:20:00.000Z'),
+      sources: ['models.dev', 'litellm'],
+      modelCount: 168,
+      customCount: 0,
+      models: {
+        'gemini-5-nova': [{ inputPerMillion: 2.0, outputPerMillion: 10.0, cacheReadPerMillion: 0.2 }]
+      },
+      customModels: {}
+    };
+
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      syncPricing: async (opts) => {
+        syncCalls++;
+        assert.equal(opts?.force, true);
+        return {
+          ok: true,
+          modelCount: 168,
+          repricedCount: 1,
+          sources: ['models.dev', 'litellm'],
+          updatedAt: syncedCatalog.updatedAt
+        };
+      },
+      getTokenHistory: async () => {
+        historyCalls++;
+        return {
+          ok: true,
+          data: {
+            schemaVersion: '0.8.8',
+            firstUseDate: '2026-11-20',
+            dailyMap: dm,
+            dailyMapBySource: { all: dm, desktop: dm, cli: {} },
+            summary: { grandTotalTokens: 210000, todayTokens: 210000 },
+            dynamicPricingCatalog: syncedCatalog,
+            recentRequestLogs: [baseUnpricedRow]
+          }
+        };
+      }
+    };
+
+    // 初始加载：未同步前显示未计价 "—"
+    h.api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.8',
+      firstUseDate: '2026-11-20',
+      dailyMap: dm,
+      dailyMapBySource: { all: dm, desktop: dm, cli: {} },
+      summary: { grandTotalTokens: 210000, todayTokens: 210000 },
+      recentRequestLogs: [baseUnpricedRow]
+    });
+    h.api.switchTokenViewForTest('requests');
+    let st = h.api.getRequestsViewStateForTest();
+    assert.equal(st.rowCount, 1);
+    assert.equal(st.rows[0][8], '—');
+
+    // 触发同步价格（经由 IPC -> 拉取最新历史并水合 dynamicPricingCatalog -> 前端即时回算出 $0.320）
+    const syncRes = await h.api.syncPricingCatalog({ force: true });
+    assert.equal(syncRes.ok, true);
+    assert.equal(syncCalls, 1);
+    assert.ok(historyCalls >= 1);
+    assert.equal(h.elements.get('req-pricing-sync-note').textContent, '已同步 168 个模型 · 补算 1 条');
+    st = h.api.getRequestsViewStateForTest();
+    // (100k*2 + 100k*0.2 + 10k*10)/1e6 = 0.2 + 0.02 + 0.1 = $0.320
+    assert.equal(st.rows[0][8], '$0.320');
+
+    // 切换英文与繁体，确认同步按钮文案正确切换且英文无中文残留
+    await h.api.setPanelLanguage('en', { persist: false });
+    assert.equal(h.elements.get('btn-req-sync-pricing').textContent, 'Sync Prices');
+    assert.doesNotMatch(h.elements.get('btn-req-sync-pricing').title, /[\u4e00-\u9fff]/);
+    await h.api.setPanelLanguage('zh-TW', { persist: false });
+    assert.equal(h.elements.get('btn-req-sync-pricing').textContent, '同步價格');
+  } finally {
+    h.api.dispose();
+    core.setDynamicPricingCatalog(null);
+    core.setCustomPricingCatalog({});
+  }
+});

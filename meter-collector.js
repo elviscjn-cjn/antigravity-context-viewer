@@ -28,6 +28,7 @@ const {
   redactProxyUrl,
   openSocks5Tunnel,
   openHttpConnectTunnel,
+  requestWithProxyTunnel,
   classifyRequestTimeoutPhase,
   sanitizeDiagnosticErrorText
 } = require('./meter-proxy');
@@ -84,11 +85,296 @@ const {
   isValidSpeedSample,
   MAX_SPEED_SAMPLES_PER_MODEL,
   calculateRequestApiCost,
+  setDynamicPricingCatalog,
+  setCustomPricingCatalog,
+  getDynamicPricingCatalog,
+  parseModelsDevPricingCatalog,
+  parseLiteLlmPricingCatalog,
+  mergePricingCatalogs,
   filterReleases,
   findReleaseAsset,
   compareVersions
 } = require('./meter-core');
 const { PROJECT_VERSION } = require('./modules-config');
+
+const PRICING_FEED_MODELS_DEV = 'https://models.dev/api.json';
+const PRICING_FEED_LITELLM = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
+const PRICING_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+const PRICING_AUTO_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
+
+let _lastPricingCacheSig = '';
+let _lastCustomPricingSig = '';
+let _lastPricingAutoAttemptMs = 0;
+let _activePricingSyncPromise = null;
+
+function resolvePricingStateDir(options = {}) {
+  if (options && typeof options.stateDir === 'string' && options.stateDir.trim()) {
+    return path.resolve(options.stateDir.trim());
+  }
+  const { getStateDir } = require('./asar-engine');
+  return getStateDir();
+}
+
+function getPricingCatalogCachePath(stateDir = null) {
+  return path.join(stateDir || resolvePricingStateDir(), 'pricing_catalog_cache.json');
+}
+
+function getCustomPricingPath(stateDir = null) {
+  return path.join(stateDir || resolvePricingStateDir(), 'custom_pricing.json');
+}
+
+function loadPersistedPricingCatalog(options = {}) {
+  // 测试运行环境（node --test）或隔离扫描未显式指定 stateDir 时，不读取宿主真实全局价格缓存，避免污染测试基线
+  const isIsolatedWithoutState = Boolean(
+    !options.stateDir && (
+      options.agDir ||
+      options.fs ||
+      options.hostFetcher ||
+      process.env.NODE_TEST_CONTEXT
+    )
+  );
+  if (isIsolatedWithoutState) return getDynamicPricingCatalog();
+  try {
+    const stateDir = resolvePricingStateDir(options);
+    const cachePath = getPricingCatalogCachePath(stateDir);
+    let cacheSig = `${cachePath}:missing`;
+    if (origFsMethods.existsSync(cachePath)) {
+      const st = origFsMethods.statSync(cachePath);
+      cacheSig = `${cachePath}:${st.size}:${st.mtimeMs}`;
+    }
+    if (cacheSig !== _lastPricingCacheSig) {
+      const prevSig = _lastPricingCacheSig;
+      _lastPricingCacheSig = cacheSig;
+      if (origFsMethods.existsSync(cachePath)) {
+        const readRes = safeReadJsonSync(cachePath, null);
+        const parsed = readRes && readRes.ok ? readRes.data : null;
+        if (parsed && typeof parsed === 'object' && parsed.models && typeof parsed.models === 'object') {
+          setDynamicPricingCatalog(parsed);
+        }
+      } else if (prevSig && !prevSig.endsWith(':missing')) {
+        setDynamicPricingCatalog(null);
+      }
+    }
+
+    const customPath = getCustomPricingPath(stateDir);
+    let customSig = `${customPath}:missing`;
+    if (origFsMethods.existsSync(customPath)) {
+      const st = origFsMethods.statSync(customPath);
+      customSig = `${customPath}:${st.size}:${st.mtimeMs}`;
+    }
+    if (customSig !== _lastCustomPricingSig) {
+      _lastCustomPricingSig = customSig;
+      if (origFsMethods.existsSync(customPath)) {
+        const readCustom = safeReadJsonSync(customPath, null);
+        const parsedCustom = readCustom && readCustom.ok ? readCustom.data : null;
+        if (parsedCustom && typeof parsedCustom === 'object') {
+          setCustomPricingCatalog(parsedCustom);
+        }
+      } else {
+        setCustomPricingCatalog({});
+      }
+    }
+  } catch { }
+  return getDynamicPricingCatalog();
+}
+
+async function fetchPricingFeedJson(urlStr, options = {}) {
+  if (typeof options.fetcher === 'function') {
+    return options.fetcher(urlStr);
+  }
+  let currentUrl = urlStr;
+  for (let hop = 0; hop <= 3; hop++) {
+    const res = await requestWithProxyTunnel(currentUrl, {
+      method: 'GET',
+      timeoutMs: Number(options.timeoutMs) || 12000,
+      maxBytes: 24 * 1024 * 1024,
+      stage: 'pricing_sync',
+      headers: {
+        'User-Agent': `AntigravityContextMeter/${PROJECT_VERSION}`,
+        'Accept': 'application/json',
+        'Accept-Encoding': 'identity'
+      },
+      ...(options.proxyUrl ? { proxyUrl: options.proxyUrl } : {})
+    });
+    if (res.status >= 300 && res.status < 400 && res.headers?.location && hop < 3) {
+      const nextUrl = new URL(res.headers.location, currentUrl);
+      if (nextUrl.protocol !== 'https:') {
+        throw new Error(`拒绝非 HTTPS 价格源重定向: ${nextUrl.protocol}`);
+      }
+      currentUrl = nextUrl.toString();
+      continue;
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    if (!res.json || typeof res.json !== 'object') {
+      throw new Error('返回内容不是有效 JSON');
+    }
+    return res.json;
+  }
+  throw new Error('价格源重定向次数过多');
+}
+
+function repriceUnpricedLedgerCalls(customAgDir = null, options = {}) {
+  const agDir = customAgDir ? path.resolve(customAgDir) : resolvePrimaryGeminiDirs(options).agDir;
+  const ledgerPath = getPricingLedgerPath(agDir);
+  if (!origFsMethods.existsSync(ledgerPath)) return 0;
+  let repricedCount = 0;
+  try {
+    const resolvedLedgerPath = path.resolve(ledgerPath);
+    withFileLockSync(ledgerPath, () => {
+      ledgerCacheByPath.delete(normalizeLedgerKey(resolvedLedgerPath));
+      const ledger = loadPricingLedger(agDir);
+      if (!ledger || ledger.__corrupted || ledger.__unreadable) return;
+      const calls = ledger.calls && typeof ledger.calls === 'object' ? ledger.calls : {};
+      let changed = false;
+      for (const [k, c] of Object.entries(calls)) {
+        if (!c || typeof c !== 'object') continue;
+        if (c.isPriced && !options.repriceAll) continue;
+        const calc = calculateRequestApiCost(c);
+        if (calc && calc.isPriced) {
+          const nextCost = calc.costUSD ?? 0;
+          if (!c.isPriced || c.modelKey !== calc.modelKey || Number(c.costUSD || 0) !== nextCost) {
+            calls[k] = {
+              ...c,
+              modelKey: calc.modelKey,
+              isPriced: true,
+              costUSD: nextCost
+            };
+            repricedCount++;
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        savePricingLedger(ledger, agDir);
+        try { syncAccountLedgerPartitions(resolvedLedgerPath, calls); } catch { }
+      }
+    }, { timeoutMs: 4000 });
+  } catch { }
+  if (repricedCount > 0) {
+    cachedTokenHistoryAt = 0;
+  }
+  return repricedCount;
+}
+
+async function syncPricingCatalogAsync(options = {}) {
+  const isolated = Boolean(options.stateDir || options.agDir || options.fetcher);
+  if (!isolated && _activePricingSyncPromise) {
+    return _activePricingSyncPromise;
+  }
+  const run = (async () => {
+    const stateDir = resolvePricingStateDir(options);
+    const cachePath = getPricingCatalogCachePath(stateDir);
+    loadPersistedPricingCatalog({ stateDir });
+    const existing = getDynamicPricingCatalog();
+    const ttlMs = Number.isFinite(Number(options.ttlMs)) ? Number(options.ttlMs) : PRICING_CATALOG_TTL_MS;
+    if (!options.force && existing.modelCount > 0 && existing.fetchedAtMs > 0 && (Date.now() - existing.fetchedAtMs) < ttlMs) {
+      return {
+        ok: true,
+        cached: true,
+        skipped: true,
+        updatedAt: existing.updatedAt,
+        fetchedAtMs: existing.fetchedAtMs,
+        sources: existing.sources,
+        modelCount: existing.modelCount,
+        customCount: existing.customCount || 0,
+        repricedCount: 0
+      };
+    }
+
+    const modelsDevUrl = options.modelsDevUrl || PRICING_FEED_MODELS_DEV;
+    const liteLlmUrl = options.liteLlmUrl || PRICING_FEED_LITELLM;
+    const [rModelsDev, rLiteLlm] = await Promise.allSettled([
+      fetchPricingFeedJson(modelsDevUrl, options),
+      fetchPricingFeedJson(liteLlmUrl, options)
+    ]);
+
+    const errors = [];
+    const sources = [];
+    let mapModelsDev = null;
+    let mapLiteLlm = null;
+
+    if (rModelsDev.status === 'fulfilled') {
+      const parsed = parseModelsDevPricingCatalog(rModelsDev.value);
+      if (Object.keys(parsed).length > 0) {
+        mapModelsDev = parsed;
+        sources.push('models.dev');
+      } else {
+        errors.push('models.dev: 未解析到有效模型价目');
+      }
+    } else {
+      errors.push(`models.dev: ${sanitizeDiagnosticErrorText(rModelsDev.reason?.message || String(rModelsDev.reason || 'fetch_failed'))}`);
+    }
+
+    if (rLiteLlm.status === 'fulfilled') {
+      const parsed = parseLiteLlmPricingCatalog(rLiteLlm.value);
+      if (Object.keys(parsed).length > 0) {
+        mapLiteLlm = parsed;
+        sources.push('litellm');
+      } else {
+        errors.push('litellm: 未解析到有效模型价目');
+      }
+    } else {
+      errors.push(`litellm: ${sanitizeDiagnosticErrorText(rLiteLlm.reason?.message || String(rLiteLlm.reason || 'fetch_failed'))}`);
+    }
+
+    const mergedModels = mergePricingCatalogs(mapModelsDev, mapLiteLlm);
+    const modelCount = Object.keys(mergedModels).length;
+    if (modelCount === 0) {
+      return {
+        ok: false,
+        error: errors.join('；') || '所有价格源拉取失败',
+        errors,
+        sources: [],
+        modelCount: existing.modelCount || 0,
+        repricedCount: 0
+      };
+    }
+
+    const nowMs = Date.now();
+    const updatedAt = new Date(nowMs).toISOString();
+    const payload = {
+      schemaVersion: 1,
+      updatedAt,
+      fetchedAtMs: nowMs,
+      sources,
+      modelCount,
+      models: mergedModels
+    };
+    try {
+      fs.mkdirSync(stateDir, { recursive: true });
+      safeWriteJsonSync(cachePath, payload);
+      const st = origFsMethods.statSync(cachePath);
+      _lastPricingCacheSig = `${cachePath}:${st.size}:${st.mtimeMs}`;
+    } catch { }
+
+    setDynamicPricingCatalog(payload);
+    loadPersistedPricingCatalog({ stateDir });
+    const repricedCount = options.skipReprice ? 0 : repriceUnpricedLedgerCalls(options.agDir || null);
+    cachedTokenHistoryAt = 0;
+
+    return {
+      ok: true,
+      cached: false,
+      updatedAt,
+      fetchedAtMs: nowMs,
+      sources,
+      modelCount,
+      customCount: getDynamicPricingCatalog().customCount || 0,
+      repricedCount,
+      errors
+    };
+  })();
+
+  if (!isolated) {
+    _activePricingSyncPromise = run.finally(() => {
+      if (_activePricingSyncPromise === run) _activePricingSyncPromise = null;
+    });
+    return _activePricingSyncPromise;
+  }
+  return run;
+}
 
 let cachedPython = undefined;
 function resolvePython() {
@@ -1283,27 +1569,36 @@ function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitSt
     : (incomingEntry.status || baseEntry.status || 'final');
   const mergedRev = !incomingIsStaleStatus && revCmp >= 0 ? (incRev ?? baseRev) : baseRev;
 
-  // 保护已有测速指标与精确模型元数据不被无测速的后续校准覆盖
+  // 保护已有测速指标与精确模型元数据不被无测速的后续校准覆盖，同时允许补全缺失的 TTFT / streamingSec / durationSec
   const preservedExactId = incomingEntry.modelExactId || baseEntry.modelExactId;
   const preservedLabel = incomingEntry.modelLabel || baseEntry.modelLabel;
   const preservedEffort = incomingEntry.effort || baseEntry.effort;
+  const hasIncomingTiming = incomingEntry.ttftSec != null || incomingEntry.streamingSec != null || incomingEntry.durationSec != null;
   const keepSpeed = (!hasSpeedMetrics(baseEntry) && hasSpeedMetrics(incomingEntry) && isValidSpeedSample(incomingEntry))
     ? {
       ...(incomingEntry.ttftSec != null ? { ttftSec: incomingEntry.ttftSec } : {}),
       ...(incomingEntry.streamingSec != null ? { streamingSec: incomingEntry.streamingSec } : {}),
       ...(incomingEntry.durationSec != null ? { durationSec: incomingEntry.durationSec } : {}),
       ...(incomingEntry.tps != null ? { tps: incomingEntry.tps } : {}),
+      ...(incomingEntry.streamingTps != null ? { streamingTps: incomingEntry.streamingTps } : {}),
       ...(incomingEntry.origin ? { origin: incomingEntry.origin } : {})
     }
     : (hasSpeedMetrics(baseEntry)
       ? {
-        ...(baseEntry.ttftSec != null ? { ttftSec: baseEntry.ttftSec } : {}),
-        ...(baseEntry.streamingSec != null ? { streamingSec: baseEntry.streamingSec } : {}),
-        ...(baseEntry.durationSec != null ? { durationSec: baseEntry.durationSec } : {}),
+        ...(baseEntry.ttftSec != null ? { ttftSec: baseEntry.ttftSec } : (incomingEntry.ttftSec != null ? { ttftSec: incomingEntry.ttftSec } : {})),
+        ...(baseEntry.streamingSec != null ? { streamingSec: baseEntry.streamingSec } : (incomingEntry.streamingSec != null ? { streamingSec: incomingEntry.streamingSec } : {})),
+        ...(baseEntry.durationSec != null ? { durationSec: baseEntry.durationSec } : (incomingEntry.durationSec != null ? { durationSec: incomingEntry.durationSec } : {})),
         ...(baseEntry.tps != null ? { tps: baseEntry.tps } : {}),
+        ...(baseEntry.streamingTps != null ? { streamingTps: baseEntry.streamingTps } : (incomingEntry.streamingTps != null && isValidSpeedSample(baseEntry) ? { streamingTps: incomingEntry.streamingTps } : {})),
         ...(baseEntry.origin ? { origin: baseEntry.origin } : {})
       }
-      : {});
+      : (hasIncomingTiming
+        ? {
+          ...(incomingEntry.ttftSec != null ? { ttftSec: incomingEntry.ttftSec } : {}),
+          ...(incomingEntry.streamingSec != null ? { streamingSec: incomingEntry.streamingSec } : {}),
+          ...(incomingEntry.durationSec != null ? { durationSec: incomingEntry.durationSec } : {})
+        }
+        : {}));
 
   // 保留账号归属元数据，避免后续无账号扫描富化抹除已确认的账号归属
   const attributionMerged = mergeAccountAttributionFields(baseEntry, incomingEntry);
@@ -1918,6 +2213,11 @@ function resolveCallAccountAttribution(call, options = {}, existing = null) {
 
 function recordModelCalls(newCalls = [], options = {}) {
   if (!Array.isArray(newCalls) || !newCalls.length) return createRecordResult(true, false);
+  if (options && typeof options === 'object') {
+    loadPersistedPricingCatalog(options);
+  } else if (!options) {
+    loadPersistedPricingCatalog({});
+  }
   const targetDir = typeof options === 'string' ? options : (options.ledgerPath || options.agDir);
   const fsOpt = (options && typeof options === 'object' && options.fs) ? { fs: options.fs } : undefined;
   const resolvedLedgerPath = path.resolve(getPricingLedgerPath(targetDir));
@@ -4934,6 +5234,7 @@ function buildDailyModelBreakdown(params) {
  * @param {object} extraContext
  */
 async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
+  loadPersistedPricingCatalog(options);
   const { home, agDir, agCliDir } = resolvePrimaryGeminiDirs(options);
 
   const archivePathV1 = path.join(agDir, 'token_usage_archive_v1.json');
@@ -5185,6 +5486,25 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
             const fallbackScope = (event.cascadeId || brainMatch) ? cascadeId : job.path;
             const eventId = extractCallId(event, fallbackScope, stepIndex ?? i);
 
+            const parseEventDurSec = (rawDur) => {
+              if (rawDur == null) return null;
+              if (typeof rawDur === 'number' && Number.isFinite(rawDur) && rawDur >= 0) return Number(rawDur.toFixed(2));
+              if (typeof rawDur === 'string') {
+                const m = rawDur.trim().match(/^(\d+(?:\.\d+)?)\s*s$/i);
+                if (m) return Number(Number(m[1]).toFixed(2));
+                const n = Number(rawDur);
+                if (Number.isFinite(n) && n >= 0) return Number(n.toFixed(2));
+              } else if (typeof rawDur === 'object') {
+                const sec = Number(rawDur.seconds || 0) + Number(rawDur.nanos || 0) / 1e9;
+                if (Number.isFinite(sec) && sec >= 0) return Number(sec.toFixed(2));
+              }
+              return null;
+            };
+            const evTtft = parseEventDurSec(event.chatModel?.timeToFirstToken ?? event.ttftSec);
+            const evStream = parseEventDurSec(event.chatModel?.streamingDuration ?? event.streamingSec);
+            const evError = event.error ? String(event.error).slice(0, 200) : '';
+            const evStatus = event.status === 'RUNNING' ? 'streaming' : 'final';
+
             fileRecords.push({
               eventId,
               cascadeId,
@@ -5192,6 +5512,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
               model,
               ...(modelExactId ? { modelExactId } : {}),
               ...(modelLabel ? { modelLabel } : {}),
+              ...(evTtft !== null ? { ttftSec: evTtft } : {}),
+              ...(evStream !== null ? { streamingSec: evStream } : {}),
+              ...(evError ? { error: evError } : {}),
+              status: evStatus,
               inp,
               outp,
               cap,
@@ -5235,6 +5559,20 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
           }
           if (!existingReq.modelExactId && rec.modelExactId) existingReq.modelExactId = rec.modelExactId;
           if (!existingReq.modelLabel && rec.modelLabel) existingReq.modelLabel = rec.modelLabel;
+          if (existingReq.ttftSec == null && rec.ttftSec != null) existingReq.ttftSec = rec.ttftSec;
+          if (existingReq.streamingSec == null && rec.streamingSec != null) existingReq.streamingSec = rec.streamingSec;
+          if (existingReq.durationSec == null && (existingReq.ttftSec != null || existingReq.streamingSec != null)) {
+            const dSum = (existingReq.ttftSec != null && existingReq.streamingSec != null)
+              ? Number((Number(existingReq.ttftSec) + Number(existingReq.streamingSec)).toFixed(2))
+              : Number((existingReq.streamingSec ?? existingReq.ttftSec));
+            if (Number.isFinite(dSum) && dSum > 0) existingReq.durationSec = dSum;
+          }
+          if (existingReq.tps == null && existingReq.outputTokens > 0 && existingReq.durationSec > 0) {
+            existingReq.tps = Number((existingReq.outputTokens / existingReq.durationSec).toFixed(1));
+          }
+          if (existingReq.streamingTps == null && existingReq.outputTokens > 0 && existingReq.streamingSec >= 0.2) {
+            existingReq.streamingTps = Number((existingReq.outputTokens / existingReq.streamingSec).toFixed(1));
+          }
           // 若两个不同 convDir 下的非 UUID 同名会话共享同一真实 responseId（非 step 拼接键），证明是同一镜像会话
           if (
             !String(rec.eventId).includes('#') &&
@@ -5269,6 +5607,21 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         srcMap[dateKey].steps += 1;
 
         const modelKey = normalizeModelId(rec.model);
+        const recTtft = (rec.ttftSec != null && Number.isFinite(Number(rec.ttftSec)) && Number(rec.ttftSec) >= 0)
+          ? Number(Number(rec.ttftSec).toFixed(2))
+          : null;
+        const recStream = (rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) && Number(rec.streamingSec) >= 0)
+          ? Number(Number(rec.streamingSec).toFixed(2))
+          : null;
+        const recDuration = (recTtft !== null && recStream !== null)
+          ? Number((recTtft + recStream).toFixed(2))
+          : (recStream !== null && recStream > 0 ? recStream : (recTtft !== null && recTtft > 0 ? recTtft : null));
+        const recTps = (rec.outp > 0 && recDuration !== null && recDuration > 0)
+          ? Number((rec.outp / recDuration).toFixed(1))
+          : null;
+        const recStreamingTps = (rec.outp > 0 && recStream !== null && recStream >= 0.2)
+          ? Number((rec.outp / recStream).toFixed(1))
+          : null;
         const reqObj = {
           callId: rec.eventId,
           source: job.source,
@@ -5278,6 +5631,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
           model: rec.model,
           ...(rec.modelExactId ? { modelExactId: rec.modelExactId } : {}),
           ...(rec.modelLabel ? { modelLabel: rec.modelLabel } : {}),
+          ...(recTtft !== null ? { ttftSec: recTtft } : {}),
+          ...(recStream !== null ? { streamingSec: recStream } : {}),
+          ...(recDuration !== null ? { durationSec: recDuration } : {}),
+          ...(recTps !== null ? { tps: recTps } : {}),
+          ...(recStreamingTps !== null ? { streamingTps: recStreamingTps } : {}),
+          ...(rec.error ? { error: rec.error } : {}),
+          ...(rec.parentCascadeId ? { parentCascadeId: rec.parentCascadeId } : {}),
+          ...(rec.subagentType ? { subagentType: rec.subagentType } : {}),
           modelKey,
           inputTokens: rec.inp,
           cacheTokens: rec.cap,
@@ -5285,7 +5646,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
           outputTokens: rec.outp,
           thinkingTokens: rec.thinking,
           totalTokens: rec.tot,
-          status: 'final',
+          status: rec.status || 'final',
           isEstimated: false,
           date: dateKey,
           dateSource: 'transcript',
@@ -5528,8 +5889,12 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       || Boolean(c.dateIsProvisional) !== Boolean(merged.dateIsProvisional);
     const statusEnriched = String(c.status || '') !== String(merged.status || '');
     const pricingEnriched = Boolean(c.isPriced) !== Boolean(merged.isPriced) || Number(c.costUSD || 0) !== Number(merged.costUSD || 0);
+    const speedEnriched = (c.ttftSec == null && merged.ttftSec != null)
+      || (c.streamingSec == null && merged.streamingSec != null)
+      || (c.durationSec == null && merged.durationSec != null)
+      || (c.tps == null && merged.tps != null);
 
-    if (keyChanged || modelEnriched || usageEnriched || stepEnriched || cascadeEnriched || dateEnriched || statusEnriched || pricingEnriched) {
+    if (keyChanged || modelEnriched || usageEnriched || stepEnriched || cascadeEnriched || dateEnriched || statusEnriched || pricingEnriched || speedEnriched) {
       ledgerEnrichmentCalls.push(merged);
       inMemoryEnrichments.set(ledgerKey, { targetCallId, merged });
     }
@@ -5734,6 +6099,20 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   }
 
+  // 对账本中此前未计价的记录尝试按最新基线/动态/自定义价表实时补算（例如新发布的 gemini-4-neon 或刚同步的模型）
+  for (const [k, c] of Object.entries(effectiveCallsMap)) {
+    if (!c || c.isPriced) continue;
+    const recalc = calculateRequestApiCost(c);
+    if (recalc && recalc.isPriced) {
+      effectiveCallsMap[k] = {
+        ...c,
+        modelKey: recalc.modelKey,
+        isPriced: true,
+        costUSD: recalc.costUSD ?? 0
+      };
+    }
+  }
+
   const finalCallsEntries = Object.entries(effectiveCallsMap);
   const mergedCalls = finalCallsEntries.map(([, c]) => c);
 
@@ -5932,6 +6311,123 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       timestamp: getCallSortTimestamp(c) || null
     }));
 
+  // 汇总最近单次请求明细（跨 Desktop / CLI 去重并按时间倒序，供 Token 面板「实时请求」表格展示）
+  const recentRequestLogs = (() => {
+    const modelConfigs = Array.isArray(livePlanStatus?.cascadeModelConfigs) ? livePlanStatus.cascadeModelConfigs : [];
+    const byKey = new Map();
+    const ingest = (c) => {
+      if (!c || typeof c !== 'object') return;
+      const inp = Math.max(0, Number(c.inputTokens ?? c.input_tokens ?? c.input ?? 0) || 0);
+      const cache = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? c.cache_read_tokens ?? c.cached ?? 0) || 0);
+      const outp = Math.max(0, Number(c.outputTokens ?? c.output_tokens ?? c.output ?? 0) || 0);
+      const tot = inp + cache + outp;
+      if (tot <= 0 && !c.error && c.status !== 'streaming') return;
+      const ts = getCallSortTimestamp(c);
+      if (!Number.isFinite(ts) || ts <= 0) return;
+      const key = String(c.callId || `${c.source || 'desktop'}:${c.cascadeId || ''}:${c.stepIndex ?? ''}:${ts}`);
+      if (!byKey.has(key)) {
+        byKey.set(key, { c, ts, inp, cache, outp, tot });
+      }
+    };
+    for (const c of mergedCalls) ingest(c);
+    for (const r of recentRequests) {
+      if (matchedTranscriptReqs.has(r)) continue;
+      ingest(r);
+    }
+    const sorted = Array.from(byKey.values()).sort((a, b) => {
+      if (b.ts !== a.ts) return b.ts - a.ts;
+      const sa = Number.isInteger(a.c.stepIndex) ? a.c.stepIndex : -1;
+      const sb = Number.isInteger(b.c.stepIndex) ? b.c.stepIndex : -1;
+      if (sb !== sa) return sb - sa;
+      return String(b.c.callId || '').localeCompare(String(a.c.callId || ''));
+    });
+    return sorted.slice(0, 300).map(({ c, ts, inp, cache, outp, tot }) => {
+      const ttftSec = (c.ttftSec != null && Number.isFinite(Number(c.ttftSec)) && Number(c.ttftSec) >= 0)
+        ? Number(Number(c.ttftSec).toFixed(2))
+        : null;
+      const streamingSec = (c.streamingSec != null && Number.isFinite(Number(c.streamingSec)) && Number(c.streamingSec) >= 0)
+        ? Number(Number(c.streamingSec).toFixed(2))
+        : null;
+      const rawDur = (c.durationSec != null && Number.isFinite(Number(c.durationSec)) && Number(c.durationSec) > 0)
+        ? Number(Number(c.durationSec).toFixed(2))
+        : null;
+      const durationSec = rawDur !== null
+        ? rawDur
+        : ((ttftSec !== null && streamingSec !== null)
+          ? Number((ttftSec + streamingSec).toFixed(2))
+          : (streamingSec !== null && streamingSec > 0 ? streamingSec : (ttftSec !== null && ttftSec > 0 ? ttftSec : null)));
+      const tps = (c.tps != null && Number.isFinite(Number(c.tps)) && Number(c.tps) > 0)
+        ? Number(Number(c.tps).toFixed(1))
+        : ((outp > 0 && durationSec !== null && durationSec > 0) ? Number((outp / durationSec).toFixed(1)) : null);
+      const streamingTps = (c.streamingTps != null && Number.isFinite(Number(c.streamingTps)) && Number(c.streamingTps) > 0)
+        ? Number(Number(c.streamingTps).toFixed(1))
+        : ((outp > 0 && streamingSec !== null && streamingSec >= 0.2) ? Number((outp / streamingSec).toFixed(1)) : null);
+      const totalInput = inp + cache;
+      const cacheReadPct = totalInput > 0 ? Number(((cache / totalInput) * 100).toFixed(1)) : null;
+      const exactId = c.modelExactId || resolveStableModelId(c, modelConfigs) || null;
+      const modelKey = c.modelKey || normalizeModelId(exactId || c.model || '') || null;
+      let isPriced = Boolean(c.isPriced);
+      let costUSD = (isPriced && Number.isFinite(Number(c.costUSD))) ? Number(c.costUSD) : 0;
+      if (!isPriced && (exactId || c.model || modelKey) && tot > 0) {
+        const calc = calculateRequestApiCost({
+          ...c,
+          model: exactId || c.model || modelKey,
+          modelKey,
+          inputTokens: inp,
+          cacheReadTokens: cache,
+          cacheTokens: cache,
+          outputTokens: outp,
+          totalTokens: tot
+        });
+        if (calc && calc.isPriced) {
+          isPriced = true;
+          costUSD = Number(calc.costUSD || 0);
+        }
+      }
+      const status = c.status === 'streaming' ? 'streaming' : 'final';
+      const errText = c.error ? String(c.error).slice(0, 200) : null;
+      const outcomeStatus = c.outcomeStatus || (errText ? 'failed' : (status === 'streaming' ? 'streaming' : 'success'));
+      const reqModelCandidate = c.requestedModel && !/^model_placeholder_/i.test(String(c.requestedModel))
+        ? String(c.requestedModel)
+        : null;
+      return {
+        callId: c.callId || null,
+        cascadeId: c.cascadeId || null,
+        stepIndex: Number.isInteger(c.stepIndex) ? c.stepIndex : null,
+        timestamp: ts,
+        created_at: c.created_at || new Date(ts).toISOString(),
+        date: c.date || formatLocalDateKey(new Date(ts)),
+        source: c.source === 'cli' ? 'cli' : (c.source === 'ide' ? 'ide' : 'desktop'),
+        agentRole: c.agentRole || (c.parentCascadeId || c.subagentType ? 'subagent' : 'main'),
+        subagentType: c.subagentType || null,
+        requestedModel: reqModelCandidate,
+        model: c.model || exactId || modelKey || '',
+        modelExactId: exactId,
+        modelKey,
+        modelLabel: c.modelLabel || null,
+        effort: c.effort || null,
+        accountScopeKey: isValidAccountScopeKey(c.accountScopeKey) ? c.accountScopeKey : null,
+        accountAttributionConfidence: c.accountAttributionConfidence || null,
+        inputTokens: inp,
+        cacheReadTokens: cache,
+        outputTokens: outp,
+        thinkingTokens: Math.max(0, Number(c.thinkingTokens || 0) || 0),
+        totalTokens: tot,
+        cacheReadPct,
+        costUSD: isPriced ? Number(costUSD.toFixed(6)) : null,
+        isPriced,
+        ttftSec,
+        streamingSec,
+        durationSec,
+        tps,
+        streamingTps,
+        status,
+        outcomeStatus,
+        error: errText
+      };
+    });
+  })();
+
   const compactModelConfigs = Array.isArray(livePlanStatus?.cascadeModelConfigs)
     ? livePlanStatus.cascadeModelConfigs.map(sanitizeCascadeModelConfig).filter(Boolean)
     : [];
@@ -6070,6 +6566,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     quotaUsageAccounting: 'raw_input_cache_output',
     recentModelUsage,
     speedRecords,
+    recentRequestLogs,
+    dynamicPricingCatalog: getDynamicPricingCatalog(),
     cascadeModelConfigs: compactModelConfigs,
     modelCapabilitiesById: livePlanStatus?.availableModelDetails || null,
     currentPeriod: {
@@ -6216,6 +6714,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
  * @param {object} options
  */
 async function collectTokenHistoryAsync(options = {}) {
+  loadPersistedPricingCatalog(options);
+  const isRuntimeHostScan = !options.agDir && !options.fs && !options.hostFetcher && !process.env.NODE_TEST_CONTEXT;
+  if (isRuntimeHostScan) {
+    const cat = getDynamicPricingCatalog();
+    const isCatalogStale = !cat.fetchedAtMs || (Date.now() - cat.fetchedAtMs) >= PRICING_CATALOG_TTL_MS;
+    if (isCatalogStale && (Date.now() - _lastPricingAutoAttemptMs) >= PRICING_AUTO_RETRY_COOLDOWN_MS) {
+      _lastPricingAutoAttemptMs = Date.now();
+      void syncPricingCatalogAsync({ force: false }).catch(() => {});
+    }
+  }
   const scopeKey = getEffectiveScanScopeKey(options);
   const canCacheByScope = !options.fs && !options.hostFetcher && !options.customPlan;
   if (!options.force && canCacheByScope && cachedTokenHistory && cachedTokenHistoryScope === scopeKey && Date.now() - cachedTokenHistoryAt < 15000) {
@@ -8170,6 +8678,11 @@ module.exports = {
   isSyntheticCall,
   quarantineSyntheticCalls,
   getCustomPlanPath,
+  getPricingCatalogCachePath,
+  getCustomPricingPath,
+  loadPersistedPricingCatalog,
+  repriceUnpricedLedgerCalls,
+  syncPricingCatalogAsync,
   sanitizeAccountPlanEntry,
   loadCustomPlanSettings,
   saveCustomPlanSettings,

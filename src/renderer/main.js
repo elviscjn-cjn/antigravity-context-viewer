@@ -92,6 +92,9 @@
     summarize,
     parseGeneratorCall,
     calculateRequestApiCost,
+    setDynamicPricingCatalog,
+    setCustomPricingCatalog,
+    getDynamicPricingCatalog,
     normalizeModelId,
     resolveStableModelId,
     formatEffortLabel,
@@ -148,7 +151,8 @@
     dailyModelMap: {},
     dailyModelMapBySource: null,
     modelMetaByKey: null,
-    speedRecords: []
+    speedRecords: [],
+    recentRequestLogs: []
   };
 
   const RING_RADIUS = 6.5;
@@ -1061,7 +1065,8 @@
         const dpr = getEffectiveDpr();
         const top = snapToDevicePixel(Math.max(36, Math.min(vh - 120, (bRect.bottom || hRect.bottom) + 6)));
         const isCompact = panelEl.classList?.contains?.('cost-compact-view') || panelEl.getAttribute?.('class')?.includes?.('cost-compact-view');
-        const effW = isCompact ? 400 : targetW;
+        const isWideRequests = panelEl.classList?.contains?.('requests-wide-view') || panelEl.getAttribute?.('class')?.includes?.('requests-wide-view');
+        const effW = isCompact ? 400 : (isWideRequests ? 1040 : targetW);
         const maxAvailW = Math.max(260, vw - minLeft - 12);
         const finalW = Math.min(effW, maxAvailW);
 
@@ -1072,7 +1077,7 @@
 
         const maxWidthPx = Math.max(260, vw - left - 12);
         const maxHeightPx = Math.max(160, vh - top - 16);
-        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${dpr}`;
+        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${isWideRequests ? 1 : 0}|${dpr}`;
         if (panelEl._lastPlacedGeomKey === geomKey) return;
         panelEl._lastPlacedGeomKey = geomKey;
 
@@ -1290,6 +1295,7 @@
       positionFloatingPanels();
       pTokens.hidden = false;
       renderActiveHeatView(true);
+      if (activeTokenView === 'requests') renderRequestsLiveView({ force: true });
       const hasCachedHistory = Boolean(ANTIGRAVITY_TOKEN_DATA.updatedAt || ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens);
       if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
         void syncTokenHistoryFromHost(false);
@@ -1931,6 +1937,7 @@
     modelUsageOffsetDays = 0;
     modelUsageLockedKey = null;
     modelUsageHoveredKey = null;
+    reqLogPageLimit = 50;
     if (typeof resetCumSelectionState === 'function') resetCumSelectionState();
   }
   function switchTokenSource(src) {
@@ -1952,6 +1959,7 @@
       renderActiveHeatView(true);
       renderActiveCostEstimateView();
       renderModelUsageView();
+      renderRequestsLiveView({ force: true });
     }
   }
   el('src-tab-all')?.addEventListener('click', () => switchTokenSource('all'));
@@ -2429,6 +2437,582 @@
     }
   }
 
+  // =========================================================================
+  // 实时请求统计视图（Magpie 风格 13 列：Desktop + CLI 历史与当前实时流式叠加）
+  // =========================================================================
+  let reqLogStatusFilter = 'all'; // 'all' | 'success' | 'error'
+  let reqLogPageLimit = 50;
+  let reqLogLastRenderedSig = '';
+  let lastRequestsLiveSyncAt = 0;
+
+  function createAntigravityAgentIcon() {
+    const wrap = document.createElement('span');
+    wrap.className = 'req-agent-icon';
+    wrap.setAttribute('aria-hidden', 'true');
+    if (typeof document.createElementNS !== 'function') return wrap;
+    try {
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('viewBox', '0 0 16 16');
+      svg.setAttribute('width', '14');
+      svg.setAttribute('height', '14');
+      svg.setAttribute('fill', 'none');
+      const segs = [
+        { d: 'M3.2 13.2 C4.6 9.6 6.2 5.4 8 2.4', stroke: '#4285F4' },
+        { d: 'M8 2.4 C9.8 5.4 11.4 9.6 12.8 13.2', stroke: '#EA4335' },
+        { d: 'M3.2 13.2 C5.2 11.0 6.8 10.2 8 10.2', stroke: '#34A853' },
+        { d: 'M8 10.2 C9.2 10.2 10.8 11.0 12.8 13.2', stroke: '#FBBC05' }
+      ];
+      for (const s of segs) {
+        const p = document.createElementNS(ns, 'path');
+        p.setAttribute('d', s.d);
+        p.setAttribute('stroke', s.stroke);
+        p.setAttribute('stroke-width', '2.1');
+        p.setAttribute('stroke-linecap', 'round');
+        p.setAttribute('stroke-linejoin', 'round');
+        svg.appendChild(p);
+      }
+      wrap.appendChild(svg);
+    } catch { }
+    return wrap;
+  }
+
+  function formatReqCompactTokens(val) {
+    if (val == null || !Number.isFinite(Number(val))) return '—';
+    const n = Math.max(0, Number(val));
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return String(Math.round(n));
+  }
+
+  function formatReqCacheHit(rec) {
+    const inp = Math.max(0, Number(rec?.inputTokens || 0));
+    const cache = Math.max(0, Number(rec?.cacheReadTokens || 0));
+    const totalIn = inp + cache;
+    if (totalIn <= 0) return '—';
+    const rawPct = rec?.cacheReadPct != null && Number.isFinite(Number(rec.cacheReadPct))
+      ? Number(rec.cacheReadPct)
+      : ((cache / totalIn) * 100);
+    if (rawPct <= 0) return '0%';
+    const rounded1 = Math.round(rawPct * 10) / 10;
+    if (rounded1 >= 100) return '100%';
+    if (Math.abs(rounded1 - Math.round(rounded1)) < 0.05) return `${Math.round(rounded1)}%`;
+    if (rounded1 >= 99) return `${rounded1.toFixed(1)}%`;
+    return `${Math.round(rounded1)}%`;
+  }
+
+  function formatReqCost(rec) {
+    let isPriced = Boolean(rec?.isPriced && rec.costUSD != null && Number.isFinite(Number(rec.costUSD)));
+    let usd = isPriced ? Math.max(0, Number(rec.costUSD)) : null;
+    if (!isPriced && rec && typeof calculateRequestApiCost === 'function') {
+      const calc = calculateRequestApiCost(rec);
+      if (calc?.isPriced && calc.costUSD != null && Number.isFinite(Number(calc.costUSD))) {
+        isPriced = true;
+        usd = Math.max(0, Number(calc.costUSD));
+      }
+    }
+    if (!isPriced || usd == null) {
+      return { text: '—', unpriced: true, tooltip: '' };
+    }
+    const text = usd >= 10 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(3)}`;
+    const tooltip = typeof formatUsdMetricTooltip === 'function' ? formatUsdMetricTooltip(usd) : text;
+    return { text, unpriced: false, tooltip };
+  }
+
+  function formatReqDurationSec(sec) {
+    if (sec == null || !Number.isFinite(Number(sec)) || Number(sec) <= 0) return '—';
+    const s = Number(sec);
+    if (s >= 60) {
+      const m = Math.floor(s / 60);
+      const rem = Math.round(s % 60);
+      return t('reqLog.unit.minSec', { m, s: rem });
+    }
+    const val = s < 10 ? String(Number(s.toFixed(1))) : String(Math.round(s));
+    return t('reqLog.unit.sec', { val });
+  }
+
+  function getReqDurationToneClass(sec) {
+    if (sec == null || !Number.isFinite(Number(sec)) || Number(sec) <= 0) return '';
+    const s = Number(sec);
+    if (s < 8) return 'req-dur-fast';
+    if (s < 20) return 'req-dur-mid';
+    return 'req-dur-slow';
+  }
+
+  function formatReqSpeed(rec) {
+    if (!rec) return '—';
+    const outp = Math.max(0, Number(rec.outputTokens || 0));
+    const sSec = rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) ? Number(rec.streamingSec) : null;
+    if (sSec !== null && sSec < 0.2) return '—';
+    let spd = null;
+    if (rec.streamingTps != null && Number.isFinite(Number(rec.streamingTps)) && Number(rec.streamingTps) > 0) {
+      spd = Number(rec.streamingTps);
+    } else if (sSec !== null && sSec >= 0.2 && outp > 0) {
+      spd = outp / sSec;
+    } else if (sSec === null && rec.tps != null && Number.isFinite(Number(rec.tps)) && Number(rec.tps) > 0 && outp >= 20) {
+      spd = Number(rec.tps);
+    }
+    if (spd === null || !Number.isFinite(spd) || spd <= 0) return '—';
+    return t('reqLog.unit.tps', { val: Math.round(spd) });
+  }
+
+  function resolveReqStatusInfo(rec) {
+    const out = String(rec?.outcomeStatus || '').toLowerCase();
+    const isStreaming = rec?.status === 'streaming' || out === 'streaming';
+    if (isStreaming) {
+      return { cls: 'is-streaming', label: t('reqLog.status.streaming'), isError: false, isStreaming: true };
+    }
+    if (!rec?.error && (!out || out === 'success' || out === 'final')) {
+      return { cls: 'is-ok', label: t('reqLog.status.success'), isError: false, isStreaming: false };
+    }
+    if (out === 'exceeded') return { cls: 'is-err', label: t('reqLog.status.exceeded'), isError: true, isStreaming: false };
+    if (out === 'rate_limited') return { cls: 'is-err', label: t('reqLog.status.rateLimited'), isError: true, isStreaming: false };
+    if (out === 'quota_exhausted') return { cls: 'is-err', label: t('reqLog.status.quotaExhausted'), isError: true, isStreaming: false };
+    if (out === 'network' || out === 'service_unavailable') return { cls: 'is-err', label: t('reqLog.status.network'), isError: true, isStreaming: false };
+    if (out === 'auth_error') return { cls: 'is-err', label: t('reqLog.status.authError'), isError: true, isStreaming: false };
+    if (out === 'canceled') return { cls: 'is-err', label: t('reqLog.status.canceled'), isError: true, isStreaming: false };
+    return { cls: 'is-err', label: t('reqLog.status.failed'), isError: true, isStreaming: false };
+  }
+
+  function formatReqActualModel(rec) {
+    if (!rec) return { text: '—', tooltip: '' };
+    const cleanId = (v) => {
+      const s = String(v || '').trim();
+      if (!s || s === 'unattributed' || /^model_placeholder_/i.test(s) || /^unknown$/i.test(s)) return '';
+      return s;
+    };
+    const key = cleanId(rec.modelKey);
+    const exact = cleanId(rec.modelExactId);
+    const rawM = cleanId(rec.model);
+    const displayText = key || exact || rawM || (typeof formatCallModelTitle === 'function' ? formatCallModelTitle(rec) : '—');
+    const tipParts = [];
+    if (rec.modelLabel) tipParts.push(rec.modelLabel);
+    if (rec.effort) tipParts.push(rec.effort);
+    if (exact && exact !== displayText) tipParts.push(exact);
+    else if (displayText && displayText !== '—' && !tipParts.length) tipParts.push(displayText);
+    return { text: displayText || '—', tooltip: tipParts.join(' · ') };
+  }
+
+  function formatReqLocalYmd(d) {
+    const dt = d instanceof Date ? d : new Date(d || Date.now());
+    const pad2 = n => String(n).padStart(2, '0');
+    return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+  }
+
+  function formatReqTimeParts(rec) {
+    const rawTs = Number(rec?.timestamp) || (rec?.created_at ? Date.parse(rec.created_at) : NaN);
+    if (!Number.isFinite(rawTs) || rawTs <= 0) return { text: '—', tooltip: '', dateKey: rec?.date || '' };
+    const d = new Date(rawTs);
+    const pad2 = n => String(n).padStart(2, '0');
+    const hhmmss = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    const ymd = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    return { text: hhmmss, tooltip: `${ymd} ${hhmmss}`, dateKey: ymd };
+  }
+
+  function resolveReqProviderDisplay(rec) {
+    const baseText = t('reqLog.provider.localSession');
+    const tipParts = [baseText];
+    if (rec?.accountScopeKey) {
+      const ovAccts = Array.isArray(accountsUiState?.overview?.accounts) ? accountsUiState.overview.accounts : [];
+      const found = ovAccts.find(a => a?.accountScopeKey === rec.accountScopeKey);
+      if (found?.maskedEmail) tipParts.push(found.maskedEmail);
+    }
+    if (rec?.cascadeId) tipParts.push(`#${String(rec.cascadeId).slice(0, 8)}`);
+    return { text: baseText, tooltip: tipParts.join(' · ') };
+  }
+
+  function buildLiveCallOverlayRecord(rawCall, fallbackScopeKey) {
+    if (!rawCall || typeof rawCall !== 'object') return null;
+    const inp = Math.max(0, Number(rawCall.inputTokens ?? 0) || 0);
+    const cache = Math.max(0, Number(rawCall.cacheReadTokens ?? rawCall.cacheTokens ?? 0) || 0);
+    const outp = Math.max(0, Number(rawCall.outputTokens ?? 0) || 0);
+    const tot = inp + cache + outp;
+    const isStreaming = rawCall.status === 'streaming' || rawCall.outcomeStatus === 'streaming';
+    if (tot <= 0 && !rawCall.error && !isStreaming) return null;
+    const ts = Number(rawCall.timestamp) || (rawCall.created_at ? Date.parse(rawCall.created_at) : Date.now());
+    const ttftSec = (rawCall.ttftSec != null && Number.isFinite(Number(rawCall.ttftSec)) && Number(rawCall.ttftSec) >= 0)
+      ? Number(Number(rawCall.ttftSec).toFixed(2))
+      : null;
+    const streamingSec = (rawCall.streamingSec != null && Number.isFinite(Number(rawCall.streamingSec)) && Number(rawCall.streamingSec) >= 0)
+      ? Number(Number(rawCall.streamingSec).toFixed(2))
+      : null;
+    let durationSec = (rawCall.durationSec != null && Number.isFinite(Number(rawCall.durationSec)) && Number(rawCall.durationSec) > 0)
+      ? Number(Number(rawCall.durationSec).toFixed(2))
+      : ((ttftSec !== null && streamingSec !== null) ? Number((ttftSec + streamingSec).toFixed(2)) : (streamingSec || ttftSec || null));
+    if (isStreaming && durationSec == null && Number.isFinite(ts)) {
+      const liveElapsed = (Date.now() - ts) / 1000;
+      if (liveElapsed > 0 && liveElapsed < 3600) durationSec = Number(liveElapsed.toFixed(1));
+    }
+    const tps = (rawCall.tps != null && Number.isFinite(Number(rawCall.tps)) && Number(rawCall.tps) > 0)
+      ? Number(Number(rawCall.tps).toFixed(1))
+      : ((outp > 0 && durationSec > 0) ? Number((outp / durationSec).toFixed(1)) : null);
+    const streamingTps = (rawCall.streamingTps != null && Number.isFinite(Number(rawCall.streamingTps)) && Number(rawCall.streamingTps) > 0)
+      ? Number(Number(rawCall.streamingTps).toFixed(1))
+      : ((outp > 0 && streamingSec != null && streamingSec >= 0.2) ? Number((outp / streamingSec).toFixed(1)) : null);
+    const totalIn = inp + cache;
+    const cacheReadPct = totalIn > 0 ? Number(((cache / totalIn) * 100).toFixed(1)) : null;
+    let isPriced = Boolean(rawCall.isPriced);
+    let costUSD = isPriced && Number.isFinite(Number(rawCall.costUSD)) ? Number(rawCall.costUSD) : null;
+    let modelKey = rawCall.modelKey || null;
+    if (!isPriced && typeof calculateRequestApiCost === 'function' && (rawCall.model || rawCall.modelExactId || modelKey) && tot > 0) {
+      const calc = calculateRequestApiCost({
+        ...rawCall,
+        inputTokens: inp,
+        cacheReadTokens: cache,
+        cacheTokens: cache,
+        outputTokens: outp,
+        totalTokens: tot
+      });
+      if (calc?.isPriced) {
+        isPriced = true;
+        costUSD = Number(calc.costUSD || 0);
+        if (!modelKey && calc.modelKey) modelKey = calc.modelKey;
+      }
+    }
+    return {
+      callId: rawCall.callId || null,
+      cascadeId: rawCall.cascadeId || state.route || null,
+      stepIndex: Number.isInteger(rawCall.stepIndex) ? rawCall.stepIndex : null,
+      timestamp: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+      created_at: rawCall.created_at || new Date(Number.isFinite(ts) && ts > 0 ? ts : Date.now()).toISOString(),
+      date: rawCall.date || formatReqLocalYmd(new Date(Number.isFinite(ts) && ts > 0 ? ts : Date.now())),
+      source: rawCall.source === 'cli' ? 'cli' : (rawCall.source === 'ide' ? 'ide' : 'desktop'),
+      agentRole: rawCall.agentRole || 'main',
+      subagentType: rawCall.subagentType || null,
+      requestedModel: (rawCall.requestedModel && !/^model_placeholder_/i.test(String(rawCall.requestedModel))) ? String(rawCall.requestedModel) : null,
+      model: rawCall.model || rawCall.modelExactId || modelKey || '',
+      modelExactId: rawCall.modelExactId || null,
+      modelKey: modelKey || (typeof normalizeModelId === 'function' ? normalizeModelId(rawCall.modelExactId || rawCall.model || '') : null),
+      modelLabel: rawCall.modelLabel || null,
+      effort: rawCall.effort || null,
+      accountScopeKey: rawCall.accountScopeKey || fallbackScopeKey || null,
+      inputTokens: inp,
+      cacheReadTokens: cache,
+      outputTokens: outp,
+      thinkingTokens: Math.max(0, Number(rawCall.thinkingTokens || 0) || 0),
+      totalTokens: tot,
+      cacheReadPct,
+      costUSD,
+      isPriced,
+      ttftSec,
+      streamingSec,
+      durationSec,
+      tps,
+      streamingTps,
+      status: isStreaming ? 'streaming' : 'final',
+      outcomeStatus: rawCall.outcomeStatus || (rawCall.error ? 'failed' : (isStreaming ? 'streaming' : 'success')),
+      error: rawCall.error ? String(rawCall.error).slice(0, 200) : null
+    };
+  }
+
+  function collectMergedRequestLogs() {
+    const byId = new Map();
+    const persisted = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentRequestLogs) ? ANTIGRAVITY_TOKEN_DATA.recentRequestLogs : [];
+    for (const r of persisted) {
+      if (!r || typeof r !== 'object') continue;
+      const k = String(r.callId || `${r.source || 'desktop'}:${r.cascadeId || ''}:${r.stepIndex ?? ''}:${r.timestamp || 0}`);
+      byId.set(k, r);
+    }
+
+    const curAcctScope = ANTIGRAVITY_TOKEN_DATA.rawPayload?.accountScopeKey || accountsUiState?.overview?.activeAccountScopeKey || null;
+    if (Array.isArray(state.sessionCalls) && state.sessionCalls.length > 0) {
+      for (const raw of state.sessionCalls) {
+        const liveRec = buildLiveCallOverlayRecord(raw, curAcctScope);
+        if (!liveRec) continue;
+        const k = String(liveRec.callId || `${liveRec.source}:${liveRec.cascadeId || ''}:${liveRec.stepIndex ?? ''}:${liveRec.timestamp}`);
+        const prev = byId.get(k);
+        if (!prev) {
+          byId.set(k, liveRec);
+        } else {
+          // 合并实时流式或更完整数据，不丢已有账号归属与计时
+          byId.set(k, {
+            ...prev,
+            ...liveRec,
+            accountScopeKey: prev.accountScopeKey || liveRec.accountScopeKey || null,
+            ttftSec: liveRec.ttftSec ?? prev.ttftSec ?? null,
+            streamingSec: liveRec.streamingSec ?? prev.streamingSec ?? null,
+            durationSec: liveRec.durationSec ?? prev.durationSec ?? null,
+            tps: liveRec.tps ?? prev.tps ?? null,
+            streamingTps: liveRec.streamingTps ?? prev.streamingTps ?? null,
+            modelKey: liveRec.modelKey || prev.modelKey || null,
+            modelExactId: liveRec.modelExactId || prev.modelExactId || null,
+            modelLabel: liveRec.modelLabel || prev.modelLabel || null
+          });
+        }
+      }
+    }
+
+    if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
+      const startedAt = Number(state.livePendingRequest.startedAtMs) || Date.now();
+      const elapsedSec = Math.max(0.1, Number(((Date.now() - startedAt) / 1000).toFixed(1)));
+      const hasNewStreaming = Array.from(byId.values()).some(
+        r => r.cascadeId === state.route && r.status === 'streaming' && r.callId !== state.livePendingRequest.baselineCallId
+      );
+      if (!hasNewStreaming) {
+        const activeModel = state.latest?.model || state.selectedModelId || '';
+        const pendingKey = `__live_pending_${state.route}_${startedAt}`;
+        byId.set(pendingKey, {
+          callId: pendingKey,
+          cascadeId: state.route,
+          stepIndex: null,
+          timestamp: startedAt,
+          created_at: new Date(startedAt).toISOString(),
+          date: formatReqLocalYmd(new Date(startedAt)),
+          source: 'desktop',
+          agentRole: 'main',
+          subagentType: null,
+          requestedModel: null,
+          model: activeModel,
+          modelExactId: activeModel || null,
+          modelKey: typeof normalizeModelId === 'function' ? normalizeModelId(activeModel) : (activeModel || null),
+          modelLabel: null,
+          effort: null,
+          accountScopeKey: curAcctScope,
+          inputTokens: null,
+          cacheReadTokens: null,
+          outputTokens: null,
+          thinkingTokens: 0,
+          totalTokens: 0,
+          cacheReadPct: null,
+          costUSD: null,
+          isPriced: false,
+          ttftSec: elapsedSec,
+          streamingSec: null,
+          durationSec: elapsedSec,
+          tps: null,
+          streamingTps: null,
+          status: 'streaming',
+          outcomeStatus: 'streaming',
+          error: null
+        });
+      }
+    }
+
+    const allRows = Array.from(byId.values()).sort((a, b) => {
+      const aStream = a.status === 'streaming' ? 1 : 0;
+      const bStream = b.status === 'streaming' ? 1 : 0;
+      if (bStream !== aStream) return bStream - aStream;
+      const ta = Number(a.timestamp) || 0;
+      const tb = Number(b.timestamp) || 0;
+      if (tb !== ta) return tb - ta;
+      return String(b.callId || '').localeCompare(String(a.callId || ''));
+    });
+
+    const filteredByScope = allRows.filter((rec) => {
+      if (activeTokenSource === 'desktop' && rec.source !== 'desktop') return false;
+      if (activeTokenSource === 'cli' && rec.source !== 'cli') return false;
+      if (activeTokenAccountFilter === 'unattributed') {
+        if (rec.accountScopeKey) return false;
+      } else if (activeTokenAccountFilter !== 'all') {
+        if (rec.accountScopeKey !== activeTokenAccountFilter) return false;
+      }
+      return true;
+    });
+
+    const filtered = filteredByScope.filter((rec) => {
+      if (reqLogStatusFilter === 'all') return true;
+      const st = resolveReqStatusInfo(rec);
+      if (reqLogStatusFilter === 'success') return !st.isError;
+      if (reqLogStatusFilter === 'error') return st.isError;
+      return true;
+    });
+
+    return { totalInScope: filteredByScope.length, rows: filtered };
+  }
+
+  function renderRequestsLiveView({ force = false } = {}) {
+    const viewEl = el('requests-live-view');
+    const tbody = el('req-live-tbody');
+    const emptyEl = el('req-live-empty');
+    const summaryEl = el('req-live-summary');
+    const moreWrap = el('req-live-more-wrap');
+    const moreBtn = el('btn-req-live-more');
+    if (!viewEl || !tbody) return;
+
+    setPillActive(el('req-filter-all'), reqLogStatusFilter === 'all');
+    setPillActive(el('req-filter-success'), reqLogStatusFilter === 'success');
+    setPillActive(el('req-filter-error'), reqLogStatusFilter === 'error');
+
+    const { totalInScope, rows } = collectMergedRequestLogs();
+    const todayStr = formatReqLocalYmd(new Date());
+    const todayCount = rows.reduce((acc, r) => acc + ((r.date === todayStr || formatReqTimeParts(r).dateKey === todayStr) ? 1 : 0), 0);
+    const limit = Math.max(20, Number(reqLogPageLimit) || 50);
+    const visible = rows.slice(0, limit);
+    const remaining = Math.max(0, rows.length - visible.length);
+
+    const pricingCat = typeof getDynamicPricingCatalog === 'function' ? getDynamicPricingCatalog() : null;
+    const sig = [
+      currentPanelLanguage,
+      activeTokenSource,
+      activeTokenAccountFilter,
+      reqLogStatusFilter,
+      limit,
+      totalInScope,
+      rows.length,
+      todayCount,
+      pricingCat?.updatedAt || '',
+      pricingCat?.modelCount || 0,
+      pricingCat?.customCount || 0,
+      visible.slice(0, 6).map(r => `${r.callId || ''}:${r.status}:${r.outcomeStatus}:${r.inputTokens}:${r.outputTokens}:${r.durationSec}:${r.costUSD}`).join(',')
+    ].join('|');
+
+    if (!force && sig === reqLogLastRenderedSig) return;
+    reqLogLastRenderedSig = sig;
+
+    if (summaryEl) {
+      summaryEl.textContent = reqLogStatusFilter === 'all'
+        ? t('reqLog.summary', { total: rows.length, today: todayCount })
+        : t('reqLog.summaryFiltered', { shown: rows.length, total: totalInScope });
+    }
+
+    tbody.replaceChildren();
+    if (!visible.length) {
+      if (emptyEl) emptyEl.style.display = 'block';
+      if (moreWrap) moreWrap.style.display = 'none';
+      return;
+    }
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    for (const rec of visible) {
+      const tr = document.createElement('tr');
+      const statusInfo = resolveReqStatusInfo(rec);
+      if (statusInfo.isStreaming) tr.className = 'is-streaming';
+
+      // 1. 时间
+      const timeInfo = formatReqTimeParts(rec);
+      const tdTime = document.createElement('td');
+      tdTime.className = 'req-td-time';
+      tdTime.textContent = timeInfo.text;
+      if (timeInfo.tooltip) tdTime.title = timeInfo.tooltip;
+      tr.appendChild(tdTime);
+
+      // 2. AGENT
+      const tdAgent = document.createElement('td');
+      const agentWrap = document.createElement('span');
+      agentWrap.className = 'req-agent-cell';
+      agentWrap.appendChild(createAntigravityAgentIcon());
+      const agentLbl = document.createElement('span');
+      agentLbl.textContent = rec.source === 'cli' ? 'Antigravity CLI' : (rec.source === 'ide' ? 'Antigravity IDE' : 'Antigravity');
+      agentWrap.appendChild(agentLbl);
+      if (rec.agentRole === 'subagent') {
+        tdAgent.title = rec.subagentType ? `${t('reqLog.tipSubagent')} (${rec.subagentType})` : t('reqLog.tipSubagent');
+      }
+      tdAgent.appendChild(agentWrap);
+      tr.appendChild(tdAgent);
+
+      // 3. 请求模型
+      const tdReqModel = document.createElement('td');
+      tdReqModel.className = rec.requestedModel ? 'req-td-model' : 'req-td-muted';
+      tdReqModel.textContent = rec.requestedModel || '—';
+      if (rec.requestedModel) tdReqModel.title = rec.requestedModel;
+      tr.appendChild(tdReqModel);
+
+      // 4. 供应商 · 账号
+      const provInfo = resolveReqProviderDisplay(rec);
+      const tdProv = document.createElement('td');
+      tdProv.className = 'req-td-provider';
+      tdProv.textContent = provInfo.text;
+      if (provInfo.tooltip) tdProv.title = provInfo.tooltip;
+      tr.appendChild(tdProv);
+
+      // 5. 实际模型
+      const modelInfo = formatReqActualModel(rec);
+      const tdModel = document.createElement('td');
+      tdModel.className = 'req-td-model';
+      tdModel.textContent = modelInfo.text;
+      if (modelInfo.tooltip) tdModel.title = modelInfo.tooltip;
+      tr.appendChild(tdModel);
+
+      // 6. 输入
+      const tdIn = document.createElement('td');
+      tdIn.className = 'req-td-num';
+      tdIn.textContent = formatReqCompactTokens(rec.inputTokens);
+      if (rec.inputTokens != null) {
+        const cacheVal = Math.max(0, Number(rec.cacheReadTokens || 0));
+        tdIn.title = t('reqLog.tipInputBreakdown', {
+          inp: fmt(rec.inputTokens),
+          cache: fmt(cacheVal),
+          total: fmt(Number(rec.inputTokens) + cacheVal)
+        });
+      }
+      tr.appendChild(tdIn);
+
+      // 7. 输出
+      const tdOut = document.createElement('td');
+      tdOut.className = 'req-td-num';
+      tdOut.textContent = formatReqCompactTokens(rec.outputTokens);
+      if (rec.outputTokens != null && rec.thinkingTokens > 0) {
+        tdOut.title = t('reqLog.tipOutputBreakdown', {
+          out: fmt(rec.outputTokens),
+          think: fmt(rec.thinkingTokens)
+        });
+      }
+      tr.appendChild(tdOut);
+
+      // 8. 缓存命中率
+      const tdCache = document.createElement('td');
+      tdCache.className = 'req-td-num';
+      tdCache.textContent = formatReqCacheHit(rec);
+      tr.appendChild(tdCache);
+
+      // 9. 费用
+      const costInfo = formatReqCost(rec);
+      const tdCost = document.createElement('td');
+      tdCost.className = `req-td-cost${costInfo.unpriced ? ' is-unpriced' : ''}`;
+      tdCost.textContent = costInfo.text;
+      if (costInfo.tooltip) tdCost.title = costInfo.tooltip;
+      tr.appendChild(tdCost);
+
+      // 10. 首字耗时
+      const tdTtft = document.createElement('td');
+      tdTtft.className = 'req-td-num';
+      tdTtft.textContent = formatReqDurationSec(rec.ttftSec);
+      tr.appendChild(tdTtft);
+
+      // 11. 耗时
+      const durTone = getReqDurationToneClass(rec.durationSec);
+      const tdDur = document.createElement('td');
+      tdDur.className = `req-td-num${durTone ? ` ${durTone}` : ''}`;
+      tdDur.textContent = formatReqDurationSec(rec.durationSec);
+      tr.appendChild(tdDur);
+
+      // 12. 速度
+      const tdSpd = document.createElement('td');
+      tdSpd.className = 'req-td-num';
+      const spdText = formatReqSpeed(rec);
+      tdSpd.textContent = spdText;
+      if (spdText === '—') tdSpd.className = 'req-td-num req-td-muted';
+      tr.appendChild(tdSpd);
+
+      // 13. 状态
+      const tdStatus = document.createElement('td');
+      const stWrap = document.createElement('span');
+      stWrap.className = `req-status-cell ${statusInfo.cls}`;
+      const stDot = document.createElement('span');
+      stDot.className = 'req-status-dot';
+      stDot.setAttribute('aria-hidden', 'true');
+      const stTxt = document.createElement('span');
+      stTxt.textContent = statusInfo.label;
+      stWrap.appendChild(stDot);
+      stWrap.appendChild(stTxt);
+      if (rec.error) tdStatus.title = rec.error;
+      tdStatus.appendChild(stWrap);
+      tr.appendChild(tdStatus);
+
+      tbody.appendChild(tr);
+    }
+
+    if (moreWrap && moreBtn) {
+      if (remaining > 0) {
+        moreWrap.style.display = 'flex';
+        moreBtn.textContent = t('reqLog.loadMore', { n: remaining });
+      } else {
+        moreWrap.style.display = 'none';
+      }
+    }
+  }
+
   function switchTokenView(v) {
     activeTokenView = v;
     // 离开 Token 统计视图时关闭订阅详情与表单
@@ -2438,8 +3022,10 @@
     setPillActive(el('tok-view-tokens'), v === 'tokens');
     setPillActive(el('tok-view-models'), v === 'models');
     setPillActive(el('tok-view-cost'), v === 'cost');
+    setPillActive(el('tok-view-requests'), v === 'requests');
     const costCard = el('cost-estimate-card');
     const modelView = el('model-usage-view');
+    const reqView = el('requests-live-view');
     const tokensMain = el('tokens-main-view');
     const statCards = el('token-stat-cards');
     const planBar = el('plan-summary-bar');
@@ -2457,6 +3043,17 @@
         renderModelUsageView();
       }
     }
+    if (reqView) {
+      reqView.style.display = v === 'requests' ? 'flex' : 'none';
+      if (v === 'requests') {
+        reqView.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+        renderRequestsLiveView({ force: true });
+        if (!lastHistorySync || (Date.now() - lastHistorySync) > 5000) {
+          lastRequestsLiveSyncAt = Date.now();
+          void syncTokenHistoryFromHost(false);
+        }
+      }
+    }
     if (tokensMain) {
       tokensMain.style.display = v === 'tokens' ? 'block' : 'none';
       if (v === 'tokens') tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
@@ -2468,24 +3065,159 @@
         ? t('tokens.titleCost')
         : v === 'models'
           ? t('tokens.titleModels')
-          : t('tokens.title');
+          : v === 'requests'
+            ? t('tokens.titleRequests')
+            : t('tokens.title');
     }
 
     if (pTokens) {
       const isCompact = v === 'cost' && !costDetailsExpanded;
+      const isWideRequests = v === 'requests';
       pTokens.classList?.toggle?.('cost-compact-view', isCompact);
-      const curCls = pTokens.getAttribute?.('class') || '';
+      pTokens.classList?.toggle?.('requests-wide-view', isWideRequests);
+      let curCls = pTokens.getAttribute?.('class') || '';
       if (isCompact) {
-        if (!curCls.includes('cost-compact-view')) pTokens.setAttribute?.('class', (curCls + ' cost-compact-view').trim());
+        if (!curCls.includes('cost-compact-view')) curCls = (curCls + ' cost-compact-view').trim();
       } else {
-        pTokens.setAttribute?.('class', curCls.replace(/\bcost-compact-view\b/g, '').trim());
+        curCls = curCls.replace(/\bcost-compact-view\b/g, '').trim();
       }
+      if (isWideRequests) {
+        if (!curCls.includes('requests-wide-view')) curCls = (curCls + ' requests-wide-view').trim();
+      } else {
+        curCls = curCls.replace(/\brequests-wide-view\b/g, '').trim();
+      }
+      pTokens.setAttribute?.('class', curCls);
     }
     positionFloatingPanels();
   }
   el('tok-view-tokens')?.addEventListener('click', () => switchTokenView('tokens'));
   el('tok-view-models')?.addEventListener('click', () => switchTokenView('models'));
   el('tok-view-cost')?.addEventListener('click', () => switchTokenView('cost'));
+  el('tok-view-requests')?.addEventListener('click', () => switchTokenView('requests'));
+  el('req-filter-all')?.addEventListener('click', () => { reqLogStatusFilter = 'all'; reqLogPageLimit = 50; renderRequestsLiveView({ force: true }); });
+  el('req-filter-success')?.addEventListener('click', () => { reqLogStatusFilter = 'success'; reqLogPageLimit = 50; renderRequestsLiveView({ force: true }); });
+  el('req-filter-error')?.addEventListener('click', () => { reqLogStatusFilter = 'error'; reqLogPageLimit = 50; renderRequestsLiveView({ force: true }); });
+  el('btn-req-live-more')?.addEventListener('click', () => { reqLogPageLimit = (Number(reqLogPageLimit) || 50) + 50; renderRequestsLiveView({ force: true }); });
+  let pricingSyncBusy = false;
+  let pricingSyncNoteState = null;
+  let pricingSyncNoteTimer = null;
+  earlyDisposeHooks.push(() => {
+    if (pricingSyncNoteTimer) {
+      clearTimeout(pricingSyncNoteTimer);
+      pricingSyncNoteTimer = null;
+    }
+  });
+
+  function formatPricingSyncShortTime(isoStr) {
+    if (!isoStr) return '';
+    const ts = Date.parse(isoStr);
+    if (!Number.isFinite(ts)) return '';
+    const d = new Date(ts);
+    const pad2 = n => String(n).padStart(2, '0');
+    return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+
+  function updatePricingSyncButtonTooltip(cat = null) {
+    const info = cat || (typeof getDynamicPricingCatalog === 'function' ? getDynamicPricingCatalog() : null);
+    const hasSynced = Boolean(info && Number(info.modelCount) > 0 && info.updatedAt);
+    const tip = hasSynced
+      ? t('reqLog.syncPricingTitleUpdated', {
+        count: Number(info.modelCount) || 0,
+        sources: Array.isArray(info.sources) && info.sources.length ? info.sources.join(' + ') : 'models.dev',
+        time: formatPricingSyncShortTime(info.updatedAt)
+      })
+      : t('reqLog.syncPricingTitle');
+    for (const id of ['btn-req-sync-pricing', 'btn-cost-sync-pricing']) {
+      const btn = el(id);
+      if (btn) btn.title = tip;
+    }
+  }
+
+  function renderPricingSyncUiState() {
+    for (const id of ['btn-req-sync-pricing', 'btn-cost-sync-pricing']) {
+      const btn = el(id);
+      if (!btn) continue;
+      btn.disabled = pricingSyncBusy;
+      btn.textContent = pricingSyncBusy ? t('reqLog.syncingPricing') : t('reqLog.syncPricing');
+    }
+    for (const id of ['req-pricing-sync-note', 'cost-pricing-sync-note']) {
+      const noteEl = el(id);
+      if (!noteEl) continue;
+      const baseCls = id === 'req-pricing-sync-note' ? 'req-pricing-sync-note' : 'cost-pricing-sync-note';
+      if (!pricingSyncNoteState || !pricingSyncNoteState.text) {
+        noteEl.style.display = 'none';
+        noteEl.textContent = '';
+        noteEl.className = baseCls;
+      } else {
+        noteEl.style.display = id === 'req-pricing-sync-note' ? 'inline-flex' : 'block';
+        noteEl.textContent = pricingSyncNoteState.text;
+        const toneCls = pricingSyncNoteState.kind === 'err' ? ' is-err' : (pricingSyncNoteState.kind === 'ok' ? ' is-ok' : '');
+        noteEl.className = `${baseCls}${toneCls}`;
+      }
+    }
+    updatePricingSyncButtonTooltip();
+  }
+
+  async function triggerSyncPricingCatalog(opts = {}) {
+    if (pricingSyncBusy) return { ok: false, busy: true };
+    pricingSyncBusy = true;
+    if (pricingSyncNoteTimer) {
+      clearTimeout(pricingSyncNoteTimer);
+      pricingSyncNoteTimer = null;
+    }
+    pricingSyncNoteState = { kind: 'busy', text: t('reqLog.syncingPricing') };
+    renderPricingSyncUiState();
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: typeof window?.contextMeterAPI?.syncPricing === 'function'
+          ? () => window.contextMeterAPI.syncPricing({ force: opts.force !== false })
+          : null,
+        liveRoute: '/sync-pricing',
+        liveBody: { force: opts.force !== false },
+        liveFetchOpts: { timeoutMs: 20000 }
+      });
+      const res = out?.result || null;
+      if (res && res.ok) {
+        const count = Number(res.modelCount) || 0;
+        const repriced = Number(res.repricedCount) || 0;
+        pricingSyncNoteState = {
+          kind: 'ok',
+          text: repriced > 0
+            ? t('reqLog.syncPricingDoneRepriced', { count, repriced })
+            : t('reqLog.syncPricingDone', { count })
+        };
+        await syncTokenHistoryFromHost(true);
+        renderRequestsLiveView({ force: true });
+        pricingSyncNoteTimer = setTimeout(() => {
+          pricingSyncNoteState = null;
+          renderPricingSyncUiState();
+        }, 8000);
+        return res;
+      }
+      const errMsg = res?.error || 'network_error';
+      pricingSyncNoteState = { kind: 'err', text: t('reqLog.syncPricingFailed', { error: errMsg }) };
+      return { ok: false, error: errMsg };
+    } catch (err) {
+      const errMsg = err?.message || String(err || 'network_error');
+      pricingSyncNoteState = { kind: 'err', text: t('reqLog.syncPricingFailed', { error: errMsg }) };
+      return { ok: false, error: errMsg };
+    } finally {
+      pricingSyncBusy = false;
+      renderPricingSyncUiState();
+    }
+  }
+
+  el('btn-req-sync-pricing')?.addEventListener('click', () => {
+    void triggerSyncPricingCatalog({ force: true });
+  });
+  el('btn-cost-sync-pricing')?.addEventListener('click', () => {
+    void triggerSyncPricingCatalog({ force: true });
+  });
+  el('btn-req-live-refresh')?.addEventListener('click', () => {
+    lastRequestsLiveSyncAt = Date.now();
+    renderRequestsLiveView({ force: true });
+    void syncTokenHistoryFromHost(true);
+  });
   el('model-period-7d')?.addEventListener('click', () => {
     modelUsagePeriodDays = 7;
     modelUsageOffsetDays = 0;
@@ -7227,6 +7959,16 @@
       if (typeof applyTokenHistoryPayload === 'function' && basePayload) {
         applyTokenHistoryPayload(basePayload);
       }
+      if (typeof renderRequestsLiveView === 'function') {
+        renderRequestsLiveView({ force: true });
+      }
+      if (typeof renderPricingSyncUiState === 'function') {
+        renderPricingSyncUiState();
+      }
+      const titleTokens = el('panel-tokens-title');
+      if (titleTokens && activeTokenView === 'requests') {
+        titleTokens.textContent = t('tokens.titleRequests');
+      }
     } catch { }
 
     if (persist) {
@@ -9609,6 +10351,15 @@
 
   function applyTokenHistoryPayload(payload) {
     if (!payload || typeof payload !== 'object') return false;
+    if (payload.dynamicPricingCatalog && typeof payload.dynamicPricingCatalog === 'object') {
+      if (typeof setDynamicPricingCatalog === 'function') {
+        setDynamicPricingCatalog(payload.dynamicPricingCatalog);
+      }
+      if (payload.dynamicPricingCatalog.customModels && typeof setCustomPricingCatalog === 'function') {
+        setCustomPricingCatalog(payload.dynamicPricingCatalog.customModels);
+      }
+      updatePricingSyncButtonTooltip(payload.dynamicPricingCatalog);
+    }
     const incomingScope = payload.accountScopeKey || (payload.planStatus?.email ? String(payload.planStatus.email).trim().toLowerCase() : null);
     if (payload.isAccountSwitched || (incomingScope && typeof handleQuotaAccountSwitch === 'function' && handleQuotaAccountSwitch(incomingScope))) {
       if (typeof handleQuotaAccountSwitch === 'function') handleQuotaAccountSwitch(incomingScope || null, { forceRefresh: true });
@@ -9619,10 +10370,14 @@
 
     if (payload.isAccountSwitched) {
       ANTIGRAVITY_TOKEN_DATA.recentModelUsage = [];
+      ANTIGRAVITY_TOKEN_DATA.recentRequestLogs = [];
       ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs = null;
     }
     if (Object.prototype.hasOwnProperty.call(payload, 'quotaUsageCoverageStartMs')) {
       ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs = payload.quotaUsageCoverageStartMs ?? null;
+    }
+    if (Array.isArray(payload.recentRequestLogs)) {
+      ANTIGRAVITY_TOKEN_DATA.recentRequestLogs = payload.recentRequestLogs;
     }
     if (Array.isArray(payload.recentModelUsage)) {
       ANTIGRAVITY_TOKEN_DATA.recentModelUsage = payload.recentModelUsage;
@@ -9662,7 +10417,8 @@
       Object.values(payload.dailyMapBySource).some(m => m && typeof m === 'object' && Object.keys(m).length > 0)
     );
     const hasIncomingRefCost = Boolean(payload.referenceCost?.currentMonth?.totalCostUSD || payload.referenceCost?.all?.totalCostUSD);
-    const hasIncomingPayloadContent = incomingKeys.length > 0 || hasIncomingBySourceData || incomingTotal > 0 || hasIncomingRefCost;
+    const hasIncomingReqLogs = Array.isArray(payload.recentRequestLogs) && payload.recentRequestLogs.length > 0;
+    const hasIncomingPayloadContent = incomingKeys.length > 0 || hasIncomingBySourceData || incomingTotal > 0 || hasIncomingRefCost || hasIncomingReqLogs;
     if (hasExistingData && !hasIncomingPayloadContent && !payload.isAccountSwitched && !payload.forceReset) {
       return false;
     }
@@ -10086,6 +10842,7 @@
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
     renderActiveCostEstimateView();
     renderModelUsageView();
+    renderRequestsLiveView({ force: true });
 
     computeTimelineWindow();
     renderActiveHeatView(true);
@@ -12656,6 +13413,9 @@
       }
       state.requestAt = Date.now(); state.requestError = '';
       if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
+      if (activeTokenView === 'requests' && el('panel-tokens') && !el('panel-tokens').hidden) {
+        renderRequestsLiveView();
+      }
     } catch (e) { if (generation === state.generation && !state.disposed) state.requestError = e.name === 'AbortError' ? '读取超时' : e.message; }
     finally {
       clearTimeout(timeout);
@@ -15254,6 +16014,16 @@
     if (quotaTickCounter === 0 && el('panel-quota') && !el('panel-quota').hidden) {
       renderQuotaBoard(Date.now());
     }
+    if (quotaTickCounter === 0 && activeTokenView === 'requests' && el('panel-tokens') && !el('panel-tokens').hidden) {
+      const hasLiveStreaming = Boolean(state.livePendingRequest) || Boolean(state.sessionCalls?.some(c => c?.status === 'streaming'));
+      if (hasLiveStreaming) {
+        renderRequestsLiveView({ force: true });
+      }
+      if (!document.hidden && !historySyncBusy && (Date.now() - Math.max(lastHistorySync, lastRequestsLiveSyncAt)) > 6000) {
+        lastRequestsLiveSyncAt = Date.now();
+        void syncTokenHistoryFromHost(true);
+      }
+    }
   }
 
   const timer = setInterval(tick, 500);
@@ -15486,6 +16256,7 @@
     setCurrency: val => applyDirectCurrencySelection(val),
     restoreSettingsFromHost,
     syncTokenHistoryFromHost,
+    syncPricingCatalog: opts => triggerSyncPricingCatalog(opts),
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,
     getTimelineWindow: () => {
@@ -15757,6 +16528,31 @@
       setScaleMode: (m) => { modelUsageScaleMode = m === 'linear' ? 'linear' : 'mixed'; renderModelUsageView(); },
       setLockedKey: (k) => { modelUsageLockedKey = k || null; renderModelUsageView(); }
     }),
+    getRequestsViewStateForTest: () => {
+      const tbody = el('req-live-tbody');
+      const pTokens = el('panel-tokens');
+      const clsStr = pTokens?.getAttribute?.('class') || '';
+      const rowNodes = Array.from(tbody?.children || []);
+      const readNodeText = (node) => {
+        if (!node) return '';
+        const kids = Array.isArray(node.children) ? node.children : (node.children ? Array.from(node.children) : []);
+        if (kids.length > 0 && !node.textContent) {
+          return kids.map(readNodeText).join('').trim();
+        }
+        return String(node.textContent || '').trim();
+      };
+      return {
+        activeView: activeTokenView,
+        wideClass: Boolean(pTokens?.classList?.contains?.('requests-wide-view') || clsStr.includes('requests-wide-view')),
+        filterStatus: reqLogStatusFilter,
+        summaryText: el('req-live-summary')?.textContent || '',
+        emptyVisible: el('req-live-empty')?.style?.display === 'block',
+        moreVisible: el('req-live-more-wrap')?.style?.display === 'flex',
+        rowCount: rowNodes.length,
+        rows: rowNodes.map(tr => Array.from(tr.children || []).map(readNodeText))
+      };
+    },
+    switchTokenViewForTest: (v) => switchTokenView(v),
     getCumulativeViewStateForTest: () => ({
       summary: _lastCumSummary,
       lockedKey: cumLockedKey,

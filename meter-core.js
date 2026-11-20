@@ -838,6 +838,13 @@
         cacheReadPerMillion: 0.075
       }
     ],
+    'gemini-4-neon': [
+      {
+        inputPerMillion: 3.00,
+        outputPerMillion: 15.00,
+        cacheReadPerMillion: 0.15
+      }
+    ],
     'gemini-4-carbon': [
       {
         effectiveTo: '2026-11-30',
@@ -917,18 +924,344 @@
     ]
   };
 
+  // 运行时动态价格目录（由 models.dev / LiteLLM 自动同步填充）与用户自定义覆写表
+  let DYNAMIC_PRICING_TABLE = Object.create(null);
+  let CUSTOM_PRICING_TABLE = Object.create(null);
+  let DYNAMIC_PRICING_META = {
+    updatedAt: null,
+    fetchedAtMs: 0,
+    sources: [],
+    modelCount: 0,
+    customCount: 0
+  };
+
+  function roundPricingNum(val) {
+    const n = Number(val);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Number(n.toFixed(6));
+  }
+
+  function normalizePricingRuleList(rawRules) {
+    const list = Array.isArray(rawRules) ? rawRules : (rawRules && typeof rawRules === 'object' ? [rawRules] : []);
+    const out = [];
+    for (const r of list) {
+      if (!r || typeof r !== 'object') continue;
+      const inp = roundPricingNum(r.inputPerMillion ?? r.input);
+      const outp = roundPricingNum(r.outputPerMillion ?? r.output);
+      if (inp === null || outp === null) continue;
+      const rawCache = r.cacheReadPerMillion ?? r.cacheRead ?? r.cache_read;
+      const cacheRead = rawCache != null ? roundPricingNum(rawCache) : 0;
+      const rule = {
+        inputPerMillion: inp,
+        outputPerMillion: outp,
+        cacheReadPerMillion: cacheRead !== null ? cacheRead : 0
+      };
+      if (rawCache == null) rule._cacheMissing = true;
+      if (Number.isFinite(Number(r.minPromptTokens)) && Number(r.minPromptTokens) > 0) {
+        rule.minPromptTokens = Number(r.minPromptTokens);
+      }
+      if (Number.isFinite(Number(r.maxPromptTokens)) && Number(r.maxPromptTokens) > 0) {
+        rule.maxPromptTokens = Number(r.maxPromptTokens);
+      }
+      if (typeof r.effectiveFrom === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.effectiveFrom)) {
+        rule.effectiveFrom = r.effectiveFrom;
+      }
+      if (typeof r.effectiveTo === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.effectiveTo)) {
+        rule.effectiveTo = r.effectiveTo;
+      }
+      out.push(rule);
+    }
+    return out;
+  }
+
+  function sanitizeDynamicCatalogKey(rawKey) {
+    if (!rawKey || typeof rawKey !== 'string') return '';
+    let s = rawKey.trim().toLowerCase();
+    // 剥离尾部括号档位/思考标记，例如 "Gemini 4 Neon (XHigh)" -> "gemini 4 neon"
+    s = s.replace(/\s*\((?:low|medium|high|xhigh|minimal|thinking|extended|preview)\)\s*$/i, '').trim();
+    // 剥离常见厂商/路由前缀
+    s = s.replace(/^(?:models|google|gemini|vertex_ai|vertex|google-vertex|anthropic|openai|xai|deepseek|mistral|alibaba|qwen|zhipu|moonshotai)\//i, '');
+    s = s.replace(/^model_/, '');
+    s = s.replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    if (!s || s.length > 120 || s.startsWith('placeholder-') || s.includes(':')) return '';
+    return s;
+  }
+
+  function parseModelsDevPricingCatalog(rawJson) {
+    const models = Object.create(null);
+    if (!rawJson || typeof rawJson !== 'object') return models;
+    const providerOrder = ['google', 'anthropic', 'openai', 'xai', 'deepseek', 'mistral', 'qwen', 'alibaba', 'moonshotai', 'zhipu', 'google-vertex'];
+    for (const provKey of providerOrder) {
+      const prov = rawJson[provKey];
+      const provModels = prov && typeof prov === 'object' ? prov.models : null;
+      if (!provModels || typeof provModels !== 'object') continue;
+      for (const [mId, item] of Object.entries(provModels)) {
+        if (!item || typeof item !== 'object' || !item.cost || typeof item.cost !== 'object') continue;
+        const key = sanitizeDynamicCatalogKey(item.id || mId);
+        if (!key) continue;
+        const baseIn = roundPricingNum(item.cost.input);
+        const baseOut = roundPricingNum(item.cost.output);
+        if (baseIn === null || baseOut === null) continue;
+        const hasCache = item.cost.cache_read != null && roundPricingNum(item.cost.cache_read) !== null;
+        const baseCache = hasCache ? roundPricingNum(item.cost.cache_read) : 0;
+        const rules = [];
+        const over200 = item.cost.context_over_200k;
+        if (over200 && typeof over200 === 'object' && roundPricingNum(over200.input) !== null && roundPricingNum(over200.output) !== null) {
+          rules.push({
+            maxPromptTokens: 200000,
+            inputPerMillion: baseIn,
+            outputPerMillion: baseOut,
+            cacheReadPerMillion: baseCache,
+            ...(hasCache ? {} : { _cacheMissing: true })
+          });
+          const hiCache = over200.cache_read != null ? roundPricingNum(over200.cache_read) : baseCache;
+          rules.push({
+            minPromptTokens: 200001,
+            inputPerMillion: roundPricingNum(over200.input),
+            outputPerMillion: roundPricingNum(over200.output),
+            cacheReadPerMillion: hiCache !== null ? hiCache : 0
+          });
+        } else {
+          rules.push({
+            inputPerMillion: baseIn,
+            outputPerMillion: baseOut,
+            cacheReadPerMillion: baseCache,
+            ...(hasCache ? {} : { _cacheMissing: true })
+          });
+        }
+        if (!models[key]) {
+          models[key] = rules;
+        } else if (models[key][0]?._cacheMissing && hasCache) {
+          models[key] = rules;
+        }
+      }
+    }
+    return models;
+  }
+
+  function parseLiteLlmPricingCatalog(rawJson) {
+    const models = Object.create(null);
+    if (!rawJson || typeof rawJson !== 'object') return models;
+    const providerRank = (prov, rawKey) => {
+      const p = String(prov || '').toLowerCase();
+      if (p === 'gemini' || rawKey.startsWith('gemini/')) return 1;
+      if (p === 'anthropic' || rawKey.startsWith('anthropic/')) return 2;
+      if (p === 'openai' || rawKey.startsWith('openai/')) return 3;
+      if (p === 'xai' || p === 'deepseek' || p === 'mistral') return 4;
+      if (p === 'vertex_ai-language-models' || p === 'vertex_ai' || rawKey.startsWith('vertex_ai/')) return 5;
+      return 99;
+    };
+    const chosenRank = Object.create(null);
+    for (const [rawKey, item] of Object.entries(rawJson)) {
+      if (!item || typeof item !== 'object' || rawKey === 'sample_spec') continue;
+      if (item.mode && item.mode !== 'chat' && item.mode !== 'completion' && item.mode !== 'responses') continue;
+      if (/(?:^ft:|:batch|:flex|:priority|\/batch$|\/flex$)/i.test(rawKey)) continue;
+      const rank = providerRank(item.litellm_provider, rawKey);
+      if (rank >= 99) continue;
+      const key = sanitizeDynamicCatalogKey(rawKey);
+      if (!key) continue;
+      const inpTok = Number(item.input_cost_per_token);
+      const outTok = Number(item.output_cost_per_token);
+      if (!Number.isFinite(inpTok) || inpTok < 0 || !Number.isFinite(outTok) || outTok < 0) continue;
+      const inpM = roundPricingNum(inpTok * 1e6);
+      const outM = roundPricingNum(outTok * 1e6);
+      const rawCacheTok = item.cache_read_input_token_cost;
+      const hasCache = rawCacheTok != null && Number.isFinite(Number(rawCacheTok)) && Number(rawCacheTok) >= 0;
+      const cacheM = hasCache ? roundPricingNum(Number(rawCacheTok) * 1e6) : 0;
+
+      const hiInTok = Number(item.input_cost_per_token_above_200k_tokens);
+      const hiOutTok = Number(item.output_cost_per_token_above_200k_tokens);
+      const hasOver200 = Number.isFinite(hiInTok) && hiInTok >= 0 && Number.isFinite(hiOutTok) && hiOutTok >= 0;
+      const rules = [];
+      if (hasOver200) {
+        const hiCacheTok = Number(item.cache_read_input_token_cost_above_200k_tokens);
+        const hiCacheM = (Number.isFinite(hiCacheTok) && hiCacheTok >= 0) ? roundPricingNum(hiCacheTok * 1e6) : cacheM;
+        rules.push({
+          maxPromptTokens: 200000,
+          inputPerMillion: inpM,
+          outputPerMillion: outM,
+          cacheReadPerMillion: cacheM,
+          ...(hasCache ? {} : { _cacheMissing: true })
+        });
+        rules.push({
+          minPromptTokens: 200001,
+          inputPerMillion: roundPricingNum(hiInTok * 1e6),
+          outputPerMillion: roundPricingNum(hiOutTok * 1e6),
+          cacheReadPerMillion: hiCacheM
+        });
+      } else {
+        rules.push({
+          inputPerMillion: inpM,
+          outputPerMillion: outM,
+          cacheReadPerMillion: cacheM,
+          ...(hasCache ? {} : { _cacheMissing: true })
+        });
+      }
+      const prevRank = chosenRank[key];
+      const shouldReplace = prevRank === undefined
+        || rank < prevRank
+        || (rank === prevRank && models[key]?.[0]?._cacheMissing && hasCache)
+        || (rank === prevRank && rules.length > (models[key]?.length || 0));
+      if (shouldReplace) {
+        chosenRank[key] = rank;
+        models[key] = rules;
+      }
+    }
+    return models;
+  }
+
+  function mergePricingCatalogs(...catalogs) {
+    const merged = Object.create(null);
+    for (const cat of catalogs) {
+      if (!cat || typeof cat !== 'object') continue;
+      const map = (cat.models && typeof cat.models === 'object') ? cat.models : cat;
+      for (const [rawKey, rawRules] of Object.entries(map)) {
+        const key = sanitizeDynamicCatalogKey(rawKey);
+        if (!key) continue;
+        const rules = normalizePricingRuleList(rawRules);
+        if (!rules.length) continue;
+        if (!merged[key]) {
+          merged[key] = rules;
+        } else {
+          // 若主源缺 cache_read 或缺 200K 阶梯而备源更完整，则定向补齐
+          const existing = merged[key];
+          if (existing[0]?._cacheMissing && !rules[0]?._cacheMissing) {
+            merged[key] = existing.map((er, idx) => {
+              const fb = rules[idx] || rules[0];
+              if (!er._cacheMissing || !fb) return er;
+              const copy = { ...er, cacheReadPerMillion: fb.cacheReadPerMillion };
+              delete copy._cacheMissing;
+              return copy;
+            });
+          } else if (existing.length === 1 && rules.length > 1 && existing[0].inputPerMillion === rules[0].inputPerMillion) {
+            merged[key] = rules;
+          }
+        }
+      }
+    }
+    // 清理内部临时标记
+    const clean = Object.create(null);
+    for (const [k, list] of Object.entries(merged)) {
+      clean[k] = list.map((r) => {
+        const { _cacheMissing, ...rest } = r;
+        return rest;
+      });
+    }
+    return clean;
+  }
+
+  function setDynamicPricingCatalog(catalog) {
+    const next = Object.create(null);
+    let count = 0;
+    const rawModels = catalog && typeof catalog === 'object'
+      ? (catalog.models && typeof catalog.models === 'object' ? catalog.models : (!Array.isArray(catalog) && !catalog.updatedAt && !catalog.sources ? catalog : {}))
+      : {};
+    for (const [rawKey, rawRules] of Object.entries(rawModels)) {
+      const key = sanitizeDynamicCatalogKey(rawKey);
+      if (!key) continue;
+      const rules = normalizePricingRuleList(rawRules).map(({ _cacheMissing, ...rest }) => rest);
+      if (!rules.length) continue;
+      next[key] = rules;
+      count++;
+    }
+    DYNAMIC_PRICING_TABLE = next;
+    DYNAMIC_PRICING_META = {
+      updatedAt: catalog?.updatedAt || null,
+      fetchedAtMs: Number(catalog?.fetchedAtMs) || 0,
+      sources: Array.isArray(catalog?.sources) ? catalog.sources.filter(Boolean).map(String) : [],
+      modelCount: count,
+      customCount: Object.keys(CUSTOM_PRICING_TABLE).length
+    };
+    if (typeof clearDailyCostCache === 'function') clearDailyCostCache();
+    return { ...DYNAMIC_PRICING_META };
+  }
+
+  function setCustomPricingCatalog(customMap) {
+    const next = Object.create(null);
+    let count = 0;
+    const rawModels = customMap && typeof customMap === 'object'
+      ? (customMap.models && typeof customMap.models === 'object' ? customMap.models : customMap)
+      : {};
+    for (const [rawKey, rawRules] of Object.entries(rawModels)) {
+      const key = sanitizeDynamicCatalogKey(rawKey);
+      if (!key) continue;
+      const rules = normalizePricingRuleList(rawRules).map(({ _cacheMissing, ...rest }) => rest);
+      if (!rules.length) continue;
+      next[key] = rules;
+      count++;
+    }
+    CUSTOM_PRICING_TABLE = next;
+    DYNAMIC_PRICING_META.customCount = count;
+    if (typeof clearDailyCostCache === 'function') clearDailyCostCache();
+    return count;
+  }
+
+  function getDynamicPricingCatalog() {
+    const models = {};
+    for (const [k, v] of Object.entries(DYNAMIC_PRICING_TABLE)) {
+      models[k] = v.map(r => ({ ...r }));
+    }
+    const customModels = {};
+    for (const [k, v] of Object.entries(CUSTOM_PRICING_TABLE)) {
+      customModels[k] = v.map(r => ({ ...r }));
+    }
+    return {
+      ...DYNAMIC_PRICING_META,
+      models,
+      customModels
+    };
+  }
+
+  function lookupDynamicModelKey(raw) {
+    const hasCustom = Object.keys(CUSTOM_PRICING_TABLE).length > 0;
+    const hasDynamic = Object.keys(DYNAMIC_PRICING_TABLE).length > 0;
+    if (!hasCustom && !hasDynamic) return null;
+    const base = sanitizeDynamicCatalogKey(raw);
+    if (!base) return null;
+    const candidates = [base];
+    const pushUnique = (v) => { if (v && !candidates.includes(v)) candidates.push(v); };
+    // 尝试点号与连字符互换（如 claude-sonnet-4.6 <-> claude-sonnet-4-6）
+    if (base.includes('.')) pushUnique(base.replace(/\./g, '-'));
+    if (/(?:^|-)(\d+)-(\d+)(?=-|$)/.test(base)) pushUnique(base.replace(/(\d+)-(\d+)/g, '$1.$2'));
+    // 尝试剥离尾部档位词或 8 位日期后缀 / -latest / -preview（绝不剥离独立补丁版本号如 -5-5-1）
+    for (const c of [...candidates]) {
+      pushUnique(c.replace(/-(?:low|medium|high|xhigh|minimal|thinking)$/i, ''));
+      pushUnique(c.replace(/-\d{8}$/, ''));
+      pushUnique(c.replace(/-(?:latest|preview)$/i, ''));
+    }
+    for (const cand of candidates) {
+      if (CUSTOM_PRICING_TABLE[cand]) return cand;
+    }
+    for (const cand of candidates) {
+      if (DYNAMIC_PRICING_TABLE[cand]) return cand;
+    }
+    return null;
+  }
+
+  function getEffectivePricingRules(modelKey) {
+    if (!modelKey) return null;
+    return CUSTOM_PRICING_TABLE[modelKey] || GEMINI_PRICING_TABLE[modelKey] || DYNAMIC_PRICING_TABLE[modelKey] || null;
+  }
+
   function extractModelString(req) {
     if (!req) return '';
     if (typeof req === 'string') return req;
     const cm = req.chatModel;
-    return cm?.modelDisplayName || cm?.responseModel || cm?.model || req.modelDisplayName || req.responseModel || req.model || req.chatModel || req.modelId || '';
+    return cm?.modelDisplayName || cm?.responseModel || cm?.model || req.modelDisplayName || req.responseModel || req.model || req.chatModel || req.modelId || req.modelExactId || '';
   }
 
   function normalizeModelId(raw) {
     if (!raw || typeof raw !== 'string') return null;
     const str = raw.trim().toLowerCase();
+    // 优先命中自定义覆写表中的精确模型名
+    const customHit = Object.keys(CUSTOM_PRICING_TABLE).length > 0 ? (() => {
+      const cleaned = sanitizeDynamicCatalogKey(raw);
+      return cleaned && CUSTOM_PRICING_TABLE[cleaned] ? cleaned : null;
+    })() : null;
+    if (customHit) return customHit;
     if (str.includes('3.8-flash') || str.includes('3.8 flash') || str.includes('flash-n')) return 'gemini-3.8-flash';
     if (str.includes('4-hydrogen') || str.includes('4 hydrogen') || str.includes('hydrogen')) return 'gemini-4-hydrogen';
+    if (str.includes('4-neon') || str.includes('4 neon') || /\bneon\b/.test(str)) return 'gemini-4-neon';
     // 注：2.32.1 客户端已将 gemini-pro-orchestrator 明确归为 Orchestrator (Argon)，仅明确的 carbon / m670 归为 gemini-4-carbon；未知 orchestrator 后缀保持未计价
     if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || str.includes('m670')) return 'gemini-4-carbon';
     if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?$/.test(str) || str.includes('m668')) return 'gemini-4-argon';
@@ -937,7 +1270,7 @@
     if (str.includes('2.5-pro') || str.includes('2.5 pro')) return 'gemini-2.5-pro';
     if (/(?:opus[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]opus)/.test(str)) return 'claude-opus-5-5';
     if (/(?:sonnet[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]sonnet)/.test(str)) return 'claude-sonnet-5-5';
-    return null;
+    return lookupDynamicModelKey(raw);
   }
 
   /**
@@ -1465,7 +1798,8 @@
     if (!req) return { costUSD: null, isPriced: false, reason: '缺失请求数据' };
     const rawModel = extractModelString(req);
     const modelKey = normalizeModelId(rawModel);
-    if (!modelKey || !GEMINI_PRICING_TABLE[modelKey]) {
+    const tierRules = getEffectivePricingRules(modelKey);
+    if (!modelKey || !tierRules || !tierRules.length) {
       return { costUSD: null, isPriced: false, modelKey: null, rawModel, reason: !rawModel ? '缺模型名称' : '未知模型或无官方公开费率' };
     }
     const input = Number(req.inputTokens ?? req.input_tokens ?? req.input ?? 0);
@@ -1493,7 +1827,6 @@
       }
       return d;
     })();
-    const tierRules = GEMINI_PRICING_TABLE[modelKey];
     let matchedTier = null;
 
     for (const rule of tierRules) {
@@ -1975,7 +2308,7 @@
     const hasBreakdown = (input + cache + output) > 0;
 
     const normKey = normalizeModelId(modelKey) || 'gemini-3.8-flash';
-    const tierRules = GEMINI_PRICING_TABLE[normKey] || GEMINI_PRICING_TABLE['gemini-3.8-flash'];
+    const tierRules = getEffectivePricingRules(normKey) || GEMINI_PRICING_TABLE['gemini-3.8-flash'];
     const reqDate = options.pricingDate ? String(options.pricingDate).slice(0, 10) : '2026-11-08';
     let matchedTier = tierRules[0];
     for (const rule of tierRules) {
@@ -7047,6 +7380,13 @@
     analyzeSteps,
     parseDurationSec,
     GEMINI_PRICING_TABLE,
+    setDynamicPricingCatalog,
+    setCustomPricingCatalog,
+    getDynamicPricingCatalog,
+    parseModelsDevPricingCatalog,
+    parseLiteLlmPricingCatalog,
+    mergePricingCatalogs,
+    getEffectivePricingRules,
     SUBSCRIPTION_ACQUISITION_PRESETS,
     SUBSCRIPTION_REGIONS_PRESET,
     findRegionPreset,
