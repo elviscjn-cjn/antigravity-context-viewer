@@ -1330,6 +1330,7 @@ function pruneExcessSpeedSamples(draftCalls, limit = MAX_SPEED_SAMPLES_PER_MODEL
       delete copy.streamingSec;
       delete copy.durationSec;
       delete copy.tps;
+      delete copy.streamingTps;
       delete copy.origin;
       draftCalls[entries[i].callId] = copy;
       pruned = true;
@@ -4803,6 +4804,9 @@ function getDbFileCacheSig(dbPath) {
     } catch { }
     return {
       sig: `${stDb.size}:${stDb.mtimeMs}:${hasWal ? 1 : 0}:${walSize}:${walMtimeMs}:${hasShm ? 1 : 0}`,
+      dbSize: stDb.size || 0,
+      dbMtimeMs: stDb.mtimeMs || 0,
+      walMtimeMs,
       hasWal,
       walSize,
       hasShm
@@ -4847,12 +4851,22 @@ function loadConversationDbMeta(dbPath, selfCascadeId = '') {
     return cached.value;
   }
 
+  // 0 字节文件代表宿主正创建/初始化 SQLite 头部，跳过读取以零干扰避开建库锁竞争
+  if (!sigInfo.dbSize) {
+    return { ...emptyResult, readMode: 'skipped', skippedReason: 'initializing_empty_db' };
+  }
+
   let targetUri = null;
   let readMode = 'immutable';
   if (!sigInfo.hasWal || sigInfo.walSize === 0) {
     targetUri = buildSqliteImmutableUri(dbPath);
     readMode = 'immutable';
   } else if (sigInfo.hasShm) {
+    // 生产环境下若超小新库在 1.5s 内刚创建且处于 WAL 写入中，延后一轮待建表稳态再读，避免 mode=ro 共享锁撞上 schema init
+    const newestWriteMs = Math.max(sigInfo.dbMtimeMs || 0, sigInfo.walMtimeMs || 0);
+    if (!process.env.NODE_TEST_CONTEXT && sigInfo.dbSize < 65536 && newestWriteMs > 0 && (Date.now() - newestWriteMs) < 1500) {
+      return { ...emptyResult, readMode: 'skipped', skippedReason: 'initializing_recent_wal_db' };
+    }
     targetUri = buildSqliteModeRoUri(dbPath);
     readMode = 'mode_ro_wal';
   } else {
@@ -5876,14 +5890,38 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     return cIsFallback || rIsFallback;
   };
 
+  // 统计账本中每个准确模型测速样本的时间下界（最多保留 MAX_SPEED_SAMPLES_PER_MODEL 条），避免老记录在被裁剪后每轮扫描反复触发无效写盘
+  const speedLimitPerModel = MAX_SPEED_SAMPLES_PER_MODEL || 200;
+  const speedSampleMinTsByModel = new Map();
+  {
+    const buckets = new Map();
+    for (const rec of Object.values(initialCallsMap)) {
+      if (!rec || !hasSpeedMetrics(rec)) continue;
+      const exactKey = String(rec.modelExactId || resolveStableModelId(rec) || rec.model || '').trim().toLowerCase();
+      if (!exactKey) continue;
+      if (!buckets.has(exactKey)) buckets.set(exactKey, []);
+      buckets.get(exactKey).push(getCallSortTimestamp(rec));
+    }
+    for (const [mKey, tsList] of buckets.entries()) {
+      if (tsList.length >= speedLimitPerModel) {
+        tsList.sort((a, b) => b - a);
+        speedSampleMinTsByModel.set(mKey, tsList[speedLimitPerModel - 1] || 0);
+      }
+    }
+  }
+
   const ledgerEnrichmentCalls = [];
   const inMemoryEnrichments = new Map();
+  const matchedReqByCallKey = new Map();
 
   const applyTranscriptMatch = (ledgerKey, c, cidKey, matched) => {
     const cIsFallback = isStepFallbackCallId(ledgerKey, c.cascadeId) || isStepFallbackCallId(cidKey, c.cascadeId);
     const mId = String(matched.callId || '');
     const mIsFallback = !mId || isStepFallbackCallId(mId, matched.cascadeId);
     const targetCallId = (cIsFallback && !mIsFallback) ? mId : cidKey;
+
+    matchedReqByCallKey.set(ledgerKey, matched);
+    if (targetCallId) matchedReqByCallKey.set(targetCallId, matched);
 
     const uC = getCallTokenBreakdown(c);
     const merged = mergeSameCallRecords(c, matched, targetCallId, null, false, true);
@@ -5899,12 +5937,17 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       || Boolean(c.dateIsProvisional) !== Boolean(merged.dateIsProvisional);
     const statusEnriched = String(c.status || '') !== String(merged.status || '');
     const pricingEnriched = Boolean(c.isPriced) !== Boolean(merged.isPriced) || Number(c.costUSD || 0) !== Number(merged.costUSD || 0);
-    const speedEnriched = (c.ttftSec == null && merged.ttftSec != null)
+    const mergedExactKey = String(merged.modelExactId || resolveStableModelId(merged) || merged.model || '').trim().toLowerCase();
+    const speedCutoffTs = mergedExactKey ? (speedSampleMinTsByModel.get(mergedExactKey) ?? 0) : 0;
+    const withinSpeedWindow = !speedCutoffTs || getCallSortTimestamp(merged) >= speedCutoffTs;
+    const speedEnriched = withinSpeedWindow && (
+      (c.ttftSec == null && merged.ttftSec != null)
       || (c.streamingSec == null && merged.streamingSec != null)
       || (c.durationSec == null && merged.durationSec != null)
       || (c.streamingSec == null && merged.streamingSec != null && Number(merged.durationSec) > Number(c.durationSec || 0))
       || (c.tps == null && merged.tps != null)
-      || (c.streamingTps == null && merged.streamingTps != null);
+      || (c.streamingTps == null && merged.streamingTps != null)
+    );
 
     if (keyChanged || modelEnriched || usageEnriched || stepEnriched || cascadeEnriched || dateEnriched || statusEnriched || pricingEnriched || speedEnriched) {
       ledgerEnrichmentCalls.push(merged);
@@ -6327,6 +6370,12 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const recentRequestLogs = (() => {
     const modelConfigs = Array.isArray(livePlanStatus?.cascadeModelConfigs) ? livePlanStatus.cascadeModelConfigs : [];
     const byKey = new Map();
+    const matchedReqByStep = new Map();
+    for (const r of recentRequests) {
+      if (!r || !r.cascadeId || !Number.isInteger(r.stepIndex) || r.stepIndex < 0) continue;
+      const sk = `${r.source || 'desktop'}:${String(r.cascadeId).toLowerCase()}#${r.stepIndex}`;
+      if (!matchedReqByStep.has(sk)) matchedReqByStep.set(sk, r);
+    }
     const ingest = (c) => {
       if (!c || typeof c !== 'object') return;
       const inp = Math.max(0, Number(c.inputTokens ?? c.input_tokens ?? c.input ?? 0) || 0);
@@ -6338,7 +6387,25 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       if (!Number.isFinite(ts) || ts <= 0) return;
       const key = String(c.callId || `${c.source || 'desktop'}:${c.cascadeId || ''}:${c.stepIndex ?? ''}:${ts}`);
       if (!byKey.has(key)) {
-        byKey.set(key, { c, ts, inp, cache, outp, tot });
+        // 若该条目老于每模型 200 条账本裁剪窗导致速度字段被剪掉，直接从本轮 .db/transcript 扫描结果恢复展示用耗时与速度
+        let viewCall = c;
+        const stepLookupKey = (c.cascadeId && Number.isInteger(c.stepIndex) && c.stepIndex >= 0)
+          ? `${c.source || 'desktop'}:${String(c.cascadeId).toLowerCase()}#${c.stepIndex}`
+          : '';
+        const liveMatched = matchedReqByCallKey.get(key) || (stepLookupKey ? matchedReqByStep.get(stepLookupKey) : null);
+        if (liveMatched && (c.ttftSec == null || c.streamingSec == null || c.durationSec == null || c.tps == null || c.streamingTps == null)) {
+          viewCall = {
+            ...c,
+            ttftSec: c.ttftSec ?? liveMatched.ttftSec ?? null,
+            streamingSec: c.streamingSec ?? liveMatched.streamingSec ?? null,
+            durationSec: (c.streamingSec == null && liveMatched.streamingSec != null && liveMatched.durationSec != null)
+              ? liveMatched.durationSec
+              : (c.durationSec ?? liveMatched.durationSec ?? null),
+            tps: c.tps ?? liveMatched.tps ?? null,
+            streamingTps: c.streamingTps ?? liveMatched.streamingTps ?? null
+          };
+        }
+        byKey.set(key, { c: viewCall, ts, inp, cache, outp, tot });
       }
     };
     for (const c of mergedCalls) ingest(c);

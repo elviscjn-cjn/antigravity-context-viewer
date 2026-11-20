@@ -1422,3 +1422,126 @@ test('耗时与速度延迟回填回归：transcript 先落盘入缓存且账本
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
 });
+
+test('加固回归：0 字节新建 .db 安全跳过不建锁 + 超过 200 条测速裁剪后 recentRequestLogs 仍保留 .db 耗时且不反复写账本', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-prune-guard-'));
+  const agDir = path.join(rootDir, 'antigravity');
+  const cid = '88888888-8888-8888-8888-888888888888';
+  const logsDir = path.join(agDir, 'brain', cid, '.system_generated', 'logs');
+  const convDir = path.join(agDir, 'conversations');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(convDir, { recursive: true });
+
+  try {
+    // 1. 0 字节 .db 跳过并可后续恢复
+    const emptyDbPath = path.join(convDir, '00000000-0000-0000-0000-000000000001.db');
+    fs.writeFileSync(emptyDbPath, Buffer.alloc(0));
+    const skippedEmpty = collector.loadConversationDbMeta(emptyDbPath, '00000000-0000-0000-0000-000000000001');
+    assert.equal(skippedEmpty.readMode, 'skipped');
+    assert.equal(skippedEmpty.skippedReason, 'initializing_empty_db');
+
+    // 2. 写入 205 条同模型记录：最老 1 条（#1）在 transcript + .db 里有完整耗时，但在账本里会被 pruneExcessSpeedSamples(200) 裁掉
+    const tPath = path.join(logsDir, 'transcript.jsonl');
+    const oldIso = '2026-11-20T01:00:00.000Z';
+    fs.writeFileSync(tPath, JSON.stringify({
+      step_index: 1,
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: oldIso,
+      model: 'gemini-4-neon',
+      input_tokens: 5000,
+      cache_read_tokens: 50000,
+      output_tokens: 800
+    }) + '\n');
+
+    const dbPath = path.join(convDir, `${cid}.db`);
+    const db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE gen_metadata (id INTEGER PRIMARY KEY, data BLOB);');
+    db.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(buildGenMetadataRowBlob({
+      stepIndex: 1,
+      responseId: 'resp-old-pruned-1',
+      model: 'gemini-4-neon',
+      modelLabel: 'Gemini 4 Neon (XHigh)',
+      ttftSec: 2,
+      streamSec: 4
+    }));
+    db.close();
+
+    const batch = [];
+    const baseMs = Date.parse('2026-11-20T02:00:00.000Z');
+    batch.push({
+      callId: 'resp-old-pruned-1',
+      cascadeId: cid,
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'Gemini 4 Neon (XHigh)',
+      modelLabel: 'Gemini 4 Neon (XHigh)',
+      modelExactId: 'MODEL_PLACEHOLDER_M535',
+      inputTokens: 5000,
+      cacheReadTokens: 50000,
+      outputTokens: 800,
+      totalTokens: 55800,
+      ttftSec: 2,
+      streamingSec: 4,
+      durationSec: 6,
+      tps: 133.3,
+      streamingTps: 200,
+      status: 'final',
+      date: '2026-11-20',
+      created_at: oldIso,
+      timestamp: Date.parse(oldIso)
+    });
+    for (let i = 2; i <= 205; i++) {
+      const ts = baseMs + i * 1000;
+      const iso = new Date(ts).toISOString();
+      batch.push({
+        callId: `resp-newer-${i}`,
+        cascadeId: cid,
+        stepIndex: i,
+        source: 'desktop',
+        model: 'Gemini 4 Neon (XHigh)',
+        modelLabel: 'Gemini 4 Neon (XHigh)',
+        modelExactId: 'MODEL_PLACEHOLDER_M535',
+        inputTokens: 1000,
+        cacheReadTokens: 10000,
+        outputTokens: 200,
+        totalTokens: 11200,
+        ttftSec: 1,
+        streamingSec: 2,
+        durationSec: 3,
+        tps: 66.7,
+        streamingTps: 100,
+        status: 'final',
+        date: '2026-11-20',
+        created_at: iso,
+        timestamp: ts
+      });
+    }
+    collector.recordModelCalls(batch, { agDir, allowSynthetic: true });
+
+    const ledgerPath = collector.getPricingLedgerPath(agDir);
+    const ledgerBefore = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    // 确认账本里该老样本速度已被 pruneExcessSpeedSamples 裁掉
+    assert.equal(ledgerBefore.calls['resp-old-pruned-1'].ttftSec, undefined);
+    assert.equal(ledgerBefore.calls['resp-old-pruned-1'].streamingTps, undefined);
+
+    // 首次扫描完成对账与计价入账，同时验证展示列表从 .db 恢复了完整耗时与速度
+    const scanRes1 = await collector.collectTokenHistoryAsync({ agDir, force: true });
+    const oldRow1 = scanRes1.recentRequestLogs.find(r => r.callId === 'resp-old-pruned-1');
+    assert.ok(oldRow1);
+    assert.equal(oldRow1.ttftSec, 2);
+    assert.equal(oldRow1.streamingSec, 4);
+    assert.equal(oldRow1.durationSec, 6);
+    assert.equal(oldRow1.streamingTps, 200);
+
+    // 稳态二次扫描：展示仍保留完整速度，且不会因为老样本被裁剪过而反复重写账本文件
+    const mtimeStable = fs.statSync(ledgerPath).mtimeMs;
+    const scanRes2 = await collector.collectTokenHistoryAsync({ agDir, force: true });
+    const oldRow2 = scanRes2.recentRequestLogs.find(r => r.callId === 'resp-old-pruned-1');
+    assert.equal(oldRow2.durationSec, 6);
+    assert.equal(oldRow2.streamingTps, 200);
+    assert.equal(fs.statSync(ledgerPath).mtimeMs, mtimeStable);
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
