@@ -5817,6 +5817,8 @@ function htmlAwareRendererHarness(extraSandbox = null) {
   const sandbox = {
     location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
     document: {
+      head: makeEl('head'),
+      body: makeEl('body'),
       createElement: (tag) => makeEl(tag || 'div'),
       createElementNS: (_ns, tag) => makeEl(tag || 'svg'),
       getElementById: id => docElements.get(id) || null,
@@ -6163,11 +6165,11 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
     assert.equal(h.elements.get('panel').hidden, false);
     assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
 
-    // 3. ELV-94 5 档停靠位置切换（aux/page 占位，缺失时平滑回退 fixed，hide 显示唤醒点）
+    // 3. 大白话 3 档停靠位置切换（顶栏默认靠在打开 IDE 左侧、右侧辅助栏内嵌、隐藏）
     mockQueryMode = 'none';
     api.setDockPosition('aux');
     assert.equal(api.getDockPosition().dockPosition, 'aux');
-    assert.equal(api.getDockPosition().actualDock, 'fixed', '缺少辅助栏容器时应平滑回退 fixed');
+    assert.equal(api.getDockPosition().actualDock, 'flow', '右侧栏未展开时平滑留在顶栏打开 IDE 左侧，绝不飞至窗口最上方');
     assert.equal(h.elements.get('dock-fallback-note').hidden, false);
 
     mockQueryMode = 'aux';
@@ -6175,11 +6177,6 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
     assert.equal(api.getDockPosition().actualDock, 'aux');
     assert.equal(h.elements.get('panel').getAttribute('data-panel-docked'), 'true');
     assert.equal(h.elements.get('dock-fallback-note').hidden, true);
-
-    mockQueryMode = 'page';
-    api.setDockPosition('page');
-    assert.equal(api.getDockPosition().actualDock, 'page');
-    assert.equal(h.elements.get('panel').getAttribute('data-panel-docked'), 'true');
 
     api.setDockPosition('hide');
     assert.equal(api.getDockPosition().actualDock, 'hide');
@@ -6189,7 +6186,7 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
     assert.equal(h.elements.get('badge-dock-wake').hidden, true);
     assert.ok(savedPayloads.some(p => p.dockPosition === 'hide'));
 
-    // 4. Issue #41 顶栏额度窗口模式 4 选 1 (auto / 5h / weekly / both) 与右键/Alt+点击切换
+    // 4. Issue #41 顶栏额度窗口模式 4 选 1 (auto / 5h / weekly / both) 逐一点按 DOM 按钮与右键/Alt+点击切换
     const nowQuotaTs = Date.now();
     api.setContextLatestForTest({ model: 'Gemini 4 Hydrogen (High)', modelId: 'gemini-4-hydrogen-high', actual: 12000, budget: 256000 });
     api.setQuotaSnapshotForTest({
@@ -6210,27 +6207,43 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
     }, nowQuotaTs);
     assert.equal(h.elements.get('quota-badge-val').textContent, '64%', 'auto 模式默认显示更紧缩的 7d 64%');
 
-    api.setQuotaBadgeWindowMode('5h');
-    assert.equal(h.elements.get('quota-badge-val').textContent, '92%');
+    // 逐一点按 4 个 DOM 按钮断言顶栏文本即时变化
+    const segQuota = h.elements.get('quota-mode-segmented');
+    const clickQuotaMode = (mode) => {
+      segQuota.trigger('click', {
+        target: {
+          closest: (sel) => ({ getAttribute: (k) => (k === 'data-quota-window-mode' ? mode : null) })
+        }
+      });
+    };
+
+    clickQuotaMode('5h');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '92%', '点按 5h 按钮立即刷新为 92%');
     assert.equal(h.elements.get('quota-badge-tag').textContent, '5h');
 
-    api.setQuotaBadgeWindowMode('weekly');
-    assert.equal(h.elements.get('quota-badge-val').textContent, '64%');
+    clickQuotaMode('weekly');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '64%', '点按周额度按钮立即刷新为 64%');
     assert.equal(h.elements.get('quota-badge-tag').textContent, '7d');
 
-    api.setQuotaBadgeWindowMode('both');
-    assert.equal(h.elements.get('quota-badge-dual').hidden, false);
+    clickQuotaMode('both');
+    assert.equal(h.elements.get('quota-badge-dual').hidden, false, '点按双显按钮立即展示双行额度');
     assert.equal(h.elements.get('quota-badge-dual').children[0].textContent, '5h 92%');
     assert.equal(h.elements.get('quota-badge-dual').children[1].textContent, '7d 64%');
 
-    // 右键 #badge-quota 从 both 轮回 auto
+    clickQuotaMode('auto');
+    assert.equal(h.elements.get('quota-badge-dual').hidden, true, '点按自动按钮双显隐藏并恢复单显');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '64%');
+
+    // 右键 #badge-quota 从 auto 轮转到 5h 并当场刷新
     h.elements.get('badge-quota').trigger('contextmenu', { preventDefault() {} });
-    assert.equal(api.getQuotaBadgeWindowMode(), 'auto');
-    assert.equal(h.elements.get('quota-badge-dual').hidden, true);
-    // Alt+点击 #badge-quota 切换到 5h 且不打开额度面板
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '92%');
+
+    // Alt+点击 #badge-quota 切换到 weekly 且不打开额度面板
     assert.equal(h.elements.get('panel-quota').hidden, true);
     h.elements.get('badge-quota').trigger('click', { altKey: true, preventDefault() {} });
-    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    assert.equal(api.getQuotaBadgeWindowMode(), 'weekly');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '64%');
     assert.equal(h.elements.get('panel-quota').hidden, true);
     assert.ok(savedPayloads.some(p => p.quotaBadgeWindowMode === 'both'));
 
@@ -6503,4 +6516,132 @@ test('Issue #49: 套餐规格与 5x/20x 子档覆盖下拉选择、立即保存�
   } finally {
     try { api.dispose(); } catch {}
   }
+});
+
+test('Issue #54 & Issue #59: 顶栏内联锚定打开 IDE 左侧、右侧辅助栏开关零飞移、Customizations 避让与 4 额度窗口即时重算刷新', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // 1. 模拟会话标题栏 DOM 结构：左侧标题，右侧按钮组（包含打开 IDE 与三个点按钮）
+  const openIdeBtn = { textContent: 'Open IDE', getBoundingClientRect: () => ({ top: 10, left: 800, right: 880, width: 80 }) };
+  const moreBtn = { textContent: '...', getBoundingClientRect: () => ({ top: 10, left: 884, right: 914, width: 30 }) };
+  const rightGroup = {
+    className: 'shrink-0 flex items-center',
+    children: [openIdeBtn, moreBtn],
+    get firstChild() { return this.children[0]; },
+    get firstElementChild() { return this.children[0]; },
+    appendChild(n) { this.children.push(n); n.parentElement = this; },
+    insertBefore(n, ref) {
+      const idx = this.children.indexOf(ref);
+      if (idx >= 0) this.children.splice(idx, 0, n);
+      else this.children.unshift(n);
+      n.parentElement = this;
+    },
+    getBoundingClientRect: () => ({ top: 10, left: 800, right: 920, width: 120 })
+  };
+  const titlebarEl = {
+    className: 'flex items-center justify-between @container/titlebar',
+    firstElementChild: { scrollWidth: 140, firstElementChild: { getBoundingClientRect: () => ({ left: 20 }) } },
+    lastElementChild: rightGroup,
+    querySelector(sel) { return sel.includes('shrink-0') ? rightGroup : null; },
+    contains(n) { return rightGroup.children.includes(n) || n.parentElement === rightGroup; },
+    getBoundingClientRect: () => ({ top: 10, left: 0, right: 1200, width: 1200 })
+  };
+
+  h.sandbox.document.querySelector = (sel) => {
+    if (sel.includes('@container/titlebar')) return titlebarEl;
+    if (sel.includes('toggle-aux-sidebar')) return { click() {} };
+    return null;
+  };
+
+  api.setDockPosition('flow');
+  const pos = api.getDockPosition();
+  assert.equal(pos.dockPosition, 'flow');
+  assert.equal(pos.actualDock, 'flow');
+
+  // 断言宿主挂在右侧组最前面，即处于“打开 IDE”与“三个点”按钮左侧，同一水平线上
+  const activeHost = h.sandbox.__AGContextMeterActiveHost;
+  assert.ok(activeHost);
+  assert.equal(activeHost.parentElement, rightGroup);
+  assert.equal(rightGroup.children[0], activeHost, '顶栏组件必须作为 targetContainer.firstChild 锚定在打开 IDE 左侧');
+  assert.equal(rightGroup.children[1], openIdeBtn);
+
+  // 2. 开关右侧辅助面板（模拟 DOM 发生变动且尺寸改变），宿主依然稳固锚定在打开 IDE 左侧，严禁飞到 fixed 或 top: 6px
+  for (let i = 0; i < 3; i++) {
+    api.setDockPosition('flow');
+    assert.equal(api.getDockPosition().actualDock, 'flow', '开关辅助栏期间 actualDock 始终为 flow 零飞移');
+    assert.equal(activeHost.style.top, '', '严禁设置 top: 6px');
+    assert.equal(activeHost.style.right, '', '严禁设置 fixed right 偏移动态乱飞');
+  }
+
+  // 3. 适配 Antigravity 2.33 的 Customizations 自定义扩展等非会话全屏子视图顶栏避让 (Issue #59)
+  if (!h.sandbox.document.head) {
+    h.sandbox.document.head = h.sandbox.document.createElement();
+  }
+  h.sandbox.navigator = { platform: 'Win32' };
+  h.sandbox.window.innerWidth = 1200;
+  h.sandbox.window.outerWidth = 1200;
+  titlebarEl.getBoundingClientRect = () => ({ top: 10, left: 0, right: 1200, width: 1200, height: 40 });
+  let inCustomizationView = true;
+  const backBtn = { getBoundingClientRect: () => ({ top: 10, left: 8, right: 36, width: 28, height: 28 }) };
+  h.sandbox.document.querySelector = (sel) => {
+    if (inCustomizationView && (sel.includes('customization') || sel.includes('Back'))) {
+      return backBtn;
+    }
+    if (sel.includes('@container/titlebar')) return titlebarEl;
+    return null;
+  };
+
+  // 触发布局测量，在 Customizations 视图下自动预留原生返回与搜索空间，绝不遮挡原生按钮
+  h.sandbox.__AGContextMeter.syncWindowControlsOverlayForTest?.();
+  const styleFix = h.sandbox.document.getElementById('ag-topbar-host-fix');
+  assert.ok(styleFix, '必须注入避让样式表');
+  assert.match(styleFix.textContent, /#ag-context-meter[\s\S]*-webkit-app-region:\s*no-drag/);
+
+  // 4. 自动化 DOM 测试逐一点按 4 个额度窗口按钮立即从 buckets 重算 5h 与 7d 数值并当场刷新 #badge-quota
+  const nowTs = Date.now();
+  api.setQuotaSnapshotForTest({
+    snapshot: {
+      fetchedAtMs: nowTs,
+      activeStatus: 'available',
+      pools: [{
+        poolKey: 'shared_gemini_main',
+        title: 'Gemini 模型',
+        buckets: [
+          { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.85, percentText: '85%' },
+          { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.42, percentText: '42%' }
+        ]
+      }]
+    }
+  }, nowTs);
+
+  const segQuota = h.elements.get('quota-mode-segmented');
+  const clickQuotaMode = (mode) => {
+    segQuota.trigger('click', {
+      target: {
+        closest: (sel) => ({ getAttribute: (k) => (k === 'data-quota-window-mode' ? mode : null) })
+      }
+    });
+  };
+
+  // a) 点按 5h 窗口
+  clickQuotaMode('5h');
+  assert.equal(h.elements.get('quota-badge-val').textContent, '85%', '点按 5h 按钮后 #badge-quota 文本即时变化为 85%');
+  assert.equal(h.elements.get('quota-badge-tag').textContent, '5h');
+
+  // b) 点按周额度
+  clickQuotaMode('weekly');
+  assert.equal(h.elements.get('quota-badge-val').textContent, '42%', '点按周额度按钮后 #badge-quota 文本即时变化为 42%');
+  assert.equal(h.elements.get('quota-badge-tag').textContent, '7d');
+
+  // c) 点按 5h+周双显
+  clickQuotaMode('both');
+  assert.equal(h.elements.get('quota-badge-dual').hidden, false, '点按双显按钮后双显行立即展示');
+  assert.equal(h.elements.get('quota-badge-dual').children[0].textContent, '5h 85%');
+  assert.equal(h.elements.get('quota-badge-dual').children[1].textContent, '7d 42%');
+
+  // d) 点按自动（最紧缩）
+  clickQuotaMode('auto');
+  assert.equal(h.elements.get('quota-badge-dual').hidden, true);
+  assert.equal(h.elements.get('quota-badge-val').textContent, '42%', '点按自动按钮立即根据 buckets 选出最紧缩 42%');
 });

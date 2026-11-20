@@ -121,11 +121,12 @@
     splitModelDisplayAndEffort,
     resolvePlaceholderModelInfo
   } = (globalThis.__AGContextMeterCore || {});
-  const VALID_DOCK_POSITIONS = ['flow', 'fixed', 'aux', 'page', 'hide'];
+  const VALID_DOCK_POSITIONS = ['flow', 'aux', 'hide'];
   const VALID_QUOTA_WINDOW_MODES = ['auto', '5h', 'weekly', 'both'];
   let dockPosition = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_dock_position') : null;
+      if (saved === 'fixed' || saved === 'page') return 'flow';
       return VALID_DOCK_POSITIONS.includes(saved) ? saved : 'flow';
     } catch { return 'flow'; }
   })();
@@ -139,7 +140,7 @@
   const host = document.createElement('div');
   host.id = 'ag-context-meter';
   host.setAttribute('data-layout', 'wide');
-  host.setAttribute('data-dock', dockPosition === 'flow' ? 'fixed' : dockPosition);
+  host.setAttribute('data-dock', dockPosition);
   host.setAttribute('data-window-active', 'true');
   const shadow = host.attachShadow({ mode: 'open' });
 
@@ -687,10 +688,30 @@
   let cachedMeasuredAvailAt = 0;
   let cachedMeasuredWinWidth = 0;
 
+  function isNonConversationSubview() {
+    try {
+      if (typeof document?.querySelector !== 'function') return false;
+      const hasCustomization = Boolean(
+        document.querySelector('[data-testid*="customization"], [class*="customization"], [aria-label*="Customization"], [aria-label*="自定义"]')
+      );
+      const hasBackBtn = Boolean(
+        document.querySelector('button[aria-label*="Back"], button[aria-label*="返回"], [data-testid*="back"]')
+      );
+      return hasCustomization || (hasBackBtn && !document.querySelector('[data-testid="composer"], textarea'));
+    } catch { return false; }
+  }
+
   function findAuxSidebarContainer() {
     try {
       if (typeof document?.querySelector !== 'function') return null;
-      return document.querySelector('[data-testid="aux-sidebar"], [id="workbench.parts.auxiliarybar"], .auxiliary-bar, .part.auxiliarybar');
+      const auxScope = document.querySelector('[data-aux-pane-focus-scope="true"]');
+      if (auxScope) {
+        const tabContent = auxScope.querySelector('div[data-active-tab-id]') || auxScope;
+        return tabContent;
+      }
+      return document.querySelector(
+        '[data-testid="aux-sidebar"], [id="workbench.parts.auxiliarybar"], .auxiliary-bar, .part.auxiliarybar'
+      );
     } catch { return null; }
   }
 
@@ -716,9 +737,6 @@
       if (dockFallbackReason === 'aux') {
         noteEl.hidden = false;
         noteEl.textContent = t('settings.dock.fallbackAux');
-      } else if (dockFallbackReason === 'page') {
-        noteEl.hidden = false;
-        noteEl.textContent = t('settings.dock.fallbackPage');
       } else {
         noteEl.hidden = true;
         noteEl.textContent = '';
@@ -731,8 +749,8 @@
   }
 
   function syncDockedPanelsAttribute() {
-    const effectiveDock = host.getAttribute?.('data-dock') || 'fixed';
-    const isEmbeddedPane = effectiveDock === 'aux' || effectiveDock === 'page';
+    const effectiveDock = host.getAttribute?.('data-dock') || 'flow';
+    const isEmbeddedPane = effectiveDock === 'aux';
     for (const id of ['panel', 'panel-tokens', 'panel-quota']) {
       const p = el(id);
       if (!p) continue;
@@ -749,7 +767,8 @@
   }
 
   function setDockPosition(mode, opts = {}) {
-    const next = VALID_DOCK_POSITIONS.includes(mode) ? mode : 'flow';
+    const normalized = (mode === 'fixed' || mode === 'page') ? 'flow' : mode;
+    const next = VALID_DOCK_POSITIONS.includes(normalized) ? normalized : 'flow';
     dockPosition = next;
     try {
       if (typeof localStorage !== 'undefined') localStorage.setItem('ag_dock_position', next);
@@ -771,6 +790,7 @@
       return;
     }
     dockFallbackReason = '';
+
     if (dockPosition === 'hide') {
       const fallbackParent = document.body || document.documentElement;
       if (fallbackParent && host.parentElement !== fallbackParent) {
@@ -785,6 +805,7 @@
       syncDockedPanelsAttribute();
       return;
     }
+
     if (dockPosition === 'aux') {
       const auxEl = findAuxSidebarContainer();
       if (auxEl) {
@@ -802,57 +823,14 @@
         updateResponsiveLayout(layoutMeasurementDirty);
         return;
       }
+      // 右侧辅助面板未展开时：平滑保持在顶栏，绝不乱飞至窗口顶部，并给出引导
       dockFallbackReason = 'aux';
-    } else if (dockPosition === 'page') {
-      const pageEl = findEditorPageContainer();
-      if (pageEl) {
-        if (host.parentElement !== pageEl) {
-          if (pageEl.firstChild) pageEl.insertBefore(host, pageEl.firstChild);
-          else pageEl.appendChild(host);
-        }
-        host.setAttribute('data-dock', 'page');
-        host.style.right = '';
-        host.style.top = '';
-        host.style.bottom = '';
-        host.style.position = 'static';
-        syncDockPositionUi();
-        syncDockedPanelsAttribute();
-        updateResponsiveLayout(layoutMeasurementDirty);
-        return;
-      }
-      dockFallbackReason = 'page';
-    }
-    if (dockPosition === 'fixed' || dockFallbackReason) {
-      const fallbackParent = document.body || document.documentElement;
-      if (fallbackParent && host.parentElement !== fallbackParent) {
-        fallbackParent.appendChild(host);
-      }
-      host.setAttribute('data-dock', 'fixed');
-      host.style.position = '';
-      host.style.bottom = '';
-      updateFixedFallbackPosition();
-      syncDockPositionUi();
-      syncDockedPanelsAttribute();
-      updateResponsiveLayout(layoutMeasurementDirty);
-      return;
     }
 
-    // 热路径短路：宿主已稳固停靠在预期标题栏内且尺寸未标脏时，跳过 DOM 遍历与强制布局查询
-    if (
-      !layoutMeasurementDirty
-      && host.isConnected
-      && host.getAttribute('data-dock') === 'flow'
-      && observedTitlebar
-      && observedTitlebar.isConnected
-      && observedTitlebar.contains(host)
-      && host.parentElement
-    ) {
-      return;
-    }
+    // 默认或回退模式：始终内联锚定在会话标题栏右侧打开 IDE 左侧三个点的左边同一水平线上
     syncWindowControlsOverlay();
     const titlebar = findHostTitlebar();
     if (titlebar) {
-      // 自愈保护：若主对话区（div.flex[style*="min-width"]）的 inline flex-grow 被意外清空，立即恢复为 1，绝不覆写其他分栏属性
       try {
         const convPane = titlebar.closest?.('div.flex[style*="min-width"]');
         if (convPane?.style && (!convPane.style.flexGrow || convPane.style.flexGrow === '0')) {
@@ -868,9 +846,10 @@
         }
       } catch { }
 
-      if (host.parentElement !== targetContainer) {
-        if (targetContainer.firstChild && targetContainer !== titlebar) {
-          targetContainer.insertBefore(host, targetContainer.firstChild);
+      const firstRef = targetContainer.firstElementChild || targetContainer.firstChild || targetContainer.children?.[0];
+      if (host.parentElement !== targetContainer || (firstRef && firstRef !== host && targetContainer !== titlebar)) {
+        if (firstRef && targetContainer !== titlebar) {
+          targetContainer.insertBefore(host, firstRef);
         } else {
           targetContainer.appendChild(host);
         }
@@ -898,13 +877,30 @@
         } catch { }
       }
     } else {
-      const fallbackParent = document.body || document.documentElement;
-      if (fallbackParent && host.parentElement !== fallbackParent) {
-        fallbackParent.appendChild(host);
+      // 若未能通过标准类名定位标题栏（如全屏子视图），尝试通过右侧打开 IDE 按钮所在容器内联插入
+      const nativeAnchor = findNativeTopRightAnchor();
+      if (nativeAnchor && nativeAnchor !== document.body && nativeAnchor !== document.documentElement) {
+        if (host.parentElement !== nativeAnchor) {
+          if (nativeAnchor.firstChild) nativeAnchor.insertBefore(host, nativeAnchor.firstChild);
+          else nativeAnchor.appendChild(host);
+        }
+        host.setAttribute('data-dock', 'flow');
+        host.style.right = '';
+        host.style.top = '';
+        host.style.bottom = '';
+        host.style.position = '';
+      } else {
+        // 绝不飞到窗口最上方标题栏 top: 6px！若当前没有任何可用容器，挂载到 body 但保持内联流式样式
+        const fallbackParent = document.body || document.documentElement;
+        if (fallbackParent && host.parentElement !== fallbackParent) {
+          fallbackParent.appendChild(host);
+        }
+        host.setAttribute('data-dock', 'flow');
+        host.style.position = 'relative';
+        host.style.top = '';
+        host.style.right = '';
+        host.style.bottom = '';
       }
-      host.setAttribute('data-dock', 'fixed');
-      host.style.bottom = '';
-      updateFixedFallbackPosition();
     }
     syncDockPositionUi();
     syncDockedPanelsAttribute();
@@ -934,28 +930,13 @@
   }
 
   function updateFixedFallbackPosition() {
-    if (host.getAttribute?.('data-dock') === 'flow') {
-      try {
-        host.style.removeProperty?.('right');
-        host.style.removeProperty?.('top');
-      } catch { }
-      host.style.right = '';
-      host.style.top = '';
-      return;
-    }
+    // 彻底废除 fixed 模式，宿主始终内联锚定，严禁设置 top: 6px 飞至最上方标题栏
     try {
-      const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
-      let rightOffset = 144;
-      const anchor = findNativeTopRightAnchor();
-      if (anchor?.getBoundingClientRect) {
-        const r = anchor.getBoundingClientRect();
-        if (r.width > 0 && r.left > 0 && r.left < vw) {
-          rightOffset = Math.max(144, Math.ceil(vw - r.left + 6));
-        }
-      }
-      host.style.top = '6px';
-      host.style.right = `${rightOffset}px`;
+      host.style.removeProperty?.('right');
+      host.style.removeProperty?.('top');
     } catch { }
+    host.style.right = '';
+    host.style.top = '';
   }
 
   // 带迟滞区间（Hysteresis）的四阶段渐进收缩计算，防止临界宽度抖动
@@ -1007,17 +988,18 @@
       if (titlebar?.getBoundingClientRect) {
         const tbRect = titlebar.getBoundingClientRect();
         if (tbRect.width > 0) {
+          const inSubview = isNonConversationSubview();
           const titleEl = titlebar.firstElementChild;
           const titleInner = titleEl?.firstElementChild;
           const contentStart = titleInner?.getBoundingClientRect
-            ? Math.max(8, titleInner.getBoundingClientRect().left - tbRect.left)
-            : (tbRect.left < 168 ? (168 - tbRect.left) : 12);
+            ? Math.max(inSubview ? 48 : 8, titleInner.getBoundingClientRect().left - tbRect.left)
+            : (inSubview ? 56 : (tbRect.left < 168 ? (168 - tbRect.left) : 12));
           const titleRealW = titleEl?.scrollWidth ? Math.min(320, titleEl.scrollWidth) : 160;
-          const minTitleWidth = tbRect.width < 760
-            ? Math.max(96, Math.min(180, titleRealW))
-            : Math.max(150, titleRealW);
-          let nativeButtonsWidth = 64;
-          let rightPad = 8;
+          const minTitleWidth = inSubview
+            ? Math.max(160, titleRealW)
+            : (tbRect.width < 760 ? Math.max(96, Math.min(180, titleRealW)) : Math.max(150, titleRealW));
+          let nativeButtonsWidth = inSubview ? 120 : 64;
+          let rightPad = inSubview ? 16 : 8;
           let titlebarOwnPadRight = 0;
           if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
             titlebarOwnPadRight = parseFloat(window.getComputedStyle(titlebar).paddingRight) || 0;
@@ -1031,9 +1013,9 @@
               : null;
             const rightClusterVar = root?.style?.getPropertyValue?.('--right-cluster-width')?.trim() || '';
             if (auxOpen) {
-              rightPad = 8;
+              rightPad = inSubview ? 16 : 8;
             } else if (rightClusterVar) {
-              rightPad = Math.max(8, (parseFloat(rightClusterVar) || 44) - 4);
+              rightPad = Math.max(inSubview ? 16 : 8, (parseFloat(rightClusterVar) || 44) - 4);
             } else if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
               rightPad = parseFloat(window.getComputedStyle(rightGroup).paddingRight) || 0;
             }
@@ -1044,7 +1026,7 @@
                   sum += child.getBoundingClientRect().width;
                 }
               }
-              if (sum > 0) nativeButtonsWidth = sum + 6;
+              if (sum > 0) nativeButtonsWidth = sum + (inSubview ? 14 : 6);
             }
           }
           const effectiveRightReserve = Math.max(rightPad, titlebarOwnPadRight);
@@ -1307,8 +1289,8 @@
   function flushHostDomMutationCheck() {
     domMutationThrottleTimer = null;
     if (state.disposed) return;
-    if (!host.isConnected || (dockPosition === 'flow' && (host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)))) {
-      scheduleLayoutSync();
+    if (!host.isConnected || (dockPosition === 'flow' && !findHostTitlebar()?.contains?.(host))) {
+      ensureHostDocked();
     }
     scheduleHostModelSync();
   }
@@ -1321,13 +1303,12 @@
     if (typeof MutationObserver !== 'undefined' && document.body) {
       hostDomObserver = new MutationObserver(() => {
         if (state.disposed) return;
-        // 轻量 O(1) 检查优先，其余全量/选择器查询合并节流至低频窗口，防止聊天吐字与切会话卡顿
-        if (!host.isConnected || (dockPosition === 'flow' && host.getAttribute('data-dock') !== 'flow')) {
+        if (!host.isConnected) {
           layoutMeasurementDirty = true;
-          scheduleLayoutSync();
+          ensureHostDocked();
         }
         if (!domMutationThrottleTimer) {
-          domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 180);
+          domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 120);
         }
       });
       hostDomObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label'] });
@@ -1605,6 +1586,18 @@
     const btn = e.target?.closest?.('[data-dock-mode]');
     const mode = btn?.getAttribute?.('data-dock-mode');
     if (mode) setDockPosition(mode, { persist: true });
+  });
+  el('dock-fallback-note')?.addEventListener('click', () => {
+    try {
+      const toggleBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
+      if (toggleBtn) {
+        toggleBtn.click();
+        setTimeout(() => {
+          ensureHostDocked();
+          syncDockPositionUi();
+        }, 60);
+      }
+    } catch { }
   });
   el('quota-mode-segmented')?.addEventListener('click', e => {
     const btn = e.target?.closest?.('[data-quota-window-mode]');
@@ -2904,7 +2897,9 @@
       if (typeof localStorage !== 'undefined') localStorage.setItem('ag_quota_badge_window_mode', next);
     } catch { }
     syncQuotaWindowModeUi();
-    if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
+    if (typeof renderQuotaBoard === 'function') {
+      renderQuotaBoard(Date.now(), { animate: false });
+    }
     if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
       void saveSettingsPayloadBridge({ quotaBadgeWindowMode: next });
     }
@@ -13415,6 +13410,7 @@
   function computeQuotaVisualSignature(view) {
     if (!view || !Array.isArray(view.pools)) return 'empty';
     const parts = [
+      quotaBadgeWindowMode || 'auto',
       view.currentModel?.productKey || '',
       view.activeStatus || '',
       view.badge?.fraction == null ? 'null' : view.badge.fraction.toFixed(4)
@@ -13710,28 +13706,28 @@
   }
 
   function applyQuotaBadgeWindowModeToView(view, core) {
-    if (!view || !Array.isArray(view.pools)) return view;
+    if (!view || !Array.isArray(view.pools) || !view.pools.length) return view;
     const mode = VALID_QUOTA_WINDOW_MODES.includes(quotaBadgeWindowMode) ? quotaBadgeWindowMode : 'auto';
-    const matchedPool = view.currentModel?.poolKey
+    const targetPool = (view.currentModel?.poolKey
       ? view.pools.find(p => p.poolKey === view.currentModel.poolKey)
-      : null;
-    if (!matchedPool || !Array.isArray(matchedPool.buckets) || !matchedPool.buckets.length) {
+      : null) || view.pools[0] || null;
+    if (!targetPool || !Array.isArray(targetPool.buckets) || !targetPool.buckets.length) {
       return { ...view, badge: { ...(view.badge || {}), windowMode: mode, dualBuckets: null } };
     }
     const selFn = typeof selectPrimaryQuotaBucket === 'function' ? selectPrimaryQuotaBucket : core?.selectPrimaryQuotaBucket;
     const pickMode = mode === 'both' ? 'auto' : mode;
-    const sel = selFn ? selFn(matchedPool.buckets, pickMode) : null;
-    const pb = sel?.primaryBucket || matchedPool.primaryBucket || null;
+    const sel = selFn ? selFn(targetPool.buckets, pickMode) : null;
+    const pb = sel?.primaryBucket || targetPool.primaryBucket || targetPool.buckets[0] || null;
     if (pb) {
-      matchedPool.primaryBucket = pb;
-      matchedPool.selectionReason = sel?.selectionReason || matchedPool.selectionReason;
+      targetPool.primaryBucket = pb;
+      targetPool.selectionReason = sel?.selectionReason || targetPool.selectionReason;
     }
 
     const fmtPct = f => (core?.formatQuotaPercentText ? core.formatQuotaPercentText(f) : `${Math.round(Number(f) * 100)}%`);
     let dualBuckets = null;
     const pairFn = typeof resolveQuotaWindowBucketPair === 'function' ? resolveQuotaWindowBucketPair : core?.resolveQuotaWindowBucketPair;
-    if (mode === 'both' && pairFn && view.activeStatus !== 'error' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'unknown') {
-      const pair = pairFn(matchedPool.buckets);
+    if (mode === 'both' && pairFn && view.activeStatus !== 'error' && view.activeStatus !== 'no_permission') {
+      const pair = pairFn(targetPool.buckets);
       if (pair?.bucket5h && pair?.bucket7d && pair.bucket5h.remainingFraction != null && pair.bucket7d.remainingFraction != null) {
         dualBuckets = [
           { key: '5h', text: `5h ${fmtPct(pair.bucket5h.remainingFraction)}` },
@@ -13742,7 +13738,7 @@
 
     const nextBadge = { ...(view.badge || {}), windowMode: mode, dualBuckets };
     let nextActiveReset = view.activeReset;
-    if (pb && view.activeStatus !== 'error' && view.activeStatus !== 'no_permission' && pb.remainingFraction != null) {
+    if (pb && pb.remainingFraction != null && view.activeStatus !== 'error' && view.activeStatus !== 'no_permission') {
       nextBadge.fraction = pb.remainingFraction;
       if (pb.isExhausted || pb.remainingFraction === 0) {
         nextBadge.text = t('quota.short.exhausted');
@@ -13831,13 +13827,14 @@
           isResetPassed: rm.isResetPassed
         };
       });
+      const pickMode = quotaBadgeWindowMode === 'both' ? 'auto' : quotaBadgeWindowMode;
       const sel = (typeof selectPrimaryQuotaBucket === 'function')
-        ? selectPrimaryQuotaBucket(nextBuckets)
+        ? selectPrimaryQuotaBucket(nextBuckets, pickMode)
         : (() => {
             const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
             return { primaryBucket: priced[0] || nextBuckets[0] || null, selectionReason: priced.length <= 1 ? 'single_window' : 'tighter_window' };
           })();
-      const pb = sel.primaryBucket || p.primaryBucket || null;
+      const pb = sel.primaryBucket || p.primaryBucket || nextBuckets[0] || null;
       return {
         ...p,
         buckets: nextBuckets,
@@ -14339,18 +14336,22 @@
       if (qDual) setQuotaHiddenIfChanged(qDual, true);
       if (qVal) {
         setQuotaHiddenIfChanged(qVal, false);
-        const hasNumericPct = view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error' && view.activeStatus !== 'unknown' && view.badge.fraction != null;
+        const hasNumericPct = view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error' && view.badge.fraction != null;
         if (hasNumericPct) {
           animateQuotaPercentNode(qVal, view.badge.fraction, shouldAnimate, view.badge.text);
+          if (!shouldAnimate) {
+            setQuotaTextIfChanged(qVal, view.badge.text);
+          }
         } else {
           let dispVal = view.badge.text;
           if (view.activeStatus === 'exhausted') dispVal = t('quota.short.exhausted');
           else if (view.activeStatus === 'no_permission') dispVal = t('quota.short.no_permission');
           else if (view.activeStatus === 'error') dispVal = t('quota.short.error');
           else if (view.activeStatus === 'unknown' || view.badge.fraction == null) {
-            dispVal = view.activeStatus === 'stale' ? t('quota.short.stale') : t('quota.short.unknown');
+            dispVal = view.activeStatus === 'stale' ? t('quota.short.stale') : (view.badge.text || t('quota.short.unknown'));
           }
           animateQuotaPercentNode(qVal, null, false, dispVal);
+          setQuotaTextIfChanged(qVal, dispVal);
         }
       }
       if (qTag) {

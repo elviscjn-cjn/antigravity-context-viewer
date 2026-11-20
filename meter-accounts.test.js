@@ -731,16 +731,19 @@ test('ELV-89 时间窗严格归属、IDE 拦截、幂等账本纠偏及 ALL == S
   const scopeA = collector.buildAccountScopeKey('a@example.com');
   const scopeB = collector.buildAccountScopeKey('b@example.com');
   const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
-  const day = collector.formatLocalDateKey(new Date());
+  const baseNow = new Date();
+  baseNow.setHours(12, 0, 0, 0);
+  const nowMs = baseNow.getTime();
+  const day = collector.formatLocalDateKey(baseNow);
 
-  const t0 = Date.now() - 3600 * 1000; // 早于追踪起点
-  const tAStart = Date.now() - 1800 * 1000;
-  const tAEnd = Date.now() - 1200 * 1000;
-  const tBStart = Date.now() - 900 * 1000;
+  const t0 = nowMs - 3600 * 1000; // 早于追踪起点
+  const tAStart = nowMs - 1800 * 1000;
+  const tAEnd = nowMs - 1200 * 1000;
+  const tBStart = nowMs - 900 * 1000;
 
   const accountSessions = [
     { email: 'a@example.com', accountScopeKey: scopeA, source: 'desktop', startAtMs: tAStart, lastVerifiedAtMs: tAEnd, endAtMs: tAEnd, evidence: 'host_user_status' },
-    { email: 'b@example.com', accountScopeKey: scopeB, source: 'desktop', startAtMs: tBStart, lastVerifiedAtMs: Date.now(), endAtMs: null, evidence: 'account_switch_verified' }
+    { email: 'b@example.com', accountScopeKey: scopeB, source: 'desktop', startAtMs: tBStart, lastVerifiedAtMs: nowMs, endAtMs: null, evidence: 'account_switch_verified' }
   ];
 
   // 1. 种子坏数据：模拟旧 bug 把早期记录、缺时间记录及 IDE 记录错标成当前账号 B
