@@ -18,7 +18,8 @@ const {
   launchCliSession,
   getContextUnlockStatus,
   applyContextUnlockAsync,
-  restoreContextUnlockAsync
+  restoreContextUnlockAsync,
+  syncPricingCatalogAsync
 } = require('./meter-collector');
 const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
@@ -120,6 +121,7 @@ const ALLOWED_ROUTES = [
   '/apply-update',
   '/accounts-overview',
   '/accounts-action',
+  '/sync-pricing',
   '/shutdown',
   '/restart-host'
 ];
@@ -141,7 +143,8 @@ const LIVE_CAPABILITIES = {
   checkUpdate: true,
   applyUpdate: true,
   restartHost: false,
-  hotReload: true
+  hotReload: true,
+  syncPricing: true
 };
 
 function timingSafeTokenEqual(provided, expected) {
@@ -477,6 +480,12 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const data = await collectTokenHistoryAsync({ force: request.force === true });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, data }));
+          return;
+        }
+        if (req.url === '/sync-pricing') {
+          const result = await syncPricingCatalogAsync({ force: request?.force !== false });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
           return;
         }
         if (req.url === '/session-timeline') {

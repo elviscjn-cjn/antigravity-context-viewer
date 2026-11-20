@@ -1254,6 +1254,7 @@
           统计</button>
         <button id="tok-view-models" class="switch-pill-btn" type="button" data-i18n="tokens.view.models">按模型</button>
         <button id="tok-view-cost" class="switch-pill-btn" type="button" data-i18n="tokens.view.cost">API 参考金额</button>
+        <button id="tok-view-requests" class="switch-pill-btn" type="button" data-i18n="tokens.view.requests">实时请求</button>
       </div>
     </div>
 
@@ -1781,8 +1782,12 @@
           优惠计价；不含缓存存储费与搜索落地费用。缓存可在多次请求中重复读取相同上下文，该总量不代表独立文本量或用户输入字数。
         </div>
 
-        <!-- 底部收起详情按钮 -->
-        <div style="display:flex;justify-content:center;margin-top:10px">
+        <!-- 底部同步价格与收起详情按钮 -->
+        <div id="cost-pricing-sync-note" class="cost-pricing-sync-note" style="display:none"></div>
+        <div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-top:10px">
+          <button id="btn-cost-sync-pricing" class="switch-pill-btn" type="button"
+            style="padding:2px 10px;font-size:10.5px" data-i18n="reqLog.syncPricing"
+            title="从 models.dev 与 LiteLLM 同步最新模型定价" data-i18n-title="reqLog.syncPricingTitle">同步价格</button>
           <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button"
             style="padding:2px 14px;font-size:10.5px" data-i18n="cost.btnCollapse">收起详情 ▴</button>
         </div>
@@ -1853,6 +1858,53 @@
 
       <div id="model-usage-empty" class="model-usage-empty" style="display:none" data-i18n="modelsUsage.empty">当前时间窗暂无 Token 用量记录</div>
       <div id="model-usage-legend" class="model-usage-legend"></div>
+    </div>
+
+    <!-- 实时请求统计视图（Magpie 风格 13 列：Desktop + CLI + 当前流式实时叠加） -->
+    <div id="requests-live-view" class="req-live-view" style="display:none">
+      <div class="req-live-toolbar">
+        <div class="req-live-meta">
+          <span class="req-live-indicator" aria-hidden="true"><span class="req-live-pulse"></span></span>
+          <span class="req-live-badge" data-i18n="reqLog.liveBadge">实时同步</span>
+          <span id="req-live-summary" class="req-live-summary"></span>
+          <span id="req-pricing-sync-note" class="req-pricing-sync-note" style="display:none"></span>
+        </div>
+        <div class="req-live-actions">
+          <div class="source-switch-bar req-status-filter-bar">
+            <button id="req-filter-all" class="switch-pill-btn active" type="button" data-i18n="reqLog.filterAll">全部</button>
+            <button id="req-filter-success" class="switch-pill-btn" type="button" data-i18n="reqLog.filterSuccess">成功</button>
+            <button id="req-filter-error" class="switch-pill-btn" type="button" data-i18n="reqLog.filterError">异常</button>
+          </div>
+          <button id="btn-req-sync-pricing" class="req-sync-pricing-btn" type="button" title="从 models.dev 与 LiteLLM 同步最新模型定价" data-i18n-title="reqLog.syncPricingTitle" data-i18n="reqLog.syncPricing">同步价格</button>
+          <button id="btn-req-live-refresh" class="heat-nav-btn req-refresh-btn" type="button" title="立即刷新请求记录" data-i18n-title="reqLog.refreshTitle" aria-label="刷新" data-i18n-aria="reqLog.refresh">↻</button>
+        </div>
+      </div>
+      <div id="req-table-wrap" class="req-table-wrap">
+        <table class="req-table">
+          <thead>
+            <tr>
+              <th class="req-col-time" data-i18n="reqLog.col.time">时间</th>
+              <th class="req-col-agent" data-i18n="reqLog.col.agent">AGENT</th>
+              <th class="req-col-req-model" data-i18n="reqLog.col.reqModel">请求模型</th>
+              <th class="req-col-provider" data-i18n="reqLog.col.provider">供应商 · 账号</th>
+              <th class="req-col-actual-model" data-i18n="reqLog.col.actualModel">实际模型</th>
+              <th class="req-col-num" data-i18n="reqLog.col.input">输入</th>
+              <th class="req-col-num" data-i18n="reqLog.col.output">输出</th>
+              <th class="req-col-num" data-i18n="reqLog.col.cacheHit">缓存命中率</th>
+              <th class="req-col-num" data-i18n="reqLog.col.cost">费用</th>
+              <th class="req-col-num" data-i18n="reqLog.col.ttft">首字耗时</th>
+              <th class="req-col-num" data-i18n="reqLog.col.duration">耗时</th>
+              <th class="req-col-num" data-i18n="reqLog.col.speed">速度</th>
+              <th class="req-col-status" data-i18n="reqLog.col.status">状态</th>
+            </tr>
+          </thead>
+          <tbody id="req-live-tbody"></tbody>
+        </table>
+        <div id="req-live-empty" class="req-live-empty" style="display:none" data-i18n="reqLog.empty">当前筛选条件下暂无请求记录</div>
+      </div>
+      <div id="req-live-more-wrap" class="req-live-more-wrap" style="display:none">
+        <button id="btn-req-live-more" class="req-load-more-btn" type="button"></button>
+      </div>
     </div>
 
     <!-- 专属 Token 统计页（包含卡片统计、热力图与调色抽屉，费用模式下完全不渲染） -->

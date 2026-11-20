@@ -29,7 +29,8 @@ const {
   applyContextUnlock,
   applyContextUnlockAsync,
   restoreContextUnlock,
-  restoreContextUnlockAsync
+  restoreContextUnlockAsync,
+  syncPricingCatalogAsync
 } = require('./meter-collector');
 const { isValidExternalUrl } = require('./meter-core');
 const { PROJECT_VERSION } = require('./modules-config');
@@ -49,7 +50,8 @@ const MAIN_CAPABILITIES = {
   checkUpdate: true,
   applyUpdate: true,
   restartHost: true,
-  hotReload: true
+  hotReload: true,
+  syncPricing: true
 };
 
 const {
@@ -890,6 +892,16 @@ function registerMeterIpcHandlers(ipcMain) {
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
       const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
       return await dispatchAccountsAction(mgr, payload || {});
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:sync-pricing', async (event, opts) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      return await syncPricingCatalogAsync({ force: opts?.force !== false });
     } catch (e) {
       return { ok: false, error: e.message };
     }
