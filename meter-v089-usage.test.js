@@ -1346,3 +1346,79 @@ test('动态价格前端交互：dynamicPricingCatalog 水合即时回算未计�
     core.setCustomPricingCatalog({});
   }
 });
+
+test('耗时与速度延迟回填回归：transcript 先落盘入缓存且账本仅含半程 ttftSec，随后 .db 落盘时无需改 transcript 即可补齐完整耗时与速度', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-late-db-timing-'));
+  const agDir = path.join(rootDir, 'antigravity');
+  const cid = '77777777-7777-7777-7777-777777777777';
+  const logsDir = path.join(agDir, 'brain', cid, '.system_generated', 'logs');
+  const convDir = path.join(agDir, 'conversations');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(convDir, { recursive: true });
+
+  try {
+    const tPath = path.join(logsDir, 'transcript.jsonl');
+    const createdIso = '2026-11-20T12:06:38.000Z';
+    fs.writeFileSync(tPath, JSON.stringify({
+      step_index: 5,
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: createdIso,
+      model: 'gemini-4-neon',
+      input_tokens: 8100,
+      cache_read_tokens: 240000,
+      output_tokens: 600
+    }) + '\n');
+
+    // 模拟流式初期仅入账了 ttftSec=2.0（尚无 streamingSec / streamingTps）
+    collector.recordModelCalls([{
+      callId: `${cid}#5`,
+      cascadeId: cid,
+      stepIndex: 5,
+      source: 'desktop',
+      model: 'gemini-4-neon',
+      inputTokens: 8100,
+      cacheReadTokens: 240000,
+      outputTokens: 600,
+      totalTokens: 248700,
+      ttftSec: 2.0,
+      durationSec: 2.0,
+      status: 'final',
+      date: '2026-11-20',
+      created_at: createdIso,
+      timestamp: Date.parse(createdIso)
+    }], { agDir, allowSynthetic: true });
+
+    // 第一次扫描：此时 .db 尚未写入，transcriptFileCache 缓存该文件，仅有半程 ttftSec=2.0
+    const res1 = await collector.collectTokenHistoryAsync({ agDir, force: true });
+    assert.equal(res1.recentRequestLogs.length, 1);
+    assert.equal(res1.recentRequestLogs[0].ttftSec, 2);
+    assert.equal(res1.recentRequestLogs[0].streamingSec, null);
+    assert.equal(res1.recentRequestLogs[0].streamingTps, null);
+
+    // 随后 .db 落盘完整 gen_metadata（ttftSec=2, streamSec=4），且 transcript.jsonl 的 size/mtimeMs 完全不变
+    const dbPath = path.join(convDir, `${cid}.db`);
+    const db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE gen_metadata (id INTEGER PRIMARY KEY, data BLOB);');
+    const insertStmt = db.prepare('INSERT INTO gen_metadata (data) VALUES (?)');
+    insertStmt.run(buildGenMetadataRowBlob({
+      stepIndex: 5,
+      responseId: 'resp-late-5',
+      model: 'gemini-4-neon',
+      modelLabel: 'Gemini 4 Neon (XHigh)',
+      ttftSec: 2,
+      streamSec: 4
+    }));
+    db.close();
+
+    // 第二次扫描：即使 transcript.jsonl 未变，也必须重查 .db 并把半程 2s 升级为完整 6s 与 150 tok/s
+    const res2 = await collector.collectTokenHistoryAsync({ agDir, force: true });
+    assert.equal(res2.recentRequestLogs.length, 1);
+    assert.equal(res2.recentRequestLogs[0].ttftSec, 2);
+    assert.equal(res2.recentRequestLogs[0].streamingSec, 4);
+    assert.equal(res2.recentRequestLogs[0].durationSec, 6);
+    assert.equal(res2.recentRequestLogs[0].streamingTps, 150);
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});

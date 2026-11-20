@@ -14767,11 +14767,18 @@ function closeAllDropdowns(exceptWrap = null) {
 
   function collectMergedRequestLogs() {
     const byId = new Map();
+    const stepKeyToId = new Map();
+    const makeStepLookupKey = (rec) => {
+      if (!rec || !rec.cascadeId || !Number.isInteger(rec.stepIndex) || rec.stepIndex < 0) return '';
+      return `${rec.source || 'desktop'}:${String(rec.cascadeId).toLowerCase()}#${rec.stepIndex}`;
+    };
     const persisted = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentRequestLogs) ? ANTIGRAVITY_TOKEN_DATA.recentRequestLogs : [];
     for (const r of persisted) {
       if (!r || typeof r !== 'object') continue;
       const k = String(r.callId || `${r.source || 'desktop'}:${r.cascadeId || ''}:${r.stepIndex ?? ''}:${r.timestamp || 0}`);
       byId.set(k, r);
+      const sk = makeStepLookupKey(r);
+      if (sk && !stepKeyToId.has(sk)) stepKeyToId.set(sk, k);
     }
 
     const curAcctScope = ANTIGRAVITY_TOKEN_DATA.rawPayload?.accountScopeKey || accountsUiState?.overview?.activeAccountScopeKey || null;
@@ -14779,15 +14786,38 @@ function closeAllDropdowns(exceptWrap = null) {
       for (const raw of state.sessionCalls) {
         const liveRec = buildLiveCallOverlayRecord(raw, curAcctScope);
         if (!liveRec) continue;
-        const k = String(liveRec.callId || `${liveRec.source}:${liveRec.cascadeId || ''}:${liveRec.stepIndex ?? ''}:${liveRec.timestamp}`);
-        const prev = byId.get(k);
+        let k = String(liveRec.callId || `${liveRec.source}:${liveRec.cascadeId || ''}:${liveRec.stepIndex ?? ''}:${liveRec.timestamp}`);
+        let prev = byId.get(k);
+        if (!prev) {
+          const sk = makeStepLookupKey(liveRec);
+          const mappedKey = sk ? stepKeyToId.get(sk) : null;
+          if (mappedKey && byId.has(mappedKey)) {
+            const cand = byId.get(mappedKey);
+            const candIsFallback = String(cand?.callId || '').includes('#');
+            const liveIsFallback = String(liveRec.callId || '').includes('#');
+            const sameUsage = Number(cand?.inputTokens || 0) === Number(liveRec.inputTokens || 0)
+              && Number(cand?.outputTokens || 0) === Number(liveRec.outputTokens || 0);
+            if (candIsFallback || liveIsFallback || sameUsage) {
+              prev = cand;
+              if (candIsFallback && !liveIsFallback && liveRec.callId) {
+                byId.delete(mappedKey);
+                stepKeyToId.set(sk, k);
+              } else {
+                k = mappedKey;
+              }
+            }
+          }
+        }
         if (!prev) {
           byId.set(k, liveRec);
+          const sk = makeStepLookupKey(liveRec);
+          if (sk && !stepKeyToId.has(sk)) stepKeyToId.set(sk, k);
         } else {
           // 合并实时流式或更完整数据，不丢已有账号归属与计时
           byId.set(k, {
             ...prev,
             ...liveRec,
+            callId: (!String(prev.callId || '').includes('#') && prev.callId) ? prev.callId : (liveRec.callId || prev.callId),
             accountScopeKey: prev.accountScopeKey || liveRec.accountScopeKey || null,
             ttftSec: liveRec.ttftSec ?? prev.ttftSec ?? null,
             streamingSec: liveRec.streamingSec ?? prev.streamingSec ?? null,

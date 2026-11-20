@@ -1573,32 +1573,33 @@ function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitSt
   const preservedExactId = incomingEntry.modelExactId || baseEntry.modelExactId;
   const preservedLabel = incomingEntry.modelLabel || baseEntry.modelLabel;
   const preservedEffort = incomingEntry.effort || baseEntry.effort;
-  const hasIncomingTiming = incomingEntry.ttftSec != null || incomingEntry.streamingSec != null || incomingEntry.durationSec != null;
-  const keepSpeed = (!hasSpeedMetrics(baseEntry) && hasSpeedMetrics(incomingEntry) && isValidSpeedSample(incomingEntry))
-    ? {
-      ...(incomingEntry.ttftSec != null ? { ttftSec: incomingEntry.ttftSec } : {}),
-      ...(incomingEntry.streamingSec != null ? { streamingSec: incomingEntry.streamingSec } : {}),
-      ...(incomingEntry.durationSec != null ? { durationSec: incomingEntry.durationSec } : {}),
-      ...(incomingEntry.tps != null ? { tps: incomingEntry.tps } : {}),
-      ...(incomingEntry.streamingTps != null ? { streamingTps: incomingEntry.streamingTps } : {}),
-      ...(incomingEntry.origin ? { origin: incomingEntry.origin } : {})
-    }
-    : (hasSpeedMetrics(baseEntry)
-      ? {
-        ...(baseEntry.ttftSec != null ? { ttftSec: baseEntry.ttftSec } : (incomingEntry.ttftSec != null ? { ttftSec: incomingEntry.ttftSec } : {})),
-        ...(baseEntry.streamingSec != null ? { streamingSec: baseEntry.streamingSec } : (incomingEntry.streamingSec != null ? { streamingSec: incomingEntry.streamingSec } : {})),
-        ...(baseEntry.durationSec != null ? { durationSec: baseEntry.durationSec } : (incomingEntry.durationSec != null ? { durationSec: incomingEntry.durationSec } : {})),
-        ...(baseEntry.tps != null ? { tps: baseEntry.tps } : {}),
-        ...(baseEntry.streamingTps != null ? { streamingTps: baseEntry.streamingTps } : (incomingEntry.streamingTps != null && isValidSpeedSample(baseEntry) ? { streamingTps: incomingEntry.streamingTps } : {})),
-        ...(baseEntry.origin ? { origin: baseEntry.origin } : {})
-      }
-      : (hasIncomingTiming
-        ? {
-          ...(incomingEntry.ttftSec != null ? { ttftSec: incomingEntry.ttftSec } : {}),
-          ...(incomingEntry.streamingSec != null ? { streamingSec: incomingEntry.streamingSec } : {}),
-          ...(incomingEntry.durationSec != null ? { durationSec: incomingEntry.durationSec } : {})
-        }
-        : {}));
+  const mergedTtft = baseEntry.ttftSec ?? incomingEntry.ttftSec ?? null;
+  const mergedStream = baseEntry.streamingSec ?? incomingEntry.streamingSec ?? null;
+  const mergedDur = (baseEntry.streamingSec == null && incomingEntry.streamingSec != null && incomingEntry.durationSec != null)
+    ? incomingEntry.durationSec
+    : (baseEntry.durationSec ?? incomingEntry.durationSec ?? (
+      (mergedTtft != null && mergedStream != null) ? Number((Number(mergedTtft) + Number(mergedStream)).toFixed(2)) : null
+    ));
+  const candidateForSpeedCheck = {
+    ...baseEntry,
+    ...incomingEntry,
+    outputTokens: out,
+    ...(mergedTtft != null ? { ttftSec: mergedTtft } : {}),
+    ...(mergedStream != null ? { streamingSec: mergedStream } : {}),
+    ...(mergedDur != null ? { durationSec: mergedDur } : {})
+  };
+  const validMergedSpeed = isValidSpeedSample(baseEntry) || isValidSpeedSample(incomingEntry) || isValidSpeedSample(candidateForSpeedCheck);
+  const mergedTps = baseEntry.tps ?? (validMergedSpeed ? (incomingEntry.tps ?? null) : null);
+  const mergedStreamingTps = baseEntry.streamingTps ?? (validMergedSpeed ? (incomingEntry.streamingTps ?? null) : null);
+  const mergedOrigin = baseEntry.origin || (validMergedSpeed ? incomingEntry.origin : undefined);
+  const keepSpeed = {
+    ...(mergedTtft != null ? { ttftSec: mergedTtft } : {}),
+    ...(mergedStream != null ? { streamingSec: mergedStream } : {}),
+    ...(mergedDur != null ? { durationSec: mergedDur } : {}),
+    ...(mergedTps != null ? { tps: mergedTps } : {}),
+    ...(mergedStreamingTps != null ? { streamingTps: mergedStreamingTps } : {}),
+    ...(mergedOrigin ? { origin: mergedOrigin } : {})
+  };
 
   // 保留账号归属元数据，避免后续无账号扫描富化抹除已确认的账号归属
   const attributionMerged = mergeAccountAttributionFields(baseEntry, incomingEntry);
@@ -5434,6 +5435,12 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
 
       if (cachedFile && cachedFile.size === st.size && cachedFile.mtimeMs === st.mtimeMs) {
         fileRecords = cachedFile.records;
+        if (cachedFile.hasPendingDbMeta !== false) {
+          backfillMissingModelsFromConversationDb(fileRecords, job.convDir, options);
+          cachedFile.hasPendingDbMeta = fileRecords.some(
+            r => r && r.tot > 0 && (needsDbLabelEnrichment(r) || !r.modelExactId || r.ttftSec == null || r.streamingSec == null)
+          );
+        }
       } else {
         fileRecords = [];
         const brainMatch = String(job.path).match(/[\\/]brain[\\/]([^\\/]+)[\\/]/i);
@@ -5531,11 +5538,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
           }
         }
         backfillMissingModelsFromConversationDb(fileRecords, job.convDir, options);
+        const hasPendingDbMeta = fileRecords.some(
+          r => r && r.tot > 0 && (needsDbLabelEnrichment(r) || !r.modelExactId || r.ttftSec == null || r.streamingSec == null)
+        );
         if (transcriptFileCache.size > 1000) {
           const oldestKey = transcriptFileCache.keys().next().value;
           if (oldestKey) transcriptFileCache.delete(oldestKey);
         }
-        transcriptFileCache.set(job.path, { size: st.size, mtimeMs: st.mtimeMs, records: fileRecords });
+        transcriptFileCache.set(job.path, { size: st.size, mtimeMs: st.mtimeMs, records: fileRecords, hasPendingDbMeta });
       }
 
       const jobConvNorm = job.convDir ? (process.platform === 'win32' ? path.resolve(job.convDir).toLowerCase() : path.resolve(job.convDir)) : '';
@@ -5892,7 +5902,9 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     const speedEnriched = (c.ttftSec == null && merged.ttftSec != null)
       || (c.streamingSec == null && merged.streamingSec != null)
       || (c.durationSec == null && merged.durationSec != null)
-      || (c.tps == null && merged.tps != null);
+      || (c.streamingSec == null && merged.streamingSec != null && Number(merged.durationSec) > Number(c.durationSec || 0))
+      || (c.tps == null && merged.tps != null)
+      || (c.streamingTps == null && merged.streamingTps != null);
 
     if (keyChanged || modelEnriched || usageEnriched || stepEnriched || cascadeEnriched || dateEnriched || statusEnriched || pricingEnriched || speedEnriched) {
       ledgerEnrichmentCalls.push(merged);
