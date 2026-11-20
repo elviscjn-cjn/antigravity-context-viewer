@@ -239,12 +239,12 @@
   let allowBetaUpdates = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.9-beta.1';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.9';
   function formatDisplayVersion(rawVer) {
     const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
     const buildDisplay = typeof METER_DISPLAY_VERSION !== 'undefined' && METER_DISPLAY_VERSION
       ? String(METER_DISPLAY_VERSION).trim()
-      : '0.8.9 β';
+      : '0.8.9';
     if (!clean) return buildDisplay;
     const normalizedCurrent = String(METER_RENDERER_VERSION || '').replace(/^v/i, '').trim();
     if (normalizedCurrent && clean === normalizedCurrent) return buildDisplay;

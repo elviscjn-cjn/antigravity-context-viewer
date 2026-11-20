@@ -85,7 +85,7 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
-          TITLE=$(node -e "const p=require('./package.json'); const tag=process.env.REF_NAME||''; const dv=(p.displayVersion||'').trim(); console.log((dv && tag==='v'+p.version) ? 'v'+dv : (tag || 'v'+p.version));")
+          TITLE=$(node -e "const tag=process.env.REF_NAME||''; if (tag==='v0.8.9') { console.log('v0.8.9 · 第 1 批'); process.exit(0); } const p=require('./package.json'); const dv=(p.displayVersion||'').trim(); console.log((dv && tag==='v'+p.version) ? (dv.startsWith('v')?dv:'v'+dv) : (tag || 'v'+p.version));")
           IS_PRE=$(node -e "const tag=process.env.REF_NAME||''; console.log(/-beta/i.test(tag) ? 'true' : 'false');")
           echo "release_title=$TITLE" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"

@@ -1,4 +1,4 @@
-# v0.8.9 β
+# v0.8.9
 
 **简体中文** · [English](#english)
 
@@ -29,7 +29,7 @@
 - 主题与中断修复. 修复浅色主题热力图配色方向. 同步推荐配置磁盘真实状态. 上下文取消归类为中性中断.
 
 ### 版本与致谢
-- 版本说明. 语义化版本 0.8.9-beta.1. 界面展示 0.8.9 β. 支持预发布版本对比与测试更新通道. 安装或升级前请退出 Antigravity 客户端后执行 node cli.js install.
+- 版本说明. 内部语义化版本号 0.8.9. 界面展示 0.8.9. 升级前请先完全退出 Antigravity 客户端后执行 node cli.js install.
 - 贡献者致谢. 感谢 @yuanyang749 提交 PR #57 贡献过滤第三方本地预览页与多 origin 容错探测. 感谢 @feizaodemon 提交 PR #52 贡献 Gemini 4 Neon 与 2.33 统一配额池匹配. 感谢 @Tswatery 提交 PR #53 与 PR #38 贡献浅色主题热力图配色修复及上下文取消中性中断归类. 感谢 @Kisaragi-Mio-0127 提交 PR #47 修复推荐配置复选框磁盘状态同步. 感谢 @JYPYYy 提交 PR #35 贡献 CLI 上下文解锁分析与 128K Gate 3A 参考. 感谢 @Nymph-Beta 提交 Issue #42 与 PR #43 协助定位 macOS 2.33 无 CDP 窗口探测.
 
 </details>
@@ -61,7 +61,7 @@
 - Theme and interruption fixes. Fixed light-theme heatmap polarity. synced recommended settings checkboxes with on-disk state. and classified context cancellations as neutral interruptions.
 
 ### Version & Acknowledgments
-- Release info. Semantic version 0.8.9-beta.1. display version 0.8.9 β. Supports prerelease comparison and beta update channel. Fully quit Antigravity desktop before running node cli.js install.
+- Release info. Semantic version 0.8.9. display version 0.8.9. Fully quit Antigravity desktop before running node cli.js install.
 - Contributor credits. Thanks to @yuanyang749 for PR #57 filtering third-party local preview pages and adding multi-origin discovery. Thanks to @feizaodemon for PR #52 adding Gemini 4 Neon and 2.33 unified quota pool matching. Thanks to @Tswatery for PR #53 and PR #38 fixing light-theme heatmap colors and classifying context cancellations as neutral interruptions. Thanks to @Kisaragi-Mio-0127 for PR #47 syncing recommended settings checkboxes with on-disk state. Thanks to @JYPYYy for PR #35 contributing CLI context unlock analysis and 128K Gate 3A references. Thanks to @Nymph-Beta for Issue #42 and PR #43 helping diagnose CDP-free window discovery on macOS 2.33.
 
 </details>
