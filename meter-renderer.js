@@ -124,13 +124,15 @@
     splitModelDisplayAndEffort,
     resolvePlaceholderModelInfo
   } = (globalThis.__AGContextMeterCore || {});
-  const VALID_DOCK_POSITIONS = ['flow', 'aux', 'hide'];
+  const VALID_DOCK_POSITIONS = ['flow'];
   const VALID_QUOTA_WINDOW_MODES = ['auto', '5h', 'weekly', 'both'];
   let dockPosition = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_dock_position') : null;
-      if (saved === 'fixed' || saved === 'page') return 'flow';
-      return VALID_DOCK_POSITIONS.includes(saved) ? saved : 'flow';
+      if (saved && saved !== 'flow') {
+        localStorage.setItem('ag_dock_position', 'flow');
+      }
+      return 'flow';
     } catch { return 'flow'; }
   })();
   let dockFallbackReason = '';
@@ -287,15 +289,7 @@
       width:100% !important;max-width:100% !important;max-height:none !important;margin-top:6px;
       box-shadow:none;
     }
-    :host([data-dock="hide"]) .ag-unit:not(#badge-dock-wake){
-      display:none !important;
-    }
-    .ag-dock-wake{
-      width:24px;height:24px;padding:0;border-radius:999px;font-size:13px;
-      background:var(--ag-unified-bg);border:1px solid var(--ag-float-border);
-      box-shadow:var(--ag-float-shadow);opacity:0.75;
-    }
-    .ag-dock-wake:hover,.ag-dock-wake:focus-visible{ opacity:1; }
+
 
     /* 窗口非活动状态适度降低顶栏对比度 */
     :host([data-window-active="false"]) .ag-unit{
@@ -2738,9 +2732,7 @@
   </svg>
 </button>
 
-<!-- hide 模式下轻量边缘唤醒按钮 -->
-<button id="badge-dock-wake" class="ag-unit ag-dock-wake" type="button" hidden aria-label="唤醒插件菜单与设置"
-  data-i18n-aria="settings.dock.wakeAria" title="顶栏已隐藏 · 点击打开快捷菜单或恢复显示" data-i18n-title="settings.dock.wakeTitle">◔</button>
+
 
 <!-- CLI 启动反馈提示气泡 -->
 <div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
@@ -3454,10 +3446,7 @@
         <div class="ctx-small-label" data-i18n="settings.dock.label">面板与顶栏停靠位置</div>
         <div id="dock-pos-segmented" class="ctx-segmented ctx-seg-wrap" role="group" aria-label="面板停靠位置">
           <button id="btn-dock-flow" class="ctx-seg-btn active" type="button" data-dock-mode="flow" data-i18n="settings.dock.flow">顶栏默认靠在打开 IDE 左侧</button>
-          <button id="btn-dock-aux" class="ctx-seg-btn" type="button" data-dock-mode="aux" data-i18n="settings.dock.aux">右侧辅助栏内嵌</button>
-          <button id="btn-dock-hide" class="ctx-seg-btn" type="button" data-dock-mode="hide" data-i18n="settings.dock.hide">隐藏</button>
         </div>
-        <div id="dock-fallback-note" class="ctx-dock-note" hidden></div>
         <div class="ctx-small-label" style="margin-top:8px" data-i18n="settings.quotaBadgeMode.label">顶栏额度窗口显示（右键/Alt+点击切换）</div>
         <div id="quota-mode-segmented" class="ctx-segmented ctx-seg-wrap" role="group" aria-label="顶栏额度窗口">
           <button id="btn-quota-mode-auto" class="ctx-seg-btn active" type="button" data-quota-window-mode="auto" data-i18n="settings.quotaBadgeMode.auto">自动 (最紧缩)</button>
@@ -5693,12 +5682,6 @@ const PANEL_I18N = {
   'settings.appearance.title': { 'zh-CN': '🎨 外观、停靠位置与顶栏偏好', 'zh-TW': '🎨 外觀、停靠位置與頂欄偏好', en: '🎨 Appearance, Dock & Topbar Preferences' },
   'settings.dock.label': { 'zh-CN': '面板与顶栏停靠位置', 'zh-TW': '面板與頂欄停靠位置', en: 'Panel & Topbar Dock Position' },
   'settings.dock.flow': { 'zh-CN': '顶栏默认靠在打开 IDE 左侧', 'zh-TW': '頂欄預設靠在開啟 IDE 左側', en: 'Top bar (Left of Open IDE)' },
-  'settings.dock.aux': { 'zh-CN': '右侧辅助栏内嵌', 'zh-TW': '右側輔助欄內嵌', en: 'Embedded in aux sidebar' },
-  'settings.dock.hide': { 'zh-CN': '隐藏', 'zh-TW': '隱藏', en: 'Hide' },
-  'settings.dock.fallbackAux': { 'zh-CN': '右侧辅助栏当前未展开. 点击此处可立即展开并挂载.', 'zh-TW': '右側輔助欄目前未展開. 點擊此處可立即展開並掛載.', en: 'Auxiliary sidebar is currently collapsed. Click here to expand and mount.' },
-  'settings.dock.fallbackPage': { 'zh-CN': '主编辑区当前不可用. 顶栏保持在会话顶栏.', 'zh-TW': '主編輯區目前無法使用. 頂欄保持在會話頂欄.', en: 'Editor container unavailable. Keeping top bar in titlebar.' },
-  'settings.dock.wakeAria': { 'zh-CN': '唤醒插件菜单与设置', 'zh-TW': '喚醒外掛選單與設定', en: 'Open extension menu and settings' },
-  'settings.dock.wakeTitle': { 'zh-CN': '顶栏已隐藏 · 点击打开快捷菜单或恢复显示', 'zh-TW': '頂欄已隱藏 · 點擊開啟捷徑選單或恢復顯示', en: 'Topbar hidden · Click to open menu or restore' },
   'settings.quotaBadgeMode.label': { 'zh-CN': '顶栏额度窗口显示（右键/Alt+点击切换）', 'zh-TW': '頂欄額度視窗顯示（右鍵/Alt+點擊切換）', en: 'Topbar Quota Window (Right-click / Alt+Click)' },
   'settings.quotaBadgeMode.auto': { 'zh-CN': '自动 (最紧缩)', 'zh-TW': '自動 (最緊縮)', en: 'Auto (Tightest)' },
   'settings.quotaBadgeMode.5h': { 'zh-CN': '5h 窗口', 'zh-TW': '5h 視窗', en: '5h Window' },
@@ -10896,48 +10879,28 @@ function formatPeriodCalendarLabel(currentPeriod) {
     if (seg) {
       for (const btn of Array.from(seg.children || [])) {
         const mode = btn.getAttribute?.('data-dock-mode');
-        const active = mode === dockPosition;
+        const active = mode === 'flow' || mode === dockPosition;
         btn.classList?.toggle?.('active', active);
         btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
       }
     }
     const noteEl = el('dock-fallback-note');
     if (noteEl) {
-      if (dockFallbackReason === 'aux') {
-        noteEl.hidden = false;
-        noteEl.textContent = t('settings.dock.fallbackAux');
-      } else {
-        noteEl.hidden = true;
-        noteEl.textContent = '';
-      }
-    }
-    const wakeBtn = el('badge-dock-wake');
-    if (wakeBtn) {
-      wakeBtn.hidden = dockPosition !== 'hide';
+      noteEl.hidden = true;
+      noteEl.textContent = '';
     }
   }
 
   function syncDockedPanelsAttribute() {
-    const effectiveDock = host.getAttribute?.('data-dock') || 'flow';
-    const isEmbeddedPane = effectiveDock === 'aux';
     for (const id of ['panel', 'panel-tokens', 'panel-quota']) {
       const p = el(id);
       if (!p) continue;
-      if (isEmbeddedPane && !p.hidden) {
-        p.setAttribute?.('data-panel-docked', 'true');
-        p.style.position = 'static';
-        p.style.top = '';
-        p.style.left = '';
-        p.style.right = '';
-      } else {
-        p.removeAttribute?.('data-panel-docked');
-      }
+      p.removeAttribute?.('data-panel-docked');
     }
   }
 
   function setDockPosition(mode, opts = {}) {
-    const normalized = (mode === 'fixed' || mode === 'page') ? 'flow' : mode;
-    const next = VALID_DOCK_POSITIONS.includes(normalized) ? normalized : 'flow';
+    const next = 'flow';
     dockPosition = next;
     try {
       if (typeof localStorage !== 'undefined') localStorage.setItem('ag_dock_position', next);
@@ -10960,41 +10923,14 @@ function formatPeriodCalendarLabel(currentPeriod) {
     }
     dockFallbackReason = '';
 
-    if (dockPosition === 'hide') {
-      const fallbackParent = document.body || document.documentElement;
-      if (fallbackParent && host.parentElement !== fallbackParent) {
-        fallbackParent.appendChild(host);
-      }
-      host.setAttribute('data-dock', 'hide');
-      host.style.position = 'fixed';
-      host.style.top = 'auto';
-      host.style.bottom = '14px';
-      host.style.right = '14px';
-      syncDockPositionUi();
-      syncDockedPanelsAttribute();
-      return;
-    }
-
-    if (dockPosition === 'aux') {
-      const auxEl = findAuxSidebarContainer();
-      if (auxEl) {
-        if (host.parentElement !== auxEl) {
-          if (auxEl.firstChild) auxEl.insertBefore(host, auxEl.firstChild);
-          else auxEl.appendChild(host);
-        }
-        host.setAttribute('data-dock', 'aux');
-        host.style.right = '';
-        host.style.top = '';
-        host.style.bottom = '';
-        host.style.position = 'static';
-        syncDockPositionUi();
-        syncDockedPanelsAttribute();
-        updateResponsiveLayout(layoutMeasurementDirty);
-        return;
-      }
-      // 右侧辅助面板未展开时：平滑保持在顶栏，绝不乱飞至窗口顶部，并给出引导
-      dockFallbackReason = 'aux';
-    }
+    try {
+      host.style.removeProperty?.('z-index');
+      host.style.removeProperty?.('pointer-events');
+      host.style.removeProperty?.('left');
+    } catch { }
+    host.style.zIndex = '';
+    host.style.pointerEvents = '';
+    host.style.left = '';
 
     // 默认或回退模式：始终内联锚定在会话标题栏右侧打开 IDE 左侧三个点的左边同一水平线上
     syncWindowControlsOverlay();
@@ -11750,23 +11686,10 @@ function formatPeriodCalendarLabel(currentPeriod) {
     openContextSettings?.({ openColors: true });
   });
   el('btn-panel-tokens-palette')?.addEventListener('click', () => toggleTokenColorsDrawer());
-  el('badge-dock-wake')?.addEventListener('click', () => toggleOverflowMenu());
   el('dock-pos-segmented')?.addEventListener('click', e => {
     const btn = e.target?.closest?.('[data-dock-mode]');
     const mode = btn?.getAttribute?.('data-dock-mode');
     if (mode) setDockPosition(mode, { persist: true });
-  });
-  el('dock-fallback-note')?.addEventListener('click', () => {
-    try {
-      const toggleBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
-      if (toggleBtn) {
-        toggleBtn.click();
-        setTimeout(() => {
-          ensureHostDocked();
-          syncDockPositionUi();
-        }, 60);
-      }
-    } catch { }
   });
   el('quota-mode-segmented')?.addEventListener('click', e => {
     const btn = e.target?.closest?.('[data-quota-window-mode]');
@@ -22595,8 +22518,8 @@ function closeAllDropdowns(exceptWrap = null) {
           if (chkBeta) chkBeta.checked = allowBetaUpdates;
         }
         const savedDock = settingsRes.dockPosition || settingsRes.uiPreferences?.dockPosition;
-        if (savedDock && VALID_DOCK_POSITIONS.includes(savedDock) && savedDock !== dockPosition) {
-          setDockPosition(savedDock, { persist: false });
+        if (savedDock && savedDock !== 'flow') {
+          setDockPosition('flow', { persist: true });
         } else {
           syncDockPositionUi();
         }

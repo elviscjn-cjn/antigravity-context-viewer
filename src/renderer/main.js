@@ -121,13 +121,15 @@
     splitModelDisplayAndEffort,
     resolvePlaceholderModelInfo
   } = (globalThis.__AGContextMeterCore || {});
-  const VALID_DOCK_POSITIONS = ['flow', 'aux', 'hide'];
+  const VALID_DOCK_POSITIONS = ['flow'];
   const VALID_QUOTA_WINDOW_MODES = ['auto', '5h', 'weekly', 'both'];
   let dockPosition = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_dock_position') : null;
-      if (saved === 'fixed' || saved === 'page') return 'flow';
-      return VALID_DOCK_POSITIONS.includes(saved) ? saved : 'flow';
+      if (saved && saved !== 'flow') {
+        localStorage.setItem('ag_dock_position', 'flow');
+      }
+      return 'flow';
     } catch { return 'flow'; }
   })();
   let dockFallbackReason = '';
@@ -727,48 +729,28 @@
     if (seg) {
       for (const btn of Array.from(seg.children || [])) {
         const mode = btn.getAttribute?.('data-dock-mode');
-        const active = mode === dockPosition;
+        const active = mode === 'flow' || mode === dockPosition;
         btn.classList?.toggle?.('active', active);
         btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
       }
     }
     const noteEl = el('dock-fallback-note');
     if (noteEl) {
-      if (dockFallbackReason === 'aux') {
-        noteEl.hidden = false;
-        noteEl.textContent = t('settings.dock.fallbackAux');
-      } else {
-        noteEl.hidden = true;
-        noteEl.textContent = '';
-      }
-    }
-    const wakeBtn = el('badge-dock-wake');
-    if (wakeBtn) {
-      wakeBtn.hidden = dockPosition !== 'hide';
+      noteEl.hidden = true;
+      noteEl.textContent = '';
     }
   }
 
   function syncDockedPanelsAttribute() {
-    const effectiveDock = host.getAttribute?.('data-dock') || 'flow';
-    const isEmbeddedPane = effectiveDock === 'aux';
     for (const id of ['panel', 'panel-tokens', 'panel-quota']) {
       const p = el(id);
       if (!p) continue;
-      if (isEmbeddedPane && !p.hidden) {
-        p.setAttribute?.('data-panel-docked', 'true');
-        p.style.position = 'static';
-        p.style.top = '';
-        p.style.left = '';
-        p.style.right = '';
-      } else {
-        p.removeAttribute?.('data-panel-docked');
-      }
+      p.removeAttribute?.('data-panel-docked');
     }
   }
 
   function setDockPosition(mode, opts = {}) {
-    const normalized = (mode === 'fixed' || mode === 'page') ? 'flow' : mode;
-    const next = VALID_DOCK_POSITIONS.includes(normalized) ? normalized : 'flow';
+    const next = 'flow';
     dockPosition = next;
     try {
       if (typeof localStorage !== 'undefined') localStorage.setItem('ag_dock_position', next);
@@ -791,41 +773,14 @@
     }
     dockFallbackReason = '';
 
-    if (dockPosition === 'hide') {
-      const fallbackParent = document.body || document.documentElement;
-      if (fallbackParent && host.parentElement !== fallbackParent) {
-        fallbackParent.appendChild(host);
-      }
-      host.setAttribute('data-dock', 'hide');
-      host.style.position = 'fixed';
-      host.style.top = 'auto';
-      host.style.bottom = '14px';
-      host.style.right = '14px';
-      syncDockPositionUi();
-      syncDockedPanelsAttribute();
-      return;
-    }
-
-    if (dockPosition === 'aux') {
-      const auxEl = findAuxSidebarContainer();
-      if (auxEl) {
-        if (host.parentElement !== auxEl) {
-          if (auxEl.firstChild) auxEl.insertBefore(host, auxEl.firstChild);
-          else auxEl.appendChild(host);
-        }
-        host.setAttribute('data-dock', 'aux');
-        host.style.right = '';
-        host.style.top = '';
-        host.style.bottom = '';
-        host.style.position = 'static';
-        syncDockPositionUi();
-        syncDockedPanelsAttribute();
-        updateResponsiveLayout(layoutMeasurementDirty);
-        return;
-      }
-      // 右侧辅助面板未展开时：平滑保持在顶栏，绝不乱飞至窗口顶部，并给出引导
-      dockFallbackReason = 'aux';
-    }
+    try {
+      host.style.removeProperty?.('z-index');
+      host.style.removeProperty?.('pointer-events');
+      host.style.removeProperty?.('left');
+    } catch { }
+    host.style.zIndex = '';
+    host.style.pointerEvents = '';
+    host.style.left = '';
 
     // 默认或回退模式：始终内联锚定在会话标题栏右侧打开 IDE 左侧三个点的左边同一水平线上
     syncWindowControlsOverlay();
@@ -1581,23 +1536,10 @@
     openContextSettings?.({ openColors: true });
   });
   el('btn-panel-tokens-palette')?.addEventListener('click', () => toggleTokenColorsDrawer());
-  el('badge-dock-wake')?.addEventListener('click', () => toggleOverflowMenu());
   el('dock-pos-segmented')?.addEventListener('click', e => {
     const btn = e.target?.closest?.('[data-dock-mode]');
     const mode = btn?.getAttribute?.('data-dock-mode');
     if (mode) setDockPosition(mode, { persist: true });
-  });
-  el('dock-fallback-note')?.addEventListener('click', () => {
-    try {
-      const toggleBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
-      if (toggleBtn) {
-        toggleBtn.click();
-        setTimeout(() => {
-          ensureHostDocked();
-          syncDockPositionUi();
-        }, 60);
-      }
-    } catch { }
   });
   el('quota-mode-segmented')?.addEventListener('click', e => {
     const btn = e.target?.closest?.('[data-quota-window-mode]');
@@ -10556,8 +10498,8 @@
           if (chkBeta) chkBeta.checked = allowBetaUpdates;
         }
         const savedDock = settingsRes.dockPosition || settingsRes.uiPreferences?.dockPosition;
-        if (savedDock && VALID_DOCK_POSITIONS.includes(savedDock) && savedDock !== dockPosition) {
-          setDockPosition(savedDock, { persist: false });
+        if (savedDock && savedDock !== 'flow') {
+          setDockPosition('flow', { persist: true });
         } else {
           syncDockPositionUi();
         }

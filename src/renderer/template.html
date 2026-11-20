@@ -74,9 +74,7 @@
   </svg>
 </button>
 
-<!-- hide 模式下轻量边缘唤醒按钮 -->
-<button id="badge-dock-wake" class="ag-unit ag-dock-wake" type="button" hidden aria-label="唤醒插件菜单与设置"
-  data-i18n-aria="settings.dock.wakeAria" title="顶栏已隐藏 · 点击打开快捷菜单或恢复显示" data-i18n-title="settings.dock.wakeTitle">◔</button>
+
 
 <!-- CLI 启动反馈提示气泡 -->
 <div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
@@ -790,10 +788,7 @@
         <div class="ctx-small-label" data-i18n="settings.dock.label">面板与顶栏停靠位置</div>
         <div id="dock-pos-segmented" class="ctx-segmented ctx-seg-wrap" role="group" aria-label="面板停靠位置">
           <button id="btn-dock-flow" class="ctx-seg-btn active" type="button" data-dock-mode="flow" data-i18n="settings.dock.flow">顶栏默认靠在打开 IDE 左侧</button>
-          <button id="btn-dock-aux" class="ctx-seg-btn" type="button" data-dock-mode="aux" data-i18n="settings.dock.aux">右侧辅助栏内嵌</button>
-          <button id="btn-dock-hide" class="ctx-seg-btn" type="button" data-dock-mode="hide" data-i18n="settings.dock.hide">隐藏</button>
         </div>
-        <div id="dock-fallback-note" class="ctx-dock-note" hidden></div>
         <div class="ctx-small-label" style="margin-top:8px" data-i18n="settings.quotaBadgeMode.label">顶栏额度窗口显示（右键/Alt+点击切换）</div>
         <div id="quota-mode-segmented" class="ctx-segmented ctx-seg-wrap" role="group" aria-label="顶栏额度窗口">
           <button id="btn-quota-mode-auto" class="ctx-seg-btn active" type="button" data-quota-window-mode="auto" data-i18n="settings.quotaBadgeMode.auto">自动 (最紧缩)</button>

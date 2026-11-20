@@ -10,7 +10,7 @@
 - 修复账本归属纠偏无限生成 .bak 备份问题. 仅在账本语义内容或版本号变更时备份. 单账本最多轮转保留最近 3 份. 并在升级安装时清理历史堆积仅保留最新 1 份.
 - 将账本与设置目录文件锁改为异步非阻塞机制. 支持超时控制. 空锁保护与过期或死进程锁自动回收. 消除事件循环阻塞.
 - 修复 CLI 启动器传递无效 `-keyring-unavailable` 参数问题. 改为无损凭据交接启动.
-- 修复顶栏胶囊缩略或开关右侧辅助面板时乱飞与卡顿（Issue #54）. 顶栏组件始终内联锚定在会话标题栏右侧打开 IDE 按钮左侧同一水平线上. 彻底移除延迟瞬移的 flow 与 fixed 定时器切换. 停靠选项精简为大白话设置（顶栏默认靠在打开 IDE 左侧. 右侧辅助栏内嵌. 隐藏）. 并在右侧栏未展开时提供一键展开挂载引导.
+- 修复顶栏胶囊缩略或开关右侧辅助面板时乱飞与卡顿（Issue #54）. 顶栏组件始终内联锚定在会话标题栏右侧打开 IDE 按钮左侧同一水平线上. 彻底移除延迟瞬移的 flow 与 fixed 定时器切换. 停靠位置收口为顶栏默认显示并自动安全回退历史配置. 移除试验性未成熟入口避免操作锁死.
 - 适配 Antigravity 2.33 的 Customizations 等非会话全屏子视图顶栏避让（Issue #59）. 确保绝不遮挡原生返回. 搜索与操作按钮.
 - 修复顶栏配额窗口切换无反应问题. 点击任一窗口选项或右键切换时立即从 buckets 重算并当场刷新.
 - 合入 PR #57 过滤内置浏览器打开的第三方本地预览页并支持多 origin 容错连接.
@@ -39,7 +39,7 @@ This beta release focuses on storage reliability fixes. full terminal CLI usage 
 - Fixed unbounded `.bak` accumulation during ledger attribution repair. Backups now trigger only on actual ledger content or repair-version changes. retain the latest 3 copies per ledger. and prune historical backlog to the latest 1 copy on upgrade.
 - Replaced blocking lock waits with an asynchronous non-blocking file lock featuring timeout handling. empty-lock grace protection. and stale or dead-process reclamation.
 - Fixed CLI launcher passing invalid `-keyring-unavailable` argument. switched to lossless credential handoff.
-- Fixed top bar badge shifting and jitter when collapsing or toggling the auxiliary sidebar (Issue #54). The top bar host is inline-anchored directly to the left of the Open IDE button on the session titlebar line. Docking options are simplified to intuitive settings (top bar inline with Open IDE. right auxiliary sidebar embedded. and hidden). with one-click sidebar expansion guidance when unexpanded.
+- Fixed top bar badge shifting and jitter when collapsing or toggling the auxiliary sidebar (Issue #54). The top bar host is inline-anchored directly to the left of the Open IDE button on the session titlebar line. Docking position is streamlined to the verified default top bar inline mode with automatic safe rollback of legacy configurations. Experimental unverified docking options have been removed to prevent interface lockouts.
 - Adapted top bar layout for non-conversation full-screen subviews in Antigravity 2.33 such as Customizations (Issue #59). preventing overlap with native back. search. or action buttons.
 - Fixed quota badge window switching responsiveness. Selecting any window option or right-clicking immediately recalculates from pool buckets and updates the badge.
 - Merged PR #57 to ignore third-party preview webviews opened in the built-in browser and support resilient multi-origin discovery.

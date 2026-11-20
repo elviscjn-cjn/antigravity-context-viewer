@@ -94,7 +94,37 @@ function harness(scanSession = session(), extraSandbox = null) {
   };
   const host = element(); host.attachShadow = () => ({ set innerHTML(value) {}, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
   const pending = [], scans = [], timers = [];
-  const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), getElementById: id => docElements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); }, ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {}) };
+  const docListeners = new Map();
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    document: {
+      createElement: () => element(),
+      getElementById: id => docElements.get(id) || null,
+      documentElement: { appendChild() {} },
+      addEventListener(type, fn) {
+        if (!docListeners.has(type)) docListeners.set(type, new Set());
+        docListeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        docListeners.get(type)?.delete(fn);
+      },
+      dispatchEvent(ev) {
+        const type = ev?.type || ev;
+        for (const fn of (docListeners.get(type) || [])) fn(ev);
+      },
+      hidden: false
+    },
+    window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } },
+    __AGContextMeterCore: core,
+    AbortController,
+    Date,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval(callback) { timers.push(callback); return 1; },
+    clearInterval() {},
+    fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); },
+    ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {})
+  };
   // First createElement call is the host; later calls are safe text-only file rows.
   let first = true; sandbox.document.createElement = () => { if (first) { first = false; return host; } return element(); };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
@@ -6165,26 +6195,19 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
     assert.equal(h.elements.get('panel').hidden, false);
     assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
 
-    // 3. 大白话 3 档停靠位置切换（顶栏默认靠在打开 IDE 左侧、右侧辅助栏内嵌、隐藏）
+    // 3. 停靠位置收口为顶栏默认靠在打开 IDE 左侧 (安全回退 flow)
     mockQueryMode = 'none';
     api.setDockPosition('aux');
-    assert.equal(api.getDockPosition().dockPosition, 'aux');
-    assert.equal(api.getDockPosition().actualDock, 'flow', '右侧栏未展开时平滑留在顶栏打开 IDE 左侧，绝不飞至窗口最上方');
-    assert.equal(h.elements.get('dock-fallback-note').hidden, false);
+    assert.equal(api.getDockPosition().dockPosition, 'flow', '历史或外部传入 aux 自动安全回退到 flow');
+    assert.equal(api.getDockPosition().actualDock, 'flow');
 
     mockQueryMode = 'aux';
-    api.setDockPosition('aux');
-    assert.equal(api.getDockPosition().actualDock, 'aux');
-    assert.equal(h.elements.get('panel').getAttribute('data-panel-docked'), 'true');
-    assert.equal(h.elements.get('dock-fallback-note').hidden, true);
-
     api.setDockPosition('hide');
-    assert.equal(api.getDockPosition().actualDock, 'hide');
-    assert.equal(h.elements.get('badge-dock-wake').hidden, false);
+    assert.equal(api.getDockPosition().dockPosition, 'flow', '历史或外部传入 hide 自动安全回退到 flow');
+    assert.equal(api.getDockPosition().actualDock, 'flow');
 
     api.setDockPosition('flow');
-    assert.equal(h.elements.get('badge-dock-wake').hidden, true);
-    assert.ok(savedPayloads.some(p => p.dockPosition === 'hide'));
+    assert.equal(api.getDockPosition().dockPosition, 'flow');
 
     // 4. Issue #41 顶栏额度窗口模式 4 选 1 (auto / 5h / weekly / both) 逐一点按 DOM 按钮与右键/Alt+点击切换
     const nowQuotaTs = Date.now();
@@ -6644,4 +6667,45 @@ test('Issue #54 & Issue #59: 顶栏内联锚定打开 IDE 左侧、右侧辅助�
   clickQuotaMode('auto');
   assert.equal(h.elements.get('quota-badge-dual').hidden, true);
   assert.equal(h.elements.get('quota-badge-val').textContent, '42%', '点按自动按钮立即根据 buckets 选出最紧缩 42%');
+});
+
+test('停靠模式最小化收口: 历史写入 hide 或 aux 自动安全回退为顶栏默认 flow 显示, 界面仅保留验稳选项', async () => {
+  const extraSandbox = {
+    localStorage: {
+      _store: new Map([['ag_dock_position', 'hide']]),
+      getItem(k) { return this._store.get(k) || null; },
+      setItem(k, v) { this._store.set(k, String(v)); },
+      removeItem(k) { this._store.delete(k); }
+    }
+  };
+  const h = harness(undefined, extraSandbox);
+  const api = h.sandbox.__AGContextMeter;
+
+  try {
+    // 1. 初始化时历史配置 hide 自动纠偏为 flow
+    assert.equal(api.getDockPosition().dockPosition, 'flow', '本地历史写入 hide 时初始化自动回退到 flow');
+    assert.equal(api.getDockPosition().actualDock, 'flow', '实际挂载始终保持为顶栏默认显示');
+    assert.equal(extraSandbox.localStorage.getItem('ag_dock_position'), 'flow', 'localStorage 纠偏写回 flow');
+
+    // 2. 外部即使再尝试设置 aux 或 hide，也一律安全规范为 flow
+    api.setDockPosition('aux');
+    assert.equal(api.getDockPosition().dockPosition, 'flow');
+    assert.equal(api.getDockPosition().actualDock, 'flow');
+
+    api.setDockPosition('hide');
+    assert.equal(api.getDockPosition().dockPosition, 'flow');
+    assert.equal(api.getDockPosition().actualDock, 'flow');
+
+    // 3. 静态模板门禁: 验证 template.html 中已彻底移除未成熟的 aux、hide 及展开挂载提示条
+    const templatePath = path.resolve(__dirname, 'src/renderer/template.html');
+    const templateHtml = fs.readFileSync(templatePath, 'utf8');
+    assert.ok(templateHtml.includes('id="btn-dock-flow"'), '必须保留默认顶栏按钮 btn-dock-flow');
+    assert.ok(!templateHtml.includes('id="btn-dock-aux"'), '必须移除 btn-dock-aux');
+    assert.ok(!templateHtml.includes('id="btn-dock-hide"'), '必须移除 btn-dock-hide');
+    assert.ok(!templateHtml.includes('id="dock-fallback-note"'), '必须移除 dock-fallback-note');
+    assert.ok(!templateHtml.includes('id="badge-dock-wake"'), '必须移除 badge-dock-wake');
+    assert.ok(!templateHtml.includes('id="dock-toast"'), '必须移除 dock-toast');
+  } finally {
+    try { api.dispose(); } catch {}
+  }
 });
