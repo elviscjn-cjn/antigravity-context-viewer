@@ -550,7 +550,7 @@ test('CLI 启动模块 10: resolveCliAccountProfile 独立账号解析、凭据�
   }
 });
 
-test('CLI 启动模块 11: launchCliSession 与 cli.js launch-cli --account 隔离环境变量与 -keyring-unavailable 注入', async () => {
+test('CLI 启动模块 11: launchCliSession 与 cli.js launch-cli --account 隔离环境变量与无损凭据交接启动', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-launch-acc-'));
   try {
     const stateDir = path.join(tmpDir, 'state');
@@ -583,7 +583,7 @@ test('CLI 启动模块 11: launchCliSession 与 cli.js launch-cli --account 隔�
     assert.equal(dryRes.ok, true);
     assert.equal(dryRes.account, 'isolated_user@gmail.com');
     assert.equal(dryRes.keyringBypassed, true);
-    assert.ok(dryRes.args.includes('-keyring-unavailable'));
+    assert.equal(dryRes.args.includes('-keyring-unavailable'), false);
     assert.equal(dryRes.env.JETSKI_APP_DATA_DIR, dryRes.isolatedDir);
     assert.equal(dryRes.env.JETSKI_OAUTH_TOKEN, 'mock_token_iso');
     assert.equal(dryRes.env.AG_CLI_ACCOUNT_EMAIL, 'isolated_user@gmail.com');
@@ -608,7 +608,7 @@ test('CLI 启动模块 11: launchCliSession 与 cli.js launch-cli --account 隔�
     assert.equal(parsedOut.ok, true);
     assert.equal(parsedOut.account, 'isolated_user@gmail.com');
     assert.equal(parsedOut.keyringBypassed, true);
-    assert.ok(parsedOut.args.includes('-keyring-unavailable'));
+    assert.equal(parsedOut.args.includes('-keyring-unavailable'), false);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
