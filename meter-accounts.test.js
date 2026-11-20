@@ -2251,3 +2251,297 @@ test('v0.8.8 非 CDP 切号与回滚对称: shared origin 更新、daemon hub �
     fs.rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test('ELV-89 回归: 新调用带修复版本号不触发反复备份，且全生命周期最多保留一份迁移前备份', async () => {
+  const agDir = makeTempDir('acm-elv89-nobak-ag-');
+  const stateDir = makeTempDir('acm-elv89-nobak-st-');
+  try {
+    const email = 'acct-nobak@example.com';
+    const scopeKey = accountsMod.buildAccountScopeKey(email);
+    const nowMs = Date.now();
+    const sessionStart = nowMs - 3600000;
+    const today = collector.formatLocalDateKey(new Date(nowMs));
+    const accountSessions = [
+      { accountScopeKey: scopeKey, email, startAtMs: sessionStart, lastVerifiedAtMs: nowMs, endAtMs: null, source: 'test' }
+    ];
+
+    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify({
+      version: 1,
+      activeAccountEmail: email,
+      accounts: {
+        [email]: { email, accessToken: 'tok-nobak', refreshToken: 'ref-nobak' }
+      },
+      accountSessions
+    }));
+
+    const listBackups = () => fs.readdirSync(agDir).filter(f => f.startsWith('pricing_ledger_v1.json.bak-pre-elv89-'));
+    const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+
+    // 1. 通过 recordModelCalls 写入已在当前会话窗口核实的新调用：自带 elv89-v3 版本号，多次轮询零备份且不降级置信度
+    const verifiedTs = nowMs - 10000;
+    const recRes1 = collector.recordModelCalls([{
+      callId: 'req_verified_new',
+      cascadeId: 'ffffffff-0000-0000-0000-000000000001',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 1000,
+      cacheTokens: 2000,
+      outputTokens: 300,
+      totalTokens: 3300,
+      date: today,
+      created_at: new Date(verifiedTs).toISOString(),
+      timestamp: verifiedTs
+    }], { agDir, accountSessions });
+    assert.equal(recRes1.ok, true);
+
+    const afterRec = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(afterRec.calls.req_verified_new.accountScopeKey, scopeKey);
+    assert.equal(afterRec.calls.req_verified_new.accountAttributionConfidence, 'session_window_verified');
+    assert.equal(afterRec.calls.req_verified_new.attributionRepairVersion, 'elv89-v3');
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 0, '已核实新调用不得触发 .bak-pre-elv89 备份');
+
+    const afterPoll = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(afterPoll.calls.req_verified_new.accountAttributionConfidence, 'session_window_verified');
+
+    // 2. 3 分钟保护期内的 live_confirmed_account 新调用不得触发自动迁移或备份
+    const liveRecRes = collector.recordModelCalls([{
+      callId: 'req_live_protected',
+      cascadeId: 'ffffffff-0000-0000-0000-000000000002',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 500,
+      cacheTokens: 0,
+      outputTokens: 100,
+      totalTokens: 600,
+      date: today,
+      liveRealtimeConfirmed: true
+    }], {
+      agDir,
+      accountSessions,
+      liveConfirmedAccount: { email, verifiedAtMs: nowMs }
+    });
+    assert.equal(liveRecRes.ok, true);
+
+    const afterLive = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(afterLive.calls.req_live_protected.accountAttributionConfidence, 'live_confirmed_account');
+    assert.equal(afterLive.calls.req_live_protected.attributionRepairVersion, undefined);
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 0, '3 分钟保护期内的 live_confirmed_account 不得触发重复迁移备份');
+
+    // 3. 首次真实历史迁移生成 1 份备份后，后续过保护期或 keepalive/explicit_email 补写版本号仍正常落盘但绝不追加第 2 份备份
+    const curLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    curLedger.calls.req_legacy_unversioned = {
+      callId: 'req_legacy_unversioned',
+      cascadeId: 'ffffffff-0000-0000-0000-000000000003',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 400,
+      cacheTokens: 0,
+      outputTokens: 80,
+      totalTokens: 480,
+      date: today,
+      created_at: new Date(nowMs - 600000).toISOString(),
+      timestamp: nowMs - 600000,
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'session_window_verified'
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(curLedger));
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 1, '首次历史迁移应生成且仅生成 1 份 .bak-pre-elv89 备份');
+
+    const withExpiredAndHardBound = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    withExpiredAndHardBound.calls.req_expired_live = {
+      callId: 'req_expired_live',
+      cascadeId: 'ffffffff-0000-0000-0000-000000000004',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 300,
+      cacheTokens: 0,
+      outputTokens: 50,
+      totalTokens: 350,
+      date: today,
+      created_at: new Date(nowMs - 300000).toISOString(),
+      timestamp: nowMs - 300000,
+      updatedAt: nowMs - 300000,
+      liveObservedAtMs: nowMs - 300000,
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'live_confirmed_account'
+    };
+    withExpiredAndHardBound.calls.req_legacy_keepalive = {
+      callId: 'req_legacy_keepalive',
+      cascadeId: 'ffffffff-0000-0000-0000-000000000005',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 10,
+      cacheTokens: 0,
+      outputTokens: 5,
+      totalTokens: 15,
+      date: today,
+      isKeepalive: true,
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'keepalive_bound'
+    };
+    withExpiredAndHardBound.calls.req_legacy_explicit = {
+      callId: 'req_legacy_explicit',
+      cascadeId: 'ffffffff-0000-0000-0000-000000000006',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 20,
+      cacheTokens: 0,
+      outputTokens: 5,
+      totalTokens: 25,
+      date: today,
+      accountEmail: email,
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'explicit_account_email'
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(withExpiredAndHardBound));
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+
+    const afterSecondRepair = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(afterSecondRepair.calls.req_expired_live.attributionRepairVersion, 'elv89-v3');
+    assert.equal(afterSecondRepair.calls.req_expired_live.accountAttributionConfidence, 'repaired_session_window');
+    assert.equal(afterSecondRepair.calls.req_legacy_keepalive.attributionRepairVersion, 'elv89-v3');
+    assert.equal(afterSecondRepair.calls.req_legacy_explicit.attributionRepairVersion, 'elv89-v3');
+    assert.equal(listBackups().length, 1, '后续修复与版本号落盘不得追加第二份 .bak-pre-elv89 备份');
+
+    // 4. 空操作调用 repairAndMigrateAccountLedger（无改动、非 force）不生成新备份
+    const noopRes = collector.repairAndMigrateAccountLedger({ agDir, accountSessions });
+    assert.equal(noopRes.ok, true);
+    assert.equal(noopRes.updatedCount, 0);
+    assert.equal(noopRes.backupPath, null);
+    assert.equal(listBackups().length, 1);
+  } finally {
+    fs.rmSync(agDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('ELV-89 备份保留上限、符号链接防护、路径清洗与存量自动清理', async () => {
+  const parentDir = makeTempDir('acm-elv89-prune-parent-');
+  const agDir = path.join(parentDir, 'ag');
+  const stateDir = path.join(parentDir, 'state');
+  const agDirAuto = path.join(parentDir, 'ag-auto');
+  fs.mkdirSync(agDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(agDirAuto, { recursive: true });
+
+  try {
+    const email = 'acct-prune@example.com';
+    const scopeKey = accountsMod.buildAccountScopeKey(email);
+    const nowMs = Date.now();
+    const today = collector.formatLocalDateKey(new Date(nowMs));
+    const accountSessions = [
+      { accountScopeKey: scopeKey, email, startAtMs: nowMs - 3600000, lastVerifiedAtMs: nowMs, endAtMs: null, source: 'test' }
+    ];
+    const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+    fs.writeFileSync(ledgerPath, JSON.stringify({
+      version: 1,
+      calls: {
+        req_keep: {
+          callId: 'req_keep',
+          cascadeId: 'ffffffff-0000-0000-0000-000000000010',
+          stepIndex: 1,
+          source: 'desktop',
+          model: 'gemini-4-hydrogen',
+          inputTokens: 100,
+          cacheTokens: 0,
+          outputTokens: 20,
+          totalTokens: 120,
+          date: today,
+          created_at: new Date(nowMs - 10000).toISOString(),
+          timestamp: nowMs - 10000,
+          accountScopeKey: scopeKey,
+          accountAttributionConfidence: 'session_window_verified',
+          attributionRepairVersion: 'elv89-v3'
+        }
+      }
+    }));
+
+    const listRegularBackups = (dir) => fs.readdirSync(dir).filter(f => {
+      if (!f.startsWith('pricing_ledger_v1.json.bak-pre-elv89-')) return false;
+      const st = fs.lstatSync(path.join(dir, f));
+      return st.isFile() && !st.isSymbolicLink();
+    });
+
+    // 1. force 连续触发 7 次备份，自动保留上限 MAX_ATTRIBUTION_REPAIR_BACKUPS (5)
+    assert.equal(collector.MAX_ATTRIBUTION_REPAIR_BACKUPS, 5);
+    for (let i = 1; i <= 7; i++) {
+      const res = collector.repairAndMigrateAccountLedger({
+        agDir,
+        accountSessions,
+        force: true,
+        backupSuffix: `f${i}`
+      });
+      assert.equal(res.ok, true);
+      const t = new Date(nowMs - (10 - i) * 1000);
+      fs.utimesSync(res.backupPath, t, t);
+    }
+    assert.equal(listRegularBackups(agDir).length, 5, '强制备份后保留数量必须封顶为 5 份');
+
+    // 2. backupSuffix 路径穿越字符清洗，绝不写到 agDir 之外
+    const traversalRes = collector.repairAndMigrateAccountLedger({
+      agDir,
+      accountSessions,
+      force: true,
+      backupSuffix: '../escape/test'
+    });
+    assert.equal(traversalRes.ok, true);
+    assert.equal(path.dirname(traversalRes.backupPath), path.resolve(agDir));
+    assert.equal(fs.existsSync(path.join(parentDir, 'escape')), false);
+    assert.equal(listRegularBackups(agDir).length, 5);
+
+    // 3. 符号链接与无关文件安全防护
+    const externalTarget = path.join(stateDir, 'outside-secret.txt');
+    fs.writeFileSync(externalTarget, 'do-not-delete');
+    const symlinkBackup = path.join(agDir, 'pricing_ledger_v1.json.bak-pre-elv89-symlink');
+    fs.symlinkSync(externalTarget, symlinkBackup);
+    const unrelatedFile = path.join(agDir, 'pricing_ledger_v1.json.other');
+    fs.writeFileSync(unrelatedFile, 'keep-me');
+
+    const pruneRes = collector.pruneAttributionRepairBackups(ledgerPath, 2);
+    assert.equal(pruneRes.keptCount, 2);
+    assert.equal(pruneRes.prunedCount, 3);
+    assert.equal(listRegularBackups(agDir).length, 2);
+    assert.equal(fs.lstatSync(symlinkBackup).isSymbolicLink(), true, '符号链接不得被删除');
+    assert.equal(fs.readFileSync(externalTarget, 'utf8'), 'do-not-delete', '外部目标文件不得受影响');
+    assert.equal(fs.readFileSync(unrelatedFile, 'utf8'), 'keep-me', '无关文件不得被删除');
+
+    // 4. collectTokenHistoryAsync 首次采集自动把存量 8 份超限备份清理至 5 份
+    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify({
+      version: 1,
+      activeAccountEmail: email,
+      accounts: {
+        [email]: { email, accessToken: 'tok-prune', refreshToken: 'ref-prune' }
+      },
+      accountSessions
+    }));
+    fs.writeFileSync(path.join(agDirAuto, 'pricing_ledger_v1.json'), fs.readFileSync(ledgerPath, 'utf8'));
+    for (let i = 1; i <= 8; i++) {
+      const p = path.join(agDirAuto, `pricing_ledger_v1.json.bak-pre-elv89-${1700000000000 + i}`);
+      fs.writeFileSync(p, '{}');
+      const t = new Date(nowMs - (20 - i) * 1000);
+      fs.utimesSync(p, t, t);
+    }
+    assert.equal(listRegularBackups(agDirAuto).length, 8);
+
+    await collector.collectTokenHistoryAsync({ agDir: agDirAuto, stateDir, wslRoots: [], force: true });
+    assert.equal(listRegularBackups(agDirAuto).length, 5, '首次采集应自动把存量超限备份清理到 5 份');
+  } finally {
+    fs.rmSync(parentDir, { recursive: true, force: true });
+  }
+});
