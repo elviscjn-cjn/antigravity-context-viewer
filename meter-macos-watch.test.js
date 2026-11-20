@@ -369,3 +369,37 @@ test('stopWatchDaemon 清理锁文件并支持单实例接管信号中断', asyn
   assert.equal(stopRes.ok, true);
   assert.equal(stopRes.watchPid, null);
 });
+
+test('discoverAntigravityCdp 与 connect 自动过滤内置浏览器打开的第三方本地预览页', async (t) => {
+  const { connect } = require('./local-api');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cdp-filter-preview-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const previewSrv = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end('<html><head><title>Preview App</title></head><body><div>Local Dev Page</div></body></html>');
+  });
+  await new Promise(r => previewSrv.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => previewSrv.close(r)));
+  const previewOrigin = `http://127.0.0.1:${previewSrv.address().port}`;
+
+  const mock = createMockCdpServer();
+  await new Promise(r => mock.server.listen(0, '127.0.0.1', r));
+  t.after(() => mock.close());
+  const port = mock.server.address().port;
+  const agOrigin = `http://127.0.0.1:${port}`;
+
+  mock.state.pages = [
+    { type: 'page', id: 'preview-page', title: 'Preview App', url: `${previewOrigin}/`, webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/preview-page` },
+    { type: 'page', id: 'ag-main', title: 'Antigravity', url: `${agOrigin}/c/33333333-3333-4333-8333-333333333333`, webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/ag-main` }
+  ];
+
+  const appDataDir = path.join(tmpDir, 'AppSupport');
+  const discovered = await discoverAntigravityCdp({ port, strictPort: true, appDataDir });
+  assert.equal(discovered.pages.length, 1);
+  assert.equal(discovered.page.id, 'ag-main');
+
+  const api = await connect({ port, strictPort: true, appDataDir });
+  assert.equal(api.origin, agOrigin);
+  assert.deepEqual(api.origins, [agOrigin]);
+});
