@@ -155,6 +155,22 @@ function fetchJsonList(port, timeoutMs = 1500) {
 }
 
 /**
+ * 轻量探测本机回环页是否为 Antigravity 宿主窗口，以过滤内置浏览器打开的第三方本地预览页。
+ * 返回三态：'antigravity'（含 __APP_CONFIG__）、'other_http'（连上但无 __APP_CONFIG__ 或非 200）、'unreachable'（网络层不可达）
+ */
+async function probeAntigravityOrigin(origin, timeoutMs = 1200) {
+  try {
+    const html = await request(origin + '/', null, null, timeoutMs);
+    return /window\.__APP_CONFIG__\s*=/.test(String(html || '')) ? 'antigravity' : 'other_http';
+  } catch (err) {
+    if (String(err?.message || '').startsWith('HTTP ')) {
+      return 'other_http';
+    }
+    return 'unreachable';
+  }
+}
+
+/**
  * 探测并定位包含 Antigravity 本地主窗口页面的 CDP 端口与页面列表
  */
 async function discoverAntigravityCdp(options = {}) {
@@ -204,6 +220,34 @@ async function discoverAntigravityCdp(options = {}) {
         item => item && item.type === 'page' && Boolean(normalizeLoopbackOrigin(item.url))
       );
       if (matchedPages.length > 0) {
+        if (matchedPages.length > 1) {
+          const uniqueOrigins = Array.from(
+            new Set(matchedPages.map(item => normalizeLoopbackOrigin(item?.url)).filter(Boolean))
+          );
+          const originKinds = new Map();
+          const probeTimeoutMs = Math.min(timeoutMs, 1200);
+          await Promise.all(
+            uniqueOrigins.map(async origin => {
+              originKinds.set(origin, await probeAntigravityOrigin(origin, probeTimeoutMs));
+            })
+          );
+          const hasAntigravity = uniqueOrigins.some(origin => originKinds.get(origin) === 'antigravity');
+          if (hasAntigravity) {
+            const filtered = matchedPages.filter(
+              item => originKinds.get(normalizeLoopbackOrigin(item?.url)) !== 'other_http'
+            );
+            const prioritized = [
+              ...filtered.filter(item => originKinds.get(normalizeLoopbackOrigin(item?.url)) === 'antigravity'),
+              ...filtered.filter(item => originKinds.get(normalizeLoopbackOrigin(item?.url)) !== 'antigravity')
+            ];
+            return {
+              port,
+              page: prioritized[0],
+              pages: prioritized,
+              allPages
+            };
+          }
+        }
         return {
           port,
           page: matchedPages[0],
@@ -622,11 +666,21 @@ async function connect(options = {}) {
     return connectOrigin(explicitOrigin, null, [explicitOrigin]);
   }
   const { port, page, pages } = await discoverAntigravityCdp(options);
+  const candidatePages = Array.isArray(pages) && pages.length ? pages : [page];
   const origins = Array.from(
-    new Set((Array.isArray(pages) ? pages : [page]).map(item => normalizeLoopbackOrigin(item?.url)).filter(Boolean))
+    new Set(candidatePages.map(item => normalizeLoopbackOrigin(item?.url)).filter(Boolean))
   );
-  const targetOrigin = normalizeLoopbackOrigin(page.url);
-  return connectOrigin(targetOrigin, page, origins, { port, pages });
+  let lastError = null;
+  for (const cand of candidatePages) {
+    const targetOrigin = normalizeLoopbackOrigin(cand?.url);
+    if (!targetOrigin) continue;
+    try {
+      return await connectOrigin(targetOrigin, cand, origins, { port, pages });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
 }
 
 module.exports = {
