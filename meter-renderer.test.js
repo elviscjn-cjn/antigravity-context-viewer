@@ -6014,3 +6014,28 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
     try { api.dispose(); } catch {}
   }
 });
+test('Split Windows route: picks the focused conversation from /c/<id1>%2B<id2>?focused=<id>', () => {
+  const A = '11111111-1111-1111-1111-111111111111';
+  const B = '22222222-2222-2222-2222-222222222222';
+  const C = '33333333-3333-3333-3333-333333333333';
+  const h = harness();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, A);
+  h.sandbox.location.pathname = `/c/${A}%2B${B}`;
+  h.sandbox.location.search = `?project=outside-of-project&focused=${B}`;
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, B);
+  h.sandbox.location.pathname = `/c/${A}%2B${B}%2B${C}`;
+  h.sandbox.location.search = `?focused=${C}`;
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, C);
+  h.sandbox.location.search = '';
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, A, 'falls back to the first pane without focused');
+  h.sandbox.location.search = '?focused=44444444-4444-4444-4444-444444444444';
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, A, 'ignores a focused id that is not in the path');
+  h.sandbox.location.pathname = '/c/not-a-uuid';
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, null);
+  h.sandbox.__AGContextMeter.dispose();
+});

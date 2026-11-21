@@ -9218,7 +9218,23 @@ function formatPeriodCalendarLabel(currentPeriod) {
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
     streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
   };
-  const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
+  // 兼容 Split Windows：/c/<id1>%2B<id2>?focused=<id>，优先取当前聚焦面板的会话
+  const route = () => {
+    const m = location.pathname.match(/^\/c\/([^/?#]+)/i);
+    if (!m) return null;
+    let seg = m[1];
+    try { seg = decodeURIComponent(seg); } catch { }
+    const ids = seg.split('+').filter(s => /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(s));
+    if (!ids.length) return null;
+    let focused = null;
+    const fm = String(location.search || '').match(/[?&]focused=([^&#]*)/i);
+    if (fm) { try { focused = decodeURIComponent(fm[1]); } catch { focused = fm[1]; } }
+    if (focused) {
+      const hit = ids.find(id => id.toLowerCase() === focused.toLowerCase());
+      if (hit) return hit;
+    }
+    return ids[0];
+  };
   let activeHeatView = 'daily';
   let heatPageOffset = 0;
   let heatMonthOffset = 0;
