@@ -950,12 +950,12 @@ async function cmdCheck(customPath, cdpOptions = {}) {
 }
 
 const CLI_VALUE_FLAGS = new Set([
-  '--path', '--backup', '--port', '--proxy-url',
+  '--path', '--backup', '--port', '--proxy-url', '--bypass', '--out', '--name',
   '--mode', '--limit', '--tier', '--title', '--context', '--brand', '--lang'
 ]);
 
 const CLI_BOOLEAN_FLAGS = new Set([
-  '--force', '--all', '--no-cli-sync', '--no-sync', '--previous', '--in-place'
+  '--force', '--all', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
@@ -963,11 +963,11 @@ const CLI_KNOWN_COMMANDS = new Set([
   'unlock-status', 'unlock', 'unlock-restore',
   'enhance-status', 'enhance', 'enhance-restore',
   'modules', 'chinese:enable', 'chinese:disable',
-  'proxy:enable', 'proxy:disable', 'proxy:set', 'proxy:test',
+  'proxy:enable', 'proxy:disable', 'proxy:set', 'proxy:test', 'proxy:launch', 'proxy:launcher',
   'status', 'check'
 ]);
 
-const CLI_POS_ARG_COMMANDS = new Set(['proxy:set', 'proxy:test']);
+const CLI_POS_ARG_COMMANDS = new Set(['proxy:set', 'proxy:test', 'proxy:launch', 'proxy:launcher']);
 
 function printUsage() {
   console.log(`用法:
@@ -978,6 +978,8 @@ function printUsage() {
   node cli.js status [--port <port>]        查看安装状态与当前对话实时上下文用量
   node cli.js check [--port <port>]         执行前置环境健康检查
   node cli.js restore [--all]               一键无损卸载并恢复备份 (--all 含还原内核增强)
+  node cli.js proxy:launch [url] [--bypass <list>]   免改盘直接以本地代理启动 Antigravity（不改 app.asar，跨版本可用）
+  node cli.js proxy:launcher [url] [--no-shortcut]   生成独立免 TUN 启动器（Windows 默认附桌面快捷方式）
   node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文调整状态
   node cli.js unlock --mode <default|fixed|dynamic> [--limit N]  调整上下文长度上限
   node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制
@@ -1361,6 +1363,60 @@ async function main() {
     console.log(`  - 3. 实际网络连通: ${r.internetReachable ? '✅ 可访问公网' : '⚠️ 无法访问公网 (可能节点无境外连接)'}`);
     console.log(`  - 4. 真实模型请求: 待通过真实在线会话验证 (分层标定)`);
     if (r.error) console.log(`  ⚠️ 诊断提示: ${r.error}`);
+  } else if (cmd === 'proxy:launch' || cmd === 'proxy:launcher') {
+    const {
+      resolveAntigravityExecutable,
+      buildHostProxyLaunchSpec,
+      createStandaloneNoTunLauncher,
+      redactProxyUrl
+    } = require('./meter-proxy');
+    const { loadModulesConfig } = require('./modules-config');
+    const getFlagVal = (flag) => {
+      const idx = args.indexOf(flag);
+      return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
+    };
+    let posUrl = null;
+    for (let i = 1; i < args.length; i++) {
+      if (CLI_VALUE_FLAGS.has(args[i])) { i++; continue; }
+      if (args[i].startsWith('-')) continue;
+      posUrl = args[i];
+      break;
+    }
+    const cfg = loadModulesConfig();
+    const proxyUrl = getFlagVal('--proxy-url') || posUrl || cfg?.modules?.proxy?.proxyUrl || '';
+    const bypassFlag = getFlagVal('--bypass');
+    const noProxy = bypassFlag !== undefined ? bypassFlag : cfg?.modules?.proxy?.bypassList;
+
+    if (cmd === 'proxy:launch') {
+      const exePath = resolveAntigravityExecutable({ asarPath: customPath });
+      if (!exePath) throw new Error('未检测到 Antigravity 可执行文件，请通过 --path 指定 app.asar 路径');
+      const spec = buildHostProxyLaunchSpec({ proxyUrl, noProxy });
+      const child = spawn(exePath, spec.args, {
+        detached: true,
+        stdio: 'ignore',
+        env: spec.env,
+        windowsHide: false
+      });
+      child.unref();
+      console.log(`✅ 已免改盘启动 Antigravity (PID: ${child.pid || 'unknown'})`);
+      console.log(`   - 可执行文件: ${exePath}`);
+      console.log(`   - 本地代理: ${redactProxyUrl(spec.proxyUrl)}`);
+      console.log('   - 说明: 不修改 app.asar，Antigravity 自动升级后依然可用。');
+    } else {
+      const res = createStandaloneNoTunLauncher({
+        asarPath: customPath,
+        proxyUrl,
+        noProxy,
+        outDir: getFlagVal('--out'),
+        shortcutName: getFlagVal('--name'),
+        createShortcut: !args.includes('--no-shortcut')
+      });
+      console.log('✅ 已生成独立免 TUN 启动器（零改 app.asar，跨客户端升级有效）：');
+      console.log(`   - 启动脚本: ${res.launcherPath}`);
+      if (res.shortcutPath) console.log(`   - 桌面快捷方式: ${res.shortcutPath}`);
+      console.log(`   - 目标程序: ${res.exePath}`);
+      console.log(`   - 本地代理: ${redactProxyUrl(res.proxyUrl)}`);
+    }
   } else if (cmd === 'status') {
     await cmdStatus(customPath, cdpOptions);
   } else if (cmd === 'check') {
