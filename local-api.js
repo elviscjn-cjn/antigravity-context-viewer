@@ -1,11 +1,116 @@
 'use strict';
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const http = require('http');
 const https = require('https');
 const net = require('net');
 const crypto = require('crypto');
 const { getAppDataDir, isIsolatedTestPath } = require('./asar-engine');
+
+function isInIsolatedTestContext(options = {}) {
+  return (
+    Boolean(options && (options.appDataDir || options.homeDir || options.platform)) ||
+    process.env.AG_METER_TEST_MODE === '1' ||
+    isIsolatedTestPath(process.env.APPDATA) ||
+    isIsolatedTestPath(process.env.AG_METER_STATE_DIR)
+  );
+}
+
+function isPidAlive(pid) {
+  const num = Number(pid);
+  if (!Number.isInteger(num) || num <= 0) return false;
+  try {
+    process.kill(num, 0);
+    return true;
+  } catch (e) {
+    return Boolean(e && e.code === 'EPERM');
+  }
+}
+
+/**
+ * 扫描 ~/.gemini/antigravity/daemon/hub_*.json 中存活语言服务记录，按 mtimeMs 最新优先排序。
+ */
+function discoverDaemonHubOrigins(opts = {}) {
+  const daemonDir = opts.daemonDir || path.join(opts.homeDir || os.homedir(), '.gemini', 'antigravity', 'daemon');
+  const checkPidAlive = typeof opts.isPidAlive === 'function' ? opts.isPidAlive : isPidAlive;
+  const out = [];
+  try {
+    if (!fs.existsSync(daemonDir)) return out;
+    const files = fs.readdirSync(daemonDir);
+    for (const name of files) {
+      if (!/^hub_.*\.json$/i.test(name)) continue;
+      const filePath = path.join(daemonDir, name);
+      try {
+        const st = fs.statSync(filePath);
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const pid = Number(raw?.pid);
+        const httpsPort = Number(raw?.httpsPort);
+        const httpPort = Number(raw?.httpPort);
+        const csrfToken = typeof raw?.csrfToken === 'string' ? raw.csrfToken.trim() : '';
+        if (!Number.isInteger(httpsPort) || httpsPort < 1 || httpsPort > 65535) continue;
+        if (!csrfToken) continue;
+        if (!checkPidAlive(pid)) continue;
+        out.push({
+          origin: `https://127.0.0.1:${httpsPort}`,
+          httpsPort,
+          httpPort: Number.isInteger(httpPort) && httpPort >= 1 && httpPort <= 65535 ? httpPort : null,
+          csrfToken,
+          pid,
+          filePath,
+          mtimeMs: Number(st.mtimeMs) || 0
+        });
+      } catch { }
+    }
+  } catch { }
+  out.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (b.httpsPort - a.httpsPort));
+  return out;
+}
+
+/**
+ * 解析本机回环 origin 对应的 CSRF Token（适配 Antigravity v2.34+ 无静态 HTML csrfToken）：
+ * 1) 若运行在 Electron 主进程（同目录存在 ./authBootstrap）且 activeLsBaseUrl 匹配 targetOrigin，读取内存令牌；
+ * 2) 从 daemon/hub_*.json 匹配端口与协议相符且进程存活的最新记录（隔离测试态仅在显式传 daemonDir/homeDir 时扫描）。
+ */
+function resolveLocalCsrfTokenForOrigin(rawOrigin, options = {}) {
+  const origin = normalizeLoopbackOrigin(rawOrigin);
+  if (!origin) return null;
+
+  if (!options.skipAuthBootstrap) {
+    try {
+      const authBoot = typeof options.authBootstrap === 'object' && options.authBootstrap !== null
+        ? options.authBootstrap
+        : require('./authBootstrap');
+      const activeBase = typeof authBoot?.getActiveLsBaseUrl === 'function'
+        ? normalizeLoopbackOrigin(authBoot.getActiveLsBaseUrl())
+        : null;
+      const activeToken = typeof authBoot?.getActiveLsCsrfToken === 'function'
+        ? String(authBoot.getActiveLsCsrfToken() || '').trim()
+        : '';
+      if (activeToken && activeBase && activeBase === origin) {
+        return activeToken;
+      }
+    } catch { }
+  }
+
+  const hasExplicitDaemonLocation = Boolean(options.daemonDir || options.homeDir);
+  if (isInIsolatedTestContext(options) && !hasExplicitDaemonLocation) {
+    return null;
+  }
+
+  let targetPort = null;
+  try {
+    targetPort = parseExplicitPort(new URL(origin).port);
+  } catch { }
+  if (!targetPort) return null;
+
+  const hubs = discoverDaemonHubOrigins(options);
+  const preferHttps = origin.startsWith('https:');
+  const exactMatch = hubs.find(h => (preferHttps ? h.httpsPort === targetPort : h.httpPort === targetPort));
+  if (exactMatch) return exactMatch.csrfToken;
+  const fallbackMatch = hubs.find(h => h.httpsPort === targetPort || h.httpPort === targetPort);
+  return fallbackMatch ? fallbackMatch.csrfToken : null;
+}
 
 const LOOPBACK_ORIGIN_RE = /^https?:\/\/127\.0\.0\.1:(\d+)$/;
 
@@ -76,11 +181,7 @@ function getCandidateCdpPorts(options = {}) {
     if (options.strictPort === true) return ports;
   }
 
-  const inIsolatedTest =
-    Boolean(options && (options.appDataDir || options.homeDir || options.platform)) ||
-    process.env.AG_METER_TEST_MODE === '1' ||
-    isIsolatedTestPath(process.env.APPDATA) ||
-    isIsolatedTestPath(process.env.AG_METER_STATE_DIR);
+  const inIsolatedTest = isInIsolatedTestContext(options);
 
   if (!inIsolatedTest && options.includeCandidatePorts !== false) {
     for (const p of HANS_CANDIDATE_PORTS) add(p);
@@ -159,11 +260,7 @@ function fetchJsonList(port, timeoutMs = 1500) {
  */
 async function discoverAntigravityCdp(options = {}) {
   const explicit = parseExplicitPort(options.port ?? process.env.AG_CDP_PORT);
-  const inIsolatedTest =
-    Boolean(options && (options.appDataDir || options.homeDir || options.platform)) ||
-    process.env.AG_METER_TEST_MODE === '1' ||
-    isIsolatedTestPath(process.env.APPDATA) ||
-    isIsolatedTestPath(process.env.AG_METER_STATE_DIR);
+  const inIsolatedTest = isInIsolatedTestContext(options);
 
   const portFileInfo = inspectDevToolsActivePort(options);
   if (portFileInfo.error) {
@@ -542,7 +639,7 @@ async function extractAppConfigViaCdp(page) {
       'Runtime.evaluate',
       {
         expression:
-          '(() => { try { if (!window.__APP_CONFIG__) return null; return { hasConfig: true, csrfToken: window.__APP_CONFIG__.csrfToken || "" }; } catch (e) { return null; } })()',
+          '(() => { try { if (!window.__APP_CONFIG__) return null; let lsTok = ""; try { lsTok = window.localStorage ? (window.localStorage.getItem("agy_session_csrf_token") || "") : ""; } catch {} return { hasConfig: true, csrfToken: window.__APP_CONFIG__.csrfToken || lsTok || "" }; } catch (e) { return null; } })()',
         returnByValue: true
       },
       3000
@@ -558,7 +655,7 @@ async function extractAppConfigViaCdp(page) {
 /**
  * 解析并缓存或实时提取指定本地页面原点的 CSRF Token 并构造 RPC 客户端。
  */
-async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta = {}) {
+async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta = {}, options = {}) {
   const origin = normalizeLoopbackOrigin(rawOrigin);
   if (!origin) {
     throw new Error('非法的本机回环页面地址');
@@ -576,16 +673,21 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
     if (!page || !page.webSocketDebuggerUrl) throw err;
   }
 
-  if (!hasConfig && page && page.webSocketDebuggerUrl) {
+  if ((!hasConfig || !token) && page && page.webSocketDebuggerUrl) {
     const cdpCfg = await extractAppConfigViaCdp(page);
     if (cdpCfg && cdpCfg.hasConfig) {
       hasConfig = true;
-      token = cdpCfg.csrfToken;
+      if (!token && cdpCfg.csrfToken) {
+        token = cdpCfg.csrfToken;
+      }
     }
   }
 
   if (!hasConfig) {
     throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+  }
+  if (!token) {
+    token = resolveLocalCsrfTokenForOrigin(origin, options);
   }
   if (!token) {
     throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
@@ -619,14 +721,14 @@ async function connect(options = {}) {
     if (!explicitOrigin) {
       throw new Error('非法的本机回环页面地址');
     }
-    return connectOrigin(explicitOrigin, null, [explicitOrigin]);
+    return connectOrigin(explicitOrigin, null, [explicitOrigin], {}, options);
   }
   const { port, page, pages } = await discoverAntigravityCdp(options);
   const origins = Array.from(
     new Set((Array.isArray(pages) ? pages : [page]).map(item => normalizeLoopbackOrigin(item?.url)).filter(Boolean))
   );
   const targetOrigin = normalizeLoopbackOrigin(page.url);
-  return connectOrigin(targetOrigin, page, origins, { port, pages });
+  return connectOrigin(targetOrigin, page, origins, { port, pages }, options);
 }
 
 module.exports = {
@@ -634,6 +736,9 @@ module.exports = {
   connectOrigin,
   normalizeLoopbackOrigin,
   parseExplicitPort,
+  isPidAlive,
+  discoverDaemonHubOrigins,
+  resolveLocalCsrfTokenForOrigin,
   getAppDataDir,
   getDevToolsActivePort,
   getCandidateCdpPorts,

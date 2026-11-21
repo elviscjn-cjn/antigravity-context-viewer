@@ -22,6 +22,7 @@ const { URL } = require('url');
 const { execFileSync, spawnSync } = require('child_process');
 
 const { getStateDir, getAppDataDir } = require('./asar-engine');
+const { discoverDaemonHubOrigins } = require('./local-api');
 const { buildModelQuotaSnapshot, selectPrimaryQuotaBucket, getModelPoolKey, getSharedQuotaGroupKey } = require('./meter-core');
 const {
   applyProxyEnvironment,
@@ -3234,55 +3235,6 @@ function createAccountsManager(options = {}) {
 
 // 2000ms LS 重启冷却 + ~2-5s Go LS 绑定及状态初始化 + 窗口/daemon 刷新与网络轮询余量
 const DEFAULT_SWITCH_VERIFY_TIMEOUT_MS = 20000;
-
-function defaultIsPidAlive(pid) {
-  const num = Number(pid);
-  if (!Number.isInteger(num) || num <= 0) return false;
-  try {
-    process.kill(num, 0);
-    return true;
-  } catch (e) {
-    return e?.code === 'EPERM';
-  }
-}
-
-/**
- * 后备发现：从 ~/.gemini/antigravity/daemon/hub_*.json 扫描存活语言服务（pid 存活且按 mtimeMs 最新优先），
- * 仅在主进程无法通过活跃窗口 webContents 读取 URL 或旧端口失联时使用，不依赖 CDP / DevToolsActivePort。
- */
-function discoverDaemonHubOrigins(opts = {}) {
-  const daemonDir = opts.daemonDir || path.join(opts.homeDir || os.homedir(), '.gemini', 'antigravity', 'daemon');
-  const isPidAlive = typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive;
-  const out = [];
-  try {
-    if (!fs.existsSync(daemonDir)) return out;
-    const files = fs.readdirSync(daemonDir);
-    for (const name of files) {
-      if (!/^hub_.*\.json$/i.test(name)) continue;
-      const filePath = path.join(daemonDir, name);
-      try {
-        const st = fs.statSync(filePath);
-        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        const pid = Number(raw?.pid);
-        const httpsPort = Number(raw?.httpsPort);
-        const csrfToken = typeof raw?.csrfToken === 'string' ? raw.csrfToken.trim() : '';
-        if (!Number.isInteger(httpsPort) || httpsPort < 1 || httpsPort > 65535) continue;
-        if (!csrfToken) continue;
-        if (!isPidAlive(pid)) continue;
-        out.push({
-          origin: `https://127.0.0.1:${httpsPort}`,
-          httpsPort,
-          csrfToken,
-          pid,
-          filePath,
-          mtimeMs: Number(st.mtimeMs) || 0
-        });
-      } catch { }
-    }
-  } catch { }
-  out.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (b.httpsPort - a.httpsPort));
-  return out;
-}
 
 /**
  * 使用已知 origin 与 csrfToken 直接向本地 Antigravity Hub / LanguageServerService 发起 GetUserStatus，完全免 CDP。

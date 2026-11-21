@@ -2633,3 +2633,117 @@ test('隔离额度请求遇到窗口未就绪、CSRF 缺失及 401/403 鉴权失
   assert.notEqual(authFailRes.snapshot.activeStatus, 'exhausted');
   assert.notEqual(authFailRes.snapshot.activeStatus, 'no_permission');
 });
+
+test('Antigravity v2.34.0 空 HTML csrfToken 场景通过 daemon hub 与 authBootstrap 正常拉取额度与会话扫描', async (t) => {
+  const os = require('os');
+  const http = require('http');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-v234-csrf-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const daemonDir = path.join(tmpDir, 'daemon');
+  fs.mkdirSync(daemonDir, { recursive: true });
+
+  const futureIso = new Date(Date.now() + 3600000).toISOString();
+  let origin = '';
+  const server = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<script>window.__APP_CONFIG__ = {"productName":"antigravity","csrfToken":"","appVersion":"2.34.0"};</script>');
+      return;
+    }
+    const tok = req.headers['x-codeium-csrf-token'];
+    if (req.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') {
+      if (tok !== 'hub-v234-tok' && tok !== 'boot-v234-tok') {
+        res.statusCode = 401;
+        res.end('unauthorized');
+        return;
+      }
+      res.end(JSON.stringify({
+        userStatus: {
+          email: 'v234@example.com',
+          planStatus: { planInfo: { planName: 'Pro', teamsTier: 'TEAMS_TIER_PRO' } },
+          cascadeModelConfigData: {
+            clientModelConfigs: [
+              { label: 'Gemini 4 Hydrogen (High)', modelOrAlias: { model: 'gemini-4-hydrogen-high' }, quotaInfo: { remainingFraction: 0.9, resetTime: futureIso } }
+            ]
+          }
+        }
+      }));
+      return;
+    }
+    if (req.url === '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary') {
+      if (tok !== 'hub-v234-tok' && tok !== 'boot-v234-tok') {
+        res.statusCode = 401;
+        res.end('unauthorized');
+        return;
+      }
+      res.end(JSON.stringify({ response: { groups: [] } }));
+      return;
+    }
+    if (req.url === '/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory') {
+      if (tok !== 'hub-v234-tok') {
+        res.statusCode = 401;
+        res.end('unauthorized');
+        return;
+      }
+      res.end(JSON.stringify({ trajectory: { steps: [] }, numTotalSteps: 0, numTotalGeneratorMetadata: 0 }));
+      return;
+    }
+    if (req.url === '/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata') {
+      res.end(JSON.stringify({ generatorMetadata: [] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => server.close(r)));
+  const port = server.address().port;
+  origin = `http://127.0.0.1:${port}`;
+
+  fs.writeFileSync(path.join(daemonDir, `hub_${port}.json`), JSON.stringify({
+    pid: process.pid,
+    httpPort: port,
+    httpsPort: port + 1,
+    lsVersion: '2.34.0',
+    csrfToken: 'hub-v234-tok'
+  }), 'utf8');
+
+  // 1. fetchQuotaSnapshotFromHost 通过 daemon hub 回退获取额度成功
+  const quotaRes = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin,
+    connect: (opts) => connectLocalApi({ ...opts, daemonDir })
+  });
+  assert.equal(quotaRes.ok, true, 'v2.34.0 空 __APP_CONFIG__.csrfToken 应通过 daemon/hub_*.json 获取额度成功');
+  assert.equal(quotaRes.planTierSummary?.planName, 'Pro');
+  assert.equal(quotaRes._raw?.planStatus?.email, 'v234@example.com');
+
+  // 2. authBootstrap 精确匹配 origin 时优先采用内存令牌，失配 origin 时安全跳过
+  const apiMatched = await connectLocalApi({
+    origin,
+    authBootstrap: {
+      getActiveLsBaseUrl: () => origin,
+      getActiveLsCsrfToken: () => 'boot-v234-tok'
+    }
+  });
+  const bootStatus = await apiMatched.call('GetUserStatus', {});
+  assert.equal(bootStatus.userStatus?.email, 'v234@example.com');
+
+  const apiMismatched = await connectLocalApi({
+    origin,
+    daemonDir,
+    authBootstrap: {
+      getActiveLsBaseUrl: () => 'http://127.0.0.1:1',
+      getActiveLsCsrfToken: () => 'wrong-tok'
+    }
+  });
+  const hubStatus = await apiMismatched.call('GetUserStatus', {});
+  assert.equal(hubStatus.userStatus?.email, 'v234@example.com');
+
+  // 3. collector.collect 在空 HTML csrfToken 下通过 daemonDir 回退通过鉴权（不报 HTTP 401）
+  const scanRes = await collector.collect(origin, '11111111-1111-1111-1111-111111111111', {
+    force: true,
+    daemonDir
+  });
+  assert.equal(scanRes.conversation, '11111111-1111-1111-1111-111111111111');
+});

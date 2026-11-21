@@ -596,22 +596,49 @@ async function collect(origin, id, options = {}) {
   const task = (async () => {
     const signal = abortController?.signal || null;
     try {
-      let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
-      if (!token) {
+      const resolveSessionCsrfToken = async (forceRefresh = false) => {
+        if (!forceRefresh) {
+          const cached = csrfTokenByOrigin.get(origin);
+          if (cached) return { superseded: false, token: cached };
+        }
         const html = await request(origin, null, null, null, signal);
-        if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-        token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
-        csrfTokenByOrigin.set(origin, token);
-      }
+        if (isSuperseded()) return { superseded: true, token: '' };
+        const cfgMatch = typeof html === 'string' ? html.match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s) : null;
+        if (!cfgMatch) {
+          throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+        }
+        let resolved = '';
+        try {
+          resolved = String(JSON.parse(cfgMatch[1]).csrfToken || '').trim();
+        } catch { }
+        if (!resolved) {
+          try {
+            const { resolveLocalCsrfTokenForOrigin } = require('./local-api');
+            resolved = resolveLocalCsrfTokenForOrigin(origin, options) || '';
+          } catch { }
+        }
+        if (!resolved) {
+          throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
+        }
+        csrfTokenByOrigin.set(origin, resolved);
+        return { superseded: false, token: resolved };
+      };
+      const initTok = await resolveSessionCsrfToken(options.force === true);
+      if (initTok.superseded) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      let token = initTok.token;
       const call = async (method, body) => {
         try {
           return await request(origin, method, body, token, signal);
         } catch (err) {
           if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
             csrfTokenByOrigin.delete(origin);
-            const html = await request(origin, null, null, null, signal);
-            token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
-            csrfTokenByOrigin.set(origin, token);
+            const refreshed = await resolveSessionCsrfToken(true);
+            if (refreshed.superseded) {
+              const abortErr = new Error('请求已取消');
+              abortErr.name = 'AbortError';
+              throw abortErr;
+            }
+            token = refreshed.token;
             return await request(origin, method, body, token, signal);
           }
           throw err;
