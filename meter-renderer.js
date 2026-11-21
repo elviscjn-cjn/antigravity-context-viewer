@@ -504,6 +504,11 @@
       color:var(--ag-custom-context-text,var(--ag-context-text-default));
       padding-left:2px;
     }
+    .badge-scope-tag{font-size:9px;font-weight:600;line-height:1.15;padding:1px 4px;margin-left:3px;border-radius:4px;border:1px solid rgba(105,192,255,0.34);background:rgba(105,192,255,0.12);color:var(--ag-text-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+    .badge-scope-tag[data-scope-locked="true"]{border-color:rgba(250,173,20,0.45);background:rgba(250,173,20,0.14);color:#fadb14}
+    :host([data-theme="light"]) .badge-scope-tag{border-color:rgba(24,144,255,0.3);background:rgba(24,144,255,0.08);color:#096dd9}
+    :host([data-theme="light"]) .badge-scope-tag[data-scope-locked="true"]{border-color:rgba(212,136,6,0.4);background:#fffbe6;color:#ad6800}
+    :host([data-layout="compact"]) .badge-scope-tag,:host([data-layout="minimal"]) .badge-scope-tag,:host([data-layout="ring-only"]) .badge-scope-tag{display:none!important}
     :host([data-layout="ring-only"]) .badge-pct-val{
       display:none!important;
     }
@@ -1197,6 +1202,29 @@
     .collapsible-pane{
       transition:opacity 0.18s ease;
     }
+    .ctx-scope-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:7px;padding:4px 6px;margin:6px 0}
+    .ctx-scope-bar[hidden]{display:none!important}
+    .ctx-scope-pills{display:flex;align-items:center;flex-wrap:wrap;gap:4px;min-width:0;flex:1}
+    .ctx-scope-pill{appearance:none;border:1px solid transparent;background:transparent;color:var(--ag-text-muted);font-size:11px;font-weight:500;line-height:1.25;padding:2px 7px;border-radius:5px;cursor:pointer;display:inline-flex;align-items:center;gap:4px;max-width:136px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background-color .14s ease,border-color .14s ease,color .14s ease}
+    .ctx-scope-pill:hover{color:var(--ag-text-primary);background:var(--ag-hover-bg,rgba(255,255,255,0.06))}
+    .ctx-scope-pill.is-active{background:var(--ag-bg-card);border-color:rgba(105,192,255,0.52);color:var(--ag-text-primary);font-weight:600}
+    :host([data-theme="light"]) .ctx-scope-pill:hover{background:rgba(0,0,0,0.04)}
+    :host([data-theme="light"]) .ctx-scope-pill.is-active{border-color:rgba(24,144,255,0.48);box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+    .ctx-scope-pill-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;background:#69c0ff}
+    :host([data-theme="light"]) .ctx-scope-pill-dot{background:#1677ff}
+    .ctx-scope-pill.is-sidechat .ctx-scope-pill-dot{background:#b37feb}
+    .ctx-scope-follow-btn{appearance:none;flex-shrink:0;display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;line-height:1.2;padding:2px 7px;border-radius:10px;border:1px solid transparent;background:transparent;color:#52c41a;cursor:default;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease,color .14s ease}
+    .ctx-scope-follow-btn[data-following="false"]{cursor:pointer;color:#69c0ff;background:rgba(105,192,255,0.12);border-color:rgba(105,192,255,0.38)}
+    .ctx-scope-follow-btn[data-following="false"]:hover{background:rgba(105,192,255,0.2)}
+    :host([data-theme="light"]) .ctx-scope-follow-btn{color:#389e0d}
+    :host([data-theme="light"]) .ctx-scope-follow-btn[data-following="false"]{color:#096dd9;background:#e6f7ff;border-color:#91d5ff}
+    :host([data-theme="light"]) .ctx-scope-follow-btn[data-following="false"]:hover{background:#bae0ff}
+    .ctx-scope-follow-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;background:currentColor}
+    .key-title-wrap{display:inline-flex;align-items:center;gap:6px;min-width:0}
+    .key-scope-chip{font-size:10px;font-weight:600;line-height:1.2;padding:1px 6px;border-radius:4px;white-space:nowrap;color:#69c0ff;background:rgba(105,192,255,0.12);border:1px solid rgba(105,192,255,0.3)}
+    .key-scope-chip[data-scope-kind="sidechat"]{color:#b37feb;background:rgba(179,127,235,0.14);border-color:rgba(179,127,235,0.34)}
+    :host([data-theme="light"]) .key-scope-chip{color:#096dd9;background:#e6f7ff;border-color:#91d5ff}
+    :host([data-theme="light"]) .key-scope-chip[data-scope-kind="sidechat"]{color:#722ed1;background:#f9f0ff;border-color:#d3adf7}
     .round-cost-bar{
       display:flex;align-items:center;justify-content:space-between;gap:8px;
       background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;
@@ -2554,6 +2582,7 @@
       transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
   </svg>
   <span id="badge-pct-val" class="badge-pct-val">--%</span>
+  <span id="badge-scope-tag" class="badge-scope-tag" hidden></span>
   <div id="bar-wrap" class="sr-only" aria-hidden="true">
     <div id="bar-fill" class="meter-bar-fill"></div>
   </div>
@@ -2691,6 +2720,13 @@
 
     <!-- 分页 1: 当前会话 -->
     <div id="pane-ctx-session" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-session">
+      <div id="ctx-scope-bar" class="ctx-scope-bar" hidden role="region" aria-label="同屏会话视角切换" data-i18n-aria="scope.bar.aria">
+        <div id="ctx-scope-pills" class="ctx-scope-pills" role="tablist" aria-label="同屏会话列表" data-i18n-aria="scope.pills.aria"></div>
+        <button id="btn-ctx-scope-follow" class="ctx-scope-follow-btn" type="button" data-following="true" title="仅切换面板查看视角，不切换客户端当前对话" data-i18n-title="scope.follow.title">
+          <span class="ctx-scope-follow-dot" aria-hidden="true"></span><span id="ctx-scope-follow-label" data-i18n="scope.follow.auto">跟随焦点</span>
+        </button>
+      </div>
+
       <!-- 本轮与当前会话实时 API 等值参考行 -->
       <div id="round-cost-bar" class="round-cost-bar" title="当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）"
         data-i18n-title="session.costBar.title">
@@ -2702,7 +2738,8 @@
 
       <!-- 卡片 1: 核心用量速览 -->
       <div id="key-summary">
-        <div class="key-header"><span class="key-title" data-i18n="session.keySummary.title">⭐ 核心用量速览</span><span
+        <div class="key-header"><span class="key-title-wrap"><span class="key-title" data-i18n="session.keySummary.title">⭐ 核心用量速览</span><span
+              id="key-scope-chip" class="key-scope-chip" hidden></span></span><span
             id="key-badge" class="key-pill pill-muted" data-i18n="session.badge.reading">读取中</span></div>
         <div class="key-bar-track">
           <div id="key-bar-fill" class="key-bar-fill"></div>
@@ -6584,7 +6621,25 @@ const PANEL_I18N = {
   'models.cap.tierAdjUnk': { 'zh-CN': '上限未知', 'zh-TW': '上限未知', en: 'Cap unknown' },
   'models.cap.diskPending': { 'zh-CN': '磁盘为 {disk}（待重启生效）', 'zh-TW': '磁碟為 {disk}（待重啟生效）', en: 'Disk: {disk} (restart pending)' },
   'models.cap.diskUnconfirmed': { 'zh-CN': '磁盘为 {disk}（运行态未确认）', 'zh-TW': '磁碟為 {disk}（執行態未確認）', en: 'Disk: {disk} (runtime unconfirmed)' },
-  'models.cap.fixedAdvice': { 'zh-CN': '固定单一上限模式 ({val}，建议升级为动态跟随)', 'zh-TW': '固定單一上限模式 ({val}，建議升級為動態跟隨)', en: 'Fixed single limit ({val}, Dynamic mode recommended)' }
+  'models.cap.fixedAdvice': { 'zh-CN': '固定单一上限模式 ({val}，建议升级为动态跟随)', 'zh-TW': '固定單一上限模式 ({val}，建議升級為動態跟隨)', en: 'Fixed single limit ({val}, Dynamic mode recommended)' },
+
+  // 同屏多会话视角切换（Split Right / Split Down / Side Chat）
+  'scope.bar.aria': { 'zh-CN': '同屏会话视角切换', 'zh-TW': '同畫面對話視角切換', en: 'On-screen session view switcher' },
+  'scope.pills.aria': { 'zh-CN': '同屏会话列表', 'zh-TW': '同畫面對話清單', en: 'On-screen sessions' },
+  'scope.pane.single': { 'zh-CN': '主对话', 'zh-TW': '主對話', en: 'Main' },
+  'scope.pane.indexed': { 'zh-CN': '窗格 {n}', 'zh-TW': '窗格 {n}', en: 'Pane {n}' },
+  'scope.side.subagent': { 'zh-CN': 'Side Chat', 'zh-TW': 'Side Chat', en: 'Side Chat' },
+  'scope.side.question': { 'zh-CN': '支线问答', 'zh-TW': '支線問答', en: 'Side Q&A' },
+  'scope.side.browser': { 'zh-CN': '浏览器子代理', 'zh-TW': '瀏覽器子代理', en: 'Browser Subagent' },
+  'scope.badge.sideShort': { 'zh-CN': '支线', 'zh-TW': '支線', en: 'Side' },
+  'scope.badge.plusSide': { 'zh-CN': '+支线', 'zh-TW': '+支線', en: '+Side' },
+  'scope.follow.auto': { 'zh-CN': '跟随焦点', 'zh-TW': '跟隨焦點', en: 'Following' },
+  'scope.follow.locked': { 'zh-CN': '恢复跟随', 'zh-TW': '恢復跟隨', en: 'Follow Focus' },
+  'scope.follow.title': { 'zh-CN': '仅切换面板查看视角，不切换客户端当前对话', 'zh-TW': '僅切換面板檢視視角，不切換用戶端目前對話', en: 'Switches monitor view only; does not change active client conversation' },
+  'scope.follow.lockedTitle': { 'zh-CN': '当前已锁定查看视角，点击恢复自动跟随聚焦窗格', 'zh-TW': '目前已鎖定檢視視角，點擊恢復自動跟隨聚焦窗格', en: 'View pinned; click to resume following the focused pane' },
+  'scope.pill.titleFocused': { 'zh-CN': '{label}（当前聚焦，ID: {id}）— 仅切换查看视角', 'zh-TW': '{label}（目前聚焦，ID: {id}）— 僅切換檢視視角', en: '{label} (Focused, ID: {id}) — view only' },
+  'scope.pill.titleOther': { 'zh-CN': '{label}（ID: {id}）— 点击仅在面板中查看，不切换客户端对话', 'zh-TW': '{label}（ID: {id}）— 點擊僅於面板檢視，不切換用戶端對話', en: '{label} (ID: {id}) — click to inspect in panel without switching client focus' },
+  'scope.pill.titleBlankFallback': { 'zh-CN': '当前聚焦空白新窗格，面板暂展示 {label}', 'zh-TW': '目前聚焦空白新窗格，面板暫時顯示 {label}', en: 'Blank new pane focused; showing {label}' }
 };
 
 function t(key, vars = null) {
@@ -9216,9 +9271,285 @@ function formatPeriodCalendarLabel(currentPeriod) {
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
-    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
+    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null,
+    layout: null, lastLayoutKey: '', lastHostFocusedRoute: null, lastActiveSideChatId: null, pinnedViewRoute: null, restoredFromCache: false
   };
-  const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
+  const UUID_STRICT_RE = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
+  const SIDE_CHAT_TAB_PREFIXES = [
+    { prefix: 'subagent_convo__', kind: 'subagent' },
+    { prefix: 'side_question__', kind: 'side_question' },
+    { prefix: 'subagent__', kind: 'browser_subagent' }
+  ];
+  const SNAPSHOT_STATE_KEYS = [
+    'count', 'latest', 'sessionCostTotal', 'requestAt', 'requestError',
+    'scan', 'scanError', 'displayedCallRecord', 'displayedCallSig',
+    'sessionTimeline', 'timelineRenderedRoute', 'lastSpeedEval'
+  ];
+  const SESSION_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
+  const sessionSnapshotCache = new Map();
+  let lastScopeRenderSig = '';
+  const safeDecode = raw => { try { return decodeURIComponent(raw); } catch { return raw; } };
+  const sameRouteId = (a, b) => Boolean(a && b && String(a).toLowerCase() === String(b).toLowerCase());
+
+  function parseSideChatTabId(raw) {
+    const val = String(raw || '').trim();
+    for (const { prefix, kind } of SIDE_CHAT_TAB_PREFIXES) {
+      if (!val.startsWith(prefix)) continue;
+      const id = val.slice(prefix.length).trim();
+      return UUID_STRICT_RE.test(id) ? { id, kind, tabId: val } : null;
+    }
+    return null;
+  }
+
+  // 解析同屏会话拓扑：支持 Split 多窗格 (/c/<id1>+<id2>?focused=<id>) 与右侧 Side Chat (?tab= 及 DOM [data-tab-id])
+  function parseConversationLayout(
+    loc = (typeof location !== 'undefined' ? location : null),
+    doc = (typeof document !== 'undefined' ? document : null)
+  ) {
+    const pathname = String(loc?.pathname || '');
+    const search = String(loc?.search || '');
+    const segMatch = pathname.match(/^\/c\/([^/?#]+)(?:\/|$)/i) || search.match(/[?&]cascadeId=([^&#]*)/i);
+    const rawTokens = segMatch ? safeDecode(segMatch[1]).split('+').map(s => s.trim()).filter(Boolean) : [];
+    const hasBlankSplitPane = rawTokens.includes('_new');
+    const panes = [];
+    const seenPane = new Set();
+    for (const tok of rawTokens) {
+      const lower = tok.toLowerCase();
+      if (UUID_STRICT_RE.test(tok) && !seenPane.has(lower)) {
+        seenPane.add(lower);
+        panes.push(tok);
+      }
+    }
+
+    const focusMatch = search.match(/[?&]focused=([^&#]*)/i);
+    const rawFocused = focusMatch ? safeDecode(focusMatch[1]).trim() : null;
+    const focusedIsBlankPane = rawFocused === '_new';
+    const focusedPaneId = (rawFocused && panes.find(id => sameRouteId(id, rawFocused))) || panes[0] || null;
+
+    const sideChats = [];
+    const pushSideChat = (parsed, title = '', active = false) => {
+      if (!parsed || seenPane.has(parsed.id.toLowerCase())) return;
+      const cleanTitle = String(title || '').replace(/\s+tab$/i, '').trim();
+      const hit = sideChats.find(s => sameRouteId(s.id, parsed.id));
+      if (hit) {
+        if (active) hit.isActiveTab = true;
+        if (!hit.titleHint && cleanTitle) hit.titleHint = cleanTitle;
+        return;
+      }
+      sideChats.push({ id: parsed.id, kind: parsed.kind, tabId: parsed.tabId, titleHint: cleanTitle, isActiveTab: Boolean(active) });
+    };
+
+    const tabMatch = search.match(/[?&]tab=([^&#]*)/i);
+    const urlTab = tabMatch ? parseSideChatTabId(safeDecode(tabMatch[1])) : null;
+    try {
+      const nodes = doc?.querySelectorAll?.('[data-tab-id]') || [];
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        const parsed = parseSideChatTabId(node?.getAttribute?.('data-tab-id'));
+        if (!parsed) continue;
+        const cls = String(node.className || node.getAttribute?.('class') || '').split(/\s+/);
+        const domActive = node.getAttribute?.('aria-selected') === 'true'
+          || node.getAttribute?.('data-active') === 'true'
+          || (cls.includes('bg-secondary') && !cls.includes('bg-transparent'));
+        const title = node.getAttribute?.('title') || node.getAttribute?.('aria-label') || node.textContent || '';
+        pushSideChat(parsed, title, urlTab ? sameRouteId(parsed.id, urlTab.id) : domActive);
+      }
+    } catch { }
+    if (urlTab) pushSideChat(urlTab, '', true);
+
+    const sideChat = sideChats.find(s => s.isActiveTab) || sideChats[0] || null;
+    const targets = [
+      ...panes.map((id, index) => ({ id, role: 'pane', kind: 'pane', index, isFocused: Boolean(id === focusedPaneId && !focusedIsBlankPane) })),
+      ...sideChats.map((s, sIdx) => ({ ...s, role: 'sidechat', sideIndex: sIdx, index: panes.length + sIdx, isFocused: false }))
+    ];
+    const sideKey = sideChats.map(s => `${s.kind}:${s.id}${s.isActiveTab ? '*' : ''}`).join(',');
+    return {
+      panes, focusedPaneId, focusedIsBlankPane, hasBlankSplitPane,
+      sideChat, sideChats, activeSideChatId: sideChat?.id || null,
+      targets, isMultiSession: targets.length > 1,
+      layoutKey: `${panes.join('+')}|${focusedPaneId || ''}|${focusedIsBlankPane ? 'blank' : ''}|${sideKey}`
+    };
+  }
+
+  function resolveEffectiveRoute(layout, commit = false) {
+    if (!layout) return null;
+    let pinned = state.pinnedViewRoute || null;
+    if (pinned && state.lastHostFocusedRoute && layout.focusedPaneId && !sameRouteId(state.lastHostFocusedRoute, layout.focusedPaneId)) {
+      pinned = null;
+    }
+    if (
+      pinned && state.lastActiveSideChatId && layout.activeSideChatId &&
+      !sameRouteId(state.lastActiveSideChatId, layout.activeSideChatId) &&
+      layout.sideChats.some(s => sameRouteId(s.id, pinned))
+    ) {
+      pinned = layout.activeSideChatId;
+    }
+    if (pinned) {
+      pinned = layout.targets.find(t => sameRouteId(t.id, pinned))?.id || null;
+      if (pinned && layout.focusedPaneId && !layout.focusedIsBlankPane && sameRouteId(pinned, layout.focusedPaneId)) {
+        pinned = null;
+      }
+    }
+    if (commit) {
+      state.pinnedViewRoute = pinned;
+      state.lastHostFocusedRoute = layout.focusedPaneId || null;
+      state.lastActiveSideChatId = layout.activeSideChatId || null;
+      state.layout = layout;
+    }
+    return pinned || layout.focusedPaneId || layout.sideChat?.id || null;
+  }
+
+  const route = () => resolveEffectiveRoute(parseConversationLayout(), true);
+
+  function saveSessionSnapshotToCache(routeId) {
+    if (!routeId || (!state.latest && !state.scan && !state.sessionCalls?.length)) return;
+    const patch = { sessionCalls: Array.isArray(state.sessionCalls) ? state.sessionCalls.slice() : [] };
+    for (const k of SNAPSHOT_STATE_KEYS) {
+      if (state[k] !== undefined) patch[k] = state[k];
+    }
+    sessionSnapshotCache.delete(routeId);
+    sessionSnapshotCache.set(routeId, {
+      savedAt: Date.now(),
+      accountScope: quotaState.accountScopeKey || null,
+      patch,
+      callsEntries: state.sessionCallsMap ? Array.from(state.sessionCallsMap.entries()) : []
+    });
+    if (sessionSnapshotCache.size > 10) {
+      sessionSnapshotCache.delete(sessionSnapshotCache.keys().next().value);
+    }
+  }
+
+  function readSessionSnapshotFromCache(routeId) {
+    const snap = routeId ? sessionSnapshotCache.get(routeId) : null;
+    if (!snap) return null;
+    if (
+      Date.now() - snap.savedAt > SESSION_SNAPSHOT_TTL_MS ||
+      (snap.accountScope && quotaState.accountScopeKey && snap.accountScope !== quotaState.accountScopeKey)
+    ) {
+      sessionSnapshotCache.delete(routeId);
+      return null;
+    }
+    return snap;
+  }
+
+  function isSameScreenSessionSwitch(prevLayout, nextLayout, prevId, nextId) {
+    if (!prevId || !nextId || prevId === nextId || !prevLayout || !nextLayout) return false;
+    const prevIds = new Set(prevLayout.targets.map(item => item.id.toLowerCase()));
+    const nextIds = new Set(nextLayout.targets.map(item => item.id.toLowerCase()));
+    let shared = false;
+    for (const id of prevIds) {
+      if (nextIds.has(id)) { shared = true; break; }
+    }
+    return shared && (prevIds.has(prevId.toLowerCase()) || nextIds.has(prevId.toLowerCase()))
+      && (prevIds.has(nextId.toLowerCase()) || nextIds.has(nextId.toLowerCase()));
+  }
+
+  function getScopeTargetLabel(target, layout) {
+    if (!target) return '';
+    if (target.role !== 'sidechat') {
+      return (layout?.panes?.length || 0) <= 1 ? t('scope.pane.single') : t('scope.pane.indexed', { n: (target.index || 0) + 1 });
+    }
+    const base = target.kind === 'side_question'
+      ? t('scope.side.question')
+      : (target.kind === 'browser_subagent' ? t('scope.side.browser') : t('scope.side.subagent'));
+    const peers = (layout?.sideChats || []).filter(s => s.kind === target.kind);
+    const idx = peers.length > 1 ? peers.findIndex(s => sameRouteId(s.id, target.id)) : -1;
+    return idx >= 0 ? `${base} ${idx + 1}` : base;
+  }
+
+  function selectConversationScopeView(targetId) {
+    if (state.disposed || !targetId) return false;
+    const cur = state.layout || parseConversationLayout();
+    const hit = cur.targets.find(item => sameRouteId(item.id, targetId));
+    if (!hit) return false;
+    state.pinnedViewRoute = (cur.focusedPaneId && !cur.focusedIsBlankPane && sameRouteId(hit.id, cur.focusedPaneId)) ? null : hit.id;
+    lastScopeRenderSig = '';
+    tick();
+    return true;
+  }
+
+  function resumeFollowFocusView() {
+    if (state.disposed) return false;
+    const wasPinned = Boolean(state.pinnedViewRoute);
+    state.pinnedViewRoute = null;
+    lastScopeRenderSig = '';
+    if (wasPinned) tick(); else renderConversationScopeUI(true);
+    return true;
+  }
+
+  function renderConversationScopeUI(force = false) {
+    const layout = state.layout || parseConversationLayout();
+    const activeId = state.route || null;
+    const activeTarget = (layout?.isMultiSession && activeId)
+      ? (layout.targets.find(item => sameRouteId(item.id, activeId)) || null)
+      : null;
+    const isLocked = Boolean(state.pinnedViewRoute && activeTarget);
+    const sig = `${layout?.layoutKey || ''}|${activeId || ''}|${isLocked ? 1 : 0}|${currentPanelLanguage}`;
+    if (!force && sig === lastScopeRenderSig) return;
+    lastScopeRenderSig = sig;
+
+    const badgeTag = el('badge-scope-tag');
+    if (badgeTag) {
+      const shortTag = !activeTarget ? ''
+        : (activeTarget.role === 'sidechat' ? t('scope.badge.sideShort')
+          : (layout.panes.length > 1 ? `${activeTarget.index + 1}/${layout.panes.length}`
+            : (layout.sideChat ? t('scope.badge.plusSide') : '')));
+      badgeTag.textContent = shortTag;
+      badgeTag.hidden = !shortTag;
+      if (shortTag) badgeTag.setAttribute('data-scope-locked', isLocked ? 'true' : 'false');
+      else badgeTag.removeAttribute?.('data-scope-locked');
+    }
+
+    const keyChip = el('key-scope-chip');
+    if (keyChip) {
+      keyChip.textContent = activeTarget ? getScopeTargetLabel(activeTarget, layout) : '';
+      keyChip.hidden = !activeTarget;
+      if (activeTarget) keyChip.setAttribute('data-scope-kind', activeTarget.role === 'sidechat' ? 'sidechat' : 'pane');
+      else keyChip.removeAttribute?.('data-scope-kind');
+    }
+
+    const scopeBar = el('ctx-scope-bar');
+    const pillsWrap = el('ctx-scope-pills');
+    if (!scopeBar || !pillsWrap) return;
+    pillsWrap.replaceChildren();
+    scopeBar.hidden = !activeTarget;
+    if (!activeTarget) return;
+
+    for (const item of layout.targets) {
+      const btn = document.createElement('button');
+      const selected = sameRouteId(item.id, activeTarget.id);
+      const label = getScopeTargetLabel(item, layout);
+      const displayLabel = (item.role === 'sidechat' && item.titleHint && item.titleHint !== label) ? `${label} · ${item.titleHint}` : label;
+      btn.type = 'button';
+      btn.className = `ctx-scope-pill${selected ? ' is-active' : ''}${item.role === 'sidechat' ? ' is-sidechat' : ''}`;
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+      btn.setAttribute('data-scope-id', item.id);
+      btn.setAttribute('data-scope-role', item.role);
+      btn.title = t(item.isFocused ? 'scope.pill.titleFocused' : 'scope.pill.titleOther', { label: displayLabel, id: `${item.id.slice(0, 8)}…` });
+      if (item.isFocused || (item.role === 'sidechat' && item.isActiveTab)) {
+        const dot = document.createElement('span');
+        dot.className = 'ctx-scope-pill-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        btn.appendChild(dot);
+      }
+      const txt = document.createElement('span');
+      txt.textContent = label;
+      btn.appendChild(txt);
+      btn.addEventListener('click', () => selectConversationScopeView(item.id));
+      pillsWrap.appendChild(btn);
+    }
+
+    const followBtn = el('btn-ctx-scope-follow');
+    const followLabel = el('ctx-scope-follow-label');
+    if (followBtn && followLabel) {
+      followBtn.setAttribute('data-following', isLocked ? 'false' : 'true');
+      followLabel.textContent = t(isLocked ? 'scope.follow.locked' : 'scope.follow.auto');
+      followBtn.title = isLocked
+        ? t('scope.follow.lockedTitle')
+        : (layout.focusedIsBlankPane ? t('scope.pill.titleBlankFallback', { label: getScopeTargetLabel(activeTarget, layout) }) : t('scope.follow.title'));
+    }
+  }
   let activeHeatView = 'daily';
   let heatPageOffset = 0;
   let heatMonthOffset = 0;
@@ -10418,8 +10749,25 @@ function formatPeriodCalendarLabel(currentPeriod) {
 
   function findHostTitlebar() {
     try {
-      if (typeof document.querySelector !== 'function') return null;
-      return document.querySelector('[class*="@container/titlebar"]');
+      const candidates = typeof document.querySelectorAll === 'function'
+        ? Array.from(document.querySelectorAll('[class*="@container/titlebar"]'))
+        : [];
+      if (candidates.length > 1) {
+        // 多窗格下优先停靠最右上角窗格顶栏，避免被夹在分割线或下层窗格
+        let best = null, bestTop = Infinity, bestRight = -Infinity;
+        for (const node of candidates) {
+          const rect = node?.getBoundingClientRect?.();
+          if (!rect || (rect.width <= 0 && rect.height <= 0)) continue;
+          const top = Number.isFinite(rect.top) ? rect.top : 0;
+          const right = Number.isFinite(rect.right) ? rect.right : 0;
+          if (!best || top < bestTop - 4 || (Math.abs(top - bestTop) <= 4 && right > bestRight)) {
+            best = node; bestTop = top; bestRight = right;
+          }
+        }
+        if (best) return best;
+      }
+      if (candidates.length === 1) return candidates[0];
+      return typeof document.querySelector === 'function' ? document.querySelector('[class*="@container/titlebar"]') : null;
     } catch {
       return null;
     }
@@ -10655,6 +11003,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
       && observedTitlebar.isConnected
       && observedTitlebar.contains(host)
       && host.parentElement
+      && ((state.layout?.panes?.length || 0) <= 1 || observedTitlebar === findHostTitlebar())
     ) {
       return;
     }
@@ -25019,6 +25368,7 @@ var cumLockedKey = null;
     host.hidden = false;
     host.setAttribute('data-has-session', state.route ? 'true' : 'false');
     ensureHostDocked();
+    renderConversationScopeUI();
     if (!state.route) {
       hideContextTooltip();
       const barFill = el('bar-fill');
@@ -25681,12 +26031,29 @@ var cumLockedKey = null;
     const timeout = setTimeout(() => controller.abort(), 12000);
     try {
       const csrf = window.__APP_CONFIG__?.csrfToken; if (!csrf) throw new Error('后台尚未就绪');
-      const offset = Math.max(0, state.count - 3);
-      const response = await fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: offset, includeMessages: false }), signal: controller.signal });
+      const fromCache = Boolean(state.restoredFromCache);
+      const prevCount = state.count || 0;
+      let offset = Math.max(0, prevCount - 3);
+      const fetchMeta = off => fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: off, includeMessages: false }), signal: controller.signal });
+      let response = await fetchMeta(offset);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json(); if (generation !== state.generation || state.disposed) return;
-      const rows = data.generatorMetadata || [];
-      state.count = rows.length ? offset + rows.length : 0;
+      let data = await response.json(); if (generation !== state.generation || state.disposed) return;
+      let rows = data.generatorMetadata || [];
+      if (fromCache && offset > 0 && (!rows.length || offset + rows.length < prevCount)) {
+        offset = 0;
+        response = await fetchMeta(0);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        data = await response.json(); if (generation !== state.generation || state.disposed) return;
+        rows = data.generatorMetadata || [];
+      }
+      state.restoredFromCache = false;
+      const nextCount = rows.length ? offset + rows.length : 0;
+      if (fromCache && nextCount < prevCount) {
+        sessionSnapshotCache.delete(id);
+        state.sessionCallsMap?.clear();
+        if (!nextCount) Object.assign(state, { latest: null, displayedCallRecord: null, displayedCallSig: '', lastSpeedEval: null });
+      }
+      state.count = nextCount;
       if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
       if (!state.syncedFinalMap) state.syncedFinalMap = new Map();
       if (!state.pendingFinalCalls) state.pendingFinalCalls = new Map();
@@ -26296,6 +26663,7 @@ var cumLockedKey = null;
   function resetQuotaState(opts = {}) {
     clearQuotaTimers();
     if (opts.clearAccountScope !== false) {
+      sessionSnapshotCache.clear();
       quotaState.accountScopeKey = null;
       quotaCalibrationScope = null;
       quotaCalibrationMap = {};
@@ -28382,6 +28750,10 @@ var cumLockedKey = null;
   }
   renderQuotaBoard();
 
+  el('btn-ctx-scope-follow')?.addEventListener('click', () => {
+    if (state.pinnedViewRoute) resumeFollowFocusView();
+  });
+
   let quotaTickCounter = 0;
   let hasTriggeredInitialQuotaSync = false;
   function tick() {
@@ -28392,8 +28764,20 @@ var cumLockedKey = null;
     if (!host.isConnected) {
       ensureHostDocked();
     }
+    const prevLayout = state.layout;
+    const prevRoute = state.route;
     const id = route();
-    if (id !== state.route) {
+    const nextLayout = state.layout;
+    const layoutChanged = Boolean(nextLayout && nextLayout.layoutKey !== state.lastLayoutKey);
+    if (nextLayout) state.lastLayoutKey = nextLayout.layoutKey;
+    if (prevLayout && nextLayout && prevLayout.panes.length !== nextLayout.panes.length) {
+      layoutMeasurementDirty = true;
+      ensureHostDocked();
+    }
+    if (id !== prevRoute) {
+      if (prevRoute) saveSessionSnapshotToCache(prevRoute);
+      const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
+      const cachedSnap = (sameScreenSwitch && id) ? readSessionSnapshotFromCache(id) : null;
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
@@ -28402,7 +28786,10 @@ var cumLockedKey = null;
       if (state.callRenderTimer) { clearTimeout(state.callRenderTimer); state.callRenderTimer = null; }
       if (state.callEnterAnimTimer) { clearTimeout(state.callEnterAnimTimer); state.callEnterAnimTimer = null; }
       clearLivePendingRequestWait();
-      if (state.sessionCallsMap) state.sessionCallsMap.clear();
+      if (state.sessionCallsMap) {
+        state.sessionCallsMap.clear();
+        cachedSnap?.callsEntries.forEach(([k, v]) => state.sessionCallsMap.set(k, v));
+      }
       if (state.expandedTurnKeys) state.expandedTurnKeys.clear();
       Object.assign(state, {
         route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
@@ -28413,13 +28800,16 @@ var cumLockedKey = null;
         historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
         timelineError: '', timelinePageLimit: 10, timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
         lastTimelineFetchAt: 0, lastTimelineCallSig: '',
-        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
-      });
+        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null, restoredFromCache: false
+      }, cachedSnap ? { ...cachedSnap.patch, sessionCalls: cachedSnap.patch.sessionCalls.slice(), restoredFromCache: true } : null);
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
       if (lastHistorySync > 0) {
         lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
       }
-      toggle(false); hideContextTooltip(); renderFiles(null); render();
+      if (!sameScreenSwitch) toggle(false);
+      hideContextTooltip(); renderFiles(state.scan?.session || null); render();
+    } else if (layoutChanged) {
+      renderConversationScopeUI(true);
     }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
@@ -28455,7 +28845,11 @@ var cumLockedKey = null;
     routeHookScheduled = true;
     Promise.resolve().then(() => {
       routeHookScheduled = false;
-      if (!state.disposed && route() !== state.route) tick();
+      if (state.disposed) return;
+      const nextLayout = parseConversationLayout();
+      if (resolveEffectiveRoute(nextLayout, false) !== state.route || nextLayout.layoutKey !== state.lastLayoutKey) {
+        tick();
+      }
     });
   };
   let origPushState = null;
@@ -28550,6 +28944,7 @@ var cumLockedKey = null;
       openPanel,
       activeContextTab,
       isContextSettingsView,
+      pinnedViewRoute: state.pinnedViewRoute || null,
       browsePoolKey: quotaState.browsePoolKey || null,
       scrollTops,
       openDrawers,
@@ -28596,6 +28991,10 @@ var cumLockedKey = null;
     }
     if (saved.browsePoolKey) {
       quotaState.browsePoolKey = saved.browsePoolKey;
+    }
+    if (saved.pinnedViewRoute && typeof saved.pinnedViewRoute === 'string') {
+      state.pinnedViewRoute = saved.pinnedViewRoute;
+      lastScopeRenderSig = '';
     }
     if (saved.openPanel && saved.openPanel !== 'none') {
       showPanel(saved.openPanel);
@@ -28981,11 +29380,36 @@ var cumLockedKey = null;
       autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
       keepaliveStatus: el('keepalive-status-pill')?.textContent || ''
     }),
+    getConversationScopeStateForTest: () => ({
+      layout: state.layout || parseConversationLayout(),
+      activeRoute: state.route,
+      pinnedViewRoute: state.pinnedViewRoute,
+      isFollowingFocus: !state.pinnedViewRoute,
+      badgeScopeTag: el('badge-scope-tag')?.textContent || '',
+      badgeScopeTagHidden: Boolean(el('badge-scope-tag')?.hidden),
+      badgeScopeLocked: el('badge-scope-tag')?.getAttribute?.('data-scope-locked') || null,
+      scopeBarHidden: Boolean(el('ctx-scope-bar')?.hidden),
+      keyScopeChip: el('key-scope-chip')?.textContent || '',
+      keyScopeChipHidden: Boolean(el('key-scope-chip')?.hidden),
+      followLabel: el('ctx-scope-follow-label')?.textContent || '',
+      followAttr: el('btn-ctx-scope-follow')?.getAttribute?.('data-following') || null,
+      pills: Array.from(el('ctx-scope-pills')?.children || []).map(btn => ({
+        id: btn.getAttribute?.('data-scope-id') || '',
+        role: btn.getAttribute?.('data-scope-role') || '',
+        selected: btn.getAttribute?.('aria-selected') === 'true',
+        label: btn.children?.[btn.children.length - 1]?.textContent || btn.textContent || ''
+      })),
+      cachedRoutes: Array.from(sessionSnapshotCache.keys())
+    }),
+    selectConversationScopeForTest: id => selectConversationScopeView(id),
+    resumeFollowFocusForTest: () => resumeFollowFocusView(),
+    findHostTitlebarForTest: () => findHostTitlebar(),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
       earlyForceDispose();
       clearQuotaTimers();
       clearInterval(timer);
+      sessionSnapshotCache.clear();
       clearLivePendingRequestWait();
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
