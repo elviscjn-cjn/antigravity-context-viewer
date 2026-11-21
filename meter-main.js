@@ -196,6 +196,36 @@ function isLocalMainFrameSender(event) {
   }
 }
 
+// 由宿主窗口使用自身会话执行只读 RPC，凭据留在该窗口内。
+async function requestQuotaFromPage(origin, route) {
+  if (window !== window.top || window.location.origin !== origin) {
+    return { error: 'Antigravity 窗口已切换，请重试' };
+  }
+  const csrf = window.__APP_CONFIG__?.csrfToken;
+  if (typeof csrf !== 'string' || !csrf) {
+    return { error: 'Antigravity 本地鉴权信息尚未就绪，请稍后重试' };
+  }
+  try {
+    const response = await fetch(route, {
+      method: 'POST',
+      mode: 'same-origin',
+      credentials: 'same-origin',
+      redirect: 'error',
+      headers: {
+        'Content-Type': 'application/json',
+        'Connect-Protocol-Version': '1',
+        'x-codeium-csrf-token': csrf
+      },
+      body: '{}',
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) return { error: `HTTP ${response.status}` };
+    return { data: await response.json() };
+  } catch (e) {
+    return { error: e?.name === 'TimeoutError' ? '请求语言服务超时' : '未能连接到 Antigravity 本地服务' };
+  }
+}
+
 function resolveTargetWindow(sender) {
   try {
     const { BrowserWindow } = require('electron');
@@ -597,31 +627,48 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const collector = require('./meter-collector');
-      const opts = typeof options === 'boolean'
-        ? { force: options }
-        : (options && typeof options === 'object' ? { ...options } : {});
-      if (!opts.origin) opts.origin = url.origin;
-      opts.backendSource = 'electron-ipc';
+      const opts = {
+        force: options === true || options?.force === true,
+        currentModel: typeof options?.currentModel === 'string' ? options.currentModel : null,
+        browsePoolKey: typeof options?.browsePoolKey === 'string' ? options.browsePoolKey : null,
+        origin: url.origin,
+        backendSource: 'electron-ipc'
+      };
+      const frame = event.senderFrame;
+      if (typeof frame?.executeJavaScript === 'function') {
+        opts.connect = async () => ({
+          call: async method => {
+            if (method !== 'GetUserStatus' && method !== 'RetrieveUserQuotaSummary') {
+              throw new Error('不支持的额度查询接口');
+            }
+            const route = `/exa.language_server_pb.LanguageServerService/${method}`;
+            const out = await frame.executeJavaScript(
+              `(${requestQuotaFromPage})(${JSON.stringify(url.origin)}, ${JSON.stringify(route)})`
+            );
+            if (!out?.data) throw new Error(out?.error || 'Antigravity 未返回额度数据');
+            return out.data;
+          }
+        });
+      }
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       let accountSyncResult = null;
       try {
-        const { getSharedAccountsManager } = require('./meter-accounts');
-        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
-        const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
-        const email = !switchInFlight
-          ? (res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
-          : null;
-        if (!switchInFlight && email && res?.snapshot) {
-          mgr.syncActiveHostQuotaSnapshot(res, email);
-          const ov = mgr.getOverviewState();
-          if (ov.autoSwitch?.enabled && !res.error) {
-            accountSyncResult = await mgr.evaluateAutoSwitch({
-              activeEmail: email,
-              activeSnapshot: res.snapshot,
-              syncState: 'fresh',
-              isGenerating: Boolean(opts.isGenerating)
-            });
+        const email = _raw?.planStatus?.email;
+        if (res?.ok && res.snapshot && email) {
+          const { getSharedAccountsManager } = require('./meter-accounts');
+          const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+          if (!mgr.isSwitchInFlight?.()) {
+            mgr.syncActiveHostQuotaSnapshot(res, email);
+            const ov = mgr.getOverviewState();
+            if (ov.autoSwitch?.enabled && !res.error) {
+              accountSyncResult = await mgr.evaluateAutoSwitch({
+                activeEmail: email,
+                activeSnapshot: res.snapshot,
+                syncState: 'fresh',
+                isGenerating: options?.isGenerating === true
+              });
+            }
           }
         }
       } catch { }
