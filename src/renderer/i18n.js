@@ -1555,7 +1555,25 @@ const PANEL_I18N = {
   'models.cap.tierAdjUnk': { 'zh-CN': '上限未知', 'zh-TW': '上限未知', en: 'Cap unknown' },
   'models.cap.diskPending': { 'zh-CN': '磁盘为 {disk}（待重启生效）', 'zh-TW': '磁碟為 {disk}（待重啟生效）', en: 'Disk: {disk} (restart pending)' },
   'models.cap.diskUnconfirmed': { 'zh-CN': '磁盘为 {disk}（运行态未确认）', 'zh-TW': '磁碟為 {disk}（執行態未確認）', en: 'Disk: {disk} (runtime unconfirmed)' },
-  'models.cap.fixedAdvice': { 'zh-CN': '固定单一上限模式 ({val}，建议升级为动态跟随)', 'zh-TW': '固定單一上限模式 ({val}，建議升級為動態跟隨)', en: 'Fixed single limit ({val}, Dynamic mode recommended)' }
+  'models.cap.fixedAdvice': { 'zh-CN': '固定单一上限模式 ({val}，建议升级为动态跟随)', 'zh-TW': '固定單一上限模式 ({val}，建議升級為動態跟隨)', en: 'Fixed single limit ({val}, Dynamic mode recommended)' },
+
+  // 同屏多会话视角切换（Split Right / Split Down / Side Chat）
+  'scope.bar.aria': { 'zh-CN': '同屏会话视角切换', 'zh-TW': '同畫面對話視角切換', en: 'On-screen session view switcher' },
+  'scope.pills.aria': { 'zh-CN': '同屏会话列表', 'zh-TW': '同畫面對話清單', en: 'On-screen sessions' },
+  'scope.pane.single': { 'zh-CN': '主对话', 'zh-TW': '主對話', en: 'Main' },
+  'scope.pane.indexed': { 'zh-CN': '窗格 {n}', 'zh-TW': '窗格 {n}', en: 'Pane {n}' },
+  'scope.side.subagent': { 'zh-CN': 'Side Chat', 'zh-TW': 'Side Chat', en: 'Side Chat' },
+  'scope.side.question': { 'zh-CN': '支线问答', 'zh-TW': '支線問答', en: 'Side Q&A' },
+  'scope.side.browser': { 'zh-CN': '浏览器子代理', 'zh-TW': '瀏覽器子代理', en: 'Browser Subagent' },
+  'scope.badge.sideShort': { 'zh-CN': '支线', 'zh-TW': '支線', en: 'Side' },
+  'scope.badge.plusSide': { 'zh-CN': '+支线', 'zh-TW': '+支線', en: '+Side' },
+  'scope.follow.auto': { 'zh-CN': '跟随焦点', 'zh-TW': '跟隨焦點', en: 'Following' },
+  'scope.follow.locked': { 'zh-CN': '恢复跟随', 'zh-TW': '恢復跟隨', en: 'Follow Focus' },
+  'scope.follow.title': { 'zh-CN': '仅切换面板查看视角，不切换客户端当前对话', 'zh-TW': '僅切換面板檢視視角，不切換用戶端目前對話', en: 'Switches monitor view only; does not change active client conversation' },
+  'scope.follow.lockedTitle': { 'zh-CN': '当前已锁定查看视角，点击恢复自动跟随聚焦窗格', 'zh-TW': '目前已鎖定檢視視角，點擊恢復自動跟隨聚焦窗格', en: 'View pinned; click to resume following the focused pane' },
+  'scope.pill.titleFocused': { 'zh-CN': '{label}（当前聚焦，ID: {id}）— 仅切换查看视角', 'zh-TW': '{label}（目前聚焦，ID: {id}）— 僅切換檢視視角', en: '{label} (Focused, ID: {id}) — view only' },
+  'scope.pill.titleOther': { 'zh-CN': '{label}（ID: {id}）— 点击仅在面板中查看，不切换客户端对话', 'zh-TW': '{label}（ID: {id}）— 點擊僅於面板檢視，不切換用戶端對話', en: '{label} (ID: {id}) — click to inspect in panel without switching client focus' },
+  'scope.pill.titleBlankFallback': { 'zh-CN': '当前聚焦空白新窗格，面板暂展示 {label}', 'zh-TW': '目前聚焦空白新窗格，面板暫時顯示 {label}', en: 'Blank new pane focused; showing {label}' }
 };
 
 function t(key, vars = null) {

@@ -198,9 +198,269 @@
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
-    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
+    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null,
+    layout: null, lastLayoutKey: '', lastHostFocusedRoute: null, lastActiveSideChatId: null, pinnedViewRoute: null
   };
-  const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
+  const UUID_STRICT_RE = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
+  const SIDE_CHAT_TAB_PREFIXES = [
+    { prefix: 'subagent_convo__', kind: 'subagent' },
+    { prefix: 'side_question__', kind: 'side_question' },
+    { prefix: 'subagent__', kind: 'browser_subagent' }
+  ];
+  const SNAPSHOT_STATE_KEYS = [
+    'count', 'latest', 'sessionCostTotal', 'callsHydrated', 'requestAt', 'requestError',
+    'scan', 'scanError', 'displayedCallRecord', 'displayedCallSig',
+    'sessionTimeline', 'timelineRenderedRoute', 'lastSpeedEval'
+  ];
+  const sessionSnapshotCache = new Map();
+  let lastScopeRenderSig = '';
+  const safeDecode = raw => { try { return decodeURIComponent(raw); } catch { return raw; } };
+  const sameRouteId = (a, b) => Boolean(a && b && String(a).toLowerCase() === String(b).toLowerCase());
+
+  function parseSideChatTabId(raw) {
+    const val = String(raw || '').trim();
+    for (const { prefix, kind } of SIDE_CHAT_TAB_PREFIXES) {
+      if (!val.startsWith(prefix)) continue;
+      const id = val.slice(prefix.length).trim();
+      return UUID_STRICT_RE.test(id) ? { id, kind, tabId: val } : null;
+    }
+    return null;
+  }
+
+  // 解析同屏会话拓扑：支持 Split 多窗格 (/c/<id1>+<id2>?focused=<id>) 与右侧 Side Chat (?tab= 及 DOM [data-tab-id])
+  function parseConversationLayout(
+    loc = (typeof location !== 'undefined' ? location : null),
+    doc = (typeof document !== 'undefined' ? document : null)
+  ) {
+    const pathname = String(loc?.pathname || '');
+    const search = String(loc?.search || '');
+    const segMatch = pathname.match(/^\/c\/([^/?#]+)(?:\/|$)/i) || search.match(/[?&]cascadeId=([^&#]*)/i);
+    const rawTokens = segMatch ? safeDecode(segMatch[1]).split('+').map(s => s.trim()).filter(Boolean) : [];
+    const hasBlankSplitPane = rawTokens.includes('_new');
+    const panes = [];
+    const seenPane = new Set();
+    for (const tok of rawTokens) {
+      const lower = tok.toLowerCase();
+      if (UUID_STRICT_RE.test(tok) && !seenPane.has(lower)) {
+        seenPane.add(lower);
+        panes.push(tok);
+      }
+    }
+
+    const focusMatch = search.match(/[?&]focused=([^&#]*)/i);
+    const rawFocused = focusMatch ? safeDecode(focusMatch[1]).trim() : null;
+    const focusedIsBlankPane = rawFocused === '_new';
+    const focusedPaneId = (rawFocused && panes.find(id => sameRouteId(id, rawFocused))) || panes[0] || null;
+
+    const sideChats = [];
+    const pushSideChat = (parsed, title = '', active = false) => {
+      if (!parsed || seenPane.has(parsed.id.toLowerCase())) return;
+      const cleanTitle = String(title || '').replace(/\s+tab$/i, '').trim();
+      const hit = sideChats.find(s => sameRouteId(s.id, parsed.id));
+      if (hit) {
+        if (active) hit.isActiveTab = true;
+        if (!hit.titleHint && cleanTitle) hit.titleHint = cleanTitle;
+        return;
+      }
+      sideChats.push({ id: parsed.id, kind: parsed.kind, tabId: parsed.tabId, titleHint: cleanTitle, isActiveTab: Boolean(active) });
+    };
+
+    const tabMatch = search.match(/[?&]tab=([^&#]*)/i);
+    const urlTab = tabMatch ? parseSideChatTabId(safeDecode(tabMatch[1])) : null;
+    try {
+      const nodes = doc?.querySelectorAll?.('[data-tab-id]') || [];
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        const parsed = parseSideChatTabId(node?.getAttribute?.('data-tab-id'));
+        if (!parsed) continue;
+        const cls = String(node.className || node.getAttribute?.('class') || '').split(/\s+/);
+        const domActive = node.getAttribute?.('aria-selected') === 'true'
+          || node.getAttribute?.('data-active') === 'true'
+          || (cls.includes('bg-secondary') && !cls.includes('bg-transparent'));
+        const title = node.getAttribute?.('title') || node.getAttribute?.('aria-label') || node.textContent || '';
+        pushSideChat(parsed, title, urlTab ? sameRouteId(parsed.id, urlTab.id) : domActive);
+      }
+    } catch { }
+    if (urlTab) pushSideChat(urlTab, '', true);
+
+    const sideChat = sideChats.find(s => s.isActiveTab) || sideChats[0] || null;
+    const targets = [
+      ...panes.map((id, index) => ({ id, role: 'pane', kind: 'pane', index, isFocused: Boolean(id === focusedPaneId && !focusedIsBlankPane) })),
+      ...sideChats.map((s, sIdx) => ({ ...s, role: 'sidechat', sideIndex: sIdx, index: panes.length + sIdx, isFocused: false }))
+    ];
+    const sideKey = sideChats.map(s => `${s.kind}:${s.id}${s.isActiveTab ? '*' : ''}`).join(',');
+    return {
+      panes, focusedPaneId, focusedIsBlankPane, hasBlankSplitPane,
+      sideChat, sideChats, activeSideChatId: sideChat?.id || null,
+      targets, isMultiSession: targets.length > 1,
+      layoutKey: `${panes.join('+')}|${focusedPaneId || ''}|${focusedIsBlankPane ? 'blank' : ''}|${sideKey}`
+    };
+  }
+
+  function resolveEffectiveRoute(layout, commit = false) {
+    if (!layout) return null;
+    let pinned = state.pinnedViewRoute || null;
+    if (pinned && state.lastHostFocusedRoute && layout.focusedPaneId && !sameRouteId(state.lastHostFocusedRoute, layout.focusedPaneId)) {
+      pinned = null;
+    }
+    if (
+      pinned && state.lastActiveSideChatId && layout.activeSideChatId &&
+      !sameRouteId(state.lastActiveSideChatId, layout.activeSideChatId) &&
+      layout.sideChats.some(s => sameRouteId(s.id, pinned))
+    ) {
+      pinned = layout.activeSideChatId;
+    }
+    if (pinned) {
+      pinned = layout.targets.find(t => sameRouteId(t.id, pinned))?.id || null;
+      if (pinned && layout.focusedPaneId && !layout.focusedIsBlankPane && sameRouteId(pinned, layout.focusedPaneId)) {
+        pinned = null;
+      }
+    }
+    if (commit) {
+      state.pinnedViewRoute = pinned;
+      state.lastHostFocusedRoute = layout.focusedPaneId || null;
+      state.lastActiveSideChatId = layout.activeSideChatId || null;
+      state.layout = layout;
+    }
+    return pinned || layout.focusedPaneId || layout.sideChat?.id || null;
+  }
+
+  const route = () => resolveEffectiveRoute(parseConversationLayout(), true);
+
+  function saveSessionSnapshotToCache(routeId) {
+    if (!routeId || (!state.latest && !state.scan && !state.sessionCalls?.length)) return;
+    const patch = { sessionCalls: Array.isArray(state.sessionCalls) ? state.sessionCalls.slice() : [] };
+    for (const k of SNAPSHOT_STATE_KEYS) {
+      if (state[k] !== undefined) patch[k] = state[k];
+    }
+    sessionSnapshotCache.delete(routeId);
+    sessionSnapshotCache.set(routeId, {
+      patch,
+      callsEntries: state.sessionCallsMap ? Array.from(state.sessionCallsMap.entries()) : []
+    });
+    if (sessionSnapshotCache.size > 10) {
+      sessionSnapshotCache.delete(sessionSnapshotCache.keys().next().value);
+    }
+  }
+
+  function isSameScreenSessionSwitch(prevLayout, nextLayout, prevId, nextId) {
+    if (!prevId || !nextId || prevId === nextId || !prevLayout || !nextLayout) return false;
+    const prevIds = new Set(prevLayout.targets.map(item => item.id.toLowerCase()));
+    const nextIds = new Set(nextLayout.targets.map(item => item.id.toLowerCase()));
+    let shared = false;
+    for (const id of prevIds) {
+      if (nextIds.has(id)) { shared = true; break; }
+    }
+    return shared && (prevIds.has(prevId.toLowerCase()) || nextIds.has(prevId.toLowerCase()))
+      && (prevIds.has(nextId.toLowerCase()) || nextIds.has(nextId.toLowerCase()));
+  }
+
+  function getScopeTargetLabel(target, layout) {
+    if (!target) return '';
+    if (target.role !== 'sidechat') {
+      return (layout?.panes?.length || 0) <= 1 ? t('scope.pane.single') : t('scope.pane.indexed', { n: (target.index || 0) + 1 });
+    }
+    const base = target.kind === 'side_question'
+      ? t('scope.side.question')
+      : (target.kind === 'browser_subagent' ? t('scope.side.browser') : t('scope.side.subagent'));
+    const peers = (layout?.sideChats || []).filter(s => s.kind === target.kind);
+    const idx = peers.length > 1 ? peers.findIndex(s => sameRouteId(s.id, target.id)) : -1;
+    return idx >= 0 ? `${base} ${idx + 1}` : base;
+  }
+
+  function selectConversationScopeView(targetId) {
+    if (state.disposed || !targetId) return false;
+    const cur = state.layout || parseConversationLayout();
+    const hit = cur.targets.find(item => sameRouteId(item.id, targetId));
+    if (!hit) return false;
+    state.pinnedViewRoute = (cur.focusedPaneId && !cur.focusedIsBlankPane && sameRouteId(hit.id, cur.focusedPaneId)) ? null : hit.id;
+    lastScopeRenderSig = '';
+    tick();
+    return true;
+  }
+
+  function resumeFollowFocusView() {
+    if (state.disposed) return false;
+    const wasPinned = Boolean(state.pinnedViewRoute);
+    state.pinnedViewRoute = null;
+    lastScopeRenderSig = '';
+    if (wasPinned) tick(); else renderConversationScopeUI(true);
+    return true;
+  }
+
+  function renderConversationScopeUI(force = false) {
+    const layout = state.layout || parseConversationLayout();
+    const activeId = state.route || null;
+    const activeTarget = (layout?.isMultiSession && activeId)
+      ? (layout.targets.find(item => sameRouteId(item.id, activeId)) || null)
+      : null;
+    const isLocked = Boolean(state.pinnedViewRoute && activeTarget);
+    const sig = `${layout?.layoutKey || ''}|${activeId || ''}|${isLocked ? 1 : 0}|${currentPanelLanguage}`;
+    if (!force && sig === lastScopeRenderSig) return;
+    lastScopeRenderSig = sig;
+
+    const badgeTag = el('badge-scope-tag');
+    if (badgeTag) {
+      const shortTag = !activeTarget ? ''
+        : (activeTarget.role === 'sidechat' ? t('scope.badge.sideShort')
+          : (layout.panes.length > 1 ? `${activeTarget.index + 1}/${layout.panes.length}`
+            : (layout.sideChat ? t('scope.badge.plusSide') : '')));
+      badgeTag.textContent = shortTag;
+      badgeTag.hidden = !shortTag;
+      if (shortTag) badgeTag.setAttribute('data-scope-locked', isLocked ? 'true' : 'false');
+      else badgeTag.removeAttribute?.('data-scope-locked');
+    }
+
+    const keyChip = el('key-scope-chip');
+    if (keyChip) {
+      keyChip.textContent = activeTarget ? getScopeTargetLabel(activeTarget, layout) : '';
+      keyChip.hidden = !activeTarget;
+      if (activeTarget) keyChip.setAttribute('data-scope-kind', activeTarget.role === 'sidechat' ? 'sidechat' : 'pane');
+      else keyChip.removeAttribute?.('data-scope-kind');
+    }
+
+    const scopeBar = el('ctx-scope-bar');
+    const pillsWrap = el('ctx-scope-pills');
+    if (!scopeBar || !pillsWrap) return;
+    pillsWrap.replaceChildren();
+    scopeBar.hidden = !activeTarget;
+    if (!activeTarget) return;
+
+    for (const item of layout.targets) {
+      const btn = document.createElement('button');
+      const selected = sameRouteId(item.id, activeTarget.id);
+      const label = getScopeTargetLabel(item, layout);
+      const displayLabel = (item.role === 'sidechat' && item.titleHint && item.titleHint !== label) ? `${label} · ${item.titleHint}` : label;
+      btn.type = 'button';
+      btn.className = `ctx-scope-pill${selected ? ' is-active' : ''}${item.role === 'sidechat' ? ' is-sidechat' : ''}`;
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+      btn.setAttribute('data-scope-id', item.id);
+      btn.setAttribute('data-scope-role', item.role);
+      btn.title = t(item.isFocused ? 'scope.pill.titleFocused' : 'scope.pill.titleOther', { label: displayLabel, id: `${item.id.slice(0, 8)}…` });
+      if (item.isFocused || (item.role === 'sidechat' && item.isActiveTab)) {
+        const dot = document.createElement('span');
+        dot.className = 'ctx-scope-pill-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        btn.appendChild(dot);
+      }
+      const txt = document.createElement('span');
+      txt.textContent = label;
+      btn.appendChild(txt);
+      btn.addEventListener('click', () => selectConversationScopeView(item.id));
+      pillsWrap.appendChild(btn);
+    }
+
+    const followBtn = el('btn-ctx-scope-follow');
+    const followLabel = el('ctx-scope-follow-label');
+    if (followBtn && followLabel) {
+      followBtn.setAttribute('data-following', isLocked ? 'false' : 'true');
+      followLabel.textContent = t(isLocked ? 'scope.follow.locked' : 'scope.follow.auto');
+      followBtn.title = isLocked
+        ? t('scope.follow.lockedTitle')
+        : (layout.focusedIsBlankPane ? t('scope.pill.titleBlankFallback', { label: getScopeTargetLabel(activeTarget, layout) }) : t('scope.follow.title'));
+    }
+  }
   let activeHeatView = 'daily';
   let heatPageOffset = 0;
   let heatMonthOffset = 0;
@@ -439,8 +699,25 @@
 
   function findHostTitlebar() {
     try {
-      if (typeof document.querySelector !== 'function') return null;
-      return document.querySelector('[class*="@container/titlebar"]');
+      const candidates = typeof document.querySelectorAll === 'function'
+        ? Array.from(document.querySelectorAll('[class*="@container/titlebar"]'))
+        : [];
+      if (candidates.length > 1) {
+        // 多窗格下优先停靠最右上角窗格顶栏，避免被夹在分割线或下层窗格
+        let best = null, bestTop = Infinity, bestRight = -Infinity;
+        for (const node of candidates) {
+          const rect = node?.getBoundingClientRect?.();
+          if (!rect || (rect.width <= 0 && rect.height <= 0)) continue;
+          const top = Number.isFinite(rect.top) ? rect.top : 0;
+          const right = Number.isFinite(rect.right) ? rect.right : 0;
+          if (!best || top < bestTop - 4 || (Math.abs(top - bestTop) <= 4 && right > bestRight)) {
+            best = node; bestTop = top; bestRight = right;
+          }
+        }
+        if (best) return best;
+      }
+      if (candidates.length === 1) return candidates[0];
+      return typeof document.querySelector === 'function' ? document.querySelector('[class*="@container/titlebar"]') : null;
     } catch {
       return null;
     }
@@ -676,6 +953,7 @@
       && observedTitlebar.isConnected
       && observedTitlebar.contains(host)
       && host.parentElement
+      && ((state.layout?.panes?.length || 0) <= 1 || observedTitlebar === findHostTitlebar())
     ) {
       return;
     }
@@ -11828,6 +12106,7 @@
     host.hidden = false;
     host.setAttribute('data-has-session', state.route ? 'true' : 'false');
     ensureHostDocked();
+    renderConversationScopeUI();
     if (!state.route) {
       hideContextTooltip();
       const barFill = el('bar-fill');
@@ -15191,6 +15470,10 @@
   }
   renderQuotaBoard();
 
+  el('btn-ctx-scope-follow')?.addEventListener('click', () => {
+    if (state.pinnedViewRoute) resumeFollowFocusView();
+  });
+
   let quotaTickCounter = 0;
   let hasTriggeredInitialQuotaSync = false;
   function tick() {
@@ -15201,8 +15484,20 @@
     if (!host.isConnected) {
       ensureHostDocked();
     }
+    const prevLayout = state.layout;
+    const prevRoute = state.route;
     const id = route();
-    if (id !== state.route) {
+    const nextLayout = state.layout;
+    const layoutChanged = Boolean(nextLayout && nextLayout.layoutKey !== state.lastLayoutKey);
+    if (nextLayout) state.lastLayoutKey = nextLayout.layoutKey;
+    if (prevLayout && nextLayout && prevLayout.panes.length !== nextLayout.panes.length) {
+      layoutMeasurementDirty = true;
+      ensureHostDocked();
+    }
+    if (id !== prevRoute) {
+      if (prevRoute) saveSessionSnapshotToCache(prevRoute);
+      const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
+      const cachedSnap = (sameScreenSwitch && id) ? (sessionSnapshotCache.get(id) || null) : null;
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
@@ -15211,7 +15506,10 @@
       if (state.callRenderTimer) { clearTimeout(state.callRenderTimer); state.callRenderTimer = null; }
       if (state.callEnterAnimTimer) { clearTimeout(state.callEnterAnimTimer); state.callEnterAnimTimer = null; }
       clearLivePendingRequestWait();
-      if (state.sessionCallsMap) state.sessionCallsMap.clear();
+      if (state.sessionCallsMap) {
+        state.sessionCallsMap.clear();
+        cachedSnap?.callsEntries.forEach(([k, v]) => state.sessionCallsMap.set(k, v));
+      }
       if (state.expandedTurnKeys) state.expandedTurnKeys.clear();
       Object.assign(state, {
         route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
@@ -15223,12 +15521,15 @@
         timelineError: '', timelinePageLimit: 10, timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
         lastTimelineFetchAt: 0, lastTimelineCallSig: '',
         speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
-      });
+      }, cachedSnap ? { ...cachedSnap.patch, sessionCalls: cachedSnap.patch.sessionCalls.slice() } : null);
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
       if (lastHistorySync > 0) {
         lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
       }
-      toggle(false); hideContextTooltip(); renderFiles(null); render();
+      if (!sameScreenSwitch) toggle(false);
+      hideContextTooltip(); renderFiles(state.scan); render();
+    } else if (layoutChanged) {
+      renderConversationScopeUI(true);
     }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
@@ -15264,7 +15565,11 @@
     routeHookScheduled = true;
     Promise.resolve().then(() => {
       routeHookScheduled = false;
-      if (!state.disposed && route() !== state.route) tick();
+      if (state.disposed) return;
+      const nextLayout = parseConversationLayout();
+      if (resolveEffectiveRoute(nextLayout, false) !== state.route || nextLayout.layoutKey !== state.lastLayoutKey) {
+        tick();
+      }
     });
   };
   let origPushState = null;
@@ -15359,6 +15664,7 @@
       openPanel,
       activeContextTab,
       isContextSettingsView,
+      pinnedViewRoute: state.pinnedViewRoute || null,
       browsePoolKey: quotaState.browsePoolKey || null,
       scrollTops,
       openDrawers,
@@ -15405,6 +15711,10 @@
     }
     if (saved.browsePoolKey) {
       quotaState.browsePoolKey = saved.browsePoolKey;
+    }
+    if (saved.pinnedViewRoute && typeof saved.pinnedViewRoute === 'string') {
+      state.pinnedViewRoute = saved.pinnedViewRoute;
+      lastScopeRenderSig = '';
     }
     if (saved.openPanel && saved.openPanel !== 'none') {
       showPanel(saved.openPanel);
@@ -15790,6 +16100,30 @@
       autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
       keepaliveStatus: el('keepalive-status-pill')?.textContent || ''
     }),
+    getConversationScopeStateForTest: () => ({
+      layout: state.layout || parseConversationLayout(),
+      activeRoute: state.route,
+      pinnedViewRoute: state.pinnedViewRoute,
+      isFollowingFocus: !state.pinnedViewRoute,
+      badgeScopeTag: el('badge-scope-tag')?.textContent || '',
+      badgeScopeTagHidden: Boolean(el('badge-scope-tag')?.hidden),
+      badgeScopeLocked: el('badge-scope-tag')?.getAttribute?.('data-scope-locked') || null,
+      scopeBarHidden: Boolean(el('ctx-scope-bar')?.hidden),
+      keyScopeChip: el('key-scope-chip')?.textContent || '',
+      keyScopeChipHidden: Boolean(el('key-scope-chip')?.hidden),
+      followLabel: el('ctx-scope-follow-label')?.textContent || '',
+      followAttr: el('btn-ctx-scope-follow')?.getAttribute?.('data-following') || null,
+      pills: Array.from(el('ctx-scope-pills')?.children || []).map(btn => ({
+        id: btn.getAttribute?.('data-scope-id') || '',
+        role: btn.getAttribute?.('data-scope-role') || '',
+        selected: btn.getAttribute?.('aria-selected') === 'true',
+        label: btn.children?.[btn.children.length - 1]?.textContent || btn.textContent || ''
+      })),
+      cachedRoutes: Array.from(sessionSnapshotCache.keys())
+    }),
+    selectConversationScopeForTest: id => selectConversationScopeView(id),
+    resumeFollowFocusForTest: () => resumeFollowFocusView(),
+    findHostTitlebarForTest: () => findHostTitlebar(),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
       earlyForceDispose();

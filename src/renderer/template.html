@@ -22,6 +22,7 @@
       transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
   </svg>
   <span id="badge-pct-val" class="badge-pct-val">--%</span>
+  <span id="badge-scope-tag" class="badge-scope-tag" hidden></span>
   <div id="bar-wrap" class="sr-only" aria-hidden="true">
     <div id="bar-fill" class="meter-bar-fill"></div>
   </div>
@@ -159,6 +160,13 @@
 
     <!-- 分页 1: 当前会话 -->
     <div id="pane-ctx-session" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-session">
+      <div id="ctx-scope-bar" class="ctx-scope-bar" hidden role="region" aria-label="同屏会话视角切换" data-i18n-aria="scope.bar.aria">
+        <div id="ctx-scope-pills" class="ctx-scope-pills" role="tablist" aria-label="同屏会话列表" data-i18n-aria="scope.pills.aria"></div>
+        <button id="btn-ctx-scope-follow" class="ctx-scope-follow-btn" type="button" data-following="true" title="仅切换面板查看视角，不切换客户端当前对话" data-i18n-title="scope.follow.title">
+          <span class="ctx-scope-follow-dot" aria-hidden="true"></span><span id="ctx-scope-follow-label" data-i18n="scope.follow.auto">跟随焦点</span>
+        </button>
+      </div>
+
       <!-- 本轮与当前会话实时 API 等值参考行 -->
       <div id="round-cost-bar" class="round-cost-bar" title="当前模型调用的 API 等值参考金额（按已返回用量或实时生成估算）"
         data-i18n-title="session.costBar.title">
@@ -170,7 +178,8 @@
 
       <!-- 卡片 1: 核心用量速览 -->
       <div id="key-summary">
-        <div class="key-header"><span class="key-title" data-i18n="session.keySummary.title">⭐ 核心用量速览</span><span
+        <div class="key-header"><span class="key-title-wrap"><span class="key-title" data-i18n="session.keySummary.title">⭐ 核心用量速览</span><span
+              id="key-scope-chip" class="key-scope-chip" hidden></span></span><span
             id="key-badge" class="key-pill pill-muted" data-i18n="session.badge.reading">读取中</span></div>
         <div class="key-bar-track">
           <div id="key-bar-fill" class="key-bar-fill"></div>
