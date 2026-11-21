@@ -14880,16 +14880,58 @@ function closeAllDropdowns(exceptWrap = null) {
     const resolveCand = (cand) => cand
       ? (resolveStableModelKeyClient(cand) || (typeof resolveStableModelId === 'function' ? resolveStableModelId(cand, configs) : null))
       : null;
-    const stableId = resolveCand(parenLabel) || resolveCand(rawText) || resolveCand(baseText);
+    const knownIds = new Set(
+      (Array.isArray(configs) ? configs : [])
+        .map(c => String(c?.modelId || c?.modelOrAlias?.model || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const resolveKnownCand = (cand) => {
+      const id = resolveCand(cand);
+      return (id && knownIds.has(id)) ? id : null;
+    };
+
+    let matchedCfg = null;
+    let stableId = resolveKnownCand(parenLabel) || resolveKnownCand(rawText) || resolveKnownCand(baseText);
+    if (!stableId && Array.isArray(configs) && configs.length > 0) {
+      // 兼容 Orchestrator 等带前缀的模型选择按钮文本（如 "Orchestrator Gemini 4 Carbon Medium"）
+      const hay = ` ${baseText.toLowerCase()} `;
+      const rawHay = ` ${rawText.toLowerCase()} `;
+      const wantEffort = normEffort ? normEffort.toLowerCase() : '';
+      let bestScore = -1;
+      for (const cfg of configs) {
+        if (!cfg || cfg.isHistorical === true) continue;
+        const cfgLabel = String(cfg.label || cfg.modelDisplayName || '').trim();
+        if (!cfgLabel) continue;
+        const cfgEffortM = cfgLabel.match(/^(.*?)\s*\(([^()]+)\)\s*$/);
+        const cfgBase = (cfgEffortM ? cfgEffortM[1] : cfgLabel).trim().toLowerCase();
+        const cfgEffort = (cfgEffortM ? cfgEffortM[2] : '').trim().toLowerCase();
+        if (!cfgBase) continue;
+        if (!hay.includes(` ${cfgBase} `) && !rawHay.includes(` ${cfgBase} `)) continue;
+        const effortMatch = wantEffort && cfgEffort && wantEffort === cfgEffort ? 1 : 0;
+        const score = cfgBase.length * 10 + effortMatch * 5 + (cfgEffort ? 1 : 0);
+        if (score > bestScore) {
+          bestScore = score;
+          matchedCfg = cfg;
+        }
+      }
+      if (matchedCfg) {
+        stableId = resolveCand(matchedCfg.label || matchedCfg.modelId || matchedCfg.modelOrAlias?.model);
+      }
+    }
+    if (!stableId) {
+      stableId = resolveCand(parenLabel) || resolveCand(rawText) || resolveCand(baseText);
+    }
+
+    const effectiveLabel = matchedCfg?.label || parenLabel;
     const g = groupProductSafe({
-      modelId: stableId || parenLabel,
-      label: parenLabel,
+      modelId: stableId || effectiveLabel,
+      label: effectiveLabel,
       effort: normEffort
     });
 
     return {
       rawText,
-      modelId: stableId || parenLabel,
+      modelId: stableId || effectiveLabel,
       productKey: g.productKey,
       productLabel: g.productLabel || baseText,
       effort: normEffort || g.effort || null,

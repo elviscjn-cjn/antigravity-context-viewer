@@ -2633,3 +2633,59 @@ test('隔离额度请求遇到窗口未就绪、CSRF 缺失及 401/403 鉴权失
   assert.notEqual(authFailRes.snapshot.activeStatus, 'exhausted');
   assert.notEqual(authFailRes.snapshot.activeStatus, 'no_permission');
 });
+
+test('Orchestrator mode: resolves prefixed model-selector-trigger text to matching config & quota pool', () => {
+  const nowMs = Date.now();
+  const userStatusRes = {
+    userStatus: {
+      email: 'orch@example.com',
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          { modelId: 'MODEL_PLACEHOLDER_M437', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M437' }, label: 'Gemini 4 Carbon (Medium)', quotaInfo: { remainingFraction: 0.93 } },
+          { modelId: 'MODEL_PLACEHOLDER_M667', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M667' }, label: 'Orchestrator (Carbon)', quotaInfo: { remainingFraction: 0.93 } },
+          { modelId: 'MODEL_PLACEHOLDER_M400', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M400' }, label: 'Claude Opus 5.5 (Low)', quotaInfo: { remainingFraction: 0.48 } }
+        ]
+      }
+    }
+  };
+  const quotaSummaryRes = {
+    groups: [
+      { displayName: 'Gemini Models', description: 'Models within this group: Gemini 4 Carbon, Orchestrator (Carbon)', buckets: [{ bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.93 }] },
+      { displayName: 'Claude and GPT models', description: 'Models within this group: Claude Opus 5.5', buckets: [{ bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.48 }] }
+    ]
+  };
+  const h = createQuotaRendererHarness();
+  let triggerText = 'Orchestrator Gemini 4 Carbon Medium';
+  const origAll = h.sandbox.document.querySelectorAll;
+  const mockTrigger = {
+    closest: () => null,
+    getBoundingClientRect: () => ({ width: 180, height: 28 }),
+    querySelector: () => null,
+    cloneNode: () => ({ querySelectorAll: () => [], textContent: triggerText }),
+    get textContent() { return triggerText; }
+  };
+  h.sandbox.document.querySelectorAll = (sel) => (sel === '[data-testid="model-selector-trigger"]' ? [mockTrigger] : origAll(sel));
+
+  const api = h.sandbox.__AGContextMeter;
+  const cfgs = userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs;
+  try {
+    api.setQuotaSnapshotForTest({ accountScopeKey: 'acct_orch', fetchedAtMs: nowMs, userStatusRes, quotaSummaryRes }, nowMs);
+    api.setContextLatestForTest(null, cfgs);
+    const v1 = api.getModelQuotaStateForTest(nowMs).view;
+    assert.equal(v1.activeStatus, 'available');
+    assert.equal(v1.badge.text, '93%');
+
+    triggerText = 'Orchestrator Claude Opus 5.5 Low';
+    api.setContextLatestForTest(null, cfgs);
+    const v2 = api.getModelQuotaStateForTest(nowMs).view;
+    assert.equal(v2.activeStatus, 'available');
+    assert.equal(v2.badge.text, '48%');
+
+    triggerText = 'BrandNewUnknownModel X';
+    api.setContextLatestForTest(null, cfgs);
+    const v3 = api.getModelQuotaStateForTest(nowMs).view;
+    assert.equal(v3.activeStatus, 'unknown');
+  } finally {
+    api.dispose();
+  }
+});
