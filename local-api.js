@@ -555,6 +555,14 @@ async function extractAppConfigViaCdp(page) {
   }
 }
 
+function resolveHostAuthToken(origin, auth) {
+  const expected = normalizeLoopbackOrigin(origin);
+  const active = normalizeLoopbackOrigin(auth?.getActiveLsBaseUrl?.());
+  if (!expected || active !== expected) return null;
+  const token = auth?.getActiveLsCsrfToken?.();
+  return typeof token === 'string' && token.trim() ? token : null;
+}
+
 /**
  * 解析并缓存或实时提取指定本地页面原点的 CSRF Token 并构造 RPC 客户端。
  */
@@ -586,6 +594,14 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
 
   if (!hasConfig) {
     throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+  }
+  if (!token) {
+    // Antigravity 2.34+ keeps the admin token in main-process memory.
+    // Only accept credentials for the exact local service being connected.
+    try {
+      const auth = require('./authBootstrap');
+      token = resolveHostAuthToken(origin, auth);
+    } catch {}
   }
   if (!token) {
     throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
@@ -630,6 +646,7 @@ async function connect(options = {}) {
 }
 
 module.exports = {
+  resolveHostAuthToken,
   connect,
   connectOrigin,
   normalizeLoopbackOrigin,
