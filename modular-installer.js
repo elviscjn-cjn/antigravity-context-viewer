@@ -437,9 +437,12 @@ function verifyCleanStructure(cleanUtils) {
   if (!cleanUtils) return false;
   if (cleanUtils.includes('installContextMeter')) return false;
   if (cleanUtils.includes(TAGS.PROXY_START) || cleanUtils.includes(TAGS.METER_UTILS_START)) return false;
-  const marker = '    void win.loadURL(url);';
+  const legacyMarker = '    void win.loadURL(url);';
+  const v234LoadMatches = cleanUtils.match(/^ {4}void loadHubWindowUrl\(win, url,[^\n]*\);$/gm) || [];
+  const hasLoadAnchor =
+    cleanUtils.split(legacyMarker).length === 2 || v234LoadMatches.length === 1;
   const setupNodeMarker = 'function setupNodeWrapper(env) {';
-  const structuralOk = cleanUtils.split(marker).length === 2 && cleanUtils.includes(setupNodeMarker);
+  const structuralOk = hasLoadAnchor && cleanUtils.includes(setupNodeMarker);
   return structuralOk && validateSyntax(cleanUtils, 'dist/utils.js');
 }
 

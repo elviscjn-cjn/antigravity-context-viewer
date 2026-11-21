@@ -555,8 +555,19 @@ async function install(options = {}) {
         finalUtils = finalUtils
           .replace('"use strict";', `"use strict";\n${meterUtils.headerProxyHook}`)
           .replace('function setupNodeWrapper(env) {', `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
-          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`)
-          .replace('    void win.loadURL(url);', `${meterUtils.windowLoadHook}    void win.loadURL(url);`);
+          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`);
+
+        if (finalUtils.includes('    void win.loadURL(url);')) {
+          finalUtils = finalUtils.replace(
+            '    void win.loadURL(url);',
+            `${meterUtils.windowLoadHook}    void win.loadURL(url);`,
+          );
+        } else {
+          finalUtils = finalUtils.replace(
+            /^( {4}void loadHubWindowUrl\(win, url,[^\n]*\);)$/m,
+            `${meterUtils.windowLoadHook}$1`,
+          );
+        }
 
         const createWinSig = 'function createWindow(url, storageManager, options) {';
         if (finalUtils.includes(createWinSig) && !finalUtils.includes('__agDefaultStorageManager')) {
