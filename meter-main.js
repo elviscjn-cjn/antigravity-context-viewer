@@ -513,7 +513,17 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:scan', async (event, id, force) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true }) }; }
+    try {
+      const hubLocalApi = createHubWindowLocalApi({ origin: url.origin, sender: event.sender });
+      return {
+        ok: true,
+        data: await collect(url.origin, id, {
+          force: force === true,
+          supersedePrevious: true,
+          connect: hubLocalApi.connect
+        })
+      };
+    }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -524,7 +534,8 @@ function registerMeterIpcHandlers(ipcMain) {
       let recOpts = {};
       try {
         const { getSharedAccountsManager } = require('./meter-accounts');
-        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+        const hubLocalApi = createHubWindowLocalApi({ origin: url.origin, sender: event.sender });
+        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins, localApi: hubLocalApi });
         const ov = mgr.getOverviewState();
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.() || ov?.switchInProgress);
         const activeEmail = !switchInFlight ? (ov?.activeAccountEmail || null) : null;
@@ -568,7 +579,17 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:token-history', async (event, force) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collectTokenHistoryAsync({ force: force === true }) }; }
+    try {
+      const hubLocalApi = createHubWindowLocalApi({ origin: url.origin, sender: event.sender });
+      return {
+        ok: true,
+        data: await collectTokenHistoryAsync({
+          force: force === true,
+          origin: url.origin,
+          connect: hubLocalApi.connect
+        })
+      };
+    }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -602,15 +623,19 @@ function registerMeterIpcHandlers(ipcMain) {
         : (options && typeof options === 'object' ? { ...options } : {});
       if (!opts.origin) opts.origin = url.origin;
       opts.backendSource = 'electron-ipc';
+      const hubLocalApi = createHubWindowLocalApi({ origin: opts.origin, sender: event.sender });
+      if (typeof opts.connect !== 'function') {
+        opts.connect = hubLocalApi.connect;
+      }
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       let accountSyncResult = null;
       try {
         const { getSharedAccountsManager } = require('./meter-accounts');
-        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins, localApi: hubLocalApi });
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
         const email = !switchInFlight
-          ? (res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+          ? (res?.planStatus?.email || res?._raw?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
           : null;
         if (!switchInFlight && email && res?.snapshot) {
           mgr.syncActiveHostQuotaSnapshot(res, email);
@@ -665,8 +690,11 @@ function registerMeterIpcHandlers(ipcMain) {
           hostBounds = targetWin.getBounds();
         } catch {}
       }
+      const hubLocalApi = createHubWindowLocalApi({ origin: url.origin, sender: event.sender });
       const res = await launchCliSession({
         ...options,
+        origin: options?.origin || url.origin,
+        connect: typeof options?.connect === 'function' ? options.connect : hubLocalApi.connect,
         ownerHwnd: ownerHwndStr,
         hostBounds
       }, ownerHwndStr);
@@ -875,7 +903,8 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { getSharedAccountsManager } = require('./meter-accounts');
-      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+      const hubLocalApi = createHubWindowLocalApi({ origin: url.origin, sender: event.sender });
+      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins, localApi: hubLocalApi });
       await mgr.detectCurrentActiveAccount();
       return mgr.getOverviewState();
     } catch (e) {
@@ -888,7 +917,8 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
-      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+      const hubLocalApi = createHubWindowLocalApi({ origin: url.origin, sender: event.sender });
+      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins, localApi: hubLocalApi });
       return await dispatchAccountsAction(mgr, payload || {});
     } catch (e) {
       return { ok: false, error: e.message };
@@ -934,19 +964,250 @@ function getWindowWebContents(win) {
   return null;
 }
 
+const HUB_WINDOW_RPC_METHODS = new Set([
+  'GetUserStatus',
+  'RetrieveUserQuotaSummary',
+  'GetAvailableModels',
+  'GetCascadeTrajectory',
+  'GetCascadeTrajectorySteps',
+  'GetCascadeTrajectoryGeneratorMetadata'
+]);
+
+function normalizeLoopbackOrigin(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    if (parsed.hostname !== '127.0.0.1') return null;
+    const portNum = parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80);
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function isUsableHubWebContents(wc) {
+  return Boolean(wc && !wc.isDestroyed?.() && typeof wc.executeJavaScript === 'function');
+}
+
+function collectHubWindowWebContents(options = {}) {
+  const result = [];
+  const seen = new Set();
+  const pushWc = (wc) => {
+    if (!isUsableHubWebContents(wc) || seen.has(wc)) return;
+    seen.add(wc);
+    result.push(wc);
+  };
+
+  if (options.sender) {
+    pushWc(options.sender);
+  }
+
+  if (typeof options.getHubWindows === 'function') {
+    try {
+      const wins = options.getHubWindows() || [];
+      for (const win of wins) pushWc(getWindowWebContents(win));
+    } catch {}
+  } else {
+    try {
+      const utils = require('./utils');
+      const wins = typeof utils.getHubWindows === 'function' ? (utils.getHubWindows() || []) : [];
+      for (const win of wins) pushWc(getWindowWebContents(win));
+    } catch {}
+  }
+
+  try {
+    const electron = require('electron');
+    const browserWins = typeof electron?.BrowserWindow?.getAllWindows === 'function'
+      ? electron.BrowserWindow.getAllWindows()
+      : [];
+    for (const win of browserWins) pushWc(getWindowWebContents(win));
+    const baseWins = typeof electron?.BaseWindow?.getAllWindows === 'function'
+      ? electron.BaseWindow.getAllWindows()
+      : [];
+    for (const win of baseWins) pushWc(getWindowWebContents(win));
+  } catch {}
+
+  return result;
+}
+
+/**
+ * 定位与目标本机回环 origin 匹配的活跃 Hub 主窗口 WebContents（确保多窗口 origin 严格隔离）
+ */
+function resolveHubWindowWebContents(targetOrigin = null, options = {}) {
+  const wantedOrigin = normalizeLoopbackOrigin(targetOrigin);
+  const candidates = collectHubWindowWebContents(options);
+  for (const wc of candidates) {
+    const wcOrigin = normalizeLoopbackOrigin(wc.getURL?.() || '');
+    if (!wcOrigin) continue;
+    if (wantedOrigin && wcOrigin !== wantedOrigin) continue;
+    return { wc, origin: wcOrigin };
+  }
+  return null;
+}
+
+function buildHubWindowRpcScript(expectedOrigin, method, body = {}, timeoutMs = 12000) {
+  const endpointPath = `/exa.language_server_pb.LanguageServerService/${method}`;
+  const bodyStr = JSON.stringify(body && typeof body === 'object' ? body : {});
+  const safeTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Math.round(Number(timeoutMs))
+    : 12000;
+  return `(async () => {
+  try {
+    const expectedOrigin = ${JSON.stringify(expectedOrigin || '')};
+    const currentOrigin = typeof window !== 'undefined' && window.location ? window.location.origin : '';
+    if (expectedOrigin && currentOrigin && currentOrigin !== expectedOrigin) {
+      return { ok: false, status: 0, code: 'origin_mismatch', error: 'Hub window origin mismatch' };
+    }
+    if (typeof fetch !== 'function') {
+      return { ok: false, status: 0, code: 'no_fetch', error: 'Hub window fetch unavailable' };
+    }
+    const csrf = (typeof window !== 'undefined' && window.__APP_CONFIG__ && typeof window.__APP_CONFIG__.csrfToken === 'string')
+      ? window.__APP_CONFIG__.csrfToken.trim()
+      : '';
+    const headers = {
+      'Content-Type': 'application/json',
+      'Connect-Protocol-Version': '1'
+    };
+    if (csrf) {
+      headers['x-codeium-csrf-token'] = csrf;
+    }
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), ${safeTimeoutMs}) : null;
+    try {
+      const res = await fetch(${JSON.stringify(endpointPath)}, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: ${JSON.stringify(bodyStr)},
+        ...(controller ? { signal: controller.signal } : {})
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        return { ok: false, status: res.status, text: String(text || '').slice(0, 300) };
+      }
+      const data = text && text.trim() ? JSON.parse(text) : {};
+      return { ok: true, status: res.status, data };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } catch (err) {
+    return { ok: false, status: 0, error: err && err.message ? err.message : String(err) };
+  }
+})()`;
+}
+
+async function executeHubWindowRpcOnWebContents(wc, origin, method, body = {}, options = {}) {
+  if (!HUB_WINDOW_RPC_METHODS.has(method)) {
+    throw new Error(`Unsupported Hub window RPC method: ${method}`);
+  }
+  if (!isUsableHubWebContents(wc)) {
+    throw new Error('Hub window webContents unavailable');
+  }
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs)) && Number(options.timeoutMs) > 0
+    ? Math.round(Number(options.timeoutMs))
+    : 20000;
+  const script = buildHubWindowRpcScript(origin, method, body, timeoutMs);
+
+  let timer = null;
+  const res = await Promise.race([
+    Promise.resolve(wc.executeJavaScript(script)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Hub window RPC ${method} timeout`)), timeoutMs + 2000);
+      timer.unref?.();
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+
+  if (!res || typeof res !== 'object') {
+    throw new Error(`Hub window RPC ${method} returned invalid response`);
+  }
+  if (!res.ok) {
+    if (Number.isInteger(res.status) && res.status > 0) {
+      const detail = res.text ? `: ${res.text}` : '';
+      const err = new Error(`HTTP ${res.status}${detail}`);
+      err.statusCode = res.status;
+      throw err;
+    }
+    throw new Error(res.error || `Hub window RPC ${method} failed`);
+  }
+  return res.data && typeof res.data === 'object' ? res.data : {};
+}
+
+/**
+ * 构造基于已登录 Hub 主窗口同源会话的本地 RPC 连接器（适配 Antigravity 2.34.0+ 鉴权机制）：
+ * - 对 GetUserStatus / RetrieveUserQuotaSummary / GetAvailableModels / GetCascadeTrajectory* 优先在匹配 origin 的 Hub 窗口中发起同源 fetch，沿用窗口登录会话；
+ * - 若不存在可用窗口或调用其他接口，平滑回退到传统 local-api 连接器。
+ */
+function createHubWindowLocalApi(defaultOpts = {}) {
+  const fallbackConnect = typeof defaultOpts.fallbackConnect === 'function'
+    ? defaultOpts.fallbackConnect
+    : (opts) => require('./local-api').connect(opts);
+
+  async function connect(connectOpts = {}) {
+    const requestedOrigin = normalizeLoopbackOrigin(
+      connectOpts?.origin || defaultOpts.origin || ''
+    );
+    const resolved = resolveHubWindowWebContents(requestedOrigin, {
+      sender: connectOpts?.sender || defaultOpts.sender || null,
+      getHubWindows: connectOpts?.getHubWindows || defaultOpts.getHubWindows
+    });
+    if (!resolved) {
+      return fallbackConnect(requestedOrigin ? { ...connectOpts, origin: requestedOrigin } : connectOpts);
+    }
+
+    const { wc, origin } = resolved;
+    let fallbackApiPromise = null;
+    const getFallbackApi = () => {
+      if (!fallbackApiPromise) {
+        fallbackApiPromise = Promise.resolve(fallbackConnect({ ...connectOpts, origin }));
+      }
+      return fallbackApiPromise;
+    };
+
+    return {
+      origin,
+      transport: 'hub-window-same-origin',
+      call: async (method, body = {}) => {
+        if (!HUB_WINDOW_RPC_METHODS.has(method)) {
+          const api = await getFallbackApi();
+          return api.call(method, body);
+        }
+        try {
+          return await executeHubWindowRpcOnWebContents(wc, origin, method, body, {
+            timeoutMs: connectOpts?.timeoutMs || defaultOpts.timeoutMs || 20000
+          });
+        } catch (winErr) {
+          if (defaultOpts.allowLegacyFallback === false || connectOpts?.allowLegacyFallback === false) {
+            throw winErr;
+          }
+          try {
+            const api = await getFallbackApi();
+            return await api.call(method, body);
+          } catch (fallbackErr) {
+            if (Number.isInteger(winErr?.statusCode) && winErr.statusCode >= 400) {
+              throw winErr;
+            }
+            throw fallbackErr || winErr;
+          }
+        }
+      }
+    };
+  }
+
+  return { connect };
+}
+
 /**
  * 在 Electron 主进程内直读所有活跃 Hub 窗口的本地原点 URL（免 CDP / DevToolsActivePort）
  */
 function getActiveHubWindowOrigins() {
   const origins = [];
   const pushUrl = (rawUrl) => {
-    if (!rawUrl || typeof rawUrl !== 'string') return;
-    try {
-      const m = rawUrl.trim().match(/^https?:\/\/127\.0\.0\.1:\d+/i);
-      if (!m) return;
-      const o = new URL(rawUrl.trim()).origin;
-      if (o && !origins.includes(o)) origins.push(o);
-    } catch { }
+    const o = normalizeLoopbackOrigin(rawUrl);
+    if (o && !origins.includes(o)) origins.push(o);
   };
   try {
     const utils = require('./utils');
@@ -957,9 +1218,18 @@ function getActiveHubWindowOrigins() {
     }
   } catch { }
   try {
-    const { BrowserWindow } = require('electron');
-    const allWins = typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : [];
+    const electron = require('electron');
+    const allWins = typeof electron?.BrowserWindow?.getAllWindows === 'function'
+      ? electron.BrowserWindow.getAllWindows()
+      : [];
     for (const win of allWins) {
+      const wc = getWindowWebContents(win);
+      if (wc && !wc.isDestroyed?.()) pushUrl(wc.getURL?.());
+    }
+    const baseWins = typeof electron?.BaseWindow?.getAllWindows === 'function'
+      ? electron.BaseWindow.getAllWindows()
+      : [];
+    for (const win of baseWins) {
       const wc = getWindowWebContents(win);
       if (wc && !wc.isDestroyed?.()) pushUrl(wc.getURL?.());
     }
@@ -1564,3 +1834,8 @@ exports.shouldInterceptWindowClose = shouldInterceptWindowClose;
 exports.isHostRunInBackgroundEnabled = isHostRunInBackgroundEnabled;
 exports.getWindowWebContents = getWindowWebContents;
 exports.getActiveHubWindowOrigins = getActiveHubWindowOrigins;
+exports.HUB_WINDOW_RPC_METHODS = HUB_WINDOW_RPC_METHODS;
+exports.resolveHubWindowWebContents = resolveHubWindowWebContents;
+exports.buildHubWindowRpcScript = buildHubWindowRpcScript;
+exports.executeHubWindowRpcOnWebContents = executeHubWindowRpcOnWebContents;
+exports.createHubWindowLocalApi = createHubWindowLocalApi;

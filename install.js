@@ -24,6 +24,7 @@ const {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
+  injectWindowLoadHook,
   verifyCleanStructure
 } = require('./modular-installer');
 
@@ -555,8 +556,13 @@ async function install(options = {}) {
         finalUtils = finalUtils
           .replace('"use strict";', `"use strict";\n${meterUtils.headerProxyHook}`)
           .replace('function setupNodeWrapper(env) {', `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
-          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`)
-          .replace('    void win.loadURL(url);', `${meterUtils.windowLoadHook}    void win.loadURL(url);`);
+          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`);
+
+        const injectedUtils = injectWindowLoadHook(finalUtils, meterUtils.windowLoadHook);
+        if (!injectedUtils) {
+          throw new Error('未能在 dist/utils.js 中定位唯一的窗口加载语句 (win.loadURL / loadHubWindowUrl)，中止写入以保护宿主环境。');
+        }
+        finalUtils = injectedUtils;
 
         const createWinSig = 'function createWindow(url, storageManager, options) {';
         if (finalUtils.includes(createWinSig) && !finalUtils.includes('__agDefaultStorageManager')) {
