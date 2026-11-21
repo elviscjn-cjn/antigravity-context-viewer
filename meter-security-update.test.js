@@ -2221,3 +2221,67 @@ test('专项复核 17：更新浮层在应用内更新或 diskPendingRestart 时
     h.sandbox.__AGContextMeter?.dispose();
   }
 });
+
+test('Antigravity 2.34.0 loadHubWindowUrl 锚点适配：安装、幂等重装与原位卸载均通过且拒绝多锚点歧义', async () => {
+  const { findWindowLoadAnchor, verifyCleanStructure } = require('./modular-installer');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-234-anchor-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const utils234 = `"use strict";
+function setupNodeWrapper(env) {
+}
+async function invokeWindowLoadUrl(win, url) {
+        await win.loadURL(url);
+}
+function createWindow(url, storageManager, options) {
+    const skipBootstrapMint = Boolean(options?.partition || options?.navigationPolicy);
+    void loadHubWindowUrl(win, url, { skipBootstrapMint });
+    return win;
+}
+`;
+    assert.equal(
+      findWindowLoadAnchor(utils234),
+      '    void loadHubWindowUrl(win, url, { skipBootstrapMint });'
+    );
+    assert.equal(verifyCleanStructure(utils234), true);
+
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const mockAsar = await createMockHostAsar(tmpDir, '2.34.0', utils234);
+    fs.copyFileSync(mockAsar, targetAsar);
+
+    const r1 = await install({ path: targetAsar });
+    assert.equal(r1.version, '2.34.0');
+
+    const patchedUtils = asar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.ok(patchedUtils.includes('require("./meter-main").installContextMeter(win);'));
+    assert.ok(patchedUtils.includes('void loadHubWindowUrl(win, url, { skipBootstrapMint });'));
+    assert.doesNotThrow(() => new vm.Script(patchedUtils, { filename: 'patched-234-utils.js' }));
+
+    // 二次覆盖安装（幂等清洗后重装）
+    const r2 = await install({ path: targetAsar });
+    assert.equal(r2.version, '2.34.0');
+
+    // 原位卸载还原
+    await restore({ path: targetAsar });
+    const restoredUtils = asar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.equal(restoredUtils.includes('installContextMeter'), false);
+    assert.equal(verifyCleanStructure(restoredUtils), true);
+
+    // 歧义测试：同时存在旧式与新式 4 空格加载锚点时拒绝匹配
+    const ambiguousUtils = `"use strict";
+function setupNodeWrapper(env) {}
+function createWindow(url, storageManager, options) {
+    void win.loadURL(url);
+    void loadHubWindowUrl(win, url, { skipBootstrapMint });
+}
+`;
+    assert.equal(findWindowLoadAnchor(ambiguousUtils), null);
+    assert.equal(verifyCleanStructure(ambiguousUtils), false);
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

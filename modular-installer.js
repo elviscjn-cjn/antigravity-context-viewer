@@ -430,6 +430,24 @@ function cleanPreloadSource(source) {
   return code;
 }
 
+const WINDOW_LOAD_MARKERS = [
+  '    void win.loadURL(url);',
+  '    void loadHubWindowUrl(win, url, { skipBootstrapMint });'
+];
+
+/**
+ * 查找宿主 utils.js createWindow 末尾的窗口加载锚点（兼容 2.33 及 2.34+），
+ * 仅在全文唯一匹配时返回该锚点文本，避免误伤其他调用点。
+ */
+function findWindowLoadAnchor(utilsSource) {
+  if (typeof utilsSource !== 'string' || !utilsSource) return null;
+  const exactMatches = WINDOW_LOAD_MARKERS.filter(m => utilsSource.split(m).length === 2);
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) return null;
+  const regexMatches = utilsSource.match(/^ {4}void loadHubWindowUrl\(win,\s*url[^\n\r;]*\);(?=\r?\n|$)/gm);
+  return regexMatches && regexMatches.length === 1 ? regexMatches[0] : null;
+}
+
 /**
  * 校验清洗后的 utils 结构合法性与 JavaScript 语法
  */
@@ -437,14 +455,16 @@ function verifyCleanStructure(cleanUtils) {
   if (!cleanUtils) return false;
   if (cleanUtils.includes('installContextMeter')) return false;
   if (cleanUtils.includes(TAGS.PROXY_START) || cleanUtils.includes(TAGS.METER_UTILS_START)) return false;
-  const marker = '    void win.loadURL(url);';
+  const loadAnchor = findWindowLoadAnchor(cleanUtils);
   const setupNodeMarker = 'function setupNodeWrapper(env) {';
-  const structuralOk = cleanUtils.split(marker).length === 2 && cleanUtils.includes(setupNodeMarker);
+  const structuralOk = Boolean(loadAnchor) && cleanUtils.includes(setupNodeMarker);
   return structuralOk && validateSyntax(cleanUtils, 'dist/utils.js');
 }
 
 module.exports = {
   TAGS,
+  WINDOW_LOAD_MARKERS,
+  findWindowLoadAnchor,
   validateSyntax,
   generateProxyUtilsCode,
   generateMeterUtilsCode,

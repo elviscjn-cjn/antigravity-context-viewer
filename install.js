@@ -24,7 +24,8 @@ const {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
-  verifyCleanStructure
+  verifyCleanStructure,
+  findWindowLoadAnchor
 } = require('./modular-installer');
 
 const asar = loadAsarEngine();
@@ -552,11 +553,15 @@ async function install(options = {}) {
       // 模块 B: Context Meter (上下文与 Token 监控)
       if (modulesConfig.modules.meter.enabled) {
         const meterUtils = generateMeterUtilsCode();
+        const loadAnchor = findWindowLoadAnchor(finalUtils);
+        if (!loadAnchor) {
+          throw new Error('未找到 utils.js createWindow 窗口加载锚点，中止写入以保护宿主环境。');
+        }
         finalUtils = finalUtils
-          .replace('"use strict";', `"use strict";\n${meterUtils.headerProxyHook}`)
-          .replace('function setupNodeWrapper(env) {', `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
-          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`)
-          .replace('    void win.loadURL(url);', `${meterUtils.windowLoadHook}    void win.loadURL(url);`);
+          .replace('"use strict";', () => `"use strict";\n${meterUtils.headerProxyHook}`)
+          .replace('function setupNodeWrapper(env) {', () => `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
+          .replace("titleBarStyle: 'hidden',", () => `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`)
+          .replace(loadAnchor, () => `${meterUtils.windowLoadHook}${loadAnchor}`);
 
         const createWinSig = 'function createWindow(url, storageManager, options) {';
         if (finalUtils.includes(createWinSig) && !finalUtils.includes('__agDefaultStorageManager')) {
