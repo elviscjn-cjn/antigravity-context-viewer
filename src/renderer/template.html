@@ -206,12 +206,19 @@
             <button id="btn-speed-breakdown-toggle" class="latest-call-link-btn" type="button" aria-expanded="false" hidden data-i18n="session.speed.details">拆解</button>
           </div>
         </div>
-        <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
+        <div class="key-stats" style="grid-template-columns:repeat(2,1fr);margin-bottom:6px;">
+          <div class="key-stat">
+            <div class="key-stat-label" id="speed-avg-label" data-i18n="session.speed.avgStreamRate">平均生成速度</div>
+            <div id="speed-avg-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—
+            </div>
+          </div>
           <div class="key-stat">
             <div class="key-stat-label" id="speed-val-label" data-i18n="session.speed.streamRate">纯流式速度</div>
             <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—
             </div>
           </div>
+        </div>
+        <div class="key-stats" style="grid-template-columns:repeat(3,1fr);">
           <div class="key-stat">
             <div class="key-stat-label" data-i18n="session.speed.duration">生成耗时</div>
             <div id="speed-duration" class="key-stat-val">—</div>

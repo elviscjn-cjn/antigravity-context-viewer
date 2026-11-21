@@ -572,3 +572,95 @@ test('ELV-91 8: 模型重复档位去重、MODEL_PLACEHOLDER_M525 映射与未�
   assert.equal(tighterSel.primaryBucket.windowShort, '7d');
   assert.equal(tighterSel.selectionReason, 'tighter_window');
 });
+
+test('ELV-91 9: 当前会话平均生成速度聚合、顶栏均速显示及卡片双指标并行展示', async () => {
+  // 1. summarizeSessionSpeed 累计输出 / 累计流式耗时优先（过滤未完成/估算/合成样本，缺失流式耗时回退整体耗时）
+  const mixedSummary = core.summarizeSessionSpeed([
+    { callId: 'c1', status: 'final', outputTokens: 200, streamingSec: 2.0, streamingTps: 100, durationSec: 3.0 },
+    { callId: 'c2', status: 'final', outputTokens: 600, streamingSec: 4.0, streamingTps: 150, durationSec: 5.0 },
+    { callId: 'c3-streaming', status: 'streaming', outputTokens: 999, streamingSec: 0.5, durationSec: 1.0 },
+    { callId: 'c4-est', status: 'final', isEstimated: true, outputTokens: 500, streamingSec: 1.0, durationSec: 1.0 }
+  ]);
+  assert.equal(mixedSummary.count, 2);
+  assert.equal(mixedSummary.streamCount, 2);
+  assert.equal(mixedSummary.totalOutputTokens, 800);
+  // 800 / (2.0 + 4.0) = 133.3 tok/s; 整体 800 / (3.0 + 5.0) = 100.0 tok/s
+  assert.equal(mixedSummary.avgStreamTps, 133.3);
+  assert.equal(mixedSummary.avgOverallTps, 100);
+  assert.equal(mixedSummary.avgTps, 133.3);
+  assert.equal(mixedSummary.isFallback, false);
+
+  // 缺失流式耗时时回退整体平均
+  const overallOnly = core.summarizeSessionSpeed([
+    { callId: 'o1', status: 'final', outputTokens: 100, durationSec: 2.0 },
+    { callId: 'o2', status: 'final', outputTokens: 300, durationSec: 2.0 }
+  ]);
+  assert.equal(overallOnly.avgStreamTps, null);
+  assert.equal(overallOnly.avgOverallTps, 100);
+  assert.equal(overallOnly.avgTps, 100);
+
+  // 短样本 fallback 不得在无会话历史时伪造均速
+  assert.equal(core.summarizeSessionSpeed([], { isSampleSparse: true, streamSpeed: 999 }), null);
+
+  // 2. UI 集成：顶栏显示会话均速，功能栏同时保留最新纯流式速度与平均生成速度
+  const h = createSpeedUiHarness();
+  try {
+    h.api.setSessionCallsForTest([
+      {
+        callId: 'sess-avg-1',
+        model: 'gemini-3.8-flash',
+        inputTokens: 1000,
+        outputTokens: 200,
+        ttftSec: 1.0,
+        streamingSec: 2.0,
+        durationSec: 3.0,
+        status: 'final',
+        timestamp: 1700000001000
+      },
+      {
+        callId: 'sess-avg-2',
+        model: 'gemini-3.8-flash',
+        inputTokens: 1200,
+        outputTokens: 600,
+        ttftSec: 1.0,
+        streamingSec: 4.0,
+        durationSec: 5.0,
+        status: 'final',
+        timestamp: 1700000002000
+      }
+    ], { replace: true });
+
+    h.api.setContextLatestForTest({
+      actual: 1800,
+      speed: {
+        tps: 120.0,
+        streamingTps: 150.0,
+        streamingSec: '4.00',
+        duration: '5.0',
+        ttft: '1.0',
+        outputTokens: 600,
+        phase: 'final',
+        status: 'final'
+      }
+    });
+    h.elements.get('btn-speed-breakdown-toggle').click();
+
+    const sp = h.api.getSpeedPanelStateForTest();
+    // 顶栏显示会话均速 (133.3 tok/s)，功能栏分别展示均速 (133.3 tok/s) 与最新流式速度 (150 tok/s)
+    assert.equal(h.elements.get('speed-amount').textContent, '133.3 tok/s');
+    assert.equal(h.elements.get('overflow-speed-val').textContent, '133.3 tok/s');
+    assert.equal(sp.speedAvgVal, '133.3 tok/s');
+    assert.equal(sp.speedVal, '150 tok/s');
+    assert.match(h.elements.get('badge-speed').title, /133\.3 tok\/s/);
+    assert.match(sp.takeaway, /133\.3 tok\/s/);
+    const breakdownRows = h.elements.get('speed-breakdown-grid').children.map(c => `${c.children[0].textContent}=>${c.children[1].textContent}`);
+    assert.ok(breakdownRows.some(r => /当前会话平均速度=>133\.3 tok\/s/.test(r)));
+
+    // 切换英文时标题与文案不包含中文
+    await h.api.setPanelLanguage('en', { persist: false });
+    assert.doesNotMatch(h.elements.get('badge-speed').title, /[\u4e00-\u9fff]/);
+    assert.doesNotMatch(h.elements.get('speed-avg-val').title, /[\u4e00-\u9fff]/);
+  } finally {
+    h.api.dispose();
+  }
+});

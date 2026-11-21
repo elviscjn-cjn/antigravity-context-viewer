@@ -1315,6 +1315,94 @@
     return true;
   }
 
+  /**
+   * 汇总当前会话的平均生成速度（与 ELV-91 纯流式口径对齐：优先累计输出 / 累计流式耗时，缺失流式耗时时回退整体平均）
+   */
+  function summarizeSessionSpeed(sessionCalls, fallbackSpeed = null) {
+    let count = 0;
+    let totalOutputTokens = 0;
+    let totalDurationSec = 0;
+    let singleOverallTps = null;
+
+    let streamCount = 0;
+    let totalStreamTokens = 0;
+    let totalStreamingSec = 0;
+    let singleStreamTps = null;
+
+    const list = Array.isArray(sessionCalls) ? sessionCalls : [];
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (!isValidSpeedSample(c)) continue;
+      const out = Number(c.outputTokens);
+      const dur = Number(c.durationSec);
+      count += 1;
+      totalOutputTokens += out;
+      totalDurationSec += dur;
+      if (count === 1) singleOverallTps = c.tps;
+
+      let sSec = Number(c.streamingSec);
+      const sTps = Number(c.streamingTps ?? c.streamSpeed);
+      if ((!Number.isFinite(sSec) || sSec < 0.05) && Number.isFinite(sTps) && sTps > 0) {
+        sSec = out / sTps;
+      }
+      if (Number.isFinite(sSec) && sSec >= 0.05) {
+        streamCount += 1;
+        totalStreamTokens += out;
+        totalStreamingSec += sSec;
+        if (streamCount === 1) singleStreamTps = (Number.isFinite(sTps) && sTps > 0) ? sTps : null;
+      }
+    }
+
+    if (count > 0 && totalDurationSec > 0 && totalOutputTokens > 0) {
+      const avgOverallTps = (count === 1 && Number.isFinite(Number(singleOverallTps)) && Number(singleOverallTps) > 0)
+        ? Number(Number(singleOverallTps).toFixed(1))
+        : Number((totalOutputTokens / totalDurationSec).toFixed(1));
+      let avgStreamTps = null;
+      if (streamCount > 0 && totalStreamingSec >= 0.05 && totalStreamTokens > 0) {
+        avgStreamTps = (streamCount === 1 && Number.isFinite(Number(singleStreamTps)) && Number(singleStreamTps) > 0)
+          ? Number(Number(singleStreamTps).toFixed(1))
+          : Number((totalStreamTokens / totalStreamingSec).toFixed(1));
+      }
+      return {
+        avgTps: avgStreamTps ?? avgOverallTps,
+        avgStreamTps,
+        avgOverallTps,
+        count,
+        streamCount,
+        totalOutputTokens,
+        totalDurationSec: Number(totalDurationSec.toFixed(2)),
+        totalStreamingSec: totalStreamingSec >= 0.05 ? Number(totalStreamingSec.toFixed(2)) : null,
+        isFallback: false
+      };
+    }
+
+    if (fallbackSpeed && !fallbackSpeed.isSampleSparse) {
+      const fbStreamTps = Number(fallbackSpeed.streamSpeed ?? fallbackSpeed.streamingTps);
+      const fbOverallTps = Number(fallbackSpeed.overallTps ?? fallbackSpeed.tps);
+      const fbHeadline = (Number.isFinite(fbStreamTps) && fbStreamTps > 0)
+        ? Number(fbStreamTps.toFixed(1))
+        : ((Number.isFinite(fbOverallTps) && fbOverallTps > 0) ? Number(fbOverallTps.toFixed(1)) : null);
+      if (fbHeadline !== null) {
+        const fbOut = Number(fallbackSpeed.outputTokens);
+        const fbDur = Number(fallbackSpeed.totalDurationSec ?? fallbackSpeed.durationSec ?? fallbackSpeed.duration);
+        const fbStreamSec = Number(fallbackSpeed.streamingSec);
+        return {
+          avgTps: fbHeadline,
+          avgStreamTps: (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? Number(fbStreamTps.toFixed(1)) : null,
+          avgOverallTps: (Number.isFinite(fbOverallTps) && fbOverallTps > 0) ? Number(fbOverallTps.toFixed(1)) : null,
+          count: 1,
+          streamCount: (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? 1 : 0,
+          totalOutputTokens: Number.isFinite(fbOut) && fbOut > 0 ? fbOut : 0,
+          totalDurationSec: Number.isFinite(fbDur) && fbDur > 0 ? Number(fbDur.toFixed(2)) : null,
+          totalStreamingSec: Number.isFinite(fbStreamSec) && fbStreamSec >= 0.05 ? Number(fbStreamSec.toFixed(2)) : null,
+          isFallback: true
+        };
+      }
+    }
+
+    return null;
+  }
+
   function computeMedian(values) {
     const clean = (Array.isArray(values) ? values : [])
       .map(Number)
@@ -7082,6 +7170,7 @@
     groupModelProduct,
     formatTokensK,
     isValidSpeedSample,
+    summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
     MAX_SPEED_SAMPLES_PER_MODEL,
