@@ -596,27 +596,46 @@ async function collect(origin, id, options = {}) {
   const task = (async () => {
     const signal = abortController?.signal || null;
     try {
-      let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
-      if (!token) {
-        const html = await request(origin, null, null, null, signal);
-        if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-        token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
-        csrfTokenByOrigin.set(origin, token);
-      }
-      const call = async (method, body) => {
-        try {
-          return await request(origin, method, body, token, signal);
-        } catch (err) {
-          if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
-            csrfTokenByOrigin.delete(origin);
-            const html = await request(origin, null, null, null, signal);
-            token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
-            csrfTokenByOrigin.set(origin, token);
-            return await request(origin, method, body, token, signal);
+      let call;
+      if (typeof options.connect === 'function') {
+        const api = await options.connect({ origin });
+        call = async (method, body) => {
+          if (signal?.aborted) {
+            const err = new Error('请求已取消');
+            err.name = 'AbortError';
+            throw err;
           }
-          throw err;
+          const out = await api.call(method, body);
+          if (signal?.aborted) {
+            const err = new Error('请求已取消');
+            err.name = 'AbortError';
+            throw err;
+          }
+          return out;
+        };
+      } else {
+        let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
+        if (!token) {
+          const html = await request(origin, null, null, null, signal);
+          if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+          token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+          csrfTokenByOrigin.set(origin, token);
         }
-      };
+        call = async (method, body) => {
+          try {
+            return await request(origin, method, body, token, signal);
+          } catch (err) {
+            if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
+              csrfTokenByOrigin.delete(origin);
+              const html = await request(origin, null, null, null, signal);
+              token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+              csrfTokenByOrigin.set(origin, token);
+              return await request(origin, method, body, token, signal);
+            }
+            throw err;
+          }
+        };
+      }
       const full = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 3 });
       if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const trajectory = full.trajectory;
@@ -647,7 +666,10 @@ async function collect(origin, id, options = {}) {
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
         try {
-          const freshStatus = await fetchUserStatusFromHost({ origin });
+          const freshStatus = await fetchUserStatusFromHost({
+            origin,
+            ...(typeof options.connect === 'function' ? { connect: options.connect } : {})
+          });
           if (freshStatus) cachedHostUserStatus = freshStatus;
           if (Array.isArray(freshStatus?.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
             knownCascadeConfigs = freshStatus.cascadeModelConfigs;
@@ -3612,8 +3634,8 @@ async function fetchUserStatusFromHost(options = {}) {
     return cachedEntry.status;
   }
   try {
-    const { connect } = require('./local-api');
-    const api = await connect(options.origin ? { origin: options.origin } : undefined);
+    const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
+    const api = await connector(options.origin ? { origin: options.origin } : undefined);
     const [res, availRes] = await Promise.all([
       api.call('GetUserStatus', {}),
       api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)

@@ -400,7 +400,7 @@ function cleanUtilsSource(source) {
     .replace(/\s*try\s*\{\s*require\("\.\/meter-main"\)\.ensureProxyEnvironment\(process\.env\);\s*\}\s*catch\s*\{\}\r?\n?/g, '')
     .replace(/\s*try\s*\{\s*require\("\.\/meter-main"\)\.ensureProxyEnvironment\(env\);\s*\}\s*catch\s*\{\}\r?\n?/g, '')
     .replace('\n' + storageFallbackLine, '')
-    .replace(/\s*require\("\.\/meter-main"\)\.installContextMeter\(win\);?\r?\n?/g, '')
+    .replace(/[ \t]*require\("\.\/meter-main"\)\.installContextMeter\(win\);?[ \t]*\r?\n?/g, '')
     .replace(/\n\s*try\s*\{\s*require\("\.\/meter-main"\)\.installContextMeter\(wins\[0\]\);[\s\S]*?\}\s*catch\s*\{\}/g, '')
     .replace(/const _mWin = createWindow\(`\$\{constants_1\.WINDOW_ORIGIN\}:\$\{port\}\/`\);\s*\n\s*try\s*\{\s*require\("\.\/meter-main"\)\.installContextMeter\(_mWin\);[\s\S]*?\}\s*catch\s*\{\}/g, 'createWindow(`${constants_1.WINDOW_ORIGIN}:${port}/`);');
 
@@ -431,15 +431,59 @@ function cleanPreloadSource(source) {
 }
 
 /**
+ * 匹配 dist/utils.js 中唯一的 Hub 窗口加载语句，同时兼容旧版 `void win.loadURL(url);`
+ * 与 Antigravity 2.34.0+ 的 `loadHubWindowUrl(win, url, { skipBootstrapMint })`。
+ * 仅在唯一命中时返回目标位置，多命中或未命中均返回 null，确保结构校验与插件注入共用同一规则。
+ */
+function findWindowLoadHookTarget(source) {
+  if (!source || typeof source !== 'string') return null;
+
+  const hubMatches = [];
+  const hubRe = /(?:^|(?<=\{))([ \t]*)(?:(?:void|await)\s+)?(?:(?:\(0,\s*[\w$.]+\.loadHubWindowUrl\)|(?:[\w$]+\.)?loadHubWindowUrl))\(\s*win\s*,\s*url(?:\s*,\s*(?:\{[^{}]*\}|[A-Za-z_$][\w$]*))?\s*\)(?:\.catch\([^;\r\n]*\))?;[ \t]*(?:\/\/[^\r\n]*)?(?=\r?\n|$|\s*\})/gm;
+  let m;
+  while ((m = hubRe.exec(source)) !== null) {
+    hubMatches.push({
+      kind: 'loadHubWindowUrl',
+      index: m.index,
+      text: m[0],
+      indent: m[1] || ''
+    });
+  }
+  if (hubMatches.length === 1) return hubMatches[0];
+  if (hubMatches.length > 1) return null;
+
+  const legacyMatches = [];
+  const legacyRe = /(?:^|(?<=\{))([ \t]*)void\s+win\.loadURL\(\s*url\s*\);[ \t]*(?:\/\/[^\r\n]*)?(?=\r?\n|$|\s*\})/gm;
+  while ((m = legacyRe.exec(source)) !== null) {
+    legacyMatches.push({
+      kind: 'win.loadURL',
+      index: m.index,
+      text: m[0],
+      indent: m[1] || ''
+    });
+  }
+  if (legacyMatches.length === 1) return legacyMatches[0];
+  return null;
+}
+
+/**
+ * 在唯一命中的窗口加载语句之前注入 ContextMeter 挂载钩子，保留宿主原有加载/登录引导语句不变。
+ */
+function injectWindowLoadHook(source, windowLoadHook) {
+  const target = findWindowLoadHookTarget(source);
+  if (!target) return null;
+  return source.slice(0, target.index) + windowLoadHook + source.slice(target.index);
+}
+
+/**
  * 校验清洗后的 utils 结构合法性与 JavaScript 语法
  */
 function verifyCleanStructure(cleanUtils) {
   if (!cleanUtils) return false;
   if (cleanUtils.includes('installContextMeter')) return false;
   if (cleanUtils.includes(TAGS.PROXY_START) || cleanUtils.includes(TAGS.METER_UTILS_START)) return false;
-  const marker = '    void win.loadURL(url);';
   const setupNodeMarker = 'function setupNodeWrapper(env) {';
-  const structuralOk = cleanUtils.split(marker).length === 2 && cleanUtils.includes(setupNodeMarker);
+  const structuralOk = Boolean(findWindowLoadHookTarget(cleanUtils)) && cleanUtils.includes(setupNodeMarker);
   return structuralOk && validateSyntax(cleanUtils, 'dist/utils.js');
 }
 
@@ -453,5 +497,7 @@ module.exports = {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
+  findWindowLoadHookTarget,
+  injectWindowLoadHook,
   verifyCleanStructure
 };

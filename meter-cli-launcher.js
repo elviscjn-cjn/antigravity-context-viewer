@@ -519,8 +519,8 @@ async function resolveCliWorkspace(options = {}) {
       return { ok: true, cwd: fromTranscript, source: 'conversation_transcript' };
     }
     try {
-      const { connect } = require('./local-api');
-      const api = await connect();
+      const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
+      const api = await connector(options.origin ? { origin: options.origin } : undefined);
       const full = await api.call('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 1 });
       const wsPath = extractWorkspaceFromTrajectory(full?.trajectory);
       if (wsPath) {
