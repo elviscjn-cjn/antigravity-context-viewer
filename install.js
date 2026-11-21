@@ -24,6 +24,7 @@ const {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
+  injectWindowLoadHook,
   verifyCleanStructure
 } = require('./modular-installer');
 
@@ -555,8 +556,8 @@ async function install(options = {}) {
         finalUtils = finalUtils
           .replace('"use strict";', `"use strict";\n${meterUtils.headerProxyHook}`)
           .replace('function setupNodeWrapper(env) {', `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
-          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`)
-          .replace('    void win.loadURL(url);', `${meterUtils.windowLoadHook}    void win.loadURL(url);`);
+          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`);
+        finalUtils = injectWindowLoadHook(finalUtils, meterUtils.windowLoadHook);
 
         const createWinSig = 'function createWindow(url, storageManager, options) {';
         if (finalUtils.includes(createWinSig) && !finalUtils.includes('__agDefaultStorageManager')) {

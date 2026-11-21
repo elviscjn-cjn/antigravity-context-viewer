@@ -569,6 +569,42 @@ async function scanFiles(media, scanOptions = {}) {
 let collectSeqCounter = 0;
 const latestCollectSeqByOrigin = new Map();
 
+async function resolveCollectCsrfToken(origin, signal, options = {}, isSuperseded = null) {
+  let token = '';
+  let hasConfig = false;
+  let htmlFetchErr = null;
+  try {
+    const html = await request(origin, null, null, null, signal);
+    if (typeof isSuperseded === 'function' && isSuperseded()) return '';
+    const match = String(html || '').match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s);
+    if (match) {
+      hasConfig = true;
+      const parsed = JSON.parse(match[1]);
+      token = typeof parsed?.csrfToken === 'string' ? parsed.csrfToken.trim() : '';
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) throw err;
+    htmlFetchErr = err;
+  }
+
+  const canFallback = !htmlFetchErr || /HTTP 40[13]\b/.test(String(htmlFetchErr.message || ''));
+  if (!token && canFallback) {
+    try {
+      const { resolveOriginCsrfToken } = require('./local-api');
+      const fallbackToken = resolveOriginCsrfToken(origin, options);
+      if (fallbackToken) {
+        token = fallbackToken;
+        hasConfig = true;
+      }
+    } catch {}
+  }
+
+  if (!token && htmlFetchErr) throw htmlFetchErr;
+  if (!hasConfig) throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+  if (!token) throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
+  return token;
+}
+
 async function collect(origin, id, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(origin);
   if (!safeOrigin || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
@@ -598,9 +634,8 @@ async function collect(origin, id, options = {}) {
     try {
       let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
       if (!token) {
-        const html = await request(origin, null, null, null, signal);
+        token = await resolveCollectCsrfToken(origin, signal, options, isSuperseded);
         if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-        token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
         csrfTokenByOrigin.set(origin, token);
       }
       const call = async (method, body) => {
@@ -609,8 +644,8 @@ async function collect(origin, id, options = {}) {
         } catch (err) {
           if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
             csrfTokenByOrigin.delete(origin);
-            const html = await request(origin, null, null, null, signal);
-            token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+            token = await resolveCollectCsrfToken(origin, signal, options, isSuperseded);
+            if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
             csrfTokenByOrigin.set(origin, token);
             return await request(origin, method, body, token, signal);
           }
@@ -3670,7 +3705,14 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     } else {
       try {
         const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
-        const api = await connector(options.origin ? { origin: options.origin } : undefined);
+        const connectOpts = {};
+        if (options.origin) connectOpts.origin = options.origin;
+        if (options.authBootstrap !== undefined) connectOpts.authBootstrap = options.authBootstrap;
+        if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
+        if (options.homeDir) connectOpts.homeDir = options.homeDir;
+        if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
+        if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
+        const api = await connector(Object.keys(connectOpts).length ? connectOpts : undefined);
         const [uRes, qRes] = await Promise.allSettled([
           api.call('GetUserStatus', {}),
           api.call('RetrieveUserQuotaSummary', {})
@@ -3854,7 +3896,14 @@ async function fetchUserStatusFromHost(options = {}) {
   }
   try {
     const { connect } = require('./local-api');
-    const api = await connect(options.origin ? { origin: options.origin } : undefined);
+    const connectOpts = {};
+    if (options.origin) connectOpts.origin = options.origin;
+    if (options.authBootstrap !== undefined) connectOpts.authBootstrap = options.authBootstrap;
+    if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
+    if (options.homeDir) connectOpts.homeDir = options.homeDir;
+    if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
+    if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
+    const api = await connect(Object.keys(connectOpts).length ? connectOpts : undefined);
     const [res, availRes] = await Promise.all([
       api.call('GetUserStatus', {}),
       api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
