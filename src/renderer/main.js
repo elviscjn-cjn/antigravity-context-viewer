@@ -13262,11 +13262,20 @@
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     if (!view || !Array.isArray(view.pools) || !core?.applyQuotaTokenEstimates) return view;
     const scopeKey = quotaState.accountScopeKey || view.accountScopeKey || 'anonymous';
-    const usageEvents = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentModelUsage) ? ANTIGRAVITY_TOKEN_DATA.recentModelUsage : [];
+    const historyLoaded = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentModelUsage);
+    const usageEvents = historyLoaded ? ANTIGRAVITY_TOKEN_DATA.recentModelUsage : [];
     const coverageStartMs = ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs ?? null;
-    const lastEvTs = usageEvents.length ? Number(usageEvents[usageEvents.length - 1]?.ts || 0) : 0;
+    let maxEvTs = 0;
+    let sumEvTokens = 0;
+    for (let i = 0; i < usageEvents.length; i++) {
+      const ev = usageEvents[i];
+      const evTs = Number(ev?.ts ?? ev?.timestamp ?? 0);
+      if (Number.isFinite(evTs) && evTs > maxEvTs) maxEvTs = evTs;
+      const evTok = Number(ev?.totalTokens ?? ev?.tok ?? 0);
+      if (Number.isFinite(evTok) && evTok > 0) sumEvTokens += evTok;
+    }
     const poolSig = view.pools.map(p => `${p.poolKey}:${(p.buckets || []).map(b => `${b.bucketId}=${b.remainingFraction ?? 'n'}`).join(',')}`).join(';');
-    const computeSig = `${scopeKey}|${view.fetchedAtMs || 0}|${coverageStartMs ?? 'null'}|${usageEvents.length}|${lastEvTs}|${poolSig}`;
+    const computeSig = `${scopeKey}|${historyLoaded ? 1 : 0}|${view.fetchedAtMs || 0}|${coverageStartMs ?? 'null'}|${usageEvents.length}|${maxEvTs}|${Math.round(sumEvTokens)}|${poolSig}`;
 
     if (quotaLastEstComputeSig === computeSig && quotaCachedEstByKey) {
       const enrichedPools = view.pools.map(p => {
@@ -13285,10 +13294,12 @@
       accountScopeKey: scopeKey,
       usageEvents,
       historyCoverageStartMs: coverageStartMs,
+      historyLoaded,
       calibrationMap: calMap,
       nowMs: view.fetchedAtMs || nowMs
     });
-    if (applied?.nextCalibrationMap) {
+    // 历史用量首次扫描尚未落盘时只读推算，不向 localStorage 持久化外部消耗锁定状态，防止冷启动竞态污染整个周期
+    if (historyLoaded && applied?.nextCalibrationMap) {
       saveQuotaCalibrationForScope(scopeKey, applied.nextCalibrationMap);
     }
     const cacheObj = {};
@@ -14480,6 +14491,15 @@
       }
       if (typeof refreshAccountsOverview === 'function') {
         void refreshAccountsOverview({ silent: !isManual, refreshAllRemote: Boolean(isManual) });
+      }
+      if (
+        requestSucceeded &&
+        hasDataChanged &&
+        !historySyncBusy &&
+        (Date.now() - lastHistorySync > 2000) &&
+        ((typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') || hasLiveHttpBridge())
+      ) {
+        void syncTokenHistoryFromHost(false);
       }
       renderQuotaBoard(nowMs, { animate: shouldAnimateChange, chargeBars: shouldChargeBars });
       return quotaState.snapshot;

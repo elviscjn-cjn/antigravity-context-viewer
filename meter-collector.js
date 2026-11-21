@@ -74,6 +74,7 @@ const {
   normalizeModelId,
   resolveStableModelId,
   UNATTRIBUTED_MODEL_KEY,
+  lookupModelDisplayLabel,
   resolveModelUsageBucket,
   computeCacheReadStats,
   summarizeCacheReadStats,
@@ -2730,9 +2731,9 @@ function summarizeAccountWindowUsage({ agDir, ledgerPath, accountScopeKey, poolK
     const ts = getCallSortTimestamp(call) ?? Number(call.timestamp) ?? (call.created_at ? Date.parse(call.created_at) : NaN);
     if (!Number.isFinite(ts) || ts < start || ts > end) continue;
     if (poolKey) {
-      const rawModel = call.modelExactId || extractModelString(call) || call.model || '';
-      const sharedKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(rawModel || call.modelLabel || '') : null;
-      const singlePoolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(rawModel, call.modelLabel || '') : null;
+      const modelHint = call.modelLabel || extractModelString(call) || call.model || '';
+      const sharedKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(call, modelHint) : null;
+      const singlePoolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(call, modelHint) : null;
       if (sharedKey !== poolKey && singlePoolKey !== poolKey) continue;
     }
     const u = getCallTokenBreakdown(call);
@@ -5271,6 +5272,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         const modelKey = normalizeModelId(rec.model);
         const reqObj = {
           callId: rec.eventId,
+          ...(rec.responseId ? { responseId: rec.responseId } : {}),
           source: job.source,
           _convDirNorm: jobConvNorm,
           cascadeId: rec.cascadeId,
@@ -5941,13 +5943,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const quotaNowMs = Date.now();
   const quotaCutoffMs = quotaNowMs - 8 * 86400000;
   const quotaRecentCutoffMs = quotaNowMs - 86400000;
+  const currentAccountScopeKey = currentAccountKey ? buildAccountScopeKey(currentAccountKey) : null;
   const seenQuotaCallIds = new Set();
   const recentModelUsage = [];
   const olderQuotaBuckets = new Map();
   let allKnownCallsMinTs = null;
   const pushQuotaUsageCall = (call) => {
     if (!call || typeof call !== 'object') return;
-    if (call.callId && seenQuotaCallIds.has(call.callId)) return;
+    if ((call.callId && seenQuotaCallIds.has(call.callId)) || (call.responseId && seenQuotaCallIds.has(call.responseId))) return;
     const rawTs = getCallSortTimestamp(call) ?? call.timestamp ?? (call.created_at ? new Date(call.created_at).getTime() : NaN);
     const ts = Number(rawTs);
     if (!Number.isFinite(ts) || ts <= 0 || ts > quotaNowMs + 60000) return;
@@ -5955,9 +5958,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       allKnownCallsMinTs = ts;
     }
     if (ts < quotaCutoffMs) return;
-    const rawModel = call.modelExactId || extractModelString(call) || call.model || '';
-    const poolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(rawModel, call.modelLabel || '') : 'unknown';
-    const sharedGroupKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(rawModel || poolKey) : 'unknown';
+    const callScopeKey = (typeof call.accountScopeKey === 'string' && isValidAccountScopeKey(call.accountScopeKey) && call.accountAttributionConfidence !== 'unattributed')
+      ? call.accountScopeKey.trim()
+      : null;
+    if (currentAccountScopeKey && callScopeKey && callScopeKey !== currentAccountScopeKey) return;
+    const resolvedDisplayLabel = typeof lookupModelDisplayLabel === 'function'
+      ? lookupModelDisplayLabel(call, compactModelConfigs, livePlanStatus?.availableModelDetails || null)
+      : '';
+    const modelHint = resolvedDisplayLabel || call.modelLabel || extractModelString(call) || call.model || '';
+    const poolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(call, modelHint) : 'unknown';
+    const sharedGroupKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(call, modelHint || poolKey) : 'unknown';
     if ((!poolKey || poolKey === 'unknown') && (!sharedGroupKey || sharedGroupKey === 'unknown')) return;
     const inp = Math.max(0, Number(call.inputTokens || 0));
     const cache = Math.max(0, Number(call.cacheTokens ?? call.cacheReadTokens ?? 0));
@@ -5966,11 +5976,15 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     const totalTokens = Number(call.totalTokens ?? sumParts);
     if (!Number.isFinite(totalTokens) || totalTokens <= 0) return;
     if (call.callId) seenQuotaCallIds.add(call.callId);
+    if (call.responseId) seenQuotaCallIds.add(call.responseId);
+    const modelExactId = call.modelExactId || call.modelId || null;
     if (ts >= quotaRecentCutoffMs) {
       recentModelUsage.push({
         id: call.callId || null,
         poolKey,
         sharedGroupKey,
+        ...(modelExactId ? { modelExactId } : {}),
+        ...(callScopeKey ? { accountScopeKey: callScopeKey } : {}),
         ts,
         inputTokens: inp,
         cacheTokens: cache,
@@ -5978,10 +5992,11 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         totalTokens
       });
     } else {
-      const bTs = Math.floor(ts / 900000) * 900000;
-      const bKey = `${sharedGroupKey}:${poolKey}:${bTs}`;
+      const bTs = Math.floor(ts / 60000) * 60000;
+      const bKey = `${callScopeKey || ''}:${sharedGroupKey}:${poolKey}:${modelExactId || ''}:${bTs}`;
       const existingB = olderQuotaBuckets.get(bKey);
       if (existingB) {
+        if (ts > existingB.ts) existingB.ts = ts;
         existingB.inputTokens += inp;
         existingB.cacheTokens += cache;
         existingB.outputTokens += outp;
@@ -5990,7 +6005,9 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         olderQuotaBuckets.set(bKey, {
           poolKey,
           sharedGroupKey,
-          ts: bTs,
+          ...(modelExactId ? { modelExactId } : {}),
+          ...(callScopeKey ? { accountScopeKey: callScopeKey } : {}),
+          ts,
           inputTokens: inp,
           cacheTokens: cache,
           outputTokens: outp,
@@ -6000,7 +6017,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   };
   for (const c of mergedCalls) pushQuotaUsageCall(c);
-  for (const c of recentRequests) pushQuotaUsageCall(c);
+  for (const c of recentRequests) {
+    if (matchedTranscriptReqs.has(c)) continue;
+    pushQuotaUsageCall(c);
+  }
   for (const b of olderQuotaBuckets.values()) recentModelUsage.push(b);
   const quotaUsageCoverageStartMs = allKnownCallsMinTs !== null ? Math.max(quotaCutoffMs, allKnownCallsMinTs) : null;
 

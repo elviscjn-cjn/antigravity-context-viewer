@@ -10,12 +10,126 @@
     return Number.isFinite(num) && num >= 0 ? num : null;
   }
 
-  function getModelPoolKey(raw) {
-    if (!raw) return 'unknown';
-    const text = typeof raw === 'object'
-      ? [raw.modelId, raw.model, raw.label, raw.modelDisplayName, raw.modelOrAlias?.model, raw.poolKey].filter(Boolean).join(' ')
-      : String(raw);
-    const s = String(text || '').toLowerCase().trim();
+  const MODEL_USAGE_ID_FALLBACK_LABELS = {
+    'gemini-flash-worker-agy': 'Gemini 4 Hydrogen (Orchestrator)',
+    'model_placeholder_m669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'placeholder-m669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'm669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'model_placeholder_m667': 'Orchestrator (Carbon)',
+    'placeholder-m667': 'Orchestrator (Carbon)',
+    'm667': 'Orchestrator (Carbon)',
+    'model_placeholder_m681': 'Orchestrator (Argon)',
+    'placeholder-m681': 'Orchestrator (Argon)',
+    'm681': 'Orchestrator (Argon)',
+    'model_placeholder_m668': 'Orchestrator (Argon)',
+    'placeholder-m668': 'Orchestrator (Argon)',
+    'm668': 'Orchestrator (Argon)',
+    'model_placeholder_m670': 'Gemini 4 Carbon',
+    'placeholder-m670': 'Gemini 4 Carbon',
+    'm670': 'Gemini 4 Carbon',
+    'gemini-4-hydrogen-sonar': 'Gemini 4 Hydrogen',
+    'model_placeholder_m578': 'Gemini 4 Hydrogen',
+    'm578': 'Gemini 4 Hydrogen',
+    'gemini-4-hydrogen-tiered-high': 'Gemini 4 Hydrogen (High)',
+    'model_placeholder_m530': 'Gemini 4 Hydrogen (High)',
+    'm530': 'Gemini 4 Hydrogen (High)',
+    'gemini-4-hydrogen-tiered-xhigh': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m531': 'Gemini 4 Hydrogen (XHigh)',
+    'm531': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m525': 'Gemini 4 Hydrogen (High)',
+    'm525': 'Gemini 4 Hydrogen (High)',
+    'model_placeholder_m526': 'Gemini 4 Hydrogen (Medium)',
+    'm526': 'Gemini 4 Hydrogen (Medium)',
+    'model_placeholder_m527': 'Gemini 4 Hydrogen (Low)',
+    'm527': 'Gemini 4 Hydrogen (Low)',
+    'model_placeholder_m528': 'Gemini 4 Hydrogen (XHigh)',
+    'm528': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m532': 'Gemini 4 Neon (High)',
+    'placeholder-m532': 'Gemini 4 Neon (High)',
+    'm532': 'Gemini 4 Neon (High)',
+    'model_placeholder_m533': 'Gemini 4 Neon (Medium)',
+    'placeholder-m533': 'Gemini 4 Neon (Medium)',
+    'm533': 'Gemini 4 Neon (Medium)',
+    'model_placeholder_m534': 'Gemini 4 Neon (Low)',
+    'placeholder-m534': 'Gemini 4 Neon (Low)',
+    'm534': 'Gemini 4 Neon (Low)',
+    'model_placeholder_m535': 'Gemini 4 Neon (XHigh)',
+    'placeholder-m535': 'Gemini 4 Neon (XHigh)',
+    'm535': 'Gemini 4 Neon (XHigh)',
+    'model_placeholder_m537': 'Orchestrator (Neon)',
+    'placeholder-m537': 'Orchestrator (Neon)',
+    'm537': 'Orchestrator (Neon)',
+    'model_placeholder_m417': 'Gemini 4 Argon (High)',
+    'm417': 'Gemini 4 Argon (High)',
+    'model_placeholder_m418': 'Gemini 4 Argon (Medium)',
+    'm418': 'Gemini 4 Argon (Medium)',
+    'model_placeholder_m419': 'Gemini 4 Argon (Low)',
+    'm419': 'Gemini 4 Argon (Low)',
+    'model_placeholder_m427': 'Gemini 4 Carbon (High)',
+    'm427': 'Gemini 4 Carbon (High)',
+    'model_placeholder_m437': 'Gemini 4 Carbon (Medium)',
+    'm437': 'Gemini 4 Carbon (Medium)',
+    'model_placeholder_m438': 'Gemini 4 Carbon (Low)',
+    'm438': 'Gemini 4 Carbon (Low)',
+    'gemini-3.8-flash-tiered': 'Gemini 3.8 Flash',
+    'model_placeholder_m322': 'Gemini 3.8 Flash',
+    'm322': 'Gemini 3.8 Flash',
+    'model_placeholder_m318': 'Gemini 3.8 Flash (High)',
+    'm318': 'Gemini 3.8 Flash (High)',
+    'model_placeholder_m319': 'Gemini 3.8 Flash (Medium)',
+    'm319': 'Gemini 3.8 Flash (Medium)',
+    'model_placeholder_m320': 'Gemini 3.8 Flash (Low)',
+    'm320': 'Gemini 3.8 Flash (Low)',
+    'model_placeholder_m400': 'Claude Opus 5.5 (Low)',
+    'm400': 'Claude Opus 5.5 (Low)',
+    'model_placeholder_m401': 'Claude Opus 5.5 (Medium)',
+    'm401': 'Claude Opus 5.5 (Medium)',
+    'model_placeholder_m402': 'Claude Opus 5.5 (High)',
+    'm402': 'Claude Opus 5.5 (High)',
+    'model_placeholder_m403': 'Claude Sonnet 5.5 (Low)',
+    'm403': 'Claude Sonnet 5.5 (Low)',
+    'model_placeholder_m404': 'Claude Sonnet 5.5 (Medium)',
+    'm404': 'Claude Sonnet 5.5 (Medium)',
+    'model_placeholder_m405': 'Claude Sonnet 5.5 (High)',
+    'm405': 'Claude Sonnet 5.5 (High)',
+    'model_placeholder_m198': 'Gemini 3.5 Flash-Lite',
+    'm198': 'Gemini 3.5 Flash-Lite',
+    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash-Lite',
+    'model_placeholder_m50': 'Gemini 3.1 Flash-Lite',
+    'm50': 'Gemini 3.1 Flash-Lite',
+    'gemini-3-flash': 'Gemini 3 Flash',
+    'model_placeholder_m18': 'Gemini 3 Flash',
+    'm18': 'Gemini 3 Flash'
+  };
+
+  function buildLookupKeysForModel(val) {
+    const clean = String(val || '').trim().toLowerCase();
+    if (!clean) return [];
+    const stripped = clean.replace(/^model_/, '');
+    const keys = [clean, stripped];
+    const mPh = stripped.match(/placeholder[_-]?(m\d+)$/);
+    if (mPh) keys.push(`model_placeholder_${mPh[1]}`, `placeholder-${mPh[1]}`, mPh[1]);
+    return Array.from(new Set(keys));
+  }
+
+  function getModelPoolKey(raw, extraHint = '') {
+    if (!raw && !extraHint) return 'unknown';
+    const rawParts = (raw && typeof raw === 'object')
+      ? [raw.modelExactId, raw.modelId, raw.model, raw.label, raw.modelDisplayName, raw.modelLabel, raw.responseModel, raw.modelOrAlias?.model, raw.poolKey, extraHint]
+      : [raw, extraHint];
+    const tokens = rawParts.filter(v => typeof v === 'string' && v.trim()).map(v => v.trim());
+    if (!tokens.length) return 'unknown';
+    const expanded = [...tokens];
+    for (const tok of tokens) {
+      for (const lk of buildLookupKeysForModel(tok)) {
+        const mapped = MODEL_USAGE_ID_FALLBACK_LABELS[lk];
+        if (mapped) {
+          expanded.push(mapped);
+          break;
+        }
+      }
+    }
+    const s = expanded.join(' ').toLowerCase().trim();
     if (!s) return 'unknown';
     if (s.includes('carbon') || s.includes('gemini-4-carbon') || s.includes('m670')) {
       return 'gemini-4-carbon';
@@ -23,6 +137,9 @@
     // 优先匹配 Argon / Orchestrator (Argon)，允许裸 gemini-pro-orchestrator 与已知变体但不吞并未知后缀
     if (s.includes('argon') || s.includes('gemini-4-argon') || s.includes('m668') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?(?![a-z0-9-])/.test(s)) {
       return 'gemini-4-argon';
+    }
+    if (s.includes('neon') || s.includes('gemini-4-neon')) {
+      return 'gemini-4-neon';
     }
     if (s.includes('hydrogen') || s.includes('gemini-4-hydrogen')) {
       return 'gemini-4-hydrogen';
@@ -40,9 +157,9 @@
     return s.replace(/[^a-z0-9_-]/g, '') || 'unknown';
   }
 
-  function getSharedQuotaGroupKey(raw) {
-    const pk = getModelPoolKey(raw);
-    if (pk === 'gemini-4-hydrogen' || pk === 'gemini-3.8-flash') return 'shared_gemini_main';
+  function getSharedQuotaGroupKey(raw, extraHint = '') {
+    const pk = getModelPoolKey(raw, extraHint);
+    if (pk === 'gemini-4-neon' || pk === 'gemini-4-hydrogen' || pk === 'gemini-3.8-flash') return 'shared_gemini_main';
     if (pk === 'claude-opus-5-5' || pk === 'claude-sonnet-5-5' || pk === 'gpt-oss-120b') return 'shared_3p_pool';
     if (pk === 'gemini-4-argon') return 'shared_gemini_argon';
     if (pk === 'gemini-4-carbon') return 'shared_gemini_carbon';
@@ -3936,12 +4053,12 @@
       const joinedHints = [g.groupId, title, desc, ...explicitModelNames].filter(Boolean).join(' ').toLowerCase();
       if (joinedHints.includes('3p') || joinedHints.includes('claude') || joinedHints.includes('gpt-oss')) {
         sharedKey = 'shared_3p_pool';
+      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('neon') || joinedHints.includes('flash')) {
+        sharedKey = 'shared_gemini_main';
       } else if (joinedHints.includes('argon')) {
         sharedKey = 'shared_gemini_argon';
       } else if (joinedHints.includes('carbon')) {
         sharedKey = 'shared_gemini_carbon';
-      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('flash')) {
-        sharedKey = 'shared_gemini_main';
       } else {
         sharedKey = `group_${g.groupId || normalizeModelLookupName(title) || idx}`;
       }
@@ -4451,12 +4568,26 @@
       };
     }
 
+    const accountScopeKey = options.accountScopeKey ? String(options.accountScopeKey).trim() : null;
     const poolModelKeys = new Set();
+    const poolExactIds = new Set();
     if (Array.isArray(pool?.models)) {
       for (const m of pool.models) {
-        for (const rawId of [...(m.modelIds || []), ...(m.aliases || []), m.productLabel]) {
-          const pk = getModelPoolKey(rawId);
-          if (pk && pk !== 'unknown') poolModelKeys.add(pk);
+        const rawIds = [...(m.modelIds || []), ...(m.aliases || [])];
+        for (const rawId of rawIds) {
+          const clean = String(rawId || '').trim().toLowerCase();
+          if (clean) {
+            poolExactIds.add(clean);
+            poolExactIds.add(clean.replace(/^model_/, ''));
+          }
+        }
+        // Orchestrator (Argon) 在新版服务端中划入 Gemini Models 共享池，仅用精确 modelIds/aliases 匹配，避免反吞 Gemini 4 Argon (M417) 独立池用量
+        const isCrossPoolArgon = m.productKey === 'product:google:orchestrator-argon' && pool.poolKey !== 'shared_gemini_argon';
+        if (!isCrossPoolArgon) {
+          for (const rawId of [...rawIds, m.productLabel]) {
+            const pk = getModelPoolKey(rawId);
+            if (pk && pk !== 'unknown') poolModelKeys.add(pk);
+          }
         }
       }
     }
@@ -4516,8 +4647,14 @@
     if (effectiveStartMs !== null) {
       for (const ev of events) {
         if (!ev || typeof ev !== 'object') continue;
+        if (ev.accountScopeKey && accountScopeKey && accountScopeKey !== 'anonymous' && String(ev.accountScopeKey).trim() !== accountScopeKey) {
+          continue;
+        }
+        const evExactId = String(ev.modelExactId || ev.modelId || '').trim().toLowerCase();
+        const evExactStripped = evExactId.replace(/^model_/, '');
+        const matchesExact = Boolean(evExactId && (poolExactIds.has(evExactId) || poolExactIds.has(evExactStripped)));
         const evShared = ev.sharedGroupKey || (ev.poolKey ? getSharedQuotaGroupKey(ev.poolKey) : null);
-        const matchesPool = (poolSharedKey && evShared === poolSharedKey) || (ev.poolKey && poolModelKeys.has(ev.poolKey));
+        const matchesPool = matchesExact || (poolSharedKey && evShared === poolSharedKey) || (ev.poolKey && poolModelKeys.has(ev.poolKey));
         if (!matchesPool) continue;
         const ts = Number(ev.ts ?? ev.timestamp);
         const inp = Math.max(0, Number(ev.inputTokens || 0));
@@ -4587,10 +4724,31 @@
       };
     }
 
-    let anchorFraction = (prev && typeof prev.anchorFraction === 'number' && !isNewCycle)
+    const historyLoaded = options.historyLoaded !== false;
+    const prevAnchorTokensNum = (prev && typeof prev.anchorCycleTokens === 'number') ? prev.anchorCycleTokens : null;
+    const isLegacyAccountingReset = Boolean(
+      !isNewCycle &&
+      historyLoaded &&
+      prev &&
+      prev.usageAccountingRev !== 2 &&
+      (prev.externalDivergenceInCycle === true || (prevAnchorTokensNum !== null && prevAnchorTokensNum > 0 && cycleTokensUsed < prevAnchorTokensNum))
+    );
+    if (isLegacyAccountingReset) {
+      divergenceInCycle = false;
+      invalidationReason = null;
+      if (calSource === 'cycle' || (prevAnchorTokensNum !== null && prevAnchorTokensNum > 0 && cycleTokensUsed < prevAnchorTokensNum)) {
+        calibratedTotal = null;
+        calibratedAt = null;
+        calibratedResetAtMs = null;
+        sampleCount = 0;
+        calSource = null;
+      }
+    }
+
+    let anchorFraction = (prev && typeof prev.anchorFraction === 'number' && !isNewCycle && !isLegacyAccountingReset)
       ? prev.anchorFraction
       : frac;
-    let anchorCycleTokens = (prev && typeof prev.anchorCycleTokens === 'number' && !isNewCycle)
+    let anchorCycleTokens = (prev && typeof prev.anchorCycleTokens === 'number' && !isNewCycle && !isLegacyAccountingReset)
       ? prev.anchorCycleTokens
       : cycleTokensUsed;
 
@@ -4598,6 +4756,26 @@
     if (frac > anchorFraction && (frac - anchorFraction) < 0.04 && !resetShiftedForward) {
       anchorFraction = frac;
       anchorCycleTokens = cycleTokensUsed;
+    }
+
+    // 当先前因轮询竞态（配额先降、本地历史滞后未到）误判 external_divergence 时，
+    // 若未发生新一轮额外降幅且随后本地增量追平并吻合，自动自愈解除本周期锁定
+    if (
+      !isNewCycle &&
+      historyLoaded &&
+      divergenceInCycle &&
+      invalidationReason === 'external_divergence' &&
+      prev &&
+      typeof prev.lastFraction === 'number' &&
+      frac >= prev.lastFraction - 0.005 &&
+      (anchorFraction - frac) >= 0.02 &&
+      (cycleTokensUsed - anchorCycleTokens) >= 2000
+    ) {
+      const recoverTotal = (cycleTokensUsed - anchorCycleTokens) / (anchorFraction - frac);
+      if (Number.isFinite(recoverTotal) && recoverTotal >= 15000 && recoverTotal <= 1e11 && (calibratedTotal === null || recoverTotal >= calibratedTotal * 0.25)) {
+        divergenceInCycle = false;
+        invalidationReason = null;
+      }
     }
 
     const deltaF = anchorFraction - frac;
@@ -4609,8 +4787,8 @@
         const sampleTotal = deltaTok / deltaF;
         const outOfBounds = !Number.isFinite(sampleTotal) || sampleTotal < 15000 || sampleTotal > 1e11;
         const tooLowVsPrior = calibratedTotal !== null && sampleTotal < calibratedTotal * 0.25;
-        const tooHighVsPrior = calibratedTotal !== null && sampleTotal > calibratedTotal * 4.5;
-        if (!outOfBounds && !tooLowVsPrior && !tooHighVsPrior) {
+        const extremeHighNoise = calibratedTotal !== null && sampleTotal > calibratedTotal * 12;
+        if (!outOfBounds && !tooLowVsPrior && !extremeHighNoise) {
           if (calibratedTotal !== null && sampleCount >= 1) {
             const clamped = Math.max(calibratedTotal * 0.35, Math.min(calibratedTotal * 3, sampleTotal));
             calibratedTotal = sampleCount >= 2 ? (calibratedTotal * 0.6 + clamped * 0.4) : (calibratedTotal * 0.4 + clamped * 0.6);
@@ -4625,10 +4803,14 @@
           invalidationReason = null;
           anchorFraction = frac;
           anchorCycleTokens = cycleTokensUsed;
+        } else if (extremeHighNoise) {
+          // 缓存命中率或轻权重模型导致的单次高倍率波动，仅跳过本次样本更新并推进锚点，不误判为他端漏采
+          anchorFraction = frac;
+          anchorCycleTokens = cycleTokensUsed;
         } else {
           externalDivergence = true;
           divergenceInCycle = true;
-          invalidationReason = tooHighVsPrior ? 'calibration_ratio_drift' : (tooLowVsPrior ? 'external_divergence' : 'delta_out_of_bounds');
+          invalidationReason = tooLowVsPrior ? 'external_divergence' : 'delta_out_of_bounds';
         }
       } else if ((deltaF >= 0.03 && deltaTok < 500) || (deltaF >= 0.15 && deltaTok < 2000)) {
         // 同周期可观测窗口内额度明显下降 (>=3% 且几乎零本地消耗，或 >=15% 且增量不足 2,000) -> 外部/他端消耗或漏采
@@ -4644,8 +4826,8 @@
           if (cycleTokensUsed >= 3000) {
             const cycleTotal = cycleTokensUsed / usedFrac;
             const outOfBounds = !Number.isFinite(cycleTotal) || cycleTotal < 15000 || cycleTotal > 1e11 || (usedFrac >= 0.1 && cycleTotal < 15000);
-            const deviatesVsPrior = calibratedTotal !== null && (cycleTotal < calibratedTotal * 0.25 || cycleTotal > calibratedTotal * 4.5);
-            if (!outOfBounds && !deviatesVsPrior) {
+            const tooLowCycleVsPrior = calibratedTotal !== null && cycleTotal < calibratedTotal * 0.25;
+            if (!outOfBounds && !tooLowCycleVsPrior) {
               if (calibratedTotal === null || calSource !== 'delta') {
                 calibratedTotal = cycleTotal;
                 calSource = 'cycle';
@@ -4658,7 +4840,7 @@
             } else {
               externalDivergence = true;
               divergenceInCycle = true;
-              invalidationReason = deviatesVsPrior ? 'external_divergence' : 'cycle_out_of_bounds';
+              invalidationReason = tooLowCycleVsPrior ? 'external_divergence' : 'cycle_out_of_bounds';
             }
           } else if ((usedFrac >= 0.05 && cycleTokensUsed < 500) || (usedFrac >= 0.15 && cycleTokensUsed < 2000)) {
             externalDivergence = true;
@@ -4756,6 +4938,7 @@
 
     const nextCalibrationEntry = {
       schemaVersion: 2,
+      usageAccountingRev: 2,
       calibratedTotalTokens: calibratedTotal !== null ? Math.round(calibratedTotal) : null,
       calibratedAt: calibratedAt ?? null,
       calibratedResetAtMs: calibratedResetAtMs ?? null,
@@ -4815,8 +4998,10 @@
         const entryKey = `${scopeKey}::${pool.poolKey}::${bucket.windowKey || bucket.bucketId || 'primary'}`;
         const est = computeBucketTokenEstimate(pool, bucket, {
           nowMs,
+          accountScopeKey: scopeKey,
           usageEvents,
           historyCoverageStartMs,
+          historyLoaded: options.historyLoaded,
           calibrationEntry: prevMap[entryKey] || null
         });
         if (est.nextCalibrationEntry) {
@@ -4937,98 +5122,11 @@
   };
   const MODEL_FALLBACK_PALETTE_DARK = ['#a78bfa', '#38bdf8', '#6366f1', '#2dd4bf', '#f59e0b', '#e879f9', '#10b981', '#f472b6'];
   const MODEL_FALLBACK_PALETTE_LIGHT = ['#7c3aed', '#0284c7', '#4f46e5', '#0d9488', '#d97706', '#c026d3', '#059669', '#db2777'];
-  const MODEL_USAGE_ID_FALLBACK_LABELS = {
-    'gemini-flash-worker-agy': 'Gemini 4 Hydrogen (Orchestrator)',
-    'model_placeholder_m669': 'Gemini 4 Hydrogen (Orchestrator)',
-    'placeholder-m669': 'Gemini 4 Hydrogen (Orchestrator)',
-    'm669': 'Gemini 4 Hydrogen (Orchestrator)',
-    'model_placeholder_m667': 'Orchestrator (Carbon)',
-    'placeholder-m667': 'Orchestrator (Carbon)',
-    'm667': 'Orchestrator (Carbon)',
-    'model_placeholder_m681': 'Orchestrator (Argon)',
-    'placeholder-m681': 'Orchestrator (Argon)',
-    'm681': 'Orchestrator (Argon)',
-    'model_placeholder_m668': 'Orchestrator (Argon)',
-    'placeholder-m668': 'Orchestrator (Argon)',
-    'm668': 'Orchestrator (Argon)',
-    'model_placeholder_m670': 'Gemini 4 Carbon',
-    'placeholder-m670': 'Gemini 4 Carbon',
-    'm670': 'Gemini 4 Carbon',
-    'gemini-4-hydrogen-sonar': 'Gemini 4 Hydrogen',
-    'model_placeholder_m578': 'Gemini 4 Hydrogen',
-    'm578': 'Gemini 4 Hydrogen',
-    'gemini-4-hydrogen-tiered-high': 'Gemini 4 Hydrogen (High)',
-    'model_placeholder_m530': 'Gemini 4 Hydrogen (High)',
-    'm530': 'Gemini 4 Hydrogen (High)',
-    'gemini-4-hydrogen-tiered-xhigh': 'Gemini 4 Hydrogen (XHigh)',
-    'model_placeholder_m531': 'Gemini 4 Hydrogen (XHigh)',
-    'm531': 'Gemini 4 Hydrogen (XHigh)',
-    'model_placeholder_m525': 'Gemini 4 Hydrogen (High)',
-    'm525': 'Gemini 4 Hydrogen (High)',
-    'model_placeholder_m526': 'Gemini 4 Hydrogen (Medium)',
-    'm526': 'Gemini 4 Hydrogen (Medium)',
-    'model_placeholder_m527': 'Gemini 4 Hydrogen (Low)',
-    'm527': 'Gemini 4 Hydrogen (Low)',
-    'model_placeholder_m528': 'Gemini 4 Hydrogen (XHigh)',
-    'm528': 'Gemini 4 Hydrogen (XHigh)',
-    'model_placeholder_m417': 'Gemini 4 Argon (High)',
-    'm417': 'Gemini 4 Argon (High)',
-    'model_placeholder_m418': 'Gemini 4 Argon (Medium)',
-    'm418': 'Gemini 4 Argon (Medium)',
-    'model_placeholder_m419': 'Gemini 4 Argon (Low)',
-    'm419': 'Gemini 4 Argon (Low)',
-    'model_placeholder_m427': 'Gemini 4 Carbon (High)',
-    'm427': 'Gemini 4 Carbon (High)',
-    'model_placeholder_m437': 'Gemini 4 Carbon (Medium)',
-    'm437': 'Gemini 4 Carbon (Medium)',
-    'model_placeholder_m438': 'Gemini 4 Carbon (Low)',
-    'm438': 'Gemini 4 Carbon (Low)',
-    'gemini-3.8-flash-tiered': 'Gemini 3.8 Flash',
-    'model_placeholder_m322': 'Gemini 3.8 Flash',
-    'm322': 'Gemini 3.8 Flash',
-    'model_placeholder_m318': 'Gemini 3.8 Flash (High)',
-    'm318': 'Gemini 3.8 Flash (High)',
-    'model_placeholder_m319': 'Gemini 3.8 Flash (Medium)',
-    'm319': 'Gemini 3.8 Flash (Medium)',
-    'model_placeholder_m320': 'Gemini 3.8 Flash (Low)',
-    'm320': 'Gemini 3.8 Flash (Low)',
-    'model_placeholder_m400': 'Claude Opus 5.5 (Low)',
-    'm400': 'Claude Opus 5.5 (Low)',
-    'model_placeholder_m401': 'Claude Opus 5.5 (Medium)',
-    'm401': 'Claude Opus 5.5 (Medium)',
-    'model_placeholder_m402': 'Claude Opus 5.5 (High)',
-    'm402': 'Claude Opus 5.5 (High)',
-    'model_placeholder_m403': 'Claude Sonnet 5.5 (Low)',
-    'm403': 'Claude Sonnet 5.5 (Low)',
-    'model_placeholder_m404': 'Claude Sonnet 5.5 (Medium)',
-    'm404': 'Claude Sonnet 5.5 (Medium)',
-    'model_placeholder_m405': 'Claude Sonnet 5.5 (High)',
-    'm405': 'Claude Sonnet 5.5 (High)',
-    'model_placeholder_m198': 'Gemini 3.5 Flash-Lite',
-    'm198': 'Gemini 3.5 Flash-Lite',
-    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash-Lite',
-    'model_placeholder_m50': 'Gemini 3.1 Flash-Lite',
-    'm50': 'Gemini 3.1 Flash-Lite',
-    'gemini-3-flash': 'Gemini 3 Flash',
-    'model_placeholder_m18': 'Gemini 3 Flash',
-    'm18': 'Gemini 3 Flash'
-  };
-
   function isOpaqueModelToken(raw) {
     const s = String(raw || '').trim();
     if (!s) return true;
     if (/^(?:model_placeholder_|placeholder[-_]|model_)/i.test(s)) return true;
     return !/[A-Z\s()]/.test(s);
-  }
-
-  function buildLookupKeysForModel(val) {
-    const clean = String(val || '').trim().toLowerCase();
-    if (!clean) return [];
-    const stripped = clean.replace(/^model_/, '');
-    const keys = [clean, stripped];
-    const mPh = stripped.match(/placeholder[_-]?(m\d+)$/);
-    if (mPh) keys.push(`model_placeholder_${mPh[1]}`, `placeholder-${mPh[1]}`, mPh[1]);
-    return Array.from(new Set(keys));
   }
 
   function lookupModelDisplayLabel(call, cascadeModelConfigs = [], availableModelDetails = null) {
