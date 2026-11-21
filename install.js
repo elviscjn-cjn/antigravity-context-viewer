@@ -17,6 +17,7 @@ const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
 const { loadModulesConfig, saveModulesConfig, acquireFileLock, getHostCoreBuildId } = require('./modules-config');
 const {
   TAGS,
+  WINDOW_LOAD_PATTERN,
   validateSyntax,
   generateProxyUtilsCode,
   generateMeterUtilsCode,
@@ -553,10 +554,10 @@ async function install(options = {}) {
       if (modulesConfig.modules.meter.enabled) {
         const meterUtils = generateMeterUtilsCode();
         finalUtils = finalUtils
+          .replace(WINDOW_LOAD_PATTERN, `${meterUtils.windowLoadHook}$&`)
           .replace('"use strict";', `"use strict";\n${meterUtils.headerProxyHook}`)
           .replace('function setupNodeWrapper(env) {', `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
-          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`)
-          .replace('    void win.loadURL(url);', `${meterUtils.windowLoadHook}    void win.loadURL(url);`);
+          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`);
 
         const createWinSig = 'function createWindow(url, storageManager, options) {';
         if (finalUtils.includes(createWinSig) && !finalUtils.includes('__agDefaultStorageManager')) {
