@@ -1,8 +1,8 @@
 {
   "name": "antigravity-context-viewer",
   "version": "0.8.8",
-  "displayVersion": "0.8.8 ��",
-  "description": "Antigravity ����ͻ��˵ĶԻ������ġ������ٶ��� Token ��������",
+  "displayVersion": "0.8.8 α",
+  "description": "Antigravity 桌面客户端的对话上下文、生成速度与 Token 用量看板",
   "main": "cli.js",
   "bin": {
     "antigravity-context-viewer": "./cli.js",
