@@ -12484,12 +12484,26 @@
     }
   }
 
+  function getRendererCsrfToken() {
+    if (typeof window === 'undefined') return '';
+    const cfgTok = window.__APP_CONFIG__?.csrfToken;
+    if (cfgTok) return String(cfgTok);
+    try {
+      const lsTok = typeof window.localStorage?.getItem === 'function'
+        ? window.localStorage.getItem('agy_session_csrf_token')
+        : '';
+      return lsTok ? String(lsTok) : '';
+    } catch {
+      return '';
+    }
+  }
+
   async function requestPoll(generation, id) {
     state.requestBusy = true;
     const controller = new AbortController(); state.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 12000);
     try {
-      const csrf = window.__APP_CONFIG__?.csrfToken; if (!csrf) throw new Error('后台尚未就绪');
+      const csrf = getRendererCsrfToken(); if (!csrf) throw new Error('后台尚未就绪');
       const offset = Math.max(0, state.count - 3);
       const response = await fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: offset, includeMessages: false }), signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -12727,7 +12741,7 @@
   async function fetchAvailableModelsIfNeeded() {
     if (availableModelsFetchInFlight) return;
     if (typeof fetch !== 'function') return;
-    const csrf = typeof window !== 'undefined' ? window.__APP_CONFIG__?.csrfToken : null;
+    const csrf = getRendererCsrfToken();
     if (!csrf) return;
     if (Date.now() - lastAvailableModelsSync < 300000 && state.modelCapabilitiesById && Object.keys(state.modelCapabilitiesById).length > 0) {
       return;
