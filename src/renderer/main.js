@@ -99,6 +99,7 @@
     groupModelProduct,
     formatTokensK,
     isValidSpeedSample,
+    summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
     computeCacheReadStats,
@@ -10873,11 +10874,79 @@
     badgeEl.textContent = `${evalRes.badge.glyph ? evalRes.badge.glyph + ' ' : ''}${evalRes.badge.text}`;
   }
 
+  function collectSessionCallsForSpeed() {
+    const merged = new Map();
+    const addList = (arr) => {
+      if (!Array.isArray(arr)) return;
+      for (const c of arr) {
+        if (!c || typeof c !== 'object') continue;
+        const k = c.callId || `__anon_${merged.size}`;
+        const prev = merged.get(k);
+        merged.set(k, prev ? { ...prev, ...c } : c);
+      }
+    };
+    addList(state.scan?.recentGeneratorCalls);
+    if (state.scan?.latestCallRecord) addList([state.scan.latestCallRecord]);
+    addList(state.sessionCalls);
+    return Array.from(merged.values());
+  }
+
+  function getSessionAverageSpeed(evalRes = null) {
+    if (typeof summarizeSessionSpeed !== 'function') return null;
+    const isMock = Boolean(state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object');
+    const sp = state.latest?.speed || null;
+    const fb = evalRes && (evalRes.streamSpeed != null || evalRes.overallTps != null)
+      ? {
+          streamSpeed: evalRes.streamSpeed,
+          overallTps: evalRes.overallTps,
+          outputTokens: evalRes.outputTokens,
+          totalDurationSec: sp?.duration ?? null,
+          streamingSec: sp?.streamingSec ?? null,
+          isSampleSparse: Boolean(evalRes.isSampleSparse)
+        }
+      : sp;
+    const calls = isMock ? [] : collectSessionCallsForSpeed();
+    return summarizeSessionSpeed(calls, fb);
+  }
+
+  function updateSpeedBadgeHoverTitle(evalRes, avgSp) {
+    const speedBadge = el('badge-speed');
+    if (!speedBadge) return;
+    const sp = state.latest?.speed || null;
+    if (avgSp?.avgTps != null) {
+      const latestStream = evalRes?.streamSpeed ?? sp?.streamingTps ?? null;
+      const latestOverall = evalRes?.overallTps ?? sp?.tps ?? null;
+      const latestPrimary = latestStream ?? latestOverall;
+      const latestPart = latestPrimary != null
+        ? t('badge.speedLatestPart', {
+          tps: latestOverall ?? latestPrimary,
+          streaming: latestStream ? t('badge.speedStreamingPart', { tps: latestStream }) : '',
+          duration: sp?.duration || evalRes?.durationFormatted || '—',
+          ttft: sp?.ttft || evalRes?.ttftFormatted || '—',
+          streamSec: sp?.streamingSec || '—',
+          output: fmt(evalRes?.outputTokens ?? sp?.outputTokens ?? 0)
+        })
+        : '';
+      speedBadge.title = t('badge.speedTitleDetail', {
+        avgTps: avgSp.avgTps,
+        count: avgSp.count,
+        totalOut: fmt(avgSp.totalOutputTokens),
+        totalDur: avgSp.totalDurationSec ?? '—',
+        latestPart
+      });
+    } else if (evalRes?.phase === 'waiting' || state.requestBusy) {
+      speedBadge.title = t('badge.speedTitleWait');
+    } else {
+      speedBadge.title = t('badge.speedTitleIdle');
+    }
+  }
+
   function renderSpeedExperienceInPlace(evalRes) {
     if (!evalRes) return;
     const isEn = currentPanelLanguage === 'en';
     const isTw = currentPanelLanguage === 'zh-TW';
     const activeColor = evalRes.badge?.color || '';
+    const avgSp = getSessionAverageSpeed(evalRes);
 
     const speedAmount = el('speed-amount');
     const overflowSpeedVal = el('overflow-speed-val');
@@ -10894,6 +10963,9 @@
       if (evalRes.phase === 'waiting') {
         speedAmount.textContent = isCompact ? evalRes.elapsedFormatted : (isEn ? `Wait ${evalRes.elapsedFormatted}` : `等待 ${evalRes.elapsedFormatted}`);
         if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.elapsedFormatted}`;
+      } else if (avgSp?.avgTps != null) {
+        speedAmount.textContent = isCompact ? `${avgSp.avgTps}` : `${avgSp.avgTps} tok/s`;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${avgSp.avgTps} tok/s`;
       } else if (evalRes.isSampleSparse) {
         speedAmount.textContent = shortSampleText;
         if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
@@ -10908,8 +10980,10 @@
         if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
       }
     }
+    updateSpeedBadgeHoverTitle(evalRes, avgSp);
 
     const spBadge = el('speed-badge');
+    const spAvgVal = el('speed-avg-val');
     const spVal = el('speed-val');
     const spDur = el('speed-duration');
     const spTtft = el('speed-ttft');
@@ -10926,6 +11000,24 @@
       if (!spMockTag.hidden) spMockTag.textContent = t('session.speed.mockTag');
     }
     if (spBadge) applyElv91PillTone(spBadge, evalRes);
+    if (spAvgVal) {
+      if (avgSp?.avgTps != null) {
+        spAvgVal.textContent = `${avgSp.avgTps} tok/s`;
+        const overallPart = (avgSp.avgOverallTps != null && Math.abs(avgSp.avgOverallTps - avgSp.avgTps) >= 0.5)
+          ? t('session.speed.avgOverallPart', { overallTps: avgSp.avgOverallTps })
+          : '';
+        spAvgVal.title = t('session.speed.avgTip', {
+          avgTps: avgSp.avgTps,
+          overallPart,
+          count: avgSp.count,
+          totalTok: fmt(avgSp.totalOutputTokens),
+          totalDur: avgSp.totalDurationSec ?? '—'
+        });
+      } else {
+        spAvgVal.textContent = '—';
+        spAvgVal.title = '';
+      }
+    }
     if (spVal) {
       if (evalRes.phase === 'waiting') {
         spVal.textContent = isEn ? 'Waiting' : '等待首字';
@@ -10956,7 +11048,10 @@
       const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)))
         ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
         : '';
-      spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}`;
+      const sessionAvgNote = avgSp?.avgTps != null
+        ? t('speed.takeaway.avgInline', { avgTps: avgSp.avgTps, count: avgSp.count })
+        : '';
+      spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}${sessionAvgNote}`;
     }
 
     const canShowBreakdown = evalRes.phase === 'final' || evalRes.phase === 'streaming';
@@ -11009,6 +11104,18 @@
           note: evalRes.durationTier?.comment || ''
         },
         { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
+        {
+          k: t('session.speed.breakdown.sessionAvg'),
+          v: avgSp?.avgTps != null ? `${avgSp.avgTps} tok/s` : unk,
+          color: null,
+          note: avgSp?.avgTps != null
+            ? (isEn
+              ? `${avgSp.count} turn(s) · ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+              : (isTw
+                ? `共 ${avgSp.count} 輪 · 累計 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+                : `共 ${avgSp.count} 轮 · 累计 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`))
+            : ''
+        },
         { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
       ];
       if (evalRes.isSampleSparse && evalRes.shortWindowEstimateSpeed != null) {
@@ -11916,31 +12023,27 @@
 
     el('badge-tokens').title = t('badge.tokensTitle');
 
-    // 渲染输出速度 (统一使用 tok/s)
+    // 渲染输出速度 (顶栏显示当前会话平均速度, 统一使用 tok/s)
     const sp = d?.speed;
     const speedBadge = el('badge-speed');
     const speedHoverExtra = el('speed-hover-extra');
     syncSpeedBadgeText();
+    const avgSpForRender = getSessionAverageSpeed(state.lastSpeedEval || null);
     if (speedBadge) {
       if (sp?.tps != null) {
         if (speedHoverExtra) {
           speedHoverExtra.textContent = `${sp.duration ? ` · ${sp.duration}s` : ''}${sp.outputTokens ? ` · ${short(sp.outputTokens)} tok` : ''}`;
         }
-        speedBadge.title = t('badge.speedTitleDetail', {
-          tps: sp.tps,
-          streaming: sp.streamingTps ? t('badge.speedStreamingPart', { tps: sp.streamingTps }) : '',
-          duration: sp.duration || '—',
-          ttft: sp.ttft || '—',
-          streamSec: sp.streamingSec || '—',
-          output: fmt(sp.outputTokens)
-        });
+      } else if (avgSpForRender?.avgTps != null) {
+        if (speedHoverExtra) {
+          speedHoverExtra.textContent = `${avgSpForRender.totalDurationSec ? ` · ${avgSpForRender.totalDurationSec}s` : ''}${avgSpForRender.totalOutputTokens ? ` · ${short(avgSpForRender.totalOutputTokens)} tok` : ''}`;
+        }
       } else if (state.requestBusy) {
         if (speedHoverExtra) speedHoverExtra.textContent = '';
-        speedBadge.title = t('badge.speedTitleWait');
       } else {
         if (speedHoverExtra) speedHoverExtra.textContent = t('badge.speedHoverIdle');
-        speedBadge.title = t('badge.speedTitleIdle');
       }
+      updateSpeedBadgeHoverTitle(state.lastSpeedEval || null, avgSpForRender);
     }
 
     if (el('key-summary')) {
@@ -12020,11 +12123,15 @@
         renderSpeedExperienceInPlace(evalRes);
       } else {
         const spBadge = el('speed-badge');
+        const spAvgVal = el('speed-avg-val');
         const spVal = el('speed-val');
         const spDur = el('speed-duration');
         const spTtft = el('speed-ttft');
         const spTokens = el('speed-tokens');
         const spTakeaway = el('speed-takeaway');
+        if (spAvgVal) {
+          spAvgVal.textContent = avgSpForRender?.avgTps != null ? `${avgSpForRender.avgTps} tok/s` : '—';
+        }
 
         if (sp?.tps != null) {
           if (spBadge) {
@@ -12040,13 +12147,22 @@
           if (spTakeaway) {
             const modelStr = d?.model ? `（${d.model}）` : '';
             const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
+            const avgPart = avgSpForRender?.avgTps != null
+              ? t('speed.avgPart', {
+                avgTps: avgSpForRender.avgTps,
+                count: avgSpForRender.count,
+                totalTok: fmt(avgSpForRender.totalOutputTokens),
+                totalDur: avgSpForRender.totalDurationSec ?? '—'
+              })
+              : '';
             spTakeaway.textContent = t('speed.takeaway.ok', {
               tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
               tps: sp.tps,
               stream: streamInfo,
               dur: sp.duration,
               tok: fmt(sp.outputTokens),
-              model: modelStr
+              model: modelStr,
+              avgPart
             });
           }
         } else {
@@ -15655,7 +15771,7 @@
       showPanel(open ? 'quota' : 'none');
       return !el('panel-quota')?.hidden;
     },
-    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
+    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, sessionAvgSpeed: getSessionAverageSpeed(state.lastSpeedEval || null), scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     captureHotReloadState,
     verifyHotReloadAndRefreshQuota,
     getBackendStatusForTest: () => ({
@@ -15733,6 +15849,7 @@
       badgeColor: el('speed-badge')?.style?.color || '',
       boltColor: el('badge-speed-icon')?.style?.color || '',
       summaryBoltColor: el('speed-summary-bolt')?.style?.color || '',
+      speedAvgVal: el('speed-avg-val')?.textContent || '',
       speedVal: el('speed-val')?.textContent || '',
       durationVal: el('speed-duration')?.textContent || '',
       ttftVal: el('speed-ttft')?.textContent || '',

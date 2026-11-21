@@ -102,6 +102,7 @@
     groupModelProduct,
     formatTokensK,
     isValidSpeedSample,
+    summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
     computeCacheReadStats,
@@ -2738,12 +2739,19 @@
             <button id="btn-speed-breakdown-toggle" class="latest-call-link-btn" type="button" aria-expanded="false" hidden data-i18n="session.speed.details">拆解</button>
           </div>
         </div>
-        <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
+        <div class="key-stats" style="grid-template-columns:repeat(2,1fr);margin-bottom:6px;">
+          <div class="key-stat">
+            <div class="key-stat-label" id="speed-avg-label" data-i18n="session.speed.avgStreamRate">平均生成速度</div>
+            <div id="speed-avg-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—
+            </div>
+          </div>
           <div class="key-stat">
             <div class="key-stat-label" id="speed-val-label" data-i18n="session.speed.streamRate">纯流式速度</div>
             <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—
             </div>
           </div>
+        </div>
+        <div class="key-stats" style="grid-template-columns:repeat(3,1fr);">
           <div class="key-stat">
             <div class="key-stat-label" data-i18n="session.speed.duration">生成耗时</div>
             <div id="speed-duration" class="key-stat-val">—</div>
@@ -5051,7 +5059,7 @@ const PANEL_I18N = {
   // 顶部入口单元与气泡
   'badge.aria': { 'zh-CN': '会话与上下文统计', 'zh-TW': '對話與 Context 統計', en: 'Session and context statistics' },
   'badge.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
-  'badge.speed.aria': { 'zh-CN': '模型输出速度与耗时统计', 'zh-TW': '模型輸出速度與耗時統計', en: 'Model output speed and latency' },
+  'badge.speed.aria': { 'zh-CN': '当前会话平均生成速度与耗时统计', 'zh-TW': '目前工作階段平均生成速度與耗時統計', en: 'Session average output speed and latency' },
   'badge.tokens.aria': { 'zh-CN': 'Token 用量一览', 'zh-TW': 'Token 用量總覽', en: 'Token usage overview' },
   'badge.cli.aria': { 'zh-CN': '启动 CLI', 'zh-TW': '啟動 CLI', en: 'Launch CLI' },
   'badge.cli.title': { 'zh-CN': '一键启动 Antigravity CLI 终端（自动进入当前项目目录）', 'zh-TW': '一鍵啟動 Antigravity CLI 終端機（自動進入目前專案目錄）', en: 'Launch Antigravity CLI in the current workspace' },
@@ -5060,7 +5068,7 @@ const PANEL_I18N = {
   'tip.pct.notReady': { 'zh-CN': '数据尚未就绪', 'zh-TW': '資料尚未就緒', en: 'Data not ready' },
   'tip.detail.loading': { 'zh-CN': '正在读取当前会话上下文用量…', 'zh-TW': '正在讀取目前對話 Context 用量…', en: 'Reading current session context usage…' },
   'overflow.aria': { 'zh-CN': '更多统计快捷菜单', 'zh-TW': '更多統計快捷選單', en: 'More metrics menu' },
-  'overflow.speed': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Output speed' },
+  'overflow.speed': { 'zh-CN': '会话均速', 'zh-TW': '會話均速', en: 'Avg speed' },
   'overflow.tokens': { 'zh-CN': 'Token 用量一览', 'zh-TW': 'Token 用量總覽', en: 'Token usage' },
   'overflow.cli': { 'zh-CN': '启动 CLI 终端', 'zh-TW': '啟動 CLI 終端機', en: 'Launch CLI' },
   'cli.launching': { 'zh-CN': '正在打开 Antigravity CLI…', 'zh-TW': '正在開啟 Antigravity CLI…', en: 'Opening Antigravity CLI…' },
@@ -5408,8 +5416,12 @@ const PANEL_I18N = {
   'tokens.cache.zeroInputNote': { 'zh-CN': '当前来源总输入为 0，缓存读取占比不适用。', 'zh-TW': '目前來源總輸入為 0，快取讀取佔比不適用。', en: 'Total input is 0 for active source; cache ratio is N/A.' },
 
   // 生成体验面板多语标签
-  'session.speedSummary.titleNoBolt': { 'zh-CN': '最新生成体验与速度', 'zh-TW': '最新生成體驗與速度', en: 'Latest Generation Experience' },
+  'session.speedSummary.titleNoBolt': { 'zh-CN': '生成体验与速度统计', 'zh-TW': '生成體驗與速度統計', en: 'Generation Speed & Experience' },
+  'session.speed.avgStreamRate': { 'zh-CN': '平均生成速度', 'zh-TW': '平均生成速度', en: 'Session Avg' },
+  'session.speed.avgTip': { 'zh-CN': '当前会话平均生成速度：{avgTps} tok/s{overallPart}（共 {count} 轮，累计 {totalTok} tokens / {totalDur}s）', 'zh-TW': '目前工作階段平均生成速度：{avgTps} tok/s{overallPart}（共 {count} 輪，累計 {totalTok} tokens / {totalDur}s）', en: 'Session average speed: {avgTps} tok/s{overallPart} ({count} turns, {totalTok} tokens / {totalDur}s)' },
+  'session.speed.avgOverallPart': { 'zh-CN': '，整体含等待 {overallTps} tok/s', 'zh-TW': '，整體含等待 {overallTps} tok/s', en: ', overall {overallTps} tok/s' },
   'session.speed.streamRate': { 'zh-CN': '纯流式速度', 'zh-TW': '純流式速度', en: 'Stream Speed' },
+  'session.speed.breakdown.sessionAvg': { 'zh-CN': '当前会话平均速度', 'zh-TW': '目前工作階段平均速度', en: 'Session Average Speed' },
   'session.speed.shortSampleBadge': { 'zh-CN': '短样本', 'zh-TW': '短樣本', en: 'Short sample' },
   'session.speed.shortWindowEst': { 'zh-CN': '短窗口估算 (参考)', 'zh-TW': '短視窗估算 (參考)', en: 'Short-Window Est. (Ref)' },
   'session.speed.shortWindowNote': { 'zh-CN': '流式窗口过短（可能包含思考 Token 集中吐出），未作主速度高亮展示。', 'zh-TW': '流式視窗過短（可能含思考 Token 集中吐出），未作主速度高亮展示。', en: 'Short streaming window (may include buffered thinking tokens); omitted from headline speed.' },
@@ -5682,9 +5694,10 @@ const PANEL_I18N = {
   'badge.tokensTitle': { 'zh-CN': 'Token 用量一览（点击展开详情）', 'zh-TW': 'Token 用量總覽（點擊展開詳細資訊）', en: 'Token Usage Overview (click to open)' },
   'badge.speedCalc': { 'zh-CN': '计算中…', 'zh-TW': '計算中…', en: 'Calculating…' },
   'badge.speedHoverIdle': { 'zh-CN': ' · 待生成', 'zh-TW': ' · 待生成', en: ' · Idle' },
-  'badge.speedTitleIdle': { 'zh-CN': '模型输出速度与耗时 (tok/s)', 'zh-TW': '模型輸出速度與耗時 (tok/s)', en: 'Model output speed & latency (tok/s)' },
+  'badge.speedTitleIdle': { 'zh-CN': '当前会话平均生成速度与耗时 (tok/s)', 'zh-TW': '目前工作階段平均生成速度與耗時 (tok/s)', en: 'Session average speed & latency (tok/s)' },
   'badge.speedTitleWait': { 'zh-CN': '正在等待模型返回或计算生成指标…', 'zh-TW': '正在等待模型回傳或計算生成指標…', en: 'Waiting for model response or metrics…' },
-  'badge.speedTitleDetail': { 'zh-CN': '最新模型输出速度：{tps} tok/s{streaming}\n总耗时：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次产出：{output} tokens', 'zh-TW': '最新模型輸出速度：{tps} tok/s{streaming}\n總耗時：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次產出：{output} tokens', en: 'Latest output speed: {tps} tok/s{streaming}\nTotal: {duration}s (TTFT {ttft}s + streaming {streamSec}s)\nOutput: {output} tokens' },
+  'badge.speedTitleDetail': { 'zh-CN': '当前会话平均生成速度：{avgTps} tok/s（共 {count} 轮，累计 {totalOut} tokens / {totalDur}s）{latestPart}', 'zh-TW': '目前工作階段平均生成速度：{avgTps} tok/s（共 {count} 輪，累計 {totalOut} tokens / {totalDur}s）{latestPart}', en: 'Session average speed: {avgTps} tok/s ({count} turns, {totalOut} tokens / {totalDur}s){latestPart}' },
+  'badge.speedLatestPart': { 'zh-CN': '\n最新一轮输出速度：{tps} tok/s{streaming}\n总耗时：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次产出：{output} tokens', 'zh-TW': '\n最新一輪輸出速度：{tps} tok/s{streaming}\n總耗時：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次產出：{output} tokens', en: '\nLatest turn speed: {tps} tok/s{streaming}\nTotal: {duration}s (TTFT {ttft}s + streaming {streamSec}s)\nOutput: {output} tokens' },
   'badge.speedStreamingPart': { 'zh-CN': ' (流式 {tps} tok/s)', 'zh-TW': ' (流式 {tps} tok/s)', en: ' (streaming {tps} tok/s)' },
   'badge.corpus.range': { 'zh-CN': '会话{range}{inc}', 'zh-TW': '工作階段{range}{inc}', en: 'Chat {range}{inc}' },
   'badge.corpus.incPlus': { 'zh-CN': '＋未知', 'zh-TW': '＋未知', en: '+unknown' },
@@ -5751,7 +5764,9 @@ const PANEL_I18N = {
   'speed.pill.slow': { 'zh-CN': '偏慢', 'zh-TW': '偏慢', en: 'Slow' },
   'speed.pill.calc': { 'zh-CN': '计算中', 'zh-TW': '計算中', en: 'Calculating' },
   'speed.pill.idle': { 'zh-CN': '待生成', 'zh-TW': '待生成', en: 'Idle' },
-  'speed.takeaway.ok': { 'zh-CN': '✔ 输出{tone}（{tps} tok/s{stream}），总耗时 {dur}s 内生成 {tok} tokens{model}。', 'zh-TW': '✔ 輸出{tone}（{tps} tok/s{stream}），總耗時 {dur}s 內產生 {tok} tokens{model}。', en: '✔ Output {tone} ({tps} tok/s{stream}), generated {tok} tokens in {dur}s{model}.' },
+  'speed.takeaway.ok': { 'zh-CN': '✔ 最新输出{tone}（{tps} tok/s{stream}），总耗时 {dur}s 内生成 {tok} tokens{model}{avgPart}。', 'zh-TW': '✔ 最新輸出{tone}（{tps} tok/s{stream}），總耗時 {dur}s 內產生 {tok} tokens{model}{avgPart}。', en: '✔ Latest output {tone} ({tps} tok/s{stream}), generated {tok} tokens in {dur}s{model}{avgPart}.' },
+  'speed.avgPart': { 'zh-CN': '；会话平均 {avgTps} tok/s（共 {count} 轮，累计 {totalTok} tokens / {totalDur}s）', 'zh-TW': '；工作階段平均 {avgTps} tok/s（共 {count} 輪，累計 {totalTok} tokens / {totalDur}s）', en: '; session avg {avgTps} tok/s ({count} turns, {totalTok} tokens / {totalDur}s)' },
+  'speed.takeaway.avgInline': { 'zh-CN': ' · 会话平均 {avgTps} tok/s（共 {count} 轮）', 'zh-TW': ' · 工作階段平均 {avgTps} tok/s（共 {count} 輪）', en: ' · Session avg {avgTps} tok/s ({count} turns)' },
   'speed.tone.smooth': { 'zh-CN': '流畅', 'zh-TW': '流暢', en: 'smooth' },
   'speed.tone.steady': { 'zh-CN': '平稳', 'zh-TW': '平穩', en: 'steady' },
   'speed.streamPart': { 'zh-CN': '，纯流式传输达 {tps} tok/s', 'zh-TW': '，純串流傳輸達 {tps} tok/s', en: ', streaming {tps} tok/s' },
@@ -24064,11 +24079,79 @@ var cumLockedKey = null;
     badgeEl.textContent = `${evalRes.badge.glyph ? evalRes.badge.glyph + ' ' : ''}${evalRes.badge.text}`;
   }
 
+  function collectSessionCallsForSpeed() {
+    const merged = new Map();
+    const addList = (arr) => {
+      if (!Array.isArray(arr)) return;
+      for (const c of arr) {
+        if (!c || typeof c !== 'object') continue;
+        const k = c.callId || `__anon_${merged.size}`;
+        const prev = merged.get(k);
+        merged.set(k, prev ? { ...prev, ...c } : c);
+      }
+    };
+    addList(state.scan?.recentGeneratorCalls);
+    if (state.scan?.latestCallRecord) addList([state.scan.latestCallRecord]);
+    addList(state.sessionCalls);
+    return Array.from(merged.values());
+  }
+
+  function getSessionAverageSpeed(evalRes = null) {
+    if (typeof summarizeSessionSpeed !== 'function') return null;
+    const isMock = Boolean(state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object');
+    const sp = state.latest?.speed || null;
+    const fb = evalRes && (evalRes.streamSpeed != null || evalRes.overallTps != null)
+      ? {
+          streamSpeed: evalRes.streamSpeed,
+          overallTps: evalRes.overallTps,
+          outputTokens: evalRes.outputTokens,
+          totalDurationSec: sp?.duration ?? null,
+          streamingSec: sp?.streamingSec ?? null,
+          isSampleSparse: Boolean(evalRes.isSampleSparse)
+        }
+      : sp;
+    const calls = isMock ? [] : collectSessionCallsForSpeed();
+    return summarizeSessionSpeed(calls, fb);
+  }
+
+  function updateSpeedBadgeHoverTitle(evalRes, avgSp) {
+    const speedBadge = el('badge-speed');
+    if (!speedBadge) return;
+    const sp = state.latest?.speed || null;
+    if (avgSp?.avgTps != null) {
+      const latestStream = evalRes?.streamSpeed ?? sp?.streamingTps ?? null;
+      const latestOverall = evalRes?.overallTps ?? sp?.tps ?? null;
+      const latestPrimary = latestStream ?? latestOverall;
+      const latestPart = latestPrimary != null
+        ? t('badge.speedLatestPart', {
+          tps: latestOverall ?? latestPrimary,
+          streaming: latestStream ? t('badge.speedStreamingPart', { tps: latestStream }) : '',
+          duration: sp?.duration || evalRes?.durationFormatted || '—',
+          ttft: sp?.ttft || evalRes?.ttftFormatted || '—',
+          streamSec: sp?.streamingSec || '—',
+          output: fmt(evalRes?.outputTokens ?? sp?.outputTokens ?? 0)
+        })
+        : '';
+      speedBadge.title = t('badge.speedTitleDetail', {
+        avgTps: avgSp.avgTps,
+        count: avgSp.count,
+        totalOut: fmt(avgSp.totalOutputTokens),
+        totalDur: avgSp.totalDurationSec ?? '—',
+        latestPart
+      });
+    } else if (evalRes?.phase === 'waiting' || state.requestBusy) {
+      speedBadge.title = t('badge.speedTitleWait');
+    } else {
+      speedBadge.title = t('badge.speedTitleIdle');
+    }
+  }
+
   function renderSpeedExperienceInPlace(evalRes) {
     if (!evalRes) return;
     const isEn = currentPanelLanguage === 'en';
     const isTw = currentPanelLanguage === 'zh-TW';
     const activeColor = evalRes.badge?.color || '';
+    const avgSp = getSessionAverageSpeed(evalRes);
 
     const speedAmount = el('speed-amount');
     const overflowSpeedVal = el('overflow-speed-val');
@@ -24085,6 +24168,9 @@ var cumLockedKey = null;
       if (evalRes.phase === 'waiting') {
         speedAmount.textContent = isCompact ? evalRes.elapsedFormatted : (isEn ? `Wait ${evalRes.elapsedFormatted}` : `等待 ${evalRes.elapsedFormatted}`);
         if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.elapsedFormatted}`;
+      } else if (avgSp?.avgTps != null) {
+        speedAmount.textContent = isCompact ? `${avgSp.avgTps}` : `${avgSp.avgTps} tok/s`;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${avgSp.avgTps} tok/s`;
       } else if (evalRes.isSampleSparse) {
         speedAmount.textContent = shortSampleText;
         if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
@@ -24099,8 +24185,10 @@ var cumLockedKey = null;
         if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
       }
     }
+    updateSpeedBadgeHoverTitle(evalRes, avgSp);
 
     const spBadge = el('speed-badge');
+    const spAvgVal = el('speed-avg-val');
     const spVal = el('speed-val');
     const spDur = el('speed-duration');
     const spTtft = el('speed-ttft');
@@ -24117,6 +24205,24 @@ var cumLockedKey = null;
       if (!spMockTag.hidden) spMockTag.textContent = t('session.speed.mockTag');
     }
     if (spBadge) applyElv91PillTone(spBadge, evalRes);
+    if (spAvgVal) {
+      if (avgSp?.avgTps != null) {
+        spAvgVal.textContent = `${avgSp.avgTps} tok/s`;
+        const overallPart = (avgSp.avgOverallTps != null && Math.abs(avgSp.avgOverallTps - avgSp.avgTps) >= 0.5)
+          ? t('session.speed.avgOverallPart', { overallTps: avgSp.avgOverallTps })
+          : '';
+        spAvgVal.title = t('session.speed.avgTip', {
+          avgTps: avgSp.avgTps,
+          overallPart,
+          count: avgSp.count,
+          totalTok: fmt(avgSp.totalOutputTokens),
+          totalDur: avgSp.totalDurationSec ?? '—'
+        });
+      } else {
+        spAvgVal.textContent = '—';
+        spAvgVal.title = '';
+      }
+    }
     if (spVal) {
       if (evalRes.phase === 'waiting') {
         spVal.textContent = isEn ? 'Waiting' : '等待首字';
@@ -24147,7 +24253,10 @@ var cumLockedKey = null;
       const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)))
         ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
         : '';
-      spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}`;
+      const sessionAvgNote = avgSp?.avgTps != null
+        ? t('speed.takeaway.avgInline', { avgTps: avgSp.avgTps, count: avgSp.count })
+        : '';
+      spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}${sessionAvgNote}`;
     }
 
     const canShowBreakdown = evalRes.phase === 'final' || evalRes.phase === 'streaming';
@@ -24200,6 +24309,18 @@ var cumLockedKey = null;
           note: evalRes.durationTier?.comment || ''
         },
         { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
+        {
+          k: t('session.speed.breakdown.sessionAvg'),
+          v: avgSp?.avgTps != null ? `${avgSp.avgTps} tok/s` : unk,
+          color: null,
+          note: avgSp?.avgTps != null
+            ? (isEn
+              ? `${avgSp.count} turn(s) · ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+              : (isTw
+                ? `共 ${avgSp.count} 輪 · 累計 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+                : `共 ${avgSp.count} 轮 · 累计 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`))
+            : ''
+        },
         { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
       ];
       if (evalRes.isSampleSparse && evalRes.shortWindowEstimateSpeed != null) {
@@ -25107,31 +25228,27 @@ var cumLockedKey = null;
 
     el('badge-tokens').title = t('badge.tokensTitle');
 
-    // 渲染输出速度 (统一使用 tok/s)
+    // 渲染输出速度 (顶栏显示当前会话平均速度, 统一使用 tok/s)
     const sp = d?.speed;
     const speedBadge = el('badge-speed');
     const speedHoverExtra = el('speed-hover-extra');
     syncSpeedBadgeText();
+    const avgSpForRender = getSessionAverageSpeed(state.lastSpeedEval || null);
     if (speedBadge) {
       if (sp?.tps != null) {
         if (speedHoverExtra) {
           speedHoverExtra.textContent = `${sp.duration ? ` · ${sp.duration}s` : ''}${sp.outputTokens ? ` · ${short(sp.outputTokens)} tok` : ''}`;
         }
-        speedBadge.title = t('badge.speedTitleDetail', {
-          tps: sp.tps,
-          streaming: sp.streamingTps ? t('badge.speedStreamingPart', { tps: sp.streamingTps }) : '',
-          duration: sp.duration || '—',
-          ttft: sp.ttft || '—',
-          streamSec: sp.streamingSec || '—',
-          output: fmt(sp.outputTokens)
-        });
+      } else if (avgSpForRender?.avgTps != null) {
+        if (speedHoverExtra) {
+          speedHoverExtra.textContent = `${avgSpForRender.totalDurationSec ? ` · ${avgSpForRender.totalDurationSec}s` : ''}${avgSpForRender.totalOutputTokens ? ` · ${short(avgSpForRender.totalOutputTokens)} tok` : ''}`;
+        }
       } else if (state.requestBusy) {
         if (speedHoverExtra) speedHoverExtra.textContent = '';
-        speedBadge.title = t('badge.speedTitleWait');
       } else {
         if (speedHoverExtra) speedHoverExtra.textContent = t('badge.speedHoverIdle');
-        speedBadge.title = t('badge.speedTitleIdle');
       }
+      updateSpeedBadgeHoverTitle(state.lastSpeedEval || null, avgSpForRender);
     }
 
     if (el('key-summary')) {
@@ -25211,11 +25328,15 @@ var cumLockedKey = null;
         renderSpeedExperienceInPlace(evalRes);
       } else {
         const spBadge = el('speed-badge');
+        const spAvgVal = el('speed-avg-val');
         const spVal = el('speed-val');
         const spDur = el('speed-duration');
         const spTtft = el('speed-ttft');
         const spTokens = el('speed-tokens');
         const spTakeaway = el('speed-takeaway');
+        if (spAvgVal) {
+          spAvgVal.textContent = avgSpForRender?.avgTps != null ? `${avgSpForRender.avgTps} tok/s` : '—';
+        }
 
         if (sp?.tps != null) {
           if (spBadge) {
@@ -25231,13 +25352,22 @@ var cumLockedKey = null;
           if (spTakeaway) {
             const modelStr = d?.model ? `（${d.model}）` : '';
             const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
+            const avgPart = avgSpForRender?.avgTps != null
+              ? t('speed.avgPart', {
+                avgTps: avgSpForRender.avgTps,
+                count: avgSpForRender.count,
+                totalTok: fmt(avgSpForRender.totalOutputTokens),
+                totalDur: avgSpForRender.totalDurationSec ?? '—'
+              })
+              : '';
             spTakeaway.textContent = t('speed.takeaway.ok', {
               tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
               tps: sp.tps,
               stream: streamInfo,
               dur: sp.duration,
               tok: fmt(sp.outputTokens),
-              model: modelStr
+              model: modelStr,
+              avgPart
             });
           }
         } else {
@@ -28846,7 +28976,7 @@ var cumLockedKey = null;
       showPanel(open ? 'quota' : 'none');
       return !el('panel-quota')?.hidden;
     },
-    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
+    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, sessionAvgSpeed: getSessionAverageSpeed(state.lastSpeedEval || null), scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     captureHotReloadState,
     verifyHotReloadAndRefreshQuota,
     getBackendStatusForTest: () => ({
@@ -28924,6 +29054,7 @@ var cumLockedKey = null;
       badgeColor: el('speed-badge')?.style?.color || '',
       boltColor: el('badge-speed-icon')?.style?.color || '',
       summaryBoltColor: el('speed-summary-bolt')?.style?.color || '',
+      speedAvgVal: el('speed-avg-val')?.textContent || '',
       speedVal: el('speed-val')?.textContent || '',
       durationVal: el('speed-duration')?.textContent || '',
       ttftVal: el('speed-ttft')?.textContent || '',
