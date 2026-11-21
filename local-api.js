@@ -10,7 +10,7 @@ const { getAppDataDir, isIsolatedTestPath } = require('./asar-engine');
 const LOOPBACK_ORIGIN_RE = /^https?:\/\/127\.0\.0\.1:(\d+)$/;
 
 /**
- * 常用本地调试候选端口（兼容 antigravity-hans / 手动 --remote-debugging-port 启动场景）
+ * ���ñ��ص��Ժ�ѡ�˿ڣ����� antigravity-hans / �ֶ� --remote-debugging-port ����������
  */
 const HANS_CANDIDATE_PORTS = [58321, 58322, 58323, 58324, 58325];
 
@@ -58,10 +58,10 @@ function getDevToolsActivePort(options = {}) {
 }
 
 /**
- * 按优先级生成候选 CDP 端口列表：
- * 1. 显式传入的 options.port 或环境变量 AG_CDP_PORT
- * 2. 候选回环端口 (58321..58325，仅在非隔离生产环境启用)
- * 3. DevToolsActivePort 文件记录的端口
+ * �����ȼ����ɺ�ѡ CDP �˿��б���
+ * 1. ��ʽ����� options.port �򻷾����� AG_CDP_PORT
+ * 2. ��ѡ�ػ��˿� (58321..58325�����ڷǸ���������������)
+ * 3. DevToolsActivePort �ļ���¼�Ķ˿�
  */
 function getCandidateCdpPorts(options = {}) {
   const ports = [];
@@ -155,7 +155,7 @@ function fetchJsonList(port, timeoutMs = 1500) {
 }
 
 /**
- * 探测并定位包含 Antigravity 本地主窗口页面的 CDP 端口与页面列表
+ * ̽�Ⲣ��λ���� Antigravity ����������ҳ��� CDP �˿���ҳ���б�
  */
 async function discoverAntigravityCdp(options = {}) {
   const explicit = parseExplicitPort(options.port ?? process.env.AG_CDP_PORT);
@@ -188,9 +188,9 @@ async function discoverAntigravityCdp(options = {}) {
 
   if (candidatePorts.length === 0) {
     if (portFileInfo.exists && !portFileInfo.valid) {
-      throw new Error('Antigravity 本地连接信息无效，请重新打开客户端');
+      throw new Error('Antigravity ����������Ϣ��Ч�������´򿪿ͻ���');
     }
-    throw new Error('Antigravity 本地连接尚未就绪，请稍后重试');
+    throw new Error('Antigravity ����������δ���������Ժ�����');
   }
 
   const timeoutMs = options.timeoutMs || 1500;
@@ -212,21 +212,21 @@ async function discoverAntigravityCdp(options = {}) {
         };
       }
     } catch {
-      // 探测下一个候选端口
+      // ̽����һ����ѡ�˿�
     }
   }
 
   if (anyPortResponded) {
-    throw new Error('未找到 Antigravity 主窗口，请等待窗口加载后重试');
+    throw new Error('δ�ҵ� Antigravity �����ڣ���ȴ����ڼ��غ�����');
   }
   if (portFileInfo.exists && !portFileInfo.valid) {
-    throw new Error('Antigravity 本地连接信息无效，请重新打开客户端');
+    throw new Error('Antigravity ����������Ϣ��Ч�������´򿪿ͻ���');
   }
-  throw new Error('Antigravity 本地连接尚未就绪，请稍后重试');
+  throw new Error('Antigravity ����������δ���������Ժ�����');
 }
 
 /**
- * 零依赖 RFC 6455 WebSocket 客户端（不发送 Origin 头，仅允许连接本机回环地址，兼容未开启 --remote-allow-origins=* 的 Electron CDP）
+ * ������ RFC 6455 WebSocket �ͻ��ˣ������� Origin ͷ�����������ӱ����ػ���ַ������δ���� --remote-allow-origins=* �� Electron CDP��
  */
 function connectCdpWebSocket(wsUrl, options = {}) {
   return new Promise((resolve, reject) => {
@@ -237,11 +237,11 @@ function connectCdpWebSocket(wsUrl, options = {}) {
       return reject(new Error(`Invalid WebSocket URL: ${wsUrl}`));
     }
     if (parsed.protocol !== 'ws:' || (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost')) {
-      return reject(new Error('仅允许连接本机回环 CDP WebSocket 地址'));
+      return reject(new Error('���������ӱ����ػ� CDP WebSocket ��ַ'));
     }
     const port = Number(parsed.port || 80);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      return reject(new Error('无效的本机 CDP 端口'));
+      return reject(new Error('��Ч�ı��� CDP �˿�'));
     }
     const host = '127.0.0.1';
     const reqPath = (parsed.pathname || '/') + (parsed.search || '');
@@ -400,7 +400,7 @@ function connectCdpWebSocket(wsUrl, options = {}) {
     };
 
     socket.on('connect', () => {
-      // 严禁附带 Origin 请求头，防止未加 --remote-allow-origins=* 时被 Chromium 拒绝返回 403
+      // �Ͻ����� Origin ����ͷ����ֹδ�� --remote-allow-origins=* ʱ�� Chromium �ܾ����� 403
       const reqLines = [
         `GET ${reqPath} HTTP/1.1`,
         `Host: ${host}:${port}`,
@@ -462,7 +462,7 @@ function connectCdpWebSocket(wsUrl, options = {}) {
 }
 
 /**
- * 创建带请求/响应关联的轻量 CDP 会话客户端
+ * ����������/��Ӧ���������� CDP �Ự�ͻ���
  */
 async function createCdpClient(wsUrl, options = {}) {
   const ws = await connectCdpWebSocket(wsUrl, options);
@@ -556,12 +556,20 @@ async function extractAppConfigViaCdp(page) {
 }
 
 /**
- * 解析并缓存或实时提取指定本地页面原点的 CSRF Token 并构造 RPC 客户端。
+ * �����������ʵʱ��ȡָ������ҳ��ԭ��� CSRF Token ������ RPC �ͻ��ˡ�
  */
+function resolveHostAuthToken(origin, auth) {
+  const expected = normalizeLoopbackOrigin(origin);
+  const active = normalizeLoopbackOrigin(auth?.getActiveLsBaseUrl?.());
+  if (!expected || active !== expected) return null;
+  const token = auth?.getActiveLsCsrfToken?.();
+  return typeof token === 'string' && token.trim() ? token : null;
+}
+
 async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta = {}) {
   const origin = normalizeLoopbackOrigin(rawOrigin);
   if (!origin) {
-    throw new Error('非法的本机回环页面地址');
+    throw new Error('�Ƿ��ı����ػ�ҳ���ַ');
   }
   let hasConfig = false;
   let token = null;
@@ -585,10 +593,18 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
   }
 
   if (!hasConfig) {
-    throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+    throw new Error('Antigravity ����������Ϣ��δ���������Ժ�����');
   }
   if (!token) {
-    throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
+    // Antigravity 2.34+ keeps the admin token in main-process memory.
+    // Only accept credentials for the exact local service being connected.
+    try {
+      const auth = require('./authBootstrap');
+      token = resolveHostAuthToken(origin, auth);
+    } catch { }
+  }
+  if (!token) {
+    throw new Error('Antigravity ���ؼ�Ȩ��Ϣ��δ���������Ժ�����');
   }
 
   return {
@@ -605,8 +621,8 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
 }
 
 /**
- * 连接到本地 Antigravity LanguageServerService。
- * 支持直接传入已知 `options.origin` 免 CDP/DevToolsActivePort 直连，亦可通过 CDP 发现所有运行窗口原点。
+ * ���ӵ����� Antigravity LanguageServerService��
+ * ֧��ֱ�Ӵ�����֪ `options.origin` �� CDP/DevToolsActivePort ֱ�������ͨ�� CDP �����������д���ԭ�㡣
  */
 async function connect(options = {}) {
   if (
@@ -617,7 +633,7 @@ async function connect(options = {}) {
   ) {
     const explicitOrigin = normalizeLoopbackOrigin(options.origin);
     if (!explicitOrigin) {
-      throw new Error('非法的本机回环页面地址');
+      throw new Error('�Ƿ��ı����ػ�ҳ���ַ');
     }
     return connectOrigin(explicitOrigin, null, [explicitOrigin]);
   }
@@ -630,6 +646,7 @@ async function connect(options = {}) {
 }
 
 module.exports = {
+  resolveHostAuthToken,
   connect,
   connectOrigin,
   normalizeLoopbackOrigin,
