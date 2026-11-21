@@ -2633,3 +2633,131 @@ test('隔离额度请求遇到窗口未就绪、CSRF 缺失及 401/403 鉴权失
   assert.notEqual(authFailRes.snapshot.activeStatus, 'exhausted');
   assert.notEqual(authFailRes.snapshot.activeStatus, 'no_permission');
 });
+
+test('Antigravity 2.34.0 鉴权适配: 未鉴权 GET / 不含 csrfToken 时可通过 authBootstrap 与 daemon/hub_*.json 正常拉取额度与会话并支持 401/403 轮换重试', async (t) => {
+  const os = require('os');
+  const http = require('http');
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-quota-2340-'));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const daemonDir = path.join(homeDir, '.gemini', 'antigravity', 'daemon');
+  const appDataDir = path.join(homeDir, 'AppData', 'Roaming');
+  fs.mkdirSync(daemonDir, { recursive: true });
+  fs.mkdirSync(path.join(appDataDir, 'Antigravity'), { recursive: true });
+
+  let activeToken = 'boot-tok-v1';
+  let origin = '';
+  let rpcCount = 0;
+
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      if (req.url === '/' || req.url === '/json/list') {
+        // 模拟 2.34.0：未鉴权 GET / 不暴露 csrfToken，且无 CDP 端口
+        res.statusCode = req.url === '/json/list' ? 404 : 200;
+        res.end('<html><body>authenticated ui bootstrap required</body></html>');
+        return;
+      }
+      const gotTok = req.headers['x-codeium-csrf-token'];
+      if (gotTok !== activeToken) {
+        res.statusCode = 401;
+        res.end('HTTP 401 Unauthorized');
+        return;
+      }
+      rpcCount++;
+      if (req.url.endsWith('/GetUserStatus')) {
+        res.end(JSON.stringify({
+          userStatus: {
+            email: 'v234@example.com',
+            planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' } },
+            cascadeModelConfigData: {
+              clientModelConfigs: [
+                { label: 'Gemini 4 Hydrogen (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M28' }, quotaInfo: { remainingFraction: 0.75, resetTime: '2026-11-21T18:00:00Z' } }
+              ]
+            }
+          }
+        }));
+        return;
+      }
+      if (req.url.endsWith('/RetrieveUserQuotaSummary')) {
+        res.end(JSON.stringify({ modelQuotaSummaryGroups: [] }));
+        return;
+      }
+      if (req.url.endsWith('/GetCascadeTrajectory')) {
+        res.end(JSON.stringify({
+          numTotalSteps: 1,
+          trajectory: {
+            steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: 'hi' }] } }],
+            generatorMetadata: []
+          }
+        }));
+        return;
+      }
+      if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+        res.end(JSON.stringify({ generatorMetadata: [] }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end('{}');
+    });
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => srv.close(r)));
+
+  const port = srv.address().port;
+  origin = `http://127.0.0.1:${port}`;
+
+  // 1) 通过主进程内存 authBootstrap 解析 csrfToken
+  const authBootstrap = {
+    getActiveLsPort: () => port,
+    getActiveLsBaseUrl: () => origin,
+    getActiveLsCsrfToken: () => activeToken
+  };
+  const snapFromAuth = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin,
+    appDataDir,
+    authBootstrap
+  });
+  assert.equal(snapFromAuth.ok, true);
+  assert.equal(snapFromAuth.error, null);
+  assert.ok(rpcCount >= 2);
+
+  // 2) 当旧连接持有已失效 token 时，服务端返回 401 后应自动从 authBootstrap 刷新 token 并重试成功
+  const oldAuthBootstrap = {
+    getActiveLsPort: () => port,
+    getActiveLsBaseUrl: () => origin,
+    getActiveLsCsrfToken: () => activeToken
+  };
+  const api = await connectLocalApi({ appDataDir, authBootstrap: oldAuthBootstrap });
+  activeToken = 'boot-tok-v2';
+  const statusAfterRotate = await api.call('GetUserStatus', {});
+  assert.equal(statusAfterRotate.userStatus.email, 'v234@example.com');
+
+  // 3) 脱离 Electron 主进程时，无 CDP 亦可从存活 daemon/hub_*.json 发现端口并鉴权拉取额度与 collect()
+  fs.writeFileSync(path.join(daemonDir, `hub_${port}.json`), JSON.stringify({
+    pid: process.pid,
+    httpPort: port,
+    lsVersion: '2.34.0',
+    csrfToken: activeToken
+  }), 'utf8');
+
+  const daemonApi = await connectLocalApi({ appDataDir, daemonDir });
+  assert.equal(daemonApi.origin, origin);
+
+  const snapFromDaemon = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    appDataDir,
+    daemonDir
+  });
+  assert.equal(snapFromDaemon.ok, true);
+  assert.equal(snapFromDaemon.originScope, '__default__');
+
+  const convId = '11111111-2222-4333-8444-555555555555';
+  const collected = await collector.collect(origin, convId, {
+    force: true,
+    appDataDir,
+    daemonDir
+  });
+  assert.equal(collected.conversation, convId);
+});

@@ -24,6 +24,7 @@ const {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
+  findWindowLoadMarker,
   verifyCleanStructure
 } = require('./modular-installer');
 
@@ -552,11 +553,15 @@ async function install(options = {}) {
       // 模块 B: Context Meter (上下文与 Token 监控)
       if (modulesConfig.modules.meter.enabled) {
         const meterUtils = generateMeterUtilsCode();
+        const loadMarker = findWindowLoadMarker(finalUtils);
+        if (!loadMarker) {
+          throw new Error('未找到 dist/utils.js 中的窗口加载锚点，中止写入以保护宿主环境。');
+        }
         finalUtils = finalUtils
           .replace('"use strict";', `"use strict";\n${meterUtils.headerProxyHook}`)
           .replace('function setupNodeWrapper(env) {', `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
           .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`)
-          .replace('    void win.loadURL(url);', `${meterUtils.windowLoadHook}    void win.loadURL(url);`);
+          .replace(loadMarker, `${meterUtils.windowLoadHook}${loadMarker}`);
 
         const createWinSig = 'function createWindow(url, storageManager, options) {';
         if (finalUtils.includes(createWinSig) && !finalUtils.includes('__agDefaultStorageManager')) {
