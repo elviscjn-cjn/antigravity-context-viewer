@@ -2633,3 +2633,268 @@ test('隔离额度请求遇到窗口未就绪、CSRF 缺失及 401/403 鉴权失
   assert.notEqual(authFailRes.snapshot.activeStatus, 'exhausted');
   assert.notEqual(authFailRes.snapshot.activeStatus, 'no_permission');
 });
+
+test('5h/weekly 用量统计防双倍重复、占位模型归池、账号隔离与冷启动自愈回归', async (t) => {
+  const os = require('os');
+  const tmpAgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-quota-dedup-'));
+  t.after(() => fs.rmSync(tmpAgDir, { recursive: true, force: true }));
+
+  const nowMs = Date.now();
+  const cid = '11111111-2222-4333-8444-555555555555';
+  const logsDir = path.join(tmpAgDir, 'brain', cid, '.system_generated', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  // 构造跨 24h 与最近 5h 的真实 transcript 记录（不含 responseId，extractCallId 会生成 cid#stepIndex）
+  const recentIso1 = new Date(nowMs - 20 * 60000).toISOString();
+  const recentIso2 = new Date(nowMs - 10 * 60000).toISOString();
+  const olderIso = new Date(nowMs - 26 * 3600000).toISOString();
+  fs.writeFileSync(path.join(logsDir, 'transcript.jsonl'), [
+    JSON.stringify({
+      step_index: 2,
+      created_at: recentIso1,
+      input_tokens: 10000,
+      cache_read_tokens: 90000,
+      output_tokens: 2000
+    }),
+    JSON.stringify({
+      step_index: 4,
+      created_at: recentIso2,
+      input_tokens: 5000,
+      cache_read_tokens: 45000,
+      output_tokens: 1000
+    }),
+    JSON.stringify({
+      step_index: 1,
+      created_at: olderIso,
+      input_tokens: 20000,
+      cache_read_tokens: 80000,
+      output_tokens: 4000
+    })
+  ].join('\n') + '\n', 'utf8');
+
+  const acctActiveKey = collector.buildAccountScopeKey('active@example.com');
+  const acctOtherKey = collector.buildAccountScopeKey('other@example.com');
+
+  // 账本保存服务端真实 responseId，与 transcript 的 cid#stepIndex 键不同，且使用不同占位模型 ID
+  collector.recordModelCalls([
+    {
+      callId: 'resp_live_h530_step2',
+      cascadeId: cid,
+      stepIndex: 2,
+      model: 'Gemini 4 Hydrogen (High)',
+      modelExactId: 'MODEL_PLACEHOLDER_M530',
+      modelLabel: 'Gemini 4 Hydrogen (High)',
+      inputTokens: 10000,
+      cacheReadTokens: 90000,
+      cacheTokens: 90000,
+      outputTokens: 2000,
+      totalTokens: 102000,
+      status: 'final',
+      created_at: recentIso1,
+      timestamp: Date.parse(recentIso1)
+    },
+    {
+      callId: 'resp_live_neon_step4',
+      cascadeId: cid,
+      stepIndex: 4,
+      model: 'Gemini 4 Neon (High)',
+      modelExactId: 'MODEL_PLACEHOLDER_M532',
+      modelLabel: 'Gemini 4 Neon (High)',
+      inputTokens: 5000,
+      cacheReadTokens: 45000,
+      cacheTokens: 45000,
+      outputTokens: 1000,
+      totalTokens: 51000,
+      status: 'final',
+      created_at: recentIso2,
+      timestamp: Date.parse(recentIso2)
+    },
+    {
+      callId: 'resp_live_orch_older',
+      cascadeId: cid,
+      stepIndex: 1,
+      model: 'Gemini 4 Hydrogen (Orchestrator)',
+      modelExactId: 'MODEL_PLACEHOLDER_M669',
+      modelLabel: 'Gemini 4 Hydrogen (Orchestrator)',
+      inputTokens: 20000,
+      cacheReadTokens: 80000,
+      cacheTokens: 80000,
+      outputTokens: 4000,
+      totalTokens: 104000,
+      status: 'final',
+      created_at: olderIso,
+      timestamp: Date.parse(olderIso)
+    }
+  ], { agDir: tmpAgDir, confirmedAccountEmail: 'active@example.com' });
+
+  collector.recordModelCalls([
+    {
+      callId: 'resp_other_acct_isolated',
+      cascadeId: '22222222-3333-4444-8555-666666666666',
+      stepIndex: 1,
+      model: 'Orchestrator (Neon)',
+      modelExactId: 'MODEL_PLACEHOLDER_M537',
+      modelLabel: 'Orchestrator (Neon)',
+      inputTokens: 30000,
+      cacheReadTokens: 170000,
+      cacheTokens: 170000,
+      outputTokens: 5000,
+      totalTokens: 205000,
+      status: 'final',
+      created_at: recentIso2,
+      timestamp: Date.parse(recentIso2)
+    }
+  ], { agDir: tmpAgDir, confirmedAccountEmail: 'other@example.com' });
+
+  const hist = await collector.collectTokenHistoryAsync({
+    agDir: tmpAgDir,
+    agCliDir: path.join(tmpAgDir, 'cli-isolated'),
+    userStatus: { userStatus: { email: 'active@example.com' } },
+    skipWslDiscovery: true,
+    skipAutoRepair: true,
+    force: true,
+    useWorker: false
+  });
+
+  // 1. 绝不双倍计算 matchedTranscriptReqs，也不混入其他账号记录
+  assert.equal(hist.recentModelUsage.length, 3, '3条已对齐记录只各计1次，且隔离其他账号');
+  const sumRecentTokens = hist.recentModelUsage.reduce((s, e) => s + e.totalTokens, 0);
+  assert.equal(sumRecentTokens, 102000 + 51000 + 104000);
+  assert.ok(hist.recentModelUsage.every(e => e.sharedGroupKey === 'shared_gemini_main'), 'M530/M532/M669 均应准确归入 shared_gemini_main');
+
+  // 2. summarizeAccountWindowUsage 对齐占位模型后不再返回 0
+  const winSummary = collector.summarizeAccountWindowUsage({
+    agDir: tmpAgDir,
+    accountScopeKey: acctActiveKey,
+    poolKey: 'shared_gemini_main',
+    startMs: nowMs - 3600000,
+    endMs: nowMs + 60000
+  });
+  assert.equal(winSummary.requestCount, 2);
+  assert.equal(winSummary.totalTokens, 153000);
+
+  // 3. computeBucketTokenEstimate 自愈（竞态滞后 + 旧版 2x 污染数据升级）及跨池 Argon 隔离
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures(
+    new Date(nowMs).toISOString(),
+    new Date(nowMs + 4 * 3600000).toISOString(),
+    new Date(nowMs + 5 * 86400000).toISOString(),
+    new Date(nowMs + 5 * 86400000).toISOString()
+  );
+  // 模拟新版服务端将 Orchestrator (Argon) (M668) 置于 Gemini Models 共享池，而 Gemini 4 Argon (M417) 保持独立池
+  quotaSummaryRes.response.groups[0].modelIds = ['Gemini 4 Hydrogen', 'Gemini 4 Neon', 'Orchestrator (Argon)', 'Gemini 3.8 Flash'];
+  const snap = core.buildModelQuotaSnapshot({
+    userStatusRes,
+    quotaSummaryRes,
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+  const gemPool = snap.pools.find(p => p.poolKey === 'shared_gemini_main');
+  const gem5h = gemPool.buckets.find(b => b.windowKey === '5h');
+  const gemWeek = gemPool.buckets.find(b => b.windowKey === 'weekly');
+
+  // 模拟冷启动/竞态：先遇到 frac 下降 >=3% 且本地尚未扫到新样本 -> 暂标 external_divergence；
+  // 随后在 frac 未再继续下降的前提下补齐本地 153K 样本 -> 自愈解除锁定并正常 delta 校准
+  const t0 = core.computeBucketTokenEstimate(gemPool, { ...gem5h, remainingFraction: 0.95 }, {
+    nowMs: nowMs - 60000,
+    accountScopeKey: acctActiveKey,
+    usageEvents: [],
+    historyLoaded: true,
+    calibrationEntry: null
+  });
+  const t1Lag = core.computeBucketTokenEstimate(gemPool, { ...gem5h, remainingFraction: 0.90 }, {
+    nowMs,
+    accountScopeKey: acctActiveKey,
+    usageEvents: [],
+    historyLoaded: true,
+    calibrationEntry: t0.nextCalibrationEntry
+  });
+  assert.equal(t1Lag.invalidationReason, 'external_divergence');
+
+  const t2Healed = core.computeBucketTokenEstimate(gemPool, { ...gem5h, remainingFraction: 0.90 }, {
+    nowMs: nowMs + 5000,
+    accountScopeKey: acctActiveKey,
+    usageEvents: hist.recentModelUsage.filter(e => e.ts >= nowMs - 3600000),
+    historyLoaded: true,
+    calibrationEntry: t1Lag.nextCalibrationEntry
+  });
+  assert.equal(t2Healed.estBasis, 'delta_calibrated');
+  assert.equal(t2Healed.invalidationReason, null);
+  assert.equal(t2Healed.cycleTokensUsed, 153000);
+
+  // 旧版（无 usageAccountingRev）因 2x / 竞态遗留的 externalDivergenceInCycle 缓存应在升级后自动解封恢复
+  const legacyPoisoned = {
+    schemaVersion: 2,
+    calibratedTotalTokens: 300000000,
+    calibratedAt: nowMs - 3600000,
+    calibratedResetAtMs: gemWeek.resetAtMs,
+    sampleCount: 1,
+    source: 'cycle',
+    lastFraction: 0.63,
+    lastResetAtMs: gemWeek.resetAtMs,
+    observedCycleFromStart: true,
+    fullStartCycleResetMs: gemWeek.resetAtMs,
+    externalDivergenceInCycle: true,
+    cycleInvalidationReason: 'external_divergence',
+    anchorFraction: 0.72,
+    anchorCycleTokens: 400000, // 旧 2x 虚高锚点 > 修复后真实 257K
+    updatedAt: nowMs - 3600000
+  };
+  const weekHealed = core.computeBucketTokenEstimate(gemPool, { ...gemWeek, remainingFraction: 0.61 }, {
+    nowMs,
+    accountScopeKey: acctActiveKey,
+    usageEvents: [
+      ...hist.recentModelUsage,
+      // 混入独立池 Gemini 4 Argon (M417) 用量，验证不会被误算入 Gemini Models 共享池
+      { poolKey: 'gemini-4-argon', sharedGroupKey: 'shared_gemini_argon', modelExactId: 'MODEL_PLACEHOLDER_M417', ts: nowMs - 60000, totalTokens: 999999 }
+    ],
+    historyCoverageStartMs: nowMs - 8 * 86400000,
+    historyLoaded: true,
+    calibrationEntry: legacyPoisoned
+  });
+  assert.equal(weekHealed.estBasis, 'cycle_estimated');
+  assert.equal(weekHealed.invalidationReason, null);
+  assert.equal(weekHealed.cycleTokensUsed, 257000);
+
+  // 4. 渲染器冷启动保护：recentModelUsage 尚未加载前调用 setQuotaSnapshotForTest 不得向 localStorage 写入锁定状态
+  const h = createQuotaRendererHarness();
+  const api = h.sandbox.__AGContextMeter;
+  const coldScope = 'acct_cold_guard';
+  h.sandbox.localStorage.setItem(`ag_quota_token_cal_v2_${coldScope}`, JSON.stringify({
+    [`${coldScope}::shared_gemini_main::weekly`]: {
+      schemaVersion: 2,
+      usageAccountingRev: 2,
+      calibratedTotalTokens: 2000000,
+      calibratedAt: nowMs - 3600000,
+      calibratedResetAtMs: gemWeek.resetAtMs,
+      sampleCount: 1,
+      source: 'delta',
+      lastFraction: 0.90,
+      lastResetAtMs: gemWeek.resetAtMs,
+      observedCycleFromStart: true,
+      fullStartCycleResetMs: gemWeek.resetAtMs,
+      anchorFraction: 0.90,
+      anchorCycleTokens: 200000,
+      updatedAt: nowMs - 3600000
+    }
+  }));
+  const beforeRaw = h.sandbox.localStorage.getItem(`ag_quota_token_cal_v2_${coldScope}`);
+  api.setQuotaSnapshotForTest({
+    accountScopeKey: coldScope,
+    fetchedAtMs: nowMs,
+    userStatusRes,
+    quotaSummaryRes
+  }, nowMs);
+  assert.equal(h.sandbox.localStorage.getItem(`ag_quota_token_cal_v2_${coldScope}`), beforeRaw, '历史未就绪时不得覆写 localStorage');
+
+  api.setTokenHistoryForTest({
+    accountScopeKey: coldScope,
+    quotaUsageCoverageStartMs: nowMs - 8 * 86400000,
+    recentModelUsage: [
+      { poolKey: 'gemini-4-hydrogen', sharedGroupKey: 'shared_gemini_main', ts: nowMs - 60000, inputTokens: 100000, cacheTokens: 600000, outputTokens: 20000, totalTokens: 720000 }
+    ],
+    dailyMap: {}
+  });
+  const savedAfter = JSON.parse(h.sandbox.localStorage.getItem(`ag_quota_token_cal_v2_${coldScope}`));
+  assert.equal(savedAfter[`${coldScope}::shared_gemini_main::weekly`].externalDivergenceInCycle, false);
+  api.dispose();
+});
