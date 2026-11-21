@@ -133,6 +133,52 @@ test('安装安全性 1.2：正常重新安装（当前文件匹配已知补丁�
   }
 });
 
+test('Antigravity 2.34.0：安装、重装和原位卸载均保留宿主窗口加载调用', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-install-window-load-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const loadCall = '    void loadHubWindowUrl(win, url, { skipBootstrapMint });';
+    const utils = `"use strict";
+function setupNodeWrapper(env) {}
+function createWindow(url, storageManager, options) {
+    const skipBootstrapMint = Boolean(options?.partition || options?.navigationPolicy);
+${loadCall}
+    return win;
+}
+`;
+    const targetAsar = await createMockHostAsar(tmpDir, '2.34.0', utils);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const manifest = await install({ path: targetAsar, pureMeterOnly: true });
+      assert.equal(manifest.version, '2.34.0');
+      const patchedUtils = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+      assert.equal(patchedUtils.split('installContextMeter(win)').length, 2);
+      assert.ok(patchedUtils.includes(
+        '    require("./meter-main").installContextMeter(win);\n' +
+        '// --- Antigravity Context Meter utils Injection End ---\n' +
+        loadCall + '\n    return win;'
+      ));
+    }
+
+    const restored = await restore({ path: targetAsar, inPlace: true });
+    assert.equal(restored.inPlaceCleaned, true);
+    const restoredUtils = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.doesNotMatch(restoredUtils, /installContextMeter|Context Meter utils Injection/);
+    assert.ok(restoredUtils.endsWith(utils.slice(utils.indexOf('function createWindow'))));
+
+    const ambiguousUtils = utils.replace(loadCall, `${loadCall}\n    void win.loadURL(url);`);
+    const ambiguousAsar = await createMockHostAsar(tmpDir, '2.34.0', ambiguousUtils);
+    const beforeSha = sha256(fs.readFileSync(ambiguousAsar));
+    await assert.rejects(install({ path: ambiguousAsar }), /Unexpected createWindow\/setupNodeWrapper/);
+    assert.equal(sha256(fs.readFileSync(ambiguousAsar)), beforeSha);
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('安装安全性 1.3：安装记录目标路径不同，不选用旧记录备份', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-install-diffpath-'));
   const prevStateDir = process.env.AG_METER_STATE_DIR;

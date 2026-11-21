@@ -12,6 +12,9 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// 宿主 2.34.0 改用 loadHubWindowUrl，挂载仍须在原生导航调用前完成。
+const WINDOW_LOAD_PATTERN = /^    void (?:win\.loadURL\(url\)|loadHubWindowUrl\(win, url, \{ skipBootstrapMint \}\));[ \t]*$/gm;
+
 // 成对标记定义
 const TAGS = {
   PROXY_START: '// --- Antigravity Proxy NoTun Injection Start ---',
@@ -400,7 +403,7 @@ function cleanUtilsSource(source) {
     .replace(/\s*try\s*\{\s*require\("\.\/meter-main"\)\.ensureProxyEnvironment\(process\.env\);\s*\}\s*catch\s*\{\}\r?\n?/g, '')
     .replace(/\s*try\s*\{\s*require\("\.\/meter-main"\)\.ensureProxyEnvironment\(env\);\s*\}\s*catch\s*\{\}\r?\n?/g, '')
     .replace('\n' + storageFallbackLine, '')
-    .replace(/\s*require\("\.\/meter-main"\)\.installContextMeter\(win\);?\r?\n?/g, '')
+    .replace(/\s*require\("\.\/meter-main"\)\.installContextMeter\(win\);?/g, '')
     .replace(/\n\s*try\s*\{\s*require\("\.\/meter-main"\)\.installContextMeter\(wins\[0\]\);[\s\S]*?\}\s*catch\s*\{\}/g, '')
     .replace(/const _mWin = createWindow\(`\$\{constants_1\.WINDOW_ORIGIN\}:\$\{port\}\/`\);\s*\n\s*try\s*\{\s*require\("\.\/meter-main"\)\.installContextMeter\(_mWin\);[\s\S]*?\}\s*catch\s*\{\}/g, 'createWindow(`${constants_1.WINDOW_ORIGIN}:${port}/`);');
 
@@ -437,14 +440,14 @@ function verifyCleanStructure(cleanUtils) {
   if (!cleanUtils) return false;
   if (cleanUtils.includes('installContextMeter')) return false;
   if (cleanUtils.includes(TAGS.PROXY_START) || cleanUtils.includes(TAGS.METER_UTILS_START)) return false;
-  const marker = '    void win.loadURL(url);';
   const setupNodeMarker = 'function setupNodeWrapper(env) {';
-  const structuralOk = cleanUtils.split(marker).length === 2 && cleanUtils.includes(setupNodeMarker);
+  const structuralOk = cleanUtils.match(WINDOW_LOAD_PATTERN)?.length === 1 && cleanUtils.includes(setupNodeMarker);
   return structuralOk && validateSyntax(cleanUtils, 'dist/utils.js');
 }
 
 module.exports = {
   TAGS,
+  WINDOW_LOAD_PATTERN,
   validateSyntax,
   generateProxyUtilsCode,
   generateMeterUtilsCode,

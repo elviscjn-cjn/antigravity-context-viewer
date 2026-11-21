@@ -707,6 +707,72 @@ test('桥接通道与安全边界：preload 暴露 getQuota，main IPC 校验来
   assert.match(liveHostSrc, /req\.url === '\/quota'/);
 });
 
+test('额度 IPC 使用发起请求窗口的当前宿主会话，拒绝跨窗口请求并保留鉴权失败语义', async (t) => {
+  const { registerMeterIpcHandlers } = require('./meter-main');
+  const handlers = new Map();
+  registerMeterIpcHandlers({ handle: (channel, handler) => handlers.set(channel, handler) });
+  const getQuota = handlers.get('context-meter:get-quota');
+  const syncActiveHostQuotaSnapshot = t.mock.fn();
+  t.mock.method(require('./meter-accounts'), 'getSharedAccountsManager', () => ({
+    syncActiveHostQuotaSnapshot,
+    getOverviewState: () => ({})
+  }));
+  t.mock.method(require('./local-api'), 'connect', async () => {
+    throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
+  });
+  t.after(() => collector.resetQuotaHostCacheForTest());
+
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures();
+  const origin = 'http://127.0.0.1:58234';
+  const observed = [];
+  const window = { __APP_CONFIG__: { csrfToken: 'fixture-session' }, location: { origin } };
+  window.top = window;
+  const ctx = {
+    window,
+    AbortSignal,
+    fetch: async (route, request) => {
+      observed.push({ route, request });
+      const data = route.endsWith('/GetUserStatus') ? userStatusRes : quotaSummaryRes;
+      return { ok: true, json: async () => data };
+    }
+  };
+  const frame = {
+    url: origin + '/chat',
+    executeJavaScript: code => vm.runInNewContext(code, ctx)
+  };
+  const event = { senderFrame: frame, sender: { mainFrame: frame } };
+  const result = await getQuota(event, { force: true, origin: 'http://127.0.0.1:58235', userStatus: {} });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.ok, true);
+  assert.ok(result.data.snapshot.pools.some(pool => Number.isFinite(pool.remainingFraction)));
+  assert.equal(syncActiveHostQuotaSnapshot.mock.callCount(), 1);
+  assert.deepEqual(observed.map(({ route }) => route).sort(), [
+    '/exa.language_server_pb.LanguageServerService/GetUserStatus',
+    '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary'
+  ]);
+  for (const { request } of observed) {
+    assert.equal(request.headers['x-codeium-csrf-token'], 'fixture-session');
+    assert.equal(request.redirect, 'error');
+    assert.equal(request.mode, 'same-origin');
+    assert.equal(request.body, '{}');
+  }
+  assert.doesNotMatch(JSON.stringify(result), /fixture-session/);
+
+  window.location.origin = 'http://127.0.0.1:58235';
+  const moved = await getQuota(event, { force: true });
+  assert.equal(moved.data.ok, false);
+  assert.equal(observed.length, 2);
+
+  window.location.origin = origin;
+  ctx.fetch = async () => ({ ok: false, status: 401 });
+  const unauthorized = await getQuota(event, { force: true });
+  assert.equal(unauthorized.data.ok, false);
+  assert.equal(unauthorized.data.errorKind, 'auth');
+  assert.equal(unauthorized.data.snapshot.syncState, 'stale');
+  assert.equal(syncActiveHostQuotaSnapshot.mock.callCount(), 1);
+  await assert.rejects(getQuota({ ...event, senderFrame: { url: frame.url } }), /仅允许本机主聊天窗口/);
+});
+
 test('顶栏入口顺序、独立弹窗锚点、防底裁切 maxHeight 与 Notice: New 过滤', () => {
   const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
   const idxQuota = tpl.indexOf('id="badge-quota"');
