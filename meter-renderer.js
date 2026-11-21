@@ -1,6 +1,6 @@
 (function () {
-  const METER_VERSION = '0.8.9';
-  const METER_DISPLAY_VERSION = '0.8.9';
+  const METER_VERSION = '0.8.10';
+  const METER_DISPLAY_VERSION = '0.8.10';
 
   'use strict';
   if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
@@ -2774,7 +2774,7 @@
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
       <span id="v" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">0.8.9</span>
+        data-i18n-title="header.versionBtn.title">0.8.10</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -3914,7 +3914,7 @@
         style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"
         data-i18n="tokens.title">本机已记录用量</span>
       <span id="v-tokens" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">0.8.9</span>
+        data-i18n-title="header.versionBtn.title">0.8.10</span>
     </div>
     <div class="panel-header-actions">
       <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
@@ -4968,7 +4968,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.8.9</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.8.10</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -9440,12 +9440,12 @@ function formatPeriodCalendarLabel(currentPeriod) {
   let allowBetaUpdates = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.9';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.10';
   function formatDisplayVersion(rawVer) {
     const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
     const buildDisplay = typeof METER_DISPLAY_VERSION !== 'undefined' && METER_DISPLAY_VERSION
       ? String(METER_DISPLAY_VERSION).trim()
-      : '0.8.9';
+      : '0.8.10';
     if (!clean) return buildDisplay;
     const normalizedCurrent = String(METER_RENDERER_VERSION || '').replace(/^v/i, '').trim();
     if (normalizedCurrent && clean === normalizedCurrent) return buildDisplay;

@@ -5425,18 +5425,18 @@ test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-
   }
 });
 
-test('v0.8.9 (0.8.9) 稳定正式版展示与更新检查', async () => {
+test('v0.8.10 (0.8.10) 稳定正式版展示与更新检查', async () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.8.9');
-  assert.equal(pkg.displayVersion, '0.8.9');
+  assert.equal(pkg.version, '0.8.10');
+  assert.equal(pkg.displayVersion, '0.8.10');
 
-  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.8.9，且 beta 通道开关默认未勾选
+  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.8.10，且 beta 通道开关默认未勾选
   const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-  assert.match(builtCode, /<span id="v"[^>]*>0\.8\.9<\/span>/);
-  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.8\.9<\/span>/);
+  assert.match(builtCode, /<span id="v"[^>]*>0\.8\.10<\/span>/);
+  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.8\.10<\/span>/);
   assert.equal(builtCode.includes('id="check-allow-beta-updates"'), true);
 
-  // 2. 0.8.9 vs 0.8.9 判为已是最新，且文案展示 0.8.9
+  // 2. 0.8.10 vs 0.8.10 判为已是最新，且文案展示 0.8.10
   {
     const h = harness();
     const api = h.sandbox.__AGContextMeter;
@@ -5444,22 +5444,22 @@ test('v0.8.9 (0.8.9) 稳定正式版展示与更新检查', async () => {
     h.sandbox.window.contextMeterAPI = {
       ...h.sandbox.window.contextMeterAPI,
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.8.9');
+        assert.equal(req.currentVersion, '0.8.10');
         assert.equal(req.allowBetaUpdates, false);
-        return { ok: true, hasUpdate: false, currentVersion: '0.8.9', installedVersion: '0.8.9' };
+        return { ok: true, hasUpdate: false, currentVersion: '0.8.10', installedVersion: '0.8.10' };
       }
     };
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.8.9 (已是最新)');
-      assert.match(h.elements.get('up-pop-body').textContent, /0\.8\.9/);
+      assert.equal(h.elements.get('up-pop-ver').textContent, '0.8.10 (已是最新)');
+      assert.match(h.elements.get('up-pop-body').textContent, /0\.8\.10/);
     } finally {
       api.dispose();
     }
   }
 
-  // 3. 0.8.9 -> 0.9.0 展示格式，以及开启 beta 通道开关持久化
+  // 3. 0.8.10 -> 0.9.0 展示格式，以及开启 beta 通道开关持久化
   {
     const savedPayloads = [];
     const h = harness();
@@ -5471,9 +5471,9 @@ test('v0.8.9 (0.8.9) 稳定正式版展示与更新检查', async () => {
         return { ok: true };
       },
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.8.9');
+        assert.equal(req.currentVersion, '0.8.10');
         assert.equal(req.allowBetaUpdates, true);
-        return { ok: true, hasUpdate: true, currentVersion: '0.8.9', latestVersion: '0.9.0', releaseNotes: 'v0.9.0 stable' };
+        return { ok: true, hasUpdate: true, currentVersion: '0.8.10', latestVersion: '0.9.0', releaseNotes: 'v0.9.0 stable' };
       }
     };
     const chkBeta = h.elements.get('check-allow-beta-updates');
@@ -5485,7 +5485,7 @@ test('v0.8.9 (0.8.9) 稳定正式版展示与更新检查', async () => {
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.8.9 → v0.9.0');
+      assert.equal(h.elements.get('up-pop-ver').textContent, '0.8.10 → v0.9.0');
       assert.match(h.elements.get('up-pop-body').textContent, /v0\.9\.0/);
       assert.equal(h.elements.get('btn-apply-update').style.display, 'inline-block');
     } finally {

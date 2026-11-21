@@ -1,7 +1,7 @@
 {
   "name": "antigravity-context-viewer",
-  "version": "0.8.9",
-  "displayVersion": "0.8.9",
+  "version": "0.8.10",
+  "displayVersion": "0.8.10",
   "description": "Antigravity 桌面客户端的对话上下文、生成速度与 Token 用量看板",
   "main": "cli.js",
   "bin": {
@@ -95,6 +95,11 @@
       "name": "yuanyang749",
       "email": "yuanyang613@163.com",
       "url": "https://github.com/yuanyang749"
+    },
+    {
+      "name": "Jemiking",
+      "email": "112058670+Jemiking@users.noreply.github.com",
+      "url": "https://github.com/Jemiking"
     }
   ],
   "license": "MIT"
