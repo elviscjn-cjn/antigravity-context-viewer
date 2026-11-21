@@ -5,7 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
-const { normalizeLoopbackOrigin } = require('./local-api');
+const { normalizeLoopbackOrigin, resolveOriginCsrfTokenFromHost } = require('./local-api');
 const { fileURLToPath } = require('url');
 const { spawn, spawnSync } = require('child_process');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
@@ -569,6 +569,22 @@ async function scanFiles(media, scanOptions = {}) {
 let collectSeqCounter = 0;
 const latestCollectSeqByOrigin = new Map();
 
+async function resolveCollectorOriginCsrfToken(origin, signal = null, options = {}) {
+  const hostAuth = resolveOriginCsrfTokenFromHost(origin, options);
+  if (hostAuth?.token) {
+    csrfTokenByOrigin.set(origin, hostAuth.token);
+    return hostAuth.token;
+  }
+  const html = await request(origin, null, null, null, signal);
+  const match = typeof html === 'string' ? html.match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s) : null;
+  const parsedToken = match ? String(JSON.parse(match[1]).csrfToken || '').trim() : '';
+  if (!parsedToken) {
+    throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
+  }
+  csrfTokenByOrigin.set(origin, parsedToken);
+  return parsedToken;
+}
+
 async function collect(origin, id, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(origin);
   if (!safeOrigin || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
@@ -598,20 +614,16 @@ async function collect(origin, id, options = {}) {
     try {
       let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
       if (!token) {
-        const html = await request(origin, null, null, null, signal);
+        token = await resolveCollectorOriginCsrfToken(origin, signal, options);
         if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-        token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
-        csrfTokenByOrigin.set(origin, token);
       }
       const call = async (method, body) => {
         try {
           return await request(origin, method, body, token, signal);
         } catch (err) {
-          if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
+          if (err && /HTTP 40[13]\b/.test(String(err.message || '')) && !signal?.aborted) {
             csrfTokenByOrigin.delete(origin);
-            const html = await request(origin, null, null, null, signal);
-            token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
-            csrfTokenByOrigin.set(origin, token);
+            token = await resolveCollectorOriginCsrfToken(origin, signal, options);
             return await request(origin, method, body, token, signal);
           }
           throw err;
@@ -3429,7 +3441,12 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     } else {
       try {
         const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
-        const api = await connector(options.origin ? { origin: options.origin } : undefined);
+        const connectOpts = {};
+        if (options.origin) connectOpts.origin = options.origin;
+        if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
+        if (options.homeDir) connectOpts.homeDir = options.homeDir;
+        if (options.authBootstrap) connectOpts.authBootstrap = options.authBootstrap;
+        const api = await connector(Object.keys(connectOpts).length ? connectOpts : undefined);
         const [uRes, qRes] = await Promise.allSettled([
           api.call('GetUserStatus', {}),
           api.call('RetrieveUserQuotaSummary', {})
@@ -3613,7 +3630,12 @@ async function fetchUserStatusFromHost(options = {}) {
   }
   try {
     const { connect } = require('./local-api');
-    const api = await connect(options.origin ? { origin: options.origin } : undefined);
+    const connectOpts = {};
+    if (options.origin) connectOpts.origin = options.origin;
+    if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
+    if (options.homeDir) connectOpts.homeDir = options.homeDir;
+    if (options.authBootstrap) connectOpts.authBootstrap = options.authBootstrap;
+    const api = await connect(Object.keys(connectOpts).length ? connectOpts : undefined);
     const [res, availRes] = await Promise.all([
       api.call('GetUserStatus', {}),
       api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
