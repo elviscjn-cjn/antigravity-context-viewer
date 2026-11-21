@@ -199,7 +199,7 @@
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
     streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null,
-    layout: null, lastLayoutKey: '', lastHostFocusedRoute: null, lastActiveSideChatId: null, pinnedViewRoute: null
+    layout: null, lastLayoutKey: '', lastHostFocusedRoute: null, lastActiveSideChatId: null, pinnedViewRoute: null, restoredFromCache: false
   };
   const UUID_STRICT_RE = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
   const SIDE_CHAT_TAB_PREFIXES = [
@@ -208,10 +208,11 @@
     { prefix: 'subagent__', kind: 'browser_subagent' }
   ];
   const SNAPSHOT_STATE_KEYS = [
-    'count', 'latest', 'sessionCostTotal', 'callsHydrated', 'requestAt', 'requestError',
+    'count', 'latest', 'sessionCostTotal', 'requestAt', 'requestError',
     'scan', 'scanError', 'displayedCallRecord', 'displayedCallSig',
     'sessionTimeline', 'timelineRenderedRoute', 'lastSpeedEval'
   ];
+  const SESSION_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
   const sessionSnapshotCache = new Map();
   let lastScopeRenderSig = '';
   const safeDecode = raw => { try { return decodeURIComponent(raw); } catch { return raw; } };
@@ -335,12 +336,27 @@
     }
     sessionSnapshotCache.delete(routeId);
     sessionSnapshotCache.set(routeId, {
+      savedAt: Date.now(),
+      accountScope: quotaState.accountScopeKey || null,
       patch,
       callsEntries: state.sessionCallsMap ? Array.from(state.sessionCallsMap.entries()) : []
     });
     if (sessionSnapshotCache.size > 10) {
       sessionSnapshotCache.delete(sessionSnapshotCache.keys().next().value);
     }
+  }
+
+  function readSessionSnapshotFromCache(routeId) {
+    const snap = routeId ? sessionSnapshotCache.get(routeId) : null;
+    if (!snap) return null;
+    if (
+      Date.now() - snap.savedAt > SESSION_SNAPSHOT_TTL_MS ||
+      (snap.accountScope && quotaState.accountScopeKey && snap.accountScope !== quotaState.accountScopeKey)
+    ) {
+      sessionSnapshotCache.delete(routeId);
+      return null;
+    }
+    return snap;
   }
 
   function isSameScreenSessionSwitch(prevLayout, nextLayout, prevId, nextId) {
@@ -12769,12 +12785,29 @@
     const timeout = setTimeout(() => controller.abort(), 12000);
     try {
       const csrf = window.__APP_CONFIG__?.csrfToken; if (!csrf) throw new Error('后台尚未就绪');
-      const offset = Math.max(0, state.count - 3);
-      const response = await fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: offset, includeMessages: false }), signal: controller.signal });
+      const fromCache = Boolean(state.restoredFromCache);
+      const prevCount = state.count || 0;
+      let offset = Math.max(0, prevCount - 3);
+      const fetchMeta = off => fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: off, includeMessages: false }), signal: controller.signal });
+      let response = await fetchMeta(offset);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json(); if (generation !== state.generation || state.disposed) return;
-      const rows = data.generatorMetadata || [];
-      state.count = rows.length ? offset + rows.length : 0;
+      let data = await response.json(); if (generation !== state.generation || state.disposed) return;
+      let rows = data.generatorMetadata || [];
+      if (fromCache && offset > 0 && (!rows.length || offset + rows.length < prevCount)) {
+        offset = 0;
+        response = await fetchMeta(0);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        data = await response.json(); if (generation !== state.generation || state.disposed) return;
+        rows = data.generatorMetadata || [];
+      }
+      state.restoredFromCache = false;
+      const nextCount = rows.length ? offset + rows.length : 0;
+      if (fromCache && nextCount < prevCount) {
+        sessionSnapshotCache.delete(id);
+        state.sessionCallsMap?.clear();
+        if (!nextCount) Object.assign(state, { latest: null, displayedCallRecord: null, displayedCallSig: '', lastSpeedEval: null });
+      }
+      state.count = nextCount;
       if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
       if (!state.syncedFinalMap) state.syncedFinalMap = new Map();
       if (!state.pendingFinalCalls) state.pendingFinalCalls = new Map();
@@ -13384,6 +13417,7 @@
   function resetQuotaState(opts = {}) {
     clearQuotaTimers();
     if (opts.clearAccountScope !== false) {
+      sessionSnapshotCache.clear();
       quotaState.accountScopeKey = null;
       quotaCalibrationScope = null;
       quotaCalibrationMap = {};
@@ -15497,7 +15531,7 @@
     if (id !== prevRoute) {
       if (prevRoute) saveSessionSnapshotToCache(prevRoute);
       const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
-      const cachedSnap = (sameScreenSwitch && id) ? (sessionSnapshotCache.get(id) || null) : null;
+      const cachedSnap = (sameScreenSwitch && id) ? readSessionSnapshotFromCache(id) : null;
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
@@ -15520,14 +15554,14 @@
         historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
         timelineError: '', timelinePageLimit: 10, timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
         lastTimelineFetchAt: 0, lastTimelineCallSig: '',
-        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
-      }, cachedSnap ? { ...cachedSnap.patch, sessionCalls: cachedSnap.patch.sessionCalls.slice() } : null);
+        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null, restoredFromCache: false
+      }, cachedSnap ? { ...cachedSnap.patch, sessionCalls: cachedSnap.patch.sessionCalls.slice(), restoredFromCache: true } : null);
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
       if (lastHistorySync > 0) {
         lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
       }
       if (!sameScreenSwitch) toggle(false);
-      hideContextTooltip(); renderFiles(state.scan); render();
+      hideContextTooltip(); renderFiles(state.scan?.session || null); render();
     } else if (layoutChanged) {
       renderConversationScopeUI(true);
     }
@@ -16129,6 +16163,7 @@
       earlyForceDispose();
       clearQuotaTimers();
       clearInterval(timer);
+      sessionSnapshotCache.clear();
       clearLivePendingRequestWait();
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }

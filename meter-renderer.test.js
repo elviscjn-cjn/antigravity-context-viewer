@@ -6017,10 +6017,11 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
 
 test('multi-pane Split Right / Split Down: route focus follow, 0ms cache hot-switch without closing panel, and blank _new fallback', async () => {
   const [A, B, C, D] = [1, 2, 3, 4].map(n => `${String(n).repeat(8)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(12)}`);
-  const h = harness();
+  const h = harness(session(1));
   const api = h.sandbox.__AGContextMeter;
-  const settleLatest = async (tokens) => {
-    h.pending[h.pending.length - 1].resolve(response({ usage: { inputTokens: tokens }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } }));
+  const makeRow = (tokens) => ({ chatModel: { usage: { inputTokens: tokens }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } });
+  const settleLatest = async (tokens, rowCount = 1) => {
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: Array.from({ length: rowCount }, () => makeRow(tokens)) }) });
     h.finishScan(h.scans.length - 1);
     await h.flush();
   };
@@ -6033,7 +6034,7 @@ test('multi-pane Split Right / Split Down: route focus follow, 0ms cache hot-swi
     assert.equal(sc.keyScopeChipHidden, true);
 
     h.elements.get('panel').hidden = false;
-    await settleLatest(46100);
+    await settleLatest(46100, 5);
     assert.equal(api.snapshot().latest.actual, 46100);
 
     nav(`/c/${A}%2B${B}`, `?project=outside-of-project&focused=${A}`);
@@ -6063,8 +6064,21 @@ test('multi-pane Split Right / Split Down: route focus follow, 0ms cache hot-swi
     const pendingBeforeBack = h.pending.length;
     nav(`/c/${A}%2B${B}`, `?project=outside-of-project&focused=${A}`);
     assert.equal(api.snapshot().latest.actual, 46100, '同屏回切应立即命中会话快照缓存（零闪烁）');
+    assert.notEqual(h.elements.get('files').children[0]?.textContent, '暂无附件', '回切首帧应直接还原缓存附件列表而非暂无附件');
     assert.equal(h.elements.get('panel').hidden, false);
     assert.ok(h.pending.length > pendingBeforeBack);
+
+    // 模拟切走期间窗格 1 消息被撤回/回滚（步数从 5 缩至 1）：首轮增量 offset=2 返回空时自动作废旧缓存并从 offset=0 重拉
+    const catchupReq = h.pending[h.pending.length - 1];
+    assert.equal(JSON.parse(catchupReq.options.body).generatorMetadataOffset, 2);
+    catchupReq.resolve({ ok: true, json: async () => ({ generatorMetadata: [] }) });
+    await h.flush();
+    const retryFromZeroReq = h.pending[h.pending.length - 1];
+    assert.equal(JSON.parse(retryFromZeroReq.options.body).generatorMetadataOffset, 0);
+    retryFromZeroReq.resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow(12300)] }) });
+    await h.flush();
+    assert.equal(api.snapshot().latest.actual, 12300);
+    assert.equal(api.snapshot().count, 1);
 
     nav(`/c/${A}%2B${B}%2B${C}`, `?focused=${C}`);
     sc = api.getConversationScopeStateForTest();
