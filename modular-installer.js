@@ -388,10 +388,10 @@ function cleanUtilsSource(source) {
   let code = source;
 
   // 1. 精准移除成对标记内容
-  const proxyRegex = new RegExp(`\\n?\\s*${TAGS.PROXY_START}[\\s\\S]*?${TAGS.PROXY_END}\\n?`, 'g');
+  const proxyRegex = new RegExp(`\\r?\\n?[ \\t]*${TAGS.PROXY_START}[\\s\\S]*?${TAGS.PROXY_END}\\r?\\n?`, 'g');
   code = code.replace(proxyRegex, '\n');
 
-  const meterRegex = new RegExp(`\\n?\\s*${TAGS.METER_UTILS_START}[\\s\\S]*?${TAGS.METER_UTILS_END}\\n?`, 'g');
+  const meterRegex = new RegExp(`\\r?\\n?[ \\t]*${TAGS.METER_UTILS_START}[\\s\\S]*?${TAGS.METER_UTILS_END}\\r?\\n?`, 'g');
   code = code.replace(meterRegex, '\n');
 
   // 2. 清洗历史未打标记的 ContextMeter 注入（严格特征匹配，防止破坏第三方）
@@ -430,6 +430,44 @@ function cleanPreloadSource(source) {
   return code;
 }
 
+const LEGACY_WINDOW_LOAD_MARKER = '    void win.loadURL(url);';
+const HUB_WINDOW_LOAD_RE = /^[ \t]+(?:void\s+)?loadHubWindowUrl\(\s*win\s*,\s*url(?:\s*,[^)\r\n]*)?\);[ \t]*\r?$/gm;
+
+/**
+ * 定位 dist/utils.js 中 createWindow 末尾的唯一窗口加载语句。
+ * 同时兼容历史版本（void win.loadURL(url);）与 Antigravity 2.34.0+（void loadHubWindowUrl(win, url, ...);）。
+ * 若缺失或出现多个候选（存在歧义），严格返回 null（fail-closed）。
+ */
+function findWindowLoadHookTarget(cleanUtils) {
+  if (!cleanUtils || typeof cleanUtils !== 'string') return null;
+  const matches = [];
+
+  let legacyPos = cleanUtils.indexOf(LEGACY_WINDOW_LOAD_MARKER);
+  while (legacyPos !== -1) {
+    matches.push({ kind: 'legacy', index: legacyPos, match: LEGACY_WINDOW_LOAD_MARKER });
+    legacyPos = cleanUtils.indexOf(LEGACY_WINDOW_LOAD_MARKER, legacyPos + LEGACY_WINDOW_LOAD_MARKER.length);
+  }
+
+  HUB_WINDOW_LOAD_RE.lastIndex = 0;
+  let m;
+  while ((m = HUB_WINDOW_LOAD_RE.exec(cleanUtils)) !== null) {
+    matches.push({ kind: 'hub_loader_v234', index: m.index, match: m[0] });
+  }
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/**
+ * 在唯一窗口加载语句之前插入 windowLoadHook，完整保留宿主原有加载调用（含 skipBootstrapMint 等参数）。
+ */
+function injectWindowLoadHook(utilsCode, windowLoadHook) {
+  const target = findWindowLoadHookTarget(utilsCode);
+  if (!target) {
+    throw new Error('未找到唯一的宿主窗口加载锚点 (createWindow loadURL/loadHubWindowUrl)，中止写入以保护宿主环境。');
+  }
+  return utilsCode.slice(0, target.index) + windowLoadHook + utilsCode.slice(target.index);
+}
+
 /**
  * 校验清洗后的 utils 结构合法性与 JavaScript 语法
  */
@@ -437,9 +475,8 @@ function verifyCleanStructure(cleanUtils) {
   if (!cleanUtils) return false;
   if (cleanUtils.includes('installContextMeter')) return false;
   if (cleanUtils.includes(TAGS.PROXY_START) || cleanUtils.includes(TAGS.METER_UTILS_START)) return false;
-  const marker = '    void win.loadURL(url);';
   const setupNodeMarker = 'function setupNodeWrapper(env) {';
-  const structuralOk = cleanUtils.split(marker).length === 2 && cleanUtils.includes(setupNodeMarker);
+  const structuralOk = Boolean(findWindowLoadHookTarget(cleanUtils)) && cleanUtils.includes(setupNodeMarker);
   return structuralOk && validateSyntax(cleanUtils, 'dist/utils.js');
 }
 
@@ -453,5 +490,7 @@ module.exports = {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
+  findWindowLoadHookTarget,
+  injectWindowLoadHook,
   verifyCleanStructure
 };

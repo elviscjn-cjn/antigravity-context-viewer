@@ -21,7 +21,7 @@
     "uninstall-patch": "node cli.js restore",
     "build:renderer": "node scripts/build-renderer.js",
     "pretest": "node scripts/build-renderer.js",
-    "test": "node --test --test-concurrency=1 meter-core.test.js meter-renderer.test.js meter-quota.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-enhance.test.js meter-update-delivery.test.js meter-cli-launcher.test.js meter-cli-monitor.test.js meter-v083-fixes.test.js meter-model-context-isolation.test.js meter-v085-fixes.test.js meter-hotload.test.js meter-macos-watch.test.js meter-v089-usage.test.js meter-elv91-speed.test.js meter-accounts.test.js",
+    "test": "node --test --test-concurrency=1 meter-core.test.js meter-renderer.test.js meter-quota.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-enhance.test.js meter-update-delivery.test.js meter-cli-launcher.test.js meter-cli-monitor.test.js meter-v083-fixes.test.js meter-model-context-isolation.test.js meter-v085-fixes.test.js meter-hotload.test.js meter-macos-watch.test.js meter-v089-usage.test.js meter-elv91-speed.test.js meter-accounts.test.js meter-v234-compat.test.js",
     "format": "npx prettier --write \"*.js\" \"*.json\" \"*.md\"",
     "format:check": "npx prettier --check \"*.js\" \"*.json\" \"*.md\"",
     "pack": "node scripts/package-release.js",
