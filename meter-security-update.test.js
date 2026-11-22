@@ -508,7 +508,7 @@ test('更新安全 4.2：资产文件名校验（官方标准无 v 前缀与带 
       ]
     }]);
   };
-  const resBad = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcherBad });
+  const resBad = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcherBad });
   assert.equal(resBad.ok, false);
   assert.match(resBad.error, /不符合官方命名规范|未提供对应系统架构资产/);
 
@@ -524,7 +524,7 @@ test('更新安全 4.2：资产文件名校验（官方标准无 v 前缀与带 
       ]
     }]);
   };
-  const resLegacy = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcherLegacy });
+  const resLegacy = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcherLegacy });
   assert.equal(resLegacy.ok, false);
   assert.doesNotMatch(resLegacy.error, /不符合官方命名规范/);
 });
@@ -545,7 +545,7 @@ test('更新安全 4.3：资产下载 URL 不属于官方仓库时拒绝安装',
     }]);
   };
 
-  const res = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcher });
+  const res = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcher });
   assert.equal(res.ok, false);
   assert.match(res.error, /不属于官方仓库/);
 });
@@ -589,7 +589,7 @@ test('更新安全 4.5：checksums.txt 缺失哈希记录或哈希不匹配时�
     }
   };
 
-  const res1 = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcherMissingSha });
+  const res1 = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcherMissingSha });
   assert.equal(res1.ok, false);
   assert.match(res1.error, /未找到合法的 64 位 SHA-256 校验记录/);
 
@@ -616,7 +616,7 @@ test('更新安全 4.5：checksums.txt 缺失哈希记录或哈希不匹配时�
     }
   };
 
-  const res2 = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcherWrongSha });
+  const res2 = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcherWrongSha });
   assert.equal(res2.ok, false);
   assert.match(res2.error, /SHA-256 校验失败/);
 });
@@ -651,6 +651,7 @@ test('更新安全 4.6：模拟慢速 I/O 延迟打开写入流配合网络请�
 
     const res = await applyUpdateAsync({
       version: '0.9.0',
+      currentVersion: '0.8.10',
       _requestGithubUrl: failingFetcher
     });
 
@@ -696,10 +697,10 @@ test('子进程更新 3.2：防重复点击并发控制', async () => {
   };
 
   // 启动第一个更新
-  const p1 = applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: slowFetcher });
+  const p1 = applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: slowFetcher });
 
   // 在 p1 尚未完成时，并发调用 p2
-  const res2 = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: slowFetcher });
+  const res2 = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: slowFetcher });
   assert.equal(res2.ok, false);
   assert.match(res2.error, /更新任务正在执行中，请勿重复操作/);
 
@@ -763,6 +764,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const mockExtractNoCli = async (zipPath, extractDir) => ({ status: 0 });
   const resNoCli = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractNoCli
   });
@@ -775,6 +777,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const spawnerNormal = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 已即时生效（无需重启）\n', '', 25);
   const resNormal = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerNormal
@@ -786,6 +789,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const spawnerFail = createMockSpawner(1, '', '磁盘空间不足，写入失败', 10);
   const resFail = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerFail
@@ -807,6 +811,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   };
   const resTimeout = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerTimeout,
@@ -820,6 +825,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const spawnerLiveTrue = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 已即时生效（无需重启）\n', '', 10);
   const resTrue = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerLiveTrue
@@ -830,6 +836,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const spawnerLiveFalse = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 将在下次启动 Antigravity 时自动生效\n', '', 10);
   const resFalse = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerLiveFalse
@@ -849,6 +856,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   };
   await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     targetPath: 'D:\\custom\\antigravity\\resources\\app.asar',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,

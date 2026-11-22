@@ -187,6 +187,7 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
   ];
 
   const res = await checkUpdateAsync({
+    currentVersion: '0.8.10',
     force: true,
     _requestGithubUrl: async () => JSON.stringify(mockReleases)
   });
@@ -276,6 +277,7 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
   // 执行 applyUpdateAsync
   const updateRes = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _spawn: mockSpawn
   });
