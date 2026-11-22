@@ -1089,7 +1089,7 @@ test('热加载 7：PROJECT_VERSION 精确跟随本插件 package.json 但不误
     fs.copyFileSync(path.join(__dirname, 'meter-proxy.js'), path.join(distDir, 'meter-proxy.js'));
 
     const hostModCfg = require(path.join(distDir, 'modules-config.js'));
-    assert.equal(hostModCfg.PROJECT_VERSION, '0.8.8', '未存在插件自身 package.json 时必须回退插件版本，绝不能误读宿主 2.32.1');
+    assert.equal(hostModCfg.PROJECT_VERSION, '0.9.0-beta.1', '未存在插件自身 package.json 时必须回退插件版本，绝不能误读宿主 2.32.1');
 
     // 同目录存在本插件 package.json 时，应动态对齐新版本（例如 0.8.9）
     const extDir = path.join(dir, 'ext');

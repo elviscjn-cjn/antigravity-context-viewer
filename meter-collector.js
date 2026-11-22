@@ -28,6 +28,7 @@ const {
   redactProxyUrl,
   openSocks5Tunnel,
   openHttpConnectTunnel,
+  requestWithProxyTunnel,
   classifyRequestTimeoutPhase,
   sanitizeDiagnosticErrorText
 } = require('./meter-proxy');
@@ -54,7 +55,15 @@ const {
 } = require('./meter-context-unlock');
 const {
   analyzeSteps,
+  buildSessionCompositionBreakdown,
+  sanitizeCommandPreview,
+  extractCommandProgram,
+  extractGeneratorMaxStep,
+  isCheckpointNewerThanGenerator,
+  buildPostCompactSummary,
+  detectContextChangeEvents,
   summarize,
+  summarizeTurnTiming,
   add,
   empty,
   measure,
@@ -74,6 +83,7 @@ const {
   normalizeModelId,
   resolveStableModelId,
   UNATTRIBUTED_MODEL_KEY,
+  lookupModelDisplayLabel,
   resolveModelUsageBucket,
   computeCacheReadStats,
   summarizeCacheReadStats,
@@ -84,11 +94,320 @@ const {
   isValidSpeedSample,
   MAX_SPEED_SAMPLES_PER_MODEL,
   calculateRequestApiCost,
+  setDynamicPricingCatalog,
+  setCustomPricingCatalog,
+  getDynamicPricingCatalog,
+  parseModelsDevPricingCatalog,
+  parseLiteLlmPricingCatalog,
+  mergePricingCatalogs,
   filterReleases,
   findReleaseAsset,
   compareVersions
 } = require('./meter-core');
 const { PROJECT_VERSION } = require('./modules-config');
+
+const PRICING_FEED_MODELS_DEV = 'https://models.dev/api.json';
+const PRICING_FEED_LITELLM = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
+const PRICING_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+const PRICING_AUTO_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
+
+let _lastPricingCacheSig = '';
+let _lastCustomPricingSig = '';
+let _lastPricingAutoAttemptMs = 0;
+let _activePricingSyncPromise = null;
+
+function resolvePricingStateDir(options = {}) {
+  if (options && typeof options.stateDir === 'string' && options.stateDir.trim()) {
+    return path.resolve(options.stateDir.trim());
+  }
+  const { getStateDir } = require('./asar-engine');
+  return getStateDir();
+}
+
+function getPricingCatalogCachePath(stateDir = null) {
+  return path.join(stateDir || resolvePricingStateDir(), 'pricing_catalog_cache.json');
+}
+
+function getCustomPricingPath(stateDir = null) {
+  return path.join(stateDir || resolvePricingStateDir(), 'custom_pricing.json');
+}
+
+function loadPersistedPricingCatalog(options = {}) {
+  // 测试运行环境（node --test）或隔离扫描未显式指定 stateDir 时，不读取宿主真实全局价格缓存，避免污染测试基线
+  const isIsolatedWithoutState = Boolean(
+    !options.stateDir && (
+      options.agDir ||
+      options.fs ||
+      options.hostFetcher ||
+      process.env.NODE_TEST_CONTEXT
+    )
+  );
+  if (isIsolatedWithoutState) return getDynamicPricingCatalog();
+  try {
+    const stateDir = resolvePricingStateDir(options);
+    const cachePath = getPricingCatalogCachePath(stateDir);
+    let cacheSig = `${cachePath}:missing`;
+    if (origFsMethods.existsSync(cachePath)) {
+      const st = origFsMethods.statSync(cachePath);
+      cacheSig = `${cachePath}:${st.size}:${st.mtimeMs}`;
+    }
+    if (cacheSig !== _lastPricingCacheSig) {
+      const prevSig = _lastPricingCacheSig;
+      _lastPricingCacheSig = cacheSig;
+      if (origFsMethods.existsSync(cachePath)) {
+        const readRes = safeReadJsonSync(cachePath, null);
+        const parsed = readRes && readRes.ok ? readRes.data : null;
+        if (parsed && typeof parsed === 'object' && parsed.models && typeof parsed.models === 'object') {
+          setDynamicPricingCatalog(parsed);
+        }
+      } else if (prevSig && !prevSig.endsWith(':missing')) {
+        setDynamicPricingCatalog(null);
+      }
+    }
+
+    const customPath = getCustomPricingPath(stateDir);
+    let customSig = `${customPath}:missing`;
+    if (origFsMethods.existsSync(customPath)) {
+      const st = origFsMethods.statSync(customPath);
+      customSig = `${customPath}:${st.size}:${st.mtimeMs}`;
+    }
+    if (customSig !== _lastCustomPricingSig) {
+      _lastCustomPricingSig = customSig;
+      if (origFsMethods.existsSync(customPath)) {
+        const readCustom = safeReadJsonSync(customPath, null);
+        const parsedCustom = readCustom && readCustom.ok ? readCustom.data : null;
+        if (parsedCustom && typeof parsedCustom === 'object') {
+          setCustomPricingCatalog(parsedCustom);
+        }
+      } else {
+        setCustomPricingCatalog({});
+      }
+    }
+  } catch { }
+  return getDynamicPricingCatalog();
+}
+
+async function fetchPricingFeedJson(urlStr, options = {}) {
+  if (typeof options.fetcher === 'function') {
+    return options.fetcher(urlStr);
+  }
+  let currentUrl = urlStr;
+  for (let hop = 0; hop <= 3; hop++) {
+    const res = await requestWithProxyTunnel(currentUrl, {
+      method: 'GET',
+      timeoutMs: Number(options.timeoutMs) || 12000,
+      maxBytes: 24 * 1024 * 1024,
+      stage: 'pricing_sync',
+      headers: {
+        'User-Agent': `AntigravityContextMeter/${PROJECT_VERSION}`,
+        'Accept': 'application/json',
+        'Accept-Encoding': 'identity'
+      },
+      ...(options.proxyUrl ? { proxyUrl: options.proxyUrl } : {})
+    });
+    if (res.status >= 300 && res.status < 400 && res.headers?.location && hop < 3) {
+      const nextUrl = new URL(res.headers.location, currentUrl);
+      if (nextUrl.protocol !== 'https:') {
+        throw new Error(`拒绝非 HTTPS 价格源重定向: ${nextUrl.protocol}`);
+      }
+      currentUrl = nextUrl.toString();
+      continue;
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    if (!res.json || typeof res.json !== 'object') {
+      throw new Error('返回内容不是有效 JSON');
+    }
+    return res.json;
+  }
+  throw new Error('价格源重定向次数过多');
+}
+
+function repriceUnpricedLedgerCallsUnlocked(agDir, resolvedLedgerPath, options = {}) {
+  let repricedCount = 0;
+  ledgerCacheByPath.delete(normalizeLedgerKey(resolvedLedgerPath));
+  const ledger = loadPricingLedger(agDir);
+  if (!ledger || ledger.__corrupted || ledger.__unreadable) return 0;
+  const calls = ledger.calls && typeof ledger.calls === 'object' ? ledger.calls : {};
+  let changed = false;
+  for (const [k, c] of Object.entries(calls)) {
+    if (!c || typeof c !== 'object') continue;
+    if (c.isPriced && !options.repriceAll) continue;
+    const calc = calculateRequestApiCost(c);
+    if (calc && calc.isPriced) {
+      const nextCost = calc.costUSD ?? 0;
+      if (!c.isPriced || c.modelKey !== calc.modelKey || Number(c.costUSD || 0) !== nextCost) {
+        calls[k] = {
+          ...c,
+          modelKey: calc.modelKey,
+          isPriced: true,
+          costUSD: nextCost
+        };
+        repricedCount++;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    savePricingLedger(ledger, agDir);
+    try { syncAccountLedgerPartitions(resolvedLedgerPath, calls); } catch { }
+  }
+  return repricedCount;
+}
+
+function repriceUnpricedLedgerCalls(customAgDir = null, options = {}) {
+  const agDir = customAgDir ? path.resolve(customAgDir) : resolvePrimaryGeminiDirs(options).agDir;
+  const ledgerPath = getPricingLedgerPath(agDir);
+  if (!origFsMethods.existsSync(ledgerPath)) return 0;
+  let repricedCount = 0;
+  try {
+    const resolvedLedgerPath = path.resolve(ledgerPath);
+    withFileLockSync(ledgerPath, () => {
+      repricedCount = repriceUnpricedLedgerCallsUnlocked(agDir, resolvedLedgerPath, options);
+    }, { timeoutMs: 4000 });
+  } catch { }
+  if (repricedCount > 0) {
+    cachedTokenHistoryAt = 0;
+  }
+  return repricedCount;
+}
+
+async function repriceUnpricedLedgerCallsAsync(customAgDir = null, options = {}) {
+  const agDir = customAgDir ? path.resolve(customAgDir) : resolvePrimaryGeminiDirs(options).agDir;
+  const ledgerPath = getPricingLedgerPath(agDir);
+  if (!origFsMethods.existsSync(ledgerPath)) return 0;
+  let repricedCount = 0;
+  try {
+    const resolvedLedgerPath = path.resolve(ledgerPath);
+    await withFileLockAsync(ledgerPath, () => {
+      repricedCount = repriceUnpricedLedgerCallsUnlocked(agDir, resolvedLedgerPath, options);
+    }, { timeoutMs: 4000 });
+  } catch { }
+  if (repricedCount > 0) {
+    cachedTokenHistoryAt = 0;
+  }
+  return repricedCount;
+}
+
+async function syncPricingCatalogAsync(options = {}) {
+  const isolated = Boolean(options.stateDir || options.agDir || options.fetcher);
+  if (!isolated && _activePricingSyncPromise) {
+    return _activePricingSyncPromise;
+  }
+  const run = (async () => {
+    const stateDir = resolvePricingStateDir(options);
+    const cachePath = getPricingCatalogCachePath(stateDir);
+    loadPersistedPricingCatalog({ stateDir });
+    const existing = getDynamicPricingCatalog();
+    const ttlMs = Number.isFinite(Number(options.ttlMs)) ? Number(options.ttlMs) : PRICING_CATALOG_TTL_MS;
+    if (!options.force && existing.modelCount > 0 && existing.fetchedAtMs > 0 && (Date.now() - existing.fetchedAtMs) < ttlMs) {
+      return {
+        ok: true,
+        cached: true,
+        skipped: true,
+        updatedAt: existing.updatedAt,
+        fetchedAtMs: existing.fetchedAtMs,
+        sources: existing.sources,
+        modelCount: existing.modelCount,
+        customCount: existing.customCount || 0,
+        repricedCount: 0
+      };
+    }
+
+    const modelsDevUrl = options.modelsDevUrl || PRICING_FEED_MODELS_DEV;
+    const liteLlmUrl = options.liteLlmUrl || PRICING_FEED_LITELLM;
+    const [rModelsDev, rLiteLlm] = await Promise.allSettled([
+      fetchPricingFeedJson(modelsDevUrl, options),
+      fetchPricingFeedJson(liteLlmUrl, options)
+    ]);
+
+    const errors = [];
+    const sources = [];
+    let mapModelsDev = null;
+    let mapLiteLlm = null;
+
+    if (rModelsDev.status === 'fulfilled') {
+      const parsed = parseModelsDevPricingCatalog(rModelsDev.value);
+      if (Object.keys(parsed).length > 0) {
+        mapModelsDev = parsed;
+        sources.push('models.dev');
+      } else {
+        errors.push('models.dev: 未解析到有效模型价目');
+      }
+    } else {
+      errors.push(`models.dev: ${sanitizeDiagnosticErrorText(rModelsDev.reason?.message || String(rModelsDev.reason || 'fetch_failed'))}`);
+    }
+
+    if (rLiteLlm.status === 'fulfilled') {
+      const parsed = parseLiteLlmPricingCatalog(rLiteLlm.value);
+      if (Object.keys(parsed).length > 0) {
+        mapLiteLlm = parsed;
+        sources.push('litellm');
+      } else {
+        errors.push('litellm: 未解析到有效模型价目');
+      }
+    } else {
+      errors.push(`litellm: ${sanitizeDiagnosticErrorText(rLiteLlm.reason?.message || String(rLiteLlm.reason || 'fetch_failed'))}`);
+    }
+
+    const mergedModels = mergePricingCatalogs(mapModelsDev, mapLiteLlm);
+    const modelCount = Object.keys(mergedModels).length;
+    if (modelCount === 0) {
+      return {
+        ok: false,
+        error: errors.join('；') || '所有价格源拉取失败',
+        errors,
+        sources: [],
+        modelCount: existing.modelCount || 0,
+        repricedCount: 0
+      };
+    }
+
+    const nowMs = Date.now();
+    const updatedAt = new Date(nowMs).toISOString();
+    const payload = {
+      schemaVersion: 1,
+      updatedAt,
+      fetchedAtMs: nowMs,
+      sources,
+      modelCount,
+      models: mergedModels
+    };
+    try {
+      fs.mkdirSync(stateDir, { recursive: true });
+      safeWriteJsonSync(cachePath, payload);
+      const st = origFsMethods.statSync(cachePath);
+      _lastPricingCacheSig = `${cachePath}:${st.size}:${st.mtimeMs}`;
+    } catch { }
+
+    setDynamicPricingCatalog(payload);
+    loadPersistedPricingCatalog({ stateDir });
+    const repricedCount = options.skipReprice ? 0 : await repriceUnpricedLedgerCallsAsync(options.agDir || null);
+    cachedTokenHistoryAt = 0;
+
+    return {
+      ok: true,
+      cached: false,
+      updatedAt,
+      fetchedAtMs: nowMs,
+      sources,
+      modelCount,
+      customCount: getDynamicPricingCatalog().customCount || 0,
+      repricedCount,
+      errors
+    };
+  })();
+
+  if (!isolated) {
+    _activePricingSyncPromise = run.finally(() => {
+      if (_activePricingSyncPromise === run) _activePricingSyncPromise = null;
+    });
+    return _activePricingSyncPromise;
+  }
+  return run;
+}
+
 
 let cachedPython = undefined;
 function resolvePython() {
@@ -451,6 +770,25 @@ function getImageDimensions(buf) {
     if (buf.length >= 26 && buf[0] === 0x42 && buf[1] === 0x4D) {
       return { width: Math.abs(buf.readInt32LE(18)), height: Math.abs(buf.readInt32LE(22)) };
     }
+    if (buf.length >= 16 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+      const chunk = buf.toString('ascii', 12, 16);
+      if (chunk === 'VP8 ' && buf.length >= 30) {
+        if ((buf[20] & 0x01) === 0 && buf[23] === 0x9D && buf[24] === 0x01 && buf[25] === 0x2A) {
+          const width = buf.readUInt16LE(26) & 0x3FFF;
+          const height = buf.readUInt16LE(28) & 0x3FFF;
+          if (width > 0 && height > 0) return { width, height };
+        }
+      } else if (chunk === 'VP8L' && buf.length >= 25 && buf[20] === 0x2F) {
+        const packed = buf.readUInt32LE(21);
+        const width = (packed & 0x3FFF) + 1;
+        const height = ((packed >>> 14) & 0x3FFF) + 1;
+        if (width > 0 && height > 0) return { width, height };
+      } else if (chunk === 'VP8X' && buf.length >= 30) {
+        const width = buf.readUIntLE(24, 3) + 1;
+        const height = buf.readUIntLE(27, 3) + 1;
+        if (width > 0 && height > 0) return { width, height };
+      }
+    }
     if (buf.length >= 4 && buf[0] === 0xFF && buf[1] === 0xD8) {
       let offset = 2;
       while (offset < buf.length - 8) {
@@ -466,6 +804,54 @@ function getImageDimensions(buf) {
     }
   } catch { }
   return { width: null, height: null };
+}
+
+const INLINE_IMAGE_DIMS_CACHE = new Map();
+const MAX_INLINE_IMAGE_DIMS_CACHE = 512;
+
+/**
+ * 解析并缓存内联 Base64 图片尺寸与字节长度，优先仅解码头部前 128 个字符以降低大图片内存分配（来自 PR #36）
+ */
+function inspectInlineImageMeta(uri, mime, b64) {
+  const safeUri = String(uri || '');
+  const safeMime = String(mime || '').toLowerCase();
+  const raw = String(b64 || '');
+  const cacheKey = raw.length <= 256
+    ? `${safeMime}|${raw}`
+    : `${safeUri}|${safeMime}|${raw.length}|${raw.slice(0, 64)}|${raw.slice(-64)}`;
+
+  if (INLINE_IMAGE_DIMS_CACHE.has(cacheKey)) {
+    return { ...INLINE_IMAGE_DIMS_CACHE.get(cacheKey), cacheHit: true };
+  }
+
+  let dims = { width: null, height: null };
+  let bytes = 0;
+  const hasWhitespace = raw.indexOf('\n') !== -1 || raw.indexOf('\r') !== -1 || raw.indexOf(' ') !== -1 || raw.indexOf('\t') !== -1;
+
+  if (!hasWhitespace && raw.length > 128) {
+    // PNG/GIF/BMP/WebP 宽高均在前 30 字节内，先解码前 128 字符避免每次全量分配 Buffer
+    const headDims = getImageDimensions(Buffer.from(raw.slice(0, 128), 'base64'));
+    if (headDims.width && headDims.height) {
+      dims = headDims;
+      bytes = Buffer.byteLength(raw, 'base64');
+    } else {
+      const fullBuf = Buffer.from(raw, 'base64');
+      dims = getImageDimensions(fullBuf);
+      bytes = fullBuf.length;
+    }
+  } else {
+    const fullBuf = Buffer.from(raw, 'base64');
+    dims = getImageDimensions(fullBuf);
+    bytes = fullBuf.length;
+  }
+
+  const meta = { width: dims.width, height: dims.height, bytes };
+  if (INLINE_IMAGE_DIMS_CACHE.size >= MAX_INLINE_IMAGE_DIMS_CACHE && !INLINE_IMAGE_DIMS_CACHE.has(cacheKey)) {
+    const oldest = INLINE_IMAGE_DIMS_CACHE.keys().next().value;
+    if (oldest !== undefined) INLINE_IMAGE_DIMS_CACHE.delete(oldest);
+  }
+  INLINE_IMAGE_DIMS_CACHE.set(cacheKey, meta);
+  return { ...meta, cacheHit: false };
 }
 
 function calcImageTokens(w, h) {
@@ -484,23 +870,24 @@ async function scanFiles(media, scanOptions = {}) {
     try {
       if (item.inlineData) {
         const mime = String(item.mime || '').toLowerCase();
-        const buf = Buffer.from(item.inlineData, 'base64');
         if (mime.startsWith('image/')) {
-          const dims = getImageDimensions(buf);
-          const [low, high] = calcImageTokens(dims.width, dims.height);
+          const meta = inspectInlineImageMeta(item.uri, mime, item.inlineData);
+          const [low, high] = calcImageTokens(meta.width, meta.height);
           results.set(item.uri, {
             status: 'parsed',
-            width: dims.width,
-            height: dims.height,
+            width: meta.width,
+            height: meta.height,
             chars: 0,
-            dimensions: dims.width ? `${dims.width}×${dims.height}` : null,
-            bytes: buf.length,
+            dimensions: meta.width ? `${meta.width}×${meta.height}` : null,
+            bytes: meta.bytes,
             low,
             high,
             unknownParts: []
           });
           continue;
-        } else if (mime.startsWith('text/') || mime === 'application/json' || mime === 'text/csv') {
+        }
+        const buf = Buffer.from(item.inlineData, 'base64');
+        if (mime.startsWith('text/') || mime === 'application/json' || mime === 'text/csv') {
           const text = buf.toString('utf8');
           const m = measure(text);
           results.set(item.uri, {
@@ -567,7 +954,44 @@ async function scanFiles(media, scanOptions = {}) {
 }
 
 let collectSeqCounter = 0;
+let collectTaskSeq = 0;
 const latestCollectSeqByOrigin = new Map();
+
+async function resolveCollectCsrfToken(origin, signal, options = {}, isSuperseded = null) {
+  let token = '';
+  let hasConfig = false;
+  let htmlFetchErr = null;
+  try {
+    const html = await request(origin, null, null, null, signal);
+    if (typeof isSuperseded === 'function' && isSuperseded()) return '';
+    const match = String(html || '').match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s);
+    if (match) {
+      hasConfig = true;
+      const parsed = JSON.parse(match[1]);
+      token = typeof parsed?.csrfToken === 'string' ? parsed.csrfToken.trim() : '';
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) throw err;
+    htmlFetchErr = err;
+  }
+
+  const canFallback = !htmlFetchErr || /HTTP 40[13]\b/.test(String(htmlFetchErr.message || ''));
+  if (!token && canFallback) {
+    try {
+      const { resolveOriginCsrfToken } = require('./local-api');
+      const fallbackToken = resolveOriginCsrfToken(origin, options);
+      if (fallbackToken) {
+        token = fallbackToken;
+        hasConfig = true;
+      }
+    } catch { }
+  }
+
+  if (!token && htmlFetchErr) throw htmlFetchErr;
+  if (!hasConfig) throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+  if (!token) throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
+  return token;
+}
 
 async function collect(origin, id, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(origin);
@@ -590,17 +1014,17 @@ async function collect(origin, id, options = {}) {
     return Boolean((latest && latest.seq > mySeq && latest.id !== id) || abortController?.signal?.aborted);
   };
   const previous = conversations.get(key);
-  if (previous?.pending) return previous.pending;
-  if (options.force) filesCache.clear();
+  if (previous?.pending && !options.force) return previous.pending;
+  if (options.clearFilesCache) filesCache.clear();
   if (!options.force && previous?.result && Date.now() - previous.at < 12000) return previous.result;
+  const taskSeq = ++collectTaskSeq;
   const task = (async () => {
     const signal = abortController?.signal || null;
     try {
-      let token = !options.force ? csrfTokenByOrigin.get(origin) : null;
+      let token = csrfTokenByOrigin.get(origin) || null;
       if (!token) {
-        const html = await request(origin, null, null, null, signal);
+        token = await resolveCollectCsrfToken(origin, signal, options, isSuperseded);
         if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-        token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
         csrfTokenByOrigin.set(origin, token);
       }
       const call = async (method, body) => {
@@ -609,8 +1033,8 @@ async function collect(origin, id, options = {}) {
         } catch (err) {
           if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
             csrfTokenByOrigin.delete(origin);
-            const html = await request(origin, null, null, null, signal);
-            token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+            token = await resolveCollectCsrfToken(origin, signal, options, isSuperseded);
+            if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
             csrfTokenByOrigin.set(origin, token);
             return await request(origin, method, body, token, signal);
           }
@@ -633,11 +1057,35 @@ async function collect(origin, id, options = {}) {
       }
       if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const session = analyzeSteps(steps);
+      const firstUserStep = steps.find(s => s?.userInput);
+      const firstUserTitleRaw = firstUserStep?.userInput
+        ? (firstUserStep.userInput.userResponse || (firstUserStep.userInput.items || []).map(it => it?.text || '').join(' '))
+        : '';
+      const rawSessionTitle = String(
+        full.title
+        || trajectory.title
+        || full.metadata?.title
+        || trajectory.metadata?.title
+        || sanitizeTurnPreviewText(firstUserTitleRaw, 56)
+        || ''
+      ).trim();
+      session.title = rawSessionTitle ? sanitizeTurnPreviewText(rawSessionTitle, 56) : '';
       const stepCapabilities = extractObservedModelInfoFromSteps(steps);
       const attachments = await scanFiles(session.media, { signal });
       if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const attachmentTotal = empty();
       for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
+      const postCheckpointAttachmentTotal = empty();
+      if (session.postCheckpoint?.mediaRefs) {
+        for (let idx = 0; idx < attachments.length; idx++) {
+          const origMedia = session.media[idx];
+          const a = attachments[idx];
+          const postRefs = origMedia?.uri ? (session.postCheckpoint.mediaRefs[origMedia.uri] || 0) : 0;
+          if (postRefs > 0 && a) {
+            add(postCheckpointAttachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * postRefs])));
+          }
+        }
+      }
       const total = add({ ...session.total }, attachmentTotal);
       let latest = null;
       const count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
@@ -660,6 +1108,7 @@ async function collect(origin, id, options = {}) {
         stepCapabilities
       );
       let latestModel = null;
+      let latestGeneratorMeta = null;
       let latestCallId = null;
       let latestCallRecord = null;
       const recentGeneratorCalls = [];
@@ -670,9 +1119,11 @@ async function collect(origin, id, options = {}) {
           if (normCall) recentGeneratorCalls.push(normCall);
         }
       }
-      for (const m of (tail.generatorMetadata || []).slice().reverse()) {
+      const reversedTail = (tail.generatorMetadata || []).slice().reverse();
+      for (const m of reversedTail) {
         latest = summarize(m, { cascadeModelConfigs: mergedCascadeConfigs });
         if (latest) {
+          latestGeneratorMeta = m;
           latestModel = m.chatModel;
           const callMeta = parseGeneratorCall(m, id, 'desktop', { cascadeModelConfigs: mergedCascadeConfigs });
           latestCallId = callMeta?.callId || null;
@@ -682,10 +1133,51 @@ async function collect(origin, id, options = {}) {
           break;
         }
       }
-      const system = latestModel ? measure((latestModel.promptSections || []).map(p => p.content || '').join('\n') || latestModel.systemPrompt || '') : empty();
-      const definitions = latestModel ? measure(JSON.stringify(latestModel.tools || [])) : empty();
+      let referenceLatest = latest ? { ...latest } : null;
+      let referenceChatModel = latestModel;
+      if (session.lastCheckpointIndex >= 0 && reversedTail.length > 1) {
+        const isSummarizerMeta = latestGeneratorMeta && extractGeneratorMaxStep(latestGeneratorMeta) === session.lastCheckpointIndex;
+        for (const m of reversedTail) {
+          if (m === latestGeneratorMeta) continue;
+          const candSum = summarize(m, { cascadeModelConfigs: mergedCascadeConfigs });
+          if (!candSum) continue;
+          if (referenceLatest && !referenceLatest.budget && candSum.budget) {
+            referenceLatest.budget = candSum.budget;
+          }
+          if (isSummarizerMeta) {
+            if (candSum.model) {
+              referenceLatest.model = candSum.model;
+              referenceLatest.modelId = candSum.modelId || referenceLatest.modelId;
+              referenceLatest.modelRaw = candSum.modelRaw || referenceLatest.modelRaw;
+            }
+            if (m.chatModel && (!referenceChatModel?.tools?.length && m.chatModel.tools?.length)) {
+              referenceChatModel = m.chatModel;
+            }
+          }
+          if (referenceLatest?.budget && (!isSummarizerMeta || referenceChatModel?.tools?.length)) break;
+        }
+      }
+      const systemSourceModel = referenceChatModel || latestModel;
+      const system = systemSourceModel ? measure((systemSourceModel.promptSections || []).map(p => p.content || '').join('\n') || systemSourceModel.systemPrompt || '') : empty();
+      const definitions = systemSourceModel ? measure(JSON.stringify(systemSourceModel.tools || [])) : empty();
+      session.definitionsCount = Array.isArray(systemSourceModel?.tools) ? systemSourceModel.tools.length : (definitions.chars > 0 ? 1 : 0);
+      session.systemCount = Array.isArray(systemSourceModel?.promptSections) && systemSourceModel.promptSections.length > 0
+        ? systemSourceModel.promptSections.length
+        : (system.chars > 0 ? 1 : 0);
       session.groups.system = system; session.groups.definitions = definitions;
       add(total, system); add(total, definitions);
+      const postCompactActiveTotal = session.postCheckpoint
+        ? add(add(add({ ...session.postCheckpoint.textTotal }, postCheckpointAttachmentTotal), system), definitions)
+        : null;
+      if (!session.currentError && isCheckpointNewerThanGenerator(session, latestGeneratorMeta, latest)) {
+        latest = buildPostCompactSummary({
+          session: { ...session, postCompactActiveTotal },
+          postCheckpointAttachmentTotal,
+          system,
+          definitions,
+          previousLatest: referenceLatest || latest
+        });
+      }
       if (session.currentError) {
         const fromStep = summarize({ chatModel: { retryInfos: [{ error: session.currentError.text }] } }, {
           currentModel: latest?.model || latestModel?.modelDisplayName || latestModel?.model || '',
@@ -707,19 +1199,49 @@ async function collect(origin, id, options = {}) {
           };
         }
       }
-    const unknownFiles = attachments.filter(a => a.status !== 'parsed').length;
-    const compactCascadeConfigs = mergedCascadeConfigs.map(sanitizeCascadeModelConfig).filter(Boolean);
-    const modelCapabilitiesById = {
-      ...(cachedHostUserStatus?.availableModelDetails || {}),
-      ...stepCapabilities
-    };
-    const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
-    if (isSuperseded()) {
-      conversations.delete(key);
-      return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-    }
-    setBoundedMap(conversations, key, { result, at: Date.now() }, CONVERSATIONS_CACHE_MAX_ENTRIES);
-    return result;
+      const unknownFiles = attachments.filter(a => a.status !== 'parsed').length;
+      const compactCascadeConfigs = mergedCascadeConfigs.map(sanitizeCascadeModelConfig).filter(Boolean);
+      const modelCapabilitiesById = {
+        ...(cachedHostUserStatus?.availableModelDetails || {}),
+        ...stepCapabilities
+      };
+      const scannedAt = Date.now();
+      let lastUserStepIdx = -1;
+      for (let i = steps.length - 1; i >= 0; i--) {
+        if (steps[i]?.userInput) { lastUserStepIdx = i; break; }
+      }
+      let turnGmRows = tail.generatorMetadata || [];
+      if (lastUserStepIdx >= 0 && count > 40 && turnGmRows.length > 0) {
+        const firstGmStep = turnGmRows[0]?.stepIndices?.[0] ?? turnGmRows[0]?.stepIndex ?? null;
+        if (firstGmStep !== null && Number(firstGmStep) > lastUserStepIdx) {
+          try {
+            const wider = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 160), includeMessages: false });
+            if (Array.isArray(wider?.generatorMetadata) && wider.generatorMetadata.length > turnGmRows.length) {
+              turnGmRows = wider.generatorMetadata;
+            }
+          } catch { }
+        }
+      }
+      const turnTiming = summarizeTurnTiming({
+        steps,
+        stepOffset: 0,
+        generatorMetadata: turnGmRows,
+        cascadeStatus: full.status || null,
+        nowMs: scannedAt
+      });
+      const result = { version: PROJECT_VERSION, conversation: id, cascadeStatus: full.status || null, turnTiming, workspacePath: wsPath || null, latest, preCompactLatest: referenceLatest || null, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, postCheckpointAttachmentTotal, postCompactActiveTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt, errors: [] };
+      if (isSuperseded()) {
+        const curSup = conversations.get(key);
+        if (!curSup || !curSup.taskSeq || curSup.taskSeq <= taskSeq) {
+          conversations.delete(key);
+        }
+        return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+      }
+      const curDone = conversations.get(key);
+      if (!curDone || !curDone.taskSeq || curDone.taskSeq <= taskSeq) {
+        setBoundedMap(conversations, key, { result, at: Date.now(), taskSeq }, CONVERSATIONS_CACHE_MAX_ENTRIES);
+      }
+      return result;
     } catch (err) {
       if (isSuperseded() || (err && err.name === 'AbortError' && signal?.aborted)) {
         return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
@@ -727,8 +1249,113 @@ async function collect(origin, id, options = {}) {
       throw err;
     }
   })();
-  setBoundedMap(conversations, key, { ...previous, pending: task }, CONVERSATIONS_CACHE_MAX_ENTRIES);
-  try { return await task; } catch (e) { conversations.delete(key); throw e; }
+  setBoundedMap(conversations, key, { ...previous, pending: task, taskSeq }, CONVERSATIONS_CACHE_MAX_ENTRIES);
+  try {
+    return await task;
+  } catch (e) {
+    const curErr = conversations.get(key);
+    if (!curErr || !curErr.taskSeq || curErr.taskSeq <= taskSeq) {
+      conversations.delete(key);
+    }
+    throw e;
+  }
+}
+
+/**
+ * 轻量级轮次状态与墙钟耗时探测（兼容 Antigravity 2.34.0 HTTP+HTTPS 与 authBootstrap）
+ */
+async function collectTurnState(origin, id, options = {}) {
+  const safeOrigin = normalizeLoopbackOrigin(origin);
+  if (!safeOrigin || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
+  origin = safeOrigin;
+  let token = csrfTokenByOrigin.get(origin) || null;
+  if (!token) {
+    token = await resolveCollectCsrfToken(origin, null, options, () => false);
+    csrfTokenByOrigin.set(origin, token);
+  }
+  const call = async (method, body) => {
+    try {
+      return await request(origin, method, body, token);
+    } catch (err) {
+      if (err && /HTTP 40[13]/.test(String(err.message || ''))) {
+        csrfTokenByOrigin.delete(origin);
+        token = await resolveCollectCsrfToken(origin, null, options, () => false);
+        csrfTokenByOrigin.set(origin, token);
+        return await request(origin, method, body, token);
+      }
+      throw err;
+    }
+  };
+
+  const head = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 0 });
+  const totalSteps = Number(head.numTotalSteps ?? head.trajectory?.steps?.length ?? 0);
+  const totalGm = Number(head.numTotalGeneratorMetadata ?? head.trajectory?.generatorMetadata?.length ?? 0);
+  const stepWindow = 80;
+  let stepOffset = Math.max(0, totalSteps - stepWindow);
+  const [stepsPage, gmPage] = await Promise.all([
+    totalSteps > 0
+      ? call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset, trajectoryVerbosity: 1 })
+      : Promise.resolve({ steps: [] }),
+    totalGm > 0
+      ? call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, totalGm - 40), includeMessages: false })
+      : Promise.resolve({ generatorMetadata: [] })
+  ]);
+
+  let tailSteps = Array.isArray(stepsPage?.steps) ? stepsPage.steps : [];
+  let tailGm = Array.isArray(gmPage?.generatorMetadata) ? gmPage.generatorMetadata : [];
+
+  if (stepOffset > 0 && !tailSteps.some(s => s?.userInput)) {
+    let backOffset = stepOffset;
+    for (let hop = 0; hop < 4 && backOffset > 0; hop++) {
+      const nextOff = Math.max(0, backOffset - 160);
+      const olderPage = await call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: nextOff, trajectoryVerbosity: 1 });
+      const olderSteps = Array.isArray(olderPage?.steps) ? olderPage.steps.slice(0, backOffset - nextOff) : [];
+      if (!olderSteps.length) break;
+      tailSteps = olderSteps.concat(tailSteps);
+      backOffset = nextOff;
+      stepOffset = nextOff;
+      if (olderSteps.some(s => s?.userInput)) break;
+    }
+  }
+
+  let minTurnStepIdx = null;
+  for (let i = tailSteps.length - 1; i >= 0; i--) {
+    if (tailSteps[i]?.userInput) {
+      const rawIdx = tailSteps[i]?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+      minTurnStepIdx = Number.isInteger(Number(rawIdx)) && Number(rawIdx) >= 0 ? Number(rawIdx) : (stepOffset + i);
+      break;
+    }
+  }
+
+  if (minTurnStepIdx !== null && totalGm > 40 && tailGm.length > 0) {
+    const firstGmIdx = tailGm[0]?.stepIndices?.[0] ?? tailGm[0]?.stepIndex ?? null;
+    if (firstGmIdx !== null && Number(firstGmIdx) > minTurnStepIdx) {
+      const gmStartOff = Math.max(0, totalGm - 160);
+      if (gmStartOff < totalGm - 40) {
+        const olderGmPage = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: gmStartOff, includeMessages: false });
+        const olderGm = Array.isArray(olderGmPage?.generatorMetadata) ? olderGmPage.generatorMetadata : [];
+        if (olderGm.length > tailGm.length) tailGm = olderGm;
+      }
+    }
+  }
+
+  const nowMs = Date.now();
+  const turnTiming = summarizeTurnTiming({
+    steps: tailSteps,
+    stepOffset,
+    generatorMetadata: tailGm,
+    cascadeStatus: head.status || null,
+    nowMs
+  });
+
+  return {
+    conversation: id,
+    cascadeStatus: head.status || null,
+    numTotalSteps: totalSteps,
+    numTotalGeneratorMetadata: totalGm,
+    turnTiming,
+    fetchedAt: nowMs
+  };
 }
 
 let cachedTokenHistory = null;
@@ -928,10 +1555,19 @@ function loadPricingLedger(overridePathOrDir, options = {}) {
     Object.defineProperty(ledger, '__hadDuplicateStepKeys', { value: true, configurable: true });
   }
 
-  // 正常落盘数据建立自动滚动备份，供损坏时恢复（只读模式绝不写盘）
+  // 正常落盘数据建立自动滚动备份（限 10 分钟以上且文件实际变化才更新 .bak，避免 40MB+ 账本高频读盘引发阻塞；只读模式绝不写盘）
   if (!readRes.corrupted && !options?.readOnly) {
     try {
-      if (!fsImpl.existsSync(bakPath) || Math.random() < 0.1) {
+      let shouldCopyBak = !fsImpl.existsSync(bakPath);
+      if (!shouldCopyBak && st) {
+        const bakSt = fsImpl.statSync(bakPath);
+        const bakAgeMs = Date.now() - (bakSt.mtimeMs || 0);
+        const fileChanged = (st.mtimeMs > (bakSt.mtimeMs || 0)) || (st.size !== bakSt.size);
+        if (bakAgeMs >= 600000 && fileChanged) {
+          shouldCopyBak = true;
+        }
+      }
+      if (shouldCopyBak) {
         fsImpl.copyFileSync(p, bakPath);
       }
     } catch { }
@@ -1045,6 +1681,7 @@ function pruneExcessSpeedSamples(draftCalls, limit = MAX_SPEED_SAMPLES_PER_MODEL
       delete copy.streamingSec;
       delete copy.durationSec;
       delete copy.tps;
+      delete copy.streamingTps;
       delete copy.origin;
       draftCalls[entries[i].callId] = copy;
       pruned = true;
@@ -1059,9 +1696,14 @@ function parseStepFallbackKey(callId, cascadeId) {
   if (hashIdx <= 0) return null;
   const idPart = callId.slice(0, hashIdx);
   const stepPart = callId.slice(hashIdx + 1);
-  if (!/^\d+$/.test(stepPart)) return null;
+  const m = stepPart.match(/^(\d+)(?:@(.+))?$/);
+  if (!m) return null;
   if (cascadeId && idPart.toLowerCase() !== String(cascadeId).toLowerCase()) return null;
-  return { cascadeId: cascadeId ? String(cascadeId) : idPart, stepIndex: Number(stepPart) };
+  return {
+    cascadeId: cascadeId ? String(cascadeId) : idPart,
+    stepIndex: Number(m[1]),
+    variantSuffix: m[2] || null
+  };
 }
 
 function isStepFallbackCallId(callId, cascadeId) {
@@ -1108,6 +1750,7 @@ function getCollectorModelRank(raw) {
   const s = typeof raw === 'string' ? raw.trim() : '';
   if (!s) return 0;
   if (isPlaceholderModel(s)) return 1;
+  if (/^gemini-pro-orchestrator$/i.test(s)) return 2;
   if (!normalizeModelId(s)) return 2;
   return 3;
 }
@@ -1121,6 +1764,39 @@ function areModelsCompatible(mA, mB) {
   const normB = normalizeModelId(b);
   if (normA && normB) return normA === normB;
   return false;
+}
+
+function areCallRecordsModelCompatible(recA, recB) {
+  if (!recA || !recB) return false;
+  if (areModelsCompatible(recA.model, recB.model)) return true;
+  const bA = resolveModelUsageBucket(recA);
+  const bB = resolveModelUsageBucket(recB);
+  if (bA?.isAttributed && bB?.isAttributed) {
+    if (bA.variantKey && bB.variantKey && bA.variantKey === bB.variantKey) return true;
+    if (bA.modelKey && bB.modelKey && bA.modelKey === bB.modelKey && bA.modelKey !== 'orchestrator') return true;
+  }
+  const candsA = [recA.modelLabel, recA.modelExactId, recA.model].filter(v => typeof v === 'string' && v.trim() && !isPlaceholderModel(v));
+  const candsB = [recB.modelLabel, recB.modelExactId, recB.model].filter(v => typeof v === 'string' && v.trim() && !isPlaceholderModel(v));
+  for (const a of candsA) {
+    if (/^gemini-pro-orchestrator$/i.test(a.trim())) continue;
+    for (const b of candsB) {
+      if (/^gemini-pro-orchestrator$/i.test(b.trim())) continue;
+      if (areModelsCompatible(a, b)) return true;
+    }
+  }
+  return false;
+}
+
+function areLedgerCallTimestampsCompatible(recA, recB) {
+  if (!recA || !recB) return false;
+  if (recA.dateIsProvisional || recB.dateIsProvisional || recA.dateSource === 'provisional' || recB.dateSource === 'provisional') {
+    return true;
+  }
+  const tsA = extractCallTimeBoundsMs(recA);
+  const tsB = extractCallTimeBoundsMs(recB);
+  if (tsA.startMs == null || tsB.startMs == null) return true;
+  const gapMs = Math.max(tsA.startMs, tsB.startMs) - Math.min(tsA.endMs ?? tsA.startMs, tsB.endMs ?? tsB.startMs);
+  return gapMs <= 120000;
 }
 
 function pickRicherModel(primaryModel, secondaryModel) {
@@ -1226,6 +1902,25 @@ function shouldAdoptSameRankAuthDate(baseEntry, incomingEntry, baseDateInfo, inc
   if (revCmp > 0 && usageCmp >= 0) return true;
   if (usageCmp > 0 && revCmp >= 0) return true;
   return false;
+}
+
+const CURRENT_ATTRIBUTION_REPAIR_VERSION = 'elv89-v3';
+const LIVE_ATTRIBUTION_PROTECT_WINDOW_MS = 180000;
+
+function isLiveProtectedAttributionRecord(rec, nowMs = Date.now()) {
+  if (!rec || typeof rec !== 'object') return false;
+  if (rec.accountAttributionConfidence !== 'live_confirmed_account') return false;
+  if (!isValidAccountScopeKey(rec.accountScopeKey)) return false;
+  const rawUpdatedAt = typeof rec.updatedAt === 'number'
+    ? rec.updatedAt
+    : (rec.updatedAt ? Date.parse(rec.updatedAt) : NaN);
+  const obsMs = Number(rec.liveObservedAtMs) || rawUpdatedAt || Number(rec.timestamp);
+  return Number.isFinite(obsMs) && (nowMs - obsMs) >= 0 && (nowMs - obsMs) < LIVE_ATTRIBUTION_PROTECT_WINDOW_MS;
+}
+
+function sanitizeBackupSuffix(rawSuffix) {
+  if (rawSuffix === null || rawSuffix === undefined) return '';
+  return String(rawSuffix).trim().replace(/[^A-Za-z0-9._-]/g, '');
 }
 
 function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitStep = null, preferIncomingModel = false, preferIncomingDate = false) {
@@ -1337,6 +2032,14 @@ function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitSt
     ...attributionMerged,
     updatedAt: Date.now()
   };
+  if (
+    incomingEntry.attributionRepairVersion === CURRENT_ATTRIBUTION_REPAIR_VERSION &&
+    attributionMerged.accountScopeKey &&
+    attributionMerged.accountScopeKey === incomingEntry.accountScopeKey &&
+    attributionMerged.accountAttributionConfidence !== 'live_confirmed_account'
+  ) {
+    merged.attributionRepairVersion = CURRENT_ATTRIBUTION_REPAIR_VERSION;
+  }
   if (!attributionMerged.accountScopeKey) {
     delete merged.accountScopeKey;
   }
@@ -1370,7 +2073,7 @@ function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitSt
 // 判定跨键单候选 (real, syn) 是否有充分证据确认为同一调用：已完成的非零真实记录严禁接受跨键异构 ID 的用量改写
 function isConfirmableSingleStepMatch(real, syn) {
   if (!real || !syn) return false;
-  if (!areModelsCompatible(real.model, syn.model)) return false;
+  if (!areCallRecordsModelCompatible(real, syn)) return false;
   const uReal = getCallTokenBreakdown(real);
   const uSyn = getCallTokenBreakdown(syn);
   if (uReal.inp === uSyn.inp && uReal.cap === uSyn.cap && uReal.out === uSyn.out) {
@@ -1444,7 +2147,8 @@ function reconcileConfirmableDuplicateStepCalls(callsObj) {
         syn: entry,
         synSrc: entry.source || 'desktop',
         synCid: parsedKey.cascadeId.toLowerCase(),
-        synStep: parsedKey.stepIndex
+        synStep: parsedKey.stepIndex,
+        synVariantSuffix: parsedKey.variantSuffix || null
       });
     } else {
       realItems.push({ realKey: key, real: entry });
@@ -1455,8 +2159,11 @@ function reconcileConfirmableDuplicateStepCalls(callsObj) {
 
   // 按 (source, cascadeId) 建立局部哈希索引，将 O(syn * real) 降至线性 O(syn + real)
   const synCidSet = new Set();
+  const synCountByStep = new Map();
   for (let i = 0; i < synItems.length; i++) {
     synCidSet.add(`${synItems[i].synSrc}\0${synItems[i].synCid}`);
+    const stepKey = `${synItems[i].synSrc}\0${synItems[i].synCid}\0${synItems[i].synStep}`;
+    synCountByStep.set(stepKey, (synCountByStep.get(stepKey) || 0) + 1);
   }
   const ruleAIndex = new Map();
   const ruleBIndex = new Map();
@@ -1488,29 +2195,49 @@ function reconcileConfirmableDuplicateStepCalls(callsObj) {
   const usedRealKeys = new Set();
   const unmatchedSyn = [];
 
-  // Rule A: 同 (source, cascadeId) 下显式包含相同 stepIndex 且模型兼容的真实 responseId 记录
+  // Rule A: 同 (source, cascadeId) 下显式包含相同 stepIndex 且模型兼容的真实 responseId 记录，或唯一精确 Token 三元组一致且时间兼容的记录
   for (const sItem of synItems) {
-    const { synKey, syn, synSrc, synCid, synStep } = sItem;
-    const indexedA = ruleAIndex.get(`${synSrc}\0${synCid}\0${synStep}`);
-    const cands = indexedA ? indexedA.filter(({ realKey, real }) => {
-      if (usedRealKeys.has(realKey) || !callsObj[realKey]) return false;
-      return areModelsCompatible(real.model, syn.model);
-    }) : [];
+    const { synKey, syn, synSrc, synCid, synStep, synVariantSuffix } = sItem;
+    const stepKey = `${synSrc}\0${synCid}\0${synStep}`;
+    const hasMultiSynOnStep = (synCountByStep.get(stepKey) || 0) > 1 || Boolean(synVariantSuffix);
+    const indexedA = ruleAIndex.get(stepKey);
+    const availableReal = indexedA ? indexedA.filter(({ realKey }) => !usedRealKeys.has(realKey) && Boolean(callsObj[realKey])) : [];
+    const cands = availableReal.filter(({ real }) => areCallRecordsModelCompatible(real, syn));
 
     let matchedRealKey = null;
-    if (cands.length === 1) {
-      if (isConfirmableSingleStepMatch(cands[0].real, syn)) {
+    if (!hasMultiSynOnStep && cands.length === 1) {
+      if (isConfirmableSingleStepMatch(cands[0].real, syn) && areLedgerCallTimestampsCompatible(cands[0].real, syn)) {
         matchedRealKey = cands[0].realKey;
       }
-    } else if (cands.length > 1) {
+    } else if (cands.length >= 1) {
       const uSyn = getCallTokenBreakdown(syn);
       if (uSyn.inp + uSyn.cap + uSyn.out > 0) {
         const exactCands = cands.filter(({ real }) => {
           const uReal = getCallTokenBreakdown(real);
-          return uReal.inp === uSyn.inp && uReal.cap === uSyn.cap && uReal.out === uSyn.out;
+          return uReal.inp === uSyn.inp
+            && uReal.cap === uSyn.cap
+            && uReal.out === uSyn.out
+            && areLedgerCallTimestampsCompatible(real, syn);
         });
         if (exactCands.length === 1) {
           matchedRealKey = exactCands[0].realKey;
+        }
+      }
+    }
+
+    // 跨历史版本路由名称变更导致的精确三元组同 step 双记消解（如 Orchestrator Carbon M667 vs gemini-pro-orchestrator、或 vertex/cli 历史同 step 双键）
+    if (!matchedRealKey && availableReal.length > 0) {
+      const uSyn = getCallTokenBreakdown(syn);
+      if (uSyn.inp + uSyn.cap + uSyn.out > 0) {
+        const exactTripletCands = availableReal.filter(({ real }) => {
+          const uReal = getCallTokenBreakdown(real);
+          return uReal.inp === uSyn.inp
+            && uReal.cap === uSyn.cap
+            && uReal.out === uSyn.out
+            && areLedgerCallTimestampsCompatible(real, syn);
+        });
+        if (exactTripletCands.length === 1) {
+          matchedRealKey = exactTripletCands[0].realKey;
         }
       }
     }
@@ -1962,12 +2689,21 @@ function buildRecordModelCallsLockedExecutor(newCalls = [], options = {}) {
       const resolvedAttrConf = attrRes.accountAttributionConfidence;
       const resolvedAttrEvidence = attrRes.accountAttributionEvidence || null;
       const resolvedUnattrReason = attrRes.unattributedReason || null;
+      const hasExplicitEmail = typeof call.accountEmail === 'string' && call.accountEmail.includes('@');
+      const isAuthoritativelyAttributed = Boolean(
+        resolvedScopeKey && (
+          resolvedAttrConf === 'session_window_verified'
+          || (resolvedAttrConf === 'explicit_account_email' && hasExplicitEmail)
+          || (resolvedAttrConf === 'keepalive_bound' && Boolean(call.isKeepalive))
+        )
+      );
       const callWithAttr = {
         ...call,
         ...(resolvedScopeKey ? { accountScopeKey: resolvedScopeKey } : {}),
         accountAttributionConfidence: resolvedAttrConf,
         ...(resolvedAttrEvidence ? { accountAttributionEvidence: resolvedAttrEvidence } : {}),
         ...(resolvedUnattrReason ? { unattributedReason: resolvedUnattrReason } : {}),
+        ...(isAuthoritativelyAttributed ? { attributionRepairVersion: CURRENT_ATTRIBUTION_REPAIR_VERSION } : {}),
         ...(attrRes.forceUnattributed ? { forceUnattributed: true } : {})
       };
       if (!resolvedScopeKey) {
@@ -1986,6 +2722,7 @@ function buildRecordModelCallsLockedExecutor(newCalls = [], options = {}) {
           accountAttributionConfidence: resolvedAttrConf,
           ...(resolvedAttrEvidence ? { accountAttributionEvidence: resolvedAttrEvidence } : {}),
           ...(resolvedUnattrReason ? { unattributedReason: resolvedUnattrReason } : {}),
+          ...(isAuthoritativelyAttributed ? { attributionRepairVersion: CURRENT_ATTRIBUTION_REPAIR_VERSION } : {}),
           ...(call.isKeepalive ? { isKeepalive: true } : {}),
           ...(callCidRaw && !call.cascadeId ? { cascadeId: callCidRaw } : {}),
           ...(normalizedStep !== null && call.stepIndex == null ? { stepIndex: normalizedStep } : {}),
@@ -2559,7 +3296,6 @@ function buildAccountUsageBreakdown({
   };
 }
 
-const CURRENT_ATTRIBUTION_REPAIR_VERSION = 'elv89-v3';
 /**
  * 同一账本最多保留最近 N=3 份归属纠偏备份：
  * 1 份用于最近一次变更的即时回滚，另 2 份覆盖跨版本纠偏迁移，避免多实例与周期扫描导致磁盘无限膨胀。
@@ -2568,7 +3304,7 @@ const MAX_LEDGER_REPAIR_BACKUPS = 3;
 const LEDGER_BACKUP_CLEANUP_MARKER_VERSION = '0.8.9';
 
 /**
- * 列出指定账本对应的 .bak-pre-elv89-* 备份文件（按时间从新到旧排序）
+ * 列出指定账本对应的 .bak-pre-elv89-* 备份文件（仅普通文件、防符号链接并按时间从新到旧排序）
  */
 function listLedgerRepairBackups(resolvedLedgerPath, fsImpl = fs) {
   const dir = path.dirname(resolvedLedgerPath);
@@ -2577,18 +3313,25 @@ function listLedgerRepairBackups(resolvedLedgerPath, fsImpl = fs) {
   const entries = fsImpl.readdirSync(dir, { withFileTypes: true });
   const items = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
-    const fullPath = path.join(dir, entry.name);
-    const suffix = entry.name.slice(prefix.length);
+    const name = typeof entry === 'string' ? entry : entry.name;
+    if (typeof name !== 'string' || !name.startsWith(prefix) || path.basename(name) !== name) continue;
+    if (typeof entry !== 'string' && typeof entry.isFile === 'function' && !entry.isFile()) continue;
+    const fullPath = path.join(dir, name);
+    const suffix = name.slice(prefix.length);
     const numericTs = /^\d{10,16}$/.test(suffix) ? Number(suffix) : NaN;
     let mtimeMs = 0;
     let size = 0;
     try {
-      const st = fsImpl.statSync(fullPath);
-      mtimeMs = Number(st.mtimeMs) || 0;
-      size = Number(st.size) || 0;
-    } catch { }
-    items.push({ name: entry.name, path: fullPath, numericTs, mtimeMs, size });
+      const lst = typeof fsImpl.lstatSync === 'function' ? fsImpl.lstatSync(fullPath) : fsImpl.statSync(fullPath);
+      if (lst && ((typeof lst.isSymbolicLink === 'function' && lst.isSymbolicLink()) || (typeof lst.isFile === 'function' && !lst.isFile()))) {
+        continue;
+      }
+      mtimeMs = Number(lst.mtimeMs) || 0;
+      size = Number(lst.size) || 0;
+    } catch {
+      continue;
+    }
+    items.push({ name, path: fullPath, numericTs, mtimeMs, size });
   }
   items.sort((a, b) => {
     const aHasTs = Number.isFinite(a.numericTs);
@@ -2651,7 +3394,7 @@ function cleanupUpgradeLedgerBackups({
     if (!force && fsImpl.existsSync(markerPath)) {
       const parsed = JSON.parse(fsImpl.readFileSync(markerPath, 'utf8'));
       if (parsed && parsed.cleanedVersion === LEDGER_BACKUP_CLEANUP_MARKER_VERSION &&
-          parsed.ledgerPath === resolvedLedgerPath) {
+        parsed.ledgerPath === resolvedLedgerPath) {
         return { ok: true, skipped: true, reason: 'already_cleaned', ledgerPath: resolvedLedgerPath, removedCount: 0 };
       }
     }
@@ -2756,12 +3499,9 @@ function buildRepairAndMigrateLedgerExecutor({
         : null;
 
       // 保护极近期（3分钟内）实时确认的新增调用，避免在 transcript 落盘前或窗口同步间隙被误清除（不写入修复版本号以便稳定后复核）
-      if (copy.accountAttributionConfidence === 'live_confirmed_account' && curScope && !force) {
-        const obsMs = Number(copy.liveObservedAtMs) || (copy.updatedAt ? Date.parse(copy.updatedAt) : NaN) || Number(copy.timestamp);
-        if (Number.isFinite(obsMs) && (Date.now() - obsMs) >= 0 && (Date.now() - obsMs) < 180000) {
-          nextCalls[k] = copy;
-          continue;
-        }
+      if (!force && isLiveProtectedAttributionRecord(copy)) {
+        nextCalls[k] = copy;
+        continue;
       }
 
       // 显式保留用户/实验硬绑定的账号记录（keepalive / explicit email），其余均依据权威时间戳严格复核
@@ -2851,14 +3591,24 @@ function buildRepairAndMigrateLedgerExecutor({
     }
 
     const after = summarizeCounts(nextCalls);
+    const safeSuffix = sanitizeBackupSuffix(backupSuffix);
+    const shouldSave = !dryRun && hasContentChange;
     let backupPath = null;
     let prunedBackups = null;
-    if (!dryRun && hasContentChange) {
+    if (shouldSave) {
       if (fs.existsSync(resolvedLedgerPath)) {
-        const tsTag = backupSuffix || `${Date.now()}`;
-        backupPath = `${resolvedLedgerPath}.bak-pre-elv89-${tsTag}`;
-        fs.copyFileSync(resolvedLedgerPath, backupPath);
-        prunedBackups = pruneLedgerRepairBackups(resolvedLedgerPath, { keep: maxBackups });
+        const existingBackups = (!force && !safeSuffix)
+          ? listLedgerRepairBackups(resolvedLedgerPath, fs)
+          : [];
+        if (existingBackups.length > 0) {
+          backupPath = existingBackups[0].path;
+          prunedBackups = pruneLedgerRepairBackups(resolvedLedgerPath, { keep: maxBackups });
+        } else {
+          const tsTag = safeSuffix || `${Date.now()}`;
+          backupPath = `${resolvedLedgerPath}.bak-pre-elv89-${tsTag}`;
+          fs.copyFileSync(resolvedLedgerPath, backupPath);
+          prunedBackups = pruneLedgerRepairBackups(resolvedLedgerPath, { keep: maxBackups });
+        }
       }
       const draftLedger = {
         ...ledger,
@@ -2928,9 +3678,9 @@ function summarizeAccountWindowUsage({ agDir, ledgerPath, accountScopeKey, poolK
     const ts = getCallSortTimestamp(call) ?? Number(call.timestamp) ?? (call.created_at ? Date.parse(call.created_at) : NaN);
     if (!Number.isFinite(ts) || ts < start || ts > end) continue;
     if (poolKey) {
-      const rawModel = call.modelExactId || extractModelString(call) || call.model || '';
-      const sharedKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(rawModel || call.modelLabel || '') : null;
-      const singlePoolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(rawModel, call.modelLabel || '') : null;
+      const modelHint = call.modelLabel || extractModelString(call) || call.model || '';
+      const sharedKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(call, modelHint) : null;
+      const singlePoolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(call, modelHint) : null;
       if (sharedKey !== poolKey && singlePoolKey !== poolKey) continue;
     }
     const u = getCallTokenBreakdown(call);
@@ -3276,6 +4026,52 @@ function resolveAccountCustomPlan(customSettingsAll, currentAccountKey) {
   return null;
 }
 
+const DEFAULT_VIEW_PREFS = Object.freeze({
+  heatView: 'daily',
+  modelUsagePeriodDays: 7,
+  speedRangeDays: '7',
+  costScope: 'period',
+  contextTrendMode: 'total',
+  contextTrendGranularity: 'step',
+  timelineDeltaOnly: false,
+  timelineSortOrder: 'newest',
+  reqLogSortBy: 'time_desc'
+});
+
+const VALID_VIEW_PREF_SETS = {
+  heatView: new Set(['daily', 'weekly', 'monthly', 'yearly', 'cum']),
+  modelUsagePeriodDays: new Set([7, 30]),
+  speedRangeDays: new Set(['7', '30', 'all']),
+  costScope: new Set(['period', 'all']),
+  contextTrendMode: new Set(['total', 'delta']),
+  contextTrendGranularity: new Set(['step', 'turn']),
+  timelineSortOrder: new Set(['newest', 'oldest', 'delta_desc']),
+  reqLogSortBy: new Set(['time_desc', 'tokens_desc', 'cost_desc', 'duration_desc', 'speed_desc'])
+};
+
+/**
+ * 清洗并规范化视图默认偏好 9 字段（ELV-99），过滤非法取值并回退默认值
+ */
+function sanitizeDefaultViewPrefs(raw, fallbackSavedHeatView = null) {
+  const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const fbHeat = (typeof fallbackSavedHeatView === 'string' && VALID_VIEW_PREF_SETS.heatView.has(fallbackSavedHeatView))
+    ? fallbackSavedHeatView
+    : DEFAULT_VIEW_PREFS.heatView;
+  const rawPeriod = Number(src.modelUsagePeriodDays);
+  const rawSpeed = src.speedRangeDays != null ? String(src.speedRangeDays) : '';
+  return {
+    heatView: VALID_VIEW_PREF_SETS.heatView.has(src.heatView) ? src.heatView : fbHeat,
+    modelUsagePeriodDays: VALID_VIEW_PREF_SETS.modelUsagePeriodDays.has(rawPeriod) ? rawPeriod : DEFAULT_VIEW_PREFS.modelUsagePeriodDays,
+    speedRangeDays: VALID_VIEW_PREF_SETS.speedRangeDays.has(rawSpeed) ? rawSpeed : DEFAULT_VIEW_PREFS.speedRangeDays,
+    costScope: VALID_VIEW_PREF_SETS.costScope.has(src.costScope) ? src.costScope : DEFAULT_VIEW_PREFS.costScope,
+    contextTrendMode: VALID_VIEW_PREF_SETS.contextTrendMode.has(src.contextTrendMode) ? src.contextTrendMode : DEFAULT_VIEW_PREFS.contextTrendMode,
+    contextTrendGranularity: VALID_VIEW_PREF_SETS.contextTrendGranularity.has(src.contextTrendGranularity) ? src.contextTrendGranularity : DEFAULT_VIEW_PREFS.contextTrendGranularity,
+    timelineDeltaOnly: typeof src.timelineDeltaOnly === 'boolean' ? src.timelineDeltaOnly : DEFAULT_VIEW_PREFS.timelineDeltaOnly,
+    timelineSortOrder: VALID_VIEW_PREF_SETS.timelineSortOrder.has(src.timelineSortOrder) ? src.timelineSortOrder : DEFAULT_VIEW_PREFS.timelineSortOrder,
+    reqLogSortBy: VALID_VIEW_PREF_SETS.reqLogSortBy.has(src.reqLogSortBy) ? src.reqLogSortBy : DEFAULT_VIEW_PREFS.reqLogSortBy
+  };
+}
+
 function getPluginSettings(options = {}) {
   const targetDir = typeof options === 'string'
     ? options
@@ -3287,6 +4083,9 @@ function getPluginSettings(options = {}) {
   const contextPreferences = settings.contextPreferences || {};
   const validDockPositions = new Set(['flow', 'fixed', 'aux', 'page', 'hide']);
   const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
+  const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
+  const defaultViewPrefs = sanitizeDefaultViewPrefs(uiPrefs.defaultViewPrefs, uiPrefs.savedHeatView);
+  const hasExplicitPanelLanguage = typeof uiPrefs.panelLanguage === 'string' && validPanelLanguages.has(uiPrefs.panelLanguage);
   return {
     ok: true,
     customPlan,
@@ -3294,12 +4093,16 @@ function getPluginSettings(options = {}) {
     contextPreferences,
     contextScopeMode: settings.contextScopeMode || 'unified',
     contextUnifiedPreference: settings.contextUnifiedPreference || { mode: 'default', limitTokens: null },
-    savedHeatView: uiPrefs.savedHeatView,
+    savedHeatView: uiPrefs.savedHeatView || defaultViewPrefs.heatView,
+    defaultViewPrefs,
     autoCheckUpdate: uiPrefs.autoCheckUpdate,
     allowBetaUpdates: uiPrefs.allowBetaUpdates === true,
     dockPosition: validDockPositions.has(uiPrefs.dockPosition) ? uiPrefs.dockPosition : 'flow',
     quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
-    panelLanguage: uiPrefs.panelLanguage || 'zh-CN',
+    panelLanguage: hasExplicitPanelLanguage ? uiPrefs.panelLanguage : 'zh-CN',
+    panelLanguageExplicit: hasExplicitPanelLanguage,
+    showTurnFooterStats: uiPrefs.showTurnFooterStats !== false,
+    showComposerQuotaSummary: uiPrefs.showComposerQuotaSummary !== false,
     cliAccountEmail: uiPrefs.cliAccountEmail || null,
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
@@ -3412,10 +4215,30 @@ function savePluginSettings(payload = {}, options = {}) {
   if (typeof payload.panelLanguage === 'string' && validPanelLanguages.has(payload.panelLanguage)) {
     topLevelUiPrefs.panelLanguage = payload.panelLanguage;
   }
+  if (typeof payload.showTurnFooterStats === 'boolean') {
+    topLevelUiPrefs.showTurnFooterStats = payload.showTurnFooterStats;
+  }
+  if (typeof payload.showComposerQuotaSummary === 'boolean') {
+    topLevelUiPrefs.showComposerQuotaSummary = payload.showComposerQuotaSummary;
+  }
   if (typeof payload.cliAccountEmail === 'string') {
     topLevelUiPrefs.cliAccountEmail = payload.cliAccountEmail.trim() || null;
   } else if (payload.cliAccountEmail === null) {
     topLevelUiPrefs.cliAccountEmail = null;
+  }
+  const rawViewPrefs = (payload.defaultViewPrefs && typeof payload.defaultViewPrefs === 'object' && !Array.isArray(payload.defaultViewPrefs))
+    ? payload.defaultViewPrefs
+    : ((payload.uiPreferences?.defaultViewPrefs && typeof payload.uiPreferences.defaultViewPrefs === 'object' && !Array.isArray(payload.uiPreferences.defaultViewPrefs))
+      ? payload.uiPreferences.defaultViewPrefs
+      : null);
+  if (rawViewPrefs) {
+    const mergedRaw = {
+      ...(settings.uiPreferences?.defaultViewPrefs || {}),
+      ...rawViewPrefs
+    };
+    const sanitizedViews = sanitizeDefaultViewPrefs(mergedRaw, topLevelUiPrefs.savedHeatView || settings.uiPreferences?.savedHeatView);
+    topLevelUiPrefs.defaultViewPrefs = sanitizedViews;
+    topLevelUiPrefs.savedHeatView = sanitizedViews.heatView;
   }
   const incomingUiPrefs = (payload.uiPreferences && typeof payload.uiPreferences === 'object' && !Array.isArray(payload.uiPreferences))
     ? { ...payload.uiPreferences, ...topLevelUiPrefs }
@@ -3424,6 +4247,9 @@ function savePluginSettings(payload = {}, options = {}) {
   if (incomingUiPrefs) {
     if (incomingUiPrefs.panelLanguage !== undefined && !validPanelLanguages.has(incomingUiPrefs.panelLanguage)) {
       delete incomingUiPrefs.panelLanguage;
+    }
+    if (incomingUiPrefs.defaultViewPrefs && !topLevelUiPrefs.defaultViewPrefs) {
+      incomingUiPrefs.defaultViewPrefs = sanitizeDefaultViewPrefs(incomingUiPrefs.defaultViewPrefs, incomingUiPrefs.savedHeatView || settings.uiPreferences?.savedHeatView);
     }
     const nextUi = {
       ...(settings.uiPreferences || {}),
@@ -3670,7 +4496,14 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     } else {
       try {
         const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
-        const api = await connector(options.origin ? { origin: options.origin } : undefined);
+        const connectOpts = {};
+        if (options.origin) connectOpts.origin = options.origin;
+        if (options.authBootstrap !== undefined) connectOpts.authBootstrap = options.authBootstrap;
+        if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
+        if (options.homeDir) connectOpts.homeDir = options.homeDir;
+        if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
+        if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
+        const api = await connector(Object.keys(connectOpts).length ? connectOpts : undefined);
         const [uRes, qRes] = await Promise.allSettled([
           api.call('GetUserStatus', {}),
           api.call('RetrieveUserQuotaSummary', {})
@@ -3854,7 +4687,14 @@ async function fetchUserStatusFromHost(options = {}) {
   }
   try {
     const { connect } = require('./local-api');
-    const api = await connect(options.origin ? { origin: options.origin } : undefined);
+    const connectOpts = {};
+    if (options.origin) connectOpts.origin = options.origin;
+    if (options.authBootstrap !== undefined) connectOpts.authBootstrap = options.authBootstrap;
+    if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
+    if (options.homeDir) connectOpts.homeDir = options.homeDir;
+    if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
+    if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
+    const api = await connect(Object.keys(connectOpts).length ? connectOpts : undefined);
     const [res, availRes] = await Promise.all([
       api.call('GetUserStatus', {}),
       api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
@@ -3890,6 +4730,384 @@ let cachedTokenHistoryScope = '';
 let currentScanSequence = 0;
 const TRANSCRIPT_SKIP_DIRS = new Set(['steps', 'tasks', 'scratch', 'media', 'artifacts', 'node_modules', '.git', '__pycache__']);
 const transcriptFileCache = new Map();
+
+function parseEventDurSec(rawDur) {
+  if (rawDur == null) return null;
+  if (typeof rawDur === 'number' && Number.isFinite(rawDur) && rawDur >= 0) return Number(rawDur.toFixed(2));
+  if (typeof rawDur === 'string') {
+    const m = rawDur.trim().match(/^(\d+(?:\.\d+)?)\s*s$/i);
+    if (m) return Number(Number(m[1]).toFixed(2));
+    const n = Number(rawDur);
+    if (Number.isFinite(n) && n >= 0) return Number(n.toFixed(2));
+  } else if (typeof rawDur === 'object') {
+    const sec = Number(rawDur.seconds || 0) + Number(rawDur.nanos || 0) / 1e9;
+    if (Number.isFinite(sec) && sec >= 0) return Number(sec.toFixed(2));
+  }
+  return null;
+}
+
+function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
+  if (!line) return null;
+  const cleanLine = line.charCodeAt(0) === 0xFEFF ? line.slice(1) : line;
+  if (!cleanLine.trim()) return null;
+  let event = null;
+  try {
+    event = JSON.parse(cleanLine);
+  } catch {
+    return null;
+  }
+
+  let hasValidCreatedAt = false;
+  if (event && event.created_at) {
+    const d = new Date(event.created_at);
+    if (!Number.isNaN(d.getTime())) {
+      hasValidCreatedAt = true;
+    }
+  }
+  if (!hasValidCreatedAt) return null;
+
+  let inp = 0, outp = 0, cap = 0, thinking = 0;
+  const model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
+  const modelExactId = event.chatModel?.modelId || event.modelId || '';
+  const modelLabel = event.chatModel?.modelDisplayName || '';
+
+  if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
+    inp = Number(event.input_tokens || 0);
+    outp = Number(event.output_tokens || 0);
+    cap = Number(event.cache_read_tokens || 0);
+    thinking = Number(event.thinking_output_tokens || 0);
+  } else if (event.chatModel?.usage) {
+    const u = event.chatModel.usage;
+    inp = Number(u.inputTokens || 0);
+    outp = Number(u.outputTokens || 0);
+    cap = Number(u.cacheReadTokens || 0);
+    thinking = Number(u.thinkingOutputTokens || 0);
+  }
+
+  const tot = inp + outp + cap;
+  if (tot > 0) {
+    const cascadeId = String(event.cascadeId || (brainMatch ? brainMatch[1] : path.basename(jobPath, '.jsonl')));
+    const rawStep = event.step_index ?? event.stepIndex;
+    const parsedStep = rawStep !== undefined && rawStep !== null && rawStep !== '' ? Number(rawStep) : NaN;
+    const stepIndex = Number.isInteger(parsedStep) && parsedStep >= 0 ? parsedStep : null;
+    const fallbackScope = (event.cascadeId || brainMatch) ? cascadeId : jobPath;
+    const eventId = extractCallId(event, fallbackScope, stepIndex ?? fallbackLineIdx);
+    const evTtft = parseEventDurSec(event.chatModel?.timeToFirstToken ?? event.ttftSec);
+    const evStream = parseEventDurSec(event.chatModel?.streamingDuration ?? event.streamingSec);
+    const evError = event.error ? String(event.error).slice(0, 200) : '';
+    const evStatus = event.status === 'RUNNING' ? 'streaming' : 'final';
+
+    return {
+      eventId,
+      cascadeId,
+      stepIndex,
+      model,
+      ...(modelExactId ? { modelExactId } : {}),
+      ...(modelLabel ? { modelLabel } : {}),
+      ...(evTtft !== null ? { ttftSec: evTtft } : {}),
+      ...(evStream !== null ? { streamingSec: evStream } : {}),
+      ...(evError ? { error: evError } : {}),
+      status: evStatus,
+      inp,
+      outp,
+      cap,
+      thinking,
+      tot,
+      created_at: event.created_at,
+      _hasExplicitId: !isStepFallbackCallId(eventId, cascadeId)
+    };
+  }
+
+  return {
+    tot: 0,
+    created_at: event.created_at
+  };
+}
+
+function cloneStepStateMap(srcMap) {
+  const copy = new Map();
+  if (!srcMap || !(srcMap instanceof Map)) return copy;
+  for (const [step, list] of srcMap.entries()) {
+    copy.set(step, list.map(item => ({ ...item })));
+  }
+  return copy;
+}
+
+/**
+ * 为缺失显式 responseId/callId 的记录分配确定性 step 键：
+ * 同步重复镜像或流式增量更新复用原 eventId，而回退/编辑/重发在同 stepIndex 产生的独立调用则分配 @2/@3 后缀防止碰撞。
+ */
+function assignDeterministicStepEventId(rec, stepStateMap) {
+  if (!rec || !(rec.tot > 0) || rec.stepIndex === null || rec._hasExplicitId) return rec;
+  const normModel = String(normalizeModelId(rec.model) || rec.model || '').trim().toLowerCase();
+  const tsMs = Date.parse(rec.created_at);
+  let list = stepStateMap.get(rec.stepIndex);
+  let matchedPrev = null;
+
+  if (list) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const prev = list[i];
+      const exactSamePayload =
+        prev.normModel === normModel &&
+        prev.inp === rec.inp &&
+        prev.cap === rec.cap &&
+        prev.out === rec.outp &&
+        prev.created_at === rec.created_at;
+      if (exactSamePayload) {
+        matchedPrev = prev;
+        break;
+      }
+      const modelsCompat = !prev.normModel || !normModel || prev.normModel === normModel || areModelsCompatible(prev.rawModel, rec.model);
+      const timeClose = Number.isFinite(tsMs) && Number.isFinite(prev.tsMs)
+        ? Math.abs(tsMs - prev.tsMs) <= 120000
+        : prev.created_at === rec.created_at;
+      if (modelsCompat && timeClose) {
+        if (prev.status === 'streaming') {
+          matchedPrev = prev;
+          break;
+        }
+        if (rec.status === 'final' && prev.inp === rec.inp && prev.cap === rec.cap && rec.outp >= prev.out && prev.created_at === rec.created_at) {
+          matchedPrev = prev;
+          break;
+        }
+      }
+    }
+  }
+
+  if (matchedPrev) {
+    rec.eventId = matchedPrev.eventId;
+    if (rec.tot > matchedPrev.tot || (rec.tot === matchedPrev.tot && rec.outp >= matchedPrev.out) || rec.status === 'final') {
+      matchedPrev.inp = rec.inp;
+      matchedPrev.cap = rec.cap;
+      matchedPrev.out = rec.outp;
+      matchedPrev.tot = rec.tot;
+      matchedPrev.status = rec.status;
+      matchedPrev.created_at = rec.created_at;
+      if (Number.isFinite(tsMs)) matchedPrev.tsMs = tsMs;
+      if (normModel && (!matchedPrev.normModel || getCollectorModelRank(rec.model) > getCollectorModelRank(matchedPrev.rawModel))) {
+        matchedPrev.normModel = normModel;
+        matchedPrev.rawModel = rec.model;
+      }
+    }
+    return rec;
+  }
+
+  if (!list) {
+    list = [];
+    stepStateMap.set(rec.stepIndex, list);
+  }
+  const occ = list.length + 1;
+  rec.eventId = occ === 1
+    ? `${rec.cascadeId}#${rec.stepIndex}`
+    : `${rec.cascadeId}#${rec.stepIndex}@${occ}`;
+  list.push({
+    eventId: rec.eventId,
+    created_at: rec.created_at,
+    tsMs,
+    normModel,
+    rawModel: rec.model,
+    inp: rec.inp,
+    cap: rec.cap,
+    out: rec.outp,
+    tot: rec.tot,
+    status: rec.status
+  });
+  return rec;
+}
+
+function readFdExactRange(fd, offset, length) {
+  if (length <= 0) return Buffer.alloc(0);
+  const buf = Buffer.allocUnsafe(length);
+  let totalRead = 0;
+  while (totalRead < length) {
+    const n = fs.readSync(fd, buf, totalRead, length - totalRead, offset + totalRead);
+    if (!n) break;
+    totalRead += n;
+  }
+  return totalRead < length ? buf.subarray(0, totalRead) : buf;
+}
+
+/**
+ * 按字节偏移增量读取并结构化解析 JSONL transcript（整合 PR #36 + Issue #77 确定性防撞）：
+ * - 通过 size + mtimeMs + ino + 头部 64B + 块尾 32B 锚点校验识别轮换/截断/同大小覆写，失配自动回退全量；
+ * - 仅将末尾完整 `\n` 之前的内容提交到 parsedOffset，保障跨字节 UTF-8 多字节字符与无换行尾行安全。
+ */
+function loadIncrementalTranscriptRecords(jobPath, st, cacheMap = transcriptFileCache) {
+  if (!st) return { records: [], mode: 'full', bytesRead: 0, cachedEntry: null };
+  const brainMatch = String(jobPath).match(/[\\/]brain[\\/]([^\\/]+)[\\/]/i);
+  if (isFsMonkeyPatched()) {
+    const content = fs.readFileSync(jobPath, 'utf8');
+    const stepStateMap = new Map();
+    const records = [];
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const rec = parseTranscriptLineRecord(lines[i], i, jobPath, brainMatch);
+      if (rec) {
+        assignDeterministicStepEventId(rec, stepStateMap);
+        records.push(rec);
+      }
+    }
+    return { records, mode: 'full', bytesRead: Buffer.byteLength(content, 'utf8'), cachedEntry: null };
+  }
+  const cachedFile = cacheMap.get(jobPath);
+  const sameIno = st.ino == null || cachedFile?.ino == null || cachedFile.ino === st.ino;
+  if (cachedFile && cachedFile.size === st.size && cachedFile.mtimeMs === st.mtimeMs && sameIno) {
+    return { records: cachedFile.records, mode: 'cache-hit', bytesRead: 0, cachedEntry: cachedFile };
+  }
+
+  let canResume = Boolean(
+    cachedFile &&
+    sameIno &&
+    Number.isFinite(cachedFile.parsedOffset) &&
+    cachedFile.parsedOffset >= 0 &&
+    st.size >= cachedFile.parsedOffset &&
+    Array.isArray(cachedFile.committedRecords) &&
+    (cachedFile.parsedOffset === 0 || (Buffer.isBuffer(cachedFile.anchorBuf) && cachedFile.anchorBuf.length > 0))
+  );
+
+  let committedRecords = canResume ? cachedFile.committedRecords : [];
+  let committedLineCount = canResume ? (cachedFile.committedLineCount || 0) : 0;
+  let committedStepState = canResume ? cloneStepStateMap(cachedFile.committedStepState) : new Map();
+  let startOffset = canResume ? cachedFile.parsedOffset : 0;
+  let newHeadBuf = (canResume && Buffer.isBuffer(cachedFile?.headBuf) && cachedFile.headBuf.length > 0)
+    ? cachedFile.headBuf
+    : Buffer.alloc(0);
+  let newAnchorBuf = (canResume && Buffer.isBuffer(cachedFile?.anchorBuf))
+    ? cachedFile.anchorBuf
+    : Buffer.alloc(0);
+
+  let bytesRead = 0;
+  let chunkBuf = Buffer.alloc(0);
+  let fullHeadCandidate = null;
+  let fullAnchorPrefix = null;
+
+  const fd = fs.openSync(jobPath, 'r');
+  try {
+    if (canResume && cachedFile.parsedOffset > 0) {
+      if (Buffer.isBuffer(cachedFile.headBuf) && cachedFile.headBuf.length > 0) {
+        const curHead = readFdExactRange(fd, 0, cachedFile.headBuf.length);
+        bytesRead += curHead.length;
+        if (!curHead.equals(cachedFile.headBuf)) {
+          canResume = false;
+        }
+      }
+      if (canResume) {
+        const anchorLen = cachedFile.anchorBuf.length;
+        const curAnchor = readFdExactRange(fd, cachedFile.parsedOffset - anchorLen, anchorLen);
+        bytesRead += curAnchor.length;
+        if (!curAnchor.equals(cachedFile.anchorBuf)) {
+          canResume = false;
+        } else {
+          fullAnchorPrefix = curAnchor;
+        }
+      }
+    }
+
+    if (canResume) {
+      chunkBuf = readFdExactRange(fd, startOffset, st.size - startOffset);
+      bytesRead += chunkBuf.length;
+      if (newHeadBuf.length === 0 && startOffset === 0 && chunkBuf.length > 0) {
+        fullHeadCandidate = Buffer.from(chunkBuf.subarray(0, Math.min(256, chunkBuf.length)));
+      }
+    } else {
+      startOffset = 0;
+      committedRecords = [];
+      committedLineCount = 0;
+      committedStepState = new Map();
+      newHeadBuf = Buffer.alloc(0);
+      newAnchorBuf = Buffer.alloc(0);
+      chunkBuf = readFdExactRange(fd, 0, st.size);
+      bytesRead += chunkBuf.length;
+      if (chunkBuf.length > 0) {
+        fullHeadCandidate = Buffer.from(chunkBuf.subarray(0, Math.min(256, chunkBuf.length)));
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const lastNl = chunkBuf.lastIndexOf(0x0A);
+  const newCommittedRecords = committedRecords.slice();
+  const newCommittedStepState = committedStepState;
+  let newParsedOffset = startOffset;
+  let newCommittedLineCount = committedLineCount;
+
+  if (lastNl >= 0) {
+    const committedText = chunkBuf.subarray(0, lastNl + 1).toString('utf8');
+    const trimmedText = committedText.endsWith('\r\n') ? committedText.slice(0, -2) : committedText.slice(0, -1);
+    const committedLines = trimmedText.split(/\r?\n/);
+    for (let i = 0; i < committedLines.length; i++) {
+      const rec = parseTranscriptLineRecord(committedLines[i], newCommittedLineCount + i, jobPath, brainMatch);
+      if (rec) {
+        assignDeterministicStepEventId(rec, newCommittedStepState);
+        newCommittedRecords.push(rec);
+      }
+    }
+    newParsedOffset = startOffset + lastNl + 1;
+    newCommittedLineCount += committedLines.length;
+    if (fullHeadCandidate) {
+      newHeadBuf = fullHeadCandidate;
+    } else if (newHeadBuf.length === 0 && startOffset === 0) {
+      newHeadBuf = Buffer.from(chunkBuf.subarray(0, Math.min(256, chunkBuf.length)));
+    }
+    const committedSlice = chunkBuf.subarray(0, lastNl + 1);
+    if (committedSlice.length >= 32) {
+      newAnchorBuf = Buffer.from(committedSlice.subarray(committedSlice.length - 32));
+    } else if (fullAnchorPrefix && fullAnchorPrefix.length > 0) {
+      const combined = Buffer.concat([fullAnchorPrefix, committedSlice]);
+      newAnchorBuf = Buffer.from(combined.subarray(Math.max(0, combined.length - 32)));
+    } else {
+      newAnchorBuf = Buffer.from(committedSlice);
+    }
+  } else if (!canResume && fullHeadCandidate) {
+    newHeadBuf = fullHeadCandidate;
+  }
+
+  const tailStart = lastNl >= 0 ? lastNl + 1 : 0;
+  let fileRecords = newCommittedRecords;
+  if (tailStart < chunkBuf.length) {
+    const tailStr = chunkBuf.subarray(tailStart).toString('utf8');
+    const tailLines = tailStr.split(/\r?\n/);
+    const tailRecords = [];
+    const tailStepState = cloneStepStateMap(newCommittedStepState);
+    for (let i = 0; i < tailLines.length; i++) {
+      const rec = parseTranscriptLineRecord(tailLines[i], newCommittedLineCount + i, jobPath, brainMatch);
+      if (rec) {
+        assignDeterministicStepEventId(rec, tailStepState);
+        tailRecords.push(rec);
+      }
+    }
+    if (tailRecords.length > 0) {
+      fileRecords = [...newCommittedRecords, ...tailRecords];
+    }
+  }
+
+  if (cacheMap.size > 1000 && !cacheMap.has(jobPath)) {
+    const oldestKey = cacheMap.keys().next().value;
+    if (oldestKey) cacheMap.delete(oldestKey);
+  }
+  const cacheEntry = {
+    size: st.size,
+    mtimeMs: st.mtimeMs,
+    ino: st.ino ?? null,
+    headBuf: newHeadBuf,
+    parsedOffset: newParsedOffset,
+    committedLineCount: newCommittedLineCount,
+    anchorBuf: newAnchorBuf,
+    committedRecords: newCommittedRecords,
+    committedStepState: newCommittedStepState,
+    records: fileRecords,
+    hasPendingDbMeta: undefined
+  };
+  cacheMap.set(jobPath, cacheEntry);
+
+  return {
+    records: fileRecords,
+    mode: canResume ? 'incremental' : 'full',
+    bytesRead,
+    cachedEntry: cacheEntry
+  };
+}
 
 const IGNORED_WSL_DISTRO_RE = /^(?:docker-desktop(?:-data)?|rancher-desktop(?:-data)?|podman-machine(?:-[a-z0-9_-]+)?)$/i;
 const WSL_LXSS_REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss';
@@ -4134,6 +5352,16 @@ async function discoverWslGeminiDirsAsync(options = {}) {
     return { distros: [], roots: [], desktopDirs: [], cliDirs: [], skippedRoots: [] };
   }
   const hasCustomOverride = Boolean(options.fs || options.wslDistros || options.wslProbeFn || options.wslProbeTimeoutMs);
+  loadPersistedPricingCatalog(options);
+  const isRuntimeHostScan = !options.agDir && !options.fs && !options.hostFetcher && !process.env.NODE_TEST_CONTEXT;
+  if (isRuntimeHostScan) {
+    const cat = getDynamicPricingCatalog();
+    const isCatalogStale = !cat.fetchedAtMs || (Date.now() - cat.fetchedAtMs) >= PRICING_CATALOG_TTL_MS;
+    if (isCatalogStale && (Date.now() - _lastPricingAutoAttemptMs) >= PRICING_AUTO_RETRY_COOLDOWN_MS) {
+      _lastPricingAutoAttemptMs = Date.now();
+      void syncPricingCatalogAsync({ force: false }).catch(() => { });
+    }
+  }
   const scopeKey = getEffectiveScanScopeKey(options);
   if (!hasCustomOverride && !options.force && wslDiscoveryCache.value && wslDiscoveryCache.scopeKey === scopeKey && (Date.now() - wslDiscoveryCache.at) < WSL_DISCOVERY_CACHE_TTL_MS) {
     return wslDiscoveryCache.value;
@@ -4743,6 +5971,8 @@ function getDbFileCacheSig(dbPath) {
     } catch { }
     return {
       sig: `${stDb.size}:${stDb.mtimeMs}:${hasWal ? 1 : 0}:${walSize}:${walMtimeMs}:${hasShm ? 1 : 0}`,
+      dbSize: stDb.size || 0,
+      dbMtimeMs: stDb.mtimeMs || 0,
       hasWal,
       walSize,
       hasShm
@@ -4779,6 +6009,11 @@ function loadConversationDbMeta(dbPath, selfCascadeId = '') {
   const sigInfo = getDbFileCacheSig(dbPath);
   if (!sigInfo) {
     return { ...emptyResult, skippedReason: 'stat_failed' };
+  }
+
+  // 0 字节文件代表宿主正创建/初始化 SQLite 头部，跳过读取以零干扰避开建库锁竞争
+  if (!sigInfo.dbSize) {
+    return { ...emptyResult, readMode: 'skipped', skippedReason: 'initializing_empty_db' };
   }
 
   const cacheKey = process.platform === 'win32' ? String(dbPath).toLowerCase() : String(dbPath);
@@ -5375,90 +6610,23 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
     try {
       const st = fs.statSync(job.path);
-      const cachedFile = transcriptFileCache.get(job.path);
-      let fileRecords = null;
+      const loaded = loadIncrementalTranscriptRecords(job.path, st, transcriptFileCache);
+      const fileRecords = loaded.records;
 
-      if (cachedFile && cachedFile.size === st.size && cachedFile.mtimeMs === st.mtimeMs) {
-        fileRecords = cachedFile.records;
+      if (loaded.mode === 'cache-hit') {
+        if (loaded.cachedEntry && loaded.cachedEntry.hasPendingDbMeta !== false) {
+          backfillMissingModelsFromConversationDb(fileRecords, job.convDir, options);
+          loaded.cachedEntry.hasPendingDbMeta = fileRecords.some(
+            r => r && r.tot > 0 && (needsDbLabelEnrichment(r) || !r.modelExactId || r.ttftSec == null || r.streamingSec == null)
+          );
+        }
       } else {
-        fileRecords = [];
-        const brainMatch = String(job.path).match(/[\\/]brain[\\/]([^\\/]+)[\\/]/i);
-        const content = fs.readFileSync(job.path, 'utf8');
-        const lines = content.split(/\r?\n/);
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line || !line.trim()) continue;
-          let event = null;
-          try {
-            event = JSON.parse(line);
-          } catch {
-            continue;
-          }
-
-          let hasValidCreatedAt = false;
-          if (event.created_at) {
-            const d = new Date(event.created_at);
-            if (!Number.isNaN(d.getTime())) {
-              hasValidCreatedAt = true;
-            }
-          }
-          if (!hasValidCreatedAt) continue;
-
-          let inp = 0, outp = 0, cap = 0, thinking = 0;
-          const model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
-          const modelExactId = event.chatModel?.modelId || event.modelId || '';
-          const modelLabel = event.chatModel?.modelDisplayName || '';
-
-          if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
-            inp = Number(event.input_tokens || 0);
-            outp = Number(event.output_tokens || 0);
-            cap = Number(event.cache_read_tokens || 0);
-            thinking = Number(event.thinking_output_tokens || 0);
-          } else if (event.chatModel?.usage) {
-            const u = event.chatModel.usage;
-            inp = Number(u.inputTokens || 0);
-            outp = Number(u.outputTokens || 0);
-            cap = Number(u.cacheReadTokens || 0);
-            thinking = Number(u.thinkingOutputTokens || 0);
-          }
-
-          const tot = inp + outp + cap;
-          if (tot > 0) {
-            // 唯一事件标识去重 (避免复制/软链接/重复日志相加)
-            const cascadeId = String(event.cascadeId || (brainMatch ? brainMatch[1] : path.basename(job.path, '.jsonl')));
-            const rawStep = event.step_index ?? event.stepIndex;
-            const parsedStep = rawStep !== undefined && rawStep !== null && rawStep !== '' ? Number(rawStep) : NaN;
-            const stepIndex = Number.isInteger(parsedStep) && parsedStep >= 0 ? parsedStep : null;
-            const fallbackScope = (event.cascadeId || brainMatch) ? cascadeId : job.path;
-            const eventId = extractCallId(event, fallbackScope, stepIndex ?? i);
-
-            fileRecords.push({
-              eventId,
-              cascadeId,
-              stepIndex,
-              model,
-              ...(modelExactId ? { modelExactId } : {}),
-              ...(modelLabel ? { modelLabel } : {}),
-              inp,
-              outp,
-              cap,
-              thinking,
-              tot,
-              created_at: event.created_at
-            });
-          } else {
-            fileRecords.push({
-              tot: 0,
-              created_at: event.created_at
-            });
-          }
-        }
         backfillMissingModelsFromConversationDb(fileRecords, job.convDir, options);
-        if (transcriptFileCache.size > 1000) {
-          const oldestKey = transcriptFileCache.keys().next().value;
-          if (oldestKey) transcriptFileCache.delete(oldestKey);
+        if (loaded.cachedEntry) {
+          loaded.cachedEntry.hasPendingDbMeta = fileRecords.some(
+            r => r && r.tot > 0 && (needsDbLabelEnrichment(r) || !r.modelExactId || r.ttftSec == null || r.streamingSec == null)
+          );
         }
-        transcriptFileCache.set(job.path, { size: st.size, mtimeMs: st.mtimeMs, records: fileRecords });
       }
 
       const jobConvNorm = job.convDir ? (process.platform === 'win32' ? path.resolve(job.convDir).toLowerCase() : path.resolve(job.convDir)) : '';
@@ -5472,16 +6640,49 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
 
         const existingReq = seenEvents.get(rec.eventId);
         if (existingReq) {
-          // 跨根重复事件绝不重复累加 Token；仅当新根回填/保留了更优模型标识时就地富化原记录
+          // 跨根/流式重复事件绝不重复累加 Token；仅当新行包含更完整用量、流式终态或更优模型标识时就地更新原记录
+          const isUsageUpdated = (
+            rec.tot > existingReq.totalTokens ||
+            (rec.tot === existingReq.totalTokens && rec.outp > existingReq.outputTokens) ||
+            (existingReq.status === 'streaming' && rec.status === 'final' && rec.tot >= existingReq.totalTokens)
+          );
+          if (isUsageUpdated) {
+            existingReq.inputTokens = rec.inp;
+            existingReq.cacheTokens = rec.cap;
+            existingReq.cacheReadTokens = rec.cap;
+            existingReq.outputTokens = rec.outp;
+            existingReq.thinkingTokens = rec.thinking;
+            existingReq.totalTokens = rec.tot;
+            existingReq.status = rec.status || existingReq.status;
+            existingReq.date = dateKey;
+            if (rec.created_at) existingReq.created_at = rec.created_at;
+            existingReq.timestamp = parsedDate.getTime();
+          }
           if (getCollectorModelRank(rec.model) > getCollectorModelRank(existingReq.model)) {
             existingReq.model = rec.model;
             existingReq.modelKey = normalizeModelId(rec.model);
+          }
+          if (isUsageUpdated || getCollectorModelRank(rec.model) >= getCollectorModelRank(existingReq.model)) {
             const enrichedCost = calculateRequestApiCost(existingReq);
             existingReq.isPriced = enrichedCost.isPriced;
             existingReq.costUSD = enrichedCost.costUSD ?? 0;
           }
           if (!existingReq.modelExactId && rec.modelExactId) existingReq.modelExactId = rec.modelExactId;
           if (!existingReq.modelLabel && rec.modelLabel) existingReq.modelLabel = rec.modelLabel;
+          if (existingReq.ttftSec == null && rec.ttftSec != null) existingReq.ttftSec = rec.ttftSec;
+          if (existingReq.streamingSec == null && rec.streamingSec != null) existingReq.streamingSec = rec.streamingSec;
+          if (existingReq.durationSec == null && (existingReq.ttftSec != null || existingReq.streamingSec != null)) {
+            const dSum = (existingReq.ttftSec != null && existingReq.streamingSec != null)
+              ? Number((Number(existingReq.ttftSec) + Number(existingReq.streamingSec)).toFixed(2))
+              : Number((existingReq.streamingSec ?? existingReq.ttftSec));
+            if (Number.isFinite(dSum) && dSum > 0) existingReq.durationSec = dSum;
+          }
+          if (existingReq.tps == null && existingReq.outputTokens > 0 && existingReq.durationSec > 0) {
+            existingReq.tps = Number((existingReq.outputTokens / existingReq.durationSec).toFixed(1));
+          }
+          if (existingReq.streamingTps == null && existingReq.outputTokens > 0 && existingReq.streamingSec >= 0.2) {
+            existingReq.streamingTps = Number((existingReq.outputTokens / existingReq.streamingSec).toFixed(1));
+          }
           // 若两个不同 convDir 下的非 UUID 同名会话共享同一真实 responseId（非 step 拼接键），证明是同一镜像会话
           if (
             !String(rec.eventId).includes('#') &&
@@ -5516,8 +6717,24 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         srcMap[dateKey].steps += 1;
 
         const modelKey = normalizeModelId(rec.model);
+        const recTtft = (rec.ttftSec != null && Number.isFinite(Number(rec.ttftSec)) && Number(rec.ttftSec) >= 0)
+          ? Number(Number(rec.ttftSec).toFixed(2))
+          : null;
+        const recStream = (rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) && Number(rec.streamingSec) >= 0)
+          ? Number(Number(rec.streamingSec).toFixed(2))
+          : null;
+        const recDuration = (recTtft !== null && recStream !== null)
+          ? Number((recTtft + recStream).toFixed(2))
+          : (recStream !== null && recStream > 0 ? recStream : (recTtft !== null && recTtft > 0 ? recTtft : null));
+        const recTps = (rec.outp > 0 && recDuration !== null && recDuration > 0)
+          ? Number((rec.outp / recDuration).toFixed(1))
+          : null;
+        const recStreamingTps = (rec.outp > 0 && recStream !== null && recStream >= 0.2)
+          ? Number((rec.outp / recStream).toFixed(1))
+          : null;
         const reqObj = {
           callId: rec.eventId,
+          ...(rec.responseId ? { responseId: rec.responseId } : {}),
           source: job.source,
           _convDirNorm: jobConvNorm,
           cascadeId: rec.cascadeId,
@@ -5525,6 +6742,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
           model: rec.model,
           ...(rec.modelExactId ? { modelExactId: rec.modelExactId } : {}),
           ...(rec.modelLabel ? { modelLabel: rec.modelLabel } : {}),
+          ...(recTtft !== null ? { ttftSec: recTtft } : {}),
+          ...(recStream !== null ? { streamingSec: recStream } : {}),
+          ...(recDuration !== null ? { durationSec: recDuration } : {}),
+          ...(recTps !== null ? { tps: recTps } : {}),
+          ...(recStreamingTps !== null ? { streamingTps: recStreamingTps } : {}),
+          ...(rec.error ? { error: rec.error } : {}),
+          ...(rec.parentCascadeId ? { parentCascadeId: rec.parentCascadeId } : {}),
+          ...(rec.subagentType ? { subagentType: rec.subagentType } : {}),
           modelKey,
           inputTokens: rec.inp,
           cacheTokens: rec.cap,
@@ -5532,7 +6757,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
           outputTokens: rec.outp,
           thinkingTokens: rec.thinking,
           totalTokens: rec.tot,
-          status: 'final',
+          status: rec.status || 'final',
           isEstimated: false,
           date: dateKey,
           dateSource: 'transcript',
@@ -5550,82 +6775,11 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     } catch { }
   }
 
-  // 6. 与旧归档做差异合并，防止简单相加或 Math.max 抹杀 CLI 增量
-  // 规则：若 (desktop + cli) < legacyV1，则把差额保留为 legacyUnallocated；否则认为已被新日志完全覆盖
-  const legacyDaily = legacyV1Archive.dailyMap || {};
-  const mergedDesktop = { ...(archiveV2.dailyMapBySource?.desktop || {}), ...scannedBySource.desktop };
-  const mergedCli = { ...(archiveV2.dailyMapBySource?.cli || {}), ...scannedBySource.cli };
-  const mergedLegacyUnallocated = {};
-
-  const allDateKeys = new Set([
-    ...Object.keys(legacyDaily),
-    ...Object.keys(mergedDesktop),
-    ...Object.keys(mergedCli)
-  ]);
-
-  const dailyMapAll = {};
-  for (const k of Array.from(allDateKeys).sort()) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue;
-    registerDate(k);
-    const dRec = mergedDesktop[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
-    const cRec = mergedCli[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
-    const lRec = legacyDaily[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
-
-    const scannedSum = (dRec.total || 0) + (cRec.total || 0);
-    let unallocatedDiff = Math.max(0, (lRec.total || 0) - scannedSum);
-
-    if (unallocatedDiff > 0) {
-      mergedLegacyUnallocated[k] = {
-        total: unallocatedDiff,
-        input: Math.max(0, (lRec.input || 0) - (dRec.input || 0) - (cRec.input || 0)),
-        output: Math.max(0, (lRec.output || 0) - (dRec.output || 0) - (cRec.output || 0)),
-        cache: Math.max(0, (lRec.cache || 0) - (dRec.cache || 0) - (cRec.cache || 0)),
-        steps: Math.max(0, (lRec.steps || 0) - (dRec.steps || 0) - (cRec.steps || 0))
-      };
-    }
-
-    const unRec = mergedLegacyUnallocated[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
-    dailyMapAll[k] = {
-      total: (dRec.total || 0) + (cRec.total || 0) + (unRec.total || 0),
-      input: (dRec.input || 0) + (cRec.input || 0) + (unRec.input || 0),
-      output: (dRec.output || 0) + (cRec.output || 0) + (unRec.output || 0),
-      cache: (dRec.cache || 0) + (cRec.cache || 0) + (unRec.cache || 0),
-      steps: (dRec.steps || 0) + (cRec.steps || 0) + (unRec.steps || 0)
-    };
-  }
-
-  // 7. 计算各项聚合统计指标
+  // 6. 自动识别套餐、加载归属窗口并先与既有持久化账本对齐，再由联合调用集合计算分来源与分日汇总（修复 Issue #77 删除会话吞用量问题）
   const now = new Date();
   const todayKey = formatLocalDateKey(now);
   const monthPrefix = todayKey.slice(0, 7);
   const yearPrefix = todayKey.slice(0, 4);
-  if (!earliestDate) earliestDate = todayKey;
-
-  let grandTotalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCacheTokens = 0, totalSteps = 0;
-  let todayTokens = 0, monthTokens = 0, yearTokens = 0;
-
-  for (const [k, v] of Object.entries(dailyMapAll)) {
-    if (!v) continue;
-    grandTotalTokens += v.total || 0;
-    totalInputTokens += v.input || 0;
-    totalOutputTokens += v.output || 0;
-    totalCacheTokens += v.cache || 0;
-    totalSteps += v.steps || 0;
-    if (k === todayKey) todayTokens += v.total || 0;
-    if (k.startsWith(monthPrefix)) monthTokens += v.total || 0;
-    if (k.startsWith(yearPrefix)) yearTokens += v.total || 0;
-  }
-
-  // 计算本期（本月自然月）分类汇总与步骤数
-  let currentMonthInput = 0, currentMonthOutput = 0, currentMonthCache = 0, currentMonthSteps = 0;
-  for (const [k, v] of Object.entries(dailyMapAll)) {
-    if (k.startsWith(monthPrefix) && v) {
-      currentMonthInput += v.input || 0;
-      currentMonthOutput += v.output || 0;
-      currentMonthCache += v.cache || 0;
-      currentMonthSteps += v.steps || 0;
-    }
-  }
 
   const totalConversations = Math.max(
     legacyV1Archive.maxConversations || 0,
@@ -5633,7 +6787,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     desktopPbCount + cliPbCount
   );
 
-  // 8. 自动识别套餐与用户自定义设置合并（实际读取优先于自定义优先于未知）
+  // 7. 自动识别套餐与用户自定义设置合并（实际读取优先于自定义优先于未知）
   let livePlanStatus = Object.prototype.hasOwnProperty.call(extraContext, 'livePlanStatus')
     ? extraContext.livePlanStatus
     : await fetchUserStatusFromHost(options);
@@ -5689,12 +6843,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   if (!options.readOnly && hasRealAccountStore && !options.skipAutoRepair && (!options.fs || options.fs === fs)) {
     try {
       const preRepairCalls = (loadPricingLedger(agDir).calls || {});
+      const nowForRepair = Date.now();
       const needsAttributionRepair = Object.values(preRepairCalls).some(rec =>
         rec &&
         typeof rec === 'object' &&
         rec.attributionRepairVersion !== CURRENT_ATTRIBUTION_REPAIR_VERSION &&
         isValidAccountScopeKey(rec.accountScopeKey) &&
-        rec.accountAttributionConfidence !== 'unattributed'
+        rec.accountAttributionConfidence !== 'unattributed' &&
+        !isLiveProtectedAttributionRecord(rec, nowForRepair)
       );
       if (needsAttributionRepair) {
         await repairAndMigrateAccountLedgerAsync({
@@ -5706,7 +6862,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     } catch { }
   }
 
-  // 结合持久化逐请求账本与本次扫描调用：先与既有账本做双阶段 1-to-1 对齐与富化，再仅将未匹配的已计价扫描请求落盘
+  // 8. 结合持久化逐请求账本与本次扫描调用：先与既有账本做双阶段 1-to-1 对齐与富化，再将所有未匹配的真实扫描调用（含未计价模型）落盘保留
   const ledgerReadOpt = options.readOnly ? { readOnly: true } : undefined;
   const initialCallsMap = loadPricingLedger(agDir, ledgerReadOpt).calls || {};
   const matchedTranscriptReqs = new Set();
@@ -5763,14 +6919,38 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     return cIsFallback || rIsFallback;
   };
 
+  // 统计账本中每个准确模型测速样本的时间下界（最多保留 MAX_SPEED_SAMPLES_PER_MODEL 条），避免老记录在被裁剪后每轮扫描反复触发无效写盘
+  const speedLimitPerModel = MAX_SPEED_SAMPLES_PER_MODEL || 200;
+  const speedSampleMinTsByModel = new Map();
+  {
+    const buckets = new Map();
+    for (const rec of Object.values(initialCallsMap)) {
+      if (!rec || !hasSpeedMetrics(rec)) continue;
+      const exactKey = String(rec.modelExactId || resolveStableModelId(rec) || rec.model || '').trim().toLowerCase();
+      if (!exactKey) continue;
+      if (!buckets.has(exactKey)) buckets.set(exactKey, []);
+      buckets.get(exactKey).push(getCallSortTimestamp(rec));
+    }
+    for (const [mKey, tsList] of buckets.entries()) {
+      if (tsList.length >= speedLimitPerModel) {
+        tsList.sort((a, b) => b - a);
+        speedSampleMinTsByModel.set(mKey, tsList[speedLimitPerModel - 1] || 0);
+      }
+    }
+  }
+
   const ledgerEnrichmentCalls = [];
   const inMemoryEnrichments = new Map();
+  const matchedReqByCallKey = new Map();
 
   const applyTranscriptMatch = (ledgerKey, c, cidKey, matched) => {
     const cIsFallback = isStepFallbackCallId(ledgerKey, c.cascadeId) || isStepFallbackCallId(cidKey, c.cascadeId);
     const mId = String(matched.callId || '');
     const mIsFallback = !mId || isStepFallbackCallId(mId, matched.cascadeId);
     const targetCallId = (cIsFallback && !mIsFallback) ? mId : cidKey;
+
+    matchedReqByCallKey.set(ledgerKey, matched);
+    if (targetCallId) matchedReqByCallKey.set(targetCallId, matched);
 
     const uC = getCallTokenBreakdown(c);
     const merged = mergeSameCallRecords(c, matched, targetCallId, null, false, true);
@@ -5786,8 +6966,19 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       || Boolean(c.dateIsProvisional) !== Boolean(merged.dateIsProvisional);
     const statusEnriched = String(c.status || '') !== String(merged.status || '');
     const pricingEnriched = Boolean(c.isPriced) !== Boolean(merged.isPriced) || Number(c.costUSD || 0) !== Number(merged.costUSD || 0);
+    const mergedExactKey = String(merged.modelExactId || resolveStableModelId(merged) || merged.model || '').trim().toLowerCase();
+    const speedCutoffTs = mergedExactKey ? (speedSampleMinTsByModel.get(mergedExactKey) ?? 0) : 0;
+    const withinSpeedWindow = !speedCutoffTs || getCallSortTimestamp(merged) >= speedCutoffTs;
+    const speedEnriched = withinSpeedWindow && (
+      (c.ttftSec == null && merged.ttftSec != null)
+      || (c.streamingSec == null && merged.streamingSec != null)
+      || (c.durationSec == null && merged.durationSec != null)
+      || (c.streamingSec == null && merged.streamingSec != null && Number(merged.durationSec) > Number(c.durationSec || 0))
+      || (c.tps == null && merged.tps != null)
+      || (c.streamingTps == null && merged.streamingTps != null)
+    );
 
-    if (keyChanged || modelEnriched || usageEnriched || stepEnriched || cascadeEnriched || dateEnriched || statusEnriched || pricingEnriched) {
+    if (keyChanged || modelEnriched || usageEnriched || stepEnriched || cascadeEnriched || dateEnriched || statusEnriched || pricingEnriched || speedEnriched) {
       ledgerEnrichmentCalls.push(merged);
       inMemoryEnrichments.set(ledgerKey, { targetCallId, merged });
     }
@@ -5816,7 +7007,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   }
 
-  // Pass 1B: 跨键 stepIndex 对齐（施加充分证据门禁：两条均含模型且用量不同的最终态调用绝不跨键误合并）
+  // Pass 1B: 跨键 stepIndex 对齐（同步骤出现多条调用或回退重发时强制精确三元组+时间窗，禁止宽松合并撞车）
   const unmatchedLedgerPass2 = [];
   for (const [ledgerKey, c] of unmatchedAfterExactId) {
     const cidKey = String(c.callId || ledgerKey);
@@ -5826,20 +7017,24 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       const cCid = String(c.cascadeId).toLowerCase();
       const candSteps = extractCallStepNumbers(c, ledgerKey);
       const uC = getCallTokenBreakdown(c);
+      const parsedLedgerFb = parseStepFallbackKey(ledgerKey, c.cascadeId) || parseStepFallbackKey(cidKey, c.cascadeId);
       for (const stIdx of candSteps) {
         const sKey = `${cSrc}:${cCid}#${stIdx}`;
-        const multiRealAtStep = (realLedgerCountByStepKey.get(sKey) || 0) > 1;
+        const stepList = reqsByStepKey.get(sKey) || [];
+        const multiRealAtStep = (realLedgerCountByStepKey.get(sKey) || 0) > 1 || stepList.length > 1 || Boolean(parsedLedgerFb?.variantSuffix);
         if (multiRealAtStep && (uC.inp + uC.cap + uC.out) > 0) {
-          matched = takeUnmatchedReq(reqsByStepKey.get(sKey), (item) => {
+          matched = takeUnmatchedReq(stepList, (item) => {
             if (!canFallbackLink(ledgerKey, c, cidKey, item)) return false;
-            if (!areModelsCompatible(c.model, item.model)) return false;
+            if (!areCallRecordsModelCompatible(c, item)) return false;
+            if (!areLedgerCallTimestampsCompatible(c, item)) return false;
             const uItem = getCallTokenBreakdown(item);
             return uItem.inp === uC.inp && uItem.cap === uC.cap && uItem.out === uC.out;
           });
         } else if (!multiRealAtStep) {
           const cIsFallback = isStepFallbackCallId(ledgerKey, c.cascadeId) || isStepFallbackCallId(cidKey, c.cascadeId);
-          matched = takeUnmatchedReq(reqsByStepKey.get(sKey), (item) => {
+          matched = takeUnmatchedReq(stepList, (item) => {
             if (!canFallbackLink(ledgerKey, c, cidKey, item)) return false;
+            if (!areLedgerCallTimestampsCompatible(c, item)) return false;
             const rId = String(item.callId || '');
             const rIsFallback = !rId || isStepFallbackCallId(rId, item.cascadeId);
             return (cIsFallback && !rIsFallback)
@@ -5889,7 +7084,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       for (const lEntry of ledgerGroup) {
         const [ledgerKey, c, cidKey] = lEntry;
         const compatReqs = reqCandidates.filter(
-          item => canFallbackLink(ledgerKey, c, cidKey, item) && areModelsCompatible(c.model, item.model)
+          item => canFallbackLink(ledgerKey, c, cidKey, item) && areCallRecordsModelCompatible(c, item)
         );
         ledgerToCompatibleReqs.set(lEntry, compatReqs);
         for (const rItem of compatReqs) {
@@ -5911,9 +7106,20 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   }
 
-  // 向账本写入既有记录的富化更新（补齐 model / 最新完整用量 / stepIndex）以及未匹配的已计价扫描调用
-  const unmatchedPricedTranscriptReqs = recentRequests.filter(r => !matchedTranscriptReqs.has(r) && r.isPriced && r.callId);
-  const ledgerUpdates = [...ledgerEnrichmentCalls, ...unmatchedPricedTranscriptReqs];
+  // 向账本写入既有记录的富化更新（补齐 model / 最新完整用量 / stepIndex）以及未匹配的真实扫描调用：
+  // 已计价模型、带显式 responseId、或带有明确模型名的调用落盘至 pricing_ledger_v1.json；
+  // 缺模型且无 responseId 的 provisional fallback 暂不落盘（避免污染 RPC 对账门禁），其已删会话保留由 archiveV2.unpersistedBySource 接管
+  const unmatchedTranscriptReqsToPersist = recentRequests.filter(r =>
+    !matchedTranscriptReqs.has(r) &&
+    r.callId &&
+    !isSyntheticCall(r.callId, r) &&
+    (r.totalTokens > 0 || (r.inputTokens + (r.cacheTokens || 0) + r.outputTokens) > 0) &&
+    (r.isPriced || !isStepFallbackCallId(r.callId, r.cascadeId) || Boolean(r.model && String(r.model).trim()))
+  );
+  const ledgerUpdates = [
+    ...ledgerEnrichmentCalls,
+    ...unmatchedTranscriptReqsToPersist.map(r => (r.fromTranscriptScan ? r : { ...r, fromTranscriptScan: true }))
+  ];
   if (!options.readOnly && ledgerUpdates.length) {
     await recordModelCallsLockedAsync(ledgerUpdates, {
       agDir,
@@ -5960,22 +7166,25 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       list.push(ledgerKey);
     }
   }
-  for (const r of unmatchedPricedTranscriptReqs) {
+  for (const r of unmatchedTranscriptReqsToPersist) {
     const rKey = String(r.callId);
     let persistedKey = effectiveCallsMap[rKey] ? rKey : null;
-    if (!persistedKey && isStepFallbackCallId(rKey, r.cascadeId) && r.cascadeId && r.stepIndex !== null && r.stepIndex !== undefined) {
-      const cands = (finalRealKeysByStep.get(`${r.source || 'desktop'}:${String(r.cascadeId).toLowerCase()}#${r.stepIndex}`) || [])
-        .filter(k => effectiveCallsMap[k] && areModelsCompatible(effectiveCallsMap[k].model, r.model));
-      if (cands.length === 1) {
-        if (isConfirmableSingleStepMatch(effectiveCallsMap[cands[0]], r)) {
+    const parsedRFb = parseStepFallbackKey(rKey, r.cascadeId);
+    if (!persistedKey && parsedRFb && r.cascadeId && r.stepIndex !== null && r.stepIndex !== undefined) {
+      const sKey = `${r.source || 'desktop'}:${String(r.cascadeId).toLowerCase()}#${r.stepIndex}`;
+      const stepSiblingCount = (reqsByStepKey.get(sKey) || []).length;
+      const cands = (finalRealKeysByStep.get(sKey) || [])
+        .filter(k => effectiveCallsMap[k] && areCallRecordsModelCompatible(effectiveCallsMap[k], r));
+      if (cands.length === 1 && stepSiblingCount <= 1 && !parsedRFb.variantSuffix) {
+        if (isConfirmableSingleStepMatch(effectiveCallsMap[cands[0]], r) && areLedgerCallTimestampsCompatible(effectiveCallsMap[cands[0]], r)) {
           persistedKey = cands[0];
         }
-      } else if (cands.length > 1) {
+      } else if (cands.length >= 1) {
         const uR = getCallTokenBreakdown(r);
         if (uR.inp + uR.cap + uR.out > 0) {
           const exact = cands.filter(k => {
             const uK = getCallTokenBreakdown(effectiveCallsMap[k]);
-            return uK.inp === uR.inp && uK.cap === uR.cap && uK.out === uR.out;
+            return uK.inp === uR.inp && uK.cap === uR.cap && uK.out === uR.out && areLedgerCallTimestampsCompatible(effectiveCallsMap[k], r);
           });
           if (exact.length === 1) persistedKey = exact[0];
         }
@@ -6003,69 +7212,271 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     return null;
   };
 
-  // 按来源与日期汇总未匹配任何实时 transcript 的账本调用，用于抵扣 v2 / v1 历史归档中已被账本覆盖的份额
-  const unmatchedLedgerBySourceDate = new Map();
-  for (const [ledgerKey, c] of finalCallsEntries) {
-    if (!c || matchedLedgerKeys.has(ledgerKey)) continue;
-    const effDate = resolveLedgerCallDate(ledgerKey, c);
-    if (!effDate || !/^\d{4}-\d{2}-\d{2}$/.test(effDate)) continue;
-    const cSrc = c.source === 'cli' ? 'cli' : 'desktop';
-    const cInp = Number(c.inputTokens ?? c.input_tokens ?? c.input ?? 0);
-    const cCap = Number(c.cacheTokens ?? c.cacheReadTokens ?? c.cache_read_tokens ?? c.cached ?? 0);
-    const cOut = Number(c.outputTokens ?? c.output_tokens ?? c.output ?? 0);
-    const cTok = cInp + cCap + cOut;
-    const mapKey = `${cSrc}:${effDate}`;
-    const prev = unmatchedLedgerBySourceDate.get(mapKey) || { tokens: 0, steps: 0 };
-    prev.tokens += cTok;
-    prev.steps += 1;
-    unmatchedLedgerBySourceDate.set(mapKey, prev);
+  // 9. 从权威逐请求联合集合 (会话相关账本记录 + 本次未入盘扫描调用 + 已删会话无模型未入盘基线) 构建分来源日汇总，
+  //    并将前序 v1/v2 无逐请求明细历史基线仅在首次迁移时冻结一次，彻底解决删会话吞当日新增与回退双记问题
+  const accumulateDailyEntry = (targetMap, dateKey, inp, cap, outp, tot, steps = 1) => {
+    if (!dateKey || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || tot <= 0) return;
+    registerDate(dateKey);
+    if (!targetMap[dateKey]) {
+      targetMap[dateKey] = { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+    }
+    targetMap[dateKey].total += tot;
+    targetMap[dateKey].input += inp;
+    targetMap[dateKey].output += outp;
+    targetMap[dateKey].cache += cap;
+    targetMap[dateKey].steps += steps;
+  };
+
+  const scannedCascadeKeysBySource = { desktop: new Set(), cli: new Set() };
+  for (const job of transcriptJobs) {
+    const bm = String(job.path || '').match(/[\\/]brain[\\/]([^\\/]+)[\\/]/i);
+    const cidGuess = bm ? bm[1] : path.basename(String(job.path || ''), '.jsonl');
+    if (cidGuess) {
+      const sBucket = job.source === 'cli' ? scannedCascadeKeysBySource.cli : scannedCascadeKeysBySource.desktop;
+      sBucket.add(String(cidGuess).toLowerCase());
+    }
+  }
+  for (const r of recentRequests) {
+    if (r && r.cascadeId) {
+      const sBucket = r.source === 'cli' ? scannedCascadeKeysBySource.cli : scannedCascadeKeysBySource.desktop;
+      sBucket.add(String(r.cascadeId).toLowerCase());
+    }
   }
 
+  const unionBySource = { desktop: {}, cli: {} };
+  for (const [ledgerKey, c] of finalCallsEntries) {
+    if (!c) continue;
+    // 无 cascadeId 且未匹配任何扫描会话、亦非 transcript 来源的孤立测试/手动条目不凭空改变日汇总（保持回归兼容）
+    if (!c.cascadeId && !c.fromTranscriptScan && !matchedLedgerKeys.has(ledgerKey)) continue;
+    const effDate = resolveLedgerCallDate(ledgerKey, c);
+    if (!effDate || !/^\d{4}-\d{2}-\d{2}$/.test(effDate)) continue;
+    const uC = getCallTokenBreakdown(c);
+    if (uC.tot <= 0) continue;
+    const cSrc = c.source === 'cli' ? 'cli' : 'desktop';
+    accumulateDailyEntry(unionBySource[cSrc], effDate, uC.inp, uC.cap, uC.out, uC.tot, 1);
+  }
+
+  const nextUnpersistedBySource = { desktop: {}, cli: {} };
+  for (const r of recentRequests) {
+    if (matchedTranscriptReqs.has(r)) continue;
+    const rInp = Number(r.inputTokens) || 0;
+    const rCap = Number(r.cacheTokens ?? r.cacheReadTokens ?? 0) || 0;
+    const rOut = Number(r.outputTokens) || 0;
+    const rTot = Number(r.totalTokens) || (rInp + rCap + rOut);
+    if (rTot <= 0) continue;
+    const rSrc = r.source === 'cli' ? 'cli' : 'desktop';
+    accumulateDailyEntry(unionBySource[rSrc], r.date, rInp, rCap, rOut, rTot, 1);
+    if (r.cascadeId && r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date) && !isSyntheticCall(r.callId, r)) {
+      const cidLower = String(r.cascadeId).toLowerCase();
+      if (!nextUnpersistedBySource[rSrc][cidLower]) nextUnpersistedBySource[rSrc][cidLower] = {};
+      accumulateDailyEntry(nextUnpersistedBySource[rSrc][cidLower], r.date, rInp, rCap, rOut, rTot, 1);
+    }
+  }
+
+  const preservedUnpersistedDaily = { desktop: {}, cli: {} };
+  for (const srcName of ['desktop', 'cli']) {
+    const prevUnp = archiveV2.unpersistedBySource?.[srcName];
+    if (!prevUnp || typeof prevUnp !== 'object') continue;
+    const liveSet = scannedCascadeKeysBySource[srcName];
+    for (const [cidLower, dayMap] of Object.entries(prevUnp)) {
+      if (liveSet.has(cidLower) || !dayMap || typeof dayMap !== 'object') continue;
+      for (const [dk, rec] of Object.entries(dayMap)) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dk) || !rec || typeof rec !== 'object') continue;
+        const tot = Math.max(0, Number(rec.total) || 0);
+        if (tot <= 0) continue;
+        const inp = Math.max(0, Number(rec.input) || 0);
+        const cap = Math.max(0, Number(rec.cache) || 0);
+        const outp = Math.max(0, Number(rec.output) || 0);
+        const steps = Math.max(1, Number(rec.steps) || 0);
+        accumulateDailyEntry(preservedUnpersistedDaily[srcName], dk, inp, cap, outp, tot, steps);
+        if (!nextUnpersistedBySource[srcName][cidLower]) nextUnpersistedBySource[srcName][cidLower] = {};
+        accumulateDailyEntry(nextUnpersistedBySource[srcName][cidLower], dk, inp, cap, outp, tot, steps);
+      }
+    }
+  }
+
+  const cloneFrozenMap = (srcObj) => {
+    const cloned = {};
+    if (!srcObj || typeof srcObj !== 'object') return cloned;
+    for (const [dk, rec] of Object.entries(srcObj)) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dk) || !rec || typeof rec !== 'object') continue;
+      const tot = Math.max(0, Number(rec.total) || 0);
+      if (tot <= 0) continue;
+      cloned[dk] = {
+        total: tot,
+        input: Math.max(0, Number(rec.input) || 0),
+        output: Math.max(0, Number(rec.output) || 0),
+        cache: Math.max(0, Number(rec.cache) || 0),
+        steps: Math.max(0, Number(rec.steps ?? rec.conversations) || 0)
+      };
+    }
+    return cloned;
+  };
+
+  const legacyDaily = legacyV1Archive.dailyMap || {};
+  let frozenDesk = {};
+  let frozenCli = {};
+  let frozenUnalloc = {};
+  if (archiveV2.legacyBaselineMigrated === true && archiveV2.frozenLegacyBySource && typeof archiveV2.frozenLegacyBySource === 'object') {
+    frozenDesk = cloneFrozenMap(archiveV2.frozenLegacyBySource.desktop);
+    frozenCli = cloneFrozenMap(archiveV2.frozenLegacyBySource.cli);
+    frozenUnalloc = cloneFrozenMap(archiveV2.frozenLegacyBySource.legacyUnallocated);
+  } else {
+    const prevDesk = (readV2.exists && readV2.ok && archiveV2.dailyMapBySource?.desktop) ? archiveV2.dailyMapBySource.desktop : {};
+    const prevCli = (readV2.exists && readV2.ok && archiveV2.dailyMapBySource?.cli) ? archiveV2.dailyMapBySource.cli : {};
+    const migDates = new Set([
+      ...Object.keys(legacyDaily),
+      ...Object.keys(prevDesk),
+      ...Object.keys(prevCli)
+    ]);
+    for (const k of migDates) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue;
+      const uD = unionBySource.desktop[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+      const uC = unionBySource.cli[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+      const pD = prevDesk[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+      const pC = prevCli[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+      const lR = legacyDaily[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+
+      const fdTot = Math.max(0, (Number(pD.total) || 0) - uD.total);
+      if (fdTot > 0) {
+        frozenDesk[k] = {
+          total: fdTot,
+          input: Math.max(0, (Number(pD.input) || 0) - uD.input),
+          output: Math.max(0, (Number(pD.output) || 0) - uD.output),
+          cache: Math.max(0, (Number(pD.cache) || 0) - uD.cache),
+          steps: Math.max(0, (Number(pD.steps ?? pD.conversations) || 0) - uD.steps)
+        };
+      }
+      const fcTot = Math.max(0, (Number(pC.total) || 0) - uC.total);
+      if (fcTot > 0) {
+        frozenCli[k] = {
+          total: fcTot,
+          input: Math.max(0, (Number(pC.input) || 0) - uC.input),
+          output: Math.max(0, (Number(pC.output) || 0) - uC.output),
+          cache: Math.max(0, (Number(pC.cache) || 0) - uC.cache),
+          steps: Math.max(0, (Number(pC.steps ?? pC.conversations) || 0) - uC.steps)
+        };
+      }
+      const coveredDeskTot = uD.total + (frozenDesk[k]?.total || 0);
+      const coveredCliTot = uC.total + (frozenCli[k]?.total || 0);
+      const fuTot = Math.max(0, (Number(lR.total) || 0) - coveredDeskTot - coveredCliTot);
+      if (fuTot > 0) {
+        const covInp = uD.input + (frozenDesk[k]?.input || 0) + uC.input + (frozenCli[k]?.input || 0);
+        const covOut = uD.output + (frozenDesk[k]?.output || 0) + uC.output + (frozenCli[k]?.output || 0);
+        const covCap = uD.cache + (frozenDesk[k]?.cache || 0) + uC.cache + (frozenCli[k]?.cache || 0);
+        const covSteps = uD.steps + (frozenDesk[k]?.steps || 0) + uC.steps + (frozenCli[k]?.steps || 0);
+        frozenUnalloc[k] = {
+          total: fuTot,
+          input: Math.max(0, (Number(lR.input) || 0) - covInp),
+          output: Math.max(0, (Number(lR.output) || 0) - covOut),
+          cache: Math.max(0, (Number(lR.cache) || 0) - covCap),
+          steps: Math.max(0, (Number(lR.steps ?? lR.conversations) || 0) - covSteps)
+        };
+      }
+    }
+  }
+
+  const mergedDesktop = {};
+  const mergedCli = {};
+  const mergedLegacyUnallocated = {};
+  const dailyMapAll = {};
+  const allDateKeys = new Set([
+    ...Object.keys(unionBySource.desktop),
+    ...Object.keys(unionBySource.cli),
+    ...Object.keys(preservedUnpersistedDaily.desktop),
+    ...Object.keys(preservedUnpersistedDaily.cli),
+    ...Object.keys(frozenDesk),
+    ...Object.keys(frozenCli),
+    ...Object.keys(frozenUnalloc)
+  ]);
+
+  let grandTotalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCacheTokens = 0, totalSteps = 0;
+  let todayTokens = 0, monthTokens = 0, yearTokens = 0;
+  let currentMonthInput = 0, currentMonthOutput = 0, currentMonthCache = 0, currentMonthSteps = 0;
   let archDeskUncovSteps = 0, archDeskUncovTokens = 0;
   let archCliUncovSteps = 0, archCliUncovTokens = 0;
   let archMonthUncovSteps = 0, archMonthUncovTokens = 0;
 
   for (const k of Array.from(allDateKeys).sort()) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue;
+    registerDate(k);
+    const uD = unionBySource.desktop[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+    const uC = unionBySource.cli[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+    const pUD = preservedUnpersistedDaily.desktop[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+    const pUC = preservedUnpersistedDaily.cli[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+    const fD = frozenDesk[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+    const fC = frozenCli[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
+    const fU = frozenUnalloc[k] || { total: 0, input: 0, output: 0, cache: 0, steps: 0 };
 
-    const v2OnlyDeskTok = Math.max(0, (mergedDesktop[k]?.total || 0) - (scannedBySource.desktop[k]?.total || 0));
-    const v2OnlyDeskSteps = Math.max(0, (mergedDesktop[k]?.steps || 0) - (scannedBySource.desktop[k]?.steps || 0));
-    const covDesk = unmatchedLedgerBySourceDate.get(`desktop:${k}`) || { tokens: 0, steps: 0 };
-    const v2UncovDeskTok = Math.max(0, v2OnlyDeskTok - covDesk.tokens);
-    const v2UncovDeskSteps = v2UncovDeskTok > 0
-      ? Math.max(1, v2OnlyDeskSteps - covDesk.steps)
-      : Math.max(0, v2OnlyDeskSteps - covDesk.steps);
-    const excessDeskTok = Math.max(0, covDesk.tokens - v2OnlyDeskTok);
-    const excessDeskSteps = Math.max(0, covDesk.steps - v2OnlyDeskSteps);
+    const dTotal = uD.total + pUD.total + fD.total;
+    if (dTotal > 0) {
+      mergedDesktop[k] = {
+        total: dTotal,
+        input: uD.input + pUD.input + fD.input,
+        output: uD.output + pUD.output + fD.output,
+        cache: uD.cache + pUD.cache + fD.cache,
+        steps: uD.steps + pUD.steps + fD.steps
+      };
+    }
+    const cTotal = uC.total + pUC.total + fC.total;
+    if (cTotal > 0) {
+      mergedCli[k] = {
+        total: cTotal,
+        input: uC.input + pUC.input + fC.input,
+        output: uC.output + pUC.output + fC.output,
+        cache: uC.cache + pUC.cache + fC.cache,
+        steps: uC.steps + pUC.steps + fC.steps
+      };
+    }
+    if (fU.total > 0) {
+      mergedLegacyUnallocated[k] = { ...fU };
+    }
 
-    const v2OnlyCliTok = Math.max(0, (mergedCli[k]?.total || 0) - (scannedBySource.cli[k]?.total || 0));
-    const v2OnlyCliSteps = Math.max(0, (mergedCli[k]?.steps || 0) - (scannedBySource.cli[k]?.steps || 0));
-    const covCli = unmatchedLedgerBySourceDate.get(`cli:${k}`) || { tokens: 0, steps: 0 };
-    const v2UncovCliTok = Math.max(0, v2OnlyCliTok - covCli.tokens);
-    const v2UncovCliSteps = v2UncovCliTok > 0
-      ? Math.max(1, v2OnlyCliSteps - covCli.steps)
-      : Math.max(0, v2OnlyCliSteps - covCli.steps);
-    const excessCliTok = Math.max(0, covCli.tokens - v2OnlyCliTok);
-    const excessCliSteps = Math.max(0, covCli.steps - v2OnlyCliSteps);
+    const dayRec = {
+      total: dTotal + cTotal + fU.total,
+      input: (uD.input + pUD.input + fD.input) + (uC.input + pUC.input + fC.input) + fU.input,
+      output: (uD.output + pUD.output + fD.output) + (uC.output + pUC.output + fC.output) + fU.output,
+      cache: (uD.cache + pUD.cache + fD.cache) + (uC.cache + pUC.cache + fC.cache) + fU.cache,
+      steps: (uD.steps + pUD.steps + fD.steps) + (uC.steps + pUC.steps + fC.steps) + fU.steps
+    };
+    dailyMapAll[k] = dayRec;
 
-    const rawV1Tok = mergedLegacyUnallocated[k]?.total || 0;
-    const rawV1Steps = mergedLegacyUnallocated[k]?.steps || 0;
-    const excessTok = excessDeskTok + excessCliTok;
-    const excessSteps = excessDeskSteps + excessCliSteps;
-    const v1UncovTok = Math.max(0, rawV1Tok - excessTok);
-    const v1UncovSteps = v1UncovTok > 0
-      ? Math.max(1, rawV1Steps - excessSteps)
-      : Math.max(0, rawV1Steps - excessSteps);
-
-    archDeskUncovTokens += v2UncovDeskTok + v1UncovTok;
-    archDeskUncovSteps += v2UncovDeskSteps + v1UncovSteps;
-    archCliUncovTokens += v2UncovCliTok;
-    archCliUncovSteps += v2UncovCliSteps;
+    grandTotalTokens += dayRec.total;
+    totalInputTokens += dayRec.input;
+    totalOutputTokens += dayRec.output;
+    totalCacheTokens += dayRec.cache;
+    totalSteps += dayRec.steps;
+    if (k === todayKey) todayTokens += dayRec.total;
     if (k.startsWith(monthPrefix)) {
-      archMonthUncovTokens += v2UncovDeskTok + v2UncovCliTok + v1UncovTok;
-      archMonthUncovSteps += v2UncovDeskSteps + v2UncovCliSteps + v1UncovSteps;
+      monthTokens += dayRec.total;
+      currentMonthInput += dayRec.input;
+      currentMonthOutput += dayRec.output;
+      currentMonthCache += dayRec.cache;
+      currentMonthSteps += dayRec.steps;
+    }
+    if (k.startsWith(yearPrefix)) yearTokens += dayRec.total;
+
+    const fdSteps = fD.total > 0 ? Math.max(1, fD.steps || 0) : 0;
+    const fcSteps = fC.total > 0 ? Math.max(1, fC.steps || 0) : 0;
+    const fuSteps = fU.total > 0 ? Math.max(1, fU.steps || 0) : 0;
+    const pudSteps = pUD.total > 0 ? Math.max(1, pUD.steps || 0) : 0;
+    const pucSteps = pUC.total > 0 ? Math.max(1, pUC.steps || 0) : 0;
+    archDeskUncovTokens += pUD.total + fD.total + fU.total;
+    archDeskUncovSteps += pudSteps + fdSteps + fuSteps;
+    archCliUncovTokens += pUC.total + fC.total;
+    archCliUncovSteps += pucSteps + fcSteps;
+    if (k.startsWith(monthPrefix)) {
+      archMonthUncovTokens += pUD.total + pUC.total + fD.total + fC.total + fU.total;
+      archMonthUncovSteps += pudSteps + pucSteps + fdSteps + fcSteps + fuSteps;
     }
   }
+  if (!earliestDate) earliestDate = todayKey;
+
+  const frozenLegacyBySource = {
+    desktop: frozenDesk,
+    cli: frozenCli,
+    legacyUnallocated: frozenUnalloc
+  };
 
   // 分来源与全量动态统计未被账本覆盖的剩余未计价请求与原因
   const unmatchedRecentUnpriced = recentRequests.filter(r => !matchedTranscriptReqs.has(r) && !r.isPriced);
@@ -6190,6 +7601,147 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       timestamp: getCallSortTimestamp(c) || null
     }));
 
+  const recentRequestLogs = (() => {
+    const modelConfigs = Array.isArray(livePlanStatus?.cascadeModelConfigs) ? livePlanStatus.cascadeModelConfigs : [];
+    const byKey = new Map();
+    const matchedReqByStep = new Map();
+    for (const r of recentRequests) {
+      if (!r || !r.cascadeId || !Number.isInteger(r.stepIndex) || r.stepIndex < 0) continue;
+      const sk = `${r.source || 'desktop'}:${String(r.cascadeId).toLowerCase()}#${r.stepIndex}`;
+      if (!matchedReqByStep.has(sk)) matchedReqByStep.set(sk, r);
+    }
+    const ingest = (c) => {
+      if (!c || typeof c !== 'object') return;
+      const inp = Math.max(0, Number(c.inputTokens ?? c.input_tokens ?? c.input ?? 0) || 0);
+      const cache = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? c.cache_read_tokens ?? c.cached ?? 0) || 0);
+      const outp = Math.max(0, Number(c.outputTokens ?? c.output_tokens ?? c.output ?? 0) || 0);
+      const tot = inp + cache + outp;
+      if (tot <= 0 && !c.error && c.status !== 'streaming') return;
+      const ts = getCallSortTimestamp(c);
+      if (!Number.isFinite(ts) || ts <= 0) return;
+      const key = String(c.callId || `${c.source || 'desktop'}:${c.cascadeId || ''}:${c.stepIndex ?? ''}:${ts}`);
+      if (!byKey.has(key)) {
+        // 若该条目老于每模型 200 条账本裁剪窗导致速度字段被剪掉，直接从本轮 .db/transcript 扫描结果恢复展示用耗时与速度
+        let viewCall = c;
+        const stepLookupKey = (c.cascadeId && Number.isInteger(c.stepIndex) && c.stepIndex >= 0)
+          ? `${c.source || 'desktop'}:${String(c.cascadeId).toLowerCase()}#${c.stepIndex}`
+          : '';
+        const liveMatched = matchedReqByCallKey.get(key) || (stepLookupKey ? matchedReqByStep.get(stepLookupKey) : null);
+        if (liveMatched && (c.ttftSec == null || c.streamingSec == null || c.durationSec == null || c.tps == null || c.streamingTps == null)) {
+          viewCall = {
+            ...c,
+            ttftSec: c.ttftSec ?? liveMatched.ttftSec ?? null,
+            streamingSec: c.streamingSec ?? liveMatched.streamingSec ?? null,
+            durationSec: (c.streamingSec == null && liveMatched.streamingSec != null && liveMatched.durationSec != null)
+              ? liveMatched.durationSec
+              : (c.durationSec ?? liveMatched.durationSec ?? null),
+            tps: c.tps ?? liveMatched.tps ?? null,
+            streamingTps: c.streamingTps ?? liveMatched.streamingTps ?? null
+          };
+        }
+        byKey.set(key, { c: viewCall, ts, inp, cache, outp, tot });
+      }
+    };
+    for (const c of mergedCalls) ingest(c);
+    for (const r of recentRequests) {
+      if (matchedTranscriptReqs.has(r)) continue;
+      ingest(r);
+    }
+    const sorted = Array.from(byKey.values()).sort((a, b) => {
+      if (b.ts !== a.ts) return b.ts - a.ts;
+      const sa = Number.isInteger(a.c.stepIndex) ? a.c.stepIndex : -1;
+      const sb = Number.isInteger(b.c.stepIndex) ? b.c.stepIndex : -1;
+      if (sb !== sa) return sb - sa;
+      return String(b.c.callId || '').localeCompare(String(a.c.callId || ''));
+    });
+    return sorted.slice(0, 300).map(({ c, ts, inp, cache, outp, tot }) => {
+      const ttftSec = (c.ttftSec != null && Number.isFinite(Number(c.ttftSec)) && Number(c.ttftSec) >= 0)
+        ? Number(Number(c.ttftSec).toFixed(2))
+        : null;
+      const streamingSec = (c.streamingSec != null && Number.isFinite(Number(c.streamingSec)) && Number(c.streamingSec) >= 0)
+        ? Number(Number(c.streamingSec).toFixed(2))
+        : null;
+      const rawDur = (c.durationSec != null && Number.isFinite(Number(c.durationSec)) && Number(c.durationSec) > 0)
+        ? Number(Number(c.durationSec).toFixed(2))
+        : null;
+      const durationSec = rawDur !== null
+        ? rawDur
+        : ((ttftSec !== null && streamingSec !== null)
+          ? Number((ttftSec + streamingSec).toFixed(2))
+          : (streamingSec !== null && streamingSec > 0 ? streamingSec : (ttftSec !== null && ttftSec > 0 ? ttftSec : null)));
+      const tps = (c.tps != null && Number.isFinite(Number(c.tps)) && Number(c.tps) > 0)
+        ? Number(Number(c.tps).toFixed(1))
+        : ((outp > 0 && durationSec !== null && durationSec > 0) ? Number((outp / durationSec).toFixed(1)) : null);
+      const streamingTps = (c.streamingTps != null && Number.isFinite(Number(c.streamingTps)) && Number(c.streamingTps) > 0)
+        ? Number(Number(c.streamingTps).toFixed(1))
+        : ((outp > 0 && streamingSec !== null && streamingSec >= 0.2) ? Number((outp / streamingSec).toFixed(1)) : null);
+      const totalInput = inp + cache;
+      const cacheReadPct = totalInput > 0 ? Number(((cache / totalInput) * 100).toFixed(1)) : null;
+      const exactId = c.modelExactId || resolveStableModelId(c, modelConfigs) || null;
+      const modelKey = c.modelKey || normalizeModelId(exactId || c.model || '') || null;
+      let isPriced = Boolean(c.isPriced);
+      let costUSD = (isPriced && Number.isFinite(Number(c.costUSD))) ? Number(c.costUSD) : 0;
+      if (!isPriced && (exactId || c.model || modelKey) && tot > 0) {
+        const calc = calculateRequestApiCost({
+          ...c,
+          model: exactId || c.model || modelKey,
+          modelKey,
+          inputTokens: inp,
+          cacheReadTokens: cache,
+          cacheTokens: cache,
+          outputTokens: outp,
+          totalTokens: tot
+        });
+        if (calc && calc.isPriced) {
+          isPriced = true;
+          costUSD = Number(calc.costUSD || 0);
+        }
+      }
+      const status = c.status === 'streaming' ? 'streaming' : 'final';
+      const errText = c.error ? String(c.error).slice(0, 200) : null;
+      const outcomeStatus = c.outcomeStatus || (errText ? 'failed' : (status === 'streaming' ? 'streaming' : 'success'));
+      const reqModelCandidate = c.requestedModel && !/^model_placeholder_/i.test(String(c.requestedModel))
+        ? String(c.requestedModel)
+        : null;
+      return {
+        callId: c.callId || null,
+        cascadeId: c.cascadeId || null,
+        stepIndex: Number.isInteger(c.stepIndex) ? c.stepIndex : null,
+        timestamp: ts,
+        created_at: c.created_at || new Date(ts).toISOString(),
+        date: c.date || formatLocalDateKey(new Date(ts)),
+        source: c.source === 'cli' ? 'cli' : (c.source === 'ide' ? 'ide' : 'desktop'),
+        agentRole: c.agentRole || (c.parentCascadeId || c.subagentType ? 'subagent' : 'main'),
+        subagentType: c.subagentType || null,
+        requestedModel: reqModelCandidate,
+        model: c.model || exactId || modelKey || '',
+        modelExactId: exactId,
+        modelKey,
+        modelLabel: c.modelLabel || null,
+        effort: c.effort || null,
+        accountScopeKey: isValidAccountScopeKey(c.accountScopeKey) ? c.accountScopeKey : null,
+        accountAttributionConfidence: c.accountAttributionConfidence || null,
+        inputTokens: inp,
+        cacheReadTokens: cache,
+        outputTokens: outp,
+        thinkingTokens: Math.max(0, Number(c.thinkingTokens || 0) || 0),
+        totalTokens: tot,
+        cacheReadPct,
+        costUSD: isPriced ? Number(costUSD.toFixed(6)) : null,
+        isPriced,
+        ttftSec,
+        streamingSec,
+        durationSec,
+        tps,
+        streamingTps,
+        status,
+        outcomeStatus,
+        error: errText
+      };
+    });
+  })();
+
+
   const compactModelConfigs = Array.isArray(livePlanStatus?.cascadeModelConfigs)
     ? livePlanStatus.cascadeModelConfigs.map(sanitizeCascadeModelConfig).filter(Boolean)
     : [];
@@ -6199,13 +7751,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   const quotaNowMs = Date.now();
   const quotaCutoffMs = quotaNowMs - 8 * 86400000;
   const quotaRecentCutoffMs = quotaNowMs - 86400000;
+  const currentAccountScopeKey = currentAccountKey ? buildAccountScopeKey(currentAccountKey) : null;
   const seenQuotaCallIds = new Set();
   const recentModelUsage = [];
   const olderQuotaBuckets = new Map();
   let allKnownCallsMinTs = null;
   const pushQuotaUsageCall = (call) => {
     if (!call || typeof call !== 'object') return;
-    if (call.callId && seenQuotaCallIds.has(call.callId)) return;
+    if ((call.callId && seenQuotaCallIds.has(call.callId)) || (call.responseId && seenQuotaCallIds.has(call.responseId))) return;
     const rawTs = getCallSortTimestamp(call) ?? call.timestamp ?? (call.created_at ? new Date(call.created_at).getTime() : NaN);
     const ts = Number(rawTs);
     if (!Number.isFinite(ts) || ts <= 0 || ts > quotaNowMs + 60000) return;
@@ -6213,9 +7766,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       allKnownCallsMinTs = ts;
     }
     if (ts < quotaCutoffMs) return;
-    const rawModel = call.modelExactId || extractModelString(call) || call.model || '';
-    const poolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(rawModel, call.modelLabel || '') : 'unknown';
-    const sharedGroupKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(rawModel || poolKey) : 'unknown';
+    const callScopeKey = (typeof call.accountScopeKey === 'string' && isValidAccountScopeKey(call.accountScopeKey) && call.accountAttributionConfidence !== 'unattributed')
+      ? call.accountScopeKey.trim()
+      : null;
+    if (currentAccountScopeKey && callScopeKey && callScopeKey !== currentAccountScopeKey) return;
+    const resolvedDisplayLabel = typeof lookupModelDisplayLabel === 'function'
+      ? lookupModelDisplayLabel(call, compactModelConfigs, livePlanStatus?.availableModelDetails || null)
+      : '';
+    const modelHint = resolvedDisplayLabel || call.modelLabel || extractModelString(call) || call.model || '';
+    const poolKey = typeof getModelPoolKey === 'function' ? getModelPoolKey(call, modelHint) : 'unknown';
+    const sharedGroupKey = typeof getSharedQuotaGroupKey === 'function' ? getSharedQuotaGroupKey(call, modelHint || poolKey) : 'unknown';
     if ((!poolKey || poolKey === 'unknown') && (!sharedGroupKey || sharedGroupKey === 'unknown')) return;
     const inp = Math.max(0, Number(call.inputTokens || 0));
     const cache = Math.max(0, Number(call.cacheTokens ?? call.cacheReadTokens ?? 0));
@@ -6224,11 +7784,15 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     const totalTokens = Number(call.totalTokens ?? sumParts);
     if (!Number.isFinite(totalTokens) || totalTokens <= 0) return;
     if (call.callId) seenQuotaCallIds.add(call.callId);
+    if (call.responseId) seenQuotaCallIds.add(call.responseId);
+    const modelExactId = call.modelExactId || call.modelId || null;
     if (ts >= quotaRecentCutoffMs) {
       recentModelUsage.push({
         id: call.callId || null,
         poolKey,
         sharedGroupKey,
+        ...(modelExactId ? { modelExactId } : {}),
+        ...(callScopeKey ? { accountScopeKey: callScopeKey } : {}),
         ts,
         inputTokens: inp,
         cacheTokens: cache,
@@ -6236,10 +7800,11 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         totalTokens
       });
     } else {
-      const bTs = Math.floor(ts / 900000) * 900000;
-      const bKey = `${sharedGroupKey}:${poolKey}:${bTs}`;
+      const bTs = Math.floor(ts / 60000) * 60000;
+      const bKey = `${callScopeKey || ''}:${sharedGroupKey}:${poolKey}:${modelExactId || ''}:${bTs}`;
       const existingB = olderQuotaBuckets.get(bKey);
       if (existingB) {
+        if (ts > existingB.ts) existingB.ts = ts;
         existingB.inputTokens += inp;
         existingB.cacheTokens += cache;
         existingB.outputTokens += outp;
@@ -6248,7 +7813,9 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         olderQuotaBuckets.set(bKey, {
           poolKey,
           sharedGroupKey,
-          ts: bTs,
+          ...(modelExactId ? { modelExactId } : {}),
+          ...(callScopeKey ? { accountScopeKey: callScopeKey } : {}),
+          ts,
           inputTokens: inp,
           cacheTokens: cache,
           outputTokens: outp,
@@ -6258,7 +7825,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   };
   for (const c of mergedCalls) pushQuotaUsageCall(c);
-  for (const c of recentRequests) pushQuotaUsageCall(c);
+  for (const c of recentRequests) {
+    if (matchedTranscriptReqs.has(c)) continue;
+    pushQuotaUsageCall(c);
+  }
   for (const b of olderQuotaBuckets.values()) recentModelUsage.push(b);
   const quotaUsageCoverageStartMs = allKnownCallsMinTs !== null ? Math.max(quotaCutoffMs, allKnownCallsMinTs) : null;
 
@@ -6328,6 +7898,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     quotaUsageAccounting: 'raw_input_cache_output',
     recentModelUsage,
     speedRecords,
+    recentRequestLogs,
+    dynamicPricingCatalog: getDynamicPricingCatalog(),
     cascadeModelConfigs: compactModelConfigs,
     modelCapabilitiesById: livePlanStatus?.availableModelDetails || null,
     currentPeriod: {
@@ -6421,8 +7993,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     (acc, dayRec) => acc + (Number(dayRec?.[UNATTRIBUTED_MODEL_KEY]?.total) || 0),
     0
   );
+  const unpersistedDeskCnt = Object.keys(nextUnpersistedBySource.desktop).length;
+  const unpersistedCliCnt = Object.keys(nextUnpersistedBySource.cli).length;
   const modelMetaSig = Object.keys(modelBreakdown.modelMetaByKey).sort().join(',');
-  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|m:${modelMetaSig}|u:${unattributedModelTokens}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.tierId || ''}|${effectivePlanStatus?.teamsTier || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
+  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|m:${modelMetaSig}|u:${unattributedModelTokens}|up:${unpersistedDeskCnt}:${unpersistedCliCnt}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.tierId || ''}|${effectivePlanStatus?.teamsTier || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
   const isStaleCheck = typeof extraContext.isStale === 'function' ? extraContext.isStale : null;
   if (isStaleCheck && isStaleCheck()) {
     return { out, archiveSig: null, accountKey: currentAccountKey || null, stale: true };
@@ -6433,10 +8007,19 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     ? extraContext.prevArchiveSig
     : collectTokenHistoryAsync._lastArchiveSig;
   try {
-    const shouldWriteArchive = !options.readOnly && (options.agDir || archiveSig !== prevArchiveSig || !fs.existsSync(archivePathV2) || !fs.existsSync(archivePathV1));
+    const shouldWriteArchive = !options.readOnly && (
+      options.agDir ||
+      archiveSig !== prevArchiveSig ||
+      archiveV2.legacyBaselineMigrated !== true ||
+      !fs.existsSync(archivePathV2) ||
+      !fs.existsSync(archivePathV1)
+    );
     if (shouldWriteArchive) {
       const v2Payload = {
         version: '2.0.0',
+        legacyBaselineMigrated: true,
+        frozenLegacyBySource,
+        unpersistedBySource: nextUnpersistedBySource,
         firstUseDate: earliestDate,
         updatedAt: out.updatedAt,
         maxConversations: totalConversations,
@@ -6543,21 +8126,293 @@ async function collectTokenHistoryAsync(options = {}) {
 /**
  * 从单个 transcript.jsonl 提取用户轮次标记、模型调用记录与可验证的子代理调用关联。
  */
+function unwrapToolArg(raw) {
+  if (raw === undefined || raw === null) return '';
+  if (typeof raw !== 'string') return raw;
+  const trimmed = raw.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'string') return parsed;
+    } catch { }
+    return trimmed.slice(1, -1);
+  }
+  return raw;
+}
+
+function estimateTextLinesCount(str) {
+  const s = String(str || '');
+  if (!s) return 0;
+  let count = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) === 10) count++;
+  }
+  return s.endsWith('\n') ? count : count + 1;
+}
+
+const READ_TOOL_NAMES = new Set(['read_file', 'view_file', 'view_file_outline', 'view_code_item', 'read', 'read_image']);
+const WRITE_TOOL_NAMES = new Set(['write_file', 'edit_file', 'replace_file_content', 'multi_replace_file_content', 'write_to_file', 'write', 'edit', 'str_replace_editor']);
+const SEARCH_TOOL_NAMES = new Set(['grep_search', 'find_by_name', 'list_dir', 'grep', 'glob']);
+const COMMAND_TOOL_NAMES = new Set(['run_command', 'execute_command', 'bash', 'powershell', 'pwsh', 'run_shell_command']);
+const TASK_TOOL_NAMES = new Set(['manage_task', 'schedule', 'invoke_subagent', 'send_message']);
+
+function resolveToolTurnNumber(stepIdx, ts, sortedTurns) {
+  if (!Array.isArray(sortedTurns) || !sortedTurns.length) return null;
+  let matched = null;
+  for (const t of sortedTurns) {
+    if (stepIdx !== null && t.stepIndex !== null) {
+      if (t.stepIndex <= stepIdx) matched = t.turnIndex;
+    } else if (ts && t.timestamp && t.timestamp <= ts + 2000) {
+      matched = t.turnIndex;
+    }
+  }
+  return matched;
+}
+
+/**
+ * 从会话步骤或 transcript 事件中提取文件活动 (读/写/搜)、脱敏命令执行与轻量任务调度记录
+ * 数据完全源自 Antigravity 本地步骤与 transcript
+ */
+function extractSessionToolInsights(rawToolEntries = [], turns = []) {
+  const fileMap = new Map();
+  const commands = [];
+  const taskEvents = [];
+  const toolExecEvents = [];
+  const seenKeys = new Set();
+
+  let totalFileOps = 0;
+  let readCount = 0;
+  let writeCount = 0;
+  let searchCount = 0;
+  let totalAddedLines = 0;
+  let totalRemovedLines = 0;
+
+  for (let idx = 0; idx < rawToolEntries.length; idx++) {
+    const entry = rawToolEntries[idx];
+    if (!entry || !entry.name) continue;
+    const toolName = String(entry.name).trim();
+    const args = entry.args && typeof entry.args === 'object' ? entry.args : {};
+    const stepIndex = Number.isInteger(Number(entry.stepIndex)) ? Number(entry.stepIndex) : null;
+    const timestamp = Number.isFinite(Number(entry.timestamp)) && Number(entry.timestamp) > 0 ? Number(entry.timestamp) : null;
+    const turnNumber = resolveToolTurnNumber(stepIndex, timestamp, turns);
+    const statusUpper = String(entry.status || '').trim().toUpperCase();
+    const isError = Boolean(entry.error || statusUpper === 'ERROR' || statusUpper === 'FAILED' || statusUpper === 'CANCELED' || statusUpper === 'CANCELLED');
+    const durationSec = (entry.durationSec != null && Number.isFinite(Number(entry.durationSec)) && Number(entry.durationSec) >= 0)
+      ? Number(Number(entry.durationSec).toFixed(2))
+      : null;
+
+    if (TASK_TOOL_NAMES.has(toolName)) {
+      const action = String(unwrapToolArg(args.Action ?? args.action ?? args.TypeName ?? '') || '').trim();
+      const role = String(unwrapToolArg(args.Role ?? args.role ?? '') || '').trim();
+      const rawPrompt = String(unwrapToolArg(args.Prompt ?? args.Message ?? args.TaskId ?? '') || '').trim();
+      const summaryText = rawPrompt ? sanitizeCommandPreview(rawPrompt.replace(/\s+/g, ' '), 96) : '';
+      const taskKey = `task:${stepIndex ?? idx}:${toolName}:${action}:${role}`;
+      if (!seenKeys.has(taskKey)) {
+        seenKeys.add(taskKey);
+        taskEvents.push({
+          id: `task-${stepIndex ?? idx}-${taskEvents.length}`,
+          toolName,
+          stepIndex,
+          turnNumber,
+          action,
+          role,
+          subagentType: String(unwrapToolArg(args.TypeName ?? '') || '').trim(),
+          summary: summaryText || `${toolName}${action ? ` · ${action}` : ''}${role ? ` · ${role}` : ''}`,
+          status: isError ? 'failed' : (statusUpper === 'RUNNING' ? 'running' : 'completed'),
+          durationSec,
+          timestamp
+        });
+      }
+      if (durationSec !== null) toolExecEvents.push({ stepIndex, durationSec, toolName });
+      continue;
+    }
+
+    if (COMMAND_TOOL_NAMES.has(toolName)) {
+      const rawCmd = String(unwrapToolArg(args.CommandLine ?? args.command ?? args.cmd ?? '') || '').trim();
+      if (!rawCmd) continue;
+      const dedupKey = `cmd:${stepIndex ?? idx}:${rawCmd.slice(0, 80)}`;
+      if (seenKeys.has(dedupKey)) continue;
+      seenKeys.add(dedupKey);
+
+      const safeCmd = sanitizeCommandPreview(rawCmd, 180);
+      const program = extractCommandProgram(rawCmd);
+      const summary = String(unwrapToolArg(args.toolSummary ?? args.description ?? '') || '').trim();
+      const rawDaemon = unwrapToolArg(args.IsDaemon ?? args.run_in_background ?? false);
+      const waitMs = Number(unwrapToolArg(args.WaitMsBeforeAsync ?? NaN));
+      const isBackground = rawDaemon === true || rawDaemon === 'true' || (Number.isFinite(waitMs) && waitMs > 0 && waitMs <= 600);
+      const isSlow = Boolean(durationSec !== null && durationSec >= 5);
+      const cmdStatus = isError ? 'failed' : (statusUpper === 'RUNNING' ? 'running' : 'completed');
+
+      commands.push({
+        id: `cmd-${stepIndex ?? idx}-${commands.length}`,
+        toolName,
+        stepIndex,
+        turnNumber,
+        program,
+        command: safeCmd,
+        summary,
+        durationSec,
+        status: cmdStatus,
+        isSlow,
+        isBackground,
+        timestamp
+      });
+      if (durationSec !== null) toolExecEvents.push({ stepIndex, durationSec, toolName });
+      continue;
+    }
+
+    let opKind = null;
+    if (READ_TOOL_NAMES.has(toolName)) opKind = 'read';
+    else if (WRITE_TOOL_NAMES.has(toolName)) opKind = 'write';
+    else if (SEARCH_TOOL_NAMES.has(toolName)) opKind = 'search';
+    else continue;
+
+    let rawPath = '';
+    for (const k of ['Path', 'TargetFile', 'AbsolutePath', 'SearchPath', 'SearchDirectory', 'DirectoryPath', 'file_path', 'filePath', 'path']) {
+      const v = unwrapToolArg(args[k]);
+      if (typeof v === 'string' && v.trim()) { rawPath = v.trim(); break; }
+    }
+    if (!rawPath && opKind === 'search') {
+      const q = unwrapToolArg(args.Query ?? args.Pattern ?? args.pattern ?? '');
+      if (typeof q === 'string' && q.trim()) rawPath = `[search] ${q.trim().slice(0, 80)}`;
+    }
+    if (!rawPath) continue;
+
+    const normPath = rawPath.replace(/\\/g, '/');
+    const dedupKey = `file:${opKind}:${stepIndex ?? idx}:${normPath.toLowerCase()}`;
+    if (seenKeys.has(dedupKey)) continue;
+    seenKeys.add(dedupKey);
+
+    let addedLines = 0;
+    let removedLines = 0;
+    if (opKind === 'write') {
+      if (toolName === 'write_file' || toolName === 'write_to_file' || toolName === 'write') {
+        addedLines = estimateTextLinesCount(unwrapToolArg(args.Content ?? args.CodeContent ?? args.content ?? ''));
+      } else if (toolName === 'edit_file' || toolName === 'replace_file_content' || toolName === 'edit') {
+        addedLines = estimateTextLinesCount(unwrapToolArg(args.Replacement ?? args.ReplacementContent ?? args.new_string ?? ''));
+        removedLines = estimateTextLinesCount(unwrapToolArg(args.Target ?? args.TargetContent ?? args.old_string ?? ''));
+      } else if (toolName === 'multi_replace_file_content' && Array.isArray(args.ReplacementChunks)) {
+        for (const ch of args.ReplacementChunks) {
+          addedLines += estimateTextLinesCount(ch?.ReplacementContent || '');
+          removedLines += estimateTextLinesCount(ch?.TargetContent || '');
+        }
+      }
+    }
+
+    totalFileOps++;
+    if (opKind === 'read') readCount++;
+    else if (opKind === 'write') writeCount++;
+    else if (opKind === 'search') searchCount++;
+    totalAddedLines += addedLines;
+    totalRemovedLines += removedLines;
+
+    const mapKey = normPath.toLowerCase();
+    let rec = fileMap.get(mapKey);
+    if (!rec) {
+      rec = {
+        path: rawPath,
+        basename: rawPath.split(/[\\/]/).pop() || rawPath,
+        readCount: 0,
+        writeCount: 0,
+        searchCount: 0,
+        totalCount: 0,
+        addedLines: 0,
+        removedLines: 0,
+        lastStepIndex: stepIndex,
+        lastTimestamp: timestamp,
+        hasError: false,
+        turnNumbers: []
+      };
+      fileMap.set(mapKey, rec);
+    }
+    if (opKind === 'read') rec.readCount++;
+    else if (opKind === 'write') rec.writeCount++;
+    else if (opKind === 'search') rec.searchCount++;
+    rec.totalCount++;
+    rec.addedLines += addedLines;
+    rec.removedLines += removedLines;
+    if (isError) rec.hasError = true;
+    if (stepIndex !== null && (rec.lastStepIndex === null || stepIndex > rec.lastStepIndex)) {
+      rec.lastStepIndex = stepIndex;
+    }
+    if (timestamp !== null && (rec.lastTimestamp === null || timestamp > rec.lastTimestamp)) {
+      rec.lastTimestamp = timestamp;
+    }
+    if (turnNumber !== null && !rec.turnNumbers.includes(turnNumber)) {
+      rec.turnNumbers.push(turnNumber);
+    }
+    if (durationSec !== null) toolExecEvents.push({ stepIndex, durationSec, toolName });
+  }
+
+  const fileActivities = Array.from(fileMap.values())
+    .map(r => ({
+      ...r,
+      primaryKind: r.writeCount > 0 ? 'write' : (r.searchCount > 0 && r.readCount === 0 ? 'search' : 'read')
+    }))
+    .sort((a, b) => (b.lastStepIndex ?? -1) - (a.lastStepIndex ?? -1) || b.totalCount - a.totalCount)
+    .slice(0, 400);
+
+  const fileActivitySummary = {
+    totalOps: totalFileOps,
+    uniqueFiles: fileMap.size,
+    readCount,
+    writeCount,
+    searchCount,
+    totalAddedLines,
+    totalRemovedLines
+  };
+
+  const recentCommands = commands.slice(-200);
+  const progCounts = new Map();
+  let failedCount = 0;
+  let slowCount = 0;
+  let backgroundCount = 0;
+  for (const c of recentCommands) {
+    if (c.status === 'failed') failedCount++;
+    if (c.isSlow) slowCount++;
+    if (c.isBackground) backgroundCount++;
+    progCounts.set(c.program, (progCounts.get(c.program) || 0) + 1);
+  }
+  const topPrograms = Array.from(progCounts.entries())
+    .map(([program, count]) => ({ program, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
+  const commandSummary = {
+    totalCount: recentCommands.length,
+    failedCount,
+    slowCount,
+    backgroundCount,
+    topPrograms
+  };
+
+  return {
+    fileActivities,
+    fileActivitySummary,
+    commandExecutions: recentCommands,
+    commandSummary,
+    taskEvents: taskEvents.slice(-80),
+    toolExecEvents
+  };
+}
+
 function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, sourceName = 'desktop', extraOpts = {}) {
   const turns = [];
   const calls = [];
   const subagentLinks = [];
+  const rawSteps = [];
+  const toolEntries = [];
   const uuidExtractRe = /"conversationId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/gi;
 
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
-    return { turns, calls, subagentLinks };
+    return { turns, calls, subagentLinks, rawSteps, toolEntries };
   }
 
   let content = '';
   try {
     content = fs.readFileSync(transcriptPath, 'utf8');
   } catch {
-    return { turns, calls, subagentLinks };
+    return { turns, calls, subagentLinks, rawSteps, toolEntries };
   }
 
   const dbMeta = convDir && !extraOpts.fs && !isFsMonkeyPatched()
@@ -6568,12 +8423,87 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
   const explicitUserTurns = [];
   const fallbackUserTurns = [];
   const pendingInvokes = [];
+  const parsedEvents = [];
+  const stepUsageCounts = new Map();
+  const lastStepUsageByStep = new Map();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line || !line.trim()) continue;
     let event = null;
     try { event = JSON.parse(line); } catch { continue; }
+    const parsedIdx = parsedEvents.length;
+    const evEntry = { event, lineIdx: i, _skipCallEmission: false };
+    parsedEvents.push(evEntry);
+    const rawS = event.step_index ?? event.stepIndex;
+    const ps = rawS !== undefined && rawS !== null && rawS !== '' ? Number(rawS) : NaN;
+    const si = Number.isInteger(ps) && ps >= 0 ? ps : null;
+    if (si !== null && !(event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user')) {
+      const evU = event.chatModel?.usage || null;
+      const evInp = event.input_tokens != null ? Number(event.input_tokens || 0) : (evU?.inputTokens != null ? Number(evU.inputTokens || 0) : null);
+      const evOut = event.output_tokens != null ? Number(event.output_tokens || 0) : (evU?.outputTokens != null ? Number(evU.outputTokens || 0) : null);
+      const evCap = event.cache_read_tokens != null
+        ? Number(event.cache_read_tokens || 0)
+        : (evU?.cacheReadTokens != null ? Number(evU.cacheReadTokens || 0) : (evU?.cacheTokens != null ? Number(evU.cacheTokens || 0) : null));
+      if (evInp !== null || evCap !== null || evOut !== null) {
+        const evRawId = extractCallId(event, cascadeId, si);
+        const isFallback = isStepFallbackCallId(evRawId, cascadeId);
+        const explicitId = isFallback ? '' : evRawId;
+        const evCreated = event.created_at || event.createdAt || null;
+        const evTs = evCreated ? Date.parse(evCreated) : NaN;
+        const evModelRaw = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
+        const evNormModel = String(normalizeModelId(evModelRaw) || evModelRaw || '').trim().toLowerCase();
+        const evStatus = event.status === 'RUNNING' ? 'streaming' : 'final';
+        const prev = lastStepUsageByStep.get(si);
+        let isSameInvocation = false;
+        if (prev) {
+          if (explicitId && prev.explicitId && explicitId === prev.explicitId) {
+            isSameInvocation = true;
+          } else if (!explicitId && !prev.explicitId) {
+            const exactSame =
+              prev.normModel === evNormModel &&
+              prev.inp === (evInp || 0) &&
+              prev.cap === (evCap || 0) &&
+              prev.outp === (evOut || 0) &&
+              prev.createdAt === evCreated;
+            const modelsCompat = !prev.normModel || !evNormModel || prev.normModel === evNormModel;
+            const timeClose = Number.isFinite(evTs) && Number.isFinite(prev.tsMs)
+              ? Math.abs(evTs - prev.tsMs) <= 120000
+              : prev.createdAt === evCreated;
+            if (exactSame) {
+              isSameInvocation = true;
+            } else if (modelsCompat && timeClose) {
+              if (prev.status === 'streaming') {
+                isSameInvocation = true;
+              } else if (evStatus === 'final' && prev.inp === (evInp || 0) && prev.cap === (evCap || 0) && (evOut || 0) >= prev.outp && prev.createdAt === evCreated) {
+                isSameInvocation = true;
+              }
+            }
+          }
+        }
+        if (isSameInvocation) {
+          parsedEvents[prev.parsedIdx]._skipCallEmission = true;
+        } else {
+          stepUsageCounts.set(si, (stepUsageCounts.get(si) || 0) + 1);
+        }
+        lastStepUsageByStep.set(si, {
+          parsedIdx,
+          explicitId,
+          createdAt: evCreated,
+          tsMs: evTs,
+          normModel: evNormModel,
+          inp: evInp || 0,
+          cap: evCap || 0,
+          outp: evOut || 0,
+          status: evStatus
+        });
+      }
+    }
+  }
+
+  const stepUsageSeen = new Map();
+  for (let idx = 0; idx < parsedEvents.length; idx++) {
+    const { event, lineIdx: i, _skipCallEmission } = parsedEvents[idx];
 
     const rawStep = event.step_index ?? event.stepIndex;
     const parsedStep = rawStep !== undefined && rawStep !== null && rawStep !== '' ? Number(rawStep) : NaN;
@@ -6583,8 +8513,19 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
     const validTs = Number.isFinite(ts) && ts > 0 ? ts : null;
 
     if (event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user') {
-      const textBody = typeof event.content === 'string' ? event.content : (typeof event.text === 'string' ? event.text : '');
+      const textBody = typeof event.content === 'string'
+        ? event.content
+        : (typeof event.text === 'string' ? event.text : (typeof event.userInput === 'string' ? event.userInput : ''));
       const rawPreview = sanitizeTurnPreviewText(textBody, 120);
+      rawSteps.push({
+        stepIndex,
+        createdAt,
+        timestamp: validTs,
+        userInput: {
+          userResponse: textBody,
+          media: Array.isArray(event.media) ? event.media : []
+        }
+      });
       const turnEntry = {
         stepIndex,
         timestamp: validTs,
@@ -6600,9 +8541,41 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
       continue;
     }
 
+    if (event.checkpoint || event.prune || event.contextPrune || event.systemMessage || event.injectSteps || event.injectedSteps || event.modeChange || event.modelChange) {
+      rawSteps.push({
+        stepIndex,
+        createdAt,
+        timestamp: validTs,
+        status: event.status,
+        ...(event.checkpoint ? { checkpoint: event.checkpoint } : {}),
+        ...(event.prune || event.contextPrune ? { prune: event.prune || event.contextPrune } : {}),
+        ...(event.systemMessage ? { systemMessage: event.systemMessage } : {}),
+        ...(event.injectSteps || event.injectedSteps ? { injectSteps: event.injectSteps || event.injectedSteps } : {}),
+        ...(event.modeChange ? { modeChange: event.modeChange } : {}),
+        ...(event.modelChange ? { modelChange: event.modelChange } : {})
+      });
+    } else if (event.type === 'PLANNER_RESPONSE' || event.plannerResponse) {
+      const respTxt = typeof event.content === 'string' ? event.content : (event.plannerResponse?.response || '');
+      rawSteps.push({
+        stepIndex,
+        createdAt,
+        timestamp: validTs,
+        plannerResponse: { response: respTxt }
+      });
+    }
+
     if (Array.isArray(event.tool_calls)) {
       for (const tc of event.tool_calls) {
         if (!tc || !tc.name) continue;
+        toolEntries.push({
+          name: tc.name,
+          args: tc.args || {},
+          stepIndex,
+          timestamp: validTs,
+          status: tc.status || event.status || null,
+          error: tc.error || event.error || null,
+          durationSec: tc.durationSec ?? tc.duration_sec ?? null
+        });
         if (tc.name === 'invoke_subagent' || tc.name === 'send_message') {
           const cleanArg = (v) => (typeof v === 'string' ? v.replace(/^"|"$/g, '').trim() : '');
           pendingInvokes.push({
@@ -6651,19 +8624,40 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
 
     const inp = event.input_tokens != null ? Number(event.input_tokens || 0) : (u?.inputTokens != null ? Number(u.inputTokens || 0) : null);
     const outp = event.output_tokens != null ? Number(event.output_tokens || 0) : (u?.outputTokens != null ? Number(u.outputTokens || 0) : null);
-    const cap = event.cache_read_tokens != null ? Number(event.cache_read_tokens || 0) : (u?.cacheReadTokens != null ? Number(u.cacheReadTokens || 0) : null);
+    const cap = event.cache_read_tokens != null
+      ? Number(event.cache_read_tokens || 0)
+      : (u?.cacheReadTokens != null ? Number(u.cacheReadTokens || 0) : (u?.cacheTokens != null ? Number(u.cacheTokens || 0) : null));
     const thinking = event.thinking_output_tokens != null ? Number(event.thinking_output_tokens || 0) : (u?.thinkingOutputTokens != null ? Number(u.thinkingOutputTokens || 0) : 0);
+
+    const hasUsageNums = inp !== null || cap !== null || outp !== null;
+    const isModelErrorEvent = Boolean(
+      event.error && (
+        event.type === 'PLANNER_RESPONSE' ||
+        event.type === 'MODEL_ERROR' ||
+        event.type === 'LLM_ERROR' ||
+        event.chatModel != null
+      )
+    );
+    if (!hasUsageNums && !isModelErrorEvent) continue;
+    if (_skipCallEmission) continue;
 
     const dbStep = (dbMeta && stepIndex !== null) ? dbMeta.stepMetaMap.get(stepIndex) : null;
     const model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || dbStep?.model || '';
     const modelExactId = event.chatModel?.modelId || event.modelId || dbStep?.modelExactId || '';
     const modelLabel = event.chatModel?.modelDisplayName || dbStep?.modelLabel || '';
 
-    const callId = dbStep?.responseId || extractCallId(event, cascadeId, stepIndex ?? i);
+    const stepTotalOcc = (stepIndex !== null && hasUsageNums) ? (stepUsageCounts.get(stepIndex) || 1) : 1;
+    let occ = 1;
+    if (stepIndex !== null && hasUsageNums) {
+      occ = (stepUsageSeen.get(stepIndex) || 0) + 1;
+      stepUsageSeen.set(stepIndex, occ);
+    }
+    const callId = (stepTotalOcc > 1 && stepIndex !== null)
+      ? `${cascadeId}#${stepIndex}@${occ}`
+      : (dbStep?.responseId || extractCallId(event, cascadeId, stepIndex ?? i));
     if (!callId) continue;
 
-    const hasUsageNums = inp !== null || cap !== null || outp !== null;
-    if (!hasUsageNums && !event.error) continue;
+    const allowDbSpeed = stepTotalOcc === 1 || occ === stepTotalOcc;
 
     calls.push({
       callId,
@@ -6680,8 +8674,8 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
       thinkingTokens: thinking,
       totalTokens: hasUsageNums ? ((inp || 0) + (cap || 0) + (outp || 0)) : null,
       hasInputCacheFields: inp !== null || cap !== null,
-      ttftSec: dbStep?.ttftSec ?? null,
-      streamingSec: dbStep?.streamingSec ?? null,
+      ttftSec: allowDbSpeed ? (dbStep?.ttftSec ?? null) : null,
+      streamingSec: allowDbSpeed ? (dbStep?.streamingSec ?? null) : null,
       status: event.status === 'RUNNING' ? 'streaming' : 'final',
       ...(event.error ? { error: String(event.error) } : {}),
       date: validTs ? formatLocalDateKey(new Date(validTs)) : null,
@@ -6694,7 +8688,7 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
 
   const chosenTurns = explicitUserTurns.length ? explicitUserTurns : fallbackUserTurns;
   for (const t of chosenTurns) turns.push(t);
-  return { turns, calls, subagentLinks, dbMeta };
+  return { turns, calls, subagentLinks, rawSteps, toolEntries, dbMeta };
 }
 
 const subagentParentIndexCache = { dirMtimesKey: '', byParent: new Map(), at: 0 };
@@ -6752,6 +8746,92 @@ function findSubagentChildrenFromConvDirs(parentCascadeId, convDirs = [], option
   return subagentParentIndexCache.byParent.get(normParent) || [];
 }
 
+function findSessionTranscriptInRoots(targetCid, rootEntries = [], fsImpl = fs) {
+  for (const r of rootEntries) {
+    if (!r || !r.dir) continue;
+    const candidates = [
+      path.join(r.dir, 'brain', targetCid, '.system_generated', 'logs', 'transcript.jsonl'),
+      path.join(r.dir, 'brain', targetCid, 'transcript.jsonl')
+    ];
+    for (const tp of candidates) {
+      if (fsImpl.existsSync(tp)) {
+        return { path: tp, convDir: path.join(r.dir, 'conversations'), source: r.source || 'desktop' };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 同步收集与指定主会话明确关联的可验证子代理调用（仅只读访问本地目录与传入账本数组）
+ */
+function collectVerifiedSubagentCallsForSessionSync({ cascadeId, rootEntries = [], initialLinks = [], ledgerCalls = [], parseOptions = {} } = {}) {
+  const cid = String(cascadeId || '').trim();
+  const fsImpl = parseOptions.fs || fs;
+  const subagentMap = new Map();
+  for (const link of (Array.isArray(initialLinks) ? initialLinks : [])) {
+    if (link && link.childCid) {
+      subagentMap.set(String(link.childCid).toLowerCase(), { ...link });
+    }
+  }
+
+  const dbChildren = findSubagentChildrenFromConvDirs(cid, rootEntries.map(r => path.join(r.dir, 'conversations')), parseOptions);
+  for (const dc of dbChildren) {
+    const k = dc.childCid.toLowerCase();
+    const existing = subagentMap.get(k);
+    if (!existing) {
+      subagentMap.set(k, {
+        childCid: dc.childCid,
+        parentCascadeId: dc.parentCascadeId || cid,
+        parentStepIndex: null,
+        subagentRole: dc.subagentRole || '',
+        subagentType: dc.subagentType || '',
+        confidence: 'verified_db_meta'
+      });
+    } else if (!existing.subagentType && dc.subagentType) {
+      existing.subagentType = dc.subagentType;
+    }
+  }
+
+  const subagentLinks = Array.from(subagentMap.values());
+  const subagentCalls = [];
+  for (const link of subagentLinks) {
+    const childFile = findSessionTranscriptInRoots(link.childCid, rootEntries, fsImpl);
+    const childNorm = link.childCid.toLowerCase();
+    let childDbMeta = null;
+    if (childFile) {
+      const childParsed = parseTranscriptForSessionTimeline(childFile.path, link.childCid, childFile.convDir, childFile.source, parseOptions);
+      childDbMeta = childParsed.dbMeta || null;
+      for (const cc of childParsed.calls) {
+        subagentCalls.push({
+          ...cc,
+          agentRole: 'subagent',
+          parentCascadeId: link.parentCascadeId || cid,
+          parentStepIndex: link.parentStepIndex ?? null,
+          subagentType: link.subagentType || childDbMeta?.subagentType || '',
+          subagentRole: link.subagentRole || childDbMeta?.subagentRole || '',
+          attributionConfidence: link.confidence
+        });
+      }
+    }
+    for (const lc of ledgerCalls) {
+      if (!lc || !lc.cascadeId) continue;
+      if (String(lc.cascadeId).toLowerCase() === childNorm) {
+        subagentCalls.push({
+          ...lc,
+          agentRole: 'subagent',
+          parentCascadeId: link.parentCascadeId || cid,
+          parentStepIndex: link.parentStepIndex ?? null,
+          subagentType: link.subagentType || childDbMeta?.subagentType || '',
+          subagentRole: link.subagentRole || childDbMeta?.subagentRole || '',
+          attributionConfidence: link.confidence
+        });
+      }
+    }
+  }
+  return { subagentLinks, subagentCalls };
+}
+
 /**
  * 聚合指定会话的按用户轮次请求时间线与可验证子代理调用（仅只读访问，复用现有本地目录与账本）。
  */
@@ -6771,30 +8851,19 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
 
   const allTurns = [];
   const allCalls = [];
+  const mainRawSteps = [];
+  const mainToolEntries = [];
   const subagentMap = new Map();
   let mainDbMeta = null;
 
-  const findTranscriptForCid = (targetCid) => {
-    for (const r of rootEntries) {
-      const candidates = [
-        path.join(r.dir, 'brain', targetCid, '.system_generated', 'logs', 'transcript.jsonl'),
-        path.join(r.dir, 'brain', targetCid, 'transcript.jsonl')
-      ];
-      for (const tp of candidates) {
-        if (fs.existsSync(tp)) {
-          return { path: tp, convDir: path.join(r.dir, 'conversations'), source: r.source };
-        }
-      }
-    }
-    return null;
-  };
-
   // 1. 解析主会话自身 transcript + .db
-  const mainFile = findTranscriptForCid(cid);
+  const mainFile = findSessionTranscriptInRoots(cid, rootEntries, fs);
   if (mainFile) {
     const parsed = parseTranscriptForSessionTimeline(mainFile.path, cid, mainFile.convDir, mainFile.source, options);
     allTurns.push(...parsed.turns);
     allCalls.push(...parsed.calls);
+    if (Array.isArray(parsed.rawSteps)) mainRawSteps.push(...parsed.rawSteps);
+    if (Array.isArray(parsed.toolEntries)) mainToolEntries.push(...parsed.toolEntries);
     if (parsed.dbMeta) mainDbMeta = parsed.dbMeta;
     for (const link of parsed.subagentLinks) {
       subagentMap.set(link.childCid.toLowerCase(), link);
@@ -6809,12 +8878,53 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
     }
   }
 
-  // 2. 合并前端 / RPC 传入的 liveSteps（识别当前尚未写入磁盘的最新轮次与 invoke_subagent 调用）
+  // 2. 合并前端 / RPC 传入的 liveSteps（识别当前尚未写入磁盘的最新轮次、工具活动与 invoke_subagent 调用）
   if (Array.isArray(options.liveSteps) && options.liveSteps.length) {
     for (let idx = 0; idx < options.liveSteps.length; idx++) {
       const s = options.liveSteps[idx];
       if (!s || typeof s !== 'object') continue;
       const stepIndex = Number.isInteger(Number(s.stepIndex ?? s.idx)) ? Number(s.stepIndex ?? s.idx) : idx;
+      const stepTs = s.timestamp || (s.createdAt ? Date.parse(s.createdAt) : null);
+      if (Array.isArray(s.tool_calls)) {
+        for (const tc of s.tool_calls) {
+          if (tc?.name) {
+            mainToolEntries.push({
+              name: tc.name,
+              args: tc.args || {},
+              stepIndex,
+              timestamp: stepTs,
+              status: tc.status || s.status || null,
+              error: tc.error || s.error || null,
+              durationSec: tc.durationSec ?? null
+            });
+          }
+        }
+      } else if (s.runCommand) {
+        mainToolEntries.push({
+          name: 'run_command',
+          args: { CommandLine: s.runCommand.commandLine || s.runCommand.command || '', toolSummary: s.runCommand.summary || '' },
+          stepIndex,
+          timestamp: stepTs,
+          status: s.status || null,
+          error: s.errorMessage || null
+        });
+      } else if (s.viewFile && (s.viewFile.absolutePathUri || s.viewFile.path)) {
+        mainToolEntries.push({
+          name: 'read_file',
+          args: { Path: s.viewFile.absolutePathUri || s.viewFile.path },
+          stepIndex,
+          timestamp: stepTs,
+          status: s.status || null
+        });
+      } else if (s.writeToFile && (s.writeToFile.targetFileUri || s.writeToFile.path)) {
+        mainToolEntries.push({
+          name: 'write_file',
+          args: { Path: s.writeToFile.targetFileUri || s.writeToFile.path },
+          stepIndex,
+          timestamp: stepTs,
+          status: s.status || null
+        });
+      }
       if (s.userInput) {
         const u = s.userInput;
         const rawText = String(u.userResponse || (u.items || []).map(item => item.text || '').join(' ') || '');
@@ -6852,7 +8962,7 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
   }
 
   // 4. 合并本地 pricing_ledger_v1.json 中当前会话（及其子代理）的持久化记录
-  const ledger = loadPricingLedger(agDir, options.fs ? { fs: options.fs } : undefined);
+  const ledger = loadPricingLedger(agDir, { ...(options.fs ? { fs: options.fs } : {}), readOnly: true });
   const ledgerCalls = ledger && ledger.calls && typeof ledger.calls === 'object' ? Object.values(ledger.calls) : [];
   const normCid = cid.toLowerCase();
   for (const lc of ledgerCalls) {
@@ -6862,70 +8972,72 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
     }
   }
 
-  // 5. 发现基于 .db parent_cascade_id / root_cascade_id 的可验证子代理会话
-  const dbChildren = findSubagentChildrenFromConvDirs(cid, rootEntries.map(r => path.join(r.dir, 'conversations')), options);
-  for (const dc of dbChildren) {
-    const k = dc.childCid.toLowerCase();
-    const existing = subagentMap.get(k);
-    if (!existing) {
-      subagentMap.set(k, {
-        childCid: dc.childCid,
-        parentCascadeId: dc.parentCascadeId || cid,
-        parentStepIndex: null,
-        subagentRole: dc.subagentRole || '',
-        subagentType: dc.subagentType || '',
-        confidence: 'verified_db_meta'
-      });
-    } else if (!existing.subagentType && dc.subagentType) {
-      existing.subagentType = dc.subagentType;
-    }
+  // 5-6. 收集已验证关联子代理（tool output + .db 元数据）的 transcript + .db + ledger 调用
+  const { subagentLinks, subagentCalls } = collectVerifiedSubagentCallsForSessionSync({
+    cascadeId: cid,
+    rootEntries,
+    initialLinks: Array.from(subagentMap.values()),
+    ledgerCalls,
+    parseOptions: options
+  });
+  for (const sc of subagentCalls) {
+    allCalls.push(sc);
   }
 
-  // 6. 读取所有已验证关联子代理的 transcript + .db + ledger 调用
-  const subagentLinks = Array.from(subagentMap.values());
-  for (const link of subagentLinks) {
-    const childFile = findTranscriptForCid(link.childCid);
-    const childNorm = link.childCid.toLowerCase();
-    if (childFile) {
-      const childParsed = parseTranscriptForSessionTimeline(childFile.path, link.childCid, childFile.convDir, childFile.source, options);
-      for (const cc of childParsed.calls) {
-        allCalls.push({
-          ...cc,
-          agentRole: 'subagent',
-          parentCascadeId: link.parentCascadeId || cid,
-          parentStepIndex: link.parentStepIndex ?? null,
-          subagentType: link.subagentType || childParsed.dbMeta?.subagentType || '',
-          subagentRole: link.subagentRole || childParsed.dbMeta?.subagentRole || '',
-          attributionConfidence: link.confidence
-        });
-      }
-    }
-    for (const lc of ledgerCalls) {
-      if (!lc || !lc.cascadeId) continue;
-      if (String(lc.cascadeId).toLowerCase() === childNorm) {
-        allCalls.push({
-          ...lc,
-          agentRole: 'subagent',
-          parentCascadeId: link.parentCascadeId || cid,
-          parentStepIndex: link.parentStepIndex ?? null,
-          subagentType: link.subagentType || '',
-          subagentRole: link.subagentRole || '',
-          attributionConfidence: link.confidence
-        });
-      }
-    }
-  }
+  const prelimTurns = [...allTurns].sort((a, b) => ((a.stepIndex ?? 0) - (b.stepIndex ?? 0)) || ((a.timestamp || 0) - (b.timestamp || 0)))
+    .map((t, i) => ({ ...t, turnIndex: i + 1 }));
+  const toolInsights = extractSessionToolInsights(mainToolEntries, prelimTurns);
 
   const grouped = groupSessionCallsByTurns(allTurns, allCalls, {
     cascadeId: cid,
     cascadeModelConfigs: cascadeConfigs,
-    userStatus: options.userStatus || null
+    userStatus: options.userStatus || null,
+    toolExecEvents: toolInsights.toolExecEvents,
+    taskEvents: toolInsights.taskEvents
   });
+  const combinedEventSteps = Array.isArray(options.liveSteps) && options.liveSteps.length
+    ? options.liveSteps.map((s, idx) => ({ ...s, stepIndex: Number.isInteger(Number(s?.stepIndex ?? s?.idx)) ? Number(s?.stepIndex ?? s?.idx) : idx }))
+    : mainRawSteps;
+  const analyzedStepsSummary = combinedEventSteps.length ? analyzeSteps(combinedEventSteps) : null;
+  const contextChangeEvents = detectContextChangeEvents(combinedEventSteps, allCalls, {
+    cascadeId: cid,
+    cascadeModelConfigs: cascadeConfigs,
+    turns: grouped.turns
+  });
+  const firstTurnTitle = grouped.turns?.[0]?.preview || mainTurnsFallbackTitle(combinedEventSteps) || '';
   return {
     ...grouped,
+    sessionTitle: String(options.sessionTitle || firstTurnTitle || '').trim(),
+    compositionFromSteps: analyzedStepsSummary
+      ? {
+          groups: analyzedStepsSummary.groups,
+          compositionSubgroups: analyzedStepsSummary.compositionSubgroups,
+          stepCompositionItems: analyzedStepsSummary.stepCompositionItems,
+          userMessages: analyzedStepsSummary.userMessages,
+          assistantMessages: analyzedStepsSummary.assistantMessages,
+          checkpointCount: analyzedStepsSummary.checkpointCount
+        }
+      : null,
+    contextChangeEvents,
+    fileActivities: toolInsights.fileActivities,
+    fileActivitySummary: toolInsights.fileActivitySummary,
+    commandExecutions: toolInsights.commandExecutions,
+    commandSummary: toolInsights.commandSummary,
     subagentLinks,
     subagentNote: mainDbMeta?.skippedReason ? `db_${mainDbMeta.skippedReason}` : null
   };
+}
+
+function mainTurnsFallbackTitle(steps) {
+  if (!Array.isArray(steps)) return '';
+  for (const s of steps) {
+    if (s?.userInput) {
+      const txt = s.userInput.userResponse || (s.userInput.items || []).map(it => it?.text || '').join(' ');
+      const cleaned = sanitizeTurnPreviewText(txt, 56);
+      if (cleaned) return cleaned;
+    }
+  }
+  return '';
 }
 
 async function collectSessionTimelineAsync(cascadeId, options = {}) {
@@ -7264,7 +9376,7 @@ function requestGithubUrl(rawUrl, options = {}) {
         if (tunnelSocket) {
           const tls = require('tls');
           // Node https.request 在 agent:false 时会忽略 reqOpts.createConnection，必须绑定带 createConnection 的专属 Agent
-          const tunnelAgent = new https.Agent({ keepAlive: false });
+          const tunnelAgent = new https.Agent({ keepAlive: false, proxyEnv: {} });
           tunnelAgent.createConnection = () => {
             tunnelConsumed = true;
             const tlsOpts = { socket: tunnelSocket, servername: parsedUrl.hostname };
@@ -7275,6 +9387,9 @@ function requestGithubUrl(rawUrl, options = {}) {
             return tls.connect(tlsOpts);
           };
           reqOpts.agent = tunnelAgent;
+        } else {
+          // 显式屏蔽 Node 24 NODE_USE_ENV_PROXY 对直连或 bypass 命中请求的自动劫持
+          reqOpts.agent = new https.Agent({ keepAlive: false, proxyEnv: {} });
         }
 
         const req = https.request(reqOpts, res => {
@@ -7301,7 +9416,7 @@ function requestGithubUrl(rawUrl, options = {}) {
             // 剥离旧 headers 与 Authorization，按新目标域名重新决定是否附带凭据与代理绕过
             hopEntry.outcome = 'redirect';
             hopEntry.durationMs = Date.now() - startMs;
-            try { hopEntry.redirectToHost = new URL(nextUrlStr).hostname; } catch {}
+            try { hopEntry.redirectToHost = new URL(nextUrlStr).hostname; } catch { }
             const nextHeaders = Object.assign({}, options.headers || {});
             for (const hKey of Object.keys(nextHeaders)) {
               if (hKey.toLowerCase() === 'authorization') delete nextHeaders[hKey];
@@ -7933,6 +10048,7 @@ const LIVE_RUNTIME_FILES = [
   'install.js',
   'restore.js',
   'live-host.js',
+  'host-recovery.js',
   'local-api.js',
   'meter-main.js',
   'meter-core.js',
@@ -7942,6 +10058,10 @@ const LIVE_RUNTIME_FILES = [
   'meter-proxy.js',
   'meter-cli-launcher.js',
   'meter-cli-monitor.js',
+  'meter-cli-adapter.js',
+  'meter-cli-companion.js',
+  'meter-cli-ui.js',
+  'meter-rehydrate.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
   'meter-accounts.js',
@@ -7996,7 +10116,7 @@ function syncLiveRuntimeBundle(sourceDir, options = {}) {
       if (!pkgVersion && fs.existsSync(path.join(sourceDir, 'package.json'))) {
         pkgVersion = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf8')).version || null;
       }
-    } catch {}
+    } catch { }
     safeWriteJsonSync(path.join(targetDir, '.runtime-manifest.json'), {
       version: pkgVersion || PROJECT_VERSION,
       copiedCount,
@@ -8018,7 +10138,7 @@ function parseInstallStdoutMeta(stdout = '') {
         return JSON.parse(jsonPart);
       }
     }
-  } catch {}
+  } catch { }
   return null;
 }
 
@@ -8098,6 +10218,136 @@ async function downloadAssetFileWithRetry(url, filePath, fetcher, options = {}) 
   throw lastErr;
 }
 
+/**
+ * 对更新解压阶段返回的报错文本执行脱敏处理（清理凭据、令牌与本机用户名路径片段）。
+ */
+function sanitizeUpdateErrorText(raw) {
+  const cleaned = sanitizeDiagnosticErrorText(raw)
+    .replace(/([A-Za-z]:\\Users\\)[^\\/\s"']+/gi, '$1<USER>')
+    .replace(/(\/(?:Users|home)\/)[^/\s"']+/g, '$1<USER>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.slice(0, 220);
+}
+
+/**
+ * 解压官方更新 zip 安装包（适配 PR #76 / Issue #75，感谢 XiangZheng2283）：
+ * - Windows 优先显式调用 %SystemRoot%\System32\tar.exe (bsdtar)，避免 PATH 中 Git/MSYS2 GNU tar 抢占失败；
+ * - 若 System32\tar.exe 不存在或执行失败，先清空半解压目录再回退 PowerShell Expand-Archive（经环境变量安全传参）；
+ * - 若全部路径失败则清理半解压目录并返回脱敏错误摘要，确保不完整目录绝不进入安装流程。
+ */
+function extractUpdateZip(zipPath, extractDir, options = {}) {
+  const platform = options.platform || process.platform;
+  const runSpawnSync = options._spawnSync || spawnSync;
+  const existsSyncFn = options._existsSync || fs.existsSync;
+  const rmSyncFn = options._rmSync || fs.rmSync;
+  const mkdirSyncFn = options._mkdirSync || fs.mkdirSync;
+  const env = options.env || process.env;
+  const isMockSpawn = typeof options._spawnSync === 'function';
+
+  const resetDirIfPresent = (recreate) => {
+    if (!extractDir || (isMockSpawn && !options._resetOnMock && !fs.existsSync(extractDir))) {
+      return;
+    }
+    try {
+      if (existsSyncFn(extractDir)) {
+        rmSyncFn(extractDir, { recursive: true, force: true });
+      }
+      if (recreate) {
+        mkdirSyncFn(extractDir, { recursive: true });
+      }
+    } catch { }
+  };
+
+  const formatResultError = (res) => {
+    if (!res) return '未返回执行结果';
+    const raw = (res.stderr && String(res.stderr).trim()) ||
+      (res.stdout && String(res.stdout).trim()) ||
+      (res.error && (res.error.message || String(res.error))) ||
+      (res.status !== null && res.status !== undefined ? `exit code ${res.status}` : '');
+    return raw ? sanitizeUpdateErrorText(raw) : '';
+  };
+
+  if (platform === 'win32') {
+    const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.WINDIR || env.windir || 'C:\\Windows';
+    const systemTarPath = path.win32.join(systemRoot, 'System32', 'tar.exe');
+    const systemPowerShellPath = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const attempts = [];
+
+    if (existsSyncFn(systemTarPath)) {
+      const tarRes = runSpawnSync(systemTarPath, ['-xf', zipPath, '-C', extractDir], {
+        encoding: 'utf8',
+        windowsHide: true
+      });
+      if (tarRes && tarRes.status === 0 && !tarRes.error) {
+        return { status: 0, method: 'system32-tar' };
+      }
+      attempts.push(`system32-tar: ${formatResultError(tarRes) || 'failed'}`);
+      // 回退 PowerShell 前清除 System32\tar.exe 可能遗留的半解压脏文件
+      resetDirIfPresent(true);
+    }
+
+    const psExe = existsSyncFn(systemPowerShellPath) ? systemPowerShellPath : 'powershell.exe';
+    const psFallbackScript = [
+      'try {',
+      '  Expand-Archive -LiteralPath $env:AG_UPDATE_ZIP_PATH -DestinationPath $env:AG_UPDATE_EXTRACT_DIR -Force -ErrorAction Stop',
+      '} catch {',
+      '  try {',
+      '    if (Test-Path -LiteralPath $env:AG_UPDATE_EXTRACT_DIR) { Remove-Item -LiteralPath $env:AG_UPDATE_EXTRACT_DIR -Recurse -Force -ErrorAction SilentlyContinue }',
+      '    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop',
+      '    [System.IO.Compression.ZipFile]::ExtractToDirectory($env:AG_UPDATE_ZIP_PATH, $env:AG_UPDATE_EXTRACT_DIR)',
+      '  } catch {',
+      '    Write-Error $_',
+      '    exit 1',
+      '  }',
+      '}'
+    ].join('; ');
+    const psRes = runSpawnSync(
+      psExe,
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        psFallbackScript
+      ],
+      {
+        encoding: 'utf8',
+        windowsHide: true,
+        env: {
+          ...env,
+          AG_UPDATE_ZIP_PATH: zipPath,
+          AG_UPDATE_EXTRACT_DIR: extractDir
+        }
+      }
+    );
+    if (psRes && psRes.status === 0 && !psRes.error) {
+      return { status: 0, method: 'powershell-expand-archive' };
+    }
+    attempts.push(`powershell: ${formatResultError(psRes) || 'failed'}`);
+
+    // 全部解压方式失败：彻底销毁半解压目录，杜绝进入安装步骤
+    resetDirIfPresent(false);
+    return {
+      status: (psRes && Number.isInteger(psRes.status) && psRes.status !== 0) ? psRes.status : 1,
+      error: psRes?.error || null,
+      detail: attempts.join('; ')
+    };
+  }
+
+  const unzipRes = runSpawnSync('unzip', ['-qo', zipPath, '-d', extractDir], {
+    encoding: 'utf8'
+  });
+  if (unzipRes && unzipRes.status === 0 && !unzipRes.error) {
+    return { status: 0, method: 'unzip' };
+  }
+  resetDirIfPresent(false);
+  return {
+    status: (unzipRes && Number.isInteger(unzipRes.status) && unzipRes.status !== 0) ? unzipRes.status : 1,
+    error: unzipRes?.error || null,
+    detail: formatResultError(unzipRes)
+  };
+}
+
 async function applyUpdateAsync(options = {}) {
   if (isApplyingUpdate) {
     return { ok: false, error: '更新任务正在执行中，请勿重复操作' };
@@ -8116,10 +10366,18 @@ async function applyUpdateAsync(options = {}) {
       : (options?.version || options?.release?.latestVersion || null);
 
     const fetcher = options._requestGithubUrl || requestGithubUrl;
+    const requestedHasPre = /alpha|beta|rc|pre-?release/i.test(String(requestedVersion || ''));
+    let allowBeta = options.allowBetaUpdates === true || requestedHasPre;
+    if (!allowBeta && options.allowBetaUpdates === undefined) {
+      try {
+        allowBeta = getPluginSettings({ agDir: options.agDir }).allowBetaUpdates === true;
+      } catch { }
+    }
     let releaseQuery;
     try {
       releaseQuery = await fetchOfficialReleasesWithFallback({
         currentVersion,
+        allowBetaUpdates: allowBeta,
         _requestGithubUrl: fetcher,
         timeout: 10000
       });
@@ -8249,13 +10507,23 @@ async function applyUpdateAsync(options = {}) {
       } catch (err) {
         extractRes = { status: 1, error: err };
       }
-    } else if (process.platform === 'win32') {
-      extractRes = spawnSync('tar', ['-xf', zipPath, '-C', extractDir], { stdio: 'ignore', windowsHide: true });
     } else {
-      extractRes = spawnSync('unzip', ['-q', zipPath, '-d', extractDir], { stdio: 'ignore' });
+      extractRes = extractUpdateZip(zipPath, extractDir, {
+        platform: process.platform,
+        _spawnSync: options._spawnSync,
+        _existsSync: options._existsSync,
+        env: options.env || process.env
+      });
     }
-    if (extractRes && extractRes.status !== 0) {
-      return { ok: false, error: '解压更新安装包失败，终止安装', htmlUrl: targetRelease.htmlUrl };
+    if (!extractRes || extractRes.status !== 0 || extractRes.error) {
+      try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { }
+      const detail = extractRes?.detail ||
+        (extractRes?.error ? sanitizeUpdateErrorText(extractRes.error) : '');
+      return {
+        ok: false,
+        error: detail ? `解压更新安装包失败，终止安装 (${detail})` : '解压更新安装包失败，终止安装',
+        htmlUrl: targetRelease.htmlUrl
+      };
     }
 
     const cliPath = path.join(extractDir, 'cli.js');
@@ -8403,6 +10671,7 @@ module.exports = {
   buildAccountScopeKey,
   resetQuotaHostCacheForTest,
   collect,
+  collectTurnState,
   collectTokenHistory,
   collectTokenHistoryAsync,
   parseLxssRegistryOutput,
@@ -8423,7 +10692,21 @@ module.exports = {
   buildDailyModelBreakdown,
   collectSessionTimelineCoreAsync,
   collectSessionTimelineAsync,
+  collectVerifiedSubagentCallsForSessionSync,
+  parseTranscriptForSessionTimeline,
+  extractSessionToolInsights,
+  buildSessionCompositionBreakdown,
+  sanitizeCommandPreview,
+  extractCommandProgram,
   scanFiles,
+  getImageDimensions,
+  inspectInlineImageMeta,
+  INLINE_IMAGE_DIMS_CACHE,
+  parseEventDurSec,
+  parseTranscriptLineRecord,
+  loadIncrementalTranscriptRecords,
+  transcriptFileCache,
+  parseStepFallbackKey,
   pythonScan,
   resolvePython,
   isCompanionOrTempFile,
@@ -8447,6 +10730,12 @@ module.exports = {
   isSyntheticCall,
   quarantineSyntheticCalls,
   getCustomPlanPath,
+  getPricingCatalogCachePath,
+  getCustomPricingPath,
+  loadPersistedPricingCatalog,
+  repriceUnpricedLedgerCalls,
+  repriceUnpricedLedgerCallsAsync,
+  syncPricingCatalogAsync,
   sanitizeAccountPlanEntry,
   loadCustomPlanSettings,
   saveCustomPlanSettings,
@@ -8456,6 +10745,8 @@ module.exports = {
   resolveAccountCustomPlan,
   getPluginSettings,
   savePluginSettings,
+  DEFAULT_VIEW_PREFS,
+  sanitizeDefaultViewPrefs,
   sanitizeContextPreferenceEntry,
   resolveCliExecutable,
   resolveCliWorkspace,
@@ -8464,6 +10755,8 @@ module.exports = {
   SUBSCRIPTION_ACQUISITION_PRESETS,
   checkUpdateAsync,
   applyUpdateAsync,
+  extractUpdateZip,
+  sanitizeUpdateErrorText,
   LIVE_RUNTIME_FILES,
   getLiveRuntimeDir,
   syncLiveRuntimeBundle,

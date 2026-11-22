@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api');
 const {
   collect,
+  collectTurnState,
   collectTokenHistoryAsync,
   collectSessionTimelineAsync,
   fetchQuotaSnapshotFromHost,
@@ -18,7 +19,8 @@ const {
   launchCliSession,
   getContextUnlockStatus,
   applyContextUnlockAsync,
-  restoreContextUnlockAsync
+  restoreContextUnlockAsync,
+  syncPricingCatalogAsync
 } = require('./meter-collector');
 const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
@@ -48,14 +50,24 @@ const liveBootProxySnapshot = (() => {
 
 const liveBootChineseSnapshots = new Map();
 
-function resolveLiveBootChineseSnapshot() {
-  const key = String(process.env.AG_METER_STATE_DIR || '__default__');
+function resolveLiveBootChineseSnapshot(customAsarPath = null) {
+  const key = `${String(process.env.AG_METER_STATE_DIR || '__default__')}|${String(customAsarPath || '__auto__')}`;
   if (liveBootChineseSnapshots.has(key)) return liveBootChineseSnapshots.get(key);
   let snap = { enabled: false, language: 'en' };
   try {
+    const { isIsolatedTestPath } = require('./asar-engine');
+    const inIsolatedEnv = Boolean(
+      process.env.AG_METER_TEST_MODE === '1' ||
+      isIsolatedTestPath(process.env.APPDATA) ||
+      isIsolatedTestPath(process.env.AG_METER_STATE_DIR)
+    );
+    if (inIsolatedEnv && !customAsarPath) {
+      liveBootChineseSnapshots.set(key, snap);
+      return snap;
+    }
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
     const cfg = loadModulesConfig();
-    const disk = inspectDiskModules();
+    const disk = inspectDiskModules(customAsarPath || null);
     const ch = cfg?.modules?.chinese || {};
     const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
     const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
@@ -69,7 +81,7 @@ function resolveLiveBootChineseSnapshot() {
 }
 try { resolveLiveBootChineseSnapshot(); } catch {}
 
-function buildLiveRuntimeModulesMeta(cfg) {
+function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null) {
   const diskProxy = cfg?.modules?.proxy || {};
   const diskEnabled = Boolean(diskProxy.enabled);
   const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
@@ -79,7 +91,7 @@ function buildLiveRuntimeModulesMeta(cfg) {
   const runtimeBypass = normalizeBypassListForCompare(liveBootProxySnapshot.bypassList || '');
   const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
     (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || diskBypass !== runtimeBypass));
-  const bootZh = resolveLiveBootChineseSnapshot();
+  const bootZh = resolveLiveBootChineseSnapshot(customAsarPath);
   const diskCh = cfg?.modules?.chinese || {};
   const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
   return {
@@ -99,6 +111,7 @@ const MAX_RECORD_CALLS = 500; // 单批次最大记录数
 const ALLOWED_ROUTES = [
   '/runtime-info',
   '/scan',
+  '/turn-state',
   '/token-history',
   '/session-timeline',
   '/quota',
@@ -113,6 +126,11 @@ const ALLOWED_ROUTES = [
   '/enhance-apply',
   '/enhance-restore',
   '/restart-language-servers',
+  '/rehydrate-status',
+  '/rehydrate-apply',
+  '/rehydrate-disable',
+  '/rehydrate-restore',
+  '/rehydrate-install-python',
   '/modules-status',
   '/toggle-module',
   '/test-proxy',
@@ -120,6 +138,8 @@ const ALLOWED_ROUTES = [
   '/apply-update',
   '/accounts-overview',
   '/accounts-action',
+  '/sync-pricing',
+  '/open-dashboard-browser',
   '/shutdown',
   '/restart-host'
 ];
@@ -128,6 +148,7 @@ const LIVE_HOST_STARTED_AT = Date.now();
 const LIVE_HOST_BUILD_ID = getHostCoreBuildId(__dirname);
 const LIVE_CAPABILITIES = {
   scan: true,
+  turnState: true,
   tokenHistory: true,
   sessionTimeline: true,
   quota: true,
@@ -136,12 +157,14 @@ const LIVE_CAPABILITIES = {
   launchCli: true,
   contextUnlock: true,
   enhance: true,
+  rehydrate: true,
   modules: true,
   accounts: true,
   checkUpdate: true,
   applyUpdate: true,
   restartHost: false,
-  hotReload: true
+  hotReload: true,
+  syncPricing: true
 };
 
 function timingSafeTokenEqual(provided, expected) {
@@ -319,6 +342,41 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           res.end(JSON.stringify(result));
           return;
         }
+        if (req.url === '/rehydrate-status') {
+          const { getRehydrateStatusAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await getRehydrateStatusAsync(sanitizeRehydrateRendererOptions(request, 'status'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: result }));
+          return;
+        }
+        if (req.url === '/rehydrate-apply') {
+          const { applyRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await applyRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'apply'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-disable') {
+          const { disableRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await disableRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'disable'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-restore') {
+          const { restoreRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await restoreRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'restore'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-install-python') {
+          const { installPythonRuntimeAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await installPythonRuntimeAsync(sanitizeRehydrateRendererOptions(request, 'install-python'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
         if (req.url === '/test-proxy') {
           const { testProxyHealth } = require('./modules-config');
           const report = await testProxyHealth(request?.proxyUrl);
@@ -334,7 +392,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             ok: true,
             data: cfg,
             disk: inspectDiskModules(request?.asarPath || null),
-            runtime: buildLiveRuntimeModulesMeta(cfg),
+            runtime: buildLiveRuntimeModulesMeta(cfg, request?.asarPath || null),
             configCorrupted: Boolean(cfg.__configCorrupted),
             configError: cfg.__configError || null,
             corruptedConfigPath: cfg.__corruptedConfigPath || null
@@ -370,7 +428,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
               status: 'install_failed',
               data: cfg,
               disk,
-              runtime: buildLiveRuntimeModulesMeta(cfg),
+              runtime: buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null),
               error: `当前客户端磁盘 ASAR 未注入${modLabel}组件（或组件不完整）。请先彻底退出 Antigravity（包含系统托盘），再${cmdHint} 完成持久化注入。`,
               restartRequired: false
             }));
@@ -378,7 +436,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           }
 
           // 在写盘更改前先确保本生命周期启动汉化快照已捕获
-          resolveLiveBootChineseSnapshot();
+          resolveLiveBootChineseSnapshot(extra.asarPath || null);
           const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
           const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
           if (mod === 'chinese') {
@@ -397,7 +455,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
                   status: 'invalid_config',
                   error: check.error,
                   data: cfg,
-                  runtime: buildLiveRuntimeModulesMeta(cfg)
+                  runtime: buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null)
                 }));
                 return;
               }
@@ -412,7 +470,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             }
           }
           saveModulesConfig(cfg);
-          const runtime = buildLiveRuntimeModulesMeta(cfg);
+          const runtime = buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null);
           const langChanged = mod === 'chinese' && (
             Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
             cfg.modules.chinese.language !== prevChineseLang
@@ -450,6 +508,57 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const result = await checkUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/sync-pricing') {
+          const result = await syncPricingCatalogAsync({ force: request?.force !== false });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/open-dashboard-browser') {
+          const { startCliUiServer } = require('./meter-cli-ui');
+          const rawSid = typeof request?.sessionId === 'string' ? request.sessionId.trim() : '';
+          const cleanSid = (rawSid && !/[/\\]|\.\./.test(rawSid)) ? rawSid : '';
+          const rawSrc = typeof request?.source === 'string' ? request.source.trim().toLowerCase() : 'desktop';
+          const cleanSrc = (rawSrc === 'cli' || rawSrc === 'desktop') ? rawSrc : 'desktop';
+          const shouldOpenExternal = request?.openExternal === true;
+          if (!globalThis.__agLiveDashboardServerPromise) {
+            globalThis.__agLiveDashboardServerPromise = startCliUiServer({ host: '127.0.0.1', port: 0, open: false }).catch(err => {
+              globalThis.__agLiveDashboardServerPromise = null;
+              throw err;
+            });
+          }
+          const srv = await globalThis.__agLiveDashboardServerPromise;
+          const baseUrl = srv?.baseUrl || srv?.url || `http://127.0.0.1:${srv?.port || 56780}`;
+          const dashboardUrl = cleanSid
+            ? `${baseUrl}/?sessionId=${encodeURIComponent(cleanSid)}&source=${encodeURIComponent(cleanSrc)}`
+            : baseUrl;
+          let openedExternal = false;
+          if (shouldOpenExternal) {
+            try {
+              const { spawn } = require('child_process');
+              if (process.platform === 'win32') {
+                spawn('cmd.exe', ['/c', 'start', '', dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
+              } else if (process.platform === 'darwin') {
+                spawn('open', [dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
+              } else {
+                spawn('xdg-open', [dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
+              }
+              openedExternal = true;
+            } catch {}
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            baseUrl,
+            url: dashboardUrl,
+            port: srv?.port || null,
+            pid: srv?.pid || null,
+            sessionId: cleanSid || null,
+            source: cleanSrc,
+            openedExternal
+          }));
           return;
         }
         if (req.url === '/apply-update') {
@@ -556,6 +665,19 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         }
         const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
         const effectiveOrigin = allowedSet.has(scanOrigin) ? scanOrigin : reqOrigin;
+        if (req.url === '/turn-state') {
+          const data = await collectTurnState(effectiveOrigin, request.id);
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            data: {
+              ...(data || {}),
+              backendVersion: PROJECT_VERSION,
+              backendSource: 'live-host'
+            }
+          }));
+          return;
+        }
         const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
@@ -649,6 +771,10 @@ function probeOriginAlive(origin) {
 }
 
 async function startLiveHost() {
+  const cliStateDir = getCliArgValue('--state-dir');
+  if (cliStateDir) {
+    process.env.AG_METER_STATE_DIR = path.resolve(cliStateDir);
+  }
   const envOrigins = parseInitialOriginsEnv();
   let currentOrigins = envOrigins;
   let api = null;
@@ -732,6 +858,7 @@ async function startLiveHost() {
       backendSource: 'live-host',
       hasQuota: true,
       hasRuntimeInfo: true,
+      hasTurnState: true,
       capabilities: Object.keys(LIVE_CAPABILITIES).filter(k => LIVE_CAPABILITIES[k]),
       startedAt: LIVE_HOST_STARTED_AT
     };

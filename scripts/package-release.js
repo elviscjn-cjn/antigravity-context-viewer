@@ -22,6 +22,7 @@ const COMMON_FILES = [
   'install.js',
   'restore.js',
   'live-host.js',
+  'host-recovery.js',
   'local-api.js',
   'meter-main.js',
   'meter-core.js',
@@ -31,8 +32,12 @@ const COMMON_FILES = [
   'meter-proxy.js',
   'meter-cli-launcher.js',
   'meter-cli-monitor.js',
+  'meter-cli-adapter.js',
+  'meter-cli-companion.js',
+  'meter-cli-ui.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
+  'meter-rehydrate.js',
   'meter-accounts.js',
   'macos-binary-utils.js',
   'attachment_scan.py',
@@ -41,6 +46,8 @@ const COMMON_FILES = [
   'modular-installer.js',
   'i18n/zh-CN.json',
   'i18n/i18n-runtime.js',
+  'rehydrate/README.md',
+  'rehydrate/rehydrate_after_compact.py',
   'unlock/README.md',
   'unlock/language-server/README.md',
   'unlock/language-server/patch-language_server.py',
@@ -57,6 +64,7 @@ const COMMON_FILES = [
   'README.ko.md',
   'README.es.md',
   'AGENTS.md',
+  'THIRD_PARTY_NOTICES.md',
   'LICENSE'
 ];
 
@@ -84,19 +92,29 @@ function supportsCscDeterministicFlag(cscExe) {
 }
 
 /**
- * 本地编译 Windows 窗口辅助程序时输出至系统临时目录，避免污染或覆盖仓库追踪的 scripts/cli-window-helper.exe。
+ * 解析并构建 Windows 窗口辅助程序 (Issue #17 构建来源可追溯):
+ * - Windows 本地打包: 强制从 scripts/cli-window-helper.cs 源码编译至系统临时目录，绝不采信源码目录残留 .exe；编译或源缺失直接报错退出。
+ * - CI / 非 Windows 打包: 强制读取本轮 Windows 作业生成的 scripts/cli-window-helper.exe 并核对 .sha256，缺失或校验失败直接报错退出。
  */
 function ensureWindowsHelper(opts = {}) {
-  const repoHelperPath = path.join(ROOT_DIR, 'scripts', 'cli-window-helper.exe');
-  const csSrc = path.join(ROOT_DIR, 'scripts', 'cli-window-helper.cs');
+  const rootDir = opts.rootDir ? path.resolve(opts.rootDir) : ROOT_DIR;
+  const platform = opts.platform || process.platform;
+  const csSrc = opts.csSrc ? path.resolve(opts.csSrc) : path.join(rootDir, 'scripts', 'cli-window-helper.cs');
+  const useCiArtifact = opts.useCiArtifact === true || platform !== 'win32';
 
-  const cscCandidates = Array.isArray(opts.cscCandidates) ? opts.cscCandidates : [
-    'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
-    'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
-  ];
-  const cscExe = cscCandidates.find(p => fs.existsSync(p));
+  if (!useCiArtifact) {
+    if (!fs.existsSync(csSrc)) {
+      throw new Error(`缺少 Windows 辅助程序源码 ${csSrc}，拒绝使用任何未验证预编译二进制！`);
+    }
+    const cscCandidates = Array.isArray(opts.cscCandidates) ? opts.cscCandidates : [
+      'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
+      'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
+    ];
+    const cscExe = cscCandidates.find(p => p && fs.existsSync(p));
+    if (!cscExe) {
+      throw new Error('未找到 .NET Framework csc.exe，无法从源码编译 scripts/cli-window-helper.cs，已终止本地打包！');
+    }
 
-  if (cscExe && fs.existsSync(csSrc)) {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-win-helper-'));
     const tempHelperPath = path.join(tempDir, 'cli-window-helper.exe');
     try {
@@ -105,24 +123,72 @@ function ensureWindowsHelper(opts = {}) {
         cscArgs.push('/deterministic');
       }
       cscArgs.push(`/out:${tempHelperPath}`, csSrc);
-      execFileSync(cscExe, cscArgs, { stdio: 'pipe', windowsHide: true });
-      if (fs.existsSync(tempHelperPath) && fs.statSync(tempHelperPath).size > 0) {
-        console.log(`[Packaging] cli-window-helper.exe 已在临时目录源码编译 (${fs.statSync(tempHelperPath).size} 字节, SHA-256: ${sha256File(tempHelperPath)})`);
-        return { helperPath: tempHelperPath, tempDir, compiled: true };
+      const res = spawnSync(cscExe, cscArgs, { encoding: 'utf8', stdio: 'pipe', windowsHide: true });
+      if (res.error) {
+        throw res.error;
       }
-      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { }
+      if (res.status !== 0) {
+        const detail = String(res.stderr || res.stdout || '').trim();
+        throw new Error(`csc.exe 退出码 ${res.status}${detail ? `: ${detail}` : ''}`);
+      }
+      if (!fs.existsSync(tempHelperPath) || fs.statSync(tempHelperPath).size === 0) {
+        throw new Error('编译完成但未生成有效的 cli-window-helper.exe');
+      }
+      const helperSha256 = sha256File(tempHelperPath);
+      const size = fs.statSync(tempHelperPath).size;
+      console.log(`[Packaging] cli-window-helper.exe 已在临时目录源码编译 (${size} 字节, SHA-256: ${helperSha256})`);
+      return {
+        helperPath: tempHelperPath,
+        helperSha256,
+        size,
+        tempDir,
+        compiled: true,
+        source: 'local_source_build'
+      };
     } catch (e) {
       try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { }
-      console.warn(`[Packaging Warning] 调用 csc 重新编译失败: ${e.message}`);
+      throw new Error(`本地源码编译 scripts/cli-window-helper.cs 失败，已终止打包 (禁止回退残留 .exe): ${e.message}`);
     }
   }
 
-  if (fs.existsSync(repoHelperPath) && fs.statSync(repoHelperPath).size > 0) {
-    console.log(`[Packaging] 复用当前 scripts/cli-window-helper.exe (SHA-256: ${sha256File(repoHelperPath)})`);
-    return { helperPath: repoHelperPath, tempDir: null, compiled: false };
+  const ciHelperPath = opts.ciHelperPath
+    ? path.resolve(opts.ciHelperPath)
+    : path.join(rootDir, 'scripts', 'cli-window-helper.exe');
+  const ciSha256File = opts.ciSha256File
+    ? path.resolve(opts.ciSha256File)
+    : path.join(rootDir, 'scripts', 'cli-window-helper.exe.sha256');
+
+  if (!fs.existsSync(ciHelperPath) || fs.statSync(ciHelperPath).size === 0) {
+    throw new Error(`缺少 CI 构建产物 ${ciHelperPath}，拒绝打包！`);
   }
 
-  throw new Error('缺少必需的 Windows 原生组件 scripts/cli-window-helper.exe，且无法自动编译！');
+  let expectedSha = typeof opts.expectedSha256 === 'string' ? opts.expectedSha256.trim().toLowerCase() : '';
+  if (!expectedSha) {
+    if (!fs.existsSync(ciSha256File)) {
+      throw new Error(`缺少 CI 辅助程序哈希校验文件 ${ciSha256File}，无法验证构建来源！`);
+    }
+    const shaContent = fs.readFileSync(ciSha256File, 'utf8');
+    const shaMatch = shaContent.match(/([a-f0-9]{64})/i);
+    if (!shaMatch) {
+      throw new Error(`哈希校验文件 ${ciSha256File} 格式无效，未包含 64 位 SHA-256！`);
+    }
+    expectedSha = shaMatch[1].toLowerCase();
+  }
+
+  const actualSha = sha256File(ciHelperPath).toLowerCase();
+  if (actualSha !== expectedSha) {
+    throw new Error(`CI 构建的 cli-window-helper.exe 哈希校验失败 (期望: ${expectedSha}, 实际: ${actualSha})！`);
+  }
+
+  console.log(`[Packaging] 已验证 CI 源码构建产物 scripts/cli-window-helper.exe (SHA-256: ${actualSha})`);
+  return {
+    helperPath: ciHelperPath,
+    helperSha256: actualSha,
+    size: fs.statSync(ciHelperPath).size,
+    tempDir: null,
+    compiled: false,
+    source: 'ci_verified_artifact'
+  };
 }
 
 function getVersion() {
@@ -167,9 +233,12 @@ function packagePlatform(plat, version, options = {}) {
     if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
     if (process.platform === 'win32') {
-      // 优先使用 Windows 内置 bsdtar (-a -cf) 生成使用正斜杠 '/' 的跨平台标准 ZIP，确保 macOS/Linux 解压子目录一致
+      // 优先使用系统自带 System32\tar.exe (bsdtar -a -cf) 生成使用正斜杠 '/' 的跨平台标准 ZIP，避免被 PATH 中的 GNU tar 抢占
       const topEntries = fs.readdirSync(stagingDir);
-      const tarRes = spawnSync('tar.exe', ['-a', '-cf', zipPath, ...topEntries], { cwd: stagingDir, stdio: 'pipe', windowsHide: true });
+      const sysRoot = process.env.SystemRoot || process.env.SYSTEMROOT || process.env.WINDIR || 'C:\\Windows';
+      const sysTar = path.win32.join(sysRoot, 'System32', 'tar.exe');
+      const tarBin = fs.existsSync(sysTar) ? sysTar : 'tar.exe';
+      const tarRes = spawnSync(tarBin, ['-a', '-cf', zipPath, ...topEntries], { cwd: stagingDir, stdio: 'pipe', windowsHide: true });
       if (tarRes.status !== 0 || !fs.existsSync(zipPath)) {
         // 回退 PowerShell 原生 .NET ZipFile
         const psScript = `
@@ -234,6 +303,8 @@ function main(options = {}) {
     fs.writeFileSync(checksumFile, checksumLines, 'utf8');
     console.log(`[Packaging] 已生成 checksums.txt (共 ${results.length} 个资产包)`);
 
+    results.helperSha256 = helperInfo.helperSha256 || null;
+    results.helperSource = helperInfo.source || null;
     return results;
   } finally {
     if (helperInfo?.tempDir) {

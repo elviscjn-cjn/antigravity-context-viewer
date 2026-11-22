@@ -10,6 +10,11 @@ const {
   applyProxyEnvironment,
   buildCliProxyEnv,
   getProxyCandidatePaths,
+  resolveAntigravityExecutable,
+  buildHostProxyLaunchSpec,
+  generateWindowsNoTunVbs,
+  generatePosixNoTunLauncher,
+  createStandaloneNoTunLauncher,
   DEFAULT_NO_PROXY
 } = require('./meter-proxy');
 const {
@@ -942,4 +947,141 @@ test('Issue #51: 锁文件残留/空锁/跨进程竞争下事件循环阻塞 < 1
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test('免改盘独立免 TUN 启动器: 环境变量/Chromium 参数构造、防注入转义与跨平台脚本生成', () => {
+  // 1. buildHostProxyLaunchSpec: socks5h -> socks5 转换、剥离 ELECTRON_RUN_AS_NODE、不污染原环境
+  const baseEnv = { PATH: '/usr/bin', ELECTRON_RUN_AS_NODE: '1', NO_PROXY: 'old.example' };
+  const spec = buildHostProxyLaunchSpec({
+    proxyUrl: 'socks5h://127.0.0.1:7897/',
+    noProxy: 'localhost,127.0.0.1,::1',
+    baseEnv,
+    extraArgs: ['--remote-debugging-port=9222']
+  });
+  assert.equal(spec.proxyUrl, 'socks5h://127.0.0.1:7897');
+  assert.equal(spec.chromiumProxyUrl, 'socks5://127.0.0.1:7897');
+  assert.equal(spec.env.HTTP_PROXY, 'socks5h://127.0.0.1:7897');
+  assert.equal(spec.env.HTTPS_PROXY, 'socks5h://127.0.0.1:7897');
+  assert.equal(spec.env.ALL_PROXY, 'socks5h://127.0.0.1:7897');
+  assert.equal(spec.env.NO_PROXY, 'localhost,127.0.0.1,::1');
+  assert.equal(spec.env.NODE_USE_ENV_PROXY, '1');
+  assert.equal('ELECTRON_RUN_AS_NODE' in spec.env, false);
+  assert.equal(baseEnv.ELECTRON_RUN_AS_NODE, '1');
+  assert.deepEqual(spec.args, [
+    '--proxy-server=socks5://127.0.0.1:7897',
+    '--proxy-bypass-list=localhost,127.0.0.1,::1',
+    '--remote-debugging-port=9222'
+  ]);
+
+  // 空 bypassList 应清除 NO_PROXY 且不附加 --proxy-bypass-list
+  const specEmptyBypass = buildHostProxyLaunchSpec({
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: '',
+    baseEnv: { NO_PROXY: 'legacy', no_proxy: 'legacy' }
+  });
+  assert.equal('NO_PROXY' in specEmptyBypass.env, false);
+  assert.equal('no_proxy' in specEmptyBypass.env, false);
+  assert.deepEqual(specEmptyBypass.args, ['--proxy-server=http://127.0.0.1:7897']);
+
+  // 非法代理地址报错
+  assert.throws(() => buildHostProxyLaunchSpec({ proxyUrl: 'ftp://127.0.0.1:21' }), /代理地址/);
+
+  // 2. resolveAntigravityExecutable 支持按 asarPath 推导各平台可执行程序
+  const fakeExisting = new Set([
+    'C:\\Apps\\antigravity\\Antigravity.exe',
+    '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
+    '/opt/antigravity/antigravity'
+  ]);
+  const mockFs = { existsSync: (p) => fakeExisting.has(p) };
+  assert.equal(
+    resolveAntigravityExecutable({ platform: 'win32', asarPath: 'C:\\Apps\\antigravity\\resources\\app.asar', fs: mockFs }),
+    'C:\\Apps\\antigravity\\Antigravity.exe'
+  );
+  assert.equal(
+    resolveAntigravityExecutable({ platform: 'darwin', asarPath: '/Applications/Antigravity.app/Contents/Resources/app.asar', fs: mockFs }),
+    '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+  );
+  assert.equal(
+    resolveAntigravityExecutable({ platform: 'linux', asarPath: '/opt/antigravity/resources/app.asar', fs: mockFs }),
+    '/opt/antigravity/antigravity'
+  );
+
+  // 3. Windows VBS 必须为纯 ASCII（避免中文系统 ANSI/UTF-8 编码冲突）且拒绝换行注入
+  const vbs = generateWindowsNoTunVbs({
+    exePath: 'C:\\Users\\demo\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe',
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: 'localhost,127.0.0.1'
+  });
+  assert.equal(/^[\x00-\x7F]+$/.test(vbs), true, 'VBS 启动器必须为纯 ASCII');
+  assert.match(vbs, /shell\.Environment\("PROCESS"\)/);
+  assert.match(vbs, /env\("NODE_USE_ENV_PROXY"\) = "1"/);
+  assert.match(vbs, /--proxy-server=/);
+  assert.throws(() => generateWindowsNoTunVbs({
+    exePath: 'C:\\a\r\nMsgBox 1',
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: 'localhost'
+  }), /控制字符/);
+
+  // 4. POSIX 脚本安全转义单引号并拒绝换行注入
+  const sh = generatePosixNoTunLauncher({
+    exePath: "/opt/it's/antigravity",
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: 'localhost,127.0.0.1'
+  });
+  assert.match(sh, /^#!\/bin\/sh/);
+  assert.match(sh, /exec '\/opt\/it'\\''s\/antigravity'/);
+  assert.match(sh, /export NODE_USE_ENV_PROXY=1/);
+  assert.throws(() => generatePosixNoTunLauncher({
+    exePath: '/opt/antigravity\nrm -rf /',
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: 'localhost'
+  }), /控制字符/);
+
+  // 5. createStandaloneNoTunLauncher 在隔离目录写入启动器与快捷方式（mock PowerShell 调用，不碰真实桌面）
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-notun-launcher-'));
+  try {
+    const fakeExe = path.join(tempDir, 'Antigravity.exe');
+    fs.writeFileSync(fakeExe, 'stub', 'utf8');
+    let capturedPsEnv = null;
+    const winRes = createStandaloneNoTunLauncher({
+      platform: 'win32',
+      exePath: fakeExe,
+      proxyUrl: 'http://127.0.0.1:7897',
+      noProxy: 'localhost,127.0.0.1',
+      outDir: path.join(tempDir, 'out-win'),
+      desktopDir: path.join(tempDir, 'desktop'),
+      shortcutName: 'Antigravity (No-TUN)',
+      _execFileSync: (_bin, _args, opts) => {
+        capturedPsEnv = opts.env;
+        return path.join(tempDir, 'desktop', 'Antigravity (No-TUN).lnk');
+      }
+    });
+    assert.equal(winRes.ok, true);
+    assert.equal(fs.existsSync(winRes.launcherPath), true);
+    assert.equal(winRes.launcherPath.endsWith('launch-antigravity-no-tun.vbs'), true);
+    assert.equal(capturedPsEnv.AG_VBS_PATH, winRes.launcherPath);
+    assert.equal(capturedPsEnv.AG_EXE_PATH, fakeExe);
+    assert.equal(winRes.shortcutPath, path.join(tempDir, 'desktop', 'Antigravity (No-TUN).lnk'));
+
+    const macRes = createStandaloneNoTunLauncher({
+      platform: 'darwin',
+      exePath: fakeExe,
+      proxyUrl: 'http://127.0.0.1:7897',
+      noProxy: 'localhost',
+      outDir: path.join(tempDir, 'out-mac')
+    });
+    assert.equal(macRes.ok, true);
+    assert.equal(macRes.launcherPath.endsWith('launch-antigravity-no-tun.sh'), true);
+    assert.equal(macRes.shortcutPath, null);
+    assert.equal(fs.existsSync(macRes.launcherPath), true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  // 6. cli.js parseCliArgs 正确接受 proxy:launch 与 proxy:launcher 及其参数
+  const { parseCliArgs } = require('./cli');
+  assert.deepEqual(parseCliArgs(['proxy:launch', 'http://127.0.0.1:7897', '--bypass', 'localhost']).cmd, 'proxy:launch');
+  assert.equal(parseCliArgs(['proxy:launch', 'http://127.0.0.1:7897', '--bypass', 'localhost']).showHelp, false);
+  assert.equal(parseCliArgs(['proxy:launcher', 'http://127.0.0.1:7897', '--no-shortcut', '--out', '/tmp/x', '--name', 'AG']).cmd, 'proxy:launcher');
+  assert.equal(parseCliArgs(['proxy:launcher', '--no-shortcut']).showHelp, false);
 });

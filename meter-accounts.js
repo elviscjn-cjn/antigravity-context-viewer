@@ -2081,7 +2081,7 @@ function createAccountsManager(options = {}) {
               response_type: 'code',
               scope: ANTIGRAVITY_OAUTH_SCOPES.join(' '),
               access_type: 'offline',
-              prompt: 'consent',
+              prompt: 'select_account consent',
               state: stateStr
             });
             const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
@@ -3300,37 +3300,26 @@ function defaultIsPidAlive(pid) {
  * 仅在主进程无法通过活跃窗口 webContents 读取 URL 或旧端口失联时使用，不依赖 CDP / DevToolsActivePort。
  */
 function discoverDaemonHubOrigins(opts = {}) {
-  const daemonDir = opts.daemonDir || path.join(opts.homeDir || os.homedir(), '.gemini', 'antigravity', 'daemon');
-  const isPidAlive = typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive;
-  const out = [];
   try {
-    if (!fs.existsSync(daemonDir)) return out;
-    const files = fs.readdirSync(daemonDir);
-    for (const name of files) {
-      if (!/^hub_.*\.json$/i.test(name)) continue;
-      const filePath = path.join(daemonDir, name);
-      try {
-        const st = fs.statSync(filePath);
-        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        const pid = Number(raw?.pid);
-        const httpsPort = Number(raw?.httpsPort);
-        const csrfToken = typeof raw?.csrfToken === 'string' ? raw.csrfToken.trim() : '';
-        if (!Number.isInteger(httpsPort) || httpsPort < 1 || httpsPort > 65535) continue;
-        if (!csrfToken) continue;
-        if (!isPidAlive(pid)) continue;
-        out.push({
-          origin: `https://127.0.0.1:${httpsPort}`,
-          httpsPort,
-          csrfToken,
-          pid,
-          filePath,
-          mtimeMs: Number(st.mtimeMs) || 0
-        });
-      } catch { }
-    }
-  } catch { }
-  out.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (b.httpsPort - a.httpsPort));
-  return out;
+    const { discoverLiveDaemonHubs } = require('./local-api');
+    const hubs = discoverLiveDaemonHubs({
+      ...opts,
+      allowDaemonFallback: true,
+      isPidAlive: typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive
+    });
+    return hubs
+      .filter(h => h && h.httpsOrigin && h.httpsPort)
+      .map(h => ({
+        origin: h.httpsOrigin,
+        httpsPort: h.httpsPort,
+        csrfToken: h.csrfToken,
+        pid: h.pid,
+        filePath: h.filePath || null,
+        mtimeMs: h.mtimeMs
+      }));
+  } catch {
+    return [];
+  }
 }
 
 /**

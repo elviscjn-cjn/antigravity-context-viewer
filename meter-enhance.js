@@ -1582,7 +1582,7 @@ function finalizeEnhanceStatus(platform, arch, binaries, procInfo, options = {})
       : 'disk_only_patched';
   }
 
-  return {
+  const res = {
     ok: true,
     supported: true,
     platform,
@@ -1620,6 +1620,10 @@ function finalizeEnhanceStatus(platform, arch, binaries, procInfo, options = {})
       lastAppliedAt: savedConfig ? savedConfig.lastAppliedAt : null
     }
   };
+  if (platform === 'darwin') {
+    res.macosSignatureWarning = 'macOS 修改 language_server 二进制会破坏官方 Hardened Runtime 签名，运行中可能因 Code Signature Invalid 触发 SIGKILL 闪退；默认关闭，建议还原并重装客户端后执行 codesign -vvv --deep --strict 验签。';
+  }
+  return res;
 }
 
 function isSupportedEnhancePlatform(platform, arch) {
@@ -1639,7 +1643,7 @@ function getEnhanceStatus(options = {}) {
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
   if (!Array.isArray(options.targets) && !isSupportedEnhancePlatform(platform, arch)) {
-    return {
+    const out = {
       ok: true,
       supported: false,
       platform,
@@ -1648,6 +1652,10 @@ function getEnhanceStatus(options = {}) {
       binaries: [],
       summary: null
     };
+    if (platform === 'darwin') {
+      out.macosSignatureWarning = 'macOS 修改 language_server 二进制会破坏官方 Hardened Runtime 签名，运行中可能因 Code Signature Invalid 触发 SIGKILL 闪退；相关功能默认关闭，如已修改建议还原并重装官方客户端后执行 codesign -vvv --deep --strict 验签。';
+    }
+    return out;
   }
 
   const targets = resolveTargetBinaries(options);
@@ -1667,7 +1675,7 @@ async function getEnhanceStatusAsync(options = {}) {
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
   if (!Array.isArray(options.targets) && !isSupportedEnhancePlatform(platform, arch)) {
-    return {
+    const out = {
       ok: true,
       supported: false,
       platform,
@@ -1676,6 +1684,10 @@ async function getEnhanceStatusAsync(options = {}) {
       binaries: [],
       summary: null
     };
+    if (platform === 'darwin') {
+      out.macosSignatureWarning = 'macOS 修改 language_server 二进制会破坏官方 Hardened Runtime 签名，运行中可能因 Code Signature Invalid 触发 SIGKILL 闪退；相关功能默认关闭，如已修改建议还原并重装官方客户端后执行 codesign -vvv --deep --strict 验签。';
+    }
+    return out;
   }
 
   const targets = resolveTargetBinaries(options);

@@ -1809,6 +1809,7 @@ test('ELV-47 & ELV-60: 禁用汉化但开品牌不误报重启恢复英文；组
   // 验证初始化时关闭汉化+开启品牌翻译展示「已关闭 (官方英文)」而非「需重启恢复英文」
   const h2 = createTestHarness({
     setupSandbox(sb) {
+      sb.localStorage.setItem('ag_panel_language', 'zh-CN');
       sb.window.__AGY_I18N_CONFIG__ = { enabled: false, language: 'en', brandTitle: 'hidden' };
       sb.window.__AGY_I18N_DATA__ = { exact: { Settings: '设置' } };
       sb.window.__AGY_TRANSLATE_EL__ = () => {};
@@ -2045,6 +2046,7 @@ test('ELV-47 & ELV-60: Electron 沙箱隔离且侧边栏含中文项目名时，
   let mockChineseEnabled = false;
   const h = createTestHarness({
     setupSandbox(sb) {
+      sb.localStorage.setItem('ag_panel_language', 'zh-CN');
       // 模拟侧边栏用户自定义中文项目名（包含“项目”“设置”字样）但宿主本身是英文
       const origQsa = sb.document.querySelectorAll.bind(sb.document);
       sb.document.querySelectorAll = (sel) => {
@@ -2224,4 +2226,91 @@ test('PR #47 / Issue #46: 推荐配置复选框按磁盘真实开关同步、仅
   } finally {
     h.api.dispose();
   }
+});
+
+test('Issue #58: 汉化隔离聊天正文与 Markdown 输出（杜绝 Plane Trajectory 正在规划串字），且两份 i18n-runtime 字节一致', () => {
+  const fsSync = require('fs');
+  const pathMod = require('path');
+  const vmMod = require('vm');
+  const rootRuntime = fsSync.readFileSync(pathMod.join(__dirname, 'i18n', 'i18n-runtime.js'), 'utf8');
+  const srcRuntime = fsSync.readFileSync(pathMod.join(__dirname, 'src', 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.equal(rootRuntime, srcRuntime, 'i18n/i18n-runtime.js 与 src/i18n/i18n-runtime.js 必须保持字节完全一致');
+
+  const makeDomNode = (nodeType, tagName, props = {}) => {
+    const node = {
+      nodeType,
+      tagName,
+      children: [],
+      childNodes: [],
+      firstChild: null,
+      lastChild: null,
+      nextSibling: null,
+      previousSibling: null,
+      parentElement: null,
+      parentNode: null,
+      nodeValue: props.nodeValue || '',
+      className: props.className || '',
+      attrs: new Map(Object.entries(props.attrs || {})),
+      getAttribute(k) { return this.attrs.get(k) ?? null; },
+      hasAttribute(k) { return this.attrs.has(k); },
+      setAttribute(k, v) { this.attrs.set(k, String(v)); },
+      closest(sel) {
+        let cur = this;
+        const clsList = String(sel || '').split(',').map(s => s.trim()).filter(Boolean);
+        while (cur && cur.nodeType === 1) {
+          for (const rule of clsList) {
+            if (rule === '.markdown-body' && String(cur.className).includes('markdown-body')) return cur;
+            if (rule === '[data-testid*="assistant-message"]' && String(cur.getAttribute('data-testid') || '').includes('assistant-message')) return cur;
+          }
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      appendChild(c) {
+        c.parentNode = this;
+        this.childNodes.push(c);
+        if (c.nodeType === 1) this.children.push(c);
+        c.parentElement = this;
+        c.previousSibling = this.lastChild;
+        if (this.lastChild) this.lastChild.nextSibling = c;
+        else this.firstChild = c;
+        this.lastChild = c;
+        return c;
+      }
+    };
+    return node;
+  };
+
+  const docRoot = makeDomNode(1, 'DIV', { className: 'workbench' });
+  const mdBlock = makeDomNode(1, 'DIV', { className: 'markdown-body' });
+  const spanInMd = makeDomNode(1, 'SPAN');
+  const planningInMdText = makeDomNode(3, null, { nodeValue: 'Planning' });
+  spanInMd.appendChild(planningInMdText);
+  mdBlock.appendChild(makeDomNode(3, null, { nodeValue: 'Plane Trajectory ' }));
+  mdBlock.appendChild(spanInMd);
+  mdBlock.appendChild(makeDomNode(3, null, { nodeValue: ' (Table 3)' }));
+
+  const uiBtn = makeDomNode(1, 'BUTTON', { className: 'action-btn' });
+  const uiPlanningText = makeDomNode(3, null, { nodeValue: 'Planning' });
+  uiBtn.appendChild(uiPlanningText);
+
+  docRoot.appendChild(mdBlock);
+  docRoot.appendChild(uiBtn);
+
+  const sandbox = {
+    window: {
+      __AGY_I18N_DATA__: { exact: { Planning: '正在规划', Save: '保存' }, patterns: [] },
+      __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' }
+    },
+    document: { documentElement: docRoot, body: docRoot, readyState: 'complete' },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1
+  };
+  sandbox.window.document = sandbox.document;
+  vmMod.runInNewContext(rootRuntime, sandbox);
+  sandbox.window.__AGY_RUN_FULL_SCAN__();
+
+  assert.equal(planningInMdText.nodeValue, 'Planning', 'Markdown/消息正文中英文词绝不得被替换为中文');
+  assert.equal(uiPlanningText.nodeValue, '正在规划', '正常 UI 控件词条必须照常汉化');
 });

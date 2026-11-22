@@ -100,30 +100,36 @@ test('CLI 启动模块 4: helper 输出诊断结构完整解析与部分成功�
   assert.equal(parsed.cmdPid, 12345);
 });
 
-test('CLI 启动模块 5: 隔离环境中验证 helper 部署、探测与哈希一致性（零生产依赖）', () => {
-  const canonicalHelper = path.join(__dirname, 'scripts', 'cli-window-helper.exe');
-  assert.ok(fs.existsSync(canonicalHelper), '唯一权威二进制 scripts/cli-window-helper.exe 必须存在');
+test('CLI 启动模块 5: 隔离环境中验证从源码编译 helper 部署、探测与哈希一致性（零预编译跟踪）', () => {
+  const csSource = path.join(__dirname, 'scripts', 'cli-window-helper.cs');
+  assert.ok(fs.existsSync(csSource), '唯一权威源码 scripts/cli-window-helper.cs 必须存在');
+  const { ensureWindowsHelper } = require('./scripts/package-release');
 
-  const buf = fs.readFileSync(canonicalHelper);
-  assert.ok(buf.length > 1024, 'helper 文件体积必须有效');
-  assert.equal(buf[0], 0x4d, '必须为合法 MZ 头');
-  assert.equal(buf[1], 0x5a, '必须为合法 MZ 头');
-  const canonicalSha = crypto.createHash('sha256').update(buf).digest('hex');
-
-  // 在隔离临时目录中模拟部署状态
+  let built = null;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-deploy-'));
   try {
-    const mockStateDir = path.join(tmpDir, 'state');
-    fs.mkdirSync(mockStateDir, { recursive: true });
-    const deployedHelper = path.join(mockStateDir, 'cli-window-helper.exe');
-    fs.copyFileSync(canonicalHelper, deployedHelper);
+    if (process.platform === 'win32') {
+      built = ensureWindowsHelper();
+      assert.equal(built.compiled, true);
+      const buf = fs.readFileSync(built.helperPath);
+      assert.ok(buf.length > 1024, 'helper 文件体积必须有效');
+      assert.equal(buf[0], 0x4d, '必须为合法 MZ 头');
+      assert.equal(buf[1], 0x5a, '必须为合法 MZ 头');
 
-    // 验证 resolveHelperExecutable 优先识别注入的 stateDir 部署路径
-    const res = resolveHelperExecutable({ stateDir: mockStateDir });
-    assert.equal(res.ok, true, '必须能成功识别已部署的 helper');
-    assert.equal(path.resolve(res.helperPath), path.resolve(deployedHelper));
-    assert.equal(res.helperSha256, canonicalSha, '部署后 helper 的哈希必须与源码一致');
+      const mockStateDir = path.join(tmpDir, 'state');
+      fs.mkdirSync(mockStateDir, { recursive: true });
+      const deployedHelper = path.join(mockStateDir, 'cli-window-helper.exe');
+      fs.copyFileSync(built.helperPath, deployedHelper);
+
+      const res = resolveHelperExecutable({ stateDir: mockStateDir });
+      assert.equal(res.ok, true, '必须能成功识别已部署的 helper');
+      assert.equal(path.resolve(res.helperPath), path.resolve(deployedHelper));
+      assert.equal(res.helperSha256, built.helperSha256, '部署后 helper 的哈希必须与本轮源码构建一致');
+    }
   } finally {
+    if (built?.tempDir) {
+      try { fs.rmSync(built.tempDir, { recursive: true, force: true }); } catch {}
+    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
@@ -452,34 +458,56 @@ test('cli.js rejects --help, -h, and unknown args/commands with non-zero exit, p
   }
 });
 
-test('打包脚本回归: package-release 编译 helper 输出至临时目录且不覆盖仓库 cli-window-helper.exe', () => {
+test('打包脚本回归: package-release 强制源码编译且忽略残留 .exe、编译/CI校验失败必报错', () => {
   const { ensureWindowsHelper, packagePlatform, supportsCscDeterministicFlag } = require('./scripts/package-release');
-  const repoHelperPath = path.join(__dirname, 'scripts', 'cli-window-helper.exe');
-  const beforeStat = fs.statSync(repoHelperPath);
-  const beforeSha = crypto.createHash('sha256').update(fs.readFileSync(repoHelperPath)).digest('hex');
-
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pkg-root-'));
   const tmpOut = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pkg-test-'));
   let helperInfo = null;
   try {
-    helperInfo = ensureWindowsHelper();
-    assert.ok(fs.existsSync(helperInfo.helperPath), '必须返回可用的 helperPath');
-    if (process.platform === 'win32' && helperInfo.compiled) {
-      assert.notEqual(
-        path.resolve(helperInfo.helperPath),
-        path.resolve(repoHelperPath),
-        '本地编译输出必须位于临时目录，绝不能覆盖仓库里的 scripts/cli-window-helper.exe'
-      );
-      assert.ok(helperInfo.tempDir && helperInfo.helperPath.startsWith(path.resolve(os.tmpdir())));
-    }
-    const afterStat = fs.statSync(repoHelperPath);
-    const afterSha = crypto.createHash('sha256').update(fs.readFileSync(repoHelperPath)).digest('hex');
-    assert.equal(afterSha, beforeSha, '仓库 tracking 的 scripts/cli-window-helper.exe 内容绝不能被改写');
-    assert.equal(afterStat.mtimeMs, beforeStat.mtimeMs, '仓库 scripts/cli-window-helper.exe 修改时间绝不能被改写');
+    // 1. 构造隔离根目录：复制真实 .cs 源码并故意放入伪造残留 cli-window-helper.exe
+    const fakeScripts = path.join(tmpRoot, 'scripts');
+    fs.mkdirSync(fakeScripts, { recursive: true });
+    fs.copyFileSync(path.join(__dirname, 'scripts', 'cli-window-helper.cs'), path.join(fakeScripts, 'cli-window-helper.cs'));
+    const staleExe = path.join(fakeScripts, 'cli-window-helper.exe');
+    fs.writeFileSync(staleExe, 'STALE_LEFTOVER_EXE_MUST_NOT_BE_PACKAGED');
+    const staleSha = crypto.createHash('sha256').update(fs.readFileSync(staleExe)).digest('hex');
 
+    if (process.platform === 'win32') {
+      helperInfo = ensureWindowsHelper({ rootDir: tmpRoot });
+      assert.equal(helperInfo.compiled, true);
+      assert.equal(helperInfo.source, 'local_source_build');
+      assert.notEqual(helperInfo.helperSha256, staleSha, 'Windows 本地打包绝不能采用源码目录残留 .exe');
+      assert.ok(helperInfo.tempDir && helperInfo.helperPath.startsWith(path.resolve(os.tmpdir())));
+
+      // 编译工具链缺失时必须直接报错，禁止回退到残留 .exe
+      assert.throws(
+        () => ensureWindowsHelper({ rootDir: tmpRoot, cscCandidates: [path.join(tmpRoot, 'missing-csc.exe')] }),
+        /csc\.exe|禁止回退|终止/
+      );
+    }
+
+    // 2. CI 模式校验：哈希文件缺失或篡改时报错，匹配时通过
+    const ciShaFile = path.join(fakeScripts, 'cli-window-helper.exe.sha256');
+    assert.throws(
+      () => ensureWindowsHelper({ rootDir: tmpRoot, useCiArtifact: true }),
+      /哈希校验文件|无法验证/
+    );
+    fs.writeFileSync(ciShaFile, `${'0'.repeat(64)}  scripts/cli-window-helper.exe\n`, 'utf8');
+    assert.throws(
+      () => ensureWindowsHelper({ rootDir: tmpRoot, useCiArtifact: true }),
+      /哈希校验失败/
+    );
+    fs.writeFileSync(ciShaFile, `${staleSha}  scripts/cli-window-helper.exe\n`, 'utf8');
+    const ciRes = ensureWindowsHelper({ rootDir: tmpRoot, useCiArtifact: true });
+    assert.equal(ciRes.source, 'ci_verified_artifact');
+    assert.equal(ciRes.helperSha256, staleSha);
+
+    // 3. 验证 packagePlatform 正确打包指定的源码构建产物
+    const targetHelperPath = helperInfo ? helperInfo.helperPath : ciRes.helperPath;
     const res = packagePlatform(
       { name: 'windows_amd64', scripts: ['install.bat', 'uninstall.bat', 'scripts/cli-window-helper.exe'] },
-      '0.8.8-test',
-      { distDir: tmpOut, helperPath: helperInfo.helperPath }
+      '0.9.0-test',
+      { distDir: tmpOut, helperPath: targetHelperPath }
     );
     assert.ok(fs.existsSync(res.path) && res.size > 0);
     assert.equal(typeof supportsCscDeterministicFlag('Z:/missing/csc.exe'), 'boolean');
@@ -487,6 +515,7 @@ test('打包脚本回归: package-release 编译 helper 输出至临时目录且
     if (helperInfo?.tempDir) {
       try { fs.rmSync(helperInfo.tempDir, { recursive: true, force: true }); } catch {}
     }
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpOut, { recursive: true, force: true }); } catch {}
   }
 });

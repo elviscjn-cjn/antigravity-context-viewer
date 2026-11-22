@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 const { Writable } = require('node:stream');
 
 const collector = require('./meter-collector');
+const core = require('./meter-core');
 const launcher = require('./meter-cli-launcher');
 const cliMonitor = require('./meter-cli-monitor');
 const { registerMeterIpcHandlers } = require('./meter-main');
@@ -773,6 +774,210 @@ contextBridge.exposeInMainWorld('__HOST__', {});
       if (prevEnv[k] === undefined) delete process.env[k];
       else process.env[k] = prevEnv[k];
     }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('14. CLI 按模型自定义上下文上限：product:* 偏好优先级、A/B 模型隔离、持久化与 600K 来源', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-ctx-model-'));
+  try {
+    const cliDir = path.join(tmpDir, 'cli');
+    const agDir = path.join(tmpDir, 'ag');
+    const stateDir = path.join(tmpDir, 'state');
+    const sessionA = 'aaaa1111-1111-1111-1111-111111111111';
+    const sessionB = 'bbbb2222-2222-2222-2222-222222222222';
+    fs.mkdirSync(path.join(cliDir, 'brain', sessionA, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(cliDir, 'brain', sessionB, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(agDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    // 1. 复现 settings.json contextWindow = 600K，同时 stateDir custom_plan_v1 存在 product:google:gemini-3.8-flash = 512000
+    fs.writeFileSync(path.join(cliDir, 'settings.json'), JSON.stringify({ contextWindow: '600K' }), 'utf8');
+    fs.writeFileSync(path.join(stateDir, 'custom_plan_v1.json'), JSON.stringify({
+      contextScopeMode: 'per_model',
+      contextPreferences: {
+        'product:google:gemini-3.8-flash': { mode: 'fixed', limitTokens: 512000 },
+        'product:google:gemini-4-hydrogen': { mode: 'fixed', limitTokens: 256000 }
+      }
+    }), 'utf8');
+
+    const transcriptA = path.join(cliDir, 'brain', sessionA, '.system_generated', 'logs', 'transcript.jsonl');
+    const transcriptB = path.join(cliDir, 'brain', sessionB, '.system_generated', 'logs', 'transcript.jsonl');
+    fs.writeFileSync(transcriptA, JSON.stringify({
+      step_index: 1,
+      type: 'MODEL_RESPONSE',
+      model: 'MODEL_PLACEHOLDER_M318',
+      usage: { input_tokens: 97000, cache_read_input_tokens: 0, output_tokens: 600 }
+    }) + '\n', 'utf8');
+    fs.writeFileSync(transcriptB, JSON.stringify({
+      step_index: 1,
+      type: 'MODEL_RESPONSE',
+      model: 'gemini-4-hydrogen',
+      usage: { input_tokens: 64000, cache_read_input_tokens: 0, output_tokens: 400 }
+    }) + '\n', 'utf8');
+
+    // 对模型 ID + Label 校验匹配优先使用 per_model_pref 512000 而非全局 600K
+    const budgetInitial = cliMonitor.resolveCliModelContextBudget(['MODEL_PLACEHOLDER_M318', 'Gemini 3.8 Flash (High)'], {
+      agCliDir: cliDir,
+      stateDir
+    });
+    assert.equal(budgetInitial.limitTokens, 512000);
+    assert.match(budgetInitial.budgetSource, /^per_model_pref:/);
+
+    // 若清除 A 的偏好，则准确溯源回 settings.json contextWindow = 600K
+    fs.writeFileSync(path.join(stateDir, 'custom_plan_v1.json'), JSON.stringify({
+      contextScopeMode: 'per_model',
+      contextPreferences: { 'product:google:gemini-4-hydrogen': { mode: 'fixed', limitTokens: 256000 } }
+    }), 'utf8');
+    const budgetFromSettings = cliMonitor.resolveCliModelContextBudget(['MODEL_PLACEHOLDER_M318', 'Gemini 3.8 Flash (High)'], {
+      agCliDir: cliDir,
+      stateDir
+    });
+    assert.equal(budgetFromSettings.limitTokens, 600000);
+    assert.equal(budgetFromSettings.budgetSource, 'cli_settings_contextWindow');
+
+    // 2. 只修改模型 A 为 400K（syncCliSettings=false，不改全局 settings.json）
+    const saveRes = cliMonitor.saveCliModelContextPreference({
+      model: 'Gemini 3.8 Flash (High)',
+      mode: 'fixed',
+      limitTokens: '400K',
+      agCliDir: cliDir,
+      stateDir,
+      syncCliSettings: false
+    });
+    assert.equal(saveRes.ok, true);
+    assert.equal(saveRes.limitTokens, 400000);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(cliDir, 'settings.json'), 'utf8')).contextWindow, '600K');
+
+    // 3. 扫描并核对：A 分母和百分比立即更新（97.6K / 400.0K · 24.4%），B 保持原值（64.0K / 256.0K · 25%）
+    const scan1 = cliMonitor.scanCliSessions({ agDir, agCliDir: cliDir, stateDir });
+    const sA1 = scan1.sessions.find(s => s.sessionId === sessionA);
+    const sB1 = scan1.sessions.find(s => s.sessionId === sessionB);
+    assert.equal(sA1.contextLimitTokens, 400000);
+    assert.match(sA1.contextLimitSource, /^per_model_pref:/);
+    assert.equal(sA1.contextPercent, 24.4);
+    assert.equal(sB1.contextLimitTokens, 256000);
+    assert.equal(sB1.contextPercent, 25.2);
+
+    // 4. 模拟重开 CLI（清除 require 缓存重新加载模块），核对持久化
+    delete require.cache[require.resolve('./meter-cli-monitor')];
+    const cliMonitorReloaded = require('./meter-cli-monitor');
+    const scanReloaded = cliMonitorReloaded.scanCliSessions({ agDir, agCliDir: cliDir, stateDir });
+    const sAReloaded = scanReloaded.sessions.find(s => s.sessionId === sessionA);
+    assert.equal(sAReloaded.contextLimitTokens, 400000);
+    assert.equal(cliMonitorReloaded.formatCliStatusLine(sAReloaded).includes('24.4% (97.6K/400.0K(偏好))'), true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('15. CLI 底部 tok/s：复用桌面口径、流式实时更新、结束后保留、无样本显示 — tok/s 与切会话同步', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-speed-'));
+  try {
+    const cliDir = path.join(tmpDir, 'cli');
+    const agDir = path.join(tmpDir, 'ag');
+    const stateDir = path.join(tmpDir, 'state');
+    const sStream = '11111111-1111-1111-1111-111111111111';
+    const sDone = '22222222-2222-2222-2222-222222222222';
+    const sSparse = '33333333-3333-3333-3333-333333333333';
+    for (const sid of [sStream, sDone, sSparse]) {
+      fs.mkdirSync(path.join(cliDir, 'brain', sid, '.system_generated', 'logs'), { recursive: true });
+    }
+    fs.mkdirSync(path.join(cliDir, 'presence'), { recursive: true });
+    fs.mkdirSync(agDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    const nowMs = Date.now();
+    // sDone：已结束且在台账里有真实请求记录（输出 1186，TTFT 4.34s，纯流式 4.58s，总耗时 8.92s -> 259 tok/s）
+    fs.writeFileSync(path.join(cliDir, 'brain', sDone, '.system_generated', 'logs', 'transcript.jsonl'), JSON.stringify({
+      step_index: 162,
+      type: 'MODEL_RESPONSE',
+      model: 'gemini-3.8-flash-high',
+      created_at: '2026-11-21T00:23:12Z',
+      usage: { input_tokens: 50000, output_tokens: 1186 }
+    }) + '\n', 'utf8');
+
+    // sStream：有活跃流式锁 + 台账里正在流式生成的最近调用 (4秒内输出 480 token -> 约 120 tok/s)
+    fs.writeFileSync(path.join(cliDir, 'brain', sStream, '.system_generated', 'logs', 'transcript.jsonl'), JSON.stringify({
+      step_index: 3,
+      type: 'MODEL_RESPONSE',
+      model: 'gemini-4-hydrogen',
+      created_at: new Date(nowMs - 4000).toISOString(),
+      usage: { input_tokens: 12500, output_tokens: 480 }
+    }) + '\n', 'utf8');
+    fs.writeFileSync(path.join(cliDir, 'presence', `${sStream}.lock`), JSON.stringify({ pid: process.pid }), 'utf8');
+
+    // sSparse：仅极短输出且无时长样本 -> — tok/s
+    fs.writeFileSync(path.join(cliDir, 'brain', sSparse, '.system_generated', 'logs', 'transcript.jsonl'), JSON.stringify({
+      step_index: 1,
+      type: 'MODEL_RESPONSE',
+      model: 'gemini-3.8-flash-high',
+      created_at: '2026-11-21T00:10:00Z',
+      usage: { input_tokens: 1000, output_tokens: 5 }
+    }) + '\n', 'utf8');
+
+    const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+    fs.writeFileSync(ledgerPath, JSON.stringify({
+      calls: {
+        [`${sDone}#162`]: {
+          callId: `${sDone}#162`,
+          cascadeId: sDone,
+          stepIndex: 162,
+          source: 'cli',
+          model: 'gemini-3.8-flash-high',
+          created_at: '2026-11-21T00:23:12Z',
+          inputTokens: 50000,
+          outputTokens: 1186,
+          ttftSec: 4.34,
+          streamingSec: 4.58,
+          durationSec: 8.92,
+          streamingTps: 259,
+          tps: 133,
+          status: 'final'
+        },
+        [`${sStream}#3`]: {
+          callId: `${sStream}#3`,
+          cascadeId: sStream,
+          stepIndex: 3,
+          source: 'cli',
+          model: 'gemini-4-hydrogen',
+          created_at: new Date(nowMs - 4000).toISOString(),
+          timestamp: nowMs - 4000,
+          inputTokens: 12500,
+          outputTokens: 480,
+          ttftSec: 1.0,
+          status: 'streaming'
+        }
+      }
+    }), 'utf8');
+
+    const scan = cliMonitor.scanCliSessions({ agDir, agCliDir: cliDir, stateDir });
+    const doneRow = scan.sessions.find(s => s.sessionId === sDone);
+    const streamRow = scan.sessions.find(s => s.sessionId === sStream);
+    const sparseRow = scan.sessions.find(s => s.sessionId === sSparse);
+
+    // 与桌面 core.evaluateGenerationExperience 严格一致
+    const expectedDesktopEval = core.evaluateGenerationExperience({
+      status: 'final',
+      outcomeStatus: 'final',
+      outputTokens: 1186,
+      ttftSec: 4.34,
+      streamingSec: 4.58,
+      totalDurationSec: 8.92,
+      streamSpeed: 259,
+      overallTps: 133
+    });
+    assert.equal(doneRow.speedTokPerSec, expectedDesktopEval.streamSpeed);
+    assert.match(cliMonitor.formatCliStatusLine(doneRow), new RegExp(`${expectedDesktopEval.streamSpeed} tok/s`));
+
+    // 活跃流式样本实时更新速度；无可靠样本显示 — tok/s
+    assert.ok(streamRow.speedTokPerSec > 0, '流式样本应实时计算 tok/s');
+    assert.equal(sparseRow.speedTokPerSec, null);
+    assert.match(cliMonitor.formatCliStatusLine(sparseRow), /— tok\/s/);
+
+    // 切换会话同步切换底部 tok/s
+    assert.notEqual(cliMonitor.formatCliStatusLine(doneRow), cliMonitor.formatCliStatusLine(sparseRow));
+  } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

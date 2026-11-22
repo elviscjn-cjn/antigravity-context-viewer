@@ -13,6 +13,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, getAppDataDir, isIsolatedTestPath, findAsarPath } = require('./asar-engine');
+const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
 const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
 const { loadModulesConfig, saveModulesConfig, acquireFileLock, getHostCoreBuildId } = require('./modules-config');
 const {
@@ -24,6 +25,7 @@ const {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
+  injectWindowLoadHook,
   verifyCleanStructure
 } = require('./modular-installer');
 
@@ -196,10 +198,14 @@ async function tryHotInjectDetailed(options = {}) {
 
     let cachedSettings = null;
     let cachedHistory = null;
+    let cachedChineseConfig = null;
     try {
       const { collectTokenHistoryAsync, getPluginSettings } = require('./meter-collector');
-      const settingsSnap = getPluginSettings();
+      const { loadModulesConfig } = require('./modules-config');
+      const settingsSnap = getPluginSettings({ agDir: stateDir });
       if (settingsSnap && settingsSnap.ok) cachedSettings = settingsSnap;
+      const modCfg = loadModulesConfig({ stateDir });
+      if (modCfg?.modules?.chinese) cachedChineseConfig = modCfg.modules.chinese;
       const historyData = await collectTokenHistoryAsync({ force: true });
       if (historyData && !historyData.loading) cachedHistory = historyData;
     } catch { }
@@ -241,6 +247,9 @@ async function tryHotInjectDetailed(options = {}) {
 
         if (cachedSettings) {
           await evalExpr('window.__AGContextMeterSettings=' + JSON.stringify(cachedSettings));
+        }
+        if (cachedChineseConfig) {
+          await evalExpr('window.__AGY_CHINESE_CONFIG__=' + JSON.stringify(cachedChineseConfig));
         }
         if (cachedHistory) {
           await evalExpr('window.__AGContextMeterHistory=' + JSON.stringify(cachedHistory));
@@ -318,7 +327,30 @@ async function install(options = {}) {
   const explicitBackup = options.backup || (customBackupIdx >= 0 ? process.argv[customBackupIdx + 1] : null);
 
   const installed = findAsarPath(customPath);
-  const stateDir = getStateDir();
+  const macIntegrity = inspectMacAsarIntegrity(installed, {
+    _platform: options._platform,
+    _existsSync: options._existsSync,
+    _readFileSync: options._readFileSync,
+    _execFileSync: options._execFileSync
+  });
+  const allowMacOverride = Boolean(options.allowIntegrityOverride || process.argv.includes('--force-mac-asar'));
+  if (
+    macIntegrity.isMacAppBundle &&
+    ((options._platform || process.platform) === 'darwin' || options.enforceMacIntegrityCheck === true)
+  ) {
+    if (macIntegrity.hasAsarIntegrity === true && !allowMacOverride) {
+      throw new Error(
+        `[macOS 完整性保护] ${macIntegrity.reason}。\n` +
+        '为避免破坏官方签名或导致客户端启动闪退，默认已中止修改磁盘 app.asar。\n' +
+        '推荐方案: 请改用免改盘守护模式 `node cli.js watch`。\n' +
+        '（若您明确计划自行重签或在测试环境下强行注入，可追加 `--force-mac-asar` 参数或传入 `{ allowIntegrityOverride: true }`）'
+      );
+    }
+    if (macIntegrity.patchRisk === 'unknown_signature' && !options.silent) {
+      console.warn(`⚠️ [macOS 预检] ${macIntegrity.reason}`);
+    }
+  }
+  const stateDir = options.stateDir ? path.resolve(String(options.stateDir)) : getStateDir();
   let sourceArchive = installed;
   let previousManifest = null;
   const manifestPath = path.join(stateDir, 'installation.json');
@@ -458,7 +490,7 @@ async function install(options = {}) {
     }
 
     // 3. 模块配置解析与状态管理
-    const modulesConfig = loadModulesConfig();
+    const modulesConfig = loadModulesConfig({ stateDir });
     if (options.modules) {
       if (options.modules.meter) Object.assign(modulesConfig.modules.meter, options.modules.meter);
       if (options.modules.chinese) {
@@ -483,7 +515,7 @@ async function install(options = {}) {
     if (proxyUrlIdx >= 0 && process.argv[proxyUrlIdx + 1]) {
       modulesConfig.modules.proxy.proxyUrl = process.argv[proxyUrlIdx + 1];
     }
-    saveModulesConfig(modulesConfig);
+    saveModulesConfig(modulesConfig, { stateDir });
 
     const version = JSON.parse(extractAsarFile(sourceArchive, 'package.json').toString('utf8')).version;
     const stamp = new Date().toISOString().replace(/[:.]/g, '-') + '-' + Math.random().toString(36).slice(2, 8);
@@ -553,10 +585,10 @@ async function install(options = {}) {
       if (modulesConfig.modules.meter.enabled) {
         const meterUtils = generateMeterUtilsCode();
         finalUtils = finalUtils
-          .replace('"use strict";', `"use strict";\n${meterUtils.headerProxyHook}`)
-          .replace('function setupNodeWrapper(env) {', `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
-          .replace("titleBarStyle: 'hidden',", `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`)
-          .replace('    void win.loadURL(url);', `${meterUtils.windowLoadHook}    void win.loadURL(url);`);
+          .replace('"use strict";', () => `"use strict";\n${meterUtils.headerProxyHook}`)
+          .replace('function setupNodeWrapper(env) {', () => `function setupNodeWrapper(env) {${meterUtils.nodeWrapperHook}`)
+          .replace("titleBarStyle: 'hidden',", () => `titleBarStyle: 'hidden',${meterUtils.menuBarOption}`);
+        finalUtils = injectWindowLoadHook(finalUtils, meterUtils.windowLoadHook);
 
         const createWinSig = 'function createWindow(url, storageManager, options) {';
         if (finalUtils.includes(createWinSig) && !finalUtils.includes('__agDefaultStorageManager')) {
@@ -622,6 +654,7 @@ async function install(options = {}) {
         'asar-engine.js',
         'modules-config.js',
         'modular-installer.js',
+        'host-recovery.js',
         'install.js',
         'restore.js',
         'meter-main.js',
@@ -632,8 +665,12 @@ async function install(options = {}) {
         'meter-proxy.js',
         'meter-cli-launcher.js',
         'meter-cli-monitor.js',
+        'meter-cli-adapter.js',
+        'meter-cli-companion.js',
+        'meter-cli-ui.js',
         'meter-context-unlock.js',
         'meter-enhance.js',
+        'meter-rehydrate.js',
         'meter-accounts.js',
         'macos-binary-utils.js',
         'local-api.js',
@@ -674,6 +711,19 @@ async function install(options = {}) {
         }
       }
 
+      // 拷贝 Post-Compact Rehydration 恢复 Hook 脚本至 ASAR 内部，确保客户端面板可直接离线部署与校验
+      const rehydrateSrcCandidates = [
+        path.join(__dirname, 'rehydrate', 'rehydrate_after_compact.py'),
+        path.join(__dirname, 'dist', 'rehydrate', 'rehydrate_after_compact.py'),
+        path.join(__dirname, '..', 'rehydrate', 'rehydrate_after_compact.py')
+      ];
+      const rehydrateSrcP = rehydrateSrcCandidates.find(p => fs.existsSync(p));
+      if (rehydrateSrcP) {
+        const rehydrateDstDir = path.join(staging, 'dist', 'rehydrate');
+        fs.mkdirSync(rehydrateDstDir, { recursive: true });
+        fs.copyFileSync(rehydrateSrcP, path.join(rehydrateDstDir, 'rehydrate_after_compact.py'));
+      }
+
       fs.writeFileSync(path.join(staging, 'dist', 'meter-manifest.json'), JSON.stringify({
         version: pkgVersion,
         hostVersion: version,
@@ -695,6 +745,7 @@ async function install(options = {}) {
         'dist/meter-manifest.json',
         'dist/i18n/zh-CN.json',
         'dist/i18n/i18n-runtime.js',
+        'dist/rehydrate/rehydrate_after_compact.py',
         ...additions.map(f => 'dist/' + f)
       ].map(p => path.normalize(p));
       for (const file of originalEntries) {
@@ -706,7 +757,11 @@ async function install(options = {}) {
         if (!before || before.files || before.link) continue;
         if (!after) throw new Error(`Target missing file after pack: ${name}`);
         if (!!before.unpacked !== !!after.unpacked) throw new Error(`Unpack flag changed: ${name}`);
-        const isAllowed = allowedChanges.includes(name) || name.startsWith('dist' + path.sep + 'i18n' + path.sep);
+        const isAllowed =
+          allowedChanges.includes(name) ||
+          name.startsWith('dist' + path.sep + 'i18n' + path.sep) ||
+          name.startsWith('dist' + path.sep + 'rehydrate' + path.sep) ||
+          name.startsWith('dist' + path.sep + 'assets' + path.sep);
         if (!isAllowed) {
           if (!before.unpacked) {
             if (sha(asar.extractFile(sourceArchive, name)) !== sha(asar.extractFile(packed, name))) {
@@ -736,6 +791,17 @@ async function install(options = {}) {
       const previousInstalledSha256 = isReadableAsar(previousInstalledBackup) ? sha(fs.readFileSync(previousInstalledBackup)) : null;
       const origSha = isReadableAsar(backup) ? sha(fs.readFileSync(backup)) : (previousInstalledSha256 || previousManifest?.originalSha256);
 
+      const prevBackupsByVersion = (isSameTargetManifest && previousManifest?.backupsByVersion && typeof previousManifest.backupsByVersion === 'object')
+        ? { ...previousManifest.backupsByVersion }
+        : {};
+      if (version && isReadableAsar(backup)) {
+        prevBackupsByVersion[version] = {
+          backup,
+          sha256: origSha,
+          recordedAt: new Date().toISOString()
+        };
+      }
+
       const manifest = {
         meterVersion: pkgVersion,
         version,
@@ -751,7 +817,9 @@ async function install(options = {}) {
         added: additions.map(f => 'dist/' + f),
         modified: ['dist/utils.js', 'dist/preload.js'],
         installedAt: new Date().toISOString(),
-        enabledModules: Object.entries(modulesConfig.modules).filter(([, v]) => v.enabled).map(([k]) => k)
+        enabledModules: Object.entries(modulesConfig.modules).filter(([, v]) => v.enabled).map(([k]) => k),
+        backupsByVersion: prevBackupsByVersion,
+        ...(macIntegrity.isMacAppBundle ? { macAsarIntegrity: macIntegrity } : {})
       };
 
       let installCommitted = false;
@@ -816,30 +884,53 @@ async function install(options = {}) {
           }
         }
 
-        // 12. 同步部署 CLI 辅助定位程序至状态目录与资源目录并核对哈希
+        // 12. 同步部署 CLI 辅助定位程序至状态目录与资源目录并核对哈希（Windows 下无预编译文件时从源码编译至临时目录）
         let helperSha = null;
-        const helperCandidates = [
-          path.join(__dirname, 'scripts', 'cli-window-helper.exe'),
-          path.join(__dirname, '..', 'scripts', 'cli-window-helper.exe'),
-          path.join(stateDir, 'cli-window-helper.exe'),
-          path.join(path.dirname(installed), 'bin', 'cli-window-helper.exe')
-        ];
-        const helperSrc = helperCandidates.find(p => fs.existsSync(p));
-        if (helperSrc) {
-          helperSha = sha(fs.readFileSync(helperSrc));
-          const deployedHelperPath = path.join(stateDir, 'cli-window-helper.exe');
-          if (deployedHelperPath !== helperSrc) {
-            fs.copyFileSync(helperSrc, deployedHelperPath);
+        let builtHelperTempDir = null;
+        try {
+          const helperCandidates = [
+            path.join(__dirname, 'scripts', 'cli-window-helper.exe'),
+            path.join(__dirname, '..', 'scripts', 'cli-window-helper.exe'),
+            path.join(stateDir, 'cli-window-helper.exe'),
+            path.join(path.dirname(installed), 'bin', 'cli-window-helper.exe')
+          ];
+          let helperSrc = null;
+          if (process.platform === 'win32' && !options.customAsarPath && !isIsolatedTestPath(installed)) {
+            const csSrc = path.join(__dirname, 'scripts', 'cli-window-helper.cs');
+            if (fs.existsSync(csSrc)) {
+              try {
+                const { ensureWindowsHelper } = require('./scripts/package-release');
+                const built = ensureWindowsHelper({ rootDir: __dirname });
+                if (built?.helperPath && fs.existsSync(built.helperPath)) {
+                  helperSrc = built.helperPath;
+                  builtHelperTempDir = built.tempDir || null;
+                }
+              } catch { }
+            }
           }
-          const deployedSha = sha(fs.readFileSync(deployedHelperPath));
-          if (deployedSha !== helperSha) {
-            throw new Error(`部署的 helper 哈希不一致 (目标: ${deployedSha}, 源: ${helperSha})`);
+          if (!helperSrc) {
+            helperSrc = helperCandidates.find(p => fs.existsSync(p));
           }
-          const resBinDir = path.join(path.dirname(installed), 'bin');
-          if (fs.existsSync(resBinDir)) {
-            try {
-              fs.copyFileSync(helperSrc, path.join(resBinDir, 'cli-window-helper.exe'));
-            } catch { }
+          if (helperSrc) {
+            helperSha = sha(fs.readFileSync(helperSrc));
+            const deployedHelperPath = path.join(stateDir, 'cli-window-helper.exe');
+            if (deployedHelperPath !== helperSrc) {
+              fs.copyFileSync(helperSrc, deployedHelperPath);
+            }
+            const deployedSha = sha(fs.readFileSync(deployedHelperPath));
+            if (deployedSha !== helperSha) {
+              throw new Error(`部署的 helper 哈希不一致 (目标: ${deployedSha}, 源: ${helperSha})`);
+            }
+            const resBinDir = path.join(path.dirname(installed), 'bin');
+            if (fs.existsSync(resBinDir)) {
+              try {
+                fs.copyFileSync(helperSrc, path.join(resBinDir, 'cli-window-helper.exe'));
+              } catch { }
+            }
+          }
+        } finally {
+          if (builtHelperTempDir) {
+            try { fs.rmSync(builtHelperTempDir, { recursive: true, force: true }); } catch { }
           }
         }
 
@@ -858,7 +949,9 @@ async function install(options = {}) {
             cleanupUpgradeLedgerBackups({ keep: 1, stateDir });
           }
         } catch { }
-        const hotInjectReport = await tryHotInjectDetailed(options.hotInjectOptions || {});
+        const hotInjectReport = options.noHotInject
+          ? { ok: false, reason: 'skipped_by_option', windowCount: 0, injectedCount: 0, windows: [] }
+          : await tryHotInjectDetailed(options.hotInjectOptions || {});
         return { ...manifest, liveInjected: hotInjectReport.ok, hotInjectReport };
       } catch (err) {
         // 失败回滚机制：若在改写目标后发生任何校验或保存异常，立即从快照无损回滚还原
@@ -897,7 +990,7 @@ function getWatchBundleBuildId(baseDir = null) {
   try {
     const root = baseDir || __dirname;
     const h = crypto.createHash('sha256');
-    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-accounts.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-accounts.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
       const p = path.join(root, f);
       if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
     }

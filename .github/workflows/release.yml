@@ -64,7 +64,6 @@ jobs:
       - name: Verify Helper Provenance
         run: |
           sha256sum -c scripts/cli-window-helper.exe.sha256
-          rm -f scripts/cli-window-helper.exe.sha256
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -79,6 +78,7 @@ jobs:
       - name: Build Cross-Platform Release Packages
         run: |
           python3 scripts/package-release.py
+          rm -f scripts/cli-window-helper.exe.sha256
 
       - name: Resolve Release Metadata
         id: meta

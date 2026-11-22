@@ -2032,7 +2032,7 @@ test('专项复核 15：真实 Electron/ASAR 模块加载环境验证：运行�
       return;
     }
 
-    const runnerScript = path.join(tmpDir, 'runner.js');
+    const runnerScript = path.join(tmpDir, 'runner.cjs');
     fs.writeFileSync(runnerScript, `
 'use strict';
 const assert = require('assert');

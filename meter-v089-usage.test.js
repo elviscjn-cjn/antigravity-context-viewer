@@ -183,10 +183,18 @@ function createV089DomSandbox({ reducedMotion = false, pathname = '/c/11111111-1
     window: {
       __APP_CONFIG__: { csrfToken: 'test-csrf' },
       scrollY: scrollVal,
+      history: {
+        pushState(_st, _title, url) { if (url) sandbox.location.pathname = String(url); },
+        replaceState(_st, _title, url) { if (url) sandbox.location.pathname = String(url); }
+      },
       contextMeterAPI: {
         scan: async () => ({ ok: true, data: { session: null, scannedAt: Date.now() } }),
         getSessionTimeline: async () => ({ ok: true, data: { turns: [], unlinkedSubagentCalls: [], totalCalls: 0, mainCallsCount: 0, subagentCallsCount: 0, cacheSummary: core.summarizeCacheReadStats([]) } })
       }
+    },
+    history: {
+      pushState(_st, _title, url) { if (url) sandbox.location.pathname = String(url); },
+      replaceState(_st, _title, url) { if (url) sandbox.location.pathname = String(url); }
     },
     matchMedia: (q) => ({ matches: Boolean(reducedMotion && String(q).includes('prefers-reduced-motion')) }),
     __AGContextMeterCore: core,
@@ -763,10 +771,1198 @@ test('v0.8.8 请求时间线回归: 11 轮 105 调用防压扁滚动契约、<US
 
     // 静态 CSS 契约断言：防止 .timeline-turn-card / .session-timeline-list 丢失 flex:0 0 auto 被压成一条缝
     const cssSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
-    assert.match(cssSrc, /\.session-timeline-list\{[^}]*flex:0 0 auto;[^}]*max-height:min\(360px,46vh\)[^}]*overflow-y:auto/);
-    assert.match(cssSrc, /\.timeline-turn-card\{\s*flex:0 0 auto;/);
-    assert.match(RENDERER_SOURCE, /\.timeline-turn-card\{[^}]*flex:0 0 auto;/);
+    assert.match(cssSrc, /\.session-timeline-list\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-height:\s*min\(360px,\s*46vh\)[^}]*overflow-y:\s*auto/);
+    assert.match(cssSrc, /\.timeline-turn-card\s*\{\s*flex:\s*0 0 auto;/);
+    assert.match(RENDERER_SOURCE, /\.timeline-turn-card\s*\{[^}]*flex:\s*0 0 auto;/);
   } finally {
     fs.rmSync(agDir, { recursive: true, force: true });
+  }
+});
+
+test('实时请求统计：后端 .db 耗时回填 + recentRequestLogs 排序去重 + 13 列渲染/筛选/分页/三语验证', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req-live-'));
+  const agDir = path.join(rootDir, 'desktop');
+  const cliDir = path.join(rootDir, 'cli');
+  const cidDesk = 'aaaaaaaa-1111-4111-8111-111111111111';
+  const cidCli = 'bbbbbbbb-2222-4222-8222-222222222222';
+  try {
+    fs.mkdirSync(path.join(agDir, 'brain', cidDesk, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agDir, 'conversations'), { recursive: true });
+    fs.mkdirSync(path.join(cliDir, 'brain', cidCli, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(cliDir, 'conversations'), { recursive: true });
+
+    // 写入桌面端 transcript + SQLite gen_metadata（回填 TTFT=4s, stream=1s -> dur=5s）
+    const deskTs = '2026-11-20T01:41:03.000Z';
+    fs.writeFileSync(
+      path.join(agDir, 'brain', cidDesk, '.system_generated', 'logs', 'transcript.jsonl'),
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        created_at: deskTs,
+        model: 'gemini-4-hydrogen',
+        input_tokens: 19500,
+        cache_read_tokens: 0,
+        output_tokens: 184
+      }) + '\n',
+      'utf8'
+    );
+    const deskDb = new DatabaseSync(path.join(agDir, 'conversations', `${cidDesk}.db`));
+    deskDb.exec('CREATE TABLE gen_metadata (id INTEGER PRIMARY KEY, data BLOB)');
+    deskDb.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(
+      buildGenMetadataRowBlob({ stepIndex: 1, responseId: 'resp-desk-1', model: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen (High)', ttftSec: 4, streamSec: 1 })
+    );
+    deskDb.close();
+
+    // 写入 CLI transcript + SQLite gen_metadata（回填 TTFT=5s, stream=29s -> dur=34s）
+    const cliTs = '2026-11-20T01:12:37.000Z';
+    fs.writeFileSync(
+      path.join(cliDir, 'brain', cidCli, '.system_generated', 'logs', 'transcript.jsonl'),
+      JSON.stringify({
+        step_index: 2,
+        type: 'PLANNER_RESPONSE',
+        created_at: cliTs,
+        model: 'gemini-4-carbon',
+        input_tokens: 4000,
+        cache_read_tokens: 396000,
+        output_tokens: 3828
+      }) + '\n',
+      'utf8'
+    );
+    const cliDb = new DatabaseSync(path.join(cliDir, 'conversations', `${cidCli}.db`));
+    cliDb.exec('CREATE TABLE gen_metadata (id INTEGER PRIMARY KEY, data BLOB)');
+    cliDb.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(
+      buildGenMetadataRowBlob({ stepIndex: 2, responseId: 'resp-cli-1', model: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon (High)', ttftSec: 5, streamSec: 29 })
+    );
+    cliDb.close();
+
+    const history = await collector.collectTokenHistoryAsync({
+      agDir,
+      agCliDir: cliDir,
+      force: true,
+      useWorker: false,
+      hostFetcher: async () => null
+    });
+
+    assert.ok(Array.isArray(history.recentRequestLogs), 'recentRequestLogs 必须存在');
+    assert.equal(history.recentRequestLogs.length, 2, '应合并 Desktop 与 CLI 共 2 条请求');
+    const [firstLog, secondLog] = history.recentRequestLogs;
+    assert.equal(firstLog.source, 'desktop', '按时间倒序桌面端更新的请求应排首位');
+    assert.equal(firstLog.ttftSec, 4);
+    assert.equal(firstLog.streamingSec, 1);
+    assert.equal(firstLog.durationSec, 5);
+    assert.equal(firstLog.cacheReadPct, 0);
+    assert.equal(secondLog.source, 'cli');
+    assert.equal(secondLog.ttftSec, 5);
+    assert.equal(secondLog.streamingSec, 29);
+    assert.equal(secondLog.durationSec, 34);
+    assert.equal(secondLog.streamingTps, 132);
+    assert.equal(secondLog.cacheReadPct, 99);
+    assert.equal(secondLog.isPriced, true);
+    assert.ok(secondLog.costUSD > 0);
+
+    // 渲染层 13 列、筛选、宽屏类、分页与三语验证
+    const h = createV089DomSandbox();
+    try {
+      const nowMs = Date.now();
+      const extraRows = [
+        {
+          callId: 'req-live-stream',
+          cascadeId: cidDesk,
+          timestamp: nowMs,
+          date: '2026-11-20',
+          source: 'desktop',
+          modelKey: 'gemini-4-hydrogen',
+          modelLabel: 'Gemini 4 Hydrogen',
+          inputTokens: 19500,
+          cacheReadTokens: 0,
+          outputTokens: 184,
+          totalTokens: 19684,
+          cacheReadPct: 0,
+          costUSD: 0.031,
+          isPriced: true,
+          ttftSec: 4.2,
+          streamingSec: 0.1,
+          durationSec: 4.3,
+          streamingTps: null,
+          status: 'final',
+          outcomeStatus: 'success',
+          accountScopeKey: 'acct_1111111111111111'
+        },
+        {
+          callId: 'req-cli-slow',
+          cascadeId: cidCli,
+          timestamp: nowMs - 60000,
+          date: '2026-11-20',
+          source: 'cli',
+          modelKey: 'gemini-4-neon',
+          modelLabel: 'Gemini 4 Neon',
+          inputTokens: 4000,
+          cacheReadTokens: 396000,
+          outputTokens: 3800,
+          totalTokens: 403800,
+          cacheReadPct: 99,
+          costUSD: 0.137,
+          isPriced: true,
+          ttftSec: 5.2,
+          streamingSec: 28.8,
+          durationSec: 34,
+          streamingTps: 132,
+          status: 'final',
+          outcomeStatus: 'success',
+          accountScopeKey: null
+        },
+        {
+          callId: 'req-cli-err',
+          cascadeId: cidCli,
+          timestamp: nowMs - 120000,
+          date: '2026-11-20',
+          source: 'cli',
+          modelKey: 'gemini-4-neon',
+          inputTokens: 2000,
+          cacheReadTokens: 398000,
+          outputTokens: 317,
+          totalTokens: 400317,
+          cacheReadPct: 99.5,
+          costUSD: 0.078,
+          isPriced: true,
+          ttftSec: 6.4,
+          streamingSec: 5.6,
+          durationSec: 12,
+          streamingTps: 200,
+          status: 'final',
+          outcomeStatus: 'rate_limited',
+          error: '429 Too Many Requests',
+          accountScopeKey: null
+        }
+      ];
+      const dm = { '2026-11-20': { total: 423484, input: 25500, cache: 794000, output: 4301, steps: 3 } };
+      h.api.applyTokenHistoryPayload({
+        schemaVersion: '0.8.8',
+        firstUseDate: '2026-11-20',
+        dailyMap: dm,
+        dailyMapBySource: { all: dm, desktop: dm, cli: dm },
+        summary: { grandTotalTokens: 423484, todayTokens: 423484 },
+        recentRequestLogs: extraRows
+      });
+
+      h.api.switchTokenViewForTest('requests');
+      let st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.activeView, 'requests');
+      assert.equal(st.wideClass, true, '切入实时请求视图应启用宽屏 class requests-wide-view');
+      assert.equal(st.rowCount, 3);
+      assert.equal(st.emptyVisible, false);
+
+      // 核对第一行（Desktop，0.1s 极短流速度应显示 —，4.3s 绿、0% 缓存、$0.031）
+      assert.equal(st.rows[0].length, 13, '表格每行必须包含完整 13 列');
+      assert.equal(st.rows[0][1], 'Antigravity');
+      assert.equal(st.rows[0][2], '—');
+      assert.equal(st.rows[0][3], '本地会话');
+      assert.equal(st.rows[0][4], 'gemini-4-hydrogen');
+      assert.equal(st.rows[0][5], '19.5K');
+      assert.equal(st.rows[0][6], '184');
+      assert.equal(st.rows[0][7], '0%');
+      assert.equal(st.rows[0][8], '$0.031');
+      assert.equal(st.rows[0][9], '≈4.2 秒');
+      assert.equal(st.rows[0][10], '≈4.3 秒');
+      assert.equal(st.rows[0][11], '—');
+      assert.equal(st.rows[0][12], '成功');
+
+      // 核对第二行（Antigravity CLI，99% 缓存，$0.137，132 token/秒）
+      assert.equal(st.rows[1][1], 'Antigravity CLI');
+      assert.equal(st.rows[1][4], 'gemini-4-neon');
+      assert.equal(st.rows[1][5], '4.0K');
+      assert.equal(st.rows[1][6], '3.8K');
+      assert.equal(st.rows[1][7], '99%');
+      assert.equal(st.rows[1][8], '$0.137');
+      assert.equal(st.rows[1][10], '≈34 秒');
+      assert.equal(st.rows[1][11], '132 token/秒');
+
+      // 核对第三行（99.5% 缓存，限流状态）
+      assert.equal(st.rows[2][7], '99.5%');
+      assert.equal(st.rows[2][10], '≈12 秒');
+      assert.equal(st.rows[2][12], '限流');
+
+      // 状态过滤：仅看异常 -> 1 条
+      h.elements.get('req-filter-error').click();
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rowCount, 1);
+      assert.equal(st.rows[0][12], '限流');
+
+      // 来源过滤：切桌面端 + 异常 -> 空态
+      h.elements.get('src-tab-desktop').click();
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rowCount, 0);
+      assert.equal(st.emptyVisible, true);
+
+      // 切回全部来源 + 全部状态 -> 3 条
+      h.elements.get('src-tab-all').click();
+      h.elements.get('req-filter-all').click();
+      assert.equal(h.api.getRequestsViewStateForTest().rowCount, 3);
+
+      // 英文切换零汉字验证
+      await h.api.setPanelLanguage('en', { persist: false });
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rows[0][3], 'Local Session');
+      assert.equal(st.rows[0][9], '≈4.2s');
+      assert.equal(st.rows[1][11], '132 tok/s');
+      assert.equal(st.rows[0][12], 'Success');
+      assert.equal(st.rows[2][12], 'Rate Limited');
+      for (const row of st.rows) {
+        assert.doesNotMatch(row.join(' '), /[\u4e00-\u9fff]/, '英文模式下实时请求表不得泄露中文');
+      }
+
+      // 离开实时请求切回 Token 统计应移除宽屏 class
+      h.api.switchTokenViewForTest('tokens');
+      assert.equal(h.api.getRequestsViewStateForTest().wideClass, false);
+
+      // 分页加载更多验证（60 条数据 -> 首屏 50 条 -> 点加载更多显示全部 60 条）
+      await h.api.setPanelLanguage('zh-CN', { persist: false });
+      const manyRows = Array.from({ length: 60 }, (_, idx) => ({
+        callId: `bulk-${idx}`,
+        cascadeId: cidDesk,
+        timestamp: nowMs - idx * 1000,
+        date: '2026-11-20',
+        source: idx % 2 === 0 ? 'desktop' : 'cli',
+        modelKey: 'gemini-4-neon',
+        inputTokens: 1000 + idx,
+        cacheReadTokens: 9000,
+        outputTokens: 500,
+        totalTokens: 10500 + idx,
+        cacheReadPct: 90,
+        costUSD: 0.012,
+        isPriced: true,
+        ttftSec: 2.1,
+        streamingSec: 3.0,
+        durationSec: 5.1,
+        streamingTps: 166,
+        status: 'final',
+        outcomeStatus: 'success'
+      }));
+      h.api.applyTokenHistoryPayload({
+        schemaVersion: '0.8.8',
+        firstUseDate: '2026-11-20',
+        dailyMap: dm,
+        dailyMapBySource: { all: dm, desktop: dm, cli: dm },
+        summary: { grandTotalTokens: 630000, todayTokens: 630000 },
+        recentRequestLogs: manyRows
+      });
+      h.api.switchTokenViewForTest('requests');
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rowCount, 50);
+      assert.equal(st.moreVisible, true);
+      h.elements.get('btn-req-live-more').click();
+      st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rowCount, 60);
+      assert.equal(st.moreVisible, false);
+    } finally {
+      h.api.dispose();
+    }
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('动态价格目录：gemini-4-neon 内置价目、models.dev/LiteLLM 双源解析合并、容灾回退、custom_pricing 覆写与历史账本自动补算', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pricing-sync-'));
+  const agDir = path.join(rootDir, 'antigravity');
+  const stateDir = path.join(rootDir, 'state');
+  fs.mkdirSync(agDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  try {
+    // 1. gemini-4-neon 离线内置基线校验 ($3.00 / $0.15 / $15.00)
+    assert.equal(core.normalizeModelId('Gemini 4 Neon (XHigh)'), 'gemini-4-neon');
+    assert.equal(core.normalizeModelId('gemini/gemini-4-neon'), 'gemini-4-neon');
+    const neonCost = core.calculateRequestApiCost({
+      model: 'Gemini 4 Neon (XHigh)',
+      inputTokens: 40000,
+      cacheReadTokens: 200000,
+      outputTokens: 5000,
+      thinkingTokens: 3000,
+      date: '2026-11-20'
+    });
+    assert.equal(neonCost.isPriced, true);
+    assert.equal(neonCost.modelKey, 'gemini-4-neon');
+    // 40k * 3 / 1e6 + 200k * 0.15 / 1e6 + 5k * 15 / 1e6 = 0.12 + 0.03 + 0.075 = 0.225
+    assert.ok(Math.abs(neonCost.costUSD - 0.225) < 1e-9, `unexpected neon cost: ${neonCost.costUSD}`);
+
+    // 2. 双源解析与合并：models.dev 优先，LiteLLM 补齐缺失 cache_read / >200K 阶梯与新模型
+    const mockModelsDev = {
+      google: {
+        models: {
+          'gemini-5-quartz': {
+            id: 'gemini-5-quartz',
+            cost: { input: 2.5, output: 12.0 }
+          }
+        }
+      },
+      anthropic: {
+        models: {
+          'claude-sonnet-6': {
+            id: 'claude-sonnet-6',
+            cost: {
+              input: 3.0,
+              output: 15.0,
+              cache_read: 0.3,
+              context_over_200k: { input: 6.0, output: 22.5, cache_read: 0.6 }
+            }
+          }
+        }
+      }
+    };
+    const mockLiteLlm = {
+      'gemini/gemini-5-quartz': {
+        litellm_provider: 'gemini',
+        mode: 'chat',
+        input_cost_per_token: 0.0000025,
+        output_cost_per_token: 0.000012,
+        cache_read_input_token_cost: 0.00000025,
+        input_cost_per_token_above_200k_tokens: 0.000005,
+        output_cost_per_token_above_200k_tokens: 0.000024,
+        cache_read_input_token_cost_above_200k_tokens: 0.0000005
+      },
+      'gemini/gemini-5-quartz:batch': {
+        litellm_provider: 'gemini',
+        mode: 'chat',
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000004
+      },
+      'openai/gpt-6-orbit': {
+        litellm_provider: 'openai',
+        mode: 'chat',
+        input_cost_per_token: 0.000004,
+        output_cost_per_token: 0.000016,
+        cache_read_input_token_cost: 0.0000004
+      }
+    };
+
+    const parsedMd = core.parseModelsDevPricingCatalog(mockModelsDev);
+    const parsedLl = core.parseLiteLlmPricingCatalog(mockLiteLlm);
+    assert.ok(parsedMd['gemini-5-quartz']);
+    assert.equal(parsedMd['claude-sonnet-6'].length, 2);
+    assert.equal(parsedLl['gemini-5-quartz'].length, 2);
+    assert.equal(parsedLl['gemini-5-quartz:batch'], undefined);
+
+    const merged = core.mergePricingCatalogs(parsedMd, parsedLl);
+    // models.dev 缺 cache_read，merge 后应由 LiteLLM 补齐 0.25
+    assert.equal(merged['gemini-5-quartz'][0].cacheReadPerMillion, 0.25);
+    assert.equal(merged['gpt-6-orbit'][0].inputPerMillion, 4);
+
+    // 3. 写入未计价的新模型历史账本记录（gemini-5-quartz）
+    const ledgerPath = collector.getPricingLedgerPath(agDir);
+    const unpricedCall = {
+      callId: 'req-quartz-1',
+      cascadeId: 'c1111111-1111-1111-1111-111111111111',
+      timestamp: Date.parse('2026-11-20T12:00:00.000Z'),
+      created_at: '2026-11-20T12:00:00.000Z',
+      date: '2026-11-20',
+      source: 'desktop',
+      model: 'Gemini 5 Quartz (High)',
+      modelExactId: 'gemini-5-quartz',
+      modelKey: 'unattributed',
+      inputTokens: 100000,
+      cacheReadTokens: 100000,
+      outputTokens: 10000,
+      totalTokens: 210000,
+      isPriced: false,
+      costUSD: null
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify({ version: '1.0.0', calls: { 'req-quartz-1': unpricedCall } }, null, 2));
+
+    // 同步前未知新模型仍保持未计价
+    core.setDynamicPricingCatalog(null);
+    core.setCustomPricingCatalog({});
+    const beforeCalc = core.calculateRequestApiCost(unpricedCall);
+    assert.equal(beforeCalc.isPriced, false);
+
+    // 4. 主源失败自动回退到 LiteLLM 备源 + 持久化缓存 + 自动补算历史账本
+    let fetchCount = 0;
+    const syncRes = await collector.syncPricingCatalogAsync({
+      stateDir,
+      agDir,
+      force: true,
+      fetcher: async (url) => {
+        fetchCount++;
+        if (url.includes('models.dev')) throw new Error('simulated_primary_timeout');
+        return mockLiteLlm;
+      }
+    });
+    assert.equal(syncRes.ok, true);
+    assert.deepEqual(syncRes.sources, ['litellm']);
+    assert.equal(syncRes.repricedCount, 1);
+    assert.equal(fetchCount, 2);
+    assert.equal(fs.existsSync(collector.getPricingCatalogCachePath(stateDir)), true);
+
+    // 验证账本已自动落盘补算（100k*2.5 + 100k*0.25 + 10k*12）/ 1e6 = 0.25 + 0.025 + 0.12 = 0.395
+    const updatedLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(updatedLedger.calls['req-quartz-1'].isPriced, true);
+    assert.equal(updatedLedger.calls['req-quartz-1'].modelKey, 'gemini-5-quartz');
+    assert.ok(Math.abs(updatedLedger.calls['req-quartz-1'].costUSD - 0.395) < 1e-9);
+
+    // TTL 缓存命中：非强制同步不再发起网络请求
+    const cachedRes = await collector.syncPricingCatalogAsync({
+      stateDir,
+      agDir,
+      force: false,
+      fetcher: async () => { throw new Error('should_not_fetch_within_ttl'); }
+    });
+    assert.equal(cachedRes.ok, true);
+    assert.equal(cachedRes.cached, true);
+    assert.equal(cachedRes.skipped, true);
+
+    // 5. 清空内存后通过 collectTokenHistoryAsync 从磁盘恢复缓存目录，且未收录模型依然不乱估价
+    core.setDynamicPricingCatalog(null);
+    const historyOut = await collector.collectTokenHistoryAsync({ agDir, stateDir, force: true });
+    assert.ok(historyOut.dynamicPricingCatalog);
+    assert.ok(historyOut.dynamicPricingCatalog.modelCount >= 2);
+    assert.ok(historyOut.dynamicPricingCatalog.models['gemini-5-quartz']);
+    assert.equal(core.calculateRequestApiCost({
+      model: 'gemini-pro-orchestrator-xenon',
+      inputTokens: 1000,
+      outputTokens: 500
+    }).isPriced, false);
+
+    // 6. custom_pricing.json 本地覆写优先级高于内置与远程目录
+    fs.writeFileSync(collector.getCustomPricingPath(stateDir), JSON.stringify({
+      'gemini-4-neon': { inputPerMillion: 1.0, outputPerMillion: 5.0, cacheReadPerMillion: 0.1 }
+    }, null, 2));
+    collector.loadPersistedPricingCatalog({ stateDir });
+    const overridden = core.calculateRequestApiCost({
+      model: 'gemini-4-neon',
+      inputTokens: 1000000,
+      cacheReadTokens: 0,
+      outputTokens: 0
+    });
+    assert.equal(overridden.isPriced, true);
+    assert.ok(Math.abs(overridden.costUSD - 1.0) < 1e-9);
+  } finally {
+    core.setDynamicPricingCatalog(null);
+    core.setCustomPricingCatalog({});
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('动态价格前端交互：dynamicPricingCatalog 水合即时回算未计价行 + 一键同步价格按钮与三语反馈', async () => {
+  const dm = { '2026-11-20': { total: 210000, input: 100000, output: 10000, cache: 100000 } };
+  let syncCalls = 0;
+  let historyCalls = 0;
+
+  const h = createV089DomSandbox();
+  try {
+    core.setDynamicPricingCatalog(null);
+    core.setCustomPricingCatalog({});
+
+    const baseUnpricedRow = {
+      callId: 'req-future-1',
+      cascadeId: 'a1111111-1111-1111-1111-111111111111',
+      timestamp: Date.parse('2026-11-20T12:15:00.000Z'),
+      date: '2026-11-20',
+      source: 'desktop',
+      model: 'Gemini 5 Nova (High)',
+      modelExactId: 'gemini-5-nova',
+      modelKey: 'gemini-5-nova',
+      inputTokens: 100000,
+      cacheReadTokens: 100000,
+      outputTokens: 10000,
+      totalTokens: 210000,
+      cacheReadPct: 50,
+      costUSD: null,
+      isPriced: false,
+      ttftSec: 1.2,
+      streamingSec: 2.0,
+      durationSec: 3.2,
+      streamingTps: 120,
+      status: 'final',
+      outcomeStatus: 'success'
+    };
+
+    const syncedCatalog = {
+      updatedAt: '2026-11-20T12:20:00.000Z',
+      fetchedAtMs: Date.parse('2026-11-20T12:20:00.000Z'),
+      sources: ['models.dev', 'litellm'],
+      modelCount: 168,
+      customCount: 0,
+      models: {
+        'gemini-5-nova': [{ inputPerMillion: 2.0, outputPerMillion: 10.0, cacheReadPerMillion: 0.2 }]
+      },
+      customModels: {}
+    };
+
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      syncPricing: async (opts) => {
+        syncCalls++;
+        assert.equal(opts?.force, true);
+        return {
+          ok: true,
+          modelCount: 168,
+          repricedCount: 1,
+          sources: ['models.dev', 'litellm'],
+          updatedAt: syncedCatalog.updatedAt
+        };
+      },
+      getTokenHistory: async () => {
+        historyCalls++;
+        return {
+          ok: true,
+          data: {
+            schemaVersion: '0.8.8',
+            firstUseDate: '2026-11-20',
+            dailyMap: dm,
+            dailyMapBySource: { all: dm, desktop: dm, cli: {} },
+            summary: { grandTotalTokens: 210000, todayTokens: 210000 },
+            dynamicPricingCatalog: syncedCatalog,
+            recentRequestLogs: [baseUnpricedRow]
+          }
+        };
+      }
+    };
+
+    // 初始加载：未同步前显示未计价 "—"
+    h.api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.8',
+      firstUseDate: '2026-11-20',
+      dailyMap: dm,
+      dailyMapBySource: { all: dm, desktop: dm, cli: {} },
+      summary: { grandTotalTokens: 210000, todayTokens: 210000 },
+      recentRequestLogs: [baseUnpricedRow]
+    });
+    h.api.switchTokenViewForTest('requests');
+    let st = h.api.getRequestsViewStateForTest();
+    assert.equal(st.rowCount, 1);
+    assert.equal(st.rows[0][8], '—');
+
+    // 触发同步价格（经由 IPC -> 拉取最新历史并水合 dynamicPricingCatalog -> 前端即时回算出 $0.320）
+    const syncRes = await h.api.syncPricingCatalog({ force: true });
+    assert.equal(syncRes.ok, true);
+    assert.equal(syncCalls, 1);
+    assert.ok(historyCalls >= 1);
+    assert.equal(h.elements.get('req-pricing-sync-note').textContent, '已同步 168 个模型 · 补算 1 条');
+    st = h.api.getRequestsViewStateForTest();
+    // (100k*2 + 100k*0.2 + 10k*10)/1e6 = 0.2 + 0.02 + 0.1 = $0.320
+    assert.equal(st.rows[0][8], '$0.320');
+
+    // 切换英文与繁体，确认同步按钮文案正确切换且英文无中文残留
+    await h.api.setPanelLanguage('en', { persist: false });
+    assert.equal(h.elements.get('btn-req-sync-pricing').textContent, 'Sync Prices');
+    assert.doesNotMatch(h.elements.get('btn-req-sync-pricing').title, /[\u4e00-\u9fff]/);
+    await h.api.setPanelLanguage('zh-TW', { persist: false });
+    assert.equal(h.elements.get('btn-req-sync-pricing').textContent, '同步價格');
+  } finally {
+    h.api.dispose();
+    core.setDynamicPricingCatalog(null);
+    core.setCustomPricingCatalog({});
+  }
+});
+
+test('耗时与速度延迟回填回归：transcript 先落盘入缓存且账本仅含半程 ttftSec，随后 .db 落盘时无需改 transcript 即可补齐完整耗时与速度', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-late-db-timing-'));
+  const agDir = path.join(rootDir, 'antigravity');
+  const cid = '77777777-7777-7777-7777-777777777777';
+  const logsDir = path.join(agDir, 'brain', cid, '.system_generated', 'logs');
+  const convDir = path.join(agDir, 'conversations');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(convDir, { recursive: true });
+
+  try {
+    const tPath = path.join(logsDir, 'transcript.jsonl');
+    const createdIso = '2026-11-20T12:06:38.000Z';
+    fs.writeFileSync(tPath, JSON.stringify({
+      step_index: 5,
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: createdIso,
+      model: 'gemini-4-neon',
+      input_tokens: 8100,
+      cache_read_tokens: 240000,
+      output_tokens: 600
+    }) + '\n');
+
+    // 模拟流式初期仅入账了 ttftSec=2.0（尚无 streamingSec / streamingTps）
+    collector.recordModelCalls([{
+      callId: `${cid}#5`,
+      cascadeId: cid,
+      stepIndex: 5,
+      source: 'desktop',
+      model: 'gemini-4-neon',
+      inputTokens: 8100,
+      cacheReadTokens: 240000,
+      outputTokens: 600,
+      totalTokens: 248700,
+      ttftSec: 2.0,
+      durationSec: 2.0,
+      status: 'final',
+      date: '2026-11-20',
+      created_at: createdIso,
+      timestamp: Date.parse(createdIso)
+    }], { agDir, allowSynthetic: true });
+
+    // 第一次扫描：此时 .db 尚未写入，transcriptFileCache 缓存该文件，仅有半程 ttftSec=2.0
+    const res1 = await collector.collectTokenHistoryAsync({ agDir, force: true });
+    assert.equal(res1.recentRequestLogs.length, 1);
+    assert.equal(res1.recentRequestLogs[0].ttftSec, 2);
+    assert.equal(res1.recentRequestLogs[0].streamingSec, null);
+    assert.equal(res1.recentRequestLogs[0].streamingTps, null);
+
+    // 随后 .db 落盘完整 gen_metadata（ttftSec=2, streamSec=4），且 transcript.jsonl 的 size/mtimeMs 完全不变
+    const dbPath = path.join(convDir, `${cid}.db`);
+    const db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE gen_metadata (id INTEGER PRIMARY KEY, data BLOB);');
+    const insertStmt = db.prepare('INSERT INTO gen_metadata (data) VALUES (?)');
+    insertStmt.run(buildGenMetadataRowBlob({
+      stepIndex: 5,
+      responseId: 'resp-late-5',
+      model: 'gemini-4-neon',
+      modelLabel: 'Gemini 4 Neon (XHigh)',
+      ttftSec: 2,
+      streamSec: 4
+    }));
+    db.close();
+
+    // 第二次扫描：即使 transcript.jsonl 未变，也必须重查 .db 并把半程 2s 升级为完整 6s 与 150 tok/s
+    const res2 = await collector.collectTokenHistoryAsync({ agDir, force: true });
+    assert.equal(res2.recentRequestLogs.length, 1);
+    assert.equal(res2.recentRequestLogs[0].ttftSec, 2);
+    assert.equal(res2.recentRequestLogs[0].streamingSec, 4);
+    assert.equal(res2.recentRequestLogs[0].durationSec, 6);
+    assert.equal(res2.recentRequestLogs[0].streamingTps, 150);
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('加固回归：0 字节新建 .db 安全跳过不建锁 + 超过 200 条测速裁剪后 recentRequestLogs 仍保留 .db 耗时且不反复写账本', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-prune-guard-'));
+  const agDir = path.join(rootDir, 'antigravity');
+  const cid = '88888888-8888-8888-8888-888888888888';
+  const logsDir = path.join(agDir, 'brain', cid, '.system_generated', 'logs');
+  const convDir = path.join(agDir, 'conversations');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(convDir, { recursive: true });
+
+  try {
+    // 1. 0 字节 .db 跳过并可后续恢复
+    const emptyDbPath = path.join(convDir, '00000000-0000-0000-0000-000000000001.db');
+    fs.writeFileSync(emptyDbPath, Buffer.alloc(0));
+    const skippedEmpty = collector.loadConversationDbMeta(emptyDbPath, '00000000-0000-0000-0000-000000000001');
+    assert.equal(skippedEmpty.readMode, 'skipped');
+    assert.equal(skippedEmpty.skippedReason, 'initializing_empty_db');
+
+    // 2. 写入 205 条同模型记录：最老 1 条（#1）在 transcript + .db 里有完整耗时，但在账本里会被 pruneExcessSpeedSamples(200) 裁掉
+    const tPath = path.join(logsDir, 'transcript.jsonl');
+    const oldIso = '2026-11-20T01:00:00.000Z';
+    fs.writeFileSync(tPath, JSON.stringify({
+      step_index: 1,
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: oldIso,
+      model: 'gemini-4-neon',
+      input_tokens: 5000,
+      cache_read_tokens: 50000,
+      output_tokens: 800
+    }) + '\n');
+
+    const dbPath = path.join(convDir, `${cid}.db`);
+    const db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE gen_metadata (id INTEGER PRIMARY KEY, data BLOB);');
+    db.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(buildGenMetadataRowBlob({
+      stepIndex: 1,
+      responseId: 'resp-old-pruned-1',
+      model: 'gemini-4-neon',
+      modelLabel: 'Gemini 4 Neon (XHigh)',
+      ttftSec: 2,
+      streamSec: 4
+    }));
+    db.close();
+
+    const batch = [];
+    const baseMs = Date.parse('2026-11-20T02:00:00.000Z');
+    batch.push({
+      callId: 'resp-old-pruned-1',
+      cascadeId: cid,
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'Gemini 4 Neon (XHigh)',
+      modelLabel: 'Gemini 4 Neon (XHigh)',
+      modelExactId: 'MODEL_PLACEHOLDER_M535',
+      inputTokens: 5000,
+      cacheReadTokens: 50000,
+      outputTokens: 800,
+      totalTokens: 55800,
+      ttftSec: 2,
+      streamingSec: 4,
+      durationSec: 6,
+      tps: 133.3,
+      streamingTps: 200,
+      status: 'final',
+      date: '2026-11-20',
+      created_at: oldIso,
+      timestamp: Date.parse(oldIso)
+    });
+    for (let i = 2; i <= 205; i++) {
+      const ts = baseMs + i * 1000;
+      const iso = new Date(ts).toISOString();
+      batch.push({
+        callId: `resp-newer-${i}`,
+        cascadeId: cid,
+        stepIndex: i,
+        source: 'desktop',
+        model: 'Gemini 4 Neon (XHigh)',
+        modelLabel: 'Gemini 4 Neon (XHigh)',
+        modelExactId: 'MODEL_PLACEHOLDER_M535',
+        inputTokens: 1000,
+        cacheReadTokens: 10000,
+        outputTokens: 200,
+        totalTokens: 11200,
+        ttftSec: 1,
+        streamingSec: 2,
+        durationSec: 3,
+        tps: 66.7,
+        streamingTps: 100,
+        status: 'final',
+        date: '2026-11-20',
+        created_at: iso,
+        timestamp: ts
+      });
+    }
+    collector.recordModelCalls(batch, { agDir, allowSynthetic: true });
+
+    const ledgerPath = collector.getPricingLedgerPath(agDir);
+    const ledgerBefore = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    // 确认账本里该老样本速度已被 pruneExcessSpeedSamples 裁掉
+    assert.equal(ledgerBefore.calls['resp-old-pruned-1'].ttftSec, undefined);
+    assert.equal(ledgerBefore.calls['resp-old-pruned-1'].streamingTps, undefined);
+
+    // 首次扫描完成对账与计价入账，同时验证展示列表从 .db 恢复了完整耗时与速度
+    const scanRes1 = await collector.collectTokenHistoryAsync({ agDir, force: true });
+    const oldRow1 = scanRes1.recentRequestLogs.find(r => r.callId === 'resp-old-pruned-1');
+    assert.ok(oldRow1);
+    assert.equal(oldRow1.ttftSec, 2);
+    assert.equal(oldRow1.streamingSec, 4);
+    assert.equal(oldRow1.durationSec, 6);
+    assert.equal(oldRow1.streamingTps, 200);
+
+    // 稳态二次扫描：展示仍保留完整速度，且不会因为老样本被裁剪过而反复重写账本文件
+    const mtimeStable = fs.statSync(ledgerPath).mtimeMs;
+    const scanRes2 = await collector.collectTokenHistoryAsync({ agDir, force: true });
+    const oldRow2 = scanRes2.recentRequestLogs.find(r => r.callId === 'resp-old-pruned-1');
+    assert.equal(oldRow2.durationSec, 6);
+    assert.equal(oldRow2.streamingTps, 200);
+    assert.equal(fs.statSync(ledgerPath).mtimeMs, mtimeStable);
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('输入栏状态条与 5 行卡片：三组信息、精确千分位、缓存命中率公式、三语与 ELV-64 商城避让', async () => {
+  const h = createV089DomSandbox();
+  try {
+    // 1. 注入 5 轮 83 步调用数据，未缓存 144,035，缓存读取 12,306,944，输出 85,595，速度 213 tok/s，上下文 22%
+    const totalInp = 144035;
+    const cacheRead = 12306944;
+    const outp = 85595;
+    const calls = [];
+    for (let i = 0; i < 83; i++) {
+      calls.push({
+        callId: `call-deepseek-${i}`,
+        inputTokens: Math.floor(totalInp / 83),
+        cacheReadTokens: Math.floor(cacheRead / 83),
+        outputTokens: Math.floor(outp / 83)
+      });
+    }
+    // 补齐余数
+    calls[0].inputTokens += (totalInp - Math.floor(totalInp / 83) * 83);
+    calls[0].cacheReadTokens += (cacheRead - Math.floor(cacheRead / 83) * 83);
+    calls[0].outputTokens += (outp - Math.floor(outp / 83) * 83);
+
+    h.api.setComposerStateForTest({
+      allTurns: [1, 2, 3, 4, 5],
+      sessionCalls: calls,
+      lastSpeedEval: { tps: 213, streamingTps: 213 },
+      sessionStats: { usedTokens: 44000, limitTokens: 200000 }
+    });
+
+    let sb = h.api.getComposerStatusBarStateForTest();
+    assert.equal(sb.speedText, '5 轮 83 步 · 213 tok/s');
+    assert.equal(sb.tokensText, '12.5M tok · 会话缓存命中率 99%');
+    assert.equal(sb.contextText, '22%');
+    assert.equal(sb.cardTotal, '12,536,574 tok');
+    assert.equal(sb.cardHit, '99%');
+    assert.equal(sb.cardUncached, '144,035 tok');
+    assert.equal(sb.cardCached, '12,306,944 tok');
+    assert.equal(sb.cardOutput, '85,595 tok');
+
+    // 2. 切换英文验证：无汉字泄露
+    await h.api.setPanelLanguage('en', { persist: false });
+    sb = h.api.getComposerStatusBarStateForTest();
+    assert.equal(sb.speedText, '5 turns 83 steps · 213 tok/s');
+    assert.equal(sb.tokensText, '12.5M tok · Session Cache 99%');
+    assert.doesNotMatch(sb.speedText, /[\u4e00-\u9fff]/);
+    assert.doesNotMatch(sb.tokensText, /[\u4e00-\u9fff]/);
+
+    // 3. 切换繁体验证
+    await h.api.setPanelLanguage('zh-TW', { persist: false });
+    sb = h.api.getComposerStatusBarStateForTest();
+    assert.equal(sb.speedText, '5 輪 83 步 · 213 tok/s');
+    assert.equal(sb.tokensText, '12.5M tok · 會話快取命中率 99%');
+
+    // 4. 零分母（纯输出无输入）与 0% 命中率严格区分
+    h.api.setComposerStateForTest({
+      sessionCalls: [{ inputTokens: 0, cacheReadTokens: 0, outputTokens: 500 }]
+    });
+    sb = h.api.getComposerStatusBarStateForTest();
+    assert.equal(sb.cardHit, '—', '总输入为 0 时缓存命中率应显示 —');
+
+    h.api.setComposerStateForTest({
+      sessionCalls: [{ inputTokens: 1000, cacheReadTokens: 0, outputTokens: 200 }]
+    });
+    sb = h.api.getComposerStatusBarStateForTest();
+    assert.equal(sb.cardHit, '0%', '总输入 > 0 且缓存为 0 时应确认显示 0%');
+
+    // 5. Linear ELV-64 商城避让：会话中打开面板 -> 路由切至商城自动收起 -> 商城内切换保持关闭 -> 返回会话可手动唤起
+    await h.api.setPanelLanguage('zh-CN', { persist: false });
+    h.elements.get('badge-tokens').click();
+    assert.equal(h.elements.get('panel-tokens').hidden, false, '点击顶栏应能打开 Token 看板');
+
+    // 切到插件商城，路由变更触发自动收起面板
+    h.sandbox.location.pathname = '/extensions';
+    h.tick();
+    assert.equal(h.elements.get('panel-tokens').hidden, true, '切到插件商城应自动收起面板');
+
+    // 在商城子路由切换保持关闭
+    h.sandbox.location.pathname = '/extensions/installed';
+    h.tick();
+    assert.equal(h.elements.get('panel-tokens').hidden, true, '商城子路由切换应保持关闭');
+
+    // 返回本地会话，手动点击顶栏可重新打开
+    h.sandbox.location.pathname = '/c/11111111-1111-1111-1111-111111111111';
+    h.tick();
+    h.elements.get('badge-tokens').click();
+    assert.equal(h.elements.get('panel-tokens').hidden, false, '返回会话后手动点击顶栏应能正常唤起面板');
+
+    // 6. 顶栏快捷配置与返回会话
+    h.elements.get('btn-quick-settings').click();
+    assert.equal(h.elements.get('pane-ctx-settings').hidden, false, '点击顶栏配置按钮应直接进入配置页');
+    h.elements.get('btn-settings-back').click();
+    assert.equal(h.elements.get('pane-ctx-settings').hidden, true, '点击返回按钮应切回会话概览');
+
+    // 7. 隐藏顶栏开关
+    const chkHide = h.elements.get('chk-hide-topbar');
+    chkHide.checked = true;
+    chkHide.click();
+    assert.equal(h.host.getAttribute('data-topbar-hidden'), 'true', '勾选隐藏顶栏应生效');
+    chkHide.checked = false;
+    chkHide.click();
+    assert.equal(h.host.getAttribute('data-topbar-hidden'), null, '取消勾选隐藏顶栏应恢复');
+  } finally {
+    h.api.dispose();
+  }
+});
+
+test('输入栏状态条与 5 行悬停卡：单色线性 SVG 图标、动态圆环与点击入口验证', async () => {
+  const h = createV089DomSandbox();
+  try {
+    // 1. 验证单色线性 SVG 图标与无 emoji 残留
+    const csbBar = h.elements.get('composer-status-bar');
+    assert.ok(csbBar, '输入框状态条容器应存在');
+    const csbHtml = csbBar.innerHTML || '';
+    assert.doesNotMatch(csbHtml, /[⏱🛢◔]/, '状态条中严禁出现粗糙 emoji 字符');
+
+    // 2. 动态圆环进度断言
+    h.api.setComposerStateForTest({
+      allTurns: [1, 2],
+      sessionCalls: [{ inputTokens: 500, cacheReadTokens: 500, outputTokens: 100 }],
+      lastSpeedEval: { tps: 120 },
+      sessionStats: { usedTokens: 50000, limitTokens: 100000 }
+    });
+    const circleEl = h.elements.get('csb-context-circle');
+    if (circleEl) {
+      assert.ok(circleEl.style.strokeDashoffset, '50% 进度时上下文圆环应有动态 strokeDashoffset');
+      assert.equal(circleEl.style.strokeDashoffset, '26.7', '50% 时 offset 应为周长的一半 26.7');
+    }
+
+    // 3. 点击入口与悬停卡
+    const csbTokens = h.elements.get('csb-group-tokens');
+    const tflCard = h.elements.get('token-five-line-card');
+    if (csbTokens && tflCard) {
+      if (typeof csbTokens.trigger === 'function') {
+        csbTokens.trigger('mouseenter');
+      } else {
+        csbTokens.dispatchEvent?.({ type: 'mouseenter' });
+      }
+      assert.equal(tflCard.hidden, false, '悬停在 Token 胶囊上时五行卡片应显示');
+      if (typeof csbTokens.trigger === 'function') {
+        csbTokens.trigger('mouseleave');
+      } else {
+        csbTokens.dispatchEvent?.({ type: 'mouseleave' });
+      }
+      assert.equal(tflCard.hidden, true, '移开时五行卡片应隐藏');
+    }
+
+    if (csbTokens) {
+      csbTokens.click();
+      assert.equal(h.elements.get('panel-tokens').hidden, false, '点击 Token 胶囊应打开 Token 看板');
+    }
+  } finally {
+    h.api.dispose();
+  }
+});
+
+test('输入框下方摘要与工具栏按钮独立挂载', async () => {
+  const h = createV089DomSandbox();
+  try {
+    const csbBar = h.elements.get('composer-status-bar');
+    assert.ok(csbBar, '状态条应存在');
+
+    // 模拟原生平铺工具栏：[+], [modelBtn], [permissionBtn (极速)], [micBtn], [sendBtn]
+    const bar = {
+      children: [],
+      style: {},
+      contains(target) { return this.children.includes(target); },
+      insertBefore(node, ref) {
+        const idx = this.children.indexOf(ref);
+        if (idx !== -1) {
+          const oldIdx = this.children.indexOf(node);
+          if (oldIdx !== -1) this.children.splice(oldIdx, 1);
+          this.children.splice(idx, 0, node);
+          node.parentElement = this;
+          node.nextElementSibling = ref;
+        } else {
+          this.appendChild(node);
+        }
+      },
+      appendChild(node) {
+        const oldIdx = this.children.indexOf(node);
+        if (oldIdx !== -1) this.children.splice(oldIdx, 1);
+        this.children.push(node);
+        node.parentElement = this;
+        node.nextElementSibling = null;
+      }
+    };
+
+    const addBtn = { parentElement: bar, textContent: '+', getAttribute: () => null, querySelector: () => null };
+    const modelBtn = { parentElement: bar, textContent: 'Claude 3.7 Sonnet', getAttribute: (k) => k === 'aria-label' ? 'Claude 3.7 Sonnet' : null, querySelector: () => null };
+    const permBtn = { parentElement: bar, textContent: '极速', getAttribute: (k) => k === 'aria-label' ? '极速' : null, querySelector: () => null };
+    const micBtn = { parentElement: bar, textContent: '', getAttribute: (k) => k === 'aria-label' ? 'mic' : null, querySelector: () => null };
+    const sendBtn = { parentElement: bar, textContent: '', getAttribute: (k) => k === 'aria-label' ? 'Send' : null, querySelector: () => null };
+
+    bar.children = [addBtn, modelBtn, permBtn, micBtn, sendBtn];
+
+    // 在沙箱 document 中挂载查询
+    h.sandbox.document.querySelector = (sel) => {
+      if (/send/i.test(sel)) return sendBtn;
+      if (/mic/i.test(sel)) return micBtn;
+      return null;
+    };
+    h.sandbox.document.querySelectorAll = (sel) => {
+      if (sel === 'button') return bar.children;
+      return [];
+    };
+
+    const composer = { after(node) { this.nextElementSibling = node; } };
+    bar.closest = selector => selector === 'form' ? composer : null;
+    h.api.ensureComposerStatusBarMountedForTest();
+    assert.equal(composer.nextElementSibling, csbBar);
+    assert.ok(!bar.children.includes(csbBar));
+    bar.children = [addBtn, modelBtn, micBtn, sendBtn];
+    h.api.ensureComposerStatusBarMountedForTest();
+    assert.equal(composer.nextElementSibling, csbBar);
+  } finally {
+    h.api.dispose();
+  }
+});
+
+test('6. 请求来源图标：使用本项目原创内联矢量 SVG、无第三方 PNG 品牌资产或 exe 提取逻辑、透明等比渲染', () => {
+  const legacyAssetPath = path.join(__dirname, 'assets', 'antigravity-icon__full-color.png');
+  assert.equal(fs.existsSync(legacyAssetPath), false, '发布包不得包含第三方品牌 PNG 资产 antigravity-icon__full-color.png');
+
+  // 验证构建、打包与安装脚本已清理第三方 PNG 资产及旧版 exe 提取逻辑
+  const installJs = fs.readFileSync(path.join(__dirname, 'install.js'), 'utf8');
+  const pkgReleaseJs = fs.readFileSync(path.join(__dirname, 'scripts', 'package-release.js'), 'utf8');
+  const mainSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  assert.equal(/antigravity-icon__full-color\.png/.test(installJs), false);
+  assert.equal(/antigravity-icon__full-color\.png/.test(pkgReleaseJs), false);
+  assert.equal(/antigravity-icon__full-color\.png/.test(mainSrc), false);
+  assert.equal(/AG_OFFICIAL_ICON_B64|AG_BUNDLED_ICON_B64|extractIcon/i.test(mainSrc), false, '不得残留从宿主提取图标或第三方品牌 PNG 注入逻辑');
+  assert.match(RENDERER_SOURCE, /data:image\/svg\+xml;utf8,/, '构建后的 meter-renderer.js 必须内联原创矢量 SVG 图标');
+
+  // 渲染验证：透明背景、object-fit:contain、14px 等比容器与来源名称并列居中
+  const h = createV089DomSandbox();
+  try {
+    h.api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.8',
+      firstUseDate: '2026-11-21',
+      dailyMap: { '2026-11-21': { total: 1000, input: 800, cache: 0, output: 200, steps: 1 } },
+      dailyMapBySource: {
+        all: { '2026-11-21': { total: 1000, input: 800, cache: 0, output: 200, steps: 1 } },
+        desktop: { '2026-11-21': { total: 1000, input: 800, cache: 0, output: 200, steps: 1 } }
+      },
+      summary: { grandTotalTokens: 1000, todayTokens: 1000 },
+      recentRequestLogs: [{
+        callId: 'req-desktop-color-icon',
+        source: 'desktop',
+        createdAt: '2026-11-21T00:10:00Z',
+        model: 'Gemini 3.8 Flash (High)',
+        inputTokens: 800,
+        outputTokens: 200,
+        ttftSec: 1.2,
+        streamingSec: 1.5,
+        durationSec: 2.7,
+        streamingTps: 133,
+        status: 'final'
+      }]
+    });
+    h.api.switchTokenViewForTest('requests');
+    const tbody = h.elements.get('req-live-tbody');
+    assert.equal(tbody.children.length, 1);
+    const agentTd = tbody.children[0].children[1];
+    const agentCell = agentTd.children[0];
+    const iconWrap = agentCell.children[0];
+    const img = iconWrap.children[0];
+    assert.equal(agentCell.className, 'req-agent-cell');
+    assert.equal(iconWrap.className, 'req-agent-icon');
+    assert.match(img.src, /^data:image\/svg\+xml;utf8,/);
+    const decodedSvg = decodeURIComponent(img.src.slice('data:image/svg+xml;utf8,'.length));
+    assert.match(decodedSvg, /viewBox=.0 0 180 180./);
+    assert.equal(/<script|onload|onerror|onclick/i.test(decodedSvg), false, '内嵌 Antigravity SVG 只能包含纯静态绘图');
+    assert.equal(img.width, 14);
+    assert.equal(img.height, 14);
+    assert.match(img.style.cssText, /object-fit:contain/);
+    assert.match(img.style.cssText, /background:transparent/);
+  } finally {
+    h.api.dispose();
+  }
+});
+
+test('Issue #77 历史用量守恒与防撞回归：删会话保留旧消耗、回退重发独立记账、流式/镜像去重、子代理与备份节流', async () => {
+  const os = require('node:os');
+  const collector = require('./meter-collector');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-issue77-'));
+  const agDir = path.join(tmpDir, 'ag');
+  const cliDir = path.join(tmpDir, 'cli');
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(path.join(agDir, 'conversations'), { recursive: true });
+  fs.mkdirSync(path.join(cliDir, 'conversations'), { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  const now = new Date();
+  const todayStr = collector.formatLocalDateKey(now);
+  const t0 = new Date(now.getTime() - 180000).toISOString();
+  const t1 = new Date(now.getTime() - 120000).toISOString();
+  const t2 = new Date(now.getTime() - 60000).toISOString();
+
+  try {
+    // 1. 故障 1：当天会话 A (含已计价 Neon 1000 tok + 未计价具名 GPT-OSS 500 tok + 缺模型 fallback 300 tok = 1800) 入账
+    const cidA = 'a1111111-1111-4111-8111-111111111111';
+    const logDirA = path.join(agDir, 'brain', cidA, '.system_generated', 'logs');
+    fs.mkdirSync(logDirA, { recursive: true });
+    fs.writeFileSync(path.join(agDir, 'conversations', `${cidA}.pb`), 'pbA');
+    fs.writeFileSync(path.join(logDirA, 'transcript.jsonl'), [
+      JSON.stringify({ step_index: 0, callId: 'resp_a_neon', model: 'Gemini 4 Neon (High)', input_tokens: 700, cache_read_tokens: 200, output_tokens: 100, status: 'DONE', created_at: t0 }),
+      JSON.stringify({ step_index: 1, model: 'GPT-OSS 120B (Medium)', input_tokens: 400, cache_read_tokens: 0, output_tokens: 100, status: 'DONE', created_at: t0 }),
+      JSON.stringify({ step_index: 2, input_tokens: 250, cache_read_tokens: 0, output_tokens: 50, status: 'DONE', created_at: t0 })
+    ].join('\n') + '\n');
+
+    const h1 = await collector.collectTokenHistoryAsync({
+      force: true,
+      agDir,
+      agCliDir: cliDir,
+      stateDir,
+      skipWslDiscovery: true
+    });
+    assert.equal(h1.dailyMapBySource.desktop[todayStr].total, 1800);
+    assert.equal(h1.summary.grandTotalTokens, 1800);
+
+    // 彻底删除会话 A 文件，然后新建当天会话 B (600 tok) 并重扫：旧消耗 1800 必须保留，总计 2400！
+    fs.rmSync(path.join(agDir, 'brain', cidA), { recursive: true, force: true });
+    fs.rmSync(path.join(agDir, 'conversations', `${cidA}.pb`), { force: true });
+
+    const cidB = 'b2222222-2222-4222-8222-222222222222';
+    const logDirB = path.join(agDir, 'brain', cidB, '.system_generated', 'logs');
+    fs.mkdirSync(logDirB, { recursive: true });
+    fs.writeFileSync(path.join(agDir, 'conversations', `${cidB}.pb`), 'pbB');
+    fs.writeFileSync(path.join(logDirB, 'transcript.jsonl'), JSON.stringify({
+      step_index: 0,
+      callId: 'resp_b_flash',
+      model: 'Gemini 3.8 Flash',
+      input_tokens: 500,
+      cache_read_tokens: 0,
+      output_tokens: 100,
+      status: 'DONE',
+      created_at: t1
+    }) + '\n');
+
+    const h2 = await collector.collectTokenHistoryAsync({
+      force: true,
+      agDir,
+      agCliDir: cliDir,
+      stateDir,
+      skipWslDiscovery: true
+    });
+    assert.equal(h2.dailyMapBySource.desktop[todayStr].total, 2400, '删掉当天已入账会话并新建会话后必须保留旧消耗并继续累加');
+    assert.equal(h2.summary.grandTotalTokens, 2400);
+
+    // 2. 故障 2：同 stepIndex 流式更新 (RUNNING -> DONE) & 重复镜像去重，而回退重发 (同 stepIndex 不同时间/用量) 必须分别保留！
+    const cidRew = 'c3333333-3333-4333-8333-333333333333';
+    const logDirRew = path.join(agDir, 'brain', cidRew, '.system_generated', 'logs');
+    const logPathRew = path.join(logDirRew, 'transcript.jsonl');
+    fs.mkdirSync(logDirRew, { recursive: true });
+    fs.writeFileSync(path.join(agDir, 'conversations', `${cidRew}.pb`), 'pbRew');
+    const rewindLines = [
+      // step 3 首次调用：流式 RUNNING (150) -> 完成 DONE (400) -> 复制镜像行 DONE (400) => 仅记 1 次 (400)
+      JSON.stringify({ step_index: 3, model: 'Gemini 4 Carbon', input_tokens: 100, cache_read_tokens: 0, output_tokens: 50, status: 'RUNNING', created_at: t1 }),
+      JSON.stringify({ step_index: 3, model: 'Gemini 4 Carbon', input_tokens: 100, cache_read_tokens: 0, output_tokens: 300, status: 'DONE', created_at: t1 }),
+      JSON.stringify({ step_index: 3, model: 'Gemini 4 Carbon', input_tokens: 100, cache_read_tokens: 0, output_tokens: 300, status: 'DONE', created_at: t1 }),
+      // step 3 回退重发：新的输入和输出 (900) => 必须作为第二条独立调用保留 (@2)！
+      JSON.stringify({ step_index: 3, model: 'Gemini 4 Carbon', input_tokens: 600, cache_read_tokens: 100, output_tokens: 200, status: 'DONE', created_at: t2 })
+    ];
+    fs.writeFileSync(logPathRew, rewindLines.join('\n') + '\n');
+
+    // 验证时间线解析：仅产生 2 次调用 (400 与 900 = 1300)，且 callId 互不碰撞
+    const tlParsed = collector.parseTranscriptForSessionTimeline(logPathRew, cidRew, path.join(agDir, 'conversations'), 'desktop');
+    assert.equal(tlParsed.calls.length, 2);
+    assert.deepEqual(tlParsed.calls.map(c => c.totalTokens), [400, 900]);
+    assert.notEqual(tlParsed.calls[0].callId, tlParsed.calls[1].callId);
+
+    // 验证全量历史统计同样保留两笔 (2400 + 1300 = 3700) 且跨重启/多次重复扫描零增减
+    const h3 = await collector.collectTokenHistoryAsync({
+      force: true,
+      agDir,
+      agCliDir: cliDir,
+      stateDir,
+      skipWslDiscovery: true
+    });
+    assert.equal(h3.dailyMapBySource.desktop[todayStr].total, 3700);
+    collector.transcriptFileCache.clear();
+    const h3Repeat = await collector.collectTokenHistoryAsync({
+      force: true,
+      agDir,
+      agCliDir: cliDir,
+      stateDir,
+      skipWslDiscovery: true
+    });
+    assert.equal(h3Repeat.summary.grandTotalTokens, 3700);
+
+    // 3. 验证 40MB+ .bak.json 读取备份节流：刚生成过 .bak.json 后在 10 分钟内即便主账本 mtime/size 变动也不反复 copyFileSync
+    const ledgerFile = collector.getPricingLedgerPath(agDir);
+    const bakFile = ledgerFile.replace(/\.json$/i, '.bak.json');
+    assert.equal(fs.existsSync(bakFile), true);
+    let copyCount = 0;
+    const origCopy = fs.copyFileSync;
+    const bakMtimeBefore = fs.statSync(bakFile).mtimeMs;
+    const ledgerData = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'));
+    ledgerData.updatedAt = new Date().toISOString();
+    fs.writeFileSync(ledgerFile, JSON.stringify(ledgerData));
+    const spyFs = {
+      ...fs,
+      copyFileSync: (...a) => { copyCount++; return origCopy(...a); }
+    };
+    for (let k = 0; k < 25; k++) {
+      collector.loadPricingLedger(agDir, { fs: spyFs });
+    }
+    assert.equal(copyCount, 0, '10 分钟窗口内 loadPricingLedger 不得高频 copyFileSync 重写 .bak.json');
+    assert.equal(fs.statSync(bakFile).mtimeMs, bakMtimeBefore);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

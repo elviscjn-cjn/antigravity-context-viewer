@@ -10,9 +10,10 @@ try {
     ipcMain = electron.ipcMain;
     app = electron.app;
   }
-} catch {}
+} catch { }
 const {
   collect,
+  collectTurnState,
   collectTokenHistory,
   collectTokenHistoryAsync,
   collectSessionTimelineAsync,
@@ -29,7 +30,8 @@ const {
   applyContextUnlock,
   applyContextUnlockAsync,
   restoreContextUnlock,
-  restoreContextUnlockAsync
+  restoreContextUnlockAsync,
+  syncPricingCatalogAsync
 } = require('./meter-collector');
 const { isValidExternalUrl } = require('./meter-core');
 const { PROJECT_VERSION } = require('./modules-config');
@@ -44,12 +46,14 @@ const MAIN_CAPABILITIES = {
   launchCli: true,
   contextUnlock: true,
   enhance: true,
+  rehydrate: true,
   modules: true,
   accounts: true,
   checkUpdate: true,
   applyUpdate: true,
   restartHost: true,
-  hotReload: true
+  hotReload: true,
+  syncPricing: true
 };
 
 const {
@@ -108,11 +112,11 @@ function resolveBootChineseSnapshot(customAsarPath = null) {
       enabled: active,
       language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
     };
-  } catch {}
+  } catch { }
   bootChineseSnapshots.set(key, snap);
   return snap;
 }
-try { resolveBootChineseSnapshot(); } catch {}
+try { resolveBootChineseSnapshot(); } catch { }
 
 function buildRuntimeModulesMeta(cfg, customAsarPath = null) {
   const diskProxy = cfg?.modules?.proxy || {};
@@ -159,6 +163,16 @@ function buildBootBackendPayload() {
   };
 }
 
+function logDiagnostic(stage, details = {}) {
+  try {
+    const logDir = getStateDir();
+    const logFile = path.join(logDir, 'meter-stage-diagnostics.log');
+    const time = new Date().toISOString();
+    const line = `[${time}] [STAGE:${stage}] ${JSON.stringify(details)}\n`;
+    fs.appendFileSync(logFile, line, 'utf8');
+  } catch { }
+}
+
 function getMeterSource() {
   try {
     const coreCode = fs.readFileSync(path.join(__dirname, 'meter-core.js'), 'utf8');
@@ -169,15 +183,27 @@ function getMeterSource() {
       if (settingsSnap && settingsSnap.ok) {
         bootstrap += `window.__AGContextMeterSettings = ${JSON.stringify(settingsSnap)};\n`;
       }
-    } catch {}
+    } catch { }
     try {
       const { loadModulesConfig } = require('./modules-config');
       const mCfg = loadModulesConfig();
       if (mCfg?.modules?.chinese) {
         bootstrap += `window.__AGY_CHINESE_CONFIG__ = ${JSON.stringify(mCfg.modules.chinese)};\n`;
       }
-    } catch {}
-    return `${bootstrap}${coreCode}\n${rendererCode}\ntrue;`;
+    } catch { }
+    return `(() => {
+  try {
+    ${bootstrap}
+    ${coreCode}
+    ${rendererCode}
+    return true;
+  } catch (fatalErr) {
+    const msg = String(fatalErr && fatalErr.stack ? fatalErr.stack : fatalErr);
+    console.error('[Context Meter Fatal Init Error]:', msg);
+    try { window.__AGContextMeterFatalError = msg; } catch {}
+    return false;
+  }
+})();`;
   } catch (e) {
     return '';
   }
@@ -201,14 +227,14 @@ function resolveTargetWindow(sender) {
     const { BrowserWindow } = require('electron');
     const direct = BrowserWindow.fromWebContents(sender);
     if (direct && !direct.isDestroyed()) return direct;
-  } catch {}
+  } catch { }
   try {
     const utils = require('./utils');
     if (typeof utils.resolveHubWindowFromWebContents === 'function') {
       const hubWin = utils.resolveHubWindowFromWebContents(sender);
       if (hubWin && !hubWin.isDestroyed?.()) return hubWin;
     }
-  } catch {}
+  } catch { }
   return null;
 }
 
@@ -262,7 +288,7 @@ function getRecordedInstallerDir() {
     if (m && typeof m.installerDir === 'string' && m.installerDir.trim()) {
       return m.installerDir.trim();
     }
-  } catch {}
+  } catch { }
   return null;
 }
 
@@ -367,7 +393,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
               wc.send('context-meter:brand-title-changed', cfg.modules.chinese.brandTitle);
             }
           }
-        } catch {}
+        } catch { }
       }
 
       const runtime = buildRuntimeModulesMeta(cfg, extraOpts?.asarPath);
@@ -427,7 +453,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
               wc.send('context-meter:brand-title-changed', cfg.modules.chinese.brandTitle);
             }
           }
-        } catch {}
+        } catch { }
       }
       return {
         ok: true,
@@ -481,7 +507,7 @@ async function handleRestartHost(event, options = {}) {
       setAppQuitting(true);
       targetApp.relaunch({ args });
       targetApp.quit();
-    } catch {}
+    } catch { }
   };
   if (delayMs <= 0) {
     triggerRestart();
@@ -514,6 +540,13 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try { return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true }) }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  });
+
+  ipcMain.handle('context-meter:turn-state', async (event, id) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try { return { ok: true, data: await collectTurnState(url.origin, id) }; }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -597,11 +630,13 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const collector = require('./meter-collector');
-      const opts = typeof options === 'boolean'
-        ? { force: options }
-        : (options && typeof options === 'object' ? { ...options } : {});
-      if (!opts.origin) opts.origin = url.origin;
-      opts.backendSource = 'electron-ipc';
+      const opts = {
+        force: options === true || options?.force === true,
+        currentModel: typeof options?.currentModel === 'string' ? options.currentModel : null,
+        browsePoolKey: typeof options?.browsePoolKey === 'string' ? options.browsePoolKey : null,
+        origin: url.origin,
+        backendSource: 'electron-ipc'
+      };
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       let accountSyncResult = null;
@@ -610,9 +645,9 @@ function registerMeterIpcHandlers(ipcMain) {
         const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
         const email = !switchInFlight
-          ? (res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+          ? (_raw?.planStatus?.email || res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
           : null;
-        if (!switchInFlight && email && res?.snapshot) {
+        if (!switchInFlight && res?.ok && email && res?.snapshot) {
           mgr.syncActiveHostQuotaSnapshot(res, email);
           const ov = mgr.getOverviewState();
           if (ov.autoSwitch?.enabled && !res.error) {
@@ -620,7 +655,7 @@ function registerMeterIpcHandlers(ipcMain) {
               activeEmail: email,
               activeSnapshot: res.snapshot,
               syncState: 'fresh',
-              isGenerating: Boolean(opts.isGenerating)
+              isGenerating: options?.isGenerating === true
             });
           }
         }
@@ -660,10 +695,10 @@ function registerMeterIpcHandlers(ipcMain) {
           } else if (buf && buf.length >= 4) {
             ownerHwndStr = buf.readInt32LE(0).toString();
           }
-        } catch {}
+        } catch { }
         try {
           hostBounds = targetWin.getBounds();
-        } catch {}
+        } catch { }
       }
       const res = await launchCliSession({
         ...options,
@@ -682,7 +717,7 @@ function registerMeterIpcHandlers(ipcMain) {
           runtimeInfo: res?.runtimeInfo,
           telemetry: res?.telemetry
         }));
-      } catch {}
+      } catch { }
 
       return res;
     }
@@ -700,15 +735,18 @@ function registerMeterIpcHandlers(ipcMain) {
         try {
           if (typeof targetWin.setMenuBarVisibility === 'function') targetWin.setMenuBarVisibility(false);
           targetWin.autoHideMenuBar = true;
-        } catch {}
+        } catch { }
       }
       if (typeof targetWin.setTitleBarOverlay !== 'function') return { ok: true };
       const patch = {};
       if (options && typeof options.color === 'string') patch.color = options.color;
       if (options && typeof options.symbolColor === 'string') patch.symbolColor = options.symbolColor;
       const rawHeight = options?.height ?? options?.heightCssPx;
-      if (options && Number.isFinite(Number(rawHeight)) && Number(rawHeight) >= 24 && Number(rawHeight) <= 64) {
-        patch.height = Math.round(Number(rawHeight));
+      if (options && Number.isFinite(Number(rawHeight)) && Number(rawHeight) >= 24) {
+        // 严格遵循宿主原生 30px 高度规范，防止 WCO 覆盖会话工具栏行
+        patch.height = Math.max(26, Math.min(32, Math.round(Number(rawHeight))));
+      } else {
+        patch.height = 30;
       }
       targetWin.setTitleBarOverlay(patch);
       return { ok: true, patch };
@@ -784,6 +822,61 @@ function registerMeterIpcHandlers(ipcMain) {
     }
   });
 
+  ipcMain.handle('context-meter:rehydrate-status', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getRehydrateStatusAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return { ok: true, data: await getRehydrateStatusAsync(sanitizeRehydrateRendererOptions(options, 'status')) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-apply', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { applyRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await applyRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'apply'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-disable', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { disableRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await disableRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'disable'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-restore', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { restoreRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await restoreRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'restore'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-install-python', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { installPythonRuntimeAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await installPythonRuntimeAsync(sanitizeRehydrateRendererOptions(options, 'install-python'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('context-meter:restart-host', handleRestartHost);
 
   if (typeof ipcMain.on === 'function') {
@@ -798,7 +891,7 @@ function registerMeterIpcHandlers(ipcMain) {
         const cfg = loadModulesConfig();
         const ch = cfg?.modules?.chinese;
         if (ch && typeof ch === 'object') {
-          const enabled = ch.enabled !== false && ch.language !== 'en';
+          const enabled = ch.enabled === true && ch.language !== 'en';
           const language = ch.language || (enabled ? 'zh-CN' : 'en');
           const brandTitle = ch.brandTitle || 'english';
           event.returnValue = { enabled, language, brandTitle, resolved: true };
@@ -894,21 +987,72 @@ function registerMeterIpcHandlers(ipcMain) {
       return { ok: false, error: e.message };
     }
   });
+
+  ipcMain.handle('context-meter:sync-pricing', async (event, opts) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      return await syncPricingCatalogAsync({ force: opts?.force !== false });
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:open-dashboard-browser', async (event, payload = {}) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { startCliUiServer } = require('./meter-cli-ui');
+      const rawSid = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : '';
+      const cleanSid = (rawSid && !/[/\\]|\.\./.test(rawSid)) ? rawSid : '';
+      const rawSrc = typeof payload?.source === 'string' ? payload.source.trim().toLowerCase() : 'desktop';
+      const cleanSrc = (rawSrc === 'cli' || rawSrc === 'desktop') ? rawSrc : 'desktop';
+      const shouldOpenExternal = payload?.openExternal === true;
+      const srv = await startCliUiServer({
+        open: false,
+        sessionId: cleanSid || undefined,
+        source: cleanSid ? cleanSrc : undefined
+      });
+      const baseUrl = srv.baseUrl || srv.url || `http://127.0.0.1:${srv.port || 56780}`;
+      const dashboardUrl = cleanSid
+        ? `${baseUrl}/?sessionId=${encodeURIComponent(cleanSid)}&source=${encodeURIComponent(cleanSrc)}`
+        : baseUrl;
+      if (shouldOpenExternal) {
+        const { shell } = require('electron');
+        if (shell && typeof shell.openExternal === 'function') {
+          await shell.openExternal(dashboardUrl);
+        }
+      }
+      return {
+        ok: true,
+        baseUrl,
+        url: dashboardUrl,
+        port: srv.port,
+        pid: srv.pid,
+        sessionId: cleanSid || null,
+        source: cleanSrc,
+        openedExternal: shouldOpenExternal
+      };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
 }
 
 function getWindowWebContents(win) {
   if (!win || win.isDestroyed?.()) return null;
-  // 1. 若为标准 BrowserWindow 或已定义 webContents getter
-  if (win.webContents && !win.webContents.isDestroyed?.()) return win.webContents;
 
-  // 2. 宿主官方 utils.getHubWebContents(win)（最权威主会话 WebContents 来源）
+  // 1. 优先使用宿主官方最权威的主会话 WebContents 来源 utils.getHubWebContents(win)
   try {
     const utils = require('./utils');
     if (typeof utils.getHubWebContents === 'function') {
       const wc = utils.getHubWebContents(win);
       if (wc && !wc.isDestroyed?.()) return wc;
     }
-  } catch {}
+  } catch { }
+
+  // 2. 若为标准 BrowserWindow 或已定义 webContents getter
+  if (win.webContents && !win.webContents.isDestroyed?.()) return win.webContents;
 
   // 3. 针对 Antigravity 2.x BaseWindow + contentView 架构遍历子 View
   // 严格安全限制：仅选择主会话界面，坚决排除 curtainView（data: 协议）及无关弹窗
@@ -930,7 +1074,7 @@ function getWindowWebContents(win) {
         }
       }
     }
-  } catch {}
+  } catch { }
   return null;
 }
 
@@ -957,9 +1101,15 @@ function getActiveHubWindowOrigins() {
     }
   } catch { }
   try {
-    const { BrowserWindow } = require('electron');
-    const allWins = typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : [];
+    const { BrowserWindow, BaseWindow } = require('electron');
+    const seenWins = new Set();
+    const allWins = [
+      ...(typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : []),
+      ...(typeof BaseWindow?.getAllWindows === 'function' ? BaseWindow.getAllWindows() : [])
+    ];
     for (const win of allWins) {
+      if (!win || seenWins.has(win)) continue;
+      seenWins.add(win);
       const wc = getWindowWebContents(win);
       if (wc && !wc.isDestroyed?.()) pushUrl(wc.getURL?.());
     }
@@ -973,9 +1123,11 @@ function syncWindowOverlayHeight(win) {
     if (!win || process.platform === 'darwin' || win.isDestroyed?.() || typeof win.setTitleBarOverlay !== 'function') return;
     const wc = getWindowWebContents(win);
     const zf = typeof wc?.getZoomFactor === 'function' ? wc.getZoomFactor() : 1;
-    const targetH = Math.max(28, Math.min(60, Math.round(40 * (Number.isFinite(zf) && zf > 0 ? zf : 1))));
+    // 严格遵循宿主原生 30px 默认高度（DEFAULT_TITLE_BAR_OVERLAY_HEIGHT），避免写死 40px 产生右上角大黑块色差
+    const baseH = 30;
+    const targetH = Math.max(26, Math.min(48, Math.round(baseH * (Number.isFinite(zf) && zf > 0 ? zf : 1))));
     win.setTitleBarOverlay({ height: targetH });
-  } catch {}
+  } catch { }
 }
 
 async function ensureMeterInjected(win, options = {}) {
@@ -1019,18 +1171,26 @@ async function ensureMeterInjected(win, options = {}) {
         const alive = await wc.executeJavaScript(
           'Boolean(window.__AGContextMeter && document.getElementById("ag-context-meter") && (window.__AGContextMeter.ensureAlive ? window.__AGContextMeter.ensureAlive() : true))'
         );
-        if (alive === true) return true;
-      } catch {}
+        if (alive === true) {
+          logDiagnostic('inject:alive_already', { wcId: wc.id, url: url.slice(0, 32) });
+          return true;
+        }
+      } catch { }
     }
 
     const runtimeSource = getMeterSource();
-    if (!runtimeSource) return false;
+    if (!runtimeSource) {
+      logDiagnostic('inject:empty_source', { wcId: wc.id });
+      return false;
+    }
 
-    await wc.executeJavaScript(runtimeSource);
-    return true;
+    const res = await wc.executeJavaScript(runtimeSource);
+    logDiagnostic('inject:executed', { wcId: wc.id, result: res, url: url.slice(0, 32) });
+    return res !== false;
   } catch (error) {
     const attempt = Number(options.attempt || 0);
     const delays = [350, 1000, 2500];
+    logDiagnostic('inject:catch_error', { attempt, error: error?.message || String(error) });
     if (attempt < delays.length && win && !win.isDestroyed?.()) {
       const prevTimer = injectionTimers.get(win);
       if (prevTimer) clearTimeout(prevTimer);
@@ -1052,20 +1212,22 @@ exports.installContextMeter = function (win) {
   registerIpcOnce();
   if (!win || win.isDestroyed?.()) return;
 
+  logDiagnostic('install:win_called', { winId: win.id, isDestroyed: win.isDestroyed?.() });
+
   if (!boundWindows.has(win)) {
     boundWindows.add(win);
     if (process.platform === 'win32') {
       try {
         if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
         win.autoHideMenuBar = true;
-      } catch {}
+      } catch { }
     }
     const onWinVisibleOrActive = () => {
       if (process.platform === 'win32') {
         try {
           if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
           win.autoHideMenuBar = true;
-        } catch {}
+        } catch { }
       }
       void ensureMeterInjected(win, { force: false });
     };
@@ -1083,25 +1245,36 @@ exports.installContextMeter = function (win) {
           }
         }
       });
-    } catch {}
+    } catch { }
   }
 
   const bindToWc = (wc) => {
     if (!wc || boundWebContents.has(wc)) return;
     boundWebContents.add(wc);
+    logDiagnostic('bind:wc_attached', { wcId: wc.id, url: wc.getURL?.()?.slice(0, 32) });
+
     wc.on('did-finish-load', () => {
+      logDiagnostic('event:did-finish-load', { wcId: wc.id });
       void ensureMeterInjected(win, { force: true });
     });
     wc.on('dom-ready', () => {
+      logDiagnostic('event:dom-ready', { wcId: wc.id });
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('did-navigate', () => {
+      logDiagnostic('event:did-navigate', { wcId: wc.id });
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('did-navigate-in-page', () => {
+      logDiagnostic('event:did-navigate-in-page', { wcId: wc.id });
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('zoom-changed', () => syncWindowOverlayHeight(win));
+    wc.on('console-message', (_event, level, message, line, _sourceId) => {
+      if (message.includes('Context Meter') || message.includes('ag-context-meter') || level >= 2) {
+        logDiagnostic('renderer:console', { level, line, message: message.slice(0, 200) });
+      }
+    });
   };
 
   const initialWc = getWindowWebContents(win);
@@ -1150,7 +1323,7 @@ try {
       try {
         exports.installContextMeter(win);
         void ensureMeterInjected(win, { force: false });
-      } catch {}
+      } catch { }
     };
     app.on('browser-window-created', handleCreated);
     app.on('base-window-created', handleCreated);
@@ -1162,7 +1335,7 @@ try {
           exports.installContextMeter(w);
           void ensureMeterInjected(w, { force: true });
         }
-      } catch {}
+      } catch { }
     });
     app.on('second-instance', () => {
       try {
@@ -1174,12 +1347,12 @@ try {
               exports.installContextMeter(w);
               void ensureMeterInjected(w, { force: true });
             }
-          } catch {}
+          } catch { }
         }, 120);
-      } catch {}
+      } catch { }
     });
   }
-} catch {}
+} catch { }
 
 function isHostRunInBackgroundEnabled() {
   try {
@@ -1188,7 +1361,7 @@ function isHostRunInBackgroundEnabled() {
     if (app && typeof app.getPath === 'function') {
       try {
         storagePath = path.join(app.getPath('userData'), 'app_storage.json');
-      } catch {}
+      } catch { }
     }
     if (!storagePath) {
       const home = typeof os.homedir === 'function' ? os.homedir() : '';
@@ -1224,7 +1397,7 @@ function shouldInterceptWindowClose(win, options = {}) {
       try {
         const utils = require('./utils');
         if (typeof utils.getHubWindows === 'function') wins = utils.getHubWindows();
-      } catch {}
+      } catch { }
     }
 
     // 获取窗口列表失败或当前窗口非已确认的主会话窗口（避免影响辅助/弹窗窗口），安全放行
@@ -1317,7 +1490,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     try {
       const utils = require('./utils');
       wins = typeof utils.getHubWindows === 'function' ? (utils.getHubWindows() || []) : [];
-    } catch {}
+    } catch { }
   }
   const activeTargets = [];
   for (const w of wins) {
@@ -1327,7 +1500,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(rawUrl)) continue;
     try {
       activeTargets.push({ win: w, wc, origin: new URL(rawUrl).origin });
-    } catch {}
+    } catch { }
   }
   if (!activeTargets.length) {
     return {
@@ -1346,7 +1519,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     if (fs.existsSync(liveSessionPath)) {
       previousLiveInfo = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
     }
-  } catch {}
+  } catch { }
 
   const probeFn = typeof options._probeLiveHost === 'function'
     ? options._probeLiveHost
@@ -1360,7 +1533,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
         await defaultPostLiveHttpJson(info.port, info.token, '/shutdown', o, {}, 1200);
       }
       if (info.pid) {
-        try { process.kill(info.pid); } catch {}
+        try { process.kill(info.pid); } catch { }
       }
     };
 
@@ -1417,14 +1590,14 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
             break;
           }
         }
-      } catch {}
+      } catch { }
     }
-    try { if (fs.existsSync(stagingStamp)) fs.unlinkSync(stagingStamp); } catch {}
+    try { if (fs.existsSync(stagingStamp)) fs.unlinkSync(stagingStamp); } catch { }
   }
 
   if (!newLiveInfo || !newLiveInfo.port || !newLiveInfo.token) {
     if (spawnedChild?.pid) {
-      try { process.kill(spawnedChild.pid); } catch {}
+      try { process.kill(spawnedChild.pid); } catch { }
     }
     return {
       ...updateRes,
@@ -1441,7 +1614,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     fs.writeFileSync(tmpMain, JSON.stringify(newLiveInfo, null, 2));
     fs.renameSync(tmpMain, liveSessionPath);
   } catch {
-    try { fs.writeFileSync(liveSessionPath, JSON.stringify(newLiveInfo, null, 2)); } catch {}
+    try { fs.writeFileSync(liveSessionPath, JSON.stringify(newLiveInfo, null, 2)); } catch { }
   }
 
   let injectedCount = 0;
@@ -1455,7 +1628,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
       if (settingsSnap && settingsSnap.ok) {
         settingsBootstrap = `window.__AGContextMeterSettings = ${JSON.stringify(settingsSnap)};\n`;
       }
-    } catch {}
+    } catch { }
     let chineseBootstrap = '';
     try {
       const { loadModulesConfig } = require('./modules-config');
@@ -1463,7 +1636,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
       if (mCfg?.modules?.chinese) {
         chineseBootstrap = `window.__AGY_CHINESE_CONFIG__ = ${JSON.stringify(mCfg.modules.chinese)};\n`;
       }
-    } catch {}
+    } catch { }
 
     for (const target of activeTargets) {
       const liveBridgeObj = {
@@ -1504,14 +1677,14 @@ true;`;
           if (verify && (!targetVer || verify.backendVersion === targetVer)) {
             backendVerified = true;
           }
-        } catch {}
+        } catch { }
       }
     }
   } catch (injectErr) {
     if (injectedCount === 0) {
-      await shutdownFn(newLiveInfo).catch(() => {});
+      await shutdownFn(newLiveInfo).catch(() => { });
       if (previousLiveInfo) {
-        try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch {}
+        try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch { }
       }
       return {
         ...updateRes,
@@ -1524,9 +1697,9 @@ true;`;
   }
 
   if (injectedCount === 0) {
-    await shutdownFn(newLiveInfo).catch(() => {});
+    await shutdownFn(newLiveInfo).catch(() => { });
     if (previousLiveInfo) {
-      try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch {}
+      try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch { }
     }
     return {
       ...updateRes,
@@ -1538,7 +1711,7 @@ true;`;
   }
 
   if (previousLiveInfo && (!previousLiveInfo.pid || previousLiveInfo.pid !== newLiveInfo.pid)) {
-    await shutdownFn(previousLiveInfo).catch(() => {});
+    await shutdownFn(previousLiveInfo).catch(() => { });
   }
 
   return {

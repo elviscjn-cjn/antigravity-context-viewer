@@ -4945,3 +4945,784 @@ test('Issue #49: parseUserPlanStatus 自动提取 5x/20x 倍率子档与 resolve
   assert.equal(effAuto.multiplier, 20);
   assert.equal(effAuto.sources.tier, 'live');
 });
+
+test('PR #37 核心遥测回归：cacheCreationInputTokens 归口、流式 warming 防抖与 summarizeTurnTiming 轮次墙钟拆解', () => {
+  const core = require('./meter-core');
+  // 1. summarize 正确纳 cacheCreationInputTokens 入 uncachedInput 与 totalInput，且输出不入缓存分母
+  const sumCache = core.summarize({
+    chatModel: {
+      model: 'claude-sonnet-5-5',
+      timeToFirstToken: '0.8s',
+      streamingDuration: '1.2s',
+      usage: {
+        inputTokens: 1000,
+        cacheCreationInputTokens: 3000,
+        cacheReadTokens: 6000,
+        outputTokens: 500
+      }
+    }
+  });
+  assert.equal(sumCache.input, 10000);
+  assert.equal(sumCache.uncachedInput, 4000);
+  assert.equal(sumCache.cacheWrite, 3000);
+  assert.equal(sumCache.cached, 6000);
+  assert.equal(sumCache.cacheHitRate, 60);
+  assert.equal(sumCache.actual, 10500);
+  assert.equal(sumCache.speed.phase, 'settled');
+  assert.equal(sumCache.speed.isWarmingStream, false);
+
+  // 2. 早期起流 (<0.45s 且 <12 tokens) 标记 warming 防抖
+  const sumWarm = core.summarize({
+    chatModel: {
+      model: 'gemini-4-hydrogen',
+      timeToFirstToken: '0.6s',
+      streamingDuration: '0.1s',
+      usage: { inputTokens: 200, outputTokens: 3 }
+    }
+  });
+  assert.equal(sumWarm.speed.phase, 'warming');
+  assert.equal(sumWarm.speed.isWarmingStream, true);
+  assert.equal(sumWarm.speed.displayTps, null);
+
+  // 3. summarizeTurnTiming 并发工具时间段合并去重与端到端墙钟拆解
+  const t0 = 1700000000000;
+  const timing = core.summarizeTurnTiming({
+    steps: [
+      { userInput: { text: 'run checks' }, metadata: { createdAt: new Date(t0).toISOString(), executionId: 'ex-1' } },
+      { metadata: { toolCall: { name: 'run1' }, startedAt: new Date(t0 + 2000).toISOString(), completedAt: new Date(t0 + 6000).toISOString(), executionId: 'ex-1' }, status: 'DONE' },
+      { metadata: { toolCall: { name: 'run2' }, startedAt: new Date(t0 + 3000).toISOString(), completedAt: new Date(t0 + 7000).toISOString(), executionId: 'ex-1' }, status: 'DONE' },
+      { plannerResponse: { text: 'done' }, metadata: { createdAt: new Date(t0 + 7500).toISOString(), completedAt: new Date(t0 + 10000).toISOString(), executionId: 'ex-1' }, status: 'DONE' }
+    ],
+    generatorMetadata: [
+      { executionId: 'ex-1', stepIndices: [3], chatModel: { timeToFirstToken: '1.0s', streamingDuration: '1.5s', usage: { outputTokens: 250 } } }
+    ],
+    cascadeStatus: 'CASCADE_RUN_STATUS_IDLE',
+    nowMs: t0 + 10000
+  });
+  assert.equal(timing.isRunning, false);
+  assert.equal(timing.toolWallSec, 5); // [2000,6000] U [3000,7000] = 5s
+  assert.equal(timing.llmDurationSec, 2.5);
+  assert.equal(timing.wallDurationSec, 10);
+  assert.equal(timing.scheduleGapSec, 2.5); // 10 - 2.5 - 5 = 2.5
+  assert.equal(timing.endToEndTps, 25);
+
+  const collectorMod = require('./meter-collector');
+  assert.equal(typeof collectorMod.collectTurnState, 'function');
+});
+
+test('/compact & checkpoint 核心因果判定：检查点切片、摘要调用隔离、宿主 ContextWindowUsage 优先级与超限报错自救恢复', () => {
+  const {
+    analyzeSteps,
+    measure,
+    isCheckpointNewerThanGenerator,
+    buildPostCompactSummary,
+    summarize
+  } = require('./meter-core');
+
+  const overflowErr = {
+    errorMessage: {
+      error: { shortError: 'The input token count exceeds the maximum number of tokens allowed 256000.' }
+    }
+  };
+
+  // 1. 超限报错后紧跟成功的 checkpoint -> 自动清除旧超限报错，并准确切片检查点及后续内容
+  const stepsAfterCompact = [
+    { userInput: { userResponse: 'x'.repeat(40000), media: [{ uri: 'file:///old.txt', mimeType: 'text/plain' }] } },
+    { plannerResponse: { response: 'y'.repeat(40000), thinking: 't'.repeat(10000) } },
+    overflowErr,
+    {
+      checkpoint: {
+        sessionSummary: 'Summary of prior 80K chars',
+        codeChangeSummary: 'Edited foo.js',
+        userIntent: 'Fix ring sync after compact'
+      }
+    }
+  ];
+  const s1 = analyzeSteps(stepsAfterCompact);
+  assert.equal(s1.checkpointCount, 1);
+  assert.equal(s1.lastCheckpointIndex, 3);
+  assert.equal(s1.lastCheckpointFailed, false);
+  assert.equal(s1.currentError, null, '成功的检查点应清除此前的超限错误');
+  assert.ok(s1.postCheckpoint, '应生成压缩后活跃切片');
+  assert.deepEqual(s1.postCheckpoint.mediaRefs, {}, '检查点之前的旧附件引用不应计入压缩后窗口');
+  assert.ok(s1.postCheckpoint.textTotal.chars < 200, '压缩后切片仅包含检查点摘要文本，不包含前序 80K 历史');
+  assert.ok(s1.total.chars > 80000, '全量累计统计仍完整保留整场历史');
+
+  // 2. 失败的 checkpoint (modelSummarizationFailed: true) 不清除前序超限报错
+  const stepsFailedCompact = [
+    { userInput: { userResponse: 'hello' } },
+    overflowErr,
+    { checkpoint: { sessionSummary: '', modelSummarizationFailed: true } }
+  ];
+  const sFail = analyzeSteps(stepsFailedCompact);
+  assert.equal(sFail.checkpointCount, 0);
+  assert.equal(sFail.lastCheckpointIndex, -1);
+  assert.equal(sFail.lastCheckpointFailed, true);
+  assert.ok(sFail.currentError, '摘要生成失败时必须保留前序超限错误');
+
+  // 3. 检查点之后再次发生的新错误仍正常保留
+  const sPostErr = analyzeSteps([...stepsAfterCompact, overflowErr]);
+  assert.ok(sPostErr.currentError, '检查点之后新发生的错误必须正常告警');
+
+  // 4. 因果时序判定：压缩前旧调用 (step 1) 与摘要生成调用本身 (step 3 === checkpointIndex) 均判定为压缩态
+  const preMeta = {
+    stepIndices: [1],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      usage: { inputTokens: 195000, outputTokens: 2000 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }
+  };
+  const summarizerMeta = {
+    stepIndices: [3],
+    chatModel: {
+      modelDisplayName: 'Gemini 3.8 Flash',
+      usage: { inputTokens: 197000, outputTokens: 1200 }
+    }
+  };
+  assert.equal(isCheckpointNewerThanGenerator(s1, preMeta, summarize(preMeta)), true);
+  assert.equal(isCheckpointNewerThanGenerator(s1, summarizerMeta, summarize(summarizerMeta)), true);
+
+  // 5. 本地兜底中位值 vs 宿主 ContextWindowUsage 优先级
+  const sysM = measure('System instructions '.repeat(200));
+  const defM = measure('Tool definitions '.repeat(200));
+  const localPost = buildPostCompactSummary({
+    session: s1,
+    system: sysM,
+    definitions: defM,
+    previousLatest: summarize(preMeta)
+  });
+  assert.equal(localPost.compacted, true);
+  assert.equal(localPost.status, 'compacted');
+  assert.equal(localPost.actual, null, '压缩后待校准态严禁伪造服务端实测 actual');
+  assert.equal(localPost.postCompactSource, 'local_post_checkpoint_midpoint');
+  assert.equal(localPost.budget, 256000);
+  assert.ok(localPost.postCompactEstimate > 0 && localPost.postCompactEstimate < 10000);
+  assert.equal(localPost.percent, (localPost.postCompactEstimate / 256000) * 100);
+
+  const hostPost = buildPostCompactSummary({
+    session: s1,
+    system: sysM,
+    definitions: defM,
+    previousLatest: summarize(preMeta),
+    hostContextWindowUsage: {
+      estimatedTokensUsed: 18432,
+      maxContextTokens: 256000,
+      lastStepIndex: 3,
+      estimatedAfterCompaction: true
+    }
+  });
+  assert.equal(hostPost.postCompactSource, 'host_context_window_usage');
+  assert.equal(hostPost.postCompactEstimate, 18432);
+  assert.equal(hostPost.percent, (18432 / 256000) * 100);
+
+  // 6. 检查点之后产生新对话实测 (step 5 > 3) -> 自动退出压缩态
+  const nextTurnMeta = {
+    stepIndices: [5],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      usage: { inputTokens: 19200, outputTokens: 600 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }
+  };
+  assert.equal(isCheckpointNewerThanGenerator(s1, nextTurnMeta, summarize(nextTurnMeta)), false);
+
+  // 7. 进行中 (RUNNING) 与已取消 (CANCELED) 的 checkpoint 步骤状态隔离：不提前覆盖旧检查点基线
+  const runningSteps = [
+    ...stepsAfterCompact,
+    { userInput: { userResponse: '二次对话输入' } },
+    { plannerResponse: { modifiedResponse: '二次对话回复' } },
+    { userInput: { userResponse: '/compact' } },
+    { status: 'CORTEX_STEP_STATUS_RUNNING', checkpoint: { sessionSummary: '' } }
+  ];
+  const sRunning = analyzeSteps(runningSteps);
+  assert.equal(sRunning.lastCheckpointIndex, 3, 'RUNNING 状态的摘要检查点未落盘前不得提前推进 lastCheckpointIndex');
+  assert.equal(sRunning.inProgressCheckpointIndex, 7, '应准确暴露进行中的 checkpoint 步序');
+  assert.equal(sRunning.checkpointCount, 1);
+
+  const canceledSteps = [
+    ...stepsAfterCompact,
+    { status: 'CORTEX_STEP_STATUS_CANCELED', checkpoint: { sessionSummary: '' } }
+  ];
+  const sCanceled = analyzeSteps(canceledSteps);
+  assert.equal(sCanceled.lastCheckpointIndex, 3);
+  assert.equal(sCanceled.lastCheckpointFailed, true);
+  assert.equal(sCanceled.inProgressCheckpointIndex, -1);
+});
+
+test('ELV-95: detectContextChangeEvents 准确识别五类上下文变化事件及前后 Token', () => {
+  const { detectContextChangeEvents } = require('./meter-core');
+  const steps = [
+    { userInput: { userResponse: 'initial prompt', media: [{ uri: 'file:///a.md', bytes: 4000 }] }, createdAt: '2026-11-22T01:00:00Z' },
+    { plannerResponse: { response: 'ok' }, createdAt: '2026-11-22T01:00:05Z' },
+    { checkpoint: { sessionSummary: 'compact summary' }, createdAt: '2026-11-22T01:01:00Z' },
+    { systemMessage: { systemMessage: '[POST-COMPACT REHYDRATION v1] ' + 'x'.repeat(1600) }, createdAt: '2026-11-22T01:01:10Z' },
+    { prune: { beforeTokens: 48000, afterTokens: 22000, reason: 'tool_trim' }, createdAt: '2026-11-22T01:02:00Z' },
+    { modeChange: { from: 'planning', to: 'execution' }, createdAt: '2026-11-22T01:03:00Z' },
+    { modelChange: { from: 'Gemini 4 Carbon', to: 'Gemini 4 Hydrogen' }, createdAt: '2026-11-22T01:04:00Z' }
+  ];
+  const calls = [
+    { callId: 'c1', stepIndex: 1, timestamp: Date.parse('2026-11-22T01:00:05Z'), modelExactId: 'gemini-4-carbon-high', modelLabel: 'Gemini 4 Carbon (High)', effort: 'High', inputTokens: 120000, totalInputTokens: 120000 },
+    { callId: 'c2', stepIndex: 3, timestamp: Date.parse('2026-11-22T01:01:12Z'), modelExactId: 'gemini-4-carbon-high', modelLabel: 'Gemini 4 Carbon (High)', effort: 'High', inputTokens: 14500, totalInputTokens: 14500 },
+    { callId: 'c3', stepIndex: 7, timestamp: Date.parse('2026-11-22T01:04:10Z'), modelExactId: 'gemini-4-hydrogen-low', modelLabel: 'Gemini 4 Hydrogen (Low)', effort: 'Low', inputTokens: 16200, totalInputTokens: 16200 }
+  ];
+  const events = detectContextChangeEvents(steps, calls);
+  const types = new Set(events.map(e => e.type));
+  assert.equal(types.has('compaction'), true, '应识别 compaction');
+  assert.equal(types.has('inject'), true, '应识别 inject');
+  assert.equal(types.has('prune'), true, '应识别 prune');
+  assert.equal(types.has('mode'), true, '应识别 mode');
+  assert.equal(types.has('model'), true, '应识别 model');
+  const cpEv = events.find(e => e.type === 'compaction');
+  assert.equal(cpEv.beforeTokens, 120000);
+  assert.equal(cpEv.afterTokens, 14500);
+  assert.equal(cpEv.deltaTokens, 14500 - 120000);
+  const injEv = events.find(e => e.type === 'inject' && e.stepIndex === 3);
+  assert.ok(injEv && injEv.deltaTokens > 100);
+  const prEv = events.find(e => e.type === 'prune');
+  assert.equal(prEv.beforeTokens, 48000);
+  assert.equal(prEv.afterTokens, 22000);
+});
+
+test('会话深度剖析: analyzeSteps 细分注入/技能, 命令行脱敏与逐轮/耗时/主子防重汇总', () => {
+  const {
+    analyzeSteps,
+    buildSessionCompositionBreakdown,
+    sanitizeCommandPreview,
+    extractCommandProgram,
+    groupSessionCallsByTurns
+  } = require('./meter-core');
+
+  const steps = [
+    { type: 'SYSTEM_MESSAGE', systemMessage: { content: '<RULE[AGENTS.md]> keep clean ' + 'x'.repeat(200) } },
+    { userInput: { userResponse: '请检查 <skills>gdrive</skills> 并执行修复' } },
+    { tool_calls: [{ name: 'read_file', args: { Path: '"C:/Users/demo/.gemini/skills/gdrive/SKILL.md"' } }], generic: { ok: true, content: 'skill body '.repeat(30) } },
+    { plannerResponse: { response: '完成', thinking: '分析完成' } }
+  ];
+  const analyzed = analyzeSteps(steps);
+  assert.ok(analyzed.compositionSubgroups);
+  assert.ok(analyzed.compositionSubgroups.injectionCount >= 1, '应识别系统/规则注入');
+  assert.ok(analyzed.compositionSubgroups.injections.chars > 100);
+  assert.ok(analyzed.compositionSubgroups.skillCount >= 1, '应识别 SKILL 加载');
+  assert.ok(analyzed.compositionSubgroups.skills.chars > 10);
+
+  const comp = buildSessionCompositionBreakdown(analyzed, { actual: 1850 });
+  assert.ok(Array.isArray(comp.items));
+  assert.equal(comp.items.find(x => x.key === 'injections').count, analyzed.compositionSubgroups.injectionCount);
+  assert.equal(comp.actualTokens, 1850);
+  assert.equal(comp.diffTokens, 1850 - comp.estimatedTotalMedian);
+
+  const rawCmd = 'cd "D:/proj" && GCLI_ACCESS_TOKEN=ya29.secret_abc123456 node cli.js --token sk-test999999999 --api-key=secretXYZ https://x.dev?access_token=abc123';
+  const safeCmd = sanitizeCommandPreview(rawCmd);
+  assert.equal(safeCmd.includes('ya29.secret_abc123456'), false);
+  assert.equal(safeCmd.includes('sk-test999999999'), false);
+  assert.equal(safeCmd.includes('secretXYZ'), false);
+  assert.equal(safeCmd.includes('abc123'), false);
+  assert.equal(extractCommandProgram('cd /app && AGY_ACCOUNT=work pwsh -NoProfile -File run.ps1'), 'pwsh');
+
+  const t1Calls = [
+    {
+      callId: 'c1', stepIndex: 1, timestamp: 1000000, model: 'gemini-4',
+      inputTokens: 10000, cacheReadTokens: 0, outputTokens: 200,
+      ttftSec: 1.2, streamingSec: 4.0, durationSec: 5.2
+    },
+    {
+      callId: 'c2', stepIndex: 3, timestamp: 1012000, model: 'gemini-4',
+      inputTokens: 2000, cacheReadTokens: 16000, outputTokens: 300,
+      ttftSec: 0.8, streamingSec: 6.0, durationSec: 6.8
+    },
+    {
+      callId: 'sub1', cascadeId: 'child-1', agentRole: 'subagent', parentStepIndex: 2,
+      subagentType: 'research', attributionConfidence: 'verified_tool_output',
+      stepIndex: 0, timestamp: 1005000, model: 'gemini-4-flash',
+      inputTokens: 1500, cacheReadTokens: 500, outputTokens: 100,
+      ttftSec: 0.5, streamingSec: 1.5, durationSec: 2.0
+    }
+  ];
+  const grouped = groupSessionCallsByTurns(
+    [{ stepIndex: 0, timestamp: 999000, preview: 'turn 1' }, { stepIndex: 3, timestamp: 1011000, preview: 'turn 2' }],
+    t1Calls,
+    { cascadeId: 'main-1', toolExecEvents: [{ stepIndex: 2, durationSec: 3.5 }] }
+  );
+  assert.equal(grouped.contextDeltaSummary.initialContextTokens, 10000);
+  assert.equal(grouped.contextDeltaSummary.latestContextTokens, 18000);
+  assert.equal(grouped.contextDeltaSummary.netDeltaTokens, 8000);
+  assert.equal(grouped.contextDeltaSummary.maxJumpCallId, 'c2');
+  assert.equal(grouped.contextDeltaSummary.maxJumpDeltaTokens, 8000);
+  assert.equal(grouped.turns[1].deltaFromPrevTurn, 8000);
+  assert.equal(grouped.timingSummary.totalTtftSec, 2.5);
+  assert.equal(grouped.timingSummary.totalStreamingSec, 11.5);
+  assert.equal(grouped.timingSummary.totalToolExecSec, 3.5);
+  assert.equal(grouped.agentFleetSummary.dedupVerified, true);
+  assert.equal(grouped.agentFleetSummary.mainAgent.callCount, 2);
+  assert.equal(grouped.agentFleetSummary.subagents.length, 1);
+  assert.equal(grouped.agentFleetSummary.mainOnlyTotalTokens, 28500);
+  assert.equal(grouped.agentFleetSummary.fleetCombinedTotalTokens, 30600);
+});
+
+test('evaluateSessionRuntimeStatus: 4 态转换与跨模型压缩 / 重试 / 断连 / 用户取消判定', () => {
+  const { evaluateSessionRuntimeStatus, computeContextSegments, groupSessionCallsByTurns } = require('./meter-core');
+
+  assert.equal(evaluateSessionRuntimeStatus({}).state, 'idle');
+  assert.equal(evaluateSessionRuntimeStatus({ isGenerating: true, waitSec: 12 }).state, 'running');
+  assert.equal(evaluateSessionRuntimeStatus({ isGenerating: true, waitSec: 65 }).state, 'slow');
+
+  const crossCompact = evaluateSessionRuntimeStatus({ isCompacting: true, compactCrossModel: true });
+  assert.equal(crossCompact.state, 'slow');
+  assert.equal(crossCompact.reasonCode, 'compact_kv_recompute');
+  assert.match(crossCompact.detail, /KV 缓存重算/);
+
+  const retrySt = evaluateSessionRuntimeStatus({ retryAttempt: 2, retryCountdownSec: 8 });
+  assert.equal(retrySt.state, 'slow');
+  assert.equal(retrySt.reasonCode, 'retrying');
+
+  assert.equal(evaluateSessionRuntimeStatus({ disconnectedSec: 5 }).state, 'slow');
+  assert.equal(evaluateSessionRuntimeStatus({ disconnectedSec: 15 }).state, 'error');
+  assert.equal(evaluateSessionRuntimeStatus({ isOffline: true }).state, 'error');
+  assert.equal(evaluateSessionRuntimeStatus({ lastError: '502 Bad Gateway' }).state, 'error');
+  assert.equal(evaluateSessionRuntimeStatus({ lastError: 'User canceled', isUserCanceled: true }).state, 'idle');
+
+  const segWarn = computeContextSegments({ inputTokens: 20000, cacheCreationInputTokens: 5000, cacheReadTokens: 135000, outputTokens: 2000 }, 200000);
+  assert.equal(segWarn.hasCacheWrite, true);
+  assert.equal(segWarn.usedPct, 81);
+  assert.equal(segWarn.thresholdLevel, 'warning');
+  assert.equal(segWarn.remainingTokens, 38000);
+
+  const segCrit = computeContextSegments({ actual: 185000 }, 200000);
+  assert.equal(segCrit.hasSplit, false);
+  assert.equal(segCrit.thresholdLevel, 'critical');
+
+  const groupedCollab = groupSessionCallsByTurns(
+    [{ stepIndex: 0, timestamp: 1000, preview: 'run' }],
+    [{ callId: 'c-main', stepIndex: 1, inputTokens: 100, cacheReadTokens: 50, outputTokens: 20, timestamp: 2000 }],
+    {
+      cascadeId: 'sess-x',
+      taskEvents: [{ stepIndex: 2, toolName: 'manage_task', role: 'planner', summary: 'update task', status: 'completed', timestamp: 3000 }]
+    }
+  );
+  assert.equal(groupedCollab.agentFleetSummary.hasTaskDependencyDag, false);
+  assert.equal(groupedCollab.agentFleetSummary.taskEvents.length, 1);
+  assert.equal(groupedCollab.agentFleetSummary.collaborationTimeline.length, 2);
+  assert.equal(groupedCollab.agentFleetSummary.collaborationTimeline[0].kind, 'main_call');
+  assert.equal(groupedCollab.agentFleetSummary.collaborationTimeline[1].kind, 'task_event');
+});
+
+test('PR #36 图像解析性能：WebP (VP8 / VP8L / VP8X) 尺寸识别与内联图片元信息缓存命中', async () => {
+  const { scanFiles, getImageDimensions, inspectInlineImageMeta, INLINE_IMAGE_DIMS_CACHE } = require('./meter-collector');
+
+  const makeWebpVp8 = (width, height) => {
+    const buf = Buffer.alloc(30, 0);
+    buf.write('RIFF', 0, 'ascii');
+    buf.writeUInt32LE(22, 4);
+    buf.write('WEBP', 8, 'ascii');
+    buf.write('VP8 ', 12, 'ascii');
+    buf.writeUInt32LE(10, 16);
+    buf[20] = 0x10;
+    buf[23] = 0x9D;
+    buf[24] = 0x01;
+    buf[25] = 0x2A;
+    buf.writeUInt16LE(width & 0x3FFF, 26);
+    buf.writeUInt16LE(height & 0x3FFF, 28);
+    return buf;
+  };
+
+  const makeWebpVp8L = (width, height) => {
+    const buf = Buffer.alloc(25, 0);
+    buf.write('RIFF', 0, 'ascii');
+    buf.writeUInt32LE(17, 4);
+    buf.write('WEBP', 8, 'ascii');
+    buf.write('VP8L', 12, 'ascii');
+    buf.writeUInt32LE(5, 16);
+    buf[20] = 0x2F;
+    const packed = (((height - 1) & 0x3FFF) << 14) | ((width - 1) & 0x3FFF);
+    buf.writeUInt32LE(packed >>> 0, 21);
+    return buf;
+  };
+
+  const makeWebpVp8X = (width, height) => {
+    const buf = Buffer.alloc(30, 0);
+    buf.write('RIFF', 0, 'ascii');
+    buf.writeUInt32LE(22, 4);
+    buf.write('WEBP', 8, 'ascii');
+    buf.write('VP8X', 12, 'ascii');
+    buf.writeUInt32LE(10, 16);
+    buf.writeUIntLE(width - 1, 24, 3);
+    buf.writeUIntLE(height - 1, 27, 3);
+    return buf;
+  };
+
+  assert.deepEqual(getImageDimensions(makeWebpVp8(1280, 720)), { width: 1280, height: 720 });
+  assert.deepEqual(getImageDimensions(makeWebpVp8L(800, 600)), { width: 800, height: 600 });
+  assert.deepEqual(getImageDimensions(makeWebpVp8X(1920, 1080)), { width: 1920, height: 1080 });
+  assert.deepEqual(getImageDimensions(Buffer.from('RIFF\x00\x00\x00\x00WEBP', 'ascii')), { width: null, height: null });
+
+  INLINE_IMAGE_DIMS_CACHE.clear();
+  const bigPng = Buffer.alloc(2048, 0);
+  bigPng[0] = 0x89; bigPng[1] = 0x50; bigPng[2] = 0x4E; bigPng[3] = 0x47;
+  bigPng.writeUInt32BE(1536, 16);
+  bigPng.writeUInt32BE(768, 20);
+  const b64Png = bigPng.toString('base64');
+
+  const first = inspectInlineImageMeta('inline:webp-test-1', 'image/png', b64Png);
+  assert.equal(first.cacheHit, false);
+  assert.equal(first.width, 1536);
+  assert.equal(first.height, 768);
+  assert.equal(first.bytes, 2048);
+
+  const second = inspectInlineImageMeta('inline:webp-test-1', 'image/png', b64Png);
+  assert.equal(second.cacheHit, true);
+  assert.equal(second.width, 1536);
+
+  const webpB64 = makeWebpVp8L(1024, 768).toString('base64');
+  const [info] = await scanFiles([{ uri: 'inline:webp-1', mime: 'image/webp', inlineData: webpB64 }]);
+  assert.equal(info.status, 'parsed');
+  assert.equal(info.dimensions, '1024×768');
+  assert.ok(info.low >= 258 * 2);
+});
+
+test('PR #36 JSONL 增量扫描边界：UTF-8 跨字节截断、无换行尾行、追加、截断、同大小覆写、轮换、只读与账号隔离', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { loadIncrementalTranscriptRecords, collectTokenHistoryAsync } = require('./meter-collector');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pr36-incr-full-'));
+  const cacheMap = new Map();
+  try {
+    const cid = '55555555-6666-4777-8888-999999999999';
+    const convDir = path.join(tmpDir, 'acctA', 'brain', cid, '.system_generated', 'logs');
+    fs.mkdirSync(convDir, { recursive: true });
+    const filePath = path.join(convDir, 'transcript.jsonl');
+
+    const prefixLines = [];
+    for (let p = 0; p < 6; p++) {
+      prefixLines.push(JSON.stringify({
+        type: 'PLANNER_RESPONSE',
+        created_at: `2026-11-20T07:5${p}:00Z`,
+        step_index: p,
+        model: 'gemini-3.8-flash',
+        input_tokens: 100 + p,
+        output_tokens: 10,
+        cache_read_tokens: 0
+      }));
+    }
+    const line0 = JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-20T08:00:00Z',
+      step_index: 10,
+      model: 'gemini-3.8-flash',
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_read_tokens: 4000
+    });
+    const line1Complete = JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-20T08:01:00Z',
+      step_index: 11,
+      model: 'gemini-3.8-flash',
+      input_tokens: 1200,
+      output_tokens: 150,
+      cache_read_tokens: 4800,
+      note: '跨字节UTF8汉字测试🔥'
+    });
+
+    // 1) UTF-8 多字节字符被劈在文件末尾（“汉”的前 2 个字节）且无结束换行：不得推进 parsedOffset，也不得破坏后续续读
+    const splitTargetBuf = Buffer.from(line1Complete, 'utf8');
+    const hanPos = splitTargetBuf.indexOf(Buffer.from('汉', 'utf8'));
+    assert.ok(hanPos > 0);
+    const committedPrefix = `${line0}\n${prefixLines.join('\n')}\n`;
+    const prefixAndHalfUtf8 = Buffer.concat([Buffer.from(committedPrefix, 'utf8'), splitTargetBuf.subarray(0, hanPos + 2)]);
+    fs.writeFileSync(filePath, prefixAndHalfUtf8);
+
+    const r1 = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(r1.mode, 'full');
+    assert.equal(r1.records.length, 7);
+    assert.equal(r1.records[0].stepIndex, 10);
+
+    // mtime/size 未变 -> cache-hit 且 bytesRead === 0
+    const rHit = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(rHit.mode, 'cache-hit');
+    assert.equal(rHit.bytesRead, 0);
+
+    // 2) 补全后半个 UTF-8 字符及尾行（故意不带结尾 \n）-> 增量解析恢复完整汉字，但 tail 不提前提交 parsedOffset
+    fs.writeFileSync(filePath, Buffer.concat([Buffer.from(committedPrefix, 'utf8'), splitTargetBuf]));
+    const r2 = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(r2.mode, 'incremental');
+    assert.equal(r2.records.length, 8);
+    assert.equal(r2.records[7].stepIndex, 11);
+    assert.equal(r2.records[7].tot, 6150);
+
+    // 3) 追加第三行含 \n，并对比全新全量读取
+    const line2 = JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-20T08:02:00Z',
+      step_index: 12,
+      model: 'gemini-3.8-flash',
+      input_tokens: 300,
+      output_tokens: 50,
+      cache_read_tokens: 0
+    });
+    fs.writeFileSync(filePath, Buffer.from(`${committedPrefix}${line1Complete}\n${line2}\n`, 'utf8'));
+    const r3 = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(r3.mode, 'incremental');
+    assert.equal(r3.records.length, 9);
+    assert.ok(r3.bytesRead < fs.statSync(filePath).size, '增量读取字节数应显著小于全文件大小');
+
+    const freshMap = new Map();
+    const rFullRef = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), freshMap);
+    assert.deepEqual(
+      r3.records.map(x => ({ eventId: x.eventId, tot: x.tot, inp: x.inp, outp: x.outp, cap: x.cap })),
+      rFullRef.records.map(x => ({ eventId: x.eventId, tot: x.tot, inp: x.inp, outp: x.outp, cap: x.cap }))
+    );
+
+    // 4) 同大小覆写（文件字节长度完全一致，mtimeMs +1s 更新且首行头部发生变更）-> headBuf 失配，必须触发 full 全量重读！
+    const prevSt = fs.statSync(filePath);
+    const sameSizeLine0 = line0.replace('"input_tokens":1000', '"input_tokens":7777');
+    const sameSizeBuf = Buffer.from(`${sameSizeLine0}\n${prefixLines.join('\n')}\n${line1Complete}\n${line2}\n`, 'utf8');
+    assert.equal(sameSizeBuf.length, prevSt.size);
+    fs.writeFileSync(filePath, sameSizeBuf);
+    const futureSec = (prevSt.mtimeMs + 2000) / 1000;
+    fs.utimesSync(filePath, futureSec, futureSec);
+    const rSameSize = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(rSameSize.mode, 'full');
+    assert.equal(rSameSize.records[0].inp, 7777);
+
+    // 5) 截断回退（体积变小）-> 自动 full 重读
+    fs.writeFileSync(filePath, Buffer.from(`${line0}\n`, 'utf8'));
+    const rTrunc = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(rTrunc.mode, 'full');
+    assert.equal(rTrunc.records.length, 1);
+
+    // 6) 日志轮换（删除后重建新 inode）-> 自动识别轮换并全量读取
+    const rotLine = JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-20T09:00:00Z',
+      step_index: 5,
+      model: 'gemini-4-neon',
+      input_tokens: 900,
+      output_tokens: 100,
+      cache_read_tokens: 0
+    });
+    fs.unlinkSync(filePath);
+    fs.writeFileSync(filePath, Buffer.from(`${rotLine}\n`, 'utf8'));
+    const rRot = loadIncrementalTranscriptRecords(filePath, fs.statSync(filePath), cacheMap);
+    assert.equal(rRot.mode, 'full');
+    assert.equal(rRot.records[0].stepIndex, 5);
+    assert.equal(rRot.records[0].tot, 1000);
+
+    // 7) 只读模式 + 多账号根目录隔离：不创建账本/归档/备份文件，且 acctA 与 acctB 互不串读
+    const agA = path.join(tmpDir, 'acctA');
+    const agB = path.join(tmpDir, 'acctB');
+    const cliA = path.join(tmpDir, 'cliA');
+    const cliB = path.join(tmpDir, 'cliB');
+    const cidB = '66666666-7777-4888-9999-aaaaaaaaaaaa';
+    fs.mkdirSync(path.join(agB, 'brain', cidB, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(cliA, { recursive: true });
+    fs.mkdirSync(cliB, { recursive: true });
+    fs.writeFileSync(path.join(agB, 'brain', cidB, '.system_generated', 'logs', 'transcript.jsonl'), JSON.stringify({
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-11-20T10:00:00Z',
+      step_index: 0,
+      model: 'gemini-3.8-flash',
+      input_tokens: 200,
+      output_tokens: 50,
+      cache_read_tokens: 0
+    }) + '\n');
+
+    const roA = await collectTokenHistoryAsync({ force: true, readOnly: true, agDir: agA, agCliDir: cliA, skipWslDiscovery: true });
+    const roB = await collectTokenHistoryAsync({ force: true, readOnly: true, agDir: agB, agCliDir: cliB, skipWslDiscovery: true });
+    assert.equal(roA.summary.grandTotalTokens, 1000);
+    assert.equal(roB.summary.grandTotalTokens, 250);
+    assert.equal(fs.existsSync(path.join(agA, 'pricing_ledger_v1.json')), false);
+    assert.equal(fs.existsSync(path.join(agA, 'token_usage_archive_v2.json')), false);
+    assert.equal(fs.existsSync(path.join(agB, 'pricing_ledger_v1.json')), false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('PR #74 & PR #27: M537/M667/M668/M669/M681 归池、Neon 官方费率与未定价回退、allowedTiers 跨分隔符兼容与动态池建组', () => {
+  const {
+    normalizeModelId,
+    getModelPoolKey,
+    getSharedQuotaGroupKey,
+    getEffectivePricingRules,
+    setDynamicPricingCatalog,
+    calculateRequestApiCost,
+    summarizeApiCost,
+    classifyModelQuotaAvailability,
+    buildModelQuotaSnapshot
+  } = require('./meter-core');
+
+  // 1. 核心占位 ID / Worker / Orchestrator 映射与归池
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M537'), 'gemini-4-neon');
+  assert.equal(normalizeModelId('placeholder-m667'), 'gemini-4-carbon');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M668'), 'gemini-4-argon');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M681'), 'gemini-4-argon');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M669'), 'gemini-4-hydrogen');
+  assert.equal(normalizeModelId('gemini-flash-worker-agy'), 'gemini-4-hydrogen');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M18'), null);
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M50'), null);
+  assert.equal(normalizeModelId('xenon-pro'), null);
+
+  assert.equal(getSharedQuotaGroupKey('MODEL_PLACEHOLDER_M537'), 'shared_gemini_main');
+  assert.equal(getSharedQuotaGroupKey('MODEL_PLACEHOLDER_M669'), 'shared_gemini_main');
+  assert.equal(getSharedQuotaGroupKey('gemini-flash-worker-agy'), 'shared_gemini_main');
+  assert.equal(getSharedQuotaGroupKey('MODEL_PLACEHOLDER_M667'), 'shared_gemini_carbon');
+  assert.equal(getSharedQuotaGroupKey('MODEL_PLACEHOLDER_M668'), 'shared_gemini_argon');
+  assert.equal(getSharedQuotaGroupKey('MODEL_PLACEHOLDER_M681'), 'shared_gemini_argon');
+
+  // 2. Neon 费率校验与动态价格优先级（保留内置分段价，不被单点动态价格覆盖）
+  const neonRules = getEffectivePricingRules('gemini-4-neon');
+  assert.ok(Array.isArray(neonRules) && neonRules.length >= 1);
+  assert.equal(neonRules[0].inputPerMillion, 3.0);
+  assert.equal(neonRules[0].outputPerMillion, 15.0);
+  assert.equal(neonRules[0].cacheReadPerMillion, 0.15);
+
+  const prevDyn = require('./meter-core').getDynamicPricingCatalog();
+  try {
+    setDynamicPricingCatalog({
+      'gemini-4-neon': [{ inputPerMillion: 99, outputPerMillion: 99, cacheReadPerMillion: 9 }],
+      'gemini-5-alpha': [{ inputPerMillion: 2.0, outputPerMillion: 8.0, cacheReadPerMillion: 0.2 }]
+    });
+    assert.equal(getEffectivePricingRules('gemini-4-neon')[0].inputPerMillion, 3.0, '内置规则应优先于单点动态价格，保护历史分段定价');
+    assert.equal(getEffectivePricingRules('gemini-5-alpha')[0].inputPerMillion, 2.0, '内置缺省的新模型应允许动态价格生效');
+  } finally {
+    setDynamicPricingCatalog(prevDyn || {});
+  }
+
+  // 3. 缺可靠费率时标记未定价且照常累计 Token；Orchestrator 不同变体名称归一化互不串池
+  assert.notEqual(
+    require('./meter-core').normalizeModelLookupName('Orchestrator (Carbon)'),
+    require('./meter-core').normalizeModelLookupName('Orchestrator (Neon)')
+  );
+  const unpricedCost = calculateRequestApiCost({
+    model: 'brand-new-unpriced-model-x',
+    inputTokens: 12000,
+    outputTokens: 3000,
+    cacheReadTokens: 4000
+  });
+  assert.equal(unpricedCost.isPriced, false);
+  const costSum = summarizeApiCost([
+    { model: 'gemini-4-neon', inputTokens: 1000000, outputTokens: 100000, cacheReadTokens: 0 },
+    { model: 'brand-new-unpriced-model-x', inputTokens: 500000, outputTokens: 50000, cacheReadTokens: 0 }
+  ]);
+  assert.ok(costSum.pricedCostUSD > 0);
+  assert.equal(costSum.unpricedRequestsCount, 1);
+
+  // 4. PR #27 allowedTiers 跨连字符/下划线与大小写变体兼容，且不放宽企业级隔离
+  const proPlan = require('./meter-core').parseUserPlanStatus({
+    userStatus: {
+      userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO' }, availablePromptCredits: 100 }
+    }
+  });
+  const hyphenCfg = classifyModelQuotaAvailability({
+    modelId: 'gemini-4-neon',
+    label: 'Gemini 4 Neon',
+    allowedTiers: ['G1_PRO_TIER', 'TEAMS-TIER-PRO']
+  }, proPlan);
+  assert.equal(hyphenCfg.noPermission, false);
+  const entOnlyCfg = classifyModelQuotaAvailability({
+    modelId: 'gemini-enterprise-only',
+    label: 'Enterprise Only Model',
+    allowedTiers: ['G1-ENTERPRISE-TIER']
+  }, proPlan);
+  assert.equal(entOnlyCfg.noPermission, true);
+
+  // 5. 动态新增模型与池改名同时生效，且继续严格屏蔽 2.5 与内部占位模型
+  const dynSnap = buildModelQuotaSnapshot({
+    userStatusRes: {
+      userStatus: {
+        userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            { label: 'Gemini 4 Neon (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M532' }, quotaInfo: { remainingFraction: 0.65 } },
+            { label: 'Gemini 5 Alpha', modelOrAlias: { model: 'gemini-5-alpha' }, quotaInfo: { remainingFraction: 0.88 } },
+            { label: 'Gemini 2.5 Pro', modelId: 'gemini-2.5-pro', quotaInfo: { remainingFraction: 1.0 } },
+            { label: 'chat_23310', modelId: 'chat_23310', quotaInfo: { remainingFraction: 1.0 } }
+          ]
+        }
+      }
+    },
+    quotaSummaryRes: {
+      response: {
+        groups: [
+          {
+            groupId: 'gemini-neon-renamed',
+            displayName: 'Gemini Neon Renamed Pool',
+            modelIds: ['Gemini 4 Neon'],
+            buckets: [{ bucketId: 'b-main', window: '5h', remainingFraction: 0.65 }]
+          }
+        ]
+      }
+    }
+  });
+  const poolKeys = dynSnap.pools.map(p => p.poolKey);
+  assert.ok(poolKeys.includes('shared_gemini_main'));
+  assert.ok(poolKeys.includes('shared_gemini5alpha') || poolKeys.some(k => k.includes('gemini5alpha')));
+  assert.ok(!poolKeys.some(k => k.includes('25') || k.includes('23310')));
+  assert.equal(dynSnap.pools.find(p => p.poolKey === 'shared_gemini_main').title, 'Gemini Neon Renamed Pool');
+  assert.equal(getModelPoolKey('gemini-4-neon'), 'gemini-4-neon');
+});
+
+test('v0.9.0-beta.1: unknown_drop 无证据突降防误判、组成步骤边界/残差/脱敏与耗时并发壁钟计算', () => {
+  const {
+    analyzeSteps,
+    buildSessionCompositionBreakdown,
+    detectContextChangeEvents,
+    groupSessionCallsByTurns,
+    sanitizeCompositionPreview
+  } = require('./meter-core');
+
+  // 1. 脱敏辅助：隐藏用户主目录与密钥/Token
+  const masked = sanitizeCompositionPreview('cmd C:\\Users\\demo\\secret\\run.ps1 --token sk-1234567890abcdef');
+  assert.equal(masked.includes('demo'), false);
+  assert.equal(masked.includes('sk-1234567890abcdef'), false);
+
+  // 2. 无 checkpoint 与 prune 证据时的上下文突降，不得误判为 prune，必须记为 unknown_drop
+  const plainSteps = [
+    { userInput: { userResponse: 'read C:\\Users\\demo\\notes.md and check --api-key=secret_token_999' }, createdAt: '2026-11-23T00:00:00Z' },
+    { plannerResponse: { response: 'step 1 ok', thinking: 'thinking trace' }, createdAt: '2026-11-23T00:00:10Z' },
+    { userInput: { userResponse: 'second question' }, createdAt: '2026-11-23T00:01:00Z' },
+    { plannerResponse: { response: 'step 3 ok' }, createdAt: '2026-11-23T00:01:10Z' }
+  ];
+  const dropCalls = [
+    { callId: 'c1', stepIndex: 1, timestamp: Date.parse('2026-11-23T00:00:10Z'), inputTokens: 42000, totalInputTokens: 42000 },
+    { callId: 'c2', stepIndex: 3, timestamp: Date.parse('2026-11-23T00:01:10Z'), inputTokens: 11000, totalInputTokens: 11000 }
+  ];
+  const events = detectContextChangeEvents(plainSteps, dropCalls);
+  assert.equal(events.some(e => e.type === 'prune'), false, '无压缩/剪枝证据时绝不能误判为 prune');
+  const unknownDrop = events.find(e => e.type === 'unknown_drop');
+  assert.ok(unknownDrop, '单凭占用突降应发出 unknown_drop');
+  assert.equal(unknownDrop.detail, 'context_drop_unknown');
+  assert.equal(unknownDrop.beforeTokens, 42000);
+  assert.equal(unknownDrop.afterTokens, 11000);
+
+  // 3. stepCompositionItems、残差分离与步骤前缀对比
+  const analyzed = analyzeSteps(plainSteps);
+  assert.ok(analyzed.stepCompositionItems.user.length >= 2);
+  assert.equal(analyzed.stepCompositionItems.user[0].preview.includes('secret_token_999'), false);
+  const comp = buildSessionCompositionBreakdown(analyzed, { actual: 18000, budget: 256000 }, { targetStepIndex: 3, compareStepIndex: 1 });
+  assert.equal(comp.stepScope, 'step_bounded');
+  assert.equal(comp.actualTokens, 18000);
+  assert.ok(comp.unaccountedTokens === Math.max(0, 18000 - comp.estimatedTotalMedian));
+  const userCat = comp.items.find(i => i.key === 'user');
+  assert.ok(userCat && userCat.deltaTokens > 0);
+
+  // 4. 并发墙钟 vs 累计任务耗时与子代理模型拆分
+  const tBase = Date.parse('2026-11-23T00:00:00Z');
+  const grouped = groupSessionCallsByTurns(
+    [{ stepIndex: 0, timestamp: tBase, preview: 'concurrent work' }],
+    [
+      { callId: 'main-1', agentRole: 'main', stepIndex: 1, timestamp: tBase + 10000, durationSec: 10, ttftSec: 1, streamingSec: 9, inputTokens: 1000, outputTokens: 200, totalTokens: 1200, modelLabel: 'Gemini 4 Neon' },
+      { callId: 'sub-1', agentRole: 'subagent', cascadeId: 'sub-cid-1', parentStepIndex: 0, subagentType: 'research', stepIndex: 1, timestamp: tBase + 10000, durationSec: 8, ttftSec: 1, streamingSec: 7, inputTokens: 500, outputTokens: 100, totalTokens: 600, modelLabel: 'Gemini 3.8 Flash' }
+    ]
+  );
+  assert.equal(grouped.timingSummary.hasIndependentThinkingTimestamps, false);
+  assert.equal(grouped.timingSummary.hasConcurrentCalls, true);
+  assert.ok(grouped.timingSummary.wallClockActiveSec < grouped.timingSummary.cumulativeTaskSec);
+  assert.ok(grouped.timingSummary.concurrencySavedSec > 0);
+  assert.equal(grouped.agentFleetSummary.subagents[0].modelBreakdown[0].modelLabel, 'Gemini 3.8 Flash');
+});
+

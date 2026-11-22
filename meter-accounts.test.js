@@ -1073,7 +1073,7 @@ test('v0.8.8 账本回归: 旧账号历史 + 新账号首次登录自动纠偏�
     const newEmail = 'newultra@example.com';
     const oldScope = accountsMod.buildAccountScopeKey(oldEmail);
     const newScope = accountsMod.buildAccountScopeKey(newEmail);
-    const nowMs = Date.now();
+    const nowMs = new Date().setHours(12, 0, 0, 0);
     const tOldStart = nowMs - 2 * 86400000;
     const tOldEnd = nowMs - 86400000;
     const tNewStart = nowMs - 600000; // 10 分钟前首次登录新号
@@ -1772,7 +1772,7 @@ test('v0.8.8 账本与切号补充回归: 二次污染 elv89-v2 自动升级纠�
   try {
     const emailNew = 'ultra@example.com';
     const scopeNew = accountsMod.buildAccountScopeKey(emailNew);
-    const nowMs = Date.now();
+    const nowMs = new Date().setHours(12, 0, 0, 0);
     const tNewStart = nowMs - 600000;
     const today = collector.formatLocalDateKey(new Date(nowMs));
     const cidOld = 'cccccccc-0000-0000-0000-000000000003';
@@ -2510,4 +2510,179 @@ test('OAuth 权限作用域: ANTIGRAVITY_OAUTH_SCOPES 包含 aicode 权限作用
     accountsMod.ANTIGRAVITY_OAUTH_SCOPES.includes('https://www.googleapis.com/auth/aicode'),
     '必须包含 aicode 权限作用域以防止模型降级与配额返回旧模型'
   );
+});
+
+test('PR #60 回归: 写入带版本号新调用不触发备份、3分钟 live 保护期、备份路径清洗与异步补价', async () => {
+  const parentDir = makeTempDir('acm-pr60-parent-');
+  const agDir = path.join(parentDir, 'ag');
+  const stateDir = path.join(parentDir, 'state');
+  fs.mkdirSync(agDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  try {
+    const email = 'acct-pr60@example.com';
+    const scopeKey = accountsMod.buildAccountScopeKey(email);
+    const nowMs = Date.now();
+    const sessionStart = nowMs - 3600000;
+    const today = collector.formatLocalDateKey(new Date(nowMs));
+    const accountSessions = [
+      { accountScopeKey: scopeKey, email, startAtMs: sessionStart, lastVerifiedAtMs: nowMs, endAtMs: null, source: 'test' }
+    ];
+
+    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify({
+      version: 1,
+      activeAccountEmail: email,
+      accounts: {
+        [email]: { email, accessToken: 'tok-pr60', refreshToken: 'ref-pr60' }
+      },
+      accountSessions
+    }));
+
+    const listBackups = () => fs.readdirSync(agDir).filter(f => {
+      if (!f.startsWith('pricing_ledger_v1.json.bak-pre-elv89-')) return false;
+      const st = fs.lstatSync(path.join(agDir, f));
+      return st.isFile() && !st.isSymbolicLink();
+    });
+    const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+
+    // 1. 权威归属新调用自带 attributionRepairVersion='elv89-v3'，后续采集不触发备份
+    const verifiedTs = nowMs - 10000;
+    const recRes1 = collector.recordModelCalls([{
+      callId: 'req_pr60_verified',
+      cascadeId: 'eeeeeeee-0000-0000-0000-000000000001',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 1000,
+      cacheTokens: 2000,
+      outputTokens: 300,
+      totalTokens: 3300,
+      date: today,
+      created_at: new Date(verifiedTs).toISOString(),
+      timestamp: verifiedTs
+    }], { agDir, accountSessions });
+    assert.equal(recRes1.ok, true);
+    const afterRec = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(afterRec.calls.req_pr60_verified.attributionRepairVersion, 'elv89-v3');
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 0, '已核实新调用不得触发 .bak-pre-elv89 备份');
+
+    // 2. 3 分钟保护期内的 live_confirmed_account（updatedAt 为 ISO 字符串）不被误清空或触发备份
+    const curLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    curLedger.calls.req_live_iso_protected = {
+      callId: 'req_live_iso_protected',
+      cascadeId: 'eeeeeeee-0000-0000-0000-000000000002',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 500,
+      cacheTokens: 0,
+      outputTokens: 100,
+      totalTokens: 600,
+      date: today,
+      updatedAt: new Date(nowMs - 15000).toISOString(),
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'live_confirmed_account'
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(curLedger));
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 0, '3 分钟保护期内的 live_confirmed_account 不得触发备份');
+
+    // 3. 首次未版本记录触发 1 份备份；后续无自定义 suffix 非 force 迁移复用已有备份且不新增第 2 份
+    const curLedger2 = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    curLedger2.calls.req_legacy_unversioned = {
+      callId: 'req_legacy_unversioned',
+      cascadeId: 'eeeeeeee-0000-0000-0000-000000000003',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 400,
+      cacheTokens: 0,
+      outputTokens: 80,
+      totalTokens: 480,
+      date: today,
+      created_at: new Date(nowMs - 600000).toISOString(),
+      timestamp: nowMs - 600000,
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'session_window_verified'
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(curLedger2));
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 1);
+
+    const curLedger3 = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    curLedger3.calls.req_legacy_keepalive = {
+      callId: 'req_legacy_keepalive',
+      cascadeId: 'eeeeeeee-0000-0000-0000-000000000004',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 10,
+      cacheTokens: 0,
+      outputTokens: 5,
+      totalTokens: 15,
+      date: today,
+      isKeepalive: true,
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'keepalive_bound'
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(curLedger3));
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 1, '非 force 修复应复用既有迁移备份而不生成第 2 份');
+
+    // 4. backupSuffix 路径穿越防护、符号链接防护与轮转上限 MAX_LEDGER_REPAIR_BACKUPS (3)
+    const externalTarget = path.join(stateDir, 'outside-secret.txt');
+    fs.writeFileSync(externalTarget, 'keep-secret');
+    const symlinkBackup = path.join(agDir, 'pricing_ledger_v1.json.bak-pre-elv89-sym');
+    try { fs.symlinkSync(externalTarget, symlinkBackup); } catch { }
+
+    const traversalRes = collector.repairAndMigrateAccountLedger({
+      agDir,
+      accountSessions,
+      force: true,
+      backupSuffix: '../escape/test'
+    });
+    assert.equal(traversalRes.ok, true);
+    assert.equal(path.dirname(traversalRes.backupPath), path.resolve(agDir));
+    assert.equal(fs.existsSync(path.join(parentDir, 'escape')), false);
+    assert.ok(listBackups().length <= collector.MAX_LEDGER_REPAIR_BACKUPS);
+    assert.equal(fs.readFileSync(externalTarget, 'utf8'), 'keep-secret');
+
+    // 5. 异步 repriceUnpricedLedgerCallsAsync 正常对未计价记录补价
+    const repricedCount = await collector.repriceUnpricedLedgerCallsAsync(agDir);
+    assert.equal(typeof repricedCount, 'number');
+  } finally {
+    fs.rmSync(parentDir, { recursive: true, force: true });
+  }
+});
+
+test('ELV-102: 后续账号 OAuth 登录强制携带 prompt=select_account consent 便于切换账号', async () => {
+  const stateDir = makeTempDir('acm-elv102-oauth-');
+  try {
+    let capturedAuthUrl = '';
+    const mgr = accountsMod.createAccountsManager({
+      stateDir,
+      credentialStore: makeMockCredStore(),
+      fetch: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+      oauthClientId: 'mock-oauth-client-id',
+      oauthClientSecret: 'mock-oauth-client-secret',
+      openExternal: (authUrl) => {
+        capturedAuthUrl = authUrl;
+        const parsed = new URL(authUrl);
+        const redirectUri = parsed.searchParams.get('redirect_uri');
+        setTimeout(() => {
+          http.get(`${redirectUri}?error=access_denied`, { agent: false }).on('error', () => {});
+        }, 20);
+      }
+    });
+    const res = await mgr.startOAuthLogin();
+    assert.equal(res.ok, false);
+    assert.ok(capturedAuthUrl, '必须触发打开浏览器授权链接');
+    const authUrlObj = new URL(capturedAuthUrl);
+    assert.equal(authUrlObj.searchParams.get('prompt'), 'select_account consent');
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
 });

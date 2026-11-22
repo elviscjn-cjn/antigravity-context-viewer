@@ -16,6 +16,8 @@ const {
 const {
   checkUpdateAsync,
   applyUpdateAsync,
+  extractUpdateZip,
+  sanitizeUpdateErrorText,
   parseReleasesAtom,
   parseLatestReleaseHtml,
   parseExpandedAssetsHtml,
@@ -760,4 +762,138 @@ test('交付验证 8: 预发布与正式版通道隔离、beta 升级正式版�
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('PR #76 / Issue #75: Windows 更新包优先显式 System32\\tar.exe、清空半解压再回退 PowerShell、全部失败销毁目录与原因脱敏', () => {
+  // 1. Windows 显式调用 System32\tar.exe，不被 PATH 中的 GNU tar 抢占
+  const calls1 = [];
+  const res1 = extractUpdateZip('C:\\Temp\\pkg.zip', 'C:\\Temp\\out', {
+    platform: 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    _existsSync: (p) => p === 'C:\\Windows\\System32\\tar.exe',
+    _spawnSync: (cmd, args, opts) => {
+      calls1.push({ cmd, args, opts });
+      return { status: 0, stdout: '', stderr: '' };
+    }
+  });
+  assert.equal(res1.status, 0);
+  assert.equal(res1.method, 'system32-tar');
+  assert.equal(calls1.length, 1);
+  assert.equal(calls1[0].cmd, 'C:\\Windows\\System32\\tar.exe');
+  assert.deepEqual(calls1[0].args, ['-xf', 'C:\\Temp\\pkg.zip', '-C', 'C:\\Temp\\out']);
+
+  // 2. tar 失败时必须先清空半解压目录，再通过环境变量传参回退 PowerShell（支持中文、空格、单引号、方括号）
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pr76-half-'));
+  try {
+    const specialZip = path.join(tmpRoot, "测试 '包 [1].zip");
+    const extractDir = path.join(tmpRoot, "解压 '目标 [2]");
+    fs.writeFileSync(specialZip, 'placeholder');
+    fs.mkdirSync(extractDir, { recursive: true });
+    const calls2 = [];
+    const res2 = extractUpdateZip(specialZip, extractDir, {
+      platform: 'win32',
+      env: { SystemRoot: 'C:\\Windows' },
+      _existsSync: (p) =>
+        p === 'C:\\Windows\\System32\\tar.exe' ||
+        p === 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' ||
+        fs.existsSync(p),
+      _spawnSync: (cmd, args, opts) => {
+        calls2.push({ cmd, args, opts });
+        if (cmd.endsWith('tar.exe')) {
+          fs.writeFileSync(path.join(extractDir, 'stale-half-file.txt'), 'corrupt');
+          return { status: 1, stdout: '', stderr: 'C:\\Users\\SecretUser\\tar failed' };
+        }
+        // 进入 PowerShell 时半解压残留文件必须已被清除
+        assert.equal(fs.existsSync(path.join(extractDir, 'stale-half-file.txt')), false);
+        fs.writeFileSync(path.join(extractDir, 'cli.js'), 'ok');
+        return { status: 0, stdout: '', stderr: '' };
+      }
+    });
+    assert.equal(res2.status, 0);
+    assert.equal(res2.method, 'powershell-expand-archive');
+    assert.equal(calls2[1].opts.env.AG_UPDATE_ZIP_PATH, specialZip);
+    assert.equal(calls2[1].opts.env.AG_UPDATE_EXTRACT_DIR, extractDir);
+    assert.equal(fs.existsSync(path.join(extractDir, 'stale-half-file.txt')), false);
+    assert.equal(fs.existsSync(path.join(extractDir, 'cli.js')), true);
+
+    // 3. 全部失败：必须彻底销毁半解压目录并脱敏路径中用户名，阻止后续安装
+    const badDir = path.join(tmpRoot, 'bad-extract');
+    fs.mkdirSync(badDir, { recursive: true });
+    fs.writeFileSync(path.join(badDir, 'partial.js'), 'partial');
+    const res3 = extractUpdateZip(specialZip, badDir, {
+      platform: 'win32',
+      env: { SystemRoot: 'C:\\Windows' },
+      _existsSync: (p) => p === 'C:\\Windows\\System32\\tar.exe' || fs.existsSync(p),
+      _spawnSync: (cmd) => {
+        if (cmd.endsWith('tar.exe')) {
+          return { status: 1, stdout: '', stderr: 'tar fail for C:\\Users\\Alice\\foo' };
+        }
+        fs.writeFileSync(path.join(badDir, 'partial2.js'), 'partial2');
+        return { status: 1, stdout: '', stderr: 'Expand-Archive fail access_token=secret123' };
+      }
+    });
+    assert.notEqual(res3.status, 0);
+    assert.equal(fs.existsSync(badDir), false, '全部解压失败后半解压目录必须被清理，杜绝进入安装流程');
+    assert.equal(res3.detail.includes('Alice'), false);
+    assert.equal(res3.detail.includes('secret123'), false);
+    assert.match(res3.detail, /C:\\Users\\<USER>/);
+    assert.match(res3.detail, /access_token=<REDACTED>/);
+
+    // 4. 非 Windows 调用 unzip
+    const calls4 = [];
+    const res4 = extractUpdateZip('/tmp/pkg.zip', '/tmp/out', {
+      platform: 'linux',
+      _spawnSync: (cmd, args) => {
+        calls4.push({ cmd, args });
+        return { status: 9, stdout: '', stderr: '/Users/bob/pkg.zip: bad archive' };
+      }
+    });
+    assert.equal(calls4[0].cmd, 'unzip');
+    assert.equal(res4.status, 9);
+    assert.equal(res4.detail.includes('/Users/bob'), false);
+    assert.match(res4.detail, /\/Users\/<USER>/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('extractUpdateZip 真实 ZIP 与 PATH 前置干扰 GNU tar 模拟路径下端到端解压成功', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-extract-zip-'));
+  try {
+    const zipPath = path.join(tmpDir, "真实 测试 '包 [1].zip");
+    const extractDir = path.join(tmpDir, "解压 目标 '目录 [2]");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(zipPath, createSimpleZipBuffer({ 'cli.js': 'console.log("ok");\n' }));
+
+    const res = extractUpdateZip(zipPath, extractDir);
+    assert.equal(res.status, 0, `真实解压失败: ${res.detail || ''}`);
+    assert.equal(fs.readFileSync(path.join(extractDir, 'cli.js'), 'utf8'), 'console.log("ok");\n');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('applyUpdateAsync 支持指定 prerelease 版本（如 0.9.0-beta.1）透传 allowBetaUpdates', async () => {
+  let seenUrl = '';
+  const res = await applyUpdateAsync({
+    version: '0.9.0-beta.1',
+    currentVersion: '0.8.10',
+    _requestGithubUrl: async (url) => {
+      seenUrl = url;
+      return JSON.stringify([
+        {
+          tag_name: 'v0.9.0-beta.1',
+          draft: false,
+          prerelease: true,
+          published_at: '2026-11-22T14:00:00Z',
+          html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.0-beta.1',
+          assets: []
+        }
+      ]);
+    }
+  });
+  assert.match(seenUrl, /releases/);
+  assert.equal(res.ok, false);
+  // 关键断言：不应因未透传 allowBetaUpdates 而报「未获取到可用的官方发布版本」或「未找到版本」，应走到资产缺失校验
+  assert.match(res.error, /未提供对应系统架构资产/);
 });

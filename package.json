@@ -1,7 +1,7 @@
 {
   "name": "antigravity-context-viewer",
-  "version": "0.8.9-beta.1",
-  "displayVersion": "0.8.9 β",
+  "version": "0.9.0-beta.1",
+  "displayVersion": "0.9.0 beta1",
   "description": "Antigravity 桌面客户端的对话上下文、生成速度与 Token 用量看板",
   "main": "cli.js",
   "bin": {
@@ -21,7 +21,7 @@
     "uninstall-patch": "node cli.js restore",
     "build:renderer": "node scripts/build-renderer.js",
     "pretest": "node scripts/build-renderer.js",
-    "test": "node --test --test-concurrency=1 meter-core.test.js meter-renderer.test.js meter-quota.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-enhance.test.js meter-update-delivery.test.js meter-cli-launcher.test.js meter-cli-monitor.test.js meter-v083-fixes.test.js meter-model-context-isolation.test.js meter-v085-fixes.test.js meter-hotload.test.js meter-macos-watch.test.js meter-v089-usage.test.js meter-elv91-speed.test.js meter-accounts.test.js",
+    "test": "node --test --test-concurrency=1 meter-core.test.js meter-renderer.test.js meter-quota.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-enhance.test.js meter-update-delivery.test.js meter-cli-launcher.test.js meter-cli-monitor.test.js meter-cli-adapter.test.js meter-cli-ui.test.js meter-rehydrate.test.js meter-v083-fixes.test.js meter-model-context-isolation.test.js meter-v085-fixes.test.js meter-hotload.test.js meter-macos-watch.test.js meter-v089-usage.test.js meter-elv91-speed.test.js meter-accounts.test.js meter-v234-compat.test.js meter-i18n-upstream.test.js meter-elv98-99.test.js meter-first-install-recovery.test.js",
     "format": "npx prettier --write \"*.js\" \"*.json\" \"*.md\"",
     "format:check": "npx prettier --check \"*.js\" \"*.json\" \"*.md\"",
     "pack": "node scripts/package-release.js",
@@ -95,6 +95,70 @@
       "name": "yuanyang749",
       "email": "yuanyang613@163.com",
       "url": "https://github.com/yuanyang749"
+    },
+    {
+      "name": "Jemiking",
+      "url": "https://github.com/Jemiking"
+    },
+    {
+      "name": "Staaaying",
+      "url": "https://github.com/Staaaying"
+    },
+    {
+      "name": "shixin08052",
+      "url": "https://github.com/shixin08052"
+    },
+    {
+      "name": "Hirasawa8",
+      "url": "https://github.com/Hirasawa8"
+    },
+    {
+      "name": "unie774",
+      "url": "https://github.com/unie774"
+    },
+    {
+      "name": "lllhhhh",
+      "url": "https://github.com/lllhhhh"
+    },
+    {
+      "name": "1-pluto1",
+      "url": "https://github.com/1-pluto1"
+    },
+    {
+      "name": "Fengsuid",
+      "url": "https://github.com/Fengsuid"
+    },
+    {
+      "name": "MoiraToki",
+      "url": "https://github.com/MoiraToki"
+    },
+    {
+      "name": "XiangZheng2283",
+      "url": "https://github.com/XiangZheng2283"
+    },
+    {
+      "name": "paojiaoleshenghuo",
+      "url": "https://github.com/paojiaoleshenghuo"
+    },
+    {
+      "name": "Xuhang0607",
+      "url": "https://github.com/Xuhang0607"
+    },
+    {
+      "name": "awu5425",
+      "url": "https://github.com/awu5425"
+    },
+    {
+      "name": "BetterThanAny",
+      "url": "https://github.com/BetterThanAny"
+    },
+    {
+      "name": "jinyue806",
+      "url": "https://github.com/jinyue806"
+    },
+    {
+      "name": "Jeffgithub0029",
+      "url": "https://github.com/Jeffgithub0029"
     }
   ],
   "license": "MIT"

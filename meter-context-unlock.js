@@ -1492,10 +1492,6 @@ function synthesizeAnalysisStatus(options = {}) {
       overallStatus = 'patched_loaded';
       statusText = '已加载，待长请求实测';
       details = `${modeNote}；目标进程 (PID ${proc?.pid || '未知'}) 启动时间晚于修改时间${unverifiedTail}`;
-      if (manifest && manifest.needsRestart) {
-        manifest.needsRestart = false;
-        try { saveManifest(manifest, options.backupDir); } catch {}
-      }
     } else if (restartDetected === false && isProcPathMatched) {
       overallStatus = 'patched_pending_restart';
       statusText = '已写入补丁，待重启';
@@ -1624,6 +1620,9 @@ function buildAnalysisResult({
       configuredMode: manifest.configuredMode || null,
       configuredLimitTokens: manifest.configuredLimitTokens ?? null
     } : null,
+    ...(container?.format === 'Mach-O' || process.platform === 'darwin'
+      ? { macosSignatureWarning: 'macOS 修改 language_server 二进制会破坏官方 Hardened Runtime 签名，运行中可能因 Code Signature Invalid 触发 SIGKILL 闪退；默认关闭，建议还原并重装客户端后执行 codesign -vvv --deep --strict 验签。' }
+      : {}),
     author: AUTHOR_INFO
   };
 }
