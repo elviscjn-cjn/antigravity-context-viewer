@@ -92,13 +92,25 @@ function harness(scanSession = session(), extraSandbox = null) {
     };
     return el;
   };
-  const host = element(); host.attachShadow = () => ({ set innerHTML(value) {}, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
+  const shadowListeners = new Map();
+  const shadow = {
+    set innerHTML(value) {},
+    getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
+    addEventListener(type, fn) {
+      if (!shadowListeners.has(type)) shadowListeners.set(type, []);
+      shadowListeners.get(type).push(fn);
+    },
+    trigger(type, ev = {}) {
+      for (const fn of (shadowListeners.get(type) || [])) fn(ev);
+    }
+  };
+  const host = element(); host.attachShadow = () => shadow;
   const pending = [], scans = [], timers = [];
   const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), getElementById: id => docElements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); }, ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {}) };
   // First createElement call is the host; later calls are safe text-only file rows.
   let first = true; sandbox.document.createElement = () => { if (first) { first = false; return host; } return element(); };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
-  return { sandbox, host, pending, scans, elements, tick: () => timers[0](), flush: () => new Promise(resolve => setImmediate(resolve)), finishScan(i = 0) { scans[i].resolve({ ok: true, data: { session: scanSession, scannedAt: Date.now(), latest: null } }); } };
+  return { sandbox, host, shadow, pending, scans, elements, tick: () => timers[0](), flush: () => new Promise(resolve => setImmediate(resolve)), finishScan(i = 0) { scans[i].resolve({ ok: true, data: { session: scanSession, scannedAt: Date.now(), latest: null } }); } };
 }
 function response(chatModel) { return { ok: true, json: async () => ({ generatorMetadata: [{ chatModel }] }) }; }
 test('late old request and old full-scan responses cannot contaminate a newly selected chat', async () => {
@@ -6012,5 +6024,108 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
     assert.equal(lastSave?.customPlan?.validEndDate, todayYmd);
   } finally {
     try { api.dispose(); } catch {}
+  }
+});
+
+test('shadow DOM event isolation preserves split-pane focus while keeping editable targets and inside-panel color-picker dismiss intact', () => {
+  const h = harness();
+  try {
+    const matchesSimple = (node, token) => {
+      if (!node) return false;
+      const t = token.trim().toLowerCase();
+      if (!t) return false;
+      if (t === '[contenteditable]') return Boolean(node.contentEditable);
+      return String(node.tagName || '').toLowerCase() === t;
+    };
+    const makeDomNode = (tagName, { parentElement = null, contentEditable = false } = {}) => {
+      const node = {
+        tagName,
+        parentElement,
+        contentEditable,
+        closest(sel) {
+          const tokens = String(sel || '').split(',');
+          let cur = this;
+          while (cur) {
+            if (tokens.some(tok => matchesSimple(cur, tok))) return cur;
+            cur = cur.parentElement;
+          }
+          return null;
+        }
+      };
+      return node;
+    };
+    const dispatchShadow = (type, target, extra = {}) => {
+      let prevented = 0;
+      let stopped = 0;
+      h.shadow.trigger(type, {
+        target,
+        preventDefault() { prevented += 1; },
+        stopPropagation() { stopped += 1; },
+        ...extra
+      });
+      return { prevented, stopped };
+    };
+
+    // 1) Non-editable targets (top-bar buttons, panel divs) call preventDefault + stopPropagation on mousedown
+    const badgeBtn = makeDomNode('button');
+    const panelDiv = makeDomNode('div', { parentElement: badgeBtn });
+    for (const target of [badgeBtn, panelDiv]) {
+      const md = dispatchShadow('mousedown', target);
+      assert.equal(md.prevented, 1, 'non-editable mousedown must preventDefault to avoid stealing pane focus');
+      assert.equal(md.stopped, 1, 'non-editable mousedown must stopPropagation');
+    }
+
+    // 2) Editable and label targets preserve default focus on mousedown while still stopping propagation
+    const inputEl = makeDomNode('input');
+    const textareaEl = makeDomNode('textarea');
+    const selectEl = makeDomNode('select');
+    const labelEl = makeDomNode('label');
+    const editableDiv = makeDomNode('div', { contentEditable: true });
+    const spanInLabel = makeDomNode('span', { parentElement: labelEl });
+    const textNodeInLabel = { parentElement: labelEl };
+
+    for (const target of [inputEl, textareaEl, selectEl, labelEl, editableDiv, spanInLabel, textNodeInLabel]) {
+      const md = dispatchShadow('mousedown', target);
+      assert.equal(md.prevented, 0, 'editable/label mousedown must not preventDefault');
+      assert.equal(md.stopped, 1, 'editable/label mousedown must still stopPropagation');
+    }
+
+    // 3) pointerdown and click stopPropagation without preventDefault on both non-editable and editable targets
+    for (const type of ['pointerdown', 'click']) {
+      for (const target of [badgeBtn, inputEl, labelEl]) {
+        const res = dispatchShadow(type, target);
+        assert.equal(res.prevented, 0, `${type} must not preventDefault`);
+        assert.equal(res.stopped, 1, `${type} must stopPropagation`);
+      }
+    }
+
+    // 4) Inside-shadow click still closes #color-picker-popover when clicking outside the picker/swatches
+    const pop = h.elements.get('color-picker-popover');
+    const leg3 = h.elements.get('heat-leg-3');
+    leg3.id = 'heat-leg-3';
+    leg3.click();
+    assert.equal(pop.hidden, false);
+
+    const insidePickerNode = makeDomNode('div');
+    const clickInside = dispatchShadow('click', insidePickerNode, {
+      composedPath: () => [insidePickerNode, pop, h.shadow, h.host]
+    });
+    assert.equal(clickInside.stopped, 1);
+    assert.equal(pop.hidden, false, 'clicking inside color picker must keep it open');
+
+    const clickSwatch = dispatchShadow('click', leg3, {
+      composedPath: () => [leg3, h.shadow, h.host]
+    });
+    assert.equal(clickSwatch.stopped, 1);
+    assert.equal(pop.hidden, false, 'clicking swatch button must not immediately close color picker');
+
+    const unrelatedNode = makeDomNode('div');
+    const clickOutsidePicker = dispatchShadow('click', unrelatedNode, {
+      composedPath: () => [unrelatedNode, h.shadow, h.host]
+    });
+    assert.equal(clickOutsidePicker.stopped, 1);
+    assert.equal(pop.hidden, true, 'clicking elsewhere inside shadow must close color picker');
+  } finally {
+    try { h.sandbox.__AGContextMeter.dispose(); } catch {}
   }
 });

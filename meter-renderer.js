@@ -129,6 +129,23 @@
   host.setAttribute('data-dock', 'fixed');
   host.setAttribute('data-window-active', 'true');
   const shadow = host.attachShadow({ mode: 'open' });
+  // 防止点击插件顶栏或面板时抢走宿主分屏窗格焦点 / 冒泡触发宿主切回主窗格
+  if (typeof shadow.addEventListener === 'function') {
+    const EDITABLE_TARGET_SELECTOR = 'input, textarea, select, label, [contenteditable]';
+    shadow.addEventListener('mousedown', (e) => {
+      const target = e?.target;
+      const targetEl = target && typeof target.closest === 'function' ? target : target?.parentElement;
+      const isEditable = Boolean(targetEl?.closest?.(EDITABLE_TARGET_SELECTOR));
+      if (!isEditable) e?.preventDefault?.();
+      e?.stopPropagation?.();
+    });
+    shadow.addEventListener('pointerdown', (e) => {
+      e?.stopPropagation?.();
+    });
+    shadow.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+    });
+  }
 
   // Antigravity 本地真实 Token 统计基准数据（纯净初始状态，启动时由宿主实时扫描本地实际账本注入）
   const ANTIGRAVITY_TOKEN_DATA = {
@@ -21123,9 +21140,19 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   el('refresh').addEventListener('click', () => { if (state.route && !state.scanBusy) void scan(state.generation, state.route, true); });
+  const closeColorPickerIfOutside = e => {
+    const pop = el('color-picker-popover');
+    const isClosingNow = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute('data-closing') === 'true';
+    if (!pop || pop.hidden || isClosingNow) return;
+    const path = typeof e?.composedPath === 'function' ? e.composedPath() : (e?.target ? [e.target] : []);
+    const isInsidePicker = path.includes(pop);
+    const isSwatchBtn = path.some(n => n?.classList?.contains?.('color-swatch-btn') || n?.classList?.contains?.('heat-leg-swatch') || n?.id?.startsWith?.('swatch-') || n?.id?.startsWith?.('heat-leg-'));
+    if (!isInsidePicker && !isSwatchBtn) {
+      closeColorPicker();
+    }
+  };
   const outside = e => {
     const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-    const pop = el('color-picker-popover');
     if (!path.includes(host)) {
       closeColorPicker(true);
       toggle(false);
@@ -21135,14 +21162,7 @@ function closeAllDropdowns(exceptWrap = null) {
       syncHostStackingElevation(false);
       return;
     }
-    const isClosingNow = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute('data-closing') === 'true';
-    if (pop && !pop.hidden && !isClosingNow) {
-      const isInsidePicker = path.includes(pop);
-      const isSwatchBtn = path.some(n => n?.classList?.contains?.('color-swatch-btn') || n?.classList?.contains?.('heat-leg-swatch') || n?.id?.startsWith?.('swatch-') || n?.id?.startsWith?.('heat-leg-'));
-      if (!isInsidePicker && !isSwatchBtn) {
-        closeColorPicker();
-      }
-    }
+    closeColorPickerIfOutside(e);
   };
   const escape = e => {
     if (e.key === 'Escape') {
@@ -21182,6 +21202,9 @@ function closeAllDropdowns(exceptWrap = null) {
       el('badge')?.focus?.();
     }
   };
+  if (typeof shadow.addEventListener === 'function') {
+    shadow.addEventListener('click', closeColorPickerIfOutside);
+  }
   document.addEventListener('click', outside);
   document.addEventListener('keydown', escape);
 
