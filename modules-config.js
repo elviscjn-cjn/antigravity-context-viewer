@@ -19,8 +19,8 @@ const { safeWriteJsonSync } = require('./meter-storage');
 const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
 const SCHEMA_VERSION = '0.8.8';
-const FALLBACK_PROJECT_VERSION = '0.9.0-beta.1';
-const FALLBACK_DISPLAY_VERSION = '0.9.0 beta1';
+const FALLBACK_PROJECT_VERSION = '0.9.0';
+const FALLBACK_DISPLAY_VERSION = '0.9.0';
 
 function resolveProjectVersion() {
   for (const pkgPath of [

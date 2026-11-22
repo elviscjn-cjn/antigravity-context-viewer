@@ -72,6 +72,7 @@ function buildRenderer(options = {}) {
   const dropdown = readVerifiedRendererSource(effSrcDir, 'dropdown.js').trim();
   const heatmap = readVerifiedRendererSource(effSrcDir, 'heatmap.js').trim();
   let mainTemplate = readVerifiedRendererSource(effSrcDir, 'main.js');
+  if (!mainTemplate.trim()) throw new Error('Renderer entry point is empty: ' + path.join(effSrcDir, 'main.js'));
   const effAntigravitySvgPath = path.join(effSrcDir, 'assets', 'antigravity-color.svg');
   const antigravitySvgPath = fs.existsSync(effAntigravitySvgPath) ? effAntigravitySvgPath : path.join(srcDir, 'assets', 'antigravity-color.svg');
   const antigravitySvgRaw = fs.readFileSync(antigravitySvgPath, 'utf8').trim();

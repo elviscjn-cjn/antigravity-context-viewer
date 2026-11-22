@@ -71,8 +71,8 @@ function openUrlInDefaultBrowser(url) {
 }
 
 function renderDashboardHtml(initialData = {}) {
-  const v = PROJECT_VERSION || '0.9.0-beta.1';
-  const dv = DISPLAY_VERSION || '0.9.0 beta1';
+  const v = PROJECT_VERSION || '0.9.0';
+  const dv = DISPLAY_VERSION || '0.9.0';
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1431,8 +1431,8 @@ async function startCliUiServer(options = {}) {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({
             ok: true,
-            version: PROJECT_VERSION || '0.9.0-beta.1',
-            displayVersion: DISPLAY_VERSION || '0.9.0 beta1',
+            version: PROJECT_VERSION || '0.9.0',
+            displayVersion: DISPLAY_VERSION || '0.9.0',
             port: testPort,
             pid: process.pid,
             uptimeSec: Math.round(process.uptime()),
