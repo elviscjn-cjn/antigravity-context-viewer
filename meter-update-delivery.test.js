@@ -16,6 +16,7 @@ const {
 const {
   checkUpdateAsync,
   applyUpdateAsync,
+  extractUpdateZip,
   parseReleasesAtom,
   parseLatestReleaseHtml,
   parseExpandedAssetsHtml,
@@ -675,5 +676,92 @@ test('Issue #22: requestGithubUrl 相对重定向跟随、Authorization 不泄�
     https.request = origRequest;
     if (origGhToken === undefined) delete process.env.GITHUB_TOKEN;
     else process.env.GITHUB_TOKEN = origGhToken;
+  }
+});
+
+test('Windows 更新包解压优先显式调用 System32\\tar.exe，失败时回退 PowerShell Expand-Archive 并保留诊断详情', () => {
+  // 1. Windows 下存在 System32\tar.exe 时必须显式调用完整路径，避免命中 PATH 中的 Git/MSYS2 GNU tar
+  const calls1 = [];
+  const res1 = extractUpdateZip('C:\\Temp\\pkg.zip', 'C:\\Temp\\out', {
+    platform: 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    _existsSync: (p) => p === 'C:\\Windows\\System32\\tar.exe',
+    _spawnSync: (cmd, args, opts) => {
+      calls1.push({ cmd, args, opts });
+      return { status: 0, stdout: '', stderr: '' };
+    }
+  });
+  assert.equal(res1.status, 0);
+  assert.equal(res1.method, 'system32-tar');
+  assert.equal(calls1.length, 1);
+  assert.equal(calls1[0].cmd, 'C:\\Windows\\System32\\tar.exe');
+  assert.deepEqual(calls1[0].args, ['-xf', 'C:\\Temp\\pkg.zip', '-C', 'C:\\Temp\\out']);
+
+  // 2. System32\tar.exe 执行失败时自动回退至 PowerShell Expand-Archive（经环境变量传参）
+  const calls2 = [];
+  const res2 = extractUpdateZip("C:\\Temp\\a'b [1]\\pkg.zip", 'C:\\Temp\\out', {
+    platform: 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    _existsSync: (p) =>
+      p === 'C:\\Windows\\System32\\tar.exe' ||
+      p === 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    _spawnSync: (cmd, args, opts) => {
+      calls2.push({ cmd, args, opts });
+      if (cmd.endsWith('tar.exe')) {
+        return { status: 1, stdout: '', stderr: 'tar: Error opening archive' };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    }
+  });
+  assert.equal(res2.status, 0);
+  assert.equal(res2.method, 'powershell-expand-archive');
+  assert.equal(calls2.length, 2);
+  assert.equal(calls2[1].cmd, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.equal(calls2[1].opts.env.AG_UPDATE_ZIP_PATH, "C:\\Temp\\a'b [1]\\pkg.zip");
+  assert.equal(calls2[1].opts.env.AG_UPDATE_EXTRACT_DIR, 'C:\\Temp\\out');
+
+  // 3. 两种方式均失败时返回非零状态与可读错误摘要
+  const res3 = extractUpdateZip('C:\\Temp\\bad.zip', 'C:\\Temp\\out', {
+    platform: 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    _existsSync: (p) => p === 'C:\\Windows\\System32\\tar.exe',
+    _spawnSync: (cmd) => {
+      if (cmd.endsWith('tar.exe')) {
+        return { status: 1, stdout: '', stderr: 'tar: Unrecognized archive format' };
+      }
+      return { status: 1, stdout: '', stderr: 'Expand-Archive : Not a valid zip' };
+    }
+  });
+  assert.notEqual(res3.status, 0);
+  assert.match(res3.detail, /system32-tar:.*Unrecognized archive format/);
+  assert.match(res3.detail, /powershell:.*Not a valid zip/);
+
+  // 4. 非 Windows 平台继续调用 unzip 且在失败时返回诊断信息
+  const calls4 = [];
+  const res4 = extractUpdateZip('/tmp/pkg.zip', '/tmp/out', {
+    platform: 'linux',
+    _spawnSync: (cmd, args) => {
+      calls4.push({ cmd, args });
+      return { status: 9, stdout: '', stderr: 'unzip: cannot find zipfile' };
+    }
+  });
+  assert.equal(calls4[0].cmd, 'unzip');
+  assert.equal(res4.status, 9);
+  assert.match(res4.detail, /cannot find zipfile/);
+});
+
+test('extractUpdateZip 在当前平台可真实解压标准 ZIP 包（即使 Windows PATH 中 Git GNU tar 排在前面）', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-extract-zip-'));
+  try {
+    const zipPath = path.join(tmpDir, 'sample.zip');
+    const extractDir = path.join(tmpDir, 'extracted');
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(zipPath, createSimpleZipBuffer({ 'cli.js': 'console.log("ok");\n' }));
+
+    const res = extractUpdateZip(zipPath, extractDir);
+    assert.equal(res.status, 0, `真实解压失败: ${res.detail || ''}`);
+    assert.equal(fs.readFileSync(path.join(extractDir, 'cli.js'), 'utf8'), 'console.log("ok");\n');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

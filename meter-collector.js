@@ -7827,6 +7827,88 @@ async function downloadAssetFileWithRetry(url, filePath, fetcher, options = {}) 
   throw lastErr;
 }
 
+/**
+ * 解压官方更新 zip 安装包：
+ * - Windows 优先显式调用 System32\tar.exe (bsdtar)，避免 PATH 中 Git/MSYS2/Cygwin 的 GNU tar 抢占导致解压 zip 失败；
+ * - 若 System32\tar.exe 缺失或执行失败，自动回退到 PowerShell Expand-Archive（经由环境变量传参避免路径转义问题）；
+ * - 非 Windows 平台继续使用 unzip，并保留 stderr 诊断摘要以便排障。
+ */
+function extractUpdateZip(zipPath, extractDir, options = {}) {
+  const platform = options.platform || process.platform;
+  const runSpawnSync = options._spawnSync || spawnSync;
+  const existsSyncFn = options._existsSync || fs.existsSync;
+  const env = options.env || process.env;
+
+  const formatResultError = (res) => {
+    if (!res) return '未返回执行结果';
+    const raw = (res.stderr && String(res.stderr).trim()) ||
+      (res.stdout && String(res.stdout).trim()) ||
+      (res.error && (res.error.message || String(res.error))) ||
+      (res.status !== null && res.status !== undefined ? `exit code ${res.status}` : '');
+    return raw ? sanitizeDiagnosticErrorText(raw).replace(/\s+/g, ' ').slice(0, 200) : '';
+  };
+
+  if (platform === 'win32') {
+    const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.WINDIR || env.windir || 'C:\\Windows';
+    const systemTarPath = path.win32.join(systemRoot, 'System32', 'tar.exe');
+    const systemPowerShellPath = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const attempts = [];
+
+    if (existsSyncFn(systemTarPath)) {
+      const tarRes = runSpawnSync(systemTarPath, ['-xf', zipPath, '-C', extractDir], {
+        encoding: 'utf8',
+        windowsHide: true
+      });
+      if (tarRes && tarRes.status === 0 && !tarRes.error) {
+        return { status: 0, method: 'system32-tar' };
+      }
+      attempts.push(`system32-tar: ${formatResultError(tarRes) || 'failed'}`);
+    }
+
+    const psExe = existsSyncFn(systemPowerShellPath) ? systemPowerShellPath : 'powershell.exe';
+    const psRes = runSpawnSync(
+      psExe,
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        'Expand-Archive -LiteralPath $env:AG_UPDATE_ZIP_PATH -DestinationPath $env:AG_UPDATE_EXTRACT_DIR -Force'
+      ],
+      {
+        encoding: 'utf8',
+        windowsHide: true,
+        env: {
+          ...env,
+          AG_UPDATE_ZIP_PATH: zipPath,
+          AG_UPDATE_EXTRACT_DIR: extractDir
+        }
+      }
+    );
+    if (psRes && psRes.status === 0 && !psRes.error) {
+      return { status: 0, method: 'powershell-expand-archive' };
+    }
+    attempts.push(`powershell: ${formatResultError(psRes) || 'failed'}`);
+
+    return {
+      status: (psRes && Number.isInteger(psRes.status) && psRes.status !== 0) ? psRes.status : 1,
+      error: psRes?.error || null,
+      detail: attempts.join('; ')
+    };
+  }
+
+  const unzipRes = runSpawnSync('unzip', ['-q', zipPath, '-d', extractDir], {
+    encoding: 'utf8'
+  });
+  if (unzipRes && unzipRes.status === 0 && !unzipRes.error) {
+    return { status: 0, method: 'unzip' };
+  }
+  return {
+    status: (unzipRes && Number.isInteger(unzipRes.status) && unzipRes.status !== 0) ? unzipRes.status : 1,
+    error: unzipRes?.error || null,
+    detail: formatResultError(unzipRes)
+  };
+}
+
 async function applyUpdateAsync(options = {}) {
   if (isApplyingUpdate) {
     return { ok: false, error: '更新任务正在执行中，请勿重复操作' };
@@ -7978,13 +8060,21 @@ async function applyUpdateAsync(options = {}) {
       } catch (err) {
         extractRes = { status: 1, error: err };
       }
-    } else if (process.platform === 'win32') {
-      extractRes = spawnSync('tar', ['-xf', zipPath, '-C', extractDir], { stdio: 'ignore', windowsHide: true });
     } else {
-      extractRes = spawnSync('unzip', ['-q', zipPath, '-d', extractDir], { stdio: 'ignore' });
+      extractRes = extractUpdateZip(zipPath, extractDir, {
+        platform: process.platform,
+        _spawnSync: options._spawnSync,
+        _existsSync: options._existsSync
+      });
     }
-    if (extractRes && extractRes.status !== 0) {
-      return { ok: false, error: '解压更新安装包失败，终止安装', htmlUrl: targetRelease.htmlUrl };
+    if (!extractRes || extractRes.status !== 0 || extractRes.error) {
+      const detail = extractRes?.detail ||
+        (extractRes?.error ? sanitizeDiagnosticErrorText(extractRes.error) : '');
+      return {
+        ok: false,
+        error: detail ? `解压更新安装包失败，终止安装 (${detail})` : '解压更新安装包失败，终止安装',
+        htmlUrl: targetRelease.htmlUrl
+      };
     }
 
     const cliPath = path.join(extractDir, 'cli.js');
@@ -8187,6 +8277,7 @@ module.exports = {
   SUBSCRIPTION_ACQUISITION_PRESETS,
   checkUpdateAsync,
   applyUpdateAsync,
+  extractUpdateZip,
   LIVE_RUNTIME_FILES,
   getLiveRuntimeDir,
   syncLiveRuntimeBundle,
