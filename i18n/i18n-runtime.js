@@ -575,6 +575,11 @@
         return translationCache.get(normalized);
       }
 
+      // 超长段落文本绝非 UI 菜单或按钮标签，快速短路避免进入 338 条正则及分句双重循环
+      if (normalized.length > 280) {
+        return cacheAndReturn(normalized, null);
+      }
+
       if (hasOwn.call(exactDict, normalized)) {
         return cacheAndReturn(normalized, exactDict[normalized]);
       }
@@ -846,6 +851,18 @@
     if (isModelSelectorBoundary(cur)) return true;
 
     if (cur.getAttribute) {
+      if (cur.hasAttribute && (
+          cur.hasAttribute('data-markdown-root') ||
+          cur.hasAttribute('data-markdown-virtualized') ||
+          cur.hasAttribute('data-markdown-block-index') ||
+          cur.hasAttribute('data-quotable') ||
+          cur.hasAttribute('data-quotable-inline') ||
+          cur.hasAttribute('data-md-table') ||
+          cur.hasAttribute('data-diff-type') ||
+          cur.hasAttribute('data-cos-artifact')
+      )) {
+        return true;
+      }
       if (cur.getAttribute('contenteditable') === 'true' ||
           cur.getAttribute('role') === 'textbox' ||
           cur.getAttribute('role') === 'code' ||
@@ -861,6 +878,7 @@
       var dataRole = cur.getAttribute('data-role') || '';
       if (dataRole === 'assistant' || dataRole === 'user' || role === 'code') return true;
       var dtid = cur.getAttribute('data-testid') || '';
+      if (dtid === 'code-gutter' || dtid === 'code-gutter-diff' || dtid === 'mcp-tool-step') return true;
       if (dtid) {
         for (var ti = 0; ti < PROTECTED_TESTID_PATTERNS.length; ti++) {
           if (dtid.indexOf(PROTECTED_TESTID_PATTERNS[ti]) !== -1) return true;
@@ -931,8 +949,22 @@
           return true;
         }
         if (cur.id && PROTECTED_ID_SET[cur.id]) return true;
+        if (cur.hasAttribute && (
+          cur.hasAttribute('data-markdown-root') ||
+          cur.hasAttribute('data-markdown-virtualized') ||
+          cur.hasAttribute('data-markdown-block-index') ||
+          cur.hasAttribute('data-quotable') ||
+          cur.hasAttribute('data-quotable-inline') ||
+          cur.hasAttribute('data-md-table') ||
+          cur.hasAttribute('data-diff-type') ||
+          cur.hasAttribute('data-cos-artifact')
+        )) {
+          return true;
+        }
         if (cur.getAttribute && (
           cur.getAttribute('data-testid') === 'user-message-content' ||
+          cur.getAttribute('data-testid') === 'code-gutter' ||
+          cur.getAttribute('data-testid') === 'code-gutter-diff' ||
           cur.getAttribute('contenteditable') === 'true' ||
           cur.getAttribute('role') === 'textbox' ||
           cur.getAttribute('data-lexical-editor') === 'true' ||
@@ -963,9 +995,9 @@
     return false;
   }
 
-  function shouldIgnoreElement(el) {
-    if (!el || el.nodeType !== 1) return false;
+  var ignoreElementCache = typeof WeakMap === 'function' ? new WeakMap() : null;
 
+  function computeShouldIgnoreElement(el) {
     // 1. 强保护容器检查 (即使白名单标签也不能突破 CODE/PRE/user-message-content/Markdown/工具输出)
     if (hasProtectedCoreAncestor(el)) return true;
 
@@ -995,6 +1027,18 @@
     return false;
   }
 
+  function shouldIgnoreElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (ignoreElementCache && ignoreElementCache.has(el)) {
+      return ignoreElementCache.get(el);
+    }
+    var res = computeShouldIgnoreElement(el);
+    if (ignoreElementCache && (res === true || el.isConnected === true)) {
+      ignoreElementCache.set(el, res);
+    }
+    return res;
+  }
+
   var MARK_ATTR = '_agyDone';
   var currentScanId = 0;
 
@@ -1003,7 +1047,18 @@
   }
 
   function applyBrandTitleToText(trimmed, parentEl) {
+    if (
+      trimmed !== 'Antigravity' &&
+      trimmed !== 'Google Antigravity' &&
+      trimmed !== '反重力' &&
+      trimmed !== 'Google 反重力'
+    ) {
+      return null;
+    }
     var mode = getBrandTitleMode();
+    if (mode === 'english' && (trimmed === 'Antigravity' || trimmed === 'Google Antigravity')) {
+      return null;
+    }
     if (!parentEl || !parentEl.tagName) return null;
     var tag = parentEl.tagName;
     if (tag === 'CODE' || tag === 'PRE' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SCRIPT' || tag === 'STYLE') return null;
@@ -1383,6 +1438,8 @@
 
   function enqueueNode(node) {
     if (!node) return;
+    var checkEl = node.nodeType === 1 ? node : (node.parentElement || node.parentNode);
+    if (checkEl && checkEl.nodeType === 1 && shouldIgnoreElement(checkEl)) return;
     if (pendingNodeSet) {
       if (pendingNodeSet.has(node)) return;
       if (pendingNodes.length < 500) {
@@ -1562,14 +1619,17 @@
 
         var target = e.target;
         if (!target) return;
-        disconnectObserver();
-        try {
-          if (target.nodeType === 1) {
+        if (target.nodeType === 1 && !shouldIgnoreElement(target)) {
+          disconnectObserver();
+          try {
             translateElement(target);
-            if (target.parentElement && !isWorkbenchOrRoot(target.parentElement)) translateElement(target.parentElement);
-          }
-        } catch (e) {}
-        reconnectObserver();
+            var parentEl = target.parentElement;
+            if (parentEl && !isWorkbenchOrRoot(parentEl) && (!parentEl.children || parentEl.children.length <= 12) && !shouldIgnoreElement(parentEl)) {
+              translateElement(parentEl);
+            }
+          } catch (e) {}
+          reconnectObserver();
+        }
 
         if (hoverScanTimer) clearTimeout(hoverScanTimer);
         hoverScanTimer = setTimeout(function () {

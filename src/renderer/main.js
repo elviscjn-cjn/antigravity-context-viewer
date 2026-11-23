@@ -2766,8 +2766,24 @@
     'i'
   );
 
-  function checkHostDomCompactionSignals() {
+  let lastCompactionDomCheckAt = 0;
+
+  function checkHostDomCompactionSignals(options = {}) {
     if (state.disposed || !state.route || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+    const nowMs = Date.now();
+    const isInitialRouteCheck = state.lastDomCompactedBannerCount < 0;
+    if (!isInitialRouteCheck && !options?.urgent) {
+      const latestCallRec = typeof resolveLatestSessionCallRecord === 'function' ? resolveLatestSessionCallRecord() : null;
+      const isActivelyBusy = Boolean(
+        state.compacting ||
+        state.lastDomCompactingActive ||
+        state.livePendingRequest ||
+        (latestCallRec && latestCallRec.status === 'streaming')
+      );
+      const minIntervalMs = isActivelyBusy ? 250 : 950;
+      if (nowMs - lastCompactionDomCheckAt < minIntervalMs) return;
+    }
+    lastCompactionDomCheckAt = nowMs;
     try {
       const nodes = document.querySelectorAll('span, div, p');
       if (!Array.isArray(nodes) && typeof nodes?.length !== 'number') return;
@@ -2777,15 +2793,35 @@
       const minIdx = Math.max(0, totalNodes - 4000);
       for (let i = totalNodes - 1; i >= minIdx; i--) {
         const n = nodes[i];
-        if (!n || n === host || (typeof host.contains === 'function' && host.contains(n))) continue;
-        if (n.children && n.children.length > 40) continue;
-        const txt = typeof n.textContent === 'string' ? n.textContent.replace(/[\u200b-\u200d\ufeff]/g, '').trim() : '';
-        if (!txt || txt.length > 120) continue;
+        if (!n || n === host || n.className === 'ag-cm-turn-footer') continue;
+        if (n.hasAttribute && (
+          n.hasAttribute('data-markdown-root') ||
+          n.hasAttribute('data-markdown-virtualized') ||
+          n.hasAttribute('data-markdown-block-index') ||
+          n.hasAttribute('data-quotable') ||
+          n.hasAttribute('data-turn-index') ||
+          n.hasAttribute('data-bubble-side')
+        )) continue;
+        const childCount = n.childElementCount !== undefined ? n.childElementCount : (n.children ? n.children.length : 0);
+        if (childCount > 40) continue;
+        // 跳过多层嵌套的大消息/布局容器，但完整保留扁平单字母闪烁的 Compacting 提示 (children 均为无子元素的叶子 span)
+        if (childCount > 3) {
+          const firstChildEl = n.firstElementChild || (n.children && n.children[0]);
+          const grandChildCount = firstChildEl
+            ? (firstChildEl.childElementCount !== undefined ? firstChildEl.childElementCount : (firstChildEl.children ? firstChildEl.children.length : 0))
+            : 0;
+          if (grandChildCount > 0) continue;
+        }
+        if (typeof host.contains === 'function' && host.contains(n)) continue;
+        const rawTxt = n.textContent;
+        if (typeof rawTxt !== 'string' || rawTxt.length < 4 || rawTxt.length > 140) continue;
+        const txt = rawTxt.replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+        if (!txt || txt.length < 4 || txt.length > 120) continue;
         if (HOST_COMPACTING_TEXT_RE.test(txt)) {
           // 若父节点与子节点均包含相同文本，仅需标记布尔位即可，不受重复嵌套影响
           sawCompacting = true;
         } else if (
-          (!n.children || n.children.length <= 3) && (
+          childCount <= 3 && (
             txt.includes('The conversation was compacted') ||
             txt.includes('会话已被压缩以适应上下文窗口') ||
             txt.includes('会话上下文已执行压缩') ||
@@ -2849,11 +2885,27 @@
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
-      hostDomObserver = new MutationObserver(() => {
+      const shouldIgnoreHostMutationTarget = (node, ignoreVirtualScroll) => {
+        if (!node) return false;
+        const elNode = node.nodeType === 1 ? node : node.parentElement;
+        if (!elNode) return false;
+        if (elNode === host || (typeof host.contains === 'function' && host.contains(elNode))) return true;
+        if (elNode.id === 'ag-composer-status-bar' || elNode.className === 'ag-cm-turn-footer') return true;
+        if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer')) return true;
+        // 静息浏览已完成对话时忽略虚拟滚动列表内部块级增删，避免滚动期间每 60ms 重跑全局 DOM 检查
+        if (ignoreVirtualScroll && elNode.closest?.('[data-testid="conversation-view"]')) return true;
+        return false;
+      };
+      hostDomObserver = new MutationObserver((mutations) => {
         if (state.disposed) return;
         if (!host.isConnected) {
           layoutMeasurementDirty = true;
           ensureHostDocked();
+        } else if (Array.isArray(mutations) && mutations.length > 0) {
+          const isIdleConv = !state.compacting && !state.lastDomCompactingActive && !state.livePendingRequest && state.lastDomCompactedBannerCount >= 0;
+          if (mutations.every(m => shouldIgnoreHostMutationTarget(m.target, isIdleConv))) {
+            return;
+          }
         }
         if (!domMutationThrottleTimer) {
           domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 60);
@@ -5593,6 +5645,18 @@
 
       const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
       const boundTurnKeys = new Set();
+      // 读写分离：在修改任何 DOM 节点前一次性批量读取工具栏宽度，消除 M 轮历史回复上的强制同步回流 (Layout Thrashing)
+      const toolbarWidths = new Map();
+      for (let i = 0; i < mainToolbars.length; i++) {
+        const tb = mainToolbars[i];
+        const row = tb.firstElementChild || tb;
+        toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
+      }
+      for (let s = 0; s < sideToolbars.length; s++) {
+        const tb = sideToolbars[s];
+        const row = tb.firstElementChild || tb;
+        toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
+      }
       const applyFooterToToolbar = (tb, turnObj, forceFallbackScope = false) => {
         const row = tb.firstElementChild || tb;
         const removeOld = () => {
@@ -5638,7 +5702,7 @@
         const outCompact = hasCalcUsage ? `Out ${formatReqCompactTokens(cs.output)}` : 'Out —';
         const cacheCompact = `${t('turnFooter.cache')} ${hitStr}`;
 
-        const rowW = Number(row.clientWidth || tb.clientWidth || 0);
+        const rowW = toolbarWidths.has(tb) ? toolbarWidths.get(tb) : Number(row.clientWidth || tb.clientWidth || 0);
         let footerParts;
         if (rowW <= 0 || rowW >= 460) {
           footerParts = [scopeLabel, mName, inCompact, outCompact, cacheCompact, tpsStr];
@@ -5663,10 +5727,14 @@
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
         }
-        badge.textContent = text;
-        badge.setAttribute('data-scope', isTurnAggregate ? 'turn' : 'request');
-        badge.setAttribute('data-turn-key', String(turnObj.turnKey || ''));
-        badge.setAttribute('data-call-id', String(lastCall.callId || ''));
+        // 脏检查幂等写入：数值不变时不重复改写 textContent 与 aria-label，避免唤醒 MutationObserver
+        if (badge.textContent !== text) badge.textContent = text;
+        const nextScope = isTurnAggregate ? 'turn' : 'request';
+        if (badge.getAttribute('data-scope') !== nextScope) badge.setAttribute('data-scope', nextScope);
+        const nextTurnKey = String(turnObj.turnKey || '');
+        if (badge.getAttribute('data-turn-key') !== nextTurnKey) badge.setAttribute('data-turn-key', nextTurnKey);
+        const nextCallId = String(lastCall.callId || '');
+        if (badge.getAttribute('data-call-id') !== nextCallId) badge.setAttribute('data-call-id', nextCallId);
 
         const tp = lastCall.timestamp ? formatReqTimeParts(lastCall) : null;
         const reqTimeStr = tp?.tooltip || tp?.text || (lastCall.date || '—');
@@ -5677,8 +5745,10 @@
           `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} (命中 ${hitStr})`,
           `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`
         ];
-        badge.title = titleLines.join('\n');
-        badge.setAttribute('aria-label', `${text}。${titleLines.slice(1).join('；')}`);
+        const nextTitle = titleLines.join('\n');
+        if (badge.title !== nextTitle) badge.title = nextTitle;
+        const nextAria = `${text}。${titleLines.slice(1).join('；')}`;
+        if (badge.getAttribute('aria-label') !== nextAria) badge.setAttribute('aria-label', nextAria);
       };
 
       const M = mainToolbars.length;
@@ -16453,6 +16523,7 @@
       baselineCallId: latestRec?.callId || null,
       baselineCount: state.count || 0
     };
+    state.requestNext = 0;
     const updateWaitOnly = () => {
       if (state.disposed || !state.livePendingRequest || state.livePendingRequest.cascadeId !== state.route) {
         stopLiveWaitTickTimer();
@@ -20158,7 +20229,7 @@
       if (generation === state.generation && !state.disposed) {
         state.requestBusy = false;
         const latestRecNow = resolveLatestSessionCallRecord();
-        const isStreamingNow = Boolean((latestRecNow && latestRecNow.status === 'streaming') || state.compacting);
+        const isStreamingNow = Boolean((latestRecNow && latestRecNow.status === 'streaming') || state.compacting || state.livePendingRequest);
         const nextDelay = document.hidden ? 15000 : (isStreamingNow ? 1000 : 3000);
         state.requestNext = Date.now() + nextDelay;
         render();
@@ -24475,7 +24546,7 @@
     },
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, sessionAvgSpeed: getSessionAverageSpeed(state.lastSpeedEval || null), scan: state.scan, compacting: state.compacting, hostContextWindowUsage: state.hostContextWindowUsage, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     simulateHostWsMessageForTest: (rawFrame) => handlePassiveHostWsMessage({ data: typeof rawFrame === 'string' ? rawFrame : JSON.stringify(rawFrame) }),
-    checkHostDomCompactionForTest: () => checkHostDomCompactionSignals(),
+    checkHostDomCompactionForTest: () => checkHostDomCompactionSignals({ urgent: true }),
     captureHotReloadState,
     verifyHotReloadAndRefreshQuota,
     getBackendStatusForTest: () => ({
