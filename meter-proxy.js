@@ -250,7 +250,7 @@ function detectProxyConfig(options = {}) {
  * overrideExisting=true 时用配置值强行覆盖父环境/loginShellEnv 的残留或冲突代理变量
  */
 function applyProxyEnvironment(targetEnv = process.env, options = {}) {
-  const detected = detectProxyConfig(options);
+  const detected = readStandaloneProxyEnvironment(options.launchEnv || process.env) || detectProxyConfig(options);
   if (!detected.enabled || !detected.httpProxy) {
     return targetEnv;
   }
@@ -283,6 +283,13 @@ function applyProxyEnvironment(targetEnv = process.env, options = {}) {
   }
 
   return targetEnv;
+}
+
+function readStandaloneProxyEnvironment(env) {
+  if (env.AG_METER_NO_TUN_LAUNCH !== '1') return null;
+  const httpProxy = normalizeProxyUrl(env.HTTPS_PROXY || env.HTTP_PROXY);
+  if (!httpProxy) return null;
+  return { enabled: true, httpProxy, allProxy: httpProxy, noProxy: env.NO_PROXY || '' };
 }
 
 /**
@@ -835,6 +842,28 @@ function resolveAntigravityExecutable(options = {}) {
   return null;
 }
 
+function isProxyLaunchHostRunning(exePath, { platform = process.platform, run = require('child_process').execFileSync } = {}) {
+  try {
+    if (platform === 'win32') {
+      const script = [
+        "$target = $env:AG_METER_PROXY_TARGET",
+        "$active = Get-CimInstance Win32_Process -Filter \"Name = 'Antigravity.exe'\" | Where-Object { $_.ExecutablePath -eq $target -and $_.CommandLine -notmatch '(^|\\s)--type=' }",
+        "if ($active) { 'running' }"
+      ].join('\n');
+      return String(run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        env: { ...process.env, AG_METER_PROXY_TARGET: path.win32.normalize(exePath) },
+        encoding: 'utf8', windowsHide: true, timeout: 6000, stdio: ['ignore', 'pipe', 'ignore']
+      })).trim() === 'running';
+    }
+    const commands = run('ps', ['-ww', '-U', String(process.getuid()), '-o', 'command='], {
+      encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore']
+    }).split('\n');
+    return commands.some(command => command === exePath || (command.startsWith(`${exePath} `) && !/\s--type=/.test(command)));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 构造免改盘（不修改 app.asar）启动 Antigravity 所需的独立进程代理环境与 Chromium 参数。
  */
@@ -867,6 +896,7 @@ function buildHostProxyLaunchSpec(options = {}) {
     delete env.no_proxy;
   }
   env.NODE_USE_ENV_PROXY = '1';
+  env.AG_METER_NO_TUN_LAUNCH = '1';
 
   const args = [`--proxy-server=${chromiumProxyUrl}`];
   if (noProxy) args.push(`--proxy-bypass-list=${noProxy}`);
@@ -879,8 +909,11 @@ function buildHostProxyLaunchSpec(options = {}) {
   return { proxyUrl, chromiumProxyUrl, noProxy, env, args };
 }
 
-function escapeVbsString(val) {
-  return assertSingleLineSafe(val, 'vbsString').replace(/"/g, '""');
+function vbsString(val) {
+  const parts = assertSingleLineSafe(val, 'vbsString').split(/([^\x20-\x7e])/).filter(Boolean);
+  return parts.map(part => /^[\x20-\x7e]+$/.test(part)
+    ? `"${part.replace(/"/g, '""')}"`
+    : `ChrW(&H${part.charCodeAt(0).toString(16).padStart(4, '0')})`).join(' & ') || '""';
 }
 
 function escapePosixSingleQuote(val) {
@@ -896,17 +929,17 @@ function generateWindowsNoTunVbs({ exePath, proxyUrl, noProxy, recoverCliPath = 
   if (!exePath || typeof exePath !== 'string' || !exePath.trim()) {
     throw new Error('缺少 Antigravity.exe 路径');
   }
-  const safeExe = escapeVbsString(exePath.trim());
-  const safeProxy = escapeVbsString(checked.value);
-  const safeChromium = escapeVbsString(checked.value.replace(/^socks5h:\/\//i, 'socks5://'));
-  const safeBypass = escapeVbsString(noProxy !== undefined && noProxy !== null ? String(noProxy).trim() : DEFAULT_NO_PROXY);
-  const bypassFlag = safeBypass ? ` --proxy-bypass-list=""${safeBypass}""` : '';
+  const safeExe = vbsString(exePath.trim());
+  const safeProxy = vbsString(checked.value);
+  const safeChromium = vbsString(checked.value.replace(/^socks5h:\/\//i, 'socks5://'));
+  const bypass = noProxy !== undefined && noProxy !== null ? String(noProxy).trim() : DEFAULT_NO_PROXY;
+  const safeBypass = vbsString(bypass);
   const safeRecoverCli = (typeof recoverCliPath === 'string' && recoverCliPath.trim())
-    ? escapeVbsString(recoverCliPath.trim())
+    ? vbsString(recoverCliPath.trim())
     : '';
   const recoverBlock = safeRecoverCli
     ? [
-      `recoverCli = "${safeRecoverCli}"`,
+      `recoverCli = ${safeRecoverCli}`,
       'If fso.FileExists(recoverCli) Then',
       '  On Error Resume Next',
       '  shell.Run "node """ & recoverCli & """ recover --silent", 0, True',
@@ -920,10 +953,11 @@ function generateWindowsNoTunVbs({ exePath, proxyUrl, noProxy, recoverCliPath = 
     safeRecoverCli
       ? 'Dim proxyUrl, chromiumProxy, noProxy, exePath, recoverCli, fso, shell, env, cmd, i, arg, delayMs, extraArgs'
       : 'Dim proxyUrl, chromiumProxy, noProxy, exePath, fso, shell, env, cmd, i, arg, delayMs, extraArgs',
-    `proxyUrl = "${safeProxy}"`,
-    `chromiumProxy = "${safeChromium}"`,
-    `noProxy = "${safeBypass}"`,
-    `exePath = "${safeExe}"`,
+    'Dim wmi, appProcess',
+    `proxyUrl = ${safeProxy}`,
+    `chromiumProxy = ${safeChromium}`,
+    `noProxy = ${safeBypass}`,
+    `exePath = ${safeExe}`,
     'Set fso = CreateObject("Scripting.FileSystemObject")',
     'Set shell = CreateObject("WScript.Shell")',
     'delayMs = 0',
@@ -944,6 +978,15 @@ function generateWindowsNoTunVbs({ exePath, proxyUrl, noProxy, recoverCliPath = 
     '  MsgBox "Antigravity.exe not found:" & vbCrLf & exePath, vbExclamation, "Antigravity No-TUN Launcher"',
     '  WScript.Quit 1',
     'End If',
+    'On Error Resume Next',
+    'Set wmi = GetObject("winmgmts:root\\cimv2")',
+    'For Each appProcess In wmi.ExecQuery("SELECT ExecutablePath, CommandLine FROM Win32_Process WHERE Name = ""Antigravity.exe""")',
+    '  If LCase(appProcess.ExecutablePath) = LCase(exePath) And InStr(1, appProcess.CommandLine, "--type=", 1) = 0 Then',
+    '    MsgBox "Quit Antigravity completely, then start it with this launcher.", vbExclamation, "Antigravity No-TUN Launcher"',
+    '    WScript.Quit 2',
+    '  End If',
+    'Next',
+    'On Error GoTo 0',
     ...recoverBlock,
     'Set env = shell.Environment("PROCESS")',
     'env("HTTP_PROXY") = proxyUrl',
@@ -952,10 +995,14 @@ function generateWindowsNoTunVbs({ exePath, proxyUrl, noProxy, recoverCliPath = 
     'env("https_proxy") = proxyUrl',
     'env("ALL_PROXY") = proxyUrl',
     'env("all_proxy") = proxyUrl',
-    safeBypass ? 'env("NO_PROXY") = noProxy' : 'env.Remove("NO_PROXY")',
-    safeBypass ? 'env("no_proxy") = noProxy' : 'env.Remove("no_proxy")',
+    bypass ? 'env("NO_PROXY") = noProxy' : 'env.Remove("NO_PROXY")',
+    bypass ? 'env("no_proxy") = noProxy' : 'env.Remove("no_proxy")',
     'env("NODE_USE_ENV_PROXY") = "1"',
-    `cmd = """" & exePath & """ --proxy-server=""" & chromiumProxy & """${bypassFlag}" & extraArgs`,
+    'env("AG_METER_NO_TUN_LAUNCH") = "1"',
+    'env.Remove("ELECTRON_RUN_AS_NODE")',
+    'cmd = """" & exePath & """ --proxy-server=""" & chromiumProxy & """"',
+    ...(bypass ? ['cmd = cmd & " --proxy-bypass-list=""" & noProxy & """"'] : []),
+    'cmd = cmd & extraArgs',
     'shell.Run cmd, 1, False',
     ''
   ].join('\r\n');
@@ -979,6 +1026,13 @@ function generatePosixNoTunLauncher({ exePath, proxyUrl, noProxy, recoverCliPath
     '#!/bin/sh',
     'set -eu',
     'unset ELECTRON_RUN_AS_NODE',
+    `if ps -ww -U "$(id -u)" -o command= 2>/dev/null | AG_METER_TARGET=${escapePosixSingleQuote(exePath.trim())} awk '`,
+    '  BEGIN { target = ENVIRON["AG_METER_TARGET"] }',
+    '  $0 == target || (index($0, target " ") == 1 && $0 !~ / --type=/) { found = 1 }',
+    "  END { exit !found }'; then",
+    '  echo "Quit Antigravity completely, then start it with this launcher." >&2',
+    '  exit 2',
+    'fi',
     ...(recoverLine ? [recoverLine] : []),
     `export HTTP_PROXY=${escapePosixSingleQuote(checked.value)}`,
     `export http_proxy=${escapePosixSingleQuote(checked.value)}`,
@@ -989,6 +1043,7 @@ function generatePosixNoTunLauncher({ exePath, proxyUrl, noProxy, recoverCliPath
     bypass ? `export NO_PROXY=${escapePosixSingleQuote(bypass)}` : 'unset NO_PROXY',
     bypass ? `export no_proxy=${escapePosixSingleQuote(bypass)}` : 'unset no_proxy',
     'export NODE_USE_ENV_PROXY=1',
+    'export AG_METER_NO_TUN_LAUNCH=1',
     bypass
       ? `exec ${escapePosixSingleQuote(exePath.trim())} --proxy-server=${escapePosixSingleQuote(chromiumProxy)} --proxy-bypass-list=${escapePosixSingleQuote(bypass)} "$@"`
       : `exec ${escapePosixSingleQuote(exePath.trim())} --proxy-server=${escapePosixSingleQuote(chromiumProxy)} "$@"`,
@@ -1090,6 +1145,7 @@ module.exports = {
   applyProxyEnvironment,
   buildCliProxyEnv,
   resolveAntigravityExecutable,
+  isProxyLaunchHostRunning,
   buildHostProxyLaunchSpec,
   generateWindowsNoTunVbs,
   generatePosixNoTunLauncher,

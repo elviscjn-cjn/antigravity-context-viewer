@@ -68,24 +68,28 @@
     try { fn(); } catch { }
   }
   activeDisposers.clear();
-  // 清理此前初始化异常或重复挂载遗留的孤儿宿主容器，保证页面内永远仅有唯一实例
+  // 清理此前初始化异常或重复挂载遗留的孤儿宿主容器（含顶层径向宿主），保证页面内永远仅有唯一实例
   try {
     if (typeof document.querySelectorAll === 'function') {
-      document.querySelectorAll('#ag-context-meter').forEach(node => {
+      document.querySelectorAll('#ag-context-meter, #ag-context-meter-radial-host, [data-ag-radial-top-layer]').forEach(node => {
         try {
+          const isRadialTopNode = node.id === 'ag-context-meter-radial-host'
+            || node.getAttribute?.('data-ag-radial-top-layer') === 'true';
           if (typeof node.__agForceDispose === 'function') {
             node.__agForceDispose();
-            node.remove?.();
+          }
+          if (node.shadowRoot && typeof node.shadowRoot.innerHTML === 'string') {
+            node.shadowRoot.innerHTML = '';
+          }
+          node.remove?.();
+          if (isRadialTopNode) {
             return;
           }
-          // 无主历史闭包节点：剥离 ID、隐藏且清空 shadowRoot 内容，保持其在位静默不再触发重插循环
+          // 无主历史主宿主闭包节点：若无法完整卸载则剥离 ID 并维持静默，避免重插死循环
           node.removeAttribute?.('id');
           node.setAttribute?.('data-ag-retired', '1');
           if (node.style) {
             node.style.cssText = 'display:none!important;width:0!important;height:0!important;overflow:hidden!important;pointer-events:none!important;position:absolute!important;';
-          }
-          if (node.shadowRoot && typeof node.shadowRoot.innerHTML === 'string') {
-            node.shadowRoot.innerHTML = '';
           }
         } catch { }
       });
@@ -99,6 +103,7 @@
     detectContextChangeEvents,
     parseGeneratorCall,
     calculateRequestApiCost,
+    summarizeSessionRequestCosts,
     setDynamicPricingCatalog,
     setCustomPricingCatalog,
     getDynamicPricingCatalog,
@@ -112,6 +117,7 @@
     summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
+    parseSpeedDateRange,
     computeCacheReadStats,
     summarizeCacheReadStats,
     computeCacheHitSummary,
@@ -137,10 +143,28 @@
     sanitizeCompositionPreview,
     evaluateSessionRuntimeStatus,
     computeContextSegments,
-    buildContextTrendSeries
+    buildContextTrendSeries,
+    buildExecutionTrace,
+    SUBSCRIPTION_TIER_SPECS,
+    SUBSCRIPTION_TIER_REGION_PRICES,
+    resolvePlanSpecKey,
+    getPlanTierSpec,
+    getRegionPlanReferencePrice
   } = (globalThis.__AGContextMeterCore || {});
   const VALID_DOCK_POSITIONS = ['flow', 'compact', 'aux', 'page'];
   const VALID_QUOTA_WINDOW_MODES = ['auto', '5h', 'weekly', 'both'];
+  const VALID_QUICK_MENU_STYLES = ['floating', 'topbar', 'bottombar', 'classic'];
+  const RADIAL_STAGGER_MS = 34;
+  const RADIAL_R_REST_360 = 56;
+  const RADIAL_R_REST_180 = 92;
+  const RADIAL_BAR_CLEARANCE_PX = 6;
+  const RADIAL_R_FAR_MULTIPLIER = 1.85;
+  const RADIAL_R_CLOSE_MULTIPLIER = 1.75;
+  const RADIAL_BLUR_START_PX = 10;
+  const RADIAL_DRAG_THRESHOLD_PX = 5;
+  const RADIAL_EDGE_MARGIN_PX = 84;
+  const ORB_RING_CIRCUMFERENCE = 122.52;
+  const ORB_CLI_FEEDBACK_MS = 1200;
   const DEFAULT_VIEW_PREFS_KEY = 'ag_default_view_prefs_v1';
   const DEFAULT_VIEW_PREFS_FALLBACK = Object.freeze({
     heatView: 'daily',
@@ -165,7 +189,8 @@
     return {
       heatView: validHeat.has(src.heatView) ? src.heatView : fbHeat,
       modelUsagePeriodDays: (rawPeriod === 7 || rawPeriod === 30) ? rawPeriod : DEFAULT_VIEW_PREFS_FALLBACK.modelUsagePeriodDays,
-      speedRangeDays: ['7', '30', 'all'].includes(rawSpeed) ? rawSpeed : DEFAULT_VIEW_PREFS_FALLBACK.speedRangeDays,
+      speedRangeDays: ['1', '3', '5', '7', '30', 'all', 'custom'].includes(rawSpeed) && (rawSpeed !== 'custom' || parseSpeedDateRange?.(src.speedDateRange)) ? rawSpeed : DEFAULT_VIEW_PREFS_FALLBACK.speedRangeDays,
+      ...(parseSpeedDateRange?.(src.speedDateRange) ? { speedDateRange: { start: src.speedDateRange.start, end: src.speedDateRange.end } } : {}),
       costScope: ['period', 'all'].includes(src.costScope) ? src.costScope : DEFAULT_VIEW_PREFS_FALLBACK.costScope,
       contextTrendMode: ['total', 'delta'].includes(src.contextTrendMode) ? src.contextTrendMode : DEFAULT_VIEW_PREFS_FALLBACK.contextTrendMode,
       contextTrendGranularity: ['step', 'turn'].includes(src.contextTrendGranularity) ? src.contextTrendGranularity : DEFAULT_VIEW_PREFS_FALLBACK.contextTrendGranularity,
@@ -201,22 +226,40 @@
   const quotaExpandedPoolKeys = new Set();
   let lastComputedQuotaView = null;
   let tflCardPinned = false;
-  let isTopbarHidden = (() => {
+  const VALID_TOPBAR_MODES = ['full', 'compact', 'hidden'];
+  const VALID_PANEL_DOCK_MODES = ['popover', 'aux', 'page'];
+  let topbarMode = (() => {
     try {
-      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_hide_topbar') : null;
-      if (saved === 'true') return true;
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_topbar_mode') : null;
+      if (VALID_TOPBAR_MODES.includes(saved)) return saved;
+      const hideSaved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_hide_topbar') : null;
       const dock = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_dock_position') : null;
-      return dock === 'hide';
-    } catch { return false; }
+      if (hideSaved === 'true' || dock === 'hide') return 'hidden';
+      if (dock === 'compact' || dock === 'fixed') return 'compact';
+      return 'full';
+    } catch { return 'full'; }
   })();
-  let dockPosition = (() => {
+  let panelDockMode = (() => {
     try {
-      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_dock_position') : null;
-      if (saved === 'fixed') return 'flow';
-      if (saved === 'hide') return 'flow';
-      if (saved === 'page') return 'flow';
-      return VALID_DOCK_POSITIONS.includes(saved) ? saved : 'flow';
-    } catch { return 'flow'; }
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_panel_dock_mode') : null;
+      if (VALID_PANEL_DOCK_MODES.includes(saved)) return saved;
+      const dock = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_dock_position') : null;
+      if (dock === 'aux') return 'aux';
+      if (dock === 'page') return 'page';
+      return 'popover';
+    } catch { return 'popover'; }
+  })();
+  let autoHideTopbarOnDockedPanel = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_autohide_topbar_docked') : null;
+      return saved === 'false' ? false : true;
+    } catch { return true; }
+  })();
+  let isTopbarHidden = topbarMode === 'hidden';
+  let dockPosition = (() => {
+    if (panelDockMode === 'aux') return 'aux';
+    if (panelDockMode === 'page') return 'page';
+    return topbarMode === 'compact' ? 'compact' : 'flow';
   })();
   let dockFallbackReason = '';
   let quotaBadgeWindowMode = (() => {
@@ -225,29 +268,140 @@
       return VALID_QUOTA_WINDOW_MODES.includes(saved) ? saved : 'auto';
     } catch { return 'auto'; }
   })();
+  // 旧 4 选 1 单选仅作为迁移输入保留，运行期真实状态由 3 个独立布尔开关承载
+  let legacyQuickMenuStyle = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_quick_menu_style') : null;
+      return VALID_QUICK_MENU_STYLES.includes(saved) ? saved : 'floating';
+    } catch { return 'floating'; }
+  })();
+  const readRadialSwitchPref = (key, legacyStyle, list) => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+      if (saved === 'true') return true;
+      if (saved === 'false') return false;
+    } catch { }
+    return list.includes(legacyStyle);
+  };
+  let radialTopbarEnabled = readRadialSwitchPref('ag_radial_topbar_enabled', legacyQuickMenuStyle, ['topbar']);
+  let radialBottombarEnabled = readRadialSwitchPref('ag_radial_bottombar_enabled', legacyQuickMenuStyle, ['bottombar']);
+  let radialOrbHidden = (() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const savedOrb = localStorage.getItem('ag_radial_orb_enabled');
+        if (savedOrb === 'false') return true;
+        if (savedOrb === 'true') return false;
+        if (localStorage.getItem('ag_radial_orb_hidden') === 'true') return true;
+      }
+    } catch { }
+    return legacyQuickMenuStyle !== 'floating';
+  })();
+  let radialOrbEnabled = !radialOrbHidden;
+  const deriveLegacyQuickMenuStyle = () => radialOrbEnabled
+    ? 'floating'
+    : (radialTopbarEnabled ? 'topbar' : (radialBottombarEnabled ? 'bottombar' : 'classic'));
+  let quickMenuStyle = deriveLegacyQuickMenuStyle();
+  let radialOrbPos = (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_radial_orb_pos') : null;
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed && Number.isFinite(Number(parsed.x)) && Number.isFinite(Number(parsed.y))) {
+        return { x: Math.round(Number(parsed.x)), y: Math.round(Number(parsed.y)) };
+      }
+    } catch { }
+    return null;
+  })();
+  const RADIAL_TOP_HOST_ID = 'ag-context-meter-radial-host';
+  const RADIAL_TOP_Z_INDEX = '2147483000';
+  const RADIAL_SYNC_ATTRS = new Set([
+    'data-theme',
+    'data-panel-tone',
+    'data-occupancy',
+    'data-marketplace-active',
+    'data-quick-menu-style',
+    'data-compacting'
+  ]);
+  const RADIAL_TOP_NODE_IDS = new Set([
+    'ctx-radial-orb',
+    'ctx-radial-layer',
+    'ctx-radial-center-close',
+    'ctx-orb-ring-fill',
+    'ctx-orb-pct'
+  ]);
+  let radialHost = null;
+  let radialShadow = null;
+  let radialDisposed = false;
+
   const host = document.createElement('div');
   host.id = 'ag-context-meter';
   host.setAttribute('data-layout', 'wide');
   host.setAttribute('data-dock', dockPosition);
+  host.setAttribute('data-topbar-mode', topbarMode);
+  host.setAttribute('data-panel-dock-mode', panelDockMode);
+  if (topbarMode === 'hidden') host.setAttribute('data-topbar-hidden', 'true');
   host.setAttribute('data-window-active', 'true');
+
+  function syncRadialHostAttributes() {
+    if (radialDisposed || !radialHost) return;
+    for (const attrName of RADIAL_SYNC_ATTRS) {
+      const val = host.getAttribute?.(attrName);
+      if (val !== null && val !== undefined) radialHost.setAttribute?.(attrName, val);
+      else radialHost.removeAttribute?.(attrName);
+    }
+  }
+
+  function disposeRadialTopLayer() {
+    radialDisposed = true;
+    try {
+      if (radialShadow && typeof radialShadow.innerHTML === 'string') {
+        radialShadow.innerHTML = '';
+      }
+    } catch { }
+    try { radialHost?.remove?.(); } catch { }
+    radialHost = null;
+    radialShadow = null;
+  }
+
+  if (typeof host.setAttribute === 'function') {
+    const origSetAttr = host.setAttribute.bind(host);
+    host.setAttribute = (name, value) => {
+      origSetAttr(name, value);
+      if (radialHost && RADIAL_SYNC_ATTRS.has(name)) {
+        radialHost.setAttribute?.(name, value);
+      }
+    };
+  }
+  if (typeof host.removeAttribute === 'function') {
+    const origRemoveAttr = host.removeAttribute.bind(host);
+    host.removeAttribute = (name) => {
+      origRemoveAttr(name);
+      if (radialHost && RADIAL_SYNC_ATTRS.has(name)) {
+        radialHost.removeAttribute?.(name);
+      }
+    };
+  }
+
   const shadow = host.attachShadow({ mode: 'open' });
   // 防止点击插件顶栏、额度/上下文/速度/用量入口或右栏面板时抢走宿主分屏窗格焦点并跳回左窗格（PR #79）
-  if (typeof shadow.addEventListener === 'function') {
+  const bindShadowFocusGuard = (rootNode) => {
+    if (typeof rootNode?.addEventListener !== 'function') return;
     const EDITABLE_TARGET_SELECTOR = 'input, textarea, select, option, label, [contenteditable]';
-    shadow.addEventListener('mousedown', (e) => {
+    rootNode.addEventListener('mousedown', (e) => {
       const target = e?.target;
       const targetEl = target && typeof target.closest === 'function' ? target : target?.parentElement;
       const isEditable = Boolean(targetEl?.closest?.(EDITABLE_TARGET_SELECTOR));
       if (!isEditable) e?.preventDefault?.();
       e?.stopPropagation?.();
     });
-    shadow.addEventListener('pointerdown', (e) => {
+    rootNode.addEventListener('pointerdown', (e) => {
       e?.stopPropagation?.();
     });
-    shadow.addEventListener('click', (e) => {
+    rootNode.addEventListener('click', (e) => {
       e?.stopPropagation?.();
     });
-  }
+  };
+  bindShadowFocusGuard(shadow);
 
   // Antigravity 本地真实 Token 统计基准数据（纯净初始状态，启动时由宿主实时扫描本地实际账本注入）
   const ANTIGRAVITY_TOKEN_DATA = {
@@ -280,10 +434,131 @@
   /* @INSERT_STYLES_AND_TEMPLATE */
 
   (document.body || document.documentElement).appendChild(host);
+
+  function extractRadialTopLayerCss() {
+    let fullCss = '';
+    try {
+      fullCss = shadow.querySelector?.('style')?.textContent || '';
+    } catch { }
+    if (!fullCss && typeof shadow.innerHTML === 'string') {
+      const m = shadow.innerHTML.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+      if (m) fullCss = m[1];
+    }
+    const startMarker = '/* @RADIAL_TOP_LAYER_CSS_START */';
+    const endMarker = '/* @RADIAL_TOP_LAYER_CSS_END */';
+    const startIdx = fullCss.indexOf(startMarker);
+    const endIdx = fullCss.indexOf(endMarker);
+    const bodyCss = (startIdx >= 0 && endIdx > startIdx)
+      ? fullCss.slice(startIdx, endIdx + endMarker.length)
+      : fullCss;
+    return `
+      :host {
+        position: fixed !important;
+        inset: 0 !important;
+        display: block !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        overflow: visible !important;
+        pointer-events: none !important;
+        z-index: ${RADIAL_TOP_Z_INDEX} !important;
+        -webkit-app-region: no-drag !important;
+        font: 12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+        --ag-ring-warn: #f59e0b;
+        --ag-ring-danger: #ef4444;
+      }
+      :host([data-marketplace-active="true"]) #ctx-radial-orb,
+      :host([data-marketplace-active="true"]) #ctx-radial-layer {
+        display: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+      }
+      ${bodyCss}
+    `;
+  }
+
+  function ensureRadialHostAtBodyEnd() {
+    if (radialDisposed || !radialHost) return false;
+    if (globalThis.__AGContextMeterActiveHost && globalThis.__AGContextMeterActiveHost !== host) return false;
+    const topParent = document.body || document.documentElement;
+    if (!topParent || typeof topParent.appendChild !== 'function') return false;
+    try {
+      if (typeof document.querySelectorAll === 'function') {
+        document.querySelectorAll('#ag-context-meter-radial-host, [data-ag-radial-top-layer]').forEach(extra => {
+          if (!extra || extra === radialHost) return;
+          try {
+            if (typeof extra.__agForceDispose === 'function') extra.__agForceDispose();
+            if (extra.shadowRoot && typeof extra.shadowRoot.innerHTML === 'string') extra.shadowRoot.innerHTML = '';
+            extra.remove?.();
+          } catch { }
+        });
+      }
+    } catch { }
+    const currentLast = topParent.lastElementChild ?? (Array.isArray(topParent.children) ? topParent.children[topParent.children.length - 1] : null);
+    if (radialHost.parentElement !== topParent || currentLast !== radialHost) {
+      topParent.appendChild(radialHost);
+      return true;
+    }
+    return false;
+  }
+
+  // 将悬浮圆球与径向菜单抽离到 document.body 末尾独立顶层容器，避免被宿主侧栏/辅助栏/浏览器层叠上下文遮挡
+  (() => {
+    try {
+      const topParent = document.body || document.documentElement;
+      if (!topParent || typeof topParent.appendChild !== 'function' || typeof document.createElement !== 'function') return;
+      if (typeof shadow.appendChild !== 'function' || typeof shadow.querySelector !== 'function') return;
+      const orbNode = shadow.getElementById?.('ctx-radial-orb');
+      const layerNode = shadow.getElementById?.('ctx-radial-layer');
+      if (!orbNode || !layerNode) return;
+      const candidate = document.createElement('div');
+      if (!candidate || typeof candidate.attachShadow !== 'function') return;
+      const candidateShadow = candidate.attachShadow({ mode: 'open' });
+      if (!candidateShadow || candidateShadow === shadow) return;
+
+      radialHost = candidate;
+      radialShadow = candidateShadow;
+      radialHost.id = RADIAL_TOP_HOST_ID;
+      radialHost.setAttribute?.('data-ag-radial-top-layer', 'true');
+      if (radialHost.style) {
+        radialHost.style.cssText = `position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;pointer-events:none!important;z-index:${RADIAL_TOP_Z_INDEX}!important;-webkit-app-region:no-drag!important;`;
+      }
+      const styleEl = document.createElement('style');
+      if (styleEl) {
+        styleEl.textContent = extractRadialTopLayerCss();
+        radialShadow.appendChild?.(styleEl);
+      }
+      for (const node of [orbNode, layerNode]) {
+        const prevParent = node.parentElement;
+        if (prevParent && prevParent !== radialShadow && Array.isArray(prevParent.children)) {
+          const idx = prevParent.children.indexOf(node);
+          if (idx >= 0) prevParent.children.splice(idx, 1);
+        }
+        radialShadow.appendChild?.(node);
+      }
+      bindShadowFocusGuard(radialShadow);
+      radialHost.__agForceDispose = disposeRadialTopLayer;
+      activeDisposers.add(disposeRadialTopLayer);
+      topParent.appendChild(radialHost);
+      syncRadialHostAttributes();
+    } catch {
+      radialHost = null;
+      radialShadow = null;
+    }
+  })();
+
   const composerSummary = shadow.getElementById('composer-status-bar');
+  const isRadialTopLayerId = id => RADIAL_TOP_NODE_IDS.has(id) || id.startsWith('radial-slot-') || id.startsWith('radial-item-');
   const el = id => {
     if (id === 'composer-status-bar') return composerSummary;
     if (id.startsWith('csb-') || id.startsWith('tfl-') || id === 'token-five-line-card') return shadow.getElementById(id) || composerSummary?.querySelector?.('#' + id) || null;
+    if (isRadialTopLayerId(id) && radialShadow) {
+      const topNode = radialShadow.getElementById?.(id);
+      if (topNode) return topNode;
+    }
     let node = shadow.getElementById(id);
     if (!node) {
       if (id === 'btn-github-repo-ctx') node = shadow.getElementById('btn-github-repo');
@@ -339,8 +614,19 @@
     timelineCmdFilter: 'all', timelineCmdQuery: '',
     ctxSubtrackMode: null, ctxZerosExpanded: false, ctxHoveredCategory: null,
     ctxTreeMode: 'full', ctxCompareBase: 'prev_step', expandedTreeCats: new Set(),
-    ctxFocusedTreeCat: null, ctxWidthTier: 'narrow', ctxAutoExpandedAuxRoute: null,
+    ctxFocusedTreeCat: null, ctxCockpitTab: 'tree', ctxWidthTier: 'narrow', ctxAutoExpandedAuxRoute: null,
+    timingDiagExpanded: false, trendCompressAll: false, trendLatencyOverlay: false,
+    inspectorViewMode: 'tree', inspectorSearchQuery: '', inspectorSortBy: 'size',
+    inspectorAsstSubFilter: 'all', inspectorPreviewMode: 'raw',
+    traceMode: 'duration', traceCatFilter: 'all', traceSearchQuery: '',
+    eventsTypeFilter: 'all', radarOpFilter: 'all', radarSearchQuery: '',
+    cmdAuditFilter: 'all', cmdAuditQuery: '',
+    collabSelectedAgent: null, collabSelectedReceiptId: null,
+    csiSelectedDate: null, csiWorkspaceFilter: 'all', csiSearchQuery: '', csiSortBy: 'recent',
     forcedPanelWidthForTest: null,
+    radialMenuOpen: false, radialClosing: false, radialAnchorMode: 'floating', radialCloseTimer: null, radialAlignTimer: null,
+    orbLinkedPanel: null, orbCliFeedbackUntil: 0, orbCliFeedbackTimer: null, orbSwapAnimTimer: null,
+    orbLastSnapshotKey: '', orbOverrideForTest: null,
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
@@ -553,6 +839,185 @@
     return true;
   }
 
+  const paneCloseSelection = new Set();
+  let paneBatch = false;
+  let paneCloseBusy = false;
+  let paneMenuId = null;
+  let paneHoverId = null;
+  let paneHighlightFrame = 0;
+  let paneLastPaint = 0;
+
+  function findNativePane(id) {
+    const views = document.querySelectorAll?.('[data-testid="conversation-view"][data-cascade-id]') || [];
+    const view = Array.from(views).find(node => sameRouteId(node.getAttribute('data-cascade-id'), id));
+    const content = view?.closest?.('[data-pane-id]');
+    const paneId = content?.getAttribute('data-pane-id');
+    if (!paneId) return null;
+    let container = content;
+    let close = null;
+    while (container?.getAttribute('data-pane-id') === paneId) {
+      close = Array.from(container.querySelectorAll('[data-testid="close-pane-button"]'))
+        .find(button => button.closest('[data-pane-id]')?.getAttribute('data-pane-id') === paneId);
+      if (close) break;
+      const parent = container.parentElement?.closest('[data-pane-id]');
+      if (parent?.getAttribute('data-pane-id') !== paneId) break;
+      container = parent;
+    }
+    return { content, container, close };
+  }
+
+  function setScopeTopLayer(node, open) {
+    if (!node) return;
+    if (!open && !node.hidden) {
+      try { node.hidePopover?.(); } catch { }
+    }
+    if (open && node.hidden) {
+      node.hidden = false;
+      try { node.showPopover?.(); } catch { }
+    }
+    node.hidden = !open;
+  }
+
+  function dismissPaneMenu() {
+    paneMenuId = null;
+    setScopeTopLayer(el('ctx-scope-menu'), false);
+  }
+
+  function syncPaneHighlights() {
+    if (paneHighlightFrame || typeof requestAnimationFrame !== 'function') return;
+    paneHighlightFrame = requestAnimationFrame(now => {
+      paneHighlightFrame = 0;
+      const overlay = el('ctx-scope-highlights');
+      if (!overlay) return;
+      const visible = !state.disposed && !el('panel')?.hidden && !el('pane-ctx-session')?.hidden && !el('ctx-scope-bar')?.hidden;
+      if (!visible) {
+        paneHoverId = null;
+        paneBatch = false;
+        paneCloseSelection.clear();
+        dismissPaneMenu();
+        syncPaneBatchControls();
+      }
+      const hover = paneMenuId || paneHoverId;
+      const marked = visible ? new Set([...paneCloseSelection, hover].filter(Boolean)) : new Set();
+      if (marked.size && now - paneLastPaint < 48) {
+        syncPaneHighlights();
+        return;
+      }
+      paneLastPaint = now;
+      const boxes = [];
+      for (const id of marked) {
+        const pane = findNativePane(id);
+        const rect = pane?.container.getBoundingClientRect();
+        if (!rect?.width || !rect.height) continue;
+        const verticalPad = Math.min(4, rect.height / 2);
+        const box = document.createElement('div');
+        box.className = 'ctx-scope-highlight';
+        box.style.left = `${Math.max(0, rect.left + 2)}px`;
+        box.style.width = `${Math.max(0, Math.min(window.innerWidth, rect.right) - Math.max(0, rect.left + 2) - 2)}px`;
+        box.style.top = `${Math.max(0, rect.top + verticalPad)}px`;
+        box.style.height = `${Math.max(0, Math.min(window.innerHeight, rect.bottom) - Math.max(0, rect.top + verticalPad) - verticalPad)}px`;
+        if (id === hover) {
+          const row = Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"][data-cascade-id]'))
+            .find(node => sameRouteId(node.getAttribute('data-cascade-id'), id));
+          const message = pane.content.querySelector('[data-testid="user-message"], [data-testid="user-input"], [data-testid="chat-message-user"]');
+          const title = (row?.textContent?.trim() || message?.textContent?.trim() || '').replace(/[（）()]/g, '').slice(0, 180);
+          if (title) {
+            const label = document.createElement('span');
+            label.textContent = title;
+            box.appendChild(label);
+          }
+        }
+        boxes.push(box);
+      }
+      const signature = boxes.map(box => box.getAttribute('style') + box.textContent).join('|');
+      if (overlay._paneSig !== signature) {
+        overlay.replaceChildren(...boxes);
+        overlay._paneSig = signature;
+      }
+      setScopeTopLayer(overlay, boxes.length > 0);
+      if (marked.size) syncPaneHighlights();
+    });
+  }
+
+  function syncPaneBatchControls(layout = state.layout || parseConversationLayout()) {
+    const toggle = el('ctx-scope-batch');
+    const actions = el('ctx-scope-batch-actions');
+    const close = el('ctx-scope-batch-close');
+    if (!toggle || !actions || !close) return;
+    for (const id of paneCloseSelection) {
+      if (!layout.panes.includes(id)) paneCloseSelection.delete(id);
+    }
+    toggle.hidden = layout.panes.length < 2;
+    if (toggle.hidden) {
+      paneBatch = false;
+      paneCloseSelection.clear();
+    }
+    toggle.setAttribute('aria-pressed', String(paneBatch));
+    actions.hidden = !paneBatch;
+    close.disabled = paneCloseBusy || !paneCloseSelection.size;
+    close.textContent = t('scope.closeSelected', { n: Math.min(paneCloseSelection.size, Math.max(0, layout.panes.length - 1)) });
+    for (const pill of el('ctx-scope-pills')?.children || []) {
+      if (pill.getAttribute?.('data-scope-role') !== 'pane') continue;
+      const selected = paneCloseSelection.has(pill.getAttribute('data-scope-id'));
+      pill.classList?.toggle?.('is-marked', selected);
+      if (paneBatch) {
+        pill.setAttribute('role', 'checkbox');
+        pill.setAttribute('aria-checked', String(selected));
+        pill.removeAttribute('aria-selected');
+      }
+    }
+  }
+
+  async function closeNativePanes(ids, keepId) {
+    if (paneCloseBusy) return;
+    paneCloseBusy = true;
+    syncPaneBatchControls();
+    let skipped = false;
+    try {
+      for (const id of ids) {
+        const { panes } = parseConversationLayout();
+        if (!panes.includes(id)) continue;
+        if (panes.length < 2 || id === keepId) { skipped = true; continue; }
+        const button = findNativePane(id)?.close;
+        if (!button?.isConnected || button.disabled) { skipped = true; continue; }
+        button.click();
+        for (let retry = 0; retry < 24 && parseConversationLayout().panes.includes(id); retry++) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        if (parseConversationLayout().panes.includes(id)) { skipped = true; break; }
+      }
+    } finally {
+      paneCloseBusy = false;
+      paneBatch = false;
+      paneCloseSelection.clear();
+      lastScopeRenderSig = '';
+      tick();
+      syncPaneHighlights();
+      if (skipped) showSpeedToast(t('scope.closeSkipped'));
+    }
+  }
+
+  function openPaneMenu(event, item) {
+    if (!findNativePane(item.id)) return;
+    event.preventDefault();
+    const menu = el('ctx-scope-menu');
+    if (!menu) return;
+    paneMenuId = item.id;
+    const { panes } = parseConversationLayout();
+    for (const button of menu.querySelectorAll('[data-pane-action]')) {
+      const action = button.getAttribute('data-pane-action');
+      button.disabled = action === 'right' ? panes.indexOf(item.id) === panes.length - 1 : action !== 'focus' && panes.length < 2;
+    }
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    setScopeTopLayer(menu, true);
+    const anchor = event.currentTarget.getBoundingClientRect();
+    menu.style.left = `${Math.max(4, Math.min(event.clientX || anchor.left, window.innerWidth - menu.offsetWidth - 4))}px`;
+    menu.style.top = `${Math.max(4, Math.min(event.clientY || anchor.bottom, window.innerHeight - menu.offsetHeight - 4))}px`;
+    menu.querySelector('button')?.focus();
+    syncPaneHighlights();
+  }
+
   function renderConversationScopeUI(force = false) {
     const layout = state.layout || parseConversationLayout();
     const activeId = state.route || null;
@@ -612,10 +1077,25 @@
       const txt = document.createElement('span');
       txt.textContent = label;
       btn.appendChild(txt);
-      btn.addEventListener('click', () => selectConversationScopeView(item.id));
+      btn.addEventListener('click', () => {
+        if (!paneBatch || item.role !== 'pane') return selectConversationScopeView(item.id);
+        if (!paneCloseSelection.delete(item.id)) paneCloseSelection.add(item.id);
+        syncPaneBatchControls(layout);
+        syncPaneHighlights();
+      });
+      if (item.role === 'pane' && layout.panes.length > 1) {
+        const hover = () => { paneHoverId = item.id; syncPaneHighlights(); };
+        const leave = () => { if (paneHoverId === item.id) paneHoverId = null; syncPaneHighlights(); };
+        btn.addEventListener('pointerenter', hover);
+        btn.addEventListener('pointerleave', leave);
+        btn.addEventListener('focus', hover);
+        btn.addEventListener('blur', leave);
+        btn.addEventListener('contextmenu', event => openPaneMenu(event, item));
+      }
       pillsWrap.appendChild(btn);
     }
 
+    syncPaneBatchControls(layout);
     const followBtn = el('btn-ctx-scope-follow');
     const followLabel = el('ctx-scope-follow-label');
     if (followBtn && followLabel) {
@@ -857,12 +1337,17 @@
   };
   const earlyForceDispose = () => {
     state.disposed = true;
+    radialDisposed = true;
     for (const controller of state.controllers) {
       try { controller.abort(); } catch { }
     }
     if (layoutRaf && typeof cancelAnimationFrame === 'function') {
       try { cancelAnimationFrame(layoutRaf); } catch { }
       layoutRaf = 0;
+    }
+    if (state.radialAlignTimer) {
+      try { clearTimeout(state.radialAlignTimer); } catch { }
+      state.radialAlignTimer = null;
     }
     while (earlyDisposeHooks.length) {
       const hook = earlyDisposeHooks.pop();
@@ -875,10 +1360,12 @@
       globalThis.__AGContextMeterActiveHost = null;
     }
     activeDisposers.delete(earlyForceDispose);
+    disposeRadialTopLayer();
     try { host.remove?.(); } catch { }
   };
   globalThis.__AGContextMeterActiveHost = host;
   host.__agForceDispose = earlyForceDispose;
+  if (radialHost) radialHost.__agForceDispose = earlyForceDispose;
   activeDisposers.add(earlyForceDispose);
 
   function findHostTitlebar() {
@@ -1285,12 +1772,13 @@
         host.setAttribute('data-marketplace-active', 'true');
         if (typeof clearBadgeLongPress === 'function') clearBadgeLongPress();
         if (typeof cancelClosePanelPicker === 'function') cancelClosePanelPicker();
+        if (typeof closeRadialMenu === 'function') closeRadialMenu(true);
         state.tooltipOpen = false;
-        for (const id of ['panel', 'panel-tokens', 'panel-quota', 'overflow-menu', 'token-five-line-card', 'dock-aux-context-bar', 'composer-status-bar']) {
+        for (const id of ['panel', 'panel-tokens', 'panel-quota', 'overflow-menu', 'ctx-radial-orb', 'ctx-radial-layer', 'token-five-line-card', 'dock-aux-context-bar', 'composer-status-bar']) {
           const node = el(id);
           if (node) {
             node.hidden = true;
-            if (node.style && (id === 'token-five-line-card' || id === 'overflow-menu')) {
+            if (node.style && (id === 'token-five-line-card' || id === 'overflow-menu' || id === 'ctx-radial-orb' || id === 'ctx-radial-layer')) {
               node.style.display = 'none';
               node.style.pointerEvents = 'none';
             }
@@ -1322,6 +1810,17 @@
           }
           const csbBar = el('composer-status-bar');
           if (csbBar) csbBar.hidden = false;
+          const orbEl = el('ctx-radial-orb');
+          if (orbEl && orbEl.style) {
+            orbEl.style.display = '';
+            orbEl.style.pointerEvents = '';
+          }
+          const radialEl = el('ctx-radial-layer');
+          if (radialEl && radialEl.style) {
+            radialEl.style.display = '';
+            radialEl.style.pointerEvents = '';
+          }
+          if (typeof syncRadialOrbVisibility === 'function') syncRadialOrbVisibility();
           if (typeof syncAuxContextBar === 'function') syncAuxContextBar();
         }
       }
@@ -1459,7 +1958,61 @@
     } catch { return null; }
   }
 
+  function syncDockCollapsedTopbar() {
+    const isDockedActive = (panelDockMode === 'aux' || panelDockMode === 'page' || dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
+    const isPanelOpen = ['panel', 'panel-tokens', 'panel-quota'].some(id => {
+      const p = el(id);
+      return p && !p.hidden && p.style.display !== 'none';
+    });
+    if (isDockedActive && isPanelOpen && autoHideTopbarOnDockedPanel) {
+      host.setAttribute('data-dock-collapsed-topbar', 'true');
+    } else {
+      host.removeAttribute('data-dock-collapsed-topbar');
+    }
+  }
+
   function syncDockPositionUi() {
+    // 1. 顶栏入口形态分段器
+    const topbarSeg = el('topbar-mode-segmented');
+    if (topbarSeg) {
+      for (const btn of Array.from(topbarSeg.children || [])) {
+        const mode = btn.getAttribute?.('data-topbar-mode');
+        const active = mode === topbarMode;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+    const topbarDescEl = el('topbar-mode-desc');
+    if (topbarDescEl) {
+      topbarDescEl.textContent = t(`settings.topbarMode.${topbarMode}Desc`) || '';
+    }
+
+    // 2. 面板显示位置分段器
+    const panelSeg = el('panel-dock-mode-segmented');
+    if (panelSeg) {
+      for (const btn of Array.from(panelSeg.children || [])) {
+        const mode = btn.getAttribute?.('data-panel-dock-mode');
+        const active = mode === panelDockMode;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+    const panelDescEl = el('panel-dock-mode-desc');
+    if (panelDescEl) {
+      panelDescEl.textContent = t(`settings.panelDockMode.${panelDockMode}Desc`) || '';
+    }
+
+    // 3. 联动与兼容复选框
+    const chkAutoCol = el('chk-autohide-topbar-docked');
+    if (chkAutoCol) {
+      chkAutoCol.checked = Boolean(autoHideTopbarOnDockedPanel);
+    }
+    const chkHide = el('chk-hide-topbar');
+    if (chkHide) {
+      chkHide.checked = Boolean(isTopbarHidden || topbarMode === 'hidden');
+    }
+
+    // 4. 兼容旧分段器与说明
     const seg = el('dock-pos-segmented');
     if (seg) {
       for (const btn of Array.from(seg.children || [])) {
@@ -1474,10 +2027,7 @@
       const descKey = `settings.dock.${dockPosition}Desc`;
       descEl.textContent = t(descKey) || '';
     }
-    const chkHide = el('chk-hide-topbar');
-    if (chkHide) {
-      chkHide.checked = Boolean(isTopbarHidden);
-    }
+
     const noteEl = el('dock-fallback-note');
     if (noteEl) {
       let fbRaw = '';
@@ -1497,18 +2047,20 @@
     }
     const pageActions = el('dock-page-actions');
     if (pageActions) {
-      pageActions.style.display = dockPosition === 'page' ? 'block' : 'none';
+      pageActions.style.display = (panelDockMode === 'page' || dockPosition === 'page') ? 'block' : 'none';
     }
     // “返回聊天”按钮仅在独立页面模式且未回退时显示
     const pageBackBtn = el('btn-dock-page-back');
     if (pageBackBtn) {
-      pageBackBtn.hidden = !(dockPosition === 'page' && !dockFallbackReason);
+      pageBackBtn.hidden = !((panelDockMode === 'page' || dockPosition === 'page') && !dockFallbackReason);
     }
     const wakeBtn = el('badge-dock-wake');
     if (wakeBtn) {
-      wakeBtn.hidden = !isTopbarHidden;
+      wakeBtn.hidden = !(isTopbarHidden || topbarMode === 'hidden');
     }
+    syncQuickMenuStyleUi();
     syncAuxContextBar();
+    syncDockCollapsedTopbar();
     const fbActions = el('dock-fallback-actions');
     const fbEl = el('dock-open-feedback');
     if (fbEl && !String(fbEl.textContent || '').trim()) {
@@ -1521,7 +2073,7 @@
   }
 
   function syncDockedPanelsAttribute() {
-    const docked = (dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
+    const docked = (panelDockMode === 'aux' || panelDockMode === 'page' || dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
     for (const id of ['panel', 'panel-tokens', 'panel-quota']) {
       const p = el(id);
       if (!p) continue;
@@ -1536,47 +2088,123 @@
     }
   }
 
-  function setDockPosition(mode, opts = {}) {
+  function setTopbarMode(mode, opts = {}) {
     let next = mode;
-    if (mode === 'hide') {
-      isTopbarHidden = true;
-      next = 'flow';
-      try {
-        if (typeof localStorage !== 'undefined') localStorage.setItem('ag_hide_topbar', 'true');
-      } catch { }
+    if (!VALID_TOPBAR_MODES.includes(mode)) next = 'full';
+    topbarMode = next;
+    isTopbarHidden = next === 'hidden';
+    // 兼容维护旧 dockPosition，且 page 模式不得覆盖持久化为 page
+    if (panelDockMode === 'aux') {
+      dockPosition = 'aux';
+    } else if (panelDockMode === 'page') {
+      dockPosition = 'page';
     } else {
-      if (!VALID_DOCK_POSITIONS.includes(mode)) next = 'flow';
+      dockPosition = topbarMode === 'compact' ? 'compact' : 'flow';
     }
-    // 独立页面 (page) 仅在当前会话生效，避免冷启动或跨页误锁死聊天视口
-    const persistDock = next === 'page' ? 'flow' : next;
-    dockPosition = next;
+    const persistDock = dockPosition === 'page' ? 'flow' : dockPosition;
     try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_dock_position', persistDock);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ag_topbar_mode', topbarMode);
+        localStorage.setItem('ag_hide_topbar', isTopbarHidden ? 'true' : 'false');
+        localStorage.setItem('ag_dock_position', persistDock);
+      }
     } catch { }
-    layoutMeasurementDirty = true;
-    ensureHostDocked();
-    syncDockPositionUi();
-    syncDockedPanelsAttribute();
-    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
-      void saveSettingsPayloadBridge({ dockPosition: persistDock, hideTopbar: isTopbarHidden });
-    }
-    return dockPosition;
-  }
-
-  function setHideTopbar(hidden, opts = {}) {
-    isTopbarHidden = Boolean(hidden);
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_hide_topbar', isTopbarHidden ? 'true' : 'false');
-    } catch { }
+    host.setAttribute('data-topbar-mode', topbarMode);
     if (isTopbarHidden) {
       host.setAttribute('data-topbar-hidden', 'true');
     } else {
       host.removeAttribute('data-topbar-hidden');
     }
+    host.setAttribute('data-dock', dockPosition);
+    layoutMeasurementDirty = true;
+    ensureHostDocked();
     syncDockPositionUi();
     if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
-      void saveSettingsPayloadBridge({ hideTopbar: isTopbarHidden });
+      void saveSettingsPayloadBridge({
+        topbarMode,
+        hideTopbar: isTopbarHidden,
+        dockPosition: persistDock
+      });
     }
+    return topbarMode;
+  }
+
+  function setPanelDockMode(mode, opts = {}) {
+    let next = mode;
+    if (!VALID_PANEL_DOCK_MODES.includes(mode)) next = 'popover';
+    panelDockMode = next;
+    // 严格保持用户当前 topbarMode，绝不强行将顶栏恢复为 full
+    if (panelDockMode === 'aux') {
+      dockPosition = 'aux';
+    } else if (panelDockMode === 'page') {
+      dockPosition = 'page';
+    } else {
+      dockPosition = topbarMode === 'compact' ? 'compact' : 'flow';
+    }
+    const persistDock = dockPosition === 'page' ? 'flow' : dockPosition;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ag_panel_dock_mode', panelDockMode);
+        localStorage.setItem('ag_dock_position', persistDock);
+      }
+    } catch { }
+    host.setAttribute('data-panel-dock-mode', panelDockMode);
+    host.setAttribute('data-dock', dockPosition);
+    layoutMeasurementDirty = true;
+    ensureHostDocked();
+    syncDockPositionUi();
+    syncDockedPanelsAttribute();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({
+        panelDockMode,
+        dockPosition: persistDock
+      });
+    }
+    return panelDockMode;
+  }
+
+  function setAutoHideTopbarOnDockedPanel(enable, opts = {}) {
+    autoHideTopbarOnDockedPanel = Boolean(enable);
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_autohide_topbar_docked', autoHideTopbarOnDockedPanel ? 'true' : 'false');
+    } catch { }
+    syncDockCollapsedTopbar();
+    syncDockPositionUi();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({
+        autoHideTopbarOnDockedPanel
+      });
+    }
+    return autoHideTopbarOnDockedPanel;
+  }
+
+  function setDockPosition(mode, opts = {}) {
+    let next = mode;
+    if (mode === 'hide') {
+      setTopbarMode('hidden', opts);
+      return 'hide';
+    }
+    if (mode === 'compact' || mode === 'fixed') {
+      setTopbarMode('compact', opts);
+      setPanelDockMode('popover', opts);
+      return 'compact';
+    }
+    if (mode === 'aux') {
+      setPanelDockMode('aux', opts);
+      return 'aux';
+    }
+    if (mode === 'page') {
+      setPanelDockMode('page', opts);
+      return 'page';
+    }
+    setTopbarMode('full', opts);
+    setPanelDockMode('popover', opts);
+    return 'flow';
+  }
+
+  function setHideTopbar(hidden, opts = {}) {
+    const isHide = Boolean(hidden);
+    setTopbarMode(isHide ? 'hidden' : 'full', opts);
   }
 
   function resolveFocusedSessionTarget() {
@@ -1662,8 +2290,8 @@
     try {
       await ensureAuxSidebarExpanded({ timeoutMs: 1000 });
       setDockPosition('aux', { persist: true });
-      showPanel('context');
       if (typeof switchContextTab === 'function') switchContextTab('session');
+      showPanel('context');
     } catch { }
 
     // 2. 生成当前聚焦会话的精确看板 URL 并尝试复制到剪贴板，明确告知宿主 built-in browser 接口限制与可用动作
@@ -1671,16 +2299,19 @@
     const targetUrl = srvRes?.url || '';
     if (targetUrl) lastPreciseDashboardUrl = targetUrl;
     const copied = await copyTextToClipboardSafe(targetUrl);
-    const copyNote = copied ? t('settings.dock.openRightCopied') : t('settings.dock.openRightCopyFail');
+    const hasSid = Boolean(focusTarget.sessionId);
+    const copyNote = copied
+      ? t(hasSid ? 'settings.dock.openRightCopiedSession' : 'settings.dock.openRightCopiedList')
+      : t('settings.dock.openRightCopyFail');
     const shortTag = focusTarget.sessionId ? focusTarget.sessionId.slice(0, 8) : '';
-    if (!focusTarget.sessionId) {
+    if (!hasSid) {
       setDockOpenFeedback(t('settings.dock.openRightNoSession', { copyNote }), true, { showActions: true });
     } else if (dockFallbackReason === 'aux') {
       setDockOpenFeedback(t('settings.dock.openRightFallback', { copyNote }), true, { showActions: true });
     } else {
       setDockOpenFeedback(t('settings.dock.openRightOk', {
         role: formatAuxRoleText(focusTarget),
-        id: `${shortTag}…`,
+        id: shortTag,
         copyNote
       }), false, { showActions: true });
     }
@@ -1699,16 +2330,17 @@
       const srvRes = await resolvePreciseDashboardUrl({ openExternal: true });
       if (!srvRes || !srvRes.ok || !srvRes.url) {
         console.warn('[Context Meter] 独立看板服务未就绪，放弃盲打默认端口');
-        setDockOpenFeedback('独立看板服务未就绪，无法打开外部浏览器.', true);
+        setDockOpenFeedback(t('settings.dock.openStandaloneNotReady'), true);
         return srvRes;
       }
       const targetUrl = String(srvRes.url);
       if (srvRes.openedExternal) {
+        const sid = srvRes.focusTarget?.sessionId;
         setDockOpenFeedback(
-          srvRes.focusTarget?.sessionId
-            ? `已在外部浏览器打开并定位会话 (${srvRes.focusTarget.sessionId.slice(0, 8)}…).`
-            : '当前未解析会话 ID，已在外部浏览器打开看板列表.',
-          !srvRes.focusTarget?.sessionId
+          sid
+            ? t('settings.dock.openStandaloneSessionOk', { id: sid.slice(0, 8) })
+            : t('settings.dock.openStandaloneListOk'),
+          !sid
         );
         return srvRes;
       }
@@ -1822,13 +2454,15 @@
       st.id = 'ag-csb-host-styles';
       st.textContent = `
         #composer-status-bar {
-          display: inline-flex !important;
+          display: flex !important;
+          flex-wrap: wrap !important;
           align-items: center !important;
+          justify-content: flex-end !important;
           vertical-align: middle !important;
           flex-shrink: 0 !important;
           position: relative !important;
-          height: 22px !important;
-          max-height: 22px !important;
+          min-height: 22px !important;
+          height: auto !important;
           box-sizing: border-box !important;
           border: none !important;
           background: transparent !important;
@@ -1836,8 +2470,9 @@
           backdrop-filter: none !important;
           -webkit-backdrop-filter: none !important;
           padding: 0 !important;
-          margin: 1px 0 0 auto !important; width: fit-content !important; max-width: 100% !important; display: flex !important; flex-wrap: nowrap !important; overflow: hidden !important;
-          gap: 2px !important;
+          margin: 2px 0 0 auto !important; width: fit-content !important; max-width: 100% !important; overflow: visible !important;
+          row-gap: 2px !important;
+          column-gap: 4px !important;
           font-family: inherit !important;
           font-size: 10px !important;
           font-weight: 450 !important;
@@ -1852,7 +2487,11 @@
           align-items: center !important;
           justify-content: center !important;
           height: 22px !important;
-          padding: 0 4px !important;
+          padding: 0 5px !important;
+          gap: 3px !important;
+          flex-shrink: 0 !important;
+          max-width: 100% !important;
+          box-sizing: border-box !important;
           border: none !important;
           background: transparent !important;
           color: inherit !important;
@@ -1862,7 +2501,7 @@
           line-height: 1 !important;
           border-radius: 4px !important;
           cursor: pointer !important;
-          transition: background-color 0.15s ease, color 0.15s ease !important;
+          transition: width 180ms ease, min-width 180ms ease, height 180ms ease, padding 180ms ease, gap 180ms ease, border-radius 180ms ease, background-color 0.15s ease, color 0.15s ease !important;
           white-space: nowrap !important;
           outline: none !important;
         }
@@ -1884,6 +2523,77 @@
           display: block !important;
           width: 12px !important;
           height: 12px !important;
+        }
+        #composer-status-bar .csb-ring-morph-wrap {
+          position: relative !important;
+          width: 13px !important;
+          height: 13px !important;
+          display: inline-flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          flex-shrink: 0 !important;
+          margin-right: 3px !important;
+          transition: margin 180ms ease !important;
+        }
+        #composer-status-bar .csb-text {
+          display: inline-block !important;
+          max-width: none !important;
+          overflow: visible !important;
+          white-space: nowrap !important;
+          transition: max-width 180ms ease, opacity 140ms ease, margin 180ms ease, padding 180ms ease !important;
+        }
+        #composer-status-bar #csb-group-context #csb-context-text {
+          max-width: 72px !important;
+          overflow: hidden !important;
+        }
+        #composer-status-bar .csb-ring-morph-wrap .csb-ring-svg {
+          width: 13px !important;
+          height: 13px !important;
+          margin-right: 0 !important;
+          transition: opacity 180ms ease, transform 220ms ease !important;
+        }
+        #composer-status-bar .csb-ring-close-svg {
+          position: absolute !important;
+          inset: 0 !important;
+          margin: auto !important;
+          width: 12px !important;
+          height: 12px !important;
+          opacity: 0 !important;
+          transform: rotate(0deg) scale(0.5) !important;
+          pointer-events: none !important;
+          color: currentColor !important;
+          transition: opacity 180ms ease, transform 260ms cubic-bezier(0.22, 1.25, 0.36, 1) !important;
+        }
+        #composer-status-bar #csb-group-context[data-radial-open="true"] {
+          width: 22px !important;
+          min-width: 22px !important;
+          height: 22px !important;
+          padding: 0 !important;
+          gap: 0 !important;
+          border-radius: 50% !important;
+          background-color: var(--accent, rgba(128, 128, 128, 0.18)) !important;
+          color: var(--foreground, currentColor) !important;
+          transition: width 180ms ease, min-width 180ms ease, height 180ms ease, padding 180ms ease, gap 180ms ease, border-radius 180ms ease, background-color 180ms ease, color 180ms ease !important;
+        }
+        #composer-status-bar #csb-group-context[data-radial-open="true"] .csb-ring-morph-wrap {
+          margin-right: 0 !important;
+        }
+        #composer-status-bar #csb-group-context[data-radial-open="true"] #csb-context-text,
+        #composer-status-bar #csb-group-context[data-radial-open="true"] .csb-text {
+          max-width: 0 !important;
+          opacity: 0 !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          overflow: hidden !important;
+          pointer-events: none !important;
+        }
+        #composer-status-bar #csb-group-context[data-radial-open="true"] .csb-ring-svg {
+          opacity: 0 !important;
+          transform: scale(0.55) rotate(45deg) !important;
+        }
+        #composer-status-bar #csb-group-context[data-radial-open="true"] .csb-ring-close-svg {
+          opacity: 1 !important;
+          transform: rotate(45deg) scale(1) !important;
         }
         #composer-status-bar .csb-ring-svg {
           width: 13px !important;
@@ -2046,10 +2756,11 @@
           flex-shrink: 0 !important;
         }
         #composer-status-bar .csb-quota-pill {
-          gap: 5px !important;
+          gap: 6px !important;
           min-width: 0 !important;
           max-width: 100% !important;
-          overflow: hidden !important;
+          overflow: visible !important;
+          flex-shrink: 0 !important;
         }
         #composer-status-bar .csb-quota-pill[hidden],
         #composer-status-bar .csb-quota-win[hidden],
@@ -2119,33 +2830,38 @@
         #composer-status-bar[data-csb-width="tight"] .csb-quota-win[data-secondary="true"] {
           display: none !important;
         }
-        @media (max-width: 680px) {
-          #csb-speed-text { display: none !important; }
-          #composer-status-bar .csb-quota-more { display: none !important; }
-        }
-        @media (max-width: 540px) {
-          #csb-group-speed { display: none !important; }
-          #composer-status-bar .csb-sep:first-of-type { display: none !important; }
-          #composer-status-bar .csb-quota-win[data-secondary="true"] { display: none !important; }
-        }
-        @media (max-width: 440px) {
-          #csb-tokens-text { max-width: 65px !important; overflow: hidden !important; text-overflow: ellipsis !important; }
-        }
       `;
       document.head.appendChild(st);
     } catch { }
   }
 
-  function ensureComposerStatusBarMounted() {
+  function ensureComposerStatusBarMounted(opts = {}) {
     try {
       const csbBar = el('composer-status-bar');
       if (!csbBar) return;
-      if (isHostMarketplaceActive()) {
+      const marketplaceActive = typeof opts.marketplaceActive === 'boolean'
+        ? opts.marketplaceActive
+        : isHostMarketplaceActive();
+      if (marketplaceActive) {
         csbBar.hidden = true;
         return;
       }
       csbBar.hidden = false;
       ensureComposerStatusBarStyles();
+      // 已稳妥挂载在真实输入框表单之后时直接短路，避免高频 DOM 变动反复全页扫描按钮
+      if (
+        csbBar.isConnected === true &&
+        csbBar.parentElement &&
+        (!document.contains || document.contains(csbBar))
+      ) {
+        const prevSibling = csbBar.previousElementSibling;
+        if (
+          prevSibling &&
+          (prevSibling.tagName === 'FORM' || Boolean(prevSibling.querySelector?.('[contenteditable="true"],textarea')))
+        ) {
+          return;
+        }
+      }
       const target = findComposerControlsContainer();
       if (!target || !target.bar) return;
 
@@ -2273,13 +2989,21 @@
 
       // 确定实际要挂入的容器 actualParent 和参考子节点 actualRef
       let actualParent = targetContainer;
-      let actualRef = anchorBtn || targetContainer.firstElementChild || targetContainer.firstChild || null;
+      let actualRef = anchorBtn;
 
       if (anchorBtn) {
         if (anchorBtn.parentElement && anchorBtn.parentElement !== targetContainer) {
           actualParent = anchorBtn.parentElement;
         }
         actualRef = anchorBtn;
+      } else {
+        // 无原生按钮锚点时挂到队首：跳过 host 自身，防止 actualRef === host 时重复触发 insertBefore(host, host)
+        // 导致 Chromium 重新连接 Shadow DOM 并清空所有打开面板的 scrollTop。
+        let firstNonHost = targetContainer.firstElementChild || targetContainer.firstChild || null;
+        while (firstNonHost && firstNonHost === host) {
+          firstNonHost = firstNonHost.nextElementSibling || firstNonHost.nextSibling || null;
+        }
+        actualRef = firstNonHost;
       }
 
       const isDirectChild = (p, c) => {
@@ -2289,7 +3013,20 @@
         return false;
       };
 
-      if (host.parentElement !== actualParent || (actualRef && host.nextElementSibling !== actualRef)) {
+      const alreadyInPosition = host.parentElement === actualParent && (
+        actualRef
+          ? (host.nextElementSibling === actualRef || host.nextSibling === actualRef)
+          : !host.nextElementSibling
+      );
+
+      if (!alreadyInPosition && actualRef !== host) {
+        const savedPanelScrolls = [];
+        for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'view-quota', 'ctx-model-list', 'files']) {
+          const n = el(sId);
+          if (n && typeof n.scrollTop === 'number' && n.scrollTop > 0) {
+            savedPanelScrolls.push([n, n.scrollTop]);
+          }
+        }
         try {
           if (actualRef && isDirectChild(actualParent, actualRef)) {
             actualParent.insertBefore(host, actualRef);
@@ -2298,6 +3035,11 @@
           }
         } catch {
           try { actualParent.appendChild(host); } catch { }
+        }
+        if (savedPanelScrolls.length > 0) {
+          for (const [n, topVal] of savedPanelScrolls) {
+            try { n.scrollTop = topVal; } catch { }
+          }
         }
       }
       host.setAttribute('data-dock', effectiveDock);
@@ -2733,6 +3475,7 @@
       placePanel(el('overflow-menu'), 220, el(activePickerAnchorId || 'badge-overflow') || el('badge-overflow'));
       positionColorPickerPopover();
       if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
+      positionCockpitWidgetManagerPopover();
     } catch { }
   }
 
@@ -2766,10 +3509,33 @@
     'i'
   );
 
-  function checkHostDomCompactionSignals() {
+  let lastCompactionDomCheckAt = 0;
+  let lastCompactionCheckedRoute = null;
+
+  function checkHostDomCompactionSignals(opts = {}) {
     if (state.disposed || !state.route || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
     try {
-      const nodes = document.querySelectorAll('span, div, p');
+      const nowMs = Date.now();
+      const isInitialRouteCheck = state.lastDomCompactedBannerCount < 0;
+      if (!isInitialRouteCheck && !opts?.force && !opts?.urgent) {
+        const latestCallRec = typeof resolveLatestSessionCallRecord === 'function' ? resolveLatestSessionCallRecord() : null;
+        const isActivelyBusy = Boolean(
+          state.compacting ||
+          state.lastDomCompactingActive ||
+          state.livePendingRequest ||
+          (latestCallRec && latestCallRec.status === 'streaming')
+        );
+        const minIntervalMs = isActivelyBusy ? 250 : 950;
+        if (nowMs - lastCompactionDomCheckAt < minIntervalMs) return;
+      }
+      lastCompactionCheckedRoute = state.route;
+      lastCompactionDomCheckAt = nowMs;
+      const convRoot = typeof document.querySelector === 'function'
+        ? document.querySelector('[data-testid="conversation-view"]')
+        : null;
+      const nodes = (convRoot && typeof convRoot.querySelectorAll === 'function')
+        ? convRoot.querySelectorAll('span, div, p')
+        : document.querySelectorAll('span, div, p');
       if (!Array.isArray(nodes) && typeof nodes?.length !== 'number') return;
       let sawCompacting = false;
       let compactedBannerCount = 0;
@@ -2777,15 +3543,35 @@
       const minIdx = Math.max(0, totalNodes - 4000);
       for (let i = totalNodes - 1; i >= minIdx; i--) {
         const n = nodes[i];
-        if (!n || n === host || (typeof host.contains === 'function' && host.contains(n))) continue;
-        if (n.children && n.children.length > 40) continue;
-        const txt = typeof n.textContent === 'string' ? n.textContent.replace(/[\u200b-\u200d\ufeff]/g, '').trim() : '';
-        if (!txt || txt.length > 120) continue;
+        if (!n || n === host || n.className === 'ag-cm-turn-footer') continue;
+        if (n.hasAttribute && (
+          n.hasAttribute('data-markdown-root') ||
+          n.hasAttribute('data-markdown-virtualized') ||
+          n.hasAttribute('data-markdown-block-index') ||
+          n.hasAttribute('data-quotable') ||
+          n.hasAttribute('data-turn-index') ||
+          n.hasAttribute('data-bubble-side')
+        )) continue;
+        if (!convRoot && n.closest?.('[role="dialog"], .settings-modal-container')) continue;
+        const childCount = n.childElementCount !== undefined ? n.childElementCount : (n.children ? n.children.length : 0);
+        if (childCount > 40) continue;
+        if (childCount > 3) {
+          const firstChildEl = n.firstElementChild || (n.children && n.children[0]);
+          const grandChildCount = firstChildEl
+            ? (firstChildEl.childElementCount !== undefined ? firstChildEl.childElementCount : (firstChildEl.children ? firstChildEl.children.length : 0))
+            : 0;
+          if (grandChildCount > 0) continue;
+        }
+        if (typeof host.contains === 'function' && host.contains(n)) continue;
+        const rawTxt = n.textContent;
+        if (typeof rawTxt !== 'string' || rawTxt.length < 4 || rawTxt.length > 140) continue;
+        const txt = rawTxt.replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+        if (!txt || txt.length < 4 || txt.length > 120) continue;
         if (HOST_COMPACTING_TEXT_RE.test(txt)) {
           // 若父节点与子节点均包含相同文本，仅需标记布尔位即可，不受重复嵌套影响
           sawCompacting = true;
         } else if (
-          (!n.children || n.children.length <= 3) && (
+          childCount <= 3 && (
             txt.includes('The conversation was compacted') ||
             txt.includes('会话已被压缩以适应上下文窗口') ||
             txt.includes('会话上下文已执行压缩') ||
@@ -2834,11 +3620,12 @@
     if (!host.isConnected || auxStateChanged || (needsTitlebarDock && !findHostTitlebar()?.contains?.(host))) {
       ensureHostDocked();
     }
-    ensureComposerStatusBarMounted();
+    const marketplaceActive = isHostMarketplaceActive();
+    ensureComposerStatusBarMounted({ marketplaceActive });
     scheduleHostModelSync();
     checkHostDomCompactionSignals();
     // 进入 Customizations / Marketplace / Installed 页面时自动收起已打开面板、浮层与辅助栏
-    if (enforceMarketplaceAvoidance()) {
+    if (enforceMarketplaceAvoidance(marketplaceActive)) {
       if (isAnyPanelOpen()) showPanel('none');
     }
   }
@@ -2849,11 +3636,28 @@
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
-      hostDomObserver = new MutationObserver(() => {
+      hostDomObserver = new MutationObserver((mutations) => {
         if (state.disposed) return;
+        // host 自身的属性更新来自本插件的布局/避让逻辑，不是宿主页面变化。
+        // 忽略这批记录，避免插件页隐藏面板时自触发下一轮全页检测。
+        if (mutations?.length && Array.from(mutations).every(m => m?.type === 'attributes' && m?.target === host)) return;
         if (!host.isConnected) {
           layoutMeasurementDirty = true;
           ensureHostDocked();
+        } else if (Array.isArray(mutations) && mutations.length > 0) {
+          const isIdleConv = !state.compacting && !state.lastDomCompactingActive && !state.livePendingRequest && state.lastDomCompactedBannerCount >= 0;
+          const shouldIgnore = (m) => {
+            const target = m.target;
+            if (!target) return false;
+            const elNode = target.nodeType === 1 ? target : target.parentElement;
+            if (!elNode) return false;
+            if (elNode === host || (typeof host.contains === 'function' && host.contains(elNode))) return true;
+            if (elNode.id === 'ag-composer-status-bar' || elNode.className === 'ag-cm-turn-footer') return true;
+            if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer')) return true;
+            if (isIdleConv && elNode.closest?.('[data-testid="conversation-view"]')) return true;
+            return false;
+          };
+          if (mutations.every(shouldIgnore)) return;
         }
         if (!domMutationThrottleTimer) {
           domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 60);
@@ -2992,6 +3796,11 @@
     if (target !== 'none' && enforceMarketplaceAvoidance()) {
       target = 'none';
     }
+    // PR #83：切页或收起额度看板时立即取消待恢复任务，与 #81 切页滚动记忆互不干扰
+    if (target !== 'quota' && typeof cancelQuotaScrollRestore === 'function') {
+      cancelQuotaScrollRestore();
+    }
+    if (target !== 'context') closeCockpitWidgetManager();
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
     const pQuota = el('panel-quota');
@@ -3063,12 +3872,23 @@
       pContext.hidden = false;
       applyContextViewVisibility?.();
       syncAuxContextBar?.();
+      // 面板真正显示后立刻让 2D Skyline 装箱接管，避免首屏停在 engine=null
+      if (typeof applyCockpitLayoutToDom === 'function') {
+        try {
+          requestAnimationFrame(() => {
+            try {
+              applyCockpitLayoutToDom({ renderManager: false });
+              requestAnimationFrame(() => { try { applyCockpitLayoutToDom({ renderManager: false }); } catch { } });
+            } catch { }
+          });
+        } catch { }
+      }
       if (dockPosition === 'aux' && !dockFallbackReason && activeContextTab === 'session' && !state.historyDrawerOpen && state.route && state.ctxAutoExpandedAuxRoute !== state.route) {
         state.historyDrawerOpen = true;
         state.ctxAutoExpandedAuxRoute = state.route;
       }
       if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
-      if ((activeContextTab === 'session' || !isContextSettingsView) && typeof renderContextTrendCard === 'function') {
+      if (activeContextTab === 'session' && !isContextSettingsView && typeof renderContextTrendCard === 'function') {
         renderContextTrendCard();
         if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
         if (state.historyDrawerOpen && typeof renderSessionTimeline === 'function') renderSessionTimeline();
@@ -3098,10 +3918,18 @@
       hidePopover();
       syncHostStackingElevation(false);
     }
+    if (target === 'none') {
+      state.orbLinkedPanel = null;
+    }
     syncDockedPanelsAttribute();
     syncPanelPickerActiveState();
+    syncDockCollapsedTopbar();
+    if (typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
   }
 
+  let activeTokenView = 'tokens';
+  let activeContextTab = 'session';
+  let isContextSettingsView = false;
   let activeContextAnchorId = 'badge';
   let activeTokensAnchorId = 'badge-tokens';
   let activeQuotaAnchorId = 'badge-quota';
@@ -3124,8 +3952,10 @@
       return activeTokenView === 'requests' ? 'requests' : 'tokens';
     }
     if (el('panel') && !el('panel').hidden) {
-      if (!isContextSettingsView && activeContextTab === 'speed') return 'speed';
-      if (!isContextSettingsView && activeContextTab === 'session' && state.historyDrawerOpen) return 'context_detail';
+      if (isContextSettingsView || activeContextTab === 'settings') return 'settings';
+      if (activeContextTab === 'models') return 'models';
+      if (activeContextTab === 'speed') return 'speed';
+      if (activeContextTab === 'session' && state.historyDrawerOpen) return 'context_detail';
       return 'context';
     }
     return null;
@@ -3177,6 +4007,9 @@
 
   function openPanelPicker(anchorId = 'badge-overflow', opts = null) {
     if (enforceMarketplaceAvoidance()) return;
+    if (opts?.viaHover && (state.radialMenuOpen || state.radialClosing)) return;
+    if (opts?.viaHover && anchorId === 'badge' && radialTopbarEnabled) return;
+    if (state.radialMenuOpen || state.radialClosing) closeRadialMenu(true);
     cancelClosePanelPicker();
     const pOverflow = el('overflow-menu');
     if (!pOverflow) return;
@@ -3187,6 +4020,7 @@
       lastPickerHoverOpen = { anchorId: '', ts: 0 };
     }
     syncOverflowMenuMetrics?.();
+    syncRadialOrbHiddenUi?.();
     syncPanelPickerActiveState();
     positionFloatingPanels();
     pOverflow.hidden = false;
@@ -3228,36 +4062,87 @@
       activeQuotaAnchorId = resolvePickerTargetAnchor('badge-quota');
       showPanel('quota');
     } else if (target === 'context') {
-      activeContextAnchorId = resolvePickerTargetAnchor('badge');
-      state.historyDrawerOpen = false;
+      openContextSessionPanel(resolvePickerTargetAnchor('badge'), {
+        toggleWhenSameAnchor: false,
+        historyDrawerOpen: false
+      });
       renderSessionTimeline?.();
-      if (activeContextTab === 'speed' || activeContextTab === 'settings') {
-        switchContextTab('session');
-      }
-      showPanel('context');
     } else if (target === 'context_detail') {
       activeContextAnchorId = resolvePickerTargetAnchor('badge');
       state.historyDrawerOpen = true;
-      showPanel('context');
       switchContextTab('session');
+      showPanel('context');
       renderSessionTimeline?.();
       if (state.route && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
         void fetchSessionTimeline(state.route, { force: !state.sessionTimeline });
       }
     } else if (target === 'speed') {
       activeContextAnchorId = resolvePickerTargetAnchor('badge-speed');
-      showPanel('context');
       switchContextTab('speed');
+      showPanel('context');
     } else if (target === 'tokens') {
       activeTokensAnchorId = resolvePickerTargetAnchor('badge-tokens');
+      if (typeof switchTokenView === 'function') switchTokenView('tokens');
       showPanel('tokens');
-      switchTokenView('tokens');
-    } else if (target === 'requests') {
-      activeTokensAnchorId = resolvePickerTargetAnchor('badge-tokens');
-      showPanel('tokens');
-      switchTokenView('requests');
+    } else if (target === 'requests' || target === 'cache') {
+      openRequestsLivePanel(resolvePickerTargetAnchor('badge-tokens'), { toggleWhenSameAnchor: false });
     }
     closePanelPicker();
+  }
+
+  /**
+   * 零闪烁直达统计面板「实时请求」第一屏：必须先切换内部视图再置面板可见，杜绝先闪出其他标签页。
+   */
+  function openRequestsLivePanel(anchorId = 'badge-tokens', opts = {}) {
+    if (enforceMarketplaceAvoidance()) {
+      showPanel('none');
+      return false;
+    }
+    const pTokens = el('panel-tokens');
+    const alreadyOnRequests = Boolean(pTokens && !pTokens.hidden && activeTokenView === 'requests');
+    if (opts.toggleWhenSameAnchor && alreadyOnRequests && activeTokensAnchorId === anchorId) {
+      showPanel('none');
+      return false;
+    }
+    activeTokensAnchorId = anchorId || 'badge-tokens';
+    if (typeof switchTokenView === 'function') {
+      switchTokenView('requests');
+    }
+    showPanel('tokens');
+    positionFloatingPanels();
+    syncPanelPickerActiveState();
+    return true;
+  }
+
+  /**
+   * 零闪烁直达上下文面板「当前会话」第一屏：先切换内部标签至 session 再置面板可见；
+   * 仅当面板已打开且当前正处于「当前会话」时，再次点击同一入口才关闭面板。
+   */
+  function openContextSessionPanel(anchorId = 'badge', opts = {}) {
+    if (enforceMarketplaceAvoidance()) {
+      showPanel('none');
+      return false;
+    }
+    const resolvedAnchor = anchorId || 'badge';
+    const pContext = el('panel');
+    const alreadyOnSession = Boolean(
+      pContext && !pContext.hidden && activeContextTab === 'session' && !isContextSettingsView
+    );
+    if (opts.toggleWhenSameAnchor && alreadyOnSession && activeContextAnchorId === resolvedAnchor) {
+      showPanel('none');
+      return false;
+    }
+    activeContextAnchorId = resolvedAnchor;
+    if (typeof opts.historyDrawerOpen === 'boolean') {
+      state.historyDrawerOpen = opts.historyDrawerOpen;
+    }
+    if (typeof switchContextTab === 'function') {
+      switchContextTab('session');
+    }
+    showPanel('context');
+    positionFloatingPanels();
+    syncPanelPickerActiveState();
+    return true;
   }
 
   function toggle(open, tab = 'context') {
@@ -3269,16 +4154,7 @@
   }
 
   function toggleContext(anchorId = 'badge') {
-    if (enforceMarketplaceAvoidance()) {
-      showPanel('none');
-      return;
-    }
-    if (!el('panel').hidden && activeContextAnchorId === anchorId) {
-      showPanel('none');
-    } else {
-      activeContextAnchorId = anchorId || 'badge';
-      showPanel('context');
-    }
+    return openContextSessionPanel(anchorId, { toggleWhenSameAnchor: true });
   }
 
   function toggleTokens(anchorId = 'badge-tokens') {
@@ -3324,11 +4200,1092 @@
     closePanelPicker();
   }
 
+  // =========================================================================
+  // 模块 1B: 上下文圆环 · 外向内虚化汇聚径向菜单 (floating / topbar / bottombar / classic)
+  // =========================================================================
+  const RADIAL_TARGETS = ['context', 'quota', 'tokens', 'speed', 'requests', 'cli'];
+
+  function getViewportSizeSafe() {
+    const w = typeof window !== 'undefined' && Number.isFinite(Number(window.innerWidth)) && window.innerWidth > 0
+      ? Number(window.innerWidth)
+      : 1280;
+    const h = typeof window !== 'undefined' && Number.isFinite(Number(window.innerHeight)) && window.innerHeight > 0
+      ? Number(window.innerHeight)
+      : 800;
+    return { width: w, height: h };
+  }
+
+  function clampOrbPosition(pos, vw, vh) {
+    const orbW = 46;
+    const margin = 12;
+    const minX = margin;
+    const minY = margin;
+    const maxX = Math.max(minX, vw - orbW - margin);
+    const maxY = Math.max(minY, vh - orbW - margin);
+    if (!pos || !Number.isFinite(Number(pos.x)) || !Number.isFinite(Number(pos.y))) {
+      return {
+        x: Math.round(Math.max(minX, Math.min(maxX, vw - 68))),
+        y: Math.round(Math.max(minY, Math.min(maxY, vh * 0.62)))
+      };
+    }
+    return {
+      x: Math.round(Math.max(minX, Math.min(maxX, Number(pos.x)))),
+      y: Math.round(Math.max(minY, Math.min(maxY, Number(pos.y))))
+    };
+  }
+
+  function applyOrbPositionToDom() {
+    const orb = el('ctx-radial-orb');
+    if (!orb || !orb.style) return;
+    const { width, height } = getViewportSizeSafe();
+    const pos = clampOrbPosition(radialOrbPos, width, height);
+    orb.style.left = `${pos.x}px`;
+    orb.style.top = `${pos.y}px`;
+  }
+
+  function formatOrbWaitElapsed(sec) {
+    const s = Math.max(0, Math.floor(Number(sec) || 0));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${m}m${String(rem).padStart(2, '0')}s`;
+  }
+
+  function formatOrbCompactNumber(val) {
+    const n = Number(val);
+    if (!Number.isFinite(n) || n < 0) return '--';
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1).replace(/\.0$/, '')}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1).replace(/\.0$/, '')}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, '')}K`;
+    return String(Math.round(n));
+  }
+
+  function resolveOrbToneFromWaitSec(sec) {
+    const s = Number(sec) || 0;
+    if (s < 5) return 'fast';
+    if (s < 15) return 'mid';
+    if (s < 45) return 'warn';
+    return 'slow';
+  }
+
+  function resolveOrbToneFromSpeed(tps, evalRes) {
+    const sev = evalRes?.badge?.severity;
+    if (sev === 'danger' || sev === 'critical') return 'slow';
+    if (sev === 'warn') return 'warn';
+    const n = Number(tps);
+    if (Number.isFinite(n) && n > 0) {
+      if (n >= 80) return 'fast';
+      if (n >= 35) return 'mid';
+      if (n >= 15) return 'warn';
+      return 'slow';
+    }
+    return 'fast';
+  }
+
+  function resolveOrbContextMetric() {
+    const d = state.latest;
+    const stale = state.requestError || (state.requestAt && Date.now() - state.requestAt > 20000);
+    let pct = null;
+    if (d?.exceeded) pct = 100;
+    else if (d?.percent != null && !stale) pct = Math.min(100, Math.max(0, d.percent));
+    else if (d?.actual != null && d?.budget && !stale) pct = Math.min(100, Math.max(0, (d.actual / d.budget) * 100));
+    const text = d?.exceeded ? '100%' : (pct != null ? `${Math.round(pct)}%` : '--%');
+    const occ = host.getAttribute?.('data-occupancy') || 'normal';
+    const tone = occ === 'danger' ? 'danger' : (occ === 'warn' ? 'warn' : 'normal');
+    return { text, pct: pct != null ? pct : 0, tone };
+  }
+
+  function resolveOrbPanelMetric(panelKey) {
+    if (panelKey === 'quota') {
+      const view = lastComputedQuotaView;
+      const frac = view?.badge?.fraction;
+      let text = '--%';
+      let pct = 0;
+      let tone = 'quota';
+      if (view?.activeStatus === 'exhausted') {
+        text = '0%';
+        pct = 0;
+        tone = 'danger';
+      } else if (frac != null && Number.isFinite(Number(frac))) {
+        const p = Math.max(0, Math.min(100, Math.round(Number(frac) * 100)));
+        text = `${p}%`;
+        pct = p;
+        tone = p <= 15 ? 'danger' : (p <= 35 ? 'warn' : 'quota');
+      } else {
+        const qTxt = String(el('quota-badge-val')?.textContent || '').trim();
+        const m = qTxt.match(/(\d+(?:\.\d+)?)%/);
+        if (m) {
+          const p = Math.max(0, Math.min(100, Math.round(Number(m[1]))));
+          text = `${p}%`;
+          pct = p;
+          tone = p <= 15 ? 'danger' : (p <= 35 ? 'warn' : 'quota');
+        }
+      }
+      return { text, pct, tone, subKind: 'quota' };
+    }
+    if (panelKey === 'tokens') {
+      const sum = ANTIGRAVITY_TOKEN_DATA?.summary;
+      const tot = sum?.grandTotalTokens ?? sum?.todayTokens;
+      let text = '--';
+      if (tot != null && Number.isFinite(Number(tot)) && Number(tot) >= 0) {
+        text = formatOrbCompactNumber(Number(tot));
+      } else {
+        const bTxt = String(el('token-amount')?.textContent || '').trim();
+        if (bTxt && bTxt !== '--') text = bTxt;
+      }
+      return { text, pct: text === '--' ? 0 : 72, tone: 'tokens', subKind: 'tokens' };
+    }
+    if (panelKey === 'speed') {
+      const ev = state.lastSpeedEval;
+      const avgSp = typeof getSessionAverageSpeed === 'function' ? getSessionAverageSpeed(ev) : null;
+      const sp = avgSp?.avgTps ?? ev?.streamSpeed ?? ev?.overallTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? null;
+      let text = '--/s';
+      let pct = 0;
+      if (sp != null && Number.isFinite(Number(sp)) && Number(sp) > 0) {
+        const rounded = Math.round(Number(sp));
+        text = `${rounded}/s`;
+        pct = Math.max(15, Math.min(100, (rounded / 150) * 100));
+      }
+      return { text, pct, tone: 'speed', subKind: 'speed' };
+    }
+    if (panelKey === 'requests') {
+      const calls = typeof collectSessionCallsForSpeed === 'function' ? collectSessionCallsForSpeed() : [];
+      const count = calls.length > 0 ? calls.length : (Array.isArray(state.sessionCalls) ? state.sessionCalls.length : 0);
+      const hasLive = Boolean(calls.some(c => c?.status === 'streaming') || state.liveSpeed?.isActivelyStreaming);
+      const text = count > 0 ? (count > 999 ? formatOrbCompactNumber(count) : String(count)) : (hasLive ? 'LIVE' : '0');
+      return { text, pct: count > 0 || hasLive ? 78 : 0, tone: 'requests', subKind: 'requests' };
+    }
+    const ctx = resolveOrbContextMetric();
+    return { text: ctx.text, pct: ctx.pct, tone: ctx.tone, subKind: 'context' };
+  }
+
+  function triggerOrbCliFeedback() {
+    if (state.orbCliFeedbackTimer) {
+      clearTimeout(state.orbCliFeedbackTimer);
+      state.orbCliFeedbackTimer = null;
+    }
+    state.orbCliFeedbackUntil = Date.now() + ORB_CLI_FEEDBACK_MS;
+    syncFloatingOrbState();
+    state.orbCliFeedbackTimer = setTimeout(() => {
+      state.orbCliFeedbackTimer = null;
+      state.orbCliFeedbackUntil = 0;
+      if (!state.disposed) syncFloatingOrbState();
+    }, ORB_CLI_FEEDBACK_MS);
+  }
+
+  /**
+   * 同步悬浮圆球实时状态机：等待首字 TTFT > 流式输出速度 > CLI 短暂反馈 > 面板联动摘要 > 空闲上下文占比
+   */
+  function syncFloatingOrbState() {
+    if (state.disposed || radialDisposed) return null;
+    const orb = el('ctx-radial-orb');
+    const orbRingFill = el('ctx-orb-ring-fill');
+    const orbPctEl = el('ctx-orb-pct');
+    const ov = (state.orbOverrideForTest && typeof state.orbOverrideForTest === 'object') ? state.orbOverrideForTest : null;
+    const spEval = state.lastSpeedEval;
+
+    let mode = 'idle';
+    let subKind = 'context';
+    let tone = 'normal';
+    let text = '--%';
+    let pct = 0;
+
+    const isWaitOverride = ov?.phase === 'waiting';
+    const isWaitLive = Boolean(!ov && (spEval?.phase === 'waiting' || (state.livePendingRequest && state.livePendingRequest.cascadeId === state.route)));
+    if (isWaitOverride || isWaitLive) {
+      mode = 'waiting';
+      subKind = 'waiting';
+      let elapsedSec = 0;
+      if (isWaitOverride && ov.elapsedSec != null) elapsedSec = Number(ov.elapsedSec) || 0;
+      else if (spEval?.phase === 'waiting' && spEval.elapsedSec != null) elapsedSec = Number(spEval.elapsedSec) || 0;
+      else if (state.livePendingRequest?.startedAtMs) elapsedSec = Math.max(0, (Date.now() - state.livePendingRequest.startedAtMs) / 1000);
+      text = formatOrbWaitElapsed(elapsedSec);
+      tone = resolveOrbToneFromWaitSec(elapsedSec);
+      pct = 100;
+    } else {
+      const isStreamOverride = ov?.phase === 'streaming';
+      const isStreamLive = Boolean(!ov && (spEval?.phase === 'streaming' || state.liveSpeed?.isActivelyStreaming));
+      if (isStreamOverride || isStreamLive) {
+        mode = 'streaming';
+        subKind = 'streaming';
+        const rawTps = isStreamOverride
+          ? (ov.streamSpeed ?? ov.tps ?? 0)
+          : (spEval?.streamSpeed ?? spEval?.overallTps ?? state.liveSpeed?.emaTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? 0);
+        const nTps = Number(rawTps);
+        if (Number.isFinite(nTps) && nTps > 0) {
+          const rounded = Math.round(nTps);
+          text = `${rounded}/s`;
+          pct = Math.max(18, Math.min(100, (rounded / 150) * 100));
+        } else {
+          text = '…';
+          pct = 45;
+        }
+        tone = resolveOrbToneFromSpeed(nTps, spEval);
+      } else if (Date.now() < Number(state.orbCliFeedbackUntil || 0)) {
+        mode = 'cli';
+        subKind = 'cli';
+        tone = 'cli';
+        text = '>_';
+        pct = 100;
+      } else {
+        const activePanel = state.orbLinkedPanel ? getCurrentPickerTarget() : null;
+        if (activePanel && state.orbLinkedPanel) {
+          mode = 'panel';
+          const pm = resolveOrbPanelMetric(activePanel);
+          subKind = pm.subKind;
+          tone = pm.tone;
+          text = pm.text;
+          pct = pm.pct;
+        } else {
+          if (!activePanel) state.orbLinkedPanel = null;
+          mode = 'idle';
+          subKind = 'context';
+          const cm = resolveOrbContextMetric();
+          tone = cm.tone;
+          text = cm.text;
+          pct = cm.pct;
+        }
+      }
+    }
+
+    const snapKey = `${mode}:${subKind}:${mode === 'waiting' ? 'tick' : text}`;
+    const changedKind = Boolean(state.orbLastSnapshotKey && state.orbLastSnapshotKey !== snapKey);
+    state.orbLastSnapshotKey = snapKey;
+
+    if (orb) {
+      orb.setAttribute?.('data-orb-mode', mode);
+      orb.setAttribute?.('data-orb-tone', tone);
+      orb.setAttribute?.('data-orb-panel', subKind);
+    }
+    if (orbRingFill) {
+      const hasProgressArc = Number.isFinite(Number(pct)) && Number(pct) > 0 && text !== '--%';
+      if (hasProgressArc) {
+        const orbArc = pct >= 100
+          ? ORB_RING_CIRCUMFERENCE
+          : Math.max(4, (Math.min(100, pct) / 100) * ORB_RING_CIRCUMFERENCE);
+        orbRingFill.removeAttribute?.('data-empty');
+        orbRingFill.setAttribute('stroke-opacity', '1');
+        if (orbRingFill.style) orbRingFill.style.opacity = '';
+        orbRingFill.setAttribute('stroke-dasharray', `${orbArc.toFixed(2)} ${ORB_RING_CIRCUMFERENCE.toFixed(2)}`);
+      } else {
+        orbRingFill.setAttribute?.('data-empty', 'true');
+        orbRingFill.setAttribute('stroke-opacity', '0');
+        if (orbRingFill.style) orbRingFill.style.opacity = '0';
+        orbRingFill.setAttribute('stroke-dasharray', `0 ${ORB_RING_CIRCUMFERENCE.toFixed(2)}`);
+      }
+    }
+    if (orbPctEl) {
+      orbPctEl.textContent = text;
+      if (text.length >= 4 || text.includes('/')) orbPctEl.setAttribute?.('data-compact', 'true');
+      else orbPctEl.removeAttribute?.('data-compact');
+      if (changedKind && orbPctEl.classList) {
+        orbPctEl.classList.remove('is-orb-swapping');
+        void orbPctEl.offsetWidth;
+        orbPctEl.classList.add('is-orb-swapping');
+        if (state.orbSwapAnimTimer) clearTimeout(state.orbSwapAnimTimer);
+        state.orbSwapAnimTimer = setTimeout(() => {
+          state.orbSwapAnimTimer = null;
+          orbPctEl.classList?.remove?.('is-orb-swapping');
+        }, 180);
+      }
+    }
+    return { mode, subKind, tone, text, pct };
+  }
+
+  function syncRadialOrbHiddenUi() {
+    const chk = el('chk-hide-radial-orb');
+    if (chk) {
+      chk.checked = Boolean(radialOrbHidden);
+      chk.disabled = false;
+    }
+    const orbSwitch = el('chk-radial-orb');
+    if (orbSwitch) orbSwitch.checked = Boolean(radialOrbEnabled);
+    const topSwitch = el('chk-radial-topbar');
+    if (topSwitch) topSwitch.checked = Boolean(radialTopbarEnabled);
+    const bottomSwitch = el('chk-radial-bottombar');
+    if (bottomSwitch) bottomSwitch.checked = Boolean(radialBottombarEnabled);
+    const showOrbMenuBtn = el('overflow-show-orb-btn');
+    if (showOrbMenuBtn) {
+      showOrbMenuBtn.hidden = !radialOrbHidden;
+    }
+    host.setAttribute?.('data-radial-orb-hidden', radialOrbHidden ? 'true' : 'false');
+    host.setAttribute?.('data-radial-orb-enabled', radialOrbEnabled ? 'true' : 'false');
+    host.setAttribute?.('data-radial-topbar-enabled', radialTopbarEnabled ? 'true' : 'false');
+    host.setAttribute?.('data-radial-bottombar-enabled', radialBottombarEnabled ? 'true' : 'false');
+  }
+
+  function showRadialOrbHiddenToast() {
+    const toast = el('cli-launch-toast');
+    if (!toast) return;
+    const msg = t('radial.orb.hiddenToast');
+    if (!msg) return;
+    toast.hidden = false;
+    toast.setAttribute?.('data-tone', 'info');
+    toast.textContent = msg;
+    if (toast.__hideTimer) clearTimeout(toast.__hideTimer);
+    toast.__hideTimer = setTimeout(() => { toast.hidden = true; }, 3600);
+  }
+
+  function setRadialOrbEnabled(enabled, opts = {}) {
+    return !setRadialOrbHidden(!enabled, opts);
+  }
+
+  function setRadialOrbHidden(hidden, opts = {}) {
+    const next = Boolean(hidden);
+    radialOrbHidden = next;
+    radialOrbEnabled = !next;
+    if (opts.persist !== false) {
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('ag_radial_orb_hidden', next ? 'true' : 'false');
+          localStorage.setItem('ag_radial_orb_enabled', next ? 'false' : 'true');
+        }
+      } catch { }
+    }
+    if (next && state.radialMenuOpen) {
+      closeRadialMenu(true);
+    }
+    syncQuickMenuStyleUi({ skipVisibility: true });
+    syncRadialOrbVisibility();
+    if (next && opts.notify) {
+      showRadialOrbHiddenToast();
+    }
+    persistRadialSwitches(opts);
+    return radialOrbHidden;
+  }
+
+  function persistRadialSwitches(opts = {}) {
+    if (opts.persist === false) return;
+    if (!(typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) return;
+    void saveSettingsPayloadBridge({
+      radialOrbEnabled,
+      radialTopbarEnabled,
+      radialBottombarEnabled,
+      quickMenuStyle,
+      floatingOrbHidden: radialOrbHidden
+    });
+  }
+
+  function setRadialTopbarEnabled(enabled, opts = {}) {
+    const next = Boolean(enabled);
+    const changed = next !== radialTopbarEnabled;
+    radialTopbarEnabled = next;
+    if (opts.persist !== false) {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('ag_radial_topbar_enabled', next ? 'true' : 'false');
+      } catch { }
+    }
+    if (changed && state.radialMenuOpen && state.radialAnchorMode === 'topbar') closeRadialMenu(false);
+    syncQuickMenuStyleUi();
+    persistRadialSwitches(opts);
+    return radialTopbarEnabled;
+  }
+
+  function setRadialBottombarEnabled(enabled, opts = {}) {
+    const next = Boolean(enabled);
+    const changed = next !== radialBottombarEnabled;
+    radialBottombarEnabled = next;
+    if (opts.persist !== false) {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('ag_radial_bottombar_enabled', next ? 'true' : 'false');
+      } catch { }
+    }
+    if (changed && state.radialMenuOpen && state.radialAnchorMode === 'bottombar') closeRadialMenu(false);
+    syncQuickMenuStyleUi();
+    persistRadialSwitches(opts);
+    return radialBottombarEnabled;
+  }
+
+  function syncRadialOrbVisibility() {
+    if (state.disposed || radialDisposed) return;
+    const orb = el('ctx-radial-orb');
+    if (!orb) return;
+    const marketplaceBlocked = host.getAttribute?.('data-marketplace-active') === 'true';
+    const shouldShow = radialOrbEnabled && !marketplaceBlocked;
+    orb.hidden = !shouldShow;
+    if (orb.style) {
+      orb.style.display = shouldShow ? '' : 'none';
+      orb.style.pointerEvents = shouldShow ? 'auto' : 'none';
+    }
+    if (shouldShow) {
+      ensureRadialHostAtBodyEnd();
+      applyOrbPositionToDom();
+      orb.setAttribute?.('aria-expanded', state.radialMenuOpen ? 'true' : 'false');
+      syncFloatingOrbState();
+    } else if (state.radialMenuOpen && state.radialAnchorMode === 'floating') {
+      closeRadialMenu(true);
+    }
+    syncRadialOrbHiddenUi();
+  }
+
+  function syncQuickMenuStyleUi(opts = {}) {
+    quickMenuStyle = deriveLegacyQuickMenuStyle();
+    host.setAttribute?.('data-quick-menu-style', quickMenuStyle);
+    // 三开关与顶栏/底栏入口的运行时互斥由 data-radial-modes 汇总，供样式与实机断言共用
+    const combos = [
+      radialOrbEnabled ? 'orb' : '',
+      radialTopbarEnabled ? 'topbar' : '',
+      radialBottombarEnabled ? 'bottombar' : ''
+    ].filter(Boolean);
+    host.setAttribute?.('data-radial-modes', combos.length ? combos.join(' ') : 'none');
+    if (!opts.skipVisibility) syncRadialOrbVisibility();
+    else syncRadialOrbHiddenUi();
+  }
+
+  /**
+   * 旧 4 选 1 API 兼容桥：写入即等价于单独点亮对应开关，classic 关闭全部三个开关
+   */
+  function setQuickMenuStyle(mode, opts = {}) {
+    const next = VALID_QUICK_MENU_STYLES.includes(mode) ? mode : 'floating';
+    legacyQuickMenuStyle = next;
+    radialTopbarEnabled = next === 'topbar';
+    radialBottombarEnabled = next === 'bottombar';
+    radialOrbHidden = next !== 'floating';
+    radialOrbEnabled = next === 'floating';
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ag_quick_menu_style', next);
+        localStorage.setItem('ag_radial_topbar_enabled', radialTopbarEnabled ? 'true' : 'false');
+        localStorage.setItem('ag_radial_bottombar_enabled', radialBottombarEnabled ? 'true' : 'false');
+        localStorage.setItem('ag_radial_orb_enabled', radialOrbEnabled ? 'true' : 'false');
+        localStorage.setItem('ag_radial_orb_hidden', radialOrbHidden ? 'true' : 'false');
+      }
+    } catch { }
+    if (state.radialMenuOpen) closeRadialMenu(true);
+    syncQuickMenuStyleUi();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({
+        quickMenuStyle: next,
+        radialOrbEnabled,
+        radialTopbarEnabled,
+        radialBottombarEnabled,
+        floatingOrbHidden: radialOrbHidden
+      });
+    }
+    return quickMenuStyle;
+  }
+
+  /**
+   * 等距生成扇区顺时针角度数组（12 点钟方向为 0deg，顺时针增大）
+   */
+  function distributeRadialAngles(startDeg, endDeg, count) {
+    const res = [];
+    const step = count > 1 ? (endDeg - startDeg) / (count - 1) : 0;
+    for (let i = 0; i < count; i++) {
+      res.push(startDeg + step * i);
+    }
+    return res;
+  }
+
+  /**
+   * 计算径向菜单几何位置；四周留白 >= 76px 时展开 360° 六瓣花环，贴边/靠角收束为原型极坐标安全扇区并保证 100% 不越界裁切。
+   */
+  function computeRadialGeometry(mode, anchorRect, viewportW = 1280, viewportH = 800) {
+    const vw = Number.isFinite(Number(viewportW)) && viewportW > 0 ? Number(viewportW) : 1280;
+    const vh = Number.isFinite(Number(viewportH)) && viewportH > 0 ? Number(viewportH) : 800;
+    const rect = anchorRect || { left: vw - 64, top: vh * 0.62, width: 40, height: 40 };
+    const cx = Number(rect.left || 0) + Number(rect.width || 40) / 2;
+    const cy = Number(rect.top || 0) + Number(rect.height || 40) / 2;
+    const count = RADIAL_TARGETS.length;
+
+    let baseRestRadius = mode === 'floating' ? RADIAL_R_REST_360 : RADIAL_R_REST_180;
+    let isFull360 = false;
+    let angles = [];
+    let defaultTipPos = 'top';
+
+    const leftSpace = cx;
+    const rightSpace = vw - cx;
+    const topSpace = cy;
+    const bottomSpace = vh - cy;
+
+    if (mode === 'topbar') {
+      baseRestRadius = RADIAL_R_REST_180;
+      const edgePad = baseRestRadius + 22;
+      let startDeg = 118;
+      let endDeg = 242;
+      if (rightSpace < edgePad) {
+        baseRestRadius = 96;
+        startDeg = 146;
+        endDeg = 246;
+      } else if (leftSpace < edgePad) {
+        baseRestRadius = 96;
+        startDeg = 114;
+        endDeg = 214;
+      }
+      angles = distributeRadialAngles(startDeg, endDeg, count);
+      defaultTipPos = 'bottom';
+    } else if (mode === 'bottombar') {
+      baseRestRadius = RADIAL_R_REST_180;
+      const edgePad = baseRestRadius + 22;
+      let startDeg = -62;
+      let endDeg = 62;
+      if (rightSpace < edgePad) {
+        baseRestRadius = 96;
+        startDeg = -66;
+        endDeg = 34;
+      } else if (leftSpace < edgePad) {
+        baseRestRadius = 96;
+        startDeg = -34;
+        endDeg = 66;
+      }
+      angles = distributeRadialAngles(startDeg, endDeg, count);
+      defaultTipPos = 'top';
+    } else {
+      const nearTop = topSpace < RADIAL_EDGE_MARGIN_PX;
+      const nearBottom = bottomSpace < RADIAL_EDGE_MARGIN_PX;
+      const nearLeft = leftSpace < RADIAL_EDGE_MARGIN_PX;
+      const nearRight = rightSpace < RADIAL_EDGE_MARGIN_PX;
+
+      if (!nearTop && !nearBottom && !nearLeft && !nearRight) {
+        isFull360 = true;
+        baseRestRadius = RADIAL_R_REST_360;
+        angles = distributeRadialAngles(0, 300, count);
+        defaultTipPos = 'top';
+      } else if (nearTop && nearLeft) {
+        baseRestRadius = 74;
+        angles = distributeRadialAngles(86, 184, count);
+        defaultTipPos = 'bottom';
+      } else if (nearTop && nearRight) {
+        baseRestRadius = 74;
+        angles = distributeRadialAngles(176, 274, count);
+        defaultTipPos = 'bottom';
+      } else if (nearBottom && nearLeft) {
+        baseRestRadius = 74;
+        angles = distributeRadialAngles(-4, 94, count);
+        defaultTipPos = 'top';
+      } else if (nearBottom && nearRight) {
+        baseRestRadius = 74;
+        angles = distributeRadialAngles(266, 364, count);
+        defaultTipPos = 'top';
+      } else if (nearTop) {
+        baseRestRadius = 68;
+        angles = distributeRadialAngles(100, 260, count);
+        defaultTipPos = 'bottom';
+      } else if (nearBottom) {
+        baseRestRadius = 68;
+        angles = distributeRadialAngles(-80, 80, count);
+        defaultTipPos = 'top';
+      } else if (nearLeft) {
+        baseRestRadius = 68;
+        angles = distributeRadialAngles(10, 170, count);
+        defaultTipPos = 'top';
+      } else {
+        baseRestRadius = 68;
+        angles = distributeRadialAngles(190, 350, count);
+        defaultTipPos = 'top';
+      }
+    }
+
+    const farRadius = Number((baseRestRadius * RADIAL_R_FAR_MULTIPLIER).toFixed(2));
+    const closeRadius = Number((baseRestRadius * RADIAL_R_CLOSE_MULTIPLIER).toFixed(2));
+    const itemHalf = (mode === 'topbar' || mode === 'bottombar') ? 18 : 19;
+    const safeMinX = itemHalf + 4;
+    const safeMaxX = Math.max(safeMinX, vw - itemHalf - 4);
+    let safeMinY = itemHalf + 4;
+    let safeMaxY = Math.max(safeMinY, vh - itemHalf - 4);
+    if (mode === 'topbar') {
+      const anchorBottom = Number.isFinite(Number(rect.top)) ? Number(rect.top) + Number(rect.height || 28) : (cy + 14);
+      safeMinY = Math.min(safeMaxY, Math.max(itemHalf + 4, anchorBottom + itemHalf + RADIAL_BAR_CLEARANCE_PX));
+    } else if (mode === 'bottombar') {
+      const anchorTop = Number.isFinite(Number(rect.top)) ? Number(rect.top) : (cy - 11);
+      safeMaxY = Math.max(safeMinY, Math.min(vh - itemHalf - 4, anchorTop - itemHalf - RADIAL_BAR_CLEARANCE_PX));
+    }
+
+    const LABEL_SAFE_X = 112;
+    const LABEL_SAFE_Y = 58;
+    const items = RADIAL_TARGETS.map((target, idx) => {
+      const deg = angles[idx] ?? 0;
+      const rad = (deg * Math.PI) / 180;
+      const rawDx = Math.sin(rad) * baseRestRadius;
+      const rawDy = -Math.cos(rad) * baseRestRadius;
+      const clampedAbsX = Math.max(safeMinX, Math.min(safeMaxX, cx + rawDx));
+      const clampedAbsY = Math.max(safeMinY, Math.min(safeMaxY, cy + rawDy));
+      const restX = Number((clampedAbsX - cx).toFixed(2));
+      const restY = Number((clampedAbsY - cy).toFixed(2));
+      // 从最终安全坐标反算极坐标角度与停靠半径，确保任何边缘夹紧后 CSS 极坐标依然 100% 对准安全坐标且不越界
+      const itemRestRadius = Number(Math.hypot(restX, restY).toFixed(2));
+      const effectiveDeg = itemRestRadius > 0.5
+        ? Number(((Math.atan2(restX, -restY) * 180) / Math.PI).toFixed(1))
+        : Number(deg.toFixed(1));
+      const itemFarRadius = Number((baseRestRadius * RADIAL_R_FAR_MULTIPLIER).toFixed(2));
+      const itemCloseRadius = Number((baseRestRadius * RADIAL_R_CLOSE_MULTIPLIER).toFixed(2));
+      const farX = Number((Math.sin(rad) * itemFarRadius).toFixed(2));
+      const farY = Number((-Math.cos(rad) * itemFarRadius).toFixed(2));
+      const closeX = Number((Math.sin(rad) * itemCloseRadius).toFixed(2));
+      const closeY = Number((-Math.cos(rad) * itemCloseRadius).toFixed(2));
+
+      // 沿卫星相对圆心的最终向量朝径向外侧弹出 Tooltip（-180°~180°：-90° 为正上、0° 为正右、+90° 为正下）
+      const vecLen = Math.hypot(restX, restY);
+      const mathDeg = vecLen > 0.5
+        ? (Math.atan2(restY, restX) * 180) / Math.PI
+        : ((((deg - 90) % 360) + 540) % 360) - 180;
+      let autoTipPos = defaultTipPos;
+      if (mathDeg >= -120 && mathDeg <= -60) {
+        autoTipPos = 'top';
+      } else if (mathDeg >= 60 && mathDeg <= 120) {
+        autoTipPos = 'bottom';
+      } else if (mathDeg > -60 && mathDeg < 60) {
+        autoTipPos = 'right';
+      } else {
+        autoTipPos = 'left';
+      }
+
+      // 贴近视口边缘时自动向安全方向翻转（优先正交外侧，避免向内盖住中心圆球）
+      if (autoTipPos === 'top' && clampedAbsY < LABEL_SAFE_Y) {
+        if (vh - clampedAbsY >= LABEL_SAFE_Y) autoTipPos = 'bottom';
+        else autoTipPos = restX >= 0 ? 'right' : 'left';
+      } else if (autoTipPos === 'bottom' && (vh - clampedAbsY) < LABEL_SAFE_Y) {
+        if (clampedAbsY >= LABEL_SAFE_Y) autoTipPos = 'top';
+        else autoTipPos = restX >= 0 ? 'right' : 'left';
+      } else if (autoTipPos === 'right' && (vw - clampedAbsX) < LABEL_SAFE_X) {
+        if (restY <= 0 && clampedAbsY >= LABEL_SAFE_Y) autoTipPos = 'top';
+        else if (restY > 0 && (vh - clampedAbsY) >= LABEL_SAFE_Y) autoTipPos = 'bottom';
+        else if (clampedAbsX >= LABEL_SAFE_X) autoTipPos = 'left';
+        else autoTipPos = (vh - clampedAbsY) >= clampedAbsY ? 'bottom' : 'top';
+      } else if (autoTipPos === 'left' && clampedAbsX < LABEL_SAFE_X) {
+        if (restY <= 0 && clampedAbsY >= LABEL_SAFE_Y) autoTipPos = 'top';
+        else if (restY > 0 && (vh - clampedAbsY) >= LABEL_SAFE_Y) autoTipPos = 'bottom';
+        else if ((vw - clampedAbsX) >= LABEL_SAFE_X) autoTipPos = 'right';
+        else autoTipPos = (vh - clampedAbsY) >= clampedAbsY ? 'bottom' : 'top';
+      }
+      return {
+        target,
+        index: idx,
+        angleDeg: isFull360 ? Number(deg.toFixed(1)) : effectiveDeg,
+        rawAngleDeg: Number(deg.toFixed(1)),
+        rRest: itemRestRadius,
+        rFar: itemFarRadius,
+        rClose: itemCloseRadius,
+        restX,
+        restY,
+        farX,
+        farY,
+        closeX,
+        closeY,
+        absX: Number(clampedAbsX.toFixed(2)),
+        absY: Number(clampedAbsY.toFixed(2)),
+        labelPos: autoTipPos
+      };
+    });
+
+    return {
+      mode,
+      centerX: Number(cx.toFixed(2)),
+      centerY: Number(cy.toFixed(2)),
+      restRadius: baseRestRadius,
+      farRadius,
+      closeRadius,
+      isFull360,
+      items
+    };
+  }
+
+  function applyRadialLayoutToDom(mode = quickMenuStyle, anchorNode = null) {
+    if (state.disposed || radialDisposed) return null;
+    const layer = el('ctx-radial-layer');
+    if (!layer) return null;
+    const effectiveMode = mode === 'classic' ? 'floating' : mode;
+    let anchorEl = anchorNode;
+    if (!anchorEl) {
+      anchorEl = effectiveMode === 'topbar'
+        ? el('badge')
+        : (effectiveMode === 'bottombar' ? el('csb-group-context') : el('ctx-radial-orb'));
+    }
+    const { width: vw, height: vh } = getViewportSizeSafe();
+    let rect = null;
+    if (anchorEl && typeof anchorEl.getBoundingClientRect === 'function') {
+      const r = anchorEl.getBoundingClientRect();
+      if (r && (r.width > 0 || r.height > 0 || r.left > 0 || r.top > 0)) {
+        rect = r;
+      }
+    }
+    if (!rect) {
+      const orbPos = clampOrbPosition(radialOrbPos, vw, vh);
+      rect = { left: orbPos.x, top: orbPos.y, width: 40, height: 40 };
+    }
+
+    const geom = computeRadialGeometry(effectiveMode, rect, vw, vh);
+    layer.setAttribute?.('data-mode', effectiveMode);
+    if (layer.style) {
+      layer.style.left = `${geom.centerX}px`;
+      layer.style.top = `${geom.centerY}px`;
+    }
+    const closeBtn = el('ctx-radial-center-close');
+    const orbEl = el('ctx-radial-orb');
+    if (closeBtn) {
+      // 顶栏与底栏彻底移除假大圆盖子；悬浮球可见时也直接使用悬浮球自身
+      closeBtn.hidden = effectiveMode !== 'floating' || Boolean(orbEl && !orbEl.hidden);
+      if (closeBtn.style) {
+        closeBtn.style.left = `${geom.centerX}px`;
+        closeBtn.style.top = `${geom.centerY}px`;
+      }
+    }
+
+    for (const itemGeom of geom.items) {
+      const slotEl = el(`radial-slot-${itemGeom.target}`);
+      const itemEl = el(`radial-item-${itemGeom.target}`);
+      if (slotEl?.style) {
+        slotEl.style.left = `${geom.centerX}px`;
+        slotEl.style.top = `${geom.centerY}px`;
+        slotEl.style.setProperty('--i', String(itemGeom.index));
+        slotEl.style.setProperty('--angle', `${itemGeom.angleDeg}deg`);
+        slotEl.style.setProperty('--r-rest', `${itemGeom.rRest}px`);
+        slotEl.style.setProperty('--r-far', `${itemGeom.rFar}px`);
+        slotEl.style.setProperty('--r-close', `${itemGeom.rClose}px`);
+      }
+      if (itemEl) {
+        itemEl.setAttribute?.('data-label-pos', itemGeom.labelPos);
+        if (itemEl.style) {
+          itemEl.style.setProperty('--far-x', `${itemGeom.farX}px`);
+          itemEl.style.setProperty('--far-y', `${itemGeom.farY}px`);
+          itemEl.style.setProperty('--rest-x', `${itemGeom.restX}px`);
+          itemEl.style.setProperty('--rest-y', `${itemGeom.restY}px`);
+          itemEl.style.setProperty('--close-x', `${itemGeom.closeX}px`);
+          itemEl.style.setProperty('--close-y', `${itemGeom.closeY}px`);
+        }
+      }
+    }
+    return geom;
+  }
+
+  function closeRadialMenu(immediate = false) {
+    const layer = el('ctx-radial-layer');
+    const orb = el('ctx-radial-orb');
+    const bCtx = el('badge');
+    const cCtx = el('csb-group-context');
+    if (state.radialCloseTimer) {
+      clearTimeout(state.radialCloseTimer);
+      state.radialCloseTimer = null;
+    }
+    if (state.radialAlignTimer) {
+      clearTimeout(state.radialAlignTimer);
+      state.radialAlignTimer = null;
+    }
+    state.radialMenuOpen = false;
+    if (orb) orb.setAttribute?.('aria-expanded', 'false');
+    bCtx?.removeAttribute?.('data-radial-open');
+    cCtx?.removeAttribute?.('data-radial-open');
+    const panelEl = el('panel');
+    const ctxPanelOpen = Boolean(panelEl && !panelEl.hidden);
+    if (bCtx) bCtx.setAttribute?.('aria-expanded', String(ctxPanelOpen && activeContextAnchorId === 'badge'));
+    if (cCtx) cCtx.setAttribute?.('aria-expanded', String(ctxPanelOpen && activeContextAnchorId === 'csb-group-context'));
+    const syncRadialElevationOnClose = () => {
+      syncHostStackingElevation(Boolean(isAnyPanelOpen() || (el('overflow-menu') && !el('overflow-menu').hidden) || state.radialMenuOpen));
+    };
+    if (!layer) {
+      state.radialClosing = false;
+      syncRadialElevationOnClose();
+      return;
+    }
+    if (immediate) {
+      state.radialClosing = false;
+      layer.setAttribute?.('data-state', 'closed');
+      layer.hidden = true;
+      syncRadialElevationOnClose();
+      return;
+    }
+    if (layer.hidden) {
+      state.radialClosing = false;
+      layer.setAttribute?.('data-state', 'closed');
+      syncRadialElevationOnClose();
+      return;
+    }
+    state.radialClosing = true;
+    layer.setAttribute?.('data-state', 'closing');
+    state.radialCloseTimer = setTimeout(() => {
+      state.radialCloseTimer = null;
+      state.radialClosing = false;
+      layer.hidden = true;
+      layer.setAttribute?.('data-state', 'closed');
+      syncRadialElevationOnClose();
+    }, 190);
+  }
+
+  function openRadialMenu(mode = quickMenuStyle, anchorNode = null) {
+    if (state.disposed || radialDisposed) return false;
+    if (enforceMarketplaceAvoidance()) return false;
+    const layer = el('ctx-radial-layer');
+    if (!layer) return false;
+    if (state.radialCloseTimer) {
+      clearTimeout(state.radialCloseTimer);
+      state.radialCloseTimer = null;
+    }
+    if (state.radialAlignTimer) {
+      clearTimeout(state.radialAlignTimer);
+      state.radialAlignTimer = null;
+    }
+    state.radialClosing = false;
+    suppressFocusPickerUntil = Date.now() + 450;
+    hideContextTooltip();
+    closePanelPicker();
+    syncHostStackingElevation(true);
+    closeColorPicker(true);
+    hideUpdatePopover();
+    hidePopover();
+    const tfl = el('token-five-line-card');
+    if (tfl && !tfl.hidden) {
+      tfl.hidden = true;
+      if (tfl.style) { tfl.style.display = 'none'; tfl.style.pointerEvents = 'none'; }
+      tflCardPinned = false;
+      el('csb-group-tokens')?.setAttribute?.('aria-expanded', 'false');
+      el('csb-status-btn')?.setAttribute?.('aria-expanded', 'false');
+      el('tfl-pin-badge')?.setAttribute?.('data-pinned', 'false');
+    }
+
+    ensureRadialHostAtBodyEnd();
+
+    const effectiveMode = mode === 'classic' ? 'floating' : mode;
+    state.radialAnchorMode = effectiveMode;
+    const orb = el('ctx-radial-orb');
+    const bCtx = el('badge');
+    const cCtx = el('csb-group-context');
+    if (orb) {
+      orb.classList?.add?.('has-interacted');
+      orb.setAttribute?.('aria-expanded', effectiveMode === 'floating' ? 'true' : 'false');
+    }
+    if (effectiveMode === 'topbar') {
+      bCtx?.setAttribute?.('data-radial-open', 'true');
+      bCtx?.setAttribute?.('aria-expanded', 'true');
+      cCtx?.removeAttribute?.('data-radial-open');
+    } else if (effectiveMode === 'bottombar') {
+      cCtx?.setAttribute?.('data-radial-open', 'true');
+      cCtx?.setAttribute?.('aria-expanded', 'true');
+      bCtx?.removeAttribute?.('data-radial-open');
+    } else {
+      bCtx?.removeAttribute?.('data-radial-open');
+      cCtx?.removeAttribute?.('data-radial-open');
+    }
+
+    applyRadialLayoutToDom(effectiveMode, anchorNode);
+
+    layer.hidden = false;
+    layer.setAttribute?.('data-state', 'entering');
+    state.radialMenuOpen = true;
+
+    const realignAnchor = () => {
+      if (!state.disposed && state.radialMenuOpen && (effectiveMode === 'topbar' || effectiveMode === 'bottombar')) {
+        applyRadialLayoutToDom(effectiveMode, anchorNode);
+      }
+    };
+
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        if (!state.disposed && state.radialMenuOpen) {
+          realignAnchor();
+          layer.setAttribute?.('data-state', 'open');
+        }
+      });
+    } else {
+      layer.setAttribute?.('data-state', 'open');
+    }
+    if (effectiveMode === 'topbar' || effectiveMode === 'bottombar') {
+      state.radialAlignTimer = setTimeout(() => {
+        state.radialAlignTimer = null;
+        realignAnchor();
+      }, 195);
+    }
+    return true;
+  }
+
+  function toggleRadialMenu(mode = quickMenuStyle, anchorNode = null) {
+    const effective = mode === 'classic' ? 'floating' : mode;
+    if (state.radialMenuOpen && state.radialAnchorMode === effective) {
+      closeRadialMenu(false);
+      return false;
+    }
+    // 三处入口共存，但屏幕任意时刻最多只展开一处：点新入口时先收起已展开的那一处
+    if (state.radialMenuOpen || state.radialClosing) closeRadialMenu(true);
+    return openRadialMenu(effective, anchorNode);
+  }
+
+  // 配置页快捷菜单样式切换、快捷隐藏开关与悬浮球拖拽绑定
+  // 3 个独立径向开关：任意组合多选共存，全部关闭即退回经典列表与原位直开
+  const radialSwitchHandlers = {
+    orb: (next) => setRadialOrbEnabled(next, { persist: true }),
+    topbar: (next) => setRadialTopbarEnabled(next, { persist: true }),
+    bottombar: (next) => setRadialBottombarEnabled(next, { persist: true })
+  };
+  for (const switchId of ['chk-radial-orb', 'chk-radial-topbar', 'chk-radial-bottombar']) {
+    const input = el(switchId);
+    if (!input) continue;
+    input.addEventListener('change', (e) => {
+      const switchKey = input.getAttribute?.('data-radial-switch') || '';
+      const handler = radialSwitchHandlers[switchKey];
+      if (!handler) return;
+      const next = e?.target ? Boolean(e.target.checked) : Boolean(input.checked);
+      handler(next);
+    });
+  }
+
+  el('chk-hide-radial-orb')?.addEventListener('change', (e) => {
+    const chk = el('chk-hide-radial-orb');
+    const next = e?.target ? Boolean(e.target.checked) : Boolean(chk?.checked);
+    setRadialOrbHidden(next, { persist: true });
+  });
+
+  el('ctx-radial-center-close')?.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
+    closeRadialMenu(false);
+  });
+
+  for (const rTarget of RADIAL_TARGETS) {
+    const rBtn = el(`radial-item-${rTarget}`);
+    if (!rBtn) continue;
+    rBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      closeRadialMenu(false);
+      if (rTarget === 'cli') {
+        triggerOrbCliFeedback();
+      } else {
+        state.orbLinkedPanel = rTarget;
+      }
+      switchPanelFromPicker(rTarget);
+      if (rTarget !== 'cli') syncFloatingOrbState();
+    });
+    if (rTarget === 'cli') {
+      rBtn.addEventListener('contextmenu', (e) => {
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
+        closeRadialMenu(true);
+        openContextSettings?.();
+      });
+    }
+  }
+
+  (() => {
+    const orb = el('ctx-radial-orb');
+    if (!orb) return;
+    let dragActive = false;
+    let didMoveBeyondThreshold = false;
+    let dragStartClientX = 0;
+    let dragStartClientY = 0;
+    let dragOrigX = 0;
+    let dragOrigY = 0;
+
+    const onOrbDragMove = (ev) => {
+      if (!dragActive) return;
+      const cx = Number(ev?.clientX ?? 0);
+      const cy = Number(ev?.clientY ?? 0);
+      const dx = cx - dragStartClientX;
+      const dy = cy - dragStartClientY;
+      if (!didMoveBeyondThreshold && Math.hypot(dx, dy) > RADIAL_DRAG_THRESHOLD_PX) {
+        didMoveBeyondThreshold = true;
+        orb.classList?.add?.('is-dragging');
+        if (state.radialMenuOpen) closeRadialMenu(true);
+      }
+      if (didMoveBeyondThreshold) {
+        const { width: vw, height: vh } = getViewportSizeSafe();
+        radialOrbPos = clampOrbPosition({ x: dragOrigX + dx, y: dragOrigY + dy }, vw, vh);
+        applyOrbPositionToDom();
+      }
+    };
+
+    const onOrbDragEnd = () => {
+      if (!dragActive) return;
+      dragActive = false;
+      orb.classList?.remove?.('is-pressing');
+      orb.classList?.remove?.('is-dragging');
+      if (didMoveBeyondThreshold && radialOrbPos) {
+        try {
+          if (typeof localStorage !== 'undefined') localStorage.setItem('ag_radial_orb_pos', JSON.stringify(radialOrbPos));
+        } catch { }
+        if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+          void saveSettingsPayloadBridge({ radialOrbPos });
+        }
+      }
+    };
+
+    const onOrbDown = (ev) => {
+      if (ev?.button && ev.button !== 0) return;
+      if (enforceMarketplaceAvoidance()) return;
+      dragActive = true;
+      didMoveBeyondThreshold = false;
+      dragStartClientX = Number(ev?.clientX ?? 0);
+      dragStartClientY = Number(ev?.clientY ?? 0);
+      const { width: vw, height: vh } = getViewportSizeSafe();
+      const basePos = clampOrbPosition(radialOrbPos, vw, vh);
+      dragOrigX = basePos.x;
+      dragOrigY = basePos.y;
+      orb.classList?.add?.('is-pressing');
+    };
+
+    orb.addEventListener('pointerdown', onOrbDown);
+    orb.addEventListener('mousedown', (ev) => {
+      if (!dragActive) onOrbDown(ev);
+    });
+    orb.addEventListener('click', (ev) => {
+      ev?.stopPropagation?.();
+      if (didMoveBeyondThreshold) {
+        didMoveBeyondThreshold = false;
+        return;
+      }
+      toggleRadialMenu('floating', orb);
+    });
+    orb.addEventListener('contextmenu', (ev) => {
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      setRadialOrbHidden(true, { persist: true, notify: true });
+    });
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      const onRadialResize = () => {
+        if (state.disposed) return;
+        syncRadialOrbVisibility();
+        if (state.radialMenuOpen) {
+          applyRadialLayoutToDom(state.radialAnchorMode || quickMenuStyle);
+        }
+      };
+      window.addEventListener('pointermove', onOrbDragMove);
+      window.addEventListener('mousemove', onOrbDragMove);
+      window.addEventListener('pointerup', onOrbDragEnd);
+      window.addEventListener('mouseup', onOrbDragEnd);
+      window.addEventListener('resize', onRadialResize);
+      activeDisposers.add(() => {
+        window?.removeEventListener?.('pointermove', onOrbDragMove);
+        window?.removeEventListener?.('mousemove', onOrbDragMove);
+        window?.removeEventListener?.('pointerup', onOrbDragEnd);
+        window?.removeEventListener?.('mouseup', onOrbDragEnd);
+        window?.removeEventListener?.('resize', onRadialResize);
+      });
+    }
+  })();
+
   // 外观调色按钮进入设置视图并直接展开颜色自定义抽屉
   el('btn-panel-palette')?.addEventListener('click', () => {
     openContextSettings?.({ openColors: true });
   });
   el('btn-panel-tokens-palette')?.addEventListener('click', () => toggleTokenColorsDrawer());
+  // 顶栏入口形态与面板显示位置正交设置监听
+  el('topbar-mode-segmented')?.addEventListener('click', e => {
+    const btn = e.target?.closest?.('[data-topbar-mode]');
+    const mode = btn?.getAttribute?.('data-topbar-mode');
+    if (mode) {
+      setTopbarMode(mode, { persist: true });
+    }
+  });
+
+  el('panel-dock-mode-segmented')?.addEventListener('click', e => {
+    const btn = e.target?.closest?.('[data-panel-dock-mode]');
+    const mode = btn?.getAttribute?.('data-panel-dock-mode');
+    if (mode) {
+      if (mode === 'aux') {
+        void (async () => {
+          await ensureAuxSidebarExpanded({ timeoutMs: 1000 });
+          setPanelDockMode('aux', { persist: true });
+        })();
+        return;
+      }
+      setPanelDockMode(mode, { persist: true });
+      if (mode === 'page') {
+        showPanel('context');
+      }
+    }
+  });
+
+  el('chk-autohide-topbar-docked')?.addEventListener('change', e => {
+    setAutoHideTopbarOnDockedPanel(Boolean(e.target?.checked), { persist: true });
+  });
+
   el('dock-pos-segmented')?.addEventListener('click', e => {
     const btn = e.target?.closest?.('[data-dock-mode]');
     const mode = btn?.getAttribute?.('data-dock-mode');
@@ -3347,21 +5304,25 @@
     }
   });
   el('btn-dock-page-back')?.addEventListener('click', () => {
+    setPanelDockMode('popover', { persist: true });
     setDockPosition('flow', { persist: true });
   });
   el('btn-dock-aux-back')?.addEventListener('click', () => {
+    setPanelDockMode('popover', { persist: true });
     setDockPosition('flow', { persist: true });
     showPanel('none');
   });
   const handleCopyPreciseDashboardLink = async () => {
+    const focusTarget = resolveFocusedSessionTarget();
     const srvRes = await resolvePreciseDashboardUrl({ openExternal: false });
     const url = srvRes?.url || lastPreciseDashboardUrl || '';
     if (url) lastPreciseDashboardUrl = url;
     const ok = await copyTextToClipboardSafe(url);
     if (ok && url) {
-      setDockOpenFeedback(t('settings.dock.openRightCopied') + ` (${url})`, false, { showActions: true });
+      const key = focusTarget?.sessionId ? 'settings.dock.openRightManualCopyOk' : 'settings.dock.openRightManualListCopyOk';
+      setDockOpenFeedback(t(key, { url }), false, { showActions: true });
     } else {
-      setDockOpenFeedback(url || t('settings.dock.openRightCopyFail'), !url, { showActions: true });
+      setDockOpenFeedback(url ? t('settings.dock.openRightManualCopyFail', { url }) : t('settings.dock.openRightCopyFail'), true, { showActions: true });
     }
   };
   el('btn-dock-aux-copy-url')?.addEventListener('click', () => { void handleCopyPreciseDashboardLink(); });
@@ -3493,43 +5454,46 @@
   // =========================================================================
   const COUNTRY_OPTIONS = [
     { value: '未知', label: '🌐 未设置 / 自动', labelTw: '🌐 未設定 / 自動', labelEn: '🌐 Auto / Unset', code: 'AUTO', aliases: ['自动', '未知', 'none', 'auto'] },
-    { value: '美国 (US)', label: '🇺🇸 美国 (US)', labelTw: '🇺🇸 美國 (US)', labelEn: '🇺🇸 United States (US)', code: 'US', aliases: ['美国', 'united states', 'usa'] },
-    { value: '日本 (JP)', label: '🇯🇵 日本 (JP)', labelTw: '🇯🇵 日本 (JP)', labelEn: '🇯🇵 Japan (JP)', code: 'JP', aliases: ['日本', 'japan'] },
-    { value: '韩国 (KR)', label: '🇰🇷 韩国 (KR)', labelTw: '🇰🇷 韓國 (KR)', labelEn: '🇰🇷 South Korea (KR)', code: 'KR', aliases: ['韩国', 'korea', 'south korea'] },
-    { value: '中国台湾 (TW)', label: '🇹🇼 中国台湾 (TW)', labelTw: '🇹🇼 中國台灣 (TW)', labelEn: '🇹🇼 Taiwan (TW)', code: 'TW', aliases: ['台湾', 'taiwan', 'tw'] },
-    { value: '中国香港 (HK)', label: '🇭🇰 中国香港 (HK)', labelTw: '🇭🇰 中國香港 (HK)', labelEn: '🇭🇰 Hong Kong (HK)', code: 'HK', aliases: ['香港', 'hong kong', 'hk'] },
-    { value: '澳大利亚 (AU)', label: '🇦🇺 澳大利亚 (AU)', labelTw: '🇦🇺 澳洲 (AU)', labelEn: '🇦🇺 Australia (AU)', code: 'AU', aliases: ['澳大利亚', '澳洲', 'australia', 'au'] },
-    { value: '新加坡 (SG)', label: '🇸🇬 新加坡 (SG)', labelTw: '🇸🇬 新加坡 (SG)', labelEn: '🇸🇬 Singapore (SG)', code: 'SG', aliases: ['新加坡', 'singapore', 'sg'] },
-    { value: '英国 (UK)', label: '🇬🇧 英国 (UK)', labelTw: '🇬🇧 英國 (UK)', labelEn: '🇬🇧 United Kingdom (UK)', code: 'UK', aliases: ['英国', 'united kingdom', 'uk', 'gb', 'britain'] },
-    { value: '德国 (DE)', label: '🇩🇪 德国 (DE)', labelTw: '🇩🇪 德國 (DE)', labelEn: '🇩🇪 Germany (DE)', code: 'DE', aliases: ['德国', 'germany', 'de'] },
-    { value: '加拿大 (CA)', label: '🇨🇦 加拿大 (CA)', labelTw: '🇨🇦 加拿大 (CA)', labelEn: '🇨🇦 Canada (CA)', code: 'CA', aliases: ['加拿大', 'canada', 'ca'] },
-    { value: '土耳其 (TR)', label: '🇹🇷 土耳其 (TR)', labelTw: '🇹🇷 土耳其 (TR)', labelEn: '🇹🇷 Turkey (TR)', code: 'TR', aliases: ['土耳其', 'turkey', 'tr'] },
-    { value: '尼日利亚 (NG)', label: '🇳🇬 尼日利亚 (NG)', labelTw: '🇳🇬 奈及利亞 (NG)', labelEn: '🇳🇬 Nigeria (NG)', code: 'NG', aliases: ['尼日利亚', 'nigeria', 'ng'] },
-    { value: '菲律宾 (PH)', label: '🇵🇭 菲律宾 (PH)', labelTw: '🇵🇭 菲律賓 (PH)', labelEn: '🇵🇭 Philippines (PH)', code: 'PH', aliases: ['菲律宾', 'philippines', 'ph'] },
-    { value: '印度 (IN)', label: '🇮🇳 印度 (IN)', labelTw: '🇮🇳 印度 (IN)', labelEn: '🇮🇳 India (IN)', code: 'IN', aliases: ['印度', 'india', 'in'] },
-    { value: '马来西亚 (MY)', label: '🇲🇾 马来西亚 (MY)', labelTw: '🇲🇾 馬來西亞 (MY)', labelEn: '🇲🇾 Malaysia (MY)', code: 'MY', aliases: ['马来西亚', 'malaysia', 'my'] },
-    { value: '巴西 (BR)', label: '🇧🇷 巴西 (BR)', labelTw: '🇧🇷 巴西 (BR)', labelEn: '🇧🇷 Brazil (BR)', code: 'BR', aliases: ['巴西', 'brazil', 'br'] },
-    { value: '中国大陆 (CN)', label: '🇨🇳 中国大陆 (CN)', labelTw: '🇨🇳 中國大陸 (CN)', labelEn: '🇨🇳 China Mainland (CN)', code: 'CN', aliases: ['中国大陆', '中国', 'china', 'cn'] }
+    { value: 'US 美国', label: '🇺🇸 US 美国', labelTw: '🇺🇸 US 美國', labelEn: '🇺🇸 US United States', code: 'US', aliases: ['美国', '美国 (US)', 'united states', 'usa', 'us'] },
+    { value: 'JP 日本', label: '🇯🇵 JP 日本', labelTw: '🇯🇵 JP 日本', labelEn: '🇯🇵 JP Japan', code: 'JP', aliases: ['日本', '日本 (JP)', 'japan', 'jp'] },
+    { value: 'KR 韩国', label: '🇰🇷 KR 韩国', labelTw: '🇰🇷 KR 韓國', labelEn: '🇰🇷 KR South Korea', code: 'KR', aliases: ['韩国', '韩国 (KR)', 'korea', 'south korea', 'kr'] },
+    { value: 'TW 中国台湾', label: '🇹🇼 TW 中国台湾', labelTw: '🇹🇼 TW 中國台灣', labelEn: '🇹🇼 TW Taiwan', code: 'TW', aliases: ['台湾', '中国台湾 (TW)', 'taiwan', 'tw'] },
+    { value: 'HK 中国香港', label: '🇭🇰 HK 中国香港', labelTw: '🇭🇰 HK 中國香港', labelEn: '🇭🇰 HK Hong Kong', code: 'HK', aliases: ['香港', '中国香港 (HK)', 'hong kong', 'hk'] },
+    { value: 'EU 欧洲', label: '🇪🇺 EU 欧洲', labelTw: '🇪🇺 EU 歐洲', labelEn: '🇪🇺 EU Europe', code: 'EU', aliases: ['欧洲', '欧洲 (EU)', 'europe', 'eu'] },
+    { value: 'UK 英国', label: '🇬🇧 UK 英国', labelTw: '🇬🇧 UK 英國', labelEn: '🇬🇧 UK United Kingdom', code: 'UK', aliases: ['英国', '英国 (UK)', 'united kingdom', 'uk', 'gb', 'britain'] },
+    { value: 'AU 澳大利亚', label: '🇦🇺 AU 澳大利亚', labelTw: '🇦🇺 AU 澳洲', labelEn: '🇦🇺 AU Australia', code: 'AU', aliases: ['澳大利亚', '澳大利亚 (AU)', '澳洲', 'australia', 'au'] },
+    { value: 'SG 新加坡', label: '🇸🇬 SG 新加坡', labelTw: '🇸🇬 SG 新加坡', labelEn: '🇸🇬 SG Singapore', code: 'SG', aliases: ['新加坡', '新加坡 (SG)', 'singapore', 'sg'] },
+    { value: 'CA 加拿大', label: '🇨🇦 CA 加拿大', labelTw: '🇨🇦 CA 加拿大', labelEn: '🇨🇦 CA Canada', code: 'CA', aliases: ['加拿大', '加拿大 (CA)', 'canada', 'ca'] },
+    { value: 'IN 印度', label: '🇮🇳 IN 印度', labelTw: '🇮🇳 IN 印度', labelEn: '🇮🇳 IN India', code: 'IN', aliases: ['印度', '印度 (IN)', 'india', 'in'] },
+    { value: 'TR 土耳其', label: '🇹🇷 TR 土耳其', labelTw: '🇹🇷 TR 土耳其', labelEn: '🇹🇷 TR Turkey', code: 'TR', aliases: ['土耳其', '土耳其 (TR)', 'turkey', 'tr'] },
+    { value: 'BR 巴西', label: '🇧🇷 BR 巴西', labelTw: '🇧🇷 BR 巴西', labelEn: '🇧🇷 BR Brazil', code: 'BR', aliases: ['巴西', '巴西 (BR)', 'brazil', 'br'] },
+    { value: 'EG 埃及', label: '🇪🇬 EG 埃及', labelTw: '🇪🇬 EG 埃及', labelEn: '🇪🇬 EG Egypt', code: 'EG', aliases: ['埃及', '埃及 (EG)', 'egypt', 'eg'] },
+    { value: 'DE 德国', label: '🇩🇪 DE 德国', labelTw: '🇩🇪 DE 德國', labelEn: '🇩🇪 DE Germany', code: 'DE', aliases: ['德国', '德国 (DE)', 'germany', 'de'] },
+    { value: 'NG 尼日利亚', label: '🇳🇬 NG 尼日利亚', labelTw: '🇳🇬 NG 奈及利亞', labelEn: '🇳🇬 NG Nigeria', code: 'NG', aliases: ['尼日利亚', '尼日利亚 (NG)', 'nigeria', 'ng'] },
+    { value: 'PH 菲律宾', label: '🇵🇭 PH 菲律宾', labelTw: '🇵🇭 PH 菲律賓', labelEn: '🇵🇭 PH Philippines', code: 'PH', aliases: ['菲律宾', '菲律宾 (PH)', 'philippines', 'ph'] },
+    { value: 'MY 马来西亚', label: '🇲🇾 MY 马来西亚', labelTw: '🇲🇾 MY 馬來西亞', labelEn: '🇲🇾 MY Malaysia', code: 'MY', aliases: ['马来西亚', '马来西亚 (MY)', 'malaysia', 'my'] },
+    { value: 'CN 中国大陆', label: '🇨🇳 CN 中国大陆', labelTw: '🇨🇳 CN 中國大陸', labelEn: '🇨🇳 CN China Mainland', code: 'CN', aliases: ['中国大陆', '中国大陆 (CN)', '中国', 'china', 'cn'] }
   ];
 
   const CURRENCY_OPTIONS = [
-    { value: 'USD', code: 'USD', symbol: '$', name: '美元', nameEn: 'US Dollar', label: 'USD ($ 美元)', labelTw: 'USD ($ 美元)', labelEn: 'USD ($ US Dollar)', aliases: ['美元', 'usd', '$', 'dollar'] },
-    { value: 'KRW', code: 'KRW', symbol: '₩', name: '韩元', nameEn: 'Korean Won', label: 'KRW (₩ 韩元)', labelTw: 'KRW (₩ 韓元)', labelEn: 'KRW (₩ Won)', aliases: ['韩元', 'krw', '₩', 'won'] },
-    { value: 'AUD', code: 'AUD', symbol: 'AU$', name: '澳元', nameEn: 'Australian Dollar', label: 'AUD (AU$ 澳元)', labelTw: 'AUD (AU$ 澳元)', labelEn: 'AUD (AU$ AUD)', aliases: ['澳元', '澳洲', 'aud', 'au$', 'australian'] },
-    { value: 'JPY', code: 'JPY', symbol: '¥', name: '日元', nameEn: 'Japanese Yen', label: 'JPY (¥ 日元)', labelTw: 'JPY (¥ 日圓)', labelEn: 'JPY (¥ Yen)', aliases: ['日元', '日本', 'jpy', '¥', 'yen'] },
-    { value: 'HKD', code: 'HKD', symbol: 'HK$', name: '港币', nameEn: 'Hong Kong Dollar', label: 'HKD (HK$ 港币)', labelTw: 'HKD (HK$ 港幣)', labelEn: 'HKD (HK$ HKD)', aliases: ['港币', '香港', 'hkd', 'hk$'] },
-    { value: 'TWD', code: 'TWD', symbol: 'NT$', name: '台币', nameEn: 'New Taiwan Dollar', label: 'TWD (NT$ 台币)', labelTw: 'TWD (NT$ 新台幣)', labelEn: 'TWD (NT$ TWD)', aliases: ['台币', '台湾', 'twd', 'ntd', 'nt$'] },
-    { value: 'TRY', code: 'TRY', symbol: '₺', name: '里拉', nameEn: 'Turkish Lira', label: 'TRY (₺ 里拉)', labelTw: 'TRY (₺ 里拉)', labelEn: 'TRY (₺ Lira)', aliases: ['里拉', '土耳其', 'try', '₺', 'lira'] },
-    { value: 'NGN', code: 'NGN', symbol: '₦', name: '奈拉', nameEn: 'Nigerian Naira', label: 'NGN (₦ 奈拉)', labelTw: 'NGN (₦ 奈拉)', labelEn: 'NGN (₦ Naira)', aliases: ['奈拉', '尼日利亚', 'ngn', '₦', 'naira'] },
-    { value: 'CNY', code: 'CNY', symbol: '¥', name: '人民币', nameEn: 'Chinese Yuan', label: 'CNY (¥ 人民币)', labelTw: 'CNY (¥ 人民幣)', labelEn: 'CNY (¥ CNY)', aliases: ['人民币', '中国', 'cny', 'rmb', '¥', 'yuan'] },
-    { value: 'EUR', code: 'EUR', symbol: '€', name: '欧元', nameEn: 'Euro', label: 'EUR (€ 欧元)', labelTw: 'EUR (€ 歐元)', labelEn: 'EUR (€ Euro)', aliases: ['欧元', '欧洲', 'eur', '€', 'euro'] },
-    { value: 'GBP', code: 'GBP', symbol: '£', name: '英镑', nameEn: 'British Pound', label: 'GBP (£ 英镑)', labelTw: 'GBP (£ 英鎊)', labelEn: 'GBP (£ Pound)', aliases: ['英镑', '英国', 'gbp', '£', 'pound'] },
-    { value: 'SGD', code: 'SGD', symbol: 'S$', name: '新元', nameEn: 'Singapore Dollar', label: 'SGD (S$ 新元)', labelTw: 'SGD (S$ 新幣)', labelEn: 'SGD (S$ SGD)', aliases: ['新元', '新加坡', 'sgd', 's$'] },
-    { value: 'CAD', code: 'CAD', symbol: 'CA$', name: '加元', nameEn: 'Canadian Dollar', label: 'CAD (CA$ 加元)', labelTw: 'CAD (CA$ 加幣)', labelEn: 'CAD (CA$ CAD)', aliases: ['加元', '加拿大', 'cad', 'ca$'] },
-    { value: 'PHP', code: 'PHP', symbol: '₱', name: '比索', nameEn: 'Philippine Peso', label: 'PHP (₱ 比索)', labelTw: 'PHP (₱ 披索)', labelEn: 'PHP (₱ Peso)', aliases: ['比索', '菲律宾', 'php', '₱', 'peso'] },
-    { value: 'INR', code: 'INR', symbol: '₹', name: '卢比', nameEn: 'Indian Rupee', label: 'INR (₹ 卢比)', labelTw: 'INR (₹ 盧比)', labelEn: 'INR (₹ Rupee)', aliases: ['卢比', '印度', 'inr', '₹', 'rupee'] },
-    { value: 'MYR', code: 'MYR', symbol: 'RM', name: '令吉', nameEn: 'Malaysian Ringgit', label: 'MYR (RM 令吉)', labelTw: 'MYR (RM 令吉)', labelEn: 'MYR (RM Ringgit)', aliases: ['令吉', '马来西亚', 'myr', 'rm', 'ringgit'] },
-    { value: 'BRL', code: 'BRL', symbol: 'R$', name: '雷亚尔', nameEn: 'Brazilian Real', label: 'BRL (R$ 雷亚尔)', labelTw: 'BRL (R$ 雷亞爾)', labelEn: 'BRL (R$ Real)', aliases: ['雷亚尔', '巴西', 'brl', 'r$', 'real'] }
+    { value: 'USD', code: 'USD', symbol: '$', name: '美元', nameEn: 'US Dollar', label: 'USD · $ 美元', labelTw: 'USD · $ 美元', labelEn: 'USD · $ US Dollar', aliases: ['美元', 'usd', '$', 'dollar'] },
+    { value: 'CNY', code: 'CNY', symbol: '¥', name: '人民币', nameEn: 'Chinese Yuan', label: 'CNY · ¥ 人民币', labelTw: 'CNY · ¥ 人民幣', labelEn: 'CNY · ¥ CNY', aliases: ['人民币', '中国', 'cny', 'rmb', '¥', 'yuan'] },
+    { value: 'JPY', code: 'JPY', symbol: '¥', name: '日元', nameEn: 'Japanese Yen', label: 'JPY · ¥ 日元', labelTw: 'JPY · ¥ 日圓', labelEn: 'JPY · ¥ Yen', aliases: ['日元', '日本', 'jpy', '¥', 'yen'] },
+    { value: 'KRW', code: 'KRW', symbol: '₩', name: '韩元', nameEn: 'Korean Won', label: 'KRW · ₩ 韩元', labelTw: 'KRW · ₩ 韓元', labelEn: 'KRW · ₩ Won', aliases: ['韩元', 'krw', '₩', 'won'] },
+    { value: 'TWD', code: 'TWD', symbol: 'NT$', name: '新台币', nameEn: 'New Taiwan Dollar', label: 'TWD · NT$ 新台币', labelTw: 'TWD · NT$ 新台幣', labelEn: 'TWD · NT$ TWD', aliases: ['台币', '新台币', '台湾', 'twd', 'ntd', 'nt$'] },
+    { value: 'HKD', code: 'HKD', symbol: 'HK$', name: '港币', nameEn: 'Hong Kong Dollar', label: 'HKD · HK$ 港币', labelTw: 'HKD · HK$ 港幣', labelEn: 'HKD · HK$ HKD', aliases: ['港币', '香港', 'hkd', 'hk$'] },
+    { value: 'EUR', code: 'EUR', symbol: '€', name: '欧元', nameEn: 'Euro', label: 'EUR · € 欧元', labelTw: 'EUR · € 歐元', labelEn: 'EUR · € Euro', aliases: ['欧元', '欧洲', 'eur', '€', 'euro'] },
+    { value: 'GBP', code: 'GBP', symbol: '£', name: '英镑', nameEn: 'British Pound', label: 'GBP · £ 英镑', labelTw: 'GBP · £ 英鎊', labelEn: 'GBP · £ Pound', aliases: ['英镑', '英国', 'gbp', '£', 'pound'] },
+    { value: 'AUD', code: 'AUD', symbol: 'AU$', name: '澳元', nameEn: 'Australian Dollar', label: 'AUD · AU$ 澳元', labelTw: 'AUD · AU$ 澳元', labelEn: 'AUD · AU$ AUD', aliases: ['澳元', '澳洲', 'aud', 'a$', 'au$', 'australian'] },
+    { value: 'SGD', code: 'SGD', symbol: 'S$', name: '新元', nameEn: 'Singapore Dollar', label: 'SGD · S$ 新元', labelTw: 'SGD · S$ 新幣', labelEn: 'SGD · S$ SGD', aliases: ['新元', '新加坡', 'sgd', 's$'] },
+    { value: 'CAD', code: 'CAD', symbol: 'CA$', name: '加元', nameEn: 'Canadian Dollar', label: 'CAD · CA$ 加元', labelTw: 'CAD · CA$ 加幣', labelEn: 'CAD · CA$ CAD', aliases: ['加元', '加拿大', 'cad', 'ca$'] },
+    { value: 'INR', code: 'INR', symbol: '₹', name: '卢比', nameEn: 'Indian Rupee', label: 'INR · ₹ 卢比', labelTw: 'INR · ₹ 盧比', labelEn: 'INR · ₹ Rupee', aliases: ['卢比', '印度', 'inr', '₹', 'rupee'] },
+    { value: 'TRY', code: 'TRY', symbol: '₺', name: '里拉', nameEn: 'Turkish Lira', label: 'TRY · ₺ 里拉', labelTw: 'TRY · ₺ 里拉', labelEn: 'TRY · ₺ Lira', aliases: ['里拉', '土耳其', 'try', '₺', 'lira'] },
+    { value: 'BRL', code: 'BRL', symbol: 'R$', name: '雷亚尔', nameEn: 'Brazilian Real', label: 'BRL · R$ 雷亚尔', labelTw: 'BRL · R$ 雷亞爾', labelEn: 'BRL · R$ Real', aliases: ['雷亚尔', '巴西', 'brl', 'r$', 'real'] },
+    { value: 'EGP', code: 'EGP', symbol: 'EGP ', name: '埃及镑', nameEn: 'Egyptian Pound', label: 'EGP · 埃及镑', labelTw: 'EGP · 埃及鎊', labelEn: 'EGP · Egyptian Pound', aliases: ['埃及镑', '埃及', 'egp', 'egypt'] },
+    { value: 'NGN', code: 'NGN', symbol: '₦', name: '奈拉', nameEn: 'Nigerian Naira', label: 'NGN · ₦ 奈拉', labelTw: 'NGN · ₦ 奈拉', labelEn: 'NGN · ₦ Naira', aliases: ['奈拉', '尼日利亚', 'ngn', '₦', 'naira'] },
+    { value: 'PHP', code: 'PHP', symbol: '₱', name: '比索', nameEn: 'Philippine Peso', label: 'PHP · ₱ 比索', labelTw: 'PHP · ₱ 披索', labelEn: 'PHP · ₱ Peso', aliases: ['比索', '菲律宾', 'php', '₱', 'peso'] },
+    { value: 'MYR', code: 'MYR', symbol: 'RM', name: '令吉', nameEn: 'Malaysian Ringgit', label: 'MYR · RM 令吉', labelTw: 'MYR · RM 令吉', labelEn: 'MYR · RM Ringgit', aliases: ['令吉', '马来西亚', 'myr', 'rm', 'ringgit'] }
   ];
 
   function refreshRegionPresetSelectOptions() {
@@ -3538,12 +5502,16 @@
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
     const curLang = getPanelLanguage();
+    const ps = ANTIGRAVITY_TOKEN_DATA?.planStatus || {};
+    const activeSpecKey = typeof resolvePlanSpecKey === 'function'
+      ? resolvePlanSpecKey(ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierKey || 'pro'))
+      : (ps.tierKey || 'pro');
     for (let i = 0; i < sel.options.length; i++) {
       const opt = sel.options[i];
       if (!opt || opt.value === '' || opt.value === 'custom') continue;
       const p = presets.find(item => item.id === opt.value);
       if (!p) continue;
-      const parts = formatPresetRegionLineParts(p, curLang);
+      const parts = formatPresetRegionLineParts(p, curLang, activeSpecKey);
       opt.textContent = parts.full || '';
     }
   }
@@ -3748,17 +5716,17 @@
 
   function renderPlanDetail(ps) {
     if (!ps) return;
+    const isCustomTier = Boolean(ps.sources?.tier === 'custom' || (ps.planTierOverride && ps.planTierOverride !== 'auto'));
     const sumTxt = el('plan-summary-text');
-    const tierDisplay = typeof localizePlanTierName === 'function' ? localizePlanTierName(ps.tierName || 'Pro') : (ps.tierName || 'Pro');
+    const tierDisplay = typeof localizePlanTierName === 'function' ? localizePlanTierName(ps.tierName || 'Google AI Pro') : (ps.tierName || 'Google AI Pro');
     if (sumTxt) {
-      const modeTxt = ps.status === 'identified'
-        ? t('plan.summary.identified')
-        : ps.hasCustomSettings
-          ? t('plan.summary.custom')
-          : t('plan.summary.unknown');
+      const modeTxt = isCustomTier
+        ? t('plan.summary.custom')
+        : (ps.status === 'identified' ? t('plan.summary.identified') : (ps.hasCustomSettings ? t('plan.summary.custom') : t('plan.summary.unknown')));
       sumTxt.textContent = `${tierDisplay} · ${modeTxt} · ${t('plan.summary.justNow')}`;
     }
-    // 实时联动更新黄框位置的订阅费与汇率胶囊（Ultra 等无公开统一定价时不回退 Pro $19.99）
+
+    // 实时联动顶部订阅费与汇率胶囊（零括号；unsplit Ultra 明确显示区间或待选择档位）
     const curSymbol = ps.currencySymbol || '$';
     let targetSymbol = '$';
     let targetNum = null;
@@ -3775,13 +5743,18 @@
       targetNum = Number(ps.actualPricePaid);
       targetCycle = t('plan.summary.perMonth');
       const sec = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { short: true });
-      targetCny = sec ? `(${sec})` : '';
+      targetCny = sec ? `· ${sec}` : '';
     } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = t('plan.summary.perMonth');
       const sec = formatSubscriptionSecondaryConversion(targetNum, 'USD', ps.region, { short: true });
-      targetCny = sec ? `(${sec})` : '';
+      targetCny = sec ? `· ${sec}` : '';
+    } else if (ps.tierKey === 'ultra') {
+      targetSymbol = t('plan.ultraRangePrice');
+      targetNum = null;
+      targetCycle = '';
+      targetCny = t('plan.summary.priceUnsetShort');
     } else {
       targetSymbol = t('plan.summary.priceUnsetShort');
       targetNum = null;
@@ -3792,9 +5765,7 @@
     renderPlanSummaryPriceBadge(targetSymbol, targetNum, targetCycle, targetCny);
 
     const detName = el('p-det-name');
-    if (detName) detName.textContent = typeof localizePlanTierName === 'function'
-      ? localizePlanTierName(ps.tierName || 'Google AI Pro')
-      : (ps.tierName || 'Google AI Pro');
+    if (detName) detName.textContent = tierDisplay;
     const detAcc = el('p-det-account');
     if (detAcc) detAcc.textContent = ps.email || t('plan.account.unknown');
 
@@ -3809,9 +5780,8 @@
     const tagCountry = el('p-det-country-tag');
     const tagTier = el('p-det-tier-tag');
     if (tagTier) {
-      const isCustomTier = ps.sources?.tier === 'custom' || (ps.planTierOverride && ps.planTierOverride !== 'auto');
-      tagTier.style.display = isCustomTier ? 'inline-block' : 'none';
-      tagTier.textContent = isCustomTier ? t('plan.tag.custom') : '';
+      tagTier.style.display = 'inline-block';
+      tagTier.textContent = isCustomTier ? t('plan.source.customPlan') : t('plan.source.autoDetected');
     }
     const directTierSel = el('direct-tier-select');
     const directCountrySel = el('direct-country-select');
@@ -3846,18 +5816,19 @@
       tagCur.textContent = ps.currencySource === 'custom' ? t('plan.tag.custom') : '';
     }
 
-    // 使用纯同步回填守卫同步更新详情面板内的下拉控件值
+    // 同步详情面板内的下拉控件值
     runWithUiHydration(() => {
       if (directTierSel) {
         directTierSel.value = ps.planTierOverride || 'auto';
       }
       if (directCountrySel) {
         if (countryText !== '未知' && directCountrySel.options) {
-          const exists = Array.from(directCountrySel.options).some(o => o.value === countryText);
+          const normC = localizeRegionDisplayValue(countryText) || countryText;
+          const exists = Array.from(directCountrySel.options).some(o => o.value === countryText || o.value === normC);
           if (!exists && typeof document.createElement === 'function') {
             const opt = document.createElement('option');
             opt.value = countryText;
-            opt.textContent = '🌐 ' + (localizeRegionDisplayValue(countryText) || countryText);
+            opt.textContent = '🌐 ' + normC;
             directCountrySel.appendChild?.(opt);
           }
         }
@@ -3868,7 +5839,6 @@
       }
     });
 
-    // 刷新套餐规格、国家、订阅地区与币种直接选择器标签与选中高亮
     if (typeof refreshDirectPlanTierDisplay === 'function') {
       refreshDirectPlanTierDisplay(ps.planTierOverride || 'auto');
     }
@@ -3882,14 +5852,12 @@
       refreshDirectCurrencyDisplay(curText);
     }
 
-    // 同步更新额度面板顶部套餐胶囊 (#quota-plan-tier-pill)
     const tierPill = el('quota-plan-tier-pill');
     if (tierPill && ps.tierName && ps.tierName !== '未知') {
       setQuotaHiddenIfChanged(tierPill, false);
-      setQuotaTextIfChanged(tierPill, ps.tierName);
+      setQuotaTextIfChanged(tierPill, tierDisplay);
     }
 
-    // 同步刷新多账号列表中展示的套餐名
     if (typeof renderAccountsOverviewSection === 'function' && accountsUiState?.overview) {
       try { renderAccountsOverviewSection(); } catch { }
     }
@@ -3919,9 +5887,12 @@
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         const secPart = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { detail: true });
         const paidFormatted = Number(ps.actualPricePaid) % 1 === 0 ? Number(ps.actualPricePaid) : Number(ps.actualPricePaid).toFixed(2);
-        detPrice.textContent = secPart ? `${curSymbol}${paidFormatted} · ${cycleText} (${secPart})` : `${curSymbol}${paidFormatted} · ${cycleText}`;
+        detPrice.textContent = secPart ? `${curSymbol}${paidFormatted} · ${cycleText} · ${secPart}` : `${curSymbol}${paidFormatted} · ${cycleText}`;
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
-        detPrice.textContent = `${t('plan.tag.publicRef')} $${ps.officialPriceMonthly}${t('plan.summary.perMonth')}`;
+        const secPart = formatSubscriptionSecondaryConversion(ps.officialPriceMonthly, 'USD', ps.region, { detail: true });
+        detPrice.textContent = secPart ? `$${ps.officialPriceMonthly}${t('plan.summary.perMonth')} · ${secPart}` : `$${ps.officialPriceMonthly}${t('plan.summary.perMonth')}`;
+      } else if (ps.tierKey === 'ultra') {
+        detPrice.textContent = `${t('plan.ultraRangePrice')} · ${t('plan.priceUnsetNote')}`;
       } else {
         detPrice.textContent = `${acqLabel} · ${t('plan.priceUnsetNote')}`;
       }
@@ -3933,11 +5904,34 @@
       } else if (ps.priceMode === 'custom' || ps.priceSource === 'custom') {
         tagPrice.textContent = t('plan.tag.userPaid');
       } else if (ps.priceSource === 'preset_region' && ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
-        tagPrice.textContent = t('plan.tag.official');
+        tagPrice.textContent = t('plan.tag.regionRef');
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         tagPrice.textContent = t('plan.tag.publicRef');
       } else {
         tagPrice.textContent = t('plan.tag.unset');
+      }
+    }
+
+    // 套餐权益规格 strip（倍率 / 云存储 / 官方 Flow 月积分 / Cloud Credits）
+    const specsEl = el('p-det-tier-specs');
+    const resolvedSpecKey = typeof resolvePlanSpecKey === 'function'
+      ? resolvePlanSpecKey(ps.tierKey, ps.multiplier, (ps.planTierOverride && ps.planTierOverride !== 'auto') ? ps.planTierOverride : ps.tierName)
+      : (ps.tierKey || 'pro');
+    const specObj = ps.planSpec || (typeof getPlanTierSpec === 'function' ? getPlanTierSpec(resolvedSpecKey) : null);
+    const specLangSuffix = currentPanelLanguage === 'en' ? 'En' : (currentPanelLanguage === 'zh-TW' ? 'Tw' : 'Zh');
+    if (specsEl) {
+      if (specObj) {
+        const items = [];
+        const winText = specObj[`windowDesc${specLangSuffix}`] || specObj.windowDescZh;
+        if (winText) items.push(winText);
+        if (specObj.storage) items.push(t('plan.specs.storage', { val: specObj.storage }));
+        const flowText = specObj[`flowOfficial${specLangSuffix}`] || specObj.flowOfficialZh;
+        if (flowText) items.push(flowText);
+        const ccText = specObj[`cloudCredits${specLangSuffix}`] || specObj.cloudCreditsZh;
+        if (ccText) items.push(ccText);
+        specsEl.textContent = items.join(' · ') || '—';
+      } else {
+        specsEl.textContent = '—';
       }
     }
 
@@ -3970,22 +5964,65 @@
       }
     }
 
+    // Prompt / Flow 额度池：区分宿主实报 vs 套餐估算，并在切换后附带次要实报对照行
     const pPrompt = el('p-det-prompt-credits');
     const pFlow = el('p-det-flow-credits');
-    if (pPrompt && ps.promptCredits) {
-      const promptTxt = `Prompt Credits: ${t('plan.credits.avail', { avail: ps.promptCredits.available ?? '—', monthly: ps.promptCredits.monthly ?? '—' })}`;
-      pPrompt.textContent = promptTxt;
+    const isEstBasis = ps.creditDisplayBasis === 'plan_estimate';
+    const effPrompt = ps.effectivePromptCredits || ps.promptCredits;
+    const effFlow = ps.effectiveFlowCredits || ps.flowCredits;
+
+    const renderCreditCell = (cellEl, effObj, liveObj, extraRightTxt = '') => {
+      if (!cellEl) return;
+      if (typeof cellEl.replaceChildren === 'function') {
+        cellEl.replaceChildren();
+        const topRow = document.createElement('div');
+        topRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+        const mainSpan = document.createElement('span');
+        const mainStr = effObj
+          ? t('plan.credits.avail', { avail: effObj.available ?? '—', monthly: effObj.monthly ?? '—' })
+          : '—';
+        mainSpan.textContent = extraRightTxt ? `${mainStr} · ${extraRightTxt}` : mainStr;
+        const srcPill = document.createElement('span');
+        srcPill.className = `plan-source-pill${isEstBasis ? '' : ' is-host'}`;
+        srcPill.textContent = isEstBasis ? t('plan.source.planEstimate') : t('plan.source.hostLive');
+        topRow.appendChild(mainSpan);
+        topRow.appendChild(srcPill);
+        cellEl.appendChild(topRow);
+        if (isEstBasis && liveObj && (liveObj.available != null || liveObj.monthly != null)) {
+          const subSpan = document.createElement('span');
+          subSpan.className = 'plan-credit-host-sub';
+          subSpan.textContent = `${t('plan.credits.hostActualPrefix')}${t('plan.credits.avail', { avail: liveObj.available ?? '—', monthly: liveObj.monthly ?? '—' })}`;
+          cellEl.appendChild(subSpan);
+        }
+      } else {
+        const mainStr = effObj
+          ? t('plan.credits.avail', { avail: effObj.available ?? '—', monthly: effObj.monthly ?? '—' })
+          : '—';
+        cellEl.textContent = `${mainStr} · ${isEstBasis ? t('plan.source.planEstimate') : t('plan.source.hostLive')}`;
+      }
+    };
+
+    if (pPrompt && effPrompt) {
+      renderCreditCell(pPrompt, effPrompt, ps.promptCredits);
       const pLegacy = el('p-det-credits');
-      if (pLegacy) pLegacy.textContent = promptTxt;
+      if (pLegacy && pLegacy !== pPrompt && pLegacy.parentElement !== pPrompt) {
+        pLegacy.textContent = t('plan.credits.avail', { avail: effPrompt.available ?? '—', monthly: effPrompt.monthly ?? '—' });
+      }
     }
-    if (pFlow && ps.flowCredits) {
-      pFlow.textContent = t('plan.credits.avail', { avail: ps.flowCredits?.available ?? '—', monthly: ps.flowCredits?.monthly ?? '—' });
+    if (pFlow && effFlow) {
+      const officialFlowExtra = specObj?.[`flowOfficial${specLangSuffix}`]
+        || effFlow.officialText
+        || specObj?.flowOfficialZh
+        || '';
+      renderCreditCell(pFlow, effFlow, ps.flowCredits, officialFlowExtra);
     }
+
     const detTime = el('p-det-time');
     if (detTime) {
-      const timeStr = ps.updatedAt ? new Date(ps.updatedAt).toLocaleString() : '—';
-      const verifyStr = ps.pricingTableVerifiedDate ? ` · ${ps.pricingTableVerifiedDate}` : '';
-      detTime.textContent = `${timeStr}${verifyStr}`;
+      const dateLocale = currentPanelLanguage === 'en' ? 'en-US' : (currentPanelLanguage === 'zh-TW' ? 'zh-TW' : 'zh-CN');
+      const timeStr = ps.updatedAt ? new Date(ps.updatedAt).toLocaleString(dateLocale) : '—';
+      const snapStr = t('plan.price.tableSnapshot', { date: ps.pricingTableVerifiedDate || '2026-11' });
+      detTime.textContent = `${timeStr} · ${snapStr}`;
     }
   }
 
@@ -4064,7 +6101,7 @@
   el('src-tab-cli')?.addEventListener('click', () => switchTokenSource('cli'));
 
   // 视图切换（Token 统计 / API 等值估算）
-  let activeTokenView = 'tokens';
+  activeTokenView = 'tokens';
 
   // 费用面板紧凑摘要与展开详情切换
   let costDetailsExpanded = false;
@@ -5149,6 +7186,50 @@
   // =========================================================================
   // 输入栏紧凑状态条 (Composer Status Bar) 与 5 行悬停卡
   // =========================================================================
+  function computeSessionCacheHitSummarySafe(calls) {
+    const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
+    if (cacheFn) return cacheFn(calls);
+    let u = 0, cr = 0, outp = 0, hasData = false, hasDenom = false;
+    for (const c of (Array.isArray(calls) ? calls : [])) {
+      if (!c || typeof c !== 'object') continue;
+      const cc = Math.max(0, Number(c.cacheCreationInputTokens ?? c.cache_creation_input_tokens ?? 0) || 0);
+      const inp = Math.max(0, Number(c.inputTokens ?? c.input_tokens ?? c.input ?? 0) || 0) + cc;
+      const crv = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? c.cache_read_tokens ?? c.cached ?? 0) || 0);
+      const ov = Math.max(0, Number(c.outputTokens ?? c.output_tokens ?? c.output ?? 0) || 0);
+      if (inp > 0 || crv > 0 || ov > 0) hasData = true;
+      if (inp + crv > 0) hasDenom = true;
+      u += inp;
+      cr += crv;
+      outp += ov;
+    }
+    const ti = u + cr;
+    const hitRatio = hasDenom && ti > 0 ? Math.max(0, Math.min(1, cr / ti)) : null;
+    const hitPct = hitRatio !== null ? Math.round(hitRatio * 100) : null;
+    return {
+      hasRealUsageData: hasData,
+      uncachedInput: u,
+      cacheRead: cr,
+      totalInput: ti,
+      output: outp,
+      grandTotal: ti + outp,
+      hitRatio,
+      hitPct,
+      cacheHitPct: hitPct,
+      cacheStatus: !hasData ? 'missing' : (ti <= 0 ? 'missing' : (cr > 0 ? 'hit' : 'zero'))
+    };
+  }
+
+  function resolveSessionCacheHitDisplay(calls = state.sessionCalls) {
+    const summary = computeSessionCacheHitSummarySafe(calls);
+    if (summary?.hitRatio === null || summary?.hitRatio === undefined || !Number.isFinite(Number(summary.hitRatio))) {
+      return '--';
+    }
+    const pctVal = Math.max(0, Math.min(100, Number(summary.hitRatio) * 100));
+    if (pctVal <= 0) return '0%';
+    if (pctVal >= 99.95) return '100%';
+    return `${pctVal.toFixed(1)}%`;
+  }
+
   function renderComposerStatusBar() {
     const csbBar = el('composer-status-bar');
     if (!csbBar) return;
@@ -5217,37 +7298,14 @@
         });
       }
     }
+    const speedGroupEl = el('csb-group-speed');
+    if (speedGroupEl) {
+      speedGroupEl.setAttribute('data-tooltip', speedTextEl?.textContent || '速度与轮步');
+      speedGroupEl.title = '';
+    }
 
-    // 2. 组 2: 会话 Token 用量与缓存命中率 (口径统一由 computeCacheHitSummary 汇总，输出排除在分母外)
-    const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
-    const csSummary = cacheFn
-      ? cacheFn(state.sessionCalls)
-      : (() => {
-        let u = 0, cr = 0, outp = 0, hasData = false, hasDenom = false;
-        for (const c of (Array.isArray(state.sessionCalls) ? state.sessionCalls : [])) {
-          if (!c || typeof c !== 'object') continue;
-          const cc = Math.max(0, Number(c.cacheCreationInputTokens ?? c.cache_creation_input_tokens ?? 0) || 0);
-          const inp = Math.max(0, Number(c.inputTokens ?? c.input_tokens ?? c.input ?? 0) || 0) + cc;
-          const crv = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? c.cache_read_tokens ?? c.cached ?? 0) || 0);
-          const ov = Math.max(0, Number(c.outputTokens ?? c.output_tokens ?? c.output ?? 0) || 0);
-          if (inp > 0 || crv > 0 || ov > 0) hasData = true;
-          if (inp + crv > 0) hasDenom = true;
-          u += inp;
-          cr += crv;
-          outp += ov;
-        }
-        const ti = u + cr;
-        return {
-          hasRealUsageData: hasData,
-          uncachedInput: u,
-          cacheRead: cr,
-          totalInput: ti,
-          output: outp,
-          grandTotal: ti + outp,
-          cacheHitPct: hasDenom && ti > 0 ? Math.round((cr / ti) * 100) : null,
-          cacheStatus: !hasData ? 'missing' : (ti <= 0 ? 'missing' : (cr > 0 ? 'hit' : 'zero'))
-        };
-      })();
+    // 2. 组 2: 会话 Token 用量与缓存命中率 (口径统一由 computeSessionCacheHitSummarySafe 汇总，输出排除在分母外)
+    const csSummary = computeSessionCacheHitSummarySafe(state.sessionCalls);
 
     let hasRealUsageData = csSummary.hasRealUsageData;
     let uncachedInput = csSummary.uncachedInput;
@@ -5268,19 +7326,22 @@
     }
 
     const hitPctStr = hitPct !== null ? `${hitPct}%` : '—';
+    const compactTokensVal = hasRealUsageData ? formatReqCompactTokens(grandTotal) : '—';
+    const tokensGroupEl = el('csb-group-tokens');
+    if (tokensGroupEl) {
+      const tipText = t('composer.tokenCacheTitle', {
+        tokens: hasRealUsageData ? `${compactTokensVal} tok` : '—',
+        hit: hitPctStr
+      });
+      tokensGroupEl.setAttribute('data-tooltip', tipText);
+      tokensGroupEl.title = '';
+    }
     const tokensTextEl = el('csb-tokens-text');
     if (tokensTextEl) {
-      if (hasRealUsageData) {
-        tokensTextEl.textContent = t('composer.tokenCache', {
-          tokens: formatReqCompactTokens(grandTotal) + ' tok',
-          hit: hitPctStr
-        });
-      } else {
-        tokensTextEl.textContent = t('composer.tokenCache', {
-          tokens: '—',
-          hit: '—'
-        });
-      }
+      tokensTextEl.textContent = t('composer.tokenCache', {
+        tokens: compactTokensVal,
+        hit: hitPctStr
+      });
     }
 
     // 5 行卡片数值
@@ -5315,13 +7376,16 @@
       ctxCircleEl.style.strokeDashoffset = String(Math.max(0, Number(offset.toFixed(1))));
     }
     if (ctxBtn) {
-      ctxBtn.title = pct !== null
+      const limitStr = limitTok !== null ? `${formatReqCompactTokens(limitTok)} · ${limitSource}` : '—';
+      const ctxTip = pct !== null
         ? t('composer.card.contextTooltip', {
           used: formatReqCompactTokens(usedTok),
-          limit: formatReqCompactTokens(limitTok) + ` (${limitSource})`,
+          limit: limitStr,
           remaining: formatReqCompactTokens(Math.max(0, limitTok - usedTok))
         })
-        : `上下文: ${usedTok !== null ? formatReqCompactTokens(usedTok) : '—'} / ${limitTok !== null ? formatReqCompactTokens(limitTok) : '—'}`;
+        : `上下文 · ${usedTok !== null ? formatReqCompactTokens(usedTok) : '—'} / ${limitTok !== null ? formatReqCompactTokens(limitTok) : '—'}`;
+      ctxBtn.setAttribute('data-tooltip', ctxTip);
+      ctxBtn.title = '';
     }
 
     // 4. 分段上下文构成 (新增 / 写缓存 / 读缓存 / 剩余) 与 75%/90% 阈值着色
@@ -5392,7 +7456,7 @@
         ? 'composer.threshold.critical'
         : (segInfo?.thresholdLevel === 'warning' ? 'composer.threshold.warning' : 'composer.threshold.normal');
       tflSegPct.textContent = segInfo && segInfo.limitTokens > 0
-        ? `${segInfo.usedPct}% (${t(threshKey)})`
+        ? `${segInfo.usedPct}% · ${t(threshKey)}`
         : '--%';
     }
 
@@ -5455,7 +7519,8 @@
     const csbRuntimeText = el('csb-runtime-text');
     if (csbStatusGroup) {
       csbStatusGroup.setAttribute('data-runtime-state', runtimeStatus.state);
-      csbStatusGroup.title = `${t('composer.runtime.title')}: ${runtimeLabel}`;
+      csbStatusGroup.setAttribute('data-tooltip', `${t('composer.runtime.title')}: ${runtimeLabel}`);
+      csbStatusGroup.title = '';
     }
     if (csbDot) {
       csbDot.className = `csb-status-dot is-${runtimeStatus.state}`;
@@ -5476,6 +7541,10 @@
     }
     if (typeof renderComposerQuotaSummary === 'function') {
       renderComposerQuotaSummary(lastComputedQuotaView, Date.now());
+    }
+    const oCacheInline = el('overflow-cache-val');
+    if (oCacheInline) {
+      oCacheInline.textContent = resolveSessionCacheHitDisplay();
     }
   }
 
@@ -5499,6 +7568,10 @@
         const turnN = Array.isArray(tl?.turns) ? tl.turns.length : 0;
         const callN = Array.isArray(state.sessionCalls) ? state.sessionCalls.length : 0;
         oDetail.textContent = turnN > 0 ? `${turnN}轮` : (callN > 0 ? `${callN}次` : '--');
+      }
+      const oCache = el('overflow-cache-val');
+      if (oCache) {
+        oCache.textContent = resolveSessionCacheHitDisplay();
       }
       const oReq = el('overflow-requests-val');
       if (oReq) {
@@ -5593,6 +7666,18 @@
 
       const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
       const boundTurnKeys = new Set();
+      // 读写分离：在修改任何 DOM 节点前一次性批量读取工具栏宽度，消除 M 轮历史回复上的强制同步回流 (Layout Thrashing)
+      const toolbarWidths = new Map();
+      for (let i = 0; i < mainToolbars.length; i++) {
+        const tb = mainToolbars[i];
+        const row = tb.firstElementChild || tb;
+        toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
+      }
+      for (let s = 0; s < sideToolbars.length; s++) {
+        const tb = sideToolbars[s];
+        const row = tb.firstElementChild || tb;
+        toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
+      }
       const applyFooterToToolbar = (tb, turnObj, forceFallbackScope = false) => {
         const row = tb.firstElementChild || tb;
         const removeOld = () => {
@@ -5638,7 +7723,7 @@
         const outCompact = hasCalcUsage ? `Out ${formatReqCompactTokens(cs.output)}` : 'Out —';
         const cacheCompact = `${t('turnFooter.cache')} ${hitStr}`;
 
-        const rowW = Number(row.clientWidth || tb.clientWidth || 0);
+        const rowW = toolbarWidths.has(tb) ? toolbarWidths.get(tb) : Number(row.clientWidth || tb.clientWidth || 0);
         let footerParts;
         if (rowW <= 0 || rowW >= 460) {
           footerParts = [scopeLabel, mName, inCompact, outCompact, cacheCompact, tpsStr];
@@ -5663,10 +7748,14 @@
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
         }
-        badge.textContent = text;
-        badge.setAttribute('data-scope', isTurnAggregate ? 'turn' : 'request');
-        badge.setAttribute('data-turn-key', String(turnObj.turnKey || ''));
-        badge.setAttribute('data-call-id', String(lastCall.callId || ''));
+        // 脏检查幂等写入：数值不变时不重复改写 textContent 与 aria-label，避免唤醒 MutationObserver
+        if (badge.textContent !== text) badge.textContent = text;
+        const nextScope = isTurnAggregate ? 'turn' : 'request';
+        if (badge.getAttribute('data-scope') !== nextScope) badge.setAttribute('data-scope', nextScope);
+        const nextTurnKey = String(turnObj.turnKey || '');
+        if (badge.getAttribute('data-turn-key') !== nextTurnKey) badge.setAttribute('data-turn-key', nextTurnKey);
+        const nextCallId = String(lastCall.callId || '');
+        if (badge.getAttribute('data-call-id') !== nextCallId) badge.setAttribute('data-call-id', nextCallId);
 
         const tp = lastCall.timestamp ? formatReqTimeParts(lastCall) : null;
         const reqTimeStr = tp?.tooltip || tp?.text || (lastCall.date || '—');
@@ -5677,8 +7766,10 @@
           `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} (命中 ${hitStr})`,
           `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`
         ];
-        badge.title = titleLines.join('\n');
-        badge.setAttribute('aria-label', `${text}。${titleLines.slice(1).join('；')}`);
+        const nextTitle = titleLines.join('\n');
+        if (badge.title !== nextTitle) badge.title = nextTitle;
+        const nextAria = `${text}。${titleLines.slice(1).join('；')}`;
+        if (badge.getAttribute('aria-label') !== nextAria) badge.setAttribute('aria-label', nextAria);
       };
 
       const M = mainToolbars.length;
@@ -5811,6 +7902,7 @@
     }
     positionFloatingPanels();
     syncPanelPickerActiveState();
+    if (state.orbLinkedPanel && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
   }
   el('tok-view-tokens')?.addEventListener('click', () => switchTokenView('tokens'));
   el('tok-view-models')?.addEventListener('click', () => switchTokenView('models'));
@@ -6164,9 +8256,14 @@
       badgeLongPressTimer = null;
     }
   };
-  el('badge').addEventListener('click', () => {
+  el('badge').addEventListener('click', (e) => {
     if (badgeLongPressTriggered) {
       badgeLongPressTriggered = false;
+      return;
+    }
+    if (radialTopbarEnabled) {
+      e?.stopPropagation?.();
+      toggleRadialMenu('topbar', el('badge'));
       return;
     }
     toggleContext('badge');
@@ -6182,7 +8279,12 @@
   el('overflow-speed-btn')?.addEventListener('click', () => switchPanelFromPicker('speed'));
   el('overflow-tokens-btn')?.addEventListener('click', () => switchPanelFromPicker('tokens'));
   el('overflow-requests-btn')?.addEventListener('click', () => switchPanelFromPicker('requests'));
+  el('overflow-cache-btn')?.addEventListener('click', () => switchPanelFromPicker('cache'));
   el('overflow-cli-btn')?.addEventListener('click', () => switchPanelFromPicker('cli'));
+  el('overflow-show-orb-btn')?.addEventListener('click', () => {
+    setRadialOrbHidden(false, { persist: true });
+    closePanelPicker();
+  });
 
   const overflowMenuEl = el('overflow-menu');
   if (overflowMenuEl) {
@@ -6229,155 +8331,324 @@
   el('close-quota')?.addEventListener('click', () => showPanel('none'));
   el('badge-quota')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleQuotaBadgeWindowMode(); });
 
-  // 输入框紧凑状态条 (Composer Status Bar) 交互事件（单一权威绑定）
+  // 输入框紧凑状态条 (Composer Status Bar) 交互事件：四组全部恢复交互、点击首帧直达（二次点击关闭）与顶层居中悬停缩略卡
   const csbSpeedBtn = el('csb-group-speed');
-  if (csbSpeedBtn) {
-    csbSpeedBtn.addEventListener('click', (e) => {
-      e?.stopPropagation?.();
-      toggleContext('csb-group-speed');
-      if (typeof switchContextTab === 'function') switchContextTab('speed');
-    });
-  }
-
-  const csbStatusBtn = el('csb-group-status');
   const csbTokensBtn = el('csb-group-tokens');
+  const csbStatusBtn = el('csb-group-status');
+  const csbContextBtn = el('csb-group-context');
+  const csbQuotaBtn = el('csb-group-quota');
   const tflCard = el('token-five-line-card');
-  const tflPinBadge = el('tfl-pin-badge');
-  const tflOpenTokensBtn = el('tfl-open-tokens-panel');
-  if (csbTokensBtn || csbStatusBtn) {
-    const syncPinBadge = () => {
-      if (!tflPinBadge) return;
-      tflPinBadge.setAttribute('data-pinned', tflCardPinned ? 'true' : 'false');
-      tflPinBadge.textContent = tflCardPinned ? t('composer.card.pinned') : t('composer.card.pinHint');
-    };
-    const openTflCard = () => {
-      if (enforceMarketplaceAvoidance()) return;
-      if (!tflCard) return;
-      tflCard.hidden = false;
-      if (tflCard.style) {
-        tflCard.style.display = '';
-        tflCard.style.pointerEvents = 'auto';
+
+  const miniCardSpeed = el('csb-card-speed');
+  const miniCardTokens = el('csb-card-tokens');
+  const miniCardContext = el('csb-card-context');
+  const miniCardQuota = el('csb-card-quota');
+
+  const allCsbMiniCards = [miniCardSpeed, miniCardTokens, miniCardContext, miniCardQuota];
+
+  const closeAllCsbMiniCards = () => {
+    for (const mc of allCsbMiniCards) {
+      if (!mc) continue;
+      mc.hidden = true;
+      mc.classList?.remove?.('is-active');
+      if (mc.style) {
+        mc.style.display = 'none';
+        mc.style.pointerEvents = 'none';
       }
-      csbTokensBtn?.setAttribute?.('aria-expanded', 'true');
-      csbStatusBtn?.setAttribute?.('aria-expanded', 'true');
-      syncPinBadge();
-    };
-    const closeTflCard = (forceUnpin = false) => {
-      if (!tflCard) return;
-      if (forceUnpin) tflCardPinned = false;
+    }
+    if (tflCard) {
       tflCard.hidden = true;
       if (tflCard.style) {
         tflCard.style.display = 'none';
         tflCard.style.pointerEvents = 'none';
       }
-      csbTokensBtn?.setAttribute?.('aria-expanded', 'false');
-      csbStatusBtn?.setAttribute?.('aria-expanded', 'false');
-      syncPinBadge();
-    };
-    const togglePinnedTflCard = (e) => {
-      e?.stopPropagation?.();
-      if (tflCardPinned && tflCard && !tflCard.hidden) {
-        closeTflCard(true);
-      } else {
-        tflCardPinned = true;
-        openTflCard();
-      }
-    };
-    if (csbStatusBtn) {
-      csbStatusBtn.addEventListener('mouseenter', () => {
-        if (!tflCardPinned) openTflCard();
-      });
-      csbStatusBtn.addEventListener('mouseleave', (e) => {
-        if (tflCardPinned) return;
-        if (e?.relatedTarget && tflCard && tflCard.contains?.(e.relatedTarget)) return;
-        closeTflCard(false);
-      });
-      csbStatusBtn.addEventListener('click', togglePinnedTflCard);
     }
-    if (csbTokensBtn) {
-      csbTokensBtn.addEventListener('mouseenter', () => {
-        if (!tflCardPinned) openTflCard();
-      });
-      csbTokensBtn.addEventListener('mouseleave', (e) => {
-        if (tflCardPinned) return;
-        if (e?.relatedTarget && tflCard && tflCard.contains?.(e.relatedTarget)) return;
-        closeTflCard(false);
-      });
-      csbTokensBtn.addEventListener('focus', openTflCard);
-      csbTokensBtn.addEventListener('blur', (e) => {
-        if (tflCardPinned) return;
-        if (e?.relatedTarget && tflCard && tflCard.contains?.(e.relatedTarget)) return;
-        closeTflCard(false);
-      });
-      // 左键点击 Token 胶囊继续直接打开完整 Token 看板（若点击浮卡上的固定角标则只切换固定）
-      csbTokensBtn.addEventListener('click', (e) => {
-        if (e?.target && tflPinBadge && (e.target === tflPinBadge || tflPinBadge.contains?.(e.target))) {
-          togglePinnedTflCard(e);
-          return;
+    csbTokensBtn?.setAttribute?.('aria-expanded', 'false');
+    csbStatusBtn?.setAttribute?.('aria-expanded', 'false');
+    csbSpeedBtn?.setAttribute?.('aria-expanded', 'false');
+    csbContextBtn?.setAttribute?.('aria-expanded', 'false');
+    csbQuotaBtn?.setAttribute?.('aria-expanded', 'false');
+    // 收起浮卡后恢复宿主层叠高度，避免长期顶在最上层挡住宿主弹层
+    try {
+      syncHostStackingElevation(Boolean(isAnyPanelOpen()
+        || (el('overflow-menu') && !el('overflow-menu').hidden)
+        || state.radialMenuOpen));
+    } catch { }
+  };
+
+  const isSessionEmptyNow = () => {
+    const turnsTxt = el('csb-speed-text')?.textContent || '';
+    const tokensTxt = el('csb-tokens-text')?.textContent || '';
+    const ctxTxt = el('csb-context-text')?.textContent || '';
+    const hasRealUsage = Boolean(state.sessionCalls?.length || state.tokenUsage?.used || state.sessionStats?.usedTokens);
+    const isBlank = (!turnsTxt || turnsTxt.includes('—')) && (!tokensTxt || tokensTxt.includes('—')) && (!ctxTxt || ctxTxt.includes('--%'));
+    return !hasRealUsage && isBlank;
+  };
+
+  /**
+   * 右侧辅助栏展开时的有效右边界：优先避开辅助栏真实左边界，宽度不足则回退到视口右缘
+   */
+  const resolveCsbAuxRightBound = () => {
+    const screenW = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+    let bound = screenW - 8;
+    try {
+      const seen = new Set();
+      const nodes = [];
+      const q = document.querySelectorAll?.('[data-side-panel-open], [data-aux-pane-open], [data-side-panel-focus-scope]');
+      for (const node of q || []) nodes.push(node);
+      nodes.push(host);
+      for (const node of nodes) {
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        const r = node.getBoundingClientRect?.();
+        if (!r || !(r.width > 0) || !(r.height > 0)) continue;
+        // 只有贴右缘且宽度不超过视口一半的窄列才视为右侧辅助栏
+        if (r.width >= screenW * 0.55) continue;
+        if (r.right < screenW - 24) continue;
+        bound = Math.min(bound, Math.floor(r.left) - 8);
+      }
+    } catch { }
+    return bound;
+  };
+
+  const positionCsbMiniCard = (card, anchor) => {
+    if (!card || !anchor || typeof anchor.getBoundingClientRect !== 'function') return;
+    try {
+      const rect = anchor.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      // 顶层抬升：底栏浮卡必须永远高于右侧辅助栏与任何宿主面板
+      syncHostStackingElevation(true);
+      const anchorCenter = rect.left + rect.width / 2;
+      const screenW = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+      const available = resolveCsbAuxRightBound();
+      let rightBound = available;
+      // 辅助栏左侧空间放不下整张浮卡时，回退到视口右缘，靠顶层 z-index 保证不被盖住
+      if (rightBound - 8 < 120) rightBound = screenW - 8;
+      const cardW = Math.min(228, Math.max(0, rightBound - 16));
+      const idealX = anchorCenter - cardW / 2;
+      const clampMin = 8;
+      const clampMax = Math.max(clampMin, rightBound - cardW);
+      const clampedX = Math.max(clampMin, Math.min(clampMax, idealX));
+      const screenH = (typeof window !== 'undefined' && window.innerHeight) || 800;
+      const bottomY = Math.max(8, screenH - rect.top + 8);
+      card.style.left = `${Math.round(clampedX)}px`;
+      card.style.bottom = `${Math.round(bottomY)}px`;
+      card.style.right = 'auto';
+      card.style.maxWidth = `${cardW}px`;
+      // 记录夹紧偏移供实机与单测核对中心偏差
+      card.setAttribute?.('data-csb-clamped', Math.abs(clampedX - idealX) > 0.5 ? 'true' : 'false');
+      card.setAttribute?.('data-csb-right-bound', String(Math.round(rightBound)));
+      card.hidden = false;
+      card.classList?.add?.('is-active');
+      if (card.style) {
+        card.style.display = '';
+        card.style.pointerEvents = 'none';
+      }
+    } catch { }
+  };
+
+  const updateAndShowCsbMiniCard = (type, anchor) => {
+    if (enforceMarketplaceAvoidance()) return;
+    closeAllCsbMiniCards();
+    const isEmpty = isSessionEmptyNow();
+
+    if (type === 'speed') {
+      const card = miniCardSpeed;
+      if (!card) return;
+      const speedValEl = el('csb-card-speed-val');
+      const speedTtftEl = el('csb-card-speed-ttft');
+      const speedDurationEl = el('csb-card-speed-duration');
+      const speedCandidate = state.lastSpeedEval?.tps
+        ?? state.lastSpeedEval?.streamingTps
+        ?? state.liveSpeed?.tps
+        ?? state.latest?.speed?.tps
+        ?? state.speedOverrideForTest?.tps
+        ?? null;
+      const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
+      if (speedValEl) speedValEl.textContent = hasSpeedVal ? `${Number(speedCandidate).toFixed(0)} tok/s` : '—';
+      const ttftCandidate = state.lastSpeedEval?.ttftSec ?? state.liveSpeed?.ttftSec ?? state.latest?.speed?.ttftSec ?? null;
+      if (speedTtftEl) speedTtftEl.textContent = (ttftCandidate != null && Number.isFinite(Number(ttftCandidate))) ? `${Number(ttftCandidate).toFixed(2)}s` : '—';
+      const durationCandidate = state.lastSpeedEval?.durationSec ?? state.liveSpeed?.durationSec ?? state.latest?.speed?.durationSec ?? null;
+      if (speedDurationEl) speedDurationEl.textContent = (durationCandidate != null && Number.isFinite(Number(durationCandidate))) ? `${Number(durationCandidate).toFixed(1)}s` : '—';
+      positionCsbMiniCard(card, anchor);
+      anchor.setAttribute?.('aria-expanded', 'true');
+    } else if (type === 'tokens') {
+      const card = miniCardTokens;
+      if (!card) return;
+      const csSummary = computeSessionCacheHitSummarySafe(state.sessionCalls);
+      const tokensTotalEl = el('csb-card-tokens-total');
+      const tokensHitEl = el('csb-card-tokens-hit');
+      const tokensRwEl = el('csb-card-tokens-rw');
+      if (tokensTotalEl) tokensTotalEl.textContent = csSummary.hasRealUsageData ? `${formatReqCompactTokens(csSummary.grandTotal)} tok` : '—';
+      if (tokensHitEl) tokensHitEl.textContent = csSummary.cacheHitPct !== null ? `${csSummary.cacheHitPct}%` : '—';
+      if (tokensRwEl) tokensRwEl.textContent = csSummary.hasRealUsageData
+        ? [t('composer.card.segRead', { val: formatReqCompactTokens(csSummary.cacheRead) }),
+          t('composer.card.segFresh', { val: formatReqCompactTokens(csSummary.uncachedInput) })].join(' · ')
+        : (isEmpty ? t('composer.card.emptySessionHint') : '—');
+      positionCsbMiniCard(card, anchor);
+      anchor.setAttribute?.('aria-expanded', 'true');
+    } else if (type === 'context') {
+      const card = miniCardContext;
+      if (!card) return;
+      const rawUsed = state.latest?.actual ?? state.latest?.postCompactEstimate ?? state.latest?.estimate ?? state.sessionStats?.usedTokens ?? state.tokenUsage?.used ?? null;
+      const usedTok = rawUsed !== null && rawUsed !== undefined && Number.isFinite(Number(rawUsed)) && Number(rawUsed) >= 0 ? Number(rawUsed) : null;
+      const rawLimit = state.latest?.budget ?? state.sessionStats?.limitTokens ?? state.tokenUsage?.limit ?? null;
+      const limitTok = rawLimit !== null && rawLimit !== undefined && Number.isFinite(Number(rawLimit)) && Number(rawLimit) > 0 ? Number(rawLimit) : null;
+      const usageEl = el('csb-card-context-usage');
+      const remainEl = el('csb-card-context-remain');
+      if (usageEl) usageEl.textContent = `${usedTok !== null ? formatReqCompactTokens(usedTok) : '—'} / ${limitTok !== null ? formatReqCompactTokens(limitTok) : '—'}`;
+      if (remainEl) remainEl.textContent = (usedTok !== null && limitTok !== null) ? `${formatReqCompactTokens(Math.max(0, limitTok - usedTok))}` : '—';
+      positionCsbMiniCard(card, anchor);
+      anchor.setAttribute?.('aria-expanded', 'true');
+    } else if (type === 'quota') {
+      const card = miniCardQuota;
+      if (!card) return;
+      const qMainEl = el('csb-card-quota-main');
+      const qOthersEl = el('csb-card-quota-others');
+      const view = lastComputedQuotaView;
+      const coreLib = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : (globalThis.__AGContextMeterCore || null);
+      const fmtPct = f => (coreLib?.formatQuotaPercentText ? coreLib.formatQuotaPercentText(f) : `${Math.round(Number(f) * 100)}%`);
+      const pairFn = typeof resolveQuotaWindowBucketPair === 'function' ? resolveQuotaWindowBucketPair : coreLib?.resolveQuotaWindowBucketPair;
+      const pools = Array.isArray(view?.pools) ? view.pools : [];
+      // 与底栏 #csb-group-quota 完全复用同一套已解析池与窗口配对，杜绝取数分裂
+      const mainPool = (view?.currentModel?.poolKey
+        ? pools.find(p => p.poolKey === view.currentModel.poolKey)
+        : null) || pools[0] || null;
+      const nowMs = Date.now();
+      const describeBucket = (label, bucket) => {
+        if (!bucket) return '';
+        const frac = Number(bucket.remainingFraction);
+        const pctText = Number.isFinite(frac) ? fmtPct(frac) : '';
+        const countdown = Number.isFinite(bucket.resetAtMs) ? formatCountdownMsCompact(bucket.resetAtMs - nowMs) : '';
+        return [label, pctText, countdown].filter(Boolean).join(' ');
+      };
+      if (qMainEl) {
+        if (!mainPool) {
+          qMainEl.textContent = '—';
+        } else if (mainPool.noPermission) {
+          qMainEl.textContent = t('quota.short.no_permission');
+        } else {
+          const pair = pairFn ? pairFn(mainPool.buckets || []) : { bucket5h: null, bucket7d: null };
+          const parts = [
+            describeBucket('5h', pair.bucket5h),
+            describeBucket('7d', pair.bucket7d)
+          ].filter(Boolean);
+          qMainEl.textContent = parts.length ? parts.join(' · ') : '—';
         }
-        if (e?.target && tflCard && tflCard.contains?.(e.target)) return;
-        e?.stopPropagation?.();
-        closeTflCard(true);
-        toggleTokens('csb-group-tokens');
-        if (typeof switchTokenView === 'function') switchTokenView('tokens');
-      });
-    }
-    if (tflPinBadge) {
-      tflPinBadge.addEventListener('click', togglePinnedTflCard);
-    }
-    if (tflCard && typeof tflCard.addEventListener === 'function') {
-      tflCard.addEventListener('mouseleave', (e) => {
-        if (tflCardPinned) return;
-        if (e?.relatedTarget && (csbTokensBtn?.contains?.(e.relatedTarget) || csbStatusBtn?.contains?.(e.relatedTarget))) return;
-        closeTflCard(false);
-      });
-    }
-    const onCsbEscKey = (e) => {
-      if (e?.key === 'Escape' && tflCard && !tflCard.hidden) {
-        closeTflCard(true);
       }
-    };
-    const onCsbOutsideClick = (e) => {
-      if (!tflCardPinned || !tflCard || tflCard.hidden) return;
-      const tNode = e?.target;
-      const path = typeof e?.composedPath === 'function' ? e.composedPath() : [];
-      const isInside = (node) => Boolean(node && (path.includes(node) || (tNode && (node === tNode || node.contains?.(tNode)))));
-      if (isInside(csbTokensBtn) || isInside(csbStatusBtn) || isInside(tflCard)) return;
-      closeTflCard(true);
-    };
-    if (typeof shadow?.addEventListener === 'function') {
-      shadow.addEventListener('click', onCsbOutsideClick);
-      activeDisposers.add(() => {
-        shadow?.removeEventListener?.('click', onCsbOutsideClick);
-      });
+      if (qOthersEl) {
+        const others = pools.filter(p => p && p !== mainPool);
+        const summaries = others.slice(0, 3).map(p => {
+          const name = String(p.label || p.displayName || p.poolLabel || p.poolKey || '').trim();
+          if (p.noPermission) return [name, t('quota.short.no_permission')].filter(Boolean).join(' ');
+          const pair = pairFn ? pairFn(p.buckets || []) : { bucket5h: null, bucket7d: null };
+          const bucket = pair.bucket7d || pair.bucket5h;
+          const frac = Number(bucket?.remainingFraction);
+          return [name, Number.isFinite(frac) ? fmtPct(frac) : ''].filter(Boolean).join(' ');
+        }).filter(Boolean);
+        if (others.length > 3) summaries.push(`+${others.length - 3}`);
+        qOthersEl.textContent = summaries.length ? summaries.join(' · ') : '—';
+      }
+      positionCsbMiniCard(card, anchor);
+      anchor.setAttribute?.('aria-expanded', 'true');
     }
-    if (typeof document?.addEventListener === 'function') {
-      document.addEventListener('keydown', onCsbEscKey);
-      document.addEventListener('click', onCsbOutsideClick);
-      activeDisposers.add(() => {
-        document?.removeEventListener?.('keydown', onCsbEscKey);
-        document?.removeEventListener?.('click', onCsbOutsideClick);
-      });
-    }
-    tflOpenTokensBtn?.addEventListener('click', (e) => {
+  };
+
+  // 绑定四组悬停与点击直达
+  if (csbSpeedBtn) {
+    csbSpeedBtn.title = '';
+    csbSpeedBtn.addEventListener('mouseenter', () => updateAndShowCsbMiniCard('speed', csbSpeedBtn));
+    csbSpeedBtn.addEventListener('mouseleave', closeAllCsbMiniCards);
+    csbSpeedBtn.addEventListener('click', (e) => {
       e?.stopPropagation?.();
-      closeTflCard(true);
-      toggleTokens('csb-group-tokens');
-      if (typeof switchTokenView === 'function') switchTokenView('tokens');
+      closeAllCsbMiniCards();
+      const pCtx = el('panel');
+      const isCurrentSpeed = pCtx && !pCtx.hidden && activeContextTab === 'speed';
+      if (isCurrentSpeed && activeContextAnchorId === 'csb-group-speed') {
+        showPanel('none');
+      } else {
+        activeContextAnchorId = 'csb-group-speed';
+        switchContextTab('speed');
+        showPanel('context');
+      }
     });
   }
 
-  const csbContextBtn = el('csb-group-context');
-  if (csbContextBtn) {
-    csbContextBtn.addEventListener('click', (e) => {
+  if (csbTokensBtn) {
+    csbTokensBtn.title = '';
+    csbTokensBtn.addEventListener('mouseenter', () => updateAndShowCsbMiniCard('tokens', csbTokensBtn));
+    csbTokensBtn.addEventListener('mouseleave', closeAllCsbMiniCards);
+    csbTokensBtn.addEventListener('focus', () => updateAndShowCsbMiniCard('tokens', csbTokensBtn));
+    csbTokensBtn.addEventListener('blur', closeAllCsbMiniCards);
+    csbTokensBtn.addEventListener('click', (e) => {
       e?.stopPropagation?.();
-      toggleContext('csb-group-context');
+      closeAllCsbMiniCards();
+      openRequestsLivePanel('csb-group-tokens', { toggleWhenSameAnchor: true });
     });
   }
-  el('csb-group-quota')?.addEventListener('click', (e) => {
-    e?.stopPropagation?.();
-    toggleQuota('csb-group-quota');
-  });
+
+  if (csbStatusBtn) {
+    csbStatusBtn.title = '';
+    csbStatusBtn.addEventListener('mouseenter', () => updateAndShowCsbMiniCard('tokens', csbStatusBtn));
+    csbStatusBtn.addEventListener('mouseleave', closeAllCsbMiniCards);
+    csbStatusBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      closeAllCsbMiniCards();
+      openRequestsLivePanel('csb-group-tokens', { toggleWhenSameAnchor: true });
+    });
+  }
+
+  if (csbContextBtn) {
+    csbContextBtn.title = '';
+    csbContextBtn.addEventListener('mouseenter', () => updateAndShowCsbMiniCard('context', csbContextBtn));
+    csbContextBtn.addEventListener('mouseleave', closeAllCsbMiniCards);
+    csbContextBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      closeAllCsbMiniCards();
+      if (radialBottombarEnabled) {
+        toggleRadialMenu('bottombar', csbContextBtn);
+      } else {
+        openContextSessionPanel('csb-group-context', { toggleWhenSameAnchor: true });
+      }
+    });
+  }
+
+  if (csbQuotaBtn) {
+    csbQuotaBtn.title = '';
+    csbQuotaBtn.addEventListener('mouseenter', () => updateAndShowCsbMiniCard('quota', csbQuotaBtn));
+    csbQuotaBtn.addEventListener('mouseleave', closeAllCsbMiniCards);
+    csbQuotaBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      closeAllCsbMiniCards();
+      const pQuota = el('panel-quota');
+      const isCurrentQuota = pQuota && !pQuota.hidden;
+      if (isCurrentQuota) {
+        showPanel('none');
+      } else {
+        showPanel('quota');
+      }
+    });
+  }
+
+  // 全局收起监听
+  const onCsbEscKey = (e) => {
+    if (e?.key === 'Escape') closeAllCsbMiniCards();
+  };
+  const onCsbOutsideClick = (e) => {
+    closeAllCsbMiniCards();
+  };
+  if (typeof shadow?.addEventListener === 'function') {
+    shadow.addEventListener('click', onCsbOutsideClick);
+    activeDisposers.add(() => shadow?.removeEventListener?.('click', onCsbOutsideClick));
+  }
+  if (typeof document?.addEventListener === 'function') {
+    document.addEventListener('keydown', onCsbEscKey);
+    document.addEventListener('click', onCsbOutsideClick);
+    activeDisposers.add(() => {
+      document?.removeEventListener?.('keydown', onCsbEscKey);
+      document?.removeEventListener?.('click', onCsbOutsideClick);
+    });
+  }
 
   // 上下文圆环悬停/聚焦/长按：未开面板时兼顾三层气泡与面板选择器，长按 >= 420ms 直达上下文详情与历史
   el('badge').addEventListener('pointerdown', (e) => {
@@ -6385,9 +8656,10 @@
     if (enforceMarketplaceAvoidance()) return;
     badgeLongPressTriggered = false;
     clearBadgeLongPress();
+    if (state.radialMenuOpen || state.radialClosing) return;
     badgeLongPressTimer = setTimeout(() => {
       badgeLongPressTimer = null;
-      if (enforceMarketplaceAvoidance()) return;
+      if (enforceMarketplaceAvoidance() || state.radialMenuOpen || state.radialClosing) return;
       badgeLongPressTriggered = true;
       activePickerAnchorId = 'badge';
       switchPanelFromPicker('context_detail');
@@ -6398,6 +8670,11 @@
   }
   el('badge').addEventListener('mouseenter', () => {
     if (enforceMarketplaceAvoidance()) return;
+    if (state.radialMenuOpen || state.radialClosing) return;
+    if (radialTopbarEnabled) {
+      if (!isAnyPanelOpen()) showContextTooltip();
+      return;
+    }
     openPanelPicker('badge', { viaHover: true });
     if (!isAnyPanelOpen()) {
       showContextTooltip();
@@ -6409,6 +8686,12 @@
   });
   el('badge').addEventListener('focus', () => {
     if (enforceMarketplaceAvoidance()) return;
+    if (state.radialMenuOpen || state.radialClosing) return;
+    if (Date.now() < suppressFocusPickerUntil) return;
+    if (radialTopbarEnabled) {
+      if (!isAnyPanelOpen()) showContextTooltip();
+      return;
+    }
     if (!canOpenPickerOnFocus(el('badge'))) return;
     openPanelPicker('badge');
     if (!isAnyPanelOpen()) showContextTooltip();
@@ -6549,14 +8832,14 @@
     '其他': 'var(--ag-text-muted, #8a8a94)'
   };
 
-  let activeContextTab = 'session';
+  activeContextTab = 'session';
   try {
     const savedTab = localStorage?.getItem(CTX_ACTIVE_TAB_KEY);
     if (savedTab === 'session' || savedTab === 'models' || savedTab === 'speed') {
       activeContextTab = savedTab;
     }
   } catch { }
-  let isContextSettingsView = false;
+  isContextSettingsView = false;
 
   let currentUnlockStatus = null;
   let unlockStatusFetchError = false;
@@ -6657,6 +8940,7 @@
   } catch { }
 
   let speedRangeDays = defaultViewPrefs.speedRangeDays;
+  let speedDateRange = defaultViewPrefs.speedDateRange || null;
   let speedOriginFilter = 'all';
   let speedMetric = 'tps';
   let selectedSpeedExactModelId = null;
@@ -8356,6 +10640,7 @@
 
   function switchContextTab(tabName) {
     if (tabName !== 'session' && tabName !== 'models' && tabName !== 'speed' && tabName !== 'settings') return;
+    if (tabName !== 'session') closeCockpitWidgetManager();
     if (activeContextTab !== 'settings') {
       prevTabBeforeSettings = activeContextTab;
     }
@@ -8371,6 +10656,10 @@
       if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
       if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
       if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+      // 切入当前会话 Tab 时立刻让 2D Skyline 接管（面板宽度此时才真实可用）
+      if (typeof applyCockpitLayoutToDom === 'function') {
+        try { requestAnimationFrame(() => { try { applyCockpitLayoutToDom({ renderManager: false }); } catch { } }); } catch { }
+      }
       if (state.route && !state.sessionTimeline && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
         void fetchSessionTimeline(state.route, { force: false });
       }
@@ -8393,11 +10682,22 @@
     }
     positionFloatingPanels();
     syncPanelPickerActiveState();
+    if (state.orbLinkedPanel && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
   }
 
   function openContextSettings(opts = {}) {
-    if (el('panel')?.hidden) showPanel('context');
-    switchContextTab('settings');
+    if (el('panel')?.hidden) {
+      if (activeContextTab !== 'settings') {
+        prevTabBeforeSettings = activeContextTab;
+      }
+      activeContextTab = 'settings';
+      isContextSettingsView = true;
+      try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, 'settings'); } catch { }
+      applyContextViewVisibility();
+      showPanel('context');
+    } else {
+      switchContextTab('settings');
+    }
     if (opts.openColors) {
       toggleColorsDrawer(true);
     }
@@ -11235,7 +13535,7 @@
     const emptyEl = el('speed-line-empty');
     const tooltip = el('speed-line-tooltip');
 
-    const samples = (selectedGroup?.samples || []).filter(s => s && s.tps > 0);
+    const samples = (selectedGroup?.samples || []).slice(-200).filter(s => s && s.tps > 0);
     if (!samples.length) {
       if (emptyEl) emptyEl.hidden = false;
       if (wrap) wrap.hidden = true;
@@ -11343,12 +13643,820 @@
 
   let lastSpeedGroups = [];
 
+  // =========================================================================
+  // 速度对比页（原型移植）：PK 对比台 + 多系列走势 + 全量排行
+  // =========================================================================
+  let speedPkSelection = [];
+  let speedPkUserCleared = false;
+  let speedPkInitialized = false;
+  let speedRankSort = 'tps';
+  let speedRankQuery = '';
+
+  const SPEED_SERIES_COLORS = ['accent', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'];
+
+  const speedSeriesColor = (index) => `var(--spd-${SPEED_SERIES_COLORS[index % SPEED_SERIES_COLORS.length]})`;
+
+  let speedAlgorithm = 'median';
+
+  const speedResolvedMetrics = (group) => {
+    const empty = { tps: null, ttft: null, duration: null };
+    if (!group) return empty;
+    const samples = Array.isArray(group.samples) ? group.samples : [];
+    const meanOf = (pick) => {
+      const list = samples.map(pick).map(Number).filter(v => Number.isFinite(v) && v > 0);
+      return list.length ? list.reduce((a, b) => a + b, 0) / list.length : null;
+    };
+    const medianTps = Number.isFinite(group.medianTps) ? group.medianTps : null;
+    const medianTtft = Number.isFinite(group.medianTtft) ? group.medianTtft : null;
+    const medianDuration = Number.isFinite(group.medianDuration) ? group.medianDuration : null;
+    let tps = medianTps;
+    let ttft = medianTtft;
+    let duration = medianDuration;
+    if (speedAlgorithm === 'mean') {
+      tps = meanOf(s => s.tps);
+      if (!Number.isFinite(tps)) tps = medianTps;
+      ttft = meanOf(s => s.ttftSec);
+      if (!Number.isFinite(ttft)) ttft = medianTtft;
+      duration = meanOf(s => s.durationSec);
+      if (!Number.isFinite(duration)) duration = medianDuration;
+    } else if (speedAlgorithm === 'composite') {
+      // 综合效率：500 token 等效输出速率 500 / (TTFT + 500 / tok_s)，无 TTFT 时优雅回退
+      if (Number.isFinite(medianTps) && medianTps > 0) {
+        tps = (Number.isFinite(medianTtft) && medianTtft > 0)
+          ? 500 / (medianTtft + 500 / medianTps)
+          : medianTps;
+      }
+    }
+    return { tps, ttft, duration };
+  };
+
+  const speedMetricValue = (group) => {
+    if (!group) return null;
+    const resolved = speedResolvedMetrics(group);
+    if (speedMetric === 'ttft') return Number.isFinite(resolved.ttft) ? resolved.ttft : null;
+    if (speedMetric === 'duration') return Number.isFinite(resolved.duration) ? resolved.duration : null;
+    return Number.isFinite(resolved.tps) ? resolved.tps : null;
+  };
+
+  const speedMetricUnit = () => (speedAlgorithm === 'composite' || speedMetric === 'tps' ? 'tok/s' : 's');
+
+  const speedSampleValue = (sample) => {
+    if (!sample) return null;
+    if (speedMetric === 'ttft') return Number.isFinite(Number(sample.ttftSec)) && Number(sample.ttftSec) > 0 ? Number(sample.ttftSec) : null;
+    if (speedMetric === 'duration') return Number.isFinite(Number(sample.durationSec)) && Number(sample.durationSec) > 0 ? Number(sample.durationSec) : null;
+    const tps = Number(sample.tps);
+    if (!(Number.isFinite(tps) && tps > 0)) return null;
+    if (speedAlgorithm === 'composite') {
+      const ttft = Number(sample.ttftSec);
+      if (Number.isFinite(ttft) && ttft > 0) return 500 / (ttft + 500 / tps);
+    }
+    return tps;
+  };
+
+  const formatSpeedMetricValue = (value) => {
+    if (!Number.isFinite(value)) return '—';
+    return speedMetric === 'tps' ? Number(value).toFixed(1) : `${Number(value).toFixed(2)}s`;
+  };
+
+  const speedEffortShortLabel = (effort) => {
+    const raw = String(effort || '').trim();
+    if (!raw) return '';
+    const zh = formatEffortZh(raw) || '';
+    // formatEffortZh 形如「中（Medium）」，速度对比页严格零括号，只取中文短档位
+    return String(zh).split(/[（(]/)[0].trim();
+  };
+
+  const stripTrailingBracket = (text) => String(text || '').replace(/\s*[（(][^（()）]*[)）]\s*$/, '').trim();
+
+  /**
+   * 速度对比页专用模型显示名：严格零中英文括号，档位用中点连接
+   */
+  const speedDisplayName = (group) => {
+    if (!group) return '';
+    const raw = String(group.productLabel || group.modelLabel || group.modelExactId || '').trim();
+    const base = stripTrailingBracket(raw);
+    const shortEffort = speedEffortShortLabel(group.effort);
+    const composed = [base, shortEffort].filter(Boolean).join(' · ');
+    return composed.replace(/[（()）]/g, '').replace(/\s{2,}/g, ' ').trim();
+  };
+
+  const resolveSpeedCurrentModelId = () => {
+    const latest = state.latest || state.scan?.latest || null;
+    const raw = latest?.modelExactId || latest?.modelLabel || latest?.model || '';
+    return String(raw || '').trim().toLowerCase();
+  };
+
+  const ensureSpeedPkSelection = (groups) => {
+    const validIds = new Set((groups || []).map(g => g.modelExactId));
+    speedPkSelection = speedPkSelection.filter(id => validIds.has(id));
+    if (speedPkSelection.length) return speedPkSelection;
+    // 用户主动清空或逐个删光后绝不自动回填，只有首次未初始化才给默认 3 款
+    if (speedPkUserCleared) return speedPkSelection;
+    const currentId = resolveSpeedCurrentModelId();
+    const picked = [];
+    const currentGroup = groups.find(g => g.modelExactId === currentId);
+    if (currentGroup) picked.push(currentGroup.modelExactId);
+    for (const g of groups) {
+      if (picked.length >= 3) break;
+      if (!picked.includes(g.modelExactId)) picked.push(g.modelExactId);
+    }
+    speedPkSelection = picked.slice(0, 3);
+    speedPkInitialized = true;
+    return speedPkSelection;
+  };
+
+  const renderSpeedPkChips = (groups) => {
+    const wrap = el('speed-pk-chips');
+    if (!wrap) return;
+    wrap.replaceChildren();
+    const picked = ensureSpeedPkSelection(groups);
+    picked.forEach((id, index) => {
+      const group = groups.find(g => g.modelExactId === id);
+      if (!group) return;
+      const chip = document.createElement('span');
+      chip.className = 'ctx-speed-chip';
+      chip.setAttribute('data-pk-id', id);
+      const dot = document.createElement('span');
+      dot.className = 'ctx-speed-chip-dot';
+      dot.style.background = speedSeriesColor(index);
+      const label = document.createElement('span');
+      label.className = 'ctx-speed-chip-label';
+      label.textContent = speedDisplayName(group);
+      const xBtn = document.createElement('button');
+      xBtn.type = 'button';
+      xBtn.className = 'ctx-speed-chip-x';
+      xBtn.textContent = '×';
+      xBtn.setAttribute('aria-label', t('speed.hero.clear'));
+      xBtn.addEventListener('click', (ev) => {
+        ev?.stopPropagation?.();
+        speedPkUserCleared = true;
+speedPkSelection = speedPkSelection.filter(v => v !== id);
+        renderSpeedProto();
+      });
+      chip.appendChild(dot);
+      chip.appendChild(label);
+      chip.appendChild(xBtn);
+      wrap.appendChild(chip);
+    });
+  };
+
+  function renderSpeedPkCards(groups) {
+    const grid = el('speed-pk-cards');
+    if (!grid) return;
+    grid.replaceChildren();
+    const picked = ensureSpeedPkSelection(groups);
+    const pickedGroups = picked.map(id => groups.find(g => g.modelExactId === id)).filter(Boolean);
+    if (!pickedGroups.length) {
+      const empty = document.createElement('div');
+      empty.className = 'ctx-speed-empty-cell';
+      empty.textContent = t('speed.empty');
+      grid.appendChild(empty);
+      return;
+    }
+    const values = pickedGroups.map(speedMetricValue);
+    const nums = values.filter(v => Number.isFinite(v) && v > 0);
+    const bestValue = nums.length
+      ? (speedMetric === 'tps' ? Math.max(...nums) : Math.min(...nums))
+      : null;
+    const ttftBest = (() => {
+      const list = pickedGroups.map(g => g.medianTtft).filter(v => Number.isFinite(v) && v > 0);
+      return list.length ? Math.min(...list) : null;
+    })();
+    const currentId = resolveSpeedCurrentModelId();
+
+    pickedGroups.forEach((group, index) => {
+      const value = values[index];
+      const isActive = group.modelExactId === currentId;
+      const card = document.createElement('div');
+      card.className = 'ctx-speed-pk-card';
+      card.setAttribute('data-pk-id', group.modelExactId);
+      card.setAttribute('data-pk-rank', String(index));
+      if (isActive) card.setAttribute('data-pk-active', 'true');
+
+      const top = document.createElement('div');
+      top.className = 'ctx-speed-pk-top';
+      // 冠军按当前指标动态判定：tps 越大越快，ttft / duration 越小越快；绝不把 current 硬编码成最快
+      const championId = (() => {
+        const scored = pickedGroups
+          .map((g, i) => ({ id: g.modelExactId, v: values[i] }))
+          .filter(x => Number.isFinite(x.v));
+        if (!scored.length) return null;
+        scored.sort((a, b) => (speedMetric === 'tps' ? b.v - a.v : a.v - b.v));
+        return scored[0].id;
+      })();
+      const isChampion = championId != null && group.modelExactId === championId;
+      if (isChampion) {
+        const badge = document.createElement('span');
+        badge.className = 'ctx-speed-pk-badge';
+        badge.textContent = isActive ? t('speed.hero.fastest') : t('speed.hero.champion');
+        top.appendChild(badge);
+        const base = document.createElement('span');
+        base.className = 'ctx-speed-pk-base';
+        base.textContent = t('speed.hero.base', { x: '1.00' });
+        top.appendChild(base);
+      } else {
+        if (isActive) {
+          const cur = document.createElement('span');
+          cur.className = 'ctx-speed-pk-rank';
+          cur.textContent = t('speed.hero.current');
+          top.appendChild(cur);
+        }
+        const rank = document.createElement('span');
+        rank.className = 'ctx-speed-pk-rank';
+        rank.textContent = t('speed.hero.rankN', { n: index + 1 });
+        top.appendChild(rank);
+        const delta = document.createElement('span');
+        delta.className = 'ctx-speed-pk-rank';
+        if (Number.isFinite(value) && Number.isFinite(bestValue) && bestValue > 0) {
+          const pct = Math.abs(((value - bestValue) / bestValue) * 100);
+          const slower = speedMetric === 'tps' ? value < bestValue : value > bestValue;
+          delta.textContent = slower
+            ? t('speed.hero.slower', { pct: pct.toFixed(1) })
+            : t('speed.hero.faster', { pct: pct.toFixed(1) });
+        } else {
+          delta.textContent = '—';
+        }
+        top.appendChild(delta);
+      }
+      card.appendChild(top);
+
+      const name = document.createElement('div');
+      name.className = 'ctx-speed-pk-name';
+      name.textContent = speedDisplayName(group);
+      name.title = speedDisplayName(group);
+      card.appendChild(name);
+
+      const sub = document.createElement('div');
+      sub.className = 'ctx-speed-pk-sub';
+      const vendorText = String(group.vendor || '').trim();
+      const effortText = String(group.effort || '').trim();
+      sub.textContent = [vendorText, effortText].filter(Boolean).join(' · ') || String(group.productKey || '');
+      card.appendChild(sub);
+
+      const valueEl = document.createElement('div');
+      valueEl.className = 'ctx-speed-pk-value';
+      valueEl.textContent = formatSpeedMetricValue(value);
+      const unit = document.createElement('span');
+      unit.className = 'ctx-speed-pk-unit';
+      unit.textContent = speedMetricUnit();
+      valueEl.appendChild(unit);
+      card.appendChild(valueEl);
+
+      const bar = document.createElement('div');
+      bar.className = 'ctx-speed-pk-bar';
+      const fill = document.createElement('div');
+      fill.className = 'ctx-speed-pk-bar-fill';
+      const ratio = Number.isFinite(value) && Number.isFinite(bestValue) && Math.max(...nums, 0) > 0
+        ? (speedMetric === 'tps'
+          ? Math.max(0.04, Math.min(1, value / Math.max(...nums)))
+          : Math.max(0.04, Math.min(1, Math.max(...nums) > 0 ? (1 - value / Math.max(...nums)) : 0.04)))
+        : 0.04;
+      fill.style.width = `${Math.round(ratio * 100)}%`;
+      fill.style.background = speedSeriesColor(index);
+      bar.appendChild(fill);
+      card.appendChild(bar);
+
+      const metrics = document.createElement('div');
+      metrics.className = 'ctx-speed-pk-metrics';
+      const addMetricRow = (labelKey, valueText, extraNode) => {
+        const row = document.createElement('div');
+        row.className = 'ctx-speed-pk-metric';
+        const lbl = document.createElement('span');
+        lbl.textContent = t(labelKey);
+        const val = document.createElement('b');
+        val.textContent = valueText;
+        if (extraNode) val.appendChild(extraNode);
+        row.appendChild(lbl);
+        row.appendChild(val);
+        metrics.appendChild(row);
+      };
+      const ttftExtra = (Number.isFinite(ttftBest) && Number.isFinite(group.medianTtft) && group.medianTtft === ttftBest)
+        ? (() => {
+          const pill = document.createElement('span');
+          pill.className = 'ctx-speed-tag ctx-speed-tag-accent';
+          pill.textContent = ` · ${t('speed.hero.firstBest')}`;
+          return pill;
+        })()
+        : null;
+      addMetricRow('speed.hero.ttft', Number.isFinite(group.medianTtft) ? `${Number(group.medianTtft).toFixed(1)}s` : '—', ttftExtra);
+      addMetricRow('speed.hero.medianOut', Number.isFinite(group.medianOutputTokens) ? `${Math.round(group.medianOutputTokens).toLocaleString()} tok` : '—');
+      const sampleExtra = group.lowSample
+        ? (() => {
+          const pill = document.createElement('span');
+          pill.className = 'ctx-speed-pill-low';
+          pill.textContent = ` · ${t('speed.hero.lowSample', { n: group.count })}`;
+          return pill;
+        })()
+        : null;
+      addMetricRow('speed.hero.samples',
+        group.lowSample ? '' : t('speed.hero.sampleCount', { n: group.count }),
+        sampleExtra);
+      card.appendChild(metrics);
+
+      card.addEventListener('click', () => {
+        if (speedPkSelection.includes(group.modelExactId)) return;
+        speedPkSelection = [...speedPkSelection, group.modelExactId];
+        renderSpeedProto();
+      });
+      grid.appendChild(card);
+    });
+
+    const countEl = el('speed-pk-count');
+    if (countEl) countEl.textContent = String(pickedGroups.length);
+  }
+
+  function speedTrendLegendSuffixes(groups) {
+    const byName = new Map();
+    for (const group of groups) {
+      const name = speedDisplayName(group);
+      if (!byName.has(name)) byName.set(name, []);
+      byName.get(name).push(group.modelExactId);
+    }
+    const suffixes = new Map();
+    const used = new Set(byName.keys());
+    for (const [name, ids] of byName) {
+      if (ids.length < 2) continue;
+      const tails = ids.map(id => id.replace(/[（）()]/g, '').split(/[-_:/]+/).pop().slice(-16));
+      ids.slice().sort().forEach((id, index) => {
+        const tail = tails[ids.indexOf(id)];
+        let suffix = tail && tails.indexOf(tail) === tails.lastIndexOf(tail) ? tail : `#${index + 1}`;
+        while (used.has(`${name} · ${suffix}`)) suffix += ` · #${index + 1}`;
+        used.add(`${name} · ${suffix}`);
+        suffixes.set(id, ` · ${suffix}`);
+      });
+    }
+    return suffixes;
+  }
+
+  const SPEED_MINUTE_MS = 60000;
+  const SPEED_HOUR_MS = 60 * SPEED_MINUTE_MS;
+  const speedLocalDay = (timestamp) => {
+    const ts = timestamp - new Date(timestamp).getTimezoneOffset() * SPEED_MINUTE_MS;
+    return Math.floor(ts / 86400000);
+  };
+  const speedLocalHour = (ts) => {
+    const date = new Date(ts);
+    return ts - date.getMinutes() * SPEED_MINUTE_MS - date.getSeconds() * 1000 - date.getMilliseconds();
+  };
+
+  function buildSpeedTrend(picked) {
+    const days = new Set();
+    let first = Infinity;
+    let last = -Infinity;
+    const series = picked.map((group, index) => {
+      const points = [];
+      for (const sample of group.samples || []) {
+        const ts = Number(sample.ts);
+        const val = speedSampleValue(sample);
+        if (!(ts > 0 && Number.isFinite(ts) && Number.isFinite(val))) continue;
+        days.add(speedLocalDay(ts));
+        first = Math.min(first, ts);
+        last = Math.max(last, ts);
+        points.push({ ts, val });
+      }
+      return { group, color: speedSeriesColor(index), points };
+    }).filter(entry => entry.points.length);
+    const granularity = last - first > 90 * 86400000 ? 'week'
+      : days.size > 2 ? 'day' : last - first >= SPEED_HOUR_MS ? 'hour' : 'sample';
+    const bucketKey = granularity === 'week' ? (ts => Math.floor((speedLocalDay(ts) + 3) / 7) * 7 - 3)
+      : granularity === 'day' ? speedLocalDay : speedLocalHour;
+    for (const entry of series) {
+      if (granularity !== 'sample') {
+        const buckets = new Map();
+        for (const { ts, val } of entry.points) {
+          const key = bucketKey(ts);
+          if (!buckets.has(key)) buckets.set(key, []);
+          buckets.get(key).push(val);
+        }
+        entry.points = Array.from(buckets, ([ts, values]) => {
+          const val = speedAlgorithm === 'mean'
+            ? values.reduce((sum, value) => sum + value, 0) / values.length
+            : computeMedian(values);
+          return { ts, val };
+        });
+      }
+      entry.points.sort((a, b) => a.ts - b.ts);
+      if (entry.points.length >= 4) {
+        const sortedVals = entry.points.map(point => point.val).sort((a, b) => a - b);
+        const index = Math.min(sortedVals.length - 1, Math.floor(sortedVals.length * 0.95));
+        const cap = sortedVals[index];
+        for (const pt of entry.points) {
+          if (pt.val > cap) pt.val = cap;
+        }
+      }
+    }
+    return { granularity, series };
+  }
+
+  function speedTrendTimeAxis(granularity, min, max, maxTicks) {
+    const span = max - min;
+    const unit = granularity === 'week' ? 7 : granularity === 'day' ? 1 : SPEED_HOUR_MS;
+    const step = granularity === 'sample'
+      ? ([1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000, 600000]
+        .find(interval => interval >= span / (maxTicks - 1)) || 900000)
+      : Math.max(1, Math.ceil(span / unit / (maxTicks - 1))) * unit;
+    const count = Math.max(3, Math.ceil(span / step) + 1);
+    const ticks = Array.from({ length: count }, (_, index) => min + step * index);
+    const twoDigits = (value) => String(value).padStart(2, '0');
+    const dateLabel = (month, day) => `${twoDigits(month + 1)}-${twoDigits(day)}`;
+    const today = speedLocalDay(Date.now());
+    const format = (ts, full = false) => {
+      if (granularity === 'day' || granularity === 'week') {
+        const date = new Date(ts * 86400000);
+        return ts === today ? t('speed.trend.today') : dateLabel(date.getUTCMonth(), date.getUTCDate());
+      }
+      const date = new Date(ts);
+      const time = `${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`;
+      const withSeconds = granularity === 'sample' && (step < SPEED_MINUTE_MS || full);
+      const clock = withSeconds ? `${time}:${twoDigits(date.getSeconds())}` : time;
+      return full ? `${dateLabel(date.getMonth(), date.getDate())} · ${clock}` : clock;
+    };
+    return { ticks, end: ticks[ticks.length - 1], format };
+  }
+
+  function renderSpeedTrendLegend(series, suffixes) {
+    const legend = el('speed-trend-legend');
+    const titleEl = el('speed-trend-title');
+    if (titleEl) {
+      const key = speedMetric === 'ttft'
+        ? 'speed.trend.titleTtft'
+        : (speedMetric === 'duration' ? 'speed.trend.titleDuration' : 'speed.trend.title');
+      titleEl.textContent = t(key);
+    }
+    if (!legend) return;
+    legend.replaceChildren();
+    for (const { group, color } of series) {
+      const item = document.createElement('span');
+      item.className = 'ctx-speed-legend-item';
+      const line = document.createElement('span');
+      line.className = 'ctx-speed-legend-line';
+      line.style.background = color;
+      const text = document.createElement('span');
+      text.textContent = speedDisplayName(group);
+      text.textContent += suffixes.get(group.modelExactId) || '';
+      item.appendChild(line);
+      item.appendChild(text);
+      legend.appendChild(item);
+    }
+  }
+
+  function renderSpeedMultiSeriesChart(series, granularity, suffixes) {
+    const svg = el('speed-line-svg');
+    const wrap = el('speed-line-chart-wrap');
+    if (!svg || !wrap) return;
+    // 测试沙箱没有 createElementNS，保留既有单模型折线图节点，避免破坏既有断言
+    if (typeof document?.createElementNS !== 'function') return;
+    wrap.hidden = !series.length;
+    const W = Math.max(220, wrap.clientWidth || 520);
+    const H = 200, PAD_L = 40, PAD_R = 32, PAD_T = 12, PAD_B = 27;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.replaceChildren();
+    const emptyEl = el('speed-line-empty');
+    if (emptyEl) emptyEl.hidden = series.length > 0;
+    const foot = el('speed-trend-foot');
+    foot?.replaceChildren();
+    const tooltip = el('speed-line-tooltip');
+    if (tooltip) {
+      tooltip.hidden = true;
+      svg.onpointermove = null;
+      svg.onpointerleave = null;
+    }
+    if (!series.length) return;
+
+    let rawMin = Infinity;
+    let rawMax = -Infinity;
+    const timestamps = new Set();
+    for (const { points } of series) {
+      for (const { ts, val } of points) {
+        timestamps.add(ts);
+        rawMin = Math.min(rawMin, val);
+        rawMax = Math.max(rawMax, val);
+      }
+    }
+    const sortedTimes = Array.from(timestamps).sort((a, b) => a - b);
+    const minTs = sortedTimes[0];
+    const plotW = W - PAD_L - PAD_R;
+    const axis = speedTrendTimeAxis(granularity, minTs, sortedTimes[sortedTimes.length - 1],
+      Math.max(3, Math.min(7, Math.floor(plotW / 57) + 1)));
+    const span = Math.max(rawMax - rawMin, 1);
+    // Y 轴下限严格锁死 0，绝不出现负数刻度
+    const yMin = Math.max(0, rawMin - span * 0.15);
+    const yMax = Math.max(yMin + 1, rawMax + span * 0.15);
+    const xOf = ts => PAD_L + ((ts - minTs) / (axis.end - minTs)) * plotW;
+    const yOf = v => PAD_T + (1 - (v - yMin) / Math.max(1e-6, yMax - yMin)) * (H - PAD_T - PAD_B);
+
+    // 网格与 Y 轴刻度
+    for (let i = 0; i <= 3; i++) {
+      const v = yMin + ((yMax - yMin) * i) / 3;
+      const y = yOf(v);
+      svg.appendChild(createSvgEl('line', { x1: PAD_L, x2: W - PAD_R, y1: y, y2: y, class: 'ctx-speed-gridline' }));
+      const label = createSvgEl('text', { x: PAD_L - 7, y: y + 3, 'text-anchor': 'end', class: 'ctx-speed-y-tick' });
+      label.textContent = speedMetric === 'tps' ? v.toFixed(0) : v.toFixed(1);
+      svg.appendChild(label);
+    }
+
+    for (const ts of axis.ticks) {
+      const x = xOf(ts);
+      svg.appendChild(createSvgEl('line', { x1: x, x2: x, y1: H - PAD_B, y2: H - PAD_B + 5, class: 'ctx-speed-gridline' }));
+      const label = createSvgEl('text', { x, y: H - 8, 'text-anchor': 'middle', class: 'ctx-speed-x-tick' });
+      label.textContent = axis.format(ts);
+      svg.appendChild(label);
+    }
+
+    series.forEach(({ points, color }, index) => {
+      svg.appendChild(createSvgEl('polyline', {
+        fill: 'none', stroke: color, 'stroke-width': index === 0 ? 2 : 1.5,
+        'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+        'stroke-dasharray': index >= SPEED_SERIES_COLORS.length ? '4 3' : null,
+        points: points.map(p => `${xOf(p.ts).toFixed(1)},${yOf(p.val).toFixed(1)}`).join(' ')
+      }));
+      const marks = points.length <= 16 ? points : points.slice(-1);
+      for (const point of marks) {
+        svg.appendChild(createSvgEl('circle', { cx: xOf(point.ts), cy: yOf(point.val), r: 2.5, fill: color }));
+      }
+    });
+
+    if (tooltip) {
+      const byTime = new Map();
+      for (const { group, color, points } of series) {
+        const label = speedDisplayName(group) + (suffixes.get(group.modelExactId) || '');
+        for (const point of points) {
+          if (!byTime.has(point.ts)) byTime.set(point.ts, []);
+          byTime.get(point.ts).push({ label, color, val: point.val });
+        }
+      }
+      svg.onpointermove = (ev) => {
+        const rect = svg.getBoundingClientRect();
+        if (!rect.width) return;
+        const offset = ev.clientX - rect.left;
+        const ratioX = (offset * W / rect.width - PAD_L) / plotW;
+        const ts = minTs + ratioX * (axis.end - minTs);
+        let nearest = minTs;
+        for (let index = 1; index < sortedTimes.length; index++) {
+          const time = sortedTimes[index];
+          if (Math.abs(time - ts) >= Math.abs(nearest - ts)) break;
+          nearest = time;
+        }
+        const stamp = document.createElement('strong');
+        stamp.textContent = axis.format(nearest, true);
+        tooltip.replaceChildren(stamp);
+        for (const { label, color, val } of byTime.get(nearest)) {
+          const row = document.createElement('div');
+          row.className = 'ctx-speed-tooltip-row';
+          const swatch = document.createElement('i');
+          swatch.style.background = color;
+          const name = document.createElement('span');
+          name.textContent = label;
+          const value = document.createElement('b');
+          value.textContent = formatSpeedMetricValue(val);
+          row.append(swatch, name, value);
+          tooltip.appendChild(row);
+        }
+        tooltip.hidden = false;
+        tooltip.style.left = `${Math.round(Math.max(4, Math.min(rect.width - tooltip.offsetWidth - 4, offset)))}px`;
+        tooltip.style.top = '6px';
+      };
+      svg.onpointerleave = () => { tooltip.hidden = true; };
+    }
+
+    if (foot) {
+      const note = document.createElement('span');
+      note.textContent = t(`speed.trend.granularity.${granularity}`);
+      foot.appendChild(note);
+      const primary = series[0];
+      if (primary && primary.points.length >= 2) {
+        const vals = primary.points.map(p => p.val);
+        const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+        const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length;
+        const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+        const stability = Math.max(0, Math.min(100, 100 - cv * 100));
+        const stable = document.createElement('span');
+        stable.textContent = `${String(primary.group.productLabel || '').split('·')[0].trim()} ${t('speed.trend.stability')} · ${stability.toFixed(1)}%`;
+        foot.appendChild(stable);
+      }
+    }
+  }
+
+  function renderSpeedRankRows(groups) {
+    const rowsWrap = el('speed-rank-rows');
+    if (!rowsWrap) return;
+    rowsWrap.replaceChildren();
+    const countEl = el('speed-rank-count');
+    if (countEl) countEl.textContent = t('speed.rank.countTotal', { n: groups.length });
+
+    const query = String(speedRankQuery || '').trim().toLowerCase();
+    let list = groups.filter((g) => {
+      if (!query) return true;
+      const hay = [g.productLabel, g.modelLabel, g.modelExactId, g.vendor, g.effort, g.productKey]
+        .filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(query);
+    });
+    const sorters = {
+      tps: (a, b) => (Number(b.medianTps) || -1) - (Number(a.medianTps) || -1),
+      ttft: (a, b) => (Number.isFinite(a.medianTtft) ? a.medianTtft : Infinity) - (Number.isFinite(b.medianTtft) ? b.medianTtft : Infinity),
+      samples: (a, b) => (Number(b.count) || 0) - (Number(a.count) || 0)
+    };
+    list = list.slice().sort(sorters[speedRankSort] || sorters.tps);
+
+    if (!list.length) {
+      const empty = document.createElement('div');
+      empty.className = 'ctx-speed-empty-cell';
+      empty.textContent = t('speed.rank.empty');
+      rowsWrap.appendChild(empty);
+      return;
+    }
+    const maxTps = list.reduce((m, g) => Math.max(m, Number(g.medianTps) || 0), 0) || 1;
+    const currentId = resolveSpeedCurrentModelId();
+
+    for (const group of list) {
+      const row = document.createElement('div');
+      row.className = 'ctx-speed-rank-row';
+      row.setAttribute('data-rank-id', group.modelExactId);
+
+      const pickWrap = document.createElement('div');
+      pickWrap.className = 'ctx-speed-rank-pick';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.className = 'ctx-speed-rank-check';
+      check.checked = speedPkSelection.includes(group.modelExactId);
+      check.setAttribute('aria-label', t('speed.rank.colPick'));
+      check.addEventListener('change', () => {
+        if (check.checked) {
+          if (!speedPkSelection.includes(group.modelExactId)) {
+            speedPkSelection = [...speedPkSelection, group.modelExactId];
+          }
+        } else {
+          speedPkUserCleared = true;
+          speedPkSelection = speedPkSelection.filter(v => v !== group.modelExactId);
+        }
+        renderSpeedProto();
+      });
+      const dot = document.createElement('span');
+      dot.className = 'ctx-speed-rank-dot';
+      const dotIdx = speedPkSelection.indexOf(group.modelExactId);
+      dot.style.background = dotIdx >= 0 ? speedSeriesColor(dotIdx) : 'var(--spd-muted)';
+      pickWrap.appendChild(check);
+      pickWrap.appendChild(dot);
+      row.appendChild(pickWrap);
+
+      const modelWrap = document.createElement('div');
+      modelWrap.className = 'ctx-speed-rank-model';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'ctx-speed-rank-name';
+      nameEl.textContent = speedDisplayName(group);
+      modelWrap.appendChild(nameEl);
+      const tags = document.createElement('div');
+      tags.className = 'ctx-speed-rank-tags';
+      const pushTag = (text, accent) => {
+        if (!text) return;
+        const tag = document.createElement('span');
+        tag.className = accent ? 'ctx-speed-tag ctx-speed-tag-accent' : 'ctx-speed-tag';
+        tag.textContent = text;
+        tags.appendChild(tag);
+      };
+      pushTag(group.vendor || '', false);
+      if (group.lowSample) pushTag(t('speed.hero.lowSample', { n: group.count }), false);
+      if (group.modelExactId === currentId) pushTag(t('speed.rank.current').replace('· ', ''), true);
+      modelWrap.appendChild(tags);
+      row.appendChild(modelWrap);
+
+      const distWrap = document.createElement('div');
+      distWrap.className = 'ctx-speed-rank-dist';
+      const bar = document.createElement('div');
+      bar.className = 'ctx-speed-rank-bar';
+      const fill = document.createElement('div');
+      fill.className = 'ctx-speed-rank-bar-fill';
+      fill.style.width = `${Math.max(3, Math.round(((Number(group.medianTps) || 0) / maxTps) * 100))}%`;
+      fill.style.background = speedSeriesColor(Math.max(0, speedPkSelection.indexOf(group.modelExactId)));
+      bar.appendChild(fill);
+      const num = document.createElement('span');
+      num.className = 'ctx-speed-rank-num';
+      num.textContent = Number.isFinite(group.medianTps) ? Number(group.medianTps).toFixed(1) : '—';
+      distWrap.appendChild(bar);
+      distWrap.appendChild(num);
+      row.appendChild(distWrap);
+
+      const metricWrap = document.createElement('div');
+      metricWrap.className = 'ctx-speed-rank-metric';
+      const tpsText = document.createElement('span');
+      tpsText.className = 'ctx-speed-rank-num';
+      tpsText.textContent = Number.isFinite(group.medianTps) ? `${Number(group.medianTps).toFixed(1)} tok/s` : '—';
+      const ttftText = document.createElement('span');
+      ttftText.className = 'ctx-speed-rank-ttft';
+      ttftText.textContent = `TTFT ${Number.isFinite(group.medianTtft) ? `${Number(group.medianTtft).toFixed(1)}s` : '—'}`;
+      const sampleTag = document.createElement('span');
+      sampleTag.className = group.lowSample ? 'ctx-speed-pill-low' : 'ctx-speed-tag';
+      sampleTag.textContent = group.lowSample
+        ? t('speed.hero.lowSample', { n: group.count })
+        : t('speed.hero.samples') + ` ${group.count}`;
+      metricWrap.appendChild(tpsText);
+      metricWrap.appendChild(ttftText);
+      metricWrap.appendChild(sampleTag);
+      row.appendChild(metricWrap);
+
+      rowsWrap.appendChild(row);
+    }
+  }
+
+  function renderSpeedProto() {
+    const groups = Array.isArray(lastSpeedGroups) ? lastSpeedGroups : [];
+    const byId = new Map(groups.map(group => [group.modelExactId, group]));
+    const picked = ensureSpeedPkSelection(groups).map(id => byId.get(id));
+    const { series, granularity } = buildSpeedTrend(picked);
+    const suffixes = speedTrendLegendSuffixes(groups);
+    renderSpeedPkChips(groups);
+    renderSpeedPkCards(groups);
+    renderSpeedTrendLegend(series, suffixes);
+    renderSpeedRankRows(groups);
+    renderSpeedMultiSeriesChart(series, granularity, suffixes);
+  }
+
+  function resetSpeedFilters() {
+    speedRankQuery = '';
+    speedRankSort = 'tps';
+    speedPkSelection = [];
+    const search = el('speed-rank-search');
+    if (search) search.value = '';
+    const sortWrap = el('speed-rank-sort');
+    if (sortWrap) {
+      for (const btn of Array.from(sortWrap.children || [])) {
+        const on = btn.getAttribute?.('data-rank-sort') === 'tps';
+        btn.classList?.toggle?.('active', on);
+        btn.setAttribute?.('aria-pressed', on ? 'true' : 'false');
+      }
+    }
+    speedRangeDays = '7';
+    speedOriginFilter = 'all';
+    speedMetric = 'tps';
+    const syncSegActive = (map, activeId) => {
+      for (const id of Object.keys(map)) {
+        const btn = el(id);
+        if (!btn) continue;
+        const on = id === activeId;
+        btn.classList?.toggle?.('active', on);
+        btn.setAttribute?.('aria-pressed', on ? 'true' : 'false');
+      }
+    };
+    syncSegActive(SPEED_RANGE_MAP, 'speed-range-7d');
+    syncSegActive(SPEED_ORIGIN_MAP, 'speed-origin-all');
+    syncSegActive(SPEED_METRIC_MAP, 'speed-metric-tps');
+    renderSpeedComparisonTab();  }
+
+  function exportSpeedCsv() {
+    const groups = Array.isArray(lastSpeedGroups) ? lastSpeedGroups : [];
+    if (!groups.length) return;
+    const header = ['model', 'samples', 'medianTps', 'medianTtft', 'medianDuration', 'medianOutputTokens', 'lowSample'];
+    const lines = [header.join(',')].concat(groups.map(g => [
+      `"${String(g.productLabel || g.modelExactId || '').replace(/"/g, '""')}"`,
+      g.count,
+      Number.isFinite(g.medianTps) ? g.medianTps : '',
+      Number.isFinite(g.medianTtft) ? g.medianTtft : '',
+      Number.isFinite(g.medianDuration) ? g.medianDuration : '',
+      Number.isFinite(g.medianOutputTokens) ? g.medianOutputTokens : '',
+      g.lowSample ? 'true' : 'false'
+    ].join(',')));
+    const csv = lines.join('\n');
+    try {
+      const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `speed-${speedRangeDays}d.csv`;
+      a.style.display = 'none';
+      (document.body || document.documentElement)?.appendChild?.(a);
+      a.click?.();
+      a.remove?.();
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch { } }, 4000);
+    } catch {
+      try { void navigator?.clipboard?.writeText?.(csv); } catch { }
+    }
+    showSpeedToast(t('speed.rank.exportOk', { n: groups.length }));
+  }
+
+  function showSpeedToast(text) {
+    const toast = el('cli-launch-toast');
+    if (!toast) return;
+    toast.hidden = false;
+    toast.setAttribute?.('data-tone', 'info');
+    toast.textContent = text;
+    if (toast.__speedTimer) clearTimeout(toast.__speedTimer);
+    toast.__speedTimer = setTimeout(() => { toast.hidden = true; }, 2600);
+  }
+
   function renderSpeedComparisonTab() {
+    const rangeForm = el('speed-custom-dates');
+    if (rangeForm) rangeForm.hidden = speedRangeDays !== 'custom';
+    const customButton = el('speed-range-custom');
+    if (customButton) setPillActive(customButton, speedRangeDays === 'custom');
     const mergedCalls = mergeAvailableSpeedCalls();
-    const daysArg = speedRangeDays === 'all' ? 'all' : Number(speedRangeDays);
+    const bounds = speedRangeDays === 'custom' ? parseSpeedDateRange?.(speedDateRange) : null;
     const groups = typeof summarizeSpeedByModel === 'function'
       ? summarizeSpeedByModel(mergedCalls, {
-        days: daysArg,
+        days: speedRangeDays,
+        calendarDays: true,
+        fullHistory: true,
+        ...(bounds || {}),
         origin: speedOriginFilter,
         metric: speedMetric,
         cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || []
@@ -11399,11 +14507,19 @@
       speedModelDropdownCtrl.refresh();
     }
 
-    renderSpeedLineChart(chosenGroup);
+    if (typeof document.createElementNS !== 'function') renderSpeedLineChart(chosenGroup);
+    // 原型化 PK 台 / 多系列走势 / 全量排行
+    try { renderSpeedProto(); } catch { }
   }
 
-  const SPEED_RANGE_MAP = { 'speed-range-7d': '7', 'speed-range-30d': '30', 'speed-range-all': 'all' };
+  const SPEED_RANGE_MAP = {
+    'speed-range-1d': '1', 'speed-range-3d': '3', 'speed-range-5d': '5', 'speed-range-7d': '7',
+    'speed-range-30d': '30', 'speed-range-all': 'all'
+  };
   const SPEED_ORIGIN_MAP = { 'speed-origin-all': 'all', 'speed-origin-chat': 'chat' };
+  const SPEED_ALGO_MAP = { 'speed-algo-median': 'median', 'speed-algo-mean': 'mean', 'speed-algo-composite': 'composite' };
+  bindSpeedFilterGroup(SPEED_ALGO_MAP, v => { speedAlgorithm = v; });
+
   const SPEED_METRIC_MAP = { 'speed-metric-tps': 'tps', 'speed-metric-ttft': 'ttft', 'speed-metric-duration': 'duration' };
 
   function bindSpeedFilterGroup(map, onPick) {
@@ -11419,8 +14535,63 @@
   }
 
   bindSpeedFilterGroup(SPEED_RANGE_MAP, v => { speedRangeDays = v; });
+  el('speed-range-custom')?.addEventListener('click', () => {
+    const form = el('speed-custom-dates');
+    if (!form) return;
+    form.hidden = false;
+    const start = el('speed-date-start');
+    const end = el('speed-date-end');
+    if (speedDateRange) {
+      start.value = speedDateRange.start;
+      end.value = speedDateRange.end;
+    }
+    start.focus();
+  });
+  el('speed-custom-dates')?.addEventListener('submit', event => {
+    event.preventDefault();
+    const range = { start: el('speed-date-start').value.trim(), end: el('speed-date-end').value.trim() };
+    const error = el('speed-date-error');
+    const valid = Boolean(parseSpeedDateRange?.(range));
+    error.hidden = valid;
+    if (!valid) return;
+    speedDateRange = range;
+    speedRangeDays = 'custom';
+    syncAllViewPrefControlsUi();
+    renderSpeedComparisonTab();
+  });
   bindSpeedFilterGroup(SPEED_ORIGIN_MAP, v => { speedOriginFilter = v; });
   bindSpeedFilterGroup(SPEED_METRIC_MAP, v => { speedMetric = v; });
+
+  // 原型交互：搜索 / 排序 / 清空 / 添加 / 导出 / 重置
+  el('speed-rank-search')?.addEventListener('input', (e) => {
+    speedRankQuery = String(e?.target?.value || '');
+    renderSpeedRankRows(Array.isArray(lastSpeedGroups) ? lastSpeedGroups : []);
+  });
+  el('speed-rank-sort')?.addEventListener('click', (e) => {
+    const btn = e?.target?.closest?.('[data-rank-sort]');
+    const next = btn?.getAttribute?.('data-rank-sort');
+    if (!next) return;
+    speedRankSort = next;
+    const wrap = el('speed-rank-sort');
+    for (const child of Array.from(wrap?.children || [])) {
+      const on = child.getAttribute?.('data-rank-sort') === next;
+      child.classList?.toggle?.('active', on);
+      child.setAttribute?.('aria-pressed', on ? 'true' : 'false');
+    }
+    renderSpeedRankRows(Array.isArray(lastSpeedGroups) ? lastSpeedGroups : []);
+  });
+  el('speed-pk-clear')?.addEventListener('click', () => {
+    speedPkUserCleared = true;
+    speedPkSelection = [];
+    renderSpeedProto();
+  });
+  el('speed-pk-add')?.addEventListener('click', () => {
+    const search = el('speed-rank-search');
+    search?.focus?.();
+    search?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  });
+  el('speed-rank-export')?.addEventListener('click', () => { exportSpeedCsv(); });
+  el('speed-rank-reset')?.addEventListener('click', () => { resetSpeedFilters(); });
 
   applyContextViewVisibility();
 
@@ -11561,6 +14732,9 @@
     setPanelLanguageInternal(nextLang);
     syncPanelLanguageButtons(nextLang);
     applyStaticPanelTranslations(shadow);
+    if (radialShadow) {
+      applyStaticPanelTranslations(radialShadow);
+    }
     if (composerSummary && composerSummary.parentElement !== shadow) {
       applyStaticPanelTranslations(composerSummary);
     }
@@ -11641,6 +14815,10 @@
       if (typeof refreshValidEndDatePicker === 'function') refreshValidEndDatePicker();
       if (typeof updateRegionCnyPreviewFromForm === 'function') updateRegionCnyPreviewFromForm();
       if (typeof syncAllNativeSelectDropdowns === 'function') syncAllNativeSelectDropdowns();
+      if (typeof applyCockpitLayoutToDom === 'function') applyCockpitLayoutToDom();
+      if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+      if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+      if (typeof renderCrossSessionInsightsSection === 'function') renderCrossSessionInsightsSection();
     } catch { }
     try {
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
@@ -14260,17 +17438,28 @@
       closePanelPicker();
     }
   };
+  const closeRadialIfOutside = (e) => {
+    if (!state.radialMenuOpen && !state.radialClosing) return;
+    const path = typeof e?.composedPath === 'function' ? e.composedPath() : [];
+    const hitRadial = ['ctx-radial-layer', 'ctx-radial-orb', 'badge', 'csb-group-context'].some((id) => {
+      const node = el(id);
+      return Boolean(node && (path.includes(node) || (e?.target && node.contains?.(e.target))));
+    });
+    if (!hitRadial) closeRadialMenu(false);
+  };
   if (typeof shadow?.addEventListener === 'function') {
     const onShadowOutsideUiClick = (e) => {
       closeColorPickerIfOutside(e);
       closePanelPickerIfOutside(e);
+      closeRadialIfOutside(e);
     };
     shadow.addEventListener('click', onShadowOutsideUiClick);
     activeDisposers.add(() => { shadow?.removeEventListener?.('click', onShadowOutsideUiClick); });
   }
   const outside = e => {
     const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-    if (!path.includes(host)) {
+    const insideHost = path.includes(host) || Boolean(radialHost && path.includes(radialHost));
+    if (!insideHost) {
       closeColorPicker(true);
       const isPersistentDocked = (dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
       if (!isPersistentDocked) {
@@ -14279,15 +17468,31 @@
       }
       hideContextTooltip();
       closePanelPicker();
+      closeRadialMenu(false);
       return;
     }
     closeColorPickerIfOutside(e);
     closePanelPickerIfOutside(e);
+    closeRadialIfOutside(e);
   };
   const isFocusInsidePlugin = () => typeof document !== 'undefined'
-    && (document.activeElement === host || Boolean(shadow?.activeElement));
+    && (document.activeElement === host
+      || Boolean(shadow?.activeElement)
+      || Boolean(radialHost && document.activeElement === radialHost)
+      || Boolean(radialShadow?.activeElement));
   const escape = e => {
     if (e.key === 'Escape') {
+      if (state.radialMenuOpen) {
+        suppressFocusPickerUntil = Date.now() + 300;
+        closeRadialMenu(false);
+        if (isFocusInsidePlugin()) {
+          const rAnchor = state.radialAnchorMode === 'topbar'
+            ? el('badge')
+            : (state.radialAnchorMode === 'bottombar' ? el('csb-group-context') : el('ctx-radial-orb'));
+          rAnchor?.focus?.();
+        }
+        return;
+      }
       if (accountsUiState.removeModal?.open) {
         if (!accountsUiState.removeModal.busy) closeRemoveAccountModal();
         return;
@@ -14602,6 +17807,7 @@
     }
 
     ANTIGRAVITY_TOKEN_DATA.rawPayload = payload;
+    ANTIGRAVITY_TOKEN_DATA.crossSessionInsights = payload.crossSessionInsights || null;
     syncTokenAccountFilterOptions(payload);
 
     // 若选择了指定账号或“历史未归属”，构造彻底隔离的账本视图（全量指标、热力图、按模型与费用同步切换，绝不泄漏全局总量）
@@ -14899,6 +18105,7 @@
     if (badgeAmt) badgeAmt.textContent = fmtCardM(totalTokens);
     if (badgeExtra) badgeExtra.textContent = t('tokens.badge.today', { val: fmtCardM(shownToday) });
     if (overAmt) overAmt.textContent = fmtCardM(totalTokens);
+    if (typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
 
     const tTotalVal = el('t-total-val');
     const tTotalSub = el('t-total-sub');
@@ -15023,6 +18230,7 @@
 
     computeTimelineWindow();
     renderActiveHeatView(true);
+    if (typeof renderCrossSessionInsightsSection === 'function') renderCrossSessionInsightsSection();
     if (activeTokenView === 'requests' || (Array.isArray(payload?.recentRequestLogs) && payload.recentRequestLogs.length > 0)) {
       renderRequestsLiveView({ force: true });
     }
@@ -15071,6 +18279,7 @@
       heatView: activeHeatView,
       modelUsagePeriodDays,
       speedRangeDays,
+      speedDateRange,
       costScope: activeCostScope,
       contextTrendMode: state.contextTrendMode,
       contextTrendGranularity: state.contextTrendGranularity,
@@ -15086,6 +18295,7 @@
     Object.entries(SPEED_RANGE_MAP || {}).forEach(([btnId, val]) => {
       setPillActive(el(btnId), String(speedRangeDays) === String(val));
     });
+    setPillActive(el('speed-range-custom'), speedRangeDays === 'custom');
     setPillActive(el('cost-btn-scope-period'), activeCostScope === 'period');
     setPillActive(el('cost-btn-scope-all'), activeCostScope === 'all');
     if (typeof syncTrendControlButtons === 'function') syncTrendControlButtons();
@@ -15107,6 +18317,7 @@
     }
     modelUsagePeriodDays = prefs.modelUsagePeriodDays;
     speedRangeDays = prefs.speedRangeDays;
+    speedDateRange = prefs.speedDateRange || null;
     activeCostScope = prefs.costScope;
     state.contextTrendMode = prefs.contextTrendMode;
     state.contextTrendGranularity = prefs.contextTrendGranularity;
@@ -15288,18 +18499,31 @@
           const chkBeta = el('check-allow-beta-updates');
           if (chkBeta) chkBeta.checked = allowBetaUpdates;
         }
+        const savedTopbarMode = settingsRes.topbarMode || settingsRes.uiPreferences?.topbarMode;
+        const savedPanelDockMode = settingsRes.panelDockMode || settingsRes.uiPreferences?.panelDockMode;
+        const savedAutoHideCol = settingsRes.autoHideTopbarOnDockedPanel ?? settingsRes.uiPreferences?.autoHideTopbarOnDockedPanel;
+        if (savedAutoHideCol !== undefined) {
+          autoHideTopbarOnDockedPanel = savedAutoHideCol !== false;
+        }
+        if (savedTopbarMode && VALID_TOPBAR_MODES.includes(savedTopbarMode)) {
+          setTopbarMode(savedTopbarMode, { persist: false });
+        }
+        if (savedPanelDockMode && VALID_PANEL_DOCK_MODES.includes(savedPanelDockMode)) {
+          setPanelDockMode(savedPanelDockMode, { persist: false });
+        }
+
         const savedDock = settingsRes.dockPosition || settingsRes.uiPreferences?.dockPosition;
         const savedHideTopbar = settingsRes.hideTopbar ?? settingsRes.uiPreferences?.hideTopbar;
-        if (savedHideTopbar !== undefined) {
+        if (!savedTopbarMode && savedHideTopbar !== undefined) {
           setHideTopbar(savedHideTopbar === true, { persist: false });
         }
         const normalizedSavedDock = savedDock === 'page' ? 'flow' : savedDock;
         if (savedDock === 'page' && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
           void saveSettingsPayloadBridge({ dockPosition: 'flow', hideTopbar: isTopbarHidden });
         }
-        if (preserveSessionView && dockPosition === 'page') {
+        if (preserveSessionView && (panelDockMode === 'page' || dockPosition === 'page')) {
           syncDockPositionUi();
-        } else if (normalizedSavedDock && VALID_DOCK_POSITIONS.includes(normalizedSavedDock) && normalizedSavedDock !== dockPosition) {
+        } else if (!savedPanelDockMode && normalizedSavedDock && VALID_DOCK_POSITIONS.includes(normalizedSavedDock) && normalizedSavedDock !== dockPosition) {
           setDockPosition(normalizedSavedDock, { persist: false });
         } else {
           syncDockPositionUi();
@@ -15310,6 +18534,51 @@
         } else {
           syncQuotaWindowModeUi();
         }
+        const savedQuickMenuStyle = settingsRes.quickMenuStyle || settingsRes.uiPreferences?.quickMenuStyle;
+        const savedOrbPos = settingsRes.radialOrbPos !== undefined ? settingsRes.radialOrbPos : settingsRes.uiPreferences?.radialOrbPos;
+        if (savedOrbPos && typeof savedOrbPos === 'object' && Number.isFinite(Number(savedOrbPos.x)) && Number.isFinite(Number(savedOrbPos.y))) {
+          radialOrbPos = { x: Math.round(Number(savedOrbPos.x)), y: Math.round(Number(savedOrbPos.y)) };
+        }
+        // 无损迁移：优先读三开关新字段，缺失时回退旧 quickMenuStyle 单选与 floatingOrbHidden
+        const readSwitchPref = (topKey, nestedKey) => {
+          const top = settingsRes[topKey];
+          if (typeof top === 'boolean') return top;
+          const nested = settingsRes.uiPreferences?.[nestedKey || topKey];
+          if (typeof nested === 'boolean') return nested;
+          return null;
+        };
+        const savedOrbEnabled = readSwitchPref('radialOrbEnabled');
+        const savedTopbarEnabled = readSwitchPref('radialTopbarEnabled');
+        const savedBottombarEnabled = readSwitchPref('radialBottombarEnabled');
+        const savedFloatingOrbHidden = (() => {
+          const fromNested = settingsRes.uiPreferences?.floatingOrbHidden;
+          if (typeof fromNested === 'boolean') return fromNested;
+          if (typeof settingsRes.floatingOrbHidden === 'boolean') return settingsRes.floatingOrbHidden;
+          if (typeof settingsRes.radialOrbHidden === 'boolean') return settingsRes.radialOrbHidden;
+          return null;
+        })();
+        const legacyStyle = VALID_QUICK_MENU_STYLES.includes(savedQuickMenuStyle) ? savedQuickMenuStyle : null;
+        radialTopbarEnabled = savedTopbarEnabled !== null ? savedTopbarEnabled : legacyStyle === 'topbar';
+        radialBottombarEnabled = savedBottombarEnabled !== null ? savedBottombarEnabled : legacyStyle === 'bottombar';
+        const orbEnabledResolved = (() => {
+          if (savedOrbEnabled !== null) return savedOrbEnabled;
+          if (savedFloatingOrbHidden !== null) return !savedFloatingOrbHidden;
+          if (legacyStyle) return legacyStyle === 'floating';
+          return radialOrbEnabled;
+        })();
+        radialOrbEnabled = orbEnabledResolved;
+        radialOrbHidden = !orbEnabledResolved;
+        if (legacyStyle) legacyQuickMenuStyle = legacyStyle;
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('ag_radial_topbar_enabled', radialTopbarEnabled ? 'true' : 'false');
+            localStorage.setItem('ag_radial_bottombar_enabled', radialBottombarEnabled ? 'true' : 'false');
+            localStorage.setItem('ag_radial_orb_enabled', radialOrbEnabled ? 'true' : 'false');
+            localStorage.setItem('ag_radial_orb_hidden', radialOrbHidden ? 'true' : 'false');
+          }
+        } catch { }
+        syncQuickMenuStyleUi();
+        syncRadialOrbVisibility();
         const savedLang = settingsRes.uiPreferences?.panelLanguage
           || (settingsRes.panelLanguageExplicit !== false ? settingsRes.panelLanguage : null);
         if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang)) {
@@ -15343,6 +18612,11 @@
           if (typeof renderComposerQuotaSummary === 'function') {
             renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
           }
+        }
+        const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
+        if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
+          persistCockpitLayout(savedCockpitLayout, { persistHost: false });
+          if (typeof applyCockpitLayoutToDom === 'function') applyCockpitLayoutToDom();
         }
         hasCompletedStartupRestore = true;
       } else {
@@ -15422,15 +18696,16 @@
     lastHistorySync = Date.now();
     try {
       const fetchHistoryAsync = async () => {
+        const knownRevision = forceFlag ? null : ANTIGRAVITY_TOKEN_DATA.rawPayload?.revision || null;
         const ipcFn = (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function')
-          ? () => window.contextMeterAPI.getTokenHistory(forceFlag)
+          ? () => window.contextMeterAPI.getTokenHistory(forceFlag, knownRevision)
           : null;
         if (!ipcFn && !hasLiveHttpBridge()) return null;
         try {
           const out = await callBackendWithPriority({
             ipcCall: ipcFn,
             liveRoute: '/token-history',
-            liveBody: { force: forceFlag }
+            liveBody: { force: forceFlag, knownRevision }
           });
           return out.result || null;
         } catch {
@@ -15685,10 +18960,14 @@
       const hasIpcApply = typeof window !== 'undefined' && typeof window.contextMeterAPI?.applyUpdate === 'function';
       const hasLiveApply = hasLiveHttpBridge() && hasLiveRouteCapability('/apply-update');
       if (hasIpcApply || hasLiveApply) {
+        const updateRequest = {
+          version: cachedLatestRelease.latestVersion,
+          allowBetaUpdates: allowBetaUpdates || cachedLatestRelease.prerelease === true
+        };
         const out = await callBackendWithPriority({
-          ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate({ version: cachedLatestRelease.latestVersion }) : null,
+          ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate(updateRequest) : null,
           liveRoute: '/apply-update',
-          liveBody: { version: cachedLatestRelease.latestVersion }
+          liveBody: updateRequest
         });
         res = out.result;
       } else {
@@ -15810,6 +19089,13 @@
   }
 
   /* @INSERT_HEATMAP_MODULE */
+  /* @INSERT_DASHBOARD_GRID_MODULE */
+  /* @INSERT_TREND_PULSE_MODULE */
+  /* @INSERT_CONTEXT_INSPECTOR_MODULE */
+  /* @INSERT_EXECUTION_TRACE_MODULE */
+  /* @INSERT_AGENT_COLLAB_MODULE */
+  /* @INSERT_AUDIT_WIDGETS_MODULE */
+  /* @INSERT_CROSS_SESSION_INSIGHTS_MODULE */
   function updateRingAndBubble(d, session, pct, danger, stale, incomplete, dispArg, isCompactingNow) {
     const ringFill = el('ring-fill');
     const tipTitle = el('ctx-tip-title');
@@ -15848,6 +19134,9 @@
         ringFill.style.opacity = '0.55';
       }
     }
+
+    // 同步悬浮圆球实时状态机与进度环
+    if (typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
 
     // 2. 悬停信息气泡三层文案（标题 — 使用比例 — 用量与容量）
     if (!tipTitle || !tipPct || !tipDetail) return;
@@ -15944,6 +19233,7 @@
   function clearLivePendingRequestWait() {
     state.livePendingRequest = null;
     stopLiveWaitTickTimer();
+    if (!state.disposed && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
   }
   earlyDisposeHooks.push(clearLivePendingRequestWait);
 
@@ -16189,8 +19479,20 @@
     }
   }
 
+  function syncTimingDiagFoldUi() {
+    const fold = el('ctx-timing-diag-fold');
+    const btn = el('btn-ctx-timing-diag-toggle');
+    const open = Boolean(state.timingDiagExpanded);
+    if (fold) fold.hidden = !open;
+    if (btn) {
+      btn.setAttribute?.('aria-expanded', open ? 'true' : 'false');
+      btn.textContent = open ? t('session.timing.diagToggleClose') : t('session.timing.diagToggleOpen');
+    }
+  }
+
   function renderSpeedExperienceInPlace(evalRes) {
     if (!evalRes) return;
+    syncTimingDiagFoldUi();
     const isEn = currentPanelLanguage === 'en';
     const isTw = currentPanelLanguage === 'zh-TW';
     const activeColor = evalRes.badge?.color || '';
@@ -16441,6 +19743,7 @@
       }
     }
     state.lastSpeedEval = evalRes;
+    if (typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
   }
 
   function startLivePendingRequestWait(cascadeId) {
@@ -17344,15 +20647,15 @@
   // 4 行 Bento 当前会话分析工作台 (容器宽屏自适应 / 双轨 / 树 / 耗时并发 / 钻取)
   // =========================================================================
   const CTX_COMP_CATEGORIES = [
-    { key: 'system', color: '#60a5fa', labelKey: 'session.comp.cat.system', overlapped: false },
-    { key: 'definitions', color: '#818cf8', labelKey: 'session.comp.cat.definitions', overlapped: false },
-    { key: 'injections', color: '#c084fc', labelKey: 'session.comp.cat.injections', overlapped: true },
-    { key: 'skills', color: '#a78bfa', labelKey: 'session.comp.cat.skills', overlapped: true },
-    { key: 'summaries', color: '#2dd4bf', labelKey: 'session.comp.cat.summaries', overlapped: false },
-    { key: 'user', color: '#38bdf8', labelKey: 'session.comp.cat.user', overlapped: false },
-    { key: 'assistant', color: '#34d399', labelKey: 'session.comp.cat.assistant', overlapped: false },
-    { key: 'thinking', color: '#fbbf24', labelKey: 'session.comp.cat.thinking', overlapped: false },
-    { key: 'tools', color: '#f97316', labelKey: 'session.comp.cat.tools', overlapped: false }
+    { key: 'system', color: '#F472B6', labelKey: 'session.comp.cat.system', overlapped: false },
+    { key: 'definitions', color: '#FACC15', labelKey: 'session.comp.cat.definitions', overlapped: false },
+    { key: 'injections', color: '#F472B6', labelKey: 'session.comp.cat.injections', overlapped: true },
+    { key: 'skills', color: '#F6DF45', labelKey: 'session.comp.cat.skills', overlapped: true },
+    { key: 'summaries', color: '#22E09B', labelKey: 'session.comp.cat.summaries', overlapped: false },
+    { key: 'user', color: '#A855F7', labelKey: 'session.comp.cat.user', overlapped: false },
+    { key: 'assistant', color: '#10B981', labelKey: 'session.comp.cat.assistant', overlapped: false },
+    { key: 'thinking', color: '#22E09B', labelKey: 'session.comp.cat.thinking', overlapped: false },
+    { key: 'tools', color: '#FB923C', labelKey: 'session.comp.cat.tools', overlapped: false }
   ];
   const CTX_COMP_COLOR_MAP = Object.fromEntries(CTX_COMP_CATEGORIES.map(c => [c.key, c.color]));
 
@@ -17404,7 +20707,7 @@
       } catch { }
     }
     const w = measureContextPanelContainerWidth();
-    const tier = w >= 860 ? 'wide' : (w >= 540 ? 'medium' : 'narrow');
+    const tier = w >= 1180 ? 'xl' : (w >= 860 ? 'wide' : (w >= 560 ? 'medium' : 'narrow'));
     state.ctxWidthTier = tier;
     pEl.setAttribute?.('data-ctx-width-tier', tier);
     return tier;
@@ -17512,8 +20815,8 @@
       activeCall,
       baseCall,
       isPinned,
-      targetStepIndex: Number.isInteger(Number(activeCall?.stepIndex)) ? Number(activeCall.stepIndex) : null,
-      compareStepIndex: Number.isInteger(Number(baseCall?.stepIndex)) ? Number(baseCall.stepIndex) : null
+      targetStepIndex: (activeCall?.stepIndex !== null && activeCall?.stepIndex !== undefined && activeCall?.stepIndex !== '' && Number.isInteger(Number(activeCall.stepIndex))) ? Number(activeCall.stepIndex) : null,
+      compareStepIndex: (baseCall?.stepIndex !== null && baseCall?.stepIndex !== undefined && baseCall?.stepIndex !== '' && Number.isInteger(Number(baseCall.stepIndex))) ? Number(baseCall.stepIndex) : null
     };
   }
 
@@ -17574,10 +20877,20 @@
     const scanSession = state.scan?.session || null;
     const tlComp = state.sessionTimeline?.compositionFromSteps || null;
     if (scanSession) {
+      let next = scanSession;
       if (!scanSession.stepCompositionItems && tlComp?.stepCompositionItems) {
-        return { ...scanSession, stepCompositionItems: tlComp.stepCompositionItems };
+        next = { ...next, stepCompositionItems: tlComp.stepCompositionItems };
       }
-      return scanSession;
+      if (!scanSession.sequentialSlices && Array.isArray(tlComp?.sequentialSlices)) {
+        next = { ...next, sequentialSlices: tlComp.sequentialSlices };
+      }
+      if (!scanSession.attachmentsDetail && Array.isArray(state.sessionTimeline?.attachmentsDetail)) {
+        next = { ...next, attachmentsDetail: state.sessionTimeline.attachmentsDetail };
+      }
+      return next;
+    }
+    if (tlComp && !tlComp.attachmentsDetail && Array.isArray(state.sessionTimeline?.attachmentsDetail)) {
+      return { ...tlComp, attachmentsDetail: state.sessionTimeline.attachmentsDetail };
     }
     return tlComp;
   }
@@ -17639,9 +20952,9 @@
     if (pillsEl) {
       pillsEl.replaceChildren();
       const entries = [
-        ['#38bdf8', `${t('session.timeline.timingTtft')} ${ttftSec > 0 ? fmtSec(ttftSec) : '0s'} (${ttftPct}%)`],
-        ['#34d399', `${t('session.timeline.timingStream')} ${streamSec > 0 ? fmtSec(streamSec) : '0s'} (${streamPct}%)`],
-        ['#f59e0b', `${t('session.timeline.timingTool')} ${toolSec > 0 ? fmtSec(toolSec) : '0s'} (${toolPct}%)`]
+        ['#FB923C', `${t('session.timeline.timingTtft')} ${ttftSec > 0 ? fmtSec(ttftSec) : '0s'} · ${ttftPct}%`],
+        ['#A855F7', `${t('session.timeline.timingStream')} ${streamSec > 0 ? fmtSec(streamSec) : '0s'} · ${streamPct}%`],
+        ['#10B981', `${t('session.timeline.timingTool')} ${toolSec > 0 ? fmtSec(toolSec) : '0s'} · ${toolPct}%`]
       ];
       for (const [col, txt] of entries) {
         const span = document.createElement('span');
@@ -17667,7 +20980,7 @@
       if (bgCircle) slices.push(bgCircle);
       if (sumStages > 0) {
         let offsetAcc = 0;
-        for (const [col, p] of [['#38bdf8', ttftPct], ['#34d399', streamPct], ['#f59e0b', toolPct]]) {
+        for (const [col, p] of [['#FB923C', ttftPct], ['#A855F7', streamPct], ['#10B981', toolPct]]) {
           if (p <= 0) continue;
           const dashLen = (p / 100) * circ;
           const arc = createSvgEl('circle', {
@@ -17722,26 +21035,106 @@
       btn.type = 'button';
       const isEmpty = sp.count === 0;
       btn.className = `ctx-audit-pill${isEmpty ? ' is-empty-collapsed' : ''}${state.historyDrawerOpen && activeTab === sp.key ? ' is-active' : ''}`;
-      btn.textContent = `${t(sp.labelKey)} (${sp.count})`;
+      btn.textContent = `${t(sp.labelKey)} · ${sp.count}`;
       btn.title = isEmpty ? t('session.audit.collapsedHint', { item: t(sp.labelKey) }) : '';
       btn.addEventListener('click', () => {
-        state.historyDrawerOpen = true;
-        state.timelineInsightTab = sp.key;
-        renderSessionTimeline();
+        switchCockpitAuditTab(sp.key);
         renderAuditQuickPills(tl);
-        if (state.route && !state.sessionTimeline && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
-          void fetchSessionTimeline(state.route, { force: false });
-        }
       });
       wrap.appendChild(btn);
     }
   }
 
-  function renderSessionBentoSections() {
+  function getContextUsageThresholds() {
+    return {
+      warnThreshold: state.customWarnThreshold ?? 75,
+      dangerThreshold: state.customDangerThreshold ?? 90
+    };
+  }
+
+  /**
+   * 阈值与分档的唯一来源：顶栏进度条与「会话总览与关键指标」#ctx-ov-pct-summary 共用。
+   * 6 档：unknown（无数据） / safe <warn / moderate >=50 / warn >=warnThreshold / danger >=dangerThreshold / full >=100
+   */
+  const CONTEXT_USAGE_TIERS = ['unknown', 'safe', 'moderate', 'warn', 'danger', 'full'];
+
+  function computeContextUsageTier(rawPct, thresholds = null, opts = {}) {
+    const { warnThreshold, dangerThreshold } = thresholds || getContextUsageThresholds();
+    if (opts.exceeded === true) return 'full';
+    const pct = Number(rawPct);
+    if (rawPct === null || rawPct === undefined || !Number.isFinite(pct)) return 'unknown';
+    if (opts.limitValid === false) return 'unknown';
+    if (pct >= 100) return 'full';
+    if (pct >= Number(dangerThreshold)) return 'danger';
+    if (pct >= Number(warnThreshold)) return 'warn';
+    if (pct >= 50) return 'moderate';
+    return 'safe';
+  }
+
+  function renderSessionRequestCosts(timeline) {
+    const list = el('ctx-request-cost-rows');
+    const summary = el('ctx-request-cost-summary');
+    const empty = el('ctx-request-cost-empty');
+    if (!list || !summary || !empty || typeof summarizeSessionRequestCosts !== 'function') return;
+    const card = list.closest?.('[data-widget-id="request-cost"]');
+    if (card?.hidden) return;
+    const calls = state.sessionCalls?.length ? state.sessionCalls : timeline?.calls;
+    const signature = [calls, currentPanelLanguage, state.route];
+    if (list._costSnapshot?.every((value, index) => value === signature[index])) return;
+    list._costSnapshot = signature;
+    const result = summarizeSessionRequestCosts(calls);
+    const money = new Intl.NumberFormat(currentPanelLanguage, { style: 'currency', currency: 'USD', maximumFractionDigits: 6 });
+    const prices = result.rows.length > result.unpriced;
+    empty.hidden = result.rows.length > 0;
+    summary.hidden = !result.rows.length;
+    list.hidden = !result.rows.length;
+    summary.textContent = t('session.requestCost.total', {
+      cost: prices ? money.format(result.costUSD) : '—',
+      savings: prices ? money.format(result.savingsUSD) : '—',
+      percent: prices ? `${(result.savingsRatio * 100).toFixed(1)}%` : '—'
+    }) + (result.unpriced ? ` · ${t('session.requestCost.unpriced', { n: result.unpriced })}` : '');
+    list.replaceChildren();
+    let shown = 0;
+    const append = () => {
+      const end = Math.min(shown + 80, result.rows.length);
+      for (; shown < end; shown++) {
+        const row = result.rows[shown];
+        const node = document.createElement('li');
+        const name = document.createElement('strong');
+        const model = String(formatCallModelTitle(row.call) || row.call.model || '—').replace(/[（）()]/g, '');
+        name.textContent = `${shown + 1} · ${model}`;
+        const tokens = document.createElement('span');
+        tokens.textContent = t('session.requestCost.tokens', {
+          input: row.input.toLocaleString(), cache: row.cache.toLocaleString(), output: row.output.toLocaleString()
+        });
+        const price = document.createElement('span');
+        price.textContent = t('session.requestCost.price', {
+          cost: row.costUSD == null ? '—' : money.format(row.costUSD),
+          savings: row.savingsUSD == null ? '—' : money.format(row.savingsUSD)
+        });
+        node.appendChild(name);
+        node.appendChild(tokens);
+        node.appendChild(price);
+        list.appendChild(node);
+      }
+    };
+    append();
+    list.onscroll = () => {
+      if (list.scrollHeight - list.scrollTop - list.clientHeight < 150) append();
+    };
+  }
+
+  function renderSessionBentoSections(options = {}) {
     if (!el('ctx-bento-grid')) return;
+    const pContext = el('panel');
+    const isTest = (typeof process !== 'undefined' && Boolean(process.env?.NODE_TEST_CONTEXT)) ||
+      Boolean(state.forceRenderForTest);
+    if (!options?.force && !isTest && (!pContext || pContext.hidden || activeContextTab !== 'session' || isContextSettingsView)) return;
+    const prevScrollTop = (pContext && typeof pContext.scrollTop === 'number') ? pContext.scrollTop : 0;
     const d = state.latest;
     const session = state.scan?.session || null;
     const { tl, activeCall, baseCall, isPinned, targetStepIndex, compareStepIndex } = resolveSelectedAndBaselineCall();
+    renderSessionRequestCosts(tl);
 
     // 1. Row 1 会话总览与严格区分口径
     const ovTitle = el('ctx-ov-title');
@@ -17754,7 +21147,7 @@
     if (ovModel) {
       const mName = (activeCall ? formatCallModelTitle(activeCall) : '') || d?.model || '—';
       const eff = activeCall?.effort || d?.effort || '';
-      ovModel.textContent = eff && !String(mName).toLowerCase().includes(eff.toLowerCase()) ? `${mName} (${eff})` : mName;
+      ovModel.textContent = eff && !String(mName).toLowerCase().includes(eff.toLowerCase()) ? `${mName} · ${eff}` : mName;
     }
     const ovTurnStep = el('ctx-ov-turn-step');
     if (ovTurnStep) {
@@ -17843,9 +21236,33 @@
     const ratioPill = el('ctx-comp-ratio-pill');
     const basisPill = el('ctx-comp-basis-pill');
 
-    const usedPctForBar = (activeContextTokens != null && limitVal > 0)
-      ? Math.min(100, Math.max(0, (activeContextTokens / limitVal) * 100))
-      : ((d?.percent != null) ? Math.min(100, Math.max(0, Number(d.percent))) : null);
+    const { warnThreshold, dangerThreshold } = getContextUsageThresholds();
+
+    const usedPctRaw = (activeContextTokens != null && limitVal > 0)
+      ? (activeContextTokens / limitVal) * 100
+      : ((d?.percent != null && Number.isFinite(Number(d.percent))) ? Number(d.percent) : null);
+    const usedPctForBar = usedPctRaw != null ? Math.min(100, Math.max(0, usedPctRaw)) : null;
+
+    let usageTier = 'unknown';
+    const isExceeded = Boolean(d?.exceeded) || (usedPctRaw != null && usedPctRaw > 100);
+    usageTier = computeContextUsageTier(usedPctRaw, { warnThreshold, dangerThreshold }, {
+      exceeded: isExceeded,
+      limitValid: limitVal > 0
+    });
+
+    const ovPctSummaryEl = el('ctx-ov-pct-summary');
+    if (ovPctSummaryEl) {
+      ovPctSummaryEl.setAttribute('data-usage-tier', usageTier);
+      if (usedPctRaw != null && Number.isFinite(usedPctRaw) && limitVal > 0) {
+        const remPct = Math.max(0, 100 - usedPctRaw);
+        const tierKey = `session.ov.tier.${usageTier}`;
+        ovPctSummaryEl.textContent = usageTier === 'full'
+          ? `${usedPctRaw.toFixed(1)}% · ${t(tierKey)}`
+          : `${usedPctRaw.toFixed(1)}% · ${t(tierKey, { pct: remPct.toFixed(1) })}`;
+      } else {
+        ovPctSummaryEl.textContent = '—';
+      }
+    }
 
     if (ratioPill) {
       ratioPill.textContent = usedPctForBar != null ? `${usedPctForBar.toFixed(1)}%` : '—';
@@ -18093,147 +21510,60 @@
       }
     }
 
-    // 5. Row 3 Right: 上下文组成明细树
-    setPillActive(el('ctx-tree-mode-full'), state.ctxTreeMode !== 'delta');
-    setPillActive(el('ctx-tree-mode-delta'), state.ctxTreeMode === 'delta');
-    const treeCovBadge = el('ctx-tree-coverage-badge');
-    const treeScopeNote = el('ctx-tree-scope-note');
-    const treeListEl = el('ctx-composition-tree-list');
-    if (treeCovBadge) {
-      const cov = breakdown?.coverageScope || 'unavailable';
-      treeCovBadge.setAttribute('data-basis', cov === 'host_only' ? 'server_usage' : (cov === 'unavailable' ? 'empty' : 'local_estimate'));
-      treeCovBadge.textContent = cov === 'host_only' ? t('session.dual.basisHostOnly') : (breakdown?.estimatedTotalMedian > 0 ? `≈ ${short(breakdown.estimatedTotalMedian)}` : '—');
-    }
-    if (treeScopeNote) {
-      if (breakdown?.stepScope === 'step_bounded' && breakdown?.targetStepIndex != null) {
-        treeScopeNote.textContent = t('session.tree.scopeStepBounded', { step: breakdown.targetStepIndex });
-      } else if (breakdown?.stepScope === 'session_approx') {
-        treeScopeNote.textContent = t('session.tree.scopeSessionApprox');
-      } else {
-        treeScopeNote.textContent = t('session.tree.scopeSessionFull');
-      }
-    }
-    if (treeListEl) {
-      treeListEl.replaceChildren();
-      const treeItems = breakdown?.items || [];
-      if (!treeItems.length && unaccTok <= 0) {
-        const emptyDiv = document.createElement('div');
-        emptyDiv.className = 'timeline-turn-meta';
-        emptyDiv.textContent = t('session.tree.noEntries');
-        treeListEl.appendChild(emptyDiv);
-      } else {
-        const renderTreeNode = (key, color, titleText, countVal, tokVal, pctVal, deltaTokVal, entriesList) => {
-          const isOpen = state.expandedTreeCats?.has?.(key);
-          const isFocused = state.ctxFocusedTreeCat === key;
-          const wrap = document.createElement('div');
-          wrap.className = `ctx-tree-node${isFocused ? ' is-focused' : ''}`;
-          wrap.setAttribute('data-tree-cat', key);
-
-          const hdr = document.createElement('button');
-          hdr.type = 'button';
-          hdr.className = 'ctx-tree-node-hdr';
-          hdr.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-          const left = document.createElement('span');
-          left.className = 'ctx-tree-node-left';
-          const sw = document.createElement('i');
-          sw.className = 'key-seg-swatch';
-          sw.style.background = color;
-          const titleSp = document.createElement('span');
-          titleSp.textContent = titleText;
-          const cntSp = document.createElement('span');
-          cntSp.className = 'ctx-ov-meta-pill';
-          cntSp.textContent = t('session.tree.itemsCount', { n: countVal || 0 });
-          left.appendChild(sw);
-          left.appendChild(titleSp);
-          left.appendChild(cntSp);
-
-          const right = document.createElement('span');
-          right.className = 'ctx-tree-node-right';
-          if (state.ctxTreeMode === 'delta' && deltaTokVal != null) {
-            right.textContent = `${deltaTokVal > 0 ? '+' : ''}${short(deltaTokVal)} · ${tokVal > 0 ? short(tokVal) : '0'} ${isOpen ? '▴' : '▾'}`;
-          } else {
-            right.textContent = `${tokVal > 0 ? short(tokVal) : '0'} (${pctVal ?? 0}%) ${isOpen ? '▴' : '▾'}`;
-          }
-          hdr.appendChild(left);
-          hdr.appendChild(right);
-          hdr.addEventListener('click', () => {
-            if (!state.expandedTreeCats) state.expandedTreeCats = new Set();
-            if (state.expandedTreeCats.has(key)) state.expandedTreeCats.delete(key);
-            else state.expandedTreeCats.add(key);
-            state.ctxFocusedTreeCat = key;
-            renderSessionBentoSections();
-          });
-          wrap.appendChild(hdr);
-
-          if (isOpen) {
-            const body = document.createElement('div');
-            body.className = 'ctx-tree-node-body';
-            const list = Array.isArray(entriesList) ? entriesList : [];
-            if (!list.length) {
-              const noE = document.createElement('div');
-              noE.className = 'ctx-tree-entry';
-              noE.textContent = t('session.tree.noEntries');
-              body.appendChild(noE);
-            } else {
-              for (const ent of list.slice(0, 20)) {
-                const row = document.createElement('div');
-                row.className = 'ctx-tree-entry';
-                const pEl = document.createElement('span');
-                pEl.className = 'ctx-tree-entry-preview';
-                const safePrev = typeof sanitizeCompositionPreview === 'function' ? sanitizeCompositionPreview(ent.preview || ent.label, 96) : (ent.preview || ent.label);
-                pEl.textContent = `[S${ent.stepIndex ?? '?'}] ${safePrev || ent.label}`;
-                pEl.title = safePrev || ent.label;
-                const vEl = document.createElement('span');
-                vEl.textContent = `≈${short(ent.tokens || 0)}`;
-                const jBtn = document.createElement('button');
-                jBtn.type = 'button';
-                jBtn.className = 'ctx-jump-step-btn';
-                jBtn.textContent = `S${ent.stepIndex ?? '?'}`;
-                jBtn.addEventListener('click', (ev) => {
-                  ev?.stopPropagation?.();
-                  if (ent.stepIndex != null) jumpToStepOrTurn({ stepIndex: ent.stepIndex });
-                });
-                row.appendChild(pEl);
-                row.appendChild(vEl);
-                if (ent.stepIndex != null) row.appendChild(jBtn);
-                body.appendChild(row);
-              }
-            }
-            wrap.appendChild(body);
-          }
-          return wrap;
-        };
-
-        for (const it of treeItems) {
-          treeListEl.appendChild(renderTreeNode(
-            it.key,
-            CTX_COMP_COLOR_MAP[it.key] || '#94a3b8',
-            t(`session.comp.cat.${it.key}`),
-            it.count,
-            it.median,
-            it.pctOfUsed ?? it.pct,
-            it.deltaTokens,
-            it.entries
-          ));
-        }
-        if (unaccTok > 0) {
-          const uPct = usedDenom > 0 ? Math.round((unaccTok / usedDenom) * 1000) / 10 : 0;
-          treeListEl.appendChild(renderTreeNode(
-            'unaccounted',
-            '#94a3b8',
-            t('session.dual.unaccounted'),
-            1,
-            unaccTok,
-            uPct,
-            null,
-            [{ stepIndex: targetStepIndex, label: 'overhead', tokens: unaccTok, preview: t('session.dual.unaccountedTip') }]
-          ));
-        }
-      }
+    // 5. Row 3 Right: 上下文解剖台（分类树 / 顺序切片视图 / 搜索排序 / 附件视觉审计）
+    if (typeof renderContextInspectorView === 'function') {
+      renderContextInspectorView(breakdown, { tl, activeCall, unaccTok, usedDenom, targetStepIndex });
+    } else {
+      setPillActive(el('ctx-tree-mode-full'), state.ctxTreeMode !== 'delta');
+      setPillActive(el('ctx-tree-mode-delta'), state.ctxTreeMode === 'delta');
     }
 
-    // 6. Row 4 审计工作台快速胶囊与辅助栏宽屏自动展开
+    // 6. Row 4 审计工作台快速胶囊、统一 6 Tab 与模块三深度分析卡片同步
     renderAuditQuickPills(tl);
+    syncCockpitAuditTabUi();
+    if (typeof renderExecutionTraceWidget === 'function') renderExecutionTraceWidget(tl);
+    if (typeof renderAgentCollabHubWidget === 'function') renderAgentCollabHubWidget(tl);
+    if (typeof renderAuditWidgetsSection === 'function') renderAuditWidgetsSection(tl, breakdown, activeCall);
+  }
+
+  function syncCockpitAuditTabUi() {
+    const activeTab = state.ctxCockpitTab || 'tree';
+    const tabsWrap = el('ctx-cockpit-audit-tabs');
+    if (tabsWrap) {
+      for (const btn of Array.from(tabsWrap.querySelectorAll?.('[data-cockpit-tab]') || [])) {
+        const isAct = btn.getAttribute('data-cockpit-tab') === activeTab;
+        btn.classList?.toggle?.('active', isAct);
+        btn.setAttribute?.('aria-selected', isAct ? 'true' : 'false');
+      }
+    }
+    const treePanel = el('ctx-composition-tree-card');
+    const treeControls = el('ctx-tree-mode-controls');
+    const auditPanel = el('ctx-audit-workbench');
+    const isTree = activeTab === 'tree';
+    if (treePanel) treePanel.hidden = !isTree;
+    if (treeControls) treeControls.hidden = !isTree;
+    if (auditPanel) auditPanel.hidden = isTree;
+  }
+
+  function switchCockpitAuditTab(tabName) {
+    const valid = ['tree', 'turns', 'timing', 'files', 'commands', 'fleet'];
+    const next = valid.includes(tabName) ? tabName : 'tree';
+    state.ctxCockpitTab = next;
+    const pContext = el('panel');
+    const prevScrollTop = (pContext && typeof pContext.scrollTop === 'number') ? pContext.scrollTop : 0;
+    syncCockpitAuditTabUi();
+    if (next !== 'tree') {
+      state.historyDrawerOpen = true;
+      state.timelineInsightTab = next;
+      renderSessionTimeline();
+      if (state.route && !state.sessionTimeline && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
+        void fetchSessionTimeline(state.route, { force: !state.sessionTimeline });
+      }
+    }
+    if (pContext && prevScrollTop > 0 && Math.abs((pContext.scrollTop || 0) - prevScrollTop) > 2) {
+      pContext.scrollTop = prevScrollTop;
+    }
+    positionFloatingPanels();
   }
 
   function formatTrendInspectText(pt) {
@@ -18253,9 +21583,13 @@
     });
   }
 
-  function renderContextTrendCard() {
+  function renderContextTrendCard(options = {}) {
     const card = el('ctx-trend-card');
     if (!card) return;
+    const pContext = el('panel');
+    const isTest = (typeof process !== 'undefined' && Boolean(process.env?.NODE_TEST_CONTEXT)) ||
+      Boolean(state.forceRenderForTest);
+    if (!options?.force && !isTest && (!pContext || pContext.hidden || activeContextTab !== 'session' || isContextSettingsView)) return;
     syncTrendControlButtons();
     const svg = el('ctx-trend-svg');
     const emptyEl = el('ctx-trend-empty');
@@ -18272,6 +21606,8 @@
       ? buildContextTrendSeries(timelineSrc, {
         mode: state.contextTrendMode,
         granularity: state.contextTrendGranularity,
+        compressAll: Boolean(state.trendCompressAll),
+        contextChangeEvents: timelineSrc?.contextChangeEvents || [],
         maxPoints: 40,
         fallbackEstimateTokens: fallbackEst,
         fallbackModelLabel: state.latest?.model || ''
@@ -18309,23 +21645,26 @@
         legendEl.appendChild(span);
       };
       if (series.mode === 'delta') {
-        addLegend('#34d399', t('session.trend.legendDeltaPos'));
-        addLegend('#f59e0b', t('session.trend.legendDeltaNeg'));
+        addLegend('#10B981', t('session.trend.legendDeltaPos'));
+        addLegend('#FB923C', t('session.trend.legendDeltaNeg'));
       } else {
-        addLegend('#38bdf8', t('session.trend.legendInput'));
-        addLegend('#818cf8', t('session.trend.legendCache'));
+        addLegend('#10B981', t('session.trend.legendInput'));
+        addLegend('#FB923C', t('session.trend.legendCache'));
       }
     }
 
+    const pillEl = el('ctx-trend-pill');
     const pts = Array.isArray(series.points) ? series.points : [];
     if (!pts.length) {
       if (emptyEl) emptyEl.hidden = false;
+      if (pillEl) pillEl.hidden = true;
       if (svg) {
         if (typeof svg.replaceChildren === 'function') svg.replaceChildren();
         else svg.innerHTML = '';
         svg.style.display = 'none';
       }
       if (inspectEl) inspectEl.textContent = t('session.trend.inspectHint');
+      if (typeof renderTrendPulseExtras === 'function') renderTrendPulseExtras(series, pts, svg, timelineSrc, { displayPt: null });
       return;
     }
 
@@ -18341,8 +21680,14 @@
       const pStep = state.pinnedCallRecord.stepIndex;
       selectedPt = pts.find(p => (pCid && p.callId === pCid) || (pStep != null && p.stepIndex === pStep)) || null;
     }
+    const displayPt = selectedPt || pts[pts.length - 1];
     if (inspectEl) {
-      inspectEl.textContent = formatTrendInspectText(selectedPt || pts[pts.length - 1]);
+      inspectEl.textContent = formatTrendInspectText(displayPt);
+    }
+    if (pillEl) {
+      const pillDelta = displayPt?.deltaTokens != null ? ` · Δ${displayPt.deltaTokens > 0 ? '+' : ''}${short(displayPt.deltaTokens)}` : '';
+      pillEl.hidden = false;
+      pillEl.textContent = `${displayPt?.label || `#${(displayPt?.index || 0) + 1}`} · ${short(displayPt?.totalContextTokens || 0)}${pillDelta}`;
     }
     if (!svg) return;
 
@@ -18379,7 +21724,8 @@
       };
       node.addEventListener?.('click', onPick);
       node.addEventListener?.('mouseenter', () => {
-        if (inspectEl) inspectEl.textContent = formatTrendInspectText(pt);
+        if (typeof handleTrendPointHover === 'function') handleTrendPointHover(pt, timelineSrc);
+        else if (inspectEl) inspectEl.textContent = formatTrendInspectText(pt);
       });
     };
 
@@ -18482,76 +21828,108 @@
       });
 
       const linePts = [];
+      let selectedX = null;
+      const baseBottomY = padT + plotH;
+      const defs = createSvgEl('defs', {});
+      const gradId = 'ctx-mint-area-grad';
+      const grad = createSvgEl('linearGradient', { id: gradId, x1: '0', y1: '0', x2: '0', y2: '1' });
+      const stop1 = createSvgEl('stop', { offset: '0%', 'stop-color': '#10B981', 'stop-opacity': '0.26' });
+      const stop2 = createSvgEl('stop', { offset: '100%', 'stop-color': '#10B981', 'stop-opacity': '0.02' });
+      if (grad && stop1 && stop2 && defs) {
+        grad.appendChild?.(stop1);
+        grad.appendChild?.(stop2);
+        defs.appendChild?.(grad);
+        nodes.push(defs);
+      }
+
       pts.forEach((pt, i) => {
         const cx = padL + (i + 0.5) * slotW;
-        const bx = cx - barW / 2;
+        const bx = cx - Math.max(3, barW * 0.55) / 2;
         const totalH = Math.max(1.5, (pt.totalContextTokens / maxVal) * plotH);
-        const topY = (padT + plotH) - totalH;
-        const cacheH = pt.totalContextTokens > 0
-          ? Math.max(0, (pt.cacheReadTokens / pt.totalContextTokens) * totalH)
-          : 0;
-        const freshH = Math.max(0, totalH - cacheH);
-        const isSel = selectedPt === pt;
-        linePts.push({ x: cx, y: topY });
+        const topY = baseBottomY - totalH;
+        const isSel = displayPt === pt;
+        if (isSel) selectedX = cx;
+        linePts.push({ x: cx, y: topY, pt, isSel });
 
-        if (cacheH > 0.5) {
-          const rCache = createSvgEl('rect', {
-            x: bx.toFixed(1), y: (topY + freshH).toFixed(1), width: barW.toFixed(1), height: cacheH.toFixed(1), rx: 1,
-            fill: pt.isEstimated ? 'rgba(245,158,11,0.45)' : 'rgba(129,140,248,0.68)',
-            class: 'ctx-trend-bar'
-          });
-          if (rCache) nodes.push(rCache);
-        }
-        let rFresh = null;
-        if (freshH > 0.5 || cacheH <= 0.5) {
-          rFresh = createSvgEl('rect', {
-            x: bx.toFixed(1), y: topY.toFixed(1), width: barW.toFixed(1), height: Math.max(1.5, freshH).toFixed(1), rx: 1,
-            fill: pt.isEstimated ? '#fbbf24' : '#38bdf8',
-            stroke: isSel ? '#ffffff' : 'none',
-            'stroke-width': isSel ? 1.3 : 0,
+        // 甜瓜橙增量/新输入伴随柱
+        const incH = pt.deltaTokens > 0
+          ? Math.min(totalH, Math.max(2, (pt.deltaTokens / maxVal) * plotH))
+          : (pt.freshInputTokens > 0 ? Math.min(totalH, Math.max(2, (pt.freshInputTokens / maxVal) * plotH)) : 0);
+        if (incH > 0.5) {
+          const rDelta = createSvgEl('rect', {
+            x: bx.toFixed(1), y: (baseBottomY - incH).toFixed(1), width: Math.max(3, barW * 0.55).toFixed(1), height: incH.toFixed(1), rx: 1.5,
+            fill: pt.isEstimated ? 'rgba(250, 204, 21, 0.45)' : 'rgba(251, 146, 60, 0.58)',
             'data-trend-index': String(pt.index),
             'data-step-index': pt.stepIndex != null ? String(pt.stepIndex) : '',
             class: 'ctx-trend-bar'
           });
-          if (rFresh) nodes.push(rFresh);
-        } else if (isSel) {
-          const selOutline = createSvgEl('rect', {
-            x: bx.toFixed(1), y: topY.toFixed(1), width: barW.toFixed(1), height: totalH.toFixed(1), rx: 1,
-            fill: 'none', stroke: '#ffffff', 'stroke-width': 1.3
-          });
-          if (selOutline) nodes.push(selOutline);
+          bindTrendPointEvents(rDelta, pt);
+          if (rDelta) nodes.push(rDelta);
         }
-
-        const hit = createSvgEl('rect', {
-          x: (padL + i * slotW).toFixed(1), y: padT, width: slotW.toFixed(1), height: plotH,
-          fill: 'transparent', style: 'cursor:pointer',
-          'data-trend-index': String(pt.index),
-          'data-step-index': pt.stepIndex != null ? String(pt.stepIndex) : ''
-        });
-        bindTrendPointEvents(hit, pt);
-        bindTrendPointEvents(rFresh, pt);
-        if (hit) nodes.push(hit);
       });
 
-      if (linePts.length >= 2) {
-        const dPath = linePts.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-        const trendLine = createSvgEl('path', {
-          d: dPath, fill: 'none', stroke: 'rgba(147,197,253,0.85)', 'stroke-width': 1.2, style: 'pointer-events:none'
+      if (linePts.length >= 1) {
+        // 阶梯状薄荷绿折线与柔和面积填充
+        let stepD = `M ${linePts[0].x.toFixed(1)} ${linePts[0].y.toFixed(1)}`;
+        for (let idx = 1; idx < linePts.length; idx++) {
+          const prev = linePts[idx - 1];
+          const cur = linePts[idx];
+          stepD += ` H ${cur.x.toFixed(1)} V ${cur.y.toFixed(1)}`;
+        }
+        if (linePts.length >= 2) {
+          const areaD = `${stepD} L ${linePts[linePts.length - 1].x.toFixed(1)} ${baseBottomY.toFixed(1)} L ${linePts[0].x.toFixed(1)} ${baseBottomY.toFixed(1)} Z`;
+          const trendArea = createSvgEl('path', {
+            d: areaD, fill: `url(#${gradId})`, style: 'pointer-events:none'
+          });
+          if (trendArea) nodes.push(trendArea);
+          const trendLine = createSvgEl('path', {
+            d: stepD, fill: 'none', stroke: '#10B981', 'stroke-width': 2, style: 'pointer-events:none'
+          });
+          if (trendLine) nodes.push(trendLine);
+        }
+        // 数据点圆点 & 选中点狂欢洋红游标线
+        if (selectedX != null) {
+          const cursorLine = createSvgEl('line', {
+            x1: selectedX.toFixed(1), y1: padT, x2: selectedX.toFixed(1), y2: baseBottomY.toFixed(1),
+            stroke: '#E11D74', 'stroke-width': 1.5, 'stroke-dasharray': '3 2', style: 'pointer-events:none'
+          });
+          if (cursorLine) nodes.push(cursorLine);
+        }
+        linePts.forEach((lp, i) => {
+          const pt = lp.pt;
+          const dot = createSvgEl('circle', {
+            cx: lp.x.toFixed(1), cy: lp.y.toFixed(1), r: lp.isSel ? '3.8' : '2.2',
+            fill: lp.isSel ? '#E11D74' : '#10B981',
+            stroke: lp.isSel ? '#ffffff' : 'none',
+            'stroke-width': lp.isSel ? '1.3' : '0',
+            'data-trend-index': String(pt.index),
+            'data-step-index': pt.stepIndex != null ? String(pt.stepIndex) : '',
+            class: 'ctx-trend-bar'
+          });
+          const hit = createSvgEl('rect', {
+            x: (padL + i * slotW).toFixed(1), y: padT, width: slotW.toFixed(1), height: plotH,
+            fill: 'transparent', style: 'cursor:pointer',
+            'data-trend-index': String(pt.index),
+            'data-step-index': pt.stepIndex != null ? String(pt.stepIndex) : ''
+          });
+          bindTrendPointEvents(hit, pt);
+          bindTrendPointEvents(dot, pt);
+          if (dot) nodes.push(dot);
+          if (hit) nodes.push(hit);
         });
-        if (trendLine) nodes.push(trendLine);
       }
     }
 
-    // 仅在有证据的上下文变化事件对应步骤位置绘制事件提示点 (支持点击追踪)
+    // 仅在有证据的上下文变化事件对应步骤位置绘制金合欢黄事件菱形标点 (支持点击追踪)
     const evList = Array.isArray(timelineSrc?.contextChangeEvents) ? timelineSrc.contextChangeEvents : [];
     if (evList.length > 0 && pts.length > 0) {
       const evColorMap = {
-        compaction: '#38bdf8',
-        prune: '#2dd4bf',
-        inject: '#c084fc',
-        model: '#34d399',
-        mode: '#818cf8',
-        unknown_drop: '#f59e0b'
+        compaction: '#FACC15',
+        prune: '#22E09B',
+        inject: '#F472B6',
+        model: '#10B981',
+        mode: '#A855F7',
+        unknown_drop: '#FB923C'
       };
       for (const ev of evList) {
         const ptIdx = pts.findIndex(p =>
@@ -18563,8 +21941,8 @@
         const cx = padL + (ptIdx + 0.5) * slotW;
         const evDot = createSvgEl('circle', {
           cx: cx.toFixed(1), cy: '7', r: '3.2',
-          fill: evColorMap[ev.type] || '#f59e0b',
-          stroke: '#0f172a', 'stroke-width': '1',
+          fill: evColorMap[ev.type] || '#FACC15',
+          stroke: 'var(--ctx-ck-card, #151517)', 'stroke-width': '1',
           style: 'cursor:pointer', 'data-event-type': ev.type
         });
         if (evDot) {
@@ -18591,6 +21969,9 @@
     else {
       svg.innerHTML = '';
       nodes.forEach(n => svg.appendChild?.(n));
+    }
+    if (typeof renderTrendPulseExtras === 'function') {
+      renderTrendPulseExtras(series, pts, svg, timelineSrc, { width, height, padL, padR, padT, padB, plotW, plotH, slotW, displayPt });
     }
   }
 
@@ -19093,7 +22474,14 @@
       pct = Math.min(100, Math.max(0, (d.actual / d.budget) * 100));
     }
 
-    const barColor = danger ? '#ff4d4f' : pct != null && pct >= 90 ? '#ff4d4f' : pct != null && pct >= 75 || stale || incomplete ? '#faad14' : '#69c0ff';
+    const { warnThreshold, dangerThreshold } = getContextUsageThresholds();
+    // 顶栏进度条与总览 #ctx-ov-pct-summary 共用同一分档来源，颜色严格由分档推导
+    const topbarTier = computeContextUsageTier(pct, { warnThreshold, dangerThreshold }, {
+      exceeded: Boolean(danger),
+      limitValid: pct != null
+    });
+    const barColor = (topbarTier === 'full' || topbarTier === 'danger') ? '#ff4d4f'
+      : (topbarTier === 'warn' || stale || incomplete) ? '#faad14' : '#69c0ff';
     const tone = danger ? '#ff9292' : stale || incomplete || (d?.estimated && !d?.compacted) ? '#f2c46d' : '#b7c1ff';
     host.style.setProperty('--tone', tone);
     host.style.setProperty('--bar-color', barColor);
@@ -20522,6 +23910,8 @@
     if (quotaResetTimer) { clearTimeout(quotaResetTimer); quotaResetTimer = null; }
     if (quotaPostTurnTimer) { clearTimeout(quotaPostTurnTimer); quotaPostTurnTimer = null; }
     if (quotaFeedbackTimer) { clearTimeout(quotaFeedbackTimer); quotaFeedbackTimer = null; }
+    // PR #83：看板滚动恢复属于额度看板生命周期内任务，销毁与切页时必须一并清理
+    try { clearQuotaScrollRestoreTimers(); } catch { }
     clearQuotaAnimations();
     try { quotaAbortController?.abort?.(); } catch { }
     quotaAbortController = null;
@@ -21947,9 +25337,9 @@
     if (!hostWidth && typeof window !== 'undefined' && Number.isFinite(Number(window.innerWidth)) && Number(window.innerWidth) > 0) {
       hostWidth = Number(window.innerWidth);
     }
-    const mode = hostWidth > 0 && hostWidth < 560
+    const mode = hostWidth > 0 && hostWidth < 500
       ? 'tight'
-      : (hostWidth > 0 && hostWidth < 720 ? 'narrow' : 'normal');
+      : (hostWidth > 0 && hostWidth < 680 ? 'narrow' : 'normal');
     setQuotaAttrIfChanged(csbBar, 'data-csb-width', mode);
     return mode;
   }
@@ -22102,9 +25492,81 @@
     setQuotaHiddenIfChanged(group, false);
   }
 
+  // =========================================================================
+  // PR #83：额度看板双层滚动恢复
+  // =========================================================================
+  const QUOTA_SCROLL_RESTORE_STEPS_MS = [0, 400, 1200, 2200];
+  const QUOTA_SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ', 'Spacebar']);
+  let quotaScrollRestoreTimers = [];
+  let quotaScrollUserIntentAt = 0;
+
+  function clearQuotaScrollRestoreTimers() {
+    for (const timer of quotaScrollRestoreTimers) clearTimeout(timer);
+    quotaScrollRestoreTimers = [];
+  }
+
+  function cancelQuotaScrollRestore() {
+    if (!quotaScrollRestoreTimers.length) return false;
+    quotaScrollUserIntentAt = Date.now();
+    clearQuotaScrollRestoreTimers();
+    return true;
+  }
+
+  function applyQuotaScrollPositions(entries) {
+    // 用户刚主动滚过就绝不再抢回去（移除旧实现里「恢复期间冻结用户滚动」的逻辑）
+    if (Date.now() - quotaScrollUserIntentAt < 200) return;
+    for (const [node, top] of entries) {
+      if (!node || typeof top !== 'number') continue;
+      if (Math.abs(Number(node.scrollTop) - top) > 1) node.scrollTop = top;
+    }
+  }
+
+  function armPanelScrollRestoreTimers(entries) {
+    clearQuotaScrollRestoreTimers();
+    if (!entries || !entries.length) return;
+    for (const delay of QUOTA_SCROLL_RESTORE_STEPS_MS) {
+      if (delay === 0) {
+        applyQuotaScrollPositions(entries);
+        continue;
+      }
+      quotaScrollRestoreTimers.push(setTimeout(() => {
+        if (state.disposed) return;
+        const panelEl = el('panel-quota');
+        if (!panelEl || panelEl.hidden) return;
+        applyQuotaScrollPositions(entries);
+      }, delay));
+    }
+  }
+
+  let quotaScrollIntentBound = false;
+  function bindQuotaScrollUserIntentOnce() {
+    if (quotaScrollIntentBound) return;
+    quotaScrollIntentBound = true;
+    bindQuotaScrollUserIntent();
+  }
+
+  function bindQuotaScrollUserIntent() {
+    for (const nodeId of ['view-quota', 'panel-quota']) {
+      const node = el(nodeId);
+      if (!node?.addEventListener) continue;
+      for (const evt of ['wheel', 'touchstart', 'mousedown']) {
+        node.addEventListener(evt, () => { cancelQuotaScrollRestore(); }, { passive: true });
+      }
+      node.addEventListener('keydown', (e) => {
+        if (e && QUOTA_SCROLL_KEYS.has(e.key)) cancelQuotaScrollRestore();
+      });
+    }
+    if (typeof activeDisposers !== 'undefined') {
+      activeDisposers.add(() => { clearQuotaScrollRestoreTimers(); });
+    }
+  }
+
   function renderQuotaBoard(nowMs = Date.now(), renderOpts = {}) {
+    bindQuotaScrollUserIntentOnce();    const panel = el('panel-quota');
+    const scrollPositions = !state.disposed && panel && !panel.hidden
+      ? [el('view-quota'), panel].filter(Boolean).map(node => [node, node.scrollTop])
+      : [];
     const viewQuotaBody = el('view-quota');
-    const savedScrollTop = (viewQuotaBody && typeof viewQuotaBody.scrollTop === 'number') ? viewQuotaBody.scrollTop : null;
     const view = computeEffectiveQuotaView(nowMs);
     lastComputedQuotaView = view;
     const currentSig = computeQuotaVisualSignature(view);
@@ -22273,6 +25735,7 @@
       const dispTag = (!useDualDisplay && qTag && !qTag.hidden) ? qTag.textContent : '';
       setQuotaTextIfChanged(oQuotaVal, dispTag ? `${dispTxt} · ${dispTag}` : dispTxt);
     }
+    if (typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
 
     // 2. 刷新按钮与横幅渲染（请求中维持现有文字、宽度与卡片数据，避免闪烁与布局抽动）
     const btnRefresh = el('btn-quota-refresh');
@@ -22714,15 +26177,10 @@
       }
     }
 
-    if (
-      savedScrollTop !== null &&
-      savedScrollTop > 0 &&
-      viewQuotaBody &&
-      el('panel-quota') &&
-      !el('panel-quota').hidden &&
-      Math.abs((viewQuotaBody.scrollTop || 0) - savedScrollTop) > 1
-    ) {
-      viewQuotaBody.scrollTop = savedScrollTop;
+    if (!state.disposed && panel && !panel.hidden) {
+      // PR #83：把恢复绑定到真实 DOM 更新点（覆盖约 2.2s 的历史回填），
+      // 且不再冻结用户滚动 —— 用户一旦主动滚动立即取消待恢复任务
+      armPanelScrollRestoreTimers(scrollPositions);
     }
 
     if (renderOpts.chargeBars) {
@@ -22879,11 +26337,13 @@
           rpcErr = t('quota.bridgeMissing');
         } else {
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          const isGeneratingNow = Boolean(state.livePendingRequest || state.turnState?.streaming || state.compacting?.cascadeId === state.route);
           const out = await callBackendWithPriority({
-            ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force) }) : null,
+            ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), isGenerating: isGeneratingNow }) : null,
             liveRoute: '/quota',
             liveBody: {
               force: Boolean(force),
+              isGenerating: isGeneratingNow,
               origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined
             },
             liveFetchOpts: { signal: quotaAbortController?.signal }
@@ -23008,6 +26468,18 @@
     }
   }
 
+  el('btn-ctx-timing-diag-toggle')?.addEventListener('click', () => {
+    state.timingDiagExpanded = !state.timingDiagExpanded;
+    if (state.timingDiagExpanded && !state.speedBreakdownOpen) {
+      state.speedBreakdownOpen = true;
+    }
+    syncTimingDiagFoldUi?.();
+    if (typeof evaluateGenerationExperience === 'function') {
+      renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
+    }
+    positionFloatingPanels();
+  });
+
   el('btn-speed-breakdown-toggle')?.addEventListener('click', () => {
     state.speedBreakdownOpen = !state.speedBreakdownOpen;
     if (typeof evaluateGenerationExperience === 'function') {
@@ -23044,16 +26516,27 @@
   });
   el('btn-session-history-toggle')?.addEventListener('click', () => {
     state.historyDrawerOpen = !state.historyDrawerOpen;
-    if (!state.historyDrawerOpen && state.pinnedCallRecord) {
-      state.pinnedCallRecord = null;
-      renderLatestCallCard({ fromUserAction: true, skipAnim: true });
+    if (state.historyDrawerOpen && (!state.ctxCockpitTab || state.ctxCockpitTab === 'tree')) {
+      state.ctxCockpitTab = state.timelineInsightTab && state.timelineInsightTab !== 'tree' ? state.timelineInsightTab : 'turns';
+    } else if (!state.historyDrawerOpen) {
+      state.ctxCockpitTab = 'tree';
+      if (state.pinnedCallRecord) {
+        state.pinnedCallRecord = null;
+        renderLatestCallCard({ fromUserAction: true, skipAnim: true });
+      }
     }
+    syncCockpitAuditTabUi();
     renderSessionTimeline();
     if (state.historyDrawerOpen && state.route) {
       void fetchSessionTimeline(state.route, { force: !state.sessionTimeline });
     }
     positionFloatingPanels();
     syncPanelPickerActiveState();
+  });
+  el('ctx-cockpit-audit-tabs')?.addEventListener('click', (e) => {
+    const btn = e?.target?.closest?.('[data-cockpit-tab]') || (e?.target?.getAttribute?.('data-cockpit-tab') ? e.target : null);
+    const nextTab = btn?.getAttribute?.('data-cockpit-tab');
+    if (nextTab) switchCockpitAuditTab(nextTab);
   });
   el('btn-timeline-load-more')?.addEventListener('click', () => {
     state.timelinePageLimit = (Number(state.timelinePageLimit) || 10) + 10;
@@ -23107,10 +26590,95 @@
   el('btn-ctx-return-latest')?.addEventListener('click', () => {
     returnToLatestSessionPoint();
   });
+  // =========================================================================
+  // 手动刷新按钮三态微交互：idle / loading / done / error
+  // =========================================================================
+  const REFRESH_MIN_SPIN_MS = 420;
+  const REFRESH_TERMINAL_HOLD_MS = 800;
+  let refreshFeedbackState = 'idle';
+  let refreshFeedbackInFlight = false;
+  let refreshStateTimer = null;
+  let refreshShimmerTimer = null;
+
+  function applyRefreshFeedbackState(nextState) {
+    refreshFeedbackState = nextState;
+    const btn = el('btn-ctx-session-refresh');
+    if (btn) {
+      btn.setAttribute?.('data-refresh-state', nextState);
+      btn.setAttribute?.('aria-busy', nextState === 'loading' ? 'true' : 'false');
+    }
+    return refreshFeedbackState;
+  }
+
+  function isReducedMotionPreferred() {
+    try {
+      return typeof window?.matchMedia === 'function'
+        && Boolean(window.matchMedia('(prefers-reduced-motion: reduce)')?.matches);
+    } catch { return false; }
+  }
+
+  /**
+   * 仅在手动刷新成功瞬间给当前卡片上下文主进度条触发一次轻扫高光。
+   * 只改伪元素的 transform 与 opacity，零重排、不跳滚动条；后台静默轮询绝不调用。
+   */
+  function triggerOverviewTrackShimmer() {
+    const track = el('ctx-main-track');
+    if (!track) return false;
+    if (isReducedMotionPreferred()) return false;
+    track.removeAttribute?.('data-refresh-shimmer');
+    try { void track.offsetWidth; } catch { }
+    track.setAttribute?.('data-refresh-shimmer', 'on');
+    if (refreshShimmerTimer) clearTimeout(refreshShimmerTimer);
+    refreshShimmerTimer = setTimeout(() => {
+      refreshShimmerTimer = null;
+      try { track.removeAttribute?.('data-refresh-shimmer'); } catch { }
+    }, 460);
+    return true;
+  }
+
+  function scheduleRefreshTerminal(state) {
+    if (refreshStateTimer) clearTimeout(refreshStateTimer);
+    applyRefreshFeedbackState(state);
+    refreshStateTimer = setTimeout(() => {
+      refreshStateTimer = null;
+      applyRefreshFeedbackState('idle');
+    }, REFRESH_TERMINAL_HOLD_MS);
+  }
+
+  async function runSessionRefreshFeedback() {
+    if (refreshFeedbackInFlight) return false;
+    if (!state.route) return false;
+    refreshFeedbackInFlight = true;
+    const startedAt = Date.now();
+    applyRefreshFeedbackState('loading');
+    let ok = false;
+    try {
+      const settled = await Promise.allSettled([
+        scan(state.generation, state.route, true),
+        fetchSessionTimeline(state.route, { force: true })
+      ]);
+      ok = settled.some(item => item.status === 'fulfilled' && item.value?.ok !== false);
+    } catch { ok = false; }
+    // 最小旋转时长：即便本地接口 20ms 返回也等满至少 420ms 再切终态，绝不吞动画
+    const remaining = Math.max(0, REFRESH_MIN_SPIN_MS - (Date.now() - startedAt));
+    if (remaining > 0) {
+      await new Promise(resolve => { setTimeout(resolve, remaining); });
+    }
+    refreshFeedbackInFlight = false;
+    if (ok) {
+      scheduleRefreshTerminal('done');
+      triggerOverviewTrackShimmer();
+    } else {
+      scheduleRefreshTerminal('error');
+    }
+    return ok;
+  }
+
   el('btn-ctx-session-refresh')?.addEventListener('click', () => {
-    if (!state.route) return;
-    void scan(state.generation, state.route, true);
-    void fetchSessionTimeline(state.route, { force: true });
+    void runSessionRefreshFeedback();
+  });
+  el('btn-ctx-return-latest')?.addEventListener('click', () => {
+    returnToLatestSessionPoint();
   });
   el('ctx-subtrack-mode-comp')?.addEventListener('click', () => {
     state.ctxSubtrackMode = 'comp';
@@ -23497,17 +27065,60 @@
     // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿）
     const stPill = el('auto-switch-status-pill');
     const lastNote = el('auto-switch-last-note');
-    const stKeys = new Set(['disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown', 'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota', 'error']);
+    const stKeys = new Set([
+      'disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown',
+      'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota',
+      'blocked_missing_pool', 'blocked_missing_account', 'error'
+    ]);
+    const blockedReasonText = (() => {
+      const stObj = ov.autoSwitchStatus || {};
+      const br = String(stObj.blockedReason || '').trim();
+      const bm = stObj.blockedMeta || {};
+      const poolName = bm.poolKey || ov.autoSwitch?.poolKey || '';
+      const activeAccEmail = ov.activeAccountEmail || bm.activeEmail || '';
+      if (br === 'target_pool_no_permission') {
+        return t('accounts.blockedReason.no_permission', { email: activeAccEmail || '—', pool: poolName });
+      }
+      if (br === 'target_pool_missing_in_snapshot' || br === 'target_pool_unavailable_or_no_permission') {
+        return t('accounts.blockedReason.missing_pool', { email: activeAccEmail || '—', pool: poolName });
+      }
+      if (br === 'target_window_unavailable') {
+        return t('accounts.blockedReason.missing_window', { email: activeAccEmail || '—', pool: poolName, window: bm.windowKey || ov.autoSwitch?.windowKey || '' });
+      }
+      if (br === 'target_pool_missing_value') {
+        return t('accounts.blockedReason.missing_value', { email: activeAccEmail || '—', pool: poolName });
+      }
+      if (br === 'no_active_account_or_snapshot') {
+        return t('accounts.blockedReason.missing_active_account');
+      }
+      if (br === 'all_candidates_insufficient_or_stale') {
+        return t('accounts.blockedReason.all_candidates_exhausted', { pool: poolName });
+      }
+      if (br.startsWith('quota_state_')) {
+        return t('accounts.blockedReason.untrusted_quota');
+      }
+      if (br === 'generation_in_progress') {
+        return t('accounts.blockedReason.waiting_idle');
+      }
+      if (stObj.state === 'cooldown') {
+        return t('accounts.blockedReason.cooldown');
+      }
+      return '';
+    })();
     if (stPill) {
       const sKey = ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled');
       stPill.textContent = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
-      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (sKey === 'error' || sKey === 'all_candidates_exhausted' ? 'pill-warn' : 'pill-muted')}`;
+      const isWarn = sKey === 'error' || sKey === 'all_candidates_exhausted'
+        || sKey === 'blocked_missing_pool' || sKey === 'blocked_missing_account' || sKey === 'blocked_untrusted_quota';
+      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : 'pill-muted')}`;
     }
     if (lastNote) {
       if (rawLastErr) {
         lastNote.textContent = formatPersistedError(rawLastErr);
       } else if (lr?.ok === false) {
         lastNote.textContent = formatPersistedError(t('accounts.actionFail'));
+      } else if (blockedReasonText) {
+        lastNote.textContent = blockedReasonText;
       } else {
         lastNote.textContent = lr?.toEmail ? t('accounts.lastSwitchedTo', { email: lr.toEmail }) : '';
       }
@@ -23543,6 +27154,10 @@
           box.value = acc.email;
           box.checked = selectedSet.has(acc.email);
           box.className = 'auto-switch-cand-checkbox';
+          if (box.checked) lbl.classList.add('is-checked');
+          box.addEventListener('change', () => {
+            lbl.classList.toggle('is-checked', Boolean(box.checked));
+          });
           const span = document.createElement('span');
           span.textContent = acc.maskedEmail || acc.email;
           lbl.appendChild(box);
@@ -23827,6 +27442,10 @@
       });
       const out = res?.result || {};
       if (out.overview) accountsUiState.overview = out.overview;
+      if (out.cancelled) {
+        accountsUiState.feedback = '';
+        return out;
+      }
       const isOk = out.ok === true;
       const isPartialOAuthQuotaWarn = isOk && action === 'oauth_login' && out.quotaOk === false && Boolean(out.quotaError);
       const rawFb = isPartialOAuthQuotaWarn
@@ -23835,8 +27454,8 @@
           ? (out.message || t('accounts.actionDone'))
           : (out.error || out.message || t('accounts.actionFail')));
       accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(rawFb) : rawFb;
-      accountsUiState.feedbackTone = isOk ? (isPartialOAuthQuotaWarn ? 'info' : 'success') : 'error';
-      if (action === 'switch' && isOk) {
+      accountsUiState.feedbackTone = isOk ? (isPartialOAuthQuotaWarn || out.restartPending ? 'info' : 'success') : 'error';
+      if (action === 'switch' && isOk && !out.restartPending) {
         void syncQuotaFromHost(true, { manual: false });
         void syncTokenHistoryFromHost(true);
       }
@@ -23865,6 +27484,10 @@
     const candidates = Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked')).map(n => n.value);
     void performAccountAction('update_auto_switch', {
       config: { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates }
+    }).then((out) => {
+      if (out?.ok && enabled) {
+        void syncQuotaFromHost(true, { manual: false });
+      }
     });
   });
   const btnQuotaBannerRestartInit = el('btn-quota-banner-restart');
@@ -23876,6 +27499,67 @@
   }
   renderQuotaBoard();
 
+  const setPaneBatch = enabled => {
+    paneBatch = enabled;
+    paneCloseSelection.clear();
+    renderConversationScopeUI(true);
+    syncPaneHighlights();
+  };
+  el('ctx-scope-batch')?.addEventListener('click', () => setPaneBatch(!paneBatch));
+  el('ctx-scope-batch-cancel')?.addEventListener('click', () => setPaneBatch(false));
+  el('ctx-scope-batch-others')?.addEventListener('click', () => {
+    const layout = parseConversationLayout();
+    const keep = layout.panes.includes(state.route) ? state.route : layout.focusedPaneId;
+    paneCloseSelection.clear();
+    for (const id of layout.panes) if (id !== keep) paneCloseSelection.add(id);
+    syncPaneBatchControls(layout);
+    syncPaneHighlights();
+  });
+  el('ctx-scope-batch-close')?.addEventListener('click', () => {
+    const layout = parseConversationLayout();
+    const ids = layout.panes.filter(id => paneCloseSelection.has(id));
+    const keep = ids.length === layout.panes.length ? layout.focusedPaneId || layout.panes[0] : null;
+    void closeNativePanes(ids, keep);
+  });
+  el('ctx-scope-menu')?.addEventListener('click', event => {
+    const action = event.target.closest('[data-pane-action]')?.getAttribute('data-pane-action');
+    const id = paneMenuId;
+    dismissPaneMenu();
+    if (!id || !action) return;
+    if (action === 'focus') {
+      findNativePane(id)?.content.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1 }));
+      return;
+    }
+    const { panes } = parseConversationLayout();
+    if (!panes.includes(id)) return;
+    const ids = action === 'close' ? [id] : action === 'others' ? panes.filter(pane => pane !== id) : panes.slice(panes.indexOf(id) + 1);
+    void closeNativePanes(ids, action === 'close' ? null : id);
+  });
+  const dismissPaneMenuOutside = event => {
+    if (paneMenuId && !event.composedPath?.()?.includes(el('ctx-scope-menu'))) dismissPaneMenu();
+  };
+  const dismissPaneMenuOnEscape = event => {
+    if (event.key === 'Escape' && paneMenuId) {
+      event.stopPropagation();
+      dismissPaneMenu();
+    }
+  };
+  const dismissPaneMenuOnBlur = () => {
+    paneHoverId = null;
+    dismissPaneMenu();
+    syncPaneHighlights();
+  };
+  document.addEventListener?.('pointerdown', dismissPaneMenuOutside, true);
+  document.addEventListener?.('keydown', dismissPaneMenuOnEscape, true);
+  window.addEventListener?.('blur', dismissPaneMenuOnBlur);
+  earlyDisposeHooks.push(() => {
+    document.removeEventListener?.('pointerdown', dismissPaneMenuOutside, true);
+    document.removeEventListener?.('keydown', dismissPaneMenuOnEscape, true);
+    window.removeEventListener?.('blur', dismissPaneMenuOnBlur);
+    if (paneHighlightFrame) cancelAnimationFrame?.(paneHighlightFrame);
+    dismissPaneMenu();
+    setScopeTopLayer(el('ctx-scope-highlights'), false);
+  });
   el('btn-ctx-scope-follow')?.addEventListener('click', () => {
     if (state.pinnedViewRoute) resumeFollowFocusView();
   });
@@ -24299,6 +27983,11 @@
       render();
       return { activeSessionModelKey, activeSessionProductKey, selectedEditModelKey, selectedProductKey, draft: { ...ctxDraft } };
     },
+    setCustomThresholdsForTest: ({ warning, critical } = {}) => {
+      state.customWarnThreshold = (warning != null && Number.isFinite(Number(warning))) ? Number(warning) : 75;
+      state.customDangerThreshold = (critical != null && Number.isFinite(Number(critical))) ? Number(critical) : 90;
+      render();
+    },
     setModelCapabilitiesForTest: (capabilitiesById) => {
       mergeCapabilitiesMapClient(capabilitiesById);
       if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
@@ -24475,7 +28164,7 @@
     },
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, sessionAvgSpeed: getSessionAverageSpeed(state.lastSpeedEval || null), scan: state.scan, compacting: state.compacting, hostContextWindowUsage: state.hostContextWindowUsage, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     simulateHostWsMessageForTest: (rawFrame) => handlePassiveHostWsMessage({ data: typeof rawFrame === 'string' ? rawFrame : JSON.stringify(rawFrame) }),
-    checkHostDomCompactionForTest: () => checkHostDomCompactionSignals(),
+    checkHostDomCompactionForTest: () => checkHostDomCompactionSignals({ force: true }),
     captureHotReloadState,
     verifyHotReloadAndRefreshQuota,
     getBackendStatusForTest: () => ({
@@ -24548,8 +28237,14 @@
       }
       return null;
     },
-    getSpeedPanelStateForTest: () => ({
-      badgeText: el('speed-badge')?.textContent || '',
+    speedAlgorithmForTest: () => speedAlgorithm,
+    setSpeedAlgorithmForTest: (alg) => {
+      speedAlgorithm = ['median', 'mean', 'composite'].includes(alg) ? alg : 'median';
+      return speedAlgorithm;
+    },
+    speedMetricValueForTest: (group) => speedMetricValue(group),
+    speedDisplayNameForTest: (group) => speedDisplayName(group),
+    getSpeedPanelStateForTest: () => ({      badgeText: el('speed-badge')?.textContent || '',
       badgeColor: el('speed-badge')?.style?.color || '',
       boltColor: el('badge-speed-icon')?.style?.color || '',
       summaryBoltColor: el('speed-summary-bolt')?.style?.color || '',
@@ -24568,6 +28263,12 @@
     }),
     setDockPosition: (mode, opts = {}) => setDockPosition(mode, opts),
     getDockPosition: () => ({ dockPosition, actualDock: host.getAttribute('data-dock'), fallbackReason: dockFallbackReason }),
+    setTopbarMode: (mode, opts = {}) => setTopbarMode(mode, opts),
+    getTopbarMode: () => topbarMode,
+    setPanelDockMode: (mode, opts = {}) => setPanelDockMode(mode, opts),
+    getPanelDockMode: () => panelDockMode,
+    setAutoHideTopbarOnDockedPanel: (enable, opts = {}) => setAutoHideTopbarOnDockedPanel(enable, opts),
+    getAutoHideTopbarOnDockedPanel: () => autoHideTopbarOnDockedPanel,
     setQuotaBadgeWindowMode: (mode, opts = {}) => setQuotaBadgeWindowMode(mode, opts),
     getQuotaBadgeWindowMode: () => quotaBadgeWindowMode,
     getTokenCacheBreakdownForTest: () => ({
@@ -24656,7 +28357,8 @@
         cardHit: el('tfl-val-hit')?.textContent || '',
         cardUncached: el('tfl-val-uncached')?.textContent || '',
         cardCached: el('tfl-val-cached')?.textContent || '',
-        cardOutput: el('tfl-val-output')?.textContent || ''
+        cardOutput: el('tfl-val-output')?.textContent || '',
+        tokensTooltip: el('csb-group-tokens')?.getAttribute?.('data-tooltip') || ''
       };
     },
     resolveFocusedSessionTargetForTest: () => resolveFocusedSessionTarget(),
@@ -24783,6 +28485,107 @@
       return { width: state.forcedPanelWidthForTest, tier };
     },
     jumpToStepOrTurnForTest: (opts) => jumpToStepOrTurn(opts),
+    getRadialMenuStateForTest: () => ({
+      quickMenuStyle,
+      radialOrbEnabled: Boolean(radialOrbEnabled),
+      radialTopbarEnabled: Boolean(radialTopbarEnabled),
+      radialBottombarEnabled: Boolean(radialBottombarEnabled),
+      radialModesAttr: host.getAttribute?.('data-radial-modes') || null,
+      radialOrbPos: radialOrbPos ? { ...radialOrbPos } : null,
+      open: Boolean(state.radialMenuOpen),
+      closing: Boolean(state.radialClosing),
+      anchorMode: state.radialAnchorMode,
+      topLayerMounted: Boolean(radialHost && radialShadow),
+      topLayerHostId: radialHost?.id || null,
+      topLayerParentTag: radialHost?.parentElement?.tagName || null,
+      topLayerZIndex: radialHost?.style?.zIndex || null,
+      radialOrbHidden: Boolean(radialOrbHidden),
+      showOrbMenuBtnHidden: Boolean(el('overflow-show-orb-btn')?.hidden),
+      orbHidden: Boolean(el('ctx-radial-orb')?.hidden),
+      layerHidden: Boolean(el('ctx-radial-layer')?.hidden),
+      layerState: el('ctx-radial-layer')?.getAttribute?.('data-state') || null,
+      centerCloseHidden: Boolean(el('ctx-radial-center-close')?.hidden),
+      badgeRadialOpen: el('badge')?.getAttribute?.('data-radial-open') === 'true',
+      badgeAriaExpanded: el('badge')?.getAttribute?.('aria-expanded') === 'true',
+      csbRadialOpen: el('csb-group-context')?.getAttribute?.('data-radial-open') === 'true',
+      csbAriaExpanded: el('csb-group-context')?.getAttribute?.('aria-expanded') === 'true',
+      marketplaceActive: host.getAttribute?.('data-marketplace-active') === 'true',
+      constants: {
+        STAGGER_MS: RADIAL_STAGGER_MS,
+        R_REST_360: RADIAL_R_REST_360,
+        R_REST_180: RADIAL_R_REST_180,
+        R_FAR_MULTIPLIER: RADIAL_R_FAR_MULTIPLIER,
+        R_CLOSE_MULTIPLIER: RADIAL_R_CLOSE_MULTIPLIER,
+        BLUR_START_PX: RADIAL_BLUR_START_PX
+      }
+    }),
+    getFloatingOrbStateForTest: () => {
+      const snap = syncFloatingOrbState();
+      const orbEl = el('ctx-radial-orb');
+      const pctEl = el('ctx-orb-pct');
+      const fillEl = el('ctx-orb-ring-fill');
+      return {
+        ...snap,
+        hidden: Boolean(orbEl?.hidden),
+        modeAttr: orbEl?.getAttribute?.('data-orb-mode') || null,
+        toneAttr: orbEl?.getAttribute?.('data-orb-tone') || null,
+        linkedPanel: state.orbLinkedPanel || null,
+        text: pctEl?.textContent || '',
+        compact: pctEl?.getAttribute?.('data-compact') === 'true',
+        dashArray: fillEl?.getAttribute?.('stroke-dasharray') || '',
+        ariaExpanded: orbEl?.getAttribute?.('aria-expanded') === 'true'
+      };
+    },
+    setFloatingOrbLiveOverrideForTest: (ov) => {
+      state.orbOverrideForTest = (ov && typeof ov === 'object') ? { ...ov } : null;
+      return syncFloatingOrbState();
+    },
+    syncFloatingOrbStateForTest: () => syncFloatingOrbState(),
+    setQuickMenuStyleForTest: (mode, opts) => setQuickMenuStyle(mode, opts),
+    setRadialOrbEnabledForTest: (enabled, opts) => setRadialOrbEnabled(enabled, opts),
+    setRadialTopbarEnabledForTest: (enabled, opts) => setRadialTopbarEnabled(enabled, opts),
+    setRadialBottombarEnabledForTest: (enabled, opts) => setRadialBottombarEnabled(enabled, opts),
+    setRadialOrbHiddenForTest: (hidden, opts) => setRadialOrbHidden(hidden, opts),
+    openRadialMenuForTest: (mode, anchorNode) => openRadialMenu(mode, anchorNode),
+    snapCockpitSpanForTest: (raw, tier) => (typeof snapCockpitSpan === 'function' ? snapCockpitSpan(raw, tier) : null),
+    applyCockpitLayoutForTest: () => (typeof applyCockpitLayoutToDom === 'function'
+      ? applyCockpitLayoutToDom({ renderManager: false })
+      : null),
+    normalizeCockpitLayoutForTest: (raw) => (typeof normalizeCockpitLayout === 'function'
+      ? normalizeCockpitLayout(raw)
+      : null),
+    getCockpitLayoutForTest: () => (typeof getCockpitLayout === 'function' ? getCockpitLayout() : null),
+    getCockpitResizeGuidesForTest: (drag, boxes, index, width, height, x, y) =>
+      cockpitResizeMagnets({ ...drag, fitGuides: cockpitSideFitGuides(drag, boxes, index) }, width, height, x, y),
+    getResizeBadgeNodeCountForTest: () => {
+      const root = host?.shadowRoot;
+      if (!root?.querySelectorAll) return 0;
+      let n = 0;
+      try { n += root.querySelectorAll('.ag-widget-resize-badge').length; } catch { }
+      try { n += document.querySelectorAll('.ag-widget-resize-badge').length; } catch { }
+      return n;
+    },
+    computeContextUsageTierForTest: (pct, opts) => computeContextUsageTier(pct, null, opts || {}),
+    getContextUsageThresholdsForTest: () => getContextUsageThresholds(),
+    legalCockpitSpansForTest: (tier) => (typeof legalCockpitSpans === 'function' ? [...legalCockpitSpans(tier)] : []),
+    packSkylineBoxesForTest: (boxes, containerWidth, gap) => (typeof packSkylineBoxes === 'function'
+      ? packSkylineBoxes(boxes, containerWidth, gap)
+      : null),
+    resolveSkylineCardWidthForTest: (widget, containerWidth, gap) => (typeof resolveSkylineCardWidth === 'function'
+      ? resolveSkylineCardWidth(widget, containerWidth, gap)
+      : null),
+    getRefreshFeedbackStateForTest: () => ({
+      state: refreshFeedbackState,
+      inFlight: refreshFeedbackInFlight,
+      minSpinMs: REFRESH_MIN_SPIN_MS,
+      holdMs: REFRESH_TERMINAL_HOLD_MS,
+      shimmerActive: el('ctx-main-track')?.getAttribute?.('data-refresh-shimmer') === 'on'
+    }),
+    triggerOverviewTrackShimmerForTest: () => triggerOverviewTrackShimmer(),
+    toggleRadialMenuForTest: (mode, anchorNode) => toggleRadialMenu(mode, anchorNode),
+    closeRadialMenuForTest: (immediate) => closeRadialMenu(Boolean(immediate)),
+    computeRadialGeometryForTest: (mode, rect, vw, vh) => computeRadialGeometry(mode, rect, vw, vh),
+    switchCockpitAuditTabForTest: (tabName) => switchCockpitAuditTab(tabName),
     getSessionDashboardStateForTest: () => ({
       widthTier: el('panel')?.getAttribute?.('data-ctx-width-tier') || state.ctxWidthTier,
       ovTitle: el('ctx-ov-title')?.textContent || '',
@@ -24799,10 +28602,68 @@
       unaccountedHidden: Boolean(el('ctx-main-unaccounted')?.hidden),
       treeMode: state.ctxTreeMode,
       compareBase: state.ctxCompareBase,
+      cockpitTab: state.ctxCockpitTab || 'tree',
+      previewTitle: el('ctx-comp-preview-title')?.textContent || '',
+      previewEntriesCount: el('ctx-comp-preview-body')?.children?.length || 0,
       treeNodes: Array.from(el('ctx-composition-tree-list')?.children || []).map(n => n.getAttribute?.('data-tree-cat')).filter(Boolean),
       auditPills: Array.from(el('ctx-audit-quick-pills')?.children || []).map(b => b.textContent),
       marketplaceActive: host.getAttribute?.('data-marketplace-active') === 'true'
     }),
+    getCockpitLayoutStateForTest: () => (typeof getCockpitLayout === 'function' ? getCockpitLayout() : null),
+    applyCockpitPresetForTest: (pid, opts) => (typeof applyCockpitPreset === 'function' ? applyCockpitPreset(pid, opts) : null),
+    reorderCockpitWidgetForTest: (dragId, targetId, insertAfter) => (typeof reorderCockpitWidget === 'function' ? reorderCockpitWidget(dragId, targetId, insertAfter) : null),
+    setCockpitWidgetSpanForTest: (wId, span) => (typeof setCockpitWidgetSpan === 'function' ? setCockpitWidgetSpan(wId, span) : null),
+    setCockpitWidgetHeightForTest: (wId, heightMode, px) => (typeof setCockpitWidgetHeight === 'function' ? setCockpitWidgetHeight(wId, heightMode, px) : null),
+    toggleCockpitWidgetVisibleForTest: (wId, vis) => (typeof toggleCockpitWidgetVisibility === 'function' ? toggleCockpitWidgetVisibility(wId, vis) : null),
+    revealCockpitWidgetForTest: (wId) => (typeof revealAndScrollToCockpitWidget === 'function' ? revealAndScrollToCockpitWidget(wId, { flash: false }) : null),
+    getModule3WidgetsStateForTest: () => ({
+      traceRows: el('ctx-trace-stream-list')?.children?.length || 0,
+      traceGanttBars: el('ctx-trace-gantt-svg')?.querySelectorAll?.('[data-trace-node-id]')?.length || 0,
+      kpiPills: Array.from(el('ctx-kpi-link-pills')?.children || []).map(b => b.textContent),
+      tokenDonutSegs: el('ctx-token-donut-svg')?.children?.length || 0,
+      fileRadarRows: el('ctx-file-radar-list')?.children?.length || 0,
+      cmdAuditRows: el('ctx-cmd-audit-list')?.children?.length || 0,
+      collabEmptyHidden: Boolean(el('ctx-collab-empty')?.hidden)
+    }),
+    getCrossSessionInsightsStateForTest: () => ({
+      selectedDate: state.csiSelectedDate,
+      workspaceFilter: state.csiWorkspaceFilter,
+      sortBy: state.csiSortBy,
+      dateFilterText: el('csi-date-filter-pill')?.textContent || '',
+      archiveCount: el('csi-archive-list')?.children?.length || 0,
+      chartNodesCount: el('csi-7d-chart-svg')?.children?.length || 0
+    }),
+    selectHeatmapDateForTest: (dateStr) => (typeof handleHeatmapDaySelected === 'function' ? handleHeatmapDaySelected(dateStr) : false),
+    setSessionTimelineForTest: (tl) => {
+      state.sessionTimeline = tl || null;
+      renderContextTrendCard({ force: true });
+      renderSessionBentoSections({ force: true });
+      renderSessionTimeline();
+    },
+    getPlanDetailTextStateForTest: () => {
+      const readTxt = (node) => {
+        if (!node) return '';
+        if (node.textContent) return String(node.textContent);
+        if (Array.isArray(node.children) && node.children.length) {
+          return node.children.map(readTxt).filter(Boolean).join(' ').trim();
+        }
+        return '';
+      };
+      return {
+        summaryText: readTxt(el('plan-summary-text')),
+        priceVal: readTxt(el('plan-summary-price-val')),
+        priceCny: readTxt(el('plan-summary-price-cny')),
+        tierLabel: readTxt(el('direct-tier-label')),
+        tierTag: readTxt(el('p-det-tier-tag')),
+        regionLabel: readTxt(el('direct-region-label')),
+        priceDetail: readTxt(el('p-det-price')),
+        priceTag: readTxt(el('p-det-price-tag')),
+        specsText: readTxt(el('p-det-tier-specs')),
+        promptCredits: readTxt(el('p-det-prompt-credits')),
+        flowCredits: readTxt(el('p-det-flow-credits')),
+        updatedText: readTxt(el('p-det-time'))
+      };
+    },
     getDefaultViewPrefsStateForTest: () => ({
       current: collectCurrentViewPrefs(),
       defaultViewPrefs: { ...defaultViewPrefs },
@@ -24824,6 +28685,13 @@
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
       cancelClosePanelPicker();
+      if (state.radialCloseTimer) { clearTimeout(state.radialCloseTimer); state.radialCloseTimer = null; }
+      if (state.radialAlignTimer) { clearTimeout(state.radialAlignTimer); state.radialAlignTimer = null; }
+      if (state.orbCliFeedbackTimer) { clearTimeout(state.orbCliFeedbackTimer); state.orbCliFeedbackTimer = null; }
+      if (state.orbSwapAnimTimer) { clearTimeout(state.orbSwapAnimTimer); state.orbSwapAnimTimer = null; }
+      state.orbCliFeedbackUntil = 0;
+      state.orbLinkedPanel = null;
+      state.orbOverrideForTest = null;
       clearBadgeLongPress();
       for (const tm of saveDefaultFeedbackTimers.values()) clearTimeout(tm);
       saveDefaultFeedbackTimers.clear();
@@ -24858,6 +28726,7 @@
       document.removeEventListener('keydown', escape, true);
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
+      disposeRadialTopLayer();
       composerSummary?.remove?.();
       host.remove();
     }
@@ -24867,8 +28736,12 @@
   syncDockPositionUi();
   syncQuotaWindowModeUi();
   syncAllViewPrefControlsUi();
+  syncRadialOrbHiddenUi();
   if (el('chk-show-composer-quota')) el('chk-show-composer-quota').checked = showComposerQuotaSummary;
   applyStaticPanelTranslations(shadow);
+  if (radialShadow) {
+    applyStaticPanelTranslations(radialShadow);
+  }
   if (composerSummary && composerSummary.parentElement !== shadow) {
     applyStaticPanelTranslations(composerSummary);
   }
@@ -24885,6 +28758,13 @@
   } catch { }
   refreshRegionPresetSelectOptions();
   renderEnhanceSectionUI();
+  if (typeof initSessionCockpitGrid === 'function') initSessionCockpitGrid();
+  if (typeof initTrendPulseControls === 'function') initTrendPulseControls();
+  if (typeof initContextInspectorControls === 'function') initContextInspectorControls();
+  if (typeof initExecutionTraceControls === 'function') initExecutionTraceControls();
+  if (typeof initAgentCollabHubControls === 'function') initAgentCollabHubControls();
+  if (typeof initAuditWidgetsControls === 'function') initAuditWidgetsControls();
+  if (typeof initCrossSessionInsightsControls === 'function') initCrossSessionInsightsControls();
   if (inheritedHotReloadState) {
     applyInheritedHotReloadState(inheritedHotReloadState);
   }

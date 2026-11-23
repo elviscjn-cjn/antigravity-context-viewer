@@ -47,7 +47,7 @@ function readVerifiedRendererSource(dir, fileName) {
   const fullPath = path.join(dir, fileName);
   const raw = fs.readFileSync(fullPath, 'utf8');
   assertNoTruncationMarker(fullPath, raw);
-  return raw;
+  return raw.replace(/\r\n/g, '\n');
 }
 
 function buildRenderer(options = {}) {
@@ -71,6 +71,13 @@ function buildRenderer(options = {}) {
   const budgetEngine = readVerifiedRendererSource(effSrcDir, 'context-budget-engine.js').trim();
   const dropdown = readVerifiedRendererSource(effSrcDir, 'dropdown.js').trim();
   const heatmap = readVerifiedRendererSource(effSrcDir, 'heatmap.js').trim();
+  const dashboardGrid = readVerifiedRendererSource(effSrcDir, 'dashboard-grid.js').trim();
+  const trendPulse = readVerifiedRendererSource(effSrcDir, 'trend-pulse.js').trim();
+  const contextInspector = readVerifiedRendererSource(effSrcDir, 'context-inspector.js').trim();
+  const executionTrace = readVerifiedRendererSource(effSrcDir, 'execution-trace.js').trim();
+  const agentCollabHub = readVerifiedRendererSource(effSrcDir, 'agent-collab-hub.js').trim();
+  const auditWidgets = readVerifiedRendererSource(effSrcDir, 'audit-widgets.js').trim();
+  const crossSessionInsights = readVerifiedRendererSource(effSrcDir, 'cross-session-insights.js').trim();
   let mainTemplate = readVerifiedRendererSource(effSrcDir, 'main.js');
   if (!mainTemplate.trim()) throw new Error('Renderer entry point is empty: ' + path.join(effSrcDir, 'main.js'));
   const effAntigravitySvgPath = path.join(effSrcDir, 'assets', 'antigravity-color.svg');
@@ -103,12 +110,18 @@ function buildRenderer(options = {}) {
     .replace('  /* @INSERT_BUDGET_ENGINE_MODULE */', () => budgetEngine)
     .replace('  /* @INSERT_COLORS_MODULE */', () => colors)
     .replace('  /* @INSERT_DROPDOWN_MODULE */', () => dropdown)
-    .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap);
+    .replace('  /* @INSERT_DASHBOARD_GRID_MODULE */', () => dashboardGrid)
+    .replace('  /* @INSERT_TREND_PULSE_MODULE */', () => trendPulse)
+    .replace('  /* @INSERT_CONTEXT_INSPECTOR_MODULE */', () => contextInspector)
+    .replace('  /* @INSERT_EXECUTION_TRACE_MODULE */', () => executionTrace)
+    .replace('  /* @INSERT_AGENT_COLLAB_MODULE */', () => agentCollabHub)
+    .replace('  /* @INSERT_AUDIT_WIDGETS_MODULE */', () => auditWidgets)
+    .replace('  /* @INSERT_CROSS_SESSION_INSIGHTS_MODULE */', () => crossSessionInsights)
+    .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap)
+    .replace('__AG_ANTIGRAVITY_COLOR_SVG_DATA_URI__', () => antigravitySvgDataUri);
 
   const buildId = require('node:crypto').createHash('sha256').update(output).digest('hex').slice(0, 16);
-  output = output
-    .replace('__AG_ANTIGRAVITY_COLOR_SVG_DATA_URI__', () => antigravitySvgDataUri)
-    .replace('__AG_RENDER_BUILD_ID__', buildId);
+  output = output.replace('__AG_RENDER_BUILD_ID__', buildId);
   fs.writeFileSync(effTargetFile, output, 'utf8');
   console.log(`[构建成功] 渲染层构建完成: ${effTargetFile} (v${meterVersion}, ${Buffer.byteLength(output, 'utf8')} 字节)`);
 }

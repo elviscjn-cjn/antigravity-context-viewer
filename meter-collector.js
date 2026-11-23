@@ -57,11 +57,13 @@ const {
   analyzeSteps,
   buildSessionCompositionBreakdown,
   sanitizeCommandPreview,
+  sanitizeCompositionPreview,
   extractCommandProgram,
   extractGeneratorMaxStep,
   isCheckpointNewerThanGenerator,
   buildPostCompactSummary,
   detectContextChangeEvents,
+  buildExecutionTrace,
   summarize,
   summarizeTurnTiming,
   add,
@@ -71,6 +73,11 @@ const {
   calculateReferenceModelCost,
   resolveEffectivePlanStatus,
   SUBSCRIPTION_ACQUISITION_PRESETS,
+  SUBSCRIPTION_TIER_SPECS,
+  SUBSCRIPTION_TIER_REGION_PRICES,
+  resolvePlanSpecKey,
+  getPlanTierSpec,
+  getRegionPlanReferencePrice,
   CURRENCY_SYMBOLS,
   parseUserPlanStatus,
   buildModelQuotaSnapshot,
@@ -93,6 +100,7 @@ const {
   groupSessionCallsByTurns,
   isValidSpeedSample,
   MAX_SPEED_SAMPLES_PER_MODEL,
+  parseSpeedDateRange,
   calculateRequestApiCost,
   setDynamicPricingCatalog,
   setCustomPricingCatalog,
@@ -686,6 +694,9 @@ function setBoundedMap(map, key, val, maxEntries) {
   }
 }
 
+const _collectorHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 8, rejectUnauthorized: false });
+const _collectorHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 8 });
+
 function request(origin, method, body, token, signal = null) {
   const url = method ? `${origin}/exa.language_server_pb.LanguageServerService/${method}` : origin + '/';
   return new Promise((resolve, reject) => {
@@ -695,9 +706,10 @@ function request(origin, method, body, token, signal = null) {
       reject(err);
       return;
     }
-    const transport = url.startsWith('https:') ? https : http;
+    const isHttps = url.startsWith('https:');
+    const transport = isHttps ? https : http;
     const req = transport.request(url, {
-      agent: false,
+      agent: isHttps ? _collectorHttpsAgent : _collectorHttpAgent,
       rejectUnauthorized: false,
       method: method ? 'POST' : 'GET',
       headers: method ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {},
@@ -1229,7 +1241,22 @@ async function collect(origin, id, options = {}) {
         cascadeStatus: full.status || null,
         nowMs: scannedAt
       });
-      const result = { version: PROJECT_VERSION, conversation: id, cascadeStatus: full.status || null, turnTiming, workspacePath: wsPath || null, latest, preCompactLatest: referenceLatest || null, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, postCheckpointAttachmentTotal, postCompactActiveTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt, errors: [] };
+      const attachmentsDetail = (attachments || []).map((a, idx) => ({
+        id: `att-${idx}`,
+        name: a?.name || 'attachment',
+        mime: a?.mime || '',
+        sizeBytes: Number(a?.bytes || 0) || 0,
+        width: a?.width || null,
+        height: a?.height || null,
+        dimensions: a?.dimensions || (a?.width && a?.height ? `${a.width}×${a.height}` : null),
+        low: Number(a?.low || 0),
+        high: Number(a?.high || 0),
+        estimatedTokens: Math.round(((Number(a?.low || 0)) + (Number(a?.high || 0))) / 2),
+        references: Number(a?.references || 1),
+        source: a?.source || 'user',
+        status: a?.status || 'unknown'
+      }));
+      const result = { version: PROJECT_VERSION, conversation: id, cascadeStatus: full.status || null, turnTiming, workspacePath: wsPath || null, latest, preCompactLatest: referenceLatest || null, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, postCheckpointAttachmentTotal, postCompactActiveTotal, total, attachments, attachmentsDetail, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt, errors: [] };
       if (isSuperseded()) {
         const curSup = conversations.get(key);
         if (!curSup || !curSup.taskSeq || curSup.taskSeq <= taskSeq) {
@@ -1261,8 +1288,11 @@ async function collect(origin, id, options = {}) {
   }
 }
 
+const _turnStateGmCountCache = new Map();
+
 /**
  * 轻量级轮次状态与墙钟耗时探测（兼容 Antigravity 2.34.0 HTTP+HTTPS 与 authBootstrap）
+ * 优先走 GetAllCascadeTrajectories 摘要 + 增量尾部 GeneratorMetadata，避免拉取数十 MB 全量 steps。
  */
 async function collectTurnState(origin, id, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(origin);
@@ -1287,22 +1317,63 @@ async function collectTurnState(origin, id, options = {}) {
     }
   };
 
-  const head = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 0 });
-  const totalSteps = Number(head.numTotalSteps ?? head.trajectory?.steps?.length ?? 0);
-  const totalGm = Number(head.numTotalGeneratorMetadata ?? head.trajectory?.generatorMetadata?.length ?? 0);
-  const stepWindow = 80;
-  let stepOffset = Math.max(0, totalSteps - stepWindow);
-  const [stepsPage, gmPage] = await Promise.all([
-    totalSteps > 0
-      ? call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset, trajectoryVerbosity: 1 })
-      : Promise.resolve({ steps: [] }),
-    totalGm > 0
-      ? call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, totalGm - 40), includeMessages: false })
-      : Promise.resolve({ generatorMetadata: [] })
-  ]);
+  let summaryEntry = null;
+  try {
+    const allSummaries = await call('GetAllCascadeTrajectories', {});
+    summaryEntry = allSummaries?.trajectorySummaries?.[id] || allSummaries?.trajectorySummaries?.[id.toLowerCase()] || null;
+  } catch { }
 
-  let tailSteps = Array.isArray(stepsPage?.steps) ? stepsPage.steps : [];
-  let tailGm = Array.isArray(gmPage?.generatorMetadata) ? gmPage.generatorMetadata : [];
+  let cascadeStatus = null;
+  let totalSteps = 0;
+  let totalGm = 0;
+  let stepOffset = 0;
+  let tailSteps = [];
+  let tailGm = [];
+  const stepWindow = 80;
+
+  if (summaryEntry && Number.isFinite(Number(summaryEntry.stepCount))) {
+    cascadeStatus = summaryEntry.status || null;
+    totalSteps = Math.max(0, Number(summaryEntry.stepCount));
+    const hintUserStep = Number.isInteger(Number(summaryEntry.lastUserInputStepIndex)) && Number(summaryEntry.lastUserInputStepIndex) >= 0
+      ? Number(summaryEntry.lastUserInputStepIndex)
+      : null;
+    stepOffset = Math.max(0, totalSteps - stepWindow);
+    if (hintUserStep !== null && hintUserStep < stepOffset && (totalSteps - hintUserStep) <= 480) {
+      stepOffset = hintUserStep;
+    }
+    const gmCacheKey = `${origin}|${id.toLowerCase()}`;
+    const prevGmCount = _turnStateGmCountCache.get(gmCacheKey);
+    const gmReqOffset = (Number.isInteger(prevGmCount) && prevGmCount > 40) ? Math.max(0, prevGmCount - 40) : 0;
+    const [stepsPage, gmPage] = await Promise.all([
+      totalSteps > 0
+        ? call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset, trajectoryVerbosity: 1 })
+        : Promise.resolve({ steps: [] }),
+      totalSteps > 0
+        ? call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: gmReqOffset, includeMessages: false })
+        : Promise.resolve({ generatorMetadata: [] })
+    ]);
+    tailSteps = Array.isArray(stepsPage?.steps) ? stepsPage.steps : [];
+    const fetchedGm = Array.isArray(gmPage?.generatorMetadata) ? gmPage.generatorMetadata : [];
+    totalGm = gmReqOffset + fetchedGm.length;
+    _turnStateGmCountCache.set(gmCacheKey, totalGm);
+    tailGm = fetchedGm.length > 40 ? fetchedGm.slice(-40) : fetchedGm;
+  } else {
+    const head = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 0 });
+    cascadeStatus = head.status || null;
+    totalSteps = Number(head.numTotalSteps ?? head.trajectory?.steps?.length ?? 0);
+    totalGm = Number(head.numTotalGeneratorMetadata ?? head.trajectory?.generatorMetadata?.length ?? 0);
+    stepOffset = Math.max(0, totalSteps - stepWindow);
+    const [stepsPage, gmPage] = await Promise.all([
+      totalSteps > 0
+        ? call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset, trajectoryVerbosity: 1 })
+        : Promise.resolve({ steps: [] }),
+      totalGm > 0
+        ? call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, totalGm - 40), includeMessages: false })
+        : Promise.resolve({ generatorMetadata: [] })
+    ]);
+    tailSteps = Array.isArray(stepsPage?.steps) ? stepsPage.steps : [];
+    tailGm = Array.isArray(gmPage?.generatorMetadata) ? gmPage.generatorMetadata : [];
+  }
 
   if (stepOffset > 0 && !tailSteps.some(s => s?.userInput)) {
     let backOffset = stepOffset;
@@ -1344,13 +1415,13 @@ async function collectTurnState(origin, id, options = {}) {
     steps: tailSteps,
     stepOffset,
     generatorMetadata: tailGm,
-    cascadeStatus: head.status || null,
+    cascadeStatus,
     nowMs
   });
 
   return {
     conversation: id,
-    cascadeStatus: head.status || null,
+    cascadeStatus,
     numTotalSteps: totalSteps,
     numTotalGeneratorMetadata: totalGm,
     turnTiming,
@@ -1677,6 +1748,11 @@ function pruneExcessSpeedSamples(draftCalls, limit = MAX_SPEED_SAMPLES_PER_MODEL
       const rec = draftCalls[entries[i].callId];
       if (!rec) continue;
       const copy = { ...rec };
+      copy.speedArchive = {
+        ...rec.speedArchive,
+        ...Object.fromEntries(['durationSec', 'ttftSec', 'streamingSec', 'tps', 'streamingTps', 'origin']
+          .filter(key => rec[key] != null).map(key => [key, rec[key]]))
+      };
       delete copy.ttftSec;
       delete copy.streamingSec;
       delete copy.durationSec;
@@ -4041,7 +4117,7 @@ const DEFAULT_VIEW_PREFS = Object.freeze({
 const VALID_VIEW_PREF_SETS = {
   heatView: new Set(['daily', 'weekly', 'monthly', 'yearly', 'cum']),
   modelUsagePeriodDays: new Set([7, 30]),
-  speedRangeDays: new Set(['7', '30', 'all']),
+  speedRangeDays: new Set(['1', '3', '5', '7', '30', 'all', 'custom']),
   costScope: new Set(['period', 'all']),
   contextTrendMode: new Set(['total', 'delta']),
   contextTrendGranularity: new Set(['step', 'turn']),
@@ -4062,7 +4138,8 @@ function sanitizeDefaultViewPrefs(raw, fallbackSavedHeatView = null) {
   return {
     heatView: VALID_VIEW_PREF_SETS.heatView.has(src.heatView) ? src.heatView : fbHeat,
     modelUsagePeriodDays: VALID_VIEW_PREF_SETS.modelUsagePeriodDays.has(rawPeriod) ? rawPeriod : DEFAULT_VIEW_PREFS.modelUsagePeriodDays,
-    speedRangeDays: VALID_VIEW_PREF_SETS.speedRangeDays.has(rawSpeed) ? rawSpeed : DEFAULT_VIEW_PREFS.speedRangeDays,
+    speedRangeDays: VALID_VIEW_PREF_SETS.speedRangeDays.has(rawSpeed) && (rawSpeed !== 'custom' || parseSpeedDateRange(src.speedDateRange)) ? rawSpeed : DEFAULT_VIEW_PREFS.speedRangeDays,
+    ...(parseSpeedDateRange(src.speedDateRange) ? { speedDateRange: { start: src.speedDateRange.start, end: src.speedDateRange.end } } : {}),
     costScope: VALID_VIEW_PREF_SETS.costScope.has(src.costScope) ? src.costScope : DEFAULT_VIEW_PREFS.costScope,
     contextTrendMode: VALID_VIEW_PREF_SETS.contextTrendMode.has(src.contextTrendMode) ? src.contextTrendMode : DEFAULT_VIEW_PREFS.contextTrendMode,
     contextTrendGranularity: VALID_VIEW_PREF_SETS.contextTrendGranularity.has(src.contextTrendGranularity) ? src.contextTrendGranularity : DEFAULT_VIEW_PREFS.contextTrendGranularity,
@@ -4070,6 +4147,139 @@ function sanitizeDefaultViewPrefs(raw, fallbackSavedHeatView = null) {
     timelineSortOrder: VALID_VIEW_PREF_SETS.timelineSortOrder.has(src.timelineSortOrder) ? src.timelineSortOrder : DEFAULT_VIEW_PREFS.timelineSortOrder,
     reqLogSortBy: VALID_VIEW_PREF_SETS.reqLogSortBy.has(src.reqLogSortBy) ? src.reqLogSortBy : DEFAULT_VIEW_PREFS.reqLogSortBy
   };
+}
+
+const VALID_COCKPIT_PRESETS = new Set(['cockpit', 'minimal', 'debug', 'speed_cost', 'collab']);
+const VALID_COCKPIT_WIDGET_IDS = [
+  'overview-kpi',
+  'token-breakdown',
+  'request-cost',
+  'timing-speed',
+  'trend-pulse',
+  'context-inspector',
+  'execution-trace',
+  'context-events',
+  'file-radar',
+  'command-audit',
+  'agent-collab',
+  'tech-drawer'
+];
+const VALID_COCKPIT_WIDGET_SET = new Set(VALID_COCKPIT_WIDGET_IDS);
+const VALID_COCKPIT_SPANS = new Set([4, 6, 8, 12]);
+const VALID_COCKPIT_HEIGHTS = new Set(['compact', 'standard', 'expanded']);
+
+function sanitizeSessionCockpitLayout(raw, includePresets = true) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const presetId = VALID_COCKPIT_PRESETS.has(raw.presetId) ? raw.presetId : 'cockpit';
+  const defaultSpanById = {
+    'overview-kpi': 12,
+    'token-breakdown': 6,
+    'request-cost': 6,
+    'timing-speed': 6,
+    'trend-pulse': 6,
+    'context-inspector': 6,
+    'execution-trace': 12,
+    'context-events': 6,
+    'file-radar': 6,
+    'command-audit': 12,
+    'agent-collab': 12,
+    'tech-drawer': 12
+  };
+  const seen = new Set();
+  const widgets = [];
+
+  if (Array.isArray(raw.widgets) && raw.widgets.length > 0) {
+    for (const item of raw.widgets) {
+      if (!item || typeof item !== 'object') continue;
+      const id = String(item.id || '').trim();
+      if (!VALID_COCKPIT_WIDGET_SET.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      const spanNum = Number(item.span);
+      const customWidth = item.customWidth === true && Number.isInteger(spanNum) && spanNum >= 1 && spanNum <= 12;
+      const span = customWidth || VALID_COCKPIT_SPANS.has(spanNum) ? spanNum : (defaultSpanById[id] || 12);
+      const height = VALID_COCKPIT_HEIGHTS.has(item.height) ? item.height : (id === 'tech-drawer' ? 'compact' : 'standard');
+      const visible = typeof item.visible === 'boolean' ? item.visible : true;
+      const rawPx = Number(item.customHeightPx ?? item.heightPx);
+      const customHeightPx = Number.isFinite(rawPx) && rawPx >= 100
+        ? Math.max(180, Math.min(680, Math.round(rawPx)))
+        : null;
+      // P1-1：宿主侧同样透传自由缩放宽度，避免回灌时丢失
+      const rawRatio = Number(item.widthRatio);
+      const widthRatio = Number.isFinite(rawRatio) && rawRatio > 0 && rawRatio <= 1 ? rawRatio : null;
+      widgets.push({ id, span, height, visible, customHeightPx, ...(customWidth ? { customWidth } : {}), ...(widthRatio != null ? { widthRatio } : {}) });
+    }
+  } else {
+    const hiddenSet = new Set(Array.isArray(raw.hiddenIds) ? raw.hiddenIds : []);
+    const srcOrder = Array.isArray(raw.order) ? raw.order : [];
+    for (const id of srcOrder) {
+      if (typeof id !== 'string' || !VALID_COCKPIT_WIDGET_SET.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      const spanNum = Number(raw.spans?.[id]);
+      const span = VALID_COCKPIT_SPANS.has(spanNum) ? spanNum : (defaultSpanById[id] || 12);
+      const hRaw = raw.heights?.[id];
+      const height = VALID_COCKPIT_HEIGHTS.has(hRaw) ? hRaw : (id === 'tech-drawer' ? 'compact' : 'standard');
+      const rawPx = Number(raw.heightPx?.[id]);
+      const customHeightPx = Number.isFinite(rawPx) && rawPx >= 100
+        ? Math.max(180, Math.min(680, Math.round(rawPx)))
+        : null;
+      widgets.push({ id, span, height, visible: !hiddenSet.has(id), customHeightPx });
+    }
+  }
+
+  for (const id of VALID_COCKPIT_WIDGET_IDS) {
+    if (!seen.has(id)) {
+      const widget = {
+        id,
+        span: defaultSpanById[id] || 12,
+        height: id === 'tech-drawer' ? 'compact' : 'standard',
+        visible: id !== 'request-cost' || presetId === 'speed_cost',
+        customHeightPx: null
+      };
+      const after = id === 'request-cost' && presetId === 'speed_cost' ? widgets.findIndex(w => w.id === 'token-breakdown') : -1;
+      if (after >= 0) widgets.splice(after + 1, 0, widget);
+      else widgets.push(widget);
+    }
+  }
+
+  const order = widgets.map(w => w.id);
+  const spans = {};
+  const heights = {};
+  const heightPx = {};
+  const hiddenIds = [];
+  for (const w of widgets) {
+    spans[w.id] = w.span;
+    heights[w.id] = w.height;
+    if (w.customHeightPx != null) heightPx[w.id] = w.customHeightPx;
+    if (!w.visible) hiddenIds.push(w.id);
+  }
+
+  const result = {
+    version: 1,
+    presetId,
+    widgets,
+    order,
+    spans,
+    heights,
+    heightPx,
+    hiddenIds,
+    timingDiagExpanded: raw.timingDiagExpanded === true,
+    trendOverviewRibbon: raw.trendOverviewRibbon === true,
+    trendLatencyOverlay: raw.trendLatencyOverlay === true
+  };
+  if (!includePresets || !Array.isArray(raw.customPresets)) return result;
+  const customPresets = [];
+  const seenPresets = new Set();
+  for (const item of raw.customPresets) {
+    const id = String(item?.id || '');
+    const name = String(item?.name || '').replace(/[（）()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!/^custom-[\w-]{1,72}$/.test(id) || !name || seenPresets.has(id)) continue;
+    const normalized = sanitizeSessionCockpitLayout(item, false);
+    seenPresets.add(id);
+    customPresets.push({ id, name, presetId: normalized.presetId, widgets: normalized.widgets });
+  }
+  if (customPresets.length) result.customPresets = customPresets;
+  if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
+  return result;
 }
 
 function getPluginSettings(options = {}) {
@@ -4081,11 +4291,50 @@ function getPluginSettings(options = {}) {
   const customPlan = resolveAccountCustomPlan(settings, email);
   const uiPrefs = settings.uiPreferences || {};
   const contextPreferences = settings.contextPreferences || {};
-  const validDockPositions = new Set(['flow', 'fixed', 'aux', 'page', 'hide']);
+  const validDockPositions = new Set(['flow', 'compact', 'fixed', 'aux', 'page', 'hide']);
+  const validTopbarModes = new Set(['full', 'compact', 'hidden']);
+  const validPanelDockModes = new Set(['popover', 'aux', 'page']);
   const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
+  const validQuickMenuStyles = new Set(['floating', 'topbar', 'bottombar', 'classic']);
   const defaultViewPrefs = sanitizeDefaultViewPrefs(uiPrefs.defaultViewPrefs, uiPrefs.savedHeatView);
   const hasExplicitPanelLanguage = typeof uiPrefs.panelLanguage === 'string' && validPanelLanguages.has(uiPrefs.panelLanguage);
+  const savedOrbPos = (uiPrefs.radialOrbPos && typeof uiPrefs.radialOrbPos === 'object'
+    && Number.isFinite(Number(uiPrefs.radialOrbPos.x)) && Number.isFinite(Number(uiPrefs.radialOrbPos.y)))
+    ? { x: Math.round(Number(uiPrefs.radialOrbPos.x)), y: Math.round(Number(uiPrefs.radialOrbPos.y)) }
+    : null;
+  const sessionCockpitLayout = sanitizeSessionCockpitLayout(uiPrefs.sessionCockpitLayout) || null;
+
+  // 正交双字段及无损旧字段映射
+  const resolvedTopbarMode = (() => {
+    if (typeof uiPrefs.topbarMode === 'string' && validTopbarModes.has(uiPrefs.topbarMode)) {
+      return uiPrefs.topbarMode;
+    }
+    if (uiPrefs.hideTopbar === true || uiPrefs.dockPosition === 'hide') return 'hidden';
+    if (uiPrefs.dockPosition === 'compact' || uiPrefs.dockPosition === 'fixed') return 'compact';
+    return 'full';
+  })();
+  const resolvedPanelDockMode = (() => {
+    if (typeof uiPrefs.panelDockMode === 'string' && validPanelDockModes.has(uiPrefs.panelDockMode)) {
+      return uiPrefs.panelDockMode;
+    }
+    if (uiPrefs.dockPosition === 'aux') return 'aux';
+    if (uiPrefs.dockPosition === 'page') return 'page';
+    return 'popover';
+  })();
+  const autoHideTopbarOnDockedPanel = uiPrefs.autoHideTopbarOnDockedPanel !== false;
+  const legacyQuickMenuStyle = validQuickMenuStyles.has(uiPrefs.quickMenuStyle) ? uiPrefs.quickMenuStyle : 'floating';
+  const resolvedRadialTopbarEnabled = typeof uiPrefs.radialTopbarEnabled === 'boolean'
+    ? uiPrefs.radialTopbarEnabled
+    : legacyQuickMenuStyle === 'topbar';
+  const resolvedRadialBottombarEnabled = typeof uiPrefs.radialBottombarEnabled === 'boolean'
+    ? uiPrefs.radialBottombarEnabled
+    : legacyQuickMenuStyle === 'bottombar';
+  const resolvedRadialOrbEnabled = (() => {
+    if (typeof uiPrefs.radialOrbEnabled === 'boolean') return uiPrefs.radialOrbEnabled;
+    if (typeof uiPrefs.floatingOrbHidden === 'boolean') return !uiPrefs.floatingOrbHidden;
+    return legacyQuickMenuStyle === 'floating';
+  })();
   return {
     ok: true,
     customPlan,
@@ -4095,9 +4344,20 @@ function getPluginSettings(options = {}) {
     contextUnifiedPreference: settings.contextUnifiedPreference || { mode: 'default', limitTokens: null },
     savedHeatView: uiPrefs.savedHeatView || defaultViewPrefs.heatView,
     defaultViewPrefs,
+    sessionCockpitLayout,
     autoCheckUpdate: uiPrefs.autoCheckUpdate,
     allowBetaUpdates: uiPrefs.allowBetaUpdates === true,
     dockPosition: validDockPositions.has(uiPrefs.dockPosition) ? uiPrefs.dockPosition : 'flow',
+    hideTopbar: uiPrefs.hideTopbar === true,
+    topbarMode: resolvedTopbarMode,
+    panelDockMode: resolvedPanelDockMode,
+    autoHideTopbarOnDockedPanel,
+    quickMenuStyle: validQuickMenuStyles.has(uiPrefs.quickMenuStyle) ? uiPrefs.quickMenuStyle : 'floating',
+    radialOrbEnabled: resolvedRadialOrbEnabled,
+    radialTopbarEnabled: resolvedRadialTopbarEnabled,
+    radialBottombarEnabled: resolvedRadialBottombarEnabled,
+    floatingOrbHidden: !resolvedRadialOrbEnabled,
+    radialOrbPos: savedOrbPos,
     quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
     panelLanguage: hasExplicitPanelLanguage ? uiPrefs.panelLanguage : 'zh-CN',
     panelLanguageExplicit: hasExplicitPanelLanguage,
@@ -4177,6 +4437,11 @@ function savePluginSettings(payload = {}, options = {}) {
     if (inputPlan.planTierOverride === null || inputPlan.planTierOverride === '' || String(inputPlan.planTierOverride).toLowerCase() === 'auto') {
       delete mergedRaw.planTierOverride;
     }
+    if (inputPlan.priceMode === 'preset' && (inputPlan.actualPricePaid === null || inputPlan.actualPricePaid === undefined || inputPlan.resetCustomPaid === true)) {
+      delete mergedRaw.actualPricePaid;
+      delete mergedRaw.customActualPrice;
+      mergedRaw.isZeroExtraCost = false;
+    }
 
     const sanitized = sanitizeAccountPlanEntry(mergedRaw, key);
     if (!sanitized) {
@@ -4196,8 +4461,9 @@ function savePluginSettings(payload = {}, options = {}) {
     topLevelUiPrefs.savedHeatView = payload.savedHeatView;
   }
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
-  const validDockPositions = new Set(['flow', 'fixed', 'aux', 'page', 'hide']);
+  const validDockPositions = new Set(['flow', 'compact', 'fixed', 'aux', 'page', 'hide']);
   const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
+  const validQuickMenuStyles = new Set(['floating', 'topbar', 'bottombar', 'classic']);
   if (typeof payload.autoCheckUpdate === 'boolean') {
     topLevelUiPrefs.autoCheckUpdate = payload.autoCheckUpdate;
   }
@@ -4206,8 +4472,78 @@ function savePluginSettings(payload = {}, options = {}) {
     cachedUpdateCheck = null;
     cachedUpdateCheckAt = 0;
   }
+  if (typeof payload.topbarMode === 'string' && validTopbarModes.has(payload.topbarMode)) {
+    topLevelUiPrefs.topbarMode = payload.topbarMode;
+    topLevelUiPrefs.hideTopbar = payload.topbarMode === 'hidden';
+    if (payload.topbarMode === 'compact') {
+      topLevelUiPrefs.dockPosition = 'compact';
+    } else if (payload.topbarMode === 'full') {
+      topLevelUiPrefs.dockPosition = topLevelUiPrefs.panelDockMode === 'aux' ? 'aux' : (topLevelUiPrefs.panelDockMode === 'page' ? 'page' : 'flow');
+    }
+  }
+  if (typeof payload.panelDockMode === 'string' && validPanelDockModes.has(payload.panelDockMode)) {
+    topLevelUiPrefs.panelDockMode = payload.panelDockMode;
+    if (payload.panelDockMode === 'aux') {
+      topLevelUiPrefs.dockPosition = 'aux';
+    } else if (payload.panelDockMode === 'page') {
+      topLevelUiPrefs.dockPosition = 'page';
+    } else {
+      topLevelUiPrefs.dockPosition = topLevelUiPrefs.topbarMode === 'compact' ? 'compact' : 'flow';
+    }
+  }
+  if (typeof payload.autoHideTopbarOnDockedPanel === 'boolean') {
+    topLevelUiPrefs.autoHideTopbarOnDockedPanel = payload.autoHideTopbarOnDockedPanel;
+  }
   if (typeof payload.dockPosition === 'string' && validDockPositions.has(payload.dockPosition)) {
     topLevelUiPrefs.dockPosition = payload.dockPosition;
+    // 兼容映射到新字段
+    if (payload.dockPosition === 'compact' || payload.dockPosition === 'fixed') {
+      topLevelUiPrefs.topbarMode = 'compact';
+      topLevelUiPrefs.panelDockMode = 'popover';
+    } else if (payload.dockPosition === 'aux') {
+      topLevelUiPrefs.panelDockMode = 'aux';
+    } else if (payload.dockPosition === 'page') {
+      topLevelUiPrefs.panelDockMode = 'page';
+    } else if (payload.dockPosition === 'hide') {
+      topLevelUiPrefs.topbarMode = 'hidden';
+      topLevelUiPrefs.hideTopbar = true;
+    } else if (payload.dockPosition === 'flow') {
+      topLevelUiPrefs.topbarMode = 'full';
+      topLevelUiPrefs.panelDockMode = 'popover';
+    }
+  }
+  if (typeof payload.hideTopbar === 'boolean') {
+    topLevelUiPrefs.hideTopbar = payload.hideTopbar;
+    if (payload.hideTopbar) {
+      topLevelUiPrefs.topbarMode = 'hidden';
+    } else if (topLevelUiPrefs.topbarMode === 'hidden') {
+      topLevelUiPrefs.topbarMode = 'full';
+    }
+  }
+  if (typeof payload.quickMenuStyle === 'string' && validQuickMenuStyles.has(payload.quickMenuStyle)) {
+    topLevelUiPrefs.quickMenuStyle = payload.quickMenuStyle;
+  }
+  if (typeof payload.radialOrbEnabled === 'boolean' || typeof payload.floatingOrbHidden === 'boolean') {
+    const orbEnabled = typeof payload.radialOrbEnabled === 'boolean'
+      ? payload.radialOrbEnabled
+      : !payload.floatingOrbHidden;
+    topLevelUiPrefs.radialOrbEnabled = orbEnabled;
+    topLevelUiPrefs.floatingOrbHidden = !orbEnabled;
+  }
+  if (typeof payload.radialTopbarEnabled === 'boolean') {
+    topLevelUiPrefs.radialTopbarEnabled = payload.radialTopbarEnabled;
+  }
+  if (typeof payload.radialBottombarEnabled === 'boolean') {
+    topLevelUiPrefs.radialBottombarEnabled = payload.radialBottombarEnabled;
+  }
+  if (payload.radialOrbPos && typeof payload.radialOrbPos === 'object'
+    && Number.isFinite(Number(payload.radialOrbPos.x)) && Number.isFinite(Number(payload.radialOrbPos.y))) {
+    topLevelUiPrefs.radialOrbPos = {
+      x: Math.round(Number(payload.radialOrbPos.x)),
+      y: Math.round(Number(payload.radialOrbPos.y))
+    };
+  } else if (payload.radialOrbPos === null) {
+    topLevelUiPrefs.radialOrbPos = null;
   }
   if (typeof payload.quotaBadgeWindowMode === 'string' && validQuotaWindowModes.has(payload.quotaBadgeWindowMode)) {
     topLevelUiPrefs.quotaBadgeWindowMode = payload.quotaBadgeWindowMode;
@@ -4240,6 +4576,17 @@ function savePluginSettings(payload = {}, options = {}) {
     topLevelUiPrefs.defaultViewPrefs = sanitizedViews;
     topLevelUiPrefs.savedHeatView = sanitizedViews.heatView;
   }
+  const rawCockpitLayout = payload.sessionCockpitLayout !== undefined
+    ? payload.sessionCockpitLayout
+    : payload.uiPreferences?.sessionCockpitLayout;
+  if (rawCockpitLayout !== undefined) {
+    const cleanLayout = sanitizeSessionCockpitLayout(rawCockpitLayout);
+    if (cleanLayout) {
+      topLevelUiPrefs.sessionCockpitLayout = cleanLayout;
+    } else if (rawCockpitLayout === null) {
+      topLevelUiPrefs.sessionCockpitLayout = null;
+    }
+  }
   const incomingUiPrefs = (payload.uiPreferences && typeof payload.uiPreferences === 'object' && !Array.isArray(payload.uiPreferences))
     ? { ...payload.uiPreferences, ...topLevelUiPrefs }
     : (Object.keys(topLevelUiPrefs).length > 0 ? topLevelUiPrefs : null);
@@ -4251,6 +4598,11 @@ function savePluginSettings(payload = {}, options = {}) {
     if (incomingUiPrefs.defaultViewPrefs && !topLevelUiPrefs.defaultViewPrefs) {
       incomingUiPrefs.defaultViewPrefs = sanitizeDefaultViewPrefs(incomingUiPrefs.defaultViewPrefs, incomingUiPrefs.savedHeatView || settings.uiPreferences?.savedHeatView);
     }
+    if (incomingUiPrefs.sessionCockpitLayout && !topLevelUiPrefs.sessionCockpitLayout) {
+      const cleanUiLayout = sanitizeSessionCockpitLayout(incomingUiPrefs.sessionCockpitLayout);
+      if (cleanUiLayout) incomingUiPrefs.sessionCockpitLayout = cleanUiLayout;
+      else delete incomingUiPrefs.sessionCockpitLayout;
+    }
     const nextUi = {
       ...(settings.uiPreferences || {}),
       ...incomingUiPrefs,
@@ -4258,6 +4610,9 @@ function savePluginSettings(payload = {}, options = {}) {
     };
     if (nextUi.restartVerification === null) {
       delete nextUi.restartVerification;
+    }
+    if (nextUi.sessionCockpitLayout === null) {
+      delete nextUi.sessionCockpitLayout;
     }
     settings.uiPreferences = nextUi;
   }
@@ -4682,7 +5037,8 @@ async function fetchUserStatusFromHost(options = {}) {
   }
   const originScope = normalizeQuotaOriginScope(options);
   const cachedEntry = cachedUserStatusByOrigin.get(originScope) || null;
-  if (!options.agDir && !options.force && cachedEntry?.status && Date.now() - (cachedEntry.fetchedAt || 0) < 60000) {
+  const userStatusTtlMs = (options.force && !options.forceUserStatus) ? 15000 : 60000;
+  if (!options.agDir && !options.forceUserStatus && cachedEntry?.status && Date.now() - (cachedEntry.fetchedAt || 0) < userStatusTtlMs) {
     return cachedEntry.status;
   }
   try {
@@ -4785,8 +5141,51 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
   }
 
   const tot = inp + outp + cap;
+  const cascadeIdMeta = String(event.cascadeId || (brainMatch ? brainMatch[1] : path.basename(jobPath, '.jsonl')));
+  let toolNames = null;
+  let commandPrograms = null;
+  let skillNames = null;
+  let titleHint = null;
+  if (event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user') {
+    const rawUserTxt = typeof event.content === 'string'
+      ? event.content
+      : (typeof event.text === 'string' ? event.text : '');
+    if (rawUserTxt && event.source !== 'SYSTEM_SDK') {
+      const cleaned = sanitizeTurnPreviewText(rawUserTxt, 56);
+      if (cleaned) titleHint = cleaned;
+    }
+    if (rawUserTxt && /SKILL\.md/i.test(rawUserTxt)) {
+      const skMatches = rawUserTxt.match(/([A-Za-z0-9_.-]+)[\\/]SKILL\.md/gi) || [];
+      if (skMatches.length) {
+        skillNames = skMatches.map(m => m.replace(/[\\/]SKILL\.md/i, '')).slice(0, 6);
+      }
+    }
+  }
+  if (Array.isArray(event.tool_calls) && event.tool_calls.length) {
+    toolNames = [];
+    for (const tc of event.tool_calls) {
+      if (!tc || !tc.name) continue;
+      const tName = String(tc.name).trim();
+      toolNames.push(tName);
+      if (COMMAND_TOOL_NAMES.has(tName)) {
+        const rawCmd = String(unwrapToolArg(tc.args?.CommandLine ?? tc.args?.command ?? tc.args?.cmd ?? '') || '').trim();
+        if (rawCmd) {
+          if (!commandPrograms) commandPrograms = [];
+          commandPrograms.push(extractCommandProgram(rawCmd));
+        }
+      }
+      const pArg = String(unwrapToolArg(tc.args?.Path ?? tc.args?.AbsolutePath ?? tc.args?.file_path ?? '') || '');
+      if (/skill\.md$/i.test(pArg)) {
+        const skFolder = pArg.split(/[\\/]/).slice(-2, -1)[0] || path.basename(pArg);
+        if (skFolder) {
+          if (!skillNames) skillNames = [];
+          skillNames.push(skFolder);
+        }
+      }
+    }
+  }
   if (tot > 0) {
-    const cascadeId = String(event.cascadeId || (brainMatch ? brainMatch[1] : path.basename(jobPath, '.jsonl')));
+    const cascadeId = cascadeIdMeta;
     const rawStep = event.step_index ?? event.stepIndex;
     const parsedStep = rawStep !== undefined && rawStep !== null && rawStep !== '' ? Number(rawStep) : NaN;
     const stepIndex = Number.isInteger(parsedStep) && parsedStep >= 0 ? parsedStep : null;
@@ -4814,13 +5213,22 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
       thinking,
       tot,
       created_at: event.created_at,
+      ...(toolNames?.length ? { toolNames } : {}),
+      ...(commandPrograms?.length ? { commandPrograms } : {}),
+      ...(skillNames?.length ? { skillNames } : {}),
       _hasExplicitId: !isStepFallbackCallId(eventId, cascadeId)
     };
   }
 
   return {
     tot: 0,
-    created_at: event.created_at
+    cascadeId: cascadeIdMeta,
+    created_at: event.created_at,
+    ...(toolNames?.length ? { toolNames } : {}),
+    ...(commandPrograms?.length ? { commandPrograms } : {}),
+    ...(skillNames?.length ? { skillNames } : {}),
+    ...(titleHint ? { titleHint } : {}),
+    ...(event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user' ? { isUserTurn: event.source !== 'SYSTEM_SDK' } : {})
   };
 }
 
@@ -6602,6 +7010,10 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
   };
   const seenEvents = new Map();
   const recentRequests = [];
+  const crossToolAgg = new Map();
+  const crossCmdAgg = new Map();
+  const crossSkillAgg = new Map();
+  const sessionMetaHints = new Map();
 
   for (let jIdx = 0; jIdx < transcriptJobs.length; jIdx++) {
     const job = transcriptJobs[jIdx];
@@ -6630,12 +7042,50 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       }
 
       const jobConvNorm = job.convDir ? (process.platform === 'win32' ? path.resolve(job.convDir).toLowerCase() : path.resolve(job.convDir)) : '';
+      const jobCidMatch = String(job.path || '').match(/[\\/]brain[\\/]([^\\/]+)[\\/]/i);
+      const jobCidLower = String(jobCidMatch ? jobCidMatch[1] : path.basename(String(job.path || ''), '.jsonl')).toLowerCase();
+      if (jobCidLower && !sessionMetaHints.has(jobCidLower)) {
+        sessionMetaHints.set(jobCidLower, { title: '', turnCount: 0, workspaceTag: '', source: job.source });
+      }
+      const metaHint = jobCidLower ? sessionMetaHints.get(jobCidLower) : null;
+      const seenSessionTools = new Set();
+      const seenSessionSkills = new Set();
       for (let rIdx = 0; rIdx < fileRecords.length; rIdx++) {
         const rec = fileRecords[rIdx];
         const parsedDate = new Date(rec.created_at);
         if (Number.isNaN(parsedDate.getTime())) continue;
         const dateKey = formatLocalDateKey(parsedDate);
         registerDate(dateKey);
+        if (metaHint) {
+          if (!metaHint.title && rec.titleHint) metaHint.title = rec.titleHint;
+          if (rec.isUserTurn) metaHint.turnCount++;
+        }
+        if (Array.isArray(rec.toolNames)) {
+          for (const tn of rec.toolNames) {
+            let ta = crossToolAgg.get(tn);
+            if (!ta) { ta = { name: tn, count: 0, sessions: new Set(), byDate: {} }; crossToolAgg.set(tn, ta); }
+            ta.count++;
+            if (jobCidLower && !seenSessionTools.has(tn)) { ta.sessions.add(jobCidLower); seenSessionTools.add(tn); }
+            ta.byDate[dateKey] = (ta.byDate[dateKey] || 0) + 1;
+          }
+        }
+        if (Array.isArray(rec.commandPrograms)) {
+          for (const cp of rec.commandPrograms) {
+            let ca = crossCmdAgg.get(cp);
+            if (!ca) { ca = { program: cp, count: 0, byDate: {} }; crossCmdAgg.set(cp, ca); }
+            ca.count++;
+            ca.byDate[dateKey] = (ca.byDate[dateKey] || 0) + 1;
+          }
+        }
+        if (Array.isArray(rec.skillNames)) {
+          for (const sk of rec.skillNames) {
+            let sa = crossSkillAgg.get(sk);
+            if (!sa) { sa = { name: sk, count: 0, sessions: new Set(), byDate: {} }; crossSkillAgg.set(sk, sa); }
+            sa.count++;
+            if (jobCidLower && !seenSessionSkills.has(sk)) { sa.sessions.add(jobCidLower); seenSessionSkills.add(sk); }
+            sa.byDate[dateKey] = (sa.byDate[dateKey] || 0) + 1;
+          }
+        }
         if (!rec.tot || !rec.eventId) continue;
 
         const existingReq = seenEvents.get(rec.eventId);
@@ -7578,9 +8028,40 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
 
   const costEstimate = costEstimateAll;
 
-  const speedRecords = mergedCalls
-    .filter(c => isValidSpeedSample(c))
-    .map(c => ({
+  const localSpeedDb = new Map();
+  const speedDbMeta = call => {
+    const cid = String(call.cascadeId || '');
+    if (!UUID_SESSION_FILE_RE.test(`${cid}.db`) || !Number.isInteger(call.stepIndex) || options.fs || isFsMonkeyPatched()) return null;
+    const source = call.source === 'cli' ? 'cli' : 'desktop';
+    const key = `${source}:${cid}`;
+    if (!localSpeedDb.has(key)) {
+      const dirs = source === 'cli' ? cliAgDirs : desktopAgDirs;
+      localSpeedDb.set(key, dirs.map(dir => loadConversationDbMeta(path.join(dir, 'conversations', `${cid}.db`), cid).stepMetaMap).filter(map => map.size));
+    }
+    for (const map of localSpeedDb.get(key)) {
+      const meta = map.get(call.stepIndex);
+      if (meta?.responseId && (meta.responseId === call.responseId || meta.responseId === call.callId)) return meta;
+    }
+    return null;
+  };
+  const speedRecords = [];
+  for (let index = 0; index < finalCallsEntries.length; index++) {
+    if (index > 0 && index % 500 === 0) await new Promise(resolve => setImmediate(resolve));
+    const [ledgerKey, call] = finalCallsEntries[index];
+    let c = call;
+    if (!isValidSpeedSample(c) && Number(c.outputTokens) > 0) {
+      const matched = matchedReqByCallKey.get(ledgerKey) || matchedReqByCallKey.get(call.callId);
+      const db = !call.speedArchive && !matched?.durationSec ? speedDbMeta(c) : null;
+      c = { ...call };
+      for (const key of ['durationSec', 'ttftSec', 'streamingSec', 'tps', 'streamingTps', 'origin']) {
+        c[key] ??= call.speedArchive?.[key] ?? matched?.[key] ?? db?.[key];
+      }
+      if (db && c.durationSec == null && Number(c.streamingSec) > 0) {
+        c.durationSec = Number(c.ttftSec || 0) + Number(c.streamingSec);
+      }
+    }
+    if (!isValidSpeedSample(c)) continue;
+    speedRecords.push({
       callId: c.callId,
       model: c.model,
       modelExactId: c.modelExactId || resolveStableModelId(c, livePlanStatus?.cascadeModelConfigs || []) || null,
@@ -7599,7 +8080,8 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       date: c.date || null,
       created_at: c.created_at || null,
       timestamp: getCallSortTimestamp(c) || null
-    }));
+    });
+  }
 
   const recentRequestLogs = (() => {
     const modelConfigs = Array.isArray(livePlanStatus?.cascadeModelConfigs) ? livePlanStatus.cascadeModelConfigs : [];
@@ -7876,6 +8358,122 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     },
     now
   });
+  const archiveMap = new Map();
+  const dailyInsightExtras = new Map();
+  for (const [ledgerKey, c] of finalCallsEntries) {
+    if (!c) continue;
+    const cid = c.cascadeId ? String(c.cascadeId) : '';
+    const dKey = resolveLedgerCallDate(ledgerKey, c);
+    if (!dKey || !/^\d{4}-\d{2}-\d{2}$/.test(dKey)) continue;
+    const uC = getCallTokenBreakdown(c);
+    if (uC.tot <= 0) continue;
+    const costV = (c.isPriced && Number.isFinite(Number(c.costUSD))) ? Number(c.costUSD) : 0;
+    let de = dailyInsightExtras.get(dKey);
+    if (!de) { de = { costUSD: 0, calls: 0, sessions: new Set() }; dailyInsightExtras.set(dKey, de); }
+    de.costUSD += costV;
+    de.calls++;
+    if (cid) de.sessions.add(cid.toLowerCase());
+    if (!cid) continue;
+    const cidLower = cid.toLowerCase();
+    let sa = archiveMap.get(cidLower);
+    if (!sa) {
+      const hint = sessionMetaHints.get(cidLower);
+      const wsRaw = conversationWorkspaces?.get?.(cidLower) || '';
+      const wsTag = wsRaw ? path.basename(wsRaw) : '';
+      sa = {
+        cascadeId: cid,
+        title: hint?.title || '',
+        date: dKey,
+        updatedAt: getCallSortTimestamp(c) || 0,
+        workspaceTag: wsTag,
+        modelLabel: c.modelLabel || c.model || '',
+        totalTokens: 0,
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 0,
+        costUSD: 0,
+        callCount: 0,
+        turnCount: hint?.turnCount || 0,
+        source: c.source === 'cli' ? 'cli' : 'desktop'
+      };
+      archiveMap.set(cidLower, sa);
+    }
+    sa.totalTokens += uC.tot;
+    sa.inputTokens += uC.inp;
+    sa.cacheReadTokens += uC.cap;
+    sa.outputTokens += uC.out;
+    sa.costUSD += costV;
+    sa.callCount++;
+    const tsC = getCallSortTimestamp(c) || 0;
+    if (tsC >= sa.updatedAt) {
+      sa.updatedAt = tsC;
+      sa.date = dKey;
+      if (c.modelLabel || c.model) sa.modelLabel = c.modelLabel || c.model;
+    }
+  }
+  const dailyInsights = {};
+  for (const [dk, dRec] of Object.entries(dailyMapAll)) {
+    const ext = dailyInsightExtras.get(dk);
+    const inPlusCache = (Number(dRec.input) || 0) + (Number(dRec.cache) || 0);
+    dailyInsights[dk] = {
+      tokens: Number(dRec.total) || 0,
+      input: Number(dRec.input) || 0,
+      cache: Number(dRec.cache) || 0,
+      output: Number(dRec.output) || 0,
+      costUSD: ext ? Number(ext.costUSD.toFixed(4)) : 0,
+      calls: ext ? ext.calls : (Number(dRec.steps) || 0),
+      sessions: ext ? ext.sessions.size : 0,
+      cacheReadPct: inPlusCache > 0 ? Number((((Number(dRec.cache) || 0) / inPlusCache) * 100).toFixed(1)) : 0
+    };
+  }
+  const totalToolUses = Array.from(crossToolAgg.values()).reduce((s, x) => s + x.count, 0);
+  const topTools = Array.from(crossToolAgg.values())
+    .map(x => ({
+      name: x.name,
+      count: x.count,
+      pct: totalToolUses > 0 ? Number(((x.count / totalToolUses) * 100).toFixed(1)) : 0,
+      sessionCount: x.sessions.size,
+      byDate: x.byDate
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20);
+  const topCommands = Array.from(crossCmdAgg.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20);
+  const topSkills = Array.from(crossSkillAgg.values())
+    .map(x => ({
+      name: x.name,
+      count: x.count,
+      sessionCount: x.sessions.size,
+      byDate: x.byDate
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20);
+  const sessionArchives = Array.from(archiveMap.values())
+    .sort((a, b) => (b.updatedAt - a.updatedAt) || (b.totalTokens - a.totalTokens))
+    .slice(0, 120)
+    .map(s => {
+      const inpTot = s.inputTokens + s.cacheReadTokens;
+      const tot = Math.max(1, s.totalTokens);
+      return {
+        ...s,
+        costUSD: Number(s.costUSD.toFixed(4)),
+        cacheReadPct: inpTot > 0 ? Number(((s.cacheReadTokens / inpTot) * 100).toFixed(1)) : 0,
+        compositionRatios: {
+          inputPct: Math.round((s.inputTokens / tot) * 1000) / 10,
+          cachePct: Math.round((s.cacheReadTokens / tot) * 1000) / 10,
+          outputPct: Math.round((s.outputTokens / tot) * 1000) / 10
+        }
+      };
+    });
+  const crossSessionInsights = {
+    dailyInsights,
+    topTools,
+    topCommands,
+    topSkills,
+    sessionArchives
+  };
+
   const out = {
     schemaVersion: PROJECT_VERSION,
     version: PROJECT_VERSION,
@@ -7899,6 +8497,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     recentModelUsage,
     speedRecords,
     recentRequestLogs,
+    crossSessionInsights,
     dynamicPricingCatalog: getDynamicPricingCatalog(),
     cascadeModelConfigs: compactModelConfigs,
     modelCapabilitiesById: livePlanStatus?.availableModelDetails || null,
@@ -8044,12 +8643,52 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   } catch { }
 
+  const { updatedAt: _collectedAt, ...visibleHistory } = out;
+  // P1-2：账号标识参与 revision，账号一换必然换哈希，从根上消除串号复用 unchanged
+  out.accountKey = currentAccountKey ? String(currentAccountKey) : null;
+  out.revision = crypto.createHash('sha256')
+    .update(String(out.accountKey || '') + '|' + JSON.stringify(visibleHistory))
+    .digest('hex');
+
   return {
     out,
     archiveSig,
     accountKey: currentAccountKey ? String(currentAccountKey) : null,
     stale: false
   };
+}
+
+/**
+ * PR #90：/token-history 重复回包跳过判据。
+ * revision 是对「全部可见历史」整体做的 SHA-256（不含 updatedAt），因此请求状态、
+ * 耗时、缓存命中、模型等任一可见字段变化都会改变 revision；这里只额外拦截两种必须刷新
+ * 的情形：强制刷新，以及账号切换（不同账号的 revision 即便碰撞也绝不能复用）。
+ */
+function shouldSkipTokenHistoryRefresh({ force, knownRevision, revision, knownAccountKey, accountKey } = {}) {
+  if (force === true) return false;
+  if (typeof knownRevision !== 'string' || !knownRevision) return false;
+  if (!revision || knownRevision !== revision) return false;
+  if (typeof knownAccountKey === 'string' && knownAccountKey) {
+    // 已知旧账号但当前账号取不到（或已变化）时，无法确认是同账号，必须刷新
+    if (!accountKey) return false;
+    if (knownAccountKey !== accountKey) return false;
+  }
+  return true;
+}
+
+async function getTokenHistoryResponse({ force = false, knownRevision, knownAccountKey } = {}) {
+  const data = await collectTokenHistoryAsync({ force });
+  const accountKey = data?.accountKey ? String(data.accountKey) : null;
+  if (shouldSkipTokenHistoryRefresh({
+    force,
+    knownRevision,
+    revision: data?.revision,
+    knownAccountKey,
+    accountKey
+  })) {
+    return { ok: true, unchanged: true, revision: data.revision, accountKey };
+  }
+  return { ok: true, data };
 }
 
 /**
@@ -8153,6 +8792,8 @@ function estimateTextLinesCount(str) {
 const READ_TOOL_NAMES = new Set(['read_file', 'view_file', 'view_file_outline', 'view_code_item', 'read', 'read_image']);
 const WRITE_TOOL_NAMES = new Set(['write_file', 'edit_file', 'replace_file_content', 'multi_replace_file_content', 'write_to_file', 'write', 'edit', 'str_replace_editor']);
 const SEARCH_TOOL_NAMES = new Set(['grep_search', 'find_by_name', 'list_dir', 'grep', 'glob']);
+const IMAGE_TOOL_NAMES = new Set(['read_image', 'generate_image', 'image_gen', 'view_image', 'edit_image']);
+const IMAGE_EXT_RE = /\.(?:png|jpe?g|webp|gif|bmp|svg|ico|tiff?)$/i;
 const COMMAND_TOOL_NAMES = new Set(['run_command', 'execute_command', 'bash', 'powershell', 'pwsh', 'run_shell_command']);
 const TASK_TOOL_NAMES = new Set(['manage_task', 'schedule', 'invoke_subagent', 'send_message']);
 
@@ -8170,20 +8811,22 @@ function resolveToolTurnNumber(stepIdx, ts, sortedTurns) {
 }
 
 /**
- * 从会话步骤或 transcript 事件中提取文件活动 (读/写/搜)、脱敏命令执行与轻量任务调度记录
+ * 从会话步骤或 transcript 事件中提取文件活动 (读/写/搜/图)、脱敏命令执行与轻量任务调度记录
  * 数据完全源自 Antigravity 本地步骤与 transcript
  */
-function extractSessionToolInsights(rawToolEntries = [], turns = []) {
+function extractSessionToolInsights(rawToolEntries = [], turns = [], extraInsights = {}) {
   const fileMap = new Map();
   const commands = [];
   const taskEvents = [];
   const toolExecEvents = [];
   const seenKeys = new Set();
+  const toolResultsByStep = extraInsights.toolResultsByStep instanceof Map ? extraInsights.toolResultsByStep : new Map();
 
   let totalFileOps = 0;
   let readCount = 0;
   let writeCount = 0;
   let searchCount = 0;
+  let imageCount = 0;
   let totalAddedLines = 0;
   let totalRemovedLines = 0;
 
@@ -8192,7 +8835,7 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
     if (!entry || !entry.name) continue;
     const toolName = String(entry.name).trim();
     const args = entry.args && typeof entry.args === 'object' ? entry.args : {};
-    const stepIndex = Number.isInteger(Number(entry.stepIndex)) ? Number(entry.stepIndex) : null;
+    const stepIndex = (entry.stepIndex !== null && entry.stepIndex !== undefined && entry.stepIndex !== '' && Number.isInteger(Number(entry.stepIndex))) ? Number(entry.stepIndex) : null;
     const timestamp = Number.isFinite(Number(entry.timestamp)) && Number(entry.timestamp) > 0 ? Number(entry.timestamp) : null;
     const turnNumber = resolveToolTurnNumber(stepIndex, timestamp, turns);
     const statusUpper = String(entry.status || '').trim().toUpperCase();
@@ -8200,12 +8843,15 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
     const durationSec = (entry.durationSec != null && Number.isFinite(Number(entry.durationSec)) && Number(entry.durationSec) >= 0)
       ? Number(Number(entry.durationSec).toFixed(2))
       : null;
+    const rawOut = entry.output || (stepIndex !== null ? toolResultsByStep.get(stepIndex) : '') || '';
+    const outputPreview = rawOut ? sanitizeCompositionPreview(String(rawOut), 600) : '';
 
     if (TASK_TOOL_NAMES.has(toolName)) {
       const action = String(unwrapToolArg(args.Action ?? args.action ?? args.TypeName ?? '') || '').trim();
       const role = String(unwrapToolArg(args.Role ?? args.role ?? '') || '').trim();
       const rawPrompt = String(unwrapToolArg(args.Prompt ?? args.Message ?? args.TaskId ?? '') || '').trim();
       const summaryText = rawPrompt ? sanitizeCommandPreview(rawPrompt.replace(/\s+/g, ' '), 96) : '';
+      const promptDetail = rawPrompt ? sanitizeCompositionPreview(rawPrompt, 1200) : '';
       const taskKey = `task:${stepIndex ?? idx}:${toolName}:${action}:${role}`;
       if (!seenKeys.has(taskKey)) {
         seenKeys.add(taskKey);
@@ -8218,6 +8864,8 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
           role,
           subagentType: String(unwrapToolArg(args.TypeName ?? '') || '').trim(),
           summary: summaryText || `${toolName}${action ? ` · ${action}` : ''}${role ? ` · ${role}` : ''}`,
+          promptDetail,
+          outputPreview,
           status: isError ? 'failed' : (statusUpper === 'RUNNING' ? 'running' : 'completed'),
           durationSec,
           timestamp
@@ -8234,14 +8882,19 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
       if (seenKeys.has(dedupKey)) continue;
       seenKeys.add(dedupKey);
 
-      const safeCmd = sanitizeCommandPreview(rawCmd, 180);
+      const safeCmd = sanitizeCommandPreview(rawCmd, 220);
       const program = extractCommandProgram(rawCmd);
       const summary = String(unwrapToolArg(args.toolSummary ?? args.description ?? '') || '').trim();
       const rawDaemon = unwrapToolArg(args.IsDaemon ?? args.run_in_background ?? false);
       const waitMs = Number(unwrapToolArg(args.WaitMsBeforeAsync ?? NaN));
       const isBackground = rawDaemon === true || rawDaemon === 'true' || (Number.isFinite(waitMs) && waitMs > 0 && waitMs <= 600);
       const isSlow = Boolean(durationSec !== null && durationSec >= 5);
-      const cmdStatus = isError ? 'failed' : (statusUpper === 'RUNNING' ? 'running' : 'completed');
+      let exitCode = entry.exitCode ?? null;
+      if (exitCode == null && outputPreview) {
+        const ecMatch = outputPreview.match(/exit(?:ed with)? code[:\s]+(-?\d+)/i);
+        if (ecMatch) exitCode = Number(ecMatch[1]);
+      }
+      const cmdStatus = (isError || (exitCode != null && Number(exitCode) !== 0)) ? 'failed' : (statusUpper === 'RUNNING' ? 'running' : 'completed');
 
       commands.push({
         id: `cmd-${stepIndex ?? idx}-${commands.length}`,
@@ -8251,6 +8904,8 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
         program,
         command: safeCmd,
         summary,
+        exitCode,
+        outputPreview,
         durationSec,
         status: cmdStatus,
         isSlow,
@@ -8262,9 +8917,10 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
     }
 
     let opKind = null;
-    if (READ_TOOL_NAMES.has(toolName)) opKind = 'read';
+    if (IMAGE_TOOL_NAMES.has(toolName)) opKind = 'image';
     else if (WRITE_TOOL_NAMES.has(toolName)) opKind = 'write';
     else if (SEARCH_TOOL_NAMES.has(toolName)) opKind = 'search';
+    else if (READ_TOOL_NAMES.has(toolName)) opKind = 'read';
     else continue;
 
     let rawPath = '';
@@ -8276,7 +8932,13 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
       const q = unwrapToolArg(args.Query ?? args.Pattern ?? args.pattern ?? '');
       if (typeof q === 'string' && q.trim()) rawPath = `[search] ${q.trim().slice(0, 80)}`;
     }
+    if (!rawPath && opKind === 'image') {
+      rawPath = String(unwrapToolArg(args.ImageName ?? args.Prompt ?? '') || '[image]').slice(0, 80);
+    }
     if (!rawPath) continue;
+    if (opKind === 'read' && IMAGE_EXT_RE.test(rawPath)) {
+      opKind = 'image';
+    }
 
     const normPath = rawPath.replace(/\\/g, '/');
     const dedupKey = `file:${opKind}:${stepIndex ?? idx}:${normPath.toLowerCase()}`;
@@ -8303,6 +8965,7 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
     if (opKind === 'read') readCount++;
     else if (opKind === 'write') writeCount++;
     else if (opKind === 'search') searchCount++;
+    else if (opKind === 'image') imageCount++;
     totalAddedLines += addedLines;
     totalRemovedLines += removedLines;
 
@@ -8315,19 +8978,22 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
         readCount: 0,
         writeCount: 0,
         searchCount: 0,
+        imageCount: 0,
         totalCount: 0,
         addedLines: 0,
         removedLines: 0,
         lastStepIndex: stepIndex,
         lastTimestamp: timestamp,
         hasError: false,
-        turnNumbers: []
+        turnNumbers: [],
+        operations: []
       };
       fileMap.set(mapKey, rec);
     }
     if (opKind === 'read') rec.readCount++;
     else if (opKind === 'write') rec.writeCount++;
     else if (opKind === 'search') rec.searchCount++;
+    else if (opKind === 'image') rec.imageCount++;
     rec.totalCount++;
     rec.addedLines += addedLines;
     rec.removedLines += removedLines;
@@ -8341,13 +9007,26 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
     if (turnNumber !== null && !rec.turnNumbers.includes(turnNumber)) {
       rec.turnNumbers.push(turnNumber);
     }
+    if (rec.operations.length < 24) {
+      rec.operations.push({
+        stepIndex,
+        turnNumber,
+        kind: opKind,
+        toolName,
+        addedLines,
+        removedLines,
+        status: isError ? 'failed' : 'ok',
+        outputPreview: outputPreview ? outputPreview.slice(0, 260) : '',
+        timestamp
+      });
+    }
     if (durationSec !== null) toolExecEvents.push({ stepIndex, durationSec, toolName });
   }
 
   const fileActivities = Array.from(fileMap.values())
     .map(r => ({
       ...r,
-      primaryKind: r.writeCount > 0 ? 'write' : (r.searchCount > 0 && r.readCount === 0 ? 'search' : 'read')
+      primaryKind: r.writeCount > 0 ? 'write' : (r.imageCount > 0 ? 'image' : (r.searchCount > 0 && r.readCount === 0 ? 'search' : 'read'))
     }))
     .sort((a, b) => (b.lastStepIndex ?? -1) - (a.lastStepIndex ?? -1) || b.totalCount - a.totalCount)
     .slice(0, 400);
@@ -8358,11 +9037,12 @@ function extractSessionToolInsights(rawToolEntries = [], turns = []) {
     readCount,
     writeCount,
     searchCount,
+    imageCount,
     totalAddedLines,
     totalRemovedLines
   };
 
-  const recentCommands = commands.slice(-200);
+  const recentCommands = commands.slice(-400);
   const progCounts = new Map();
   let failedCount = 0;
   let slowCount = 0;
@@ -8501,6 +9181,8 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
     }
   }
 
+  const toolResultsByStep = new Map();
+  const subagentReceipts = [];
   const stepUsageSeen = new Map();
   for (let idx = 0; idx < parsedEvents.length; idx++) {
     const { event, lineIdx: i, _skipCallEmission } = parsedEvents[idx];
@@ -8512,20 +9194,43 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
     const ts = createdAt ? Date.parse(createdAt) : NaN;
     const validTs = Number.isFinite(ts) && ts > 0 ? ts : null;
 
+    if (event.type === 'TOOL_RESULT' || event.source === 'TOOL_RESULT') {
+      const resBody = typeof event.content === 'string'
+        ? event.content
+        : (typeof event.output === 'string' ? event.output : JSON.stringify(event.content || event.output || ''));
+      if (stepIndex !== null && resBody) {
+        const prevTxt = toolResultsByStep.get(stepIndex) || '';
+        toolResultsByStep.set(stepIndex, prevTxt ? `${prevTxt}\n${resBody}`.slice(0, 2400) : resBody.slice(0, 2400));
+      }
+      if (rawSteps.length < 1500) {
+        rawSteps.push({
+          stepIndex,
+          createdAt,
+          timestamp: validTs,
+          type: 'TOOL_RESULT',
+          status: event.status || null,
+          error: event.error || null,
+          content: resBody.slice(0, 2400)
+        });
+      }
+    }
+
     if (event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user') {
       const textBody = typeof event.content === 'string'
         ? event.content
         : (typeof event.text === 'string' ? event.text : (typeof event.userInput === 'string' ? event.userInput : ''));
       const rawPreview = sanitizeTurnPreviewText(textBody, 120);
-      rawSteps.push({
-        stepIndex,
-        createdAt,
-        timestamp: validTs,
-        userInput: {
-          userResponse: textBody,
-          media: Array.isArray(event.media) ? event.media : []
-        }
-      });
+      if (rawSteps.length < 1500) {
+        rawSteps.push({
+          stepIndex,
+          createdAt,
+          timestamp: validTs,
+          userInput: {
+            userResponse: textBody,
+            media: Array.isArray(event.media) ? event.media : []
+          }
+        });
+      }
       const turnEntry = {
         stepIndex,
         timestamp: validTs,
@@ -8542,26 +9247,48 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
     }
 
     if (event.checkpoint || event.prune || event.contextPrune || event.systemMessage || event.injectSteps || event.injectedSteps || event.modeChange || event.modelChange) {
-      rawSteps.push({
-        stepIndex,
-        createdAt,
-        timestamp: validTs,
-        status: event.status,
-        ...(event.checkpoint ? { checkpoint: event.checkpoint } : {}),
-        ...(event.prune || event.contextPrune ? { prune: event.prune || event.contextPrune } : {}),
-        ...(event.systemMessage ? { systemMessage: event.systemMessage } : {}),
-        ...(event.injectSteps || event.injectedSteps ? { injectSteps: event.injectSteps || event.injectedSteps } : {}),
-        ...(event.modeChange ? { modeChange: event.modeChange } : {}),
-        ...(event.modelChange ? { modelChange: event.modelChange } : {})
-      });
-    } else if (event.type === 'PLANNER_RESPONSE' || event.plannerResponse) {
+      if (rawSteps.length < 1500) {
+        rawSteps.push({
+          stepIndex,
+          createdAt,
+          timestamp: validTs,
+          status: event.status,
+          ...(event.checkpoint ? { checkpoint: event.checkpoint } : {}),
+          ...(event.prune || event.contextPrune ? { prune: event.prune || event.contextPrune } : {}),
+          ...(event.systemMessage ? { systemMessage: event.systemMessage } : {}),
+          ...(event.injectSteps || event.injectedSteps ? { injectSteps: event.injectSteps || event.injectedSteps } : {}),
+          ...(event.modeChange ? { modeChange: event.modeChange } : {}),
+          ...(event.modelChange ? { modelChange: event.modelChange } : {})
+        });
+      }
+    } else if (event.type === 'PLANNER_RESPONSE' || event.plannerResponse || typeof event.thinking === 'string') {
       const respTxt = typeof event.content === 'string' ? event.content : (event.plannerResponse?.response || '');
-      rawSteps.push({
-        stepIndex,
-        createdAt,
-        timestamp: validTs,
-        plannerResponse: { response: respTxt }
-      });
+      const thinkTxt = typeof event.thinking === 'string' ? event.thinking : (event.plannerResponse?.thinking || '');
+      if (rawSteps.length < 1500) {
+        rawSteps.push({
+          stepIndex,
+          createdAt,
+          timestamp: validTs,
+          status: event.status,
+          error: event.error || null,
+          plannerResponse: {
+            response: respTxt,
+            ...(thinkTxt ? { thinking: thinkTxt } : {})
+          },
+          ...(Array.isArray(event.tool_calls) && event.tool_calls.length ? { tool_calls: event.tool_calls } : {})
+        });
+      }
+    } else if (Array.isArray(event.tool_calls) && event.tool_calls.length) {
+      if (rawSteps.length < 1500) {
+        rawSteps.push({
+          stepIndex,
+          createdAt,
+          timestamp: validTs,
+          status: event.status,
+          error: event.error || null,
+          tool_calls: event.tool_calls
+        });
+      }
     }
 
     if (Array.isArray(event.tool_calls)) {
@@ -8570,6 +9297,7 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
         toolEntries.push({
           name: tc.name,
           args: tc.args || {},
+          output: tc.output || (stepIndex !== null ? toolResultsByStep.get(stepIndex) : '') || '',
           stepIndex,
           timestamp: validTs,
           status: tc.status || event.status || null,
@@ -8578,12 +9306,27 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
         });
         if (tc.name === 'invoke_subagent' || tc.name === 'send_message') {
           const cleanArg = (v) => (typeof v === 'string' ? v.replace(/^"|"$/g, '').trim() : '');
+          const roleArg = cleanArg(tc.args?.Role);
+          const typeArg = cleanArg(tc.args?.TypeName);
+          const rcptArg = cleanArg(tc.args?.Recipient);
+          const promptArg = cleanArg(tc.args?.Prompt ?? tc.args?.Message);
           pendingInvokes.push({
             stepIndex,
             toolName: tc.name,
-            role: cleanArg(tc.args?.Role),
-            typeName: cleanArg(tc.args?.TypeName),
-            recipient: cleanArg(tc.args?.Recipient)
+            role: roleArg,
+            typeName: typeArg,
+            recipient: rcptArg
+          });
+          subagentReceipts.push({
+            id: `rcpt-inv-${stepIndex ?? i}-${subagentReceipts.length}`,
+            stepIndex,
+            timestamp: validTs,
+            fromAgent: 'main',
+            toAgent: roleArg || typeArg || rcptArg || 'subagent',
+            kind: tc.name,
+            status: (tc.error || event.error) ? 'failed' : 'completed',
+            summary: sanitizeCompositionPreview(`${tc.name} ${roleArg || typeArg || ''} ${promptArg}`.trim(), 110),
+            detail: sanitizeCompositionPreview(promptArg || JSON.stringify(tc.args || {}), 1800)
           });
         }
       }
@@ -8595,7 +9338,6 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
       while ((m = uuidExtractRe.exec(event.content)) !== null) {
         const childCid = m[1];
         if (!childCid || childCid.toLowerCase() === String(cascadeId).toLowerCase()) continue;
-        // 寻找紧邻前文的 invoke_subagent 调用以定位准确父步骤和 Role/TypeName
         let matchedInvoke = null;
         for (let pIdx = pendingInvokes.length - 1; pIdx >= 0; pIdx--) {
           const inv = pendingInvokes[pIdx];
@@ -8615,6 +9357,19 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
             confidence: 'verified_tool_output'
           });
         }
+      }
+      if (subagentReceipts.length < 150) {
+        subagentReceipts.push({
+          id: `rcpt-ret-${stepIndex ?? i}-${subagentReceipts.length}`,
+          stepIndex,
+          timestamp: validTs,
+          fromAgent: 'subagent',
+          toAgent: 'main',
+          kind: 'subagent_receipt',
+          status: event.error ? 'failed' : 'completed',
+          summary: sanitizeCompositionPreview(event.content, 110),
+          detail: sanitizeCompositionPreview(event.content, 2000)
+        });
       }
     }
 
@@ -8688,7 +9443,7 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
 
   const chosenTurns = explicitUserTurns.length ? explicitUserTurns : fallbackUserTurns;
   for (const t of chosenTurns) turns.push(t);
-  return { turns, calls, subagentLinks, rawSteps, toolEntries, dbMeta };
+  return { turns, calls, subagentLinks, rawSteps, toolEntries, toolResultsByStep, subagentReceipts, dbMeta };
 }
 
 const subagentParentIndexCache = { dirMtimesKey: '', byParent: new Map(), at: 0 };
@@ -8857,6 +9612,8 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
   let mainDbMeta = null;
 
   // 1. 解析主会话自身 transcript + .db
+  let mainToolResultsByStep = new Map();
+  let mainSubagentReceipts = [];
   const mainFile = findSessionTranscriptInRoots(cid, rootEntries, fs);
   if (mainFile) {
     const parsed = parseTranscriptForSessionTimeline(mainFile.path, cid, mainFile.convDir, mainFile.source, options);
@@ -8864,6 +9621,8 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
     allCalls.push(...parsed.calls);
     if (Array.isArray(parsed.rawSteps)) mainRawSteps.push(...parsed.rawSteps);
     if (Array.isArray(parsed.toolEntries)) mainToolEntries.push(...parsed.toolEntries);
+    if (parsed.toolResultsByStep instanceof Map) mainToolResultsByStep = parsed.toolResultsByStep;
+    if (Array.isArray(parsed.subagentReceipts)) mainSubagentReceipts = parsed.subagentReceipts;
     if (parsed.dbMeta) mainDbMeta = parsed.dbMeta;
     for (const link of parsed.subagentLinks) {
       subagentMap.set(link.childCid.toLowerCase(), link);
@@ -8986,14 +9745,16 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
 
   const prelimTurns = [...allTurns].sort((a, b) => ((a.stepIndex ?? 0) - (b.stepIndex ?? 0)) || ((a.timestamp || 0) - (b.timestamp || 0)))
     .map((t, i) => ({ ...t, turnIndex: i + 1 }));
-  const toolInsights = extractSessionToolInsights(mainToolEntries, prelimTurns);
+  const toolInsights = extractSessionToolInsights(mainToolEntries, prelimTurns, { toolResultsByStep: mainToolResultsByStep });
 
   const grouped = groupSessionCallsByTurns(allTurns, allCalls, {
     cascadeId: cid,
     cascadeModelConfigs: cascadeConfigs,
     userStatus: options.userStatus || null,
+    budgetTokens: options.budgetTokens || null,
     toolExecEvents: toolInsights.toolExecEvents,
-    taskEvents: toolInsights.taskEvents
+    taskEvents: toolInsights.taskEvents,
+    subagentReceipts: mainSubagentReceipts
   });
   const combinedEventSteps = Array.isArray(options.liveSteps) && options.liveSteps.length
     ? options.liveSteps.map((s, idx) => ({ ...s, stepIndex: Number.isInteger(Number(s?.stepIndex ?? s?.idx)) ? Number(s?.stepIndex ?? s?.idx) : idx }))
@@ -9004,20 +9765,48 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
     cascadeModelConfigs: cascadeConfigs,
     turns: grouped.turns
   });
+  const executionTrace = buildExecutionTrace(combinedEventSteps, grouped.turns ? grouped.turns.flatMap(t => t.calls || []).concat(grouped.unlinkedSubagentCalls || []) : allCalls, {
+    turns: grouped.turns,
+    toolEntries: mainToolEntries
+  });
+  const attachmentsDetail = (analyzedStepsSummary?.media || []).map((m, idx) => {
+    let meta = null;
+    if (m.inlineData && String(m.mime || '').startsWith('image/')) {
+      meta = inspectInlineImageMeta(m.uri, m.mime, m.inlineData);
+    }
+    const estLow = meta ? calcImageTokens(meta.width, meta.height)[0] : 0;
+    return {
+      id: `att-tl-${idx}`,
+      name: m.name || 'attachment',
+      mime: m.mime || '',
+      sizeBytes: meta?.bytes || (typeof m.inlineData === 'string' ? Math.round(m.inlineData.length * 0.75) : 0),
+      width: meta?.width || null,
+      height: meta?.height || null,
+      dimensions: meta?.width && meta?.height ? `${meta.width}×${meta.height}` : null,
+      estimatedTokens: estLow || 258,
+      references: Number(m.references || 1),
+      source: m.source || 'user'
+    };
+  });
   const firstTurnTitle = grouped.turns?.[0]?.preview || mainTurnsFallbackTitle(combinedEventSteps) || '';
   return {
     ...grouped,
     sessionTitle: String(options.sessionTitle || firstTurnTitle || '').trim(),
     compositionFromSteps: analyzedStepsSummary
       ? {
-          groups: analyzedStepsSummary.groups,
-          compositionSubgroups: analyzedStepsSummary.compositionSubgroups,
-          stepCompositionItems: analyzedStepsSummary.stepCompositionItems,
-          userMessages: analyzedStepsSummary.userMessages,
-          assistantMessages: analyzedStepsSummary.assistantMessages,
-          checkpointCount: analyzedStepsSummary.checkpointCount
-        }
+        groups: analyzedStepsSummary.groups,
+        compositionSubgroups: analyzedStepsSummary.compositionSubgroups,
+        stepCompositionItems: analyzedStepsSummary.stepCompositionItems,
+        sequentialSlices: analyzedStepsSummary.sequentialSlices,
+        userMessages: analyzedStepsSummary.userMessages,
+        assistantMessages: analyzedStepsSummary.assistantMessages,
+        checkpointCount: analyzedStepsSummary.checkpointCount
+      }
       : null,
+    sequentialSlices: analyzedStepsSummary?.sequentialSlices || [],
+    attachmentsDetail,
+    executionTrace,
+    agentCollabHub: grouped.agentFleetSummary || null,
     contextChangeEvents,
     fileActivities: toolInsights.fileActivities,
     fileActivitySummary: toolInsights.fileActivitySummary,
@@ -9626,6 +10415,16 @@ function getInstalledMeterVersion(options = {}) {
   return null;
 }
 
+function formatReleaseNotesPreview(body) {
+  const notes = String(body || '');
+  const sections = [...notes.matchAll(/<details\b([^>]*)>([\s\S]*?)<\/details\s*>/gi)];
+  const section = sections.find(match => /(?:^|\s)open(?:[\s=]|$)/i.test(match[1])) || sections[0];
+  const content = (section?.[2] ?? notes)
+    .replace(/<summary\b[^>]*>[\s\S]*?<\/summary\s*>/gi, '')
+    .replace(/<\/?(?:details|summary|b|strong|i|em)\b[^>]*>/gi, '');
+  return content.split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, 8).join('\n');
+}
+
 function decodeHtmlEntities(str) {
   return String(str || '')
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
@@ -9938,7 +10737,7 @@ async function checkUpdateAsync(options = {}) {
           assetsWarning = assetErr.message;
         }
       }
-      const bodyLines = (latest.body || '').split(/\r?\n/).slice(0, 8).join('\n');
+      const bodyLines = formatReleaseNotesPreview(latest.body);
       cachedUpdateCheck = {
         ok: true,
         hasUpdate: true,
@@ -10662,6 +11461,8 @@ async function applyUpdateAsync(options = {}) {
 }
 
 module.exports = {
+  getTokenHistoryResponse,
+  shouldSkipTokenHistoryRefresh,
   sanitizeCascadeModelConfig,
   parseAvailableModelsResponse,
   extractObservedModelInfoFromSteps,
@@ -10747,6 +11548,7 @@ module.exports = {
   savePluginSettings,
   DEFAULT_VIEW_PREFS,
   sanitizeDefaultViewPrefs,
+  sanitizeSessionCockpitLayout,
   sanitizeContextPreferenceEntry,
   resolveCliExecutable,
   resolveCliWorkspace,

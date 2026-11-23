@@ -448,7 +448,7 @@
     if (!opt) return '';
     if (currentPanelLanguage === 'en') {
       if (opt.labelEn) return opt.labelEn;
-      if (opt.code && opt.symbol) return `${opt.code} (${opt.symbol}${opt.nameEn ? ' ' + opt.nameEn : ''})`;
+      if (opt.code && opt.symbol) return `${opt.code} · ${opt.symbol}${opt.nameEn ? ' ' + opt.nameEn : ''}`;
       if (opt.value && opt.value !== '未知') {
         const flagMatch = String(opt.label || '').match(/^([\u{1F1E6}-\u{1F1FF}]{2}|🌐|🌏)\s*/u);
         const flag = flagMatch ? flagMatch[1] + ' ' : '';
@@ -463,13 +463,29 @@
   }
 
   const PLAN_TIER_OPTIONS = [
-    { value: 'auto', label: '✨ 自动检测 (Auto-detect)', labelZh: '✨ 自动检测 (Auto-detect)', labelTw: '✨ 自動檢測 (Auto-detect)', labelEn: '✨ Auto-detect' },
-    { value: 'free', label: 'Free (免费版)', labelZh: 'Free (免费版)', labelTw: 'Free (免費版)', labelEn: 'Free' },
+    { value: 'auto', label: '✨ 自动检测', labelZh: '✨ 自动检测', labelTw: '✨ 自動檢測', labelEn: '✨ Auto-detect' },
+    { value: 'free', label: '免费版', labelZh: '免费版', labelTw: '免費版', labelEn: 'Free' },
+    { value: 'plus', label: 'Google AI Plus', labelZh: 'Google AI Plus', labelTw: 'Google AI Plus', labelEn: 'Google AI Plus' },
     { value: 'pro', label: 'Google AI Pro', labelZh: 'Google AI Pro', labelTw: 'Google AI Pro', labelEn: 'Google AI Pro' },
-    { value: 'ultra', label: 'Google AI Ultra', labelZh: 'Google AI Ultra', labelTw: 'Google AI Ultra', labelEn: 'Google AI Ultra' },
-    { value: 'ultra_5x', label: 'Google AI Ultra (5x)', labelZh: 'Google AI Ultra (5x)', labelTw: 'Google AI Ultra (5x)', labelEn: 'Google AI Ultra (5x)' },
-    { value: 'ultra_20x', label: 'Google AI Ultra (20x)', labelZh: 'Google AI Ultra (20x)', labelTw: 'Google AI Ultra (20x)', labelEn: 'Google AI Ultra (20x)' }
+    { value: 'ultra_5x', label: 'Google AI Ultra 5x', labelZh: 'Google AI Ultra 5x', labelTw: 'Google AI Ultra 5x', labelEn: 'Google AI Ultra 5x' },
+    { value: 'ultra_20x', label: 'Google AI Ultra 20x', labelZh: 'Google AI Ultra 20x', labelTw: 'Google AI Ultra 20x', labelEn: 'Google AI Ultra 20x' },
+    { value: 'ultra', label: 'Google AI Ultra', labelZh: 'Google AI Ultra', labelTw: 'Google AI Ultra', labelEn: 'Google AI Ultra' }
   ];
+
+  function getActivePlanSpecKeyForDropdown() {
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const ps = ANTIGRAVITY_TOKEN_DATA?.planStatus || {};
+    if (core && typeof core.resolvePlanSpecKey === 'function') {
+      const sk = core.resolvePlanSpecKey(
+        ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierKey || 'pro'),
+        ps.multiplier,
+        ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierName || '')
+      );
+      return (sk === 'unknown' || sk === 'custom') ? 'pro' : sk;
+    }
+    if (ps.planTierOverride && ps.planTierOverride !== 'auto') return ps.planTierOverride;
+    return (!ps.tierKey || ps.tierKey === 'unknown' || ps.tierKey === 'custom') ? 'pro' : ps.tierKey;
+  }
 
   // 刷新套餐规格直接选择器显示
   function refreshDirectPlanTierDisplay(currentVal) {
@@ -519,7 +535,8 @@
       ? (core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg || p.nameTw === reg || p.nameEn === reg))
       : null;
     if (matched) {
-      directLabel.textContent = formatPresetRegionLineParts(matched, currentPanelLanguage).full;
+      const activeSpecKey = getActivePlanSpecKeyForDropdown();
+      directLabel.textContent = formatPresetRegionLineParts(matched, currentPanelLanguage, activeSpecKey).full;
     } else if (!isUnk) {
       directLabel.textContent = '🌏 ' + (localizeRegionDisplayValue(reg) || reg);
     } else {
@@ -628,6 +645,7 @@
       ? ps.priceMode
       : (ps.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
     return {
+      ...(ps.planTierOverride && ps.planTierOverride !== 'auto' ? { planTierOverride: ps.planTierOverride } : {}),
       accountRegion: (ps.accountRegion && !ps.accountRegion.includes('未知')) ? ps.accountRegion : ((ps.country && !ps.country.includes('未知')) ? ps.country : undefined),
       country: (ps.country && !ps.country.includes('未知')) ? ps.country : undefined,
       subscriptionCountry: (ps.subscriptionCountry && !ps.subscriptionCountry.includes('未知')) ? ps.subscriptionCountry : ((ps.subscriptionRegion && !ps.subscriptionRegion.includes('未知')) ? ps.subscriptionRegion : ((ps.region && !ps.region.includes('未知')) ? ps.region : undefined)),
@@ -737,6 +755,9 @@
   }
 
   function applyCustomPlanObjectLocally(customObj, email = 'default') {
+    if (customObj && typeof customObj === 'object') {
+      lastSavedCustomPlan = { ...customObj };
+    }
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const rawLive = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus || null;
     const cleanLive = rawLive
@@ -777,27 +798,37 @@
 
     let customObj = null;
     if (targetMode === 'preset') {
-      // 切换为「跟随订阅国家参考价」：实时根据当前订阅国家派生官方参考价与币种
+      // 切换为「跟随订阅国家参考价」：按当前生效套餐 × 订阅国家实时派生官方参考价与币种，清空旧实付锁死
+      const activeSpecKey = getActivePlanSpecKeyForDropdown();
       const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
-      const matched = core?.findRegionPreset ? core.findRegionPreset(currentReg) : core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === currentReg || p.name === currentReg);
-      const isUltraTier = ps.tierKey === 'ultra';
-      const curCode = matched ? matched.currency : (prevCustom.subscriptionCurrency || prevCustom.currency || 'USD');
-      const curSymbol = matched ? matched.symbol : (core?.CURRENCY_SYMBOLS?.[curCode] || '$');
-      const paid = (matched && !isUltraTier) ? matched.monthlyPrice : null;
+      const matched = core?.findRegionPreset
+        ? core.findRegionPreset(currentReg)
+        : core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === currentReg || p.name === currentReg);
+      const refLookup = (matched && typeof core?.getRegionPlanReferencePrice === 'function')
+        ? core.getRegionPlanReferencePrice(matched, activeSpecKey)
+        : null;
+      const curCode = refLookup?.currency || matched?.currency || prevCustom.subscriptionCurrency || prevCustom.currency || 'USD';
+      const curSymbol = refLookup?.symbol || matched?.symbol || core?.CURRENCY_SYMBOLS?.[curCode] || '$';
+      const paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
+        ? refLookup.monthlyPrice
+        : null;
 
       customObj = {
         ...prevCustom,
         priceMode: 'preset',
-        priceSource: (matched && !isUltraTier) ? 'preset_region' : 'unknown',
-        actualPricePaid: paid,
+        priceSource: paid !== null ? (refLookup?.source || 'preset_region') : 'unknown',
+        resetCustomPaid: true,
         subscriptionCurrency: curCode,
         currency: curCode,
         currencySource: matched ? 'preset_region' : (prevCustom.currencySource || 'default'),
         currencySymbol: curSymbol,
-        billingCycle: '月付',
-        isZeroExtraCost: false,
+        billingCycle: activeSpecKey === 'free' ? '免费/赠送' : '月付',
+        isZeroExtraCost: activeSpecKey === 'free',
         updatedAt: new Date().toISOString()
       };
+      delete customObj.customActualPrice;
+      if (paid !== null) customObj.actualPricePaid = paid;
+      else delete customObj.actualPricePaid;
       applyCustomPlanObjectLocally(customObj, email);
       void persistSettingsToHost({ email, customPlan: customObj });
     } else {
@@ -826,9 +857,10 @@
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
-    const localizedName = getLocalizedPresetName(regionItem, currentPanelLanguage).replace(/\s*\(CNY\)\s*$/i, '').trim();
-    const regionName = localizedName + ' (' + (regionItem.currency === 'TWD' ? 'NTD' : regionItem.currency) + ')';
+    const localizedName = getLocalizedPresetName(regionItem, currentPanelLanguage).trim();
+    const regionName = `${regionItem.id} ${localizedName}`;
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const activeSpecKey = getActivePlanSpecKeyForDropdown();
 
     const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
     const currentPriceMode = (prevCustom.priceMode === 'custom' || prevCustom.priceMode === 'preset')
@@ -843,22 +875,26 @@
     let cycle = '月付';
 
     if (currentPriceMode === 'custom') {
-      // 自定义实付模式：切换国家严格保留用户此前设置的实付金额与币种，绝不静默覆盖！
+      // 自定义实付模式：切换国家严格保留用户此前设置的实付金额与币种，绝不静默覆盖
       isZero = Boolean(prevCustom.isZeroExtraCost || prevCustom.actualPricePaid === 0);
       curCode = prevCustom.subscriptionCurrency || prevCustom.currency || regionItem.currency;
       curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || '$';
       paid = isZero ? 0 : (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined ? prevCustom.actualPricePaid : null);
       priceSource = 'custom';
-      cycle = isZero ? '随套餐赠送/免费' : (prevCustom.billingCycle || '月付');
+      cycle = isZero ? '免费/赠送' : (prevCustom.billingCycle || '月付');
     } else {
-      // 跟随订阅国家参考价模式：仅 Pro 等有统一区域参考表时派生价格；Ultra 不套用 Pro 参考价
-      const isUltraTier = ps.tierKey === 'ultra';
-      curCode = regionItem.currency;
-      curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
-      paid = isUltraTier ? null : regionItem.monthlyPrice;
-      priceSource = isUltraTier ? 'unknown' : 'preset_region';
-      isZero = false;
-      cycle = '月付';
+      // 跟随订阅国家参考价模式：按当前套餐规格 × 地区二维定价矩阵实时查询参考价
+      const refLookup = typeof core?.getRegionPlanReferencePrice === 'function'
+        ? core.getRegionPlanReferencePrice(regionItem, activeSpecKey)
+        : null;
+      curCode = refLookup?.currency || regionItem.currency;
+      curSymbol = refLookup?.symbol || core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
+      paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
+        ? refLookup.monthlyPrice
+        : (activeSpecKey === 'pro' ? regionItem.monthlyPrice : null);
+      priceSource = paid !== null ? (refLookup?.source || 'preset_region') : 'unknown';
+      isZero = activeSpecKey === 'free';
+      cycle = activeSpecKey === 'free' ? '免费/赠送' : '月付';
     }
 
     const customObj = {
@@ -872,13 +908,14 @@
       acquisitionSourceName: prevCustom.acquisitionSourceName || ps.acquisitionSourceName || undefined,
       isZeroExtraCost: isZero,
       actualPricePaid: paid,
-      customActualPrice: currentPriceMode === 'custom' ? paid : (prevCustom.customActualPrice ?? null),
+      customActualPrice: currentPriceMode === 'custom' ? paid : null,
+      ...(currentPriceMode === 'preset' ? { resetCustomPaid: true } : {}),
       priceMode: currentPriceMode,
       subscriptionCurrency: curCode,
       currency: curCode,
       currencySource: currentPriceMode === 'custom' ? 'custom' : 'preset_region',
       currencySymbol: curSymbol,
-      billingCycle: isZero ? '随套餐赠送/免费' : cycle,
+      billingCycle: isZero ? '免费/赠送' : cycle,
       priceSource,
       updatedAt: new Date().toISOString()
     };
@@ -977,11 +1014,17 @@
       paid = 0;
       priceSource = 'custom';
     } else if (currentPriceMode === 'preset') {
-      // 检查新币种在预设库中是否有基准定价
+      // 检查新币种在预设库中是否有基准定价，并按当前生效套餐档位查询参考价
+      const activeSpecKey = getActivePlanSpecKeyForDropdown();
       const matchedNewPreset = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.currency === curCode);
       if (matchedNewPreset) {
-        paid = matchedNewPreset.monthlyPrice;
-        priceSource = 'preset_region';
+        const refLookup = typeof core?.getRegionPlanReferencePrice === 'function'
+          ? core.getRegionPlanReferencePrice(matchedNewPreset, activeSpecKey)
+          : null;
+        paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
+          ? refLookup.monthlyPrice
+          : (activeSpecKey === 'pro' ? matchedNewPreset.monthlyPrice : null);
+        priceSource = paid !== null ? (refLookup?.source || 'preset_region') : 'unknown';
       } else {
         paid = prevCustom.actualPricePaid;
       }
@@ -1045,11 +1088,54 @@
     if (tierVal && tierVal !== 'auto') {
       customObj.planTierOverride = tierVal;
     } else {
-      delete customObj.planTierOverride;
+      customObj.planTierOverride = null;
     }
+    // 切换套餐时全链路自动重置为新套餐对应地区参考价模式，清除旧套餐实付金额锁定
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const rawLiveTier = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus?.tierKey || ps.tierKey || 'pro';
+    const targetSpecKey = (core && typeof core.resolvePlanSpecKey === 'function')
+      ? core.resolvePlanSpecKey(tierVal && tierVal !== 'auto' ? tierVal : rawLiveTier)
+      : (tierVal && tierVal !== 'auto' ? tierVal : rawLiveTier);
+
+    customObj.priceMode = 'preset';
+    customObj.priceSource = targetSpecKey === 'ultra' ? 'unknown' : 'preset_region';
+    customObj.resetCustomPaid = true;
+    customObj.isZeroExtraCost = targetSpecKey === 'free';
+    customObj.billingCycle = targetSpecKey === 'free' ? '免费/赠送' : '月付';
+    delete customObj.actualPricePaid;
+    delete customObj.customActualPrice;
+    customObj.updatedAt = new Date().toISOString();
+
     applyCustomPlanObjectLocally(customObj, email);
     void persistSettingsToHost({ email, customPlan: customObj });
     refreshDirectPlanTierDisplay(tierVal);
+    const updatedPs = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    refreshDirectRegionDisplay(updatedPs.region);
+    refreshDirectCurrencyDisplay(updatedPs.currency);
+    el('direct-region-wrap')?._controller?.refresh?.();
+    el('direct-currency-wrap')?._controller?.refresh?.();
+    if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
+
+    runWithUiHydration(() => {
+      const form = el('plan-custom-form');
+      if (form) {
+        const paidInput = el('input-custom-paid');
+        const zeroCheck = el('check-zero-extra');
+        const curSel = el('select-custom-currency');
+        if (zeroCheck) zeroCheck.checked = Boolean(updatedPs.isZeroExtraCost);
+        if (paidInput) {
+          paidInput.disabled = Boolean(updatedPs.isZeroExtraCost);
+          paidInput.value = (updatedPs.actualPricePaid !== null && updatedPs.actualPricePaid !== undefined)
+            ? String(updatedPs.actualPricePaid)
+            : '';
+        }
+        if (curSel && updatedPs.currency) {
+          curSel.value = updatedPs.currency === 'NTD' ? 'TWD' : updatedPs.currency;
+          enhancedDropdowns.get('select-custom-currency')?.refresh?.();
+        }
+        if (typeof updateRegionCnyPreviewFromForm === 'function') updateRegionCnyPreviewFromForm();
+      }
+    });
   }
 
   el('direct-tier-select')?.addEventListener('change', (e) => {
@@ -1125,9 +1211,10 @@
       getAriaLabel: () => t('plan.form.regionLabel'),
       searchPlaceholder: () => t('dropdown.regionSearch'),
       getOptions: () => {
+        const activeSpecKey = getActivePlanSpecKeyForDropdown();
         return presets.map(p => {
           const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-          const parts = formatPresetRegionLineParts(p, currentPanelLanguage);
+          const parts = formatPresetRegionLineParts(p, currentPanelLanguage, activeSpecKey);
           return {
             value: p.id,
             rawItem: p,
@@ -1155,7 +1242,8 @@
       getLabelText: (opt) => {
         const p = opt.rawItem;
         if (!p) return opt.label;
-        return formatPresetRegionLineParts(p, currentPanelLanguage).full;
+        const activeSpecKey = getActivePlanSpecKeyForDropdown();
+        return formatPresetRegionLineParts(p, currentPanelLanguage, activeSpecKey).full;
       },
       onSelect: (opt) => {
         if (opt.rawItem) applyDirectRegionSelection(opt.rawItem);

@@ -3498,10 +3498,14 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
   assert.equal(csbNarrow.altWarnHidden, false);
   h.sandbox.window.innerWidth = 1280;
 
-  // 通过配置开关真实 change 事件关闭/开启并校验 localStorage 与 saveSettings 持久化，及 click 打开看板
+  // 补充任务 A: 底栏额度项首帧直达额度看板，二次点击关闭
   h.elements.get('panel-quota').hidden = true;
   h.elements.get('csb-group-quota').click();
-  assert.equal(h.elements.get('panel-quota').hidden, false, '点击输入框额度摘要应直接打开额度看板');
+  assert.equal(h.elements.get('panel-quota').hidden, false, '补充任务 A: 点击底栏额度项直达模型额度看板');
+  h.elements.get('csb-group-quota').click();
+  assert.equal(h.elements.get('panel-quota').hidden, true, '二次点击底栏额度项关闭模型额度看板');
+  h.elements.get('badge-quota').click();
+  assert.equal(h.elements.get('panel-quota').hidden, false, '点击顶部额度圆环正常打开额度看板');
   const chkComposerQuota = h.elements.get('chk-show-composer-quota');
   chkComposerQuota.checked = false;
   chkComposerQuota.dispatchEvent({ type: 'change', target: chkComposerQuota });

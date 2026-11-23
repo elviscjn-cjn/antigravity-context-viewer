@@ -136,40 +136,52 @@ async function restore(options = {}) {
       )
     );
 
-    // 3. 检测并严格验证可用备份完整性：绝不使用已损坏或哈希不匹配的备份覆盖
-    const backupCandidates = previous
-      ? [{ path: info.previousInstalledBackup, expected: info.previousInstalledSha256 }]
-      : [
-          { path: info.previousInstalledBackup, expected: info.previousInstalledSha256 },
-          { path: info.backup, expected: info.originalSha256 }
-        ];
+    // 3. 检测并严格验证可用备份完整性：优先匹配与当前宿主目标版本一致的备份
+    const backupCandidates = [];
+    if (previous) {
+      backupCandidates.push({ path: info.previousInstalledBackup, expected: info.previousInstalledSha256 });
+    } else {
+      if (info.backupsByVersion && targetHostVer && info.backupsByVersion[targetHostVer]) {
+        const verBkp = info.backupsByVersion[targetHostVer];
+        backupCandidates.push({ path: verBkp.backup, expected: verBkp.sha256 || verBkp.originalSha256 });
+      }
+      if (info.backup) {
+        backupCandidates.push({ path: info.backup, expected: info.originalSha256 });
+      }
+      if (info.previousInstalledBackup) {
+        backupCandidates.push({ path: info.previousInstalledBackup, expected: info.previousInstalledSha256 });
+      }
+    }
 
     let anyBackupFileExists = false;
     let validBackup = null;
     let validExpectedSha = null;
+    let backupHostVer = null;
+    let backupParseError = null;
     for (const c of backupCandidates) {
       if (c.path && fs.existsSync(c.path)) {
         anyBackupFileExists = true;
         if (c.expected && sha(c.path) === c.expected) {
-          validBackup = c.path;
-          validExpectedSha = c.expected;
-          break;
+          let version;
+          try {
+            version = JSON.parse(extractAsarFile(c.path, 'package.json').toString('utf8')).version;
+          } catch (error) {
+            backupParseError = error;
+            continue;
+          }
+          const matchesTarget = version && version === targetHostVer;
+          if (!validBackup || matchesTarget) {
+            validBackup = c.path;
+            validExpectedSha = c.expected;
+            backupHostVer = version;
+          }
+          if (matchesTarget) break;
         }
       }
     }
 
-    let backupHostVer = null;
-    if (validBackup) {
-      try {
-        backupHostVer = JSON.parse(extractAsarFile(validBackup, 'package.json').toString('utf8')).version;
-      } catch (e) {
-        if (previous || !hasMeterTraces) {
-          throw new Error(`解析备份 ASAR 版本失败: ${e.message}`);
-        }
-        // 备份文件本身内容已损坏时降级视作不可用备份，转交原位解构或校验拒绝分支处理
-        validBackup = null;
-        validExpectedSha = null;
-      }
+    if (!validBackup && backupParseError && (previous || !hasMeterTraces)) {
+      throw new Error(`解析备份 ASAR 版本失败: ${backupParseError.message}`);
     }
     const versionMatches = Boolean(!backupHostVer || !targetHostVer || backupHostVer === targetHostVer);
 
@@ -235,8 +247,24 @@ async function restore(options = {}) {
             `目标文件 (${targetFile}) 校验失败：备份宿主版本 (v${backupHostVer}) 与当前目标宿主版本 (v${targetHostVer}) 不匹配，文件内容已被宿主升级、第三方补丁或其他操作改变，拒绝覆盖还原以保护宿主文件。`
           );
         }
+        if (validBackup && currentInstalledSha !== info.patchedSha256 && info.originalSha256 && currentInstalledSha !== info.originalSha256) {
+          throw new Error(
+            `目标文件 (${targetFile}) 校验失败：文件内容已被宿主升级、第三方补丁或其他操作改变，拒绝覆盖还原以保护宿主文件。若需强制还原旧备份，请显式传入 --force 参数。`
+          );
+        }
         if (!anyBackupFileExists && !validBackup) {
           throw new Error(`无法卸载目标文件 (${targetFile})：原版备份缺失且目标未检测到本插件挂载痕迹，无法安全还原，已保留原文件。`);
+        }
+        if (currentInstalledSha === info.originalSha256) {
+          await tryHotDispose();
+          if (hasManifest) {
+            try {
+              info.restoredAt = new Date().toISOString();
+              info.uninstalled = true;
+              fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
+            } catch {}
+          }
+          return { restored: targetFile, fromBackup: null, alreadyClean: true };
         }
       } else {
         const potentialCleanUtils = cleanUtilsSource(currentUtilsRaw);

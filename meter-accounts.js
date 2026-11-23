@@ -760,8 +760,24 @@ function resolveSystemNodeBinary() {
   return null;
 }
 
+const _stateDbItemsCache = new Map();
+
 function readStateDbItems(dbPath, keys) {
   if (!dbPath || !fs.existsSync(dbPath)) return {};
+  let statSig = '';
+  try {
+    const st = fs.statSync(dbPath);
+    let walSig = '0:0';
+    try {
+      const wst = fs.statSync(`${dbPath}-wal`);
+      walSig = `${wst.size}:${wst.mtimeMs}`;
+    } catch { }
+    statSig = `${st.size}:${st.mtimeMs}|${walSig}|${keys.join(',')}`;
+    const cached = _stateDbItemsCache.get(dbPath);
+    if (cached && cached.statSig === statSig) {
+      return { ...cached.items };
+    }
+  } catch { }
   const DatabaseSync = getSqliteSyncCtor();
   if (DatabaseSync) {
     const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -772,6 +788,7 @@ function readStateDbItems(dbPath, keys) {
         const row = stmt.get(k);
         out[k] = row ? row.value : null;
       }
+      if (statSig) _stateDbItemsCache.set(dbPath, { statSig, items: { ...out } });
       return out;
     } finally {
       db.close();
@@ -1782,21 +1799,50 @@ function createAccountsManager(options = {}) {
     if (ga?.active) gaEmail = normalizeEmail(ga.active);
 
     const resolved = hostEmail || dbEmail || gaEmail || null;
+    const switchStore = loadStore();
+    const pending = switchStore.autoSwitchStatus.lastResult;
+    if (pending?.restartPending) {
+      const now = Date.now();
+      const verified = pending.pid !== process.pid && hostEmail === pending.toEmail;
+      if (!verified && now - pending.atMs < 120000) {
+        const email = switchStore.activeAccountEmail || null;
+        return { email, accountScopeKey: email ? buildAccountScopeKey(email) : null, switchInProgress: true };
+      }
+      switchStore.autoSwitchStatus.lastResult = {
+        ...pending,
+        restartPending: false,
+        ok: verified,
+        verifiedEffective: verified
+      };
+      switchStore.autoSwitchStatus.lastError = verified ? null : '客户端重启后未确认切换到目标账号';
+      if (verified) switchStore.autoSwitchStatus.lastSwitchAtMs = now;
+      saveStore(switchStore);
+      if (!verified && !hostEmail) {
+        return { email: switchStore.activeAccountEmail, accountScopeKey: null, skippedWrite: true };
+      }
+    }
     if (resolved) {
-      const store = loadStore();
+      const store = switchStore;
       let dirty = false;
       if (store.activeAccountEmail !== resolved) {
         store.activeAccountEmail = resolved;
         dirty = true;
       }
       if (hostEmail || dbEmail) {
+        const nowMs = Date.now();
+        const prevOpen = Array.isArray(store.verifiedSessions)
+          ? store.verifiedSessions.find(s => s && s.endAtMs == null && normalizeEmail(s.email) === resolved)
+          : null;
+        const prevVerifiedAt = Number(prevOpen?.lastVerifiedAtMs || 0);
         recordVerifiedAccountSession(store, {
           email: resolved,
-          nowMs: Date.now(),
+          nowMs,
           source: 'desktop',
           evidence: hostEmail ? 'host_user_status' : 'desktop_state_db'
         });
-        dirty = true;
+        if (!prevOpen || (nowMs - prevVerifiedAt) >= 60000) {
+          dirty = true;
+        }
       }
       if (dirty) saveStore(store);
     }
@@ -2211,13 +2257,13 @@ function createAccountsManager(options = {}) {
 
     // 清理该账号相关的防抖计数；若移除了活跃账号则整组重置防抖，避免基于失效账号触发误切换
     for (const k of Array.from(debounceState.keys())) {
-      if (k === clean || k.startsWith(`${clean}:`)) debounceState.delete(k);
+      if (k === clean || k.startsWith(`${clean}|`) || k.startsWith(`${clean}:`)) debounceState.delete(k);
     }
 
     if (wasActive) {
       store.activeAccountEmail = null;
       debounceState.clear();
-      if (store.autoSwitchStatus && store.autoSwitchStatus.state === 'pending_idle') {
+      if (store.autoSwitchStatus && (store.autoSwitchStatus.state === 'waiting_idle' || store.autoSwitchStatus.state === 'pending_idle')) {
         store.autoSwitchStatus.state = store.autoSwitch.enabled ? 'watching' : 'disabled';
         store.autoSwitchStatus.blockedReason = null;
       }
@@ -2793,6 +2839,10 @@ function createAccountsManager(options = {}) {
     const execSwitch = async () => {
       const store = loadStore();
       const targetRec = store.accounts[cleanTarget];
+      const pending = store.autoSwitchStatus.lastResult;
+      if (pending?.restartPending && Date.now() - pending.atMs < 120000) {
+        return { ok: false, busy: true, error: '正在等待客户端重启后验证账号切换' };
+      }
       if (!targetRec) return { ok: false, error: `未在多账号列表中找到 ${cleanTarget}` };
       if (!targetRec.credential?.refreshToken) {
         return { ok: false, error: `${cleanTarget} 缺少 refresh_token，无法切换客户端登录态` };
@@ -2907,7 +2957,25 @@ function createAccountsManager(options = {}) {
           };
         }
 
-        // 5. 重启语言服务使其加载新凭据（不暴力 kill 主 Electron UI 进程，如实告知重启 LS 行为）
+        if (typeof opts.restartClient === 'function' && opts.trigger !== 'auto') {
+          const pendingStore = loadStore();
+          pendingStore.autoSwitchStatus.lastResult = {
+            ok: false,
+            restartPending: true,
+            fromEmail: preActiveEmail,
+            toEmail: cleanTarget,
+            atMs: Date.now(),
+            pid: process.pid,
+            trigger: 'manual'
+          };
+          pendingStore.autoSwitchStatus.lastError = null;
+          saveStore(pendingStore);
+          const result = await opts.restartClient();
+          if (!result?.supported) throw new Error('当前客户端无法自动重启');
+          return { ok: true, restartPending: true, verifiedEffective: false, message: '已准备切换账号，正在重启客户端' };
+        }
+
+        // 5. 重启语言服务使其加载新凭据
         let lsRestarted = false;
         if (opts.restartLanguageServer !== false) {
           const lsRes = await Promise.resolve(restartLanguageServersFn({ includeCli: false }));
@@ -2961,6 +3029,8 @@ function createAccountsManager(options = {}) {
           nextStore.autoSwitchStatus = {
             ...nextStore.autoSwitchStatus,
             lastSwitchAtMs: nowMs,
+            blockedReason: null,
+            blockedMeta: null,
             lastResult: {
               ok: true,
               fromEmail: preActiveEmail,
@@ -3029,53 +3099,89 @@ function createAccountsManager(options = {}) {
 
   function updateAutoSwitchConfig(patch = {}) {
     const store = loadStore();
-    const prevEnabled = Boolean(store.autoSwitch.enabled);
+    const prev = store.autoSwitch || DEFAULT_AUTO_SWITCH_CONFIG;
+    const prevEnabled = Boolean(prev.enabled);
     const next = {
-      ...store.autoSwitch,
-      enabled: patch.enabled !== undefined ? Boolean(patch.enabled) : store.autoSwitch.enabled,
-      metricMode: patch.metricMode === 'used_pct' ? 'used_pct' : (patch.metricMode === 'remaining_pct' ? 'remaining_pct' : store.autoSwitch.metricMode),
-      poolKey: patch.poolKey ? String(patch.poolKey).trim() : store.autoSwitch.poolKey,
-      windowKey: ['primary', '5h', '7d', '24h'].includes(patch.windowKey) ? patch.windowKey : store.autoSwitch.windowKey,
-      thresholdPct: patch.thresholdPct !== undefined && Number.isFinite(Number(patch.thresholdPct)) ? Math.max(1, Math.min(95, Number(patch.thresholdPct))) : store.autoSwitch.thresholdPct,
-      debounceSec: patch.debounceSec !== undefined && Number.isFinite(Number(patch.debounceSec)) ? Math.max(0, Math.min(300, Number(patch.debounceSec))) : store.autoSwitch.debounceSec,
-      cooldownSec: patch.cooldownSec !== undefined && Number.isFinite(Number(patch.cooldownSec)) ? Math.max(10, Math.min(3600, Number(patch.cooldownSec))) : store.autoSwitch.cooldownSec,
-      waitUntilIdle: patch.waitUntilIdle !== undefined ? Boolean(patch.waitUntilIdle) : store.autoSwitch.waitUntilIdle,
-      strategy: patch.strategy === 'candidate_order' ? 'candidate_order' : (patch.strategy === 'highest_quota' ? 'highest_quota' : store.autoSwitch.strategy),
+      ...prev,
+      enabled: patch.enabled !== undefined ? Boolean(patch.enabled) : prev.enabled,
+      metricMode: patch.metricMode === 'used_pct' ? 'used_pct' : (patch.metricMode === 'remaining_pct' ? 'remaining_pct' : prev.metricMode),
+      poolKey: patch.poolKey ? String(patch.poolKey).trim() : prev.poolKey,
+      windowKey: ['primary', '5h', '7d', '24h'].includes(patch.windowKey) ? patch.windowKey : prev.windowKey,
+      thresholdPct: patch.thresholdPct !== undefined && Number.isFinite(Number(patch.thresholdPct)) ? Math.max(1, Math.min(95, Number(patch.thresholdPct))) : prev.thresholdPct,
+      debounceSec: patch.debounceSec !== undefined && Number.isFinite(Number(patch.debounceSec)) ? Math.max(0, Math.min(300, Number(patch.debounceSec))) : prev.debounceSec,
+      cooldownSec: patch.cooldownSec !== undefined && Number.isFinite(Number(patch.cooldownSec)) ? Math.max(10, Math.min(3600, Number(patch.cooldownSec))) : prev.cooldownSec,
+      waitUntilIdle: patch.waitUntilIdle !== undefined ? Boolean(patch.waitUntilIdle) : prev.waitUntilIdle,
+      strategy: patch.strategy === 'candidate_order' ? 'candidate_order' : (patch.strategy === 'highest_quota' ? 'highest_quota' : prev.strategy),
       candidates: Array.isArray(patch.candidates)
         ? Array.from(new Set(patch.candidates.map(normalizeEmail).filter(Boolean)))
-        : store.autoSwitch.candidates
+        : prev.candidates
     };
+    const ruleChanged = prev.poolKey !== next.poolKey
+      || prev.windowKey !== next.windowKey
+      || prev.metricMode !== next.metricMode
+      || prev.thresholdPct !== next.thresholdPct
+      || JSON.stringify(prev.candidates || []) !== JSON.stringify(next.candidates || []);
     store.autoSwitch = next;
     if (!next.enabled) {
       store.autoSwitchStatus.state = 'disabled';
       store.autoSwitchStatus.blockedReason = null;
+      store.autoSwitchStatus.blockedMeta = null;
       debounceState.clear();
-    } else if (!prevEnabled) {
+    } else if (!prevEnabled || ruleChanged) {
       store.autoSwitchStatus.state = 'watching';
       store.autoSwitchStatus.lastError = null;
       store.autoSwitchStatus.blockedReason = null;
+      store.autoSwitchStatus.blockedMeta = null;
+      debounceState.clear();
     }
     saveStore(store);
     return { ok: true, autoSwitch: next, autoSwitchStatus: store.autoSwitchStatus };
   }
 
-  function extractPoolMetricPct(quotaSnapshot, poolKey, windowKey = 'primary') {
-    if (!quotaSnapshot || !Array.isArray(quotaSnapshot.pools)) return null;
-    const pool = quotaSnapshot.pools.find(p => p.poolKey === poolKey);
-    if (!pool || pool.noPermission) return null;
+  /**
+   * 精细提取目标池与窗口的剩余额度百分比，并给出可核查的不可用细分原因。
+   * 绝不将无权限、缺池、缺窗口或空快照视为 0% 触发切换！
+   */
+  function inspectPoolMetric(quotaSnapshot, poolKey, windowKey = 'primary') {
+    if (!quotaSnapshot || !Array.isArray(quotaSnapshot.pools)) {
+      return { ok: false, pct: null, reason: 'target_pool_missing_in_snapshot', poolKey, windowKey };
+    }
+    const pool = quotaSnapshot.pools.find(p => p && p.poolKey === poolKey);
+    if (!pool) {
+      return { ok: false, pct: null, reason: 'target_pool_missing_in_snapshot', poolKey, windowKey };
+    }
+    if (pool.noPermission || pool.status === 'no_permission') {
+      return { ok: false, pct: null, reason: 'target_pool_no_permission', poolKey, windowKey };
+    }
+    const buckets = Array.isArray(pool.buckets) ? pool.buckets.filter(Boolean) : [];
     let targetBucket = null;
     if (windowKey === 'primary') {
-      targetBucket = pool.primaryBucket || selectPrimaryQuotaBucket(pool.buckets || []).primaryBucket;
+      targetBucket = pool.primaryBucket || selectPrimaryQuotaBucket(buckets).primaryBucket;
+      // 若池内根本没有任何桶且 pool.remainingFraction 存在，才回退池顶层分数
+      if (!targetBucket && buckets.length === 0 && pool.remainingFraction !== null && pool.remainingFraction !== undefined && Number.isFinite(Number(pool.remainingFraction))) {
+        return { ok: true, pct: Number((Number(pool.remainingFraction) * 100).toFixed(2)), reason: null, poolKey, windowKey };
+      }
     } else {
-      targetBucket = (pool.buckets || []).find(b =>
+      targetBucket = buckets.find(b =>
         String(b.windowShort || '').toLowerCase() === windowKey ||
         String(b.windowKey || '').toLowerCase() === windowKey ||
         (windowKey === '7d' && b.windowKey === 'weekly')
       ) || null;
+      if (!targetBucket) {
+        // 指定具体窗口 (5h/7d/24h) 但池快照不含该窗口时按未知拦截，不再错误回退到其他窗口汇总分数
+        return { ok: false, pct: null, reason: 'target_window_unavailable', poolKey, windowKey };
+      }
     }
-    const frac = targetBucket ? targetBucket.remainingFraction : pool.remainingFraction;
-    if (frac === null || frac === undefined || !Number.isFinite(Number(frac))) return null;
-    return Number((Number(frac) * 100).toFixed(2));
+    const frac = targetBucket ? targetBucket.remainingFraction : null;
+    if (frac === null || frac === undefined || !Number.isFinite(Number(frac))) {
+      return { ok: false, pct: null, reason: 'target_pool_missing_value', poolKey, windowKey };
+    }
+    return { ok: true, pct: Number((Number(frac) * 100).toFixed(2)), reason: null, poolKey, windowKey };
+  }
+
+  function extractPoolMetricPct(quotaSnapshot, poolKey, windowKey = 'primary') {
+    const res = inspectPoolMetric(quotaSnapshot, poolKey, windowKey);
+    return res.ok ? res.pct : null;
   }
 
   async function evaluateAutoSwitch(ctx = {}) {
@@ -3087,6 +3193,9 @@ function createAccountsManager(options = {}) {
     if (!cfg.enabled) {
       return { ok: true, action: 'noop', state: 'disabled' };
     }
+    if (st.lastResult?.restartPending && Date.now() - st.lastResult.atMs < 120000) {
+      return { ok: true, action: 'blocked', state: st.state, reason: 'client_restart_pending' };
+    }
     st.lastCheckAtMs = nowMs;
 
     // 1. 数据过期 / 未知 / 错误 / 无权限：严格不触发
@@ -3094,6 +3203,7 @@ function createAccountsManager(options = {}) {
     if (syncState !== 'fresh') {
       st.state = 'blocked_untrusted_quota';
       st.blockedReason = `quota_state_${syncState}`;
+      st.blockedMeta = { syncState };
       debounceState.clear();
       saveStore(store);
       return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state };
@@ -3104,26 +3214,31 @@ function createAccountsManager(options = {}) {
     if (!activeEmail || !activeSnapshot) {
       st.state = 'blocked_missing_account';
       st.blockedReason = 'no_active_account_or_snapshot';
+      st.blockedMeta = { activeEmail: activeEmail || null };
       saveStore(store);
       return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state };
     }
 
-    const remPct = extractPoolMetricPct(activeSnapshot, cfg.poolKey, cfg.windowKey);
-    if (remPct === null) {
+    const metric = inspectPoolMetric(activeSnapshot, cfg.poolKey, cfg.windowKey);
+    if (!metric.ok) {
       st.state = 'blocked_missing_pool';
-      st.blockedReason = 'target_pool_unavailable_or_no_permission';
+      st.blockedReason = metric.reason || 'target_pool_missing_in_snapshot';
+      st.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey, reason: st.blockedReason };
       saveStore(store);
-      return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state };
+      return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state, blockedMeta: st.blockedMeta };
     }
+    const remPct = metric.pct;
 
+    const dbKey = `${activeEmail}|${cfg.poolKey}|${cfg.windowKey}`;
     // 检查是否触发阈值
     const usedPct = Number((100 - remPct).toFixed(2));
     const triggered = cfg.metricMode === 'used_pct' ? (usedPct >= cfg.thresholdPct) : (remPct <= cfg.thresholdPct);
     if (!triggered) {
-      // 额度重置或滚动恢复回到安全线以上：重置状态并恢复 watching
-      debounceState.delete(activeEmail);
+      // 额度重置或滚动恢复回到安全线以上：精准清理当前规则键并恢复 watching
+      debounceState.delete(dbKey);
       st.state = 'watching';
       st.blockedReason = null;
+      st.blockedMeta = null;
       saveStore(store);
       return { ok: true, action: 'ok_above_threshold', remainingPct: remPct, usedPct, state: 'watching' };
     }
@@ -3131,22 +3246,27 @@ function createAccountsManager(options = {}) {
     // 2. 冷却保护（优先检查，避免刚切完号又再次进入防抖）
     if (st.lastSwitchAtMs && (nowMs - st.lastSwitchAtMs) < cfg.cooldownSec * 1000) {
       st.state = 'cooldown';
+      st.blockedReason = null;
+      st.blockedMeta = null;
       saveStore(store);
       return { ok: true, action: 'cooldown', retryInSec: Math.ceil((st.lastSwitchAtMs + cfg.cooldownSec * 1000 - nowMs) / 1000), state: 'cooldown' };
     }
 
     // 3. 防抖保护（默认 15s）
-    const dbKey = `${activeEmail}|${cfg.poolKey}|${cfg.windowKey}`;
     const dbEntry = debounceState.get(dbKey);
     if (!dbEntry) {
       debounceState.set(dbKey, { firstSeenMs: nowMs });
       if (cfg.debounceSec > 0) {
         st.state = 'pending_debounce';
+        st.blockedReason = null;
+        st.blockedMeta = null;
         saveStore(store);
         return { ok: true, action: 'pending_debounce', state: st.state, remainingPct: remPct };
       }
     } else if ((nowMs - dbEntry.firstSeenMs) < cfg.debounceSec * 1000) {
       st.state = 'pending_debounce';
+      st.blockedReason = null;
+      st.blockedMeta = null;
       saveStore(store);
       return { ok: true, action: 'pending_debounce', state: st.state, remainingPct: remPct };
     }
@@ -3155,20 +3275,39 @@ function createAccountsManager(options = {}) {
     if (ctx.isGenerating && cfg.waitUntilIdle) {
       st.state = 'waiting_idle';
       st.blockedReason = 'generation_in_progress';
+      st.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey };
       saveStore(store);
       return { ok: true, action: 'waiting_idle', state: 'waiting_idle' };
     }
 
-    // 5. 筛选可用且充足的候选目标账号（绝不选中同账号/无效授权/也处于阈值以下/过期快照的账号）
+    // 5. 筛选可用且充足的候选目标账号（若候选快照过期且未显式关闭自动刷新，先按需静默刷新候选配额）
     const candidateEmails = (cfg.candidates || [])
       .map(normalizeEmail)
       .filter(e => e && e !== activeEmail && store.accounts[e] && !store.accounts[e].authInvalid && store.accounts[e].credential?.refreshToken);
 
+    const maxStaleMs = Number.isFinite(Number(ctx.candidateMaxStaleMs)) ? Number(ctx.candidateMaxStaleMs) : 5 * 60 * 1000;
+    if (ctx.skipCandidateRefresh !== true && (typeof customFetch === 'function' || ctx.allowLiveCandidateRefresh === true || !options.credentialStore)) {
+      for (const ce of candidateEmails) {
+        const curSnapStore = loadStore();
+        const cRec = curSnapStore.accounts[ce];
+        if (!cRec) continue;
+        const cAgeMs = cRec.lastQuotaUpdatedAtMs ? (nowMs - cRec.lastQuotaUpdatedAtMs) : Infinity;
+        if (!cRec.quotaSnapshot || cRec.lastQuotaError || cAgeMs > maxStaleMs) {
+          try {
+            await refreshAccountQuota(ce, { nowMs });
+          } catch { }
+        }
+      }
+    }
+
+    const latestStore = loadStore();
+    const latestStatus = latestStore.autoSwitchStatus || (latestStore.autoSwitchStatus = {});
     const eligible = [];
     for (const ce of candidateEmails) {
-      const cRec = store.accounts[ce];
+      const cRec = latestStore.accounts[ce];
+      if (!cRec || cRec.authInvalid) continue;
       const cAgeMs = cRec.lastQuotaUpdatedAtMs ? (nowMs - cRec.lastQuotaUpdatedAtMs) : Infinity;
-      if (cRec.lastQuotaError || cAgeMs > (ctx.candidateMaxStaleMs || 5 * 60 * 1000)) continue;
+      if (cRec.lastQuotaError || cAgeMs > maxStaleMs) continue;
       const cRem = extractPoolMetricPct(cRec.quotaSnapshot, cfg.poolKey, cfg.windowKey);
       if (cRem === null) continue;
       const cUsed = Number((100 - cRem).toFixed(2));
@@ -3179,9 +3318,10 @@ function createAccountsManager(options = {}) {
     }
 
     if (!eligible.length) {
-      st.state = 'all_candidates_exhausted';
-      st.blockedReason = 'all_candidates_insufficient_or_stale';
-      saveStore(store);
+      latestStatus.state = 'all_candidates_exhausted';
+      latestStatus.blockedReason = 'all_candidates_insufficient_or_stale';
+      latestStatus.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey, candidateCount: candidateEmails.length };
+      saveStore(latestStore);
       return { ok: true, action: 'all_candidates_exhausted', state: 'all_candidates_exhausted' };
     }
 
@@ -3190,8 +3330,10 @@ function createAccountsManager(options = {}) {
     }
     const chosen = eligible[0];
 
-    st.state = 'switching';
-    saveStore(store);
+    latestStatus.state = 'switching';
+    latestStatus.blockedReason = null;
+    latestStatus.blockedMeta = null;
+    saveStore(latestStore);
     const swRes = await (optsSwitchExecutor(ctx))(chosen.email, {
       trigger: 'auto_switch',
       nowMs,
@@ -3208,6 +3350,8 @@ function createAccountsManager(options = {}) {
       postStore.autoSwitchStatus = {
         ...postStore.autoSwitchStatus,
         state: 'error',
+        blockedReason: null,
+        blockedMeta: null,
         lastError: swRes.error || '自动切号失败，已停止自动切换保护账号状态',
         lastResult: { ok: false, toEmail: chosen.email, atMs: nowMs, error: swRes.error }
       };
@@ -3215,8 +3359,18 @@ function createAccountsManager(options = {}) {
       return { ok: false, action: 'switch_failed_halted', targetEmail: chosen.email, error: swRes.error };
     }
 
+    // 成功切换后立刻收敛状态为 cooldown，避免状态滞留在 switching 或被同次条件重复触发
+    postStore.autoSwitchStatus = {
+      ...(postStore.autoSwitchStatus || {}),
+      state: 'cooldown',
+      lastSwitchAtMs: postStore.autoSwitchStatus?.lastSwitchAtMs || nowMs,
+      lastError: null,
+      blockedReason: null,
+      blockedMeta: null
+    };
+    saveStore(postStore);
     debounceState.clear();
-    return { ok: true, action: 'switched', fromEmail: activeEmail, toEmail: chosen.email, targetRemainingPct: chosen.remainingPct, switchResult: swRes };
+    return { ok: true, action: 'switched', fromEmail: activeEmail, toEmail: chosen.email, targetRemainingPct: chosen.remainingPct, state: 'cooldown', switchResult: swRes };
   }
 
   function optsSwitchExecutor(ctx) {
@@ -3270,6 +3424,7 @@ function createAccountsManager(options = {}) {
     refreshAccountQuota,
     syncActiveHostQuotaSnapshot,
     switchActiveAccount,
+    inspectPoolMetric,
     updateAutoSwitchConfig,
     evaluateAutoSwitch,
     updateKeepaliveConfig,
@@ -3504,7 +3659,7 @@ function getSharedAccountsManager(opts = {}) {
   return sharedAccountsMgr;
 }
 
-async function dispatchAccountsAction(mgr, payload = {}) {
+async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
   const act = String(payload?.action || '').trim();
   if (!mgr) return { ok: false, error: '账号管理器尚未初始化' };
   switch (act) {
@@ -3570,6 +3725,7 @@ async function dispatchAccountsAction(mgr, payload = {}) {
     case 'switch':
       return {
         ...(await mgr.switchActiveAccount(payload.email, {
+          restartClient: options.restartClient,
           forceWhileBusy: Boolean(payload.forceWhileBusy),
           ...(payload.verifyTimeoutMs != null ? { verifyTimeoutMs: payload.verifyTimeoutMs } : {})
         })),

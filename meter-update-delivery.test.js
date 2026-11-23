@@ -170,7 +170,7 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
     {
       tag_name: 'v0.9.0',
       name: 'v0.9.0 实验性上下文加长正式集成',
-      body: '1. 引入上下文加长功能\n2. 零外部依赖\n3. 支持恢复官方原版',
+      body: '# v0.9.0\n<details open>\n<summary><b>简体中文</b></summary>\n\n1. 引入上下文加长功能\n2. 零外部依赖\n3. 支持恢复官方原版\n</details>\n<details><summary>English</summary>English notes</details>',
       published_at: '2026-11-12T00:00:00Z',
       html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.0',
       assets: [
@@ -188,6 +188,7 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
 
   const res = await checkUpdateAsync({
     currentVersion: '0.8.10',
+    installedVersion: '0.8.10',
     force: true,
     _requestGithubUrl: async () => JSON.stringify(mockReleases)
   });
@@ -196,6 +197,7 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
   assert.equal(res.hasUpdate, true);
   assert.equal(res.latestVersion, '0.9.0');
   assert.match(res.releaseNotes, /上下文加长/);
+  assert.doesNotMatch(res.releaseNotes, /<\/?(?:details|summary)|English notes|简体中文/);
 });
 
 test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演练', async () => {

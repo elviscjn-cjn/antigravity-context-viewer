@@ -306,7 +306,7 @@ test('自定义实付模式下非零金额、0 元与不同周期，且切换订
   assert.equal(settingsZero.actualPricePaid, 0, '0 元必须作为有效实付金额');
   assert.match(priceVal.textContent, /\$0/);
   assert.match(detPrice.textContent, /\$0 · 免费\/赠送/);
-  assert.equal(detPriceTag.textContent, '手动确认 · 免费');
+  assert.equal(detPriceTag.textContent, '免费');
 
   // 2.4 点击「跟随参考价」切换回参考价模式 -> 立即按日本实时恢复 ¥2900/月
   btnModePreset.click();
@@ -483,8 +483,8 @@ test('Google AI Ultra 套餐预设模式与多语言下不误套 Pro $19.99 与 
       dailyMap: {}
     });
     assert.doesNotMatch(h.elements.get('plan-summary-price-val').textContent, /19\.99/);
-    assert.match(h.elements.get('plan-summary-price-val').textContent, /待设置月费/);
-    assert.equal(h.elements.get('p-det-price-tag').textContent, '待设置');
+    assert.match(h.elements.get('plan-summary-price-val').textContent, /\$99\.99–\$199\.99\/月/);
+    assert.equal(h.elements.get('p-det-price-tag').textContent, '待选档位');
 
     await api.setPanelLanguage('en', { persist: false });
     api.applyTokenHistoryPayload({
@@ -493,10 +493,10 @@ test('Google AI Ultra 套餐预设模式与多语言下不误套 Pro $19.99 与 
       dailyMap: {}
     });
     assert.doesNotMatch(h.elements.get('plan-summary-price-val').textContent, /19\.99/);
-    assert.equal(h.elements.get('plan-summary-price-val').textContent, 'Fee unset');
-    assert.equal(h.elements.get('p-det-price-tag').textContent, 'Unset');
+    assert.equal(h.elements.get('plan-summary-price-val').textContent, '$99.99–$199.99/mo');
+    assert.equal(h.elements.get('p-det-price-tag').textContent, 'Tier unset');
     assert.notEqual(h.elements.get('p-det-price-tag').textContent, 'Official price');
-    assert.equal(h.elements.get('p-det-name').textContent, 'Google AI Ultra (Sub-tier unknown)');
+    assert.equal(h.elements.get('p-det-name').textContent, 'Google AI Ultra');
 
     await api.setPanelLanguage('zh-TW', { persist: false });
     api.applyTokenHistoryPayload({
@@ -504,8 +504,8 @@ test('Google AI Ultra 套餐预设模式与多语言下不误套 Pro $19.99 与 
       rawPlanStatus: ultraLive,
       dailyMap: {}
     });
-    assert.equal(h.elements.get('p-det-name').textContent, 'Google AI Ultra（子檔未知）');
-    assert.equal(h.elements.get('p-det-price-tag').textContent, '待設定');
+    assert.equal(h.elements.get('p-det-name').textContent, 'Google AI Ultra');
+    assert.equal(h.elements.get('p-det-price-tag').textContent, '待選檔位');
   } finally {
     api.dispose();
   }

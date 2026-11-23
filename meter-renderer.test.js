@@ -892,10 +892,10 @@ test('default current period API reference amount, independent subscription spen
   h.elements.get('btn-custom-plan-save').click();
 
   assert.equal(customForm.style.display, 'none');
-  assert.equal(h.elements.get('p-det-region').textContent, '日本 (JP)');
+  assert.equal(h.elements.get('p-det-region').textContent, 'JP 日本');
   assert.match(h.elements.get('p-det-acq').textContent, /学生.*优惠/);
   assert.match(h.elements.get('p-det-price').textContent, /\$0/);
-  assert.equal(h.elements.get('p-det-price-tag').textContent, '手动确认 · 免费');
+  assert.equal(h.elements.get('p-det-price-tag').textContent, '免费');
 
   // 验证在首屏估值卡片中，实际支出并列显示为 $0，且标注免费权益使用中
   h.elements.get('cost-btn-scope-period').click();
@@ -1039,7 +1039,7 @@ test('instant region switch to Australia & Korea, price badge dynamic animation 
   // 验证初始状态：韩元 29000（整数不带 .00）
   assert.match(priceVal.textContent, /₩29000/);
   assert.match(priceVal.textContent, /月/);
-  assert.equal(priceCny.textContent, '(≈ ¥147.9 CNY)');
+  assert.equal(priceCny.textContent, '· ≈ ¥147.9 CNY');
   assert.match(detPrice.textContent, /₩29000 · 月付/);
   assert.equal(detPriceTag.textContent, '官方定价');
 
@@ -1063,7 +1063,7 @@ test('instant region switch to Australia & Korea, price badge dynamic animation 
   // 3. 验证立即更新（0延迟保存与上面立即更改）
   assert.match(priceVal.textContent, /AU\$32\.99/);
   assert.match(priceVal.textContent, /月/);
-  assert.equal(priceCny.textContent, '(≈ ¥146.8 CNY)');
+  assert.equal(priceCny.textContent, '· ≈ ¥146.8 CNY');
   assert.match(detPrice.textContent, /AU\$32\.99 · 月付/);
   assert.equal(detPriceTag.textContent, '官方定价');
   assert.match(directLabel.textContent, /澳大利亚.*AU\$32\.99/);
@@ -1238,8 +1238,8 @@ test('custom dropdowns for country, region, and currency support code/symbol sea
   // 点击选中台湾
   twItem.click();
   await h.flush();
-  assert.equal(api.getPlanSettings().country, '中国台湾 (TW)');
-  assert.equal(h.elements.get('direct-country-label').textContent, '🇹🇼 中国台湾 (TW)');
+  assert.equal(api.getPlanSettings().country, 'TW 中国台湾');
+  assert.equal(h.elements.get('direct-country-label').textContent, '🇹🇼 TW 中国台湾');
 
   // 3. 验证「币种」统一定制下拉：展开、搜索符号 "AU$" 过滤出澳元、选择后保存
   const curTrigger = h.elements.get('direct-currency-trigger');
@@ -1262,7 +1262,7 @@ test('custom dropdowns for country, region, and currency support code/symbol sea
   audItem.click();
   await h.flush();
   assert.equal(api.getPlanSettings().currency, 'AUD');
-  assert.equal(h.elements.get('direct-currency-label').textContent, 'AUD (AU$ 澳元)');
+  assert.equal(h.elements.get('direct-currency-label').textContent, 'AUD · AU$ 澳元');
 
   // 4. 验证 Esc 关闭
   curTrigger.click();
@@ -4755,7 +4755,7 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
 
     h.elements.get('btn-check-update').click();
     await h.flush();
-    assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.3 → v0.9.1');
+    assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.3 → 0.9.1');
 
     h.elements.get('btn-apply-update').click();
     await h.flush();
@@ -4768,7 +4768,7 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
     mockLiveInjected = true;
     h.elements.get('btn-apply-update').click();
     await h.flush();
-    assert.equal(h.elements.get('v').textContent, 'v0.9.1');
+    assert.equal(h.elements.get('v').textContent, '0.9.1');
   } finally {
     api.dispose();
   }
@@ -5427,18 +5427,18 @@ test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-
   }
 });
 
-test('v0.9.0 版本展示与预发布更新比较隔离', async () => {
+test('v0.9.1 版本展示与预发布更新比较隔离', async () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.9.0');
-  assert.equal(pkg.displayVersion, '0.9.0');
+  assert.equal(pkg.version, '0.9.1');
+  assert.equal(pkg.displayVersion, '0.9.1');
 
-  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.9.0，且 beta 通道开关默认未勾选
+  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.9.1，且 beta 通道开关默认未勾选
   const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-  assert.match(builtCode, /<span id="v"[^>]*>0\.9\.0<\/span>/);
-  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.9\.0<\/span>/);
+  assert.match(builtCode, /<span id="v"[^>]*>0\.9\.1<\/span>/);
+  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.9\.1<\/span>/);
   assert.equal(builtCode.includes('id="check-allow-beta-updates"'), true);
 
-  // 2. 0.9.0 vs 0.9.0 判为已是最新，且文案展示 0.9.0
+  // 2. 0.9.1 vs 0.9.1 判为已是最新，且文案展示 0.9.1
   {
     const h = harness();
     const api = h.sandbox.__AGContextMeter;
@@ -5446,22 +5446,22 @@ test('v0.9.0 版本展示与预发布更新比较隔离', async () => {
     h.sandbox.window.contextMeterAPI = {
       ...h.sandbox.window.contextMeterAPI,
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.9.0');
+        assert.equal(req.currentVersion, '0.9.1');
         assert.equal(req.allowBetaUpdates, false);
-        return { ok: true, hasUpdate: false, currentVersion: '0.9.0', installedVersion: '0.9.0' };
+        return { ok: true, hasUpdate: false, currentVersion: '0.9.1', installedVersion: '0.9.1' };
       }
     };
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.0 (已是最新)');
-      assert.match(h.elements.get('up-pop-body').textContent, /0\.9\.0/);
+      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.1 (已是最新)');
+      assert.match(h.elements.get('up-pop-body').textContent, /0\.9\.1/);
     } finally {
       api.dispose();
     }
   }
 
-  // 3. ??? -> beta.2 与 beta.1 -> 0.9.0 展示格式，以及开启 beta 通道开关持久化
+  // 3. ??? -> beta.2 与 beta.1 -> 0.9.1 展示格式，以及开启 beta 通道开关持久化
   {
     const savedPayloads = [];
     const h = harness();
@@ -5473,9 +5473,9 @@ test('v0.9.0 版本展示与预发布更新比较隔离', async () => {
         return { ok: true };
       },
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.9.0');
+        assert.equal(req.currentVersion, '0.9.1');
         assert.equal(req.allowBetaUpdates, true);
-        return { ok: true, hasUpdate: true, currentVersion: '0.9.0', latestVersion: '0.9.1-beta.2', releaseNotes: 'v0.9.1-beta.2' };
+        return { ok: true, hasUpdate: true, currentVersion: '0.9.1', latestVersion: '0.9.1-beta.2', releaseNotes: 'v0.9.1-beta.2' };
       }
     };
     const chkBeta = h.elements.get('check-allow-beta-updates');
@@ -5487,7 +5487,7 @@ test('v0.9.0 版本展示与预发布更新比较隔离', async () => {
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.0 → 0.9.1 beta2');
+      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.1 → 0.9.1 beta2');
       assert.match(h.elements.get('up-pop-body').textContent, /v0\.9\.1/);
       assert.equal(h.elements.get('btn-apply-update').style.display, 'inline-block');
     } finally {
@@ -5964,8 +5964,8 @@ test('v0.8.8 英文界面完整去汉字回归、地区预设自动转换与零 
     await api.setPanelLanguage('en', { persist: false });
 
     assert.equal(h.shadow.querySelectorAll('input[type="date"]').length, 0, '不允许存在原生 input[type="date"]');
-    assert.equal(h.elements.get('input-custom-country').value, 'United States (US)');
-    assert.equal(h.elements.get('input-custom-region').value, 'United States (USD)');
+    assert.equal(h.elements.get('input-custom-country').value, 'US United States');
+    assert.equal(h.elements.get('input-custom-region').value, 'USD United States');
     assert.equal(h.elements.get('cost-period-tag').textContent, `${ym} (Calendar Month)`);
     assert.doesNotMatch(h.elements.get('cost-scope-desc').textContent, /[\u4e00-\u9fff]/);
     assert.doesNotMatch(h.elements.get('plan-summary-price-val').textContent, /[\u4e00-\u9fff]/);
@@ -6089,8 +6089,8 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
 
     h.elements.get('btn-plan-detail-toggle').click();
     h.elements.get('btn-edit-plan-custom').click();
-    assert.equal(h.elements.get('input-custom-country').value, '美國 (US)');
-    assert.equal(h.elements.get('input-custom-region').value, '美國 (USD)');
+    assert.equal(h.elements.get('input-custom-country').value, 'US 美國');
+    assert.equal(h.elements.get('input-custom-region').value, 'USD 美國');
 
     // 扫描 PANEL_I18N zh-TW 全字典不含明确简体专属字
     const simpOnlyRe = /[国韩亚欧乌罗马联东陆区宾兰达尔义书买云亿仅从仓优会体佣储兑划创删剂剑劝办务动励劳势协单卖卫却压厌双变叠叶号叹启员响哑唤严丰临举么乐习乡乱亏亚产亲们价众伙伞伟传伤伦伪侣侦侧侨俩仓个倾偿催傲傻]/;
@@ -6512,12 +6512,12 @@ test('Issue #49: 套餐规格与 5x/20x 子档覆盖下拉选择、立即保存�
 
     // 4. 验证 Token 面板订阅摘要条展示带子档套餐名
     const sumTxt = h.elements.get('plan-summary-text');
-    assert.match(sumTxt.textContent, /Google AI Ultra \(5x\)/);
+    assert.match(sumTxt.textContent, /Google AI Ultra 5x/);
 
     // 5. 验证额度面板顶部套餐胶囊展示带子档套餐名
     const quotaPill = h.elements.get('quota-plan-tier-pill');
     assert.equal(quotaPill.hidden, false);
-    assert.equal(quotaPill.textContent, 'Google AI Ultra (5x)');
+    assert.equal(quotaPill.textContent, 'Google AI Ultra 5x');
 
     // 6. 验证多账号列表展示带子档套餐名
     const mockOverview = {
@@ -6536,7 +6536,7 @@ test('Issue #49: 套餐规格与 5x/20x 子档覆盖下拉选择、立即保存�
     assert.ok(listEl.children.length > 0);
     const acctEmail = listEl.children[0].children.find(c => c.className === 'quota-subcard-row')?.children?.find(c => c.className === 'quota-acct-email');
     assert.ok(acctEmail);
-    assert.match(acctEmail.textContent, /ultra-user@example\.com · Google AI Ultra \(5x\)/);
+    assert.match(acctEmail.textContent, /ultra-user@example\.com · Google AI Ultra 5x/);
 
     // 7. 验证切换英文 en 模式下，全 DOM 零汉字门禁通过
     await api.setPanelLanguage('en', { persist: false });
@@ -6561,6 +6561,8 @@ test('Issue #54 & Issue #59: 顶栏内联锚定打开 IDE 左侧、右侧辅助�
     get firstElementChild() { return this.children[0]; },
     appendChild(n) { this.children.push(n); n.parentElement = this; },
     insertBefore(n, ref) {
+      const existingIdx = this.children.indexOf(n);
+      if (existingIdx >= 0) this.children.splice(existingIdx, 1);
       const idx = this.children.indexOf(ref);
       if (idx >= 0) this.children.splice(idx, 0, n);
       else this.children.unshift(n);
@@ -7956,8 +7958,9 @@ test('Step 6: aux/page 停靠 data-panel-docked、返回聊天仅 page 显示、
     // 4. 输入框状态条：缺失上限与 Token 时全显示 — 且绝无硬编码 600K；速度直达 context/speed；离开 5 行卡同步零残留
     h.sandbox.__AGContextMeter.setComposerStateForTest({ sessionStats: { usedTokens: 50000 } });
     assert.equal(h.elements.get('csb-context-text').textContent, '--%');
-    assert.doesNotMatch(String(h.elements.get('csb-group-context').title || ''), /600K/);
-    assert.match(String(h.elements.get('csb-group-context').title || ''), /—/);
+    assert.equal(String(h.elements.get('csb-group-context').title || ''), '', '原生 title 必须清空以消除系统黑框双气泡');
+    assert.doesNotMatch(String(h.elements.get('csb-group-context').getAttribute('data-tooltip') || ''), /600K/);
+    assert.match(String(h.elements.get('csb-group-context').getAttribute('data-tooltip') || ''), /—/);
 
     // 验证全空时显示 —
     const hEmpty = harness();
@@ -7968,12 +7971,14 @@ test('Step 6: aux/page 停靠 data-panel-docked、返回聊天仅 page 显示、
       assert.equal(csbEmpty.cardUncached, '—');
 
       hEmpty.elements.get('csb-group-speed').click();
-      assert.equal(hEmpty.elements.get('panel').hidden, false, '点击输入栏速度组应打开上下文面板');
-      assert.notEqual(hEmpty.elements.get('panel-tokens').hidden, false, '不应打开累计 Token 面板');
-      assert.equal(hEmpty.elements.get('tab-ctx-speed').classList.contains('active'), true, '应选中 speed 子页');
+      assert.equal(hEmpty.elements.get('panel').hidden, false, '点击底栏速度项直达速度对比视图');
+      assert.equal(hEmpty.elements.get('tab-ctx-speed').classList.contains('active'), true);
+      // 二次点击同视图关闭
+      hEmpty.elements.get('csb-group-speed').click();
+      assert.equal(hEmpty.elements.get('panel').hidden, true, '再次点击底栏速度项关闭面板');
 
       const tokBtn = hEmpty.elements.get('csb-group-tokens');
-      const card = hEmpty.elements.get('token-five-line-card');
+      const card = hEmpty.elements.get('csb-card-tokens');
       tokBtn.trigger('mouseenter');
       assert.equal(card.hidden, false);
       assert.equal(card.style.display, '');
@@ -8234,32 +8239,15 @@ test('2.34.0 Hub DOM 停靠、分屏/Side Chat 右侧打开精确传参、点击
 
     const statusBtn = h.elements.get('csb-group-status');
     const tokBtn = h.elements.get('csb-group-tokens');
-    const card = h.elements.get('token-five-line-card');
-    // 悬停 Token 胶囊预览、移开关闭；点击状态胶囊固定展开、移开不关、再点击/Esc 收起
+    const card = h.elements.get('csb-card-tokens');
+    // 悬停 Token 胶囊预览、移开关闭；状态胶囊取消点击收敛为纯遥测展示
     tokBtn.trigger('mouseenter');
     assert.equal(card.hidden, false);
     tokBtn.trigger('mouseleave');
     assert.equal(card.hidden, true);
 
     statusBtn.click();
-    assert.equal(card.hidden, false);
-    assert.equal(api.getComposerStatusBarStateForTest().cardPinned, true);
-    // 固定状态下 mouseleave 不应关闭
-    tokBtn.trigger('mouseleave');
-    statusBtn.trigger('mouseleave');
-    assert.equal(card.hidden, false);
-    // 再点一次切换收起
-    statusBtn.click();
-    assert.equal(card.hidden, true);
-    assert.equal(api.getComposerStatusBarStateForTest().cardPinned, false);
-
-    // 点击卡片固定角标同样固定，且按 Esc 收起
-    tokBtn.trigger('mouseenter');
-    h.elements.get('tfl-pin-badge').click();
-    assert.equal(card.hidden, false);
-    assert.equal(api.getComposerStatusBarStateForTest().cardPinned, true);
-    h.sandbox.document.dispatchEvent({ type: 'keydown', key: 'Escape' });
-    assert.equal(card.hidden, true);
+    assert.equal(card.hidden, true, '状态胶囊收敛不误弹浮卡');
     assert.equal(api.getComposerStatusBarStateForTest().cardPinned, false);
 
     // 4. 每轮回复尾部统计微徽标（主区 + Side Chat toolbar）及配置开关持久化
@@ -8294,6 +8282,8 @@ test('v0.9.0-beta.1 实机停靠修复: hidden 停靠面板零高度折叠、pag
     contains(node) { return this.children.includes(node) || node?.parentElement === this; },
     appendChild(n) { n.parentElement = this; this.children.push(n); },
     insertBefore(n, ref) {
+      const existingIdx = this.children.indexOf(n);
+      if (existingIdx >= 0) this.children.splice(existingIdx, 1);
       const idx = this.children.indexOf(ref);
       if (idx >= 0) this.children.splice(idx, 0, n);
       else this.children.unshift(n);
@@ -8422,6 +8412,8 @@ test('ELV-94 2.34.0 右侧辅助栏 [data-side-panel-open="true"] 识别、展�
     contains(n) { return this.children.includes(n); },
     appendChild(n) { n.parentElement = this; this.children.push(n); },
     insertBefore(n, ref) {
+      const existingIdx = this.children.indexOf(n);
+      if (existingIdx >= 0) this.children.splice(existingIdx, 1);
       const idx = this.children.indexOf(ref);
       if (idx >= 0) this.children.splice(idx, 0, n);
       else this.children.unshift(n);
@@ -8628,7 +8620,9 @@ test('v0.9.0-beta.1 回复尾注去框、两轮独立对账不跨轮复用与 co
     assert.equal(footerSnap.items[1].callId, 'wTECa8iUMJaA6tkPqLCn4Qk');
     assert.match(footerSnap.items[0].text, /本次请求.*31\.9K.*Out 57.*0%.*570 tok\/s/);
     assert.match(footerSnap.items[1].text, /本次请求.*32\.2K.*Out 57.*0%.*518 tok\/s/);
-    assert.match(api.getComposerStatusBarStateForTest().tokensText, /会话缓存命中率 26%/);
+    assert.match(api.getComposerStatusBarStateForTest().tokensText, /缓存 26%/);
+    assert.match(h.elements.get('csb-group-tokens').getAttribute('data-tooltip'), /会话缓存命中率 26%/);
+    assert.equal(h.elements.get('csb-group-tokens').title, '', '原生 title 必须清空以杜绝双气泡');
   } finally {
     h.sandbox.__AGContextMeter.dispose();
   }
@@ -9265,6 +9259,8 @@ test('v0.9.0-beta.1: Customizations/插件市场/详情子页(含搜索框)全�
     assert.equal(host.getAttribute('data-marketplace-active'), 'true');
     assert.equal(elements.get('panel').hidden, true);
     assert.equal(elements.get('dock-aux-context-bar').hidden, true);
+    assert.equal(elements.get('ctx-radial-orb').hidden, true, '自定义扩展页必须隐藏悬浮球');
+    assert.equal(elements.get('ctx-radial-layer').hidden, true, '自定义扩展页必须收起径向菜单');
     elements.get('badge-overflow').click();
     assert.equal(elements.get('overflow-menu').hidden, true, '自定义扩展页点击溢出口禁止弹出 picker 菜单');
     elements.get('badge').trigger('mouseenter');
@@ -9295,6 +9291,7 @@ test('v0.9.0-beta.1: Customizations/插件市场/详情子页(含搜索框)全�
     capturedObserverCbs.forEach(cb => { try { cb([{ type: 'childList', addedNodes: [{}] }]); } catch { } });
     flushScheduledTimers();
     assert.equal(host.getAttribute('data-marketplace-active'), null);
+    assert.equal(elements.get('ctx-radial-orb').hidden, false, '返回聊天页应恢复悬浮球');
     elements.get('badge').click();
     assert.equal(elements.get('panel').hidden, false, '退出返回聊天页面后应恢复正常打开面板');
   } finally {
@@ -9334,6 +9331,7 @@ test('v0.9.0-beta.1: 正常状态隐藏空蓝框(#ctx-ov-pinned-banner / #dock-f
     assert.equal(dockOpenFeedback.textContent, '');
 
     // 2. 固定历史步骤：#ctx-ov-pinned-banner 出现有效内容；返回最新后清空并隐藏
+    h.elements.get('csb-group-context').click();
     api.jumpToStepOrTurnForTest({ callId: 'c1', stepIndex: 10 });
     assert.equal(pinnedBanner.hidden, false);
     assert.match(pinnedBanner.textContent, /S10/);
@@ -9357,4 +9355,1074 @@ test('v0.9.0-beta.1: 正常状态隐藏空蓝框(#ctx-ov-pinned-banner / #dock-f
   }
 });
 
+test('v0.9.0-beta.1: 径向菜单 3 形态 / 锁定物理动效参数 / 靠边安全扇区 / 拖拽阈值 / CLI 右键直达配置 / Customizations 避让', async () => {
+  const h = harness(session());
+  const api = h.sandbox.__AGContextMeter;
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  try {
+    h.finishScan();
+    await h.flush();
 
+    // 1. CSS 与常量严格锁定验证（含原型双层极坐标外向内汇聚 + 正向抵消旋转）
+    assert.match(stylesSrc, /border-radius:\s*50%/);
+    assert.match(stylesSrc, /width:\s*38px;\s*height:\s*38px/);
+    assert.match(stylesSrc, /340ms\s+cubic-bezier\(0\.22,\s*1\.18,\s*0\.36,\s*1\)\s+calc\(var\(--i\)\s*\*\s*34ms\)/);
+    assert.match(stylesSrc, /240ms\s+ease-out\s+calc\(var\(--i\)\s*\*\s*34ms\)/);
+    assert.match(stylesSrc, /280ms\s+ease-out\s+calc\(var\(--i\)\s*\*\s*34ms\)/);
+    assert.match(stylesSrc, /190ms\s+cubic-bezier\(0\.4,\s*0,\s*1,\s*1\)\s+0ms/);
+    assert.match(stylesSrc, /scale\(1\.09\)/);
+    assert.match(stylesSrc, /scale\(0\.94\)/);
+    assert.match(stylesSrc, /blur\(10px\)/);
+    assert.match(stylesSrc, /\.ctx-radial-slot[\s\S]*rotate\(var\(--angle\)\)[\s\S]*translateY\(calc\(-1\s*\*\s*var\(--r-far\)\)\)[\s\S]*rotate\(calc\(-1\s*\*\s*var\(--angle\)\)\)/);
+    assert.match(stylesSrc, /\.ctx-radial-layer\[data-state="open"\]\s+\.ctx-radial-slot[\s\S]*translateY\(calc\(-1\s*\*\s*var\(--r-rest\)\)\)[\s\S]*rotate\(calc\(-1\s*\*\s*var\(--angle\)\)\)/);
+    assert.ok(!fs.existsSync(require('node:path').join(__dirname, 'antigravity_contextmeter.html')), '不得将只读原型 HTML 复制进项目目录');
+
+    const rSt0 = api.getRadialMenuStateForTest();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(rSt0.constants)), {
+      STAGGER_MS: 34,
+      R_REST_360: 56,
+      R_REST_180: 92,
+      R_FAR_MULTIPLIER: 1.85,
+      R_CLOSE_MULTIPLIER: 1.75,
+      BLUR_START_PX: 10
+    });
+    assert.equal(rSt0.quickMenuStyle, 'floating');
+    assert.equal(h.elements.get('ctx-radial-orb').hidden, false);
+
+    // 2. 四周留白 >= 84px 展开完整 360° 六瓣花环；四角与四边靠边收束安全扇区且 100% 不越界
+    const gCenter = api.computeRadialGeometryForTest('floating', { left: 500, top: 380, width: 40, height: 40 }, 1280, 800);
+    assert.equal(gCenter.isFull360, true);
+    assert.equal(gCenter.restRadius, 56);
+    assert.equal(gCenter.items.length, 6);
+    assert.equal(gCenter.items[0].angleDeg, 0);
+    assert.equal(gCenter.items[3].angleDeg, 180);
+
+    const checkSafeBounds = (geom, msg) => {
+      for (const it of geom.items) {
+        assert.ok(it.absX >= 20 && it.absX <= 1260 && it.absY >= 20 && it.absY <= 780, msg);
+      }
+    };
+    const gCornerTL = api.computeRadialGeometryForTest('floating', { left: 10, top: 10, width: 40, height: 40 }, 1280, 800);
+    const gCornerTR = api.computeRadialGeometryForTest('floating', { left: 1230, top: 10, width: 40, height: 40 }, 1280, 800);
+    const gCornerBL = api.computeRadialGeometryForTest('floating', { left: 10, top: 750, width: 40, height: 40 }, 1280, 800);
+    const gCornerBR = api.computeRadialGeometryForTest('floating', { left: 1230, top: 750, width: 40, height: 40 }, 1280, 800);
+    assert.equal(gCornerTR.isFull360, false);
+    checkSafeBounds(gCornerTL, '左上角安全扇区不得被视口裁切');
+    checkSafeBounds(gCornerTR, '右上角安全扇区不得被视口裁切');
+    checkSafeBounds(gCornerBL, '左下角安全扇区不得被视口裁切');
+    checkSafeBounds(gCornerBR, '右下角安全扇区不得被视口裁切');
+    checkSafeBounds(api.computeRadialGeometryForTest('floating', { left: 500, top: 10, width: 40, height: 40 }, 1280, 800), '顶边避让不得越界');
+    checkSafeBounds(api.computeRadialGeometryForTest('floating', { left: 500, top: 750, width: 40, height: 40 }, 1280, 800), '底边避让不得越界');
+    checkSafeBounds(api.computeRadialGeometryForTest('floating', { left: 10, top: 380, width: 40, height: 40 }, 1280, 800), '左边避让不得越界');
+    checkSafeBounds(api.computeRadialGeometryForTest('floating', { left: 1230, top: 380, width: 40, height: 40 }, 1280, 800), '右边避让不得越界');
+
+    const gTopCenter = api.computeRadialGeometryForTest('topbar', { left: 600, top: 6, width: 40, height: 28 }, 1280, 800);
+    assert.equal(gTopCenter.restRadius, 92);
+    for (const it of gTopCenter.items) {
+      assert.ok(it.absY - 18 >= 34 + 6, '顶栏居中展开时 36px 卫星上边缘必须在工具栏底边下方净空区');
+    }
+
+    const gTop = api.computeRadialGeometryForTest('topbar', { left: 1220, top: 6, width: 40, height: 28 }, 1280, 800);
+    assert.equal(gTop.restRadius, 96);
+    for (const it of gTop.items) {
+      assert.ok(it.absY - 18 >= 34 + 6 && it.absX >= 22 && it.absX <= 1258, '顶栏贴边向下扇形及防右裁切不得压顶栏或越界');
+    }
+
+    const gBot = api.computeRadialGeometryForTest('bottombar', { left: 12, top: 750, width: 60, height: 24 }, 1280, 800);
+    assert.equal(gBot.restRadius, 96);
+    for (const it of gBot.items) {
+      assert.ok(it.absY + 18 <= 750 - 6 && it.absX >= 22 && it.absY >= 22, '底栏贴边向上扇形及防左裁切不得压底栏或越界');
+    }
+
+    // 3. 悬浮圆环点击展开 -> 右键第 6 颗 CLI 直达配置；切顶栏/底栏/经典模式验证切换与隐藏悬浮球
+    h.elements.get('ctx-radial-orb').click();
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(h.elements.get('ctx-radial-layer').hidden, false);
+
+    h.elements.get('radial-item-cli').trigger('contextmenu', { preventDefault() {}, stopPropagation() {} });
+    assert.equal(api.getRadialMenuStateForTest().open, false);
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
+
+    api.setQuickMenuStyleForTest('topbar', { persist: false });
+    assert.equal(h.elements.get('ctx-radial-orb').hidden, true);
+    h.elements.get('badge').click();
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(api.getRadialMenuStateForTest().anchorMode, 'topbar');
+
+    api.setQuickMenuStyleForTest('bottombar', { persist: false });
+    assert.equal(api.getRadialMenuStateForTest().open, false);
+    h.elements.get('csb-group-context').click();
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(api.getRadialMenuStateForTest().anchorMode, 'bottombar');
+
+    api.setQuickMenuStyleForTest('classic', { persist: false });
+    assert.equal(h.elements.get('ctx-radial-orb').hidden, true);
+    assert.equal(h.elements.get('ctx-radial-layer').hidden, true);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.9.0-beta.1: 当前会话双栏驾驶舱(>=860/窄屏) + 零删除既有ID + 统一6Tab与组成树真实预览 + 标题栏color-mix/color(srgb)采样', async () => {
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+
+  // 1. 浅/深色作用域无黑色槽位 & 零蓝调炭黑与珍珠白 CSS 校验
+  assert.match(stylesSrc, /#pane-ctx-session[\s\S]*--ctx-ck-canvas:\s*#0C0C0D[\s\S]*--ctx-ck-card:\s*#151517/);
+  assert.match(stylesSrc, /:host\(\[data-theme="light"\]\)\s*#pane-ctx-session[\s\S]*--ctx-ck-canvas:\s*#F2F2F4[\s\S]*--ctx-ck-card:\s*#FCFCFD[\s\S]*--ctx-ck-track:\s*#EAEAEF/);
+  assert.match(stylesSrc, /#pane-ctx-session\s+\.ctx-main-track\s*\{[^}]*height:\s*14px/);
+  assert.match(stylesSrc, /#pane-ctx-session\s+\.ctx-cockpit-grid\s*\{[^}]*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(stylesSrc, /#pane-ctx-session\s+\.ctx-ov-kpi-row\.ctx-ov-kpi-row-bottom\s*\{[^}]*repeat\(3,/);
+  assert.match(tplSrc, /id="ctx-timing-donut-wrap"|class="ctx-timing-donut-wrap"\s+hidden/);
+  assert.ok(tplSrc.includes('id="ctx-bento-row3"'), '必须保留 #ctx-bento-row3 确保 0 个既有 ID 被移除');
+
+  const overlayCalls = [];
+  const h = harness(session(), {
+    getComputedStyle: (target) => {
+      if (target && target._tag === 'title-menu-bar') {
+        return {
+          backgroundColor: 'color-mix(in srgb, #ffffff 4%, #181818)',
+          color: 'color(srgb 0.941176 0.941176 0.941176)',
+          getPropertyValue: () => ''
+        };
+      }
+      return { getPropertyValue: () => '' };
+    }
+  });
+  h.sandbox.document.querySelector = (sel) => sel === '[data-testid="title-menu-bar"]'
+    ? { _tag: 'title-menu-bar' }
+    : null;
+  h.sandbox.window.contextMeterAPI.syncOverlay = (opts) => overlayCalls.push(opts);
+  h.sandbox.window.contextMeterAPI.getSessionTimeline = async () => ({ ok: true, data: { turns: [], totalCalls: 0 } });
+
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+    h.elements.get('theme-toggle').click();
+    await h.flush();
+
+    // 2. title-menu-bar 的 color-mix(in srgb, #ffffff 4%, #181818) 必须精准算出 #212121 并同步给宿主
+    assert.ok(overlayCalls.some(o => o && o.color === '#212121'), `预期 #212121，实际: ${JSON.stringify(overlayCalls)}`);
+
+    // 3. 宽屏 >=860 与窄屏 <860 容器档位 + 统一 6 Tab 与右子栏真实预览联动
+    const sess = session();
+    sess.userMessages = 2;
+    sess.steps = 12;
+    sess.stepCompositionItems = {
+      system: [{ stepIndex: 1, label: 'System Rules', tokens: 1200, preview: 'Strictly follow evidence from tools.' }],
+      tools: [{ stepIndex: 12, label: 'read_file', tokens: 800, preview: 'D:/path/to/secret/file' }]
+    };
+    h.elements.get('csb-group-context').click();
+    api.setContextLatestForTest({ model: 'Gemini 4 Neon', actual: 18000, budget: 512000, percent: 3.5 });
+    const wWide = api.setPanelWidthForTest(960);
+    assert.equal(wWide.tier, 'wide');
+    const wNarrow = api.setPanelWidthForTest(520);
+    assert.equal(wNarrow.tier, 'narrow');
+
+    api.switchCockpitAuditTabForTest('files');
+    assert.equal(h.elements.get('ctx-composition-tree-card').hidden, true);
+    assert.equal(h.elements.get('ctx-audit-workbench').hidden, false);
+    api.switchCockpitAuditTabForTest('tree');
+    assert.equal(h.elements.get('ctx-composition-tree-card').hidden, false);
+    assert.equal(h.elements.get('ctx-audit-workbench').hidden, true);
+
+    const dash = api.getSessionDashboardStateForTest();
+    assert.equal(dash.cockpitTab, 'tree');
+    assert.ok(h.elements.get('ctx-ov-pct-summary').textContent.includes('%'));
+
+    // 4. blocked_missing_pool 按 reason 精准展示且非 noPermission 不得误报无权限
+    api.setAccountsOverviewForTest({
+      activeAccountEmail: 'elvis@example.com',
+      accounts: [{ email: 'elvis@example.com', isActive: true, hasRefreshToken: true }],
+      autoSwitch: { enabled: true, poolKey: 'shared_gemini_carbon', metricMode: 'remaining_pct', windowKey: 'primary', thresholdPct: 10, candidates: [] },
+      autoSwitchStatus: {
+        state: 'blocked_missing_pool',
+        blockedReason: 'target_pool_missing_in_snapshot',
+        blockedMeta: { poolKey: 'shared_gemini_carbon', windowKey: 'primary' }
+      }
+    });
+    assert.equal(h.elements.get('auto-switch-status-pill').textContent, '所选池不可用');
+    assert.match(h.elements.get('auto-switch-last-note').textContent, /尚未返回监控池/);
+    assert.doesNotMatch(h.elements.get('auto-switch-last-note').textContent, /无模型权限|无权限/);
+
+    // 5. 打开看板/复制链接 4 分支文案核验（无硬编码括号）
+    await api.setPanelLanguage('zh-CN', { persist: false });
+    const sCopy = api.translateForTest('settings.dock.openRightCopiedSession');
+    const lCopy = api.translateForTest('settings.dock.openRightCopiedList');
+    const nSess = api.translateForTest('settings.dock.openRightNoSession', { copyNote: lCopy });
+    assert.match(nSess, /未识别到当前会话，已打开看板列表/);
+    assert.doesNotMatch(nSess, /[()（）]/);
+    assert.doesNotMatch(sCopy + lCopy, /[()（）]/);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.9.0-beta.1: 顶栏悬停/点击严格互斥状态机 + 顶栏/底栏去假圆盖子原位变形 + 悬浮圆球三态与二级菜单联动', async () => {
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const mainSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+
+  assert.ok(tplSrc.includes('id="badge-radial-close-svg"'), '顶栏 #badge 必须内置原地变形关闭图标');
+  assert.ok(tplSrc.includes('id="csb-radial-close-svg"'), '底栏 #csb-group-context 必须内置原地变形关闭图标');
+  assert.match(stylesSrc, /\.ctx-radial-layer\[data-mode="topbar"\]\s+\.ctx-radial-center-close/);
+  assert.match(stylesSrc, /\.ctx-radial-layer\[data-mode="bottombar"\]\s+\.ctx-radial-center-close/);
+  assert.match(stylesSrc, /#badge\.ag-unit-ring\[data-radial-open="true"\]\s+\.ag-ring-close-svg[\s\S]*rotate\(45deg\)/);
+  assert.match(stylesSrc, /#csb-group-context\[data-radial-open="true"\]\s+\.csb-ring-close-svg[\s\S]*rotate\(45deg\)/);
+  assert.match(stylesSrc, /\.ctx-radial-layer\[data-mode="topbar"\]\s+\.ctx-radial-item[\s\S]*width:\s*36px;\s*height:\s*36px/);
+  assert.match(stylesSrc, /\.ctx-radial-orb\s*\{[^}]*width:\s*46px;\s*height:\s*46px/);
+  assert.match(stylesSrc, /ctx-orb-swap-in\s+160ms/);
+  assert.match(mainSrc, /#composer-status-bar\s+#csb-group-context\[data-radial-open="true"\]\s+\.csb-ring-close-svg[\s\S]*rotate\(45deg\)/, '宿主 Light DOM #composer-status-bar 必须同步注入底栏原地变形样式');
+
+  const capturedTimeouts = [];
+  let nextTimerId = 10;
+  const h = harness(session(), {
+    setTimeout: (fn, ms) => {
+      const id = ++nextTimerId;
+      capturedTimeouts.push({ id, fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => {
+      const idx = capturedTimeouts.findIndex(t => t.id === id);
+      if (idx >= 0) capturedTimeouts.splice(idx, 1);
+    }
+  });
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+    await h.flush();
+
+    const badge = h.elements.get('badge');
+    const bOverflow = h.elements.get('badge-overflow');
+    const om = h.elements.get('overflow-menu');
+    const csbCtx = h.elements.get('csb-group-context');
+
+    badge.focus = () => badge.trigger('focus');
+
+    // 1. 顶栏互斥状态机
+    api.setQuickMenuStyleForTest('topbar', { persist: false });
+    badge.trigger('mouseenter');
+    const tip = h.elements.get('context-tooltip');
+    assert.equal(om.hidden, true, 'topbar 模式下 mouseenter #badge 禁止弹出 #overflow-menu');
+    assert.equal(tip.getAttribute('data-visible'), 'true', 'topbar 模式下未展开时悬停应展示轻 #context-tooltip');
+
+    badge.trigger('focus');
+    assert.equal(om.hidden, true, 'topbar 模式下 focus #badge 禁止弹出 #overflow-menu');
+
+    badge.click();
+    const layer = h.elements.get('ctx-radial-layer');
+    const centerClose = h.elements.get('ctx-radial-center-close');
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(layer.getAttribute('data-mode'), 'topbar');
+    assert.equal(tip.getAttribute('data-visible'), 'false', '点击展开径向菜单瞬间必须强关 #context-tooltip');
+    assert.equal(om.hidden, true, '点击展开径向菜单瞬间必须强关 #overflow-menu');
+    assert.equal(centerClose.hidden, true, 'topbar 模式必须隐藏独立假大圆盖子');
+    assert.equal(badge.getAttribute('data-radial-open'), 'true', 'topbar 展开态必须原位激活 #badge');
+    assert.equal(badge.getAttribute('aria-expanded'), 'true');
+
+    badge.trigger('mouseenter');
+    badge.trigger('focus');
+    assert.equal(om.hidden, true);
+    assert.equal(tip.getAttribute('data-visible'), 'false', '径向展开期间必须彻底屏蔽悬停浮层');
+
+    h.sandbox.document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    assert.equal(api.getRadialMenuStateForTest().open, false);
+    assert.equal(badge.getAttribute('data-radial-open'), null);
+    assert.equal(om.hidden, true);
+
+    bOverflow.click();
+    assert.equal(om.hidden, false, '显式点击 #badge-overflow 应正常展开列表');
+    om.hidden = true;
+
+    // 2. 底栏贴边原生原地变形 + 外部点击收起
+    api.setQuickMenuStyleForTest('bottombar', { persist: false });
+    csbCtx.click();
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(layer.getAttribute('data-mode'), 'bottombar');
+    assert.equal(centerClose.hidden, true, 'bottombar 模式必须隐藏独立假大圆盖子');
+    assert.equal(csbCtx.getAttribute('data-radial-open'), 'true', 'bottombar 展开态必须原位激活 #csb-group-context');
+    assert.equal(csbCtx.getAttribute('aria-expanded'), 'true');
+
+    h.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [] });
+    assert.equal(api.getRadialMenuStateForTest().open, false);
+    assert.equal(csbCtx.getAttribute('data-radial-open'), null);
+
+    // 3. 悬浮圆球实时三态 + 6 项二级菜单联动 + 新请求抢占 + CLI 1.2s 回落
+    api.setQuickMenuStyleForTest('floating', { persist: false });
+    api.setContextLatestForTest({ model: 'Gemini 4 Neon', modelId: 'gemini-4-neon', actual: 30720, budget: 512000, percent: 6 });
+    const nowTs = Date.now();
+    api.setQuotaSnapshotForTest({
+      snapshot: {
+        fetchedAtMs: nowTs,
+        currentModel: { productKey: 'product:google:gemini-4-neon', productLabel: 'Gemini 4 Neon', poolKey: 'shared_gemini_main' },
+        activeStatus: 'available',
+        pools: [{
+          poolKey: 'shared_gemini_main',
+          title: 'Gemini 主池',
+          models: [{ productKey: 'product:google:gemini-4-neon', productLabel: 'Gemini 4 Neon', modelIds: ['gemini-4-neon'] }],
+          buckets: [{ bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.43, percentText: '43%' }]
+        }]
+      }
+    }, nowTs);
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      dailyMap: { '2026-11-23': { total: 6400000, input: 1400000, cache: 4800000, output: 200000, costUSD: 2.0 } },
+      summary: { grandTotalTokens: 6400000, todayTokens: 6400000, monthTokens: 6400000, yearTokens: 6400000, totalConversations: 1 }
+    });
+    api.setSpeedEvaluationForTest({ phase: 'final', streamSpeed: 114, overallTps: 114, outputTokens: 200, streamingSec: 1.75 });
+    api.setSessionCallsForTest([
+      { callId: 'c_orb_1', stepIndex: 2, modelLabel: 'Gemini 4 Neon', inputTokens: 20000, outputTokens: 200, streamingTps: 114, status: 'final' }
+    ], { replace: true });
+
+    let orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'idle');
+    assert.equal(orbSt.text, '6%');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-quota').click();
+    orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'panel');
+    assert.equal(orbSt.subKind, 'quota');
+    assert.equal(orbSt.text, '43%');
+
+    orbSt = api.setFloatingOrbLiveOverrideForTest({ phase: 'waiting', elapsedSec: 6 });
+    assert.equal(orbSt.mode, 'waiting');
+    assert.equal(orbSt.text, '6s');
+    assert.equal(orbSt.tone, 'mid');
+
+    orbSt = api.setFloatingOrbLiveOverrideForTest({ phase: 'waiting', elapsedSec: 78 });
+    assert.equal(orbSt.mode, 'waiting');
+    assert.equal(orbSt.text, '1m18s');
+    assert.equal(orbSt.tone, 'slow');
+
+    orbSt = api.setFloatingOrbLiveOverrideForTest({ phase: 'streaming', streamSpeed: 129 });
+    assert.equal(orbSt.mode, 'streaming');
+    assert.equal(orbSt.text, '129/s');
+    assert.equal(orbSt.tone, 'fast');
+
+    orbSt = api.setFloatingOrbLiveOverrideForTest(null);
+    assert.equal(orbSt.mode, 'panel');
+    assert.equal(orbSt.text, '43%');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-tokens').click();
+    assert.equal(api.getFloatingOrbStateForTest().text, '6.4M');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-speed').click();
+    assert.equal(api.getFloatingOrbStateForTest().text, '114/s');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-requests').click();
+    assert.equal(api.getFloatingOrbStateForTest().text, '1');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-context').click();
+    assert.equal(api.getFloatingOrbStateForTest().text, '6%');
+
+    api.toggle(false);
+    orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'idle');
+    assert.equal(orbSt.linkedPanel, null);
+    assert.equal(orbSt.text, '6%');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-cli').click();
+    orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'cli');
+    assert.equal(orbSt.text, '>_');
+    const cliTimer = capturedTimeouts.find(t => t.ms === 1200);
+    assert.ok(cliTimer, '点击 CLI 卫星必须注册 1200ms 自动回落定时器');
+    cliTimer.fn();
+    orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'idle');
+    assert.equal(orbSt.text, '6%');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.9.0 三项 UI 精修: 独立顶层挂载至 body 末尾 + 快捷隐藏悬浮球 + 顶/底栏正圆收缩与白滑块 Tab', async () => {
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const mainSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  const bundleSrc = fs.readFileSync(require('node:path').join(__dirname, 'meter-renderer.js'), 'utf8');
+
+  // 1. 静态 DOM 与 CSS 契约断言（源 + 构建产物同步验证）
+  for (const labelSrc of [stylesSrc, bundleSrc]) {
+    assert.match(labelSrc, /#badge\.ag-unit-ring\[data-radial-open="true"\][\s\S]*width:\s*26px\s*!important;[\s\S]*height:\s*26px\s*!important;[\s\S]*border-radius:\s*50%\s*!important;[\s\S]*padding:\s*0\s*!important/);
+    assert.match(labelSrc, /#badge\.ag-unit-ring\[data-radial-open="true"\]\s+#badge-pct-val[\s\S]*max-width:\s*0\s*!important;[\s\S]*opacity:\s*0\s*!important/);
+    assert.match(labelSrc, /#csb-group-context\[data-radial-open="true"\]\s*\{[\s\S]*width:\s*22px\s*!important;[\s\S]*height:\s*22px\s*!important;[\s\S]*border-radius:\s*50%\s*!important;[\s\S]*padding:\s*0\s*!important/);
+    assert.match(labelSrc, /#csb-group-context\[data-radial-open="true"\]\s+#csb-context-text[\s\S]*max-width:\s*0\s*!important;[\s\S]*opacity:\s*0\s*!important/);
+    assert.match(labelSrc, /#ctx-tabs-bar\s+\.ctx-tab-btn\.active\s*\{[\s\S]*background:\s*#2A2A2E;[\s\S]*color:\s*#FAFAFA;[\s\S]*rgba\(255,\s*255,\s*255,\s*0\.14\)/);
+    assert.match(labelSrc, /:host\(\[data-theme="light"\]\)\s+#ctx-tabs-bar\s+\.ctx-tab-btn\.active[\s\S]*background:\s*#FFFFFF;[\s\S]*color:\s*#111111;[\s\S]*1px\s+solid\s+#E4E4E7;[\s\S]*0\s+1px\s+2px\s+rgba\(0,\s*0,\s*0,\s*0\.06\)/);
+  }
+  const tabBlockMatch = stylesSrc.match(/#ctx-tabs-bar\s*\{[\s\S]*?#pane-ctx-session\s+\.ctx-cockpit-grid/);
+  assert.ok(tabBlockMatch, '应定位到 #ctx-tabs-bar 样式块');
+  assert.doesNotMatch(tabBlockMatch[0], /#FF2E88|#FCE7F3|#BE185D/i, '#ctx-tabs-bar 严禁残留旧洋红配色');
+  assert.match(mainSrc, /#composer-status-bar\s+#csb-group-context\[data-radial-open="true"\]\s*\{[\s\S]*width:\s*22px\s*!important;[\s\S]*height:\s*22px\s*!important;[\s\S]*border-radius:\s*50%\s*!important/);
+  assert.match(mainSrc, /#composer-status-bar\s+#csb-group-context\[data-radial-open="true"\]\s+#csb-context-text[\s\S]*max-width:\s*0\s*!important;[\s\S]*opacity:\s*0\s*!important/);
+  assert.ok(tplSrc.includes('id="chk-hide-radial-orb"'), '配置页必须包含隐藏悬浮圆球开关');
+  assert.ok(tplSrc.includes('id="overflow-show-orb-btn"'), '顶栏菜单必须包含一键恢复悬浮圆球项');
+
+  // 2. 独立顶层容器 #ag-context-meter-radial-host + 孤儿清理 + 属性镜像 + 点击防误关 + 快捷隐藏全链路
+  const store = new Map();
+  const mockLocalStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k)
+  };
+  const docListeners = new Map();
+  const listeners = new Map();
+  const makeNode = (tag = 'div') => {
+    const attrs = new Map();
+    const props = new Map();
+    const node = {
+      tagName: String(tag).toUpperCase(),
+      children: [],
+      hidden: false,
+      checked: false,
+      textContent: '',
+      _innerHTML: '',
+      _styleCssText: '',
+      style: {
+        display: '',
+        zIndex: '',
+        setProperty(k, v) { props.set(k, v); },
+        removeProperty(k) { props.delete(k); },
+        getPropertyValue(k) { return props.get(k) || ''; },
+        get cssText() { return node._styleCssText; },
+        set cssText(v) {
+          node._styleCssText = String(v || '');
+          const zM = node._styleCssText.match(/z-index\s*:\s*([^;!]+)/i);
+          if (zM) node.style.zIndex = zM[1].trim();
+        }
+      },
+      get lastElementChild() { return node.children[node.children.length - 1] || null; },
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      classList: {
+        add(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+          if (!cur.includes(c)) cur.push(c);
+          attrs.set('class', cur.join(' '));
+        },
+        remove(c) {
+          attrs.set('class', (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c).join(' '));
+        },
+        contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); }
+      },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      addEventListener(type, fn) {
+        if (!listeners.has(node)) listeners.set(node, new Map());
+        listeners.get(node).set(type, fn);
+      },
+      removeEventListener(type, fn) {
+        const m = listeners.get(node);
+        if (m && m.get(type) === fn) m.delete(type);
+      },
+      trigger(type, ev = {}) { listeners.get(node)?.get(type)?.(ev); },
+      click() { listeners.get(node)?.get('click')?.({ stopPropagation() { }, preventDefault() { } }); },
+      appendChild(child) {
+        if (!child) return child;
+        if (child.parentElement && Array.isArray(child.parentElement.children)) {
+          const idx = child.parentElement.children.indexOf(child);
+          if (idx >= 0) child.parentElement.children.splice(idx, 1);
+        }
+        child.parentElement = node;
+        node.children.push(child);
+        return child;
+      },
+      remove() {
+        if (node.parentElement && Array.isArray(node.parentElement.children)) {
+          const idx = node.parentElement.children.indexOf(node);
+          if (idx >= 0) node.parentElement.children.splice(idx, 1);
+          node.parentElement = null;
+        }
+      },
+      contains(target) {
+        if (!target) return false;
+        if (target === node) return true;
+        return node.children.some(c => c.contains?.(target));
+      },
+      getElementById(id) {
+        const dfs = (cur) => {
+          if (!cur) return null;
+          if (cur.id === id || cur.getAttribute?.('id') === id) return cur;
+          for (const ch of (cur.children || [])) {
+            const found = dfs(ch);
+            if (found) return found;
+          }
+          return null;
+        };
+        return dfs(node);
+      },
+      querySelector(sel) {
+        if (sel === 'style') return node.children.find(c => c.tagName === 'STYLE') || null;
+        if (sel.startsWith('#')) return node.getElementById(sel.slice(1));
+        return null;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        const parts = sel.split(',').map(s => s.trim());
+        const ids = parts.filter(s => s.startsWith('#')).map(s => s.slice(1));
+        const hasRadialAttr = parts.includes('[data-ag-radial-top-layer]');
+        const visit = (cur) => {
+          if (!cur) return;
+          if (ids.includes(cur.id) || (hasRadialAttr && cur.getAttribute?.('data-ag-radial-top-layer') !== null)) out.push(cur);
+          for (const ch of (cur.children || [])) visit(ch);
+        };
+        visit(node);
+        return out;
+      },
+      replaceChildren(...items) {
+        node.children = [];
+        for (const it of items) node.appendChild(it);
+      },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 46, height: 46, right: 146, bottom: 146 }; }
+    };
+    return node;
+  };
+
+  const attachShadowPoly = (targetNode) => {
+    const sr = makeNode('shadow-root');
+    Object.defineProperty(sr, 'innerHTML', {
+      get() { return sr._innerHTML; },
+      set(val) {
+        sr._innerHTML = String(val || '');
+        sr.children = [];
+        const styleM = sr._innerHTML.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+        if (styleM) {
+          const st = makeNode('style');
+          st.textContent = styleM[1];
+          sr.appendChild(st);
+        }
+        const createdById = new Map();
+        const reId = /\bid="([^"]+)"/g;
+        let m;
+        while ((m = reId.exec(sr._innerHTML)) !== null) {
+          const id = m[1];
+          if (createdById.has(id)) continue;
+          const elNode = makeNode('div');
+          elNode.id = id;
+          elNode.className = id.startsWith('overflow-') ? 'overflow-item' : '';
+          createdById.set(id, elNode);
+          if (id.startsWith('ctx-orb-') && id !== 'ctx-radial-orb' && createdById.has('ctx-radial-orb')) {
+            createdById.get('ctx-radial-orb').appendChild(elNode);
+          } else if ((id === 'ctx-radial-center-close' || id.startsWith('radial-slot-') || id.startsWith('radial-item-')) && createdById.has('ctx-radial-layer')) {
+            createdById.get('ctx-radial-layer').appendChild(elNode);
+          } else {
+            sr.appendChild(elNode);
+          }
+        }
+      }
+    });
+    targetNode.shadowRoot = sr;
+    return sr;
+  };
+
+  const runInTopLayerSandbox = () => {
+    docListeners.clear();
+    const body = makeNode('body');
+    const docEl = makeNode('html');
+    docEl.appendChild(body);
+    const orphanRadial = makeNode('div');
+    orphanRadial.id = 'ag-context-meter-radial-host';
+    attachShadowPoly(orphanRadial).innerHTML = '<button id="ctx-radial-orb">staleA</button>';
+    body.appendChild(orphanRadial);
+    const orphanExtra = makeNode('div');
+    orphanExtra.setAttribute('data-ag-radial-top-layer', 'true');
+    attachShadowPoly(orphanExtra).innerHTML = '<button id="ctx-radial-orb">staleB</button>';
+    body.appendChild(orphanExtra);
+    const sidebarSibling = makeNode('div');
+    sidebarSibling.id = 'mock-left-sidebar';
+    body.appendChild(sidebarSibling);
+
+    const pending = [], scans = [];
+    const sandbox = {
+      location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+      localStorage: mockLocalStorage,
+      document: {
+        body,
+        documentElement: docEl,
+        createElement: (tag) => {
+          const n = makeNode(tag);
+          if (String(tag).toLowerCase() === 'div') {
+            n.attachShadow = () => attachShadowPoly(n);
+          }
+          return n;
+        },
+        getElementById: (id) => docEl.getElementById(id),
+        querySelector: (sel) => docEl.querySelector(sel),
+        querySelectorAll: (sel) => docEl.querySelectorAll(sel),
+        addEventListener(type, fn) {
+          if (!docListeners.has(type)) docListeners.set(type, new Set());
+          docListeners.get(type).add(fn);
+        },
+        removeEventListener(type, fn) { docListeners.get(type)?.delete(fn); },
+        dispatchEvent(ev) {
+          for (const fn of (docListeners.get(ev?.type || ev) || [])) fn(ev);
+        },
+        hidden: false
+      },
+      window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } },
+      __AGContextMeterCore: core,
+      AbortController,
+      Date,
+      setTimeout: () => 1,
+      clearTimeout() { },
+      setInterval: () => 1,
+      clearInterval() { },
+      fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); }
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(bundleSrc, sandbox);
+    return { sandbox, body, pending, scans, orphanRadial, orphanExtra };
+  };
+
+  const env1 = runInTopLayerSandbox();
+  const api1 = env1.sandbox.__AGContextMeter;
+  try {
+    assert.equal(env1.orphanRadial.parentElement, null, '必须清除旧 #ag-context-meter-radial-host');
+    assert.equal(env1.orphanExtra.parentElement, null, '必须清除无 ID 但带 data-ag-radial-top-layer 的第二颗悬浮球宿主');
+    assert.equal(env1.orphanRadial.shadowRoot.innerHTML, '', '清除孤儿宿主时必须清空 shadowRoot');
+    assert.equal(env1.orphanExtra.shadowRoot.innerHTML, '', '清除第二颗残留宿主时必须清空 shadowRoot');
+    const topHosts = env1.body.querySelectorAll('#ag-context-meter-radial-host, [data-ag-radial-top-layer]');
+    assert.equal(topHosts.length, 1, '启动时必须清除旧孤儿 #ag-context-meter-radial-host 且仅保留唯一实例');
+    const radialHost = topHosts[0];
+    const meterHost = env1.body.getElementById('ag-context-meter');
+    assert.ok(radialHost && meterHost);
+    assert.equal(env1.body.lastElementChild, radialHost, '#ag-context-meter-radial-host 必须位于 document.body 末尾');
+    assert.match(radialHost.style.cssText, /position:\s*fixed/i);
+    assert.match(radialHost.style.cssText, /inset:\s*0/i);
+    assert.match(radialHost.style.cssText, /pointer-events:\s*none/i);
+    assert.equal(radialHost.style.zIndex, '2147483000');
+
+    const radialShadow = radialHost.shadowRoot;
+    const mainShadow = meterHost.shadowRoot;
+    const orbNode = radialShadow.getElementById('ctx-radial-orb');
+    const layerNode = radialShadow.getElementById('ctx-radial-layer');
+    assert.ok(orbNode && layerNode, '悬浮球与径向菜单必须位于独立顶层 radialShadow 中');
+    assert.equal(mainShadow.getElementById('ctx-radial-orb'), null, '主 shadow 内不应保留悬浮球重复节点');
+    assert.equal(mainShadow.getElementById('ctx-radial-layer'), null, '主 shadow 内不应保留径向层重复节点');
+    const radialStyle = radialShadow.querySelector('style')?.textContent || '';
+    assert.match(radialStyle, /:host\s*\{[\s\S]*z-index:\s*2147483000\s*!important[\s\S]*pointer-events:\s*none\s*!important/);
+    assert.match(radialStyle, /\.ctx-radial-orb\s*\{[\s\S]*pointer-events:\s*auto/);
+    assert.match(radialStyle, /:host\(\[data-marketplace-active="true"\]\)\s+#ctx-radial-orb/);
+
+    api1.setTheme('light');
+    assert.equal(radialHost.getAttribute('data-theme'), 'light', 'data-theme 必须实时镜像到独立顶层宿主');
+    const rSt = api1.getRadialMenuStateForTest();
+    assert.equal(rSt.topLayerMounted, true);
+    assert.equal(rSt.topLayerHostId, 'ag-context-meter-radial-host');
+    assert.equal(rSt.topLayerParentTag, 'BODY');
+    assert.equal(rSt.topLayerZIndex, '2147483000');
+    assert.equal(rSt.radialOrbHidden, false);
+
+    const lateOverlay = env1.sandbox.document.createElement('div');
+    lateOverlay.id = 'late-host-panel';
+    env1.body.appendChild(lateOverlay);
+    orbNode.click();
+    assert.equal(env1.body.lastElementChild, radialHost, '展开径向菜单前必须确保顶层容器位于 body 末尾');
+    assert.equal(api1.getRadialMenuStateForTest().open, true);
+    env1.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [orbNode, radialHost] });
+    assert.equal(api1.getRadialMenuStateForTest().open, true, '点击独立顶层中的悬浮球路径不得被 outside 误关');
+    env1.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [lateOverlay] });
+    assert.equal(api1.getRadialMenuStateForTest().open, false, '点击外部宿主区域必须干净关闭径向菜单');
+
+    let prevented = false;
+    let stopped = false;
+    orbNode.trigger('contextmenu', {
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; }
+    });
+    assert.equal(prevented, true);
+    assert.equal(stopped, true);
+    assert.equal(orbNode.hidden, true, '右键悬浮球必须立即隐藏悬浮球');
+    assert.equal(store.get('ag_radial_orb_hidden'), 'true', '快捷隐藏状态必须持久化到 localStorage');
+    const toast = mainShadow.getElementById('cli-launch-toast');
+    const chkHideOrb = mainShadow.getElementById('chk-hide-radial-orb');
+    const showOrbBtn = mainShadow.getElementById('overflow-show-orb-btn');
+    assert.equal(toast.hidden, false, '右键隐藏悬浮球后应弹出轻提示');
+    assert.equal(chkHideOrb.checked, true, '配置页隐藏悬浮球开关必须同步勾选');
+    assert.equal(showOrbBtn.hidden, false, '隐藏悬浮球后顶栏恢复入口必须显现');
+
+    showOrbBtn.click();
+    assert.equal(orbNode.hidden, false, '点击顶栏恢复入口必须重新显示悬浮球');
+    assert.equal(store.get('ag_radial_orb_hidden'), 'false');
+    assert.equal(chkHideOrb.checked, false);
+    assert.equal(showOrbBtn.hidden, true, '悬浮球显示后应自动收起顶栏恢复入口');
+
+    chkHideOrb.checked = true;
+    chkHideOrb.trigger('change', { target: chkHideOrb });
+    assert.equal(orbNode.hidden, true);
+    assert.equal(store.get('ag_radial_orb_hidden'), 'true');
+  } finally {
+    api1.dispose();
+  }
+  assert.equal(env1.body.getElementById('ag-context-meter-radial-host'), null, 'dispose 后必须移除独立顶层宿主容器');
+  api1.setRadialOrbHiddenForTest(false, { persist: false });
+  assert.equal(env1.body.querySelectorAll('[data-ag-radial-top-layer]').length, 0, 'dispose 后调用显隐控制不得将悬浮球重新插回 body');
+
+  const env2 = runInTopLayerSandbox();
+  const api2 = env2.sandbox.__AGContextMeter;
+  try {
+    const radialHost2 = env2.body.getElementById('ag-context-meter-radial-host');
+    const meterHost2 = env2.body.getElementById('ag-context-meter');
+    assert.equal(radialHost2.shadowRoot.getElementById('ctx-radial-orb').hidden, true, '重启后应保留悬浮球隐藏持久化状态');
+    assert.equal(meterHost2.shadowRoot.getElementById('chk-hide-radial-orb').checked, true);
+    assert.equal(meterHost2.shadowRoot.getElementById('overflow-show-orb-btn').hidden, false);
+    api2.setRadialOrbHiddenForTest(false, { persist: true });
+    assert.equal(radialHost2.shadowRoot.getElementById('ctx-radial-orb').hidden, false);
+  } finally {
+    api2.dispose();
+  }
+});
+
+test('径向Tooltip朝外防遮挡 + 去套娃叠环去12点圆点 + 溢出菜单CLI树莓色与缓存命中率 + 会话缓存命中率直达实时请求', () => {
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const i18nSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'i18n.js'), 'utf8');
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+
+  // A. CSS 与模板契约验证（z-index、去套娃叠环与光晕、12点圆点属性、56px 半径与极细描边、树莓色 CLI 图标）
+  const orbZ = Number((stylesSrc.match(/\.ctx-radial-orb\s*\{[^}]*z-index\s*:\s*(\d+)/) || [])[1] || 0);
+  const layerZ = Number((stylesSrc.match(/\.ctx-radial-layer\s*\{[^}]*z-index\s*:\s*(\d+)/) || [])[1] || 0);
+  assert.ok(layerZ > orbZ && orbZ >= 2147483645, `径向浮层 z-index(${layerZ}) 必须严格高于悬浮球 z-index(${orbZ})`);
+  assert.match(stylesSrc, /\.ctx-radial-label\s*\{[\s\S]*z-index:\s*90;/);
+  assert.match(stylesSrc, /\.ctx-radial-slot:hover,\s*\.ctx-radial-slot:focus-within\s*\{\s*z-index:\s*40;/);
+  assert.match(stylesSrc, /\.ctx-radial-item\[data-label-pos="bottom"\]\s+\.ctx-radial-label/);
+  assert.match(stylesSrc, /\.ctx-radial-item\[data-label-pos="right"\]\s+\.ctx-radial-label/);
+  assert.match(stylesSrc, /\.ctx-radial-item\[data-label-pos="left"\]\s+\.ctx-radial-label/);
+  assert.match(stylesSrc, /\.ctx-radial-orb\[aria-expanded="true"\]\s+\.ctx-orb-ring-svg\s*\{[^}]*opacity:\s*0;/);
+  assert.doesNotMatch(stylesSrc, /\.ctx-radial-orb\[aria-expanded="true"\][^{]*\{[^}]*0 0 0 4px/);
+  assert.match(stylesSrc, /\.ctx-orb-ring-fill\[data-empty="true"\]\s*\{[^}]*opacity:\s*0;[^}]*stroke:\s*none;/);
+  assert.match(stylesSrc, /\.ctx-radial-slot\s*\{[\s\S]*--r-rest:\s*56px;/);
+  assert.match(stylesSrc, /\.ctx-radial-item\s*\{[^}]*border:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.10\);/);
+  assert.match(stylesSrc, /#overflow-cli-btn\s+\.cli-icon\s*\{\s*color:\s*#FF2E88;/);
+  assert.match(stylesSrc, /:host\(\[data-theme="light"\]\)\s+#overflow-cli-btn\s+\.cli-icon[\s\S]*color:\s*#E11D74;/);
+  assert.match(i18nSrc, /'overflow\.cacheHit':\s*\{\s*'zh-CN':\s*'缓存命中率',\s*'zh-TW':\s*'快取命中率',\s*en:\s*'Cache hit rate'\s*\}/);
+  assert.match(tplSrc, /id="overflow-cache-btn"[\s\S]*id="overflow-cache-val"/);
+
+  // B. 四方向径向 Tooltip + 贴边翻转 + 12 点残余圆点彻底清除
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const gCenter = api.computeRadialGeometryForTest('floating', { left: 500, top: 380, width: 40, height: 40 }, 1280, 800);
+    assert.deepStrictEqual(
+      Array.from(gCenter.items.map(it => it.labelPos)),
+      ['top', 'right', 'right', 'bottom', 'left', 'left'],
+      '360° 六瓣卫星必须按方位沿径向朝外弹出 Tooltip（top/right/right/bottom/left/left）'
+    );
+    const gRightEdge = api.computeRadialGeometryForTest('floating', { left: 1230, top: 380, width: 40, height: 40 }, 1280, 800);
+    assert.ok(gRightEdge.items.every(it => ['top', 'bottom', 'left'].includes(it.labelPos)), '贴右边缘不得向外右侧裁切');
+    const gTopEdge = api.computeRadialGeometryForTest('topbar', { left: 900, top: 4, width: 58, height: 26 }, 1280, 800);
+    assert.equal(gTopEdge.items[0].labelPos, 'right', 'topbar 最右翼应向右朝外弹出');
+    assert.equal(gTopEdge.items[gTopEdge.items.length - 1].labelPos, 'left', 'topbar 最左翼应向左朝外弹出');
+    const gBottomEdge = api.computeRadialGeometryForTest('bottombar', { left: 600, top: 760, width: 58, height: 22 }, 1280, 800);
+    assert.ok(gBottomEdge.items.every(it => it.labelPos !== 'bottom'), 'bottombar 卫星 Tooltip 严禁向下撞底栏');
+
+    const ringFill = h.elements.get('ctx-orb-ring-fill');
+    assert.equal(ringFill.getAttribute('data-empty'), 'true', '无数据 --% 初始必须隐藏进度弧以防 12 点小圆点');
+    assert.equal(ringFill.getAttribute('stroke-opacity'), '0');
+    api.setContextLatestForTest({ model: 'Gemini 4 Neon', actual: 0, budget: 512000, percent: 0 });
+    assert.equal(ringFill.getAttribute('data-empty'), 'true', '0% 时同样必须隐藏进度弧 stroke');
+    assert.equal(ringFill.getAttribute('stroke-opacity'), '0');
+    api.setContextLatestForTest({ model: 'Gemini 4 Neon', actual: 215040, budget: 512000, percent: 42 });
+    assert.equal(ringFill.getAttribute('data-empty'), null, '非零进度时必须恢复显示进度弧');
+    assert.equal(ringFill.getAttribute('stroke-opacity'), '1');
+
+    // C. 溢出菜单「缓存命中率」真实数据展示 + 点击直达实时请求 + 底部入口两次点击零闪烁直达「实时请求」
+    const oCacheVal = h.elements.get('overflow-cache-val');
+    const om = h.elements.get('overflow-menu');
+    assert.ok(oCacheVal && h.elements.get('overflow-cache-btn'));
+    h.elements.get('badge-overflow').click();
+    assert.equal(om.hidden, false);
+    assert.equal(oCacheVal.textContent, '--', '无会话调用记录时溢出菜单缓存命中率应显示 --');
+
+    api.setComposerStateForTest({
+      sessionCalls: [{ callId: 'c_hit_1', stepIndex: 1, inputTokens: 460, cacheReadTokens: 9540, outputTokens: 200, status: 'final' }],
+      sessionStats: { usedTokens: 10200, limitTokens: 512000, turnCount: 1, stepCount: 1 }
+    });
+    h.elements.get('badge-overflow').click();
+    assert.equal(oCacheVal.textContent, '95.4%', '有真实数据时溢出菜单缓存命中率必须复用会话数据并显示精确百分比');
+    h.elements.get('overflow-cache-btn').click();
+    assert.equal(h.elements.get('panel-tokens').hidden, false);
+    assert.equal(h.elements.get('requests-live-view').style.display, 'flex');
+
+    // 切回 Token 统计并关闭面板，测试第 7 项两次零闪烁点击
+    h.elements.get('tok-view-tokens').click();
+    assert.equal(h.elements.get('tokens-main-view').style.display, 'block');
+    api.toggle(false);
+    assert.equal(h.elements.get('panel-tokens').hidden, true);
+
+    // 通过劫持 panel-tokens.hidden setter 记录首次显现瞬间视图状态，证明 0 帧闪出旧页
+    const pTokens = h.elements.get('panel-tokens');
+    const reqView = h.elements.get('requests-live-view');
+    const mainView = h.elements.get('tokens-main-view');
+    const tokReqTab = h.elements.get('tok-view-requests');
+    const revealSnapshots = [];
+    let hiddenVal = pTokens.hidden;
+    Object.defineProperty(pTokens, 'hidden', {
+      configurable: true,
+      get() { return hiddenVal; },
+      set(v) {
+        const prev = hiddenVal;
+        hiddenVal = Boolean(v);
+        if (prev && !hiddenVal) {
+          revealSnapshots.push({
+            reqDisplay: reqView.style.display,
+            mainDisplay: mainView.style.display,
+            reqActive: tokReqTab.classList.contains('active')
+          });
+        }
+      }
+    });
+
+    const csbTokensBtn = h.elements.get('csb-group-tokens');
+    // 验证 A：首次从其他旧页记忆态直接点击「会话缓存命中率」
+    csbTokensBtn.click();
+    assert.equal(pTokens.hidden, false);
+    assert.equal(reqView.style.display, 'flex');
+    assert.equal(tokReqTab.classList.contains('active'), true);
+    assert.deepStrictEqual(revealSnapshots[0], { reqDisplay: 'flex', mainDisplay: 'none', reqActive: true }, '首次展开瞬间即须为实时请求，严禁先闪出 Token 统计');
+
+    // 验证 B：手动切到「Token 统计」→ 关闭 → 再次点击「会话缓存命中率」
+    h.elements.get('tok-view-tokens').click();
+    assert.equal(mainView.style.display, 'block');
+    api.toggle(false);
+    csbTokensBtn.click();
+    assert.equal(pTokens.hidden, false);
+    assert.equal(reqView.style.display, 'flex');
+    assert.equal(tokReqTab.classList.contains('active'), true);
+    assert.deepStrictEqual(revealSnapshots[1], { reqDisplay: 'flex', mainDisplay: 'none', reqActive: true }, '第二次展开瞬间同样即须为实时请求');
+
+    // 底栏 Token 胶囊作为唯一点击入口直达实时请求
+    api.toggle(false);
+    csbTokensBtn.click();
+    assert.equal(pTokens.hidden, false);
+    assert.equal(reqView.style.display, 'flex');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('上下文直达零闪烁 + 底栏消除硬裁切自适应换行 + 悬浮圆球悬停同心居中契约', async () => {
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const mainSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+
+  // 1. 第 2 项 CSS 与 Light DOM 样式契约（禁止全局 72px 裁切、允许 wrap + overflow visible、保留径向收缩）
+  assert.doesNotMatch(stylesSrc, /\.csb-text\s*\{[^}]*max-width:\s*72px/);
+  assert.match(stylesSrc, /\.composer-status-bar\s*\{[^}]*flex-wrap:\s*wrap;[^}]*overflow:\s*visible;/s);
+  assert.match(stylesSrc, /\.csb-quota-pill\s*\{[^}]*overflow:\s*visible;/s);
+  assert.match(mainSrc, /#composer-status-bar\s*\{[^}]*flex-wrap:\s*wrap\s*!important;[^}]*overflow:\s*visible\s*!important;/s);
+  assert.match(mainSrc, /#composer-status-bar\s+\.csb-text\s*\{[^}]*max-width:\s*none\s*!important;[^}]*overflow:\s*visible\s*!important;/s);
+  assert.match(mainSrc, /#composer-status-bar\s+\.csb-quota-pill\s*\{[^}]*overflow:\s*visible\s*!important;/s);
+
+  // 2. 第 3 项悬浮球同心居中契约（严格 border-box、grid 居中、hover 不放大位移、svg inset:0 100% 匹配 cx=cy=23）
+  assert.match(stylesSrc, /\.ctx-radial-orb\s*\{[^}]*box-sizing:\s*border-box;[^}]*width:\s*46px;[^}]*height:\s*46px;[^}]*margin:\s*0;[^}]*padding:\s*0;[^}]*display:\s*grid;[^}]*place-items:\s*center;/s);
+  assert.doesNotMatch(stylesSrc, /\.ctx-radial-orb:hover\s*\{[^}]*scale\(/);
+  assert.match(stylesSrc, /\.ctx-orb-ring-svg\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*display:\s*block;/s);
+  assert.match(tplSrc, /<svg class="ctx-orb-ring-svg" viewBox="0 0 46 46" aria-hidden="true">/);
+  assert.match(tplSrc, /class="ctx-orb-ring-track" cx="23" cy="23" r="19\.5"/);
+
+  // 3. 第 1 项行为与零闪烁验证
+  const h = harness(session());
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+    await h.flush();
+
+    const pCtx = h.elements.get('panel');
+    const paneSess = h.elements.get('pane-ctx-session');
+    const paneSet = h.elements.get('pane-ctx-settings');
+    const tabSess = h.elements.get('tab-ctx-session');
+    const tabSet = h.elements.get('tab-ctx-settings');
+    const revealSnaps = [];
+    let pHidden = pCtx.hidden;
+    Object.defineProperty(pCtx, 'hidden', {
+      configurable: true,
+      get() { return pHidden; },
+      set(v) {
+        const prev = pHidden;
+        pHidden = Boolean(v);
+        if (prev && !pHidden) {
+          revealSnaps.push({
+            sessHidden: paneSess.hidden,
+            setHidden: paneSet.hidden,
+            sessActive: tabSess.classList.contains('active'),
+            setActive: tabSet.classList.contains('active')
+          });
+        }
+      }
+    });
+
+    // (a) 切到配置 -> 不关闭直接点底栏 #csb-group-context / 径向上下文 / 溢出菜单上下文均立即回「当前会话」且面板不关闭
+    api.openContextSettingsForTest();
+    assert.equal(pCtx.hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
+    assert.equal(api.getPanelPickerStateForTest().currentTarget, 'settings');
+
+    h.elements.get('csb-group-context').click();
+    assert.equal(pCtx.hidden, false, '停在配置页点底栏上下文入口应切回当前会话，不应直接关闭面板');
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'session');
+    assert.equal(api.getContextPreferencesState().isContextSettingsView, false);
+
+    // 停在当前会话再次点击同一入口才执行关闭
+    h.elements.get('csb-group-context').click();
+    assert.equal(pCtx.hidden, true, '停在当前会话再次点击同一入口应正常关闭面板');
+
+    // (b) 停在「配置」后关闭面板 -> 分别点各上下文入口，首帧即须呈现「当前会话」零闪烁
+    api.openContextSettingsForTest();
+    api.toggle(false);
+    h.elements.get('csb-group-context').click();
+    assert.equal(pCtx.hidden, false);
+    assert.deepStrictEqual(revealSnaps[revealSnaps.length - 1], {
+      sessHidden: false,
+      setHidden: true,
+      sessActive: true,
+      setActive: false
+    }, '关闭后点底栏上下文入口，首帧即须是当前会话');
+
+    api.openContextSettingsForTest();
+    api.toggle(false);
+    h.elements.get('radial-item-context').click();
+    assert.equal(pCtx.hidden, false);
+    assert.deepStrictEqual(revealSnaps[revealSnaps.length - 1], {
+      sessHidden: false,
+      setHidden: true,
+      sessActive: true,
+      setActive: false
+    }, '关闭后点径向菜单上下文入口，首帧即须是当前会话');
+
+    api.openContextSettingsForTest();
+    api.toggle(false);
+    h.elements.get('overflow-context-btn').click();
+    assert.equal(pCtx.hidden, false);
+    assert.deepStrictEqual(revealSnaps[revealSnaps.length - 1], {
+      sessHidden: false,
+      setHidden: true,
+      sessActive: true,
+      setActive: false
+    }, '关闭后点溢出菜单上下文入口，首帧即须是当前会话');
+
+    // 非径向模式下直接点顶栏 #badge 也遵循同规则（先停在配置时切回当前会话，再点才关闭）
+    api.setQuickMenuStyleForTest('floating', { persist: false });
+    api.openContextSettingsForTest();
+    h.elements.get('badge').click();
+    assert.equal(pCtx.hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'session');
+    h.elements.get('badge').click();
+    assert.equal(pCtx.hidden, true);
+
+    // (c) 专用配置入口与右键 CLI 仍直达配置
+    h.elements.get('btn-quick-settings').click();
+    assert.equal(pCtx.hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
+    api.toggle(false);
+    h.elements.get('radial-item-cli').trigger('contextmenu', { preventDefault() {}, stopPropagation() {} });
+    assert.equal(pCtx.hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
+  } finally {
+    api.dispose();
+  }
+});
+
+
+
+test('v0.9.1 第19轮 / A: 三算法切换数值与冠军同步重算', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  assert.match(src, /const speedResolvedMetrics = \(group\) =>/, '必须有统一的算法解析函数');
+  assert.match(src, /speedAlgorithm === 'composite'/, '必须实现综合效率分支');
+  assert.match(src, /500 \/ \(medianTtft \+ 500 \/ medianTps\)/, '综合效率公式必须是 500 / (TTFT + 500 / tok_s)');
+  assert.match(src, /: medianTps;/, '缺 TTFT 时必须回退 tok_s');
+  assert.match(src, /if \(speedAlgorithm === 'mean'\)/, '必须实现均值分支');
+  // 冠军判定不得再依赖下标 0
+  assert.doesNotMatch(src, /if \(index === 0\) \{\s*const badge/, '冠军判定不得写死第一张卡');
+  assert.match(src, /const championId = \(\(\) => \{/, '必须有动态冠军判定');
+  assert.match(src, /speedMetric === 'tps' \? b\.v - a\.v : a\.v - b\.v/, '冠军排序必须区分越大越快与越小越快');
+});
+
+test('v0.9.1 第19轮 / B: 折线图按日聚合 + P95 压平 + Y 轴锁 0', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  assert.match(src, /Math\.floor\(ts \/ 86400000\)/, '必须按自然日分桶');
+  assert.match(src, /const val = speedAlgorithm === 'mean'/, '每日聚合必须随算法联动');
+  assert.match(src, /Math\.floor\(sortedVals\.length \* 0\.95\)/, '必须有 P95 上限保护');
+  assert.match(src, /if \(pt\.val > cap\) pt\.val = cap;/, '超过 P95 的点必须被压平');
+  assert.match(src, /const yMin = Math\.max\(0, rawMin - span \* 0\.15\);/, 'Y 轴下限必须锁 0');
+  assert.match(src, /const yMax = Math\.max\(yMin \+ 1,/, '必须保证 yMax > yMin');
+});
+
+test('v0.9.1 第19轮 / C: 折线图图例使用 speedDisplayName 区分档位且零括号', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  assert.match(src, /text\.textContent = speedDisplayName\(group\);/, '图例必须走 speedDisplayName');
+  assert.doesNotMatch(src, /text\.textContent = String\(group\.productLabel \|\| group\.modelExactId \|\| ''\)\.split/, '不得再截断到无档位的短名');
+  // 档位分隔符与零括号契约
+  assert.match(src, /\.join\(' · '\)/, '档位必须用中点连接');
+  assert.match(src, /composed\.replace\(/, 'speedDisplayName must strip brackets');
+});
+
+function openSpeedTrend() {
+  const h = harness();
+  const doc = h.sandbox.document;
+  doc.createElementNS = (_ns, tag) => Object.assign(doc.createElement(tag), { tagName: tag });
+  const api = h.sandbox.__AGContextMeter;
+  api.switchContextTabForTest('speed');
+  return { h, api, svg: h.elements.get('speed-line-svg') };
+}
+
+test('speed trend selects local days, hours and raw timestamps from plottable samples', () => {
+  const { h, api, svg } = openSpeedTrend();
+  const now = Date.now() - 10_000;
+  try {
+    for (const [interval, label] of [[86400000, '按日聚合'], [3600000, '按小时聚合'], [1100, '按采样序列']]) {
+      api.setSpeedRecordsForTest([0, 1, 2, 3].map(i => ({
+        callId: 'trend-' + i, modelExactId: 'gemini-4-hydrogen', status: 'final', timestamp: now - i * interval,
+        outputTokens: 400, durationSec: 10, tps: 40 + i * 3
+      })));
+      assert.equal(h.elements.get('speed-trend-foot').children[0].textContent, label);
+      const marks = svg.children.filter(node => node.className === 'ctx-speed-x-tick' || node.getAttribute('class') === 'ctx-speed-x-tick');
+      assert.ok(marks.length >= 3 && marks.length <= 7);
+      assert.equal(new Set(marks.map(node => node.textContent)).size, marks.length);
+      assert.equal(svg.children.find(node => node.tagName === 'polyline').getAttribute('points').split(' ').length, 4);
+    }
+    api.setSpeedRecordsForTest([]);
+    assert.equal(svg.children.length, 0);
+    assert.equal(h.elements.get('speed-trend-foot').children.length, 0);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('speed trend colors and names match each plotted model, including duplicate display names', () => {
+  const { h, api, svg } = openSpeedTrend();
+  const ids = ['gemini-4-hydrogen-ultra', 'gemini-4-hydrogen-ultra-preview', 'gemini-4-hydrogen-low',
+    'gemini-4-carbon-mid', 'gemini-3.8-flash-high', 'claude-opus-4-6', 'gpt-5.4', 'gemini-3.1-pro-high'];
+  try {
+    api.setSpeedRecordsForTest(ids.map((modelExactId, i) => ({
+      callId: 'color-' + i, modelExactId, status: 'final', timestamp: Date.now() - 2000 + i,
+      modelLabel: i < 2 ? 'Gemini 4 Hydrogen (Ultra)' : modelExactId, effort: i < 2 ? 'ultra' : undefined,
+      outputTokens: 400, durationSec: 10, tps: 40 + i
+    })));
+    for (const id of ids) {
+      const row = h.elements.get('speed-rank-rows').children.find(node => node.getAttribute('data-rank-id') === id);
+      const checkbox = row.children[0].children[0];
+      checkbox.checked = true;
+      checkbox.trigger('change');
+    }
+    const legend = h.elements.get('speed-trend-legend').children;
+    const names = legend.map(item => item.children[1].textContent);
+    const colors = legend.map(item => item.children[0].style.background);
+    assert.equal(new Set(names).size, 8);
+    assert.equal(new Set(colors).size, 8);
+    assert.ok(names.every(name => !/[（）()]/.test(name)));
+    assert.deepEqual(svg.children.filter(node => node.tagName === 'polyline').map(node => node.getAttribute('stroke')), colors);
+  } finally {
+    api.dispose();
+  }
+});

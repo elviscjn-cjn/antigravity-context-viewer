@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { crc32, deflateRawSync } = require('zlib');
 const { execFileSync, spawnSync } = require('child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -39,6 +40,7 @@ const COMMON_FILES = [
   'meter-enhance.js',
   'meter-rehydrate.js',
   'meter-accounts.js',
+  'autostart.js',
   'macos-binary-utils.js',
   'attachment_scan.py',
   'asar-engine.js',
@@ -91,6 +93,53 @@ function supportsCscDeterministicFlag(cscExe) {
   }
 }
 
+// Legacy Framework csc writes the build clock and a random module GUID even for
+// identical input. Normalize these two fields on our freshly built unsigned PE.
+function normalizeLegacyHelper(file) {
+  const image = fs.readFileSync(file);
+  const pe = image.readUInt32LE(0x3c);
+  const optional = pe + 24;
+  if (image.toString('ascii', pe, pe + 4) !== 'PE\0\0' || image.readUInt16LE(optional) !== 0x10b) {
+    throw new Error('Unexpected Windows helper PE format');
+  }
+  const directory = optional + 96;
+  const sectionCount = image.readUInt16LE(pe + 6);
+  const sectionTable = optional + image.readUInt16LE(pe + 20);
+  const offsetOf = rva => {
+    for (let i = 0; i < sectionCount; i++) {
+      const section = sectionTable + i * 40;
+      const start = image.readUInt32LE(section + 12);
+      const size = image.readUInt32LE(section + 16);
+      if (rva >= start && rva < start + size) return image.readUInt32LE(section + 20) + rva - start;
+    }
+    throw new Error('Invalid Windows helper metadata address');
+  };
+  const cli = offsetOf(image.readUInt32LE(directory + 14 * 8));
+  if (image.readUInt32LE(directory + 4 * 8 + 4) || image.readUInt32LE(cli + 36) || image.readUInt32LE(optional + 64)) {
+    throw new Error('Refusing to normalize signed or checksummed Windows helper');
+  }
+  const metadata = offsetOf(image.readUInt32LE(cli + 8));
+  if (image.toString('ascii', metadata, metadata + 4) !== 'BSJB') throw new Error('Invalid Windows helper metadata');
+  const streamHeader = metadata + 16 + image.readUInt32LE(metadata + 12);
+  const count = image.readUInt16LE(streamHeader + 2);
+  for (let i = 0, stream = streamHeader + 4; i < count; i++) {
+    const end = image.indexOf(0, stream + 8);
+    if (end < stream + 8) break;
+    if (image.toString('ascii', stream + 8, end) === '#GUID' && image.readUInt32LE(stream + 4) === 16) {
+      const guid = metadata + image.readUInt32LE(stream);
+      if (guid + 16 > image.length) break;
+      image.fill(0, guid, guid + 16);
+      image.writeUInt32LE(0, pe + 8);
+      const digest = crypto.createHash('sha256').update(image).digest();
+      digest.copy(image, guid, 0, 16);
+      fs.writeFileSync(file, image);
+      return;
+    }
+    stream = (end + 4) & ~3;
+  }
+  throw new Error('Expected one module GUID in Windows helper');
+}
+
 /**
  * 解析并构建 Windows 窗口辅助程序 (Issue #17 构建来源可追溯):
  * - Windows 本地打包: 强制从 scripts/cli-window-helper.cs 源码编译至系统临时目录，绝不采信源码目录残留 .exe；编译或源缺失直接报错退出。
@@ -119,7 +168,8 @@ function ensureWindowsHelper(opts = {}) {
     const tempHelperPath = path.join(tempDir, 'cli-window-helper.exe');
     try {
       const cscArgs = ['/nologo', '/target:exe', '/platform:anycpu', '/optimize+'];
-      if (supportsCscDeterministicFlag(cscExe)) {
+      const deterministic = supportsCscDeterministicFlag(cscExe);
+      if (deterministic) {
         cscArgs.push('/deterministic');
       }
       cscArgs.push(`/out:${tempHelperPath}`, csSrc);
@@ -134,6 +184,7 @@ function ensureWindowsHelper(opts = {}) {
       if (!fs.existsSync(tempHelperPath) || fs.statSync(tempHelperPath).size === 0) {
         throw new Error('编译完成但未生成有效的 cli-window-helper.exe');
       }
+      if (!deterministic) normalizeLegacyHelper(tempHelperPath);
       const helperSha256 = sha256File(tempHelperPath);
       const size = fs.statSync(tempHelperPath).size;
       console.log(`[Packaging] cli-window-helper.exe 已在临时目录源码编译 (${size} 字节, SHA-256: ${helperSha256})`);
@@ -196,87 +247,73 @@ function getVersion() {
   return pkg.version || '0.8.5';
 }
 
+// Write ZIP metadata directly so timestamps, permissions and entry order do not
+// depend on the checkout filesystem or the OS archive tool.
+function createReleaseZip(fileList, helperPath) {
+  const localChunks = [];
+  const centralChunks = [];
+  let localOffset = 0;
+  const dosDate = ((2020 - 1980) << 9) | (1 << 5) | 1;
+
+  for (const relative of fileList) {
+    const file = relative === 'scripts/cli-window-helper.exe' && helperPath
+      ? path.resolve(helperPath) : path.join(ROOT_DIR, relative);
+    if (!fs.existsSync(file)) throw new Error(`缺少必需的发布文件: ${relative}`);
+    let raw = fs.readFileSync(file);
+    if (!relative.endsWith('.exe')) {
+      const lf = raw.toString('utf8').replace(/\r\n/g, '\n');
+      raw = Buffer.from(relative.endsWith('.bat') ? lf.replace(/\n/g, '\r\n') : lf);
+    }
+    const name = Buffer.from(relative, 'utf8');
+    const packed = deflateRawSync(raw, { level: 6 });
+    const fields = Buffer.alloc(26);
+    fields.writeUInt16LE(20, 0); // Minimum reader version
+    fields.writeUInt16LE(0x0800, 2); // UTF-8 file names
+    fields.writeUInt16LE(8, 4); // Deflate
+    fields.writeUInt16LE(dosDate, 8);
+    fields.writeUInt32LE(crc32(raw), 10);
+    fields.writeUInt32LE(packed.length, 14);
+    fields.writeUInt32LE(raw.length, 18);
+    fields.writeUInt16LE(name.length, 22);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50);
+    fields.copy(local, 4);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50);
+    central.writeUInt16LE(0x0314, 4); // Unix attributes
+    fields.copy(central, 6);
+    const mode = relative.endsWith('.sh') ? 0o100755 : 0o100644;
+    central.writeUInt32LE(mode * 65536, 38);
+    central.writeUInt32LE(localOffset, 42);
+    localChunks.push(local, name, packed);
+    centralChunks.push(central, name);
+    localOffset += local.length + name.length + packed.length;
+  }
+
+  const centralSize = centralChunks.reduce((size, chunk) => size + chunk.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50);
+  end.writeUInt16LE(fileList.length, 8);
+  end.writeUInt16LE(fileList.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(localOffset, 16);
+  return Buffer.concat([...localChunks, ...centralChunks, end]);
+}
+
 function packagePlatform(plat, version, options = {}) {
   const platName = plat.name;
   const targetDistDir = options.distDir ? path.resolve(options.distDir) : DIST_DIR;
   const zipFilename = `antigravity-context-viewer_${version}_${platName}.zip`;
   const zipPath = path.join(targetDistDir, zipFilename);
 
-  const stamp = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-  const stagingDir = path.join(os.tmpdir(), `ag-pkg-${platName}-${stamp}`);
-  fs.mkdirSync(stagingDir, { recursive: true });
   fs.mkdirSync(targetDistDir, { recursive: true });
-
-  try {
-    const fileList = [...COMMON_FILES, ...plat.scripts];
-    for (const rel of fileList) {
-      const src = (rel === 'scripts/cli-window-helper.exe' && options.helperPath)
-        ? path.resolve(options.helperPath)
-        : path.join(ROOT_DIR, rel);
-      if (!fs.existsSync(src)) {
-        throw new Error(`缺少必需的发布文件: ${rel}，拒绝打包！`);
-      }
-      const dest = path.join(stagingDir, rel);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-
-      if (rel.endsWith('.sh')) {
-        let content = fs.readFileSync(src, 'utf8').replace(/\r\n/g, '\n');
-        fs.writeFileSync(dest, content, { encoding: 'utf8', mode: 0o755 });
-      } else if (rel.endsWith('.bat')) {
-        let content = fs.readFileSync(src, 'utf8').replace(/\r?\n/g, '\r\n');
-        fs.writeFileSync(dest, content, { encoding: 'utf8' });
-      } else {
-        fs.copyFileSync(src, dest);
-      }
-    }
-
-    if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-
-    if (process.platform === 'win32') {
-      // 优先使用系统自带 System32\tar.exe (bsdtar -a -cf) 生成使用正斜杠 '/' 的跨平台标准 ZIP，避免被 PATH 中的 GNU tar 抢占
-      const topEntries = fs.readdirSync(stagingDir);
-      const sysRoot = process.env.SystemRoot || process.env.SYSTEMROOT || process.env.WINDIR || 'C:\\Windows';
-      const sysTar = path.win32.join(sysRoot, 'System32', 'tar.exe');
-      const tarBin = fs.existsSync(sysTar) ? sysTar : 'tar.exe';
-      const tarRes = spawnSync(tarBin, ['-a', '-cf', zipPath, ...topEntries], { cwd: stagingDir, stdio: 'pipe', windowsHide: true });
-      if (tarRes.status !== 0 || !fs.existsSync(zipPath)) {
-        // 回退 PowerShell 原生 .NET ZipFile
-        const psScript = `
-      [System.Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null
-      [System.IO.Compression.ZipFile]::CreateFromDirectory('${stagingDir.replace(/'/g, "''")}', '${zipPath.replace(/'/g, "''")}', [System.IO.Compression.CompressionLevel]::Optimal, $false)
-    `;
-        const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', psScript], { stdio: 'pipe', windowsHide: true });
-        if (res.status !== 0 || !fs.existsSync(zipPath)) {
-          throw new Error(`打包 ${zipFilename} 失败: ${res.stderr?.toString('utf8') || '未知错误'}`);
-        }
-      }
-    } else {
-      // Linux/macOS CI 下优先使用原生 zip 保留 POSIX 文件权限，缺省再回退 Python zipfile
-      const zipRes = spawnSync('zip', ['-rq', zipPath, '.'], { cwd: stagingDir, stdio: 'pipe' });
-      if (zipRes.status !== 0 || !fs.existsSync(zipPath)) {
-        const pyCode = [
-          'import os, sys, zipfile',
-          'src, dst = sys.argv[1], sys.argv[2]',
-          'with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zf:',
-          '    for root, _, files in os.walk(src):',
-          '        for name in files:',
-          '            full = os.path.join(root, name)',
-          '            zf.write(full, os.path.relpath(full, src))'
-        ].join('\n');
-        const pyRes = spawnSync('python3', ['-c', pyCode, stagingDir, zipPath], { stdio: 'pipe' });
-        if (pyRes.status !== 0 || !fs.existsSync(zipPath)) {
-          throw new Error(`打包 ${zipFilename} 失败: ${(zipRes.stderr || pyRes.stderr || Buffer.alloc(0)).toString('utf8') || '未知错误'}`);
-        }
-      }
-    }
-
-    const sz = fs.statSync(zipPath).size;
-    const sha = sha256File(zipPath);
-    console.log(`[Packaging] 成功打包 ${zipFilename} (${sz} 字节) - SHA-256: ${sha.slice(0, 16)}...`);
-    return { name: zipFilename, path: zipPath, sha256: sha, size: sz };
-  } finally {
-    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
-  }
+  const archive = createReleaseZip([...COMMON_FILES, ...plat.scripts].sort(), options.helperPath);
+  fs.writeFileSync(zipPath, archive);
+  const sz = archive.length;
+  const sha = crypto.createHash('sha256').update(archive).digest('hex');
+  console.log(`[Packaging] Packaged ${zipFilename} (${sz} bytes) - SHA-256: ${sha.slice(0, 16)}...`);
+  return { name: zipFilename, path: zipPath, sha256: sha, size: sz };
 }
 
 function main(options = {}) {
@@ -293,8 +330,33 @@ function main(options = {}) {
     fs.mkdirSync(targetDistDir, { recursive: true });
 
     const results = [];
+    // 相同载荷必须产出逐字节一致的资产：按载荷签名复用已生成的包，
+    // 彻底消除归档器在条目元数据与读取顺序上的非确定性
+    const builtBySignature = new Map();
     for (const plat of PLATFORMS) {
+      const signature = JSON.stringify({
+        version,
+        files: [...COMMON_FILES, ...plat.scripts].slice().sort(),
+        helper: helperInfo.helperSha256 || null
+      });
+      const cached = builtBySignature.get(signature);
+      if (cached) {
+        const zipFilename = `antigravity-context-viewer_${version}_${plat.name}.zip`;
+        const zipPath = path.join(targetDistDir, zipFilename);
+        fs.copyFileSync(cached.path, zipPath);
+        const reused = {
+          name: zipFilename,
+          path: zipPath,
+          sha256: cached.sha256,
+          size: cached.size,
+          reusedFrom: cached.name
+        };
+        console.log(`[Packaging] 复用同载荷资产 ${zipFilename} (${reused.size} 字节) - SHA-256: ${reused.sha256.slice(0, 16)}...`);
+        results.push(reused);
+        continue;
+      }
       const r = packagePlatform(plat, version, { distDir: targetDistDir, helperPath: helperInfo.helperPath });
+      builtBySignature.set(signature, r);
       results.push(r);
     }
 

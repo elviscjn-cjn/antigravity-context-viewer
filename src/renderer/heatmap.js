@@ -63,10 +63,10 @@
     const monthsBox = el('h-months');
     if (!colsBox || !monthsBox) return;
     const win = computeTimelineWindow();
-    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}:${cumLinkedDailyDate || ''}`;
-    if (!forceRebuild && colsBox.children.length > 0 && colsBox.getAttribute('data-sig') === sig) return;
+    const csiSelDate = (typeof state !== 'undefined' && state?.csiSelectedDate) ? state.csiSelectedDate : '';
+    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}:${cumLinkedDailyDate || ''}:${csiSelDate}:${typeof currentPanelLanguage !== 'undefined' ? currentPanelLanguage : ''}:${typeof activeCostModel !== 'undefined' ? activeCostModel : ''}:${typeof activeCostMode !== 'undefined' ? activeCostMode : ''}`;
+    if (!forceRebuild && colsBox.children.length === 52 && colsBox.getAttribute('data-sig') === sig) return;
 
-    colsBox.replaceChildren();
     monthsBox.replaceChildren();
     colsBox.setAttribute('data-sig', sig);
 
@@ -83,13 +83,73 @@
       list.push({ date: d, key, tokens, rec, isFuture, isToday: key === todayKey, isUnactivated });
     }
 
+    let pool = colsBox._cellPool;
+    if (!pool || colsBox.children.length !== 52) {
+      colsBox.replaceChildren();
+      pool = [];
+      for (let c = 0; c < 52; c++) {
+        const col = document.createElement('div');
+        col.className = 'heat-week-col';
+        const colCells = [];
+        for (let rIdx = 0; rIdx < 7; rIdx++) {
+          const cell = document.createElement('div');
+          cell.className = 'heat-cell lvl-0';
+          cell._meta = null;
+          const showPop = () => {
+            const meta = cell._meta;
+            if (!meta) return;
+            const d = meta.date;
+            const dateLabel = currentPanelLanguage === 'en'
+              ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+              : (currentPanelLanguage === 'zh-TW'
+                ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
+                : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
+            heatPopDate.textContent = `${dateLabel}${meta.isToday ? t('heat.today') : (meta.key === meta.firstStr ? t('heat.firstUse') : '')}`;
+            const costInfo = getDailyModelCost(meta.rec, meta.key, activeCostModel, { mode: activeCostMode });
+            const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
+            heatPopVal.textContent = meta.tokens > 0
+              ? `${fmtYi(meta.tokens)} Tokens${costStr}`
+              : (meta.isFuture ? t('heat.future') : (meta.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
+            if (meta.rec) {
+              heatPopDet.innerHTML = `
+                <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(meta.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
+                <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(meta.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
+                <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(meta.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
+              `.trim();
+              heatPopDet.style.display = 'flex';
+            } else {
+              heatPopDet.style.display = 'none';
+            }
+            const r = cell.getBoundingClientRect ? cell.getBoundingClientRect() : { left: 0, top: 0, width: 10 };
+            heatPop.style.left = `${r.left + r.width / 2}px`;
+            heatPop.style.top = `${r.top - 6}px`;
+            heatPop.style.opacity = '1';
+          };
+          cell.addEventListener('mouseenter', showPop);
+          cell.addEventListener('mouseleave', hidePopover);
+          cell.addEventListener('click', () => {
+            const meta = cell._meta;
+            if (!meta) return;
+            showPop();
+            if (!meta.isFuture && typeof handleHeatmapDaySelected === 'function') {
+              handleHeatmapDaySelected(meta.key);
+            }
+          });
+          col.appendChild(cell);
+          colCells.push(cell);
+        }
+        colsBox.appendChild(col);
+        pool.push(colCells);
+      }
+      colsBox._cellPool = pool;
+    }
+
     const monthMarkers = [];
     let lastM = -1;
     let lastCol = -10;
 
     for (let c = 0; c < 52; c++) {
-      const col = document.createElement('div');
-      col.className = 'heat-week-col';
+      const colCells = pool[c];
       const slice = list.slice(c * 7, (c + 1) * 7);
       const mNum = slice[0].date.getMonth() + 1;
       if (mNum !== lastM) {
@@ -100,57 +160,30 @@
         lastM = mNum;
       }
 
-      slice.forEach(item => {
-        const cell = document.createElement('div');
+      for (let rIdx = 0; rIdx < 7; rIdx++) {
+        const item = slice[rIdx];
+        const cell = colCells[rIdx];
+        cell._meta = { ...item, firstStr: win.firstStr };
         const lvl = getLvl(item.tokens);
         const isLinked = Boolean(cumLinkedDailyDate && item.key === cumLinkedDailyDate);
-        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isUnactivated ? ' is-unactivated' : ''}${item.isToday ? ' is-today' : ''}${isLinked ? ' is-cum-linked' : ''}`;
+        const isDayFiltered = Boolean(csiSelDate && item.key === csiSelDate);
+        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isUnactivated ? ' is-unactivated' : ''}${item.isToday ? ' is-today' : ''}${isLinked ? ' is-cum-linked' : ''}${isDayFiltered ? ' is-day-filtered' : ''}`;
         if (item.tokens > 0 && typeof getContinuousHeatColor === 'function') {
           const contCol = getContinuousHeatColor(item.tokens, 'heat');
           if (contCol) {
             cell.style.backgroundColor = contCol;
             cell.setAttribute('data-heat-color', contCol);
+          } else {
+            cell.style.backgroundColor = '';
+            cell.removeAttribute('data-heat-color');
           }
+        } else {
+          cell.style.backgroundColor = '';
+          cell.removeAttribute('data-heat-color');
         }
         cell.setAttribute('data-date', item.key);
         cell.setAttribute('data-tokens', String(item.tokens));
-
-        const showPop = () => {
-          const d = item.date;
-          const dateLabel = currentPanelLanguage === 'en'
-            ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-            : (currentPanelLanguage === 'zh-TW'
-              ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
-              : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
-          heatPopDate.textContent = `${dateLabel}${item.isToday ? t('heat.today') : (item.key === win.firstStr ? t('heat.firstUse') : '')}`;
-          const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
-          heatPopVal.textContent = item.tokens > 0
-            ? `${fmtYi(item.tokens)} Tokens${costStr}`
-            : (item.isFuture ? t('heat.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
-          if (item.rec) {
-            heatPopDet.innerHTML = `
-              <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
-              <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(item.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
-              <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(item.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
-            `.trim();
-            heatPopDet.style.display = 'flex';
-          } else {
-            heatPopDet.style.display = 'none';
-          }
-          const r = cell.getBoundingClientRect();
-          heatPop.style.left = `${r.left + r.width / 2}px`;
-          heatPop.style.top = `${r.top - 6}px`;
-          heatPop.style.opacity = '1';
-        };
-
-        cell.addEventListener('mouseenter', showPop);
-        cell.addEventListener('mouseleave', hidePopover);
-        cell.addEventListener('click', showPop);
-
-        col.appendChild(cell);
-      });
-      colsBox.appendChild(col);
+      }
     }
 
     const shortMonthsEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -916,8 +949,9 @@
         ? getContinuousHeatColor(tokens, 'heat')
         : null;
 
+      const isDayFiltered = Boolean(typeof state !== 'undefined' && state?.csiSelectedDate && k === state.csiSelectedDate);
       const cell = document.createElement('div');
-      cell.className = `heat-month-cell heat-cell lvl-${lvl}${isFuture ? ' is-future' : ''}${isUnactivated ? ' is-unactivated' : ''}${isToday ? ' is-today' : ''}`;
+      cell.className = `heat-month-cell heat-cell lvl-${lvl}${isFuture ? ' is-future' : ''}${isUnactivated ? ' is-unactivated' : ''}${isToday ? ' is-today' : ''}${isDayFiltered ? ' is-day-filtered' : ''}`;
       cell.style.width = `${bestS}px`;
       cell.style.height = `${bestS}px`;
       cell.style.backgroundColor = contCol || scale[lvl];
@@ -962,7 +996,12 @@
 
       cell.addEventListener('mouseenter', showPop);
       cell.addEventListener('mouseleave', hidePopover);
-      cell.addEventListener('click', showPop);
+      cell.addEventListener('click', () => {
+        showPop();
+        if (!isFuture && typeof handleHeatmapDaySelected === 'function') {
+          handleHeatmapDaySelected(k);
+        }
+      });
 
       grid.appendChild(cell);
     }

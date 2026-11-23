@@ -1016,6 +1016,24 @@ test('免改盘独立免 TUN 启动器: 环境变量/Chromium 参数构造、防
   assert.match(vbs, /shell\.Environment\("PROCESS"\)/);
   assert.match(vbs, /env\("NODE_USE_ENV_PROXY"\) = "1"/);
   assert.match(vbs, /--proxy-server=/);
+  const localizedVbs = generateWindowsNoTunVbs({
+    exePath: "D:\\测试 Workspace\\Bob's Antigravity\\Antigravity.exe",
+    recoverCliPath: 'D:\\工具\\cli.js',
+    proxyUrl: 'http://127.0.0.1:7897'
+  });
+  assert.match(localizedVbs, /^[\x00-\x7f]+$/);
+  assert.match(localizedVbs, /ChrW\(&H6d4b\) & ChrW\(&H8bd5\)/);
+  assert.match(localizedVbs, /Workspace\\Bob's Antigravity/);
+  assert.match(localizedVbs, /env\("AG_METER_NO_TUN_LAUNCH"\) = "1"/);
+
+  // The Language Server wrapper runs this function after the login-shell merge.
+  const launch = buildHostProxyLaunchSpec({ proxyUrl: 'http://127.0.0.1:7897', noProxy: '', baseEnv: {} });
+  const merged = { ...launch.env, HTTPS_PROXY: 'http://127.0.0.1:9999', NO_PROXY: 'old-shell' };
+  require('./meter-proxy').applyProxyEnvironment(merged, { overrideExisting: true, launchEnv: launch.env, candidates: [] });
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
+    assert.equal(merged[key], 'http://127.0.0.1:7897');
+  }
+  assert.equal('NO_PROXY' in merged, false);
   assert.throws(() => generateWindowsNoTunVbs({
     exePath: 'C:\\a\r\nMsgBox 1',
     proxyUrl: 'http://127.0.0.1:7897',

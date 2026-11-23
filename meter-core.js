@@ -887,25 +887,92 @@
       thinking: [],
       tools: []
     };
-    const MAX_COMP_ENTRIES = 36;
+    const sequentialSlices = [];
+    const MAX_COMP_ENTRIES = 200;
+    const MAX_SLICE_ENTRIES = 400;
+    const MAX_DETAIL_STEPS = 1500;
+    const startDetailIdx = steps.length > MAX_DETAIL_STEPS ? steps.length - MAX_DETAIL_STEPS : 0;
     const estPairMid = (m) => {
       if (!m) return 0;
       const l = Number(m.low || 0);
       const h = Number(m.high || 0);
       return (l <= 0 && h <= 0) ? 0 : Math.round((l + h) / 2);
     };
-    const pushCompEntry = (cat, stepIndex, label, measured, previewRaw) => {
+    const countTextLines = (raw) => {
+      const s = String(raw || '');
+      if (!s) return 0;
+      let lines = 1;
+      for (let idx = 0; idx < s.length; idx++) {
+        if (s.charCodeAt(idx) === 10) lines++;
+      }
+      return lines;
+    };
+    const resolveStepStatus = (stepObj) => {
+      const stUpper = String(stepObj?.status || stepObj?.metadata?.status || '').trim().toUpperCase();
+      if (stepObj?.error || stepObj?.errorMessage || /(?:^|_)(?:ERROR|FAILED|CANCELED|CANCELLED|ABORTED)$/.test(stUpper)) return 'error';
+      if (/(?:^|_)(?:RUNNING|PENDING|GENERATING|IN_PROGRESS|STREAMING|QUEUED)$/.test(stUpper)) return 'running';
+      return 'ok';
+    };
+    const resolveSourceTag = (cat, label, rawObj) => {
+      if (cat === 'user') return 'user';
+      if (cat === 'skills') return 'skill';
+      if (cat === 'injections' || cat === 'summaries') return 'host';
+      const lbl = String(label || '');
+      if (/^mcp[_\-:]/i.test(lbl) || rawObj?.mcp || rawObj?.mcpTool) return 'mcp';
+      if (/skill\.md/i.test(String(rawObj?.viewFile?.absolutePathUri || ''))) return 'skill';
+      if (cat === 'tools') return 'builtin';
+      return 'host';
+    };
+    const pushCompEntry = (cat, stepIndex, label, measured, previewRaw, extra = {}) => {
       const list = stepCompositionItems[cat];
-      if (!list || list.length >= MAX_COMP_ENTRIES) return;
+      if (!list) return;
       const tok = estPairMid(measured);
       if (tok <= 0 && !(measured?.chars > 0)) return;
-      list.push({
-        stepIndex,
-        label: String(label || cat),
-        tokens: tok,
-        chars: Number(measured?.chars || 0),
-        preview: sanitizeCompositionPreview(previewRaw || '', 110)
-      });
+      const cleanStr = typeof previewRaw === 'string'
+        ? previewRaw
+        : (previewRaw && typeof previewRaw === 'object' ? JSON.stringify(previewRaw) : String(previewRaw || ''));
+      const seqOrder = sequentialSlices.length + 1;
+      const entryId = `${cat}-${stepIndex ?? 'na'}-${list.length + 1}`;
+      const subKind = extra.subKind || cat;
+      const sourceTag = extra.sourceTag || resolveSourceTag(cat, label, extra.rawObj);
+      const status = extra.status || 'ok';
+      const lineCount = Number.isFinite(Number(extra.lineCount)) ? Number(extra.lineCount) : countTextLines(cleanStr);
+      const preview = sanitizeCompositionPreview(cleanStr, 140);
+      const fullSnippet = sanitizeCompositionPreview(cleanStr, 2400);
+      if (list.length < MAX_COMP_ENTRIES) {
+        list.push({
+          id: entryId,
+          seqOrder,
+          stepIndex,
+          category: cat,
+          subKind,
+          sourceTag,
+          status,
+          lineCount,
+          label: String(label || cat),
+          tokens: tok,
+          chars: Number(measured?.chars || 0),
+          preview,
+          fullSnippet
+        });
+      }
+      if (sequentialSlices.length < MAX_SLICE_ENTRIES && cat !== 'injections' && cat !== 'skills') {
+        sequentialSlices.push({
+          id: `slice-${seqOrder}`,
+          seqOrder,
+          stepIndex,
+          category: cat,
+          subKind,
+          sourceTag,
+          status,
+          lineCount,
+          label: String(label || cat),
+          tokens: tok,
+          chars: Number(measured?.chars || 0),
+          preview,
+          fullSnippet
+        });
+      }
     };
     const media = new Map();
     let userMessages = 0, assistantMessages = 0, latestStepError = null, lastUserAt = -1, lastAssistantAt = -1;
@@ -979,6 +1046,8 @@
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i];
       const stepIdx = Number.isInteger(Number(s?.stepIndex ?? s?.idx)) ? Number(s.stepIndex ?? s.idx) : i;
+      const allowDetail = i >= startDetailIdx;
+      const stepStatus = resolveStepStatus(s);
       if (s.userInput) {
         userMessages++; lastUserAt = i;
         compositionSubgroups.userCount++;
@@ -986,18 +1055,24 @@
         const uText = u.userResponse || (u.items || []).map(item => item.text || '').join('\n');
         const uMeasured = measure(uText);
         add(groups.user, uMeasured);
-        pushCompEntry('user', stepIdx, `U#${compositionSubgroups.userCount}`, uMeasured, uText);
+        if (allowDetail) {
+          pushCompEntry('user', stepIdx, `U#${compositionSubgroups.userCount}`, uMeasured, uText, { subKind: 'user', sourceTag: 'user', status: stepStatus });
+        }
         if (uText.includes('<SYSTEM_MESSAGE>') || uText.includes('[POST-COMPACT REHYDRATION') || uText.includes('<RULE[') || uText.includes('<CONTEXT_SUMMARY>') || uText.includes('<EXT_CONTEXT_INJECT>') || uText.includes('AGENTS.md')) {
           add(compositionSubgroups.injections, uMeasured);
           compositionSubgroups.injectionCount++;
-          pushCompEntry('injections', stepIdx, `Inject@${stepIdx}`, uMeasured, uText);
+          if (allowDetail) {
+            pushCompEntry('injections', stepIdx, `Inject@${stepIdx}`, uMeasured, uText, { subKind: 'injection', sourceTag: 'host', status: stepStatus });
+          }
         }
         if (uText.includes('<skills>') || /SKILL\.md/i.test(uText)) {
           const skillTagMatch = uText.match(/<skills>[\s\S]*?<\/skills>/i);
           const skillMeasured = skillTagMatch ? measure(skillTagMatch[0]) : uMeasured;
           add(compositionSubgroups.skills, skillMeasured);
           compositionSubgroups.skillCount++;
-          pushCompEntry('skills', stepIdx, `Skill@${stepIdx}`, skillMeasured, skillTagMatch ? skillTagMatch[0] : uText);
+          if (allowDetail) {
+            pushCompEntry('skills', stepIdx, `Skill@${stepIdx}`, skillMeasured, skillTagMatch ? skillTagMatch[0] : uText, { subKind: 'skill', sourceTag: 'skill', status: stepStatus });
+          }
         }
         if (lastCheckpointIndex >= 0) add(postCheckpointText, uMeasured);
         // Canonical media and item inline previews represent the same upload.
@@ -1011,10 +1086,14 @@
         const tMeasured = measure(tRaw);
         add(groups.assistant, aMeasured);
         add(groups.thinking, tMeasured);
-        if (aMeasured.chars > 0) pushCompEntry('assistant', stepIdx, `A#${compositionSubgroups.assistantCount}`, aMeasured, aRaw);
         if (tMeasured.chars > 0) {
           compositionSubgroups.thinkingCount++;
-          pushCompEntry('thinking', stepIdx, `Think#${compositionSubgroups.thinkingCount}`, tMeasured, tRaw);
+          if (allowDetail) {
+            pushCompEntry('thinking', stepIdx, `Think#${compositionSubgroups.thinkingCount}`, tMeasured, tRaw, { subKind: 'thinking', sourceTag: 'host', status: stepStatus });
+          }
+        }
+        if (aMeasured.chars > 0 && allowDetail) {
+          pushCompEntry('assistant', stepIdx, `A#${compositionSubgroups.assistantCount}`, aMeasured, aRaw, { subKind: 'text', sourceTag: 'host', status: stepStatus });
         }
         if (lastCheckpointIndex >= 0) {
           add(postCheckpointText, aMeasured);
@@ -1036,7 +1115,9 @@
         add(groups.summaries, cpMeasured);
         if (cpMeasured.chars > 0) {
           compositionSubgroups.summaryCount++;
-          pushCompEntry('summaries', stepIdx, `Checkpoint@${stepIdx}`, cpMeasured, cpText);
+          if (allowDetail) {
+            pushCompEntry('summaries', stepIdx, `Checkpoint@${stepIdx}`, cpMeasured, cpText, { subKind: 'summary', sourceTag: 'host', status: stepStatus });
+          }
         }
         if (isCpInProgress) {
           inProgressCheckpointIndex = i;
@@ -1083,8 +1164,28 @@
           add(groups.tools, toolMeasured);
           compositionSubgroups.toolCount++;
           const toolNameHint = (Array.isArray(s.tool_calls) && s.tool_calls[0]?.name)
-            || (s.runCommand ? 'run_command' : (s.viewFile ? 'read_file' : (s.writeToFile ? 'write_file' : stepKeys.find(k => !['type', 'status', 'metadata', 'error'].includes(k)) || 'tool')));
-          pushCompEntry('tools', stepIdx, `${toolNameHint}@${stepIdx}`, toolMeasured, `${toolNameHint} (${toolAcc.chars} chars)`);
+            || (s.runCommand ? 'run_command' : (s.viewFile ? 'read_file' : (s.writeToFile ? 'write_file' : stepKeys.find(k => !['type', 'status', 'metadata', 'error', 'stepIndex', 'idx', 'createdAt', 'timestamp'].includes(k)) || 'tool')));
+          let toolRawPreview = '';
+          if (Array.isArray(s.tool_calls) && s.tool_calls.length) {
+            toolRawPreview = s.tool_calls.map(tc => `${tc.name || toolNameHint}: ${JSON.stringify(tc.args || {})}${tc.output ? `\n-> ${String(tc.output)}` : ''}`).join('\n');
+          } else if (typeof s.content === 'string' && s.content.trim()) {
+            toolRawPreview = s.content;
+          } else if (s.runCommand) {
+            toolRawPreview = `run_command: ${s.runCommand.commandLine || s.runCommand.command || ''}${s.runCommand.output ? `\n${s.runCommand.output}` : ''}`;
+          } else if (s.viewFile) {
+            toolRawPreview = `read_file: ${s.viewFile.absolutePathUri || s.viewFile.path || ''}${s.viewFile.content ? `\n${s.viewFile.content}` : ''}`;
+          } else if (s.writeToFile) {
+            toolRawPreview = `write_file: ${s.writeToFile.targetFileUri || s.writeToFile.path || ''}`;
+          } else {
+            toolRawPreview = `${toolNameHint} ${toolAcc.chars} chars`;
+          }
+          if (allowDetail) {
+            pushCompEntry('tools', stepIdx, `${toolNameHint}@${stepIdx}`, toolMeasured, toolRawPreview, {
+              subKind: (typeof s.content === 'string' && s.type === 'TOOL_RESULT') ? 'tool_result' : 'tool_call',
+              rawObj: s,
+              status: stepStatus
+            });
+          }
           if (lastCheckpointIndex >= 0) add(postCheckpointText, toolMeasured);
           const stepTypeUpper = String(s.type || '').toUpperCase();
           const isExplicitInjection = Boolean(
@@ -1093,7 +1194,13 @@
           if (isExplicitInjection) {
             add(compositionSubgroups.injections, toolMeasured);
             compositionSubgroups.injectionCount++;
-            pushCompEntry('injections', stepIdx, `System@${stepIdx}`, toolMeasured, s.systemMessage?.content || s.systemMessage || toolNameHint);
+            if (allowDetail) {
+              pushCompEntry('injections', stepIdx, `System@${stepIdx}`, toolMeasured, s.systemMessage?.content || s.systemMessage || toolRawPreview || toolNameHint, {
+                subKind: 'injection',
+                sourceTag: 'host',
+                status: stepStatus
+              });
+            }
           }
           // 识别技能读取/注入工具步骤（如读取 SKILL.md）
           let isSkillStep = false;
@@ -1108,7 +1215,13 @@
           if (isSkillStep) {
             add(compositionSubgroups.skills, toolMeasured);
             compositionSubgroups.skillCount++;
-            pushCompEntry('skills', stepIdx, `SKILL.md@${stepIdx}`, toolMeasured, s.viewFile?.absolutePathUri || toolNameHint);
+            if (allowDetail) {
+              pushCompEntry('skills', stepIdx, `SKILL.md@${stepIdx}`, toolMeasured, s.viewFile?.absolutePathUri || toolRawPreview || toolNameHint, {
+                subKind: 'skill',
+                sourceTag: 'skill',
+                status: stepStatus
+              });
+            }
           }
         }
       }
@@ -1126,6 +1239,7 @@
       groups,
       compositionSubgroups,
       stepCompositionItems,
+      sequentialSlices,
       total,
       media: [...media.values()],
       steps: steps.length,
@@ -1144,7 +1258,7 @@
   }
 
   /**
-   * 汇总会话上下文 9 维组成明细（支持宿主实报与可见内容估算分离、逐步前缀还原、残差标注与脱敏条目列表）
+   * 汇总会话上下文 9 维组成明细（支持宿主实报与可见内容估算分离、逐步前缀还原、顺序切片、残差标注与脱敏条目列表）
    */
   function buildSessionCompositionBreakdown(session, latestSummary = null, options = {}) {
     const groups = session?.groups || {};
@@ -1157,8 +1271,9 @@
       if (l <= 0 && h <= 0) return 0;
       return Math.round((l + h) / 2);
     };
-    const targetStep = Number.isInteger(Number(options.targetStepIndex)) ? Number(options.targetStepIndex) : null;
-    const compareStep = Number.isInteger(Number(options.compareStepIndex)) ? Number(options.compareStepIndex) : null;
+    const parseIntOpt = (v) => (v !== null && v !== undefined && v !== '' && Number.isInteger(Number(v))) ? Number(v) : null;
+    const targetStep = parseIntOpt(options.targetStepIndex);
+    const compareStep = parseIntOpt(options.compareStepIndex);
     const hasStepItems = Boolean(
       compEntries && Object.values(compEntries).some(arr => Array.isArray(arr) && arr.length > 0)
     );
@@ -1206,6 +1321,7 @@
       let effectiveEntries = allEntries;
       let deltaTokens = null;
       let deltaCount = null;
+      let deltaItems = null;
       if (targetStep !== null && hasStepItems && item.key !== 'system' && item.key !== 'definitions') {
         const snap = sumEntriesUpTo(item.key, targetStep);
         if (snap) {
@@ -1219,8 +1335,16 @@
             if (baseSnap) {
               deltaTokens = snap.tokens - baseSnap.tokens;
               deltaCount = snap.count - baseSnap.count;
+              deltaItems = snap.count - baseSnap.count;
             }
           }
+        }
+      } else if (compareStep !== null && hasStepItems && item.key !== 'system' && item.key !== 'definitions') {
+        const baseSnap = sumEntriesUpTo(item.key, compareStep);
+        if (baseSnap) {
+          deltaTokens = fullMedian - baseSnap.tokens;
+          deltaCount = item.count - baseSnap.count;
+          deltaItems = item.count - baseSnap.count;
         }
       }
       return {
@@ -1236,6 +1360,7 @@
         chars: effectiveChars,
         deltaTokens,
         deltaCount,
+        deltaItems,
         entries: effectiveEntries
       };
     });
@@ -1257,8 +1382,41 @@
       : (targetStep !== null && !stepBounded && estimatedTotalMedian > 0)
         ? 'session_approx'
         : (unaccountedTokens > 0 ? 'partial_estimate' : (estimatedTotalMedian > 0 ? 'estimated_visible' : 'unavailable'));
+
+    const rawSlices = Array.isArray(session?.sequentialSlices) ? session.sequentialSlices : [];
+    let sequentialSlices = rawSlices;
+    if (targetStep !== null && rawSlices.length) {
+      sequentialSlices = rawSlices.filter(sl => sl.stepIndex == null || Number(sl.stepIndex) <= targetStep);
+    }
+    if (!sequentialSlices.length && items.some(it => Array.isArray(it.entries) && it.entries.length > 0)) {
+      const rebuilt = [];
+      for (const it of items) {
+        if (it.key === 'injections' || it.key === 'skills') continue;
+        for (const ent of (it.entries || [])) {
+          rebuilt.push({
+            id: ent.id || `${it.key}-${rebuilt.length + 1}`,
+            seqOrder: ent.seqOrder || (rebuilt.length + 1),
+            stepIndex: ent.stepIndex ?? null,
+            category: it.key,
+            subKind: ent.subKind || it.key,
+            sourceTag: ent.sourceTag || 'host',
+            status: ent.status || 'ok',
+            lineCount: ent.lineCount || 0,
+            label: ent.label || it.key,
+            tokens: Number(ent.tokens || 0),
+            chars: Number(ent.chars || 0),
+            preview: ent.preview || '',
+            fullSnippet: ent.fullSnippet || ent.preview || ''
+          });
+        }
+      }
+      rebuilt.sort((a, b) => (a.seqOrder - b.seqOrder) || ((a.stepIndex ?? 0) - (b.stepIndex ?? 0)));
+      sequentialSlices = rebuilt.slice(0, 400);
+    }
+
     return {
       items,
+      sequentialSlices,
       estimatedTotalMedian,
       actualTokens,
       budgetTokens,
@@ -1462,12 +1620,13 @@
    */
   function detectContextChangeEvents(steps = [], calls = [], options = {}) {
     const safeSteps = Array.isArray(steps) ? steps : [];
+    const validStepInt = (v) => (v !== null && v !== undefined && v !== '' && Number.isInteger(Number(v))) ? Number(v) : null;
     const safeCalls = (Array.isArray(calls) ? calls : [])
       .filter(c => c && typeof c === 'object' && c.agentRole !== 'subagent')
       .slice()
       .sort((a, b) => {
-        const sa = Number.isInteger(Number(a.stepIndex)) ? Number(a.stepIndex) : Number.MAX_SAFE_INTEGER;
-        const sb = Number.isInteger(Number(b.stepIndex)) ? Number(b.stepIndex) : Number.MAX_SAFE_INTEGER;
+        const sa = validStepInt(a.stepIndex) ?? Number.MAX_SAFE_INTEGER;
+        const sb = validStepInt(b.stepIndex) ?? Number.MAX_SAFE_INTEGER;
         if (sa !== sb) return sa - sb;
         return (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0);
       });
@@ -1490,7 +1649,7 @@
 
     const findNextCallAtOrAfter = (stepIdx, tsMs = null) => {
       for (const c of safeCalls) {
-        const cs = Number.isInteger(Number(c.stepIndex)) ? Number(c.stepIndex) : null;
+        const cs = validStepInt(c.stepIndex);
         if (cs !== null && stepIdx >= 0 && cs > stepIdx) return c;
         if (cs === null && tsMs && Number(c.timestamp) > tsMs) return c;
       }
@@ -1500,7 +1659,7 @@
     const findLastCallBefore = (stepIdx, tsMs = null) => {
       let last = null;
       for (const c of safeCalls) {
-        const cs = Number.isInteger(Number(c.stepIndex)) ? Number(c.stepIndex) : null;
+        const cs = validStepInt(c.stepIndex);
         if (cs !== null && stepIdx >= 0 && cs < stepIdx) {
           last = c;
         } else if (cs === null && tsMs && Number(c.timestamp) < tsMs) {
@@ -1676,13 +1835,29 @@
           detail: `${modc.from || '?'} -> ${modc.to || modc.model || '?'}`
         });
         recordedSteps.add(`model:${stepIdx}`);
+      } else if (s.errorMessage || s.error || /(?:^|_)(?:ERROR|FAILED|CANCELED|CANCELLED|ABORTED)$/.test(String(s.status || s.metadata?.status || '').trim().toUpperCase())) {
+        const eObj = s.errorMessage?.error || s.error || {};
+        const errText = typeof eObj === 'string' ? eObj : (eObj.modelErrorMessage || eObj.shortError || eObj.fullError || s.status || 'aborted');
+        events.push({
+          id: `ev-error-${stepIdx}`,
+          type: 'error',
+          source: 'step_error',
+          callId: callBefore?.callId || null,
+          stepIndex: stepIdx,
+          timestamp: stepTs,
+          beforeTokens: baselineTok,
+          afterTokens: baselineTok,
+          deltaTokens: 0,
+          detail: sanitizeCompositionPreview(errText, 90)
+        });
+        recordedSteps.add(`error:${stepIdx}`);
       } else {
         const sTok = midpointTokens(measure(JSON.stringify(s)));
         runningEstTokens += sTok;
       }
     }
 
-    // 遍历主调用流检测：model 切换、mode（如 effort/模式）切换；无压缩或剪枝证据时的显著降幅记为 unknown_drop 避免误判
+    // 遍历主调用流检测：model 切换、mode（如 effort/模式）切换、异常中断；无压缩或剪枝证据时的显著降幅记为 unknown_drop 避免误判
     const checkpointSteps = new Set(events.filter(e => e.type === 'compaction').map(e => e.stepIndex));
     const explicitPruneSteps = new Set(events.filter(e => e.type === 'prune').map(e => e.stepIndex));
     let prevCall = null;
@@ -1693,6 +1868,25 @@
       const cModelLabel = String(c.modelLabel || c.modelExactId || c.modelRaw || '').trim();
       const cEffortOrMode = String(c.agentMode || c.mode || c.effort || '').trim();
       const cTok = getCallContextTokens(c);
+
+      if (c.error || c.outcomeStatus === 'failed') {
+        const evKey = `error:${cStep >= 0 ? cStep : c.callId}`;
+        if (!recordedSteps.has(evKey)) {
+          recordedSteps.add(evKey);
+          events.push({
+            id: `ev-error-${cStep >= 0 ? cStep : c.callId}`,
+            type: 'error',
+            source: 'call_sequence',
+            callId: c.callId || null,
+            stepIndex: cStep,
+            timestamp: cTs,
+            beforeTokens: cTok,
+            afterTokens: cTok,
+            deltaTokens: 0,
+            detail: sanitizeCompositionPreview(c.error || 'failed', 90)
+          });
+        }
+      }
 
       if (prevCall) {
         const prevStep = Number.isInteger(Number(prevCall.stepIndex)) ? Number(prevCall.stepIndex) : -1;
@@ -1792,7 +1986,344 @@
       if (sa !== sb) return sa - sb;
       return (a.timestamp || 0) - (b.timestamp || 0);
     });
-    return events;
+    return events.length > 400 ? events.slice(-400) : events;
+  }
+
+  /**
+   * 构建全链路会话执行轨迹与多轨横向甘特时间轴数据（严格基于本地真实步骤与调用，设步骤 <= 1500 防膨胀）
+   */
+  function buildExecutionTrace(steps = [], calls = [], options = {}) {
+    const safeSteps = Array.isArray(steps) ? steps.slice(-1500) : [];
+    const safeCalls = Array.isArray(calls) ? calls.slice() : [];
+    const turns = Array.isArray(options.turns) ? options.turns : [];
+    const toolEntries = Array.isArray(options.toolEntries) ? options.toolEntries : [];
+
+    const resolveTurn = (stepIdx, tsMs) => {
+      let matched = null;
+      for (const t of turns) {
+        if (!t) continue;
+        if (stepIdx != null && t.stepIndex != null && Number(t.stepIndex) <= stepIdx) {
+          matched = t.turnIndex;
+        } else if (tsMs && t.timestamp && Number(t.timestamp) <= tsMs + 2000) {
+          matched = t.turnIndex;
+        }
+      }
+      return matched;
+    };
+
+    const callByStep = new Map();
+    for (const c of safeCalls) {
+      if (!c || c.stepIndex == null) continue;
+      const sk = Number(c.stepIndex);
+      if (!callByStep.has(sk)) callByStep.set(sk, []);
+      callByStep.get(sk).push(c);
+    }
+
+    const nodes = [];
+    const stepQuickSummaries = [];
+    let currentUserIntent = '';
+
+    for (let i = 0; i < safeSteps.length; i++) {
+      const s = safeSteps[i];
+      if (!s || typeof s !== 'object') continue;
+      const stepIdx = Number.isInteger(Number(s.stepIndex ?? s.idx)) ? Number(s.stepIndex ?? s.idx) : i;
+      const endMs = parseTimestampMs(s.timestamp || s.createdAt || s.metadata?.createdAt) || null;
+      const stepCalls = callByStep.get(stepIdx) || [];
+      const firstCall = stepCalls[0] || null;
+      const turnIndex = resolveTurn(stepIdx, endMs || firstCall?.timestamp || null);
+      const rawStatus = String(s.status || s.metadata?.status || '').trim().toUpperCase();
+      const isErr = Boolean(s.error || s.errorMessage || /(?:^|_)(?:ERROR|FAILED|CANCELED|CANCELLED|ABORTED)$/.test(rawStatus));
+      const isRun = /(?:^|_)(?:RUNNING|PENDING|GENERATING|IN_PROGRESS|STREAMING|QUEUED)$/.test(rawStatus);
+      const status = isErr ? 'error' : (isRun ? 'running' : 'ok');
+
+      if (s.userInput) {
+        const uText = String(s.userInput.userResponse || (s.userInput.items || []).map(it => it?.text || '').join('\n') || '');
+        const cleanIntent = sanitizeCompositionPreview(uText, 96);
+        currentUserIntent = cleanIntent;
+        const hasInject = uText.includes('<SYSTEM_MESSAGE>') || uText.includes('[POST-COMPACT REHYDRATION') || uText.includes('<RULE[') || uText.includes('<CONTEXT_SUMMARY>');
+        const estTok = Math.round(measure(uText).low * 1.2);
+        nodes.push({
+          id: `trace-u-${stepIdx}-${nodes.length}`,
+          stepIndex: stepIdx,
+          turnIndex,
+          category: hasInject ? 'injection' : 'user',
+          subKind: hasInject ? 'injection' : 'user',
+          label: hasInject ? '上下文注入' : '用户输入',
+          summary: cleanIntent || '用户消息',
+          detail: sanitizeCompositionPreview(uText, 2200),
+          argsSummary: '',
+          outputSummary: '',
+          status,
+          startMs: endMs,
+          endMs,
+          durationSec: 0,
+          tokens: estTok,
+          modelLabel: '',
+          agentRole: 'main'
+        });
+        stepQuickSummaries.push({
+          stepIndex: stepIdx,
+          turnIndex,
+          intent: cleanIntent || '发起对话轮次',
+          loaded: hasInject ? '系统规则 / 上下文恢复注入' : (Array.isArray(s.userInput.media) && s.userInput.media.length ? `附件 ${s.userInput.media.length} 项` : '用户提示词'),
+          action: '提交上下文至模型'
+        });
+      } else if (s.plannerResponse) {
+        const aText = String(s.plannerResponse.modifiedResponse || s.plannerResponse.response || '');
+        const tText = String(s.plannerResponse.thinking || '');
+        const durSec = firstCall?.durationSec ?? ((firstCall?.ttftSec || 0) + (firstCall?.streamingSec || 0)) ?? null;
+        const totalTok = firstCall?.totalTokens ?? (aText.length + tText.length > 0 ? Math.round(measure(aText + tText).low * 1.2) : 0);
+        const callEndMs = firstCall?.timestamp || endMs || null;
+        const callStartMs = (callEndMs && durSec && durSec > 0) ? Math.max(0, callEndMs - Math.round(durSec * 1000)) : callEndMs;
+        if (tText) {
+          nodes.push({
+            id: `trace-think-${stepIdx}-${nodes.length}`,
+            stepIndex: stepIdx,
+            turnIndex,
+            category: 'thinking',
+            subKind: 'thinking',
+            label: '模型思考',
+            summary: sanitizeCompositionPreview(tText, 96),
+            detail: sanitizeCompositionPreview(tText, 2200),
+            argsSummary: '',
+            outputSummary: '',
+            status,
+            startMs: callStartMs,
+            endMs: firstCall?.ttftSec && callStartMs ? callStartMs + Math.round(firstCall.ttftSec * 1000) : callStartMs,
+            durationSec: firstCall?.ttftSec != null ? Number(firstCall.ttftSec) : 0,
+            tokens: Number(firstCall?.thinkingTokens || measure(tText).low || 0),
+            modelLabel: firstCall?.modelLabel || firstCall?.model || '',
+            agentRole: firstCall?.agentRole || 'main'
+          });
+        }
+        nodes.push({
+          id: `trace-asst-${stepIdx}-${nodes.length}`,
+          stepIndex: stepIdx,
+          turnIndex,
+          category: 'assistant',
+          subKind: 'assistant',
+          label: '助手输出',
+          summary: sanitizeCompositionPreview(aText, 96) || (firstCall ? `${firstCall.modelLabel || firstCall.model || 'Model'} 响应` : '模型响应'),
+          detail: sanitizeCompositionPreview(aText, 2200),
+          argsSummary: '',
+          outputSummary: '',
+          status,
+          startMs: callStartMs,
+          endMs: callEndMs,
+          durationSec: durSec != null ? Number(Number(durSec).toFixed(2)) : 0,
+          tokens: totalTok,
+          modelLabel: firstCall?.modelLabel || firstCall?.model || '',
+          agentRole: firstCall?.agentRole || 'main'
+        });
+        stepQuickSummaries.push({
+          stepIndex: stepIdx,
+          turnIndex,
+          intent: currentUserIntent || '推理生成',
+          loaded: tText ? `思考 ${Math.round(measure(tText).low * 1.2)} tok` : '无外显思考',
+          action: sanitizeCompositionPreview(aText, 84) || '生成模型回复'
+        });
+      } else if (s.checkpoint) {
+        const cp = s.checkpoint;
+        const cpTxt = [cp.userIntent, cp.sessionSummary, cp.codeChangeSummary].filter(Boolean).join(' · ');
+        nodes.push({
+          id: `trace-cp-${stepIdx}-${nodes.length}`,
+          stepIndex: stepIdx,
+          turnIndex,
+          category: 'system',
+          subKind: 'compaction',
+          label: '压缩检查点',
+          summary: sanitizeCompositionPreview(cpTxt, 96) || `压缩检查点 S${stepIdx}`,
+          detail: sanitizeCompositionPreview(cpTxt, 2200),
+          argsSummary: '',
+          outputSummary: '',
+          status,
+          startMs: endMs,
+          endMs,
+          durationSec: 0,
+          tokens: Math.round(measure(cpTxt).low * 1.2),
+          modelLabel: '',
+          agentRole: 'main'
+        });
+      } else if (Array.isArray(s.tool_calls) && s.tool_calls.length > 0) {
+        const loadedNames = [];
+        for (const tc of s.tool_calls) {
+          if (!tc || !tc.name) continue;
+          loadedNames.push(tc.name);
+          const argsStr = sanitizeCompositionPreview(JSON.stringify(tc.args || {}), 1800);
+          const outStr = sanitizeCompositionPreview(tc.output || s.content || '', 1800);
+          const tDur = Number(tc.durationSec ?? tc.duration_sec ?? firstCall?.durationSec ?? 0) || 0;
+          nodes.push({
+            id: `trace-tool-${stepIdx}-${nodes.length}`,
+            stepIndex: stepIdx,
+            turnIndex,
+            category: 'tool',
+            subKind: tc.name,
+            label: tc.name,
+            summary: sanitizeCompositionPreview(`${tc.name} ${argsStr}`, 96),
+            detail: outStr || argsStr,
+            argsSummary: argsStr,
+            outputSummary: outStr,
+            status: (tc.error || status === 'error') ? 'error' : status,
+            startMs: (endMs && tDur > 0) ? Math.max(0, endMs - Math.round(tDur * 1000)) : endMs,
+            endMs,
+            durationSec: Number(tDur.toFixed(2)),
+            tokens: Number(firstCall?.totalTokens || Math.round(measure(argsStr + outStr).low * 1.2)),
+            modelLabel: firstCall?.modelLabel || firstCall?.model || '',
+            agentRole: firstCall?.agentRole || 'main'
+          });
+        }
+        stepQuickSummaries.push({
+          stepIndex: stepIdx,
+          turnIndex,
+          intent: currentUserIntent || '执行工具链路',
+          loaded: loadedNames.join(' · ') || '工具返回',
+          action: `调用 ${loadedNames.length} 个工具`
+        });
+      } else if (s.runCommand || s.viewFile || s.writeToFile || s.systemMessage || s.injectSteps || s.injectedSteps) {
+        const isInj = Boolean(s.systemMessage || s.injectSteps || s.injectedSteps);
+        const label = isInj ? '上下文注入' : (s.runCommand ? 'run_command' : (s.viewFile ? 'read_file' : 'write_file'));
+        const rawTxt = isInj
+          ? (typeof (s.systemMessage?.content || s.systemMessage) === 'string' ? (s.systemMessage?.content || s.systemMessage) : JSON.stringify(s.systemMessage || s.injectSteps || s.injectedSteps))
+          : JSON.stringify(s.runCommand || s.viewFile || s.writeToFile || {});
+        nodes.push({
+          id: `trace-step-${stepIdx}-${nodes.length}`,
+          stepIndex: stepIdx,
+          turnIndex,
+          category: isInj ? 'injection' : 'tool',
+          subKind: label,
+          label,
+          summary: sanitizeCompositionPreview(rawTxt, 96),
+          detail: sanitizeCompositionPreview(rawTxt, 2000),
+          argsSummary: isInj ? '' : sanitizeCompositionPreview(rawTxt, 1200),
+          outputSummary: '',
+          status,
+          startMs: endMs,
+          endMs,
+          durationSec: 0,
+          tokens: Math.round(measure(rawTxt).low * 1.2),
+          modelLabel: '',
+          agentRole: 'main'
+        });
+      }
+    }
+
+    // 补充 transcript 中有但 rawSteps 未覆盖的子代理/模型调用节点，保持时间线完整
+    const existingStepCats = new Set(nodes.map(n => `${n.agentRole}:${n.stepIndex}:${n.category}`));
+    for (const c of safeCalls) {
+      if (!c) continue;
+      const role = c.agentRole === 'subagent' ? 'subagent' : 'main';
+      const sIdx = c.stepIndex ?? null;
+      const key = `${role}:${sIdx}:assistant`;
+      if (role === 'main' && sIdx != null && existingStepCats.has(key)) continue;
+      const dur = c.durationSec ?? ((Number(c.ttftSec) || 0) + (Number(c.streamingSec) || 0));
+      const endMs = Number(c.timestamp) || null;
+      const startMs = (endMs && dur > 0) ? Math.max(0, endMs - Math.round(dur * 1000)) : endMs;
+      nodes.push({
+        id: `trace-call-${c.callId || nodes.length}`,
+        stepIndex: sIdx,
+        turnIndex: resolveTurn(sIdx, endMs),
+        category: role === 'subagent' ? 'subagent' : 'assistant',
+        subKind: role === 'subagent' ? (c.subagentType || 'subagent') : 'model_call',
+        label: role === 'subagent' ? `子代理 ${c.subagentType || c.subagentRole || ''}`.trim() : (c.attributedModelLabel || c.modelLabel || c.model || '模型调用'),
+        summary: sanitizeCompositionPreview(`${c.attributedModelLabel || c.modelLabel || c.model || ''} · ${Number(c.totalTokens || 0)} tok`, 96),
+        detail: `模型 ${c.attributedModelLabel || c.modelLabel || c.model || '未知'} · 输入 ${Number(c.inputTokens || 0)} · 缓存 ${Number(c.cacheReadTokens || 0)} · 输出 ${Number(c.outputTokens || 0)}`,
+        argsSummary: '',
+        outputSummary: c.error ? String(c.error) : '',
+        status: c.error || c.outcomeStatus === 'failed' ? 'error' : (c.status === 'streaming' ? 'running' : 'ok'),
+        startMs,
+        endMs,
+        durationSec: Number(Number(dur || 0).toFixed(2)),
+        tokens: Number(c.totalTokens || 0),
+        modelLabel: c.attributedModelLabel || c.modelLabel || c.model || '',
+        agentRole: role
+      });
+    }
+
+    // 补充 toolEntries 中尚未出现的操作（如来自 liveSteps 的工具条目）
+    const existingToolNodes = new Set(nodes.filter(n => n.category === 'tool').map(n => `${n.stepIndex}:${n.label}`));
+    for (const te of toolEntries) {
+      if (!te || !te.name) continue;
+      const k = `${te.stepIndex ?? 'na'}:${te.name}`;
+      if (existingToolNodes.has(k)) continue;
+      existingToolNodes.add(k);
+      const tDur = Number(te.durationSec || 0) || 0;
+      const endMs = Number(te.timestamp) || null;
+      nodes.push({
+        id: `trace-te-${te.stepIndex ?? 'na'}-${nodes.length}`,
+        stepIndex: te.stepIndex ?? null,
+        turnIndex: resolveTurn(te.stepIndex ?? null, endMs),
+        category: 'tool',
+        subKind: te.name,
+        label: te.name,
+        summary: sanitizeCompositionPreview(`${te.name} ${JSON.stringify(te.args || {})}`, 96),
+        detail: sanitizeCompositionPreview(JSON.stringify(te.args || {}), 1800),
+        argsSummary: sanitizeCompositionPreview(JSON.stringify(te.args || {}), 1400),
+        outputSummary: sanitizeCompositionPreview(te.output || '', 1200),
+        status: te.error ? 'error' : 'ok',
+        startMs: (endMs && tDur > 0) ? Math.max(0, endMs - Math.round(tDur * 1000)) : endMs,
+        endMs,
+        durationSec: Number(tDur.toFixed(2)),
+        tokens: 0,
+        modelLabel: '',
+        agentRole: 'main'
+      });
+    }
+
+    nodes.sort((a, b) => {
+      const sa = Number.isInteger(a.stepIndex) ? a.stepIndex : Number.MAX_SAFE_INTEGER;
+      const sb = Number.isInteger(b.stepIndex) ? b.stepIndex : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return (Number(a.startMs || a.endMs || 0)) - (Number(b.startMs || b.endMs || 0));
+    });
+
+    const boundedNodes = nodes.slice(-1500);
+    const validTsList = boundedNodes.flatMap(n => [n.startMs, n.endMs]).filter(ts => Number.isFinite(ts) && ts > 0);
+    const hasExactTimestamps = validTsList.length >= 2;
+    const minTs = hasExactTimestamps ? Math.min(...validTsList) : 0;
+    const maxTs = hasExactTimestamps ? Math.max(...validTsList) : 0;
+    const totalSpanSec = hasExactTimestamps && maxTs > minTs
+      ? Math.max(0.5, Number(((maxTs - minTs) / 1000).toFixed(2)))
+      : Math.max(1, boundedNodes.length);
+
+    const ganttTracks = {
+      user: [],
+      thinking: [],
+      tool: [],
+      assistant: [],
+      subagent: []
+    };
+    for (let i = 0; i < boundedNodes.length; i++) {
+      const n = boundedNodes[i];
+      const trackKey = n.agentRole === 'subagent'
+        ? 'subagent'
+        : (n.category === 'thinking' ? 'thinking'
+          : (n.category === 'tool' ? 'tool'
+            : (n.category === 'assistant' ? 'assistant' : 'user')));
+      const startOffsetSec = hasExactTimestamps && n.startMs
+        ? Math.max(0, Number(((n.startMs - minTs) / 1000).toFixed(2)))
+        : i;
+      const durSec = n.durationSec > 0 ? n.durationSec : (hasExactTimestamps ? 0.25 : 0.85);
+      ganttTracks[trackKey].push({
+        id: `g-${n.id}`,
+        nodeId: n.id,
+        stepIndex: n.stepIndex,
+        turnIndex: n.turnIndex,
+        startOffsetSec,
+        durationSec: durSec,
+        label: n.label,
+        summary: n.summary,
+        status: n.status,
+        category: n.category
+      });
+    }
+
+    return {
+      nodes: boundedNodes,
+      ganttTracks,
+      hasExactTimestamps,
+      totalSpanSec,
+      stepQuickSummaries: stepQuickSummaries.slice(-400)
+    };
   }
 
   // 官方 Developer API Standard 公开费率表 (USD / 百万 Token)
@@ -3140,6 +3671,20 @@
 
   const MAX_SPEED_SAMPLES_PER_MODEL = 200;
 
+  function parseSpeedDateRange(raw) {
+    const parse = value => {
+      const hit = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
+      if (!hit) return null;
+      const [, y, m, d] = hit.map(Number);
+      const date = new Date(y, m - 1, d);
+      return date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === d ? date : null;
+    };
+    const first = parse(raw?.start);
+    const last = parse(raw?.end);
+    if (!first || !last || +first > +last) return null;
+    return { startMs: +first, endMs: +new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1) };
+  }
+
   /**
    * 按准确模型 ID（含档位）汇总速度对比统计（中位数、样本数、时间范围与折线序列）
    */
@@ -3148,11 +3693,15 @@
     const originFilter = options.origin || 'all';
     const metric = options.metric || 'tps';
     const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
-    const cutoffMs = (days === 7 || days === '7')
-      ? nowMs - 7 * 86400000
-      : (days === 30 || days === '30')
-        ? nowMs - 30 * 86400000
-        : null;
+    const rangeDays = Number(days);
+    let cutoffMs = Number.isFinite(options.startMs) ? options.startMs : null;
+    const endMs = Number.isFinite(options.endMs) ? options.endMs : null;
+    if (cutoffMs === null && [1, 3, 5, 7, 30].includes(rangeDays)) {
+      if (options.calendarDays) {
+        const now = new Date(nowMs);
+        cutoffMs = new Date(now.getFullYear(), now.getMonth(), now.getDate() - rangeDays + 1).getTime();
+      } else cutoffMs = nowMs - rangeDays * 86400000;
+    }
     const cascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
 
     const groups = new Map();
@@ -3164,6 +3713,7 @@
       }
       const ts = Number(c.timestamp) || (c.created_at ? Date.parse(c.created_at) : 0) || (c.date ? Date.parse(c.date) : 0) || 0;
       if (cutoffMs !== null && (!ts || ts < cutoffMs)) continue;
+      if (endMs !== null && (!ts || ts >= endMs)) continue;
 
       const exactId = String(c.modelExactId || resolveStableModelId(c, cascadeConfigs) || c.model || '').trim().toLowerCase();
       if (!exactId) continue;
@@ -3214,7 +3764,7 @@
     for (const g of groups.values()) {
       // 按时间降序截断保留最近 200 条
       g.records.sort((a, b) => b.ts - a.ts);
-      const recent = g.records.slice(0, MAX_SPEED_SAMPLES_PER_MODEL);
+      const recent = options.fullHistory === true ? g.records : g.records.slice(0, MAX_SPEED_SAMPLES_PER_MODEL);
       if (!recent.length) continue;
 
       const medTps = computeMedian(recent.map(r => r.tps));
@@ -3339,6 +3889,28 @@
       thinkingTokens: thinking,
       totalTokens: input + cache + output
     };
+  }
+
+  function summarizeSessionRequestCosts(calls) {
+    let costUSD = 0;
+    let savingsUSD = 0;
+    let unpriced = 0;
+    const rows = [];
+    for (const call of calls || []) {
+      if (!call || call.error || (call.status && call.status !== 'final')) continue;
+      const calc = calculateRequestApiCost(call);
+      const input = Number(call.inputTokens ?? call.input_tokens ?? 0);
+      const cache = Number(call.cacheTokens ?? call.cacheReadTokens ?? call.cache_read_tokens ?? 0);
+      const output = Number(call.outputTokens ?? call.output_tokens ?? 0);
+      if (!(input + cache + output > 0)) continue;
+      const saved = calc.isPriced ? Math.max(0, cache * (calc.matchedTier.inputPerMillion - calc.matchedTier.cacheReadPerMillion) / 1e6) : null;
+      if (calc.isPriced) {
+        costUSD += calc.costUSD;
+        savingsUSD += saved;
+      } else unpriced++;
+      rows.push({ call, input, cache, output, costUSD: calc.costUSD, savingsUSD: saved });
+    }
+    return { rows, costUSD, savingsUSD, unpriced, savingsRatio: costUSD + savingsUSD > 0 ? savingsUSD / (costUSD + savingsUSD) : 0 };
   }
 
   function summarizeApiCost(requests = [], extraUnpricedCount = 0, extraUnpricedReasons = {}, extraUnpricedTokens = 0) {
@@ -3652,6 +4224,7 @@
       return {
         status: 'unidentified',
         tierKey: 'unknown',
+        tierSpecKey: 'unknown',
         tierName: '未知',
         tierId: null,
         teamsTier: null,
@@ -3666,7 +4239,7 @@
         isPriceEstimated: true,
         promptCredits: null,
         flowCredits: null,
-        pricingTableVerifiedDate: '2026-11-08',
+        pricingTableVerifiedDate: '2026-11',
         updatedAt: null
       };
     }
@@ -3690,6 +4263,7 @@
       return {
         status: 'unidentified',
         tierKey: 'unknown',
+        tierSpecKey: 'unknown',
         tierName: '未知',
         tierId: null,
         teamsTier: null,
@@ -3704,12 +4278,13 @@
         isPriceEstimated: true,
         promptCredits: null,
         flowCredits: null,
-        pricingTableVerifiedDate: '2026-11-08',
+        pricingTableVerifiedDate: '2026-11',
         updatedAt: null
       };
     }
 
     let tierKey = 'unknown';
+    let tierSpecKey = 'unknown';
     let tierDisplayName = '未知';
     let officialPrice = null;
     let priceRange = null;
@@ -3728,7 +4303,6 @@
 
     if (/ultra/i.test(rawTierName) || /ultra/i.test(userTier.id || '') || /pro_ultimate|teams_tier_ultra/i.test(rawTeamsTier)) {
       tierKey = 'ultra';
-      // 检查明确的倍率子档，如 5x / 20x / 5X / 20X
       let detectedMultiplierStr = null;
       const combinedMeta = `${rawTierName} ${userTier.id || ''} ${rawTeamsTier}`;
       const multStrMatch = combinedMeta.match(/(?:ultra)?[_\-\s]*(\d+x)\b/i);
@@ -3741,35 +4315,42 @@
 
       const subTierMatch = rawTierName.match(/ultra\s*([0-9a-zA-Z\-_]+)/i);
       if (detectedMultiplierStr) {
-        tierDisplayName = `Google AI Ultra (${detectedMultiplierStr})`;
-        officialPrice = null;
-        priceRange = `Google AI Ultra (${detectedMultiplierStr}) 子档`;
+        tierDisplayName = `Google AI Ultra ${detectedMultiplierStr}`;
+        tierSpecKey = multiplier === 5 ? 'ultra_5x' : (multiplier === 20 ? 'ultra_20x' : 'ultra');
+        officialPrice = multiplier === 5 ? 99.99 : (multiplier === 20 ? 199.99 : null);
+        priceRange = officialPrice !== null ? `$${officialPrice}/月 · 公开参考` : `Google AI Ultra ${detectedMultiplierStr}`;
       } else if (subTierMatch && !['plan', 'tier'].includes(subTierMatch[1].toLowerCase())) {
-        tierDisplayName = `Google AI Ultra (${subTierMatch[1]})`;
+        tierDisplayName = `Google AI Ultra ${subTierMatch[1]}`;
+        tierSpecKey = 'ultra';
         officialPrice = null;
-        priceRange = '子档定制费率未知';
+        priceRange = '$99.99–$199.99/月 · 待选择档位';
       } else {
-        tierDisplayName = 'Google AI Ultra（子档未知）';
+        tierDisplayName = 'Google AI Ultra';
+        tierSpecKey = 'ultra';
         officialPrice = null;
-        priceRange = '参考区间 $99.99 ~ $249.99/月（子档未知）';
+        priceRange = '$99.99–$199.99/月 · 待选择档位';
       }
     } else if (/pro/i.test(rawTierName) || /pro/i.test(userTier.id || '') || /^teams_tier_pro$/i.test(rawTeamsTier)) {
       tierKey = 'pro';
+      tierSpecKey = 'pro';
       tierDisplayName = 'Google AI Pro';
       officialPrice = 19.99;
-      priceRange = '$19.99/月（公开参考）';
+      priceRange = '$19.99/月 · 公开参考';
     } else if (/plus/i.test(rawTierName) || /plus/i.test(userTier.id || '') || /^teams_tier_plus$/i.test(rawTeamsTier)) {
       tierKey = 'plus';
+      tierSpecKey = 'plus';
       tierDisplayName = 'Google AI Plus';
       officialPrice = 4.99;
-      priceRange = '$4.99/月（公开参考）';
+      priceRange = '$4.99/月 · 公开参考';
     } else if (/free/i.test(rawTierName) || /free/i.test(userTier.id || '') || /^teams_tier_free$/i.test(rawTeamsTier)) {
       tierKey = 'free';
+      tierSpecKey = 'free';
       tierDisplayName = 'Free';
       officialPrice = 0;
-      priceRange = '$0/月（公开参考）';
+      priceRange = '$0/月 · 公开参考';
     } else {
       tierKey = 'custom';
+      tierSpecKey = 'custom';
       tierDisplayName = rawTierName || rawTeamsTier || '未知套餐';
       officialPrice = null;
       priceRange = '费率未知';
@@ -3778,6 +4359,7 @@
     return {
       status: 'identified',
       tierKey,
+      tierSpecKey,
       tierName: tierDisplayName,
       multiplier,
       tierId: userTier.id || null,
@@ -3799,7 +4381,7 @@
         available: planStatus.availableFlowCredits ?? null,
         monthly: planInfo.monthlyFlowCredits ?? null
       },
-      pricingTableVerifiedDate: '2026-11-08',
+      pricingTableVerifiedDate: '2026-11',
       updatedAt: new Date().toISOString()
     };
   }
@@ -3938,44 +4520,44 @@
     };
   }
 
-  // 官方依据订阅获取方式预设表 (核对日期: 2026-11-09)
+  // 官方依据订阅获取方式预设表 · 2026-11 口径
   const SUBSCRIPTION_ACQUISITION_PRESETS = [
     {
       id: 'normal_paid',
       name: '正常付费订阅',
       category: 'paid',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: 'https://one.google.com/about/plans',
       defaultPaid: 19.99,
       note: '按月或按年常规全额付费订阅'
     },
     {
       id: 'student_offer',
-      name: '学生认证优惠 (Google One AI Student)',
+      name: '学生认证优惠 · Google One AI Student',
       category: 'discount',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: 'https://support.google.com/googleone/thread/460703251/updates-to-google-one-ai-student-offers-for-2026',
       defaultPaid: 0,
-      note: '学生资格验证试用或专享折扣 (按地区提供 Plus/Pro)'
+      note: '学生资格验证试用或专享折扣 · 按地区提供 Plus 与 Pro'
     },
     {
       id: 'pixel_bundle',
       name: 'Google Pixel 设备赠送',
       category: 'bundle_free',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: 'https://support.google.com/pixelphone/answer/13529884',
       defaultPaid: 0,
-      note: '购买指定 Pixel 机型附赠权益 (如 Pixel 11 Pro 系列赠送 6 个月)'
+      note: '购买指定 Pixel 机型附赠权益 · 如 Pixel 11 Pro 系列赠送 6 个月'
     },
     {
       id: 'chromebook_bundle',
       name: 'Chromebook Plus 设备赠送',
       category: 'bundle_free',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: 'https://www.google.com/chromebook/chromebookplus/',
       defaultPaid: 0,
       note: '符合资格的 Chromebook Plus 设备赠送 Google AI Pro 权益'
@@ -3985,27 +4567,27 @@
       name: 'Samsung Galaxy 设备指定活动',
       category: 'bundle_free',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: 'https://www.samsung.com/hk_en/offer/content-services-offer/tnc/',
       defaultPaid: 0,
-      note: '指定 Galaxy 机型区域专享 Google AI Pro 活动 (需在有效领取期内)'
+      note: '指定 Galaxy 机型区域专享 Google AI Pro 活动 · 需在有效领取期内'
     },
     {
       id: 'jio_offer',
       name: 'Jio 运营商套餐权益',
       category: 'partner',
       status: 'expired_claim_active_use',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: 'https://www.jio.com/help/faq/mobile/offers/google-gemini-offer/',
       defaultPaid: 0,
-      note: '历史活动 (新领取已截止，已成功兑换者享有最长 18 个月权益)'
+      note: '历史活动 · 新领取已截止 · 已兑换者享有最长 18 个月权益'
     },
     {
       id: 'partner_carrier',
       name: '其他运营商 / 合作伙伴权益',
       category: 'partner',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: '',
       defaultPaid: 0,
       note: '宽带、通信套餐或第三方平台绑定的 AI 订阅权益'
@@ -4015,17 +4597,17 @@
       name: '家庭组共享 / 他人赠送',
       category: 'sharing',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: '',
       defaultPaid: 0,
-      note: '加入家庭组成员车位或受赠权益 (非公开促销)'
+      note: '加入家庭组成员车位或受赠权益 · 非公开促销'
     },
     {
       id: 'official_promo',
       name: 'Google 官方限时试用 / 促销活动',
       category: 'promo',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: '',
       defaultPaid: 0,
       note: '新用户首月免费或其他官方优惠码兑换'
@@ -4035,12 +4617,170 @@
       name: '其他 / 自由自定义来源',
       category: 'custom',
       status: 'active',
-      verifiedDate: '2026-11-09',
+      verifiedDate: '2026-11',
       sourceUrl: '',
       defaultPaid: null,
       note: '用户自定义填写的特定渠道或活动'
     }
   ];
+
+  // 2026-11 各档位规格、倍率、云存储、Prompt/Flow 额度池基准及 Cloud Credits 参考
+  const SUBSCRIPTION_TIER_SPECS = {
+    free: {
+      key: 'free',
+      tierKey: 'free',
+      name: 'Free',
+      nameZh: '免费版',
+      nameTw: '免費版',
+      nameEn: 'Free',
+      officialPriceUSD: 0,
+      multiplier: null,
+      windowDescZh: '每周基础刷新',
+      windowDescTw: '每週基礎重新整理',
+      windowDescEn: 'Weekly baseline refresh',
+      storage: '15 GB',
+      promptMonthly: null,
+      flowPoolMonthly: null,
+      flowOfficialZh: 'Flow 50/天',
+      flowOfficialTw: 'Flow 50/天',
+      flowOfficialEn: 'Flow 50/day',
+      cloudCreditsZh: null,
+      cloudCreditsTw: null,
+      cloudCreditsEn: null
+    },
+    plus: {
+      key: 'plus',
+      tierKey: 'plus',
+      name: 'Google AI Plus',
+      nameZh: 'Google AI Plus',
+      nameTw: 'Google AI Plus',
+      nameEn: 'Google AI Plus',
+      officialPriceUSD: 4.99,
+      multiplier: null,
+      windowDescZh: '基础提升窗口',
+      windowDescTw: '基礎提升視窗',
+      windowDescEn: 'Enhanced tier window',
+      storage: '400 GB / 2 TB',
+      promptMonthly: null,
+      flowPoolMonthly: null,
+      flowOfficialZh: 'Flow 50/天 + 200/月',
+      flowOfficialTw: 'Flow 50/天 + 200/月',
+      flowOfficialEn: 'Flow 50/day + 200/mo',
+      cloudCreditsZh: null,
+      cloudCreditsTw: null,
+      cloudCreditsEn: null
+    },
+    pro: {
+      key: 'pro',
+      tierKey: 'pro',
+      name: 'Google AI Pro',
+      nameZh: 'Google AI Pro',
+      nameTw: 'Google AI Pro',
+      nameEn: 'Google AI Pro',
+      officialPriceUSD: 19.99,
+      multiplier: 1,
+      windowDescZh: '1x · 5h+7d 窗口',
+      windowDescTw: '1x · 5h+7d 視窗',
+      windowDescEn: '1x · 5h+7d window',
+      storage: '5 TB',
+      promptMonthly: 50000,
+      flowPoolMonthly: 150000,
+      flowOfficialZh: '官方 +1,000/月',
+      flowOfficialTw: '官方 +1,000/月',
+      flowOfficialEn: 'Official +1,000/mo',
+      cloudCreditsZh: '$10/月 Cloud Credits',
+      cloudCreditsTw: '$10/月 Cloud Credits',
+      cloudCreditsEn: '$10/mo Cloud Credits'
+    },
+    ultra_5x: {
+      key: 'ultra_5x',
+      tierKey: 'ultra',
+      name: 'Google AI Ultra 5x',
+      nameZh: 'Google AI Ultra 5x',
+      nameTw: 'Google AI Ultra 5x',
+      nameEn: 'Google AI Ultra 5x',
+      officialPriceUSD: 99.99,
+      multiplier: 5,
+      windowDescZh: '5x Pro 窗口',
+      windowDescTw: '5x Pro 視窗',
+      windowDescEn: '5x Pro window',
+      storage: '20 TB',
+      promptMonthly: 250000,
+      flowPoolMonthly: 750000,
+      flowOfficialZh: '官方 +10,000/月',
+      flowOfficialTw: '官方 +10,000/月',
+      flowOfficialEn: 'Official +10,000/mo',
+      cloudCreditsZh: '$40/月 Cloud Credits',
+      cloudCreditsTw: '$40/月 Cloud Credits',
+      cloudCreditsEn: '$40/mo Cloud Credits'
+    },
+    ultra_20x: {
+      key: 'ultra_20x',
+      tierKey: 'ultra',
+      name: 'Google AI Ultra 20x',
+      nameZh: 'Google AI Ultra 20x',
+      nameTw: 'Google AI Ultra 20x',
+      nameEn: 'Google AI Ultra 20x',
+      officialPriceUSD: 199.99,
+      multiplier: 20,
+      windowDescZh: '20x Pro 窗口',
+      windowDescTw: '20x Pro 視窗',
+      windowDescEn: '20x Pro window',
+      storage: '30 TB',
+      promptMonthly: 1000000,
+      flowPoolMonthly: 3000000,
+      flowOfficialZh: '官方 +25,000/月',
+      flowOfficialTw: '官方 +25,000/月',
+      flowOfficialEn: 'Official +25,000/mo',
+      cloudCreditsZh: '$100/月 Cloud Credits',
+      cloudCreditsTw: '$100/月 Cloud Credits',
+      cloudCreditsEn: '$100/mo Cloud Credits'
+    },
+    ultra: {
+      key: 'ultra',
+      tierKey: 'ultra',
+      name: 'Google AI Ultra',
+      nameZh: 'Google AI Ultra',
+      nameTw: 'Google AI Ultra',
+      nameEn: 'Google AI Ultra',
+      officialPriceUSD: null,
+      priceRangeUSD: [99.99, 199.99],
+      priceRangeTextZh: '$99.99–$199.99/月',
+      priceRangeTextTw: '$99.99–$199.99/月',
+      priceRangeTextEn: '$99.99–$199.99/mo',
+      multiplier: null,
+      windowDescZh: '5x–20x Pro 窗口',
+      windowDescTw: '5x–20x Pro 視窗',
+      windowDescEn: '5x–20x Pro window',
+      storage: '20–30 TB',
+      promptMonthly: null,
+      flowPoolMonthly: null,
+      flowOfficialZh: '官方 +10,000–25,000/月',
+      flowOfficialTw: '官方 +10,000–25,000/月',
+      flowOfficialEn: 'Official +10,000–25,000/mo',
+      cloudCreditsZh: '$40–$100/月 Cloud Credits',
+      cloudCreditsTw: '$40–$100/月 Cloud Credits',
+      cloudCreditsEn: '$40–$100/mo Cloud Credits'
+    }
+  };
+
+  // 分套餐 × 分地区官方月付参考价二维矩阵 · 2026-11 校准
+  const SUBSCRIPTION_TIER_REGION_PRICES = {
+    US: { currency: 'USD', symbol: '$', plus: 4.99, pro: 19.99, ultra_5x: 99.99, ultra_20x: 199.99 },
+    JP: { currency: 'JPY', symbol: '¥', plus: 750, pro: 2900, ultra_5x: 14500, ultra_20x: 32000 },
+    KR: { currency: 'KRW', symbol: '₩', plus: 7000, pro: 29000, ultra_5x: 119000, ultra_20x: 300000 },
+    TW: { currency: 'TWD', symbol: 'NT$', plus: 160, pro: 650, ultra_5x: 3250, ultra_20x: 6500 },
+    HK: { currency: 'HKD', symbol: 'HK$', plus: 38, pro: 158, ultra_5x: 799, ultra_20x: 1588 },
+    EU: { currency: 'EUR', symbol: '€', plus: 5.49, pro: 21.99, ultra_5x: 99.99, ultra_20x: 219.99 },
+    GB: { currency: 'GBP', symbol: '£', plus: 4.99, pro: 18.99, ultra_5x: 94.99, ultra_20x: 189.99 },
+    AU: { currency: 'AUD', symbol: 'AU$', plus: 7.99, pro: 32.99, ultra_5x: 164.99, ultra_20x: 329.99 },
+    SG: { currency: 'SGD', symbol: 'S$', plus: 6.99, pro: 28.99, ultra_5x: 139.99, ultra_20x: 279.99 },
+    CA: { currency: 'CAD', symbol: 'CA$', plus: 6.99, pro: 26.99, ultra_5x: 139.99, ultra_20x: 279.99 },
+    IN: { currency: 'INR', symbol: '₹', plus: 499, pro: 1950, ultra_5x: 6500, ultra_20x: 19500 },
+    TR: { currency: 'TRY', symbol: '₺', plus: 199.99, pro: 869.99, ultra_5x: 4749.99, ultra_20x: 8999.99 },
+    BR: { currency: 'BRL', symbol: 'R$', plus: 24.90, pro: 96.90, ultra_5x: 499.90, ultra_20x: 999.90 },
+    EG: { currency: 'EGP', symbol: 'EGP ', plus: 239.99, pro: 939.99, ultra_5x: 4399.99, ultra_20x: 8799.99 }
+  };
 
   const CURRENCY_SYMBOLS = {
     USD: '$',
@@ -4080,23 +4820,23 @@
     HUF: 'Ft ',
     RON: 'lei ',
     ZAR: 'R ',
-    EGP: 'E£ ',
+    EGP: 'EGP ',
     KES: 'KSh ',
     AED: 'AED ',
     SAR: 'SAR ',
     ILS: '₪ '
   };
 
-  // 订阅地区参考价与静态汇率，供本地估算使用 (基准货币: CNY)
+  // 订阅地区参考价与静态汇率，供本地估算使用 · 基准货币 CNY · 2026-11
   const SUBSCRIPTION_REGIONS_PRESET = [
     // 亚太与大洋洲
     { id: 'TW', name: '中国台湾', nameTw: '中國台灣', nameEn: 'Taiwan', flag: '🇹🇼', currency: 'TWD', symbol: 'NT$', monthlyPrice: 650, rateToCNY: 0.21, aliases: ['tw', 'ntd', 'twd', 'taiwan', '台湾', '台灣', '中国台湾', '中國台灣', '台区', '台區'] },
     { id: 'HK', name: '中国香港', nameTw: '中國香港', nameEn: 'Hong Kong', flag: '🇭🇰', currency: 'HKD', symbol: 'HK$', monthlyPrice: 158.00, rateToCNY: 0.857, aliases: ['hk', 'hong kong', '香港', '中国香港', '中國香港', '港区', '港區'] },
     { id: 'JP', name: '日本', nameTw: '日本', nameEn: 'Japan', flag: '🇯🇵', currency: 'JPY', symbol: '¥', monthlyPrice: 2900, rateToCNY: 0.0425, aliases: ['jp', 'japan', '日本', '日区', '日區'] },
     { id: 'KR', name: '韩国', nameTw: '韓國', nameEn: 'South Korea', flag: '🇰🇷', currency: 'KRW', symbol: '₩', monthlyPrice: 29000, rateToCNY: 0.0051, aliases: ['kr', 'korea', 'south korea', '韩国', '韓國', '韩区', '韓區'] },
-    { id: 'AU', name: '澳大利亚 (澳区)', nameTw: '澳洲 (澳區)', nameEn: 'Australia', flag: '🇦🇺', currency: 'AUD', symbol: 'AU$', monthlyPrice: 32.99, rateToCNY: 4.45, aliases: ['au', 'aud', 'australia', '澳大利亚', '澳洲', '澳大利亞', '澳区', '澳區'] },
+    { id: 'AU', name: '澳大利亚', nameTw: '澳洲', nameEn: 'Australia', flag: '🇦🇺', currency: 'AUD', symbol: 'AU$', monthlyPrice: 32.99, rateToCNY: 4.45, aliases: ['au', 'aud', 'australia', '澳大利亚', '澳洲', '澳大利亞', '澳区', '澳區', '澳大利亚 (澳区)', '澳洲 (澳區)'] },
     { id: 'NZ', name: '新西兰', nameTw: '紐西蘭', nameEn: 'New Zealand', flag: '🇳🇿', currency: 'NZD', symbol: 'NZ$', monthlyPrice: 34.99, rateToCNY: 4.05, aliases: ['nz', 'nzd', 'new zealand', '新西兰', '紐西蘭'] },
-    { id: 'SG', name: '新加坡', nameTw: '新加坡', nameEn: 'Singapore', flag: '🇸🇬', currency: 'SGD', symbol: 'S$', monthlyPrice: 27.99, rateToCNY: 5.12, aliases: ['sg', 'singapore', '新加坡', '星洲'] },
+    { id: 'SG', name: '新加坡', nameTw: '新加坡', nameEn: 'Singapore', flag: '🇸🇬', currency: 'SGD', symbol: 'S$', monthlyPrice: 28.99, rateToCNY: 5.12, aliases: ['sg', 'singapore', '新加坡', '星洲'] },
     { id: 'MY', name: '马来西亚', nameTw: '馬來西亞', nameEn: 'Malaysia', flag: '🇲🇾', currency: 'MYR', symbol: 'RM ', monthlyPrice: 97.99, rateToCNY: 1.55, aliases: ['my', 'myr', 'malaysia', '马来西亚', '馬來西亞', '大马', '大馬'] },
     { id: 'TH', name: '泰国', nameTw: '泰國', nameEn: 'Thailand', flag: '🇹🇭', currency: 'THB', symbol: '฿', monthlyPrice: 750, rateToCNY: 0.20, aliases: ['th', 'thb', 'thailand', '泰国', '泰國'] },
     { id: 'VN', name: '越南', nameTw: '越南', nameEn: 'Vietnam', flag: '🇻🇳', currency: 'VND', symbol: '₫', monthlyPrice: 489000, rateToCNY: 0.00028, aliases: ['vn', 'vnd', 'vietnam', '越南'] },
@@ -4109,7 +4849,7 @@
     { id: 'US', name: '美国', nameTw: '美國', nameEn: 'United States', flag: '🇺🇸', currency: 'USD', symbol: '$', monthlyPrice: 19.99, rateToCNY: 6.72, aliases: ['us', 'usa', 'united states', '美国', '美國', '美区', '美區'] },
     { id: 'CA', name: '加拿大', nameTw: '加拿大', nameEn: 'Canada', flag: '🇨🇦', currency: 'CAD', symbol: 'CA$', monthlyPrice: 26.99, rateToCNY: 4.88, aliases: ['ca', 'cad', 'canada', '加拿大'] },
     { id: 'MX', name: '墨西哥', nameTw: '墨西哥', nameEn: 'Mexico', flag: '🇲🇽', currency: 'MXN', symbol: '$', monthlyPrice: 395, rateToCNY: 0.36, aliases: ['mx', 'mxn', 'mexico', '墨西哥'] },
-    { id: 'BR', name: '巴西', nameTw: '巴西', nameEn: 'Brazil', flag: '🇧🇷', currency: 'BRL', symbol: 'R$', monthlyPrice: 96.99, rateToCNY: 1.18, aliases: ['br', 'brl', 'brazil', '巴西'] },
+    { id: 'BR', name: '巴西', nameTw: '巴西', nameEn: 'Brazil', flag: '🇧🇷', currency: 'BRL', symbol: 'R$', monthlyPrice: 96.90, rateToCNY: 1.18, aliases: ['br', 'brl', 'brazil', '巴西'] },
     { id: 'TR', name: '土耳其', nameTw: '土耳其', nameEn: 'Turkey', flag: '🇹🇷', currency: 'TRY', symbol: '₺', monthlyPrice: 869.99, rateToCNY: 0.133, aliases: ['tr', 'try', 'turkey', '土耳其', '土区', '土區'] },
     { id: 'AR', name: '阿根廷', nameTw: '阿根廷', nameEn: 'Argentina', flag: '🇦🇷', currency: 'ARS', symbol: '$', monthlyPrice: 19999, rateToCNY: 0.0065, aliases: ['ar', 'ars', 'argentina', '阿根廷'] },
     { id: 'CL', name: '智利', nameTw: '智利', nameEn: 'Chile', flag: '🇨🇱', currency: 'CLP', symbol: '$', monthlyPrice: 18990, rateToCNY: 0.0072, aliases: ['cl', 'clp', 'chile', '智利'] },
@@ -4118,7 +4858,7 @@
 
     // 欧洲与欧亚
     { id: 'GB', name: '英国', nameTw: '英國', nameEn: 'United Kingdom', flag: '🇬🇧', currency: 'GBP', symbol: '£', monthlyPrice: 18.99, rateToCNY: 8.75, aliases: ['gb', 'uk', 'gbp', 'united kingdom', '英国', '英國', '英区', '英區'] },
-    { id: 'EU', name: '欧洲/欧盟 (德法意西荷等)', nameTw: '歐洲/歐盟 (德法義西荷等)', nameEn: 'Europe / EU', flag: '🇪🇺', currency: 'EUR', symbol: '€', monthlyPrice: 21.99, rateToCNY: 7.52, aliases: ['eu', 'eur', 'euro', 'europe', 'europe / eu', '欧洲', '歐洲', '欧盟', '歐盟', '德国', '德國', '法国', '法國', '意大利', '義大利', '西班牙', '荷兰', '荷蘭'] },
+    { id: 'EU', name: '欧洲', nameTw: '歐洲', nameEn: 'Europe', flag: '🇪🇺', currency: 'EUR', symbol: '€', monthlyPrice: 21.99, rateToCNY: 7.52, aliases: ['eu', 'eur', 'euro', 'europe', 'europe / eu', '欧洲', '歐洲', '欧盟', '歐盟', '欧洲/欧盟', '德國', '德国', '法国', '法國', '意大利', '義大利', '西班牙', '荷兰', '荷蘭', '欧洲/欧盟 (德法意西荷等)', '歐洲/歐盟 (德法義西荷等)'] },
     { id: 'CH', name: '瑞士', nameTw: '瑞士', nameEn: 'Switzerland', flag: '🇨🇭', currency: 'CHF', symbol: 'CHF ', monthlyPrice: 17.00, rateToCNY: 7.85, aliases: ['ch', 'chf', 'switzerland', '瑞士'] },
     { id: 'UA', name: '乌克兰', nameTw: '烏克蘭', nameEn: 'Ukraine', flag: '🇺🇦', currency: 'UAH', symbol: '₴', monthlyPrice: 900, rateToCNY: 0.162, aliases: ['ua', 'uah', 'ukraine', '乌克兰', '烏克蘭'] },
     { id: 'PL', name: '波兰', nameTw: '波蘭', nameEn: 'Poland', flag: '🇵🇱', currency: 'PLN', symbol: 'zł ', monthlyPrice: 97.99, rateToCNY: 1.72, aliases: ['pl', 'pln', 'poland', '波兰', '波蘭'] },
@@ -4132,15 +4872,134 @@
     // 中东与非洲
     { id: 'NG', name: '尼日利亚', nameTw: '奈及利亞', nameEn: 'Nigeria', flag: '🇳🇬', currency: 'NGN', symbol: '₦', monthlyPrice: 28500, rateToCNY: 0.0042, aliases: ['ng', 'ngn', 'nigeria', '尼日利亚', '奈及利亞', '尼区', '尼區'] },
     { id: 'ZA', name: '南非', nameTw: '南非', nameEn: 'South Africa', flag: '🇿🇦', currency: 'ZAR', symbol: 'R ', monthlyPrice: 429.99, rateToCNY: 0.38, aliases: ['za', 'zar', 'south africa', '南非'] },
-    { id: 'EG', name: '埃及', nameTw: '埃及', nameEn: 'Egypt', flag: '🇪🇬', currency: 'EGP', symbol: 'E£ ', monthlyPrice: 999, rateToCNY: 0.136, aliases: ['eg', 'egp', 'egypt', '埃及'] },
+    { id: 'EG', name: '埃及', nameTw: '埃及', nameEn: 'Egypt', flag: '🇪🇬', currency: 'EGP', symbol: 'EGP ', monthlyPrice: 939.99, rateToCNY: 0.136, aliases: ['eg', 'egp', 'egypt', '埃及'] },
     { id: 'KE', name: '肯尼亚', nameTw: '肯亞', nameEn: 'Kenya', flag: '🇰🇪', currency: 'KES', symbol: 'KSh ', monthlyPrice: 2800, rateToCNY: 0.052, aliases: ['ke', 'kes', 'kenya', '肯尼亚', '肯亞'] },
     { id: 'AE', name: '阿联酋', nameTw: '阿聯酋', nameEn: 'United Arab Emirates', flag: '🇦🇪', currency: 'AED', symbol: 'AED ', monthlyPrice: 76.99, rateToCNY: 1.83, aliases: ['ae', 'aed', 'uae', 'emirates', 'united arab emirates', '阿联酋', '阿聯酋', '迪拜', '杜拜'] },
     { id: 'SA', name: '沙特阿拉伯', nameTw: '沙烏地阿拉伯', nameEn: 'Saudi Arabia', flag: '🇸🇦', currency: 'SAR', symbol: 'SAR ', monthlyPrice: 85.99, rateToCNY: 1.79, aliases: ['sa', 'sar', 'saudi', 'saudi arabia', '沙特', '沙特阿拉伯', '沙烏地阿拉伯'] },
     { id: 'IL', name: '以色列', nameTw: '以色列', nameEn: 'Israel', flag: '🇮🇱', currency: 'ILS', symbol: '₪ ', monthlyPrice: 79.90, rateToCNY: 1.85, aliases: ['il', 'ils', 'israel', '以色列'] },
 
     // 大中华区/人民币与自定义
-    { id: 'CN', name: '中国大陆 (CNY)', nameTw: '中國大陸 (CNY)', nameEn: 'China Mainland', flag: '🇨🇳', currency: 'CNY', symbol: '¥', monthlyPrice: 140.00, rateToCNY: 1.0, aliases: ['cn', 'cny', 'china', 'china mainland', '中国', '中國', '中国大陆', '中國大陸', '人民币', '人民幣', '国内', '國內'] }
+    { id: 'CN', name: '中国大陆', nameTw: '中國大陸', nameEn: 'China Mainland', flag: '🇨🇳', currency: 'CNY', symbol: '¥', monthlyPrice: 140.00, rateToCNY: 1.0, aliases: ['cn', 'cny', 'china', 'china mainland', '中国', '中國', '中国大陆', '中國大陸', '中国大陆 (CNY)', '中國大陸 (CNY)', '人民币', '人民幣', '国内', '國內'] }
   ];
+
+  function resolvePlanSpecKey(tierKey = null, multiplier = null, override = null) {
+    const ov = typeof override === 'string' ? override.trim().toLowerCase() : '';
+    if (ov === 'free' || ov === 'teams_tier_free') return 'free';
+    if (ov === 'plus' || ov === 'teams_tier_plus') return 'plus';
+    if (ov === 'pro' || ov === 'teams_tier_pro') return 'pro';
+    if (ov === 'ultra_5x' || ov === 'ultra 5x' || ov === 'ultra-5x' || ov === '5x') return 'ultra_5x';
+    if (ov === 'ultra_20x' || ov === 'ultra 20x' || ov === 'ultra-20x' || ov === '20x') return 'ultra_20x';
+    if (ov === 'ultra' || ov === 'google ai ultra') return 'ultra';
+    const tk = typeof tierKey === 'string' ? tierKey.trim().toLowerCase() : '';
+    const mult = Number(multiplier);
+    if (tk === 'free') return 'free';
+    if (tk === 'plus') return 'plus';
+    if (tk === 'pro') return 'pro';
+    if (tk === 'ultra_5x' || tk === 'ultra 5x' || tk === 'ultra-5x') return 'ultra_5x';
+    if (tk === 'ultra_20x' || tk === 'ultra 20x' || tk === 'ultra-20x') return 'ultra_20x';
+    if (tk === 'ultra') {
+      if (mult === 5) return 'ultra_5x';
+      if (mult === 20) return 'ultra_20x';
+      return 'ultra';
+    }
+    return 'unknown';
+  }
+
+  function getPlanTierSpec(specKey) {
+    return SUBSCRIPTION_TIER_SPECS[specKey] || null;
+  }
+
+  /**
+   * 查询指定地区 + 指定套餐的官方参考月价（2026-11 二维矩阵优先，其余地区按 USD 参考价换算）
+   */
+  function getRegionPlanReferencePrice(regionOrPreset, specKey = 'pro') {
+    const preset = (typeof regionOrPreset === 'string')
+      ? findRegionPreset(regionOrPreset)
+      : (regionOrPreset && typeof regionOrPreset === 'object' ? regionOrPreset : null);
+    const sk = (specKey && SUBSCRIPTION_TIER_SPECS[specKey]) ? specKey : 'pro';
+    if (sk === 'free') {
+      return {
+        available: true,
+        isRange: false,
+        monthlyPrice: 0,
+        currency: preset?.currency || 'USD',
+        symbol: preset?.symbol || '$',
+        source: 'preset_region'
+      };
+    }
+    if (sk === 'ultra') {
+      return {
+        available: false,
+        isRange: true,
+        monthlyPrice: null,
+        minUsd: 99.99,
+        maxUsd: 199.99,
+        currency: preset?.currency || 'USD',
+        symbol: preset?.symbol || '$',
+        source: 'unknown'
+      };
+    }
+    if (!preset) {
+      const spec = SUBSCRIPTION_TIER_SPECS[sk];
+      return {
+        available: spec && spec.officialPriceUSD !== null && spec.officialPriceUSD !== undefined,
+        isRange: false,
+        monthlyPrice: spec?.officialPriceUSD ?? null,
+        currency: 'USD',
+        symbol: '$',
+        source: 'official_reference'
+      };
+    }
+    const matrixRow = SUBSCRIPTION_TIER_REGION_PRICES[preset.id];
+    if (matrixRow && matrixRow[sk] !== undefined) {
+      return {
+        available: true,
+        isRange: false,
+        monthlyPrice: Number(matrixRow[sk]),
+        currency: matrixRow.currency,
+        symbol: matrixRow.symbol || preset.symbol || (CURRENCY_SYMBOLS[matrixRow.currency] || '$'),
+        source: 'preset_region'
+      };
+    }
+    if (sk === 'pro' && Number.isFinite(Number(preset.monthlyPrice))) {
+      return {
+        available: true,
+        isRange: false,
+        monthlyPrice: Number(preset.monthlyPrice),
+        currency: preset.currency,
+        symbol: preset.symbol || (CURRENCY_SYMBOLS[preset.currency] || '$'),
+        source: 'preset_region'
+      };
+    }
+    const spec = SUBSCRIPTION_TIER_SPECS[sk];
+    if (spec && Number.isFinite(Number(spec.officialPriceUSD))) {
+      const usdRef = Number(spec.officialPriceUSD);
+      const converted = preset.currency === 'USD'
+        ? usdRef
+        : convertCurrency(usdRef, 'USD', preset.currency, preset.id);
+      if (converted !== null && Number.isFinite(converted)) {
+        const rounded = (preset.currency === 'JPY' || preset.currency === 'KRW' || preset.currency === 'VND' || preset.currency === 'IDR' || preset.currency === 'CLP' || preset.currency === 'COP' || preset.currency === 'HUF' || preset.currency === 'TWD' || preset.currency === 'INR' || preset.currency === 'NGN')
+          ? Math.round(converted)
+          : Number(converted.toFixed(2));
+        return {
+          available: true,
+          isRange: false,
+          monthlyPrice: rounded,
+          currency: preset.currency,
+          symbol: preset.symbol || (CURRENCY_SYMBOLS[preset.currency] || '$'),
+          source: 'preset_converted'
+        };
+      }
+    }
+    return {
+      available: false,
+      isRange: false,
+      monthlyPrice: null,
+      currency: preset.currency || 'USD',
+      symbol: preset.symbol || '$',
+      source: 'unknown'
+    };
+  }
 
   function findRegionPreset(regionQuery) {
     if (!regionQuery || typeof regionQuery !== 'string') return null;
@@ -4237,6 +5096,10 @@
       ? rawTierOverride.trim()
       : null;
 
+    const sanitizeTierDisplayName = (rawName) => String(rawName || '')
+      .replace(/\s*[（(]([^）)]+)[）)]/g, (_, inner) => (/^\s*\d+x\s*$/i.test(inner) ? ` ${inner.trim().toLowerCase()}` : ''))
+      .replace(/\s+/g, ' ')
+      .trim();
     if (normTierOverride) {
       status = (rawLive && rawLive.status === 'identified') ? 'identified' : 'custom';
       tierSource = 'custom';
@@ -4253,7 +5116,7 @@
         tierKey = 'pro';
         tierName = 'Google AI Pro';
         planName = 'Google AI Pro';
-        multiplier = null;
+        multiplier = 1;
       } else if (lowerOverride === 'plus' || lowerOverride === 'teams_tier_plus') {
         tierKey = 'plus';
         tierName = 'Google AI Plus';
@@ -4261,13 +5124,13 @@
         multiplier = null;
       } else if (lowerOverride === 'ultra_5x' || lowerOverride === 'ultra 5x' || lowerOverride === 'ultra-5x' || lowerOverride === '5x') {
         tierKey = 'ultra';
-        tierName = 'Google AI Ultra (5x)';
-        planName = 'Google AI Ultra (5x)';
+        tierName = 'Google AI Ultra 5x';
+        planName = 'Google AI Ultra 5x';
         multiplier = 5;
       } else if (lowerOverride === 'ultra_20x' || lowerOverride === 'ultra 20x' || lowerOverride === 'ultra-20x' || lowerOverride === '20x') {
         tierKey = 'ultra';
-        tierName = 'Google AI Ultra (20x)';
-        planName = 'Google AI Ultra (20x)';
+        tierName = 'Google AI Ultra 20x';
+        planName = 'Google AI Ultra 20x';
         multiplier = 20;
       } else if (lowerOverride === 'ultra' || lowerOverride === 'google ai ultra') {
         tierKey = 'ultra';
@@ -4280,9 +5143,9 @@
           tierKey = 'ultra';
           if (multMatch) {
             multiplier = parseInt(multMatch[1], 10);
-            tierName = `Google AI Ultra (${multMatch[1].toLowerCase()})`;
+            tierName = `Google AI Ultra ${multMatch[1].toLowerCase()}`;
           } else {
-            tierName = normTierOverride;
+            tierName = sanitizeTierDisplayName(normTierOverride);
           }
         } else {
           tierKey = 'custom';
@@ -4293,30 +5156,37 @@
     } else if (rawLive && rawLive.status === 'identified' && rawLive.tierKey !== 'unknown') {
       status = 'identified';
       tierKey = rawLive.tierKey;
-      tierName = rawLive.tierName;
+      tierName = sanitizeTierDisplayName(rawLive.tierName) || rawLive.tierName;
       tierId = rawLive.tierId;
       teamsTier = rawLive.teamsTier || null;
-      planName = rawLive.planName || rawLive.tierName;
+      planName = rawLive.planName || tierName;
       tierSource = 'live';
       multiplier = rawLive.multiplier || multiplier;
     } else if (effectiveCustom && effectiveCustom.tierName) {
       status = 'custom';
       tierKey = effectiveCustom.tierKey || 'custom';
-      tierName = effectiveCustom.tierName;
+      tierName = sanitizeTierDisplayName(effectiveCustom.tierName);
       tierId = effectiveCustom.tierId || rawLive?.tierId || cachedLive?.tierId || null;
       teamsTier = effectiveCustom.teamsTier || rawLive?.teamsTier || cachedLive?.teamsTier || null;
-      planName = effectiveCustom.tierName;
+      planName = tierName;
       tierSource = 'custom';
     } else if (cachedLive && cachedLive.status === 'identified' && cachedLive.tierKey !== 'unknown') {
       status = 'identified';
       tierKey = cachedLive.tierKey;
-      tierName = cachedLive.tierName;
+      tierName = sanitizeTierDisplayName(cachedLive.tierName) || cachedLive.tierName;
       tierId = cachedLive.tierId;
       teamsTier = cachedLive.teamsTier || null;
-      planName = cachedLive.planName || cachedLive.tierName;
+      planName = cachedLive.planName || tierName;
       tierSource = 'cached_live';
       multiplier = cachedLive.multiplier || multiplier;
     }
+    const tierSpecKey = resolvePlanSpecKey(tierKey, multiplier, normTierOverride || tierName);
+    const tierSpec = getPlanTierSpec(tierSpecKey);
+    const liveTierSpecKey = (rawLive && rawLive.status === 'identified' && rawLive.tierKey !== 'unknown')
+      ? resolvePlanSpecKey(rawLive.tierKey, rawLive.multiplier, rawLive.tierName)
+      : ((cachedLive && cachedLive.status === 'identified' && cachedLive.tierKey !== 'unknown')
+        ? resolvePlanSpecKey(cachedLive.tierKey, cachedLive.multiplier, cachedLive.tierName)
+        : 'unknown');
 
     // 2A. 账号所在地区 (accountRegion / country) 独立取值：仅表示本地记录，不影响订阅国家与币种
     let country = '未知';
@@ -4391,7 +5261,7 @@
     }
 
     let actualPricePaid = null;
-    let officialPriceMonthly = rawLive?.officialPriceMonthly ?? cachedLive?.officialPriceMonthly ?? null;
+    let officialPriceMonthly = tierSpec?.officialPriceUSD ?? rawLive?.officialPriceMonthly ?? cachedLive?.officialPriceMonthly ?? null;
     const matchedRegionPreset = findRegionPreset(region);
     let rawCur = (effectiveCustom?.subscriptionCurrency || effectiveCustom?.currency) ? String(effectiveCustom.subscriptionCurrency || effectiveCustom.currency).trim().toUpperCase() : '';
     if (rawCur === 'NTD') rawCur = 'TWD';
@@ -4436,7 +5306,7 @@
 
     const isLivePaidValid = rawLive && rawLive.priceSource !== 'custom' && rawLive.priceSource !== 'preset_region' && rawLive.actualPricePaid !== null && rawLive.actualPricePaid !== undefined && Number.isFinite(Number(rawLive.actualPricePaid)) && Number(rawLive.actualPricePaid) >= 0;
 
-    if (isLivePaidValid) {
+    if (isLivePaidValid && !normTierOverride) {
       priceMode = 'live';
       actualPricePaid = Number(rawLive.actualPricePaid);
       isPriceEstimated = false;
@@ -4471,39 +5341,101 @@
         priceRangeNote = `${acquisitionSourceName} · 待设置实付金额`;
       }
     } else {
-      // priceMode === 'preset' (跟随订阅国家参考价：仅 Pro 等单一公开标准价套餐套用地区参考表，Ultra 等不适用 Pro $19.99 参考价)
+      // priceMode === 'preset' 跟随订阅国家参考价，严格按二维矩阵派生；未指定子档的 Ultra 保持范围而不回退 Pro $19.99
       priceMode = 'preset';
-      const isUltraTier = tierKey === 'ultra';
-      if (matchedRegionPreset && !isUltraTier) {
-        actualPricePaid = Number(matchedRegionPreset.monthlyPrice);
-        isPriceEstimated = true;
-        priceSource = 'preset_region';
+      const effLookupSpecKey = (tierSpecKey === 'unknown' || tierSpecKey === 'custom') ? 'pro' : tierSpecKey;
+      const isUnsplitUltra = effLookupSpecKey === 'ultra';
+      if (effLookupSpecKey === 'free') {
+        actualPricePaid = 0;
+        officialPriceMonthly = 0;
+        isPriceEstimated = false;
+        priceSource = matchedRegionPreset ? 'preset_region' : 'official_reference';
+        billingCycle = effectiveCustom?.billingCycle || '免费版';
+        priceRangeNote = `${acquisitionSourceName} · ${curSymbol}0 · ${billingCycle}`;
+      } else if (isUnsplitUltra) {
+        actualPricePaid = null;
+        officialPriceMonthly = null;
+        isPriceEstimated = false;
+        priceSource = 'unknown';
         billingCycle = effectiveCustom?.billingCycle || '月付';
-        priceRangeNote = `${acquisitionSourceName} · 地区参考价 ${curSymbol}${actualPricePaid} · ${billingCycle}`;
+        priceRangeNote = `${acquisitionSourceName} · $99.99–$199.99/月 · 待选择档位`;
+      } else if (matchedRegionPreset && effLookupSpecKey !== 'unknown') {
+        const refObj = getRegionPlanReferencePrice(matchedRegionPreset, effLookupSpecKey);
+        if (refObj.available && refObj.monthlyPrice !== null) {
+          actualPricePaid = Number(refObj.monthlyPrice);
+          isPriceEstimated = true;
+          priceSource = 'preset_region';
+          billingCycle = effectiveCustom?.billingCycle || '月付';
+          priceRangeNote = `${acquisitionSourceName} · 地区参考价 ${curSymbol}${actualPricePaid} · ${billingCycle}`;
+        } else {
+          actualPricePaid = null;
+          isPriceEstimated = false;
+          priceSource = 'unknown';
+          billingCycle = effectiveCustom?.billingCycle || '月付';
+          priceRangeNote = `${acquisitionSourceName} · 待设置订阅国家与价格`;
+        }
       } else if (officialPriceMonthly !== null) {
         actualPricePaid = null;
+        isPriceEstimated = true;
         priceSource = 'official_reference';
-        billingCycle = '月付 · 公开参考';
-        priceRangeNote = `${acquisitionSourceName} · 公开参考价 $${officialPriceMonthly}/月`;
+        billingCycle = '月付';
+        priceRangeNote = `${acquisitionSourceName} · 官方参考价 $${officialPriceMonthly}/月`;
       } else {
         actualPricePaid = null;
         isPriceEstimated = false;
         priceSource = 'unknown';
-        billingCycle = isUltraTier ? (effectiveCustom?.billingCycle || '月付') : '未知';
-        priceRangeNote = isUltraTier
-          ? `${acquisitionSourceName} · Google AI Ultra 待设置实付月费`
-          : `${acquisitionSourceName} · 待设置订阅国家与价格`;
+        billingCycle = '未知';
+        priceRangeNote = `${acquisitionSourceName} · 待设置订阅国家与价格`;
       }
     }
 
     // 5. 用户自定义备注（仅展示，不参与计算）
     const customNote = effectiveCustom?.customNote ? String(effectiveCustom.customNote).trim() : null;
 
-    // 6. 额度池
+    // 6. 额度池（自动识别/同档展示宿主实报；手动切换为其他套餐时切换至估算/基准并保留宿主实报副注）
     const promptCredits = rawLive?.promptCredits || cachedLive?.promptCredits || null;
     const flowCredits = rawLive?.flowCredits || cachedLive?.flowCredits || null;
+    const hasHostLiveCredits = Boolean(
+      (promptCredits && (promptCredits.available != null || promptCredits.monthly != null)) ||
+      (flowCredits && (flowCredits.available != null || flowCredits.monthly != null))
+    );
+    const isManualTierOverride = Boolean(normTierOverride);
+    const isDifferentFromHostTier = Boolean(
+      isManualTierOverride && (!liveTierSpecKey || liveTierSpecKey === 'unknown' || liveTierSpecKey !== tierSpecKey)
+    );
+    const creditDisplayBasis = (isDifferentFromHostTier || (!hasHostLiveCredits && tierSpec))
+      ? (tierSpecKey === 'pro' ? 'official_baseline' : 'plan_estimate')
+      : 'host_live';
+    const effectivePromptCredits = creditDisplayBasis === 'host_live'
+      ? {
+        available: promptCredits?.available ?? null,
+        monthly: promptCredits?.monthly ?? tierSpec?.promptMonthly ?? null,
+        basis: 'host_live',
+        hostLive: promptCredits
+      }
+      : {
+        available: null,
+        monthly: tierSpec?.promptMonthly ?? null,
+        basis: creditDisplayBasis,
+        hostLive: hasHostLiveCredits ? promptCredits : null
+      };
+    const effectiveFlowCredits = creditDisplayBasis === 'host_live'
+      ? {
+        available: flowCredits?.available ?? null,
+        monthly: flowCredits?.monthly ?? tierSpec?.flowPoolMonthly ?? null,
+        officialText: tierSpec?.flowOfficialZh || null,
+        basis: 'host_live',
+        hostLive: flowCredits
+      }
+      : {
+        available: null,
+        monthly: tierSpec?.flowPoolMonthly ?? null,
+        officialText: tierSpec?.flowOfficialZh || null,
+        basis: creditDisplayBasis,
+        hostLive: hasHostLiveCredits ? flowCredits : null
+      };
 
-    // 根据地区与币种自动折合人民币 (CNY)
+    // 根据地区与币种自动折合人民币 CNY
     const rateRegion = (matchedRegionPreset && matchedRegionPreset.currency === currency) ? region : null;
     const effectiveRate = (matchedRegionPreset && matchedRegionPreset.currency === currency)
       ? matchedRegionPreset.rateToCNY
@@ -4513,18 +5445,20 @@
     const cnyFormatted = actualPricePaidCNY !== null ? (currency === 'CNY' ? ('¥' + actualPricePaidCNY) : ('折合 ≈ ¥' + actualPricePaidCNY.toFixed(1) + ' CNY')) : null;
 
     if (actualPricePaidCNY !== null && actualPricePaid > 0 && currency !== 'CNY') {
-      priceRangeNote += ' (' + cnyFormatted + ')';
+      priceRangeNote += ' · ' + cnyFormatted;
     }
 
     return {
       status,
       tierKey,
+      tierSpecKey,
       tierName,
       tierId,
       teamsTier,
       planName,
       planTierOverride: normTierOverride || 'auto',
-      multiplier: multiplier || null,
+      multiplier: multiplier || tierSpec?.multiplier || null,
+      planSpec: tierSpec || null,
       email: currentEmail,
       accountRegion: country,
       country,
@@ -4559,6 +5493,9 @@
       customNote,
       promptCredits,
       flowCredits,
+      creditDisplayBasis,
+      effectivePromptCredits,
+      effectiveFlowCredits,
       sources: {
         tier: tierSource,
         country: countrySource,
@@ -4568,8 +5505,8 @@
         acquisition: effectiveCustom?.acquisitionSource ? 'custom' : 'default'
       },
       hasCustomSettings: Boolean(effectiveCustom && (normTierOverride || effectiveCustom.country || effectiveCustom.region || effectiveCustom.subscriptionRegion || effectiveCustom.currency || effectiveCustom.actualPricePaid !== undefined || effectiveCustom.customNote || effectiveCustom.acquisitionSource)),
-      pricingTableVerifiedDate: '2026-11-09',
-      updatedAt: rawLive?.updatedAt || new Date().toISOString()
+      pricingTableVerifiedDate: '2026-11',
+      updatedAt: effectiveCustom?.updatedAt || rawLive?.updatedAt || new Date().toISOString()
     };
   }
 
@@ -8767,29 +9704,59 @@
       return Array.isArray(list) && list.some(x => x && x.agentRole === 'subagent');
     }
 
-    // 汇总主子 Agent 家族 (按去重后的 allCalls 计算，主代理与子代理严格分离、绝不重复计入)
+    // 汇总主子 Agent 家族 · 按去重后的 allCalls 计算，主代理与子代理严格分离、绝不重复计入
+    const sessionBudgetHint = Number(options.budgetTokens) > 0 ? Number(options.budgetTokens) : null;
     const initAgentStats = (meta = {}) => ({
       ...meta,
       callCount: 0,
+      stepIndices: new Set(),
       inputTokens: 0,
       cacheReadTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
       streamingSec: 0,
+      totalDurationSec: 0,
+      costUSD: 0,
+      latestContextTokens: 0,
+      latestTimestamp: 0,
+      hasError: false,
+      hasRunning: false,
       modelsSet: new Set(),
       modelStatsMap: new Map()
     });
-    const finalizeAgentStats = (acc) => ({
-      ...acc,
-      models: Array.from(acc.modelsSet),
-      modelBreakdown: Array.from(acc.modelStatsMap.values()).map(m => ({
-        ...m,
-        streamingSec: Number(m.streamingSec.toFixed(2))
-      })),
-      streamingSec: Number(acc.streamingSec.toFixed(2)),
-      modelsSet: undefined,
-      modelStatsMap: undefined
-    });
+    const finalizeAgentStats = (acc) => {
+      const inp = Number(acc.inputTokens || 0);
+      const cap = Number(acc.cacheReadTokens || 0);
+      const outp = Number(acc.outputTokens || 0);
+      const tok = Math.max(1, inp + cap + outp);
+      const ctxUsed = Number(acc.latestContextTokens || 0);
+      const ctxPct = (sessionBudgetHint && ctxUsed > 0) ? Math.min(100, Number(((ctxUsed / sessionBudgetHint) * 100).toFixed(1))) : null;
+      return {
+        ...acc,
+        modelLabel: Array.from(acc.modelsSet)[0] || '',
+        models: Array.from(acc.modelsSet),
+        modelBreakdown: Array.from(acc.modelStatsMap.values()).map(m => ({
+          ...m,
+          streamingSec: Number(m.streamingSec.toFixed(2))
+        })),
+        streamingSec: Number(acc.streamingSec.toFixed(2)),
+        durationSec: Number(acc.totalDurationSec.toFixed(2)),
+        costUSD: Number(acc.costUSD.toFixed(4)),
+        stepCount: acc.stepIndices.size || acc.callCount,
+        contextUsedTokens: ctxUsed,
+        contextBudgetTokens: sessionBudgetHint,
+        contextPct: ctxPct,
+        status: acc.hasRunning ? 'running' : (acc.hasError ? 'failed' : 'completed'),
+        compositionRatios: {
+          inputPct: Math.round((inp / tok) * 1000) / 10,
+          cachePct: Math.round((cap / tok) * 1000) / 10,
+          outputPct: Math.round((outp / tok) * 1000) / 10
+        },
+        stepIndices: undefined,
+        modelsSet: undefined,
+        modelStatsMap: undefined
+      };
+    };
     const mainAcc = initAgentStats({ role: 'main', agentId: cascadeId || 'main' });
     const subAccMap = new Map();
     let unlinkedTotalTokens = 0;
@@ -8798,11 +9765,30 @@
       const mName = c.attributedModelLabel || c.modelLabel || c.modelExactId || c.modelRaw || (c.isModelUnknown ? '未知模型' : '');
       const addInto = (acc) => {
         acc.callCount++;
+        if (c.stepIndex != null) acc.stepIndices.add(Number(c.stepIndex));
         acc.inputTokens += Number(c.inputTokens || 0);
         acc.cacheReadTokens += Number(c.cacheReadTokens || 0);
         acc.outputTokens += Number(c.outputTokens || 0);
         acc.totalTokens += Number(c.totalTokens || 0);
         acc.streamingSec += Number(c.streamingSec || 0);
+        const dur = Number(c.durationSec ?? ((Number(c.ttftSec) || 0) + (Number(c.streamingSec) || 0)));
+        if (Number.isFinite(dur) && dur > 0) acc.totalDurationSec += dur;
+        if (Number.isFinite(Number(c.costUSD))) {
+          acc.costUSD += Number(c.costUSD);
+        } else {
+          const calcCost = calculateRequestApiCost(c);
+          if (calcCost?.isPriced && Number.isFinite(Number(calcCost.costUSD))) acc.costUSD += Number(calcCost.costUSD);
+        }
+        const tsNum = Number(c.timestamp || 0);
+        const ctxTok = Number(c.contextWindowTokens ?? ((Number(c.inputTokens) || 0) + (Number(c.cacheReadTokens) || 0)));
+        if (ctxTok > 0 && tsNum >= acc.latestTimestamp) {
+          acc.latestTimestamp = tsNum;
+          acc.latestContextTokens = ctxTok;
+        } else if (ctxTok > 0 && acc.latestContextTokens === 0) {
+          acc.latestContextTokens = ctxTok;
+        }
+        if (c.status === 'streaming') acc.hasRunning = true;
+        if (c.error || c.outcomeStatus === 'failed') acc.hasError = true;
         if (mName) {
           acc.modelsSet.add(mName);
           let ms = acc.modelStatsMap.get(mName);
@@ -8846,20 +9832,26 @@
     // 按步骤与时间合并主子协作时间线，直观还原代理派生与交接节点
     const rawTaskEvents = Array.isArray(options.taskEvents) ? options.taskEvents : [];
     const collabEvents = [];
+    const interactionReceipts = [];
+    const rawReceipts = Array.isArray(options.subagentReceipts) ? options.subagentReceipts : [];
     for (const c of allCalls) {
       const isSub = c.agentRole === 'subagent';
+      const subName = isSub ? (c.subagentRole || c.subagentType || 'subagent') : 'main';
       collabEvents.push({
         stepIndex: c.stepIndex ?? null,
         timestamp: c.timestamp ?? null,
         kind: isSub ? 'subagent_call' : 'main_call',
-        role: isSub ? (c.subagentRole || c.subagentType || 'subagent') : 'main',
+        role: subName,
+        agentId: isSub ? (c.cascadeId || subName) : (cascadeId || 'main'),
         modelLabel: c.modelLabel || c.modelExactId || c.modelRaw || '',
         subagentType: c.subagentType || '',
         parentStepIndex: c.parentStepIndex ?? null,
         callId: c.callId || null,
         totalTokens: Number(c.totalTokens || 0),
+        durationSec: c.durationSec ?? null,
+        status: c.status === 'streaming' ? 'running' : ((c.error || c.outcomeStatus === 'failed') ? 'failed' : 'completed'),
         detail: isSub
-          ? `子代理${c.subagentType ? ` (${c.subagentType})` : ''} 响应 · ${Number(c.totalTokens || 0)} tok`
+          ? `子代理${c.subagentType ? ` ${c.subagentType}` : ''} 响应 · ${Number(c.totalTokens || 0)} tok`
           : `主代理调用 · ${Number(c.totalTokens || 0)} tok`
       });
     }
@@ -8870,13 +9862,40 @@
         timestamp: te.timestamp ?? null,
         kind: 'task_event',
         role: te.role || te.toolName || 'task',
+        agentId: te.role || te.subagentType || 'task',
         modelLabel: '',
         subagentType: te.subagentType || '',
         parentStepIndex: null,
         callId: null,
         totalTokens: 0,
+        durationSec: te.durationSec ?? null,
         status: te.status || 'completed',
-        detail: te.summary || `${te.toolName || 'task'}${te.action ? ` (${te.action})` : ''}`
+        detail: te.summary || `${te.toolName || 'task'}${te.action ? ` · ${te.action}` : ''}`
+      });
+      interactionReceipts.push({
+        id: te.id || `rcpt-task-${interactionReceipts.length}`,
+        stepIndex: te.stepIndex ?? null,
+        timestamp: te.timestamp ?? null,
+        fromAgent: 'main',
+        toAgent: te.role || te.subagentType || te.toolName || 'subagent',
+        kind: te.toolName || 'task',
+        status: te.status || 'completed',
+        summary: te.summary || `${te.toolName || 'task'} ${te.action || ''}`.trim(),
+        detail: te.promptDetail || te.summary || ''
+      });
+    }
+    for (const rr of rawReceipts) {
+      if (!rr || typeof rr !== 'object') continue;
+      interactionReceipts.push({
+        id: rr.id || `rcpt-${interactionReceipts.length}`,
+        stepIndex: rr.stepIndex ?? null,
+        timestamp: rr.timestamp ?? null,
+        fromAgent: rr.fromAgent || 'subagent',
+        toAgent: rr.toAgent || 'main',
+        kind: rr.kind || 'receipt',
+        status: rr.status || 'completed',
+        summary: rr.summary || '',
+        detail: rr.detail || rr.summary || ''
       });
     }
     collabEvents.sort((a, b) => {
@@ -8885,6 +9904,39 @@
       if (sa !== sb) return sa - sb;
       return Number(a.timestamp || 0) - Number(b.timestamp || 0);
     });
+    interactionReceipts.sort((a, b) => {
+      const sa = Number.isInteger(a.stepIndex) ? a.stepIndex : Number.MAX_SAFE_INTEGER;
+      const sb = Number.isInteger(b.stepIndex) ? b.stepIndex : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return Number(a.timestamp || 0) - Number(b.timestamp || 0);
+    });
+
+    const delegatedTasks = rawTaskEvents.map(te => ({
+      id: te.id || `dt-${te.stepIndex ?? 'na'}`,
+      role: te.role || '',
+      type: te.subagentType || te.toolName || 'task',
+      summary: te.summary || '',
+      status: te.status === 'failed' ? 'failed' : (te.status === 'running' ? 'in_progress' : 'completed'),
+      stepIndex: te.stepIndex ?? null,
+      turnNumber: te.turnNumber ?? null,
+      durationSec: te.durationSec ?? null
+    }));
+    for (const sub of subagentsList) {
+      const alreadyHas = delegatedTasks.some(d => d.stepIndex != null && sub.parentStepIndex != null && Math.abs(d.stepIndex - sub.parentStepIndex) <= 1);
+      if (!alreadyHas) {
+        delegatedTasks.push({
+          id: `dt-sub-${sub.childCid || delegatedTasks.length}`,
+          role: sub.role || sub.type || 'subagent',
+          type: sub.type || 'subagent',
+          summary: `${sub.role || sub.type || '子代理'} · ${sub.callCount} 次调用 · ${sub.totalTokens} tok`,
+          status: sub.status === 'running' ? 'in_progress' : (sub.status === 'failed' ? 'failed' : 'completed'),
+          stepIndex: sub.parentStepIndex ?? null,
+          turnNumber: null,
+          durationSec: sub.durationSec ?? null,
+          childCid: sub.childCid || null
+        });
+      }
+    }
 
     const agentFleetSummary = {
       mainAgent: mainAgentFinal,
@@ -8896,6 +9948,8 @@
       dedupVerified: (mainAgentFinal.totalTokens + subagentsSum + unlinkedTotalTokens) === fleetCombinedTotalTokens,
       collaborationTimeline: collabEvents.slice(0, 120),
       taskEvents: rawTaskEvents.slice(0, 80),
+      delegatedTasks: delegatedTasks.slice(0, 100),
+      interactionReceipts: interactionReceipts.slice(0, 150),
       hasTaskDependencyDag: false
     };
 
@@ -8968,6 +10022,8 @@
   function buildContextTrendSeries(timeline, options = {}) {
     const mode = options.mode === 'delta' ? 'delta' : 'total';
     const granularity = options.granularity === 'turn' ? 'turn' : 'step';
+    const compressAll = Boolean(options.compressAll);
+    const contextEvents = Array.isArray(options.contextChangeEvents) ? options.contextChangeEvents : [];
     const rawMax = Number(options.maxPoints);
     const maxPoints = Number.isFinite(rawMax) && rawMax > 0 ? Math.max(4, Math.min(200, Math.round(rawMax))) : 48;
     const turns = Array.isArray(timeline)
@@ -8998,6 +10054,7 @@
         const delta = hasTurnDelta ? Number(t.deltaFromPrevTurn) : (prevCtx !== null ? totalCtx - prevCtx : null);
         prevCtx = totalCtx;
         const isEst = Boolean(!lastCall || lastCall.usageEstimated === true || lastCall.hasInputCacheFields === false);
+        const durSum = validCalls.reduce((s, c) => s + (Number(c.durationSec ?? ((Number(c.ttftSec) || 0) + (Number(c.streamingSec) || 0))) || 0), 0);
         rawPoints.push({
           origIndex: rawPoints.length,
           turnIndex: t.turnIndex ?? null,
@@ -9012,6 +10069,10 @@
           outputTokens: Number(t.outputTokens) || 0,
           totalContextTokens: totalCtx,
           deltaTokens: delta,
+          durationSec: durSum > 0 ? Number(durSum.toFixed(2)) : (lastCall?.durationSec ?? null),
+          ttftSec: lastCall?.ttftSec ?? null,
+          streamingSec: lastCall?.streamingSec ?? null,
+          eventFlags: [],
           callCount: calls.length,
           isMaxJump: false,
           isEstimated: isEst,
@@ -9036,6 +10097,7 @@
           const delta = hasStepDelta ? Number(c.deltaFromPrevStep) : (prevCtx !== null ? totalCtx - prevCtx : null);
           prevCtx = totalCtx;
           const isEst = Boolean(c.usageEstimated === true || c.hasInputCacheFields === false);
+          const cDur = c.durationSec ?? ((c.ttftSec != null || c.streamingSec != null) ? Number(((Number(c.ttftSec) || 0) + (Number(c.streamingSec) || 0)).toFixed(2)) : null);
           rawPoints.push({
             origIndex: rawPoints.length,
             turnIndex: t.turnIndex ?? null,
@@ -9050,11 +10112,34 @@
             outputTokens: Number(c.outputTokens) || 0,
             totalContextTokens: totalCtx,
             deltaTokens: delta,
+            durationSec: cDur,
+            ttftSec: c.ttftSec ?? null,
+            streamingSec: c.streamingSec ?? null,
+            eventFlags: [],
             callCount: 1,
             isMaxJump: Boolean(c.isMaxContextJump),
             isEstimated: isEst,
             sourceBasis: isEst ? 'local_estimate' : 'server_usage'
           });
+        }
+      }
+    }
+
+    if (contextEvents.length && rawPoints.length) {
+      for (const ev of contextEvents) {
+        if (!ev || !ev.type) continue;
+        let targetPt = null;
+        if (ev.callId) targetPt = rawPoints.find(p => p.callId && p.callId === ev.callId);
+        if (!targetPt && ev.stepIndex != null && Number(ev.stepIndex) >= 0) {
+          targetPt = rawPoints.find(p => p.stepIndex === Number(ev.stepIndex))
+            || rawPoints.find(p => p.stepIndex != null && p.stepIndex >= Number(ev.stepIndex))
+            || rawPoints[rawPoints.length - 1];
+        }
+        if (!targetPt && ev.turnIndex != null) {
+          targetPt = rawPoints.find(p => p.turnIndex === Number(ev.turnIndex));
+        }
+        if (targetPt && !targetPt.eventFlags.includes(ev.type)) {
+          targetPt.eventFlags.push(ev.type);
         }
       }
     }
@@ -9076,6 +10161,10 @@
         outputTokens: 0,
         totalContextTokens: estRounded,
         deltaTokens: null,
+        durationSec: null,
+        ttftSec: null,
+        streamingSec: null,
+        eventFlags: [],
         callCount: 0,
         isMaxJump: false,
         isEstimated: true,
@@ -9084,8 +10173,35 @@
     }
 
     const totalPoints = rawPoints.length;
-    const truncatedCount = totalPoints > maxPoints ? (totalPoints - maxPoints) : 0;
-    const sliced = truncatedCount > 0 ? rawPoints.slice(totalPoints - maxPoints) : rawPoints;
+    let sliced = rawPoints;
+    let truncatedCount = 0;
+    if (totalPoints > maxPoints) {
+      if (compressAll) {
+        // 全会话全景压缩带：均匀保留首点、末点、事件标旗点及各桶极值点，呈现完整脉络与压缩谷底
+        const keptIdx = new Set([0, totalPoints - 1]);
+        const bucketCount = Math.max(4, maxPoints - 2);
+        const step = (totalPoints - 2) / bucketCount;
+        for (let b = 0; b < bucketCount; b++) {
+          const bStart = 1 + Math.floor(b * step);
+          const bEnd = Math.min(totalPoints - 2, Math.floor((b + 1) * step));
+          if (bStart > bEnd) continue;
+          let bestIdx = bStart;
+          for (let i = bStart; i <= bEnd; i++) {
+            const p = rawPoints[i];
+            if ((p.eventFlags && p.eventFlags.length) || p.isMaxJump || p.totalContextTokens > rawPoints[bestIdx].totalContextTokens) {
+              bestIdx = i;
+              if (p.eventFlags && p.eventFlags.length) break;
+            }
+          }
+          keptIdx.add(bestIdx);
+        }
+        sliced = Array.from(keptIdx).sort((a, b) => a - b).map(i => rawPoints[i]);
+        truncatedCount = 0;
+      } else {
+        truncatedCount = totalPoints - maxPoints;
+        sliced = rawPoints.slice(totalPoints - maxPoints);
+      }
+    }
     const points = sliced.map((p, idx) => ({ ...p, index: idx }));
 
     let maxTotalTokens = 0;
@@ -10333,6 +11449,7 @@
     isCheckpointNewerThanGenerator,
     buildPostCompactSummary,
     detectContextChangeEvents,
+    buildExecutionTrace,
     parseDurationSec,
     parseTimestampMs,
     mergeTimeIntervals,
@@ -10348,7 +11465,12 @@
     getEffectivePricingRules,
 
     SUBSCRIPTION_ACQUISITION_PRESETS,
+    SUBSCRIPTION_TIER_SPECS,
+    SUBSCRIPTION_TIER_REGION_PRICES,
     SUBSCRIPTION_REGIONS_PRESET,
+    resolvePlanSpecKey,
+    getPlanTierSpec,
+    getRegionPlanReferencePrice,
     findRegionPreset,
     convertToCNY,
     convertCurrency,
@@ -10389,8 +11511,10 @@
     summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
+    parseSpeedDateRange,
     MAX_SPEED_SAMPLES_PER_MODEL,
     calculateRequestApiCost,
+    summarizeSessionRequestCosts,
     summarizeApiCost,
     calculateReferenceModelCost,
     resolveEffectivePlanStatus,

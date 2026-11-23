@@ -24,9 +24,40 @@ const {
   formatTokensK,
   isValidSpeedSample,
   computeMedian,
+  parseSpeedDateRange,
   summarizeSpeedByModel,
+  summarizeSessionRequestCosts,
   MAX_SPEED_SAMPLES_PER_MODEL
 } = require('./meter-core');
+
+test('all-history speed compares more than 200 samples and custom dates are inclusive', () => {
+  const date = (day, hour = 0) => +new Date(2026, 10, day, hour);
+  const model = { status: 'final', modelExactId: 'gemini-3.8-flash', outputTokens: 200, durationSec: 5 };
+  const calls = Array.from({ length: 251 }, (_, i) => ({
+    ...model, callId: `sample-${i}`, timestamp: i < 250 ? date(23, 15) + i : date(24)
+  }));
+  const range = parseSpeedDateRange({ start: '2026-11-23', end: '2026-11-23' });
+  assert.equal(range.startMs, date(23));
+  assert.equal(range.endMs, date(24));
+  assert.equal(parseSpeedDateRange({ start: '2026-11-31', end: '2026-12-01' }), null);
+  assert.equal(summarizeSpeedByModel(calls, { days: 'all', fullHistory: true })[0].count, 251);
+  assert.equal(summarizeSpeedByModel(calls, { ...range, fullHistory: true })[0].count, 250);
+  assert.equal(summarizeSpeedByModel(calls, { days: '1', nowMs: date(24, 16), calendarDays: true, fullHistory: true })[0].count, 1);
+});
+
+test('request cost sums known rates and reports cache savings and unavailable prices separately', () => {
+  const known = { model: 'gemini-3.8-flash', inputTokens: 1000, cacheReadTokens: 2000, outputTokens: 100, status: 'final' };
+  const unknown = { ...known, model: 'unpriced-test-model' };
+  const summary = summarizeSessionRequestCosts([known, unknown, { ...known, status: 'streaming' }]);
+  assert.equal(summary.rows.length, 2);
+  assert.equal(summary.unpriced, 1);
+  assert.equal(summary.rows[0].cache, 2000);
+  assert.ok(summary.costUSD > 0);
+  assert.ok(summary.savingsUSD > 0);
+  assert.equal(summary.savingsRatio, summary.savingsUSD / (summary.costUSD + summary.savingsUSD));
+  assert.equal(summary.rows[1].costUSD, null);
+  assert.equal(summary.rows[1].savingsUSD, null);
+});
 const entry = (usage, context = {}) => ({ chatModel: { usage, chatStartMetadata: { contextWindowMetadata: context } } });
 const exceeded = 'INVALID_ARGUMENT (code 400): The input token count exceeds the maximum number of tokens allowed 1048576.';
 test('cache counted once, thinking not counted twice, backend budget preserved', () => {
@@ -470,7 +501,7 @@ test('parseUserPlanStatus treats empty status as unidentified and handles Ultra 
 
   const ultraRes = parseUserPlanStatus({ userStatus: { userTier: { name: 'Google AI Ultra' } } });
   assert.equal(ultraRes.status, 'identified');
-  assert.equal(ultraRes.tierDisplayName || ultraRes.tierName, 'Google AI Ultra（子档未知）');
+  assert.equal(ultraRes.tierDisplayName || ultraRes.tierName, 'Google AI Ultra');
   assert.equal(ultraRes.officialPriceMonthly, null);
   assert.ok(ultraRes.priceRangeNote);
 });
@@ -4907,7 +4938,7 @@ test('Issue #49: parseUserPlanStatus 自动提取 5x/20x 倍率子档与 resolve
     }
   });
   assert.equal(res5x.tierKey, 'ultra');
-  assert.equal(res5x.tierName, 'Google AI Ultra (5x)');
+  assert.equal(res5x.tierName, 'Google AI Ultra 5x');
   assert.equal(res5x.multiplier, 5);
 
   // 2. 服务端返回 20x 明确子档倍率（数值 multiplier）
@@ -4917,7 +4948,7 @@ test('Issue #49: parseUserPlanStatus 自动提取 5x/20x 倍率子档与 resolve
     }
   });
   assert.equal(res20x.tierKey, 'ultra');
-  assert.equal(res20x.tierName, 'Google AI Ultra (20x)');
+  assert.equal(res20x.tierName, 'Google AI Ultra 20x');
   assert.equal(res20x.multiplier, 20);
 
   // 3. 用户手动选择覆盖：优先于服务端返回值
@@ -4925,7 +4956,7 @@ test('Issue #49: parseUserPlanStatus 自动提取 5x/20x 倍率子档与 resolve
     planTierOverride: 'ultra_5x'
   });
   assert.equal(effManual5x.tierKey, 'ultra');
-  assert.equal(effManual5x.tierName, 'Google AI Ultra (5x)');
+  assert.equal(effManual5x.tierName, 'Google AI Ultra 5x');
   assert.equal(effManual5x.multiplier, 5);
   assert.equal(effManual5x.sources.tier, 'custom');
 
@@ -4941,7 +4972,7 @@ test('Issue #49: parseUserPlanStatus 自动提取 5x/20x 倍率子档与 resolve
   // 5. 手动选择 auto 时，恢复以服务端返回为准
   const effAuto = resolveEffectivePlanStatus(res20x, { planTierOverride: 'auto' });
   assert.equal(effAuto.tierKey, 'ultra');
-  assert.equal(effAuto.tierName, 'Google AI Ultra (20x)');
+  assert.equal(effAuto.tierName, 'Google AI Ultra 20x');
   assert.equal(effAuto.multiplier, 20);
   assert.equal(effAuto.sources.tier, 'live');
 });

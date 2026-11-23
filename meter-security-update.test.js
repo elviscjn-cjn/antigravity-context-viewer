@@ -308,6 +308,37 @@ test('卸载安全性 2.1：当前文件匹配 patchedSha256 且备份哈希正�
   }
 });
 
+test('卸载优先使用实际宿主版本对应且哈希有效的备份', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-versioned-backup-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const stateDir = path.join(tmpDir, 'state');
+  process.env.AG_METER_STATE_DIR = stateDir;
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const olderBackup = path.join(tmpDir, 'app-old.asar');
+    fs.copyFileSync(await createMockHostAsar(tmpDir, '2.33.0'), olderBackup);
+    fs.copyFileSync(await createMockHostAsar(tmpDir, '2.34.0'), targetAsar);
+    const originalSha = sha256(fs.readFileSync(targetAsar));
+    await install({ path: targetAsar });
+
+    const manifestPath = path.join(stateDir, 'installation.json');
+    const info = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const matchingBackup = info.backup;
+    info.backupsByVersion = { '2.34.0': { backup: matchingBackup, sha256: originalSha } };
+    info.backup = olderBackup;
+    info.originalSha256 = sha256(fs.readFileSync(olderBackup));
+    fs.writeFileSync(manifestPath, JSON.stringify(info));
+
+    const restored = await restore({ path: targetAsar });
+    assert.equal(restored.fromBackup, matchingBackup);
+    assert.equal(sha256(fs.readFileSync(targetAsar)), originalSha);
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('卸载安全性 2.2：当前文件已经等于目标备份时，幂等返回 alreadyRestored: true', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-restore-idempotent-'));
   const prevStateDir = process.env.AG_METER_STATE_DIR;
