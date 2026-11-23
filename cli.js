@@ -767,11 +767,13 @@ async function queryLiveWindow(options = {}) {
     const origin = normalizeLoopbackOrigin(target.url) || new URL(target.url).origin;
     const origins = Array.from(new Set(matchedTargets.map(p => normalizeLoopbackOrigin(p.url)).filter(Boolean)));
 
+    const lightProbe = Boolean(options.lightProbe);
     const client = await createCdpClient(target.webSocketDebuggerUrl, { timeoutMs: 4000 });
     try {
       const status = await client.evaluateValue(`(async () => {
-        const s = window.__AGContextMeter?.snapshot();
-        const root = document.getElementById('ag-context-meter')?.shadowRoot;
+        const light = ${lightProbe ? 'true' : 'false'};
+        const s = light ? null : window.__AGContextMeter?.snapshot();
+        const root = light ? null : document.getElementById('ag-context-meter')?.shadowRoot;
         let ipcRuntimeInfo = null;
         if (typeof window.contextMeterAPI?.getRuntimeInfo === 'function') {
           try { ipcRuntimeInfo = await window.contextMeterAPI.getRuntimeInfo(); } catch {}
@@ -780,7 +782,7 @@ async function queryLiveWindow(options = {}) {
         const backendStatus = typeof window.__AGContextMeter?.getBackendStatusForTest === 'function'
           ? window.__AGContextMeter.getBackendStatusForTest()
           : null;
-        const quotaState = typeof window.__AGContextMeter?.getModelQuotaStateForTest === 'function'
+        const quotaState = (!light && typeof window.__AGContextMeter?.getModelQuotaStateForTest === 'function')
           ? window.__AGContextMeter.getModelQuotaStateForTest()
           : null;
         return {
@@ -799,9 +801,9 @@ async function queryLiveWindow(options = {}) {
           } : null,
           effectiveBackendSource: backendStatus?.backendSource || (ipcRuntimeInfo?.backendVersion ? 'electron-ipc' : null),
           effectiveBackendVersion: backendStatus?.backendVersion || quotaState?.state?.collectorVersion || ipcRuntimeInfo?.backendVersion || null,
-          badgeText: root?.getElementById('amount')?.textContent || null,
-          route: s?.route || null,
-          latest: s?.latest || null
+          badgeText: light ? null : (root?.getElementById('amount')?.textContent || null),
+          route: light ? null : (s?.route || null),
+          latest: light ? null : (s?.latest || null)
         };
       })()`, { timeoutMs: 4000 });
       return { running: true, cdpEnabled: true, cdpPort: port, pageFound: true, origin, origins, windowCount: matchedTargets.length, ...(status || {}) };
@@ -1210,7 +1212,7 @@ async function runWatchDaemon(options = {}) {
 
   const discoverFn = typeof options._discoverWindow === 'function'
     ? options._discoverWindow
-    : () => queryLiveWindow(options);
+    : () => queryLiveWindow({ ...options, lightProbe: true });
 
   if (!options._discoverWindow && !options._ensureLiveWindow && !options._hotInject && options.autoRecover !== false) {
     await tryAutoRecoverBeforeLaunch(options.customPath || null, { ...options, stateDir }, 'watch');

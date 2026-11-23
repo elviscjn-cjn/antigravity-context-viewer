@@ -583,9 +583,18 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/token-history') {
-          const data = await collectTokenHistoryAsync({ force: request.force === true });
+          const histOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
+          const targetOrigin = allowedSet.has(histOrigin) ? histOrigin : reqOrigin;
+          const data = await collectTokenHistoryAsync({
+            force: request.force === true,
+            origin: targetOrigin
+          });
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, data }));
+          if (!request.force && request.knownRevision && data?.revision && data.revision === request.knownRevision) {
+            res.end(JSON.stringify({ ok: true, unchanged: true, revision: data.revision }));
+            return;
+          }
+          res.end(JSON.stringify({ ok: true, revision: data?.revision || null, data }));
           return;
         }
         if (req.url === '/session-timeline') {
@@ -627,17 +636,20 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           try {
             const { getSharedAccountsManager } = require('./meter-accounts');
             const mgr = getSharedAccountsManager({ origin: targetOrigin });
-            const email = resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null;
-            if (email && resData?.snapshot) {
-              mgr.syncActiveHostQuotaSnapshot(resData, email);
-              const ov = mgr.getOverviewState();
-              if (ov.autoSwitch?.enabled && !resData.error) {
-                accountSyncResult = await mgr.evaluateAutoSwitch({
-                  activeEmail: email,
-                  activeSnapshot: resData.snapshot,
-                  syncState: 'fresh',
-                  isGenerating: Boolean(request?.isGenerating)
-                });
+            const switchInFlight = typeof mgr.isSwitchInProgress === 'function' ? mgr.isSwitchInProgress() : false;
+            if (!switchInFlight && resData?.ok !== false) {
+              const email = _raw?.planStatus?.email || resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null;
+              if (email && resData?.snapshot) {
+                mgr.syncActiveHostQuotaSnapshot(resData, email);
+                const ov = mgr.getOverviewState();
+                if (ov.autoSwitch?.enabled && !resData.error) {
+                  accountSyncResult = await mgr.evaluateAutoSwitch({
+                    activeEmail: email,
+                    activeSnapshot: resData.snapshot,
+                    syncState: 'fresh',
+                    isGenerating: Boolean(request?.isGenerating)
+                  });
+                }
               }
             }
           } catch { }
@@ -678,7 +690,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           }));
           return;
         }
-        const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
+        const data = await collect(effectiveOrigin, request.id, { force: request.force === true, supersedePrevious: true });
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
           ok: true,

@@ -575,6 +575,11 @@
         return translationCache.get(normalized);
       }
 
+      // 超长段落文本绝非 UI 菜单或按钮标签，快速短路避免进入 338 条正则及分句双重循环
+      if (normalized.length > 280) {
+        return cacheAndReturn(normalized, null);
+      }
+
       if (hasOwn.call(exactDict, normalized)) {
         return cacheAndReturn(normalized, exactDict[normalized]);
       }
@@ -805,6 +810,13 @@
     'stderr'
   ];
 
+  function escapeRegexLit(str) {
+    return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  var IGNORED_CLASS_RE = new RegExp('(?:' + IGNORED_CLASSES.map(escapeRegexLit).join('|') + ')');
+  var PROTECTED_CLASS_RE = new RegExp('(?:' + PROTECTED_CLASS_SUBSTRS.map(escapeRegexLit).join('|') + ')', 'i');
+  var PROTECTED_TESTID_RE = new RegExp('(?:' + PROTECTED_TESTID_PATTERNS.map(escapeRegexLit).join('|') + ')');
+
   var MENTION_CATEGORIES = {
     Rules: 1, '规则': 1,
     Conversation: 1, '对话': 1,
@@ -846,6 +858,18 @@
     if (isModelSelectorBoundary(cur)) return true;
 
     if (cur.getAttribute) {
+      if (cur.hasAttribute && (
+          cur.hasAttribute('data-markdown-root') ||
+          cur.hasAttribute('data-markdown-virtualized') ||
+          cur.hasAttribute('data-markdown-block-index') ||
+          cur.hasAttribute('data-quotable') ||
+          cur.hasAttribute('data-quotable-inline') ||
+          cur.hasAttribute('data-md-table') ||
+          cur.hasAttribute('data-diff-type') ||
+          cur.hasAttribute('data-cos-artifact')
+      )) {
+        return true;
+      }
       if (cur.getAttribute('contenteditable') === 'true' ||
           cur.getAttribute('role') === 'textbox' ||
           cur.getAttribute('role') === 'code' ||
@@ -861,27 +885,13 @@
       var dataRole = cur.getAttribute('data-role') || '';
       if (dataRole === 'assistant' || dataRole === 'user' || role === 'code') return true;
       var dtid = cur.getAttribute('data-testid') || '';
-      if (dtid) {
-        for (var ti = 0; ti < PROTECTED_TESTID_PATTERNS.length; ti++) {
-          if (dtid.indexOf(PROTECTED_TESTID_PATTERNS[ti]) !== -1) return true;
-        }
-      }
+      if (dtid === 'code-gutter' || dtid === 'code-gutter-diff' || dtid === 'mcp-tool-step') return true;
+      if (dtid && PROTECTED_TESTID_RE.test(dtid)) return true;
     }
 
     var cls = typeof cur.className === 'string' ? cur.className : '';
     if (cls) {
-      var tokens = cls.split(/\s+/);
-      for (var tIdx = 0; tIdx < tokens.length; tIdx++) {
-        var tok = tokens[tIdx];
-        if (!tok) continue;
-        for (var ci = 0; ci < IGNORED_CLASSES.length; ci++) {
-          if (tok === IGNORED_CLASSES[ci] || tok.indexOf(IGNORED_CLASSES[ci]) !== -1) return true;
-        }
-      }
-      var clsLower = cls.toLowerCase();
-      for (var pi = 0; pi < PROTECTED_CLASS_SUBSTRS.length; pi++) {
-        if (clsLower.indexOf(PROTECTED_CLASS_SUBSTRS[pi]) !== -1) return true;
-      }
+      if (IGNORED_CLASS_RE.test(cls) || PROTECTED_CLASS_RE.test(cls)) return true;
     }
     return false;
   }
@@ -931,8 +941,22 @@
           return true;
         }
         if (cur.id && PROTECTED_ID_SET[cur.id]) return true;
+        if (cur.hasAttribute && (
+          cur.hasAttribute('data-markdown-root') ||
+          cur.hasAttribute('data-markdown-virtualized') ||
+          cur.hasAttribute('data-markdown-block-index') ||
+          cur.hasAttribute('data-quotable') ||
+          cur.hasAttribute('data-quotable-inline') ||
+          cur.hasAttribute('data-md-table') ||
+          cur.hasAttribute('data-diff-type') ||
+          cur.hasAttribute('data-cos-artifact')
+        )) {
+          return true;
+        }
         if (cur.getAttribute && (
           cur.getAttribute('data-testid') === 'user-message-content' ||
+          cur.getAttribute('data-testid') === 'code-gutter' ||
+          cur.getAttribute('data-testid') === 'code-gutter-diff' ||
           cur.getAttribute('contenteditable') === 'true' ||
           cur.getAttribute('role') === 'textbox' ||
           cur.getAttribute('data-lexical-editor') === 'true' ||
@@ -963,9 +987,9 @@
     return false;
   }
 
-  function shouldIgnoreElement(el) {
-    if (!el || el.nodeType !== 1) return false;
+  var ignoreElementCache = typeof WeakMap === 'function' ? new WeakMap() : null;
 
+  function computeShouldIgnoreElement(el) {
     // 1. 强保护容器检查 (即使白名单标签也不能突破 CODE/PRE/user-message-content/Markdown/工具输出)
     if (hasProtectedCoreAncestor(el)) return true;
 
@@ -995,6 +1019,18 @@
     return false;
   }
 
+  function shouldIgnoreElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (ignoreElementCache && ignoreElementCache.has(el)) {
+      return ignoreElementCache.get(el);
+    }
+    var res = computeShouldIgnoreElement(el);
+    if (ignoreElementCache && (res === true || el.isConnected === true)) {
+      ignoreElementCache.set(el, res);
+    }
+    return res;
+  }
+
   var MARK_ATTR = '_agyDone';
   var currentScanId = 0;
 
@@ -1003,7 +1039,18 @@
   }
 
   function applyBrandTitleToText(trimmed, parentEl) {
+    if (
+      trimmed !== 'Antigravity' &&
+      trimmed !== 'Google Antigravity' &&
+      trimmed !== '反重力' &&
+      trimmed !== 'Google 反重力'
+    ) {
+      return null;
+    }
     var mode = getBrandTitleMode();
+    if (mode === 'english' && (trimmed === 'Antigravity' || trimmed === 'Google Antigravity')) {
+      return null;
+    }
     if (!parentEl || !parentEl.tagName) return null;
     var tag = parentEl.tagName;
     if (tag === 'CODE' || tag === 'PRE' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SCRIPT' || tag === 'STYLE') return null;
@@ -1340,7 +1387,8 @@
       if (child.nodeType === 3) {
         translateTextNode(child);
       } else if (child.nodeType === 1) {
-        translateElement(child, scanId);
+        if (scanId) translateElement(child, scanId);
+        else enqueueNode(child);
       }
       child = child.nextSibling;
     }
@@ -1383,13 +1431,13 @@
 
   function enqueueNode(node) {
     if (!node) return;
+    var checkEl = node.nodeType === 1 ? node : (node.parentElement || node.parentNode);
+    if (checkEl && checkEl.nodeType === 1 && shouldIgnoreElement(checkEl)) return;
     if (pendingNodeSet) {
       if (pendingNodeSet.has(node)) return;
-      if (pendingNodes.length < 500) {
-        pendingNodes.push(node);
-        pendingNodeSet.add(node);
-      }
-    } else if (pendingNodes.length < 500) {
+      pendingNodes.push(node);
+      pendingNodeSet.add(node);
+    } else {
       pendingNodes.push(node);
     }
   }
@@ -1461,21 +1509,8 @@
       reconnectObserver();
     }
 
-    var idleScanScheduled = false;
-    function scheduleIdleScan() {
-      if (!i18nEnabled && getBrandTitleMode() === 'english') return;
-      if (idleScanScheduled) return;
-      if (root.requestIdleCallback) {
-        idleScanScheduled = true;
-        root.requestIdleCallback(function () {
-          idleScanScheduled = false;
-          safeFullScan();
-        }, { timeout: 5000 });
-      } else {
-        safeFullScan();
-      }
-    }
-    setInterval(scheduleIdleScan, 15000);
+    // 首屏全量翻译后由 MutationObserver 增量处理新增节点。
+    // 不再每 15 秒递归整棵 DOM；复杂插件页的全树扫描会阻塞主线程数秒。
   }
 
   function isFloatingElement(el) {
@@ -1556,17 +1591,20 @@
       }
 
       var onHoverAction = function (e) {
+        var target = e && e.target;
+        if (!target || target.nodeType !== 1) return;
+        if (target.id && PROTECTED_ID_SET[target.id]) return;
         var now = Date.now ? Date.now() : (+new Date());
         if (now - lastHoverTime < 120) return;
+        if (shouldIgnoreElement(target)) return;
         lastHoverTime = now;
 
-        var target = e.target;
-        if (!target) return;
         disconnectObserver();
         try {
-          if (target.nodeType === 1) {
-            translateElement(target);
-            if (target.parentElement && !isWorkbenchOrRoot(target.parentElement)) translateElement(target.parentElement);
+          translateElement(target);
+          var parentEl = target.parentElement;
+          if (parentEl && !isWorkbenchOrRoot(parentEl) && (!parentEl.children || parentEl.children.length <= 12) && !shouldIgnoreElement(parentEl)) {
+            translateElement(parentEl);
           }
         } catch (e) {}
         reconnectObserver();
@@ -1580,10 +1618,20 @@
 
       doc.addEventListener('pointerenter', onHoverAction, { capture: true, passive: true });
       doc.addEventListener('contextmenu', onHoverAction, { capture: true, passive: true });
+      if (root) {
+        root.__AGY_I18N_DISPOSE__ = function () {
+          try { disconnectObserver(); } catch (e) {}
+          try { if (hoverScanTimer) { clearTimeout(hoverScanTimer); hoverScanTimer = null; } } catch (e) {}
+          try { if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; } } catch (e) {}
+          try { doc.removeEventListener('pointerenter', onHoverAction, { capture: true }); } catch (e) {}
+          try { doc.removeEventListener('contextmenu', onHoverAction, { capture: true }); } catch (e) {}
+        };
+      }
     } catch (e) {}
   }
 
   if (root) {
+    root.__AGY_I18N_RUNTIME_VER__ = '3.4.0-perf2';
     root.__AGY_CREATE_ENGINE__ = createI18nEngine;
     root.__AGY_TRANSLATE_UNIT__ = translateSingleUnit;
     root.__AGY_TRANSLATE_EL__ = translateElement;

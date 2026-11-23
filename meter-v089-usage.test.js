@@ -1966,3 +1966,134 @@ test('Issue #77 历史用量守恒与防撞回归：删会话保留旧消耗、�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('perf: collectTokenHistoryAsync 稳定 revision 指纹、构建哈希 stat 缓存与 collectTurnState 轻量摘要快速通道', async () => {
+  const os = require('node:os');
+  const http = require('node:http');
+  const collector = require('./meter-collector');
+  const { getHostCoreBuildId } = require('./modules-config');
+  const { getRendererBuildId, getWatchBundleBuildId } = require('./install');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-perf-pipe-'));
+  let srv = null;
+  try {
+    // 1. 构建哈希 stat 门禁缓存与文件修改即时失效
+    const fakeRepo = path.join(tmpDir, 'repo');
+    fs.mkdirSync(fakeRepo, { recursive: true });
+    const fakeRenderer = path.join(fakeRepo, 'meter-renderer.js');
+    const fakePkg = path.join(fakeRepo, 'package.json');
+    fs.writeFileSync(fakeRenderer, '/* v1 */', 'utf8');
+    fs.writeFileSync(fakePkg, '{"version":"0.9.0"}', 'utf8');
+    const rId1 = getRendererBuildId(fakeRenderer);
+    const rId2 = getRendererBuildId(fakeRenderer);
+    const hId1 = getHostCoreBuildId(fakeRepo);
+    const bId1 = getWatchBundleBuildId(fakeRepo);
+    assert.equal(rId1, rId2);
+    fs.writeFileSync(fakeRenderer, '/* v2-updated-length */', 'utf8');
+    fs.writeFileSync(fakePkg, '{"version":"0.9.0","x":1}', 'utf8');
+    assert.notEqual(getRendererBuildId(fakeRenderer), rId1, '渲染文件变更后 getRendererBuildId 必须立即更新');
+    assert.notEqual(getHostCoreBuildId(fakeRepo), hId1, '核心文件变更后 getHostCoreBuildId 必须立即更新');
+    assert.notEqual(getWatchBundleBuildId(fakeRepo), bId1, '监听包文件变更后 getWatchBundleBuildId 必须立即更新');
+
+    // 2. collectTokenHistoryAsync 稳定 revision 指纹
+    const agDir = path.join(tmpDir, 'ag');
+    const cliDir = path.join(tmpDir, 'cli');
+    const stateDir = path.join(tmpDir, 'state');
+    const convId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const logDir = path.join(agDir, 'brain', convId, '.system_generated', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.mkdirSync(path.join(agDir, 'conversations'), { recursive: true });
+    fs.mkdirSync(path.join(cliDir, 'conversations'), { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(agDir, 'conversations', `${convId}.pb`), 'pb-perf');
+    const tIso1 = new Date(Date.now() - 120000).toISOString();
+    const tIso2 = new Date(Date.now() - 60000).toISOString();
+    fs.writeFileSync(path.join(logDir, 'transcript.jsonl'), JSON.stringify({
+      step_index: 1,
+      callId: 'perf-call-1',
+      model: 'Gemini 4 Neon (High)',
+      input_tokens: 1000,
+      cache_read_tokens: 500,
+      output_tokens: 200,
+      status: 'DONE',
+      created_at: tIso1
+    }) + '\n');
+
+    const hist1 = await collector.collectTokenHistoryAsync({ force: true, agDir, agCliDir: cliDir, stateDir, skipWslDiscovery: true });
+    const hist2 = await collector.collectTokenHistoryAsync({ force: true, agDir, agCliDir: cliDir, stateDir, skipWslDiscovery: true });
+    assert.equal(hist1.summary.grandTotalTokens, 1700);
+    assert.match(String(hist1.revision || ''), /^[0-9a-f]{16}$/);
+    assert.equal(hist1.revision, hist2.revision, '用量未变化时 revision 必须严格幂等');
+
+    fs.appendFileSync(path.join(logDir, 'transcript.jsonl'), JSON.stringify({
+      step_index: 2,
+      callId: 'perf-call-2',
+      model: 'Gemini 4 Neon (High)',
+      input_tokens: 1200,
+      cache_read_tokens: 600,
+      output_tokens: 300,
+      status: 'DONE',
+      created_at: tIso2
+    }) + '\n');
+    collector.transcriptFileCache.clear();
+    const hist3 = await collector.collectTokenHistoryAsync({ force: true, agDir, agCliDir: cliDir, stateDir, skipWslDiscovery: true });
+    assert.notEqual(hist3.revision, hist1.revision, '新增调用后 revision 必须变化');
+
+    // 3. collectTurnState 优先走 GetAllCascadeTrajectories 摘要快通，零调用全量 GetCascadeTrajectory
+    let fullTrajectoryCalls = 0;
+    const turnId = '11111111-2222-4333-8444-555555555555';
+    srv = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => (body += c));
+      req.on('end', () => {
+        res.setHeader('Content-Type', 'application/json');
+        if (req.url === '/') {
+          res.end('<script>window.__APP_CONFIG__={"csrfToken":"tok-perf-test"};</script>');
+          return;
+        }
+        if (req.url.endsWith('/GetCascadeTrajectory')) {
+          fullTrajectoryCalls += 1;
+          res.end(JSON.stringify({ status: 'CASCADE_RUN_STATUS_IDLE', numTotalSteps: 2, numTotalGeneratorMetadata: 1 }));
+          return;
+        }
+        if (req.url.endsWith('/GetAllCascadeTrajectories')) {
+          res.end(JSON.stringify({
+            trajectorySummaries: {
+              [turnId]: { status: 'CASCADE_RUN_STATUS_RUNNING', stepCount: 2, lastUserInputStepIndex: 0 }
+            }
+          }));
+          return;
+        }
+        if (req.url.endsWith('/GetCascadeTrajectorySteps')) {
+          res.end(JSON.stringify({
+            steps: [
+              { userInput: { userResponse: 'hi' }, metadata: { createdAt: '2026-11-23T06:00:00.000Z' } },
+              { plannerResponse: { response: 'ok' }, metadata: { createdAt: '2026-11-23T06:00:02.000Z' } }
+            ]
+          }));
+          return;
+        }
+        if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+          res.end(JSON.stringify({
+            generatorMetadata: [{
+              stepIndices: [1],
+              chatModel: { usage: { model: 'MODEL_PLACEHOLDER_M535', inputTokens: 500, outputTokens: 80 } }
+            }]
+          }));
+          return;
+        }
+        res.end('{}');
+      });
+    });
+    await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${srv.address().port}`;
+    const ts = await collector.collectTurnState(origin, turnId);
+    assert.equal(fullTrajectoryCalls, 0, 'GetAllCascadeTrajectories 可用时不应拉取全量 GetCascadeTrajectory');
+    assert.equal(ts.numTotalSteps, 2);
+    assert.equal(ts.cascadeStatus, 'CASCADE_RUN_STATUS_RUNNING');
+  } finally {
+    if (srv) await new Promise(resolve => srv.close(resolve));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+

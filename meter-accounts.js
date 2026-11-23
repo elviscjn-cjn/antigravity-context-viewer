@@ -760,8 +760,24 @@ function resolveSystemNodeBinary() {
   return null;
 }
 
+const _stateDbItemsCache = new Map();
+
 function readStateDbItems(dbPath, keys) {
   if (!dbPath || !fs.existsSync(dbPath)) return {};
+  let statSig = '';
+  try {
+    const st = fs.statSync(dbPath);
+    let walSig = '0:0';
+    try {
+      const wst = fs.statSync(`${dbPath}-wal`);
+      walSig = `${wst.size}:${wst.mtimeMs}`;
+    } catch { }
+    statSig = `${st.size}:${st.mtimeMs}|${walSig}|${keys.join(',')}`;
+    const cached = _stateDbItemsCache.get(dbPath);
+    if (cached && cached.statSig === statSig) {
+      return { ...cached.items };
+    }
+  } catch { }
   const DatabaseSync = getSqliteSyncCtor();
   if (DatabaseSync) {
     const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -772,6 +788,7 @@ function readStateDbItems(dbPath, keys) {
         const row = stmt.get(k);
         out[k] = row ? row.value : null;
       }
+      if (statSig) _stateDbItemsCache.set(dbPath, { statSig, items: { ...out } });
       return out;
     } finally {
       db.close();
@@ -1790,13 +1807,20 @@ function createAccountsManager(options = {}) {
         dirty = true;
       }
       if (hostEmail || dbEmail) {
+        const nowMs = Date.now();
+        const prevOpen = Array.isArray(store.verifiedSessions)
+          ? store.verifiedSessions.find(s => s && s.endAtMs == null && normalizeEmail(s.email) === resolved)
+          : null;
+        const prevVerifiedAt = Number(prevOpen?.lastVerifiedAtMs || 0);
         recordVerifiedAccountSession(store, {
           email: resolved,
-          nowMs: Date.now(),
+          nowMs,
           source: 'desktop',
           evidence: hostEmail ? 'host_user_status' : 'desktop_state_db'
         });
-        dirty = true;
+        if (!prevOpen || (nowMs - prevVerifiedAt) >= 60000) {
+          dirty = true;
+        }
       }
       if (dirty) saveStore(store);
     }

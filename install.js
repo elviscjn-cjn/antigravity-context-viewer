@@ -976,11 +976,19 @@ async function install(options = {}) {
   }
 }
 
+const _rendererBuildCache = new Map();
+const _watchBundleBuildCache = new Map();
+
 function getRendererBuildId(filePath = null) {
   try {
     const p = filePath || path.join(__dirname, 'meter-renderer.js');
-    if (!fs.existsSync(p)) return null;
-    return sha(fs.readFileSync(p)).slice(0, 12);
+    const st = fs.statSync(p);
+    const statSig = `${st.size}:${st.mtimeMs}`;
+    const cached = _rendererBuildCache.get(p);
+    if (cached && cached.statSig === statSig) return cached.hash;
+    const hash = sha(fs.readFileSync(p)).slice(0, 12);
+    _rendererBuildCache.set(p, { statSig, hash });
+    return hash;
   } catch {
     return null;
   }
@@ -989,12 +997,28 @@ function getRendererBuildId(filePath = null) {
 function getWatchBundleBuildId(baseDir = null) {
   try {
     const root = baseDir || __dirname;
-    const h = crypto.createHash('sha256');
-    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-accounts.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+    const files = ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-accounts.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json'];
+    const statParts = [];
+    const existingPaths = [];
+    for (const f of files) {
       const p = path.join(root, f);
-      if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
+      try {
+        const st = fs.statSync(p);
+        statParts.push(`${f}:${st.size}:${st.mtimeMs}`);
+        existingPaths.push([f, p]);
+      } catch { }
     }
-    return h.digest('hex').slice(0, 12);
+    const statSig = statParts.join('|');
+    const cached = _watchBundleBuildCache.get(root);
+    if (cached && cached.statSig === statSig) return cached.hash;
+
+    const h = crypto.createHash('sha256');
+    for (const [f, p] of existingPaths) {
+      h.update(f + ':').update(fs.readFileSync(p));
+    }
+    const hash = h.digest('hex').slice(0, 12);
+    _watchBundleBuildCache.set(root, { statSig, hash });
+    return hash;
   } catch {
     return null;
   }

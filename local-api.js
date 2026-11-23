@@ -93,12 +93,16 @@ function getCandidateCdpPorts(options = {}) {
   return ports;
 }
 
+const _keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 8, rejectUnauthorized: false });
+const _keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 8 });
+
 function request(url, body, token, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
-    const req = (url.startsWith('https:') ? https : http).request(
+    const isHttps = url.startsWith('https:');
+    const req = (isHttps ? https : http).request(
       url,
       {
-        agent: false,
+        agent: isHttps ? _keepAliveHttpsAgent : _keepAliveHttpAgent,
         rejectUnauthorized: false,
         method: body ? 'POST' : 'GET',
         headers: body
