@@ -391,6 +391,135 @@ function listMacProcessesAsync() {
   });
 }
 
+/**
+ * 预检 macOS .app 包的 Info.plist ElectronAsarIntegrity 与 codesign 签名状态（Issue #80）
+ * 跨平台纯 Node 实现，支持测试环境注入 _platform/_existsSync/_readFileSync/_execFileSync。
+ */
+function inspectMacAsarIntegrity(asarPath, options = {}) {
+  const platform = options._platform || process.platform;
+  const existsFn = options._existsSync || fs.existsSync;
+  const readFn = options._readFileSync || ((p) => fs.readFileSync(p, 'utf8'));
+  const execSyncFn = options._execFileSync || execFileSync;
+
+  const result = {
+    isMacAppBundle: false,
+    appBundlePath: options.appBundlePath || null,
+    plistPath: null,
+    plistExists: false,
+    hasAsarIntegrity: null,
+    integrityAlgorithm: null,
+    signatureStatus: 'not_checked',
+    teamIdentifier: null,
+    hardenedRuntime: null,
+    patchRisk: 'safe',
+    recommendedEntry: 'node cli.js install',
+    reason: '非 macOS .app 结构，无需 ElectronAsarIntegrity 拦截'
+  };
+
+  if (!asarPath && !options.appBundlePath) {
+    return result;
+  }
+
+  let appBundlePath = options.appBundlePath || null;
+  if (!appBundlePath && asarPath) {
+    const norm = path.resolve(String(asarPath)).replace(/\\/g, '/');
+    const m = norm.match(/^(.*?\.app)\/Contents\/Resources\/app\.asar$/i);
+    if (m) {
+      appBundlePath = m[1];
+    } else if (/\.app$/i.test(norm)) {
+      appBundlePath = norm;
+    }
+  }
+
+  const isMacTarget = Boolean(appBundlePath) || platform === 'darwin' || options.forceMacInspect === true;
+  if (!appBundlePath || (!isMacTarget && platform !== 'darwin')) {
+    return result;
+  }
+
+  result.isMacAppBundle = true;
+  result.appBundlePath = appBundlePath;
+  const plistPath = path.join(appBundlePath, 'Contents', 'Info.plist');
+  result.plistPath = plistPath;
+
+  let plistRaw = null;
+  try {
+    if (existsFn(plistPath)) {
+      result.plistExists = true;
+      plistRaw = String(readFn(plistPath, 'utf8') || '');
+    }
+  } catch {
+    result.plistExists = false;
+  }
+
+  if (plistRaw !== null) {
+    const hasKey = /<key>\s*ElectronAsarIntegrity\s*<\/key>/i.test(plistRaw);
+    result.hasAsarIntegrity = hasKey;
+    if (hasKey) {
+      const algM = plistRaw.match(/<key>\s*algorithm\s*<\/key>\s*<string>\s*([^<\s]+)\s*<\/string>/i);
+      result.integrityAlgorithm = algM ? algM[1] : 'SHA256';
+    }
+  } else {
+    result.hasAsarIntegrity = null;
+  }
+
+  if (platform === 'darwin' || typeof options._execFileSync === 'function') {
+    try {
+      const signOut = String(execSyncFn('codesign', ['-dv', '--verbose=4', appBundlePath], {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['ignore', 'pipe', 'pipe']
+      }) || '');
+      const teamM = signOut.match(/TeamIdentifier=([^\r\n]+)/);
+      const teamVal = teamM ? teamM[1].trim() : null;
+      result.teamIdentifier = teamVal;
+      result.hardenedRuntime = /flags=0x[0-9a-f]+\(runtime\)|Runtime Version/i.test(signOut);
+      if (teamVal && teamVal.toLowerCase() !== 'not set') {
+        result.signatureStatus = 'signed';
+      } else if (/Signature=adhoc/i.test(signOut)) {
+        result.signatureStatus = 'adhoc';
+      } else if (signOut.trim()) {
+        result.signatureStatus = 'signed';
+      } else {
+        result.signatureStatus = 'unknown';
+      }
+    } catch (err) {
+      const errOut = String((err && (err.stderr || err.stdout || err.message)) || '');
+      // macOS 上 codesign -dv 默认把签名信息输出到 stderr，execFileSync 返回 0 时走上面；非 0 常见为未签名或拒绝访问
+      const teamM = errOut.match(/TeamIdentifier=([^\r\n]+)/);
+      if (teamM) {
+        const teamVal = teamM[1].trim();
+        result.teamIdentifier = teamVal;
+        result.hardenedRuntime = /flags=0x[0-9a-f]+\(runtime\)|Runtime Version/i.test(errOut);
+        result.signatureStatus = (teamVal && teamVal.toLowerCase() !== 'not set')
+          ? 'signed'
+          : (/Signature=adhoc/i.test(errOut) ? 'adhoc' : 'signed');
+      } else if (/not signed at all/i.test(errOut)) {
+        result.signatureStatus = 'unsigned';
+      } else {
+        result.signatureStatus = 'unknown';
+      }
+    }
+  }
+
+  if (result.hasAsarIntegrity === true) {
+    result.patchRisk = 'blocked_integrity';
+    result.recommendedEntry = 'node cli.js watch';
+    result.reason = `检测到 macOS ElectronAsarIntegrity (${result.integrityAlgorithm || 'SHA256'})` +
+      (result.teamIdentifier ? ` 与官方签名 TeamIdentifier=${result.teamIdentifier}` : '') +
+      '，直接改写 app.asar 会导致客户端启动完整性校验失败或破坏系统权限，建议使用免改盘 node cli.js watch';
+  } else if (result.hasAsarIntegrity === null || result.signatureStatus === 'unknown') {
+    result.patchRisk = 'unknown_signature';
+    result.recommendedEntry = 'node cli.js watch';
+    result.reason = '无法读取 Info.plist ElectronAsarIntegrity 或 codesign 签名状态，为避免破坏 macOS 完整性校验，优先推荐使用免改盘 node cli.js watch';
+  } else {
+    result.patchRisk = 'safe';
+    result.recommendedEntry = 'node cli.js install';
+    result.reason = '未检测到 ElectronAsarIntegrity 强制校验，可执行常规安装';
+  }
+
+  return result;
+}
+
 module.exports = {
   MH_MAGIC_64,
   FAT_MAGIC,
@@ -411,5 +540,6 @@ module.exports = {
   parsePsOutput,
   isExactMacLanguageServerProcess,
   listMacProcessesSync,
-  listMacProcessesAsync
+  listMacProcessesAsync,
+  inspectMacAsarIntegrity
 };

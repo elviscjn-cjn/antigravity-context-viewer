@@ -4,12 +4,6 @@
 
 See how much context your conversation uses, how fast the model responds, and how many tokens you have used across the desktop app and CLI, right from the Google Antigravity 2.x toolbar.
 
-## Demo
-
-https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
-
-[Download HD MP4](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
-
 ## Features
 
 - **Context and speed**. See context usage, the model budget, time to first token (TTFT), output rate, and total generation time. Server-reported usage and local estimates are shown separately.
@@ -25,7 +19,7 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 ## Interface language
 
 - **Viewer panel (3 languages)**: Switch the plugin panel live between **简体中文**, **繁體中文**, and **English** across all tabs, charts, billing views, and enhancement settings.
-- **Client UI language & licensing**: The client localization module supports **Simplified Chinese** (`i18n/zh-CN.json`) and stock **English**. A Traditional Chinese client dictionary from `qqxpee/antigravity2-cn` is omitted because no open-source license is declared upstream; selecting `繁體中文` translates the plugin panel only.
+- **Client UI language & licensing**: The client localization module supports **Simplified Chinese** (`i18n/zh-CN.json`) and stock **English**. The Antigravity UI localization is based on [Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization) (Release `v2.34.0`), thanks to **aabbWei** and **antigravity-cn-community contributors**. Full MIT license terms and copyright notices are bundled in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). A Traditional Chinese client dictionary from `qqxpee/antigravity2-cn` is omitted because no open-source license is declared upstream; selecting `繁體中文` translates the plugin panel only.
 
 ---
 
@@ -58,12 +52,21 @@ node cli.js status
 ```bash
 node cli.js check
 node cli.js install
+node cli.js live              # Patch-free CDP injection (auto-launches with CDP port; pass --relaunch outside host if already running without CDP on v2.33.0+)
+node cli.js watch             # Patch-free background watcher (recommended on macOS to preserve Apple code signatures)
+node cli.js stop-watch
 node cli.js status
 node cli.js restore
 node cli.js enhance-status
 node cli.js enhance --tier 3 --chinese-title on --brand-title english
 node cli.js enhance-restore
 ```
+
+> [!IMPORTANT]
+> **Antigravity v2.34.0 & macOS `ElectronAsarIntegrity` Support Scope**:
+> - **Window-loader anchor (`loadHubWindowUrl`)**: Verified across clean install, upgrade (`v2.33.0 -> v2.34.0`), and lossless restore tests.
+> - **macOS `ElectronAsarIntegrity` & code signature**: Signed macOS `Antigravity.app` bundles enable `ElectronAsarIntegrity` in `Info.plist` plus Hardened Runtime (`TeamIdentifier`). Modifying `app.asar` in-place risks launch integrity failures or breaking Keychain/TCC permissions. `node cli.js check` reports integrity preflight status, and `node cli.js install` blocks patching integrity-protected macOS `.app` bundles by default in favor of patch-free **`node cli.js watch`** (`open -a Antigravity --args --remote-debugging-port=58321`) unless `--force-mac-asar` is explicitly passed.
+> - **Unverified on real Mac hardware**: No physical macOS host was available during this release cycle; real macOS cold-boot signature behavior and desktop UI interactions await community hardware feedback.
 
 ---
 
@@ -79,13 +82,15 @@ Tests cover context estimates, token aggregation, storage, proxy configuration, 
 ## 🛡️ Security & Windows CLI Helper Transparency
 
 - **Purpose**: On Windows, the optional `scripts/cli-window-helper.exe` (source in [scripts/cli-window-helper.cs](scripts/cli-window-helper.cs)) is used solely when launching an `agy` CLI session from the UI popup to locate, center, and foreground the newly spawned console window. It makes no network calls and performs no persistence.
-- **Toolchain & Local Build Command**: Compiled from source using built-in Windows `.NET Framework 4.0`:
+- **Verifiable Build Provenance (No Prebuilt Binary in Git)**: Prebuilt `scripts/cli-window-helper.exe` is no longer tracked in Git. Release binaries are compiled directly from `scripts/cli-window-helper.cs` with SHA-256 verification via:
+  1. GitHub Actions (`.github/workflows/release.yml`), compiling on `windows-latest` with `.NET Framework 4.0` and verifying `.sha256` before packaging Windows ZIP bundles;
+  2. Local packaging (`node scripts/package-release.js`) or local source installation (`node cli.js install`), compiling `scripts/cli-window-helper.cs` into an OS temp directory via local `csc.exe` without touching the working tree or reusing stale `.exe` files.
+- **Toolchain & Manual Build Command**: Compiled from source using built-in Windows `.NET Framework 4.0`:
   ```powershell
   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /platform:anycpu /optimize+ /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
   ```
-- **Current Prebuilt Binary SHA-256**: `e6a62cbb03163107db889e6accf7c05049ecf949c89f29afaf072c66fe09eac9` (Note: `csc.exe` embeds PE timestamps/MVIDs unless deterministic flags are set, so rebuilding locally or in `.github/workflows/release.yml` on `windows-latest` yields a functionally identical binary with a different hash; CI source compilation improves build provenance, though it does **not** guarantee zero heuristic detections by all AV engines.)
-- **AV Heuristic Phenomenon**: Because it is an unsigned ~15 KB .NET executable invoking `keybd_event`, `AttachThreadInput`, `AllowSetForegroundWindow`, `CreateToolhelp32Snapshot`, and `Process.Start("cmd.exe")`, some antivirus scanners may flag it heuristically.
-- **Safe Fallback Without Disabling AV**: You do **not** need to disable antivirus software or buy a code-signing certificate. Simply delete `scripts/cli-window-helper.exe` (or allow AV quarantine). `meter-cli-launcher.js` automatically falls back to spawning a standard console (`cmd.exe /d /k`) directly—CLI launching continues working normally, only without automatic centering or forced foreground activation.
+- **AV Heuristic Phenomenon**: Because it is an unsigned ~15 KB .NET executable invoking `keybd_event`, `AttachThreadInput`, `AllowSetForegroundWindow`, `CreateToolhelp32Snapshot`, and `Process.Start("cmd.exe")`, some antivirus scanners may flag it heuristically. (CI source compilation makes provenance transparent, though it does **not** guarantee zero heuristic detections by all AV engines.)
+- **Safe Fallback Without Disabling AV**: You do **not** need to disable antivirus software or buy a code-signing certificate. Simply delete `cli-window-helper.exe` (in `scripts/cli-window-helper.exe` or `%LOCALAPPDATA%\AntigravityContextMeter\cli-window-helper.exe`). `meter-cli-launcher.js` automatically falls back to spawning a standard console (`cmd.exe /d /k`) directly—CLI launching continues working normally, only without automatic centering or forced foreground activation.
 
 ---
 
@@ -103,3 +108,4 @@ Tests cover context estimates, token aggregation, storage, proxy configuration, 
 - **Issue #17 (`cli-window-helper` Security Transparency, Hashes & CI Build Workflow)**: Reported & investigated by **[@riandycandra](https://github.com/riandycandra)**.
 - **PR #21 (Traditional Chinese UI Refinement)**: Contributed by **[@U1tr0n-Lee](https://github.com/U1tr0n-Lee)**.
 - **Issue #22 (Official Web/Atom Fallback Under GitHub API Rate Limits)**: Proposed by **[@zhao33079-zhao](https://github.com/zhao33079-zhao)**.
+- **Client UI Localization Upstream**: Antigravity UI localization is based on [Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization) (Release `v2.34.0`), thanks to **aabbWei** and **antigravity-cn-community contributors** (MIT License; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)).

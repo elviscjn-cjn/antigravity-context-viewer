@@ -419,7 +419,7 @@
 
   function getContinuousScaleStops() {
     const scale = getEffectiveHeatmapScale();
-    const isLight = typeof resolveEffectiveTheme === 'function' && resolveEffectiveTheme() === 'light';
+    const isLight = resolveTheme() === 'light';
     const hasCustomHeat = Boolean(
       customColors.heatLow ||
       customColors.heatHigh ||
@@ -560,21 +560,66 @@
   }
 
   let lastSyncedOverlayKey = '';
+  function resolveNativeTitlebarOverlayColors() {
+    const pickHex = (candidates) => {
+      for (const raw of candidates) {
+        if (!raw || typeof raw !== 'string') continue;
+        const tVal = raw.trim();
+        if (!tVal || tVal === 'transparent' || tVal === 'rgba(0, 0, 0, 0)') continue;
+        const hex = normalizeHex(tVal);
+        if (hex) return hex;
+      }
+      return '';
+    };
+    const isLight = (() => {
+      const attr = host?.getAttribute?.('data-theme') || host?.getAttribute?.('data-panel-tone');
+      if (attr === 'light') return true;
+      if (attr === 'dark') return false;
+      try {
+        return typeof detectHostLightTheme === 'function' ? Boolean(detectHostLightTheme()) : false;
+      } catch {
+        return false;
+      }
+    })();
+    try {
+      const nativeStyle = typeof getComputedStyle === 'function' ? getComputedStyle(document.documentElement) : null;
+      const bodyStyle = typeof getComputedStyle === 'function' && document.body ? getComputedStyle(document.body) : null;
+      const barNode = typeof document.querySelector === 'function'
+        ? (document.querySelector('[class*="@container/titlebar"]') || document.querySelector('header, nav, .titlebar'))
+        : null;
+      const barStyle = barNode && typeof getComputedStyle === 'function' ? getComputedStyle(barNode) : null;
+      const bg = pickHex([
+        nativeStyle?.getPropertyValue?.('--vscode-titleBar-activeBackground'),
+        barStyle?.backgroundColor,
+        nativeStyle?.getPropertyValue?.('--sidebar'),
+        nativeStyle?.getPropertyValue?.('--background'),
+        bodyStyle?.backgroundColor
+      ]) || (isLight ? '#f8f8f8' : '#181818');
+      const fg = pickHex([
+        nativeStyle?.getPropertyValue?.('--vscode-titleBar-activeForeground'),
+        barStyle?.color,
+        nativeStyle?.getPropertyValue?.('--foreground'),
+        nativeStyle?.getPropertyValue?.('--secondary-foreground'),
+        bodyStyle?.color
+      ]) || (isLight ? '#383838' : '#cccccc');
+      return { bg, fg };
+    } catch {
+      return { bg: isLight ? '#f8f8f8' : '#181818', fg: isLight ? '#383838' : '#cccccc' };
+    }
+  }
+
   function syncNativeOverlayTheme() {
     try {
       if (typeof window === 'undefined') return;
-      const isLight = resolveTheme() === 'light';
-      const rootEl = document.body || document.documentElement;
-      const cs = (rootEl && typeof window.getComputedStyle === 'function') ? window.getComputedStyle(rootEl) : null;
-      const bg = cs?.getPropertyValue?.('--background')?.trim() || (isLight ? '#FAFAFA' : '#131313');
-      const fg = cs?.getPropertyValue?.('--foreground')?.trim() || (isLight ? '#383A42' : '#FAFAFA');
-      const overlayKey = `${bg}|${fg}|40`;
+      const { bg, fg } = resolveNativeTitlebarOverlayColors();
+      if (!/^#[0-9a-f]{6}$/i.test(bg) || !/^#[0-9a-f]{6}$/i.test(fg)) return;
+      const overlayKey = `${bg}|${fg}|30`;
       if (overlayKey === lastSyncedOverlayKey) return;
       lastSyncedOverlayKey = overlayKey;
       if (typeof window.contextMeterAPI?.syncOverlay === 'function') {
-        void window.contextMeterAPI.syncOverlay({ color: bg, symbolColor: fg, height: 40, heightCssPx: 40 });
+        void window.contextMeterAPI.syncOverlay({ color: bg, symbolColor: fg, height: 30, heightCssPx: 30 });
       } else if (typeof window.electronNative?.setTitleBarOverlay === 'function') {
-        void window.electronNative.setTitleBarOverlay({ color: bg, symbolColor: fg });
+        void window.electronNative.setTitleBarOverlay({ color: bg, symbolColor: fg, height: 30 });
       }
     } catch {}
   }

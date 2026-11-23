@@ -777,6 +777,301 @@ function redactProxyUrl(rawUrl) {
   }
 }
 
+function assertSingleLineSafe(value, fieldName) {
+  const s = String(value ?? '');
+  if (/[\r\n\0]/.test(s)) {
+    throw new Error(`${fieldName} 包含非法控制字符（换行或空字节）`);
+  }
+  return s;
+}
+
+function resolveAntigravityExecutable(options = {}) {
+  const platform = options.platform || process.platform;
+  const fsImpl = options.fs || fs;
+  const env = options.env || process.env;
+  const home = options.homeDir || os.homedir();
+  const pathMod = platform === 'win32' ? path.win32 : path.posix;
+
+  if (options.exePath && typeof options.exePath === 'string') {
+    const raw = options.exePath.trim();
+    if (!raw) return null;
+    if (fsImpl.existsSync(raw)) return raw;
+    const p = pathMod.resolve(raw);
+    return fsImpl.existsSync(p) ? p : null;
+  }
+
+  const candidates = [];
+  if (options.asarPath && typeof options.asarPath === 'string') {
+    const resDir = pathMod.dirname(pathMod.resolve(options.asarPath.trim()));
+    if (platform === 'win32') {
+      candidates.push(pathMod.resolve(resDir, '..', 'Antigravity.exe'));
+    } else if (platform === 'darwin') {
+      candidates.push(pathMod.resolve(resDir, '..', 'MacOS', 'Antigravity'));
+    } else {
+      candidates.push(pathMod.resolve(resDir, '..', 'antigravity'));
+    }
+  }
+
+  if (platform === 'win32') {
+    const localAppData = env.LOCALAPPDATA || pathMod.join(home, 'AppData', 'Local');
+    const programFiles = env.ProgramFiles || 'C:\\Program Files';
+    candidates.push(
+      pathMod.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe'),
+      pathMod.join(programFiles, 'antigravity', 'Antigravity.exe'),
+      pathMod.join(programFiles, 'Google Antigravity', 'Antigravity.exe')
+    );
+  } else if (platform === 'darwin') {
+    candidates.push(
+      '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
+      pathMod.join(home, 'Applications', 'Antigravity.app', 'Contents', 'MacOS', 'Antigravity')
+    );
+  } else {
+    candidates.push('/opt/antigravity/antigravity', '/usr/bin/antigravity', pathMod.join(home, '.local', 'bin', 'antigravity'));
+  }
+
+  for (const cand of candidates) {
+    if (fsImpl.existsSync(cand)) return cand;
+  }
+  return null;
+}
+
+/**
+ * 构造免改盘（不修改 app.asar）启动 Antigravity 所需的独立进程代理环境与 Chromium 参数。
+ */
+function buildHostProxyLaunchSpec(options = {}) {
+  const detected = detectProxyConfig(options.proxyConfigOptions || {});
+  const rawUrl = options.proxyUrl !== undefined && options.proxyUrl !== null && String(options.proxyUrl).trim()
+    ? String(options.proxyUrl).trim()
+    : (detected.httpProxy || '');
+  const checked = parseAndValidateProxyUrl(rawUrl);
+  if (!checked.ok) {
+    throw new Error(checked.error || '请提供有效的本地代理地址（例如 http://127.0.0.1:7897）');
+  }
+  const proxyUrl = assertSingleLineSafe(checked.value, 'proxyUrl');
+  const chromiumProxyUrl = proxyUrl.replace(/^socks5h:\/\//i, 'socks5://');
+  const rawBypass = options.noProxy !== undefined && options.noProxy !== null
+    ? String(options.noProxy).trim()
+    : (detected.noProxy !== undefined && detected.noProxy !== null ? String(detected.noProxy).trim() : DEFAULT_NO_PROXY);
+  const noProxy = assertSingleLineSafe(rawBypass, 'noProxy');
+
+  const env = Object.assign({}, options.baseEnv || process.env);
+  delete env.ELECTRON_RUN_AS_NODE;
+  for (const k of ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy']) {
+    env[k] = proxyUrl;
+  }
+  if (noProxy) {
+    env.NO_PROXY = noProxy;
+    env.no_proxy = noProxy;
+  } else {
+    delete env.NO_PROXY;
+    delete env.no_proxy;
+  }
+  env.NODE_USE_ENV_PROXY = '1';
+
+  const args = [`--proxy-server=${chromiumProxyUrl}`];
+  if (noProxy) args.push(`--proxy-bypass-list=${noProxy}`);
+  if (Array.isArray(options.extraArgs)) {
+    for (const a of options.extraArgs) {
+      if (typeof a === 'string' && a.length > 0) args.push(a);
+    }
+  }
+
+  return { proxyUrl, chromiumProxyUrl, noProxy, env, args };
+}
+
+function escapeVbsString(val) {
+  return assertSingleLineSafe(val, 'vbsString').replace(/"/g, '""');
+}
+
+function escapePosixSingleQuote(val) {
+  return `'${assertSingleLineSafe(val, 'shellArg').replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * 生成纯 ASCII 的 Windows 无黑窗免 TUN 启动器 (.vbs)，仅作用于子进程，不污染系统环境变量。
+ */
+function generateWindowsNoTunVbs({ exePath, proxyUrl, noProxy, recoverCliPath = null }) {
+  const checked = parseAndValidateProxyUrl(proxyUrl);
+  if (!checked.ok) throw new Error(checked.error || '无效的代理地址');
+  if (!exePath || typeof exePath !== 'string' || !exePath.trim()) {
+    throw new Error('缺少 Antigravity.exe 路径');
+  }
+  const safeExe = escapeVbsString(exePath.trim());
+  const safeProxy = escapeVbsString(checked.value);
+  const safeChromium = escapeVbsString(checked.value.replace(/^socks5h:\/\//i, 'socks5://'));
+  const safeBypass = escapeVbsString(noProxy !== undefined && noProxy !== null ? String(noProxy).trim() : DEFAULT_NO_PROXY);
+  const bypassFlag = safeBypass ? ` --proxy-bypass-list=""${safeBypass}""` : '';
+  const safeRecoverCli = (typeof recoverCliPath === 'string' && recoverCliPath.trim())
+    ? escapeVbsString(recoverCliPath.trim())
+    : '';
+  const recoverBlock = safeRecoverCli
+    ? [
+      `recoverCli = "${safeRecoverCli}"`,
+      'If fso.FileExists(recoverCli) Then',
+      '  On Error Resume Next',
+      '  shell.Run "node """ & recoverCli & """ recover --silent", 0, True',
+      '  On Error GoTo 0',
+      'End If'
+    ]
+    : [];
+
+  return [
+    'Option Explicit',
+    safeRecoverCli
+      ? 'Dim proxyUrl, chromiumProxy, noProxy, exePath, recoverCli, fso, shell, env, cmd, i, arg, delayMs, extraArgs'
+      : 'Dim proxyUrl, chromiumProxy, noProxy, exePath, fso, shell, env, cmd, i, arg, delayMs, extraArgs',
+    `proxyUrl = "${safeProxy}"`,
+    `chromiumProxy = "${safeChromium}"`,
+    `noProxy = "${safeBypass}"`,
+    `exePath = "${safeExe}"`,
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'Set shell = CreateObject("WScript.Shell")',
+    'delayMs = 0',
+    'extraArgs = ""',
+    'i = 0',
+    'Do While i < WScript.Arguments.Count',
+    '  arg = WScript.Arguments(i)',
+    '  If LCase(arg) = "--delay" And (i + 1) < WScript.Arguments.Count Then',
+    '    If IsNumeric(WScript.Arguments(i + 1)) Then delayMs = CLng(WScript.Arguments(i + 1))',
+    '    i = i + 2',
+    '  Else',
+    '    extraArgs = extraArgs & " """ & Replace(arg, """", """""") & """"',
+    '    i = i + 1',
+    '  End If',
+    'Loop',
+    'If delayMs > 0 Then WScript.Sleep delayMs',
+    'If Not fso.FileExists(exePath) Then',
+    '  MsgBox "Antigravity.exe not found:" & vbCrLf & exePath, vbExclamation, "Antigravity No-TUN Launcher"',
+    '  WScript.Quit 1',
+    'End If',
+    ...recoverBlock,
+    'Set env = shell.Environment("PROCESS")',
+    'env("HTTP_PROXY") = proxyUrl',
+    'env("http_proxy") = proxyUrl',
+    'env("HTTPS_PROXY") = proxyUrl',
+    'env("https_proxy") = proxyUrl',
+    'env("ALL_PROXY") = proxyUrl',
+    'env("all_proxy") = proxyUrl',
+    safeBypass ? 'env("NO_PROXY") = noProxy' : 'env.Remove("NO_PROXY")',
+    safeBypass ? 'env("no_proxy") = noProxy' : 'env.Remove("no_proxy")',
+    'env("NODE_USE_ENV_PROXY") = "1"',
+    `cmd = """" & exePath & """ --proxy-server=""" & chromiumProxy & """${bypassFlag}" & extraArgs`,
+    'shell.Run cmd, 1, False',
+    ''
+  ].join('\r\n');
+}
+
+/**
+ * 生成 macOS / Linux 免改盘独立免 TUN 启动脚本 (.sh)。
+ */
+function generatePosixNoTunLauncher({ exePath, proxyUrl, noProxy, recoverCliPath = null }) {
+  const checked = parseAndValidateProxyUrl(proxyUrl);
+  if (!checked.ok) throw new Error(checked.error || '无效的代理地址');
+  if (!exePath || typeof exePath !== 'string' || !exePath.trim()) {
+    throw new Error('缺少 Antigravity 可执行文件路径');
+  }
+  const chromiumProxy = checked.value.replace(/^socks5h:\/\//i, 'socks5://');
+  const bypass = noProxy !== undefined && noProxy !== null ? String(noProxy).trim() : DEFAULT_NO_PROXY;
+  const recoverLine = (typeof recoverCliPath === 'string' && recoverCliPath.trim())
+    ? `if command -v node >/dev/null 2>&1 && [ -f ${escapePosixSingleQuote(recoverCliPath.trim())} ]; then node ${escapePosixSingleQuote(recoverCliPath.trim())} recover --silent >/dev/null 2>&1 || true; fi`
+    : null;
+  const lines = [
+    '#!/bin/sh',
+    'set -eu',
+    'unset ELECTRON_RUN_AS_NODE',
+    ...(recoverLine ? [recoverLine] : []),
+    `export HTTP_PROXY=${escapePosixSingleQuote(checked.value)}`,
+    `export http_proxy=${escapePosixSingleQuote(checked.value)}`,
+    `export HTTPS_PROXY=${escapePosixSingleQuote(checked.value)}`,
+    `export https_proxy=${escapePosixSingleQuote(checked.value)}`,
+    `export ALL_PROXY=${escapePosixSingleQuote(checked.value)}`,
+    `export all_proxy=${escapePosixSingleQuote(checked.value)}`,
+    bypass ? `export NO_PROXY=${escapePosixSingleQuote(bypass)}` : 'unset NO_PROXY',
+    bypass ? `export no_proxy=${escapePosixSingleQuote(bypass)}` : 'unset no_proxy',
+    'export NODE_USE_ENV_PROXY=1',
+    bypass
+      ? `exec ${escapePosixSingleQuote(exePath.trim())} --proxy-server=${escapePosixSingleQuote(chromiumProxy)} --proxy-bypass-list=${escapePosixSingleQuote(bypass)} "$@"`
+      : `exec ${escapePosixSingleQuote(exePath.trim())} --proxy-server=${escapePosixSingleQuote(chromiumProxy)} "$@"`,
+    ''
+  ];
+  return lines.join('\n');
+}
+
+/**
+ * 生成独立于 app.asar 的跨版本免 TUN 启动器（Windows 默认同时生成桌面快捷方式）。
+ */
+function createStandaloneNoTunLauncher(options = {}) {
+  const platform = options.platform || process.platform;
+  const fsImpl = options.fs || fs;
+  const exePath = resolveAntigravityExecutable({ ...options, platform, fs: fsImpl });
+  if (!exePath) {
+    throw new Error('未检测到 Antigravity 可执行文件，请通过 --path 指定 app.asar 或安装路径');
+  }
+  const spec = buildHostProxyLaunchSpec(options);
+  const { getStateDir } = require('./asar-engine');
+  const outDir = options.outDir ? path.resolve(options.outDir) : (options.stateDir ? path.resolve(options.stateDir) : getStateDir());
+  fsImpl.mkdirSync(outDir, { recursive: true });
+
+  const scriptName = platform === 'win32' ? 'launch-antigravity-no-tun.vbs' : 'launch-antigravity-no-tun.sh';
+  const launcherPath = path.join(outDir, scriptName);
+  const content = platform === 'win32'
+    ? generateWindowsNoTunVbs({ exePath, proxyUrl: spec.proxyUrl, noProxy: spec.noProxy, recoverCliPath: options.recoverCliPath || null })
+    : generatePosixNoTunLauncher({ exePath, proxyUrl: spec.proxyUrl, noProxy: spec.noProxy, recoverCliPath: options.recoverCliPath || null });
+
+  const tmpPath = `${launcherPath}.${process.pid}.${Date.now()}.tmp`;
+  fsImpl.writeFileSync(tmpPath, content, 'utf8');
+  if (platform !== 'win32' && typeof fsImpl.chmodSync === 'function') {
+    fsImpl.chmodSync(tmpPath, 0o755);
+  }
+  fsImpl.renameSync(tmpPath, launcherPath);
+
+  let shortcutPath = null;
+  if (platform === 'win32' && options.createShortcut !== false) {
+    const rawName = String(options.shortcutName || 'Antigravity (No-TUN)').replace(/[<>:"/\\|?*\r\n\0]/g, '').trim() || 'Antigravity (No-TUN)';
+    const lnkFileName = rawName.toLowerCase().endsWith('.lnk') ? rawName : `${rawName}.lnk`;
+    const execFileSyncFn = options._execFileSync || require('child_process').execFileSync;
+    const psScript = [
+      '$ErrorActionPreference = "Stop"',
+      '$desk = if ($env:AG_DESKTOP_DIR) { $env:AG_DESKTOP_DIR } else { [Environment]::GetFolderPath("Desktop") }',
+      '$lnk = Join-Path $desk $env:AG_LNK_NAME',
+      '$sh = New-Object -ComObject WScript.Shell',
+      '$sc = $sh.CreateShortcut($lnk)',
+      '$sc.TargetPath = "$env:WINDIR\\System32\\wscript.exe"',
+      '$sc.Arguments = "`"$($env:AG_VBS_PATH)`""',
+      '$sc.WorkingDirectory = $env:AG_WORK_DIR',
+      '$sc.IconLocation = "$($env:AG_EXE_PATH),0"',
+      '$sc.Description = $env:AG_DESC',
+      '$sc.Save()',
+      '[Console]::Out.Write($lnk)'
+    ].join('\n');
+    const out = execFileSyncFn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psScript], {
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+      env: Object.assign({}, process.env, {
+        AG_DESKTOP_DIR: options.desktopDir ? String(options.desktopDir) : '',
+        AG_LNK_NAME: lnkFileName,
+        AG_VBS_PATH: launcherPath,
+        AG_EXE_PATH: exePath,
+        AG_WORK_DIR: path.win32.dirname(exePath),
+        AG_DESC: `Launch Antigravity via ${redactProxyUrl(spec.proxyUrl) || 'local proxy'} (No-TUN)`
+      })
+    });
+    shortcutPath = String(out || '').trim() || null;
+  }
+
+  return {
+    ok: true,
+    platform,
+    exePath,
+    launcherPath,
+    shortcutPath,
+    proxyUrl: spec.proxyUrl,
+    chromiumProxyUrl: spec.chromiumProxyUrl,
+    noProxy: spec.noProxy
+  };
+}
+
 module.exports = {
   DEFAULT_NO_PROXY,
   redactProxyUrl,
@@ -793,5 +1088,10 @@ module.exports = {
   getProxyCandidatePaths,
   detectProxyConfig,
   applyProxyEnvironment,
-  buildCliProxyEnv
+  buildCliProxyEnv,
+  resolveAntigravityExecutable,
+  buildHostProxyLaunchSpec,
+  generateWindowsNoTunVbs,
+  generatePosixNoTunLauncher,
+  createStandaloneNoTunLauncher
 };

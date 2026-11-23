@@ -276,6 +276,7 @@ async function restore(options = {}) {
             'meter-cli-launcher.js',
             'meter-context-unlock.js',
             'meter-enhance.js',
+            'meter-rehydrate.js',
             'meter-accounts.js',
             'macos-binary-utils.js',
             'local-api.js',
@@ -287,6 +288,8 @@ async function restore(options = {}) {
             try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
           }
           try { fs.rmSync(path.join(staging, 'dist', 'i18n'), { recursive: true, force: true }); } catch {}
+          try { fs.rmSync(path.join(staging, 'dist', 'rehydrate'), { recursive: true, force: true }); } catch {}
+          try { fs.rmSync(path.join(staging, 'dist', 'assets'), { recursive: true, force: true }); } catch {}
 
           const snapshotDir = path.join(getStateDir(), 'backups', 'snapshots');
           fs.mkdirSync(snapshotDir, { recursive: true });

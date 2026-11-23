@@ -62,7 +62,8 @@ function buildRenderer(options = {}) {
 
   const styles = readVerifiedRendererSource(effSrcDir, 'styles.css').trim();
   let template = readVerifiedRendererSource(effSrcDir, 'template.html').trim();
-  template = template.replace(/<span id="v">[^<]*<\/span>/g, `<span id="v">${displayVersion}</span>`);
+  template = template.replace(/(<span id="v"[^>]*>)[^<]*(<\/span>)/g, `$1${displayVersion}$2`);
+  template = template.replace(/(<span id="v-tokens"[^>]*>)[^<]*(<\/span>)/g, `$1${displayVersion}$2`);
   template = template.replace(/<span id="up-pop-ver"[^>]*>[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">${displayVersion}</span>`);
 
   const colors = readVerifiedRendererSource(effSrcDir, 'colors.js').trim();
@@ -71,6 +72,15 @@ function buildRenderer(options = {}) {
   const dropdown = readVerifiedRendererSource(effSrcDir, 'dropdown.js').trim();
   const heatmap = readVerifiedRendererSource(effSrcDir, 'heatmap.js').trim();
   let mainTemplate = readVerifiedRendererSource(effSrcDir, 'main.js');
+  if (!mainTemplate.trim()) throw new Error('Renderer entry point is empty: ' + path.join(effSrcDir, 'main.js'));
+  const effAntigravitySvgPath = path.join(effSrcDir, 'assets', 'antigravity-color.svg');
+  const antigravitySvgPath = fs.existsSync(effAntigravitySvgPath) ? effAntigravitySvgPath : path.join(srcDir, 'assets', 'antigravity-color.svg');
+  const antigravitySvgRaw = fs.readFileSync(antigravitySvgPath, 'utf8').trim();
+  assertNoTruncationMarker(antigravitySvgPath, antigravitySvgRaw);
+  if (!/^<svg[\s>]/i.test(antigravitySvgRaw) || /<script\b|on[a-z]+\s*=|javascript:/i.test(antigravitySvgRaw)) {
+    throw new Error(`[构建中止] Antigravity 静态 SVG 资源校验失败（禁止脚本或非静态内容）: ${antigravitySvgPath}`);
+  }
+  const antigravitySvgDataUri = 'data:image/svg+xml;utf8,' + encodeURIComponent(antigravitySvgRaw);
 
   // 注入或同步构建期版本常量
   const versionConst = `  const METER_VERSION = '${meterVersion}';\n`;
@@ -95,6 +105,10 @@ function buildRenderer(options = {}) {
     .replace('  /* @INSERT_DROPDOWN_MODULE */', () => dropdown)
     .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap);
 
+  const buildId = require('node:crypto').createHash('sha256').update(output).digest('hex').slice(0, 16);
+  output = output
+    .replace('__AG_ANTIGRAVITY_COLOR_SVG_DATA_URI__', () => antigravitySvgDataUri)
+    .replace('__AG_RENDER_BUILD_ID__', buildId);
   fs.writeFileSync(effTargetFile, output, 'utf8');
   console.log(`[构建成功] 渲染层构建完成: ${effTargetFile} (v${meterVersion}, ${Buffer.byteLength(output, 'utf8')} 字节)`);
 }

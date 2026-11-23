@@ -731,16 +731,19 @@ test('ELV-89 时间窗严格归属、IDE 拦截、幂等账本纠偏及 ALL == S
   const scopeA = collector.buildAccountScopeKey('a@example.com');
   const scopeB = collector.buildAccountScopeKey('b@example.com');
   const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
-  const day = collector.formatLocalDateKey(new Date());
+  const baseNow = new Date();
+  baseNow.setHours(12, 0, 0, 0);
+  const nowMs = baseNow.getTime();
+  const day = collector.formatLocalDateKey(baseNow);
 
-  const t0 = Date.now() - 3600 * 1000; // 早于追踪起点
-  const tAStart = Date.now() - 1800 * 1000;
-  const tAEnd = Date.now() - 1200 * 1000;
-  const tBStart = Date.now() - 900 * 1000;
+  const t0 = nowMs - 3600 * 1000; // 早于追踪起点
+  const tAStart = nowMs - 1800 * 1000;
+  const tAEnd = nowMs - 1200 * 1000;
+  const tBStart = nowMs - 900 * 1000;
 
   const accountSessions = [
     { email: 'a@example.com', accountScopeKey: scopeA, source: 'desktop', startAtMs: tAStart, lastVerifiedAtMs: tAEnd, endAtMs: tAEnd, evidence: 'host_user_status' },
-    { email: 'b@example.com', accountScopeKey: scopeB, source: 'desktop', startAtMs: tBStart, lastVerifiedAtMs: Date.now(), endAtMs: null, evidence: 'account_switch_verified' }
+    { email: 'b@example.com', accountScopeKey: scopeB, source: 'desktop', startAtMs: tBStart, lastVerifiedAtMs: nowMs, endAtMs: null, evidence: 'account_switch_verified' }
   ];
 
   // 1. 种子坏数据：模拟旧 bug 把早期记录、缺时间记录及 IDE 记录错标成当前账号 B
@@ -988,7 +991,12 @@ test('UI 深度回归: 8 处统一下拉规范、零用量账号归零、NoPerm 
           hasRefreshToken: true,
           lastQuotaError: 'quota fetch timeout',
           lastQuotaErrorMeta: { stage: 'quota_fetch', targetHost: 'cloudcode-pa.googleapis.com', httpStatus: 503 },
-          quotaSnapshot: { pools: [{ poolKey: 'shared_gemini_carbon', title: 'Carbon', noPermission: true, remainingFraction: null }] }
+          quotaSnapshot: {
+            pools: [
+              { poolKey: 'shared_3p_pool', title: 'Claude/3P', noPermission: true, remainingFraction: null },
+              { poolKey: 'shared_gemini_carbon', title: 'Carbon', noPermission: true, remainingFraction: null }
+            ]
+          }
         },
         { email: 'used@example.com', maskedEmail: 'us***om@example.com', accountScopeKey: keyUsed, isActive: false, hasRefreshToken: true }
       ],
@@ -1065,7 +1073,7 @@ test('v0.8.8 账本回归: 旧账号历史 + 新账号首次登录自动纠偏�
     const newEmail = 'newultra@example.com';
     const oldScope = accountsMod.buildAccountScopeKey(oldEmail);
     const newScope = accountsMod.buildAccountScopeKey(newEmail);
-    const nowMs = Date.now();
+    const nowMs = new Date().setHours(12, 0, 0, 0);
     const tOldStart = nowMs - 2 * 86400000;
     const tOldEnd = nowMs - 86400000;
     const tNewStart = nowMs - 600000; // 10 分钟前首次登录新号
@@ -1764,7 +1772,7 @@ test('v0.8.8 账本与切号补充回归: 二次污染 elv89-v2 自动升级纠�
   try {
     const emailNew = 'ultra@example.com';
     const scopeNew = accountsMod.buildAccountScopeKey(emailNew);
-    const nowMs = Date.now();
+    const nowMs = new Date().setHours(12, 0, 0, 0);
     const tNewStart = nowMs - 600000;
     const today = collector.formatLocalDateKey(new Date(nowMs));
     const cidOld = 'cccccccc-0000-0000-0000-000000000003';
@@ -2248,6 +2256,433 @@ test('v0.8.8 非 CDP 切号与回滚对称: shared origin 更新、daemon hub �
     fs.rmSync(homeDir, { recursive: true, force: true });
     fs.rmSync(daemonDir, { recursive: true, force: true });
     fs.rmSync(agDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('Issue #50: 仅账本内容变化时备份、单账本最多保留 N=3 份、升级清理只留最新 1 份且幂等运行 100 次零新增', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-issue50-bak-'));
+  const agDir = path.join(tmpDir, 'ag');
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(agDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+
+  const countBackups = () => fs.readdirSync(agDir).filter(f => f.startsWith('pricing_ledger_v1.json.bak-pre-elv89-'));
+
+  try {
+    const scopeA = 'email:a@example.com';
+    const tBase = Date.parse('2026-11-18T10:00:00.000Z');
+    const accountSessions = [{
+      sessionId: 'sess-50-1',
+      accountScopeKey: scopeA,
+      email: 'a@example.com',
+      startedAtMs: tBase - 600000,
+      endedAtMs: tBase + 6000000
+    }];
+
+    // 1. 模拟升级前已堆积 12 份旧版本 .bak-pre-elv89-* 备份
+    collector.savePricingLedger({
+      version: 1,
+      calls: {
+        call_old_1: {
+          callId: 'call_old_1',
+          source: 'desktop',
+          model: 'gemini-4-hydrogen',
+          inputTokens: 1000,
+          outputTokens: 200,
+          totalTokens: 1200,
+          date: '2026-11-18',
+          created_at: new Date(tBase).toISOString(),
+          accountScopeKey: scopeA
+        },
+        call_recent_live: {
+          callId: 'call_recent_live',
+          source: 'desktop',
+          model: 'gemini-4-hydrogen',
+          inputTokens: 500,
+          outputTokens: 100,
+          totalTokens: 600,
+          date: '2026-11-19',
+          created_at: new Date(Date.now() - 10000).toISOString(),
+          liveObservedAtMs: Date.now() - 10000,
+          accountScopeKey: scopeA,
+          accountAttributionConfidence: 'live_confirmed_account'
+        }
+      }
+    }, ledgerPath);
+
+    for (let i = 1; i <= 12; i++) {
+      fs.writeFileSync(
+        path.join(agDir, `pricing_ledger_v1.json.bak-pre-elv89-${1795000000000 + i * 1000}`),
+        `{"legacy":${i}}`
+      );
+    }
+    assert.equal(countBackups().length, 12);
+
+    // 升级清理只保留最新 1 份
+    const upgRes = collector.cleanupUpgradeLedgerBackups({ ledgerPath, stateDir, keep: 1 });
+    assert.equal(upgRes.ok, true);
+    assert.equal(upgRes.removedCount, 11);
+    assert.deepEqual(countBackups(), ['pricing_ledger_v1.json.bak-pre-elv89-1795000012000']);
+
+    // 2. 首次有内容变化的纠偏触发 1 份备份，随后连续 100 次幂等运行（含 live_confirmed_account 未满 3 分钟的场景）均不得新增任何备份
+    const firstRepair = collector.repairAndMigrateAccountLedger({ ledgerPath, accountSessions, stateDir, backupSuffix: '1795000020000' });
+    assert.equal(firstRepair.ok, true);
+    assert.equal(firstRepair.changed, true);
+    assert.ok(firstRepair.backupPath && fs.existsSync(firstRepair.backupPath));
+    const afterFirstCount = countBackups().length;
+    assert.equal(afterFirstCount, 2);
+
+    for (let i = 0; i < 100; i++) {
+      const rep = collector.repairAndMigrateAccountLedger({
+        ledgerPath,
+        accountSessions,
+        stateDir,
+        force: i % 10 === 0,
+        backupSuffix: `179500003${String(i).padStart(4, '0')}`
+      });
+      assert.equal(rep.ok, true);
+      assert.equal(rep.changed, false);
+      assert.equal(rep.backupPath, null);
+    }
+    assert.equal(countBackups().length, afterFirstCount, '幂等运行 100 次后备份数量不得增长');
+
+    // 3. 当账本内容确实发生变化并触发多次新备份时，同一账本最多保留最近 N=3 份
+    for (let round = 1; round <= 5; round++) {
+      const curLedger = collector.loadPricingLedger(ledgerPath);
+      curLedger.calls[`call_mut_${round}`] = {
+        callId: `call_mut_${round}`,
+        source: 'desktop',
+        model: 'gemini-4-hydrogen',
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        date: '2026-11-18',
+        created_at: new Date(tBase + round * 1000).toISOString(),
+        accountScopeKey: scopeA
+      };
+      collector.savePricingLedger(curLedger, ledgerPath);
+      const r = collector.repairAndMigrateAccountLedger({
+        ledgerPath,
+        accountSessions,
+        stateDir,
+        backupSuffix: `${1795000100000 + round * 1000}`
+      });
+      assert.equal(r.ok, true);
+      assert.equal(r.changed, true);
+      assert.ok(r.backupPath);
+      assert.ok(countBackups().length <= collector.MAX_LEDGER_REPAIR_BACKUPS, `备份数必须 <= ${collector.MAX_LEDGER_REPAIR_BACKUPS}`);
+    }
+    assert.deepEqual(
+      countBackups().sort(),
+      [
+        'pricing_ledger_v1.json.bak-pre-elv89-1795000103000',
+        'pricing_ledger_v1.json.bak-pre-elv89-1795000104000',
+        'pricing_ledger_v1.json.bak-pre-elv89-1795000105000'
+      ]
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('CloudCode 配额拉取回归: 默认优先 daily、失败回退 prod、UA 对齐 2.33.0、过滤内部杂项池 (chat_23310 / chat_20706 / tab / gemini-2.5-pro)', async () => {
+  const requestedUrls = [];
+  const requestedUas = [];
+  let dailyFailed = false;
+
+  const mockFetch = async (url, init = {}) => {
+    const u = String(url);
+    requestedUrls.push(u);
+    const ua = init.headers?.['User-Agent'] || '';
+    if (ua) requestedUas.push(ua);
+
+    if (u.includes('daily-cloudcode-pa.googleapis.com')) {
+      dailyFailed = true;
+      // 模拟 daily 端点故障 (HTTP 503)，触发回退至 prod
+      return {
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify({ error: { message: 'daily temporarily unavailable' } })
+      };
+    }
+
+    if (u.includes('loadCodeAssist')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          cloudaicompanionProject: 'test-proj-fallback',
+          currentTier: { id: 'g1-pro-tier' }
+        })
+      };
+    }
+
+    if (u.includes('fetchAvailableModels')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          agentModelSorts: ['gemini-4-hydrogen', 'gemini-4-argon', 'claude-3-7-sonnet'],
+          models: {
+            'gemini-4-hydrogen': { displayName: 'Gemini 4 Hydrogen', quotaInfo: { remainingFraction: 0.90 } },
+            'gemini-4-argon': { displayName: 'Gemini 4 Argon', quotaInfo: { remainingFraction: 0.80 } },
+            'claude-3-7-sonnet': { displayName: 'Claude 3.7 Sonnet', model: 'claude-sonnet-5-5', quotaInfo: { remainingFraction: 0.85 } },
+            'chat_23310': { displayName: 'Internal Chat 23310', quotaInfo: { remainingFraction: 1.0 } },
+            'chat_20706': { displayName: 'Internal Chat 20706', isInternal: true, quotaInfo: { remainingFraction: 1.0 } },
+            'tab_flash_lite_preview': { displayName: 'Tab Flash Lite', quotaInfo: { remainingFraction: 1.0 } },
+            'gemini-2.5-pro': { displayName: 'Gemini 2.5 Pro', quotaInfo: { remainingFraction: 1.0 } }
+          }
+        })
+      };
+    }
+
+    if (u.includes('retrieveUserQuotaSummary')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          response: {
+            groups: [
+              {
+                groupId: 'hydrogen-group',
+                displayName: 'Gemini 4 Hydrogen',
+                buckets: [
+                  { bucketId: 'b5h', window: '5h', remainingFraction: 0.90 },
+                  { bucketId: 'b7d', window: 'weekly', remainingFraction: 0.95 }
+                ]
+              },
+              {
+                groupId: 'argon-group',
+                displayName: 'Gemini 4 Argon',
+                buckets: [
+                  { bucketId: 'barg', window: 'weekly', remainingFraction: 0.80 }
+                ]
+              }
+            ]
+          }
+        })
+      };
+    }
+
+    return { ok: true, status: 200, text: async () => '{}' };
+  };
+
+  const quotaRes = await accountsMod.fetchAccountQuotaViaCloudCode('mock-access-token', {
+    fetch: mockFetch,
+    email: 'fallback-test@example.com'
+  });
+
+  // 1. 验证 daily 优先请求并成功触发回退 prod
+  assert.equal(dailyFailed, true, '必须优先尝试 daily 端点');
+  assert.ok(requestedUrls.some(u => u.includes('daily-cloudcode-pa.googleapis.com')));
+  assert.ok(requestedUrls.some(u => u.includes('cloudcode-pa.googleapis.com')));
+  // 2. 验证 User-Agent 对齐 2.33.0
+  assert.ok(requestedUas.length > 0);
+  assert.ok(requestedUas.every(ua => ua.startsWith('antigravity/2.33.0')));
+
+  // 3. 验证杂项池严格过滤，仅保留四大核心共享池
+  const poolKeys = quotaRes.snapshot.pools.map(p => p.poolKey);
+  assert.ok(poolKeys.includes('shared_gemini_main'));
+  assert.ok(poolKeys.includes('shared_gemini_argon'));
+  assert.doesNotMatch(poolKeys.join(' '), /shared_chat_23310|shared_chat_20706|shared_gemini-25-pro|shared_tab/);
+
+  // 4. 验证直接向 buildModelQuotaSnapshot 传入含杂项 models 也不会生成独立杂项池
+  const directSnap = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: [
+      { modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen', quotaInfo: { remainingFraction: 0.9 } },
+      { modelId: 'chat_23310', label: 'chat_23310', quotaInfo: { remainingFraction: 1.0 } },
+      { modelId: 'chat_20706', isInternal: true, label: 'chat_20706', quotaInfo: { remainingFraction: 1.0 } },
+      { modelId: 'tab_flash_lite_preview', label: 'tab_flash_lite_preview', quotaInfo: { remainingFraction: 1.0 } },
+      { modelId: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', quotaInfo: { remainingFraction: 1.0 } }
+    ],
+    userStatusRes: null,
+    quotaSummaryRes: null
+  });
+  const directPoolKeys = directSnap.pools.map(p => p.poolKey);
+  assert.deepEqual(directPoolKeys, ['shared_gemini_main']);
+});
+
+test('OAuth 权限作用域: ANTIGRAVITY_OAUTH_SCOPES 包含 aicode 权限作用域', () => {
+  assert.ok(Array.isArray(accountsMod.ANTIGRAVITY_OAUTH_SCOPES));
+  assert.ok(
+    accountsMod.ANTIGRAVITY_OAUTH_SCOPES.includes('https://www.googleapis.com/auth/aicode'),
+    '必须包含 aicode 权限作用域以防止模型降级与配额返回旧模型'
+  );
+});
+
+test('PR #60 回归: 写入带版本号新调用不触发备份、3分钟 live 保护期、备份路径清洗与异步补价', async () => {
+  const parentDir = makeTempDir('acm-pr60-parent-');
+  const agDir = path.join(parentDir, 'ag');
+  const stateDir = path.join(parentDir, 'state');
+  fs.mkdirSync(agDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  try {
+    const email = 'acct-pr60@example.com';
+    const scopeKey = accountsMod.buildAccountScopeKey(email);
+    const nowMs = Date.now();
+    const sessionStart = nowMs - 3600000;
+    const today = collector.formatLocalDateKey(new Date(nowMs));
+    const accountSessions = [
+      { accountScopeKey: scopeKey, email, startAtMs: sessionStart, lastVerifiedAtMs: nowMs, endAtMs: null, source: 'test' }
+    ];
+
+    fs.writeFileSync(path.join(stateDir, 'accounts_v1.json'), JSON.stringify({
+      version: 1,
+      activeAccountEmail: email,
+      accounts: {
+        [email]: { email, accessToken: 'tok-pr60', refreshToken: 'ref-pr60' }
+      },
+      accountSessions
+    }));
+
+    const listBackups = () => fs.readdirSync(agDir).filter(f => {
+      if (!f.startsWith('pricing_ledger_v1.json.bak-pre-elv89-')) return false;
+      const st = fs.lstatSync(path.join(agDir, f));
+      return st.isFile() && !st.isSymbolicLink();
+    });
+    const ledgerPath = path.join(agDir, 'pricing_ledger_v1.json');
+
+    // 1. 权威归属新调用自带 attributionRepairVersion='elv89-v3'，后续采集不触发备份
+    const verifiedTs = nowMs - 10000;
+    const recRes1 = collector.recordModelCalls([{
+      callId: 'req_pr60_verified',
+      cascadeId: 'eeeeeeee-0000-0000-0000-000000000001',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 1000,
+      cacheTokens: 2000,
+      outputTokens: 300,
+      totalTokens: 3300,
+      date: today,
+      created_at: new Date(verifiedTs).toISOString(),
+      timestamp: verifiedTs
+    }], { agDir, accountSessions });
+    assert.equal(recRes1.ok, true);
+    const afterRec = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(afterRec.calls.req_pr60_verified.attributionRepairVersion, 'elv89-v3');
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 0, '已核实新调用不得触发 .bak-pre-elv89 备份');
+
+    // 2. 3 分钟保护期内的 live_confirmed_account（updatedAt 为 ISO 字符串）不被误清空或触发备份
+    const curLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    curLedger.calls.req_live_iso_protected = {
+      callId: 'req_live_iso_protected',
+      cascadeId: 'eeeeeeee-0000-0000-0000-000000000002',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 500,
+      cacheTokens: 0,
+      outputTokens: 100,
+      totalTokens: 600,
+      date: today,
+      updatedAt: new Date(nowMs - 15000).toISOString(),
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'live_confirmed_account'
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(curLedger));
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 0, '3 分钟保护期内的 live_confirmed_account 不得触发备份');
+
+    // 3. 首次未版本记录触发 1 份备份；后续无自定义 suffix 非 force 迁移复用已有备份且不新增第 2 份
+    const curLedger2 = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    curLedger2.calls.req_legacy_unversioned = {
+      callId: 'req_legacy_unversioned',
+      cascadeId: 'eeeeeeee-0000-0000-0000-000000000003',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 400,
+      cacheTokens: 0,
+      outputTokens: 80,
+      totalTokens: 480,
+      date: today,
+      created_at: new Date(nowMs - 600000).toISOString(),
+      timestamp: nowMs - 600000,
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'session_window_verified'
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(curLedger2));
+
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 1);
+
+    const curLedger3 = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    curLedger3.calls.req_legacy_keepalive = {
+      callId: 'req_legacy_keepalive',
+      cascadeId: 'eeeeeeee-0000-0000-0000-000000000004',
+      stepIndex: 1,
+      source: 'desktop',
+      model: 'gemini-4-hydrogen',
+      inputTokens: 10,
+      cacheTokens: 0,
+      outputTokens: 5,
+      totalTokens: 15,
+      date: today,
+      isKeepalive: true,
+      accountScopeKey: scopeKey,
+      accountAttributionConfidence: 'keepalive_bound'
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(curLedger3));
+    await collector.collectTokenHistoryAsync({ agDir, stateDir, wslRoots: [], force: true });
+    assert.equal(listBackups().length, 1, '非 force 修复应复用既有迁移备份而不生成第 2 份');
+
+    // 4. backupSuffix 路径穿越防护、符号链接防护与轮转上限 MAX_LEDGER_REPAIR_BACKUPS (3)
+    const externalTarget = path.join(stateDir, 'outside-secret.txt');
+    fs.writeFileSync(externalTarget, 'keep-secret');
+    const symlinkBackup = path.join(agDir, 'pricing_ledger_v1.json.bak-pre-elv89-sym');
+    try { fs.symlinkSync(externalTarget, symlinkBackup); } catch { }
+
+    const traversalRes = collector.repairAndMigrateAccountLedger({
+      agDir,
+      accountSessions,
+      force: true,
+      backupSuffix: '../escape/test'
+    });
+    assert.equal(traversalRes.ok, true);
+    assert.equal(path.dirname(traversalRes.backupPath), path.resolve(agDir));
+    assert.equal(fs.existsSync(path.join(parentDir, 'escape')), false);
+    assert.ok(listBackups().length <= collector.MAX_LEDGER_REPAIR_BACKUPS);
+    assert.equal(fs.readFileSync(externalTarget, 'utf8'), 'keep-secret');
+
+    // 5. 异步 repriceUnpricedLedgerCallsAsync 正常对未计价记录补价
+    const repricedCount = await collector.repriceUnpricedLedgerCallsAsync(agDir);
+    assert.equal(typeof repricedCount, 'number');
+  } finally {
+    fs.rmSync(parentDir, { recursive: true, force: true });
+  }
+});
+
+test('ELV-102: 后续账号 OAuth 登录强制携带 prompt=select_account consent 便于切换账号', async () => {
+  const stateDir = makeTempDir('acm-elv102-oauth-');
+  try {
+    let capturedAuthUrl = '';
+    const mgr = accountsMod.createAccountsManager({
+      stateDir,
+      credentialStore: makeMockCredStore(),
+      fetch: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+      oauthClientId: 'mock-oauth-client-id',
+      oauthClientSecret: 'mock-oauth-client-secret',
+      openExternal: (authUrl) => {
+        capturedAuthUrl = authUrl;
+        const parsed = new URL(authUrl);
+        const redirectUri = parsed.searchParams.get('redirect_uri');
+        setTimeout(() => {
+          http.get(`${redirectUri}?error=access_denied`, { agent: false }).on('error', () => {});
+        }, 20);
+      }
+    });
+    const res = await mgr.startOAuthLogin();
+    assert.equal(res.ok, false);
+    assert.ok(capturedAuthUrl, '必须触发打开浏览器授权链接');
+    const authUrlObj = new URL(capturedAuthUrl);
+    assert.equal(authUrlObj.searchParams.get('prompt'), 'select_account consent');
+  } finally {
     fs.rmSync(stateDir, { recursive: true, force: true });
   }
 });

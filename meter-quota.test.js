@@ -242,6 +242,7 @@ function createQuotaRendererHarness(opts = {}) {
       remove() { },
       focus() { },
       click() { listeners.get(el)?.get('click')?.(); },
+      dispatchEvent(ev) { listeners.get(el)?.get(ev?.type)?.(ev); },
       getBoundingClientRect() {
         const myId = attrs.get('id') || '';
         if (myId && rectsById[myId]) return rectsById[myId];
@@ -707,6 +708,52 @@ test('桥接通道与安全边界：preload 暴露 getQuota，main IPC 校验来
   assert.match(liveHostSrc, /req\.url === '\/quota'/);
 });
 
+test('PR #66 加固：额度 IPC 拒绝渲染进程伪造 origin/userStatus 且 401 失败不覆盖有效账号快照', async (t) => {
+  const { registerMeterIpcHandlers } = require('./meter-main');
+  const handlers = new Map();
+  registerMeterIpcHandlers({ handle: (channel, handler) => handlers.set(channel, handler) });
+  const getQuota = handlers.get('context-meter:get-quota');
+  const syncActiveHostQuotaSnapshot = t.mock.fn();
+  const detectCurrentActiveAccount = t.mock.fn(async () => ({ email: 'fallback@example.com' }));
+  t.mock.method(require('./meter-accounts'), 'getSharedAccountsManager', () => ({
+    syncActiveHostQuotaSnapshot,
+    detectCurrentActiveAccount,
+    getOverviewState: () => ({})
+  }));
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures();
+  const observedOrigins = [];
+  let forceUnauthorized = false;
+  t.mock.method(collector, 'fetchQuotaSnapshotFromHost', async (opts) => {
+    observedOrigins.push({ origin: opts.origin, hasFakeUserStatus: 'userStatus' in opts });
+    if (forceUnauthorized) {
+      return { ok: false, error: 'HTTP 401', errorKind: 'auth', snapshot: { syncState: 'stale', pools: [] } };
+    }
+    return {
+      ok: true,
+      error: null,
+      snapshot: core.buildModelQuotaSnapshot({ userStatusRes, quotaSummaryRes, nowMs: Date.now() }),
+      _raw: { planStatus: { email: 'real-quota@example.com' } }
+    };
+  });
+  const origin = 'http://127.0.0.1:58234';
+  const frame = { url: `${origin}/chat` };
+  const event = { senderFrame: frame, sender: { mainFrame: frame } };
+
+  const okRes = await getQuota(event, { force: true, origin: 'http://127.0.0.1:59999', userStatus: { fake: true } });
+  assert.equal(okRes.ok, true);
+  assert.equal(okRes.data.ok, true);
+  assert.deepEqual(observedOrigins, [{ origin, hasFakeUserStatus: false }]);
+  assert.equal(syncActiveHostQuotaSnapshot.mock.callCount(), 1);
+  assert.equal(syncActiveHostQuotaSnapshot.mock.calls[0].arguments[1], 'real-quota@example.com');
+
+  forceUnauthorized = true;
+  const failRes = await getQuota(event, { force: true });
+  assert.equal(failRes.ok, true);
+  assert.equal(failRes.data.ok, false);
+  assert.equal(syncActiveHostQuotaSnapshot.mock.callCount(), 1, '刷新失败时不得覆盖已有账号快照');
+  await assert.rejects(getQuota({ ...event, senderFrame: { url: frame.url } }), /仅允许本机主聊天窗口/);
+});
+
 test('顶栏入口顺序、独立弹窗锚点、防底裁切 maxHeight 与 Notice: New 过滤', () => {
   const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
   const idxQuota = tpl.indexOf('id="badge-quota"');
@@ -719,7 +766,9 @@ test('顶栏入口顺序、独立弹窗锚点、防底裁切 maxHeight 与 Notic
   assert.ok(idxBadge < idxSpeed && idxSpeed < idxTokens && idxTokens < idxCli && idxCli < idxOverflow);
   const betweenBadgeAndSpeed = tpl.slice(idxBadge, idxSpeed);
   assert.equal(betweenBadgeAndSpeed.includes('badge-quota'), false, '上下文与速度必须紧邻，不能被额度入口隔开');
-  assert.ok(tpl.includes('id="quota-usage-tip"'), '面板底部应包含简短用量贴士节点');
+  assert.equal(tpl.includes('id="quota-usage-tip"'), false, 'v0.8.9 精简应移除冗余 quota-usage-tip 占位');
+  assert.equal(tpl.includes('id="quota-basis-note"'), false, 'v0.8.9 精简应移除大段 quota-basis-note');
+  assert.ok(tpl.includes('id="quota-basis-help"'), '应保留 (?) 悬浮提示按钮替代静态大段说明');
 
   // 2. 验证纯 New/Beta 装饰角标不触发 Notice: New 占地，而真实警示意图保留
   const availNew = core.classifyModelQuotaAvailability({
@@ -920,6 +969,19 @@ test('刷新交互：原地 DOM 节点复用、不清空归零、220ms 平滑数
     fetchedAtMs: nowMs,
     nextRefreshAtMs: nowMs + 60000
   }, nowMs);
+  while (hReduced.quotaRequests.length > 0) {
+    hReduced.quotaRequests.shift().resolve({
+      ok: true,
+      data: {
+        ok: true,
+        accountScopeKey: 'acct_rm',
+        fetchedAtMs: nowMs,
+        lastSuccessAtMs: nowMs,
+        snapshot: core.buildModelQuotaSnapshot({ userStatusRes, quotaSummaryRes, currentModel: 'MODEL_PLACEHOLDER_M38', fetchMeta: { fetchedAtMs: nowMs }, nowMs })
+      }
+    });
+    await hReduced.flush();
+  }
   const rmReq = apiR.refreshQuotaForTest(true, { manual: true });
   hReduced.quotaRequests[hReduced.quotaRequests.length - 1].resolve({
     ok: true,
@@ -1566,10 +1628,23 @@ test('额度进度条充能动画：仅手动刷新成功后按真实比例与�
   assert.equal(curStage.getAttribute('data-status'), 'available');
   assert.equal(curStage.style.width, '45.06%');
   assert.equal(curFill.style.transform, 'scaleX(0.4506)');
+  const curSegFills = curTrack.children[2].children.map(s => s.children[0]);
+  const curPulsedCount = curSegFills.filter(sf => sf.getAttribute('data-cell-pulse') === 'true').length;
+  assert.equal(curPulsedCount, 10, '45.06% 共 9 满格+1 部分格，应仅点亮前 10 格');
+  assert.equal(curSegFills[0].style.getPropertyValue('--quota-cell-delay'), '0ms');
+  assert.equal(curSegFills[9].style.getPropertyValue('--quota-cell-delay'), '378ms', '10 格步进 clamp(round(420/10),22,48)=42ms');
+  assert.equal(curSegFills[10].getAttribute('data-cell-pulse'), null, '空槽必须保持静止不加脉冲标记');
   assert.equal(lowTrack.getAttribute('data-charging'), 'true');
   assert.equal(lowStage.hidden, false);
   assert.equal(lowStage.getAttribute('data-status'), 'low');
   assert.equal(lowStage.style.width, '12.00%');
+  const lowSegFills = lowTrack.children[2].children.map(s => s.children[0]);
+  assert.equal(lowSegFills.filter(sf => sf.getAttribute('data-cell-pulse') === 'true').length, 3, '12% 共 3 格点亮，步进 48ms');
+  assert.equal(lowSegFills[2].style.getPropertyValue('--quota-cell-delay'), '96ms');
+  assert.equal(lowSegFills[3].getAttribute('data-cell-pulse'), null);
+  const chargeDetail = api.getQuotaChargeDetailForTest();
+  assert.equal(chargeDetail.playing, true);
+  assert.ok(chargeDetail.detail.bars.some(b => b.activeCells === 10 && b.stepMs === 42 && b.staticEmptyCount === 10));
   assert.equal(zeroTrack.getAttribute('data-charge-eligible'), 'false');
   assert.equal(zeroTrack.getAttribute('data-charging'), null);
   assert.equal(zeroStage.hidden, true);
@@ -1595,6 +1670,7 @@ test('额度进度条充能动画：仅手动刷新成功后按真实比例与�
   activeChargeTimers2[0].fn();
   assert.equal(curTrack.getAttribute('data-charging'), null);
   assert.equal(curStage.hidden, true);
+  assert.equal(curSegFills.filter(sf => sf.getAttribute('data-cell-pulse') === 'true').length, 0, '收尾后必须清除逐格脉冲属性');
   assert.equal(curFill.style.transform, 'scaleX(0.4506)');
 
   // 5. 自动静默刷新 & 失败响应均不触发充能动画
@@ -2059,6 +2135,7 @@ test('上下文面板后台刷新与下拉展开不触发 scrollIntoView，scrol
   }
 });
 
+
 test('g1-ultra-tier 搭配 TEAMS_TIER_PRO 与 allowedTiers/New 角标不得误判为无权限', () => {
   const nowIso = '2026-11-16T02:32:00Z';
   const future5hIso = '2026-11-16T05:39:51Z';
@@ -2412,6 +2489,7 @@ test('ELV-83 全矩阵回归：Carbon/Hydrogen/Sonnet 权限校验、同账号�
   }
 });
 
+
 test('ELV-83 安装与热加载桥接核验：live-host 版本元数据、cli.js 不重复热注入且识别 getQuota 桥接', () => {
   const cliSrc = fs.readFileSync(path.join(__dirname, 'cli.js'), 'utf8');
   const liveHostSrc = fs.readFileSync(path.join(__dirname, 'live-host.js'), 'utf8');
@@ -2633,3 +2711,1098 @@ test('隔离额度请求遇到窗口未就绪、CSRF 缺失及 401/403 鉴权失
   assert.notEqual(authFailRes.snapshot.activeStatus, 'exhausted');
   assert.notEqual(authFailRes.snapshot.activeStatus, 'no_permission');
 });
+
+test('Antigravity v2.33 合并 Gemini 池与 Gemini 4 Neon / Orchestrator (Neon) 顶栏额度准确匹配', async () => {
+  assert.equal(core.getModelPoolKey('Gemini 4 Neon (High)'), 'gemini-4-neon');
+  assert.equal(core.getModelPoolKey('gemini-4-neon-high'), 'gemini-4-neon');
+  assert.equal(core.getModelPoolKey('Orchestrator (Neon)'), 'gemini-4-neon');
+  assert.equal(core.getModelPoolKey('gemini-pro-orchestrator-neon'), 'gemini-4-neon');
+  assert.equal(core.getSharedQuotaGroupKey('Gemini 4 Neon (High)'), 'shared_gemini_main');
+  assert.equal(core.getSharedQuotaGroupKey('Orchestrator (Neon)'), 'shared_gemini_main');
+  // 保持 Argon 独立映射语义不变
+  assert.equal(core.getModelPoolKey('Orchestrator (Argon)'), 'gemini-4-argon');
+  assert.equal(core.getSharedQuotaGroupKey('Orchestrator (Argon)'), 'shared_gemini_argon');
+
+  const nowIso = '2026-11-19T14:03:30Z';
+  const nowMs = Date.parse(nowIso);
+  const future5hIso = '2026-11-19T17:53:00Z';
+  const futureWeekIso = '2026-11-26T05:09:00Z';
+
+  const v233Configs = [
+    { label: 'Gemini 4 Neon (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M701' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Gemini 4 Neon (Low)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M702' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Gemini 4 Hydrogen (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M28' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Orchestrator (Neon)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M705' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Orchestrator (Argon)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M668' }, modelId: 'gemini-pro-orchestrator-g1-pro', quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Gemini 3.8 Flash (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M39' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } },
+    { label: 'Claude Opus 5.5 (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' }, quotaInfo: { remainingFraction: 1.0, resetTime: futureWeekIso } }
+  ];
+
+  const v233Summary = {
+    response: {
+      groups: [
+        {
+          groupId: 'gemini',
+          displayName: 'Gemini Models',
+          description: 'Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Argon), Gemini 3.8 Flash',
+          buckets: [
+            { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.81, resetTime: futureWeekIso },
+            { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.95, resetTime: future5hIso }
+          ]
+        },
+        {
+          groupId: '3p',
+          displayName: 'Claude & GPT',
+          description: 'Models within this group: Claude Opus 5.5',
+          buckets: [
+            { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 1.0, resetTime: futureWeekIso }
+          ]
+        }
+      ]
+    }
+  };
+
+  // 1. 合并池包含 Orchestrator (Argon) 与 Neon/Hydrogen/Flash 时，应归为 shared_gemini_main 而非 shared_gemini_argon
+  const snap = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: v233Configs,
+    quotaSummaryRes: v233Summary,
+    currentModel: { modelId: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' },
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+  const geminiPool = snap.pools.find(p => p.poolKey === 'shared_gemini_main');
+  assert.ok(geminiPool, '合并后的 Gemini 池应保持 shared_gemini_main 键名');
+  assert.equal(snap.activeStatus, 'available');
+  assert.equal(snap.badge.text, '81%');
+  assert.equal(snap.currentModel?.productLabel, 'Gemini 4 Neon');
+
+  // 2. modelId 为未知占位符但 label 可匹配产品名时（兼容未来新模型），也能准确匹配所在池
+  const snapByLabel = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: [
+      ...v233Configs,
+      { label: 'Gemini 4 Krypton (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M990' }, quotaInfo: { remainingFraction: 0.81, resetTime: futureWeekIso } }
+    ],
+    quotaSummaryRes: {
+      response: {
+        groups: [
+          {
+            ...v233Summary.response.groups[0],
+            description: v233Summary.response.groups[0].description + ', Gemini 4 Krypton'
+          },
+          v233Summary.response.groups[1]
+        ]
+      }
+    },
+    currentModel: { modelId: 'MODEL_PLACEHOLDER_UNKNOWN_999', label: 'Gemini 4 Krypton (High)' },
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+  assert.equal(snapByLabel.activeStatus, 'available');
+  assert.equal(snapByLabel.badge.text, '81%');
+  assert.equal(snapByLabel.currentModel?.productLabel, 'Gemini 4 Krypton');
+
+  // 3. 渲染层仅拿到标准化 snapshot（无 rawInput）且当前会话为 gemini-4-neon-high 时，顶栏显示 81% 而非未知
+  const snapWithoutCurrent = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: v233Configs,
+    quotaSummaryRes: v233Summary,
+    currentModel: null,
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+  const h = createQuotaRendererHarness();
+  try {
+    for (const req of h.quotaRequests) {
+      req.resolve({
+        ok: true,
+        data: {
+          snapshot: snapWithoutCurrent,
+          cascadeModelConfigs: v233Configs,
+          fetchedAtMs: nowMs,
+          nextRefreshAtMs: nowMs + 60000
+        }
+      });
+    }
+    await h.flush();
+    const api = h.sandbox.__AGContextMeter;
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', actual: 18000, budget: 256000 },
+      v233Configs
+    );
+    await h.flush();
+    assert.equal(h.elements.get('quota-badge-val').textContent, '81%');
+  } finally {
+    try { h.sandbox.__AGContextMeter.dispose(); } catch { }
+  }
+});
+
+
+test('共享额度池随 5h/weekly 窗口切换同步更新状态与手动刷新排队强制执行', async () => {
+  const nowIso = '2026-11-15T00:44:00Z';
+  const nowMs = Date.parse(nowIso);
+  const future5hIso = '2026-11-15T05:00:00Z';
+  const futureWeekIso = '2026-11-18T22:00:00Z';
+  const argonResetIso = '2026-11-21T11:48:00Z';
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures(nowIso, future5hIso, futureWeekIso, argonResetIso);
+
+  // 让 Gemini Main 5h=5% (low) 但 weekly=80% (available)，验证切换窗口模式时 pool.status 随 pb 同步变化
+  userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs[0].quotaInfo.remainingFraction = 0.05;
+  quotaSummaryRes.response.groups[0].buckets[0].remainingFraction = 0.05;
+  quotaSummaryRes.response.groups[0].buckets[1].remainingFraction = 0.80;
+
+  const h = createQuotaRendererHarness();
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    const snap = core.buildModelQuotaSnapshot({
+      userStatusRes,
+      quotaSummaryRes,
+      currentModel: 'MODEL_PLACEHOLDER_M38',
+      fetchMeta: { fetchedAtMs: nowMs },
+      nowMs
+    });
+
+    // 先完结初始化时自动发起的配额请求，避免占用 quotaInFlightPromise
+    while (h.quotaRequests.length > 0) {
+      h.quotaRequests.shift().resolve({
+        ok: true,
+        data: { ok: true, accountScopeKey: 'acct_alice', fetchedAtMs: nowMs, lastSuccessAtMs: nowMs, snapshot: snap }
+      });
+    }
+    await h.flush();
+
+    // 验证静默刷新进行中时，手动刷新会排队并在静默结束后自动发起一次 force: true 请求
+    const req0Count = h.quotaRequests.length;
+    const silentPromise = api.refreshQuotaForTest(false, { manual: false });
+    const manualPromise = api.refreshQuotaForTest(true, { manual: true });
+    assert.equal(h.quotaRequests.length, req0Count + 1, '静默进行中时暂不并发第二次请求');
+    h.quotaRequests[req0Count].resolve({
+      ok: true,
+      data: { ok: true, accountScopeKey: 'acct_alice', fetchedAtMs: nowMs, lastSuccessAtMs: nowMs, snapshot: snap }
+    });
+    await h.flush();
+    assert.ok(h.quotaRequests.length >= req0Count + 2, '静默完成后应自动补发一次手动强制刷新');
+    const queuedManualReq = h.quotaRequests[req0Count + 1];
+    assert.equal(Boolean(queuedManualReq.opts?.force), true);
+    queuedManualReq.resolve({
+      ok: true,
+      data: { ok: true, accountScopeKey: 'acct_alice', fetchedAtMs: nowMs + 500, lastSuccessAtMs: nowMs + 500, snapshot: snap }
+    });
+    await Promise.all([silentPromise, manualPromise]);
+
+    // 验证 5h -> weekly 切换时 shared_gemini_main 的 pool.status 跟随 pb 更新（low -> available）
+    api.setQuotaBadgeWindowMode('5h', { persist: false });
+    const view5h = api.getModelQuotaStateForTest(nowMs).view;
+    const pool5h = view5h.pools.find(p => p.poolKey === 'shared_gemini_main');
+    assert.equal(pool5h.status, 'low');
+    assert.equal(pool5h.percentText, '5%');
+
+    api.setQuotaBadgeWindowMode('weekly', { persist: false });
+    const viewWeekly = api.getModelQuotaStateForTest(nowMs).view;
+    const poolWeekly = viewWeekly.pools.find(p => p.poolKey === 'shared_gemini_main');
+    assert.equal(poolWeekly.percentText, '80%');
+    assert.equal(poolWeekly.status, 'available');
+  } finally {
+    try { h.sandbox.__AGContextMeter.dispose(); } catch { }
+  }
+});
+
+test('PR #64 回归：5h/weekly 用量统计防双倍重复、占位模型归池、账号隔离与冷启动自愈回归', async (t) => {
+  const os = require('os');
+  const tmpAgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-quota-dedup-'));
+  t.after(() => fs.rmSync(tmpAgDir, { recursive: true, force: true }));
+
+  const nowMs = Date.now();
+  const cid = '11111111-2222-4333-8444-555555555555';
+  const logsDir = path.join(tmpAgDir, 'brain', cid, '.system_generated', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  // 构造跨 24h 与最近 5h 的真实 transcript 记录（不含 responseId，extractCallId 会生成 cid#stepIndex）
+  const recentIso1 = new Date(nowMs - 20 * 60000).toISOString();
+  const recentIso2 = new Date(nowMs - 10 * 60000).toISOString();
+  const olderIso = new Date(nowMs - 26 * 3600000).toISOString();
+  fs.writeFileSync(path.join(logsDir, 'transcript.jsonl'), [
+    JSON.stringify({
+      step_index: 2,
+      created_at: recentIso1,
+      input_tokens: 10000,
+      cache_read_tokens: 90000,
+      output_tokens: 2000
+    }),
+    JSON.stringify({
+      step_index: 4,
+      created_at: recentIso2,
+      input_tokens: 5000,
+      cache_read_tokens: 45000,
+      output_tokens: 1000
+    }),
+    JSON.stringify({
+      step_index: 1,
+      created_at: olderIso,
+      input_tokens: 20000,
+      cache_read_tokens: 80000,
+      output_tokens: 4000
+    })
+  ].join('\n') + '\n', 'utf8');
+
+  const acctActiveKey = collector.buildAccountScopeKey('active@example.com');
+
+  // 账本保存服务端真实 responseId，与 transcript 的 cid#stepIndex 键不同，且使用不同占位模型 ID
+  collector.recordModelCalls([
+    {
+      callId: 'resp_live_h530_step2',
+      cascadeId: cid,
+      stepIndex: 2,
+      model: 'Gemini 4 Hydrogen (High)',
+      modelExactId: 'MODEL_PLACEHOLDER_M530',
+      modelLabel: 'Gemini 4 Hydrogen (High)',
+      inputTokens: 10000,
+      cacheReadTokens: 90000,
+      cacheTokens: 90000,
+      outputTokens: 2000,
+      totalTokens: 102000,
+      status: 'final',
+      created_at: recentIso1,
+      timestamp: Date.parse(recentIso1)
+    },
+    {
+      callId: 'resp_live_neon_step4',
+      cascadeId: cid,
+      stepIndex: 4,
+      model: 'Gemini 4 Neon (High)',
+      modelExactId: 'MODEL_PLACEHOLDER_M532',
+      modelLabel: 'Gemini 4 Neon (High)',
+      inputTokens: 5000,
+      cacheReadTokens: 45000,
+      cacheTokens: 45000,
+      outputTokens: 1000,
+      totalTokens: 51000,
+      status: 'final',
+      created_at: recentIso2,
+      timestamp: Date.parse(recentIso2)
+    },
+    {
+      callId: 'resp_live_orch_older',
+      cascadeId: cid,
+      stepIndex: 1,
+      model: 'Gemini 4 Hydrogen (Orchestrator)',
+      modelExactId: 'MODEL_PLACEHOLDER_M669',
+      modelLabel: 'Gemini 4 Hydrogen (Orchestrator)',
+      inputTokens: 20000,
+      cacheReadTokens: 80000,
+      cacheTokens: 80000,
+      outputTokens: 4000,
+      totalTokens: 104000,
+      status: 'final',
+      created_at: olderIso,
+      timestamp: Date.parse(olderIso)
+    }
+  ], { agDir: tmpAgDir, confirmedAccountEmail: 'active@example.com' });
+
+  collector.recordModelCalls([
+    {
+      callId: 'resp_other_acct_isolated',
+      cascadeId: '22222222-3333-4444-8555-666666666666',
+      stepIndex: 1,
+      model: 'Orchestrator (Neon)',
+      modelExactId: 'MODEL_PLACEHOLDER_M537',
+      modelLabel: 'Orchestrator (Neon)',
+      inputTokens: 30000,
+      cacheReadTokens: 170000,
+      cacheTokens: 170000,
+      outputTokens: 5000,
+      totalTokens: 205000,
+      status: 'final',
+      created_at: recentIso2,
+      timestamp: Date.parse(recentIso2)
+    }
+  ], { agDir: tmpAgDir, confirmedAccountEmail: 'other@example.com' });
+
+  const hist = await collector.collectTokenHistoryAsync({
+    agDir: tmpAgDir,
+    agCliDir: path.join(tmpAgDir, 'cli-isolated'),
+    userStatus: { userStatus: { email: 'active@example.com' } },
+    skipWslDiscovery: true,
+    skipAutoRepair: true,
+    force: true,
+    useWorker: false
+  });
+
+  // 1. 绝不双倍计算 matchedTranscriptReqs，也不混入其他账号记录
+  assert.equal(hist.recentModelUsage.length, 3, '3条已对齐记录只各计1次，且隔离其他账号');
+  const sumRecentTokens = hist.recentModelUsage.reduce((s, e) => s + e.totalTokens, 0);
+  assert.equal(sumRecentTokens, 102000 + 51000 + 104000);
+  assert.ok(hist.recentModelUsage.every(e => e.sharedGroupKey === 'shared_gemini_main'), 'M530/M532/M669 均应准确归入 shared_gemini_main');
+
+  // 2. summarizeAccountWindowUsage 对齐占位模型后不再返回 0
+  const winSummary = collector.summarizeAccountWindowUsage({
+    agDir: tmpAgDir,
+    accountScopeKey: acctActiveKey,
+    poolKey: 'shared_gemini_main',
+    startMs: nowMs - 3600000,
+    endMs: nowMs + 60000
+  });
+  assert.equal(winSummary.requestCount, 2);
+  assert.equal(winSummary.totalTokens, 153000);
+
+  // 3. computeBucketTokenEstimate 自愈（竞态滞后 + 旧版 2x 污染数据升级）及跨池 Argon 隔离
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures(
+    new Date(nowMs).toISOString(),
+    new Date(nowMs + 4 * 3600000).toISOString(),
+    new Date(nowMs + 5 * 86400000).toISOString(),
+    new Date(nowMs + 5 * 86400000).toISOString()
+  );
+  // 模拟新版服务端将 Orchestrator (Argon) (M668) 置于 Gemini Models 共享池，而 Gemini 4 Argon (M417) 保持独立池
+  quotaSummaryRes.response.groups[0].modelIds = ['Gemini 4 Hydrogen', 'Gemini 4 Neon', 'Orchestrator (Argon)', 'Gemini 3.8 Flash'];
+  const snap = core.buildModelQuotaSnapshot({
+    userStatusRes,
+    quotaSummaryRes,
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+  const gemPool = snap.pools.find(p => p.poolKey === 'shared_gemini_main');
+  const gem5h = gemPool.buckets.find(b => b.windowKey === '5h');
+  const gemWeek = gemPool.buckets.find(b => b.windowKey === 'weekly');
+
+  // 模拟冷启动/竞态：先遇到 frac 下降 >=3% 且本地尚未扫到新样本 -> 暂标 external_divergence；
+  // 随后在 frac 未再继续下降的前提下补齐本地 153K 样本 -> 自愈解除锁定并正常 delta 校准
+  const t0 = core.computeBucketTokenEstimate(gemPool, { ...gem5h, remainingFraction: 0.95 }, {
+    nowMs: nowMs - 60000,
+    accountScopeKey: acctActiveKey,
+    usageEvents: [],
+    historyLoaded: true,
+    calibrationEntry: null
+  });
+  const t1Lag = core.computeBucketTokenEstimate(gemPool, { ...gem5h, remainingFraction: 0.90 }, {
+    nowMs,
+    accountScopeKey: acctActiveKey,
+    usageEvents: [],
+    historyLoaded: true,
+    calibrationEntry: t0.nextCalibrationEntry
+  });
+  assert.equal(t1Lag.invalidationReason, 'external_divergence');
+
+  const t2Healed = core.computeBucketTokenEstimate(gemPool, { ...gem5h, remainingFraction: 0.90 }, {
+    nowMs: nowMs + 5000,
+    accountScopeKey: acctActiveKey,
+    usageEvents: hist.recentModelUsage.filter(e => e.ts >= nowMs - 3600000),
+    historyLoaded: true,
+    calibrationEntry: t1Lag.nextCalibrationEntry
+  });
+  assert.equal(t2Healed.estBasis, 'delta_calibrated');
+  assert.equal(t2Healed.invalidationReason, null);
+  assert.equal(t2Healed.cycleTokensUsed, 153000);
+
+  // 旧版（无 usageAccountingRev）因 2x / 竞态遗留的 externalDivergenceInCycle 缓存应在升级后自动解封恢复
+  const legacyPoisoned = {
+    schemaVersion: 2,
+    calibratedTotalTokens: 300000000,
+    calibratedAt: nowMs - 3600000,
+    calibratedResetAtMs: gemWeek.resetAtMs,
+    sampleCount: 1,
+    source: 'cycle',
+    lastFraction: 0.63,
+    lastResetAtMs: gemWeek.resetAtMs,
+    observedCycleFromStart: true,
+    fullStartCycleResetMs: gemWeek.resetAtMs,
+    externalDivergenceInCycle: true,
+    cycleInvalidationReason: 'external_divergence',
+    anchorFraction: 0.72,
+    anchorCycleTokens: 400000, // 旧 2x 虚高锚点 > 修复后真实 257K
+    updatedAt: nowMs - 3600000
+  };
+  const weekHealed = core.computeBucketTokenEstimate(gemPool, { ...gemWeek, remainingFraction: 0.61 }, {
+    nowMs,
+    accountScopeKey: acctActiveKey,
+    usageEvents: [
+      ...hist.recentModelUsage,
+      // 混入独立池 Gemini 4 Argon (M417) 用量，验证不会被误算入 Gemini Models 共享池
+      { poolKey: 'gemini-4-argon', sharedGroupKey: 'shared_gemini_argon', modelExactId: 'MODEL_PLACEHOLDER_M417', ts: nowMs - 60000, totalTokens: 999999 }
+    ],
+    historyCoverageStartMs: nowMs - 8 * 86400000,
+    historyLoaded: true,
+    calibrationEntry: legacyPoisoned
+  });
+  assert.equal(weekHealed.estBasis, 'cycle_estimated');
+  assert.equal(weekHealed.invalidationReason, null);
+  assert.equal(weekHealed.cycleTokensUsed, 257000);
+
+  // 4. 渲染器冷启动保护：recentModelUsage 尚未加载前调用 setQuotaSnapshotForTest 不得向 localStorage 写入锁定状态
+  const h = createQuotaRendererHarness();
+  const api = h.sandbox.__AGContextMeter;
+  const coldScope = 'acct_cold_guard';
+  h.sandbox.localStorage.setItem(`ag_quota_token_cal_v2_${coldScope}`, JSON.stringify({
+    [`${coldScope}::shared_gemini_main::weekly`]: {
+      schemaVersion: 2,
+      usageAccountingRev: 2,
+      calibratedTotalTokens: 2000000,
+      calibratedAt: nowMs - 3600000,
+      calibratedResetAtMs: gemWeek.resetAtMs,
+      sampleCount: 1,
+      source: 'delta',
+      lastFraction: 0.90,
+      lastResetAtMs: gemWeek.resetAtMs,
+      observedCycleFromStart: true,
+      fullStartCycleResetMs: gemWeek.resetAtMs,
+      anchorFraction: 0.90,
+      anchorCycleTokens: 200000,
+      updatedAt: nowMs - 3600000
+    }
+  }));
+  const beforeRaw = h.sandbox.localStorage.getItem(`ag_quota_token_cal_v2_${coldScope}`);
+  api.setQuotaSnapshotForTest({
+    accountScopeKey: coldScope,
+    fetchedAtMs: nowMs,
+    userStatusRes,
+    quotaSummaryRes
+  }, nowMs);
+  assert.equal(h.sandbox.localStorage.getItem(`ag_quota_token_cal_v2_${coldScope}`), beforeRaw, '历史未就绪时不得覆写 localStorage');
+
+  api.setTokenHistoryForTest({
+    accountScopeKey: coldScope,
+    quotaUsageCoverageStartMs: nowMs - 8 * 86400000,
+    recentModelUsage: [
+      { poolKey: 'gemini-4-hydrogen', sharedGroupKey: 'shared_gemini_main', ts: nowMs - 60000, inputTokens: 100000, cacheTokens: 600000, outputTokens: 20000, totalTokens: 720000 }
+    ],
+    dailyMap: {}
+  });
+  const savedAfter = JSON.parse(h.sandbox.localStorage.getItem(`ag_quota_token_cal_v2_${coldScope}`));
+  assert.equal(savedAfter[`${coldScope}::shared_gemini_main::weekly`].externalDivergenceInCycle, false);
+  api.dispose();
+});
+
+test('额度消耗节奏数学模型：20格分段、极小非零保护、三色四档精确边界与静默条件', () => {
+  const nowMs = Date.parse('2026-11-22T06:00:00Z');
+  const fiveHMs = 5 * 3600 * 1000;
+  const weekMs = 7 * 24 * 3600 * 1000;
+  const makeBucket = (windowKey, frac, remainMs, extra = {}) => ({
+    bucketId: `b-${windowKey}`,
+    windowKey,
+    windowShort: windowKey === '5h' ? '5h' : (windowKey === 'weekly' ? '7d' : windowKey),
+    remainingFraction: frac,
+    isExhausted: frac === 0,
+    hasResetTime: remainMs !== null,
+    resetAtMs: remainMs !== null ? nowMs + remainMs : null,
+    resetTimeIso: remainMs !== null ? new Date(nowMs + remainMs).toISOString() : null,
+    isResetPassed: false,
+    ...extra
+  });
+
+  // 1. +10 / -5 / 红色严重偏快(-40pp 与 Rq<25% 且 delta<-20pp)精确边界
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.60, 0.50 * fiveHMs), nowMs).tier, 1, '+10pp 边界应落入 1 档(宽裕)');
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.599, 0.50 * fiveHMs), nowMs).tier, 2, '+9.9pp 应落入 2 档(均衡)');
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.45, 0.50 * fiveHMs), nowMs).tier, 2, '-5pp 边界应落入 2 档(均衡)');
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.449, 0.50 * fiveHMs), nowMs).tier, 3, '-5.1pp 应落入 3 档(偏快)');
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.25, 0.65 * fiveHMs), nowMs).tier, 3, '-40pp 边界且 Rq=0.25 不满足 < -0.40 应落入 3 档(偏快橙)');
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.299, 0.70 * fiveHMs), nowMs).tier, 4, 'delta = -40.1pp (< -0.40) 应落入 4 档(透支红)');
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.24, 0.44 * fiveHMs), nowMs).tier, 3, 'Rq < 0.25 但 delta = -20pp 边界未满足 < -0.20 应保持 3 档(偏快橙)');
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.24, 0.45 * fiveHMs), nowMs).tier, 4, 'Rq < 0.25 且 delta = -21pp (< -0.20) 应落入 4 档(透支红)');
+
+  // 2. 用户截图实测样本与整数剩余时间文案校验
+  const liveSample55 = core.evaluateQuotaPace(makeBucket('weekly', 0.55, 0.948 * weekMs), nowMs);
+  assert.equal(liveSample55.tier, 3, '55% / 94.8% (delta=-39.8pp) 必须为橙色偏快(3档)');
+  assert.equal(liveSample55.colorGroup, 'amber');
+  assert.equal(liveSample55.timePct, 95, '剩余时间文案应为整数百分比');
+  assert.ok(Math.abs(liveSample55.timeRemaining - 0.948) < 1e-4, '游标仍应保留真实浮点比例');
+
+  const liveSample36 = core.evaluateQuotaPace(makeBucket('weekly', 0.36, 0.711 * weekMs), nowMs);
+  assert.equal(liveSample36.tier, 3, '36% / 71.1% (delta=-35.1pp) 必须为橙色偏快(3档)');
+  assert.equal(liveSample36.colorGroup, 'amber');
+  assert.equal(liveSample36.timePct, 71);
+
+  const sampleFast = core.evaluateQuotaPace(makeBucket('5h', 0.65, 0.75 * fiveHMs), nowMs);
+  assert.equal(sampleFast.tier, 3);
+  assert.equal(sampleFast.tierKey, 'fast');
+  assert.equal(sampleFast.colorGroup, 'amber');
+  assert.equal(sampleFast.deltaPct, -10);
+  assert.equal(sampleFast.hasGap, true);
+  assert.equal(sampleFast.fullBlocks, 13);
+  assert.equal(sampleFast.partialBlockFrac, 0);
+
+  const sampleModerateLag = core.evaluateQuotaPace(makeBucket('weekly', 0.59, 0.96 * weekMs), nowMs);
+  assert.equal(sampleModerateLag.tier, 3, '59%/96% (-37pp) 在新阈值下为 3 档橙色而非红色');
+  assert.equal(sampleModerateLag.tierKey, 'fast');
+  assert.equal(sampleModerateLag.colorGroup, 'amber');
+  assert.equal(sampleModerateLag.deltaPct, -37);
+  assert.equal(sampleModerateLag.hasGap, true);
+  assert.equal(sampleModerateLag.fullBlocks, 11);
+  assert.ok(Math.abs(sampleModerateLag.partialBlockFrac - 0.8) < 1e-6);
+
+  const sampleOverburnStrict = core.evaluateQuotaPace(makeBucket('weekly', 0.49, 0.96 * weekMs), nowMs);
+  assert.equal(sampleOverburnStrict.tier, 4, '49%/96% (delta=-47pp < -40pp) 必须为 4 档透支红');
+  assert.equal(sampleOverburnStrict.tierKey, 'overburn');
+  assert.equal(sampleOverburnStrict.colorGroup, 'red');
+
+  const pdfSurplus = core.evaluateQuotaPace(makeBucket('5h', 0.80, 0.50 * fiveHMs), nowMs);
+  assert.equal(pdfSurplus.tier, 1);
+  assert.equal(pdfSurplus.fullBlocks, 16);
+  assert.equal(pdfSurplus.partialBlockFrac, 0);
+  assert.equal(pdfSurplus.hasGap, false);
+
+  const pdfBalanced = core.evaluateQuotaPace(makeBucket('5h', 0.52, 0.50 * fiveHMs), nowMs);
+  assert.equal(pdfBalanced.tier, 2);
+  assert.equal(pdfBalanced.fullBlocks, 10);
+  assert.ok(Math.abs(pdfBalanced.partialBlockFrac - 0.4) < 1e-6);
+
+  // 3. 极小非零保护 (<1 格) 与 0% 已耗尽强制 4 档 (即使仅剩 10 分钟重置)
+  const tinyNonZero = core.evaluateQuotaPace(makeBucket('5h', 0.00134, 0.50 * fiveHMs), nowMs);
+  assert.equal(tinyNonZero.available, true);
+  assert.equal(tinyNonZero.fullBlocks, 0);
+  assert.ok(tinyNonZero.partialBlockFrac > 0 && tinyNonZero.partialBlockFrac < 0.05);
+  assert.equal(tinyNonZero.hasMinVisibleBlock, true);
+  assert.equal(tinyNonZero.partialVisualOpacity, 0.25);
+
+  const zeroNearReset = core.evaluateQuotaPace(makeBucket('5h', 0, 10 * 60000), nowMs);
+  assert.equal(zeroNearReset.available, true);
+  assert.equal(zeroNearReset.tier, 4);
+  assert.equal(zeroNearReset.isExhausted, true);
+  assert.equal(zeroNearReset.fullBlocks, 0);
+  assert.equal(zeroNearReset.partialBlockFrac, 0);
+
+  // 4. 异常与静默边界（缺重置时间、周期未知、已过期、无权限、取数失败、数据过期、未知状态）
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.65, null), nowMs).available, false);
+  assert.equal(core.evaluateQuotaPace(makeBucket('daily', 0.65, 12 * 3600000), nowMs).available, false);
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.65, -60000, { isResetPassed: true }), nowMs).available, false);
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.65, 0), nowMs).available, false);
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.65, 3600000), nowMs, { status: 'no_permission' }).available, false);
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.65, 3600000), nowMs, { status: 'error' }).available, false);
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.65, 3600000), nowMs, { status: 'stale' }).available, false);
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', 0.65, 3600000), nowMs, { status: 'unknown' }).available, false);
+  assert.equal(core.evaluateQuotaPace(makeBucket('5h', null, 3600000), nowMs).available, false);
+});
+
+test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏时间白点零重绘、输入框双显/限额提醒/开关/窄窗及静默隐藏', async () => {
+  const nowMs = Date.parse('2026-11-22T06:00:00Z');
+  const nowIso = new Date(nowMs).toISOString();
+  const f5h = new Date(nowMs + Math.round(0.75 * 5 * 3600000)).toISOString(); // 75% timeRemaining -> delta -10% (fast)
+  const fWeek = new Date(nowMs + Math.round(0.96 * 7 * 86400000)).toISOString(); // 96% timeRemaining -> delta -37% (overburn)
+  const fArgon = new Date(nowMs + Math.round(0.50 * 7 * 86400000)).toISOString();
+
+  const h = createQuotaRendererHarness({ innerWidth: 1280 });
+  const savedSettingsPayloads = [];
+  h.sandbox.window.contextMeterAPI.saveSettings = async (p) => {
+    savedSettingsPayloads.push(p);
+    return { ok: true };
+  };
+  for (const req of h.quotaRequests) {
+    req.resolve({ ok: false, error: 'init-noop' });
+  }
+  await h.flush();
+
+  const userStatusRes = {
+    userStatus: {
+      email: 'pace-test@example.com',
+      planStatus: { planInfo: { planName: 'Google AI Pro', teamsTier: 'TEAMS_TIER_PRO' } },
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          { label: 'Gemini 4 Hydrogen (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M28' }, quotaInfo: { remainingFraction: 0.65, resetTime: f5h } },
+          { label: 'Claude Opus 5.5 (Low)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M40' }, quotaInfo: { remainingFraction: 0.52, resetTime: fWeek } },
+          { label: 'Gemini 4 Argon (Medium)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M66' }, quotaInfo: { remainingFraction: 0.80, resetTime: fArgon } }
+        ]
+      }
+    }
+  };
+  const quotaSummaryRes = {
+    response: {
+      groups: [
+        {
+          groupId: 'gemini-main',
+          displayName: 'Gemini Models',
+          modelIds: ['Gemini 4 Hydrogen'],
+          buckets: [
+            { bucketId: 'gem-5h', window: '5h', remainingFraction: 0.65, resetTime: f5h },
+            { bucketId: 'gem-7d', window: 'weekly', remainingFraction: 0.59, resetTime: fWeek }
+          ]
+        },
+        {
+          groupId: 'claude-gpt',
+          displayName: 'Claude & GPT',
+          modelIds: ['Claude Opus 5.5'],
+          buckets: [
+            { bucketId: '3p-5h', window: '5h', remainingFraction: 0.52, resetTime: new Date(nowMs + 0.50 * 5 * 3600000).toISOString() },
+            { bucketId: '3p-7d', window: 'weekly', remainingFraction: 0.80, resetTime: fArgon }
+          ]
+        },
+        {
+          groupId: 'argon-pool',
+          displayName: 'Gemini 4 Argon',
+          modelIds: ['Gemini 4 Argon'],
+          buckets: [
+            { bucketId: 'argon-7d', window: 'weekly', remainingFraction: 0.80, resetTime: fArgon }
+          ]
+        }
+      ]
+    }
+  };
+
+  const api = h.sandbox.__AGContextMeter;
+  api.setContextLatestForTest(
+    { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 18000, budget: 256000 },
+    userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
+  );
+  api.setQuotaSnapshotForTest({
+    accountScopeKey: 'acct_pace_ui',
+    userStatusRes,
+    quotaSummaryRes,
+    fetchedAtMs: nowMs,
+    nowMs
+  }, nowMs);
+
+  // 1. 校验 65%/75% 5h(偏快 -10%) 与 59%/96% Weekly(透支 -37%) 双轨 20 格、小数格、下轨游标与差值带
+  const curBuckets = h.elements.get('quota-cur-buckets');
+  assert.equal(curBuckets.children.length, 2);
+
+  const row5h = curBuckets.children[0];
+  assert.equal(row5h.getAttribute('data-pace-tier'), '3');
+  const segs5h = row5h.children[1].children[2];
+  assert.equal(segs5h.children.length, 20);
+  assert.equal(segs5h.children[12].children[0].style.width, '100%');
+  assert.equal(segs5h.children[13].children[0].style.width, '0%');
+  const paceWrap5h = row5h.children[2];
+  assert.equal(paceWrap5h.hidden, false);
+  assert.equal(paceWrap5h.getAttribute('data-pace-tier'), '3');
+  assert.equal(paceWrap5h.children[0].children[1].hidden, false, '5h 偏快应展示差值高亮区段');
+  assert.match(paceWrap5h.children[1].children[1].textContent, /偏快\s*-10%/);
+
+  const row7d = curBuckets.children[1];
+  assert.equal(row7d.getAttribute('data-pace-tier'), '3', '59%/96% (-37pp) 在新阈值下为 3 档橙色偏快');
+  const segs7d = row7d.children[1].children[2];
+  assert.equal(segs7d.children[10].children[0].style.width, '100%');
+  assert.equal(segs7d.children[11].children[0].style.width, '80.0%', '59% 第 12 格应按 80% 实际比例填充');
+  assert.equal(segs7d.children[12].children[0].style.width, '0%');
+  const paceWrap7d = row7d.children[2];
+  assert.equal(paceWrap7d.hidden, false);
+  assert.equal(paceWrap7d.getAttribute('data-pace-tier'), '3');
+  assert.equal(paceWrap7d.children[0].children[1].hidden, false, '偏快应展示差值高亮区段');
+  assert.match(paceWrap7d.children[1].children[0].textContent, /96%/, '剩余时间文案应统一整数百分比');
+  assert.equal(paceWrap7d.children[0].children[2].style.left, '96.00%', '时间刻线游标仍按真实精度定位');
+  assert.match(paceWrap7d.children[1].children[1].textContent, /偏快\s*-37%/);
+
+  // 1b. 验证 2 档轻微落后 (58% 额度 / 60% 余时 -> delta = -2%) 也显示差值高亮区段
+  const tier2Summary = JSON.parse(JSON.stringify(quotaSummaryRes));
+  tier2Summary.response.groups[0].buckets[0] = {
+    bucketId: 'gem-5h',
+    window: '5h',
+    remainingFraction: 0.58,
+    resetTime: new Date(nowMs + Math.round(0.60 * 5 * 3600000)).toISOString()
+  };
+  api.setQuotaSnapshotForTest({
+    accountScopeKey: 'acct_pace_ui',
+    userStatusRes,
+    quotaSummaryRes: tier2Summary,
+    fetchedAtMs: nowMs + 100,
+    nowMs
+  }, nowMs);
+  const tier2Row = h.elements.get('quota-cur-buckets').children[0];
+  assert.equal(tier2Row.getAttribute('data-pace-tier'), '2');
+  assert.equal(tier2Row.children[2].children[0].children[1].hidden, false, '2 档轻微落后时也应标出差值高亮区段');
+  assert.equal(tier2Row.children[2].children[0].children[1].getAttribute('data-pace-tier'), '2');
+
+  // 还原主验证快照 (65%/75% 偏快 与 59%/96% 偏快) 并加测 Claude 池 0% 空条与单份主池双轨
+  const zeroCompactSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+  zeroCompactSummary.response.groups[1].buckets[0] = {
+    bucketId: '3p-5h',
+    window: '5h',
+    remainingFraction: 0,
+    resetTime: f5h
+  };
+  api.setQuotaSnapshotForTest({
+    accountScopeKey: 'acct_pace_ui',
+    userStatusRes,
+    quotaSummaryRes: zeroCompactSummary,
+    fetchedAtMs: nowMs + 200,
+    nowMs
+  }, nowMs);
+
+  // 2. 分层展示做减法：当前池仅在 #quota-current-card 唯一呈现并自带节奏标签与模型芯片，#quota-pools-list 仅列其余池
+  const curPacePill = h.elements.get('quota-cur-pace-pill');
+  const curChips = h.elements.get('quota-cur-models-chips');
+  assert.equal(curPacePill.hidden, false);
+  assert.match(curPacePill.textContent, /节奏.*偏快/);
+  assert.equal(curChips.hidden, false);
+  assert.ok(curChips.children.some(ch => String(ch.textContent || '').includes('Gemini 4 Hydrogen') || (ch.children || []).some(sub => String(sub.textContent || '').includes('Gemini 4 Hydrogen'))));
+
+  const listEl = h.elements.get('quota-pools-list');
+  const duplicateMainCard = listEl.children.find(c => c.getAttribute('data-pool-key') === 'shared_gemini_main');
+  assert.equal(duplicateMainCard, undefined, '下方共享池列表不应重复渲染主池双轨卡片');
+  const otherPoolCard = listEl.children.find(c => c.getAttribute('data-pool-key') === 'shared_3p_pool');
+  assert.equal(otherPoolCard.getAttribute('data-compact'), 'true');
+  const compactBox = otherPoolCard.children[4];
+  assert.equal(compactBox.hidden, false, '其他池默认显示紧凑行条');
+  // 验证 0% 紧凑条真实亮色填充 width:0% + data-empty=true，保留低透明差值底带与重置刻线
+  const compactZeroRow = compactBox.children[0];
+  const zeroFill = compactZeroRow.children[1].children[0];
+  const zeroGap = compactZeroRow.children[1].children[1];
+  const zeroTick = compactZeroRow.children[1].children[2];
+  assert.equal(zeroFill.getAttribute('data-empty'), 'true');
+  assert.equal(zeroFill.style.width, '0%');
+  assert.equal(zeroGap.hidden, false);
+  assert.equal(zeroTick.hidden, false);
+  otherPoolCard.click();
+  assert.equal(otherPoolCard.getAttribute('data-compact'), 'false', '点击其他池应展开完整双轨');
+  otherPoolCard.click();
+  assert.equal(otherPoolCard.getAttribute('data-compact'), 'true', '再次点击应可收起回紧凑展示');
+
+  // 3. 顶栏圆环时间刻点与零冗余重绘校验（复原无 0% 修改的原主验证快照测试）
+  api.setQuotaSnapshotForTest({
+    accountScopeKey: 'acct_pace_ui',
+    userStatusRes,
+    quotaSummaryRes,
+    fetchedAtMs: nowMs + 250,
+    nowMs
+  }, nowMs);
+  const paceState = api.getQuotaPaceStateForTest(nowMs);
+  assert.equal(paceState.badgeTier, '3', '59%/96% (-37pp) 新规则下顶栏应为 3 档偏快橙');
+  assert.equal(paceState.badgeDotHidden, false);
+  const qFill = h.elements.get('quota-ring-fill');
+  let attrWrites = 0;
+  const origSetAttr = qFill.setAttribute.bind(qFill);
+  qFill.setAttribute = (k, v) => { attrWrites += 1; return origSetAttr(k, v); };
+  h.elements.get('btn-quota-refresh').click();
+  if (h.quotaRequests.length > 0) {
+    h.quotaRequests[h.quotaRequests.length - 1].resolve({
+      ok: true,
+      data: {
+        ok: true,
+        accountScopeKey: 'acct_pace_ui',
+        fetchedAtMs: nowMs + 500,
+        lastSuccessAtMs: nowMs + 500,
+        snapshot: core.buildModelQuotaSnapshot({
+          userStatusRes,
+          quotaSummaryRes,
+          currentModel: 'MODEL_PLACEHOLDER_M28',
+          fetchMeta: { fetchedAtMs: nowMs + 500 },
+          nowMs: nowMs + 500
+        })
+      }
+    });
+    await h.flush();
+  }
+  assert.equal(attrWrites, 0, '手动刷新相同数据时绝不重复重绘 #quota-ring-fill');
+
+  // 4. 输入框下方额度摘要：5h/周双显、另一条限额提醒、其余池+N、窄窗收敛与开关持久化
+  const csbWide = api.getComposerQuotaSummaryStateForTest(nowMs);
+  assert.equal(csbWide.groupHidden, false);
+  assert.equal(csbWide.win5hHidden, false);
+  assert.equal(csbWide.win5hText, '5h 65%');
+  assert.equal(csbWide.win7dHidden, false);
+  assert.equal(csbWide.win7dText, '7d 59%');
+  assert.equal(csbWide.altWarnHidden, false);
+  assert.match(csbWide.altWarnText, /5h 偏快/);
+  assert.equal(csbWide.moreText, '+2');
+
+  // 切窄窗 (< 560) -> widthMode = tight，隐藏次要窗口与 +N，仍保留紧缩主窗口(7d)与另一条限额提醒(5h 偏快)
+  h.sandbox.window.innerWidth = 480;
+  const csbNarrow = api.getComposerQuotaSummaryStateForTest(nowMs);
+  assert.equal(csbNarrow.widthMode, 'tight');
+  assert.equal(csbNarrow.win5hSecondary, 'true');
+  assert.equal(csbNarrow.win7dSecondary, 'false');
+  assert.equal(csbNarrow.altWarnHidden, false);
+  h.sandbox.window.innerWidth = 1280;
+
+  // 通过配置开关真实 change 事件关闭/开启并校验 localStorage 与 saveSettings 持久化，及 click 打开看板
+  h.elements.get('panel-quota').hidden = true;
+  h.elements.get('csb-group-quota').click();
+  assert.equal(h.elements.get('panel-quota').hidden, false, '点击输入框额度摘要应直接打开额度看板');
+  const chkComposerQuota = h.elements.get('chk-show-composer-quota');
+  chkComposerQuota.checked = false;
+  chkComposerQuota.dispatchEvent({ type: 'change', target: chkComposerQuota });
+  assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).groupHidden, true);
+  assert.equal(h.storageMap.get('ag_show_composer_quota'), 'false');
+  assert.ok(savedSettingsPayloads.some(p => p.showComposerQuotaSummary === false));
+
+  chkComposerQuota.checked = true;
+  chkComposerQuota.dispatchEvent({ type: 'change', target: chkComposerQuota });
+  assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).groupHidden, false);
+  assert.equal(h.storageMap.get('ag_show_composer_quota'), 'true');
+  assert.ok(savedSettingsPayloads.some(p => p.showComposerQuotaSummary === true));
+
+  // 主进程 settings 持久化往返
+  const tmpSettingsDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ag-pace-settings-'));
+  try {
+    assert.equal(collector.getPluginSettings(tmpSettingsDir).showComposerQuotaSummary, true);
+    collector.savePluginSettings({ showComposerQuotaSummary: false }, tmpSettingsDir);
+    assert.equal(collector.getPluginSettings(tmpSettingsDir).showComposerQuotaSummary, false);
+  } finally {
+    fs.rmSync(tmpSettingsDir, { recursive: true, force: true });
+  }
+
+  // 5. 极小非零(<1格)、0% 已耗尽、缺重置时间及未知周期、无权限与异常态 UI 静默隐藏
+  const edgeSummary = {
+    response: {
+      groups: [
+        {
+          groupId: 'gemini-main',
+          displayName: 'Gemini Models',
+          modelIds: ['Gemini 4 Hydrogen'],
+          buckets: [
+            { bucketId: 'edge-tiny', window: '5h', remainingFraction: 0.00134, resetTime: f5h },
+            { bucketId: 'edge-zero', window: 'weekly', remainingFraction: 0, resetTime: new Date(nowMs + 10 * 60000).toISOString() },
+            { bucketId: 'edge-no-reset', window: '5h', remainingFraction: 0.72, resetTime: null },
+            { bucketId: 'edge-unknown-win', window: 'daily', remainingFraction: 0.50, resetTime: fWeek }
+          ]
+        }
+      ]
+    }
+  };
+  api.setQuotaSnapshotForTest({
+    accountScopeKey: 'acct_pace_edges',
+    userStatusRes,
+    quotaSummaryRes: edgeSummary,
+    fetchedAtMs: nowMs,
+    nowMs
+  }, nowMs);
+  const edgeRows = h.elements.get('quota-cur-buckets').children;
+  assert.equal(edgeRows.length, 4);
+  // 极小非零 0.134% 第1格透亮兜底 opacity=0.25
+  assert.equal(edgeRows[0].children[1].children[2].children[0].children[0].style.opacity, '0.25');
+  assert.equal(edgeRows[0].children[2].hidden, false);
+  // 0% 耗尽强制4档透支且 20 格全 0%
+  assert.equal(edgeRows[1].getAttribute('data-pace-tier'), '4');
+  assert.equal(edgeRows[1].children[1].children[2].children[0].children[0].style.width, '0%');
+  assert.match(edgeRows[1].children[2].children[1].children[1].textContent, /透支.*耗尽/);
+  // 缺重置时间与未知周期静默隐藏节奏轨，保留常规 20 格比例显示
+  assert.equal(edgeRows[2].getAttribute('data-pace-tier'), null);
+  assert.equal(edgeRows[2].children[2].hidden, true);
+  assert.equal(edgeRows[2].children[1].children[2].hidden, false);
+  assert.equal(edgeRows[3].getAttribute('data-pace-tier'), null);
+  assert.equal(edgeRows[3].children[2].hidden, true);
+
+  // 数据过期时整体隐藏顶栏时间刻点与所有窗口节奏轨
+  api.setQuotaSnapshotForTest({
+    accountScopeKey: 'acct_pace_ui',
+    error: 'stale timeout',
+    userStatusRes,
+    quotaSummaryRes,
+    fetchedAtMs: nowMs,
+    nowMs
+  }, nowMs);
+  assert.equal(h.elements.get('quota-ring-pace-dot').hidden, true, '数据过期/异常时应隐藏顶栏时间刻点');
+  assert.equal(h.elements.get('quota-cur-buckets').children[0].children[2].hidden, true, '数据过期/异常时应隐藏节奏下轨');
+
+  api.dispose();
+});
+
+test('v0.9.0-beta.1 同快照额度百分比在顶栏、双轨卡与输入框摘要严格一致，且极小非零与 core 共用 <0.1% 口径', async () => {
+  const nowMs = Date.UTC(2026, 10, 22, 6, 20, 0);
+  const f5h = new Date(nowMs + 152 * 60000).toISOString();
+  const fWeek = new Date(nowMs + 5930 * 60000).toISOString();
+  const userStatusRes = {
+    userStatus: {
+      userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+      cascadeModelConfigData: {
+        clientModelConfigs: [{ label: 'Gemini 4 Hydrogen', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M578' }, quotaInfo: { remainingFraction: 0.0614952, resetTime: f5h } }]
+      }
+    }
+  };
+  const h = createQuotaRendererHarness({ innerWidth: 1280 });
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Hydrogen', modelId: 'MODEL_PLACEHOLDER_M578', actual: 18000, budget: 256000 },
+      userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
+    );
+    // 1. 同快照 0.0614952 -> 三处统一显示 6%（不出现 7.26% 等异快照混淆）
+    const snapReal = {
+      response: {
+        groups: [{
+          groupId: 'gemini-main',
+          displayName: 'Gemini Models',
+          modelIds: ['Gemini 4 Hydrogen'],
+          buckets: [
+            { bucketId: 'g-5h', window: '5h', remainingFraction: 0.0614952, resetTime: f5h },
+            { bucketId: 'g-7d', window: 'weekly', remainingFraction: 0.7303, resetTime: fWeek }
+          ]
+        }]
+      }
+    };
+    api.setQuotaSnapshotForTest({ accountScopeKey: 'acct_same_snap', userStatusRes, quotaSummaryRes: snapReal, fetchedAtMs: nowMs, nowMs }, nowMs);
+    assert.equal(h.elements.get('quota-badge-val').textContent, '6%');
+    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5h 6%');
+    assert.equal(h.elements.get('quota-cur-buckets').children[0].children[0].children[1].children[0].textContent, '6%');
+
+    // 2. 极小非零 0.0005 (0.05%) 与 core.formatQuotaPercentText 均返回 '<0.1%'
+    assert.equal(core.formatQuotaPercentText(0.0005), '<0.1%');
+    const snapMicro = {
+      response: {
+        groups: [{
+          groupId: 'gemini-main',
+          displayName: 'Gemini Models',
+          modelIds: ['Gemini 4 Hydrogen'],
+          buckets: [
+            { bucketId: 'g-5h', window: '5h', remainingFraction: 0.0005, resetTime: f5h }
+          ]
+        }]
+      }
+    };
+    api.setQuotaSnapshotForTest({ accountScopeKey: 'acct_micro_snap', userStatusRes, quotaSummaryRes: snapMicro, fetchedAtMs: nowMs, nowMs }, nowMs);
+    assert.equal(h.elements.get('quota-badge-val').textContent, '<0.1%');
+    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5h <0.1%');
+    assert.equal(h.elements.get('quota-cur-buckets').children[0].children[0].children[1].children[0].textContent, '<0.1%');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('PR #74: 带前缀模型选择器、Orchestrator/Worker 身份、分屏聚焦选择、未知档位与未知模型清除旧额度', async () => {
+  const nowMs = Date.UTC(2026, 10, 22, 9, 0, 0);
+  const f5h = new Date(nowMs + 180 * 60000).toISOString();
+  const fWeek = new Date(nowMs + 4320 * 60000).toISOString();
+  const clientModelConfigs = [
+    { label: 'Gemini 4 Hydrogen (Low)', modelId: 'MODEL_PLACEHOLDER_M527', modelOrAlias: { model: 'gemini-4-hydrogen' }, quotaInfo: { remainingFraction: 0.78, resetTime: f5h } },
+    { label: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M525', modelOrAlias: { model: 'gemini-4-hydrogen' }, quotaInfo: { remainingFraction: 0.78, resetTime: f5h } },
+    { label: 'Gemini 4 Neon (Low)', modelId: 'MODEL_PLACEHOLDER_M534', modelOrAlias: { model: 'gemini-4-neon' }, quotaInfo: { remainingFraction: 0.78, resetTime: f5h } },
+    { label: 'Gemini 4 Neon (Medium)', modelId: 'MODEL_PLACEHOLDER_M533', modelOrAlias: { model: 'gemini-4-neon' }, quotaInfo: { remainingFraction: 0.78, resetTime: f5h } },
+    { label: 'Gemini 4 Neon (High)', modelId: 'MODEL_PLACEHOLDER_M532', modelOrAlias: { model: 'gemini-4-neon' }, quotaInfo: { remainingFraction: 0.78, resetTime: f5h } },
+    { label: 'Gemini 4 Neon (XHigh)', modelId: 'MODEL_PLACEHOLDER_M535', modelOrAlias: { model: 'gemini-4-neon' }, quotaInfo: { remainingFraction: 0.78, resetTime: f5h } },
+    { label: 'Orchestrator (Neon)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M537' }, quotaInfo: { remainingFraction: 0.78, resetTime: f5h } },
+    { label: 'Orchestrator (Carbon)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M667' }, quotaInfo: { remainingFraction: 0.41, resetTime: fWeek } },
+    { label: 'Orchestrator (Argon)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M681' }, quotaInfo: { remainingFraction: 0.92, resetTime: fWeek } },
+    { label: 'Gemini 4 Hydrogen (Orchestrator)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M669' }, quotaInfo: { remainingFraction: 0.78, resetTime: f5h } }
+  ];
+  const userStatusRes = {
+    userStatus: {
+      userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+      cascadeModelConfigData: { clientModelConfigs }
+    }
+  };
+  const quotaSummaryRes = {
+    response: {
+      groups: [
+        {
+          groupId: 'gemini-main',
+          displayName: 'Gemini 4 Neon / Hydrogen Pool',
+          modelIds: ['Gemini 4 Neon', 'Gemini 4 Hydrogen'],
+          buckets: [
+            { bucketId: 'm-5h', window: '5h', remainingFraction: 0.78, resetTime: f5h },
+            { bucketId: 'm-7d', window: 'weekly', remainingFraction: 0.91, resetTime: fWeek }
+          ]
+        },
+        {
+          groupId: 'gemini-carbon',
+          displayName: 'Gemini 4 Carbon Pool',
+          modelIds: ['Orchestrator (Carbon)', 'Gemini 4 Carbon'],
+          buckets: [{ bucketId: 'c-7d', window: 'weekly', remainingFraction: 0.41, resetTime: fWeek }]
+        },
+        {
+          groupId: 'gemini-argon',
+          displayName: 'Gemini 4 Argon Pool',
+          modelIds: ['Orchestrator (Argon)', 'Gemini 4 Argon'],
+          buckets: [{ bucketId: 'a-7d', window: 'weekly', remainingFraction: 0.92, resetTime: fWeek }]
+        }
+      ]
+    }
+  };
+
+  let activeTriggerTextLeft = 'Gemini 4 Hydrogen (Low)';
+  let activeTriggerTextRight = 'Orchestrator · Gemini 4 Neon (XHigh)';
+  let focusedPane = 'right';
+
+  const makeMockTrigger = (getText, parentPane) => {
+    const node = {
+      parentElement: parentPane,
+      get textContent() { return getText(); },
+      closest: () => null,
+      getBoundingClientRect: () => ({ width: 120, height: 24 }),
+      querySelectorAll: () => [],
+      querySelector: () => null
+    };
+    node.cloneNode = () => ({ textContent: getText(), querySelectorAll: () => [] });
+    return node;
+  };
+  const wsRoot = { parentElement: null };
+  const leftPane = { parentElement: wsRoot };
+  const rightPane = { parentElement: wsRoot };
+  const leftEditor = { parentElement: leftPane };
+  const rightEditor = { parentElement: rightPane };
+  leftPane.contains = (x) => x === leftEditor || x === leftTrig;
+  rightPane.contains = (x) => x === rightEditor || x === rightTrig;
+  wsRoot.contains = () => true;
+  const leftTrig = makeMockTrigger(() => activeTriggerTextLeft, leftPane);
+  const rightTrig = makeMockTrigger(() => activeTriggerTextRight, rightPane);
+
+  const h = createQuotaRendererHarness({ innerWidth: 1280 });
+  h.sandbox.document.querySelectorAll = (sel) => (sel === '[data-testid="model-selector-trigger"]' ? [leftTrig, rightTrig] : []);
+  Object.defineProperty(h.sandbox.document, 'activeElement', {
+    configurable: true,
+    get: () => (focusedPane === 'right' ? rightEditor : leftEditor)
+  });
+
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Hydrogen (Low)', modelId: 'MODEL_PLACEHOLDER_M527', actual: 12000, budget: 256000 },
+      clientModelConfigs
+    );
+    api.setQuotaSnapshotForTest({ accountScopeKey: 'acct_pr74', userStatusRes, quotaSummaryRes, fetchedAtMs: nowMs, nowMs }, nowMs);
+
+    // 1. 多分屏右窗格聚焦时优先提取右侧带前缀模型 Orchestrator · Gemini 4 Neon (XHigh)
+    const syncedRight = api.syncContextModelSelectionForTest(nowMs);
+    assert.equal(syncedRight.activeSessionModelRole, 'orchestrator');
+    assert.equal(syncedRight.activeSessionEffort, 'XHigh');
+    assert.equal(syncedRight.activeSessionProductKey, 'product:google:gemini-4-neon');
+    assert.equal(syncedRight.activeSessionEffortUnknown, false);
+    assert.equal(h.elements.get('quota-badge-val').textContent, '78%');
+    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5h 78%');
+
+    // 2. Orchestrator (Carbon) & Orchestrator (Argon) 各自命中独立池与 41% / 92% 读数
+    activeTriggerTextRight = 'Orchestrator (Carbon)';
+    const syncedCarbon = api.syncContextModelSelectionForTest(nowMs);
+    assert.equal(syncedCarbon.activeSessionModelRole, 'orchestrator');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '41%');
+
+    activeTriggerTextRight = 'Orchestrator (Argon)';
+    const syncedArgon = api.syncContextModelSelectionForTest(nowMs);
+    assert.equal(syncedArgon.activeSessionModelRole, 'orchestrator');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '92%');
+
+    // 3. Worker (M669) 保留 worker 身份且命中共享主池
+    activeTriggerTextRight = 'Worker · Gemini 4 Hydrogen (Orchestrator)';
+    const syncedWorker = api.syncContextModelSelectionForTest(nowMs);
+    assert.equal(syncedWorker.activeSessionModelRole, 'worker');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '78%');
+
+    // 4. 名字已知但档位未知时显示 '未知档位'，且绝不从配置数组偷取其他成员档位
+    activeTriggerTextRight = 'Orchestrator · Gemini 4 Neon';
+    const syncedNoEff = api.syncContextModelSelectionForTest(nowMs);
+    assert.equal(syncedNoEff.activeSessionProductKey, 'product:google:gemini-4-neon');
+    assert.equal(syncedNoEff.activeSessionEffort, null);
+    assert.equal(syncedNoEff.activeSessionEffortUnknown, true);
+    assert.equal(h.elements.get('ctx-card-session-effort').hidden, false);
+    assert.match(h.elements.get('ctx-card-session-effort').textContent, /未知档位/);
+
+    activeTriggerTextRight = 'Gemini 4 Neon (Turbo)';
+    const syncedUnkEff = api.syncContextModelSelectionForTest(nowMs);
+    assert.equal(syncedUnkEff.activeSessionEffort, null);
+    assert.equal(syncedUnkEff.activeSessionEffortUnknown, true);
+    assert.match(h.elements.get('ctx-card-session-effort').textContent, /未知档位/);
+
+    // 5. 切到无法识别的未知模型：保留未知名称，彻底清除上一个模型的 78%/92% 额度读数、bucket 与输入框摘要
+    activeTriggerTextRight = 'Future Mystery 9';
+    const syncedUnknown = api.syncContextModelSelectionForTest(nowMs);
+    assert.equal(syncedUnknown.activeSessionModelUnknown, true);
+    const vUnknown = api.getModelQuotaStateForTest(nowMs).view;
+    assert.equal(vUnknown.activeStatus, 'unknown');
+    assert.equal(vUnknown.badge.fraction, null);
+    assert.equal(vUnknown.currentModel.productLabel, 'Future Mystery 9');
+    assert.equal(vUnknown.currentModel.poolKey, null);
+    assert.equal(h.elements.get('quota-badge-val').textContent, '未知');
+    assert.equal(h.elements.get('quota-cur-buckets').children.length, 0);
+    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).groupHidden, true);
+    api.setQuotaBadgeWindowMode?.('both');
+    const vUnknownBoth = api.getModelQuotaStateForTest(nowMs).view;
+    assert.equal(vUnknownBoth.badge.dualBuckets, null);
+    assert.equal(vUnknownBoth.badge.fraction, null);
+
+    // 6. 切回左侧聚焦分屏应立即恢复左窗格 Gemini 4 Hydrogen (Low) 并支持 dual/auto 切换
+    focusedPane = 'left';
+    const syncedLeft = api.syncContextModelSelectionForTest(nowMs);
+    assert.equal(syncedLeft.activeSessionModelUnknown, false);
+    assert.equal(syncedLeft.activeSessionEffort, 'Low');
+    const vLeftBoth = api.getModelQuotaStateForTest(nowMs).view;
+    assert.equal(vLeftBoth.badge.dualBuckets?.[0]?.text, '5h 78%');
+    api.setQuotaBadgeWindowMode?.('auto');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '78%');
+  } finally {
+    api.dispose();
+  }
+});
+

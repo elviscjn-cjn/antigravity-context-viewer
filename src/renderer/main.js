@@ -1,4 +1,7 @@
 (function () {
+  const METER_VERSION = '0.9.0';
+  const METER_DISPLAY_VERSION = '0.9.0';
+
   'use strict';
   if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
 
@@ -30,7 +33,7 @@
         const openDrawers = [];
         for (const btnId of [
           'btn-toggle-details', 'btn-toggle-card-details', 'btn-toggle-unlock-details',
-          'btn-toggle-enhance-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
+          'btn-toggle-enhance-details', 'btn-toggle-rehydrate-details', 'btn-toggle-proxy', 'btn-toggle-colors', 'btn-toggle-token-colors'
         ]) {
           if (prevRoot.getElementById(btnId)?.getAttribute?.('aria-expanded') === 'true') {
             openDrawers.push(btnId);
@@ -90,8 +93,15 @@
   } catch { }
   const {
     summarize,
+    extractGeneratorMaxStep,
+    isCheckpointNewerThanGenerator,
+    buildPostCompactSummary,
+    detectContextChangeEvents,
     parseGeneratorCall,
     calculateRequestApiCost,
+    setDynamicPricingCatalog,
+    setCustomPricingCatalog,
+    getDynamicPricingCatalog,
     normalizeModelId,
     resolveStableModelId,
     formatEffortLabel,
@@ -99,10 +109,12 @@
     groupModelProduct,
     formatTokensK,
     isValidSpeedSample,
+    summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
     computeCacheReadStats,
     summarizeCacheReadStats,
+    computeCacheHitSummary,
     normalizeSessionCallRecord,
     sanitizeTurnPreviewText,
     groupSessionCallsByTurns,
@@ -117,20 +129,131 @@
     convertToCNY,
     resolveEffectivePlanStatus,
     selectPrimaryQuotaBucket,
+    resolveQuotaWindowBucketPair,
+    evaluateQuotaPace,
     splitModelDisplayAndEffort,
-    resolvePlaceholderModelInfo
+    resolvePlaceholderModelInfo,
+    buildSessionCompositionBreakdown,
+    sanitizeCompositionPreview,
+    evaluateSessionRuntimeStatus,
+    computeContextSegments,
+    buildContextTrendSeries
   } = (globalThis.__AGContextMeterCore || {});
+  const VALID_DOCK_POSITIONS = ['flow', 'compact', 'aux', 'page'];
+  const VALID_QUOTA_WINDOW_MODES = ['auto', '5h', 'weekly', 'both'];
+  const DEFAULT_VIEW_PREFS_KEY = 'ag_default_view_prefs_v1';
+  const DEFAULT_VIEW_PREFS_FALLBACK = Object.freeze({
+    heatView: 'daily',
+    modelUsagePeriodDays: 7,
+    speedRangeDays: '7',
+    costScope: 'period',
+    contextTrendMode: 'total',
+    contextTrendGranularity: 'step',
+    timelineDeltaOnly: false,
+    timelineSortOrder: 'newest',
+    reqLogSortBy: 'time_desc'
+  });
+
+  function normalizeDefaultViewPrefs(raw, fallbackHeatView = null) {
+    const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    const validHeat = new Set(['daily', 'weekly', 'monthly', 'yearly', 'cum']);
+    const fbHeat = (typeof fallbackHeatView === 'string' && validHeat.has(fallbackHeatView))
+      ? fallbackHeatView
+      : DEFAULT_VIEW_PREFS_FALLBACK.heatView;
+    const rawPeriod = Number(src.modelUsagePeriodDays);
+    const rawSpeed = src.speedRangeDays != null ? String(src.speedRangeDays) : '';
+    return {
+      heatView: validHeat.has(src.heatView) ? src.heatView : fbHeat,
+      modelUsagePeriodDays: (rawPeriod === 7 || rawPeriod === 30) ? rawPeriod : DEFAULT_VIEW_PREFS_FALLBACK.modelUsagePeriodDays,
+      speedRangeDays: ['7', '30', 'all'].includes(rawSpeed) ? rawSpeed : DEFAULT_VIEW_PREFS_FALLBACK.speedRangeDays,
+      costScope: ['period', 'all'].includes(src.costScope) ? src.costScope : DEFAULT_VIEW_PREFS_FALLBACK.costScope,
+      contextTrendMode: ['total', 'delta'].includes(src.contextTrendMode) ? src.contextTrendMode : DEFAULT_VIEW_PREFS_FALLBACK.contextTrendMode,
+      contextTrendGranularity: ['step', 'turn'].includes(src.contextTrendGranularity) ? src.contextTrendGranularity : DEFAULT_VIEW_PREFS_FALLBACK.contextTrendGranularity,
+      timelineDeltaOnly: typeof src.timelineDeltaOnly === 'boolean' ? src.timelineDeltaOnly : DEFAULT_VIEW_PREFS_FALLBACK.timelineDeltaOnly,
+      timelineSortOrder: ['newest', 'oldest', 'delta_desc'].includes(src.timelineSortOrder) ? src.timelineSortOrder : DEFAULT_VIEW_PREFS_FALLBACK.timelineSortOrder,
+      reqLogSortBy: ['time_desc', 'tokens_desc', 'cost_desc', 'duration_desc', 'speed_desc'].includes(src.reqLogSortBy) ? src.reqLogSortBy : DEFAULT_VIEW_PREFS_FALLBACK.reqLogSortBy
+    };
+  }
+
+  function readInitialDefaultViewPrefs() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(DEFAULT_VIEW_PREFS_KEY);
+        if (raw) return normalizeDefaultViewPrefs(JSON.parse(raw));
+      }
+    } catch { }
+    return { ...DEFAULT_VIEW_PREFS_FALLBACK };
+  }
+  let defaultViewPrefs = readInitialDefaultViewPrefs();
+  let lastPreciseDashboardUrl = '';
+  let showTurnFooterStats = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_turn_footer_stats') : null;
+      return saved === 'false' ? false : true;
+    } catch { return true; }
+  })();
+  let showComposerQuotaSummary = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_composer_quota') : null;
+      return saved === 'false' ? false : true;
+    } catch { return true; }
+  })();
+  const quotaExpandedPoolKeys = new Set();
+  let lastComputedQuotaView = null;
+  let tflCardPinned = false;
+  let isTopbarHidden = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_hide_topbar') : null;
+      if (saved === 'true') return true;
+      const dock = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_dock_position') : null;
+      return dock === 'hide';
+    } catch { return false; }
+  })();
+  let dockPosition = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_dock_position') : null;
+      if (saved === 'fixed') return 'flow';
+      if (saved === 'hide') return 'flow';
+      if (saved === 'page') return 'flow';
+      return VALID_DOCK_POSITIONS.includes(saved) ? saved : 'flow';
+    } catch { return 'flow'; }
+  })();
+  let dockFallbackReason = '';
+  let quotaBadgeWindowMode = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_quota_badge_window_mode') : null;
+      return VALID_QUOTA_WINDOW_MODES.includes(saved) ? saved : 'auto';
+    } catch { return 'auto'; }
+  })();
   const host = document.createElement('div');
   host.id = 'ag-context-meter';
   host.setAttribute('data-layout', 'wide');
-  host.setAttribute('data-dock', 'fixed');
+  host.setAttribute('data-dock', dockPosition);
   host.setAttribute('data-window-active', 'true');
   const shadow = host.attachShadow({ mode: 'open' });
+  // 防止点击插件顶栏、额度/上下文/速度/用量入口或右栏面板时抢走宿主分屏窗格焦点并跳回左窗格（PR #79）
+  if (typeof shadow.addEventListener === 'function') {
+    const EDITABLE_TARGET_SELECTOR = 'input, textarea, select, option, label, [contenteditable]';
+    shadow.addEventListener('mousedown', (e) => {
+      const target = e?.target;
+      const targetEl = target && typeof target.closest === 'function' ? target : target?.parentElement;
+      const isEditable = Boolean(targetEl?.closest?.(EDITABLE_TARGET_SELECTOR));
+      if (!isEditable) e?.preventDefault?.();
+      e?.stopPropagation?.();
+    });
+    shadow.addEventListener('pointerdown', (e) => {
+      e?.stopPropagation?.();
+    });
+    shadow.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+    });
+  }
 
   // Antigravity 本地真实 Token 统计基准数据（纯净初始状态，启动时由宿主实时扫描本地实际账本注入）
   const ANTIGRAVITY_TOKEN_DATA = {
     updatedAt: "",
     firstUseDate: null,
+    recentRequestLogs: [],
     summary: {
       grandTotalTokens: 0,
       totalInputTokens: 0,
@@ -157,7 +280,19 @@
   /* @INSERT_STYLES_AND_TEMPLATE */
 
   (document.body || document.documentElement).appendChild(host);
-  const el = id => shadow.getElementById(id);
+  const composerSummary = shadow.getElementById('composer-status-bar');
+  const el = id => {
+    if (id === 'composer-status-bar') return composerSummary;
+    if (id.startsWith('csb-') || id.startsWith('tfl-') || id === 'token-five-line-card') return shadow.getElementById(id) || composerSummary?.querySelector?.('#' + id) || null;
+    let node = shadow.getElementById(id);
+    if (!node) {
+      if (id === 'btn-github-repo-ctx') node = shadow.getElementById('btn-github-repo');
+      else if (id === 'btn-check-update-ctx') node = shadow.getElementById('btn-check-update');
+      else if (id === 'btn-github-repo') node = shadow.getElementById('btn-github-repo-ctx');
+      else if (id === 'btn-check-update') node = shadow.getElementById('btn-check-update-ctx');
+    }
+    return node;
+  };
   /* @INSERT_I18N_MODULE */
   /* @INSERT_BUDGET_ENGINE_MODULE */
   const budgetEngine = globalThis.__AGContextBudgetEngine || {};
@@ -195,26 +330,326 @@
     historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
     timelineError: '', expandedTurnKeys: new Set(), timelinePageLimit: 10,
     timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
+    timelineInsightTab: 'turns', timelineDeltaOnly: Boolean(defaultViewPrefs.timelineDeltaOnly),
+    timelineSortOrder: defaultViewPrefs.timelineSortOrder,
+    contextTrendMode: defaultViewPrefs.contextTrendMode,
+    contextTrendGranularity: defaultViewPrefs.contextTrendGranularity,
+    selectedTrendCallId: null, lastTrendSeries: null,
+    timelineFileFilter: 'all', timelineFileQuery: '',
+    timelineCmdFilter: 'all', timelineCmdQuery: '',
+    ctxSubtrackMode: null, ctxZerosExpanded: false, ctxHoveredCategory: null,
+    ctxTreeMode: 'full', ctxCompareBase: 'prev_step', expandedTreeCats: new Set(),
+    ctxFocusedTreeCat: null, ctxWidthTier: 'narrow', ctxAutoExpandedAuxRoute: null,
+    forcedPanelWidthForTest: null,
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
-    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
+    streamSampleTracker: null, liveSpeed: null, turnState: null, lastSpeedEval: null, speedOverrideForTest: null,
+    compacting: null, compactProbeTimer: null, pendingCompactForceScan: false,
+    lastCompactForceScanAt: 0, hostContextWindowUsage: null,
+    lastDomCompactingActive: false, lastDomCompactedBannerCount: -1,
+    layout: null, lastLayoutKey: '', lastHostFocusedRoute: null, lastActiveSideChatId: null, pinnedViewRoute: null, restoredFromCache: false
   };
-  const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
-  let activeHeatView = 'daily';
+  const UUID_STRICT_RE = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
+  const SIDE_CHAT_TAB_PREFIXES = [
+    { prefix: 'subagent_convo__', kind: 'subagent' },
+    { prefix: 'side_question__', kind: 'side_question' },
+    { prefix: 'subagent__', kind: 'browser_subagent' }
+  ];
+  const SNAPSHOT_STATE_KEYS = [
+    'count', 'latest', 'sessionCostTotal', 'requestAt', 'requestError',
+    'scan', 'scanError', 'displayedCallRecord', 'displayedCallSig',
+    'sessionTimeline', 'timelineRenderedRoute', 'lastSpeedEval'
+  ];
+  const SESSION_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
+  const sessionSnapshotCache = new Map();
+  let lastScopeRenderSig = '';
+  const safeDecode = raw => { try { return decodeURIComponent(raw); } catch { return raw; } };
+  const sameRouteId = (a, b) => Boolean(a && b && String(a).toLowerCase() === String(b).toLowerCase());
+
+  function parseSideChatTabId(raw) {
+    const val = String(raw || '').trim();
+    for (const { prefix, kind } of SIDE_CHAT_TAB_PREFIXES) {
+      if (!val.startsWith(prefix)) continue;
+      const id = val.slice(prefix.length).trim();
+      return UUID_STRICT_RE.test(id) ? { id, kind, tabId: val } : null;
+    }
+    return null;
+  }
+
+  // 解析同屏会话拓扑：支持 Split 多窗格 (/c/<id1>+<id2>?focused=<id>) 与右侧 Side Chat (?tab= 及 DOM [data-tab-id])
+  function parseConversationLayout(
+    loc = (typeof location !== 'undefined' ? location : null),
+    doc = (typeof document !== 'undefined' ? document : null)
+  ) {
+    const pathname = String(loc?.pathname || '');
+    const search = String(loc?.search || '');
+    const segMatch = pathname.match(/^\/c\/([^/?#]+)(?:\/|$)/i) || search.match(/[?&]cascadeId=([^&#]*)/i);
+    const rawTokens = segMatch ? safeDecode(segMatch[1]).split('+').map(s => s.trim()).filter(Boolean) : [];
+    const hasBlankSplitPane = rawTokens.includes('_new');
+    const panes = [];
+    const seenPane = new Set();
+    for (const tok of rawTokens) {
+      const lower = tok.toLowerCase();
+      if (UUID_STRICT_RE.test(tok) && !seenPane.has(lower)) {
+        seenPane.add(lower);
+        panes.push(tok);
+      }
+    }
+
+    const focusMatch = search.match(/[?&]focused=([^&#]*)/i);
+    const rawFocused = focusMatch ? safeDecode(focusMatch[1]).trim() : null;
+    const focusedIsBlankPane = rawFocused === '_new';
+    const focusedPaneId = (rawFocused && panes.find(id => sameRouteId(id, rawFocused))) || panes[0] || null;
+
+    const sideChats = [];
+    const pushSideChat = (parsed, title = '', active = false) => {
+      if (!parsed || seenPane.has(parsed.id.toLowerCase())) return;
+      const cleanTitle = String(title || '').replace(/\s+tab$/i, '').trim();
+      const hit = sideChats.find(s => sameRouteId(s.id, parsed.id));
+      if (hit) {
+        if (active) hit.isActiveTab = true;
+        if (!hit.titleHint && cleanTitle) hit.titleHint = cleanTitle;
+        return;
+      }
+      sideChats.push({ id: parsed.id, kind: parsed.kind, tabId: parsed.tabId, titleHint: cleanTitle, isActiveTab: Boolean(active) });
+    };
+
+    const tabMatch = search.match(/[?&]tab=([^&#]*)/i);
+    const urlTab = tabMatch ? parseSideChatTabId(safeDecode(tabMatch[1])) : null;
+    try {
+      const nodes = doc?.querySelectorAll?.('[data-tab-id]') || [];
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        const parsed = parseSideChatTabId(node?.getAttribute?.('data-tab-id'));
+        if (!parsed) continue;
+        const cls = String(node.className || node.getAttribute?.('class') || '').split(/\s+/);
+        const domActive = node.getAttribute?.('aria-selected') === 'true'
+          || node.getAttribute?.('data-active') === 'true'
+          || (cls.includes('bg-secondary') && !cls.includes('bg-transparent'));
+        const title = node.getAttribute?.('title') || node.getAttribute?.('aria-label') || node.textContent || '';
+        pushSideChat(parsed, title, urlTab ? sameRouteId(parsed.id, urlTab.id) : domActive);
+      }
+    } catch { }
+    if (urlTab) pushSideChat(urlTab, '', true);
+
+    const sideChat = sideChats.find(s => s.isActiveTab) || sideChats[0] || null;
+    const targets = [
+      ...panes.map((id, index) => ({ id, role: 'pane', kind: 'pane', index, isFocused: Boolean(id === focusedPaneId && !focusedIsBlankPane) })),
+      ...sideChats.map((s, sIdx) => ({ ...s, role: 'sidechat', sideIndex: sIdx, index: panes.length + sIdx, isFocused: false }))
+    ];
+    const sideKey = sideChats.map(s => `${s.kind}:${s.id}${s.isActiveTab ? '*' : ''}`).join(',');
+    return {
+      panes, focusedPaneId, focusedIsBlankPane, hasBlankSplitPane,
+      sideChat, sideChats, activeSideChatId: sideChat?.id || null,
+      targets, isMultiSession: targets.length > 1,
+      layoutKey: `${panes.join('+')}|${focusedPaneId || ''}|${focusedIsBlankPane ? 'blank' : ''}|${sideKey}`
+    };
+  }
+
+  function resolveEffectiveRoute(layout, commit = false) {
+    if (!layout) return null;
+    let pinned = state.pinnedViewRoute || null;
+    if (pinned && state.lastHostFocusedRoute && layout.focusedPaneId && !sameRouteId(state.lastHostFocusedRoute, layout.focusedPaneId)) {
+      pinned = null;
+    }
+    if (
+      pinned && state.lastActiveSideChatId && layout.activeSideChatId &&
+      !sameRouteId(state.lastActiveSideChatId, layout.activeSideChatId) &&
+      layout.sideChats.some(s => sameRouteId(s.id, pinned))
+    ) {
+      pinned = layout.activeSideChatId;
+    }
+    if (pinned) {
+      pinned = layout.targets.find(t => sameRouteId(t.id, pinned))?.id || null;
+      if (pinned && layout.focusedPaneId && !layout.focusedIsBlankPane && sameRouteId(pinned, layout.focusedPaneId)) {
+        pinned = null;
+      }
+    }
+    if (commit) {
+      state.pinnedViewRoute = pinned;
+      state.lastHostFocusedRoute = layout.focusedPaneId || null;
+      state.lastActiveSideChatId = layout.activeSideChatId || null;
+      state.layout = layout;
+    }
+    return pinned || layout.focusedPaneId || layout.sideChat?.id || null;
+  }
+
+  const route = () => resolveEffectiveRoute(parseConversationLayout(), true);
+
+  function saveSessionSnapshotToCache(routeId) {
+    if (!routeId || (!state.latest && !state.scan && !state.sessionCalls?.length)) return;
+    const patch = { sessionCalls: Array.isArray(state.sessionCalls) ? state.sessionCalls.slice() : [] };
+    for (const k of SNAPSHOT_STATE_KEYS) {
+      if (state[k] !== undefined) patch[k] = state[k];
+    }
+    sessionSnapshotCache.delete(routeId);
+    sessionSnapshotCache.set(routeId, {
+      savedAt: Date.now(),
+      accountScope: quotaState.accountScopeKey || null,
+      patch,
+      callsEntries: state.sessionCallsMap ? Array.from(state.sessionCallsMap.entries()) : []
+    });
+    if (sessionSnapshotCache.size > 10) {
+      sessionSnapshotCache.delete(sessionSnapshotCache.keys().next().value);
+    }
+  }
+
+  function readSessionSnapshotFromCache(routeId) {
+    const snap = routeId ? sessionSnapshotCache.get(routeId) : null;
+    if (!snap) return null;
+    if (
+      Date.now() - snap.savedAt > SESSION_SNAPSHOT_TTL_MS ||
+      (snap.accountScope && quotaState.accountScopeKey && snap.accountScope !== quotaState.accountScopeKey)
+    ) {
+      sessionSnapshotCache.delete(routeId);
+      return null;
+    }
+    return snap;
+  }
+
+  function isSameScreenSessionSwitch(prevLayout, nextLayout, prevId, nextId) {
+    if (!prevId || !nextId || prevId === nextId || !prevLayout || !nextLayout) return false;
+    const prevIds = new Set(prevLayout.targets.map(item => item.id.toLowerCase()));
+    const nextIds = new Set(nextLayout.targets.map(item => item.id.toLowerCase()));
+    let shared = false;
+    for (const id of prevIds) {
+      if (nextIds.has(id)) { shared = true; break; }
+    }
+    return shared && (prevIds.has(prevId.toLowerCase()) || nextIds.has(prevId.toLowerCase()))
+      && (prevIds.has(nextId.toLowerCase()) || nextIds.has(nextId.toLowerCase()));
+  }
+
+  function getScopeTargetLabel(target, layout) {
+    if (!target) return '';
+    if (target.role !== 'sidechat') {
+      return (layout?.panes?.length || 0) <= 1 ? t('scope.pane.single') : t('scope.pane.indexed', { n: (target.index || 0) + 1 });
+    }
+    const base = target.kind === 'side_question'
+      ? t('scope.side.question')
+      : (target.kind === 'browser_subagent' ? t('scope.side.browser') : t('scope.side.subagent'));
+    const peers = (layout?.sideChats || []).filter(s => s.kind === target.kind);
+    const idx = peers.length > 1 ? peers.findIndex(s => sameRouteId(s.id, target.id)) : -1;
+    return idx >= 0 ? `${base} ${idx + 1}` : base;
+  }
+
+  function selectConversationScopeView(targetId) {
+    if (state.disposed || !targetId) return false;
+    const cur = state.layout || parseConversationLayout();
+    const hit = cur.targets.find(item => sameRouteId(item.id, targetId));
+    if (!hit) return false;
+    state.pinnedViewRoute = (cur.focusedPaneId && !cur.focusedIsBlankPane && sameRouteId(hit.id, cur.focusedPaneId)) ? null : hit.id;
+    lastScopeRenderSig = '';
+    tick();
+    return true;
+  }
+
+  function resumeFollowFocusView() {
+    if (state.disposed) return false;
+    const wasPinned = Boolean(state.pinnedViewRoute);
+    state.pinnedViewRoute = null;
+    lastScopeRenderSig = '';
+    if (wasPinned) tick(); else renderConversationScopeUI(true);
+    return true;
+  }
+
+  function renderConversationScopeUI(force = false) {
+    const layout = state.layout || parseConversationLayout();
+    const activeId = state.route || null;
+    const activeTarget = (layout?.isMultiSession && activeId)
+      ? (layout.targets.find(item => sameRouteId(item.id, activeId)) || null)
+      : null;
+    const isLocked = Boolean(state.pinnedViewRoute && activeTarget);
+    const sig = `${layout?.layoutKey || ''}|${activeId || ''}|${isLocked ? 1 : 0}|${currentPanelLanguage}`;
+    if (!force && sig === lastScopeRenderSig) return;
+    lastScopeRenderSig = sig;
+
+    const badgeTag = el('badge-scope-tag');
+    if (badgeTag) {
+      const shortTag = !activeTarget ? ''
+        : (activeTarget.role === 'sidechat' ? t('scope.badge.sideShort')
+          : (layout.panes.length > 1 ? `${activeTarget.index + 1}/${layout.panes.length}`
+            : (layout.sideChat ? t('scope.badge.plusSide') : '')));
+      badgeTag.textContent = shortTag;
+      badgeTag.hidden = !shortTag;
+      if (shortTag) badgeTag.setAttribute('data-scope-locked', isLocked ? 'true' : 'false');
+      else badgeTag.removeAttribute?.('data-scope-locked');
+    }
+
+    const keyChip = el('key-scope-chip');
+    if (keyChip) {
+      keyChip.textContent = activeTarget ? getScopeTargetLabel(activeTarget, layout) : '';
+      keyChip.hidden = !activeTarget;
+      if (activeTarget) keyChip.setAttribute('data-scope-kind', activeTarget.role === 'sidechat' ? 'sidechat' : 'pane');
+      else keyChip.removeAttribute?.('data-scope-kind');
+    }
+
+    const scopeBar = el('ctx-scope-bar');
+    const pillsWrap = el('ctx-scope-pills');
+    if (!scopeBar || !pillsWrap) return;
+    pillsWrap.replaceChildren();
+    scopeBar.hidden = !activeTarget;
+    if (!activeTarget) return;
+
+    for (const item of layout.targets) {
+      const btn = document.createElement('button');
+      const selected = sameRouteId(item.id, activeTarget.id);
+      const label = getScopeTargetLabel(item, layout);
+      const displayLabel = (item.role === 'sidechat' && item.titleHint && item.titleHint !== label) ? `${label} · ${item.titleHint}` : label;
+      btn.type = 'button';
+      btn.className = `ctx-scope-pill${selected ? ' is-active' : ''}${item.role === 'sidechat' ? ' is-sidechat' : ''}`;
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+      btn.setAttribute('data-scope-id', item.id);
+      btn.setAttribute('data-scope-role', item.role);
+      btn.title = t(item.isFocused ? 'scope.pill.titleFocused' : 'scope.pill.titleOther', { label: displayLabel, id: `${item.id.slice(0, 8)}…` });
+      if (item.isFocused || (item.role === 'sidechat' && item.isActiveTab)) {
+        const dot = document.createElement('span');
+        dot.className = 'ctx-scope-pill-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        btn.appendChild(dot);
+      }
+      const txt = document.createElement('span');
+      txt.textContent = label;
+      btn.appendChild(txt);
+      btn.addEventListener('click', () => selectConversationScopeView(item.id));
+      pillsWrap.appendChild(btn);
+    }
+
+    const followBtn = el('btn-ctx-scope-follow');
+    const followLabel = el('ctx-scope-follow-label');
+    if (followBtn && followLabel) {
+      followBtn.setAttribute('data-following', isLocked ? 'false' : 'true');
+      followLabel.textContent = t(isLocked ? 'scope.follow.locked' : 'scope.follow.auto');
+      followBtn.title = isLocked
+        ? t('scope.follow.lockedTitle')
+        : (layout.focusedIsBlankPane ? t('scope.pill.titleBlankFallback', { label: getScopeTargetLabel(activeTarget, layout) }) : t('scope.follow.title'));
+    }
+  }
+  let activeHeatView = defaultViewPrefs.heatView;
   let heatPageOffset = 0;
   let heatMonthOffset = 0;
   let heatYearOffset = 0;
   let activeCostModel = 'gemini-3.8-flash';
   let activeCostMode = 'ref';
   let autoCheckUpdate = true;
+  let allowBetaUpdates = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-beta.1';
   function formatDisplayVersion(rawVer) {
     const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
-    if (!clean) return '0.8.8 α';
+    const buildDisplay = typeof METER_DISPLAY_VERSION !== 'undefined' && METER_DISPLAY_VERSION
+      ? String(METER_DISPLAY_VERSION).trim()
+      : '0.9.0 beta1';
+    if (!clean) return buildDisplay;
+    const normalizedCurrent = String(METER_RENDERER_VERSION || '').replace(/^v/i, '').trim();
+    if (normalizedCurrent && clean === normalizedCurrent) return buildDisplay;
     if (clean === '0.8.8') return '0.8.8 α';
+    const betaMatch = clean.match(/^(\d+\.\d+\.\d+)-beta(?:\.(\d+))?$/i);
+    if (betaMatch) {
+      return `${betaMatch[1]} beta${betaMatch[2] || '1'}`;
+    }
     return `v${clean}`;
   }
   const backendStatus = {
@@ -259,6 +694,11 @@
       '/enhance-apply': 'enhance',
       '/enhance-restore': 'enhance',
       '/restart-language-servers': 'enhance',
+      '/rehydrate-status': 'rehydrate',
+      '/rehydrate-apply': 'rehydrate',
+      '/rehydrate-disable': 'rehydrate',
+      '/rehydrate-restore': 'rehydrate',
+      '/rehydrate-install-python': 'rehydrate',
       '/modules-status': 'modules',
       '/toggle-module': 'modules',
       '/test-proxy': 'modules',
@@ -269,6 +709,10 @@
     };
     const key = map[routePath];
     if (!key) return true;
+    if (key === 'rehydrate') {
+      if (!caps || typeof caps !== 'object') return false;
+      return Array.isArray(caps) ? caps.includes('rehydrate') : caps.rehydrate === true;
+    }
     if (Array.isArray(caps)) return caps.includes(key);
     return caps[key] !== false;
   }
@@ -440,7 +884,39 @@
   function findHostTitlebar() {
     try {
       if (typeof document.querySelector !== 'function') return null;
-      return document.querySelector('[class*="@container/titlebar"]');
+      const candidates = typeof document.querySelectorAll === 'function'
+        ? Array.from(document.querySelectorAll('[class*="@container/titlebar"]'))
+        : [];
+      if (candidates.length > 1) {
+        // 多窗格下优先停靠最右上角窗格顶栏，避免被夹在分割线或下层窗格
+        let best = null, bestTop = Infinity, bestRight = -Infinity;
+        for (const node of candidates) {
+          const rect = node?.getBoundingClientRect?.();
+          if (!rect || (rect.width <= 0 && rect.height <= 0)) continue;
+          const top = Number.isFinite(rect.top) ? rect.top : 0;
+          const right = Number.isFinite(rect.right) ? rect.right : 0;
+          if (!best || top < bestTop - 4 || (Math.abs(top - bestTop) <= 4 && right > bestRight)) {
+            best = node; bestTop = top; bestRight = right;
+          }
+        }
+        if (best) return best;
+      }
+      if (candidates.length === 1) return candidates[0];
+
+      const byClass = document.querySelector('[class*="@container/titlebar"]');
+      if (byClass) return byClass;
+
+      // 回退方案：通过 "打开 IDE" / "Open IDE" 按钮反查其所属标题栏容器
+      const allBtns = Array.from(document.querySelectorAll('button, a, [role="button"]') || []);
+      const ideBtn = allBtns.find(b => {
+        const text = (b?.textContent || '').trim();
+        return text === 'Open IDE' || text === '打开 IDE' || text.includes('Open IDE') || text.includes('打开 IDE');
+      });
+      if (ideBtn) {
+        const bar = ideBtn.closest('header, nav, [class*="titlebar"], [class*="toolbar"], div.flex.items-center');
+        if (bar) return bar;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -632,7 +1108,7 @@
             '[class*="@container/titlebar"],',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child {',
-            '  -webkit-app-region: drag;',
+            '  /* Native titlebar owns draggable regions. */',
             '}',
             '[class*="@container/titlebar"] button,',
             '[class*="@container/titlebar"] a,',
@@ -646,7 +1122,9 @@
             '#ag-context-meter {',
             '  -webkit-app-region: no-drag;',
             '}'
-          ].join('\n') : ''
+          ].join('\n') : '',
+          // 无论是否存在 WCO 宽度，始终强制顶栏容器与内部控件可点击且不触发窗口拖动
+          '#ag-context-meter, #ag-context-meter * { -webkit-app-region: no-drag !important; pointer-events: auto; }'
         ].join('\n');
         if (styleEl.textContent !== cssText) {
           styleEl.textContent = cssText;
@@ -661,28 +1139,1105 @@
   let cachedMeasuredAvailAt = 0;
   let cachedMeasuredWinWidth = 0;
 
+  function isSearchOrFilterTextbox(node) {
+    if (!node) return false;
+    try {
+      const type = String(node.type || node.getAttribute?.('type') || '').toLowerCase();
+      if (type === 'search') return true;
+      const meta = [
+        node.getAttribute?.('placeholder'),
+        node.getAttribute?.('aria-label'),
+        node.getAttribute?.('name'),
+        node.getAttribute?.('data-testid')
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (/\b(search|filter|find|extension|plugin|marketplace)\b|搜索|过滤|筛选|扩展|插件/.test(meta)) return true;
+      if (node.closest?.('[data-testid*="customization"], [data-testid*="marketplace"], [class*="customization"], [class*="marketplace"]')) {
+        return true;
+      }
+    } catch { }
+    return false;
+  }
+
+  function hasRealChatComposer() {
+    try {
+      const selectors = '[data-testid="composer"], [data-testid="chat-input"], [data-testid="prompt-input"], textarea, [contenteditable="true"], [role="textbox"]';
+      let candidates = [];
+      if (typeof document?.querySelectorAll === 'function') {
+        candidates = Array.from(document.querySelectorAll(selectors) || []);
+      }
+      if (!candidates.length && typeof document?.querySelector === 'function') {
+        for (const singleSel of selectors.split(',')) {
+          const hit = document.querySelector(singleSel.trim());
+          if (hit) candidates.push(hit);
+        }
+      }
+      for (const node of candidates) {
+        if (!node) continue;
+        if (typeof host?.contains === 'function' && host.contains(node)) continue;
+        if (node.closest?.('#ag-context-meter')) continue;
+        if (isSearchOrFilterTextbox(node)) continue;
+        if (typeof node.getBoundingClientRect === 'function') {
+          const rect = node.getBoundingClientRect();
+          if (rect && Number(rect.width) === 0 && Number(rect.height) === 0) continue;
+        }
+        return true;
+      }
+    } catch { }
+    return false;
+  }
+
+  function isHostNavOrSideUtilityNode(node) {
+    if (!node) return false;
+    try {
+      if (typeof host?.contains === 'function' && host.contains(node)) return true;
+      if (node.closest?.('#ag-context-meter')) return true;
+      if (node.closest?.('nav, aside, [data-side-panel-open], [data-side-panel-focus-scope]')) return true;
+      if (node.tagName === 'A' && node.getAttribute?.('href')) return true;
+    } catch { }
+    return false;
+  }
+
+  function hasActiveConversationContentInDom() {
+    try {
+      if (typeof document?.querySelector !== 'function') return false;
+      return Boolean(
+        document.querySelector('[data-testid="conversation-view"], [data-testid="cascade-system-message-toolbar"], .ag-cm-turn-footer')
+      );
+    } catch { return false; }
+  }
+
+  function isNonConversationSubview() {
+    return isHostMarketplaceActive();
+  }
+
+  function isHostMarketplaceActive() {
+    try {
+      const locPath = String(typeof location !== 'undefined' ? (location.pathname || '') : '');
+      const locHash = String(typeof location !== 'undefined' ? (location.hash || '') : '');
+      const locCombined = `${locPath} ${locHash}`.toLowerCase();
+      if (/(?:^|\/|#)(?:extensions|marketplace|customizations|installed|plugin|plugins)(?:\/|$|\?|#)/i.test(locCombined)) {
+        return true;
+      }
+      if (typeof document?.querySelector !== 'function') return false;
+      const customNav = document.querySelector(
+        '[data-testid*="customization"].active, [data-testid*="marketplace"].active, [data-testid*="installed"].active, '
+        + '[aria-label*="自定义"].active, [aria-label*="Customization"].active, '
+        + 'button[aria-selected="true"][data-testid*="customization"], button[aria-selected="true"][data-testid*="marketplace"], '
+        + '[role="tab"][aria-selected="true"][data-testid*="customization"], [role="tab"][aria-selected="true"][data-testid*="marketplace"], '
+        + '[aria-current="page"][data-testid*="customization"], [aria-current="page"][data-testid*="marketplace"]'
+      );
+      if (customNav && !host?.contains?.(customNav) && !customNav.closest?.('#ag-context-meter')) return true;
+
+      // 仅把真正的对话输入框视为聊天视图，自定义扩展/插件市场中的搜索框不得触发误放行
+      const hasComposer = hasRealChatComposer();
+      if (hasComposer) return false;
+
+      // 排除左侧常驻导航/右侧工具栏；移除单字泛词防止命中无关菜单标签
+      const headings = typeof document?.querySelectorAll === 'function'
+        ? Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"], [role="tab"][aria-selected="true"], button[aria-selected="true"]'))
+        : [];
+      const CUSTOMIZATION_TITLES = new Set([
+        '自定义扩展', '插件市场', '已安装', '自定义扩展与技能',
+        'Marketplace', 'Customizations', 'Customizations & Skills', 'Installed', 'Plugins', 'Extensions',
+        'Browse the Marketplace'
+      ]);
+      const hasHeading = headings.some(node => {
+        if (!node || isHostNavOrSideUtilityNode(node)) return false;
+        const txt = String(node.textContent || '').trim();
+        return CUSTOMIZATION_TITLES.has(txt);
+      });
+      if (hasHeading) return true;
+
+      // 若页面明确处于带消息记录的会话视图（含无输入框的已归档历史会话 /c/...），不再走宽松的全局 Back 猜测
+      if (hasActiveConversationContentInDom()) return false;
+
+      // 兼容插件详情子页：顶部标题切换为具体插件名，出现 Back 返回按钮且存在扩展容器或安装/启用操作
+      const backBtn = document.querySelector('button[aria-label*="Back"], button[aria-label*="返回"], [data-testid*="back"]');
+      const hasHostBack = Boolean(backBtn && !isHostNavOrSideUtilityNode(backBtn));
+      if (hasHostBack) {
+        const customContainerNodes = typeof document?.querySelectorAll === 'function'
+          ? Array.from(document.querySelectorAll('[data-testid*="customization"], [class*="customization"], [data-testid*="marketplace"], [class*="marketplace"]'))
+          : [];
+        const hasMainCustomContainer = customContainerNodes.some(node => node && !isHostNavOrSideUtilityNode(node));
+        if (hasMainCustomContainer) {
+          return true;
+        }
+        const actionNodes = typeof document?.querySelectorAll === 'function'
+          ? Array.from(document.querySelectorAll('button, [role="button"]'))
+          : [];
+        const hasPluginDetailAction = actionNodes.some(btn => {
+          if (!btn || isHostNavOrSideUtilityNode(btn)) return false;
+          const label = String(btn.textContent || '').trim();
+          return /^(Install|Uninstall|Enable|Disable|Configure|Connect|\+\s*Add|Details|安装|卸载|启用|禁用|移除|配置|详情)$/i.test(label);
+        });
+        if (hasPluginDetailAction && !document.querySelector('[data-testid="conversation-view"]')) {
+          return true;
+        }
+      }
+      return false;
+    } catch { return false; }
+  }
+
+  function enforceMarketplaceAvoidance(forceActive) {
+    const active = typeof forceActive === 'boolean' ? forceActive : isHostMarketplaceActive();
+    try {
+      if (active) {
+        host.setAttribute('data-marketplace-active', 'true');
+        if (typeof clearBadgeLongPress === 'function') clearBadgeLongPress();
+        if (typeof cancelClosePanelPicker === 'function') cancelClosePanelPicker();
+        state.tooltipOpen = false;
+        for (const id of ['panel', 'panel-tokens', 'panel-quota', 'overflow-menu', 'token-five-line-card', 'dock-aux-context-bar', 'composer-status-bar']) {
+          const node = el(id);
+          if (node) {
+            node.hidden = true;
+            if (node.style && (id === 'token-five-line-card' || id === 'overflow-menu')) {
+              node.style.display = 'none';
+              node.style.pointerEvents = 'none';
+            }
+          }
+        }
+        const tip = el('context-tooltip');
+        if (tip) tip.setAttribute('data-visible', 'false');
+        const upPop = el('update-popover');
+        if (upPop && upPop.style) upPop.style.display = 'none';
+        if (typeof hidePopover === 'function') hidePopover();
+        for (const bid of ['badge', 'badge-speed', 'badge-tokens', 'badge-quota', 'badge-overflow', 'badge-dock-wake']) {
+          const btn = el(bid);
+          btn?.setAttribute?.('aria-expanded', 'false');
+          btn?.removeAttribute?.('data-picker-open');
+        }
+        if (typeof syncHostStackingElevation === 'function') syncHostStackingElevation(false);
+        if (typeof syncDockedPanelsAttribute === 'function') syncDockedPanelsAttribute();
+        if (typeof syncPanelPickerActiveState === 'function') syncPanelPickerActiveState();
+      } else {
+        const hadAttr = host.getAttribute?.('data-marketplace-active') === 'true';
+        if (hadAttr) {
+          host.removeAttribute('data-marketplace-active');
+          const tflCard = el('token-five-line-card');
+          if (tflCard && tflCard.hidden && tflCard.style) tflCard.style.display = 'none';
+          const ovMenu = el('overflow-menu');
+          if (ovMenu && ovMenu.style) {
+            ovMenu.style.display = '';
+            ovMenu.style.pointerEvents = '';
+          }
+          const csbBar = el('composer-status-bar');
+          if (csbBar) csbBar.hidden = false;
+          if (typeof syncAuxContextBar === 'function') syncAuxContextBar();
+        }
+      }
+    } catch { }
+    return active;
+  }
+
+  function findAuxSidebarContainer() {
+    try {
+      // 1. 优先识别 Antigravity 2.34.0 展开态右侧辅助栏 ([data-side-panel-open="true"] / [data-aux-pane-open="true"])
+      if (typeof document?.querySelectorAll === 'function') {
+        const modernCandidates = Array.from(document.querySelectorAll(
+          '[data-side-panel-open="true"] [data-side-panel-focus-scope="true"], [data-aux-pane-open="true"] [data-side-panel-focus-scope="true"]'
+        ) || []);
+        const visibleModern = modernCandidates.filter(node => {
+          if (!node) return false;
+          if (typeof node.getBoundingClientRect === 'function') {
+            const rect = node.getBoundingClientRect();
+            const hasBox = rect && (Number(rect.height) > 0 || Number(rect.top) > 0 || Number(rect.left) > 0);
+            if (hasBox && Number(rect.width) <= 120) return false;
+          }
+          return true;
+        });
+        if (visibleModern.length > 0) {
+          const outerStripHost = visibleModern.find(n => {
+            try { return Boolean(n.querySelector?.('[data-side-panel-strip="true"], [data-side-panel-strip]')); } catch { return false; }
+          });
+          return outerStripHost || visibleModern[0];
+        }
+      }
+      if (typeof document?.querySelector !== 'function') return null;
+      // 2. 兼容旧版宿主与单元测 DOM ([data-aux-pane-focus-scope="true"])
+      const auxScope = document.querySelector('[data-aux-pane-focus-scope="true"]');
+      if (auxScope) {
+        if (typeof auxScope.getBoundingClientRect === 'function') {
+          const rect = auxScope.getBoundingClientRect();
+          const hasBox = rect && (Number(rect.height) > 0 || Number(rect.top) > 0 || Number(rect.left) > 0);
+          if (hasBox && Number(rect.width) <= 120 && !auxScope.querySelector?.('div[data-active-tab-id]')) {
+            return null;
+          }
+        }
+        const tabContent = auxScope.querySelector?.('div[data-active-tab-id]') || auxScope;
+        return tabContent;
+      }
+      // 3. 回退常见 VS Code / Electron 右侧栏容器
+      const legacy = document.querySelector(
+        '[data-testid="aux-sidebar"], [data-testid="right-sidebar"], [id="workbench.parts.auxiliarybar"], .auxiliary-bar, .part.auxiliarybar'
+      );
+      if (legacy && typeof legacy.getBoundingClientRect === 'function') {
+        const lr = legacy.getBoundingClientRect();
+        const hasBox = lr && (Number(lr.height) > 0 || Number(lr.top) > 0 || Number(lr.left) > 0);
+        if (hasBox && Number(lr.width) <= 120) return null;
+      }
+      return legacy;
+    } catch { return null; }
+  }
+
+  function isAuxSidebarExpanded() {
+    try {
+      const auxToggle = document?.querySelector?.('[data-testid="toggle-aux-sidebar"]');
+      if (auxToggle?.getAttribute?.('aria-expanded') === 'true') return true;
+      if (document?.querySelector?.('[data-side-panel-open="true"], [data-aux-pane-open="true"]')) return true;
+      return Boolean(findAuxSidebarContainer());
+    } catch { return false; }
+  }
+
+  async function ensureAuxSidebarExpanded({ timeoutMs = 1000 } = {}) {
+    const existing = findAuxSidebarContainer();
+    if (existing) return existing;
+    const auxToggle = document?.querySelector?.('[data-testid="toggle-aux-sidebar"]');
+    if (auxToggle && !isAuxSidebarExpanded()) {
+      try { auxToggle.click(); } catch { }
+    }
+    const immediate = findAuxSidebarContainer();
+    if (immediate) return immediate;
+    const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+    while (Date.now() < deadline && !state.disposed) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const found = findAuxSidebarContainer();
+      if (found) return found;
+    }
+    return findAuxSidebarContainer();
+  }
+
+  async function copyTextToClipboardSafe(text) {
+    if (!text) return false;
+    if (typeof navigator !== 'undefined' && typeof navigator?.clipboard?.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(String(text));
+        return true;
+      } catch { }
+    }
+    return false;
+  }
+
+  function formatAuxRoleText(focusTarget) {
+    if (focusTarget?.isSideChat) return t('settings.dock.auxRoleSideChat');
+    if (focusTarget?.kind === 'split' || (state.layout?.panes?.length || 0) > 1) return t('settings.dock.auxRoleSplit');
+    return t('settings.dock.auxRoleMain');
+  }
+
+  function syncAuxContextBar() {
+    const bar = el('dock-aux-context-bar');
+    const lbl = el('dock-aux-session-label');
+    const marketplaceBlocked = isHostMarketplaceActive();
+    const activeAux = !marketplaceBlocked && dockPosition === 'aux' && !dockFallbackReason;
+    if (bar) bar.hidden = !activeAux;
+    if (lbl) {
+      const ft = resolveFocusedSessionTarget();
+      if (ft?.sessionId) {
+        lbl.textContent = t('settings.dock.auxFollowing', {
+          role: formatAuxRoleText(ft),
+          id: ft.sessionId.slice(0, 8)
+        });
+        lbl.title = ft.sessionId;
+      } else {
+        lbl.textContent = t('settings.dock.auxUnresolved');
+        lbl.title = '';
+      }
+    }
+  }
+
+  function findEditorPageContainer() {
+    try {
+      if (typeof document?.querySelector !== 'function') return null;
+      const standard = document.querySelector('[id="workbench.parts.editor"], .editor-group-container, main[role="main"], .monaco-workbench .part.editor');
+      if (standard) return standard;
+      const convView = document.querySelector('[data-testid="conversation-view"]');
+      if (convView && (!host || !host.contains?.(convView))) {
+        return convView.parentElement || convView;
+      }
+      const hubMain = document.querySelector('[data-main-pane], [data-testid="chat-pane"], main');
+      if (hubMain && (!host || !host.contains?.(hubMain))) return hubMain;
+      return null;
+    } catch { return null; }
+  }
+
+  function syncDockPositionUi() {
+    const seg = el('dock-pos-segmented');
+    if (seg) {
+      for (const btn of Array.from(seg.children || [])) {
+        const mode = btn.getAttribute?.('data-dock-mode');
+        const active = mode === dockPosition;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+    const descEl = el('dock-mode-desc');
+    if (descEl) {
+      const descKey = `settings.dock.${dockPosition}Desc`;
+      descEl.textContent = t(descKey) || '';
+    }
+    const chkHide = el('chk-hide-topbar');
+    if (chkHide) {
+      chkHide.checked = Boolean(isTopbarHidden);
+    }
+    const noteEl = el('dock-fallback-note');
+    if (noteEl) {
+      let fbRaw = '';
+      if (dockFallbackReason === 'aux') {
+        fbRaw = t('settings.dock.fallbackAux');
+      } else if (dockFallbackReason === 'page') {
+        fbRaw = t('settings.dock.fallbackPage');
+      }
+      const fbTxt = String(fbRaw || '').trim();
+      if (fbTxt) {
+        noteEl.hidden = false;
+        noteEl.textContent = fbTxt;
+      } else {
+        noteEl.hidden = true;
+        noteEl.textContent = '';
+      }
+    }
+    const pageActions = el('dock-page-actions');
+    if (pageActions) {
+      pageActions.style.display = dockPosition === 'page' ? 'block' : 'none';
+    }
+    // “返回聊天”按钮仅在独立页面模式且未回退时显示
+    const pageBackBtn = el('btn-dock-page-back');
+    if (pageBackBtn) {
+      pageBackBtn.hidden = !(dockPosition === 'page' && !dockFallbackReason);
+    }
+    const wakeBtn = el('badge-dock-wake');
+    if (wakeBtn) {
+      wakeBtn.hidden = !isTopbarHidden;
+    }
+    syncAuxContextBar();
+    const fbActions = el('dock-fallback-actions');
+    const fbEl = el('dock-open-feedback');
+    if (fbEl && !String(fbEl.textContent || '').trim()) {
+      fbEl.hidden = true;
+      fbEl.textContent = '';
+    }
+    if (fbActions) {
+      fbActions.hidden = !((fbEl && !fbEl.hidden) || dockFallbackReason === 'aux' || dockFallbackReason === 'page');
+    }
+  }
+
+  function syncDockedPanelsAttribute() {
+    const docked = (dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
+    for (const id of ['panel', 'panel-tokens', 'panel-quota']) {
+      const p = el(id);
+      if (!p) continue;
+      if (docked) {
+        p.setAttribute?.('data-panel-docked', 'true');
+      } else {
+        const wasDocked = p.getAttribute?.('data-panel-docked') === 'true' || p.style?.position === 'static';
+        p.removeAttribute?.('data-panel-docked');
+        if (p.style && p.style.position === 'static') p.style.position = '';
+        if (wasDocked) p._lastPlacedGeomKey = null;
+      }
+    }
+  }
+
+  function setDockPosition(mode, opts = {}) {
+    let next = mode;
+    if (mode === 'hide') {
+      isTopbarHidden = true;
+      next = 'flow';
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('ag_hide_topbar', 'true');
+      } catch { }
+    } else {
+      if (!VALID_DOCK_POSITIONS.includes(mode)) next = 'flow';
+    }
+    // 独立页面 (page) 仅在当前会话生效，避免冷启动或跨页误锁死聊天视口
+    const persistDock = next === 'page' ? 'flow' : next;
+    dockPosition = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_dock_position', persistDock);
+    } catch { }
+    layoutMeasurementDirty = true;
+    ensureHostDocked();
+    syncDockPositionUi();
+    syncDockedPanelsAttribute();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ dockPosition: persistDock, hideTopbar: isTopbarHidden });
+    }
+    return dockPosition;
+  }
+
+  function setHideTopbar(hidden, opts = {}) {
+    isTopbarHidden = Boolean(hidden);
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_hide_topbar', isTopbarHidden ? 'true' : 'false');
+    } catch { }
+    if (isTopbarHidden) {
+      host.setAttribute('data-topbar-hidden', 'true');
+    } else {
+      host.removeAttribute('data-topbar-hidden');
+    }
+    syncDockPositionUi();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ hideTopbar: isTopbarHidden });
+    }
+  }
+
+  function resolveFocusedSessionTarget() {
+    try {
+      const layout = typeof parseConversationLayout === 'function' ? parseConversationLayout() : null;
+      const resolved = layout ? resolveEffectiveRoute(layout, false) : null;
+      const targetId = resolved || state.route || null;
+      const targetMeta = (layout?.targets || []).find(item => sameRouteId(item.id, targetId)) || null;
+      return {
+        sessionId: targetId,
+        source: 'desktop',
+        role: targetMeta?.role || 'pane',
+        kind: targetMeta?.kind || 'pane',
+        isSideChat: targetMeta?.role === 'sidechat'
+      };
+    } catch {
+      return { sessionId: state.route || null, source: 'desktop', role: 'pane', kind: 'pane', isSideChat: false };
+    }
+  }
+
+  function setDockOpenFeedback(msg, isWarn = false, { showActions = true } = {}) {
+    const fb = el('dock-open-feedback');
+    const fbActions = el('dock-fallback-actions');
+    const cleanMsg = String(msg || '').trim();
+    if (fb) {
+      if (!cleanMsg) {
+        fb.hidden = true;
+        fb.textContent = '';
+        if (fbActions && !dockFallbackReason) fbActions.hidden = true;
+      } else {
+        fb.hidden = false;
+        fb.textContent = cleanMsg;
+        fb.style.color = isWarn ? 'var(--ag-ring-warn, #f59e0b)' : 'var(--ag-text-secondary)';
+        if (fbActions) fbActions.hidden = !showActions;
+      }
+    }
+    const toast = el('cli-launch-toast');
+    if (toast && cleanMsg) {
+      toast.textContent = cleanMsg;
+      toast.hidden = false;
+      toast.setAttribute('data-tone', isWarn ? 'warn' : 'info');
+      clearTimeout(toast.__hideTimer);
+      toast.__hideTimer = setTimeout(() => { toast.hidden = true; }, 4500);
+    }
+  }
+
+  async function resolvePreciseDashboardUrl({ openExternal = false } = {}) {
+    const focusTarget = resolveFocusedSessionTarget();
+    const payload = {
+      sessionId: focusTarget.sessionId || null,
+      source: focusTarget.source || 'desktop',
+      openExternal: Boolean(openExternal)
+    };
+    if (typeof window?.contextMeterAPI?.openDashboardBrowser === 'function') {
+      try {
+        const res = await window.contextMeterAPI.openDashboardBrowser(payload);
+        if (res && res.ok && res.url) {
+          return { ...res, focusTarget };
+        }
+      } catch { }
+    }
+    if (typeof callBackendWithPriority === 'function') {
+      try {
+        const out = await callBackendWithPriority({
+          liveRoute: '/open-dashboard-browser',
+          liveBody: payload
+        });
+        const res = out?.result || out;
+        if (res && res.ok && res.url) {
+          return { ...res, focusTarget };
+        }
+      } catch { }
+    }
+    return { ok: false, focusTarget, error: '独立看板服务未就绪' };
+  }
+
+  async function openDashboardInRightPanel() {
+    if (enforceMarketplaceAvoidance()) {
+      return { ok: false, blocked: 'marketplace', mode: 'blocked' };
+    }
+    const focusTarget = resolveFocusedSessionTarget();
+    // 1. 仅在辅助栏未展开时触发 toggle，并异步等待 2.34.0 右侧容器动画/挂载就绪后再执行停靠
+    try {
+      await ensureAuxSidebarExpanded({ timeoutMs: 1000 });
+      setDockPosition('aux', { persist: true });
+      showPanel('context');
+      if (typeof switchContextTab === 'function') switchContextTab('session');
+    } catch { }
+
+    // 2. 生成当前聚焦会话的精确看板 URL 并尝试复制到剪贴板，明确告知宿主 built-in browser 接口限制与可用动作
+    const srvRes = await resolvePreciseDashboardUrl({ openExternal: false });
+    const targetUrl = srvRes?.url || '';
+    if (targetUrl) lastPreciseDashboardUrl = targetUrl;
+    const copied = await copyTextToClipboardSafe(targetUrl);
+    const copyNote = copied ? t('settings.dock.openRightCopied') : t('settings.dock.openRightCopyFail');
+    const shortTag = focusTarget.sessionId ? focusTarget.sessionId.slice(0, 8) : '';
+    if (!focusTarget.sessionId) {
+      setDockOpenFeedback(t('settings.dock.openRightNoSession', { copyNote }), true, { showActions: true });
+    } else if (dockFallbackReason === 'aux') {
+      setDockOpenFeedback(t('settings.dock.openRightFallback', { copyNote }), true, { showActions: true });
+    } else {
+      setDockOpenFeedback(t('settings.dock.openRightOk', {
+        role: formatAuxRoleText(focusTarget),
+        id: `${shortTag}…`,
+        copyNote
+      }), false, { showActions: true });
+    }
+    syncAuxContextBar();
+    return {
+      ok: true,
+      mode: dockFallbackReason === 'aux' ? 'fallback_copy' : 'aux_dock',
+      url: targetUrl,
+      copied,
+      focusTarget
+    };
+  }
+
+  async function openStandaloneBrowserPage() {
+    try {
+      const srvRes = await resolvePreciseDashboardUrl({ openExternal: true });
+      if (!srvRes || !srvRes.ok || !srvRes.url) {
+        console.warn('[Context Meter] 独立看板服务未就绪，放弃盲打默认端口');
+        setDockOpenFeedback('独立看板服务未就绪，无法打开外部浏览器.', true);
+        return srvRes;
+      }
+      const targetUrl = String(srvRes.url);
+      if (srvRes.openedExternal) {
+        setDockOpenFeedback(
+          srvRes.focusTarget?.sessionId
+            ? `已在外部浏览器打开并定位会话 (${srvRes.focusTarget.sessionId.slice(0, 8)}…).`
+            : '当前未解析会话 ID，已在外部浏览器打开看板列表.',
+          !srvRes.focusTarget?.sessionId
+        );
+        return srvRes;
+      }
+      if (typeof window?.contextMeterAPI?.openExternal === 'function') {
+        await window.contextMeterAPI.openExternal(targetUrl);
+        return { ...srvRes, openedExternal: true };
+      }
+      if (typeof window?.contextMeterAPI?.openExternalUrl === 'function') {
+        await window.contextMeterAPI.openExternalUrl(targetUrl);
+        return { ...srvRes, openedExternal: true };
+      }
+      if (typeof window?.open === 'function') {
+        window.open(targetUrl, '_blank');
+      }
+      return srvRes;
+    } catch (e) {
+      console.warn('[Context Meter] 打开浏览器看板失败:', e);
+      return { ok: false, error: e.message };
+    }
+  }
+
+  function findComposerControlsContainer() {
+    try {
+      if (typeof document?.querySelector !== 'function') return null;
+
+      // 1. 寻找核心控制按钮
+      // A. 发送按钮
+      const sendBtn = document.querySelector(
+        'button[aria-label*="Send" i], button[aria-label*="发送"], [data-testid*="send" i], button.send-button, form button[type="submit"]'
+      );
+
+      // B. 麦克风/语音按钮
+      const micBtn = document.querySelector(
+        'button[aria-label*="mic" i], button[aria-label*="麦克风"], button[aria-label*="voice" i], [data-testid*="voice" i], button[aria-label*="Audio" i]'
+      );
+
+      // C. 本地权限/运行模式按钮 (如"极速", "fast", "local", "permission", 包含盾牌图标的按钮)
+      const allButtons = Array.from(document.querySelectorAll('button') || []);
+      const permissionBtn = allButtons.find(b => {
+        if (!b || b === sendBtn || b === micBtn) return false;
+        const aria = (typeof b.getAttribute === 'function' ? (b.getAttribute('aria-label') || '') : '').toLowerCase();
+        const text = String(b.textContent || '').trim().toLowerCase();
+        const testId = (typeof b.getAttribute === 'function' ? (b.getAttribute('data-testid') || '') : '').toLowerCase();
+        if (/permission|极速|权限|fast\b|local\b|auto\b/i.test(aria) || /permission|极速|权限/i.test(text) || /permission/i.test(testId)) {
+          return true;
+        }
+        const svg = typeof b.querySelector === 'function' ? b.querySelector('svg') : null;
+        if (svg && /shield|security|lock|bolt/i.test(svg.innerHTML || '')) return true;
+        return false;
+      });
+
+      // D. 模型选择器按钮 (在左侧)
+      const modelBtn = allButtons.find(b => {
+        if (!b || b === sendBtn || b === micBtn || b === permissionBtn) return false;
+        const text = String(b.textContent || '').trim();
+        const aria = (typeof b.getAttribute === 'function' ? (b.getAttribute('aria-label') || '') : '').toLowerCase();
+        return /Gemini|Claude|GPT|DeepSeek|Auto|模型|Model/i.test(text) || /model/i.test(aria);
+      });
+
+      // 2. 确定锚点元素 anchorBtn (状态条应放在其紧左侧)
+      // 优先级：权限按钮 > 麦克风 > 发送按钮
+      const anchorBtn = permissionBtn || micBtn || sendBtn;
+
+      if (!anchorBtn) {
+        const composer = document.querySelector('[data-testid="composer"], textarea');
+        if (composer) {
+          const parent = composer.closest('div[class*="composer"], div[class*="chat-input"]') || composer.parentElement;
+          const bottomBar = parent?.querySelector?.('div.flex:last-child');
+          if (bottomBar && bottomBar !== composer) {
+            return { bar: bottomBar, insertBeforeNode: null, isRightGroup: false };
+          }
+        }
+        return null;
+      }
+
+      // 3. 分析 anchorBtn 的父层级结构
+      const directParent = anchorBtn.parentElement;
+      if (!directParent || directParent === document.body) return null;
+
+      // 检查 directParent 是否是右侧独立按钮组 (例如包含 permissionBtn, micBtn, sendBtn 的右侧 flex wrapper)
+      // 如果 directParent 包含了 sendBtn 并且不包含 modelBtn，说明 directParent 就是右侧按钮组！
+      if (modelBtn && !directParent.contains(modelBtn) && directParent.contains(sendBtn || anchorBtn)) {
+        const targetInsertBefore = (permissionBtn && directParent.contains(permissionBtn))
+          ? permissionBtn
+          : (directParent.firstChild || anchorBtn);
+        return {
+          bar: directParent,
+          insertBeforeNode: targetInsertBefore,
+          modelBtn,
+          isRightGroup: true
+        };
+      }
+
+      // 单层扁平工具栏
+      return {
+        bar: directParent,
+        insertBeforeNode: anchorBtn,
+        modelBtn,
+        isRightGroup: false
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function ensureComposerStatusBarStyles() {
+    try {
+      if (typeof document === 'undefined' || !document.head) return;
+      if (document.getElementById('ag-csb-host-styles')) return;
+      const st = document.createElement('style');
+      st.id = 'ag-csb-host-styles';
+      st.textContent = `
+        #composer-status-bar {
+          display: inline-flex !important;
+          align-items: center !important;
+          vertical-align: middle !important;
+          flex-shrink: 0 !important;
+          position: relative !important;
+          height: 22px !important;
+          max-height: 22px !important;
+          box-sizing: border-box !important;
+          border: none !important;
+          background: transparent !important;
+          box-shadow: none !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          padding: 0 !important;
+          margin: 1px 0 0 auto !important; width: fit-content !important; max-width: 100% !important; display: flex !important; flex-wrap: nowrap !important; overflow: hidden !important;
+          gap: 2px !important;
+          font-family: inherit !important;
+          font-size: 10px !important;
+          font-weight: 450 !important;
+          line-height: 1 !important;
+          color: var(--muted-foreground, #94a3b8) !important;
+          user-select: none !important;
+          -webkit-user-select: none !important;
+          z-index: 10 !important;
+        }
+        #composer-status-bar .csb-pill {
+          display: inline-flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          height: 22px !important;
+          padding: 0 4px !important;
+          border: none !important;
+          background: transparent !important;
+          color: inherit !important;
+          font-family: inherit !important;
+          font-size: 10px !important;
+          font-weight: 450 !important;
+          line-height: 1 !important;
+          border-radius: 4px !important;
+          cursor: pointer !important;
+          transition: background-color 0.15s ease, color 0.15s ease !important;
+          white-space: nowrap !important;
+          outline: none !important;
+        }
+        #composer-status-bar .csb-pill:hover,
+        #composer-status-bar .csb-pill:focus-visible {
+          background-color: var(--accent, rgba(128, 128, 128, 0.15)) !important;
+          color: var(--foreground, #eee) !important;
+          outline: none !important;
+        }
+        #composer-status-bar .csb-svg-icon {
+          display: inline-flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          flex-shrink: 0 !important;
+          margin-right: 3px !important;
+          color: inherit !important;
+        }
+        #composer-status-bar .csb-svg-icon svg {
+          display: block !important;
+          width: 12px !important;
+          height: 12px !important;
+        }
+        #composer-status-bar .csb-ring-svg {
+          width: 13px !important;
+          height: 13px !important;
+        }
+        #composer-status-bar .csb-sep {
+          width: 1px !important;
+          height: 11px !important;
+          background-color: var(--border, rgba(128, 128, 128, 0.2)) !important;
+          margin: 0 1px !important;
+          flex-shrink: 0 !important;
+        }
+        #composer-status-bar .token-five-line-card {
+          position: absolute !important;
+          bottom: calc(100% + 8px) !important;
+          right: 0 !important;
+          min-width: 220px !important;
+          max-width: 280px !important;
+          padding: 10px 12px !important;
+          border-radius: 8px !important;
+          border: 1px solid var(--border, rgba(128, 128, 128, 0.2)) !important;
+          background: var(--popover, #1e1e1e) !important;
+          color: var(--popover-foreground, #eee) !important;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+          backdrop-filter: blur(12px) !important;
+          -webkit-backdrop-filter: blur(12px) !important;
+          z-index: 99999 !important;
+          display: flex !important;
+          flex-direction: column !important;
+          gap: 6px !important;
+          font-family: inherit !important;
+          font-size: 11px !important;
+          pointer-events: auto !important;
+        }
+        #composer-status-bar .token-five-line-card[hidden] {
+          display: none !important;
+          visibility: hidden !important;
+          opacity: 0 !important;
+          pointer-events: none !important;
+        }
+        #composer-status-bar .tfl-row,
+        #composer-status-bar .tfl-hdr,
+        #composer-status-bar .tfl-line {
+          display: flex !important;
+          align-items: center !important;
+          justify-content: space-between !important;
+          gap: 12px !important;
+          line-height: 1.3 !important;
+        }
+        #composer-status-bar .tfl-hdr,
+        #composer-status-bar .tfl-row.tfl-bold,
+        #composer-status-bar .tfl-line.tfl-bold {
+          font-weight: 600 !important;
+          color: var(--foreground, #fff) !important;
+        }
+        #composer-status-bar .tfl-sep {
+          height: 1px !important;
+          background-color: var(--border, rgba(128, 128, 128, 0.2)) !important;
+          margin: 2px 0 !important;
+        }
+        #composer-status-bar .tfl-label {
+          color: var(--muted-foreground, #888) !important;
+        }
+        #composer-status-bar .tfl-val {
+          font-variant-numeric: tabular-nums !important;
+          color: var(--foreground, #ddd) !important;
+          font-weight: 500 !important;
+        }
+        #composer-status-bar .csb-speed-text,
+        #composer-status-bar .csb-tokens-text,
+        #composer-status-bar .csb-context-text {
+          font-variant-numeric: tabular-nums !important;
+        }
+        #composer-status-bar .csb-runtime-pill {
+          gap: 5px !important;
+          cursor: default !important;
+        }
+        #composer-status-bar .csb-status-dot {
+          display: inline-block !important;
+          width: 7px !important;
+          height: 7px !important;
+          border-radius: 50% !important;
+          background: #94a3b8 !important;
+          flex-shrink: 0 !important;
+        }
+        #composer-status-bar .csb-status-dot.is-idle { background: #34d399 !important; }
+        #composer-status-bar .csb-status-dot.is-running { background: #38bdf8 !important; animation: agCsbPulse 1.4s infinite ease-in-out !important; }
+        #composer-status-bar .csb-status-dot.is-slow { background: #fbbf24 !important; }
+        #composer-status-bar .csb-status-dot.is-error { background: #f87171 !important; }
+        @keyframes agCsbPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        #composer-status-bar .tfl-pin-badge {
+          font-size: 9.5px !important;
+          padding: 1px 5px !important;
+          border-radius: 4px !important;
+          border: 1px solid rgba(148, 163, 184, 0.35) !important;
+          color: var(--muted-foreground, #94a3b8) !important;
+        }
+        #composer-status-bar .tfl-pin-badge[data-pinned="true"] {
+          border-color: #38bdf8 !important;
+          color: #38bdf8 !important;
+          background: rgba(56, 189, 248, 0.14) !important;
+        }
+        #composer-status-bar .tfl-seg-wrap { display: flex !important; flex-direction: column !important; gap: 3px !important; }
+        #composer-status-bar .tfl-seg-bar {
+          width: 100% !important;
+          height: 5px !important;
+          border-radius: 3px !important;
+          overflow: hidden !important;
+          display: flex !important;
+          background: rgba(148, 163, 184, 0.18) !important;
+        }
+        #composer-status-bar .tfl-seg-bar[data-threshold="warning"] { outline: 1px solid rgba(251, 191, 36, 0.7) !important; }
+        #composer-status-bar .tfl-seg-bar[data-threshold="critical"] { outline: 1px solid rgba(248, 113, 113, 0.85) !important; }
+        #composer-status-bar .key-seg-part { height: 100% !important; display: block !important; }
+        #composer-status-bar .key-seg-fresh { background: #38bdf8 !important; }
+        #composer-status-bar .key-seg-write { background: #f59e0b !important; }
+        #composer-status-bar .key-seg-read { background: #34d399 !important; }
+        #composer-status-bar .tfl-seg-legend { display: flex !important; flex-wrap: wrap !important; gap: 3px 8px !important; font-size: 9.5px !important; color: var(--muted-foreground, #94a3b8) !important; }
+        #composer-status-bar .tfl-runtime-note { font-size: 10px !important; padding: 4px 6px !important; border-radius: 5px !important; background: rgba(251, 191, 36, 0.12) !important; color: #fbbf24 !important; line-height: 1.35 !important; }
+        #composer-status-bar .tfl-runtime-note[data-level="error"] { background: rgba(248, 113, 113, 0.12) !important; color: #f87171 !important; }
+        #composer-status-bar .tfl-actions { display: flex !important; justify-content: flex-end !important; }
+        #composer-status-bar .tfl-action-link { border: 0 !important; background: none !important; padding: 0 !important; font-size: 10px !important; color: #38bdf8 !important; cursor: pointer !important; }
+        .ag-cm-turn-footer {
+          display: inline-flex !important;
+          align-items: center !important;
+          gap: 3px !important;
+          font-size: 11px !important;
+          line-height: 1.2 !important;
+          padding: 0 !important;
+          margin-right: 8px !important;
+          border-radius: 0 !important;
+          border: 0 !important;
+          color: var(--muted-foreground, #94a3b8) !important;
+          background: transparent !important;
+          box-shadow: none !important;
+          opacity: 0.78 !important;
+          font-variant-numeric: tabular-nums !important;
+          user-select: none !important;
+          vertical-align: middle !important;
+          min-width: 0 !important;
+          max-width: min(100%, 560px) !important;
+          flex: 0 1 auto !important;
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+          white-space: nowrap !important;
+          cursor: default !important;
+          transition: opacity .12s ease !important;
+        }
+        .ag-cm-turn-footer:hover,
+        .ag-cm-turn-footer:focus-visible {
+          opacity: 1 !important;
+          outline: none !important;
+        }
+        .ag-cm-turn-footer:focus-visible {
+          text-decoration: underline dotted currentColor !important;
+          text-underline-offset: 2px !important;
+        }
+        .ag-cm-turn-footer ~ button,
+        .ag-cm-turn-footer ~ [role="button"] {
+          flex-shrink: 0 !important;
+        }
+        #composer-status-bar .csb-quota-pill {
+          gap: 5px !important;
+          min-width: 0 !important;
+          max-width: 100% !important;
+          overflow: hidden !important;
+        }
+        #composer-status-bar .csb-quota-pill[hidden],
+        #composer-status-bar .csb-quota-win[hidden],
+        #composer-status-bar .csb-quota-dot[hidden],
+        #composer-status-bar .csb-quota-alt-warn[hidden],
+        #composer-status-bar .csb-quota-more[hidden] {
+          display: none !important;
+        }
+        #composer-status-bar .csb-quota-win {
+          display: inline-flex !important;
+          align-items: center !important;
+          gap: 3px !important;
+          white-space: nowrap !important;
+          flex-shrink: 0 !important;
+        }
+        #composer-status-bar .csb-quota-svg {
+          width: 13px !important;
+          height: 13px !important;
+          display: block !important;
+          flex-shrink: 0 !important;
+          overflow: visible !important;
+        }
+        #composer-status-bar .csb-quota-track { stroke: rgba(148, 163, 184, 0.28) !important; }
+        #composer-status-bar .csb-quota-ring { stroke: #22c55e !important; transition: stroke-dashoffset .22s ease, stroke .18s ease !important; }
+        #composer-status-bar .csb-quota-win[data-pace-tier="1"] .csb-quota-ring { stroke: #22c55e !important; }
+        #composer-status-bar .csb-quota-win[data-pace-tier="2"] .csb-quota-ring { stroke: #34d399 !important; }
+        #composer-status-bar .csb-quota-win[data-pace-tier="3"] .csb-quota-ring { stroke: #f59e0b !important; }
+        #composer-status-bar .csb-quota-win[data-pace-tier="4"] .csb-quota-ring { stroke: #ef4444 !important; }
+        #composer-status-bar .csb-quota-win[data-quota-state="exhausted"] .csb-quota-ring { stroke: #ef4444 !important; }
+        #composer-status-bar .csb-quota-win[data-quota-state="no_permission"] .csb-quota-ring { stroke: #a855f7 !important; }
+        #composer-status-bar .csb-quota-win[data-quota-state="unknown"] .csb-quota-ring { stroke: #94a3b8 !important; opacity: 0.65 !important; }
+        #composer-status-bar .csb-quota-dot {
+          fill: #ffffff !important;
+          stroke: rgba(15, 23, 42, 0.85) !important;
+          stroke-width: 0.75 !important;
+        }
+        #composer-status-bar .csb-quota-alt-warn {
+          display: inline-flex !important;
+          align-items: center !important;
+          padding: 1px 4px !important;
+          border-radius: 4px !important;
+          font-size: 9.5px !important;
+          font-weight: 600 !important;
+          line-height: 1.15 !important;
+          white-space: nowrap !important;
+          flex-shrink: 0 !important;
+        }
+        #composer-status-bar .csb-quota-alt-warn[data-pace-tier="3"] {
+          color: #fbbf24 !important;
+          background: rgba(245, 158, 11, 0.16) !important;
+        }
+        #composer-status-bar .csb-quota-alt-warn[data-pace-tier="4"] {
+          color: #f87171 !important;
+          background: rgba(239, 68, 68, 0.18) !important;
+        }
+        #composer-status-bar .csb-quota-more {
+          font-size: 9.5px !important;
+          font-weight: 600 !important;
+          opacity: 0.72 !important;
+          white-space: nowrap !important;
+          flex-shrink: 0 !important;
+        }
+        #composer-status-bar[data-csb-width="narrow"] .csb-quota-more,
+        #composer-status-bar[data-csb-width="tight"] .csb-quota-more {
+          display: none !important;
+        }
+        #composer-status-bar[data-csb-width="tight"] .csb-quota-win[data-secondary="true"] {
+          display: none !important;
+        }
+        @media (max-width: 680px) {
+          #csb-speed-text { display: none !important; }
+          #composer-status-bar .csb-quota-more { display: none !important; }
+        }
+        @media (max-width: 540px) {
+          #csb-group-speed { display: none !important; }
+          #composer-status-bar .csb-sep:first-of-type { display: none !important; }
+          #composer-status-bar .csb-quota-win[data-secondary="true"] { display: none !important; }
+        }
+        @media (max-width: 440px) {
+          #csb-tokens-text { max-width: 65px !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+        }
+      `;
+      document.head.appendChild(st);
+    } catch { }
+  }
+
+  function ensureComposerStatusBarMounted() {
+    try {
+      const csbBar = el('composer-status-bar');
+      if (!csbBar) return;
+      if (isHostMarketplaceActive()) {
+        csbBar.hidden = true;
+        return;
+      }
+      csbBar.hidden = false;
+      ensureComposerStatusBarStyles();
+      const target = findComposerControlsContainer();
+      if (!target || !target.bar) return;
+
+      let composer = target.bar.closest('form');
+      if (!composer) {
+        composer = target.bar;
+        while (composer && !composer.querySelector('[contenteditable="true"],textarea')) composer = composer.parentElement;
+      }
+      if (!composer || composer === document.body || composer === document.documentElement) return;
+      if (composer.nextElementSibling !== csbBar) composer.after(csbBar);
+    } catch (e) {
+      console.warn('[Context Meter CSB Mount Warning]:', e);
+    }
+  }
+
   function ensureHostDocked() {
     if (state.disposed) return;
     if (globalThis.__AGContextMeterActiveHost && globalThis.__AGContextMeterActiveHost !== host) {
       earlyForceDispose();
       return;
     }
-    // 热路径短路：宿主已稳固停靠在预期标题栏内且尺寸未标脏时，跳过 DOM 遍历与强制布局查询
-    if (
-      !layoutMeasurementDirty
-      && host.isConnected
-      && host.getAttribute('data-dock') === 'flow'
-      && observedTitlebar
-      && observedTitlebar.isConnected
-      && observedTitlebar.contains(host)
-      && host.parentElement
-    ) {
-      return;
+    dockFallbackReason = '';
+
+    if (enforceMarketplaceAvoidance()) {
+      if (isAnyPanelOpen()) showPanel('none');
     }
+
+    try {
+      host.style.removeProperty?.('z-index');
+      host.style.removeProperty?.('pointer-events');
+      host.style.removeProperty?.('left');
+    } catch { }
+    host.style.zIndex = '';
+    host.style.pointerEvents = '';
+    host.style.left = '';
+
+    if (isTopbarHidden) {
+      host.setAttribute('data-topbar-hidden', 'true');
+    } else {
+      host.removeAttribute('data-topbar-hidden');
+    }
+
+    // 辅助栏内嵌模式
+    if (dockPosition === 'aux') {
+      const auxEl = findAuxSidebarContainer();
+      if (auxEl) {
+        if (host.parentElement !== auxEl) {
+          if (auxEl.firstChild) auxEl.insertBefore(host, auxEl.firstChild);
+          else auxEl.appendChild(host);
+        }
+        host.setAttribute('data-dock', 'aux');
+        host.style.right = '';
+        host.style.top = '';
+        host.style.bottom = '';
+        host.style.position = 'static';
+        syncDockPositionUi();
+        syncDockedPanelsAttribute();
+        ensureComposerStatusBarMounted();
+        updateResponsiveLayout(layoutMeasurementDirty);
+        return;
+      }
+      dockFallbackReason = 'aux';
+    }
+
+    // 独立页面模式
+    if (dockPosition === 'page') {
+      const editorEl = findEditorPageContainer();
+      if (editorEl) {
+        if (host.parentElement !== editorEl) {
+          if (editorEl.firstChild) editorEl.insertBefore(host, editorEl.firstChild);
+          else editorEl.appendChild(host);
+        }
+        host.setAttribute('data-dock', 'page');
+        host.style.right = '';
+        host.style.top = '';
+        host.style.bottom = '';
+        host.style.position = 'static';
+        syncDockPositionUi();
+        syncDockedPanelsAttribute();
+        ensureComposerStatusBarMounted();
+        updateResponsiveLayout(layoutMeasurementDirty);
+        return;
+      }
+      dockFallbackReason = 'page';
+    }
+
+    // 常态 (flow) 与 缩略态 (compact)：
+    // 始终内联锚定在会话标题栏右侧工具组内，宿主原生 ⋮ 的紧左侧！从左往右：插件 -> 宿主 ⋮ -> 打开 IDE
     syncWindowControlsOverlay();
+    const effectiveDock = dockPosition === 'compact' ? 'compact' : 'flow';
     const titlebar = findHostTitlebar();
     if (titlebar) {
-      // 自愈保护：若主对话区（div.flex[style*="min-width"]）的 inline flex-grow 被意外清空，立即恢复为 1，绝不覆写其他分栏属性
       try {
         const convPane = titlebar.closest?.('div.flex[style*="min-width"]');
         if (convPane?.style && (!convPane.style.flexGrow || convPane.style.flexGrow === '0')) {
@@ -698,20 +2253,64 @@
         }
       } catch { }
 
-      if (host.parentElement !== targetContainer) {
-        if (targetContainer.firstChild && targetContainer !== titlebar) {
-          targetContainer.insertBefore(host, targetContainer.firstChild);
-        } else {
-          targetContainer.appendChild(host);
+      // 在 targetContainer 内部寻找原生 ⋮ 和 打开 IDE 按钮
+      let anchorBtn = null;
+      try {
+        const btns = Array.from(targetContainer.querySelectorAll('button, a, [role="button"]'));
+        const openIdeBtn = btns.find(b => {
+          const text = (b.textContent || '').trim();
+          return text === 'Open IDE' || text === '打开 IDE' || text.includes('Open IDE') || text.includes('打开 IDE');
+        });
+        if (openIdeBtn) {
+          const prevBtn = openIdeBtn.previousElementSibling;
+          if (prevBtn && prevBtn !== host && prevBtn.tagName === 'BUTTON') {
+            anchorBtn = prevBtn; // 锚定在原生 ⋮ 的紧左侧
+          } else {
+            anchorBtn = openIdeBtn; // 紧贴在打开 IDE 前面
+          }
+        }
+      } catch { }
+
+      // 确定实际要挂入的容器 actualParent 和参考子节点 actualRef
+      let actualParent = targetContainer;
+      let actualRef = anchorBtn || targetContainer.firstElementChild || targetContainer.firstChild || null;
+
+      if (anchorBtn) {
+        if (anchorBtn.parentElement && anchorBtn.parentElement !== targetContainer) {
+          actualParent = anchorBtn.parentElement;
+        }
+        actualRef = anchorBtn;
+      }
+
+      const isDirectChild = (p, c) => {
+        if (!p || !c) return false;
+        if (c.parentElement === p || c.parentNode === p) return true;
+        if (Array.isArray(p.children) && p.children.includes(c)) return true;
+        return false;
+      };
+
+      if (host.parentElement !== actualParent || (actualRef && host.nextElementSibling !== actualRef)) {
+        try {
+          if (actualRef && isDirectChild(actualParent, actualRef)) {
+            actualParent.insertBefore(host, actualRef);
+          } else {
+            actualParent.appendChild(host);
+          }
+        } catch {
+          try { actualParent.appendChild(host); } catch { }
         }
       }
-      host.setAttribute('data-dock', 'flow');
+      host.setAttribute('data-dock', effectiveDock);
       try {
         host.style.removeProperty?.('right');
         host.style.removeProperty?.('top');
+        host.style.removeProperty?.('bottom');
+        host.style.removeProperty?.('position');
       } catch { }
       host.style.right = '';
       host.style.top = '';
+      host.style.bottom = '';
+      host.style.position = '';
 
       if (observedTitlebar !== titlebar) {
         observedTitlebar = titlebar;
@@ -724,13 +2323,32 @@
         } catch { }
       }
     } else {
-      const fallbackParent = document.body || document.documentElement;
-      if (fallbackParent && host.parentElement !== fallbackParent) {
-        fallbackParent.appendChild(host);
+      const nativeAnchor = findNativeTopRightAnchor();
+      if (nativeAnchor && nativeAnchor !== document.body && nativeAnchor !== document.documentElement) {
+        if (host.parentElement !== nativeAnchor) {
+          if (nativeAnchor.firstChild) nativeAnchor.insertBefore(host, nativeAnchor.firstChild);
+          else nativeAnchor.appendChild(host);
+        }
+        host.setAttribute('data-dock', effectiveDock);
+        host.style.right = '';
+        host.style.top = '';
+        host.style.bottom = '';
+        host.style.position = '';
+      } else {
+        const fallbackParent = document.body || document.documentElement;
+        if (fallbackParent && host.parentElement !== fallbackParent) {
+          fallbackParent.appendChild(host);
+        }
+        host.setAttribute('data-dock', effectiveDock);
+        host.style.position = 'relative';
+        host.style.top = '';
+        host.style.right = '';
+        host.style.bottom = '';
       }
-      host.setAttribute('data-dock', 'fixed');
-      updateFixedFallbackPosition();
     }
+    syncDockPositionUi();
+    syncDockedPanelsAttribute();
+    ensureComposerStatusBarMounted();
     updateResponsiveLayout(layoutMeasurementDirty);
   }
 
@@ -757,28 +2375,13 @@
   }
 
   function updateFixedFallbackPosition() {
-    if (host.getAttribute?.('data-dock') === 'flow') {
-      try {
-        host.style.removeProperty?.('right');
-        host.style.removeProperty?.('top');
-      } catch { }
-      host.style.right = '';
-      host.style.top = '';
-      return;
-    }
+    // 彻底废除 fixed 模式，宿主始终内联锚定，严禁设置 top: 6px 飞至最上方标题栏
     try {
-      const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
-      let rightOffset = 144;
-      const anchor = findNativeTopRightAnchor();
-      if (anchor?.getBoundingClientRect) {
-        const r = anchor.getBoundingClientRect();
-        if (r.width > 0 && r.left > 0 && r.left < vw) {
-          rightOffset = Math.max(144, Math.ceil(vw - r.left + 6));
-        }
-      }
-      host.style.top = '6px';
-      host.style.right = `${rightOffset}px`;
+      host.style.removeProperty?.('right');
+      host.style.removeProperty?.('top');
     } catch { }
+    host.style.right = '';
+    host.style.top = '';
   }
 
   // 带迟滞区间（Hysteresis）的四阶段渐进收缩计算，防止临界宽度抖动
@@ -830,17 +2433,18 @@
       if (titlebar?.getBoundingClientRect) {
         const tbRect = titlebar.getBoundingClientRect();
         if (tbRect.width > 0) {
+          const inSubview = isNonConversationSubview();
           const titleEl = titlebar.firstElementChild;
           const titleInner = titleEl?.firstElementChild;
           const contentStart = titleInner?.getBoundingClientRect
-            ? Math.max(8, titleInner.getBoundingClientRect().left - tbRect.left)
-            : (tbRect.left < 168 ? (168 - tbRect.left) : 12);
+            ? Math.max(inSubview ? 48 : 8, titleInner.getBoundingClientRect().left - tbRect.left)
+            : (inSubview ? 56 : (tbRect.left < 168 ? (168 - tbRect.left) : 12));
           const titleRealW = titleEl?.scrollWidth ? Math.min(320, titleEl.scrollWidth) : 160;
-          const minTitleWidth = tbRect.width < 760
-            ? Math.max(96, Math.min(180, titleRealW))
-            : Math.max(150, titleRealW);
-          let nativeButtonsWidth = 64;
-          let rightPad = 8;
+          const minTitleWidth = inSubview
+            ? Math.max(160, titleRealW)
+            : (tbRect.width < 760 ? Math.max(96, Math.min(180, titleRealW)) : Math.max(150, titleRealW));
+          let nativeButtonsWidth = inSubview ? 120 : 64;
+          let rightPad = inSubview ? 16 : 8;
           let titlebarOwnPadRight = 0;
           if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
             titlebarOwnPadRight = parseFloat(window.getComputedStyle(titlebar).paddingRight) || 0;
@@ -854,9 +2458,9 @@
               : null;
             const rightClusterVar = root?.style?.getPropertyValue?.('--right-cluster-width')?.trim() || '';
             if (auxOpen) {
-              rightPad = 8;
+              rightPad = inSubview ? 16 : 8;
             } else if (rightClusterVar) {
-              rightPad = Math.max(8, (parseFloat(rightClusterVar) || 44) - 4);
+              rightPad = Math.max(inSubview ? 16 : 8, (parseFloat(rightClusterVar) || 44) - 4);
             } else if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
               rightPad = parseFloat(window.getComputedStyle(rightGroup).paddingRight) || 0;
             }
@@ -867,7 +2471,7 @@
                   sum += child.getBoundingClientRect().width;
                 }
               }
-              if (sum > 0) nativeButtonsWidth = sum + 6;
+              if (sum > 0) nativeButtonsWidth = sum + (inSubview ? 14 : 6);
             }
           }
           const effectiveRightReserve = Math.max(rightPad, titlebarOwnPadRight);
@@ -989,6 +2593,16 @@
       top = snapToDevicePixel(Math.max(6, Math.min(vh - tipH - 6, top)));
 
       let left = bRect.left + bRect.width / 2 - tipW / 2;
+      const om = el('overflow-menu');
+      if (om && !om.hidden && typeof om.getBoundingClientRect === 'function') {
+        const omRect = om.getBoundingClientRect();
+        if (omRect && omRect.width > 0 && omRect.left - tipW - 8 >= 8) {
+          left = omRect.left - tipW - 8;
+          if (Number.isFinite(omRect.top) && omRect.top > 0) {
+            top = snapToDevicePixel(Math.max(6, Math.min(vh - tipH - 6, omRect.top)));
+          }
+        }
+      }
       left = snapToDevicePixel(Math.max(8, Math.min(vw - tipW - 8, left)));
 
       tip.style.top = `${top}px`;
@@ -997,8 +2611,9 @@
   }
 
   function showContextTooltip() {
+    if (enforceMarketplaceAvoidance()) return;
     const tip = el('context-tooltip');
-    if (!tip || !el('panel')?.hidden) return;
+    if (!tip || isAnyPanelOpen()) return;
     state.tooltipOpen = true;
     tip.setAttribute('data-visible', 'true');
     positionContextTooltip();
@@ -1055,13 +2670,37 @@
 
       const placePanel = (panelEl, targetW, anchorBtn) => {
         if (!panelEl) return;
-        const bRect = (anchorBtn && anchorBtn.getBoundingClientRect && anchorBtn !== host && anchorBtn.getBoundingClientRect().right > hRect.left)
-          ? anchorBtn.getBoundingClientRect()
+        const effectiveDock = host.getAttribute?.('data-dock') || 'fixed';
+        if ((effectiveDock === 'aux' || effectiveDock === 'page') && panelEl.id !== 'overflow-menu') {
+          panelEl.setAttribute?.('data-panel-docked', 'true');
+          panelEl.style.position = 'static';
+          panelEl.style.top = '';
+          panelEl.style.left = '';
+          panelEl.style.right = '';
+          panelEl.style.maxWidth = '100%';
+          panelEl.style.maxHeight = '';
+          panelEl._lastPlacedGeomKey = null;
+          return;
+        }
+        panelEl.removeAttribute?.('data-panel-docked');
+        panelEl.style.position = '';
+        const isCsbAnchor = Boolean(anchorBtn?.id?.startsWith?.('csb-'));
+        const anchorRect = anchorBtn && anchorBtn.getBoundingClientRect ? anchorBtn.getBoundingClientRect() : null;
+        const bRect = (anchorRect && anchorBtn !== host && (isCsbAnchor || anchorRect.right > hRect.left))
+          ? anchorRect
           : hRect;
         const dpr = getEffectiveDpr();
-        const top = snapToDevicePixel(Math.max(36, Math.min(vh - 120, (bRect.bottom || hRect.bottom) + 6)));
+        const isPickerMenu = panelEl.id === 'overflow-menu';
+        const openAbove = isPickerMenu
+          ? Boolean(bRect.bottom > vh * 0.62)
+          : (isCsbAnchor && bRect.bottom > vh * 0.52);
+        const top = openAbove
+          ? snapToDevicePixel(Math.max(40, bRect.top - (isPickerMenu ? 210 : Math.max(220, Math.min(540, bRect.top - 52))) - 8))
+          : snapToDevicePixel(Math.max(36, Math.min(vh - 120, (bRect.bottom || hRect.bottom) + 6)));
         const isCompact = panelEl.classList?.contains?.('cost-compact-view') || panelEl.getAttribute?.('class')?.includes?.('cost-compact-view');
-        const effW = isCompact ? 400 : targetW;
+        const isWideRequests = panelEl.classList?.contains?.('requests-wide-view') || panelEl.getAttribute?.('class')?.includes?.('requests-wide-view');
+        const effW = isCompact ? 400 : (isWideRequests ? 1040 : targetW);
+
         const maxAvailW = Math.max(260, vw - minLeft - 12);
         const finalW = Math.min(effW, maxAvailW);
 
@@ -1071,8 +2710,11 @@
         left = Math.max(snapToDevicePixel(minLeft), left);
 
         const maxWidthPx = Math.max(260, vw - left - 12);
-        const maxHeightPx = Math.max(160, vh - top - 16);
-        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${dpr}`;
+        const maxHeightPx = openAbove
+          ? Math.max(220, Math.min(540, bRect.top - top - 8))
+          : Math.max(160, vh - top - 16);
+        const anchorKey = anchorBtn?.id || '';
+        const geomKey = `${anchorKey}|${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${openAbove ? 1 : 0}|${dpr}`;
         if (panelEl._lastPlacedGeomKey === geomKey) return;
         panelEl._lastPlacedGeomKey = geomKey;
 
@@ -1081,14 +2723,16 @@
         panelEl.style.right = 'auto';
         panelEl.style.maxWidth = `${maxWidthPx}px`;
         panelEl.style.maxHeight = `${maxHeightPx}px`;
-        panelEl.style.transformOrigin = 'top right';
+        panelEl.style.transformOrigin = openAbove ? 'bottom right' : 'top right';
+        if (isPickerMenu) panelEl.setAttribute?.('data-placement', openAbove ? 'top' : 'bottom');
       };
 
       placePanel(el('panel'), 472, el(activeContextAnchorId) || el('badge'));
       placePanel(el('panel-quota'), 460, el(activeQuotaAnchorId) || el('badge-quota'));
       placePanel(el('panel-tokens'), 730, el(activeTokensAnchorId) || el('badge-tokens'));
-      placePanel(el('overflow-menu'), 220, el('badge-overflow'));
+      placePanel(el('overflow-menu'), 220, el(activePickerAnchorId || 'badge-overflow') || el('badge-overflow'));
       positionColorPickerPopover();
+      if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
     } catch { }
   }
 
@@ -1115,13 +2759,124 @@
     } catch { }
   }
 
+  // 兼容宿主压缩提示及其动态读秒后缀（如 "Compacting"、"Compacting · 46s"、"Compacting · 1m 12s"、"正在压缩上下文 · 46s" 等）
+  const HOST_COMPACTING_TIMER_TAIL = '(?:\\s*(?:[·•|\\-–—]|\\()\\s*<?\\d[\\d\\s.:hms分秒钟鐘小时小時/]*\\)?|\\s+\\(?<?\\d+(?:\\.\\d+)?\\s*(?:h|hr|m|min|s|sec|秒|分(?:钟|鐘)?)[\\d\\s.:hms分秒钟鐘]*\\)?)?';
+  const HOST_COMPACTING_TEXT_RE = new RegExp(
+    `^(?:compacting(?:\\s+(?:conversation|context))?(?:\\.{1,3}|…)?${HOST_COMPACTING_TIMER_TAIL}|正在压缩(?:上下文|对话|会话)?(?:\\.{1,3}|…)?${HOST_COMPACTING_TIMER_TAIL}|正在壓縮(?:上下文|對話|工作階段)?(?:\\.{1,3}|…)?${HOST_COMPACTING_TIMER_TAIL})$`,
+    'i'
+  );
+
+  let lastCompactionDomCheckAt = 0;
+
+  function checkHostDomCompactionSignals(options = {}) {
+    if (state.disposed || !state.route || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+    const nowMs = Date.now();
+    const isInitialRouteCheck = state.lastDomCompactedBannerCount < 0;
+    if (!isInitialRouteCheck && !options?.urgent) {
+      const latestCallRec = typeof resolveLatestSessionCallRecord === 'function' ? resolveLatestSessionCallRecord() : null;
+      const isActivelyBusy = Boolean(
+        state.compacting ||
+        state.lastDomCompactingActive ||
+        state.livePendingRequest ||
+        (latestCallRec && latestCallRec.status === 'streaming')
+      );
+      const minIntervalMs = isActivelyBusy ? 250 : 950;
+      if (nowMs - lastCompactionDomCheckAt < minIntervalMs) return;
+    }
+    lastCompactionDomCheckAt = nowMs;
+    try {
+      const nodes = document.querySelectorAll('span, div, p');
+      if (!Array.isArray(nodes) && typeof nodes?.length !== 'number') return;
+      let sawCompacting = false;
+      let compactedBannerCount = 0;
+      const totalNodes = nodes.length;
+      const minIdx = Math.max(0, totalNodes - 4000);
+      for (let i = totalNodes - 1; i >= minIdx; i--) {
+        const n = nodes[i];
+        if (!n || n === host || n.className === 'ag-cm-turn-footer') continue;
+        if (n.hasAttribute && (
+          n.hasAttribute('data-markdown-root') ||
+          n.hasAttribute('data-markdown-virtualized') ||
+          n.hasAttribute('data-markdown-block-index') ||
+          n.hasAttribute('data-quotable') ||
+          n.hasAttribute('data-turn-index') ||
+          n.hasAttribute('data-bubble-side')
+        )) continue;
+        const childCount = n.childElementCount !== undefined ? n.childElementCount : (n.children ? n.children.length : 0);
+        if (childCount > 40) continue;
+        // 跳过多层嵌套的大消息/布局容器，但完整保留扁平单字母闪烁的 Compacting 提示 (children 均为无子元素的叶子 span)
+        if (childCount > 3) {
+          const firstChildEl = n.firstElementChild || (n.children && n.children[0]);
+          const grandChildCount = firstChildEl
+            ? (firstChildEl.childElementCount !== undefined ? firstChildEl.childElementCount : (firstChildEl.children ? firstChildEl.children.length : 0))
+            : 0;
+          if (grandChildCount > 0) continue;
+        }
+        if (typeof host.contains === 'function' && host.contains(n)) continue;
+        const rawTxt = n.textContent;
+        if (typeof rawTxt !== 'string' || rawTxt.length < 4 || rawTxt.length > 140) continue;
+        const txt = rawTxt.replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+        if (!txt || txt.length < 4 || txt.length > 120) continue;
+        if (HOST_COMPACTING_TEXT_RE.test(txt)) {
+          // 若父节点与子节点均包含相同文本，仅需标记布尔位即可，不受重复嵌套影响
+          sawCompacting = true;
+        } else if (
+          childCount <= 3 && (
+            txt.includes('The conversation was compacted') ||
+            txt.includes('会话已被压缩以适应上下文窗口') ||
+            txt.includes('会话上下文已执行压缩') ||
+            txt.includes('工作階段已被壓縮以適應上下文視窗')
+          )
+        ) {
+          compactedBannerCount++;
+        }
+      }
+      const prevCompacting = Boolean(state.lastDomCompactingActive);
+      state.lastDomCompactingActive = sawCompacting;
+      let needUrgentCompactScan = false;
+      if (sawCompacting) {
+        if (!state.compacting || state.compacting.cascadeId !== state.route) {
+          beginCompactingTransition(state.route);
+        } else {
+          state.compacting.domEndedAtMs = 0;
+          state.compacting.postDomEndScans = 0;
+        }
+      } else if (prevCompacting) {
+        if (state.compacting && state.compacting.cascadeId === state.route) {
+          state.compacting.domEndedAtMs = Date.now();
+          state.compacting.postDomEndScans = 0;
+        }
+        needUrgentCompactScan = true;
+      }
+      const prevBanners = state.lastDomCompactedBannerCount;
+      state.lastDomCompactedBannerCount = compactedBannerCount;
+      if (prevBanners >= 0 && compactedBannerCount > prevBanners) {
+        needUrgentCompactScan = true;
+      }
+      if (needUrgentCompactScan) {
+        triggerImmediateCompactScan(state.route, { urgent: true });
+      }
+    } catch { }
+  }
+
   function flushHostDomMutationCheck() {
     domMutationThrottleTimer = null;
     if (state.disposed) return;
-    if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
-      scheduleLayoutSync();
+    const actualDockNow = host.getAttribute?.('data-dock') || dockPosition;
+    const needsTitlebarDock = actualDockNow === 'flow' || actualDockNow === 'compact' || Boolean(dockFallbackReason);
+    const auxStateChanged = dockPosition === 'aux'
+      && ((actualDockNow === 'aux' && !findAuxSidebarContainer())
+        || (dockFallbackReason === 'aux' && Boolean(findAuxSidebarContainer())));
+    if (!host.isConnected || auxStateChanged || (needsTitlebarDock && !findHostTitlebar()?.contains?.(host))) {
+      ensureHostDocked();
     }
+    ensureComposerStatusBarMounted();
     scheduleHostModelSync();
+    checkHostDomCompactionSignals();
+    // 进入 Customizations / Marketplace / Installed 页面时自动收起已打开面板、浮层与辅助栏
+    if (enforceMarketplaceAvoidance()) {
+      if (isAnyPanelOpen()) showPanel('none');
+    }
   }
 
   try {
@@ -1130,18 +2885,39 @@
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
-      hostDomObserver = new MutationObserver(() => {
+      const shouldIgnoreHostMutationTarget = (node, ignoreVirtualScroll) => {
+        if (!node) return false;
+        const elNode = node.nodeType === 1 ? node : node.parentElement;
+        if (!elNode) return false;
+        if (elNode === host || (typeof host.contains === 'function' && host.contains(elNode))) return true;
+        if (elNode.id === 'ag-composer-status-bar' || elNode.className === 'ag-cm-turn-footer') return true;
+        if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer')) return true;
+        // 静息浏览已完成对话时忽略虚拟滚动列表内部块级增删，避免滚动期间每 60ms 重跑全局 DOM 检查
+        if (ignoreVirtualScroll && elNode.closest?.('[data-testid="conversation-view"]')) return true;
+        return false;
+      };
+      hostDomObserver = new MutationObserver((mutations) => {
         if (state.disposed) return;
-        // 轻量 O(1) 检查优先，其余全量/选择器查询合并节流至低频窗口，防止聊天吐字与切会话卡顿
-        if (!host.isConnected || host.getAttribute('data-dock') !== 'flow') {
+        if (!host.isConnected) {
           layoutMeasurementDirty = true;
-          scheduleLayoutSync();
+          ensureHostDocked();
+        } else if (Array.isArray(mutations) && mutations.length > 0) {
+          const isIdleConv = !state.compacting && !state.lastDomCompactingActive && !state.livePendingRequest && state.lastDomCompactedBannerCount >= 0;
+          if (mutations.every(m => shouldIgnoreHostMutationTarget(m.target, isIdleConv))) {
+            return;
+          }
         }
         if (!domMutationThrottleTimer) {
-          domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 180);
+          domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 60);
         }
       });
-      hostDomObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label'] });
+      hostDomObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['aria-label', 'aria-selected', 'aria-current', 'data-state', 'data-side-panel-open', 'data-aux-pane-open', 'hidden', 'class']
+      });
     }
   } catch { }
 
@@ -1230,7 +3006,12 @@
   function withStepError(value, metadata) {
     const error = state.scan?.session?.currentError;
     if (!error || value?.error) return value;
-    const lastStep = Math.max(-1, ...(metadata?.stepIndices || []), metadata?.chatModel?.chatStartMetadata?.startStepIndex ?? -1);
+    const lastStep = Math.max(
+      -1,
+      ...(metadata?.stepIndices || []),
+      metadata?.chatModel?.chatStartMetadata?.startStepIndex ?? -1,
+      (value?.compacted && Number.isInteger(value?.checkpointIndex)) ? value.checkpointIndex : -1
+    );
     if (lastStep > error.index) return value;
     const failure = summarize({ chatModel: { retryInfos: [{ error: error.text }] } }, {
       currentModel: value?.model || state.latest?.model || '',
@@ -1256,10 +3037,13 @@
   }
 
   function isAnyPanelOpen() {
-    return !el('panel').hidden || !el('panel-tokens').hidden || !el('panel-quota')?.hidden;
+    return !el('panel').hidden || !el('panel-tokens').hidden || Boolean(el('panel-quota') && !el('panel-quota').hidden);
   }
 
   function showPanel(target) {
+    if (target !== 'none' && enforceMarketplaceAvoidance()) {
+      target = 'none';
+    }
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
     const pQuota = el('panel-quota');
@@ -1330,6 +3114,20 @@
       positionFloatingPanels();
       pContext.hidden = false;
       applyContextViewVisibility?.();
+      syncAuxContextBar?.();
+      if (dockPosition === 'aux' && !dockFallbackReason && activeContextTab === 'session' && !state.historyDrawerOpen && state.route && state.ctxAutoExpandedAuxRoute !== state.route) {
+        state.historyDrawerOpen = true;
+        state.ctxAutoExpandedAuxRoute = state.route;
+      }
+      if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
+      if ((activeContextTab === 'session' || !isContextSettingsView) && typeof renderContextTrendCard === 'function') {
+        renderContextTrendCard();
+        if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+        if (state.historyDrawerOpen && typeof renderSessionTimeline === 'function') renderSessionTimeline();
+        if (state.route && !state.sessionTimeline && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
+          void fetchSessionTimeline(state.route, { force: false });
+        }
+      }
       if (activeContextTab === 'models' && !isContextSettingsView) {
         if (typeof syncModelListQuotaIndicators === 'function') syncModelListQuotaIndicators(null, Date.now(), true);
         void refreshUnlockStatus();
@@ -1352,11 +3150,167 @@
       hidePopover();
       syncHostStackingElevation(false);
     }
+    syncDockedPanelsAttribute();
+    syncPanelPickerActiveState();
   }
 
   let activeContextAnchorId = 'badge';
   let activeTokensAnchorId = 'badge-tokens';
   let activeQuotaAnchorId = 'badge-quota';
+  let activePickerAnchorId = 'badge-overflow';
+  let panelPickerCloseTimer = null;
+  let suppressFocusPickerUntil = 0;
+  let lastPickerHoverOpen = { anchorId: '', ts: 0 };
+
+  function canOpenPickerOnFocus(elm) {
+    if (Date.now() < suppressFocusPickerUntil) return false;
+    if (typeof elm?.matches === 'function') {
+      try { return elm.matches(':focus-visible'); } catch { return true; }
+    }
+    return true;
+  }
+
+  function getCurrentPickerTarget() {
+    if (el('panel-quota') && !el('panel-quota').hidden) return 'quota';
+    if (el('panel-tokens') && !el('panel-tokens').hidden) {
+      return activeTokenView === 'requests' ? 'requests' : 'tokens';
+    }
+    if (el('panel') && !el('panel').hidden) {
+      if (!isContextSettingsView && activeContextTab === 'speed') return 'speed';
+      if (!isContextSettingsView && activeContextTab === 'session' && state.historyDrawerOpen) return 'context_detail';
+      return 'context';
+    }
+    return null;
+  }
+
+  function syncPanelPickerActiveState() {
+    const om = el('overflow-menu');
+    if (!om) return;
+    const currentTarget = getCurrentPickerTarget();
+    const btns = Array.from(om.children || []);
+    for (const btn of btns) {
+      const target = btn?.getAttribute?.('data-picker-target');
+      const isCur = Boolean(target && target === currentTarget);
+      if (isCur) {
+        btn.setAttribute?.('data-active', 'true');
+        btn.setAttribute?.('aria-current', 'true');
+      } else {
+        btn?.removeAttribute?.('data-active');
+        btn?.removeAttribute?.('aria-current');
+      }
+    }
+  }
+
+  function cancelClosePanelPicker() {
+    if (panelPickerCloseTimer) {
+      clearTimeout(panelPickerCloseTimer);
+      panelPickerCloseTimer = null;
+    }
+  }
+
+  function closePanelPicker() {
+    cancelClosePanelPicker();
+    const pOverflow = el('overflow-menu');
+    if (pOverflow) pOverflow.hidden = true;
+    el('badge-overflow')?.setAttribute('aria-expanded', 'false');
+    for (const tid of ['badge-quota', 'badge', 'badge-overflow', 'badge-dock-wake']) {
+      el(tid)?.removeAttribute?.('data-picker-open');
+    }
+    syncHostStackingElevation(isAnyPanelOpen());
+  }
+
+  function scheduleClosePanelPicker(delayMs = 180) {
+    cancelClosePanelPicker();
+    panelPickerCloseTimer = setTimeout(() => {
+      panelPickerCloseTimer = null;
+      closePanelPicker();
+    }, delayMs);
+  }
+
+  function openPanelPicker(anchorId = 'badge-overflow', opts = null) {
+    if (enforceMarketplaceAvoidance()) return;
+    cancelClosePanelPicker();
+    const pOverflow = el('overflow-menu');
+    if (!pOverflow) return;
+    if (anchorId) activePickerAnchorId = anchorId;
+    if (opts && opts.viaHover) {
+      lastPickerHoverOpen = { anchorId: activePickerAnchorId, ts: Date.now() };
+    } else {
+      lastPickerHoverOpen = { anchorId: '', ts: 0 };
+    }
+    syncOverflowMenuMetrics?.();
+    syncPanelPickerActiveState();
+    positionFloatingPanels();
+    pOverflow.hidden = false;
+    pOverflow.setAttribute?.('data-anchor', activePickerAnchorId);
+    el('badge-overflow')?.setAttribute('aria-expanded', activePickerAnchorId === 'badge-overflow' ? 'true' : 'false');
+    for (const tid of ['badge-quota', 'badge', 'badge-overflow', 'badge-dock-wake']) {
+      const btn = el(tid);
+      if (btn) {
+        if (tid === activePickerAnchorId) btn.setAttribute?.('data-picker-open', 'true');
+        else btn.removeAttribute?.('data-picker-open');
+      }
+    }
+    syncHostStackingElevation(true);
+  }
+
+  function resolvePickerTargetAnchor(defaultId) {
+    if (state.layoutMode === 'minimal' || state.layoutMode === 'ring-only') {
+      if (defaultId !== 'badge' && el('badge-overflow')) return 'badge-overflow';
+    }
+    const anchor = activePickerAnchorId || defaultId;
+    return (anchor && el(anchor)) ? anchor : defaultId;
+  }
+
+  function switchPanelFromPicker(target) {
+    if (!target) return;
+    if (enforceMarketplaceAvoidance()) return;
+    if (target === 'cli') {
+      closePanelPicker();
+      void triggerLaunchCli();
+      return;
+    }
+    const current = getCurrentPickerTarget();
+    if (current && current === target) {
+      // 误点已选项时保持当前面板，仅收起选择器且不关闭右侧栏/浮层
+      closePanelPicker();
+      return;
+    }
+    if (target === 'quota') {
+      activeQuotaAnchorId = resolvePickerTargetAnchor('badge-quota');
+      showPanel('quota');
+    } else if (target === 'context') {
+      activeContextAnchorId = resolvePickerTargetAnchor('badge');
+      state.historyDrawerOpen = false;
+      renderSessionTimeline?.();
+      if (activeContextTab === 'speed' || activeContextTab === 'settings') {
+        switchContextTab('session');
+      }
+      showPanel('context');
+    } else if (target === 'context_detail') {
+      activeContextAnchorId = resolvePickerTargetAnchor('badge');
+      state.historyDrawerOpen = true;
+      showPanel('context');
+      switchContextTab('session');
+      renderSessionTimeline?.();
+      if (state.route && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
+        void fetchSessionTimeline(state.route, { force: !state.sessionTimeline });
+      }
+    } else if (target === 'speed') {
+      activeContextAnchorId = resolvePickerTargetAnchor('badge-speed');
+      showPanel('context');
+      switchContextTab('speed');
+    } else if (target === 'tokens') {
+      activeTokensAnchorId = resolvePickerTargetAnchor('badge-tokens');
+      showPanel('tokens');
+      switchTokenView('tokens');
+    } else if (target === 'requests') {
+      activeTokensAnchorId = resolvePickerTargetAnchor('badge-tokens');
+      showPanel('tokens');
+      switchTokenView('requests');
+    }
+    closePanelPicker();
+  }
 
   function toggle(open, tab = 'context') {
     if (!open) {
@@ -1367,6 +3321,10 @@
   }
 
   function toggleContext(anchorId = 'badge') {
+    if (enforceMarketplaceAvoidance()) {
+      showPanel('none');
+      return;
+    }
     if (!el('panel').hidden && activeContextAnchorId === anchorId) {
       showPanel('none');
     } else {
@@ -1376,6 +3334,10 @@
   }
 
   function toggleTokens(anchorId = 'badge-tokens') {
+    if (enforceMarketplaceAvoidance()) {
+      showPanel('none');
+      return;
+    }
     if (!el('panel-tokens').hidden && activeTokensAnchorId === anchorId) {
       showPanel('none');
     } else {
@@ -1385,6 +3347,10 @@
   }
 
   function toggleQuota(anchorId = 'badge-quota') {
+    if (enforceMarketplaceAvoidance()) {
+      showPanel('none');
+      return;
+    }
     if (el('panel-quota') && !el('panel-quota').hidden && activeQuotaAnchorId === anchorId) {
       showPanel('none');
     } else {
@@ -1394,15 +3360,20 @@
   }
 
   function toggleOverflowMenu() {
+    if (enforceMarketplaceAvoidance()) return;
     const pOverflow = el('overflow-menu');
     if (!pOverflow) return;
-    const willOpen = pOverflow.hidden;
-    showPanel('none');
-    hideContextTooltip();
-    if (willOpen) positionFloatingPanels();
-    pOverflow.hidden = !willOpen;
-    el('badge-overflow')?.setAttribute('aria-expanded', String(willOpen));
-    syncHostStackingElevation(willOpen);
+    if (pOverflow.hidden) {
+      openPanelPicker('badge-overflow');
+      return;
+    }
+    // 鼠标移入触发 mouseenter 刚打开选择器后紧接着 click 时保持展开，避免同一次点击动作立刻反关
+    if (lastPickerHoverOpen.anchorId === 'badge-overflow' && (Date.now() - lastPickerHoverOpen.ts) < 600) {
+      lastPickerHoverOpen = { anchorId: '', ts: 0 };
+      cancelClosePanelPicker();
+      return;
+    }
+    closePanelPicker();
   }
 
   // 外观调色按钮进入设置视图并直接展开颜色自定义抽屉
@@ -1410,6 +3381,164 @@
     openContextSettings?.({ openColors: true });
   });
   el('btn-panel-tokens-palette')?.addEventListener('click', () => toggleTokenColorsDrawer());
+  el('dock-pos-segmented')?.addEventListener('click', e => {
+    const btn = e.target?.closest?.('[data-dock-mode]');
+    const mode = btn?.getAttribute?.('data-dock-mode');
+    if (mode) {
+      if (mode === 'aux') {
+        void (async () => {
+          await ensureAuxSidebarExpanded({ timeoutMs: 1000 });
+          setDockPosition('aux', { persist: true });
+        })();
+        return;
+      }
+      setDockPosition(mode, { persist: true });
+      if (mode === 'page') {
+        showPanel('context');
+      }
+    }
+  });
+  el('btn-dock-page-back')?.addEventListener('click', () => {
+    setDockPosition('flow', { persist: true });
+  });
+  el('btn-dock-aux-back')?.addEventListener('click', () => {
+    setDockPosition('flow', { persist: true });
+    showPanel('none');
+  });
+  const handleCopyPreciseDashboardLink = async () => {
+    const srvRes = await resolvePreciseDashboardUrl({ openExternal: false });
+    const url = srvRes?.url || lastPreciseDashboardUrl || '';
+    if (url) lastPreciseDashboardUrl = url;
+    const ok = await copyTextToClipboardSafe(url);
+    if (ok && url) {
+      setDockOpenFeedback(t('settings.dock.openRightCopied') + ` (${url})`, false, { showActions: true });
+    } else {
+      setDockOpenFeedback(url || t('settings.dock.openRightCopyFail'), !url, { showActions: true });
+    }
+  };
+  el('btn-dock-aux-copy-url')?.addEventListener('click', () => { void handleCopyPreciseDashboardLink(); });
+  el('btn-dock-fb-copy')?.addEventListener('click', () => { void handleCopyPreciseDashboardLink(); });
+  el('btn-dock-aux-external')?.addEventListener('click', () => { void openStandaloneBrowserPage(); });
+  el('btn-dock-fb-external')?.addEventListener('click', () => { void openStandaloneBrowserPage(); });
+  el('btn-dock-fb-page')?.addEventListener('click', () => {
+    setDockPosition('page', { persist: true });
+    showPanel('context');
+  });
+  const onHideTopbarToggle = (e) => {
+    const chk = el('chk-hide-topbar');
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : !isTopbarHidden);
+    setHideTopbar(next, { persist: true });
+  };
+  el('chk-hide-topbar')?.addEventListener('change', onHideTopbarToggle);
+  el('chk-hide-topbar')?.addEventListener('click', onHideTopbarToggle);
+  el('btn-quick-settings')?.addEventListener('click', () => {
+    openContextSettings();
+  });
+  el('btn-settings-back')?.addEventListener('click', () => {
+    switchContextTab('session');
+  });
+  el('badge-dock-wake')?.addEventListener('click', () => {
+    toggleOverflowMenu();
+  });
+  el('btn-dock-open-right')?.addEventListener('click', () => {
+    void openDashboardInRightPanel();
+  });
+  el('btn-open-right-panel')?.addEventListener('click', () => {
+    void openDashboardInRightPanel();
+  });
+  el('btn-dock-open-browser')?.addEventListener('click', () => {
+    void openStandaloneBrowserPage();
+  });
+  const onShowTurnFooterToggle = (e) => {
+    const chk = el('chk-show-turn-footer-stats');
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : showTurnFooterStats);
+    showTurnFooterStats = next;
+    if (chk) chk.checked = showTurnFooterStats;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_show_turn_footer_stats', showTurnFooterStats ? 'true' : 'false');
+    } catch { }
+    renderTurnFooterStats();
+    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+      void saveSettingsPayloadBridge({ showTurnFooterStats });
+    }
+  };
+  el('chk-show-turn-footer-stats')?.addEventListener('change', onShowTurnFooterToggle);
+  const onShowComposerQuotaToggle = (e) => {
+    const chk = el('chk-show-composer-quota');
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : showComposerQuotaSummary);
+    showComposerQuotaSummary = next;
+    if (chk) chk.checked = showComposerQuotaSummary;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_show_composer_quota', showComposerQuotaSummary ? 'true' : 'false');
+    } catch { }
+    if (typeof renderComposerQuotaSummary === 'function') {
+      renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
+    }
+    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+      void saveSettingsPayloadBridge({ showComposerQuotaSummary });
+    }
+  };
+  el('chk-show-composer-quota')?.addEventListener('change', onShowComposerQuotaToggle);
+  el('dock-fallback-note')?.addEventListener('click', () => {
+    void (async () => {
+      try {
+        await ensureAuxSidebarExpanded({ timeoutMs: 1000 });
+        setDockPosition('aux', { persist: true });
+        syncDockPositionUi();
+      } catch { }
+    })();
+  });
+  el('settings-quick-nav-group')?.addEventListener('click', e => {
+    const btn = e.target?.closest?.('[data-nav-target]');
+    const targetId = btn?.getAttribute?.('data-nav-target');
+    if (targetId) {
+      if (activeContextTab !== 'settings' || isContextSettingsView !== true) {
+        openContextSettings();
+      }
+      const targetEl = el(targetId);
+      if (targetEl) {
+        // 仅当目标元素本身就是抽屉容器时自动展开；卡片内部的附属技术抽屉不自动触发
+        const drawerTrigger = targetEl.classList?.contains('tech-drawer')
+          ? targetEl.querySelector?.('.drawer-trigger')
+          : null;
+        if (drawerTrigger && drawerTrigger.getAttribute('aria-expanded') !== 'true') {
+          drawerTrigger.click();
+        }
+        // 确保父级抽屉或折叠项也被展开
+        const parentDrawer = targetEl.closest?.('.tech-drawer');
+        if (parentDrawer && parentDrawer !== targetEl) {
+          const pt = parentDrawer.querySelector('.drawer-trigger');
+          if (pt && pt.getAttribute('aria-expanded') !== 'true') pt.click();
+        }
+
+        setTimeout(() => {
+          targetEl.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+          targetEl.style.transition = 'box-shadow 0.3s ease';
+          targetEl.style.boxShadow = '0 0 0 2px var(--ag-accent, #6366f1)';
+          setTimeout(() => { targetEl.style.boxShadow = ''; }, 1400);
+        }, 60);
+      }
+      for (const b of Array.from(e.currentTarget.children || [])) {
+        b.classList.toggle('active', b === btn);
+      }
+    }
+  });
+  el('quota-mode-segmented')?.addEventListener('click', e => {
+    const btn = e.target?.closest?.('[data-quota-window-mode]');
+    const mode = btn?.getAttribute?.('data-quota-window-mode');
+    if (mode) setQuotaBadgeWindowMode(mode, { persist: true });
+  });
+  const onVersionBadgeActivate = () => {
+    openContextSettings?.({ scrollToUpdate: true });
+  };
+  el('v')?.addEventListener('click', onVersionBadgeActivate);
+  el('v')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onVersionBadgeActivate(); }
+  });
+  el('v-tokens')?.addEventListener('click', onVersionBadgeActivate);
+  el('v-tokens')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onVersionBadgeActivate(); }
+  });
 
   // =========================================================================
   // 统一定制下拉组件控制器 (国家 / 订阅地区 / 币种 / 增强 Select)
@@ -1730,6 +3859,13 @@
 
     const detCountry = el('p-det-country');
     const tagCountry = el('p-det-country-tag');
+    const tagTier = el('p-det-tier-tag');
+    if (tagTier) {
+      const isCustomTier = ps.sources?.tier === 'custom' || (ps.planTierOverride && ps.planTierOverride !== 'auto');
+      tagTier.style.display = isCustomTier ? 'inline-block' : 'none';
+      tagTier.textContent = isCustomTier ? t('plan.tag.custom') : '';
+    }
+    const directTierSel = el('direct-tier-select');
     const directCountrySel = el('direct-country-select');
     const rawCountryStr = ps.country ? String(ps.country).trim() : '';
     const isCountryUnknown = !rawCountryStr || rawCountryStr === '未知' || rawCountryStr === 'Unknown' || rawCountryStr.includes('未设置');
@@ -1764,6 +3900,9 @@
 
     // 使用纯同步回填守卫同步更新详情面板内的下拉控件值
     runWithUiHydration(() => {
+      if (directTierSel) {
+        directTierSel.value = ps.planTierOverride || 'auto';
+      }
       if (directCountrySel) {
         if (countryText !== '未知' && directCountrySel.options) {
           const exists = Array.from(directCountrySel.options).some(o => o.value === countryText);
@@ -1781,7 +3920,10 @@
       }
     });
 
-    // 刷新国家、订阅地区与币种直接选择器标签与选中高亮
+    // 刷新套餐规格、国家、订阅地区与币种直接选择器标签与选中高亮
+    if (typeof refreshDirectPlanTierDisplay === 'function') {
+      refreshDirectPlanTierDisplay(ps.planTierOverride || 'auto');
+    }
     if (typeof refreshDirectCountryDisplay === 'function') {
       refreshDirectCountryDisplay(countryText);
     }
@@ -1790,6 +3932,18 @@
     }
     if (typeof refreshDirectCurrencyDisplay === 'function') {
       refreshDirectCurrencyDisplay(curText);
+    }
+
+    // 同步更新额度面板顶部套餐胶囊 (#quota-plan-tier-pill)
+    const tierPill = el('quota-plan-tier-pill');
+    if (tierPill && ps.tierName && ps.tierName !== '未知') {
+      setQuotaHiddenIfChanged(tierPill, false);
+      setQuotaTextIfChanged(tierPill, ps.tierName);
+    }
+
+    // 同步刷新多账号列表中展示的套餐名
+    if (typeof renderAccountsOverviewSection === 'function' && accountsUiState?.overview) {
+      try { renderAccountsOverviewSection(); } catch { }
     }
 
     const detAcq = el('p-det-acq');
@@ -1953,6 +4107,9 @@
       renderActiveCostEstimateView();
       renderModelUsageView();
     }
+    if (activeTokenView === 'requests') {
+      renderRequestsLiveView({ force: true });
+    }
   }
   el('src-tab-all')?.addEventListener('click', () => switchTokenSource('all'));
   el('src-tab-desktop')?.addEventListener('click', () => switchTokenSource('desktop'));
@@ -2002,7 +4159,7 @@
   toggleCostDetails(false);
 
   // 按模型 Token 统计状态与视图渲染
-  let modelUsagePeriodDays = 7;
+  let modelUsagePeriodDays = defaultViewPrefs.modelUsagePeriodDays;
   let modelUsageOffsetDays = 0;
   let modelUsageGroupBy = 'model';
   let modelUsageMetric = 'total';
@@ -2429,6 +4586,1224 @@
     }
   }
 
+  let reqLogStatusFilter = 'all'; // 'all' | 'success' | 'error'
+  let reqLogSortBy = defaultViewPrefs.reqLogSortBy;
+  let reqLogPageLimit = 50;
+  let reqLogLastRenderedSig = '';
+  let lastRequestsLiveSyncAt = 0;
+
+  // Antigravity 彩色静态矢量图标（构建期由 assets/antigravity-color.svg 离线内嵌）
+  const AG_METER_AGENT_SVG_DATA_URI = '__AG_ANTIGRAVITY_COLOR_SVG_DATA_URI__';
+
+  function createAntigravityAgentIcon() {
+    const wrap = document.createElement('span');
+    wrap.className = 'req-agent-icon';
+    wrap.setAttribute('aria-hidden', 'true');
+    const img = document.createElement('img');
+    img.src = AG_METER_AGENT_SVG_DATA_URI;
+    img.width = 14;
+    img.height = 14;
+    img.alt = 'Antigravity';
+    img.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;background:transparent;';
+    wrap.appendChild(img);
+    return wrap;
+  }
+
+  function formatReqCompactTokens(val) {
+    if (val == null || !Number.isFinite(Number(val))) return '—';
+    const n = Math.max(0, Number(val));
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return String(Math.round(n));
+  }
+
+  function formatReqCacheHit(rec) {
+    const inp = Math.max(0, Number(rec?.inputTokens || 0));
+    const cache = Math.max(0, Number(rec?.cacheReadTokens || 0));
+    const totalIn = inp + cache;
+    if (totalIn <= 0) return '—';
+    const rawPct = rec?.cacheReadPct != null && Number.isFinite(Number(rec.cacheReadPct))
+      ? Number(rec.cacheReadPct)
+      : ((cache / totalIn) * 100);
+    if (rawPct <= 0) return '0%';
+    const rounded1 = Math.round(rawPct * 10) / 10;
+    if (rounded1 >= 100) return '100%';
+    if (Math.abs(rounded1 - Math.round(rounded1)) < 0.05) return `${Math.round(rounded1)}%`;
+    if (rounded1 >= 99) return `${rounded1.toFixed(1)}%`;
+    return `${Math.round(rounded1)}%`;
+  }
+
+  function formatReqCost(rec) {
+    let isPriced = Boolean(rec?.isPriced && rec.costUSD != null && Number.isFinite(Number(rec.costUSD)));
+    let usd = isPriced ? Math.max(0, Number(rec.costUSD)) : null;
+    if (!isPriced && rec && typeof calculateRequestApiCost === 'function') {
+      const calc = calculateRequestApiCost(rec);
+      if (calc?.isPriced && calc.costUSD != null && Number.isFinite(Number(calc.costUSD))) {
+        isPriced = true;
+        usd = Math.max(0, Number(calc.costUSD));
+      }
+    }
+    if (!isPriced || usd == null) {
+      return { text: '—', unpriced: true, tooltip: '' };
+    }
+    const text = usd >= 10 ? ('$' + usd.toFixed(2)) : ('$' + usd.toFixed(3));
+    const tooltip = typeof formatUsdMetricTooltip === 'function' ? formatUsdMetricTooltip(usd) : text;
+    return { text, unpriced: false, tooltip };
+  }
+
+  function formatReqDurationSec(sec) {
+    if (sec == null || !Number.isFinite(Number(sec)) || Number(sec) <= 0) return '—';
+    const s = Number(sec);
+    if (s >= 60) {
+      const m = Math.floor(s / 60);
+      const rem = Math.round(s % 60);
+      return t('reqLog.unit.minSec', { m, s: rem });
+    }
+    const val = s < 10 ? String(Number(s.toFixed(1))) : String(Math.round(s));
+    return t('reqLog.unit.sec', { val });
+  }
+
+  function getReqDurationToneClass(sec) {
+    if (sec == null || !Number.isFinite(Number(sec)) || Number(sec) <= 0) return '';
+    const s = Number(sec);
+    if (s < 8) return 'req-dur-fast';
+    if (s < 20) return 'req-dur-mid';
+    return 'req-dur-slow';
+  }
+
+  function formatReqSpeed(rec) {
+    if (!rec) return '—';
+    const outp = Math.max(0, Number(rec.outputTokens || 0));
+    const sSec = rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) ? Number(rec.streamingSec) : null;
+    if (sSec !== null && sSec < 0.2) return '—';
+    let spd = null;
+    if (rec.streamingTps != null && Number.isFinite(Number(rec.streamingTps)) && Number(rec.streamingTps) > 0) {
+      spd = Number(rec.streamingTps);
+    } else if (sSec !== null && sSec >= 0.2 && outp > 0) {
+      spd = outp / sSec;
+    } else if (sSec === null && rec.tps != null && Number.isFinite(Number(rec.tps)) && Number(rec.tps) > 0 && outp >= 20) {
+      spd = Number(rec.tps);
+    }
+    if (spd === null || !Number.isFinite(spd) || spd <= 0) return '—';
+    return t('reqLog.unit.tps', { val: Math.round(spd) });
+  }
+
+  function resolveReqStatusInfo(rec) {
+    const out = String(rec?.outcomeStatus || '').toLowerCase();
+    const isStreaming = rec?.status === 'streaming' || out === 'streaming';
+    if (isStreaming) {
+      return { cls: 'is-streaming', label: t('reqLog.status.streaming'), isError: false, isStreaming: true };
+    }
+    if (!rec?.error && (!out || out === 'success' || out === 'final')) {
+      return { cls: 'is-ok', label: t('reqLog.status.success'), isError: false, isStreaming: false };
+    }
+    if (out === 'exceeded') return { cls: 'is-err', label: t('reqLog.status.exceeded'), isError: true, isStreaming: false };
+    if (out === 'rate_limited') return { cls: 'is-err', label: t('reqLog.status.rateLimited'), isError: true, isStreaming: false };
+    if (out === 'quota_exhausted') return { cls: 'is-err', label: t('reqLog.status.quotaExhausted'), isError: true, isStreaming: false };
+    if (out === 'network' || out === 'service_unavailable') return { cls: 'is-err', label: t('reqLog.status.network'), isError: true, isStreaming: false };
+    if (out === 'auth_error') return { cls: 'is-err', label: t('reqLog.status.authError'), isError: true, isStreaming: false };
+    if (out === 'canceled') return { cls: 'is-err', label: t('reqLog.status.canceled'), isError: true, isStreaming: false };
+    return { cls: 'is-err', label: t('reqLog.status.failed'), isError: true, isStreaming: false };
+  }
+
+  function formatReqActualModel(rec) {
+    if (!rec) return { text: '—', tooltip: '' };
+    const cleanId = (v) => {
+      const s = String(v || '').trim();
+      if (!s || s === 'unattributed' || /^model_placeholder_/i.test(s) || /^unknown$/i.test(s)) return '';
+      return s;
+    };
+    const key = cleanId(rec.modelKey);
+    const exact = cleanId(rec.modelExactId);
+    const rawM = cleanId(rec.model);
+    const displayText = key || exact || rawM || (typeof formatCallModelTitle === 'function' ? formatCallModelTitle(rec) : '—');
+    const tipParts = [];
+    if (rec.modelLabel) tipParts.push(rec.modelLabel);
+    if (rec.effort) tipParts.push(rec.effort);
+    if (exact && exact !== displayText) tipParts.push(exact);
+    else if (displayText && displayText !== '—' && !tipParts.length) tipParts.push(displayText);
+    return { text: displayText || '—', tooltip: tipParts.join(' · ') };
+  }
+
+  function formatReqLocalYmd(d) {
+    const dt = d instanceof Date ? d : new Date(d || Date.now());
+    const pad2 = n => String(n).padStart(2, '0');
+    return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+  }
+
+  function formatReqTimeParts(rec) {
+    const rawTs = Number(rec?.timestamp) || (rec?.created_at ? Date.parse(rec.created_at) : NaN);
+    if (!Number.isFinite(rawTs) || rawTs <= 0) return { text: '—', tooltip: '', dateKey: rec?.date || '' };
+    const d = new Date(rawTs);
+    const pad2 = n => String(n).padStart(2, '0');
+    const hhmmss = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    const ymd = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    return { text: hhmmss, tooltip: `${ymd} ${hhmmss}`, dateKey: ymd };
+  }
+
+  function resolveReqProviderDisplay(rec) {
+    const baseText = t('reqLog.provider.localSession');
+    const tipParts = [baseText];
+    if (rec?.accountScopeKey) {
+      const ovAccts = Array.isArray(accountsUiState?.overview?.accounts) ? accountsUiState.overview.accounts : [];
+      const found = ovAccts.find(a => a?.accountScopeKey === rec.accountScopeKey);
+      if (found?.maskedEmail) tipParts.push(found.maskedEmail);
+    }
+    if (rec?.cascadeId) tipParts.push(`#${String(rec.cascadeId).slice(0, 8)}`);
+    return { text: baseText, tooltip: tipParts.join(' · ') };
+  }
+
+  function buildLiveCallOverlayRecord(rawCall, fallbackScopeKey) {
+    if (!rawCall || typeof rawCall !== 'object') return null;
+    const inp = Math.max(0, Number(rawCall.inputTokens ?? 0) || 0);
+    const cache = Math.max(0, Number(rawCall.cacheReadTokens ?? rawCall.cacheTokens ?? 0) || 0);
+    const outp = Math.max(0, Number(rawCall.outputTokens ?? 0) || 0);
+    const tot = inp + cache + outp;
+    const isStreaming = rawCall.status === 'streaming' || rawCall.outcomeStatus === 'streaming';
+    if (tot <= 0 && !rawCall.error && !isStreaming) return null;
+    const ts = Number(rawCall.timestamp) || (rawCall.created_at ? Date.parse(rawCall.created_at) : Date.now());
+    const ttftSec = (rawCall.ttftSec != null && Number.isFinite(Number(rawCall.ttftSec)) && Number(rawCall.ttftSec) >= 0)
+      ? Number(Number(rawCall.ttftSec).toFixed(2))
+      : null;
+    const streamingSec = (rawCall.streamingSec != null && Number.isFinite(Number(rawCall.streamingSec)) && Number(rawCall.streamingSec) >= 0)
+      ? Number(Number(rawCall.streamingSec).toFixed(2))
+      : null;
+    let durationSec = (rawCall.durationSec != null && Number.isFinite(Number(rawCall.durationSec)) && Number(rawCall.durationSec) > 0)
+      ? Number(Number(rawCall.durationSec).toFixed(2))
+      : ((ttftSec !== null && streamingSec !== null) ? Number((ttftSec + streamingSec).toFixed(2)) : (streamingSec || ttftSec || null));
+    if (isStreaming && durationSec == null && Number.isFinite(ts)) {
+      const liveElapsed = (Date.now() - ts) / 1000;
+      if (liveElapsed > 0 && liveElapsed < 3600) durationSec = Number(liveElapsed.toFixed(1));
+    }
+    const tps = (rawCall.tps != null && Number.isFinite(Number(rawCall.tps)) && Number(rawCall.tps) > 0)
+      ? Number(Number(rawCall.tps).toFixed(1))
+      : ((outp > 0 && durationSec > 0) ? Number((outp / durationSec).toFixed(1)) : null);
+    const streamingTps = (rawCall.streamingTps != null && Number.isFinite(Number(rawCall.streamingTps)) && Number(rawCall.streamingTps) > 0)
+      ? Number(Number(rawCall.streamingTps).toFixed(1))
+      : ((outp > 0 && streamingSec != null && streamingSec >= 0.2) ? Number((outp / streamingSec).toFixed(1)) : null);
+    const totalIn = inp + cache;
+    const cacheReadPct = totalIn > 0 ? Number(((cache / totalIn) * 100).toFixed(1)) : null;
+    let isPriced = Boolean(rawCall.isPriced);
+    let costUSD = isPriced && Number.isFinite(Number(rawCall.costUSD)) ? Number(rawCall.costUSD) : null;
+    let modelKey = rawCall.modelKey || null;
+    if (!isPriced && typeof calculateRequestApiCost === 'function' && (rawCall.model || rawCall.modelExactId || modelKey) && tot > 0) {
+      const calc = calculateRequestApiCost({
+        ...rawCall,
+        inputTokens: inp,
+        cacheReadTokens: cache,
+        cacheTokens: cache,
+        outputTokens: outp,
+        totalTokens: tot
+      });
+      if (calc?.isPriced) {
+        isPriced = true;
+        costUSD = Number(calc.costUSD || 0);
+        if (!modelKey && calc.modelKey) modelKey = calc.modelKey;
+      }
+    }
+    return {
+      callId: rawCall.callId || null,
+      cascadeId: rawCall.cascadeId || state.route || null,
+      stepIndex: Number.isInteger(rawCall.stepIndex) ? rawCall.stepIndex : null,
+      timestamp: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+      created_at: rawCall.created_at || new Date(Number.isFinite(ts) && ts > 0 ? ts : Date.now()).toISOString(),
+      date: rawCall.date || formatReqLocalYmd(new Date(Number.isFinite(ts) && ts > 0 ? ts : Date.now())),
+      source: rawCall.source === 'cli' ? 'cli' : (rawCall.source === 'ide' ? 'ide' : 'desktop'),
+      agentRole: rawCall.agentRole || 'main',
+      subagentType: rawCall.subagentType || null,
+      requestedModel: (rawCall.requestedModel && !/^model_placeholder_/i.test(String(rawCall.requestedModel))) ? String(rawCall.requestedModel) : null,
+      model: rawCall.model || rawCall.modelExactId || modelKey || '',
+      modelExactId: rawCall.modelExactId || null,
+      modelKey: modelKey || (typeof normalizeModelId === 'function' ? normalizeModelId(rawCall.modelExactId || rawCall.model || '') : null),
+      modelLabel: rawCall.modelLabel || null,
+      effort: rawCall.effort || null,
+      accountScopeKey: rawCall.accountScopeKey || fallbackScopeKey || null,
+      inputTokens: inp,
+      cacheReadTokens: cache,
+      outputTokens: outp,
+      thinkingTokens: Math.max(0, Number(rawCall.thinkingTokens || 0) || 0),
+      totalTokens: tot,
+      cacheReadPct,
+      costUSD,
+      isPriced,
+      ttftSec,
+      streamingSec,
+      durationSec,
+      tps,
+      streamingTps,
+      status: isStreaming ? 'streaming' : 'final',
+      outcomeStatus: rawCall.outcomeStatus || (rawCall.error ? 'failed' : (isStreaming ? 'streaming' : 'success')),
+      error: rawCall.error ? String(rawCall.error).slice(0, 200) : null
+    };
+  }
+
+  function collectMergedRequestLogs() {
+    const byId = new Map();
+    const stepKeyToId = new Map();
+    const makeStepLookupKey = (rec) => {
+      if (!rec || !rec.cascadeId || !Number.isInteger(rec.stepIndex) || rec.stepIndex < 0) return '';
+      return `${rec.source || 'desktop'}:${String(rec.cascadeId).toLowerCase()}#${rec.stepIndex}`;
+    };
+    const persisted = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentRequestLogs) ? ANTIGRAVITY_TOKEN_DATA.recentRequestLogs : [];
+    for (const r of persisted) {
+      if (!r || typeof r !== 'object') continue;
+      const k = String(r.callId || `${r.source || 'desktop'}:${r.cascadeId || ''}:${r.stepIndex ?? ''}:${r.timestamp || 0}`);
+      byId.set(k, r);
+      const sk = makeStepLookupKey(r);
+      if (sk && !stepKeyToId.has(sk)) stepKeyToId.set(sk, k);
+    }
+
+    const curAcctScope = ANTIGRAVITY_TOKEN_DATA.rawPayload?.accountScopeKey || accountsUiState?.overview?.activeAccountScopeKey || null;
+    if (Array.isArray(state.sessionCalls) && state.sessionCalls.length > 0) {
+      for (const raw of state.sessionCalls) {
+        const liveRec = buildLiveCallOverlayRecord(raw, curAcctScope);
+        if (!liveRec) continue;
+        let k = String(liveRec.callId || `${liveRec.source}:${liveRec.cascadeId || ''}:${liveRec.stepIndex ?? ''}:${liveRec.timestamp}`);
+        let prev = byId.get(k);
+        if (!prev) {
+          const sk = makeStepLookupKey(liveRec);
+          const mappedKey = sk ? stepKeyToId.get(sk) : null;
+          if (mappedKey && byId.has(mappedKey)) {
+            const cand = byId.get(mappedKey);
+            const candIsFallback = String(cand?.callId || '').includes('#');
+            const liveIsFallback = String(liveRec.callId || '').includes('#');
+            const sameUsage = Number(cand?.inputTokens || 0) === Number(liveRec.inputTokens || 0)
+              && Number(cand?.outputTokens || 0) === Number(liveRec.outputTokens || 0);
+            if (candIsFallback || liveIsFallback || sameUsage) {
+              prev = cand;
+              if (candIsFallback && !liveIsFallback && liveRec.callId) {
+                byId.delete(mappedKey);
+                stepKeyToId.set(sk, k);
+              } else {
+                k = mappedKey;
+              }
+            }
+          }
+        }
+        if (!prev) {
+          byId.set(k, liveRec);
+          const sk = makeStepLookupKey(liveRec);
+          if (sk && !stepKeyToId.has(sk)) stepKeyToId.set(sk, k);
+        } else {
+          // 合并实时流式或更完整数据，不丢已有账号归属与计时
+          byId.set(k, {
+            ...prev,
+            ...liveRec,
+            callId: (!String(prev.callId || '').includes('#') && prev.callId) ? prev.callId : (liveRec.callId || prev.callId),
+            accountScopeKey: prev.accountScopeKey || liveRec.accountScopeKey || null,
+            ttftSec: liveRec.ttftSec ?? prev.ttftSec ?? null,
+            streamingSec: liveRec.streamingSec ?? prev.streamingSec ?? null,
+            durationSec: liveRec.durationSec ?? prev.durationSec ?? null,
+            tps: liveRec.tps ?? prev.tps ?? null,
+            streamingTps: liveRec.streamingTps ?? prev.streamingTps ?? null,
+            modelKey: liveRec.modelKey || prev.modelKey || null,
+            modelExactId: liveRec.modelExactId || prev.modelExactId || null,
+            modelLabel: liveRec.modelLabel || prev.modelLabel || null
+          });
+        }
+      }
+    }
+
+    if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
+      const startedAt = Number(state.livePendingRequest.startedAtMs) || Date.now();
+      const elapsedSec = Math.max(0.1, Number(((Date.now() - startedAt) / 1000).toFixed(1)));
+      const hasNewStreaming = Array.from(byId.values()).some(
+        r => r.cascadeId === state.route && r.status === 'streaming' && r.callId !== state.livePendingRequest.baselineCallId
+      );
+      if (!hasNewStreaming) {
+        const activeModel = state.latest?.model || state.selectedModelId || '';
+        const pendingKey = `__live_pending_${state.route}_${startedAt}`;
+        byId.set(pendingKey, {
+          callId: pendingKey,
+          cascadeId: state.route,
+          stepIndex: null,
+          timestamp: startedAt,
+          created_at: new Date(startedAt).toISOString(),
+          date: formatReqLocalYmd(new Date(startedAt)),
+          source: 'desktop',
+          agentRole: 'main',
+          subagentType: null,
+          requestedModel: null,
+          model: activeModel,
+          modelExactId: activeModel || null,
+          modelKey: typeof normalizeModelId === 'function' ? normalizeModelId(activeModel) : (activeModel || null),
+          modelLabel: null,
+          effort: null,
+          accountScopeKey: curAcctScope,
+          inputTokens: null,
+          cacheReadTokens: null,
+          outputTokens: null,
+          thinkingTokens: 0,
+          totalTokens: 0,
+          cacheReadPct: null,
+          costUSD: null,
+          isPriced: false,
+          ttftSec: elapsedSec,
+          streamingSec: null,
+          durationSec: elapsedSec,
+          tps: null,
+          streamingTps: null,
+          status: 'streaming',
+          outcomeStatus: 'streaming',
+          error: null
+        });
+      }
+    }
+
+    const resolveReqTotalTokens = (rec) => (Number(rec?.inputTokens) || 0) + (Number(rec?.cacheReadTokens) || 0) + (Number(rec?.outputTokens) || 0);
+    const allRows = Array.from(byId.values()).sort((a, b) => {
+      const aStream = a.status === 'streaming' ? 1 : 0;
+      const bStream = b.status === 'streaming' ? 1 : 0;
+      if (bStream !== aStream) return bStream - aStream;
+      const ta = Number(a.timestamp) || 0;
+      const tb = Number(b.timestamp) || 0;
+      if (reqLogSortBy === 'tokens_desc') {
+        const diff = resolveReqTotalTokens(b) - resolveReqTotalTokens(a);
+        if (diff !== 0) return diff;
+      } else if (reqLogSortBy === 'cost_desc') {
+        const diff = (Number(b.costUSD) || 0) - (Number(a.costUSD) || 0);
+        if (Math.abs(diff) > 1e-12) return diff > 0 ? 1 : -1;
+      } else if (reqLogSortBy === 'duration_desc') {
+        const diff = (Number(b.durationSec) || 0) - (Number(a.durationSec) || 0);
+        if (Math.abs(diff) > 1e-9) return diff > 0 ? 1 : -1;
+      } else if (reqLogSortBy === 'speed_desc') {
+        const diff = (Number(b.streamingTps ?? b.tps) || 0) - (Number(a.streamingTps ?? a.tps) || 0);
+        if (Math.abs(diff) > 1e-9) return diff > 0 ? 1 : -1;
+      }
+      if (tb !== ta) return tb - ta;
+      return String(b.callId || '').localeCompare(String(a.callId || ''));
+    });
+
+    const filteredByScope = allRows.filter((rec) => {
+      if (activeTokenSource === 'desktop' && rec.source !== 'desktop') return false;
+      if (activeTokenSource === 'cli' && rec.source !== 'cli') return false;
+      if (activeTokenAccountFilter === 'unattributed') {
+        if (rec.accountScopeKey) return false;
+      } else if (activeTokenAccountFilter !== 'all') {
+        if (rec.accountScopeKey !== activeTokenAccountFilter) return false;
+      }
+      return true;
+    });
+
+    const filtered = filteredByScope.filter((rec) => {
+      if (reqLogStatusFilter === 'all') return true;
+      const st = resolveReqStatusInfo(rec);
+      if (reqLogStatusFilter === 'success') return !st.isError;
+      if (reqLogStatusFilter === 'error') return st.isError;
+      return true;
+    });
+
+    return { totalInScope: filteredByScope.length, rows: filtered };
+  }
+
+  function renderRequestsLiveView({ force = false } = {}) {
+    const viewEl = el('requests-live-view');
+    const tbody = el('req-live-tbody');
+    const emptyEl = el('req-live-empty');
+    const summaryEl = el('req-live-summary');
+    const moreWrap = el('req-live-more-wrap');
+    const moreBtn = el('btn-req-live-more');
+    if (!viewEl || !tbody) return;
+
+    setPillActive(el('req-filter-all'), reqLogStatusFilter === 'all');
+    setPillActive(el('req-filter-success'), reqLogStatusFilter === 'success');
+    setPillActive(el('req-filter-error'), reqLogStatusFilter === 'error');
+    el('req-sort-bar')?.querySelectorAll?.('[data-req-sort]').forEach(btn => {
+      const active = btn.getAttribute('data-req-sort') === reqLogSortBy;
+      setPillActive(btn, active);
+      btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+    });
+
+    const { totalInScope, rows } = collectMergedRequestLogs();
+    const oReqVal = el('overflow-requests-val');
+    if (oReqVal) oReqVal.textContent = rows.length > 0 ? String(rows.length) : '--';
+    const todayStr = formatReqLocalYmd(new Date());
+    const todayCount = rows.reduce((acc, r) => acc + ((r.date === todayStr || formatReqTimeParts(r).dateKey === todayStr) ? 1 : 0), 0);
+    const limit = Math.max(20, Number(reqLogPageLimit) || 50);
+    const visible = rows.slice(0, limit);
+    const remaining = Math.max(0, rows.length - visible.length);
+
+    const pricingCat = typeof getDynamicPricingCatalog === 'function' ? getDynamicPricingCatalog() : null;
+    const sig = [
+      currentPanelLanguage,
+      activeTokenSource,
+      activeTokenAccountFilter,
+      reqLogStatusFilter,
+      reqLogSortBy,
+      limit,
+      totalInScope,
+      rows.length,
+      todayCount,
+      pricingCat?.updatedAt || '',
+      pricingCat?.modelCount || 0,
+      pricingCat?.customCount || 0,
+      visible.slice(0, 6).map(r => `${r.callId || ''}:${r.status}:${r.outcomeStatus}:${r.inputTokens}:${r.outputTokens}:${r.durationSec}:${r.costUSD}`).join(',')
+    ].join('|');
+
+    if (!force && sig === reqLogLastRenderedSig) return;
+    reqLogLastRenderedSig = sig;
+
+    if (summaryEl) {
+      summaryEl.textContent = reqLogStatusFilter === 'all'
+        ? t('reqLog.summary', { total: rows.length, today: todayCount })
+        : t('reqLog.summaryFiltered', { shown: rows.length, total: totalInScope });
+    }
+
+    tbody.replaceChildren();
+    if (!visible.length) {
+      if (emptyEl) emptyEl.style.display = 'block';
+      if (moreWrap) moreWrap.style.display = 'none';
+      return;
+    }
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    for (const rec of visible) {
+      const tr = document.createElement('tr');
+      const statusInfo = resolveReqStatusInfo(rec);
+      if (statusInfo.isStreaming) tr.className = 'is-streaming';
+
+      // 1. 时间
+      const timeInfo = formatReqTimeParts(rec);
+      const tdTime = document.createElement('td');
+      tdTime.className = 'req-td-time';
+      tdTime.textContent = timeInfo.text;
+      if (timeInfo.tooltip) tdTime.title = timeInfo.tooltip;
+      tr.appendChild(tdTime);
+
+      // 2. AGENT
+      const tdAgent = document.createElement('td');
+      const agentWrap = document.createElement('span');
+      agentWrap.className = 'req-agent-cell';
+      agentWrap.appendChild(createAntigravityAgentIcon());
+      const agentLbl = document.createElement('span');
+      agentLbl.textContent = rec.source === 'cli' ? 'Antigravity CLI' : (rec.source === 'ide' ? 'Antigravity IDE' : 'Antigravity');
+      agentWrap.appendChild(agentLbl);
+      if (rec.agentRole === 'subagent') {
+        tdAgent.title = rec.subagentType ? `${t('reqLog.tipSubagent')} (${rec.subagentType})` : t('reqLog.tipSubagent');
+      }
+      tdAgent.appendChild(agentWrap);
+      tr.appendChild(tdAgent);
+
+      // 3. 请求模型
+      const tdReqModel = document.createElement('td');
+      tdReqModel.className = rec.requestedModel ? 'req-td-model' : 'req-td-muted';
+      tdReqModel.textContent = rec.requestedModel || '—';
+      if (rec.requestedModel) tdReqModel.title = rec.requestedModel;
+      tr.appendChild(tdReqModel);
+
+      // 4. 供应商 · 账号
+      const provInfo = resolveReqProviderDisplay(rec);
+      const tdProv = document.createElement('td');
+      tdProv.className = 'req-td-provider';
+      tdProv.textContent = provInfo.text;
+      if (provInfo.tooltip) tdProv.title = provInfo.tooltip;
+      tr.appendChild(tdProv);
+
+      // 5. 实际模型
+      const modelInfo = formatReqActualModel(rec);
+      const tdModel = document.createElement('td');
+      tdModel.className = 'req-td-model';
+      tdModel.textContent = modelInfo.text;
+      if (modelInfo.tooltip) tdModel.title = modelInfo.tooltip;
+      tr.appendChild(tdModel);
+
+      // 6. 输入
+      const tdIn = document.createElement('td');
+      tdIn.className = 'req-td-num';
+      tdIn.textContent = formatReqCompactTokens(rec.inputTokens);
+      if (rec.inputTokens != null) {
+        const cacheVal = Math.max(0, Number(rec.cacheReadTokens || 0));
+        tdIn.title = t('reqLog.tipInputBreakdown', {
+          inp: fmt(rec.inputTokens),
+          cache: fmt(cacheVal),
+          total: fmt(Number(rec.inputTokens) + cacheVal)
+        });
+      }
+      tr.appendChild(tdIn);
+
+      // 7. 输出
+      const tdOut = document.createElement('td');
+      tdOut.className = 'req-td-num';
+      tdOut.textContent = formatReqCompactTokens(rec.outputTokens);
+      if (rec.outputTokens != null && rec.thinkingTokens > 0) {
+        tdOut.title = t('reqLog.tipOutputBreakdown', {
+          out: fmt(rec.outputTokens),
+          think: fmt(rec.thinkingTokens)
+        });
+      }
+      tr.appendChild(tdOut);
+
+      // 8. 缓存命中率
+      const tdCache = document.createElement('td');
+      tdCache.className = 'req-td-num';
+      tdCache.textContent = formatReqCacheHit(rec);
+      tr.appendChild(tdCache);
+
+      // 9. 费用
+      const costInfo = formatReqCost(rec);
+      const tdCost = document.createElement('td');
+      tdCost.className = `req-td-cost${costInfo.unpriced ? ' is-unpriced' : ''}`;
+      tdCost.textContent = costInfo.text;
+      if (costInfo.tooltip) tdCost.title = costInfo.tooltip;
+      tr.appendChild(tdCost);
+
+      // 10. 首字耗时
+      const tdTtft = document.createElement('td');
+      tdTtft.className = 'req-td-num';
+      tdTtft.textContent = formatReqDurationSec(rec.ttftSec);
+      tr.appendChild(tdTtft);
+
+      // 11. 耗时
+      const durTone = getReqDurationToneClass(rec.durationSec);
+      const tdDur = document.createElement('td');
+      tdDur.className = `req-td-num${durTone ? ` ${durTone}` : ''}`;
+      tdDur.textContent = formatReqDurationSec(rec.durationSec);
+      tr.appendChild(tdDur);
+
+      // 12. 速度
+      const tdSpd = document.createElement('td');
+      tdSpd.className = 'req-td-num';
+      const spdText = formatReqSpeed(rec);
+      tdSpd.textContent = spdText;
+      if (spdText === '—') tdSpd.className = 'req-td-num req-td-muted';
+      tr.appendChild(tdSpd);
+
+      // 13. 状态
+      const tdStatus = document.createElement('td');
+      const stWrap = document.createElement('span');
+      stWrap.className = `req-status-cell ${statusInfo.cls}`;
+      const stDot = document.createElement('span');
+      stDot.className = 'req-status-dot';
+      stDot.setAttribute('aria-hidden', 'true');
+      const stTxt = document.createElement('span');
+      stTxt.textContent = statusInfo.label;
+      stWrap.appendChild(stDot);
+      stWrap.appendChild(stTxt);
+      if (rec.error) tdStatus.title = rec.error;
+      tdStatus.appendChild(stWrap);
+      tr.appendChild(tdStatus);
+
+      tbody.appendChild(tr);
+    }
+
+    if (moreWrap && moreBtn) {
+      if (remaining > 0) {
+        moreWrap.style.display = 'flex';
+        moreBtn.textContent = t('reqLog.loadMore', { n: remaining });
+      } else {
+        moreWrap.style.display = 'none';
+      }
+    }
+  }
+
+
+  // =========================================================================
+  // 输入栏紧凑状态条 (Composer Status Bar) 与 5 行悬停卡
+  // =========================================================================
+  function renderComposerStatusBar() {
+    const csbBar = el('composer-status-bar');
+    if (!csbBar) return;
+    ensureComposerStatusBarMounted();
+
+    // 1. 组 1: 轮次/步数与速度 (⏱ X 轮 Y 步 · Z tok/s)
+    const speedTextEl = el('csb-speed-text');
+    let detectedDomTurns = 0;
+    try {
+      if (typeof document?.querySelectorAll === 'function') {
+        const userMsgEls = document.querySelectorAll(
+          '[data-testid*="user-message"], [data-role="user"], .user-message, div.items-end > div.rounded-2xl, div.items-end > div[class*="rounded"]'
+        );
+        if (userMsgEls && userMsgEls.length > 0) detectedDomTurns = userMsgEls.length;
+      }
+    } catch { }
+
+    let maxCallTurn = 0;
+    let maxCallStep = 0;
+    if (Array.isArray(state.sessionCalls)) {
+      for (const c of state.sessionCalls) {
+        if (!c) continue;
+        const ti = Number(c.turnIndex ?? c.turn_index);
+        const si = Number(c.stepIndex ?? c.step_index);
+        if (Number.isInteger(ti) && ti >= 0) maxCallTurn = Math.max(maxCallTurn, ti + 1);
+        if (Number.isInteger(si) && si >= 0) maxCallStep = Math.max(maxCallStep, si + 1);
+      }
+    }
+
+    const turnsFromTimeline = Array.isArray(state.sessionTimeline?.turns) ? state.sessionTimeline.turns.length : 0;
+    const turnsFromAll = Array.isArray(state.allTurns) ? state.allTurns.length : 0;
+    const turnsFromScan = Number(state.scan?.session?.userMessages || 0);
+    const turnsFromStats = Number(state.sessionStats?.turnCount || 0);
+    const turnsCount = Math.max(turnsFromTimeline, turnsFromAll, turnsFromScan, maxCallTurn, detectedDomTurns, turnsFromStats);
+
+    const stepsFromScan = Number(state.scan?.session?.steps || 0);
+    const callsCount = Array.isArray(state.sessionCalls) ? state.sessionCalls.length : 0;
+    const stepsFromStats = Number(state.sessionStats?.stepCount || 0);
+    const stepsCount = Math.max(stepsFromScan, maxCallStep, callsCount, stepsFromStats);
+
+    const hasTurnsData = Boolean(
+      turnsFromTimeline > 0 || turnsFromAll > 0 || turnsFromScan > 0 || maxCallTurn > 0 || detectedDomTurns > 0 || state.sessionStats?.turnCount != null
+    );
+    const hasStepsData = Boolean(
+      stepsFromScan > 0 || maxCallStep > 0 || callsCount > 0 || state.sessionStats?.stepCount != null
+    );
+
+    const speedCandidate = state.lastSpeedEval?.tps
+      ?? state.lastSpeedEval?.streamingTps
+      ?? state.liveSpeed?.tps
+      ?? state.latest?.speed?.tps
+      ?? state.speedOverrideForTest?.tps
+      ?? null;
+    const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
+    const speedStr = hasSpeedVal
+      ? `${Number(speedCandidate).toFixed(0)} tok/s`
+      : (state.livePendingRequest ? t('composer.speedWaiting') : '—');
+    if (speedTextEl) {
+      if (state.loading && turnsCount === 0 && stepsCount === 0) {
+        speedTextEl.textContent = t('badge.reading');
+      } else {
+        speedTextEl.textContent = t('composer.speedTurns', {
+          turns: hasTurnsData ? turnsCount : '—',
+          steps: hasStepsData ? stepsCount : '—',
+          speed: speedStr
+        });
+      }
+    }
+
+    // 2. 组 2: 会话 Token 用量与缓存命中率 (口径统一由 computeCacheHitSummary 汇总，输出排除在分母外)
+    const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
+    const csSummary = cacheFn
+      ? cacheFn(state.sessionCalls)
+      : (() => {
+        let u = 0, cr = 0, outp = 0, hasData = false, hasDenom = false;
+        for (const c of (Array.isArray(state.sessionCalls) ? state.sessionCalls : [])) {
+          if (!c || typeof c !== 'object') continue;
+          const cc = Math.max(0, Number(c.cacheCreationInputTokens ?? c.cache_creation_input_tokens ?? 0) || 0);
+          const inp = Math.max(0, Number(c.inputTokens ?? c.input_tokens ?? c.input ?? 0) || 0) + cc;
+          const crv = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? c.cache_read_tokens ?? c.cached ?? 0) || 0);
+          const ov = Math.max(0, Number(c.outputTokens ?? c.output_tokens ?? c.output ?? 0) || 0);
+          if (inp > 0 || crv > 0 || ov > 0) hasData = true;
+          if (inp + crv > 0) hasDenom = true;
+          u += inp;
+          cr += crv;
+          outp += ov;
+        }
+        const ti = u + cr;
+        return {
+          hasRealUsageData: hasData,
+          uncachedInput: u,
+          cacheRead: cr,
+          totalInput: ti,
+          output: outp,
+          grandTotal: ti + outp,
+          cacheHitPct: hasDenom && ti > 0 ? Math.round((cr / ti) * 100) : null,
+          cacheStatus: !hasData ? 'missing' : (ti <= 0 ? 'missing' : (cr > 0 ? 'hit' : 'zero'))
+        };
+      })();
+
+    let hasRealUsageData = csSummary.hasRealUsageData;
+    let uncachedInput = csSummary.uncachedInput;
+    const cacheRead = csSummary.cacheRead;
+    const output = csSummary.output;
+    let totalInput = csSummary.totalInput;
+    let grandTotal = csSummary.grandTotal;
+    let hitPct = csSummary.cacheHitPct;
+    if (!hasRealUsageData && state.sessionStats) {
+      const su = Number(state.sessionStats.usedTokens || 0);
+      if (su > 0) {
+        hasRealUsageData = true;
+        uncachedInput = su;
+        totalInput = su;
+        grandTotal = su;
+        hitPct = null;
+      }
+    }
+
+    const hitPctStr = hitPct !== null ? `${hitPct}%` : '—';
+    const tokensTextEl = el('csb-tokens-text');
+    if (tokensTextEl) {
+      if (hasRealUsageData) {
+        tokensTextEl.textContent = t('composer.tokenCache', {
+          tokens: formatReqCompactTokens(grandTotal) + ' tok',
+          hit: hitPctStr
+        });
+      } else {
+        tokensTextEl.textContent = t('composer.tokenCache', {
+          tokens: '—',
+          hit: '—'
+        });
+      }
+    }
+
+    // 5 行卡片数值
+    const tflTotal = el('tfl-val-total');
+    const tflHit = el('tfl-val-hit');
+    const tflUncached = el('tfl-val-uncached');
+    const tflCached = el('tfl-val-cached');
+    const tflOutput = el('tfl-val-output');
+    if (tflTotal) tflTotal.textContent = hasRealUsageData ? `${grandTotal.toLocaleString()} tok` : '—';
+    if (tflHit) tflHit.textContent = hitPctStr;
+    if (tflUncached) tflUncached.textContent = hasRealUsageData ? `${uncachedInput.toLocaleString()} tok` : '—';
+    if (tflCached) tflCached.textContent = hasRealUsageData ? `${cacheRead.toLocaleString()} tok` : '—';
+    if (tflOutput) tflOutput.textContent = hasRealUsageData ? `${output.toLocaleString()} tok` : '—';
+
+    // 3. 组 3: 上下文小圆环与百分比 + 4 段细分条 & 4 态运行状态机
+    const ctxTextEl = el('csb-context-text');
+    const ctxBtn = el('csb-group-context');
+    const ctxCircleEl = el('csb-context-circle');
+    const rawUsed = state.latest?.actual ?? state.latest?.postCompactEstimate ?? state.latest?.estimate ?? state.sessionStats?.usedTokens ?? state.tokenUsage?.used ?? null;
+    const usedTok = rawUsed !== null && rawUsed !== undefined && Number.isFinite(Number(rawUsed)) && Number(rawUsed) >= 0 ? Number(rawUsed) : null;
+    const rawLimit = state.latest?.budget ?? state.sessionStats?.limitTokens ?? state.tokenUsage?.limit ?? null;
+    const limitTok = rawLimit !== null && rawLimit !== undefined && Number.isFinite(Number(rawLimit)) && Number(rawLimit) > 0 ? Number(rawLimit) : null;
+    const limitSource = state.customContextLimit ? '用户设置' : (limitTok !== null ? '设置' : '—');
+    const pct = usedTok !== null && limitTok !== null ? Math.min(100, Math.max(0, Math.round((usedTok / limitTok) * 100))) : null;
+
+    if (ctxTextEl) {
+      ctxTextEl.textContent = pct !== null ? `${pct}%` : '--%';
+    }
+    if (ctxCircleEl) {
+      const circumference = 53.4;
+      const offset = pct !== null ? circumference * (1 - (pct / 100)) : circumference;
+      ctxCircleEl.style.strokeDashoffset = String(Math.max(0, Number(offset.toFixed(1))));
+    }
+    if (ctxBtn) {
+      ctxBtn.title = pct !== null
+        ? t('composer.card.contextTooltip', {
+          used: formatReqCompactTokens(usedTok),
+          limit: formatReqCompactTokens(limitTok) + ` (${limitSource})`,
+          remaining: formatReqCompactTokens(Math.max(0, limitTok - usedTok))
+        })
+        : `上下文: ${usedTok !== null ? formatReqCompactTokens(usedTok) : '—'} / ${limitTok !== null ? formatReqCompactTokens(limitTok) : '—'}`;
+    }
+
+    // 4. 分段上下文构成 (新增 / 写缓存 / 读缓存 / 剩余) 与 75%/90% 阈值着色
+    const latestCallRec = Array.isArray(state.sessionCalls) && state.sessionCalls.length
+      ? state.sessionCalls[state.sessionCalls.length - 1]
+      : null;
+    const segUsage = latestCallRec ? {
+      inputTokens: latestCallRec.inputTokens ?? 0,
+      cacheCreationInputTokens: latestCallRec.cacheCreationInputTokens ?? latestCallRec.cache_creation_input_tokens ?? null,
+      cacheReadTokens: latestCallRec.cacheReadTokens ?? latestCallRec.cacheTokens ?? 0,
+      outputTokens: latestCallRec.outputTokens ?? 0,
+      actual: usedTok ?? latestCallRec.totalTokens ?? 0
+    } : { actual: usedTok ?? 0 };
+    const segInfo = typeof computeContextSegments === 'function'
+      ? computeContextSegments(segUsage, limitTok || 0)
+      : null;
+
+    const applySegmentBar = (freshEl, writeEl, readEl, barEl, legendEl) => {
+      if (!segInfo || segInfo.usedTokens <= 0) {
+        if (barEl && barEl.id === 'key-seg-track') barEl.hidden = true;
+        if (legendEl && legendEl.id === 'key-seg-legend') legendEl.hidden = true;
+        return;
+      }
+      if (barEl && barEl.id === 'key-seg-track') barEl.hidden = false;
+      if (legendEl && legendEl.id === 'key-seg-legend') legendEl.hidden = false;
+      if (barEl) barEl.setAttribute('data-threshold', segInfo.thresholdLevel);
+      if (freshEl) freshEl.style.width = `${segInfo.freshPct}%`;
+      if (writeEl) writeEl.style.width = `${segInfo.cacheWritePct}%`;
+      if (readEl) readEl.style.width = `${segInfo.cacheReadPct}%`;
+      if (legendEl) {
+        if (typeof legendEl.replaceChildren === 'function') legendEl.replaceChildren();
+        else legendEl.textContent = '';
+        const appendLegendItem = (colorHex, labelText) => {
+          const item = document.createElement('span');
+          item.className = 'key-seg-legend-item';
+          if (colorHex) {
+            const sw = document.createElement('i');
+            sw.className = 'key-seg-swatch';
+            if (sw.style) sw.style.background = colorHex;
+            item.appendChild(sw);
+          }
+          const txt = document.createElement('span');
+          txt.textContent = labelText;
+          item.appendChild(txt);
+          legendEl.appendChild(item);
+        };
+        appendLegendItem('#38bdf8', t('composer.card.segFresh', { val: formatReqCompactTokens(segInfo.freshInputTokens) }));
+        if (segInfo.hasCacheWrite && segInfo.cacheWriteTokens > 0) {
+          appendLegendItem('#f59e0b', t('composer.card.segWrite', { val: formatReqCompactTokens(segInfo.cacheWriteTokens) }));
+        }
+        if (segInfo.cacheReadTokens > 0) {
+          appendLegendItem('#34d399', t('composer.card.segRead', { val: formatReqCompactTokens(segInfo.cacheReadTokens) }));
+        }
+        if (segInfo.limitTokens > 0) {
+          appendLegendItem('', t('composer.card.segRemain', { val: formatReqCompactTokens(segInfo.remainingTokens) }));
+        }
+      }
+    };
+    applySegmentBar(el('tfl-seg-fresh'), el('tfl-seg-write'), el('tfl-seg-read'), el('tfl-seg-bar'), el('tfl-seg-legend'));
+    // 若面板副轨处于「缓存结构」或未初始化状态，同步更新宽度；若处于「已用构成 100%」，严禁覆盖隐藏态
+    const effSubModeNow = state.ctxSubtrackMode || ((segInfo && segInfo.usedPct < 25) ? 'comp' : 'cache');
+    if (effSubModeNow === 'cache') {
+      applySegmentBar(el('key-seg-fresh'), el('key-seg-cache-write'), el('key-seg-cache-read'), el('key-seg-track'), el('key-seg-legend'));
+    }
+    const tflSegPct = el('tfl-seg-pct');
+    if (tflSegPct) {
+      const threshKey = segInfo?.thresholdLevel === 'critical'
+        ? 'composer.threshold.critical'
+        : (segInfo?.thresholdLevel === 'warning' ? 'composer.threshold.warning' : 'composer.threshold.normal');
+      tflSegPct.textContent = segInfo && segInfo.limitTokens > 0
+        ? `${segInfo.usedPct}% (${t(threshKey)})`
+        : '--%';
+    }
+
+    // 5. 4 态会话运行状态机与等待/重试/跨模型压缩提示
+    const isCompactingNow = Boolean(state.compacting && (!state.route || state.compacting.cascadeId === state.route));
+    const curSelectedModel = state.selectedModelId || state.latest?.model || '';
+    const lastCallModel = latestCallRec?.model || latestCallRec?.modelExactId || '';
+    const detectFamily = (m) => {
+      const s = String(m || '').toLowerCase();
+      if (s.includes('claude')) return 'claude';
+      if (s.includes('gemini')) return 'gemini';
+      if (s.includes('gpt') || s.includes('o1') || s.includes('o3')) return 'openai';
+      return s ? s.split(/[-_\s]/)[0] : '';
+    };
+    const compactCrossModel = Boolean(
+      isCompactingNow && curSelectedModel && lastCallModel && detectFamily(curSelectedModel) && detectFamily(lastCallModel) && detectFamily(curSelectedModel) !== detectFamily(lastCallModel)
+    );
+    const waitSec = state.livePendingRequest?.startedAtMs
+      ? Math.max(0, (Date.now() - Number(state.livePendingRequest.startedAtMs)) / 1000)
+      : 0;
+    const isGeneratingNow = Boolean(state.livePendingRequest || (latestCallRec && String(latestCallRec.status || '').toLowerCase() === 'streaming'));
+    const isOfflineNow = typeof navigator !== 'undefined' && navigator.onLine === false;
+    const lastErrMsg = state.latest?.error ? String(state.latest.error) : (state.requestError ? String(state.requestError) : '');
+    const isUserCancel = Boolean(state.latest?.canceled || /cancel|abort/i.test(lastErrMsg));
+
+    const runtimeStatus = typeof evaluateSessionRuntimeStatus === 'function'
+      ? evaluateSessionRuntimeStatus({
+        isGenerating: isGeneratingNow,
+        waitSec,
+        isCompacting: isCompactingNow,
+        compactCrossModel,
+        lastError: lastErrMsg,
+        isUserCanceled: isUserCancel,
+        isOffline: isOfflineNow
+      })
+      : { state: 'idle', reasonCode: 'ready', label: '就绪', detail: '' };
+
+    const RUNTIME_REASON_I18N = {
+      ready: 'composer.runtime.reason.ready',
+      generating: 'composer.runtime.reason.generating',
+      compacting: 'composer.runtime.reason.compacting',
+      slow_wait: 'composer.runtime.reason.slow_wait',
+      compact_kv_recompute: 'composer.runtime.reason.compact_kv_recompute',
+      retrying: 'composer.runtime.reason.retrying',
+      reconnecting: 'composer.runtime.reason.reconnecting',
+      disconnected: 'composer.runtime.reason.disconnected',
+      offline: 'composer.runtime.reason.offline',
+      request_error: 'composer.runtime.reason.request_error'
+    };
+    const RUNTIME_STATE_I18N = {
+      idle: 'composer.runtime.idle',
+      running: 'composer.runtime.running',
+      slow: 'composer.runtime.slow',
+      error: 'composer.runtime.error'
+    };
+    const reasonKey = RUNTIME_REASON_I18N[runtimeStatus.reasonCode] || RUNTIME_STATE_I18N[runtimeStatus.state] || 'composer.runtime.idle';
+    const runtimeLabel = t(reasonKey) || runtimeStatus.label;
+    const csbStatusGroup = el('csb-group-status');
+    const csbDot = el('csb-runtime-dot');
+    const csbRuntimeText = el('csb-runtime-text');
+    if (csbStatusGroup) {
+      csbStatusGroup.setAttribute('data-runtime-state', runtimeStatus.state);
+      csbStatusGroup.title = `${t('composer.runtime.title')}: ${runtimeLabel}`;
+    }
+    if (csbDot) {
+      csbDot.className = `csb-status-dot is-${runtimeStatus.state}`;
+    }
+    if (csbRuntimeText) {
+      csbRuntimeText.textContent = runtimeLabel;
+    }
+    const tflRuntimeNote = el('tfl-runtime-note');
+    if (tflRuntimeNote) {
+      if (runtimeStatus.state === 'slow' || runtimeStatus.state === 'error' || compactCrossModel) {
+        tflRuntimeNote.hidden = false;
+        tflRuntimeNote.setAttribute('data-level', runtimeStatus.state);
+        tflRuntimeNote.textContent = currentPanelLanguage === 'en' ? runtimeLabel : (runtimeStatus.detail || runtimeLabel);
+      } else {
+        tflRuntimeNote.hidden = true;
+        tflRuntimeNote.textContent = '';
+      }
+    }
+    if (typeof renderComposerQuotaSummary === 'function') {
+      renderComposerQuotaSummary(lastComputedQuotaView, Date.now());
+    }
+  }
+
+  /**
+   * 渲染每条助手回复与 Side Question 尾部的单行统计微徽标（受 showTurnFooterStats 控制）
+   * 启发来源: antigravity-codex-theme (MIT, core/runtime/50-telemetry-ui.js)
+   */
+  function syncOverflowMenuMetrics() {
+    try {
+      const d = state.latest;
+      const stale = state.requestError || (state.requestAt && Date.now() - state.requestAt > 20000);
+      let pct = null;
+      if (d?.exceeded) pct = 100;
+      else if (d?.percent != null && !stale) pct = Math.min(100, Math.max(0, d.percent));
+      else if (d?.actual != null && d?.budget && !stale) pct = Math.min(100, Math.max(0, (d.actual / d.budget) * 100));
+      const oCtx = el('overflow-context-val');
+      if (oCtx) oCtx.textContent = pct != null ? `${Math.round(pct)}%` : '--%';
+      const oDetail = el('overflow-context-detail-val');
+      if (oDetail) {
+        const tl = state.sessionTimeline;
+        const turnN = Array.isArray(tl?.turns) ? tl.turns.length : 0;
+        const callN = Array.isArray(state.sessionCalls) ? state.sessionCalls.length : 0;
+        oDetail.textContent = turnN > 0 ? `${turnN}轮` : (callN > 0 ? `${callN}次` : '--');
+      }
+      const oReq = el('overflow-requests-val');
+      if (oReq) {
+        const callN = Array.isArray(state.sessionCalls) ? state.sessionCalls.length : 0;
+        oReq.textContent = callN > 0 ? String(callN) : '--';
+      }
+    } catch { }
+  }
+
+  function buildAuthoritativeMainTurns() {
+    const tl = state.sessionTimeline;
+    const routeLower = state.route ? String(state.route).toLowerCase() : '';
+    const timelineMatchesRoute = !routeLower || !tl?.cascadeId || String(tl.cascadeId).toLowerCase() === routeLower;
+    if (timelineMatchesRoute && Array.isArray(tl?.turns) && tl.turns.length > 0) {
+      const validTurns = [];
+      for (const turn of tl.turns) {
+        if (!turn) continue;
+        const tCalls = Array.isArray(turn.calls) ? turn.calls.filter(c => c && c.agentRole !== 'subagent') : [];
+        if (tCalls.length > 0) {
+          validTurns.push({
+            turnKey: `turn-${turn.turnIndex ?? turn.stepIndex ?? validTurns.length}`,
+            turnIndex: turn.turnIndex,
+            stepIndex: turn.stepIndex,
+            calls: tCalls
+          });
+        }
+      }
+      if (validTurns.length > 0) {
+        return { source: 'timeline', turns: validTurns };
+      }
+    }
+    const calls = (Array.isArray(state.sessionCalls) ? state.sessionCalls : []).filter(c => c && c.agentRole !== 'subagent');
+    if (calls.length === 0) return { source: 'empty', turns: [] };
+    if (typeof groupSessionCallsByTurns === 'function') {
+      const grouped = groupSessionCallsByTurns([], calls, { cascadeId: state.route || null });
+      const turns = (Array.isArray(grouped?.turns) ? grouped.turns : [])
+        .filter(tr => Array.isArray(tr?.calls) && tr.calls.length > 0)
+        .map((tr, idx) => ({
+          turnKey: `fallback-${tr.turnIndex ?? idx}`,
+          turnIndex: tr.turnIndex ?? idx + 1,
+          stepIndex: tr.stepIndex ?? null,
+          calls: tr.calls
+        }));
+      if (turns.length > 0) return { source: 'fallback', turns };
+    }
+    return {
+      source: 'fallback',
+      turns: [{ turnKey: `call-${calls[calls.length - 1]?.callId || 'latest'}`, turnIndex: 1, stepIndex: null, calls }]
+    };
+  }
+
+  function desensitizeTurnCallId(callId) {
+    const raw = String(callId || '').trim();
+    if (!raw || raw === 'unknown') return '—';
+    if (raw.length <= 12) return raw;
+    return `${raw.slice(0, 4)}…${raw.slice(-4)}`;
+  }
+
+  function renderTurnFooterStats() {
+    try {
+      if (typeof document?.querySelectorAll !== 'function') return;
+      const existing = document.querySelectorAll('.ag-cm-turn-footer');
+      const rawCalls = Array.isArray(state.sessionCalls) ? state.sessionCalls : [];
+      if (!showTurnFooterStats || rawCalls.length === 0) {
+        existing.forEach(n => n.remove?.());
+        return;
+      }
+      const rawToolbars = Array.from(document.querySelectorAll('[data-testid="cascade-system-message-toolbar"], [data-testid="side-question-tab-conversation"] [data-testid="cascade-system-message-toolbar"]'));
+      const seenTb = new Set();
+      const mainToolbars = [];
+      const sideToolbars = [];
+      for (const tb of rawToolbars) {
+        if (!tb || seenTb.has(tb)) continue;
+        seenTb.add(tb);
+        const isSide = Boolean(
+          tb.closest?.('[data-testid="side-question-tab-conversation"], [data-side-question], .side-question-container')
+          || tb.getAttribute?.('data-side-question') === 'true'
+        );
+        if (isSide) sideToolbars.push(tb);
+        else mainToolbars.push(tb);
+      }
+      if (mainToolbars.length === 0 && sideToolbars.length === 0) {
+        existing.forEach(n => n.remove?.());
+        return;
+      }
+
+      const { source, turns } = buildAuthoritativeMainTurns();
+      // 若主区回复条数多于已分段轮次数（或尚无时间线），后台静默拉取时间线做精确归属，绝不把 turns[0] 复制到每条回复
+      if (mainToolbars.length > turns.length && source !== 'timeline' && state.route && !state.timelineLoading && !state.timelineError && typeof fetchSessionTimeline === 'function') {
+        void fetchSessionTimeline(state.route, { force: false });
+      }
+
+      const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
+      const boundTurnKeys = new Set();
+      // 读写分离：在修改任何 DOM 节点前一次性批量读取工具栏宽度，消除 M 轮历史回复上的强制同步回流 (Layout Thrashing)
+      const toolbarWidths = new Map();
+      for (let i = 0; i < mainToolbars.length; i++) {
+        const tb = mainToolbars[i];
+        const row = tb.firstElementChild || tb;
+        toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
+      }
+      for (let s = 0; s < sideToolbars.length; s++) {
+        const tb = sideToolbars[s];
+        const row = tb.firstElementChild || tb;
+        toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
+      }
+      const applyFooterToToolbar = (tb, turnObj, forceFallbackScope = false) => {
+        const row = tb.firstElementChild || tb;
+        const removeOld = () => {
+          const old = row.querySelector?.('.ag-cm-turn-footer') || tb.querySelector?.('.ag-cm-turn-footer');
+          if (old) old.remove?.();
+        };
+        if (!turnObj || !Array.isArray(turnObj.calls) || turnObj.calls.length === 0) {
+          removeOld();
+          return;
+        }
+        const turnCalls = turnObj.calls;
+        const lastCall = turnCalls[turnCalls.length - 1];
+        if (!lastCall) {
+          removeOld();
+          return;
+        }
+        const cs = cacheFn
+          ? cacheFn(turnCalls)
+          : (() => {
+            const inp = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.inputTokens || 0)) + Math.max(0, Number(c?.cacheCreationInputTokens ?? 0)), 0);
+            const cr = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.cacheReadTokens ?? c?.cacheTokens ?? 0)), 0);
+            const outp = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.outputTokens || 0)), 0);
+            const ti = inp + cr;
+            return {
+              hasRealUsageData: ti > 0 || outp > 0,
+              uncachedInput: inp,
+              cacheRead: cr,
+              totalInput: ti,
+              output: outp,
+              cacheHitPct: ti > 0 ? Math.round((cr / ti) * 100) : null
+            };
+          })();
+
+        const hasCalcUsage = Boolean(cs.hasConfirmedUsage || cs.hasRealUsageData);
+        const rawHitPct = cs.hitPct ?? cs.cacheHitPct ?? null;
+        const isTurnAggregate = !forceFallbackScope && turnCalls.length > 1;
+        const scopeLabel = isTurnAggregate ? t('turnFooter.scopeTurn') : t('turnFooter.scopeReq');
+        const hitStr = rawHitPct !== null ? `${rawHitPct}%` : '—';
+        const mName = lastCall.attributedModelLabel || lastCall.modelLabel || lastCall.model || '';
+        const tpsNum = lastCall.streamingTps ?? lastCall.tps;
+        const tpsStr = (tpsNum != null && Number.isFinite(Number(tpsNum)) && Number(tpsNum) > 0) ? `${Number(tpsNum).toFixed(0)} tok/s` : '';
+        const inCompact = hasCalcUsage ? `In ${formatReqCompactTokens(cs.totalInput)}` : 'In —';
+        const outCompact = hasCalcUsage ? `Out ${formatReqCompactTokens(cs.output)}` : 'Out —';
+        const cacheCompact = `${t('turnFooter.cache')} ${hitStr}`;
+
+        const rowW = toolbarWidths.has(tb) ? toolbarWidths.get(tb) : Number(row.clientWidth || tb.clientWidth || 0);
+        let footerParts;
+        if (rowW <= 0 || rowW >= 460) {
+          footerParts = [scopeLabel, mName, inCompact, outCompact, cacheCompact, tpsStr];
+        } else if (rowW >= 320) {
+          footerParts = [scopeLabel, inCompact, outCompact, cacheCompact, tpsStr];
+        } else if (rowW >= 245) {
+          footerParts = [inCompact, outCompact, cacheCompact, tpsStr];
+        } else if (rowW >= 205) {
+          footerParts = [inCompact, cacheCompact, tpsStr];
+        } else if (rowW >= 150) {
+          footerParts = [inCompact, hitStr, tpsStr];
+        } else {
+          footerParts = tpsStr ? [inCompact, tpsStr] : [inCompact, hitStr];
+        }
+        const text = footerParts.filter(Boolean).join(' · ');
+
+        let badge = row.querySelector?.('.ag-cm-turn-footer') || null;
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'ag-cm-turn-footer';
+          badge.setAttribute('data-ag-turn-footer', '1');
+          badge.tabIndex = 0;
+          row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
+        }
+        // 脏检查幂等写入：数值不变时不重复改写 textContent 与 aria-label，避免唤醒 MutationObserver
+        if (badge.textContent !== text) badge.textContent = text;
+        const nextScope = isTurnAggregate ? 'turn' : 'request';
+        if (badge.getAttribute('data-scope') !== nextScope) badge.setAttribute('data-scope', nextScope);
+        const nextTurnKey = String(turnObj.turnKey || '');
+        if (badge.getAttribute('data-turn-key') !== nextTurnKey) badge.setAttribute('data-turn-key', nextTurnKey);
+        const nextCallId = String(lastCall.callId || '');
+        if (badge.getAttribute('data-call-id') !== nextCallId) badge.setAttribute('data-call-id', nextCallId);
+
+        const tp = lastCall.timestamp ? formatReqTimeParts(lastCall) : null;
+        const reqTimeStr = tp?.tooltip || tp?.text || (lastCall.date || '—');
+        const safeCallId = desensitizeTurnCallId(lastCall.callId);
+        const titleLines = [
+          `${scopeLabel}${isTurnAggregate ? ` (${turnCalls.length} 次请求)` : ''} · 模型: ${mName || '未知'}`,
+          `请求 ID: ${safeCallId} · 时间: ${reqTimeStr}`,
+          `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} (命中 ${hitStr})`,
+          `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`
+        ];
+        const nextTitle = titleLines.join('\n');
+        if (badge.title !== nextTitle) badge.title = nextTitle;
+        const nextAria = `${text}。${titleLines.slice(1).join('；')}`;
+        if (badge.getAttribute('aria-label') !== nextAria) badge.setAttribute('aria-label', nextAria);
+      };
+
+      const M = mainToolbars.length;
+      const T = turns.length;
+      if (M > 0) {
+        if (M <= T) {
+          // DOM 仅挂载末尾 M 条已生成回复时，从时间线尾部一对一精确对齐
+          const offset = T - M;
+          for (let i = 0; i < M; i++) {
+            const tr = turns[offset + i];
+            const k = tr?.turnKey;
+            if (!tr || (k && boundTurnKeys.has(k))) {
+              applyFooterToToolbar(mainToolbars[i], null);
+              continue;
+            }
+            if (k) boundTurnKeys.add(k);
+            applyFooterToToolbar(mainToolbars[i], tr);
+          }
+        } else {
+          // 缺历史轮次边界时仅匹配最后 T 条，前置未匹配条目绝不复用 turns[0]
+          const startToolbarIdx = M - T;
+          for (let i = 0; i < M; i++) {
+            if (i < startToolbarIdx) {
+              applyFooterToToolbar(mainToolbars[i], null);
+              continue;
+            }
+            const tr = turns[i - startToolbarIdx];
+            const k = tr?.turnKey;
+            if (!tr || (k && boundTurnKeys.has(k))) {
+              applyFooterToToolbar(mainToolbars[i], null);
+              continue;
+            }
+            if (k) boundTurnKeys.add(k);
+            applyFooterToToolbar(mainToolbars[i], tr);
+          }
+        }
+      }
+
+      if (sideToolbars.length > 0) {
+        const latestCall = rawCalls[rawCalls.length - 1] || null;
+        for (let s = 0; s < sideToolbars.length; s++) {
+          if (s === sideToolbars.length - 1 && latestCall) {
+            applyFooterToToolbar(sideToolbars[s], {
+              turnKey: `side-${latestCall.callId || 'latest'}`,
+              calls: [latestCall]
+            }, true);
+          } else {
+            applyFooterToToolbar(sideToolbars[s], null);
+          }
+        }
+      }
+    } catch { }
+  }
+
+
   function switchTokenView(v) {
     activeTokenView = v;
     // 离开 Token 统计视图时关闭订阅详情与表单
@@ -2438,8 +5813,10 @@
     setPillActive(el('tok-view-tokens'), v === 'tokens');
     setPillActive(el('tok-view-models'), v === 'models');
     setPillActive(el('tok-view-cost'), v === 'cost');
+    setPillActive(el('tok-view-requests'), v === 'requests');
     const costCard = el('cost-estimate-card');
     const modelView = el('model-usage-view');
+    const reqView = el('requests-live-view');
     const tokensMain = el('tokens-main-view');
     const statCards = el('token-stat-cards');
     const planBar = el('plan-summary-bar');
@@ -2457,6 +5834,17 @@
         renderModelUsageView();
       }
     }
+    if (reqView) {
+      reqView.style.display = v === 'requests' ? 'flex' : 'none';
+      if (v === 'requests') {
+        reqView.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+        renderRequestsLiveView({ force: true });
+        if (!lastHistorySync || (Date.now() - lastHistorySync) > 5000) {
+          lastRequestsLiveSyncAt = Date.now();
+          void syncTokenHistoryFromHost(false);
+        }
+      }
+    }
     if (tokensMain) {
       tokensMain.style.display = v === 'tokens' ? 'block' : 'none';
       if (v === 'tokens') tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
@@ -2468,21 +5856,171 @@
         ? t('tokens.titleCost')
         : v === 'models'
           ? t('tokens.titleModels')
-          : t('tokens.title');
+          : v === 'requests'
+            ? t('tokens.titleRequests')
+            : t('tokens.title');
     }
 
     if (pTokens) {
       const isCompact = v === 'cost' && !costDetailsExpanded;
+      const isWideRequests = v === 'requests';
       pTokens.classList?.toggle?.('cost-compact-view', isCompact);
-      const curCls = pTokens.getAttribute?.('class') || '';
+      pTokens.classList?.toggle?.('requests-wide-view', isWideRequests);
+      let curCls = pTokens.getAttribute?.('class') || '';
       if (isCompact) {
-        if (!curCls.includes('cost-compact-view')) pTokens.setAttribute?.('class', (curCls + ' cost-compact-view').trim());
+        if (!curCls.includes('cost-compact-view')) curCls = (curCls + ' cost-compact-view').trim();
       } else {
-        pTokens.setAttribute?.('class', curCls.replace(/\bcost-compact-view\b/g, '').trim());
+        curCls = curCls.replace(/\bcost-compact-view\b/g, '').trim();
       }
+      if (isWideRequests) {
+        if (!curCls.includes('requests-wide-view')) curCls = (curCls + ' requests-wide-view').trim();
+      } else {
+        curCls = curCls.replace(/\brequests-wide-view\b/g, '').trim();
+      }
+      pTokens.setAttribute?.('class', curCls);
     }
     positionFloatingPanels();
+    syncPanelPickerActiveState();
   }
+  el('tok-view-tokens')?.addEventListener('click', () => switchTokenView('tokens'));
+  el('tok-view-models')?.addEventListener('click', () => switchTokenView('models'));
+  el('tok-view-cost')?.addEventListener('click', () => switchTokenView('cost'));
+  el('tok-view-requests')?.addEventListener('click', () => switchTokenView('requests'));
+  el('req-filter-all')?.addEventListener('click', () => { reqLogStatusFilter = 'all'; reqLogPageLimit = 50; renderRequestsLiveView({ force: true }); });
+  el('req-filter-success')?.addEventListener('click', () => { reqLogStatusFilter = 'success'; reqLogPageLimit = 50; renderRequestsLiveView({ force: true }); });
+  el('req-filter-error')?.addEventListener('click', () => { reqLogStatusFilter = 'error'; reqLogPageLimit = 50; renderRequestsLiveView({ force: true }); });
+  el('req-sort-bar')?.addEventListener('click', (e) => {
+    const btn = e?.target?.closest?.('[data-req-sort]') || (e?.target?.getAttribute?.('data-req-sort') ? e.target : null);
+    const sortVal = btn?.getAttribute?.('data-req-sort');
+    if (sortVal && ['time_desc', 'tokens_desc', 'cost_desc', 'duration_desc', 'speed_desc'].includes(sortVal)) {
+      reqLogSortBy = sortVal;
+      reqLogPageLimit = 50;
+      renderRequestsLiveView({ force: true });
+    }
+  });
+  el('btn-req-live-more')?.addEventListener('click', () => { reqLogPageLimit = (Number(reqLogPageLimit) || 50) + 50; renderRequestsLiveView({ force: true }); });
+  let pricingSyncBusy = false;
+  let pricingSyncNoteState = null;
+  let pricingSyncNoteTimer = null;
+  earlyDisposeHooks.push(() => {
+    if (pricingSyncNoteTimer) {
+      clearTimeout(pricingSyncNoteTimer);
+      pricingSyncNoteTimer = null;
+    }
+  });
+
+  function formatPricingSyncShortTime(isoStr) {
+    if (!isoStr) return '';
+    const ts = Date.parse(isoStr);
+    if (!Number.isFinite(ts)) return '';
+    const d = new Date(ts);
+    const pad2 = n => String(n).padStart(2, '0');
+    return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+
+  function updatePricingSyncButtonTooltip(cat = null) {
+    const info = cat || (typeof getDynamicPricingCatalog === 'function' ? getDynamicPricingCatalog() : null);
+    const hasSynced = Boolean(info && Number(info.modelCount) > 0 && info.updatedAt);
+    const tip = hasSynced
+      ? t('reqLog.syncPricingTitleUpdated', {
+        count: Number(info.modelCount) || 0,
+        sources: Array.isArray(info.sources) && info.sources.length ? info.sources.join(' + ') : 'models.dev',
+        time: formatPricingSyncShortTime(info.updatedAt)
+      })
+      : t('reqLog.syncPricingTitle');
+    for (const id of ['btn-req-sync-pricing', 'btn-cost-sync-pricing']) {
+      const btn = el(id);
+      if (btn) btn.title = tip;
+    }
+  }
+
+  function renderPricingSyncUiState() {
+    for (const id of ['btn-req-sync-pricing', 'btn-cost-sync-pricing']) {
+      const btn = el(id);
+      if (!btn) continue;
+      btn.disabled = pricingSyncBusy;
+      btn.textContent = pricingSyncBusy ? t('reqLog.syncingPricing') : t('reqLog.syncPricing');
+    }
+    for (const id of ['req-pricing-sync-note', 'cost-pricing-sync-note']) {
+      const noteEl = el(id);
+      if (!noteEl) continue;
+      const baseCls = id === 'req-pricing-sync-note' ? 'req-pricing-sync-note' : 'cost-pricing-sync-note';
+      if (!pricingSyncNoteState || !pricingSyncNoteState.text) {
+        noteEl.style.display = 'none';
+        noteEl.textContent = '';
+        noteEl.className = baseCls;
+      } else {
+        noteEl.style.display = id === 'req-pricing-sync-note' ? 'inline-flex' : 'block';
+        noteEl.textContent = pricingSyncNoteState.text;
+        const toneCls = pricingSyncNoteState.kind === 'err' ? ' is-err' : (pricingSyncNoteState.kind === 'ok' ? ' is-ok' : '');
+        noteEl.className = `${baseCls}${toneCls}`;
+      }
+    }
+    updatePricingSyncButtonTooltip();
+  }
+
+  async function triggerSyncPricingCatalog(opts = {}) {
+    if (pricingSyncBusy) return { ok: false, busy: true };
+    pricingSyncBusy = true;
+    if (pricingSyncNoteTimer) {
+      clearTimeout(pricingSyncNoteTimer);
+      pricingSyncNoteTimer = null;
+    }
+    pricingSyncNoteState = { kind: 'busy', text: t('reqLog.syncingPricing') };
+    renderPricingSyncUiState();
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: typeof window?.contextMeterAPI?.syncPricing === 'function'
+          ? () => window.contextMeterAPI.syncPricing({ force: opts.force !== false })
+          : null,
+        liveRoute: '/sync-pricing',
+        liveBody: { force: opts.force !== false },
+        liveFetchOpts: { timeoutMs: 20000 }
+      });
+      const res = out?.result || null;
+      if (res && res.ok) {
+        const count = Number(res.modelCount) || 0;
+        const repriced = Number(res.repricedCount) || 0;
+        pricingSyncNoteState = {
+          kind: 'ok',
+          text: repriced > 0
+            ? t('reqLog.syncPricingDoneRepriced', { count, repriced })
+            : t('reqLog.syncPricingDone', { count })
+        };
+        await syncTokenHistoryFromHost(true);
+        renderRequestsLiveView({ force: true });
+        pricingSyncNoteTimer = setTimeout(() => {
+          pricingSyncNoteState = null;
+          renderPricingSyncUiState();
+        }, 8000);
+        return res;
+      }
+      const errMsg = res?.error || 'network_error';
+      pricingSyncNoteState = { kind: 'err', text: t('reqLog.syncPricingFailed', { error: errMsg }) };
+      return { ok: false, error: errMsg };
+    } catch (err) {
+      const errMsg = err?.message || String(err || 'network_error');
+      pricingSyncNoteState = { kind: 'err', text: t('reqLog.syncPricingFailed', { error: errMsg }) };
+      return { ok: false, error: errMsg };
+    } finally {
+      pricingSyncBusy = false;
+      renderPricingSyncUiState();
+    }
+  }
+
+  el('btn-req-sync-pricing')?.addEventListener('click', () => {
+    void triggerSyncPricingCatalog({ force: true });
+  });
+  el('btn-cost-sync-pricing')?.addEventListener('click', () => {
+    void triggerSyncPricingCatalog({ force: true });
+  });
+  el('btn-req-live-refresh')?.addEventListener('click', () => {
+    lastRequestsLiveSyncAt = Date.now();
+    renderRequestsLiveView({ force: true });
+    void syncTokenHistoryFromHost(true);
+  });
+
+
   el('tok-view-tokens')?.addEventListener('click', () => switchTokenView('tokens'));
   el('tok-view-models')?.addEventListener('click', () => switchTokenView('models'));
   el('tok-view-cost')?.addEventListener('click', () => switchTokenView('cost'));
@@ -2607,8 +6145,7 @@
 
       lastCliLaunchResult = res;
       if (res && res.ok) {
-        const om = el('overflow-menu');
-        if (om) om.hidden = true;
+        closePanelPicker();
         showCliToast(t('cli.launched', { cwd: res.cwd || t('cli.defaultCwd') }), false);
         return res;
       } else {
@@ -2646,44 +6183,309 @@
       void triggerLaunchCli();
     });
   }
-  el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
-  el('badge-quota')?.addEventListener('click', () => toggleQuota('badge-quota'));
-  el('badge').addEventListener('click', () => toggleContext('badge'));
+  function syncQuotaWindowModeUi() {
+    const seg = el('quota-mode-segmented');
+    if (seg) {
+      for (const btn of Array.from(seg.children || [])) {
+        const mode = btn.getAttribute?.('data-quota-window-mode');
+        const active = mode === quotaBadgeWindowMode;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+  }
+
+  function setQuotaBadgeWindowMode(mode, opts = {}) {
+    const next = VALID_QUOTA_WINDOW_MODES.includes(mode) ? mode : 'auto';
+    quotaBadgeWindowMode = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_quota_badge_window_mode', next);
+    } catch { }
+    syncQuotaWindowModeUi();
+    if (typeof renderQuotaBoard === 'function') {
+      renderQuotaBoard(Date.now(), { animate: false });
+    }
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ quotaBadgeWindowMode: next });
+    }
+    return quotaBadgeWindowMode;
+  }
+
+  function cycleQuotaBadgeWindowMode() {
+    const idx = VALID_QUOTA_WINDOW_MODES.indexOf(quotaBadgeWindowMode);
+    const next = VALID_QUOTA_WINDOW_MODES[(idx + 1) % VALID_QUOTA_WINDOW_MODES.length];
+    return setQuotaBadgeWindowMode(next, { persist: true });
+  }
+
+  el('badge-quota')?.addEventListener('click', e => {
+    if (e?.altKey) {
+      e.preventDefault?.();
+      cycleQuotaBadgeWindowMode();
+      return;
+    }
+    toggleQuota('badge-quota');
+  });
+  let badgeLongPressTimer = null;
+  let badgeLongPressTriggered = false;
+  const clearBadgeLongPress = () => {
+    if (badgeLongPressTimer) {
+      clearTimeout(badgeLongPressTimer);
+      badgeLongPressTimer = null;
+    }
+  };
+  el('badge').addEventListener('click', () => {
+    if (badgeLongPressTriggered) {
+      badgeLongPressTriggered = false;
+      return;
+    }
+    toggleContext('badge');
+  });
   el('badge-speed')?.addEventListener('click', () => toggleContext('badge-speed'));
   el('badge-tokens').addEventListener('click', () => toggleTokens('badge-tokens'));
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
-  el('overflow-quota-btn')?.addEventListener('click', () => {
-    activeQuotaAnchorId = 'badge-overflow';
-    showPanel('quota');
-  });
-  el('overflow-speed-btn')?.addEventListener('click', () => {
-    activeContextAnchorId = 'badge-overflow';
-    showPanel('context');
-  });
-  el('overflow-tokens-btn')?.addEventListener('click', () => {
-    activeTokensAnchorId = 'badge-overflow';
-    showPanel('tokens');
-  });
+
+  // 紧凑面板切换选择器事件：点击切换当前面板不关闭右栏/重置会话；键盘方向键可导航
+  el('overflow-quota-btn')?.addEventListener('click', () => switchPanelFromPicker('quota'));
+  el('overflow-context-btn')?.addEventListener('click', () => switchPanelFromPicker('context'));
+  el('overflow-context-detail-btn')?.addEventListener('click', () => switchPanelFromPicker('context_detail'));
+  el('overflow-speed-btn')?.addEventListener('click', () => switchPanelFromPicker('speed'));
+  el('overflow-tokens-btn')?.addEventListener('click', () => switchPanelFromPicker('tokens'));
+  el('overflow-requests-btn')?.addEventListener('click', () => switchPanelFromPicker('requests'));
+  el('overflow-cli-btn')?.addEventListener('click', () => switchPanelFromPicker('cli'));
+
+  const overflowMenuEl = el('overflow-menu');
+  if (overflowMenuEl) {
+    overflowMenuEl.addEventListener('mouseenter', () => {
+      cancelClosePanelPicker();
+      hideContextTooltip();
+    });
+    overflowMenuEl.addEventListener('mouseleave', () => scheduleClosePanelPicker());
+    overflowMenuEl.addEventListener('focusin', () => cancelClosePanelPicker());
+    overflowMenuEl.addEventListener('focusout', () => scheduleClosePanelPicker(120));
+    overflowMenuEl.addEventListener('keydown', (e) => {
+      const items = Array.from(overflowMenuEl.children || []).filter(n => !n.hidden);
+      if (!items.length) return;
+      const curIdx = items.findIndex(n => n === shadow.activeElement || n === document.activeElement);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault?.();
+        const nextIdx = curIdx >= 0 ? (curIdx + 1) % items.length : 0;
+        items[nextIdx]?.focus?.();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault?.();
+        const prevIdx = curIdx > 0 ? curIdx - 1 : items.length - 1;
+        items[prevIdx]?.focus?.();
+      }
+    });
+  }
+
+  for (const pickerTriggerId of ['badge-quota', 'badge-overflow', 'badge-dock-wake']) {
+    const triggerEl = el(pickerTriggerId);
+    if (!triggerEl) continue;
+    triggerEl.addEventListener('mouseenter', () => {
+      hideContextTooltip();
+      openPanelPicker(pickerTriggerId, { viaHover: true });
+    });
+    triggerEl.addEventListener('mouseleave', () => scheduleClosePanelPicker());
+    triggerEl.addEventListener('focus', () => {
+      if (!canOpenPickerOnFocus(triggerEl)) return;
+      hideContextTooltip();
+      openPanelPicker(pickerTriggerId);
+    });
+    triggerEl.addEventListener('blur', () => scheduleClosePanelPicker(120));
+  }
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
   el('close-quota')?.addEventListener('click', () => showPanel('none'));
-  el('badge-quota')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
+  el('badge-quota')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleQuotaBadgeWindowMode(); });
 
-  // 上下文圆环悬停与键盘聚焦气泡（面板打开时不通过悬停误切，必须通过显式左键点击切换）
+  // 输入框紧凑状态条 (Composer Status Bar) 交互事件（单一权威绑定）
+  const csbSpeedBtn = el('csb-group-speed');
+  if (csbSpeedBtn) {
+    csbSpeedBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      toggleContext('csb-group-speed');
+      if (typeof switchContextTab === 'function') switchContextTab('speed');
+    });
+  }
+
+  const csbStatusBtn = el('csb-group-status');
+  const csbTokensBtn = el('csb-group-tokens');
+  const tflCard = el('token-five-line-card');
+  const tflPinBadge = el('tfl-pin-badge');
+  const tflOpenTokensBtn = el('tfl-open-tokens-panel');
+  if (csbTokensBtn || csbStatusBtn) {
+    const syncPinBadge = () => {
+      if (!tflPinBadge) return;
+      tflPinBadge.setAttribute('data-pinned', tflCardPinned ? 'true' : 'false');
+      tflPinBadge.textContent = tflCardPinned ? t('composer.card.pinned') : t('composer.card.pinHint');
+    };
+    const openTflCard = () => {
+      if (enforceMarketplaceAvoidance()) return;
+      if (!tflCard) return;
+      tflCard.hidden = false;
+      if (tflCard.style) {
+        tflCard.style.display = '';
+        tflCard.style.pointerEvents = 'auto';
+      }
+      csbTokensBtn?.setAttribute?.('aria-expanded', 'true');
+      csbStatusBtn?.setAttribute?.('aria-expanded', 'true');
+      syncPinBadge();
+    };
+    const closeTflCard = (forceUnpin = false) => {
+      if (!tflCard) return;
+      if (forceUnpin) tflCardPinned = false;
+      tflCard.hidden = true;
+      if (tflCard.style) {
+        tflCard.style.display = 'none';
+        tflCard.style.pointerEvents = 'none';
+      }
+      csbTokensBtn?.setAttribute?.('aria-expanded', 'false');
+      csbStatusBtn?.setAttribute?.('aria-expanded', 'false');
+      syncPinBadge();
+    };
+    const togglePinnedTflCard = (e) => {
+      e?.stopPropagation?.();
+      if (tflCardPinned && tflCard && !tflCard.hidden) {
+        closeTflCard(true);
+      } else {
+        tflCardPinned = true;
+        openTflCard();
+      }
+    };
+    if (csbStatusBtn) {
+      csbStatusBtn.addEventListener('mouseenter', () => {
+        if (!tflCardPinned) openTflCard();
+      });
+      csbStatusBtn.addEventListener('mouseleave', (e) => {
+        if (tflCardPinned) return;
+        if (e?.relatedTarget && tflCard && tflCard.contains?.(e.relatedTarget)) return;
+        closeTflCard(false);
+      });
+      csbStatusBtn.addEventListener('click', togglePinnedTflCard);
+    }
+    if (csbTokensBtn) {
+      csbTokensBtn.addEventListener('mouseenter', () => {
+        if (!tflCardPinned) openTflCard();
+      });
+      csbTokensBtn.addEventListener('mouseleave', (e) => {
+        if (tflCardPinned) return;
+        if (e?.relatedTarget && tflCard && tflCard.contains?.(e.relatedTarget)) return;
+        closeTflCard(false);
+      });
+      csbTokensBtn.addEventListener('focus', openTflCard);
+      csbTokensBtn.addEventListener('blur', (e) => {
+        if (tflCardPinned) return;
+        if (e?.relatedTarget && tflCard && tflCard.contains?.(e.relatedTarget)) return;
+        closeTflCard(false);
+      });
+      // 左键点击 Token 胶囊继续直接打开完整 Token 看板（若点击浮卡上的固定角标则只切换固定）
+      csbTokensBtn.addEventListener('click', (e) => {
+        if (e?.target && tflPinBadge && (e.target === tflPinBadge || tflPinBadge.contains?.(e.target))) {
+          togglePinnedTflCard(e);
+          return;
+        }
+        if (e?.target && tflCard && tflCard.contains?.(e.target)) return;
+        e?.stopPropagation?.();
+        closeTflCard(true);
+        toggleTokens('csb-group-tokens');
+        if (typeof switchTokenView === 'function') switchTokenView('tokens');
+      });
+    }
+    if (tflPinBadge) {
+      tflPinBadge.addEventListener('click', togglePinnedTflCard);
+    }
+    if (tflCard && typeof tflCard.addEventListener === 'function') {
+      tflCard.addEventListener('mouseleave', (e) => {
+        if (tflCardPinned) return;
+        if (e?.relatedTarget && (csbTokensBtn?.contains?.(e.relatedTarget) || csbStatusBtn?.contains?.(e.relatedTarget))) return;
+        closeTflCard(false);
+      });
+    }
+    const onCsbEscKey = (e) => {
+      if (e?.key === 'Escape' && tflCard && !tflCard.hidden) {
+        closeTflCard(true);
+      }
+    };
+    const onCsbOutsideClick = (e) => {
+      if (!tflCardPinned || !tflCard || tflCard.hidden) return;
+      const tNode = e?.target;
+      const path = typeof e?.composedPath === 'function' ? e.composedPath() : [];
+      const isInside = (node) => Boolean(node && (path.includes(node) || (tNode && (node === tNode || node.contains?.(tNode)))));
+      if (isInside(csbTokensBtn) || isInside(csbStatusBtn) || isInside(tflCard)) return;
+      closeTflCard(true);
+    };
+    if (typeof shadow?.addEventListener === 'function') {
+      shadow.addEventListener('click', onCsbOutsideClick);
+      activeDisposers.add(() => {
+        shadow?.removeEventListener?.('click', onCsbOutsideClick);
+      });
+    }
+    if (typeof document?.addEventListener === 'function') {
+      document.addEventListener('keydown', onCsbEscKey);
+      document.addEventListener('click', onCsbOutsideClick);
+      activeDisposers.add(() => {
+        document?.removeEventListener?.('keydown', onCsbEscKey);
+        document?.removeEventListener?.('click', onCsbOutsideClick);
+      });
+    }
+    tflOpenTokensBtn?.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      closeTflCard(true);
+      toggleTokens('csb-group-tokens');
+      if (typeof switchTokenView === 'function') switchTokenView('tokens');
+    });
+  }
+
+  const csbContextBtn = el('csb-group-context');
+  if (csbContextBtn) {
+    csbContextBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      toggleContext('csb-group-context');
+    });
+  }
+  el('csb-group-quota')?.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
+    toggleQuota('csb-group-quota');
+  });
+
+  // 上下文圆环悬停/聚焦/长按：未开面板时兼顾三层气泡与面板选择器，长按 >= 420ms 直达上下文详情与历史
+  el('badge').addEventListener('pointerdown', (e) => {
+    if (e?.button && e.button !== 0) return;
+    if (enforceMarketplaceAvoidance()) return;
+    badgeLongPressTriggered = false;
+    clearBadgeLongPress();
+    badgeLongPressTimer = setTimeout(() => {
+      badgeLongPressTimer = null;
+      if (enforceMarketplaceAvoidance()) return;
+      badgeLongPressTriggered = true;
+      activePickerAnchorId = 'badge';
+      switchPanelFromPicker('context_detail');
+    }, 420);
+  });
+  for (const upEvt of ['pointerup', 'pointercancel', 'mouseleave']) {
+    el('badge').addEventListener(upEvt, clearBadgeLongPress);
+  }
   el('badge').addEventListener('mouseenter', () => {
+    if (enforceMarketplaceAvoidance()) return;
+    openPanelPicker('badge', { viaHover: true });
     if (!isAnyPanelOpen()) {
       showContextTooltip();
     }
   });
   el('badge').addEventListener('mouseleave', () => {
     hideContextTooltip();
+    scheduleClosePanelPicker();
   });
   el('badge').addEventListener('focus', () => {
+    if (enforceMarketplaceAvoidance()) return;
+    if (!canOpenPickerOnFocus(el('badge'))) return;
+    openPanelPicker('badge');
     if (!isAnyPanelOpen()) showContextTooltip();
   });
   el('badge').addEventListener('blur', () => {
     hideContextTooltip();
+    scheduleClosePanelPicker(120);
   });
 
   el('theme-toggle')?.addEventListener('click', cycleTheme);
@@ -2899,6 +6701,10 @@
   let activeSessionModelKey = null;
   let activeSessionProductKey = null;
   let activeSessionEffort = null;
+  let activeSessionModelLabel = null;
+  let activeSessionEffortUnknown = false;
+  let activeSessionModelUnknown = false;
+  let activeSessionModelRole = null;
   let activeSessionModelConfirmed = false;
   let selectedEditModelKey = null;
   let selectedProductKey = null;
@@ -2920,7 +6726,7 @@
     if (rawPre) preRestartSnapshot = JSON.parse(rawPre);
   } catch { }
 
-  let speedRangeDays = '7';
+  let speedRangeDays = defaultViewPrefs.speedRangeDays;
   let speedOriginFilter = 'all';
   let speedMetric = 'tps';
   let selectedSpeedExactModelId = null;
@@ -3037,6 +6843,7 @@
 
   /**
    * 仅从宿主真实输入框选择器读取当前选中模型（严格排除插件自身 #ag-context-meter DOM）
+   * 兼容多分屏焦点优先、角色/规划器前缀、M537/M667/M668/M669/M681、已知模型未知档位与完全未知模型
    */
   function extractHostSelectedModel() {
     if (typeof document === 'undefined') return null;
@@ -3045,7 +6852,7 @@
       : (typeof document.querySelector === 'function' ? [document.querySelector('[data-testid="model-selector-trigger"]')].filter(Boolean) : []);
     if (!triggers.length) return null;
 
-    let trigger = null;
+    const visibleTriggers = [];
     for (const candidate of triggers) {
       if (!candidate) continue;
       if (host && typeof host.contains === 'function' && host.contains(candidate)) continue;
@@ -3054,16 +6861,51 @@
         const rect = candidate.getBoundingClientRect();
         if (rect && rect.width === 0 && rect.height === 0) continue;
       }
-      trigger = candidate;
-      break;
+      visibleTriggers.push(candidate);
     }
-    if (!trigger) return null;
+    if (!visibleTriggers.length) return null;
 
-    let effort = null;
+    // 多分屏场景优先选取包含或最贴近当前宿主焦点的选择器
+    let trigger = visibleTriggers[0];
+    if (visibleTriggers.length > 1) {
+      const activeEl = document.activeElement;
+      const focusInsidePlugin = !activeEl
+        || (host && (activeEl === host || host.contains?.(activeEl)))
+        || Boolean(activeEl?.closest?.('#ag-context-meter'));
+      if (!focusInsidePlugin) {
+        const activeAncestors = new Set();
+        let cur = activeEl;
+        let guard = 0;
+        while (cur && guard++ < 64) {
+          activeAncestors.add(cur);
+          cur = cur.parentElement || cur.parentNode || null;
+        }
+        let bestDist = Infinity;
+        for (const cand of visibleTriggers) {
+          let p = cand;
+          let dist = 0;
+          let found = false;
+          while (p && dist < 64) {
+            if (activeAncestors.has(p) || (typeof p.contains === 'function' && p.contains(activeEl))) {
+              found = true;
+              break;
+            }
+            p = p.parentElement || p.parentNode || null;
+            dist++;
+          }
+          if (found && dist < bestDist) {
+            bestDist = dist;
+            trigger = cand;
+          }
+        }
+      }
+    }
+
+    let rawEffortAttr = null;
     const effortEl = trigger.querySelector?.('[data-testid="model-selector-effort-option"]')
       || trigger.querySelector?.('[data-effort]');
     if (effortEl) {
-      effort = effortEl.getAttribute?.('data-effort') || effortEl.textContent?.trim() || null;
+      rawEffortAttr = effortEl.getAttribute?.('data-effort') || effortEl.textContent?.trim() || null;
     }
 
     const clone = trigger.cloneNode ? trigger.cloneNode(true) : trigger;
@@ -3075,6 +6917,7 @@
     const effortCaseMap = {
       'extra high': 'Extra High',
       xhigh: 'XHigh',
+      'x high': 'XHigh',
       low: 'Low',
       medium: 'Medium',
       high: 'High',
@@ -3082,38 +6925,195 @@
       minimal: 'Minimal',
       max: 'Max'
     };
+    const MODEL_SERIES_PAREN_RE = /^(?:carbon|argon|neon|orchestrator|hydrogen|flash|pro|preview|thinking|beta)$/i;
+
     let baseText = rawText;
-    const mParen = rawText.match(/^(.*?)\s*\((Extra High|XHigh|Low|Medium|High|Extra|Minimal|Max)\)\s*$/i);
+    let effortToken = rawEffortAttr;
+    let hasExplicitUnknownEffort = false;
+
+    if (effortToken) {
+      const eLo = String(effortToken).trim().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+      if (!effortCaseMap[eLo]) {
+        hasExplicitUnknownEffort = true;
+        effortToken = null;
+      }
+    }
+
+    const mParen = rawText.match(/^(.*?)\s*[（(](Extra High|XHigh|Low|Medium|High|Extra|Minimal|Max)[)）]\s*$/i);
     if (mParen) {
       baseText = mParen[1].trim() || rawText;
-      if (!effort) effort = mParen[2];
+      if (!effortToken && !hasExplicitUnknownEffort) effortToken = mParen[2];
     } else {
       const mTrail = rawText.match(/^(.*?)\s+(Extra High|XHigh|Low|Medium|High|Minimal|Max)\s*$/i);
       if (mTrail) {
         baseText = mTrail[1].trim() || rawText;
-        if (!effort) effort = mTrail[2];
+        if (!effortToken && !hasExplicitUnknownEffort) effortToken = mTrail[2];
+      } else {
+        const mAnyParen = rawText.match(/^(.*?)\s*[（(]([^()]{1,24})[)）]\s*$/);
+        if (mAnyParen && !MODEL_SERIES_PAREN_RE.test(mAnyParen[2].trim())) {
+          baseText = mAnyParen[1].trim() || rawText;
+          hasExplicitUnknownEffort = true;
+        }
       }
     }
-    const normEffort = effort ? (effortCaseMap[String(effort).trim().toLowerCase()] || effort) : null;
-    const parenLabel = (normEffort && baseText && !baseText.includes('(')) ? `${baseText} (${normEffort})` : rawText;
-
-    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
-    const resolveCand = (cand) => cand
-      ? (resolveStableModelKeyClient(cand) || (typeof resolveStableModelId === 'function' ? resolveStableModelId(cand, configs) : null))
+    const normEffort = effortToken
+      ? (effortCaseMap[String(effortToken).trim().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').toLowerCase()] || effortToken)
       : null;
-    const stableId = resolveCand(parenLabel) || resolveCand(rawText) || resolveCand(baseText);
+    const parenLabel = (normEffort && baseText && !/[（(][^()]+[)）]\s*$/.test(baseText)) ? `${baseText} (${normEffort})` : rawText;
+
+    const configs = Array.isArray(state.cascadeModelConfigs)
+      ? state.cascadeModelConfigs
+      : (Array.isArray(state.scan?.cascadeModelConfigs) ? state.scan.cascadeModelConfigs : []);
+
+    const knownIdSet = new Set();
+    for (const c of configs) {
+      const c1 = String(c?.modelId || '').trim().toLowerCase();
+      const c2 = String(c?.modelOrAlias?.model || '').trim().toLowerCase();
+      if (c1) knownIdSet.add(c1);
+      if (c2) knownIdSet.add(c2);
+    }
+    const BUILTIN_MODEL_RE = /(?:^|[^a-z0-9])(?:(?:model_)?placeholder[_-]?m(?:40[0-5]|41[7-9]|427|437|438|52[5-8]|53[0-7]|578|66[7-9]|670|681)|m(?:40[0-5]|41[7-9]|427|437|438|52[5-8]|53[0-7]|578|66[7-9]|670|681)|gemini-flash-worker-agy|gemini[-.\s_]*(?:4|3\.8|3\.5|3\.1)[-\s_]*(?:neon|hydrogen|argon|carbon|flash|pro)|claude[-.\s_]*(?:opus|sonnet)[-\s_]*5[._-]5|gpt[-.\s_]*oss[-.\s_]*120b|orchestrator\s*[（(](?:neon|argon|carbon|hydrogen)[)）])(?=$|[^a-z0-9])/i;
+
+    const resolveConfigMatchOnly = (cand) => {
+      if (!cand) return null;
+      const candLo = String(cand).trim().toLowerCase();
+      if (!candLo) return null;
+      const matchedCfg = configs.find(c =>
+        String(c?.modelId || '').trim().toLowerCase() === candLo
+        || String(c?.modelOrAlias?.model || '').trim().toLowerCase() === candLo
+        || String(c?.label || '').trim().toLowerCase() === candLo
+      );
+      return matchedCfg
+        ? (resolveStableModelKeyClient(matchedCfg) || String(matchedCfg.modelOrAlias?.model || matchedCfg.modelId || candLo).trim().toLowerCase())
+        : null;
+    };
+
+    const rawCandidates = [parenLabel, rawText, baseText];
+    // 带前缀标签拆解：例如 "Orchestrator · Gemini 4 Neon" / "Planning - Gemini 4 Argon" / "[Worker] Gemini 4 Hydrogen"
+    for (const seg of baseText.split(/\s*(?:·|\||\/|:|—|–|->|»|\]|\s-\s)\s*/)) {
+      const s = seg.trim();
+      if (s && s !== baseText) {
+        if (normEffort) rawCandidates.push(`${s} (${normEffort})`);
+        rawCandidates.push(s);
+      }
+    }
+
+    let stableId = null;
+    for (const cand of rawCandidates) {
+      const cfgHit = resolveConfigMatchOnly(cand);
+      if (cfgHit) {
+        stableId = cfgHit;
+        break;
+      }
+    }
+    if (!stableId) {
+      for (const cand of rawCandidates) {
+        if (BUILTIN_MODEL_RE.test(cand)) {
+          stableId = typeof resolveStableModelId === 'function'
+            ? (resolveStableModelId(cand, configs) || cand.toLowerCase())
+            : cand.toLowerCase();
+          break;
+        }
+      }
+    }
+
+    // 遍历宿主动态 configs（按标签长度降序，支持前缀修饰，且不误吞未知模型）
+    let matchedProductConfigs = [];
+    let matchedExactCfg = null;
+    if (configs.length) {
+      const hay = ` ${baseText.toLowerCase().replace(/\s+/g, ' ')} `;
+      const hayWithEffort = ` ${parenLabel.toLowerCase().replace(/\s+/g, ' ')} `;
+      const sortedCfgs = configs.slice().sort((a, b) => String(b?.label || b?.modelId || '').length - String(a?.label || a?.modelId || '').length);
+      for (const c of sortedCfgs) {
+        const cLabel = String(c?.label || '').trim().toLowerCase();
+        const cId = String(c?.modelId || c?.modelOrAlias?.model || '').trim().toLowerCase();
+        const gC = groupProductSafe({ modelId: c?.modelId || c?.modelOrAlias?.model || cLabel, label: c?.label });
+        const prodBase = String(gC?.productLabel || '').trim().toLowerCase();
+        const cEffort = gC?.effort ? String(gC.effort).trim().toLowerCase() : '';
+        const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const labelHit = cLabel && new RegExp(`(?:^|[^a-z0-9])${esc(cLabel)}(?=$|[^a-z0-9])`).test(hayWithEffort);
+        const prodHit = prodBase && new RegExp(`(?:^|[^a-z0-9])${esc(prodBase)}(?=$|[^a-z0-9])`).test(hay);
+        const idHit = cId && new RegExp(`(?:^|[^a-z0-9])${esc(cId)}(?=$|[^a-z0-9])`).test(hay);
+        if (labelHit || prodHit || idHit) {
+          matchedProductConfigs.push({ cfg: c, group: gC, effortLo: cEffort });
+          if (!matchedExactCfg) {
+            if (normEffort && cEffort === normEffort.toLowerCase()) {
+              matchedExactCfg = c;
+            } else if (!normEffort && !cEffort && (labelHit || idHit)) {
+              matchedExactCfg = c;
+            }
+          }
+        }
+      }
+    }
+
+    if (!stableId && matchedExactCfg) {
+      stableId = resolveStableModelKeyClient(matchedExactCfg) || String(matchedExactCfg.modelOrAlias?.model || matchedExactCfg.modelId || '').trim().toLowerCase();
+    } else if (!stableId && matchedProductConfigs.length > 0) {
+      const firstHit = matchedProductConfigs[0].cfg;
+      stableId = resolveStableModelKeyClient(firstHit) || String(firstHit.modelOrAlias?.model || firstHit.modelId || '').trim().toLowerCase();
+    }
+
+    const coreRef = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : (globalThis.__AGContextMeterCore || null);
+    const poolKeyCandidate = coreRef?.getModelPoolKey ? coreRef.getModelPoolKey(stableId || baseText) : null;
+    const isBuiltInMatch = BUILTIN_MODEL_RE.test(baseText) || (stableId && BUILTIN_MODEL_RE.test(stableId));
+    const isKnownModel = Boolean(
+      matchedExactCfg
+      || matchedProductConfigs.length > 0
+      || (stableId && knownIdSet.has(stableId.toLowerCase()))
+      || isBuiltInMatch
+      || (poolKeyCandidate && ['gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-argon', 'gemini-4-carbon', 'gemini-3.8-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-oss-120b'].includes(poolKeyCandidate))
+    );
+
+    const roleHint = `${rawText} ${stableId || ''}`.toLowerCase();
+    const role = (/\bworker\b/.test(roleHint) || roleHint.includes('gemini-flash-worker'))
+      ? 'worker'
+      : ((/\borchestrator\b/.test(roleHint) || /\bplanner\b|\bplanning\b/.test(roleHint)) ? 'orchestrator' : 'execution');
+
+    if (!isKnownModel) {
+      const slug = (baseText || rawText).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'model';
+      return {
+        rawText,
+        modelId: rawText,
+        productKey: `unknown:${slug}`,
+        productLabel: baseText || rawText,
+        effort: normEffort || null,
+        effortUnknown: hasExplicitUnknownEffort,
+        isUnknownModel: true,
+        role,
+        source: 'dom_trigger'
+      };
+    }
+
+    const canonicalBaseLabel = matchedExactCfg?.label
+      || matchedProductConfigs[0]?.group?.productLabel
+      || baseText;
     const g = groupProductSafe({
-      modelId: stableId || parenLabel,
-      label: parenLabel,
-      effort: normEffort
+      modelId: matchedExactCfg?.modelId || matchedExactCfg?.modelOrAlias?.model || stableId || canonicalBaseLabel,
+      label: matchedExactCfg?.label || (normEffort ? `${canonicalBaseLabel} (${normEffort})` : canonicalBaseLabel),
+      effort: normEffort || undefined
     });
+
+    // 多档位配置存在但 UI 未带任何档位标签时（或明确带未知括弧档位时），显示未知档位且禁止偷借任意成员的档位
+    const productEfforts = new Set(
+      matchedProductConfigs
+        .filter(x => x.group?.productKey === g.productKey && x.group?.effort)
+        .map(x => String(x.group.effort).toLowerCase())
+    );
+    const hasEffortlessMember = matchedProductConfigs.some(x => x.group?.productKey === g.productKey && !x.group?.effort);
+    const missingExpectedEffort = !normEffort && productEfforts.size > 0 && !hasEffortlessMember && !/orchestrator\s*[（(]/i.test(baseText);
+    const effortUnknown = Boolean(hasExplicitUnknownEffort || missingExpectedEffort);
+    const resolvedEffort = effortUnknown ? null : (normEffort || g.effort || null);
 
     return {
       rawText,
       modelId: stableId || parenLabel,
       productKey: g.productKey,
       productLabel: g.productLabel || baseText,
-      effort: normEffort || g.effort || null,
+      effort: resolvedEffort,
+      effortUnknown,
+      isUnknownModel: false,
+      role,
       source: 'dom_trigger'
     };
   }
@@ -3182,7 +7182,336 @@
     return rec;
   }
 
+  let compactDispatchSeq = 0;
+  let activeScanSeq = 0;
+  let activeScanController = null;
+  let compactThrottleTimer = null;
+  const compactDispatches = new Map();
+  const hookedWebSockets = new Set();
+
+  function clearCompactingTransition() {
+    if (state.compactProbeTimer) {
+      clearInterval(state.compactProbeTimer);
+      state.compactProbeTimer = null;
+    }
+    if (compactThrottleTimer) {
+      clearTimeout(compactThrottleTimer);
+      compactThrottleTimer = null;
+    }
+    state.compacting = null;
+  }
+  earlyDisposeHooks.push(clearCompactingTransition);
+
+  function triggerImmediateCompactScan(cascadeId = null, opts = {}) {
+    if (state.disposed) return;
+    const cid = cascadeId || state.route;
+    if (!cid || cid !== state.route) return;
+    const now = Date.now();
+    const urgent = Boolean(opts && opts.urgent);
+    if (urgent) {
+      if (compactThrottleTimer) {
+        clearTimeout(compactThrottleTimer);
+        compactThrottleTimer = null;
+      }
+      if (activeScanController) {
+        try { activeScanController.abort(); } catch { }
+        activeScanController = null;
+      }
+      state.pendingCompactForceScan = false;
+      state.lastCompactForceScanAt = now;
+      void scan(state.generation, cid, true);
+      return;
+    }
+    if (state.scanBusy) {
+      state.pendingCompactForceScan = true;
+      return;
+    }
+    if (now - (state.lastCompactForceScanAt || 0) < 250) {
+      state.pendingCompactForceScan = true;
+      if (!compactThrottleTimer) {
+        compactThrottleTimer = setTimeout(() => {
+          compactThrottleTimer = null;
+          if (!state.disposed && state.pendingCompactForceScan && state.route === cid && !state.scanBusy) {
+            state.pendingCompactForceScan = false;
+            state.lastCompactForceScanAt = Date.now();
+            void scan(state.generation, cid, true);
+          }
+        }, 260);
+      }
+      return;
+    }
+    state.pendingCompactForceScan = false;
+    state.lastCompactForceScanAt = now;
+    void scan(state.generation, cid, true);
+  }
+
+  function beginCompactingTransition(cascadeId = null) {
+    if (state.disposed) return;
+    const cid = cascadeId || state.route;
+    if (!cid || cid !== state.route) return;
+    clearLivePendingRequestWait();
+    const nowMs = Date.now();
+    if (state.compacting && state.compacting.cascadeId === cid) {
+      if (state.lastDomCompactingActive) {
+        state.compacting.domEndedAtMs = 0;
+        state.compacting.postDomEndScans = 0;
+      }
+      render();
+      return;
+    }
+    const hasBaselineScan = Boolean(state.scan?.session);
+    const prevCpIdx = hasBaselineScan && Number.isInteger(state.scan.session.lastCheckpointIndex)
+      ? state.scan.session.lastCheckpointIndex
+      : -1;
+    state.compacting = {
+      cascadeId: cid,
+      startedAtMs: nowMs,
+      domEndedAtMs: 0,
+      postDomEndScans: 0,
+      baselineHydrated: hasBaselineScan,
+      baselineCheckpointIndex: prevCpIdx
+    };
+    if (state.compactProbeTimer) clearInterval(state.compactProbeTimer);
+    state.compactProbeTimer = setInterval(() => {
+      if (state.disposed || !state.compacting || state.compacting.cascadeId !== state.route) {
+        clearCompactingTransition();
+        return;
+      }
+      checkHostDomCompactionSignals();
+      if (!state.compacting) return;
+      const now = Date.now();
+      const backendCpRunning = Number.isInteger(state.scan?.session?.inProgressCheckpointIndex)
+        && state.scan.session.inProgressCheckpointIndex >= 0;
+      const hostActivelyCompacting = Boolean(state.lastDomCompactingActive || backendCpRunning);
+      if (hostActivelyCompacting) {
+        if (now - state.compacting.startedAtMs > 300000) {
+          clearCompactingTransition();
+          triggerImmediateCompactScan(state.route, { urgent: true });
+          render();
+          return;
+        }
+        if (!state.scanBusy && now - (state.lastCompactForceScanAt || 0) >= 3500) {
+          triggerImmediateCompactScan(state.route);
+        }
+        return;
+      }
+      if (state.compacting.domEndedAtMs > 0) {
+        if ((state.compacting.postDomEndScans || 0) >= 5 && now - state.compacting.domEndedAtMs > 25000) {
+          clearCompactingTransition();
+          render();
+          return;
+        }
+      } else if (now - state.compacting.startedAtMs > 180000) {
+        clearCompactingTransition();
+        triggerImmediateCompactScan(state.route, { urgent: true });
+        render();
+        return;
+      }
+      if (!state.scanBusy) {
+        triggerImmediateCompactScan(state.route);
+      }
+    }, 1500);
+    render();
+  }
+
+  function isCompactCommandName(val) {
+    if (typeof val !== 'string') return false;
+    const clean = val.trim().toLowerCase();
+    return clean === 'compact' || clean === '/compact';
+  }
+
+  function isSlashCompactTextString(str) {
+    if (typeof str !== 'string') return false;
+    const trimmed = str.trim();
+    return Boolean(
+      trimmed && (
+        /^\/compact(?:\s|$)/i.test(trimmed) ||
+        /^\[\/?compact\]\(slash_command:\/\/compact\)(?:\s|$)/i.test(trimmed) ||
+        trimmed.toLowerCase() === 'slash_command://compact'
+      )
+    );
+  }
+
+  function hasNestedCompactSlashScopeItem(node, depth = 0) {
+    if (!node || typeof node !== 'object' || depth > 5) return false;
+    const sc = node.slashCommand || node.slash_command || (node.case === 'slashCommand' ? node.value : null);
+    if (sc && typeof sc === 'object') {
+      const info = sc.info || sc;
+      if ([info?.name, info?.displayName, info?.display_name, sc.name, sc.command].some(isCompactCommandName)) {
+        return true;
+      }
+    }
+    for (const subKey of ['item', 'chunk', 'value', 'scopeItem', 'scope_item']) {
+      if (node[subKey] && typeof node[subKey] === 'object' && hasNestedCompactSlashScopeItem(node[subKey], depth + 1)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function extractSlashCompactFromObject(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const cascadeId = payload.cascadeId || payload.cascade_id || state.route || null;
+    if (hasNestedCompactSlashScopeItem(payload, 0)) return { isCompact: true, cascadeId };
+    const parts = [];
+    for (const k of ['userResponse', 'user_response', 'messageText', 'message_text', 'text']) {
+      if (typeof payload[k] === 'string' && payload[k].trim()) {
+        if (isSlashCompactTextString(payload[k])) return { isCompact: true, cascadeId };
+        parts.push(payload[k]);
+      }
+    }
+    if (Array.isArray(payload.items)) {
+      for (const it of payload.items) {
+        if (!it || typeof it !== 'object') continue;
+        if (hasNestedCompactSlashScopeItem(it, 0)) return { isCompact: true, cascadeId };
+        const txt = typeof it.text === 'string'
+          ? it.text
+          : (typeof it.chunk?.text === 'string'
+            ? it.chunk.text
+            : (it.chunk?.case === 'text' && typeof it.chunk.value === 'string' ? it.chunk.value : it.item?.text));
+        if (typeof txt === 'string') parts.push(txt);
+      }
+    }
+    return isSlashCompactTextString(parts.join('\n')) ? { isCompact: true, cascadeId } : null;
+  }
+
+  function containsAsciiCompactWord(bytes) {
+    if (!bytes || bytes.length < 7) return false;
+    for (let i = 0; i <= bytes.length - 7; i++) {
+      if (
+        (bytes[i] | 0x20) === 0x63 && (bytes[i + 1] | 0x20) === 0x6f &&
+        (bytes[i + 2] | 0x20) === 0x6d && (bytes[i + 3] | 0x20) === 0x70 &&
+        (bytes[i + 4] | 0x20) === 0x61 && (bytes[i + 5] | 0x20) === 0x63 &&
+        (bytes[i + 6] | 0x20) === 0x74
+      ) return true;
+    }
+    return false;
+  }
+
+  function hasProtoCompactPayload(bytes, decoder, depth = 0) {
+    if (!bytes || !bytes.length || depth > 5 || typeof budgetEngine.parseProtoFields !== 'function') return false;
+    try {
+      for (const f of budgetEngine.parseProtoFields(bytes)) {
+        if (f.wireType !== 2 || !f.bytesValue?.length) continue;
+        if (depth === 0) {
+          if (f.fieldNumber === 2 && isSlashCompactTextString(decoder.decode(f.bytesValue))) return true;
+          if (f.fieldNumber === 3 && containsAsciiCompactWord(f.bytesValue) && hasProtoCompactPayload(f.bytesValue, decoder, 1)) return true;
+        } else {
+          if (f.fieldNumber === 1) {
+            const s = decoder.decode(f.bytesValue).trim();
+            if (depth === 1 ? isSlashCompactTextString(s) : (f.bytesValue.length <= 16 && isCompactCommandName(s))) return true;
+          }
+          if (containsAsciiCompactWord(f.bytesValue) && hasProtoCompactPayload(f.bytesValue, decoder, depth + 1)) return true;
+        }
+      }
+    } catch { }
+    return false;
+  }
+
+  function detectOutgoingCompactCommand(rawInput, channel = 'http', urlOrProcedure = '', contentType = '') {
+    try {
+      if (!rawInput) return null;
+      if (channel === 'client_object') return extractSlashCompactFromObject(rawInput);
+      if (typeof budgetEngine.unpackTransportPayload !== 'function') return null;
+      if (typeof rawInput === 'string') {
+        if (!rawInput.toLowerCase().includes('compact')) return null;
+      } else {
+        const view = rawInput instanceof Uint8Array
+          ? rawInput
+          : (rawInput instanceof ArrayBuffer
+            ? new Uint8Array(rawInput)
+            : (ArrayBuffer.isView?.(rawInput) ? new Uint8Array(rawInput.buffer, rawInput.byteOffset, rawInput.byteLength) : null));
+        if (!view || !containsAsciiCompactWord(view)) return null;
+      }
+      const unpacked = budgetEngine.unpackTransportPayload(rawInput, { channel, urlOrProcedure, contentType });
+      if (!unpacked) return null;
+      if (channel === 'ws_frame' && (!unpacked.procedure || !budgetEngine.isTargetBudgetRpc?.(unpacked.procedure))) return null;
+      if (unpacked.payload) return extractSlashCompactFromObject(unpacked.payload);
+      if ((unpacked.format === 'connect_proto_envelope' || unpacked.format === 'raw_binary_proto') && typeof TextDecoder === 'function') {
+        const protoBytes = unpacked.format === 'connect_proto_envelope' ? unpacked.rawInner : unpacked.rawBytes;
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        if (hasProtoCompactPayload(protoBytes, decoder, 0)) {
+          return { isCompact: true, cascadeId: unpacked.protoMeta?.cascadeId || state.route || null };
+        }
+      }
+    } catch { }
+    return null;
+  }
+
+  function registerCompactDispatch(compactInfo) {
+    const cid = compactInfo?.cascadeId || state.route || null;
+    beginCompactingTransition(cid);
+    const dispatchId = `compact_${++compactDispatchSeq}`;
+    compactDispatches.set(dispatchId, { cascadeId: cid, at: Date.now() });
+    if (compactDispatches.size > 32) {
+      const firstKey = compactDispatches.keys().next().value;
+      if (firstKey) compactDispatches.delete(firstKey);
+    }
+    return { dispatchId, isCompact: true, cascadeId: cid };
+  }
+
+  function handlePassiveHostWsMessage(ev) {
+    if (state.disposed || !state.route || typeof ev?.data !== 'string') return;
+    const raw = ev.data;
+    const hasCwu = raw.includes('contextWindowUsage') || raw.includes('context_window_usage');
+    const hasCheckpoint = raw.includes('"checkpoint"');
+    if (!hasCwu && !hasCheckpoint) return;
+    try {
+      const parsed = JSON.parse(raw);
+      const envelopePayload = (parsed && typeof parsed === 'object' && parsed.payload && typeof parsed.payload === 'object')
+        ? parsed.payload
+        : parsed;
+      const update = (envelopePayload && typeof envelopePayload === 'object' && envelopePayload.update && typeof envelopePayload.update === 'object')
+        ? envelopePayload.update
+        : envelopePayload;
+      if (!update || typeof update !== 'object') return;
+      const convId = update.conversationId || update.conversation_id || update.cascadeId || update.cascade_id || state.route;
+      if (!convId || String(convId).toLowerCase() !== String(state.route).toLowerCase()) return;
+
+      const cwu = update.contextWindowUsage || update.context_window_usage;
+      if (cwu && typeof cwu === 'object') {
+        const estUsed = Number(cwu.estimatedTokensUsed ?? cwu.estimated_tokens_used);
+        const maxCtx = Number(cwu.maxContextTokens ?? cwu.max_context_tokens);
+        const lastStep = Number(cwu.lastStepIndex ?? cwu.last_step_index);
+        const genIdx = Number(cwu.generatorMetadataIndex ?? cwu.generator_metadata_index);
+        const afterCompact = Boolean(cwu.estimatedAfterCompaction ?? cwu.estimated_after_compaction);
+        state.hostContextWindowUsage = {
+          cascadeId: state.route,
+          estimatedTokensUsed: Number.isFinite(estUsed) && estUsed >= 0 ? estUsed : null,
+          maxContextTokens: Number.isFinite(maxCtx) && maxCtx > 0 ? maxCtx : null,
+          lastStepIndex: Number.isInteger(lastStep) && lastStep >= 0 ? lastStep : -1,
+          generatorMetadataIndex: Number.isInteger(genIdx) && genIdx >= 0 ? genIdx : -1,
+          estimatedAfterCompaction: afterCompact,
+          at: Date.now()
+        };
+        if (afterCompact) {
+          clearCompactingTransition();
+          state.latest = resolveEffectiveLatestWithCompaction(state.latest);
+          state.requestAt = Date.now();
+          state.requestError = '';
+          render();
+          triggerImmediateCompactScan(state.route);
+          return;
+        }
+      }
+      if (hasCheckpoint) {
+        triggerImmediateCompactScan(state.route, { urgent: true });
+      }
+    } catch { }
+  }
+
   function finishDispatchOutcome(dispatchId, ok, err) {
+    if (dispatchId && compactDispatches.has(dispatchId)) {
+      const info = compactDispatches.get(dispatchId);
+      compactDispatches.delete(dispatchId);
+      if (!ok) {
+        clearCompactingTransition();
+        render();
+      } else {
+        triggerImmediateCompactScan(info?.cascadeId || state.route);
+      }
+      return;
+    }
     if (!ok) {
       clearLivePendingRequestWait();
     }
@@ -3206,7 +7535,21 @@
     globalThis.__AG_METER_ON_SEND_MESSAGE__ = function (req, channel = 'client_object') {
       try {
         if (!req || typeof req !== 'object' || typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
+        const compactCmd = detectOutgoingCompactCommand(req, 'client_object', 'SendUserCascadeMessage');
         const tx = budgetEngine.transformOutgoingSendRequest(req, buildInterceptorContext(channel, 'SendUserCascadeMessage'));
+        if (compactCmd?.isCompact) {
+          const cRec = registerCompactDispatch(compactCmd);
+          lastDecoratorDispatchHint = {
+            ts: Date.now(),
+            cascadeId: cRec.cascadeId || tx?.cascadeId || null,
+            productKey: tx?.productKey || null,
+            sentMode: tx?.sentMode || 'default',
+            sentLimitTokens: tx?.sentLimitTokens ?? null,
+            dispatchId: cRec.dispatchId,
+            isCompact: true
+          };
+          return { dispatchId: cRec.dispatchId };
+        }
         if (!tx || !tx.handled) return null;
         const rec = recordBudgetTransformDispatch(tx);
         lastDecoratorDispatchHint = {
@@ -3231,13 +7574,34 @@
       if (!lastDecoratorDispatchHint) return false;
       const age = Date.now() - lastDecoratorDispatchHint.ts;
       if (age < 0 || age > 400) return false;
+      if (lastDecoratorDispatchHint.isCompact) {
+        return !tx?.cascadeId || !lastDecoratorDispatchHint.cascadeId || lastDecoratorDispatchHint.cascadeId === tx.cascadeId;
+      }
       const sameConv = (lastDecoratorDispatchHint.cascadeId || null) === (tx.cascadeId || null);
       const sameMode = lastDecoratorDispatchHint.sentMode === tx.sentMode
         && (lastDecoratorDispatchHint.sentLimitTokens ?? null) === (tx.sentLimitTokens ?? null);
       return sameConv && sameMode;
     };
 
-    // 1. WebSocket.prototype.send interceptor (覆盖 Lcc ws://<host>/connect-websocket JSON 帧)
+    const processOutgoingBody = (rawBody, channel, urlOrProc, contentType = '') => {
+      const compactCmd = detectOutgoingCompactCommand(rawBody, channel, urlOrProc, contentType);
+      const tx = typeof budgetEngine.transformOutgoingSendRequest === 'function'
+        ? budgetEngine.transformOutgoingSendRequest(rawBody, buildInterceptorContext(channel, urlOrProc, contentType))
+        : null;
+      let body = rawBody;
+      let rec = null;
+      if (tx && tx.handled) {
+        if (tx.modified && tx.output !== undefined) body = tx.output;
+        if (!isCoveredByRecentDecorator(tx)) {
+          rec = compactCmd?.isCompact ? registerCompactDispatch(compactCmd) : recordBudgetTransformDispatch(tx);
+        }
+      } else if (compactCmd?.isCompact && !isCoveredByRecentDecorator({ cascadeId: compactCmd.cascadeId })) {
+        rec = registerCompactDispatch(compactCmd);
+      }
+      return { body, rec };
+    };
+
+    // 1. WebSocket.prototype.send interceptor (覆盖 Lcc ws://<host>/connect-websocket JSON 帧 + 被动监听服务端状态推送)
     if (typeof window.WebSocket === 'function' && window.WebSocket.prototype && typeof window.WebSocket.prototype.send === 'function') {
       const origWsSend = window.WebSocket.prototype.send;
       window.__agOrigWsSend = origWsSend;
@@ -3245,17 +7609,14 @@
         let nextData = data;
         let rec = null;
         try {
-          if (typeof budgetEngine.transformOutgoingSendRequest === 'function') {
-            const tx = budgetEngine.transformOutgoingSendRequest(data, buildInterceptorContext('ws_frame', this?.url || ''));
-            if (tx && tx.handled) {
-              if (tx.modified && tx.output !== undefined) {
-                nextData = tx.output;
-              }
-              if (!isCoveredByRecentDecorator(tx)) {
-                rec = recordBudgetTransformDispatch(tx);
-              }
-            }
+          if (this && !this.__agMeterWsMessageHooked && typeof this.addEventListener === 'function') {
+            this.__agMeterWsMessageHooked = true;
+            this.addEventListener('message', handlePassiveHostWsMessage);
+            hookedWebSockets.add(this);
           }
+          const out = processOutgoingBody(data, 'ws_frame', this?.url || '');
+          nextData = out.body;
+          rec = out.rec;
         } catch (err) {
           console.warn('[ContextMeter] WebSocket interceptor error:', err);
         }
@@ -3268,6 +7629,59 @@
       };
     }
 
+    // 1.5 Request 构造器旁路监听（覆盖 live 热注入模式下 @connectrpc/connect 已提前绑定 fetchFn 但每次新建 Request 的场景）
+    if (typeof window.Request === 'function' && !window.__agOrigRequest) {
+      const OrigRequest = window.Request;
+      window.__agOrigRequest = OrigRequest;
+      const WrappedRequest = function (input, init) {
+        const reqObj = new.target
+          ? Reflect.construct(OrigRequest, [input, init], new.target)
+          : new OrigRequest(input, init);
+        try {
+          const urlStr = typeof input === 'string' ? input : (reqObj?.url || '');
+          if (urlStr && typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
+            const ct = reqObj?.headers?.get?.('content-type') || init?.headers?.['content-type'] || init?.headers?.['Content-Type'] || '';
+            const reqSignal = init?.signal || reqObj?.signal;
+            const onCompactDetected = (cmd) => {
+              const targetCid = cmd.cascadeId || state.route;
+              try { Object.defineProperty(reqObj, '__agCompactCmd', { value: cmd, configurable: true }); } catch { }
+              if (!state.compacting) beginCompactingTransition(targetCid);
+              if (reqSignal && typeof reqSignal.addEventListener === 'function') {
+                const onAbort = () => {
+                  if (!state.disposed && state.compacting && state.compacting.cascadeId === (targetCid || state.route)) {
+                    clearCompactingTransition();
+                    render();
+                  }
+                };
+                if (reqSignal.aborted) onAbort();
+                else reqSignal.addEventListener('abort', onAbort, { once: true });
+              }
+            };
+            const directBody = init?.body;
+            if (typeof directBody === 'string' || directBody instanceof Uint8Array || directBody instanceof ArrayBuffer || ArrayBuffer.isView?.(directBody)) {
+              const syncCmd = detectOutgoingCompactCommand(directBody, 'fetch', urlStr, ct);
+              if (syncCmd?.isCompact) onCompactDetected(syncCmd);
+            } else if (typeof reqObj?.clone === 'function') {
+              const cloned = reqObj.clone();
+              if (typeof cloned?.arrayBuffer === 'function') {
+                cloned.arrayBuffer().then((ab) => {
+                  if (state.disposed || !ab || !ab.byteLength) return;
+                  const asyncCmd = detectOutgoingCompactCommand(new Uint8Array(ab), 'fetch', urlStr, ct);
+                  if (asyncCmd?.isCompact) onCompactDetected(asyncCmd);
+                }).catch(() => { });
+              }
+            }
+          }
+        } catch { }
+        return reqObj;
+      };
+      try {
+        WrappedRequest.prototype = OrigRequest.prototype;
+        Object.setPrototypeOf(WrappedRequest, OrigRequest);
+        window.Request = WrappedRequest;
+      } catch { }
+    }
+
     // 2. window.fetch interceptor (仅处理 SendUserCascadeMessage；严禁猜测 StartCascade)
     const origFetch = window.fetch;
     if (typeof origFetch === 'function') {
@@ -3278,24 +7692,20 @@
           const urlStr = typeof resource === 'string'
             ? resource
             : (resource && resource.url ? resource.url : String(resource || ''));
-          if (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr) && init?.body) {
-            const headersObj = init?.headers;
+          if (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
+            const headersObj = init?.headers || resource?.headers;
             let contentType = '';
             if (headersObj) {
-              if (typeof headersObj.get === 'function') {
-                contentType = headersObj.get('content-type') || headersObj.get('Content-Type') || '';
-              } else if (typeof headersObj === 'object') {
-                contentType = headersObj['content-type'] || headersObj['Content-Type'] || '';
-              }
+              contentType = typeof headersObj.get === 'function'
+                ? (headersObj.get('content-type') || headersObj.get('Content-Type') || '')
+                : (headersObj['content-type'] || headersObj['Content-Type'] || '');
             }
-            const tx = budgetEngine.transformOutgoingSendRequest(init.body, buildInterceptorContext('fetch', urlStr, contentType));
-            if (tx && tx.handled) {
-              if (tx.modified && tx.output !== undefined) {
-                init = { ...init, body: tx.output };
-              }
-              if (!isCoveredByRecentDecorator(tx)) {
-                rec = recordBudgetTransformDispatch(tx);
-              }
+            if (init?.body) {
+              const out = processOutgoingBody(init.body, 'fetch', urlStr, contentType);
+              if (out.body !== init.body) init = { ...init, body: out.body };
+              rec = out.rec;
+            } else if (resource?.__agCompactCmd?.isCompact && !isCoveredByRecentDecorator({ cascadeId: resource.__agCompactCmd.cascadeId })) {
+              rec = registerCompactDispatch(resource.__agCompactCmd);
             }
           }
         } catch (err) {
@@ -3303,8 +7713,12 @@
         }
         try {
           const response = await origFetch.call(this, resource, init);
-          if (rec && response && response.ok === false) {
-            finishDispatchOutcome(rec.dispatchId, false, new Error(`HTTP ${response.status || 'error'}`));
+          if (rec) {
+            if (response && response.ok === false) {
+              finishDispatchOutcome(rec.dispatchId, false, new Error(`HTTP ${response.status || 'error'}`));
+            } else if (rec.isCompact) {
+              finishDispatchOutcome(rec.dispatchId, true, null);
+            }
           }
           return response;
         } catch (fetchErr) {
@@ -3347,27 +7761,23 @@
         try {
           const urlStr = this.__agRequestUrl || '';
           if (body && typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
-            const contentType = this.__agRequestHeaders?.['content-type'] || '';
-            const tx = budgetEngine.transformOutgoingSendRequest(body, buildInterceptorContext('xhr', urlStr, contentType));
-            if (tx && tx.handled) {
-              if (tx.modified && tx.output !== undefined) {
-                body = tx.output;
-              }
-              if (!isCoveredByRecentDecorator(tx)) {
-                rec = recordBudgetTransformDispatch(tx);
-              }
-            }
+            const out = processOutgoingBody(body, 'xhr', urlStr, this.__agRequestHeaders?.['content-type'] || '');
+            body = out.body;
+            rec = out.rec;
           }
         } catch (err) {
           console.warn('[ContextMeter] XHR request interceptor error:', err);
         }
         if (rec && typeof this.addEventListener === 'function') {
           const dId = rec.dispatchId;
+          const isCompactRec = Boolean(rec.isCompact);
           this.addEventListener('error', () => finishDispatchOutcome(dId, false, new Error('XHR network error')), { once: true });
           this.addEventListener('abort', () => finishDispatchOutcome(dId, false, Object.assign(new Error('XHR aborted'), { name: 'AbortError' })), { once: true });
           this.addEventListener('load', () => {
             if (typeof this.status === 'number' && this.status >= 400) {
               finishDispatchOutcome(dId, false, new Error(`HTTP ${this.status}`));
+            } else if (isCompactRec) {
+              finishDispatchOutcome(dId, true, null);
             }
           }, { once: true });
         }
@@ -3389,9 +7799,21 @@
     delete globalThis.__AG_METER_ON_SEND_RESULT__;
     for (const tId of pendingConfirmTimers) clearTimeout(tId);
     pendingConfirmTimers.clear();
+    compactDispatches.clear();
+    for (const ws of hookedWebSockets) {
+      try {
+        ws.removeEventListener?.('message', handlePassiveHostWsMessage);
+        delete ws.__agMeterWsMessageHooked;
+      } catch { }
+    }
+    hookedWebSockets.clear();
     if (window.__agOrigWsSend && window.WebSocket?.prototype) {
       window.WebSocket.prototype.send = window.__agOrigWsSend;
       delete window.__agOrigWsSend;
+    }
+    if (window.__agOrigRequest) {
+      window.Request = window.__agOrigRequest;
+      delete window.__agOrigRequest;
     }
     if (window.__agOrigFetch) {
       window.fetch = window.__agOrigFetch;
@@ -3980,10 +8402,15 @@
 
   function applyContextViewVisibility() {
     if (ctxTabsBar) ctxTabsBar.hidden = false;
-    if (paneSettings) paneSettings.hidden = activeContextTab !== 'settings';
-    if (paneSession) paneSession.hidden = activeContextTab !== 'session';
-    if (paneModels) paneModels.hidden = activeContextTab !== 'models';
-    if (paneSpeed) paneSpeed.hidden = activeContextTab !== 'speed';
+    const setPaneVis = (pane, active) => {
+      if (!pane) return;
+      pane.hidden = !active;
+      if (pane.style) pane.style.display = active ? '' : 'none';
+    };
+    setPaneVis(paneSettings, activeContextTab === 'settings');
+    setPaneVis(paneSession, activeContextTab === 'session');
+    setPaneVis(paneModels, activeContextTab === 'models');
+    setPaneVis(paneSpeed, activeContextTab === 'speed');
 
     setPillActive(btnTabSession, activeContextTab === 'session');
     setPillActive(btnTabModels, activeContextTab === 'models');
@@ -4006,7 +8433,19 @@
     isContextSettingsView = tabName === 'settings';
     try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, tabName); } catch { }
     applyContextViewVisibility();
-    if (tabName === 'models') {
+    if (tabName === 'session') {
+      if (dockPosition === 'aux' && !dockFallbackReason && !state.historyDrawerOpen && state.route && state.ctxAutoExpandedAuxRoute !== state.route) {
+        state.historyDrawerOpen = true;
+        state.ctxAutoExpandedAuxRoute = state.route;
+      }
+      if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
+      if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+      if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+      if (state.route && !state.sessionTimeline && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
+        void fetchSessionTimeline(state.route, { force: false });
+      }
+      if (state.historyDrawerOpen && typeof renderSessionTimeline === 'function') renderSessionTimeline();
+    } else if (tabName === 'models') {
       renderModelSettingsTab();
       if (!currentUnlockStatus && !unlockStatusFetchError) {
         void refreshUnlockStatus();
@@ -4020,8 +8459,10 @@
         void refreshUnlockStatus();
       }
       if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
+      if (typeof refreshRehydrateStatus === 'function') void refreshRehydrateStatus();
     }
     positionFloatingPanels();
+    syncPanelPickerActiveState();
   }
 
   function openContextSettings(opts = {}) {
@@ -4029,6 +8470,9 @@
     switchContextTab('settings');
     if (opts.openColors) {
       toggleColorsDrawer(true);
+    }
+    if (opts.scrollToUpdate) {
+      try { el('settings-about-update-card')?.scrollIntoView?.({ block: 'nearest' }); } catch { }
     }
     positionFloatingPanels();
   }
@@ -4073,7 +8517,11 @@
     if (hostSelected && hostSelected.productKey) {
       activeSessionModelKey = hostSelected.modelId;
       activeSessionProductKey = hostSelected.productKey;
-      activeSessionEffort = hostSelected.effort;
+      activeSessionEffort = hostSelected.effort || null;
+      activeSessionModelLabel = hostSelected.productLabel || hostSelected.rawText || null;
+      activeSessionEffortUnknown = Boolean(hostSelected.effortUnknown);
+      activeSessionModelUnknown = Boolean(hostSelected.isUnknownModel);
+      activeSessionModelRole = hostSelected.role || null;
       activeSessionModelConfirmed = true;
     } else if (activeSessionProductKey) {
       const curProd = getKnownModelProducts().find(p => p.productKey === activeSessionProductKey);
@@ -4081,9 +8529,14 @@
         activeSessionModelConfirmed = false;
         activeSessionProductKey = null;
         activeSessionModelKey = null;
+        activeSessionEffort = null;
+        activeSessionModelLabel = null;
+        activeSessionEffortUnknown = false;
+        activeSessionModelUnknown = false;
+        activeSessionModelRole = null;
       }
     }
-    if (!activeSessionModelConfirmed || !activeSessionProductKey) {
+    if (!activeSessionModelConfirmed || !activeSessionProductKey || activeSessionModelUnknown) {
       if (typeof showToastNotification === 'function') {
         showToastNotification(t('panel.ctx.currentModelUnconfirmed') || '当前会话模型待确认，未获取到可靠选择');
       } else {
@@ -5154,6 +9607,9 @@
       if (activeSessionProductKey === product.productKey && activeSessionEffort) {
         ctxCardSessionEffort.textContent = t('models.card.sessionEffort', { effort: formatEffortZh(activeSessionEffort) });
         ctxCardSessionEffort.hidden = false;
+      } else if (activeSessionProductKey === product.productKey && activeSessionEffortUnknown) {
+        ctxCardSessionEffort.textContent = t('models.card.sessionEffort', { effort: t('models.card.unknownEffort') || '未知档位' });
+        ctxCardSessionEffort.hidden = false;
       } else {
         ctxCardSessionEffort.hidden = true;
       }
@@ -5863,7 +10319,7 @@
     if (hostSelected && hostSelected.productKey) {
       exactId = hostSelected.modelId;
       detectedProduct = hostSelected.productKey;
-      detectedEffort = hostSelected.effort;
+      detectedEffort = hostSelected.effort || null;
       isConfirmed = true;
     } else if (state.latest && activeConvId) {
       // 2. 次优先级：检查 state.latest 是否属于当前活跃会话且非历史归档模型
@@ -5895,6 +10351,10 @@
       activeSessionModelKey = exactId;
       activeSessionProductKey = detectedProduct;
       activeSessionEffort = detectedEffort;
+      activeSessionModelLabel = hostSelected?.productLabel || hostSelected?.rawText || state.latest?.model || null;
+      activeSessionEffortUnknown = Boolean(hostSelected?.effortUnknown);
+      activeSessionModelUnknown = Boolean(hostSelected?.isUnknownModel);
+      activeSessionModelRole = hostSelected?.role || null;
       activeSessionModelConfirmed = true;
       // 严禁在此处用 Date.now() 伪造观测时间戳；仅当无观测记录且有明确后端快照时保留已有真实观测
     } else {
@@ -5902,9 +10362,13 @@
       activeSessionModelKey = null;
       activeSessionProductKey = null;
       activeSessionEffort = null;
+      activeSessionModelLabel = null;
+      activeSessionEffortUnknown = false;
+      activeSessionModelUnknown = false;
+      activeSessionModelRole = null;
     }
 
-    if (activeSessionModelConfirmed && activeSessionProductKey && (!manualModelSelection || !selectedProductKey)) {
+    if (activeSessionModelConfirmed && activeSessionProductKey && !activeSessionModelUnknown && (!manualModelSelection || !selectedProductKey)) {
       const switched = prevProd !== activeSessionProductKey || selectedProductKey !== activeSessionProductKey;
       selectedProductKey = activeSessionProductKey;
       selectedEditModelKey = activeSessionModelKey;
@@ -6290,6 +10754,39 @@
     }
   }
 
+  async function invokeRehydrateApi(endpoint, payload = {}) {
+    const ipcMap = {
+      status: window.contextMeterAPI?.getRehydrateStatus,
+      apply: window.contextMeterAPI?.applyRehydrate,
+      disable: window.contextMeterAPI?.disableRehydrate,
+      restore: window.contextMeterAPI?.restoreRehydrate,
+      installPython: window.contextMeterAPI?.installRehydratePython
+    };
+    const routeMap = {
+      status: '/rehydrate-status',
+      apply: '/rehydrate-apply',
+      disable: '/rehydrate-disable',
+      restore: '/rehydrate-restore',
+      installPython: '/rehydrate-install-python'
+    };
+    const ipcFn = typeof ipcMap[endpoint] === 'function' ? () => ipcMap[endpoint](payload) : null;
+    const liveRoute = routeMap[endpoint] || '';
+    if ((!ipcFn && !hasLiveRouteCapability(liveRoute)) || !liveRoute) {
+      return { ok: false, errorKey: 'rehydrate.result.noBridge', error: t('rehydrate.result.noBridge'), unavailable: true };
+    }
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute,
+        liveBody: payload
+      });
+      return out.result || { ok: false, errorKey: 'rehydrate.result.noBridge', error: t('rehydrate.result.noBridge'), unavailable: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('rehydrate.result.noBridge') };
+    }
+  }
+
+
   async function invokeModulesApi(action, name, enable, opts = {}) {
     const ipcFn = (action === 'status' && typeof window.contextMeterAPI?.getModulesStatus === 'function')
       ? () => window.contextMeterAPI.getModulesStatus()
@@ -6325,6 +10822,7 @@
       if (!res || !res.ok || !res.data) {
         unlockStatusFetchError = true;
         currentUnlockStatus = null;
+        syncRecommendedCheckboxes();
         if (unlockStatusDesc) unlockStatusDesc.textContent = t('status.client.unavailable');
         renderCompactSessionCard();
         renderClientStatusBar();
@@ -6335,6 +10833,7 @@
       unlockStatusFetchError = false;
       const data = res.data;
       currentUnlockStatus = data;
+      syncRecommendedCheckboxes();
       lastPartialReason = data.partialMatchReason || data.error || '';
       if (typeof data.hostSupportsRestart === 'boolean') {
         hostSupportsRestart = data.hostSupportsRestart;
@@ -7092,6 +11591,7 @@
   const panelLangSaveBadge = el('panel-lang-save-badge');
   const btnClientLangZhCn = el('btn-client-lang-zh-CN');
   const btnClientLangEn = el('btn-client-lang-en');
+  let hasExplicitPanelLanguage = Boolean(resolveExplicitPanelLanguagePref());
 
   function syncPanelLanguageButtons(lang) {
     const normalized = normalizePanelLanguage(lang);
@@ -7131,6 +11631,10 @@
     setPanelLanguageInternal(nextLang);
     syncPanelLanguageButtons(nextLang);
     applyStaticPanelTranslations(shadow);
+    if (composerSummary && composerSummary.parentElement !== shadow) {
+      applyStaticPanelTranslations(composerSummary);
+    }
+    renderComposerStatusBar();
 
     try {
       if (colorDrawerArrow && colorDrawerBody) {
@@ -7200,6 +11704,7 @@
         if (locReg) regInp.value = locReg;
       }
       if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
+      if (typeof refreshDirectPlanTierDisplay === 'function') refreshDirectPlanTierDisplay();
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
@@ -7221,6 +11726,9 @@
       if (isContextSettingsView && typeof refreshEnhanceStatus === 'function') {
         void refreshEnhanceStatus(false);
       }
+      if (isContextSettingsView && typeof refreshRehydrateStatus === 'function') {
+        void refreshRehydrateStatus();
+      }
     } catch { }
     try {
       const basePayload = ANTIGRAVITY_TOKEN_DATA?.rawPayload || ANTIGRAVITY_TOKEN_DATA;
@@ -7228,8 +11736,17 @@
         applyTokenHistoryPayload(basePayload);
       }
     } catch { }
+    try {
+      renderPricingSyncUiState();
+      updatePricingSyncButtonTooltip();
+      renderComposerStatusBar();
+      if (activeTokenView === 'requests') {
+        renderRequestsLiveView({ force: true });
+      }
+    } catch { }
 
     if (persist) {
+      hasExplicitPanelLanguage = true;
       userActionSeq++;
       try { localStorage?.setItem('ag_panel_language', nextLang); } catch { }
       const res = await saveSettingsPayloadBridge({
@@ -7381,6 +11898,7 @@
   const chkPresetTitle = el('chk-rec-title');
   const chkPresetLang = el('chk-rec-lang');
   const chkPresetCtx = el('chk-rec-ctx');
+  const chkPresetRehydrate = el('chk-rec-rehydrate');
 
   const brandTitleBtns = {
     english: el('btn-brand-english'),
@@ -7430,6 +11948,137 @@
   let enhancePromptResultState = null; // { ok, resolveMessage }
   let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
   let lastProxyTestState = null;       // { pending, thrownErr, res }
+
+  const rehydrateBadge = el('rehydrate-badge');
+  const rehydrateStatHook = el('rehydrate-stat-hook');
+  const rehydrateStatScript = el('rehydrate-stat-script');
+  const rehydrateStatPython = el('rehydrate-stat-python');
+  const rehydrateStatSiblings = el('rehydrate-stat-siblings');
+  const btnRehydrateEnable = el('btn-rehydrate-enable');
+  const btnRehydrateInstallPython = el('btn-rehydrate-install-python');
+  const btnRehydrateDisable = el('btn-rehydrate-disable');
+  const btnRehydrateRefresh = el('btn-rehydrate-refresh');
+  const btnRehydrateRemove = el('btn-rehydrate-remove');
+  const rehydrateResultBox = el('rehydrate-result-box');
+  const rehydrateResultText = el('rehydrate-result-text');
+  const btnToggleRehydrateDetails = el('btn-toggle-rehydrate-details');
+  const rehydrateDetailsBody = el('rehydrate-details-body');
+  const rehydrateDetailsArrow = el('rehydrate-details-arrow');
+  const rehydratePathsMeta = el('rehydrate-paths-meta');
+  const linkRehydrateAuthor = el('link-rehydrate-author');
+  const btnCopyRehydrateLink = el('btn-copy-rehydrate-link');
+  const rehydrateLinkToast = el('rehydrate-link-toast');
+  const REHYDRATE_AUTHOR_URL = 'https://agy-rehydrate.pages.dev/';
+  let currentRehydrateStatus = null;
+  let rehydrateStatusReqSeq = 0;
+  let isRehydrateBusy = false;
+  let rehydrateResultState = null;     // { ok, resolveMessage, isConfirmHint }
+  let rehydrateToastTimer = null;
+  let rehydrateRemoveArmed = false;
+  let rehydrateRemoveArmTimer = null;
+
+  function copyUrlWithToast(targetUrl, showToastFn, fromFailedOpen = false) {
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(targetUrl);
+        copied = true;
+      }
+    } catch { }
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = targetUrl;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        copied = true;
+      } catch { }
+    }
+    showToastFn(fromFailedOpen ? t('models.linkCopyFallback') : t('models.copyOk'));
+  }
+
+  async function openExternalWithFallback(targetUrl, showToastFn, openedMsgKey = 'models.linkOpened') {
+    let opened = false;
+    try {
+      if (window.contextMeterAPI?.openExternal) {
+        const res = await window.contextMeterAPI.openExternal(targetUrl);
+        if (res && res.ok) opened = true;
+      }
+    } catch { }
+
+    if (!opened) {
+      try {
+        const w = window.open(targetUrl, '_blank');
+        if (w) opened = true;
+      } catch { }
+    }
+
+    if (opened) {
+      showToastFn(t(openedMsgKey));
+    } else {
+      copyUrlWithToast(targetUrl, showToastFn, true);
+    }
+  }
+  const recDirty = { prompt: false, title: false, lang: false, ctx: false, rehydrate: false };
+
+  function recommendedPromptOn() {
+    const s = currentEnhanceStatus?.summary || currentEnhanceStatus;
+    return Number(s?.promptTier) === 4;
+  }
+  function recommendedTitleOn() {
+    const s = currentEnhanceStatus?.summary || currentEnhanceStatus;
+    return s?.chineseTitleMode === 'zh';
+  }
+  function recommendedLangOn() {
+    return Boolean(currentChineseEnabled);
+  }
+  function recommendedCtxOn() {
+    return currentUnlockStatus?.configuredMode === 'dynamic';
+  }
+  function recommendedRehydrateOn() {
+    return Boolean(currentRehydrateStatus?.status === 'enabled');
+  }
+
+  function getRecommendedDiff() {
+    const diff = [];
+    if (Boolean(chkPresetPrompt?.checked) !== recommendedPromptOn()) diff.push({ key: 'prompt', enable: Boolean(chkPresetPrompt?.checked) });
+    if (Boolean(chkPresetTitle?.checked) !== recommendedTitleOn()) diff.push({ key: 'title', enable: Boolean(chkPresetTitle?.checked) });
+    if (Boolean(chkPresetLang?.checked) !== recommendedLangOn()) diff.push({ key: 'lang', enable: Boolean(chkPresetLang?.checked) });
+    if (Boolean(chkPresetCtx?.checked) !== recommendedCtxOn()) diff.push({ key: 'ctx', enable: Boolean(chkPresetCtx?.checked) });
+    if (Boolean(chkPresetRehydrate?.checked) !== recommendedRehydrateOn()) diff.push({ key: 'rehydrate', enable: Boolean(chkPresetRehydrate?.checked) });
+    return diff;
+  }
+
+  function syncRecommendedCheckboxes({ force = false } = {}) {
+    const unsupported = Boolean(currentEnhanceStatus && currentEnhanceStatus.supported === false);
+    const ctxUnsupported = Boolean(
+      currentUnlockStatus &&
+      currentUnlockStatus.isPlatformSupported === false &&
+      currentUnlockStatus.status === 'unsupported'
+    );
+    if (chkPresetPrompt && (force || !recDirty.prompt)) {
+      chkPresetPrompt.checked = !unsupported && recommendedPromptOn();
+      if (force) recDirty.prompt = false;
+    }
+    if (chkPresetTitle && (force || !recDirty.title)) {
+      chkPresetTitle.checked = !unsupported && recommendedTitleOn();
+      if (force) recDirty.title = false;
+    }
+    if (chkPresetLang && (force || !recDirty.lang)) {
+      chkPresetLang.checked = recommendedLangOn();
+      if (force) recDirty.lang = false;
+    }
+    if (chkPresetCtx && (force || !recDirty.ctx)) {
+      chkPresetCtx.checked = !ctxUnsupported && recommendedCtxOn();
+      if (force) recDirty.ctx = false;
+    }
+    if (chkPresetRehydrate && (force || !recDirty.rehydrate)) {
+      chkPresetRehydrate.checked = recommendedRehydrateOn();
+      if (force) recDirty.rehydrate = false;
+    }
+  }
 
   function syncBrandTitleButtons(mode = currentBrandTitle) {
     for (const [k, btn] of Object.entries(brandTitleBtns)) {
@@ -7655,12 +12304,14 @@
   }
 
   function getSelectedPresetLabelResolvers() {
-    const resolvers = [];
-    if (chkPresetPrompt?.checked) resolvers.push(() => t('enhance.preset.itemPrompt'));
-    if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
-    if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
-    if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
-    return resolvers;
+    const labels = {
+      prompt: () => t('enhance.preset.itemPrompt'),
+      title: () => t('enhance.preset.itemTitle'),
+      lang: () => t('enhance.preset.itemLang'),
+      ctx: () => t('enhance.preset.itemCtx'),
+      rehydrate: () => t('enhance.preset.itemRehydrate')
+    };
+    return getRecommendedDiff().map((item) => labels[item.key]);
   }
 
   function renderEnhancePresetConfirmText() {
@@ -7744,6 +12395,7 @@
         }));
       }
     }
+    syncRecommendedCheckboxes({ force: forceSyncDrafts });
     renderEnhanceSectionUI();
   }
 
@@ -7882,6 +12534,12 @@
     }
   });
 
+  [['prompt', chkPresetPrompt], ['title', chkPresetTitle], ['lang', chkPresetLang], ['ctx', chkPresetCtx], ['rehydrate', chkPresetRehydrate]].forEach(([key, box]) => {
+    box?.addEventListener('change', () => {
+      recDirty[key] = true;
+    });
+  });
+
   btnEnhancePresetApply?.addEventListener('click', () => {
     if (isEnhanceBusy) return;
     const selectedResolvers = getSelectedPresetLabelResolvers();
@@ -7912,10 +12570,12 @@
     if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
     if (!mode || isEnhanceBusy) return;
 
-    const wantPrompt = Boolean(chkPresetPrompt?.checked);
-    const wantTitle = Boolean(chkPresetTitle?.checked);
-    const wantLang = Boolean(chkPresetLang?.checked);
-    const wantCtx = Boolean(chkPresetCtx?.checked);
+    const presetDiff = mode === 'preset' ? getRecommendedDiff() : [];
+    const wantPrompt = presetDiff.find((item) => item.key === 'prompt');
+    const wantTitle = presetDiff.find((item) => item.key === 'title');
+    const wantLang = presetDiff.find((item) => item.key === 'lang');
+    const wantCtx = presetDiff.find((item) => item.key === 'ctx');
+    const wantRehydrate = presetDiff.find((item) => item.key === 'rehydrate');
 
     isEnhanceBusy = true;
     syncEnhanceInteractiveDisabledState();
@@ -7935,8 +12595,8 @@
           const resolveItemLabel = () => [wantPrompt ? t('enhance.preset.itemPrompt') : '', wantTitle ? t('enhance.preset.itemTitle') : ''].filter(Boolean).join(t('list.sep'));
           try {
             const payload = {};
-            if (wantPrompt) payload.promptTier = 4;
-            if (wantTitle) payload.chineseTitle = true;
+            if (wantPrompt) payload.promptTier = wantPrompt.enable ? 4 : 0;
+            if (wantTitle) payload.chineseTitle = Boolean(wantTitle.enable);
             const eRes = await invokeEnhanceApi('apply', payload);
             if (!eRes || !eRes.ok) {
               const errPayload = eRes;
@@ -7958,9 +12618,9 @@
 
         if (wantLang) {
           try {
-            const lRes = await invokeModulesApi('toggle', 'chinese', true, {
-              language: 'zh-CN',
-              brandTitle: currentBrandTitle
+            const lRes = await invokeModulesApi('toggle', 'chinese', Boolean(wantLang.enable), {
+              language: wantLang.enable ? 'zh-CN' : 'en',
+              brandTitle: wantLang.enable ? currentBrandTitle : 'english'
             });
             if (!lRes || !lRes.ok) {
               const errPayload = lRes;
@@ -7978,7 +12638,9 @@
 
         if (wantCtx) {
           try {
-            const cRes = await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null });
+            const cRes = wantCtx.enable
+              ? await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null })
+              : await invokeUnlockApi('restore', {});
             if (!cRes || !cRes.ok) {
               const rawErr = cRes?.error;
               failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
@@ -7990,6 +12652,24 @@
           } catch (stepErr) {
             const rawErr = stepErr?.message;
             failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
+          }
+        }
+
+        if (wantRehydrate) {
+          try {
+            const rhRes = wantRehydrate.enable
+              ? await invokeRehydrateApi('apply', {})
+              : await invokeRehydrateApi('disable', {});
+            if (!rhRes || !rhRes.ok) {
+              const errPayload = rhRes;
+              failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${resolveSettingsErrorText(errPayload, 'rehydrate.err.applyFailed')}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemRehydrate'));
+              if (rhRes.changed !== false) anyChanged = true;
+            }
+          } catch (stepErr) {
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
           }
         }
       } else if (mode === 'restore') {
@@ -8039,6 +12719,19 @@
           const rawErr = stepErr?.message;
           failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
         }
+
+        try {
+          const rhRes = await invokeRehydrateApi('restore', {});
+          if (!rhRes || !rhRes.ok) {
+            const errPayload = rhRes;
+            failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${resolveSettingsErrorText(errPayload, 'msg.restoreFail')}`);
+          } else {
+            doneResolvers.push(() => t('enhance.preset.itemRehydrate'));
+          }
+        } catch (stepErr) {
+          const rawErr = stepErr?.message;
+          failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
+        }
       }
 
       if (needsHostRestart) needsRestartAfterApply = true;
@@ -8069,9 +12762,9 @@
 
       if (latestEnhanceStatus) {
         applyEnhanceStatusPayload(latestEnhanceStatus, { syncDrafts: true, forceSyncDrafts: true });
-        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus()]);
+        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus(), typeof refreshRehydrateStatus === 'function' ? refreshRehydrateStatus() : Promise.resolve()]);
       } else {
-        await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus()]);
+        await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus(), typeof refreshRehydrateStatus === 'function' ? refreshRehydrateStatus() : Promise.resolve()]);
       }
     } catch (e) {
       const rawErr = e?.message;
@@ -8115,6 +12808,263 @@
   });
 
   btnEnhanceRestartHost?.addEventListener('click', openClientRestartConfirmFlow);
+
+  function showRehydrateToast(msg) {
+    if (!rehydrateLinkToast) return;
+    if (rehydrateToastTimer) clearTimeout(rehydrateToastTimer);
+    rehydrateLinkToast.textContent = msg;
+    rehydrateLinkToast.style.display = 'block';
+    rehydrateToastTimer = setTimeout(() => {
+      rehydrateLinkToast.style.display = 'none';
+    }, 4500);
+  }
+
+  function showRehydrateResult(ok, messageOrResolver, opts = {}) {
+    if (!rehydrateResultBox || !rehydrateResultText) return;
+    const resolveMessage = typeof messageOrResolver === 'function'
+      ? messageOrResolver
+      : () => String(messageOrResolver ?? '');
+    rehydrateResultState = { ok, resolveMessage, isConfirmHint: Boolean(opts?.isConfirmHint) };
+    rehydrateResultBox.style.display = 'block';
+    rehydrateResultBox.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
+    rehydrateResultText.textContent = resolveMessage();
+  }
+
+  function disarmRehydrateRemove({ restoreText = true, clearConfirmHint = true } = {}) {
+    if (rehydrateRemoveArmTimer) {
+      clearTimeout(rehydrateRemoveArmTimer);
+      rehydrateRemoveArmTimer = null;
+    }
+    const wasArmed = rehydrateRemoveArmed;
+    rehydrateRemoveArmed = false;
+    if (restoreText && btnRehydrateRemove && !isRehydrateBusy) {
+      btnRehydrateRemove.textContent = t('rehydrate.btn.remove');
+    }
+    if (clearConfirmHint && rehydrateResultState?.isConfirmHint && rehydrateResultBox) {
+      rehydrateResultBox.style.display = 'none';
+      rehydrateResultState = null;
+    }
+    return wasArmed;
+  }
+
+  function syncRehydrateInteractiveState() {
+    const d = currentRehydrateStatus;
+    const busy = Boolean(isRehydrateBusy || isEnhanceBusy);
+    const unavailable = Boolean(d && d.supported === false);
+    const corrupt = Boolean(d && d.hooksFileValid === false);
+    const modCfgCorrupt = Boolean(d && d.modulesConfigValid === false);
+    const pyBlocked = Boolean(d && d.supported !== false && !d.pythonReady);
+    if (btnRehydrateInstallPython) {
+      btnRehydrateInstallPython.hidden = !pyBlocked;
+      btnRehydrateInstallPython.disabled = busy || unavailable;
+    }
+    if (btnRehydrateEnable) btnRehydrateEnable.disabled = busy || unavailable || corrupt || modCfgCorrupt || pyBlocked;
+    if (btnRehydrateDisable) btnRehydrateDisable.disabled = busy || unavailable || corrupt || modCfgCorrupt || !d?.hookRegistered || !d?.hookEnabled;
+    if (btnRehydrateRemove) btnRehydrateRemove.disabled = busy || unavailable || corrupt || (!d?.hookRegistered && !d?.scriptInstalled);
+    if (rehydrateRemoveArmed && btnRehydrateRemove?.disabled) {
+      disarmRehydrateRemove();
+    }
+    if (btnRehydrateRefresh) btnRehydrateRefresh.disabled = busy;
+  }
+
+  function renderRehydrateSectionUI() {
+    syncRehydrateInteractiveState();
+    const d = currentRehydrateStatus;
+    const unread = !d || d.supported === false;
+    if (rehydrateBadge) {
+      if (unread) {
+        rehydrateBadge.textContent = t('rehydrate.status.unread');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      } else if (d.status === 'enabled') {
+        rehydrateBadge.textContent = t('rehydrate.status.enabled');
+        rehydrateBadge.className = 'key-pill pill-ok';
+      } else if (d.status === 'disabled') {
+        rehydrateBadge.textContent = t('rehydrate.status.disabled');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      } else if (d.status === 'broken') {
+        rehydrateBadge.textContent = t('rehydrate.status.broken');
+        rehydrateBadge.className = 'key-pill pill-warn';
+      } else if (d.status === 'corrupt_hooks_json') {
+        rehydrateBadge.textContent = t('rehydrate.status.corrupt');
+        rehydrateBadge.className = 'key-pill pill-warn';
+      } else {
+        rehydrateBadge.textContent = t('rehydrate.status.notInstalled');
+        rehydrateBadge.className = 'key-pill pill-muted';
+      }
+    }
+    if (rehydrateStatHook) {
+      rehydrateStatHook.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.hookRegistered ? (d.hookEnabled ? t('rehydrate.state.hookEnabled') : t('rehydrate.state.hookDisabled')) : t('rehydrate.state.hookNone'));
+    }
+    if (rehydrateStatScript) {
+      rehydrateStatScript.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.scriptInstalled ? (d.scriptMatchesBundled ? t('rehydrate.state.scriptSynced') : t('rehydrate.state.scriptCustom')) : t('rehydrate.state.scriptMissing'));
+    }
+    if (rehydrateStatPython) {
+      rehydrateStatPython.textContent = unread
+        ? t('rehydrate.status.unread')
+        : (d.pythonReady ? t('rehydrate.state.pythonOk', { ver: d.pythonVersion || '3.10+' }) : (d.pythonVersion ? t('rehydrate.state.pythonOld', { ver: d.pythonVersion }) : t('rehydrate.state.pythonMissing')));
+    }
+    if (rehydrateStatSiblings) {
+      if (unread) {
+        rehydrateStatSiblings.textContent = t('rehydrate.status.unread');
+      } else if (d.hooksFileValid === false) {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsBlocked');
+      } else if (Array.isArray(d.otherHookNames) && d.otherHookNames.length > 0) {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsList', { names: d.otherHookNames.join(', ') });
+      } else {
+        rehydrateStatSiblings.textContent = t('rehydrate.state.siblingsNone');
+      }
+    }
+    if (rehydratePathsMeta && d && (d.hooksJsonPath || d.deployedScriptPath)) {
+      rehydratePathsMeta.textContent = t('rehydrate.paths.summary', {
+        hooksJson: d.hooksJsonPath || '~/.gemini/config/hooks.json',
+        script: d.deployedScriptPath || '~/.gemini/config/hooks/rehydrate_after_compact.py'
+      });
+    }
+    if (rehydrateDetailsArrow && rehydrateDetailsBody) {
+      const open = rehydrateDetailsBody.style.display === 'block';
+      rehydrateDetailsArrow.textContent = open ? t('drawer.shortCollapse') : t('drawer.shortExpand');
+    }
+  }
+
+  function applyRehydrateStatusPayload(statusData) {
+    currentRehydrateStatus = statusData;
+    syncEnhanceInteractiveDisabledState();
+    renderRehydrateSectionUI();
+    if (statusData && (statusData.status === 'corrupt_hooks_json' || statusData.status === 'broken' || statusData.modulesConfigValid === false) && statusData.errorKey) {
+      showRehydrateResult(false, () => t(statusData.errorKey));
+    }
+  }
+
+  async function refreshRehydrateStatus() {
+    const seq = ++rehydrateStatusReqSeq;
+    try {
+      const res = await invokeRehydrateApi('status', {});
+      if (seq !== rehydrateStatusReqSeq) return;
+      if (res && res.ok && res.data) {
+        applyRehydrateStatusPayload(res.data);
+      } else if (res && res.unavailable) {
+        currentRehydrateStatus = { supported: false };
+        syncEnhanceInteractiveDisabledState();
+        renderRehydrateSectionUI();
+      } else {
+        renderRehydrateSectionUI();
+      }
+    } catch {
+      if (seq !== rehydrateStatusReqSeq) return;
+      currentRehydrateStatus = null;
+      renderRehydrateSectionUI();
+    }
+  }
+
+  async function runRehydrateAction(endpoint, btnEl, busyKey, idleKey, onSuccess, payload = {}) {
+    if (isRehydrateBusy || isEnhanceBusy) return;
+    isRehydrateBusy = true;
+    syncEnhanceInteractiveDisabledState();
+    syncRehydrateInteractiveState();
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = t(busyKey);
+    }
+    showRehydrateResult(true, () => t(busyKey));
+    try {
+      await yieldForSettingsPaint();
+      const res = await invokeRehydrateApi(endpoint, payload);
+      if (!res || !res.ok) {
+        if (res?.status) applyRehydrateStatusPayload(res.status);
+        showRehydrateResult(false, () => t('rehydrate.result.fail', { err: resolveSettingsErrorText(res, 'msg.unknownErr') }));
+      } else {
+        if (res.status) applyRehydrateStatusPayload(res.status);
+        else await refreshRehydrateStatus();
+        showRehydrateResult(true, onSuccess(res));
+      }
+    } catch (e) {
+      const rawErr = e?.message;
+      showRehydrateResult(false, () => t('rehydrate.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') }));
+    } finally {
+      isRehydrateBusy = false;
+      if (btnEl) btnEl.textContent = t(idleKey);
+      syncEnhanceInteractiveDisabledState();
+      syncRehydrateInteractiveState();
+    }
+  }
+
+  btnRehydrateInstallPython?.addEventListener('click', () => {
+    disarmRehydrateRemove();
+    void runRehydrateAction('installPython', btnRehydrateInstallPython, 'rehydrate.btn.installPythonBusy', 'rehydrate.btn.installPython', (res) => {
+      const ver = res?.python?.version || res?.status?.pythonVersion || '3.12';
+      if (res?.alreadyInstalled) return () => t('rehydrate.result.pythonAlreadyReady', { ver });
+      return () => t('rehydrate.result.pythonInstalled', { ver });
+    });
+  });
+
+  btnRehydrateEnable?.addEventListener('click', () => {
+    disarmRehydrateRemove();
+    void runRehydrateAction('apply', btnRehydrateEnable, 'rehydrate.btn.enableBusy', 'rehydrate.btn.enable', (res) => {
+      if (res.changed === false) return () => t('rehydrate.result.alreadyEnabled');
+      const p = res.status?.hooksJsonPath || '~/.gemini/config/hooks.json';
+      return () => t('rehydrate.result.enabled', { path: p });
+    });
+  });
+
+  btnRehydrateDisable?.addEventListener('click', () => {
+    disarmRehydrateRemove();
+    void runRehydrateAction('disable', btnRehydrateDisable, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
+  });
+
+  btnRehydrateRemove?.addEventListener('click', () => {
+    if (isRehydrateBusy || isEnhanceBusy) return;
+    if (!rehydrateRemoveArmed) {
+      rehydrateRemoveArmed = true;
+      if (rehydrateRemoveArmTimer) clearTimeout(rehydrateRemoveArmTimer);
+      if (btnRehydrateRemove) btnRehydrateRemove.textContent = t('rehydrate.btn.removeConfirm');
+      showRehydrateResult(true, () => t('rehydrate.result.confirmRemoveHint'), { isConfirmHint: true });
+      rehydrateRemoveArmTimer = setTimeout(() => {
+        rehydrateRemoveArmTimer = null;
+        disarmRehydrateRemove({ restoreText: true, clearConfirmHint: true });
+      }, 4500);
+      return;
+    }
+    disarmRehydrateRemove({ restoreText: false, clearConfirmHint: false });
+    void runRehydrateAction('restore', btnRehydrateRemove, 'rehydrate.btn.removeBusy', 'rehydrate.btn.remove', () => () => t('rehydrate.result.removed'), { force: true });
+  });
+
+  btnRehydrateRefresh?.addEventListener('click', () => {
+    if (isRehydrateBusy) return;
+    disarmRehydrateRemove();
+    void refreshRehydrateStatus();
+  });
+
+  btnToggleRehydrateDetails?.addEventListener('click', () => {
+    if (!rehydrateDetailsBody) return;
+    const isHidden = rehydrateDetailsBody.style.display === 'none' || !rehydrateDetailsBody.style.display;
+    rehydrateDetailsBody.style.display = isHidden ? 'block' : 'none';
+    btnToggleRehydrateDetails.setAttribute('aria-expanded', String(isHidden));
+    renderRehydrateSectionUI();
+  });
+
+  linkRehydrateAuthor?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast, 'rehydrate.credit.linkOpened');
+  });
+
+  linkRehydrateAuthor?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      void openExternalWithFallback(REHYDRATE_AUTHOR_URL, showRehydrateToast, 'rehydrate.credit.linkOpened');
+    }
+  });
+
+  btnCopyRehydrateLink?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyUrlWithToast(REHYDRATE_AUTHOR_URL, showRehydrateToast, false);
+  });
 
   let selectedBrandTitle = currentBrandTitle;
 
@@ -8315,9 +13265,6 @@
     brandApplyFeedback.textContent = resolveMessage();
     if (!isApplied) {
       const rBtn = document.createElement('button');
-      rBtn.type = 'button';
-      rBtn.className = 'unlock-btn unlock-btn-secondary';
-      rBtn.style.cssText = 'margin-left:8px;padding:2px 8px;font-size:11px;cursor:pointer;';
       rBtn.textContent = t('models.btnRestartHost');
       rBtn.addEventListener('click', () => openClientRestartConfirmFlow());
       brandApplyFeedback.appendChild(rBtn);
@@ -8419,6 +13366,7 @@
       }
 
       currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
+      syncRecommendedCheckboxes();
       currentBrandTitle = cfg.modules?.chinese?.brandTitle || 'english';
       syncBrandTitleButtons(currentBrandTitle);
       syncRuntimeBrandConfig(currentBrandTitle);
@@ -8459,6 +13407,20 @@
         } catch { }
         return false;
       })();
+      if (!hasExplicitPanelLanguage && !resolveExplicitPanelLanguagePref()) {
+        const hasExplicitRuntimeSignal = Boolean(
+          (typeof window.__AGY_I18N_CONFIG__ === 'object' && window.__AGY_I18N_CONFIG__)
+          || (typeof window.__AGY_CHINESE_CONFIG__ === 'object' && window.__AGY_CHINESE_CONFIG__)
+          || (runtimeMeta && typeof runtimeMeta.chineseActive === 'boolean')
+          || resolveHostClientLanguageSignal()
+        );
+        if (hasExplicitRuntimeSignal) {
+          const followLang = isDomTranslated ? 'zh-CN' : 'en';
+          if (followLang !== currentPanelLanguage) {
+            void applyPanelLanguage(followLang, { persist: false });
+          }
+        }
+      }
       const disk = res.disk || {};
       const isChineseDiskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
       const isChinesePartial = Boolean(disk.chinese && disk.chineseReady === false);
@@ -8814,7 +13776,7 @@
   // 热力图视图切换（每天 / 每周 / 累计总量）
 
   // 费用估算范围（默认本期：自然月）与估值模式（默认参考模型折算，首屏展示真实用量价值）
-  let activeCostScope = 'period'; // 'period' | 'all'
+  let activeCostScope = defaultViewPrefs.costScope; // 'period' | 'all'
   let costModelMode = 'ref'; // 'ref' | 'hybrid' | 'identified'
   let activeRefMode = 'all'; // 兼容旧接口 'all' | 'hybrid'
 
@@ -9344,27 +14306,56 @@
   });
 
   el('refresh').addEventListener('click', () => { if (state.route && !state.scanBusy) void scan(state.generation, state.route, true); });
-  const outside = e => {
-    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+  const closeColorPickerIfOutside = (e) => {
+    const path = typeof e?.composedPath === 'function' ? e.composedPath() : [];
     const pop = el('color-picker-popover');
-    if (!path.includes(host)) {
-      closeColorPicker(true);
-      toggle(false);
-      hideContextTooltip();
-      const om = el('overflow-menu');
-      if (om) om.hidden = true;
-      syncHostStackingElevation(false);
-      return;
-    }
-    const isClosingNow = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute('data-closing') === 'true';
+    const isClosingNow = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute?.('data-closing') === 'true';
     if (pop && !pop.hidden && !isClosingNow) {
-      const isInsidePicker = path.includes(pop);
+      const isInsidePicker = path.includes(pop) || Boolean(e?.target && pop.contains?.(e.target));
       const isSwatchBtn = path.some(n => n?.classList?.contains?.('color-swatch-btn') || n?.classList?.contains?.('heat-leg-swatch') || n?.id?.startsWith?.('swatch-') || n?.id?.startsWith?.('heat-leg-'));
       if (!isInsidePicker && !isSwatchBtn) {
         closeColorPicker();
       }
     }
   };
+  const closePanelPickerIfOutside = (e) => {
+    const om = el('overflow-menu');
+    if (!om || om.hidden) return;
+    const path = typeof e?.composedPath === 'function' ? e.composedPath() : [];
+    const hitTriggerOrMenu = ['overflow-menu', 'badge', 'badge-quota', 'badge-overflow', 'badge-dock-wake'].some((id) => {
+      const node = el(id);
+      return Boolean(node && (path.includes(node) || (e?.target && node.contains?.(e.target))));
+    });
+    if (!hitTriggerOrMenu) {
+      closePanelPicker();
+    }
+  };
+  if (typeof shadow?.addEventListener === 'function') {
+    const onShadowOutsideUiClick = (e) => {
+      closeColorPickerIfOutside(e);
+      closePanelPickerIfOutside(e);
+    };
+    shadow.addEventListener('click', onShadowOutsideUiClick);
+    activeDisposers.add(() => { shadow?.removeEventListener?.('click', onShadowOutsideUiClick); });
+  }
+  const outside = e => {
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    if (!path.includes(host)) {
+      closeColorPicker(true);
+      const isPersistentDocked = (dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
+      if (!isPersistentDocked) {
+        toggle(false);
+        syncHostStackingElevation(false);
+      }
+      hideContextTooltip();
+      closePanelPicker();
+      return;
+    }
+    closeColorPickerIfOutside(e);
+    closePanelPickerIfOutside(e);
+  };
+  const isFocusInsidePlugin = () => typeof document !== 'undefined'
+    && (document.activeElement === host || Boolean(shadow?.activeElement));
   const escape = e => {
     if (e.key === 'Escape') {
       if (accountsUiState.removeModal?.open) {
@@ -9380,31 +14371,38 @@
       if (pop && !pop.hidden && !isEscClosing) {
         const returnFocus = activePickerAnchor;
         closeColorPicker();
-        returnFocus?.focus?.();
+        if (isFocusInsidePlugin()) returnFocus?.focus?.();
+        return;
+      }
+      const om = el('overflow-menu');
+      if (om && !om.hidden) {
+        const returnTrigger = el(activePickerAnchorId || 'badge-overflow') || el('badge-overflow');
+        suppressFocusPickerUntil = Date.now() + 300;
+        closePanelPicker();
+        if (isFocusInsidePlugin()) returnTrigger?.focus?.();
         return;
       }
       const tokenDrawer = el('token-color-drawer-body');
       if (tokenDrawer && tokenDrawer.style.display !== 'none') {
         toggleTokenColorsDrawer(false);
-        btnTokenColors?.focus?.();
+        if (isFocusInsidePlugin()) btnTokenColors?.focus?.();
         return;
       }
       const colorDrawer = el('color-drawer-body');
       if (colorDrawer && colorDrawer.style.display !== 'none') {
         toggleColorsDrawer(false);
-        btnColors?.focus?.();
+        if (isFocusInsidePlugin()) btnColors?.focus?.();
         return;
       }
       toggle(false);
       hideContextTooltip();
-      const om = el('overflow-menu');
-      if (om) om.hidden = true;
+      closePanelPicker();
       syncHostStackingElevation(false);
-      el('badge')?.focus?.();
+      if (isFocusInsidePlugin()) el('badge')?.focus?.();
     }
   };
   document.addEventListener('click', outside);
-  document.addEventListener('keydown', escape);
+  document.addEventListener('keydown', escape, true);
 
   // =========================================================================
   // 模块 4: 数据渲染、完整本地 Token 历史读取与首次使用日起算时间轴
@@ -9629,6 +14627,12 @@
       if (typeof refreshQuotaTokenEstimates === 'function') {
         refreshQuotaTokenEstimates();
       }
+    }
+    if (payload.dynamicPricingCatalog && typeof setDynamicPricingCatalog === 'function') {
+      setDynamicPricingCatalog(payload.dynamicPricingCatalog);
+    }
+    if (Array.isArray(payload.recentRequestLogs)) {
+      ANTIGRAVITY_TOKEN_DATA.recentRequestLogs = payload.recentRequestLogs;
     }
     if (Array.isArray(payload.speedRecords)) {
       ANTIGRAVITY_TOKEN_DATA.speedRecords = payload.speedRecords;
@@ -10089,6 +15093,9 @@
 
     computeTimelineWindow();
     renderActiveHeatView(true);
+    if (activeTokenView === 'requests' || (Array.isArray(payload?.recentRequestLogs) && payload.recentRequestLogs.length > 0)) {
+      renderRequestsLiveView({ force: true });
+    }
     return true;
   }
 
@@ -10129,8 +15136,131 @@
     }
   }
 
-  async function restoreSettingsFromHost() {
+  function collectCurrentViewPrefs() {
+    return normalizeDefaultViewPrefs({
+      heatView: activeHeatView,
+      modelUsagePeriodDays,
+      speedRangeDays,
+      costScope: activeCostScope,
+      contextTrendMode: state.contextTrendMode,
+      contextTrendGranularity: state.contextTrendGranularity,
+      timelineDeltaOnly: Boolean(state.timelineDeltaOnly),
+      timelineSortOrder: state.timelineSortOrder,
+      reqLogSortBy
+    });
+  }
+
+  function syncAllViewPrefControlsUi() {
+    setPillActive(el('model-period-7d'), modelUsagePeriodDays === 7);
+    setPillActive(el('model-period-30d'), modelUsagePeriodDays === 30);
+    Object.entries(SPEED_RANGE_MAP || {}).forEach(([btnId, val]) => {
+      setPillActive(el(btnId), String(speedRangeDays) === String(val));
+    });
+    setPillActive(el('cost-btn-scope-period'), activeCostScope === 'period');
+    setPillActive(el('cost-btn-scope-all'), activeCostScope === 'all');
+    if (typeof syncTrendControlButtons === 'function') syncTrendControlButtons();
+    if (typeof syncTimelineSortAndDeltaUi === 'function') syncTimelineSortAndDeltaUi();
+    el('req-sort-bar')?.querySelectorAll?.('[data-req-sort]').forEach(btn => {
+      const act = btn.getAttribute('data-req-sort') === reqLogSortBy;
+      setPillActive(btn, act);
+      btn.setAttribute?.('aria-pressed', act ? 'true' : 'false');
+    });
+  }
+
+  function applyDefaultViewPrefs(rawPrefs, { rerender = true, persistLocal = false } = {}) {
+    const prefs = normalizeDefaultViewPrefs(rawPrefs, defaultViewPrefs?.heatView);
+    defaultViewPrefs = prefs;
+    if (persistLocal) {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(DEFAULT_VIEW_PREFS_KEY, JSON.stringify(prefs));
+      } catch { }
+    }
+    modelUsagePeriodDays = prefs.modelUsagePeriodDays;
+    speedRangeDays = prefs.speedRangeDays;
+    activeCostScope = prefs.costScope;
+    state.contextTrendMode = prefs.contextTrendMode;
+    state.contextTrendGranularity = prefs.contextTrendGranularity;
+    state.timelineDeltaOnly = prefs.timelineDeltaOnly;
+    state.timelineSortOrder = prefs.timelineSortOrder;
+    reqLogSortBy = prefs.reqLogSortBy;
+
+    if (rerender) {
+      switchHeatView(prefs.heatView, false);
+      switchCostScope(prefs.costScope);
+      renderModelUsageView();
+      renderSpeedComparisonTab();
+      if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+      if (state.historyDrawerOpen) renderSessionTimeline();
+      renderRequestsLiveView({ force: true });
+    } else {
+      activeHeatView = prefs.heatView;
+      ['daily', 'weekly', 'monthly', 'yearly', 'cum'].forEach(v => {
+        const tabBtn = el(`h-tab-${v}`);
+        const box = el(`h-${v}-box`);
+        const isActive = v === prefs.heatView;
+        if (tabBtn) {
+          tabBtn.classList?.toggle?.('active', isActive);
+          tabBtn.setAttribute?.('aria-selected', isActive ? 'true' : 'false');
+          tabBtn.setAttribute?.('tabindex', isActive ? '0' : '-1');
+        }
+        if (box) {
+          box.style.display = isActive ? ((v === 'weekly' || v === 'monthly' || v === 'yearly') ? 'flex' : 'block') : 'none';
+        }
+      });
+    }
+    syncAllViewPrefControlsUi();
+    return prefs;
+  }
+
+  let saveDefaultFeedbackTimers = new Map();
+  async function saveCurrentViewAsDefault(triggerBtnId = null) {
+    const prefs = collectCurrentViewPrefs();
+    defaultViewPrefs = prefs;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(DEFAULT_VIEW_PREFS_KEY, JSON.stringify(prefs));
+      }
+    } catch { }
+    if (typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
+      window.__AGContextMeterSettings = {
+        ...window.__AGContextMeterSettings,
+        savedHeatView: prefs.heatView,
+        defaultViewPrefs: { ...prefs },
+        uiPreferences: {
+          ...(window.__AGContextMeterSettings.uiPreferences || {}),
+          savedHeatView: prefs.heatView,
+          defaultViewPrefs: { ...prefs }
+        }
+      };
+    }
+    const targetBtns = ['btn-save-default-view-ctx', 'btn-save-default-view-tokens', 'btn-save-default-view-speed']
+      .map(id => el(id))
+      .filter(Boolean);
+    for (const btn of targetBtns) {
+      const btnKey = btn.id || triggerBtnId || 'default';
+      if (saveDefaultFeedbackTimers.has(btnKey)) {
+        clearTimeout(saveDefaultFeedbackTimers.get(btnKey));
+      }
+      if (!triggerBtnId || btn.id === triggerBtnId) {
+        btn.classList?.add?.('is-saved');
+        btn.textContent = t('prefs.savedFeedback');
+        const tm = setTimeout(() => {
+          btn.classList?.remove?.('is-saved');
+          btn.textContent = t('prefs.saveDefault');
+          saveDefaultFeedbackTimers.delete(btnKey);
+        }, 2000);
+        saveDefaultFeedbackTimers.set(btnKey, tm);
+      }
+    }
+    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+      await saveSettingsPayloadBridge({ defaultViewPrefs: prefs, savedHeatView: prefs.heatView });
+    }
+    return prefs;
+  }
+
+  async function restoreSettingsFromHost(opts = {}) {
     if (state.disposed) return;
+    const preserveSessionView = Boolean(opts?.preserveSessionView);
     const thisSeq = ++restoreRequestSeq;
     const startActionSeq = userActionSeq;
     try {
@@ -10196,9 +15326,21 @@
         renderHeaderModelDropdown();
         if (!ctxDraftDirty) loadDraftFromSelectedModel(true);
         else renderCompactSessionCard();
-        const savedView = settingsRes.savedHeatView || settingsRes.uiPreferences?.savedHeatView;
-        if (savedView && ['daily', 'weekly', 'monthly', 'yearly', 'cum'].includes(savedView)) {
-          switchHeatView(savedView, false);
+        const explicitDefaults = (settingsRes.uiPreferences?.defaultViewPrefs && typeof settingsRes.uiPreferences.defaultViewPrefs === 'object')
+          ? settingsRes.uiPreferences.defaultViewPrefs
+          : null;
+        if (preserveSessionView) {
+          if (explicitDefaults) {
+            defaultViewPrefs = normalizeDefaultViewPrefs(settingsRes.defaultViewPrefs || explicitDefaults, defaultViewPrefs?.heatView);
+          }
+        } else if (explicitDefaults) {
+          applyDefaultViewPrefs(settingsRes.defaultViewPrefs || explicitDefaults, { rerender: true, persistLocal: true });
+        } else {
+          const savedView = settingsRes.savedHeatView || settingsRes.uiPreferences?.savedHeatView;
+          if (savedView && ['daily', 'weekly', 'monthly', 'yearly', 'cum'].includes(savedView)) {
+            switchHeatView(savedView, false);
+          }
+          syncAllViewPrefControlsUi();
         }
         const savedAutoUpdate = settingsRes.autoCheckUpdate !== undefined
           ? settingsRes.autoCheckUpdate
@@ -10208,10 +15350,71 @@
           const chk = el('check-auto-update');
           if (chk) chk.checked = autoCheckUpdate;
         }
-        const savedLang = settingsRes.panelLanguage || settingsRes.uiPreferences?.panelLanguage;
-        if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang) && savedLang !== currentPanelLanguage) {
-          await applyPanelLanguage(savedLang, { persist: false });
+        const savedAllowBeta = settingsRes.allowBetaUpdates !== undefined
+          ? settingsRes.allowBetaUpdates
+          : settingsRes.uiPreferences?.allowBetaUpdates;
+        if (savedAllowBeta !== undefined) {
+          allowBetaUpdates = savedAllowBeta === true;
+          const chkBeta = el('check-allow-beta-updates');
+          if (chkBeta) chkBeta.checked = allowBetaUpdates;
         }
+        const savedDock = settingsRes.dockPosition || settingsRes.uiPreferences?.dockPosition;
+        const savedHideTopbar = settingsRes.hideTopbar ?? settingsRes.uiPreferences?.hideTopbar;
+        if (savedHideTopbar !== undefined) {
+          setHideTopbar(savedHideTopbar === true, { persist: false });
+        }
+        const normalizedSavedDock = savedDock === 'page' ? 'flow' : savedDock;
+        if (savedDock === 'page' && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+          void saveSettingsPayloadBridge({ dockPosition: 'flow', hideTopbar: isTopbarHidden });
+        }
+        if (preserveSessionView && dockPosition === 'page') {
+          syncDockPositionUi();
+        } else if (normalizedSavedDock && VALID_DOCK_POSITIONS.includes(normalizedSavedDock) && normalizedSavedDock !== dockPosition) {
+          setDockPosition(normalizedSavedDock, { persist: false });
+        } else {
+          syncDockPositionUi();
+        }
+        const savedQuotaMode = settingsRes.quotaBadgeWindowMode || settingsRes.uiPreferences?.quotaBadgeWindowMode;
+        if (savedQuotaMode && VALID_QUOTA_WINDOW_MODES.includes(savedQuotaMode) && savedQuotaMode !== quotaBadgeWindowMode) {
+          setQuotaBadgeWindowMode(savedQuotaMode, { persist: false });
+        } else {
+          syncQuotaWindowModeUi();
+        }
+        const savedLang = settingsRes.uiPreferences?.panelLanguage
+          || (settingsRes.panelLanguageExplicit !== false ? settingsRes.panelLanguage : null);
+        if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang)) {
+          hasExplicitPanelLanguage = true;
+          if (savedLang !== currentPanelLanguage) {
+            await applyPanelLanguage(savedLang, { persist: false });
+          }
+        } else {
+          try {
+            const localLang = localStorage?.getItem('ag_panel_language');
+            if (localLang && ['zh-CN', 'zh-TW', 'en'].includes(localLang)) {
+              hasExplicitPanelLanguage = true;
+              if (localLang !== currentPanelLanguage) {
+                await applyPanelLanguage(localLang, { persist: false });
+              }
+            }
+          } catch { }
+        }
+        const savedTurnFooter = settingsRes.showTurnFooterStats ?? settingsRes.uiPreferences?.showTurnFooterStats;
+        if (savedTurnFooter !== undefined) {
+          showTurnFooterStats = savedTurnFooter !== false;
+          const chkTurnFooter = el('chk-show-turn-footer-stats');
+          if (chkTurnFooter) chkTurnFooter.checked = showTurnFooterStats;
+          renderTurnFooterStats();
+        }
+        const savedComposerQuota = settingsRes.showComposerQuotaSummary ?? settingsRes.uiPreferences?.showComposerQuotaSummary;
+        if (savedComposerQuota !== undefined) {
+          showComposerQuotaSummary = savedComposerQuota !== false;
+          const chkCompQuota = el('chk-show-composer-quota');
+          if (chkCompQuota) chkCompQuota.checked = showComposerQuotaSummary;
+          if (typeof renderComposerQuotaSummary === 'function') {
+            renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
+          }
+        }
+        hasCompletedStartupRestore = true;
       } else {
         try {
           const localLang = localStorage?.getItem('ag_panel_language');
@@ -10266,6 +15469,7 @@
   let lastAutomaticHistorySync = null;
   let hasScheduledInitialUpdateCheck = false;
   let startupRestorePromise = null;
+  let hasCompletedStartupRestore = false;
 
   function syncPendingAutomaticHistory() {
     if (!automaticHistorySyncPending || historySyncBusy || state.disposed) return;
@@ -10305,7 +15509,9 @@
       };
       const restoreStep = startupRestorePromise
         ? startupRestorePromise
-        : restoreSettingsFromHost();
+        : (hasCompletedStartupRestore
+          ? restoreSettingsFromHost({ preserveSessionView: true })
+          : restoreSettingsFromHost());
       const [, res] = await Promise.all([restoreStep, fetchHistoryAsync()]);
       if (state.disposed) return;
       if (typeof window !== 'undefined' && window.__AGContextMeterHistory) {
@@ -10350,7 +15556,9 @@
   function positionUpdatePopover(trigger = currentUpdateTrigger) {
     const pop = el('update-popover');
     if (!pop) return;
-    const triggerBtn = trigger === 'ctx' ? el('btn-check-update-ctx') : el('btn-check-update');
+    const triggerBtn = trigger === 'ctx'
+      ? (el('btn-check-update-ctx') || el('v') || el('btn-check-update'))
+      : (el('btn-check-update') || el('v'));
     if (!triggerBtn || typeof triggerBtn.getBoundingClientRect !== 'function') return;
     const rect = triggerBtn.getBoundingClientRect();
     const winW = typeof window !== 'undefined' ? (window.innerWidth || 1024) : 1024;
@@ -10440,7 +15648,7 @@
     }
 
     try {
-      const checkReq = { force: manual, currentVersion: currentVer };
+      const checkReq = { force: manual, currentVersion: currentVer, allowBetaUpdates };
       const out = await callBackendWithPriority({
         ipcCall: hasIpcUpdateBridge ? () => window.contextMeterAPI.checkUpdate(checkReq) : null,
         liveRoute: '/check-update',
@@ -10660,8 +15868,19 @@
     }
   });
 
+  const chkBetaInit = el('check-allow-beta-updates');
+  if (chkBetaInit) {
+    chkBetaInit.checked = allowBetaUpdates;
+    chkBetaInit.addEventListener('change', e => {
+      allowBetaUpdates = e.target.checked === true;
+      if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+        void saveSettingsPayloadBridge({ allowBetaUpdates });
+      }
+    });
+  }
+
   /* @INSERT_HEATMAP_MODULE */
-  function updateRingAndBubble(d, session, pct, danger, stale, incomplete) {
+  function updateRingAndBubble(d, session, pct, danger, stale, incomplete, dispArg, isCompactingNow) {
     const ringFill = el('ring-fill');
     const tipTitle = el('ctx-tip-title');
     const tipPct = el('ctx-tip-pct');
@@ -10703,11 +15922,21 @@
     // 2. 悬停信息气泡三层文案（标题 — 使用比例 — 用量与容量）
     if (!tipTitle || !tipPct || !tipDetail) return;
 
-    const disp = resolveDisplayStatus(d, session);
+    const disp = dispArg || resolveDisplayStatus(d, session);
     if (disp.isError || disp.kind === 'canceled') {
       tipTitle.textContent = disp.tipTitle;
       tipPct.textContent = disp.tipPct;
       tipDetail.textContent = disp.tipDetail;
+    } else if (isCompactingNow) {
+      tipTitle.textContent = t('tip.title.compacting');
+      tipPct.textContent = t('tip.pct.compacting');
+      if (d?.actual != null && d?.budget) {
+        tipDetail.textContent = t('tip.detail.usedOfBudget', { used: fmtBubbleToken(d.actual), budget: fmtBubbleToken(d.budget), inc: '' });
+      } else if (d?.compacted && d?.postCompactEstimate != null && d?.budget) {
+        tipDetail.textContent = t('tip.detail.compacted', { used: fmtBubbleToken(d.postCompactEstimate), budget: fmtBubbleToken(d.budget) });
+      } else {
+        tipDetail.textContent = t('tip.detail.waitBg');
+      }
     } else if (stale && d?.actual != null && d?.budget) {
       const usedRound = Math.min(100, Math.max(0, Math.round((d.actual / d.budget) * 100)));
       const remRound = Math.max(0, 100 - usedRound);
@@ -10720,6 +15949,20 @@
       tipDetail.textContent = session?.total
         ? t('tip.detail.sessionEst', { low: fmtBubbleToken(session.total.low), high: fmtBubbleToken(session.total.high) })
         : t('tip.detail.waitBg');
+    } else if (d?.compacted && d?.postCompactEstimate != null && d?.budget) {
+      const rawPct = pct != null ? pct : (d.postCompactEstimate / d.budget) * 100;
+      const usedRound = rawPct > 0 && rawPct < 1 ? 1 : Math.min(100, Math.max(0, Math.round(rawPct)));
+      const remRound = Math.max(0, 100 - usedRound);
+      tipTitle.textContent = t('tip.title.compacted');
+      tipPct.textContent = t('tip.pct.compacted', { used: usedRound, rem: remRound });
+      tipDetail.textContent = t('tip.detail.compacted', {
+        used: fmtBubbleToken(d.postCompactEstimate),
+        budget: fmtBubbleToken(d.budget)
+      });
+    } else if (d?.compacted && d?.postCompactEstimate != null && !d?.budget) {
+      tipTitle.textContent = t('tip.title.compacted');
+      tipPct.textContent = t('tip.pct.noBudget');
+      tipDetail.textContent = t('tip.detail.compactedNoBudget', { used: fmtBubbleToken(d.postCompactEstimate) });
     } else if (d?.actual != null && d?.budget) {
       const rawPct = pct != null ? pct : (d.actual / d.budget) * 100;
       const usedRound = rawPct > 0 && rawPct < 1 ? 1 : Math.min(100, Math.max(0, Math.round(rawPct)));
@@ -10777,6 +16020,35 @@
   function resolveSpeedEvaluationInput() {
     if (state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object') {
       return state.speedOverrideForTest;
+    }
+    const isRemoteSession = Boolean(
+      state.scan?.session?.isRemote === true ||
+      state.latest?.isRemote === true ||
+      state.latest?.status === 'remote_unavailable' ||
+      /remote|cloud/i.test(String(state.scan?.session?.locationKind || ''))
+    );
+    const hasLocalSpeedData = Boolean(
+      state.latest?.speed?.ttft != null ||
+      state.latest?.speed?.duration != null ||
+      state.latest?.speed?.streamingTps != null ||
+      state.latest?.speed?.tps != null ||
+      (resolveLatestSessionCallRecord() && (
+        resolveLatestSessionCallRecord().ttftSec != null ||
+        resolveLatestSessionCallRecord().durationSec != null ||
+        resolveLatestSessionCallRecord().outputTokens > 0
+      ))
+    );
+    if (isRemoteSession && !hasLocalSpeedData) {
+      if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
+        state.livePendingRequest = null;
+        stopLiveWaitTickTimer();
+      }
+      return {
+        phase: 'remote_unavailable',
+        status: 'remote_unavailable',
+        outcomeStatus: 'remote_unavailable',
+        isRemote: true
+      };
     }
     if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
       const elapsedSec = Math.max(0, (Date.now() - state.livePendingRequest.startedAtMs) / 1000);
@@ -10862,6 +16134,53 @@
     return { phase: 'idle', status: 'idle' };
   }
 
+  function updateLiveSpeedTracker(routeId, row, summary, callInfo) {
+    if (!routeId || !row || !summary?.speed) {
+      state.liveSpeed = null;
+      return { isActivelyStreaming: false };
+    }
+    const cm = row.chatModel || {};
+    const sp = summary.speed;
+    const callKey = callInfo?.callId || cm.usage?.responseId || String(row.stepIndices?.[0] ?? row.stepIndex ?? 'latest');
+    const curOut = Number(sp.outputTokens || 0);
+    const curStreamSec = sp.streamingSec != null ? Number(sp.streamingSec) : null;
+    const explicitStreaming = Boolean(row.isStreaming === true || row.status === 'streaming');
+    const explicitFinal = Boolean(row.status === 'final' || row.status === 'completed' || cm.finishReason || row.finishReason || row.done === true);
+
+    const prev = state.liveSpeed && state.liveSpeed.routeId === routeId && state.liveSpeed.callKey === callKey
+      ? state.liveSpeed
+      : null;
+    const dOut = prev ? (curOut - prev.prevOut) : 0;
+    const dStream = (prev && curStreamSec != null && prev.prevStreamSec != null) ? (curStreamSec - prev.prevStreamSec) : 0;
+    const isGrowing = dOut > 0 || dStream > 0;
+
+    let emaTps = prev ? prev.emaTps : null;
+    if (sp.phase === 'warming') {
+      emaTps = null;
+    } else if (!explicitFinal && isGrowing && dStream >= 0.25 && dOut >= 4) {
+      const instTps = dOut / dStream;
+      const anchor = sp.streamingTps || emaTps || instTps;
+      const clamped = anchor > 0 ? Math.min(Math.max(instTps, anchor * 0.35), anchor * 2.5) : instTps;
+      const base = emaTps ?? sp.streamingTps ?? clamped;
+      emaTps = Number((base * 0.55 + clamped * 0.45).toFixed(1));
+    } else if (explicitFinal || (!explicitStreaming && prev && !isGrowing)) {
+      emaTps = null;
+    }
+
+    const isActivelyStreaming = Boolean(
+      !explicitFinal && (explicitStreaming || sp.phase === 'warming' || isGrowing)
+    );
+    state.liveSpeed = {
+      routeId,
+      callKey,
+      prevOut: curOut,
+      prevStreamSec: curStreamSec,
+      emaTps,
+      isActivelyStreaming
+    };
+    return { isActivelyStreaming };
+  }
+
   function applyElv91PillTone(badgeEl, evalRes) {
     if (!badgeEl || !evalRes?.badge) return;
     const sev = evalRes.badge.severity || 'neutral';
@@ -10873,13 +16192,83 @@
     badgeEl.textContent = `${evalRes.badge.glyph ? evalRes.badge.glyph + ' ' : ''}${evalRes.badge.text}`;
   }
 
+  function collectSessionCallsForSpeed() {
+    const merged = new Map();
+    const addList = (arr) => {
+      if (!Array.isArray(arr)) return;
+      for (const c of arr) {
+        if (!c || typeof c !== 'object') continue;
+        const k = c.callId || `__anon_${merged.size}`;
+        const prev = merged.get(k);
+        merged.set(k, prev ? { ...prev, ...c } : c);
+      }
+    };
+    addList(state.scan?.recentGeneratorCalls);
+    if (state.scan?.latestCallRecord) addList([state.scan.latestCallRecord]);
+    addList(state.sessionCalls);
+    return Array.from(merged.values());
+  }
+
+  function getSessionAverageSpeed(evalRes = null) {
+    if (typeof summarizeSessionSpeed !== 'function') return null;
+    const isMock = Boolean(state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object');
+    const sp = state.latest?.speed || null;
+    const fb = evalRes && (evalRes.streamSpeed != null || evalRes.overallTps != null)
+      ? {
+        streamSpeed: evalRes.streamSpeed,
+        overallTps: evalRes.overallTps,
+        outputTokens: evalRes.outputTokens,
+        totalDurationSec: sp?.duration ?? null,
+        streamingSec: sp?.streamingSec ?? null,
+        isSampleSparse: Boolean(evalRes.isSampleSparse)
+      }
+      : sp;
+    const calls = isMock ? [] : collectSessionCallsForSpeed();
+    return summarizeSessionSpeed(calls, fb);
+  }
+
+  function updateSpeedBadgeHoverTitle(evalRes, avgSp) {
+    const speedBadge = el('badge-speed');
+    if (!speedBadge) return;
+    const sp = state.latest?.speed || null;
+    if (avgSp?.avgTps != null) {
+      const latestStream = evalRes?.streamSpeed ?? sp?.streamingTps ?? null;
+      const latestOverall = evalRes?.overallTps ?? sp?.tps ?? null;
+      const latestPrimary = latestStream ?? latestOverall;
+      const latestPart = latestPrimary != null
+        ? t('badge.speedLatestPart', {
+          tps: latestOverall ?? latestPrimary,
+          streaming: latestStream ? t('badge.speedStreamingPart', { tps: latestStream }) : '',
+          duration: sp?.duration || evalRes?.durationFormatted || '—',
+          ttft: sp?.ttft || evalRes?.ttftFormatted || '—',
+          streamSec: sp?.streamingSec || '—',
+          output: fmt(evalRes?.outputTokens ?? sp?.outputTokens ?? 0)
+        })
+        : '';
+      speedBadge.title = t('badge.speedTitleDetail', {
+        avgTps: avgSp.avgTps,
+        count: avgSp.count,
+        totalOut: fmt(avgSp.totalOutputTokens),
+        totalDur: avgSp.totalDurationSec ?? '—',
+        latestPart
+      });
+    } else if (evalRes?.phase === 'waiting' || state.requestBusy) {
+      speedBadge.title = t('badge.speedTitleWait');
+    } else {
+      speedBadge.title = t('badge.speedTitleIdle');
+    }
+  }
+
   function renderSpeedExperienceInPlace(evalRes) {
     if (!evalRes) return;
     const isEn = currentPanelLanguage === 'en';
     const isTw = currentPanelLanguage === 'zh-TW';
     const activeColor = evalRes.badge?.color || '';
+    const avgSp = getSessionAverageSpeed(evalRes);
 
+    const bSpeed = el('badge-speed');
     const speedAmount = el('speed-amount');
+    const waitSvgWrap = el('badge-speed-wait-svg');
     const overflowSpeedVal = el('overflow-speed-val');
     const topBolt = el('badge-speed-icon');
     const cardBolt = el('speed-summary-bolt');
@@ -10890,26 +16279,53 @@
 
     const isCompact = state.layoutMode === 'compact';
     const shortSampleText = t('session.speed.shortSampleBadge');
-    if (speedAmount) {
-      if (evalRes.phase === 'waiting') {
-        speedAmount.textContent = isCompact ? evalRes.elapsedFormatted : (isEn ? `Wait ${evalRes.elapsedFormatted}` : `等待 ${evalRes.elapsedFormatted}`);
-        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.elapsedFormatted}`;
-      } else if (evalRes.isSampleSparse) {
-        speedAmount.textContent = shortSampleText;
-        if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
-      } else if (evalRes.streamSpeed != null) {
-        speedAmount.textContent = isCompact ? `${evalRes.streamSpeed}` : `${evalRes.streamSpeed} tok/s`;
-        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.streamSpeed} tok/s`;
-      } else if (evalRes.overallTps != null) {
-        speedAmount.textContent = isCompact ? `${evalRes.overallTps}` : `${evalRes.overallTps} tok/s`;
-        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.overallTps} tok/s`;
-      } else {
-        speedAmount.textContent = isCompact ? '--' : '-- tok/s';
-        if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
+    if (evalRes.phase === 'waiting') {
+      // ELV-93: 等待态顶栏纯 SVG 沙漏动效，去除每秒文字变化导致的横向抖动
+      bSpeed?.setAttribute?.('data-speed-phase', 'waiting');
+      if (waitSvgWrap) waitSvgWrap.hidden = false;
+      if (speedAmount) speedAmount.textContent = '';
+      if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.elapsedFormatted || '0s'}`;
+      if (bSpeed) {
+        const waitTip = t('badge.speedWaitTitle', { elapsed: evalRes.elapsedFormatted || '0s' });
+        bSpeed.title = waitTip;
+        bSpeed.setAttribute?.('aria-label', waitTip);
       }
+    } else if (evalRes.phase === 'remote_unavailable') {
+      bSpeed?.setAttribute?.('data-speed-phase', 'remote_unavailable');
+      if (waitSvgWrap) waitSvgWrap.hidden = true;
+      if (speedAmount) speedAmount.textContent = isCompact ? '—' : '— tok/s';
+      if (overflowSpeedVal) overflowSpeedVal.textContent = '— tok/s';
+      if (bSpeed) {
+        bSpeed.title = evalRes.comment;
+        bSpeed.setAttribute?.('aria-label', evalRes.comment);
+      }
+    } else {
+      bSpeed?.removeAttribute?.('data-speed-phase');
+      if (waitSvgWrap) waitSvgWrap.hidden = true;
+      bSpeed?.setAttribute?.('aria-label', t('badge.speed.aria'));
+      if (speedAmount) {
+        if (evalRes.isSampleSparse) {
+          speedAmount.textContent = shortSampleText;
+          if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
+        } else if (avgSp?.avgTps != null) {
+          speedAmount.textContent = isCompact ? `${avgSp.avgTps}` : `${avgSp.avgTps} tok/s`;
+          if (overflowSpeedVal) overflowSpeedVal.textContent = `${avgSp.avgTps} tok/s`;
+        } else if (evalRes.streamSpeed != null) {
+          speedAmount.textContent = isCompact ? `${evalRes.streamSpeed}` : `${evalRes.streamSpeed} tok/s`;
+          if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.streamSpeed} tok/s`;
+        } else if (evalRes.overallTps != null) {
+          speedAmount.textContent = isCompact ? `${evalRes.overallTps}` : `${evalRes.overallTps} tok/s`;
+          if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.overallTps} tok/s`;
+        } else {
+          speedAmount.textContent = isCompact ? '--' : '-- tok/s';
+          if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
+        }
+      }
+      updateSpeedBadgeHoverTitle(evalRes, avgSp);
     }
 
     const spBadge = el('speed-badge');
+    const spAvgVal = el('speed-avg-val');
     const spVal = el('speed-val');
     const spDur = el('speed-duration');
     const spTtft = el('speed-ttft');
@@ -10926,9 +16342,29 @@
       if (!spMockTag.hidden) spMockTag.textContent = t('session.speed.mockTag');
     }
     if (spBadge) applyElv91PillTone(spBadge, evalRes);
+    if (spAvgVal) {
+      if (avgSp?.avgTps != null) {
+        spAvgVal.textContent = `${avgSp.avgTps} tok/s`;
+        const overallPart = (avgSp.avgOverallTps != null && Math.abs(avgSp.avgOverallTps - avgSp.avgTps) >= 0.5)
+          ? t('session.speed.avgOverallPart', { overallTps: avgSp.avgOverallTps })
+          : '';
+        spAvgVal.title = t('session.speed.avgTip', {
+          avgTps: avgSp.avgTps,
+          overallPart,
+          count: avgSp.count,
+          totalTok: fmt(avgSp.totalOutputTokens),
+          totalDur: avgSp.totalDurationSec ?? '—'
+        });
+      } else {
+        spAvgVal.textContent = '—';
+        spAvgVal.title = '';
+      }
+    }
     if (spVal) {
       if (evalRes.phase === 'waiting') {
         spVal.textContent = isEn ? 'Waiting' : '等待首字';
+      } else if (evalRes.phase === 'remote_unavailable') {
+        spVal.textContent = evalRes.shortTitle || '—';
       } else if (evalRes.isSampleSparse) {
         spVal.textContent = shortSampleText;
       } else if (evalRes.streamSpeed != null) {
@@ -10956,7 +16392,10 @@
       const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)))
         ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
         : '';
-      spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}`;
+      const sessionAvgNote = avgSp?.avgTps != null
+        ? t('speed.takeaway.avgInline', { avgTps: avgSp.avgTps, count: avgSp.count })
+        : '';
+      spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}${sessionAvgNote}`;
     }
 
     const canShowBreakdown = evalRes.phase === 'final' || evalRes.phase === 'streaming';
@@ -11009,6 +16448,18 @@
           note: evalRes.durationTier?.comment || ''
         },
         { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
+        {
+          k: t('session.speed.breakdown.sessionAvg'),
+          v: avgSp?.avgTps != null ? `${avgSp.avgTps} tok/s` : unk,
+          color: null,
+          note: avgSp?.avgTps != null
+            ? (isEn
+              ? `${avgSp.count} turn(s) · ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+              : (isTw
+                ? `共 ${avgSp.count} 輪 · 累計 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+                : `共 ${avgSp.count} 轮 · 累计 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`))
+            : ''
+        },
         { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
       ];
       if (evalRes.isSampleSparse && evalRes.shortWindowEstimateSpeed != null) {
@@ -11072,6 +16523,7 @@
       baselineCallId: latestRec?.callId || null,
       baselineCount: state.count || 0
     };
+    state.requestNext = 0;
     const updateWaitOnly = () => {
       if (state.disposed || !state.livePendingRequest || state.livePendingRequest.cascadeId !== state.route) {
         stopLiveWaitTickTimer();
@@ -11134,12 +16586,19 @@
   }
 
   function formatCallModelTitle(call) {
-    if (!call) return t('session.latestCall.unknownVal');
-    if (call.isPlaceholderOnly && !call.isRoutedModelVerified) {
-      const rawId = call.rawPlaceholderId || call.modelExactId || call.model || '';
-      return rawId ? t('session.latestCall.unknownMappedModel', { id: rawId }) : t('session.latestCall.unknownVal');
+    if (!call) return t('session.timeline.unknownModel');
+    if (call.isModelUnknown) {
+      if (call.rawPlaceholderId || (call.isPlaceholderOnly && (call.modelExactId || call.model))) {
+        const rawId = call.rawPlaceholderId || call.modelExactId || call.model || '';
+        return rawId ? t('session.latestCall.unknownMappedModel', { id: rawId }) : t('session.timeline.unknownModel');
+      }
+      return call.attributedModelLabel || t('session.timeline.unknownModel');
     }
-    const rawLbl = call.modelLabel || (call.model && !/^model_/i.test(String(call.model)) ? String(call.model) : '');
+    if (call.isPlaceholderOnly && !call.isRoutedModelVerified && !call.attributedModelLabel) {
+      const rawId = call.rawPlaceholderId || call.modelExactId || call.model || '';
+      return rawId ? t('session.latestCall.unknownMappedModel', { id: rawId }) : t('session.timeline.unknownModel');
+    }
+    const rawLbl = call.attributedModelLabel || call.modelLabel || (call.model && !/^model_/i.test(String(call.model)) ? String(call.model) : '');
     if (rawLbl) {
       if (typeof splitModelDisplayAndEffort === 'function') {
         const split = splitModelDisplayAndEffort(rawLbl, call.effort);
@@ -11153,7 +16612,7 @@
     if (call.rawPlaceholderId || call.modelExactId || call.model) {
       return t('session.latestCall.unknownMappedModel', { id: call.rawPlaceholderId || call.modelExactId || call.model });
     }
-    return t('session.latestCall.unknownVal');
+    return t('session.timeline.unknownModel');
   }
 
   function buildCallDisplaySignature(call) {
@@ -11349,22 +16808,22 @@
     const scoreInline = el('latest-call-score-inline');
     const callEval = (typeof evaluateGenerationExperience === 'function')
       ? evaluateGenerationExperience({
-          phase: call.status === 'streaming' ? 'streaming' : (call.outcomeStatus === 'canceled' ? 'canceled' : (call.error ? 'failed' : 'final')),
-          outcomeStatus: call.outcomeStatus,
-          ttftSec: call.ttftSec,
-          streamingSec: call.streamingSec,
-          totalDurationSec: call.durationSec,
-          streamSpeed: call.streamingTps ?? call.streamSpeed,
-          overallTps: call.tps,
-          outputTokens: call.outputTokens,
-          totalInputTokens: call.totalInputTokens,
-          chunkCount: call.chunkCount,
-          chunkIntervalsMs: call.chunkIntervalsMs,
-          intervalCv: call.intervalCv,
-          sampleSource: call.sampleSource || null,
-          isSyntheticPoll: call.isSyntheticPoll === true,
-          error: call.error
-        }, currentPanelLanguage)
+        phase: call.status === 'streaming' ? 'streaming' : (call.outcomeStatus === 'canceled' ? 'canceled' : (call.error ? 'failed' : 'final')),
+        outcomeStatus: call.outcomeStatus,
+        ttftSec: call.ttftSec,
+        streamingSec: call.streamingSec,
+        totalDurationSec: call.durationSec,
+        streamSpeed: call.streamingTps ?? call.streamSpeed,
+        overallTps: call.tps,
+        outputTokens: call.outputTokens,
+        totalInputTokens: call.totalInputTokens,
+        chunkCount: call.chunkCount,
+        chunkIntervalsMs: call.chunkIntervalsMs,
+        intervalCv: call.intervalCv,
+        sampleSource: call.sampleSource || null,
+        isSyntheticPoll: call.isSyntheticPoll === true,
+        error: call.error
+      }, currentPanelLanguage)
       : null;
 
     if (scoreInline) {
@@ -11537,6 +16996,1675 @@
     syncLatestCallDetailsVisibility();
   }
 
+  function createDeltaBadgeEl(deltaVal, isMaxJump = false) {
+    if (deltaVal === null || deltaVal === undefined || isNaN(deltaVal)) return null;
+    const n = Number(deltaVal);
+    const pill = document.createElement('span');
+    const dirCls = n > 0 ? ' is-up' : (n < 0 ? ' is-down' : '');
+    const jumpCls = isMaxJump ? ' is-jump' : '';
+    pill.className = `timeline-delta-pill${dirCls}${jumpCls}`;
+    const sign = n > 0 ? '+' : (n < 0 ? '-' : '');
+    const jumpLabel = isMaxJump ? ` · ${t('session.timeline.maxJumpBadge')}` : '';
+    pill.textContent = `Δ ${sign}${short(Math.abs(n))}${jumpLabel}`;
+    return pill;
+  }
+
+  function renderTimelineInsightTabBody(tl, bodyEl) {
+    if (!bodyEl) return;
+    const prevBodyScroll = Number(bodyEl.scrollTop || 0);
+    bodyEl.replaceChildren();
+    const tab = state.timelineInsightTab || 'turns';
+
+    if (tab === 'timing') {
+      const tm = tl?.timingSummary;
+      if (!tm || tm.activeWallSec <= 0) {
+        const empty = document.createElement('div');
+        empty.className = 'timeline-turn-meta';
+        empty.textContent = t('session.timeline.timingEmpty');
+        bodyEl.appendChild(empty);
+        return;
+      }
+      const wallLine = document.createElement('div');
+      wallLine.className = 'timeline-turn-meta';
+      const fmtDur = (sec) => (formatHumanDuration ? formatHumanDuration(sec, currentPanelLanguage) : `${sec}s`);
+      const wallTxt = tm.wallClockActiveSec > 0 ? fmtDur(tm.wallClockActiveSec) : fmtDur(tm.activeWallSec);
+      const cumTxt = tm.cumulativeTaskSec > 0 ? fmtDur(tm.cumulativeTaskSec) : wallTxt;
+      wallLine.textContent = (tm.hasConcurrentCalls && tm.cumulativeTaskSec > tm.wallClockActiveSec + 0.05)
+        ? t('session.timing.wallVsCum', { wall: wallTxt, cum: cumTxt })
+        : t('session.timeline.timingWall', { wall: wallTxt });
+      bodyEl.appendChild(wallLine);
+
+      const bar = document.createElement('div');
+      bar.className = 'tl-timing-bar';
+      const mkSeg = (cls, pct) => {
+        const s = document.createElement('div');
+        s.className = cls;
+        s.style.width = `${Math.max(0, Math.min(100, Number(pct) || 0))}%`;
+        return s;
+      };
+      bar.appendChild(mkSeg('tl-timing-seg-ttft', tm.ttftPct));
+      bar.appendChild(mkSeg('tl-timing-seg-stream', tm.streamingPct));
+      bar.appendChild(mkSeg('tl-timing-seg-tool', tm.toolExecPct));
+      bodyEl.appendChild(bar);
+
+      const stages = [
+        { label: `${t('session.timeline.timingTtft')} (${tm.ttftCount})`, val: `${tm.totalTtftSec}s · ${tm.ttftPct}%` },
+        { label: `${t('session.timeline.timingStream')} (${tm.streamingCount})`, val: `${tm.totalStreamingSec}s · ${tm.streamingPct}%` },
+        { label: `${t('session.timeline.timingTool')} (${tm.toolExecCount}${tm.toolExecEstimated ? ' est.' : ''})`, val: `${tm.totalToolExecSec}s · ${tm.toolExecPct}%` }
+      ];
+      for (const st of stages) {
+        const row = document.createElement('div');
+        row.className = 'tl-insight-row';
+        const l = document.createElement('span'); l.textContent = st.label;
+        const r = document.createElement('span'); r.className = 'tl-tag-stat'; r.textContent = st.val;
+        row.appendChild(l); row.appendChild(r);
+        bodyEl.appendChild(row);
+      }
+      const tsDecl = document.createElement('div');
+      tsDecl.className = 'timeline-turn-meta';
+      tsDecl.textContent = t('session.timing.missingTsNote');
+      bodyEl.appendChild(tsDecl);
+      return;
+    }
+
+    if (tab === 'files') {
+      const allFiles = Array.isArray(tl?.fileActivities) ? tl.fileActivities : [];
+      if (allFiles.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'timeline-turn-meta';
+        empty.textContent = t('session.timeline.filesEmpty');
+        bodyEl.appendChild(empty);
+        return;
+      }
+      const filterRow = document.createElement('div');
+      filterRow.className = 'tl-insight-filter-row';
+      for (const [fKey, lblKey] of [['all', 'session.timeline.filterAll'], ['read', 'session.timeline.filterRead'], ['write', 'session.timeline.filterWrite'], ['search', 'session.timeline.filterSearch']]) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = `tl-filter-chip${state.timelineFileFilter === fKey ? ' active' : ''}`;
+        chip.textContent = t(lblKey);
+        chip.addEventListener('click', () => { state.timelineFileFilter = fKey; renderSessionTimeline(); });
+        filterRow.appendChild(chip);
+      }
+      const qInput = document.createElement('input');
+      qInput.type = 'text';
+      qInput.className = 'tl-filter-input';
+      qInput.value = state.timelineFileQuery || '';
+      qInput.placeholder = t('session.timeline.fileSearchPh');
+      qInput.addEventListener('input', (e) => {
+        state.timelineFileQuery = e.target.value || '';
+        renderSessionTimeline();
+      });
+      filterRow.appendChild(qInput);
+      bodyEl.appendChild(filterRow);
+
+      const q = (state.timelineFileQuery || '').trim().toLowerCase();
+      const filtered = allFiles.filter(f => {
+        if (state.timelineFileFilter === 'read' && !(f.readCount > 0)) return false;
+        if (state.timelineFileFilter === 'write' && !(f.writeCount > 0)) return false;
+        if (state.timelineFileFilter === 'search' && !(f.searchCount > 0)) return false;
+        if (q && !String(f.path || '').toLowerCase().includes(q) && !String(f.basename || '').toLowerCase().includes(q)) return false;
+        return true;
+      });
+      for (const f of filtered.slice(0, 60)) {
+        const row = document.createElement('div');
+        row.className = 'tl-insight-row';
+        const main = document.createElement('div');
+        main.className = 'tl-insight-row-main';
+        const nameEl = document.createElement('span');
+        nameEl.className = 'tl-insight-path';
+        const safePath = typeof sanitizeCompositionPreview === 'function' ? sanitizeCompositionPreview(f.path || f.basename, 110) : (f.path || f.basename);
+        nameEl.textContent = f.basename || safePath;
+        nameEl.title = safePath;
+        main.appendChild(nameEl);
+
+        const statEl = document.createElement('span');
+        statEl.className = 'tl-tag-stat';
+        const ops = [
+          f.readCount ? `R${f.readCount}` : '',
+          f.writeCount ? `W${f.writeCount}` : '',
+          f.searchCount ? `S${f.searchCount}` : ''
+        ].filter(Boolean).join(' ');
+        const linesTxt = (f.addedLines || f.removedLines) ? ` +${f.addedLines}/-${f.removedLines}` : '';
+        const tTxt = Array.isArray(f.turnNumbers) && f.turnNumbers.length ? ` · T${f.turnNumbers.join(',')}` : '';
+        statEl.textContent = `${ops}${linesTxt}${tTxt}`;
+        row.appendChild(main);
+        row.appendChild(statEl);
+        const targetTurn = Array.isArray(f.turnNumbers) && f.turnNumbers.length ? f.turnNumbers[f.turnNumbers.length - 1] : null;
+        if (targetTurn != null || f.lastStepIndex != null) {
+          row.classList.add('is-clickable');
+          const jBtn = document.createElement('button');
+          jBtn.type = 'button';
+          jBtn.className = 'ctx-jump-step-btn';
+          jBtn.textContent = targetTurn != null ? `T${targetTurn}` : `S${f.lastStepIndex}`;
+          jBtn.addEventListener('click', (ev) => {
+            ev?.stopPropagation?.();
+            jumpToStepOrTurn({ turnIndex: targetTurn, stepIndex: f.lastStepIndex ?? null, timelineTab: 'turns' });
+          });
+          row.appendChild(jBtn);
+        }
+        bodyEl.appendChild(row);
+      }
+      if (prevBodyScroll > 0) bodyEl.scrollTop = prevBodyScroll;
+      return;
+    }
+
+    if (tab === 'commands') {
+      const allCmds = Array.isArray(tl?.commandExecutions) ? tl.commandExecutions : [];
+      if (allCmds.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'timeline-turn-meta';
+        empty.textContent = t('session.timeline.commandsEmpty');
+        bodyEl.appendChild(empty);
+        return;
+      }
+      const topProgs = Array.isArray(tl?.commandSummary?.topPrograms) ? tl.commandSummary.topPrograms : [];
+      if (topProgs.length > 0) {
+        const progLine = document.createElement('div');
+        progLine.className = 'timeline-turn-meta';
+        progLine.style.marginBottom = '4px';
+        progLine.textContent = t('session.audit.topPrograms', {
+          list: topProgs.slice(0, 5).map(p => `${p.program}×${p.count}`).join(', ')
+        });
+        bodyEl.appendChild(progLine);
+      }
+      const filterRow = document.createElement('div');
+      filterRow.className = 'tl-insight-filter-row';
+      for (const [cKey, lblKey] of [['all', 'session.timeline.filterAll'], ['failed', 'session.timeline.filterFailed'], ['slow', 'session.timeline.filterSlow'], ['bg', 'session.timeline.filterBg']]) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = `tl-filter-chip${state.timelineCmdFilter === cKey ? ' active' : ''}`;
+        chip.textContent = t(lblKey);
+        chip.addEventListener('click', () => { state.timelineCmdFilter = cKey; renderSessionTimeline(); });
+        filterRow.appendChild(chip);
+      }
+      const qInput = document.createElement('input');
+      qInput.type = 'text';
+      qInput.className = 'tl-filter-input';
+      qInput.value = state.timelineCmdQuery || '';
+      qInput.placeholder = t('session.timeline.cmdSearchPh');
+      qInput.addEventListener('input', (e) => {
+        state.timelineCmdQuery = e.target.value || '';
+        renderSessionTimeline();
+      });
+      filterRow.appendChild(qInput);
+      bodyEl.appendChild(filterRow);
+
+      const q = (state.timelineCmdQuery || '').trim().toLowerCase();
+      const filtered = allCmds.slice().reverse().filter(c => {
+        if (state.timelineCmdFilter === 'failed' && c.status !== 'failed') return false;
+        if (state.timelineCmdFilter === 'slow' && !c.isSlow) return false;
+        if (state.timelineCmdFilter === 'bg' && !c.isBackground) return false;
+        if (q && !String(c.command || '').toLowerCase().includes(q) && !String(c.program || '').toLowerCase().includes(q)) return false;
+        return true;
+      });
+      for (const c of filtered.slice(0, 50)) {
+        const row = document.createElement('div');
+        row.className = 'tl-insight-row is-clickable';
+        const main = document.createElement('div');
+        main.className = 'tl-insight-row-main';
+        const progTag = document.createElement('span');
+        progTag.className = 'timeline-delta-pill';
+        progTag.textContent = c.program || 'cmd';
+        const cmdEl = document.createElement('span');
+        cmdEl.className = 'tl-insight-cmd';
+        const safeCmd = typeof sanitizeCompositionPreview === 'function' ? sanitizeCompositionPreview(c.command, 130) : c.command;
+        cmdEl.textContent = safeCmd;
+        cmdEl.title = safeCmd;
+        main.appendChild(progTag);
+        main.appendChild(cmdEl);
+
+        const statEl = document.createElement('span');
+        statEl.className = `tl-tag-stat${c.status === 'failed' ? ' tl-tag-warn' : (c.isSlow ? ' tl-tag-slow' : (c.isBackground ? ' tl-tag-bg' : ''))}`;
+        const flags = [c.status === 'failed' ? '✕' : '', c.isSlow ? 'SLOW' : '', c.isBackground ? 'BG' : ''].filter(Boolean).join(' ');
+        const durTxt = c.durationSec != null ? `${c.durationSec}s` : '';
+        const stepTxt = `${c.turnNumber != null ? `T${c.turnNumber} ` : ''}S${c.stepIndex ?? '?'}`;
+        statEl.textContent = [flags, durTxt, stepTxt].filter(Boolean).join(' · ');
+        row.appendChild(main);
+        row.appendChild(statEl);
+        if (c.turnNumber != null || c.stepIndex != null) {
+          const jBtn = document.createElement('button');
+          jBtn.type = 'button';
+          jBtn.className = 'ctx-jump-step-btn';
+          jBtn.textContent = c.turnNumber != null ? `T${c.turnNumber}` : `S${c.stepIndex}`;
+          jBtn.addEventListener('click', (ev) => {
+            ev?.stopPropagation?.();
+            jumpToStepOrTurn({ turnIndex: c.turnNumber ?? null, stepIndex: c.stepIndex ?? null, timelineTab: 'turns' });
+          });
+          row.appendChild(jBtn);
+        }
+        bodyEl.appendChild(row);
+      }
+      if (prevBodyScroll > 0) bodyEl.scrollTop = prevBodyScroll;
+      return;
+    }
+
+    if (tab === 'fleet') {
+      const fleet = tl?.agentFleetSummary;
+      if (!fleet || !fleet.mainAgent) {
+        const empty = document.createElement('div');
+        empty.className = 'timeline-turn-meta';
+        empty.textContent = t('session.timeline.empty');
+        bodyEl.appendChild(empty);
+        return;
+      }
+      const note = document.createElement('div');
+      note.className = 'timeline-turn-meta';
+      note.textContent = t('session.timeline.fleetSummary', {
+        main: short(fleet.mainOnlyTotalTokens || 0),
+        fleet: short(fleet.fleetCombinedTotalTokens || 0)
+      });
+      bodyEl.appendChild(note);
+
+      const mkAgentRow = (label, a, isSub = false) => {
+        const row = document.createElement('div');
+        row.className = 'tl-insight-row';
+        const l = document.createElement('span');
+        const relTag = isSub && (a.parentStepIndex == null && a.confidence === 'unknown')
+          ? ` [${t('session.audit.subUnknownRel')}]`
+          : (isSub && a.parentStepIndex != null ? ` @S${a.parentStepIndex}` : '');
+        const mbStr = Array.isArray(a.modelBreakdown) && a.modelBreakdown.length
+          ? a.modelBreakdown.map(m => `${m.modelLabel}(${m.callCount}/${short(m.totalTokens)})`).join(', ')
+          : (a.models?.length ? a.models.join(', ') : '');
+        l.textContent = `${label}${relTag}${mbStr ? ` · ${mbStr}` : ''}`;
+        const r = document.createElement('span');
+        r.className = 'tl-tag-stat';
+        r.textContent = `${a.callCount} calls · ${short(a.totalTokens)} tok${a.streamingSec ? ` · ${a.streamingSec}s` : ''}`;
+        row.appendChild(l);
+        row.appendChild(r);
+        if (isSub && a.parentStepIndex != null) {
+          const jBtn = document.createElement('button');
+          jBtn.type = 'button';
+          jBtn.className = 'ctx-jump-step-btn';
+          jBtn.textContent = `S${a.parentStepIndex}`;
+          jBtn.addEventListener('click', () => jumpToStepOrTurn({ stepIndex: a.parentStepIndex, timelineTab: 'turns' }));
+          row.appendChild(jBtn);
+        }
+        bodyEl.appendChild(row);
+      };
+      mkAgentRow(t('session.timeline.fleetMain'), fleet.mainAgent, false);
+      for (const sa of (fleet.subagents || [])) {
+        mkAgentRow(`${t('session.latestCall.agentSub')} ${sa.type || sa.role || sa.childCid}`, sa, true);
+      }
+      if (fleet.unlinkedCount > 0) {
+        const un = document.createElement('div');
+        un.className = 'timeline-turn-meta';
+        un.textContent = t('session.timeline.fleetUnlinked', { n: fleet.unlinkedCount });
+        bodyEl.appendChild(un);
+      }
+      const collabList = Array.isArray(fleet.collaborationTimeline) ? fleet.collaborationTimeline : [];
+      if (collabList.length > 0) {
+        const collabHdr = document.createElement('div');
+        collabHdr.className = 'timeline-turn-meta';
+        collabHdr.style.marginTop = '6px';
+        collabHdr.textContent = t('session.timeline.fleetCollabTitle', { n: collabList.length });
+        bodyEl.appendChild(collabHdr);
+        for (const ev of collabList.slice(0, 35)) {
+          const row = document.createElement('div');
+          row.className = 'tl-insight-row is-clickable';
+          const l = document.createElement('span');
+          l.textContent = `S${ev.stepIndex ?? '?'} · [${ev.role || ev.kind}] ${ev.detail || ''}`;
+          const r = document.createElement('span');
+          r.className = 'tl-tag-stat';
+          r.textContent = ev.modelLabel || ev.status || '';
+          row.appendChild(l);
+          row.appendChild(r);
+          row.addEventListener('click', () => jumpToStepOrTurn({ stepIndex: ev.stepIndex, callId: ev.callId, timelineTab: 'turns' }));
+          bodyEl.appendChild(row);
+        }
+      }
+      const tasks = Array.isArray(fleet.taskEvents) ? fleet.taskEvents : [];
+      const taskHdr = document.createElement('div');
+      taskHdr.className = 'timeline-turn-meta';
+      taskHdr.style.marginTop = '6px';
+      taskHdr.textContent = t('session.timeline.fleetTasksTitle', { n: tasks.length });
+      bodyEl.appendChild(taskHdr);
+      if (tasks.length === 0) {
+        const emptyTask = document.createElement('div');
+        emptyTask.className = 'timeline-turn-meta';
+        emptyTask.textContent = t('session.timeline.fleetTasksEmpty');
+        bodyEl.appendChild(emptyTask);
+      } else {
+        for (const te of tasks.slice(0, 25)) {
+          const row = document.createElement('div');
+          row.className = 'tl-insight-row';
+          const l = document.createElement('span');
+          l.textContent = `S${te.stepIndex ?? '?'} · [${te.toolName}] ${te.summary || ''}`;
+          const r = document.createElement('span');
+          r.className = 'tl-tag-stat';
+          r.textContent = te.status || 'completed';
+          row.appendChild(l);
+          row.appendChild(r);
+          bodyEl.appendChild(row);
+        }
+      }
+      if (prevBodyScroll > 0) bodyEl.scrollTop = prevBodyScroll;
+    }
+  }
+
+  function syncTrendControlButtons() {
+    const mode = state.contextTrendMode === 'delta' ? 'delta' : 'total';
+    const gran = state.contextTrendGranularity === 'turn' ? 'turn' : 'step';
+    setPillActive(el('ctx-trend-mode-total'), mode === 'total');
+    setPillActive(el('ctx-trend-mode-delta'), mode === 'delta');
+    el('ctx-trend-mode-total')?.setAttribute?.('aria-pressed', mode === 'total' ? 'true' : 'false');
+    el('ctx-trend-mode-delta')?.setAttribute?.('aria-pressed', mode === 'delta' ? 'true' : 'false');
+    setPillActive(el('ctx-trend-gran-step'), gran === 'step');
+    setPillActive(el('ctx-trend-gran-turn'), gran === 'turn');
+    el('ctx-trend-gran-step')?.setAttribute?.('aria-pressed', gran === 'step' ? 'true' : 'false');
+    el('ctx-trend-gran-turn')?.setAttribute?.('aria-pressed', gran === 'turn' ? 'true' : 'false');
+  }
+
+  function syncTimelineSortAndDeltaUi() {
+    const isTurnsTab = (state.timelineInsightTab || 'turns') === 'turns';
+    const deltaBtnEl = el('btn-timeline-delta-mode');
+    if (deltaBtnEl) {
+      deltaBtnEl.setAttribute?.('aria-pressed', state.timelineDeltaOnly ? 'true' : 'false');
+      deltaBtnEl.textContent = state.timelineDeltaOnly ? t('session.timeline.deltaModeOnly') : t('session.timeline.deltaModeAll');
+      deltaBtnEl.hidden = !isTurnsTab;
+    }
+    const sortGrp = el('timeline-sort-group');
+    if (sortGrp) {
+      sortGrp.hidden = !isTurnsTab;
+      const curSort = state.timelineSortOrder || 'newest';
+      sortGrp.querySelectorAll?.('[data-tl-sort]').forEach(btn => {
+        const active = btn.getAttribute('data-tl-sort') === curSort;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+  }
+
+  function resolveTrendTimelineSource() {
+    if (state.sessionTimeline && Array.isArray(state.sessionTimeline.turns) && state.sessionTimeline.turns.length > 0) {
+      return state.sessionTimeline;
+    }
+    const liveCalls = Array.isArray(state.sessionCalls) ? state.sessionCalls : [];
+    if (liveCalls.length > 0 && typeof groupSessionCallsByTurns === 'function') {
+      const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+      return groupSessionCallsByTurns([], liveCalls, { cascadeId: state.route || '', cascadeModelConfigs: configs });
+    }
+    return state.sessionTimeline || null;
+  }
+
+  function findMatchingCallForTrendPoint(timelineSrc, pt) {
+    if (!pt) return null;
+    const allCalls = [];
+    if (Array.isArray(timelineSrc?.turns)) {
+      for (const turn of timelineSrc.turns) {
+        if (Array.isArray(turn?.calls)) allCalls.push(...turn.calls);
+      }
+    }
+    if (Array.isArray(state.sessionCalls)) {
+      for (const c of state.sessionCalls) {
+        if (c) allCalls.push(c);
+      }
+    }
+    if (pt.callId) {
+      const byId = allCalls.find(c => c && String(c.callId || '') === String(pt.callId));
+      if (byId) return byId;
+    }
+    if (pt.stepIndex != null) {
+      const byStep = allCalls.find(c => c && c.stepIndex === pt.stepIndex && (pt.turnIndex == null || c.turnIndex == null || c.turnIndex === pt.turnIndex));
+      if (byStep) return byStep;
+    }
+    return null;
+  }
+
+  // =========================================================================
+  // 4 行 Bento 当前会话分析工作台 (容器宽屏自适应 / 双轨 / 树 / 耗时并发 / 钻取)
+  // =========================================================================
+  const CTX_COMP_CATEGORIES = [
+    { key: 'system', color: '#60a5fa', labelKey: 'session.comp.cat.system', overlapped: false },
+    { key: 'definitions', color: '#818cf8', labelKey: 'session.comp.cat.definitions', overlapped: false },
+    { key: 'injections', color: '#c084fc', labelKey: 'session.comp.cat.injections', overlapped: true },
+    { key: 'skills', color: '#a78bfa', labelKey: 'session.comp.cat.skills', overlapped: true },
+    { key: 'summaries', color: '#2dd4bf', labelKey: 'session.comp.cat.summaries', overlapped: false },
+    { key: 'user', color: '#38bdf8', labelKey: 'session.comp.cat.user', overlapped: false },
+    { key: 'assistant', color: '#34d399', labelKey: 'session.comp.cat.assistant', overlapped: false },
+    { key: 'thinking', color: '#fbbf24', labelKey: 'session.comp.cat.thinking', overlapped: false },
+    { key: 'tools', color: '#f97316', labelKey: 'session.comp.cat.tools', overlapped: false }
+  ];
+  const CTX_COMP_COLOR_MAP = Object.fromEntries(CTX_COMP_CATEGORIES.map(c => [c.key, c.color]));
+
+  let panelResizeObserver = null;
+  function measureContextPanelContainerWidth() {
+    if (Number.isFinite(Number(state.forcedPanelWidthForTest)) && Number(state.forcedPanelWidthForTest) > 0) {
+      return Number(state.forcedPanelWidthForTest);
+    }
+    const pEl = el('panel');
+    if (pEl) {
+      if (typeof pEl.getBoundingClientRect === 'function') {
+        const r = pEl.getBoundingClientRect();
+        if (r && Number(r.width) > 0) return Number(r.width);
+      }
+      if (Number(pEl.clientWidth) > 0) return Number(pEl.clientWidth);
+    }
+    const effectiveDock = host.getAttribute?.('data-dock') || dockPosition;
+    if (effectiveDock === 'aux') {
+      const auxEl = findAuxSidebarContainer();
+      if (auxEl) {
+        if (typeof auxEl.getBoundingClientRect === 'function') {
+          const ar = auxEl.getBoundingClientRect();
+          if (ar && Number(ar.width) > 0) return Number(ar.width);
+        }
+        if (Number(auxEl.clientWidth) > 0) return Number(auxEl.clientWidth);
+      }
+    }
+    return 472;
+  }
+
+  function syncContextPanelContainerWidthTier() {
+    const pEl = el('panel');
+    if (!pEl) return 'narrow';
+    if (!panelResizeObserver && typeof ResizeObserver !== 'undefined') {
+      try {
+        panelResizeObserver = new ResizeObserver(() => {
+          if (state.disposed) return;
+          const prevTier = state.ctxWidthTier;
+          const nextTier = syncContextPanelContainerWidthTier();
+          if (prevTier !== nextTier && !pEl.hidden && activeContextTab === 'session') {
+            renderContextTrendCard();
+          }
+        });
+        panelResizeObserver.observe(pEl);
+        activeDisposers.add(() => {
+          try { panelResizeObserver?.disconnect?.(); } catch { }
+          panelResizeObserver = null;
+        });
+      } catch { }
+    }
+    const w = measureContextPanelContainerWidth();
+    const tier = w >= 860 ? 'wide' : (w >= 540 ? 'medium' : 'narrow');
+    state.ctxWidthTier = tier;
+    pEl.setAttribute?.('data-ctx-width-tier', tier);
+    return tier;
+  }
+
+  function highlightCompositionCategory(catKey) {
+    state.ctxHoveredCategory = catKey || null;
+    const applyCls = (containerId, attrName) => {
+      const box = el(containerId);
+      if (!box) return;
+      const kids = Array.from(box.children || []);
+      for (const ch of kids) {
+        const k = ch.getAttribute?.(attrName);
+        if (!k) continue;
+        if (!catKey) {
+          ch.classList?.remove?.('is-hovered', 'is-dimmed');
+        } else if (k === catKey) {
+          ch.classList?.add?.('is-hovered');
+          ch.classList?.remove?.('is-dimmed');
+        } else {
+          ch.classList?.remove?.('is-hovered');
+          ch.classList?.add?.('is-dimmed');
+        }
+      }
+    };
+    applyCls('ctx-main-segments', 'data-comp-cat');
+    applyCls('ctx-subtrack-comp', 'data-comp-cat');
+    applyCls('ctx-comp-legend', 'data-comp-cat');
+  }
+
+  function focusCompositionTreeCategory(catKey) {
+    if (!catKey) return;
+    if (!state.expandedTreeCats) state.expandedTreeCats = new Set();
+    state.expandedTreeCats.add(catKey);
+    state.ctxFocusedTreeCat = catKey;
+    renderSessionBentoSections();
+    try {
+      const node = el('ctx-composition-tree-list')?.querySelector?.(`[data-tree-cat="${catKey}"]`);
+      node?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    } catch { }
+  }
+
+  function collectOrderedSessionCallsForCompare(timelineSrc) {
+    const map = new Map();
+    if (Array.isArray(timelineSrc?.turns)) {
+      for (const t of timelineSrc.turns) {
+        for (const c of (t?.calls || [])) {
+          if (c && c.agentRole !== 'subagent') {
+            const key = c.callId || `s:${c.stepIndex}:${c.timestamp}`;
+            map.set(key, { ...c, turnIndex: c.turnIndex ?? t.turnIndex ?? null });
+          }
+        }
+      }
+    }
+    if (Array.isArray(state.sessionCalls)) {
+      for (const c of state.sessionCalls) {
+        if (c && c.agentRole !== 'subagent') {
+          const key = c.callId || `s:${c.stepIndex}:${c.timestamp}`;
+          if (!map.has(key)) map.set(key, c);
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      const sa = Number.isInteger(Number(a.stepIndex)) ? Number(a.stepIndex) : Number.MAX_SAFE_INTEGER;
+      const sb = Number.isInteger(Number(b.stepIndex)) ? Number(b.stepIndex) : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0);
+    });
+  }
+
+  function resolveSelectedAndBaselineCall() {
+    const tl = resolveTrendTimelineSource();
+    const calls = collectOrderedSessionCallsForCompare(tl);
+    const incoming = resolveLatestSessionCallRecord();
+    const activeCall = state.pinnedCallRecord || incoming || (calls.length ? calls[calls.length - 1] : null);
+    const isPinned = Boolean(state.pinnedCallRecord || state.selectedTrendCallId);
+
+    let activeIdx = -1;
+    if (activeCall) {
+      activeIdx = calls.findIndex(c =>
+        (activeCall.callId && c.callId === activeCall.callId)
+        || (activeCall.stepIndex != null && c.stepIndex === activeCall.stepIndex)
+      );
+    }
+    if (activeIdx < 0 && calls.length > 0 && !isPinned) activeIdx = calls.length - 1;
+
+    let baseCall = null;
+    if (activeIdx > 0) {
+      if (state.ctxCompareBase === 'prev_turn') {
+        const curTurn = activeCall?.turnIndex ?? null;
+        for (let i = activeIdx - 1; i >= 0; i--) {
+          if (curTurn != null && calls[i].turnIndex != null && calls[i].turnIndex < curTurn) {
+            baseCall = calls[i];
+            break;
+          }
+        }
+        if (!baseCall) baseCall = calls[activeIdx - 1];
+      } else {
+        baseCall = calls[activeIdx - 1];
+      }
+    }
+    return {
+      tl,
+      calls,
+      activeCall,
+      baseCall,
+      isPinned,
+      targetStepIndex: Number.isInteger(Number(activeCall?.stepIndex)) ? Number(activeCall.stepIndex) : null,
+      compareStepIndex: Number.isInteger(Number(baseCall?.stepIndex)) ? Number(baseCall.stepIndex) : null
+    };
+  }
+
+  function jumpToStepOrTurn({ stepIndex = null, turnIndex = null, callId = null, timelineTab = null } = {}) {
+    const tl = resolveTrendTimelineSource();
+    const turns = Array.isArray(tl?.turns) ? tl.turns : [];
+    let matchedCall = null;
+    const allCalls = collectOrderedSessionCallsForCompare(tl);
+    if (callId) matchedCall = allCalls.find(c => String(c.callId || '') === String(callId)) || null;
+    if (!matchedCall && stepIndex != null) {
+      matchedCall = allCalls.find(c => Number(c.stepIndex) === Number(stepIndex))
+        || allCalls.find(c => c.stepIndex != null && Number(c.stepIndex) >= Number(stepIndex))
+        || null;
+    }
+    if (!matchedCall && turnIndex != null) {
+      const tObj = turns.find(t => Number(t.turnIndex) === Number(turnIndex));
+      if (tObj && Array.isArray(tObj.calls) && tObj.calls.length) {
+        matchedCall = tObj.calls[tObj.calls.length - 1];
+      }
+    }
+    if (matchedCall) {
+      state.pinnedCallRecord = matchedCall;
+      state.selectedTrendCallId = matchedCall.callId || (matchedCall.stepIndex != null ? `step:${matchedCall.stepIndex}` : null);
+      state.latestCallDetailOpen = true;
+    } else if (stepIndex != null) {
+      state.selectedTrendCallId = `step:${stepIndex}`;
+    }
+    if (turnIndex != null && turns.length) {
+      const targetTurn = turns.find(t => Number(t.turnIndex) === Number(turnIndex));
+      if (targetTurn) {
+        const tk = targetTurn.turnKey || `turn-${targetTurn.turnIndex ?? 'x'}-${targetTurn.stepIndex ?? 'na'}`;
+        state.expandedTurnKeys.add(tk);
+      }
+    }
+    if (timelineTab) state.timelineInsightTab = timelineTab;
+    state.historyDrawerOpen = true;
+    renderContextTrendCard();
+    renderLatestCallCard({ fromUserAction: true, skipAnim: true });
+    renderSessionBentoSections();
+    renderSessionTimeline();
+    try {
+      el('ctx-trend-card')?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    } catch { }
+  }
+
+  function returnToLatestSessionPoint() {
+    state.pinnedCallRecord = null;
+    state.selectedTrendCallId = null;
+    state.pendingLatestCallRecord = null;
+    state.ctxFocusedTreeCat = null;
+    renderContextTrendCard();
+    renderLatestCallCard({ fromUserAction: true, skipAnim: true });
+    renderSessionBentoSections();
+    if (state.historyDrawerOpen) renderSessionTimeline();
+  }
+
+  function buildEffectiveSessionForComposition() {
+    const scanSession = state.scan?.session || null;
+    const tlComp = state.sessionTimeline?.compositionFromSteps || null;
+    if (scanSession) {
+      if (!scanSession.stepCompositionItems && tlComp?.stepCompositionItems) {
+        return { ...scanSession, stepCompositionItems: tlComp.stepCompositionItems };
+      }
+      return scanSession;
+    }
+    return tlComp;
+  }
+
+  function renderTimingSummaryCardVisual(tl) {
+    const donut = el('ctx-timing-donut');
+    const concEl = el('ctx-timing-concurrency-note');
+    const barEl = el('ctx-timing-stages-bar');
+    const pillsEl = el('ctx-timing-stage-pills');
+    const tsNoteEl = el('ctx-timing-ts-note');
+    const tm = tl?.timingSummary || null;
+    const sp = state.liveSpeed || state.turnState || null;
+
+    let ttftSec = tm ? Number(tm.totalTtftSec || 0) : Number(sp?.ttft || 0);
+    let streamSec = tm ? Number(tm.totalStreamingSec || 0) : Math.max(0, Number(sp?.duration || 0) - Number(sp?.ttft || 0));
+    let toolSec = tm ? Number(tm.totalToolExecSec || 0) : 0;
+    const sumStages = ttftSec + streamSec + toolSec;
+    const wallSec = tm?.wallClockActiveSec > 0 ? Number(tm.wallClockActiveSec) : (tm?.activeWallSec > 0 ? Number(tm.activeWallSec) : sumStages);
+    const cumSec = tm?.cumulativeTaskSec > 0 ? Number(tm.cumulativeTaskSec) : sumStages;
+
+    const fmtSec = (v) => (typeof formatHumanDuration === 'function' ? formatHumanDuration(v, currentPanelLanguage) : `${Number(v || 0).toFixed(1)}s`);
+    if (concEl) {
+      const parts = [];
+      if (wallSec > 0) {
+        if (tm?.hasConcurrentCalls && cumSec > wallSec + 0.05) {
+          parts.push(t('session.timing.wallVsCum', { wall: fmtSec(wallSec), cum: fmtSec(cumSec) }));
+        } else {
+          parts.push(t('session.timing.wallOnly', { wall: fmtSec(wallSec) }));
+        }
+      } else {
+        parts.push('—');
+      }
+      if (tm?.concurrencySavedSec > 0.05 && tm?.hasConcurrentCalls) {
+        parts.push(t('session.timing.savedConcurrent', { saved: fmtSec(tm.concurrencySavedSec) }));
+      }
+      if (tm?.isShortSample) {
+        parts.push(t('session.timing.shortSample'));
+      }
+      concEl.textContent = parts.join(' · ');
+    }
+
+    const ttftPct = sumStages > 0 ? Math.round((ttftSec / sumStages) * 1000) / 10 : 0;
+    const streamPct = sumStages > 0 ? Math.round((streamSec / sumStages) * 1000) / 10 : 0;
+    const toolPct = sumStages > 0 ? Math.max(0, Math.round((100 - ttftPct - streamPct) * 10) / 10) : 0;
+
+    if (barEl) {
+      barEl.replaceChildren();
+      const mkSeg = (cls, p) => {
+        const s = document.createElement('div');
+        s.className = cls;
+        s.style.width = `${Math.max(0, Math.min(100, p))}%`;
+        return s;
+      };
+      barEl.appendChild(mkSeg('tl-timing-seg-ttft', ttftPct));
+      barEl.appendChild(mkSeg('tl-timing-seg-stream', streamPct));
+      barEl.appendChild(mkSeg('tl-timing-seg-tool', toolPct));
+    }
+
+    if (pillsEl) {
+      pillsEl.replaceChildren();
+      const entries = [
+        ['#38bdf8', `${t('session.timeline.timingTtft')} ${ttftSec > 0 ? fmtSec(ttftSec) : '0s'} (${ttftPct}%)`],
+        ['#34d399', `${t('session.timeline.timingStream')} ${streamSec > 0 ? fmtSec(streamSec) : '0s'} (${streamPct}%)`],
+        ['#f59e0b', `${t('session.timeline.timingTool')} ${toolSec > 0 ? fmtSec(toolSec) : '0s'} (${toolPct}%)`]
+      ];
+      for (const [col, txt] of entries) {
+        const span = document.createElement('span');
+        span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;';
+        const dot = document.createElement('i');
+        dot.style.cssText = `width:6px;height:6px;border-radius:2px;background:${col};display:inline-block;`;
+        const lbl = document.createElement('span');
+        lbl.textContent = txt;
+        span.appendChild(dot);
+        span.appendChild(lbl);
+        pillsEl.appendChild(span);
+      }
+    }
+
+    if (donut) {
+      const r = 22;
+      const circ = 2 * Math.PI * r;
+      const slices = [];
+      const bgCircle = createSvgEl('circle', {
+        cx: '32', cy: '32', r: String(r), fill: 'none',
+        stroke: 'rgba(148,163,184,0.22)', 'stroke-width': '8'
+      });
+      if (bgCircle) slices.push(bgCircle);
+      if (sumStages > 0) {
+        let offsetAcc = 0;
+        for (const [col, p] of [['#38bdf8', ttftPct], ['#34d399', streamPct], ['#f59e0b', toolPct]]) {
+          if (p <= 0) continue;
+          const dashLen = (p / 100) * circ;
+          const arc = createSvgEl('circle', {
+            cx: '32', cy: '32', r: String(r), fill: 'none',
+            stroke: col, 'stroke-width': '8',
+            'stroke-dasharray': `${dashLen.toFixed(2)} ${circ.toFixed(2)}`,
+            'stroke-dashoffset': (-offsetAcc).toFixed(2),
+            transform: 'rotate(-90 32 32)'
+          });
+          if (arc) slices.push(arc);
+          offsetAcc += dashLen;
+        }
+      }
+      const centerText = createSvgEl('text', {
+        x: '32', y: '35', 'text-anchor': 'middle',
+        fill: 'var(--ag-text-primary, #ececef)', 'font-size': '10', 'font-weight': '600'
+      });
+      if (centerText) {
+        centerText.textContent = wallSec > 0 ? (wallSec >= 60 ? `${Math.round(wallSec)}s` : `${Number(wallSec.toFixed(1))}s`) : '—';
+        slices.push(centerText);
+      }
+      if (typeof donut.replaceChildren === 'function') donut.replaceChildren(...slices);
+      else {
+        donut.innerHTML = '';
+        slices.forEach(s => donut.appendChild?.(s));
+      }
+    }
+
+    if (tsNoteEl) {
+      tsNoteEl.textContent = t('session.timing.missingTsNote');
+      tsNoteEl.hidden = false;
+    }
+  }
+
+  function renderAuditQuickPills(tl) {
+    const wrap = el('ctx-audit-quick-pills');
+    if (!wrap) return;
+    wrap.replaceChildren();
+    const evCount = Array.isArray(tl?.contextChangeEvents) ? tl.contextChangeEvents.length : 0;
+    const fileCount = Array.isArray(tl?.fileActivities) ? tl.fileActivities.length : 0;
+    const cmdCount = Array.isArray(tl?.commandExecutions) ? tl.commandExecutions.length : 0;
+    const fleetCount = Array.isArray(tl?.agentFleetSummary?.subagents) ? tl.agentFleetSummary.subagents.length : 0;
+    const activeTab = state.timelineInsightTab || 'turns';
+    const specs = [
+      { key: 'turns', labelKey: 'session.audit.eventsShort', count: evCount },
+      { key: 'files', labelKey: 'session.audit.filesShort', count: fileCount },
+      { key: 'commands', labelKey: 'session.audit.cmdsShort', count: cmdCount },
+      { key: 'fleet', labelKey: 'session.audit.fleetShort', count: fleetCount }
+    ];
+    for (const sp of specs) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      const isEmpty = sp.count === 0;
+      btn.className = `ctx-audit-pill${isEmpty ? ' is-empty-collapsed' : ''}${state.historyDrawerOpen && activeTab === sp.key ? ' is-active' : ''}`;
+      btn.textContent = `${t(sp.labelKey)} (${sp.count})`;
+      btn.title = isEmpty ? t('session.audit.collapsedHint', { item: t(sp.labelKey) }) : '';
+      btn.addEventListener('click', () => {
+        state.historyDrawerOpen = true;
+        state.timelineInsightTab = sp.key;
+        renderSessionTimeline();
+        renderAuditQuickPills(tl);
+        if (state.route && !state.sessionTimeline && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
+          void fetchSessionTimeline(state.route, { force: false });
+        }
+      });
+      wrap.appendChild(btn);
+    }
+  }
+
+  function renderSessionBentoSections() {
+    if (!el('ctx-bento-grid')) return;
+    const d = state.latest;
+    const session = state.scan?.session || null;
+    const { tl, activeCall, baseCall, isPinned, targetStepIndex, compareStepIndex } = resolveSelectedAndBaselineCall();
+
+    // 1. Row 1 会话总览与严格区分口径
+    const ovTitle = el('ctx-ov-title');
+    if (ovTitle) {
+      const titleStr = session?.title || tl?.sessionTitle || (state.route ? state.route.slice(0, 8) : t('session.ov.noTitle'));
+      ovTitle.textContent = titleStr || t('session.ov.noTitle');
+      ovTitle.title = titleStr || '';
+    }
+    const ovModel = el('ctx-ov-model');
+    if (ovModel) {
+      const mName = (activeCall ? formatCallModelTitle(activeCall) : '') || d?.model || '—';
+      const eff = activeCall?.effort || d?.effort || '';
+      ovModel.textContent = eff && !String(mName).toLowerCase().includes(eff.toLowerCase()) ? `${mName} (${eff})` : mName;
+    }
+    const ovTurnStep = el('ctx-ov-turn-step');
+    if (ovTurnStep) {
+      const turnN = Array.isArray(tl?.turns) && tl.turns.length > 0 ? tl.turns.length : (session?.userMessages ?? 0);
+      const stepN = session?.steps ?? activeCall?.stepIndex ?? state.count ?? null;
+      ovTurnStep.textContent = stepN != null
+        ? t('session.ov.turnsSteps', { turns: turnN || 0, steps: stepN })
+        : t('session.ov.turnsOnly', { turns: turnN || 0 });
+    }
+
+    const pinnedBanner = el('ctx-ov-pinned-banner');
+    const retLatestBtn = el('btn-ctx-return-latest');
+    if (retLatestBtn) retLatestBtn.hidden = !isPinned;
+    if (pinnedBanner) {
+      const lbl = activeCall?.stepIndex != null ? `S${activeCall.stepIndex}` : (state.selectedTrendCallId || '#');
+      const pinnedTxt = isPinned ? String(t('session.ov.pinnedTag', { label: lbl }) || '').trim() : '';
+      if (pinnedTxt) {
+        pinnedBanner.hidden = false;
+        pinnedBanner.textContent = pinnedTxt;
+      } else {
+        pinnedBanner.hidden = true;
+        pinnedBanner.textContent = '';
+      }
+    }
+
+    const activeContextTokens = isPinned && activeCall
+      ? (activeCall.contextWindowTokens ?? (activeCall.hasInputCacheFields ? activeCall.totalInputTokens : null))
+      : (d?.actual ?? d?.postCompactEstimate ?? d?.estimate ?? null);
+    const limitVal = d?.budget || d?.serviceLimit || null;
+    const isHostConfirmedWindow = Boolean(d?.serviceLimit || state.hostContextWindowUsage?.limit || (d?.actual != null && d?.budget));
+    const limitSourceEl = el('ctx-ov-limit-source');
+    if (limitSourceEl) {
+      if (limitVal) {
+        limitSourceEl.hidden = false;
+        limitSourceEl.textContent = isHostConfirmedWindow ? '宿主确认窗口' : '插件配置预算';
+      } else {
+        limitSourceEl.hidden = true;
+        limitSourceEl.textContent = '';
+      }
+    }
+    const keyLimitEl = el('key-limit');
+    if (keyLimitEl && limitVal && !d?.exceeded) {
+      keyLimitEl.title = t(isHostConfirmedWindow ? 'session.ov.limitHost' : 'session.ov.limitPref', { val: short(limitVal) });
+    }
+
+    const ovCacheEl = el('ctx-ov-cache');
+    if (ovCacheEl) {
+      const stepHitTxt = activeCall ? formatCallCachePctText(activeCall) : '—';
+      let cumHitTxt = '—';
+      if (tl?.cacheSummary) {
+        if (tl.cacheSummary.cacheStatus === 'zero_input') cumHitTxt = '0%';
+        else if (tl.cacheSummary.cacheStatus !== 'missing' && tl.cacheSummary.cacheReadPct != null) cumHitTxt = `${tl.cacheSummary.cacheReadPct}%`;
+      }
+      ovCacheEl.textContent = `${stepHitTxt} / ${cumHitTxt}`;
+    }
+
+    const ovTotalEl = el('ctx-ov-total');
+    if (ovTotalEl) {
+      const cumTot = tl?.sessionTokenTotals?.totalTokens ?? (Array.isArray(state.sessionCalls) && state.sessionCalls.length
+        ? state.sessionCalls.reduce((s, c) => s + Number(c?.totalTokens || 0), 0)
+        : null);
+      ovTotalEl.textContent = cumTot != null && cumTot > 0 ? short(cumTot) : (cumTot === 0 && tl?.totalCalls > 0 ? '0' : '—');
+    }
+
+    // 2. Row 2 Left: 双轨进度条与组成图例
+    const effSession = buildEffectiveSessionForComposition();
+    const targetSummaryForComp = {
+      actual: activeContextTokens,
+      budget: limitVal
+    };
+    const breakdown = (effSession && typeof buildSessionCompositionBreakdown === 'function')
+      ? buildSessionCompositionBreakdown(effSession, targetSummaryForComp, {
+        targetStepIndex: isPinned ? targetStepIndex : null,
+        compareStepIndex: isPinned ? compareStepIndex : null,
+        budgetTokens: limitVal
+      })
+      : null;
+
+    const mainSegmentsEl = el('ctx-main-segments');
+    const mainUnaccEl = el('ctx-main-unaccounted');
+    const subCompEl = el('ctx-subtrack-comp');
+    const subLabelEl = el('ctx-subtrack-label');
+    const keySegTrack = el('key-seg-track');
+    const keySegLegend = el('key-seg-legend');
+    const compLegendEl = el('ctx-comp-legend');
+    const ratioPill = el('ctx-comp-ratio-pill');
+    const basisPill = el('ctx-comp-basis-pill');
+
+    const usedPctForBar = (activeContextTokens != null && limitVal > 0)
+      ? Math.min(100, Math.max(0, (activeContextTokens / limitVal) * 100))
+      : ((d?.percent != null) ? Math.min(100, Math.max(0, Number(d.percent))) : null);
+
+    if (ratioPill) {
+      ratioPill.textContent = usedPctForBar != null ? `${usedPctForBar.toFixed(1)}%` : '—';
+    }
+
+    const estMid = breakdown?.estimatedTotalMedian || 0;
+    const unaccTok = breakdown?.unaccountedTokens || 0;
+    if (basisPill) {
+      if (activeContextTokens != null && estMid > 0) {
+        basisPill.setAttribute('data-basis', 'mixed');
+        basisPill.textContent = t('session.dual.basisHostPlusEst', { actual: short(activeContextTokens), est: short(estMid) });
+      } else if (estMid > 0) {
+        basisPill.setAttribute('data-basis', 'local_estimate');
+        basisPill.textContent = t('session.dual.basisEstOnly');
+      } else if (activeContextTokens != null) {
+        basisPill.setAttribute('data-basis', 'server_usage');
+        basisPill.textContent = t('session.dual.basisHostOnly');
+      } else {
+        basisPill.setAttribute('data-basis', 'empty');
+        basisPill.textContent = '—';
+      }
+    }
+
+    const nonOverlapItems = (breakdown?.items || []).filter(it => !it.overlapped);
+    const totalWindowDenom = limitVal > 0 ? limitVal : Math.max(1, activeContextTokens || estMid || 1);
+    const usedDenom = Math.max(1, (activeContextTokens != null && activeContextTokens >= estMid) ? activeContextTokens : (estMid + unaccTok));
+
+    if (mainSegmentsEl) {
+      mainSegmentsEl.replaceChildren();
+      const segs = [];
+      let totalMainPct = 0;
+      for (const it of nonOverlapItems) {
+        if (!it.median || it.median <= 0) continue;
+        const wPct = (it.median / totalWindowDenom) * 100;
+        totalMainPct += wPct;
+        const block = document.createElement('div');
+        block.className = 'ctx-seg-block';
+        block.setAttribute('data-comp-cat', it.key);
+        block.style.width = `${Math.max(0.4, Math.min(100, wPct)).toFixed(2)}%`;
+        block.style.background = CTX_COMP_COLOR_MAP[it.key] || '#94a3b8';
+        block.title = `${t(`session.comp.cat.${it.key}`)}: ${short(it.median)} (${it.pctOfUsed ?? it.pct}%)`;
+        block.addEventListener('mouseenter', () => highlightCompositionCategory(it.key));
+        block.addEventListener('mouseleave', () => highlightCompositionCategory(null));
+        block.addEventListener('click', () => focusCompositionTreeCategory(it.key));
+        segs.push(block);
+      }
+      mainSegmentsEl.style.width = `${Math.min(100, totalMainPct).toFixed(2)}%`;
+      for (const b of segs) mainSegmentsEl.appendChild(b);
+    }
+
+    if (mainUnaccEl) {
+      if (unaccTok > 0 && limitVal > 0) {
+        const uPct = Math.min(100, (unaccTok / totalWindowDenom) * 100);
+        mainUnaccEl.hidden = false;
+        mainUnaccEl.style.width = `${Math.max(0.4, uPct).toFixed(2)}%`;
+        mainUnaccEl.title = `${t('session.dual.unaccounted')}: ${short(unaccTok)}`;
+      } else {
+        mainUnaccEl.hidden = true;
+        mainUnaccEl.style.width = '0%';
+      }
+    }
+
+    // 副轨模式决策：低占用 (<25%) 默认开启「已用构成 100%」，可随时切至「缓存结构」
+    const cacheTotalCheck = activeCall ? ((Number(activeCall.inputTokens) || 0) + (Number(activeCall.cacheReadTokens) || 0)) : 0;
+    const effSubMode = state.ctxSubtrackMode || ((usedPctForBar !== null && usedPctForBar < 25) ? 'comp' : (cacheTotalCheck > 0 ? 'cache' : 'comp'));
+    setPillActive(el('ctx-subtrack-mode-comp'), effSubMode === 'comp');
+    setPillActive(el('ctx-subtrack-mode-cache'), effSubMode === 'cache');
+    el('ctx-subtrack-mode-comp')?.setAttribute?.('aria-pressed', String(effSubMode === 'comp'));
+    el('ctx-subtrack-mode-cache')?.setAttribute?.('aria-pressed', String(effSubMode === 'cache'));
+
+    if (effSubMode === 'cache') {
+      if (subLabelEl) subLabelEl.textContent = t('session.dual.subTitleCache');
+      if (subCompEl) subCompEl.hidden = true;
+      if (compLegendEl) compLegendEl.hidden = true;
+      if (keySegTrack) keySegTrack.hidden = false;
+      if (keySegLegend) keySegLegend.hidden = false;
+      const segCall = activeCall || {};
+      const segInfo = typeof computeContextSegments === 'function'
+        ? computeContextSegments({
+          inputTokens: segCall.inputTokens ?? 0,
+          cacheCreationInputTokens: segCall.cacheCreationInputTokens ?? segCall.cache_creation_input_tokens ?? null,
+          cacheReadTokens: segCall.cacheReadTokens ?? segCall.cacheTokens ?? 0,
+          outputTokens: segCall.outputTokens ?? 0,
+          actual: activeContextTokens ?? segCall.totalTokens ?? 0
+        }, limitVal || 0)
+        : null;
+      if (segInfo && segInfo.usedTokens > 0) {
+        if (el('key-seg-fresh')) el('key-seg-fresh').style.width = `${segInfo.freshPct}%`;
+        if (el('key-seg-cache-write')) el('key-seg-cache-write').style.width = `${segInfo.cacheWritePct}%`;
+        if (el('key-seg-cache-read')) el('key-seg-cache-read').style.width = `${segInfo.cacheReadPct}%`;
+        if (keySegLegend) {
+          keySegLegend.replaceChildren();
+          const addLeg = (cHex, txt) => {
+            const sp = document.createElement('span');
+            sp.className = 'key-seg-legend-item';
+            if (cHex) {
+              const sw = document.createElement('i');
+              sw.className = 'key-seg-swatch';
+              sw.style.background = cHex;
+              sp.appendChild(sw);
+            }
+            const tSpan = document.createElement('span');
+            tSpan.textContent = txt;
+            sp.appendChild(tSpan);
+            keySegLegend.appendChild(sp);
+          };
+          addLeg('#38bdf8', `${t('session.dual.cacheFresh')} ${short(segInfo.freshInputTokens)}`);
+          if (segInfo.hasCacheWrite && segInfo.cacheWriteTokens > 0) addLeg('#f59e0b', `${t('session.dual.cacheWrite')} ${short(segInfo.cacheWriteTokens)}`);
+          addLeg('#34d399', `${t('session.dual.cacheRead')} ${short(segInfo.cacheReadTokens)}`);
+        }
+      } else if (keySegTrack) {
+        keySegTrack.hidden = true;
+      }
+    } else {
+      if (subLabelEl) subLabelEl.textContent = t('session.dual.subTitleComp');
+      if (keySegTrack) keySegTrack.hidden = true;
+      if (keySegLegend) keySegLegend.hidden = true;
+      if (subCompEl) {
+        subCompEl.hidden = false;
+        subCompEl.replaceChildren();
+        for (const it of nonOverlapItems) {
+          if (!it.median || it.median <= 0) continue;
+          const part = document.createElement('div');
+          part.className = 'ctx-seg-block';
+          part.setAttribute('data-comp-cat', it.key);
+          part.style.width = `${Math.max(1, (it.median / usedDenom) * 100).toFixed(2)}%`;
+          part.style.background = CTX_COMP_COLOR_MAP[it.key] || '#94a3b8';
+          part.title = `${t(`session.comp.cat.${it.key}`)}: ${short(it.median)} (${it.pctOfUsed}%)`;
+          part.addEventListener('mouseenter', () => highlightCompositionCategory(it.key));
+          part.addEventListener('mouseleave', () => highlightCompositionCategory(null));
+          part.addEventListener('click', () => focusCompositionTreeCategory(it.key));
+          subCompEl.appendChild(part);
+        }
+        if (unaccTok > 0) {
+          const uPart = document.createElement('div');
+          uPart.className = 'ctx-main-unaccounted';
+          uPart.style.width = `${Math.max(1, (unaccTok / usedDenom) * 100).toFixed(2)}%`;
+          uPart.title = `${t('session.dual.unaccounted')}: ${short(unaccTok)}`;
+          subCompEl.appendChild(uPart);
+        }
+      }
+      if (compLegendEl) {
+        compLegendEl.hidden = false;
+        compLegendEl.replaceChildren();
+        const nonZeroList = [];
+        const zeroList = [];
+        for (const it of (breakdown?.items || [])) {
+          if (it.median > 0 || it.chars > 0 || it.count > 0) nonZeroList.push(it);
+          else zeroList.push(it);
+        }
+        const toShow = state.ctxZerosExpanded ? [...nonZeroList, ...zeroList] : nonZeroList;
+        for (const it of toShow) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ctx-comp-leg-item';
+          btn.setAttribute('data-comp-cat', it.key);
+          const left = document.createElement('span');
+          left.className = 'ctx-comp-leg-left';
+          const dot = document.createElement('i');
+          dot.className = 'key-seg-swatch';
+          dot.style.background = CTX_COMP_COLOR_MAP[it.key] || '#94a3b8';
+          const lbl = document.createElement('span');
+          lbl.textContent = t(`session.comp.cat.${it.key}`);
+          left.appendChild(dot);
+          left.appendChild(lbl);
+
+          const val = document.createElement('span');
+          val.className = 'ctx-comp-leg-val';
+          val.textContent = it.median > 0 ? `${short(it.median)} · ${it.pctOfUsed}%` : '0';
+
+          btn.appendChild(left);
+          btn.appendChild(val);
+          btn.addEventListener('mouseenter', () => highlightCompositionCategory(it.key));
+          btn.addEventListener('mouseleave', () => highlightCompositionCategory(null));
+          btn.addEventListener('click', () => focusCompositionTreeCategory(it.key));
+          compLegendEl.appendChild(btn);
+        }
+        if (unaccTok > 0) {
+          const uBtn = document.createElement('button');
+          uBtn.type = 'button';
+          uBtn.className = 'ctx-comp-leg-item';
+          uBtn.title = t('session.dual.unaccountedTip');
+          const uPct = usedDenom > 0 ? Math.round((unaccTok / usedDenom) * 1000) / 10 : 0;
+          const uLeft = document.createElement('span');
+          uLeft.className = 'ctx-comp-leg-left';
+          const uDot = document.createElement('i');
+          uDot.className = 'key-seg-swatch';
+          uDot.style.background = 'repeating-linear-gradient(-45deg, #94a3b8, #94a3b8 2px, transparent 2px, transparent 4px)';
+          const uLbl = document.createElement('span');
+          uLbl.textContent = t('session.dual.unaccounted');
+          uLeft.appendChild(uDot);
+          uLeft.appendChild(uLbl);
+          const uVal = document.createElement('span');
+          uVal.className = 'ctx-comp-leg-val';
+          uVal.textContent = `${short(unaccTok)} · ${uPct}%`;
+          uBtn.appendChild(uLeft);
+          uBtn.appendChild(uVal);
+          compLegendEl.appendChild(uBtn);
+        }
+        if (zeroList.length > 0) {
+          const zBtn = document.createElement('button');
+          zBtn.type = 'button';
+          zBtn.id = 'btn-ctx-legend-zeros';
+          zBtn.className = 'ctx-comp-zeros-btn';
+          zBtn.textContent = state.ctxZerosExpanded ? t('session.dual.zerosHide') : t('session.dual.zerosBtn', { n: zeroList.length });
+          zBtn.addEventListener('click', () => {
+            state.ctxZerosExpanded = !state.ctxZerosExpanded;
+            renderSessionBentoSections();
+          });
+          compLegendEl.appendChild(zBtn);
+        }
+      }
+    }
+
+    // 3. Row 2 Right: 耗时并发图表
+    renderTimingSummaryCardVisual(tl);
+
+    // 4. Row 3 Left: 选中步骤详情与前一轮/前一步比较
+    const stepCardTitleEl = el('latest-call-card-title');
+    if (stepCardTitleEl) {
+      stepCardTitleEl.textContent = isPinned ? t('session.stepCard.titlePinned') : t('session.stepCard.titleLatest');
+    }
+    setPillActive(el('btn-ctx-cmp-step'), state.ctxCompareBase !== 'prev_turn');
+    setPillActive(el('btn-ctx-cmp-turn'), state.ctxCompareBase === 'prev_turn');
+    const cmpSummaryEl = el('ctx-step-compare-summary');
+    if (cmpSummaryEl) {
+      if (activeCall && baseCall) {
+        const aCtx = activeCall.contextWindowTokens ?? activeCall.totalInputTokens ?? null;
+        const bCtx = baseCall.contextWindowTokens ?? baseCall.totalInputTokens ?? null;
+        const ctxDelta = (aCtx != null && bCtx != null) ? aCtx - bCtx : null;
+        const outDelta = (activeCall.outputTokens != null && baseCall.outputTokens != null) ? (activeCall.outputTokens - baseCall.outputTokens) : null;
+        const baseTag = baseCall.stepIndex != null ? `S${baseCall.stepIndex}` : (baseCall.turnIndex != null ? `T${baseCall.turnIndex}` : '#');
+        const parts = [`vs ${baseTag}`];
+        if (ctxDelta !== null) parts.push(`ΔCtx ${ctxDelta > 0 ? '+' : ''}${short(ctxDelta)}`);
+        if (outDelta !== null) parts.push(`ΔOut ${outDelta > 0 ? '+' : ''}${short(outDelta)}`);
+        if (activeCall.cacheReadPct != null && baseCall.cacheReadPct != null) {
+          const cDiff = Math.round((activeCall.cacheReadPct - baseCall.cacheReadPct) * 10) / 10;
+          parts.push(`ΔCache ${cDiff > 0 ? '+' : ''}${cDiff}%`);
+        }
+        cmpSummaryEl.hidden = false;
+        cmpSummaryEl.textContent = parts.join(' · ');
+      } else {
+        cmpSummaryEl.hidden = true;
+        cmpSummaryEl.textContent = '';
+      }
+    }
+
+    // 5. Row 3 Right: 上下文组成明细树
+    setPillActive(el('ctx-tree-mode-full'), state.ctxTreeMode !== 'delta');
+    setPillActive(el('ctx-tree-mode-delta'), state.ctxTreeMode === 'delta');
+    const treeCovBadge = el('ctx-tree-coverage-badge');
+    const treeScopeNote = el('ctx-tree-scope-note');
+    const treeListEl = el('ctx-composition-tree-list');
+    if (treeCovBadge) {
+      const cov = breakdown?.coverageScope || 'unavailable';
+      treeCovBadge.setAttribute('data-basis', cov === 'host_only' ? 'server_usage' : (cov === 'unavailable' ? 'empty' : 'local_estimate'));
+      treeCovBadge.textContent = cov === 'host_only' ? t('session.dual.basisHostOnly') : (breakdown?.estimatedTotalMedian > 0 ? `≈ ${short(breakdown.estimatedTotalMedian)}` : '—');
+    }
+    if (treeScopeNote) {
+      if (breakdown?.stepScope === 'step_bounded' && breakdown?.targetStepIndex != null) {
+        treeScopeNote.textContent = t('session.tree.scopeStepBounded', { step: breakdown.targetStepIndex });
+      } else if (breakdown?.stepScope === 'session_approx') {
+        treeScopeNote.textContent = t('session.tree.scopeSessionApprox');
+      } else {
+        treeScopeNote.textContent = t('session.tree.scopeSessionFull');
+      }
+    }
+    if (treeListEl) {
+      treeListEl.replaceChildren();
+      const treeItems = breakdown?.items || [];
+      if (!treeItems.length && unaccTok <= 0) {
+        const emptyDiv = document.createElement('div');
+        emptyDiv.className = 'timeline-turn-meta';
+        emptyDiv.textContent = t('session.tree.noEntries');
+        treeListEl.appendChild(emptyDiv);
+      } else {
+        const renderTreeNode = (key, color, titleText, countVal, tokVal, pctVal, deltaTokVal, entriesList) => {
+          const isOpen = state.expandedTreeCats?.has?.(key);
+          const isFocused = state.ctxFocusedTreeCat === key;
+          const wrap = document.createElement('div');
+          wrap.className = `ctx-tree-node${isFocused ? ' is-focused' : ''}`;
+          wrap.setAttribute('data-tree-cat', key);
+
+          const hdr = document.createElement('button');
+          hdr.type = 'button';
+          hdr.className = 'ctx-tree-node-hdr';
+          hdr.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+          const left = document.createElement('span');
+          left.className = 'ctx-tree-node-left';
+          const sw = document.createElement('i');
+          sw.className = 'key-seg-swatch';
+          sw.style.background = color;
+          const titleSp = document.createElement('span');
+          titleSp.textContent = titleText;
+          const cntSp = document.createElement('span');
+          cntSp.className = 'ctx-ov-meta-pill';
+          cntSp.textContent = t('session.tree.itemsCount', { n: countVal || 0 });
+          left.appendChild(sw);
+          left.appendChild(titleSp);
+          left.appendChild(cntSp);
+
+          const right = document.createElement('span');
+          right.className = 'ctx-tree-node-right';
+          if (state.ctxTreeMode === 'delta' && deltaTokVal != null) {
+            right.textContent = `${deltaTokVal > 0 ? '+' : ''}${short(deltaTokVal)} · ${tokVal > 0 ? short(tokVal) : '0'} ${isOpen ? '▴' : '▾'}`;
+          } else {
+            right.textContent = `${tokVal > 0 ? short(tokVal) : '0'} (${pctVal ?? 0}%) ${isOpen ? '▴' : '▾'}`;
+          }
+          hdr.appendChild(left);
+          hdr.appendChild(right);
+          hdr.addEventListener('click', () => {
+            if (!state.expandedTreeCats) state.expandedTreeCats = new Set();
+            if (state.expandedTreeCats.has(key)) state.expandedTreeCats.delete(key);
+            else state.expandedTreeCats.add(key);
+            state.ctxFocusedTreeCat = key;
+            renderSessionBentoSections();
+          });
+          wrap.appendChild(hdr);
+
+          if (isOpen) {
+            const body = document.createElement('div');
+            body.className = 'ctx-tree-node-body';
+            const list = Array.isArray(entriesList) ? entriesList : [];
+            if (!list.length) {
+              const noE = document.createElement('div');
+              noE.className = 'ctx-tree-entry';
+              noE.textContent = t('session.tree.noEntries');
+              body.appendChild(noE);
+            } else {
+              for (const ent of list.slice(0, 20)) {
+                const row = document.createElement('div');
+                row.className = 'ctx-tree-entry';
+                const pEl = document.createElement('span');
+                pEl.className = 'ctx-tree-entry-preview';
+                const safePrev = typeof sanitizeCompositionPreview === 'function' ? sanitizeCompositionPreview(ent.preview || ent.label, 96) : (ent.preview || ent.label);
+                pEl.textContent = `[S${ent.stepIndex ?? '?'}] ${safePrev || ent.label}`;
+                pEl.title = safePrev || ent.label;
+                const vEl = document.createElement('span');
+                vEl.textContent = `≈${short(ent.tokens || 0)}`;
+                const jBtn = document.createElement('button');
+                jBtn.type = 'button';
+                jBtn.className = 'ctx-jump-step-btn';
+                jBtn.textContent = `S${ent.stepIndex ?? '?'}`;
+                jBtn.addEventListener('click', (ev) => {
+                  ev?.stopPropagation?.();
+                  if (ent.stepIndex != null) jumpToStepOrTurn({ stepIndex: ent.stepIndex });
+                });
+                row.appendChild(pEl);
+                row.appendChild(vEl);
+                if (ent.stepIndex != null) row.appendChild(jBtn);
+                body.appendChild(row);
+              }
+            }
+            wrap.appendChild(body);
+          }
+          return wrap;
+        };
+
+        for (const it of treeItems) {
+          treeListEl.appendChild(renderTreeNode(
+            it.key,
+            CTX_COMP_COLOR_MAP[it.key] || '#94a3b8',
+            t(`session.comp.cat.${it.key}`),
+            it.count,
+            it.median,
+            it.pctOfUsed ?? it.pct,
+            it.deltaTokens,
+            it.entries
+          ));
+        }
+        if (unaccTok > 0) {
+          const uPct = usedDenom > 0 ? Math.round((unaccTok / usedDenom) * 1000) / 10 : 0;
+          treeListEl.appendChild(renderTreeNode(
+            'unaccounted',
+            '#94a3b8',
+            t('session.dual.unaccounted'),
+            1,
+            unaccTok,
+            uPct,
+            null,
+            [{ stepIndex: targetStepIndex, label: 'overhead', tokens: unaccTok, preview: t('session.dual.unaccountedTip') }]
+          ));
+        }
+      }
+    }
+
+    // 6. Row 4 审计工作台快速胶囊与辅助栏宽屏自动展开
+    renderAuditQuickPills(tl);
+  }
+
+  function formatTrendInspectText(pt) {
+    if (!pt) return t('session.trend.inspectHint');
+    const deltaStr = pt.deltaTokens != null
+      ? `${pt.deltaTokens > 0 ? '+' : ''}${short(pt.deltaTokens)}`
+      : '—';
+    const modelStr = pt.modelLabel ? ` · ${pt.modelLabel}` : '';
+    const estMark = pt.isEstimated ? ` [${t('session.trend.basisEstimate')}]` : '';
+    return t('session.trend.inspectFmt', {
+      label: pt.label || `#${(pt.index || 0) + 1}`,
+      total: short(pt.totalContextTokens || 0),
+      delta: deltaStr,
+      inp: short(pt.freshInputTokens || 0),
+      cap: short(pt.cacheReadTokens || 0),
+      model: `${modelStr}${estMark}`
+    });
+  }
+
+  function renderContextTrendCard() {
+    const card = el('ctx-trend-card');
+    if (!card) return;
+    syncTrendControlButtons();
+    const svg = el('ctx-trend-svg');
+    const emptyEl = el('ctx-trend-empty');
+    const badgeEl = el('ctx-trend-basis-badge');
+    const truncEl = el('ctx-trend-trunc-note');
+    const legendEl = el('ctx-trend-legend');
+    const inspectEl = el('ctx-trend-inspect');
+
+    const timelineSrc = resolveTrendTimelineSource();
+    const fallbackEst = (state.latest?.actual == null && Number(state.latest?.estimate) > 0)
+      ? Number(state.latest.estimate)
+      : (state.scan?.session?.total?.low > 0 && state.latest?.actual == null ? Number(state.scan.session.total.low) : null);
+    const series = typeof buildContextTrendSeries === 'function'
+      ? buildContextTrendSeries(timelineSrc, {
+        mode: state.contextTrendMode,
+        granularity: state.contextTrendGranularity,
+        maxPoints: 40,
+        fallbackEstimateTokens: fallbackEst,
+        fallbackModelLabel: state.latest?.model || ''
+      })
+      : { points: [], totalPoints: 0, truncatedCount: 0, basis: 'empty', maxTotalTokens: 0, maxAbsDeltaTokens: 0 };
+    state.lastTrendSeries = series;
+
+    if (badgeEl) {
+      badgeEl.setAttribute?.('data-basis', series.basis || 'empty');
+      if (series.basis === 'local_estimate') badgeEl.textContent = t('session.trend.basisEstimate');
+      else if (series.basis === 'mixed') badgeEl.textContent = t('session.trend.basisMixed');
+      else if (series.basis === 'server_usage') badgeEl.textContent = t('session.trend.basisServer');
+      else badgeEl.textContent = '—';
+    }
+    if (truncEl) {
+      if (series.truncatedCount > 0) {
+        truncEl.hidden = false;
+        truncEl.textContent = t('session.trend.truncatedNote', { shown: series.points.length, total: series.totalPoints });
+      } else {
+        truncEl.hidden = true;
+        truncEl.textContent = '';
+      }
+    }
+    if (legendEl) {
+      legendEl.replaceChildren?.();
+      const addLegend = (color, labelText) => {
+        const span = document.createElement('span');
+        const dot = document.createElement('span');
+        dot.className = 'ctx-trend-legend-dot';
+        dot.style.background = color;
+        span.appendChild(dot);
+        const lblSpan = document.createElement('span');
+        lblSpan.textContent = labelText;
+        span.appendChild(lblSpan);
+        legendEl.appendChild(span);
+      };
+      if (series.mode === 'delta') {
+        addLegend('#34d399', t('session.trend.legendDeltaPos'));
+        addLegend('#f59e0b', t('session.trend.legendDeltaNeg'));
+      } else {
+        addLegend('#38bdf8', t('session.trend.legendInput'));
+        addLegend('#818cf8', t('session.trend.legendCache'));
+      }
+    }
+
+    const pts = Array.isArray(series.points) ? series.points : [];
+    if (!pts.length) {
+      if (emptyEl) emptyEl.hidden = false;
+      if (svg) {
+        if (typeof svg.replaceChildren === 'function') svg.replaceChildren();
+        else svg.innerHTML = '';
+        svg.style.display = 'none';
+      }
+      if (inspectEl) inspectEl.textContent = t('session.trend.inspectHint');
+      return;
+    }
+
+    if (emptyEl) emptyEl.hidden = true;
+    if (svg) svg.style.display = 'block';
+
+    let selectedPt = null;
+    if (state.selectedTrendCallId) {
+      selectedPt = pts.find(p => (p.callId && p.callId === state.selectedTrendCallId) || (p.stepIndex != null && `step:${p.stepIndex}` === state.selectedTrendCallId) || String(p.index) === String(state.selectedTrendCallId)) || null;
+    }
+    if (!selectedPt && state.pinnedCallRecord) {
+      const pCid = state.pinnedCallRecord.callId;
+      const pStep = state.pinnedCallRecord.stepIndex;
+      selectedPt = pts.find(p => (pCid && p.callId === pCid) || (pStep != null && p.stepIndex === pStep)) || null;
+    }
+    if (inspectEl) {
+      inspectEl.textContent = formatTrendInspectText(selectedPt || pts[pts.length - 1]);
+    }
+    if (!svg) return;
+
+    const panelWrapW = el('ctx-trend-chart-wrap')?.clientWidth || 0;
+    const tierDefaultW = state.ctxWidthTier === 'wide' ? 620 : (state.ctxWidthTier === 'medium' ? 480 : 360);
+    const width = Math.max(320, Math.min(760, panelWrapW > 180 ? panelWrapW : tierDefaultW));
+    const height = state.ctxWidthTier === 'wide' ? 128 : 114;
+    const padL = 40;
+    const padR = 12;
+    const padT = 14;
+    const padB = 20;
+    const plotW = width - padL - padR;
+    const plotH = height - padT - padB;
+    svg.setAttribute?.('viewBox', `0 0 ${width} ${height}`);
+
+    const nodes = [];
+    const slotW = plotW / Math.max(1, pts.length);
+    const barW = Math.max(3, Math.min(20, slotW * 0.66));
+
+    const bindTrendPointEvents = (node, pt) => {
+      if (!node) return;
+      const onPick = () => {
+        state.selectedTrendCallId = pt.callId || (pt.stepIndex != null ? `step:${pt.stepIndex}` : String(pt.index));
+        if (inspectEl) inspectEl.textContent = formatTrendInspectText(pt);
+        const matched = findMatchingCallForTrendPoint(timelineSrc, pt);
+        if (matched) {
+          state.pinnedCallRecord = matched;
+          state.latestCallDetailOpen = true;
+          renderLatestCallCard({ fromUserAction: true, skipAnim: true });
+          renderSessionTimeline();
+        }
+        renderContextTrendCard();
+        renderSessionBentoSections();
+      };
+      node.addEventListener?.('click', onPick);
+      node.addEventListener?.('mouseenter', () => {
+        if (inspectEl) inspectEl.textContent = formatTrendInspectText(pt);
+      });
+    };
+
+    if (series.mode === 'delta') {
+      const posMax = Math.max(0, ...pts.map(p => (p.deltaTokens != null && p.deltaTokens > 0) ? p.deltaTokens : 0));
+      const negMax = Math.max(0, ...pts.map(p => (p.deltaTokens != null && p.deltaTokens < 0) ? Math.abs(p.deltaTokens) : 0));
+      const span = Math.max(1000, posMax + negMax);
+      let zeroY = padT + plotH;
+      if (posMax > 0 && negMax > 0) {
+        zeroY = Math.max(padT + 14, Math.min(padT + plotH - 14, padT + (posMax / span) * plotH));
+      } else if (negMax > 0 && posMax === 0) {
+        zeroY = padT + 6;
+      }
+      const zeroLine = createSvgEl('line', {
+        x1: padL, y1: zeroY.toFixed(1), x2: width - padR, y2: zeroY.toFixed(1),
+        stroke: 'rgba(148,163,184,0.45)', 'stroke-width': 1, 'stroke-dasharray': '3 2'
+      });
+      const zeroLbl = createSvgEl('text', {
+        x: padL - 4, y: (zeroY + 3).toFixed(1), 'text-anchor': 'end',
+        fill: 'var(--ag-text-muted, #8a8a94)', 'font-size': '9'
+      });
+      if (zeroLbl) zeroLbl.textContent = '0';
+      if (posMax > 0) {
+        const topLbl = createSvgEl('text', {
+          x: padL - 4, y: (padT + 7).toFixed(1), 'text-anchor': 'end',
+          fill: '#34d399', 'font-size': '9'
+        });
+        if (topLbl) topLbl.textContent = `+${short(posMax)}`;
+        if (topLbl) nodes.push(topLbl);
+      }
+      if (negMax > 0) {
+        const botLbl = createSvgEl('text', {
+          x: padL - 4, y: (padT + plotH).toFixed(1), 'text-anchor': 'end',
+          fill: '#f59e0b', 'font-size': '9'
+        });
+        if (botLbl) botLbl.textContent = `-${short(negMax)}`;
+        if (botLbl) nodes.push(botLbl);
+      }
+      if (zeroLine) nodes.push(zeroLine);
+      if (zeroLbl) nodes.push(zeroLbl);
+
+      pts.forEach((pt, i) => {
+        const cx = padL + (i + 0.5) * slotW;
+        const bx = cx - barW / 2;
+        const dVal = pt.deltaTokens;
+        const upH = zeroY - padT;
+        const dnH = (padT + plotH) - zeroY;
+        let by = zeroY - 2;
+        let bh = 2;
+        let fill = 'rgba(148,163,184,0.45)';
+        if (dVal != null && dVal > 0 && posMax > 0) {
+          bh = Math.max(2, (dVal / posMax) * upH);
+          by = zeroY - bh;
+          fill = pt.isEstimated ? '#fbbf24' : (pt.isMaxJump ? '#22c55e' : '#34d399');
+        } else if (dVal != null && dVal < 0 && negMax > 0) {
+          bh = Math.max(2, (Math.abs(dVal) / negMax) * dnH);
+          by = zeroY;
+          fill = '#f59e0b';
+        }
+        const isSel = selectedPt === pt;
+        const bar = createSvgEl('rect', {
+          x: bx.toFixed(1), y: by.toFixed(1), width: barW.toFixed(1), height: bh.toFixed(1), rx: 1.5,
+          fill,
+          stroke: (isSel || pt.isMaxJump) ? '#ffffff' : 'none',
+          'stroke-width': isSel ? 1.4 : (pt.isMaxJump ? 0.9 : 0),
+          'data-trend-index': String(pt.index),
+          'data-step-index': pt.stepIndex != null ? String(pt.stepIndex) : '',
+          class: 'ctx-trend-bar'
+        });
+        const hit = createSvgEl('rect', {
+          x: (padL + i * slotW).toFixed(1), y: padT, width: slotW.toFixed(1), height: plotH,
+          fill: 'transparent', style: 'cursor:pointer',
+          'data-trend-index': String(pt.index),
+          'data-step-index': pt.stepIndex != null ? String(pt.stepIndex) : ''
+        });
+        bindTrendPointEvents(hit, pt);
+        bindTrendPointEvents(bar, pt);
+        if (bar) nodes.push(bar);
+        if (hit) nodes.push(hit);
+      });
+    } else {
+      const maxVal = Math.max(1000, series.maxTotalTokens || 0);
+      [0, 0.5, 1].forEach(r => {
+        const y = padT + plotH * (1 - r);
+        const grid = createSvgEl('line', {
+          x1: padL, y1: y.toFixed(1), x2: width - padR, y2: y.toFixed(1),
+          stroke: 'rgba(148,163,184,0.18)', 'stroke-width': 1
+        });
+        if (grid) nodes.push(grid);
+        if (r === 0 || r === 1) {
+          const lbl = createSvgEl('text', {
+            x: padL - 4, y: (y + 3).toFixed(1), 'text-anchor': 'end',
+            fill: 'var(--ag-text-muted, #8a8a94)', 'font-size': '9'
+          });
+          if (lbl) {
+            lbl.textContent = r === 0 ? '0' : short(maxVal);
+            nodes.push(lbl);
+          }
+        }
+      });
+
+      const linePts = [];
+      pts.forEach((pt, i) => {
+        const cx = padL + (i + 0.5) * slotW;
+        const bx = cx - barW / 2;
+        const totalH = Math.max(1.5, (pt.totalContextTokens / maxVal) * plotH);
+        const topY = (padT + plotH) - totalH;
+        const cacheH = pt.totalContextTokens > 0
+          ? Math.max(0, (pt.cacheReadTokens / pt.totalContextTokens) * totalH)
+          : 0;
+        const freshH = Math.max(0, totalH - cacheH);
+        const isSel = selectedPt === pt;
+        linePts.push({ x: cx, y: topY });
+
+        if (cacheH > 0.5) {
+          const rCache = createSvgEl('rect', {
+            x: bx.toFixed(1), y: (topY + freshH).toFixed(1), width: barW.toFixed(1), height: cacheH.toFixed(1), rx: 1,
+            fill: pt.isEstimated ? 'rgba(245,158,11,0.45)' : 'rgba(129,140,248,0.68)',
+            class: 'ctx-trend-bar'
+          });
+          if (rCache) nodes.push(rCache);
+        }
+        let rFresh = null;
+        if (freshH > 0.5 || cacheH <= 0.5) {
+          rFresh = createSvgEl('rect', {
+            x: bx.toFixed(1), y: topY.toFixed(1), width: barW.toFixed(1), height: Math.max(1.5, freshH).toFixed(1), rx: 1,
+            fill: pt.isEstimated ? '#fbbf24' : '#38bdf8',
+            stroke: isSel ? '#ffffff' : 'none',
+            'stroke-width': isSel ? 1.3 : 0,
+            'data-trend-index': String(pt.index),
+            'data-step-index': pt.stepIndex != null ? String(pt.stepIndex) : '',
+            class: 'ctx-trend-bar'
+          });
+          if (rFresh) nodes.push(rFresh);
+        } else if (isSel) {
+          const selOutline = createSvgEl('rect', {
+            x: bx.toFixed(1), y: topY.toFixed(1), width: barW.toFixed(1), height: totalH.toFixed(1), rx: 1,
+            fill: 'none', stroke: '#ffffff', 'stroke-width': 1.3
+          });
+          if (selOutline) nodes.push(selOutline);
+        }
+
+        const hit = createSvgEl('rect', {
+          x: (padL + i * slotW).toFixed(1), y: padT, width: slotW.toFixed(1), height: plotH,
+          fill: 'transparent', style: 'cursor:pointer',
+          'data-trend-index': String(pt.index),
+          'data-step-index': pt.stepIndex != null ? String(pt.stepIndex) : ''
+        });
+        bindTrendPointEvents(hit, pt);
+        bindTrendPointEvents(rFresh, pt);
+        if (hit) nodes.push(hit);
+      });
+
+      if (linePts.length >= 2) {
+        const dPath = linePts.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+        const trendLine = createSvgEl('path', {
+          d: dPath, fill: 'none', stroke: 'rgba(147,197,253,0.85)', 'stroke-width': 1.2, style: 'pointer-events:none'
+        });
+        if (trendLine) nodes.push(trendLine);
+      }
+    }
+
+    // 仅在有证据的上下文变化事件对应步骤位置绘制事件提示点 (支持点击追踪)
+    const evList = Array.isArray(timelineSrc?.contextChangeEvents) ? timelineSrc.contextChangeEvents : [];
+    if (evList.length > 0 && pts.length > 0) {
+      const evColorMap = {
+        compaction: '#38bdf8',
+        prune: '#2dd4bf',
+        inject: '#c084fc',
+        model: '#34d399',
+        mode: '#818cf8',
+        unknown_drop: '#f59e0b'
+      };
+      for (const ev of evList) {
+        const ptIdx = pts.findIndex(p =>
+          (ev.callId && p.callId === ev.callId)
+          || (ev.stepIndex != null && Number(p.stepIndex) === Number(ev.stepIndex))
+          || (ev.turnIndex != null && Number(p.turnIndex) === Number(ev.turnIndex))
+        );
+        if (ptIdx < 0) continue;
+        const cx = padL + (ptIdx + 0.5) * slotW;
+        const evDot = createSvgEl('circle', {
+          cx: cx.toFixed(1), cy: '7', r: '3.2',
+          fill: evColorMap[ev.type] || '#f59e0b',
+          stroke: '#0f172a', 'stroke-width': '1',
+          style: 'cursor:pointer', 'data-event-type': ev.type
+        });
+        if (evDot) {
+          evDot.addEventListener?.('click', () => jumpToStepOrTurn({ stepIndex: ev.stepIndex, turnIndex: ev.turnIndex, callId: ev.callId }));
+          nodes.push(evDot);
+        }
+      }
+    }
+
+    const firstX = createSvgEl('text', { x: padL, y: height - 5, fill: 'var(--ag-text-muted, #8a8a94)', 'font-size': '9' });
+    if (firstX) {
+      firstX.textContent = pts[0].label || '#1';
+      nodes.push(firstX);
+    }
+    if (pts.length > 1) {
+      const lastX = createSvgEl('text', { x: width - padR, y: height - 5, 'text-anchor': 'end', fill: 'var(--ag-text-muted, #8a8a94)', 'font-size': '9' });
+      if (lastX) {
+        lastX.textContent = pts[pts.length - 1].label || `#${pts.length}`;
+        nodes.push(lastX);
+      }
+    }
+
+    if (typeof svg.replaceChildren === 'function') svg.replaceChildren(...nodes);
+    else {
+      svg.innerHTML = '';
+      nodes.forEach(n => svg.appendChild?.(n));
+    }
+  }
+
   function renderSessionTimeline() {
     const drawer = el('session-timeline-drawer');
     const toggleBtn = el('btn-session-history-toggle');
@@ -11550,25 +18678,88 @@
 
     const sumEl = el('session-timeline-summary');
     const listEl = el('session-timeline-list');
+    const insightBodyEl = el('session-timeline-insight-body');
+    const insightBarEl = el('timeline-insight-bar');
     const unlinkedEl = el('session-timeline-unlinked');
     const moreWrap = el('session-timeline-more-wrap');
     const moreBtn = el('btn-timeline-load-more');
 
+    syncTimelineSortAndDeltaUi();
+    if (insightBarEl) {
+      insightBarEl.querySelectorAll?.('.tl-tab-btn').forEach(btn => {
+        const isAct = btn.getAttribute('data-tl-tab') === (state.timelineInsightTab || 'turns');
+        btn.classList.toggle('active', isAct);
+        btn.setAttribute?.('aria-selected', isAct ? 'true' : 'false');
+      });
+    }
+
     if (state.timelineLoading && !state.sessionTimeline) {
       if (sumEl) sumEl.textContent = t('session.timeline.loading');
-      if (listEl) listEl.replaceChildren();
+      if (listEl) { listEl.hidden = false; listEl.replaceChildren(); }
+      if (insightBodyEl) { insightBodyEl.hidden = true; insightBodyEl.replaceChildren(); }
       if (unlinkedEl) unlinkedEl.hidden = true;
       if (moreWrap) moreWrap.hidden = true;
       return;
     }
 
     const tl = state.sessionTimeline;
-    if (!tl || (!tl.turns?.length && !tl.unlinkedSubagentCalls?.length)) {
+    const eventsEl = el('session-timeline-events');
+    if (!tl || (!tl.turns?.length && !tl.unlinkedSubagentCalls?.length && !tl.contextChangeEvents?.length)) {
       if (sumEl) sumEl.textContent = state.timelineError ? translateBackendText(state.timelineError) : t('session.timeline.empty');
-      if (listEl) listEl.replaceChildren();
+      if (eventsEl) { eventsEl.hidden = true; eventsEl.replaceChildren(); }
+      if (listEl) { listEl.hidden = false; listEl.replaceChildren(); }
+      if (insightBodyEl) { insightBodyEl.hidden = true; insightBodyEl.replaceChildren(); }
       if (unlinkedEl) unlinkedEl.hidden = true;
       if (moreWrap) moreWrap.hidden = true;
       return;
+    }
+
+    const ctxEvents = Array.isArray(tl.contextChangeEvents) ? tl.contextChangeEvents : [];
+    if (eventsEl) {
+      eventsEl.replaceChildren();
+      if (ctxEvents.length > 0) {
+        eventsEl.hidden = false;
+        const evTitle = document.createElement('div');
+        evTitle.className = 'timeline-context-events-title';
+        evTitle.textContent = t('session.timeline.eventsTitle', { n: ctxEvents.length });
+        const evList = document.createElement('div');
+        evList.className = 'timeline-context-events-list';
+        for (const ev of ctxEvents) {
+          const evRow = document.createElement('div');
+          evRow.className = 'timeline-event-row is-clickable';
+          const leftBox = document.createElement('div');
+          leftBox.className = 'timeline-event-left';
+          const badge = document.createElement('span');
+          const safeType = ['compaction', 'prune', 'inject', 'model', 'mode', 'unknown_drop'].includes(ev.type) ? ev.type : 'inject';
+          badge.className = `timeline-event-badge is-${safeType}`;
+          badge.textContent = t(`session.timeline.event.${safeType}`);
+          const detailEl = document.createElement('span');
+          detailEl.className = 'timeline-event-detail';
+          const turnPart = ev.turnIndex != null ? `T${ev.turnIndex} ` : '';
+          const stepPart = Number.isInteger(ev.stepIndex) && ev.stepIndex >= 0 ? `#${ev.stepIndex} ` : '';
+          const srcPart = ev.source ? ` [${ev.source}]` : '';
+          const rawDesc = ev.type === 'unknown_drop' ? t('session.timeline.event.unknown_drop') : (ev.detail || '');
+          detailEl.textContent = `${turnPart}${stepPart}${rawDesc}${srcPart}`.trim() || badge.textContent;
+          leftBox.appendChild(badge);
+          leftBox.appendChild(detailEl);
+
+          const tokEl = document.createElement('span');
+          tokEl.className = 'timeline-event-tokens';
+          const bTxt = ev.beforeTokens != null ? short(ev.beforeTokens) : '—';
+          const aTxt = ev.afterTokens != null ? short(ev.afterTokens) : '—';
+          const dTxt = ev.deltaTokens != null ? ` (${ev.deltaTokens > 0 ? '+' : ''}${short(ev.deltaTokens)})` : '';
+          tokEl.textContent = `${bTxt} → ${aTxt}${dTxt}`;
+
+          evRow.appendChild(leftBox);
+          evRow.appendChild(tokEl);
+          evRow.addEventListener('click', () => jumpToStepOrTurn({ stepIndex: ev.stepIndex, turnIndex: ev.turnIndex, callId: ev.callId, timelineTab: 'turns' }));
+          evList.appendChild(evRow);
+        }
+        eventsEl.appendChild(evTitle);
+        eventsEl.appendChild(evList);
+      } else {
+        eventsEl.hidden = true;
+      }
     }
 
     const turns = Array.isArray(tl.turns) ? tl.turns : [];
@@ -11585,11 +18776,63 @@
         sub: tl.subagentCallsCount || 0,
         cache: cacheText
       });
+      sumEl.appendChild(sLine);
+      if (tl.contextDeltaSummary?.latestContextTokens != null) {
+        const dSum = tl.contextDeltaSummary;
+        const netTxt = dSum.netDeltaTokens != null
+          ? `${dSum.netDeltaTokens > 0 ? '+' : ''}${short(dSum.netDeltaTokens)}`
+          : '—';
+        const dLine = document.createElement('div');
+        dLine.style.marginTop = '2px';
+        dLine.textContent = t('session.timeline.deltaSummary', {
+          net: netTxt,
+          init: short(dSum.initialContextTokens || 0),
+          latest: short(dSum.latestContextTokens || 0)
+        });
+        sumEl.appendChild(dLine);
+      }
       const noteLine = document.createElement('div');
       noteLine.style.marginTop = '2px';
       noteLine.textContent = t('session.timeline.windowNote');
-      sumEl.appendChild(sLine);
       sumEl.appendChild(noteLine);
+      if (Array.isArray(tl.modelBreakdown) && tl.modelBreakdown.length > 0) {
+        const mbWrap = document.createElement('div');
+        mbWrap.className = 'timeline-model-breakdown';
+        const mbHdr = document.createElement('div');
+        mbHdr.className = 'timeline-model-hdr';
+        mbHdr.textContent = t('session.timeline.modelBreakdownTitle');
+        mbWrap.appendChild(mbHdr);
+        for (const mItem of tl.modelBreakdown) {
+          const mRow = document.createElement('div');
+          mRow.className = 'timeline-model-row';
+          const mName = document.createElement('span');
+          mName.className = `timeline-model-name${mItem.isUnknown ? ' is-unknown' : ''}`;
+          mName.textContent = mItem.isUnknown && !mItem.rawModelId
+            ? t('session.timeline.unknownModel')
+            : (mItem.modelLabel || mItem.modelKey || t('session.timeline.unknownModel'));
+          if (mItem.rawModelId) mName.title = String(mItem.rawModelId);
+          const mVal = document.createElement('span');
+          mVal.className = 'timeline-model-val';
+          mVal.textContent = `${mItem.callCount} · ${short(mItem.totalTokens || 0)} (${mItem.pct ?? 0}%)`;
+          mRow.appendChild(mName);
+          mRow.appendChild(mVal);
+          mbWrap.appendChild(mRow);
+        }
+        if (tl.sessionTokenTotals) {
+          const st = tl.sessionTokenTotals;
+          const totLine = document.createElement('div');
+          totLine.className = 'timeline-turn-meta';
+          totLine.textContent = t('session.timeline.modelTotalsLine', {
+            calls: st.callCount || 0,
+            total: short(st.totalTokens || 0),
+            inp: short(st.inputTokens || 0),
+            cap: short(st.cacheReadTokens || 0),
+            out: short(st.outputTokens || 0)
+          });
+          mbWrap.appendChild(totLine);
+        }
+        sumEl.appendChild(mbWrap);
+      }
       if (tl.subagentNote) {
         const dbNoteLine = document.createElement('div');
         dbNoteLine.style.marginTop = '2px';
@@ -11598,14 +18841,48 @@
       }
     }
 
+    const activeInsightTab = state.timelineInsightTab || 'turns';
+    if (activeInsightTab !== 'turns') {
+      if (listEl) listEl.hidden = true;
+      if (moreWrap) moreWrap.hidden = true;
+      if (unlinkedEl) unlinkedEl.hidden = true;
+      if (insightBodyEl) {
+        insightBodyEl.hidden = false;
+        renderTimelineInsightTabBody(tl, insightBodyEl);
+      }
+      return;
+    }
+
+    if (insightBodyEl) insightBodyEl.hidden = true;
     if (listEl) {
+      listEl.hidden = false;
       const curRouteKey = state.route || '';
       const sameTimelineRoute = state.timelineRenderedRoute === curRouteKey;
       const prevScrollTop = sameTimelineRoute ? Number(listEl.scrollTop || 0) : 0;
       listEl.replaceChildren();
       state.timelineRenderedRoute = curRouteKey;
       const resolveTurnKey = (tObj) => tObj?.turnKey || `turn-${tObj?.turnIndex ?? 'x'}-${tObj?.stepIndex ?? 'na'}`;
-      const descTurns = [...turns].reverse();
+      const sortOrder = state.timelineSortOrder || 'newest';
+      let descTurns;
+      if (sortOrder === 'oldest') {
+        descTurns = [...turns];
+      } else if (sortOrder === 'delta_desc') {
+        const resolveTurnMaxJump = (tObj) => {
+          const turnDelta = tObj?.deltaFromPrevTurn != null ? Math.abs(Number(tObj.deltaFromPrevTurn)) : 0;
+          const calls = Array.isArray(tObj?.calls) ? tObj.calls : [];
+          let callMax = 0;
+          for (const c of calls) {
+            if (c?.deltaFromPrevStep != null && Number.isFinite(Number(c.deltaFromPrevStep))) {
+              const absD = Math.abs(Number(c.deltaFromPrevStep));
+              if (absD > callMax) callMax = absD;
+            }
+          }
+          return Math.max(turnDelta, callMax);
+        };
+        descTurns = [...turns].sort((a, b) => resolveTurnMaxJump(b) - resolveTurnMaxJump(a));
+      } else {
+        descTurns = [...turns].reverse();
+      }
       if (descTurns.length > 0 && state.timelineAutoExpandedRoute !== curRouteKey) {
         state.timelineAutoExpandedRoute = curRouteKey;
         if (state.expandedTurnKeys.size === 0) {
@@ -11637,20 +18914,28 @@
         mName.textContent = (effortText && !hasEffortParen) ? `${baseModelTitle} (${effortText})` : baseModelTitle;
         main.appendChild(roleBadge);
         main.appendChild(mName);
+        const deltaBadge = createDeltaBadgeEl(call.deltaFromPrevStep, Boolean(call.isMaxContextJump));
+        if (deltaBadge) main.appendChild(deltaBadge);
 
         const stats = document.createElement('div');
         stats.className = 'timeline-call-stats';
         const st = resolveCallStatusDisplay(call);
-        const inpTxt = call.hasInputCacheFields ? short(call.totalInputTokens) : t('session.latestCall.unknownVal');
-        const eTag = (call.eScore != null && call.eGrade)
-          ? (currentPanelLanguage === 'en' ? ` · ${call.eScore}pt(${call.eGrade})` : ` · ${call.eScore}分(${call.eGrade})`)
-          : '';
-        if (currentPanelLanguage === 'en') {
-          stats.textContent = `${formatCallTimeStr(call)} · In ${inpTxt}/Out ${short(call.outputTokens || 0)} · Cache ${formatCallCachePctText(call)}${eTag} · ${st.text}`;
-        } else if (currentPanelLanguage === 'zh-TW') {
-          stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 緩${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        if (state.timelineDeltaOnly && call.contextWindowTokens != null) {
+          const dVal = call.deltaFromPrevStep;
+          const dStr = dVal != null ? `${dVal > 0 ? '+' : ''}${short(dVal)}` : '—';
+          stats.textContent = `${formatCallTimeStr(call)} · Δ ${dStr} → ${short(call.contextWindowTokens)} · ${st.text}`;
         } else {
-          stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 缓${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+          const inpTxt = call.hasInputCacheFields ? short(call.totalInputTokens) : t('session.latestCall.unknownVal');
+          const eTag = (call.eScore != null && call.eGrade)
+            ? (currentPanelLanguage === 'en' ? ` · ${call.eScore}pt(${call.eGrade})` : ` · ${call.eScore}分(${call.eGrade})`)
+            : '';
+          if (currentPanelLanguage === 'en') {
+            stats.textContent = `${formatCallTimeStr(call)} · In ${inpTxt}/Out ${short(call.outputTokens || 0)} · Cache ${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+          } else if (currentPanelLanguage === 'zh-TW') {
+            stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 緩${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+          } else {
+            stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 缓${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+          }
         }
 
         row.appendChild(main);
@@ -11692,15 +18977,22 @@
         if (promptText) promptEl.title = promptText;
         left.appendChild(idxEl);
         left.appendChild(promptEl);
+        const turnDeltaBadge = createDeltaBadgeEl(turn.deltaFromPrevTurn, false);
+        if (turnDeltaBadge) left.appendChild(turnDeltaBadge);
 
         const metaEl = document.createElement('span');
         metaEl.className = 'timeline-turn-meta';
-        metaEl.textContent = t('session.timeline.turnSummary', {
-          calls: turn.calls?.length || 0,
-          inp: short(turn.inputTokens || 0),
-          cap: short(turn.cacheReadTokens || 0),
-          out: short(turn.outputTokens || 0)
-        });
+        if (state.timelineDeltaOnly && turn.lastContextTokens != null) {
+          const td = turn.deltaFromPrevTurn;
+          metaEl.textContent = `${turn.calls?.length || 0} · ${td != null ? `Δ${td > 0 ? '+' : ''}${short(td)} ` : ''}→ ${short(turn.lastContextTokens)}`;
+        } else {
+          metaEl.textContent = t('session.timeline.turnSummary', {
+            calls: turn.calls?.length || 0,
+            inp: short(turn.inputTokens || 0),
+            cap: short(turn.cacheReadTokens || 0),
+            out: short(turn.outputTokens || 0)
+          });
+        }
 
         hdrBtn.appendChild(left);
         hdrBtn.appendChild(metaEl);
@@ -11792,19 +19084,25 @@
         timelineData = groupSessionCallsByTurns([], liveCalls, { cascadeId: id, cascadeModelConfigs: configs });
       }
 
-      if (gen !== state.generation || seq !== timelineFetchSeq || state.disposed) return null;
+      if (gen !== state.generation || seq !== timelineFetchSeq || state.disposed || !sameRouteId(id, state.route)) return null;
       if (timelineData) {
+        if (timelineData.cascadeId && UUID_STRICT_RE.test(String(timelineData.cascadeId)) && !sameRouteId(timelineData.cascadeId, state.route)) return null;
         state.sessionTimeline = timelineData;
         state.lastTimelineFetchAt = Date.now();
       }
     } catch (e) {
-      if (e?.name !== 'AbortError' && gen === state.generation && !state.disposed) {
+      if (e?.name !== 'AbortError' && gen === state.generation && !state.disposed && sameRouteId(id, state.route)) {
         state.timelineError = e?.message || String(e || '');
       }
     } finally {
-      if (seq === timelineFetchSeq && !state.disposed) {
+      if (seq === timelineFetchSeq && !state.disposed && sameRouteId(id, state.route)) {
         state.timelineLoading = false;
+        if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+        if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
         if (state.historyDrawerOpen) renderSessionTimeline();
+        renderComposerStatusBar();
+        renderTurnFooterStats();
+        syncOverflowMenuMetrics?.();
       }
     }
     return state.sessionTimeline;
@@ -11827,8 +19125,11 @@
   function render() {
     host.hidden = false;
     host.setAttribute('data-has-session', state.route ? 'true' : 'false');
+    enforceMarketplaceAvoidance();
     ensureHostDocked();
+    renderConversationScopeUI();
     if (!state.route) {
+      host.setAttribute('data-compacting', 'false');
       hideContextTooltip();
       const barFill = el('bar-fill');
       if (barFill) barFill.style.width = '0%';
@@ -11840,7 +19141,10 @@
       el('badge-tokens').title = t('badge.tokensTitle');
       syncContextModelSelectionFromState();
       renderLatestCallCard({ skipAnim: true });
+      renderSessionBentoSections();
       renderSessionTimeline();
+      renderComposerStatusBar();
+      renderTurnFooterStats();
       return;
     }
     renderSessionCost();
@@ -11861,14 +19165,15 @@
     }
 
     const barColor = danger ? '#ff4d4f' : pct != null && pct >= 90 ? '#ff4d4f' : pct != null && pct >= 75 || stale || incomplete ? '#faad14' : '#69c0ff';
-    const tone = danger ? '#ff9292' : stale || incomplete || d?.estimated ? '#f2c46d' : '#b7c1ff';
+    const tone = danger ? '#ff9292' : stale || incomplete || (d?.estimated && !d?.compacted) ? '#f2c46d' : '#b7c1ff';
     host.style.setProperty('--tone', tone);
     host.style.setProperty('--bar-color', barColor);
 
     const barFill = el('bar-fill');
     if (barFill) barFill.style.width = pct != null ? `${pct}%` : (d?.exceeded ? '100%' : '0%');
+    const isCompactingNow = Boolean(state.compacting && state.compacting.cascadeId === state.route && !disp.isError);
 
-    updateRingAndBubble(d, session, pct, danger, stale, incomplete);
+    updateRingAndBubble(d, session, pct, danger, stale, incomplete, disp, isCompactingNow);
 
     syncContextModelSelectionFromState();
 
@@ -11880,13 +19185,16 @@
       }
     }
 
-    const status = disp.isError
+    host.setAttribute('data-compacting', isCompactingNow ? 'true' : 'false');
+    const status = disp.isError || disp.kind === 'canceled'
       ? disp.statusText
-      : stale ? t('badge.status.stale')
-        : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })
-          : incomplete ? t('badge.status.incomplete', { count: session.unknownFiles })
-            : d?.estimated ? t('badge.status.estimated')
-              : t('badge.status.normal');
+      : isCompactingNow ? t('badge.status.compacting')
+        : stale ? t('badge.status.stale')
+          : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })
+            : incomplete ? t('badge.status.incomplete', { count: session.unknownFiles })
+              : d?.compacted ? t('badge.status.compacted')
+                : d?.estimated ? t('badge.status.estimated')
+                  : t('badge.status.normal');
     el('status').textContent = status;
 
     const corpus = session?.total
@@ -11898,10 +19206,23 @@
       el('amount').textContent = disp.amountText;
       if (badgePctVal) badgePctVal.textContent = disp.badgeText;
       setHoverExtra(disp.hoverExtra);
+    } else if (isCompactingNow) {
+      const curTok = d?.actual != null ? d.actual : (d?.postCompactEstimate ?? null);
+      el('amount').textContent = curTok != null ? `${short(curTok)} (${t('badge.pct.compacting')})` : t('badge.pct.compacting');
+      if (badgePctVal) badgePctVal.textContent = t('badge.pct.compacting');
+      const budgetStr = d?.budget ? ` / ${short(d.budget)}` : '';
+      setHoverExtra(`${budgetStr} · ${corpus}`);
     } else if (stale) {
       el('amount').textContent = t('badge.delayed');
       if (badgePctVal) badgePctVal.textContent = pct != null ? `${pct.toFixed(0)}%` : '--%';
       setHoverExtra(` · ${corpus}`);
+    } else if (d?.compacted && d?.postCompactEstimate != null) {
+      const pctRound = pct != null ? (pct > 0 && pct < 1 ? 1 : Math.round(pct)) : null;
+      const pctStr = pctRound != null ? ` (${pctRound}%)` : '';
+      el('amount').textContent = `~${short(d.postCompactEstimate)}${pctStr}`;
+      if (badgePctVal) badgePctVal.textContent = pctRound != null ? `~${pctRound}%` : '--%';
+      const budgetStr = d?.budget ? ` / ${short(d.budget)}` : '';
+      setHoverExtra(`${budgetStr} · ${corpus}`);
     } else if (d?.actual != null) {
       const pctStr = pct != null ? ` (${pct.toFixed(0)}%)` : '';
       el('amount').textContent = `${short(d.actual)}${pctStr}`;
@@ -11916,31 +19237,27 @@
 
     el('badge-tokens').title = t('badge.tokensTitle');
 
-    // 渲染输出速度 (统一使用 tok/s)
+    // 渲染输出速度 (顶栏显示当前会话平均速度, 统一使用 tok/s)
     const sp = d?.speed;
     const speedBadge = el('badge-speed');
     const speedHoverExtra = el('speed-hover-extra');
     syncSpeedBadgeText();
+    const avgSpForRender = getSessionAverageSpeed(state.lastSpeedEval || null);
     if (speedBadge) {
       if (sp?.tps != null) {
         if (speedHoverExtra) {
           speedHoverExtra.textContent = `${sp.duration ? ` · ${sp.duration}s` : ''}${sp.outputTokens ? ` · ${short(sp.outputTokens)} tok` : ''}`;
         }
-        speedBadge.title = t('badge.speedTitleDetail', {
-          tps: sp.tps,
-          streaming: sp.streamingTps ? t('badge.speedStreamingPart', { tps: sp.streamingTps }) : '',
-          duration: sp.duration || '—',
-          ttft: sp.ttft || '—',
-          streamSec: sp.streamingSec || '—',
-          output: fmt(sp.outputTokens)
-        });
+      } else if (avgSpForRender?.avgTps != null) {
+        if (speedHoverExtra) {
+          speedHoverExtra.textContent = `${avgSpForRender.totalDurationSec ? ` · ${avgSpForRender.totalDurationSec}s` : ''}${avgSpForRender.totalOutputTokens ? ` · ${short(avgSpForRender.totalOutputTokens)} tok` : ''}`;
+        }
       } else if (state.requestBusy) {
         if (speedHoverExtra) speedHoverExtra.textContent = '';
-        speedBadge.title = t('badge.speedTitleWait');
       } else {
         if (speedHoverExtra) speedHoverExtra.textContent = t('badge.speedHoverIdle');
-        speedBadge.title = t('badge.speedTitleIdle');
       }
+      updateSpeedBadgeHoverTitle(state.lastSpeedEval || null, avgSpForRender);
     }
 
     if (el('key-summary')) {
@@ -11982,7 +19299,69 @@
             }
           }
         }
-        if (keyTakeaway) keyTakeaway.textContent = disp.keyTakeaway;
+        if (keyTakeaway) {
+          keyTakeaway.textContent = disp.keyTakeaway;
+          const showErrTakeaway = Boolean(disp.isError);
+          keyTakeaway.hidden = !showErrTakeaway;
+          keyTakeaway.style.display = showErrTakeaway ? '' : 'none';
+        }
+      } else if (isCompactingNow) {
+        if (keyBadge) {
+          keyBadge.textContent = t('key.pill.compacting');
+          keyBadge.className = 'key-pill pill-info';
+        }
+        const curUsed = d?.actual != null ? d.actual : (d?.postCompactEstimate ?? d?.estimate ?? null);
+        if (keyUsed) {
+          keyUsed.textContent = curUsed != null
+            ? `${d?.actual != null ? '' : '~'}${short(curUsed)}${pct != null ? ` (${pct.toFixed(1)}%)` : ''}`
+            : '—';
+        }
+        if (keyLimit) keyLimit.textContent = d?.budget ? short(d.budget) : '—';
+        if (keyRemaining) {
+          if (curUsed != null && d?.budget && pct != null) {
+            const rem = Math.max(0, d.budget - curUsed);
+            const remPct = Math.max(0, 100 - pct);
+            keyRemaining.textContent = `${short(rem)} (${remPct.toFixed(1)}%)`;
+          } else {
+            keyRemaining.textContent = t('key.pending');
+          }
+        }
+        if (keyTakeaway) {
+          keyTakeaway.textContent = t('key.takeaway.compacting');
+          keyTakeaway.hidden = false;
+          keyTakeaway.style.display = '';
+        }
+      } else if (d?.compacted && d?.postCompactEstimate != null) {
+        if (pct != null) {
+          const limitVal = d.budget || 256000;
+          const remainVal = Math.max(0, limitVal - d.postCompactEstimate);
+          const remainPct = Math.max(0, 100 - pct);
+          if (keyBadge) {
+            keyBadge.textContent = t('key.pill.compacted');
+            keyBadge.className = pct >= 90 ? 'key-pill pill-danger' : (pct >= 75 ? 'key-pill pill-warn' : 'key-pill pill-good');
+          }
+          if (keyUsed) keyUsed.textContent = `~${short(d.postCompactEstimate)} (${pct.toFixed(1)}%)`;
+          if (keyLimit) keyLimit.textContent = short(limitVal);
+          if (keyRemaining) keyRemaining.textContent = `~${short(remainVal)} (${remainPct.toFixed(1)}%)`;
+          if (keyTakeaway) {
+            keyTakeaway.textContent = t('key.takeaway.compacted', { pct: pct.toFixed(1), rem: short(remainVal) });
+            keyTakeaway.hidden = false;
+            keyTakeaway.style.display = '';
+          }
+        } else {
+          if (keyBadge) {
+            keyBadge.textContent = t('key.pill.compacted');
+            keyBadge.className = 'key-pill pill-good';
+          }
+          if (keyUsed) keyUsed.textContent = `~${short(d.postCompactEstimate)}`;
+          if (keyLimit) keyLimit.textContent = d?.budget ? short(d.budget) : '—';
+          if (keyRemaining) keyRemaining.textContent = t('key.pending');
+          if (keyTakeaway) {
+            keyTakeaway.textContent = t('badge.status.compacted');
+            keyTakeaway.hidden = false;
+            keyTakeaway.style.display = '';
+          }
+        }
       } else if (d?.actual != null && pct != null) {
         const limitVal = d.budget || 256000;
         const remainVal = Math.max(0, limitVal - d.actual);
@@ -11999,10 +19378,16 @@
         if (keyTakeaway) {
           if (pct >= 90) {
             keyTakeaway.textContent = t('key.takeaway.90', { pct: pct.toFixed(1), rem: short(remainVal) });
+            keyTakeaway.hidden = false;
+            keyTakeaway.style.display = '';
           } else if (pct >= 75) {
             keyTakeaway.textContent = t('key.takeaway.75', { pct: pct.toFixed(1), rem: short(remainVal) });
+            keyTakeaway.hidden = false;
+            keyTakeaway.style.display = '';
           } else {
             keyTakeaway.textContent = t('key.takeaway.ok', { pct: pct.toFixed(1), rem: short(remainVal) });
+            keyTakeaway.hidden = true;
+            keyTakeaway.style.display = 'none';
           }
         }
       } else {
@@ -12010,7 +19395,11 @@
         if (keyUsed) keyUsed.textContent = d?.estimate ? t('key.estPrefix', { val: short(d.estimate) }) : (session?.total ? short(session.total.low) : '—');
         if (keyLimit) keyLimit.textContent = d?.budget ? short(d.budget) : '—';
         if (keyRemaining) keyRemaining.textContent = t('key.pending');
-        if (keyTakeaway) keyTakeaway.textContent = t('key.takeaway.est');
+        if (keyTakeaway) {
+          keyTakeaway.textContent = t('key.takeaway.est');
+          keyTakeaway.hidden = true;
+          keyTakeaway.style.display = 'none';
+        }
       }
     }
 
@@ -12020,11 +19409,15 @@
         renderSpeedExperienceInPlace(evalRes);
       } else {
         const spBadge = el('speed-badge');
+        const spAvgVal = el('speed-avg-val');
         const spVal = el('speed-val');
         const spDur = el('speed-duration');
         const spTtft = el('speed-ttft');
         const spTokens = el('speed-tokens');
         const spTakeaway = el('speed-takeaway');
+        if (spAvgVal) {
+          spAvgVal.textContent = avgSpForRender?.avgTps != null ? `${avgSpForRender.avgTps} tok/s` : '—';
+        }
 
         if (sp?.tps != null) {
           if (spBadge) {
@@ -12040,13 +19433,22 @@
           if (spTakeaway) {
             const modelStr = d?.model ? `（${d.model}）` : '';
             const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
+            const avgPart = avgSpForRender?.avgTps != null
+              ? t('speed.avgPart', {
+                avgTps: avgSpForRender.avgTps,
+                count: avgSpForRender.count,
+                totalTok: fmt(avgSpForRender.totalOutputTokens),
+                totalDur: avgSpForRender.totalDurationSec ?? '—'
+              })
+              : '';
             spTakeaway.textContent = t('speed.takeaway.ok', {
               tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
               tps: sp.tps,
               stream: streamInfo,
               dur: sp.duration,
               tok: fmt(sp.outputTokens),
-              model: modelStr
+              model: modelStr,
+              avgPart
             });
           }
         } else {
@@ -12061,17 +19463,55 @@
     }
 
     el('model').textContent = d?.model?.startsWith('MODEL_PLACEHOLDER') ? t('tech.modelPlaceholder', { id: d.model }) : d?.model || t('tech.modelMissing');
-    el('request-status').textContent = d?.exceeded ? t('tech.req.exceeded') : d?.network ? t('tech.req.network') : d?.error ? t('tech.req.failed') : d?.status === 'reported' ? t('tech.req.reported') : d?.status === 'estimated' ? t('tech.req.estimated') : t('tech.req.waiting');
-    el('actual').textContent = d?.actual != null ? token(d.actual) : d?.exceeded ? t('tech.actual.exceeded', { val: fmt(d.serviceLimit || 0) }) : t('tech.actual.unknown');
+    el('request-status').textContent = d?.exceeded ? t('tech.req.exceeded') : d?.network ? t('tech.req.network') : d?.error ? t('tech.req.failed') : isCompactingNow ? t('tech.req.compacting') : d?.compacted ? t('tech.req.compacted') : d?.status === 'reported' ? t('tech.req.reported') : d?.status === 'estimated' ? t('tech.req.estimated') : t('tech.req.waiting');
+    el('actual').textContent = d?.actual != null ? token(d.actual) : d?.exceeded ? t('tech.actual.exceeded', { val: fmt(d.serviceLimit || 0) }) : d?.compacted ? t('tech.actual.compacted') : t('tech.actual.unknown');
     if (d?.exceeded && !d.serviceLimit) el('actual').textContent = t('tech.actual.exceededNoLim');
-    el('estimate').textContent = d?.estimate ? t('tech.est.val', { val: fmt(d.estimate), note: d.exceeded ? t('tech.est.under') : t('tech.est.ref') }) : t('tech.est.none');
+    el('estimate').textContent = d?.estimate ? t('tech.est.val', { val: fmt(d.estimate), note: d.exceeded ? t('tech.est.under') : (d.compacted ? t('tech.est.compacted') : t('tech.est.ref')) }) : t('tech.est.none');
     el('budget').textContent = token(d?.budget);
     el('service-limit').textContent = d?.serviceLimit ? t('tech.svcLim.val', { val: fmt(d.serviceLimit) }) : t('tech.svcLim.none');
-    el('percent').textContent = d?.percent != null && !danger && !stale ? t('tech.pct.val', { pct: d.percent.toFixed(1) }) : t('tech.pct.none');
+    el('percent').textContent = d?.percent != null && !danger && !stale
+      ? (d.compacted ? t('tech.pct.compactedVal', { pct: d.percent.toFixed(1) }) : t('tech.pct.val', { pct: d.percent.toFixed(1) }))
+      : t('tech.pct.none');
     el('session-total').textContent = session?.total ? range(session.total) + (incomplete ? t('tech.plusUnknown') : '') : state.scanError ? t('tech.scanIncomplete') : t('tech.scanning');
     el('characters').textContent = session?.total ? fmt(session.total.chars) : '—';
-    for (const name of ['user', 'assistant', 'thinking', 'tools', 'summaries']) el(name).textContent = session?.groups ? range(session.groups[name]) : '—';
+    for (const name of ['user', 'assistant', 'thinking', 'tools', 'summaries']) {
+      if (name === 'summaries' && session?.groups?.summaries && Number(session.checkpointCount) > 0 && Number.isInteger(session.lastCheckpointIndex) && session.lastCheckpointIndex >= 0) {
+        el(name).textContent = t('tech.summaries.withCheckpoints', {
+          range: range(session.groups.summaries),
+          count: session.checkpointCount,
+          step: session.lastCheckpointIndex
+        });
+      } else {
+        el(name).textContent = session?.groups ? range(session.groups[name]) : '—';
+      }
+    }
     el('system').textContent = session?.groups ? range({ low: (session.groups.system?.low || 0) + (session.groups.definitions?.low || 0), high: (session.groups.system?.high || 0) + (session.groups.definitions?.high || 0) }) : '—';
+    const subGrp = session?.compositionSubgroups;
+    if (el('injections')) {
+      el('injections').textContent = (subGrp && Number(subGrp.injectionCount) > 0)
+        ? t('session.tech.subCount', { range: range(subGrp.injections), count: subGrp.injectionCount })
+        : '—';
+    }
+    if (el('skills')) {
+      el('skills').textContent = (subGrp && Number(subGrp.skillCount) > 0)
+        ? t('session.tech.subCount', { range: range(subGrp.skills), count: subGrp.skillCount })
+        : '—';
+    }
+    if (el('composition-gap')) {
+      const comp = (session && typeof buildSessionCompositionBreakdown === 'function')
+        ? buildSessionCompositionBreakdown(session, d)
+        : null;
+      if (comp && comp.actualTokens != null && comp.estimatedTotalMedian > 0) {
+        const diffSign = comp.diffTokens > 0 ? '+' : (comp.diffTokens < 0 ? '-' : '');
+        el('composition-gap').textContent = t('session.tech.gapVal', {
+          actual: short(comp.actualTokens),
+          est: short(comp.estimatedTotalMedian),
+          diff: `${diffSign}${short(Math.abs(comp.diffTokens || 0))}`
+        });
+      } else {
+        el('composition-gap').textContent = '—';
+      }
+    }
     el('attachment-total').textContent = session?.attachmentTotal ? range(session.attachmentTotal) + (incomplete ? t('tech.plusUnknownShort') : '') : '—';
     el('steps').textContent = session?.steps != null ? t('tech.stepsVal', { steps: fmt(session.steps), user: session.userMessages, assistant: session.assistantMessages }) : t('tech.stepsNone');
     el('coverage').textContent = Array.isArray(session?.attachments)
@@ -12091,7 +19531,13 @@
     });
     el('refresh').disabled = state.scanBusy;
     scheduleLatestCallRefresh({ allowTimelineRefresh: false });
+    if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
+    if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+    if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
     if (state.historyDrawerOpen) renderSessionTimeline();
+    renderComposerStatusBar();
+    renderTurnFooterStats();
+    syncOverflowMenuMetrics?.();
   }
 
   const MAX_FLUSH_BATCH_CALLS = 500;
@@ -12484,18 +19930,127 @@
     }
   }
 
+  function getRendererCsrfToken() {
+    const direct = typeof window !== 'undefined' ? window.__APP_CONFIG__?.csrfToken : null;
+    if (typeof direct === 'string' && direct.trim()) return direct.trim();
+    try {
+      const stored = typeof window !== 'undefined' ? window.localStorage?.getItem?.('agy_session_csrf_token') : null;
+      if (typeof stored === 'string' && stored.trim()) return stored.trim();
+    } catch { }
+    return '';
+  }
+
+  function resolveDefaultBudgetFallbackForCompaction(baseLatest) {
+    if (baseLatest?.budget && baseLatest.budget > 0) return baseLatest.budget;
+    if (state.scan?.preCompactLatest?.budget && state.scan.preCompactLatest.budget > 0) {
+      return state.scan.preCompactLatest.budget;
+    }
+    if (state.latest?.budget && state.latest.budget > 0) return state.latest.budget;
+    return null;
+  }
+
+  function resolveEffectiveLatestWithCompaction(candidateLatest, candidateMeta = null, candidateGenIndex = -1) {
+    const scanSession = state.scan?.session || null;
+    const scanCpIdx = Number.isInteger(scanSession?.lastCheckpointIndex) ? scanSession.lastCheckpointIndex : -1;
+    const scanGenCount = Number.isFinite(Number(state.scan?.generatorCount)) ? Number(state.scan.generatorCount) : -1;
+    const hCwu = (state.hostContextWindowUsage && state.hostContextWindowUsage.cascadeId === state.route)
+      ? state.hostContextWindowUsage
+      : null;
+    const hostCpActive = Boolean(hCwu?.estimatedAfterCompaction);
+    const hostStepIdx = Number.isInteger(hCwu?.lastStepIndex) ? hCwu.lastStepIndex : -1;
+    const hostGenIdx = Number.isInteger(hCwu?.generatorMetadataIndex) ? hCwu.generatorMetadataIndex : -1;
+
+    const effectiveCpIdx = Math.max(scanCpIdx, hostCpActive ? Math.max(0, hostStepIdx) : -1);
+    if (effectiveCpIdx < 0 && !hostCpActive) {
+      return withStepError(candidateLatest, candidateMeta);
+    }
+
+    if (candidateLatest && !candidateLatest.compacted) {
+      const rowMaxStep = typeof extractGeneratorMaxStep === 'function'
+        ? extractGeneratorMaxStep(candidateMeta)
+        : -1;
+      const hasOutcome = candidateLatest.actual !== null || Boolean(candidateLatest.error);
+      if (rowMaxStep >= 0) {
+        if (rowMaxStep > effectiveCpIdx && hasOutcome) {
+          if (hCwu && hCwu.estimatedAfterCompaction && (hostStepIdx < 0 || rowMaxStep > hostStepIdx)) {
+            hCwu.estimatedAfterCompaction = false;
+          }
+          return withStepError(candidateLatest, candidateMeta);
+        }
+      } else if (hasOutcome) {
+        const lastModelStep = Number.isInteger(scanSession?.lastModelStepAt)
+          ? scanSession.lastModelStepAt
+          : (Number.isInteger(scanSession?.lastAssistantAt) ? scanSession.lastAssistantAt : -1);
+        // 若旧检查点之后已存在真实模型/工具步，证明 scanCpIdx 是早先已被超越的历史检查点（二次压缩期间亦应保持压缩前真实用量，避免误拿旧检查点重算）
+        const scanAlreadyHasPostModelStep = scanCpIdx >= 0 && lastModelStep > scanCpIdx && !hostCpActive;
+        const isCompactingCurrentRoute = Boolean(state.compacting && state.compacting.cascadeId === state.route);
+        const genAdvancedPastScan = !isCompactingCurrentRoute && scanCpIdx >= 0 && scanGenCount > 0 && candidateGenIndex >= scanGenCount && !hostCpActive;
+        const genAdvancedPastHost = !isCompactingCurrentRoute && hostCpActive && hostGenIdx >= 0 && candidateGenIndex > hostGenIdx;
+        if (scanAlreadyHasPostModelStep || genAdvancedPastScan || genAdvancedPastHost) {
+          if (hCwu && hCwu.estimatedAfterCompaction) {
+            hCwu.estimatedAfterCompaction = false;
+          }
+          return withStepError(candidateLatest, candidateMeta);
+        }
+      }
+    }
+
+    if (typeof buildPostCompactSummary === 'function') {
+      const baseRef = (candidateLatest && !candidateLatest.compacted)
+        ? {
+          ...(state.scan?.preCompactLatest || state.latest || {}),
+          ...candidateLatest,
+          budget: candidateLatest.budget || resolveDefaultBudgetFallbackForCompaction(candidateLatest),
+          model: candidateLatest.model || state.scan?.preCompactLatest?.model || state.latest?.model || '',
+          modelId: candidateLatest.modelId || state.scan?.preCompactLatest?.modelId || state.latest?.modelId || null,
+          modelRaw: candidateLatest.modelRaw || state.scan?.preCompactLatest?.modelRaw || state.latest?.modelRaw || '',
+          speed: candidateLatest.speed || state.latest?.speed || state.scan?.preCompactLatest?.speed || null
+        }
+        : (state.scan?.preCompactLatest || candidateLatest || state.latest || null);
+      const compactedObj = buildPostCompactSummary({
+        session: scanSession,
+        postCheckpointAttachmentTotal: scanSession?.postCheckpointAttachmentTotal,
+        system: scanSession?.groups?.system,
+        definitions: scanSession?.groups?.definitions,
+        previousLatest: baseRef,
+        hostContextWindowUsage: hCwu,
+        defaultBudgetFallback: resolveDefaultBudgetFallbackForCompaction(baseRef)
+      });
+      return withStepError(compactedObj, null);
+    }
+
+    return withStepError(candidateLatest, candidateMeta);
+  }
+
   async function requestPoll(generation, id) {
     state.requestBusy = true;
     const controller = new AbortController(); state.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 12000);
     try {
-      const csrf = window.__APP_CONFIG__?.csrfToken; if (!csrf) throw new Error('后台尚未就绪');
-      const offset = Math.max(0, state.count - 3);
-      const response = await fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: offset, includeMessages: false }), signal: controller.signal });
+      const csrf = getRendererCsrfToken(); if (!csrf) throw new Error('后台尚未就绪');
+      const fromCache = Boolean(state.restoredFromCache);
+      const prevCount = state.count || 0;
+      let offset = Math.max(0, prevCount - 3);
+      const fetchMeta = off => fetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf }, body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: off, includeMessages: false }), signal: controller.signal });
+      let response = await fetchMeta(offset);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json(); if (generation !== state.generation || state.disposed) return;
-      const rows = data.generatorMetadata || [];
-      state.count = rows.length ? offset + rows.length : 0;
+      let data = await response.json(); if (generation !== state.generation || state.disposed || !sameRouteId(id, state.route)) return;
+      let rows = data.generatorMetadata || [];
+      if (fromCache && offset > 0 && (!rows.length || offset + rows.length < prevCount)) {
+        offset = 0;
+        response = await fetchMeta(0);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        data = await response.json(); if (generation !== state.generation || state.disposed || !sameRouteId(id, state.route)) return;
+        rows = data.generatorMetadata || [];
+      }
+      state.restoredFromCache = false;
+      const nextCount = rows.length ? offset + rows.length : 0;
+      if (fromCache && nextCount < prevCount) {
+        sessionSnapshotCache.delete(id);
+        state.sessionCallsMap?.clear();
+        if (!nextCount) Object.assign(state, { latest: null, displayedCallRecord: null, displayedCallSig: '', lastSpeedEval: null });
+      }
+      state.count = nextCount;
       if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
       if (!state.syncedFinalMap) state.syncedFinalMap = new Map();
       if (!state.pendingFinalCalls) state.pendingFinalCalls = new Map();
@@ -12641,18 +20196,29 @@
       if (state.pendingFinalCalls.size > 0) {
         void flushPendingFinalCalls(wasHydrated);
       }
+      let matchedPollRow = false;
       for (let i = rows.length - 1; i >= 0; i--) {
         const value = summarize(rows[i], { cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [] });
         if (value) {
-          state.latest = withStepError(value, rows[i]);
+          matchedPollRow = true;
+          state.latest = resolveEffectiveLatestWithCompaction(value, rows[i], offset + i);
           const callInfo = parseGeneratorCall ? parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: modelConfigsList }) : null;
-          recordObservationFromSummary(state.latest, id, {
-            callId: callInfo?.callId || null,
-            stepCount: state.count,
-            ts: Date.now()
-          });
+          updateLiveSpeedTracker(id, rows[i], state.latest, callInfo);
+          if (!state.latest?.compacted || state.latest?.postCompactSource === 'host_context_window_usage') {
+            recordObservationFromSummary(state.latest, id, {
+              callId: state.latest?.compacted ? null : (callInfo?.callId || null),
+              stepCount: state.count,
+              ts: Date.now()
+            });
+          }
           break;
         }
+      }
+      if (!matchedPollRow && state.latest?.compacted) {
+        state.latest = resolveEffectiveLatestWithCompaction(state.latest, null, -1);
+      }
+      if (rows.some(r => r && !r.chatModel) && !state.scanBusy && Date.now() - (state.lastCompactForceScanAt || 0) > 1500) {
+        triggerImmediateCompactScan(id);
       }
       state.requestAt = Date.now(); state.requestError = '';
       if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
@@ -12663,7 +20229,7 @@
       if (generation === state.generation && !state.disposed) {
         state.requestBusy = false;
         const latestRecNow = resolveLatestSessionCallRecord();
-        const isStreamingNow = Boolean(latestRecNow && latestRecNow.status === 'streaming');
+        const isStreamingNow = Boolean((latestRecNow && latestRecNow.status === 'streaming') || state.compacting || state.livePendingRequest);
         const nextDelay = document.hidden ? 15000 : (isStreamingNow ? 1000 : 3000);
         state.requestNext = Date.now() + nextDelay;
         render();
@@ -12672,6 +20238,8 @@
   }
 
   async function scan(generation, id, force = false) {
+    const myScanSeq = ++activeScanSeq;
+    const scanStartedAtMs = Date.now();
     state.scanBusy = true; render();
     try {
       let result;
@@ -12679,7 +20247,9 @@
       if (!hasIpcScan && !hasLiveHttpBridge()) {
         throw new Error('完整重启 Antigravity 后启用附件扫描');
       }
-      const controller = new AbortController(); state.controllers.add(controller);
+      const controller = new AbortController();
+      activeScanController = controller;
+      state.controllers.add(controller);
       const timeout = setTimeout(() => controller.abort(), 180000);
       try {
         const out = await callBackendWithPriority({
@@ -12692,11 +20262,40 @@
       } finally {
         clearTimeout(timeout);
         state.controllers.delete(controller);
+        if (activeScanController === controller) activeScanController = null;
       }
-      if (generation !== state.generation || state.disposed) return;
+      if (generation !== state.generation || state.disposed || myScanSeq !== activeScanSeq || !sameRouteId(id, state.route)) return;
       if (result?.data?.abortedStale) return;
+      if (result?.data?.conversation && UUID_STRICT_RE.test(String(result.data.conversation)) && !sameRouteId(result.data.conversation, state.route)) return;
       if (!result?.ok) throw new Error(result?.error || '扫描未返回有效结果');
       state.scan = result.data; state.scanError = '';
+      const scannedCpIdx = Number.isInteger(result.data.session?.lastCheckpointIndex)
+        ? result.data.session.lastCheckpointIndex
+        : -1;
+      const scannedInProgressCpIdx = Number.isInteger(result.data.session?.inProgressCheckpointIndex)
+        ? result.data.session.inProgressCheckpointIndex
+        : -1;
+      if (scannedInProgressCpIdx >= 0 && !state.compacting && id === state.route) {
+        beginCompactingTransition(id);
+      }
+      if (state.compacting && state.compacting.cascadeId === id) {
+        if (!state.compacting.baselineHydrated) {
+          const firstScanAlreadyCompacted = scannedCpIdx >= 0
+            && Boolean(result.data.latest?.compacted)
+            && !state.lastDomCompactingActive
+            && scannedInProgressCpIdx < 0;
+          if (firstScanAlreadyCompacted) {
+            clearCompactingTransition();
+          } else {
+            state.compacting.baselineCheckpointIndex = scannedCpIdx;
+            state.compacting.baselineHydrated = true;
+          }
+        } else if (scannedCpIdx > state.compacting.baselineCheckpointIndex && scannedInProgressCpIdx < 0) {
+          clearCompactingTransition();
+        } else if (state.compacting.domEndedAtMs > 0 && scanStartedAtMs >= state.compacting.domEndedAtMs) {
+          state.compacting.postDomEndScans = (state.compacting.postDomEndScans || 0) + 1;
+        }
+      }
       if (result.data.modelCapabilitiesById && typeof result.data.modelCapabilitiesById === 'object') {
         mergeCapabilitiesMapClient(result.data.modelCapabilitiesById);
       }
@@ -12709,17 +20308,57 @@
         const genSteps = Number(result.data.generatorCount);
         const msgSteps = Number(result.data.session?.userMessages || 0) + Number(result.data.session?.assistantMessages || 0);
         const resolvedStepCount = Number.isFinite(genSteps) && genSteps >= 0 ? genSteps : (msgSteps > 0 ? msgSteps : state.count);
-        recordObservationFromSummary(state.latest, id, {
-          callId: result.data.latestCallId || null,
-          stepCount: resolvedStepCount,
-          ts: Number(result.data.scannedAt || Date.now())
-        });
+        if (!state.latest?.compacted) {
+          recordObservationFromSummary(state.latest, id, {
+            callId: result.data.latestCallId || null,
+            stepCount: resolvedStepCount,
+            ts: Number(result.data.scannedAt || Date.now())
+          });
+        }
       }
-      state.latest = withStepError(state.latest);
+      state.latest = resolveEffectiveLatestWithCompaction(
+        state.latest || result.data.latest || null,
+        null,
+        state.count > 0 ? state.count - 1 : -1
+      );
+      if (state.latest?.compacted && !state.requestAt) {
+        state.requestAt = Number(result.data.scannedAt || Date.now());
+      }
       renderFiles(result.data.session);
       if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
-    } catch (e) { if (generation === state.generation && !state.disposed) state.scanError = e.message; }
-    finally { if (generation === state.generation && !state.disposed) { state.scanBusy = false; state.scanNext = Date.now() + (document.hidden ? 60000 : 20000); render(); } }
+    } catch (e) {
+      if (generation === state.generation && !state.disposed && myScanSeq === activeScanSeq) {
+        state.scanError = e.message;
+      }
+    }
+    finally {
+      if (generation === state.generation && !state.disposed && myScanSeq === activeScanSeq) {
+        state.scanBusy = false;
+        if (state.pendingCompactForceScan && id === state.route) {
+          state.pendingCompactForceScan = false;
+          state.lastCompactForceScanAt = Date.now();
+          void scan(state.generation, id, true);
+          return;
+        }
+        if (
+          state.compacting
+          && state.compacting.cascadeId === id
+          && state.compacting.domEndedAtMs > 0
+          && (state.compacting.postDomEndScans || 0) >= 1
+          && (state.compacting.postDomEndScans || 0) <= 3
+          && !compactThrottleTimer
+        ) {
+          compactThrottleTimer = setTimeout(() => {
+            compactThrottleTimer = null;
+            if (!state.disposed && state.compacting && state.compacting.cascadeId === id && state.route === id && !state.scanBusy) {
+              triggerImmediateCompactScan(id);
+            }
+          }, 350);
+        }
+        state.scanNext = Date.now() + (document.hidden ? 60000 : 20000);
+        render();
+      }
+    }
   }
 
   let lastAvailableModelsSync = 0;
@@ -12727,7 +20366,7 @@
   async function fetchAvailableModelsIfNeeded() {
     if (availableModelsFetchInFlight) return;
     if (typeof fetch !== 'function') return;
-    const csrf = typeof window !== 'undefined' ? window.__APP_CONFIG__?.csrfToken : null;
+    const csrf = getRendererCsrfToken();
     if (!csrf) return;
     if (Date.now() - lastAvailableModelsSync < 300000 && state.modelCapabilitiesById && Object.keys(state.modelCapabilitiesById).length > 0) {
       return;
@@ -12814,11 +20453,13 @@
   let quotaPostTurnTimer = null;
   let quotaFeedbackTimer = null;
   let quotaInFlightPromise = null;
+  let quotaInFlightManual = false;
   let quotaAbortController = null;
   const QUOTA_BAR_CHARGE_DURATION_MS = 720;
   let quotaRefreshSpinAnim = null;
   let quotaBarChargeTimer = null;
   let quotaBarChargePlaying = false;
+  let quotaLastChargeDetail = null;
   const quotaAnimRafs = new Set();
   const quotaActiveChargeRefs = new Set();
   const quotaNumAnimState = new WeakMap();
@@ -12848,6 +20489,13 @@
     for (const ref of quotaActiveChargeRefs) {
       if (ref?.track) removeQuotaAttrIfPresent(ref.track, 'data-charging');
       if (ref?.chargeStage) setQuotaHiddenIfChanged(ref.chargeStage, true);
+      if (Array.isArray(ref?.segFills)) {
+        for (const sf of ref.segFills) {
+          if (!sf) continue;
+          removeQuotaAttrIfPresent(sf, 'data-cell-pulse');
+          sf.style?.removeProperty?.('--quota-cell-delay');
+        }
+      }
     }
     quotaActiveChargeRefs.clear();
   }
@@ -12867,12 +20515,35 @@
     }
     if (!validRefs.length) return false;
 
+    const details = [];
     for (const ref of validRefs) {
       removeQuotaAttrIfPresent(ref.track, 'data-charging');
       setQuotaHiddenIfChanged(ref.chargeStage, false);
+      const activeCells = Number.isInteger(ref.activeCells) ? ref.activeCells : 0;
+      const segFills = Array.isArray(ref.segFills) ? ref.segFills : [];
+      if (activeCells > 0 && segFills.length === 20) {
+        const stepMs = Math.max(22, Math.min(48, Math.round(420 / activeCells)));
+        let pulseCount = 0;
+        let staticEmptyCount = 0;
+        for (let idx = 0; idx < 20; idx++) {
+          const sf = segFills[idx];
+          if (!sf) continue;
+          if (idx < activeCells) {
+            setQuotaAttrIfChanged(sf, 'data-cell-pulse', 'true');
+            sf.style?.setProperty?.('--quota-cell-delay', `${idx * stepMs}ms`);
+            pulseCount++;
+          } else {
+            removeQuotaAttrIfPresent(sf, 'data-cell-pulse');
+            sf.style?.removeProperty?.('--quota-cell-delay');
+            staticEmptyCount++;
+          }
+        }
+        details.push({ activeCells, stepMs, pulseCount, staticEmptyCount });
+      }
       quotaActiveChargeRefs.add(ref);
     }
-    // 仅触发单次整体可见性提交，确保后续 CSS 关键帧从 0% 平滑起播
+    quotaLastChargeDetail = { targetCount: validRefs.length, bars: details };
+    // 仅触发单次整体可见性提交，确保后续 CSS 逐格延迟关键帧同步起播
     if (typeof panelQuotaEl.offsetHeight === 'number') void panelQuotaEl.offsetHeight;
     for (const ref of validRefs) {
       setQuotaAttrIfChanged(ref.track, 'data-charging', 'true');
@@ -13008,6 +20679,7 @@
   function computeQuotaVisualSignature(view) {
     if (!view || !Array.isArray(view.pools)) return 'empty';
     const parts = [
+      quotaBadgeWindowMode || 'auto',
       view.currentModel?.productKey || '',
       view.activeStatus || '',
       view.badge?.fraction == null ? 'null' : view.badge.fraction.toFixed(4)
@@ -13023,7 +20695,8 @@
     if (!Number.isFinite(pctVal)) return '';
     const clamped = Math.max(0, Math.min(100, pctVal));
     if (clamped === 0) return '0%';
-    if (clamped > 0 && clamped < 1) return `${Math.max(0.1, Math.round(clamped * 10) / 10)}%`;
+    if (clamped > 0 && clamped < 0.1) return '<0.1%';
+    if (clamped < 1) return `${clamped.toFixed(1)}%`;
     return `${Math.round(clamped)}%`;
   }
 
@@ -13105,6 +20778,7 @@
   function resetQuotaState(opts = {}) {
     clearQuotaTimers();
     if (opts.clearAccountScope !== false) {
+      sessionSnapshotCache.clear();
       quotaState.accountScopeKey = null;
       quotaCalibrationScope = null;
       quotaCalibrationMap = {};
@@ -13114,6 +20788,8 @@
     quotaLastSnapshotSig = null;
     quotaPendingSmoothAnim = false;
     quotaBadgeLastHasFraction = false;
+    quotaExpandedPoolKeys.clear();
+    lastComputedQuotaView = null;
     quotaState.snapshot = null;
     quotaState.rawInput = null;
     quotaState.browsePoolKey = null;
@@ -13236,6 +20912,15 @@
 
   function getActiveQuotaModelInput() {
     if (activeSessionModelConfirmed && (activeSessionModelKey || activeSessionProductKey)) {
+      if (activeSessionModelUnknown) {
+        return {
+          modelId: activeSessionModelKey || '',
+          label: activeSessionModelLabel || activeSessionModelKey || activeSessionProductKey,
+          productKey: activeSessionProductKey || '',
+          role: activeSessionModelRole || undefined,
+          isUnknownModel: true
+        };
+      }
       const cfgList = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
       const activeKeyLower = String(activeSessionModelKey || '').trim().toLowerCase();
       const matched = activeKeyLower ? cfgList.find(c =>
@@ -13245,8 +20930,9 @@
       if (matched) return matched;
       return {
         modelId: activeSessionModelKey || '',
-        label: state.latest?.model || activeSessionModelKey || activeSessionProductKey,
-        productKey: activeSessionProductKey || ''
+        label: activeSessionModelLabel || state.latest?.model || activeSessionModelKey || activeSessionProductKey,
+        productKey: activeSessionProductKey || '',
+        role: activeSessionModelRole || undefined
       };
     }
     if (state.latest?.modelId || state.latest?.model) {
@@ -13262,11 +20948,20 @@
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     if (!view || !Array.isArray(view.pools) || !core?.applyQuotaTokenEstimates) return view;
     const scopeKey = quotaState.accountScopeKey || view.accountScopeKey || 'anonymous';
-    const usageEvents = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentModelUsage) ? ANTIGRAVITY_TOKEN_DATA.recentModelUsage : [];
+    const historyLoaded = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentModelUsage);
+    const usageEvents = historyLoaded ? ANTIGRAVITY_TOKEN_DATA.recentModelUsage : [];
     const coverageStartMs = ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs ?? null;
-    const lastEvTs = usageEvents.length ? Number(usageEvents[usageEvents.length - 1]?.ts || 0) : 0;
+    let maxEvTs = 0;
+    let sumEvTokens = 0;
+    for (let i = 0; i < usageEvents.length; i++) {
+      const ev = usageEvents[i];
+      const evTs = Number(ev?.ts ?? ev?.timestamp ?? 0);
+      if (Number.isFinite(evTs) && evTs > maxEvTs) maxEvTs = evTs;
+      const evTok = Number(ev?.totalTokens ?? ev?.tok ?? 0);
+      if (Number.isFinite(evTok) && evTok > 0) sumEvTokens += evTok;
+    }
     const poolSig = view.pools.map(p => `${p.poolKey}:${(p.buckets || []).map(b => `${b.bucketId}=${b.remainingFraction ?? 'n'}`).join(',')}`).join(';');
-    const computeSig = `${scopeKey}|${view.fetchedAtMs || 0}|${coverageStartMs ?? 'null'}|${usageEvents.length}|${lastEvTs}|${poolSig}`;
+    const computeSig = `${scopeKey}|${historyLoaded ? 1 : 0}|${view.fetchedAtMs || 0}|${coverageStartMs ?? 'null'}|${usageEvents.length}|${maxEvTs}|${Math.round(sumEvTokens)}|${poolSig}`;
 
     if (quotaLastEstComputeSig === computeSig && quotaCachedEstByKey) {
       const enrichedPools = view.pools.map(p => {
@@ -13285,10 +20980,12 @@
       accountScopeKey: scopeKey,
       usageEvents,
       historyCoverageStartMs: coverageStartMs,
+      historyLoaded,
       calibrationMap: calMap,
       nowMs: view.fetchedAtMs || nowMs
     });
-    if (applied?.nextCalibrationMap) {
+    // 历史用量首次扫描尚未落盘时只读推算，不向 localStorage 持久化外部消耗锁定状态，防止冷启动竞态污染整个周期
+    if (historyLoaded && applied?.nextCalibrationMap) {
       saveQuotaCalibrationForScope(scopeKey, applied.nextCalibrationMap);
     }
     const cacheObj = {};
@@ -13300,6 +20997,90 @@
     quotaLastEstComputeSig = computeSig;
     quotaCachedEstByKey = cacheObj;
     return applied?.snapshot || view;
+  }
+
+  function applyQuotaBadgeWindowModeToView(view, core) {
+    if (!view || !Array.isArray(view.pools) || !view.pools.length) return view;
+    const mode = VALID_QUOTA_WINDOW_MODES.includes(quotaBadgeWindowMode) ? quotaBadgeWindowMode : 'auto';
+    const hasUnmatchedCurrent = Boolean(view.currentModel && !view.currentModel.poolKey) || Boolean(view.currentModel?.isUnknownModel);
+    if (hasUnmatchedCurrent) {
+      return {
+        ...view,
+        badge: {
+          ...(view.badge || {}),
+          windowMode: mode,
+          dualBuckets: null,
+          fraction: null,
+          status: 'unknown',
+          statusLabel: view.badge?.statusLabel || getQuotaStatusLabelText('unknown'),
+          text: view.badge?.text || t('quota.short.unknown'),
+          tag: '',
+          pace: null
+        },
+        activeReset: {
+          hasResetTime: false,
+          resetTimeIso: null,
+          resetAtMs: null,
+          resetTimeText: null,
+          countdownText: null,
+          isResetPassed: false
+        }
+      };
+    }
+    const targetPool = (view.currentModel?.poolKey
+      ? view.pools.find(p => p.poolKey === view.currentModel.poolKey)
+      : null) || view.pools[0] || null;
+    if (!targetPool || !Array.isArray(targetPool.buckets) || !targetPool.buckets.length) {
+      return { ...view, badge: { ...(view.badge || {}), windowMode: mode, dualBuckets: null } };
+    }
+    const selFn = typeof selectPrimaryQuotaBucket === 'function' ? selectPrimaryQuotaBucket : core?.selectPrimaryQuotaBucket;
+    const pickMode = mode === 'both' ? 'auto' : mode;
+    const sel = selFn ? selFn(targetPool.buckets, pickMode) : null;
+    const pb = sel?.primaryBucket || targetPool.primaryBucket || targetPool.buckets[0] || null;
+    if (pb) {
+      targetPool.primaryBucket = pb;
+      targetPool.selectionReason = sel?.selectionReason || targetPool.selectionReason;
+    }
+
+    const fmtPct = f => (core?.formatQuotaPercentText ? core.formatQuotaPercentText(f) : `${Math.round(Number(f) * 100)}%`);
+    let dualBuckets = null;
+    const pairFn = typeof resolveQuotaWindowBucketPair === 'function' ? resolveQuotaWindowBucketPair : core?.resolveQuotaWindowBucketPair;
+    if (mode === 'both' && pairFn && view.activeStatus !== 'error' && view.activeStatus !== 'no_permission') {
+      const pair = pairFn(targetPool.buckets);
+      if (pair?.bucket5h && pair?.bucket7d && pair.bucket5h.remainingFraction != null && pair.bucket7d.remainingFraction != null) {
+        dualBuckets = [
+          { key: '5h', text: `5h ${fmtPct(pair.bucket5h.remainingFraction)}` },
+          { key: '7d', text: `7d ${fmtPct(pair.bucket7d.remainingFraction)}` }
+        ];
+      }
+    }
+
+    const nextBadge = { ...(view.badge || {}), windowMode: mode, dualBuckets };
+    let nextActiveReset = view.activeReset;
+    if (pb && pb.remainingFraction != null && view.activeStatus !== 'error' && view.activeStatus !== 'no_permission') {
+      nextBadge.fraction = pb.remainingFraction;
+      if (pb.isExhausted || pb.remainingFraction === 0) {
+        nextBadge.text = t('quota.short.exhausted');
+      } else {
+        nextBadge.text = fmtPct(pb.remainingFraction);
+      }
+      nextBadge.tag = view.syncState === 'stale' ? t('quota.short.stale') : (pb.windowShort || '');
+      nextBadge.pace = (pb.pace && pb.pace.available && view.syncState !== 'stale') ? pb.pace : null;
+      nextActiveReset = {
+        hasResetTime: Boolean(pb.hasResetTime),
+        resetTimeIso: pb.resetTimeIso ?? null,
+        resetAtMs: pb.resetAtMs ?? null,
+        resetTimeText: pb.resetTimeText ?? null,
+        countdownText: pb.countdownText ?? null,
+        isResetPassed: Boolean(pb.isResetPassed)
+      };
+    }
+
+    return {
+      ...view,
+      badge: nextBadge,
+      activeReset: nextActiveReset
+    };
   }
 
   function computeEffectiveQuotaView(nowMs = Date.now()) {
@@ -13321,7 +21102,7 @@
         },
         nowMs
       });
-      return attachTokenEstimatesToQuotaView(built, nowMs);
+      return applyQuotaBadgeWindowModeToView(attachTokenEstimatesToQuotaView(built, nowMs), core);
     }
 
     // 2. 基于主进程返回的标准化 snapshot 重新结合当前会话模型与实时 nowMs 刷新视图状态
@@ -13366,21 +21147,30 @@
           isResetPassed: rm.isResetPassed
         };
       });
+      const pickMode = quotaBadgeWindowMode === 'both' ? 'auto' : quotaBadgeWindowMode;
       const sel = (typeof selectPrimaryQuotaBucket === 'function')
-        ? selectPrimaryQuotaBucket(nextBuckets)
+        ? selectPrimaryQuotaBucket(nextBuckets, pickMode)
         : (() => {
-            const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
-            return { primaryBucket: priced[0] || nextBuckets[0] || null, selectionReason: priced.length <= 1 ? 'single_window' : 'tighter_window' };
-          })();
-      const pb = sel.primaryBucket || p.primaryBucket || null;
+          const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
+          return { primaryBucket: priced[0] || nextBuckets[0] || null, selectionReason: priced.length <= 1 ? 'single_window' : 'tighter_window' };
+        })();
+      const pb = sel.primaryBucket || p.primaryBucket || nextBuckets[0] || null;
+      const pbFrac = pb?.remainingFraction ?? p.remainingFraction ?? null;
+      const pbExhausted = pb ? Boolean(pb.isExhausted || pb.remainingFraction === 0) : Boolean(p.isExhausted);
+      const nextStatus = p.noPermission
+        ? 'no_permission'
+        : (pbFrac == null
+          ? (p.status || 'unknown')
+          : (pbExhausted ? 'exhausted' : (pbFrac <= 0.2 ? 'low' : 'available')));
       return {
         ...p,
         buckets: nextBuckets,
         primaryBucket: pb,
         selectionReason: sel.selectionReason || p.selectionReason || 'single_window',
-        remainingFraction: pb?.remainingFraction ?? p.remainingFraction ?? null,
+        status: nextStatus,
+        remainingFraction: pbFrac,
         percentText: pb?.percentText ?? p.percentText ?? null,
-        isExhausted: pb ? Boolean(pb.isExhausted || pb.remainingFraction === 0) : Boolean(p.isExhausted),
+        isExhausted: pbExhausted,
         hasResetTime: Boolean(pb?.hasResetTime ?? p.hasResetTime),
         resetTimeIso: pb?.resetTimeIso ?? p.resetTimeIso ?? null,
         resetAtMs: pb?.resetAtMs ?? p.resetAtMs ?? null,
@@ -13391,33 +21181,63 @@
     });
 
     // 针对实时切换后的会话模型重新匹配池与模型
-    const tStr = currentModelInput
-      ? String(currentModelInput.modelId || currentModelInput.label || '').trim().toLowerCase()
-      : '';
-    const tStripped = tStr.replace(/^model_/, '');
+    const targetCandidates = currentModelInput
+      ? (typeof currentModelInput === 'object'
+        ? [currentModelInput.modelId, currentModelInput.modelOrAlias?.model, currentModelInput.label, currentModelInput.model]
+        : [String(currentModelInput)]
+      ).filter(v => typeof v === 'string' && v.trim())
+      : [];
+    const targetLowers = targetCandidates.map(v => v.trim().toLowerCase());
+    const targetStripped = targetLowers.map(v => v.replace(/^model_/, ''));
+    const normFn = core?.normalizeModelLookupName;
+    const targetNorms = normFn
+      ? [...new Set(targetCandidates.map(v => normFn(v)).filter(Boolean))]
+      : [];
     let matchedPool = null;
     let matchedModel = null;
-    if (tStr) {
+    if (!currentModelInput?.isUnknownModel && (targetLowers.length > 0 || currentModelInput?.productKey)) {
       for (const p of updatedPools) {
         for (const m of (p.models || [])) {
           const allIds = [...(m.modelIds || []), ...(m.aliases || [])].map(x => String(x).toLowerCase());
-          if (allIds.some(id => id === tStr || id.replace(/^model_/, '') === tStripped)) {
-            matchedPool = p;
-            matchedModel = m;
-            break;
-          }
-          if (m.productLabel && m.productLabel.toLowerCase() === tStr) {
-            matchedPool = p;
-            matchedModel = m;
-            break;
-          }
-          if (m.productKey && currentModelInput?.productKey && m.productKey === currentModelInput.productKey) {
+          if (allIds.some(id => targetLowers.includes(id) || targetStripped.includes(id.replace(/^model_/, '')))) {
             matchedPool = p;
             matchedModel = m;
             break;
           }
         }
         if (matchedPool) break;
+      }
+      if (!matchedPool && currentModelInput?.productKey) {
+        for (const p of updatedPools) {
+          for (const m of (p.models || [])) {
+            if (m.productKey && m.productKey === currentModelInput.productKey) {
+              matchedPool = p;
+              matchedModel = m;
+              break;
+            }
+          }
+          if (matchedPool) break;
+        }
+      }
+      if (!matchedPool) {
+        for (const p of updatedPools) {
+          for (const m of (p.models || [])) {
+            if (m.productLabel && targetLowers.includes(m.productLabel.toLowerCase())) {
+              matchedPool = p;
+              matchedModel = m;
+              break;
+            }
+            if (normFn && m.productLabel) {
+              const mNorm = normFn(m.productLabel);
+              if (mNorm && targetNorms.includes(mNorm)) {
+                matchedPool = p;
+                matchedModel = m;
+                break;
+              }
+            }
+          }
+          if (matchedPool) break;
+        }
       }
       if (!matchedPool && core?.getSharedQuotaGroupKey) {
         const gKey = core.getSharedQuotaGroupKey(currentModelInput);
@@ -13434,6 +21254,23 @@
     if (!hasAnyPool && quotaState.error) syncState = 'error';
     else if (hasAnyPool && (quotaState.error || ageExpired || anyResetPassed)) syncState = 'stale';
     else if (hasAnyPool) syncState = 'fresh';
+
+    const paceFn = typeof evaluateQuotaPace === 'function' ? evaluateQuotaPace : core?.evaluateQuotaPace;
+    if (paceFn) {
+      for (const p of updatedPools) {
+        const paceStatus = p.noPermission
+          ? 'no_permission'
+          : (syncState === 'error' || syncState === 'stale' ? syncState : p.status);
+        for (const b of (p.buckets || [])) {
+          b.pace = paceFn(b, nowMs, { status: paceStatus });
+        }
+        if (p.primaryBucket) {
+          const matchedBucket = (p.buckets || []).find(x => x === p.primaryBucket || (p.primaryBucket.bucketId && x.bucketId === p.primaryBucket.bucketId));
+          if (matchedBucket && matchedBucket.pace) p.primaryBucket.pace = matchedBucket.pace;
+          else p.primaryBucket.pace = paceFn(p.primaryBucket, nowMs, { status: paceStatus });
+        }
+      }
+    }
 
     let activeStatus = 'unknown';
     let badgeText = t('quota.short.unknown');
@@ -13470,12 +21307,12 @@
         badgeText = core?.formatQuotaPercentText ? core.formatQuotaPercentText(matchedPool.remainingFraction) : matchedPool.percentText;
         badgeTag = syncState === 'stale' ? t('quota.short.stale') : (matchedPool.primaryBucket?.windowShort || '');
       }
-    } else if (syncState === 'stale') {
+    } else if (!currentModelInput?.isUnknownModel && syncState === 'stale') {
       activeStatus = 'stale';
       badgeText = t('quota.short.stale');
     }
 
-    return attachTokenEstimatesToQuotaView({
+    const baseOut = attachTokenEstimatesToQuotaView({
       ...base,
       syncState,
       fetchedAtMs: lastOkMs,
@@ -13492,7 +21329,14 @@
           unavailabilityReason: matchedModel.unavailabilityReason,
           noticeText: matchedModel.noticeText
         }
-        : (currentModelInput ? { productLabel: String(currentModelInput.label || currentModelInput.modelId), poolKey: null, poolTitle: null } : base.currentModel),
+        : (currentModelInput
+          ? {
+            productLabel: String(currentModelInput.label || currentModelInput.modelId),
+            poolKey: null,
+            poolTitle: null,
+            isUnknownModel: Boolean(currentModelInput.isUnknownModel)
+          }
+          : base.currentModel),
       activeStatus,
       activeStatusLabel: getQuotaStatusLabelText(activeStatus),
       badge: {
@@ -13506,6 +21350,7 @@
       browsePoolKey: quotaState.browsePoolKey || matchedPool?.poolKey || updatedPools[0]?.poolKey || null,
       pools: updatedPools
     }, nowMs);
+    return applyQuotaBadgeWindowModeToView(baseOut, core);
   }
 
   function formatBucketTokenEstimateLine(est) {
@@ -13577,6 +21422,32 @@
     }
   }
 
+  function getQuotaPaceTierLabel(pace) {
+    if (!pace || !pace.tierKey) return '';
+    if (pace.tierKey === 'surplus') return t('quota.pace.surplus');
+    if (pace.tierKey === 'balanced') return t('quota.pace.balanced');
+    if (pace.tierKey === 'fast') return t('quota.pace.fast');
+    return t('quota.pace.overburn');
+  }
+
+  function formatQuotaPaceDeltaText(pace) {
+    if (!pace || !pace.available) return '';
+    const label = getQuotaPaceTierLabel(pace);
+    if (pace.isExhausted) return `${label} · ${t('quota.pace.exhaustedTag')}`;
+    if (pace.tier === 2 && pace.deltaPct === 0) return label;
+    const sign = pace.deltaPct >= 0 ? '+' : '';
+    return `${label} ${sign}${pace.deltaPct}%`;
+  }
+
+  function computePaceRingDotCoords(cx, cy, radius, timeRemaining) {
+    const tFrac = Math.max(0, Math.min(1, Number(timeRemaining) || 0));
+    const angle = -Math.PI / 2 + 2 * Math.PI * tFrac;
+    return {
+      x: Number((cx + radius * Math.cos(angle)).toFixed(2)),
+      y: Number((cy + radius * Math.sin(angle)).toFixed(2))
+    };
+  }
+
   function renderQuotaBucketsContainer(container, buckets, statusOverride = null, opts = {}) {
     if (!container) return;
     const list = Array.isArray(buckets) ? buckets : [];
@@ -13587,6 +21458,7 @@
       return;
     }
 
+    const MINI_RING_C = 2 * Math.PI * 5.5;
     const existingRows = new Map();
     for (const child of Array.from(container.children || [])) {
       const bKey = getChildAttr(child, 'data-bucket-key');
@@ -13609,8 +21481,57 @@
         const meta = document.createElement('div');
         meta.className = 'quota-bucket-meta';
 
+        const leftBox = document.createElement('span');
+        leftBox.className = 'quota-bucket-left';
+
+        const miniSvg = createQuotaSvgEl('svg');
+        let miniFill = null;
+        let miniDot = null;
+        if (miniSvg) {
+          miniSvg.setAttribute('class', 'quota-mini-ring-svg');
+          miniSvg.setAttribute('width', '15');
+          miniSvg.setAttribute('height', '15');
+          miniSvg.setAttribute('viewBox', '0 0 16 16');
+          miniSvg.setAttribute('aria-hidden', 'true');
+          const miniTrack = createQuotaSvgEl('circle');
+          miniFill = createQuotaSvgEl('circle');
+          miniDot = createQuotaSvgEl('circle');
+          if (miniTrack) {
+            miniTrack.setAttribute('class', 'quota-mini-ring-track');
+            miniTrack.setAttribute('cx', '8');
+            miniTrack.setAttribute('cy', '8');
+            miniTrack.setAttribute('r', '5.5');
+            miniTrack.setAttribute('fill', 'none');
+            miniTrack.setAttribute('stroke-width', '2');
+            miniSvg.appendChild(miniTrack);
+          }
+          if (miniFill) {
+            miniFill.setAttribute('class', 'quota-mini-ring-fill');
+            miniFill.setAttribute('cx', '8');
+            miniFill.setAttribute('cy', '8');
+            miniFill.setAttribute('r', '5.5');
+            miniFill.setAttribute('fill', 'none');
+            miniFill.setAttribute('stroke-width', '2');
+            miniFill.setAttribute('stroke-linecap', 'round');
+            miniFill.setAttribute('transform', 'rotate(-90 8 8)');
+            miniFill.setAttribute('stroke-dasharray', `${MINI_RING_C.toFixed(2)} ${MINI_RING_C.toFixed(2)}`);
+            miniFill.setAttribute('stroke-dashoffset', MINI_RING_C.toFixed(2));
+            miniSvg.appendChild(miniFill);
+          }
+          if (miniDot) {
+            miniDot.setAttribute('class', 'quota-mini-pace-dot');
+            miniDot.setAttribute('cx', '8');
+            miniDot.setAttribute('cy', '2.5');
+            miniDot.setAttribute('r', '1.35');
+            miniDot.hidden = true;
+            miniSvg.appendChild(miniDot);
+          }
+          leftBox.appendChild(miniSvg);
+        }
+
         const nameEl = document.createElement('span');
         nameEl.className = 'quota-bucket-name';
+        leftBox.appendChild(nameEl);
 
         const valEl = document.createElement('span');
         valEl.className = 'quota-bucket-val';
@@ -13621,7 +21542,7 @@
         valEl.appendChild(pctEl);
         valEl.appendChild(resetEl);
 
-        meta.appendChild(nameEl);
+        meta.appendChild(leftBox);
         meta.appendChild(valEl);
 
         const track = document.createElement('div');
@@ -13630,7 +21551,7 @@
         fillEl.className = 'quota-bar-fill';
         track.appendChild(fillEl);
 
-        // 独立充能动画层：裁剪在真实比例宽度内，绝不归零底层也不填满到 100%
+        // 独立充能动画层：保留在 track.children[1]，兼容既有充能动画与测试索引
         const chargeStage = document.createElement('div');
         chargeStage.className = 'quota-bar-charge-stage';
         chargeStage.hidden = true;
@@ -13642,15 +21563,64 @@
         chargeStage.appendChild(chargeSheen);
         track.appendChild(chargeStage);
 
+        // 20 格离散分段上轨层：保留在 track.children[2]，原地复用不重建
+        const segsWrap = document.createElement('div');
+        segsWrap.className = 'quota-bar-segments';
+        const segFills = [];
+        for (let sIdx = 0; sIdx < 20; sIdx++) {
+          const seg = document.createElement('span');
+          seg.className = 'quota-seg';
+          const segFill = document.createElement('span');
+          segFill.className = 'quota-seg-fill';
+          seg.appendChild(segFill);
+          segsWrap.appendChild(seg);
+          segFills.push(segFill);
+        }
+        track.appendChild(segsWrap);
+
+        // 时间基准与消耗节奏下轨：原地复用于 row.children[2]
+        const paceWrap = document.createElement('div');
+        paceWrap.className = 'quota-pace-wrap';
+        paceWrap.hidden = true;
+
+        const paceTrack = document.createElement('div');
+        paceTrack.className = 'quota-pace-track';
+        const paceTimeFill = document.createElement('div');
+        paceTimeFill.className = 'quota-pace-time-fill';
+        const paceGap = document.createElement('div');
+        paceGap.className = 'quota-pace-gap';
+        paceGap.hidden = true;
+        const paceTick = document.createElement('div');
+        paceTick.className = 'quota-pace-tick';
+        paceTrack.appendChild(paceTimeFill);
+        paceTrack.appendChild(paceGap);
+        paceTrack.appendChild(paceTick);
+
+        const paceMeta = document.createElement('div');
+        paceMeta.className = 'quota-pace-meta';
+        const paceTimeText = document.createElement('span');
+        paceTimeText.className = 'quota-pace-time-text';
+        const paceTierPill = document.createElement('span');
+        paceTierPill.className = 'quota-pace-tier-pill';
+        paceMeta.appendChild(paceTimeText);
+        paceMeta.appendChild(paceTierPill);
+
+        paceWrap.appendChild(paceTrack);
+        paceWrap.appendChild(paceMeta);
+
         const estEl = document.createElement('div');
         estEl.className = 'quota-bucket-est';
         estEl.hidden = true;
 
         row.appendChild(meta);
         row.appendChild(track);
+        row.appendChild(paceWrap);
         row.appendChild(estEl);
         refs = {
           nameEl,
+          miniSvg,
+          miniFill,
+          miniDot,
           pctEl,
           resetEl,
           track,
@@ -13658,14 +21628,36 @@
           chargeStage,
           chargeFill,
           chargeSheen,
-          chargeRef: { track, chargeStage, chargeEligible: false },
+          chargeRef: { track, chargeStage, segFills, activeCells: 0, chargeEligible: false },
+          segsWrap,
+          segFills,
+          paceWrap,
+          paceTimeFill,
+          paceGap,
+          paceTick,
+          paceTimeText,
+          paceTierPill,
           estEl
         };
         quotaNodeRefsMap.set(row, refs);
       }
 
-      const { nameEl, pctEl, resetEl, track, fillEl, chargeStage, chargeRef, estEl } = refs;
+      const {
+        nameEl, miniSvg, miniFill, miniDot, pctEl, resetEl, track, fillEl,
+        chargeStage, chargeRef, segsWrap, segFills,
+        paceWrap, paceTimeFill, paceGap, paceTick, paceTimeText, paceTierPill, estEl
+      } = refs;
       if (nameEl) setQuotaTextIfChanged(nameEl, formatQuotaWindowTitle(b));
+
+      const pace = (statusOverride === 'no_permission' || opts.paceSuppressed)
+        ? null
+        : (b.pace && b.pace.available ? b.pace : null);
+
+      if (pace) {
+        setQuotaAttrIfChanged(row, 'data-pace-tier', String(pace.tier));
+      } else {
+        removeQuotaAttrIfPresent(row, 'data-pace-tier');
+      }
 
       if (pctEl) {
         if (statusOverride === 'no_permission') {
@@ -13684,13 +21676,35 @@
         setQuotaTextIfChanged(resetEl, resetSuffix);
       }
 
+      const bStatus = statusOverride || (b.remainingFraction == null
+        ? 'unknown'
+        : (b.isExhausted || b.remainingFraction === 0 ? 'exhausted' : (b.remainingFraction <= 0.2 ? 'low' : 'available')));
+      const hasValidFrac = b.remainingFraction != null && Number.isFinite(Number(b.remainingFraction)) && statusOverride !== 'no_permission';
+      const scaleVal = b.remainingFraction == null ? 0 : Math.max(0, Math.min(1, b.remainingFraction));
+      const scaleStr = scaleVal.toFixed(4);
+      const stageWidthStr = `${(scaleVal * 100).toFixed(2)}%`;
+
+      if (miniSvg && miniFill) {
+        if (!hasValidFrac) {
+          setQuotaAttrIfChanged(miniFill, 'stroke-dashoffset', MINI_RING_C.toFixed(2));
+          if (miniDot) setQuotaHiddenIfChanged(miniDot, true);
+        } else {
+          const offsetStr = (MINI_RING_C * (1 - scaleVal)).toFixed(2);
+          setQuotaAttrIfChanged(miniFill, 'stroke-dashoffset', offsetStr);
+          if (miniDot) {
+            if (pace) {
+              const pos = computePaceRingDotCoords(8, 8, 5.5, pace.timeRemaining);
+              setQuotaAttrIfChanged(miniDot, 'cx', String(pos.x));
+              setQuotaAttrIfChanged(miniDot, 'cy', String(pos.y));
+              setQuotaHiddenIfChanged(miniDot, false);
+            } else {
+              setQuotaHiddenIfChanged(miniDot, true);
+            }
+          }
+        }
+      }
+
       if (fillEl) {
-        const bStatus = statusOverride || (b.remainingFraction == null
-          ? 'unknown'
-          : (b.isExhausted || b.remainingFraction === 0 ? 'exhausted' : (b.remainingFraction <= 0.2 ? 'low' : 'available')));
-        const scaleVal = b.remainingFraction == null ? 0 : Math.max(0, Math.min(1, b.remainingFraction));
-        const scaleStr = scaleVal.toFixed(4);
-        const stageWidthStr = `${(scaleVal * 100).toFixed(2)}%`;
         setQuotaAttrIfChanged(fillEl, 'data-status', bStatus);
         if (getChildAttr(fillEl, 'data-fraction') !== scaleStr) {
           fillEl.setAttribute('data-fraction', scaleStr);
@@ -13701,13 +21715,67 @@
             fillEl.style.transform = `scaleX(${scaleStr})`;
           }
         }
+        let activeCells = 0;
+        if (segsWrap && Array.isArray(segFills) && segFills.length === 20) {
+          setQuotaAttrIfChanged(segsWrap, 'data-status', bStatus);
+          if (hasValidFrac) {
+            setQuotaHiddenIfChanged(segsWrap, false);
+            const EPS = 1e-9;
+            const fullBlocks = pace
+              ? pace.fullBlocks
+              : Math.min(20, Math.floor(scaleVal * 20 + EPS));
+            const partialRaw = pace
+              ? pace.partialBlockFrac
+              : (fullBlocks >= 20 ? 0 : Math.max(0, scaleVal * 20 - fullBlocks));
+            const partialFrac = partialRaw < EPS ? 0 : partialRaw;
+            const minVis = pace
+              ? pace.hasMinVisibleBlock
+              : (scaleVal > 0 && fullBlocks === 0 && partialFrac > 0);
+            const minOpacity = pace
+              ? pace.partialVisualOpacity
+              : (minVis && partialFrac < 0.25 ? 0.25 : partialFrac);
+            activeCells = Math.min(20, fullBlocks + (partialFrac > 0 ? 1 : 0));
+
+            for (let sIdx = 0; sIdx < 20; sIdx++) {
+              const sf = segFills[sIdx];
+              if (!sf?.style) continue;
+              if (sIdx < fullBlocks) {
+                if (sf.style.width !== '100%') sf.style.width = '100%';
+                if (sf.style.opacity !== '1') sf.style.opacity = '1';
+                sf.style.setProperty?.('--seg-opacity', '1');
+              } else if (sIdx === fullBlocks && partialFrac > 0) {
+                if (minVis && partialFrac < 0.25) {
+                  if (sf.style.width !== '100%') sf.style.width = '100%';
+                  const opStr = String(minOpacity);
+                  if (sf.style.opacity !== opStr) sf.style.opacity = opStr;
+                  sf.style.setProperty?.('--seg-opacity', opStr);
+                } else {
+                  const wStr = `${(partialFrac * 100).toFixed(1)}%`;
+                  if (sf.style.width !== wStr) sf.style.width = wStr;
+                  if (sf.style.opacity !== '0.85') sf.style.opacity = '0.85';
+                  sf.style.setProperty?.('--seg-opacity', '0.85');
+                }
+              } else {
+                if (sf.style.width !== '0%') sf.style.width = '0%';
+                if (sf.style.opacity !== '0') sf.style.opacity = '0';
+                sf.style.setProperty?.('--seg-opacity', '0');
+                removeQuotaAttrIfPresent(sf, 'data-cell-pulse');
+                sf.style?.removeProperty?.('--quota-cell-delay');
+              }
+            }
+          } else {
+            setQuotaHiddenIfChanged(segsWrap, true);
+          }
+        }
+
         const chargeEligible = Boolean(
           statusOverride !== 'no_permission' &&
           bStatus !== 'no_permission' &&
           bStatus !== 'unknown' &&
           b.remainingFraction != null &&
           Number.isFinite(Number(b.remainingFraction)) &&
-          scaleVal > 0
+          scaleVal > 0 &&
+          activeCells > 0
         );
         if (chargeStage) {
           setQuotaAttrIfChanged(chargeStage, 'data-status', bStatus);
@@ -13720,6 +21788,7 @@
         }
         if (track) {
           setQuotaAttrIfChanged(track, 'data-charge-eligible', chargeEligible ? 'true' : 'false');
+          setQuotaAttrIfChanged(track, 'data-segmented', hasValidFrac ? 'true' : 'false');
           if (!chargeEligible) {
             removeQuotaAttrIfPresent(track, 'data-charging');
             if (chargeStage) setQuotaHiddenIfChanged(chargeStage, true);
@@ -13727,10 +21796,68 @@
           }
         }
         if (chargeRef) {
+          chargeRef.activeCells = activeCells;
           chargeRef.chargeEligible = chargeEligible;
           if (chargeEligible && Array.isArray(opts.chargeTargets)) {
             opts.chargeTargets.push(chargeRef);
           }
+        }
+      }
+
+      if (paceWrap) {
+        if (pace) {
+          setQuotaHiddenIfChanged(paceWrap, false);
+          setQuotaAttrIfChanged(paceWrap, 'data-pace-tier', String(pace.tier));
+          const timeLeftPctStr = `${(pace.timeRemaining * 100).toFixed(2)}%`;
+          if (paceTimeFill?.style && paceTimeFill.style.width !== timeLeftPctStr) {
+            paceTimeFill.style.width = timeLeftPctStr;
+          }
+          if (paceTick?.style && paceTick.style.left !== timeLeftPctStr) {
+            paceTick.style.left = timeLeftPctStr;
+          }
+          if (paceGap) {
+            if (pace.hasGap && pace.gapWidthPct > 0) {
+              setQuotaHiddenIfChanged(paceGap, false);
+              setQuotaAttrIfChanged(paceGap, 'data-pace-tier', String(pace.tier));
+              if (paceGap.style) {
+                const lStr = `${pace.gapLeftPct.toFixed(2)}%`;
+                const wStr = `${pace.gapWidthPct.toFixed(2)}%`;
+                if (paceGap.style.left !== lStr) paceGap.style.left = lStr;
+                if (paceGap.style.width !== wStr) paceGap.style.width = wStr;
+              }
+            } else {
+              setQuotaHiddenIfChanged(paceGap, true);
+            }
+          }
+          const countdownStr = formatCountdownMsCompact(pace.remainingTimeMs);
+          if (paceTimeText) {
+            setQuotaTextIfChanged(paceTimeText, t('quota.pace.resetIn', { countdown: countdownStr, pct: pace.timePct }));
+          }
+          const pillLabel = formatQuotaPaceDeltaText(pace);
+          if (paceTierPill) {
+            setQuotaAttrIfChanged(paceTierPill, 'data-pace-tier', String(pace.tier));
+            setQuotaTextIfChanged(paceTierPill, pillLabel);
+          }
+          const deltaSign = pace.deltaPct >= 0 ? '+' : '';
+          const tipLines = [
+            t('quota.pace.tooltip', {
+              quotaPct: pace.quotaPct,
+              timePct: pace.timePct,
+              countdown: countdownStr,
+              window: formatQuotaWindowTitle(b),
+              deltaStr: `${deltaSign}${pace.deltaPct}%`,
+              tierLabel: getQuotaPaceTierLabel(pace)
+            })
+          ];
+          if (pace.estRunoutMs) {
+            tipLines.push(t('quota.pace.estRunout', { eta: formatCountdownMsCompact(pace.estRunoutMs) }));
+          }
+          const tipText = tipLines.join('\n');
+          if (paceWrap.title !== tipText) paceWrap.title = tipText;
+        } else {
+          setQuotaHiddenIfChanged(paceWrap, true);
+          removeQuotaAttrIfPresent(paceWrap, 'data-pace-tier');
+          if (paceGap) setQuotaHiddenIfChanged(paceGap, true);
         }
       }
 
@@ -13750,10 +21877,307 @@
     reconcileQuotaChildOrder(container, desiredRows);
   }
 
+  function renderPoolCompactList(compactBox, pool, paceSuppressed = false) {
+    if (!compactBox) return;
+    const list = Array.isArray(pool?.buckets) ? pool.buckets : [];
+    if (pool?.noPermission || !list.length) {
+      setQuotaHiddenIfChanged(compactBox, true);
+      reconcileQuotaChildOrder(compactBox, []);
+      return;
+    }
+    setQuotaHiddenIfChanged(compactBox, false);
+
+    const existingRows = new Map();
+    for (const ch of Array.from(compactBox.children || [])) {
+      const bk = getChildAttr(ch, 'data-bucket-key');
+      if (bk) existingRows.set(bk, ch);
+    }
+
+    const desiredRows = [];
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      const bKey = String(b.bucketId || b.windowKey || `b-${i}`);
+      let cRow = existingRows.get(bKey);
+      let cRefs = cRow ? quotaNodeRefsMap.get(cRow) : null;
+
+      if (!cRow || !cRefs) {
+        cRow = document.createElement('div');
+        cRow.className = 'quota-pool-compact-row';
+        cRow.setAttribute('data-bucket-key', bKey);
+
+        const winEl = document.createElement('span');
+        winEl.className = 'quota-compact-win';
+
+        const barEl = document.createElement('div');
+        barEl.className = 'quota-compact-bar';
+        const cFill = document.createElement('div');
+        cFill.className = 'quota-compact-fill';
+        const cGap = document.createElement('div');
+        cGap.className = 'quota-compact-gap';
+        cGap.hidden = true;
+        const cTick = document.createElement('div');
+        cTick.className = 'quota-compact-tick';
+        cTick.hidden = true;
+        barEl.appendChild(cFill);
+        barEl.appendChild(cGap);
+        barEl.appendChild(cTick);
+
+        const cVal = document.createElement('span');
+        cVal.className = 'quota-compact-val';
+        const cTier = document.createElement('span');
+        cTier.className = 'quota-compact-tier';
+        cTier.hidden = true;
+
+        cRow.appendChild(winEl);
+        cRow.appendChild(barEl);
+        cRow.appendChild(cVal);
+        cRow.appendChild(cTier);
+
+        cRefs = { winEl, cFill, cGap, cTick, cVal, cTier };
+        quotaNodeRefsMap.set(cRow, cRefs);
+      }
+
+      const { winEl, cFill, cGap, cTick, cVal, cTier } = cRefs;
+      const wShort = b.windowShort || (b.windowKey === '5h' ? '5h' : (b.windowKey === 'weekly' ? '7d' : (b.windowKey === 'daily' ? '24h' : '—')));
+      setQuotaTextIfChanged(winEl, wShort);
+
+      const pace = !paceSuppressed && b.pace && b.pace.available ? b.pace : null;
+      const frac = b.remainingFraction == null ? null : Math.max(0, Math.min(1, Number(b.remainingFraction)));
+      const bStatus = frac == null
+        ? 'unknown'
+        : (b.isExhausted || frac === 0 ? 'exhausted' : (frac <= 0.2 ? 'low' : 'available'));
+
+      if (pace) {
+        setQuotaAttrIfChanged(cRow, 'data-pace-tier', String(pace.tier));
+      } else {
+        removeQuotaAttrIfPresent(cRow, 'data-pace-tier');
+      }
+
+      if (cFill) {
+        setQuotaAttrIfChanged(cFill, 'data-status', bStatus);
+        const isZeroFill = frac == null || frac === 0 || b.isExhausted === true;
+        if (isZeroFill) {
+          setQuotaAttrIfChanged(cFill, 'data-empty', 'true');
+          if (cFill.style && cFill.style.width !== '0%') cFill.style.width = '0%';
+        } else {
+          removeQuotaAttrIfPresent(cFill, 'data-empty');
+          const wPct = `${(frac * 100).toFixed(1)}%`;
+          if (cFill.style && cFill.style.width !== wPct) cFill.style.width = wPct;
+        }
+      }
+      if (cGap) {
+        if (pace && pace.hasGap && pace.gapWidthPct > 0) {
+          setQuotaHiddenIfChanged(cGap, false);
+          setQuotaAttrIfChanged(cGap, 'data-pace-tier', String(pace.tier));
+          if (cGap.style) {
+            const lStr = `${pace.gapLeftPct.toFixed(2)}%`;
+            const wStr = `${pace.gapWidthPct.toFixed(2)}%`;
+            if (cGap.style.left !== lStr) cGap.style.left = lStr;
+            if (cGap.style.width !== wStr) cGap.style.width = wStr;
+          }
+        } else {
+          setQuotaHiddenIfChanged(cGap, true);
+        }
+      }
+      if (cTick) {
+        if (pace) {
+          setQuotaHiddenIfChanged(cTick, false);
+          const tStr = `${(pace.timeRemaining * 100).toFixed(2)}%`;
+          if (cTick.style && cTick.style.left !== tStr) cTick.style.left = tStr;
+        } else {
+          setQuotaHiddenIfChanged(cTick, true);
+        }
+      }
+      if (cVal) {
+        setQuotaTextIfChanged(cVal, frac == null ? t('quota.time.unknown') : (b.percentText || `${Math.round(frac * 100)}%`));
+      }
+      if (cTier) {
+        if (pace) {
+          setQuotaHiddenIfChanged(cTier, false);
+          setQuotaTextIfChanged(cTier, getQuotaPaceTierLabel(pace));
+        } else {
+          setQuotaHiddenIfChanged(cTier, true);
+          setQuotaTextIfChanged(cTier, '');
+        }
+      }
+      desiredRows.push(cRow);
+    }
+    reconcileQuotaChildOrder(compactBox, desiredRows);
+  }
+
+  function syncComposerStatusBarWidth() {
+    const csbBar = el('composer-status-bar');
+    if (!csbBar) return 'normal';
+    let hostWidth = 0;
+    try {
+      const parentRect = csbBar.parentElement?.getBoundingClientRect?.();
+      if (parentRect && Number.isFinite(parentRect.width) && parentRect.width > 0) {
+        hostWidth = parentRect.width;
+      }
+    } catch { }
+    if (!hostWidth && typeof window !== 'undefined' && Number.isFinite(Number(window.innerWidth)) && Number(window.innerWidth) > 0) {
+      hostWidth = Number(window.innerWidth);
+    }
+    const mode = hostWidth > 0 && hostWidth < 560
+      ? 'tight'
+      : (hostWidth > 0 && hostWidth < 720 ? 'narrow' : 'normal');
+    setQuotaAttrIfChanged(csbBar, 'data-csb-width', mode);
+    return mode;
+  }
+
+  function renderComposerQuotaSummary(view = lastComputedQuotaView, nowMs = Date.now()) {
+    const group = el('csb-group-quota');
+    if (!group) return;
+    syncComposerStatusBarWidth();
+    if (!showComposerQuotaSummary || !view || !Array.isArray(view.pools) || !view.pools.length) {
+      setQuotaHiddenIfChanged(group, true);
+      return;
+    }
+
+    const hasUnmatchedCurrentModel = Boolean(view.currentModel && !view.currentModel.poolKey) || Boolean(view.currentModel?.isUnknownModel);
+    const pool = hasUnmatchedCurrentModel
+      ? null
+      : ((view.currentModel?.poolKey
+        ? view.pools.find(p => p.poolKey === view.currentModel.poolKey)
+        : null) || view.pools[0] || null);
+    if (!pool) {
+      setQuotaHiddenIfChanged(group, true);
+      return;
+    }
+
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : (globalThis.__AGContextMeterCore || null);
+    const fmtPct = f => (core?.formatQuotaPercentText ? core.formatQuotaPercentText(f) : `${Math.round(Number(f) * 100)}%`);
+    const CSB_RING_C = 2 * Math.PI * 5.5;
+    const paceSuppressed = Boolean(pool.noPermission || view.syncState === 'stale' || view.syncState === 'error' || view.activeStatus === 'stale' || view.activeStatus === 'error');
+
+    const applyWin = (winId, ringId, dotId, textId, prefix, bucket, statusOverride, isSecondary) => {
+      const winEl = el(winId);
+      const ringEl = el(ringId);
+      const dotEl = el(dotId);
+      const textEl = el(textId);
+      if (!winEl) return;
+      if (!bucket && statusOverride !== 'no_permission') {
+        setQuotaHiddenIfChanged(winEl, true);
+        return;
+      }
+      setQuotaHiddenIfChanged(winEl, false);
+      setQuotaAttrIfChanged(winEl, 'data-secondary', isSecondary ? 'true' : 'false');
+
+      const frac = bucket?.remainingFraction ?? null;
+      const validFrac = statusOverride !== 'no_permission' && frac != null && Number.isFinite(Number(frac));
+      const bStatus = statusOverride || (!validFrac
+        ? 'unknown'
+        : (bucket.isExhausted || frac === 0 ? 'exhausted' : (frac <= 0.2 ? 'low' : 'available')));
+      const pace = !paceSuppressed && bucket?.pace && bucket.pace.available ? bucket.pace : null;
+
+      setQuotaAttrIfChanged(winEl, 'data-quota-state', bStatus);
+      if (pace && (bStatus === 'available' || bStatus === 'low' || bStatus === 'exhausted')) {
+        setQuotaAttrIfChanged(winEl, 'data-pace-tier', String(pace.tier));
+      } else {
+        removeQuotaAttrIfPresent(winEl, 'data-pace-tier');
+      }
+
+      if (ringEl) {
+        const dashOffset = validFrac ? (CSB_RING_C * (1 - Math.max(0, Math.min(1, Number(frac))))).toFixed(2) : CSB_RING_C.toFixed(2);
+        setQuotaAttrIfChanged(ringEl, 'stroke-dashoffset', dashOffset);
+      }
+      if (dotEl) {
+        if (pace && validFrac) {
+          const pos = computePaceRingDotCoords(8, 8, 5.5, pace.timeRemaining);
+          setQuotaAttrIfChanged(dotEl, 'cx', String(pos.x));
+          setQuotaAttrIfChanged(dotEl, 'cy', String(pos.y));
+          setQuotaHiddenIfChanged(dotEl, false);
+        } else {
+          setQuotaHiddenIfChanged(dotEl, true);
+        }
+      }
+      if (textEl) {
+        const valText = statusOverride === 'no_permission'
+          ? t('quota.short.no_permission')
+          : (validFrac ? fmtPct(frac) : t('quota.short.unknown'));
+        setQuotaTextIfChanged(textEl, prefix ? `${prefix} ${valText}` : valText);
+      }
+    };
+
+    const altWarnEl = el('csb-quota-alt-warn');
+    const moreEl = el('csb-quota-more');
+
+    if (pool.noPermission) {
+      applyWin('csb-quota-5h', 'csb-quota-ring-5h', 'csb-quota-dot-5h', 'csb-quota-text-5h', '', null, null, true);
+      applyWin('csb-quota-7d', 'csb-quota-ring-7d', 'csb-quota-dot-7d', 'csb-quota-text-7d', '', null, null, true);
+      applyWin('csb-quota-single', 'csb-quota-ring-single', 'csb-quota-dot-single', 'csb-quota-text-single', '', null, 'no_permission', false);
+      if (altWarnEl) setQuotaHiddenIfChanged(altWarnEl, true);
+    } else {
+      const pairFn = typeof resolveQuotaWindowBucketPair === 'function' ? resolveQuotaWindowBucketPair : core?.resolveQuotaWindowBucketPair;
+      const pair = pairFn ? pairFn(pool.buckets || []) : { bucket5h: null, bucket7d: null };
+      const b5h = pair?.bucket5h || null;
+      const b7d = pair?.bucket7d || null;
+
+      if (b5h && b7d) {
+        const pb = pool.primaryBucket || null;
+        const primaryIs7d = Boolean(pb && (pb === b7d || pb.windowKey === 'weekly' || pb.windowShort === '7d'));
+        applyWin('csb-quota-5h', 'csb-quota-ring-5h', 'csb-quota-dot-5h', 'csb-quota-text-5h', '5h', b5h, null, primaryIs7d);
+        applyWin('csb-quota-7d', 'csb-quota-ring-7d', 'csb-quota-dot-7d', 'csb-quota-text-7d', '7d', b7d, null, !primaryIs7d);
+        applyWin('csb-quota-single', 'csb-quota-ring-single', 'csb-quota-dot-single', 'csb-quota-text-single', '', null, null, true);
+
+        const altBucket = primaryIs7d ? b5h : b7d;
+        const altShort = primaryIs7d ? '5h' : '7d';
+        const altPace = !paceSuppressed && altBucket?.pace?.available ? altBucket.pace : null;
+        const altLowOrExhausted = Boolean(altBucket && (altBucket.isExhausted || (altBucket.remainingFraction != null && altBucket.remainingFraction <= 0.2)));
+        const altPaceWarn = Boolean(altPace && (altPace.tier === 3 || altPace.tier === 4));
+        if (altWarnEl && (altPaceWarn || altLowOrExhausted)) {
+          const warnTier = altPace ? (altPace.tier >= 3 ? altPace.tier : (altBucket.isExhausted ? 4 : 3)) : (altBucket.isExhausted ? 4 : 3);
+          const warnLabel = altBucket.isExhausted
+            ? t('quota.short.exhausted')
+            : (altPaceWarn ? getQuotaPaceTierLabel(altPace) : t('quota.pace.fast'));
+          setQuotaHiddenIfChanged(altWarnEl, false);
+          setQuotaAttrIfChanged(altWarnEl, 'data-pace-tier', String(warnTier));
+          setQuotaTextIfChanged(altWarnEl, `${altShort} ${warnLabel}`);
+        } else if (altWarnEl) {
+          setQuotaHiddenIfChanged(altWarnEl, true);
+        }
+      } else if (b5h || b7d) {
+        applyWin('csb-quota-5h', 'csb-quota-ring-5h', 'csb-quota-dot-5h', 'csb-quota-text-5h', '5h', b5h, null, false);
+        applyWin('csb-quota-7d', 'csb-quota-ring-7d', 'csb-quota-dot-7d', 'csb-quota-text-7d', '7d', b7d, null, false);
+        applyWin('csb-quota-single', 'csb-quota-ring-single', 'csb-quota-dot-single', 'csb-quota-text-single', '', null, null, true);
+        if (altWarnEl) setQuotaHiddenIfChanged(altWarnEl, true);
+      } else {
+        applyWin('csb-quota-5h', 'csb-quota-ring-5h', 'csb-quota-dot-5h', 'csb-quota-text-5h', '', null, null, true);
+        applyWin('csb-quota-7d', 'csb-quota-ring-7d', 'csb-quota-dot-7d', 'csb-quota-text-7d', '', null, null, true);
+        const sb = pool.primaryBucket || pool.buckets?.[0] || null;
+        applyWin('csb-quota-single', 'csb-quota-ring-single', 'csb-quota-dot-single', 'csb-quota-text-single', sb?.windowShort || '', sb, sb ? null : (view.activeStatus || 'unknown'), false);
+        if (altWarnEl) setQuotaHiddenIfChanged(altWarnEl, true);
+      }
+    }
+
+    const otherPools = view.pools.filter(p => p.poolKey !== pool.poolKey);
+    if (moreEl) {
+      if (otherPools.length > 0) {
+        setQuotaHiddenIfChanged(moreEl, false);
+        setQuotaTextIfChanged(moreEl, `+${otherPools.length}`);
+      } else {
+        setQuotaHiddenIfChanged(moreEl, true);
+      }
+    }
+
+    const poolLines = (pool.buckets || []).map(b => {
+      const wTag = b.windowShort || formatQuotaWindowTitle(b);
+      const paceText = (!paceSuppressed && b.pace?.available) ? ` · ${formatQuotaPaceDeltaText(b.pace)}` : '';
+      return `${wTag}: ${b.percentText || t('quota.time.unknown')}${paceText}`;
+    });
+    const otherText = otherPools.length
+      ? `${t('quota.pace.otherPoolsMore', { count: otherPools.length })}: ${otherPools.map(p => `${p.title} (${p.percentText})`).join(' / ')}`
+      : '';
+    const tipTitle = [`${pool.title}`, poolLines.join(' | '), otherText].filter(Boolean).join('\n');
+    if (group.title !== tipTitle) group.title = tipTitle;
+    setQuotaHiddenIfChanged(group, false);
+  }
+
   function renderQuotaBoard(nowMs = Date.now(), renderOpts = {}) {
     const viewQuotaBody = el('view-quota');
     const savedScrollTop = (viewQuotaBody && typeof viewQuotaBody.scrollTop === 'number') ? viewQuotaBody.scrollTop : null;
     const view = computeEffectiveQuotaView(nowMs);
+    lastComputedQuotaView = view;
     const currentSig = computeQuotaVisualSignature(view);
     const chargeBarTargets = renderOpts.chargeBars ? [] : null;
     const shouldAnimate = Boolean(
@@ -13766,42 +22190,69 @@
     }
     quotaLastSnapshotSig = currentSig;
 
-    // 1. 渲染顶栏圆环入口与窄屏溢出菜单项（不只靠颜色，必含数值/状态短文本）
+    // 1. 渲染顶栏圆环入口与窄屏溢出菜单项（不只靠颜色，必含数值/状态短文本与时间刻点）
     const bQuota = el('badge-quota');
     const qFill = el('quota-ring-fill');
+    const qPaceDot = el('quota-ring-pace-dot');
     const qVal = el('quota-badge-val');
     const qTag = el('quota-badge-tag');
+    const qDual = el('quota-badge-dual');
     const oQuotaVal = el('overflow-quota-val');
+    const matchedPoolObjTop = (view.pools || []).find(p => p.poolKey === view.currentModel?.poolKey) || null;
+    const topPaceAllowed = view.activeStatus === 'available' || view.activeStatus === 'low';
+    const topPace = topPaceAllowed
+      ? ((view.badge?.pace && view.badge.pace.available ? view.badge.pace : null)
+        || (matchedPoolObjTop?.primaryBucket?.pace && matchedPoolObjTop.primaryBucket.pace.available ? matchedPoolObjTop.primaryBucket.pace : null))
+      : null;
 
     if (bQuota) {
       setQuotaAttrIfChanged(bQuota, 'data-quota-state', view.activeStatus || 'unknown');
+      if (topPace) {
+        setQuotaAttrIfChanged(bQuota, 'data-quota-pace-tier', String(topPace.tier));
+      } else {
+        removeQuotaAttrIfPresent(bQuota, 'data-quota-pace-tier');
+      }
       const tipModel = view.currentModel?.productLabel || t('quota.current.unmatched');
-      const matchedPoolObj = (view.pools || []).find(p => p.poolKey === view.currentModel?.poolKey) || null;
+      const matchedPoolObj = matchedPoolObjTop;
       const reasonMap = {
         tighter_window: currentPanelLanguage === 'en' ? 'tightest window' : (currentPanelLanguage === 'zh-TW' ? '最緊縮視窗優先' : '最紧缩窗口优先'),
         tie_window: currentPanelLanguage === 'en' ? '5h priority on tie' : (currentPanelLanguage === 'zh-TW' ? '同餘量優先短視窗' : '同余量优先短窗口'),
-        single_window: currentPanelLanguage === 'en' ? 'single window' : (currentPanelLanguage === 'zh-TW' ? '單一限額視窗' : '单一限额窗口')
+        single_window: currentPanelLanguage === 'en' ? 'single window' : (currentPanelLanguage === 'zh-TW' ? '單一限額視窗' : '单一限额窗口'),
+        user_5h: t('quota.modeTag.5h'),
+        user_weekly: t('quota.modeTag.weekly')
       };
       const winLines = (matchedPoolObj?.buckets || []).map(b => {
         const wTag = b.windowShort || formatQuotaWindowTitle(b);
         const wReset = b.hasResetTime ? `${b.resetTimeText} (${formatCountdownMsCompact((b.resetAtMs || 0) - nowMs)})` : t('quota.time.unknown');
-        return `${wTag}: ${b.percentText || t('quota.time.unknown')} (${wReset})`;
+        const paceNote = (b.pace && b.pace.available && topPaceAllowed) ? ` · ${formatQuotaPaceDeltaText(b.pace)}` : '';
+        return `${wTag}: ${b.percentText || t('quota.time.unknown')} (${wReset}${paceNote})`;
       });
       const selNote = matchedPoolObj?.primaryBucket
         ? `${matchedPoolObj.primaryBucket.windowShort || formatQuotaWindowTitle(matchedPoolObj.primaryBucket)} · ${reasonMap[matchedPoolObj.selectionReason] || ''}`
         : '';
+      const modeTag = t(`quota.modeTag.${quotaBadgeWindowMode}`);
       const updatedStr = view.fetchedAtMs ? new Date(view.fetchedAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : t('quota.time.unknown');
       const poolHeader = matchedPoolObj?.title ? ` · ${matchedPoolObj.title}` : '';
       const tipReset = view.activeReset?.hasResetTime
         ? `${view.activeReset.resetTimeText} (${formatCountdownMsCompact((view.activeReset.resetAtMs || 0) - nowMs)})`
         : t('quota.time.unknown');
       const nextTitle = [
-        `${tipModel}${poolHeader} · ${view.activeStatusLabel} (${view.badge.text})${selNote ? ` [${selNote}]` : ''}`,
+        `${tipModel}${poolHeader} · ${view.activeStatusLabel} (${view.badge.text})${selNote ? ` [${selNote}]` : ''} · [${modeTag}]`,
         winLines.length ? winLines.join(' | ') : `${t('quota.time.reset')}: ${tipReset}`,
         `${currentPanelLanguage === 'en' ? 'Updated' : '更新'}: ${updatedStr}`
       ].filter(Boolean).join('\n');
       if (bQuota.title !== nextTitle) bQuota.title = nextTitle;
       setQuotaAttrIfChanged(bQuota, 'aria-label', `${t('badge.quota.aria')}: ${view.badge.text} (${view.activeStatusLabel})`);
+    }
+    if (qPaceDot) {
+      if (topPace) {
+        const dotPos = computePaceRingDotCoords(9, 9, RING_RADIUS, topPace.timeRemaining);
+        setQuotaAttrIfChanged(qPaceDot, 'cx', String(dotPos.x));
+        setQuotaAttrIfChanged(qPaceDot, 'cy', String(dotPos.y));
+        setQuotaHiddenIfChanged(qPaceDot, false);
+      } else {
+        setQuotaHiddenIfChanged(qPaceDot, true);
+      }
     }
     if (qFill) {
       if (view.badge.fraction == null) {
@@ -13826,38 +22277,71 @@
         quotaBadgeLastHasFraction = true;
       }
     }
-    if (qVal) {
-      const hasNumericPct = view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error' && view.activeStatus !== 'unknown' && view.badge.fraction != null;
-      if (hasNumericPct) {
-        animateQuotaPercentNode(qVal, view.badge.fraction, shouldAnimate, view.badge.text);
-      } else {
-        let dispVal = view.badge.text;
-        if (view.activeStatus === 'exhausted') dispVal = t('quota.short.exhausted');
-        else if (view.activeStatus === 'no_permission') dispVal = t('quota.short.no_permission');
-        else if (view.activeStatus === 'error') dispVal = t('quota.short.error');
-        else if (view.activeStatus === 'unknown' || view.badge.fraction == null) {
-          dispVal = view.activeStatus === 'stale' ? t('quota.short.stale') : t('quota.short.unknown');
-        }
-        animateQuotaPercentNode(qVal, null, false, dispVal);
-      }
+    const useDualDisplay = quotaBadgeWindowMode === 'both'
+      && state.layoutMode !== 'compact'
+      && Array.isArray(view.badge.dualBuckets)
+      && view.badge.dualBuckets.length === 2;
+    if (bQuota) {
+      if (useDualDisplay) bQuota.setAttribute?.('data-quota-dual', 'true');
+      else bQuota.removeAttribute?.('data-quota-dual');
     }
-    if (qTag) {
-      let dispTag = view.badge.tag;
-      if (view.activeStatus === 'error') dispTag = t('quota.retry');
-      else if (view.activeStatus === 'stale' && view.badge.fraction != null) dispTag = t('quota.short.stale');
-      if (dispTag) {
-        setQuotaHiddenIfChanged(qTag, false);
-        setQuotaTextIfChanged(qTag, dispTag);
-      } else {
-        setQuotaHiddenIfChanged(qTag, true);
-        setQuotaTextIfChanged(qTag, '');
+    if (useDualDisplay && qDual) {
+      if (qVal) setQuotaHiddenIfChanged(qVal, true);
+      if (qTag) setQuotaHiddenIfChanged(qTag, true);
+      setQuotaHiddenIfChanged(qDual, false);
+      const line0 = qDual.children?.[0] || document.createElement('span');
+      line0.className = 'quota-dual-line';
+      line0.textContent = view.badge.dualBuckets[0].text;
+      const line1 = qDual.children?.[1] || document.createElement('span');
+      line1.className = 'quota-dual-line is-secondary';
+      line1.textContent = view.badge.dualBuckets[1].text;
+      if (qDual.children?.length !== 2) {
+        qDual.replaceChildren?.();
+        qDual.appendChild?.(line0);
+        qDual.appendChild?.(line1);
+      }
+    } else {
+      if (qDual) setQuotaHiddenIfChanged(qDual, true);
+      if (qVal) {
+        setQuotaHiddenIfChanged(qVal, false);
+        const hasNumericPct = view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error' && view.badge.fraction != null;
+        if (hasNumericPct) {
+          animateQuotaPercentNode(qVal, view.badge.fraction, shouldAnimate, view.badge.text);
+          if (!shouldAnimate) {
+            setQuotaTextIfChanged(qVal, view.badge.text);
+          }
+        } else {
+          let dispVal = view.badge.text;
+          if (view.activeStatus === 'exhausted') dispVal = t('quota.short.exhausted');
+          else if (view.activeStatus === 'no_permission') dispVal = t('quota.short.no_permission');
+          else if (view.activeStatus === 'error') dispVal = t('quota.short.error');
+          else if (view.activeStatus === 'unknown' || view.badge.fraction == null) {
+            dispVal = view.activeStatus === 'stale' ? t('quota.short.stale') : (view.badge.text || t('quota.short.unknown'));
+          }
+          animateQuotaPercentNode(qVal, null, false, dispVal);
+          setQuotaTextIfChanged(qVal, dispVal);
+        }
+      }
+      if (qTag) {
+        let dispTag = view.badge.tag;
+        if (view.activeStatus === 'error') dispTag = t('quota.retry');
+        else if (view.activeStatus === 'stale' && view.badge.fraction != null) dispTag = t('quota.short.stale');
+        if (dispTag) {
+          setQuotaHiddenIfChanged(qTag, false);
+          setQuotaTextIfChanged(qTag, dispTag);
+        } else {
+          setQuotaHiddenIfChanged(qTag, true);
+          setQuotaTextIfChanged(qTag, '');
+        }
       }
     }
     if (oQuotaVal) {
-      const dispTxt = view.badge.fraction != null && view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error'
-        ? view.badge.text
-        : (qVal ? qVal.textContent : view.badge.text);
-      const dispTag = (qTag && !qTag.hidden) ? qTag.textContent : '';
+      const dispTxt = useDualDisplay
+        ? view.badge.dualBuckets.map(b => b.text).join(' / ')
+        : (view.badge.fraction != null && view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error'
+          ? view.badge.text
+          : (qVal ? qVal.textContent : view.badge.text));
+      const dispTag = (!useDualDisplay && qTag && !qTag.hidden) ? qTag.textContent : '';
       setQuotaTextIfChanged(oQuotaVal, dispTag ? `${dispTxt} · ${dispTag}` : dispTxt);
     }
 
@@ -13996,15 +22480,62 @@
       if (tReset.title !== resetStr) tReset.title = resetStr;
     }
 
-    // 当前会话模型概览卡片
+    // 当前会话模型概览卡片（唯一主池双轨与所属模型芯片）
+    const renderQuotaModelChips = (chipsBox, modelsList, currentProductKey) => {
+      if (!chipsBox) return;
+      const list = Array.isArray(modelsList) ? modelsList : [];
+      if (!list.length) {
+        setQuotaHiddenIfChanged(chipsBox, true);
+        return;
+      }
+      setQuotaHiddenIfChanged(chipsBox, false);
+      const chipsSig = list.map(m => `${m.productKey}:${m.productLabel}:${(m.efforts || []).join('/')}:${m.noPermission ? 1 : 0}:${m.noticeText || ''}:${currentProductKey === m.productKey ? 1 : 0}:${t('quota.short.no_permission')}`).join(';');
+      if (getChildAttr(chipsBox, 'data-chips-sig') === chipsSig) return;
+      chipsBox.setAttribute('data-chips-sig', chipsSig);
+      const chipNodes = [];
+      for (const m of list) {
+        const chip = document.createElement('span');
+        chip.className = 'quota-model-chip';
+        if (currentProductKey && m.productKey === currentProductKey) {
+          chip.setAttribute('data-current-model', 'true');
+        }
+        const lbl = document.createElement('span');
+        lbl.textContent = m.productLabel;
+        chip.appendChild(lbl);
+        if (m.efforts && m.efforts.length) {
+          const ef = document.createElement('span');
+          ef.className = 'quota-chip-efforts';
+          ef.textContent = `(${m.efforts.join('/')})`;
+          chip.appendChild(ef);
+        }
+        if (m.noPermission) {
+          const np = document.createElement('span');
+          np.className = 'quota-chip-noperm';
+          np.textContent = t('quota.short.no_permission');
+          chip.appendChild(np);
+        } else if (m.noticeText) {
+          const nt = document.createElement('span');
+          nt.className = 'quota-chip-notice';
+          nt.title = m.noticeText;
+          nt.textContent = m.noticeTitle || 'Notice';
+          chip.appendChild(nt);
+        }
+        chipNodes.push(chip);
+      }
+      reconcileQuotaChildOrder(chipsBox, chipNodes);
+    };
+
     const curModelEl = el('quota-cur-model');
     const curPoolEl = el('quota-cur-pool');
     const curEstEl = el('quota-cur-est');
     const curStatusEl = el('quota-cur-status');
+    const curPacePillEl = el('quota-cur-pace-pill');
     const curAlertEl = el('quota-cur-alert');
     const curBucketsEl = el('quota-cur-buckets');
+    const curModelsChipsEl = el('quota-cur-models-chips');
 
     const matchedPoolObj = view.pools.find(p => p.poolKey === view.currentModel?.poolKey);
+    const paceSuppressedGlobal = view.syncState === 'stale' || view.syncState === 'error';
 
     if (curModelEl) {
       setQuotaTextIfChanged(curModelEl, view.currentModel?.productLabel || t('quota.current.unmatched'));
@@ -14028,6 +22559,20 @@
       setQuotaClassIfChanged(curStatusEl, `key-pill ${getQuotaPillClass(view.activeStatus)}`);
       setQuotaTextIfChanged(curStatusEl, getQuotaStatusLabelText(view.activeStatus));
     }
+    if (curPacePillEl) {
+      const curPrimaryPace = !view.currentModel?.noPermission && !paceSuppressedGlobal && matchedPoolObj?.primaryBucket?.pace?.available
+        ? matchedPoolObj.primaryBucket.pace
+        : null;
+      if (curPrimaryPace) {
+        setQuotaHiddenIfChanged(curPacePillEl, false);
+        setQuotaAttrIfChanged(curPacePillEl, 'data-pace-tier', String(curPrimaryPace.tier));
+        setQuotaTextIfChanged(curPacePillEl, `${t('quota.pace.labelPrefix')} · ${formatQuotaPaceDeltaText(curPrimaryPace)}`);
+      } else {
+        setQuotaHiddenIfChanged(curPacePillEl, true);
+        removeQuotaAttrIfPresent(curPacePillEl, 'data-pace-tier');
+        setQuotaTextIfChanged(curPacePillEl, '');
+      }
+    }
     if (curAlertEl) {
       if (view.currentModel?.noPermission && view.currentModel?.unavailabilityReason) {
         setQuotaHiddenIfChanged(curAlertEl, false);
@@ -14049,14 +22594,30 @@
         curBucketsEl,
         matchedPoolObj?.buckets || [],
         view.currentModel?.noPermission ? 'no_permission' : null,
-        { animate: shouldAnimate, nowMs, chargeTargets: view.currentModel?.noPermission ? null : chargeBarTargets }
+        {
+          animate: shouldAnimate,
+          nowMs,
+          chargeTargets: view.currentModel?.noPermission ? null : chargeBarTargets,
+          paceSuppressed: paceSuppressedGlobal
+        }
       );
     }
+    if (curModelsChipsEl) {
+      renderQuotaModelChips(curModelsChipsEl, matchedPoolObj?.models || [], view.currentModel?.productKey || null);
+    }
 
-    // 共享额度池列表（原地复用已有 DOM 卡片，禁止整块摧毁重排，兼顾轻量 mock DOM）
+    // 其他共享额度池列表（当前池已于上方唯一双轨区展示，此处不再重复渲染主池）
+    const poolsHeadingEl = el('quota-pools-heading');
+    const poolsHeaderEl = poolsHeadingEl?.parentElement || null;
     const listEl = el('quota-pools-list');
     if (listEl) {
+      const hasIdentifiedCurrentPool = Boolean(view.currentModel?.poolKey && view.pools.some(p => p.poolKey === view.currentModel.poolKey));
+      if (poolsHeadingEl) {
+        setQuotaTextIfChanged(poolsHeadingEl, t(hasIdentifiedCurrentPool ? 'quota.pools.othersHeading' : 'quota.pools.heading'));
+      }
       if (!view.pools.length) {
+        if (poolsHeaderEl) setQuotaHiddenIfChanged(poolsHeaderEl, false);
+        setQuotaHiddenIfChanged(listEl, false);
         let emptyEl = Array.from(listEl.children || []).find(ch => String(ch.className || '').includes('quota-pools-empty-state')) || null;
         if (!emptyEl) {
           emptyEl = document.createElement('div');
@@ -14075,8 +22636,10 @@
         const desiredCards = [];
         for (let pIdx = 0; pIdx < view.pools.length; pIdx++) {
           const pool = view.pools[pIdx];
-          const isCurrentPool = Boolean(view.currentModel?.poolKey && pool.poolKey === view.currentModel.poolKey);
+          const isCurrentPool = hasIdentifiedCurrentPool ? pool.poolKey === view.currentModel.poolKey : false;
+          if (isCurrentPool) continue;
           const isBrowsing = Boolean(view.browsePoolKey && pool.poolKey === view.browsePoolKey);
+          const isExpanded = quotaExpandedPoolKeys.has(pool.poolKey);
 
           let card = existingCards.get(pool.poolKey);
           let refs = card ? quotaNodeRefsMap.get(card) : null;
@@ -14086,6 +22649,14 @@
             card.className = 'quota-pool-card';
             card.setAttribute('data-pool-key', pool.poolKey);
             card.addEventListener('click', () => {
+              const curKey = computeEffectiveQuotaView(Date.now())?.currentModel?.poolKey || null;
+              if (curKey !== pool.poolKey) {
+                if (quotaExpandedPoolKeys.has(pool.poolKey)) {
+                  quotaExpandedPoolKeys.delete(pool.poolKey);
+                } else {
+                  quotaExpandedPoolKeys.add(pool.poolKey);
+                }
+              }
               quotaState.browsePoolKey = pool.poolKey;
               renderQuotaBoard(Date.now(), { animate: false });
             });
@@ -14101,8 +22672,11 @@
             curTagEl.hidden = true;
             const stPill = document.createElement('span');
             stPill.className = 'key-pill quota-pool-status-pill';
+            const chevronEl = document.createElement('span');
+            chevronEl.className = 'quota-pool-chevron';
             tagsEl.appendChild(curTagEl);
             tagsEl.appendChild(stPill);
+            tagsEl.appendChild(chevronEl);
             top.appendChild(titleEl);
             top.appendChild(tagsEl);
 
@@ -14117,20 +22691,27 @@
             const chipsBox = document.createElement('div');
             chipsBox.className = 'quota-models-chips';
 
+            const compactBox = document.createElement('div');
+            compactBox.className = 'quota-pool-compact-list';
+            compactBox.hidden = true;
+
             card.appendChild(top);
             card.appendChild(reasonEl);
             card.appendChild(bucketsBox);
             card.appendChild(chipsBox);
-            refs = { titleEl, curTagEl, stPill, reasonEl, bucketsBox, chipsBox };
+            card.appendChild(compactBox);
+            refs = { titleEl, curTagEl, stPill, chevronEl, reasonEl, bucketsBox, chipsBox, compactBox };
             quotaNodeRefsMap.set(card, refs);
           }
 
-          const { titleEl, curTagEl, stPill, reasonEl, bucketsBox, chipsBox } = refs;
+          const { titleEl, curTagEl, stPill, chevronEl, reasonEl, bucketsBox, chipsBox, compactBox } = refs;
 
           if (isCurrentPool) setQuotaAttrIfChanged(card, 'data-active-current', 'true');
           else removeQuotaAttrIfPresent(card, 'data-active-current');
           if (isBrowsing) setQuotaAttrIfChanged(card, 'data-browsing', 'true');
           else removeQuotaAttrIfPresent(card, 'data-browsing');
+          setQuotaAttrIfChanged(card, 'data-compact', isExpanded ? 'false' : 'true');
+          setQuotaAttrIfChanged(card, 'aria-expanded', isExpanded ? 'true' : 'false');
 
           if (titleEl) setQuotaTextIfChanged(titleEl, pool.title);
           if (curTagEl) {
@@ -14141,6 +22722,14 @@
               setQuotaHiddenIfChanged(curTagEl, true);
             }
           }
+          if (chevronEl) {
+            if (isCurrentPool) {
+              setQuotaHiddenIfChanged(chevronEl, true);
+            } else {
+              setQuotaHiddenIfChanged(chevronEl, false);
+              setQuotaTextIfChanged(chevronEl, isExpanded ? `▾ ${t('quota.pace.collapseHint')}` : `▸ ${t('quota.pace.expandHint')}`);
+            }
+          }
           if (stPill) {
             const pStatus = pool.noPermission ? 'no_permission' : (pool.status || 'unknown');
             setQuotaClassIfChanged(stPill, `key-pill quota-pool-status-pill ${getQuotaPillClass(pStatus)}`);
@@ -14148,6 +22737,7 @@
             setQuotaTextIfChanged(stPill, `${getQuotaStatusLabelText(pStatus)}${pctStr}`);
           }
 
+          const poolPaceSuppressed = Boolean(pool.noPermission || view.syncState === 'stale' || view.syncState === 'error');
           if (pool.noPermission && pool.unavailabilityReason) {
             if (reasonEl) {
               setQuotaHiddenIfChanged(reasonEl, false);
@@ -14157,65 +22747,41 @@
               setQuotaHiddenIfChanged(bucketsBox, true);
               renderQuotaBucketsContainer(bucketsBox, [], null, { animate: false, nowMs });
             }
+            if (compactBox) setQuotaHiddenIfChanged(compactBox, true);
           } else {
             if (reasonEl) setQuotaHiddenIfChanged(reasonEl, true);
             if (bucketsBox) {
               if (pool.buckets && pool.buckets.length) {
                 setQuotaHiddenIfChanged(bucketsBox, false);
-                renderQuotaBucketsContainer(bucketsBox, pool.buckets, null, { animate: shouldAnimate, nowMs, chargeTargets: chargeBarTargets });
+                renderQuotaBucketsContainer(bucketsBox, pool.buckets, null, {
+                  animate: shouldAnimate,
+                  nowMs,
+                  chargeTargets: chargeBarTargets,
+                  paceSuppressed: poolPaceSuppressed
+                });
               } else {
                 setQuotaHiddenIfChanged(bucketsBox, true);
                 renderQuotaBucketsContainer(bucketsBox, [], null, { animate: false, nowMs });
               }
             }
+            if (compactBox) {
+              if (!isExpanded && pool.buckets && pool.buckets.length) {
+                renderPoolCompactList(compactBox, pool, poolPaceSuppressed);
+              } else {
+                setQuotaHiddenIfChanged(compactBox, true);
+              }
+            }
           }
 
           if (chipsBox) {
-            const modelsList = Array.isArray(pool.models) ? pool.models : [];
-            if (!modelsList.length) {
-              setQuotaHiddenIfChanged(chipsBox, true);
-            } else {
-              setQuotaHiddenIfChanged(chipsBox, false);
-              const chipsSig = modelsList.map(m => `${m.productKey}:${m.productLabel}:${(m.efforts || []).join('/')}:${m.noPermission ? 1 : 0}:${m.noticeText || ''}:${view.currentModel?.productKey === m.productKey ? 1 : 0}:${t('quota.short.no_permission')}`).join(';');
-              if (getChildAttr(chipsBox, 'data-chips-sig') !== chipsSig) {
-                chipsBox.setAttribute('data-chips-sig', chipsSig);
-                const chipNodes = [];
-                for (const m of modelsList) {
-                  const chip = document.createElement('span');
-                  chip.className = 'quota-model-chip';
-                  if (view.currentModel?.productKey && m.productKey === view.currentModel.productKey) {
-                    chip.setAttribute('data-current-model', 'true');
-                  }
-                  const lbl = document.createElement('span');
-                  lbl.textContent = m.productLabel;
-                  chip.appendChild(lbl);
-                  if (m.efforts && m.efforts.length) {
-                    const ef = document.createElement('span');
-                    ef.className = 'quota-chip-efforts';
-                    ef.textContent = `(${m.efforts.join('/')})`;
-                    chip.appendChild(ef);
-                  }
-                  if (m.noPermission) {
-                    const np = document.createElement('span');
-                    np.className = 'quota-chip-noperm';
-                    np.textContent = t('quota.short.no_permission');
-                    chip.appendChild(np);
-                  } else if (m.noticeText) {
-                    const nt = document.createElement('span');
-                    nt.className = 'quota-chip-notice';
-                    nt.title = m.noticeText;
-                    nt.textContent = m.noticeTitle || 'Notice';
-                    chip.appendChild(nt);
-                  }
-                  chipNodes.push(chip);
-                }
-                reconcileQuotaChildOrder(chipsBox, chipNodes);
-              }
-            }
+            renderQuotaModelChips(chipsBox, pool.models || [], view.currentModel?.productKey || null);
           }
           desiredCards.push(card);
         }
         reconcileQuotaChildOrder(listEl, desiredCards);
+        const hasOtherCards = desiredCards.length > 0;
+        if (poolsHeaderEl) setQuotaHiddenIfChanged(poolsHeaderEl, !hasOtherCards);
+        setQuotaHiddenIfChanged(listEl, !hasOtherCards);
       }
     }
 
@@ -14239,6 +22805,7 @@
     }
 
     syncModelListQuotaIndicators(view, nowMs);
+    renderComposerQuotaSummary(view, nowMs);
     scheduleQuotaResetConfirmIfNeeded(view, nowMs);
   }
 
@@ -14352,13 +22919,20 @@
 
   async function syncQuotaFromHost(force = false, meta = {}) {
     if (state.disposed) return null;
+    const isManual = Boolean(meta.manual);
     if (quotaInFlightPromise) {
+      if ((isManual || force) && !quotaInFlightManual) {
+        if (isManual) triggerQuotaRefreshIconSpin();
+        try { await quotaInFlightPromise; } catch { }
+        if (state.disposed) return null;
+        return syncQuotaFromHost(true, meta);
+      }
       return quotaInFlightPromise;
     }
 
-    const isManual = Boolean(meta.manual);
     const isSilent = Boolean(meta.silent) && !isManual;
     if (isManual) triggerQuotaRefreshIconSpin();
+    quotaInFlightManual = isManual;
     const runner = (async () => {
       const prevSig = computeQuotaVisualSignature(computeEffectiveQuotaView(Date.now()));
       quotaState.busy = true;
@@ -14481,6 +23055,15 @@
       if (typeof refreshAccountsOverview === 'function') {
         void refreshAccountsOverview({ silent: !isManual, refreshAllRemote: Boolean(isManual) });
       }
+      if (
+        requestSucceeded &&
+        hasDataChanged &&
+        !historySyncBusy &&
+        (Date.now() - lastHistorySync > 2000) &&
+        ((typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') || hasLiveHttpBridge())
+      ) {
+        void syncTokenHistoryFromHost(false);
+      }
       renderQuotaBoard(nowMs, { animate: shouldAnimateChange, chargeBars: shouldChargeBars });
       return quotaState.snapshot;
     })();
@@ -14489,7 +23072,10 @@
     try {
       return await runner;
     } finally {
-      if (quotaInFlightPromise === runner) quotaInFlightPromise = null;
+      if (quotaInFlightPromise === runner) {
+        quotaInFlightPromise = null;
+        quotaInFlightManual = false;
+      }
     }
   }
 
@@ -14538,11 +23124,118 @@
       void fetchSessionTimeline(state.route, { force: !state.sessionTimeline });
     }
     positionFloatingPanels();
+    syncPanelPickerActiveState();
   });
   el('btn-timeline-load-more')?.addEventListener('click', () => {
     state.timelinePageLimit = (Number(state.timelinePageLimit) || 10) + 10;
     renderSessionTimeline();
     positionFloatingPanels();
+  });
+  el('timeline-insight-bar')?.addEventListener('click', (e) => {
+    const rawTarget = e?.target || e?.currentTarget;
+    const sortBtn = rawTarget?.closest?.('[data-tl-sort]')
+      || (rawTarget?.getAttribute?.('data-tl-sort') ? rawTarget : null);
+    if (sortBtn) {
+      const nextSort = sortBtn.getAttribute('data-tl-sort') || 'newest';
+      if (['newest', 'oldest', 'delta_desc'].includes(nextSort)) {
+        state.timelineSortOrder = nextSort;
+        renderSessionTimeline();
+        positionFloatingPanels();
+      }
+      return;
+    }
+    const tabBtn = rawTarget?.closest?.('.tl-tab-btn')
+      || (rawTarget?.getAttribute?.('data-tl-tab') ? rawTarget : null);
+    if (tabBtn) {
+      const nextTab = tabBtn.getAttribute('data-tl-tab') || 'turns';
+      state.timelineInsightTab = nextTab;
+      renderSessionTimeline();
+      positionFloatingPanels();
+      return;
+    }
+    if (rawTarget?.id === 'btn-timeline-delta-mode' || rawTarget?.closest?.('#btn-timeline-delta-mode')) {
+      state.timelineDeltaOnly = !state.timelineDeltaOnly;
+      renderSessionTimeline();
+      positionFloatingPanels();
+    }
+  });
+  el('ctx-trend-mode-total')?.addEventListener('click', () => {
+    state.contextTrendMode = 'total';
+    renderContextTrendCard();
+  });
+  el('ctx-trend-mode-delta')?.addEventListener('click', () => {
+    state.contextTrendMode = 'delta';
+    renderContextTrendCard();
+  });
+  el('ctx-trend-gran-step')?.addEventListener('click', () => {
+    state.contextTrendGranularity = 'step';
+    renderContextTrendCard();
+  });
+  el('ctx-trend-gran-turn')?.addEventListener('click', () => {
+    state.contextTrendGranularity = 'turn';
+    renderContextTrendCard();
+  });
+  el('btn-ctx-return-latest')?.addEventListener('click', () => {
+    returnToLatestSessionPoint();
+  });
+  el('btn-ctx-session-refresh')?.addEventListener('click', () => {
+    if (!state.route) return;
+    void scan(state.generation, state.route, true);
+    void fetchSessionTimeline(state.route, { force: true });
+  });
+  el('ctx-subtrack-mode-comp')?.addEventListener('click', () => {
+    state.ctxSubtrackMode = 'comp';
+    renderSessionBentoSections();
+  });
+  el('ctx-subtrack-mode-cache')?.addEventListener('click', () => {
+    state.ctxSubtrackMode = 'cache';
+    renderSessionBentoSections();
+  });
+  el('ctx-tree-mode-full')?.addEventListener('click', () => {
+    state.ctxTreeMode = 'full';
+    renderSessionBentoSections();
+  });
+  el('ctx-tree-mode-delta')?.addEventListener('click', () => {
+    state.ctxTreeMode = 'delta';
+    renderSessionBentoSections();
+  });
+  el('btn-ctx-cmp-step')?.addEventListener('click', () => {
+    state.ctxCompareBase = 'prev_step';
+    renderSessionBentoSections();
+  });
+  el('btn-ctx-cmp-turn')?.addEventListener('click', () => {
+    state.ctxCompareBase = 'prev_turn';
+    renderSessionBentoSections();
+  });
+  el('ctx-trend-card')?.addEventListener('keydown', (e) => {
+    const pts = Array.isArray(state.lastTrendSeries?.points) ? state.lastTrendSeries.points : [];
+    if (!pts.length) return;
+    if (e.key === 'Escape') {
+      e.preventDefault?.();
+      returnToLatestSessionPoint();
+      return;
+    }
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault?.();
+    let curIdx = pts.findIndex(p =>
+      (state.selectedTrendCallId && ((p.callId && p.callId === state.selectedTrendCallId) || (p.stepIndex != null && `step:${p.stepIndex}` === state.selectedTrendCallId) || String(p.index) === String(state.selectedTrendCallId)))
+      || (state.pinnedCallRecord && ((p.callId && p.callId === state.pinnedCallRecord.callId) || (p.stepIndex != null && p.stepIndex === state.pinnedCallRecord.stepIndex)))
+    );
+    if (curIdx < 0) curIdx = pts.length - 1;
+    let nextIdx = curIdx;
+    if (e.key === 'ArrowLeft') nextIdx = Math.max(0, curIdx - 1);
+    else if (e.key === 'ArrowRight') nextIdx = Math.min(pts.length - 1, curIdx + 1);
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = pts.length - 1;
+    const targetPt = pts[nextIdx];
+    if (targetPt) {
+      jumpToStepOrTurn({ stepIndex: targetPt.stepIndex ?? null, turnIndex: targetPt.turnIndex ?? null, callId: targetPt.callId || null });
+    }
+  });
+  ['btn-save-default-view-ctx', 'btn-save-default-view-tokens', 'btn-save-default-view-speed'].forEach(btnId => {
+    el(btnId)?.addEventListener('click', () => {
+      void saveCurrentViewAsDefault(btnId);
+    });
   });
 
   el('btn-quota-refresh')?.addEventListener('click', () => {
@@ -14731,7 +23424,17 @@
           topRow.className = 'quota-subcard-row';
           const left = document.createElement('span');
           left.className = 'quota-acct-email';
-          left.textContent = `${acc.email}${acc.tierId ? ` · ${acc.tierId}` : ''}`;
+          const resolveAccountTierLabel = (a) => {
+            if (!a) return '';
+            const curEmail = ANTIGRAVITY_TOKEN_DATA.planStatus?.email;
+            if (a.isActive && curEmail && (typeof normalizeEmail === 'function' ? normalizeEmail(a.email) === normalizeEmail(curEmail) : a.email === curEmail)) {
+              const curName = ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName;
+              if (curName && curName !== '未知') return curName;
+            }
+            return a.tierName || a.tierId || '';
+          };
+          const accTierLabel = resolveAccountTierLabel(acc);
+          left.textContent = `${acc.email}${accTierLabel ? ` · ${accTierLabel}` : ''}`;
           left.title = acc.email;
           const right = document.createElement('div');
           right.className = 'quota-subsec-actions';
@@ -14770,13 +23473,66 @@
           topRow.appendChild(right);
           card.appendChild(topRow);
 
-          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => {
-            const pName = p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'));
-            const pVal = p.noPermission
-              ? t('accounts.poolNoAccess')
-              : (p.percentText && p.percentText !== '未知' ? p.percentText : t('accounts.poolUnknown'));
-            return `${pName}: ${pVal}`;
-          });
+          const CORE_POOL_NAMES = {
+            shared_gemini_main: 'Gemini (Neon/Hydrogen)',
+            shared_3p_pool: 'Claude/3P',
+            shared_gemini_argon: 'Argon',
+            shared_gemini_carbon: 'Carbon'
+          };
+
+          const poolSummaries = [];
+          for (const p of (acc.quotaSnapshot?.pools || [])) {
+            if (!p || typeof p !== 'object') continue;
+            const pName = CORE_POOL_NAMES[p.poolKey];
+            // 严禁使用 else 'Carbon' 兜底！只展示四大核心共享池，过滤掉历史快照中已残留的 shared_chat_* / shared_gemini-25-pro* 等非核心杂项池
+            if (!pName) continue;
+
+            // Carbon 显示规则：
+            // 当 shared_gemini_carbon 具有真实可用权限（!p.noPermission 且有配额数据，即 Ultra 用户）时，必须正常显示 Carbon 额度；
+            // 当 p.noPermission === true（无权限，如 Free / Pro 用户）时，在多账号卡片摘要行中直接隐藏该无权限项，不显示 "Carbon: 无模型权限"，更不能把别的池显示成 Carbon。
+            if (p.poolKey === 'shared_gemini_carbon') {
+              if (p.noPermission) continue;
+              const hasQuotaData = (Array.isArray(p.buckets) && p.buckets.some(b => b && b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction))))
+                || (p.remainingFraction !== null && p.remainingFraction !== undefined && Number.isFinite(Number(p.remainingFraction)));
+              if (!hasQuotaData) continue;
+            }
+
+            if (p.noPermission) {
+              poolSummaries.push(`${pName}: ${t('accounts.poolNoAccess')}`);
+              continue;
+            }
+
+            const buckets = Array.isArray(p.buckets) ? p.buckets.filter(Boolean) : [];
+            const b5h = buckets.find(b => b.windowKey === '5h' || b.windowShort === '5h') || null;
+            const b7d = buckets.find(b => b.windowKey === 'weekly' || b.windowShort === '7d') || null;
+
+            const formatBucketPct = (b) => {
+              if (!b) return '';
+              if (b.percentText && b.percentText !== '未知') return b.percentText;
+              if (b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction))) {
+                return `${Math.round(b.remainingFraction * 100)}%`;
+              }
+              return '—';
+            };
+
+            if (b5h && b7d) {
+              // 若同时存在 5h 与 7d 桶，格式明确显示为 "Hydrogen: 5h 0% / 7d 70%"、"Claude/3P: 5h 100% / 7d 87%"
+              poolSummaries.push(`${pName}: 5h ${formatBucketPct(b5h)} / 7d ${formatBucketPct(b7d)}`);
+            } else if (b5h) {
+              const tag = b5h.windowShort || '5h';
+              poolSummaries.push(`${pName}: ${tag} ${formatBucketPct(b5h)}`);
+            } else if (b7d) {
+              // 若仅存在单一窗口桶（如 Argon 仅有 7d 桶，或 free-tier 仅有 7d 桶），明确带上窗口短标显示为 "Argon: 7d 70%"、"Hydrogen: 7d 100%"
+              const tag = b7d.windowShort || '7d';
+              poolSummaries.push(`${pName}: ${tag} ${formatBucketPct(b7d)}`);
+            } else if (buckets.length === 1 && buckets[0]?.windowShort) {
+              poolSummaries.push(`${pName}: ${buckets[0].windowShort} ${formatBucketPct(buckets[0])}`);
+            } else {
+              // 仅在 bucket 无 windowShort 时回退 p.percentText
+              const pVal = p.percentText && p.percentText !== '未知' ? p.percentText : t('accounts.poolUnknown');
+              poolSummaries.push(`${pName}: ${pVal}`);
+            }
+          }
           const metaRow = document.createElement('div');
           metaRow.className = 'quota-acct-meta';
           const updRaw = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';
@@ -15191,6 +23947,10 @@
   }
   renderQuotaBoard();
 
+  el('btn-ctx-scope-follow')?.addEventListener('click', () => {
+    if (state.pinnedViewRoute) resumeFollowFocusView();
+  });
+
   let quotaTickCounter = 0;
   let hasTriggeredInitialQuotaSync = false;
   function tick() {
@@ -15201,8 +23961,23 @@
     if (!host.isConnected) {
       ensureHostDocked();
     }
+    if (enforceMarketplaceAvoidance()) {
+      if (isAnyPanelOpen()) showPanel('none');
+    }
+    const prevLayout = state.layout;
+    const prevRoute = state.route;
     const id = route();
-    if (id !== state.route) {
+    const nextLayout = state.layout;
+    const layoutChanged = Boolean(nextLayout && nextLayout.layoutKey !== state.lastLayoutKey);
+    if (nextLayout) state.lastLayoutKey = nextLayout.layoutKey;
+    if (prevLayout && nextLayout && prevLayout.panes.length !== nextLayout.panes.length) {
+      layoutMeasurementDirty = true;
+      ensureHostDocked();
+    }
+    if (id !== prevRoute) {
+      if (prevRoute) saveSessionSnapshotToCache(prevRoute);
+      const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
+      const cachedSnap = (sameScreenSwitch && id) ? readSessionSnapshotFromCache(id) : null;
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
@@ -15211,8 +23986,13 @@
       if (state.callRenderTimer) { clearTimeout(state.callRenderTimer); state.callRenderTimer = null; }
       if (state.callEnterAnimTimer) { clearTimeout(state.callEnterAnimTimer); state.callEnterAnimTimer = null; }
       clearLivePendingRequestWait();
-      if (state.sessionCallsMap) state.sessionCallsMap.clear();
+      clearCompactingTransition();
+      if (state.sessionCallsMap) {
+        state.sessionCallsMap.clear();
+        cachedSnap?.callsEntries.forEach(([k, v]) => state.sessionCallsMap.set(k, v));
+      }
       if (state.expandedTurnKeys) state.expandedTurnKeys.clear();
+      if (state.expandedTreeCats) state.expandedTreeCats.clear();
       Object.assign(state, {
         route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
         callsHydrated: false, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
@@ -15221,15 +24001,39 @@
         pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
         historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
         timelineError: '', timelinePageLimit: 10, timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
+        timelineInsightTab: 'turns', timelineDeltaOnly: Boolean(state.timelineDeltaOnly),
+        timelineSortOrder: state.timelineSortOrder || 'newest',
+        contextTrendMode: state.contextTrendMode || 'total',
+        contextTrendGranularity: state.contextTrendGranularity || 'step',
+        selectedTrendCallId: null, lastTrendSeries: null,
+        ctxFocusedTreeCat: null, ctxAutoExpandedAuxRoute: null,
+        timelineFileFilter: 'all', timelineFileQuery: '',
+        timelineCmdFilter: 'all', timelineCmdQuery: '',
         lastTimelineFetchAt: 0, lastTimelineCallSig: '',
-        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
-      });
+        speedBreakdownOpen: false, streamSampleTracker: null, liveSpeed: null, turnState: null, lastSpeedEval: null, speedOverrideForTest: null,
+        pendingCompactForceScan: false, lastCompactForceScanAt: 0, hostContextWindowUsage: null,
+        lastDomCompactingActive: false, lastDomCompactedBannerCount: -1,
+        restoredFromCache: false
+      }, cachedSnap ? { ...cachedSnap.patch, sessionCalls: cachedSnap.patch.sessionCalls.slice(), restoredFromCache: true } : null);
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
       if (lastHistorySync > 0) {
         lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
       }
-      toggle(false); hideContextTooltip(); renderFiles(null); render();
+      const keepAuxOpen = dockPosition === 'aux' && !dockFallbackReason && !el('panel')?.hidden;
+      if (!sameScreenSwitch && !keepAuxOpen) toggle(false);
+      if (keepAuxOpen && activeContextTab === 'session') {
+        state.historyDrawerOpen = true;
+      }
+      hideContextTooltip(); renderFiles(state.scan?.session || null); render();
+      syncAuxContextBar();
+      if (keepAuxOpen && id && activeContextTab === 'session' && !state.timelineLoading) {
+        void fetchSessionTimeline(id, { force: true });
+      }
+    } else if (layoutChanged) {
+      renderConversationScopeUI(true);
+      syncAuxContextBar();
     }
+    if (id && !document.hidden) checkHostDomCompactionSignals();
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
     if (!state.disposed && state.pendingFinalCalls?.size && !state.flushFinalsBusy && Date.now() >= (state.nextFlushRetryAt || 0)) {
@@ -15264,7 +24068,12 @@
     routeHookScheduled = true;
     Promise.resolve().then(() => {
       routeHookScheduled = false;
-      if (!state.disposed && route() !== state.route) tick();
+      if (state.disposed) return;
+      enforceMarketplaceAvoidance();
+      const nextLayout = parseConversationLayout();
+      if (resolveEffectiveRoute(nextLayout, false) !== state.route || nextLayout.layoutKey !== state.lastLayoutKey) {
+        tick();
+      }
     });
   };
   let origPushState = null;
@@ -15359,6 +24168,7 @@
       openPanel,
       activeContextTab,
       isContextSettingsView,
+      pinnedViewRoute: state.pinnedViewRoute || null,
       browsePoolKey: quotaState.browsePoolKey || null,
       scrollTops,
       openDrawers,
@@ -15406,6 +24216,10 @@
     if (saved.browsePoolKey) {
       quotaState.browsePoolKey = saved.browsePoolKey;
     }
+    if (saved.pinnedViewRoute && typeof saved.pinnedViewRoute === 'string') {
+      state.pinnedViewRoute = saved.pinnedViewRoute;
+      lastScopeRenderSig = '';
+    }
     if (saved.openPanel && saved.openPanel !== 'none') {
       showPanel(saved.openPanel);
       if (saved.openPanel === 'context' && saved.activeContextTab) {
@@ -15439,6 +24253,7 @@
   }
 
   globalThis.__AGContextMeter = {
+    buildId: '__AG_RENDER_BUILD_ID__',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -15512,6 +24327,11 @@
     getContextPreferencesState: () => ({
       activeSessionModelKey,
       activeSessionProductKey,
+      activeSessionEffort,
+      activeSessionEffortUnknown,
+      activeSessionModelUnknown,
+      activeSessionModelRole,
+      activeSessionModelLabel,
       selectedEditModelKey,
       selectedProductKey,
       activeContextTab,
@@ -15522,6 +24342,23 @@
       pendingRestartVerification: pendingRestartVerification ? { ...pendingRestartVerification } : null,
       needsRestartAfterApply
     }),
+    extractHostSelectedModelForTest: () => extractHostSelectedModel(),
+    syncContextModelSelectionForTest: (nowMs = Date.now()) => {
+      syncContextModelSelectionFromState();
+      renderCompactSessionCard();
+      const prod = getSelectedProductObj();
+      if (prod) renderModelDetailCard(prod);
+      if (typeof renderQuotaBoard === 'function') renderQuotaBoard(Number.isFinite(nowMs) ? nowMs : Date.now(), { animate: false });
+      return {
+        activeSessionModelKey,
+        activeSessionProductKey,
+        activeSessionEffort,
+        activeSessionEffortUnknown,
+        activeSessionModelUnknown,
+        activeSessionModelRole,
+        activeSessionModelLabel
+      };
+    },
     setContextLatestForTest: (latestObj, configs = [], capabilitiesById = null) => {
       if (capabilitiesById && typeof capabilitiesById === 'object') mergeCapabilitiesMapClient(capabilitiesById);
       if (Array.isArray(configs) && configs.length) state.cascadeModelConfigs = configs;
@@ -15556,6 +24393,10 @@
     getKnownModelProductsForTest: () => getKnownModelProducts(),
     refreshUnlockStatusForTest: () => refreshUnlockStatus(),
     refreshEnhanceStatusForTest: () => refreshEnhanceStatus(),
+    refreshRehydrateStatusForTest: () => refreshRehydrateStatus(),
+    getRehydrateStateForTest: () => ({
+      currentRehydrateStatus: currentRehydrateStatus ? { ...currentRehydrateStatus } : null
+    }),
     getEnhanceStateForTest: () => ({
       currentBrandTitle,
       selectedEnhanceTier,
@@ -15648,14 +24489,64 @@
     refreshQuotaForTest: (force = false, meta = {}) => syncQuotaFromHost(Boolean(force), meta),
     selectQuotaPoolBrowseForTest: (poolKey) => {
       quotaState.browsePoolKey = poolKey || null;
+      if (poolKey) quotaExpandedPoolKeys.add(poolKey);
       renderQuotaBoard();
       return { browsePoolKey: quotaState.browsePoolKey, activeSessionModelKey };
+    },
+    getQuotaPaceStateForTest: (nowMs = Date.now()) => {
+      const view = computeEffectiveQuotaView(nowMs);
+      return {
+        badgeTier: el('badge-quota')?.getAttribute?.('data-quota-pace-tier') || null,
+        badgeDotHidden: Boolean(el('quota-ring-pace-dot')?.hidden),
+        badgeDotCx: el('quota-ring-pace-dot')?.getAttribute?.('cx') || null,
+        badgeDotCy: el('quota-ring-pace-dot')?.getAttribute?.('cy') || null,
+        expandedPoolKeys: Array.from(quotaExpandedPoolKeys),
+        pools: (view.pools || []).map(p => ({
+          poolKey: p.poolKey,
+          compact: el('quota-pools-list')?.children?.find?.(c => c.getAttribute?.('data-pool-key') === p.poolKey)?.getAttribute?.('data-compact') || null,
+          buckets: (p.buckets || []).map(b => ({ bucketId: b.bucketId, windowKey: b.windowKey, pace: b.pace || null }))
+        }))
+      };
+    },
+    getComposerQuotaSummaryStateForTest: (nowMs = Date.now()) => {
+      renderComposerQuotaSummary(computeEffectiveQuotaView(nowMs), nowMs);
+      return {
+        enabled: showComposerQuotaSummary,
+        groupHidden: Boolean(el('csb-group-quota')?.hidden),
+        widthMode: el('composer-status-bar')?.getAttribute?.('data-csb-width') || 'normal',
+        win5hHidden: Boolean(el('csb-quota-5h')?.hidden),
+        win5hSecondary: el('csb-quota-5h')?.getAttribute?.('data-secondary') || 'false',
+        win5hTier: el('csb-quota-5h')?.getAttribute?.('data-pace-tier') || null,
+        win5hText: el('csb-quota-text-5h')?.textContent || '',
+        win5hDotHidden: Boolean(el('csb-quota-dot-5h')?.hidden),
+        win7dHidden: Boolean(el('csb-quota-7d')?.hidden),
+        win7dSecondary: el('csb-quota-7d')?.getAttribute?.('data-secondary') || 'false',
+        win7dTier: el('csb-quota-7d')?.getAttribute?.('data-pace-tier') || null,
+        win7dText: el('csb-quota-text-7d')?.textContent || '',
+        win7dDotHidden: Boolean(el('csb-quota-dot-7d')?.hidden),
+        singleHidden: Boolean(el('csb-quota-single')?.hidden),
+        singleText: el('csb-quota-text-single')?.textContent || '',
+        altWarnHidden: Boolean(el('csb-quota-alt-warn')?.hidden),
+        altWarnText: el('csb-quota-alt-warn')?.textContent || '',
+        altWarnTier: el('csb-quota-alt-warn')?.getAttribute?.('data-pace-tier') || null,
+        moreHidden: Boolean(el('csb-quota-more')?.hidden),
+        moreText: el('csb-quota-more')?.textContent || ''
+      };
+    },
+    setComposerQuotaSummaryEnabledForTest: (enabled) => {
+      showComposerQuotaSummary = Boolean(enabled);
+      const chk = el('chk-show-composer-quota');
+      if (chk) chk.checked = showComposerQuotaSummary;
+      renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
+      return showComposerQuotaSummary;
     },
     showQuotaPanelForTest: (open = true) => {
       showPanel(open ? 'quota' : 'none');
       return !el('panel-quota')?.hidden;
     },
-    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
+    snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, sessionAvgSpeed: getSessionAverageSpeed(state.lastSpeedEval || null), scan: state.scan, compacting: state.compacting, hostContextWindowUsage: state.hostContextWindowUsage, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
+    simulateHostWsMessageForTest: (rawFrame) => handlePassiveHostWsMessage({ data: typeof rawFrame === 'string' ? rawFrame : JSON.stringify(rawFrame) }),
+    checkHostDomCompactionForTest: () => checkHostDomCompactionSignals({ urgent: true }),
     captureHotReloadState,
     verifyHotReloadAndRefreshQuota,
     getBackendStatusForTest: () => ({
@@ -15733,15 +24624,23 @@
       badgeColor: el('speed-badge')?.style?.color || '',
       boltColor: el('badge-speed-icon')?.style?.color || '',
       summaryBoltColor: el('speed-summary-bolt')?.style?.color || '',
+      speedAvgVal: el('speed-avg-val')?.textContent || '',
       speedVal: el('speed-val')?.textContent || '',
       durationVal: el('speed-duration')?.textContent || '',
       ttftVal: el('speed-ttft')?.textContent || '',
       tokensVal: el('speed-tokens')?.textContent || '',
       subLabel: el('speed-sub-label')?.textContent || '',
       takeaway: el('speed-takeaway')?.textContent || '',
+      topSpeedText: el('speed-amount')?.textContent || '',
+      topSpeedPhase: el('badge-speed')?.getAttribute?.('data-speed-phase') || null,
+      topWaitSvgVisible: Boolean(el('badge-speed-wait-svg') && !el('badge-speed-wait-svg').hidden),
       breakdownOpen: state.speedBreakdownOpen,
       lastEval: state.lastSpeedEval
     }),
+    setDockPosition: (mode, opts = {}) => setDockPosition(mode, opts),
+    getDockPosition: () => ({ dockPosition, actualDock: host.getAttribute('data-dock'), fallbackReason: dockFallbackReason }),
+    setQuotaBadgeWindowMode: (mode, opts = {}) => setQuotaBadgeWindowMode(mode, opts),
+    getQuotaBadgeWindowMode: () => quotaBadgeWindowMode,
     getTokenCacheBreakdownForTest: () => ({
       input: el('tcb-input-val')?.textContent || '',
       cacheRead: el('tcb-cache-val')?.textContent || '',
@@ -15757,6 +24656,121 @@
       setScaleMode: (m) => { modelUsageScaleMode = m === 'linear' ? 'linear' : 'mixed'; renderModelUsageView(); },
       setLockedKey: (k) => { modelUsageLockedKey = k || null; renderModelUsageView(); }
     }),
+    getRequestsViewStateForTest: () => {
+      const tbody = el('req-live-tbody');
+      const pTokens = el('panel-tokens');
+      const clsStr = pTokens?.getAttribute?.('class') || '';
+      const rowNodes = Array.from(tbody?.children || []);
+      const readNodeText = (node) => {
+        if (!node) return '';
+        const kids = Array.isArray(node.children) ? node.children : (node.children ? Array.from(node.children) : []);
+        if (kids.length > 0 && !node.textContent) {
+          return kids.map(readNodeText).join('').trim();
+        }
+        return String(node.textContent || '').trim();
+      };
+      return {
+        activeView: activeTokenView,
+        wideClass: Boolean(pTokens?.classList?.contains?.('requests-wide-view') || clsStr.includes('requests-wide-view')),
+        filterStatus: reqLogStatusFilter,
+        summaryText: el('req-live-summary')?.textContent || '',
+        emptyVisible: el('req-live-empty')?.style?.display === 'block',
+        moreVisible: el('req-live-more-wrap')?.style?.display === 'flex',
+        rowCount: rowNodes.length,
+        rows: rowNodes.map(tr => Array.from(tr.children || []).map(readNodeText))
+      };
+    },
+    switchTokenViewForTest: (v) => switchTokenView(v),
+    toggle: (open) => toggle(open),
+    setComposerStateForTest: (customState = {}) => {
+      if (customState.allTurns) state.allTurns = customState.allTurns;
+      if ('sessionTimeline' in customState) state.sessionTimeline = customState.sessionTimeline;
+      if (customState.sessionCalls) {
+        state.sessionCalls = customState.sessionCalls;
+        if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
+        state.sessionCallsMap.clear();
+        for (const c of customState.sessionCalls) {
+          if (c && c.callId) state.sessionCallsMap.set(c.callId, c);
+        }
+      }
+      if (customState.lastSpeedEval) {
+        state.lastSpeedEval = customState.lastSpeedEval;
+        state.speedOverrideForTest = customState.lastSpeedEval;
+      }
+      if (customState.sessionStats) state.sessionStats = customState.sessionStats;
+      renderComposerStatusBar();
+      renderTurnFooterStats();
+    },
+    syncPricingCatalog: opts => triggerSyncPricingCatalog(opts),
+    ensureComposerStatusBarMountedForTest: () => ensureComposerStatusBarMounted(),
+    getComposerStatusBarStateForTest: () => {
+      renderComposerStatusBar();
+      const collectNodeText = (n) => {
+        if (!n) return '';
+        const kids = Array.isArray(n.children) ? n.children : (n.children ? Array.from(n.children) : []);
+        if (kids.length > 0 && !n.textContent) return kids.map(collectNodeText).join(' ').trim();
+        return String(n.textContent || '').trim();
+      };
+      return {
+        speedText: el('csb-speed-text')?.textContent || '',
+        tokensText: el('csb-tokens-text')?.textContent || '',
+        contextText: el('csb-context-text')?.textContent || '',
+        runtimeState: el('csb-group-status')?.getAttribute?.('data-runtime-state') || 'idle',
+        runtimeText: el('csb-runtime-text')?.textContent || '',
+        cardHidden: el('token-five-line-card')?.hidden !== false,
+        cardPinned: tflCardPinned,
+        cardPinText: el('tfl-pin-badge')?.textContent || '',
+        segThreshold: el('tfl-seg-bar')?.getAttribute?.('data-threshold') || 'normal',
+        segLegend: collectNodeText(el('tfl-seg-legend')),
+        runtimeNote: el('tfl-runtime-note')?.textContent || '',
+        cardTotal: el('tfl-val-total')?.textContent || '',
+        cardHit: el('tfl-val-hit')?.textContent || '',
+        cardUncached: el('tfl-val-uncached')?.textContent || '',
+        cardCached: el('tfl-val-cached')?.textContent || '',
+        cardOutput: el('tfl-val-output')?.textContent || ''
+      };
+    },
+    resolveFocusedSessionTargetForTest: () => resolveFocusedSessionTarget(),
+    openDashboardInRightPanelForTest: () => openDashboardInRightPanel(),
+    openStandaloneBrowserPageForTest: () => openStandaloneBrowserPage(),
+    getTurnFooterStatsForTest: () => {
+      const footerNodes = Array.from(document.querySelectorAll?.('.ag-cm-turn-footer') || []);
+      return {
+        enabled: showTurnFooterStats,
+        nodes: footerNodes.map(n => n.textContent || ''),
+        items: footerNodes.map(n => ({
+          text: n.textContent || '',
+          scope: n.getAttribute?.('data-scope') || null,
+          turnKey: n.getAttribute?.('data-turn-key') || null,
+          callId: n.getAttribute?.('data-call-id') || null,
+          title: n.title || ''
+        }))
+      };
+    },
+    getPanelPickerStateForTest: () => {
+      const om = el('overflow-menu');
+      return {
+        open: Boolean(om && !om.hidden),
+        anchorId: activePickerAnchorId,
+        currentTarget: getCurrentPickerTarget(),
+        placement: om?.getAttribute?.('data-placement') || null,
+        items: Array.from(om?.children || []).map(btn => ({
+          id: btn.id || '',
+          target: btn.getAttribute?.('data-picker-target') || '',
+          active: btn.getAttribute?.('data-active') === 'true',
+          hidden: Boolean(btn.hidden)
+        }))
+      };
+    },
+    getQuotaChargeDetailForTest: () => ({
+      playing: quotaBarChargePlaying,
+      detail: quotaLastChargeDetail
+    }),
+    setTurnFooterStatsEnabledForTest: (enabled) => {
+      showTurnFooterStats = Boolean(enabled);
+      renderTurnFooterStats();
+      return showTurnFooterStats;
+    },
     getCumulativeViewStateForTest: () => ({
       summary: _lastCumSummary,
       lockedKey: cumLockedKey,
@@ -15790,11 +24804,104 @@
       autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
       keepaliveStatus: el('keepalive-status-pill')?.textContent || ''
     }),
+    getConversationScopeStateForTest: () => ({
+      layout: state.layout || parseConversationLayout(),
+      activeRoute: state.route,
+      pinnedViewRoute: state.pinnedViewRoute,
+      isFollowingFocus: !state.pinnedViewRoute,
+      badgeScopeTag: el('badge-scope-tag')?.textContent || '',
+      badgeScopeTagHidden: Boolean(el('badge-scope-tag')?.hidden),
+      badgeScopeLocked: el('badge-scope-tag')?.getAttribute?.('data-scope-locked') || null,
+      scopeBarHidden: Boolean(el('ctx-scope-bar')?.hidden),
+      keyScopeChip: el('key-scope-chip')?.textContent || '',
+      keyScopeChipHidden: Boolean(el('key-scope-chip')?.hidden),
+      followLabel: el('ctx-scope-follow-label')?.textContent || '',
+      followAttr: el('btn-ctx-scope-follow')?.getAttribute?.('data-following') || null,
+      pills: Array.from(el('ctx-scope-pills')?.children || []).map(btn => ({
+        id: btn.getAttribute?.('data-scope-id') || '',
+        role: btn.getAttribute?.('data-scope-role') || '',
+        selected: btn.getAttribute?.('aria-selected') === 'true',
+        label: btn.children?.[btn.children.length - 1]?.textContent || btn.textContent || ''
+      })),
+      cachedRoutes: Array.from(sessionSnapshotCache.keys())
+    }),
+    selectConversationScopeForTest: id => selectConversationScopeView(id),
+    resumeFollowFocusForTest: () => resumeFollowFocusView(),
+    findHostTitlebarForTest: () => findHostTitlebar(),
+    getContextTrendStateForTest: () => ({
+      mode: state.contextTrendMode,
+      granularity: state.contextTrendGranularity,
+      selectedTrendCallId: state.selectedTrendCallId,
+      basis: el('ctx-trend-basis-badge')?.getAttribute?.('data-basis') || 'empty',
+      basisText: el('ctx-trend-basis-badge')?.textContent || '',
+      inspectText: el('ctx-trend-inspect')?.textContent || '',
+      truncText: el('ctx-trend-trunc-note')?.textContent || '',
+      series: state.lastTrendSeries || null,
+      pinnedCallId: state.pinnedCallRecord?.callId || null,
+      pinnedCallStepIndex: state.pinnedCallRecord?.stepIndex ?? null,
+      latestDetailOpen: Boolean(state.latestCallDetailOpen),
+      detailGridCells: Array.from(el('latest-call-detail-grid')?.children || []).map(c => ({
+        k: c.children?.[0]?.textContent || '',
+        v: c.children?.[1]?.textContent || ''
+      })),
+      timelineSortOrder: state.timelineSortOrder
+    }),
+    setPanelWidthForTest: (w) => {
+      state.forcedPanelWidthForTest = w == null ? null : Number(w);
+      const tier = syncContextPanelContainerWidthTier();
+      renderContextTrendCard();
+      renderSessionBentoSections();
+      return { width: state.forcedPanelWidthForTest, tier };
+    },
+    jumpToStepOrTurnForTest: (opts) => jumpToStepOrTurn(opts),
+    getSessionDashboardStateForTest: () => ({
+      widthTier: el('panel')?.getAttribute?.('data-ctx-width-tier') || state.ctxWidthTier,
+      ovTitle: el('ctx-ov-title')?.textContent || '',
+      ovModel: el('ctx-ov-model')?.textContent || '',
+      ovCache: el('ctx-ov-cache')?.textContent || '',
+      ovTotal: el('ctx-ov-total')?.textContent || '',
+      pinnedBannerHidden: Boolean(el('ctx-ov-pinned-banner')?.hidden),
+      returnLatestHidden: Boolean(el('btn-ctx-return-latest')?.hidden),
+      subtrackMode: state.ctxSubtrackMode || (el('key-seg-track')?.hidden === false ? 'cache' : 'comp'),
+      subtrackCompHidden: Boolean(el('ctx-subtrack-comp')?.hidden),
+      keySegTrackHidden: Boolean(el('key-seg-track')?.hidden),
+      zerosExpanded: Boolean(state.ctxZerosExpanded),
+      mainSegmentsCount: el('ctx-main-segments')?.children?.length || 0,
+      unaccountedHidden: Boolean(el('ctx-main-unaccounted')?.hidden),
+      treeMode: state.ctxTreeMode,
+      compareBase: state.ctxCompareBase,
+      treeNodes: Array.from(el('ctx-composition-tree-list')?.children || []).map(n => n.getAttribute?.('data-tree-cat')).filter(Boolean),
+      auditPills: Array.from(el('ctx-audit-quick-pills')?.children || []).map(b => b.textContent),
+      marketplaceActive: host.getAttribute?.('data-marketplace-active') === 'true'
+    }),
+    getDefaultViewPrefsStateForTest: () => ({
+      current: collectCurrentViewPrefs(),
+      defaultViewPrefs: { ...defaultViewPrefs },
+      reqLogSortBy
+    }),
+    saveCurrentViewAsDefaultForTest: (btnId) => saveCurrentViewAsDefault(btnId || 'btn-save-default-view-ctx'),
+    getAuxDockStateForTest: () => ({
+      dockPosition,
+      fallbackReason: dockFallbackReason,
+      actualDock: host.getAttribute('data-dock'),
+      panelHidden: Boolean(el('panel')?.hidden),
+      auxBarHidden: Boolean(el('dock-aux-context-bar')?.hidden),
+      auxSessionLabel: el('dock-aux-session-label')?.textContent || '',
+      lastPreciseDashboardUrl,
+      feedbackText: el('dock-open-feedback')?.textContent || '',
+      fallbackActionsHidden: Boolean(el('dock-fallback-actions')?.hidden),
+      auxContainerFound: Boolean(findAuxSidebarContainer())
+    }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
+      cancelClosePanelPicker();
+      clearBadgeLongPress();
+      for (const tm of saveDefaultFeedbackTimers.values()) clearTimeout(tm);
+      saveDefaultFeedbackTimers.clear();
       earlyForceDispose();
       clearQuotaTimers();
       clearInterval(timer);
+      sessionSnapshotCache.clear();
       clearLivePendingRequestWait();
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
@@ -15819,20 +24926,41 @@
         window.removeEventListener?.('mouseup', onPointerUp);
       } catch { }
       document.removeEventListener('click', outside);
-      document.removeEventListener('keydown', escape);
+      document.removeEventListener('keydown', escape, true);
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
+      composerSummary?.remove?.();
       host.remove();
     }
   };
   syncPanelLanguageButtons(currentPanelLanguage);
+  if (el('v-tokens')) el('v-tokens').textContent = formatDisplayVersion(METER_RENDERER_VERSION);
+  syncDockPositionUi();
+  syncQuotaWindowModeUi();
+  syncAllViewPrefControlsUi();
+  if (el('chk-show-composer-quota')) el('chk-show-composer-quota').checked = showComposerQuotaSummary;
   applyStaticPanelTranslations(shadow);
+  if (composerSummary && composerSummary.parentElement !== shadow) {
+    applyStaticPanelTranslations(composerSummary);
+  }
+  renderComposerStatusBar();
+  const onComposerResize = () => {
+    syncComposerStatusBarWidth();
+    if (typeof renderTurnFooterStats === 'function') renderTurnFooterStats();
+  };
+  try {
+    if (typeof window?.addEventListener === 'function') {
+      window.addEventListener('resize', onComposerResize);
+      activeDisposers.add(() => window?.removeEventListener?.('resize', onComposerResize));
+    }
+  } catch { }
   refreshRegionPresetSelectOptions();
   renderEnhanceSectionUI();
   if (inheritedHotReloadState) {
     applyInheritedHotReloadState(inheritedHotReloadState);
   }
   startupRestorePromise = restoreSettingsFromHost().finally(() => {
+    hasCompletedStartupRestore = true;
     startupRestorePromise = null;
     if (inheritedHotReloadState) {
       applyInheritedHotReloadState(inheritedHotReloadState);
@@ -15844,4 +24972,3 @@
   render();
   tick();
 })();
-

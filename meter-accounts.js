@@ -191,7 +191,8 @@ const ANTIGRAVITY_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/cclog',
-  'https://www.googleapis.com/auth/experimentsandconfigs'
+  'https://www.googleapis.com/auth/experimentsandconfigs',
+  'https://www.googleapis.com/auth/aicode'
 ];
 const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/auth';
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -1356,95 +1357,140 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   const proxyConfigOptions = options.proxyConfigOptions || {};
   const quotaStage = options.stage || 'quota_fetch';
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
-  const baseUrl = options.useDaily ? CLOUDCODE_DAILY_URL : CLOUDCODE_PROD_URL;
-  let targetHost = 'cloudcode-pa.googleapis.com';
-  try { targetHost = new URL(baseUrl).hostname; } catch { }
-  const ua = `antigravity/2.32.1 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
+  const ua = `antigravity/2.33.0 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     'User-Agent': ua,
     'Content-Type': 'application/json'
   };
 
-  let projectId = options.projectId || '';
-  let tierId = null;
-  try {
-    const loadRes = await fetchJsonWithProxy(`${baseUrl}/v1internal:loadCodeAssist`, {
-      method: 'POST',
-      stage: quotaStage,
-      headers,
-      body: JSON.stringify({
-        metadata: {
-          ideName: 'antigravity',
-          ideType: 'ANTIGRAVITY',
-          pluginType: 'GEMINI',
-          updateChannel: 'stable'
-        },
-        mode: 'FULL_ELIGIBILITY_CHECK',
-        ...(projectId ? { cloudaicompanionProject: projectId } : {})
-      })
-    }, customFetch, proxyConfigOptions);
-    if (loadRes.ok && loadRes.json) {
-      if (typeof loadRes.json.cloudaicompanionProject === 'string' && loadRes.json.cloudaicompanionProject) {
-        projectId = loadRes.json.cloudaicompanionProject;
-      } else if (loadRes.json.cloudaicompanionProject?.id) {
-        projectId = loadRes.json.cloudaicompanionProject.id;
+  const initialBaseUrl = options.baseUrl || (options.useDaily === false ? CLOUDCODE_PROD_URL : CLOUDCODE_DAILY_URL);
+  const allowFallback = !options.baseUrl && options.useDaily !== false && initialBaseUrl !== CLOUDCODE_PROD_URL;
+
+  const tryRequest = async (baseUrl) => {
+    let targetHost = 'cloudcode-pa.googleapis.com';
+    try { targetHost = new URL(baseUrl).hostname; } catch { }
+    let projectId = options.projectId || '';
+    let tierId = null;
+    try {
+      const loadRes = await fetchJsonWithProxy(`${baseUrl}/v1internal:loadCodeAssist`, {
+        method: 'POST',
+        stage: quotaStage,
+        headers,
+        body: JSON.stringify({
+          metadata: {
+            ideName: 'antigravity',
+            ideType: 'ANTIGRAVITY',
+            pluginType: 'GEMINI',
+            updateChannel: 'stable'
+          },
+          mode: 'FULL_ELIGIBILITY_CHECK',
+          ...(projectId ? { cloudaicompanionProject: projectId } : {})
+        })
+      }, customFetch, proxyConfigOptions);
+      if (loadRes.ok && loadRes.json) {
+        if (typeof loadRes.json.cloudaicompanionProject === 'string' && loadRes.json.cloudaicompanionProject) {
+          projectId = loadRes.json.cloudaicompanionProject;
+        } else if (loadRes.json.cloudaicompanionProject?.id) {
+          projectId = loadRes.json.cloudaicompanionProject.id;
+        }
+        tierId = loadRes.json.paidTier?.id || loadRes.json.currentTier?.id || null;
+      } else if (loadRes.status === 401 || loadRes.status === 403) {
+        const err = attachStageErrorMeta(
+          new Error(`CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
+          quotaStage,
+          targetHost,
+          loadRes.status,
+          loadRes.diagnostics
+        );
+        err.isAuthInvalid = true;
+        throw err;
       }
-      tierId = loadRes.json.paidTier?.id || loadRes.json.currentTier?.id || null;
-    } else if (loadRes.status === 401 || loadRes.status === 403) {
+    } catch (e) {
+      if (e.isAuthInvalid) throw e;
+    }
+
+    const payload = projectId ? { project: projectId } : {};
+    let availRes;
+    let summaryRes;
+    try {
+      [availRes, summaryRes] = await Promise.all([
+        fetchJsonWithProxy(`${baseUrl}/v1internal:fetchAvailableModels`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions),
+        fetchJsonWithProxy(`${baseUrl}/v1internal:retrieveUserQuotaSummary`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions)
+      ]);
+    } catch (e) {
+      const diag = e?.diagnostics || {};
+      throw attachStageErrorMeta(
+        new Error(`CloudCode 配额请求网络失败 (${diag.targetHost || targetHost}): ${sanitizeDiagnosticErrorText(e)}`),
+        quotaStage,
+        diag.targetHost || targetHost,
+        null,
+        diag
+      );
+    }
+
+    if (!availRes.ok && !summaryRes.ok) {
+      const st = availRes.status || summaryRes.status;
       const err = attachStageErrorMeta(
-        new Error(`CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
+        new Error(`CloudCode 配额请求失败 (HTTP ${st})`),
         quotaStage,
         targetHost,
-        loadRes.status,
-        loadRes.diagnostics
+        st,
+        availRes.diagnostics || summaryRes.diagnostics
       );
-      err.isAuthInvalid = true;
+      if (st === 401 || st === 403) err.isAuthInvalid = true;
       throw err;
     }
-  } catch (e) {
-    if (e.isAuthInvalid) throw e;
-  }
 
-  const payload = projectId ? { project: projectId } : {};
-  let availRes;
-  let summaryRes;
+    return { projectId, tierId, availRes, summaryRes, targetHost };
+  };
+
+  let reqRes;
   try {
-    [availRes, summaryRes] = await Promise.all([
-      fetchJsonWithProxy(`${baseUrl}/v1internal:fetchAvailableModels`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions),
-      fetchJsonWithProxy(`${baseUrl}/v1internal:retrieveUserQuotaSummary`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions)
-    ]);
-  } catch (e) {
-    const diag = e?.diagnostics || {};
-    throw attachStageErrorMeta(
-      new Error(`CloudCode 配额请求网络失败 (${diag.targetHost || targetHost}): ${sanitizeDiagnosticErrorText(e)}`),
-      quotaStage,
-      diag.targetHost || targetHost,
-      null,
-      diag
-    );
+    reqRes = await tryRequest(initialBaseUrl);
+  } catch (err) {
+    if (err.isAuthInvalid || !allowFallback) throw err;
+    reqRes = await tryRequest(CLOUDCODE_PROD_URL);
   }
 
-  if (!availRes.ok && !summaryRes.ok) {
-    const st = availRes.status || summaryRes.status;
-    const err = attachStageErrorMeta(
-      new Error(`CloudCode 配额请求失败 (HTTP ${st})`),
-      quotaStage,
-      targetHost,
-      st,
-      availRes.diagnostics || summaryRes.diagnostics
-    );
-    if (st === 401 || st === 403) err.isAuthInvalid = true;
-    throw err;
-  }
-
+  const { projectId, tierId, availRes, summaryRes } = reqRes;
   const modelsObj = availRes.json?.models && typeof availRes.json.models === 'object' ? availRes.json.models : {};
-  const clientModelConfigs = Object.entries(modelsObj).map(([k, v]) => ({
-    modelId: k,
-    label: v.displayName || k,
-    modelOrAlias: { model: v.model || k },
-    quotaInfo: v.quotaInfo || null
-  }));
+  const agentSorts = Array.isArray(availRes.json?.agentModelSorts) && availRes.json.agentModelSorts.length > 0
+    ? new Set(availRes.json.agentModelSorts.map(s => String(s).trim().toLowerCase()))
+    : null;
+  const CORE_POOLS = new Set(['shared_gemini_main', 'shared_3p_pool', 'shared_gemini_argon', 'shared_gemini_carbon']);
+
+  const clientModelConfigs = [];
+  for (const [k, v] of Object.entries(modelsObj)) {
+    if (!v || typeof v !== 'object') continue;
+    if (v.isInternal === true) continue;
+    const mKey = String(k || '').trim().toLowerCase();
+    const mModel = String(v.model || '').trim().toLowerCase();
+    if ((mKey.startsWith('chat_') && /^chat_\d+$/.test(mKey)) || (mModel.startsWith('chat_') && /^chat_\d+$/.test(mModel))) {
+      continue;
+    }
+    if (mKey.startsWith('tab_') || mModel.startsWith('tab_')) {
+      continue;
+    }
+
+    const cfg = {
+      modelId: k,
+      label: v.displayName || k,
+      modelOrAlias: { model: v.model || k },
+      quotaInfo: v.quotaInfo || null
+    };
+
+    const poolKey = getSharedQuotaGroupKey(cfg);
+    if (!CORE_POOLS.has(poolKey)) {
+      continue;
+    }
+    if (agentSorts && !agentSorts.has(mKey) && !agentSorts.has(mModel) && !agentSorts.has(poolKey)) {
+      // 若有显式 agentModelSorts 且不在核心列表内则过滤
+    }
+
+    clientModelConfigs.push(cfg);
+  }
+
   const quotaSummaryData = summaryRes.json?.response || summaryRes.json || null;
   const userStatusCompat = {
     userStatus: {
@@ -1463,6 +1509,7 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   return {
     projectId: projectId || null,
     tierId,
+    tierName: snapshot?.planStatus?.tierName || tierId || null,
     snapshot,
     fetchedAtMs: nowMs
   };
@@ -1654,6 +1701,7 @@ function createAccountsManager(options = {}) {
       authInvalid: Boolean(rec.authInvalid),
       authError: rec.authError || null,
       tierId: rec.tierId || null,
+      tierName: rec.tierName || rec.quotaSnapshot?.planStatus?.tierName || null,
       projectId: rec.projectId || null,
       quotaSnapshot: rec.quotaSnapshot || null,
       lastQuotaUpdatedAtMs: rec.lastQuotaUpdatedAtMs || null,
@@ -2033,7 +2081,7 @@ function createAccountsManager(options = {}) {
               response_type: 'code',
               scope: ANTIGRAVITY_OAUTH_SCOPES.join(' '),
               access_type: 'offline',
-              prompt: 'consent',
+              prompt: 'select_account consent',
               state: stateStr
             });
             const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
@@ -2493,6 +2541,7 @@ function createAccountsManager(options = {}) {
 
       targetRec.projectId = quotaData.projectId ?? targetRec.projectId;
       targetRec.tierId = quotaData.tierId ?? targetRec.tierId;
+      targetRec.tierName = quotaData.tierName || quotaData.snapshot?.planStatus?.tierName || targetRec.tierName || null;
       targetRec.quotaSnapshot = quotaData.snapshot;
       targetRec.lastQuotaUpdatedAtMs = quotaData.fetchedAtMs || nowMs;
       targetRec.lastQuotaError = null;
@@ -3251,37 +3300,26 @@ function defaultIsPidAlive(pid) {
  * 仅在主进程无法通过活跃窗口 webContents 读取 URL 或旧端口失联时使用，不依赖 CDP / DevToolsActivePort。
  */
 function discoverDaemonHubOrigins(opts = {}) {
-  const daemonDir = opts.daemonDir || path.join(opts.homeDir || os.homedir(), '.gemini', 'antigravity', 'daemon');
-  const isPidAlive = typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive;
-  const out = [];
   try {
-    if (!fs.existsSync(daemonDir)) return out;
-    const files = fs.readdirSync(daemonDir);
-    for (const name of files) {
-      if (!/^hub_.*\.json$/i.test(name)) continue;
-      const filePath = path.join(daemonDir, name);
-      try {
-        const st = fs.statSync(filePath);
-        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        const pid = Number(raw?.pid);
-        const httpsPort = Number(raw?.httpsPort);
-        const csrfToken = typeof raw?.csrfToken === 'string' ? raw.csrfToken.trim() : '';
-        if (!Number.isInteger(httpsPort) || httpsPort < 1 || httpsPort > 65535) continue;
-        if (!csrfToken) continue;
-        if (!isPidAlive(pid)) continue;
-        out.push({
-          origin: `https://127.0.0.1:${httpsPort}`,
-          httpsPort,
-          csrfToken,
-          pid,
-          filePath,
-          mtimeMs: Number(st.mtimeMs) || 0
-        });
-      } catch { }
-    }
-  } catch { }
-  out.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (b.httpsPort - a.httpsPort));
-  return out;
+    const { discoverLiveDaemonHubs } = require('./local-api');
+    const hubs = discoverLiveDaemonHubs({
+      ...opts,
+      allowDaemonFallback: true,
+      isPidAlive: typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive
+    });
+    return hubs
+      .filter(h => h && h.httpsOrigin && h.httpsPort)
+      .map(h => ({
+        origin: h.httpsOrigin,
+        httpsPort: h.httpsPort,
+        csrfToken: h.csrfToken,
+        pid: h.pid,
+        filePath: h.filePath || null,
+        mtimeMs: h.mtimeMs
+      }));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -3338,6 +3376,7 @@ function requestGetUserStatusDirect(origin, csrfToken, timeoutMs = 4000) {
 }
 
 let sharedAccountsMgr = null;
+let sharedMgrStateDir = null;
 const sharedMgrRuntime = {
   currentOrigin: '',
   getLiveOrigins: null,
@@ -3373,7 +3412,9 @@ function getSharedAccountsManager(opts = {}) {
     }
   };
 
-  if (!sharedAccountsMgr || opts.forceNew) {
+  const stateDirDiffers = Boolean(opts.stateDir && opts.stateDir !== sharedMgrStateDir);
+  if (!sharedAccountsMgr || opts.forceNew || stateDirDiffers) {
+    if (!opts.forceNew && opts.stateDir) sharedMgrStateDir = opts.stateDir;
     const collector = opts.collector || require('./meter-collector');
     const localRuntime = opts.forceNew
       ? {
@@ -3574,5 +3615,9 @@ module.exports = {
   createDefaultSystemCredentialStore,
   createAccountsManager,
   getSharedAccountsManager,
-  dispatchAccountsAction
+  dispatchAccountsAction,
+  fetchAccountQuotaViaCloudCode,
+  CLOUDCODE_DAILY_URL,
+  CLOUDCODE_PROD_URL,
+  ANTIGRAVITY_OAUTH_SCOPES
 };

@@ -14,12 +14,13 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
-const { getStateDir } = require('./asar-engine');
+const { getStateDir, isIsolatedTestPath } = require('./asar-engine');
 const { safeWriteJsonSync } = require('./meter-storage');
 const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
 const SCHEMA_VERSION = '0.8.8';
-const FALLBACK_PROJECT_VERSION = '0.8.8';
+const FALLBACK_PROJECT_VERSION = '0.9.0';
+const FALLBACK_DISPLAY_VERSION = '0.9.0';
 
 function resolveProjectVersion() {
   for (const pkgPath of [
@@ -38,12 +39,30 @@ function resolveProjectVersion() {
           return parsed.version.trim();
         }
       }
-    } catch {}
+    } catch { }
   }
   return FALLBACK_PROJECT_VERSION;
 }
 
+function resolveDisplayVersion() {
+  for (const pkgPath of [
+    path.join(__dirname, 'package.json'),
+    path.join(__dirname, '..', 'package.json')
+  ]) {
+    try {
+      if (fs.existsSync(pkgPath)) {
+        const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (parsed && parsed.name === 'antigravity-context-viewer' && typeof parsed.displayVersion === 'string' && parsed.displayVersion.trim()) {
+          return parsed.displayVersion.trim();
+        }
+      }
+    } catch { }
+  }
+  return FALLBACK_DISPLAY_VERSION;
+}
+
 const PROJECT_VERSION = resolveProjectVersion();
+const DISPLAY_VERSION = resolveDisplayVersion();
 
 const DEFAULT_CONFIG = {
   schemaVersion: SCHEMA_VERSION,
@@ -69,6 +88,16 @@ const DEFAULT_CONFIG = {
       chineseTitle: null,
       lastAppliedAt: null,
       targetBuilds: {}
+    },
+    rehydrate: {
+      enabled: false,
+      managed: false,
+      baselineCaptured: false,
+      hadPreexistingHook: false,
+      preexistingHook: null,
+      hadPreexistingScript: false,
+      preexistingScriptBackupPath: null,
+      lastUpdated: null
     }
   }
 };
@@ -103,7 +132,9 @@ function getModulesConfigPath(options = {}) {
  * 迁移旧独立版配置（识别已有独立版的机器状态，避免静默改变用户偏好）
  */
 function detectAndMigrateLegacyConfigs(options = {}) {
-  const migrations = [];
+  if (options && options.allowLegacyMigration === false) {
+    return { proxy: null, chinese: null };
+  }
   const home = options.homeDir || os.homedir();
   const platform = options.platform || process.platform;
   const localApp = platform === 'win32'
@@ -111,6 +142,20 @@ function detectAndMigrateLegacyConfigs(options = {}) {
     : platform === 'darwin'
       ? path.join(home, 'Library', 'Application Support')
       : (process.env.XDG_STATE_HOME || path.join(home, '.local', 'state'));
+
+  // 隔离 stateDir 且未显式指定 localAppData/homeDir 时，禁止误扫宿主机真实旧配置
+  if (
+    options &&
+    typeof options.stateDir === 'string' &&
+    options.stateDir.trim() &&
+    options.localAppData === undefined &&
+    options.homeDir === undefined &&
+    options.allowLegacyMigration !== true &&
+    isIsolatedTestPath(options.stateDir) &&
+    !isIsolatedTestPath(localApp)
+  ) {
+    return { proxy: null, chinese: null };
+  }
 
   // 1. 检查独立版 AntigravityProxyNoTun 配置
   const legacyProxyPaths = [
@@ -124,31 +169,43 @@ function detectAndMigrateLegacyConfigs(options = {}) {
         const raw = JSON.parse(fs.readFileSync(lp, 'utf8'));
         if (raw.proxyUrl || raw.httpProxy) {
           legacyProxyFound = {
-            enabled: raw.enabled !== false,
+            enabled: raw.enabled === true,
             proxyUrl: raw.proxyUrl || raw.httpProxy || 'http://127.0.0.1:7897',
             bypassList: raw.bypassList || raw.noProxy || DEFAULT_CONFIG.modules.proxy.bypassList,
             source: lp
           };
           break;
         }
-      } catch {}
+      } catch { }
     }
   }
 
-  // 2. 检查独立版 AntigravityChinese 安装痕迹
-  const legacyChinesePaths = [
-    path.join(localApp, 'AntigravityChinese', 'installation.json'),
-    path.join(localApp, 'AntigravityChinese', 'config.json')
-  ];
+  // 2. 检查独立版 AntigravityChinese 配置与明确开启状态（仅残留目录或 enabled!==true 绝不默认开启）
+  const legacyZhConfigPath = path.join(localApp, 'AntigravityChinese', 'config.json');
+  const legacyZhInstallPath = path.join(localApp, 'AntigravityChinese', 'installation.json');
   let legacyChineseFound = null;
-  for (const lcp of legacyChinesePaths) {
-    if (fs.existsSync(lcp)) {
-      legacyChineseFound = {
-        detected: true,
-        source: lcp
-      };
-      break;
-    }
+  if (fs.existsSync(legacyZhConfigPath)) {
+    try {
+      const rawZh = JSON.parse(fs.readFileSync(legacyZhConfigPath, 'utf8'));
+      const langLower = String(rawZh?.language || '').trim().toLowerCase();
+      if (rawZh && rawZh.enabled === true && langLower !== 'en') {
+        legacyChineseFound = {
+          detected: true,
+          source: legacyZhConfigPath
+        };
+      }
+    } catch { }
+  } else if (fs.existsSync(legacyZhInstallPath)) {
+    try {
+      const rawInst = JSON.parse(fs.readFileSync(legacyZhInstallPath, 'utf8'));
+      const langLower = String(rawInst?.language || '').trim().toLowerCase();
+      if (rawInst && rawInst.enabled === true && langLower !== 'en') {
+        legacyChineseFound = {
+          detected: true,
+          source: legacyZhInstallPath
+        };
+      }
+    } catch { }
   }
 
   return {
@@ -165,9 +222,14 @@ function validateModulesSchema(parsed) {
   if (!isPlainObject(parsed)) return { ok: false, error: '配置文件根节点必须是 JSON 对象' };
   if (!isPlainObject(parsed.modules)) return { ok: false, error: '配置文件缺少有效的 modules 对象' };
   const mods = parsed.modules;
-  for (const key of ['meter', 'chinese', 'proxy', 'enhance']) {
+  for (const key of ['meter', 'chinese', 'proxy', 'enhance', 'rehydrate']) {
     if (mods[key] !== undefined && !isPlainObject(mods[key])) {
       return { ok: false, error: `配置文件中 modules.${key} 字段格式非法` };
+    }
+  }
+  if (mods.rehydrate) {
+    if (mods.rehydrate.enabled !== undefined && typeof mods.rehydrate.enabled !== 'boolean') {
+      return { ok: false, error: '配置文件中 modules.rehydrate.enabled 必须为布尔值' };
     }
   }
   if (mods.proxy) {
@@ -222,13 +284,19 @@ function loadModulesConfig(options = {}) {
       }
 
       current.modules.meter = Object.assign({}, DEFAULT_CONFIG.modules.meter, parsed.modules.meter || {});
-      current.modules.chinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, parsed.modules.chinese || {});
-      current.modules.chinese.language = normalizeClientLanguage(
-        parsed.modules.chinese?.language,
-        current.modules.chinese.enabled === true
-      );
-      current.modules.chinese.brandTitle = normalizeBrandTitle(parsed.modules.chinese?.brandTitle);
-      current.modules.chinese.enabled = current.modules.chinese.language === 'zh-CN';
+      const rawZh = isPlainObject(parsed.modules.chinese) ? parsed.modules.chinese : {};
+      current.modules.chinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, rawZh);
+      if (rawZh.enabled === false) {
+        current.modules.chinese.enabled = false;
+        current.modules.chinese.language = 'en';
+      } else {
+        const explicitEnabled = rawZh.enabled === true;
+        current.modules.chinese.language = explicitEnabled
+          ? normalizeClientLanguage(rawZh.language, true)
+          : 'en';
+        current.modules.chinese.enabled = explicitEnabled && current.modules.chinese.language === 'zh-CN';
+      }
+      current.modules.chinese.brandTitle = normalizeBrandTitle(rawZh.brandTitle);
       current.modules.proxy = Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules.proxy || {});
       current.modules.enhance = Object.assign(
         {},
@@ -237,6 +305,11 @@ function loadModulesConfig(options = {}) {
         {
           targetBuilds: Object.assign({}, parsed.modules.enhance?.targetBuilds || {})
         }
+      );
+      current.modules.rehydrate = Object.assign(
+        {},
+        DEFAULT_CONFIG.modules.rehydrate,
+        parsed.modules.rehydrate || {}
       );
       return current;
     } catch (e) {
@@ -284,7 +357,7 @@ function saveModulesConfig(cfg, options = {}) {
       try {
         const bakPath = `${cfgPath}.corrupt.${Date.now()}.bak`;
         fs.copyFileSync(cfgPath, bakPath);
-      } catch {}
+      } catch { }
     }
   }
   const res = safeWriteJsonSync(cfgPath, cfg, {
@@ -306,7 +379,7 @@ function testSocks5Proxy(host, port, targetHost = null, targetPort = 80, timeout
     const done = (ok, detail = null) => {
       if (settled) return;
       settled = true;
-      try { sock.destroy(); } catch {}
+      try { sock.destroy(); } catch { }
       resolve({ ok, detail });
     };
     const timer = setTimeout(() => done(false, 'timeout'), timeoutMs);
@@ -424,7 +497,7 @@ async function testProxyHealth(proxyUrlStr) {
           timeout: 2500
         });
         req.on('connect', (_res, socket) => {
-          try { socket?.destroy(); } catch {}
+          try { socket?.destroy(); } catch { }
           req.destroy();
           finish(true);
         });
@@ -500,7 +573,7 @@ function acquireFileLock(targetPath, timeoutMs = 6000) {
       return {
         lockFile,
         release: () => {
-          try { fs.unlinkSync(lockFile); } catch {}
+          try { fs.unlinkSync(lockFile); } catch { }
         }
       };
     } catch (e) {
@@ -518,9 +591,9 @@ function acquireFileLock(targetPath, timeoutMs = 6000) {
             continue;
           }
         }
-      } catch {}
+      } catch { }
       const endWait = Date.now() + 50;
-      while (Date.now() < endWait) {} // 短暂自旋避让
+      while (Date.now() < endWait) { } // 短暂自旋避让
     }
   }
 }
@@ -543,7 +616,7 @@ function inspectDiskModules(customPath = null, options = {}) {
   const { TAGS } = require('./modular-installer');
   const rawFs = typeof getRawFs === 'function' ? getRawFs() : fs;
   let asarPath = null;
-  try { asarPath = findAsarPath(customPath); } catch {}
+  try { asarPath = findAsarPath(customPath); } catch { }
   if ((!asarPath || !rawFs.existsSync(asarPath)) && !customPath) {
     try {
       const manifestPath = path.join(resolveModulesStateDir(options), 'installation.json');
@@ -554,7 +627,7 @@ function inspectDiskModules(customPath = null, options = {}) {
           asarPath = recPath.trim();
         }
       }
-    } catch {}
+    } catch { }
   }
   if (!asarPath || !rawFs.existsSync(asarPath)) {
     return {
@@ -584,7 +657,7 @@ function inspectDiskModules(customPath = null, options = {}) {
       if (hit && hit.statSig === statSig) {
         return { ...hit.result };
       }
-    } catch {}
+    } catch { }
   }
 
   let utilsStr = '';
@@ -653,7 +726,10 @@ function inspectDiskModules(customPath = null, options = {}) {
     // 检查字典与运行时代码完整性
     const hasDictData = preloadStr.includes('__AGY_I18N_DATA__') && preloadStr.includes('_dictData');
     const hasRuntimeEngine = preloadStr.includes('createI18nEngine') || preloadStr.includes('translateSingleUnit') || preloadStr.includes('MutationObserver');
-    const hasGateLogic = preloadStr.includes('chinese.enabled === false') && preloadStr.includes('modules.json');
+    const hasGateLogic = (
+      preloadStr.includes('chinese.enabled === false')
+      || (preloadStr.includes('_ch.enabled === true') && preloadStr.includes('!_i18nConfig.enabled'))
+    ) && preloadStr.includes('modules.json');
 
     // 检查字典是否包含有效条目（防止被值内的 `};` 提前截断而误判空字典）
     const dictStartIdx = preloadStr.indexOf('_dictData');
@@ -742,7 +818,7 @@ function getHostCoreBuildId(baseDir = null) {
   try {
     const root = baseDir || __dirname;
     const h = crypto.createHash('sha256');
-    for (const f of ['cli.js', 'install.js', 'restore.js', 'live-host.js', 'local-api.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-context-unlock.js', 'meter-enhance.js', 'macos-binary-utils.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+    for (const f of ['cli.js', 'install.js', 'restore.js', 'live-host.js', 'host-recovery.js', 'local-api.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-context-unlock.js', 'meter-enhance.js', 'macos-binary-utils.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
       const p = path.join(root, f);
       if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
     }
@@ -755,6 +831,7 @@ function getHostCoreBuildId(baseDir = null) {
 module.exports = {
   SCHEMA_VERSION,
   PROJECT_VERSION,
+  DISPLAY_VERSION,
   DEFAULT_CONFIG,
   normalizeBrandTitle,
   normalizeClientLanguage,

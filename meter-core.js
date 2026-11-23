@@ -10,12 +10,126 @@
     return Number.isFinite(num) && num >= 0 ? num : null;
   }
 
-  function getModelPoolKey(raw) {
-    if (!raw) return 'unknown';
-    const text = typeof raw === 'object'
-      ? [raw.modelId, raw.model, raw.label, raw.modelDisplayName, raw.modelOrAlias?.model, raw.poolKey].filter(Boolean).join(' ')
-      : String(raw);
-    const s = String(text || '').toLowerCase().trim();
+  const MODEL_USAGE_ID_FALLBACK_LABELS = {
+    'gemini-flash-worker-agy': 'Gemini 4 Hydrogen (Orchestrator)',
+    'model_placeholder_m669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'placeholder-m669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'm669': 'Gemini 4 Hydrogen (Orchestrator)',
+    'model_placeholder_m667': 'Orchestrator (Carbon)',
+    'placeholder-m667': 'Orchestrator (Carbon)',
+    'm667': 'Orchestrator (Carbon)',
+    'model_placeholder_m681': 'Orchestrator (Argon)',
+    'placeholder-m681': 'Orchestrator (Argon)',
+    'm681': 'Orchestrator (Argon)',
+    'model_placeholder_m668': 'Orchestrator (Argon)',
+    'placeholder-m668': 'Orchestrator (Argon)',
+    'm668': 'Orchestrator (Argon)',
+    'model_placeholder_m670': 'Gemini 4 Carbon',
+    'placeholder-m670': 'Gemini 4 Carbon',
+    'm670': 'Gemini 4 Carbon',
+    'gemini-4-hydrogen-sonar': 'Gemini 4 Hydrogen',
+    'model_placeholder_m578': 'Gemini 4 Hydrogen',
+    'm578': 'Gemini 4 Hydrogen',
+    'gemini-4-hydrogen-tiered-high': 'Gemini 4 Hydrogen (High)',
+    'model_placeholder_m530': 'Gemini 4 Hydrogen (High)',
+    'm530': 'Gemini 4 Hydrogen (High)',
+    'gemini-4-hydrogen-tiered-xhigh': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m531': 'Gemini 4 Hydrogen (XHigh)',
+    'm531': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m525': 'Gemini 4 Hydrogen (High)',
+    'm525': 'Gemini 4 Hydrogen (High)',
+    'model_placeholder_m526': 'Gemini 4 Hydrogen (Medium)',
+    'm526': 'Gemini 4 Hydrogen (Medium)',
+    'model_placeholder_m527': 'Gemini 4 Hydrogen (Low)',
+    'm527': 'Gemini 4 Hydrogen (Low)',
+    'model_placeholder_m528': 'Gemini 4 Hydrogen (XHigh)',
+    'm528': 'Gemini 4 Hydrogen (XHigh)',
+    'model_placeholder_m532': 'Gemini 4 Neon (High)',
+    'placeholder-m532': 'Gemini 4 Neon (High)',
+    'm532': 'Gemini 4 Neon (High)',
+    'model_placeholder_m533': 'Gemini 4 Neon (Medium)',
+    'placeholder-m533': 'Gemini 4 Neon (Medium)',
+    'm533': 'Gemini 4 Neon (Medium)',
+    'model_placeholder_m534': 'Gemini 4 Neon (Low)',
+    'placeholder-m534': 'Gemini 4 Neon (Low)',
+    'm534': 'Gemini 4 Neon (Low)',
+    'model_placeholder_m535': 'Gemini 4 Neon (XHigh)',
+    'placeholder-m535': 'Gemini 4 Neon (XHigh)',
+    'm535': 'Gemini 4 Neon (XHigh)',
+    'model_placeholder_m537': 'Orchestrator (Neon)',
+    'placeholder-m537': 'Orchestrator (Neon)',
+    'm537': 'Orchestrator (Neon)',
+    'model_placeholder_m417': 'Gemini 4 Argon (High)',
+    'm417': 'Gemini 4 Argon (High)',
+    'model_placeholder_m418': 'Gemini 4 Argon (Medium)',
+    'm418': 'Gemini 4 Argon (Medium)',
+    'model_placeholder_m419': 'Gemini 4 Argon (Low)',
+    'm419': 'Gemini 4 Argon (Low)',
+    'model_placeholder_m427': 'Gemini 4 Carbon (High)',
+    'm427': 'Gemini 4 Carbon (High)',
+    'model_placeholder_m437': 'Gemini 4 Carbon (Medium)',
+    'm437': 'Gemini 4 Carbon (Medium)',
+    'model_placeholder_m438': 'Gemini 4 Carbon (Low)',
+    'm438': 'Gemini 4 Carbon (Low)',
+    'gemini-3.8-flash-tiered': 'Gemini 3.8 Flash',
+    'model_placeholder_m322': 'Gemini 3.8 Flash',
+    'm322': 'Gemini 3.8 Flash',
+    'model_placeholder_m318': 'Gemini 3.8 Flash (High)',
+    'm318': 'Gemini 3.8 Flash (High)',
+    'model_placeholder_m319': 'Gemini 3.8 Flash (Medium)',
+    'm319': 'Gemini 3.8 Flash (Medium)',
+    'model_placeholder_m320': 'Gemini 3.8 Flash (Low)',
+    'm320': 'Gemini 3.8 Flash (Low)',
+    'model_placeholder_m400': 'Claude Opus 5.5 (Low)',
+    'm400': 'Claude Opus 5.5 (Low)',
+    'model_placeholder_m401': 'Claude Opus 5.5 (Medium)',
+    'm401': 'Claude Opus 5.5 (Medium)',
+    'model_placeholder_m402': 'Claude Opus 5.5 (High)',
+    'm402': 'Claude Opus 5.5 (High)',
+    'model_placeholder_m403': 'Claude Sonnet 5.5 (Low)',
+    'm403': 'Claude Sonnet 5.5 (Low)',
+    'model_placeholder_m404': 'Claude Sonnet 5.5 (Medium)',
+    'm404': 'Claude Sonnet 5.5 (Medium)',
+    'model_placeholder_m405': 'Claude Sonnet 5.5 (High)',
+    'm405': 'Claude Sonnet 5.5 (High)',
+    'model_placeholder_m198': 'Gemini 3.5 Flash-Lite',
+    'm198': 'Gemini 3.5 Flash-Lite',
+    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash-Lite',
+    'model_placeholder_m50': 'Gemini 3.1 Flash-Lite',
+    'm50': 'Gemini 3.1 Flash-Lite',
+    'gemini-3-flash': 'Gemini 3 Flash',
+    'model_placeholder_m18': 'Gemini 3 Flash',
+    'm18': 'Gemini 3 Flash'
+  };
+
+  function buildLookupKeysForModel(val) {
+    const clean = String(val || '').trim().toLowerCase();
+    if (!clean) return [];
+    const stripped = clean.replace(/^model_/, '');
+    const keys = [clean, stripped];
+    const mPh = stripped.match(/placeholder[_-]?(m\d+)$/);
+    if (mPh) keys.push(`model_placeholder_${mPh[1]}`, `placeholder-${mPh[1]}`, mPh[1]);
+    return Array.from(new Set(keys));
+  }
+
+  function getModelPoolKey(raw, extraHint = '') {
+    if (!raw && !extraHint) return 'unknown';
+    const rawParts = (raw && typeof raw === 'object')
+      ? [raw.modelExactId, raw.modelId, raw.model, raw.label, raw.modelDisplayName, raw.modelLabel, raw.responseModel, raw.modelOrAlias?.model, raw.poolKey, extraHint]
+      : [raw, extraHint];
+    const tokens = rawParts.filter(v => typeof v === 'string' && v.trim()).map(v => v.trim());
+    if (!tokens.length) return 'unknown';
+    const expanded = [...tokens];
+    for (const tok of tokens) {
+      for (const lk of buildLookupKeysForModel(tok)) {
+        const mapped = MODEL_USAGE_ID_FALLBACK_LABELS[lk];
+        if (mapped) {
+          expanded.push(mapped);
+          break;
+        }
+      }
+    }
+    const s = expanded.join(' ').toLowerCase().trim();
     if (!s) return 'unknown';
     if (s.includes('carbon') || s.includes('gemini-4-carbon') || s.includes('m670')) {
       return 'gemini-4-carbon';
@@ -23,6 +137,9 @@
     // 优先匹配 Argon / Orchestrator (Argon)，允许裸 gemini-pro-orchestrator 与已知变体但不吞并未知后缀
     if (s.includes('argon') || s.includes('gemini-4-argon') || s.includes('m668') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?(?![a-z0-9-])/.test(s)) {
       return 'gemini-4-argon';
+    }
+    if (s.includes('neon') || s.includes('gemini-4-neon')) {
+      return 'gemini-4-neon';
     }
     if (s.includes('hydrogen') || s.includes('gemini-4-hydrogen')) {
       return 'gemini-4-hydrogen';
@@ -40,9 +157,9 @@
     return s.replace(/[^a-z0-9_-]/g, '') || 'unknown';
   }
 
-  function getSharedQuotaGroupKey(raw) {
-    const pk = getModelPoolKey(raw);
-    if (pk === 'gemini-4-hydrogen' || pk === 'gemini-3.8-flash') return 'shared_gemini_main';
+  function getSharedQuotaGroupKey(raw, extraHint = '') {
+    const pk = getModelPoolKey(raw, extraHint);
+    if (pk === 'gemini-4-neon' || pk === 'gemini-4-hydrogen' || pk === 'gemini-3.8-flash') return 'shared_gemini_main';
     if (pk === 'claude-opus-5-5' || pk === 'claude-sonnet-5-5' || pk === 'gpt-oss-120b') return 'shared_3p_pool';
     if (pk === 'gemini-4-argon') return 'shared_gemini_argon';
     if (pk === 'gemini-4-carbon') return 'shared_gemini_carbon';
@@ -283,7 +400,13 @@
     if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0) {
       const allowedTokens = buildAllowedTierMatchSet(planStatus);
       if (allowedTokens) {
-        const hit = config.allowedTiers.some(v => allowedTokens.has(String(v || '').trim().toLowerCase()));
+        const hit = config.allowedTiers.some((v) => {
+          const norm = String(v || '').trim().toLowerCase();
+          if (!norm) return false;
+          return allowedTokens.has(norm)
+            || allowedTokens.has(norm.replace(/-/g, '_'))
+            || allowedTokens.has(norm.replace(/_/g, '-'));
+        });
         if (!hit) {
           tierBlocked = true;
           tierReason = `仅限 ${config.allowedTiers.join(' / ')} 套餐可用`;
@@ -359,6 +482,7 @@
     const parsed = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
     const poolNames = {
       'gemini-4-argon': 'Gemini 4 Argon 配额池（周限额）',
+      'gemini-4-neon': 'Gemini 4 Neon / Hydrogen / 3.8 Flash 共享池',
       'gemini-4-hydrogen': 'Gemini 4 Hydrogen / 3.8 Flash 共享池',
       'gemini-3.8-flash': 'Gemini 3.8 Flash / Hydrogen 共享池',
       'gemini-4-carbon': 'Gemini 4 Carbon 配额池',
@@ -425,9 +549,12 @@
       };
     }
 
+    // 取消只证明请求已中断，不证明由谁取消；普通 Go context 取消也属于此类。
+    const canceledMatch = /(?:\bcontext cancel(?:l)?ed\b|\buser cancel(?:l)?ed\b|request was aborted|AbortError)/i.test(error);
+
     // 2. 模型或额度池耗尽 (Quota Exhausted)
     const explicitQuotaMatch = /(?:quota\s*(?:exceeded|reached|limit|exhausted)|out\s+of\s+quota|exhausted.*(?:capacity|quota)|resource_exhausted.*(?:quota|capacity|billing)|free\s+tier\s+quota|daily\s+quota|weekly\s+quota)/i.test(error);
-    const quotaZeroEvidence = Boolean(modelQuota && typeof modelQuota.remainingFraction === 'number' && modelQuota.remainingFraction <= 0.0001);
+    const quotaZeroEvidence = !canceledMatch && Boolean(modelQuota && typeof modelQuota.remainingFraction === 'number' && modelQuota.remainingFraction <= 0.0001);
 
     if (explicitQuotaMatch || quotaZeroEvidence) {
       const resetTimeZh = modelQuota?.resetTime ? formatResetTimeZh(modelQuota.resetTime) : null;
@@ -464,14 +591,13 @@
       };
     }
 
-    // 4. 用户主动取消或请求中断 (Canceled)
-    const canceledMatch = /(?:context canceled by user|user cancelled|request was aborted|AbortError)/i.test(error);
+    // 4. 请求取消或中断 (Canceled)，不推断取消发起方或当前轮次状态。
     if (canceledMatch) {
       return {
         kind: 'canceled',
-        title: '已取消',
-        badgeText: '已取消',
-        detail: '本次生成请求已由用户或系统主动取消',
+        title: '请求中断',
+        badgeText: '已中断',
+        detail: '最近一次生成请求已中断，无法仅凭此记录确定取消来源或当前请求状态',
         serviceLimit: null,
         retryAfterSec: null,
         resetTime: null,
@@ -570,13 +696,15 @@
     const serviceLimit = classification.serviceLimit || null;
 
     const usage = lastRetry ? lastRetry.usage : m.usage;
-    const input = number(usage?.inputTokens), cached = number(usage?.cacheReadTokens), output = number(usage?.outputTokens);
+    const input = number(usage?.inputTokens);
+    const cacheWrite = number(usage?.cacheCreationInputTokens ?? usage?.cacheWriteTokens ?? usage?.cacheWriteInputTokens);
+    const cached = number(usage?.cacheReadTokens), output = number(usage?.outputTokens);
     const thinking = number(usage?.thinkingOutputTokens), responseTokens = number(usage?.responseOutputTokens);
-    const hasInput = (input || 0) + (cached || 0) > 0;
+    const hasInput = (input || 0) + (cacheWrite || 0) + (cached || 0) > 0;
 
     // 解耦维度：错误发生时不强制归零已有上下文用量
     const prevContext = options.previousValidContext || null;
-    let actual = hasInput && !error ? (input || 0) + (cached || 0) + (output || 0) : null;
+    let actual = hasInput && !error ? (input || 0) + (cacheWrite || 0) + (cached || 0) + (output || 0) : null;
     if (actual === null && prevContext && prevContext.actual != null && !exceeded) {
       actual = prevContext.actual;
     }
@@ -585,7 +713,9 @@
     const estimate = number(context?.estimatedTokensUsed) || prevContext?.estimate || null;
     const budget = number(context?.maxContextTokens) || prevContext?.budget || null;
 
-    // 计算生成耗时与输出速度 (Tokens Per Second)
+    // 计算生成耗时与输出速度 (Tokens Per Second)，区分早期 warming 与已稳态 streamingTps
+    const MIN_SETTLED_STREAM_SEC = 0.45;
+    const MIN_SETTLED_STREAM_TOKENS = 12;
     const ttft = parseDurationSec(m.timeToFirstToken);
     const streamingSec = parseDurationSec(m.streamingDuration);
     const duration = (ttft !== null && streamingSec !== null) ? (ttft + streamingSec) : (ttft ?? streamingSec ?? null);
@@ -597,21 +727,31 @@
     if (output && streamingSec && streamingSec >= 0.05) {
       streamingTps = Number((output / streamingSec).toFixed(1));
     }
-    const speedInputTokens = hasInput ? ((input || 0) + (cached || 0)) : null;
+    const isSettledStream = Boolean(output && streamingSec !== null && (
+      streamingSec >= MIN_SETTLED_STREAM_SEC || (streamingSec > 0.05 && output >= MIN_SETTLED_STREAM_TOKENS)
+    ));
+    const isWarming = Boolean(output && output > 0 && !isSettledStream && (
+      streamingSec === null || streamingSec < MIN_SETTLED_STREAM_SEC
+    ));
+    const speedPhase = isWarming ? 'warming' : (isSettledStream || tps !== null ? 'settled' : 'idle');
+    const speedInputTokens = hasInput ? ((input || 0) + (cacheWrite || 0) + (cached || 0)) : null;
     const speedExp = (!error && output != null && ttft != null && duration != null && streamingTps != null)
       ? calculateExperienceScore({
-          outputTokens: output,
-          totalInputTokens: speedInputTokens,
-          ttftSec: ttft,
-          streamingSec,
-          totalDurationSec: duration,
-          streamSpeed: streamingTps
-        })
+        outputTokens: output,
+        totalInputTokens: speedInputTokens,
+        ttftSec: ttft,
+        streamingSec,
+        totalDurationSec: duration,
+        streamSpeed: streamingTps
+      })
       : { available: false, score: null, grade: null, ruleVersion: ELV91_SCORE_RULE_VERSION };
     const speed = (tps !== null || duration !== null || output !== null || ttft !== null) ? {
       tps,
       streamingTps,
       streamSpeed: streamingTps,
+      phase: speedPhase,
+      isWarmingStream: isWarming,
+      displayTps: speedPhase === 'warming' ? null : (streamingTps ?? tps ?? null),
       duration: duration !== null ? Number(duration.toFixed(2)) : null,
       ttft: ttft !== null ? Number(ttft.toFixed(2)) : null,
       streamingSec: streamingSec !== null ? Number(streamingSec.toFixed(2)) : null,
@@ -639,6 +779,12 @@
 
     const usedVal = actual ?? (estimate > 0 ? estimate : null);
     const percentVal = actual !== null && budget > 0 && !exceeded ? (actual / budget * 100) : null;
+    const effectiveInputTotal = hasInput ? (input || 0) + (cacheWrite || 0) + (cached || 0) : (prevContext?.input || null);
+    const effectiveCached = hasInput ? (cached || 0) : (prevContext?.cached || 0);
+    const effectiveUncached = hasInput
+      ? (input || 0) + (cacheWrite || 0)
+      : (prevContext?.uncachedInput ?? (effectiveInputTotal != null ? Math.max(0, effectiveInputTotal - effectiveCached) : null));
+    const cacheHit = computeCacheReadStats({ inputTokens: effectiveUncached, cacheReadTokens: effectiveCached });
 
     return {
       used: usedVal,
@@ -651,8 +797,11 @@
       error,
       errorClassification: classification,
       estimated: actual === null,
-      input: hasInput ? (input || 0) + (cached || 0) : (prevContext?.input || null),
-      cached: cached || prevContext?.cached || 0,
+      input: effectiveInputTotal,
+      uncachedInput: effectiveUncached,
+      cacheWrite: cacheWrite || 0,
+      cached: effectiveCached,
+      cacheHitRate: cacheHit.cacheReadPct,
       output: output ?? (prevContext?.output ?? null),
       percent: percentVal,
       model,
@@ -699,15 +848,78 @@
     const middle = (chars - cjk) / 4 + cjk * 1.2;
     return { chars, bytes, low: Math.ceil(middle * .7), high: Math.ceil(Math.max(middle * 1.6, bytes / 2)) };
   }
+  /**
+   * 对上下文组成预览文本执行脱敏与安全截断，屏蔽本地用户目录前缀与敏感凭据
+   */
+  function sanitizeCompositionPreview(rawText, maxLen = 120) {
+    let clean = sanitizeCommandPreview(String(rawText || ''), maxLen * 2);
+    if (!clean) return '';
+    clean = clean
+      .replace(/[A-Za-z]:\\Users\\[^\\\s"'<>]+\\/gi, '~\\')
+      .replace(/\/(?:Users|home)\/[^/\s"'<>]+\//gi, '~/');
+    if (maxLen > 8 && clean.length > maxLen) {
+      return clean.slice(0, maxLen - 1) + '…';
+    }
+    return clean;
+  }
+
   function add(a, b) { for (const k of ['chars', 'bytes', 'low', 'high']) a[k] += b[k] || 0; return a; }
   const empty = () => ({ chars: 0, bytes: 0, low: 0, high: 0 });
   function analyzeSteps(steps) {
     const groups = { user: empty(), assistant: empty(), thinking: empty(), tools: empty(), summaries: empty() };
+    const compositionSubgroups = {
+      injections: empty(),
+      skills: empty(),
+      injectionCount: 0,
+      skillCount: 0,
+      userCount: 0,
+      assistantCount: 0,
+      thinkingCount: 0,
+      toolCount: 0,
+      summaryCount: 0
+    };
+    const stepCompositionItems = {
+      injections: [],
+      skills: [],
+      summaries: [],
+      user: [],
+      assistant: [],
+      thinking: [],
+      tools: []
+    };
+    const MAX_COMP_ENTRIES = 36;
+    const estPairMid = (m) => {
+      if (!m) return 0;
+      const l = Number(m.low || 0);
+      const h = Number(m.high || 0);
+      return (l <= 0 && h <= 0) ? 0 : Math.round((l + h) / 2);
+    };
+    const pushCompEntry = (cat, stepIndex, label, measured, previewRaw) => {
+      const list = stepCompositionItems[cat];
+      if (!list || list.length >= MAX_COMP_ENTRIES) return;
+      const tok = estPairMid(measured);
+      if (tok <= 0 && !(measured?.chars > 0)) return;
+      list.push({
+        stepIndex,
+        label: String(label || cat),
+        tokens: tok,
+        chars: Number(measured?.chars || 0),
+        preview: sanitizeCompositionPreview(previewRaw || '', 110)
+      });
+    };
     const media = new Map();
     let userMessages = 0, assistantMessages = 0, latestStepError = null, lastUserAt = -1, lastAssistantAt = -1;
+    let checkpointCount = 0, lastCheckpointIndex = -1, lastCheckpointFailed = false, inProgressCheckpointIndex = -1, lastModelStepAt = -1;
+    let postCheckpointText = empty();
+    let postCheckpointMediaRefs = new Map();
     const skip = new Set(['metadata', 'userConfig', 'lastUserConfig', 'userAgentSpec', 'activeUserState', 'thinkingSignature', 'thumbnail', 'inlineData', 'media', 'modelUsage', 'tokenUsage', 'mendelExperimentIds']);
     // 直接按与原 content()+measure() 等价的逻辑流式累计 chars/bytes/cjk，避免分配巨型中间拼接字符串
     const toolAcc = { chars: 0, bytes: 0, cjk: 0 };
+    function recordPostCheckpointMedia(uriKey) {
+      if (lastCheckpointIndex >= 0 && uriKey) {
+        postCheckpointMediaRefs.set(uriKey, (postCheckpointMediaRefs.get(uriKey) || 0) + 1);
+      }
+    }
     function accumulateContent(value, acc) {
       if (typeof value === 'string') { measure(value, acc); return; }
       if (typeof value === 'number' || typeof value === 'boolean') { measure(String(value), acc); return; }
@@ -737,43 +949,108 @@
       if (Array.isArray(value)) { for (const v of value) attachments(v, source, withinStep); return; }
       if (value.uri && (value.mimeType || value.inlineData !== undefined)) {
         const key = String(value.uri);
-        if (!withinStep.has(key)) { withinStep.add(key); const prior = media.get(key); if (prior) prior.references++; else media.set(key, { uri: key, name: String(value.description || key.split(/[\\/]/).pop()), mime: String(value.mimeType || ''), references: 1, source }); }
+        if (!withinStep.has(key)) {
+          withinStep.add(key);
+          const prior = media.get(key);
+          if (prior) prior.references++;
+          else media.set(key, { uri: key, name: String(value.description || key.split(/[\\/]/).pop()), mime: String(value.mimeType || ''), references: 1, source });
+          recordPostCheckpointMedia(key);
+        }
       } else if (value.inlineData && !value.uri) {
         const key = `inline-${media.size}`;
         const rawData = typeof value.inlineData === 'string' ? value.inlineData : (value.inlineData.data || '');
         const mime = String(value.mimeType || value.inlineData.mimeType || '');
         if (!withinStep.has(key)) {
           withinStep.add(key);
+          const inlineUri = `inline:${key}`;
           media.set(key, {
-            uri: `inline:${key}`,
+            uri: inlineUri,
             inlineData: rawData,
             name: String(value.description || (mime.startsWith('image/') ? '内嵌图像' : '内嵌附件')),
             mime,
             references: 1,
             source
           });
+          recordPostCheckpointMedia(inlineUri);
         }
       }
       for (const [key, v] of Object.entries(value)) if (!skip.has(key) || key === 'media') attachments(v, source, withinStep);
     }
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i];
+      const stepIdx = Number.isInteger(Number(s?.stepIndex ?? s?.idx)) ? Number(s.stepIndex ?? s.idx) : i;
       if (s.userInput) {
         userMessages++; lastUserAt = i;
+        compositionSubgroups.userCount++;
         const u = s.userInput;
-        add(groups.user, measure(u.userResponse || (u.items || []).map(item => item.text || '').join('\n')));
+        const uText = u.userResponse || (u.items || []).map(item => item.text || '').join('\n');
+        const uMeasured = measure(uText);
+        add(groups.user, uMeasured);
+        pushCompEntry('user', stepIdx, `U#${compositionSubgroups.userCount}`, uMeasured, uText);
+        if (uText.includes('<SYSTEM_MESSAGE>') || uText.includes('[POST-COMPACT REHYDRATION') || uText.includes('<RULE[') || uText.includes('<CONTEXT_SUMMARY>') || uText.includes('<EXT_CONTEXT_INJECT>') || uText.includes('AGENTS.md')) {
+          add(compositionSubgroups.injections, uMeasured);
+          compositionSubgroups.injectionCount++;
+          pushCompEntry('injections', stepIdx, `Inject@${stepIdx}`, uMeasured, uText);
+        }
+        if (uText.includes('<skills>') || /SKILL\.md/i.test(uText)) {
+          const skillTagMatch = uText.match(/<skills>[\s\S]*?<\/skills>/i);
+          const skillMeasured = skillTagMatch ? measure(skillTagMatch[0]) : uMeasured;
+          add(compositionSubgroups.skills, skillMeasured);
+          compositionSubgroups.skillCount++;
+          pushCompEntry('skills', stepIdx, `Skill@${stepIdx}`, skillMeasured, skillTagMatch ? skillTagMatch[0] : uText);
+        }
+        if (lastCheckpointIndex >= 0) add(postCheckpointText, uMeasured);
         // Canonical media and item inline previews represent the same upload.
         attachments(u.media?.length ? u.media : u.items, 'user');
       } else if (s.plannerResponse) {
-        assistantMessages++; lastAssistantAt = i;
-        add(groups.assistant, measure(s.plannerResponse.modifiedResponse || s.plannerResponse.response || ''));
-        add(groups.thinking, measure(s.plannerResponse.thinking || ''));
+        assistantMessages++; lastAssistantAt = i; lastModelStepAt = i;
+        compositionSubgroups.assistantCount++;
+        const aRaw = s.plannerResponse.modifiedResponse || s.plannerResponse.response || '';
+        const tRaw = s.plannerResponse.thinking || '';
+        const aMeasured = measure(aRaw);
+        const tMeasured = measure(tRaw);
+        add(groups.assistant, aMeasured);
+        add(groups.thinking, tMeasured);
+        if (aMeasured.chars > 0) pushCompEntry('assistant', stepIdx, `A#${compositionSubgroups.assistantCount}`, aMeasured, aRaw);
+        if (tMeasured.chars > 0) {
+          compositionSubgroups.thinkingCount++;
+          pushCompEntry('thinking', stepIdx, `Think#${compositionSubgroups.thinkingCount}`, tMeasured, tRaw);
+        }
+        if (lastCheckpointIndex >= 0) {
+          add(postCheckpointText, aMeasured);
+          add(postCheckpointText, tMeasured);
+        }
         attachments(s.plannerResponse, 'assistant');
       } else if (s.errorMessage) {
         const e = s.errorMessage.error || {};
         latestStepError = { index: i, text: e.modelErrorMessage || e.shortError || e.fullError || '', id: e.errorId || '' };
       } else if (s.checkpoint) {
-        add(groups.summaries, measure(s.checkpoint.sessionSummary || ''));
+        const cp = s.checkpoint;
+        const rawStepStatus = String(s.status || s.metadata?.status || '').trim().toUpperCase();
+        const isCpInProgress = Boolean(rawStepStatus && /(?:^|_)(?:RUNNING|PENDING|GENERATING|IN_PROGRESS|STREAMING|QUEUED)$/.test(rawStepStatus));
+        const isCpStepFailed = Boolean(rawStepStatus && /(?:^|_)(?:ERROR|FAILED|CANCELED|CANCELLED|ABORTED)$/.test(rawStepStatus));
+        const cpText = [cp.sessionSummary, cp.codeChangeSummary, cp.userIntent, cp.memorySummary]
+          .filter(v => typeof v === 'string' && v.length > 0)
+          .join('\n');
+        const cpMeasured = measure(cpText);
+        add(groups.summaries, cpMeasured);
+        if (cpMeasured.chars > 0) {
+          compositionSubgroups.summaryCount++;
+          pushCompEntry('summaries', stepIdx, `Checkpoint@${stepIdx}`, cpMeasured, cpText);
+        }
+        if (isCpInProgress) {
+          inProgressCheckpointIndex = i;
+        } else if (cp.modelSummarizationFailed === true || isCpStepFailed) {
+          lastCheckpointFailed = true;
+          inProgressCheckpointIndex = -1;
+        } else {
+          checkpointCount++;
+          lastCheckpointIndex = i;
+          lastCheckpointFailed = false;
+          inProgressCheckpointIndex = -1;
+          postCheckpointText = { ...cpMeasured };
+          postCheckpointMediaRefs = new Map();
+        }
       } else {
         toolAcc.chars = 0; toolAcc.bytes = 0; toolAcc.cjk = 0;
         const stepKeys = Object.keys(s);
@@ -795,19 +1072,727 @@
           }
         }
         if (toolAcc.chars > 0 || toolAcc.bytes > 0) {
+          lastModelStepAt = i;
           const middle = (toolAcc.chars - toolAcc.cjk) / 4 + toolAcc.cjk * 1.2;
-          add(groups.tools, {
+          const toolMeasured = {
             chars: toolAcc.chars,
             bytes: toolAcc.bytes,
             low: Math.ceil(middle * .7),
             high: Math.ceil(Math.max(middle * 1.6, toolAcc.bytes / 2))
-          });
+          };
+          add(groups.tools, toolMeasured);
+          compositionSubgroups.toolCount++;
+          const toolNameHint = (Array.isArray(s.tool_calls) && s.tool_calls[0]?.name)
+            || (s.runCommand ? 'run_command' : (s.viewFile ? 'read_file' : (s.writeToFile ? 'write_file' : stepKeys.find(k => !['type', 'status', 'metadata', 'error'].includes(k)) || 'tool')));
+          pushCompEntry('tools', stepIdx, `${toolNameHint}@${stepIdx}`, toolMeasured, `${toolNameHint} (${toolAcc.chars} chars)`);
+          if (lastCheckpointIndex >= 0) add(postCheckpointText, toolMeasured);
+          const stepTypeUpper = String(s.type || '').toUpperCase();
+          const isExplicitInjection = Boolean(
+            s.systemMessage || s.injectSteps || s.injectedSteps || s.contextInject || s.ruleInject || stepTypeUpper === 'SYSTEM_MESSAGE'
+          );
+          if (isExplicitInjection) {
+            add(compositionSubgroups.injections, toolMeasured);
+            compositionSubgroups.injectionCount++;
+            pushCompEntry('injections', stepIdx, `System@${stepIdx}`, toolMeasured, s.systemMessage?.content || s.systemMessage || toolNameHint);
+          }
+          // 识别技能读取/注入工具步骤（如读取 SKILL.md）
+          let isSkillStep = false;
+          try {
+            const rawToolCalls = Array.isArray(s.tool_calls) ? s.tool_calls : [];
+            if (rawToolCalls.some(tc => /skill\.md/i.test(String(tc?.args?.Path || tc?.args?.AbsolutePath || tc?.args?.file_path || '')))) {
+              isSkillStep = true;
+            } else if (s.viewFile?.absolutePathUri && /skill\.md/i.test(String(s.viewFile.absolutePathUri))) {
+              isSkillStep = true;
+            }
+          } catch { }
+          if (isSkillStep) {
+            add(compositionSubgroups.skills, toolMeasured);
+            compositionSubgroups.skillCount++;
+            pushCompEntry('skills', stepIdx, `SKILL.md@${stepIdx}`, toolMeasured, s.viewFile?.absolutePathUri || toolNameHint);
+          }
         }
       }
     }
     const total = Object.values(groups).reduce(add, empty());
-    const currentError = latestStepError && latestStepError.index > Math.max(lastUserAt, lastAssistantAt) ? latestStepError : null;
-    return { groups, total, media: [...media.values()], steps: steps.length, userMessages, assistantMessages, currentError };
+    const currentError = latestStepError && latestStepError.index > Math.max(lastUserAt, lastAssistantAt, lastCheckpointIndex)
+      ? latestStepError
+      : null;
+    const postCheckpoint = lastCheckpointIndex >= 0 ? {
+      checkpointIndex: lastCheckpointIndex,
+      textTotal: postCheckpointText,
+      mediaRefs: Object.fromEntries(postCheckpointMediaRefs)
+    } : null;
+    return {
+      groups,
+      compositionSubgroups,
+      stepCompositionItems,
+      total,
+      media: [...media.values()],
+      steps: steps.length,
+      userMessages,
+      assistantMessages,
+      lastUserAt,
+      lastAssistantAt,
+      lastModelStepAt,
+      checkpointCount,
+      lastCheckpointIndex,
+      lastCheckpointFailed,
+      inProgressCheckpointIndex,
+      postCheckpoint,
+      currentError
+    };
+  }
+
+  /**
+   * 汇总会话上下文 9 维组成明细（支持宿主实报与可见内容估算分离、逐步前缀还原、残差标注与脱敏条目列表）
+   */
+  function buildSessionCompositionBreakdown(session, latestSummary = null, options = {}) {
+    const groups = session?.groups || {};
+    const sub = session?.compositionSubgroups || {};
+    const compEntries = session?.stepCompositionItems || {};
+    const estMid = (g) => {
+      if (!g) return 0;
+      const l = Number(g.low || 0);
+      const h = Number(g.high || 0);
+      if (l <= 0 && h <= 0) return 0;
+      return Math.round((l + h) / 2);
+    };
+    const targetStep = Number.isInteger(Number(options.targetStepIndex)) ? Number(options.targetStepIndex) : null;
+    const compareStep = Number.isInteger(Number(options.compareStepIndex)) ? Number(options.compareStepIndex) : null;
+    const hasStepItems = Boolean(
+      compEntries && Object.values(compEntries).some(arr => Array.isArray(arr) && arr.length > 0)
+    );
+    const sumEntriesUpTo = (cat, limitStep) => {
+      const list = Array.isArray(compEntries?.[cat]) ? compEntries[cat] : [];
+      if (limitStep === null) return null;
+      const matched = list.filter(e => Number(e.stepIndex) <= limitStep);
+      return {
+        tokens: matched.reduce((s, e) => s + Number(e.tokens || 0), 0),
+        chars: matched.reduce((s, e) => s + Number(e.chars || 0), 0),
+        count: matched.length,
+        entries: matched
+      };
+    };
+
+    const definitionsCount = Number(session?.definitionsCount || (groups.definitions?.chars > 0 ? 1 : 0));
+    const systemCount = Number(session?.systemCount || (groups.system?.chars > 0 ? 1 : 0));
+
+    const rawDefs = [
+      { key: 'system', data: groups.system || empty(), count: systemCount, source: 'host_prompt_sections', overlapped: false },
+      { key: 'definitions', data: groups.definitions || empty(), count: definitionsCount, source: 'host_tools_schema', overlapped: false },
+      { key: 'injections', data: sub.injections || empty(), count: Number(sub.injectionCount || 0), source: 'transcript_steps', overlapped: true },
+      { key: 'skills', data: sub.skills || empty(), count: Number(sub.skillCount || 0), source: 'transcript_steps', overlapped: true },
+      { key: 'summaries', data: groups.summaries || empty(), count: Number(sub.summaryCount ?? session?.checkpointCount ?? (groups.summaries?.chars > 0 ? 1 : 0)), source: 'transcript_steps', overlapped: false },
+      { key: 'user', data: groups.user || empty(), count: Number(sub.userCount ?? session?.userMessages ?? 0), source: 'transcript_steps', overlapped: false },
+      { key: 'assistant', data: groups.assistant || empty(), count: Number(sub.assistantCount ?? session?.assistantMessages ?? 0), source: 'transcript_steps', overlapped: false },
+      { key: 'thinking', data: groups.thinking || empty(), count: Number(sub.thinkingCount ?? (groups.thinking?.chars > 0 ? (session?.assistantMessages || 1) : 0)), source: 'transcript_steps', overlapped: false },
+      { key: 'tools', data: groups.tools || empty(), count: Number(sub.toolCount ?? (groups.tools?.chars > 0 ? 1 : 0)), source: 'transcript_steps', overlapped: false }
+    ];
+
+    const actualTokens = (latestSummary && latestSummary.actual != null && Number.isFinite(Number(latestSummary.actual)))
+      ? Number(latestSummary.actual)
+      : null;
+    const budgetTokens = (latestSummary && latestSummary.budget != null && Number.isFinite(Number(latestSummary.budget)) && Number(latestSummary.budget) > 0)
+      ? Number(latestSummary.budget)
+      : (Number.isFinite(Number(options.budgetTokens)) && Number(options.budgetTokens) > 0 ? Number(options.budgetTokens) : null);
+
+    let stepBounded = false;
+    const items = rawDefs.map(item => {
+      const fullMedian = estMid(item.data);
+      const allEntries = Array.isArray(compEntries?.[item.key]) ? compEntries[item.key] : [];
+      let effectiveMedian = fullMedian;
+      let effectiveCount = item.count;
+      let effectiveChars = Number(item.data?.chars || 0);
+      let effectiveEntries = allEntries;
+      let deltaTokens = null;
+      let deltaCount = null;
+      if (targetStep !== null && hasStepItems && item.key !== 'system' && item.key !== 'definitions') {
+        const snap = sumEntriesUpTo(item.key, targetStep);
+        if (snap) {
+          stepBounded = true;
+          effectiveMedian = snap.tokens;
+          effectiveCount = snap.count;
+          effectiveChars = snap.chars;
+          effectiveEntries = snap.entries;
+          if (compareStep !== null) {
+            const baseSnap = sumEntriesUpTo(item.key, compareStep);
+            if (baseSnap) {
+              deltaTokens = snap.tokens - baseSnap.tokens;
+              deltaCount = snap.count - baseSnap.count;
+            }
+          }
+        }
+      }
+      return {
+        ...item,
+        count: effectiveCount,
+        median: effectiveMedian,
+        low: targetStep !== null && stepBounded && item.key !== 'system' && item.key !== 'definitions'
+          ? Math.round(effectiveMedian * 0.7)
+          : Number(item.data?.low || 0),
+        high: targetStep !== null && stepBounded && item.key !== 'system' && item.key !== 'definitions'
+          ? Math.round(effectiveMedian * 1.4)
+          : Number(item.data?.high || 0),
+        chars: effectiveChars,
+        deltaTokens,
+        deltaCount,
+        entries: effectiveEntries
+      };
+    });
+
+    const estimatedTotalMedian = items
+      .filter(it => !it.overlapped)
+      .reduce((acc, it) => acc + it.median, 0);
+    const denomForUsed = (actualTokens !== null && actualTokens > 0) ? actualTokens : estimatedTotalMedian;
+    for (const it of items) {
+      it.pct = estimatedTotalMedian > 0 ? Math.round((it.median / estimatedTotalMedian) * 1000) / 10 : 0;
+      it.pctOfUsed = denomForUsed > 0 ? Math.round((it.median / denomForUsed) * 1000) / 10 : 0;
+      it.pctOfBudget = budgetTokens > 0 ? Math.round((it.median / budgetTokens) * 1000) / 10 : null;
+    }
+    const unaccountedTokens = (actualTokens !== null && actualTokens > estimatedTotalMedian)
+      ? Math.max(0, actualTokens - estimatedTotalMedian)
+      : 0;
+    const coverageScope = (actualTokens !== null && estimatedTotalMedian === 0)
+      ? 'host_only'
+      : (targetStep !== null && !stepBounded && estimatedTotalMedian > 0)
+        ? 'session_approx'
+        : (unaccountedTokens > 0 ? 'partial_estimate' : (estimatedTotalMedian > 0 ? 'estimated_visible' : 'unavailable'));
+    return {
+      items,
+      estimatedTotalMedian,
+      actualTokens,
+      budgetTokens,
+      unaccountedTokens,
+      diffTokens: (actualTokens !== null && estimatedTotalMedian > 0) ? (actualTokens - estimatedTotalMedian) : null,
+      coverageScope,
+      stepScope: targetStep !== null ? (stepBounded ? 'step_bounded' : 'session_approx') : 'session_full',
+      targetStepIndex: targetStep,
+      compareStepIndex: compareStep
+    };
+  }
+
+  /**
+   * 命令行敏感凭据脱敏与单行摘要提取（用于文件/命令活动审计，绝不暴露明文密钥或 Token）
+   */
+  function sanitizeCommandPreview(cmdText, maxLen = 160) {
+    let clean = String(cmdText || '').replace(/\r?\n+/g, ' ; ').replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+    clean = clean
+      .replace(/((?:--?(?:token|api[-_]?key|secret|password|passwd|auth|bearer|cookie|session|credential|pat)[=\s]+))("[^"]*"|'[^']*'|[^\s;&|]+)/gi, '$1***')
+      .replace(/\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|COOKIE|AUTH|GCLI_ACCESS_TOKEN|AGY_ACCOUNT)[A-Z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|]+)/gi, '$1=***')
+      .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi, '$1 ***')
+      .replace(/([?&](?:token|key|secret|password|access_token|auth)=)[^&\s"']+/gi, '$1***')
+      .replace(/\b(?:sk|ghp|gho|github_pat|AIza|ya29\.[A-Za-z0-9_-]{8,})[A-Za-z0-9._-]{8,}\b/g, '***');
+    if (maxLen > 8 && clean.length > maxLen) {
+      return clean.slice(0, maxLen - 1) + '…';
+    }
+    return clean;
+  }
+
+  /**
+   * 提取命令行实际主程序名（跳过 cd 前缀、环境变量赋值与常见外壳包装器）
+   */
+  function extractCommandProgram(cmdText) {
+    let s = String(cmdText || '').trim();
+    if (!s) return 'unknown';
+    s = s.replace(/^\s*(?:cd|Set-Location)\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*/i, '');
+    s = s.replace(/^\s*(?:set|export)\s+[A-Za-z_][A-Za-z0-9_]*=[^;&|\s]+\s*(?:&&|;)?\s*/i, '');
+    s = s.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
+    s = s.replace(/^\s*&\s*/, '').trim();
+    const firstMatch = s.match(/^(?:"([^"]+)"|'([^']+)'|([^\s;&|()]+))/);
+    let token = (firstMatch && (firstMatch[1] || firstMatch[2] || firstMatch[3])) || '';
+    if (!token) return 'unknown';
+    token = token.split(/[\\/]/).pop() || token;
+    token = token.replace(/\.(?:exe|cmd|bat|ps1)$/i, '');
+    const lower = token.toLowerCase();
+    if (['env', 'sudo', 'command', 'exec', 'nohup', 'time'].includes(lower)) {
+      const rest = s.slice(firstMatch[0].length).trim();
+      if (rest) return extractCommandProgram(rest);
+    }
+    return token || 'unknown';
+  }
+
+  /**
+   * 提取单条 CortexStepGeneratorMetadata 关联的最大步序号；缺失时返回 -1
+   */
+  function extractGeneratorMaxStep(metadata) {
+    if (!metadata || typeof metadata !== 'object') return -1;
+    let maxStep = -1;
+    if (Array.isArray(metadata.stepIndices)) {
+      for (const raw of metadata.stepIndices) {
+        const n = Number(raw);
+        if (Number.isInteger(n) && n >= 0 && n > maxStep) maxStep = n;
+      }
+    }
+    for (const cand of [metadata.stepIndex, metadata.step_index, metadata.chatModel?.chatStartMetadata?.startStepIndex]) {
+      if (cand !== undefined && cand !== null && cand !== '') {
+        const n = Number(cand);
+        if (Number.isInteger(n) && n >= 0 && n > maxStep) maxStep = n;
+      }
+    }
+    return maxStep;
+  }
+
+  /**
+   * 判定会话最新成功的压缩检查点是否晚于（或恰好对应）最近一次模型调用，
+   * 即当前是否处于“已完成压缩、尚未产生压缩后新对话实测账单”状态。
+   */
+  function isCheckpointNewerThanGenerator(session, latestGeneratorMeta = null, summarizedLatest = null) {
+    const cpIdx = Number.isInteger(session?.lastCheckpointIndex) ? session.lastCheckpointIndex : -1;
+    if (cpIdx < 0) return false;
+    if (!latestGeneratorMeta) return true;
+    const genMaxStep = extractGeneratorMaxStep(latestGeneratorMeta);
+    if (genMaxStep >= 0) {
+      if (genMaxStep <= cpIdx) return true;
+      // 步序已越过检查点，但新推理尚在流式首包前（无实测 actual 且无错误）时暂保压缩态防闪烁
+      const hasPostCompactOutcome = Boolean(
+        summarizedLatest && (summarizedLatest.actual !== null || Boolean(summarizedLatest.error))
+      );
+      return !hasPostCompactOutcome;
+    }
+    // 元数据未携带 stepIndices 时，回退核对轨迹中检查点之后是否出现过任何模型响应或工具步骤
+    const lastModelStep = Number.isInteger(session?.lastModelStepAt)
+      ? session.lastModelStepAt
+      : (Number.isInteger(session?.lastAssistantAt) ? session.lastAssistantAt : -1);
+    return lastModelStep <= cpIdx;
+  }
+
+  /**
+   * 构建压缩后（Post-Compact）上下文窗口状态快照：
+   * - 优先采信宿主当前步序对应的 ContextWindowUsage.estimatedTokensUsed；
+   * - 本地兜底采用 [system + definitions + 最新 checkpoint 摘要 + 检查点后步骤与附件] 的区间中位值；
+   * - actual 严格保持 null（不冒充服务端返回账单），同时提供 postCompactEstimate 与 percent 驱动圆环回落。
+   */
+  function buildPostCompactSummary(options = {}) {
+    const session = options.session || null;
+    const prev = options.previousLatest || null;
+    const hCwu = options.hostContextWindowUsage || null;
+    const cpIdx = Number.isInteger(session?.lastCheckpointIndex) ? session.lastCheckpointIndex : -1;
+
+    let activeRange = null;
+    if (session?.postCompactActiveTotal) {
+      activeRange = { ...session.postCompactActiveTotal };
+    } else if (session?.postCheckpoint?.textTotal) {
+      activeRange = add(
+        add(
+          add({ ...session.postCheckpoint.textTotal }, options.postCheckpointAttachmentTotal || empty()),
+          options.system || session?.groups?.system || empty()
+        ),
+        options.definitions || session?.groups?.definitions || empty()
+      );
+    }
+
+    let localMidpoint = null;
+    if (activeRange) {
+      const low = Number(activeRange.low) || 0;
+      const high = Number(activeRange.high) || 0;
+      const mid = Math.round((low + high) / 2);
+      localMidpoint = (activeRange.chars > 0 && mid <= 0) ? 1 : mid;
+    }
+
+    const hostUsed = number(hCwu?.estimatedTokensUsed ?? hCwu?.estimated_tokens_used);
+    const hostStep = Number.isInteger(Number(hCwu?.lastStepIndex ?? hCwu?.last_step_index))
+      ? Number(hCwu.lastStepIndex ?? hCwu.last_step_index)
+      : -1;
+    const hostAfterCompact = Boolean(hCwu?.estimatedAfterCompaction ?? hCwu?.estimated_after_compaction);
+    const canUseHostUsage = hostUsed !== null && hostUsed > 0 && (
+      hostAfterCompact || (cpIdx >= 0 && hostStep >= cpIdx)
+    );
+
+    const estimatedUsed = canUseHostUsage
+      ? Math.round(hostUsed)
+      : localMidpoint;
+    const estimateSource = canUseHostUsage
+      ? 'host_context_window_usage'
+      : (localMidpoint !== null ? 'local_post_checkpoint_midpoint' : 'unknown');
+
+    const hostBudget = number(hCwu?.maxContextTokens ?? hCwu?.max_context_tokens);
+    const budget = (hostBudget && hostBudget > 0)
+      ? hostBudget
+      : ((prev?.budget && prev.budget > 0)
+        ? prev.budget
+        : (number(options.defaultBudgetFallback) > 0 ? number(options.defaultBudgetFallback) : null));
+
+    const percentVal = (estimatedUsed !== null && budget && budget > 0)
+      ? (estimatedUsed / budget * 100)
+      : null;
+
+    const effectiveCpIdx = Math.max(cpIdx, hostAfterCompact ? hostStep : -1);
+    const resolvedCpIndex = effectiveCpIdx >= 0 ? effectiveCpIdx : null;
+    const resolvedCpCount = Number(session?.checkpointCount) > 0
+      ? Number(session.checkpointCount) + (cpIdx >= 0 && hostAfterCompact && hostStep > cpIdx ? 1 : 0)
+      : (hostAfterCompact || resolvedCpIndex !== null ? 1 : 0);
+
+    return {
+      used: estimatedUsed,
+      actual: null,
+      estimate: estimatedUsed,
+      postCompactEstimate: estimatedUsed,
+      postCompactRange: activeRange,
+      postCompactSource: estimateSource,
+      compacted: true,
+      checkpointIndex: resolvedCpIndex,
+      checkpointCount: resolvedCpCount,
+      budget: budget && budget > 0 ? budget : null,
+      serviceLimit: null,
+      exceeded: false,
+      network: false,
+      error: '',
+      errorClassification: { kind: 'none' },
+      estimated: true,
+      input: null,
+      cached: 0,
+      output: null,
+      percent: percentVal,
+      model: prev?.model || '',
+      modelId: prev?.modelId || null,
+      modelRaw: prev?.modelRaw || '',
+      status: 'compacted',
+      speed: prev?.speed || null
+    };
+  }
+
+  /**
+   * ELV-95: 从会话步骤与模型调用记录中识别五类上下文变化事件及变化前后 Token：
+   * - compaction: 上下文压缩（成功 checkpoint）
+   * - prune: 裁剪上下文（显式 prune 步骤或无检查点时的上下文显著缩水）
+   * - inject: 上下文注入（systemMessage / injectSteps / Post-Compact 恢复 / 大块文件附件）
+   * - model: 主会话模型切换
+   * - mode: 规划/执行模式或思考档位切换
+   */
+  function detectContextChangeEvents(steps = [], calls = [], options = {}) {
+    const safeSteps = Array.isArray(steps) ? steps : [];
+    const safeCalls = (Array.isArray(calls) ? calls : [])
+      .filter(c => c && typeof c === 'object' && c.agentRole !== 'subagent')
+      .slice()
+      .sort((a, b) => {
+        const sa = Number.isInteger(Number(a.stepIndex)) ? Number(a.stepIndex) : Number.MAX_SAFE_INTEGER;
+        const sb = Number.isInteger(Number(b.stepIndex)) ? Number(b.stepIndex) : Number.MAX_SAFE_INTEGER;
+        if (sa !== sb) return sa - sb;
+        return (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0);
+      });
+
+    const getCallContextTokens = (call) => {
+      if (!call || typeof call !== 'object') return null;
+      const inp = number(call.totalInputTokens ?? call.inputTokens ?? call.totalTokens);
+      if (inp !== null) return Math.round(inp);
+      const out = number(call.outputTokens);
+      return out !== null ? Math.round(out) : null;
+    };
+
+    const midpointTokens = (m) => {
+      if (!m || !m.chars) return 0;
+      const low = Number(m.low) || 0;
+      const high = Number(m.high) || 0;
+      const mid = Math.round((low + high) / 2);
+      return mid > 0 ? mid : 1;
+    };
+
+    const findNextCallAtOrAfter = (stepIdx, tsMs = null) => {
+      for (const c of safeCalls) {
+        const cs = Number.isInteger(Number(c.stepIndex)) ? Number(c.stepIndex) : null;
+        if (cs !== null && stepIdx >= 0 && cs > stepIdx) return c;
+        if (cs === null && tsMs && Number(c.timestamp) > tsMs) return c;
+      }
+      return null;
+    };
+
+    const findLastCallBefore = (stepIdx, tsMs = null) => {
+      let last = null;
+      for (const c of safeCalls) {
+        const cs = Number.isInteger(Number(c.stepIndex)) ? Number(c.stepIndex) : null;
+        if (cs !== null && stepIdx >= 0 && cs < stepIdx) {
+          last = c;
+        } else if (cs === null && tsMs && Number(c.timestamp) < tsMs) {
+          last = c;
+        }
+      }
+      return last;
+    };
+
+    const events = [];
+    let runningEstTokens = 0;
+    let lastKnownTokens = null;
+    let cpOrdinal = 0;
+    const recordedSteps = new Set();
+
+    for (let i = 0; i < safeSteps.length; i++) {
+      const s = safeSteps[i];
+      if (!s || typeof s !== 'object') continue;
+      const stepIdx = Number.isInteger(Number(s.stepIndex ?? s.idx)) ? Number(s.stepIndex ?? s.idx) : i;
+      const stepTs = parseTimestampMs(s.timestamp || s.createdAt || s.metadata?.createdAt) || null;
+      const callBefore = findLastCallBefore(stepIdx, stepTs);
+      const callBeforeTok = getCallContextTokens(callBefore);
+      const baselineTok = callBeforeTok !== null ? callBeforeTok : (lastKnownTokens !== null ? lastKnownTokens : (runningEstTokens > 0 ? runningEstTokens : null));
+
+      if (s.checkpoint) {
+        const cp = s.checkpoint;
+        const rawSt = String(s.status || s.metadata?.status || '').trim().toUpperCase();
+        const isRunning = Boolean(rawSt && /(?:^|_)(?:RUNNING|PENDING|GENERATING|IN_PROGRESS|STREAMING|QUEUED)$/.test(rawSt));
+        const isFailed = Boolean(rawSt && /(?:^|_)(?:ERROR|FAILED|CANCELED|CANCELLED|ABORTED)$/.test(rawSt));
+        const cpText = [cp.sessionSummary, cp.codeChangeSummary, cp.userIntent, cp.memorySummary]
+          .filter(v => typeof v === 'string' && v.length > 0)
+          .join('\n');
+        const cpMid = midpointTokens(measure(cpText));
+        if (!isRunning && !isFailed && cp.modelSummarizationFailed !== true) {
+          cpOrdinal++;
+          const nextCall = findNextCallAtOrAfter(stepIdx, stepTs);
+          const nextTok = getCallContextTokens(nextCall);
+          const afterTok = nextTok !== null ? nextTok : cpMid;
+          const beforeTok = baselineTok !== null ? baselineTok : (runningEstTokens > 0 ? runningEstTokens : null);
+          events.push({
+            id: `ev-compaction-${stepIdx}`,
+            type: 'compaction',
+            source: 'step_checkpoint',
+            callId: nextCall?.callId || callBefore?.callId || null,
+            stepIndex: stepIdx,
+            timestamp: stepTs,
+            beforeTokens: beforeTok,
+            afterTokens: afterTok,
+            deltaTokens: beforeTok !== null && afterTok !== null ? afterTok - beforeTok : null,
+            checkpointIndex: stepIdx,
+            checkpointCount: cpOrdinal,
+            detail: `#${stepIdx}`
+          });
+          runningEstTokens = afterTok;
+          lastKnownTokens = afterTok;
+          recordedSteps.add(`compaction:${stepIdx}`);
+        }
+        continue;
+      }
+
+      if (s.prune || s.contextPrune || s.pruneContext || s.contextPruned) {
+        const pruneObj = s.prune || s.contextPrune || s.pruneContext || s.contextPruned || {};
+        const bTok = number(pruneObj.beforeTokens) ?? baselineTok;
+        const aTok = number(pruneObj.afterTokens) ?? (findNextCallAtOrAfter(stepIdx, stepTs) ? getCallContextTokens(findNextCallAtOrAfter(stepIdx, stepTs)) : null);
+        events.push({
+          id: `ev-prune-${stepIdx}`,
+          type: 'prune',
+          source: 'step_prune',
+          callId: callBefore?.callId || null,
+          stepIndex: stepIdx,
+          timestamp: stepTs,
+          beforeTokens: bTok,
+          afterTokens: aTok,
+          deltaTokens: bTok !== null && aTok !== null ? aTok - bTok : null,
+          detail: pruneObj.reason || ''
+        });
+        if (aTok !== null) {
+          runningEstTokens = aTok;
+          lastKnownTokens = aTok;
+        }
+        recordedSteps.add(`prune:${stepIdx}`);
+        continue;
+      }
+
+      const injectSource = s.systemMessage || s.injectSteps || s.injectedSteps || s.contextInject || s.ruleInject;
+      if (injectSource) {
+        const injectText = typeof injectSource === 'string'
+          ? injectSource
+          : JSON.stringify(injectSource);
+        const injTok = midpointTokens(measure(injectText));
+        const bTok = baselineTok !== null ? baselineTok : 0;
+        const aTok = bTok + injTok;
+        events.push({
+          id: `ev-inject-${stepIdx}`,
+          type: 'inject',
+          source: 'step_inject',
+          callId: findNextCallAtOrAfter(stepIdx, stepTs)?.callId || callBefore?.callId || null,
+          stepIndex: stepIdx,
+          timestamp: stepTs,
+          beforeTokens: bTok,
+          afterTokens: aTok,
+          deltaTokens: injTok,
+          detail: injectText.includes('POST-COMPACT REHYDRATION') ? 'post-compact-rehydrate' : ''
+        });
+        runningEstTokens = aTok;
+        lastKnownTokens = aTok;
+        recordedSteps.add(`inject:${stepIdx}`);
+        continue;
+      }
+
+      if (s.userInput) {
+        const u = s.userInput;
+        const rawText = String(u.userResponse || (u.items || []).map(it => it.text || '').join('\n') || '');
+        const uTok = midpointTokens(measure(rawText));
+        const mediaList = Array.isArray(u.media) ? u.media : [];
+        const hasRehydrateTag = rawText.includes('[POST-COMPACT REHYDRATION') || rawText.includes('<EXT_CONTEXT_INJECT>');
+        if (hasRehydrateTag || mediaList.length > 0) {
+          const mediaBytes = mediaList.reduce((acc, m) => acc + (Number(m?.bytes || m?.sizeBytes || 0) || (typeof m?.inlineData === 'string' ? m.inlineData.length : 0)), 0);
+          const mediaTok = hasRehydrateTag ? uTok : Math.max(mediaList.length * 250, Math.round(mediaBytes / 4));
+          const bTok = baselineTok !== null ? baselineTok : 0;
+          const aTok = bTok + mediaTok;
+          events.push({
+            id: `ev-inject-${stepIdx}`,
+            type: 'inject',
+            source: 'step_user_media',
+            callId: findNextCallAtOrAfter(stepIdx, stepTs)?.callId || callBefore?.callId || null,
+            stepIndex: stepIdx,
+            timestamp: stepTs,
+            beforeTokens: bTok,
+            afterTokens: aTok,
+            deltaTokens: mediaTok,
+            detail: hasRehydrateTag ? 'rehydrate' : (mediaList[0]?.description || mediaList[0]?.uri || `${mediaList.length} file(s)`)
+          });
+          recordedSteps.add(`inject:${stepIdx}`);
+        }
+        runningEstTokens += uTok;
+        if (lastKnownTokens !== null) lastKnownTokens += uTok;
+      } else if (s.plannerResponse) {
+        const pTok = midpointTokens(measure((s.plannerResponse.modifiedResponse || s.plannerResponse.response || '') + (s.plannerResponse.thinking || '')));
+        runningEstTokens += pTok;
+        if (lastKnownTokens !== null) lastKnownTokens += pTok;
+      } else if (s.modeChange || s.agentModeChange || s.planningModeChange) {
+        const mc = s.modeChange || s.agentModeChange || s.planningModeChange || {};
+        events.push({
+          id: `ev-mode-${stepIdx}`,
+          type: 'mode',
+          source: 'step_mode',
+          callId: findNextCallAtOrAfter(stepIdx, stepTs)?.callId || callBefore?.callId || null,
+          stepIndex: stepIdx,
+          timestamp: stepTs,
+          beforeTokens: baselineTok,
+          afterTokens: baselineTok,
+          deltaTokens: 0,
+          modeFrom: String(mc.from || mc.previousMode || ''),
+          modeTo: String(mc.to || mc.nextMode || mc.mode || ''),
+          detail: `${mc.from || '?'} -> ${mc.to || mc.mode || '?'}`
+        });
+        recordedSteps.add(`mode:${stepIdx}`);
+      } else if (s.modelChange) {
+        const modc = s.modelChange || {};
+        events.push({
+          id: `ev-model-${stepIdx}`,
+          type: 'model',
+          source: 'step_model',
+          callId: findNextCallAtOrAfter(stepIdx, stepTs)?.callId || callBefore?.callId || null,
+          stepIndex: stepIdx,
+          timestamp: stepTs,
+          beforeTokens: baselineTok,
+          afterTokens: baselineTok,
+          deltaTokens: 0,
+          modelFrom: String(modc.from || modc.previousModel || ''),
+          modelTo: String(modc.to || modc.nextModel || modc.model || ''),
+          detail: `${modc.from || '?'} -> ${modc.to || modc.model || '?'}`
+        });
+        recordedSteps.add(`model:${stepIdx}`);
+      } else {
+        const sTok = midpointTokens(measure(JSON.stringify(s)));
+        runningEstTokens += sTok;
+      }
+    }
+
+    // 遍历主调用流检测：model 切换、mode（如 effort/模式）切换；无压缩或剪枝证据时的显著降幅记为 unknown_drop 避免误判
+    const checkpointSteps = new Set(events.filter(e => e.type === 'compaction').map(e => e.stepIndex));
+    const explicitPruneSteps = new Set(events.filter(e => e.type === 'prune').map(e => e.stepIndex));
+    let prevCall = null;
+    for (const c of safeCalls) {
+      const cStep = Number.isInteger(Number(c.stepIndex)) ? Number(c.stepIndex) : -1;
+      const cTs = Number(c.timestamp) || null;
+      const cModelKey = String(c.modelExactId || c.modelRaw || c.modelLabel || '').trim();
+      const cModelLabel = String(c.modelLabel || c.modelExactId || c.modelRaw || '').trim();
+      const cEffortOrMode = String(c.agentMode || c.mode || c.effort || '').trim();
+      const cTok = getCallContextTokens(c);
+
+      if (prevCall) {
+        const prevStep = Number.isInteger(Number(prevCall.stepIndex)) ? Number(prevCall.stepIndex) : -1;
+        const prevTok = getCallContextTokens(prevCall);
+        const crossedCp = Array.from(checkpointSteps).some(cpS => cpS >= prevStep && (cStep < 0 || cpS <= cStep));
+        const crossedPrune = Array.from(explicitPruneSteps).some(pS => pS >= prevStep && (cStep < 0 || pS <= cStep));
+
+        const prevModelKey = String(prevCall.modelExactId || prevCall.modelRaw || prevCall.modelLabel || '').trim();
+        const prevModelLabel = String(prevCall.modelLabel || prevCall.modelExactId || prevCall.modelRaw || '').trim();
+        if (cModelKey && prevModelKey && cModelKey.toLowerCase() !== prevModelKey.toLowerCase()) {
+          const evKey = `model:${cStep >= 0 ? cStep : c.callId}`;
+          if (!recordedSteps.has(evKey)) {
+            recordedSteps.add(evKey);
+            events.push({
+              id: `ev-model-${cStep >= 0 ? cStep : c.callId}`,
+              type: 'model',
+              source: 'call_sequence',
+              callId: c.callId || null,
+              stepIndex: cStep,
+              timestamp: cTs,
+              beforeTokens: prevTok,
+              afterTokens: cTok,
+              deltaTokens: (prevTok !== null && cTok !== null) ? cTok - prevTok : null,
+              modelFrom: prevModelLabel || prevModelKey,
+              modelTo: cModelLabel || cModelKey,
+              detail: `${prevModelLabel || prevModelKey} → ${cModelLabel || cModelKey}`
+            });
+          }
+        }
+
+        const prevMode = String(prevCall.agentMode || prevCall.mode || prevCall.effort || '').trim();
+        if (cEffortOrMode && prevMode && cEffortOrMode.toLowerCase() !== prevMode.toLowerCase()) {
+          const evKey = `mode:${cStep >= 0 ? cStep : c.callId}`;
+          if (!recordedSteps.has(evKey)) {
+            recordedSteps.add(evKey);
+            events.push({
+              id: `ev-mode-${cStep >= 0 ? cStep : c.callId}`,
+              type: 'mode',
+              source: 'call_sequence',
+              callId: c.callId || null,
+              stepIndex: cStep,
+              timestamp: cTs,
+              beforeTokens: prevTok,
+              afterTokens: cTok,
+              deltaTokens: (prevTok !== null && cTok !== null) ? cTok - prevTok : null,
+              modeFrom: prevMode,
+              modeTo: cEffortOrMode,
+              detail: `${prevMode} → ${cEffortOrMode}`
+            });
+          }
+        }
+
+        if (!crossedCp && !crossedPrune && prevTok !== null && cTok !== null && prevTok >= 8000 && cTok < prevTok * 0.72) {
+          const evKey = `unknown-drop:${cStep >= 0 ? cStep : c.callId}`;
+          if (!recordedSteps.has(evKey)) {
+            recordedSteps.add(evKey);
+            events.push({
+              id: `ev-unknown-drop-${cStep >= 0 ? cStep : c.callId}`,
+              type: 'unknown_drop',
+              source: 'call_sequence',
+              callId: c.callId || null,
+              stepIndex: cStep,
+              timestamp: cTs,
+              beforeTokens: prevTok,
+              afterTokens: cTok,
+              deltaTokens: cTok - prevTok,
+              detail: 'context_drop_unknown'
+            });
+          }
+        }
+      }
+      prevCall = c;
+    }
+
+    const optTurns = Array.isArray(options.turns) ? options.turns : [];
+    const resolveTurnNum = (stepIdx, tsMs) => {
+      let matched = null;
+      for (const t of optTurns) {
+        if (!t) continue;
+        if (stepIdx >= 0 && t.stepIndex != null && Number(t.stepIndex) <= stepIdx) {
+          matched = t.turnIndex;
+        } else if (tsMs && t.timestamp && Number(t.timestamp) <= tsMs + 2000) {
+          matched = t.turnIndex;
+        }
+      }
+      return matched;
+    };
+    for (const ev of events) {
+      if (ev.turnIndex == null) {
+        ev.turnIndex = resolveTurnNum(Number(ev.stepIndex ?? -1), ev.timestamp);
+      }
+    }
+
+    events.sort((a, b) => {
+      const sa = Number.isInteger(a.stepIndex) && a.stepIndex >= 0 ? a.stepIndex : Number.MAX_SAFE_INTEGER;
+      const sb = Number.isInteger(b.stepIndex) && b.stepIndex >= 0 ? b.stepIndex : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return (a.timestamp || 0) - (b.timestamp || 0);
+    });
+    return events;
   }
 
   // 官方 Developer API Standard 公开费率表 (USD / 百万 Token)
@@ -836,6 +1821,14 @@
         inputPerMillion: 1.50,
         outputPerMillion: 7.50,
         cacheReadPerMillion: 0.075
+      }
+    ],
+    // Gemini 4 Neon 参考定价（来源：Google Gemini API 官方定价表，2026-11-18 生效：$3.00 / $15.00 / $0.15 per 1M tokens；保持内置表优先级高于单点动态价格）
+    'gemini-4-neon': [
+      {
+        inputPerMillion: 3.00,
+        outputPerMillion: 15.00,
+        cacheReadPerMillion: 0.15
       }
     ],
     'gemini-4-carbon': [
@@ -917,27 +1910,759 @@
     ]
   };
 
+  // 运行时动态价格目录（由 models.dev / LiteLLM 自动同步填充）与用户自定义覆写表
+  let DYNAMIC_PRICING_TABLE = Object.create(null);
+  let CUSTOM_PRICING_TABLE = Object.create(null);
+  let DYNAMIC_PRICING_META = {
+    updatedAt: null,
+    fetchedAtMs: 0,
+    sources: [],
+    modelCount: 0,
+    customCount: 0
+  };
+
+  function roundPricingNum(val) {
+    const n = Number(val);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Number(n.toFixed(6));
+  }
+
+  function normalizePricingRuleList(rawRules) {
+    const list = Array.isArray(rawRules) ? rawRules : (rawRules && typeof rawRules === 'object' ? [rawRules] : []);
+    const out = [];
+    for (const r of list) {
+      if (!r || typeof r !== 'object') continue;
+      const inp = roundPricingNum(r.inputPerMillion ?? r.input);
+      const outp = roundPricingNum(r.outputPerMillion ?? r.output);
+      if (inp === null || outp === null) continue;
+      const rawCache = r.cacheReadPerMillion ?? r.cacheRead ?? r.cache_read;
+      const cacheRead = rawCache != null ? roundPricingNum(rawCache) : 0;
+      const rule = {
+        inputPerMillion: inp,
+        outputPerMillion: outp,
+        cacheReadPerMillion: cacheRead !== null ? cacheRead : 0
+      };
+      if (rawCache == null) rule._cacheMissing = true;
+      if (Number.isFinite(Number(r.minPromptTokens)) && Number(r.minPromptTokens) > 0) {
+        rule.minPromptTokens = Number(r.minPromptTokens);
+      }
+      if (Number.isFinite(Number(r.maxPromptTokens)) && Number(r.maxPromptTokens) > 0) {
+        rule.maxPromptTokens = Number(r.maxPromptTokens);
+      }
+      if (typeof r.effectiveFrom === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.effectiveFrom)) {
+        rule.effectiveFrom = r.effectiveFrom;
+      }
+      if (typeof r.effectiveTo === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.effectiveTo)) {
+        rule.effectiveTo = r.effectiveTo;
+      }
+      out.push(rule);
+    }
+    return out;
+  }
+
+  function sanitizeDynamicCatalogKey(rawKey) {
+    if (!rawKey || typeof rawKey !== 'string') return '';
+    let s = rawKey.trim().toLowerCase();
+    // 剥离尾部括号档位/思考标记，例如 "Gemini 4 Neon (XHigh)" -> "gemini 4 neon"
+    s = s.replace(/\s*\((?:low|medium|high|xhigh|minimal|thinking|extended|preview)\)\s*$/i, '').trim();
+    // 剥离常见厂商/路由前缀
+    s = s.replace(/^(?:models|google|gemini|vertex_ai|vertex|google-vertex|anthropic|openai|xai|deepseek|mistral|alibaba|qwen|zhipu|moonshotai)\//i, '');
+    s = s.replace(/^model_/, '');
+    s = s.replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    if (!s || s.length > 120 || s.startsWith('placeholder-') || s.includes(':')) return '';
+    return s;
+  }
+
+  function parseModelsDevPricingCatalog(rawJson) {
+    const models = Object.create(null);
+    if (!rawJson || typeof rawJson !== 'object') return models;
+    const providerOrder = ['google', 'anthropic', 'openai', 'xai', 'deepseek', 'mistral', 'qwen', 'alibaba', 'moonshotai', 'zhipu', 'google-vertex'];
+    for (const provKey of providerOrder) {
+      const prov = rawJson[provKey];
+      const provModels = prov && typeof prov === 'object' ? prov.models : null;
+      if (!provModels || typeof provModels !== 'object') continue;
+      for (const [mId, item] of Object.entries(provModels)) {
+        if (!item || typeof item !== 'object' || !item.cost || typeof item.cost !== 'object') continue;
+        const key = sanitizeDynamicCatalogKey(item.id || mId);
+        if (!key) continue;
+        const baseIn = roundPricingNum(item.cost.input);
+        const baseOut = roundPricingNum(item.cost.output);
+        if (baseIn === null || baseOut === null) continue;
+        const hasCache = item.cost.cache_read != null && roundPricingNum(item.cost.cache_read) !== null;
+        const baseCache = hasCache ? roundPricingNum(item.cost.cache_read) : 0;
+        const rules = [];
+        const over200 = item.cost.context_over_200k;
+        if (over200 && typeof over200 === 'object' && roundPricingNum(over200.input) !== null && roundPricingNum(over200.output) !== null) {
+          rules.push({
+            maxPromptTokens: 200000,
+            inputPerMillion: baseIn,
+            outputPerMillion: baseOut,
+            cacheReadPerMillion: baseCache,
+            ...(hasCache ? {} : { _cacheMissing: true })
+          });
+          const hiCache = over200.cache_read != null ? roundPricingNum(over200.cache_read) : baseCache;
+          rules.push({
+            minPromptTokens: 200001,
+            inputPerMillion: roundPricingNum(over200.input),
+            outputPerMillion: roundPricingNum(over200.output),
+            cacheReadPerMillion: hiCache !== null ? hiCache : 0
+          });
+        } else {
+          rules.push({
+            inputPerMillion: baseIn,
+            outputPerMillion: baseOut,
+            cacheReadPerMillion: baseCache,
+            ...(hasCache ? {} : { _cacheMissing: true })
+          });
+        }
+        if (!models[key]) {
+          models[key] = rules;
+        } else if (models[key][0]?._cacheMissing && hasCache) {
+          models[key] = rules;
+        }
+      }
+    }
+    return models;
+  }
+
+  function parseLiteLlmPricingCatalog(rawJson) {
+    const models = Object.create(null);
+    if (!rawJson || typeof rawJson !== 'object') return models;
+    const providerRank = (prov, rawKey) => {
+      const p = String(prov || '').toLowerCase();
+      if (p === 'gemini' || rawKey.startsWith('gemini/')) return 1;
+      if (p === 'anthropic' || rawKey.startsWith('anthropic/')) return 2;
+      if (p === 'openai' || rawKey.startsWith('openai/')) return 3;
+      if (p === 'xai' || p === 'deepseek' || p === 'mistral') return 4;
+      if (p === 'vertex_ai-language-models' || p === 'vertex_ai' || rawKey.startsWith('vertex_ai/')) return 5;
+      return 99;
+    };
+    const chosenRank = Object.create(null);
+    for (const [rawKey, item] of Object.entries(rawJson)) {
+      if (!item || typeof item !== 'object' || rawKey === 'sample_spec') continue;
+      if (item.mode && item.mode !== 'chat' && item.mode !== 'completion' && item.mode !== 'responses') continue;
+      if (/(?:^ft:|:batch|:flex|:priority|\/batch$|\/flex$)/i.test(rawKey)) continue;
+      const rank = providerRank(item.litellm_provider, rawKey);
+      if (rank >= 99) continue;
+      const key = sanitizeDynamicCatalogKey(rawKey);
+      if (!key) continue;
+      const inpTok = Number(item.input_cost_per_token);
+      const outTok = Number(item.output_cost_per_token);
+      if (!Number.isFinite(inpTok) || inpTok < 0 || !Number.isFinite(outTok) || outTok < 0) continue;
+      const inpM = roundPricingNum(inpTok * 1e6);
+      const outM = roundPricingNum(outTok * 1e6);
+      const rawCacheTok = item.cache_read_input_token_cost;
+      const hasCache = rawCacheTok != null && Number.isFinite(Number(rawCacheTok)) && Number(rawCacheTok) >= 0;
+      const cacheM = hasCache ? roundPricingNum(Number(rawCacheTok) * 1e6) : 0;
+
+      const hiInTok = Number(item.input_cost_per_token_above_200k_tokens);
+      const hiOutTok = Number(item.output_cost_per_token_above_200k_tokens);
+      const hasOver200 = Number.isFinite(hiInTok) && hiInTok >= 0 && Number.isFinite(hiOutTok) && hiOutTok >= 0;
+      const rules = [];
+      if (hasOver200) {
+        const hiCacheTok = Number(item.cache_read_input_token_cost_above_200k_tokens);
+        const hiCacheM = (Number.isFinite(hiCacheTok) && hiCacheTok >= 0) ? roundPricingNum(hiCacheTok * 1e6) : cacheM;
+        rules.push({
+          maxPromptTokens: 200000,
+          inputPerMillion: inpM,
+          outputPerMillion: outM,
+          cacheReadPerMillion: cacheM,
+          ...(hasCache ? {} : { _cacheMissing: true })
+        });
+        rules.push({
+          minPromptTokens: 200001,
+          inputPerMillion: roundPricingNum(hiInTok * 1e6),
+          outputPerMillion: roundPricingNum(hiOutTok * 1e6),
+          cacheReadPerMillion: hiCacheM
+        });
+      } else {
+        rules.push({
+          inputPerMillion: inpM,
+          outputPerMillion: outM,
+          cacheReadPerMillion: cacheM,
+          ...(hasCache ? {} : { _cacheMissing: true })
+        });
+      }
+      const prevRank = chosenRank[key];
+      const shouldReplace = prevRank === undefined
+        || rank < prevRank
+        || (rank === prevRank && models[key]?.[0]?._cacheMissing && hasCache)
+        || (rank === prevRank && rules.length > (models[key]?.length || 0));
+      if (shouldReplace) {
+        chosenRank[key] = rank;
+        models[key] = rules;
+      }
+    }
+    return models;
+  }
+
+  function parseTimestampMs(val) {
+    if (val === undefined || val === null || val === '') return null;
+    if (typeof val === 'number') return Number.isFinite(val) && val > 0 ? val : null;
+    const ms = Date.parse(String(val));
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
+  }
+
+  function mergeTimeIntervals(intervals) {
+    if (!Array.isArray(intervals) || !intervals.length) return 0;
+    const valid = [];
+    for (const item of intervals) {
+      if (!Array.isArray(item) || item.length < 2) continue;
+      const s = Number(item[0]);
+      const e = Number(item[1]);
+      if (Number.isFinite(s) && Number.isFinite(e) && e > s) valid.push([s, e]);
+    }
+    if (!valid.length) return 0;
+    valid.sort((a, b) => a[0] - b[0]);
+    let mergedMs = 0;
+    let curStart = valid[0][0];
+    let curEnd = valid[0][1];
+    for (let i = 1; i < valid.length; i++) {
+      const [s, e] = valid[i];
+      if (s <= curEnd) {
+        if (e > curEnd) curEnd = e;
+      } else {
+        mergedMs += curEnd - curStart;
+        curStart = s;
+        curEnd = e;
+      }
+    }
+    mergedMs += curEnd - curStart;
+    return mergedMs / 1000;
+  }
+
+  function formatCompactDurationSec(sec, options = {}) {
+    if (sec === undefined || sec === null || !Number.isFinite(Number(sec)) || Number(sec) < 0) return '—';
+    const val = Number(sec);
+    const live = options.live === true;
+    if (val < 60) {
+      if (live) return `${Math.max(0, Math.floor(val))}s`;
+      return `${Number(val.toFixed(2))}s`;
+    }
+    const totalSec = live ? Math.floor(val) : Math.round(val);
+    if (totalSec < 3600) {
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      return `${m}m ${String(s).padStart(2, '0')}s`;
+    }
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return s > 0 ? `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s` : `${h}h ${String(m).padStart(2, '0')}m`;
+  }
+
+  /**
+   * 汇总最新一轮用户交互 (基于最新 userInput stepIndex 边界) 的真实端到端墙钟耗时与去向拆解：
+   * wallDurationSec = ttftSec (各步首字等待合计) + streamingSec (各步流式生成合计) + toolWallSec (工具并发去重墙钟) + scheduleGapSec (钩子/等待/间隙)
+   */
+  function summarizeTurnTiming(options = {}) {
+    const steps = Array.isArray(options.steps) ? options.steps : [];
+    const baseStepOffset = Number.isInteger(Number(options.stepOffset)) && Number(options.stepOffset) >= 0
+      ? Number(options.stepOffset)
+      : 0;
+    const explicitMinStepIdx = options.minStepIndex !== undefined && options.minStepIndex !== null && Number.isInteger(Number(options.minStepIndex)) && Number(options.minStepIndex) >= 0
+      ? Number(options.minStepIndex)
+      : null;
+    const explicitExecId = typeof options.turnExecutionId === 'string' && options.turnExecutionId.trim()
+      ? options.turnExecutionId.trim()
+      : null;
+    const generatorMetadata = Array.isArray(options.generatorMetadata) ? options.generatorMetadata : [];
+    const cascadeStatus = typeof options.cascadeStatus === 'string' && options.cascadeStatus.trim()
+      ? options.cascadeStatus.trim()
+      : null;
+    const fallbackTurnStartMs = parseTimestampMs(options.fallbackTurnStartMs);
+    const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : (parseTimestampMs(options.nowMs) ?? Date.now());
+
+    const getStepGlobalIndex = (s, localIdx) => {
+      const rawIdx = s?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+      if (rawIdx !== undefined && rawIdx !== null && rawIdx !== '' && Number.isInteger(Number(rawIdx)) && Number(rawIdx) >= 0) {
+        return Number(rawIdx);
+      }
+      return baseStepOffset + localIdx;
+    };
+
+    const getGmStepIndices = (g) => {
+      if (!g || typeof g !== 'object') return [];
+      if (Array.isArray(g.stepIndices) && g.stepIndices.length > 0) {
+        return g.stepIndices.map(Number).filter(n => Number.isFinite(n) && n >= 0);
+      }
+      const single = g.stepIndex ?? g.step_index;
+      if (single !== undefined && single !== null && single !== '' && Number.isFinite(Number(single)) && Number(single) >= 0) {
+        return [Number(single)];
+      }
+      return [];
+    };
+
+    let lastUserIdx = -1;
+    let lastUserGlobalIdx = null;
+    let latestStepExecId = null;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      if (!s || typeof s !== 'object') continue;
+      if (s.userInput) {
+        lastUserIdx = i;
+        lastUserGlobalIdx = getStepGlobalIndex(s, i);
+      }
+      const eid = s.metadata?.executionId ? String(s.metadata.executionId).trim() : '';
+      if (eid) latestStepExecId = eid;
+    }
+
+    let turnExecutionId = explicitExecId;
+    if (lastUserIdx >= 0 && steps[lastUserIdx]?.metadata?.executionId) {
+      turnExecutionId = String(steps[lastUserIdx].metadata.executionId).trim();
+    }
+    if (latestStepExecId) {
+      turnExecutionId = latestStepExecId;
+    }
+    if (!turnExecutionId) {
+      for (let i = generatorMetadata.length - 1; i >= 0; i--) {
+        const eid = generatorMetadata[i]?.executionId ? String(generatorMetadata[i].executionId).trim() : '';
+        if (eid) {
+          turnExecutionId = eid;
+          break;
+        }
+      }
+    }
+
+    let turnStartStepIndex = explicitMinStepIdx;
+    let turnSteps = [];
+    let turnStepGlobalIndices = [];
+    if (steps.length > 0) {
+      if (lastUserIdx >= 0) {
+        turnStartStepIndex = explicitMinStepIdx !== null && lastUserGlobalIdx !== null
+          ? Math.max(explicitMinStepIdx, lastUserGlobalIdx)
+          : lastUserGlobalIdx;
+        for (let i = lastUserIdx; i < steps.length; i++) {
+          const gIdx = getStepGlobalIndex(steps[i], i);
+          if (turnStartStepIndex !== null && gIdx < turnStartStepIndex) continue;
+          if (steps[i]) {
+            turnSteps.push(steps[i]);
+            turnStepGlobalIndices.push(gIdx);
+          }
+        }
+      } else if (explicitMinStepIdx !== null) {
+        for (let i = 0; i < steps.length; i++) {
+          const gIdx = getStepGlobalIndex(steps[i], i);
+          if (gIdx >= explicitMinStepIdx && steps[i]) {
+            turnSteps.push(steps[i]);
+            turnStepGlobalIndices.push(gIdx);
+          }
+        }
+      } else if (turnExecutionId) {
+        for (let i = 0; i < steps.length; i++) {
+          if (steps[i] && String(steps[i].metadata?.executionId || '').trim() === turnExecutionId) {
+            turnSteps.push(steps[i]);
+            turnStepGlobalIndices.push(getStepGlobalIndex(steps[i], i));
+          }
+        }
+      }
+    }
+
+    let turnStartMs = null;
+    let lastActivityMs = null;
+    let hasInFlightStep = false;
+    for (const s of turnSteps) {
+      const m = s?.metadata || {};
+      const cMs = parseTimestampMs(m.createdAt);
+      if (s.userInput && cMs !== null && (turnStartMs === null || cMs < turnStartMs)) {
+        turnStartMs = cMs;
+      }
+      const candidates = [m.createdAt, m.viewableAt, m.finishedGeneratingAt, m.startedAt, m.completedAt];
+      const transitions = Array.isArray(m.internalMetadata?.statusTransitions) ? m.internalMetadata.statusTransitions : [];
+      for (const tr of transitions) {
+        if (tr?.timestamp) candidates.push(tr.timestamp);
+      }
+      for (const rawTs of candidates) {
+        const ts = parseTimestampMs(rawTs);
+        if (ts !== null) {
+          if (turnStartMs === null || ts < turnStartMs) turnStartMs = ts;
+          if (lastActivityMs === null || ts > lastActivityMs) lastActivityMs = ts;
+        }
+      }
+      const lastTrStatus = transitions.length ? String(transitions[transitions.length - 1]?.updatedStatus || '') : String(s.status || '');
+      if (
+        !s.userInput &&
+        !m.completedAt &&
+        /RUNNING|GENERATING|PENDING/i.test(lastTrStatus) &&
+        !/DONE|COMPLETED|ERROR|CANCELED|FAILED/i.test(lastTrStatus)
+      ) {
+        hasInFlightStep = true;
+      }
+    }
+
+    const isFreshLocalDispatch = Boolean(
+      fallbackTurnStartMs !== null &&
+      (lastActivityMs === null || fallbackTurnStartMs > lastActivityMs + 200)
+    );
+    if (isFreshLocalDispatch) {
+      turnStartMs = fallbackTurnStartMs;
+      turnExecutionId = null;
+      turnStartStepIndex = null;
+      turnSteps = [];
+      turnStepGlobalIndices = [];
+      lastActivityMs = null;
+    } else if (turnStartMs === null && fallbackTurnStartMs !== null) {
+      turnStartMs = fallbackTurnStartMs;
+    }
+
+    const tailGm = generatorMetadata.length ? generatorMetadata[generatorMetadata.length - 1] : null;
+    const tailGmStreaming = Boolean(
+      !isFreshLocalDispatch &&
+      tailGm &&
+      (tailGm.isStreaming === true || tailGm.status === 'streaming')
+    );
+
+    let isRunning = false;
+    if (cascadeStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+      isRunning = true;
+    } else if (cascadeStatus !== null) {
+      isRunning = isFreshLocalDispatch;
+    } else {
+      isRunning = Boolean(isFreshLocalDispatch || hasInFlightStep || tailGmStreaming);
+    }
+
+    let turnGms = [];
+    if (!isFreshLocalDispatch) {
+      if (turnStartStepIndex !== null) {
+        turnGms = generatorMetadata.filter(g => {
+          if (!g) return false;
+          const idxs = getGmStepIndices(g);
+          if (idxs.length > 0) {
+            return idxs.some(idx => idx >= turnStartStepIndex);
+          }
+          return Boolean(turnExecutionId && String(g.executionId || '').trim() === turnExecutionId);
+        });
+      } else if (turnExecutionId) {
+        turnGms = generatorMetadata.filter(g => g && String(g.executionId || '').trim() === turnExecutionId);
+      } else if (steps.length === 0 && tailGm) {
+        turnGms = [tailGm];
+      }
+    }
+
+    let ttftSec = 0;
+    let latestTtftSec = null;
+    let streamingSec = 0;
+    let llmDurationSec = 0;
+    let outputTokens = 0;
+    let thinkingTokens = 0;
+    let responseTokens = 0;
+    let maxSettledGmStepIdx = -1;
+    const settledGmStepSet = new Set();
+    for (const g of turnGms) {
+      const cm = g?.chatModel || {};
+      const lastRetry = (cm.retryInfos || []).at(-1);
+      const usage = lastRetry ? lastRetry.usage : cm.usage;
+      const tSec = parseDurationSec(cm.timeToFirstToken);
+      const sSec = parseDurationSec(cm.streamingDuration);
+      if (tSec !== null) {
+        ttftSec += tSec;
+        latestTtftSec = tSec;
+        for (const idx of getGmStepIndices(g)) {
+          settledGmStepSet.add(idx);
+          if (idx > maxSettledGmStepIdx) maxSettledGmStepIdx = idx;
+        }
+      }
+      if (sSec !== null) streamingSec += sSec;
+      if (tSec !== null || sSec !== null) llmDurationSec += (tSec || 0) + (sSec || 0);
+      const out = number(usage?.outputTokens) || 0;
+      const think = number(usage?.thinkingOutputTokens) || 0;
+      const resp = number(usage?.responseOutputTokens);
+      outputTokens += out;
+      thinkingTokens += think;
+      responseTokens += resp !== null ? resp : Math.max(0, out - think);
+    }
+
+    const toolIntervals = [];
+    const completedToolIntervals = [];
+    let activeToolStartMs = null;
+    let toolCallCount = 0;
+    for (const s of turnSteps) {
+      const m = s?.metadata || {};
+      const transitions = Array.isArray(m.internalMetadata?.statusTransitions) ? m.internalMetadata.statusTransitions : [];
+      const lastTrStatus = transitions.length ? String(transitions[transitions.length - 1]?.updatedStatus || '') : String(s.status || '');
+      const runningTr = transitions.find(tr => /RUNNING/i.test(String(tr?.updatedStatus || '')) && tr?.timestamp);
+      const doneTr = [...transitions].reverse().find(tr => /DONE|COMPLETED|ERROR|CANCELED|FAILED/i.test(String(tr?.updatedStatus || '')) && tr?.timestamp);
+      const isToolStep = Boolean(m.toolCall) || (!s.userInput && !s.plannerResponse && !s.checkpoint && !s.errorMessage && (m.startedAt || runningTr || m.toolSource));
+      if (!isToolStep) continue;
+      toolCallCount++;
+      const isTerminal = Boolean(m.completedAt || doneTr) || /DONE|COMPLETED|ERROR|CANCELED|FAILED/i.test(lastTrStatus);
+      const isQueuedOnly = !isTerminal && !m.startedAt && !runningTr && /GENERATING|PENDING/i.test(lastTrStatus);
+      const stMs = isQueuedOnly
+        ? null
+        : (
+          parseTimestampMs(m.startedAt) ??
+          parseTimestampMs(runningTr?.timestamp) ??
+          (isTerminal ? parseTimestampMs(m.finishedGeneratingAt ?? m.viewableAt ?? m.createdAt) : null)
+        );
+      const completedMs = parseTimestampMs(m.completedAt) ?? parseTimestampMs(doneTr?.timestamp);
+      if (stMs !== null) {
+        if (completedMs !== null && completedMs > stMs) {
+          completedToolIntervals.push([stMs, completedMs]);
+          toolIntervals.push([stMs, completedMs]);
+        } else if (completedMs === null && isRunning && !isTerminal) {
+          activeToolStartMs = activeToolStartMs === null ? stMs : Math.min(activeToolStartMs, stMs);
+          if (nowMs > stMs) {
+            toolIntervals.push([stMs, nowMs]);
+          }
+        }
+      }
+    }
+    const completedToolWallSec = mergeTimeIntervals(completedToolIntervals);
+    const rawToolWallSec = mergeTimeIntervals(toolIntervals);
+
+    let inFlightTtftAnchorMs = null;
+    if (isRunning && activeToolStartMs === null && !tailGmStreaming) {
+      if (turnSteps.length === 0) {
+        inFlightTtftAnchorMs = turnStartMs;
+      } else {
+        const lastIdx = turnSteps.length - 1;
+        const lastStep = turnSteps[lastIdx];
+        const lastGlobalIdx = turnStepGlobalIndices[lastIdx];
+        const lm = lastStep?.metadata || {};
+        if (lastStep?.plannerResponse) {
+          if (!lm.viewableAt && !lm.finishedGeneratingAt && !lm.completedAt && !settledGmStepSet.has(lastGlobalIdx)) {
+            inFlightTtftAnchorMs = parseTimestampMs(lm.createdAt) ?? lastActivityMs ?? turnStartMs;
+          }
+        } else if (lastStep?.userInput) {
+          if (turnGms.length === 0) {
+            inFlightTtftAnchorMs = parseTimestampMs(lm.createdAt) ?? turnStartMs;
+          }
+        } else if (lm.completedAt && maxSettledGmStepIdx >= 0 && lastGlobalIdx > maxSettledGmStepIdx) {
+          inFlightTtftAnchorMs = parseTimestampMs(lm.completedAt) ?? lastActivityMs;
+        }
+      }
+    }
+    const inFlightTtftSec = (inFlightTtftAnchorMs !== null && nowMs >= inFlightTtftAnchorMs)
+      ? Number(((nowMs - inFlightTtftAnchorMs) / 1000).toFixed(2))
+      : null;
+
+    const minPhysicalWallSec = llmDurationSec + rawToolWallSec;
+    let wallDurationSec = null;
+    let hasAuthoritativeWallClock = false;
+    if (turnStartMs !== null) {
+      if (isRunning) {
+        wallDurationSec = Math.max(minPhysicalWallSec, Math.max(0, (nowMs - turnStartMs) / 1000));
+        hasAuthoritativeWallClock = true;
+      } else if (lastActivityMs !== null && lastActivityMs >= turnStartMs) {
+        wallDurationSec = Math.max(minPhysicalWallSec, (lastActivityMs - turnStartMs) / 1000);
+        hasAuthoritativeWallClock = true;
+      }
+    }
+    if (wallDurationSec === null && minPhysicalWallSec > 0) {
+      wallDurationSec = minPhysicalWallSec;
+    }
+
+    const nonLlmSec = wallDurationSec !== null ? Math.max(0, wallDurationSec - llmDurationSec) : 0;
+    const toolWallSec = Math.min(rawToolWallSec, nonLlmSec > 0 ? nonLlmSec : rawToolWallSec);
+    const scheduleGapSec = Math.max(0, nonLlmSec - toolWallSec);
+    const endToEndTps = (outputTokens > 0 && wallDurationSec && wallDurationSec > 0)
+      ? Number((outputTokens / wallDurationSec).toFixed(1))
+      : null;
+
+    return {
+      executionId: turnExecutionId || null,
+      turnStartStepIndex,
+      isRunning,
+      hasAuthoritativeWallClock,
+      turnStartMs,
+      lastActivityMs,
+      activeToolStartMs,
+      completedToolWallSec: Number(completedToolWallSec.toFixed(2)),
+      inFlightTtftAnchorMs,
+      inFlightTtftSec,
+      llmCalls: turnGms.length,
+      toolCalls: toolCallCount,
+      wallDurationSec: wallDurationSec !== null ? Number(wallDurationSec.toFixed(2)) : null,
+      llmDurationSec: Number(llmDurationSec.toFixed(2)),
+      ttftSec: Number(ttftSec.toFixed(2)),
+      latestTtftSec: latestTtftSec !== null ? Number(latestTtftSec.toFixed(2)) : null,
+      streamingSec: Number(streamingSec.toFixed(2)),
+      toolWallSec: Number(toolWallSec.toFixed(2)),
+      nonLlmSec: Number(nonLlmSec.toFixed(2)),
+      scheduleGapSec: Number(scheduleGapSec.toFixed(2)),
+      outputTokens,
+      thinkingTokens,
+      responseTokens,
+      endToEndTps
+    };
+  }
+
+  function mergePricingCatalogs(...catalogs) {
+    const merged = Object.create(null);
+    for (const cat of catalogs) {
+      if (!cat || typeof cat !== 'object') continue;
+      const map = (cat.models && typeof cat.models === 'object') ? cat.models : cat;
+      for (const [rawKey, rawRules] of Object.entries(map)) {
+        const key = sanitizeDynamicCatalogKey(rawKey);
+        if (!key) continue;
+        const rules = normalizePricingRuleList(rawRules);
+        if (!rules.length) continue;
+        if (!merged[key]) {
+          merged[key] = rules;
+        } else {
+          // 若主源缺 cache_read 或缺 200K 阶梯而备源更完整，则定向补齐
+          const existing = merged[key];
+          if (existing[0]?._cacheMissing && !rules[0]?._cacheMissing) {
+            merged[key] = existing.map((er, idx) => {
+              const fb = rules[idx] || rules[0];
+              if (!er._cacheMissing || !fb) return er;
+              const copy = { ...er, cacheReadPerMillion: fb.cacheReadPerMillion };
+              delete copy._cacheMissing;
+              return copy;
+            });
+          } else if (existing.length === 1 && rules.length > 1 && existing[0].inputPerMillion === rules[0].inputPerMillion) {
+            merged[key] = rules;
+          }
+        }
+      }
+    }
+    // 清理内部临时标记
+    const clean = Object.create(null);
+    for (const [k, list] of Object.entries(merged)) {
+      clean[k] = list.map((r) => {
+        const { _cacheMissing, ...rest } = r;
+        return rest;
+      });
+    }
+    return clean;
+  }
+
+  function setDynamicPricingCatalog(catalog) {
+    const next = Object.create(null);
+    let count = 0;
+    const rawModels = catalog && typeof catalog === 'object'
+      ? (catalog.models && typeof catalog.models === 'object' ? catalog.models : (!Array.isArray(catalog) && !catalog.updatedAt && !catalog.sources ? catalog : {}))
+      : {};
+    for (const [rawKey, rawRules] of Object.entries(rawModels)) {
+      const key = sanitizeDynamicCatalogKey(rawKey);
+      if (!key) continue;
+      const rules = normalizePricingRuleList(rawRules).map(({ _cacheMissing, ...rest }) => rest);
+      if (!rules.length) continue;
+      next[key] = rules;
+      count++;
+    }
+    DYNAMIC_PRICING_TABLE = next;
+    DYNAMIC_PRICING_META = {
+      updatedAt: catalog?.updatedAt || null,
+      fetchedAtMs: Number(catalog?.fetchedAtMs) || 0,
+      sources: Array.isArray(catalog?.sources) ? catalog.sources.filter(Boolean).map(String) : [],
+      modelCount: count,
+      customCount: Object.keys(CUSTOM_PRICING_TABLE).length
+    };
+    if (typeof clearDailyCostCache === 'function') clearDailyCostCache();
+    return { ...DYNAMIC_PRICING_META };
+  }
+
+  function setCustomPricingCatalog(customMap) {
+    const next = Object.create(null);
+    let count = 0;
+    const rawModels = customMap && typeof customMap === 'object'
+      ? (customMap.models && typeof customMap.models === 'object' ? customMap.models : customMap)
+      : {};
+    for (const [rawKey, rawRules] of Object.entries(rawModels)) {
+      const key = sanitizeDynamicCatalogKey(rawKey);
+      if (!key) continue;
+      const rules = normalizePricingRuleList(rawRules).map(({ _cacheMissing, ...rest }) => rest);
+      if (!rules.length) continue;
+      next[key] = rules;
+      count++;
+    }
+    CUSTOM_PRICING_TABLE = next;
+    DYNAMIC_PRICING_META.customCount = count;
+    if (typeof clearDailyCostCache === 'function') clearDailyCostCache();
+    return count;
+  }
+
+  function getDynamicPricingCatalog() {
+    const models = {};
+    for (const [k, v] of Object.entries(DYNAMIC_PRICING_TABLE)) {
+      models[k] = v.map(r => ({ ...r }));
+    }
+    const customModels = {};
+    for (const [k, v] of Object.entries(CUSTOM_PRICING_TABLE)) {
+      customModels[k] = v.map(r => ({ ...r }));
+    }
+    return {
+      ...DYNAMIC_PRICING_META,
+      models,
+      customModels
+    };
+  }
+
+  function lookupDynamicModelKey(raw) {
+    const hasCustom = Object.keys(CUSTOM_PRICING_TABLE).length > 0;
+    const hasDynamic = Object.keys(DYNAMIC_PRICING_TABLE).length > 0;
+    if (!hasCustom && !hasDynamic) return null;
+    const base = sanitizeDynamicCatalogKey(raw);
+    if (!base) return null;
+    const candidates = [base];
+    const pushUnique = (v) => { if (v && !candidates.includes(v)) candidates.push(v); };
+    // 尝试点号与连字符互换（如 claude-sonnet-4.6 <-> claude-sonnet-4-6）
+    if (base.includes('.')) pushUnique(base.replace(/\./g, '-'));
+    if (/(?:^|-)(\d+)-(\d+)(?=-|$)/.test(base)) pushUnique(base.replace(/(\d+)-(\d+)/g, '$1.$2'));
+    // 尝试剥离尾部档位词或 8 位日期后缀 / -latest / -preview（绝不剥离独立补丁版本号如 -5-5-1）
+    for (const c of [...candidates]) {
+      pushUnique(c.replace(/-(?:low|medium|high|xhigh|minimal|thinking)$/i, ''));
+      pushUnique(c.replace(/-\d{8}$/, ''));
+      pushUnique(c.replace(/-(?:latest|preview)$/i, ''));
+    }
+    for (const cand of candidates) {
+      if (CUSTOM_PRICING_TABLE[cand]) return cand;
+    }
+    for (const cand of candidates) {
+      if (DYNAMIC_PRICING_TABLE[cand]) return cand;
+    }
+    return null;
+  }
+
+  function getEffectivePricingRules(modelKey) {
+    if (!modelKey) return null;
+    return CUSTOM_PRICING_TABLE[modelKey] || GEMINI_PRICING_TABLE[modelKey] || DYNAMIC_PRICING_TABLE[modelKey] || null;
+  }
+
+
   function extractModelString(req) {
     if (!req) return '';
     if (typeof req === 'string') return req;
     const cm = req.chatModel;
-    return cm?.modelDisplayName || cm?.responseModel || cm?.model || req.modelDisplayName || req.responseModel || req.model || req.chatModel || req.modelId || '';
+    const lbl = cm?.modelDisplayName || req.modelLabel || req.modelDisplayName || '';
+    const exactId = req.modelExactId || cm?.modelId || req.modelId || '';
+    const mRaw = cm?.responseModel || cm?.model || req.responseModel || req.model || req.chatModel || '';
+    if (typeof lbl === 'string' && lbl.trim() && !/^model_placeholder_/i.test(lbl.trim()) && !/^placeholder[-_]/i.test(lbl.trim())) {
+      return lbl.trim();
+    }
+    if (
+      typeof mRaw === 'string' &&
+      mRaw.trim().toLowerCase() === 'gemini-pro-orchestrator' &&
+      typeof exactId === 'string' &&
+      exactId.trim()
+    ) {
+      return exactId.trim();
+    }
+    return mRaw || exactId || '';
   }
 
   function normalizeModelId(raw) {
     if (!raw || typeof raw !== 'string') return null;
     const str = raw.trim().toLowerCase();
-    if (str.includes('3.8-flash') || str.includes('3.8 flash') || str.includes('flash-n')) return 'gemini-3.8-flash';
-    if (str.includes('4-hydrogen') || str.includes('4 hydrogen') || str.includes('hydrogen')) return 'gemini-4-hydrogen';
-    // 注：2.32.1 客户端已将 gemini-pro-orchestrator 明确归为 Orchestrator (Argon)，仅明确的 carbon / m670 归为 gemini-4-carbon；未知 orchestrator 后缀保持未计价
-    if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || str.includes('m670')) return 'gemini-4-carbon';
-    if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?$/.test(str) || str.includes('m668')) return 'gemini-4-argon';
+    // 优先命中自定义覆写表中的精确模型名
+    const customHit = Object.keys(CUSTOM_PRICING_TABLE).length > 0 ? (() => {
+      const cleaned = sanitizeDynamicCatalogKey(raw);
+      return cleaned && CUSTOM_PRICING_TABLE[cleaned] ? cleaned : null;
+    })() : null;
+    if (customHit) return customHit;
+    if (str.includes('3.8-flash') || str.includes('3.8 flash') || str.includes('flash-n') || /(?:^|[^a-z0-9])(?:(?:model_)?placeholder[_-]?)?m(?:318|319|320|322)(?=$|[^a-z0-9])/.test(str)) return 'gemini-3.8-flash';
+    if (str.includes('4-hydrogen') || str.includes('4 hydrogen') || str.includes('hydrogen') || str.includes('worker-agy') || /(?:^|[^a-z0-9])(?:(?:model_)?placeholder[_-]?)?m(?:525|526|527|528|530|531|578|669)(?=$|[^a-z0-9])/.test(str)) return 'gemini-4-hydrogen';
+    if (str.includes('4-neon') || str.includes('4 neon') || /\bneon\b/.test(str) || /(?:^|[^a-z0-9])(?:(?:model_)?placeholder[_-]?)?m(?:532|533|534|535|537)(?=$|[^a-z0-9])/.test(str)) return 'gemini-4-neon';
+    // 注：2.32.1 客户端已将裸 gemini-pro-orchestrator 明确归为 Orchestrator (Argon)，而 M667/M670/carbon 归为 gemini-4-carbon；未知 orchestrator 后缀保持未计价
+    if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || /(?:^|[^a-z0-9])(?:(?:model_)?placeholder[_-]?)?m(?:427|437|438|667|670)(?=$|[^a-z0-9])/.test(str)) return 'gemini-4-carbon';
+    if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?$/.test(str) || /(?:^|[^a-z0-9])(?:(?:model_)?placeholder[_-]?)?m(?:417|418|419|668|681)(?=$|[^a-z0-9])/.test(str)) return 'gemini-4-argon';
     if (str.includes('3.1-pro') || str.includes('3.1 pro')) return 'gemini-3.1-pro-preview';
     if (str.includes('3.5-flash-lite') || str.includes('3.5 flash-lite') || str.includes('flash-lite')) return 'gemini-3.5-flash-lite';
     if (str.includes('2.5-pro') || str.includes('2.5 pro')) return 'gemini-2.5-pro';
-    if (/(?:opus[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]opus)/.test(str)) return 'claude-opus-5-5';
-    if (/(?:sonnet[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]sonnet)/.test(str)) return 'claude-sonnet-5-5';
-    return null;
+    if (/(?:opus[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]opus)/.test(str) || /(?:^|[^a-z0-9])(?:(?:model_)?placeholder[_-]?)?m(?:400|401|402)(?=$|[^a-z0-9])/.test(str)) return 'claude-opus-5-5';
+    if (/(?:sonnet[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]sonnet)/.test(str) || /(?:^|[^a-z0-9])(?:(?:model_)?placeholder[_-]?)?m(?:403|404|405)(?=$|[^a-z0-9])/.test(str)) return 'claude-sonnet-5-5';
+    return lookupDynamicModelKey(raw);
   }
 
   /**
@@ -1108,7 +2833,7 @@
   function resolvePlaceholderModelInfo(rawInput, cascadeModelConfigs = [], availableModels = null) {
     const rawStr = typeof rawInput === 'string'
       ? rawInput.trim()
-      : String(rawInput?.modelId || rawInput?.modelOrAlias?.model || rawInput?.modelRaw || rawInput?.model || '').trim();
+      : String(rawInput?.modelId || rawInput?.modelOrAlias?.model || rawInput?.modelRaw || rawInput?.model || rawInput?.modelExactId || '').trim();
     const isPlaceholder = /^model_placeholder_/i.test(rawStr);
     const configs = Array.isArray(cascadeModelConfigs) ? cascadeModelConfigs : [];
     const stripPrefix = s => String(s || '').trim().toLowerCase().replace(/^model_/, '');
@@ -1315,6 +3040,94 @@
     return true;
   }
 
+  /**
+   * 汇总当前会话的平均生成速度（与 ELV-91 纯流式口径对齐：优先累计输出 / 累计流式耗时，缺失流式耗时时回退整体平均）
+   */
+  function summarizeSessionSpeed(sessionCalls, fallbackSpeed = null) {
+    let count = 0;
+    let totalOutputTokens = 0;
+    let totalDurationSec = 0;
+    let singleOverallTps = null;
+
+    let streamCount = 0;
+    let totalStreamTokens = 0;
+    let totalStreamingSec = 0;
+    let singleStreamTps = null;
+
+    const list = Array.isArray(sessionCalls) ? sessionCalls : [];
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (!isValidSpeedSample(c)) continue;
+      const out = Number(c.outputTokens);
+      const dur = Number(c.durationSec);
+      count += 1;
+      totalOutputTokens += out;
+      totalDurationSec += dur;
+      if (count === 1) singleOverallTps = c.tps;
+
+      let sSec = Number(c.streamingSec);
+      const sTps = Number(c.streamingTps ?? c.streamSpeed);
+      if ((!Number.isFinite(sSec) || sSec < 0.05) && Number.isFinite(sTps) && sTps > 0) {
+        sSec = out / sTps;
+      }
+      if (Number.isFinite(sSec) && sSec >= 0.05) {
+        streamCount += 1;
+        totalStreamTokens += out;
+        totalStreamingSec += sSec;
+        if (streamCount === 1) singleStreamTps = (Number.isFinite(sTps) && sTps > 0) ? sTps : null;
+      }
+    }
+
+    if (count > 0 && totalDurationSec > 0 && totalOutputTokens > 0) {
+      const avgOverallTps = (count === 1 && Number.isFinite(Number(singleOverallTps)) && Number(singleOverallTps) > 0)
+        ? Number(Number(singleOverallTps).toFixed(1))
+        : Number((totalOutputTokens / totalDurationSec).toFixed(1));
+      let avgStreamTps = null;
+      if (streamCount > 0 && totalStreamingSec >= 0.05 && totalStreamTokens > 0) {
+        avgStreamTps = (streamCount === 1 && Number.isFinite(Number(singleStreamTps)) && Number(singleStreamTps) > 0)
+          ? Number(Number(singleStreamTps).toFixed(1))
+          : Number((totalStreamTokens / totalStreamingSec).toFixed(1));
+      }
+      return {
+        avgTps: avgStreamTps ?? avgOverallTps,
+        avgStreamTps,
+        avgOverallTps,
+        count,
+        streamCount,
+        totalOutputTokens,
+        totalDurationSec: Number(totalDurationSec.toFixed(2)),
+        totalStreamingSec: totalStreamingSec >= 0.05 ? Number(totalStreamingSec.toFixed(2)) : null,
+        isFallback: false
+      };
+    }
+
+    if (fallbackSpeed && !fallbackSpeed.isSampleSparse) {
+      const fbStreamTps = Number(fallbackSpeed.streamSpeed ?? fallbackSpeed.streamingTps);
+      const fbOverallTps = Number(fallbackSpeed.overallTps ?? fallbackSpeed.tps);
+      const fbHeadline = (Number.isFinite(fbStreamTps) && fbStreamTps > 0)
+        ? Number(fbStreamTps.toFixed(1))
+        : ((Number.isFinite(fbOverallTps) && fbOverallTps > 0) ? Number(fbOverallTps.toFixed(1)) : null);
+      if (fbHeadline !== null) {
+        const fbOut = Number(fallbackSpeed.outputTokens);
+        const fbDur = Number(fallbackSpeed.totalDurationSec ?? fallbackSpeed.durationSec ?? fallbackSpeed.duration);
+        const fbStreamSec = Number(fallbackSpeed.streamingSec);
+        return {
+          avgTps: fbHeadline,
+          avgStreamTps: (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? Number(fbStreamTps.toFixed(1)) : null,
+          avgOverallTps: (Number.isFinite(fbOverallTps) && fbOverallTps > 0) ? Number(fbOverallTps.toFixed(1)) : null,
+          count: 1,
+          streamCount: (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? 1 : 0,
+          totalOutputTokens: Number.isFinite(fbOut) && fbOut > 0 ? fbOut : 0,
+          totalDurationSec: Number.isFinite(fbDur) && fbDur > 0 ? Number(fbDur.toFixed(2)) : null,
+          totalStreamingSec: Number.isFinite(fbStreamSec) && fbStreamSec >= 0.05 ? Number(fbStreamSec.toFixed(2)) : null,
+          isFallback: true
+        };
+      }
+    }
+
+    return null;
+  }
+
   function computeMedian(values) {
     const clean = (Array.isArray(values) ? values : [])
       .map(Number)
@@ -1465,7 +3278,8 @@
     if (!req) return { costUSD: null, isPriced: false, reason: '缺失请求数据' };
     const rawModel = extractModelString(req);
     const modelKey = normalizeModelId(rawModel);
-    if (!modelKey || !GEMINI_PRICING_TABLE[modelKey]) {
+    const tierRules = getEffectivePricingRules(modelKey);
+    if (!modelKey || !tierRules || !tierRules.length) {
       return { costUSD: null, isPriced: false, modelKey: null, rawModel, reason: !rawModel ? '缺模型名称' : '未知模型或无官方公开费率' };
     }
     const input = Number(req.inputTokens ?? req.input_tokens ?? req.input ?? 0);
@@ -1493,7 +3307,6 @@
       }
       return d;
     })();
-    const tierRules = GEMINI_PRICING_TABLE[modelKey];
     let matchedTier = null;
 
     for (const rule of tierRules) {
@@ -1902,10 +3715,36 @@
     let priceRange = null;
     const rawTeamsTier = typeof planInfo.teamsTier === 'string' ? planInfo.teamsTier.trim() : '';
 
+    let multiplier = null;
+    if (Number.isFinite(Number(userTier.multiplier)) && Number(userTier.multiplier) > 0) {
+      multiplier = Number(userTier.multiplier);
+    } else if (Number.isFinite(Number(planInfo.multiplier)) && Number(planInfo.multiplier) > 0) {
+      multiplier = Number(planInfo.multiplier);
+    } else if (Number.isFinite(Number(planStatus.quotaMultiplier)) && Number(planStatus.quotaMultiplier) > 0) {
+      multiplier = Number(planStatus.quotaMultiplier);
+    } else if (Number.isFinite(Number(userTier.tierMultiplier)) && Number(userTier.tierMultiplier) > 0) {
+      multiplier = Number(userTier.tierMultiplier);
+    }
+
     if (/ultra/i.test(rawTierName) || /ultra/i.test(userTier.id || '') || /pro_ultimate|teams_tier_ultra/i.test(rawTeamsTier)) {
       tierKey = 'ultra';
+      // 检查明确的倍率子档，如 5x / 20x / 5X / 20X
+      let detectedMultiplierStr = null;
+      const combinedMeta = `${rawTierName} ${userTier.id || ''} ${rawTeamsTier}`;
+      const multStrMatch = combinedMeta.match(/(?:ultra)?[_\-\s]*(\d+x)\b/i);
+      if (multStrMatch) {
+        detectedMultiplierStr = multStrMatch[1].toLowerCase();
+        if (!multiplier) multiplier = parseInt(detectedMultiplierStr, 10);
+      } else if (multiplier) {
+        detectedMultiplierStr = `${multiplier}x`;
+      }
+
       const subTierMatch = rawTierName.match(/ultra\s*([0-9a-zA-Z\-_]+)/i);
-      if (subTierMatch && !['plan', 'tier'].includes(subTierMatch[1].toLowerCase())) {
+      if (detectedMultiplierStr) {
+        tierDisplayName = `Google AI Ultra (${detectedMultiplierStr})`;
+        officialPrice = null;
+        priceRange = `Google AI Ultra (${detectedMultiplierStr}) 子档`;
+      } else if (subTierMatch && !['plan', 'tier'].includes(subTierMatch[1].toLowerCase())) {
         tierDisplayName = `Google AI Ultra (${subTierMatch[1]})`;
         officialPrice = null;
         priceRange = '子档定制费率未知';
@@ -1940,6 +3779,7 @@
       status: 'identified',
       tierKey,
       tierName: tierDisplayName,
+      multiplier,
       tierId: userTier.id || null,
       teamsTier: planInfo.teamsTier || null,
       planName: planInfo.planName || tierDisplayName,
@@ -1975,7 +3815,7 @@
     const hasBreakdown = (input + cache + output) > 0;
 
     const normKey = normalizeModelId(modelKey) || 'gemini-3.8-flash';
-    const tierRules = GEMINI_PRICING_TABLE[normKey] || GEMINI_PRICING_TABLE['gemini-3.8-flash'];
+    const tierRules = getEffectivePricingRules(normKey) || GEMINI_PRICING_TABLE['gemini-3.8-flash'];
     const reqDate = options.pricingDate ? String(options.pricingDate).slice(0, 10) : '2026-11-08';
     let matchedTier = tierRules[0];
     for (const rule of tierRules) {
@@ -2390,8 +4230,67 @@
     let teamsTier = null;
     let planName = '未知';
     let tierSource = 'unknown';
+    let multiplier = rawLive?.multiplier || cachedLive?.multiplier || null;
 
-    if (rawLive && rawLive.status === 'identified' && rawLive.tierKey !== 'unknown') {
+    const rawTierOverride = effectiveCustom?.planTierOverride || effectiveCustom?.tierOverride || effectiveCustom?.planTier || null;
+    const normTierOverride = (typeof rawTierOverride === 'string' && rawTierOverride.trim() && rawTierOverride.trim().toLowerCase() !== 'auto')
+      ? rawTierOverride.trim()
+      : null;
+
+    if (normTierOverride) {
+      status = (rawLive && rawLive.status === 'identified') ? 'identified' : 'custom';
+      tierSource = 'custom';
+      tierId = rawLive?.tierId || cachedLive?.tierId || null;
+      teamsTier = rawLive?.teamsTier || cachedLive?.teamsTier || null;
+      const lowerOverride = normTierOverride.toLowerCase();
+
+      if (lowerOverride === 'free' || lowerOverride === 'teams_tier_free') {
+        tierKey = 'free';
+        tierName = 'Free';
+        planName = 'Free';
+        multiplier = null;
+      } else if (lowerOverride === 'pro' || lowerOverride === 'teams_tier_pro') {
+        tierKey = 'pro';
+        tierName = 'Google AI Pro';
+        planName = 'Google AI Pro';
+        multiplier = null;
+      } else if (lowerOverride === 'plus' || lowerOverride === 'teams_tier_plus') {
+        tierKey = 'plus';
+        tierName = 'Google AI Plus';
+        planName = 'Google AI Plus';
+        multiplier = null;
+      } else if (lowerOverride === 'ultra_5x' || lowerOverride === 'ultra 5x' || lowerOverride === 'ultra-5x' || lowerOverride === '5x') {
+        tierKey = 'ultra';
+        tierName = 'Google AI Ultra (5x)';
+        planName = 'Google AI Ultra (5x)';
+        multiplier = 5;
+      } else if (lowerOverride === 'ultra_20x' || lowerOverride === 'ultra 20x' || lowerOverride === 'ultra-20x' || lowerOverride === '20x') {
+        tierKey = 'ultra';
+        tierName = 'Google AI Ultra (20x)';
+        planName = 'Google AI Ultra (20x)';
+        multiplier = 20;
+      } else if (lowerOverride === 'ultra' || lowerOverride === 'google ai ultra') {
+        tierKey = 'ultra';
+        tierName = 'Google AI Ultra';
+        planName = 'Google AI Ultra';
+        multiplier = null;
+      } else {
+        const multMatch = normTierOverride.match(/(\d+x)/i);
+        if (/ultra/i.test(normTierOverride)) {
+          tierKey = 'ultra';
+          if (multMatch) {
+            multiplier = parseInt(multMatch[1], 10);
+            tierName = `Google AI Ultra (${multMatch[1].toLowerCase()})`;
+          } else {
+            tierName = normTierOverride;
+          }
+        } else {
+          tierKey = 'custom';
+          tierName = normTierOverride;
+        }
+        planName = tierName;
+      }
+    } else if (rawLive && rawLive.status === 'identified' && rawLive.tierKey !== 'unknown') {
       status = 'identified';
       tierKey = rawLive.tierKey;
       tierName = rawLive.tierName;
@@ -2399,6 +4298,7 @@
       teamsTier = rawLive.teamsTier || null;
       planName = rawLive.planName || rawLive.tierName;
       tierSource = 'live';
+      multiplier = rawLive.multiplier || multiplier;
     } else if (effectiveCustom && effectiveCustom.tierName) {
       status = 'custom';
       tierKey = effectiveCustom.tierKey || 'custom';
@@ -2415,6 +4315,7 @@
       teamsTier = cachedLive.teamsTier || null;
       planName = cachedLive.planName || cachedLive.tierName;
       tierSource = 'cached_live';
+      multiplier = cachedLive.multiplier || multiplier;
     }
 
     // 2A. 账号所在地区 (accountRegion / country) 独立取值：仅表示本地记录，不影响订阅国家与币种
@@ -2622,6 +4523,8 @@
       tierId,
       teamsTier,
       planName,
+      planTierOverride: normTierOverride || 'auto',
+      multiplier: multiplier || null,
       email: currentEmail,
       accountRegion: country,
       country,
@@ -2664,7 +4567,7 @@
         price: priceSource,
         acquisition: effectiveCustom?.acquisitionSource ? 'custom' : 'default'
       },
-      hasCustomSettings: Boolean(effectiveCustom && (effectiveCustom.country || effectiveCustom.region || effectiveCustom.subscriptionRegion || effectiveCustom.currency || effectiveCustom.actualPricePaid !== undefined || effectiveCustom.customNote || effectiveCustom.acquisitionSource)),
+      hasCustomSettings: Boolean(effectiveCustom && (normTierOverride || effectiveCustom.country || effectiveCustom.region || effectiveCustom.subscriptionRegion || effectiveCustom.currency || effectiveCustom.actualPricePaid !== undefined || effectiveCustom.customNote || effectiveCustom.acquisitionSource)),
       pricingTableVerifiedDate: '2026-11-09',
       updatedAt: rawLive?.updatedAt || new Date().toISOString()
     };
@@ -2767,10 +4670,10 @@
     const cacheReadStatsBySource = (payload.cacheReadStatsBySource && typeof payload.cacheReadStatsBySource === 'object')
       ? payload.cacheReadStatsBySource
       : {
-          all: summarizeDailyMapCacheStats(dailyMapBySource.all || normalizedMap),
-          desktop: summarizeDailyMapCacheStats(dailyMapBySource.desktop || {}),
-          cli: summarizeDailyMapCacheStats(dailyMapBySource.cli || {})
-        };
+        all: summarizeDailyMapCacheStats(dailyMapBySource.all || normalizedMap),
+        desktop: summarizeDailyMapCacheStats(dailyMapBySource.desktop || {}),
+        cli: summarizeDailyMapCacheStats(dailyMapBySource.cli || {})
+      };
 
     const rawConvs = Object.prototype.hasOwnProperty.call(rawSum, 'totalConversations')
       ? Number(rawSum.totalConversations)
@@ -3721,18 +5624,50 @@
   }
 
   /**
-   * 解析严格 v0.x.x 格式的语义化版本
-   * 防御性要求：只接受 ^v0\.\d+\.\d+$，任何 v2.x 或其他前缀均返回 null
+   * 解析严格 v0.x.x(-prerelease) 格式的语义化版本
+   * 防御性要求：只接受 ^v?0\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$，任何 v2.x 或其他前缀均返回 null
    */
   function parseSemver(tag) {
     if (!tag || typeof tag !== 'string') return null;
-    const m = tag.trim().match(/^v?0\.(\d+)\.(\d+)$/);
+    const m = tag.trim().match(/^v?0\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/);
     if (!m) return null;
-    return { major: 0, minor: parseInt(m[1], 10), patch: parseInt(m[2], 10) };
+    const parsed = { major: 0, minor: parseInt(m[1], 10), patch: parseInt(m[2], 10) };
+    if (m[3]) parsed.prerelease = m[3];
+    return parsed;
   }
 
   /**
-   * 语义化版本对比
+   * 对比 SemVer 预发布标识符序列
+   */
+  function comparePrereleaseIdentifiers(preA, preB) {
+    if (!preA && !preB) return 0;
+    if (!preA && preB) return 1;
+    if (preA && !preB) return -1;
+    const partsA = String(preA).split('.');
+    const partsB = String(preB).split('.');
+    const len = Math.max(partsA.length, partsB.length);
+    for (let i = 0; i < len; i += 1) {
+      if (i >= partsA.length) return -1;
+      if (i >= partsB.length) return 1;
+      const a = partsA[i];
+      const b = partsB[i];
+      if (a === b) continue;
+      const aNum = /^\d+$/.test(a);
+      const bNum = /^\d+$/.test(b);
+      if (aNum && bNum) {
+        const diff = parseInt(a, 10) - parseInt(b, 10);
+        if (diff !== 0) return diff > 0 ? 1 : -1;
+      } else if (aNum !== bNum) {
+        return aNum ? -1 : 1;
+      } else {
+        return a > b ? 1 : -1;
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * 语义化版本对比（支持预发布后缀：0.8.8 < 0.8.9-beta.1 < 0.8.9-beta.2 < 0.8.9）
    * @returns {number} 1 (vA > vB), -1 (vA < vB), 0 (相等或无法对比)
    */
   function compareVersions(vA, vB) {
@@ -3743,24 +5678,35 @@
     if (!b) return 1;
     if (a.minor !== b.minor) return a.minor > b.minor ? 1 : -1;
     if (a.patch !== b.patch) return a.patch > b.patch ? 1 : -1;
-    return 0;
+    return comparePrereleaseIdentifiers(a.prerelease, b.prerelease);
   }
 
   /**
    * 过滤并筛选可用更新 Release
+   * - 正式版用户默认（allowBetaUpdates !== true）不推送预发布版本
+   * - 预发布用户（如 0.8.9-beta.1）可识别并升级到后续 beta 或正式版（如 0.8.9）
    */
-  function filterReleases(releasesList, currentVersion = '0.8.8') {
+  function filterReleases(releasesList, currentVersion = '0.8.8', options = {}) {
     if (!Array.isArray(releasesList)) return [];
+    const allowBetaUpdates = options?.allowBetaUpdates === true;
+    const currentParsed = parseSemver(currentVersion);
+    const isCurrentBeta = Boolean(currentParsed && currentParsed.prerelease);
+    const acceptPrerelease = allowBetaUpdates || isCurrentBeta;
     const valid = [];
     for (const rel of releasesList) {
-      if (!rel || rel.draft || rel.prerelease) continue;
+      if (!rel || rel.draft) continue;
       const parsed = parseSemver(rel.tag_name);
       if (!parsed) continue; // 忽略非 v0.x 编号
-      const verStr = `0.${parsed.minor}.${parsed.patch}`;
+      const isRelPrerelease = Boolean(rel.prerelease || parsed.prerelease);
+      if (isRelPrerelease && !acceptPrerelease) continue;
+      const verStr = parsed.prerelease
+        ? `0.${parsed.minor}.${parsed.patch}-${parsed.prerelease}`
+        : `0.${parsed.minor}.${parsed.patch}`;
       if (compareVersions(verStr, currentVersion) > 0) {
         valid.push({
           tagName: rel.tag_name,
           version: verStr,
+          prerelease: isRelPrerelease,
           htmlUrl: rel.html_url,
           body: rel.body || '',
           publishedAt: rel.published_at || '',
@@ -3800,7 +5746,7 @@
   function normalizeModelLookupName(raw) {
     return String(raw || '')
       .toLowerCase()
-      .replace(/\([^)]*\)/g, ' ')
+      .replace(/[\(（]\s*(?:extra\s*high|xhigh|low|medium|high|extra|minimal|max|thinking)\s*[\)）]/gi, ' ')
       .replace(/\b(low|medium|high|xhigh|extra\s*high)\b/gi, ' ')
       .replace(/[^a-z0-9.\u4e00-\u9fa5]+/g, ' ')
       .replace(/\s+/g, ' ')
@@ -3847,15 +5793,47 @@
     return 10;
   }
 
+  function resolveQuotaWindowBucketPair(buckets = []) {
+    const list = Array.isArray(buckets) ? buckets.filter(Boolean) : [];
+    const findWindow = (targetKey, targetShort) => {
+      const candidates = list.filter(b => {
+        const wk = String(b.windowKey || '').trim().toLowerCase();
+        const ws = String(b.windowShort || '').trim().toLowerCase();
+        return wk === targetKey || ws === targetShort;
+      });
+      if (!candidates.length) return null;
+      const priced = candidates.filter(b => b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction)));
+      if (priced.length) {
+        return priced.slice().sort((a, b) => Number(a.remainingFraction) - Number(b.remainingFraction))[0];
+      }
+      return candidates[0];
+    };
+    return {
+      bucket5h: findWindow('5h', '5h'),
+      bucket7d: findWindow('weekly', '7d')
+    };
+  }
+
   /**
    * 统一选择主限额窗口（被 buildModelQuotaSnapshot 与顶栏徽章渲染共用）：
-   * 1) 优先 remainingFraction 最小的更紧缩窗口；
+   * 1) 支持 preferredMode: 'auto' (最紧缩优先) | '5h' | 'weekly' | 'both'；
    * 2) 相同剩余量按 5h -> 24h/daily -> 7d/weekly -> 其他 确定性排序；
    * 3) 返回 { primaryBucket, selectionReason } 供悬浮详情解释选择依据。
    */
-  function selectPrimaryQuotaBucket(buckets = []) {
+  function selectPrimaryQuotaBucket(buckets = [], preferredMode = 'auto') {
     const list = Array.isArray(buckets) ? buckets.filter(Boolean) : [];
     if (!list.length) return { primaryBucket: null, selectionReason: 'none' };
+    const mode = String(preferredMode || 'auto').trim().toLowerCase();
+    if (mode === '5h' || mode === 'weekly') {
+      const pair = resolveQuotaWindowBucketPair(list);
+      const picked = mode === '5h' ? pair.bucket5h : pair.bucket7d;
+      if (picked && picked.remainingFraction !== null && picked.remainingFraction !== undefined && Number.isFinite(Number(picked.remainingFraction))) {
+        return {
+          primaryBucket: picked,
+          selectionReason: list.length === 1 ? 'single_window' : (mode === '5h' ? 'user_5h' : 'user_weekly')
+        };
+      }
+    }
     const priced = list.filter(b => b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction)));
     if (!priced.length) {
       return { primaryBucket: list[0], selectionReason: list.length === 1 ? 'single_window' : 'unpriced_fallback' };
@@ -3936,12 +5914,12 @@
       const joinedHints = [g.groupId, title, desc, ...explicitModelNames].filter(Boolean).join(' ').toLowerCase();
       if (joinedHints.includes('3p') || joinedHints.includes('claude') || joinedHints.includes('gpt-oss')) {
         sharedKey = 'shared_3p_pool';
+      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('neon') || joinedHints.includes('flash')) {
+        sharedKey = 'shared_gemini_main';
       } else if (joinedHints.includes('argon')) {
         sharedKey = 'shared_gemini_argon';
       } else if (joinedHints.includes('carbon')) {
         sharedKey = 'shared_gemini_carbon';
-      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('flash')) {
-        sharedKey = 'shared_gemini_main';
       } else {
         sharedKey = `group_${g.groupId || normalizeModelLookupName(title) || idx}`;
       }
@@ -3960,15 +5938,25 @@
     // 2. 将 clientModelConfigs 按产品折叠多挡位（如 Low/Medium/High/XHigh）
     const productMap = new Map();
     const fallbackGroupNames = {
-      shared_gemini_main: 'Gemini 4 Hydrogen / Gemini 3.8 Flash',
+      shared_gemini_main: 'Gemini 4 Neon / Hydrogen / Gemini 3.8 Flash',
       shared_3p_pool: 'Claude Opus/Sonnet 5.5 / GPT-OSS 120B (第三方共享池)',
       shared_gemini_argon: 'Gemini 4 Argon / Orchestrator',
       shared_gemini_carbon: 'Gemini 4 Carbon'
     };
+    const CORE_SHARED_POOLS = new Set(Object.keys(fallbackGroupNames));
 
     for (const cfg of rawConfigs) {
       if (!cfg || typeof cfg !== 'object') continue;
       if (cfg.isHistorical === true) continue;
+      if (cfg.isInternal === true) continue;
+      const rawMId = String(cfg.modelId || cfg.model || '').trim().toLowerCase();
+      const rawMAlias = String(cfg.modelOrAlias?.model || '').trim().toLowerCase();
+      if ((rawMId.startsWith('chat_') && /^chat_\d+$/.test(rawMId)) || (rawMAlias.startsWith('chat_') && /^chat_\d+$/.test(rawMAlias))) continue;
+      if (rawMId.startsWith('tab_') || rawMAlias.startsWith('tab_')) continue;
+      const isLegacyRetiredCfg = /^gemini-2\.5-/i.test(rawMId)
+        || /^gemini-2\.5-/i.test(rawMAlias)
+        || /^gemini\s*2\.5\b/i.test(String(cfg.label || ''));
+      if (isLegacyRetiredCfg) continue;
       const gInfo = groupModelProduct(cfg);
       const avail = classifyModelQuotaAvailability(cfg, planStatus);
       const qi = cfg.quotaInfo || {};
@@ -3987,6 +5975,9 @@
       }) || null;
 
       const resolvedSharedKey = matchedSummaryGroup ? matchedSummaryGroup.sharedKey : defaultSharedKey;
+      const allowDynamicCfg = !isLegacyRetiredCfg && resolvedSharedKey !== 'unknown' && (parsedFrac.hasValue || resetMeta.hasResetTime);
+      if (!CORE_SHARED_POOLS.has(resolvedSharedKey) && !matchedSummaryGroup && !allowDynamicCfg) continue;
+
       const pKey = `${resolvedSharedKey}::${gInfo.productKey}`;
 
       let prod = productMap.get(pKey);
@@ -4098,11 +6089,14 @@
     };
 
     for (const pg of parsedGroups) {
-      ensurePool(pg.sharedKey, pg.title, pg);
+      if (CORE_SHARED_POOLS.has(pg.sharedKey) || (Array.isArray(pg.buckets) && pg.buckets.length > 0)) {
+        ensurePool(pg.sharedKey, pg.title, pg);
+      }
     }
 
     for (const prod of productMap.values()) {
       const sKey = prod.sharedGroupKey;
+      if (!sKey || sKey === 'unknown') continue;
       const summaryGroup = parsedGroups.find(pg => pg.sharedKey === sKey) || null;
       const pool = ensurePool(sKey, prod.productLabel, summaryGroup);
       pool.models.push({
@@ -4241,21 +6235,46 @@
 
     // 4. 匹配当前会话模型与浏览查看池（浏览不修改 currentModel）
     const findMatchedForTarget = (targetInput) => {
-      if (!targetInput) return { pool: null, model: null };
-      const targetStr = typeof targetInput === 'object'
-        ? String(targetInput.modelId || targetInput.modelOrAlias?.model || targetInput.label || targetInput.model || '')
-        : String(targetInput);
-      const tLower = targetStr.trim().toLowerCase();
-      const tStripped = tLower.replace(/^model_/, '');
-      const tNorm = normalizeModelLookupName(targetStr);
+      if (!targetInput || targetInput.isUnknownModel) return { pool: null, model: null };
+      const targetCandidates = typeof targetInput === 'object'
+        ? [targetInput.modelId, targetInput.modelOrAlias?.model, targetInput.label, targetInput.model]
+          .filter(v => typeof v === 'string' && v.trim())
+        : [String(targetInput)].filter(v => v.trim());
+      const targetProductKey = typeof targetInput === 'object' && targetInput.productKey
+        ? String(targetInput.productKey).trim()
+        : '';
+      if (targetCandidates.length === 0 && !targetProductKey) return { pool: null, model: null };
+      const targetLowers = targetCandidates.map(v => v.trim().toLowerCase());
+      const targetStripped = targetLowers.map(v => v.replace(/^model_/, ''));
+      const targetNorms = [...new Set(targetCandidates.map(normalizeModelLookupName).filter(Boolean))];
 
+      // 1. 最高优先级：精确 modelId / aliases（避免跨池名称模糊匹配抢占 M667/M668/M537 等独立实体）
       for (const pool of pools) {
         for (const m of pool.models) {
           const allIds = [...m.modelIds, ...m.aliases].map(x => x.toLowerCase());
-          if (allIds.some(id => id === tLower || id.replace(/^model_/, '') === tStripped)) {
+          if (allIds.some(id => targetLowers.includes(id) || targetStripped.includes(id.replace(/^model_/, '')))) {
             return { pool, model: m };
           }
-          if (tNorm && normalizeModelLookupName(m.productLabel) === tNorm) {
+        }
+      }
+      // 2. 次优先级：精确 productKey
+      if (targetProductKey) {
+        for (const pool of pools) {
+          for (const m of pool.models) {
+            if (m.productKey && m.productKey === targetProductKey) {
+              return { pool, model: m };
+            }
+          }
+        }
+      }
+      // 3. 展示名与归一化产品名匹配
+      for (const pool of pools) {
+        for (const m of pool.models) {
+          if (m.productLabel && targetLowers.includes(m.productLabel.toLowerCase())) {
+            return { pool, model: m };
+          }
+          const mNorm = normalizeModelLookupName(m.productLabel);
+          if (mNorm && targetNorms.includes(mNorm)) {
             return { pool, model: m };
           }
         }
@@ -4288,6 +6307,18 @@
       syncState = 'fresh';
     } else {
       syncState = 'unknown';
+    }
+
+    for (const pool of pools) {
+      const paceStatus = pool.noPermission
+        ? 'no_permission'
+        : (syncState === 'error' || syncState === 'stale' ? syncState : pool.status);
+      for (const b of (pool.buckets || [])) {
+        b.pace = evaluateQuotaPace(b, nowMs, { status: paceStatus });
+      }
+      if (pool.primaryBucket && !pool.primaryBucket.pace) {
+        pool.primaryBucket.pace = evaluateQuotaPace(pool.primaryBucket, nowMs, { status: paceStatus });
+      }
     }
 
     // 6. 顶栏与概览裁决（严禁仅凭网络错误显示耗尽；不只是颜色表达）
@@ -4334,7 +6365,7 @@
         badgeText = p.percentText;
         badgeTag = syncState === 'stale' ? '过期' : (p.primaryBucket?.windowShort || '');
       }
-    } else if (syncState === 'stale') {
+    } else if (!input.currentModel?.isUnknownModel && syncState === 'stale') {
       activeStatus = 'stale';
       activeStatusLabel = '数据过期';
       badgeText = '过期';
@@ -4355,14 +6386,14 @@
       errorKind,
       currentModel: currentMatch.model
         ? {
-            productKey: currentMatch.model.productKey,
-            productLabel: currentMatch.model.productLabel,
-            poolKey: currentMatch.pool.poolKey,
-            poolTitle: currentMatch.pool.title,
-            noPermission: currentMatch.model.noPermission,
-            unavailabilityReason: currentMatch.model.unavailabilityReason,
-            noticeText: currentMatch.model.noticeText
-          }
+          productKey: currentMatch.model.productKey,
+          productLabel: currentMatch.model.productLabel,
+          poolKey: currentMatch.pool.poolKey,
+          poolTitle: currentMatch.pool.title,
+          noPermission: currentMatch.model.noPermission,
+          unavailabilityReason: currentMatch.model.unavailabilityReason,
+          noticeText: currentMatch.model.noticeText
+        }
         : (input.currentModel ? { productLabel: String(input.currentModel?.label || input.currentModel), poolKey: null, poolTitle: null } : null),
       activeStatus,
       activeStatusLabel,
@@ -4403,6 +6434,132 @@
     if (k === 'weekly' || k === '7d' || k.includes('week')) return 7 * 86400000;
     if (k === 'daily' || k === '24h' || k.includes('day')) return 24 * 3600000;
     return null;
+  }
+
+  const QUOTA_PACE_TIERS = {
+    1: { tier: 1, tierKey: 'surplus', colorGroup: 'green', colorDark: '#22C55E', colorLight: '#16A34A' },
+    2: { tier: 2, tierKey: 'balanced', colorGroup: 'green', colorDark: '#34D399', colorLight: '#10B981' },
+    3: { tier: 3, tierKey: 'fast', colorGroup: 'amber', colorDark: '#F59E0B', colorLight: '#D97706' },
+    4: { tier: 4, tierKey: 'overburn', colorGroup: 'red', colorDark: '#EF4444', colorLight: '#DC2626' }
+  };
+
+  /**
+   * 评估单个限额窗口（5h / weekly）的消耗节奏与 20 格分段显示参数
+   */
+  function evaluateQuotaPace(bucket, nowMs = Date.now(), options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    if (!bucket || typeof bucket !== 'object') {
+      return { available: false, reason: 'invalid_bucket' };
+    }
+    const status = String(opts.status ?? bucket.status ?? '').trim().toLowerCase();
+    if (status === 'no_permission' || status === 'error' || status === 'unknown' || status === 'stale') {
+      return { available: false, reason: status };
+    }
+
+    const rawFrac = bucket.remainingFraction;
+    if (rawFrac === null || rawFrac === undefined || !Number.isFinite(Number(rawFrac))) {
+      return { available: false, reason: 'missing_fraction' };
+    }
+
+    const windowKey = String(bucket.windowKey || '').trim().toLowerCase();
+    const windowShort = String(bucket.windowShort || '').trim().toLowerCase();
+    let windowDurationMs = null;
+    if (windowKey === '5h' || windowShort === '5h') {
+      windowDurationMs = 5 * 3600 * 1000;
+    } else if (windowKey === 'weekly' || windowShort === '7d') {
+      windowDurationMs = 7 * 24 * 3600 * 1000;
+    }
+    if (!windowDurationMs) {
+      return { available: false, reason: 'unknown_window' };
+    }
+
+    const curNow = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+    let resetAtMs = null;
+    if (bucket.resetAtMs !== null && bucket.resetAtMs !== undefined && Number.isFinite(Number(bucket.resetAtMs))) {
+      resetAtMs = Number(bucket.resetAtMs);
+    } else if (typeof (bucket.resetTimeIso || bucket.resetTime || bucket.reset_time) === 'string') {
+      const parsed = Date.parse(String(bucket.resetTimeIso || bucket.resetTime || bucket.reset_time));
+      if (Number.isFinite(parsed)) resetAtMs = parsed;
+    }
+
+    if (!resetAtMs || bucket.hasResetTime === false) {
+      return { available: false, reason: 'missing_reset_time' };
+    }
+    if (bucket.isResetPassed === true || resetAtMs <= curNow) {
+      return { available: false, reason: 'reset_passed' };
+    }
+
+    const PACE_EPS = 1e-9;
+    const quotaRemaining = Math.max(0, Math.min(1, Number(rawFrac)));
+    const remainingTimeMs = Math.max(0, resetAtMs - curNow);
+    const timeRemaining = Math.max(0, Math.min(1, remainingTimeMs / windowDurationMs));
+    const delta = Math.max(-1, Math.min(1, quotaRemaining - timeRemaining));
+
+    const totalBlocks = 20;
+    const rawUnits = quotaRemaining * totalBlocks;
+    const fullBlocks = Math.min(totalBlocks, Math.floor(rawUnits + PACE_EPS));
+    const partialRaw = fullBlocks >= totalBlocks ? 0 : Math.max(0, rawUnits - fullBlocks);
+    const partialBlockFrac = partialRaw < PACE_EPS ? 0 : Number(partialRaw.toFixed(6));
+    const hasMinVisibleBlock = quotaRemaining > 0 && fullBlocks === 0 && partialBlockFrac > 0;
+    const partialVisualOpacity = hasMinVisibleBlock && partialBlockFrac < 0.25 ? 0.25 : partialBlockFrac;
+
+    const isExhausted = quotaRemaining === 0 || bucket.isExhausted === true;
+    let tier = 1;
+    if (isExhausted || delta < -0.40 - PACE_EPS || (quotaRemaining < 0.25 - PACE_EPS && delta < -0.20 - PACE_EPS)) {
+      tier = 4;
+    } else if (delta < -0.05 - PACE_EPS) {
+      tier = 3;
+    } else if (delta < 0.10 - PACE_EPS) {
+      tier = 2;
+    } else {
+      tier = 1;
+    }
+    const tierMeta = QUOTA_PACE_TIERS[tier];
+
+    const quotaPct = Number((quotaRemaining * 100).toFixed(1));
+    const timePct = Math.round(timeRemaining * 100);
+    const rawDeltaPct = delta * 100;
+    const deltaPct = Math.abs(rawDeltaPct) < 0.05 ? 0 : Math.round(rawDeltaPct);
+    const hasGap = delta < -1e-4;
+    const gapLeftPct = Number((quotaRemaining * 100).toFixed(2));
+    const gapWidthPct = hasGap ? Number(((timeRemaining - quotaRemaining) * 100).toFixed(2)) : 0;
+
+    const elapsedFrac = 1 - timeRemaining;
+    const usedFrac = 1 - quotaRemaining;
+    let estRunoutMs = null;
+    if (!isExhausted && elapsedFrac >= 0.05 && usedFrac > 0 && quotaRemaining > 0) {
+      const projected = Math.round((quotaRemaining / usedFrac) * elapsedFrac * windowDurationMs);
+      if (Number.isFinite(projected) && projected > 0 && projected < remainingTimeMs) {
+        estRunoutMs = projected;
+      }
+    }
+
+    return {
+      available: true,
+      windowDurationMs,
+      remainingTimeMs,
+      quotaRemaining,
+      timeRemaining,
+      delta,
+      quotaPct,
+      timePct,
+      deltaPct,
+      totalBlocks,
+      fullBlocks,
+      partialBlockFrac,
+      hasMinVisibleBlock,
+      partialVisualOpacity,
+      tier: tierMeta.tier,
+      tierKey: tierMeta.tierKey,
+      colorGroup: tierMeta.colorGroup,
+      colorDark: tierMeta.colorDark,
+      colorLight: tierMeta.colorLight,
+      hasGap,
+      gapLeftPct,
+      gapWidthPct,
+      isExhausted,
+      estRunoutMs
+    };
   }
 
   const QUOTA_CAL_TTL_MS = {
@@ -4451,12 +6608,26 @@
       };
     }
 
+    const accountScopeKey = options.accountScopeKey ? String(options.accountScopeKey).trim() : null;
     const poolModelKeys = new Set();
+    const poolExactIds = new Set();
     if (Array.isArray(pool?.models)) {
       for (const m of pool.models) {
-        for (const rawId of [...(m.modelIds || []), ...(m.aliases || []), m.productLabel]) {
-          const pk = getModelPoolKey(rawId);
-          if (pk && pk !== 'unknown') poolModelKeys.add(pk);
+        const rawIds = [...(m.modelIds || []), ...(m.aliases || [])];
+        for (const rawId of rawIds) {
+          const clean = String(rawId || '').trim().toLowerCase();
+          if (clean) {
+            poolExactIds.add(clean);
+            poolExactIds.add(clean.replace(/^model_/, ''));
+          }
+        }
+        // Orchestrator (Argon) 在新版服务端中划入 Gemini Models 共享池，仅用精确 modelIds/aliases 匹配，避免反吞 Gemini 4 Argon (M417) 独立池用量
+        const isCrossPoolArgon = m.productKey === 'product:google:orchestrator-argon' && pool.poolKey !== 'shared_gemini_argon';
+        if (!isCrossPoolArgon) {
+          for (const rawId of [...rawIds, m.productLabel]) {
+            const pk = getModelPoolKey(rawId);
+            if (pk && pk !== 'unknown') poolModelKeys.add(pk);
+          }
         }
       }
     }
@@ -4516,8 +6687,14 @@
     if (effectiveStartMs !== null) {
       for (const ev of events) {
         if (!ev || typeof ev !== 'object') continue;
+        if (ev.accountScopeKey && accountScopeKey && accountScopeKey !== 'anonymous' && String(ev.accountScopeKey).trim() !== accountScopeKey) {
+          continue;
+        }
+        const evExactId = String(ev.modelExactId || ev.modelId || '').trim().toLowerCase();
+        const evExactStripped = evExactId.replace(/^model_/, '');
+        const matchesExact = Boolean(evExactId && (poolExactIds.has(evExactId) || poolExactIds.has(evExactStripped)));
         const evShared = ev.sharedGroupKey || (ev.poolKey ? getSharedQuotaGroupKey(ev.poolKey) : null);
-        const matchesPool = (poolSharedKey && evShared === poolSharedKey) || (ev.poolKey && poolModelKeys.has(ev.poolKey));
+        const matchesPool = matchesExact || (poolSharedKey && evShared === poolSharedKey) || (ev.poolKey && poolModelKeys.has(ev.poolKey));
         if (!matchesPool) continue;
         const ts = Number(ev.ts ?? ev.timestamp);
         const inp = Math.max(0, Number(ev.inputTokens || 0));
@@ -4587,10 +6764,31 @@
       };
     }
 
-    let anchorFraction = (prev && typeof prev.anchorFraction === 'number' && !isNewCycle)
+    const historyLoaded = options.historyLoaded !== false;
+    const prevAnchorTokensNum = (prev && typeof prev.anchorCycleTokens === 'number') ? prev.anchorCycleTokens : null;
+    const isLegacyAccountingReset = Boolean(
+      !isNewCycle &&
+      historyLoaded &&
+      prev &&
+      prev.usageAccountingRev !== 2 &&
+      (prev.externalDivergenceInCycle === true || (prevAnchorTokensNum !== null && prevAnchorTokensNum > 0 && cycleTokensUsed < prevAnchorTokensNum))
+    );
+    if (isLegacyAccountingReset) {
+      divergenceInCycle = false;
+      invalidationReason = null;
+      if (calSource === 'cycle' || (prevAnchorTokensNum !== null && prevAnchorTokensNum > 0 && cycleTokensUsed < prevAnchorTokensNum)) {
+        calibratedTotal = null;
+        calibratedAt = null;
+        calibratedResetAtMs = null;
+        sampleCount = 0;
+        calSource = null;
+      }
+    }
+
+    let anchorFraction = (prev && typeof prev.anchorFraction === 'number' && !isNewCycle && !isLegacyAccountingReset)
       ? prev.anchorFraction
       : frac;
-    let anchorCycleTokens = (prev && typeof prev.anchorCycleTokens === 'number' && !isNewCycle)
+    let anchorCycleTokens = (prev && typeof prev.anchorCycleTokens === 'number' && !isNewCycle && !isLegacyAccountingReset)
       ? prev.anchorCycleTokens
       : cycleTokensUsed;
 
@@ -4598,6 +6796,26 @@
     if (frac > anchorFraction && (frac - anchorFraction) < 0.04 && !resetShiftedForward) {
       anchorFraction = frac;
       anchorCycleTokens = cycleTokensUsed;
+    }
+
+    // 当先前因轮询竞态（配额先降、本地历史滞后未到）误判 external_divergence 时，
+    // 若未发生新一轮额外降幅且随后本地增量追平并吻合，自动自愈解除本周期锁定
+    if (
+      !isNewCycle &&
+      historyLoaded &&
+      divergenceInCycle &&
+      invalidationReason === 'external_divergence' &&
+      prev &&
+      typeof prev.lastFraction === 'number' &&
+      frac >= prev.lastFraction - 0.005 &&
+      (anchorFraction - frac) >= 0.02 &&
+      (cycleTokensUsed - anchorCycleTokens) >= 2000
+    ) {
+      const recoverTotal = (cycleTokensUsed - anchorCycleTokens) / (anchorFraction - frac);
+      if (Number.isFinite(recoverTotal) && recoverTotal >= 15000 && recoverTotal <= 1e11 && (calibratedTotal === null || recoverTotal >= calibratedTotal * 0.25)) {
+        divergenceInCycle = false;
+        invalidationReason = null;
+      }
     }
 
     const deltaF = anchorFraction - frac;
@@ -4609,8 +6827,8 @@
         const sampleTotal = deltaTok / deltaF;
         const outOfBounds = !Number.isFinite(sampleTotal) || sampleTotal < 15000 || sampleTotal > 1e11;
         const tooLowVsPrior = calibratedTotal !== null && sampleTotal < calibratedTotal * 0.25;
-        const tooHighVsPrior = calibratedTotal !== null && sampleTotal > calibratedTotal * 4.5;
-        if (!outOfBounds && !tooLowVsPrior && !tooHighVsPrior) {
+        const extremeHighNoise = calibratedTotal !== null && sampleTotal > calibratedTotal * 12;
+        if (!outOfBounds && !tooLowVsPrior && !extremeHighNoise) {
           if (calibratedTotal !== null && sampleCount >= 1) {
             const clamped = Math.max(calibratedTotal * 0.35, Math.min(calibratedTotal * 3, sampleTotal));
             calibratedTotal = sampleCount >= 2 ? (calibratedTotal * 0.6 + clamped * 0.4) : (calibratedTotal * 0.4 + clamped * 0.6);
@@ -4625,10 +6843,14 @@
           invalidationReason = null;
           anchorFraction = frac;
           anchorCycleTokens = cycleTokensUsed;
+        } else if (extremeHighNoise) {
+          // 缓存命中率或轻权重模型导致的单次高倍率波动，仅跳过本次样本更新并推进锚点，不误判为他端漏采
+          anchorFraction = frac;
+          anchorCycleTokens = cycleTokensUsed;
         } else {
           externalDivergence = true;
           divergenceInCycle = true;
-          invalidationReason = tooHighVsPrior ? 'calibration_ratio_drift' : (tooLowVsPrior ? 'external_divergence' : 'delta_out_of_bounds');
+          invalidationReason = tooLowVsPrior ? 'external_divergence' : 'delta_out_of_bounds';
         }
       } else if ((deltaF >= 0.03 && deltaTok < 500) || (deltaF >= 0.15 && deltaTok < 2000)) {
         // 同周期可观测窗口内额度明显下降 (>=3% 且几乎零本地消耗，或 >=15% 且增量不足 2,000) -> 外部/他端消耗或漏采
@@ -4644,8 +6866,8 @@
           if (cycleTokensUsed >= 3000) {
             const cycleTotal = cycleTokensUsed / usedFrac;
             const outOfBounds = !Number.isFinite(cycleTotal) || cycleTotal < 15000 || cycleTotal > 1e11 || (usedFrac >= 0.1 && cycleTotal < 15000);
-            const deviatesVsPrior = calibratedTotal !== null && (cycleTotal < calibratedTotal * 0.25 || cycleTotal > calibratedTotal * 4.5);
-            if (!outOfBounds && !deviatesVsPrior) {
+            const tooLowCycleVsPrior = calibratedTotal !== null && cycleTotal < calibratedTotal * 0.25;
+            if (!outOfBounds && !tooLowCycleVsPrior) {
               if (calibratedTotal === null || calSource !== 'delta') {
                 calibratedTotal = cycleTotal;
                 calSource = 'cycle';
@@ -4658,7 +6880,7 @@
             } else {
               externalDivergence = true;
               divergenceInCycle = true;
-              invalidationReason = deviatesVsPrior ? 'external_divergence' : 'cycle_out_of_bounds';
+              invalidationReason = tooLowCycleVsPrior ? 'external_divergence' : 'cycle_out_of_bounds';
             }
           } else if ((usedFrac >= 0.05 && cycleTokensUsed < 500) || (usedFrac >= 0.15 && cycleTokensUsed < 2000)) {
             externalDivergence = true;
@@ -4756,6 +6978,7 @@
 
     const nextCalibrationEntry = {
       schemaVersion: 2,
+      usageAccountingRev: 2,
       calibratedTotalTokens: calibratedTotal !== null ? Math.round(calibratedTotal) : null,
       calibratedAt: calibratedAt ?? null,
       calibratedResetAtMs: calibratedResetAtMs ?? null,
@@ -4815,8 +7038,10 @@
         const entryKey = `${scopeKey}::${pool.poolKey}::${bucket.windowKey || bucket.bucketId || 'primary'}`;
         const est = computeBucketTokenEstimate(pool, bucket, {
           nowMs,
+          accountScopeKey: scopeKey,
           usageEvents,
           historyCoverageStartMs,
+          historyLoaded: options.historyLoaded,
           calibrationEntry: prevMap[entryKey] || null
         });
         if (est.nextCalibrationEntry) {
@@ -4887,6 +7112,10 @@
           pathname === '/u/23375'
         );
       }
+      if (u.hostname === 'agy-rehydrate.pages.dev') {
+        const pathname = u.pathname.replace(/\/+$/, '');
+        return pathname === '';
+      }
       return false;
     } catch {
       return false;
@@ -4937,98 +7166,11 @@
   };
   const MODEL_FALLBACK_PALETTE_DARK = ['#a78bfa', '#38bdf8', '#6366f1', '#2dd4bf', '#f59e0b', '#e879f9', '#10b981', '#f472b6'];
   const MODEL_FALLBACK_PALETTE_LIGHT = ['#7c3aed', '#0284c7', '#4f46e5', '#0d9488', '#d97706', '#c026d3', '#059669', '#db2777'];
-  const MODEL_USAGE_ID_FALLBACK_LABELS = {
-    'gemini-flash-worker-agy': 'Gemini 4 Hydrogen (Orchestrator)',
-    'model_placeholder_m669': 'Gemini 4 Hydrogen (Orchestrator)',
-    'placeholder-m669': 'Gemini 4 Hydrogen (Orchestrator)',
-    'm669': 'Gemini 4 Hydrogen (Orchestrator)',
-    'model_placeholder_m667': 'Orchestrator (Carbon)',
-    'placeholder-m667': 'Orchestrator (Carbon)',
-    'm667': 'Orchestrator (Carbon)',
-    'model_placeholder_m681': 'Orchestrator (Argon)',
-    'placeholder-m681': 'Orchestrator (Argon)',
-    'm681': 'Orchestrator (Argon)',
-    'model_placeholder_m668': 'Orchestrator (Argon)',
-    'placeholder-m668': 'Orchestrator (Argon)',
-    'm668': 'Orchestrator (Argon)',
-    'model_placeholder_m670': 'Gemini 4 Carbon',
-    'placeholder-m670': 'Gemini 4 Carbon',
-    'm670': 'Gemini 4 Carbon',
-    'gemini-4-hydrogen-sonar': 'Gemini 4 Hydrogen',
-    'model_placeholder_m578': 'Gemini 4 Hydrogen',
-    'm578': 'Gemini 4 Hydrogen',
-    'gemini-4-hydrogen-tiered-high': 'Gemini 4 Hydrogen (High)',
-    'model_placeholder_m530': 'Gemini 4 Hydrogen (High)',
-    'm530': 'Gemini 4 Hydrogen (High)',
-    'gemini-4-hydrogen-tiered-xhigh': 'Gemini 4 Hydrogen (XHigh)',
-    'model_placeholder_m531': 'Gemini 4 Hydrogen (XHigh)',
-    'm531': 'Gemini 4 Hydrogen (XHigh)',
-    'model_placeholder_m525': 'Gemini 4 Hydrogen (High)',
-    'm525': 'Gemini 4 Hydrogen (High)',
-    'model_placeholder_m526': 'Gemini 4 Hydrogen (Medium)',
-    'm526': 'Gemini 4 Hydrogen (Medium)',
-    'model_placeholder_m527': 'Gemini 4 Hydrogen (Low)',
-    'm527': 'Gemini 4 Hydrogen (Low)',
-    'model_placeholder_m528': 'Gemini 4 Hydrogen (XHigh)',
-    'm528': 'Gemini 4 Hydrogen (XHigh)',
-    'model_placeholder_m417': 'Gemini 4 Argon (High)',
-    'm417': 'Gemini 4 Argon (High)',
-    'model_placeholder_m418': 'Gemini 4 Argon (Medium)',
-    'm418': 'Gemini 4 Argon (Medium)',
-    'model_placeholder_m419': 'Gemini 4 Argon (Low)',
-    'm419': 'Gemini 4 Argon (Low)',
-    'model_placeholder_m427': 'Gemini 4 Carbon (High)',
-    'm427': 'Gemini 4 Carbon (High)',
-    'model_placeholder_m437': 'Gemini 4 Carbon (Medium)',
-    'm437': 'Gemini 4 Carbon (Medium)',
-    'model_placeholder_m438': 'Gemini 4 Carbon (Low)',
-    'm438': 'Gemini 4 Carbon (Low)',
-    'gemini-3.8-flash-tiered': 'Gemini 3.8 Flash',
-    'model_placeholder_m322': 'Gemini 3.8 Flash',
-    'm322': 'Gemini 3.8 Flash',
-    'model_placeholder_m318': 'Gemini 3.8 Flash (High)',
-    'm318': 'Gemini 3.8 Flash (High)',
-    'model_placeholder_m319': 'Gemini 3.8 Flash (Medium)',
-    'm319': 'Gemini 3.8 Flash (Medium)',
-    'model_placeholder_m320': 'Gemini 3.8 Flash (Low)',
-    'm320': 'Gemini 3.8 Flash (Low)',
-    'model_placeholder_m400': 'Claude Opus 5.5 (Low)',
-    'm400': 'Claude Opus 5.5 (Low)',
-    'model_placeholder_m401': 'Claude Opus 5.5 (Medium)',
-    'm401': 'Claude Opus 5.5 (Medium)',
-    'model_placeholder_m402': 'Claude Opus 5.5 (High)',
-    'm402': 'Claude Opus 5.5 (High)',
-    'model_placeholder_m403': 'Claude Sonnet 5.5 (Low)',
-    'm403': 'Claude Sonnet 5.5 (Low)',
-    'model_placeholder_m404': 'Claude Sonnet 5.5 (Medium)',
-    'm404': 'Claude Sonnet 5.5 (Medium)',
-    'model_placeholder_m405': 'Claude Sonnet 5.5 (High)',
-    'm405': 'Claude Sonnet 5.5 (High)',
-    'model_placeholder_m198': 'Gemini 3.5 Flash-Lite',
-    'm198': 'Gemini 3.5 Flash-Lite',
-    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash-Lite',
-    'model_placeholder_m50': 'Gemini 3.1 Flash-Lite',
-    'm50': 'Gemini 3.1 Flash-Lite',
-    'gemini-3-flash': 'Gemini 3 Flash',
-    'model_placeholder_m18': 'Gemini 3 Flash',
-    'm18': 'Gemini 3 Flash'
-  };
-
   function isOpaqueModelToken(raw) {
     const s = String(raw || '').trim();
     if (!s) return true;
     if (/^(?:model_placeholder_|placeholder[-_]|model_)/i.test(s)) return true;
     return !/[A-Z\s()]/.test(s);
-  }
-
-  function buildLookupKeysForModel(val) {
-    const clean = String(val || '').trim().toLowerCase();
-    if (!clean) return [];
-    const stripped = clean.replace(/^model_/, '');
-    const keys = [clean, stripped];
-    const mPh = stripped.match(/placeholder[_-]?(m\d+)$/);
-    if (mPh) keys.push(`model_placeholder_${mPh[1]}`, `placeholder-${mPh[1]}`, mPh[1]);
-    return Array.from(new Set(keys));
   }
 
   function lookupModelDisplayLabel(call, cascadeModelConfigs = [], availableModelDetails = null) {
@@ -5086,12 +7228,14 @@
     return '';
   }
 
+  const UNKNOWN_MODEL_SENTINEL_RE = /^(?:unknown|未知|未知模型|none|null|undefined|unattributed|__unattributed__)$/i;
+
   function resolveModelUsageBucket(call, cascadeModelConfigs = [], availableModelDetails = null) {
     if (!call || typeof call !== 'object') {
       return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
     }
     const rawStr = String(call.model || call.modelLabel || call.modelExactId || call.modelId || '').trim();
-    if (!rawStr) {
+    if (!rawStr || UNKNOWN_MODEL_SENTINEL_RE.test(rawStr)) {
       return { modelKey: UNATTRIBUTED_MODEL_KEY, modelLabel: null, variantKey: UNATTRIBUTED_MODEL_KEY, variantLabel: null, isAttributed: false };
     }
     const resolvedStable = resolveStableModelId(call, cascadeModelConfigs);
@@ -5100,9 +7244,9 @@
       cascadeModelConfigs,
       availableModelDetails
     );
-    const explicitHumanLabel = (call.modelLabel && !isOpaqueModelToken(call.modelLabel))
+    const explicitHumanLabel = (call.modelLabel && !isOpaqueModelToken(call.modelLabel) && !UNKNOWN_MODEL_SENTINEL_RE.test(call.modelLabel))
       ? String(call.modelLabel).trim()
-      : (call.chatModel?.modelDisplayName && !isOpaqueModelToken(call.chatModel.modelDisplayName))
+      : (call.chatModel?.modelDisplayName && !isOpaqueModelToken(call.chatModel.modelDisplayName) && !UNKNOWN_MODEL_SENTINEL_RE.test(call.chatModel.modelDisplayName))
         ? String(call.chatModel.modelDisplayName).trim()
         : '';
     const effectiveLabel = dynamicOrFallbackLabel || explicitHumanLabel || (!isOpaqueModelToken(rawStr) ? rawStr : '');
@@ -5111,7 +7255,7 @@
 
     // Orchestrator 与 Worker 子模型专用归属：
     // - gemini-flash-worker-agy / M669 / Gemini 4 Hydrogen (Orchestrator) 归入 Gemini 4 Hydrogen，档位标为 (Orchestrator)
-    // - Orchestrator (Carbon / Argon) 归入独立 Orchestrator 模型家族，按档位展开 Carbon / Argon
+    // - Orchestrator (Carbon / Argon / Neon) 归入独立 Orchestrator 模型家族，按档位展开 Carbon / Argon / Neon
     if (
       probeLower.includes('worker-agy') ||
       /\bm669\b/.test(probeLower) ||
@@ -5128,7 +7272,7 @@
 
     if (
       probeLower.includes('orchestrator') ||
-      /\b(?:model_placeholder_|placeholder[-_])?m(?:667|668|681)\b/.test(probeLower)
+      /\b(?:model_placeholder_|placeholder[-_])?m(?:667|668|681|537)\b/.test(probeLower)
     ) {
       let tier = null;
       let tierLabel = null;
@@ -5139,6 +7283,9 @@
       } else if (lblLower.includes('argon') || probeLower.includes('argon') || /\b(?:model_placeholder_|placeholder[-_])?m(?:668|681)\b/.test(probeLower)) {
         tier = 'argon';
         tierLabel = 'Orchestrator (Argon)';
+      } else if (lblLower.includes('neon') || probeLower.includes('neon') || /\b(?:model_placeholder_|placeholder[-_])?m537\b/.test(probeLower)) {
+        tier = 'neon';
+        tierLabel = 'Orchestrator (Neon)';
       }
       return {
         modelKey: 'orchestrator',
@@ -5152,6 +7299,17 @@
     let modelKey = (effectiveLabel ? normalizeModelId(effectiveLabel) : null) || normalizeModelId(rawStr) || normalizeModelId(probeText);
     if (!modelKey && probeLower.includes('gpt-oss')) {
       modelKey = 'gpt-oss-120b';
+    }
+    const isUnmappedPlaceholderRaw = /^(?:model_placeholder_|placeholder[-_])/i.test(rawStr) && !effectiveLabel && !modelKey;
+    if (isUnmappedPlaceholderRaw) {
+      return {
+        modelKey: UNATTRIBUTED_MODEL_KEY,
+        modelLabel: null,
+        variantKey: UNATTRIBUTED_MODEL_KEY,
+        variantLabel: null,
+        isAttributed: false,
+        rawPlaceholderId: rawStr
+      };
     }
     const prod = groupModelProduct({
       modelId: resolvedStable || call.modelExactId || call.modelId || rawStr,
@@ -5469,11 +7627,13 @@
     }
 
     const rawInp = rec.inputTokens ?? rec.input_tokens ?? rec.input;
+    const rawCacheWrite = rec.cacheWrite ?? rec.cacheWriteTokens ?? rec.cacheCreationInputTokens ?? rec.cacheWriteInputTokens;
     const rawCap = rec.cacheReadTokens ?? rec.cacheTokens ?? rec.cache_read_tokens ?? rec.cached ?? rec.cache;
     const rawOut = rec.outputTokens ?? rec.output_tokens ?? rec.output;
     const explicitMissing = rec.hasInputCacheFields === false;
 
-    const hasInp = !explicitMissing && rawInp !== undefined && rawInp !== null && Number.isFinite(Number(rawInp));
+    const hasCacheWrite = !explicitMissing && rec.uncachedInput == null && rawCacheWrite !== undefined && rawCacheWrite !== null && Number.isFinite(Number(rawCacheWrite)) && Number(rawCacheWrite) > 0;
+    const hasInp = !explicitMissing && ((rawInp !== undefined && rawInp !== null && Number.isFinite(Number(rawInp))) || hasCacheWrite);
     const hasCap = !explicitMissing && rawCap !== undefined && rawCap !== null && Number.isFinite(Number(rawCap));
     const hasOut = rawOut !== undefined && rawOut !== null && Number.isFinite(Number(rawOut));
 
@@ -5492,7 +7652,9 @@
     }
 
     // Proto3 JSON 序列化会省略 0 值字段：当至少一个输入/缓存字段存在时，另一被省略字段按 0 处理
-    const inpVal = hasInp ? Math.max(0, Number(rawInp)) : 0;
+    const rawInpNum = (rawInp !== undefined && rawInp !== null && Number.isFinite(Number(rawInp))) ? Math.max(0, Number(rawInp)) : 0;
+    const cacheWriteVal = hasCacheWrite ? Math.max(0, Number(rawCacheWrite)) : 0;
+    const inpVal = rawInpNum + cacheWriteVal;
     const capVal = hasCap ? Math.max(0, Number(rawCap)) : 0;
     const outVal = hasOut ? Math.max(0, Number(rawOut)) : 0;
 
@@ -5642,6 +7804,62 @@
   }
 
   /**
+   * 统一计算单次请求、单轮汇总或整段会话的缓存命中率（分母不含输出）.
+   * 若记录为纯估算且缺少可靠输入字段，或总输入分母 <= 0，返回 hitPct: null 与 hitText: '—'.
+   * @param {Object|Array<Object>} records
+   * @param {Object} [options]
+   */
+  function computeCacheHitSummary(records, options = {}) {
+    const list = Array.isArray(records) ? records : (records && typeof records === 'object' ? [records] : []);
+    const includeEstimated = options && options.includeEstimated === true;
+    let uncachedInput = 0;
+    let cacheRead = 0;
+    let totalInput = 0;
+    let output = 0;
+    let validCount = 0;
+
+    for (const r of list) {
+      if (!r || typeof r !== 'object') continue;
+      if (!includeEstimated && r.isEstimated === true && r.hasInputCacheFields !== true) continue;
+      let recForNorm = r;
+      if (
+        r.inputTokens == null && r.input_tokens == null && r.input == null &&
+        r.totalInputTokens != null && Number.isFinite(Number(r.totalInputTokens))
+      ) {
+        recForNorm = { ...r, inputTokens: Number(r.totalInputTokens), inputIncludesCache: true };
+      }
+      const norm = normalizeCallInputCacheTokens(recForNorm);
+      if (norm.output !== null) output += norm.output;
+      if (!norm.hasInputCacheFields || norm.totalInput === null || norm.cacheRead === null) continue;
+      validCount++;
+      uncachedInput += norm.uncachedInput;
+      cacheRead += norm.cacheRead;
+      totalInput += norm.totalInput;
+    }
+
+    const hasConfirmedUsage = validCount > 0 && totalInput > 0;
+    const hitRatio = hasConfirmedUsage ? Math.max(0, Math.min(1, cacheRead / totalInput)) : null;
+    const hitPct = hitRatio !== null ? Math.round(hitRatio * 100) : null;
+    const hitText = hitPct !== null ? `${hitPct}%` : '—';
+    const grandTotal = totalInput + output;
+
+    return {
+      hasConfirmedUsage,
+      hasRealUsageData: hasConfirmedUsage || output > 0,
+      validCount,
+      uncachedInput,
+      cacheRead,
+      totalInput,
+      output,
+      grandTotal,
+      hitRatio,
+      hitPct,
+      cacheHitPct: hitPct,
+      hitText
+    };
+  }
+
+  /**
    * 规范化单条会话调用记录（供最新调用卡片、轮次时间线与缓存统计统一复用）。
    */
   function normalizeSessionCallRecord(raw, options = {}) {
@@ -5737,14 +7955,14 @@
     const expScore = raw.status === 'streaming'
       ? { available: false, score: null, grade: null, ruleVersion: ELV91_SCORE_RULE_VERSION }
       : calculateExperienceScore({
-          outputTokens: cacheStats.output,
-          totalInputTokens: cacheStats.totalInput,
-          inputTokens: cacheStats.uncachedInput,
-          ttftSec,
-          streamingSec,
-          totalDurationSec: durationSec,
-          streamSpeed: streamingTpsRounded
-        });
+        outputTokens: cacheStats.output,
+        totalInputTokens: cacheStats.totalInput,
+        inputTokens: cacheStats.uncachedInput,
+        ttftSec,
+        streamingSec,
+        totalDurationSec: durationSec,
+        streamSpeed: streamingTpsRounded
+      });
     const stabInfo = computeStreamStability({
       chunkCount: raw.chunkCount != null ? Number(raw.chunkCount) : (Array.isArray(raw.chunkTimestamps) ? raw.chunkTimestamps.length : null),
       chunkIntervalsMs: Array.isArray(raw.chunkIntervalsMs) ? raw.chunkIntervalsMs : null,
@@ -5837,53 +8055,446 @@
   function groupSessionCallsByTurns(turnMarkers = [], calls = [], options = {}) {
     const cascadeId = options.cascadeId || null;
     const cascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
+    const availableModels = options.availableModels || options.userStatus?.availableModels || null;
 
-    // 1. 归一化全部调用并按 callId 去重（保留信息更完整的一条）
+    const isFallbackOrTranscriptId = (id) => {
+      const s = String(id || '').trim();
+      return !s || s.startsWith('bot-') || /#\d+(?:@\d+)?$/.test(s);
+    };
+    const isMultiOccId = (id) => /#\d+@\d+$/.test(String(id || '').trim());
+    const getModelSpecRank = (c) => {
+      if (!c) return 0;
+      const m = String(c.model || '').trim();
+      const lbl = String(c.modelLabel || '').trim();
+      const ex = String(c.modelExactId || '').trim();
+      if ((!m || UNKNOWN_MODEL_SENTINEL_RE.test(m)) && !lbl && !ex) return 0;
+      let rank = 1;
+      if (lbl && !isOpaqueModelToken(lbl) && !UNKNOWN_MODEL_SENTINEL_RE.test(lbl)) rank += 4;
+      if (m && !/^model_/i.test(m) && !/^gemini-pro-orchestrator$/i.test(m) && !UNKNOWN_MODEL_SENTINEL_RE.test(m)) rank += 2;
+      if (ex && !/^gemini-pro-orchestrator$/i.test(ex) && !/^model_placeholder_/i.test(ex)) rank += 1;
+      if (c.isRoutedModelVerified) rank += 2;
+      if (c.effort) rank += 1;
+      return rank;
+    };
+    const hasSameTokenTriplet = (a, b) => {
+      const aHas = (a.totalTokens ?? 0) > 0 || (a.inputTokens ?? 0) > 0 || (a.cacheReadTokens ?? 0) > 0 || (a.outputTokens ?? 0) > 0;
+      const bHas = (b.totalTokens ?? 0) > 0 || (b.inputTokens ?? 0) > 0 || (b.cacheReadTokens ?? 0) > 0 || (b.outputTokens ?? 0) > 0;
+      if (!aHas || !bHas) return false;
+      if (a.hasInputCacheFields && b.hasInputCacheFields) {
+        return (a.inputTokens || 0) === (b.inputTokens || 0)
+          && (a.cacheReadTokens || 0) === (b.cacheReadTokens || 0)
+          && (a.outputTokens || 0) === (b.outputTokens || 0);
+      }
+      return (a.totalTokens || 0) === (b.totalTokens || 0) && (a.outputTokens || 0) === (b.outputTokens || 0);
+    };
+    const areSessionModelsRoughlyCompat = (a, b) => {
+      const ba = resolveModelUsageBucket(a, cascadeConfigs, availableModels);
+      const bb = resolveModelUsageBucket(b, cascadeConfigs, availableModels);
+      if (!ba.isAttributed || !bb.isAttributed) return true;
+      if (ba.modelKey === bb.modelKey) return true;
+      const aOrch = ba.modelKey === 'orchestrator' || String(a.modelExactId || a.model || '').toLowerCase().includes('orchestrator');
+      const bOrch = bb.modelKey === 'orchestrator' || String(b.modelExactId || b.model || '').toLowerCase().includes('orchestrator');
+      return aOrch && bOrch;
+    };
+    const mergeSessionCallsLossless = (prev, next, forceCanonicalCallId = null) => {
+      const prevTot = prev.totalTokens ?? -1;
+      const nextTot = next.totalTokens ?? -1;
+      const useNextUsage = (prev.status === 'streaming' && next.status === 'final')
+        || nextTot > prevTot
+        || (nextTot === prevTot && !prev.hasInputCacheFields && Boolean(next.hasInputCacheFields));
+      const usageSrc = useNextUsage ? next : prev;
+      const prevModelRank = getModelSpecRank(prev);
+      const nextModelRank = getModelSpecRank(next);
+      const modelSrc = nextModelRank > prevModelRank ? next : prev;
+      const altModelSrc = modelSrc === next ? prev : next;
+
+      // 时间戳保护：非 provisional 的真实 transcript/created_at 优先，绝不被 provisional 浏览时间戳覆盖
+      let timeSrc = prev;
+      if (!prev.timestamp && next.timestamp) timeSrc = next;
+      else if (prev.dateIsProvisional && !next.dateIsProvisional && next.timestamp) timeSrc = next;
+      else if (prev.dateIsProvisional === next.dateIsProvisional && next.timestamp && !prev.timestamp) timeSrc = next;
+
+      // callId 选择：优先保留真实 RPC ID，次选非 @occ 的稳定 ID
+      let chosenCallId = forceCanonicalCallId;
+      if (!chosenCallId) {
+        const prevFb = isFallbackOrTranscriptId(prev.callId);
+        const nextFb = isFallbackOrTranscriptId(next.callId);
+        if (!nextFb && prevFb) chosenCallId = next.callId;
+        else if (!prevFb && nextFb) chosenCallId = prev.callId;
+        else chosenCallId = prev.callId;
+      }
+
+      const ttftSec = next.ttftSec ?? prev.ttftSec ?? null;
+      const streamingSec = next.streamingSec ?? prev.streamingSec ?? null;
+      const durationSec = next.durationSec ?? prev.durationSec
+        ?? ((ttftSec !== null || streamingSec !== null) ? Number(((ttftSec || 0) + (streamingSec || 0)).toFixed(2)) : null);
+      const outNum = usageSrc.outputTokens ?? 0;
+      const tps = next.tps ?? prev.tps ?? (outNum > 0 && durationSec > 0 ? Number((outNum / durationSec).toFixed(1)) : null);
+      const streamingTps = next.streamingTps ?? prev.streamingTps
+        ?? (outNum > 0 && streamingSec !== null && streamingSec > 0.05 ? Number((outNum / streamingSec).toFixed(1)) : null);
+
+      const mergedConf = (next.parentStepIndex != null && next.attributionConfidence && next.attributionConfidence !== 'unidentified')
+        ? next.attributionConfidence
+        : (prev.parentStepIndex != null && prev.attributionConfidence && prev.attributionConfidence !== 'unidentified')
+          ? prev.attributionConfidence
+          : (next.attributionConfidence !== 'unidentified' ? next.attributionConfidence : prev.attributionConfidence);
+
+      return {
+        ...prev,
+        ...usageSrc,
+        callId: chosenCallId,
+        cascadeId: prev.cascadeId || next.cascadeId || cascadeId || null,
+        stepIndex: prev.stepIndex ?? next.stepIndex ?? null,
+        source: (!prev.source || prev.source === 'desktop') ? (next.source || prev.source || 'desktop') : prev.source,
+        agentRole: (prev.agentRole === 'subagent' || next.agentRole === 'subagent') ? 'subagent' : (prev.agentRole || next.agentRole || 'main'),
+        model: modelSrc.model || altModelSrc.model || '',
+        modelKey: modelSrc.modelKey || altModelSrc.modelKey || null,
+        rawModelId: modelSrc.rawModelId || altModelSrc.rawModelId || null,
+        rawPlaceholderId: modelSrc.rawPlaceholderId || altModelSrc.rawPlaceholderId || null,
+        stableModelId: modelSrc.stableModelId || altModelSrc.stableModelId || null,
+        isPlaceholderOnly: Boolean(modelSrc.modelLabel ? false : (modelSrc.isPlaceholderOnly && altModelSrc.isPlaceholderOnly)),
+        isRoutedModelVerified: Boolean(modelSrc.isRoutedModelVerified || altModelSrc.isRoutedModelVerified),
+        modelMappingSource: modelSrc.modelMappingSource || altModelSrc.modelMappingSource || null,
+        modelExactId: modelSrc.modelExactId || altModelSrc.modelExactId || null,
+        modelLabel: modelSrc.modelLabel || altModelSrc.modelLabel || null,
+        effort: modelSrc.effort || altModelSrc.effort || null,
+        ttftSec,
+        streamingSec,
+        durationSec,
+        tps,
+        streamingTps,
+        streamSpeed: streamingTps,
+        date: timeSrc.date || prev.date || next.date || null,
+        dateIsProvisional: Boolean(timeSrc.dateIsProvisional),
+        created_at: timeSrc.created_at || prev.created_at || next.created_at || null,
+        timestamp: timeSrc.timestamp ?? prev.timestamp ?? next.timestamp ?? null,
+        parentCascadeId: next.parentCascadeId || prev.parentCascadeId || null,
+        parentStepIndex: next.parentStepIndex ?? prev.parentStepIndex ?? null,
+        subagentType: next.subagentType || prev.subagentType || null,
+        subagentRole: next.subagentRole || prev.subagentRole || null,
+        attributionConfidence: mergedConf || 'main',
+        status: (prev.status === 'final' || next.status === 'final') ? 'final' : (next.status || prev.status || 'final')
+      };
+    };
+
+    // 1. 归一化全部调用并用两级无损去重器消除跨源重复（同时绝不吞并同 step 的不同真实重试调用）
     const dedupMap = new Map();
+    const dupSeqMap = new Map();
     for (const raw of (Array.isArray(calls) ? calls : [])) {
-      const norm = normalizeSessionCallRecord(raw, { cascadeId, cascadeModelConfigs: cascadeConfigs, userStatus: options.userStatus });
+      const norm = normalizeSessionCallRecord(raw, { cascadeId, cascadeModelConfigs: cascadeConfigs, userStatus: options.userStatus, availableModels });
       if (!norm) continue;
-      const prev = dedupMap.get(norm.callId);
+      const scopeBaseKey = `${String(norm.cascadeId || cascadeId || '').toLowerCase()}|${norm.agentRole || 'main'}|${norm.callId}`;
+      const prev = dedupMap.get(scopeBaseKey);
       if (!prev) {
-        dedupMap.set(norm.callId, norm);
+        dedupMap.set(scopeBaseKey, norm);
       } else {
-        const prevTot = prev.totalTokens ?? -1;
-        const nextTot = norm.totalTokens ?? -1;
-        const preferNext = (prev.status === 'streaming' && norm.status === 'final')
-          || nextTot > prevTot
-          || (nextTot === prevTot && !prev.modelExactId && Boolean(norm.modelExactId))
-          || (nextTot === prevTot && prev.durationSec === null && norm.durationSec !== null);
-        if (preferNext) {
-          dedupMap.set(norm.callId, {
-            ...prev,
-            ...norm,
-            modelExactId: norm.modelExactId || prev.modelExactId,
-            modelLabel: norm.modelLabel || prev.modelLabel,
-            effort: norm.effort || prev.effort,
-            ttftSec: norm.ttftSec ?? prev.ttftSec,
-            streamingSec: norm.streamingSec ?? prev.streamingSec,
-            durationSec: norm.durationSec ?? prev.durationSec,
-            tps: norm.tps ?? prev.tps,
-            streamingTps: norm.streamingTps ?? prev.streamingTps,
-            parentCascadeId: norm.parentCascadeId || prev.parentCascadeId,
-            parentStepIndex: norm.parentStepIndex ?? prev.parentStepIndex,
-            subagentType: norm.subagentType || prev.subagentType,
-            subagentRole: norm.subagentRole || prev.subagentRole,
-            attributionConfidence: norm.parentStepIndex != null ? norm.attributionConfidence : prev.attributionConfidence
-          });
+        const sameTriplet = hasSameTokenTriplet(prev, norm);
+        const canMergeSameId = sameTriplet
+          || prev.status === 'streaming'
+          || norm.status === 'streaming'
+          || (prev.totalTokens ?? 0) === 0
+          || (norm.totalTokens ?? 0) === 0
+          || prev.stepIndex === norm.stepIndex
+          || prev.stepIndex == null
+          || norm.stepIndex == null;
+        if (canMergeSameId) {
+          dedupMap.set(scopeBaseKey, mergeSessionCallsLossless(prev, norm, norm.callId));
+        } else {
+          const seq = (dupSeqMap.get(scopeBaseKey) || 1) + 1;
+          dupSeqMap.set(scopeBaseKey, seq);
+          const uniqueCallId = `${norm.callId}#dup${seq}`;
+          dedupMap.set(`${scopeBaseKey}#dup${seq}`, { ...norm, callId: uniqueCallId });
         }
       }
     }
 
-    const allCalls = Array.from(dedupMap.values());
+    // 第 2 级：按 (cascadeId, agentRole, stepIndex) 消除同次调用在不同 ID 格式 (RPC ID vs bot-* vs cid#step) 间的重复
+    const level1Calls = Array.from(dedupMap.values());
+    const byStepBucket = new Map();
+    const noStepCalls = [];
+    for (const c of level1Calls) {
+      if (c.stepIndex === null || c.stepIndex === undefined) {
+        noStepCalls.push(c);
+        continue;
+      }
+      const bKey = `${String(c.cascadeId || cascadeId || '').toLowerCase()}|${c.agentRole || 'main'}|${c.stepIndex}`;
+      let list = byStepBucket.get(bKey);
+      if (!list) { list = []; byStepBucket.set(bKey, list); }
+      list.push(c);
+    }
+
+    const isCrossIdTimestampCompatible = (a, b) => {
+      if (a.dateIsProvisional || b.dateIsProvisional || !a.timestamp || !b.timestamp) return true;
+      const maxDurMs = Math.max(180000, ((Math.max(a.durationSec || 0, b.durationSec || 0)) + 60) * 1000);
+      return Math.abs(a.timestamp - b.timestamp) <= maxDurMs;
+    };
+
+    const allCalls = [...noStepCalls];
+    for (const bucketCalls of byStepBucket.values()) {
+      if (bucketCalls.length === 1) {
+        allCalls.push(bucketCalls[0]);
+        continue;
+      }
+      // 优先让真实 RPC ID 作为主宿主接收 fallback / bot-* 记录的属性
+      bucketCalls.sort((a, b) => {
+        const fa = isFallbackOrTranscriptId(a.callId) ? 1 : 0;
+        const fb = isFallbackOrTranscriptId(b.callId) ? 1 : 0;
+        if (fa !== fb) return fa - fb;
+        return (a.dateIsProvisional ? 1 : 0) - (b.dateIsProvisional ? 1 : 0);
+      });
+      const active = [...bucketCalls];
+      const removed = new Array(active.length).fill(false);
+
+      // Pass 2A: 同 (cascadeId, role, stepIndex) + 非零 Token 三元组精确相等 + 时间不冲突 -> 同次调用 1-to-1 无损合并
+      for (let i = 0; i < active.length; i++) {
+        if (removed[i]) continue;
+        for (let j = i + 1; j < active.length; j++) {
+          if (removed[j]) continue;
+          const a = active[i];
+          const b = active[j];
+          if (!hasSameTokenTriplet(a, b)) continue;
+          if (!isCrossIdTimestampCompatible(a, b)) continue;
+          const hasFallbackOrProvisional = isFallbackOrTranscriptId(a.callId)
+            || isFallbackOrTranscriptId(b.callId)
+            || a.dateIsProvisional
+            || b.dateIsProvisional
+            || (a.timestamp && b.timestamp && Math.abs(a.timestamp - b.timestamp) <= 5000);
+          if (!hasFallbackOrProvisional) continue;
+          active[i] = mergeSessionCallsLossless(a, b);
+          removed[j] = true;
+        }
+      }
+
+      // Pass 2B: 单条 transcript fallback 快照 -> 单条真实 RPC 更新（如 Step 7.2 中同 step 仅有一对流式->完成升级）
+      const remIndices = [];
+      for (let i = 0; i < active.length; i++) {
+        if (!removed[i]) remIndices.push(i);
+      }
+      if (remIndices.length === 2) {
+        const idxA = remIndices[0];
+        const idxB = remIndices[1];
+        const reals = remIndices.filter(idx => !isFallbackOrTranscriptId(active[idx].callId));
+        const fallbacks = remIndices.filter(idx => isFallbackOrTranscriptId(active[idx].callId) && !isMultiOccId(active[idx].callId));
+        if (reals.length === 1 && fallbacks.length === 1) {
+          const rObj = active[reals[0]];
+          const fObj = active[fallbacks[0]];
+          const tsClose = !rObj.timestamp || !fObj.timestamp || Math.abs(rObj.timestamp - fObj.timestamp) <= 15000;
+          const notLargerFallback = (fObj.totalTokens || 0) <= (rObj.totalTokens || 0);
+          if (tsClose && notLargerFallback && areSessionModelsRoughlyCompat(fObj, rObj)) {
+            active[reals[0]] = mergeSessionCallsLossless(fObj, rObj, rObj.callId);
+            removed[fallbacks[0]] = true;
+          }
+        }
+      }
+
+      for (let i = 0; i < active.length; i++) {
+        if (!removed[i]) allCalls.push(active[i]);
+      }
+    }
+
     allCalls.sort((a, b) => {
       const tsA = a.timestamp || 0;
       const tsB = b.timestamp || 0;
       if (tsA !== tsB) return tsA - tsB;
       const sa = a.stepIndex ?? Number.MAX_SAFE_INTEGER;
       const sb = b.stepIndex ?? Number.MAX_SAFE_INTEGER;
-      return sa - sb;
+      if (sa !== sb) return sa - sb;
+      return String(a.callId || '').localeCompare(String(b.callId || ''));
     });
+
+    // 1.2 为每条去重后的请求确定权威模型归属，确保 Orchestrator、Worker 与未知模型清晰分桶且与总量 100% 恒等
+    const modelAccMap = new Map();
+    let totalCallsAll = 0;
+    let totalMainAll = 0;
+    let totalSubAll = 0;
+    let totalInpAll = 0;
+    let totalCapAll = 0;
+    let totalOutAll = 0;
+    let totalTokAll = 0;
+    const mainOnlyTotals = { callCount: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, totalTokens: 0 };
+    const subOnlyTotals = { callCount: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, totalTokens: 0 };
+
+    for (const c of allCalls) {
+      const mBucket = resolveModelUsageBucket(c, cascadeConfigs, availableModels);
+      const rawPidCand = String(c.rawPlaceholderId || '').trim();
+      const rawModelCand = String(c.modelExactId || c.model || '').trim();
+      const isPlaceholderUnmapped = !mBucket.isAttributed && Boolean(
+        mBucket.rawPlaceholderId || rawPidCand || /^(?:model_placeholder_|placeholder[-_])/i.test(rawModelCand)
+      );
+      const isUnknown = !mBucket.isAttributed || mBucket.modelKey === UNATTRIBUTED_MODEL_KEY;
+
+      let attrKey = mBucket.modelKey || UNATTRIBUTED_MODEL_KEY;
+      let attrLabel = mBucket.modelLabel || null;
+      let attrVarKey = mBucket.variantKey || attrKey;
+      let attrVarLabel = mBucket.variantLabel || attrLabel;
+      let isOrchestrator = false;
+      let rawUnknownId = null;
+
+      if (isPlaceholderUnmapped) {
+        rawUnknownId = mBucket.rawPlaceholderId || rawPidCand || rawModelCand;
+        const pidSlug = rawUnknownId.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'placeholder';
+        attrKey = `unknown:${pidSlug}`;
+        attrLabel = `未知模型 (${rawUnknownId})`;
+        attrVarKey = attrKey;
+        attrVarLabel = attrLabel;
+      } else if (isUnknown) {
+        attrKey = UNATTRIBUTED_MODEL_KEY;
+        attrLabel = '未知模型';
+        attrVarKey = UNATTRIBUTED_MODEL_KEY;
+        attrVarLabel = '未知模型';
+      } else if (mBucket.modelKey === 'orchestrator') {
+        isOrchestrator = true;
+        attrKey = mBucket.variantKey || 'orchestrator';
+        attrLabel = mBucket.variantLabel || 'Orchestrator';
+        attrVarKey = attrKey;
+        attrVarLabel = attrLabel;
+      } else {
+        isOrchestrator = Boolean(mBucket.variantKey && mBucket.variantKey.endsWith(':orchestrator'));
+        attrLabel = mBucket.modelLabel || c.modelLabel || mBucket.modelKey;
+        attrVarLabel = mBucket.variantLabel || attrLabel;
+      }
+
+      c.attributedModelKey = attrKey;
+      c.attributedModelLabel = attrLabel;
+      c.attributedVariantKey = attrVarKey;
+      c.attributedVariantLabel = attrVarLabel;
+      c.isModelUnknown = isUnknown;
+      c.isOrchestrator = isOrchestrator;
+      if (!c.modelKey && mBucket.isAttributed) {
+        c.modelKey = mBucket.modelKey;
+      }
+
+      const inp = Number(c.inputTokens || 0);
+      const cap = Number(c.cacheReadTokens || 0);
+      const outp = Number(c.outputTokens || 0);
+      const tot = Number(c.totalTokens ?? (inp + cap + outp));
+      const isSub = c.agentRole === 'subagent';
+
+      totalCallsAll++;
+      totalInpAll += inp;
+      totalCapAll += cap;
+      totalOutAll += outp;
+      totalTokAll += tot;
+      if (isSub) {
+        totalSubAll++;
+        subOnlyTotals.callCount++;
+        subOnlyTotals.inputTokens += inp;
+        subOnlyTotals.cacheReadTokens += cap;
+        subOnlyTotals.outputTokens += outp;
+        subOnlyTotals.totalTokens += tot;
+      } else {
+        totalMainAll++;
+        mainOnlyTotals.callCount++;
+        mainOnlyTotals.inputTokens += inp;
+        mainOnlyTotals.cacheReadTokens += cap;
+        mainOnlyTotals.outputTokens += outp;
+        mainOnlyTotals.totalTokens += tot;
+      }
+
+      let acc = modelAccMap.get(attrKey);
+      if (!acc) {
+        acc = {
+          modelKey: attrKey,
+          modelLabel: attrLabel,
+          isOrchestrator,
+          isUnknown,
+          rawModelId: rawUnknownId,
+          callCount: 0,
+          mainCallCount: 0,
+          subagentCallCount: 0,
+          inputTokens: 0,
+          cacheReadTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          variantsMap: new Map()
+        };
+        modelAccMap.set(attrKey, acc);
+      }
+      acc.callCount++;
+      if (isSub) acc.subagentCallCount++;
+      else acc.mainCallCount++;
+      acc.inputTokens += inp;
+      acc.cacheReadTokens += cap;
+      acc.outputTokens += outp;
+      acc.totalTokens += tot;
+
+      let vAcc = acc.variantsMap.get(attrVarKey);
+      if (!vAcc) {
+        vAcc = {
+          variantKey: attrVarKey,
+          variantLabel: attrVarLabel,
+          callCount: 0,
+          inputTokens: 0,
+          cacheReadTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0
+        };
+        acc.variantsMap.set(attrVarKey, vAcc);
+      }
+      vAcc.callCount++;
+      vAcc.inputTokens += inp;
+      vAcc.cacheReadTokens += cap;
+      vAcc.outputTokens += outp;
+      vAcc.totalTokens += tot;
+    }
+
+    const modelBreakdown = Array.from(modelAccMap.values())
+      .map(m => ({
+        modelKey: m.modelKey,
+        modelLabel: m.modelLabel,
+        isOrchestrator: m.isOrchestrator,
+        isUnknown: m.isUnknown,
+        ...(m.rawModelId ? { rawModelId: m.rawModelId } : {}),
+        callCount: m.callCount,
+        mainCallCount: m.mainCallCount,
+        subagentCallCount: m.subagentCallCount,
+        inputTokens: m.inputTokens,
+        cacheReadTokens: m.cacheReadTokens,
+        outputTokens: m.outputTokens,
+        totalTokens: m.totalTokens,
+        pct: totalTokAll > 0 ? Number(((m.totalTokens / totalTokAll) * 100).toFixed(1)) : 0,
+        variants: Array.from(m.variantsMap.values()).sort((a, b) => (b.totalTokens - a.totalTokens) || (b.callCount - a.callCount))
+      }))
+      .sort((a, b) => {
+        if (a.isUnknown !== b.isUnknown) return a.isUnknown ? 1 : -1;
+        if (b.totalTokens !== a.totalTokens) return b.totalTokens - a.totalTokens;
+        if (b.callCount !== a.callCount) return b.callCount - a.callCount;
+        return String(a.modelKey).localeCompare(String(b.modelKey));
+      });
+
+    // 1.5. 按主会话步序计算逐步上下文增量 (deltaFromPrevStep) 与最大单步跃升
+    let prevMainCtxTok = null;
+    let initialContextTokens = null;
+    let latestContextTokens = null;
+    let maxJumpCall = null;
+    let maxJumpDeltaTokens = null;
+    for (const c of allCalls) {
+      if (c.agentRole === 'subagent') {
+        c.contextWindowTokens = c.hasInputCacheFields ? ((c.inputTokens || 0) + (c.cacheReadTokens || 0)) : null;
+        c.deltaFromPrevStep = null;
+        continue;
+      }
+      const ctxTok = c.hasInputCacheFields ? ((c.inputTokens || 0) + (c.cacheReadTokens || 0)) : null;
+      c.contextWindowTokens = ctxTok;
+      if (ctxTok !== null) {
+        if (initialContextTokens === null) initialContextTokens = ctxTok;
+        latestContextTokens = ctxTok;
+        if (prevMainCtxTok !== null) {
+          const delta = ctxTok - prevMainCtxTok;
+          c.deltaFromPrevStep = delta;
+          if (delta > 0 && (maxJumpDeltaTokens === null || delta > maxJumpDeltaTokens)) {
+            maxJumpDeltaTokens = delta;
+            maxJumpCall = c;
+          }
+        } else {
+          c.deltaFromPrevStep = null;
+        }
+        prevMainCtxTok = ctxTok;
+      } else {
+        c.deltaFromPrevStep = null;
+      }
+    }
+    if (maxJumpCall) maxJumpCall.isMaxContextJump = true;
 
     // 2. 构建规范化用户轮次边界（按 stepIndex 升序）
     const sortedTurns = (Array.isArray(turnMarkers) ? turnMarkers : [])
@@ -5973,9 +8584,19 @@
       let totalTokens = 0;
       let hasTotalTokens = false;
       let latestTimestamp = b.timestamp || null;
+      let lastContextTokens = null;
+      let peakContextTokens = null;
       for (const c of b.calls) {
         if (c.agentRole === 'subagent') subagentCallCount++;
-        else mainCallCount++;
+        else {
+          mainCallCount++;
+          if (c.contextWindowTokens !== null && c.contextWindowTokens !== undefined) {
+            lastContextTokens = c.contextWindowTokens;
+            if (peakContextTokens === null || c.contextWindowTokens > peakContextTokens) {
+              peakContextTokens = c.contextWindowTokens;
+            }
+          }
+        }
         if (c.outcomeStatus && c.outcomeStatus !== 'success' && c.outcomeStatus !== 'streaming') {
           errorCount++;
         }
@@ -6004,6 +8625,9 @@
         totalInputTokens: cacheSummary.evaluatedRequestCount > 0 ? cacheSummary.totalInput : null,
         outputTokens: b.calls.some(c => c.outputTokens !== null) ? cacheSummary.totalOutput : null,
         totalTokens: hasTotalTokens ? totalTokens : null,
+        lastContextTokens,
+        peakContextTokens,
+        deltaFromPrevTurn: null,
         cacheReadRatio: cacheSummary.cacheReadRatio,
         cacheReadPct: cacheSummary.cacheReadPct,
         cacheStatus: cacheSummary.cacheStatus,
@@ -6027,16 +8651,637 @@
       resultTurns.push(finalizeTurnBucket(b));
     }
 
+    // 计算逐轮上下文净变化 deltaFromPrevTurn
+    let prevTurnCtxTok = null;
+    for (const t of resultTurns) {
+      if (t.lastContextTokens !== null && t.lastContextTokens !== undefined) {
+        if (prevTurnCtxTok !== null) {
+          t.deltaFromPrevTurn = t.lastContextTokens - prevTurnCtxTok;
+        }
+        prevTurnCtxTok = t.lastContextTokens;
+      }
+    }
+
+    const contextDeltaSummary = {
+      initialContextTokens,
+      latestContextTokens,
+      netDeltaTokens: (initialContextTokens !== null && latestContextTokens !== null)
+        ? (latestContextTokens - initialContextTokens)
+        : null,
+      maxJumpCallId: maxJumpCall ? maxJumpCall.callId : null,
+      maxJumpStepIndex: maxJumpCall ? (maxJumpCall.stepIndex ?? null) : null,
+      maxJumpDeltaTokens: maxJumpDeltaTokens !== null ? maxJumpDeltaTokens : null
+    };
+
+    // 汇总会话耗时各阶段 (TTFT 等待 / 流式输出 / 工具执行估算)
+    let totalTtftSec = 0;
+    let ttftCount = 0;
+    let totalStreamingSec = 0;
+    let streamingCount = 0;
+    let totalCallDurationSec = 0;
+    let durationCount = 0;
+    for (const c of allCalls) {
+      if (c.ttftSec !== null && c.ttftSec !== undefined && Number.isFinite(Number(c.ttftSec)) && Number(c.ttftSec) >= 0) {
+        totalTtftSec += Number(c.ttftSec);
+        ttftCount++;
+      }
+      if (c.streamingSec !== null && c.streamingSec !== undefined && Number.isFinite(Number(c.streamingSec)) && Number(c.streamingSec) >= 0) {
+        totalStreamingSec += Number(c.streamingSec);
+        streamingCount++;
+      }
+      if (c.durationSec !== null && c.durationSec !== undefined && Number.isFinite(Number(c.durationSec)) && Number(c.durationSec) >= 0) {
+        totalCallDurationSec += Number(c.durationSec);
+        durationCount++;
+      }
+    }
+    let totalToolExecSec = 0;
+    let toolExecCount = 0;
+    let toolExecEstimated = false;
+    const explicitToolEvents = Array.isArray(options.toolExecEvents) ? options.toolExecEvents : [];
+    for (const te of explicitToolEvents) {
+      toolExecCount++;
+      if (te && te.durationSec != null && Number.isFinite(Number(te.durationSec)) && Number(te.durationSec) > 0) {
+        totalToolExecSec += Number(te.durationSec);
+      }
+    }
+    if (totalToolExecSec <= 0) {
+      // 无显式工具耗时时，仅在同一轮连续主会话调用间隙估算 (0.05s ~ 180s)
+      for (const t of resultTurns) {
+        const turnMainCalls = (t.calls || []).filter(c => c.agentRole !== 'subagent' && c.timestamp);
+        for (let ci = 1; ci < turnMainCalls.length; ci++) {
+          const prevC = turnMainCalls[ci - 1];
+          const curC = turnMainCalls[ci];
+          const wallGapSec = (curC.timestamp - prevC.timestamp) / 1000;
+          const curCallDur = curC.durationSec ?? ((curC.ttftSec || 0) + (curC.streamingSec || 0));
+          const toolGap = wallGapSec - curCallDur;
+          if (toolGap >= 0.05 && toolGap <= 180) {
+            totalToolExecSec += toolGap;
+            toolExecEstimated = true;
+          }
+        }
+      }
+    }
+    const activeWallSec = Number((totalTtftSec + totalStreamingSec + totalToolExecSec).toFixed(2));
+    const callIntervals = [];
+    let missingDurationCount = 0;
+    for (const c of allCalls) {
+      const ts = Number(c.timestamp);
+      const dur = Number(c.durationSec ?? ((Number(c.ttftSec) || 0) + (Number(c.streamingSec) || 0)));
+      if (!Number.isFinite(dur) || dur <= 0) {
+        missingDurationCount++;
+      } else if (Number.isFinite(ts) && ts > 0) {
+        const endMs = ts;
+        const startMs = Math.max(0, ts - Math.round(dur * 1000));
+        if (endMs > startMs) callIntervals.push([startMs, endMs]);
+      }
+    }
+    const mergedCallWallSec = callIntervals.length ? Number(mergeTimeIntervals(callIntervals).toFixed(2)) : 0;
+    const wallClockActiveSec = mergedCallWallSec > 0
+      ? Number(Math.max(mergedCallWallSec, activeWallSec > totalCallDurationSec ? (mergedCallWallSec + totalToolExecSec) : mergedCallWallSec).toFixed(2))
+      : activeWallSec;
+    const cumulativeTaskSec = Number((totalCallDurationSec > 0 ? (totalCallDurationSec + totalToolExecSec) : activeWallSec).toFixed(2));
+    const timingSummary = {
+      totalTtftSec: Number(totalTtftSec.toFixed(2)),
+      ttftCount,
+      totalStreamingSec: Number(totalStreamingSec.toFixed(2)),
+      streamingCount,
+      totalCallDurationSec: Number(totalCallDurationSec.toFixed(2)),
+      durationCount,
+      totalToolExecSec: Number(totalToolExecSec.toFixed(2)),
+      toolExecCount,
+      toolExecEstimated,
+      activeWallSec,
+      wallClockActiveSec,
+      cumulativeTaskSec,
+      concurrencySavedSec: Number(Math.max(0, cumulativeTaskSec - wallClockActiveSec).toFixed(2)),
+      hasConcurrentCalls: cumulativeTaskSec > wallClockActiveSec + 0.05 && subagentsListCountHint(allCalls),
+      hasIndependentThinkingTimestamps: false,
+      sampleCount: allCalls.length,
+      isShortSample: allCalls.length < 3,
+      missingDurationCount,
+      ttftPct: activeWallSec > 0 ? Math.round((totalTtftSec / activeWallSec) * 1000) / 10 : 0,
+      streamingPct: activeWallSec > 0 ? Math.round((totalStreamingSec / activeWallSec) * 1000) / 10 : 0,
+      toolExecPct: activeWallSec > 0 ? Math.round((totalToolExecSec / activeWallSec) * 1000) / 10 : 0
+    };
+    function subagentsListCountHint(list) {
+      return Array.isArray(list) && list.some(x => x && x.agentRole === 'subagent');
+    }
+
+    // 汇总主子 Agent 家族 (按去重后的 allCalls 计算，主代理与子代理严格分离、绝不重复计入)
+    const initAgentStats = (meta = {}) => ({
+      ...meta,
+      callCount: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      streamingSec: 0,
+      modelsSet: new Set(),
+      modelStatsMap: new Map()
+    });
+    const finalizeAgentStats = (acc) => ({
+      ...acc,
+      models: Array.from(acc.modelsSet),
+      modelBreakdown: Array.from(acc.modelStatsMap.values()).map(m => ({
+        ...m,
+        streamingSec: Number(m.streamingSec.toFixed(2))
+      })),
+      streamingSec: Number(acc.streamingSec.toFixed(2)),
+      modelsSet: undefined,
+      modelStatsMap: undefined
+    });
+    const mainAcc = initAgentStats({ role: 'main', agentId: cascadeId || 'main' });
+    const subAccMap = new Map();
+    let unlinkedTotalTokens = 0;
+    const unlinkedSet = new Set(unlinkedSubagentCalls);
+    for (const c of allCalls) {
+      const mName = c.attributedModelLabel || c.modelLabel || c.modelExactId || c.modelRaw || (c.isModelUnknown ? '未知模型' : '');
+      const addInto = (acc) => {
+        acc.callCount++;
+        acc.inputTokens += Number(c.inputTokens || 0);
+        acc.cacheReadTokens += Number(c.cacheReadTokens || 0);
+        acc.outputTokens += Number(c.outputTokens || 0);
+        acc.totalTokens += Number(c.totalTokens || 0);
+        acc.streamingSec += Number(c.streamingSec || 0);
+        if (mName) {
+          acc.modelsSet.add(mName);
+          let ms = acc.modelStatsMap.get(mName);
+          if (!ms) {
+            ms = { modelLabel: mName, callCount: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, totalTokens: 0, streamingSec: 0 };
+            acc.modelStatsMap.set(mName, ms);
+          }
+          ms.callCount++;
+          ms.inputTokens += Number(c.inputTokens || 0);
+          ms.cacheReadTokens += Number(c.cacheReadTokens || 0);
+          ms.outputTokens += Number(c.outputTokens || 0);
+          ms.totalTokens += Number(c.totalTokens || 0);
+          ms.streamingSec += Number(c.streamingSec || 0);
+        }
+      };
+      if (c.agentRole !== 'subagent') {
+        addInto(mainAcc);
+      } else if (unlinkedSet.has(c)) {
+        unlinkedTotalTokens += Number(c.totalTokens || 0);
+      } else {
+        const subKey = String(c.cascadeId || `${c.subagentType || 'sub'}:${c.subagentRole || ''}:${c.parentStepIndex ?? 'na'}`);
+        let sAcc = subAccMap.get(subKey);
+        if (!sAcc) {
+          sAcc = initAgentStats({
+            childCid: c.cascadeId || subKey,
+            role: c.subagentRole || '',
+            type: c.subagentType || '',
+            parentStepIndex: c.parentStepIndex ?? null,
+            confidence: c.attributionConfidence || 'unknown'
+          });
+          subAccMap.set(subKey, sAcc);
+        }
+        addInto(sAcc);
+      }
+    }
+    const subagentsList = Array.from(subAccMap.values()).map(finalizeAgentStats);
+    const mainAgentFinal = finalizeAgentStats(mainAcc);
+    const fleetCombinedTotalTokens = allCalls.reduce((sum, c) => sum + Number(c.totalTokens || 0), 0);
+    const subagentsSum = subagentsList.reduce((sum, s) => sum + s.totalTokens, 0);
+
+    // 按步骤与时间合并主子协作时间线，直观还原代理派生与交接节点
+    const rawTaskEvents = Array.isArray(options.taskEvents) ? options.taskEvents : [];
+    const collabEvents = [];
+    for (const c of allCalls) {
+      const isSub = c.agentRole === 'subagent';
+      collabEvents.push({
+        stepIndex: c.stepIndex ?? null,
+        timestamp: c.timestamp ?? null,
+        kind: isSub ? 'subagent_call' : 'main_call',
+        role: isSub ? (c.subagentRole || c.subagentType || 'subagent') : 'main',
+        modelLabel: c.modelLabel || c.modelExactId || c.modelRaw || '',
+        subagentType: c.subagentType || '',
+        parentStepIndex: c.parentStepIndex ?? null,
+        callId: c.callId || null,
+        totalTokens: Number(c.totalTokens || 0),
+        detail: isSub
+          ? `子代理${c.subagentType ? ` (${c.subagentType})` : ''} 响应 · ${Number(c.totalTokens || 0)} tok`
+          : `主代理调用 · ${Number(c.totalTokens || 0)} tok`
+      });
+    }
+    for (const te of rawTaskEvents) {
+      if (!te || typeof te !== 'object') continue;
+      collabEvents.push({
+        stepIndex: te.stepIndex ?? null,
+        timestamp: te.timestamp ?? null,
+        kind: 'task_event',
+        role: te.role || te.toolName || 'task',
+        modelLabel: '',
+        subagentType: te.subagentType || '',
+        parentStepIndex: null,
+        callId: null,
+        totalTokens: 0,
+        status: te.status || 'completed',
+        detail: te.summary || `${te.toolName || 'task'}${te.action ? ` (${te.action})` : ''}`
+      });
+    }
+    collabEvents.sort((a, b) => {
+      const sa = Number.isInteger(a.stepIndex) ? a.stepIndex : Number.MAX_SAFE_INTEGER;
+      const sb = Number.isInteger(b.stepIndex) ? b.stepIndex : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return Number(a.timestamp || 0) - Number(b.timestamp || 0);
+    });
+
+    const agentFleetSummary = {
+      mainAgent: mainAgentFinal,
+      subagents: subagentsList,
+      unlinkedCount: unlinkedSubagentCalls.length,
+      unlinkedTotalTokens,
+      mainOnlyTotalTokens: mainAgentFinal.totalTokens,
+      fleetCombinedTotalTokens,
+      dedupVerified: (mainAgentFinal.totalTokens + subagentsSum + unlinkedTotalTokens) === fleetCombinedTotalTokens,
+      collaborationTimeline: collabEvents.slice(0, 120),
+      taskEvents: rawTaskEvents.slice(0, 80),
+      hasTaskDependencyDag: false
+    };
+
+    let modelBreakdownSumTokens = 0;
+    let modelBreakdownSumCalls = 0;
+    let modelBreakdownSumInput = 0;
+    let modelBreakdownSumCache = 0;
+    let modelBreakdownSumOutput = 0;
+    for (const m of modelBreakdown) {
+      modelBreakdownSumTokens += m.totalTokens;
+      modelBreakdownSumCalls += m.callCount;
+      modelBreakdownSumInput += m.inputTokens;
+      modelBreakdownSumCache += m.cacheReadTokens;
+      modelBreakdownSumOutput += m.outputTokens;
+    }
+    const placedCalls = [
+      ...resultTurns.flatMap(t => t.calls || []),
+      ...unlinkedSubagentCalls
+    ];
+    let placedCallsSumTokens = 0;
+    for (const c of placedCalls) {
+      placedCallsSumTokens += Number(c.totalTokens ?? ((c.inputTokens || 0) + (c.cacheReadTokens || 0) + (c.outputTokens || 0)));
+    }
+    const sessionTokenTotals = {
+      callCount: totalCallsAll,
+      mainCallCount: totalMainAll,
+      subagentCallCount: totalSubAll,
+      inputTokens: totalInpAll,
+      cacheReadTokens: totalCapAll,
+      outputTokens: totalOutAll,
+      totalTokens: totalTokAll,
+      mainOnly: mainOnlyTotals,
+      subagentsOnly: subOnlyTotals,
+      modelBreakdownSumTokens,
+      modelBreakdownSumCalls,
+      placedCallsCount: placedCalls.length,
+      placedCallsSumTokens,
+      isConsistent: (
+        modelBreakdownSumTokens === totalTokAll &&
+        modelBreakdownSumCalls === totalCallsAll &&
+        modelBreakdownSumInput === totalInpAll &&
+        modelBreakdownSumCache === totalCapAll &&
+        modelBreakdownSumOutput === totalOutAll &&
+        placedCalls.length === totalCallsAll &&
+        placedCallsSumTokens === totalTokAll
+      )
+    };
+
     const overallCacheSummary = summarizeCacheReadStats(allCalls);
     return {
       cascadeId,
       turns: resultTurns,
       unlinkedSubagentCalls,
       totalCalls: allCalls.length,
-      mainCallsCount: allCalls.filter(c => c.agentRole !== 'subagent').length,
-      subagentCallsCount: allCalls.filter(c => c.agentRole === 'subagent').length,
+      mainCallsCount: totalMainAll,
+      subagentCallsCount: totalSubAll,
+      modelBreakdown,
+      sessionTokenTotals,
       cacheSummary: overallCacheSummary,
+      contextDeltaSummary,
+      timingSummary,
+      agentFleetSummary,
       latestCall: allCalls.length ? allCalls[allCalls.length - 1] : null
+    };
+  }
+
+  /**
+   * ELV-98: 基于规范化会话时间线构建上下文总量 / 增量 Δ 趋势序列，明确区分服务端真实用量与本地估算口径
+   */
+  function buildContextTrendSeries(timeline, options = {}) {
+    const mode = options.mode === 'delta' ? 'delta' : 'total';
+    const granularity = options.granularity === 'turn' ? 'turn' : 'step';
+    const rawMax = Number(options.maxPoints);
+    const maxPoints = Number.isFinite(rawMax) && rawMax > 0 ? Math.max(4, Math.min(200, Math.round(rawMax))) : 48;
+    const turns = Array.isArray(timeline)
+      ? timeline
+      : (Array.isArray(timeline?.turns) ? timeline.turns : []);
+
+    const rawPoints = [];
+    if (granularity === 'turn') {
+      let prevCtx = null;
+      for (const t of turns) {
+        if (!t || typeof t !== 'object') continue;
+        const calls = Array.isArray(t.calls) ? t.calls : [];
+        const validCalls = calls.filter(c => {
+          if (!c || typeof c !== 'object') return false;
+          if (c.contextWindowTokens != null) return true;
+          const inp = Number(c.inputTokens) || 0;
+          const cap = Number(c.cacheReadTokens) || 0;
+          return c.hasInputCacheFields !== false && (c.inputTokens != null || c.cacheReadTokens != null || inp > 0 || cap > 0);
+        });
+        const lastCall = validCalls.length ? validCalls[validCalls.length - 1] : null;
+        if (!lastCall && t.lastContextTokens == null) continue;
+        const freshInput = lastCall ? Math.max(0, Number(lastCall.inputTokens) || 0) : Math.max(0, Number(t.lastContextTokens) || 0);
+        const cacheRead = lastCall ? Math.max(0, Number(lastCall.cacheReadTokens) || 0) : 0;
+        const totalCtx = t.lastContextTokens != null
+          ? Math.max(0, Number(t.lastContextTokens) || 0)
+          : (lastCall.contextWindowTokens != null ? Math.max(0, Number(lastCall.contextWindowTokens) || 0) : (freshInput + cacheRead));
+        const hasTurnDelta = t.deltaFromPrevTurn !== undefined && t.deltaFromPrevTurn !== null && Number.isFinite(Number(t.deltaFromPrevTurn));
+        const delta = hasTurnDelta ? Number(t.deltaFromPrevTurn) : (prevCtx !== null ? totalCtx - prevCtx : null);
+        prevCtx = totalCtx;
+        const isEst = Boolean(!lastCall || lastCall.usageEstimated === true || lastCall.hasInputCacheFields === false);
+        rawPoints.push({
+          origIndex: rawPoints.length,
+          turnIndex: t.turnIndex ?? null,
+          stepIndex: lastCall?.stepIndex ?? t.stepIndex ?? null,
+          callId: lastCall?.callId ? String(lastCall.callId) : '',
+          label: t.turnIndex != null ? `T${t.turnIndex}` : `#${rawPoints.length + 1}`,
+          modelLabel: (lastCall?.attributedModelLabel || lastCall?.modelLabel || lastCall?.modelExactId || '') || '',
+          agentRole: lastCall?.agentRole || 'main',
+          timestamp: lastCall?.timestamp ?? t.timestamp ?? null,
+          freshInputTokens: freshInput,
+          cacheReadTokens: cacheRead,
+          outputTokens: Number(t.outputTokens) || 0,
+          totalContextTokens: totalCtx,
+          deltaTokens: delta,
+          callCount: calls.length,
+          isMaxJump: false,
+          isEstimated: isEst,
+          sourceBasis: isEst ? 'local_estimate' : 'server_usage'
+        });
+      }
+    } else {
+      let prevCtx = null;
+      for (const t of turns) {
+        if (!t || typeof t !== 'object') continue;
+        const calls = Array.isArray(t.calls) ? t.calls : [];
+        for (const c of calls) {
+          if (!c || typeof c !== 'object') continue;
+          const freshInput = Math.max(0, Number(c.inputTokens) || 0);
+          const cacheRead = Math.max(0, Number(c.cacheReadTokens) || 0);
+          const hasIC = c.hasInputCacheFields !== false && (c.inputTokens != null || c.cacheReadTokens != null || c.contextWindowTokens != null);
+          if (c.contextWindowTokens == null && !hasIC && freshInput === 0 && cacheRead === 0) continue;
+          const totalCtx = c.contextWindowTokens != null
+            ? Math.max(0, Number(c.contextWindowTokens) || 0)
+            : (freshInput + cacheRead);
+          const hasStepDelta = c.deltaFromPrevStep !== undefined && c.deltaFromPrevStep !== null && Number.isFinite(Number(c.deltaFromPrevStep));
+          const delta = hasStepDelta ? Number(c.deltaFromPrevStep) : (prevCtx !== null ? totalCtx - prevCtx : null);
+          prevCtx = totalCtx;
+          const isEst = Boolean(c.usageEstimated === true || c.hasInputCacheFields === false);
+          rawPoints.push({
+            origIndex: rawPoints.length,
+            turnIndex: t.turnIndex ?? null,
+            stepIndex: c.stepIndex ?? null,
+            callId: c.callId ? String(c.callId) : '',
+            label: c.stepIndex != null ? `S${c.stepIndex}` : `#${rawPoints.length + 1}`,
+            modelLabel: (c.attributedModelLabel || c.modelLabel || c.modelExactId || '') || '',
+            agentRole: c.agentRole || 'main',
+            timestamp: c.timestamp ?? null,
+            freshInputTokens: freshInput,
+            cacheReadTokens: cacheRead,
+            outputTokens: Number(c.outputTokens) || 0,
+            totalContextTokens: totalCtx,
+            deltaTokens: delta,
+            callCount: 1,
+            isMaxJump: Boolean(c.isMaxContextJump),
+            isEstimated: isEst,
+            sourceBasis: isEst ? 'local_estimate' : 'server_usage'
+          });
+        }
+      }
+    }
+
+    const fallbackEst = Number(options.fallbackEstimateTokens);
+    if (rawPoints.length === 0 && Number.isFinite(fallbackEst) && fallbackEst > 0) {
+      const estRounded = Math.round(fallbackEst);
+      rawPoints.push({
+        origIndex: 0,
+        turnIndex: null,
+        stepIndex: null,
+        callId: '',
+        label: 'Est',
+        modelLabel: options.fallbackModelLabel ? String(options.fallbackModelLabel) : '',
+        agentRole: 'main',
+        timestamp: null,
+        freshInputTokens: estRounded,
+        cacheReadTokens: 0,
+        outputTokens: 0,
+        totalContextTokens: estRounded,
+        deltaTokens: null,
+        callCount: 0,
+        isMaxJump: false,
+        isEstimated: true,
+        sourceBasis: 'local_estimate'
+      });
+    }
+
+    const totalPoints = rawPoints.length;
+    const truncatedCount = totalPoints > maxPoints ? (totalPoints - maxPoints) : 0;
+    const sliced = truncatedCount > 0 ? rawPoints.slice(totalPoints - maxPoints) : rawPoints;
+    const points = sliced.map((p, idx) => ({ ...p, index: idx }));
+
+    let maxTotalTokens = 0;
+    let maxAbsDeltaTokens = 0;
+    let maxJumpIdx = -1;
+    let maxJumpVal = 0;
+    let serverCount = 0;
+    let estCount = 0;
+    for (let i = 0; i < points.length; i++) {
+      const pt = points[i];
+      if (pt.totalContextTokens > maxTotalTokens) maxTotalTokens = pt.totalContextTokens;
+      if (pt.deltaTokens != null && Number.isFinite(pt.deltaTokens)) {
+        const absD = Math.abs(pt.deltaTokens);
+        if (absD > maxAbsDeltaTokens) maxAbsDeltaTokens = absD;
+        if (pt.deltaTokens > maxJumpVal) {
+          maxJumpVal = pt.deltaTokens;
+          maxJumpIdx = i;
+        }
+      }
+      if (pt.isEstimated) estCount++;
+      else serverCount++;
+    }
+    const existingJumpIdx = points.findIndex(p => p.isMaxJump);
+    const finalJumpIdx = existingJumpIdx >= 0 ? existingJumpIdx : maxJumpIdx;
+    for (let i = 0; i < points.length; i++) {
+      points[i].isMaxJump = (i === finalJumpIdx && points[i].deltaTokens != null && points[i].deltaTokens > 0);
+    }
+
+    let basis = 'empty';
+    if (points.length > 0) {
+      basis = (serverCount > 0 && estCount > 0) ? 'mixed' : (estCount > 0 ? 'local_estimate' : 'server_usage');
+    }
+    const latestContextTokens = points.length ? points[points.length - 1].totalContextTokens : null;
+    const netDeltaTokens = points.length >= 2
+      ? (points[points.length - 1].totalContextTokens - points[0].totalContextTokens)
+      : (timeline?.contextDeltaSummary?.netDeltaTokens ?? null);
+
+    return {
+      ok: true,
+      mode,
+      granularity,
+      basis,
+      basisReason: points.length === 0 ? 'no_data' : basis,
+      points,
+      totalPoints,
+      truncatedCount,
+      maxTotalTokens,
+      maxAbsDeltaTokens,
+      maxJumpIndex: finalJumpIdx,
+      latestContextTokens,
+      netDeltaTokens
+    };
+  }
+
+  /**
+   * 评估桌面会话实时 4 态运行状态 (idle / running / slow / error) 与等待原因
+   * 规则灵感借鉴 antigravity-codex-theme (MIT, core/runtime/40-status-machine.js, commit 09b1f2ad)
+   */
+  function evaluateSessionRuntimeStatus(input = {}) {
+    const isOffline = Boolean(input.isOffline);
+    const isUserCanceled = Boolean(input.isUserCanceled);
+    const lastError = input.lastError ? String(input.lastError).trim() : '';
+    const disconnectedSec = Math.max(0, Number(input.disconnectedSec || 0) || 0);
+    const isGenerating = Boolean(input.isGenerating);
+    const waitSec = Math.max(0, Number(input.waitSec || 0) || 0);
+    const isCompacting = Boolean(input.isCompacting);
+    const compactCrossModel = Boolean(input.compactCrossModel);
+    const retryAttempt = Math.max(0, Number(input.retryAttempt || 0) || 0);
+    const retryCountdownSec = Math.max(0, Number(input.retryCountdownSec || 0) || 0);
+
+    if (isOffline) {
+      return {
+        state: 'error',
+        reasonCode: 'offline',
+        label: '网络离线',
+        detail: '当前网络离线，请求无法触达模型服务端.'
+      };
+    }
+    if (lastError && !isUserCanceled) {
+      return {
+        state: 'error',
+        reasonCode: 'request_error',
+        label: '请求异常',
+        detail: lastError
+      };
+    }
+    if (disconnectedSec >= 12) {
+      return {
+        state: 'error',
+        reasonCode: 'disconnected',
+        label: '连接断开',
+        detail: `与宿主连接已中断 ${Math.round(disconnectedSec)}s，等待恢复.`
+      };
+    }
+    if (isCompacting && compactCrossModel) {
+      return {
+        state: 'slow',
+        reasonCode: 'compact_kv_recompute',
+        label: '跨模型压缩重算缓存',
+        detail: '正在使用不同模型家族执行上下文压缩，将触发 KV 缓存重算，首轮等待可能偏长.'
+      };
+    }
+    if (retryCountdownSec > 0 || retryAttempt > 0) {
+      const retryNote = retryCountdownSec > 0
+        ? `第 ${Math.max(1, retryAttempt)} 次重试，约 ${Math.round(retryCountdownSec)}s 后重发.`
+        : `正在执行第 ${retryAttempt} 次自动重试.`;
+      return {
+        state: 'slow',
+        reasonCode: 'retrying',
+        label: '自动重试中',
+        detail: retryNote
+      };
+    }
+    if (disconnectedSec >= 3) {
+      return {
+        state: 'slow',
+        reasonCode: 'reconnecting',
+        label: '连接抖动',
+        detail: `宿主通信已等待 ${Math.round(disconnectedSec)}s，正在重试连接.`
+      };
+    }
+    if (isGenerating && waitSec >= 60) {
+      return {
+        state: 'slow',
+        reasonCode: 'slow_wait',
+        label: '等待较慢',
+        detail: `本次请求已等待 ${Math.round(waitSec)}s，尚未收到流式增量或服务端正在排队.`
+      };
+    }
+    if (isCompacting) {
+      return {
+        state: 'running',
+        reasonCode: 'compacting',
+        label: '压缩上下文中',
+        detail: '正在整理并压缩历史对话上下文.'
+      };
+    }
+    if (isGenerating) {
+      return {
+        state: 'running',
+        reasonCode: 'generating',
+        label: '生成中',
+        detail: waitSec > 0 ? `正在生成模型响应（已耗时 ${Math.round(waitSec)}s）.` : '正在生成模型响应.'
+      };
+    }
+    return {
+      state: 'idle',
+      reasonCode: 'ready',
+      label: '就绪',
+      detail: '当前会话就绪，等待下一次请求.'
+    };
+  }
+
+  /**
+   * 拆分当前上下文 4 段构成（新增未命中 / 写缓存 / 读缓存 / 剩余）及 75% / 90% 阈值级别
+   * @param {Object} usage 用量对象 { inputTokens, freshInputTokens, cacheCreationInputTokens, cacheReadTokens, cacheTokens, outputTokens, actual }
+   * @param {number} limitTokens 预算上限
+   */
+  function computeContextSegments(usage = {}, limitTokens = 0) {
+    const cap = Number.isFinite(Number(limitTokens)) && Number(limitTokens) > 0 ? Number(limitTokens) : 0;
+    const rawCacheWrite = usage?.cacheCreationInputTokens ?? usage?.cache_creation_input_tokens ?? null;
+    const hasCacheWrite = rawCacheWrite !== null && rawCacheWrite !== undefined && Number.isFinite(Number(rawCacheWrite));
+    const cacheWriteTokens = hasCacheWrite ? Math.max(0, Number(rawCacheWrite)) : 0;
+    const cacheReadTokens = Math.max(0, Number(usage?.cacheReadTokens ?? usage?.cacheTokens ?? usage?.cache_read_tokens ?? 0) || 0);
+    const freshInputTokens = Math.max(0, Number(usage?.freshInputTokens ?? usage?.inputTokens ?? usage?.input_tokens ?? 0) || 0);
+    const outputTokens = Math.max(0, Number(usage?.outputTokens ?? usage?.output_tokens ?? 0) || 0);
+
+    const sumFromSplit = freshInputTokens + cacheWriteTokens + cacheReadTokens + outputTokens;
+    const explicitUsed = Number(usage?.actual ?? usage?.usedTokens ?? 0);
+    const usedTokens = sumFromSplit > 0 ? sumFromSplit : (Number.isFinite(explicitUsed) && explicitUsed > 0 ? explicitUsed : 0);
+    // 当缺少 split 字段仅有 total actual 时，把 actual 归入新增段以便分段条可用，同时标 hasSplit=false
+    const hasSplit = sumFromSplit > 0;
+    const effectiveFresh = hasSplit ? (freshInputTokens + outputTokens) : usedTokens;
+    const remainingTokens = cap > 0 ? Math.max(0, cap - usedTokens) : 0;
+    const denom = cap > 0 ? cap : (usedTokens > 0 ? usedTokens : 0);
+    const toPct = (v) => denom > 0 ? Math.min(100, Math.max(0, Number(((v / denom) * 100).toFixed(1)))) : 0;
+    const usedPct = cap > 0 ? Math.min(999, Number(((usedTokens / cap) * 100).toFixed(1))) : 0;
+    const thresholdLevel = usedPct >= 90 ? 'critical' : (usedPct >= 75 ? 'warning' : 'normal');
+
+    return {
+      freshInputTokens: effectiveFresh,
+      rawInputTokens: freshInputTokens,
+      cacheWriteTokens,
+      cacheReadTokens,
+      outputTokens,
+      hasSplit,
+      hasCacheWrite,
+      usedTokens,
+      limitTokens: cap,
+      remainingTokens,
+      freshPct: toPct(effectiveFresh),
+      cacheWritePct: toPct(cacheWriteTokens),
+      cacheReadPct: toPct(cacheReadTokens),
+      remainingPct: cap > 0 ? Math.max(0, Number((100 - Math.min(100, usedPct)).toFixed(1))) : 0,
+      usedPct,
+      thresholdLevel
     };
   }
 
@@ -6715,12 +9960,43 @@
 
     let phase = input.phase || '';
     if (!phase) {
-      if (outcome === 'canceled') phase = 'canceled';
+      if (outcome === 'remote_unavailable' || (input.isRemote === true && ttftSec === null && totalDurationSec === null && streamSpeed === null && !(outputTokens > 0))) phase = 'remote_unavailable';
+      else if (outcome === 'canceled') phase = 'canceled';
       else if (['failed', 'exceeded', 'network', 'quota_exhausted', 'rate_limited', 'auth_error', 'service_unavailable'].includes(outcome) || input.error) phase = 'failed';
       else if (outcome === 'waiting' || (elapsedSec !== null && ttftSec === null && !outputTokens)) phase = 'waiting';
       else if (outcome === 'streaming') phase = 'streaming';
       else if (ttftSec !== null || totalDurationSec !== null || streamSpeed !== null || (outputTokens !== null && outputTokens > 0)) phase = 'final';
       else phase = 'idle';
+    }
+
+    // 远程/云端对话且本地无轨迹数据（Issue #56）
+    if (phase === 'remote_unavailable') {
+      return {
+        phase: 'remote_unavailable',
+        scoreRuleVersion: ELV91_SCORE_RULE_VERSION,
+        badge: {
+          text: isEn ? 'Remote' : (isTw ? '遠端對話' : '远程对话'),
+          color: '#9CA3AF',
+          severity: 'neutral',
+          glyph: '☁'
+        },
+        shortTitle: isEn ? 'Remote Session' : (isTw ? '遠端對話無法測速' : '远程对话无法测速'),
+        comment: isEn
+          ? 'Remote/cloud conversation; no local trace is written, so latency and throughput cannot be measured.'
+          : (isTw ? '目前為遠端/雲端對話，本機無寫入紀錄，無法取得耗時與輸出速度資料.' : '当前为远程/云端对话，本地无写入记录，无法获取耗时与输出速度数据.'),
+        subLabel: isEn ? 'No local metrics available' : (isTw ? '本機無計量依據' : '本地无计量依据'),
+        elapsedFormatted: '—',
+        ttftFormatted: '—',
+        durationFormatted: '—',
+        ttftRatioPct: null,
+        streamSpeed: null,
+        overallTps: null,
+        ttftTier: null,
+        speedTier: null,
+        durationTier: null,
+        stability: computeStreamStability({}),
+        efficiency: { available: false, skippedReason: 'remote_unavailable', score: null, grade: null, tier: null, ruleVersion: ELV91_SCORE_RULE_VERSION }
+      };
     }
 
     // 异常 / 取消 / 空闲状态处理（绝不制造评分或速率）
@@ -6841,13 +10117,13 @@
     });
     const efficiency = phase === 'final'
       ? calculateExperienceScore({
-          outputTokens,
-          inputTokens: input.totalInputTokens ?? input.inputTokens,
-          ttftSec,
-          streamingSec,
-          totalDurationSec,
-          streamSpeed
-        }, lang)
+        outputTokens,
+        inputTokens: input.totalInputTokens ?? input.inputTokens,
+        ttftSec,
+        streamingSec,
+        totalDurationSec,
+        streamSpeed
+      }, lang)
       : { available: false, skippedReason: 'streaming', score: null, grade: null, tier: null, ruleVersion: ELV91_SCORE_RULE_VERSION };
 
     // 按规则 2 / 3 / 4 判断实时速度与首字等待展示评价
@@ -7026,17 +10302,21 @@
     resolveModelQuota,
     getModelPoolKey,
     getSharedQuotaGroupKey,
+    normalizeModelLookupName,
     parseQuotaFraction,
     formatQuotaPercentText,
     formatQuotaResetMeta,
     classifyModelQuotaAvailability,
     isDecorativeBadgeTagTitle,
     selectPrimaryQuotaBucket,
+    resolveQuotaWindowBucketPair,
     buildModelQuotaSnapshot,
     splitModelDisplayAndEffort,
     resolvePlaceholderModelInfo,
     formatApproxTokensShort,
     inferQuotaWindowDurationMs,
+    QUOTA_PACE_TIERS,
+    evaluateQuotaPace,
     QUOTA_CAL_TTL_MS,
     computeBucketTokenEstimate,
     applyQuotaTokenEstimates,
@@ -7045,8 +10325,28 @@
     add,
     empty,
     analyzeSteps,
+    buildSessionCompositionBreakdown,
+    sanitizeCommandPreview,
+    sanitizeCompositionPreview,
+    extractCommandProgram,
+    extractGeneratorMaxStep,
+    isCheckpointNewerThanGenerator,
+    buildPostCompactSummary,
+    detectContextChangeEvents,
     parseDurationSec,
+    parseTimestampMs,
+    mergeTimeIntervals,
+    formatCompactDurationSec,
+    summarizeTurnTiming,
     GEMINI_PRICING_TABLE,
+    setDynamicPricingCatalog,
+    setCustomPricingCatalog,
+    getDynamicPricingCatalog,
+    parseModelsDevPricingCatalog,
+    parseLiteLlmPricingCatalog,
+    mergePricingCatalogs,
+    getEffectivePricingRules,
+
     SUBSCRIPTION_ACQUISITION_PRESETS,
     SUBSCRIPTION_REGIONS_PRESET,
     findRegionPreset,
@@ -7064,9 +10364,13 @@
     computeCacheReadStats,
     summarizeCacheReadStats,
     summarizeDailyMapCacheStats,
+    computeCacheHitSummary,
     normalizeSessionCallRecord,
     sanitizeTurnPreviewText,
     groupSessionCallsByTurns,
+    buildContextTrendSeries,
+    evaluateSessionRuntimeStatus,
+    computeContextSegments,
     ELV91_SCORE_RULE_VERSION,
     formatHumanDuration,
     classifyStreamSpeedTier,
@@ -7082,6 +10386,7 @@
     groupModelProduct,
     formatTokensK,
     isValidSpeedSample,
+    summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
     MAX_SPEED_SAMPLES_PER_MODEL,

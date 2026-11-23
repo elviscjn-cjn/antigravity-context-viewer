@@ -462,6 +462,34 @@
     return opt.label;
   }
 
+  const PLAN_TIER_OPTIONS = [
+    { value: 'auto', label: '✨ 自动检测 (Auto-detect)', labelZh: '✨ 自动检测 (Auto-detect)', labelTw: '✨ 自動檢測 (Auto-detect)', labelEn: '✨ Auto-detect' },
+    { value: 'free', label: 'Free (免费版)', labelZh: 'Free (免费版)', labelTw: 'Free (免費版)', labelEn: 'Free' },
+    { value: 'pro', label: 'Google AI Pro', labelZh: 'Google AI Pro', labelTw: 'Google AI Pro', labelEn: 'Google AI Pro' },
+    { value: 'ultra', label: 'Google AI Ultra', labelZh: 'Google AI Ultra', labelTw: 'Google AI Ultra', labelEn: 'Google AI Ultra' },
+    { value: 'ultra_5x', label: 'Google AI Ultra (5x)', labelZh: 'Google AI Ultra (5x)', labelTw: 'Google AI Ultra (5x)', labelEn: 'Google AI Ultra (5x)' },
+    { value: 'ultra_20x', label: 'Google AI Ultra (20x)', labelZh: 'Google AI Ultra (20x)', labelTw: 'Google AI Ultra (20x)', labelEn: 'Google AI Ultra (20x)' }
+  ];
+
+  // 刷新套餐规格直接选择器显示
+  function refreshDirectPlanTierDisplay(currentVal) {
+    const label = el('direct-tier-label');
+    const tag = el('p-det-tier-tag');
+    if (!label) return;
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const email = ps.email || 'default';
+    const effectiveCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+    const override = currentVal || ps.planTierOverride || effectiveCustom?.planTierOverride || 'auto';
+    const matched = PLAN_TIER_OPTIONS.find(o => o.value === override);
+    if (override && override !== 'auto') {
+      label.textContent = matched ? formatOptionLabelByLang(matched) : override;
+      if (tag) tag.style.display = 'inline-block';
+    } else {
+      label.textContent = formatOptionLabelByLang(PLAN_TIER_OPTIONS[0]);
+      if (tag) tag.style.display = 'none';
+    }
+  }
+
   // 刷新国家直接选择器显示
   function refreshDirectCountryDisplay(currentCountryVal) {
     const label = el('direct-country-label');
@@ -1006,6 +1034,53 @@
     void persistSettingsToHost({ email, customPlan: customObj });
   }
 
+  function applyDirectPlanTierSelection(tierVal) {
+    ++userActionSeq;
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const email = ps.email || 'default';
+    const prevCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+    const customObj = {
+      ...(prevCustom || {})
+    };
+    if (tierVal && tierVal !== 'auto') {
+      customObj.planTierOverride = tierVal;
+    } else {
+      delete customObj.planTierOverride;
+    }
+    applyCustomPlanObjectLocally(customObj, email);
+    void persistSettingsToHost({ email, customPlan: customObj });
+    refreshDirectPlanTierDisplay(tierVal);
+  }
+
+  el('direct-tier-select')?.addEventListener('change', (e) => {
+    if (isHydratingUiControls) return;
+    applyDirectPlanTierSelection(e.target?.value || 'auto');
+  });
+
+  function initDirectPlanTierDropdown() {
+    return initDropdownController({
+      wrapId: 'direct-tier-wrap',
+      triggerId: 'direct-tier-trigger',
+      labelId: 'direct-tier-label',
+      menuId: 'direct-tier-menu',
+      selectId: 'direct-tier-select',
+      getAriaLabel: () => t('plan.tier.aria'),
+      searchPlaceholder: () => t('dropdown.tierSearch'),
+      getOptions: () => PLAN_TIER_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
+      getSelectedValue: () => {
+        const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+        const email = ps.email || 'default';
+        const effectiveCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+        return ps.planTierOverride || effectiveCustom?.planTierOverride || 'auto';
+      },
+      getLabelText: (opt) => formatOptionLabelByLang(opt),
+      onSelect: (opt) => {
+        applyDirectPlanTierSelection(opt.value);
+      },
+      emptyText: () => t('dropdown.tierEmpty')
+    });
+  }
+
   el('direct-country-select')?.addEventListener('change', (e) => {
     if (isHydratingUiControls) return;
     applyDirectCountrySelection(e.target?.value || '');
@@ -1121,7 +1196,8 @@
     });
   }
 
-  // 立即触发初始化三大原生定制下拉
+  // 立即触发初始化四大原生定制下拉
+  initDirectPlanTierDropdown();
   initDirectCountryDropdown();
   initDirectRegionDropdown();
   initDirectCurrencyDropdown();
@@ -1142,17 +1218,11 @@
     });
   }
 
-  // 套餐详情卡片展开与收回（统一走 setPlanDetailExpanded）
-  el('plan-summary-price-badge')?.addEventListener('click', () => {
-    setPlanDetailExpanded(!planDetailExpanded);
-  });
+  // 套餐详情卡片展开与收回（统一单入口 #btn-plan-detail-toggle 与底部 #btn-plan-detail-collapse）
   el('btn-plan-detail-toggle')?.addEventListener('click', () => {
     const card = el('plan-detail-card');
     const currentlyHidden = !card || card.style.display === 'none' || !card.style.display;
     setPlanDetailExpanded(currentlyHidden);
-  });
-  el('btn-plan-detail-collapse-top')?.addEventListener('click', () => {
-    setPlanDetailExpanded(false);
   });
   el('btn-plan-detail-collapse')?.addEventListener('click', () => {
     setPlanDetailExpanded(false);
@@ -1277,7 +1347,7 @@
       const ctrl = enhancedDropdowns.get(spec.selectId) || initNativeSelectDropdown(spec.selectId, spec);
       ctrl?.refresh?.();
     }
-    for (const wrapId of ['direct-country-wrap', 'direct-region-wrap', 'direct-currency-wrap']) {
+    for (const wrapId of ['direct-country-wrap', 'direct-region-wrap', 'direct-currency-wrap', 'direct-tier-wrap']) {
       el(wrapId)?._controller?.refresh?.();
     }
   }

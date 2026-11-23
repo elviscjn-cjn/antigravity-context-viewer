@@ -894,12 +894,12 @@ test('6. Worker 异常/超时不永久卡死或永久禁用 & 多子进程并发
   const sb = makeTempSandbox('ag-v085-conc-');
   try {
     // A. Unlock Worker 超时卡死 & 后继恢复
-    const hangWorker = path.join(sb.root, 'hang-worker.js');
+    const hangWorker = path.join(sb.root, 'hang-worker.cjs');
     fs.writeFileSync(hangWorker, `
       const { parentPort } = require('worker_threads');
       parentPort.on('message', () => { /* 故意永久不回应以模拟卡死 */ });
     `, 'utf8');
-    const okWorker = path.join(sb.root, 'ok-worker.js');
+    const okWorker = path.join(sb.root, 'ok-worker.cjs');
     fs.writeFileSync(okWorker, `
       const { parentPort } = require('worker_threads');
       parentPort.on('message', (msg) => {
@@ -914,7 +914,7 @@ test('6. Worker 异常/超时不永久卡死或永久禁用 & 多子进程并发
     assert.equal(recovered?.result?.echoed, 'analyze');
 
     // B. History Worker 超时/异常非零退出后不卡住后续 collectTokenHistoryAsync 队列
-    const exitWorker = path.join(sb.root, 'exit-worker.js');
+    const exitWorker = path.join(sb.root, 'exit-worker.cjs');
     fs.writeFileSync(exitWorker, `
       const { parentPort } = require('worker_threads');
       parentPort.on('message', () => { process.exit(1); });
@@ -948,7 +948,7 @@ test('6. Worker 异常/超时不永久卡死或永久禁用 & 多子进程并发
     const isolatedAgDir = path.join(sb.root, 'ag-dir');
     fs.mkdirSync(isolatedAgDir, { recursive: true });
     const ledgerPath = path.join(isolatedAgDir, 'pricing_ledger_v1.json');
-    const workerScript = path.join(sb.root, 'ledger-writer.js');
+    const workerScript = path.join(sb.root, 'ledger-writer.cjs');
     fs.writeFileSync(workerScript, `
       const { recordModelCalls } = require(${JSON.stringify(path.join(ROOT_DIR, 'meter-collector.js'))});
       const workerId = Number(process.argv[2]);

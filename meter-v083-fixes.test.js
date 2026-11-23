@@ -811,10 +811,10 @@ test('设置页动态操作反馈三语支持与面板语言切换即时更新�
   h.elements.get('chk-rec-title').checked = true;
   h.elements.get('btn-enhance-preset-apply').click();
   const confirmText = h.elements.get('enhance-preset-confirm-text');
-  assert.match(confirmText.textContent, /About to apply checked items: .*, /);
+  assert.match(confirmText.textContent, /About to apply checked items: /);
   h.elements.get('btn-top-lang-zh-CN').click();
   await new Promise(r => setTimeout(r, 25));
-  assert.match(confirmText.textContent, /即将执行以下已勾选项：.*、/);
+  assert.match(confirmText.textContent, /即将执行以下已勾选项：/);
 
   // 恢复默认触发部分失败，随后切换 EN 验证全部条目与分隔符重译
   h.elements.get('btn-enhance-restore-all').click();
@@ -1809,6 +1809,7 @@ test('ELV-47 & ELV-60: 禁用汉化但开品牌不误报重启恢复英文；组
   // 验证初始化时关闭汉化+开启品牌翻译展示「已关闭 (官方英文)」而非「需重启恢复英文」
   const h2 = createTestHarness({
     setupSandbox(sb) {
+      sb.localStorage.setItem('ag_panel_language', 'zh-CN');
       sb.window.__AGY_I18N_CONFIG__ = { enabled: false, language: 'en', brandTitle: 'hidden' };
       sb.window.__AGY_I18N_DATA__ = { exact: { Settings: '设置' } };
       sb.window.__AGY_TRANSLATE_EL__ = () => {};
@@ -2045,6 +2046,7 @@ test('ELV-47 & ELV-60: Electron 沙箱隔离且侧边栏含中文项目名时，
   let mockChineseEnabled = false;
   const h = createTestHarness({
     setupSandbox(sb) {
+      sb.localStorage.setItem('ag_panel_language', 'zh-CN');
       // 模拟侧边栏用户自定义中文项目名（包含“项目”“设置”字样）但宿主本身是英文
       const origQsa = sb.document.querySelectorAll.bind(sb.document);
       sb.document.querySelectorAll = (sel) => {
@@ -2102,4 +2104,213 @@ test('ELV-47 & ELV-60: Electron 沙箱隔离且侧边栏含中文项目名时，
   } finally {
     h.api.dispose();
   }
+});
+
+test('PR #47 / Issue #46: 推荐配置复选框按磁盘真实开关同步、仅提交差异、取消已开启项走恢复且不冲掉用户草稿', async () => {
+  const applyEnhanceCalls = [];
+  const toggleCalls = [];
+  const unlockCalls = [];
+  const restoreUnlockCalls = [];
+  const h = createTestHarness({
+    setupSandbox(sb) {
+      sb.window.contextMeterAPI.getEnhanceStatus = async () => ({
+        ok: true,
+        data: {
+          supported: true,
+          summary: {
+            promptTier: 4,
+            chineseTitleEnabled: false,
+            chineseTitleMode: 'default',
+            pendingLsRestart: false
+          }
+        }
+      });
+      sb.window.contextMeterAPI.getContextUnlockStatus = async () => ({
+        ok: true,
+        data: {
+          isPlatformSupported: true,
+          status: 'applied',
+          configuredMode: 'dynamic',
+          configuredLimitTokens: null
+        }
+      });
+      sb.window.contextMeterAPI.getModulesStatus = async () => ({
+        ok: true,
+        data: {
+          modules: {
+            chinese: { enabled: false, language: 'en', brandTitle: 'english' },
+            proxy: { enabled: false, proxyUrl: '' }
+          }
+        },
+        disk: { chinese: true, chineseReady: true, proxy: true, proxyReady: true },
+        runtime: { chineseActive: false, chineseNeedsRestart: false, proxyActive: false, proxyNeedsRestart: false }
+      });
+      sb.window.contextMeterAPI.applyEnhancePatch = async (payload) => {
+        applyEnhanceCalls.push(payload);
+        return {
+          ok: true,
+          changed: true,
+          needsRestart: true,
+          status: {
+            supported: true,
+            summary: {
+              promptTier: payload.promptTier ?? 4,
+              chineseTitleEnabled: Boolean(payload.chineseTitle),
+              chineseTitleMode: payload.chineseTitle ? 'zh' : 'default'
+            }
+          }
+        };
+      };
+      sb.window.contextMeterAPI.toggleModule = async (name, enable, opts) => {
+        toggleCalls.push({ name, enable, opts });
+        return {
+          ok: true,
+          status: 'config_toggled',
+          data: { modules: { chinese: { enabled: Boolean(enable), language: opts?.language || 'en', brandTitle: opts?.brandTitle || 'english' }, proxy: { enabled: false } } },
+          disk: { chinese: true, chineseReady: true, proxy: true, proxyReady: true },
+          runtime: { chineseActive: false, chineseNeedsRestart: Boolean(enable) }
+        };
+      };
+      sb.window.contextMeterAPI.applyContextUnlock = async (payload) => {
+        unlockCalls.push(payload);
+        return { ok: true, data: { isPlatformSupported: true, status: 'applied', configuredMode: payload.mode } };
+      };
+      sb.window.contextMeterAPI.restoreContextUnlock = async () => {
+        restoreUnlockCalls.push(true);
+        return { ok: true, data: { isPlatformSupported: true, status: 'not_patched', configuredMode: 'default' } };
+      };
+    }
+  });
+  try {
+    h.elements.get('btn-ctx-settings').click();
+    await new Promise(r => setTimeout(r, 80));
+
+    // 1. 磁盘上仅 promptTier=4 与 configuredMode='dynamic' 为开启，复选框必须按磁盘真实同步
+    const chkPrompt = h.elements.get('chk-rec-prompt');
+    const chkTitle = h.elements.get('chk-rec-title');
+    const chkLang = h.elements.get('chk-rec-lang');
+    const chkCtx = h.elements.get('chk-rec-ctx');
+    assert.equal(chkPrompt.checked, true);
+    assert.equal(chkTitle.checked, false);
+    assert.equal(chkLang.checked, false);
+    assert.equal(chkCtx.checked, true);
+
+    // 2. 用户未做任何改动直接点应用：差异为空，确认前绝不写入
+    h.elements.get('btn-enhance-preset-apply').click();
+    assert.equal(applyEnhanceCalls.length, 0);
+    assert.equal(toggleCalls.length, 0);
+    assert.equal(restoreUnlockCalls.length, 0);
+
+    // 3. 用户取消勾选已开启的 ctx，并勾选未开启的 title；触发 change 标记 dirty 后，后台状态刷新不能冲掉用户草稿
+    chkCtx.checked = false;
+    chkCtx.trigger('change', { target: chkCtx });
+    chkTitle.checked = true;
+    chkTitle.trigger('change', { target: chkTitle });
+
+    await h.api.refreshEnhanceStatusForTest();
+    assert.equal(chkCtx.checked, false, '用户已编辑的复选框不能被后台刷新冲掉');
+    assert.equal(chkTitle.checked, true, '用户已编辑的复选框不能被后台刷新冲掉');
+
+    // 4. 点应用再点确认：仅提交差异项（title 开启、ctx 恢复），未变动的 prompt 与 lang 不触发写入
+    h.elements.get('btn-enhance-preset-apply').click();
+    assert.equal(h.elements.get('enhance-preset-confirm').hidden, false);
+    assert.equal(applyEnhanceCalls.length, 0, '确认前绝不写入磁盘');
+    h.elements.get('btn-enhance-confirm-go').click();
+    await new Promise(r => setTimeout(r, 60));
+
+    assert.equal(applyEnhanceCalls.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(applyEnhanceCalls[0])), { chineseTitle: true });
+    assert.equal(toggleCalls.length, 0, '未变更的客户端语言不得被写入');
+    assert.equal(unlockCalls.length, 0);
+    assert.equal(restoreUnlockCalls.length, 1, '取消已开启的上下文跟随模型必须走 restore');
+  } finally {
+    h.api.dispose();
+  }
+});
+
+test('Issue #58: 汉化隔离聊天正文与 Markdown 输出（杜绝 Plane Trajectory 正在规划串字），且两份 i18n-runtime 字节一致', () => {
+  const fsSync = require('fs');
+  const pathMod = require('path');
+  const vmMod = require('vm');
+  const rootRuntime = fsSync.readFileSync(pathMod.join(__dirname, 'i18n', 'i18n-runtime.js'), 'utf8');
+  const srcRuntime = fsSync.readFileSync(pathMod.join(__dirname, 'src', 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.equal(rootRuntime, srcRuntime, 'i18n/i18n-runtime.js 与 src/i18n/i18n-runtime.js 必须保持字节完全一致');
+
+  const makeDomNode = (nodeType, tagName, props = {}) => {
+    const node = {
+      nodeType,
+      tagName,
+      children: [],
+      childNodes: [],
+      firstChild: null,
+      lastChild: null,
+      nextSibling: null,
+      previousSibling: null,
+      parentElement: null,
+      parentNode: null,
+      nodeValue: props.nodeValue || '',
+      className: props.className || '',
+      attrs: new Map(Object.entries(props.attrs || {})),
+      getAttribute(k) { return this.attrs.get(k) ?? null; },
+      hasAttribute(k) { return this.attrs.has(k); },
+      setAttribute(k, v) { this.attrs.set(k, String(v)); },
+      closest(sel) {
+        let cur = this;
+        const clsList = String(sel || '').split(',').map(s => s.trim()).filter(Boolean);
+        while (cur && cur.nodeType === 1) {
+          for (const rule of clsList) {
+            if (rule === '.markdown-body' && String(cur.className).includes('markdown-body')) return cur;
+            if (rule === '[data-testid*="assistant-message"]' && String(cur.getAttribute('data-testid') || '').includes('assistant-message')) return cur;
+          }
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      appendChild(c) {
+        c.parentNode = this;
+        this.childNodes.push(c);
+        if (c.nodeType === 1) this.children.push(c);
+        c.parentElement = this;
+        c.previousSibling = this.lastChild;
+        if (this.lastChild) this.lastChild.nextSibling = c;
+        else this.firstChild = c;
+        this.lastChild = c;
+        return c;
+      }
+    };
+    return node;
+  };
+
+  const docRoot = makeDomNode(1, 'DIV', { className: 'workbench' });
+  const mdBlock = makeDomNode(1, 'DIV', { className: 'markdown-body' });
+  const spanInMd = makeDomNode(1, 'SPAN');
+  const planningInMdText = makeDomNode(3, null, { nodeValue: 'Planning' });
+  spanInMd.appendChild(planningInMdText);
+  mdBlock.appendChild(makeDomNode(3, null, { nodeValue: 'Plane Trajectory ' }));
+  mdBlock.appendChild(spanInMd);
+  mdBlock.appendChild(makeDomNode(3, null, { nodeValue: ' (Table 3)' }));
+
+  const uiBtn = makeDomNode(1, 'BUTTON', { className: 'action-btn' });
+  const uiPlanningText = makeDomNode(3, null, { nodeValue: 'Planning' });
+  uiBtn.appendChild(uiPlanningText);
+
+  docRoot.appendChild(mdBlock);
+  docRoot.appendChild(uiBtn);
+
+  const sandbox = {
+    window: {
+      __AGY_I18N_DATA__: { exact: { Planning: '正在规划', Save: '保存' }, patterns: [] },
+      __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' }
+    },
+    document: { documentElement: docRoot, body: docRoot, readyState: 'complete' },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1
+  };
+  sandbox.window.document = sandbox.document;
+  vmMod.runInNewContext(rootRuntime, sandbox);
+  sandbox.window.__AGY_RUN_FULL_SCAN__();
+
+  assert.equal(planningInMdText.nodeValue, 'Planning', 'Markdown/消息正文中英文词绝不得被替换为中文');
+  assert.equal(uiPlanningText.nodeValue, '正在规划', '正常 UI 控件词条必须照常汉化');
 });

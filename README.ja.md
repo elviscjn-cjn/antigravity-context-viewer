@@ -4,12 +4,6 @@
 
 Google Antigravity 2.x のツールバーで、会話のコンテキスト使用量、モデルの応答速度、デスクトップと CLI のトークン使用量を確認できます。
 
-## デモ
-
-https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
-
-[高画質 MP4 をダウンロード](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
-
 ## 機能
 
 - **コンテキストと応答速度**. 使用量、モデルの上限、最初のトークンまでの時間（TTFT）、出力速度、生成時間を表示します。サーバーの実測値とローカルの推定値を分けて表示します。
