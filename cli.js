@@ -10,12 +10,14 @@ process.noAsar = true;
 
 const fs = require('fs');
 const os = require('os');
+const net = require('net');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const readline = require('readline');
 const { spawn, execFileSync } = require('child_process');
 const { loadAsarEngine, getStateDir, getAppDataDir, isIsolatedTestPath } = require('./asar-engine');
-const { discoverAntigravityCdp, createCdpClient, parseExplicitPort, normalizeLoopbackOrigin } = require('./local-api');
+const { discoverAntigravityCdp, createCdpClient, parseExplicitPort, normalizeLoopbackOrigin, HANS_CANDIDATE_PORTS } = require('./local-api');
 const {
   install,
   findAsarPath,
@@ -515,6 +517,388 @@ async function rollbackPreparedLiveBridge(bridgePrep) {
   return { rolledBack: true };
 }
 
+const DEFAULT_LAUNCH_CDP_PORT = (Array.isArray(HANS_CANDIDATE_PORTS) && HANS_CANDIDATE_PORTS[0]) || 58321;
+
+function isRunningInsideAntigravitySession(env = process.env) {
+  if (!env || typeof env !== 'object') return false;
+  return Boolean(
+    env.ANTIGRAVITY_AGENT ||
+    env.ANTIGRAVITY_CONVERSATION_ID ||
+    env.ANTIGRAVITY_LS_ADDRESS
+  );
+}
+
+function resolveAntigravityHostTarget(customPath = null, options = {}) {
+  if (options && options._hostTarget) return options._hostTarget;
+  const asarPath = findAsarPath(customPath);
+  const platform = (options && options.platform) || process.platform;
+  if (platform === 'darwin') {
+    const bundleCandidate = path.resolve(asarPath, '..', '..', '..');
+    const isAppBundle = bundleCandidate.toLowerCase().endsWith('.app');
+    const appBundlePath = isAppBundle ? bundleCandidate : null;
+    let exeName = isAppBundle ? path.basename(bundleCandidate, '.app') : 'Antigravity';
+    if (appBundlePath) {
+      try {
+        const plistPath = path.join(appBundlePath, 'Contents', 'Info.plist');
+        if (fs.existsSync(plistPath)) {
+          const plistRaw = fs.readFileSync(plistPath, 'utf8');
+          const m = plistRaw.match(/<key>\s*CFBundleExecutable\s*<\/key>\s*<string>\s*([^<\s][^<]*?)\s*<\/string>/);
+          if (m && m[1]) exeName = m[1].trim();
+        }
+      } catch {}
+    }
+    const execPath = appBundlePath
+      ? path.join(appBundlePath, 'Contents', 'MacOS', exeName)
+      : path.resolve(asarPath, '..', '..', 'MacOS', exeName);
+    return { platform, asarPath, appBundlePath, execPath };
+  }
+  const installDir = path.resolve(asarPath, '..', '..');
+  if (platform === 'win32') {
+    const candidates = ['Antigravity.exe', 'antigravity.exe'].map(n => path.join(installDir, n));
+    const execPath = candidates.find(p => fs.existsSync(p)) || candidates[0];
+    return { platform, asarPath, appBundlePath: null, execPath };
+  }
+  const candidates = ['antigravity', 'Antigravity'].map(n => path.join(installDir, n));
+  const execPath = candidates.find(p => fs.existsSync(p)) || candidates[0];
+  return { platform, asarPath, appBundlePath: null, execPath };
+}
+
+function formatManualCdpLaunchCommand(target = null, port = DEFAULT_LAUNCH_CDP_PORT) {
+  const platform = target?.platform || process.platform;
+  if (platform === 'darwin') {
+    const appRef = target?.appBundlePath || '/Applications/Antigravity.app';
+    return appRef === '/Applications/Antigravity.app'
+      ? `open -a Antigravity --args --remote-debugging-port=${port}`
+      : `open -a "${appRef}" --args --remote-debugging-port=${port}`;
+  }
+  if (platform === 'win32') {
+    const exe = target?.execPath || 'Antigravity.exe';
+    return `& "${exe}" --remote-debugging-port=${port}`;
+  }
+  const exe = target?.execPath || 'antigravity';
+  return `"${exe}" --remote-debugging-port=${port}`;
+}
+
+async function isAntigravityHostRunning(customPath = null, options = {}) {
+  if (options && typeof options._isHostRunning === 'function') {
+    return Boolean(await options._isHostRunning());
+  }
+  if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
+    return false;
+  }
+  let target = null;
+  try {
+    target = resolveAntigravityHostTarget(customPath, options);
+  } catch {
+    return false;
+  }
+  if (!target || !target.execPath) return false;
+  if (target.platform === 'darwin') {
+    try {
+      const { listMacProcessesSync } = require('./macos-binary-utils');
+      const expectedExec = path.resolve(target.execPath);
+      return listMacProcessesSync().some(p => p && p.path && path.resolve(p.path) === expectedExec);
+    } catch {
+      return false;
+    }
+  }
+  if (target.platform === 'win32') {
+    try {
+      const exeBase = path.basename(target.execPath);
+      const out = execFileSync('tasklist.exe', ['/FI', `IMAGENAME eq ${exeBase}`, '/NH', '/FO', 'CSV'], {
+        encoding: 'utf8',
+        timeout: 3000,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      return String(out || '').toLowerCase().includes(`"${exeBase.toLowerCase()}"`);
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const out = execFileSync('ps', ['-ax', '-o', 'args='], {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const expectedExec = path.resolve(target.execPath);
+    return String(out || '').split(/\r?\n/).some(line => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.includes('--type=')) return false;
+      return trimmed === expectedExec || trimmed.startsWith(expectedExec + ' ');
+    });
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackPortFree(port) {
+  return new Promise(resolve => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once('error', () => resolve(false));
+    srv.listen(port, '127.0.0.1', () => {
+      srv.close(() => resolve(true));
+    });
+  });
+}
+
+async function pickAvailableCdpPort(preferredPort = null, options = {}) {
+  const explicit = parseExplicitPort(preferredPort ?? options?.port ?? process.env.AG_CDP_PORT);
+  if (explicit) return explicit;
+  if (options && typeof options._pickPort === 'function') {
+    return Number(await options._pickPort()) || DEFAULT_LAUNCH_CDP_PORT;
+  }
+  if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
+    return DEFAULT_LAUNCH_CDP_PORT;
+  }
+  const pool = Array.isArray(HANS_CANDIDATE_PORTS) && HANS_CANDIDATE_PORTS.length
+    ? HANS_CANDIDATE_PORTS
+    : [DEFAULT_LAUNCH_CDP_PORT];
+  for (const candidate of pool) {
+    if (await isLoopbackPortFree(candidate)) return candidate;
+  }
+  return DEFAULT_LAUNCH_CDP_PORT;
+}
+
+function buildCleanHostLaunchEnv(baseEnv = process.env) {
+  const cleanEnv = { ...(baseEnv || {}) };
+  delete cleanEnv.ELECTRON_RUN_AS_NODE;
+  for (const key of Object.keys(cleanEnv)) {
+    if (key.startsWith('ANTIGRAVITY_')) {
+      delete cleanEnv[key];
+    }
+  }
+  return cleanEnv;
+}
+
+async function launchAntigravityHostWithCdp(target, port, options = {}) {
+  if (options && typeof options._launchHost === 'function') {
+    return options._launchHost(target, port);
+  }
+  if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
+    throw new Error('Test mode blocks launching real Antigravity host');
+  }
+  if (!target) {
+    throw new Error('未找到 Antigravity 客户端安装路径');
+  }
+  const cleanEnv = buildCleanHostLaunchEnv(options.env || process.env);
+  if (target.platform === 'darwin' && target.appBundlePath) {
+    execFileSync('open', ['-a', target.appBundlePath, '--args', `--remote-debugging-port=${port}`], {
+      stdio: 'ignore',
+      timeout: 10000,
+      env: cleanEnv
+    });
+    return;
+  }
+  const child = spawn(target.execPath, [`--remote-debugging-port=${port}`], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+    env: cleanEnv
+  });
+  child.unref();
+}
+
+async function quitAntigravityHostGracefully(target, customPath = null, options = {}) {
+  const activeEnv = (options && options.env) || process.env;
+  if (isRunningInsideAntigravitySession(activeEnv)) {
+    throw new Error('当前位于 Antigravity 内部会话中，禁止自动关闭宿主进程');
+  }
+  if (options && typeof options._quitHost === 'function') {
+    await options._quitHost(target);
+  } else {
+    if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
+      throw new Error('Test mode blocks quitting real Antigravity host');
+    }
+    if (target?.platform === 'darwin') {
+      execFileSync('osascript', [
+        '-e', 'on run argv',
+        '-e', 'tell application (item 1 of argv) to quit',
+        '-e', 'end run',
+        '--',
+        target.appBundlePath || 'Antigravity'
+      ], {
+        stdio: 'ignore',
+        timeout: 8000
+      });
+    } else if (target?.platform === 'win32' && target.execPath) {
+      execFileSync('taskkill.exe', ['/IM', path.basename(target.execPath)], {
+        stdio: 'ignore',
+        timeout: 5000,
+        windowsHide: true
+      });
+    } else if (target?.execPath) {
+      const out = execFileSync('ps', ['-ax', '-o', 'pid=,args='], {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      const expectedExec = path.resolve(target.execPath);
+      for (const line of String(out || '').split(/\r?\n/)) {
+        const m = line.trim().match(/^(\d+)\s+(.*)$/);
+        if (!m) continue;
+        const pid = Number(m[1]);
+        const argsStr = m[2].trim();
+        if (argsStr.includes('--type=')) continue;
+        if (argsStr === expectedExec || argsStr.startsWith(expectedExec + ' ')) {
+          try { process.kill(pid, 'SIGTERM'); } catch {}
+        }
+      }
+    }
+  }
+
+  const quitTimeoutMs = options.quitTimeoutMs ?? 10000;
+  const quitPollMs = options.quitPollMs ?? 200;
+  const deadline = Date.now() + quitTimeoutMs;
+  while (Date.now() <= deadline) {
+    const stillRunning = await isAntigravityHostRunning(customPath, { ...options, _hostTarget: target });
+    if (!stillRunning) {
+      const settleMs = options.relaunchSettleMs ?? ((options && typeof options._quitHost === 'function') ? 0 : 300);
+      if (settleMs > 0) await new Promise(r => setTimeout(r, settleMs));
+      return true;
+    }
+    await new Promise(r => setTimeout(r, quitPollMs));
+  }
+  return false;
+}
+
+async function confirmInteractiveRelaunch(options = {}) {
+  if (options && options.relaunch === true) return true;
+  if (options && typeof options._confirmRelaunch === 'function') {
+    return Boolean(await options._confirmRelaunch());
+  }
+  const stdin = (options && options.stdin) || process.stdin;
+  const stdout = (options && options.stdout) || process.stdout;
+  if (!stdin || !stdout || !stdin.isTTY || !stdout.isTTY) {
+    return false;
+  }
+  const rl = readline.createInterface({ input: stdin, output: stdout });
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = val => {
+      if (settled) return;
+      settled = true;
+      try { rl.close(); } catch {}
+      resolve(val);
+    };
+    rl.on('SIGINT', () => {
+      try { stdout.write('\n'); } catch {}
+      finish(false);
+    });
+    rl.on('close', () => finish(false));
+    rl.question(
+      '⚠️ 检测到 Antigravity 正在运行但未开启 CDP 调试端口（v2.33.0+ 默认关闭）。\n是否自动优雅重启客户端并挂载看板？[Y/n] ',
+      answer => {
+        const normalized = String(answer || '').trim().toLowerCase();
+        finish(normalized === '' || normalized === 'y' || normalized === 'yes');
+      }
+    );
+  });
+}
+
+async function waitForLiveWindowReady(cdpOptions = {}, options = {}) {
+  const queryFn = (options && typeof options._queryLiveWindow === 'function')
+    ? options._queryLiveWindow
+    : queryLiveWindow;
+  const timeoutMs = options.launchTimeoutMs ?? 20000;
+  const pollMs = options.launchPollMs ?? 350;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const snap = await queryFn(cdpOptions);
+    if (snap && snap.running && snap.pageFound) {
+      return snap;
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  return null;
+}
+
+/**
+ * 确保存在可通过 CDP 连接的运行中 Antigravity 主窗口：
+ * - 已连接 CDP：直接返回
+ * - 客户端未启动：默认带 --remote-debugging-port 启动并等待窗口就绪
+ * - 客户端已无端口裸开：外部交互终端下询问确认（或 --relaunch）后优雅重开并等待就绪；宿主内部会话严格拒绝关停宿主
+ */
+async function ensureLiveWindowAvailable(customPath = null, cdpOptions = {}, options = {}) {
+  const queryFn = (options && typeof options._queryLiveWindow === 'function')
+    ? options._queryLiveWindow
+    : queryLiveWindow;
+
+  const initial = await queryFn(cdpOptions);
+  if (initial && initial.running && initial.pageFound) {
+    return { ok: true, live: initial, action: 'connected', port: initial.cdpPort };
+  }
+  if (initial && initial.running && !initial.pageFound) {
+    const readyFromExistingPort = await waitForLiveWindowReady(cdpOptions, {
+      ...options,
+      launchTimeoutMs: options.pageReadyTimeoutMs ?? 5000
+    });
+    if (readyFromExistingPort) {
+      return { ok: true, live: readyFromExistingPort, action: 'connected', port: readyFromExistingPort.cdpPort };
+    }
+  }
+
+  let target = null;
+  try {
+    target = resolveAntigravityHostTarget(customPath, options);
+  } catch {}
+  const launchPort = await pickAvailableCdpPort(cdpOptions.port, options);
+  const manualCmd = formatManualCdpLaunchCommand(target, launchPort);
+  const hostRunning = await isAntigravityHostRunning(customPath, { ...options, _hostTarget: target });
+  const probeOpts = {
+    ...cdpOptions,
+    port: cdpOptions.port || launchPort,
+    strictPort: Boolean(cdpOptions.strictPort)
+  };
+
+  if (!hostRunning) {
+    if (options.autoLaunch === false) {
+      return { ok: false, reason: 'host_not_running', manualCmd, port: launchPort };
+    }
+    if (!target) {
+      return { ok: false, reason: 'host_not_found', manualCmd, port: launchPort };
+    }
+    if (!options.silent) {
+      console.log(`🚀 未检测到运行中的 Antigravity，正在带调试端口 (${launchPort}) 启动客户端...`);
+    }
+    await launchAntigravityHostWithCdp(target, launchPort, options);
+    const readyLive = await waitForLiveWindowReady(probeOpts, options);
+    if (readyLive) {
+      return { ok: true, live: readyLive, action: 'launched', port: readyLive.cdpPort || launchPort };
+    }
+    return { ok: false, reason: 'launch_timeout', manualCmd, port: launchPort };
+  }
+
+  const activeEnv = (options && options.env) || process.env;
+  if (isRunningInsideAntigravitySession(activeEnv)) {
+    return { ok: false, reason: 'cdp_disabled_inside_host', manualCmd, port: launchPort };
+  }
+
+  const confirmed = await confirmInteractiveRelaunch(options);
+  if (!confirmed) {
+    return { ok: false, reason: 'cdp_disabled_needs_relaunch', manualCmd, port: launchPort };
+  }
+
+  if (!target) {
+    return { ok: false, reason: 'host_not_found', manualCmd, port: launchPort };
+  }
+  if (!options.silent) {
+    console.log(`🔄 正在优雅退出 Antigravity 并带调试端口 (${launchPort}) 重新启动...`);
+  }
+  const quitOk = await quitAntigravityHostGracefully(target, customPath, options);
+  if (!quitOk) {
+    return { ok: false, reason: 'relaunch_quit_timeout', manualCmd, port: launchPort };
+  }
+  await launchAntigravityHostWithCdp(target, launchPort, options);
+  const readyLive = await waitForLiveWindowReady(probeOpts, options);
+  if (readyLive) {
+    return { ok: true, live: readyLive, action: 'relaunched', port: readyLive.cdpPort || launchPort };
+  }
+  return { ok: false, reason: 'launch_timeout', manualCmd, port: launchPort };
+}
+
 /**
  * 免改盘后台守护模式 (node cli.js watch)
  * 复用现有 live-host 与 tryHotInjectDetailed 架构：等待宿主启动、页面刷新后自动恢复挂载、支持多窗口、关闭后自动清理退出。
@@ -547,6 +931,10 @@ async function runWatchDaemon(options = {}) {
   const startupHostBuildId = getHostCoreBuildId(rootDir);
   const startedAtIso = new Date().toISOString();
 
+  const discoverFn = typeof options._discoverWindow === 'function'
+    ? options._discoverWindow
+    : () => queryLiveWindow(options);
+
   // 1. 单实例 PID 互斥锁与陈旧守护进程接管检查
   let replacedPid = null;
   const existingLock = readWatchLockInfo(stateDir);
@@ -571,6 +959,15 @@ async function runWatchDaemon(options = {}) {
       await new Promise(r => setTimeout(r, 60));
       replacedPid = existingPid;
     } else {
+      if (options.autoBootstrapHost) {
+        const curSnap = await discoverFn();
+        if (!curSnap || !curSnap.running || !curSnap.pageFound) {
+          await ensureLiveWindowAvailable(options.customPath || null, options, {
+            ...options,
+            _queryLiveWindow: () => discoverFn()
+          });
+        }
+      }
       if (!options.silent) {
         console.log(`ℹ️ [Watch] 已有运行中的守护进程 (PID ${existingPid})，本次实例自动退出。`);
       }
@@ -657,10 +1054,9 @@ async function runWatchDaemon(options = {}) {
   let disposedCount = 0;
   let cycles = 0;
   let exitReason = 'stopped';
+  let warnedMissingCdp = false;
+  let prefetchedLive = null;
 
-  const discoverFn = typeof options._discoverWindow === 'function'
-    ? options._discoverWindow
-    : () => queryLiveWindow(options);
   const ensureBridgeFn = typeof options._ensureBridge === 'function'
     ? options._ensureBridge
     : (liveSnap) => ensureLiveBridgeIfNeeded(liveSnap, { ...options, stateDir });
@@ -670,6 +1066,23 @@ async function runWatchDaemon(options = {}) {
   const hotDisposeFn = typeof options._hotDispose === 'function'
     ? options._hotDispose
     : () => tryHotDispose(options);
+
+  if (options.autoBootstrapHost) {
+    const bootstrapped = await ensureLiveWindowAvailable(options.customPath || null, options, {
+      ...options,
+      _queryLiveWindow: () => discoverFn()
+    });
+    if (bootstrapped.ok && bootstrapped.live) {
+      prefetchedLive = bootstrapped.live;
+    } else if (!bootstrapped.ok && (bootstrapped.reason === 'cdp_disabled_inside_host' || bootstrapped.reason === 'cdp_disabled_needs_relaunch' || bootstrapped.reason === 'relaunch_quit_timeout')) {
+      warnedMissingCdp = true;
+      if (!options.silent) {
+        const portArg = options.port ? ` --port ${options.port}` : '';
+        console.warn('⚠️ [Watch] 检测到 Antigravity 正在运行但未开启 CDP 调试端口（v2.33.0+ 默认关闭）。');
+        console.warn(`   👉 可在外部终端运行 node cli.js watch${portArg} --relaunch 一键重开守护，或手动退出客户端后执行: ${bootstrapped.manualCmd}`);
+      }
+    }
+  }
 
   try {
     while (!stopped && cycles < maxCycles) {
@@ -693,7 +1106,7 @@ async function runWatchDaemon(options = {}) {
           }
           await stopLiveBridge({ stateDir });
           cleanupLockfile();
-          const reloadArgs = [expectedScript, 'watch'];
+          const reloadArgs = [expectedScript, 'watch', '--no-launch'];
           if (options.port) reloadArgs.push('--port', String(options.port));
           const reloadSpawner = options._spawnSelfReload || spawn;
           const child = reloadSpawner(process.execPath, reloadArgs, {
@@ -715,11 +1128,27 @@ async function runWatchDaemon(options = {}) {
         persistWatchLockAndMeta();
       }
 
-      const live = await discoverFn();
+      const live = prefetchedLive || await discoverFn();
+      prefetchedLive = null;
       const hasWindow = Boolean(live && live.running && live.pageFound);
 
       if (!hasWindow) {
         if (!windowEverSeen) {
+          if (!warnedMissingCdp) {
+            const hostRunning = await isAntigravityHostRunning(options.customPath || null, options);
+            if (hostRunning) {
+              warnedMissingCdp = true;
+              if (!options.silent) {
+                let target = null;
+                try { target = resolveAntigravityHostTarget(options.customPath || null, options); } catch {}
+                const portHint = options.port || DEFAULT_LAUNCH_CDP_PORT;
+                const portArg = options.port ? ` --port ${options.port}` : '';
+                const manualCmd = formatManualCdpLaunchCommand(target, portHint);
+                console.warn('⚠️ [Watch] 检测到 Antigravity 正在运行但未开启 CDP 调试端口（v2.33.0+ 默认关闭）。');
+                console.warn(`   👉 可在外部终端运行 node cli.js watch${portArg} --relaunch 一键重开守护，或手动退出客户端后执行: ${manualCmd}`);
+              }
+            }
+          }
           if (Date.now() - startedAt >= startupTimeoutMs) {
             exitReason = 'startup_timeout';
             break;
@@ -933,8 +1362,9 @@ async function cmdCheck(customPath, cdpOptions = {}) {
   } catch {}
   console.log(`🔍 [Antigravity 对话上下文查看器 v${pluginVersion}] 正在执行环境预检...`);
   console.log(`  - Node.js 运行时: ${process.version} (${process.execPath})`);
+  let asarPath = null;
   try {
-    const asarPath = findAsarPath(customPath);
+    asarPath = findAsarPath(customPath);
     const version = JSON.parse(asar.extractFile(asarPath, 'package.json').toString('utf8')).version;
     console.log(`  - Antigravity 路径: ${asarPath} (v${version})`);
   } catch (e) {
@@ -944,9 +1374,88 @@ async function cmdCheck(customPath, cdpOptions = {}) {
   }
   const py = resolvePython();
   console.log(`  - Python 附件深度解析器: ${py || '未检测到（基础上下文统计不受影响）'}`);
-  const live = await queryLiveWindow(cdpOptions);
-  console.log(`  - 运行中窗口 CDP 状态: ${live.running ? `已连接 (端口 ${live.cdpPort})` : '客户端未运行或未开启调试端口'}`);
+  const queryFn = typeof cdpOptions._queryLiveWindow === 'function' ? cdpOptions._queryLiveWindow : queryLiveWindow;
+  const live = await queryFn(cdpOptions);
+  if (live.running) {
+    console.log(`  - 运行中窗口 CDP 状态: 已连接 (端口 ${live.cdpPort})`);
+  } else {
+    const hostRunning = await isAntigravityHostRunning(customPath, cdpOptions);
+    if (hostRunning) {
+      let target = null;
+      try { target = resolveAntigravityHostTarget(customPath, cdpOptions); } catch {}
+      const portHint = cdpOptions.port || DEFAULT_LAUNCH_CDP_PORT;
+      const portArg = cdpOptions.port ? ` --port ${cdpOptions.port}` : '';
+      const manualCmd = formatManualCdpLaunchCommand(target, portHint);
+      console.log(`  - 运行中窗口 CDP 状态: 客户端正在运行，但未开启 CDP 调试端口（可运行 node cli.js live${portArg} --relaunch 自动重开挂载，或手动执行: ${manualCmd}）`);
+    } else {
+      console.log('  - 运行中窗口 CDP 状态: 客户端未运行（运行 node cli.js live 或 watch 可自动带调试端口启动并挂载）');
+    }
+  }
   console.log('✅ 环境预检通过！');
+}
+
+async function cmdLive(customPath = null, cdpOptions = {}, options = {}) {
+  const ensured = await ensureLiveWindowAvailable(customPath, cdpOptions, {
+    autoLaunch: options.autoLaunch !== false,
+    relaunch: Boolean(options.relaunch),
+    ...options
+  });
+  if (!ensured.ok) {
+    const portArg = cdpOptions.port ? ` --port ${cdpOptions.port}` : '';
+    if (ensured.reason === 'cdp_disabled_inside_host') {
+      throw new Error(
+        `检测到 Antigravity 正在运行但未开启 CDP 调试端口（v2.33.0+ 默认关闭；当前位于客户端内部会话，已阻止自动重启宿主）。请在外部终端运行: node cli.js live${portArg} --relaunch（或手动退出后执行: ${ensured.manualCmd}）`
+      );
+    }
+    if (ensured.reason === 'cdp_disabled_needs_relaunch') {
+      throw new Error(
+        `检测到 Antigravity 正在运行但未开启 CDP 调试端口（v2.33.0+ 默认关闭）。请运行 node cli.js live${portArg} --relaunch 自动重开并挂载，或手动退出后执行: ${ensured.manualCmd}`
+      );
+    }
+    if (ensured.reason === 'relaunch_quit_timeout') {
+      throw new Error(
+        `等待 Antigravity 优雅退出超时，未强制终止进程。请手动退出客户端后重新运行 node cli.js live（或执行: ${ensured.manualCmd}）`
+      );
+    }
+    if (ensured.reason === 'launch_timeout') {
+      throw new Error('已拉起 Antigravity，但等待主窗口 CDP 就绪超时。请待窗口加载完成后重试 node cli.js live。');
+    }
+    throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js watch。');
+  }
+
+  const effectiveCdpOptions = {
+    ...cdpOptions,
+    ...(ensured.port && !cdpOptions.port ? { port: ensured.port } : {})
+  };
+  const ensureBridgeFn = typeof options._ensureBridge === 'function' ? options._ensureBridge : ensureLiveBridgeIfNeeded;
+  const hotInjectFn = typeof options._hotInject === 'function' ? options._hotInject : tryHotInjectDetailed;
+
+  const bridgePrep = await ensureBridgeFn(ensured.live, effectiveCdpOptions);
+  let report;
+  try {
+    report = await hotInjectFn({
+      ...effectiveCdpOptions,
+      source: 'cli-live',
+      liveInfo: bridgePrep.liveInfo || null,
+      liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
+      preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
+      clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
+    });
+  } catch (liveErr) {
+    await rollbackPreparedLiveBridge(bridgePrep);
+    throw liveErr;
+  }
+  if (!report.ok) {
+    await rollbackPreparedLiveBridge(bridgePrep);
+    throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js watch。');
+  }
+  if (bridgePrep.previousLiveInfo) {
+    await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
+  }
+  if (!options.silent) {
+    console.log(`✅ 已通过 CDP 热注入当前运行的 ${report.injectedCount}/${report.windowCount} 个 Antigravity 窗口！`);
+  }
+  return { ...report, action: ensured.action, port: ensured.port };
 }
 
 const CLI_VALUE_FLAGS = new Set([
@@ -955,7 +1464,8 @@ const CLI_VALUE_FLAGS = new Set([
 ]);
 
 const CLI_BOOLEAN_FLAGS = new Set([
-  '--force', '--all', '--no-cli-sync', '--no-sync', '--previous', '--in-place'
+  '--force', '--all', '--no-cli-sync', '--no-sync', '--previous', '--in-place',
+  '--relaunch', '--no-launch'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
@@ -971,9 +1481,9 @@ const CLI_POS_ARG_COMMANDS = new Set(['proxy:set', 'proxy:test']);
 
 function printUsage() {
   console.log(`用法:
-  node cli.js watch [--port <port>]         免改盘后台守护模式（随客户端启动自动挂载，关闭后自动退出）
+  node cli.js watch [--port <port>] [--relaunch]  免改盘后台守护模式（未启动则自动拉起，关闭后自动退出）
   node cli.js stop-watch                    停止正在运行的 watch 守护进程与本地桥接服务
-  node cli.js live [--port <port>]          免改盘 CDP 热挂载到当前运行窗口
+  node cli.js live [--port <port>] [--relaunch]   免改盘 CDP 热挂载（未开启调试端口时支持自动拉起/重开）
   node cli.js install [--path <app.asar>]   一键持久化安装并热注入当前运行窗口
   node cli.js status [--port <port>]        查看安装状态与当前对话实时上下文用量
   node cli.js check [--port <port>]         执行前置环境健康检查
@@ -1052,6 +1562,8 @@ async function main() {
   }
   const cdpOptions = explicitPort ? { port: explicitPort, strictPort: true } : {};
   const isForce = args.includes('--force');
+  const isRelaunch = args.includes('--relaunch');
+  const isNoLaunch = args.includes('--no-launch');
 
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
@@ -1132,33 +1644,19 @@ async function main() {
       }));
     }
   } else if (cmd === 'live') {
-    const liveBefore = await queryLiveWindow(cdpOptions);
-    const bridgePrep = await ensureLiveBridgeIfNeeded(liveBefore, cdpOptions);
-    let report;
-    try {
-      report = await tryHotInjectDetailed({
-        ...cdpOptions,
-        source: 'cli-live',
-        liveInfo: bridgePrep.liveInfo || null,
-        liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
-        preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
-        clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
-      });
-    } catch (liveErr) {
-      await rollbackPreparedLiveBridge(bridgePrep);
-      throw liveErr;
-    }
-    if (!report.ok) {
-      await rollbackPreparedLiveBridge(bridgePrep);
-      throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js watch。');
-    }
-    if (bridgePrep.previousLiveInfo) {
-      await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
-    }
-    console.log(`✅ 已通过 CDP 热注入当前运行的 ${report.injectedCount}/${report.windowCount} 个 Antigravity 窗口！`);
+    await cmdLive(customPath, cdpOptions, {
+      relaunch: isRelaunch,
+      autoLaunch: !isNoLaunch
+    });
   } else if (cmd === 'watch') {
     console.log('👀 [Antigravity 对话上下文查看器] 免改盘守护模式启动中（不修改 app.asar，保留官方原始签名）...');
-    const res = await runWatchDaemon(cdpOptions);
+    const res = await runWatchDaemon({
+      ...cdpOptions,
+      customPath,
+      autoBootstrapHost: !isNoLaunch,
+      autoLaunch: !isNoLaunch,
+      relaunch: isRelaunch
+    });
     if (!res.alreadyRunning && !res.selfReloaded) {
       console.log(`👋 守护模式已停止 (${res.exitReason})，已清理临时桥接状态。`);
     }
@@ -1382,7 +1880,14 @@ module.exports = {
   parseCliArgs,
   cmdStatus,
   cmdCheck,
+  cmdLive,
   queryLiveWindow,
+  ensureLiveWindowAvailable,
+  isRunningInsideAntigravitySession,
+  resolveAntigravityHostTarget,
+  formatManualCdpLaunchCommand,
+  isAntigravityHostRunning,
+  confirmInteractiveRelaunch,
   ensureLiveBridgeIfNeeded,
   rollbackPreparedLiveBridge,
   stopLiveBridge,
