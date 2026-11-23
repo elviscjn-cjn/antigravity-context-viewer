@@ -55,6 +55,7 @@ node cli.js install
 node cli.js live              # Patch-free CDP injection (auto-launches with CDP port; pass --relaunch outside host if already running without CDP on v2.33.0+)
 node cli.js watch             # Patch-free background watcher (recommended on macOS to preserve Apple code signatures)
 node cli.js stop-watch
+node cli.js update            # Online SHA-256 verified self-update (mode-aware; pass --check to preview or --live to attach)
 node cli.js status
 node cli.js restore
 node cli.js enhance-status

@@ -9586,12 +9586,16 @@ function getInstalledMeterVersion(options = {}) {
   try {
     if (options && options.installedVersion) return String(options.installedVersion);
     const { getStateDir, findAsarPath } = require('./asar-engine');
-    const stateDir = getStateDir();
+    const stateDir = options?.stateDir || getStateDir();
 
     let targetAsar = null;
     try {
       targetAsar = options.asarPath || findAsarPath(options.customPath || null);
     } catch { }
+
+    const inspectFn = (options && typeof options._inspectDiskModules === 'function')
+      ? options._inspectDiskModules
+      : require('./modules-config').inspectDiskModules;
 
     const candidatePaths = [
       options && options.installationJsonPath,
@@ -9618,12 +9622,44 @@ function getInstalledMeterVersion(options = {}) {
           if (manifest.installed && !fs.existsSync(manifest.installed)) {
             continue; // 记录的物理文件已不存在，属于失效记录
           }
+          // 核实物理 ASAR 内是否仍存在插件注入痕迹，防止宿主升级覆盖原版后陈旧 installation.json 锁死更新检测
+          const asarToVerify = manifest.installed || options?.asarPath || null;
+          if (asarToVerify && typeof inspectFn === 'function') {
+            const disk = inspectFn(asarToVerify);
+            if (!disk || (!disk.meter && !disk.chinese && !disk.proxy)) {
+              continue;
+            }
+          }
           return String(manifest.meterVersion);
         }
       }
     }
   } catch { }
   return null;
+}
+
+function formatReleaseNotesPreview(rawBody, maxLines = 8) {
+  const raw = String(rawBody || '').trim();
+  if (!raw) return '';
+  let working = raw;
+  const firstDetailsClose = working.search(/<\/\s*details\s*>/i);
+  if (firstDetailsClose >= 0 && /<\s*details\b/i.test(working.slice(0, firstDetailsClose))) {
+    working = working.slice(0, firstDetailsClose);
+  }
+  const cleaned = [];
+  for (const rawLine of working.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+    if (/^<\/?\s*(?:details|summary)\b[^>]*>.*$/i.test(trimmed)) continue;
+    if (/^#+\s*v?\d+\.\d+\.\d+(?:[-.\s][0-9A-Za-z.\sαβ-]*)?$/i.test(trimmed)) continue;
+    if ((/简体中文/.test(trimmed) && /English/i.test(trimmed)) && (trimmed.includes('](#') || trimmed.includes('·'))) continue;
+    const strippedInlineHtml = trimmed.replace(/<\/?\s*(?:b|strong|i|em|summary|details)\b[^>]*>/gi, '').trim();
+    if (!strippedInlineHtml) continue;
+    cleaned.push(strippedInlineHtml);
+    if (cleaned.length >= maxLines) break;
+  }
+  if (cleaned.length > 0) return cleaned.join('\n');
+  return raw.split(/\r?\n/).slice(0, maxLines).join('\n').trim();
 }
 
 function decodeHtmlEntities(str) {
@@ -9938,7 +9974,7 @@ async function checkUpdateAsync(options = {}) {
           assetsWarning = assetErr.message;
         }
       }
-      const bodyLines = (latest.body || '').split(/\r?\n/).slice(0, 8).join('\n');
+      const bodyLines = formatReleaseNotesPreview(latest.body, 8);
       cachedUpdateCheck = {
         ok: true,
         hasUpdate: true,
@@ -10080,6 +10116,93 @@ function getLiveRuntimeDir(customStateDir = null) {
   return path.join(stateDir, 'live-runtime');
 }
 
+function isGitWorktreeDir(dirPath) {
+  if (!dirPath || typeof dirPath !== 'string') return false;
+  try {
+    let cur = path.resolve(dirPath);
+    while (cur) {
+      if (fs.existsSync(path.join(cur, '.git'))) return true;
+      const parent = path.dirname(cur);
+      if (!parent || parent === cur) break;
+      cur = parent;
+    }
+  } catch { }
+  return false;
+}
+
+function isRecognizedStandaloneBundleDir(dirPath, liveRuntimeDir = null) {
+  if (!dirPath || typeof dirPath !== 'string') return false;
+  try {
+    const abs = path.resolve(dirPath);
+    if (abs.toLowerCase().includes('.asar')) return false;
+    if (liveRuntimeDir && path.resolve(liveRuntimeDir) === abs) return false;
+    if (!fs.existsSync(path.join(abs, 'cli.js'))) return false;
+    const pkgPath = path.join(abs, 'package.json');
+    if (!fs.existsSync(pkgPath)) return false;
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return pkg && pkg.name === 'antigravity-context-viewer';
+  } catch {
+    return false;
+  }
+}
+
+function syncStandaloneBundleDir(sourceDir, bundleDir, options = {}) {
+  if (!bundleDir || typeof bundleDir !== 'string') {
+    return { synced: false, bundleDir: null, copiedCount: 0, reason: 'no_bundle_dir' };
+  }
+  try {
+    const absSource = path.resolve(sourceDir);
+    const absBundle = path.resolve(bundleDir);
+    if (absBundle === absSource || absBundle.toLowerCase().includes('.asar')) {
+      return { synced: false, bundleDir: absBundle, copiedCount: 0, reason: 'not_standalone_dir' };
+    }
+    if (options.liveRuntimeDir && path.resolve(options.liveRuntimeDir) === absBundle) {
+      return { synced: false, bundleDir: absBundle, copiedCount: 0, reason: 'already_live_runtime' };
+    }
+    const { isIsolatedTestPath } = require('./asar-engine');
+    if ((process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') && !options.allowBundleSyncInTest) {
+      if (!isIsolatedTestPath(absBundle)) {
+        return { synced: false, bundleDir: absBundle, copiedCount: 0, reason: 'test_guard' };
+      }
+    }
+    if (isGitWorktreeDir(absBundle)) {
+      return { synced: false, bundleDir: absBundle, copiedCount: 0, reason: 'git_worktree' };
+    }
+    if (!isRecognizedStandaloneBundleDir(absBundle, options.liveRuntimeDir)) {
+      return { synced: false, bundleDir: absBundle, copiedCount: 0, reason: 'unrecognized_bundle_dir' };
+    }
+
+    let copiedCount = 0;
+    const copyTree = (relDir = '') => {
+      const srcDir = relDir ? path.join(absSource, relDir) : absSource;
+      const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry || entry.name === '.' || entry.name === '..') continue;
+        const relPath = relDir ? path.join(relDir, entry.name) : entry.name;
+        const srcPath = path.join(absSource, relPath);
+        const dstPath = path.join(absBundle, relPath);
+        if (entry.isDirectory()) {
+          fs.mkdirSync(dstPath, { recursive: true });
+          copyTree(relPath);
+        } else if (entry.isFile()) {
+          fs.mkdirSync(path.dirname(dstPath), { recursive: true });
+          const tmpDst = `${dstPath}.tmp-${process.pid}-${Date.now()}`;
+          fs.copyFileSync(srcPath, tmpDst);
+          if (entry.name === 'cli.js' || entry.name.endsWith('.sh')) {
+            try { fs.chmodSync(tmpDst, 0o755); } catch { }
+          }
+          fs.renameSync(tmpDst, dstPath);
+          copiedCount++;
+        }
+      }
+    };
+    copyTree('');
+    return { synced: true, bundleDir: absBundle, copiedCount, reason: null };
+  } catch (err) {
+    return { synced: false, bundleDir: null, copiedCount: 0, reason: 'sync_error', error: err?.message || String(err) };
+  }
+}
+
 /**
  * 将运行外置 live-host 所需的纯 JS/配置运行时文件原子同步至 stateDir/live-runtime。
  * 保证在线更新清理临时目录或安装目录变动后，热加载后台进程仍能稳定运行至客户端重启。
@@ -10100,6 +10223,14 @@ function syncLiveRuntimeBundle(sourceDir, options = {}) {
     }
     const targetDir = getLiveRuntimeDir(stateDir);
     fs.mkdirSync(targetDir, { recursive: true });
+    let previousBundleDir = null;
+    const manifestFile = path.join(targetDir, '.runtime-manifest.json');
+    try {
+      if (fs.existsSync(manifestFile)) {
+        const prev = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+        if (prev && typeof prev.bundleDir === 'string') previousBundleDir = prev.bundleDir;
+      }
+    } catch { }
     let copiedCount = 0;
     for (const rel of LIVE_RUNTIME_FILES) {
       const src = path.join(sourceDir, rel);
@@ -10117,9 +10248,14 @@ function syncLiveRuntimeBundle(sourceDir, options = {}) {
         pkgVersion = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf8')).version || null;
       }
     } catch { }
-    safeWriteJsonSync(path.join(targetDir, '.runtime-manifest.json'), {
+    const candBundleDir = options.bundleDir || previousBundleDir || null;
+    const persistedBundleDir = (candBundleDir && !isGitWorktreeDir(candBundleDir) && isRecognizedStandaloneBundleDir(candBundleDir, targetDir) && !candBundleDir.toLowerCase().includes(os.tmpdir().toLowerCase()))
+      ? path.resolve(candBundleDir)
+      : previousBundleDir;
+    safeWriteJsonSync(manifestFile, {
       version: pkgVersion || PROJECT_VERSION,
       copiedCount,
+      ...(persistedBundleDir ? { bundleDir: persistedBundleDir } : {}),
       updatedAt: new Date().toISOString()
     });
     return targetDir;
@@ -10367,7 +10503,7 @@ async function applyUpdateAsync(options = {}) {
 
     const fetcher = options._requestGithubUrl || requestGithubUrl;
     const requestedHasPre = /alpha|beta|rc|pre-?release/i.test(String(requestedVersion || ''));
-    let allowBeta = options.allowBetaUpdates === true || requestedHasPre;
+    let allowBeta = options.allowBetaUpdates === true || options.prerelease === true || requestedHasPre;
     if (!allowBeta && options.allowBetaUpdates === undefined) {
       try {
         allowBeta = getPluginSettings({ agDir: options.agDir }).allowBetaUpdates === true;
@@ -10533,14 +10669,13 @@ async function applyUpdateAsync(options = {}) {
 
     const runtimeResolver = options._resolveNodeRuntime || resolveNodeRuntime;
     const runtimeInfo = runtimeResolver();
-    const subArgs = [...runtimeInfo.args, cliPath, 'install'];
 
     // 检查是否存在已记录的自定义安装路径，确保更新子进程继续更新原目标
     let recordedInstalledPath = options.targetPath || null;
     if (!recordedInstalledPath) {
       try {
         const { getStateDir } = require('./asar-engine');
-        const stateDir = getStateDir();
+        const stateDir = options.stateDir || getStateDir();
         const candidatePaths = [
           path.join(stateDir, 'installation.json'),
           path.join(__dirname, 'installation.json')
@@ -10556,57 +10691,229 @@ async function applyUpdateAsync(options = {}) {
         }
       } catch { }
     }
+
+    // 区分磁盘补丁模式 (install) 与免改盘模式 (live)：
+    // 免改盘 live-host 在磁盘未注入或 macOS ElectronAsarIntegrity 保护下绝不强行改写 app.asar
+    let effectiveMode = (options.mode === 'live' || options.mode === 'install') ? options.mode : null;
+    if (!effectiveMode) {
+      if (options.backendSource === 'live-host') {
+        let diskPatched = false;
+        let macIntegrityBlocked = false;
+        try {
+          const inspectFn = options._inspectDiskModules || require('./modules-config').inspectDiskModules;
+          const disk = inspectFn(recordedInstalledPath || null);
+          diskPatched = Boolean(disk && (disk.meter || disk.chinese || disk.proxy));
+          const asarToCheck = disk?.asarPath || recordedInstalledPath || null;
+          if (asarToCheck && (effectivePlatform === 'darwin' || options.enforceMacIntegrityCheck === true) && !options.forceMacAsar) {
+            const macCheckFn = options._inspectMacAsarIntegrity || require('./macos-binary-utils').inspectMacAsarIntegrity;
+            const macInfo = macCheckFn(asarToCheck);
+            macIntegrityBlocked = Boolean(macInfo && macInfo.isMacAppBundle && macInfo.hasAsarIntegrity === true);
+          }
+        } catch { }
+        effectiveMode = (!diskPatched || macIntegrityBlocked) ? 'live' : 'install';
+      } else {
+        effectiveMode = 'install';
+      }
+    }
+
+    const runUpdateChildProcess = (subArgs, childCwd, extraEnv = {}) => {
+      const spawner = options._spawn || spawn;
+      return new Promise((resolve, reject) => {
+        let child;
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        const timeoutMs = options._timeoutMs || 45000;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          if (child) {
+            try { child.kill('SIGKILL'); } catch { }
+            const closeGraceTimer = setTimeout(() => {
+              reject(new Error(`更新安装子进程执行超时 (${timeoutMs}ms)`));
+            }, 3000);
+            child.once('close', () => {
+              clearTimeout(closeGraceTimer);
+              reject(new Error(`更新安装子进程执行超时 (${timeoutMs}ms)`));
+            });
+          } else {
+            reject(new Error(`更新安装子进程执行超时 (${timeoutMs}ms)`));
+          }
+        }, timeoutMs);
+
+        try {
+          child = spawner(runtimeInfo.runtime, subArgs, {
+            cwd: childCwd,
+            env: { ...(runtimeInfo.env || {}), AG_EMIT_INSTALL_META: '1', ...extraEnv },
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true
+          });
+        } catch (err) {
+          clearTimeout(timer);
+          return reject(err);
+        }
+
+        child.stdout?.on('data', d => { stdout += d.toString('utf8'); });
+        child.stderr?.on('data', d => { stderr += d.toString('utf8'); });
+        child.on('error', err => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        child.on('close', (code, signal) => {
+          clearTimeout(timer);
+          if (timedOut) return;
+          resolve({ code, signal, stdout, stderr });
+        });
+      });
+    };
+
+    if (effectiveMode === 'live') {
+      const { getStateDir } = require('./asar-engine');
+      const resolvedStateDir = options.stateDir || getStateDir();
+      let resolvedBundleDir = options.bundleDir || null;
+      if (!resolvedBundleDir || path.resolve(resolvedBundleDir) === path.resolve(getLiveRuntimeDir(resolvedStateDir))) {
+        try {
+          const rtManifestPath = path.join(getLiveRuntimeDir(resolvedStateDir), '.runtime-manifest.json');
+          if (fs.existsSync(rtManifestPath)) {
+            const rtMeta = JSON.parse(fs.readFileSync(rtManifestPath, 'utf8'));
+            if (rtMeta && typeof rtMeta.bundleDir === 'string') resolvedBundleDir = rtMeta.bundleDir;
+          }
+        } catch { }
+      }
+      const liveRuntimeDir = syncLiveRuntimeBundle(extractDir, {
+        version: targetRelease.version,
+        stateDir: options.stateDir,
+        bundleDir: resolvedBundleDir
+      });
+      const bundleSync = syncStandaloneBundleDir(extractDir, resolvedBundleDir, {
+        version: targetRelease.version,
+        liveRuntimeDir,
+        allowBundleSyncInTest: options.allowBundleSyncInTest
+      });
+
+      cachedUpdateCheck = null;
+      cachedUpdateCheckAt = 0;
+
+      if (options.skipLiveReload === true) {
+        return {
+          ok: true,
+          mode: 'live',
+          diskInstalled: false,
+          liveUpdated: true,
+          liveInjected: false,
+          backendHotReloaded: false,
+          backendVersion: null,
+          backendSource: null,
+          hotReloadReport: null,
+          shouldShutdownCallerLiveHost: false,
+          bundleSynced: Boolean(bundleSync.synced),
+          bundleDir: bundleSync.bundleDir || null,
+          bundleSkippedReason: bundleSync.reason || null,
+          liveRuntimeDir: liveRuntimeDir || null,
+          version: targetRelease.version,
+          installedVersion: targetRelease.version,
+          diagnostics: {
+            checksums: checksumDl.diagnostics,
+            package: packageDl.diagnostics
+          }
+        };
+      }
+
+      const liveCliPath = (liveRuntimeDir && fs.existsSync(path.join(liveRuntimeDir, 'cli.js')))
+        ? path.join(liveRuntimeDir, 'cli.js')
+        : cliPath;
+      const liveSubArgs = [...runtimeInfo.args, liveCliPath, 'live'];
+      if (recordedInstalledPath && typeof recordedInstalledPath === 'string') {
+        liveSubArgs.push('--path', recordedInstalledPath);
+      }
+      if (options.cdpPort) {
+        liveSubArgs.push('--port', String(options.cdpPort));
+      }
+      if (options.relaunch === true) {
+        liveSubArgs.push('--relaunch');
+      }
+      if (options.autoLaunch !== true) {
+        liveSubArgs.push('--no-launch');
+      }
+      const liveExecRes = await runUpdateChildProcess(
+        liveSubArgs,
+        path.dirname(liveCliPath),
+        {
+          ...(options.autoLaunch !== true ? { AG_QUIET_NO_WINDOW: '1' } : {}),
+          ...(options.callerLiveHostPid ? { AG_DEFER_KILL_LIVE_HOST_PID: String(options.callerLiveHostPid) } : {}),
+          ...(options.stateDir ? { AG_METER_STATE_DIR: resolvedStateDir } : {}),
+          ...(bundleSync.synced && bundleSync.bundleDir ? { AG_BUNDLE_SOURCE_DIR: bundleSync.bundleDir } : {})
+        }
+      );
+      const combinedLiveOut = `${liveExecRes.stdout || ''}\n${liveExecRes.stderr || ''}`;
+      const benignNoCdpWindow = options.autoLaunch !== true
+        && liveExecRes.code !== 0
+        && /(未检测到运行中的 Antigravity 主窗口|未开启 CDP (?:远程)?调试端口)/.test(combinedLiveOut);
+      if (liveExecRes.code !== 0 && !benignNoCdpWindow) {
+        const detail = (liveExecRes.stderr || liveExecRes.stdout || `退出码 ${liveExecRes.code}`).trim();
+        return { ok: false, mode: 'live', error: `免改盘热更新挂载失败: ${detail}` };
+      }
+
+      const liveMeta = parseInstallStdoutMeta(liveExecRes.stdout);
+      const liveInjected = !benignNoCdpWindow && Boolean(
+        liveMeta?.liveInjected === true ||
+        liveExecRes.stdout.includes('已通过 CDP 热注入') ||
+        liveExecRes.stdout.includes('"liveInjected": true')
+      );
+      let fallbackSessionInfo = null;
+      if (!liveMeta && liveInjected) {
+        try {
+          const sessPath = path.join(resolvedStateDir, '.live-session.json');
+          if (fs.existsSync(sessPath)) {
+            fallbackSessionInfo = JSON.parse(fs.readFileSync(sessPath, 'utf8'));
+          }
+        } catch { }
+      }
+      const detectedLiveHostPid = liveMeta?.liveHostPid || fallbackSessionInfo?.pid || null;
+      const detectedBackendVersion = liveMeta?.backendVersion || fallbackSessionInfo?.version || (liveInjected ? targetRelease.version : null);
+      const backendHotReloaded = Boolean(
+        liveMeta?.backendHotReloaded === true ||
+        (liveInjected && (liveMeta?.backendSource === 'live-host' || (fallbackSessionInfo && fallbackSessionInfo.version === targetRelease.version)))
+      );
+      const shouldShutdownCallerLiveHost = Boolean(
+        options.callerLiveHostPid &&
+        backendHotReloaded &&
+        detectedLiveHostPid &&
+        Number(detectedLiveHostPid) !== Number(options.callerLiveHostPid)
+      );
+
+      return {
+        ok: true,
+        mode: 'live',
+        diskInstalled: false,
+        liveUpdated: true,
+        liveInjected,
+        backendHotReloaded,
+        backendVersion: detectedBackendVersion,
+        backendSource: liveMeta?.backendSource || (liveInjected ? 'live-host' : null),
+        hotReloadReport: liveMeta || null,
+        shouldShutdownCallerLiveHost,
+        bundleSynced: Boolean(bundleSync.synced),
+        bundleDir: bundleSync.bundleDir || null,
+        bundleSkippedReason: bundleSync.reason || null,
+        liveRuntimeDir: liveRuntimeDir || null,
+        version: targetRelease.version,
+        installedVersion: targetRelease.version,
+        diagnostics: {
+          checksums: checksumDl.diagnostics,
+          package: packageDl.diagnostics
+        }
+      };
+    }
+
+    const subArgs = [...runtimeInfo.args, cliPath, 'install'];
     if (recordedInstalledPath && typeof recordedInstalledPath === 'string') {
       subArgs.push('--path', recordedInstalledPath);
     }
+    if (options.forceMacAsar === true) {
+      subArgs.push('--force-mac-asar');
+    }
 
-    const spawner = options._spawn || spawn;
-    const execRes = await new Promise((resolve, reject) => {
-      let child;
-      let stdout = '';
-      let stderr = '';
-      let timedOut = false;
-      const timeoutMs = options._timeoutMs || 45000;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        if (child) {
-          try { child.kill('SIGKILL'); } catch { }
-          const closeGraceTimer = setTimeout(() => {
-            reject(new Error(`更新安装子进程执行超时 (${timeoutMs}ms)`));
-          }, 3000);
-          child.once('close', () => {
-            clearTimeout(closeGraceTimer);
-            reject(new Error(`更新安装子进程执行超时 (${timeoutMs}ms)`));
-          });
-        } else {
-          reject(new Error(`更新安装子进程执行超时 (${timeoutMs}ms)`));
-        }
-      }, timeoutMs);
-
-      try {
-        child = spawner(runtimeInfo.runtime, subArgs, {
-          cwd: extractDir,
-          env: { ...(runtimeInfo.env || {}), AG_EMIT_INSTALL_META: '1' },
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true
-        });
-      } catch (err) {
-        clearTimeout(timer);
-        return reject(err);
-      }
-
-      child.stdout?.on('data', d => { stdout += d.toString('utf8'); });
-      child.stderr?.on('data', d => { stderr += d.toString('utf8'); });
-      child.on('error', err => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      child.on('close', (code, signal) => {
-        clearTimeout(timer);
-        if (timedOut) return;
-        resolve({ code, signal, stdout, stderr });
-      });
-    });
+    const execRes = await runUpdateChildProcess(subArgs, extractDir);
 
     if (execRes.code !== 0) {
       const detail = (execRes.stderr || execRes.stdout || `退出码 ${execRes.code}`).trim();
@@ -10629,6 +10936,7 @@ async function applyUpdateAsync(options = {}) {
     const finalInstalledVer = getInstalledMeterVersion(options) || targetRelease.version;
     return {
       ok: true,
+      mode: 'install',
       diskInstalled: true,
       liveInjected,
       backendHotReloaded: Boolean(installMeta?.backendHotReloaded),
@@ -10755,6 +11063,10 @@ module.exports = {
   SUBSCRIPTION_ACQUISITION_PRESETS,
   checkUpdateAsync,
   applyUpdateAsync,
+  getInstalledMeterVersion,
+  formatReleaseNotesPreview,
+  isGitWorktreeDir,
+  syncStandaloneBundleDir,
   extractUpdateZip,
   sanitizeUpdateErrorText,
   LIVE_RUNTIME_FILES,
