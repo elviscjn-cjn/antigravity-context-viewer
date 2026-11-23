@@ -9302,6 +9302,11 @@ test('v0.9.0-beta.1: Customizations/插件市场/详情子页(含搜索框)全�
   }
 });
 
+test('v0.9.1: 插件页重复避让立即返回，打破 MutationObserver 写入反馈循环', () => {
+  const source = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  assert.match(source, /function enforceMarketplaceAvoidance\(forceActive\)[\s\S]{0,900}if \(active && host\.getAttribute\?\.\('data-marketplace-active'\) === 'true'\) return true;/);
+});
+
 test('v0.9.0-beta.1: 正常状态隐藏空蓝框(#ctx-ov-pinned-banner / #dock-fallback-note / #dock-open-feedback)，有有效内容展示且解除后完整收起', async () => {
   const h = harness();
   const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');

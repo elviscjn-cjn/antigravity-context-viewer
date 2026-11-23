@@ -1280,6 +1280,9 @@
 
   function enforceMarketplaceAvoidance(forceActive) {
     const active = typeof forceActive === 'boolean' ? forceActive : isHostMarketplaceActive();
+    // 避让状态只需写入一次。重复设置 hidden/style/aria 会再次触发全局
+    // MutationObserver，在插件页形成“观察 -> 写入 -> 再观察”的渲染循环。
+    if (active && host.getAttribute?.('data-marketplace-active') === 'true') return true;
     try {
       if (active) {
         host.setAttribute('data-marketplace-active', 'true');
@@ -2739,6 +2742,8 @@
   let lastObservedHostModelSig = null;
   let hostModelSyncTimer = null;
   let domMutationThrottleTimer = null;
+  let lastMarketplaceRecheckAt = 0;
+  let marketplaceRecheckForced = false;
   function scheduleHostModelSync() {
     try {
       if (state.disposed || typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
@@ -2826,6 +2831,17 @@
   function flushHostDomMutationCheck() {
     domMutationThrottleTimer = null;
     if (state.disposed) return;
+    // 插件页只做避让判定，停留期间不扫描输入框、模型、压缩文案等全页节点。
+    // 退出插件页时，同一次 DOM 通知会重新判定为 false，再恢复正常同步。
+    const now = Date.now();
+    const forceMarketplaceRecheck = marketplaceRecheckForced;
+    marketplaceRecheckForced = false;
+    if (!forceMarketplaceRecheck && host.getAttribute?.('data-marketplace-active') === 'true' && now - lastMarketplaceRecheckAt < 1000) return;
+    if (host.getAttribute?.('data-marketplace-active') === 'true') lastMarketplaceRecheckAt = now;
+    if (enforceMarketplaceAvoidance()) {
+      if (isAnyPanelOpen()) showPanel('none');
+      return;
+    }
     const actualDockNow = host.getAttribute?.('data-dock') || dockPosition;
     const needsTitlebarDock = actualDockNow === 'flow' || actualDockNow === 'compact' || Boolean(dockFallbackReason);
     const auxStateChanged = dockPosition === 'aux'
@@ -2837,10 +2853,6 @@
     ensureComposerStatusBarMounted();
     scheduleHostModelSync();
     checkHostDomCompactionSignals();
-    // 进入 Customizations / Marketplace / Installed 页面时自动收起已打开面板、浮层与辅助栏
-    if (enforceMarketplaceAvoidance()) {
-      if (isAnyPanelOpen()) showPanel('none');
-    }
   }
 
   try {
@@ -2849,8 +2861,12 @@
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
-      hostDomObserver = new MutationObserver(() => {
+      hostDomObserver = new MutationObserver((mutations) => {
         if (state.disposed) return;
+        // host 自身的属性更新来自本插件的布局/避让逻辑，不是宿主页面变化。
+        // 忽略这批记录，避免插件页隐藏面板时自触发下一轮全页检测。
+        if (mutations?.length && Array.from(mutations).every(m => m?.type === 'attributes' && m?.target === host)) return;
+        if (Array.from(mutations || []).some(m => m?.type === 'childList')) marketplaceRecheckForced = true;
         if (!host.isConnected) {
           layoutMeasurementDirty = true;
           ensureHostDocked();
