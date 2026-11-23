@@ -86,6 +86,11 @@ node cli.js live --relaunch
 node cli.js watch
 node cli.js stop-watch
 
+# 3c. 登录自启（macOS LaunchAgent / Windows Run 键），登录后自动执行 watch，无需每次手动挂载
+node cli.js autostart:enable          # 可加 --port <port> 固定调试端口
+node cli.js autostart-status
+node cli.js autostart:disable
+
 # 4. 查看当前安装状态与实时会话上下文用量
 node cli.js status
 
