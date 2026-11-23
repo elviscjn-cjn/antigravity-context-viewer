@@ -28341,7 +28341,8 @@ var cumLockedKey = null;
           ? (out.message || t('accounts.actionDone'))
           : (out.error || out.message || t('accounts.actionFail')));
       accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(rawFb) : rawFb;
-      accountsUiState.feedbackTone = isOk ? (isPartialOAuthQuotaWarn ? 'info' : 'success') : 'error';
+      const isPendingRestartSwitch = !isOk && action === 'switch' && out.pendingRestart === true;
+      accountsUiState.feedbackTone = isOk ? (isPartialOAuthQuotaWarn ? 'info' : 'success') : (isPendingRestartSwitch ? 'info' : 'error');
       if (action === 'switch' && isOk) {
         void syncQuotaFromHost(true, { manual: false });
         void syncTokenHistoryFromHost(true);
