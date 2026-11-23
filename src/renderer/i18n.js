@@ -1512,6 +1512,7 @@ const PANEL_I18N = {
   'update.doneVer': { 'zh-CN': '{ver} (已是最新)', 'zh-TW': '{ver} (已是最新)', en: '{ver} (Up to date)' },
   'update.doneHot': { 'zh-CN': '已成功在线更新至 {ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 {ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to {ver}. UI hot-injected immediately; restart client for main-process changes.' },
   'update.doneHotFull': { 'zh-CN': '已成功在线更新至 {ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 {ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to {ver}. Both UI and backend service hot-reloaded and verified without restart.' },
+  'update.doneLiveSynced': { 'zh-CN': '已成功同步免改盘运行时至 {ver}（重新运行 node cli.js live 或 watch 即加载新版）。', 'zh-TW': '已成功同步免改盤執行階段至 {ver}（重新執行 node cli.js live 或 watch 即載入新版）。', en: 'Synced patch-free runtime to {ver}. Re-run node cli.js live or watch to load it.' },
   'update.doneDisk': { 'zh-CN': '已成功完成 {ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 {ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to {ver} complete. Restart Antigravity to apply.' },
   'update.restartBtn': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },

@@ -176,6 +176,8 @@ function timingSafeTokenEqual(provided, expected) {
 }
 
 function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT }) {
+  let activeApplyUpdateCount = 0;
+  let deferredShutdownRequested = false;
   const resolveAllowedSet = () => {
     const set = new Set();
     const addAllowed = (raw) => {
@@ -562,13 +564,37 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/apply-update') {
-          const result = await applyUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+          activeApplyUpdateCount++;
+          let result;
+          try {
+            result = await applyUpdateAsync({
+              ...(request || {}),
+              currentVersion: PROJECT_VERSION,
+              backendSource: 'live-host',
+              bundleDir: process.env.AG_BUNDLE_SOURCE_DIR || __dirname,
+              callerLiveHostPid: process.pid
+            });
+          } finally {
+            activeApplyUpdateCount = Math.max(0, activeApplyUpdateCount - 1);
+          }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
+          if (((result && result.ok && result.shouldShutdownCallerLiveHost) || deferredShutdownRequested) && typeof onShutdown === 'function') {
+            res.once('finish', () => {
+              setTimeout(() => {
+                try { onShutdown(); } catch {}
+              }, 250);
+            });
+          }
           return;
         }
         if (req.url === '/shutdown') {
           res.setHeader('Content-Type', 'application/json');
+          if (activeApplyUpdateCount > 0) {
+            deferredShutdownRequested = true;
+            res.end(JSON.stringify({ ok: true, shuttingDown: true, deferredForApplyUpdate: true, pid: process.pid, version: PROJECT_VERSION }));
+            return;
+          }
           res.end(JSON.stringify({ ok: true, shuttingDown: true, pid: process.pid, version: PROJECT_VERSION }));
           if (typeof onShutdown === 'function') {
             setImmediate(() => {

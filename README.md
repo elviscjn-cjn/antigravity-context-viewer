@@ -86,6 +86,11 @@ node cli.js live --relaunch
 node cli.js watch
 node cli.js stop-watch
 
+# 3c. 在线检查与一键自更新（自动识别免改盘 / 持久化模式，SHA-256 校验，不覆盖 Git 源码工作区）
+node cli.js update --check
+node cli.js update
+node cli.js update --live
+
 # 4. 查看当前安装状态与实时会话上下文用量
 node cli.js status
 

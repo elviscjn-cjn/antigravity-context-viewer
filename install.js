@@ -168,14 +168,15 @@ async function tryHotInjectDetailed(options = {}) {
       return report;
     }
 
+    const bundleRoot = options.bundleDir ? path.resolve(options.bundleDir) : __dirname;
     let pkgVersion = null;
     try {
-      pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
+      pkgVersion = JSON.parse(fs.readFileSync(path.join(bundleRoot, 'package.json'), 'utf8')).version || null;
     } catch { }
     const stateDir = options.stateDir || getStateDir();
     const livePath = fs.existsSync(path.join(stateDir, '.live-session.json'))
       ? path.join(stateDir, '.live-session.json')
-      : path.join(__dirname, '.live-session.json');
+      : path.join(bundleRoot, '.live-session.json');
     let liveInfo = options.liveInfo || (fs.existsSync(livePath) ? JSON.parse(fs.readFileSync(livePath, 'utf8')) : null);
     let liveProbeOk = Boolean(options.liveVerified);
     if (liveInfo && !liveProbeOk) {
@@ -193,7 +194,7 @@ async function tryHotInjectDetailed(options = {}) {
     }
 
     const bundle = ['meter-core.js', 'meter-renderer.js']
-      .map(f => fs.readFileSync(path.join(__dirname, f), 'utf8'))
+      .map(f => fs.readFileSync(path.join(bundleRoot, f), 'utf8'))
       .join('\n');
 
     let cachedSettings = null;

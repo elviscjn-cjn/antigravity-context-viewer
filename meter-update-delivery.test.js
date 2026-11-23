@@ -899,3 +899,466 @@ test('applyUpdateAsync 支持指定 prerelease 版本（如 0.9.0-beta.1）透�
   // 关键断言：不应因未透传 allowBetaUpdates 而报「未获取到可用的官方发布版本」或「未找到版本」，应走到资产缺失校验
   assert.match(res.error, /未提供对应系统架构资产/);
 });
+
+test('更新闭环修复 1: 宿主覆盖 app.asar 后忽略陈旧 installation.json (如残留 2.2.0)，不再锁死更新检测', async () => {
+  const { getInstalledMeterVersion } = require('./meter-collector');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-stale-manifest-'));
+  try {
+    const fakeAsar = path.join(tmpDir, 'app.asar');
+    fs.writeFileSync(fakeAsar, 'clean-official-unpatched-asar', 'utf8');
+    const instPath = path.join(tmpDir, 'installation.json');
+    fs.writeFileSync(instPath, JSON.stringify({
+      meterVersion: '2.2.0',
+      version: '2.28.2',
+      installed: fakeAsar
+    }), 'utf8');
+
+    // 1. 物理 ASAR 无任何补丁痕迹时，必须忽略陈旧的 2.2.0 清单
+    const staleVer = getInstalledMeterVersion({
+      installationJsonPath: instPath,
+      asarPath: fakeAsar,
+      _inspectDiskModules: () => ({ found: true, meter: false, chinese: false, proxy: false })
+    });
+    assert.equal(staleVer, null, '纯净未打补丁的 app.asar 严禁采信陈旧 installation.json 中的 2.2.0');
+
+    const chk = await checkUpdateAsync({
+      currentVersion: '0.8.10',
+      installationJsonPath: instPath,
+      asarPath: fakeAsar,
+      _inspectDiskModules: () => ({ found: true, meter: false, chinese: false, proxy: false }),
+      force: true,
+      allowBetaUpdates: true,
+      _requestGithubUrl: async () => JSON.stringify([{
+        tag_name: 'v0.9.0',
+        name: 'v0.9.0',
+        prerelease: true,
+        published_at: '2026-11-22T20:00:00Z',
+        body: '# v0.9.0 beta1\n\n**简体中文** · [English](#v090-beta1-en)\n\n<details open>\n<summary><b>简体中文</b></summary>\n\n### 核心改进\n- 修复免改盘在线热更新\n</details>\n<details id="v090-beta1-en"><summary>English</summary>\n- English item\n</details>',
+        assets: []
+      }])
+    });
+    assert.equal(chk.ok, true);
+    assert.equal(chk.hasUpdate, true, '忽略陈旧 2.2.0 清单后必须正常发现 0.9.0 更新');
+    assert.equal(chk.latestVersion, '0.9.0');
+    assert.equal(chk.installedVersion, '0.8.10');
+    // 同时验证 M3：双语 <details open> 折叠头被剥离，展示实质正文且不混入英文折叠段
+    assert.equal(chk.releaseNotes.includes('<details'), false);
+    assert.equal(chk.releaseNotes.includes('English item'), false);
+    assert.match(chk.releaseNotes, /修复免改盘在线热更新/);
+
+    // 2. 物理 ASAR 确实含 meter 补丁时，正常返回清单记录版本
+    const validVer = getInstalledMeterVersion({
+      installationJsonPath: instPath,
+      asarPath: fakeAsar,
+      _inspectDiskModules: () => ({ found: true, meter: true, chinese: false, proxy: false })
+    });
+    assert.equal(validVer, '2.2.0');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('更新闭环修复 2: macOS ElectronAsarIntegrity 与免改盘 live-host 在线更新走 live 热替换、同步独立包且保护 .git 仓库', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-live-self-update-'));
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    const standaloneDir = path.join(tmpDir, 'standalone-pkg');
+    const gitRepoDir = path.join(tmpDir, 'git-repo-pkg');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(standaloneDir, { recursive: true });
+    fs.mkdirSync(path.join(gitRepoDir, '.git'), { recursive: true });
+
+    for (const dir of [standaloneDir, gitRepoDir]) {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version: '0.9.0' }), 'utf8');
+      fs.writeFileSync(path.join(dir, 'cli.js'), '// old 0.9.0 cli\n', 'utf8');
+    }
+
+    const zipBuf = createSimpleZipBuffer({
+      'package.json': JSON.stringify({ name: 'antigravity-context-viewer', version: '0.9.1' }),
+      'cli.js': '// new 0.9.1 cli\n',
+      'live-host.js': '// new 0.9.1 live-host\n',
+      'meter-core.js': '// new 0.9.1 core\n',
+      'meter-renderer.js': '// new 0.9.1 renderer\n'
+    });
+    const zipSha = crypto.createHash('sha256').update(zipBuf).digest('hex');
+    const zipName = 'antigravity-context-viewer_0.9.1_darwin_arm64.zip';
+    const checksumTxt = `${zipSha}  ${zipName}\n`;
+
+    // 测试 tag 不含 beta 但 prerelease: true 场景（M2）
+    const mockReleases = [{
+      tag_name: 'v0.9.1',
+      name: 'v0.9.1',
+      prerelease: true,
+      published_at: '2026-11-23T00:00:00Z',
+      html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.1',
+      assets: [
+        { name: zipName, browser_download_url: `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.1/${zipName}` },
+        { name: 'checksums.txt', browser_download_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/download/v0.9.1/checksums.txt' }
+      ]
+    }];
+
+    const mockFetcher = async (url, opts = {}) => {
+      if (opts.streamTo) {
+        if (url.endsWith('checksums.txt')) await writeStreamAsync(opts.streamTo, checksumTxt);
+        else await writeStreamAsync(opts.streamTo, zipBuf);
+        return;
+      }
+      return JSON.stringify(mockReleases);
+    };
+
+    const spawnedCommands = [];
+    const mockSpawn = (_runtime, subArgs, opts) => {
+      const { EventEmitter } = require('events');
+      spawnedCommands.push({ subArgs, env: opts.env });
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      setImmediate(() => {
+        child.stdout.emit('data', Buffer.from(
+          '✅ 已通过 CDP 热注入当前运行的 1/1 个 Antigravity 窗口！\n' +
+          '__AG_INSTALL_META__=' + JSON.stringify({
+            meterVersion: '0.9.1',
+            liveInjected: true,
+            backendHotReloaded: true,
+            backendVersion: '0.9.1',
+            backendSource: 'live-host',
+            liveHostPid: 99999
+          }) + '\n'
+        ));
+        child.emit('close', 0, null);
+      });
+      return child;
+    };
+
+    // 1. 独立发行包目录 + macOS ElectronAsarIntegrity + live-host 触发：走免改盘 live 热更新
+    const resLive = await applyUpdateAsync({
+      version: '0.9.1',
+      prerelease: true,
+      currentVersion: '0.9.0',
+      platform: 'darwin',
+      arch: 'arm64',
+      backendSource: 'live-host',
+      callerLiveHostPid: 12345,
+      stateDir,
+      bundleDir: standaloneDir,
+      _inspectDiskModules: () => ({ found: true, asarPath: '/Applications/Antigravity.app/Contents/Resources/app.asar', meter: false, chinese: false, proxy: false }),
+      _inspectMacAsarIntegrity: () => ({ isMacAppBundle: true, hasAsarIntegrity: true }),
+      _requestGithubUrl: mockFetcher,
+      _spawn: mockSpawn
+    });
+
+    assert.equal(resLive.ok, true, resLive.error || 'live update failed');
+    assert.equal(resLive.mode, 'live');
+    assert.equal(resLive.diskInstalled, false, '免改盘更新绝不能标记或执行磁盘 ASAR 安装');
+    assert.equal(resLive.liveUpdated, true);
+    assert.equal(resLive.liveInjected, true);
+    assert.equal(resLive.backendHotReloaded, true);
+    assert.equal(resLive.shouldShutdownCallerLiveHost, true, '新 live-host 接管后通知旧调用方在响应刷完后自退');
+    assert.equal(resLive.bundleSynced, true, '非 Git 独立解压包目录应同步更新至新版');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(standaloneDir, 'package.json'), 'utf8')).version, '0.9.1');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(stateDir, 'live-runtime', 'package.json'), 'utf8')).version, '0.9.1');
+    assert.equal(spawnedCommands.length, 1);
+    assert.equal(spawnedCommands[0].subArgs.includes('install'), false, '绝不能调用 cli.js install 触发 macOS 签名拦截');
+    assert.equal(spawnedCommands[0].subArgs.includes('live'), true);
+    assert.equal(spawnedCommands[0].subArgs.includes('--no-launch'), true);
+    assert.equal(spawnedCommands[0].subArgs.includes('--quiet-no-window'), false, '通过环境变量传递静默标记，向下兼容尚未包含 --quiet-no-window 参数的旧版发行包');
+    assert.equal(spawnedCommands[0].env.AG_QUIET_NO_WINDOW, '1');
+    assert.equal(spawnedCommands[0].env.AG_DEFER_KILL_LIVE_HOST_PID, '12345');
+
+    // 2. Git 源码工作区目录：严禁覆盖工作区源码，仅更新 live-runtime
+    const resGitGuard = await applyUpdateAsync({
+      version: '0.9.1',
+      prerelease: true,
+      currentVersion: '0.9.0',
+      platform: 'darwin',
+      arch: 'arm64',
+      mode: 'live',
+      skipLiveReload: true,
+      stateDir,
+      bundleDir: gitRepoDir,
+      _requestGithubUrl: mockFetcher
+    });
+    assert.equal(resGitGuard.ok, true);
+    assert.equal(resGitGuard.bundleSynced, false);
+    assert.equal(resGitGuard.bundleSkippedReason, 'git_worktree');
+    assert.equal(fs.readFileSync(path.join(gitRepoDir, 'cli.js'), 'utf8'), '// old 0.9.0 cli\n', 'Git 仓库源码文件绝对不能被覆盖');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('更新闭环修复 3: cli.js update 参数解析、--check 纯只读检查与已是最新时 --live 自动接续挂载', async () => {
+  const cli = require('./cli');
+  assert.equal(cli.parseCliArgs(['update']).cmd, 'update');
+  assert.equal(cli.parseCliArgs(['update', '--check', '--beta']).cmd, 'update');
+  assert.equal(cli.parseCliArgs(['update', '--live', '--relaunch']).cmd, 'update');
+
+  let applyCalled = 0;
+  const chkRes = await cli.cmdUpdate(null, {}, {
+    checkOnly: true,
+    silent: true,
+    _checkUpdate: async () => ({
+      ok: true,
+      hasUpdate: true,
+      currentVersion: '0.9.0',
+      latestVersion: '0.9.1',
+      releaseNotes: '- 新增 cli.js update'
+    }),
+    _applyUpdate: async () => { applyCalled++; return { ok: true }; }
+  });
+  assert.equal(chkRes.hasUpdate, true);
+  assert.equal(applyCalled, 0, '--check 模式必须严格只读，绝不执行下载安装');
+
+  let liveAttached = 0;
+  const upToDateLive = await cli.cmdUpdate(null, {}, {
+    wantLive: true,
+    silent: true,
+    _inspectDiskModules: () => ({ found: true, meter: false, chinese: false, proxy: false }),
+    _checkUpdate: async () => ({
+      ok: true,
+      hasUpdate: false,
+      currentVersion: '0.9.0',
+      installedVersion: '0.9.0',
+      latestVersion: '0.9.0'
+    }),
+    _applyUpdate: async () => { applyCalled++; return { ok: true }; },
+    _liveOpts: {
+      silent: true,
+      _queryLiveWindow: async () => ({ running: true, cdpEnabled: true, pageFound: true, cdpPort: 58321, origin: 'https://127.0.0.1:54186', origins: ['https://127.0.0.1:54186'] }),
+      _ensureBridge: async () => ({ ready: true, backendSource: 'live-host', backendVersion: '0.9.0', liveInfo: { port: 54000, token: 't', pid: process.pid } }),
+      _hotInject: async () => { liveAttached++; return { ok: true, injectedCount: 1, windowCount: 1, backendVersion: '0.9.0', backendSource: 'live-host' }; }
+    }
+  });
+  assert.equal(upToDateLive.ok, true);
+  assert.equal(upToDateLive.upToDate, true);
+  assert.equal(applyCalled, 0);
+  assert.equal(liveAttached, 1, '已是最新时加 --live 应直接平滑接续挂载');
+
+  // 升级成功后接续 --watch：即使在 .git 仓库 (bundleSynced: false)，也必须绑定新版 liveRuntimeDir 与新版本号
+  const watchTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-update-watch-'));
+  try {
+    const rtDir = path.join(watchTmp, 'live-runtime');
+    fs.mkdirSync(rtDir, { recursive: true });
+    fs.writeFileSync(path.join(rtDir, 'package.json'), JSON.stringify({ version: '0.9.1' }), 'utf8');
+    fs.writeFileSync(path.join(rtDir, 'cli.js'), '// 0.9.1 cli\n', 'utf8');
+    fs.writeFileSync(path.join(rtDir, 'meter-renderer.js'), '// 0.9.1 renderer\n', 'utf8');
+    let watchInjectedOpts = null;
+    const updatedWatch = await cli.cmdUpdate(null, {}, {
+      wantWatch: true,
+      noLaunch: true,
+      silent: true,
+      stateDir: watchTmp,
+      _inspectDiskModules: () => ({ found: true, meter: false, chinese: false, proxy: false }),
+      _checkUpdate: async () => ({
+        ok: true,
+        hasUpdate: true,
+        currentVersion: '0.9.0',
+        latestVersion: '0.9.1',
+        prerelease: false
+      }),
+      _applyUpdate: async () => ({
+        ok: true,
+        mode: 'live',
+        diskInstalled: false,
+        liveUpdated: true,
+        bundleSynced: false,
+        bundleSkippedReason: 'git_worktree',
+        liveRuntimeDir: rtDir,
+        version: '0.9.1',
+        installedVersion: '0.9.1'
+      }),
+      _watchOpts: {
+        maxCycles: 1,
+        pollIntervalMs: 5,
+        handleSignals: false,
+        selfReloadOnHostChange: false,
+        _discoverWindow: async () => ({
+          running: true,
+          cdpEnabled: true,
+          pageFound: true,
+          active: true,
+          version: '0.9.0',
+          origin: 'https://127.0.0.1:54186',
+          origins: ['https://127.0.0.1:54186']
+        }),
+        _ensureBridge: async () => ({
+          ready: true,
+          backendSource: 'live-host',
+          backendVersion: '0.9.1',
+          liveInfo: { port: 54001, token: 'tok', pid: process.pid }
+        }),
+        _hotInject: async (opts) => {
+          watchInjectedOpts = opts;
+          return { ok: true, injectedCount: 1, windowCount: 1, backendVersion: '0.9.1', backendSource: 'live-host' };
+        }
+      }
+    });
+    assert.equal(updatedWatch.ok, true);
+    assert.equal(updatedWatch.upToDate, false);
+    assert.equal(updatedWatch.watchResult?.injectedCount, 1, '旧窗口 0.9.0 必须因 expectedVersion=0.9.1 触发重注入');
+    assert.equal(watchInjectedOpts?.expectedVersion, '0.9.1');
+    assert.equal(watchInjectedOpts?.bundleDir, path.resolve(rtDir));
+  } finally {
+    fs.rmSync(watchTmp, { recursive: true, force: true });
+  }
+});
+
+test('更新闭环修复 4: 渲染层点击立即更新透传 prerelease/allowBetaUpdates、免改盘不误出重启按钮且热重载保留完成弹窗', async () => {
+  const vm = require('vm');
+  const core = require('./meter-core');
+  const rendererSource = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+
+  const createEnv = (prevHostNode = null, hotReloadSource = null) => {
+    const elements = new Map();
+    const listeners = new Map();
+    const makeEl = () => {
+      const attrs = new Map();
+      const props = new Map();
+      const node = {
+        style: {
+          display: '',
+          opacity: '',
+          setProperty(k, v) { props.set(k, v); },
+          removeProperty(k) { props.delete(k); },
+          getPropertyValue(k) { return props.get(k) || ''; }
+        },
+        disabled: false,
+        children: [],
+        hidden: false,
+        textContent: '',
+        value: '',
+        checked: false,
+        scrollTop: 0,
+        get className() { return attrs.get('class') || ''; },
+        set className(v) { attrs.set('class', String(v || '')); },
+        classList: {
+          add(c) {
+            const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+            if (!cur.includes(c)) cur.push(c);
+            attrs.set('class', cur.join(' '));
+          },
+          remove(c) {
+            const cur = (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c);
+            attrs.set('class', cur.join(' '));
+          },
+          contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); }
+        },
+        addEventListener(type, fn) {
+          if (!listeners.has(node)) listeners.set(node, new Map());
+          listeners.get(node).set(type, fn);
+        },
+        setAttribute(k, v) { attrs.set(k, String(v)); },
+        getAttribute(k) { return attrs.get(k) ?? null; },
+        removeAttribute(k) { attrs.delete(k); },
+        remove() {},
+        appendChild(x) { this.children.push(x); },
+        replaceChildren() { this.children = []; },
+        click() { listeners.get(node)?.get('click')?.(); }
+      };
+      return node;
+    };
+    const host = makeEl();
+    const shadowRoot = {
+      set innerHTML(_v) {},
+      getElementById(id) {
+        if (!elements.has(id)) elements.set(id, makeEl());
+        return elements.get(id);
+      }
+    };
+    host.shadowRoot = shadowRoot;
+    host.attachShadow = () => shadowRoot;
+
+    let first = true;
+    const sandbox = {
+      location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111', search: '' },
+      document: {
+        createElement: () => { if (first) { first = false; return host; } return makeEl(); },
+        getElementById: (id) => (id === 'ag-context-meter' ? prevHostNode : null),
+        querySelectorAll: () => (prevHostNode ? [prevHostNode] : []),
+        documentElement: { appendChild() {} },
+        addEventListener() {},
+        removeEventListener() {},
+        hidden: false
+      },
+      window: {
+        __APP_CONFIG__: { csrfToken: 'test' },
+        ...(hotReloadSource ? { __AGContextMeterHotReloadContext: { source: hotReloadSource } } : {}),
+        contextMeterAPI: {
+          restartHost: async () => ({ ok: true, supported: true })
+        }
+      },
+      __AGContextMeterCore: core,
+      AbortController,
+      Date,
+      setTimeout: () => 1,
+      clearTimeout() {},
+      setInterval: () => 1,
+      clearInterval() {},
+      fetch: () => Promise.resolve({ ok: true, json: async () => ({}) })
+    };
+    if (prevHostNode && prevHostNode.__prevApi) {
+      sandbox.__AGContextMeter = prevHostNode.__prevApi;
+    }
+    vm.createContext(sandbox);
+    vm.runInContext(rendererSource, sandbox);
+    host.__prevApi = sandbox.__AGContextMeter;
+    return {
+      sandbox,
+      host,
+      elements,
+      flush: () => new Promise(resolve => setImmediate(resolve))
+    };
+  };
+
+  const h1 = createEnv();
+  let capturedApplyPayload = null;
+  h1.sandbox.window.contextMeterAPI.checkUpdate = async () => ({
+    ok: true,
+    hasUpdate: true,
+    currentVersion: '0.8.10',
+    latestVersion: '0.9.0',
+    prerelease: true,
+    tagName: 'v0.9.0',
+    releaseNotes: '- 免改盘热更新'
+  });
+  h1.sandbox.window.contextMeterAPI.applyUpdate = async (payload) => {
+    capturedApplyPayload = payload;
+    return {
+      ok: true,
+      mode: 'live',
+      diskInstalled: false,
+      liveUpdated: true,
+      liveInjected: false,
+      version: '0.9.0'
+    };
+  };
+
+  try {
+    h1.elements.get('btn-check-update-ctx').click();
+    await h1.flush();
+    assert.equal(h1.elements.get('update-popover').style.display, 'block');
+
+    h1.elements.get('btn-apply-update').click();
+    await h1.flush();
+    assert.deepEqual({ ...capturedApplyPayload }, {
+      version: '0.9.0',
+      allowBetaUpdates: true,
+      prerelease: true
+    }, '点击立即更新时必须透传 prerelease 与 allowBetaUpdates');
+    assert.equal(h1.elements.get('btn-update-restart').hidden, true, '免改盘更新绝不展示重启客户端按钮');
+    assert.match(h1.elements.get('up-pop-body').textContent, /免改盘/);
+
+    // 模拟 cli-live-update 热注入替换旧实例时，原打开的更新弹窗平滑保留为「🎉 更新已完成」
+    const h2 = createEnv(h1.host, 'cli-live-update');
+    try {
+      assert.equal(h2.elements.get('update-popover').style.display, 'block');
+      assert.match(h2.elements.get('up-pop-title').textContent, /更新已完成/);
+      assert.match(h2.elements.get('up-pop-body').textContent, /免重启热加载/);
+      assert.equal(h2.elements.get('btn-apply-update').disabled, true);
+    } finally {
+      h2.sandbox.__AGContextMeter?.dispose();
+    }
+  } finally {
+    h1.sandbox.__AGContextMeter?.dispose();
+  }
+});

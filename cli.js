@@ -898,14 +898,15 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
   if (!live.running || !live.pageFound) {
     return { needed: false, ready: false, reason: 'no_running_window', liveInfo: null, previousLiveInfo: null };
   }
+  const bundleRoot = options.bundleDir ? path.resolve(options.bundleDir) : __dirname;
   let currentPkgVersion = null;
   try {
-    currentPkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
+    currentPkgVersion = JSON.parse(fs.readFileSync(path.join(bundleRoot, 'package.json'), 'utf8')).version || null;
   } catch {}
 
   const stateDir = options.stateDir || getStateDir();
   const statePath = path.join(stateDir, '.live-session.json');
-  const legacyPath = path.join(__dirname, '.live-session.json');
+  const legacyPath = path.join(bundleRoot, '.live-session.json');
   const liveSessionPath = fs.existsSync(statePath) ? statePath : legacyPath;
 
   let existingInfo = null;
@@ -947,7 +948,7 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
     return expectedOrigins.every(o => covered.has(o));
   };
 
-  const expectedHostBuildId = getHostCoreBuildId(__dirname);
+  const expectedHostBuildId = getHostCoreBuildId(bundleRoot);
   if (existingInfo && existingInfo.pid) {
     const info = existingInfo;
     let pidAlive = false;
@@ -978,21 +979,29 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
   } catch {}
 
   const liveRuntimeScript = path.join(stateDir, 'live-runtime', 'live-host.js');
+  const effectiveBundleSourceDir = process.env.AG_BUNDLE_SOURCE_DIR || options.bundleDir || __dirname;
   // 在从临时解压目录安装或升级前先同步持久化 live-runtime，避免触发进程删除临时目录后影响后台按需加载
   let syncedRuntimeDir = null;
   try {
-    syncedRuntimeDir = syncLiveRuntimeBundle(__dirname, { version: currentPkgVersion, stateDir });
+    syncedRuntimeDir = syncLiveRuntimeBundle(bundleRoot, {
+      version: currentPkgVersion,
+      stateDir,
+      bundleDir: effectiveBundleSourceDir
+    });
   } catch {}
   const hostEntryScript = (syncedRuntimeDir && fs.existsSync(liveRuntimeScript))
     ? liveRuntimeScript
-    : (fs.existsSync(liveRuntimeScript) && !__dirname.toLowerCase().includes(os.tmpdir().toLowerCase())
+    : (fs.existsSync(liveRuntimeScript) && !bundleRoot.toLowerCase().includes(os.tmpdir().toLowerCase())
       ? liveRuntimeScript
-      : path.join(__dirname, 'live-host.js'));
+      : path.join(bundleRoot, 'live-host.js'));
 
   const childEnv = {
     ...process.env,
     ...(options.stateDir ? { AG_METER_STATE_DIR: stateDir } : {}),
     ...(options.appDataDir ? { APPDATA: options.appDataDir } : {}),
+    ...(effectiveBundleSourceDir && path.resolve(effectiveBundleSourceDir) !== path.resolve(path.dirname(liveRuntimeScript))
+      ? { AG_BUNDLE_SOURCE_DIR: effectiveBundleSourceDir }
+      : {}),
     AG_LIVE_STAMP_PATH: stagingStamp,
     ...(expectedOrigins.length ? { AG_LIVE_ORIGINS: JSON.stringify(expectedOrigins) } : {})
   };
@@ -1341,11 +1350,11 @@ async function runWatchDaemon(options = {}) {
   let prefetchedLive = null;
 
   const ensureBridgeFn = typeof options._ensureBridge === 'function'
-    ? options._ensureBridge
-    : (liveSnap) => ensureLiveBridgeIfNeeded(liveSnap, { ...options, stateDir });
+    ? (liveSnap) => options._ensureBridge(liveSnap, { ...options, stateDir, bundleDir: rootDir })
+    : (liveSnap) => ensureLiveBridgeIfNeeded(liveSnap, { ...options, stateDir, bundleDir: rootDir });
   const hotInjectFn = typeof options._hotInject === 'function'
-    ? options._hotInject
-    : (injectOpts) => tryHotInjectDetailed({ ...options, ...injectOpts, stateDir });
+    ? (injectOpts) => options._hotInject({ ...options, ...injectOpts, stateDir, bundleDir: rootDir })
+    : (injectOpts) => tryHotInjectDetailed({ ...options, ...injectOpts, stateDir, bundleDir: rootDir });
   const hotDisposeFn = typeof options._hotDispose === 'function'
     ? options._hotDispose
     : () => tryHotDispose(options);
@@ -1759,6 +1768,10 @@ async function cmdCheck(customPath, cdpOptions = {}) {
 }
 
 async function cmdLive(customPath = null, cdpOptions = {}, options = {}) {
+  let meterVersion = null;
+  try {
+    meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
+  } catch {}
   if (!options._queryLiveWindow && !options._ensureLiveWindow && !options._hotInject && options.autoRecover !== false) {
     await tryAutoRecoverBeforeLaunch(customPath, cdpOptions, 'live');
   }
@@ -1768,6 +1781,20 @@ async function cmdLive(customPath = null, cdpOptions = {}, options = {}) {
     ...options
   });
   if (!ensured.ok) {
+    if (options.quietNoWindow || process.env.AG_QUIET_NO_WINDOW === '1') {
+      if (process.env.AG_EMIT_INSTALL_META === '1') {
+        console.log('__AG_INSTALL_META__=' + JSON.stringify({
+          meterVersion,
+          liveInjected: false,
+          backendHotReloaded: false,
+          backendVersion: null,
+          backendSource: null,
+          liveHostPid: null,
+          reason: ensured.reason || 'no_running_window'
+        }));
+      }
+      return { ok: false, skipped: true, reason: ensured.reason || 'no_running_window', manualCmd: ensured.manualCmd || null };
+    }
     const portArg = cdpOptions.port ? ` --port ${cdpOptions.port}` : '';
     if (ensured.reason === 'port_occupied') {
       throw new Error(ensured.error || `指定的 CDP 端口 (${ensured.port}) 已被其他进程占用`);
@@ -1805,7 +1832,7 @@ async function cmdLive(customPath = null, cdpOptions = {}, options = {}) {
   try {
     report = await hotInjectFn({
       ...effectiveCdpOptions,
-      source: 'cli-live',
+      source: options.source || (process.env.AG_EMIT_INSTALL_META === '1' ? 'cli-live-update' : 'cli-live'),
       liveInfo: bridgePrep.liveInfo || null,
       liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
       preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
@@ -1819,13 +1846,191 @@ async function cmdLive(customPath = null, cdpOptions = {}, options = {}) {
     await rollbackPreparedLiveBridge(bridgePrep);
     throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js watch。');
   }
-  if (bridgePrep.previousLiveInfo) {
+  const deferKillPid = Number(process.env.AG_DEFER_KILL_LIVE_HOST_PID || 0);
+  if (bridgePrep.previousLiveInfo && (!deferKillPid || Number(bridgePrep.previousLiveInfo.pid) !== deferKillPid)) {
     await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
   }
   if (!options.silent) {
     console.log(`✅ 已通过 CDP 热注入当前运行的 ${report.injectedCount}/${report.windowCount} 个 Antigravity 窗口！`);
   }
-  return { ...report, action: ensured.action, port: ensured.port };
+  const reportBackendVersion = report.backendVersion || bridgePrep.backendVersion || meterVersion;
+  const reportBackendSource = report.backendSource || bridgePrep.backendSource || null;
+  const backendAligned = Boolean(meterVersion ? reportBackendVersion === meterVersion : bridgePrep.ready);
+  if (process.env.AG_EMIT_INSTALL_META === '1') {
+    console.log('__AG_INSTALL_META__=' + JSON.stringify({
+      meterVersion,
+      liveInjected: true,
+      backendHotReloaded: backendAligned,
+      backendVersion: reportBackendVersion,
+      backendSource: reportBackendSource,
+      liveHostPid: bridgePrep.liveInfo?.pid || null
+    }));
+  }
+  return { ...report, action: ensured.action, port: ensured.port, backendVersion: reportBackendVersion, backendSource: reportBackendSource };
+}
+
+async function cmdUpdate(customPath = null, cdpOptions = {}, options = {}) {
+  const { checkUpdateAsync, applyUpdateAsync } = require('./meter-collector');
+  const checkFn = typeof options._checkUpdate === 'function' ? options._checkUpdate : checkUpdateAsync;
+  const applyFn = typeof options._applyUpdate === 'function' ? options._applyUpdate : applyUpdateAsync;
+  const checkOnly = Boolean(options.checkOnly);
+  const wantJson = Boolean(options.json);
+  const silent = Boolean(options.silent);
+
+  const checkOpts = {
+    force: true,
+    ...(customPath ? { asarPath: customPath } : {}),
+    ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+    ...(options.agDir ? { agDir: options.agDir } : {}),
+    ...(options.beta === true ? { allowBetaUpdates: true } : {}),
+    ...(options._requestGithubUrl ? { _requestGithubUrl: options._requestGithubUrl } : {}),
+    ...(options._inspectDiskModules ? { _inspectDiskModules: options._inspectDiskModules } : {})
+  };
+  const chk = await checkFn(checkOpts);
+  if (!chk || chk.ok === false) {
+    throw new Error(chk?.error || '检查官方更新失败');
+  }
+
+  if (checkOnly) {
+    if (wantJson) {
+      console.log(JSON.stringify(chk, null, 2));
+    } else if (!silent) {
+      if (chk.hasUpdate) {
+        console.log(`🚀 发现新版本: v${chk.currentVersion} -> v${chk.latestVersion} (${chk.htmlUrl || ''})`);
+        if (chk.releaseNotes) {
+          console.log('--- 更新摘要 ---');
+          console.log(chk.releaseNotes);
+        }
+      } else {
+        console.log(`✅ 当前已是最新版本 (v${chk.installedVersion || chk.currentVersion})`);
+      }
+    }
+    return chk;
+  }
+
+  let targetMode = null;
+  if (options.wantInstall) {
+    targetMode = 'install';
+  } else if (options.wantLive || options.wantWatch) {
+    targetMode = 'live';
+  } else {
+    let diskPatched = false;
+    let macBlocked = false;
+    try {
+      const inspectFn = options._inspectDiskModules || require('./modules-config').inspectDiskModules;
+      const disk = inspectFn(customPath || null);
+      diskPatched = Boolean(disk && (disk.meter || disk.chinese || disk.proxy));
+      const asarToCheck = disk?.asarPath || customPath || null;
+      if (asarToCheck && ((options.platform || process.platform) === 'darwin') && !options.forceMacAsar) {
+        const macInfo = inspectMacAsarIntegrity(asarToCheck);
+        macBlocked = Boolean(macInfo && macInfo.isMacAppBundle && macInfo.hasAsarIntegrity === true);
+      }
+    } catch {}
+    targetMode = (diskPatched && !macBlocked) ? 'install' : 'live';
+  }
+
+  if (!chk.hasUpdate) {
+    const activeVer = chk.installedVersion || chk.currentVersion;
+    if (!wantJson && !silent) {
+      console.log(`✅ 当前已是最新版本 (v${activeVer})`);
+    }
+    let followUp = null;
+    if (options.wantLive) {
+      followUp = await cmdLive(customPath, cdpOptions, {
+        autoLaunch: !options.noLaunch,
+        relaunch: Boolean(options.relaunch),
+        silent: wantJson || silent,
+        ...(options._liveOpts || {})
+      });
+    } else if (options.wantWatch) {
+      followUp = await runWatchDaemon({
+        ...cdpOptions,
+        customPath,
+        autoBootstrapHost: !options.noLaunch,
+        autoLaunch: !options.noLaunch,
+        relaunch: Boolean(options.relaunch),
+        silent: wantJson || silent,
+        ...(options._watchOpts || {})
+      });
+    }
+    const out = { ok: true, upToDate: true, mode: targetMode, version: activeVer, followUp };
+    if (wantJson) console.log(JSON.stringify(out, null, 2));
+    return out;
+  }
+
+  if (!wantJson && !silent) {
+    console.log(`🚀 发现新版本 v${chk.currentVersion} -> v${chk.latestVersion} (${targetMode === 'live' ? '免改盘模式' : '持久化安装模式'})，正在下载并校验 SHA-256...`);
+  }
+  const applyRes = await applyFn({
+    version: chk.latestVersion,
+    currentVersion: chk.currentVersion,
+    allowBetaUpdates: Boolean(options.beta || chk.allowBetaUpdates || chk.prerelease),
+    prerelease: Boolean(chk.prerelease),
+    mode: targetMode,
+    targetPath: customPath || undefined,
+    stateDir: options.stateDir || undefined,
+    agDir: options.agDir || undefined,
+    bundleDir: options.bundleDir || __dirname,
+    cdpPort: cdpOptions.port || undefined,
+    autoLaunch: Boolean(options.wantLive && !options.noLaunch),
+    relaunch: Boolean(options.relaunch),
+    skipLiveReload: Boolean(options.wantWatch || options.skipLiveReload),
+    forceMacAsar: Boolean(options.forceMacAsar),
+    ...(options._requestGithubUrl ? { _requestGithubUrl: options._requestGithubUrl } : {}),
+    ...(options._extractZip ? { _extractZip: options._extractZip } : {}),
+    ...(options._spawn ? { _spawn: options._spawn } : {})
+  });
+
+  if (!applyRes || !applyRes.ok) {
+    throw new Error(applyRes?.error || '更新安装失败');
+  }
+
+  if (!wantJson && !silent) {
+    if (applyRes.mode === 'live') {
+      console.log(`✅ 已下载校验并同步免改盘运行时至 v${applyRes.version}`);
+      if (applyRes.bundleSynced && applyRes.bundleDir) {
+        console.log(`   - 本地独立发行包已同步更新: ${applyRes.bundleDir}`);
+      } else if (applyRes.bundleSkippedReason === 'git_worktree') {
+        console.log('   - 检测到当前位于 Git 源码仓库，已保护工作区源码不被覆盖（仅同步 live-runtime）');
+      }
+      if (!options.wantWatch) {
+        if (applyRes.liveInjected) {
+          console.log(`   - 运行中窗口热刷新: ✅ 界面与后台已即时切换至 v${applyRes.version}`);
+        } else {
+          console.log('   - 运行中窗口热刷新: ⚪ 当前未检测到开启 CDP 的窗口（下次运行 node cli.js live / watch 即加载新版）');
+        }
+      }
+    } else {
+      console.log(`✅ 已完成持久化升级至 v${applyRes.version}${applyRes.liveInjected ? '（运行中窗口已即时生效）' : '（重启客户端后完整生效）'}`);
+    }
+  }
+
+  let watchResult = null;
+  if (options.wantWatch) {
+    const nextBundleDir = (applyRes.bundleSynced && applyRes.bundleDir)
+      ? applyRes.bundleDir
+      : (applyRes.liveRuntimeDir || undefined);
+    const nextWatchScript = (nextBundleDir && fs.existsSync(path.join(nextBundleDir, 'cli.js')))
+      ? path.join(nextBundleDir, 'cli.js')
+      : undefined;
+    watchResult = await runWatchDaemon({
+      ...cdpOptions,
+      customPath,
+      ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+      ...(nextBundleDir ? { bundleDir: nextBundleDir } : {}),
+      ...(nextWatchScript ? { watchScript: nextWatchScript } : {}),
+      ...(applyRes.version ? { expectedVersion: applyRes.version } : {}),
+      autoBootstrapHost: !options.noLaunch,
+      autoLaunch: !options.noLaunch,
+      relaunch: Boolean(options.relaunch),
+      silent: wantJson || silent,
+      ...(options._watchOpts || {})
+    });
+  }
+
+  const finalOut = { ...applyRes, upToDate: false, ...(watchResult ? { watchResult } : {}) };
+  if (wantJson) console.log(JSON.stringify(finalOut, null, 2));
+  return finalOut;
 }
 
 async function runLiveCommand(cdpOptions = {}, customPath = null) {
@@ -1892,11 +2097,11 @@ const CLI_BOOLEAN_FLAGS = new Set([
   '--force', '--all', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut',
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
   '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--force-mac-asar',
-  '--check-only', '--silent'
+  '--check', '--check-only', '--beta', '--live', '--watch', '--install', '--quiet-no-window', '--silent'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
-  'install', 'recover', 'live', 'watch', 'stop-watch', 'restore', 'uninstall',
+  'install', 'update', 'recover', 'live', 'watch', 'stop-watch', 'restore', 'uninstall',
   'install-cli', 'restore-cli', 'status-cli',
   'unlock-status', 'unlock', 'unlock-restore',
   'enhance-status', 'enhance', 'enhance-restore',
@@ -1930,6 +2135,7 @@ function printUsage() {
   node cli.js watch [--port <port>] [--relaunch] [--no-launch]  免改盘后台守护模式（未启动则自动拉起，关闭后自动退出）
   node cli.js stop-watch                    停止正在运行的 watch 守护进程与本地桥接服务
   node cli.js live [--port <port>] [--relaunch] [--no-launch]   免改盘 CDP 热挂载（未开启调试端口时支持自动拉起/重开）
+  node cli.js update [--check] [--beta] [--live|--watch|--install]  在线检查并校验更新（免改盘同步热刷新，不误改 Git 仓库）
   node cli.js install [--path <app.asar>] [--force-mac-asar]    一键持久化安装并热注入当前运行窗口
   node cli.js recover [--path <app.asar>] [--check-only] [--json]  检测并在宿主更新覆盖后自动备份恢复插件配置
   node cli.js status [--port <port>]        查看安装状态与当前对话实时上下文用量
@@ -2172,7 +2378,24 @@ async function main() {
   } else if (cmd === 'live') {
     await cmdLive(customPath, cdpOptions, {
       relaunch: isRelaunch,
-      autoLaunch: !isNoLaunch
+      autoLaunch: !isNoLaunch,
+      quietNoWindow: args.includes('--quiet-no-window')
+    });
+  } else if (cmd === 'update') {
+    const stateDirIdx = args.indexOf('--state-dir');
+    const customStateDir = stateDirIdx >= 0 ? args[stateDirIdx + 1] : null;
+    await cmdUpdate(customPath, cdpOptions, {
+      checkOnly: args.includes('--check') || args.includes('--check-only'),
+      beta: args.includes('--beta'),
+      wantLive: args.includes('--live'),
+      wantWatch: args.includes('--watch'),
+      wantInstall: args.includes('--install'),
+      relaunch: isRelaunch,
+      noLaunch: isNoLaunch,
+      forceMacAsar: isForceMacAsar,
+      json: args.includes('--json'),
+      silent: args.includes('--silent'),
+      stateDir: customStateDir || undefined
     });
   } else if (cmd === 'watch') {
     console.log('👀 [Antigravity 对话上下文查看器] 免改盘守护模式启动中（不修改 app.asar，保留官方原始签名）...');
@@ -2829,6 +3052,7 @@ module.exports = {
   formatManualCdpLaunchCommand,
   runLiveCommand,
   cmdLive,
+  cmdUpdate,
   ensureLiveWindowAvailable,
   isRunningInsideAntigravitySession,
   resolveAntigravityHostTarget,

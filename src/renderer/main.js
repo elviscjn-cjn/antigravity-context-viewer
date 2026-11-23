@@ -41,11 +41,13 @@
         }
         const proxySaveBtn = prevRoot.getElementById('btn-save-proxy-config');
         const enhanceSaveBtn = prevRoot.getElementById('btn-enhance-preset-apply');
+        const prevUpdatePop = prevRoot.getElementById('update-popover');
         inheritedHotReloadState = {
           capturedAt: Date.now(),
           openPanel,
           activeContextTab: activeTab,
           isContextSettingsView: activeTab === 'settings',
+          updatePopoverOpen: Boolean(prevUpdatePop && prevUpdatePop.style && prevUpdatePop.style.display === 'block'),
           scrollTops,
           openDrawers,
           drafts: {
@@ -15685,10 +15687,15 @@
       const hasIpcApply = typeof window !== 'undefined' && typeof window.contextMeterAPI?.applyUpdate === 'function';
       const hasLiveApply = hasLiveHttpBridge() && hasLiveRouteCapability('/apply-update');
       if (hasIpcApply || hasLiveApply) {
+        const applyPayload = {
+          version: cachedLatestRelease.latestVersion,
+          allowBetaUpdates: Boolean(allowBetaUpdates || cachedLatestRelease.prerelease),
+          prerelease: Boolean(cachedLatestRelease.prerelease)
+        };
         const out = await callBackendWithPriority({
-          ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate({ version: cachedLatestRelease.latestVersion }) : null,
+          ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate(applyPayload) : null,
           liveRoute: '/apply-update',
-          liveBody: { version: cachedLatestRelease.latestVersion }
+          liveBody: applyPayload
         });
         res = out.result;
       } else {
@@ -15705,21 +15712,24 @@
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
 
+        const isLiveOnlyUpdate = res.diskInstalled === false || res.mode === 'live';
         const fullyHotReloaded = Boolean(res.liveInjected && res.backendHotReloaded);
-        pendingUpdateRestart = !fullyHotReloaded;
+        pendingUpdateRestart = Boolean(!fullyHotReloaded && !isLiveOnlyUpdate);
         if (titleEl) titleEl.textContent = t('update.doneTitle');
         if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
         if (bodyEl) {
           bodyEl.textContent = fullyHotReloaded
             ? t('update.doneHotFull', { ver: nextDisplayVer })
-            : (res.liveInjected ? t('update.doneHot', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer }));
+            : (res.liveInjected
+              ? t('update.doneHot', { ver: nextDisplayVer })
+              : (isLiveOnlyUpdate ? t('update.doneLiveSynced', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer })));
         }
         if (applyBtn) {
           applyBtn.textContent = t('update.btnUpdated');
           applyBtn.disabled = false;
         }
         if (restartBtn) {
-          const showRestart = Boolean(!fullyHotReloaded && hostSupportsRestart);
+          const showRestart = Boolean(!fullyHotReloaded && !isLiveOnlyUpdate && hostSupportsRestart);
           restartBtn.hidden = !showRestart;
           if (restartBtn.style) restartBtn.style.display = showRestart ? 'inline-block' : 'none';
         }
@@ -15731,6 +15741,8 @@
           }
         } else if (res.liveInjected) {
           if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextDisplayVer });
+        } else if (isLiveOnlyUpdate) {
+          if (statusEl) statusEl.textContent = t('update.doneLiveSynced', { ver: nextDisplayVer });
         } else {
           if (statusEl) {
             statusEl.textContent = hostSupportsRestart
@@ -23949,7 +23961,7 @@
         lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
       }
       const keepAuxOpen = dockPosition === 'aux' && !dockFallbackReason && !el('panel')?.hidden;
-      if (!sameScreenSwitch && !keepAuxOpen) toggle(false);
+      if (!sameScreenSwitch && !keepAuxOpen && (prevRoute || !inheritedHotReloadState)) toggle(false);
       if (keepAuxOpen && activeContextTab === 'session') {
         state.historyDrawerOpen = true;
       }
@@ -24097,6 +24109,8 @@
       openPanel,
       activeContextTab,
       isContextSettingsView,
+      updatePopoverOpen: Boolean(el('update-popover')?.style?.display === 'block'),
+      updatePopoverTrigger: currentUpdateTrigger || 'ctx',
       pinnedViewRoute: state.pinnedViewRoute || null,
       browsePoolKey: quotaState.browsePoolKey || null,
       scrollTops,
@@ -24155,6 +24169,32 @@
         switchContextTab(saved.activeContextTab);
       } else if (saved.openPanel === 'context' && saved.isContextSettingsView) {
         switchContextTab('settings');
+      }
+    }
+    if (saved.updatePopoverOpen && typeof window !== 'undefined' && window.__AGContextMeterHotReloadContext?.source === 'cli-live-update') {
+      const displayVer = formatDisplayVersion(METER_VERSION);
+      showUpdatePopover(saved.updatePopoverTrigger || 'ctx');
+      const titleEl = el('up-pop-title');
+      const verEl = el('up-pop-ver');
+      const bodyEl = el('up-pop-body');
+      const statusEl = el('up-pop-status');
+      const applyBtn = el('btn-apply-update');
+      const restartBtn = el('btn-update-restart');
+      if (titleEl) titleEl.textContent = t('update.doneTitle');
+      if (verEl) verEl.textContent = t('update.doneVer', { ver: displayVer });
+      if (bodyEl) bodyEl.textContent = t('update.doneHotFull', { ver: displayVer });
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.textContent = t('update.doneHotFull', { ver: displayVer });
+      }
+      if (applyBtn) {
+        applyBtn.style.display = 'inline-block';
+        applyBtn.textContent = t('update.btnUpdated');
+        applyBtn.disabled = true;
+      }
+      if (restartBtn) {
+        restartBtn.hidden = true;
+        if (restartBtn.style) restartBtn.style.display = 'none';
       }
     }
     if (Array.isArray(saved.openDrawers)) {

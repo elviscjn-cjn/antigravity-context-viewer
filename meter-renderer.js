@@ -41,11 +41,13 @@
         }
         const proxySaveBtn = prevRoot.getElementById('btn-save-proxy-config');
         const enhanceSaveBtn = prevRoot.getElementById('btn-enhance-preset-apply');
+        const prevUpdatePop = prevRoot.getElementById('update-popover');
         inheritedHotReloadState = {
           capturedAt: Date.now(),
           openPanel,
           activeContextTab: activeTab,
           isContextSettingsView: activeTab === 'settings',
+          updatePopoverOpen: Boolean(prevUpdatePop && prevUpdatePop.style && prevUpdatePop.style.display === 'block'),
           scrollTops,
           openDrawers,
           drafts: {
@@ -16437,6 +16439,7 @@ const PANEL_I18N = {
   'update.doneVer': { 'zh-CN': '{ver} (已是最新)', 'zh-TW': '{ver} (已是最新)', en: '{ver} (Up to date)' },
   'update.doneHot': { 'zh-CN': '已成功在线更新至 {ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 {ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to {ver}. UI hot-injected immediately; restart client for main-process changes.' },
   'update.doneHotFull': { 'zh-CN': '已成功在线更新至 {ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 {ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to {ver}. Both UI and backend service hot-reloaded and verified without restart.' },
+  'update.doneLiveSynced': { 'zh-CN': '已成功同步免改盘运行时至 {ver}（重新运行 node cli.js live 或 watch 即加载新版）。', 'zh-TW': '已成功同步免改盤執行階段至 {ver}（重新執行 node cli.js live 或 watch 即載入新版）。', en: 'Synced patch-free runtime to {ver}. Re-run node cli.js live or watch to load it.' },
   'update.doneDisk': { 'zh-CN': '已成功完成 {ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 {ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to {ver} complete. Restart Antigravity to apply.' },
   'update.restartBtn': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },
@@ -37867,10 +37870,15 @@ function closeAllDropdowns(exceptWrap = null) {
       const hasIpcApply = typeof window !== 'undefined' && typeof window.contextMeterAPI?.applyUpdate === 'function';
       const hasLiveApply = hasLiveHttpBridge() && hasLiveRouteCapability('/apply-update');
       if (hasIpcApply || hasLiveApply) {
+        const applyPayload = {
+          version: cachedLatestRelease.latestVersion,
+          allowBetaUpdates: Boolean(allowBetaUpdates || cachedLatestRelease.prerelease),
+          prerelease: Boolean(cachedLatestRelease.prerelease)
+        };
         const out = await callBackendWithPriority({
-          ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate({ version: cachedLatestRelease.latestVersion }) : null,
+          ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate(applyPayload) : null,
           liveRoute: '/apply-update',
-          liveBody: { version: cachedLatestRelease.latestVersion }
+          liveBody: applyPayload
         });
         res = out.result;
       } else {
@@ -37887,21 +37895,24 @@ function closeAllDropdowns(exceptWrap = null) {
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
 
+        const isLiveOnlyUpdate = res.diskInstalled === false || res.mode === 'live';
         const fullyHotReloaded = Boolean(res.liveInjected && res.backendHotReloaded);
-        pendingUpdateRestart = !fullyHotReloaded;
+        pendingUpdateRestart = Boolean(!fullyHotReloaded && !isLiveOnlyUpdate);
         if (titleEl) titleEl.textContent = t('update.doneTitle');
         if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
         if (bodyEl) {
           bodyEl.textContent = fullyHotReloaded
             ? t('update.doneHotFull', { ver: nextDisplayVer })
-            : (res.liveInjected ? t('update.doneHot', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer }));
+            : (res.liveInjected
+              ? t('update.doneHot', { ver: nextDisplayVer })
+              : (isLiveOnlyUpdate ? t('update.doneLiveSynced', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer })));
         }
         if (applyBtn) {
           applyBtn.textContent = t('update.btnUpdated');
           applyBtn.disabled = false;
         }
         if (restartBtn) {
-          const showRestart = Boolean(!fullyHotReloaded && hostSupportsRestart);
+          const showRestart = Boolean(!fullyHotReloaded && !isLiveOnlyUpdate && hostSupportsRestart);
           restartBtn.hidden = !showRestart;
           if (restartBtn.style) restartBtn.style.display = showRestart ? 'inline-block' : 'none';
         }
@@ -37913,6 +37924,8 @@ function closeAllDropdowns(exceptWrap = null) {
           }
         } else if (res.liveInjected) {
           if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextDisplayVer });
+        } else if (isLiveOnlyUpdate) {
+          if (statusEl) statusEl.textContent = t('update.doneLiveSynced', { ver: nextDisplayVer });
         } else {
           if (statusEl) {
             statusEl.textContent = hostSupportsRestart
@@ -47543,7 +47556,7 @@ var cumLockedKey = null;
         lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
       }
       const keepAuxOpen = dockPosition === 'aux' && !dockFallbackReason && !el('panel')?.hidden;
-      if (!sameScreenSwitch && !keepAuxOpen) toggle(false);
+      if (!sameScreenSwitch && !keepAuxOpen && (prevRoute || !inheritedHotReloadState)) toggle(false);
       if (keepAuxOpen && activeContextTab === 'session') {
         state.historyDrawerOpen = true;
       }
@@ -47691,6 +47704,8 @@ var cumLockedKey = null;
       openPanel,
       activeContextTab,
       isContextSettingsView,
+      updatePopoverOpen: Boolean(el('update-popover')?.style?.display === 'block'),
+      updatePopoverTrigger: currentUpdateTrigger || 'ctx',
       pinnedViewRoute: state.pinnedViewRoute || null,
       browsePoolKey: quotaState.browsePoolKey || null,
       scrollTops,
@@ -47751,6 +47766,32 @@ var cumLockedKey = null;
         switchContextTab('settings');
       }
     }
+    if (saved.updatePopoverOpen && typeof window !== 'undefined' && window.__AGContextMeterHotReloadContext?.source === 'cli-live-update') {
+      const displayVer = formatDisplayVersion(METER_VERSION);
+      showUpdatePopover(saved.updatePopoverTrigger || 'ctx');
+      const titleEl = el('up-pop-title');
+      const verEl = el('up-pop-ver');
+      const bodyEl = el('up-pop-body');
+      const statusEl = el('up-pop-status');
+      const applyBtn = el('btn-apply-update');
+      const restartBtn = el('btn-update-restart');
+      if (titleEl) titleEl.textContent = t('update.doneTitle');
+      if (verEl) verEl.textContent = t('update.doneVer', { ver: displayVer });
+      if (bodyEl) bodyEl.textContent = t('update.doneHotFull', { ver: displayVer });
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.textContent = t('update.doneHotFull', { ver: displayVer });
+      }
+      if (applyBtn) {
+        applyBtn.style.display = 'inline-block';
+        applyBtn.textContent = t('update.btnUpdated');
+        applyBtn.disabled = true;
+      }
+      if (restartBtn) {
+        restartBtn.hidden = true;
+        if (restartBtn.style) restartBtn.style.display = 'none';
+      }
+    }
     if (Array.isArray(saved.openDrawers)) {
       for (const btnId of saved.openDrawers) {
         const btn = el(btnId);
@@ -47776,7 +47817,7 @@ var cumLockedKey = null;
   }
 
   globalThis.__AGContextMeter = {
-    buildId: 'e0e63847e5a265e2',
+    buildId: '68bf25c0392ffcd9',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
