@@ -2221,3 +2221,81 @@ test('专项复核 17：更新浮层在应用内更新或 diskPendingRestart 时
     h.sandbox.__AGContextMeter?.dispose();
   }
 });
+
+test('Antigravity 2.34.0 适配：findWindowLoadMarker / verifyCleanStructure 及 loadHubWindowUrl 完整安装、重装与卸载闭环', async () => {
+  const {
+    TAGS,
+    findWindowLoadMarker,
+    verifyCleanStructure,
+    validateSyntax
+  } = require('./modular-installer');
+
+  // 1. 锚点识别与结构校验边界矩阵
+  const legacyUtils = `"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url, storageManager, options) {\n    void win.loadURL(url);\n    return win;\n}\n`;
+  const v234Utils = `"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url, storageManager, options) {\n    const windowOptions = {\n        titleBarStyle: 'hidden',\n    };\n    const skipBootstrapMint = Boolean(options?.partition || options?.navigationPolicy);\n    void loadHubWindowUrl(win, url, { skipBootstrapMint });\n    return win;\n}\n`;
+  const v234NoOptsUtils = `"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url, storageManager, options) {\n    void loadHubWindowUrl(win, url);\n    return win;\n}\n`;
+  const missingMarkerUtils = `"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url, storageManager, options) {\n    return win;\n}\n`;
+  const duplicateModernUtils = `"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url, storageManager, options) {\n    void loadHubWindowUrl(win, url, { skipBootstrapMint });\n    void loadHubWindowUrl(win, url, { skipBootstrapMint });\n}\n`;
+  const mixedMarkersUtils = `"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url, storageManager, options) {\n    void win.loadURL(url);\n    void loadHubWindowUrl(win, url, { skipBootstrapMint });\n}\n`;
+
+  assert.equal(findWindowLoadMarker(legacyUtils), '    void win.loadURL(url);');
+  assert.equal(verifyCleanStructure(legacyUtils), true);
+
+  assert.equal(findWindowLoadMarker(v234Utils), '    void loadHubWindowUrl(win, url, { skipBootstrapMint });');
+  assert.equal(verifyCleanStructure(v234Utils), true);
+
+  assert.equal(findWindowLoadMarker(v234NoOptsUtils), '    void loadHubWindowUrl(win, url);');
+  assert.equal(verifyCleanStructure(v234NoOptsUtils), true);
+
+  assert.equal(findWindowLoadMarker(missingMarkerUtils), null);
+  assert.equal(verifyCleanStructure(missingMarkerUtils), false);
+
+  assert.equal(findWindowLoadMarker(duplicateModernUtils), null);
+  assert.equal(verifyCleanStructure(duplicateModernUtils), false);
+
+  assert.equal(findWindowLoadMarker(mixedMarkersUtils), null);
+  assert.equal(verifyCleanStructure(mixedMarkersUtils), false);
+
+  // 2. 端到端安装、幂等重装、原位卸载闭环
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-v234-compat-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const hostAsar = await createMockHostAsar(tmpDir, '2.34.0', v234Utils);
+    fs.copyFileSync(hostAsar, targetAsar);
+
+    // 首次安装
+    const manifest1 = await install({ path: targetAsar });
+    assert.equal(manifest1.version, '2.34.0');
+    const patchedUtils1 = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.equal(validateSyntax(patchedUtils1, 'dist/utils.js'), true);
+    assert.ok(patchedUtils1.includes(TAGS.METER_UTILS_START));
+    assert.ok(patchedUtils1.includes('require("./meter-main").installContextMeter(win);'));
+    assert.ok(patchedUtils1.includes('    void loadHubWindowUrl(win, url, { skipBootstrapMint });'));
+    assert.ok(
+      patchedUtils1.indexOf(TAGS.METER_UTILS_END) < patchedUtils1.indexOf('    void loadHubWindowUrl(win, url, { skipBootstrapMint });'),
+      'installContextMeter(win) 必须注入在 loadHubWindowUrl 调用之前'
+    );
+
+    // 幂等重装（走原位清洗路径）
+    const manifest2 = await install({ path: targetAsar });
+    assert.equal(manifest2.version, '2.34.0');
+    const patchedUtils2 = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.equal(validateSyntax(patchedUtils2, 'dist/utils.js'), true);
+    assert.equal(patchedUtils2.split(TAGS.METER_UTILS_START).length - 1, 1, '重复安装不得产生重复注入块');
+    assert.equal(patchedUtils2.split('void loadHubWindowUrl(win, url, { skipBootstrapMint });').length - 1, 1);
+
+    // 还原卸载
+    await restore({ path: targetAsar });
+    const restoredUtils = builtinAsar.extractFile(targetAsar, 'dist/utils.js').toString('utf8');
+    assert.equal(verifyCleanStructure(restoredUtils), true);
+    assert.equal(restoredUtils.includes(TAGS.METER_UTILS_START), false);
+    assert.ok(restoredUtils.includes('    void loadHubWindowUrl(win, url, { skipBootstrapMint });'));
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+});

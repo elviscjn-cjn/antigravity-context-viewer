@@ -2633,3 +2633,106 @@ test('隔离额度请求遇到窗口未就绪、CSRF 缺失及 401/403 鉴权失
   assert.notEqual(authFailRes.snapshot.activeStatus, 'exhausted');
   assert.notEqual(authFailRes.snapshot.activeStatus, 'no_permission');
 });
+
+test('Antigravity 2.34.0 适配：主进程额度接口鉴权失败 (errorKind=auth) 时自动回退到渲染层同源鉴权 RPC 并复用到后续刷新', async () => {
+  collector.resetQuotaHostCacheForTest();
+  const h = createQuotaRendererHarness();
+  const getQuotaCalls = [];
+  const fetchCalls = [];
+
+  const mockUserStatus = {
+    userStatus: {
+      email: 'v234-user@example.com',
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          {
+            label: 'Gemini 4 Neon (High)',
+            modelOrAlias: { model: 'MODEL_GEMINI_4_NEON' },
+            quotaInfo: { remainingFraction: 0.75, resetTime: new Date(Date.now() + 3600000).toISOString() }
+          }
+        ]
+      }
+    }
+  };
+  const mockQuotaSummary = {
+    groups: []
+  };
+
+  try {
+    // 先结束 harness 启动时自动发起的首次挂起请求（使用非 auth 错误，避免启动态提前触发回退）
+    for (const req of h.quotaRequests) {
+      req.resolve({
+        ok: true,
+        data: {
+          ok: false,
+          error: 'init-pending',
+          errorKind: 'network',
+          snapshot: null
+        }
+      });
+    }
+    await h.flush();
+
+    h.sandbox.window.__APP_CONFIG__ = { csrfToken: 'v234-csrf-token' };
+    h.sandbox.fetch = async (url, init) => {
+      fetchCalls.push({ url: String(url), headers: init?.headers || {} });
+      if (String(url).includes('/GetUserStatus')) {
+        return { ok: true, status: 200, json: async () => mockUserStatus };
+      }
+      if (String(url).includes('/RetrieveUserQuotaSummary')) {
+        return { ok: true, status: 200, json: async () => mockQuotaSummary };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    h.sandbox.window.contextMeterAPI.getQuota = async (opts) => {
+      getQuotaCalls.push(opts || {});
+      if (opts && (opts.userStatus !== undefined || opts.quotaSummary !== undefined)) {
+        const data = await collector.fetchQuotaSnapshotFromHost({
+          origin: 'http://127.0.0.1:59999',
+          force: Boolean(opts.force),
+          userStatus: opts.userStatus,
+          quotaSummary: opts.quotaSummary,
+          fromRenderer: Boolean(opts.fromRenderer)
+        });
+        const { _raw, ...safe } = data;
+        return { ok: true, data: safe };
+      }
+      return {
+        ok: true,
+        data: {
+          ok: false,
+          error: '本地鉴权失败或已失效',
+          errorKind: 'auth',
+          snapshot: null
+        }
+      };
+    };
+
+    const api = h.sandbox.__AGContextMeter;
+    // 1. 首次刷新：主进程返回 auth 错误 -> 触发渲染层同源 fetch -> 回传后端构造完整快照
+    await api.refreshQuotaForTest(true);
+    await h.flush();
+
+    assert.equal(getQuotaCalls.length, 2, '首次遇到主进程 auth 错误应回退并回传一次渲染层数据');
+    assert.equal(getQuotaCalls[0].fromRenderer, undefined);
+    assert.equal(getQuotaCalls[1].fromRenderer, true);
+    assert.ok(getQuotaCalls[1].userStatus);
+    assert.ok(fetchCalls.some(c => c.url.includes('/GetUserStatus') && c.headers['x-codeium-csrf-token'] === 'v234-csrf-token'));
+    assert.ok(fetchCalls.some(c => c.url.includes('/RetrieveUserQuotaSummary') && c.headers['x-codeium-csrf-token'] === 'v234-csrf-token'));
+
+    const stateAfterFirst = api.getModelQuotaStateForTest();
+    assert.equal(stateAfterFirst.state.error, null, '回退成功后不应残留 auth 错误');
+    assert.ok(stateAfterFirst.state.lastSuccessAtMs > 0, '应成功记录有效刷新时间');
+    assert.ok(Array.isArray(stateAfterFirst.view?.pools) && stateAfterFirst.view.pools.length > 0, '应成功产出可用额度池视图');
+
+    // 2. 第二次刷新：已记住使用渲染层 RPC，直接一次 IPC 往返，不再触发无效的主进程 401 请求
+    const callsBeforeSecond = getQuotaCalls.length;
+    await api.refreshQuotaForTest(true);
+    await h.flush();
+    assert.equal(getQuotaCalls.length, callsBeforeSecond + 1);
+    assert.equal(getQuotaCalls[getQuotaCalls.length - 1].fromRenderer, true);
+  } finally {
+    try { h.sandbox.__AGContextMeter.dispose(); } catch { }
+    collector.resetQuotaHostCacheForTest();
+  }
+});

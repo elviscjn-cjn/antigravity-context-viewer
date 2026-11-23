@@ -431,15 +431,29 @@ function cleanPreloadSource(source) {
 }
 
 /**
+ * 定位 createWindow 中的窗口加载锚点：
+ * - Antigravity <= 2.33: `    void win.loadURL(url);`
+ * - Antigravity >= 2.34: `    void loadHubWindowUrl(win, url, { skipBootstrapMint });`
+ * 仅当存在且仅存在 1 处合法锚点时返回匹配字符串，否则返回 null。
+ */
+function findWindowLoadMarker(source) {
+  if (!source || typeof source !== 'string') return null;
+  const legacyMarker = '    void win.loadURL(url);';
+  const legacyCount = source.split(legacyMarker).length - 1;
+  const modernMatches = source.match(/^[ \t]*void loadHubWindowUrl\(win,\s*url\b[^\r\n]*\);/gm) || [];
+  if (legacyCount + modernMatches.length !== 1) return null;
+  return legacyCount === 1 ? legacyMarker : modernMatches[0];
+}
+
+/**
  * 校验清洗后的 utils 结构合法性与 JavaScript 语法
  */
 function verifyCleanStructure(cleanUtils) {
   if (!cleanUtils) return false;
   if (cleanUtils.includes('installContextMeter')) return false;
   if (cleanUtils.includes(TAGS.PROXY_START) || cleanUtils.includes(TAGS.METER_UTILS_START)) return false;
-  const marker = '    void win.loadURL(url);';
   const setupNodeMarker = 'function setupNodeWrapper(env) {';
-  const structuralOk = cleanUtils.split(marker).length === 2 && cleanUtils.includes(setupNodeMarker);
+  const structuralOk = Boolean(findWindowLoadMarker(cleanUtils)) && cleanUtils.includes(setupNodeMarker);
   return structuralOk && validateSyntax(cleanUtils, 'dist/utils.js');
 }
 
@@ -453,5 +467,6 @@ module.exports = {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
+  findWindowLoadMarker,
   verifyCleanStructure
 };

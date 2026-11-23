@@ -511,7 +511,10 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             origin: targetOrigin,
             backendSource: 'live-host',
             currentModel: request.currentModel || null,
-            browsePoolKey: request.browsePoolKey || null
+            browsePoolKey: request.browsePoolKey || null,
+            ...(request.userStatus !== undefined ? { userStatus: request.userStatus } : {}),
+            ...(request.quotaSummary !== undefined ? { quotaSummary: request.quotaSummary } : {}),
+            ...(request.fromRenderer === true ? { fromRenderer: true } : {})
           });
           const { _raw, ...safeData } = resData || {};
           let accountSyncResult = null;

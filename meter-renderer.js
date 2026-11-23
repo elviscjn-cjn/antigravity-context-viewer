@@ -26006,6 +26006,7 @@ var cumLockedKey = null;
   let quotaFeedbackTimer = null;
   let quotaInFlightPromise = null;
   let quotaAbortController = null;
+  let useRendererQuotaRpc = false;
   const QUOTA_BAR_CHARGE_DURATION_MS = 720;
   let quotaRefreshSpinAnim = null;
   let quotaBarChargeTimer = null;
@@ -26116,6 +26117,7 @@ var cumLockedKey = null;
     clearQuotaAnimations();
     try { quotaAbortController?.abort?.(); } catch { }
     quotaAbortController = null;
+    useRendererQuotaRpc = false;
   }
 
   function loadQuotaCalibrationForScope(scopeKey) {
@@ -27541,6 +27543,35 @@ var cumLockedKey = null;
     });
   }
 
+  async function fetchQuotaRpcFromRenderer(signal) {
+    if (typeof fetch !== 'function' || typeof window === 'undefined') return null;
+    const csrf = window.__APP_CONFIG__?.csrfToken;
+    if (!csrf) return null;
+    const callMethod = async (method) => {
+      const response = await fetch(`/exa.language_server_pb.LanguageServerService/${method}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': csrf
+        },
+        body: '{}',
+        ...(signal ? { signal } : {})
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const parsed = await response.json();
+      return parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0 ? parsed : null;
+    };
+    const [uRes, qRes] = await Promise.allSettled([
+      callMethod('GetUserStatus'),
+      callMethod('RetrieveUserQuotaSummary')
+    ]);
+    const userStatus = uRes.status === 'fulfilled' && uRes.value ? uRes.value : null;
+    const quotaSummary = qRes.status === 'fulfilled' && qRes.value ? qRes.value : null;
+    if (!userStatus && !quotaSummary) return null;
+    return { userStatus, quotaSummary };
+  }
+
   async function syncQuotaFromHost(force = false, meta = {}) {
     if (state.disposed) return null;
     if (quotaInFlightPromise) {
@@ -27567,21 +27598,65 @@ var cumLockedKey = null;
           rpcErr = t('quota.bridgeMissing');
         } else {
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
-          const out = await callBackendWithPriority({
-            ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force) }) : null,
+          const invokeQuotaBackend = (extraOpts = {}) => callBackendWithPriority({
+            ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), ...extraOpts }) : null,
             liveRoute: '/quota',
             liveBody: {
               force: Boolean(force),
-              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined
+              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined,
+              ...extraOpts
             },
             liveFetchOpts: { signal: quotaAbortController?.signal }
           });
+
+          let out = null;
+          if (useRendererQuotaRpc) {
+            const rpcData = await fetchQuotaRpcFromRenderer(quotaAbortController?.signal).catch(() => null);
+            if (rpcData) {
+              out = await invokeQuotaBackend({
+                userStatus: rpcData.userStatus,
+                quotaSummary: rpcData.quotaSummary,
+                fromRenderer: true
+              });
+            } else {
+              useRendererQuotaRpc = false;
+            }
+          }
+
+          if (!out) {
+            out = await invokeQuotaBackend({});
+          }
+
           usedBackendSource = out.source;
           const resObj = out.result;
           if (resObj?.ok && resObj.data) {
             payload = resObj.data;
           } else if (resObj?.error) {
             rpcErr = resObj.error;
+          }
+
+          const needsRendererFallback = !useRendererQuotaRpc && (
+            (payload && payload.ok === false && payload.errorKind === 'auth') ||
+            (!payload && typeof rpcErr === 'string' && /401|403|csrf|unauthorized|forbidden|鉴权/i.test(rpcErr))
+          );
+          if (needsRendererFallback) {
+            const rpcData = await fetchQuotaRpcFromRenderer(quotaAbortController?.signal).catch(() => null);
+            if (rpcData) {
+              useRendererQuotaRpc = true;
+              const retryOut = await invokeQuotaBackend({
+                userStatus: rpcData.userStatus,
+                quotaSummary: rpcData.quotaSummary,
+                fromRenderer: true
+              });
+              usedBackendSource = retryOut.source;
+              const retryObj = retryOut.result;
+              if (retryObj?.ok && retryObj.data) {
+                payload = retryObj.data;
+                rpcErr = null;
+              } else if (retryObj?.error) {
+                rpcErr = retryObj.error;
+              }
+            }
           }
         }
       } catch (e) {

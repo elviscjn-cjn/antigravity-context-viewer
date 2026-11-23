@@ -3578,7 +3578,7 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       _raw: rawRecord
     };
 
-    if (!hasStaticFixture && !options.agDir) {
+    if ((!hasStaticFixture || options.fromRenderer === true) && !options.agDir) {
       cachedQuotaStateByOrigin.set(originScope, out);
     }
     return out;
