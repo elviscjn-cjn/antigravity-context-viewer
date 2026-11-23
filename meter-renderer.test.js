@@ -6014,3 +6014,249 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
     try { api.dispose(); } catch {}
   }
 });
+
+test('multi-pane Split Right / Split Down: route focus follow, 0ms cache hot-switch without closing panel, and blank _new fallback', async () => {
+  const [A, B, C, D] = [1, 2, 3, 4].map(n => `${String(n).repeat(8)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(12)}`);
+  const h = harness(session(1));
+  const api = h.sandbox.__AGContextMeter;
+  const makeRow = (tokens) => ({ chatModel: { usage: { inputTokens: tokens }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } });
+  const settleLatest = async (tokens, rowCount = 1) => {
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: Array.from({ length: rowCount }, () => makeRow(tokens)) }) });
+    h.finishScan(h.scans.length - 1);
+    await h.flush();
+  };
+  const nav = (pathname, search = '') => { h.sandbox.location.pathname = pathname; h.sandbox.location.search = search; h.tick(); };
+  try {
+    let sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.scopeBarHidden, true);
+    assert.equal(sc.badgeScopeTagHidden, true);
+    assert.equal(sc.keyScopeChipHidden, true);
+
+    h.elements.get('panel').hidden = false;
+    await settleLatest(46100, 5);
+    assert.equal(api.snapshot().latest.actual, 46100);
+
+    nav(`/c/${A}%2B${B}`, `?project=outside-of-project&focused=${A}`);
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.scopeBarHidden, false);
+    assert.equal(sc.badgeScopeTagHidden, false);
+    assert.equal(sc.badgeScopeTag, '1/2');
+    assert.equal(sc.keyScopeChip, '窗格 1');
+    assert.equal(sc.followLabel, '跟随焦点');
+    assert.deepEqual(Array.from(sc.pills, p => p.selected), [true, false]);
+
+    const pendingBeforeSwitch = h.pending.length;
+    nav(`/c/${A}%2B${B}`, `?project=outside-of-project&focused=${B}`);
+    assert.equal(h.elements.get('panel').hidden, false, '同屏分屏切窗格时不应强行关闭已展开的面板');
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, B);
+    assert.equal(sc.badgeScopeTag, '2/2');
+    assert.equal(sc.keyScopeChip, '窗格 2');
+    assert.equal(sc.pills[1].selected, true);
+    assert.ok(sc.cachedRoutes.includes(A));
+    assert.ok(h.pending.length > pendingBeforeSwitch);
+
+    await settleLatest(128400);
+    assert.equal(api.snapshot().latest.actual, 128400);
+
+    const pendingBeforeBack = h.pending.length;
+    nav(`/c/${A}%2B${B}`, `?project=outside-of-project&focused=${A}`);
+    assert.equal(api.snapshot().latest.actual, 46100, '同屏回切应立即命中会话快照缓存（零闪烁）');
+    assert.notEqual(h.elements.get('files').children[0]?.textContent, '暂无附件', '回切首帧应直接还原缓存附件列表而非暂无附件');
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.ok(h.pending.length > pendingBeforeBack);
+
+    // 模拟切走期间窗格 1 消息被撤回/回滚（步数从 5 缩至 1）：首轮增量 offset=2 返回空时自动作废旧缓存并从 offset=0 重拉
+    const catchupReq = h.pending[h.pending.length - 1];
+    assert.equal(JSON.parse(catchupReq.options.body).generatorMetadataOffset, 2);
+    catchupReq.resolve({ ok: true, json: async () => ({ generatorMetadata: [] }) });
+    await h.flush();
+    const retryFromZeroReq = h.pending[h.pending.length - 1];
+    assert.equal(JSON.parse(retryFromZeroReq.options.body).generatorMetadataOffset, 0);
+    retryFromZeroReq.resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow(12300)] }) });
+    await h.flush();
+    assert.equal(api.snapshot().latest.actual, 12300);
+    assert.equal(api.snapshot().count, 1);
+
+    nav(`/c/${A}%2B${B}%2B${C}`, `?focused=${C}`);
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, C);
+    assert.equal(sc.badgeScopeTag, '3/3');
+    assert.equal(sc.pills.length, 3);
+
+    nav(`/c/${A}%2B${B}%2B${C}`, '?focused=99999999-9999-9999-9999-999999999999');
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, A);
+
+    nav(`/c/${A}%2B_new`, '?focused=_new');
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, A);
+
+    h.elements.get('panel').hidden = false;
+    nav(`/c/${D}`);
+    assert.equal(h.elements.get('panel').hidden, true);
+    assert.equal(api.getConversationScopeStateForTest().scopeBarHidden, true);
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});
+
+test('Side Chat / Side Question read-only view switcher, auto-resume follow, 3-locale i18n, and top-rightmost titlebar docking', async () => {
+  const A = '11111111-1111-1111-1111-111111111111';
+  const B = '22222222-2222-2222-2222-222222222222';
+  const S = '9a41c80b-77e2-4f10-81ad-3b20e91c4f02';
+  const S2 = '7c63e02d-55c0-4d31-83cf-5d42013e6f24';
+  const Q = '8b52d91c-66d1-4e20-92be-4c31f02d5e13';
+
+  const makeMockTitlebar = (id, rect) => ({
+    id, isConnected: true, children: [], getBoundingClientRect: () => rect,
+    appendChild(c) { if (c) { c.parentElement = this; this.children.push(c); } },
+    insertBefore(c) { if (c) { c.parentElement = this; this.children.unshift(c); } },
+    contains(c) { return this.children.includes(c); }
+  });
+  const tbLeft = makeMockTitlebar('tb-left', { top: 0, left: 0, right: 600, width: 600, height: 40 });
+  const tbTopRight = makeMockTitlebar('tb-top-right', { top: 0, left: 600, right: 1200, width: 600, height: 40 });
+  const tbBottomRight = makeMockTitlebar('tb-bottom-right', { top: 420, left: 600, right: 1200, width: 600, height: 40 });
+  let mockDomTabNodes = [];
+
+  const h = harness(session(), {
+    document: {
+      createElement: () => null, getElementById: () => null, documentElement: { appendChild() {} },
+      addEventListener() {}, removeEventListener() {}, hidden: false,
+      querySelectorAll: (sel) => sel === '[class*="@container/titlebar"]'
+        ? [tbLeft, tbBottomRight, tbTopRight]
+        : (sel === '[data-tab-id]' ? mockDomTabNodes : []),
+      querySelector: (sel) => (sel === '[class*="@container/titlebar"]' ? tbLeft : null)
+    }
+  });
+  const api = h.sandbox.__AGContextMeter;
+  const settleLatest = async (tokens) => {
+    h.pending[h.pending.length - 1].resolve(response({ usage: { inputTokens: tokens }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } }));
+    h.finishScan(h.scans.length - 1);
+    await h.flush();
+  };
+  try {
+    assert.equal(api.findHostTitlebarForTest(), tbTopRight);
+
+    h.elements.get('panel').hidden = false;
+    await settleLatest(52000);
+
+    const origPathname = `/c/${A}`;
+    const origSearch = `?project=demo&tab=subagent_convo__${S}`;
+    h.sandbox.location.pathname = origPathname;
+    h.sandbox.location.search = origSearch;
+    h.tick();
+
+    let sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.isFollowingFocus, true);
+    assert.equal(sc.scopeBarHidden, false);
+    assert.equal(sc.badgeScopeTag, '+支线');
+    assert.deepEqual(Array.from(sc.pills, p => p.label), ['主对话', 'Side Chat']);
+
+    const pendingBeforeSide = h.pending.length;
+    h.elements.get('ctx-scope-pills').children[1].click();
+    assert.equal(h.sandbox.location.pathname, origPathname, '点击胶囊绝不能篡改宿主主对话路径');
+    assert.equal(h.sandbox.location.search, origSearch, '点击胶囊绝不能篡改宿主查询参数');
+    assert.equal(h.elements.get('panel').hidden, false);
+
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, S);
+    assert.equal(sc.pinnedViewRoute, S);
+    assert.equal(sc.isFollowingFocus, false);
+    assert.equal(sc.badgeScopeTag, '支线');
+    assert.equal(sc.badgeScopeLocked, 'true');
+    assert.equal(sc.followAttr, 'false');
+    assert.equal(sc.followLabel, '恢复跟随');
+    assert.equal(sc.keyScopeChip, 'Side Chat');
+    assert.ok(h.pending.length > pendingBeforeSide);
+    assert.equal(JSON.parse(h.pending[h.pending.length - 1].options.body).cascadeId, S);
+
+    await api.setPanelLanguage('en', { persist: false });
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.badgeScopeTag, 'Side');
+    assert.equal(sc.followLabel, 'Follow Focus');
+    assert.deepEqual(Array.from(sc.pills, p => p.label), ['Main', 'Side Chat']);
+    assert.doesNotMatch(`${sc.badgeScopeTag}${sc.followLabel}${sc.pills.map(p => p.label).join('')}`, /[\u4e00-\u9fff]/);
+
+    await api.setPanelLanguage('zh-TW', { persist: false });
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.badgeScopeTag, '支線');
+    assert.equal(sc.followLabel, '恢復跟隨');
+    assert.equal(sc.pills[0].label, '主對話');
+
+    await api.setPanelLanguage('zh-CN', { persist: false });
+    h.elements.get('btn-ctx-scope-follow').click();
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.isFollowingFocus, true);
+    assert.equal(sc.badgeScopeTag, '+支线');
+    assert.equal(api.snapshot().latest.actual, 52000);
+
+    h.sandbox.location.search = `?tab=side_question__${Q}`;
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().pills[1].label, '支线问答');
+    api.selectConversationScopeForTest(Q);
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, Q);
+
+    h.sandbox.location.search = '';
+    h.tick();
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.pinnedViewRoute, null);
+    assert.equal(sc.scopeBarHidden, true);
+
+    let activeDomSideId = S;
+    const makeMockSideTab = (sid, title) => ({
+      get className() { return activeDomSideId === sid ? 'bg-secondary text-foreground' : 'bg-transparent text-secondary-foreground'; },
+      getAttribute: k => (k === 'data-tab-id' ? `subagent_convo__${sid}` : (k === 'title' ? title : null)),
+      textContent: title
+    });
+    mockDomTabNodes = [makeMockSideTab(S, 'Side Chat · Debug API'), makeMockSideTab(S2, 'Side Chat · Review Diff')];
+    h.tick();
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.scopeBarHidden, false);
+    assert.deepEqual(Array.from(sc.pills, p => p.label), ['主对话', 'Side Chat 1', 'Side Chat 2']);
+
+    api.selectConversationScopeForTest(S);
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, S);
+    await settleLatest(18200);
+    assert.equal(api.snapshot().latest.actual, 18200);
+
+    activeDomSideId = S2;
+    h.sandbox.location.search = `?tab=subagent_convo__${S2}`;
+    h.tick();
+    sc = api.getConversationScopeStateForTest();
+    assert.deepEqual(Array.from(sc.pills).slice(1).map(p => `${p.label}:${p.id}`), [`Side Chat 1:${S}`, `Side Chat 2:${S2}`]);
+    assert.equal(sc.activeRoute, S2);
+    await settleLatest(33400);
+    assert.equal(api.snapshot().latest.actual, 33400);
+
+    activeDomSideId = S;
+    h.sandbox.location.search = '';
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, S);
+    assert.equal(api.snapshot().latest.actual, 18200);
+
+    mockDomTabNodes = [];
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, A);
+    assert.equal(api.getConversationScopeStateForTest().scopeBarHidden, true);
+
+    h.sandbox.location.pathname = `/c/${A}%2B${B}`;
+    h.sandbox.location.search = `?focused=${A}`;
+    h.tick();
+    api.selectConversationScopeForTest(B);
+    assert.equal(api.getConversationScopeStateForTest().isFollowingFocus, false);
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, B);
+    h.sandbox.location.search = `?focused=${B}`;
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().isFollowingFocus, true);
+    h.sandbox.location.search = `?focused=${A}`;
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, A);
+    assert.equal(api.getConversationScopeStateForTest().isFollowingFocus, true);
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});

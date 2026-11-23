@@ -344,6 +344,11 @@
       color:var(--ag-custom-context-text,var(--ag-context-text-default));
       padding-left:2px;
     }
+    .badge-scope-tag{font-size:9px;font-weight:600;line-height:1.15;padding:1px 4px;margin-left:3px;border-radius:4px;border:1px solid rgba(105,192,255,0.34);background:rgba(105,192,255,0.12);color:var(--ag-text-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+    .badge-scope-tag[data-scope-locked="true"]{border-color:rgba(250,173,20,0.45);background:rgba(250,173,20,0.14);color:#fadb14}
+    :host([data-theme="light"]) .badge-scope-tag{border-color:rgba(24,144,255,0.3);background:rgba(24,144,255,0.08);color:#096dd9}
+    :host([data-theme="light"]) .badge-scope-tag[data-scope-locked="true"]{border-color:rgba(212,136,6,0.4);background:#fffbe6;color:#ad6800}
+    :host([data-layout="compact"]) .badge-scope-tag,:host([data-layout="minimal"]) .badge-scope-tag,:host([data-layout="ring-only"]) .badge-scope-tag{display:none!important}
     :host([data-layout="ring-only"]) .badge-pct-val{
       display:none!important;
     }
@@ -1037,6 +1042,29 @@
     .collapsible-pane{
       transition:opacity 0.18s ease;
     }
+    .ctx-scope-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:7px;padding:4px 6px;margin:6px 0}
+    .ctx-scope-bar[hidden]{display:none!important}
+    .ctx-scope-pills{display:flex;align-items:center;flex-wrap:wrap;gap:4px;min-width:0;flex:1}
+    .ctx-scope-pill{appearance:none;border:1px solid transparent;background:transparent;color:var(--ag-text-muted);font-size:11px;font-weight:500;line-height:1.25;padding:2px 7px;border-radius:5px;cursor:pointer;display:inline-flex;align-items:center;gap:4px;max-width:136px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background-color .14s ease,border-color .14s ease,color .14s ease}
+    .ctx-scope-pill:hover{color:var(--ag-text-primary);background:var(--ag-hover-bg,rgba(255,255,255,0.06))}
+    .ctx-scope-pill.is-active{background:var(--ag-bg-card);border-color:rgba(105,192,255,0.52);color:var(--ag-text-primary);font-weight:600}
+    :host([data-theme="light"]) .ctx-scope-pill:hover{background:rgba(0,0,0,0.04)}
+    :host([data-theme="light"]) .ctx-scope-pill.is-active{border-color:rgba(24,144,255,0.48);box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+    .ctx-scope-pill-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;background:#69c0ff}
+    :host([data-theme="light"]) .ctx-scope-pill-dot{background:#1677ff}
+    .ctx-scope-pill.is-sidechat .ctx-scope-pill-dot{background:#b37feb}
+    .ctx-scope-follow-btn{appearance:none;flex-shrink:0;display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;line-height:1.2;padding:2px 7px;border-radius:10px;border:1px solid transparent;background:transparent;color:#52c41a;cursor:default;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease,color .14s ease}
+    .ctx-scope-follow-btn[data-following="false"]{cursor:pointer;color:#69c0ff;background:rgba(105,192,255,0.12);border-color:rgba(105,192,255,0.38)}
+    .ctx-scope-follow-btn[data-following="false"]:hover{background:rgba(105,192,255,0.2)}
+    :host([data-theme="light"]) .ctx-scope-follow-btn{color:#389e0d}
+    :host([data-theme="light"]) .ctx-scope-follow-btn[data-following="false"]{color:#096dd9;background:#e6f7ff;border-color:#91d5ff}
+    :host([data-theme="light"]) .ctx-scope-follow-btn[data-following="false"]:hover{background:#bae0ff}
+    .ctx-scope-follow-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;background:currentColor}
+    .key-title-wrap{display:inline-flex;align-items:center;gap:6px;min-width:0}
+    .key-scope-chip{font-size:10px;font-weight:600;line-height:1.2;padding:1px 6px;border-radius:4px;white-space:nowrap;color:#69c0ff;background:rgba(105,192,255,0.12);border:1px solid rgba(105,192,255,0.3)}
+    .key-scope-chip[data-scope-kind="sidechat"]{color:#b37feb;background:rgba(179,127,235,0.14);border-color:rgba(179,127,235,0.34)}
+    :host([data-theme="light"]) .key-scope-chip{color:#096dd9;background:#e6f7ff;border-color:#91d5ff}
+    :host([data-theme="light"]) .key-scope-chip[data-scope-kind="sidechat"]{color:#722ed1;background:#f9f0ff;border-color:#d3adf7}
     .round-cost-bar{
       display:flex;align-items:center;justify-content:space-between;gap:8px;
       background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;
