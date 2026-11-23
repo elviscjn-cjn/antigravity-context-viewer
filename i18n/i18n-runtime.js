@@ -1340,7 +1340,8 @@
       if (child.nodeType === 3) {
         translateTextNode(child);
       } else if (child.nodeType === 1) {
-        translateElement(child, scanId);
+        if (scanId) translateElement(child, scanId);
+        else enqueueNode(child);
       }
       child = child.nextSibling;
     }
@@ -1385,11 +1386,9 @@
     if (!node) return;
     if (pendingNodeSet) {
       if (pendingNodeSet.has(node)) return;
-      if (pendingNodes.length < 500) {
-        pendingNodes.push(node);
-        pendingNodeSet.add(node);
-      }
-    } else if (pendingNodes.length < 500) {
+      pendingNodes.push(node);
+      pendingNodeSet.add(node);
+    } else {
       pendingNodes.push(node);
     }
   }
@@ -1461,21 +1460,8 @@
       reconnectObserver();
     }
 
-    var idleScanScheduled = false;
-    function scheduleIdleScan() {
-      if (!i18nEnabled && getBrandTitleMode() === 'english') return;
-      if (idleScanScheduled) return;
-      if (root.requestIdleCallback) {
-        idleScanScheduled = true;
-        root.requestIdleCallback(function () {
-          idleScanScheduled = false;
-          safeFullScan();
-        }, { timeout: 5000 });
-      } else {
-        safeFullScan();
-      }
-    }
-    setInterval(scheduleIdleScan, 15000);
+    // 首屏全量翻译后由 MutationObserver 增量处理新增节点。
+    // 不再每 15 秒递归整棵 DOM；复杂插件页的全树扫描会阻塞主线程数秒。
   }
 
   function isFloatingElement(el) {

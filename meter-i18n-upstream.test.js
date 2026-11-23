@@ -163,6 +163,20 @@ test('上游词典合并一致性、版权署名及 2.34.0 核心界面翻译与
   assert.equal(engine.translate('Terminal Commands'), '终端命令权限');
 });
 
+test('性能回归：汉化启动后仅增量监听，不再每 15 秒全树扫描', () => {
+  const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.match(rtSrc, /function startObserver\(\)[\s\S]*?safeFullScan\(\);/);
+  assert.doesNotMatch(rtSrc, /setInterval\(scheduleIdleScan,\s*15000\)/);
+  assert.doesNotMatch(rtSrc, /function scheduleIdleScan\(/);
+});
+
+test('性能回归：页面切换新增的大子树按 6ms 分片翻译，不递归阻塞', () => {
+  const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.match(rtSrc, /if \(scanId\) translateElement\(child, scanId\);\s*else enqueueNode\(child\);/);
+  assert.match(rtSrc, /getNow\(\) - startMs\) >= 6/);
+  assert.doesNotMatch(rtSrc, /pendingNodes\.length < 500/);
+});
+
 test('Issue #58 物理隔离矩阵: UI 控件与思考药丸汉化，正文/Markdown/代码块/用户输入/终端与工具输出/插件自身全保留原文', () => {
   const dict = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'zh-CN.json'), 'utf8'));
   const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
