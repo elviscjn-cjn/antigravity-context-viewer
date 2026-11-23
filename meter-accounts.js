@@ -2935,21 +2935,71 @@ function createAccountsManager(options = {}) {
           };
         }
 
-        // 若 LS 未在校验时间内确认切换为目标邮箱，默认自动回滚并保持原活跃账号，不虚报成功！
+        // 若 LS 未在校验时间内确认切换为目标邮箱：
+        // Antigravity 2.34 的语言服务凭据由 Electron 主进程在客户端启动时经 host bridge 下发，
+        // 仅重启语言服务永远不会加载新凭据 → 验证必然失败。
+        // 因此手动切号（默认）保留已写入凭据并自动重启整个客户端；自动切号维持旧回滚行为。
+        const isAutoTrigger = String(opts.trigger || '').startsWith('auto');
+        const shouldPersist = isAutoTrigger
+          ? Boolean(opts.persistOnVerifyMismatch)
+          : opts.rollbackOnVerifyMismatch !== true;
         let rolledBack = false;
-        if (opts.rollbackOnVerifyMismatch !== false && preSnap) {
+        if (!shouldPersist && preSnap) {
           try {
             const rb = credStore.restoreSnapshot(preSnap);
             rolledBack = Boolean(rb?.ok !== false);
           } catch { }
         }
-        const failErrMsg = `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`;
+        let clientRelaunchScheduled = false;
+        if (shouldPersist && opts.restartClientOnVerifyFail !== false) {
+          try {
+            const electronMod = (() => { try { return require('electron'); } catch { return null; } })();
+            const app = electronMod && typeof electronMod === 'object' && electronMod.app && typeof electronMod.app.quit === 'function'
+              ? electronMod.app
+              : null;
+            if (app) {
+              clientRelaunchScheduled = true;
+              // 优先走本机启动器脚本（保证代理环境变量 / 看板守护齐备）；
+              // 找不到启动器时退回 app.relaunch()（继承当前进程环境）。
+              const launcherCandidates = [
+                path.join(os.homedir(), 'Documents', 'MyFiles', 'agy-tool', '启动Antigravity.command')
+              ];
+              const launcher = launcherCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+              const { spawn } = require('child_process');
+              if (launcher) {
+                try {
+                  spawn('/bin/bash', ['-c', `sleep 5; exec '${launcher.replace(/'/g, `'\\''`)}' >/dev/null 2>&1`], { detached: true, stdio: 'ignore' }).unref();
+                } catch { clientRelaunchScheduled = false; }
+              }
+              if (!clientRelaunchScheduled) {
+                setTimeout(() => {
+                  try { app.relaunch(); app.quit(); } catch { }
+                }, 1500);
+              } else {
+                setTimeout(() => {
+                  try { app.quit(); } catch { }
+                }, 1500);
+              }
+            }
+          } catch { }
+        }
+        const failErrMsg = shouldPersist
+          ? `已写入 ${cleanTarget} 凭据。当前版本语言服务凭据由客户端启动时下发，仅重启语言服务不会生效${clientRelaunchScheduled ? '，客户端即将自动重启以完成切换' : '，请完全退出并重启 Antigravity 后自动生效（无需再次点击切换）'}。`
+          : `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`;
         const savedFailStore = finalizeFailureStore({ errMsg: failErrMsg, rolledBack, verifiedEmail, atMs: nowMs });
+        if (shouldPersist) {
+          // 保留凭据时账本直接指向目标账号：客户端重启后宿主回报即与之一致；
+          // 若用户取消重启，下次 detect_active 会按宿主实况重新校准。
+          savedFailStore.activeAccountEmail = cleanTarget;
+          saveStore(savedFailStore);
+        }
         return {
           ok: false,
           verifiedEffective: false,
           rolledBack,
           lsRestarted,
+          pendingRestart: shouldPersist,
+          clientRelaunchScheduled,
           observedEmail: verifiedEmail || null,
           activeAccountEmail: savedFailStore.activeAccountEmail || null,
           error: failErrMsg
