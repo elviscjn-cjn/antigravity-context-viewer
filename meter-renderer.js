@@ -26945,38 +26945,111 @@ var cumLockedKey = null;
   // scroll 事件持续记录最新位置（用户滚动与程序化恢复都会自然更新），
   // 因此任何重渲染（含 applyTokenHistoryPayload → refreshQuotaTokenEstimates
   // 这类在刷新完成后 ~2s 才异步触发的重渲染）之后把 scrollTop 校正回记忆值都是安全的
-  const quotaScrollMemory = { top: {}, restoring: false };
+  const quotaScrollMemory = { top: {}, restoring: false, deadline: 0, userHoldUntil: 0 };
+  function scrollKeyOf(n) {
+    if (n.id) return 'id:' + n.id;
+    const parts = [];
+    let cur = n;
+    while (cur && cur.nodeType === 1) {
+      const p = cur.parentElement;
+      if (!p) break;
+      let idx = 0;
+      let sib = cur.previousElementSibling;
+      while (sib) { idx++; sib = sib.previousElementSibling; }
+      parts.unshift(cur.tagName + ':' + idx);
+      cur = p;
+    }
+    return 'path:' + parts.join('>');
+  }
+  function isScrollableNode(n) {
+    if (!n || n.nodeType !== 1 || !(n.clientHeight > 0)) return false;
+    if (n.scrollHeight <= n.clientHeight + 1) return false;
+    const oy = getComputedStyle(n).overflowY;
+    return oy === 'auto' || oy === 'scroll' || oy === 'overlay';
+  }
+  function collectScrollables() {
+    const host = document.getElementById('ag-context-meter');
+    const root = (host && host.shadowRoot) || document;
+    const out = [];
+    for (const n of root.querySelectorAll('*')) {
+      if (isScrollableNode(n)) out.push(n);
+    }
+    return out;
+  }
+  // 记录面板内所有滚动容器（额度列表、Token 历史、模型列表、账号列表、
+  // 设置抽屉等）的滚动位置，任何重渲染之后都能统一恢复
+  function userHoldActive() {
+    return Date.now() < (quotaScrollMemory.userHoldUntil || 0);
+  }
+  // 用户物理输入（滚轮/触摸/按下/按键）后 1.2s 内：记忆跟随用户、恢复暂停
+  function installUserHoldListeners() {
+    const h = document.getElementById('ag-context-meter');
+    if (!h || h.__agUserHoldInstalled) return;
+    h.__agUserHoldInstalled = true;
+    for (const evName of ['wheel', 'touchstart', 'mousedown', 'keydown']) {
+      h.addEventListener(evName, () => { quotaScrollMemory.userHoldUntil = Date.now() + 1200; }, { passive: true });
+    }
+  }
   function bindQuotaScrollMemory() {
-    for (const id of ['view-quota', 'panel']) {
-      const n = el(id);
-      if (!n || n.__agQuotaScrollMemBound) continue;
+    installUserHoldListeners();
+    const frozen = quotaScrollMemory.restoring && !userHoldActive();
+    for (const n of collectScrollables()) {
+      const k = scrollKeyOf(n);
+      // 冻结窗口内不覆盖记忆：此时元素可能刚被重建归零，
+      // 写入会把恢复目标污染成 0（记忆棘轮）
+      if (!frozen) quotaScrollMemory.top[k] = n.scrollTop || 0;
+      if (n.__agQuotaScrollMemBound) continue;
       n.__agQuotaScrollMemBound = true;
-      quotaScrollMemory.top[id] = n.scrollTop || 0;
       n.addEventListener('scroll', () => {
-        // 恢复窗口内冻结记忆：重渲染瞬间内容变矮触发浏览器 clamp，
-        // 其 scroll 事件若写入记忆会把恢复目标污染成半路值
-        if (quotaScrollMemory.restoring) return;
-        quotaScrollMemory.top[id] = n.scrollTop;
+        // 恢复窗口内的 scroll 事件是浏览器 clamp 触发的（内容变矮），
+        // 忽略以免污染记忆；用户正在滚动（近期有物理输入）时必须跟随用户
+        if (quotaScrollMemory.restoring && !userHoldActive()) return;
+        quotaScrollMemory.top[k] = n.scrollTop;
       }, { passive: true });
     }
   }
 
+  // 监听 shadow root 内的元素级 DOM 变更（innerHTML 重建面板会添加/移除元素
+  // 节点；纯文本计数器更新不含元素节点，不会误触发），从而覆盖额度刷新之外
+  // 的其它重渲染路径，让所有小窗口都不跳顶
+  function installScrollRestoreObserver() {
+    const host = document.getElementById('ag-context-meter');
+    const root = host && host.shadowRoot;
+    if (!root || root.__agScrollObsInstalled) return;
+    root.__agScrollObsInstalled = true;
+    let debounceTimer = null;
+    const obs = new MutationObserver((muts) => {
+      let relevant = false;
+      for (const m of muts) {
+        if (m.type !== 'childList') continue;
+        for (const node of m.addedNodes) { if (node.nodeType === 1) { relevant = true; break; } }
+        if (relevant) break;
+        for (const node of m.removedNodes) { if (node.nodeType === 1) { relevant = true; break; } }
+        if (relevant) break;
+      }
+      if (!relevant) return;
+      if (debounceTimer) return;
+      debounceTimer = setTimeout(() => { debounceTimer = null; scheduleQuotaScrollRestore(); }, 150);
+    });
+    obs.observe(root, { subtree: true, childList: true, characterData: false, attributes: false });
+  }
+
   function scheduleQuotaScrollRestore() {
     if (state.disposed) return;
-    const deadline = Date.now() + 3000;
+    const now = Date.now();
+    const deadline = Math.max(quotaScrollMemory.deadline, now + 3000);
+    quotaScrollMemory.deadline = deadline;
     quotaScrollMemory.restoring = true;
-    const endWindow = () => { quotaScrollMemory.restoring = false; };
-    // 用户主动滚动（滚轮/触摸/按下滚动条）立即结束冻结与校正，交还控制权
-    for (const evName of ['wheel', 'touchstart', 'mousedown']) {
-      host?.addEventListener?.(evName, endWindow, { once: true, passive: true });
-    }
+    // 用户输入期间完全让位：恢复暂停、记忆同步跟随用户
+    const userHold = () => { quotaScrollMemory.userHoldUntil = Math.max(quotaScrollMemory.userHoldUntil, Date.now() + 1000); };
+
     const applyOnce = () => {
-      if (!quotaScrollMemory.restoring) return;
-      const pq = el('panel-quota');
-      if (!pq || pq.hidden) return;
-      for (const [id, top] of Object.entries(quotaScrollMemory.top)) {
+      if (!quotaScrollMemory.restoring || userHoldActive()) return;
+      const found = new Map();
+      for (const n of collectScrollables()) found.set(scrollKeyOf(n), n);
+      for (const [k, top] of Object.entries(quotaScrollMemory.top)) {
         if (!(top > 0)) continue;
-        const n = el(id);
+        const n = found.get(k);
         if (n && typeof n.scrollTop === 'number' && Math.abs((n.scrollTop || 0) - top) > 1) {
           n.scrollTop = top;
         }
@@ -26984,7 +27057,7 @@ var cumLockedKey = null;
     };
     requestAnimationFrame(applyOnce);
     const timer = setInterval(() => {
-      if (state.disposed || !quotaScrollMemory.restoring || Date.now() >= deadline) {
+      if (state.disposed || !quotaScrollMemory.restoring || Date.now() >= quotaScrollMemory.deadline) {
         clearInterval(timer);
         endWindow();
         return;
@@ -26995,6 +27068,7 @@ var cumLockedKey = null;
 
   function renderQuotaBoard(nowMs = Date.now(), renderOpts = {}) {
     bindQuotaScrollMemory();
+    installScrollRestoreObserver();
     const view = computeEffectiveQuotaView(nowMs);
     const currentSig = computeQuotaVisualSignature(view);
     const chargeBarTargets = renderOpts.chargeBars ? [] : null;
