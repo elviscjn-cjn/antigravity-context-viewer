@@ -3067,14 +3067,18 @@
         state.historyDrawerOpen = true;
         state.ctxAutoExpandedAuxRoute = state.route;
       }
-      if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
-      if ((activeContextTab === 'session' || !isContextSettingsView) && typeof renderContextTrendCard === 'function') {
-        renderContextTrendCard();
-        if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+      if (!isContextSettingsView && activeContextTab === 'session') {
+        const forceBentoRefresh = dirtySessionContextPanel;
+        if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
+        if (typeof renderContextTrendCard === 'function') renderContextTrendCard({ force: forceBentoRefresh });
+        if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections({ force: forceBentoRefresh });
+        dirtySessionContextPanel = false;
         if (state.historyDrawerOpen && typeof renderSessionTimeline === 'function') renderSessionTimeline();
         if (state.route && !state.sessionTimeline && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
           void fetchSessionTimeline(state.route, { force: false });
         }
+      } else if (typeof syncContextPanelContainerWidthTier === 'function') {
+        syncContextPanelContainerWidthTier();
       }
       if (activeContextTab === 'models' && !isContextSettingsView) {
         if (typeof syncModelListQuotaIndicators === 'function') syncModelListQuotaIndicators(null, Date.now(), true);
@@ -6557,6 +6561,14 @@
     }
   } catch { }
   let isContextSettingsView = false;
+  let dirtySessionContextPanel = true;
+  let lastSessionBentoSig = '';
+  let lastContextTrendSig = '';
+
+  function isSessionContextPanelVisible() {
+    const pEl = el('panel');
+    return Boolean(pEl && !pEl.hidden && !isContextSettingsView && activeContextTab === 'session');
+  }
 
   let currentUnlockStatus = null;
   let unlockStatusFetchError = false;
@@ -8368,9 +8380,11 @@
         state.historyDrawerOpen = true;
         state.ctxAutoExpandedAuxRoute = state.route;
       }
+      const forceBentoRefresh = dirtySessionContextPanel;
       if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
-      if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
-      if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+      if (typeof renderContextTrendCard === 'function') renderContextTrendCard({ force: forceBentoRefresh });
+      if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections({ force: forceBentoRefresh });
+      dirtySessionContextPanel = false;
       if (state.route && !state.sessionTimeline && !state.timelineLoading && typeof fetchSessionTimeline === 'function') {
         void fetchSessionTimeline(state.route, { force: false });
       }
@@ -11693,6 +11707,9 @@
 
   function setPanelLanguageInternal(lang) {
     currentPanelLanguage = normalizePanelLanguage(lang);
+    lastSessionBentoSig = '';
+    lastContextTrendSig = '';
+    dirtySessionContextPanel = true;
   }
 
   for (const [langCode, btn] of Object.entries(panelLangBtns)) {
@@ -15119,7 +15136,11 @@
       switchCostScope(prefs.costScope);
       renderModelUsageView();
       renderSpeedComparisonTab();
-      if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+      if (isSessionContextPanelVisible()) {
+        if (typeof renderContextTrendCard === 'function') renderContextTrendCard({ force: true });
+      } else {
+        dirtySessionContextPanel = true;
+      }
       if (state.historyDrawerOpen) renderSessionTimeline();
       renderRequestsLiveView({ force: true });
     } else {
@@ -17737,11 +17758,74 @@
     }
   }
 
-  function renderSessionBentoSections() {
+  function renderSessionBentoSections(options = {}) {
     if (!el('ctx-bento-grid')) return;
     const d = state.latest;
     const session = state.scan?.session || null;
     const { tl, activeCall, baseCall, isPinned, targetStepIndex, compareStepIndex } = resolveSelectedAndBaselineCall();
+
+    const expandedCatsSig = state.expandedTreeCats && typeof state.expandedTreeCats.size === 'number'
+      ? Array.from(state.expandedTreeCats).sort().join(',')
+      : '';
+    const bentoSig = [
+      currentPanelLanguage,
+      state.ctxWidthTier || '',
+      state.route || '',
+      d?.actual ?? '',
+      d?.postCompactEstimate ?? '',
+      d?.estimate ?? '',
+      d?.budget ?? '',
+      d?.serviceLimit ?? '',
+      d?.percent ?? '',
+      d?.model ?? '',
+      d?.effort ?? '',
+      d?.exceeded ? 1 : 0,
+      state.hostContextWindowUsage?.limit ?? '',
+      session?.title ?? '',
+      session?.steps ?? '',
+      session?.userMessages ?? '',
+      session?.assistantMessages ?? '',
+      session?.unknownFiles ?? '',
+      session?.scannedAt ?? '',
+      session?.total?.low ?? '',
+      session?.attachmentTotal?.low ?? '',
+      state.scan?.scannedAt ?? '',
+      tl?.sessionTitle ?? '',
+      tl?.totalCalls ?? '',
+      Array.isArray(tl?.turns) ? tl.turns.length : '',
+      tl?.cacheSummary?.cacheStatus ?? '',
+      tl?.cacheSummary?.cacheReadPct ?? '',
+      tl?.sessionTokenTotals?.totalTokens ?? '',
+      Array.isArray(tl?.contextChangeEvents) ? tl.contextChangeEvents.length : 0,
+      Array.isArray(tl?.fileActivities) ? tl.fileActivities.length : 0,
+      Array.isArray(tl?.commandEvents) ? tl.commandEvents.length : 0,
+      Array.isArray(tl?.subagents) ? tl.subagents.length : 0,
+      tl?.timingSummary?.wallClockMs ?? '',
+      tl?.timingSummary?.totalDurationMs ?? '',
+      state.lastTimelineFetchAt || 0,
+      Array.isArray(state.sessionCalls) ? state.sessionCalls.length : 0,
+      state.count ?? '',
+      isPinned ? 1 : 0,
+      targetStepIndex ?? '',
+      compareStepIndex ?? '',
+      state.selectedTrendCallId ?? '',
+      activeCall?.callId ?? '',
+      activeCall?.stepIndex ?? '',
+      activeCall?.totalInputTokens ?? '',
+      activeCall?.cacheReadTokens ?? '',
+      activeCall?.outputTokens ?? '',
+      activeCall?.contextWindowTokens ?? '',
+      baseCall?.callId ?? '',
+      state.ctxSubtrackMode || '',
+      state.ctxZerosExpanded ? 1 : 0,
+      state.ctxTreeMode || '',
+      state.ctxCompareBase || '',
+      state.ctxFocusedTreeCat || '',
+      expandedCatsSig
+    ].join('|');
+    if (!options?.force && bentoSig === lastSessionBentoSig) return;
+    const outerPanel = el('panel');
+    const prevPanelScrollTop = (outerPanel && typeof outerPanel.scrollTop === 'number') ? outerPanel.scrollTop : 0;
 
     // 1. Row 1 会话总览与严格区分口径
     const ovTitle = el('ctx-ov-title');
@@ -18234,6 +18318,10 @@
 
     // 6. Row 4 审计工作台快速胶囊与辅助栏宽屏自动展开
     renderAuditQuickPills(tl);
+    lastSessionBentoSig = bentoSig;
+    if (outerPanel && prevPanelScrollTop > 0) {
+      outerPanel.scrollTop = prevPanelScrollTop;
+    }
   }
 
   function formatTrendInspectText(pt) {
@@ -18253,7 +18341,7 @@
     });
   }
 
-  function renderContextTrendCard() {
+  function renderContextTrendCard(options = {}) {
     const card = el('ctx-trend-card');
     if (!card) return;
     syncTrendControlButtons();
@@ -18278,6 +18366,39 @@
       })
       : { points: [], totalPoints: 0, truncatedCount: 0, basis: 'empty', maxTotalTokens: 0, maxAbsDeltaTokens: 0 };
     state.lastTrendSeries = series;
+
+    const pts = Array.isArray(series.points) ? series.points : [];
+    let ptsTotalSum = 0;
+    let ptsDeltaSum = 0;
+    for (let i = 0; i < pts.length; i++) {
+      ptsTotalSum += Number(pts[i]?.totalContextTokens || 0);
+      ptsDeltaSum += Number(pts[i]?.deltaTokens || 0);
+    }
+    const firstPt = pts[0] || null;
+    const lastPt = pts.length ? pts[pts.length - 1] : null;
+    const trendSig = [
+      currentPanelLanguage,
+      state.ctxWidthTier || '',
+      state.contextTrendMode || '',
+      state.contextTrendGranularity || '',
+      state.selectedTrendCallId ?? '',
+      state.hoveredTrendCallId ?? '',
+      state.pinnedCallRecord?.callId ?? '',
+      series.basis || '',
+      series.totalPoints || 0,
+      series.truncatedCount || 0,
+      series.maxTotalTokens || 0,
+      series.maxAbsDeltaTokens || 0,
+      pts.length,
+      ptsTotalSum,
+      ptsDeltaSum,
+      firstPt ? `${firstPt.callId || ''}:${firstPt.stepIndex ?? ''}:${firstPt.totalContextTokens || 0}:${firstPt.deltaTokens ?? ''}:${firstPt.cacheReadTokens || 0}:${firstPt.isEstimated ? 1 : 0}` : '',
+      lastPt ? `${lastPt.callId || ''}:${lastPt.stepIndex ?? ''}:${lastPt.totalContextTokens || 0}:${lastPt.deltaTokens ?? ''}:${lastPt.cacheReadTokens || 0}:${lastPt.isEstimated ? 1 : 0}` : '',
+      Array.isArray(timelineSrc?.contextChangeEvents) ? timelineSrc.contextChangeEvents.length : 0
+    ].join('|');
+    if (!options?.force && trendSig === lastContextTrendSig) return;
+    const outerPanel = el('panel');
+    const prevPanelScrollTop = (outerPanel && typeof outerPanel.scrollTop === 'number') ? outerPanel.scrollTop : 0;
 
     if (badgeEl) {
       badgeEl.setAttribute?.('data-basis', series.basis || 'empty');
@@ -18317,7 +18438,6 @@
       }
     }
 
-    const pts = Array.isArray(series.points) ? series.points : [];
     if (!pts.length) {
       if (emptyEl) emptyEl.hidden = false;
       if (svg) {
@@ -18326,6 +18446,8 @@
         svg.style.display = 'none';
       }
       if (inspectEl) inspectEl.textContent = t('session.trend.inspectHint');
+      lastContextTrendSig = trendSig;
+      if (outerPanel && prevPanelScrollTop > 0) outerPanel.scrollTop = prevPanelScrollTop;
       return;
     }
 
@@ -18344,7 +18466,11 @@
     if (inspectEl) {
       inspectEl.textContent = formatTrendInspectText(selectedPt || pts[pts.length - 1]);
     }
-    if (!svg) return;
+    if (!svg) {
+      lastContextTrendSig = trendSig;
+      if (outerPanel && prevPanelScrollTop > 0) outerPanel.scrollTop = prevPanelScrollTop;
+      return;
+    }
 
     const panelWrapW = el('ctx-trend-chart-wrap')?.clientWidth || 0;
     const tierDefaultW = state.ctxWidthTier === 'wide' ? 620 : (state.ctxWidthTier === 'medium' ? 480 : 360);
@@ -18591,6 +18717,10 @@
     else {
       svg.innerHTML = '';
       nodes.forEach(n => svg.appendChild?.(n));
+    }
+    lastContextTrendSig = trendSig;
+    if (outerPanel && prevPanelScrollTop > 0) {
+      outerPanel.scrollTop = prevPanelScrollTop;
     }
   }
 
@@ -19026,8 +19156,13 @@
     } finally {
       if (seq === timelineFetchSeq && !state.disposed && sameRouteId(id, state.route)) {
         state.timelineLoading = false;
-        if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
-        if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+        if (isSessionContextPanelVisible()) {
+          if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+          if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+          dirtySessionContextPanel = false;
+        } else {
+          dirtySessionContextPanel = true;
+        }
         if (state.historyDrawerOpen) renderSessionTimeline();
         renderComposerStatusBar();
         renderTurnFooterStats();
@@ -19070,8 +19205,15 @@
       el('badge-tokens').title = t('badge.tokensTitle');
       syncContextModelSelectionFromState();
       renderLatestCallCard({ skipAnim: true });
-      renderSessionBentoSections();
-      renderSessionTimeline();
+      if (isSessionContextPanelVisible()) {
+        renderSessionBentoSections();
+        dirtySessionContextPanel = false;
+      } else {
+        dirtySessionContextPanel = true;
+      }
+      if (isSessionContextPanelVisible() || state.historyDrawerOpen) {
+        renderSessionTimeline();
+      }
       renderComposerStatusBar();
       renderTurnFooterStats();
       return;
@@ -19460,9 +19602,14 @@
     });
     el('refresh').disabled = state.scanBusy;
     scheduleLatestCallRefresh({ allowTimelineRefresh: false });
-    if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
-    if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
-    if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+    if (isSessionContextPanelVisible()) {
+      if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
+      if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+      if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+      dirtySessionContextPanel = false;
+    } else {
+      dirtySessionContextPanel = true;
+    }
     if (state.historyDrawerOpen) renderSessionTimeline();
     renderComposerStatusBar();
     renderTurnFooterStats();
@@ -24778,8 +24925,8 @@
     setPanelWidthForTest: (w) => {
       state.forcedPanelWidthForTest = w == null ? null : Number(w);
       const tier = syncContextPanelContainerWidthTier();
-      renderContextTrendCard();
-      renderSessionBentoSections();
+      renderContextTrendCard({ force: true });
+      renderSessionBentoSections({ force: true });
       return { width: state.forcedPanelWidthForTest, tier };
     },
     jumpToStepOrTurnForTest: (opts) => jumpToStepOrTurn(opts),
