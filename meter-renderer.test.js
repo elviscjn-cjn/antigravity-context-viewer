@@ -9357,4 +9357,159 @@ test('v0.9.0-beta.1: 正常状态隐藏空蓝框(#ctx-ov-pinned-banner / #dock-f
   }
 });
 
+test('性能回归: 面板隐藏态跳过 Bento 工作台与趋势图重建，展开后立即可见完整渲染', async () => {
+  const extScans = [];
+  const timelineMock = {
+    cascadeId: '11111111-1111-1111-1111-111111111111',
+    sessionTitle: '隐藏态跳过测试会话',
+    totalCalls: 2,
+    turns: [
+      {
+        turnIndex: 1, stepIndex: 0, preview: 't1', inputTokens: 4000, cacheReadTokens: 12000, outputTokens: 400,
+        lastContextTokens: 16000, deltaFromPrevTurn: 16000,
+        calls: [{ callId: 'c-1', stepIndex: 1, turnIndex: 1, modelLabel: 'Gemini 4', agentRole: 'main', hasInputCacheFields: true, inputTokens: 4000, cacheReadTokens: 12000, totalInputTokens: 16000, outputTokens: 400, contextWindowTokens: 16000, deltaFromPrevStep: 16000, outcomeStatus: 'success', created_at: '2026-11-23T00:01:00Z' }]
+      },
+      {
+        turnIndex: 2, stepIndex: 2, preview: 't2', inputTokens: 5000, cacheReadTokens: 20000, outputTokens: 600,
+        lastContextTokens: 25000, deltaFromPrevTurn: 9000,
+        calls: [{ callId: 'c-2', stepIndex: 3, turnIndex: 2, modelLabel: 'Gemini 4', agentRole: 'main', hasInputCacheFields: true, inputTokens: 5000, cacheReadTokens: 20000, totalInputTokens: 25000, outputTokens: 600, contextWindowTokens: 25000, deltaFromPrevStep: 9000, outcomeStatus: 'success', created_at: '2026-11-23T00:02:00Z' }]
+      }
+    ]
+  };
+  const h = harness(session(), {
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      contextMeterAPI: {
+        scan: id => new Promise(resolve => extScans.push({ id, resolve })),
+        getSettings: async () => ({ ok: true, settings: {} }),
+        getSessionTimeline: async () => ({ ok: true, data: timelineMock })
+      }
+    }
+  });
+  try {
+    const ensureEl = id => {
+      if (!h.elements.has(id)) h.elements.set(id, h.sandbox.document.createElement('div'));
+      return h.elements.get(id);
+    };
+    const panelEl = ensureEl('panel');
+    assert.equal(panelEl.hidden, true, '初始状态上下文面板应为隐藏');
+
+    let segRebuilds = 0;
+    let treeRebuilds = 0;
+    let svgRebuilds = 0;
+    const segEl = ensureEl('ctx-main-segments');
+    const treeEl = ensureEl('ctx-composition-tree-list');
+    const svgEl = ensureEl('ctx-trend-svg');
+    const origSegReplace = segEl.replaceChildren;
+    const origTreeReplace = treeEl.replaceChildren;
+    const origSvgReplace = svgEl.replaceChildren;
+    segEl.replaceChildren = function (...args) { segRebuilds += 1; return origSegReplace.apply(this, args); };
+    treeEl.replaceChildren = function (...args) { treeRebuilds += 1; return origTreeReplace.apply(this, args); };
+    svgEl.replaceChildren = function (...args) { svgRebuilds += 1; return origSvgReplace.apply(this, args); };
+
+    const api = h.sandbox.__AGContextMeter;
+    extScans[0]?.resolve({ ok: true, data: { session: { ...session(), title: '隐藏态跳过测试会话', scannedAt: Date.now() }, scannedAt: Date.now(), latest: { actual: 25000, budget: 256000 } } });
+    h.pending[0]?.resolve(response({ usage: { inputTokens: 5000, cacheReadTokens: 20000, outputTokens: 600 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } }));
+    await h.flush();
+
+    api.setContextLatestForTest({ actual: 28000, budget: 256000, input: 6000, cached: 22000, output: 700, model: 'Gemini 4' });
+    api.setContextLatestForTest({ actual: 31000, budget: 256000, input: 7000, cached: 24000, output: 800, model: 'Gemini 4' });
+    await h.flush();
+
+    assert.equal(segRebuilds, 0, '面板隐藏期间不应重建 Bento 分段条');
+    assert.equal(treeRebuilds, 0, '面板隐藏期间不应重建 Bento 组成明细树');
+    assert.equal(svgRebuilds, 0, '面板隐藏期间不应重建趋势图 SVG');
+
+    // 打开面板后立即补齐最新数据渲染
+    ensureEl('badge').click();
+    await h.flush();
+    assert.equal(panelEl.hidden, false);
+    assert.ok(segRebuilds >= 1, '打开面板后必须立即渲染 Bento 分段条');
+    assert.ok(treeRebuilds >= 1, '打开面板后必须立即渲染 Bento 组成明细树');
+    assert.ok(svgRebuilds >= 1, '打开面板后必须立即渲染趋势图 SVG');
+    assert.equal(ensureEl('ctx-ov-title').textContent, '隐藏态跳过测试会话');
+  } finally {
+    h.sandbox?.__AGContextMeter?.dispose?.();
+  }
+});
+
+test('性能回归: 上下文面板展开态数据未变时签名短路跳过重建，真实变化重建后保留 #panel.scrollTop', async () => {
+  const extScans = [];
+  const timelineMock = {
+    cascadeId: '11111111-1111-1111-1111-111111111111',
+    sessionTitle: '滚动保护测试会话',
+    totalCalls: 2,
+    turns: [
+      {
+        turnIndex: 1, stepIndex: 0, preview: 't1', inputTokens: 4000, cacheReadTokens: 12000, outputTokens: 400,
+        lastContextTokens: 16000, deltaFromPrevTurn: 16000,
+        calls: [{ callId: 'c-1', stepIndex: 1, turnIndex: 1, modelLabel: 'Gemini 4', agentRole: 'main', hasInputCacheFields: true, inputTokens: 4000, cacheReadTokens: 12000, totalInputTokens: 16000, outputTokens: 400, contextWindowTokens: 16000, deltaFromPrevStep: 16000, outcomeStatus: 'success', created_at: '2026-11-23T00:01:00Z' }]
+      },
+      {
+        turnIndex: 2, stepIndex: 2, preview: 't2', inputTokens: 5000, cacheReadTokens: 20000, outputTokens: 600,
+        lastContextTokens: 25000, deltaFromPrevTurn: 9000,
+        calls: [{ callId: 'c-2', stepIndex: 3, turnIndex: 2, modelLabel: 'Gemini 4', agentRole: 'main', hasInputCacheFields: true, inputTokens: 5000, cacheReadTokens: 20000, totalInputTokens: 25000, outputTokens: 600, contextWindowTokens: 25000, deltaFromPrevStep: 9000, outcomeStatus: 'success', created_at: '2026-11-23T00:02:00Z' }]
+      }
+    ]
+  };
+  const h = harness(session(), {
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      contextMeterAPI: {
+        scan: id => new Promise(resolve => extScans.push({ id, resolve })),
+        getSettings: async () => ({ ok: true, settings: {} }),
+        getSessionTimeline: async () => ({ ok: true, data: timelineMock })
+      }
+    }
+  });
+  try {
+    const ensureEl = id => {
+      if (!h.elements.has(id)) h.elements.set(id, h.sandbox.document.createElement('div'));
+      return h.elements.get(id);
+    };
+    const api = h.sandbox.__AGContextMeter;
+    extScans[0]?.resolve({ ok: true, data: { session: { ...session(), title: '滚动保护测试会话', scannedAt: 1000 }, scannedAt: 1000, latest: { actual: 25000, budget: 256000 } } });
+    h.pending[0]?.resolve(response({ usage: { inputTokens: 5000, cacheReadTokens: 20000, outputTokens: 600 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } }));
+    await h.flush();
+
+    ensureEl('badge').click();
+    await h.flush();
+
+    const panelEl = ensureEl('panel');
+    panelEl.scrollTop = 320;
+
+    let treeRebuilds = 0;
+    let svgRebuilds = 0;
+    const treeEl = ensureEl('ctx-composition-tree-list');
+    const svgEl = ensureEl('ctx-trend-svg');
+    const origTreeReplace = treeEl.replaceChildren;
+    const origSvgReplace = svgEl.replaceChildren;
+    treeEl.replaceChildren = function (...args) {
+      treeRebuilds += 1;
+      panelEl.scrollTop = 0; // 模拟清空容器瞬间浏览器将滚动位置钳制归零
+      return origTreeReplace.apply(this, args);
+    };
+    svgEl.replaceChildren = function (...args) {
+      svgRebuilds += 1;
+      panelEl.scrollTop = 0;
+      return origSvgReplace.apply(this, args);
+    };
+
+    // 1. 以相同摘要数据触发多次 render() -> 签名命中短路，零重建且 scrollTop 不丢失
+    const snap = api.snapshot().latest;
+    api.setContextLatestForTest({ ...snap });
+    api.setContextLatestForTest({ ...snap });
+    assert.equal(treeRebuilds, 0, '数据未变时 Bento 树应命中签名短路跳过重建');
+    assert.equal(svgRebuilds, 0, '数据未变时趋势图 SVG 应命中签名短路跳过重建');
+    assert.equal(panelEl.scrollTop, 320, '签名短路期间 #panel.scrollTop 必须保持 320');
+
+    // 2. 数据真实变化触发重建（即使 replaceChildren 期间 scrollTop 被浏览器归零）-> 重建后必须恢复 scrollTop
+    api.setContextLatestForTest({ ...snap, actual: 32000, input: 8000, cached: 24000 });
+    assert.ok(treeRebuilds >= 1, '数据变化后 Bento 树应触发真实重建');
+    assert.equal(panelEl.scrollTop, 320, '重建完成后必须自动恢复先前的 #panel.scrollTop = 320');
+  } finally {
+    h.sandbox?.__AGContextMeter?.dispose?.();
+  }
+});
+
 

@@ -163,20 +163,116 @@ function buildBootBackendPayload() {
   };
 }
 
+const DIAGNOSTIC_LOG_MAX_BYTES = 512 * 1024;
+const DIAGNOSTIC_LOG_KEEP_BYTES = 128 * 1024;
+const DIAGNOSTIC_LOG_MAX_QUEUE = 200;
+const diagnosticLogQueue = [];
+let diagnosticFlushPromise = null;
+let diagnosticDirReadyFor = null;
+const meterSourceFileCache = new Map();
+
+async function trimDiagnosticLogIfNeeded(logFile) {
+  try {
+    const st = await fs.promises.stat(logFile).catch(() => null);
+    if (!st || !st.isFile() || st.size <= DIAGNOSTIC_LOG_MAX_BYTES) return;
+    const keepBytes = Math.min(DIAGNOSTIC_LOG_KEEP_BYTES, st.size);
+    const startOffset = Math.max(0, st.size - keepBytes);
+    const handle = await fs.promises.open(logFile, 'r');
+    try {
+      const buf = Buffer.allocUnsafe(keepBytes);
+      const { bytesRead } = await handle.read(buf, 0, keepBytes, startOffset);
+      let tail = buf.subarray(0, bytesRead).toString('utf8');
+      if (startOffset > 0) {
+        const nlIdx = tail.indexOf('\n');
+        if (nlIdx >= 0 && nlIdx + 1 < tail.length) {
+          tail = tail.slice(nlIdx + 1);
+        }
+      }
+      await fs.promises.writeFile(logFile, tail, 'utf8');
+    } finally {
+      await handle.close().catch(() => { });
+    }
+  } catch { }
+}
+
+async function flushDiagnosticLogQueue() {
+  while (diagnosticLogQueue.length > 0) {
+    const first = diagnosticLogQueue[0];
+    const targetDir = first.logDir;
+    const targetFile = first.logFile;
+    let batch = '';
+    while (diagnosticLogQueue.length > 0 && diagnosticLogQueue[0].logFile === targetFile) {
+      batch += diagnosticLogQueue.shift().line;
+    }
+    try {
+      if (diagnosticDirReadyFor !== targetDir) {
+        await fs.promises.mkdir(targetDir, { recursive: true });
+        diagnosticDirReadyFor = targetDir;
+      }
+      await fs.promises.appendFile(targetFile, batch, 'utf8');
+      await trimDiagnosticLogIfNeeded(targetFile);
+    } catch {
+      diagnosticDirReadyFor = null;
+    }
+  }
+}
+
 function logDiagnostic(stage, details = {}) {
   try {
     const logDir = getStateDir();
     const logFile = path.join(logDir, 'meter-stage-diagnostics.log');
     const time = new Date().toISOString();
     const line = `[${time}] [STAGE:${stage}] ${JSON.stringify(details)}\n`;
-    fs.appendFileSync(logFile, line, 'utf8');
+    if (diagnosticLogQueue.length >= DIAGNOSTIC_LOG_MAX_QUEUE) {
+      diagnosticLogQueue.shift();
+    }
+    diagnosticLogQueue.push({ logDir, logFile, line });
+    if (!diagnosticFlushPromise) {
+      const startFlush = () => {
+        diagnosticFlushPromise = flushDiagnosticLogQueue()
+          .catch(() => { })
+          .finally(() => {
+            diagnosticFlushPromise = null;
+            if (diagnosticLogQueue.length > 0) {
+              startFlush();
+            }
+          });
+      };
+      startFlush();
+    }
   } catch { }
+}
+
+async function flushDiagnosticLogsForTest() {
+  while (diagnosticFlushPromise || diagnosticLogQueue.length > 0) {
+    if (diagnosticFlushPromise) {
+      await diagnosticFlushPromise;
+    } else {
+      await flushDiagnosticLogQueue();
+    }
+  }
+}
+
+function readCachedSourceFile(filePath) {
+  const resolved = path.resolve(filePath);
+  const st = fs.statSync(resolved);
+  const cached = meterSourceFileCache.get(resolved);
+  if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+    return cached.content;
+  }
+  const content = fs.readFileSync(resolved, 'utf8');
+  meterSourceFileCache.set(resolved, { size: st.size, mtimeMs: st.mtimeMs, content });
+  return content;
+}
+
+function clearMeterSourceCacheForTest() {
+  meterSourceFileCache.clear();
 }
 
 function getMeterSource() {
   try {
-    const coreCode = fs.readFileSync(path.join(__dirname, 'meter-core.js'), 'utf8');
-    const rendererCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+    const coreCode = readCachedSourceFile(path.join(__dirname, 'meter-core.js'));
+    const rendererCode = readCachedSourceFile(path.join(__dirname, 'meter-renderer.js'));
     let bootstrap = `window.__AGContextMeterBootBackend = ${JSON.stringify(buildBootBackendPayload())};\n`;
     try {
       const settingsSnap = getPluginSettings();
@@ -243,6 +339,8 @@ let isAppQuitting = false;
 const boundWindows = new WeakSet();
 const boundWebContents = new WeakSet();
 const injectionTimers = new WeakMap();
+const inFlightInjections = new WeakMap();
+const pendingForceInjections = new WeakMap();
 const wcProbeTimers = new WeakMap();
 
 function setAppQuitting(val = true) {
@@ -1130,7 +1228,7 @@ function syncWindowOverlayHeight(win) {
   } catch { }
 }
 
-async function ensureMeterInjected(win, options = {}) {
+async function runEnsureMeterInjected(win, options = {}) {
   try {
     if (!win || win.isDestroyed?.()) return false;
     const wc = getWindowWebContents(win);
@@ -1206,6 +1304,48 @@ async function ensureMeterInjected(win, options = {}) {
   }
 }
 
+async function ensureMeterInjected(win, options = {}) {
+  if (!win || win.isDestroyed?.()) return false;
+  const existing = inFlightInjections.get(win);
+  if (!existing && pendingForceInjections.has(win)) {
+    return pendingForceInjections.get(win).promise;
+  }
+  if (existing) {
+    if (options?.force === true && !existing.isForce) {
+      let pending = pendingForceInjections.get(win);
+      if (!pending) {
+        pending = { options: { ...options, attempt: 0 }, promise: null };
+        pending.promise = existing.promise.then(() => {
+          if (pendingForceInjections.get(win) === pending) {
+            pendingForceInjections.delete(win);
+          }
+          if (!win || win.isDestroyed?.()) return false;
+          return ensureMeterInjected(win, pending.options);
+        });
+        pendingForceInjections.set(win, pending);
+      } else {
+        pending.options = { ...options, attempt: 0 };
+      }
+      return pending.promise;
+    }
+    const pending = pendingForceInjections.get(win);
+    return pending ? pending.promise : existing.promise;
+  }
+
+  const isForce = options?.force === true;
+  const task = (async () => {
+    try {
+      return await runEnsureMeterInjected(win, options);
+    } finally {
+      if (inFlightInjections.get(win)?.promise === task) {
+        inFlightInjections.delete(win);
+      }
+    }
+  })();
+  inFlightInjections.set(win, { promise: task, isForce });
+  return task;
+}
+
 exports.ensureMeterInjected = ensureMeterInjected;
 
 exports.installContextMeter = function (win) {
@@ -1270,8 +1410,15 @@ exports.installContextMeter = function (win) {
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('zoom-changed', () => syncWindowOverlayHeight(win));
-    wc.on('console-message', (_event, level, message, line, _sourceId) => {
-      if (message.includes('Context Meter') || message.includes('ag-context-meter') || level >= 2) {
+    wc.on('console-message', function (event) {
+      const isModernEvent = event && typeof event === 'object' && typeof event.message === 'string';
+      const level = isModernEvent ? event.level : arguments[1];
+      const message = isModernEvent ? event.message : String(arguments[2] ?? '');
+      const line = isModernEvent ? event.lineNumber : arguments[3];
+      const isWarnOrError = typeof level === 'string'
+        ? (level === 'warning' || level === 'error')
+        : Number(level) >= 2;
+      if (message.includes('Context Meter') || message.includes('ag-context-meter') || isWarnOrError) {
         logDiagnostic('renderer:console', { level, line, message: message.slice(0, 200) });
       }
     });
@@ -1737,3 +1884,7 @@ exports.shouldInterceptWindowClose = shouldInterceptWindowClose;
 exports.isHostRunInBackgroundEnabled = isHostRunInBackgroundEnabled;
 exports.getWindowWebContents = getWindowWebContents;
 exports.getActiveHubWindowOrigins = getActiveHubWindowOrigins;
+exports.getMeterSource = getMeterSource;
+exports.clearMeterSourceCacheForTest = clearMeterSourceCacheForTest;
+exports.logDiagnostic = logDiagnostic;
+exports.flushDiagnosticLogsForTest = flushDiagnosticLogsForTest;

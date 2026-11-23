@@ -610,3 +610,127 @@ test('集成测试：collect() 在 /compact 检查点后隔离压缩前大账单
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test('单元测试：ensureMeterInjected 并发注入互斥与 force 合并、getMeterSource 缓存与异步日志及 console-message 新签名', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-meter-main-perf-'));
+  process.env.AG_METER_STATE_DIR = tmpStateDir;
+
+  const mainPath = require.resolve('./meter-main');
+  delete require.cache[mainPath];
+  const {
+    ensureMeterInjected,
+    installContextMeter,
+    getMeterSource,
+    clearMeterSourceCacheForTest,
+    flushDiagnosticLogsForTest
+  } = require('./meter-main');
+
+  const origReadFileSync = fs.readFileSync;
+  try {
+    // 1. getMeterSource 缓存命中校验（连续调用多次仅读取 1 次 meter-core.js 与 meter-renderer.js）
+    clearMeterSourceCacheForTest();
+    let coreReads = 0;
+    let rendererReads = 0;
+    fs.readFileSync = function (filePath, ...rest) {
+      const p = String(filePath || '');
+      if (p.endsWith(`${path.sep}meter-core.js`) || p === 'meter-core.js') coreReads += 1;
+      if (p.endsWith(`${path.sep}meter-renderer.js`) || p === 'meter-renderer.js') rendererReads += 1;
+      return origReadFileSync.call(this, filePath, ...rest);
+    };
+    const src1 = getMeterSource();
+    const src2 = getMeterSource();
+    const src3 = getMeterSource();
+    assert.ok(src1.length > 0 && src1.length === src2.length && src2.length === src3.length);
+    assert.equal(coreReads, 1, 'meter-core.js 未变化时应复用缓存');
+    assert.equal(rendererReads, 1, 'meter-renderer.js 未变化时应复用缓存');
+    fs.readFileSync = origReadFileSync;
+
+    // 2. ensureMeterInjected 并发非 force 调用合并为 1 次，且在途期间的多个 force 请求合并为 1 次补跑
+    let probeCalls = 0;
+    let injectCalls = 0;
+    let releaseFirstProbe = null;
+    let firstProbeStarted = false;
+    const wcListeners = new Map();
+    const mockWc = {
+      id: 77,
+      isDestroyed: () => false,
+      getURL: () => 'https://127.0.0.1:54321/c/11111111-1111-4111-8111-111111111111',
+      on(evt, fn) {
+        if (!wcListeners.has(evt)) wcListeners.set(evt, []);
+        wcListeners.get(evt).push(fn);
+      },
+      executeJavaScript(code) {
+        if (String(code).includes('window.__AGContextMeter && document.getElementById')) {
+          probeCalls += 1;
+          if (!firstProbeStarted) {
+            firstProbeStarted = true;
+            return new Promise(resolve => { releaseFirstProbe = () => resolve(false); });
+          }
+          return Promise.resolve(true);
+        }
+        injectCalls += 1;
+        return Promise.resolve(true);
+      }
+    };
+    const mockWin = {
+      id: 1,
+      isDestroyed: () => false,
+      webContents: mockWc,
+      on() {}
+    };
+
+    // 4 个并发非 force 调用只应触发 1 次探测 + 1 次全量注入
+    const batch1 = [
+      ensureMeterInjected(mockWin, { force: false }),
+      ensureMeterInjected(mockWin, { force: false }),
+      ensureMeterInjected(mockWin, { force: false }),
+      ensureMeterInjected(mockWin, { force: false })
+    ];
+    await new Promise(r => setImmediate(r));
+    assert.equal(probeCalls, 1, '并发非 force 调用应互斥合并为 1 次存活探测');
+    releaseFirstProbe();
+    const res1 = await Promise.all(batch1);
+    assert.deepEqual(res1, [true, true, true, true]);
+    assert.equal(injectCalls, 1, '并发非 force 调用只应执行 1 次全量注入');
+
+    // 在途非 force 期间连续到达 2 个 force: true -> 仅补跑 1 次 force 注入
+    firstProbeStarted = false;
+    probeCalls = 0;
+    injectCalls = 0;
+    const pNonForce = ensureMeterInjected(mockWin, { force: false });
+    await new Promise(r => setImmediate(r));
+    const pForceA = ensureMeterInjected(mockWin, { force: true });
+    const pForceB = ensureMeterInjected(mockWin, { force: true });
+    releaseFirstProbe();
+    const [r0, rA, rB] = await Promise.all([pNonForce, pForceA, pForceB]);
+    assert.equal(r0, true);
+    assert.equal(rA, true);
+    assert.equal(rB, true);
+    assert.equal(injectCalls, 2, '在途非 force (1 次) + 合并后的 force 补跑 (1 次) 合计应为 2 次');
+
+    // 3. console-message 单参数签名与异步诊断日志刷盘
+    installContextMeter(mockWin);
+    const consoleFns = wcListeners.get('console-message') || [];
+    assert.equal(consoleFns.length, 1);
+    assert.equal(consoleFns[0].length, 1, 'console-message 监听函数形参个数必须为 1 以适配 Electron 新版事件对象');
+
+    consoleFns[0]({ level: 'warning', message: 'Context Meter modern event test', lineNumber: 88 });
+    consoleFns[0]({}, 2, 'Context Meter legacy tuple test', 99);
+    await flushDiagnosticLogsForTest();
+    const diagPath = path.join(tmpStateDir, 'meter-stage-diagnostics.log');
+    assert.equal(fs.existsSync(diagPath), true, '异步诊断日志应成功落盘');
+    const diagContent = fs.readFileSync(diagPath, 'utf8');
+    assert.match(diagContent, /Context Meter modern event test/);
+    assert.match(diagContent, /Context Meter legacy tuple test/);
+  } finally {
+    fs.readFileSync = origReadFileSync;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[mainPath];
+    fs.rmSync(tmpStateDir, { recursive: true, force: true });
+  }
+});
