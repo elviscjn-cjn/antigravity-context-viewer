@@ -620,11 +620,11 @@ test('v0.8.9 7: 1500 条大量历史记录时间线及聚合缓存命中性能�
     }
 
     const tCold0 = performance.now();
-    const res1 = await collector.collectTokenHistoryAsync({ agDir, wslRoots: [], force: true });
+    const res1 = await collector.collectTokenHistoryAsync({ agDir, wslRoots: [], userStatus: null, force: true });
     const coldMs = performance.now() - tCold0;
 
     const tWarm0 = performance.now();
-    const res2 = await collector.collectTokenHistoryAsync({ agDir, wslRoots: [], force: false });
+    const res2 = await collector.collectTokenHistoryAsync({ agDir, wslRoots: [], userStatus: null, force: false });
     const warmMs = performance.now() - tWarm0;
 
     assert.equal(res1.summary.totalSteps, 1500);
@@ -1763,6 +1763,7 @@ test('输入框下方摘要与工具栏按钮独立挂载', async () => {
 
     const composer = { after(node) { this.nextElementSibling = node; } };
     bar.closest = selector => selector === 'form' ? composer : null;
+    h.api.setComposerQuotaSummaryEnabledForTest(true);
     h.api.ensureComposerStatusBarMountedForTest();
     assert.equal(composer.nextElementSibling, csbBar);
     assert.ok(!bar.children.includes(csbBar));

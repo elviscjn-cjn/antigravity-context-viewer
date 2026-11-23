@@ -2,6 +2,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFile } = require('child_process');
 let ipcMain = null;
 let app = null;
 try {
@@ -578,7 +579,60 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       };
     }
 
-    // 结果类型 3: 磁盘上原本没有该组件/资源或组件不完整，无法在客户端运行中直接热注入
+    // 首次手动启用时，由独立进程写盘。当前 Electron 窗口继续使用原运行时。
+    const installerDir = fs.existsSync(path.join(__dirname, 'package.json')) ? __dirname : getLiveRuntimeDir();
+    const installBrandSupport = moduleName === 'chinese' && extraOpts.brandTitle && extraOpts.brandTitle !== 'english';
+    if ((targetEnable || installBrandSupport) && disk.meterReady && disk.asarPath && ['proxy', 'chinese'].includes(moduleName)
+        && fs.existsSync(path.join(installerDir, 'install.js'))) {
+      const patch = { enabled: true };
+      if (moduleName === 'proxy') {
+        const proxy = validateProxyUrlInput(extraOpts.proxyUrl ?? cfg.modules.proxy.proxyUrl);
+        if (!proxy.ok) return { ok: false, status: 'invalid_config', error: proxy.error };
+        patch.proxyUrl = proxy.value;
+        if (typeof extraOpts.bypassList === 'string') patch.bypassList = extraOpts.bypassList.trim();
+      } else {
+        const { normalizeBrandTitle, normalizeClientLanguage } = require('./modules-config');
+        patch.language = normalizeClientLanguage(extraOpts.language, targetEnable);
+        patch.enabled = patch.language === 'zh-CN';
+        if (extraOpts.brandTitle !== undefined) patch.brandTitle = normalizeBrandTitle(extraOpts.brandTitle);
+      }
+      resolveBootChineseSnapshot(disk.asarPath);
+      const rt = resolveNodeRuntime();
+      const argv = [
+        ...rt.args, '-e',
+        'process.noAsar = true; const args = JSON.parse(process.env.AG_OPTIONAL_MODULE_INSTALL); require("./install").install(args).catch(e => { console.error(e.message); process.exitCode = 1; });'
+      ];
+      try {
+        await new Promise((resolve, reject) => {
+          execFile(rt.runtime, argv, {
+            cwd: installerDir,
+            env: { ...rt.env, AG_METER_STATE_DIR: getStateDir(), AG_OPTIONAL_MODULE_INSTALL: JSON.stringify({
+              path: disk.asarPath, modules: { [moduleName]: patch }, noHotInject: true
+            }) },
+            windowsHide: true,
+            timeout: 60000
+          }, (error, _stdout, stderr) => {
+            if (error) reject(new Error(String(stderr || '可选模块安装未完成').trim()));
+            else resolve();
+          });
+        });
+        const installed = inspectDiskModules(disk.asarPath, { forceRefresh: true });
+        const next = loadModulesConfig();
+        const ready = moduleName === 'proxy' ? installed.proxyReady : installed.chineseReady;
+        if (!ready) throw new Error('磁盘校验未找到可选模块');
+        return {
+          ok: true, status: 'config_toggled', data: next, disk: installed,
+          runtime: buildRuntimeModulesMeta(next, disk.asarPath), restartRequired: true,
+          message: '可选模块已安装，重启客户端后生效'
+        };
+      } catch (error) {
+        return { ok: false, status: 'install_failed', data: loadModulesConfig(),
+          disk: inspectDiskModules(disk.asarPath, { forceRefresh: true }),
+          restartRequired: false, error: error.message };
+      }
+    }
+
+    // 组件缺失且无法在本次启动中写盘时，保留原配置并显示终端入口。
     const modLabel = moduleName === 'chinese' ? '汉化' : (moduleName === 'proxy' ? '免 TUN 代理' : '核心监控');
     const partialReason = moduleName === 'chinese'
       ? (disk.chinese && !disk.chineseReady ? (disk.chineseReason || '汉化资源或门禁不完整') : '')
@@ -878,8 +932,12 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const updateRes = await applyUpdateAsync(options || {});
-      return await tryInAppHotReloadAfterUpdate(updateRes, options || {});
+      const updateRes = await applyUpdateAsync({
+        version: typeof options?.version === 'string' ? options.version : undefined,
+        allowBetaUpdates: typeof options?.allowBetaUpdates === 'boolean' ? options.allowBetaUpdates : undefined,
+        diskOnly: true
+      });
+      return updateRes.ok ? { ...updateRes, restartRequired: true } : updateRes;
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1061,7 +1119,13 @@ function registerMeterIpcHandlers(ipcMain) {
   });
 
   ipcMain.handle('context-meter:modules-status', handleModulesStatus);
-  ipcMain.handle('context-meter:toggle-module', handleToggleModule);
+  ipcMain.handle('context-meter:toggle-module', (event, name, enable, options) =>
+    handleToggleModule(event, name, enable, {
+      language: options?.language,
+      brandTitle: options?.brandTitle,
+      proxyUrl: options?.proxyUrl,
+      bypassList: options?.bypassList
+    }));
 
   ipcMain.handle('context-meter:test-proxy', async (event, proxyUrl) => {
     const url = isLocalMainFrameSender(event);

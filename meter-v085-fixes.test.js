@@ -273,11 +273,11 @@ test('1. 配置损坏 fail-closed：不静默迁移旧代理/旧汉化、保留�
       assert.equal(Boolean(reloaded.__configCorrupted), false);
       assert.equal(reloaded.modules.proxy.proxyUrl, 'http://127.0.0.1:7897');
 
-      // 场景 D: modules.json 不存在时的全新首次安装仍应平滑迁移遗留代理配置
+      // 场景 D: 首装只保留可供手动启用的旧代理地址
       fs.unlinkSync(modPath);
       const migrated = loadModulesConfig();
       assert.equal(Boolean(migrated.__configCorrupted), false);
-      assert.equal(migrated.modules.proxy.enabled, true, '首次缺失 modules.json 时仍正常迁移遗留代理');
+      assert.equal(migrated.modules.proxy.enabled, false, '遗留工具的开关不能代表新装插件的手动启用');
       assert.equal(migrated.modules.proxy.proxyUrl, 'http://127.0.0.1:19999');
     });
   } finally {
@@ -1098,7 +1098,7 @@ test('8. PR #40 补充: builtinAsar.createPackage 与测试 ASAR 路径透传至
       assert.ok(fs.existsSync(asarA) && fs.existsSync(asarB));
 
       // 对 asarA 完成安装，使 asarA 具备完整插件+汉化磁盘能力，而 asarB 保持未注入状态
-      await install({ path: asarA });
+      await install({ path: asarA, modules: { chinese: { enabled: true } } });
       const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
       const initCfg = loadModulesConfig();
       initCfg.modules.chinese.enabled = true;

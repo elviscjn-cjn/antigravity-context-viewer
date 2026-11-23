@@ -84,8 +84,8 @@ const DEFAULT_CONFIG = {
       lastTestedAt: null
     },
     enhance: {
-      promptTier: null,
-      chineseTitle: null,
+      promptTier: 0,
+      chineseTitle: false,
       lastAppliedAt: null,
       targetBuilds: {}
     },
@@ -324,14 +324,11 @@ function loadModulesConfig(options = {}) {
   // 仅当统一配置尚不存在时，才尝试识别旧独立版并平滑继承
   const legacy = detectAndMigrateLegacyConfigs(options);
   if (legacy.proxy) {
-    current.modules.proxy.enabled = legacy.proxy.enabled;
     current.modules.proxy.proxyUrl = legacy.proxy.proxyUrl;
     current.modules.proxy.bypassList = legacy.proxy.bypassList;
     current.modules.proxy.migratedFrom = legacy.proxy.source;
   }
   if (legacy.chinese && legacy.chinese.detected) {
-    current.modules.chinese.enabled = true;
-    current.modules.chinese.language = 'zh-CN';
     current.modules.chinese.migratedFrom = legacy.chinese.source;
   }
 

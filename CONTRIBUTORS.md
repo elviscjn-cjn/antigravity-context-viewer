@@ -2,6 +2,13 @@
 
 [简体中文](#简体中文) · [English](#english)
 
+## v0.9.2
+
+- [@ltppp](https://github.com/ltppp) · 提供 Token 历史、汉化监听和面板重绘的排查及优化方案. 本版补齐按账号识别历史更新，以及隐藏视图的重绘门禁. [PR #90](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/90)
+- [@tihonovaaybeniz-code](https://github.com/tihonovaaybeniz-code) · 提供主进程注入、异步日志与隐藏会话面板的定位和修复. 本版沿用这些修复，验证更新链路与现有注入逻辑的组合. [PR #92](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/92)
+- [@Nymph-Beta](https://github.com/Nymph-Beta) · 提供更新链路与陈旧安装清单的复现和修复. 本版采纳磁盘状态核验，并调整桌面应用内更新的交接. [PR #93](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/93)
+- [@lllhhhh](https://github.com/lllhhhh) 和 [@Staaaying](https://github.com/Staaaying) · 提供 Windows 和 macOS 卡顿、CPU 占用及滚动回顶的复现. [Issue #85](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/85) · [Issue #89](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/89)
+
 <details open>
 <summary><b>简体中文</b></summary>
 

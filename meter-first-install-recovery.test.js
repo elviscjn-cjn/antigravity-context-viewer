@@ -282,8 +282,8 @@ test('需求三-1: 首次全新安装 4 项可选增强默认全关，缺失字�
   assert.equal(firstCfg.modules.chinese.enabled, false, '首次全新安装汉化必须默认关闭');
   assert.equal(firstCfg.modules.chinese.language, 'en');
   assert.equal(firstCfg.modules.proxy.enabled, false, '首次全新安装免 TUN 代理必须默认关闭');
-  assert.equal(firstCfg.modules.enhance.promptTier, null, '首次安装提示词优化必须默认关闭');
-  assert.equal(firstCfg.modules.enhance.chineseTitle, null, '首次安装中文标题补丁必须默认关闭');
+  assert.equal(firstCfg.modules.enhance.promptTier, 0, '首次安装提示词优化必须为官方 0 档');
+  assert.equal(firstCfg.modules.enhance.chineseTitle, false, '首次安装中文标题补丁必须默认关闭');
   assert.equal(firstCfg.modules.rehydrate.enabled, false, '首次安装防有损压缩必须默认关闭');
 
   // 验证缺 enabled/language 或显式关闭的 fail-closed 行为
@@ -334,6 +334,12 @@ test('需求三-1: 首次全新安装 4 项可选增强默认全关，缺失字�
   assert.equal(legacyEnabledCfg.modules.chinese.enabled, true);
   assert.equal(legacyEnabledCfg.modules.chinese.language, 'zh-CN');
 
+  // 旧独立工具的配置不能代表用户在新插件里选择开启模块。
+  fs.writeFileSync(path.join(legacyDirNoConfig, 'AntigravityChinese', 'config.json'), JSON.stringify({ enabled: true }), 'utf8');
+  const newInstallWithLegacy = loadModulesConfig({ stateDir: path.join(root, 'fresh-unified-state'), localAppData: legacyDirNoConfig });
+  assert.equal(newInstallWithLegacy.modules.chinese.enabled, false);
+  assert.equal(newInstallWithLegacy.modules.chinese.language, 'en');
+
   // 传隔离 stateDir 不传 localAppData 时绝不穿透读取宿主机真实旧痕迹
   const isoCfg = loadModulesConfig({ stateDir: path.join(root, 'pure-iso-state') });
   assert.equal(isoCfg.modules.chinese.enabled, false);
@@ -342,7 +348,7 @@ test('需求三-1: 首次全新安装 4 项可选增强默认全关，缺失字�
 
 test('需求三-2: template 推荐增强复选框默认全部未勾选，面板语言自动跟随英文/中文宿主并优先用户显式选择', async () => {
   const html = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
-  for (const id of ['chk-rec-prompt', 'chk-rec-title', 'chk-rec-lang', 'chk-rec-ctx', 'chk-rec-rehydrate', 'chk-enhance-chinese-title']) {
+  for (const id of ['chk-rec-prompt', 'chk-rec-title', 'chk-rec-lang', 'chk-rec-ctx', 'chk-rec-rehydrate', 'chk-enhance-chinese-title', 'chk-autohide-topbar-docked', 'chk-radial-orb', 'chk-radial-topbar', 'chk-radial-bottombar', 'chk-show-composer-quota', 'chk-show-turn-footer-stats', 'check-auto-update']) {
     const tagMatch = html.match(new RegExp(`<input[^>]*id=["']${id}["'][^>]*>`, 'i'));
     assert.ok(tagMatch, `template.html 缺少元素 #${id}`);
     assert.equal(/\bchecked\b/i.test(tagMatch[0]), false, `首次安装可选增强复选框 #${id} 不得带默认 checked 属性`);

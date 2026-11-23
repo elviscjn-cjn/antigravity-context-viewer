@@ -1,6 +1,6 @@
 (function () {
-  const METER_VERSION = '0.9.1';
-  const METER_DISPLAY_VERSION = '0.9.1';
+  const METER_VERSION = '0.9.2';
+  const METER_DISPLAY_VERSION = '0.9.2';
 
   'use strict';
   if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
@@ -214,14 +214,14 @@
   let showTurnFooterStats = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_turn_footer_stats') : null;
-      return saved === 'false' ? false : true;
-    } catch { return true; }
+      return saved === 'true';
+    } catch { return false; }
   })();
   let showComposerQuotaSummary = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_composer_quota') : null;
-      return saved === 'false' ? false : true;
-    } catch { return true; }
+      return saved === 'true';
+    } catch { return false; }
   })();
   const quotaExpandedPoolKeys = new Set();
   let lastComputedQuotaView = null;
@@ -252,8 +252,8 @@
   let autoHideTopbarOnDockedPanel = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_autohide_topbar_docked') : null;
-      return saved === 'false' ? false : true;
-    } catch { return true; }
+      return saved === 'true';
+    } catch { return false; }
   })();
   let isTopbarHidden = topbarMode === 'hidden';
   let dockPosition = (() => {
@@ -272,8 +272,9 @@
   let legacyQuickMenuStyle = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_quick_menu_style') : null;
-      return VALID_QUICK_MENU_STYLES.includes(saved) ? saved : 'floating';
-    } catch { return 'floating'; }
+      if (saved === 'orb') return 'floating';
+      return VALID_QUICK_MENU_STYLES.includes(saved) ? saved : 'classic';
+    } catch { return 'classic'; }
   })();
   const readRadialSwitchPref = (key, legacyStyle, list) => {
     try {
@@ -16537,7 +16538,7 @@
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
       <span id="v" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">0.9.1</span>
+        data-i18n-title="header.versionBtn.title">0.9.2</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -18091,7 +18092,7 @@
               </label>
               <div class="ctx-prefs-row-ctl">
                 <label class="ctx-toggle" for="chk-autohide-topbar-docked">
-                  <input id="chk-autohide-topbar-docked" class="ctx-toggle-input" type="checkbox" checked>
+                  <input id="chk-autohide-topbar-docked" class="ctx-toggle-input" type="checkbox">
                   <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
                 </label>
               </div>
@@ -18131,7 +18132,7 @@
               </label>
               <div class="ctx-prefs-row-ctl">
                 <label class="ctx-toggle" for="chk-radial-orb">
-                  <input id="chk-radial-orb" class="ctx-toggle-input" type="checkbox" data-radial-switch="orb" checked>
+                  <input id="chk-radial-orb" class="ctx-toggle-input" type="checkbox" data-radial-switch="orb">
                   <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
                 </label>
               </div>
@@ -18218,7 +18219,7 @@
               </label>
               <div class="ctx-prefs-row-ctl">
                 <label class="ctx-toggle" for="chk-show-composer-quota">
-                  <input id="chk-show-composer-quota" class="ctx-toggle-input" type="checkbox" checked>
+                  <input id="chk-show-composer-quota" class="ctx-toggle-input" type="checkbox">
                   <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
                 </label>
               </div>
@@ -18232,7 +18233,7 @@
               </label>
               <div class="ctx-prefs-row-ctl">
                 <label class="ctx-toggle" for="chk-show-turn-footer-stats">
-                  <input id="chk-show-turn-footer-stats" class="ctx-toggle-input" type="checkbox" checked>
+                  <input id="chk-show-turn-footer-stats" class="ctx-toggle-input" type="checkbox">
                   <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
                 </label>
               </div>
@@ -18756,7 +18757,7 @@
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:11px">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
-            <input id="check-auto-update" type="checkbox" checked>
+            <input id="check-auto-update" type="checkbox">
             <span data-i18n="tokens.update.auto">启动时自动检查更新（不自动安装）</span>
           </label>
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
@@ -18800,7 +18801,7 @@
         style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"
         data-i18n="tokens.title">本机已记录用量</span>
       <span id="v-tokens" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">0.9.1</span>
+        data-i18n-title="header.versionBtn.title">0.9.2</span>
     </div>
     <div class="panel-header-actions">
       <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
@@ -20040,7 +20041,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.9.1</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.9.2</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -26217,7 +26218,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
   let heatYearOffset = 0;
   let activeCostModel = 'gemini-3.8-flash';
   let activeCostMode = 'ref';
-  let autoCheckUpdate = true;
+  let autoCheckUpdate = false;
   let allowBetaUpdates = false;
   let cachedLatestRelease = null;
 
@@ -29080,7 +29081,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
       const marketplaceActive = typeof opts.marketplaceActive === 'boolean'
         ? opts.marketplaceActive
         : isHostMarketplaceActive();
-      if (marketplaceActive) {
+      if (marketplaceActive || (!showComposerQuotaSummary && !radialBottombarEnabled)) {
         csbBar.hidden = true;
         return;
       }
@@ -29763,7 +29764,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
           state.livePendingRequest ||
           (latestCallRec && latestCallRec.status === 'streaming')
         );
-        const minIntervalMs = isActivelyBusy ? 250 : 950;
+        const minIntervalMs = isActivelyBusy ? 250 : 5000;
         if (nowMs - lastCompactionDomCheckAt < minIntervalMs) return;
       }
       lastCompactionCheckedRoute = state.route;
@@ -30068,7 +30069,9 @@ function formatPeriodCalendarLabel(currentPeriod) {
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pTokens.hidden = false;
-      renderActiveHeatView(true);
+      if (activeTokenView === 'models') renderModelUsageView();
+      else if (activeTokenView === 'requests') renderRequestsLiveView({ force: true });
+      else if (activeTokenView === 'tokens') renderActiveHeatView();
       const hasCachedHistory = Boolean(ANTIGRAVITY_TOKEN_DATA.updatedAt || ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens);
       if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
         void syncTokenHistoryFromHost(false);
@@ -30830,6 +30833,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     }
     if (changed && state.radialMenuOpen && state.radialAnchorMode === 'bottombar') closeRadialMenu(false);
     syncQuickMenuStyleUi();
+    if (changed) ensureComposerStatusBarMounted();
     persistRadialSwitches(opts);
     return radialBottombarEnabled;
   }
@@ -31621,6 +31625,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     if (typeof renderComposerQuotaSummary === 'function') {
       renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
     }
+    ensureComposerStatusBarMounted();
     if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
       void saveSettingsPayloadBridge({ showComposerQuotaSummary });
     }
@@ -34277,7 +34282,7 @@ function closeAllDropdowns(exceptWrap = null) {
     setPillActive(el('src-tab-cli'), src === 'cli');
 
     if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
-      applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+      applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload, { renderTokenSubview: true });
     } else {
       const bySrc = ANTIGRAVITY_TOKEN_DATA.dailyMapBySource || {};
       const srcMap = bySrc[src] || bySrc.all || ANTIGRAVITY_TOKEN_DATA.dailyMap;
@@ -34774,7 +34779,7 @@ function closeAllDropdowns(exceptWrap = null) {
   let lastRequestsLiveSyncAt = 0;
 
   // Antigravity 彩色静态矢量图标（构建期由 assets/antigravity-color.svg 离线内嵌）
-  const AG_METER_AGENT_SVG_DATA_URI = 'data:image/svg+xml;utf8,%3Csvg%20width%3D%22180%22%20height%3D%22180%22%20viewBox%3D%220%200%20180%20180%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%20%20%3Cg%20transform%3D%22scale(7.5)%22%3E%0A%20%20%20%20%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2218%22%20height%3D%2218%22%20rx%3D%225%22%20fill%3D%22%2334486C%22%2F%3E%0A%20%20%20%20%3Cpath%20d%3D%22M6%2013h3l2-5%203%208%202-4h2%22%20stroke%3D%22%23A8DAFF%22%20stroke-width%3D%221.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%0A%20%20%3C%2Fg%3E%0A%3C%2Fsvg%3E';
+  const AG_METER_AGENT_SVG_DATA_URI = 'data:image/svg+xml;utf8,%3Csvg%20width%3D%22180%22%20height%3D%22180%22%20viewBox%3D%220%200%20180%20180%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cpath%20d%3D%22M144.248%20149.062C151.748%20154.688%20162.998%20150.938%20152.685%20140.625C121.748%20110.625%20128.31%2028.125%2089.8727%2028.125C51.4352%2028.125%2057.9977%20110.625%2027.0602%20140.625C15.8102%20151.875%2027.9977%20154.688%2035.4977%20149.062C64.5602%20129.375%2062.6852%2094.6875%2089.8727%2094.6875C117.06%2094.6875%20115.185%20129.375%20144.248%20149.062Z%22%20fill%3D%22%233186FF%22%2F%3E%0A%3Cmask%20id%3D%22mask0_6001_409%22%20style%3D%22mask-type%3Aalpha%22%20maskUnits%3D%22userSpaceOnUse%22%20x%3D%2222%22%20y%3D%2228%22%20width%3D%22136%22%20height%3D%22125%22%3E%0A%3Cpath%20d%3D%22M144.248%20149.062C151.748%20154.688%20162.998%20150.938%20152.685%20140.625C121.748%20110.625%20128.31%2028.125%2089.8727%2028.125C51.4352%2028.125%2057.9977%20110.625%2027.0602%20140.625C15.8102%20151.875%2027.9977%20154.688%2035.4977%20149.062C64.5602%20129.375%2062.6852%2094.6875%2089.8727%2094.6875C117.06%2094.6875%20115.185%20129.375%20144.248%20149.062Z%22%20fill%3D%22white%22%2F%3E%0A%3C%2Fmask%3E%0A%3Cg%20mask%3D%22url(%23mask0_6001_409)%22%3E%0A%3Cg%20filter%3D%22url(%23filter0_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2236.6225%22%20cy%3D%2243.0872%22%20rx%3D%2236.6225%22%20ry%3D%2243.0872%22%20transform%3D%22matrix(-0.112784%200.99362%20-0.99362%20-0.112781%20106.557%20-26.4847)%22%20fill%3D%22%23FFE432%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter1_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%22155.163%22%20cy%3D%2254.9292%22%20rx%3D%2247.4118%22%20ry%3D%2248.4541%22%20transform%3D%22rotate(76.9243%20155.163%2054.9292)%22%20fill%3D%22%23FC413D%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter2_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2214.6006%22%20cy%3D%2265.4425%22%20rx%3D%2249.5515%22%20ry%3D%2264.192%22%20transform%3D%22rotate(74.1257%2014.6006%2065.4425)%22%20fill%3D%22%2300B95C%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter3_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2214.6006%22%20cy%3D%2265.4425%22%20rx%3D%2249.5515%22%20ry%3D%2264.192%22%20transform%3D%22rotate(74.1257%2014.6006%2065.4425)%22%20fill%3D%22%2300B95C%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter4_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2218.1226%22%20cy%3D%2267.414%22%20rx%3D%2248.5679%22%20ry%3D%2253.4688%22%20transform%3D%22rotate(45.6065%2018.1226%2067.414)%22%20fill%3D%22%2300B95C%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter5_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%22121.837%22%20cy%3D%22166.945%22%20rx%3D%2246.6356%22%20ry%3D%2244.9084%22%20transform%3D%22rotate(76.9243%20121.837%20166.945)%22%20fill%3D%22%233186FF%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter6_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2253.9456%22%20cy%3D%2256.8997%22%20rx%3D%2253.9456%22%20ry%3D%2256.8997%22%20transform%3D%22matrix(-0.409539%200.912293%20-0.912294%20-0.409537%20162.811%20-25.895)%22%20fill%3D%22%23FBBC04%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter7_f_6001_409)%22%3E%0A%3Cpath%20d%3D%22M4.21557%20239.063C-25.3231%20227.467%2025.1577%20132.061%2037.7105%20100.085C50.2634%2068.1097%2084.3853%2051.5888%20113.924%2063.1848C143.463%2074.7809%20178.474%20138.65%20165.921%20170.626C153.368%20202.601%2033.7543%20250.659%204.21557%20239.063Z%22%20fill%3D%22%233186FF%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter8_f_6001_409)%22%3E%0A%3Cpath%20d%3D%22M183.197%20120.315C175.289%20129.545%20154.652%20124.839%20137.102%20109.803C119.553%2094.7668%20111.738%2075.0955%20119.646%2065.8656C127.554%2056.6357%20148.191%2061.3423%20165.74%2076.3782C183.289%2091.414%20191.105%20111.085%20183.197%20120.315Z%22%20fill%3D%22%23749BFF%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter9_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%22148.928%22%20cy%3D%2236.7252%22%20rx%3D%2271.1018%22%20ry%3D%2244.199%22%20transform%3D%22rotate(34.0763%20148.928%2036.7252)%22%20fill%3D%22%23FC413D%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter10_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2237.848%22%20cy%3D%2246.0346%22%20rx%3D%2238.1008%22%20ry%3D%2222.1575%22%20transform%3D%22rotate(112.516%2037.848%2046.0346)%22%20fill%3D%22%23FFEE48%22%2F%3E%0A%3C%2Fg%3E%0A%3C%2Fg%3E%0A%3Cdefs%3E%0A%3Cfilter%20id%3D%22filter0_f_6001_409%22%20x%3D%224.09591%22%20y%3D%22-44.1761%22%20width%3D%22111.037%22%20height%3D%2298.4416%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%226.25234%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter1_f_6001_409%22%20x%3D%2246.2974%22%20y%3D%22-53.0009%22%20width%3D%22217.731%22%20height%3D%22215.86%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2230.2268%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter2_f_6001_409%22%20x%3D%22-100.018%22%20y%3D%22-36.7558%22%20width%3D%22229.238%22%20height%3D%22204.397%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2225.6957%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter3_f_6001_409%22%20x%3D%22-100.018%22%20y%3D%22-36.7558%22%20width%3D%22229.238%22%20height%3D%22204.397%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2225.6957%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter4_f_6001_409%22%20x%3D%22-84.3985%22%20y%3D%22-35.003%22%20width%3D%22205.042%22%20height%3D%22204.834%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2225.6957%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter5_f_6001_409%22%20x%3D%2227.9915%22%20y%3D%2271.5493%22%20width%3D%22187.691%22%20height%3D%22190.791%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2224.4184%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter6_f_6001_409%22%20x%3D%22-11.8808%22%20y%3D%22-98.7085%22%20width%3D%22201.38%22%20height%3D%22197.45%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2222.1301%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter7_f_6001_409%22%20x%3D%22-44.4432%22%20y%3D%2219.9522%22%20width%3D%22252.513%22%20height%3D%22260.404%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2219.7631%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter8_f_6001_409%22%20x%3D%2281.1915%22%20y%3D%2225.7722%22%20width%3D%22140.46%22%20height%3D%22134.637%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2217.6843%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter9_f_6001_409%22%20x%3D%2255.1499%22%20y%3D%22-47.2531%22%20width%3D%22187.555%22%20height%3D%22167.957%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2214.9365%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter10_f_6001_409%22%20x%3D%22-24.2633%22%20y%3D%22-27.1515%22%20width%3D%22124.223%22%20height%3D%22146.372%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2218.4865%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E';
 
   function createAntigravityAgentIcon() {
     const wrap = document.createElement('span');
@@ -36064,7 +36069,10 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     if (tokensMain) {
       tokensMain.style.display = v === 'tokens' ? 'block' : 'none';
-      if (v === 'tokens') tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+      if (v === 'tokens') {
+        tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+        renderActiveHeatView();
+      }
     }
     if (statCards) statCards.style.display = v === 'tokens' ? 'grid' : 'none';
     if (planBar) planBar.style.display = v === 'tokens' ? 'flex' : 'none';
@@ -43676,7 +43684,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     if (s && s.pendingLsRestart !== undefined) {
       hasPendingLsReload = Boolean(s.pendingLsRestart);
     }
-    const useSavedAfterUpdate = Boolean(s?.clientUpdatedSinceSave && [0, 1, 2, 3, 4].includes(Number(s?.savedPromptTier)));
+    const useSavedAfterUpdate = Boolean(s?.clientUpdatedSinceSave && s.savedPromptTier != null && [0, 1, 2, 3, 4].includes(Number(s.savedPromptTier)));
     if (syncDrafts && s && statusData?.supported !== false) {
       if (forceSyncDrafts || !enhanceTierDirty) {
         const tierVal = useSavedAfterUpdate ? s.savedPromptTier : (s.promptTier ?? s.detectedTier);
@@ -45936,7 +45944,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     return { firstStr, firstDate, today, winStart, winEnd, totalDays, canPrev, canNext };
   }
 
-  function applyTokenHistoryPayload(payload) {
+  function applyTokenHistoryPayload(payload, { renderTokenSubview = false } = {}) {
     if (!payload || typeof payload !== 'object') return false;
     const incomingScope = payload.accountScopeKey || (payload.planStatus?.email ? String(payload.planStatus.email).trim().toLowerCase() : null);
     if (payload.isAccountSwitched || (incomingScope && typeof handleQuotaAccountSwitch === 'function' && handleQuotaAccountSwitch(incomingScope))) {
@@ -45967,9 +45975,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     }
     if (Array.isArray(payload.speedRecords)) {
       ANTIGRAVITY_TOKEN_DATA.speedRecords = payload.speedRecords;
-      if (!isContextSettingsView && activeContextTab === 'speed') {
+      if (!el('panel')?.hidden && !isContextSettingsView && activeContextTab === 'speed') {
         renderSpeedComparisonTab();
-      } else if (!isContextSettingsView && activeContextTab === 'models') {
+      } else if (!el('panel')?.hidden && !isContextSettingsView && activeContextTab === 'models') {
         renderModelSettingsTab();
       }
     }
@@ -46422,12 +46430,13 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
     renderActiveCostEstimateView();
-    renderModelUsageView();
+    const tokenPanelVisible = renderTokenSubview || !el('panel-tokens')?.hidden;
+    if (tokenPanelVisible && activeTokenView === 'models') renderModelUsageView();
 
     computeTimelineWindow();
-    renderActiveHeatView(true);
+    if (tokenPanelVisible && activeTokenView === 'tokens') renderActiveHeatView();
     if (typeof renderCrossSessionInsightsSection === 'function') renderCrossSessionInsightsSection();
-    if (activeTokenView === 'requests' || (Array.isArray(payload?.recentRequestLogs) && payload.recentRequestLogs.length > 0)) {
+    if (tokenPanelVisible && activeTokenView === 'requests') {
       renderRequestsLiveView({ force: true });
     }
     return true;
@@ -46808,6 +46817,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           if (typeof renderComposerQuotaSummary === 'function') {
             renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
           }
+          ensureComposerStatusBarMounted();
         }
         const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
         if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
@@ -46893,26 +46903,23 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     try {
       const fetchHistoryAsync = async () => {
         const knownRevision = forceFlag ? null : ANTIGRAVITY_TOKEN_DATA.rawPayload?.revision || null;
+        const knownAccountKey = knownRevision ? ANTIGRAVITY_TOKEN_DATA.rawPayload?.accountKey || null : null;
         const ipcFn = (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function')
-          ? () => window.contextMeterAPI.getTokenHistory(forceFlag, knownRevision)
+          ? () => window.contextMeterAPI.getTokenHistory(forceFlag, knownRevision, knownAccountKey)
           : null;
         if (!ipcFn && !hasLiveHttpBridge()) return null;
         try {
           const out = await callBackendWithPriority({
             ipcCall: ipcFn,
             liveRoute: '/token-history',
-            liveBody: { force: forceFlag, knownRevision }
+            liveBody: { force: forceFlag, knownRevision, knownAccountKey }
           });
           return out.result || null;
         } catch {
           return null;
         }
       };
-      const restoreStep = startupRestorePromise
-        ? startupRestorePromise
-        : (hasCompletedStartupRestore
-          ? restoreSettingsFromHost({ preserveSessionView: true })
-          : restoreSettingsFromHost());
+      const restoreStep = startupRestorePromise || (!hasCompletedStartupRestore ? restoreSettingsFromHost() : null);
       const [, res] = await Promise.all([restoreStep, fetchHistoryAsync()]);
       if (state.disposed) return;
       if (typeof window !== 'undefined' && window.__AGContextMeterHistory) {
@@ -62048,7 +62055,9 @@ function initCrossSessionInsightsControls() {
         void syncQuotaFromHost(false);
       }
     }
-    if (Date.now() - lastHistorySync > 15000) {
+    const historyInView = !el('panel-tokens')?.hidden
+      || (!el('panel')?.hidden && !isContextSettingsView && activeContextTab === 'speed');
+    if (Date.now() - lastHistorySync > (historyInView ? 15000 : 60000)) {
       const isInitialSync = lastHistorySync === 0;
       lastHistorySync = Date.now();
       void syncTokenHistoryFromHost(false);
@@ -62255,7 +62264,7 @@ function initCrossSessionInsightsControls() {
   }
 
   globalThis.__AGContextMeter = {
-    buildId: 'b63e8f576cbf1d69',
+    buildId: '2303c0bdd268067f',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

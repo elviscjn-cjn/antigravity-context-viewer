@@ -1902,7 +1902,7 @@ const CLI_VALUE_FLAGS = new Set([
 const CLI_BOOLEAN_FLAGS = new Set([
   '--force', '--all', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut',
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
-  '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--force-mac-asar',
+  '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--force-mac-asar', '--disk-only',
   '--check-only', '--silent'
 ]);
 
@@ -2061,8 +2061,9 @@ async function main() {
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
     console.log(`🚀 [Antigravity 对话上下文查看器 v${meterVersion}] 正在安装上下文可视化组件...`);
-    const liveBefore = await queryLiveWindow(cdpOptions);
-    const bridgePrep = await ensureLiveBridgeIfNeeded(liveBefore, cdpOptions);
+    const diskOnly = args.includes('--disk-only') || process.env.AG_EMIT_INSTALL_META === '1';
+    const liveBefore = diskOnly ? {} : await queryLiveWindow(cdpOptions);
+    const bridgePrep = diskOnly ? {} : await ensureLiveBridgeIfNeeded(liveBefore, cdpOptions);
     const hotInjectOptions = {
       ...cdpOptions,
       source: 'cli-install',
@@ -2078,7 +2079,8 @@ async function main() {
         backup: customBackup,
         force: isForce,
         allowIntegrityOverride: isForceMacAsar,
-        hotInjectOptions
+        hotInjectOptions,
+        noHotInject: diskOnly
       });
     } catch (installErr) {
       await rollbackPreparedLiveBridge(bridgePrep);

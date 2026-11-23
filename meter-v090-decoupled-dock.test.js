@@ -327,7 +327,7 @@ test('旧 5 态配置向下兼容与无损持久化', async () => {
     const s1 = collector.getPluginSettings({ targetDir: tmpDir });
     assert.equal(s1.topbarMode, 'compact');
     assert.equal(s1.panelDockMode, 'popover');
-    assert.equal(s1.autoHideTopbarOnDockedPanel, true);
+    assert.equal(s1.autoHideTopbarOnDockedPanel, false);
 
     // 写入旧版 aux 配置
     collector.savePluginSettings({ dockPosition: 'aux' }, { targetDir: tmpDir });

@@ -4739,15 +4739,15 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
         ok: true,
         hasUpdate: true,
         currentVersion: '0.8.3',
-        latestVersion: '0.9.1',
-        tagName: 'v0.9.1',
+        latestVersion: '0.9.2',
+        tagName: 'v0.9.2',
         releaseNotes: 'Fix update flow',
-        htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.1'
+        htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.2'
       }),
       applyUpdate: async () => ({
         ok: true,
-        version: '0.9.1',
-        installedVersion: '0.9.1',
+        version: '0.9.2',
+        installedVersion: '0.9.2',
         liveInjected: mockLiveInjected,
         backendHotReloaded: mockLiveInjected
       })
@@ -4755,20 +4755,20 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
 
     h.elements.get('btn-check-update').click();
     await h.flush();
-    assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.3 → 0.9.1');
+    assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.3 → 0.9.2');
 
     h.elements.get('btn-apply-update').click();
     await h.flush();
 
     assert.equal(h.elements.get('v').textContent, '');
-    assert.match(h.elements.get('up-pop-ver').textContent, /0\.9\.1/);
+    assert.match(h.elements.get('up-pop-ver').textContent, /0\.9\.2/);
     assert.doesNotMatch(h.elements.get('up-pop-status').textContent, /currentVer|异常|失败/i);
-    assert.match(h.elements.get('up-pop-status').textContent, /0\.9\.1/);
+    assert.match(h.elements.get('up-pop-status').textContent, /0\.9\.2/);
 
     mockLiveInjected = true;
     h.elements.get('btn-apply-update').click();
     await h.flush();
-    assert.equal(h.elements.get('v').textContent, '0.9.1');
+    assert.equal(h.elements.get('v').textContent, '0.9.2');
   } finally {
     api.dispose();
   }
@@ -5009,6 +5009,7 @@ test('By Model usage view: renders stacked bars, percentages, 7d/30d, variant/ca
     });
 
     // Switch to By Model view
+    h.sandbox.__AGContextMeter.toggle(true, 'tokens');
     h.elements.get('tok-view-models').click();
     assert.equal(h.elements.get('model-usage-view').style.display, 'block');
     assert.equal(h.elements.get('tokens-main-view').style.display, 'none');
@@ -5427,18 +5428,18 @@ test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-
   }
 });
 
-test('v0.9.1 版本展示与预发布更新比较隔离', async () => {
+test('v0.9.2 版本展示与预发布更新比较隔离', async () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.9.1');
-  assert.equal(pkg.displayVersion, '0.9.1');
+  assert.equal(pkg.version, '0.9.2');
+  assert.equal(pkg.displayVersion, '0.9.2');
 
-  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.9.1，且 beta 通道开关默认未勾选
+  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.9.2，且 beta 通道开关默认未勾选
   const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-  assert.match(builtCode, /<span id="v"[^>]*>0\.9\.1<\/span>/);
-  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.9\.1<\/span>/);
+  assert.match(builtCode, /<span id="v"[^>]*>0\.9\.2<\/span>/);
+  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.9\.2<\/span>/);
   assert.equal(builtCode.includes('id="check-allow-beta-updates"'), true);
 
-  // 2. 0.9.1 vs 0.9.1 判为已是最新，且文案展示 0.9.1
+  // 2. 0.9.2 vs 0.9.2 判为已是最新，且文案展示 0.9.2
   {
     const h = harness();
     const api = h.sandbox.__AGContextMeter;
@@ -5446,22 +5447,22 @@ test('v0.9.1 版本展示与预发布更新比较隔离', async () => {
     h.sandbox.window.contextMeterAPI = {
       ...h.sandbox.window.contextMeterAPI,
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.9.1');
+        assert.equal(req.currentVersion, '0.9.2');
         assert.equal(req.allowBetaUpdates, false);
-        return { ok: true, hasUpdate: false, currentVersion: '0.9.1', installedVersion: '0.9.1' };
+        return { ok: true, hasUpdate: false, currentVersion: '0.9.2', installedVersion: '0.9.2' };
       }
     };
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.1 (已是最新)');
-      assert.match(h.elements.get('up-pop-body').textContent, /0\.9\.1/);
+      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.2 (已是最新)');
+      assert.match(h.elements.get('up-pop-body').textContent, /0\.9\.2/);
     } finally {
       api.dispose();
     }
   }
 
-  // 3. ??? -> beta.2 与 beta.1 -> 0.9.1 展示格式，以及开启 beta 通道开关持久化
+  // 3. ??? -> beta.2 与 beta.1 -> 0.9.2 展示格式，以及开启 beta 通道开关持久化
   {
     const savedPayloads = [];
     const h = harness();
@@ -5473,9 +5474,9 @@ test('v0.9.1 版本展示与预发布更新比较隔离', async () => {
         return { ok: true };
       },
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.9.1');
+        assert.equal(req.currentVersion, '0.9.2');
         assert.equal(req.allowBetaUpdates, true);
-        return { ok: true, hasUpdate: true, currentVersion: '0.9.1', latestVersion: '0.9.1-beta.2', releaseNotes: 'v0.9.1-beta.2' };
+        return { ok: true, hasUpdate: true, currentVersion: '0.9.2', latestVersion: '0.9.2-beta.2', releaseNotes: 'v0.9.2-beta.2' };
       }
     };
     const chkBeta = h.elements.get('check-allow-beta-updates');
@@ -5487,8 +5488,8 @@ test('v0.9.1 版本展示与预发布更新比较隔离', async () => {
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.1 → 0.9.1 beta2');
-      assert.match(h.elements.get('up-pop-body').textContent, /v0\.9\.1/);
+      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.2 → 0.9.2 beta2');
+      assert.match(h.elements.get('up-pop-body').textContent, /v0\.9\.2/);
       assert.equal(h.elements.get('btn-apply-update').style.display, 'inline-block');
     } finally {
       api.dispose();
@@ -8172,6 +8173,7 @@ test('2.34.0 Hub DOM 停靠、分屏/Side Chat 右侧打开精确传参、点击
 
   try {
     const api = h.sandbox.__AGContextMeter;
+    api.setTurnFooterStatsEnabledForTest(true);
 
     // 1. 2.34.0 Hub DOM (无 workbench.parts.editor) 下 page 模式直接挂载到 Hub 主视图且不回退
     api.setDockPosition('page');
@@ -8579,6 +8581,7 @@ test('v0.9.0-beta.1 回复尾注去框、两轮独立对账不跨轮复用与 co
   };
   try {
     const api = h.sandbox.__AGContextMeter;
+    api.setTurnFooterStatsEnabledForTest(true);
     // 只有 1 条记录却有 2 个主区 toolbar 时：仅最后一个 toolbar 挂载，前者绝不复用 turns[0]
     api.setComposerStateForTest({
       sessionCalls: [{ callId: 'quwBa7eRLpW6odAPxqKKsAM', modelLabel: 'Gemini 3.8 Flash', inputTokens: 31851, cacheReadTokens: 0, outputTokens: 57, streamingTps: 570 }],
@@ -8735,6 +8738,7 @@ test('v0.9.0-beta.1 窄窗下回复尾注优先保留完整 tok/s 速度且缓�
   };
   try {
     const api = h.sandbox.__AGContextMeter;
+    api.setTurnFooterStatsEnabledForTest(true);
     api.setComposerStateForTest({
       sessionCalls: tl.turns.flatMap(t => t.calls || []),
       sessionTimeline: tl,
@@ -9246,6 +9250,7 @@ test('v0.9.0-beta.1: Customizations/插件市场/详情子页(含搜索框)全�
     await new Promise(r => setImmediate(r));
     flushScheduledTimers();
     const api = sandbox.__AGContextMeter;
+    api.setRadialOrbEnabledForTest(true, { persist: false });
     api.setDockPosition('aux');
     elements.get('badge').click();
     assert.equal(elements.get('panel').hidden, false);
@@ -9377,6 +9382,7 @@ test('v0.9.0-beta.1: 径向菜单 3 形态 / 锁定物理动效参数 / 靠边�
     assert.match(stylesSrc, /\.ctx-radial-layer\[data-state="open"\]\s+\.ctx-radial-slot[\s\S]*translateY\(calc\(-1\s*\*\s*var\(--r-rest\)\)\)[\s\S]*rotate\(calc\(-1\s*\*\s*var\(--angle\)\)\)/);
     assert.ok(!fs.existsSync(require('node:path').join(__dirname, 'antigravity_contextmeter.html')), '不得将只读原型 HTML 复制进项目目录');
 
+    api.setRadialOrbEnabledForTest(true, { persist: false });
     const rSt0 = api.getRadialMenuStateForTest();
     assert.deepStrictEqual(JSON.parse(JSON.stringify(rSt0.constants)), {
       STAGGER_MS: 34,
@@ -10015,6 +10021,7 @@ test('v0.9.0 三项 UI 精修: 独立顶层挂载至 body 末尾 + 快捷隐藏�
     assert.match(radialStyle, /\.ctx-radial-orb\s*\{[\s\S]*pointer-events:\s*auto/);
     assert.match(radialStyle, /:host\(\[data-marketplace-active="true"\]\)\s+#ctx-radial-orb/);
 
+    api1.setRadialOrbEnabledForTest(true, { persist: false });
     api1.setTheme('light');
     assert.equal(radialHost.getAttribute('data-theme'), 'light', 'data-theme 必须实时镜像到独立顶层宿主');
     const rSt = api1.getRadialMenuStateForTest();

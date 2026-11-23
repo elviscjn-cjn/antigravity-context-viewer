@@ -768,10 +768,10 @@ test('交付验证 8: 预发布与正式版通道隔离、beta 升级正式版�
   }
 });
 
-test('PR #76 / Issue #75: Windows 更新包优先显式 System32\\tar.exe、清空半解压再回退 PowerShell、全部失败销毁目录与原因脱敏', () => {
+test('PR #76 / Issue #75: Windows 更新包优先显式 System32\\tar.exe、清空半解压再回退 PowerShell、全部失败销毁目录与原因脱敏', async () => {
   // 1. Windows 显式调用 System32\tar.exe，不被 PATH 中的 GNU tar 抢占
   const calls1 = [];
-  const res1 = extractUpdateZip('C:\\Temp\\pkg.zip', 'C:\\Temp\\out', {
+  const res1 = await extractUpdateZip('C:\\Temp\\pkg.zip', 'C:\\Temp\\out', {
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
     _existsSync: (p) => p === 'C:\\Windows\\System32\\tar.exe',
@@ -794,7 +794,7 @@ test('PR #76 / Issue #75: Windows 更新包优先显式 System32\\tar.exe、清�
     fs.writeFileSync(specialZip, 'placeholder');
     fs.mkdirSync(extractDir, { recursive: true });
     const calls2 = [];
-    const res2 = extractUpdateZip(specialZip, extractDir, {
+    const res2 = await extractUpdateZip(specialZip, extractDir, {
       platform: 'win32',
       env: { SystemRoot: 'C:\\Windows' },
       _existsSync: (p) =>
@@ -824,7 +824,7 @@ test('PR #76 / Issue #75: Windows 更新包优先显式 System32\\tar.exe、清�
     const badDir = path.join(tmpRoot, 'bad-extract');
     fs.mkdirSync(badDir, { recursive: true });
     fs.writeFileSync(path.join(badDir, 'partial.js'), 'partial');
-    const res3 = extractUpdateZip(specialZip, badDir, {
+    const res3 = await extractUpdateZip(specialZip, badDir, {
       platform: 'win32',
       env: { SystemRoot: 'C:\\Windows' },
       _existsSync: (p) => p === 'C:\\Windows\\System32\\tar.exe' || fs.existsSync(p),
@@ -845,7 +845,7 @@ test('PR #76 / Issue #75: Windows 更新包优先显式 System32\\tar.exe、清�
 
     // 4. 非 Windows 调用 unzip
     const calls4 = [];
-    const res4 = extractUpdateZip('/tmp/pkg.zip', '/tmp/out', {
+    const res4 = await extractUpdateZip('/tmp/pkg.zip', '/tmp/out', {
       platform: 'linux',
       _spawnSync: (cmd, args) => {
         calls4.push({ cmd, args });
@@ -861,7 +861,26 @@ test('PR #76 / Issue #75: Windows 更新包优先显式 System32\\tar.exe、清�
   }
 });
 
-test('extractUpdateZip 真实 ZIP 与 PATH 前置干扰 GNU tar 模拟路径下端到端解压成功', () => {
+test('update extraction leaves the update host event loop responsive while the extractor runs', async () => {
+  let ticks = 0;
+  const timer = setInterval(() => ticks++, 10);
+  try {
+    const result = await extractUpdateZip('fixture.zip', 'fixture-output', {
+      platform: 'win32',
+      _existsSync: () => true,
+      _spawnAsync: async () => {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return { status: 0 };
+      }
+    });
+    assert.equal(result.method, 'system32-tar');
+    assert.ok(ticks >= 3, `main loop heartbeat only ran ${ticks} times`);
+  } finally {
+    clearInterval(timer);
+  }
+});
+
+test('extractUpdateZip 真实 ZIP 与 PATH 前置干扰 GNU tar 模拟路径下端到端解压成功', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-extract-zip-'));
   try {
     const zipPath = path.join(tmpDir, "真实 测试 '包 [1].zip");
@@ -869,7 +888,7 @@ test('extractUpdateZip 真实 ZIP 与 PATH 前置干扰 GNU tar 模拟路径下�
     fs.mkdirSync(extractDir, { recursive: true });
     fs.writeFileSync(zipPath, createSimpleZipBuffer({ 'cli.js': 'console.log("ok");\n' }));
 
-    const res = extractUpdateZip(zipPath, extractDir);
+    const res = await extractUpdateZip(zipPath, extractDir);
     assert.equal(res.status, 0, `真实解压失败: ${res.detail || ''}`);
     assert.equal(fs.readFileSync(path.join(extractDir, 'cli.js'), 'utf8'), 'console.log("ok");\n');
   } finally {

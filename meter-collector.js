@@ -7,7 +7,7 @@ const http = require('http');
 const https = require('https');
 const { normalizeLoopbackOrigin } = require('./local-api');
 const { fileURLToPath } = require('url');
-const { spawn, spawnSync } = require('child_process');
+const { spawn, spawnSync, execFile } = require('child_process');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const origDateNow = Date.now;
 const origFsMethods = {
@@ -4322,8 +4322,8 @@ function getPluginSettings(options = {}) {
     if (uiPrefs.dockPosition === 'page') return 'page';
     return 'popover';
   })();
-  const autoHideTopbarOnDockedPanel = uiPrefs.autoHideTopbarOnDockedPanel !== false;
-  const legacyQuickMenuStyle = validQuickMenuStyles.has(uiPrefs.quickMenuStyle) ? uiPrefs.quickMenuStyle : 'floating';
+  const autoHideTopbarOnDockedPanel = uiPrefs.autoHideTopbarOnDockedPanel === true;
+  const legacyQuickMenuStyle = validQuickMenuStyles.has(uiPrefs.quickMenuStyle) ? uiPrefs.quickMenuStyle : 'classic';
   const resolvedRadialTopbarEnabled = typeof uiPrefs.radialTopbarEnabled === 'boolean'
     ? uiPrefs.radialTopbarEnabled
     : legacyQuickMenuStyle === 'topbar';
@@ -4345,14 +4345,14 @@ function getPluginSettings(options = {}) {
     savedHeatView: uiPrefs.savedHeatView || defaultViewPrefs.heatView,
     defaultViewPrefs,
     sessionCockpitLayout,
-    autoCheckUpdate: uiPrefs.autoCheckUpdate,
+    autoCheckUpdate: uiPrefs.autoCheckUpdate === true,
     allowBetaUpdates: uiPrefs.allowBetaUpdates === true,
     dockPosition: validDockPositions.has(uiPrefs.dockPosition) ? uiPrefs.dockPosition : 'flow',
     hideTopbar: uiPrefs.hideTopbar === true,
     topbarMode: resolvedTopbarMode,
     panelDockMode: resolvedPanelDockMode,
     autoHideTopbarOnDockedPanel,
-    quickMenuStyle: validQuickMenuStyles.has(uiPrefs.quickMenuStyle) ? uiPrefs.quickMenuStyle : 'floating',
+    quickMenuStyle: legacyQuickMenuStyle,
     radialOrbEnabled: resolvedRadialOrbEnabled,
     radialTopbarEnabled: resolvedRadialTopbarEnabled,
     radialBottombarEnabled: resolvedRadialBottombarEnabled,
@@ -4361,8 +4361,8 @@ function getPluginSettings(options = {}) {
     quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
     panelLanguage: hasExplicitPanelLanguage ? uiPrefs.panelLanguage : 'zh-CN',
     panelLanguageExplicit: hasExplicitPanelLanguage,
-    showTurnFooterStats: uiPrefs.showTurnFooterStats !== false,
-    showComposerQuotaSummary: uiPrefs.showComposerQuotaSummary !== false,
+    showTurnFooterStats: uiPrefs.showTurnFooterStats === true,
+    showComposerQuotaSummary: uiPrefs.showComposerQuotaSummary === true,
     cliAccountEmail: uiPrefs.cliAccountEmail || null,
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
@@ -10407,6 +10407,8 @@ function getInstalledMeterVersion(options = {}) {
           if (manifest.installed && !fs.existsSync(manifest.installed)) {
             continue; // 记录的物理文件已不存在，属于失效记录
           }
+          const diskAsar = targetAsar || manifest.installed;
+          if (diskAsar && !require('./modules-config').inspectDiskModules(diskAsar).meter) continue;
           return String(manifest.meterVersion);
         }
       }
@@ -10869,6 +10871,7 @@ const LIVE_RUNTIME_FILES = [
   'asar-engine.js',
   'modules-config.js',
   'modular-installer.js',
+  'rehydrate/rehydrate_after_compact.py',
   'i18n/zh-CN.json',
   'i18n/i18n-runtime.js'
 ];
@@ -11035,25 +11038,33 @@ function sanitizeUpdateErrorText(raw) {
  * - 若 System32\tar.exe 不存在或执行失败，先清空半解压目录再回退 PowerShell Expand-Archive（经环境变量安全传参）；
  * - 若全部路径失败则清理半解压目录并返回脱敏错误摘要，确保不完整目录绝不进入安装流程。
  */
-function extractUpdateZip(zipPath, extractDir, options = {}) {
-  const platform = options.platform || process.platform;
-  const runSpawnSync = options._spawnSync || spawnSync;
-  const existsSyncFn = options._existsSync || fs.existsSync;
-  const rmSyncFn = options._rmSync || fs.rmSync;
-  const mkdirSyncFn = options._mkdirSync || fs.mkdirSync;
-  const env = options.env || process.env;
-  const isMockSpawn = typeof options._spawnSync === 'function';
+function runUpdateExtractor(executable, args, options) {
+  return new Promise(resolve => {
+    execFile(executable, args, { ...options, timeout: 45000, maxBuffer: 512 * 1024 }, (error, stdout, stderr) => {
+      resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, error, stdout, stderr });
+    });
+  });
+}
 
-  const resetDirIfPresent = (recreate) => {
+async function extractUpdateZip(zipPath, extractDir, options = {}) {
+  const platform = options.platform || process.platform;
+  const runExtractor = options._spawnAsync || options._spawnSync || runUpdateExtractor;
+  const existsSyncFn = options._existsSync || fs.existsSync;
+  const removeDir = options._rmSync || fs.promises.rm;
+  const createDir = options._mkdirSync || fs.promises.mkdir;
+  const env = options.env || process.env;
+  const isMockSpawn = Boolean(options._spawnSync || options._spawnAsync);
+
+  const resetDirIfPresent = async (recreate) => {
     if (!extractDir || (isMockSpawn && !options._resetOnMock && !fs.existsSync(extractDir))) {
       return;
     }
     try {
       if (existsSyncFn(extractDir)) {
-        rmSyncFn(extractDir, { recursive: true, force: true });
+        await removeDir(extractDir, { recursive: true, force: true });
       }
       if (recreate) {
-        mkdirSyncFn(extractDir, { recursive: true });
+        await createDir(extractDir, { recursive: true });
       }
     } catch { }
   };
@@ -11074,7 +11085,7 @@ function extractUpdateZip(zipPath, extractDir, options = {}) {
     const attempts = [];
 
     if (existsSyncFn(systemTarPath)) {
-      const tarRes = runSpawnSync(systemTarPath, ['-xf', zipPath, '-C', extractDir], {
+      const tarRes = await runExtractor(systemTarPath, ['-xf', zipPath, '-C', extractDir], {
         encoding: 'utf8',
         windowsHide: true
       });
@@ -11083,7 +11094,7 @@ function extractUpdateZip(zipPath, extractDir, options = {}) {
       }
       attempts.push(`system32-tar: ${formatResultError(tarRes) || 'failed'}`);
       // 回退 PowerShell 前清除 System32\tar.exe 可能遗留的半解压脏文件
-      resetDirIfPresent(true);
+      await resetDirIfPresent(true);
     }
 
     const psExe = existsSyncFn(systemPowerShellPath) ? systemPowerShellPath : 'powershell.exe';
@@ -11101,7 +11112,7 @@ function extractUpdateZip(zipPath, extractDir, options = {}) {
       '  }',
       '}'
     ].join('; ');
-    const psRes = runSpawnSync(
+    const psRes = await runExtractor(
       psExe,
       [
         '-NoProfile',
@@ -11125,7 +11136,7 @@ function extractUpdateZip(zipPath, extractDir, options = {}) {
     attempts.push(`powershell: ${formatResultError(psRes) || 'failed'}`);
 
     // 全部解压方式失败：彻底销毁半解压目录，杜绝进入安装步骤
-    resetDirIfPresent(false);
+    await resetDirIfPresent(false);
     return {
       status: (psRes && Number.isInteger(psRes.status) && psRes.status !== 0) ? psRes.status : 1,
       error: psRes?.error || null,
@@ -11133,13 +11144,13 @@ function extractUpdateZip(zipPath, extractDir, options = {}) {
     };
   }
 
-  const unzipRes = runSpawnSync('unzip', ['-qo', zipPath, '-d', extractDir], {
+  const unzipRes = await runExtractor('unzip', ['-qo', zipPath, '-d', extractDir], {
     encoding: 'utf8'
   });
   if (unzipRes && unzipRes.status === 0 && !unzipRes.error) {
     return { status: 0, method: 'unzip' };
   }
-  resetDirIfPresent(false);
+  await resetDirIfPresent(false);
   return {
     status: (unzipRes && Number.isInteger(unzipRes.status) && unzipRes.status !== 0) ? unzipRes.status : 1,
     error: unzipRes?.error || null,
@@ -11274,7 +11285,7 @@ async function applyUpdateAsync(options = {}) {
     );
     zipStream = packageDl.stream;
 
-    const checksumContent = fs.readFileSync(checksumPath, 'utf8');
+    const checksumContent = await fs.promises.readFile(checksumPath, 'utf8');
     const lines = checksumContent.split(/\r?\n/);
     let expectedSha = null;
     for (const line of lines) {
@@ -11291,7 +11302,7 @@ async function applyUpdateAsync(options = {}) {
       return { ok: false, error: 'checksums.txt 中未找到合法的 64 位 SHA-256 校验记录，拒绝安装', htmlUrl: targetRelease.htmlUrl };
     }
 
-    const fileBuf = fs.readFileSync(zipPath);
+    const fileBuf = await fs.promises.readFile(zipPath);
     const actualSha = crypto.createHash('sha256').update(fileBuf).digest('hex').toLowerCase();
     if (actualSha !== expectedSha) {
       return { ok: false, error: `SHA-256 校验失败 (期望: ${expectedSha}, 实际: ${actualSha})，拒绝安装`, htmlUrl: targetRelease.htmlUrl };
@@ -11307,7 +11318,7 @@ async function applyUpdateAsync(options = {}) {
         extractRes = { status: 1, error: err };
       }
     } else {
-      extractRes = extractUpdateZip(zipPath, extractDir, {
+      extractRes = await extractUpdateZip(zipPath, extractDir, {
         platform: process.platform,
         _spawnSync: options._spawnSync,
         _existsSync: options._existsSync,
@@ -11315,7 +11326,7 @@ async function applyUpdateAsync(options = {}) {
       });
     }
     if (!extractRes || extractRes.status !== 0 || extractRes.error) {
-      try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { }
+      try { await fs.promises.rm(extractDir, { recursive: true, force: true }); } catch { }
       const detail = extractRes?.detail ||
         (extractRes?.error ? sanitizeUpdateErrorText(extractRes.error) : '');
       return {
@@ -11333,6 +11344,7 @@ async function applyUpdateAsync(options = {}) {
     const runtimeResolver = options._resolveNodeRuntime || resolveNodeRuntime;
     const runtimeInfo = runtimeResolver();
     const subArgs = [...runtimeInfo.args, cliPath, 'install'];
+    if (options.diskOnly === true) subArgs.push('--disk-only');
 
     // 检查是否存在已记录的自定义安装路径，确保更新子进程继续更新原目标
     let recordedInstalledPath = options.targetPath || null;
@@ -11415,7 +11427,7 @@ async function applyUpdateAsync(options = {}) {
     cachedUpdateCheck = null;
     cachedUpdateCheckAt = 0;
 
-    const liveRuntimeDir = syncLiveRuntimeBundle(extractDir, {
+    const liveRuntimeDir = options.diskOnly === true ? null : syncLiveRuntimeBundle(extractDir, {
       version: targetRelease.version,
       stateDir: options.stateDir
     });
@@ -11454,7 +11466,7 @@ async function applyUpdateAsync(options = {}) {
       if (checksumStream) await safeCloseStream(checksumStream);
       if (zipStream) await safeCloseStream(zipStream);
       if (tmpDir && fs.existsSync(tmpDir)) {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        await fs.promises.rm(tmpDir, { recursive: true, force: true });
       }
     } catch { }
   }

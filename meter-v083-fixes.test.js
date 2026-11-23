@@ -1985,6 +1985,7 @@ test('ELV-44 & ELV-62: bootProxySnapshot 严禁未注入即虚报 active，部�
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-partial-boot-'));
   const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevAsarPath = process.env.AG_ASAR_PATH;
   const prevHttp = process.env.HTTP_PROXY;
   const prevHttps = process.env.HTTPS_PROXY;
   try {
@@ -2017,6 +2018,7 @@ test('ELV-44 & ELV-62: bootProxySnapshot 严禁未注入即虚报 active，部�
     fs.writeFileSync(path.join(pkgDir, 'dist', 'preload.js'), '// --- Antigravity Chinese Localization Injection Start ---\n// empty\n// --- Antigravity Chinese Localization Injection End ---', 'utf8');
     const partialAsar = path.join(tmpDir, 'partial.asar');
     await builtinAsar.createPackageWithOptions(pkgDir, partialAsar, {});
+    process.env.AG_ASAR_PATH = partialAsar;
 
     const statusRes = await handlers['context-meter:modules-status'](ev, partialAsar);
     assert.equal(statusRes.ok, true);
@@ -2027,13 +2029,14 @@ test('ELV-44 & ELV-62: bootProxySnapshot 严禁未注入即虚报 active，部�
     assert.equal(statusRes.disk.chinese, true);
     assert.equal(statusRes.disk.chineseReady, false);
 
-    const togglePartialRes = await handlers['context-meter:toggle-module'](ev, 'chinese', true, { asarPath: partialAsar });
+    const togglePartialRes = await handlers['context-meter:toggle-module'](ev, 'chinese', true);
     assert.equal(togglePartialRes.ok, false);
     assert.equal(togglePartialRes.status, 'install_failed');
     assert.match(togglePartialRes.error, /^当前客户端磁盘 ASAR 未注入汉化组件（或组件不完整）。/);
     assert.match(togglePartialRes.error, /系统托盘/);
   } finally {
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR; else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevAsarPath === undefined) delete process.env.AG_ASAR_PATH; else process.env.AG_ASAR_PATH = prevAsarPath;
     if (prevHttp === undefined) delete process.env.HTTP_PROXY; else process.env.HTTP_PROXY = prevHttp;
     if (prevHttps === undefined) delete process.env.HTTPS_PROXY; else process.env.HTTPS_PROXY = prevHttps;
     delete require.cache[require.resolve('./meter-main')];

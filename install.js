@@ -515,8 +515,6 @@ async function install(options = {}) {
     if (proxyUrlIdx >= 0 && process.argv[proxyUrlIdx + 1]) {
       modulesConfig.modules.proxy.proxyUrl = process.argv[proxyUrlIdx + 1];
     }
-    saveModulesConfig(modulesConfig, { stateDir });
-
     const version = JSON.parse(extractAsarFile(sourceArchive, 'package.json').toString('utf8')).version;
     const stamp = new Date().toISOString().replace(/[:.]/g, '-') + '-' + Math.random().toString(36).slice(2, 8);
     const backupDir = path.join(stateDir, 'backups');
@@ -570,12 +568,12 @@ async function install(options = {}) {
       let finalUtils = cleanUtils;
       let finalPreload = cleanPreload;
 
-      // 6. 模块组装注入（使用成对标记与运行时配置门禁，默认完整注入三模块能力，通过 modules.json 精确控制开关）
+      // 6. 仅挂载已启用的可选模块。发行包资源留作手动启用时使用。
       // 若用户或测试显式传入 pureMeterOnly: true 或 --pure-meter-only，则仅注入上下文监控
       const isPureMeterOnly = Boolean(options.pureMeterOnly || process.argv.includes('--pure-meter-only'));
 
       // 模块 A: Proxy NoTun (免 TUN 代理组件注入)
-      const shouldInjectProxy = !isPureMeterOnly && (modulesConfig.modules.proxy.enabled || options.injectProxy !== false);
+      const shouldInjectProxy = !isPureMeterOnly && (modulesConfig.modules.proxy.enabled || options.injectProxy === true);
       if (shouldInjectProxy) {
         const proxyCode = generateProxyUtilsCode(modulesConfig.modules.proxy);
         finalUtils = proxyCode + '\n' + finalUtils;
@@ -605,7 +603,8 @@ async function install(options = {}) {
       }
 
       // 模块 C: Chinese (桌面端界面汉化组件注入)
-      const shouldInjectChinese = !isPureMeterOnly && (modulesConfig.modules.chinese.enabled || options.injectChinese !== false);
+      const shouldInjectChinese = !isPureMeterOnly && (modulesConfig.modules.chinese.enabled ||
+        modulesConfig.modules.chinese.brandTitle !== 'english' || options.injectChinese === true);
       if (shouldInjectChinese) {
         const homeDir = os.homedir();
         const localAppDir = process.platform === 'win32'
@@ -823,6 +822,8 @@ async function install(options = {}) {
       };
 
       let installCommitted = false;
+      let replacedManifest = false;
+      const priorManifestBytes = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath) : null;
       const tempReplacement = path.join(path.dirname(installed), `app.asar.tmp_${stamp}`);
 
       try {
@@ -940,11 +941,13 @@ async function install(options = {}) {
         manifest.verifiedAt = new Date().toISOString();
 
         fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+        replacedManifest = true;
+        saveModulesConfig(modulesConfig, { stateDir });
 
         installCommitted = true;
         try {
           const { syncLiveRuntimeBundle, cleanupUpgradeLedgerBackups } = require('./meter-collector');
-          syncLiveRuntimeBundle(__dirname, { version: manifest.meterVersion });
+          syncLiveRuntimeBundle(__dirname, { version: manifest.meterVersion, stateDir: options.stateDir });
           if (!options.customAsarPath && !isIsolatedTestPath(installed)) {
             cleanupUpgradeLedgerBackups({ keep: 1, stateDir });
           }
@@ -959,6 +962,10 @@ async function install(options = {}) {
           try {
             fs.copyFileSync(snapshotFile, installed);
             clearAsarCache(installed);
+            if (replacedManifest) {
+              if (priorManifestBytes) fs.writeFileSync(manifestPath, priorManifestBytes);
+              else fs.rmSync(manifestPath, { force: true });
+            }
             console.error(`[Failure-Rollback] 安装过程异常中断，已自动从改写前快照还原目标文件: ${installed}`);
           } catch (rollbackErr) {
             console.error(`[Fatal Rollback Error] 快照回滚失败: ${rollbackErr.message}`);

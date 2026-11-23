@@ -3334,6 +3334,7 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
   };
 
   const api = h.sandbox.__AGContextMeter;
+  api.setComposerQuotaSummaryEnabledForTest(true);
   api.setContextLatestForTest(
     { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 18000, budget: 256000 },
     userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
@@ -3522,7 +3523,7 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
   // 主进程 settings 持久化往返
   const tmpSettingsDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ag-pace-settings-'));
   try {
-    assert.equal(collector.getPluginSettings(tmpSettingsDir).showComposerQuotaSummary, true);
+    assert.equal(collector.getPluginSettings(tmpSettingsDir).showComposerQuotaSummary, false);
     collector.savePluginSettings({ showComposerQuotaSummary: false }, tmpSettingsDir);
     assert.equal(collector.getPluginSettings(tmpSettingsDir).showComposerQuotaSummary, false);
   } finally {
@@ -3599,6 +3600,7 @@ test('v0.9.0-beta.1 同快照额度百分比在顶栏、双轨卡与输入框摘
   };
   const h = createQuotaRendererHarness({ innerWidth: 1280 });
   const api = h.sandbox.__AGContextMeter;
+  api.setComposerQuotaSummaryEnabledForTest(true);
   try {
     api.setContextLatestForTest(
       { model: 'Gemini 4 Hydrogen', modelId: 'MODEL_PLACEHOLDER_M578', actual: 18000, budget: 256000 },
@@ -3731,6 +3733,7 @@ test('PR #74: 带前缀模型选择器、Orchestrator/Worker 身份、分屏聚�
   });
 
   const api = h.sandbox.__AGContextMeter;
+  api.setComposerQuotaSummaryEnabledForTest(true);
   try {
     api.setContextLatestForTest(
       { model: 'Gemini 4 Hydrogen (Low)', modelId: 'MODEL_PLACEHOLDER_M527', actual: 12000, budget: 256000 },

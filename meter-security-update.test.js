@@ -83,6 +83,15 @@ test('安装安全性 1.1：宿主升级后重新安装，以新版宿主为打�
 
     // 2. 首次安装到 0.1.0
     const manifestV1 = await install({ path: targetAsar });
+    const { inspectDiskModules, loadModulesConfig } = require('./modules-config');
+    const firstDisk = inspectDiskModules(targetAsar);
+    assert.equal(firstDisk.meter, true);
+    assert.equal(firstDisk.chinese, false);
+    assert.equal(firstDisk.proxy, false);
+    const fresh = loadModulesConfig().modules;
+    assert.equal(fresh.enhance.promptTier, 0);
+    assert.equal(fresh.enhance.chineseTitle, false);
+    assert.equal(fresh.rehydrate.enabled, false);
     assert.equal(manifestV1.version, '0.1.0');
     assert.ok(fs.existsSync(manifestV1.backup));
     assert.match(manifestV1.backup, /app-0\.1\.0-.*-base\.asar/);
@@ -1943,17 +1952,14 @@ test('专项复核 14：隔离集成测试：状态机三分模型、目标定�
     assert.equal(status1.data.modules.chinese.enabled, false);
     assert.equal(status1.disk.chinese, false);
 
-    // 2. 模拟磁盘组件未就绪时的保护拦截：在未注入汉化的宿主上，客户端内尝试开启汉化
-    // 测试防护机制：绝对不能把异常吃掉！绝对不能将配置改成 true！绝不调用内部危险安装！
-    const resFail = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsar });
-
-    assert.equal(resFail.ok, false, '磁盘未就绪时 toggle-module 必须返回 ok: false');
-    assert.equal(resFail.status, 'install_failed', '状态必须明确为 install_failed');
-    assert.match(resFail.error, /未注入/, '错误描述必须清晰指出磁盘未注入组件');
-
-    // 核查配置：modules.json 必须保持 enabled: false，绝不偷偷改成已开启！
-    const cfgAfterFail = loadModulesConfig();
-    assert.equal(cfgAfterFail.modules.chinese.enabled, false, '安装失败后配置必须依然保持 false');
+    // 2. 首次明确启用汉化时写入隔离宿主，重启前保留原运行状态。
+    const firstEnable = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsar });
+    assert.equal(firstEnable.ok, true, firstEnable.error);
+    assert.equal(firstEnable.status, 'config_toggled');
+    assert.equal(firstEnable.disk.chineseReady, true);
+    assert.equal(firstEnable.runtime.chineseActive, false);
+    assert.equal(firstEnable.restartRequired, true);
+    assert.equal(loadModulesConfig().modules.chinese.enabled, true);
 
     // 3. 在全新隔离会话目录与纯净宿主副本上安装完整汉化包，模拟“客户端已开启汉化启动”，再测切回启动态的一致性判断
     process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state-boot-zh');

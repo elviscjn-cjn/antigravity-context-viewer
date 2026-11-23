@@ -640,7 +640,7 @@ test('ELV-99: 首次恢复完成后打开 Token 面板触发后台 syncTokenHist
     h.ensureEl('badge-tokens').click();
     h.ensureEl('h-tab-monthly').click();
     await h.flush();
-    assert.ok(settingsCalls >= 1, '打开 Token 面板应触发一次后台配置同步且保留临时视图');
+    assert.equal(settingsCalls, 0, '打开 Token 面板不应重复加载已经恢复的用户配置');
 
     const cur = api.getDefaultViewPrefsStateForTest().current;
     assert.deepEqual(JSON.parse(JSON.stringify(cur)), {

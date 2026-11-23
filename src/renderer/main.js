@@ -214,14 +214,14 @@
   let showTurnFooterStats = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_turn_footer_stats') : null;
-      return saved === 'false' ? false : true;
-    } catch { return true; }
+      return saved === 'true';
+    } catch { return false; }
   })();
   let showComposerQuotaSummary = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_composer_quota') : null;
-      return saved === 'false' ? false : true;
-    } catch { return true; }
+      return saved === 'true';
+    } catch { return false; }
   })();
   const quotaExpandedPoolKeys = new Set();
   let lastComputedQuotaView = null;
@@ -252,8 +252,8 @@
   let autoHideTopbarOnDockedPanel = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_autohide_topbar_docked') : null;
-      return saved === 'false' ? false : true;
-    } catch { return true; }
+      return saved === 'true';
+    } catch { return false; }
   })();
   let isTopbarHidden = topbarMode === 'hidden';
   let dockPosition = (() => {
@@ -272,8 +272,9 @@
   let legacyQuickMenuStyle = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_quick_menu_style') : null;
-      return VALID_QUICK_MENU_STYLES.includes(saved) ? saved : 'floating';
-    } catch { return 'floating'; }
+      if (saved === 'orb') return 'floating';
+      return VALID_QUICK_MENU_STYLES.includes(saved) ? saved : 'classic';
+    } catch { return 'classic'; }
   })();
   const readRadialSwitchPref = (key, legacyStyle, list) => {
     try {
@@ -1112,7 +1113,7 @@
   let heatYearOffset = 0;
   let activeCostModel = 'gemini-3.8-flash';
   let activeCostMode = 'ref';
-  let autoCheckUpdate = true;
+  let autoCheckUpdate = false;
   let allowBetaUpdates = false;
   let cachedLatestRelease = null;
 
@@ -2842,7 +2843,7 @@
       const marketplaceActive = typeof opts.marketplaceActive === 'boolean'
         ? opts.marketplaceActive
         : isHostMarketplaceActive();
-      if (marketplaceActive) {
+      if (marketplaceActive || (!showComposerQuotaSummary && !radialBottombarEnabled)) {
         csbBar.hidden = true;
         return;
       }
@@ -3525,7 +3526,7 @@
           state.livePendingRequest ||
           (latestCallRec && latestCallRec.status === 'streaming')
         );
-        const minIntervalMs = isActivelyBusy ? 250 : 950;
+        const minIntervalMs = isActivelyBusy ? 250 : 5000;
         if (nowMs - lastCompactionDomCheckAt < minIntervalMs) return;
       }
       lastCompactionCheckedRoute = state.route;
@@ -3830,7 +3831,9 @@
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pTokens.hidden = false;
-      renderActiveHeatView(true);
+      if (activeTokenView === 'models') renderModelUsageView();
+      else if (activeTokenView === 'requests') renderRequestsLiveView({ force: true });
+      else if (activeTokenView === 'tokens') renderActiveHeatView();
       const hasCachedHistory = Boolean(ANTIGRAVITY_TOKEN_DATA.updatedAt || ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens);
       if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
         void syncTokenHistoryFromHost(false);
@@ -4592,6 +4595,7 @@
     }
     if (changed && state.radialMenuOpen && state.radialAnchorMode === 'bottombar') closeRadialMenu(false);
     syncQuickMenuStyleUi();
+    if (changed) ensureComposerStatusBarMounted();
     persistRadialSwitches(opts);
     return radialBottombarEnabled;
   }
@@ -5383,6 +5387,7 @@
     if (typeof renderComposerQuotaSummary === 'function') {
       renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
     }
+    ensureComposerStatusBarMounted();
     if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
       void saveSettingsPayloadBridge({ showComposerQuotaSummary });
     }
@@ -6081,7 +6086,7 @@
     setPillActive(el('src-tab-cli'), src === 'cli');
 
     if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
-      applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+      applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload, { renderTokenSubview: true });
     } else {
       const bySrc = ANTIGRAVITY_TOKEN_DATA.dailyMapBySource || {};
       const srcMap = bySrc[src] || bySrc.all || ANTIGRAVITY_TOKEN_DATA.dailyMap;
@@ -7868,7 +7873,10 @@
     }
     if (tokensMain) {
       tokensMain.style.display = v === 'tokens' ? 'block' : 'none';
-      if (v === 'tokens') tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+      if (v === 'tokens') {
+        tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+        renderActiveHeatView();
+      }
     }
     if (statCards) statCards.style.display = v === 'tokens' ? 'grid' : 'none';
     if (planBar) planBar.style.display = v === 'tokens' ? 'flex' : 'none';
@@ -15480,7 +15488,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     if (s && s.pendingLsRestart !== undefined) {
       hasPendingLsReload = Boolean(s.pendingLsRestart);
     }
-    const useSavedAfterUpdate = Boolean(s?.clientUpdatedSinceSave && [0, 1, 2, 3, 4].includes(Number(s?.savedPromptTier)));
+    const useSavedAfterUpdate = Boolean(s?.clientUpdatedSinceSave && s.savedPromptTier != null && [0, 1, 2, 3, 4].includes(Number(s.savedPromptTier)));
     if (syncDrafts && s && statusData?.supported !== false) {
       if (forceSyncDrafts || !enhanceTierDirty) {
         const tierVal = useSavedAfterUpdate ? s.savedPromptTier : (s.promptTier ?? s.detectedTier);
@@ -17740,7 +17748,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     return { firstStr, firstDate, today, winStart, winEnd, totalDays, canPrev, canNext };
   }
 
-  function applyTokenHistoryPayload(payload) {
+  function applyTokenHistoryPayload(payload, { renderTokenSubview = false } = {}) {
     if (!payload || typeof payload !== 'object') return false;
     const incomingScope = payload.accountScopeKey || (payload.planStatus?.email ? String(payload.planStatus.email).trim().toLowerCase() : null);
     if (payload.isAccountSwitched || (incomingScope && typeof handleQuotaAccountSwitch === 'function' && handleQuotaAccountSwitch(incomingScope))) {
@@ -17771,9 +17779,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     }
     if (Array.isArray(payload.speedRecords)) {
       ANTIGRAVITY_TOKEN_DATA.speedRecords = payload.speedRecords;
-      if (!isContextSettingsView && activeContextTab === 'speed') {
+      if (!el('panel')?.hidden && !isContextSettingsView && activeContextTab === 'speed') {
         renderSpeedComparisonTab();
-      } else if (!isContextSettingsView && activeContextTab === 'models') {
+      } else if (!el('panel')?.hidden && !isContextSettingsView && activeContextTab === 'models') {
         renderModelSettingsTab();
       }
     }
@@ -18226,12 +18234,13 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
     renderActiveCostEstimateView();
-    renderModelUsageView();
+    const tokenPanelVisible = renderTokenSubview || !el('panel-tokens')?.hidden;
+    if (tokenPanelVisible && activeTokenView === 'models') renderModelUsageView();
 
     computeTimelineWindow();
-    renderActiveHeatView(true);
+    if (tokenPanelVisible && activeTokenView === 'tokens') renderActiveHeatView();
     if (typeof renderCrossSessionInsightsSection === 'function') renderCrossSessionInsightsSection();
-    if (activeTokenView === 'requests' || (Array.isArray(payload?.recentRequestLogs) && payload.recentRequestLogs.length > 0)) {
+    if (tokenPanelVisible && activeTokenView === 'requests') {
       renderRequestsLiveView({ force: true });
     }
     return true;
@@ -18612,6 +18621,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           if (typeof renderComposerQuotaSummary === 'function') {
             renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
           }
+          ensureComposerStatusBarMounted();
         }
         const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
         if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
@@ -18697,26 +18707,23 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     try {
       const fetchHistoryAsync = async () => {
         const knownRevision = forceFlag ? null : ANTIGRAVITY_TOKEN_DATA.rawPayload?.revision || null;
+        const knownAccountKey = knownRevision ? ANTIGRAVITY_TOKEN_DATA.rawPayload?.accountKey || null : null;
         const ipcFn = (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function')
-          ? () => window.contextMeterAPI.getTokenHistory(forceFlag, knownRevision)
+          ? () => window.contextMeterAPI.getTokenHistory(forceFlag, knownRevision, knownAccountKey)
           : null;
         if (!ipcFn && !hasLiveHttpBridge()) return null;
         try {
           const out = await callBackendWithPriority({
             ipcCall: ipcFn,
             liveRoute: '/token-history',
-            liveBody: { force: forceFlag, knownRevision }
+            liveBody: { force: forceFlag, knownRevision, knownAccountKey }
           });
           return out.result || null;
         } catch {
           return null;
         }
       };
-      const restoreStep = startupRestorePromise
-        ? startupRestorePromise
-        : (hasCompletedStartupRestore
-          ? restoreSettingsFromHost({ preserveSessionView: true })
-          : restoreSettingsFromHost());
+      const restoreStep = startupRestorePromise || (!hasCompletedStartupRestore ? restoreSettingsFromHost() : null);
       const [, res] = await Promise.all([restoreStep, fetchHistoryAsync()]);
       if (state.disposed) return;
       if (typeof window !== 'undefined' && window.__AGContextMeterHistory) {
@@ -27659,7 +27666,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         void syncQuotaFromHost(false);
       }
     }
-    if (Date.now() - lastHistorySync > 15000) {
+    const historyInView = !el('panel-tokens')?.hidden
+      || (!el('panel')?.hidden && !isContextSettingsView && activeContextTab === 'speed');
+    if (Date.now() - lastHistorySync > (historyInView ? 15000 : 60000)) {
       const isInitialSync = lastHistorySync === 0;
       lastHistorySync = Date.now();
       void syncTokenHistoryFromHost(false);
