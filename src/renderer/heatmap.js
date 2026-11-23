@@ -58,15 +58,62 @@
     }
   }
 
+  function computeDailyMapSig() {
+    const map = ANTIGRAVITY_TOKEN_DATA?.dailyMap;
+    if (!map) return '0:0';
+    const keys = Object.keys(map);
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const rec = map[k];
+      const s = rec ? `${k}:${rec.total || 0}:${rec.input || 0}:${rec.output || 0}:${rec.cache || 0}` : k;
+      for (let j = 0; j < s.length; j++) {
+        h ^= s.charCodeAt(j);
+        h = Math.imul(h, 16777619) >>> 0;
+      }
+    }
+    return `${keys.length}:${h.toString(36)}`;
+  }
+
+  function buildHeatRenderSig(viewName, win, extra = '') {
+    const scaleStr = (typeof getEffectiveHeatmapScale === 'function' ? getEffectiveHeatmapScale() : []).join(',');
+    const themeStr = typeof resolveEffectiveTheme === 'function' ? resolveEffectiveTheme() : '';
+    const accentStr = (typeof customColors !== 'undefined' && customColors && customColors.tokenAccent) ? customColors.tokenAccent : '';
+    const planKey = `${ANTIGRAVITY_TOKEN_DATA?.planStatus?.planName || ''}:${ANTIGRAVITY_TOKEN_DATA?.customPlanSettings?.actualPricePaid ?? ''}:${ANTIGRAVITY_TOKEN_DATA?.customPlanSettings?.currency || ''}`;
+    return [
+      viewName,
+      win.firstStr || '',
+      formatLocalYmd(win.winStart),
+      formatLocalYmd(win.winEnd),
+      formatLocalYmd(win.today),
+      computeDailyMapSig(),
+      typeof activeTokenSource !== 'undefined' ? activeTokenSource : '',
+      typeof activeTokenAccountFilter !== 'undefined' ? activeTokenAccountFilter : '',
+      typeof activeCostModel !== 'undefined' ? activeCostModel : '',
+      typeof activeCostMode !== 'undefined' ? activeCostMode : '',
+      typeof currentPanelLanguage !== 'undefined' ? currentPanelLanguage : '',
+      themeStr,
+      scaleStr,
+      accentStr,
+      planKey,
+      cumLinkedDailyDate || '',
+      cumLockedKey || '',
+      cumExpandedWeekKey || '',
+      extra
+    ].join('|');
+  }
+
   function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
     if (!colsBox || !monthsBox) return;
     const win = computeTimelineWindow();
-    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}:${cumLinkedDailyDate || ''}`;
-    if (!forceRebuild && colsBox.children.length > 0 && colsBox.getAttribute('data-sig') === sig) return;
+    const sig = buildHeatRenderSig('daily', win);
+    if (!forceRebuild && colsBox.children.length === 52 && colsBox.getAttribute('data-sig') === sig) {
+      updateSummaryBar('daily', colsBox._cachedSummaryDates || []);
+      return;
+    }
 
-    colsBox.replaceChildren();
     monthsBox.replaceChildren();
     colsBox.setAttribute('data-sig', sig);
 
@@ -83,13 +130,65 @@
       list.push({ date: d, key, tokens, rec, isFuture, isToday: key === todayKey, isUnactivated });
     }
 
+    let pool = colsBox._cellPool;
+    if (!pool || colsBox.children.length !== 52) {
+      colsBox.replaceChildren();
+      pool = [];
+      for (let c = 0; c < 52; c++) {
+        const col = document.createElement('div');
+        col.className = 'heat-week-col';
+        const colCells = [];
+        for (let rIdx = 0; rIdx < 7; rIdx++) {
+          const cell = document.createElement('div');
+          cell.className = 'heat-cell lvl-0';
+          cell._meta = null;
+          const showPop = () => {
+            const meta = cell._meta;
+            if (!meta) return;
+            const r = cell.getBoundingClientRect ? cell.getBoundingClientRect() : { left: 0, top: 0, width: 10 };
+            const d = meta.date;
+            const dateLabel = currentPanelLanguage === 'en'
+              ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+              : (currentPanelLanguage === 'zh-TW'
+                ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
+                : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
+            const costInfo = getDailyModelCost(meta.rec, meta.key, activeCostModel, { mode: activeCostMode });
+            const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
+            heatPopDate.textContent = `${dateLabel}${meta.isToday ? t('heat.today') : (meta.key === meta.firstStr ? t('heat.firstUse') : '')}`;
+            heatPopVal.textContent = meta.tokens > 0
+              ? `${fmtYi(meta.tokens)} Tokens${costStr}`
+              : (meta.isFuture ? t('heat.future') : (meta.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
+            if (meta.rec) {
+              heatPopDet.innerHTML = `
+                <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(meta.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
+                <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(meta.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
+                <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(meta.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
+              `.trim();
+              heatPopDet.style.display = 'flex';
+            } else {
+              heatPopDet.style.display = 'none';
+            }
+            heatPop.style.left = `${r.left + r.width / 2}px`;
+            heatPop.style.top = `${r.top - 6}px`;
+            heatPop.style.opacity = '1';
+          };
+          cell.addEventListener('mouseenter', showPop);
+          cell.addEventListener('mouseleave', hidePopover);
+          cell.addEventListener('click', showPop);
+          col.appendChild(cell);
+          colCells.push(cell);
+        }
+        colsBox.appendChild(col);
+        pool.push(colCells);
+      }
+      colsBox._cellPool = pool;
+    }
+
     const monthMarkers = [];
     let lastM = -1;
     let lastCol = -10;
 
     for (let c = 0; c < 52; c++) {
-      const col = document.createElement('div');
-      col.className = 'heat-week-col';
       const slice = list.slice(c * 7, (c + 1) * 7);
       const mNum = slice[0].date.getMonth() + 1;
       if (mNum !== lastM) {
@@ -100,57 +199,38 @@
         lastM = mNum;
       }
 
-      slice.forEach(item => {
-        const cell = document.createElement('div');
+      const colCells = pool[c];
+      for (let rIdx = 0; rIdx < slice.length; rIdx++) {
+        const item = slice[rIdx];
+        const cell = colCells[rIdx];
+        cell._meta = {
+          date: item.date,
+          key: item.key,
+          tokens: item.tokens,
+          rec: item.rec,
+          isFuture: item.isFuture,
+          isToday: item.isToday,
+          isUnactivated: item.isUnactivated,
+          firstStr: win.firstStr
+        };
         const lvl = getLvl(item.tokens);
         const isLinked = Boolean(cumLinkedDailyDate && item.key === cumLinkedDailyDate);
-        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isUnactivated ? ' is-unactivated' : ''}${item.isToday ? ' is-today' : ''}${isLinked ? ' is-cum-linked' : ''}`;
-        if (item.tokens > 0 && typeof getContinuousHeatColor === 'function') {
-          const contCol = getContinuousHeatColor(item.tokens, 'heat');
-          if (contCol) {
-            cell.style.backgroundColor = contCol;
-            cell.setAttribute('data-heat-color', contCol);
-          }
+        const nextCls = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isUnactivated ? ' is-unactivated' : ''}${item.isToday ? ' is-today' : ''}${isLinked ? ' is-cum-linked' : ''}`;
+        if (cell.className !== nextCls) cell.className = nextCls;
+        const contCol = (item.tokens > 0 && typeof getContinuousHeatColor === 'function')
+          ? getContinuousHeatColor(item.tokens, 'heat')
+          : '';
+        if (contCol) {
+          if (cell.style.backgroundColor !== contCol) cell.style.backgroundColor = contCol;
+          cell.setAttribute('data-heat-color', contCol);
+        } else {
+          if (cell.style.backgroundColor) cell.style.backgroundColor = '';
+          if (typeof cell.removeAttribute === 'function') cell.removeAttribute('data-heat-color');
+          else if (cell.attributes) delete cell.attributes['data-heat-color'];
         }
         cell.setAttribute('data-date', item.key);
         cell.setAttribute('data-tokens', String(item.tokens));
-
-        const showPop = () => {
-          const d = item.date;
-          const dateLabel = currentPanelLanguage === 'en'
-            ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-            : (currentPanelLanguage === 'zh-TW'
-              ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
-              : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
-          heatPopDate.textContent = `${dateLabel}${item.isToday ? t('heat.today') : (item.key === win.firstStr ? t('heat.firstUse') : '')}`;
-          const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
-          heatPopVal.textContent = item.tokens > 0
-            ? `${fmtYi(item.tokens)} Tokens${costStr}`
-            : (item.isFuture ? t('heat.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
-          if (item.rec) {
-            heatPopDet.innerHTML = `
-              <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
-              <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(item.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
-              <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(item.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
-            `.trim();
-            heatPopDet.style.display = 'flex';
-          } else {
-            heatPopDet.style.display = 'none';
-          }
-          const r = cell.getBoundingClientRect();
-          heatPop.style.left = `${r.left + r.width / 2}px`;
-          heatPop.style.top = `${r.top - 6}px`;
-          heatPop.style.opacity = '1';
-        };
-
-        cell.addEventListener('mouseenter', showPop);
-        cell.addEventListener('mouseleave', hidePopover);
-        cell.addEventListener('click', showPop);
-
-        col.appendChild(cell);
-      });
-      colsBox.appendChild(col);
+      }
     }
 
     const shortMonthsEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -162,17 +242,25 @@
       monthsBox.appendChild(lbl);
     });
 
-    updateSummaryBar('daily', list.map(x => x.key));
+    const summaryDates = list.map(x => x.key);
+    colsBox._cachedSummaryDates = summaryDates;
+    updateSummaryBar('daily', summaryDates);
   }
 
-  function renderHeatmapWeekly() {
+  function renderHeatmapWeekly(forceRebuild = false) {
     const box = el('h-weekly-box');
     if (!box) return;
-    box.replaceChildren();
 
     const scale = getEffectiveHeatmapScale();
     const [cEmpty] = scale;
     const win = computeTimelineWindow();
+    const sig = buildHeatRenderSig('weekly', win);
+    if (!forceRebuild && box.children.length > 0 && box.getAttribute('data-sig') === sig) {
+      updateSummaryBar('weekly', box._cachedSummaryDates || []);
+      return;
+    }
+    box.replaceChildren();
+    box.setAttribute('data-sig', sig);
     const todayTs = win.today.getTime();
     const totalWeeks = 52;
     const weeksData = [];
@@ -243,8 +331,9 @@
       col.appendChild(fill);
 
       const showPop = () => {
+        const r = col.getBoundingClientRect ? col.getBoundingClientRect() : { left: 0, top: 0, width: 10 };
         const weekDates = [];
-        for (let r = 0; r < 7; r++) weekDates.push(formatLocalYmd(addDays(w.sDate, r)));
+        for (let rIdx = 0; rIdx < 7; rIdx++) weekDates.push(formatLocalYmd(addDays(w.sDate, rIdx)));
         const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, weekDates, activeCostModel, {
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
@@ -254,7 +343,6 @@
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : (w.isFutureWeek ? t('tokens.heat.futureTip') : '0 Tokens');
         heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
         heatPopDet.style.display = 'block';
-        const r = col.getBoundingClientRect();
         heatPop.style.left = `${r.left + r.width / 2}px`;
         heatPop.style.top = `${r.top - 6}px`;
         heatPop.style.opacity = '1';
@@ -269,13 +357,18 @@
 
     const allWinDates = [];
     for (let i = 0; i < win.totalDays; i++) allWinDates.push(formatLocalYmd(addDays(win.winStart, i)));
+    box._cachedSummaryDates = allWinDates;
     updateSummaryBar('weekly', allWinDates);
   }
 
-  function renderHeatmapCum() {
+  function renderHeatmapCum(forceRebuild = false) {
     const box = el('h-cum-box');
     if (!box) return;
-    box.replaceChildren();
+
+    const scrollBox = el('h-scroll-box') || box.parentElement;
+    const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
+    const W = (rect && rect.width > 120) ? rect.width : 670;
+    const isNarrow = W < 460;
 
     const core = globalThis.__AGContextMeterCore || {};
     const win = computeTimelineWindow();
@@ -289,6 +382,15 @@
     const rangeEl = el('h-win-range');
     if (rangeEl) rangeEl.textContent = `${formatDotYmd(win.winStart)} – ${formatDotYmd(activeEnd)}`;
 
+    const sig = buildHeatRenderSig('cum', win, isNarrow ? 'narrow' : 'wide');
+    if (!forceRebuild && box.children.length > 0 && box.getAttribute('data-sig') === sig) {
+      if (box._cachedCumSummary) _lastCumSummary = box._cachedCumSummary;
+      updateSummaryBar('cum', box._cachedSummaryDates || []);
+      return;
+    }
+    box.replaceChildren();
+    box.setAttribute('data-sig', sig);
+
     const summary = typeof core.computeCumulativeStripSummary === 'function'
       ? core.computeCumulativeStripSummary(map, startKey, endKey)
       : {
@@ -298,6 +400,7 @@
         concentrationOmittedReason: 'empty', ruler: { status: 'zero', pct: 0, value: 0, ticks: [] }
       };
     _lastCumSummary = summary;
+    box._cachedCumSummary = summary;
 
     // 切换账号/区间后若锁定键不再属于当前窗口，自动清理失效选中项
     if (cumLockedKey && !summary.segments.some(s => s.key === cumLockedKey)) {
@@ -309,16 +412,12 @@
     }
 
     const rangeDates = summary.dailyEntries.map(d => d.date);
+    box._cachedSummaryDates = rangeDates;
     const costAgg = calculateIntervalCost(map, rangeDates, activeCostModel, {
       mode: activeCostMode,
       todayStr: todayKey
     });
     const costText = formatUsdMetricDisplay(costAgg.totalCostUSD);
-
-    const scrollBox = el('h-scroll-box') || box.parentElement;
-    const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
-    const W = (rect && rect.width > 120) ? rect.width : 670;
-    const isNarrow = W < 460;
 
     const rootEl = document.createElement('div');
     rootEl.className = `cum-root${isNarrow ? ' is-narrow' : ''}`;
@@ -504,6 +603,7 @@
     const segPalette = isLight ? segPaletteLight : segPaletteDark;
 
     const showSegPop = (seg, anchorNode) => {
+      const r = anchorNode && anchorNode.getBoundingClientRect ? anchorNode.getBoundingClientRect() : { left: 100, top: 100, width: 20 };
       const segDates = seg.days.map(d => d.date);
       const segCost = calculateIntervalCost(map, segDates, activeCostModel, { mode: activeCostMode, todayStr: todayKey });
       const costSuffix = segCost.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(segCost.totalCostUSD, { detail: true })}` : '';
@@ -517,7 +617,6 @@
         : `0 Tokens (0.0%)`;
       heatPopDet.innerHTML = `<span>${t('tokens.heat.cumTotalLbl')}: ${fmtYi(seg.cumulativeTokens)} Tokens (${summary.intervalTotal > 0 ? ((seg.cumulativeTokens / summary.intervalTotal) * 100).toFixed(1) : '0.0'}%)</span>`;
       heatPopDet.style.display = 'block';
-      const r = anchorNode && anchorNode.getBoundingClientRect ? anchorNode.getBoundingClientRect() : { left: 100, top: 100, width: 20 };
       heatPop.style.left = `${r.left + (r.width || 0) / 2}px`;
       heatPop.style.top = `${r.top - 6}px`;
       heatPop.style.opacity = '1';
@@ -855,10 +954,9 @@
     }
   }
 
-  function renderHeatmapMonthly() {
+  function renderHeatmapMonthly(forceRebuild = false) {
     const box = el('h-monthly-box');
     if (!box) return;
-    box.replaceChildren();
 
     const scrollBox = el('h-scroll-box') || box.parentElement;
     const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
@@ -867,6 +965,13 @@
 
     const scale = getEffectiveHeatmapScale();
     const win = computeTimelineWindow();
+    const sig = buildHeatRenderSig('monthly', win, `${heatMonthOffset}:${W}`);
+    if (!forceRebuild && box.children.length > 0 && box.getAttribute('data-sig') === sig) {
+      updateSummaryBar('monthly', box._cachedSummaryDates || []);
+      return;
+    }
+    box.replaceChildren();
+    box.setAttribute('data-sig', sig);
     const today = win.today;
     const todayKey = formatLocalYmd(today);
 
@@ -933,6 +1038,7 @@
       }
 
       const showPop = () => {
+        const r = cell.getBoundingClientRect ? cell.getBoundingClientRect() : { left: 0, top: 0, width: bestS };
         const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
         const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
         const mDateLabel = currentPanelLanguage === 'en'
@@ -954,7 +1060,6 @@
         } else {
           heatPopDet.style.display = 'none';
         }
-        const r = cell.getBoundingClientRect();
         heatPop.style.left = `${r.left + r.width / 2}px`;
         heatPop.style.top = `${r.top - 6}px`;
         heatPop.style.opacity = '1';
@@ -968,13 +1073,13 @@
     }
 
     box.appendChild(grid);
+    box._cachedSummaryDates = dateKeys;
     updateSummaryBar('monthly', dateKeys);
   }
 
-  function renderHeatmapYearly() {
+  function renderHeatmapYearly(forceRebuild = false) {
     const box = el('h-yearly-box');
     if (!box) return;
-    box.replaceChildren();
 
     const scrollBox = el('h-scroll-box') || box.parentElement;
     const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
@@ -983,6 +1088,13 @@
 
     const scale = getEffectiveHeatmapScale();
     const win = computeTimelineWindow();
+    const sig = buildHeatRenderSig('yearly', win, `${heatYearOffset}:${W}`);
+    if (!forceRebuild && box.children.length > 0 && box.getAttribute('data-sig') === sig) {
+      updateSummaryBar('yearly', box._cachedSummaryDates || []);
+      return;
+    }
+    box.replaceChildren();
+    box.setAttribute('data-sig', sig);
     const today = win.today;
     const thisYear = today.getFullYear();
     const thisMonth = today.getMonth();
@@ -1201,6 +1313,7 @@
       g.appendChild(text);
 
       const showPop = () => {
+        const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
         const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, item.dates, activeCostModel, {
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
@@ -1214,7 +1327,6 @@
         heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}</span>`;
         heatPopDet.style.display = 'block';
 
-        const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
         heatPop.style.left = `${r.left + (r.width || 0) / 2}px`;
         heatPop.style.top = `${r.top - 6}px`;
         heatPop.style.opacity = '1';
@@ -1228,6 +1340,7 @@
     });
 
     box.appendChild(svg);
+    box._cachedSummaryDates = allYearDates;
     updateSummaryBar('yearly', allYearDates);
   }
 

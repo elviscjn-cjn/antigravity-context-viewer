@@ -686,6 +686,9 @@ function setBoundedMap(map, key, val, maxEntries) {
   }
 }
 
+const _collectorHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 8, rejectUnauthorized: false });
+const _collectorHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 8 });
+
 function request(origin, method, body, token, signal = null) {
   const url = method ? `${origin}/exa.language_server_pb.LanguageServerService/${method}` : origin + '/';
   return new Promise((resolve, reject) => {
@@ -695,9 +698,10 @@ function request(origin, method, body, token, signal = null) {
       reject(err);
       return;
     }
-    const transport = url.startsWith('https:') ? https : http;
+    const isHttps = url.startsWith('https:');
+    const transport = isHttps ? https : http;
     const req = transport.request(url, {
-      agent: false,
+      agent: isHttps ? _collectorHttpsAgent : _collectorHttpAgent,
       rejectUnauthorized: false,
       method: method ? 'POST' : 'GET',
       headers: method ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {},
@@ -1261,8 +1265,11 @@ async function collect(origin, id, options = {}) {
   }
 }
 
+const _turnStateGmCountCache = new Map();
+
 /**
  * 轻量级轮次状态与墙钟耗时探测（兼容 Antigravity 2.34.0 HTTP+HTTPS 与 authBootstrap）
+ * 优先走 GetAllCascadeTrajectories 摘要 + 增量尾部 GeneratorMetadata，避免拉取数十 MB 全量 steps。
  */
 async function collectTurnState(origin, id, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(origin);
@@ -1287,22 +1294,63 @@ async function collectTurnState(origin, id, options = {}) {
     }
   };
 
-  const head = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 0 });
-  const totalSteps = Number(head.numTotalSteps ?? head.trajectory?.steps?.length ?? 0);
-  const totalGm = Number(head.numTotalGeneratorMetadata ?? head.trajectory?.generatorMetadata?.length ?? 0);
-  const stepWindow = 80;
-  let stepOffset = Math.max(0, totalSteps - stepWindow);
-  const [stepsPage, gmPage] = await Promise.all([
-    totalSteps > 0
-      ? call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset, trajectoryVerbosity: 1 })
-      : Promise.resolve({ steps: [] }),
-    totalGm > 0
-      ? call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, totalGm - 40), includeMessages: false })
-      : Promise.resolve({ generatorMetadata: [] })
-  ]);
+  let summaryEntry = null;
+  try {
+    const allSummaries = await call('GetAllCascadeTrajectories', {});
+    summaryEntry = allSummaries?.trajectorySummaries?.[id] || allSummaries?.trajectorySummaries?.[id.toLowerCase()] || null;
+  } catch { }
 
-  let tailSteps = Array.isArray(stepsPage?.steps) ? stepsPage.steps : [];
-  let tailGm = Array.isArray(gmPage?.generatorMetadata) ? gmPage.generatorMetadata : [];
+  let cascadeStatus = null;
+  let totalSteps = 0;
+  let totalGm = 0;
+  let stepOffset = 0;
+  let tailSteps = [];
+  let tailGm = [];
+  const stepWindow = 80;
+
+  if (summaryEntry && Number.isFinite(Number(summaryEntry.stepCount))) {
+    cascadeStatus = summaryEntry.status || null;
+    totalSteps = Math.max(0, Number(summaryEntry.stepCount));
+    const hintUserStep = Number.isInteger(Number(summaryEntry.lastUserInputStepIndex)) && Number(summaryEntry.lastUserInputStepIndex) >= 0
+      ? Number(summaryEntry.lastUserInputStepIndex)
+      : null;
+    stepOffset = Math.max(0, totalSteps - stepWindow);
+    if (hintUserStep !== null && hintUserStep < stepOffset && (totalSteps - hintUserStep) <= 480) {
+      stepOffset = hintUserStep;
+    }
+    const gmCacheKey = `${origin}|${id.toLowerCase()}`;
+    const prevGmCount = _turnStateGmCountCache.get(gmCacheKey);
+    const gmReqOffset = (Number.isInteger(prevGmCount) && prevGmCount > 40) ? Math.max(0, prevGmCount - 40) : 0;
+    const [stepsPage, gmPage] = await Promise.all([
+      totalSteps > 0
+        ? call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset, trajectoryVerbosity: 1 })
+        : Promise.resolve({ steps: [] }),
+      totalSteps > 0
+        ? call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: gmReqOffset, includeMessages: false })
+        : Promise.resolve({ generatorMetadata: [] })
+    ]);
+    tailSteps = Array.isArray(stepsPage?.steps) ? stepsPage.steps : [];
+    const fetchedGm = Array.isArray(gmPage?.generatorMetadata) ? gmPage.generatorMetadata : [];
+    totalGm = gmReqOffset + fetchedGm.length;
+    _turnStateGmCountCache.set(gmCacheKey, totalGm);
+    tailGm = fetchedGm.length > 40 ? fetchedGm.slice(-40) : fetchedGm;
+  } else {
+    const head = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 0 });
+    cascadeStatus = head.status || null;
+    totalSteps = Number(head.numTotalSteps ?? head.trajectory?.steps?.length ?? 0);
+    totalGm = Number(head.numTotalGeneratorMetadata ?? head.trajectory?.generatorMetadata?.length ?? 0);
+    stepOffset = Math.max(0, totalSteps - stepWindow);
+    const [stepsPage, gmPage] = await Promise.all([
+      totalSteps > 0
+        ? call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset, trajectoryVerbosity: 1 })
+        : Promise.resolve({ steps: [] }),
+      totalGm > 0
+        ? call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, totalGm - 40), includeMessages: false })
+        : Promise.resolve({ generatorMetadata: [] })
+    ]);
+    tailSteps = Array.isArray(stepsPage?.steps) ? stepsPage.steps : [];
+    tailGm = Array.isArray(gmPage?.generatorMetadata) ? gmPage.generatorMetadata : [];
+  }
 
   if (stepOffset > 0 && !tailSteps.some(s => s?.userInput)) {
     let backOffset = stepOffset;
@@ -1344,13 +1392,13 @@ async function collectTurnState(origin, id, options = {}) {
     steps: tailSteps,
     stepOffset,
     generatorMetadata: tailGm,
-    cascadeStatus: head.status || null,
+    cascadeStatus,
     nowMs
   });
 
   return {
     conversation: id,
-    cascadeStatus: head.status || null,
+    cascadeStatus,
     numTotalSteps: totalSteps,
     numTotalGeneratorMetadata: totalGm,
     turnTiming,
@@ -4682,7 +4730,8 @@ async function fetchUserStatusFromHost(options = {}) {
   }
   const originScope = normalizeQuotaOriginScope(options);
   const cachedEntry = cachedUserStatusByOrigin.get(originScope) || null;
-  if (!options.agDir && !options.force && cachedEntry?.status && Date.now() - (cachedEntry.fetchedAt || 0) < 60000) {
+  const userStatusTtlMs = (options.force && !options.forceUserStatus) ? 15000 : 60000;
+  if (!options.agDir && !options.forceUserStatus && cachedEntry?.status && Date.now() - (cachedEntry.fetchedAt || 0) < userStatusTtlMs) {
     return cachedEntry.status;
   }
   try {
@@ -8042,6 +8091,25 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       };
       safeWriteJsonSync(archivePathV1, v1Payload);
     }
+  } catch { }
+
+  try {
+    const topReq = Array.isArray(out.recentRequestLogs) && out.recentRequestLogs[0]
+      ? `${out.recentRequestLogs[0].callId || ''}:${out.recentRequestLogs[0].status || ''}:${out.recentRequestLogs[0].outputTokens || 0}`
+      : '';
+    const revRaw = [
+      archiveSig || '',
+      out.summary?.grandTotalTokens || 0,
+      out.summary?.todayTokens || 0,
+      Array.isArray(out.recentRequestLogs) ? out.recentRequestLogs.length : 0,
+      topReq,
+      out.accountScopeKey || '',
+      out.isAccountSwitched ? 1 : 0,
+      out.planStatus?.planName || '',
+      out.planStatus?.email || '',
+      JSON.stringify(out.customPlanSettings || null)
+    ].join('|');
+    out.revision = crypto.createHash('sha1').update(revRaw).digest('hex').slice(0, 16);
   } catch { }
 
   return {

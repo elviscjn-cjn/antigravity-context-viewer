@@ -163,6 +163,20 @@ test('上游词典合并一致性、版权署名及 2.34.0 核心界面翻译与
   assert.equal(engine.translate('Terminal Commands'), '终端命令权限');
 });
 
+test('性能回归：汉化启动后仅增量监听，不再每 15 秒全树扫描', () => {
+  const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.match(rtSrc, /function startObserver\(\)[\s\S]*?safeFullScan\(\);/);
+  assert.doesNotMatch(rtSrc, /setInterval\(scheduleIdleScan,\s*15000\)/);
+  assert.doesNotMatch(rtSrc, /function scheduleIdleScan\(/);
+});
+
+test('性能回归：页面切换新增的大子树按 6ms 分片翻译，不递归阻塞', () => {
+  const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.match(rtSrc, /if \(scanId\) translateElement\(child, scanId\);\s*else enqueueNode\(child\);/);
+  assert.match(rtSrc, /getNow\(\) - startMs\) >= 6/);
+  assert.doesNotMatch(rtSrc, /pendingNodes\.length < 500/);
+});
+
 test('Issue #58 物理隔离矩阵: UI 控件与思考药丸汉化，正文/Markdown/代码块/用户输入/终端与工具输出/插件自身全保留原文', () => {
   const dict = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'zh-CN.json'), 'utf8'));
   const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
@@ -357,3 +371,109 @@ test('生命周期闭环: 2.34.0 宿主的开启/关闭/冷启动持久化/卸�
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('Antigravity 2.34.0 虚拟化 Markdown 与气泡属性隔离及非品牌词零同步回流回归校验', () => {
+  const dict = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'zh-CN.json'), 'utf8'));
+  const runtimeCode = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  const srcRuntimeCode = fs.readFileSync(path.join(ROOT_DIR, 'src', 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.equal(runtimeCode, srcRuntimeCode, 'i18n 与 src/i18n 运行时脚本必须保持一致');
+
+  const d = makeMockDom();
+  let rectCalls = 0;
+
+  const uiBtn = d.el('button', { attrs: { 'data-testid': 'settings-button' } });
+  const uiText = d.text('Settings');
+  uiBtn.appendChild(uiText);
+  uiBtn.getBoundingClientRect = () => {
+    rectCalls++;
+    return { width: 60, height: 24, top: 10, left: 20 };
+  };
+
+  // Antigravity 2.34.0 真实结构：无 .markdown-body/.prose，使用 data-bubble-side="agent" + data-quotable + data-markdown-root
+  const agentBubble = d.el('div', { attrs: { 'data-bubble-side': 'agent', 'data-step-index': '1' } });
+  const quotableWrap = d.el('div', { attrs: { 'data-quotable': '' } });
+  const mdRoot = d.el('div', { attrs: { 'data-markdown-root': '', 'data-markdown-virtualized': 'true' } });
+  const mdBlock = d.el('div', { attrs: { 'data-markdown-block-index': '0' } });
+  const mdPara = d.el('p');
+  const mdReplyText = d.text('Settings and Clear cache in Workspace');
+  mdPara.appendChild(mdReplyText);
+  mdBlock.appendChild(mdPara);
+  mdRoot.appendChild(mdBlock);
+  quotableWrap.appendChild(mdRoot);
+  agentBubble.appendChild(quotableWrap);
+
+  // 用户消息气泡内的操作栏白名单按钮仍应放行汉化
+  const userBubble = d.el('div', { attrs: { 'data-bubble-side': 'user' } });
+  const userActions = d.el('div', { attrs: { 'data-testid': 'user-message-actions' } });
+  const actionBtn = d.el('button');
+  const actionText = d.text('Copy');
+  actionBtn.appendChild(actionText);
+  userActions.appendChild(actionBtn);
+  userBubble.appendChild(userActions);
+
+  d.body.appendChild(uiBtn);
+  d.body.appendChild(agentBubble);
+  d.body.appendChild(userBubble);
+
+  const winObj = {
+    __AGY_I18N_DATA__: dict,
+    __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' },
+    document: { documentElement: d.body, body: d.body, readyState: 'complete' },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1,
+    Map,
+    Set,
+    WeakMap
+  };
+  winObj.window = winObj;
+  winObj.globalThis = winObj;
+
+  vm.runInNewContext(runtimeCode, winObj);
+
+  assert.equal(uiText.nodeValue, '设置', '壳层 UI 按钮正常汉化');
+  assert.equal(mdReplyText.nodeValue, 'Settings and Clear cache in Workspace', '2.34.0 虚拟化 Markdown 与助手气泡正文必须严格隔离保持原文');
+  assert.equal(actionText.nodeValue, '复制', '气泡内白名单操作栏按钮仍保持正常汉化');
+  assert.equal(rectCalls, 0, '非品牌词节点不得触发 getBoundingClientRect 强制同步回流');
+});
+
+test('perf: 鼠标划过 #ag-context-meter 或受保护 Markdown 正文块时首行短路，零触发 50ms 浮层扫描定时器', () => {
+  const dict = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'zh-CN.json'), 'utf8'));
+  const runtimeCode = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  let scheduledTimers = 0;
+  const docListeners = new Map();
+  const d = makeMockDom();
+  const mdBlock = d.el('div', { attrs: { 'data-markdown-root': 'true' } });
+  const meterHost = d.el('div', { id: 'ag-context-meter' });
+  d.body.appendChild(mdBlock);
+  d.body.appendChild(meterHost);
+
+  const winObj = {
+    __AGY_I18N_DATA__: dict,
+    __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' },
+    document: {
+      documentElement: d.body,
+      body: d.body,
+      readyState: 'complete',
+      addEventListener: (ev, fn) => docListeners.set(ev, fn),
+      removeEventListener: (ev) => docListeners.delete(ev),
+      querySelectorAll: () => []
+    },
+    setTimeout: () => { scheduledTimers += 1; return 1; },
+    clearTimeout() {},
+    Map,
+    Set,
+    WeakMap
+  };
+  winObj.window = winObj;
+  winObj.globalThis = winObj;
+  vm.runInNewContext(runtimeCode, winObj);
+
+  const beforeHover = scheduledTimers;
+  const hoverFn = docListeners.get('pointerenter');
+  assert.equal(typeof hoverFn, 'function');
+  hoverFn({ target: meterHost });
+  hoverFn({ target: mdBlock });
+  assert.equal(scheduledTimers, beforeHover, '悬浮在插件宿主或受保护正文块上不得注册 50ms 全局浮层扫描定时器');
+});
+

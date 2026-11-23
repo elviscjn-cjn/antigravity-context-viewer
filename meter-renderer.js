@@ -420,6 +420,11 @@
       display: none !important;
     }
 
+    :host([data-window-active="false"]) *,
+    :host([data-marketplace-active="true"]) * {
+      animation-play-state: paused !important;
+    }
+
     :host([data-dock="page"]) #btn-dock-page-back {
       display: inline-flex !important;
     }
@@ -2469,6 +2474,7 @@
     }
 
     .ag-dropdown-menu {
+      display: none;
       position: absolute;
       top: calc(100% + 4px);
       left: 0;
@@ -2516,6 +2522,7 @@
     }
 
     .ag-dropdown-wrapper.is-open .ag-dropdown-menu {
+      display: block;
       opacity: 1;
       transform: none;
       pointer-events: auto;
@@ -3082,7 +3089,7 @@
 
     #panel-tokens {
       width: 730px;
-      transition: width .22s cubic-bezier(0.16, 1, 0.3, 1), max-width .22s cubic-bezier(0.16, 1, 0.3, 1), opacity .16s cubic-bezier(0.16, 1, 0.3, 1), transform .16s cubic-bezier(0.16, 1, 0.3, 1)
+      transition: opacity .12s ease
     }
 
     #panel-tokens.cost-compact-view {
@@ -3096,10 +3103,7 @@
     }
 
     .ag-panel[hidden] {
-      display: block !important;
-      opacity: 0;
-      transform: translateY(-6px);
-      visibility: hidden;
+      display: none !important;
       pointer-events: none
     }
 
@@ -4698,7 +4702,8 @@
       background: var(--ag-heat-bg);
       border: 1px solid var(--ag-border-card);
       border-radius: 10px;
-      padding: 12px
+      padding: 12px;
+      contain: layout style
     }
 
     .heat-header {
@@ -4828,7 +4833,8 @@
     .heat-scroll-box {
       overflow-x: auto;
       overflow-y: hidden;
-      padding: 6px 6px 4px 6px
+      padding: 6px 6px 4px 6px;
+      contain: layout style
     }
 
     .heat-scroll-box.is-cum-active {
@@ -4851,8 +4857,7 @@
       height: 10px;
       border-radius: 2px;
       background: var(--ag-heat-lvl-0);
-      cursor: pointer;
-      transition: transform .12s ease
+      cursor: pointer
     }
 
     .heat-cell:hover {
@@ -10220,6 +10225,7 @@
       overflow: auto;
       max-height: min(460px, calc(100vh - 220px));
       overscroll-behavior: contain;
+      contain: layout paint;
     }
 
     .req-table {
@@ -21592,6 +21598,9 @@ function formatPeriodCalendarLabel(currentPeriod) {
 
   function enforceMarketplaceAvoidance(forceActive) {
     const active = typeof forceActive === 'boolean' ? forceActive : isHostMarketplaceActive();
+    // 避让状态只需写入一次。重复设置 hidden/style/aria 会再次触发全局
+    // MutationObserver，在插件页形成“观察 -> 写入 -> 再观察”的渲染循环。
+    if (active && host.getAttribute?.('data-marketplace-active') === 'true') return true;
     try {
       if (active) {
         host.setAttribute('data-marketplace-active', 'true');
@@ -22585,13 +22594,21 @@ function formatPeriodCalendarLabel(currentPeriod) {
 
       // 确定实际要挂入的容器 actualParent 和参考子节点 actualRef
       let actualParent = targetContainer;
-      let actualRef = anchorBtn || targetContainer.firstElementChild || targetContainer.firstChild || null;
+      let actualRef = anchorBtn;
 
       if (anchorBtn) {
         if (anchorBtn.parentElement && anchorBtn.parentElement !== targetContainer) {
           actualParent = anchorBtn.parentElement;
         }
         actualRef = anchorBtn;
+      } else {
+        // 无原生按钮锚点时挂到队首：跳过 host 自身，防止 actualRef === host 时重复触发 insertBefore(host, host)
+        // 导致 Chromium 重新连接 Shadow DOM 并清空所有打开面板的 scrollTop。
+        let firstNonHost = targetContainer.firstElementChild || targetContainer.firstChild || null;
+        while (firstNonHost && firstNonHost === host) {
+          firstNonHost = firstNonHost.nextElementSibling || firstNonHost.nextSibling || null;
+        }
+        actualRef = firstNonHost;
       }
 
       const isDirectChild = (p, c) => {
@@ -22601,7 +22618,20 @@ function formatPeriodCalendarLabel(currentPeriod) {
         return false;
       };
 
-      if (host.parentElement !== actualParent || (actualRef && host.nextElementSibling !== actualRef)) {
+      const alreadyInPosition = host.parentElement === actualParent && (
+        actualRef
+          ? (host.nextElementSibling === actualRef || host.nextSibling === actualRef)
+          : !host.nextElementSibling
+      );
+
+      if (!alreadyInPosition && actualRef !== host) {
+        const savedPanelScrolls = [];
+        for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'view-quota', 'ctx-model-list', 'files']) {
+          const n = el(sId);
+          if (n && typeof n.scrollTop === 'number' && n.scrollTop > 0) {
+            savedPanelScrolls.push([n, n.scrollTop]);
+          }
+        }
         try {
           if (actualRef && isDirectChild(actualParent, actualRef)) {
             actualParent.insertBefore(host, actualRef);
@@ -22610,6 +22640,11 @@ function formatPeriodCalendarLabel(currentPeriod) {
           }
         } catch {
           try { actualParent.appendChild(host); } catch { }
+        }
+        if (savedPanelScrolls.length > 0) {
+          for (const [n, topVal] of savedPanelScrolls) {
+            try { n.scrollTop = topVal; } catch { }
+          }
         }
       }
       host.setAttribute('data-dock', effectiveDock);
@@ -22955,34 +22990,71 @@ function formatPeriodCalendarLabel(currentPeriod) {
     } catch { }
   }
 
+  let _navSidebarCache = { vw: 0, val: 0, at: 0 };
+  let _anchorGeomSnap = { vw: 0, vh: 0, dock: '', at: 0, hRect: null, byId: new Map() };
+
   function getLeftProjectSidebarRight(vw) {
+    const isRealDom = typeof Element !== 'undefined' && host instanceof Element;
+    const now = Date.now();
+    if (isRealDom && _navSidebarCache.vw === vw && (now - _navSidebarCache.at) < 1000) {
+      return _navSidebarCache.val;
+    }
+    let val = 0;
     try {
       if (typeof document.querySelector === 'function') {
         const navEl = document.querySelector('div[role="navigation"]');
         if (navEl?.getBoundingClientRect) {
           const nr = navEl.getBoundingClientRect();
           if (nr.width > 0 && nr.left <= 8 && nr.right > 0 && nr.right < vw - 260) {
-            return Math.ceil(nr.right);
+            val = Math.ceil(nr.right);
           }
         }
       }
     } catch { }
-    return 0;
+    if (isRealDom) _navSidebarCache = { vw, val, at: now };
+    return val;
   }
 
-  function positionFloatingPanels() {
+  function positionFloatingPanels(onlyPanelId = null) {
+    const targetPanelId = (typeof onlyPanelId === 'string' && el('panel')?._lastPlacedGeomKey) ? onlyPanelId : null;
     if (!host.getBoundingClientRect) return;
     try {
-      const hRect = host.getBoundingClientRect();
-      if (hRect.width === 0 && hRect.height === 0) return;
+      const isRealDom = typeof Element !== 'undefined' && host instanceof Element;
       const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
       const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+      const effectiveDock = host.getAttribute?.('data-dock') || 'fixed';
+      const now = Date.now();
+      const canReuseSnap = Boolean(
+        isRealDom &&
+        _anchorGeomSnap.hRect &&
+        _anchorGeomSnap.vw === vw &&
+        _anchorGeomSnap.vh === vh &&
+        _anchorGeomSnap.dock === effectiveDock &&
+        (now - _anchorGeomSnap.at) < 300
+      );
+      let hRect = canReuseSnap ? _anchorGeomSnap.hRect : host.getBoundingClientRect();
+      if (hRect.width === 0 && hRect.height === 0) return;
+      if (isRealDom && !canReuseSnap) {
+        _anchorGeomSnap = { vw, vh, dock: effectiveDock, at: now, hRect, byId: new Map() };
+      }
       const navRight = getLeftProjectSidebarRight(vw);
       const minLeft = navRight > 0 ? Math.max(12, navRight + 12) : 12;
 
+      const getAnchorRectCached = (anchorBtn) => {
+        if (!anchorBtn || !anchorBtn.getBoundingClientRect) return null;
+        const aId = anchorBtn.id || '';
+        if (isRealDom && aId && _anchorGeomSnap.byId.has(aId)) {
+          return _anchorGeomSnap.byId.get(aId);
+        }
+        const r = anchorBtn.getBoundingClientRect();
+        if (isRealDom && aId && r && (r.width > 0 || r.height > 0)) {
+          _anchorGeomSnap.byId.set(aId, r);
+        }
+        return r;
+      };
+
       const placePanel = (panelEl, targetW, anchorBtn) => {
         if (!panelEl) return;
-        const effectiveDock = host.getAttribute?.('data-dock') || 'fixed';
         if ((effectiveDock === 'aux' || effectiveDock === 'page') && panelEl.id !== 'overflow-menu') {
           panelEl.setAttribute?.('data-panel-docked', 'true');
           panelEl.style.position = 'static';
@@ -22997,7 +23069,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
         panelEl.removeAttribute?.('data-panel-docked');
         panelEl.style.position = '';
         const isCsbAnchor = Boolean(anchorBtn?.id?.startsWith?.('csb-'));
-        const anchorRect = anchorBtn && anchorBtn.getBoundingClientRect ? anchorBtn.getBoundingClientRect() : null;
+        const anchorRect = getAnchorRectCached(anchorBtn);
         const bRect = (anchorRect && anchorBtn !== host && (isCsbAnchor || anchorRect.right > hRect.left))
           ? anchorRect
           : hRect;
@@ -23026,7 +23098,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
           ? Math.max(220, Math.min(540, bRect.top - top - 8))
           : Math.max(160, vh - top - 16);
         const anchorKey = anchorBtn?.id || '';
-        const geomKey = `${anchorKey}|${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${openAbove ? 1 : 0}|${dpr}`;
+        const geomKey = `${anchorKey}|${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}|${isWideRequests ? 1 : 0}|${openAbove ? 1 : 0}|${dpr}`;
         if (panelEl._lastPlacedGeomKey === geomKey) return;
         panelEl._lastPlacedGeomKey = geomKey;
 
@@ -23039,18 +23111,22 @@ function formatPeriodCalendarLabel(currentPeriod) {
         if (isPickerMenu) panelEl.setAttribute?.('data-placement', openAbove ? 'top' : 'bottom');
       };
 
-      placePanel(el('panel'), 472, el(activeContextAnchorId) || el('badge'));
-      placePanel(el('panel-quota'), 460, el(activeQuotaAnchorId) || el('badge-quota'));
-      placePanel(el('panel-tokens'), 730, el(activeTokensAnchorId) || el('badge-tokens'));
-      placePanel(el('overflow-menu'), 220, el(activePickerAnchorId || 'badge-overflow') || el('badge-overflow'));
-      positionColorPickerPopover();
-      if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
+      if (!targetPanelId || targetPanelId === 'panel') placePanel(el('panel'), 472, el(activeContextAnchorId) || el('badge'));
+      if (!targetPanelId || targetPanelId === 'panel-quota') placePanel(el('panel-quota'), 460, el(activeQuotaAnchorId) || el('badge-quota'));
+      if (!targetPanelId || targetPanelId === 'panel-tokens') placePanel(el('panel-tokens'), 730, el(activeTokensAnchorId) || el('badge-tokens'));
+      if (!targetPanelId || targetPanelId === 'overflow-menu') placePanel(el('overflow-menu'), 220, el(activePickerAnchorId || 'badge-overflow') || el('badge-overflow'));
+      if (!targetPanelId) positionColorPickerPopover();
+      if ((!targetPanelId || targetPanelId === 'panel') && !el('panel')?.hidden && typeof syncContextPanelContainerWidthTier === 'function') {
+        syncContextPanelContainerWidthTier();
+      }
     } catch { }
   }
 
   let lastObservedHostModelSig = null;
   let hostModelSyncTimer = null;
   let domMutationThrottleTimer = null;
+  let lastMarketplaceRecheckAt = 0;
+  let marketplaceRecheckForced = false;
   function scheduleHostModelSync() {
     try {
       if (state.disposed || typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
@@ -23078,8 +23154,24 @@ function formatPeriodCalendarLabel(currentPeriod) {
     'i'
   );
 
-  function checkHostDomCompactionSignals() {
+  let lastCompactionDomCheckAt = 0;
+
+  function checkHostDomCompactionSignals(options = {}) {
     if (state.disposed || !state.route || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+    const nowMs = Date.now();
+    const isInitialRouteCheck = state.lastDomCompactedBannerCount < 0;
+    if (!isInitialRouteCheck && !options?.urgent) {
+      const latestCallRec = typeof resolveLatestSessionCallRecord === 'function' ? resolveLatestSessionCallRecord() : null;
+      const isActivelyBusy = Boolean(
+        state.compacting ||
+        state.lastDomCompactingActive ||
+        state.livePendingRequest ||
+        (latestCallRec && latestCallRec.status === 'streaming')
+      );
+      const minIntervalMs = isActivelyBusy ? 250 : 950;
+      if (nowMs - lastCompactionDomCheckAt < minIntervalMs) return;
+    }
+    lastCompactionDomCheckAt = nowMs;
     try {
       const nodes = document.querySelectorAll('span, div, p');
       if (!Array.isArray(nodes) && typeof nodes?.length !== 'number') return;
@@ -23089,15 +23181,35 @@ function formatPeriodCalendarLabel(currentPeriod) {
       const minIdx = Math.max(0, totalNodes - 4000);
       for (let i = totalNodes - 1; i >= minIdx; i--) {
         const n = nodes[i];
-        if (!n || n === host || (typeof host.contains === 'function' && host.contains(n))) continue;
-        if (n.children && n.children.length > 40) continue;
-        const txt = typeof n.textContent === 'string' ? n.textContent.replace(/[\u200b-\u200d\ufeff]/g, '').trim() : '';
-        if (!txt || txt.length > 120) continue;
+        if (!n || n === host || n.className === 'ag-cm-turn-footer') continue;
+        if (n.hasAttribute && (
+          n.hasAttribute('data-markdown-root') ||
+          n.hasAttribute('data-markdown-virtualized') ||
+          n.hasAttribute('data-markdown-block-index') ||
+          n.hasAttribute('data-quotable') ||
+          n.hasAttribute('data-turn-index') ||
+          n.hasAttribute('data-bubble-side')
+        )) continue;
+        const childCount = n.childElementCount !== undefined ? n.childElementCount : (n.children ? n.children.length : 0);
+        if (childCount > 40) continue;
+        // 跳过多层嵌套的大消息/布局容器，但完整保留扁平单字母闪烁的 Compacting 提示 (children 均为无子元素的叶子 span)
+        if (childCount > 3) {
+          const firstChildEl = n.firstElementChild || (n.children && n.children[0]);
+          const grandChildCount = firstChildEl
+            ? (firstChildEl.childElementCount !== undefined ? firstChildEl.childElementCount : (firstChildEl.children ? firstChildEl.children.length : 0))
+            : 0;
+          if (grandChildCount > 0) continue;
+        }
+        if (typeof host.contains === 'function' && host.contains(n)) continue;
+        const rawTxt = n.textContent;
+        if (typeof rawTxt !== 'string' || rawTxt.length < 4 || rawTxt.length > 140) continue;
+        const txt = rawTxt.replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+        if (!txt || txt.length < 4 || txt.length > 120) continue;
         if (HOST_COMPACTING_TEXT_RE.test(txt)) {
           // 若父节点与子节点均包含相同文本，仅需标记布尔位即可，不受重复嵌套影响
           sawCompacting = true;
         } else if (
-          (!n.children || n.children.length <= 3) && (
+          childCount <= 3 && (
             txt.includes('The conversation was compacted') ||
             txt.includes('会话已被压缩以适应上下文窗口') ||
             txt.includes('会话上下文已执行压缩') ||
@@ -23138,6 +23250,17 @@ function formatPeriodCalendarLabel(currentPeriod) {
   function flushHostDomMutationCheck() {
     domMutationThrottleTimer = null;
     if (state.disposed) return;
+    // 插件页只做避让判定，停留期间不扫描输入框、模型、压缩文案等全页节点。
+    // 退出插件页时，同一次 DOM 通知会重新判定为 false，再恢复正常同步。
+    const now = Date.now();
+    const forceMarketplaceRecheck = marketplaceRecheckForced;
+    marketplaceRecheckForced = false;
+    if (!forceMarketplaceRecheck && host.getAttribute?.('data-marketplace-active') === 'true' && now - lastMarketplaceRecheckAt < 1000) return;
+    if (host.getAttribute?.('data-marketplace-active') === 'true') lastMarketplaceRecheckAt = now;
+    if (enforceMarketplaceAvoidance()) {
+      if (isAnyPanelOpen()) showPanel('none');
+      return;
+    }
     const actualDockNow = host.getAttribute?.('data-dock') || dockPosition;
     const needsTitlebarDock = actualDockNow === 'flow' || actualDockNow === 'compact' || Boolean(dockFallbackReason);
     const auxStateChanged = dockPosition === 'aux'
@@ -23149,10 +23272,6 @@ function formatPeriodCalendarLabel(currentPeriod) {
     ensureComposerStatusBarMounted();
     scheduleHostModelSync();
     checkHostDomCompactionSignals();
-    // 进入 Customizations / Marketplace / Installed 页面时自动收起已打开面板、浮层与辅助栏
-    if (enforceMarketplaceAvoidance()) {
-      if (isAnyPanelOpen()) showPanel('none');
-    }
   }
 
   try {
@@ -23161,11 +23280,31 @@ function formatPeriodCalendarLabel(currentPeriod) {
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
-      hostDomObserver = new MutationObserver(() => {
+      const shouldIgnoreHostMutationTarget = (node, ignoreVirtualScroll) => {
+        if (!node) return false;
+        const elNode = node.nodeType === 1 ? node : node.parentElement;
+        if (!elNode) return false;
+        if (elNode === host || (typeof host.contains === 'function' && host.contains(elNode))) return true;
+        if (elNode.id === 'ag-composer-status-bar' || elNode.className === 'ag-cm-turn-footer') return true;
+        if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer')) return true;
+        // 静息浏览已完成对话时忽略虚拟滚动列表内部块级增删，避免滚动期间每 60ms 重跑全局 DOM 检查
+        if (ignoreVirtualScroll && elNode.closest?.('[data-testid="conversation-view"]')) return true;
+        return false;
+      };
+      hostDomObserver = new MutationObserver((mutations) => {
         if (state.disposed) return;
+        // host 自身的属性更新来自本插件的布局/避让逻辑，不是宿主页面变化。
+        // 忽略这批记录，避免插件页隐藏面板时自触发下一轮全页检测。
+        if (mutations?.length && Array.from(mutations).every(m => m?.type === 'attributes' && m?.target === host)) return;
+        if (Array.from(mutations || []).some(m => m?.type === 'childList')) marketplaceRecheckForced = true;
         if (!host.isConnected) {
           layoutMeasurementDirty = true;
           ensureHostDocked();
+        } else if (Array.isArray(mutations) && mutations.length > 0) {
+          const isIdleConv = !state.compacting && !state.lastDomCompactingActive && !state.livePendingRequest && state.lastDomCompactedBannerCount >= 0;
+          if (mutations.every(m => shouldIgnoreHostMutationTarget(m.target, isIdleConv))) {
+            return;
+          }
         }
         if (!domMutationThrottleTimer) {
           domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 60);
@@ -23300,7 +23439,31 @@ function formatPeriodCalendarLabel(currentPeriod) {
     return !el('panel').hidden || !el('panel-tokens').hidden || Boolean(el('panel-quota') && !el('panel-quota').hidden);
   }
 
+  const panelScrollMemory = new Map();
+  function rememberPanelScrollPositions() {
+    for (const id of ['panel', 'panel-tokens', 'view-quota']) {
+      const owner = id === 'view-quota' ? el('panel-quota') : el(id);
+      if (owner?.hidden) continue;
+      const node = el(id);
+      if (node && typeof node.scrollTop === 'number') panelScrollMemory.set(id, node.scrollTop);
+    }
+  }
+  function restorePanelScrollPosition(target) {
+    const id = target === 'quota' ? 'view-quota' : target === 'tokens' ? 'panel-tokens' : target === 'context' ? 'panel' : '';
+    if (!id || !panelScrollMemory.has(id)) return;
+    const top = panelScrollMemory.get(id);
+    if (!top || top <= 0) return;
+    const apply = () => {
+      if (state.disposed) return;
+      const node = el(id);
+      if (node && Math.abs((node.scrollTop || 0) - top) > 1) node.scrollTop = top;
+    };
+    apply();
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
+  }
+
   function showPanel(target) {
+    rememberPanelScrollPositions();
     if (target !== 'none' && enforceMarketplaceAvoidance()) {
       target = 'none';
     }
@@ -23313,6 +23476,11 @@ function formatPeriodCalendarLabel(currentPeriod) {
     const bTokens = el('badge-tokens');
     const bQuota = el('badge-quota');
     const bOverflow = el('badge-overflow');
+
+    // 在变更宿主与面板 DOM 前读取干净布局定位目标面板，杜绝 15万+ 宿主节点的同步强制重排
+    if (target === 'tokens') positionFloatingPanels('panel-tokens');
+    else if (target === 'quota') positionFloatingPanels('panel-quota');
+    else if (target === 'context') positionFloatingPanels('panel');
 
     hideUpdatePopover();
     if (pOverflow) pOverflow.hidden = true;
@@ -23331,12 +23499,18 @@ function formatPeriodCalendarLabel(currentPeriod) {
       bQuota?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
       syncHostStackingElevation(true);
-      positionFloatingPanels();
       pTokens.hidden = false;
-      renderActiveHeatView(true);
+      renderActiveHeatView(false);
+      if (activeTokenView === 'models' && dirtyTokenSubviews.models) {
+        dirtyTokenSubviews.models = false;
+        renderModelUsageView({ force: true });
+      } else if (activeTokenView === 'requests' && dirtyTokenSubviews.requests) {
+        dirtyTokenSubviews.requests = false;
+        renderRequestsLiveView({ force: true });
+      }
       const hasCachedHistory = Boolean(ANTIGRAVITY_TOKEN_DATA.updatedAt || ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens);
       if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
-        void syncTokenHistoryFromHost(false);
+        void syncTokenHistoryFromHost(false, { syncSettings: true });
       }
       if (!accountsUiState?.overview && typeof refreshAccountsOverview === 'function') {
         void refreshAccountsOverview({ silent: true });
@@ -23354,12 +23528,13 @@ function formatPeriodCalendarLabel(currentPeriod) {
       bTokens.setAttribute('aria-expanded', 'false');
       bQuota?.setAttribute('aria-expanded', 'true');
       syncHostStackingElevation(true);
-      positionFloatingPanels();
       if (pQuota) pQuota.hidden = false;
       if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
       if (typeof maybeRefreshQuotaOnOpen === 'function') void maybeRefreshQuotaOnOpen();
       if (typeof renderAccountsOverviewSection === 'function') renderAccountsOverviewSection();
-      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
+      if (typeof refreshAccountsOverview === 'function' && (!accountsUiState?.overview || (Date.now() - lastAccountsOverviewFetchAt) > 10000)) {
+        void refreshAccountsOverview({ silent: true });
+      }
     } else if (target === 'context') {
       hideContextTooltip();
       closeColorPicker();
@@ -23371,7 +23546,6 @@ function formatPeriodCalendarLabel(currentPeriod) {
       bTokens.setAttribute('aria-expanded', 'false');
       bQuota?.setAttribute('aria-expanded', 'false');
       syncHostStackingElevation(true);
-      positionFloatingPanels();
       pContext.hidden = false;
       applyContextViewVisibility?.();
       syncAuxContextBar?.();
@@ -23412,6 +23586,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     }
     syncDockedPanelsAttribute();
     syncPanelPickerActiveState();
+    restorePanelScrollPosition(target);
   }
 
   let activeContextAnchorId = 'badge';
@@ -25887,8 +26062,8 @@ function closeAllDropdowns(exceptWrap = null) {
       }
     }
 
-    // 3. 数字滚动/递减递增动画 (Rolling Numeric Count Tween)
-    if (startNum !== endNum && numEl) {
+    // 3. 数字滚动/递减递增动画 (Rolling Numeric Count Tween) — 隐藏态直接赋值避免后台 30 帧 rAF 空转
+    if (startNum !== endNum && numEl && !el('panel-tokens')?.hidden) {
       if (badgeEl && badgeEl.classList) badgeEl.classList.add('is-animating');
 
       const startTime = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -26217,6 +26392,7 @@ function closeAllDropdowns(exceptWrap = null) {
     modelUsageHoveredKey = null;
     if (typeof resetCumSelectionState === 'function') resetCumSelectionState();
   }
+  const dirtyTokenSubviews = { models: false, requests: false };
   function switchTokenSource(src) {
     activeTokenSource = src;
     try { localStorage?.setItem('ag_token_source_v1', src); } catch { }
@@ -26233,12 +26409,20 @@ function closeAllDropdowns(exceptWrap = null) {
       ANTIGRAVITY_TOKEN_DATA.dailyMap = srcMap;
       const mBySrc = ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource || {};
       ANTIGRAVITY_TOKEN_DATA.dailyModelMap = mBySrc[src] || mBySrc.all || ANTIGRAVITY_TOKEN_DATA.dailyModelMap || {};
-      renderActiveHeatView(true);
+      renderActiveHeatView(false);
       renderActiveCostEstimateView();
-      renderModelUsageView();
-    }
-    if (activeTokenView === 'requests') {
-      renderRequestsLiveView({ force: true });
+      if (activeTokenView === 'models') {
+        dirtyTokenSubviews.models = false;
+        renderModelUsageView({ force: true });
+      } else {
+        dirtyTokenSubviews.models = true;
+      }
+      if (activeTokenView === 'requests') {
+        dirtyTokenSubviews.requests = false;
+        renderRequestsLiveView({ force: true });
+      } else {
+        dirtyTokenSubviews.requests = true;
+      }
     }
   }
   el('src-tab-all')?.addEventListener('click', () => switchTokenSource('all'));
@@ -26273,7 +26457,7 @@ function closeAllDropdowns(exceptWrap = null) {
         pTokens.setAttribute?.('class', curCls.replace(/\bcost-compact-view\b/g, '').trim());
       }
     }
-    positionFloatingPanels();
+    positionFloatingPanels('panel-tokens');
   }
   el('cost-details-pane');
   el('cost-non-paid-badge');
@@ -26360,7 +26544,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   }
 
-  function renderModelUsageView() {
+  function renderModelUsageView({ force = false } = {}) {
     const viewEl = el('model-usage-view');
     if (!viewEl) return;
 
@@ -26388,6 +26572,25 @@ function closeAllDropdowns(exceptWrap = null) {
     const themeAccent = customColors?.tokenAccent || (typeof heatPreset !== 'undefined' && heatPreset !== 'purple' && typeof getEffectiveHeatmapScale === 'function'
       ? getEffectiveHeatmapScale()[3]
       : '');
+    const modelSig = [
+      currentPanelLanguage,
+      activeTokenSource,
+      activeTokenAccountFilter,
+      modelUsagePeriodDays,
+      endDate,
+      modelUsageGroupBy,
+      modelUsageMetric,
+      modelUsageScaleMode,
+      modelUsageHideUnattr ? 1 : 0,
+      isLightTone ? 'light' : 'dark',
+      themeAccent || '',
+      modelUsageLockedKey || '',
+      Object.keys(dailyModelMap).length,
+      ANTIGRAVITY_TOKEN_DATA.updatedAt || '',
+      ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens || 0
+    ].join('|');
+    if (!force && viewEl.children?.length > 0 && viewEl.getAttribute?.('data-sig') === modelSig) return;
+    viewEl.setAttribute?.('data-sig', modelSig);
     const summary = core.summarizeModelUsageWindow(dailyModelMap, {
       periodDays: modelUsagePeriodDays,
       endDate,
@@ -26725,7 +26928,11 @@ function closeAllDropdowns(exceptWrap = null) {
   // Antigravity 彩色静态矢量图标（构建期由 assets/antigravity-color.svg 离线内嵌）
   const AG_METER_AGENT_SVG_DATA_URI = 'data:image/svg+xml;utf8,%3Csvg%20width%3D%22180%22%20height%3D%22180%22%20viewBox%3D%220%200%20180%20180%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cpath%20d%3D%22M144.248%20149.062C151.748%20154.688%20162.998%20150.938%20152.685%20140.625C121.748%20110.625%20128.31%2028.125%2089.8727%2028.125C51.4352%2028.125%2057.9977%20110.625%2027.0602%20140.625C15.8102%20151.875%2027.9977%20154.688%2035.4977%20149.062C64.5602%20129.375%2062.6852%2094.6875%2089.8727%2094.6875C117.06%2094.6875%20115.185%20129.375%20144.248%20149.062Z%22%20fill%3D%22%233186FF%22%2F%3E%0A%3Cmask%20id%3D%22mask0_6001_409%22%20style%3D%22mask-type%3Aalpha%22%20maskUnits%3D%22userSpaceOnUse%22%20x%3D%2222%22%20y%3D%2228%22%20width%3D%22136%22%20height%3D%22125%22%3E%0A%3Cpath%20d%3D%22M144.248%20149.062C151.748%20154.688%20162.998%20150.938%20152.685%20140.625C121.748%20110.625%20128.31%2028.125%2089.8727%2028.125C51.4352%2028.125%2057.9977%20110.625%2027.0602%20140.625C15.8102%20151.875%2027.9977%20154.688%2035.4977%20149.062C64.5602%20129.375%2062.6852%2094.6875%2089.8727%2094.6875C117.06%2094.6875%20115.185%20129.375%20144.248%20149.062Z%22%20fill%3D%22white%22%2F%3E%0A%3C%2Fmask%3E%0A%3Cg%20mask%3D%22url(%23mask0_6001_409)%22%3E%0A%3Cg%20filter%3D%22url(%23filter0_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2236.6225%22%20cy%3D%2243.0872%22%20rx%3D%2236.6225%22%20ry%3D%2243.0872%22%20transform%3D%22matrix(-0.112784%200.99362%20-0.99362%20-0.112781%20106.557%20-26.4847)%22%20fill%3D%22%23FFE432%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter1_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%22155.163%22%20cy%3D%2254.9292%22%20rx%3D%2247.4118%22%20ry%3D%2248.4541%22%20transform%3D%22rotate(76.9243%20155.163%2054.9292)%22%20fill%3D%22%23FC413D%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter2_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2214.6006%22%20cy%3D%2265.4425%22%20rx%3D%2249.5515%22%20ry%3D%2264.192%22%20transform%3D%22rotate(74.1257%2014.6006%2065.4425)%22%20fill%3D%22%2300B95C%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter3_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2214.6006%22%20cy%3D%2265.4425%22%20rx%3D%2249.5515%22%20ry%3D%2264.192%22%20transform%3D%22rotate(74.1257%2014.6006%2065.4425)%22%20fill%3D%22%2300B95C%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter4_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2218.1226%22%20cy%3D%2267.414%22%20rx%3D%2248.5679%22%20ry%3D%2253.4688%22%20transform%3D%22rotate(45.6065%2018.1226%2067.414)%22%20fill%3D%22%2300B95C%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter5_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%22121.837%22%20cy%3D%22166.945%22%20rx%3D%2246.6356%22%20ry%3D%2244.9084%22%20transform%3D%22rotate(76.9243%20121.837%20166.945)%22%20fill%3D%22%233186FF%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter6_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2253.9456%22%20cy%3D%2256.8997%22%20rx%3D%2253.9456%22%20ry%3D%2256.8997%22%20transform%3D%22matrix(-0.409539%200.912293%20-0.912294%20-0.409537%20162.811%20-25.895)%22%20fill%3D%22%23FBBC04%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter7_f_6001_409)%22%3E%0A%3Cpath%20d%3D%22M4.21557%20239.063C-25.3231%20227.467%2025.1577%20132.061%2037.7105%20100.085C50.2634%2068.1097%2084.3853%2051.5888%20113.924%2063.1848C143.463%2074.7809%20178.474%20138.65%20165.921%20170.626C153.368%20202.601%2033.7543%20250.659%204.21557%20239.063Z%22%20fill%3D%22%233186FF%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter8_f_6001_409)%22%3E%0A%3Cpath%20d%3D%22M183.197%20120.315C175.289%20129.545%20154.652%20124.839%20137.102%20109.803C119.553%2094.7668%20111.738%2075.0955%20119.646%2065.8656C127.554%2056.6357%20148.191%2061.3423%20165.74%2076.3782C183.289%2091.414%20191.105%20111.085%20183.197%20120.315Z%22%20fill%3D%22%23749BFF%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter9_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%22148.928%22%20cy%3D%2236.7252%22%20rx%3D%2271.1018%22%20ry%3D%2244.199%22%20transform%3D%22rotate(34.0763%20148.928%2036.7252)%22%20fill%3D%22%23FC413D%22%2F%3E%0A%3C%2Fg%3E%0A%3Cg%20filter%3D%22url(%23filter10_f_6001_409)%22%3E%0A%3Cellipse%20cx%3D%2237.848%22%20cy%3D%2246.0346%22%20rx%3D%2238.1008%22%20ry%3D%2222.1575%22%20transform%3D%22rotate(112.516%2037.848%2046.0346)%22%20fill%3D%22%23FFEE48%22%2F%3E%0A%3C%2Fg%3E%0A%3C%2Fg%3E%0A%3Cdefs%3E%0A%3Cfilter%20id%3D%22filter0_f_6001_409%22%20x%3D%224.09591%22%20y%3D%22-44.1761%22%20width%3D%22111.037%22%20height%3D%2298.4416%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%226.25234%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter1_f_6001_409%22%20x%3D%2246.2974%22%20y%3D%22-53.0009%22%20width%3D%22217.731%22%20height%3D%22215.86%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2230.2268%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter2_f_6001_409%22%20x%3D%22-100.018%22%20y%3D%22-36.7558%22%20width%3D%22229.238%22%20height%3D%22204.397%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2225.6957%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter3_f_6001_409%22%20x%3D%22-100.018%22%20y%3D%22-36.7558%22%20width%3D%22229.238%22%20height%3D%22204.397%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2225.6957%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter4_f_6001_409%22%20x%3D%22-84.3985%22%20y%3D%22-35.003%22%20width%3D%22205.042%22%20height%3D%22204.834%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2225.6957%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter5_f_6001_409%22%20x%3D%2227.9915%22%20y%3D%2271.5493%22%20width%3D%22187.691%22%20height%3D%22190.791%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2224.4184%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter6_f_6001_409%22%20x%3D%22-11.8808%22%20y%3D%22-98.7085%22%20width%3D%22201.38%22%20height%3D%22197.45%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2222.1301%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter7_f_6001_409%22%20x%3D%22-44.4432%22%20y%3D%2219.9522%22%20width%3D%22252.513%22%20height%3D%22260.404%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2219.7631%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter8_f_6001_409%22%20x%3D%2281.1915%22%20y%3D%2225.7722%22%20width%3D%22140.46%22%20height%3D%22134.637%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2217.6843%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter9_f_6001_409%22%20x%3D%2255.1499%22%20y%3D%22-47.2531%22%20width%3D%22187.555%22%20height%3D%22167.957%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2214.9365%22%2F%3E%0A%3C%2Ffilter%3E%0A%3Cfilter%20id%3D%22filter10_f_6001_409%22%20x%3D%22-24.2633%22%20y%3D%22-27.1515%22%20width%3D%22124.223%22%20height%3D%22146.372%22%20filterUnits%3D%22userSpaceOnUse%22%20color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeGaussianBlur%20stdDeviation%3D%2218.4865%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E';
 
+  let _agentIconTpl = null;
   function createAntigravityAgentIcon() {
+    if (_agentIconTpl && typeof _agentIconTpl.cloneNode === 'function') {
+      return _agentIconTpl.cloneNode(true);
+    }
     const wrap = document.createElement('span');
     wrap.className = 'req-agent-icon';
     wrap.setAttribute('aria-hidden', 'true');
@@ -26736,6 +26943,10 @@ function closeAllDropdowns(exceptWrap = null) {
     img.alt = 'Antigravity';
     img.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;background:transparent;';
     wrap.appendChild(img);
+    if (typeof wrap.cloneNode === 'function') {
+      _agentIconTpl = wrap;
+      return wrap.cloneNode(true);
+    }
     return wrap;
   }
 
@@ -27775,6 +27986,18 @@ function closeAllDropdowns(exceptWrap = null) {
 
       const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
       const boundTurnKeys = new Set();
+      // 读写分离：在修改任何 DOM 节点前一次性批量读取工具栏宽度，消除 M 轮历史回复上的强制同步回流 (Layout Thrashing)
+      const toolbarWidths = new Map();
+      for (let i = 0; i < mainToolbars.length; i++) {
+        const tb = mainToolbars[i];
+        const row = tb.firstElementChild || tb;
+        toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
+      }
+      for (let s = 0; s < sideToolbars.length; s++) {
+        const tb = sideToolbars[s];
+        const row = tb.firstElementChild || tb;
+        toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
+      }
       const applyFooterToToolbar = (tb, turnObj, forceFallbackScope = false) => {
         const row = tb.firstElementChild || tb;
         const removeOld = () => {
@@ -27820,7 +28043,7 @@ function closeAllDropdowns(exceptWrap = null) {
         const outCompact = hasCalcUsage ? `Out ${formatReqCompactTokens(cs.output)}` : 'Out —';
         const cacheCompact = `${t('turnFooter.cache')} ${hitStr}`;
 
-        const rowW = Number(row.clientWidth || tb.clientWidth || 0);
+        const rowW = toolbarWidths.has(tb) ? toolbarWidths.get(tb) : Number(row.clientWidth || tb.clientWidth || 0);
         let footerParts;
         if (rowW <= 0 || rowW >= 460) {
           footerParts = [scopeLabel, mName, inCompact, outCompact, cacheCompact, tpsStr];
@@ -27845,10 +28068,14 @@ function closeAllDropdowns(exceptWrap = null) {
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
         }
-        badge.textContent = text;
-        badge.setAttribute('data-scope', isTurnAggregate ? 'turn' : 'request');
-        badge.setAttribute('data-turn-key', String(turnObj.turnKey || ''));
-        badge.setAttribute('data-call-id', String(lastCall.callId || ''));
+        // 脏检查幂等写入：数值不变时不重复改写 textContent 与 aria-label，避免唤醒 MutationObserver
+        if (badge.textContent !== text) badge.textContent = text;
+        const nextScope = isTurnAggregate ? 'turn' : 'request';
+        if (badge.getAttribute('data-scope') !== nextScope) badge.setAttribute('data-scope', nextScope);
+        const nextTurnKey = String(turnObj.turnKey || '');
+        if (badge.getAttribute('data-turn-key') !== nextTurnKey) badge.setAttribute('data-turn-key', nextTurnKey);
+        const nextCallId = String(lastCall.callId || '');
+        if (badge.getAttribute('data-call-id') !== nextCallId) badge.setAttribute('data-call-id', nextCallId);
 
         const tp = lastCall.timestamp ? formatReqTimeParts(lastCall) : null;
         const reqTimeStr = tp?.tooltip || tp?.text || (lastCall.date || '—');
@@ -27859,8 +28086,10 @@ function closeAllDropdowns(exceptWrap = null) {
           `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} (命中 ${hitStr})`,
           `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`
         ];
-        badge.title = titleLines.join('\n');
-        badge.setAttribute('aria-label', `${text}。${titleLines.slice(1).join('；')}`);
+        const nextTitle = titleLines.join('\n');
+        if (badge.title !== nextTitle) badge.title = nextTitle;
+        const nextAria = `${text}。${titleLines.slice(1).join('；')}`;
+        if (badge.getAttribute('aria-label') !== nextAria) badge.setAttribute('aria-label', nextAria);
       };
 
       const M = mainToolbars.length;
@@ -27943,14 +28172,18 @@ function closeAllDropdowns(exceptWrap = null) {
       modelView.style.display = v === 'models' ? 'block' : 'none';
       if (v === 'models') {
         modelView.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
-        renderModelUsageView();
+        const forceModels = dirtyTokenSubviews.models;
+        dirtyTokenSubviews.models = false;
+        renderModelUsageView({ force: forceModels });
       }
     }
     if (reqView) {
       reqView.style.display = v === 'requests' ? 'flex' : 'none';
       if (v === 'requests') {
         reqView.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
-        renderRequestsLiveView({ force: true });
+        const forceReqs = dirtyTokenSubviews.requests;
+        dirtyTokenSubviews.requests = false;
+        renderRequestsLiveView({ force: forceReqs });
         if (!lastHistorySync || (Date.now() - lastHistorySync) > 5000) {
           lastRequestsLiveSyncAt = Date.now();
           void syncTokenHistoryFromHost(false);
@@ -27959,7 +28192,10 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     if (tokensMain) {
       tokensMain.style.display = v === 'tokens' ? 'block' : 'none';
-      if (v === 'tokens') tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+      if (v === 'tokens') {
+        tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+        updateHeatTabThumb();
+      }
     }
     if (statCards) statCards.style.display = v === 'tokens' ? 'grid' : 'none';
     if (planBar) planBar.style.display = v === 'tokens' ? 'flex' : 'none';
@@ -27991,7 +28227,7 @@ function closeAllDropdowns(exceptWrap = null) {
       }
       pTokens.setAttribute?.('class', curCls);
     }
-    positionFloatingPanels();
+    positionFloatingPanels('panel-tokens');
     syncPanelPickerActiveState();
   }
   el('tok-view-tokens')?.addEventListener('click', () => switchTokenView('tokens'));
@@ -30573,7 +30809,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
       if (typeof refreshRehydrateStatus === 'function') void refreshRehydrateStatus();
     }
-    positionFloatingPanels();
+    positionFloatingPanels('panel');
     syncPanelPickerActiveState();
   }
 
@@ -36259,35 +36495,64 @@ function closeAllDropdowns(exceptWrap = null) {
     if (heatPop) heatPop.style.opacity = '0';
   }
 
+  const _heatThumbGeomCache = new Map();
+  let _heatThumbRafId = null;
+
   function updateHeatTabThumb() {
     const thumb = el('heat-tab-thumb');
     const tabsBar = el('heat-tabs-bar');
     const activeBtn = el(`h-tab-${activeHeatView}`);
     if (!thumb || !tabsBar || !activeBtn) return;
 
-    const offsetLeft = activeBtn.offsetLeft || 0;
-    const offsetWidth = activeBtn.offsetWidth || 0;
-    thumb.style.transform = `translateX(${offsetLeft}px)`;
-    thumb.style.width = `${offsetWidth}px`;
-
     const thumbColor = customColors.tokenAccent || (typeof getEffectiveHeatmapScale === 'function' ? getEffectiveHeatmapScale()[4] : '#a78bfa');
     thumb.style.setProperty('--ag-tab-thumb-bg', thumbColor);
+
+    const cacheKey = `${currentPanelLanguage}:${activeHeatView}`;
+    const cachedGeom = _heatThumbGeomCache.get(cacheKey);
+    if (cachedGeom) {
+      thumb.style.transform = `translateX(${cachedGeom.left}px)`;
+      thumb.style.width = `${cachedGeom.width}px`;
+      return;
+    }
+
+    const isRealDom = typeof Element !== 'undefined' && host instanceof Element;
+    if (isRealDom && typeof requestAnimationFrame === 'function') {
+      if (_heatThumbRafId) cancelAnimationFrame(_heatThumbRafId);
+      _heatThumbRafId = requestAnimationFrame(() => {
+        _heatThumbRafId = null;
+        if (state.disposed) return;
+        const btnNow = el(`h-tab-${activeHeatView}`);
+        if (!btnNow) return;
+        const left = btnNow.offsetLeft || 0;
+        const width = btnNow.offsetWidth || 0;
+        if (width > 0) _heatThumbGeomCache.set(`${currentPanelLanguage}:${activeHeatView}`, { left, width });
+        thumb.style.transform = `translateX(${left}px)`;
+        thumb.style.width = `${width}px`;
+      });
+      return;
+    }
+
+    const offsetLeft = activeBtn.offsetLeft || 0;
+    const offsetWidth = activeBtn.offsetWidth || 0;
+    if (offsetWidth > 0) _heatThumbGeomCache.set(cacheKey, { left: offsetLeft, width: offsetWidth });
+    thumb.style.transform = `translateX(${offsetLeft}px)`;
+    thumb.style.width = `${offsetWidth}px`;
   }
 
   function renderActiveHeatView(forceRebuild = false) {
+    computeTimelineWindow();
+    updateHeatTabThumb();
     if (activeHeatView === 'weekly') {
-      renderHeatmapWeekly();
+      renderHeatmapWeekly(forceRebuild);
     } else if (activeHeatView === 'monthly') {
-      renderHeatmapMonthly();
+      renderHeatmapMonthly(forceRebuild);
     } else if (activeHeatView === 'yearly') {
-      renderHeatmapYearly();
+      renderHeatmapYearly(forceRebuild);
     } else if (activeHeatView === 'cum') {
-      renderHeatmapCum();
+      renderHeatmapCum(forceRebuild);
     } else {
       renderHeatmapGrid(forceRebuild);
     }
-    computeTimelineWindow();
-    updateHeatTabThumb();
   }
 
   function switchHeatView(view, save = true) {
@@ -36323,8 +36588,7 @@ function closeAllDropdowns(exceptWrap = null) {
     setClassFlag(el('h-scroll-box'), 'is-cum-active', view === 'cum');
 
     hidePopover();
-    renderActiveHeatView(true);
-    updateHeatTabThumb();
+    renderActiveHeatView(false);
 
     if (save && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
       void saveSettingsPayloadBridge({ savedHeatView: view });
@@ -37199,14 +37463,26 @@ function closeAllDropdowns(exceptWrap = null) {
       tYearCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(yearCostAgg.totalCostUSD);
     }
 
-    // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
+    // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染；非当前激活的按模型/实时请求子页按需延迟渲染
     renderActiveCostEstimateView();
-    renderModelUsageView();
+    if (activeTokenView === 'models') {
+      dirtyTokenSubviews.models = false;
+      renderModelUsageView({ force: true });
+    } else {
+      dirtyTokenSubviews.models = true;
+    }
 
-    computeTimelineWindow();
-    renderActiveHeatView(true);
-    if (activeTokenView === 'requests' || (Array.isArray(payload?.recentRequestLogs) && payload.recentRequestLogs.length > 0)) {
+    renderActiveHeatView(false);
+    if (activeTokenView === 'requests') {
+      dirtyTokenSubviews.requests = false;
       renderRequestsLiveView({ force: true });
+    } else {
+      dirtyTokenSubviews.requests = true;
+      const oReqVal = el('overflow-requests-val');
+      if (oReqVal && Array.isArray(payload?.recentRequestLogs)) {
+        const { rows } = collectMergedRequestLogs();
+        oReqVal.textContent = rows.length > 0 ? String(rows.length) : '--';
+      }
     }
     return true;
   }
@@ -37591,14 +37867,19 @@ function closeAllDropdowns(exceptWrap = null) {
     void syncTokenHistoryFromHost(true);
   }
 
-  async function syncTokenHistoryFromHost(force = false) {
+  let lastTokenHistoryRevision = null;
+  let historySyncPendingSyncSettings = false;
+
+  async function syncTokenHistoryFromHost(force = false, opts = {}) {
     if (state.disposed) return;
     if (historySyncBusy) {
       historySyncPending = true;
       if (force) historySyncPendingForce = true;
+      if (opts?.syncSettings) historySyncPendingSyncSettings = true;
       return;
     }
     const forceFlag = Boolean(force);
+    const shouldSyncSettings = Boolean(opts?.syncSettings);
     if (forceFlag) automaticHistorySyncPending = false;
     historySyncBusy = true;
     lastHistorySync = Date.now();
@@ -37612,7 +37893,10 @@ function closeAllDropdowns(exceptWrap = null) {
           const out = await callBackendWithPriority({
             ipcCall: ipcFn,
             liveRoute: '/token-history',
-            liveBody: { force: forceFlag }
+            liveBody: {
+              force: forceFlag,
+              knownRevision: forceFlag ? null : lastTokenHistoryRevision
+            }
           });
           return out.result || null;
         } catch {
@@ -37621,9 +37905,9 @@ function closeAllDropdowns(exceptWrap = null) {
       };
       const restoreStep = startupRestorePromise
         ? startupRestorePromise
-        : (hasCompletedStartupRestore
-          ? restoreSettingsFromHost({ preserveSessionView: true })
-          : restoreSettingsFromHost());
+        : (!hasCompletedStartupRestore
+          ? restoreSettingsFromHost()
+          : (shouldSyncSettings ? restoreSettingsFromHost({ preserveSessionView: true }) : Promise.resolve(null)));
       const [, res] = await Promise.all([restoreStep, fetchHistoryAsync()]);
       if (state.disposed) return;
       if (typeof window !== 'undefined' && window.__AGContextMeterHistory) {
@@ -37631,7 +37915,12 @@ function closeAllDropdowns(exceptWrap = null) {
           applyTokenHistoryPayload(window.__AGContextMeterHistory);
         }
       }
-      if (res?.ok && res.data) {
+      if (res?.ok && res.unchanged === true) {
+        if (res.revision) lastTokenHistoryRevision = res.revision;
+      } else if (res?.ok && res.data) {
+        if (res.data.revision || res.revision) {
+          lastTokenHistoryRevision = res.data.revision || res.revision;
+        }
         if (typeof window !== 'undefined') window.__AGContextMeterHistory = res.data;
         applyTokenHistoryPayload(res.data);
       }
@@ -37645,9 +37934,11 @@ function closeAllDropdowns(exceptWrap = null) {
       }
       if (historySyncPending && !state.disposed) {
         const nextForce = historySyncPendingForce;
+        const nextSyncSettings = historySyncPendingSyncSettings;
         historySyncPending = false;
         historySyncPendingForce = false;
-        void syncTokenHistoryFromHost(nextForce);
+        historySyncPendingSyncSettings = false;
+        void syncTokenHistoryFromHost(nextForce, { syncSettings: nextSyncSettings });
       } else {
         syncPendingAutomaticHistory();
       }
@@ -38051,15 +38342,62 @@ var cumLockedKey = null;
     }
   }
 
+  function computeDailyMapSig() {
+    const map = ANTIGRAVITY_TOKEN_DATA?.dailyMap;
+    if (!map) return '0:0';
+    const keys = Object.keys(map);
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const rec = map[k];
+      const s = rec ? `${k}:${rec.total || 0}:${rec.input || 0}:${rec.output || 0}:${rec.cache || 0}` : k;
+      for (let j = 0; j < s.length; j++) {
+        h ^= s.charCodeAt(j);
+        h = Math.imul(h, 16777619) >>> 0;
+      }
+    }
+    return `${keys.length}:${h.toString(36)}`;
+  }
+
+  function buildHeatRenderSig(viewName, win, extra = '') {
+    const scaleStr = (typeof getEffectiveHeatmapScale === 'function' ? getEffectiveHeatmapScale() : []).join(',');
+    const themeStr = typeof resolveEffectiveTheme === 'function' ? resolveEffectiveTheme() : '';
+    const accentStr = (typeof customColors !== 'undefined' && customColors && customColors.tokenAccent) ? customColors.tokenAccent : '';
+    const planKey = `${ANTIGRAVITY_TOKEN_DATA?.planStatus?.planName || ''}:${ANTIGRAVITY_TOKEN_DATA?.customPlanSettings?.actualPricePaid ?? ''}:${ANTIGRAVITY_TOKEN_DATA?.customPlanSettings?.currency || ''}`;
+    return [
+      viewName,
+      win.firstStr || '',
+      formatLocalYmd(win.winStart),
+      formatLocalYmd(win.winEnd),
+      formatLocalYmd(win.today),
+      computeDailyMapSig(),
+      typeof activeTokenSource !== 'undefined' ? activeTokenSource : '',
+      typeof activeTokenAccountFilter !== 'undefined' ? activeTokenAccountFilter : '',
+      typeof activeCostModel !== 'undefined' ? activeCostModel : '',
+      typeof activeCostMode !== 'undefined' ? activeCostMode : '',
+      typeof currentPanelLanguage !== 'undefined' ? currentPanelLanguage : '',
+      themeStr,
+      scaleStr,
+      accentStr,
+      planKey,
+      cumLinkedDailyDate || '',
+      cumLockedKey || '',
+      cumExpandedWeekKey || '',
+      extra
+    ].join('|');
+  }
+
   function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
     if (!colsBox || !monthsBox) return;
     const win = computeTimelineWindow();
-    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}:${cumLinkedDailyDate || ''}`;
-    if (!forceRebuild && colsBox.children.length > 0 && colsBox.getAttribute('data-sig') === sig) return;
+    const sig = buildHeatRenderSig('daily', win);
+    if (!forceRebuild && colsBox.children.length === 52 && colsBox.getAttribute('data-sig') === sig) {
+      updateSummaryBar('daily', colsBox._cachedSummaryDates || []);
+      return;
+    }
 
-    colsBox.replaceChildren();
     monthsBox.replaceChildren();
     colsBox.setAttribute('data-sig', sig);
 
@@ -38076,13 +38414,65 @@ var cumLockedKey = null;
       list.push({ date: d, key, tokens, rec, isFuture, isToday: key === todayKey, isUnactivated });
     }
 
+    let pool = colsBox._cellPool;
+    if (!pool || colsBox.children.length !== 52) {
+      colsBox.replaceChildren();
+      pool = [];
+      for (let c = 0; c < 52; c++) {
+        const col = document.createElement('div');
+        col.className = 'heat-week-col';
+        const colCells = [];
+        for (let rIdx = 0; rIdx < 7; rIdx++) {
+          const cell = document.createElement('div');
+          cell.className = 'heat-cell lvl-0';
+          cell._meta = null;
+          const showPop = () => {
+            const meta = cell._meta;
+            if (!meta) return;
+            const r = cell.getBoundingClientRect ? cell.getBoundingClientRect() : { left: 0, top: 0, width: 10 };
+            const d = meta.date;
+            const dateLabel = currentPanelLanguage === 'en'
+              ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+              : (currentPanelLanguage === 'zh-TW'
+                ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
+                : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
+            const costInfo = getDailyModelCost(meta.rec, meta.key, activeCostModel, { mode: activeCostMode });
+            const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
+            heatPopDate.textContent = `${dateLabel}${meta.isToday ? t('heat.today') : (meta.key === meta.firstStr ? t('heat.firstUse') : '')}`;
+            heatPopVal.textContent = meta.tokens > 0
+              ? `${fmtYi(meta.tokens)} Tokens${costStr}`
+              : (meta.isFuture ? t('heat.future') : (meta.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
+            if (meta.rec) {
+              heatPopDet.innerHTML = `
+                <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(meta.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
+                <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(meta.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
+                <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(meta.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
+              `.trim();
+              heatPopDet.style.display = 'flex';
+            } else {
+              heatPopDet.style.display = 'none';
+            }
+            heatPop.style.left = `${r.left + r.width / 2}px`;
+            heatPop.style.top = `${r.top - 6}px`;
+            heatPop.style.opacity = '1';
+          };
+          cell.addEventListener('mouseenter', showPop);
+          cell.addEventListener('mouseleave', hidePopover);
+          cell.addEventListener('click', showPop);
+          col.appendChild(cell);
+          colCells.push(cell);
+        }
+        colsBox.appendChild(col);
+        pool.push(colCells);
+      }
+      colsBox._cellPool = pool;
+    }
+
     const monthMarkers = [];
     let lastM = -1;
     let lastCol = -10;
 
     for (let c = 0; c < 52; c++) {
-      const col = document.createElement('div');
-      col.className = 'heat-week-col';
       const slice = list.slice(c * 7, (c + 1) * 7);
       const mNum = slice[0].date.getMonth() + 1;
       if (mNum !== lastM) {
@@ -38093,57 +38483,38 @@ var cumLockedKey = null;
         lastM = mNum;
       }
 
-      slice.forEach(item => {
-        const cell = document.createElement('div');
+      const colCells = pool[c];
+      for (let rIdx = 0; rIdx < slice.length; rIdx++) {
+        const item = slice[rIdx];
+        const cell = colCells[rIdx];
+        cell._meta = {
+          date: item.date,
+          key: item.key,
+          tokens: item.tokens,
+          rec: item.rec,
+          isFuture: item.isFuture,
+          isToday: item.isToday,
+          isUnactivated: item.isUnactivated,
+          firstStr: win.firstStr
+        };
         const lvl = getLvl(item.tokens);
         const isLinked = Boolean(cumLinkedDailyDate && item.key === cumLinkedDailyDate);
-        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isUnactivated ? ' is-unactivated' : ''}${item.isToday ? ' is-today' : ''}${isLinked ? ' is-cum-linked' : ''}`;
-        if (item.tokens > 0 && typeof getContinuousHeatColor === 'function') {
-          const contCol = getContinuousHeatColor(item.tokens, 'heat');
-          if (contCol) {
-            cell.style.backgroundColor = contCol;
-            cell.setAttribute('data-heat-color', contCol);
-          }
+        const nextCls = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isUnactivated ? ' is-unactivated' : ''}${item.isToday ? ' is-today' : ''}${isLinked ? ' is-cum-linked' : ''}`;
+        if (cell.className !== nextCls) cell.className = nextCls;
+        const contCol = (item.tokens > 0 && typeof getContinuousHeatColor === 'function')
+          ? getContinuousHeatColor(item.tokens, 'heat')
+          : '';
+        if (contCol) {
+          if (cell.style.backgroundColor !== contCol) cell.style.backgroundColor = contCol;
+          cell.setAttribute('data-heat-color', contCol);
+        } else {
+          if (cell.style.backgroundColor) cell.style.backgroundColor = '';
+          if (typeof cell.removeAttribute === 'function') cell.removeAttribute('data-heat-color');
+          else if (cell.attributes) delete cell.attributes['data-heat-color'];
         }
         cell.setAttribute('data-date', item.key);
         cell.setAttribute('data-tokens', String(item.tokens));
-
-        const showPop = () => {
-          const d = item.date;
-          const dateLabel = currentPanelLanguage === 'en'
-            ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-            : (currentPanelLanguage === 'zh-TW'
-              ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
-              : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
-          heatPopDate.textContent = `${dateLabel}${item.isToday ? t('heat.today') : (item.key === win.firstStr ? t('heat.firstUse') : '')}`;
-          const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
-          heatPopVal.textContent = item.tokens > 0
-            ? `${fmtYi(item.tokens)} Tokens${costStr}`
-            : (item.isFuture ? t('heat.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
-          if (item.rec) {
-            heatPopDet.innerHTML = `
-              <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
-              <div class="pop-det-col"><span class="pop-det-val">Output: ${fmtYi(item.rec.output)}</span><span class="pop-det-trans">${t('heat.output')}</span></div>
-              <div class="pop-det-col"><span class="pop-det-val">Cache: ${fmtYi(item.rec.cache)}</span><span class="pop-det-trans">${t('heat.cache')}</span></div>
-            `.trim();
-            heatPopDet.style.display = 'flex';
-          } else {
-            heatPopDet.style.display = 'none';
-          }
-          const r = cell.getBoundingClientRect();
-          heatPop.style.left = `${r.left + r.width / 2}px`;
-          heatPop.style.top = `${r.top - 6}px`;
-          heatPop.style.opacity = '1';
-        };
-
-        cell.addEventListener('mouseenter', showPop);
-        cell.addEventListener('mouseleave', hidePopover);
-        cell.addEventListener('click', showPop);
-
-        col.appendChild(cell);
-      });
-      colsBox.appendChild(col);
+      }
     }
 
     const shortMonthsEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -38155,17 +38526,25 @@ var cumLockedKey = null;
       monthsBox.appendChild(lbl);
     });
 
-    updateSummaryBar('daily', list.map(x => x.key));
+    const summaryDates = list.map(x => x.key);
+    colsBox._cachedSummaryDates = summaryDates;
+    updateSummaryBar('daily', summaryDates);
   }
 
-  function renderHeatmapWeekly() {
+  function renderHeatmapWeekly(forceRebuild = false) {
     const box = el('h-weekly-box');
     if (!box) return;
-    box.replaceChildren();
 
     const scale = getEffectiveHeatmapScale();
     const [cEmpty] = scale;
     const win = computeTimelineWindow();
+    const sig = buildHeatRenderSig('weekly', win);
+    if (!forceRebuild && box.children.length > 0 && box.getAttribute('data-sig') === sig) {
+      updateSummaryBar('weekly', box._cachedSummaryDates || []);
+      return;
+    }
+    box.replaceChildren();
+    box.setAttribute('data-sig', sig);
     const todayTs = win.today.getTime();
     const totalWeeks = 52;
     const weeksData = [];
@@ -38236,8 +38615,9 @@ var cumLockedKey = null;
       col.appendChild(fill);
 
       const showPop = () => {
+        const r = col.getBoundingClientRect ? col.getBoundingClientRect() : { left: 0, top: 0, width: 10 };
         const weekDates = [];
-        for (let r = 0; r < 7; r++) weekDates.push(formatLocalYmd(addDays(w.sDate, r)));
+        for (let rIdx = 0; rIdx < 7; rIdx++) weekDates.push(formatLocalYmd(addDays(w.sDate, rIdx)));
         const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, weekDates, activeCostModel, {
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
@@ -38247,7 +38627,6 @@ var cumLockedKey = null;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : (w.isFutureWeek ? t('tokens.heat.futureTip') : '0 Tokens');
         heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
         heatPopDet.style.display = 'block';
-        const r = col.getBoundingClientRect();
         heatPop.style.left = `${r.left + r.width / 2}px`;
         heatPop.style.top = `${r.top - 6}px`;
         heatPop.style.opacity = '1';
@@ -38262,13 +38641,18 @@ var cumLockedKey = null;
 
     const allWinDates = [];
     for (let i = 0; i < win.totalDays; i++) allWinDates.push(formatLocalYmd(addDays(win.winStart, i)));
+    box._cachedSummaryDates = allWinDates;
     updateSummaryBar('weekly', allWinDates);
   }
 
-  function renderHeatmapCum() {
+  function renderHeatmapCum(forceRebuild = false) {
     const box = el('h-cum-box');
     if (!box) return;
-    box.replaceChildren();
+
+    const scrollBox = el('h-scroll-box') || box.parentElement;
+    const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
+    const W = (rect && rect.width > 120) ? rect.width : 670;
+    const isNarrow = W < 460;
 
     const core = globalThis.__AGContextMeterCore || {};
     const win = computeTimelineWindow();
@@ -38282,6 +38666,15 @@ var cumLockedKey = null;
     const rangeEl = el('h-win-range');
     if (rangeEl) rangeEl.textContent = `${formatDotYmd(win.winStart)} – ${formatDotYmd(activeEnd)}`;
 
+    const sig = buildHeatRenderSig('cum', win, isNarrow ? 'narrow' : 'wide');
+    if (!forceRebuild && box.children.length > 0 && box.getAttribute('data-sig') === sig) {
+      if (box._cachedCumSummary) _lastCumSummary = box._cachedCumSummary;
+      updateSummaryBar('cum', box._cachedSummaryDates || []);
+      return;
+    }
+    box.replaceChildren();
+    box.setAttribute('data-sig', sig);
+
     const summary = typeof core.computeCumulativeStripSummary === 'function'
       ? core.computeCumulativeStripSummary(map, startKey, endKey)
       : {
@@ -38291,6 +38684,7 @@ var cumLockedKey = null;
         concentrationOmittedReason: 'empty', ruler: { status: 'zero', pct: 0, value: 0, ticks: [] }
       };
     _lastCumSummary = summary;
+    box._cachedCumSummary = summary;
 
     // 切换账号/区间后若锁定键不再属于当前窗口，自动清理失效选中项
     if (cumLockedKey && !summary.segments.some(s => s.key === cumLockedKey)) {
@@ -38302,16 +38696,12 @@ var cumLockedKey = null;
     }
 
     const rangeDates = summary.dailyEntries.map(d => d.date);
+    box._cachedSummaryDates = rangeDates;
     const costAgg = calculateIntervalCost(map, rangeDates, activeCostModel, {
       mode: activeCostMode,
       todayStr: todayKey
     });
     const costText = formatUsdMetricDisplay(costAgg.totalCostUSD);
-
-    const scrollBox = el('h-scroll-box') || box.parentElement;
-    const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
-    const W = (rect && rect.width > 120) ? rect.width : 670;
-    const isNarrow = W < 460;
 
     const rootEl = document.createElement('div');
     rootEl.className = `cum-root${isNarrow ? ' is-narrow' : ''}`;
@@ -38497,6 +38887,7 @@ var cumLockedKey = null;
     const segPalette = isLight ? segPaletteLight : segPaletteDark;
 
     const showSegPop = (seg, anchorNode) => {
+      const r = anchorNode && anchorNode.getBoundingClientRect ? anchorNode.getBoundingClientRect() : { left: 100, top: 100, width: 20 };
       const segDates = seg.days.map(d => d.date);
       const segCost = calculateIntervalCost(map, segDates, activeCostModel, { mode: activeCostMode, todayStr: todayKey });
       const costSuffix = segCost.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(segCost.totalCostUSD, { detail: true })}` : '';
@@ -38510,7 +38901,6 @@ var cumLockedKey = null;
         : `0 Tokens (0.0%)`;
       heatPopDet.innerHTML = `<span>${t('tokens.heat.cumTotalLbl')}: ${fmtYi(seg.cumulativeTokens)} Tokens (${summary.intervalTotal > 0 ? ((seg.cumulativeTokens / summary.intervalTotal) * 100).toFixed(1) : '0.0'}%)</span>`;
       heatPopDet.style.display = 'block';
-      const r = anchorNode && anchorNode.getBoundingClientRect ? anchorNode.getBoundingClientRect() : { left: 100, top: 100, width: 20 };
       heatPop.style.left = `${r.left + (r.width || 0) / 2}px`;
       heatPop.style.top = `${r.top - 6}px`;
       heatPop.style.opacity = '1';
@@ -38848,10 +39238,9 @@ var cumLockedKey = null;
     }
   }
 
-  function renderHeatmapMonthly() {
+  function renderHeatmapMonthly(forceRebuild = false) {
     const box = el('h-monthly-box');
     if (!box) return;
-    box.replaceChildren();
 
     const scrollBox = el('h-scroll-box') || box.parentElement;
     const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
@@ -38860,6 +39249,13 @@ var cumLockedKey = null;
 
     const scale = getEffectiveHeatmapScale();
     const win = computeTimelineWindow();
+    const sig = buildHeatRenderSig('monthly', win, `${heatMonthOffset}:${W}`);
+    if (!forceRebuild && box.children.length > 0 && box.getAttribute('data-sig') === sig) {
+      updateSummaryBar('monthly', box._cachedSummaryDates || []);
+      return;
+    }
+    box.replaceChildren();
+    box.setAttribute('data-sig', sig);
     const today = win.today;
     const todayKey = formatLocalYmd(today);
 
@@ -38926,6 +39322,7 @@ var cumLockedKey = null;
       }
 
       const showPop = () => {
+        const r = cell.getBoundingClientRect ? cell.getBoundingClientRect() : { left: 0, top: 0, width: bestS };
         const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
         const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
         const mDateLabel = currentPanelLanguage === 'en'
@@ -38947,7 +39344,6 @@ var cumLockedKey = null;
         } else {
           heatPopDet.style.display = 'none';
         }
-        const r = cell.getBoundingClientRect();
         heatPop.style.left = `${r.left + r.width / 2}px`;
         heatPop.style.top = `${r.top - 6}px`;
         heatPop.style.opacity = '1';
@@ -38961,13 +39357,13 @@ var cumLockedKey = null;
     }
 
     box.appendChild(grid);
+    box._cachedSummaryDates = dateKeys;
     updateSummaryBar('monthly', dateKeys);
   }
 
-  function renderHeatmapYearly() {
+  function renderHeatmapYearly(forceRebuild = false) {
     const box = el('h-yearly-box');
     if (!box) return;
-    box.replaceChildren();
 
     const scrollBox = el('h-scroll-box') || box.parentElement;
     const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
@@ -38976,6 +39372,13 @@ var cumLockedKey = null;
 
     const scale = getEffectiveHeatmapScale();
     const win = computeTimelineWindow();
+    const sig = buildHeatRenderSig('yearly', win, `${heatYearOffset}:${W}`);
+    if (!forceRebuild && box.children.length > 0 && box.getAttribute('data-sig') === sig) {
+      updateSummaryBar('yearly', box._cachedSummaryDates || []);
+      return;
+    }
+    box.replaceChildren();
+    box.setAttribute('data-sig', sig);
     const today = win.today;
     const thisYear = today.getFullYear();
     const thisMonth = today.getMonth();
@@ -39194,6 +39597,7 @@ var cumLockedKey = null;
       g.appendChild(text);
 
       const showPop = () => {
+        const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
         const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, item.dates, activeCostModel, {
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
@@ -39207,7 +39611,6 @@ var cumLockedKey = null;
         heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}</span>`;
         heatPopDet.style.display = 'block';
 
-        const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
         heatPop.style.left = `${r.left + (r.width || 0) / 2}px`;
         heatPop.style.top = `${r.top - 6}px`;
         heatPop.style.opacity = '1';
@@ -39221,6 +39624,7 @@ var cumLockedKey = null;
     });
 
     box.appendChild(svg);
+    box._cachedSummaryDates = allYearDates;
     updateSummaryBar('yearly', allYearDates);
   }
 
@@ -40047,6 +40451,7 @@ var cumLockedKey = null;
       baselineCallId: latestRec?.callId || null,
       baselineCount: state.count || 0
     };
+    state.requestNext = 0;
     const updateWaitOnly = () => {
       if (state.disposed || !state.livePendingRequest || state.livePendingRequest.cascadeId !== state.route) {
         stopLiveWaitTickTimer();
@@ -43752,7 +44157,7 @@ var cumLockedKey = null;
       if (generation === state.generation && !state.disposed) {
         state.requestBusy = false;
         const latestRecNow = resolveLatestSessionCallRecord();
-        const isStreamingNow = Boolean((latestRecNow && latestRecNow.status === 'streaming') || state.compacting);
+        const isStreamingNow = Boolean((latestRecNow && latestRecNow.status === 'streaming') || state.compacting || state.livePendingRequest);
         const nextDelay = document.hidden ? 15000 : (isStreamingNow ? 1000 : 3000);
         state.requestNext = Date.now() + nextDelay;
         render();
@@ -46575,7 +46980,10 @@ var cumLockedKey = null;
       } else {
         scheduleQuotaAutoRefresh();
       }
-      if (typeof refreshAccountsOverview === 'function') {
+      if (
+        typeof refreshAccountsOverview === 'function' &&
+        (Boolean(isManual) || !accountsUiState.overview || Boolean(payload?.accountSwitched) || (panelQuotaEl && !panelQuotaEl.hidden))
+      ) {
         void refreshAccountsOverview({ silent: !isManual, refreshAllRemote: Boolean(isManual) });
       }
       if (
@@ -46646,7 +47054,7 @@ var cumLockedKey = null;
     if (state.historyDrawerOpen && state.route) {
       void fetchSessionTimeline(state.route, { force: !state.sessionTimeline });
     }
-    positionFloatingPanels();
+    positionFloatingPanels('panel');
     syncPanelPickerActiveState();
   });
   el('btn-timeline-load-more')?.addEventListener('click', () => {
@@ -47234,8 +47642,11 @@ var cumLockedKey = null;
     if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
   }
 
+  let lastAccountsOverviewFetchAt = 0;
+
   async function refreshAccountsOverview({ silent = true, refreshAllRemote = false } = {}) {
     if (state.disposed) return null;
+    lastAccountsOverviewFetchAt = Date.now();
     try {
       const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getAccountsOverview === 'function';
       const hasLive = hasLiveHttpBridge() && hasLiveRouteCapability('/accounts-overview');
@@ -47776,7 +48187,7 @@ var cumLockedKey = null;
   }
 
   globalThis.__AGContextMeter = {
-    buildId: 'e0e63847e5a265e2',
+    buildId: 'cecd056796d78c14',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -48069,7 +48480,7 @@ var cumLockedKey = null;
     },
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, sessionAvgSpeed: getSessionAverageSpeed(state.lastSpeedEval || null), scan: state.scan, compacting: state.compacting, hostContextWindowUsage: state.hostContextWindowUsage, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     simulateHostWsMessageForTest: (rawFrame) => handlePassiveHostWsMessage({ data: typeof rawFrame === 'string' ? rawFrame : JSON.stringify(rawFrame) }),
-    checkHostDomCompactionForTest: () => checkHostDomCompactionSignals(),
+    checkHostDomCompactionForTest: () => checkHostDomCompactionSignals({ urgent: true }),
     captureHotReloadState,
     verifyHotReloadAndRefreshQuota,
     getBackendStatusForTest: () => ({
@@ -48369,6 +48780,7 @@ var cumLockedKey = null;
       })),
       timelineSortOrder: state.timelineSortOrder
     }),
+    showPanelForTest: target => showPanel(target),
     setPanelWidthForTest: (w) => {
       state.forcedPanelWidthForTest = w == null ? null : Number(w);
       const tier = syncContextPanelContainerWidthTier();

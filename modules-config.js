@@ -811,18 +811,37 @@ function inspectDiskModules(customPath = null, options = {}) {
   return result;
 }
 
+const _hostCoreBuildCache = new Map();
+
 /**
  * 计算后台核心运行文件组合的 SHA-256 指纹（12 位 hex），用于同版本不同构建热重载识别。
+ * 通过各文件 size+mtimeMs 快速命中缓存，避免守护进程每 3 秒重复读取并哈希数 MB 源码。
  */
 function getHostCoreBuildId(baseDir = null) {
   try {
     const root = baseDir || __dirname;
-    const h = crypto.createHash('sha256');
-    for (const f of ['cli.js', 'install.js', 'restore.js', 'live-host.js', 'host-recovery.js', 'local-api.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-context-unlock.js', 'meter-enhance.js', 'macos-binary-utils.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+    const files = ['cli.js', 'install.js', 'restore.js', 'live-host.js', 'host-recovery.js', 'local-api.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-context-unlock.js', 'meter-enhance.js', 'macos-binary-utils.js', 'modules-config.js', 'asar-engine.js', 'package.json'];
+    const statParts = [];
+    const existingPaths = [];
+    for (const f of files) {
       const p = path.join(root, f);
-      if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
+      try {
+        const st = fs.statSync(p);
+        statParts.push(`${f}:${st.size}:${st.mtimeMs}`);
+        existingPaths.push([f, p]);
+      } catch { }
     }
-    return h.digest('hex').slice(0, 12);
+    const statSig = statParts.join('|');
+    const cached = _hostCoreBuildCache.get(root);
+    if (cached && cached.statSig === statSig) return cached.hash;
+
+    const h = crypto.createHash('sha256');
+    for (const [f, p] of existingPaths) {
+      h.update(f + ':').update(fs.readFileSync(p));
+    }
+    const hash = h.digest('hex').slice(0, 12);
+    _hostCoreBuildCache.set(root, { statSig, hash });
+    return hash;
   } catch {
     return null;
   }
