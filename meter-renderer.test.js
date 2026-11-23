@@ -9307,6 +9307,24 @@ test('v0.9.1: 插件页重复避让立即返回，打破 MutationObserver 写入
   assert.match(source, /function enforceMarketplaceAvoidance\(forceActive\)[\s\S]{0,900}if \(active && host\.getAttribute\?\.\('data-marketplace-active'\) === 'true'\) return true;/);
 });
 
+test('额度看板切换隐藏后保留内部滚动位置', () => {
+  const h = harness();
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    api.showPanelForTest('quota');
+    const quotaBody = h.elements.get('view-quota');
+    quotaBody.scrollTop = 640;
+    api.showPanelForTest('context');
+    quotaBody.scrollTop = 0; // 模拟浏览器在隐藏/重排时将滚动位置归零
+    api.showPanelForTest('quota');
+    assert.equal(quotaBody.scrollTop, 640);
+    assert.equal(h.elements.get('panel-quota').hidden, false);
+    assert.equal(h.elements.get('panel').hidden, true);
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
 test('v0.9.0-beta.1: 正常状态隐藏空蓝框(#ctx-ov-pinned-banner / #dock-fallback-note / #dock-open-feedback)，有有效内容展示且解除后完整收起', async () => {
   const h = harness();
   const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');

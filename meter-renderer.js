@@ -23316,7 +23316,31 @@ function formatPeriodCalendarLabel(currentPeriod) {
     return !el('panel').hidden || !el('panel-tokens').hidden || Boolean(el('panel-quota') && !el('panel-quota').hidden);
   }
 
+  const panelScrollMemory = new Map();
+  function rememberPanelScrollPositions() {
+    for (const id of ['panel', 'panel-tokens', 'view-quota']) {
+      const owner = id === 'view-quota' ? el('panel-quota') : el(id);
+      if (owner?.hidden) continue;
+      const node = el(id);
+      if (node && typeof node.scrollTop === 'number') panelScrollMemory.set(id, node.scrollTop);
+    }
+  }
+  function restorePanelScrollPosition(target) {
+    const id = target === 'quota' ? 'view-quota' : target === 'tokens' ? 'panel-tokens' : target === 'context' ? 'panel' : '';
+    if (!id || !panelScrollMemory.has(id)) return;
+    const top = panelScrollMemory.get(id);
+    const apply = () => {
+      if (state.disposed) return;
+      const node = el(id);
+      if (node && Math.abs((node.scrollTop || 0) - top) > 1) node.scrollTop = top;
+    };
+    apply();
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
+    setTimeout(apply, 50);
+  }
+
   function showPanel(target) {
+    rememberPanelScrollPositions();
     if (target !== 'none' && enforceMarketplaceAvoidance()) {
       target = 'none';
     }
@@ -23428,6 +23452,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     }
     syncDockedPanelsAttribute();
     syncPanelPickerActiveState();
+    restorePanelScrollPosition(target);
   }
 
   let activeContextAnchorId = 'badge';
@@ -47792,7 +47817,7 @@ var cumLockedKey = null;
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '516fd85b7c1b119f',
+    buildId: '17237a62c55e94af',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -48385,6 +48410,7 @@ var cumLockedKey = null;
       })),
       timelineSortOrder: state.timelineSortOrder
     }),
+    showPanelForTest: target => showPanel(target),
     setPanelWidthForTest: (w) => {
       state.forcedPanelWidthForTest = w == null ? null : Number(w);
       const tier = syncContextPanelContainerWidthTier();
