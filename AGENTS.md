@@ -32,6 +32,9 @@ Other commands:
 
 - `node cli.js live`: inject into the running window without patching the archive.
 - `node cli.js restore`: restore the recorded backup.
+- `node cli.js autostart:enable|disable|autostart-status`: manage the login autostart entry
+  (macOS `~/Library/LaunchAgents/<label>.plist`, Windows `HKCU` Run key). The entry only runs
+  `node cli.js watch`; it never touches `app.asar`. Verify with `autostart-status` after enabling.
 
 ## UI translation
 

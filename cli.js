@@ -1897,6 +1897,7 @@ const CLI_BOOLEAN_FLAGS = new Set([
 
 const CLI_KNOWN_COMMANDS = new Set([
   'install', 'recover', 'live', 'watch', 'stop-watch', 'restore', 'uninstall',
+  'autostart-status', 'autostart:enable', 'autostart:disable',
   'install-cli', 'restore-cli', 'status-cli',
   'unlock-status', 'unlock', 'unlock-restore',
   'enhance-status', 'enhance', 'enhance-restore',
@@ -1929,6 +1930,9 @@ function printUsage() {
                                             查看 CLI 按模型上下文偏好与二进制门禁状态
   node cli.js watch [--port <port>] [--relaunch] [--no-launch]  免改盘后台守护模式（未启动则自动拉起，关闭后自动退出）
   node cli.js stop-watch                    停止正在运行的 watch 守护进程与本地桥接服务
+  node cli.js autostart-status              查看登录自启状态 (macOS LaunchAgent / Windows Run 键)
+  node cli.js autostart:enable [--port <port>]   写入登录自启项，登录后自动执行 watch 免改盘挂载
+  node cli.js autostart:disable             移除登录自启项（不影响当前正在运行的 watch）
   node cli.js live [--port <port>] [--relaunch] [--no-launch]   免改盘 CDP 热挂载（未开启调试端口时支持自动拉起/重开）
   node cli.js install [--path <app.asar>] [--force-mac-asar]    一键持久化安装并热注入当前运行窗口
   node cli.js recover [--path <app.asar>] [--check-only] [--json]  检测并在宿主更新覆盖后自动备份恢复插件配置
@@ -2193,9 +2197,55 @@ async function main() {
     } else {
       console.log('ℹ️ 当前没有正在运行的 watch 或 live-host 进程。');
     }
+  } else if (cmd === 'autostart-status' || cmd === 'autostart:enable' || cmd === 'autostart:disable') {
+    const { getAutostartStatus, enableAutostart, disableAutostart } = require('./autostart');
+    const autostartOptions = { port: cdpOptions.port };
+    if (cmd === 'autostart:enable') {
+      const res = await enableAutostart(autostartOptions);
+      if (!res.ok) {
+        console.error(`❌ 登录自启写入失败: ${res.reason || res.kind}`);
+        process.exitCode = 1;
+      } else if (res.action === 'already_enabled') {
+        console.log(`ℹ️ 登录自启已存在，未做改动: ${res.command}`);
+      } else {
+        console.log(`✅ 已写入登录自启 (${res.action}): ${res.file || 'HKCU Run 键'}`);
+        console.log(`   命令: ${res.command}`);
+        if (res.warning) console.log(`   ⚠️ ${res.warning}`);
+        console.log('   提示: 下次登录会自动执行 watch；本会话如需立即生效，在外部终端运行 node cli.js watch。');
+      }
+    } else if (cmd === 'autostart:disable') {
+      const res = await disableAutostart(autostartOptions);
+      if (!res.ok) {
+        console.error(`❌ 登录自启移除失败: ${res.reason || res.kind}`);
+        process.exitCode = 1;
+      } else if (res.action === 'already_disabled') {
+        console.log('ℹ️ 当前没有登录自启项，无需移除。');
+      } else {
+        console.log(`✅ 已移除登录自启: ${res.file || 'HKCU Run 键'}`);
+      }
+    } else {
+      const res = getAutostartStatus(autostartOptions);
+      if (!res.supported) {
+        console.log(`ℹ️ ${res.reason}`);
+      } else {
+        console.log(`🔎 登录自启状态: ${res.enabled ? '已启用' : '未启用'} (${res.kind})`);
+        if (res.file) console.log(`   - 配置位置: ${res.file}`);
+        if (res.command) console.log(`   - 命令: ${res.command}`);
+      }
+    }
   } else if (cmd === 'restore' || cmd === 'uninstall') {
     const restoreAll = args.includes('--all');
     await stopWatchDaemon();
+    // 卸载时同步移除登录自启，避免登录后拉起已不存在的 watch
+    try {
+      const { disableAutostart } = require('./autostart');
+      const aRes = await disableAutostart({});
+      if (aRes.ok && aRes.action === 'disabled') {
+        console.log(`✅ 已同步移除登录自启: ${aRes.file || 'HKCU Run 键'}`);
+      }
+    } catch {
+      // 自启清理失败不阻断还原主流程
+    }
     const res = await restore({ path: customPath, force: isForce, ...cdpOptions });
     console.log(`✅ 已完成卸载还原: ${res.restored}`);
     if (restoreAll) {
