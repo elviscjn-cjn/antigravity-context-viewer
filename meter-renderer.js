@@ -26,7 +26,7 @@
           k => prevRoot.getElementById(`tab-ctx-${k}`)?.classList?.contains('active')
         ) || null;
         const scrollTops = {};
-        for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body']) {
+        for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body', 'view-quota']) {
           const n = prevRoot.getElementById(sId);
           if (n && Number(n.scrollTop) > 0) scrollTops[sId] = Number(n.scrollTop);
         }
@@ -26941,9 +26941,44 @@ var cumLockedKey = null;
     reconcileQuotaChildOrder(container, desiredRows);
   }
 
+  // 滚动位置记忆：额度面板两个可滚动容器（view-quota 内容区 + panel 外壳）。
+  // scroll 事件持续记录最新位置（用户滚动与程序化恢复都会自然更新），
+  // 因此任何重渲染（含 applyTokenHistoryPayload → refreshQuotaTokenEstimates
+  // 这类在刷新完成后 ~2s 才异步触发的重渲染）之后把 scrollTop 校正回记忆值都是安全的
+  const quotaScrollMemory = { top: {} };
+  function bindQuotaScrollMemory() {
+    for (const id of ['view-quota', 'panel']) {
+      const n = el(id);
+      if (!n || n.__agQuotaScrollMemBound) continue;
+      n.__agQuotaScrollMemBound = true;
+      quotaScrollMemory.top[id] = n.scrollTop || 0;
+      n.addEventListener('scroll', () => { quotaScrollMemory.top[id] = n.scrollTop; }, { passive: true });
+    }
+  }
+
+  function scheduleQuotaScrollRestore() {
+    if (state.disposed) return;
+    const deadline = Date.now() + 3000;
+    const applyOnce = () => {
+      const pq = el('panel-quota');
+      if (!pq || pq.hidden) return;
+      for (const [id, top] of Object.entries(quotaScrollMemory.top)) {
+        if (!(top > 0)) continue;
+        const n = el(id);
+        if (n && typeof n.scrollTop === 'number' && Math.abs((n.scrollTop || 0) - top) > 1) {
+          n.scrollTop = top;
+        }
+      }
+    };
+    requestAnimationFrame(applyOnce);
+    const timer = setInterval(() => {
+      if (state.disposed || Date.now() >= deadline) { clearInterval(timer); return; }
+      applyOnce();
+    }, 120);
+  }
+
   function renderQuotaBoard(nowMs = Date.now(), renderOpts = {}) {
-    const viewQuotaBody = el('view-quota');
-    const savedScrollTop = (viewQuotaBody && typeof viewQuotaBody.scrollTop === 'number') ? viewQuotaBody.scrollTop : null;
+    bindQuotaScrollMemory();
     const view = computeEffectiveQuotaView(nowMs);
     const currentSig = computeQuotaVisualSignature(view);
     const chargeBarTargets = renderOpts.chargeBars ? [] : null;
@@ -27410,16 +27445,7 @@ var cumLockedKey = null;
       }
     }
 
-    if (
-      savedScrollTop !== null &&
-      savedScrollTop > 0 &&
-      viewQuotaBody &&
-      el('panel-quota') &&
-      !el('panel-quota').hidden &&
-      Math.abs((viewQuotaBody.scrollTop || 0) - savedScrollTop) > 1
-    ) {
-      viewQuotaBody.scrollTop = savedScrollTop;
-    }
+    scheduleQuotaScrollRestore();
 
     if (renderOpts.chargeBars) {
       if (isQuotaReducedMotion()) {
@@ -28532,7 +28558,7 @@ var cumLockedKey = null;
       : ((pTokens && !pTokens.hidden) ? 'tokens'
         : ((pCtx && !pCtx.hidden) ? 'context' : 'none'));
     const scrollTops = {};
-    for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body']) {
+    for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body', 'view-quota']) {
       const n = el(sId);
       if (n && Number(n.scrollTop) > 0) scrollTops[sId] = Number(n.scrollTop);
     }
