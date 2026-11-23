@@ -26945,21 +26945,33 @@ var cumLockedKey = null;
   // scroll 事件持续记录最新位置（用户滚动与程序化恢复都会自然更新），
   // 因此任何重渲染（含 applyTokenHistoryPayload → refreshQuotaTokenEstimates
   // 这类在刷新完成后 ~2s 才异步触发的重渲染）之后把 scrollTop 校正回记忆值都是安全的
-  const quotaScrollMemory = { top: {} };
+  const quotaScrollMemory = { top: {}, restoring: false };
   function bindQuotaScrollMemory() {
     for (const id of ['view-quota', 'panel']) {
       const n = el(id);
       if (!n || n.__agQuotaScrollMemBound) continue;
       n.__agQuotaScrollMemBound = true;
       quotaScrollMemory.top[id] = n.scrollTop || 0;
-      n.addEventListener('scroll', () => { quotaScrollMemory.top[id] = n.scrollTop; }, { passive: true });
+      n.addEventListener('scroll', () => {
+        // 恢复窗口内冻结记忆：重渲染瞬间内容变矮触发浏览器 clamp，
+        // 其 scroll 事件若写入记忆会把恢复目标污染成半路值
+        if (quotaScrollMemory.restoring) return;
+        quotaScrollMemory.top[id] = n.scrollTop;
+      }, { passive: true });
     }
   }
 
   function scheduleQuotaScrollRestore() {
     if (state.disposed) return;
     const deadline = Date.now() + 3000;
+    quotaScrollMemory.restoring = true;
+    const endWindow = () => { quotaScrollMemory.restoring = false; };
+    // 用户主动滚动（滚轮/触摸/按下滚动条）立即结束冻结与校正，交还控制权
+    for (const evName of ['wheel', 'touchstart', 'mousedown']) {
+      host?.addEventListener?.(evName, endWindow, { once: true, passive: true });
+    }
     const applyOnce = () => {
+      if (!quotaScrollMemory.restoring) return;
       const pq = el('panel-quota');
       if (!pq || pq.hidden) return;
       for (const [id, top] of Object.entries(quotaScrollMemory.top)) {
@@ -26972,7 +26984,11 @@ var cumLockedKey = null;
     };
     requestAnimationFrame(applyOnce);
     const timer = setInterval(() => {
-      if (state.disposed || Date.now() >= deadline) { clearInterval(timer); return; }
+      if (state.disposed || !quotaScrollMemory.restoring || Date.now() >= deadline) {
+        clearInterval(timer);
+        endWindow();
+        return;
+      }
       applyOnce();
     }, 120);
   }
