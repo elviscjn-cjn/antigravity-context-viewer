@@ -9357,4 +9357,237 @@ test('v0.9.0-beta.1: 正常状态隐藏空蓝框(#ctx-ov-pinned-banner / #dock-f
   }
 });
 
+test('v0.9.0: ensureHostDocked 在无 Open IDE 锚点按钮时不触发 insertBefore(host, host) 自插循环且重挂时保留面板 scrollTop', async () => {
+  const elements = new Map();
+  const docElements = new Map();
+  const listeners = new Map();
+  const makeNode = (tag = 'DIV') => {
+    const attrs = new Map();
+    const props = new Map();
+    const node = {
+      tagName: tag,
+      style: {
+        display: '',
+        opacity: '',
+        setProperty(k, v) { props.set(k, v); },
+        removeProperty(k) { props.delete(k); },
+        getPropertyValue(k) { return props.get(k) || ''; }
+      },
+      children: [],
+      parentElement: null,
+      parentNode: null,
+      hidden: false,
+      textContent: '',
+      scrollTop: 0,
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); if (v) docElements.set(String(v), node); },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      get firstElementChild() { return this.children[0] || null; },
+      get firstChild() { return this.children[0] || null; },
+      get lastElementChild() { return this.children[this.children.length - 1] || null; },
+      get nextElementSibling() {
+        const siblings = this.parentElement?.children;
+        if (!Array.isArray(siblings)) return null;
+        const idx = siblings.indexOf(this);
+        return idx >= 0 ? (siblings[idx + 1] || null) : null;
+      },
+      get nextSibling() { return this.nextElementSibling; },
+      get isConnected() { return Boolean(this.parentElement); },
+      classList: {
+        add(c) {
+          const current = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+          if (!current.includes(c)) current.push(c);
+          attrs.set('class', current.join(' '));
+        },
+        remove(c) {
+          const current = (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c);
+          attrs.set('class', current.join(' '));
+        },
+        contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); }
+      },
+      addEventListener(type, fn) {
+        if (!listeners.has(node)) listeners.set(node, new Map());
+        listeners.get(node).set(type, fn);
+      },
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id' && v) docElements.set(String(v), node);
+      },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      contains(target) {
+        let cur = target;
+        while (cur) {
+          if (cur === this) return true;
+          cur = cur.parentElement;
+        }
+        return false;
+      },
+      remove() {
+        if (this.parentElement && Array.isArray(this.parentElement.children)) {
+          const idx = this.parentElement.children.indexOf(this);
+          if (idx >= 0) this.parentElement.children.splice(idx, 1);
+        }
+        this.parentElement = null;
+        this.parentNode = null;
+      },
+      appendChild(child) {
+        if (!child) return child;
+        if (child.parentElement && Array.isArray(child.parentElement.children)) {
+          const oldIdx = child.parentElement.children.indexOf(child);
+          if (oldIdx >= 0) child.parentElement.children.splice(oldIdx, 1);
+        }
+        child.parentElement = this;
+        child.parentNode = this;
+        this.children.push(child);
+        return child;
+      },
+      insertBefore(child, ref) {
+        if (!child) return child;
+        if (child.parentElement && Array.isArray(child.parentElement.children)) {
+          const oldIdx = child.parentElement.children.indexOf(child);
+          if (oldIdx >= 0) child.parentElement.children.splice(oldIdx, 1);
+        }
+        child.parentElement = this;
+        child.parentNode = this;
+        const refIdx = ref ? this.children.indexOf(ref) : -1;
+        if (refIdx >= 0) this.children.splice(refIdx, 0, child);
+        else this.children.push(child);
+        return child;
+      },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      closest() { return null; },
+      replaceChildren() { this.children = []; },
+      click() { listeners.get(node)?.get('click')?.(); },
+      getBoundingClientRect() { return { left: 100, top: 0, width: 800, height: 36, right: 900, bottom: 36 }; },
+      trigger(type, ev = {}) { listeners.get(node)?.get(type)?.(ev); }
+    };
+    return node;
+  };
+
+  const body = makeNode('BODY');
+  const titlebar = makeNode('DIV');
+  titlebar.className = '@container/titlebar flex items-center';
+  const leftTitle = makeNode('DIV');
+  const rightGroup = makeNode('DIV');
+  rightGroup.className = 'shrink-0 flex items-center';
+  // 仅有宿主原生菜单按钮，不存在 Open IDE / 打开 IDE 锚点按钮
+  const moreBtn = makeNode('BUTTON');
+  moreBtn.textContent = '⋮';
+  rightGroup.appendChild(moreBtn);
+  titlebar.appendChild(leftTitle);
+  titlebar.appendChild(rightGroup);
+  body.appendChild(titlebar);
+
+  titlebar.querySelector = sel => (sel === ':scope > div.shrink-0' ? rightGroup : null);
+  rightGroup.querySelectorAll = sel => (sel.includes('button') ? rightGroup.children.filter(c => c.tagName === 'BUTTON') : []);
+
+  const host = makeNode('DIV');
+  host.attachShadow = () => ({
+    set innerHTML(_v) { },
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, makeNode('DIV'));
+      return elements.get(id);
+    },
+    querySelectorAll() { return []; }
+  });
+
+  // 模拟 Chromium DOM 重插副作用：对 host 调用 insertBefore / appendChild 会重置 Shadow DOM 内所有滚动容器的 scrollTop
+  let hostReinsertCount = 0;
+  const resetShadowScrollsOnReinsert = (child) => {
+    if (child !== host) return;
+    hostReinsertCount++;
+    for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'view-quota', 'ctx-model-list', 'files']) {
+      const n = elements.get(sId);
+      if (n) n.scrollTop = 0;
+    }
+  };
+  const origInsertBefore = rightGroup.insertBefore.bind(rightGroup);
+  const origAppendChild = rightGroup.appendChild.bind(rightGroup);
+  rightGroup.insertBefore = (child, ref) => {
+    resetShadowScrollsOnReinsert(child);
+    return origInsertBefore(child, ref);
+  };
+  rightGroup.appendChild = (child) => {
+    resetShadowScrollsOnReinsert(child);
+    return origAppendChild(child);
+  };
+
+  let firstCreate = true;
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    window: {
+      innerWidth: 1280,
+      innerHeight: 800,
+      __APP_CONFIG__: { csrfToken: 'test' },
+      contextMeterAPI: { scan: () => new Promise(() => { }) }
+    },
+    document: {
+      body,
+      documentElement: body,
+      hidden: false,
+      createElement: tag => {
+        if (firstCreate) { firstCreate = false; return host; }
+        return makeNode((tag || 'DIV').toUpperCase());
+      },
+      getElementById: id => docElements.get(id) || null,
+      querySelector: sel => (sel === '[class*="@container/titlebar"]' ? titlebar : null),
+      querySelectorAll: sel => (sel === '[class*="@container/titlebar"]' ? [titlebar] : []),
+      addEventListener() { },
+      removeEventListener() { }
+    },
+    __AGContextMeterCore: core,
+    AbortController,
+    Date,
+    setTimeout: () => 1,
+    clearTimeout() { },
+    setInterval: () => 1,
+    clearInterval() { },
+    fetch: () => new Promise(() => { })
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  try {
+    const api = sandbox.__AGContextMeter;
+    assert.equal(host.parentElement, rightGroup, 'host 应初始挂载进顶栏右侧容器');
+    assert.equal(rightGroup.children[0], host, '无 Open IDE 按钮时 host 应位于队首');
+    assert.equal(rightGroup.children[1], moreBtn, 'host 应位于原有按钮之前');
+
+    // 模拟用户在 3 个面板均已下拉滚动
+    elements.get('panel').scrollTop = 280;
+    elements.get('view-quota').scrollTop = 360;
+    elements.get('panel-tokens').scrollTop = 420;
+    const countAfterInit = hostReinsertCount;
+
+    // 连续多次触发 ensureHostDocked + render（模拟定时轮询与流式更新）
+    api.ensureAlive();
+    api.ensureAlive();
+    api.ensureAlive();
+
+    assert.equal(hostReinsertCount, countAfterInit, 'host 已位于队首时绝不能反复触发 insertBefore(host, host)');
+    assert.equal(elements.get('panel').scrollTop, 280, '上下文/配置面板 scrollTop 应保持不变');
+    assert.equal(elements.get('view-quota').scrollTop, 360, '模型额度面板 scrollTop 应保持不变');
+    assert.equal(elements.get('panel-tokens').scrollTop, 420, 'Token 用量面板 scrollTop 应保持不变');
+
+    // 模拟宿主动态在 host 之前插入新按钮，触发真正的重挂挪位 -> 重挂后仍需完整恢复各面板 scrollTop
+    const newLeadingBtn = makeNode('BUTTON');
+    newLeadingBtn.textContent = 'New';
+    origInsertBefore(newLeadingBtn, host);
+    assert.equal(rightGroup.children[0], newLeadingBtn);
+
+    api.ensureAlive();
+    assert.equal(rightGroup.children[0], host, '宿主插入前置按钮后应重新将 host 挪回队首');
+    assert.equal(hostReinsertCount, countAfterInit + 1, '真正需要重挂时仅执行一次 insertBefore');
+    assert.equal(elements.get('panel').scrollTop, 280, '重挂后上下文/配置面板 scrollTop 应被自动恢复');
+    assert.equal(elements.get('view-quota').scrollTop, 360, '重挂后模型额度面板 scrollTop 应被自动恢复');
+    assert.equal(elements.get('panel-tokens').scrollTop, 420, '重挂后 Token 用量面板 scrollTop 应被自动恢复');
+  } finally {
+    sandbox.__AGContextMeter?.dispose?.();
+  }
+});
+
+
 

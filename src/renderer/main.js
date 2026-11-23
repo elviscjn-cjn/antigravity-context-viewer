@@ -2273,13 +2273,21 @@
 
       // 确定实际要挂入的容器 actualParent 和参考子节点 actualRef
       let actualParent = targetContainer;
-      let actualRef = anchorBtn || targetContainer.firstElementChild || targetContainer.firstChild || null;
+      let actualRef = anchorBtn;
 
       if (anchorBtn) {
         if (anchorBtn.parentElement && anchorBtn.parentElement !== targetContainer) {
           actualParent = anchorBtn.parentElement;
         }
         actualRef = anchorBtn;
+      } else {
+        // 无原生按钮锚点时挂到队首：跳过 host 自身，防止 actualRef === host 时重复触发 insertBefore(host, host)
+        // 导致 Chromium 重新连接 Shadow DOM 并清空所有打开面板的 scrollTop。
+        let firstNonHost = targetContainer.firstElementChild || targetContainer.firstChild || null;
+        while (firstNonHost && firstNonHost === host) {
+          firstNonHost = firstNonHost.nextElementSibling || firstNonHost.nextSibling || null;
+        }
+        actualRef = firstNonHost;
       }
 
       const isDirectChild = (p, c) => {
@@ -2289,7 +2297,20 @@
         return false;
       };
 
-      if (host.parentElement !== actualParent || (actualRef && host.nextElementSibling !== actualRef)) {
+      const alreadyInPosition = host.parentElement === actualParent && (
+        actualRef
+          ? (host.nextElementSibling === actualRef || host.nextSibling === actualRef)
+          : !host.nextElementSibling
+      );
+
+      if (!alreadyInPosition && actualRef !== host) {
+        const savedPanelScrolls = [];
+        for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'view-quota', 'ctx-model-list', 'files']) {
+          const n = el(sId);
+          if (n && typeof n.scrollTop === 'number' && n.scrollTop > 0) {
+            savedPanelScrolls.push([n, n.scrollTop]);
+          }
+        }
         try {
           if (actualRef && isDirectChild(actualParent, actualRef)) {
             actualParent.insertBefore(host, actualRef);
@@ -2298,6 +2319,11 @@
           }
         } catch {
           try { actualParent.appendChild(host); } catch { }
+        }
+        if (savedPanelScrolls.length > 0) {
+          for (const [n, topVal] of savedPanelScrolls) {
+            try { n.scrollTop = topVal; } catch { }
+          }
         }
       }
       host.setAttribute('data-dock', effectiveDock);
