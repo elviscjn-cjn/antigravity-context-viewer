@@ -637,6 +637,10 @@ test('handleRestartHost: 正常触发 app.relaunch + app.quit，无能力时返�
       ['relaunch', { args: ['--test'] }],
       ['quit']
     ]);
+    const refusal = await handleRestartHost(localEvent, {
+      appOverride: { relaunch() { throw new Error('restart denied'); }, quit() { assert.fail('failed restart must not quit'); } }
+    });
+    assert.deepEqual(refusal, { ok: false, supported: true, error: 'restart denied' });
   } finally {
     setAppQuitting(false);
   }

@@ -643,7 +643,7 @@ test('ELV-91 9 (PR #63): 当前会话平均生成速度聚合、顶栏均速显�
         status: 'final'
       }
     });
-    h.elements.get('btn-speed-breakdown-toggle').click();
+    h.elements.get('btn-ctx-timing-diag-toggle').click();
 
     const sp = h.api.getSpeedPanelStateForTest();
     // 顶栏显示会话均速 (133.3 tok/s)，功能栏分别展示均速 (133.3 tok/s) 与最新流式速度 (150 tok/s)
@@ -699,4 +699,86 @@ test('Issue #56 & 短样本: 远程对话明确提示无法测速并停转圈，
     outputTokens: 60
   }, 'zh-CN');
   assert.equal(sparse.isSampleSparse, true);
+});
+
+test('Phase 3 (图 5): 移除拆解冗余按钮、保留诊断评分、requestedModel/占位符/回退差异与 <0.2s 小数速率统一、排队 TTFT 状态机', async () => {
+  const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  assert.doesNotMatch(tpl, /id="btn-speed-breakdown-toggle"/, '冗余拆解按钮 #btn-speed-breakdown-toggle 必须移除');
+  assert.match(tpl, /id="btn-ctx-timing-diag-toggle"/, '左侧诊断评分切换按钮必须保留');
+  assert.match(tpl, /id="speed-breakdown-grid"/, '诊断拆解网格容器必须保留');
+
+  // 1. requestedModel 全链路：MODEL_PLACEHOLDER_* 映射 + 回退路由差异保留
+  const cfgList = [
+    { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M525' }, modelId: 'gemini-4-hydrogen-tiered-high', label: 'Gemini 4 Hydrogen (High)' },
+    { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M667' }, modelId: 'gemini-4-carbon', label: 'Orchestrator (Carbon)' }
+  ];
+  const fallbackCall = core.parseGeneratorCall({
+    stepIndices: [7],
+    created_at: '2026-11-24T12:00:00Z',
+    chatModel: {
+      model: 'MODEL_PLACEHOLDER_M667',
+      responseModel: 'gemini-4-argon',
+      modelDisplayName: 'Gemini 4 Argon',
+      usage: { inputTokens: 2000, cacheReadTokens: 8000, outputTokens: 19 },
+      timeToFirstToken: '1.2345s',
+      streamingDuration: '0.15s'
+    }
+  }, 'cid-fallback-1', 'desktop', { cascadeModelConfigs: cfgList });
+  assert.equal(fallbackCall.requestedModel, 'Orchestrator (Carbon)');
+  assert.equal(fallbackCall.requestedModelRaw, 'MODEL_PLACEHOLDER_M667');
+  assert.equal(fallbackCall.model, 'Gemini 4 Argon');
+  assert.equal(fallbackCall.streamingSec, 0.15);
+  assert.equal(fallbackCall.streamingTps, 126.7, '解除 <0.2s 截断并保留 0.1 tok/s 精度 (19 / 0.15 = 126.7)');
+
+  // 2. 无有效流式/非流式/缺耗时不可计算原因与小数精度验证
+  const shortRow = core.resolveRequestRowSpeed({ outputTokens: 19, streamingSec: 0.15, durationSec: 1.3845, status: 'final' });
+  assert.equal(shortRow.calculable, true);
+  assert.equal(shortRow.speed, 126.7);
+  assert.equal(shortRow.isShortStream, true);
+
+  const nonStreamRow = core.resolveRequestRowSpeed({ outputTokens: 120, ttftSec: 2.5, streamingSec: 0, durationSec: 2.5, status: 'final' });
+  assert.equal(nonStreamRow.calculable, false);
+  assert.equal(nonStreamRow.reasonCode, 'non_streaming_final');
+
+  const noOutRow = core.resolveRequestRowSpeed({ outputTokens: 0, streamingSec: 0.5, durationSec: 1.5, status: 'final' });
+  assert.equal(noOutRow.calculable, false);
+  assert.equal(noOutRow.reasonCode, 'no_output_tokens');
+
+  const missingDurRow = core.resolveRequestRowSpeed({ outputTokens: 50, streamingSec: null, durationSec: null, status: 'final' });
+  assert.equal(missingDurRow.calculable, false);
+  assert.equal(missingDurRow.reasonCode, 'missing_duration');
+
+  // 3. 排队 -> 调度 -> 首字 3 阶段 TTFT 与取消/编辑归零
+  const h = createSpeedUiHarness();
+  try {
+    const routeCid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const qState = h.api.startPendingRequestForTest(routeCid, { queued: true, nowMs: 100000 });
+    assert.equal(qState.stage, 'queued');
+    assert.equal(qState.startedAtMs, null, '排队期间不得开始计算首字延迟');
+    assert.equal(h.api.getSpeedPanelStateForTest().lastEval.phase, 'queued');
+    assert.equal(h.elements.get('speed-ttft').textContent, '—');
+
+    // 排队期间取消或编辑：彻底清零无残留
+    assert.equal(h.api.cancelOrEditQueuedRequestForTest('user_edit'), true);
+    assert.equal(h.api.getPendingRequestStateForTest(), null);
+    assert.equal(h.api.getSpeedPanelStateForTest().lastEval.phase, 'idle');
+
+    // 排队 -> 调度 -> 拿到真实行速度
+    h.api.startPendingRequestForTest(routeCid, { queued: true, nowMs: 200000 });
+    assert.equal(h.api.promoteQueuedRequestForTest(routeCid, 205000), true);
+    const dispState = h.api.getPendingRequestStateForTest();
+    assert.equal(dispState.stage, 'dispatched');
+    assert.equal(dispState.dispatchedAtMs, 205000);
+    assert.equal(h.api.getSpeedPanelStateForTest().lastEval.phase, 'waiting');
+
+    // 短耗时高精度单行渲染 + 非可计算原因提示
+    const shortSpdUi = h.api.resolveReqSpeedDisplayForTest({ outputTokens: 19, streamingSec: 0.15, durationSec: 1.3845, status: 'final' });
+    assert.equal(shortSpdUi.text, '126.7 token/秒');
+    assert.match(shortSpdUi.tooltip, /短流式窗口 0\.15 秒/);
+    const noOutUi = h.api.resolveReqSpeedDisplayForTest({ outputTokens: 0, durationSec: 1.2, status: 'final' });
+    assert.equal(noOutUi.text, '—');
+    assert.match(noOutUi.tooltip, /无有效输出/);
+  } finally {
+    h.api.dispose();
+  }
 });

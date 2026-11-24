@@ -396,6 +396,7 @@ test('meter-collector.collect 与 fetchQuotaSnapshotFromHost 在 2.34.0 下通�
       res.end(JSON.stringify({
         numTotalSteps: 1,
         trajectory: {
+          ...(trajectoryCalls === 2 ? { metadata: { workspaceUris: ['vscode-remote://ssh-remote+test-host/workspace'] } } : {}),
           steps: [{
             type: 'CORTEX_STEP_TYPE_USER_INPUT',
             userInput: { items: [{ text: 'hello v2.34.0' }] }
@@ -451,6 +452,7 @@ test('meter-collector.collect 与 fetchQuotaSnapshotFromHost 在 2.34.0 下通�
   });
   assert.equal(scan1.conversation, cascadeId);
   assert.ok(scan1.session);
+  assert.equal(scan1.session.isRemote, false);
 
   // 3.2 令牌轮换后再次 collect（复用旧缓存触发 401 -> 自动从 authBootstrap 刷新并重试成功）
   currentToken = 'collect-tok-2';
@@ -459,6 +461,7 @@ test('meter-collector.collect 与 fetchQuotaSnapshotFromHost 在 2.34.0 下通�
     allowDaemonFallback: false
   });
   assert.equal(scan2.conversation, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  assert.equal(scan2.session.isRemote, true);
   assert.equal(trajectoryCalls, 2);
   assert.equal(unauthorized401Count, 1, '令牌轮换后应仅触发 1 次 401 并自愈成功');
 
@@ -598,6 +601,18 @@ test('Issue #80: macOS ElectronAsarIntegrity 与签名预检及 install 完整�
 
   // 2. 移除 ElectronAsarIntegrity 且无签名的 .app 可标记 safe 并允许安装
   fs.writeFileSync(plistPath, `<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Antigravity</string></dict></plist>`, 'utf8');
+  const signedOptions = {
+    _platform: 'darwin',
+    _execFileSync: () => 'Signature=signed\nTeamIdentifier=EQHXZ8M8AV\nSealed Resources version=2'
+  };
+  const signedArchive = fs.readFileSync(macAsarPath);
+  assert.equal(inspectMacAsarIntegrity(macAsarPath, signedOptions).patchRisk, 'blocked_signature');
+  await assert.rejects(
+    () => install({ path: macAsarPath, pureMeterOnly: true, ...signedOptions }),
+    /签名.*node cli\.js watch/s
+  );
+  assert.deepEqual(fs.readFileSync(macAsarPath), signedArchive);
+
   const infoSafe = inspectMacAsarIntegrity(macAsarPath, {
     _platform: 'darwin',
     _execFileSync: () => { throw new Error('code object is not signed at all'); }
@@ -617,4 +632,92 @@ test('Issue #80: macOS ElectronAsarIntegrity 与签名预检及 install 完整�
   assert.equal(infoUnknown.hasAsarIntegrity, null);
   assert.equal(infoUnknown.patchRisk, 'unknown_signature');
   assert.equal(infoUnknown.recommendedEntry, 'node cli.js watch');
+});
+
+
+test('Phase 2A & 2B: createWindow 作用域 await win.loadURL 兼容、4阶段诊断、check阻塞、helper平台限制与restore全清', async (t) => {
+  const { diagnoseCleanStructure } = require('./modular-installer');
+  const { cmdCheck } = require('./cli');
+
+  // 1. 宿主 utils 含辅助函数 invokeWindowLoadUrl 中的 await win.loadURL(url) + createWindow 内的 await win.loadURL(url)
+  const awaitCreateWindowUtils = `"use strict";
+function setupNodeWrapper(env) { return env; }
+async function invokeWindowLoadUrl(win, url) {
+  await win.loadURL(url);
+}
+async function createWindow(url, storageManager, options) {
+  const win = {};
+  await win.loadURL(url);
+  return win;
+}
+`;
+  const target = findWindowLoadHookTarget(awaitCreateWindowUtils);
+  assert.ok(target, 'createWindow 内唯一定位 await win.loadURL(url) 时不应与辅助函数冲突');
+  assert.equal(target.kind, 'create_window_load_url');
+  assert.ok(awaitCreateWindowUtils.slice(target.index).startsWith('  await win.loadURL(url);'));
+  assert.equal(diagnoseCleanStructure(awaitCreateWindowUtils).ok, true);
+
+  // 2. 分阶段明确诊断：缺 setupNodeWrapper / 缺加载锚点 / 歧义锚点 / 语法错误
+  assert.equal(diagnoseCleanStructure('function createWindow(url){ void win.loadURL(url); }').stage, 'missing_setup_node_wrapper');
+  assert.equal(diagnoseCleanStructure('function setupNodeWrapper(env) {}\nfunction createWindow(url) { return null; }').stage, 'missing_window_load_anchor');
+  assert.equal(diagnoseCleanStructure('function setupNodeWrapper(env) {}\nfunction createWindow(url) {\n  await win.loadURL(url);\n  await win.loadURL(url);\n}').stage, 'ambiguous_window_load_anchor');
+  assert.equal(diagnoseCleanStructure('function setupNodeWrapper(env) {}\nfunction createWindow(url) {\n    void win.loadURL(url);\n  return (;\n}').stage, 'syntax_error');
+
+  // 3. macOS 平台上不得部署 cli-window-helper.exe 至 stateDir 或 Resources/bin
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-phase2ab-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const macStateDir = path.join(tmpDir, 'state-mac');
+  process.env.AG_METER_STATE_DIR = macStateDir;
+  t.after(() => {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const macAppDir = path.join(tmpDir, 'Antigravity.app', 'Contents', 'Resources');
+  const macBinDir = path.join(macAppDir, 'bin');
+  fs.mkdirSync(macBinDir, { recursive: true });
+  fs.writeFileSync(path.join(tmpDir, 'Antigravity.app', 'Contents', 'Info.plist'), '<plist><dict><key>CFBundleExecutable</key><string>Antigravity</string></dict></plist>');
+  const macAsarPath = path.join(macAppDir, 'app.asar');
+  const tmpUnsigned = await createMockAsar(tmpDir, '2.34.0', SAMPLE_V234_UTILS);
+  fs.copyFileSync(tmpUnsigned, macAsarPath);
+  const resMac = await install({
+    path: macAsarPath,
+    stateDir: macStateDir,
+    pureMeterOnly: true,
+    _platform: 'darwin',
+    _execFileSync: () => { throw new Error('code object is not signed at all'); },
+    noHotInject: true
+  });
+  assert.equal(resMac.helperSha256, null, '非 Windows 平台不得写入或记录 cli-window-helper.exe');
+  assert.equal(fs.existsSync(path.join(macStateDir, 'cli-window-helper.exe')), false);
+  assert.equal(fs.existsSync(path.join(macBinDir, 'cli-window-helper.exe')), false);
+
+  // 4. 模拟旧版遗留 Resources/bin/cli-window-helper.exe 并执行原位卸载：确认补全 25 项依赖且残留 .exe 被清理
+  fs.writeFileSync(path.join(macBinDir, 'cli-window-helper.exe'), 'stale-exe');
+  const restRes = await restore({
+    path: macAsarPath,
+    inPlace: true,
+    _platform: 'darwin',
+    _execFileSync: () => { throw new Error('code object is not signed at all'); }
+  });
+  assert.equal(restRes.inPlaceCleaned, true);
+  assert.equal(fs.existsSync(path.join(macBinDir, 'cli-window-helper.exe')), false, 'restore 应清理残留 cli-window-helper.exe');
+  for (const mod of ['host-recovery.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js']) {
+    let exists = true;
+    try { builtinAsar.extractFile(macAsarPath, 'dist/' + mod); } catch { exists = false; }
+    assert.equal(exists, false, `restore 原位卸载必须清理 dist/${mod}`);
+  }
+
+  // 5. macOS 已签名应用禁止 --in-place 重打包写盘，保护原 ASAR SHA-256 不变
+  const badAsar = await createMockAsar(tmpDir, '2.34.0', 'function setupNodeWrapper(env) {}');
+  const badShaBefore = crypto.createHash('sha256').update(fs.readFileSync(badAsar)).digest('hex');
+  await assert.rejects(() => install({ path: badAsar, pureMeterOnly: true, noHotInject: true }), /missing_window_load_anchor/);
+  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(badAsar)).digest('hex'), badShaBefore, '写前报错不得改动原 ASAR');
+
+  // 6. cmdCheck 在预检被阻断时必须设置非零 exitCode 而非打印通过
+  const prevExitCode = process.exitCode;
+  await cmdCheck(badAsar, { stateDir: macStateDir, _queryLiveWindow: async () => ({ running: false }) });
+  assert.equal(process.exitCode, 1, '结构预检阻塞时 cmdCheck 不得返回 0');
+  process.exitCode = prevExitCode;
 });

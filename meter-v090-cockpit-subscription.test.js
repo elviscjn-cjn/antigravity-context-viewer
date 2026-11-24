@@ -1176,3 +1176,65 @@ test('模块管理 Pointer Events 浮起实体行，实时移动空槽并同步�
     h.sandbox.__AGContextMeter.dispose();
   }
 });
+
+test('Phase 4B (图 4): 预设栏扁平混合轨迹、presetOrder 长按拖拽与最右 Sort 按键降级排序及后端持久往返', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-preset-order-'));
+  try {
+    // 1. 后端 sanitizeSessionCockpitLayout 与持久化往返保留混合 presetOrder
+    const customPresets = [
+      { id: 'custom-alpha', name: 'Alpha Flow', presetId: 'cockpit', widgets: [{ id: 'overview-kpi', visible: true }] }
+    ];
+    const desiredOrder = ['custom-alpha', 'debug', 'cockpit', 'speed_cost', 'collab', 'minimal'];
+    const saved = savePluginSettings({
+      sessionCockpitLayout: {
+        presetId: 'debug',
+        customPresets,
+        presetOrder: desiredOrder,
+        widgets: []
+      }
+    }, { agDir: tmpDir });
+    assert.equal(saved.ok, true);
+    const loaded = getPluginSettings({ agDir: tmpDir }).sessionCockpitLayout;
+    assert.deepEqual(loaded.presetOrder, desiredOrder, '自定义与系统预设顺序必须完整保存与读取');
+
+    // 2. 前端验证扁平轨道 + 最右 Sort 按钮位置 + 按键排序 + 拖拽跨类重排 + 切换预设保持顺序
+    const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
+    assert.match(tpl, /id="ctx-cockpit-presets-track"[\s\S]*id="btn-ctx-preset-sort"/, 'Sort 按钮必须位于预设轨道最右侧');
+
+    const h = createDomHarness();
+    await h.flush();
+    const api = h.sandbox.__AGContextMeter;
+    const savedCustom = api.createCustomCockpitPresetForTest('My Custom Layout');
+    const customId = savedCustom.activeCustomId;
+    assert.ok(customId);
+
+    // 模拟拖入系统预设之间（把自定义预设移到 debug 之前）
+    api.reorderCockpitPresetsForTest(customId, 'debug', false);
+    let trackState = api.getPresetTrackStateForTest();
+    assert.ok(trackState.presetOrder.indexOf(customId) < trackState.presetOrder.indexOf('debug'), '长按拖拽应能将个人预设移到系统预设之前');
+
+    // 切换 Sort 模式并用 offset 移动（降级按钮入口）
+    assert.equal(api.togglePresetSortModeForTest(true), true);
+    api.moveCockpitPresetForTest('minimal', -1);
+    trackState = api.getPresetTrackStateForTest();
+    assert.equal(trackState.sortMode, true);
+    assert.equal(trackState.presetOrder[0], 'minimal');
+
+    // 切换不同预设时不得冲掉用户刚调整好的 presetOrder
+    const afterSwitch = api.applyCockpitPresetForTest('speed_cost', { persist: true });
+    assert.deepEqual(Array.from(afterSwitch.presetOrder), Array.from(trackState.presetOrder));
+
+    // 重载实例校验 presetOrder 复原
+    const snap = h.getSettingsSnapshot();
+    api.dispose();
+    const h2 = createDomHarness({ initialSettings: snap });
+    await h2.flush();
+    assert.deepEqual(
+      Array.from(h2.sandbox.__AGContextMeter.getPresetTrackStateForTest().presetOrder),
+      Array.from(trackState.presetOrder)
+    );
+    h2.sandbox.__AGContextMeter.dispose();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

@@ -210,8 +210,39 @@
     }
 
     :host([data-dock="aux"]) {
+      position: relative !important;
       background: var(--ag-bg-panel);
       border-bottom: 1px solid var(--ag-border-subtle);
+    }
+
+    :host([data-dock="aux"][data-aux-view="browser"]) .ag-panel[data-panel-docked="true"],
+    :host([data-dock="aux"][data-aux-collapsed="true"]) .ag-panel[data-panel-docked="true"] {
+      display: none !important;
+    }
+
+    .dock-aux-resizer {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 6px;
+      cursor: ew-resize;
+      z-index: 60;
+      background: transparent;
+      transition: background-color 140ms ease;
+    }
+
+    .dock-aux-resizer:hover,
+    .dock-aux-resizer.is-resizing {
+      background: color-mix(in srgb, var(--ag-accent, #6366f1) 48%, transparent);
+    }
+
+    .dock-aux-resizer[hidden] {
+      display: none !important;
+    }
+
+    .dock-aux-tab-switch {
+      flex-shrink: 0;
     }
 
     :host([data-dock="aux"]) .ag-panel[data-panel-docked="true"],
@@ -6693,6 +6724,31 @@
       display: none !important
     }
 
+    #global-restart-modal {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      max-width: none;
+      max-height: none;
+      margin: 0;
+      border: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+      animation: none;
+    }
+
+    #global-restart-modal::backdrop {
+      background: transparent;
+    }
+
+    #global-restart-modal .ag-modal-card {
+      box-sizing: border-box;
+      max-height: 100%;
+      overflow: auto;
+      overscroll-behavior: contain;
+    }
+
     .ag-modal-card {
       background: var(--ag-bg-card);
       border: 1px solid var(--ag-border-card);
@@ -8894,7 +8950,7 @@
     }
 
     .ctx-toggle-input:checked+.ctx-toggle-track {
-      background: var(--ag-token-accent-default, #a78bfa);
+      background: var(--ag-custom-token-accent, #0a84ff);
       border-color: transparent
     }
 
@@ -8925,8 +8981,44 @@
 
     :host([data-theme="light"]) .ctx-toggle-input:checked+.ctx-toggle-track,
     :host([data-panel-tone="light"]) .ctx-toggle-input:checked+.ctx-toggle-track {
-      background: #7c3aed
+      background: var(--ag-custom-token-accent, #007aff)
     }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch) {
+      appearance: none;
+      position: relative;
+      display: inline-block;
+      inline-size: 34px;
+      block-size: 19px;
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--ag-border-subcard);
+      border-radius: 999px;
+      background: var(--ag-border-card);
+      cursor: pointer;
+      vertical-align: middle;
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch)::after {
+      content: "";
+      position: absolute;
+      inset: 2px auto auto 2px;
+      inline-size: 13px;
+      block-size: 13px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input):checked, button.ag-action-switch[aria-checked="true"]) {
+      background: var(--ag-custom-token-accent, #0a84ff);
+      border-color: transparent;
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input):checked, button.ag-action-switch[aria-checked="true"])::after { transform: translateX(15px); }
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch):focus-visible { outline: 2px solid var(--ag-custom-token-accent, #0a84ff); outline-offset: 2px; }
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch):disabled { opacity: .55; cursor: default; }
 
     @container (max-width: 400px) {
       .ctx-prefs-row {
@@ -10412,6 +10504,17 @@
       min-width: 0;
     }
 
+    .quota-accounts-section.settings-accounts-embedded {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .quota-accounts-entry-card {
+      margin-top: 10px;
+      gap: 5px;
+    }
+
     .quota-subsec-header {
       display: flex;
       align-items: center;
@@ -11393,6 +11496,12 @@
     }
 
     /* 输入栏紧凑状态条 (Composer Status Bar) 与 5 行悬停卡 - Antigravity 原生紧凑风格 */
+    :host #composer-status-bar,
+    :host #composer-status-bar,
+    .composer-status-bar[hidden] {
+      display: none !important;
+    }
+
     .composer-status-bar {
       display: flex;
       flex-wrap: wrap;
@@ -11951,7 +12060,21 @@
       display: none !important;
     }
 
-    /* 窄窗响应式折叠（由 flex-wrap 自动换行，严禁硬裁切文字） */
+    /* 窄窗响应式折叠（由 flex-wrap 自动换行，严禁硬裁切文字，状态胶囊优先露出） */
+    .composer-status-bar .csb-runtime-pill {
+      order: -10;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .composer-status-bar[data-csb-width="tight"] .csb-runtime-pill {
+      display: inline-flex !important;
+      order: -10 !important;
+      flex-shrink: 0 !important;
+      max-width: none !important;
+      overflow: visible !important;
+    }
+
     .composer-status-bar[data-csb-width="narrow"] .csb-quota-more,
     .composer-status-bar[data-csb-width="tight"] .csb-quota-more {
       display: none !important;
@@ -13090,6 +13213,7 @@
       user-select: none;
       touch-action: none;
       pointer-events: auto;
+      -webkit-app-region: no-drag;
       font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
       transition: transform 200ms cubic-bezier(0.22, 1.3, 0.36, 1), border-color 200ms ease, background-color 200ms ease, box-shadow 200ms ease;
     }
@@ -13417,6 +13541,7 @@
     }
 
     .ctx-radial-layer[data-state="open"] .ctx-radial-center-close {
+      -webkit-app-region: no-drag;
       opacity: 1;
       transform: scale(1);
     }
@@ -13462,6 +13587,7 @@
     }
 
     .ctx-radial-layer[data-state="open"] .ctx-radial-slot {
+      -webkit-app-region: no-drag;
       pointer-events: auto;
       opacity: 1;
       filter: blur(0px);
@@ -13839,11 +13965,64 @@
       border-radius: 10px;
     }
 
+    #pane-ctx-session .ctx-cockpit-presets-wrap {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
     #pane-ctx-session .ctx-cockpit-presets {
       display: flex;
       align-items: center;
       flex-wrap: wrap;
       gap: 4px;
+      flex: 0 1 auto;
+    }
+
+    #pane-ctx-session .ctx-preset-sort-toggle {
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    .ctx-preset-chip-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      border-radius: 7px;
+      transition: transform 140ms ease, opacity 140ms ease;
+    }
+
+    .ctx-preset-chip-group.is-dragging {
+      opacity: 0.55;
+      transform: scale(0.97);
+    }
+
+    .ctx-preset-sort-step {
+      appearance: none;
+      border: 1px solid var(--ctx-ck-border);
+      background: var(--ctx-ck-sub);
+      color: var(--ctx-ck-text);
+      font-size: 10px;
+      padding: 2px 5px;
+      border-radius: 5px;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+
+    .ctx-preset-sort-step:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .ctx-custom-preset-controls,
+    .ctx-custom-preset-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
     }
 
     #pane-ctx-session .ctx-preset-btn {

@@ -3,7 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile, execFileSync } = require('child_process');
+const { execFile, execFileSync, spawnSync } = require('child_process');
 
 const MH_MAGIC_64 = 0xfeedfacf;
 const FAT_MAGIC = 0xcafebabe;
@@ -399,7 +399,6 @@ function inspectMacAsarIntegrity(asarPath, options = {}) {
   const platform = options._platform || process.platform;
   const existsFn = options._existsSync || fs.existsSync;
   const readFn = options._readFileSync || ((p) => fs.readFileSync(p, 'utf8'));
-  const execSyncFn = options._execFileSync || execFileSync;
 
   const result = {
     isMacAppBundle: false,
@@ -463,41 +462,30 @@ function inspectMacAsarIntegrity(asarPath, options = {}) {
   }
 
   if (platform === 'darwin' || typeof options._execFileSync === 'function') {
+    const args = ['-dv', '--verbose=4', appBundlePath];
+    const spawnOptions = { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] };
+    let signOut = '';
     try {
-      const signOut = String(execSyncFn('codesign', ['-dv', '--verbose=4', appBundlePath], {
-        encoding: 'utf8',
-        timeout: 3000,
-        stdio: ['ignore', 'pipe', 'pipe']
-      }) || '');
-      const teamM = signOut.match(/TeamIdentifier=([^\r\n]+)/);
-      const teamVal = teamM ? teamM[1].trim() : null;
-      result.teamIdentifier = teamVal;
-      result.hardenedRuntime = /flags=0x[0-9a-f]+\(runtime\)|Runtime Version/i.test(signOut);
-      if (teamVal && teamVal.toLowerCase() !== 'not set') {
-        result.signatureStatus = 'signed';
-      } else if (/Signature=adhoc/i.test(signOut)) {
-        result.signatureStatus = 'adhoc';
-      } else if (signOut.trim()) {
-        result.signatureStatus = 'signed';
+      if (options._execFileSync) {
+        signOut = String(options._execFileSync('codesign', args, spawnOptions) || '');
       } else {
-        result.signatureStatus = 'unknown';
+        const output = spawnSync('codesign', args, spawnOptions);
+        signOut = `${output.stdout || ''}\n${output.stderr || ''}`;
       }
     } catch (err) {
-      const errOut = String((err && (err.stderr || err.stdout || err.message)) || '');
-      // macOS 上 codesign -dv 默认把签名信息输出到 stderr，execFileSync 返回 0 时走上面；非 0 常见为未签名或拒绝访问
-      const teamM = errOut.match(/TeamIdentifier=([^\r\n]+)/);
-      if (teamM) {
-        const teamVal = teamM[1].trim();
-        result.teamIdentifier = teamVal;
-        result.hardenedRuntime = /flags=0x[0-9a-f]+\(runtime\)|Runtime Version/i.test(errOut);
-        result.signatureStatus = (teamVal && teamVal.toLowerCase() !== 'not set')
-          ? 'signed'
-          : (/Signature=adhoc/i.test(errOut) ? 'adhoc' : 'signed');
-      } else if (/not signed at all/i.test(errOut)) {
-        result.signatureStatus = 'unsigned';
-      } else {
-        result.signatureStatus = 'unknown';
-      }
+      signOut = String(err?.stderr || err?.stdout || err?.message || '');
+    }
+    const teamVal = signOut.match(/^TeamIdentifier=([^\r\n]+)/m)?.[1].trim();
+    result.teamIdentifier = teamVal && teamVal.toLowerCase() !== 'not set' ? teamVal : null;
+    result.hardenedRuntime = /flags=0x[0-9a-f]+\(runtime\)|Runtime Version/i.test(signOut);
+    if (/not signed at all/i.test(signOut)) {
+      result.signatureStatus = 'unsigned';
+    } else if (/^Signature=adhoc/im.test(signOut)) {
+      result.signatureStatus = 'adhoc';
+    } else if (result.teamIdentifier || /^(?:Authority=|Signature=signed)/im.test(signOut)) {
+      result.signatureStatus = 'signed';
+    } else {
+      result.signatureStatus = 'unknown';
     }
   }
 
@@ -507,6 +495,10 @@ function inspectMacAsarIntegrity(asarPath, options = {}) {
     result.reason = `检测到 macOS ElectronAsarIntegrity (${result.integrityAlgorithm || 'SHA256'})` +
       (result.teamIdentifier ? ` 与官方签名 TeamIdentifier=${result.teamIdentifier}` : '') +
       '，直接改写 app.asar 会导致客户端启动完整性校验失败或破坏系统权限，建议使用免改盘 node cli.js watch';
+  } else if (result.signatureStatus === 'signed') {
+    result.patchRisk = 'blocked_signature';
+    result.recommendedEntry = 'node cli.js watch';
+    result.reason = '检测到 macOS 应用包签名，改写 app.asar 会破坏已签名的应用包资源，建议使用免改盘 node cli.js watch';
   } else if (result.hasAsarIntegrity === null || result.signatureStatus === 'unknown') {
     result.patchRisk = 'unknown_signature';
     result.recommendedEntry = 'node cli.js watch';

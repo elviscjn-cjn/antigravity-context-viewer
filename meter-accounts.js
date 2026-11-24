@@ -1803,22 +1803,93 @@ function createAccountsManager(options = {}) {
     const pending = switchStore.autoSwitchStatus.lastResult;
     if (pending?.restartPending) {
       const now = Date.now();
-      const verified = pending.pid !== process.pid && hostEmail === pending.toEmail;
-      if (!verified && now - pending.atMs < 120000) {
+      const targetEmailNorm = normalizeEmail(pending.toEmail || '');
+      const fromEmailNorm = normalizeEmail(pending.fromEmail || '');
+      const isNewProcess = pending.pid !== process.pid;
+      const elapsedSinceStartMs = now - Number(pending.atMs || 0);
+      const verified = isNewProcess && Boolean(targetEmailNorm) && hostEmail === targetEmailNorm;
+      const newProcessWrongAccount = isNewProcess && Boolean(hostEmail) && hostEmail !== targetEmailNorm && elapsedSinceStartMs >= 25000;
+      const timedOut = elapsedSinceStartMs >= 120000;
+      if (!verified && !newProcessWrongAccount && !timedOut) {
         const email = switchStore.activeAccountEmail || null;
         return { email, accountScopeKey: email ? buildAccountScopeKey(email) : null, switchInProgress: true };
       }
-      switchStore.autoSwitchStatus.lastResult = {
-        ...pending,
-        restartPending: false,
-        ok: verified,
-        verifiedEffective: verified
-      };
-      switchStore.autoSwitchStatus.lastError = verified ? null : '客户端重启后未确认切换到目标账号';
-      if (verified) switchStore.autoSwitchStatus.lastSwitchAtMs = now;
-      saveStore(switchStore);
-      if (!verified && !hostEmail) {
-        return { email: switchStore.activeAccountEmail, accountScopeKey: null, skippedWrite: true };
+      if (verified) {
+        closeActiveAccountSessions(switchStore, now);
+        switchStore.activeAccountEmail = targetEmailNorm;
+        if (switchStore.accounts[targetEmailNorm]) {
+          switchStore.accounts[targetEmailNorm].lastUsedAtMs = now;
+        }
+        recordVerifiedAccountSession(switchStore, {
+          email: targetEmailNorm,
+          nowMs: now,
+          source: 'desktop',
+          evidence: 'account_switch_verified',
+          forceNew: true
+        });
+        switchStore.autoSwitchStatus = {
+          ...switchStore.autoSwitchStatus,
+          state: switchStore.autoSwitch?.enabled ? 'cooldown' : 'disabled',
+          lastSwitchAtMs: now,
+          blockedReason: null,
+          blockedMeta: null,
+          lastError: null,
+          lastResult: {
+            ...pending,
+            restartPending: false,
+            manualRestartRequired: false,
+            ok: true,
+            verifiedEffective: true,
+            verifiedAtMs: now,
+            message: `已切换至 ${targetEmailNorm}，客户端重启后已通过 GetUserStatus 核验生效。`
+          }
+        };
+        debounceState.clear();
+        saveStore(switchStore);
+      } else {
+        let rolledBack = Boolean(fromEmailNorm && hostEmail === fromEmailNorm);
+        if (fromEmailNorm && switchStore.accounts[fromEmailNorm]?.credential?.refreshToken) {
+          try {
+            const origCred = switchStore.accounts[fromEmailNorm].credential;
+            const rb = credStore.applyCredential({
+              email: fromEmailNorm,
+              name: switchStore.accounts[fromEmailNorm].name,
+              accessToken: origCred.accessToken,
+              refreshToken: origCred.refreshToken,
+              expiresAt: origCred.expiresAt,
+              idToken: origCred.idToken
+            });
+            rolledBack = Boolean(rb?.ok) || rolledBack;
+          } catch { }
+        }
+        const failReason = newProcessWrongAccount
+          ? `客户端重启后仍回报 ${hostEmail}，未切换至 ${targetEmailNorm || '目标账号'}${rolledBack ? '，已回滚原账号凭据' : ''}`
+          : `客户端重启验证超时，未确认切换到 ${targetEmailNorm || '目标账号'}${rolledBack ? '，已回滚原账号凭据' : ''}`;
+        const isAutoTrigger = String(pending.trigger || '').startsWith('auto');
+        if (isAutoTrigger) {
+          switchStore.autoSwitch.enabled = false;
+        }
+        switchStore.autoSwitchStatus = {
+          ...switchStore.autoSwitchStatus,
+          state: isAutoTrigger ? 'error' : (switchStore.autoSwitch?.enabled ? 'watching' : 'disabled'),
+          blockedReason: null,
+          blockedMeta: null,
+          lastError: failReason,
+          lastResult: {
+            ...pending,
+            restartPending: false,
+            manualRestartRequired: false,
+            ok: false,
+            verifiedEffective: false,
+            rolledBack,
+            observedEmail: hostEmail || null,
+            error: failReason
+          }
+        };
+        saveStore(switchStore);
+        if (!hostEmail) {
+          return { email: switchStore.activeAccountEmail, accountScopeKey: null, skippedWrite: true };
+        }
       }
     }
     if (resolved) {
@@ -1830,8 +1901,8 @@ function createAccountsManager(options = {}) {
       }
       if (hostEmail || dbEmail) {
         const nowMs = Date.now();
-        const prevOpen = Array.isArray(store.verifiedSessions)
-          ? store.verifiedSessions.find(s => s && s.endAtMs == null && normalizeEmail(s.email) === resolved)
+        const prevOpen = Array.isArray(store.accountSessions)
+          ? store.accountSessions.find(s => s && s.endAtMs == null && normalizeEmail(s.email) === resolved)
           : null;
         const prevVerifiedAt = Number(prevOpen?.lastVerifiedAtMs || 0);
         recordVerifiedAccountSession(store, {
@@ -2957,8 +3028,13 @@ function createAccountsManager(options = {}) {
           };
         }
 
-        if (typeof opts.restartClient === 'function' && opts.trigger !== 'auto') {
+        if (typeof opts.restartClient === 'function') {
           const pendingStore = loadStore();
+          if (pendingStore.autoSwitch?.enabled) {
+            pendingStore.autoSwitchStatus.state = 'restarting';
+          }
+          pendingStore.autoSwitchStatus.blockedReason = null;
+          pendingStore.autoSwitchStatus.blockedMeta = null;
           pendingStore.autoSwitchStatus.lastResult = {
             ok: false,
             restartPending: true,
@@ -2966,13 +3042,53 @@ function createAccountsManager(options = {}) {
             toEmail: cleanTarget,
             atMs: Date.now(),
             pid: process.pid,
-            trigger: 'manual'
+            trigger: opts.trigger || 'manual'
           };
           pendingStore.autoSwitchStatus.lastError = null;
           saveStore(pendingStore);
           const result = await opts.restartClient();
-          if (!result?.supported) throw new Error('当前客户端无法自动重启');
+          if (result?.cancelled) {
+            const rb = credStore.restoreSnapshot(preSnap);
+            const rolledBack = Boolean(rb?.ok !== false);
+            const cancelMsg = '已取消重启客户端，已恢复原账号凭据';
+            finalizeFailureStore({ errMsg: cancelMsg, rolledBack, verifiedEmail: preActiveEmail || '', atMs: Date.now() });
+            const stRestore = loadStore();
+            stRestore.autoSwitchStatus.state = stRestore.autoSwitch?.enabled ? 'watching' : 'disabled';
+            stRestore.autoSwitchStatus.lastError = null;
+            saveStore(stRestore);
+            return { ok: false, cancelled: true, rolledBack, reason: 'user_cancelled_restart', message: cancelMsg };
+          }
+          if (!result?.supported || result.ok === false) throw new Error(result?.error || '当前客户端无法自动重启');
           return { ok: true, restartPending: true, verifiedEffective: false, message: '已准备切换账号，正在重启客户端' };
+        }
+        if (opts.requiresClientRestart) {
+          if (opts.allowManualRestartPending && !String(opts.trigger || '').startsWith('auto')) {
+            const pendingStore = loadStore();
+            pendingStore.autoSwitchStatus.lastResult = {
+              ok: false,
+              restartPending: true,
+              manualRestartRequired: true,
+              fromEmail: preActiveEmail,
+              toEmail: cleanTarget,
+              atMs: Date.now(),
+              pid: process.pid,
+              trigger: opts.trigger || 'manual'
+            };
+            pendingStore.autoSwitchStatus.lastError = null;
+            saveStore(pendingStore);
+            return {
+              ok: true,
+              restartPending: true,
+              manualRestartRequired: true,
+              verifiedEffective: false,
+              message: '已写入目标账号凭据，请手动完全退出并重启 Antigravity 客户端后生效'
+            };
+          }
+          const rb = credStore.restoreSnapshot(preSnap);
+          const rolledBack = Boolean(rb?.ok !== false);
+          const errMsg = opts.blockedRestartMessage || '当前运行模式无法自动重启客户端，已回滚原凭据';
+          finalizeFailureStore({ errMsg, rolledBack, verifiedEmail: preActiveEmail || '', atMs: Date.now() });
+          return { ok: false, rolledBack, reason: opts.blockedRestartReason || 'client_restart_unavailable', error: errMsg };
         }
 
         // 5. 重启语言服务使其加载新凭据
@@ -3330,12 +3446,22 @@ function createAccountsManager(options = {}) {
     }
     const chosen = eligible[0];
 
+    if (ctx.requiresClientRestart && typeof ctx.restartClient !== 'function') {
+      latestStatus.state = 'waiting_idle';
+      latestStatus.blockedReason = ctx.blockedRestartReason || 'client_restart_requires_idle_window';
+      saveStore(latestStore);
+      return { ok: true, action: 'blocked', state: 'waiting_idle', reason: latestStatus.blockedReason };
+    }
+
     latestStatus.state = 'switching';
     latestStatus.blockedReason = null;
     latestStatus.blockedMeta = null;
     saveStore(latestStore);
     const swRes = await (optsSwitchExecutor(ctx))(chosen.email, {
       trigger: 'auto_switch',
+      restartClient: ctx.restartClient,
+      requiresClientRestart: Boolean(ctx.requiresClientRestart),
+      blockedRestartReason: ctx.blockedRestartReason,
       nowMs,
       forceWhileBusy: !cfg.waitUntilIdle,
       restartLanguageServer: ctx.restartLanguageServer,
@@ -3357,6 +3483,10 @@ function createAccountsManager(options = {}) {
       };
       saveStore(postStore);
       return { ok: false, action: 'switch_failed_halted', targetEmail: chosen.email, error: swRes.error };
+    }
+
+    if (swRes.restartPending) {
+      return { ok: true, action: 'restart_pending', fromEmail: activeEmail, toEmail: chosen.email, switchResult: swRes };
     }
 
     // 成功切换后立刻收敛状态为 cooldown，避免状态滞留在 switching 或被同次条件重复触发
@@ -3726,6 +3856,8 @@ async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
       return {
         ...(await mgr.switchActiveAccount(payload.email, {
           restartClient: options.restartClient,
+          requiresClientRestart: Boolean(options.requiresClientRestart),
+          allowManualRestartPending: Boolean(options.allowManualRestartPending),
           forceWhileBusy: Boolean(payload.forceWhileBusy),
           ...(payload.verifyTimeoutMs != null ? { verifyTimeoutMs: payload.verifyTimeoutMs } : {})
         })),
@@ -3773,6 +3905,7 @@ module.exports = {
   getSharedAccountsManager,
   dispatchAccountsAction,
   fetchAccountQuotaViaCloudCode,
+  fetchJsonWithProxy,
   CLOUDCODE_DAILY_URL,
   CLOUDCODE_PROD_URL,
   ANTIGRAVITY_OAUTH_SCOPES

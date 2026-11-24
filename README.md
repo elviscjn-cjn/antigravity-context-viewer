@@ -24,7 +24,7 @@
 目前主要在 Windows 桌面客户端实机验证. macOS 兼容与完整性校验边界如下:
 
 - **2.34.0 窗口加载锚点 (`loadHubWindowUrl`)**: 已同步适配并通过跨平台安装/升级/还原自动化测试验证.
-- **macOS `ElectronAsarIntegrity` 与官方签名**: `Antigravity.app` (2.34.0) 启用了 `Info.plist` 中的 `ElectronAsarIntegrity` 校验并带有官方 Hardened Runtime 签名 (`TeamIdentifier`). 若直接改写磁盘 `app.asar` 可能导致启动完整性校验失败或破坏原有授权与自动更新, 故 `node cli.js check` 会先预检完整性, `node cli.js install` 默认拦截启用 `ElectronAsarIntegrity` 的 macOS 包并推荐免改盘 **`node cli.js watch`** (`open -a Antigravity --args --remote-debugging-port=58321`), 仅在自签场景支持 `--force-mac-asar` 显式覆盖.
+- **macOS `ElectronAsarIntegrity` 与应用包签名**: `node cli.js check` 会预检签名和 ASAR 完整性. 对启用 `ElectronAsarIntegrity` 或带发行方签名的 `.app`，`install` 和 `recover` 默认拦截改盘并推荐免改盘 **`node cli.js watch`**. 改写 `app.asar` 会影响签名验证，可能导致客户端或定时任务的 `language_server` 无法启动.
 - **实机未覆盖说明**: 本版构建期无 macOS 物理实机, macOS 上真实冷启动、Keychain/TCC 系统签名表现与真机 `watch` 交互仍待社区实际反馈核实. IDE 专属支持正在规划开发.
 
 ## 界面语言
@@ -86,6 +86,10 @@ node cli.js live --relaunch
 node cli.js watch
 node cli.js stop-watch
 
+# 3c. 检查并下载免改盘更新，watch 会接手验证后的新版本
+node cli.js update --check-only
+node cli.js update
+
 # 4. 查看当前安装状态与实时会话上下文用量
 node cli.js status
 
@@ -100,6 +104,8 @@ node cli.js enhance-status
 node cli.js enhance --tier 3 --chinese-title on --brand-title english
 node cli.js enhance-restore
 ```
+
+如果旧版插件目录里的 `cli.js` 不认识 `update`，请从 [GitHub Releases](https://github.com/elviscjn-cjn/antigravity-context-viewer/releases) 下载包含该命令的插件包，解压到新目录后在该目录运行 `node cli.js watch`。插件更新与 Antigravity 客户端更新独立。macOS 签名已经损坏时，先换回官方客户端并确认定时任务可运行，再使用 `watch`。
 
 ---
 

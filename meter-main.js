@@ -34,7 +34,17 @@ const {
   restoreContextUnlockAsync,
   syncPricingCatalogAsync
 } = require('./meter-collector');
-const { isValidExternalUrl } = require('./meter-core');
+const { isValidExternalUrl, compareVersions } = require('./meter-core');
+
+function isHostVersionAtLeast(targetVersion = '2.34.0') {
+  try {
+    const raw = typeof app?.getVersion === 'function' ? String(app.getVersion() || '').trim() : '';
+    if (!raw) return false;
+    return compareVersions(raw, targetVersion) >= 0;
+  } catch {
+    return false;
+  }
+}
 const { PROJECT_VERSION } = require('./modules-config');
 const MAIN_STARTED_AT = Date.now();
 const MAIN_CAPABILITIES = {
@@ -668,10 +678,14 @@ async function handleRestartHost(event, options = {}) {
     ? options.args
     : (Array.isArray(process.argv) ? process.argv.slice(1) : []);
   const delayMs = Number.isFinite(Number(options?.delayMs)) ? Number(options.delayMs) : 80;
+  try {
+    targetApp.relaunch({ args });
+  } catch (error) {
+    return { ok: false, supported: true, error: error.message };
+  }
   const triggerRestart = () => {
     try {
       setAppQuitting(true);
-      targetApp.relaunch({ args });
       targetApp.quit();
     } catch { }
   };
@@ -811,17 +825,29 @@ function registerMeterIpcHandlers(ipcMain) {
         const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
         const email = !switchInFlight
-          ? (res?.email || _raw?.planStatus?.email || res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+          ? (res?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
           : null;
         if (!switchInFlight && res?.ok && email && res?.snapshot) {
           mgr.syncActiveHostQuotaSnapshot(res, email);
           const ov = mgr.getOverviewState();
           if (ov.autoSwitch?.enabled && !res.error) {
+            const requiresClientRestart = isHostVersionAtLeast('2.34.0');
+            const liveOrigins = getActiveHubWindowOrigins();
+            const hasRestartApi = typeof app?.relaunch === 'function' && typeof app?.quit === 'function';
+            const canRestart = requiresClientRestart && options?.isGenerating === false && liveOrigins.length === 1 && hasRestartApi;
+            const blockedRestartReason = !canRestart
+              ? (options?.isGenerating !== false
+                ? 'generation_in_progress'
+                : (liveOrigins.length > 1 ? 'multi_window_open' : 'client_restart_requires_idle_window'))
+              : undefined;
             accountSyncResult = await mgr.evaluateAutoSwitch({
               activeEmail: email,
               activeSnapshot: res.snapshot,
               syncState: 'fresh',
-              isGenerating: options?.isGenerating === true
+              isGenerating: options?.isGenerating === true,
+              requiresClientRestart,
+              blockedRestartReason,
+              restartClient: canRestart ? () => handleRestartHost(event) : undefined
             });
           }
         }
@@ -1159,7 +1185,8 @@ function registerMeterIpcHandlers(ipcMain) {
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
       const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
       let restartClient;
-      if (payload?.action === 'switch' && process.platform === 'darwin' && /^2\.34\./.test(app?.getVersion?.() || '')
+      const requiresClientRestart = isHostVersionAtLeast('2.34.0');
+      if (payload?.action === 'switch' && requiresClientRestart
           && typeof app?.relaunch === 'function' && typeof app?.quit === 'function') {
         const { dialog } = require('electron');
         const zh = /^zh/i.test(app.getLocale?.() || '');
@@ -1170,10 +1197,16 @@ function registerMeterIpcHandlers(ipcMain) {
           cancelId: 1,
           message: zh ? '切换账号需要重新启动 Antigravity' : 'Restart Antigravity to switch accounts'
         });
-        if (result.response !== 0) return { ok: false, cancelled: true };
+        if (result.response !== 0) {
+          return { ok: false, cancelled: true, reason: 'user_cancelled_restart', overview: mgr.getOverviewState() };
+        }
         restartClient = () => handleRestartHost(event);
       }
-      return await dispatchAccountsAction(mgr, payload || {}, { restartClient });
+      return await dispatchAccountsAction(mgr, payload || {}, {
+        restartClient,
+        requiresClientRestart,
+        allowManualRestartPending: requiresClientRestart && !restartClient
+      });
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1226,6 +1259,25 @@ function registerMeterIpcHandlers(ipcMain) {
       };
     } catch (e) {
       return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:predict-next-prompt', async (event, payload = {}) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const settings = getPluginSettings();
+      if (settings.nextPromptEnabled !== true && payload?.allowWhenDisabled !== true) {
+        return { ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 };
+      }
+      const { predictNextPromptAsync } = require('./meter-next-prompt');
+      return await predictNextPromptAsync(payload || {}, {
+        origin: url.origin,
+        model: typeof payload?.model === 'string' && payload.model.trim() ? payload.model.trim() : undefined,
+        allowGetModelResponseFallback: payload?.allowGetModelResponseFallback === true
+      });
+    } catch (e) {
+      return { ok: false, abstained: true, suggestion: '', error: e.message };
     }
   });
 }

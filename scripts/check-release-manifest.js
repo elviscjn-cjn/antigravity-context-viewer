@@ -20,7 +20,8 @@ const mandatoryRuntimeModules = [
   'meter-renderer.js',
   'meter-core.js',
   'meter-collector.js',
-  'meter-storage.js'
+  'meter-storage.js',
+  'meter-next-prompt.js'
 ];
 for (const file of mandatoryRuntimeModules) {
   if (!required.includes(file)) throw new Error('Missing mandatory runtime module in install additions. ' + file);

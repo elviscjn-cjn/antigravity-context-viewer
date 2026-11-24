@@ -40,6 +40,7 @@ const COMMON_FILES = [
   'meter-enhance.js',
   'meter-rehydrate.js',
   'meter-accounts.js',
+  'meter-next-prompt.js',
   'autostart.js',
   'macos-binary-utils.js',
   'attachment_scan.py',

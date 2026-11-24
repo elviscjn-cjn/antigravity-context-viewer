@@ -738,15 +738,19 @@ test('5. 渲染层界面控制、推荐配置联动、白名单链接与三语�
     assert.match(h.elements.get('rehydrate-stat-siblings').textContent, /herdr/);
 
     // 单独卡片启用 -> 停用 -> 二次确认显式卸载移除（首次点击仅进入确认态，二次点击才传入 { force: true }）
-    h.elements.get('btn-rehydrate-enable').click();
+    const rehydrateSwitch = h.elements.get('btn-rehydrate-switch');
+    assert.equal(rehydrateSwitch.getAttribute('aria-checked'), 'false');
+    rehydrateSwitch.click();
     await h.flush();
     assert.equal(calls.apply, 1);
     assert.equal(h.elements.get('rehydrate-badge').textContent, '已开启');
 
-    h.elements.get('btn-rehydrate-disable').click();
+    assert.equal(rehydrateSwitch.getAttribute('aria-checked'), 'true');
+    rehydrateSwitch.click();
     await h.flush();
     assert.equal(calls.disable, 1);
     assert.equal(h.elements.get('rehydrate-badge').textContent, '已停用');
+    assert.equal(rehydrateSwitch.getAttribute('aria-checked'), 'false');
 
     h.elements.get('btn-rehydrate-remove').click();
     await h.flush();
@@ -1561,13 +1565,13 @@ test('8. 缺 Python 时一键安装：win32 下载解压路径、已就绪短路
       await h.flush();
       const installBtn = h.elements.get('btn-rehydrate-install-python');
       assert.equal(installBtn.hidden, false, '缺少 Python 时应展示一键安装按钮');
-      assert.equal(h.elements.get('btn-rehydrate-enable').disabled, true, '缺少 Python 时应禁用启用按钮');
+      assert.equal(h.elements.get('btn-rehydrate-switch').disabled, true, '缺少 Python 时应禁用开关');
 
       installBtn.click();
       await h.flush();
       assert.equal(installClicks, 1);
       assert.equal(installBtn.hidden, true, '安装成功并刷新状态后应隐藏一键安装按钮');
-      assert.equal(h.elements.get('btn-rehydrate-enable').disabled, false);
+      assert.equal(h.elements.get('btn-rehydrate-switch').disabled, false);
     } finally {
       try { h.api.dispose(); } catch {}
     }

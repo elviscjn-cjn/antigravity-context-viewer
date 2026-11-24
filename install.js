@@ -26,6 +26,7 @@ const {
   cleanUtilsSource,
   cleanPreloadSource,
   injectWindowLoadHook,
+  diagnoseCleanStructure,
   verifyCleanStructure
 } = require('./modular-installer');
 
@@ -338,7 +339,7 @@ async function install(options = {}) {
     macIntegrity.isMacAppBundle &&
     ((options._platform || process.platform) === 'darwin' || options.enforceMacIntegrityCheck === true)
   ) {
-    if (macIntegrity.hasAsarIntegrity === true && !allowMacOverride) {
+    if ((macIntegrity.patchRisk === 'blocked_integrity' || macIntegrity.patchRisk === 'blocked_signature') && !allowMacOverride) {
       throw new Error(
         `[macOS 完整性保护] ${macIntegrity.reason}。\n` +
         '为避免破坏官方签名或导致客户端启动闪退，默认已中止修改磁盘 app.asar。\n' +
@@ -561,8 +562,9 @@ async function install(options = {}) {
       let cleanUtils = cleanUtilsSource(inPlaceCleanedUtils || extractAsarFile(sourceArchive, 'dist/utils.js').toString('utf8'));
       let cleanPreload = cleanPreloadSource(inPlaceCleanedPreload || extractAsarFile(sourceArchive, 'dist/preload.js').toString('utf8'));
 
-      if (!verifyCleanStructure(cleanUtils)) {
-        throw new Error('清洗后的 utils.js 结构校验未通过 (Unexpected createWindow/setupNodeWrapper) 或 JavaScript 语法自证失败，中止写入以保护宿主环境。');
+      const cleanDiag = diagnoseCleanStructure(cleanUtils);
+      if (!cleanDiag.ok) {
+        throw new Error(`清洗后的 utils.js 结构校验未通过 (Unexpected createWindow/setupNodeWrapper) [stage=${cleanDiag.stage}]: ${cleanDiag.reason}，中止写入以保护宿主环境。`);
       }
 
       let finalUtils = cleanUtils;
@@ -671,6 +673,7 @@ async function install(options = {}) {
         'meter-enhance.js',
         'meter-rehydrate.js',
         'meter-accounts.js',
+        'meter-next-prompt.js',
         'macos-binary-utils.js',
         'local-api.js',
         'attachment_scan.py'
@@ -885,53 +888,56 @@ async function install(options = {}) {
           }
         }
 
-        // 12. 同步部署 CLI 辅助定位程序至状态目录与资源目录并核对哈希（Windows 下无预编译文件时从源码编译至临时目录）
+        // 12. 同步部署 CLI 辅助定位程序（仅限 Windows 平台部署 cli-window-helper.exe，严禁写入 macOS/Linux 应用包）
         let helperSha = null;
         let builtHelperTempDir = null;
-        try {
-          const helperCandidates = [
-            path.join(__dirname, 'scripts', 'cli-window-helper.exe'),
-            path.join(__dirname, '..', 'scripts', 'cli-window-helper.exe'),
-            path.join(stateDir, 'cli-window-helper.exe'),
-            path.join(path.dirname(installed), 'bin', 'cli-window-helper.exe')
-          ];
-          let helperSrc = null;
-          if (process.platform === 'win32' && !options.customAsarPath && !isIsolatedTestPath(installed)) {
-            const csSrc = path.join(__dirname, 'scripts', 'cli-window-helper.cs');
-            if (fs.existsSync(csSrc)) {
-              try {
-                const { ensureWindowsHelper } = require('./scripts/package-release');
-                const built = ensureWindowsHelper({ rootDir: __dirname });
-                if (built?.helperPath && fs.existsSync(built.helperPath)) {
-                  helperSrc = built.helperPath;
-                  builtHelperTempDir = built.tempDir || null;
-                }
-              } catch { }
+        const effectiveHelperPlatform = options._platform || process.platform;
+        if (effectiveHelperPlatform === 'win32') {
+          try {
+            const helperCandidates = [
+              path.join(__dirname, 'scripts', 'cli-window-helper.exe'),
+              path.join(__dirname, '..', 'scripts', 'cli-window-helper.exe'),
+              path.join(stateDir, 'cli-window-helper.exe'),
+              path.join(path.dirname(installed), 'bin', 'cli-window-helper.exe')
+            ];
+            let helperSrc = null;
+            if (!options.customAsarPath && !isIsolatedTestPath(installed)) {
+              const csSrc = path.join(__dirname, 'scripts', 'cli-window-helper.cs');
+              if (fs.existsSync(csSrc)) {
+                try {
+                  const { ensureWindowsHelper } = require('./scripts/package-release');
+                  const built = ensureWindowsHelper({ rootDir: __dirname });
+                  if (built?.helperPath && fs.existsSync(built.helperPath)) {
+                    helperSrc = built.helperPath;
+                    builtHelperTempDir = built.tempDir || null;
+                  }
+                } catch { }
+              }
             }
-          }
-          if (!helperSrc) {
-            helperSrc = helperCandidates.find(p => fs.existsSync(p));
-          }
-          if (helperSrc) {
-            helperSha = sha(fs.readFileSync(helperSrc));
-            const deployedHelperPath = path.join(stateDir, 'cli-window-helper.exe');
-            if (deployedHelperPath !== helperSrc) {
-              fs.copyFileSync(helperSrc, deployedHelperPath);
+            if (!helperSrc) {
+              helperSrc = helperCandidates.find(p => fs.existsSync(p));
             }
-            const deployedSha = sha(fs.readFileSync(deployedHelperPath));
-            if (deployedSha !== helperSha) {
-              throw new Error(`部署的 helper 哈希不一致 (目标: ${deployedSha}, 源: ${helperSha})`);
+            if (helperSrc) {
+              helperSha = sha(fs.readFileSync(helperSrc));
+              const deployedHelperPath = path.join(stateDir, 'cli-window-helper.exe');
+              if (deployedHelperPath !== helperSrc) {
+                fs.copyFileSync(helperSrc, deployedHelperPath);
+              }
+              const deployedSha = sha(fs.readFileSync(deployedHelperPath));
+              if (deployedSha !== helperSha) {
+                throw new Error(`部署的 helper 哈希不一致 (目标: ${deployedSha}, 源: ${helperSha})`);
+              }
+              const resBinDir = path.join(path.dirname(installed), 'bin');
+              if (fs.existsSync(resBinDir)) {
+                try {
+                  fs.copyFileSync(helperSrc, path.join(resBinDir, 'cli-window-helper.exe'));
+                } catch { }
+              }
             }
-            const resBinDir = path.join(path.dirname(installed), 'bin');
-            if (fs.existsSync(resBinDir)) {
-              try {
-                fs.copyFileSync(helperSrc, path.join(resBinDir, 'cli-window-helper.exe'));
-              } catch { }
+          } finally {
+            if (builtHelperTempDir) {
+              try { fs.rmSync(builtHelperTempDir, { recursive: true, force: true }); } catch { }
             }
-          }
-        } finally {
-          if (builtHelperTempDir) {
-            try { fs.rmSync(builtHelperTempDir, { recursive: true, force: true }); } catch { }
           }
         }
 
@@ -997,7 +1003,7 @@ function getWatchBundleBuildId(baseDir = null) {
   try {
     const root = baseDir || __dirname;
     const h = crypto.createHash('sha256');
-    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-accounts.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-accounts.js', 'meter-next-prompt.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
       const p = path.join(root, f);
       if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
     }

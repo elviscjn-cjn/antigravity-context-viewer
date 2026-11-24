@@ -13,7 +13,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { loadAsarEngine, builtinAsar, getStateDir, isIsolatedTestPath } = require('./asar-engine');
 const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
-const { cleanUtilsSource, verifyCleanStructure, TAGS } = require('./modular-installer');
+const { cleanUtilsSource, verifyCleanStructure, diagnoseCleanStructure, TAGS } = require('./modular-installer');
 const {
   PROJECT_VERSION,
   loadModulesConfig,
@@ -139,12 +139,14 @@ function runPreflightChecks(asarPath, options = {}) {
   preflight.hasPluginTraceInUtils = hasTrace;
 
   const cleanCandidate = hasTrace ? cleanUtilsSource(utilsRaw) : utilsRaw;
-  preflight.structureValid = Boolean(verifyCleanStructure(cleanCandidate));
+  const cleanDiag = diagnoseCleanStructure(cleanCandidate);
+  preflight.structureValid = Boolean(cleanDiag.ok);
+  preflight.structureStage = cleanDiag.stage;
   if (!preflight.structureValid) {
     preflight.ok = false;
     preflight.blocked = true;
     preflight.reason = 'host_structure_unsupported';
-    preflight.guidance = '宿主 dist/utils.js 入口结构不兼容当前补丁锚点（verifyCleanStructure 未通过），已写前拦截并禁止强写；请等待适配更新或改用免改盘 live/watch 模式。';
+    preflight.guidance = `宿主 dist/utils.js 入口结构不兼容当前补丁锚点 (${cleanDiag.stage}: ${cleanDiag.reason})，已写前拦截并禁止强写；请等待适配更新或改用免改盘 live/watch 模式。`;
     return preflight;
   }
 
@@ -159,11 +161,11 @@ function runPreflightChecks(asarPath, options = {}) {
     const effectivePlatform = options._platform || process.platform;
     const enforceMac = effectivePlatform === 'darwin' || options.enforceMacIntegrityCheck === true;
     const allowOverride = Boolean(options.allowIntegrityOverride || options.forceMacAsar);
-    if (enforceMac && macCheck.hasAsarIntegrity === true && !allowOverride) {
+    if (enforceMac && (macCheck.patchRisk === 'blocked_integrity' || macCheck.patchRisk === 'blocked_signature') && !allowOverride) {
       preflight.ok = false;
       preflight.blocked = true;
-      preflight.reason = 'macos_asar_integrity_blocked';
-      preflight.guidance = '检测到 macOS 宿主启用 ElectronAsarIntegrity 校验，直接改盘会导致客户端触发签名保护闪退；已阻止写入，请改用免改盘模式 `node cli.js watch` 或 `node cli.js live`。';
+      preflight.reason = macCheck.patchRisk === 'blocked_integrity' ? 'macos_asar_integrity_blocked' : 'macos_bundle_signature_blocked';
+      preflight.guidance = `${macCheck.reason}。已阻止写入。`;
       return preflight;
     }
   }

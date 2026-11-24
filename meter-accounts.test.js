@@ -287,6 +287,12 @@ test('ELV-89 真实切号验证与失败保护 + 阈值自动切号边界全矩�
   const busyRes = await mgr.evaluateAutoSwitch({ activeEmail: 'a@example.com', activeSnapshot: buildMockQuotaSnapshot(0.08), syncState: 'fresh', isGenerating: true, nowMs: 15000 });
   assert.equal(busyRes.action, 'waiting_idle');
 
+  const restartBlocked = await mgr.evaluateAutoSwitch({
+    activeEmail: 'a@example.com', activeSnapshot: buildMockQuotaSnapshot(0.08), syncState: 'fresh',
+    isGenerating: false, nowMs: 15500, requiresClientRestart: true
+  });
+  assert.equal(restartBlocked.reason, 'client_restart_requires_idle_window');
+
   // 4) 生成空闲 + 过防抖期 + 正常验证切换 -> 选中更高余量的 B（65%），绝不选已低于阈值的 C（5%）
   currentHostEmail = 'b@example.com'; // 模拟 LS 重启后生效为 B
   const switchedRes = await mgr.evaluateAutoSwitch({ activeEmail: 'a@example.com', activeSnapshot: buildMockQuotaSnapshot(0.08), syncState: 'fresh', isGenerating: false, nowMs: 16000, skipTokenRefresh: true });
@@ -1986,6 +1992,84 @@ test('v0.9.0 自动切号精修 7+ 场景闭环: blocked_missing_pool 精确分�
     });
     assert.equal(disRes.action, 'noop');
     assert.equal(disRes.state, 'disabled');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Phase 1.3: 取消重启安全回滚原凭据 / 25s后错账及120s超时自动回滚与停用 / 规则跨冷重启实例持久化保留', async () => {
+  const tmpDir = makeTempDir('acm-phase13-restart-');
+  try {
+    let activeSysEmail = 'a@example.com';
+    let hostReportEmail = 'a@example.com';
+    const fakeCredStore = {
+      getPaths: () => ({ desktopDbPath: '', ideDbPath: '', googleAccountsPath: '' }),
+      captureSnapshot: () => ({ winCred: { id_token_email: activeSysEmail } }),
+      applyCredential: (c) => { activeSysEmail = c.email; return { ok: true, stage: 'done' }; },
+      restoreSnapshot: (s) => { activeSysEmail = s?.winCred?.id_token_email || activeSysEmail; return { ok: true }; }
+    };
+
+    const mgr1 = accountsMod.createAccountsManager({
+      stateDir: tmpDir,
+      credentialStore: fakeCredStore,
+      getHostUserStatus: async () => ({ email: hostReportEmail })
+    });
+    mgr1.addAccountWithCredential({ email: 'a@example.com', accessToken: 'tok-a', refreshToken: 'rt-a', expiresAt: new Date(Date.now() + 3600000).toISOString() });
+    mgr1.addAccountWithCredential({ email: 'b@example.com', accessToken: 'tok-b', refreshToken: 'rt-b', expiresAt: new Date(Date.now() + 3600000).toISOString() });
+    await mgr1.detectCurrentActiveAccount();
+
+    // 1. 保存自动切号规则后重建管理器实例模拟冷重启，校验字段完整保留且默认首次安装为关闭
+    mgr1.updateAutoSwitchConfig({
+      enabled: true,
+      poolKey: 'shared_gemini_main',
+      metricMode: 'remaining_pct',
+      windowKey: '5h',
+      thresholdPct: 22,
+      candidates: ['b@example.com']
+    });
+    const mgr2 = accountsMod.createAccountsManager({
+      stateDir: tmpDir,
+      credentialStore: fakeCredStore,
+      getHostUserStatus: async () => ({ email: hostReportEmail })
+    });
+    const ov2 = mgr2.getOverviewState();
+    assert.equal(ov2.autoSwitch.enabled, true);
+    assert.equal(ov2.autoSwitch.poolKey, 'shared_gemini_main');
+    assert.equal(ov2.autoSwitch.metricMode, 'remaining_pct');
+    assert.equal(ov2.autoSwitch.windowKey, '5h');
+    assert.equal(ov2.autoSwitch.thresholdPct, 22);
+    assert.deepEqual(ov2.autoSwitch.candidates, ['b@example.com']);
+
+    // 2. 手动切换取消重启：凭据回滚至 A，state 恢复 watching，lastError 清空
+    const cancelRes = await mgr2.switchActiveAccount('b@example.com', {
+      skipTokenRefresh: true,
+      restartClient: async () => ({ cancelled: true })
+    });
+    assert.equal(cancelRes.cancelled, true);
+    assert.equal(cancelRes.rolledBack, true);
+    assert.equal(activeSysEmail, 'a@example.com');
+    assert.equal(mgr2.getOverviewState().autoSwitchStatus.state, 'watching');
+    assert.equal(mgr2.getOverviewState().autoSwitchStatus.lastError, null);
+
+    // 3. 模拟自动切号发起重启但新进程超过 25s 仍回报原账号 A：安全回滚凭据并自动停用防循环
+    const autoPendRes = await mgr2.switchActiveAccount('b@example.com', {
+      trigger: 'auto_switch',
+      skipTokenRefresh: true,
+      restartClient: async () => ({ ok: true, supported: true })
+    });
+    assert.equal(autoPendRes.restartPending, true);
+    const storePath = path.join(tmpDir, 'accounts_v1.json');
+    const rawStore = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+    rawStore.autoSwitchStatus.lastResult.pid = process.pid + 99999; // 模拟跨重启新进程
+    rawStore.autoSwitchStatus.lastResult.atMs = Date.now() - 30000; // 超过 25s 启动宽限
+    fs.writeFileSync(storePath, JSON.stringify(rawStore, null, 2));
+
+    await mgr2.detectCurrentActiveAccount();
+    const ovErr = mgr2.getOverviewState();
+    assert.equal(activeSysEmail, 'a@example.com', '错账超时必须回滚系统凭据至原账号');
+    assert.equal(ovErr.autoSwitch.enabled, false, '自动切号校验失败必须关闭防反复重启循环');
+    assert.equal(ovErr.autoSwitchStatus.state, 'error');
+    assert.equal(ovErr.autoSwitchStatus.lastResult.rolledBack, true);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

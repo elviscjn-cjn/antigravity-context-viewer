@@ -23,8 +23,30 @@ const {
   syncPricingCatalogAsync
 } = require('./meter-collector');
 const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl, redactProxyUrl } = require('./meter-proxy');
-const { getStateDir } = require('./asar-engine');
+const { getStateDir, findAsarPath, builtinAsar } = require('./asar-engine');
 const { PROJECT_VERSION, getHostCoreBuildId } = require('./modules-config');
+const { compareVersions } = require('./meter-core');
+
+function resolveLiveHostTargetVersion() {
+  const envVer = String(process.env.AG_HOST_VERSION || '').trim();
+  if (envVer) return envVer;
+  try {
+    const stateDir = getStateDir();
+    const manifestP = path.join(stateDir, 'installation.json');
+    if (fs.existsSync(manifestP)) {
+      const m = JSON.parse(fs.readFileSync(manifestP, 'utf8'));
+      if (m?.version) return String(m.version);
+    }
+  } catch { }
+  try {
+    const asarPath = findAsarPath(null);
+    if (asarPath && fs.existsSync(asarPath)) {
+      const pkg = JSON.parse(builtinAsar.extractFile(asarPath, 'package.json').toString('utf8'));
+      if (pkg?.version) return String(pkg.version);
+    }
+  } catch { }
+  return '2.34.0';
+}
 
 const liveBootProxySnapshot = (() => {
   const bootInfo = (typeof globalThis !== 'undefined' && globalThis.__AG_PROXY_BOOT_INFO__ && globalThis.__AG_PROXY_BOOT_INFO__.injectedAtStartup)
@@ -176,6 +198,8 @@ function timingSafeTokenEqual(provided, expected) {
 }
 
 function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT }) {
+  let activeApplyUpdateCount = 0;
+  let deferredShutdownRequested = false;
   const resolveAllowedSet = () => {
     const set = new Set();
     const addAllowed = (raw) => {
@@ -505,7 +529,12 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/check-update') {
-          const result = await checkUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+          const result = await checkUpdateAsync({
+            force: request?.force === true,
+            allowBetaUpdates: typeof request?.allowBetaUpdates === 'boolean' ? request.allowBetaUpdates : undefined,
+            currentVersion: PROJECT_VERSION,
+            liveOnly: true
+          });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
@@ -562,13 +591,41 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/apply-update') {
-          const result = await applyUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+          activeApplyUpdateCount += 1;
+          let result;
+          try {
+            result = await applyUpdateAsync({
+              ...(request || {}),
+              version: typeof request?.version === 'string' ? request.version : undefined,
+              allowBetaUpdates: request?.allowBetaUpdates === true || request?.prerelease === true,
+              prerelease: request?.prerelease === true,
+              currentVersion: PROJECT_VERSION,
+              backendSource: 'live-host',
+              bundleDir: process.env.AG_BUNDLE_SOURCE_DIR || __dirname,
+              callerLiveHostPid: process.pid,
+              liveOnly: request?.liveOnly !== undefined ? request.liveOnly === true : true
+            });
+          } finally {
+            activeApplyUpdateCount = Math.max(0, activeApplyUpdateCount - 1);
+          }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
+          if (((result && result.ok && result.shouldShutdownCallerLiveHost) || deferredShutdownRequested) && typeof onShutdown === 'function') {
+            res.once('finish', () => {
+              setTimeout(() => {
+                try { onShutdown(); } catch {}
+              }, 250);
+            });
+          }
           return;
         }
         if (req.url === '/shutdown') {
           res.setHeader('Content-Type', 'application/json');
+          if (activeApplyUpdateCount > 0) {
+            deferredShutdownRequested = true;
+            res.end(JSON.stringify({ ok: true, shuttingDown: true, deferred: true, deferredForApplyUpdate: true, pid: process.pid, version: PROJECT_VERSION }));
+            return;
+          }
           res.end(JSON.stringify({ ok: true, shuttingDown: true, pid: process.pid, version: PROJECT_VERSION }));
           if (typeof onShutdown === 'function') {
             setImmediate(() => {
@@ -629,17 +686,20 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             const mgr = getSharedAccountsManager({ origin: targetOrigin });
             const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
             const email = !switchInFlight
-              ? (resData?.email || _raw?.planStatus?.email || resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+              ? (resData?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
               : null;
             if (!switchInFlight && email && resData?.snapshot) {
               mgr.syncActiveHostQuotaSnapshot(resData, email);
               const ov = mgr.getOverviewState();
               if (ov.autoSwitch?.enabled && !resData.error) {
+                const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
                 accountSyncResult = await mgr.evaluateAutoSwitch({
                   activeEmail: email,
                   activeSnapshot: resData.snapshot,
                   syncState: 'fresh',
-                  isGenerating: Boolean(request?.isGenerating)
+                  isGenerating: Boolean(request?.isGenerating),
+                  requiresClientRestart,
+                  blockedRestartReason: requiresClientRestart ? 'live_mode_cannot_auto_restart' : undefined
                 });
               }
             }
@@ -661,7 +721,11 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
           const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
           const mgr = getSharedAccountsManager({ origin: targetOrigin });
-          const outRes = await dispatchAccountsAction(mgr, request || {});
+          const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
+          const outRes = await dispatchAccountsAction(mgr, request || {}, {
+            requiresClientRestart,
+            allowManualRestartPending: requiresClientRestart
+          });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(outRes));
           return;
@@ -679,6 +743,23 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
               backendSource: 'live-host'
             }
           }));
+          return;
+        }
+        if (req.url === '/predict-next-prompt') {
+          const settings = getPluginSettings();
+          if (settings.nextPromptEnabled !== true && request?.allowWhenDisabled !== true) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 }));
+            return;
+          }
+          const { predictNextPromptAsync } = require('./meter-next-prompt');
+          const predRes = await predictNextPromptAsync(request || {}, {
+            origin: effectiveOrigin,
+            model: typeof request?.model === 'string' && request.model.trim() ? request.model.trim() : undefined,
+            allowGetModelResponseFallback: request?.allowGetModelResponseFallback === true
+          });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ...predRes, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
           return;
         }
         const data = await collect(effectiveOrigin, request.id, { force: request.force === true });

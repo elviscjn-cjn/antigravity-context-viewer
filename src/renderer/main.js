@@ -5,11 +5,20 @@
   'use strict';
   if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
 
+  const HOT_RELOAD_SCROLL_IDS = ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'view-quota', 'quota-view-body'];
+
   // 在替换或重载旧实例之前捕获当前打开面板、滚动位置与未保存设置草稿（同时兼容无 captureHotReloadState 的旧版本）
   let inheritedHotReloadState = null;
   try {
     if (typeof globalThis.__AGContextMeter?.captureHotReloadState === 'function') {
       inheritedHotReloadState = globalThis.__AGContextMeter.captureHotReloadState();
+      const quotaScrollTop = document.getElementById('ag-context-meter')?.shadowRoot?.getElementById('view-quota')?.scrollTop;
+      if (inheritedHotReloadState && quotaScrollTop > 0) {
+        inheritedHotReloadState = {
+          ...inheritedHotReloadState,
+          scrollTops: { ...inheritedHotReloadState.scrollTops, 'view-quota': quotaScrollTop }
+        };
+      }
     } else if (typeof document !== 'undefined') {
       const prevHost = document.getElementById('ag-context-meter');
       const prevRoot = prevHost?.shadowRoot;
@@ -26,7 +35,7 @@
           k => prevRoot.getElementById(`tab-ctx-${k}`)?.classList?.contains('active')
         ) || null;
         const scrollTops = {};
-        for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body']) {
+        for (const sId of HOT_RELOAD_SCROLL_IDS) {
           const n = prevRoot.getElementById(sId);
           if (n && Number(n.scrollTop) > 0) scrollTops[sId] = Number(n.scrollTop);
         }
@@ -41,11 +50,14 @@
         }
         const proxySaveBtn = prevRoot.getElementById('btn-save-proxy-config');
         const enhanceSaveBtn = prevRoot.getElementById('btn-enhance-preset-apply');
+        const prevUpdatePop = prevRoot.getElementById('update-popover');
         inheritedHotReloadState = {
           capturedAt: Date.now(),
           openPanel,
           activeContextTab: activeTab,
           isContextSettingsView: activeTab === 'settings',
+          updatePopoverOpen: Boolean(prevUpdatePop && prevUpdatePop.style && prevUpdatePop.style.display === 'block'),
+          updatePopoverTrigger: 'ctx',
           scrollTops,
           openDrawers,
           drafts: {
@@ -109,11 +121,13 @@
     getDynamicPricingCatalog,
     normalizeModelId,
     resolveStableModelId,
+    resolveRequestedModelDisplay,
     formatEffortLabel,
     detectModelVendor,
     groupModelProduct,
     formatTokensK,
     isValidSpeedSample,
+    resolveRequestRowSpeed,
     summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
@@ -214,8 +228,8 @@
   let showTurnFooterStats = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_turn_footer_stats') : null;
-      return saved === 'true';
-    } catch { return false; }
+      return saved === 'false' ? false : true;
+    } catch { return true; }
   })();
   let showComposerQuotaSummary = (() => {
     try {
@@ -262,6 +276,25 @@
     return topbarMode === 'compact' ? 'compact' : 'flow';
   })();
   let dockFallbackReason = '';
+  let auxViewTab = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_aux_view_tab') : null;
+      return saved === 'browser' ? 'browser' : 'plugin';
+    } catch { return 'plugin'; }
+  })();
+  let auxCollapsed = (() => {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem('ag_aux_collapsed') === 'true';
+    } catch { return false; }
+  })();
+  let auxWidthPx = (() => {
+    try {
+      const n = typeof localStorage !== 'undefined' ? Number(localStorage.getItem('ag_aux_width_px')) : NaN;
+      return Number.isFinite(n) && n >= 260 && n <= 1200 ? Math.round(n) : null;
+    } catch { return null; }
+  })();
+  const auxSavedPanelScrolls = new Map();
+  let auxHiddenHostNodes = new Set();
   let quotaBadgeWindowMode = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_quota_badge_window_mode') : null;
@@ -455,10 +488,11 @@
     return `
       :host {
         position: fixed !important;
-        inset: 0 !important;
+        top: 0 !important;
+        left: 0 !important;
         display: block !important;
-        width: 100vw !important;
-        height: 100vh !important;
+        width: 0 !important;
+        height: 0 !important;
         margin: 0 !important;
         padding: 0 !important;
         border: 0 !important;
@@ -466,7 +500,6 @@
         overflow: visible !important;
         pointer-events: none !important;
         z-index: ${RADIAL_TOP_Z_INDEX} !important;
-        -webkit-app-region: no-drag !important;
         font: 12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
         --ag-ring-warn: #f59e0b;
         --ag-ring-danger: #ef4444;
@@ -525,7 +558,7 @@
       radialHost.id = RADIAL_TOP_HOST_ID;
       radialHost.setAttribute?.('data-ag-radial-top-layer', 'true');
       if (radialHost.style) {
-        radialHost.style.cssText = `position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;pointer-events:none!important;z-index:${RADIAL_TOP_Z_INDEX}!important;-webkit-app-region:no-drag!important;`;
+        radialHost.style.cssText = `position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;pointer-events:none!important;z-index:${RADIAL_TOP_Z_INDEX}!important;`;
       }
       const styleEl = document.createElement('style');
       if (styleEl) {
@@ -631,6 +664,7 @@
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
+    lastRequestedModelByCascade: new Map(),
     streamSampleTracker: null, liveSpeed: null, turnState: null, lastSpeedEval: null, speedOverrideForTest: null,
     compacting: null, compactProbeTimer: null, pendingCompactForceScan: false,
     lastCompactForceScanAt: 0, hostContextWindowUsage: null,
@@ -1116,6 +1150,14 @@
   let autoCheckUpdate = false;
   let allowBetaUpdates = false;
   let cachedLatestRelease = null;
+  let updateActionPhase = 'idle';
+  let lastCheckUpdateResult = null;
+  let lastApplyUpdateResult = null;
+  let updateTargetVersion = null;
+  let updateActivatedTarget = false;
+  let lastUpdateError = null;
+  let cachedStrictUpdateState = null;
+  let hostSettingsCtrl = null;
 
   const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-beta.1';
   function formatDisplayVersion(rawVer) {
@@ -1265,6 +1307,10 @@
       backendStatus.backendVersion !== METER_RENDERER_VERSION
     );
     backendStatus.lastVerifiedAtMs = Date.now();
+    if (typeof recomputeStrictUpdateState === 'function') {
+      recomputeStrictUpdateState();
+      syncHostSettingsUi();
+    }
   }
 
   async function callBackendWithPriority({ ipcCall = null, liveRoute = '', liveBody = {}, liveFetchOpts = {}, onFallback = null } = {}) {
@@ -1582,7 +1628,18 @@
           styleEl.id = 'ag-topbar-host-fix';
           document.head.appendChild(styleEl);
         }
+        const isMacPlatform = /^Mac/i.test((typeof navigator !== 'undefined' && navigator.platform) || '');
+        const hasStandaloneMenuBar = (() => {
+          try {
+            const mb = typeof document.querySelector === 'function' ? document.querySelector('[data-testid="title-menu-bar"]') : null;
+            const r = mb?.getBoundingClientRect?.();
+            return Boolean(r && r.height >= 16);
+          } catch {
+            return false;
+          }
+        })();
         const activeWco = wcoWidth > 0 || titlebarWcoPad > 0;
+        const enableTitlebarDrag = activeWco || isMacPlatform || !hasStandaloneMenuBar;
         const cssText = [
           '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id] {',
           '  padding-right: calc(var(--right-cluster-width, 140px) - 4px) !important;',
@@ -1592,11 +1649,11 @@
             `  padding-right: ${titlebarWcoPad}px !important;`,
             '}'
           ].join('\n') : '',
-          activeWco ? [
+          enableTitlebarDrag ? [
             '[class*="@container/titlebar"],',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child {',
-            '  /* Native titlebar owns draggable regions. */',
+            '  -webkit-app-region: drag;',
             '}',
             '[class*="@container/titlebar"] button,',
             '[class*="@container/titlebar"] a,',
@@ -1809,8 +1866,7 @@
             ovMenu.style.display = '';
             ovMenu.style.pointerEvents = '';
           }
-          const csbBar = el('composer-status-bar');
-          if (csbBar) csbBar.hidden = false;
+          ensureComposerStatusBarMounted({ marketplaceActive: false });
           const orbEl = el('ctx-radial-orb');
           if (orbEl && orbEl.style) {
             orbEl.style.display = '';
@@ -1923,6 +1979,169 @@
     return t('settings.dock.auxRoleMain');
   }
 
+  function captureAuxPanelScrolls() {
+    for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'view-quota', 'ctx-model-list', 'files']) {
+      const node = el(sId);
+      if (node && typeof node.scrollTop === 'number') {
+        auxSavedPanelScrolls.set(sId, node.scrollTop);
+      }
+    }
+  }
+
+  function restoreAuxPanelScrolls() {
+    for (const [sId, topVal] of auxSavedPanelScrolls.entries()) {
+      const node = el(sId);
+      if (node && typeof node.scrollTop === 'number' && topVal > 0) {
+        try { node.scrollTop = topVal; } catch { }
+      }
+    }
+  }
+
+  function restoreAuxHostSiblings() {
+    for (const node of Array.from(auxHiddenHostNodes)) {
+      try {
+        if (!node) continue;
+        const orig = node.getAttribute?.('data-ag-aux-orig-display');
+        if (node.style) node.style.display = orig || '';
+        node.removeAttribute?.('data-ag-aux-orig-display');
+        node.removeAttribute?.('data-ag-aux-host-hidden');
+      } catch { }
+    }
+    auxHiddenHostNodes.clear();
+  }
+
+  function clampAuxWidthPx(rawWidth) {
+    const n = Number(rawWidth);
+    if (!Number.isFinite(n)) return 420;
+    const vw = (typeof window !== 'undefined' && Number(window.innerWidth) > 320) ? Number(window.innerWidth) : 1440;
+    const maxW = Math.max(360, Math.min(920, Math.round(vw * 0.72)));
+    return Math.max(280, Math.min(maxW, Math.round(n)));
+  }
+
+  function resolveAuxSizingContainer(auxEl) {
+    if (!auxEl) return null;
+    return auxEl.closest?.('[data-side-panel-focus-scope="true"], [data-aux-pane-focus-scope="true"]')
+      || auxEl;
+  }
+
+  function applyAuxWidthPx(widthPx, { persist = false } = {}) {
+    if (widthPx == null) return null;
+    const clamped = clampAuxWidthPx(widthPx);
+    auxWidthPx = clamped;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_aux_width_px', String(clamped));
+    } catch { }
+    const activeAux = dockPosition === 'aux' && !dockFallbackReason;
+    if (activeAux) {
+      const auxEl = findAuxSidebarContainer();
+      const target = resolveAuxSizingContainer(auxEl);
+      if (target && target.style) {
+        target.style.width = `${clamped}px`;
+        target.style.minWidth = '280px';
+        target.style.flexBasis = `${clamped}px`;
+      }
+      layoutMeasurementDirty = true;
+      updateResponsiveLayout(true);
+    }
+    if (persist && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ auxWidthPx: clamped });
+    }
+    return clamped;
+  }
+
+  function syncAuxHostCoexistence() {
+    const marketplaceBlocked = isHostMarketplaceActive();
+    const activeAux = !marketplaceBlocked && dockPosition === 'aux' && !dockFallbackReason;
+    const resizer = el('dock-aux-resizer');
+    if (!activeAux) {
+      host.removeAttribute('data-aux-view');
+      host.removeAttribute('data-aux-collapsed');
+      if (resizer) resizer.hidden = true;
+      restoreAuxHostSiblings();
+      return;
+    }
+    host.setAttribute('data-aux-view', auxViewTab);
+    host.setAttribute('data-aux-collapsed', auxCollapsed ? 'true' : 'false');
+    if (resizer) resizer.hidden = false;
+
+    const btnPlug = el('btn-dock-aux-view-plugin');
+    const btnBrw = el('btn-dock-aux-view-browser');
+    if (btnPlug) {
+      btnPlug.classList?.toggle?.('active', auxViewTab === 'plugin');
+      btnPlug.setAttribute?.('aria-selected', auxViewTab === 'plugin' ? 'true' : 'false');
+    }
+    if (btnBrw) {
+      btnBrw.classList?.toggle?.('active', auxViewTab === 'browser');
+      btnBrw.setAttribute?.('aria-selected', auxViewTab === 'browser' ? 'true' : 'false');
+    }
+    const collapseBtn = el('btn-dock-aux-collapse');
+    if (collapseBtn) {
+      collapseBtn.textContent = auxCollapsed ? t('settings.dock.auxRestore') : t('settings.dock.auxCollapse');
+      collapseBtn.setAttribute?.('aria-expanded', auxCollapsed ? 'false' : 'true');
+    }
+
+    const auxEl = findAuxSidebarContainer();
+    if (auxEl) {
+      if (auxWidthPx != null) applyAuxWidthPx(auxWidthPx, { persist: false });
+      const children = Array.from(auxEl.children || []);
+      const showHostBrowser = auxViewTab === 'browser';
+      if (showHostBrowser) {
+        captureAuxPanelScrolls();
+        restoreAuxHostSiblings();
+      } else {
+        for (const node of children) {
+          if (!node || node === host || node.id === 'ag-context-meter') continue;
+          if (!auxHiddenHostNodes.has(node) && node.getAttribute?.('data-ag-aux-host-hidden') !== 'true') {
+            const origDisp = node.style?.display || '';
+            node.setAttribute?.('data-ag-aux-orig-display', origDisp);
+            node.setAttribute?.('data-ag-aux-host-hidden', 'true');
+          }
+          if (node.style) node.style.display = 'none';
+          auxHiddenHostNodes.add(node);
+        }
+        if (!auxCollapsed) restoreAuxPanelScrolls();
+      }
+    }
+  }
+
+  function setAuxViewTab(tab, opts = {}) {
+    const next = tab === 'browser' ? 'browser' : 'plugin';
+    if (next !== auxViewTab && next === 'browser') {
+      captureAuxPanelScrolls();
+    }
+    auxViewTab = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_aux_view_tab', auxViewTab);
+    } catch { }
+    syncAuxHostCoexistence();
+    if (auxViewTab === 'plugin' && !auxCollapsed && dockPosition === 'aux' && !dockFallbackReason) {
+      if (!isAnyPanelOpen()) showPanel('context');
+      restoreAuxPanelScrolls();
+    }
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ auxViewTab });
+    }
+    return auxViewTab;
+  }
+
+  function setAuxCollapsed(collapsed, opts = {}) {
+    const next = Boolean(collapsed);
+    if (next && !auxCollapsed) captureAuxPanelScrolls();
+    auxCollapsed = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_aux_collapsed', auxCollapsed ? 'true' : 'false');
+    } catch { }
+    syncAuxHostCoexistence();
+    if (!auxCollapsed && auxViewTab === 'plugin' && dockPosition === 'aux' && !dockFallbackReason) {
+      if (!isAnyPanelOpen()) showPanel('context');
+      restoreAuxPanelScrolls();
+    }
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ auxCollapsed });
+    }
+    return auxCollapsed;
+  }
+
   function syncAuxContextBar() {
     const bar = el('dock-aux-context-bar');
     const lbl = el('dock-aux-session-label');
@@ -1930,18 +2149,24 @@
     const activeAux = !marketplaceBlocked && dockPosition === 'aux' && !dockFallbackReason;
     if (bar) bar.hidden = !activeAux;
     if (lbl) {
-      const ft = resolveFocusedSessionTarget();
-      if (ft?.sessionId) {
-        lbl.textContent = t('settings.dock.auxFollowing', {
-          role: formatAuxRoleText(ft),
-          id: ft.sessionId.slice(0, 8)
-        });
-        lbl.title = ft.sessionId;
-      } else {
-        lbl.textContent = t('settings.dock.auxUnresolved');
+      if (activeAux && auxViewTab === 'browser') {
+        lbl.textContent = t('settings.dock.auxBrowserHint');
         lbl.title = '';
+      } else {
+        const ft = resolveFocusedSessionTarget();
+        if (ft?.sessionId) {
+          lbl.textContent = t('settings.dock.auxFollowing', {
+            role: formatAuxRoleText(ft),
+            id: ft.sessionId.slice(0, 8)
+          });
+          lbl.title = ft.sessionId;
+        } else {
+          lbl.textContent = t('settings.dock.auxUnresolved');
+          lbl.title = '';
+        }
       }
     }
+    syncAuxHostCoexistence();
   }
 
   function findEditorPageContainer() {
@@ -2483,6 +2708,7 @@
           -webkit-user-select: none !important;
           z-index: 10 !important;
         }
+        #composer-status-bar[hidden] { display: none !important; }
         #composer-status-bar .csb-pill {
           display: inline-flex !important;
           align-items: center !important;
@@ -2669,8 +2895,21 @@
           font-variant-numeric: tabular-nums !important;
         }
         #composer-status-bar .csb-runtime-pill {
+          order: -10 !important;
+          flex-shrink: 0 !important;
           gap: 5px !important;
-          cursor: default !important;
+          cursor: pointer !important;
+        }
+        #composer-status-bar[data-csb-width="tight"] .csb-runtime-pill {
+          display: inline-flex !important;
+          order: -10 !important;
+          flex-shrink: 0 !important;
+          max-width: none !important;
+          overflow: visible !important;
+        }
+        #composer-status-bar[data-csb-width="tight"] #csb-runtime-text {
+          max-width: none !important;
+          overflow: visible !important;
         }
         #composer-status-bar .csb-status-dot {
           display: inline-block !important;
@@ -2723,14 +2962,14 @@
           gap: 3px !important;
           font-size: 11px !important;
           line-height: 1.2 !important;
-          padding: 0 !important;
+          padding: 1px 4px !important;
           margin-right: 8px !important;
-          border-radius: 0 !important;
+          border-radius: 4px !important;
           border: 0 !important;
           color: var(--muted-foreground, #94a3b8) !important;
           background: transparent !important;
           box-shadow: none !important;
-          opacity: 0.78 !important;
+          opacity: 0.82 !important;
           font-variant-numeric: tabular-nums !important;
           user-select: none !important;
           vertical-align: middle !important;
@@ -2740,13 +2979,18 @@
           overflow: hidden !important;
           text-overflow: ellipsis !important;
           white-space: nowrap !important;
-          cursor: default !important;
-          transition: opacity .12s ease !important;
+          cursor: pointer !important;
+          transition: opacity .12s ease, color .12s ease, background-color .12s ease, transform .1s ease !important;
         }
         .ag-cm-turn-footer:hover,
         .ag-cm-turn-footer:focus-visible {
           opacity: 1 !important;
           outline: none !important;
+          color: var(--foreground, #ececef) !important;
+          background: rgba(255, 255, 255, 0.06) !important;
+        }
+        .ag-cm-turn-footer:active {
+          transform: scale(0.98) !important;
         }
         .ag-cm-turn-footer:focus-visible {
           text-decoration: underline dotted currentColor !important;
@@ -2847,7 +3091,6 @@
         csbBar.hidden = true;
         return;
       }
-      csbBar.hidden = false;
       ensureComposerStatusBarStyles();
       // 已稳妥挂载在真实输入框表单之后时直接短路，避免高频 DOM 变动反复全页扫描按钮
       if (
@@ -2860,9 +3103,11 @@
           prevSibling &&
           (prevSibling.tagName === 'FORM' || Boolean(prevSibling.querySelector?.('[contenteditable="true"],textarea')))
         ) {
+          csbBar.hidden = false;
           return;
         }
       }
+      csbBar.hidden = true;
       const target = findComposerControlsContainer();
       if (!target || !target.bar) return;
 
@@ -2871,8 +3116,10 @@
         composer = target.bar;
         while (composer && !composer.querySelector('[contenteditable="true"],textarea')) composer = composer.parentElement;
       }
-      if (!composer || composer === document.body || composer === document.documentElement) return;
+      if (!composer || composer === document.body || composer === document.documentElement ||
+          composer.closest?.('header,[role="dialog"],#ag-context-meter')) return;
       if (composer.nextElementSibling !== csbBar) composer.after(csbBar);
+      csbBar.hidden = false;
     } catch (e) {
       console.warn('[Context Meter CSB Mount Warning]:', e);
     }
@@ -2917,14 +3164,18 @@
         host.style.right = '';
         host.style.top = '';
         host.style.bottom = '';
-        host.style.position = 'static';
+        host.style.position = 'relative';
         syncDockPositionUi();
         syncDockedPanelsAttribute();
         ensureComposerStatusBarMounted();
+        syncAuxHostCoexistence();
         updateResponsiveLayout(layoutMeasurementDirty);
         return;
       }
+      restoreAuxHostSiblings();
       dockFallbackReason = 'aux';
+    } else {
+      restoreAuxHostSiblings();
     }
 
     // 独立页面模式
@@ -3238,15 +3489,20 @@
     return 400;
   }
 
+  let sessionCostCalls = null;
+  let sessionHybridCost = null;
   function renderSessionCost() {
-    const roundCostBar = el('round-cost-bar');
     const roundCostText = el('round-cost-text');
     const sessionCostText = el('session-cost-text');
     if (!roundCostText || !sessionCostText) return;
     const activeCalls = state.sessionCalls || [];
     const latestCall = activeCalls[activeCalls.length - 1];
-    const sessTotal = state.sessionCostTotal || 0;
-    if (latestCall && latestCall.isPriced) {
+    if (sessionCostCalls !== activeCalls) {
+      sessionCostCalls = activeCalls;
+      sessionHybridCost = __AGContextMeterCore.summarizeSessionHybridCost(activeCalls);
+    }
+    const sessTotal = sessionHybridCost.combinedTotalUSD;
+    if (latestCall?.isPriced && Number.isFinite(latestCall.costUSD)) {
       const roundCost = latestCall.costUSD || 0;
       const roundCostStr = roundCost < 0.01 ? '<$0.01' : `≈$${roundCost.toFixed(4)}`;
       const estLabel = latestCall.status === 'streaming' ? t('cost.streamingEst') : t('cost.returnedEst');
@@ -3258,6 +3514,10 @@
         output: fmt(latestCall.outputTokens),
         cost: roundCost.toFixed(6)
       });
+    } else if (sessionHybridCost.latestEstimateUSD !== null) {
+      const roundCost = sessionHybridCost.latestEstimateUSD;
+      roundCostText.textContent = t('cost.latestTurn', { val: roundCost < 0.01 ? '<$0.01' : `≈$${roundCost.toFixed(4)}`, label: t('cost.hybridBadge') });
+      roundCostText.title = t('cost.sessionReferenceTip');
     } else if (latestCall) {
       roundCostText.textContent = t('cost.unpriced');
       roundCostText.title = latestCall.model ? t('cost.unpricedTip', { model: latestCall.model }) : t('cost.missingModel');
@@ -3266,6 +3526,9 @@
       roundCostText.title = '';
     }
     sessionCostText.textContent = sessTotal > 0 ? t('cost.sessionTotal', { val: sessTotal.toFixed(4) }) : t('session.sessionCost.dash');
+    sessionCostText.title = sessionHybridCost.unpricedResidualTokens > 0
+      ? `${t('cost.hybridSub', { known: sessionHybridCost.knownCostUSD.toFixed(4), res: sessionHybridCost.unpricedResidualCostUSD.toFixed(4) })} · ${t('cost.sessionReferenceTip')}`
+      : '';
   }
 
   function applyLayoutMode(nextMode) {
@@ -3623,6 +3886,7 @@
     }
     const marketplaceActive = isHostMarketplaceActive();
     ensureComposerStatusBarMounted({ marketplaceActive });
+    if (typeof syncModelPickers === 'function') syncModelPickers();
     scheduleHostModelSync();
     checkHostDomCompactionSignals();
     // 进入 Customizations / Marketplace / Installed 页面时自动收起已打开面板、浮层与辅助栏
@@ -4393,15 +4657,25 @@
     let text = '--%';
     let pct = 0;
 
+    const isQueuedPending = Boolean(!ov && state.livePendingRequest && state.livePendingRequest.cascadeId === state.route && state.livePendingRequest.stage === 'queued');
     const isWaitOverride = ov?.phase === 'waiting';
-    const isWaitLive = Boolean(!ov && (spEval?.phase === 'waiting' || (state.livePendingRequest && state.livePendingRequest.cascadeId === state.route)));
-    if (isWaitOverride || isWaitLive) {
+    const isWaitLive = Boolean(!ov && !isQueuedPending && (spEval?.phase === 'waiting' || (state.livePendingRequest && state.livePendingRequest.cascadeId === state.route)));
+    if (isQueuedPending && !isWaitOverride) {
+      mode = 'idle';
+      subKind = 'queued';
+      tone = 'normal';
+      text = currentPanelLanguage === 'en' ? 'Queue' : '排队';
+      pct = 0;
+    } else if (isWaitOverride || isWaitLive) {
       mode = 'waiting';
       subKind = 'waiting';
       let elapsedSec = 0;
       if (isWaitOverride && ov.elapsedSec != null) elapsedSec = Number(ov.elapsedSec) || 0;
       else if (spEval?.phase === 'waiting' && spEval.elapsedSec != null) elapsedSec = Number(spEval.elapsedSec) || 0;
-      else if (state.livePendingRequest?.startedAtMs) elapsedSec = Math.max(0, (Date.now() - state.livePendingRequest.startedAtMs) / 1000);
+      else if (state.livePendingRequest?.dispatchedAtMs || state.livePendingRequest?.startedAtMs) {
+        const refTs = Number(state.livePendingRequest.dispatchedAtMs || state.livePendingRequest.startedAtMs);
+        elapsedSec = Math.max(0, (Date.now() - refTs) / 1000);
+      }
       text = formatOrbWaitElapsed(elapsedSec);
       tone = resolveOrbToneFromWaitSec(elapsedSec);
       pct = 100;
@@ -5312,10 +5586,105 @@
     setDockPosition('flow', { persist: true });
   });
   el('btn-dock-aux-back')?.addEventListener('click', () => {
+    restoreAuxHostSiblings();
     setPanelDockMode('popover', { persist: true });
     setDockPosition('flow', { persist: true });
     showPanel('none');
   });
+  el('btn-dock-aux-view-plugin')?.addEventListener('click', () => {
+    setAuxViewTab('plugin', { persist: true });
+    syncAuxContextBar();
+  });
+  el('btn-dock-aux-view-browser')?.addEventListener('click', () => {
+    setAuxViewTab('browser', { persist: true });
+    syncAuxContextBar();
+  });
+  el('btn-dock-aux-collapse')?.addEventListener('click', () => {
+    setAuxCollapsed(!auxCollapsed, { persist: true });
+    syncAuxContextBar();
+  });
+
+  // 右侧辅助分栏宽度拖拽手柄（拖拽期间禁用 webview/iframe 指针拦截并保证结束/异常/销毁必还原）
+  {
+    const resizer = el('dock-aux-resizer');
+    if (resizer) {
+      let auxResizeDrag = null;
+      const savedFramePe = new Map();
+      const disableFramesPointerEvents = () => {
+        try {
+          const frames = Array.from(document?.querySelectorAll?.('webview, iframe') || []);
+          for (const f of frames) {
+            if (!f || !f.style) continue;
+            if (!savedFramePe.has(f)) savedFramePe.set(f, f.style.pointerEvents || '');
+            f.style.pointerEvents = 'none';
+          }
+        } catch { }
+      };
+      const restoreFramesPointerEvents = () => {
+        for (const [f, prev] of savedFramePe.entries()) {
+          try { if (f?.style) f.style.pointerEvents = prev; } catch { }
+        }
+        savedFramePe.clear();
+      };
+      const stopAuxResize = (commit = true) => {
+        if (!auxResizeDrag) {
+          restoreFramesPointerEvents();
+          return;
+        }
+        resizer.classList?.remove?.('is-resizing');
+        try { resizer.releasePointerCapture?.(auxResizeDrag.pointerId); } catch { }
+        restoreFramesPointerEvents();
+        const finalW = auxResizeDrag.lastWidth;
+        auxResizeDrag = null;
+        window.removeEventListener?.('pointermove', onAuxResizeMove);
+        window.removeEventListener?.('pointerup', onAuxResizeEnd);
+        window.removeEventListener?.('pointercancel', onAuxResizeCancel);
+        window.removeEventListener?.('blur', onAuxResizeCancel);
+        window.removeEventListener?.('keydown', onAuxResizeEsc, true);
+        if (commit && finalW != null) applyAuxWidthPx(finalW, { persist: true });
+      };
+      const onAuxResizeMove = (ev) => {
+        if (!auxResizeDrag) return;
+        const delta = auxResizeDrag.startX - (Number(ev.clientX) || 0);
+        const nextW = clampAuxWidthPx(auxResizeDrag.startWidth + delta);
+        auxResizeDrag.lastWidth = nextW;
+        applyAuxWidthPx(nextW, { persist: false });
+      };
+      const onAuxResizeEnd = () => stopAuxResize(true);
+      const onAuxResizeCancel = () => {
+        if (auxResizeDrag) applyAuxWidthPx(auxResizeDrag.startWidth, { persist: false });
+        stopAuxResize(false);
+      };
+      const onAuxResizeEsc = (ev) => {
+        if (ev.key === 'Escape' && auxResizeDrag) {
+          ev.preventDefault?.();
+          onAuxResizeCancel();
+        }
+      };
+      resizer.addEventListener('pointerdown', (ev) => {
+        if (ev.isPrimary === false || (ev.button != null && ev.button !== 0)) return;
+        const auxEl = findAuxSidebarContainer();
+        const target = resolveAuxSizingContainer(auxEl);
+        const startW = (target?.getBoundingClientRect?.().width) || auxWidthPx || 420;
+        auxResizeDrag = {
+          pointerId: ev.pointerId,
+          startX: Number(ev.clientX) || 0,
+          startWidth: clampAuxWidthPx(startW),
+          lastWidth: clampAuxWidthPx(startW)
+        };
+        resizer.classList?.add?.('is-resizing');
+        try { resizer.setPointerCapture?.(ev.pointerId); } catch { }
+        disableFramesPointerEvents();
+        window.addEventListener?.('pointermove', onAuxResizeMove);
+        window.addEventListener?.('pointerup', onAuxResizeEnd);
+        window.addEventListener?.('pointercancel', onAuxResizeCancel);
+        window.addEventListener?.('blur', onAuxResizeCancel);
+        window.addEventListener?.('keydown', onAuxResizeEsc, true);
+        ev.preventDefault?.();
+      });
+      earlyDisposeHooks.push(() => stopAuxResize(false));
+    }
+  }
   const handleCopyPreciseDashboardLink = async () => {
     const focusTarget = resolveFocusedSessionTarget();
     const srvRes = await resolvePreciseDashboardUrl({ openExternal: false });
@@ -5393,6 +5762,44 @@
     }
   };
   el('chk-show-composer-quota')?.addEventListener('change', onShowComposerQuotaToggle);
+  const onSimplifiedModelPickerToggle = (e) => {
+    const chk = el('chk-simplified-model-picker');
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : simplifiedModelPickerEnabled);
+    simplifiedModelPickerEnabled = next;
+    if (chk) chk.checked = simplifiedModelPickerEnabled;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_simplified_model_picker', simplifiedModelPickerEnabled ? 'true' : 'false');
+    } catch { }
+    if (typeof syncModelPickers === 'function') syncModelPickers();
+    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+      void saveSettingsPayloadBridge({ simplifiedModelPickerEnabled });
+    }
+  };
+  el('chk-simplified-model-picker')?.addEventListener('change', onSimplifiedModelPickerToggle);
+  function setNextPromptEnabledState(enabled, { persist = true } = {}) {
+    nextPromptEnabled = Boolean(enabled);
+    const chk = el('chk-next-prompt-enabled');
+    if (chk) chk.checked = nextPromptEnabled;
+    if (persist) {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('ag_next_prompt_enabled', nextPromptEnabled ? 'true' : 'false');
+      } catch { }
+    }
+    if (!nextPromptEnabled && typeof dismissNextPromptSuggestion === 'function') {
+      dismissNextPromptSuggestion(true);
+    }
+    if (persist && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ nextPromptEnabled });
+    }
+    syncHostSettingsUi();
+    return nextPromptEnabled;
+  }
+  const onNextPromptToggle = (e) => {
+    const chk = el('chk-next-prompt-enabled');
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : nextPromptEnabled);
+    setNextPromptEnabledState(next, { persist: true });
+  };
+  el('chk-next-prompt-enabled')?.addEventListener('change', onNextPromptToggle);
   el('dock-fallback-note')?.addEventListener('click', () => {
     void (async () => {
       try {
@@ -6059,6 +6466,13 @@
     feedback: '',
     feedbackTone: 'info',
     busy: false,
+    autoSwitchDraft: {
+      dirty: false,
+      saving: false,
+      saveStatusKey: '',
+      saveErrorDetail: '',
+      values: null
+    },
     removeModal: {
       open: false,
       email: '',
@@ -6662,21 +7076,44 @@
     return 'req-dur-slow';
   }
 
-  function formatReqSpeed(rec) {
-    if (!rec) return '—';
-    const outp = Math.max(0, Number(rec.outputTokens || 0));
-    const sSec = rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) ? Number(rec.streamingSec) : null;
-    if (sSec !== null && sSec < 0.2) return '—';
-    let spd = null;
-    if (rec.streamingTps != null && Number.isFinite(Number(rec.streamingTps)) && Number(rec.streamingTps) > 0) {
-      spd = Number(rec.streamingTps);
-    } else if (sSec !== null && sSec >= 0.2 && outp > 0) {
-      spd = outp / sSec;
-    } else if (sSec === null && rec.tps != null && Number.isFinite(Number(rec.tps)) && Number(rec.tps) > 0 && outp >= 20) {
-      spd = Number(rec.tps);
+  function resolveReqSpeedDisplayInfo(rec) {
+    if (!rec) return { text: '—', tooltip: '', calculable: false, rawSpeed: null, source: 'unavailable', reasonCode: 'missing_record', isShortStream: false };
+    const info = typeof resolveRequestRowSpeed === 'function'
+      ? resolveRequestRowSpeed(rec)
+      : null;
+    if (!info) return { text: '—', tooltip: '', calculable: false, rawSpeed: null, source: 'unavailable', reasonCode: 'missing_record', isShortStream: false };
+    if (info.calculable && info.speed != null && Number.isFinite(info.speed) && info.speed > 0) {
+      const displayVal = Number(info.speed.toFixed(1));
+      let tooltip = '';
+      if (info.isShortStream && info.streamingSec != null) {
+        tooltip = t('reqLog.speedShortNote', { sec: Number(Number(info.streamingSec).toFixed(4)) });
+      } else if (info.source === 'overall') {
+        tooltip = t('reqLog.speedOverallNote');
+      }
+      return {
+        text: t('reqLog.unit.tps', { val: displayVal }),
+        tooltip,
+        calculable: true,
+        rawSpeed: info.rawSpeed ?? info.speed,
+        source: info.source,
+        reasonCode: null,
+        isShortStream: Boolean(info.isShortStream)
+      };
     }
-    if (spd === null || !Number.isFinite(spd) || spd <= 0) return '—';
-    return t('reqLog.unit.tps', { val: Math.round(spd) });
+    const reasonKey = info.reasonCode ? `reqLog.speedReason.${info.reasonCode}` : 'reqLog.speedReason.missing_duration';
+    return {
+      text: '—',
+      tooltip: t(reasonKey),
+      calculable: false,
+      rawSpeed: null,
+      source: info.source || 'unavailable',
+      reasonCode: info.reasonCode || 'missing_duration',
+      isShortStream: false
+    };
+  }
+
+  function formatReqSpeed(rec) {
+    return resolveReqSpeedDisplayInfo(rec).text;
   }
 
   function resolveReqStatusInfo(rec) {
@@ -6695,6 +7132,31 @@
     if (out === 'auth_error') return { cls: 'is-err', label: t('reqLog.status.authError'), isError: true, isStreaming: false };
     if (out === 'canceled') return { cls: 'is-err', label: t('reqLog.status.canceled'), isError: true, isStreaming: false };
     return { cls: 'is-err', label: t('reqLog.status.failed'), isError: true, isStreaming: false };
+  }
+
+  function formatReqRequestedModel(rec, actualInfo = null) {
+    if (!rec) return { text: '—', tooltip: '' };
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const avail = state.scan?.userStatus?.availableModels || null;
+    const rawCand = rec.requestedModel || rec.requestedModelRaw || null;
+    if (!rawCand) return { text: '—', tooltip: '' };
+    const meta = typeof resolveRequestedModelDisplay === 'function'
+      ? resolveRequestedModelDisplay(rawCand, configs, avail)
+      : { text: String(rawCand), rawId: String(rawCand), stableId: null };
+    const dispText = meta.text || '—';
+    const tipParts = [];
+    const rawOrigin = rec.requestedModelRaw || meta.rawId || '';
+    if (rawOrigin && rawOrigin !== dispText) {
+      tipParts.push(t('reqLog.requestedRawTip', { raw: rawOrigin }));
+    }
+    if (dispText !== '—' && actualInfo?.text && actualInfo.text !== '—') {
+      const normReq = typeof normalizeModelId === 'function' ? (normalizeModelId(meta.stableId || dispText) || dispText.toLowerCase()) : dispText.toLowerCase();
+      const normAct = typeof normalizeModelId === 'function' ? (normalizeModelId(actualInfo.text) || actualInfo.text.toLowerCase()) : actualInfo.text.toLowerCase();
+      if (normReq && normAct && normReq !== normAct) {
+        tipParts.push(t('reqLog.requestedDiffTip', { req: dispText, act: actualInfo.text }));
+      }
+    }
+    return { text: dispText, tooltip: tipParts.join(' · ') };
   }
 
   function formatReqActualModel(rec) {
@@ -6754,24 +7216,29 @@
     if (tot <= 0 && !rawCall.error && !isStreaming) return null;
     const ts = Number(rawCall.timestamp) || (rawCall.created_at ? Date.parse(rawCall.created_at) : Date.now());
     const ttftSec = (rawCall.ttftSec != null && Number.isFinite(Number(rawCall.ttftSec)) && Number(rawCall.ttftSec) >= 0)
-      ? Number(Number(rawCall.ttftSec).toFixed(2))
+      ? Number(Number(rawCall.ttftSec).toFixed(4))
       : null;
     const streamingSec = (rawCall.streamingSec != null && Number.isFinite(Number(rawCall.streamingSec)) && Number(rawCall.streamingSec) >= 0)
-      ? Number(Number(rawCall.streamingSec).toFixed(2))
+      ? Number(Number(rawCall.streamingSec).toFixed(4))
       : null;
     let durationSec = (rawCall.durationSec != null && Number.isFinite(Number(rawCall.durationSec)) && Number(rawCall.durationSec) > 0)
-      ? Number(Number(rawCall.durationSec).toFixed(2))
-      : ((ttftSec !== null && streamingSec !== null) ? Number((ttftSec + streamingSec).toFixed(2)) : (streamingSec || ttftSec || null));
+      ? Number(Number(rawCall.durationSec).toFixed(4))
+      : ((ttftSec !== null && streamingSec !== null) ? Number((ttftSec + streamingSec).toFixed(4)) : (streamingSec || ttftSec || null));
     if (isStreaming && durationSec == null && Number.isFinite(ts)) {
       const liveElapsed = (Date.now() - ts) / 1000;
-      if (liveElapsed > 0 && liveElapsed < 3600) durationSec = Number(liveElapsed.toFixed(1));
+      if (liveElapsed > 0 && liveElapsed < 3600) durationSec = Number(liveElapsed.toFixed(4));
     }
     const tps = (rawCall.tps != null && Number.isFinite(Number(rawCall.tps)) && Number(rawCall.tps) > 0)
       ? Number(Number(rawCall.tps).toFixed(1))
       : ((outp > 0 && durationSec > 0) ? Number((outp / durationSec).toFixed(1)) : null);
     const streamingTps = (rawCall.streamingTps != null && Number.isFinite(Number(rawCall.streamingTps)) && Number(rawCall.streamingTps) > 0)
       ? Number(Number(rawCall.streamingTps).toFixed(1))
-      : ((outp > 0 && streamingSec != null && streamingSec >= 0.2) ? Number((outp / streamingSec).toFixed(1)) : null);
+      : ((outp > 0 && streamingSec != null && streamingSec > 0) ? Number((outp / streamingSec).toFixed(1)) : null);
+    const configsList = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const availMap = state.scan?.userStatus?.availableModels || null;
+    const reqMeta = typeof resolveRequestedModelDisplay === 'function'
+      ? resolveRequestedModelDisplay(rawCall.requestedModel || rawCall.requestedModelRaw || null, configsList, availMap)
+      : { text: rawCall.requestedModel ? String(rawCall.requestedModel) : null, rawId: rawCall.requestedModelRaw || null };
     const totalIn = inp + cache;
     const cacheReadPct = totalIn > 0 ? Number(((cache / totalIn) * 100).toFixed(1)) : null;
     let isPriced = Boolean(rawCall.isPriced);
@@ -6802,7 +7269,8 @@
       source: rawCall.source === 'cli' ? 'cli' : (rawCall.source === 'ide' ? 'ide' : 'desktop'),
       agentRole: rawCall.agentRole || 'main',
       subagentType: rawCall.subagentType || null,
-      requestedModel: (rawCall.requestedModel && !/^model_placeholder_/i.test(String(rawCall.requestedModel))) ? String(rawCall.requestedModel) : null,
+      requestedModel: reqMeta?.text || null,
+      ...(reqMeta?.rawId && reqMeta.rawId !== reqMeta.text ? { requestedModelRaw: reqMeta.rawId } : (rawCall.requestedModelRaw ? { requestedModelRaw: rawCall.requestedModelRaw } : {})),
       model: rawCall.model || rawCall.modelExactId || modelKey || '',
       modelExactId: rawCall.modelExactId || null,
       modelKey: modelKey || (typeof normalizeModelId === 'function' ? normalizeModelId(rawCall.modelExactId || rawCall.model || '') : null),
@@ -6887,6 +7355,8 @@
             durationSec: liveRec.durationSec ?? prev.durationSec ?? null,
             tps: liveRec.tps ?? prev.tps ?? null,
             streamingTps: liveRec.streamingTps ?? prev.streamingTps ?? null,
+            requestedModel: liveRec.requestedModel || prev.requestedModel || null,
+            requestedModelRaw: liveRec.requestedModelRaw || prev.requestedModelRaw || null,
             modelKey: liveRec.modelKey || prev.modelKey || null,
             modelExactId: liveRec.modelExactId || prev.modelExactId || null,
             modelLabel: liveRec.modelLabel || prev.modelLabel || null
@@ -6896,25 +7366,29 @@
     }
 
     if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
-      const startedAt = Number(state.livePendingRequest.startedAtMs) || Date.now();
-      const elapsedSec = Math.max(0.1, Number(((Date.now() - startedAt) / 1000).toFixed(1)));
+      const isQueuedWait = state.livePendingRequest.stage === 'queued';
+      const refStartedAt = Number(state.livePendingRequest.dispatchedAtMs || state.livePendingRequest.startedAtMs || 0);
+      const elapsedSec = (!isQueuedWait && refStartedAt > 0)
+        ? Math.max(0.1, Number(((Date.now() - refStartedAt) / 1000).toFixed(4)))
+        : null;
       const hasNewStreaming = Array.from(byId.values()).some(
         r => r.cascadeId === state.route && r.status === 'streaming' && r.callId !== state.livePendingRequest.baselineCallId
       );
-      if (!hasNewStreaming) {
+      if (!hasNewStreaming && !isQueuedWait && refStartedAt > 0) {
         const activeModel = state.latest?.model || state.selectedModelId || '';
-        const pendingKey = `__live_pending_${state.route}_${startedAt}`;
+        const trackedReq = state.lastRequestedModelByCascade?.get?.(state.route)?.requestedModel || null;
+        const pendingKey = `__live_pending_${state.route}_${refStartedAt}`;
         byId.set(pendingKey, {
           callId: pendingKey,
           cascadeId: state.route,
           stepIndex: null,
-          timestamp: startedAt,
-          created_at: new Date(startedAt).toISOString(),
-          date: formatReqLocalYmd(new Date(startedAt)),
+          timestamp: refStartedAt,
+          created_at: new Date(refStartedAt).toISOString(),
+          date: formatReqLocalYmd(new Date(refStartedAt)),
           source: 'desktop',
           agentRole: 'main',
           subagentType: null,
-          requestedModel: null,
+          requestedModel: trackedReq,
           model: activeModel,
           modelExactId: activeModel || null,
           modelKey: typeof normalizeModelId === 'function' ? normalizeModelId(activeModel) : (activeModel || null),
@@ -6958,7 +7432,10 @@
         const diff = (Number(b.durationSec) || 0) - (Number(a.durationSec) || 0);
         if (Math.abs(diff) > 1e-9) return diff > 0 ? 1 : -1;
       } else if (reqLogSortBy === 'speed_desc') {
-        const diff = (Number(b.streamingTps ?? b.tps) || 0) - (Number(a.streamingTps ?? a.tps) || 0);
+        const sa = resolveReqSpeedDisplayInfo(a);
+        const sb = resolveReqSpeedDisplayInfo(b);
+        if (sb.calculable !== sa.calculable) return sb.calculable ? 1 : -1;
+        const diff = (Number(sb.rawSpeed) || 0) - (Number(sa.rawSpeed) || 0);
         if (Math.abs(diff) > 1e-9) return diff > 0 ? 1 : -1;
       }
       if (tb !== ta) return tb - ta;
@@ -7028,7 +7505,7 @@
       pricingCat?.updatedAt || '',
       pricingCat?.modelCount || 0,
       pricingCat?.customCount || 0,
-      visible.slice(0, 6).map(r => `${r.callId || ''}:${r.status}:${r.outcomeStatus}:${r.inputTokens}:${r.outputTokens}:${r.durationSec}:${r.costUSD}`).join(',')
+      visible.slice(0, 6).map(r => `${r.callId || ''}:${r.status}:${r.outcomeStatus}:${r.requestedModel || ''}:${r.inputTokens}:${r.outputTokens}:${r.streamingSec}:${r.streamingTps}:${r.durationSec}:${r.costUSD}`).join(',')
     ].join('|');
 
     if (!force && sig === reqLogLastRenderedSig) return;
@@ -7075,11 +7552,14 @@
       tdAgent.appendChild(agentWrap);
       tr.appendChild(tdAgent);
 
+      const modelInfo = formatReqActualModel(rec);
+
       // 3. 请求模型
+      const reqModelInfo = formatReqRequestedModel(rec, modelInfo);
       const tdReqModel = document.createElement('td');
-      tdReqModel.className = rec.requestedModel ? 'req-td-model' : 'req-td-muted';
-      tdReqModel.textContent = rec.requestedModel || '—';
-      if (rec.requestedModel) tdReqModel.title = rec.requestedModel;
+      tdReqModel.className = reqModelInfo.text !== '—' ? 'req-td-model' : 'req-td-muted';
+      tdReqModel.textContent = reqModelInfo.text;
+      if (reqModelInfo.tooltip) tdReqModel.title = reqModelInfo.tooltip;
       tr.appendChild(tdReqModel);
 
       // 4. 供应商 · 账号
@@ -7091,7 +7571,6 @@
       tr.appendChild(tdProv);
 
       // 5. 实际模型
-      const modelInfo = formatReqActualModel(rec);
       const tdModel = document.createElement('td');
       tdModel.className = 'req-td-model';
       tdModel.textContent = modelInfo.text;
@@ -7153,10 +7632,11 @@
 
       // 12. 速度
       const tdSpd = document.createElement('td');
-      tdSpd.className = 'req-td-num';
-      const spdText = formatReqSpeed(rec);
-      tdSpd.textContent = spdText;
-      if (spdText === '—') tdSpd.className = 'req-td-num req-td-muted';
+      const spdInfo = resolveReqSpeedDisplayInfo(rec);
+      tdSpd.className = spdInfo.calculable ? 'req-td-num' : 'req-td-num req-td-muted';
+      tdSpd.textContent = spdInfo.text;
+      if (spdInfo.tooltip) tdSpd.title = spdInfo.tooltip;
+      if (!spdInfo.calculable && spdInfo.reasonCode) tdSpd.setAttribute('data-speed-reason', spdInfo.reasonCode);
       tr.appendChild(tdSpd);
 
       // 13. 状态
@@ -7239,6 +7719,7 @@
     const csbBar = el('composer-status-bar');
     if (!csbBar) return;
     ensureComposerStatusBarMounted();
+    syncComposerStatusBarWidth();
 
     // 1. 组 1: 轮次/步数与速度 (⏱ X 轮 Y 步 · Z tok/s)
     const speedTextEl = el('csb-speed-text');
@@ -7288,10 +7769,12 @@
       ?? state.latest?.speed?.tps
       ?? state.speedOverrideForTest?.tps
       ?? null;
+    const isPendingWait = Boolean(state.livePendingRequest && state.livePendingRequest.cascadeId === state.route);
+    const isPendingQueued = Boolean(isPendingWait && state.livePendingRequest.stage === 'queued');
     const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
     const speedStr = hasSpeedVal
       ? `${Number(speedCandidate).toFixed(0)} tok/s`
-      : (state.livePendingRequest ? t('composer.speedWaiting') : '—');
+      : (isPendingQueued ? t('composer.speedQueued') : (isPendingWait ? t('composer.speedWaiting') : '—'));
     if (speedTextEl) {
       if (state.loading && turnsCount === 0 && stepsCount === 0) {
         speedTextEl.textContent = t('badge.reading');
@@ -7479,29 +7962,35 @@
     const compactCrossModel = Boolean(
       isCompactingNow && curSelectedModel && lastCallModel && detectFamily(curSelectedModel) && detectFamily(lastCallModel) && detectFamily(curSelectedModel) !== detectFamily(lastCallModel)
     );
-    const waitSec = state.livePendingRequest?.startedAtMs
-      ? Math.max(0, (Date.now() - Number(state.livePendingRequest.startedAtMs)) / 1000)
+    const isPendingRoute = Boolean(state.livePendingRequest && state.livePendingRequest.cascadeId === state.route);
+    const isQueuedPending = Boolean(isPendingRoute && state.livePendingRequest.stage === 'queued');
+    const refDispMs = Number(state.livePendingRequest?.dispatchedAtMs || state.livePendingRequest?.startedAtMs || 0);
+    const waitSec = (!isQueuedPending && isPendingRoute && refDispMs > 0)
+      ? Math.max(0, (Date.now() - refDispMs) / 1000)
       : 0;
-    const isGeneratingNow = Boolean(state.livePendingRequest || (latestCallRec && String(latestCallRec.status || '').toLowerCase() === 'streaming'));
+    const isGeneratingNow = Boolean((isPendingRoute && !isQueuedPending) || (latestCallRec && String(latestCallRec.status || '').toLowerCase() === 'streaming'));
     const isOfflineNow = typeof navigator !== 'undefined' && navigator.onLine === false;
     const lastErrMsg = state.latest?.error ? String(state.latest.error) : (state.requestError ? String(state.requestError) : '');
     const isUserCancel = Boolean(state.latest?.canceled || /cancel|abort/i.test(lastErrMsg));
 
-    const runtimeStatus = typeof evaluateSessionRuntimeStatus === 'function'
-      ? evaluateSessionRuntimeStatus({
-        isGenerating: isGeneratingNow,
-        waitSec,
-        isCompacting: isCompactingNow,
-        compactCrossModel,
-        lastError: lastErrMsg,
-        isUserCanceled: isUserCancel,
-        isOffline: isOfflineNow
-      })
-      : { state: 'idle', reasonCode: 'ready', label: '就绪', detail: '' };
+    const runtimeStatus = isQueuedPending
+      ? { state: 'running', reasonCode: 'queued', label: t('composer.runtime.reason.queued'), detail: '' }
+      : (typeof evaluateSessionRuntimeStatus === 'function'
+        ? evaluateSessionRuntimeStatus({
+          isGenerating: isGeneratingNow,
+          waitSec,
+          isCompacting: isCompactingNow,
+          compactCrossModel,
+          lastError: lastErrMsg,
+          isUserCanceled: isUserCancel,
+          isOffline: isOfflineNow
+        })
+        : { state: 'idle', reasonCode: 'ready', label: '就绪', detail: '' });
 
     const RUNTIME_REASON_I18N = {
       ready: 'composer.runtime.reason.ready',
       generating: 'composer.runtime.reason.generating',
+      queued: 'composer.runtime.reason.queued',
       compacting: 'composer.runtime.reason.compacting',
       slow_wait: 'composer.runtime.reason.slow_wait',
       compact_kv_recompute: 'composer.runtime.reason.compact_kv_recompute',
@@ -7524,7 +8013,8 @@
     const csbRuntimeText = el('csb-runtime-text');
     if (csbStatusGroup) {
       csbStatusGroup.setAttribute('data-runtime-state', runtimeStatus.state);
-      csbStatusGroup.setAttribute('data-tooltip', `${t('composer.runtime.title')}: ${runtimeLabel}`);
+      csbStatusGroup.setAttribute('data-tooltip', `${t('composer.runtime.title')}: ${runtimeLabel} · ${t('composer.runtime.clickHint')}`);
+      csbStatusGroup.setAttribute('aria-label', `${t('composer.runtime.title')}: ${runtimeLabel} · ${t('composer.runtime.clickHint')}`);
       csbStatusGroup.title = '';
     }
     if (csbDot) {
@@ -7635,6 +8125,8 @@
     return `${raw.slice(0, 4)}…${raw.slice(-4)}`;
   }
 
+  const turnFooterScopeState = new Map();
+
   function renderTurnFooterStats() {
     try {
       if (typeof document?.querySelectorAll !== 'function') return;
@@ -7699,12 +8191,17 @@
           removeOld();
           return;
         }
+        const turnKey = String(turnObj.turnKey || '');
+        const isMultiCall = !forceFallbackScope && turnCalls.length > 1;
+        const requestedScope = isMultiCall ? (turnFooterScopeState.get(turnKey) || 'turn') : 'request';
+        const isTurnAggregate = requestedScope === 'turn';
+        const activeCalls = isTurnAggregate ? turnCalls : [lastCall];
         const cs = cacheFn
-          ? cacheFn(turnCalls)
+          ? cacheFn(activeCalls)
           : (() => {
-            const inp = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.inputTokens || 0)) + Math.max(0, Number(c?.cacheCreationInputTokens ?? 0)), 0);
-            const cr = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.cacheReadTokens ?? c?.cacheTokens ?? 0)), 0);
-            const outp = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.outputTokens || 0)), 0);
+            const inp = activeCalls.reduce((a, c) => a + Math.max(0, Number(c?.inputTokens || 0)) + Math.max(0, Number(c?.cacheCreationInputTokens ?? 0)), 0);
+            const cr = activeCalls.reduce((a, c) => a + Math.max(0, Number(c?.cacheReadTokens ?? c?.cacheTokens ?? 0)), 0);
+            const outp = activeCalls.reduce((a, c) => a + Math.max(0, Number(c?.outputTokens || 0)), 0);
             const ti = inp + cr;
             return {
               hasRealUsageData: ti > 0 || outp > 0,
@@ -7718,7 +8215,6 @@
 
         const hasCalcUsage = Boolean(cs.hasConfirmedUsage || cs.hasRealUsageData);
         const rawHitPct = cs.hitPct ?? cs.cacheHitPct ?? null;
-        const isTurnAggregate = !forceFallbackScope && turnCalls.length > 1;
         const scopeLabel = isTurnAggregate ? t('turnFooter.scopeTurn') : t('turnFooter.scopeReq');
         const hitStr = rawHitPct !== null ? `${rawHitPct}%` : '—';
         const mName = lastCall.attributedModelLabel || lastCall.modelLabel || lastCall.model || '';
@@ -7750,26 +8246,62 @@
           badge = document.createElement('span');
           badge.className = 'ag-cm-turn-footer';
           badge.setAttribute('data-ag-turn-footer', '1');
+          badge.setAttribute('role', 'button');
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
+        }
+        badge.__turnObj = turnObj;
+        badge.__forceFallback = forceFallbackScope;
+        badge.__tb = tb;
+        if (!badge.__agClickBound) {
+          badge.__agClickBound = true;
+          badge.addEventListener('click', (ev) => {
+            ev.stopPropagation?.();
+            const curObj = badge.__turnObj;
+            if (!curObj || !Array.isArray(curObj.calls)) return;
+            if (curObj.calls.length > 1) {
+              const curScope = badge.getAttribute('data-scope') || 'turn';
+              const nextScope = curScope === 'turn' ? 'request' : 'turn';
+              const k = String(curObj.turnKey || '');
+              if (k) turnFooterScopeState.set(k, nextScope);
+              applyFooterToToolbar(badge.__tb || tb, curObj, badge.__forceFallback);
+            } else {
+              if (typeof openDashboardInRightPanel === 'function') void openDashboardInRightPanel();
+            }
+          });
+          badge.addEventListener('dblclick', (ev) => {
+            ev.stopPropagation?.();
+            if (typeof openDashboardInRightPanel === 'function') void openDashboardInRightPanel();
+          });
+          badge.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+              ev.preventDefault?.();
+              ev.stopPropagation?.();
+              badge.click();
+            }
+          });
         }
         // 脏检查幂等写入：数值不变时不重复改写 textContent 与 aria-label，避免唤醒 MutationObserver
         if (badge.textContent !== text) badge.textContent = text;
         const nextScope = isTurnAggregate ? 'turn' : 'request';
         if (badge.getAttribute('data-scope') !== nextScope) badge.setAttribute('data-scope', nextScope);
-        const nextTurnKey = String(turnObj.turnKey || '');
-        if (badge.getAttribute('data-turn-key') !== nextTurnKey) badge.setAttribute('data-turn-key', nextTurnKey);
+        if (badge.getAttribute('data-turn-key') !== turnKey) badge.setAttribute('data-turn-key', turnKey);
         const nextCallId = String(lastCall.callId || '');
         if (badge.getAttribute('data-call-id') !== nextCallId) badge.setAttribute('data-call-id', nextCallId);
+        if (badge.getAttribute('data-multi-call') !== (isMultiCall ? 'true' : 'false')) {
+          badge.setAttribute('data-multi-call', isMultiCall ? 'true' : 'false');
+        }
 
         const tp = lastCall.timestamp ? formatReqTimeParts(lastCall) : null;
         const reqTimeStr = tp?.tooltip || tp?.text || (lastCall.date || '—');
         const safeCallId = desensitizeTurnCallId(lastCall.callId);
+        const tipAction = isMultiCall ? t('turnFooter.tipMulti') : t('turnFooter.tipSingle');
         const titleLines = [
-          `${scopeLabel}${isTurnAggregate ? ` (${turnCalls.length} 次请求)` : ''} · 模型: ${mName || '未知'}`,
+          `${scopeLabel}${isTurnAggregate ? ` · ${turnCalls.length} 次请求` : ''} · 模型: ${mName || '未知'}`,
           `请求 ID: ${safeCallId} · 时间: ${reqTimeStr}`,
-          `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} (命中 ${hitStr})`,
-          `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`
+          `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} · 命中 ${hitStr}`,
+          `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`,
+          tipAction
         ];
         const nextTitle = titleLines.join('\n');
         if (badge.title !== nextTitle) badge.title = nextTitle;
@@ -8249,12 +8781,12 @@
   }
 
   el('badge-quota')?.addEventListener('click', e => {
-    if (e?.altKey) {
-      e.preventDefault?.();
-      cycleQuotaBadgeWindowMode();
+    if (e?.altKey || e?.detail === 0) {
+      e?.preventDefault?.();
+      toggleQuota('badge-quota');
       return;
     }
-    toggleQuota('badge-quota');
+    cycleQuotaBadgeWindowMode();
   });
   let badgeLongPressTimer = null;
   let badgeLongPressTriggered = false;
@@ -8337,7 +8869,11 @@
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
   el('close-quota')?.addEventListener('click', () => showPanel('none'));
-  el('badge-quota')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleQuotaBadgeWindowMode(); });
+  el('badge-quota')?.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleQuota('badge-quota');
+  });
 
   // 输入框紧凑状态条 (Composer Status Bar) 交互事件：四组全部恢复交互、点击首帧直达（二次点击关闭）与顶层居中悬停缩略卡
   const csbSpeedBtn = el('csb-group-speed');
@@ -9397,14 +9933,192 @@
     if (txResult.targetMode === 'fixed' || txResult.targetMode === 'dynamic' || txResult.targetMode === 'default') {
       scheduleConfirmTimeoutCheck();
     }
+    const targetCid = txResult.cascadeId || state.route;
+    if (targetCid && (txResult.productLabel || txResult.modelId)) {
+      state.lastRequestedModelByCascade?.set?.(targetCid, {
+        requestedModel: txResult.productLabel || txResult.modelId,
+        requestedModelRaw: txResult.modelId || txResult.productLabel || null,
+        modelId: txResult.modelId || null,
+        ts: Date.now()
+      });
+    }
     if (state.route && (!txResult.cascadeId || txResult.cascadeId === state.route)) {
-      startLivePendingRequestWait(txResult.cascadeId || state.route);
+      startLivePendingRequestWait(targetCid);
     }
     refreshBudgetUiAfterDispatch();
     return rec;
   }
 
   let compactDispatchSeq = 0;
+  let autoCompactEnabled = false;
+  let autoCompactThreshold = 85;
+  let compactPrefsEditInFlight = false;
+  let compactSubmitInFlight = false;
+  let autoCompactCheckInFlight = false;
+  let lastAutoCompactCheckAt = 0;
+  const autoCompactAttempted = new Map();
+
+  function normalizeAutoCompactThreshold(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 50 && n <= 99 ? Math.round(n) : 85;
+  }
+
+  function syncCompactPreferencesControls() {
+    const check = el('chk-auto-compact');
+    const threshold = el('inp-auto-compact-threshold');
+    if (check) check.checked = autoCompactEnabled;
+    if (threshold) threshold.value = String(autoCompactThreshold);
+  }
+
+  function setCompactControlStatus(key) {
+    const status = el('compact-settings-status');
+    if (status) status.textContent = t(key);
+  }
+
+  async function saveCompactPreferences() {
+    if (compactPrefsEditInFlight) return;
+    const check = el('chk-auto-compact');
+    const threshold = el('inp-auto-compact-threshold');
+    const requestedThreshold = Number(threshold?.value);
+    if (!Number.isInteger(requestedThreshold) || requestedThreshold < 50 || requestedThreshold > 99) {
+      syncCompactPreferencesControls();
+      setCompactControlStatus('compact.settings.invalid');
+      return;
+    }
+    const next = { autoCompactEnabled: check?.checked === true, autoCompactThreshold: requestedThreshold };
+    compactPrefsEditInFlight = true;
+    userActionSeq++;
+    if (check) check.disabled = true;
+    if (threshold) threshold.disabled = true;
+    try {
+      const result = await saveSettingsPayloadBridge({ uiPreferences: next });
+      if (result?.ok) {
+        autoCompactEnabled = next.autoCompactEnabled;
+        autoCompactThreshold = next.autoCompactThreshold;
+      }
+      setCompactControlStatus(result?.ok ? 'prefs.saved' : 'compact.settings.saveFailed');
+    } finally {
+      compactPrefsEditInFlight = false;
+      if (check) check.disabled = false;
+      if (threshold) threshold.disabled = false;
+      syncCompactPreferencesControls();
+    }
+  }
+
+  function hasActiveCompactionOrGeneration() {
+    return Boolean(state.compacting || state.livePendingRequest || state.turnState?.streaming || state.lastDomCompactingActive
+      || state.sessionCalls?.at(-1)?.status === 'streaming'
+      || document.querySelector?.('.surface-composer button[data-testid="stop-button"], .surface-composer button[aria-label^="Stop"], .surface-composer button[aria-label^="停止"]'));
+  }
+
+  async function requestOfficialCompact(auto = false) {
+    if (compactSubmitInFlight || hasActiveCompactionOrGeneration()) {
+      if (!auto) setCompactControlStatus('compact.settings.busy');
+      return false;
+    }
+    const route = state.route;
+    if (!route || state.scan?.session?.isRemote === true || document.hidden) {
+      if (!auto) setCompactControlStatus('compact.settings.unavailable');
+      return false;
+    }
+    const editors = Array.from(document.querySelectorAll('.surface-composer [data-lexical-editor="true"][contenteditable="true"]'))
+      .filter(node => node.getClientRects().length > 0);
+    const editor = editors.length === 1 ? editors[0] : null;
+    const composer = editor?.closest('.surface-composer');
+    if (!editor || !composer || editor.textContent.trim() || editor.querySelector('[data-lexical-decorator]')
+      || composer.querySelector('[data-testid*="attachment" i]')) {
+      if (!auto) setCompactControlStatus('compact.settings.draft');
+      return false;
+    }
+    const modelSelector = composer.querySelector('[data-testid="model-selector-trigger"]');
+    if (!modelSelector || /no model selected|未选择模型|未選擇模型|未選取模型/i.test(modelSelector.textContent)) {
+      if (!auto) setCompactControlStatus('compact.settings.noModel');
+      return false;
+    }
+    compactSubmitInFlight = true;
+    const focusBefore = document.activeElement;
+    let sent = false;
+    let inserted = false;
+    try {
+      if (auto) {
+        autoCompactAttempted.set(route, Date.now());
+        if (autoCompactAttempted.size > 128) autoCompactAttempted.delete(autoCompactAttempted.keys().next().value);
+      }
+      editor.focus({ preventScroll: true });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (state.route !== route || document.activeElement !== editor || editor.textContent.trim()) return false;
+      inserted = document.execCommand('insertText', false, '/compact');
+      if (!inserted) return false;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 45));
+        if (state.disposed || state.route !== route || hasActiveCompactionOrGeneration() || editor.textContent.trim() !== '/compact') break;
+        const menuId = editor.getAttribute('aria-controls');
+        const menu = menuId ? document.getElementById(menuId) : null;
+        const options = menu?.querySelectorAll('[role="option"]');
+        const option = Array.from(options?.length ? options : document.querySelectorAll('[role="option"][id^="typeahead-item-"]'))
+          .find(node => node.querySelector('[data-testid="menu-option-label"]')?.textContent.trim().toLowerCase() === 'compact');
+        if (!option) continue;
+        option.click();
+        await new Promise(resolve => setTimeout(resolve, 45));
+        const sendButton = composer.querySelector('button[data-testid="send-button"]');
+        if (state.route !== route || hasActiveCompactionOrGeneration() || !editor.isConnected
+          || editor.textContent.trim() !== '/compact' || !sendButton || sendButton.disabled) break;
+        sendButton.click();
+        for (let confirm = 0; confirm < 10 && state.route === route; confirm++) {
+          if (!editor.textContent.trim() || state.compacting?.cascadeId === route) {
+            sent = true;
+            setCompactControlStatus('compact.settings.submitted');
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        break;
+      }
+      return sent;
+    } finally {
+      if (!sent) {
+        if (inserted && editor.isConnected && state.route === route && editor.textContent === '/compact') {
+          editor.focus({ preventScroll: true });
+          const range = document.createRange();
+          range.selectNodeContents(editor);
+          const selection = document.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.execCommand('delete');
+        }
+        setCompactControlStatus('compact.settings.unavailable');
+      }
+      if (focusBefore?.isConnected && focusBefore !== editor) focusBefore.focus?.({ preventScroll: true });
+      compactSubmitInFlight = false;
+    }
+  }
+
+  async function maybeAutoCompact() {
+    if (!autoCompactEnabled || !state.route || state.restoredFromCache || document.hidden
+      || autoCompactCheckInFlight || compactSubmitInFlight || hasActiveCompactionOrGeneration()) return;
+    const { actual, budget } = state.latest || {};
+    if (!Number.isFinite(actual) || !Number.isFinite(budget) || budget <= 0) return;
+    const pct = actual / budget * 100;
+    const lastAttempt = autoCompactAttempted.get(state.route);
+    if (pct < autoCompactThreshold - 5 && lastAttempt && Date.now() - lastAttempt >= 120000) autoCompactAttempted.delete(state.route);
+    if (pct < autoCompactThreshold || lastAttempt || !state.requestAt || Date.now() - state.requestAt >= 45000
+      || Date.now() - lastAutoCompactCheckAt < 10000) return;
+    const route = state.route;
+    autoCompactCheckInFlight = true;
+    lastAutoCompactCheckAt = Date.now();
+    try {
+      const ipcFn = window.contextMeterAPI?.getTurnState ? () => window.contextMeterAPI.getTurnState(route) : null;
+      const { result } = await callBackendWithPriority({ ipcCall: ipcFn, liveRoute: '/turn-state', liveBody: { id: route } });
+      const status = String(result?.data?.cascadeStatus || '');
+      if (result?.ok && result.data.conversation === route && /(?:^|_)(?:IDLE|COMPLETED|DONE|FINISHED)$/i.test(status)
+        && !state.disposed && state.route === route && autoCompactEnabled) await requestOfficialCompact(true);
+    } catch { }
+    finally { autoCompactCheckInFlight = false; }
+  }
+
+  el('btn-compact-now')?.addEventListener('click', () => void requestOfficialCompact());
+  el('chk-auto-compact')?.addEventListener('change', () => void saveCompactPreferences());
+  el('inp-auto-compact-threshold')?.addEventListener('change', () => void saveCompactPreferences());
   let activeScanSeq = 0;
   let activeScanController = null;
   let compactThrottleTimer = null;
@@ -9758,6 +10472,7 @@
       try {
         if (!req || typeof req !== 'object' || typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
         const compactCmd = detectOutgoingCompactCommand(req, 'client_object', 'SendUserCascadeMessage');
+        if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
         const tx = budgetEngine.transformOutgoingSendRequest(req, buildInterceptorContext(channel, 'SendUserCascadeMessage'));
         if (compactCmd?.isCompact) {
           const cRec = registerCompactDispatch(compactCmd);
@@ -9806,12 +10521,26 @@
     };
 
     const processOutgoingBody = (rawBody, channel, urlOrProc, contentType = '') => {
+      if (urlOrProc && /CancelCascade|DeleteQueued|RemoveQueued|AbortCascade/i.test(String(urlOrProc))) {
+        cancelOrEditQueuedPendingRequest('rpc_cancel');
+      }
       const compactCmd = detectOutgoingCompactCommand(rawBody, channel, urlOrProc, contentType);
       const tx = typeof budgetEngine.transformOutgoingSendRequest === 'function'
         ? budgetEngine.transformOutgoingSendRequest(rawBody, buildInterceptorContext(channel, urlOrProc, contentType))
         : null;
       let body = rawBody;
       let rec = null;
+      if (tx && (tx.productLabel || tx.modelId)) {
+        const tCid = tx.cascadeId || state.route;
+        if (tCid) {
+          state.lastRequestedModelByCascade?.set?.(tCid, {
+            requestedModel: tx.productLabel || tx.modelId,
+            requestedModelRaw: tx.modelId || tx.productLabel || null,
+            modelId: tx.modelId || null,
+            ts: Date.now()
+          });
+        }
+      }
       if (tx && tx.handled) {
         if (tx.modified && tx.output !== undefined) body = tx.output;
         if (!isCoveredByRecentDecorator(tx)) {
@@ -9914,6 +10643,9 @@
           const urlStr = typeof resource === 'string'
             ? resource
             : (resource && resource.url ? resource.url : String(resource || ''));
+          if (urlStr && /CancelCascade|DeleteQueued|RemoveQueued|AbortCascade/i.test(urlStr)) {
+            cancelOrEditQueuedPendingRequest('rpc_cancel');
+          }
           if (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
             const headersObj = init?.headers || resource?.headers;
             let contentType = '';
@@ -10682,6 +11414,7 @@
       renderSpeedComparisonTab();
     } else if (tabName === 'settings') {
       void refreshModulesDisplay();
+      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
       if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
         void refreshUnlockStatus();
       }
@@ -10691,6 +11424,28 @@
     positionFloatingPanels();
     syncPanelPickerActiveState();
     if (state.orbLinkedPanel && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
+  }
+
+  function focusSettingsCardSection(targetId) {
+    if (!targetId) return;
+    const navGroup = el('settings-quick-nav-group');
+    if (navGroup) {
+      for (const b of Array.from(navGroup.children || [])) {
+        b.classList?.toggle?.('active', b.getAttribute?.('data-nav-target') === targetId);
+      }
+    }
+    const targetEl = el(targetId);
+    if (!targetEl) return;
+    try {
+      setTimeout(() => {
+        targetEl.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+        if (targetEl.style) {
+          targetEl.style.transition = 'box-shadow 0.3s ease';
+          targetEl.style.boxShadow = '0 0 0 2px var(--ag-accent, #6366f1)';
+          setTimeout(() => { if (targetEl.style) targetEl.style.boxShadow = ''; }, 1400);
+        }
+      }, 60);
+    } catch { }
   }
 
   function openContextSettings(opts = {}) {
@@ -10703,6 +11458,8 @@
       try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, 'settings'); } catch { }
       applyContextViewVisibility();
       showPanel('context');
+      void refreshModulesDisplay();
+      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
     } else {
       switchContextTab('settings');
     }
@@ -10710,7 +11467,11 @@
       toggleColorsDrawer(true);
     }
     if (opts.scrollToUpdate) {
-      try { el('settings-about-update-card')?.scrollIntoView?.({ block: 'nearest' }); } catch { }
+      focusSettingsCardSection('settings-about-update-card');
+    } else if (opts.section === 'accounts') {
+      focusSettingsCardSection('settings-accounts-card');
+    } else if (typeof opts.section === 'string' && opts.section) {
+      focusSettingsCardSection(opts.section);
     }
     positionFloatingPanels();
   }
@@ -12678,7 +13439,7 @@
       ? () => window.contextMeterAPI.saveSettings(payload)
       : null;
     if (!ipcFn && !hasLiveHttpBridge()) {
-      return { ok: false, error: t('msg.noHostBridge') };
+      return reportSettingsSave({ ok: false, error: t('msg.noHostBridge') });
     }
     try {
       const out = await callBackendWithPriority({
@@ -12686,10 +13447,16 @@
         liveRoute: '/save-settings',
         liveBody: payload
       });
-      return out.result || { ok: false, error: t('msg.noHostBridge') };
+      return reportSettingsSave(out.result || { ok: false, error: t('msg.noHostBridge') });
     } catch (e) {
-      return { ok: false, error: e?.message || t('msg.noHostBridge') };
+      return reportSettingsSave({ ok: false, error: e?.message || t('msg.noHostBridge') });
     }
+  }
+
+  function reportSettingsSave(result) {
+    const status = el('prefs-save-status');
+    if (status) status.textContent = result?.ok === true ? t('prefs.saved') : t('prefs.saveError', { reason: result?.error || t('msg.unknownErr') });
+    return result;
   }
 
   function showUnlockResultBox(isSuccess, html, opts = {}) {
@@ -13301,6 +14068,7 @@
   }
 
   function openClientRestartConfirmFlow() {
+    if (isRestartInProgress || globalRestartModal?.open) return;
     if (!hostSupportsRestart) {
       showUnlockResultBox(true, t('client.restart.hostNotSupported'), { needsRestart: true });
       const upStatusEl = el('up-pop-status');
@@ -13318,8 +14086,8 @@
         modalRestartFeedback.hidden = true;
       }
       if (btnModalRestartConfirm) btnModalRestartConfirm.disabled = false;
-      isRestartInProgress = false;
       globalRestartModal.hidden = false;
+      globalRestartModal.showModal?.();
       return;
     }
     if (ctxRestartConfirm) {
@@ -13335,14 +14103,21 @@
     void refreshUnlockStatus();
   });
 
-  btnModalRestartCancel?.addEventListener('click', () => {
-    if (globalRestartModal) globalRestartModal.hidden = true;
-  });
+  function closeClientRestartConfirm() {
+    if (!globalRestartModal) return;
+    if (globalRestartModal.open) globalRestartModal.close();
+    globalRestartModal.hidden = true;
+  }
+
+  btnModalRestartCancel?.addEventListener('click', closeClientRestartConfirm);
   globalRestartModal?.addEventListener('click', (e) => {
-    if (e.target === globalRestartModal) {
-      globalRestartModal.hidden = true;
-    }
+    if (e.target === globalRestartModal) closeClientRestartConfirm();
   });
+  globalRestartModal?.addEventListener('cancel', (e) => {
+    e.preventDefault();
+    closeClientRestartConfirm();
+  });
+  earlyDisposeHooks.push(closeClientRestartConfirm);
 
   btnModalRestartConfirm?.addEventListener('click', () => executeClientRestart(true));
 
@@ -15070,9 +15845,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   const rehydrateStatScript = el('rehydrate-stat-script');
   const rehydrateStatPython = el('rehydrate-stat-python');
   const rehydrateStatSiblings = el('rehydrate-stat-siblings');
-  const btnRehydrateEnable = el('btn-rehydrate-enable');
+  const btnRehydrateSwitch = el('btn-rehydrate-switch');
   const btnRehydrateInstallPython = el('btn-rehydrate-install-python');
-  const btnRehydrateDisable = el('btn-rehydrate-disable');
   const btnRehydrateRefresh = el('btn-rehydrate-refresh');
   const btnRehydrateRemove = el('btn-rehydrate-remove');
   const rehydrateResultBox = el('rehydrate-result-box');
@@ -15974,8 +16748,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       btnRehydrateInstallPython.hidden = !pyBlocked;
       btnRehydrateInstallPython.disabled = busy || unavailable;
     }
-    if (btnRehydrateEnable) btnRehydrateEnable.disabled = busy || unavailable || corrupt || modCfgCorrupt || pyBlocked;
-    if (btnRehydrateDisable) btnRehydrateDisable.disabled = busy || unavailable || corrupt || modCfgCorrupt || !d?.hookRegistered || !d?.hookEnabled;
+    if (btnRehydrateSwitch) {
+      const enabled = Boolean(d?.hookRegistered && d?.hookEnabled);
+      btnRehydrateSwitch.setAttribute('aria-checked', String(enabled));
+      btnRehydrateSwitch.disabled = !d || busy || unavailable || corrupt || modCfgCorrupt || (!enabled && pyBlocked);
+    }
     if (btnRehydrateRemove) btnRehydrateRemove.disabled = busy || unavailable || corrupt || (!d?.hookRegistered && !d?.scriptInstalled);
     if (rehydrateRemoveArmed && btnRehydrateRemove?.disabled) {
       disarmRehydrateRemove();
@@ -16117,18 +16894,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     });
   });
 
-  btnRehydrateEnable?.addEventListener('click', () => {
+  btnRehydrateSwitch?.addEventListener('click', () => {
     disarmRehydrateRemove();
-    void runRehydrateAction('apply', btnRehydrateEnable, 'rehydrate.btn.enableBusy', 'rehydrate.btn.enable', (res) => {
+    if (currentRehydrateStatus?.hookRegistered && currentRehydrateStatus?.hookEnabled) {
+      void runRehydrateAction('disable', null, 'rehydrate.btn.disableBusy', null, () => () => t('rehydrate.result.disabled'));
+      return;
+    }
+    void runRehydrateAction('apply', null, 'rehydrate.btn.enableBusy', null, (res) => {
       if (res.changed === false) return () => t('rehydrate.result.alreadyEnabled');
       const p = res.status?.hooksJsonPath || '~/.gemini/config/hooks.json';
       return () => t('rehydrate.result.enabled', { path: p });
     });
-  });
-
-  btnRehydrateDisable?.addEventListener('click', () => {
-    disarmRehydrateRemove();
-    void runRehydrateAction('disable', btnRehydrateDisable, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
   });
 
   btnRehydrateRemove?.addEventListener('click', () => {
@@ -16651,7 +17427,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
       }
       if (btnToggleProxyModule) {
-        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
+        btnToggleProxyModule.setAttribute('aria-checked', String(currentProxyEnabled));
       }
       syncProxySaveButtonState();
     } catch (err) {
@@ -16735,7 +17511,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const rawBypass = String(inputProxyBypass?.value ?? '').trim();
     if (btnToggleProxyModule) {
       btnToggleProxyModule.disabled = true;
-      btnToggleProxyModule.textContent = t('mod.processing');
+      btnToggleProxyModule.setAttribute('aria-busy', 'true');
     }
     syncProxySaveButtonState();
     try {
@@ -16767,7 +17543,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       isProxyBusy = false;
       if (btnToggleProxyModule) {
         btnToggleProxyModule.disabled = false;
-        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
+        btnToggleProxyModule.removeAttribute('aria-busy');
       }
       syncProxySaveButtonState();
     }
@@ -17490,6 +18266,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       || Boolean(radialShadow?.activeElement));
   const escape = e => {
     if (e.key === 'Escape') {
+      if (globalRestartModal?.open) return;
       if (state.radialMenuOpen) {
         suppressFocusPickerUntil = Date.now() + 300;
         closeRadialMenu(false);
@@ -17795,6 +18572,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (!hasExisting || (incomingHasCaps && !existingHasCaps)) {
         state.cascadeModelConfigs = payload.cascadeModelConfigs;
         renderHeaderModelDropdown();
+        if (typeof syncModelPickers === 'function') syncModelPickers();
         if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
       }
     }
@@ -18441,6 +19219,13 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
 
       if (settingsRes?.ok) {
+        restoreAppearancePreferences(settingsRes.uiPreferences || {});
+        if (!compactPrefsEditInFlight) {
+          const p = settingsRes.uiPreferences || {};
+          autoCompactEnabled = p.autoCompactEnabled === true;
+          autoCompactThreshold = normalizeAutoCompactThreshold(p.autoCompactThreshold);
+          syncCompactPreferencesControls();
+        }
         if (settingsRes.uiPreferences?.restartVerification && typeof settingsRes.uiPreferences.restartVerification === 'object') {
           pendingRestartVerification = { ...settingsRes.uiPreferences.restartVerification };
           void refreshUnlockStatus();
@@ -18504,15 +19289,25 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           ? settingsRes.allowBetaUpdates
           : settingsRes.uiPreferences?.allowBetaUpdates;
         if (savedAllowBeta !== undefined) {
-          allowBetaUpdates = savedAllowBeta === true;
-          const chkBeta = el('check-allow-beta-updates');
-          if (chkBeta) chkBeta.checked = allowBetaUpdates;
+          setAllowBetaUpdatesState(savedAllowBeta === true, { persist: false });
         }
         const savedTopbarMode = settingsRes.topbarMode || settingsRes.uiPreferences?.topbarMode;
         const savedPanelDockMode = settingsRes.panelDockMode || settingsRes.uiPreferences?.panelDockMode;
         const savedAutoHideCol = settingsRes.autoHideTopbarOnDockedPanel ?? settingsRes.uiPreferences?.autoHideTopbarOnDockedPanel;
         if (savedAutoHideCol !== undefined) {
           autoHideTopbarOnDockedPanel = savedAutoHideCol !== false;
+        }
+        const savedAuxViewTab = settingsRes.auxViewTab || settingsRes.uiPreferences?.auxViewTab;
+        if (savedAuxViewTab === 'browser' || savedAuxViewTab === 'plugin') {
+          setAuxViewTab(savedAuxViewTab, { persist: false });
+        }
+        const savedAuxCollapsed = settingsRes.auxCollapsed ?? settingsRes.uiPreferences?.auxCollapsed;
+        if (typeof savedAuxCollapsed === 'boolean') {
+          setAuxCollapsed(savedAuxCollapsed, { persist: false });
+        }
+        const savedAuxWidth = settingsRes.auxWidthPx ?? settingsRes.uiPreferences?.auxWidthPx;
+        if (Number.isFinite(Number(savedAuxWidth)) && Number(savedAuxWidth) >= 260) {
+          auxWidthPx = clampAuxWidthPx(savedAuxWidth);
         }
         if (savedTopbarMode && VALID_TOPBAR_MODES.includes(savedTopbarMode)) {
           setTopbarMode(savedTopbarMode, { persist: false });
@@ -18622,6 +19417,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
           }
           ensureComposerStatusBarMounted();
+        }
+        const savedModelPicker = settingsRes.simplifiedModelPickerEnabled ?? settingsRes.uiPreferences?.simplifiedModelPickerEnabled;
+        if (savedModelPicker !== undefined) {
+          simplifiedModelPickerEnabled = savedModelPicker !== false;
+          const chkMp = el('chk-simplified-model-picker');
+          if (chkMp) chkMp.checked = simplifiedModelPickerEnabled;
+          if (typeof syncModelPickers === 'function') syncModelPickers();
+        }
+        const savedNextPrompt = settingsRes.nextPromptEnabled ?? settingsRes.uiPreferences?.nextPromptEnabled;
+        if (savedNextPrompt !== undefined) {
+          setNextPromptEnabledState(savedNextPrompt === true, { persist: false });
         }
         const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
         if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
@@ -18812,6 +19618,149 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     });
   }
 
+  function hasUpdateBridgeAvailable() {
+    const hasIpcUpdateBridge = typeof window !== 'undefined' && (
+      typeof window.contextMeterAPI?.checkUpdate === 'function' ||
+      typeof window.contextMeterAPI?.applyUpdate === 'function'
+    );
+    const hasLiveBridge = hasLiveHttpBridge() && (
+      hasLiveRouteCapability('/check-update') ||
+      hasLiveRouteCapability('/apply-update')
+    );
+    return Boolean(hasIpcUpdateBridge || hasLiveBridge);
+  }
+
+  function recomputeStrictUpdateState() {
+    const core = typeof __AGContextMeterCore !== 'undefined'
+      ? __AGContextMeterCore
+      : (typeof globalThis !== 'undefined' ? globalThis.__AGContextMeterCore : null);
+    const input = {
+      hasBridge: hasUpdateBridgeAvailable(),
+      rendererVersion: METER_RENDERER_VERSION,
+      backendVersion: backendStatus.backendVersion,
+      ipcBackendVersion: backendStatus.ipcBackendVersion,
+      liveHostVersion: backendStatus.liveHostVersion,
+      backendSource: backendStatus.backendSource,
+      backendVersionMismatch: backendStatus.backendVersionMismatch,
+      pendingUpdateRestart,
+      targetVersion: updateTargetVersion,
+      updateActivatedTarget,
+      actionPhase: updateActionPhase,
+      checkResult: lastCheckUpdateResult,
+      applyResult: lastApplyUpdateResult,
+      lastError: lastUpdateError
+    };
+    if (core && typeof core.computeStrictUpdateState === 'function') {
+      cachedStrictUpdateState = core.computeStrictUpdateState(input);
+    } else {
+      const stage = !input.hasBridge
+        ? 'unavailable'
+        : (updateActionPhase === 'checking'
+          ? 'checking'
+          : (updateActionPhase === 'downloading'
+            ? 'downloading'
+            : (updateActionPhase === 'error'
+              ? 'error'
+              : (lastApplyUpdateResult?.ok && (lastApplyUpdateResult.liveStaged || lastApplyUpdateResult.diskInstalled === false) && !lastApplyUpdateResult.liveInjected
+                ? 'downloaded'
+                : (pendingUpdateRestart || backendStatus.backendVersionMismatch ? 'pending_restart' : (updateActivatedTarget ? 'active' : 'idle'))))));
+      cachedStrictUpdateState = {
+        stage,
+        hasBridge: input.hasBridge,
+        rendererVersion: METER_RENDERER_VERSION,
+        backendVersion: backendStatus.backendVersion,
+        backendSource: backendStatus.backendSource,
+        backendMismatch: Boolean(backendStatus.backendVersionMismatch),
+        pendingRestart: Boolean(pendingUpdateRestart),
+        targetVersion: updateTargetVersion,
+        downloaded: stage === 'downloaded',
+        activeConfirmed: stage === 'active',
+        error: lastUpdateError
+      };
+    }
+    return cachedStrictUpdateState;
+  }
+
+  function syncHostSettingsUi() {
+    if (hostSettingsCtrl && typeof hostSettingsCtrl.renderPage === 'function') {
+      hostSettingsCtrl.renderPage();
+    }
+  }
+
+  function setAllowBetaUpdatesState(enabled, { persist = true } = {}) {
+    allowBetaUpdates = Boolean(enabled);
+    const chkBeta = el('check-allow-beta-updates');
+    if (chkBeta) chkBeta.checked = allowBetaUpdates;
+    if (persist && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ allowBetaUpdates });
+    }
+    syncHostSettingsUi();
+    return allowBetaUpdates;
+  }
+
+  function syncPopoverByStrictStage(strictState, opts = {}) {
+    const titleEl = el('up-pop-title');
+    const bodyEl = el('up-pop-body');
+    const verEl = el('up-pop-ver');
+    const statusEl = el('up-pop-status');
+    const applyBtn = el('btn-apply-update');
+    const restartBtn = el('btn-update-restart');
+    const dot = el('update-badge-dot');
+    const dotCtx = el('update-badge-dot-ctx');
+    const stage = strictState?.stage || 'idle';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : METER_RENDERER_VERSION;
+    const targetVer = strictState?.targetVersion || opts.nextVer || currentVer;
+    const targetDisp = formatDisplayVersion(targetVer);
+    const showRestart = Boolean(stage === 'pending_restart' && hostSupportsRestart);
+    if (restartBtn) {
+      restartBtn.hidden = !showRestart;
+      if (restartBtn.style) restartBtn.style.display = showRestart ? 'inline-block' : 'none';
+    }
+    if (stage === 'downloaded') {
+      if (dot) dot.style.display = 'none';
+      if (dotCtx) dotCtx.style.display = 'none';
+      if (titleEl) titleEl.textContent = t('hostSettings.stage.downloaded');
+      if (verEl) verEl.textContent = targetDisp;
+      if (bodyEl) bodyEl.textContent = t('update.doneLiveSynced', { ver: targetDisp });
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.textContent = t('update.doneLiveSynced', { ver: targetDisp });
+      }
+      if (applyBtn) applyBtn.style.display = 'none';
+    } else if (stage === 'active') {
+      if (dot) dot.style.display = 'none';
+      if (dotCtx) dotCtx.style.display = 'none';
+      if (titleEl) titleEl.textContent = t('update.doneTitle');
+      if (verEl) verEl.textContent = t('update.doneVer', { ver: targetDisp });
+      if (bodyEl) bodyEl.textContent = t('update.doneHotFull', { ver: targetDisp });
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.textContent = t('update.doneHotFull', { ver: targetDisp });
+      }
+      if (applyBtn) {
+        applyBtn.textContent = t('update.btnUpdated');
+        applyBtn.disabled = false;
+      }
+    } else if (stage === 'pending_restart') {
+      if (dot) dot.style.display = 'none';
+      if (dotCtx) dotCtx.style.display = 'none';
+      if (titleEl) titleEl.textContent = t('hostSettings.stage.pendingRestart');
+      if (verEl) verEl.textContent = targetDisp;
+      const msg = opts.liveInjected
+        ? t('update.doneHot', { ver: targetDisp })
+        : (hostSupportsRestart ? t('update.doneDisk', { ver: targetDisp }) : `${t('update.doneDisk', { ver: targetDisp })} ${t('client.restart.hostNotSupported')}`);
+      if (bodyEl) bodyEl.textContent = msg;
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.textContent = msg;
+      }
+      if (applyBtn) {
+        applyBtn.textContent = t('update.btnUpdated');
+        applyBtn.disabled = false;
+      }
+    }
+  }
+
   async function checkAppUpdate(manual = false, trigger = currentUpdateTrigger) {
     const dot = el('update-badge-dot');
     const dotCtx = el('update-badge-dot-ctx');
@@ -18822,6 +19771,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const statusEl = el('up-pop-status');
     const applyBtn = el('btn-apply-update');
     const restartBtn = el('btn-update-restart');
+    const usePopover = trigger !== 'host-settings';
     const setUpdateRestartVisible = (visible) => {
       if (!restartBtn) return;
       const show = Boolean(visible && hostSupportsRestart);
@@ -18836,6 +19786,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
       cachedLatestRelease = null;
+      lastCheckUpdateResult = null;
+      updateActionPhase = 'idle';
+      lastUpdateError = null;
+      recomputeStrictUpdateState();
+      syncHostSettingsUi();
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.unavailableTitle');
@@ -18844,13 +19799,18 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       setUpdateRestartVisible(false);
-      if (manual) showUpdatePopover(trigger);
+      if (manual && usePopover) showUpdatePopover(trigger);
       return;
     }
 
+    updateActionPhase = 'checking';
+    lastUpdateError = null;
+    recomputeStrictUpdateState();
+    syncHostSettingsUi();
+
     if (manual) {
       cachedLatestRelease = null;
-      showUpdatePopover(trigger);
+      if (usePopover) showUpdatePopover(trigger);
       if (titleEl) titleEl.textContent = t('update.checkingTitle');
       if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.connecting');
@@ -18871,20 +19831,32 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       // 返回 null、非对象或 ok: false 均为检查失败，严禁显示“最新”
       if (!res || res.ok === false) {
         cachedLatestRelease = null;
+        lastCheckUpdateResult = res || null;
+        updateActionPhase = 'error';
+        const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
+        lastUpdateError = errMsg;
+        recomputeStrictUpdateState();
+        syncHostSettingsUi();
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = t('update.failedTitle');
         if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
-        const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
         if (bodyEl) bodyEl.textContent = t('update.failedBody', { err: errMsg });
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         setUpdateRestartVisible(false);
-        if (manual) showUpdatePopover(trigger);
+        if (manual && usePopover) showUpdatePopover(trigger);
         return;
       }
 
+      lastCheckUpdateResult = res;
+      updateActionPhase = 'idle';
+      lastUpdateError = null;
       if (res.hasUpdate && res.latestVersion) {
         cachedLatestRelease = res;
+        updateTargetVersion = res.latestVersion;
+        updateActivatedTarget = false;
+        recomputeStrictUpdateState();
+        syncHostSettingsUi();
         const nextDisplayVer = formatDisplayVersion(res.latestVersion);
         if (dot) dot.style.display = 'block';
         if (dotCtx) dotCtx.style.display = 'block';
@@ -18899,22 +19871,31 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           applyBtn.style.display = 'inline-block';
         }
         setUpdateRestartVisible(false);
-        if (manual) showUpdatePopover(trigger);
+        if (manual && usePopover) showUpdatePopover(trigger);
       } else {
         cachedLatestRelease = null;
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
-        if (titleEl) titleEl.textContent = t('update.latestTitle');
         const effectiveCurrent = res.installedVersion || res.currentVersion || currentVer;
         const effectiveDisplayVer = formatDisplayVersion(effectiveCurrent);
-        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveDisplayVer });
         const needsDiskRestart = Boolean(res.diskPendingRestart);
         if (needsDiskRestart) {
           pendingUpdateRestart = true;
+          updateTargetVersion = effectiveCurrent;
+        } else if (res.livePendingReload) {
+          updateTargetVersion = res.stagedVersion || res.latestVersion || effectiveCurrent;
         }
+        const strictState = recomputeStrictUpdateState();
+        syncHostSettingsUi();
+        if (titleEl) {
+          titleEl.textContent = strictState.stage === 'downloaded'
+            ? t('hostSettings.stage.downloaded')
+            : (strictState.stage === 'pending_restart' ? t('hostSettings.stage.pendingRestart') : t('update.latestTitle'));
+        }
+        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveDisplayVer });
         const updateStatusText = needsDiskRestart
           ? t('update.diskPending', { ver: effectiveDisplayVer })
-          : t('update.latestBody', { ver: effectiveDisplayVer });
+          : t(res.livePendingReload ? 'update.liveStaged' : 'update.latestBody', { ver: effectiveDisplayVer });
         if (bodyEl) bodyEl.textContent = updateStatusText;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         setUpdateRestartVisible(needsDiskRestart);
@@ -18922,18 +19903,22 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           statusEl.style.display = 'block';
           statusEl.textContent = t('client.restart.hostNotSupported');
         }
-        if (manual) showUpdatePopover(trigger);
+        if (manual && usePopover) showUpdatePopover(trigger);
       }
     } catch (err) {
       cachedLatestRelease = null;
+      updateActionPhase = 'error';
+      lastUpdateError = translateBackendText(err.message);
+      recomputeStrictUpdateState();
+      syncHostSettingsUi();
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.failedTitle');
       if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
-      if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: translateBackendText(err.message) });
+      if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: lastUpdateError });
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       setUpdateRestartVisible(false);
-      if (manual) showUpdatePopover(trigger);
+      if (manual && usePopover) showUpdatePopover(trigger);
     }
   }
 
@@ -18948,6 +19933,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const dot = el('update-badge-dot');
     const dotCtx = el('update-badge-dot-ctx');
     if (!cachedLatestRelease) return;
+
+    updateActionPhase = 'downloading';
+    lastUpdateError = null;
+    updateTargetVersion = cachedLatestRelease.latestVersion || updateTargetVersion;
+    recomputeStrictUpdateState();
+    syncHostSettingsUi();
 
     if (restartBtn) {
       restartBtn.hidden = true;
@@ -18969,7 +19960,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (hasIpcApply || hasLiveApply) {
         const updateRequest = {
           version: cachedLatestRelease.latestVersion,
-          allowBetaUpdates: allowBetaUpdates || cachedLatestRelease.prerelease === true
+          allowBetaUpdates: Boolean(allowBetaUpdates || cachedLatestRelease.prerelease === true),
+          prerelease: cachedLatestRelease.prerelease === true
         };
         const out = await callBackendWithPriority({
           ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate(updateRequest) : null,
@@ -18983,56 +19975,60 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (state.disposed) return;
       if (res && res.ok) {
         const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
-        const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
+        const nextVer = res.version || res.targetVersion || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const nextDisplayVer = formatDisplayVersion(nextVer);
+        lastApplyUpdateResult = res;
+        updateActionPhase = 'idle';
+        lastUpdateError = null;
+        updateTargetVersion = nextVer;
+
+        const isLiveOnlyUpdate = Boolean(
+          (res.liveStaged === true || res.diskInstalled === false || res.mode === 'live') &&
+          !res.liveInjected
+        );
+        if (isLiveOnlyUpdate) {
+          cachedLatestRelease = null;
+          pendingUpdateRestart = false;
+          updateActivatedTarget = false;
+          const strictState = recomputeStrictUpdateState();
+          syncPopoverByStrictStage(strictState, { nextVer, liveInjected: false });
+          syncHostSettingsUi();
+          return;
+        }
         const vEl = el('v');
         if (vEl && res.liveInjected) vEl.textContent = nextDisplayVer;
 
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
 
-        const fullyHotReloaded = Boolean(res.liveInjected && res.backendHotReloaded);
-        pendingUpdateRestart = !fullyHotReloaded;
-        if (titleEl) titleEl.textContent = t('update.doneTitle');
-        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
-        if (bodyEl) {
-          bodyEl.textContent = fullyHotReloaded
-            ? t('update.doneHotFull', { ver: nextDisplayVer })
-            : (res.liveInjected ? t('update.doneHot', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer }));
+        updateActivatedTarget = Boolean(res.liveInjected || res.diskInstalled);
+        if (res.backendVersion) {
+          backendStatus.backendVersion = String(res.backendVersion);
+          backendStatus.backendVersionMismatch = Boolean(backendStatus.backendVersion !== METER_RENDERER_VERSION);
         }
-        if (applyBtn) {
-          applyBtn.textContent = t('update.btnUpdated');
-          applyBtn.disabled = false;
-        }
-        if (restartBtn) {
-          const showRestart = Boolean(!fullyHotReloaded && hostSupportsRestart);
-          restartBtn.hidden = !showRestart;
-          if (restartBtn.style) restartBtn.style.display = showRestart ? 'inline-block' : 'none';
-        }
-
-        if (fullyHotReloaded) {
-          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextDisplayVer });
-          if (backendStatus.backendVersion === nextVer) {
-            backendStatus.backendVersionMismatch = false;
-          }
-        } else if (res.liveInjected) {
-          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextDisplayVer });
-        } else {
-          if (statusEl) {
-            statusEl.textContent = hostSupportsRestart
-              ? t('update.doneDisk', { ver: nextDisplayVer })
-              : `${t('update.doneDisk', { ver: nextDisplayVer })} ${t('client.restart.hostNotSupported')}`;
-          }
-        }
+        const tentativeStrict = recomputeStrictUpdateState();
+        pendingUpdateRestart = tentativeStrict.stage !== 'active';
+        const finalStrict = recomputeStrictUpdateState();
+        syncPopoverByStrictStage(finalStrict, { nextVer, liveInjected: Boolean(res.liveInjected) });
+        syncHostSettingsUi();
         if (typeof renderQuotaBoard === 'function') {
           renderQuotaBoard(Date.now(), { animate: false });
         }
       } else {
-        if (statusEl) statusEl.textContent = t('update.failStatus', { err: translateBackendText(res?.error) || t('models.meta.archUnknown') });
+        updateActionPhase = 'error';
+        lastApplyUpdateResult = res || null;
+        lastUpdateError = translateBackendText(res?.error) || t('models.meta.archUnknown');
+        recomputeStrictUpdateState();
+        syncHostSettingsUi();
+        if (statusEl) statusEl.textContent = t('update.failStatus', { err: lastUpdateError });
         if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = t('update.btnRetry'); }
       }
     } catch (err) {
-      if (statusEl) statusEl.textContent = t('update.errStatus', { err: translateBackendText(err.message) });
+      updateActionPhase = 'error';
+      lastUpdateError = translateBackendText(err.message);
+      recomputeStrictUpdateState();
+      syncHostSettingsUi();
+      if (statusEl) statusEl.textContent = t('update.errStatus', { err: lastUpdateError });
       if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = t('update.btnRetry'); }
     }
   }
@@ -19088,15 +20084,78 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   if (chkBetaInit) {
     chkBetaInit.checked = allowBetaUpdates;
     chkBetaInit.addEventListener('change', e => {
-      allowBetaUpdates = e.target.checked === true;
-      if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
-        void saveSettingsPayloadBridge({ allowBetaUpdates });
-      }
+      setAllowBetaUpdatesState(e.target.checked === true, { persist: true });
     });
   }
 
   /* @INSERT_HEATMAP_MODULE */
   /* @INSERT_DASHBOARD_GRID_MODULE */
+  /* @INSERT_MODEL_PICKER_MODULE */
+  /* @INSERT_NEXT_PROMPT_MODULE */
+  /* @INSERT_HOST_SETTINGS_MODULE */
+  if (typeof createHostSettingsController === 'function') {
+    hostSettingsCtrl = createHostSettingsController({
+      t,
+      getSnapshot: () => {
+        const strict = recomputeStrictUpdateState();
+        return {
+          strictUpdateState: strict,
+          rendererVersion: METER_RENDERER_VERSION,
+          rendererDisplayVersion: formatDisplayVersion(METER_RENDERER_VERSION),
+          backendVersion: backendStatus.backendVersion || null,
+          backendDisplayVersion: backendStatus.backendVersion ? formatDisplayVersion(backendStatus.backendVersion) : null,
+          backendSource: backendStatus.backendSource || null,
+          backendPid: backendStatus.backendPid || null,
+          backendMismatch: Boolean(backendStatus.backendVersionMismatch),
+          allowBetaUpdates: Boolean(allowBetaUpdates),
+          nextPromptEnabled: Boolean(nextPromptEnabled),
+          hostSupportsRestart: Boolean(hostSupportsRestart),
+          hasCachedRelease: Boolean(cachedLatestRelease),
+          releaseNotes: cachedLatestRelease?.releaseNotes || '',
+          errorText: strict.error || lastUpdateError || null,
+          activeRoute: state.route || null,
+          lastQuotaDurationMs: backendStatus.lastQuotaDurationMs,
+          diagError: backendStatus.lastError || quotaState.error || null,
+          formatVersion: formatDisplayVersion
+        };
+      },
+      onCheckUpdate: (trigger) => checkAppUpdate(true, trigger || 'host-settings'),
+      onApplyUpdate: () => applyAppUpdate(),
+      onRestartHost: () => openClientRestartConfirmFlow(),
+      onVerifyRuntime: () => verifyHotReloadAndRefreshQuota(),
+      onToggleBetaUpdates: (enabled) => setAllowBetaUpdatesState(enabled, { persist: true }),
+      onToggleNextPrompt: (enabled) => setNextPromptEnabledState(enabled, { persist: true }),
+      onOpenPluginPanel: (target) => {
+        if (target === 'accounts') {
+          openContextSettings({ section: 'accounts' });
+        } else if (target === 'settings') {
+          openContextSettings();
+        } else if (target === 'quota') {
+          showPanel('quota');
+        } else if (target === 'tokens') {
+          showPanel('tokens');
+        }
+      },
+      onOpenReleasePage: () => {
+        openGithubRepo(cachedLatestRelease?.tagName ? `/releases/tag/${cachedLatestRelease.tagName}` : '/releases');
+      },
+      onCopyDiagnostics: () => {
+        const strict = recomputeStrictUpdateState();
+        const payload = JSON.stringify({
+          rendererVersion: METER_RENDERER_VERSION,
+          backendVersion: backendStatus.backendVersion,
+          backendSource: backendStatus.backendSource,
+          backendMismatch: backendStatus.backendVersionMismatch,
+          strictStage: strict.stage,
+          route: state.route || null,
+          lastQuotaDurationMs: backendStatus.lastQuotaDurationMs
+        }, null, 2);
+        return copyTextToClipboardSafe?.(payload);
+      }
+    });
+    activeDisposers.add(() => hostSettingsCtrl?.dispose?.());
+    earlyDisposeHooks.push(() => hostSettingsCtrl?.dispose?.());
+  }
   /* @INSERT_TREND_PULSE_MODULE */
   /* @INSERT_CONTEXT_INSPECTOR_MODULE */
   /* @INSERT_EXECUTION_TRACE_MODULE */
@@ -19278,7 +20337,16 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       };
     }
     if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
-      const elapsedSec = Math.max(0, (Date.now() - state.livePendingRequest.startedAtMs) / 1000);
+      if (state.livePendingRequest.stage === 'queued') {
+        return {
+          phase: 'queued',
+          status: 'queued',
+          outcomeStatus: 'queued',
+          elapsedSec: null
+        };
+      }
+      const refDisp = Number(state.livePendingRequest.dispatchedAtMs || state.livePendingRequest.startedAtMs || 0);
+      const elapsedSec = refDisp > 0 ? Math.max(0, (Date.now() - refDisp) / 1000) : 0;
       return {
         phase: 'waiting',
         status: 'waiting',
@@ -19490,6 +20558,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const fold = el('ctx-timing-diag-fold');
     const btn = el('btn-ctx-timing-diag-toggle');
     const open = Boolean(state.timingDiagExpanded);
+    state.speedBreakdownOpen = open;
     if (fold) fold.hidden = !open;
     if (btn) {
       btn.setAttribute?.('aria-expanded', open ? 'true' : 'false');
@@ -19518,7 +20587,16 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
     const isCompact = state.layoutMode === 'compact';
     const shortSampleText = t('session.speed.shortSampleBadge');
-    if (evalRes.phase === 'waiting') {
+    if (evalRes.phase === 'queued') {
+      bSpeed?.setAttribute?.('data-speed-phase', 'queued');
+      if (waitSvgWrap) waitSvgWrap.hidden = true;
+      if (speedAmount) speedAmount.textContent = isCompact ? '…' : t('composer.runtime.reason.queued');
+      if (overflowSpeedVal) overflowSpeedVal.textContent = t('composer.runtime.reason.queued');
+      if (bSpeed) {
+        bSpeed.title = evalRes.comment;
+        bSpeed.setAttribute?.('aria-label', evalRes.comment);
+      }
+    } else if (evalRes.phase === 'waiting') {
       // ELV-93: 等待态顶栏纯 SVG 沙漏动效，去除每秒文字变化导致的横向抖动
       bSpeed?.setAttribute?.('data-speed-phase', 'waiting');
       if (waitSvgWrap) waitSvgWrap.hidden = false;
@@ -19571,7 +20649,6 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const spTokens = el('speed-tokens');
     const spSub = el('speed-sub-label');
     const spTakeaway = el('speed-takeaway');
-    const spToggleBtn = el('btn-speed-breakdown-toggle');
     const spBreakdownDet = el('speed-breakdown-details');
     const spBreakdownGrid = el('speed-breakdown-grid');
 
@@ -19600,7 +20677,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
     }
     if (spVal) {
-      if (evalRes.phase === 'waiting') {
+      if (evalRes.phase === 'queued') {
+        spVal.textContent = evalRes.shortTitle || t('composer.runtime.reason.queued');
+      } else if (evalRes.phase === 'waiting') {
         spVal.textContent = isEn ? 'Waiting' : '等待首字';
       } else if (evalRes.phase === 'remote_unavailable') {
         spVal.textContent = evalRes.shortTitle || '—';
@@ -19638,15 +20717,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     }
 
     const canShowBreakdown = evalRes.phase === 'final' || evalRes.phase === 'streaming';
-    if (spToggleBtn) {
-      spToggleBtn.hidden = !canShowBreakdown;
-      spToggleBtn.textContent = state.speedBreakdownOpen ? t('session.speed.hideDetails') : t('session.speed.details');
-      spToggleBtn.setAttribute?.('aria-expanded', state.speedBreakdownOpen ? 'true' : 'false');
-    }
+    const breakdownVisible = Boolean(canShowBreakdown && (state.timingDiagExpanded || state.speedBreakdownOpen));
     if (spBreakdownDet) {
-      spBreakdownDet.style.display = (canShowBreakdown && state.speedBreakdownOpen) ? 'block' : 'none';
+      spBreakdownDet.style.display = breakdownVisible ? 'block' : 'none';
     }
-    if (spBreakdownGrid && canShowBreakdown && state.speedBreakdownOpen) {
+    if (spBreakdownGrid && breakdownVisible) {
       spBreakdownGrid.replaceChildren();
       const unk = t('session.latestCall.unknownVal');
       const eText = evalRes.efficiency?.available
@@ -19753,16 +20828,23 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     if (typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
   }
 
-  function startLivePendingRequestWait(cascadeId) {
+  function isPriorTurnActivelyGenerating(cascadeId) {
     const cid = cascadeId || state.route;
-    if (!cid) return;
-    const latestRec = resolveLatestSessionCallRecord();
-    state.livePendingRequest = {
-      cascadeId: cid,
-      startedAtMs: Date.now(),
-      baselineCallId: latestRec?.callId || null,
-      baselineCount: state.count || 0
-    };
+    if (!cid) return false;
+    const latestRec = typeof resolveLatestSessionCallRecord === 'function' ? resolveLatestSessionCallRecord() : null;
+    if (latestRec && latestRec.status === 'streaming') return true;
+    if (state.turnState?.streaming && !state.livePendingRequest) return true;
+    if (state.livePendingRequest && state.livePendingRequest.cascadeId === cid && state.livePendingRequest.stage === 'dispatched') {
+      return true;
+    }
+    try {
+      const stopBtn = typeof document !== 'undefined' && document.querySelector?.('.surface-composer button[data-testid="stop-button"], .surface-composer button[aria-label^="Stop"], .surface-composer button[aria-label^="停止"]');
+      if (stopBtn) return true;
+    } catch { }
+    return false;
+  }
+
+  function startPendingWaitTickTimer() {
     const updateWaitOnly = () => {
       if (state.disposed || !state.livePendingRequest || state.livePendingRequest.cascadeId !== state.route) {
         stopLiveWaitTickTimer();
@@ -19775,6 +20857,133 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     updateWaitOnly();
     stopLiveWaitTickTimer();
     state.liveWaitTickTimer = setInterval(updateWaitOnly, 1000);
+  }
+
+  function startLivePendingRequestWait(cascadeId, options = {}) {
+    const cid = cascadeId || state.route;
+    if (!cid) return null;
+    const latestRec = resolveLatestSessionCallRecord();
+    const now = Number(options.nowMs) || Date.now();
+    const shouldQueue = options.queued !== undefined
+      ? Boolean(options.queued)
+      : isPriorTurnActivelyGenerating(cid);
+
+    if (shouldQueue) {
+      state.livePendingRequest = {
+        cascadeId: cid,
+        stage: 'queued',
+        queuedAtMs: now,
+        dispatchedAtMs: null,
+        startedAtMs: null,
+        firstTokenAtMs: null,
+        queuedFromComposerDom: Boolean(options.fromDom),
+        baselineCallId: latestRec?.callId || null,
+        baselineCount: state.count || 0
+      };
+    } else {
+      state.livePendingRequest = {
+        cascadeId: cid,
+        stage: 'dispatched',
+        queuedAtMs: null,
+        dispatchedAtMs: now,
+        startedAtMs: now,
+        firstTokenAtMs: null,
+        queuedFromComposerDom: false,
+        baselineCallId: latestRec?.callId || null,
+        baselineCount: state.count || 0
+      };
+    }
+    startPendingWaitTickTimer();
+    if (!state.disposed && typeof syncComposerStatusBar === 'function') syncComposerStatusBar();
+    if (!state.disposed && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
+    return state.livePendingRequest;
+  }
+
+  function promoteQueuedPendingRequestToDispatched(cascadeId, nowMs = Date.now()) {
+    const req = state.livePendingRequest;
+    const cid = cascadeId || state.route;
+    if (!req || !cid || req.cascadeId !== cid || req.stage !== 'queued') return false;
+    const latestRec = resolveLatestSessionCallRecord();
+    const ts = Number(nowMs) || Date.now();
+    req.stage = 'dispatched';
+    req.dispatchedAtMs = ts;
+    req.startedAtMs = ts;
+    req.baselineCallId = latestRec?.callId || req.baselineCallId || null;
+    req.baselineCount = state.count || req.baselineCount || 0;
+    startPendingWaitTickTimer();
+    if (!state.disposed && typeof syncComposerStatusBar === 'function') syncComposerStatusBar();
+    if (!state.disposed && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
+    return true;
+  }
+
+  function cancelOrEditQueuedPendingRequest(reason = 'canceled') {
+    const req = state.livePendingRequest;
+    if (!req) return false;
+    if (req.stage === 'queued' || /cancel|abort|edit|rpc_cancel/i.test(String(reason))) {
+      clearLivePendingRequestWait();
+      if (!state.disposed && typeof evaluateGenerationExperience === 'function') {
+        renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
+      }
+      if (!state.disposed && typeof syncComposerStatusBar === 'function') syncComposerStatusBar();
+      if (!state.disposed && typeof syncRequestsLiveViewIfVisible === 'function') syncRequestsLiveViewIfVisible();
+      return true;
+    }
+    return false;
+  }
+
+  // 监听宿主输入框排队提交、撤回/取消与重编辑，避免排队或中断误产生假首字计时
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    const onComposerQueueKeydown = (e) => {
+      if (state.disposed || !state.route) return;
+      if (e.key === 'Escape' && state.livePendingRequest?.stage === 'queued') {
+        if (e.target?.closest?.('.surface-composer')) {
+          cancelOrEditQueuedPendingRequest('escape_edit');
+        }
+        return;
+      }
+      if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+      const composer = e.target?.closest?.('.surface-composer');
+      if (!composer || composer.closest?.('#ag-context-meter')) return;
+      if (isPriorTurnActivelyGenerating(state.route) && e.target?.textContent?.trim() && !/^\/compact(?:\s|$)/i.test(e.target.textContent.trim())) {
+        startLivePendingRequestWait(state.route, { queued: true, fromDom: true });
+      }
+    };
+    const onComposerQueueClick = (e) => {
+      if (state.disposed || !state.route) return;
+      const btn = e.target?.closest?.('button');
+      if (!btn || btn.closest?.('#ag-context-meter')) return;
+      const testId = String(btn.getAttribute?.('data-testid') || '');
+      const aria = String(btn.getAttribute?.('aria-label') || '');
+      const txt = String(btn.textContent || '').trim();
+      const composer = btn.closest?.('.surface-composer');
+      if (composer && testId === 'send-button' && isPriorTurnActivelyGenerating(state.route)) {
+        startLivePendingRequestWait(state.route, { queued: true, fromDom: true });
+        return;
+      }
+      if (state.livePendingRequest?.stage === 'queued') {
+        const metaStr = `${testId} ${aria} ${txt}`;
+        if (/(?:stop|cancel|abort|remove|delete|edit|withdraw|停止|取消|删除|移除|编辑|撤回)/i.test(metaStr)) {
+          cancelOrEditQueuedPendingRequest('dom_cancel_or_edit');
+        }
+      }
+    };
+    const onComposerQueueInput = (e) => {
+      if (state.disposed || state.livePendingRequest?.stage !== 'queued' || !state.livePendingRequest.queuedFromComposerDom) return;
+      const composer = e.target?.closest?.('.surface-composer');
+      if (composer && !composer.closest?.('#ag-context-meter')) {
+        cancelOrEditQueuedPendingRequest('dom_edit');
+      }
+    };
+    document.addEventListener('keydown', onComposerQueueKeydown, true);
+    document.addEventListener('click', onComposerQueueClick, true);
+    document.addEventListener('input', onComposerQueueInput, true);
+    earlyDisposeHooks.push(() => {
+      try {
+        document.removeEventListener('keydown', onComposerQueueKeydown, true);
+        document.removeEventListener('click', onComposerQueueClick, true);
+        document.removeEventListener('input', onComposerQueueInput, true);
+      } catch { }
+    });
   }
 
   function syncSpeedBadgeText() {
@@ -23094,6 +24303,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     if (getModelRank(prevWm.model, prevWm.modelKey) > getModelRank(nextWm.model, nextWm.modelKey)) {
       merged.model = prevCall.model;
     }
+    if (!merged.requestedModel && prevCall.requestedModel) {
+      merged.requestedModel = prevCall.requestedModel;
+    }
+    if (!merged.requestedModelRaw && prevCall.requestedModelRaw) {
+      merged.requestedModelRaw = prevCall.requestedModelRaw;
+    }
     if (!nextWm.modelKey && prevWm.modelKey) {
       merged.modelKey = prevCall.modelKey;
     }
@@ -23398,8 +24613,14 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             (state.livePendingRequest && state.livePendingRequest.cascadeId === id && call.callId !== state.livePendingRequest.baselineCallId)
           );
           if (isNewLiveObservation) {
+            const trackedReq = state.lastRequestedModelByCascade?.get?.(id);
+            const useTrackedReq = !effectiveCall.requestedModel && trackedReq && (Date.now() - (trackedReq.ts || 0) < 300000);
             effectiveCall = {
               ...effectiveCall,
+              ...(useTrackedReq ? {
+                requestedModel: trackedReq.requestedModel,
+                ...(trackedReq.requestedModelRaw ? { requestedModelRaw: trackedReq.requestedModelRaw } : {})
+              } : {}),
               liveRealtimeConfirmed: true,
               liveObservedAtMs: prevSessionCall?.liveObservedAtMs || Date.now()
             };
@@ -23502,13 +24723,28 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
 
-      // 清除等待首字计时器（禁止用 1000ms 轮询步进时间戳伪造服务器分块流式间隔，避免误判为“输出平稳”）
+      // 清除等待首字计时器与排队->调度状态流转（禁止用轮询时间戳伪造分块间隔）
       const newestPollCall = state.sessionCalls.length ? state.sessionCalls[state.sessionCalls.length - 1] : null;
       if (newestPollCall) {
         if (state.livePendingRequest && state.livePendingRequest.cascadeId === id) {
           const isNewCall = newestPollCall.callId !== state.livePendingRequest.baselineCallId;
           const gotFirstToken = (newestPollCall.outputTokens || 0) > 0 || newestPollCall.ttftSec != null || newestPollCall.status === 'final';
-          if ((isNewCall && gotFirstToken) || (state.count > (state.livePendingRequest.baselineCount || 0) && gotFirstToken) || newestPollCall.error) {
+          if (state.livePendingRequest.stage === 'queued') {
+            const baselineCall = state.livePendingRequest.baselineCallId
+              ? state.sessionCallsMap?.get?.(state.livePendingRequest.baselineCallId)
+              : null;
+            if ((isNewCall && gotFirstToken) || (state.count > (state.livePendingRequest.baselineCount || 0) && gotFirstToken) || (isNewCall && newestPollCall.error)) {
+              state.livePendingRequest.stage = 'first_token';
+              state.livePendingRequest.firstTokenAtMs = Date.now();
+              clearLivePendingRequestWait();
+            } else if (isNewCall || (state.count > (state.livePendingRequest.baselineCount || 0))) {
+              promoteQueuedPendingRequestToDispatched(id, newestPollCall.timestamp || Date.now());
+            } else if (baselineCall && baselineCall.status === 'final' && !state.livePendingRequest.queuedFromComposerDom) {
+              promoteQueuedPendingRequestToDispatched(id, Date.now());
+            }
+          } else if ((isNewCall && gotFirstToken) || (state.count > (state.livePendingRequest.baselineCount || 0) && gotFirstToken) || newestPollCall.error) {
+            state.livePendingRequest.stage = 'first_token';
+            state.livePendingRequest.firstTokenAtMs = Date.now();
             clearLivePendingRequestWait();
           }
         }
@@ -23681,6 +24917,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
         state.scanNext = Date.now() + (document.hidden ? 60000 : 20000);
         render();
+        if (nextPromptEnabled && !state.compacting && id === state.route && typeof maybeRequestNextPromptPrediction === 'function') {
+          void maybeRequestNextPromptPrediction({ routeId: id });
+        }
       }
     }
   }
@@ -25553,7 +26792,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   }
 
   function bindQuotaScrollUserIntent() {
-    for (const nodeId of ['view-quota', 'panel-quota']) {
+    for (const nodeId of ['view-quota', 'panel-quota', 'panel']) {
       const node = el(nodeId);
       if (!node?.addEventListener) continue;
       for (const evt of ['wheel', 'touchstart', 'mousedown']) {
@@ -25569,9 +26808,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   }
 
   function renderQuotaBoard(nowMs = Date.now(), renderOpts = {}) {
-    bindQuotaScrollUserIntentOnce();    const panel = el('panel-quota');
+    bindQuotaScrollUserIntentOnce();
+    const panel = el('panel-quota');
     const scrollPositions = !state.disposed && panel && !panel.hidden
-      ? [el('view-quota'), panel].filter(Boolean).map(node => [node, node.scrollTop])
+      ? [el('view-quota'), panel, el('panel')].filter(node => node && !node.hidden).map(node => [node, node.scrollTop])
       : [];
     const viewQuotaBody = el('view-quota');
     const view = computeEffectiveQuotaView(nowMs);
@@ -25637,7 +26877,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       const nextTitle = [
         `${tipModel}${poolHeader} · ${view.activeStatusLabel} (${view.badge.text})${selNote ? ` [${selNote}]` : ''} · [${modeTag}]`,
         winLines.length ? winLines.join(' | ') : `${t('quota.time.reset')}: ${tipReset}`,
-        `${currentPanelLanguage === 'en' ? 'Updated' : '更新'}: ${updatedStr}`
+        `${currentPanelLanguage === 'en' ? 'Updated' : '更新'}: ${updatedStr}`,
+        t('settings.quotaBadgeMode.desc')
       ].filter(Boolean).join('\n');
       if (bQuota.title !== nextTitle) bQuota.title = nextTitle;
       setQuotaAttrIfChanged(bQuota, 'aria-label', `${t('badge.quota.aria')}: ${view.badge.text} (${view.activeStatusLabel})`);
@@ -26344,7 +27585,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           rpcErr = t('quota.bridgeMissing');
         } else {
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
-          const isGeneratingNow = Boolean(state.livePendingRequest || state.turnState?.streaming || state.compacting?.cascadeId === state.route);
+          const isGeneratingNow = hasActiveCompactionOrGeneration();
           const out = await callBackendWithPriority({
             ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), isGenerating: isGeneratingNow }) : null,
             liveRoute: '/quota',
@@ -26361,6 +27602,16 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             payload = resObj.data;
           } else if (resObj?.error) {
             rpcErr = resObj.error;
+          }
+          if (resObj?.accountSyncResult) {
+            const sr = resObj.accountSyncResult;
+            if (sr.action === 'restart_pending') {
+              accountsUiState.feedback = sr.switchResult?.message || '已触发自动切号，正在重启客户端';
+              accountsUiState.feedbackTone = 'info';
+            } else if (sr.action === 'switch_failed_halted') {
+              accountsUiState.feedback = sr.error || '自动切号失败，已停止自动切换';
+              accountsUiState.feedbackTone = 'error';
+            }
           }
         }
       } catch (e) {
@@ -26410,6 +27661,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             );
             renderHeaderModelDropdown();
             syncContextModelSelectionFromState();
+            if (typeof syncModelPickers === 'function') syncModelPickers();
             if (!isContextSettingsView && activeContextTab === 'models') {
               renderModelSettingsTab();
             }
@@ -26477,18 +27729,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
   el('btn-ctx-timing-diag-toggle')?.addEventListener('click', () => {
     state.timingDiagExpanded = !state.timingDiagExpanded;
-    if (state.timingDiagExpanded && !state.speedBreakdownOpen) {
-      state.speedBreakdownOpen = true;
-    }
+    state.speedBreakdownOpen = state.timingDiagExpanded;
     syncTimingDiagFoldUi?.();
-    if (typeof evaluateGenerationExperience === 'function') {
-      renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
-    }
-    positionFloatingPanels();
-  });
-
-  el('btn-speed-breakdown-toggle')?.addEventListener('click', () => {
-    state.speedBreakdownOpen = !state.speedBreakdownOpen;
     if (typeof evaluateGenerationExperience === 'function') {
       renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
     }
@@ -26835,15 +28077,94 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     }
   });
 
+  function readAutoSwitchFormValues() {
+    const chk = el('chk-auto-switch-enabled');
+    const poolSel = el('sel-auto-switch-pool');
+    const modeSel = el('sel-auto-switch-mode');
+    const winSel = el('sel-auto-switch-window');
+    const thInp = el('inp-auto-switch-threshold');
+    const checkedCands = typeof shadow?.querySelectorAll === 'function'
+      ? Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked') || []).map(n => n.value)
+      : Array.from(el('auto-switch-candidates-list')?.children || [])
+        .map(lbl => lbl?.children?.find?.(c => c?.type === 'checkbox' || c?.className === 'auto-switch-cand-checkbox') || (lbl?.checked !== undefined ? lbl : null))
+        .filter(box => box && box.checked)
+        .map(box => box.value);
+    return {
+      enabled: Boolean(chk?.checked),
+      poolKey: poolSel?.value || 'shared_gemini_main',
+      metricMode: modeSel?.value || 'remaining_pct',
+      windowKey: winSel?.value || 'primary',
+      thresholdPct: thInp ? Number(thInp.value) : 10,
+      candidates: checkedCands
+    };
+  }
+
   function isEditingAutoSwitchDraft() {
+    if (autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty) return true;
     try {
       const ae = shadow?.activeElement;
       if (!ae) return false;
       const body = el('auto-switch-config-body');
-      return Boolean(body && body.contains?.(ae));
+      const chk = el('chk-auto-switch-enabled');
+      return Boolean((body && body.contains?.(ae)) || ae === chk);
     } catch {
       return false;
     }
+  }
+
+  let autoSwitchDraftDirty = false;
+  let autoSwitchSaving = false;
+  function syncQuotaAccountsSummaryCard(ovOverride = null) {
+    const ov = ovOverride || accountsUiState.overview || { accounts: [], autoSwitch: {}, autoSwitchStatus: { state: 'disabled' } };
+    const pillEl = el('quota-entry-autoswitch-pill');
+    const acctEl = el('quota-entry-active-account');
+    const ruleEl = el('quota-entry-rule-summary');
+    const refreshEntryBtn = el('btn-quota-entry-refresh-accts');
+    if (refreshEntryBtn) refreshEntryBtn.disabled = Boolean(accountsUiState.busy);
+    const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
+    const activeAcc = accts.find(a => a?.isActive) || null;
+    const activeLabel = activeAcc?.email || ov.activeAccountEmail || '';
+    if (acctEl) {
+      acctEl.textContent = activeLabel
+        ? t('accounts.entryActiveLabel', { email: activeLabel, count: accts.length })
+        : t('accounts.entryNoActive', { count: accts.length });
+    }
+    const lr = ov.autoSwitchStatus?.lastResult;
+    const stKeys = new Set([
+      'disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown',
+      'switching', 'restarting', 'all_candidates_exhausted', 'blocked_untrusted_quota',
+      'blocked_missing_pool', 'blocked_missing_account', 'error'
+    ]);
+    const isRestartPend = Boolean(lr?.restartPending);
+    const sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
+    const statusText = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
+    if (pillEl) {
+      pillEl.textContent = statusText;
+      const isWarn = sKey === 'error' || sKey === 'all_candidates_exhausted'
+        || sKey === 'blocked_missing_pool' || sKey === 'blocked_missing_account' || sKey === 'blocked_untrusted_quota';
+      const isInfo = sKey === 'restarting' || sKey === 'switching' || sKey === 'waiting_idle' || sKey === 'pending_debounce';
+      pillEl.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : (isInfo ? 'pill-info' : 'pill-muted'))}`;
+    }
+    if (ruleEl) {
+      const hasDraft = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty);
+      const thVal = hasDraft
+        ? (accountsUiState.autoSwitchDraft?.values?.thresholdPct ?? ov.autoSwitch?.thresholdPct ?? 10)
+        : (ov.autoSwitch?.thresholdPct ?? 10);
+      ruleEl.textContent = hasDraft
+        ? t('accounts.entryRuleUnsaved')
+        : t('accounts.entryRuleSummary', { state: statusText, threshold: thVal });
+    }
+  }
+
+  function markAutoSwitchDraftEdited() {
+    autoSwitchDraftDirty = true;
+    accountsUiState.autoSwitchDraft.dirty = true;
+    accountsUiState.autoSwitchDraft.values = readAutoSwitchFormValues();
+    accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.ruleUnsaved';
+    accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+    const status = el('auto-switch-save-status');
+    if (status) status.textContent = t('accounts.ruleUnsaved');
+    syncQuotaAccountsSummaryCard();
   }
 
   function renderAccountsOverviewSection() {
@@ -27069,12 +28390,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
     }
 
-    // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿）
+    // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿；账户增删时仍同步候选列表）
     const stPill = el('auto-switch-status-pill');
     const lastNote = el('auto-switch-last-note');
     const stKeys = new Set([
       'disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown',
-      'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota',
+      'switching', 'restarting', 'all_candidates_exhausted', 'blocked_untrusted_quota',
       'blocked_missing_pool', 'blocked_missing_account', 'error'
     ]);
     const blockedReasonText = (() => {
@@ -27107,21 +28428,31 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (br === 'generation_in_progress') {
         return t('accounts.blockedReason.waiting_idle');
       }
+      if (br === 'multi_window_open') return t('accounts.blockedReason.multi_window_open');
+      if (br === 'live_mode_cannot_auto_restart') return t('accounts.blockedReason.live_mode_cannot_auto_restart');
+      if (br === 'client_restart_requires_idle_window') return t('accounts.blockedReason.restartWindow');
+      if (stObj.state === 'pending_debounce') return t('accounts.blockedReason.pending_debounce');
       if (stObj.state === 'cooldown') {
         return t('accounts.blockedReason.cooldown');
       }
       return '';
     })();
     if (stPill) {
-      const sKey = ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled');
+      const isRestartPend = Boolean(lr?.restartPending);
+      const sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
       stPill.textContent = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
       const isWarn = sKey === 'error' || sKey === 'all_candidates_exhausted'
         || sKey === 'blocked_missing_pool' || sKey === 'blocked_missing_account' || sKey === 'blocked_untrusted_quota';
-      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : 'pill-muted')}`;
+      const isInfo = sKey === 'restarting' || sKey === 'switching' || sKey === 'waiting_idle' || sKey === 'pending_debounce';
+      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : (isInfo ? 'pill-info' : 'pill-muted'))}`;
     }
     if (lastNote) {
       if (rawLastErr) {
         lastNote.textContent = formatPersistedError(rawLastErr);
+      } else if (lr?.ok === false && lr?.restartPending) {
+        lastNote.textContent = lr.message
+          ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
+          : t('accounts.status.restarting');
       } else if (lr?.ok === false) {
         lastNote.textContent = formatPersistedError(t('accounts.actionFail'));
       } else if (blockedReasonText) {
@@ -27131,7 +28462,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
     }
 
-    if (!isEditingAutoSwitchDraft()) {
+    const editingDraft = isEditingAutoSwitchDraft();
+    const draftValues = editingDraft ? (accountsUiState.autoSwitchDraft?.values || readAutoSwitchFormValues()) : null;
+    const activeRuleCfg = editingDraft ? draftValues : (ov.autoSwitch || {});
+    if (!editingDraft) {
       const cfg = ov.autoSwitch || {};
       const chk = el('chk-auto-switch-enabled');
       const poolSel = el('sel-auto-switch-pool');
@@ -27148,12 +28482,18 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         enhancedDropdowns.get('sel-auto-switch-mode')?.refresh?.();
         enhancedDropdowns.get('sel-auto-switch-window')?.refresh?.();
       }
+    }
 
-      const candWrap = el('auto-switch-candidates-list');
-      if (candWrap) {
+    const candWrap = el('auto-switch-candidates-list');
+    if (candWrap) {
+      const accountsList = Array.isArray(ov.accounts) ? ov.accounts : [];
+      const currentDomEmails = Array.from(candWrap.querySelectorAll('.auto-switch-cand-checkbox')).map(n => n.value);
+      const nextEmails = accountsList.map(a => a.email);
+      const candListChanged = currentDomEmails.length !== nextEmails.length || currentDomEmails.some((v, idx) => v !== nextEmails[idx]);
+      if (!editingDraft || candListChanged) {
         candWrap.replaceChildren();
-        const selectedSet = new Set(Array.isArray(cfg.candidates) ? cfg.candidates : []);
-        for (const acc of (ov.accounts || [])) {
+        const selectedSet = new Set(Array.isArray(activeRuleCfg?.candidates) ? activeRuleCfg.candidates : []);
+        for (const acc of accountsList) {
           const lbl = document.createElement('label');
           lbl.className = 'auto-switch-cand-chip';
           const box = document.createElement('input');
@@ -27164,6 +28504,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           if (box.checked) lbl.classList.add('is-checked');
           box.addEventListener('change', () => {
             lbl.classList.toggle('is-checked', Boolean(box.checked));
+            markAutoSwitchDraftEdited();
           });
           const span = document.createElement('span');
           span.textContent = acc.maskedEmail || acc.email;
@@ -27171,6 +28512,20 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           lbl.appendChild(span);
           candWrap.appendChild(lbl);
         }
+      }
+    }
+
+    const saveStatusEl = el('auto-switch-save-status');
+    if (saveStatusEl) {
+      const draftState = accountsUiState.autoSwitchDraft || {};
+      if (draftState.dirty) {
+        saveStatusEl.textContent = t('accounts.ruleUnsaved');
+      } else if (draftState.saveStatusKey === 'prefs.saveError') {
+        saveStatusEl.textContent = t('prefs.saveError', { reason: draftState.saveErrorDetail || t('accounts.actionFail') });
+      } else if (draftState.saveStatusKey) {
+        saveStatusEl.textContent = t(draftState.saveStatusKey);
+      } else {
+        saveStatusEl.textContent = '';
       }
     }
 
@@ -27258,6 +28613,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     }
     if (kaStopBtn) kaStopBtn.hidden = !ks.running;
 
+    syncQuotaAccountsSummaryCard(ov);
     syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
     if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
   }
@@ -27481,21 +28837,46 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   el('btn-acct-import-current')?.addEventListener('click', () => void performAccountAction('import_current'));
   el('btn-acct-import-tools')?.addEventListener('click', () => void performAccountAction('import_tools'));
   el('btn-acct-oauth-add')?.addEventListener('click', () => void performAccountAction('oauth_login'));
+  el('btn-quota-open-accounts-settings')?.addEventListener('click', () => openContextSettings({ section: 'accounts' }));
+  el('btn-quota-entry-refresh-accts')?.addEventListener('click', () => void refreshAccountsOverview({ silent: false, refreshAllRemote: true }));
   el('btn-keepalive-stop')?.addEventListener('click', () => void performAccountAction('stop_keepalive', { reason: 'manual_button' }));
-  el('btn-save-auto-switch')?.addEventListener('click', () => {
-    const enabled = Boolean(el('chk-auto-switch-enabled')?.checked);
-    const poolKey = el('sel-auto-switch-pool')?.value || 'shared_gemini_main';
-    const metricMode = el('sel-auto-switch-mode')?.value || 'remaining_pct';
-    const windowKey = el('sel-auto-switch-window')?.value || 'primary';
-    const thresholdPct = Number(el('inp-auto-switch-threshold')?.value) || 10;
-    const candidates = Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked')).map(n => n.value);
-    void performAccountAction('update_auto_switch', {
+  for (const id of ['chk-auto-switch-enabled', 'sel-auto-switch-pool', 'sel-auto-switch-mode', 'sel-auto-switch-window', 'inp-auto-switch-threshold']) {
+    el(id)?.addEventListener(id === 'inp-auto-switch-threshold' ? 'input' : 'change', markAutoSwitchDraftEdited);
+  }
+  el('btn-save-auto-switch')?.addEventListener('click', async () => {
+    if (autoSwitchSaving || accountsUiState.busy) return;
+    const { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates } = readAutoSwitchFormValues();
+    const status = el('auto-switch-save-status');
+    if (!(thresholdPct >= 1 && thresholdPct <= 95)) {
+      if (status) status.textContent = t('accounts.ruleThreshold');
+      return;
+    }
+    autoSwitchSaving = true;
+    accountsUiState.autoSwitchDraft.saving = true;
+    const button = el('btn-save-auto-switch');
+    if (button) button.disabled = true;
+    if (status) status.textContent = t('accounts.actionBusy');
+    const out = await performAccountAction('update_auto_switch', {
       config: { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates }
-    }).then((out) => {
-      if (out?.ok && enabled) {
-        void syncQuotaFromHost(true, { manual: false });
-      }
     });
+    autoSwitchSaving = false;
+    accountsUiState.autoSwitchDraft.saving = false;
+    if (button) button.disabled = false;
+    if (!out?.ok) {
+      autoSwitchDraftDirty = true;
+      accountsUiState.autoSwitchDraft.dirty = true;
+      accountsUiState.autoSwitchDraft.saveStatusKey = 'prefs.saveError';
+      accountsUiState.autoSwitchDraft.saveErrorDetail = out?.error || t('accounts.actionFail');
+      if (status) status.textContent = t('prefs.saveError', { reason: accountsUiState.autoSwitchDraft.saveErrorDetail });
+      return;
+    }
+    autoSwitchDraftDirty = false;
+    accountsUiState.autoSwitchDraft.dirty = false;
+    accountsUiState.autoSwitchDraft.values = null;
+    accountsUiState.autoSwitchDraft.saveStatusKey = enabled ? 'accounts.ruleSavedOn' : 'accounts.ruleSavedOff';
+    accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+    renderAccountsOverviewSection();
+    if (enabled) void syncQuotaFromHost(true, { manual: false });
   });
   const btnQuotaBannerRestartInit = el('btn-quota-banner-restart');
   if (btnQuotaBannerRestartInit) {
@@ -27599,6 +28980,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
       const cachedSnap = (sameScreenSwitch && id) ? readSessionSnapshotFromCache(id) : null;
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
+if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
         timelineFetchController = null;
@@ -27677,6 +29059,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
     }
     quotaTickCounter = (quotaTickCounter + 1) % 2;
+    if (quotaTickCounter === 0) void maybeAutoCompact();
     if (quotaTickCounter === 0 && el('panel-quota') && !el('panel-quota').hidden) {
       renderQuotaBoard(Date.now());
     }
@@ -27732,6 +29115,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         const rt = await window.contextMeterAPI.getRuntimeInfo();
         if (rt && rt.ok && rt.backendVersion) {
           backendStatus.ipcBackendVersion = String(rt.backendVersion);
+          if (!backendStatus.backendVersion) {
+            backendStatus.backendVersion = String(rt.backendVersion);
+            backendStatus.backendSource = 'electron-ipc';
+          }
+          backendStatus.backendVersionMismatch = Boolean(backendStatus.backendVersion && backendStatus.backendVersion !== METER_RENDERER_VERSION);
         }
       } catch { }
     }
@@ -27746,6 +29134,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
     }
     const snap = await syncQuotaFromHost(true);
+    const strictUpdateState = recomputeStrictUpdateState();
+    pendingUpdateRestart = strictUpdateState.stage === 'pending_restart';
+    syncPopoverByStrictStage(strictUpdateState, { liveInjected: Boolean(lastApplyUpdateResult?.liveInjected) });
+    syncHostSettingsUi();
     return {
       rendererVersion: METER_RENDERER_VERSION,
       backendSource: backendStatus.backendSource,
@@ -27756,6 +29148,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       hotReloadFallback: backendStatus.hotReloadFallback,
       backendVersionMismatch: backendStatus.backendVersionMismatch,
       pendingUpdateRestart,
+      strictUpdateState,
       quotaAttempted: Boolean(quotaState.lastFetchedAtMs),
       quotaOk: Boolean(snap && !quotaState.error),
       quotaActiveStatus: computeEffectiveQuotaView(Date.now()).activeStatus,
@@ -27772,7 +29165,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       : ((pTokens && !pTokens.hidden) ? 'tokens'
         : ((pCtx && !pCtx.hidden) ? 'context' : 'none'));
     const scrollTops = {};
-    for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body']) {
+    for (const sId of HOT_RELOAD_SCROLL_IDS) {
       const n = el(sId);
       if (n && Number(n.scrollTop) > 0) scrollTops[sId] = Number(n.scrollTop);
     }
@@ -27790,6 +29183,16 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       openPanel,
       activeContextTab,
       isContextSettingsView,
+      updatePopoverOpen: Boolean(el('update-popover')?.style?.display === 'block'),
+      updatePopoverTrigger: currentUpdateTrigger || 'ctx',
+      updateState: {
+        targetVersion: updateTargetVersion,
+        activatedTarget: updateActivatedTarget,
+        actionPhase: updateActionPhase,
+        checkResult: lastCheckUpdateResult,
+        applyResult: lastApplyUpdateResult,
+        lastError: lastUpdateError
+      },
       pinnedViewRoute: state.pinnedViewRoute || null,
       browsePoolKey: quotaState.browsePoolKey || null,
       scrollTops,
@@ -27810,6 +29213,22 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
   function applyInheritedHotReloadState(saved) {
     if (!saved || typeof saved !== 'object' || state.disposed) return;
+    if (saved.updateState && typeof saved.updateState === 'object') {
+      const us = saved.updateState;
+      if (us.targetVersion) updateTargetVersion = us.targetVersion;
+      updateActivatedTarget = Boolean(us.activatedTarget);
+      updateActionPhase = us.actionPhase === 'error' ? 'error' : 'idle';
+      if (us.checkResult) lastCheckUpdateResult = us.checkResult;
+      if (us.applyResult) lastApplyUpdateResult = us.applyResult;
+      if (us.lastError) lastUpdateError = us.lastError;
+      const strict = recomputeStrictUpdateState();
+      pendingUpdateRestart = strict.stage === 'pending_restart';
+      syncPopoverByStrictStage(strict, { liveInjected: Boolean(lastApplyUpdateResult?.liveInjected) });
+      syncHostSettingsUi();
+    }
+    if (saved.updatePopoverOpen && typeof showUpdatePopover === 'function') {
+      showUpdatePopover(saved.updatePopoverTrigger || 'ctx');
+    }
     const d = saved.drafts || {};
     if (d.proxyInputDirty) {
       if (inputProxyUrl && typeof d.proxyUrl === 'string') inputProxyUrl.value = d.proxyUrl;
@@ -27862,7 +29281,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const restoreScrolls = () => {
       if (state.disposed) return;
       for (const [sId, topVal] of Object.entries(scrollTops)) {
-        const node = el(sId);
+        const node = el(sId) || (sId === 'quota-view-body' && !scrollTops['view-quota'] ? el('view-quota') : null);
         if (node && Number(topVal) > 0) node.scrollTop = Number(topVal);
       }
     };
@@ -28238,7 +29657,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     },
     setSpeedEvaluationForTest: (mockInput, opts = {}) => {
       state.speedOverrideForTest = mockInput || null;
-      if (opts.openBreakdown !== undefined) state.speedBreakdownOpen = Boolean(opts.openBreakdown);
+      if (opts.openBreakdown !== undefined) {
+        state.timingDiagExpanded = Boolean(opts.openBreakdown);
+        state.speedBreakdownOpen = state.timingDiagExpanded;
+      }
       if (typeof evaluateGenerationExperience === 'function') {
         const res = evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage);
         renderSpeedExperienceInPlace(res);
@@ -28246,6 +29668,13 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
       return null;
     },
+    formatReqSpeedForTest: (rec) => formatReqSpeed(rec),
+    resolveReqSpeedDisplayForTest: (rec) => resolveReqSpeedDisplayInfo(rec),
+    resolveRequestedModelForTest: (rec) => formatReqRequestedModel(rec, formatReqActualModel(rec)),
+    startPendingRequestForTest: (cascadeId, opts = {}) => startLivePendingRequestWait(cascadeId || state.route, opts),
+    promoteQueuedRequestForTest: (cascadeId, nowMs) => promoteQueuedPendingRequestToDispatched(cascadeId || state.route, nowMs),
+    cancelOrEditQueuedRequestForTest: (reason) => cancelOrEditQueuedPendingRequest(reason),
+    getPendingRequestStateForTest: () => state.livePendingRequest ? { ...state.livePendingRequest } : null,
     speedAlgorithmForTest: () => speedAlgorithm,
     setSpeedAlgorithmForTest: (alg) => {
       speedAlgorithm = ['median', 'mean', 'composite'].includes(alg) ? alg : 'median';
@@ -28383,9 +29812,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           scope: n.getAttribute?.('data-scope') || null,
           turnKey: n.getAttribute?.('data-turn-key') || null,
           callId: n.getAttribute?.('data-call-id') || null,
+          multiCall: n.getAttribute?.('data-multi-call') === 'true',
           title: n.title || ''
         }))
       };
+    },
+    toggleTurnFooterScopeForTest: (turnKey) => {
+      const cur = turnFooterScopeState.get(turnKey) || 'turn';
+      const next = cur === 'turn' ? 'request' : 'turn';
+      turnFooterScopeState.set(turnKey, next);
+      renderTurnFooterStats();
+      return next;
     },
     getPanelPickerStateForTest: () => {
       const om = el('overflow-menu');
@@ -28625,6 +30062,27 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     setCockpitWidgetHeightForTest: (wId, heightMode, px) => (typeof setCockpitWidgetHeight === 'function' ? setCockpitWidgetHeight(wId, heightMode, px) : null),
     toggleCockpitWidgetVisibleForTest: (wId, vis) => (typeof toggleCockpitWidgetVisibility === 'function' ? toggleCockpitWidgetVisibility(wId, vis) : null),
     revealCockpitWidgetForTest: (wId) => (typeof revealAndScrollToCockpitWidget === 'function' ? revealAndScrollToCockpitWidget(wId, { flash: false }) : null),
+    reorderCockpitPresetsForTest: (srcId, tgtId, after = false) => (typeof reorderCockpitPresets === 'function' ? reorderCockpitPresets(srcId, tgtId, after, { persist: true }) : null),
+    moveCockpitPresetForTest: (pid, delta) => (typeof moveCockpitPresetByOffset === 'function' ? moveCockpitPresetByOffset(pid, delta, { persist: true }) : null),
+    togglePresetSortModeForTest: (enabled) => {
+      if (typeof presetSortMode !== 'undefined') {
+        presetSortMode = enabled !== undefined ? Boolean(enabled) : !presetSortMode;
+        if (typeof renderCockpitPresetsTrack === 'function') renderCockpitPresetsTrack(getCockpitLayout());
+        return presetSortMode;
+      }
+      return false;
+    },
+    createCustomCockpitPresetForTest: (name) => (typeof updateCustomCockpitPreset === 'function' ? updateCustomCockpitPreset('save', name) : null),
+    getPresetTrackStateForTest: () => {
+      const track = el('ctx-cockpit-presets-track');
+      const layout = typeof getCockpitLayout === 'function' ? getCockpitLayout() : null;
+      return {
+        sortMode: typeof presetSortMode !== 'undefined' ? Boolean(presetSortMode) : false,
+        presetOrder: layout?.presetOrder || [],
+        domOrder: Array.from(track?.querySelectorAll?.('[data-cockpit-preset]') || []).map(b => b.getAttribute?.('data-cockpit-preset')),
+        customPresets: layout?.customPresets || []
+      };
+    },
     getModule3WidgetsStateForTest: () => ({
       traceRows: el('ctx-trace-stream-list')?.children?.length || 0,
       traceGanttBars: el('ctx-trace-gantt-svg')?.querySelectorAll?.('[data-trace-node-id]')?.length || 0,
@@ -28685,11 +30143,94 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       actualDock: host.getAttribute('data-dock'),
       panelHidden: Boolean(el('panel')?.hidden),
       auxBarHidden: Boolean(el('dock-aux-context-bar')?.hidden),
+      auxViewTab,
+      auxCollapsed,
+      auxWidthPx,
+      auxResizerHidden: Boolean(el('dock-aux-resizer')?.hidden),
       auxSessionLabel: el('dock-aux-session-label')?.textContent || '',
       lastPreciseDashboardUrl,
       feedbackText: el('dock-open-feedback')?.textContent || '',
       fallbackActionsHidden: Boolean(el('dock-fallback-actions')?.hidden),
       auxContainerFound: Boolean(findAuxSidebarContainer())
+    }),
+    setAuxViewTabForTest: (tab, opts = {}) => setAuxViewTab(tab, opts),
+    setAuxCollapsedForTest: (col, opts = {}) => setAuxCollapsed(col, opts),
+    resizeAuxPanelForTest: (px, opts = {}) => applyAuxWidthPx(px, opts),
+    syncModelPickersForTest: () => (typeof syncModelPickers === 'function' ? syncModelPickers() : []),
+    getModelPickersStateForTest: () => {
+      const menu = typeof getActiveGroupedMenu === 'function' ? getActiveGroupedMenu() : null;
+      return Array.from(mountedPickerRecords || []).map(rec => {
+        const sel = typeof resolveCurrentSelectionForPicker === 'function' ? resolveCurrentSelectionForPicker(rec, menu) : null;
+        return {
+          route: sel?.route || resolveComposerRouteContext(rec.composer, rec.trigger),
+          productKey: sel?.productKey || null,
+          productLabel: sel?.productLabel || '',
+          effort: sel?.effort || null,
+          isFixedEffort: Boolean(sel?.isFixedEffort),
+          supportedEfforts: sel?.supportedEfforts || [],
+          isOrchestrator: Boolean(sel?.isOrchestrator),
+          openMode: rec.openMode,
+          submenuOpen: Boolean(rec.submenuOpen),
+          fallbackNotice: rec.fallbackNotice ? { ...rec.fallbackNotice } : null,
+          nativeHidden: Boolean(rec.trigger?.classList?.contains?.('ag-mp-native-hidden')),
+          effortBtnHidden: Boolean(rec.effortBtn?.hidden),
+          effortBtnReadOnly: rec.effortBtn?.getAttribute?.('data-readonly') === 'true',
+          modelBtnText: rec.modelLblEl?.textContent || '',
+          effortBtnText: rec.effortLblEl?.textContent || '',
+          modelMenuHidden: Boolean(rec.modelMenuEl?.hidden),
+          effortMenuHidden: Boolean(rec.effortMenuEl?.hidden),
+          modelBtn: rec.modelBtn,
+          effortBtn: rec.effortBtn,
+          modelMenuEl: rec.modelMenuEl,
+          effortMenuEl: rec.effortMenuEl,
+          composer: rec.composer,
+          trigger: rec.trigger
+        };
+      });
+    },
+    setSimplifiedModelPickerEnabledForTest: (enabled) => {
+      simplifiedModelPickerEnabled = Boolean(enabled);
+      const chk = el('chk-simplified-model-picker');
+      if (chk) chk.checked = simplifiedModelPickerEnabled;
+      if (typeof syncModelPickers === 'function') syncModelPickers();
+      return simplifiedModelPickerEnabled;
+    },
+    setNextPromptEnabledForTest: (enabled) => setNextPromptEnabledState(enabled === true, { persist: false }),
+    setAllowBetaUpdatesForTest: (enabled) => setAllowBetaUpdatesState(enabled === true, { persist: false }),
+    getStrictUpdateState: () => recomputeStrictUpdateState(),
+    getUpdateStateForTest: () => ({
+      ...recomputeStrictUpdateState(),
+      allowBetaUpdates: Boolean(allowBetaUpdates),
+      nextPromptEnabled: Boolean(nextPromptEnabled),
+      hasCachedRelease: Boolean(cachedLatestRelease)
+    }),
+    setBackendStatusForTest: (patch = {}) => {
+      if (patch && typeof patch === 'object') {
+        Object.assign(backendStatus, patch);
+        backendStatus.backendVersionMismatch = Boolean(
+          backendStatus.backendVersion &&
+          backendStatus.backendVersion !== METER_RENDERER_VERSION
+        );
+      }
+      const strict = recomputeStrictUpdateState();
+      syncHostSettingsUi();
+      return strict;
+    },
+    getHostSettingsStateForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.getStateForTest() : null),
+    syncHostSettingsForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.syncModalMount() : false),
+    applyInheritedHotReloadStateForTest: (saved) => applyInheritedHotReloadState(saved),
+    maybeRequestNextPromptForTest: (opts = {}) => (typeof maybeRequestNextPromptPrediction === 'function' ? maybeRequestNextPromptPrediction(opts) : Promise.resolve({ skipped: true })),
+    acceptNextPromptForTest: (comp = null) => (typeof acceptNextPromptIntoComposer === 'function' ? acceptNextPromptIntoComposer(comp) : false),
+    dismissNextPromptForTest: (invalidate = true) => (typeof dismissNextPromptSuggestion === 'function' ? dismissNextPromptSuggestion(invalidate) : undefined),
+    getNextPromptStateForTest: () => ({
+      enabled: Boolean(nextPromptEnabled),
+      inFlight: Boolean(nextPromptState?.inFlight),
+      suggestion: nextPromptState?.suggestion || '',
+      routeId: nextPromptState?.routeId || null,
+      turnKey: nextPromptState?.turnKey || null,
+      model: nextPromptState?.model || null,
+      ghostHidden: Boolean(!nextPromptState?.ghostEl || nextPromptState.ghostEl.hidden),
+      isComposing: Boolean(nextPromptState?.isComposing)
     }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
@@ -28708,7 +30249,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       clearQuotaTimers();
       clearInterval(timer);
       sessionSnapshotCache.clear();
+      state.lastRequestedModelByCascade?.clear?.();
       clearLivePendingRequestWait();
+      restoreAuxHostSiblings();
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
         timelineFetchController = null;
@@ -28735,6 +30278,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       document.removeEventListener('keydown', escape, true);
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
+      turnFooterScopeState.clear();
+      if (typeof disposeModelPickers === 'function') disposeModelPickers();
+      if (typeof disposeNextPrompt === 'function') disposeNextPrompt();
       disposeRadialTopLayer();
       composerSummary?.remove?.();
       host.remove();
@@ -28747,6 +30293,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   syncAllViewPrefControlsUi();
   syncRadialOrbHiddenUi();
   if (el('chk-show-composer-quota')) el('chk-show-composer-quota').checked = showComposerQuotaSummary;
+  if (el('chk-simplified-model-picker')) el('chk-simplified-model-picker').checked = simplifiedModelPickerEnabled;
+  if (el('chk-next-prompt-enabled')) el('chk-next-prompt-enabled').checked = nextPromptEnabled;
+  if (el('chk-show-turn-footer-stats')) el('chk-show-turn-footer-stats').checked = showTurnFooterStats;
+  if (typeof bindNextPromptComposerListeners === 'function') bindNextPromptComposerListeners();
   applyStaticPanelTranslations(shadow);
   if (radialShadow) {
     applyStaticPanelTranslations(radialShadow);
@@ -28774,6 +30324,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   if (typeof initAgentCollabHubControls === 'function') initAgentCollabHubControls();
   if (typeof initAuditWidgetsControls === 'function') initAuditWidgetsControls();
   if (typeof initCrossSessionInsightsControls === 'function') initCrossSessionInsightsControls();
+  hostSettingsCtrl?.start?.();
   if (inheritedHotReloadState) {
     applyInheritedHotReloadState(inheritedHotReloadState);
   }

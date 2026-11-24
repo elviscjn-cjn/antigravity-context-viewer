@@ -289,7 +289,7 @@ try {
     if (_agDecPromise && typeof _agDecPromise.catch === "function") { _agDecPromise.catch(function(){}); }
   }
 } catch (_agDecErr) {}
-electron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { getRuntimeInfo: () => electron_1.ipcRenderer.invoke("context-meter:runtime-info"), scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTurnState: (id) => electron_1.ipcRenderer.invoke("context-meter:turn-state", id), getTokenHistory: (force, knownRevision, knownAccountKey) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true, typeof knownRevision === "string" ? knownRevision : null, typeof knownAccountKey === "string" ? knownAccountKey : null), getSessionTimeline: (id, opts) => electron_1.ipcRenderer.invoke("context-meter:session-timeline", id, opts), getQuota: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-quota", opts), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts), applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts), restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts), restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host"), getEnhanceStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-status", opts), applyEnhancePatch: (payload) => electron_1.ipcRenderer.invoke("context-meter:enhance-apply", payload), restoreAllEnhance: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-restore", opts), restartLanguageServers: () => electron_1.ipcRenderer.invoke("context-meter:restart-language-servers"), getRehydrateStatus: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-status"), applyRehydrate: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-apply"), disableRehydrate: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-disable"), restoreRehydrate: (opts) => electron_1.ipcRenderer.invoke("context-meter:rehydrate-restore", opts && opts.force === true ? { force: true } : {}), installRehydratePython: (opts) => electron_1.ipcRenderer.invoke("context-meter:rehydrate-install-python", opts), getModulesStatus: () => electron_1.ipcRenderer.invoke("context-meter:modules-status"), toggleModule: (name, enable, opts) => electron_1.ipcRenderer.invoke("context-meter:toggle-module", name, enable, opts), testProxy: (url) => electron_1.ipcRenderer.invoke("context-meter:test-proxy", url), getAccountsOverview: () => electron_1.ipcRenderer.invoke("context-meter:accounts-overview"), accountsAction: (payload) => electron_1.ipcRenderer.invoke("context-meter:accounts-action", payload), syncPricing: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-pricing", opts), openDashboardBrowser: (opts) => electron_1.ipcRenderer.invoke("context-meter:open-dashboard-browser", opts) });
+electron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { getRuntimeInfo: () => electron_1.ipcRenderer.invoke("context-meter:runtime-info"), scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTurnState: (id) => electron_1.ipcRenderer.invoke("context-meter:turn-state", id), getTokenHistory: (force, knownRevision, knownAccountKey) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true, typeof knownRevision === "string" ? knownRevision : null, typeof knownAccountKey === "string" ? knownAccountKey : null), getSessionTimeline: (id, opts) => electron_1.ipcRenderer.invoke("context-meter:session-timeline", id, opts), getQuota: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-quota", opts), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts), applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts), restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts), restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host"), getEnhanceStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-status", opts), applyEnhancePatch: (payload) => electron_1.ipcRenderer.invoke("context-meter:enhance-apply", payload), restoreAllEnhance: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-restore", opts), restartLanguageServers: () => electron_1.ipcRenderer.invoke("context-meter:restart-language-servers"), getRehydrateStatus: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-status"), applyRehydrate: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-apply"), disableRehydrate: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-disable"), restoreRehydrate: (opts) => electron_1.ipcRenderer.invoke("context-meter:rehydrate-restore", opts && opts.force === true ? { force: true } : {}), installRehydratePython: (opts) => electron_1.ipcRenderer.invoke("context-meter:rehydrate-install-python", opts), getModulesStatus: () => electron_1.ipcRenderer.invoke("context-meter:modules-status"), toggleModule: (name, enable, opts) => electron_1.ipcRenderer.invoke("context-meter:toggle-module", name, enable, opts), testProxy: (url) => electron_1.ipcRenderer.invoke("context-meter:test-proxy", url), getAccountsOverview: () => electron_1.ipcRenderer.invoke("context-meter:accounts-overview"), accountsAction: (payload) => electron_1.ipcRenderer.invoke("context-meter:accounts-action", payload), syncPricing: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-pricing", opts), openDashboardBrowser: (opts) => electron_1.ipcRenderer.invoke("context-meter:open-dashboard-browser", opts), predictNextPrompt: (payload) => electron_1.ipcRenderer.invoke("context-meter:predict-next-prompt", payload) });
 ${TAGS.METER_PRELOAD_END}\n`;
 }
 
@@ -439,14 +439,63 @@ function cleanPreloadSource(source) {
 
 const LEGACY_WINDOW_LOAD_MARKER = '    void win.loadURL(url);';
 const HUB_WINDOW_LOAD_RE = /^[ \t]+(?:(?:void|await)[ \t]+)?(?:loadHubWindowUrl|[\w$]+\.loadHubWindowUrl|\(0,\s*[\w$.]+\.loadHubWindowUrl\))\(\s*win\s*,\s*url(?:\s*,(?:[^)\r\n]*|\s*\{[^{}();]*\}))?\s*\);[ \t]*\r?$/gm;
+const CREATE_WINDOW_LOAD_URL_RE = /^[ \t]+(?:void|await)[ \t]+win\.loadURL\(\s*url\s*\);[ \t]*\r?$/gm;
 
 /**
- * 定位 dist/utils.js 中 createWindow 末尾的唯一窗口加载语句。
- * 同时兼容历史版本（void win.loadURL(url);）与 Antigravity 2.34.0+（void loadHubWindowUrl(win, url, ...);）。
- * 若缺失或出现多个候选（存在歧义），严格返回 null（fail-closed）。
+ * 提取 dist/utils.js 中 function createWindow(...) { ... } 的函数体范围，用于受控回退匹配。
  */
-function findWindowLoadHookTarget(cleanUtils) {
-  if (!cleanUtils || typeof cleanUtils !== 'string') return null;
+function extractCreateWindowSpan(source) {
+  if (!source || typeof source !== 'string') return null;
+  const sigMatch = /\bfunction\s+createWindow\s*\([^)]*\)\s*\{/.exec(source);
+  if (!sigMatch) return null;
+  const bodyStart = sigMatch.index + sigMatch[0].length;
+  let depth = 1;
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let escaped = false;
+  for (let i = bodyStart; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') { inBlockComment = false; i++; }
+      continue;
+    }
+    if (escaped) { escaped = false; continue; }
+    if (inSingle || inDouble || inTemplate) {
+      if (ch === '\\') { escaped = true; continue; }
+      if (inSingle && ch === '\'') inSingle = false;
+      else if (inDouble && ch === '"') inDouble = false;
+      else if (inTemplate && ch === '`') inTemplate = false;
+      continue;
+    }
+    if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+    if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+    if (ch === '\'') { inSingle = true; continue; }
+    if (ch === '"') { inDouble = true; continue; }
+    if (ch === '`') { inTemplate = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return { start: bodyStart, end: i };
+    }
+  }
+  return null;
+}
+
+/**
+ * 检查窗口加载锚点匹配详情（返回 unique / missing / ambiguous 状态）。
+ */
+function inspectWindowLoadAnchors(cleanUtils) {
+  if (!cleanUtils || typeof cleanUtils !== 'string') {
+    return { target: null, status: 'missing', count: 0 };
+  }
   const matches = [];
 
   let legacyPos = cleanUtils.indexOf(LEGACY_WINDOW_LOAD_MARKER);
@@ -461,7 +510,46 @@ function findWindowLoadHookTarget(cleanUtils) {
     matches.push({ kind: 'hub_loader_v234', index: m.index, match: m[0] });
   }
 
-  return matches.length === 1 ? matches[0] : null;
+  if (matches.length === 1) {
+    return { target: matches[0], status: 'unique', count: 1 };
+  }
+  if (matches.length > 1) {
+    return { target: null, status: 'ambiguous', count: matches.length };
+  }
+
+  // Pass 2: 仅当无 legacy/loadHubWindowUrl 命中时，限定在 createWindow 函数体内查找 void/await win.loadURL(url);
+  // 绝不全局匹配，防止误命中 loadHubWindowUrl / invokeWindowLoadUrl 等辅助函数内的 await win.loadURL(...)。
+  const span = extractCreateWindowSpan(cleanUtils);
+  if (span) {
+    const body = cleanUtils.slice(span.start, span.end);
+    const scopedMatches = [];
+    CREATE_WINDOW_LOAD_URL_RE.lastIndex = 0;
+    let sm;
+    while ((sm = CREATE_WINDOW_LOAD_URL_RE.exec(body)) !== null) {
+      scopedMatches.push({
+        kind: 'create_window_load_url',
+        index: span.start + sm.index,
+        match: sm[0]
+      });
+    }
+    if (scopedMatches.length === 1) {
+      return { target: scopedMatches[0], status: 'unique', count: 1 };
+    }
+    if (scopedMatches.length > 1) {
+      return { target: null, status: 'ambiguous', count: scopedMatches.length };
+    }
+  }
+
+  return { target: null, status: 'missing', count: 0 };
+}
+
+/**
+ * 定位 dist/utils.js 中 createWindow 末尾的唯一窗口加载语句。
+ * 同时兼容历史版本（void win.loadURL(url);）与 Antigravity 2.34.0+（void loadHubWindowUrl(win, url, ...); / createWindow 内 await win.loadURL(url);）。
+ * 若缺失或出现多个候选（存在歧义），严格返回 null（fail-closed）。
+ */
+function findWindowLoadHookTarget(cleanUtils) {
+  return inspectWindowLoadAnchors(cleanUtils).target;
 }
 
 /**
@@ -476,15 +564,49 @@ function injectWindowLoadHook(utilsCode, windowLoadHook) {
 }
 
 /**
+ * 分阶段诊断清洗后 utils.js 的结构合法性与 JS 语法，供 CLI 与安装器明确回报失败阶段。
+ */
+function diagnoseCleanStructure(cleanUtils) {
+  if (!cleanUtils || typeof cleanUtils !== 'string') {
+    return { ok: false, stage: 'empty_source', reason: 'dist/utils.js 内容为空或不可读' };
+  }
+  if (
+    cleanUtils.includes('installContextMeter') ||
+    cleanUtils.includes(TAGS.PROXY_START) ||
+    cleanUtils.includes(TAGS.METER_UTILS_START)
+  ) {
+    return { ok: false, stage: 'residual_plugin_trace', reason: '清洗后仍残留旧版插件注入标记' };
+  }
+  const setupNodeMarker = 'function setupNodeWrapper(env) {';
+  if (!cleanUtils.includes(setupNodeMarker)) {
+    return { ok: false, stage: 'missing_setup_node_wrapper', reason: '未找到 setupNodeWrapper(env) 宿主入口函数' };
+  }
+  const anchorInfo = inspectWindowLoadAnchors(cleanUtils);
+  if (!anchorInfo.target) {
+    if (anchorInfo.status === 'ambiguous') {
+      return {
+        ok: false,
+        stage: 'ambiguous_window_load_anchor',
+        reason: `发现多个窗口加载锚点候选（共 ${anchorInfo.count} 处），存在注入歧义`
+      };
+    }
+    return {
+      ok: false,
+      stage: 'missing_window_load_anchor',
+      reason: '未找到唯一的 createWindow 窗口加载调用（loadURL / loadHubWindowUrl）'
+    };
+  }
+  if (!validateSyntax(cleanUtils, 'dist/utils.js')) {
+    return { ok: false, stage: 'syntax_error', reason: '清洗后的 dist/utils.js JavaScript 语法校验失败' };
+  }
+  return { ok: true, stage: 'ok', anchorKind: anchorInfo.target.kind, reason: 'ok' };
+}
+
+/**
  * 校验清洗后的 utils 结构合法性与 JavaScript 语法
  */
 function verifyCleanStructure(cleanUtils) {
-  if (!cleanUtils) return false;
-  if (cleanUtils.includes('installContextMeter')) return false;
-  if (cleanUtils.includes(TAGS.PROXY_START) || cleanUtils.includes(TAGS.METER_UTILS_START)) return false;
-  const setupNodeMarker = 'function setupNodeWrapper(env) {';
-  const structuralOk = Boolean(findWindowLoadHookTarget(cleanUtils)) && cleanUtils.includes(setupNodeMarker);
-  return structuralOk && validateSyntax(cleanUtils, 'dist/utils.js');
+  return diagnoseCleanStructure(cleanUtils).ok;
 }
 
 module.exports = {
@@ -499,5 +621,6 @@ module.exports = {
   cleanPreloadSource,
   findWindowLoadHookTarget,
   injectWindowLoadHook,
+  diagnoseCleanStructure,
   verifyCleanStructure
 };

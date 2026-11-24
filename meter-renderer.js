@@ -5,11 +5,20 @@
   'use strict';
   if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
 
+  const HOT_RELOAD_SCROLL_IDS = ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'view-quota', 'quota-view-body'];
+
   // 在替换或重载旧实例之前捕获当前打开面板、滚动位置与未保存设置草稿（同时兼容无 captureHotReloadState 的旧版本）
   let inheritedHotReloadState = null;
   try {
     if (typeof globalThis.__AGContextMeter?.captureHotReloadState === 'function') {
       inheritedHotReloadState = globalThis.__AGContextMeter.captureHotReloadState();
+      const quotaScrollTop = document.getElementById('ag-context-meter')?.shadowRoot?.getElementById('view-quota')?.scrollTop;
+      if (inheritedHotReloadState && quotaScrollTop > 0) {
+        inheritedHotReloadState = {
+          ...inheritedHotReloadState,
+          scrollTops: { ...inheritedHotReloadState.scrollTops, 'view-quota': quotaScrollTop }
+        };
+      }
     } else if (typeof document !== 'undefined') {
       const prevHost = document.getElementById('ag-context-meter');
       const prevRoot = prevHost?.shadowRoot;
@@ -26,7 +35,7 @@
           k => prevRoot.getElementById(`tab-ctx-${k}`)?.classList?.contains('active')
         ) || null;
         const scrollTops = {};
-        for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body']) {
+        for (const sId of HOT_RELOAD_SCROLL_IDS) {
           const n = prevRoot.getElementById(sId);
           if (n && Number(n.scrollTop) > 0) scrollTops[sId] = Number(n.scrollTop);
         }
@@ -109,11 +118,13 @@
     getDynamicPricingCatalog,
     normalizeModelId,
     resolveStableModelId,
+    resolveRequestedModelDisplay,
     formatEffortLabel,
     detectModelVendor,
     groupModelProduct,
     formatTokensK,
     isValidSpeedSample,
+    resolveRequestRowSpeed,
     summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
@@ -214,8 +225,8 @@
   let showTurnFooterStats = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_turn_footer_stats') : null;
-      return saved === 'true';
-    } catch { return false; }
+      return saved === 'false' ? false : true;
+    } catch { return true; }
   })();
   let showComposerQuotaSummary = (() => {
     try {
@@ -262,6 +273,25 @@
     return topbarMode === 'compact' ? 'compact' : 'flow';
   })();
   let dockFallbackReason = '';
+  let auxViewTab = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_aux_view_tab') : null;
+      return saved === 'browser' ? 'browser' : 'plugin';
+    } catch { return 'plugin'; }
+  })();
+  let auxCollapsed = (() => {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem('ag_aux_collapsed') === 'true';
+    } catch { return false; }
+  })();
+  let auxWidthPx = (() => {
+    try {
+      const n = typeof localStorage !== 'undefined' ? Number(localStorage.getItem('ag_aux_width_px')) : NaN;
+      return Number.isFinite(n) && n >= 260 && n <= 1200 ? Math.round(n) : null;
+    } catch { return null; }
+  })();
+  const auxSavedPanelScrolls = new Map();
+  let auxHiddenHostNodes = new Set();
   let quotaBadgeWindowMode = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_quota_badge_window_mode') : null;
@@ -645,8 +675,39 @@
     }
 
     :host([data-dock="aux"]) {
+      position: relative !important;
       background: var(--ag-bg-panel);
       border-bottom: 1px solid var(--ag-border-subtle);
+    }
+
+    :host([data-dock="aux"][data-aux-view="browser"]) .ag-panel[data-panel-docked="true"],
+    :host([data-dock="aux"][data-aux-collapsed="true"]) .ag-panel[data-panel-docked="true"] {
+      display: none !important;
+    }
+
+    .dock-aux-resizer {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 6px;
+      cursor: ew-resize;
+      z-index: 60;
+      background: transparent;
+      transition: background-color 140ms ease;
+    }
+
+    .dock-aux-resizer:hover,
+    .dock-aux-resizer.is-resizing {
+      background: color-mix(in srgb, var(--ag-accent, #6366f1) 48%, transparent);
+    }
+
+    .dock-aux-resizer[hidden] {
+      display: none !important;
+    }
+
+    .dock-aux-tab-switch {
+      flex-shrink: 0;
     }
 
     :host([data-dock="aux"]) .ag-panel[data-panel-docked="true"],
@@ -7128,6 +7189,31 @@
       display: none !important
     }
 
+    #global-restart-modal {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      max-width: none;
+      max-height: none;
+      margin: 0;
+      border: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+      animation: none;
+    }
+
+    #global-restart-modal::backdrop {
+      background: transparent;
+    }
+
+    #global-restart-modal .ag-modal-card {
+      box-sizing: border-box;
+      max-height: 100%;
+      overflow: auto;
+      overscroll-behavior: contain;
+    }
+
     .ag-modal-card {
       background: var(--ag-bg-card);
       border: 1px solid var(--ag-border-card);
@@ -9329,7 +9415,7 @@
     }
 
     .ctx-toggle-input:checked+.ctx-toggle-track {
-      background: var(--ag-token-accent-default, #a78bfa);
+      background: var(--ag-custom-token-accent, #0a84ff);
       border-color: transparent
     }
 
@@ -9360,8 +9446,44 @@
 
     :host([data-theme="light"]) .ctx-toggle-input:checked+.ctx-toggle-track,
     :host([data-panel-tone="light"]) .ctx-toggle-input:checked+.ctx-toggle-track {
-      background: #7c3aed
+      background: var(--ag-custom-token-accent, #007aff)
     }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch) {
+      appearance: none;
+      position: relative;
+      display: inline-block;
+      inline-size: 34px;
+      block-size: 19px;
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--ag-border-subcard);
+      border-radius: 999px;
+      background: var(--ag-border-card);
+      cursor: pointer;
+      vertical-align: middle;
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch)::after {
+      content: "";
+      position: absolute;
+      inset: 2px auto auto 2px;
+      inline-size: 13px;
+      block-size: 13px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input):checked, button.ag-action-switch[aria-checked="true"]) {
+      background: var(--ag-custom-token-accent, #0a84ff);
+      border-color: transparent;
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input):checked, button.ag-action-switch[aria-checked="true"])::after { transform: translateX(15px); }
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch):focus-visible { outline: 2px solid var(--ag-custom-token-accent, #0a84ff); outline-offset: 2px; }
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch):disabled { opacity: .55; cursor: default; }
 
     @container (max-width: 400px) {
       .ctx-prefs-row {
@@ -10847,6 +10969,17 @@
       min-width: 0;
     }
 
+    .quota-accounts-section.settings-accounts-embedded {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .quota-accounts-entry-card {
+      margin-top: 10px;
+      gap: 5px;
+    }
+
     .quota-subsec-header {
       display: flex;
       align-items: center;
@@ -11828,6 +11961,11 @@
     }
 
     /* 输入栏紧凑状态条 (Composer Status Bar) 与 5 行悬停卡 - Antigravity 原生紧凑风格 */
+    :host #composer-status-bar,
+    .composer-status-bar[hidden] {
+      display: none !important;
+    }
+
     .composer-status-bar {
       display: flex;
       flex-wrap: wrap;
@@ -13525,6 +13663,7 @@
       user-select: none;
       touch-action: none;
       pointer-events: auto;
+      -webkit-app-region: no-drag;
       font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
       transition: transform 200ms cubic-bezier(0.22, 1.3, 0.36, 1), border-color 200ms ease, background-color 200ms ease, box-shadow 200ms ease;
     }
@@ -13852,6 +13991,7 @@
     }
 
     .ctx-radial-layer[data-state="open"] .ctx-radial-center-close {
+      -webkit-app-region: no-drag;
       opacity: 1;
       transform: scale(1);
     }
@@ -13897,6 +14037,7 @@
     }
 
     .ctx-radial-layer[data-state="open"] .ctx-radial-slot {
+      -webkit-app-region: no-drag;
       pointer-events: auto;
       opacity: 1;
       filter: blur(0px);
@@ -14274,11 +14415,64 @@
       border-radius: 10px;
     }
 
+    #pane-ctx-session .ctx-cockpit-presets-wrap {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
     #pane-ctx-session .ctx-cockpit-presets {
       display: flex;
       align-items: center;
       flex-wrap: wrap;
       gap: 4px;
+      flex: 0 1 auto;
+    }
+
+    #pane-ctx-session .ctx-preset-sort-toggle {
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    .ctx-preset-chip-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      border-radius: 7px;
+      transition: transform 140ms ease, opacity 140ms ease;
+    }
+
+    .ctx-preset-chip-group.is-dragging {
+      opacity: 0.55;
+      transform: scale(0.97);
+    }
+
+    .ctx-preset-sort-step {
+      appearance: none;
+      border: 1px solid var(--ctx-ck-border);
+      background: var(--ctx-ck-sub);
+      color: var(--ctx-ck-text);
+      font-size: 10px;
+      padding: 2px 5px;
+      border-radius: 5px;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+
+    .ctx-preset-sort-step:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .ctx-custom-preset-controls,
+    .ctx-custom-preset-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
     }
 
     #pane-ctx-session .ctx-preset-btn {
@@ -16356,14 +16550,6 @@
 
 
 
-<div id="ctx-scope-highlights" class="ctx-scope-highlights" popover="manual" hidden aria-hidden="true"></div>
-<div id="ctx-scope-menu" class="ctx-scope-menu" popover="manual" hidden role="group" data-i18n-aria="scope.actions">
-  <button type="button" data-pane-action="focus" data-i18n="scope.focusPane">定位并聚焦窗格</button>
-  <button type="button" data-pane-action="close" data-i18n="scope.closePane">关闭此窗格</button>
-  <button type="button" data-pane-action="others" data-i18n="scope.closeOthers">关闭其他窗格</button>
-  <button type="button" data-pane-action="right" data-i18n="scope.closeRight">关闭右侧窗格</button>
-</div>
-
 <!-- CLI 启动反馈提示气泡 -->
 <div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
 
@@ -16530,6 +16716,33 @@
   </div>
 </div>
 
+<!-- 右侧辅助栏左缘宽窄拖拽条（仅 aux 且未回退时显示） -->
+<div id="dock-aux-resizer" class="dock-aux-resizer" role="separator" aria-orientation="vertical"
+  aria-label="拖拽调整右侧辅助面板宽度" data-i18n-aria="settings.dock.auxResizeAria" title="左右拖拽调整宽度"
+  data-i18n-title="settings.dock.auxResizeTitle" hidden></div>
+
+<!-- 右侧辅助栏停靠控制条：置于面板外部顶层以保证切至浏览器或收起时仍可随时切换/恢复 -->
+<div id="dock-aux-context-bar" class="dock-aux-context-bar" hidden>
+  <span id="dock-aux-session-label" class="dock-aux-session-label"
+    data-i18n="settings.dock.auxUnresolved">当前未解析会话</span>
+  <div id="dock-aux-tab-switch" class="ctx-segmented dock-aux-tab-switch" role="tablist" aria-label="右侧辅助视图">
+    <button id="btn-dock-aux-view-plugin" class="ctx-seg-btn active" type="button" role="tab" aria-selected="true"
+      data-aux-view="plugin" data-i18n="settings.dock.auxTabPlugin">插件</button>
+    <button id="btn-dock-aux-view-browser" class="ctx-seg-btn" type="button" role="tab" aria-selected="false"
+      data-aux-view="browser" data-i18n="settings.dock.auxTabBrowser">浏览器</button>
+  </div>
+  <div class="dock-aux-actions">
+    <button id="btn-dock-aux-collapse" class="dock-aux-btn" type="button" aria-expanded="true"
+      data-i18n="settings.dock.auxCollapse">收起</button>
+    <button id="btn-dock-aux-copy-url" class="dock-aux-btn" type="button"
+      data-i18n="settings.dock.auxCopyUrl">复制链接</button>
+    <button id="btn-dock-aux-external" class="dock-aux-btn" type="button"
+      data-i18n="settings.dock.auxExternal">外部浏览器</button>
+    <button id="btn-dock-aux-back" class="dock-aux-btn dock-aux-btn-back" type="button" title="退出右侧停靠，返回顶部工具栏"
+      data-i18n-title="settings.dock.auxBackTitle" data-i18n="settings.dock.auxBack">返回顶栏</button>
+  </div>
+</div>
+
 <!-- 弹出式面板 1: 会话上下文与速度监控 (#panel, 450px) -->
 <section id="panel" class="ag-panel" hidden aria-label="会话与上下文详情" data-i18n-aria="panel.ctx.aria">
   <div class="panel-header-bar">
@@ -16582,19 +16795,6 @@
   </div>
 
   <div id="view-context">
-    <!-- 右侧辅助栏停靠跟随条（仅 aux 且未回退时显示） -->
-    <div id="dock-aux-context-bar" class="dock-aux-context-bar" hidden>
-      <span id="dock-aux-session-label" class="dock-aux-session-label"
-        data-i18n="settings.dock.auxUnresolved">当前未解析会话</span>
-      <div class="dock-aux-actions">
-        <button id="btn-dock-aux-copy-url" class="dock-aux-btn" type="button"
-          data-i18n="settings.dock.auxCopyUrl">复制链接</button>
-        <button id="btn-dock-aux-external" class="dock-aux-btn" type="button"
-          data-i18n="settings.dock.auxExternal">外部浏览器</button>
-        <button id="btn-dock-aux-back" class="dock-aux-btn dock-aux-btn-back" type="button" title="退出右侧停靠，返回顶部工具栏"
-          data-i18n-title="settings.dock.auxBackTitle" data-i18n="settings.dock.auxBack">返回顶栏</button>
-      </div>
-    </div>
     <!-- 顶部 4 分页标签栏 -->
     <div id="ctx-tabs-bar" class="ctx-tabs-bar" role="tablist" aria-label="上下文面板分页" data-i18n-aria="tabs.aria">
       <button id="tab-ctx-session" class="ctx-tab-btn active" type="button" role="tab" aria-selected="true"
@@ -16607,7 +16807,7 @@
         data-ctx-tab="settings" data-i18n="tab.settings">配置</button>
     </div>
 
-    <!-- 分页 1: 当前会话（12 列自适应自由拖拽 Bento 会话总览） -->
+    <!-- 分页 1: 当前会话（12 列自适应自由拖拽 Bento 全景驾驶舱） -->
     <div id="pane-ctx-session" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-session">
       <div id="ctx-scope-bar" class="ctx-scope-bar" hidden role="region" aria-label="同屏会话视角切换"
         data-i18n-aria="scope.bar.aria">
@@ -16618,36 +16818,53 @@
           <span class="ctx-scope-follow-dot" aria-hidden="true"></span><span id="ctx-scope-follow-label"
             data-i18n="scope.follow.auto">跟随焦点</span>
         </button>
-        <button id="ctx-scope-batch" class="ctx-scope-follow-btn" type="button" aria-pressed="false"
-          hidden data-i18n="scope.batch">批量关闭</button>
-        <div id="ctx-scope-batch-actions" class="ctx-scope-batch-actions" hidden>
-          <button id="ctx-scope-batch-others" class="ctx-scope-follow-btn" type="button" data-i18n="scope.selectOthers">全选其他</button>
-          <button id="ctx-scope-batch-close" class="ctx-scope-follow-btn" type="button"></button>
-          <button id="ctx-scope-batch-cancel" class="ctx-scope-follow-btn" type="button" data-i18n="scope.cancel">取消</button>
-        </div>
       </div>
 
       <!-- 驾驶舱顶部预设工具条与模块管理浮层 -->
       <div id="ctx-cockpit-toolbar" class="ctx-cockpit-toolbar">
-        <div class="ctx-cockpit-presets" role="group" aria-label="布局预设" data-i18n-aria="session.preset.label">
-          <button id="btn-preset-cockpit" class="ctx-preset-btn active" type="button" data-cockpit-preset="cockpit"
-            aria-pressed="true" data-i18n="session.preset.cockpit">会话总览</button>
-          <button id="btn-preset-minimal" class="ctx-preset-btn" type="button" data-cockpit-preset="minimal"
-            aria-pressed="false" data-i18n="session.preset.minimal">极简遥测</button>
-          <button id="btn-preset-debug" class="ctx-preset-btn" type="button" data-cockpit-preset="debug"
-            aria-pressed="false" data-i18n="session.preset.debug">深度排障</button>
-          <button id="btn-preset-speed-cost" class="ctx-preset-btn" type="button" data-cockpit-preset="speed_cost"
-            aria-pressed="false" data-i18n="session.preset.speedCost">速度与成本</button>
-          <button id="btn-preset-collab" class="ctx-preset-btn" type="button" data-cockpit-preset="collab"
-            aria-pressed="false" data-i18n="session.preset.collab">多代理协作</button>
-          <span id="ctx-custom-presets" class="ctx-custom-presets"></span>
+        <div class="ctx-cockpit-presets-wrap">
+          <div id="ctx-cockpit-presets-track" class="ctx-cockpit-presets" role="group" aria-label="布局预设"
+            data-i18n-aria="session.preset.label">
+            <button id="btn-preset-cockpit" class="ctx-preset-btn active" type="button" data-cockpit-preset="cockpit"
+              aria-pressed="true" data-i18n="session.preset.cockpit">会话总览</button>
+            <button id="btn-preset-minimal" class="ctx-preset-btn" type="button" data-cockpit-preset="minimal"
+              aria-pressed="false" data-i18n="session.preset.minimal">极简遥测</button>
+            <button id="btn-preset-debug" class="ctx-preset-btn" type="button" data-cockpit-preset="debug"
+              aria-pressed="false" data-i18n="session.preset.debug">深度排障</button>
+            <button id="btn-preset-speed-cost" class="ctx-preset-btn" type="button" data-cockpit-preset="speed_cost"
+              aria-pressed="false" data-i18n="session.preset.speedCost">速度与成本</button>
+            <button id="btn-preset-collab" class="ctx-preset-btn" type="button" data-cockpit-preset="collab"
+              aria-pressed="false" data-i18n="session.preset.collab">多代理协作</button>
+          </div>
+          <div id="ctx-custom-presets" class="ctx-custom-presets" hidden aria-hidden="true"></div>
+          <button id="btn-ctx-preset-sort" class="ctx-action-pill ctx-preset-sort-toggle" type="button"
+            aria-pressed="false" title="长按预设标签拖拽排序或点击进入按键重排" data-i18n-title="session.preset.sortTitle"
+            data-i18n="session.preset.sort">排序</button>
         </div>
         <div class="ctx-cockpit-toolbar-right" id="ctx-widget-mgr-wrap">
-          <button id="btn-ctx-widget-mgr" class="ctx-action-pill" type="button" aria-expanded="false"
-            title="显示或调整模块顺序" data-i18n-title="session.preset.mgrTitle">
+          <div class="ctx-custom-preset-controls">
+            <button class="ctx-action-pill" type="button" data-custom-preset-action="save"
+              data-i18n="session.preset.saveNew">+ 保存为预设</button>
+            <div id="ctx-custom-preset-actions" class="ctx-custom-preset-actions" hidden>
+              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="overwrite"
+                data-i18n="session.preset.overwrite">覆盖保存</button>
+              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="rename"
+                data-i18n="session.preset.rename">重命名</button>
+              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="delete"
+                data-i18n="session.preset.delete">删除预设</button>
+            </div>
+          </div>
+          <form id="ctx-custom-preset-editor" class="ctx-preset-editor" hidden>
+            <input id="ctx-custom-preset-name" type="text" maxlength="60" placeholder="预设名称"
+              data-i18n-placeholder="session.preset.name" />
+            <button class="ctx-action-pill" type="submit" data-i18n="session.preset.submit">保存</button>
+            <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="cancel"
+              data-i18n="session.preset.cancel">取消</button>
+          </form>
+          <button id="btn-ctx-widget-mgr" class="ctx-action-pill" type="button" aria-expanded="false" title="显示或调整模块顺序"
+            data-i18n-title="session.preset.mgrTitle">
             <span data-i18n="session.preset.mgrBtn">模块管理</span>
           </button>
-          <button class="ctx-action-pill" type="button" data-custom-preset-action="save" data-i18n="session.preset.saveNew">保存为预设</button>
           <div id="ctx-widget-mgr-popover" class="ctx-widget-mgr-popover" hidden>
             <div class="ctx-widget-mgr-hdr">
               <span data-i18n="session.preset.mgrTitle">显示或调整模块顺序</span>
@@ -16657,17 +16874,6 @@
             <div id="ctx-widget-mgr-list" class="ctx-widget-mgr-list"></div>
           </div>
         </div>
-        <div id="ctx-custom-preset-actions" class="ctx-preset-editor" hidden>
-          <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="overwrite" data-i18n="session.preset.overwrite">覆盖保存</button>
-          <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="rename" data-i18n="session.preset.rename">重命名</button>
-          <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="delete" data-i18n="session.preset.delete">删除预设</button>
-        </div>
-        <form id="ctx-custom-preset-editor" class="ctx-preset-editor" hidden>
-          <input id="ctx-custom-preset-name" maxlength="80" required data-i18n-aria="session.preset.name" aria-label="预设名称"
-            data-i18n-placeholder="session.preset.name" placeholder="预设名称">
-          <button class="ctx-action-pill" type="submit" data-i18n="session.preset.submit">保存</button>
-          <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="cancel" data-i18n="session.preset.cancel">取消</button>
-        </form>
       </div>
 
       <!-- 12 列等高可拖拽 Widget 网格 -->
@@ -16802,7 +17008,6 @@
               当前占用为单次上下文，累计包含多轮请求输入与输出；配置预算独立于宿主窗口上限。</div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 2: Token 构成与费用 (#token-breakdown) -->
@@ -16831,28 +17036,6 @@
             <div id="ctx-token-cache-cost-strip" class="ctx-token-cache-cost-strip"></div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
-        </section>
-
-        <section class="ctx-widget-card ctx-bento-card" data-widget-id="request-cost" data-span="6" hidden>
-          <header class="ctx-widget-hdr">
-            <div class="ctx-widget-hdr-left">
-              <button class="ctx-widget-drag-handle ag-widget-drag-handle" type="button"
-                data-i18n-aria="session.widget.dragAria" data-i18n-title="session.widget.dragTitle">⋮⋮</button>
-              <span class="ctx-widget-title" data-i18n="session.widget.requestCost">单次请求费用与缓存节省</span>
-            </div>
-            <div class="ctx-widget-hdr-actions">
-              <button class="ctx-widget-ctrl-btn" type="button" data-widget-action="cycle-span" data-i18n-title="session.widget.spanTitle">6列</button>
-              <button class="ctx-widget-ctrl-btn" type="button" data-widget-action="cycle-height" data-i18n-title="session.widget.heightTitle">标准</button>
-            </div>
-          </header>
-          <div class="ctx-widget-body ctx-request-cost-body">
-            <div id="ctx-request-cost-summary" class="ctx-request-cost-summary"></div>
-            <ol id="ctx-request-cost-rows" class="ctx-request-cost-rows" tabindex="0" data-i18n-aria="session.widget.requestCost"></ol>
-            <p id="ctx-request-cost-empty" data-i18n="session.requestCost.empty">暂无已完成的请求</p>
-          </div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 3: 耗时与流式效率 (#timing-speed, 原 8 项详细诊断折叠) -->
@@ -16922,8 +17105,6 @@
             <div class="ctx-timing-diag-bar">
               <button id="btn-ctx-timing-diag-toggle" class="ctx-action-pill" type="button" aria-expanded="false"
                 data-i18n="session.timing.diagToggleOpen">详细诊断评分 ▼</button>
-              <button id="btn-speed-breakdown-toggle" class="latest-call-link-btn" type="button" aria-expanded="false"
-                hidden data-i18n="session.speed.details">拆解</button>
             </div>
             <div id="ctx-timing-diag-fold" class="ctx-timing-diag-fold" hidden>
               <div id="ctx-timing-ts-note" class="ctx-timing-ts-note" data-i18n="session.timing.missingTsNote">
@@ -16935,7 +17116,6 @@
             </div>
           </section>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 4: 全景脉冲趋势 + 三行步骤速览 + 当前步骤条 (#trend-pulse) -->
@@ -17044,7 +17224,6 @@
             </div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 5: 上下文解剖台 · 分类树 / 顺序切片视图 (#context-inspector) -->
@@ -17195,7 +17374,6 @@
             </section>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 6: 会话执行轨迹 (#execution-trace) -->
@@ -17253,7 +17431,6 @@
             <div id="ctx-trace-stream-list" class="ctx-trace-stream-list"></div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 7: 上下文异动日志 (#context-events) -->
@@ -17279,7 +17456,6 @@
             <div id="ctx-events-list" class="ctx-events-list"></div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 8: 文件变更雷达 (#file-radar) -->
@@ -17320,7 +17496,6 @@
             <div id="ctx-file-radar-list" class="ctx-file-radar-list"></div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 9: 终端命令审计 (#command-audit, 宽屏左右双栏联动) -->
@@ -17370,7 +17545,6 @@
             </div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 10: 多代理协作中枢 (#agent-collab) -->
@@ -17414,24 +17588,19 @@
             </div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 11: 底层技术参数与附件审计 (#tech-drawer) -->
         <section class="ctx-widget-card ctx-bento-card" data-widget-id="tech-drawer" data-span="12"
           data-height-mode="compact">
           <div class="tech-drawer">
-            <div class="ctx-widget-hdr ctx-tech-widget-hdr">
-              <button class="ctx-widget-drag-handle ag-widget-drag-handle" type="button"
-                data-i18n-aria="session.widget.dragAria" aria-label="拖动排序">⋮⋮</button>
-              <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
-                <span class="drawer-trigger-left">
-                  <span data-i18n="session.techDrawer.title">📋 底层技术参数与附件审计</span>
-                </span>
-                <span id="drawer-arrow" class="drawer-arrow" data-i18n="session.techDrawer.expand">▼ 点击展开明细</span>
-              </button>
-            </div>
-            <div id="drawer-body" class="drawer-body ctx-widget-body" style="display:none;">
+            <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
+              <span class="drawer-trigger-left">
+                <span data-i18n="session.techDrawer.title">📋 底层技术参数与附件审计</span>
+              </span>
+              <span id="drawer-arrow" class="drawer-arrow" data-i18n="session.techDrawer.expand">▼ 点击展开明细</span>
+            </button>
+            <div id="drawer-body" class="drawer-body" style="display:none;">
               <p id="status" data-i18n="session.tech.checking">正在核对请求和附件…</p>
               <p id="model"></p>
               <h4 data-i18n="session.tech.latestReq">最近一次模型请求</h4>
@@ -17489,8 +17658,6 @@
               <p id="updated"></p>
             </div>
           </div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
       </div>
@@ -17872,162 +18039,75 @@
 
     <!-- 分页 3: 速度对比 -->
     <div id="pane-ctx-speed" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-speed" hidden>
-      <!-- 44px 筛选工具栏：原型假顶栏已移除，页面直接从工具栏开始 -->
-      <div id="speed-filter-bar" class="ctx-speed-filterbar">
-        <div class="ctx-segmented ctx-speed-seg" role="group" aria-label="时间范围" data-i18n-aria="speed.range.aria">
-          <button id="speed-range-1d" class="ctx-seg-btn" type="button" data-i18n="speed.range.1d">今日</button>
-          <button id="speed-range-3d" class="ctx-seg-btn" type="button" data-i18n="speed.range.3d">近 3 天</button>
-          <button id="speed-range-5d" class="ctx-seg-btn" type="button" data-i18n="speed.range.5d">近 5 天</button>
+      <div class="ctx-speed-toolbar">
+        <div class="ctx-segmented" role="group" aria-label="时间范围" data-i18n-aria="speed.range.aria">
           <button id="speed-range-7d" class="ctx-seg-btn active" type="button" data-speed-range="7"
-            data-i18n="speed.range.7d">近一周</button>
+            data-i18n="speed.range.7d">近 7 天</button>
           <button id="speed-range-30d" class="ctx-seg-btn" type="button" data-speed-range="30"
             data-i18n="speed.range.30d">近 30 天</button>
           <button id="speed-range-all" class="ctx-seg-btn" type="button" data-speed-range="all"
-            data-i18n="speed.range.all">全量历史</button>
-          <button id="speed-range-custom" class="ctx-seg-btn" type="button" aria-pressed="false"
-            aria-controls="speed-custom-dates" data-i18n="speed.range.custom">自定义</button>
+            data-i18n="speed.range.all">全部</button>
         </div>
-        <div class="ctx-speed-filter-group">
-          <span class="ctx-speed-filter-label" data-i18n="speed.filter.source">数据源</span>
-          <div id="speed-origin-filter-wrap" class="ctx-segmented ctx-speed-seg" role="group" aria-label="样本来源"
-            data-i18n-aria="speed.origin.aria">
-            <button id="speed-origin-all" class="ctx-seg-btn active" type="button" data-speed-origin="all"
-              data-i18n="speed.origin.all">全部来源</button>
-            <button id="speed-origin-chat" class="ctx-seg-btn" type="button" data-speed-origin="chat"
-              data-i18n="speed.origin.chat">日常对话</button>
-          </div>
+        <div id="speed-origin-filter-wrap" class="ctx-segmented" role="group" aria-label="样本来源"
+          data-i18n-aria="speed.origin.aria">
+          <button id="speed-origin-all" class="ctx-seg-btn active" type="button" data-speed-origin="all"
+            data-i18n="speed.origin.all">全部来源</button>
+          <button id="speed-origin-chat" class="ctx-seg-btn" type="button" data-speed-origin="chat"
+            data-i18n="speed.origin.chat">日常对话</button>
         </div>
-        <div class="ctx-speed-filter-group ctx-speed-filter-group-metric">
-          <span class="ctx-speed-filter-label" data-i18n="speed.filter.metric">对比指标</span>
-          <div class="ctx-segmented ctx-speed-seg" role="group" aria-label="对比指标" data-i18n-aria="speed.metric.aria">
+        <button id="btn-save-default-view-speed" class="save-default-btn" type="button" data-save-default="speed"
+          title="将当前时间范围、趋势模式与排序方式保存为默认视图" data-i18n-title="prefs.saveDefaultTitle"
+          data-i18n="prefs.saveDefault">设为默认</button>
+      </div>
+
+      <!-- 柱状图卡片 -->
+      <div class="ctx-chart-card">
+        <div class="ctx-chart-header">
+          <span id="speed-bar-title" class="ctx-chart-title" data-i18n="speed.barTitle.tps">输出速度对比</span>
+          <div class="ctx-segmented" role="group" aria-label="对比指标" data-i18n-aria="speed.metric.aria">
             <button id="speed-metric-tps" class="ctx-seg-btn active" type="button" data-speed-metric="tps"
-              data-i18n="speed.metric.tps">输出速度 tok/s</button>
+              data-i18n="speed.metric.tps">输出速度</button>
             <button id="speed-metric-ttft" class="ctx-seg-btn" type="button" data-speed-metric="ttft"
-              data-i18n="speed.metric.ttft">首字延迟 TTFT</button>
+              data-i18n="speed.metric.ttft">首字延迟</button>
             <button id="speed-metric-duration" class="ctx-seg-btn" type="button" data-speed-metric="duration"
               data-i18n="speed.metric.duration">总耗时</button>
           </div>
         </div>
-        <div class="ctx-speed-filter-group">
-          <span class="ctx-speed-filter-label" data-i18n="speed.filter.algo">统计口径</span>
-          <div id="speed-algo-segmented" class="ctx-segmented ctx-speed-seg-algo" role="group"
-            aria-label="统计口径">
-            <button id="speed-algo-median" class="ctx-seg-btn active" type="button" data-speed-algo="median"
-              data-i18n="speed.algo.median">中位数</button>
-            <button id="speed-algo-mean" class="ctx-seg-btn" type="button" data-speed-algo="mean"
-              data-i18n="speed.algo.mean">均值</button>
-            <button id="speed-algo-composite" class="ctx-seg-btn" type="button" data-speed-algo="composite"
-              data-i18n="speed.algo.composite">综合效率</button>
-          </div>
-        </div>
-        <button id="btn-save-default-view-speed" class="save-default-btn ctx-speed-save" type="button"
-          data-save-default="speed" title="将当前时间范围、趋势模式与排序方式保存为默认视图"
-          data-i18n-title="prefs.saveDefaultTitle" data-i18n="prefs.saveDefault">设为默认</button>
-      </div>
-
-      <form id="speed-custom-dates" class="ctx-speed-dates" hidden>
-        <label><span data-i18n="speed.range.start">开始日期</span> <input id="speed-date-start" type="text" placeholder="YYYY-MM-DD" maxlength="10" required></label>
-        <label><span data-i18n="speed.range.end">结束日期</span> <input id="speed-date-end" type="text" placeholder="YYYY-MM-DD" maxlength="10" required></label>
-        <button type="submit" class="ctx-speed-ghost-btn" data-i18n="speed.range.apply">应用</button>
-        <span id="speed-date-error" role="alert" data-i18n="speed.range.invalid" hidden>请选择有效的起止日期</span>
-      </form>
-
-      <!-- Row 1：模型速度 PK 对比台 + 多系列走势 -->
-      <section id="speed-hero" class="ctx-speed-hero">
-        <header class="ctx-speed-hero-head">
-          <span class="ctx-speed-hero-title" data-i18n="speed.hero.title">模型速度 PK 对比台</span>
-          <span class="ctx-speed-hero-count"><span data-i18n="speed.hero.selectedPrev">已选</span>
-            <b id="speed-pk-count">0</b> <span data-i18n="speed.hero.selectedUnit">款</span></span>
-          <div id="speed-pk-chips" class="ctx-speed-chips"></div>
-          <div class="ctx-speed-hero-actions">
-            <button id="speed-pk-add" class="ctx-speed-ghost-btn" type="button"
-              data-i18n="speed.hero.addModel">+ 添加模型对比</button>
-            <button id="speed-pk-clear" class="ctx-speed-ghost-btn" type="button"
-              data-i18n="speed.hero.clear">清空选择</button>
-          </div>
-        </header>
-        <div class="ctx-speed-hero-body">
-          <div id="speed-pk-cards" class="ctx-speed-pk-grid"></div>
-          <div class="ctx-speed-trend-panel">
-            <div class="ctx-speed-trend-head">
-              <span id="speed-trend-title" class="ctx-speed-trend-title"
-                data-i18n="speed.trend.title">各模型速度走势 · tok/s</span>
-              <div id="speed-trend-legend" class="ctx-speed-trend-legend"></div>
-            </div>
-            <div id="speed-line-chart-wrap" class="ctx-svg-wrap ctx-speed-trend-wrap" style="position:relative;">
-              <svg id="speed-line-svg" class="ctx-speed-svg" role="img" aria-label="所选模型与档位历史输出速度折线图"
-                data-i18n-aria="speed.lineSvg.aria"></svg>
-              <div id="speed-line-tooltip" class="ctx-chart-tooltip" hidden></div>
-            </div>
-            <p id="speed-line-empty" data-i18n="speed.hero.emptyTrend" hidden>暂无对比曲线</p>
-            <div id="speed-trend-foot" class="ctx-speed-trend-foot"></div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Row 2：全量模型统计排行 -->
-      <section id="speed-rank" class="ctx-speed-rank">
-        <header class="ctx-speed-rank-head">
-          <span class="ctx-speed-rank-title" data-i18n="speed.rank.title">全量模型统计排行 · 点击勾选加入对比</span>
-          <span id="speed-rank-count" class="ctx-speed-rank-count"></span>
-          <div class="ctx-speed-rank-tools">
-            <input id="speed-rank-search" class="ctx-speed-search" type="search"
-              placeholder="过滤模型名称或架构标签" data-i18n-placeholder="speed.rank.searchPlaceholder" />
-            <div id="speed-rank-sort" class="ctx-segmented ctx-speed-seg" role="group" aria-label="排序方式"
-              data-i18n-aria="speed.rank.sortAria">
-              <button class="ctx-seg-btn active" type="button" data-rank-sort="tps"
-                data-i18n="speed.rank.sortTps">中位速度降序</button>
-              <button class="ctx-seg-btn" type="button" data-rank-sort="ttft"
-                data-i18n="speed.rank.sortTtft">首字延迟升序</button>
-              <button class="ctx-seg-btn" type="button" data-rank-sort="samples"
-                data-i18n="speed.rank.sortSamples">样本数降序</button>
-            </div>
-          </div>
-        </header>
-        <div class="ctx-speed-rank-thead">
-          <span data-i18n="speed.rank.colPick">对比</span>
-          <span data-i18n="speed.rank.colModel">模型规格与配置</span>
-          <span data-i18n="speed.rank.colDist">吞吐速度分布 · tok/s</span>
-          <span data-i18n="speed.rank.colMetric">核心实测指标 · 中位数</span>
-        </div>
-        <div id="speed-rank-rows" class="ctx-speed-rank-rows"></div>
-        <div class="ctx-speed-rank-foot">
-          <span class="ctx-speed-rank-note" data-i18n="speed.rank.note">速率仅统计有效 Streaming 生成周期 · 已剔除首次网络握手耗时</span>
-          <div class="ctx-speed-rank-foot-actions">
-            <button id="speed-rank-export" class="ctx-speed-ghost-btn" type="button"
-              data-i18n="speed.rank.export">导出 CSV</button>
-            <button id="speed-rank-reset" class="ctx-speed-ghost-btn" type="button"
-              data-i18n="speed.rank.reset">重置筛选</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 兼容桥：旧柱状图 / 下拉 / 标题节点保留，继续由既有渲染逻辑驱动 -->
-      <div class="ctx-speed-legacy" hidden>
-        <span id="speed-bar-title" class="ctx-chart-title" data-i18n="speed.barTitle.tps">输出速度对比</span>
         <div id="speed-bar-empty" class="ctx-speed-empty" hidden data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
         <div id="speed-bar-chart-wrap" class="ctx-svg-wrap" style="position:relative;">
           <svg id="speed-bar-svg" class="ctx-speed-svg" role="img" aria-label="各模型与档位速度对比柱状图"
             data-i18n-aria="speed.barSvg.aria"></svg>
           <div id="speed-bar-tooltip" class="ctx-chart-tooltip" hidden></div>
         </div>
-        <div id="speed-line-empty" class="ctx-speed-empty" data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
-        <div id="speed-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-speed-dropdown">
-          <div id="speed-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0"
-            title="选择一个模型与档位查看速度变化" data-i18n-title="speed.linePickTitle">
-            <span id="speed-model-dropdown-label" class="ag-dropdown-label"
-              data-i18n="speed.lineNoModel">暂无模型记录</span>
-            <div class="ag-dropdown-arrow">
-              <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                stroke-linecap="round" stroke-linejoin="round">
-                <path d="M1 1l4 4 4-4" />
-              </svg>
+        <div id="speed-bar-note" class="ctx-chart-note" data-i18n="speed.barNote">以各模型与档位的中位数统计；不足 3
+          条标注“样本少”。总耗时受输出长度影响，条件相近时才可比较。</div>
+      </div>
+
+      <!-- 单模型折线图卡片 -->
+      <div class="ctx-chart-card">
+        <div class="ctx-chart-header ctx-line-header">
+          <span class="ctx-chart-title" data-i18n="speed.lineTitle">单模型速度趋势</span>
+          <div id="speed-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-speed-dropdown">
+            <div id="speed-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0"
+              title="选择一个模型与档位查看速度变化" data-i18n-title="speed.linePickTitle">
+              <span id="speed-model-dropdown-label" class="ag-dropdown-label"
+                data-i18n="speed.lineNoModel">暂无模型记录</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </div>
             </div>
+            <div id="speed-model-dropdown-menu" class="ag-dropdown-menu"></div>
           </div>
-          <div id="speed-model-dropdown-menu" class="ag-dropdown-menu"></div>
         </div>
-        <div id="speed-bar-note" class="ctx-chart-note" data-i18n="speed.barNote">以各模型与档位的中位数统计 · 不足 3
-          条标注偏少 · 总耗时受输出长度影响 · 条件相近时才可比较.</div>
+        <div id="speed-line-empty" class="ctx-speed-empty" data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
+        <div id="speed-line-chart-wrap" class="ctx-svg-wrap" style="position:relative;" hidden>
+          <svg id="speed-line-svg" class="ctx-speed-svg" role="img" aria-label="所选模型与档位历史输出速度折线图"
+            data-i18n-aria="speed.lineSvg.aria"></svg>
+          <div id="speed-line-tooltip" class="ctx-chart-tooltip" hidden></div>
+        </div>
       </div>
 
     </div>
@@ -18043,6 +18123,8 @@
           style="display:flex;gap:3px;flex:1;justify-content:flex-end">
           <button class="ctx-seg-btn active" type="button" data-nav-target="ui-slim-prefs-card"
             data-i18n="settings.nav.appearance">🎨 外观停靠</button>
+          <button class="ctx-seg-btn" type="button" data-nav-target="settings-accounts-card"
+            data-i18n="settings.nav.accounts">👤 账号切号</button>
           <button class="ctx-seg-btn" type="button" data-nav-target="enhance-preset-card"
             data-i18n="settings.nav.preset">✨ 推荐配置</button>
           <button class="ctx-seg-btn" type="button" data-nav-target="rehydrate-hook-card"
@@ -18225,6 +18307,36 @@
               </div>
             </div>
 
+            <div class="ctx-prefs-row" id="row-simplified-model-picker">
+              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-simplified-model-picker"
+                for="chk-simplified-model-picker">
+                <span class="ctx-prefs-row-title" data-i18n="settings.modelPicker.label">简化输入框模型与思考档位菜单</span>
+                <span class="ctx-prefs-row-sub" data-i18n="settings.modelPicker.desc">
+                  基础模型仅展示一次并将思考档位独立调节，不兼容时退回原生菜单.</span>
+              </label>
+              <div class="ctx-prefs-row-ctl">
+                <label class="ctx-toggle" for="chk-simplified-model-picker">
+                  <input id="chk-simplified-model-picker" class="ctx-toggle-input" type="checkbox">
+                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="ctx-prefs-row" id="row-next-prompt">
+              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-next-prompt"
+                for="chk-next-prompt-enabled">
+                <span class="ctx-prefs-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</span>
+                <span class="ctx-prefs-row-sub" data-i18n="settings.nextPrompt.desc">
+                  默认关闭. 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿.</span>
+              </label>
+              <div class="ctx-prefs-row-ctl">
+                <label class="ctx-toggle" for="chk-next-prompt-enabled">
+                  <input id="chk-next-prompt-enabled" class="ctx-toggle-input" type="checkbox">
+                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                </label>
+              </div>
+            </div>
+
             <div class="ctx-prefs-row" id="row-turn-footer">
               <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-turn-footer" for="chk-show-turn-footer-stats">
                 <span class="ctx-prefs-row-title" data-i18n="settings.turnFooter.label">每轮回复尾部统计</span>
@@ -18282,7 +18394,126 @@
         <div id="dock-fallback-actions" class="dock-fallback-actions" hidden></div>
       </div>
 
-      <!-- 1. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
+      <!-- 1. 多账号管理、阈值自动切号与共享额度对照 (图1入口迁入设置专卡，保留原DOM ID与状态共享) -->
+      <div class="ctx-settings-card" id="settings-accounts-card">
+        <div id="quota-accounts-section" class="quota-accounts-section settings-accounts-embedded">
+          <div class="quota-subsec-header">
+            <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
+            <div class="quota-subsec-actions">
+              <button id="btn-acct-import-current" class="switch-pill-btn" type="button"
+                data-i18n="accounts.importCurrent">导入当前</button>
+              <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden
+                data-i18n="accounts.importTools">导入 Tools</button>
+              <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button" data-i18n="accounts.oauthAdd">+
+                登录添加</button>
+            </div>
+          </div>
+          <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
+          <div id="quota-accounts-list" class="quota-accounts-list"></div>
+
+          <!-- 阈值自动切号配置 -->
+          <div class="quota-subcard">
+            <div class="quota-subcard-row">
+              <label class="quota-switch-lbl">
+                <input id="chk-auto-switch-enabled" type="checkbox" />
+                <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号，默认关闭</span>
+              </label>
+              <span id="auto-switch-status-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
+            </div>
+            <div id="auto-switch-config-body" class="auto-switch-grid">
+              <div class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
+                <select id="sel-auto-switch-pool" class="quota-compact-select" aria-label="监控共享池"
+                  data-i18n-aria="accounts.poolLabel" style="display:none">
+                  <option value="shared_gemini_main">Gemini 4 (Neon / Hydrogen / Flash)</option>
+                  <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
+                  <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
+                  <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
+                </select>
+                <div id="sel-auto-switch-pool-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+                  <div id="sel-auto-switch-pool-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                    <span id="sel-auto-switch-pool-dropdown-label" class="ag-dropdown-label">Gemini 4 (Neon / Hydrogen /
+                      Flash)</span>
+                    <div class="ag-dropdown-arrow">
+                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 1l4 4 4-4" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div id="sel-auto-switch-pool-dropdown-menu" class="ag-dropdown-menu"></div>
+                </div>
+              </div>
+              <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
+                <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径"
+                  data-i18n-aria="accounts.metricLabel" style="display:none">
+                  <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
+                  <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
+                </select>
+                <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+                  <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                    <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label"
+                      data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</span>
+                    <div class="ag-dropdown-arrow">
+                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 1l4 4 4-4" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
+                </div>
+              </div>
+              <div class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
+                <select id="sel-auto-switch-window" class="quota-compact-select" aria-label="限额窗口"
+                  data-i18n-aria="accounts.windowLabel" style="display:none">
+                  <option value="primary" data-i18n="accounts.winPrimary">主窗口最紧缩</option>
+                  <option value="5h">5h</option>
+                  <option value="7d">7d</option>
+                </select>
+                <div id="sel-auto-switch-window-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+                  <div id="sel-auto-switch-window-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                    <span id="sel-auto-switch-window-dropdown-label" class="ag-dropdown-label"
+                      data-i18n="accounts.winPrimary">主窗口最紧缩</span>
+                    <div class="ag-dropdown-arrow">
+                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 1l4 4 4-4" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div id="sel-auto-switch-window-dropdown-menu" class="ag-dropdown-menu"></div>
+                </div>
+              </div>
+              <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
+                <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95"
+                  value="10" />
+              </label>
+              <div class="auto-switch-candidates-wrap">
+                <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
+                <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
+              </div>
+              <div class="auto-switch-save-row">
+                <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button"
+                  data-i18n="accounts.saveRule">保存切号规则</button>
+                <span id="auto-switch-last-note" class="quota-muted-note"></span>
+              </div>
+              <div id="auto-switch-save-status" class="quota-muted-note" role="status"></div>
+            </div>
+          </div>
+
+          <!-- 本机消耗与共享账号额度变化对照 -->
+          <div class="quota-subsec-header" style="margin-top:10px">
+            <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
+          </div>
+          <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px"
+            data-i18n="quota.compareDisclaimer">
+            按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
+          </div>
+          <div id="quota-compare-list" class="quota-compare-list"></div>
+        </div>
+      </div>
+
+      <!-- 2. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
       <div class="ctx-settings-card" id="enhance-preset-card">
         <div class="ctx-settings-card-hdr">
           <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
@@ -18787,6 +19018,22 @@
     </div>
   </div>
 </section>
+
+<!-- 移除账号二次确认模态弹窗（提升至 Shadow DOM 顶层，避免被隐藏或滚动面板裁切） -->
+<div id="account-remove-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
+  aria-labelledby="modal-account-remove-title">
+  <div class="ag-modal-card">
+    <div id="modal-account-remove-title" class="ag-modal-title" data-i18n="accounts.removeModal.title">移除账号</div>
+    <div id="modal-account-remove-text" class="ag-modal-body"></div>
+    <div id="modal-account-remove-feedback" class="ag-modal-feedback" hidden></div>
+    <div class="ag-modal-actions">
+      <button id="btn-modal-account-remove-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+        data-i18n="accounts.removeModal.cancel">取消</button>
+      <button id="btn-modal-account-remove-confirm" class="unlock-btn unlock-btn-danger" type="button"
+        data-i18n="accounts.removeModal.confirm">确认移除</button>
+    </div>
+  </div>
+</div>
 
 <!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
 <section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria">
@@ -20143,123 +20390,25 @@
     </div>
     <div id="quota-pools-list" class="quota-pools-list"></div>
 
-    <!-- 统一多账号切换、自动切号、共享额度对照(ELV-57)与缓存保活保障(ELV-52) -->
-    <div id="quota-accounts-section" class="quota-accounts-section">
-      <div class="quota-subsec-header">
+    <!-- 多账号与自动切号摘要直达入口（共用设置页账号状态与未保存草稿） -->
+    <div id="quota-accounts-entry-card" class="quota-subcard quota-accounts-entry-card">
+      <div class="quota-subcard-row">
         <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
-        <div class="quota-subsec-actions">
-          <button id="btn-acct-import-current" class="switch-pill-btn" type="button"
-            data-i18n="accounts.importCurrent">导入当前</button>
-          <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden
-            data-i18n="accounts.importTools">导入 Tools</button>
-          <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button" data-i18n="accounts.oauthAdd">+
-            登录添加</button>
-        </div>
+        <span id="quota-entry-autoswitch-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
       </div>
-      <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
-      <div id="quota-accounts-list" class="quota-accounts-list"></div>
+      <div id="quota-entry-active-account" class="quota-acct-meta"></div>
+      <div id="quota-entry-rule-summary" class="quota-muted-note"></div>
+      <div class="quota-subsec-actions" style="margin-top:4px">
+        <button id="btn-quota-open-accounts-settings" class="switch-pill-btn active" type="button"
+          data-i18n="accounts.manageBtn">在设置中管理账号与自动切号</button>
+        <button id="btn-quota-entry-refresh-accts" class="switch-pill-btn" type="button"
+          data-i18n="accounts.refreshEntry">刷新账号</button>
+      </div>
+    </div>
 
-      <!-- 阈值自动切号配置 -->
-      <div class="quota-subcard">
-        <div class="quota-subcard-row">
-          <label class="quota-switch-lbl">
-            <input id="chk-auto-switch-enabled" type="checkbox" />
-            <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号（默认关闭）</span>
-          </label>
-          <span id="auto-switch-status-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
-        </div>
-        <div id="auto-switch-config-body" class="auto-switch-grid">
-          <div class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
-            <select id="sel-auto-switch-pool" class="quota-compact-select" aria-label="监控共享池"
-              data-i18n-aria="accounts.poolLabel" style="display:none">
-              <option value="shared_gemini_main">Gemini 4 (Neon / Hydrogen / Flash)</option>
-              <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
-              <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
-              <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
-            </select>
-            <div id="sel-auto-switch-pool-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-              <div id="sel-auto-switch-pool-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                <span id="sel-auto-switch-pool-dropdown-label" class="ag-dropdown-label">Gemini 4 (Neon / Hydrogen /
-                  Flash)</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1 1l4 4 4-4" />
-                  </svg>
-                </div>
-              </div>
-              <div id="sel-auto-switch-pool-dropdown-menu" class="ag-dropdown-menu"></div>
-            </div>
-          </div>
-          <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
-            <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径"
-              data-i18n-aria="accounts.metricLabel" style="display:none">
-              <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
-              <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
-            </select>
-            <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-              <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label"
-                  data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1 1l4 4 4-4" />
-                  </svg>
-                </div>
-              </div>
-              <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
-            </div>
-          </div>
-          <div class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
-            <select id="sel-auto-switch-window" class="quota-compact-select" aria-label="限额窗口"
-              data-i18n-aria="accounts.windowLabel" style="display:none">
-              <option value="primary" data-i18n="accounts.winPrimary">主窗口（最紧缩）</option>
-              <option value="5h">5h</option>
-              <option value="7d">7d</option>
-            </select>
-            <div id="sel-auto-switch-window-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-              <div id="sel-auto-switch-window-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                <span id="sel-auto-switch-window-dropdown-label" class="ag-dropdown-label"
-                  data-i18n="accounts.winPrimary">主窗口（最紧缩）</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1 1l4 4 4-4" />
-                  </svg>
-                </div>
-              </div>
-              <div id="sel-auto-switch-window-dropdown-menu" class="ag-dropdown-menu"></div>
-            </div>
-          </div>
-          <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
-            <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95"
-              value="10" />
-          </label>
-          <div class="auto-switch-candidates-wrap">
-            <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
-            <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
-          </div>
-          <div class="auto-switch-save-row">
-            <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button"
-              data-i18n="accounts.saveRule">保存切号规则</button>
-            <span id="auto-switch-last-note" class="quota-muted-note"></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 本机消耗与共享账号额度变化对照 -->
-      <div class="quota-subsec-header" style="margin-top:10px">
-        <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
-      </div>
-      <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px"
-        data-i18n="quota.compareDisclaimer">
-        按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
-      </div>
-      <div id="quota-compare-list" class="quota-compare-list"></div>
-
-      <!-- 模型 Prompt Cache 保活协议与保障 -->
-      <div class="quota-subsec-header" style="margin-top:10px">
+    <!-- 模型 Prompt Cache 保活协议与保障（保留在额度面板内作为诊断信息） -->
+    <div id="quota-keepalive-section" class="quota-accounts-section">
+      <div class="quota-subsec-header">
         <span class="quota-subsec-title" data-i18n="keepalive.title">🧊 模型缓存保活状态与协议核查</span>
         <span id="keepalive-status-pill" class="key-pill pill-muted" data-i18n="accounts.keepaliveOff">默认关闭</span>
       </div>
@@ -20271,22 +20420,6 @@
           <button id="btn-keepalive-stop" class="switch-pill-btn" type="button" hidden
             data-i18n="keepalive.stopBtn">立即停止保活</button>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 移除账号二次确认模态弹窗（移除插件凭证与切号候选，保留历史本地用量与归属） -->
-  <div id="account-remove-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
-    aria-labelledby="modal-account-remove-title">
-    <div class="ag-modal-card">
-      <div id="modal-account-remove-title" class="ag-modal-title" data-i18n="accounts.removeModal.title">移除账号</div>
-      <div id="modal-account-remove-text" class="ag-modal-body"></div>
-      <div id="modal-account-remove-feedback" class="ag-modal-feedback" hidden></div>
-      <div class="ag-modal-actions">
-        <button id="btn-modal-account-remove-cancel" class="unlock-btn unlock-btn-secondary" type="button"
-          data-i18n="accounts.removeModal.cancel">取消</button>
-        <button id="btn-modal-account-remove-confirm" class="unlock-btn unlock-btn-danger" type="button"
-          data-i18n="accounts.removeModal.confirm">确认移除</button>
       </div>
     </div>
   </div>
@@ -20503,10 +20636,11 @@
     return `
       :host {
         position: fixed !important;
-        inset: 0 !important;
+        top: 0 !important;
+        left: 0 !important;
         display: block !important;
-        width: 100vw !important;
-        height: 100vh !important;
+        width: 0 !important;
+        height: 0 !important;
         margin: 0 !important;
         padding: 0 !important;
         border: 0 !important;
@@ -20514,7 +20648,6 @@
         overflow: visible !important;
         pointer-events: none !important;
         z-index: ${RADIAL_TOP_Z_INDEX} !important;
-        -webkit-app-region: no-drag !important;
         font: 12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
         --ag-ring-warn: #f59e0b;
         --ag-ring-danger: #ef4444;
@@ -20573,7 +20706,7 @@
       radialHost.id = RADIAL_TOP_HOST_ID;
       radialHost.setAttribute?.('data-ag-radial-top-layer', 'true');
       if (radialHost.style) {
-        radialHost.style.cssText = `position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;pointer-events:none!important;z-index:${RADIAL_TOP_Z_INDEX}!important;-webkit-app-region:no-drag!important;`;
+        radialHost.style.cssText = `position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;pointer-events:none!important;z-index:${RADIAL_TOP_Z_INDEX}!important;`;
       }
       const styleEl = document.createElement('style');
       if (styleEl) {
@@ -20705,6 +20838,24 @@ function getPanelLanguage() {
 }
 
 const PANEL_I18N = {
+  'prefs.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
+  'prefs.saveError': { 'zh-CN': '未保存 · {reason}', 'zh-TW': '未儲存 · {reason}', en: 'Save failed · {reason}' },
+  'accounts.ruleUnsaved': { 'zh-CN': '有未保存的切号规则', 'zh-TW': '有未儲存的切號規則', en: 'Unsaved switching rule' },
+  'accounts.ruleSavedOn': { 'zh-CN': '规则已保存，自动切号已启用', 'zh-TW': '規則已儲存，自動切號已啟用', en: 'Rule saved. Auto-switch is on.' },
+  'accounts.ruleSavedOff': { 'zh-CN': '规则已保存，自动切号已关闭', 'zh-TW': '規則已儲存，自動切號已關閉', en: 'Rule saved. Auto-switch is off.' },
+  'accounts.ruleThreshold': { 'zh-CN': '阈值需要在 1% 到 95% 之间', 'zh-TW': '閾值需在 1% 到 95% 之間', en: 'Enter a threshold from 1% to 95%.' },
+  'accounts.blockedReason.restartWindow': { 'zh-CN': '当前需要重启才能切号。等待只剩一个空闲窗口。', 'zh-TW': '目前需要重新啟動才能切號。等待只剩一個閒置視窗。', en: 'Switch requires a restart. Waiting for a single idle window.' },
+  'compact.settings.title': { 'zh-CN': '上下文压缩', 'zh-TW': '上下文壓縮', en: 'Context compaction' },
+  'compact.settings.now': { 'zh-CN': '压缩当前会话', 'zh-TW': '壓縮目前工作階段', en: 'Compact current chat' },
+  'compact.settings.auto': { 'zh-CN': '自动压缩', 'zh-TW': '自動壓縮', en: 'Auto-compact' },
+  'compact.settings.threshold': { 'zh-CN': '上下文阈值 (%)', 'zh-TW': '上下文閾值 (%)', en: 'Context threshold (%)' },
+  'compact.settings.invalid': { 'zh-CN': '请输入 50 到 99 的整数阈值。', 'zh-TW': '請輸入 50 到 99 的整數閾值。', en: 'Enter a whole-number threshold between 50 and 99.' },
+  'compact.settings.saveFailed': { 'zh-CN': '压缩设置未保存。', 'zh-TW': '壓縮設定未儲存。', en: 'Compaction settings were not saved.' },
+  'compact.settings.busy': { 'zh-CN': '等待当前生成或压缩完成。', 'zh-TW': '等待目前生成或壓縮完成。', en: 'Wait for the current response or compaction to finish.' },
+  'compact.settings.unavailable': { 'zh-CN': '当前会话无法执行官方 /compact。', 'zh-TW': '目前工作階段無法執行官方 /compact。', en: 'The official /compact command is unavailable for this chat.' },
+  'compact.settings.draft': { 'zh-CN': '需要一个空闲、无草稿和附件的会话输入框。', 'zh-TW': '需要一個閒置、無草稿及附件的輸入框。', en: 'Requires one idle composer with no draft or attachments.' },
+  'compact.settings.noModel': { 'zh-CN': '请先在当前会话中选择一个可用模型。', 'zh-TW': '請先在目前工作階段中選擇一個可用模型。', en: 'Select an available model in the current chat first.' },
+  'compact.settings.submitted': { 'zh-CN': '已提交官方 /compact，进度见顶栏圆环。', 'zh-TW': '已送出官方 /compact，進度見頂欄圓環。', en: 'Official /compact sent. Progress appears in the context ring.' },
   // 顶部入口单元与气泡
   'badge.aria': { 'zh-CN': '会话与上下文统计', 'zh-TW': '對話與 Context 統計', en: 'Session and context statistics' },
   'badge.reading': { 'zh-CN': '读取中…', 'zh-TW': '讀取中…', en: 'Loading…' },
@@ -21186,6 +21337,15 @@ const PANEL_I18N = {
   'reqLog.syncPricingDone': { 'zh-CN': '已同步 {count} 个模型', 'zh-TW': '已同步 {count} 個模型', en: 'Synced {count} models' },
   'reqLog.syncPricingDoneRepriced': { 'zh-CN': '已同步 {count} 个模型 · 补算 {repriced} 条', 'zh-TW': '已同步 {count} 個模型 · 補算 {repriced} 筆', en: 'Synced {count} models · {repriced} repriced' },
   'reqLog.syncPricingFailed': { 'zh-CN': '同步失败：{error}', 'zh-TW': '同步失敗：{error}', en: 'Sync failed: {error}' },
+  'reqLog.requestedDiffTip': { 'zh-CN': '请求模型 {req} 与实际路由 {act} 不同，可能已触发后台自动回退或路由切换', 'zh-TW': '請求模型 {req} 與實際路由 {act} 不同，可能已觸發後台自動回退或路由切換', en: 'Requested {req} differs from routed {act}; backend fallback or routing switch may have occurred' },
+  'reqLog.requestedRawTip': { 'zh-CN': '原始模型标识 {raw}', 'zh-TW': '原始模型識別 {raw}', en: 'Raw model id {raw}' },
+  'reqLog.speedShortNote': { 'zh-CN': '短流式窗口 {sec} 秒，按实测流式输出计算', 'zh-TW': '短串流視窗 {sec} 秒，依實測串流輸出計算', en: 'Short streaming window {sec}s, computed from measured stream output' },
+  'reqLog.speedOverallNote': { 'zh-CN': '缺少纯流式耗时字段，按总耗时估算参考速率', 'zh-TW': '缺少純串流耗時欄位，依總耗時估算參考速率', en: 'Streaming duration missing; reference rate estimated from total duration' },
+  'reqLog.speedReason.awaiting_first_token': { 'zh-CN': '等待首字响应中，暂未开始计算速率', 'zh-TW': '等待首字回應中，暫未開始計算速率', en: 'Awaiting first token; speed not yet available' },
+  'reqLog.speedReason.no_output_tokens': { 'zh-CN': '无有效输出 Token，无法计算生成速率', 'zh-TW': '無有效輸出 Token，無法計算生成速率', en: 'No output tokens; unable to calculate speed' },
+  'reqLog.speedReason.non_streaming_final': { 'zh-CN': '非流式终态无流式输出窗口，不伪造生成速率', 'zh-TW': '非串流終態無串流輸出視窗，不偽造生成速率', en: 'Non-streaming final without stream window; speed omitted' },
+  'reqLog.speedReason.missing_duration': { 'zh-CN': '缺少总耗时与流式耗时字段，无法计算生成速率', 'zh-TW': '缺少總耗時與串流耗時欄位，無法計算生成速率', en: 'Missing duration telemetry; unable to calculate speed' },
+  'reqLog.speedReason.missing_streaming_duration': { 'zh-CN': '缺少纯流式耗时且样本过小，不估算生成速率', 'zh-TW': '缺少純串流耗時且樣本過小，不估算生成速率', en: 'Missing streaming duration on small output; speed omitted' },
   'composer.speedTurns': { 'zh-CN': '{turns} 轮 {steps} 步 · {speed}', 'zh-TW': '{turns} 輪 {steps} 步 · {speed}', en: '{turns} turns {steps} steps · {speed}' },
   'composer.tokenCache': { 'zh-CN': '{tokens} · 缓存 {hit}', 'zh-TW': '{tokens} · 快取 {hit}', en: '{tokens} · Cache {hit}' },
   'composer.tokenCacheTitle': { 'zh-CN': '会话累计 {tokens} · 会话缓存命中率 {hit}（点击直达实时请求）', 'zh-TW': '會話累計 {tokens} · 會話快取命中率 {hit}（點擊直達即時請求）', en: 'Session total {tokens} · Session Cache Hit Rate {hit} (click for live requests)' },
@@ -21194,6 +21354,8 @@ const PANEL_I18N = {
   'turnFooter.cache': { 'zh-CN': '缓存', 'zh-TW': '快取', en: 'Cache' },
   'turnFooter.in': { 'zh-CN': '入', 'zh-TW': '入', en: 'In' },
   'turnFooter.out': { 'zh-CN': '出', 'zh-TW': '出', en: 'Out' },
+  'turnFooter.tipMulti': { 'zh-CN': '点击在本次请求与本轮汇总之间切换 · 双击查看详细看板', 'zh-TW': '點擊在本次請求與本輪彙總之間切換 · 雙擊查看詳細看板', en: 'Click to toggle between request and turn · Double-click to view dashboard' },
+  'turnFooter.tipSingle': { 'zh-CN': '点击查看详细看板', 'zh-TW': '點擊查看詳細看板', en: 'Click to view dashboard' },
   'composer.card.tokenUsage': { 'zh-CN': 'Token 用量', 'zh-TW': 'Token 用量', en: 'Token Usage' },
   'composer.card.cacheHit': { 'zh-CN': '缓存命中', 'zh-TW': '快取命中', en: 'Cache Hit' },
   'composer.card.uncachedInput': { 'zh-CN': '未缓存输入', 'zh-TW': '未快取輸入', en: 'Uncached Input' },
@@ -21230,6 +21392,7 @@ const PANEL_I18N = {
   'composer.runtime.error': { 'zh-CN': '状态异常', 'zh-TW': '狀態異常', en: 'Error' },
   'composer.runtime.reason.ready': { 'zh-CN': '就绪', 'zh-TW': '就緒', en: 'Ready' },
   'composer.runtime.reason.generating': { 'zh-CN': '生成中', 'zh-TW': '生成中', en: 'Generating' },
+  'composer.runtime.reason.queued': { 'zh-CN': '排队中', 'zh-TW': '排隊中', en: 'Queued' },
   'composer.runtime.reason.compacting': { 'zh-CN': '压缩上下文中', 'zh-TW': '壓縮上下文中', en: 'Compacting' },
   'composer.runtime.reason.slow_wait': { 'zh-CN': '等待较慢', 'zh-TW': '等待較慢', en: 'Waiting slowly' },
   'composer.runtime.reason.compact_kv_recompute': { 'zh-CN': '跨模型压缩重算缓存', 'zh-TW': '跨模型壓縮重算快取', en: 'Cross-model compact KV recompute' },
@@ -21245,6 +21408,7 @@ const PANEL_I18N = {
   'composer.contextAria': { 'zh-CN': '上下文详情', 'zh-TW': '上下文詳情', en: 'Context details' },
   'composer.contextTip': { 'zh-CN': '点击查看上下文详情', 'zh-TW': '點擊查看上下文詳情', en: 'Click to view context details' },
   'composer.cardAria': { 'zh-CN': 'Token 用量与缓存明细', 'zh-TW': 'Token 用量與快取明細', en: 'Token usage & cache breakdown' },
+  'composer.speedQueued': { 'zh-CN': '排队中…', 'zh-TW': '排隊中…', en: 'Queued…' },
   'composer.speedWaiting': { 'zh-CN': '等待首字…', 'zh-TW': '等待首字…', en: 'Waiting for TTFT…' },
   'modelsUsage.title': { 'zh-CN': '按模型 Token 用量', 'zh-TW': '依模型 Token 用量', en: 'Usage history' },
   'modelsUsage.subtitle': { 'zh-CN': '查看桌面端与 CLI 各模型每日 Token 消耗及占比分布。', 'zh-TW': '檢視桌面端與 CLI 各模型每日 Token 消耗及佔比分布。', en: 'Daily token consumption and share by model across Desktop and CLI.' },
@@ -21521,11 +21685,37 @@ const PANEL_I18N = {
   'settings.turnFooter.desc': { 'zh-CN': '在助手回复操作栏末尾显示本轮模型、用量与耗时微标.', 'zh-TW': '在助手回覆操作列末尾顯示本輪模型、用量與耗時微標.', en: 'Show this turn model, usage and duration chip at the end of the assistant action bar.' },
   'settings.composerQuota.label': { 'zh-CN': '输入框下方状态条', 'zh-TW': '輸入框下方狀態列', en: 'Status bar under the composer' },
   'settings.composerQuota.desc': { 'zh-CN': '在聊天输入框下方显示速度、Token、上下文与额度摘要.', 'zh-TW': '在聊天輸入框下方顯示速度、Token、上下文與額度摘要.', en: 'Show speed, tokens, context and quota summary below the chat composer.' },
+  'settings.modelPicker.label': { 'zh-CN': '简化输入框模型与思考档位菜单', 'zh-TW': '簡化輸入框模型與思考檔位選單', en: 'Simplified composer model and effort picker' },
+  'settings.modelPicker.desc': { 'zh-CN': '基础模型仅展示一次并将思考档位独立调节，不兼容时退回原生菜单.', 'zh-TW': '基礎模型僅顯示一次並將思考檔位獨立調整，不相容時退回原生選單.', en: 'Deduplicate base models with a separate thinking effort control and fall back safely if host markup changes.' },
+  'modelPicker.title': { 'zh-CN': '选择模型', 'zh-TW': '選擇模型', en: 'Select model' },
+  'modelPicker.subtitle': { 'zh-CN': '档位右侧独立调节', 'zh-TW': '檔位右側獨立調整', en: 'Effort set separately' },
+  'modelPicker.effortTitle': { 'zh-CN': '思考深度', 'zh-TW': '思考深度', en: 'Thinking effort' },
+  'modelPicker.orchestratorEntry': { 'zh-CN': 'Orchestrator 编排', 'zh-TW': 'Orchestrator 編排', en: 'Orchestrator' },
+  'modelPicker.orchestratorTitle': { 'zh-CN': 'Orchestrator 路由', 'zh-TW': 'Orchestrator 路由', en: 'Orchestration' },
+  'modelPicker.orchestratorSubHint': { 'zh-CN': '复用宿主真实路由与预设', 'zh-TW': '複用宿主真實路由與預設', en: 'Uses live host routing' },
+  'modelPicker.plannerSection': { 'zh-CN': 'Planner 规划器', 'zh-TW': 'Planner 規劃器', en: 'Planner' },
+  'modelPicker.executorSection': { 'zh-CN': 'Executor 执行器', 'zh-TW': 'Executor 執行器', en: 'Executor' },
+  'modelPicker.backToModels': { 'zh-CN': '返回模型列表', 'zh-TW': '返回模型清單', en: 'Back to models' },
+  'modelPicker.viewUsage': { 'zh-CN': '查看用量与限额', 'zh-TW': '檢視用量與限額', en: 'View Usage' },
+  'modelPicker.unavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
+  'modelPicker.unknownModel': { 'zh-CN': '未知模型', 'zh-TW': '未知模型', en: 'Unknown model' },
+  'modelPicker.fallbackNormal': { 'zh-CN': '已按宿主规则切至 {to}', 'zh-TW': '已依宿主規則切至 {to}', en: 'Switched via host rule to {to}' },
+  'modelPicker.fallbackHighWarn': { 'zh-CN': '不支持 {from}，已按宿主规则切至高档 {to}', 'zh-TW': '不支援 {from}，已依宿主規則切至高檔 {to}', en: '{from} unsupported, fell back to {to}' },
+  'settings.nextPrompt.label': { 'zh-CN': '下一句预测建议', 'zh-TW': '下一句預測建議', en: 'Next prompt prediction' },
+  'settings.nextPrompt.desc': { 'zh-CN': '默认关闭. 开启后每轮结束会调用当前账号模型并产生额外用量，按 Tab 填入草稿.', 'zh-TW': '預設關閉. 開啟後每輪結束會呼叫目前帳號模型並產生額外用量，按 Tab 填入草稿.', en: 'Off by default. Uses your current account model quota after each completed turn; press Tab to insert draft.' },
+  'nextPrompt.tabFill': { 'zh-CN': 'Tab 填入', 'zh-TW': 'Tab 填入', en: 'Tab fill' },
   'composer.quotaAria': { 'zh-CN': '当前模型池额度与消耗节奏摘要', 'zh-TW': '目前模型池額度與消耗節奏摘要', en: 'Current pool quota & consumption pace summary' },
   'settings.dock.fallbackAux': { 'zh-CN': '右侧辅助栏当前未展开. 点击此处可立即展开并挂载.', 'zh-TW': '右側輔助欄目前未展開. 點擊此處可立即展開並掛載.', en: 'Auxiliary sidebar is currently collapsed. Click here to expand and mount.' },
   'settings.dock.fallbackPage': { 'zh-CN': '已在本地启动独立页面服务. 点击右侧按钮可在浏览器中打开.', 'zh-TW': '已在本地啟動獨立頁面服務. 點擊右側按鈕可在瀏覽器中開啟.', en: 'Standalone service active. Click button to open in browser.' },
   'settings.dock.auxBack': { 'zh-CN': '返回顶栏', 'zh-TW': '返回頂欄', en: 'Back to Topbar' },
   'settings.dock.auxBackTitle': { 'zh-CN': '退出右侧停靠，返回顶部工具栏', 'zh-TW': '結束右側停靠，返回頂部工具列', en: 'Undock right sidebar and return to top toolbar' },
+  'settings.dock.auxTabPlugin': { 'zh-CN': '插件', 'zh-TW': '外掛', en: 'Plugin' },
+  'settings.dock.auxTabBrowser': { 'zh-CN': '浏览器', 'zh-TW': '瀏覽器', en: 'Browser' },
+  'settings.dock.auxCollapse': { 'zh-CN': '收起', 'zh-TW': '收合', en: 'Collapse' },
+  'settings.dock.auxRestore': { 'zh-CN': '展开', 'zh-TW': '展開', en: 'Restore' },
+  'settings.dock.auxResizeAria': { 'zh-CN': '拖拽调整右侧辅助面板宽度', 'zh-TW': '拖曳調整右側輔助面板寬度', en: 'Drag to resize right auxiliary panel width' },
+  'settings.dock.auxResizeTitle': { 'zh-CN': '左右拖拽调整宽度', 'zh-TW': '左右拖曳調整寬度', en: 'Drag left or right to resize' },
+  'settings.dock.auxBrowserHint': { 'zh-CN': '已切至宿主浏览器，保留右侧网页状态', 'zh-TW': '已切至宿主瀏覽器，保留右側網頁狀態', en: 'Showing host browser with page state preserved' },
   'settings.dock.auxCopyUrl': { 'zh-CN': '复制链接', 'zh-TW': '複製連結', en: 'Copy URL' },
   'settings.dock.auxExternal': { 'zh-CN': '外部浏览器', 'zh-TW': '外部瀏覽器', en: 'External' },
   'settings.dock.auxFollowing': { 'zh-CN': '已随焦点定位 · {role} {id}', 'zh-TW': '已隨焦點定位 · {role} {id}', en: 'Following {role} · {id}' },
@@ -21535,6 +21725,7 @@ const PANEL_I18N = {
   'settings.dock.auxRoleSideChat': { 'zh-CN': 'Side Chat', 'zh-TW': 'Side Chat', en: 'Side Chat' },
   'settings.dock.fbCopyUrl': { 'zh-CN': '复制链接', 'zh-TW': '複製連結', en: 'Copy Link' },
   'settings.dock.fbOpenExternal': { 'zh-CN': '在外部浏览器打开', 'zh-TW': '在外部瀏覽器開啟', en: 'Open External Browser' },
+  'settings.dock.fbOpenPage': { 'zh-CN': '以独立页面展开', 'zh-TW': '以獨立頁面展開', en: 'Open Standalone Page' },
   'settings.dock.fbPage': { 'zh-CN': '独立页面', 'zh-TW': '獨立頁面', en: 'Standalone' },
   'settings.dock.openRightOk': { 'zh-CN': '已在右侧辅助栏定位 {role} · {id}，{copyNote}.', 'zh-TW': '已在右側輔助欄定位 {role} · {id}，{copyNote}.', en: 'Opened {role} · {id} in right sidebar; {copyNote}.' },
   'settings.dock.openRightFallback': { 'zh-CN': '右侧辅助栏未能展开，已保留悬浮详情，{copyNote}. 可用下方外部浏览器或独立页面查看.', 'zh-TW': '右側輔助欄未能展開，已保留懸浮詳情，{copyNote}. 可用下方外部瀏覽器或獨立頁面檢視.', en: 'Right sidebar failed to expand, kept floating panel; {copyNote}. Use External Browser or Standalone Page below.' },
@@ -21554,6 +21745,7 @@ const PANEL_I18N = {
   'settings.quickSettings': { 'zh-CN': '⚙️ 配置', 'zh-TW': '⚙️ 設定', en: '⚙️ Settings' },
   'settings.backToSession': { 'zh-CN': '‹ 返回会话', 'zh-TW': '‹ 返回會話', en: '‹ Back to Session' },
   'settings.nav.appearance': { 'zh-CN': '🎨 外观与停靠', 'zh-TW': '🎨 外觀與停靠', en: '🎨 Appearance & Dock' },
+  'settings.nav.accounts': { 'zh-CN': '👤 账号切号', 'zh-TW': '👤 帳號切號', en: '👤 Accounts' },
   'settings.nav.preset': { 'zh-CN': '✨ 推荐配置', 'zh-TW': '✨ 推薦配置', en: '✨ Presets' },
   'settings.nav.rehydrate': { 'zh-CN': '🧠 压缩与恢复', 'zh-TW': '🧠 壓縮與恢復', en: '🧠 Rehydrate' },
   'settings.nav.proxy': { 'zh-CN': '🌐 免 TUN 代理', 'zh-TW': '🌐 免 TUN 代理', en: '🌐 Proxy' },
@@ -21563,7 +21755,7 @@ const PANEL_I18N = {
   'badge.compactContextTip': { 'zh-CN': '会话上下文看板 · 点击打开', 'zh-TW': '會話上下文看板 · 點擊開啟', en: 'Context Dashboard · Click to open' },
   'badge.compactOverflowTip': { 'zh-CN': '插件快捷功能与设置 · 点击打开', 'zh-TW': '外掛捷徑功能與設定 · 點擊開啟', en: 'Plugin Menu & Settings · Click to open' },
   'settings.quotaBadgeMode.label': { 'zh-CN': '顶栏额度窗口', 'zh-TW': '頂欄額度視窗', en: 'Topbar quota window' },
-  'settings.quotaBadgeMode.desc': { 'zh-CN': '支持右键或 Alt 加点击切换.', 'zh-TW': '支援右鍵或 Alt 加點擊切換.', en: 'Right-click or Alt plus click to cycle.' },
+  'settings.quotaBadgeMode.desc': { 'zh-CN': '左键切换额度窗口，右键或 Alt 加点击打开额度面板。', 'zh-TW': '左鍵切換額度視窗，右鍵或 Alt 加點擊開啟額度面板。', en: 'Click to cycle quota windows. Right-click or Alt-click to open the quota panel.' },
   'settings.quotaBadgeMode.auto': { 'zh-CN': '自动最紧缩', 'zh-TW': '自動最緊縮', en: 'Auto Tightest' },
   'settings.quotaBadgeMode.5h': { 'zh-CN': '5h 窗口', 'zh-TW': '5h 視窗', en: '5h Window' },
   'settings.quotaBadgeMode.weekly': { 'zh-CN': '周额度', 'zh-TW': '週額度', en: 'Weekly' },
@@ -21603,6 +21795,7 @@ const PANEL_I18N = {
   'cost.unpriced': { 'zh-CN': '最近调用：模型费率未收录', 'zh-TW': '最近呼叫：模型費率未收錄', en: 'Latest turn: unpriced model' },
   'cost.latestDash': { 'zh-CN': '最近调用估值：—', 'zh-TW': '最近呼叫估值：—', en: 'Latest turn: —' },
   'cost.sessionTotal': { 'zh-CN': '当前会话合计约 ${val}', 'zh-TW': '目前工作階段合計約 ${val}', en: 'Session total ≈ ${val}' },
+  'cost.sessionReferenceTip': { 'zh-CN': '未收录费率的用量按 Gemini 3.8 Flash 参考价估算', 'zh-TW': '未收錄費率的用量按 Gemini 3.8 Flash 參考價估算', en: 'Usage without a listed rate is estimated at Gemini 3.8 Flash reference prices' },
   'cost.modelTip': { 'zh-CN': '模型：{model}\n输入：{input} tok\n缓存：{cache} tok\n输出：{output} tok\n参考金额：${cost}', 'zh-TW': '模型：{model}\n輸入：{input} tok\n快取：{cache} tok\n輸出：{output} tok\n參考金額：${cost}', en: 'Model: {model}\nInput: {input} tok\nCache: {cache} tok\nOutput: {output} tok\nEst. cost: ${cost}' },
   'cost.unpricedTip': { 'zh-CN': '模型：{model}（公开费率未收录）', 'zh-TW': '模型：{model}（公開費率未收錄）', en: 'Model: {model} (public rate unavailable)' },
   'cost.missingModel': { 'zh-CN': '缺少模型信息', 'zh-TW': '缺少模型資訊', en: 'Missing model info' },
@@ -21642,6 +21835,7 @@ const PANEL_I18N = {
   'mod.proxy.descOff': { 'zh-CN': '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。', 'zh-TW': '未啟用本機網路直連，網路請求跟隨系統預設/TUN 設定。', en: 'Local proxy disabled; requests follow system/TUN settings.' },
   'mod.proxy.btnDisable': { 'zh-CN': '关闭免 TUN 直连', 'zh-TW': '關閉免 TUN 直連', en: 'Disable Local Proxy' },
   'mod.proxy.btnEnable': { 'zh-CN': '开启免 TUN 直连', 'zh-TW': '開啟免 TUN 直連', en: 'Enable Local Proxy' },
+  'mod.proxy.switch': { 'zh-CN': '免 TUN 直连', 'zh-TW': '免 TUN 直連', en: 'Local proxy without TUN' },
   'mod.proxy.btnSave': { 'zh-CN': '保存代理设置', 'zh-TW': '儲存代理設定', en: 'Save Proxy Config' },
   'mod.proxy.btnSaving': { 'zh-CN': '正在保存…', 'zh-TW': '正在儲存…', en: 'Saving…' },
   'mod.proxy.badgePendingRestart': { 'zh-CN': '⏳ 已配置 · 待重启生效', 'zh-TW': '⏳ 已設定 · 待重啟生效', en: '⏳ Saved · Restart Needed' },
@@ -22296,6 +22490,7 @@ const PANEL_I18N = {
   'update.doneHot': { 'zh-CN': '已成功在线更新至 {ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 {ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to {ver}. UI hot-injected immediately; restart client for main-process changes.' },
   'update.doneHotFull': { 'zh-CN': '已成功在线更新至 {ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 {ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to {ver}. Both UI and backend service hot-reloaded and verified without restart.' },
   'update.doneDisk': { 'zh-CN': '已成功完成 {ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 {ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to {ver} complete. Restart Antigravity to apply.' },
+  'update.liveStaged': { 'zh-CN': '{ver} 已下载并验证。watch 会加载新版，也可运行 node cli.js live 重新挂载。', 'zh-TW': '{ver} 已下載並驗證。watch 會載入新版，也可執行 node cli.js live 重新掛載。', en: '{ver} downloaded and verified. Watch will load it, or run node cli.js live to attach again.' },
   'update.restartBtn': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },
   'update.btnRetry': { 'zh-CN': '重试更新', 'zh-TW': '重試更新', en: 'Retry Update' },
@@ -22646,6 +22841,12 @@ const PANEL_I18N = {
   'accounts.thresholdLabel': { 'zh-CN': '阈值 (%)', 'zh-TW': '閾值 (%)', en: 'Threshold (%)' },
   'accounts.candidatesLabel': { 'zh-CN': '允许切入的候选账号：', 'zh-TW': '允許切入的候選帳號：', en: 'Candidate accounts allowed:' },
   'accounts.saveRule': { 'zh-CN': '保存切号规则', 'zh-TW': '儲存切號規則', en: 'Save Rule' },
+  'accounts.manageBtn': { 'zh-CN': '在设置中管理账号与自动切号', 'zh-TW': '在設定中管理帳號與自動切號', en: 'Manage Accounts & Auto-Switch' },
+  'accounts.refreshEntry': { 'zh-CN': '刷新账号', 'zh-TW': '重新整理帳號', en: 'Refresh Accounts' },
+  'accounts.entryActiveLabel': { 'zh-CN': '当前账号：{email} · 已登记 {count} 个', 'zh-TW': '目前帳號：{email} · 已登記 {count} 個', en: 'Active: {email} · {count} saved' },
+  'accounts.entryNoActive': { 'zh-CN': '暂未识别活跃账号 · 已登记 {count} 个', 'zh-TW': '暫未識別目前帳號 · 已登記 {count} 個', en: 'No active account · {count} saved' },
+  'accounts.entryRuleUnsaved': { 'zh-CN': '检测到未保存的自动切号草稿，前往设置页查看或保存', 'zh-TW': '偵測到未儲存的自動切號草稿，前往設定頁檢視或儲存', en: 'Unsaved auto-switch draft pending in Settings' },
+  'accounts.entryRuleSummary': { 'zh-CN': '自动切号：{state} · 阈值 {threshold}%', 'zh-TW': '自動切號：{state} · 閾值 {threshold}%', en: 'Auto-switch: {state} · Threshold {threshold}%' },
   'quota.compareTitle': { 'zh-CN': '📊 本机消耗与共享账号额度对照', 'zh-TW': '📊 本機消耗與共享帳號額度對照', en: '📊 Local Usage vs. Shared Quota Deltas' },
   'quota.compareDisclaimer': { 'zh-CN': '按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。', 'zh-TW': '依同一帳號與共享池統計。帳面百分點下降受多裝置使用、取整、重置與滾動恢復影響，不等同於本機單獨消耗佔比。', en: 'Scoped per account & pool. Quota percentage-point changes reflect shared multi-device usage, rounding, resets, and rolling recovery — not solely local consumption.' },
   'quota.compareEmpty': { 'zh-CN': '暂未累积同一账号前后两次配额采样对照区间（刷新配额后自动对比）。', 'zh-TW': '暫未累積同一帳號前後兩次配額採樣對照區間（重新整理配額後自動對比）。', en: 'No completed quota comparison intervals yet. Refresh quota to capture baseline & delta.' },
@@ -22707,11 +22908,12 @@ const PANEL_I18N = {
   'accounts.status.waiting_idle': { 'zh-CN': '等待当前生成完成', 'zh-TW': '等待目前生成完成', en: 'Waiting idle' },
   'accounts.status.cooldown': { 'zh-CN': '冷却保护中', 'zh-TW': '冷卻保護中', en: 'Cooldown' },
   'accounts.status.switching': { 'zh-CN': '切号中', 'zh-TW': '切號中', en: 'Switching' },
+  'accounts.status.restarting': { 'zh-CN': '重启生效中', 'zh-TW': '重啟生效中', en: 'Restarting' },
   'accounts.status.all_candidates_exhausted': { 'zh-CN': '备选账号均不足', 'zh-TW': '備選帳號皆不足', en: 'All candidates exhausted' },
-  'accounts.status.blocked_untrusted_quota': { 'zh-CN': '数据不可信已跳过', 'zh-TW': '資料不可信已跳過', en: 'Skipped (Stale/Error)' },
+  'accounts.status.blocked_untrusted_quota': { 'zh-CN': '数据不可信已跳过', 'zh-TW': '資料不可信已跳過', en: 'Skipped' },
   'accounts.status.blocked_missing_pool': { 'zh-CN': '所选池不可用', 'zh-TW': '所選池無法使用', en: 'Pool unavailable' },
   'accounts.status.blocked_missing_account': { 'zh-CN': '未识别当前账号', 'zh-TW': '未識別目前帳號', en: 'Account unknown' },
-  'accounts.status.error': { 'zh-CN': '失败已停用', 'zh-TW': '失敗已停用', en: 'Halted (Error)' },
+  'accounts.status.error': { 'zh-CN': '失败已停用', 'zh-TW': '失敗已停用', en: 'Halted' },
   'accounts.blockedReason.no_permission': { 'zh-CN': '当前账号 {email} 对监控池 {pool} 无模型权限，请切换监测池或改用兼容账号', 'zh-TW': '目前帳號 {email} 對監控池 {pool} 無模型權限，請切換監測池或改用相容帳號', en: '{email} has no access to {pool}; switch pool or use a compatible account' },
   'accounts.blockedReason.missing_pool': { 'zh-CN': '当前账号 {email} 尚未返回监控池 {pool}，请刷新配额或改选其他共享池', 'zh-TW': '目前帳號 {email} 尚未回傳監控池 {pool}，請重新整理配額或改選其他池', en: '{email} has no {pool} data; refresh quota or pick another pool' },
   'accounts.blockedReason.missing_window': { 'zh-CN': '当前账号 {email} 的 {pool} 暂未返回所选限额窗口 {window}，建议改为“主窗口最紧缩”或刷新配额', 'zh-TW': '目前帳號 {email} 的 {pool} 尚未回傳所選視窗 {window}，建議改為「主視窗最緊縮」或重新整理配額', en: '{email} {pool} lacks {window} window data; use Primary Tightest or refresh quota' },
@@ -22721,7 +22923,9 @@ const PANEL_I18N = {
   'accounts.blockedReason.untrusted_quota': { 'zh-CN': '当前配额快照过期或刷新失败，已暂停自动切号，刷新恢复后自动继续', 'zh-TW': '目前配額快照過期或重新整理失敗，已暫停自動切號，重新整理恢復後自動繼續', en: 'Quota snapshot stale or failed; auto-switch paused until a clean refresh' },
   'accounts.blockedReason.waiting_idle': { 'zh-CN': '已达切号阈值，正在等待当前对话生成结束后切换', 'zh-TW': '已達切號閾值，正在等待目前對話生成結束後切換', en: 'Threshold met; waiting for current generation to finish before switching' },
   'accounts.blockedReason.cooldown': { 'zh-CN': '处于切号冷却保护期内，稍后自动恢复监测', 'zh-TW': '處於切號冷卻保護期內，稍後自動恢復監測', en: 'In switch cooldown protection; monitoring will resume automatically' },
-  'accounts.blockedReason.pending_debounce': { 'zh-CN': '已触发阈值 · 防抖确认中 ({count}/{target})', 'zh-TW': '已觸發閾值 · 防抖確認中 ({count}/{target})', en: 'Threshold met · Debouncing ({count}/{target})' },
+  'accounts.blockedReason.pending_debounce': { 'zh-CN': '已触发阈值 · 防抖确认中', 'zh-TW': '已觸發閾值 · 防抖確認中', en: 'Threshold met · Debouncing' },
+  'accounts.blockedReason.multi_window_open': { 'zh-CN': '检测到多个活跃窗口，等待仅剩单个空闲窗口后重启切换', 'zh-TW': '偵測到多個活躍視窗，等待僅剩單個閒置視窗後重啟切換', en: 'Multiple active windows open. Waiting for a single idle window to restart and switch.' },
+  'accounts.blockedReason.live_mode_cannot_auto_restart': { 'zh-CN': '免改盘模式下无法自动重启客户端，请在桌面安装模式下使用或手动重启', 'zh-TW': '免改盤模式下無法自動重啟用戶端，請在桌面安裝模式下使用或手動重啟', en: 'Cannot auto-restart host in patch-free live mode. Restart manually or use installed mode.' },
   'accounts.lastSwitchedTo': { 'zh-CN': '上次切至 {email}', 'zh-TW': '上次切至 {email}', en: 'Last switched to {email}' },
   'accounts.lastSwitchRolledBack': { 'zh-CN': '已自动回滚：{detail}', 'zh-TW': '已自動回滾：{detail}', en: 'Rolled back: {detail}' },
   'accounts.actionBusy': { 'zh-CN': '正在处理…', 'zh-TW': '處理中…', en: 'Processing…' },
@@ -22914,6 +23118,11 @@ const PANEL_I18N = {
   'session.preset.mgrBtn': { 'zh-CN': '模块管理', 'zh-TW': '模組管理', en: 'Widgets' },
   'session.preset.mgrTitle': { 'zh-CN': '显示或调整模块顺序', 'zh-TW': '顯示或調整模組順序', en: 'Show or reorder modules' },
   'session.preset.reset': { 'zh-CN': '重置当前预设', 'zh-TW': '重設目前預設', en: 'Reset preset' },
+  'session.preset.sort': { 'zh-CN': '排序', 'zh-TW': '排序', en: 'Sort' },
+  'session.preset.sortDone': { 'zh-CN': '完成', 'zh-TW': '完成', en: 'Done' },
+  'session.preset.sortTitle': { 'zh-CN': '长按预设标签拖拽排序或点击进入按键重排', 'zh-TW': '長按預設標籤拖曳排序或點擊進入按鍵重排', en: 'Long press presets to drag or click to reorder with buttons' },
+  'session.preset.moveLeftAria': { 'zh-CN': '向左移动预设', 'zh-TW': '向左移動預設', en: 'Move preset left' },
+  'session.preset.moveRightAria': { 'zh-CN': '向右移动预设', 'zh-TW': '向右移動預設', en: 'Move preset right' },
 
   'session.widget.overviewKpi': { 'zh-CN': '会话总览与关键指标', 'zh-TW': '會話總覽與關鍵指標', en: 'Session Overview & KPIs' },
   'session.widget.tokenBreakdown': { 'zh-CN': 'Token 构成与费用', 'zh-TW': 'Token 構成與費用', en: 'Token Mix & Cost' },
@@ -25736,6 +25945,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
     callEnterAnimTimer: null,
     speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
+    lastRequestedModelByCascade: new Map(),
     streamSampleTracker: null, liveSpeed: null, turnState: null, lastSpeedEval: null, speedOverrideForTest: null,
     compacting: null, compactProbeTimer: null, pendingCompactForceScan: false,
     lastCompactForceScanAt: 0, hostContextWindowUsage: null,
@@ -26501,6 +26711,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     if (savedPreset && HEAT_PRESETS[savedPreset]) heatPreset = savedPreset;
   } catch {}
 
+  let colorSaveTimer = null;
   function saveCustomColors() {
     try {
       if (typeof localStorage !== 'undefined') {
@@ -26508,6 +26719,24 @@ function formatPeriodCalendarLabel(currentPeriod) {
         localStorage.setItem(HEAT_PRESET_STORAGE_KEY, heatPreset);
       }
     } catch {}
+    userActionSeq++;
+    if (colorSaveTimer) clearTimeout(colorSaveTimer);
+    colorSaveTimer = setTimeout(() => {
+      colorSaveTimer = null;
+      if (!state.disposed) void saveSettingsPayloadBridge({ uiPreferences: { customColors: { ...customColors }, heatPreset } });
+    }, 250);
+  }
+
+  function restoreAppearancePreferences(prefs) {
+    if (prefs.customColors && typeof prefs.customColors === 'object') {
+      for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = normalizeHex(prefs.customColors[key]) || '';
+      if (HEAT_PRESETS[prefs.heatPreset]) heatPreset = prefs.heatPreset;
+      applyCustomColors();
+    }
+    if (['auto', 'light', 'dark'].includes(prefs.themeMode) && prefs.themeMode !== currentThemeMode) {
+      currentThemeMode = prefs.themeMode;
+      applyTheme();
+    }
   }
 
   // 色彩空间转换与格式化工具（HEX <-> RGB <-> HSV <-> HSL）
@@ -27152,6 +27381,8 @@ function formatPeriodCalendarLabel(currentPeriod) {
       if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', currentThemeMode);
     } catch {}
     applyTheme();
+    userActionSeq++;
+    void saveSettingsPayloadBridge({ uiPreferences: { themeMode: currentThemeMode } });
   }
 
   let themeObserver = null;
@@ -27820,7 +28051,18 @@ function formatPeriodCalendarLabel(currentPeriod) {
           styleEl.id = 'ag-topbar-host-fix';
           document.head.appendChild(styleEl);
         }
+        const isMacPlatform = /^Mac/i.test((typeof navigator !== 'undefined' && navigator.platform) || '');
+        const hasStandaloneMenuBar = (() => {
+          try {
+            const mb = typeof document.querySelector === 'function' ? document.querySelector('[data-testid="title-menu-bar"]') : null;
+            const r = mb?.getBoundingClientRect?.();
+            return Boolean(r && r.height >= 16);
+          } catch {
+            return false;
+          }
+        })();
         const activeWco = wcoWidth > 0 || titlebarWcoPad > 0;
+        const enableTitlebarDrag = activeWco || isMacPlatform || !hasStandaloneMenuBar;
         const cssText = [
           '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id] {',
           '  padding-right: calc(var(--right-cluster-width, 140px) - 4px) !important;',
@@ -27830,11 +28072,11 @@ function formatPeriodCalendarLabel(currentPeriod) {
             `  padding-right: ${titlebarWcoPad}px !important;`,
             '}'
           ].join('\n') : '',
-          activeWco ? [
+          enableTitlebarDrag ? [
             '[class*="@container/titlebar"],',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child {',
-            '  /* Native titlebar owns draggable regions. */',
+            '  -webkit-app-region: drag;',
             '}',
             '[class*="@container/titlebar"] button,',
             '[class*="@container/titlebar"] a,',
@@ -28047,8 +28289,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
             ovMenu.style.display = '';
             ovMenu.style.pointerEvents = '';
           }
-          const csbBar = el('composer-status-bar');
-          if (csbBar) csbBar.hidden = false;
+          ensureComposerStatusBarMounted({ marketplaceActive: false });
           const orbEl = el('ctx-radial-orb');
           if (orbEl && orbEl.style) {
             orbEl.style.display = '';
@@ -28161,6 +28402,169 @@ function formatPeriodCalendarLabel(currentPeriod) {
     return t('settings.dock.auxRoleMain');
   }
 
+  function captureAuxPanelScrolls() {
+    for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'view-quota', 'ctx-model-list', 'files']) {
+      const node = el(sId);
+      if (node && typeof node.scrollTop === 'number') {
+        auxSavedPanelScrolls.set(sId, node.scrollTop);
+      }
+    }
+  }
+
+  function restoreAuxPanelScrolls() {
+    for (const [sId, topVal] of auxSavedPanelScrolls.entries()) {
+      const node = el(sId);
+      if (node && typeof node.scrollTop === 'number' && topVal > 0) {
+        try { node.scrollTop = topVal; } catch { }
+      }
+    }
+  }
+
+  function restoreAuxHostSiblings() {
+    for (const node of Array.from(auxHiddenHostNodes)) {
+      try {
+        if (!node) continue;
+        const orig = node.getAttribute?.('data-ag-aux-orig-display');
+        if (node.style) node.style.display = orig || '';
+        node.removeAttribute?.('data-ag-aux-orig-display');
+        node.removeAttribute?.('data-ag-aux-host-hidden');
+      } catch { }
+    }
+    auxHiddenHostNodes.clear();
+  }
+
+  function clampAuxWidthPx(rawWidth) {
+    const n = Number(rawWidth);
+    if (!Number.isFinite(n)) return 420;
+    const vw = (typeof window !== 'undefined' && Number(window.innerWidth) > 320) ? Number(window.innerWidth) : 1440;
+    const maxW = Math.max(360, Math.min(920, Math.round(vw * 0.72)));
+    return Math.max(280, Math.min(maxW, Math.round(n)));
+  }
+
+  function resolveAuxSizingContainer(auxEl) {
+    if (!auxEl) return null;
+    return auxEl.closest?.('[data-side-panel-focus-scope="true"], [data-aux-pane-focus-scope="true"]')
+      || auxEl;
+  }
+
+  function applyAuxWidthPx(widthPx, { persist = false } = {}) {
+    if (widthPx == null) return null;
+    const clamped = clampAuxWidthPx(widthPx);
+    auxWidthPx = clamped;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_aux_width_px', String(clamped));
+    } catch { }
+    const activeAux = dockPosition === 'aux' && !dockFallbackReason;
+    if (activeAux) {
+      const auxEl = findAuxSidebarContainer();
+      const target = resolveAuxSizingContainer(auxEl);
+      if (target && target.style) {
+        target.style.width = `${clamped}px`;
+        target.style.minWidth = '280px';
+        target.style.flexBasis = `${clamped}px`;
+      }
+      layoutMeasurementDirty = true;
+      updateResponsiveLayout(true);
+    }
+    if (persist && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ auxWidthPx: clamped });
+    }
+    return clamped;
+  }
+
+  function syncAuxHostCoexistence() {
+    const marketplaceBlocked = isHostMarketplaceActive();
+    const activeAux = !marketplaceBlocked && dockPosition === 'aux' && !dockFallbackReason;
+    const resizer = el('dock-aux-resizer');
+    if (!activeAux) {
+      host.removeAttribute('data-aux-view');
+      host.removeAttribute('data-aux-collapsed');
+      if (resizer) resizer.hidden = true;
+      restoreAuxHostSiblings();
+      return;
+    }
+    host.setAttribute('data-aux-view', auxViewTab);
+    host.setAttribute('data-aux-collapsed', auxCollapsed ? 'true' : 'false');
+    if (resizer) resizer.hidden = false;
+
+    const btnPlug = el('btn-dock-aux-view-plugin');
+    const btnBrw = el('btn-dock-aux-view-browser');
+    if (btnPlug) {
+      btnPlug.classList?.toggle?.('active', auxViewTab === 'plugin');
+      btnPlug.setAttribute?.('aria-selected', auxViewTab === 'plugin' ? 'true' : 'false');
+    }
+    if (btnBrw) {
+      btnBrw.classList?.toggle?.('active', auxViewTab === 'browser');
+      btnBrw.setAttribute?.('aria-selected', auxViewTab === 'browser' ? 'true' : 'false');
+    }
+    const collapseBtn = el('btn-dock-aux-collapse');
+    if (collapseBtn) {
+      collapseBtn.textContent = auxCollapsed ? t('settings.dock.auxRestore') : t('settings.dock.auxCollapse');
+      collapseBtn.setAttribute?.('aria-expanded', auxCollapsed ? 'false' : 'true');
+    }
+
+    const auxEl = findAuxSidebarContainer();
+    if (auxEl) {
+      if (auxWidthPx != null) applyAuxWidthPx(auxWidthPx, { persist: false });
+      const children = Array.from(auxEl.children || []);
+      const showHostBrowser = auxViewTab === 'browser';
+      if (showHostBrowser) {
+        captureAuxPanelScrolls();
+        restoreAuxHostSiblings();
+      } else {
+        for (const node of children) {
+          if (!node || node === host || node.id === 'ag-context-meter') continue;
+          if (!auxHiddenHostNodes.has(node) && node.getAttribute?.('data-ag-aux-host-hidden') !== 'true') {
+            const origDisp = node.style?.display || '';
+            node.setAttribute?.('data-ag-aux-orig-display', origDisp);
+            node.setAttribute?.('data-ag-aux-host-hidden', 'true');
+          }
+          if (node.style) node.style.display = 'none';
+          auxHiddenHostNodes.add(node);
+        }
+        if (!auxCollapsed) restoreAuxPanelScrolls();
+      }
+    }
+  }
+
+  function setAuxViewTab(tab, opts = {}) {
+    const next = tab === 'browser' ? 'browser' : 'plugin';
+    if (next !== auxViewTab && next === 'browser') {
+      captureAuxPanelScrolls();
+    }
+    auxViewTab = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_aux_view_tab', auxViewTab);
+    } catch { }
+    syncAuxHostCoexistence();
+    if (auxViewTab === 'plugin' && !auxCollapsed && dockPosition === 'aux' && !dockFallbackReason) {
+      if (!isAnyPanelOpen()) showPanel('context');
+      restoreAuxPanelScrolls();
+    }
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ auxViewTab });
+    }
+    return auxViewTab;
+  }
+
+  function setAuxCollapsed(collapsed, opts = {}) {
+    const next = Boolean(collapsed);
+    if (next && !auxCollapsed) captureAuxPanelScrolls();
+    auxCollapsed = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_aux_collapsed', auxCollapsed ? 'true' : 'false');
+    } catch { }
+    syncAuxHostCoexistence();
+    if (!auxCollapsed && auxViewTab === 'plugin' && dockPosition === 'aux' && !dockFallbackReason) {
+      if (!isAnyPanelOpen()) showPanel('context');
+      restoreAuxPanelScrolls();
+    }
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ auxCollapsed });
+    }
+    return auxCollapsed;
+  }
+
   function syncAuxContextBar() {
     const bar = el('dock-aux-context-bar');
     const lbl = el('dock-aux-session-label');
@@ -28168,18 +28572,24 @@ function formatPeriodCalendarLabel(currentPeriod) {
     const activeAux = !marketplaceBlocked && dockPosition === 'aux' && !dockFallbackReason;
     if (bar) bar.hidden = !activeAux;
     if (lbl) {
-      const ft = resolveFocusedSessionTarget();
-      if (ft?.sessionId) {
-        lbl.textContent = t('settings.dock.auxFollowing', {
-          role: formatAuxRoleText(ft),
-          id: ft.sessionId.slice(0, 8)
-        });
-        lbl.title = ft.sessionId;
-      } else {
-        lbl.textContent = t('settings.dock.auxUnresolved');
+      if (activeAux && auxViewTab === 'browser') {
+        lbl.textContent = t('settings.dock.auxBrowserHint');
         lbl.title = '';
+      } else {
+        const ft = resolveFocusedSessionTarget();
+        if (ft?.sessionId) {
+          lbl.textContent = t('settings.dock.auxFollowing', {
+            role: formatAuxRoleText(ft),
+            id: ft.sessionId.slice(0, 8)
+          });
+          lbl.title = ft.sessionId;
+        } else {
+          lbl.textContent = t('settings.dock.auxUnresolved');
+          lbl.title = '';
+        }
       }
     }
+    syncAuxHostCoexistence();
   }
 
   function findEditorPageContainer() {
@@ -28721,6 +29131,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
           -webkit-user-select: none !important;
           z-index: 10 !important;
         }
+        #composer-status-bar[hidden] { display: none !important; }
         #composer-status-bar .csb-pill {
           display: inline-flex !important;
           align-items: center !important;
@@ -28961,14 +29372,14 @@ function formatPeriodCalendarLabel(currentPeriod) {
           gap: 3px !important;
           font-size: 11px !important;
           line-height: 1.2 !important;
-          padding: 0 !important;
+          padding: 1px 4px !important;
           margin-right: 8px !important;
-          border-radius: 0 !important;
+          border-radius: 4px !important;
           border: 0 !important;
           color: var(--muted-foreground, #94a3b8) !important;
           background: transparent !important;
           box-shadow: none !important;
-          opacity: 0.78 !important;
+          opacity: 0.82 !important;
           font-variant-numeric: tabular-nums !important;
           user-select: none !important;
           vertical-align: middle !important;
@@ -28978,13 +29389,18 @@ function formatPeriodCalendarLabel(currentPeriod) {
           overflow: hidden !important;
           text-overflow: ellipsis !important;
           white-space: nowrap !important;
-          cursor: default !important;
-          transition: opacity .12s ease !important;
+          cursor: pointer !important;
+          transition: opacity .12s ease, color .12s ease, background-color .12s ease, transform .1s ease !important;
         }
         .ag-cm-turn-footer:hover,
         .ag-cm-turn-footer:focus-visible {
           opacity: 1 !important;
           outline: none !important;
+          color: var(--foreground, #ececef) !important;
+          background: rgba(255, 255, 255, 0.06) !important;
+        }
+        .ag-cm-turn-footer:active {
+          transform: scale(0.98) !important;
         }
         .ag-cm-turn-footer:focus-visible {
           text-decoration: underline dotted currentColor !important;
@@ -29085,7 +29501,6 @@ function formatPeriodCalendarLabel(currentPeriod) {
         csbBar.hidden = true;
         return;
       }
-      csbBar.hidden = false;
       ensureComposerStatusBarStyles();
       // 已稳妥挂载在真实输入框表单之后时直接短路，避免高频 DOM 变动反复全页扫描按钮
       if (
@@ -29098,9 +29513,11 @@ function formatPeriodCalendarLabel(currentPeriod) {
           prevSibling &&
           (prevSibling.tagName === 'FORM' || Boolean(prevSibling.querySelector?.('[contenteditable="true"],textarea')))
         ) {
+          csbBar.hidden = false;
           return;
         }
       }
+      csbBar.hidden = true;
       const target = findComposerControlsContainer();
       if (!target || !target.bar) return;
 
@@ -29109,8 +29526,10 @@ function formatPeriodCalendarLabel(currentPeriod) {
         composer = target.bar;
         while (composer && !composer.querySelector('[contenteditable="true"],textarea')) composer = composer.parentElement;
       }
-      if (!composer || composer === document.body || composer === document.documentElement) return;
+      if (!composer || composer === document.body || composer === document.documentElement ||
+          composer.closest?.('header,[role="dialog"],#ag-context-meter')) return;
       if (composer.nextElementSibling !== csbBar) composer.after(csbBar);
+      csbBar.hidden = false;
     } catch (e) {
       console.warn('[Context Meter CSB Mount Warning]:', e);
     }
@@ -29155,14 +29574,18 @@ function formatPeriodCalendarLabel(currentPeriod) {
         host.style.right = '';
         host.style.top = '';
         host.style.bottom = '';
-        host.style.position = 'static';
+        host.style.position = 'relative';
         syncDockPositionUi();
         syncDockedPanelsAttribute();
         ensureComposerStatusBarMounted();
+        syncAuxHostCoexistence();
         updateResponsiveLayout(layoutMeasurementDirty);
         return;
       }
+      restoreAuxHostSiblings();
       dockFallbackReason = 'aux';
+    } else {
+      restoreAuxHostSiblings();
     }
 
     // 独立页面模式
@@ -29476,15 +29899,20 @@ function formatPeriodCalendarLabel(currentPeriod) {
     return 400;
   }
 
+  let sessionCostCalls = null;
+  let sessionHybridCost = null;
   function renderSessionCost() {
-    const roundCostBar = el('round-cost-bar');
     const roundCostText = el('round-cost-text');
     const sessionCostText = el('session-cost-text');
     if (!roundCostText || !sessionCostText) return;
     const activeCalls = state.sessionCalls || [];
     const latestCall = activeCalls[activeCalls.length - 1];
-    const sessTotal = state.sessionCostTotal || 0;
-    if (latestCall && latestCall.isPriced) {
+    if (sessionCostCalls !== activeCalls) {
+      sessionCostCalls = activeCalls;
+      sessionHybridCost = __AGContextMeterCore.summarizeSessionHybridCost(activeCalls);
+    }
+    const sessTotal = sessionHybridCost.combinedTotalUSD;
+    if (latestCall?.isPriced && Number.isFinite(latestCall.costUSD)) {
       const roundCost = latestCall.costUSD || 0;
       const roundCostStr = roundCost < 0.01 ? '<$0.01' : `≈$${roundCost.toFixed(4)}`;
       const estLabel = latestCall.status === 'streaming' ? t('cost.streamingEst') : t('cost.returnedEst');
@@ -29496,6 +29924,10 @@ function formatPeriodCalendarLabel(currentPeriod) {
         output: fmt(latestCall.outputTokens),
         cost: roundCost.toFixed(6)
       });
+    } else if (sessionHybridCost.latestEstimateUSD !== null) {
+      const roundCost = sessionHybridCost.latestEstimateUSD;
+      roundCostText.textContent = t('cost.latestTurn', { val: roundCost < 0.01 ? '<$0.01' : `≈$${roundCost.toFixed(4)}`, label: t('cost.hybridBadge') });
+      roundCostText.title = t('cost.sessionReferenceTip');
     } else if (latestCall) {
       roundCostText.textContent = t('cost.unpriced');
       roundCostText.title = latestCall.model ? t('cost.unpricedTip', { model: latestCall.model }) : t('cost.missingModel');
@@ -29504,6 +29936,9 @@ function formatPeriodCalendarLabel(currentPeriod) {
       roundCostText.title = '';
     }
     sessionCostText.textContent = sessTotal > 0 ? t('cost.sessionTotal', { val: sessTotal.toFixed(4) }) : t('session.sessionCost.dash');
+    sessionCostText.title = sessionHybridCost.unpricedResidualTokens > 0
+      ? `${t('cost.hybridSub', { known: sessionHybridCost.knownCostUSD.toFixed(4), res: sessionHybridCost.unpricedResidualCostUSD.toFixed(4) })} · ${t('cost.sessionReferenceTip')}`
+      : '';
   }
 
   function applyLayoutMode(nextMode) {
@@ -29861,6 +30296,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     }
     const marketplaceActive = isHostMarketplaceActive();
     ensureComposerStatusBarMounted({ marketplaceActive });
+    if (typeof syncModelPickers === 'function') syncModelPickers();
     scheduleHostModelSync();
     checkHostDomCompactionSignals();
     // 进入 Customizations / Marketplace / Installed 页面时自动收起已打开面板、浮层与辅助栏
@@ -30631,15 +31067,25 @@ function formatPeriodCalendarLabel(currentPeriod) {
     let text = '--%';
     let pct = 0;
 
+    const isQueuedPending = Boolean(!ov && state.livePendingRequest && state.livePendingRequest.cascadeId === state.route && state.livePendingRequest.stage === 'queued');
     const isWaitOverride = ov?.phase === 'waiting';
-    const isWaitLive = Boolean(!ov && (spEval?.phase === 'waiting' || (state.livePendingRequest && state.livePendingRequest.cascadeId === state.route)));
-    if (isWaitOverride || isWaitLive) {
+    const isWaitLive = Boolean(!ov && !isQueuedPending && (spEval?.phase === 'waiting' || (state.livePendingRequest && state.livePendingRequest.cascadeId === state.route)));
+    if (isQueuedPending && !isWaitOverride) {
+      mode = 'idle';
+      subKind = 'queued';
+      tone = 'normal';
+      text = currentPanelLanguage === 'en' ? 'Queue' : '排队';
+      pct = 0;
+    } else if (isWaitOverride || isWaitLive) {
       mode = 'waiting';
       subKind = 'waiting';
       let elapsedSec = 0;
       if (isWaitOverride && ov.elapsedSec != null) elapsedSec = Number(ov.elapsedSec) || 0;
       else if (spEval?.phase === 'waiting' && spEval.elapsedSec != null) elapsedSec = Number(spEval.elapsedSec) || 0;
-      else if (state.livePendingRequest?.startedAtMs) elapsedSec = Math.max(0, (Date.now() - state.livePendingRequest.startedAtMs) / 1000);
+      else if (state.livePendingRequest?.dispatchedAtMs || state.livePendingRequest?.startedAtMs) {
+        const refTs = Number(state.livePendingRequest.dispatchedAtMs || state.livePendingRequest.startedAtMs);
+        elapsedSec = Math.max(0, (Date.now() - refTs) / 1000);
+      }
       text = formatOrbWaitElapsed(elapsedSec);
       tone = resolveOrbToneFromWaitSec(elapsedSec);
       pct = 100;
@@ -31550,10 +31996,105 @@ function formatPeriodCalendarLabel(currentPeriod) {
     setDockPosition('flow', { persist: true });
   });
   el('btn-dock-aux-back')?.addEventListener('click', () => {
+    restoreAuxHostSiblings();
     setPanelDockMode('popover', { persist: true });
     setDockPosition('flow', { persist: true });
     showPanel('none');
   });
+  el('btn-dock-aux-view-plugin')?.addEventListener('click', () => {
+    setAuxViewTab('plugin', { persist: true });
+    syncAuxContextBar();
+  });
+  el('btn-dock-aux-view-browser')?.addEventListener('click', () => {
+    setAuxViewTab('browser', { persist: true });
+    syncAuxContextBar();
+  });
+  el('btn-dock-aux-collapse')?.addEventListener('click', () => {
+    setAuxCollapsed(!auxCollapsed, { persist: true });
+    syncAuxContextBar();
+  });
+
+  // 右侧辅助分栏宽度拖拽手柄（拖拽期间禁用 webview/iframe 指针拦截并保证结束/异常/销毁必还原）
+  {
+    const resizer = el('dock-aux-resizer');
+    if (resizer) {
+      let auxResizeDrag = null;
+      const savedFramePe = new Map();
+      const disableFramesPointerEvents = () => {
+        try {
+          const frames = Array.from(document?.querySelectorAll?.('webview, iframe') || []);
+          for (const f of frames) {
+            if (!f || !f.style) continue;
+            if (!savedFramePe.has(f)) savedFramePe.set(f, f.style.pointerEvents || '');
+            f.style.pointerEvents = 'none';
+          }
+        } catch { }
+      };
+      const restoreFramesPointerEvents = () => {
+        for (const [f, prev] of savedFramePe.entries()) {
+          try { if (f?.style) f.style.pointerEvents = prev; } catch { }
+        }
+        savedFramePe.clear();
+      };
+      const stopAuxResize = (commit = true) => {
+        if (!auxResizeDrag) {
+          restoreFramesPointerEvents();
+          return;
+        }
+        resizer.classList?.remove?.('is-resizing');
+        try { resizer.releasePointerCapture?.(auxResizeDrag.pointerId); } catch { }
+        restoreFramesPointerEvents();
+        const finalW = auxResizeDrag.lastWidth;
+        auxResizeDrag = null;
+        window.removeEventListener?.('pointermove', onAuxResizeMove);
+        window.removeEventListener?.('pointerup', onAuxResizeEnd);
+        window.removeEventListener?.('pointercancel', onAuxResizeCancel);
+        window.removeEventListener?.('blur', onAuxResizeCancel);
+        window.removeEventListener?.('keydown', onAuxResizeEsc, true);
+        if (commit && finalW != null) applyAuxWidthPx(finalW, { persist: true });
+      };
+      const onAuxResizeMove = (ev) => {
+        if (!auxResizeDrag) return;
+        const delta = auxResizeDrag.startX - (Number(ev.clientX) || 0);
+        const nextW = clampAuxWidthPx(auxResizeDrag.startWidth + delta);
+        auxResizeDrag.lastWidth = nextW;
+        applyAuxWidthPx(nextW, { persist: false });
+      };
+      const onAuxResizeEnd = () => stopAuxResize(true);
+      const onAuxResizeCancel = () => {
+        if (auxResizeDrag) applyAuxWidthPx(auxResizeDrag.startWidth, { persist: false });
+        stopAuxResize(false);
+      };
+      const onAuxResizeEsc = (ev) => {
+        if (ev.key === 'Escape' && auxResizeDrag) {
+          ev.preventDefault?.();
+          onAuxResizeCancel();
+        }
+      };
+      resizer.addEventListener('pointerdown', (ev) => {
+        if (ev.isPrimary === false || (ev.button != null && ev.button !== 0)) return;
+        const auxEl = findAuxSidebarContainer();
+        const target = resolveAuxSizingContainer(auxEl);
+        const startW = (target?.getBoundingClientRect?.().width) || auxWidthPx || 420;
+        auxResizeDrag = {
+          pointerId: ev.pointerId,
+          startX: Number(ev.clientX) || 0,
+          startWidth: clampAuxWidthPx(startW),
+          lastWidth: clampAuxWidthPx(startW)
+        };
+        resizer.classList?.add?.('is-resizing');
+        try { resizer.setPointerCapture?.(ev.pointerId); } catch { }
+        disableFramesPointerEvents();
+        window.addEventListener?.('pointermove', onAuxResizeMove);
+        window.addEventListener?.('pointerup', onAuxResizeEnd);
+        window.addEventListener?.('pointercancel', onAuxResizeCancel);
+        window.addEventListener?.('blur', onAuxResizeCancel);
+        window.addEventListener?.('keydown', onAuxResizeEsc, true);
+        ev.preventDefault?.();
+      });
+      earlyDisposeHooks.push(() => stopAuxResize(false));
+    }
+  }
   const handleCopyPreciseDashboardLink = async () => {
     const focusTarget = resolveFocusedSessionTarget();
     const srvRes = await resolvePreciseDashboardUrl({ openExternal: false });
@@ -31631,6 +32172,36 @@ function formatPeriodCalendarLabel(currentPeriod) {
     }
   };
   el('chk-show-composer-quota')?.addEventListener('change', onShowComposerQuotaToggle);
+  const onSimplifiedModelPickerToggle = (e) => {
+    const chk = el('chk-simplified-model-picker');
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : simplifiedModelPickerEnabled);
+    simplifiedModelPickerEnabled = next;
+    if (chk) chk.checked = simplifiedModelPickerEnabled;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_simplified_model_picker', simplifiedModelPickerEnabled ? 'true' : 'false');
+    } catch { }
+    if (typeof syncModelPickers === 'function') syncModelPickers();
+    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+      void saveSettingsPayloadBridge({ simplifiedModelPickerEnabled });
+    }
+  };
+  el('chk-simplified-model-picker')?.addEventListener('change', onSimplifiedModelPickerToggle);
+  const onNextPromptToggle = (e) => {
+    const chk = el('chk-next-prompt-enabled');
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : nextPromptEnabled);
+    nextPromptEnabled = next;
+    if (chk) chk.checked = nextPromptEnabled;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_next_prompt_enabled', nextPromptEnabled ? 'true' : 'false');
+    } catch { }
+    if (!nextPromptEnabled && typeof dismissNextPromptSuggestion === 'function') {
+      dismissNextPromptSuggestion(true);
+    }
+    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
+      void saveSettingsPayloadBridge({ nextPromptEnabled });
+    }
+  };
+  el('chk-next-prompt-enabled')?.addEventListener('change', onNextPromptToggle);
   el('dock-fallback-note')?.addEventListener('click', () => {
     void (async () => {
       try {
@@ -34255,6 +34826,13 @@ function closeAllDropdowns(exceptWrap = null) {
     feedback: '',
     feedbackTone: 'info',
     busy: false,
+    autoSwitchDraft: {
+      dirty: false,
+      saving: false,
+      saveStatusKey: '',
+      saveErrorDetail: '',
+      values: null
+    },
     removeModal: {
       open: false,
       email: '',
@@ -34858,21 +35436,44 @@ function closeAllDropdowns(exceptWrap = null) {
     return 'req-dur-slow';
   }
 
-  function formatReqSpeed(rec) {
-    if (!rec) return '—';
-    const outp = Math.max(0, Number(rec.outputTokens || 0));
-    const sSec = rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) ? Number(rec.streamingSec) : null;
-    if (sSec !== null && sSec < 0.2) return '—';
-    let spd = null;
-    if (rec.streamingTps != null && Number.isFinite(Number(rec.streamingTps)) && Number(rec.streamingTps) > 0) {
-      spd = Number(rec.streamingTps);
-    } else if (sSec !== null && sSec >= 0.2 && outp > 0) {
-      spd = outp / sSec;
-    } else if (sSec === null && rec.tps != null && Number.isFinite(Number(rec.tps)) && Number(rec.tps) > 0 && outp >= 20) {
-      spd = Number(rec.tps);
+  function resolveReqSpeedDisplayInfo(rec) {
+    if (!rec) return { text: '—', tooltip: '', calculable: false, rawSpeed: null, source: 'unavailable', reasonCode: 'missing_record', isShortStream: false };
+    const info = typeof resolveRequestRowSpeed === 'function'
+      ? resolveRequestRowSpeed(rec)
+      : null;
+    if (!info) return { text: '—', tooltip: '', calculable: false, rawSpeed: null, source: 'unavailable', reasonCode: 'missing_record', isShortStream: false };
+    if (info.calculable && info.speed != null && Number.isFinite(info.speed) && info.speed > 0) {
+      const displayVal = Number(info.speed.toFixed(1));
+      let tooltip = '';
+      if (info.isShortStream && info.streamingSec != null) {
+        tooltip = t('reqLog.speedShortNote', { sec: Number(Number(info.streamingSec).toFixed(4)) });
+      } else if (info.source === 'overall') {
+        tooltip = t('reqLog.speedOverallNote');
+      }
+      return {
+        text: t('reqLog.unit.tps', { val: displayVal }),
+        tooltip,
+        calculable: true,
+        rawSpeed: info.rawSpeed ?? info.speed,
+        source: info.source,
+        reasonCode: null,
+        isShortStream: Boolean(info.isShortStream)
+      };
     }
-    if (spd === null || !Number.isFinite(spd) || spd <= 0) return '—';
-    return t('reqLog.unit.tps', { val: Math.round(spd) });
+    const reasonKey = info.reasonCode ? `reqLog.speedReason.${info.reasonCode}` : 'reqLog.speedReason.missing_duration';
+    return {
+      text: '—',
+      tooltip: t(reasonKey),
+      calculable: false,
+      rawSpeed: null,
+      source: info.source || 'unavailable',
+      reasonCode: info.reasonCode || 'missing_duration',
+      isShortStream: false
+    };
+  }
+
+  function formatReqSpeed(rec) {
+    return resolveReqSpeedDisplayInfo(rec).text;
   }
 
   function resolveReqStatusInfo(rec) {
@@ -34891,6 +35492,31 @@ function closeAllDropdowns(exceptWrap = null) {
     if (out === 'auth_error') return { cls: 'is-err', label: t('reqLog.status.authError'), isError: true, isStreaming: false };
     if (out === 'canceled') return { cls: 'is-err', label: t('reqLog.status.canceled'), isError: true, isStreaming: false };
     return { cls: 'is-err', label: t('reqLog.status.failed'), isError: true, isStreaming: false };
+  }
+
+  function formatReqRequestedModel(rec, actualInfo = null) {
+    if (!rec) return { text: '—', tooltip: '' };
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const avail = state.scan?.userStatus?.availableModels || null;
+    const rawCand = rec.requestedModel || rec.requestedModelRaw || null;
+    if (!rawCand) return { text: '—', tooltip: '' };
+    const meta = typeof resolveRequestedModelDisplay === 'function'
+      ? resolveRequestedModelDisplay(rawCand, configs, avail)
+      : { text: String(rawCand), rawId: String(rawCand), stableId: null };
+    const dispText = meta.text || '—';
+    const tipParts = [];
+    const rawOrigin = rec.requestedModelRaw || meta.rawId || '';
+    if (rawOrigin && rawOrigin !== dispText) {
+      tipParts.push(t('reqLog.requestedRawTip', { raw: rawOrigin }));
+    }
+    if (dispText !== '—' && actualInfo?.text && actualInfo.text !== '—') {
+      const normReq = typeof normalizeModelId === 'function' ? (normalizeModelId(meta.stableId || dispText) || dispText.toLowerCase()) : dispText.toLowerCase();
+      const normAct = typeof normalizeModelId === 'function' ? (normalizeModelId(actualInfo.text) || actualInfo.text.toLowerCase()) : actualInfo.text.toLowerCase();
+      if (normReq && normAct && normReq !== normAct) {
+        tipParts.push(t('reqLog.requestedDiffTip', { req: dispText, act: actualInfo.text }));
+      }
+    }
+    return { text: dispText, tooltip: tipParts.join(' · ') };
   }
 
   function formatReqActualModel(rec) {
@@ -34950,24 +35576,29 @@ function closeAllDropdowns(exceptWrap = null) {
     if (tot <= 0 && !rawCall.error && !isStreaming) return null;
     const ts = Number(rawCall.timestamp) || (rawCall.created_at ? Date.parse(rawCall.created_at) : Date.now());
     const ttftSec = (rawCall.ttftSec != null && Number.isFinite(Number(rawCall.ttftSec)) && Number(rawCall.ttftSec) >= 0)
-      ? Number(Number(rawCall.ttftSec).toFixed(2))
+      ? Number(Number(rawCall.ttftSec).toFixed(4))
       : null;
     const streamingSec = (rawCall.streamingSec != null && Number.isFinite(Number(rawCall.streamingSec)) && Number(rawCall.streamingSec) >= 0)
-      ? Number(Number(rawCall.streamingSec).toFixed(2))
+      ? Number(Number(rawCall.streamingSec).toFixed(4))
       : null;
     let durationSec = (rawCall.durationSec != null && Number.isFinite(Number(rawCall.durationSec)) && Number(rawCall.durationSec) > 0)
-      ? Number(Number(rawCall.durationSec).toFixed(2))
-      : ((ttftSec !== null && streamingSec !== null) ? Number((ttftSec + streamingSec).toFixed(2)) : (streamingSec || ttftSec || null));
+      ? Number(Number(rawCall.durationSec).toFixed(4))
+      : ((ttftSec !== null && streamingSec !== null) ? Number((ttftSec + streamingSec).toFixed(4)) : (streamingSec || ttftSec || null));
     if (isStreaming && durationSec == null && Number.isFinite(ts)) {
       const liveElapsed = (Date.now() - ts) / 1000;
-      if (liveElapsed > 0 && liveElapsed < 3600) durationSec = Number(liveElapsed.toFixed(1));
+      if (liveElapsed > 0 && liveElapsed < 3600) durationSec = Number(liveElapsed.toFixed(4));
     }
     const tps = (rawCall.tps != null && Number.isFinite(Number(rawCall.tps)) && Number(rawCall.tps) > 0)
       ? Number(Number(rawCall.tps).toFixed(1))
       : ((outp > 0 && durationSec > 0) ? Number((outp / durationSec).toFixed(1)) : null);
     const streamingTps = (rawCall.streamingTps != null && Number.isFinite(Number(rawCall.streamingTps)) && Number(rawCall.streamingTps) > 0)
       ? Number(Number(rawCall.streamingTps).toFixed(1))
-      : ((outp > 0 && streamingSec != null && streamingSec >= 0.2) ? Number((outp / streamingSec).toFixed(1)) : null);
+      : ((outp > 0 && streamingSec != null && streamingSec > 0) ? Number((outp / streamingSec).toFixed(1)) : null);
+    const configsList = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const availMap = state.scan?.userStatus?.availableModels || null;
+    const reqMeta = typeof resolveRequestedModelDisplay === 'function'
+      ? resolveRequestedModelDisplay(rawCall.requestedModel || rawCall.requestedModelRaw || null, configsList, availMap)
+      : { text: rawCall.requestedModel ? String(rawCall.requestedModel) : null, rawId: rawCall.requestedModelRaw || null };
     const totalIn = inp + cache;
     const cacheReadPct = totalIn > 0 ? Number(((cache / totalIn) * 100).toFixed(1)) : null;
     let isPriced = Boolean(rawCall.isPriced);
@@ -34998,7 +35629,8 @@ function closeAllDropdowns(exceptWrap = null) {
       source: rawCall.source === 'cli' ? 'cli' : (rawCall.source === 'ide' ? 'ide' : 'desktop'),
       agentRole: rawCall.agentRole || 'main',
       subagentType: rawCall.subagentType || null,
-      requestedModel: (rawCall.requestedModel && !/^model_placeholder_/i.test(String(rawCall.requestedModel))) ? String(rawCall.requestedModel) : null,
+      requestedModel: reqMeta?.text || null,
+      ...(reqMeta?.rawId && reqMeta.rawId !== reqMeta.text ? { requestedModelRaw: reqMeta.rawId } : (rawCall.requestedModelRaw ? { requestedModelRaw: rawCall.requestedModelRaw } : {})),
       model: rawCall.model || rawCall.modelExactId || modelKey || '',
       modelExactId: rawCall.modelExactId || null,
       modelKey: modelKey || (typeof normalizeModelId === 'function' ? normalizeModelId(rawCall.modelExactId || rawCall.model || '') : null),
@@ -35083,6 +35715,8 @@ function closeAllDropdowns(exceptWrap = null) {
             durationSec: liveRec.durationSec ?? prev.durationSec ?? null,
             tps: liveRec.tps ?? prev.tps ?? null,
             streamingTps: liveRec.streamingTps ?? prev.streamingTps ?? null,
+            requestedModel: liveRec.requestedModel || prev.requestedModel || null,
+            requestedModelRaw: liveRec.requestedModelRaw || prev.requestedModelRaw || null,
             modelKey: liveRec.modelKey || prev.modelKey || null,
             modelExactId: liveRec.modelExactId || prev.modelExactId || null,
             modelLabel: liveRec.modelLabel || prev.modelLabel || null
@@ -35092,25 +35726,29 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
-      const startedAt = Number(state.livePendingRequest.startedAtMs) || Date.now();
-      const elapsedSec = Math.max(0.1, Number(((Date.now() - startedAt) / 1000).toFixed(1)));
+      const isQueuedWait = state.livePendingRequest.stage === 'queued';
+      const refStartedAt = Number(state.livePendingRequest.dispatchedAtMs || state.livePendingRequest.startedAtMs || 0);
+      const elapsedSec = (!isQueuedWait && refStartedAt > 0)
+        ? Math.max(0.1, Number(((Date.now() - refStartedAt) / 1000).toFixed(4)))
+        : null;
       const hasNewStreaming = Array.from(byId.values()).some(
         r => r.cascadeId === state.route && r.status === 'streaming' && r.callId !== state.livePendingRequest.baselineCallId
       );
-      if (!hasNewStreaming) {
+      if (!hasNewStreaming && !isQueuedWait && refStartedAt > 0) {
         const activeModel = state.latest?.model || state.selectedModelId || '';
-        const pendingKey = `__live_pending_${state.route}_${startedAt}`;
+        const trackedReq = state.lastRequestedModelByCascade?.get?.(state.route)?.requestedModel || null;
+        const pendingKey = `__live_pending_${state.route}_${refStartedAt}`;
         byId.set(pendingKey, {
           callId: pendingKey,
           cascadeId: state.route,
           stepIndex: null,
-          timestamp: startedAt,
-          created_at: new Date(startedAt).toISOString(),
-          date: formatReqLocalYmd(new Date(startedAt)),
+          timestamp: refStartedAt,
+          created_at: new Date(refStartedAt).toISOString(),
+          date: formatReqLocalYmd(new Date(refStartedAt)),
           source: 'desktop',
           agentRole: 'main',
           subagentType: null,
-          requestedModel: null,
+          requestedModel: trackedReq,
           model: activeModel,
           modelExactId: activeModel || null,
           modelKey: typeof normalizeModelId === 'function' ? normalizeModelId(activeModel) : (activeModel || null),
@@ -35154,7 +35792,10 @@ function closeAllDropdowns(exceptWrap = null) {
         const diff = (Number(b.durationSec) || 0) - (Number(a.durationSec) || 0);
         if (Math.abs(diff) > 1e-9) return diff > 0 ? 1 : -1;
       } else if (reqLogSortBy === 'speed_desc') {
-        const diff = (Number(b.streamingTps ?? b.tps) || 0) - (Number(a.streamingTps ?? a.tps) || 0);
+        const sa = resolveReqSpeedDisplayInfo(a);
+        const sb = resolveReqSpeedDisplayInfo(b);
+        if (sb.calculable !== sa.calculable) return sb.calculable ? 1 : -1;
+        const diff = (Number(sb.rawSpeed) || 0) - (Number(sa.rawSpeed) || 0);
         if (Math.abs(diff) > 1e-9) return diff > 0 ? 1 : -1;
       }
       if (tb !== ta) return tb - ta;
@@ -35224,7 +35865,7 @@ function closeAllDropdowns(exceptWrap = null) {
       pricingCat?.updatedAt || '',
       pricingCat?.modelCount || 0,
       pricingCat?.customCount || 0,
-      visible.slice(0, 6).map(r => `${r.callId || ''}:${r.status}:${r.outcomeStatus}:${r.inputTokens}:${r.outputTokens}:${r.durationSec}:${r.costUSD}`).join(',')
+      visible.slice(0, 6).map(r => `${r.callId || ''}:${r.status}:${r.outcomeStatus}:${r.requestedModel || ''}:${r.inputTokens}:${r.outputTokens}:${r.streamingSec}:${r.streamingTps}:${r.durationSec}:${r.costUSD}`).join(',')
     ].join('|');
 
     if (!force && sig === reqLogLastRenderedSig) return;
@@ -35271,11 +35912,14 @@ function closeAllDropdowns(exceptWrap = null) {
       tdAgent.appendChild(agentWrap);
       tr.appendChild(tdAgent);
 
+      const modelInfo = formatReqActualModel(rec);
+
       // 3. 请求模型
+      const reqModelInfo = formatReqRequestedModel(rec, modelInfo);
       const tdReqModel = document.createElement('td');
-      tdReqModel.className = rec.requestedModel ? 'req-td-model' : 'req-td-muted';
-      tdReqModel.textContent = rec.requestedModel || '—';
-      if (rec.requestedModel) tdReqModel.title = rec.requestedModel;
+      tdReqModel.className = reqModelInfo.text !== '—' ? 'req-td-model' : 'req-td-muted';
+      tdReqModel.textContent = reqModelInfo.text;
+      if (reqModelInfo.tooltip) tdReqModel.title = reqModelInfo.tooltip;
       tr.appendChild(tdReqModel);
 
       // 4. 供应商 · 账号
@@ -35287,7 +35931,6 @@ function closeAllDropdowns(exceptWrap = null) {
       tr.appendChild(tdProv);
 
       // 5. 实际模型
-      const modelInfo = formatReqActualModel(rec);
       const tdModel = document.createElement('td');
       tdModel.className = 'req-td-model';
       tdModel.textContent = modelInfo.text;
@@ -35349,10 +35992,11 @@ function closeAllDropdowns(exceptWrap = null) {
 
       // 12. 速度
       const tdSpd = document.createElement('td');
-      tdSpd.className = 'req-td-num';
-      const spdText = formatReqSpeed(rec);
-      tdSpd.textContent = spdText;
-      if (spdText === '—') tdSpd.className = 'req-td-num req-td-muted';
+      const spdInfo = resolveReqSpeedDisplayInfo(rec);
+      tdSpd.className = spdInfo.calculable ? 'req-td-num' : 'req-td-num req-td-muted';
+      tdSpd.textContent = spdInfo.text;
+      if (spdInfo.tooltip) tdSpd.title = spdInfo.tooltip;
+      if (!spdInfo.calculable && spdInfo.reasonCode) tdSpd.setAttribute('data-speed-reason', spdInfo.reasonCode);
       tr.appendChild(tdSpd);
 
       // 13. 状态
@@ -35484,10 +36128,12 @@ function closeAllDropdowns(exceptWrap = null) {
       ?? state.latest?.speed?.tps
       ?? state.speedOverrideForTest?.tps
       ?? null;
+    const isPendingWait = Boolean(state.livePendingRequest && state.livePendingRequest.cascadeId === state.route);
+    const isPendingQueued = Boolean(isPendingWait && state.livePendingRequest.stage === 'queued');
     const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
     const speedStr = hasSpeedVal
       ? `${Number(speedCandidate).toFixed(0)} tok/s`
-      : (state.livePendingRequest ? t('composer.speedWaiting') : '—');
+      : (isPendingQueued ? t('composer.speedQueued') : (isPendingWait ? t('composer.speedWaiting') : '—'));
     if (speedTextEl) {
       if (state.loading && turnsCount === 0 && stepsCount === 0) {
         speedTextEl.textContent = t('badge.reading');
@@ -35675,29 +36321,35 @@ function closeAllDropdowns(exceptWrap = null) {
     const compactCrossModel = Boolean(
       isCompactingNow && curSelectedModel && lastCallModel && detectFamily(curSelectedModel) && detectFamily(lastCallModel) && detectFamily(curSelectedModel) !== detectFamily(lastCallModel)
     );
-    const waitSec = state.livePendingRequest?.startedAtMs
-      ? Math.max(0, (Date.now() - Number(state.livePendingRequest.startedAtMs)) / 1000)
+    const isPendingRoute = Boolean(state.livePendingRequest && state.livePendingRequest.cascadeId === state.route);
+    const isQueuedPending = Boolean(isPendingRoute && state.livePendingRequest.stage === 'queued');
+    const refDispMs = Number(state.livePendingRequest?.dispatchedAtMs || state.livePendingRequest?.startedAtMs || 0);
+    const waitSec = (!isQueuedPending && isPendingRoute && refDispMs > 0)
+      ? Math.max(0, (Date.now() - refDispMs) / 1000)
       : 0;
-    const isGeneratingNow = Boolean(state.livePendingRequest || (latestCallRec && String(latestCallRec.status || '').toLowerCase() === 'streaming'));
+    const isGeneratingNow = Boolean((isPendingRoute && !isQueuedPending) || (latestCallRec && String(latestCallRec.status || '').toLowerCase() === 'streaming'));
     const isOfflineNow = typeof navigator !== 'undefined' && navigator.onLine === false;
     const lastErrMsg = state.latest?.error ? String(state.latest.error) : (state.requestError ? String(state.requestError) : '');
     const isUserCancel = Boolean(state.latest?.canceled || /cancel|abort/i.test(lastErrMsg));
 
-    const runtimeStatus = typeof evaluateSessionRuntimeStatus === 'function'
-      ? evaluateSessionRuntimeStatus({
-        isGenerating: isGeneratingNow,
-        waitSec,
-        isCompacting: isCompactingNow,
-        compactCrossModel,
-        lastError: lastErrMsg,
-        isUserCanceled: isUserCancel,
-        isOffline: isOfflineNow
-      })
-      : { state: 'idle', reasonCode: 'ready', label: '就绪', detail: '' };
+    const runtimeStatus = isQueuedPending
+      ? { state: 'running', reasonCode: 'queued', label: t('composer.runtime.reason.queued'), detail: '' }
+      : (typeof evaluateSessionRuntimeStatus === 'function'
+        ? evaluateSessionRuntimeStatus({
+          isGenerating: isGeneratingNow,
+          waitSec,
+          isCompacting: isCompactingNow,
+          compactCrossModel,
+          lastError: lastErrMsg,
+          isUserCanceled: isUserCancel,
+          isOffline: isOfflineNow
+        })
+        : { state: 'idle', reasonCode: 'ready', label: '就绪', detail: '' });
 
     const RUNTIME_REASON_I18N = {
       ready: 'composer.runtime.reason.ready',
       generating: 'composer.runtime.reason.generating',
+      queued: 'composer.runtime.reason.queued',
       compacting: 'composer.runtime.reason.compacting',
       slow_wait: 'composer.runtime.reason.slow_wait',
       compact_kv_recompute: 'composer.runtime.reason.compact_kv_recompute',
@@ -35831,6 +36483,8 @@ function closeAllDropdowns(exceptWrap = null) {
     return `${raw.slice(0, 4)}…${raw.slice(-4)}`;
   }
 
+  const turnFooterScopeState = new Map();
+
   function renderTurnFooterStats() {
     try {
       if (typeof document?.querySelectorAll !== 'function') return;
@@ -35895,12 +36549,17 @@ function closeAllDropdowns(exceptWrap = null) {
           removeOld();
           return;
         }
+        const turnKey = String(turnObj.turnKey || '');
+        const isMultiCall = !forceFallbackScope && turnCalls.length > 1;
+        const requestedScope = isMultiCall ? (turnFooterScopeState.get(turnKey) || 'turn') : 'request';
+        const isTurnAggregate = requestedScope === 'turn';
+        const activeCalls = isTurnAggregate ? turnCalls : [lastCall];
         const cs = cacheFn
-          ? cacheFn(turnCalls)
+          ? cacheFn(activeCalls)
           : (() => {
-            const inp = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.inputTokens || 0)) + Math.max(0, Number(c?.cacheCreationInputTokens ?? 0)), 0);
-            const cr = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.cacheReadTokens ?? c?.cacheTokens ?? 0)), 0);
-            const outp = turnCalls.reduce((a, c) => a + Math.max(0, Number(c?.outputTokens || 0)), 0);
+            const inp = activeCalls.reduce((a, c) => a + Math.max(0, Number(c?.inputTokens || 0)) + Math.max(0, Number(c?.cacheCreationInputTokens ?? 0)), 0);
+            const cr = activeCalls.reduce((a, c) => a + Math.max(0, Number(c?.cacheReadTokens ?? c?.cacheTokens ?? 0)), 0);
+            const outp = activeCalls.reduce((a, c) => a + Math.max(0, Number(c?.outputTokens || 0)), 0);
             const ti = inp + cr;
             return {
               hasRealUsageData: ti > 0 || outp > 0,
@@ -35914,7 +36573,6 @@ function closeAllDropdowns(exceptWrap = null) {
 
         const hasCalcUsage = Boolean(cs.hasConfirmedUsage || cs.hasRealUsageData);
         const rawHitPct = cs.hitPct ?? cs.cacheHitPct ?? null;
-        const isTurnAggregate = !forceFallbackScope && turnCalls.length > 1;
         const scopeLabel = isTurnAggregate ? t('turnFooter.scopeTurn') : t('turnFooter.scopeReq');
         const hitStr = rawHitPct !== null ? `${rawHitPct}%` : '—';
         const mName = lastCall.attributedModelLabel || lastCall.modelLabel || lastCall.model || '';
@@ -35946,26 +36604,62 @@ function closeAllDropdowns(exceptWrap = null) {
           badge = document.createElement('span');
           badge.className = 'ag-cm-turn-footer';
           badge.setAttribute('data-ag-turn-footer', '1');
+          badge.setAttribute('role', 'button');
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
+        }
+        badge.__turnObj = turnObj;
+        badge.__forceFallback = forceFallbackScope;
+        badge.__tb = tb;
+        if (!badge.__agClickBound) {
+          badge.__agClickBound = true;
+          badge.addEventListener('click', (ev) => {
+            ev.stopPropagation?.();
+            const curObj = badge.__turnObj;
+            if (!curObj || !Array.isArray(curObj.calls)) return;
+            if (curObj.calls.length > 1) {
+              const curScope = badge.getAttribute('data-scope') || 'turn';
+              const nextScope = curScope === 'turn' ? 'request' : 'turn';
+              const k = String(curObj.turnKey || '');
+              if (k) turnFooterScopeState.set(k, nextScope);
+              applyFooterToToolbar(badge.__tb || tb, curObj, badge.__forceFallback);
+            } else {
+              if (typeof openDashboardInRightPanel === 'function') void openDashboardInRightPanel();
+            }
+          });
+          badge.addEventListener('dblclick', (ev) => {
+            ev.stopPropagation?.();
+            if (typeof openDashboardInRightPanel === 'function') void openDashboardInRightPanel();
+          });
+          badge.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+              ev.preventDefault?.();
+              ev.stopPropagation?.();
+              badge.click();
+            }
+          });
         }
         // 脏检查幂等写入：数值不变时不重复改写 textContent 与 aria-label，避免唤醒 MutationObserver
         if (badge.textContent !== text) badge.textContent = text;
         const nextScope = isTurnAggregate ? 'turn' : 'request';
         if (badge.getAttribute('data-scope') !== nextScope) badge.setAttribute('data-scope', nextScope);
-        const nextTurnKey = String(turnObj.turnKey || '');
-        if (badge.getAttribute('data-turn-key') !== nextTurnKey) badge.setAttribute('data-turn-key', nextTurnKey);
+        if (badge.getAttribute('data-turn-key') !== turnKey) badge.setAttribute('data-turn-key', turnKey);
         const nextCallId = String(lastCall.callId || '');
         if (badge.getAttribute('data-call-id') !== nextCallId) badge.setAttribute('data-call-id', nextCallId);
+        if (badge.getAttribute('data-multi-call') !== (isMultiCall ? 'true' : 'false')) {
+          badge.setAttribute('data-multi-call', isMultiCall ? 'true' : 'false');
+        }
 
         const tp = lastCall.timestamp ? formatReqTimeParts(lastCall) : null;
         const reqTimeStr = tp?.tooltip || tp?.text || (lastCall.date || '—');
         const safeCallId = desensitizeTurnCallId(lastCall.callId);
+        const tipAction = isMultiCall ? t('turnFooter.tipMulti') : t('turnFooter.tipSingle');
         const titleLines = [
-          `${scopeLabel}${isTurnAggregate ? ` (${turnCalls.length} 次请求)` : ''} · 模型: ${mName || '未知'}`,
+          `${scopeLabel}${isTurnAggregate ? ` · ${turnCalls.length} 次请求` : ''} · 模型: ${mName || '未知'}`,
           `请求 ID: ${safeCallId} · 时间: ${reqTimeStr}`,
-          `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} (命中 ${hitStr})`,
-          `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`
+          `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} · 命中 ${hitStr}`,
+          `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`,
+          tipAction
         ];
         const nextTitle = titleLines.join('\n');
         if (badge.title !== nextTitle) badge.title = nextTitle;
@@ -36445,12 +37139,12 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   el('badge-quota')?.addEventListener('click', e => {
-    if (e?.altKey) {
-      e.preventDefault?.();
-      cycleQuotaBadgeWindowMode();
+    if (e?.altKey || e?.detail === 0) {
+      e?.preventDefault?.();
+      toggleQuota('badge-quota');
       return;
     }
-    toggleQuota('badge-quota');
+    cycleQuotaBadgeWindowMode();
   });
   let badgeLongPressTimer = null;
   let badgeLongPressTriggered = false;
@@ -36533,7 +37227,11 @@ function closeAllDropdowns(exceptWrap = null) {
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
   el('close-quota')?.addEventListener('click', () => showPanel('none'));
-  el('badge-quota')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleQuotaBadgeWindowMode(); });
+  el('badge-quota')?.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleQuota('badge-quota');
+  });
 
   // 输入框紧凑状态条 (Composer Status Bar) 交互事件：四组全部恢复交互、点击首帧直达（二次点击关闭）与顶层居中悬停缩略卡
   const csbSpeedBtn = el('csb-group-speed');
@@ -37593,14 +38291,192 @@ function closeAllDropdowns(exceptWrap = null) {
     if (txResult.targetMode === 'fixed' || txResult.targetMode === 'dynamic' || txResult.targetMode === 'default') {
       scheduleConfirmTimeoutCheck();
     }
+    const targetCid = txResult.cascadeId || state.route;
+    if (targetCid && (txResult.productLabel || txResult.modelId)) {
+      state.lastRequestedModelByCascade?.set?.(targetCid, {
+        requestedModel: txResult.productLabel || txResult.modelId,
+        requestedModelRaw: txResult.modelId || txResult.productLabel || null,
+        modelId: txResult.modelId || null,
+        ts: Date.now()
+      });
+    }
     if (state.route && (!txResult.cascadeId || txResult.cascadeId === state.route)) {
-      startLivePendingRequestWait(txResult.cascadeId || state.route);
+      startLivePendingRequestWait(targetCid);
     }
     refreshBudgetUiAfterDispatch();
     return rec;
   }
 
   let compactDispatchSeq = 0;
+  let autoCompactEnabled = false;
+  let autoCompactThreshold = 85;
+  let compactPrefsEditInFlight = false;
+  let compactSubmitInFlight = false;
+  let autoCompactCheckInFlight = false;
+  let lastAutoCompactCheckAt = 0;
+  const autoCompactAttempted = new Map();
+
+  function normalizeAutoCompactThreshold(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 50 && n <= 99 ? Math.round(n) : 85;
+  }
+
+  function syncCompactPreferencesControls() {
+    const check = el('chk-auto-compact');
+    const threshold = el('inp-auto-compact-threshold');
+    if (check) check.checked = autoCompactEnabled;
+    if (threshold) threshold.value = String(autoCompactThreshold);
+  }
+
+  function setCompactControlStatus(key) {
+    const status = el('compact-settings-status');
+    if (status) status.textContent = t(key);
+  }
+
+  async function saveCompactPreferences() {
+    if (compactPrefsEditInFlight) return;
+    const check = el('chk-auto-compact');
+    const threshold = el('inp-auto-compact-threshold');
+    const requestedThreshold = Number(threshold?.value);
+    if (!Number.isInteger(requestedThreshold) || requestedThreshold < 50 || requestedThreshold > 99) {
+      syncCompactPreferencesControls();
+      setCompactControlStatus('compact.settings.invalid');
+      return;
+    }
+    const next = { autoCompactEnabled: check?.checked === true, autoCompactThreshold: requestedThreshold };
+    compactPrefsEditInFlight = true;
+    userActionSeq++;
+    if (check) check.disabled = true;
+    if (threshold) threshold.disabled = true;
+    try {
+      const result = await saveSettingsPayloadBridge({ uiPreferences: next });
+      if (result?.ok) {
+        autoCompactEnabled = next.autoCompactEnabled;
+        autoCompactThreshold = next.autoCompactThreshold;
+      }
+      setCompactControlStatus(result?.ok ? 'prefs.saved' : 'compact.settings.saveFailed');
+    } finally {
+      compactPrefsEditInFlight = false;
+      if (check) check.disabled = false;
+      if (threshold) threshold.disabled = false;
+      syncCompactPreferencesControls();
+    }
+  }
+
+  function hasActiveCompactionOrGeneration() {
+    return Boolean(state.compacting || state.livePendingRequest || state.turnState?.streaming || state.lastDomCompactingActive
+      || state.sessionCalls?.at(-1)?.status === 'streaming'
+      || document.querySelector?.('.surface-composer button[data-testid="stop-button"], .surface-composer button[aria-label^="Stop"], .surface-composer button[aria-label^="停止"]'));
+  }
+
+  async function requestOfficialCompact(auto = false) {
+    if (compactSubmitInFlight || hasActiveCompactionOrGeneration()) {
+      if (!auto) setCompactControlStatus('compact.settings.busy');
+      return false;
+    }
+    const route = state.route;
+    if (!route || state.scan?.session?.isRemote === true || document.hidden) {
+      if (!auto) setCompactControlStatus('compact.settings.unavailable');
+      return false;
+    }
+    const editors = Array.from(document.querySelectorAll('.surface-composer [data-lexical-editor="true"][contenteditable="true"]'))
+      .filter(node => node.getClientRects().length > 0);
+    const editor = editors.length === 1 ? editors[0] : null;
+    const composer = editor?.closest('.surface-composer');
+    if (!editor || !composer || editor.textContent.trim() || editor.querySelector('[data-lexical-decorator]')
+      || composer.querySelector('[data-testid*="attachment" i]')) {
+      if (!auto) setCompactControlStatus('compact.settings.draft');
+      return false;
+    }
+    const modelSelector = composer.querySelector('[data-testid="model-selector-trigger"]');
+    if (!modelSelector || /no model selected|未选择模型|未選擇模型|未選取模型/i.test(modelSelector.textContent)) {
+      if (!auto) setCompactControlStatus('compact.settings.noModel');
+      return false;
+    }
+    compactSubmitInFlight = true;
+    const focusBefore = document.activeElement;
+    let sent = false;
+    let inserted = false;
+    try {
+      if (auto) {
+        autoCompactAttempted.set(route, Date.now());
+        if (autoCompactAttempted.size > 128) autoCompactAttempted.delete(autoCompactAttempted.keys().next().value);
+      }
+      editor.focus({ preventScroll: true });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (state.route !== route || document.activeElement !== editor || editor.textContent.trim()) return false;
+      inserted = document.execCommand('insertText', false, '/compact');
+      if (!inserted) return false;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 45));
+        if (state.disposed || state.route !== route || hasActiveCompactionOrGeneration() || editor.textContent.trim() !== '/compact') break;
+        const menuId = editor.getAttribute('aria-controls');
+        const menu = menuId ? document.getElementById(menuId) : null;
+        const options = menu?.querySelectorAll('[role="option"]');
+        const option = Array.from(options?.length ? options : document.querySelectorAll('[role="option"][id^="typeahead-item-"]'))
+          .find(node => node.querySelector('[data-testid="menu-option-label"]')?.textContent.trim().toLowerCase() === 'compact');
+        if (!option) continue;
+        option.click();
+        await new Promise(resolve => setTimeout(resolve, 45));
+        const sendButton = composer.querySelector('button[data-testid="send-button"]');
+        if (state.route !== route || hasActiveCompactionOrGeneration() || !editor.isConnected
+          || editor.textContent.trim() !== '/compact' || !sendButton || sendButton.disabled) break;
+        sendButton.click();
+        for (let confirm = 0; confirm < 10 && state.route === route; confirm++) {
+          if (!editor.textContent.trim() || state.compacting?.cascadeId === route) {
+            sent = true;
+            setCompactControlStatus('compact.settings.submitted');
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        break;
+      }
+      return sent;
+    } finally {
+      if (!sent) {
+        if (inserted && editor.isConnected && state.route === route && editor.textContent === '/compact') {
+          editor.focus({ preventScroll: true });
+          const range = document.createRange();
+          range.selectNodeContents(editor);
+          const selection = document.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.execCommand('delete');
+        }
+        setCompactControlStatus('compact.settings.unavailable');
+      }
+      if (focusBefore?.isConnected && focusBefore !== editor) focusBefore.focus?.({ preventScroll: true });
+      compactSubmitInFlight = false;
+    }
+  }
+
+  async function maybeAutoCompact() {
+    if (!autoCompactEnabled || !state.route || state.restoredFromCache || document.hidden
+      || autoCompactCheckInFlight || compactSubmitInFlight || hasActiveCompactionOrGeneration()) return;
+    const { actual, budget } = state.latest || {};
+    if (!Number.isFinite(actual) || !Number.isFinite(budget) || budget <= 0) return;
+    const pct = actual / budget * 100;
+    const lastAttempt = autoCompactAttempted.get(state.route);
+    if (pct < autoCompactThreshold - 5 && lastAttempt && Date.now() - lastAttempt >= 120000) autoCompactAttempted.delete(state.route);
+    if (pct < autoCompactThreshold || lastAttempt || !state.requestAt || Date.now() - state.requestAt >= 45000
+      || Date.now() - lastAutoCompactCheckAt < 10000) return;
+    const route = state.route;
+    autoCompactCheckInFlight = true;
+    lastAutoCompactCheckAt = Date.now();
+    try {
+      const ipcFn = window.contextMeterAPI?.getTurnState ? () => window.contextMeterAPI.getTurnState(route) : null;
+      const { result } = await callBackendWithPriority({ ipcCall: ipcFn, liveRoute: '/turn-state', liveBody: { id: route } });
+      const status = String(result?.data?.cascadeStatus || '');
+      if (result?.ok && result.data.conversation === route && /(?:^|_)(?:IDLE|COMPLETED|DONE|FINISHED)$/i.test(status)
+        && !state.disposed && state.route === route && autoCompactEnabled) await requestOfficialCompact(true);
+    } catch { }
+    finally { autoCompactCheckInFlight = false; }
+  }
+
+  el('btn-compact-now')?.addEventListener('click', () => void requestOfficialCompact());
+  el('chk-auto-compact')?.addEventListener('change', () => void saveCompactPreferences());
+  el('inp-auto-compact-threshold')?.addEventListener('change', () => void saveCompactPreferences());
   let activeScanSeq = 0;
   let activeScanController = null;
   let compactThrottleTimer = null;
@@ -37954,6 +38830,7 @@ function closeAllDropdowns(exceptWrap = null) {
       try {
         if (!req || typeof req !== 'object' || typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
         const compactCmd = detectOutgoingCompactCommand(req, 'client_object', 'SendUserCascadeMessage');
+        if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
         const tx = budgetEngine.transformOutgoingSendRequest(req, buildInterceptorContext(channel, 'SendUserCascadeMessage'));
         if (compactCmd?.isCompact) {
           const cRec = registerCompactDispatch(compactCmd);
@@ -38002,12 +38879,26 @@ function closeAllDropdowns(exceptWrap = null) {
     };
 
     const processOutgoingBody = (rawBody, channel, urlOrProc, contentType = '') => {
+      if (urlOrProc && /CancelCascade|DeleteQueued|RemoveQueued|AbortCascade/i.test(String(urlOrProc))) {
+        cancelOrEditQueuedPendingRequest('rpc_cancel');
+      }
       const compactCmd = detectOutgoingCompactCommand(rawBody, channel, urlOrProc, contentType);
       const tx = typeof budgetEngine.transformOutgoingSendRequest === 'function'
         ? budgetEngine.transformOutgoingSendRequest(rawBody, buildInterceptorContext(channel, urlOrProc, contentType))
         : null;
       let body = rawBody;
       let rec = null;
+      if (tx && (tx.productLabel || tx.modelId)) {
+        const tCid = tx.cascadeId || state.route;
+        if (tCid) {
+          state.lastRequestedModelByCascade?.set?.(tCid, {
+            requestedModel: tx.productLabel || tx.modelId,
+            requestedModelRaw: tx.modelId || tx.productLabel || null,
+            modelId: tx.modelId || null,
+            ts: Date.now()
+          });
+        }
+      }
       if (tx && tx.handled) {
         if (tx.modified && tx.output !== undefined) body = tx.output;
         if (!isCoveredByRecentDecorator(tx)) {
@@ -38110,6 +39001,9 @@ function closeAllDropdowns(exceptWrap = null) {
           const urlStr = typeof resource === 'string'
             ? resource
             : (resource && resource.url ? resource.url : String(resource || ''));
+          if (urlStr && /CancelCascade|DeleteQueued|RemoveQueued|AbortCascade/i.test(urlStr)) {
+            cancelOrEditQueuedPendingRequest('rpc_cancel');
+          }
           if (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
             const headersObj = init?.headers || resource?.headers;
             let contentType = '';
@@ -38878,6 +39772,7 @@ function closeAllDropdowns(exceptWrap = null) {
       renderSpeedComparisonTab();
     } else if (tabName === 'settings') {
       void refreshModulesDisplay();
+      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
       if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
         void refreshUnlockStatus();
       }
@@ -38887,6 +39782,28 @@ function closeAllDropdowns(exceptWrap = null) {
     positionFloatingPanels();
     syncPanelPickerActiveState();
     if (state.orbLinkedPanel && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
+  }
+
+  function focusSettingsCardSection(targetId) {
+    if (!targetId) return;
+    const navGroup = el('settings-quick-nav-group');
+    if (navGroup) {
+      for (const b of Array.from(navGroup.children || [])) {
+        b.classList?.toggle?.('active', b.getAttribute?.('data-nav-target') === targetId);
+      }
+    }
+    const targetEl = el(targetId);
+    if (!targetEl) return;
+    try {
+      setTimeout(() => {
+        targetEl.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+        if (targetEl.style) {
+          targetEl.style.transition = 'box-shadow 0.3s ease';
+          targetEl.style.boxShadow = '0 0 0 2px var(--ag-accent, #6366f1)';
+          setTimeout(() => { if (targetEl.style) targetEl.style.boxShadow = ''; }, 1400);
+        }
+      }, 60);
+    } catch { }
   }
 
   function openContextSettings(opts = {}) {
@@ -38899,6 +39816,8 @@ function closeAllDropdowns(exceptWrap = null) {
       try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, 'settings'); } catch { }
       applyContextViewVisibility();
       showPanel('context');
+      void refreshModulesDisplay();
+      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
     } else {
       switchContextTab('settings');
     }
@@ -38906,7 +39825,11 @@ function closeAllDropdowns(exceptWrap = null) {
       toggleColorsDrawer(true);
     }
     if (opts.scrollToUpdate) {
-      try { el('settings-about-update-card')?.scrollIntoView?.({ block: 'nearest' }); } catch { }
+      focusSettingsCardSection('settings-about-update-card');
+    } else if (opts.section === 'accounts') {
+      focusSettingsCardSection('settings-accounts-card');
+    } else if (typeof opts.section === 'string' && opts.section) {
+      focusSettingsCardSection(opts.section);
     }
     positionFloatingPanels();
   }
@@ -40874,7 +41797,7 @@ function closeAllDropdowns(exceptWrap = null) {
       ? () => window.contextMeterAPI.saveSettings(payload)
       : null;
     if (!ipcFn && !hasLiveHttpBridge()) {
-      return { ok: false, error: t('msg.noHostBridge') };
+      return reportSettingsSave({ ok: false, error: t('msg.noHostBridge') });
     }
     try {
       const out = await callBackendWithPriority({
@@ -40882,10 +41805,16 @@ function closeAllDropdowns(exceptWrap = null) {
         liveRoute: '/save-settings',
         liveBody: payload
       });
-      return out.result || { ok: false, error: t('msg.noHostBridge') };
+      return reportSettingsSave(out.result || { ok: false, error: t('msg.noHostBridge') });
     } catch (e) {
-      return { ok: false, error: e?.message || t('msg.noHostBridge') };
+      return reportSettingsSave({ ok: false, error: e?.message || t('msg.noHostBridge') });
     }
+  }
+
+  function reportSettingsSave(result) {
+    const status = el('prefs-save-status');
+    if (status) status.textContent = result?.ok === true ? t('prefs.saved') : t('prefs.saveError', { reason: result?.error || t('msg.unknownErr') });
+    return result;
   }
 
   function showUnlockResultBox(isSuccess, html, opts = {}) {
@@ -41497,6 +42426,7 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   function openClientRestartConfirmFlow() {
+    if (isRestartInProgress || globalRestartModal?.open) return;
     if (!hostSupportsRestart) {
       showUnlockResultBox(true, t('client.restart.hostNotSupported'), { needsRestart: true });
       const upStatusEl = el('up-pop-status');
@@ -41514,8 +42444,8 @@ function closeAllDropdowns(exceptWrap = null) {
         modalRestartFeedback.hidden = true;
       }
       if (btnModalRestartConfirm) btnModalRestartConfirm.disabled = false;
-      isRestartInProgress = false;
       globalRestartModal.hidden = false;
+      globalRestartModal.showModal?.();
       return;
     }
     if (ctxRestartConfirm) {
@@ -41531,14 +42461,21 @@ function closeAllDropdowns(exceptWrap = null) {
     void refreshUnlockStatus();
   });
 
-  btnModalRestartCancel?.addEventListener('click', () => {
-    if (globalRestartModal) globalRestartModal.hidden = true;
-  });
+  function closeClientRestartConfirm() {
+    if (!globalRestartModal) return;
+    if (globalRestartModal.open) globalRestartModal.close();
+    globalRestartModal.hidden = true;
+  }
+
+  btnModalRestartCancel?.addEventListener('click', closeClientRestartConfirm);
   globalRestartModal?.addEventListener('click', (e) => {
-    if (e.target === globalRestartModal) {
-      globalRestartModal.hidden = true;
-    }
+    if (e.target === globalRestartModal) closeClientRestartConfirm();
   });
+  globalRestartModal?.addEventListener('cancel', (e) => {
+    e.preventDefault();
+    closeClientRestartConfirm();
+  });
+  earlyDisposeHooks.push(closeClientRestartConfirm);
 
   btnModalRestartConfirm?.addEventListener('click', () => executeClientRestart(true));
 
@@ -43266,9 +44203,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   const rehydrateStatScript = el('rehydrate-stat-script');
   const rehydrateStatPython = el('rehydrate-stat-python');
   const rehydrateStatSiblings = el('rehydrate-stat-siblings');
-  const btnRehydrateEnable = el('btn-rehydrate-enable');
+  const btnRehydrateSwitch = el('btn-rehydrate-switch');
   const btnRehydrateInstallPython = el('btn-rehydrate-install-python');
-  const btnRehydrateDisable = el('btn-rehydrate-disable');
   const btnRehydrateRefresh = el('btn-rehydrate-refresh');
   const btnRehydrateRemove = el('btn-rehydrate-remove');
   const rehydrateResultBox = el('rehydrate-result-box');
@@ -44170,8 +45106,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       btnRehydrateInstallPython.hidden = !pyBlocked;
       btnRehydrateInstallPython.disabled = busy || unavailable;
     }
-    if (btnRehydrateEnable) btnRehydrateEnable.disabled = busy || unavailable || corrupt || modCfgCorrupt || pyBlocked;
-    if (btnRehydrateDisable) btnRehydrateDisable.disabled = busy || unavailable || corrupt || modCfgCorrupt || !d?.hookRegistered || !d?.hookEnabled;
+    if (btnRehydrateSwitch) {
+      const enabled = Boolean(d?.hookRegistered && d?.hookEnabled);
+      btnRehydrateSwitch.setAttribute('aria-checked', String(enabled));
+      btnRehydrateSwitch.disabled = !d || busy || unavailable || corrupt || modCfgCorrupt || (!enabled && pyBlocked);
+    }
     if (btnRehydrateRemove) btnRehydrateRemove.disabled = busy || unavailable || corrupt || (!d?.hookRegistered && !d?.scriptInstalled);
     if (rehydrateRemoveArmed && btnRehydrateRemove?.disabled) {
       disarmRehydrateRemove();
@@ -44313,18 +45252,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     });
   });
 
-  btnRehydrateEnable?.addEventListener('click', () => {
+  btnRehydrateSwitch?.addEventListener('click', () => {
     disarmRehydrateRemove();
-    void runRehydrateAction('apply', btnRehydrateEnable, 'rehydrate.btn.enableBusy', 'rehydrate.btn.enable', (res) => {
+    if (currentRehydrateStatus?.hookRegistered && currentRehydrateStatus?.hookEnabled) {
+      void runRehydrateAction('disable', null, 'rehydrate.btn.disableBusy', null, () => () => t('rehydrate.result.disabled'));
+      return;
+    }
+    void runRehydrateAction('apply', null, 'rehydrate.btn.enableBusy', null, (res) => {
       if (res.changed === false) return () => t('rehydrate.result.alreadyEnabled');
       const p = res.status?.hooksJsonPath || '~/.gemini/config/hooks.json';
       return () => t('rehydrate.result.enabled', { path: p });
     });
-  });
-
-  btnRehydrateDisable?.addEventListener('click', () => {
-    disarmRehydrateRemove();
-    void runRehydrateAction('disable', btnRehydrateDisable, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
   });
 
   btnRehydrateRemove?.addEventListener('click', () => {
@@ -44847,7 +45785,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
       }
       if (btnToggleProxyModule) {
-        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
+        btnToggleProxyModule.setAttribute('aria-checked', String(currentProxyEnabled));
       }
       syncProxySaveButtonState();
     } catch (err) {
@@ -44931,7 +45869,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const rawBypass = String(inputProxyBypass?.value ?? '').trim();
     if (btnToggleProxyModule) {
       btnToggleProxyModule.disabled = true;
-      btnToggleProxyModule.textContent = t('mod.processing');
+      btnToggleProxyModule.setAttribute('aria-busy', 'true');
     }
     syncProxySaveButtonState();
     try {
@@ -44963,7 +45901,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       isProxyBusy = false;
       if (btnToggleProxyModule) {
         btnToggleProxyModule.disabled = false;
-        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
+        btnToggleProxyModule.removeAttribute('aria-busy');
       }
       syncProxySaveButtonState();
     }
@@ -45686,6 +46624,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       || Boolean(radialShadow?.activeElement));
   const escape = e => {
     if (e.key === 'Escape') {
+      if (globalRestartModal?.open) return;
       if (state.radialMenuOpen) {
         suppressFocusPickerUntil = Date.now() + 300;
         closeRadialMenu(false);
@@ -45991,6 +46930,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (!hasExisting || (incomingHasCaps && !existingHasCaps)) {
         state.cascadeModelConfigs = payload.cascadeModelConfigs;
         renderHeaderModelDropdown();
+        if (typeof syncModelPickers === 'function') syncModelPickers();
         if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
       }
     }
@@ -46637,6 +47577,13 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
 
       if (settingsRes?.ok) {
+        restoreAppearancePreferences(settingsRes.uiPreferences || {});
+        if (!compactPrefsEditInFlight) {
+          const p = settingsRes.uiPreferences || {};
+          autoCompactEnabled = p.autoCompactEnabled === true;
+          autoCompactThreshold = normalizeAutoCompactThreshold(p.autoCompactThreshold);
+          syncCompactPreferencesControls();
+        }
         if (settingsRes.uiPreferences?.restartVerification && typeof settingsRes.uiPreferences.restartVerification === 'object') {
           pendingRestartVerification = { ...settingsRes.uiPreferences.restartVerification };
           void refreshUnlockStatus();
@@ -46709,6 +47656,18 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         const savedAutoHideCol = settingsRes.autoHideTopbarOnDockedPanel ?? settingsRes.uiPreferences?.autoHideTopbarOnDockedPanel;
         if (savedAutoHideCol !== undefined) {
           autoHideTopbarOnDockedPanel = savedAutoHideCol !== false;
+        }
+        const savedAuxViewTab = settingsRes.auxViewTab || settingsRes.uiPreferences?.auxViewTab;
+        if (savedAuxViewTab === 'browser' || savedAuxViewTab === 'plugin') {
+          setAuxViewTab(savedAuxViewTab, { persist: false });
+        }
+        const savedAuxCollapsed = settingsRes.auxCollapsed ?? settingsRes.uiPreferences?.auxCollapsed;
+        if (typeof savedAuxCollapsed === 'boolean') {
+          setAuxCollapsed(savedAuxCollapsed, { persist: false });
+        }
+        const savedAuxWidth = settingsRes.auxWidthPx ?? settingsRes.uiPreferences?.auxWidthPx;
+        if (Number.isFinite(Number(savedAuxWidth)) && Number(savedAuxWidth) >= 260) {
+          auxWidthPx = clampAuxWidthPx(savedAuxWidth);
         }
         if (savedTopbarMode && VALID_TOPBAR_MODES.includes(savedTopbarMode)) {
           setTopbarMode(savedTopbarMode, { persist: false });
@@ -46818,6 +47777,20 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
           }
           ensureComposerStatusBarMounted();
+        }
+        const savedModelPicker = settingsRes.simplifiedModelPickerEnabled ?? settingsRes.uiPreferences?.simplifiedModelPickerEnabled;
+        if (savedModelPicker !== undefined) {
+          simplifiedModelPickerEnabled = savedModelPicker !== false;
+          const chkMp = el('chk-simplified-model-picker');
+          if (chkMp) chkMp.checked = simplifiedModelPickerEnabled;
+          if (typeof syncModelPickers === 'function') syncModelPickers();
+        }
+        const savedNextPrompt = settingsRes.nextPromptEnabled ?? settingsRes.uiPreferences?.nextPromptEnabled;
+        if (savedNextPrompt !== undefined) {
+          nextPromptEnabled = savedNextPrompt === true;
+          const chkNp = el('chk-next-prompt-enabled');
+          if (chkNp) chkNp.checked = nextPromptEnabled;
+          if (!nextPromptEnabled && typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
         }
         const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
         if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
@@ -47110,7 +48083,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
         const updateStatusText = needsDiskRestart
           ? t('update.diskPending', { ver: effectiveDisplayVer })
-          : t('update.latestBody', { ver: effectiveDisplayVer });
+          : t(res.livePendingReload ? 'update.liveStaged' : 'update.latestBody', { ver: effectiveDisplayVer });
         if (bodyEl) bodyEl.textContent = updateStatusText;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         setUpdateRestartVisible(needsDiskRestart);
@@ -47181,6 +48154,18 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const nextDisplayVer = formatDisplayVersion(nextVer);
+        if (res.liveStaged) {
+          cachedLatestRelease = null;
+          pendingUpdateRestart = false;
+          if (dot) dot.style.display = 'none';
+          if (dotCtx) dotCtx.style.display = 'none';
+          if (titleEl) titleEl.textContent = t('update.doneTitle');
+          if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
+          if (bodyEl) bodyEl.textContent = t('update.liveStaged', { ver: nextDisplayVer });
+          if (statusEl) statusEl.style.display = 'none';
+          if (applyBtn) applyBtn.style.display = 'none';
+          return;
+        }
         const vEl = el('v');
         if (vEl && res.liveInjected) vEl.textContent = nextDisplayVer;
 
@@ -48958,12 +49943,35 @@ let cockpitDragCleanup = null;
 let cancelCockpitManagerDrag = null;
 let stopCockpitManagerPositioning = null;
 
+const BUILTIN_COCKPIT_PRESET_IDS = Object.freeze(['cockpit', 'minimal', 'debug', 'speed_cost', 'collab']);
+
+function normalizeCockpitPresetOrder(rawOrder, customPresets = []) {
+  const customIds = Array.isArray(customPresets) ? customPresets.map(p => String(p?.id || '').trim()).filter(Boolean) : [];
+  const validIds = new Set([...BUILTIN_COCKPIT_PRESET_IDS, ...customIds]);
+  const seen = new Set();
+  const out = [];
+  for (const rawId of (Array.isArray(rawOrder) ? rawOrder : [])) {
+    const pid = typeof rawId === 'string' ? rawId.trim() : '';
+    if (!pid || !validIds.has(pid) || seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+  }
+  for (const bId of BUILTIN_COCKPIT_PRESET_IDS) {
+    if (!seen.has(bId)) { seen.add(bId); out.push(bId); }
+  }
+  for (const cId of customIds) {
+    if (!seen.has(cId)) { seen.add(cId); out.push(cId); }
+  }
+  return out;
+}
+
 function buildDefaultCockpitLayout(presetId = 'cockpit') {
   const safeId = Object.prototype.hasOwnProperty.call(COCKPIT_PRESET_LAYOUTS, presetId) ? presetId : 'cockpit';
   const base = COCKPIT_PRESET_LAYOUTS[safeId];
   return {
     version: 1,
     presetId: safeId,
+    presetOrder: [...BUILTIN_COCKPIT_PRESET_IDS],
     widgets: [...base.items, ...COCKPIT_WIDGET_DEFS.filter(def => !base.items.some(it => it.id === def.id))
       .map(def => ({ id: def.id, span: def.defaultSpan, height: def.defaultHeight, visible: false }))].map(it => ({
       id: it.id,
@@ -49045,61 +50053,186 @@ function normalizeCockpitLayout(raw, includePresets = true) {
     presetId,
     widgets: normalized
   };
-  if (!includePresets || !Array.isArray(raw.customPresets)) return result;
+  if (!includePresets) return result;
   const seenPresets = new Set();
   const customPresets = [];
-  for (const item of raw.customPresets) {
-    const id = String(item?.id || '');
-    const name = String(item?.name || '').replace(/[（）()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
-    if (!/^custom-[\w-]{1,72}$/.test(id) || !name || seenPresets.has(id)) continue;
-    seenPresets.add(id);
-    customPresets.push({ ...normalizeCockpitLayout(item, false), id, name });
+  if (Array.isArray(raw.customPresets)) {
+    for (const item of raw.customPresets) {
+      const id = String(item?.id || '');
+      const name = String(item?.name || '').replace(/[（）()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (!/^custom-[\w-]{1,72}$/.test(id) || !name || seenPresets.has(id)) continue;
+      seenPresets.add(id);
+      customPresets.push({ ...normalizeCockpitLayout(item, false), id, name });
+    }
+    if (customPresets.length) result.customPresets = customPresets;
+    if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
   }
-  if (customPresets.length) result.customPresets = customPresets;
-  if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
+  result.presetOrder = normalizeCockpitPresetOrder(raw.presetOrder, customPresets);
   return result;
 }
 
-function renderCustomCockpitPresets(layout) {
-  const list = el('ctx-custom-presets');
-  if (!list) return;
-  const signature = JSON.stringify([layout.activeCustomId, (layout.customPresets || []).map(({ id, name }) => [id, name])]);
-  if (list._presetSignature !== signature) {
-    list._presetSignature = signature;
-    list.replaceChildren();
-    for (const { id, name } of layout.customPresets || []) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'ctx-preset-btn';
-      button.textContent = name;
-      button.title = name;
-      button.setAttribute('data-cockpit-preset', id);
-      button.setAttribute('aria-pressed', String(id === layout.activeCustomId));
-      button.classList.toggle('active', id === layout.activeCustomId);
-      list.appendChild(button);
+let presetSortMode = false;
+
+function renderCockpitPresetsTrack(layout) {
+  const track = el('ctx-cockpit-presets-track') || el('ctx-cockpit-toolbar')?.querySelector?.('.ctx-cockpit-presets');
+  const sortToggleBtn = el('btn-ctx-preset-sort');
+  if (sortToggleBtn) {
+    sortToggleBtn.setAttribute('aria-pressed', presetSortMode ? 'true' : 'false');
+    sortToggleBtn.classList?.toggle?.('active', presetSortMode);
+    sortToggleBtn.textContent = presetSortMode ? t('session.preset.sortDone') : t('session.preset.sort');
+  }
+  const activeId = layout.activeCustomId || layout.presetId;
+  if (track) {
+    const customList = Array.isArray(layout.customPresets) ? layout.customPresets : [];
+    const customMap = new Map(customList.map(c => [c.id, c]));
+    const order = normalizeCockpitPresetOrder(layout.presetOrder, customList);
+    const sig = JSON.stringify([activeId, presetSortMode, order, customList.map(c => [c.id, c.name])]);
+    if (track._presetTrackSignature !== sig) {
+      track._presetTrackSignature = sig;
+      const builtinBtnIdMap = {
+        cockpit: 'btn-preset-cockpit',
+        minimal: 'btn-preset-minimal',
+        debug: 'btn-preset-debug',
+        speed_cost: 'btn-preset-speed-cost',
+        collab: 'btn-preset-collab'
+      };
+      const existingById = new Map();
+      if (typeof track.querySelectorAll === 'function') {
+        for (const btn of Array.from(track.querySelectorAll('[data-cockpit-preset]'))) {
+          const pid = btn.getAttribute?.('data-cockpit-preset');
+          if (pid && !existingById.has(pid)) existingById.set(pid, btn);
+        }
+      }
+      for (const [pid, domId] of Object.entries(builtinBtnIdMap)) {
+        if (!existingById.has(pid)) {
+          const found = el(domId);
+          if (found) {
+            found.setAttribute?.('data-cockpit-preset', pid);
+            existingById.set(pid, found);
+          }
+        }
+      }
+      track.setAttribute?.('data-sort-mode', presetSortMode ? 'true' : 'false');
+      const items = [];
+      for (let i = 0; i < order.length; i++) {
+        const pid = order[i];
+        const meta = COCKPIT_PRESET_LAYOUTS[pid];
+        const customMeta = customMap.get(pid);
+        if (!meta && !customMeta) continue;
+        let btn = existingById.get(pid);
+        if (!btn) {
+          btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ctx-preset-btn';
+          btn.setAttribute('data-cockpit-preset', pid);
+        }
+        if (customMeta) {
+          btn.textContent = customMeta.name;
+          btn.title = customMeta.name;
+          btn.setAttribute?.('data-custom-preset', 'true');
+        } else if (meta) {
+          btn.removeAttribute?.('data-custom-preset');
+          btn.textContent = t(meta.labelKey);
+        }
+        const isAct = pid === activeId;
+        btn.setAttribute?.('aria-pressed', isAct ? 'true' : 'false');
+        btn.classList?.toggle?.('active', isAct);
+
+        if (presetSortMode) {
+          const wrap = document.createElement('span');
+          wrap.className = 'ctx-preset-chip-group';
+          wrap.setAttribute('data-preset-chip-id', pid);
+          const leftBtn = document.createElement('button');
+          leftBtn.type = 'button';
+          leftBtn.className = 'ctx-preset-sort-step';
+          leftBtn.setAttribute('data-preset-move', '-1');
+          leftBtn.setAttribute('data-preset-move-id', pid);
+          leftBtn.setAttribute('aria-label', t('session.preset.moveLeftAria'));
+          leftBtn.textContent = '‹';
+          leftBtn.disabled = i === 0;
+          const rightBtn = document.createElement('button');
+          rightBtn.type = 'button';
+          rightBtn.className = 'ctx-preset-sort-step';
+          rightBtn.setAttribute('data-preset-move', '1');
+          rightBtn.setAttribute('data-preset-move-id', pid);
+          rightBtn.setAttribute('aria-label', t('session.preset.moveRightAria'));
+          rightBtn.textContent = '›';
+          rightBtn.disabled = i === order.length - 1;
+          wrap.appendChild(leftBtn);
+          wrap.appendChild(btn);
+          wrap.appendChild(rightBtn);
+          items.push(wrap);
+        } else {
+          items.push(btn);
+        }
+      }
+      if (typeof track.replaceChildren === 'function') {
+        track.replaceChildren(...items);
+      }
     }
   }
   const actions = el('ctx-custom-preset-actions');
   if (actions) actions.hidden = !layout.activeCustomId;
 }
 
+function renderCustomCockpitPresets(layout) {
+  renderCockpitPresetsTrack(layout);
+}
+
 function updateCustomCockpitPreset(action, name = '') {
   const layout = getCockpitLayout();
   const presets = layout.customPresets || [];
   const active = presets.find(item => item.id === layout.activeCustomId);
+  const curOrder = normalizeCockpitPresetOrder(layout.presetOrder, presets);
   if (action === 'delete' && active) {
-    return applyCockpitPreset('cockpit', { customPresets: presets.filter(item => item !== active) });
+    const nextCustoms = presets.filter(item => item !== active);
+    const nextOrder = curOrder.filter(id => id !== active.id);
+    return applyCockpitPreset('cockpit', { customPresets: nextCustoms, presetOrder: nextOrder });
   }
   if (action === 'save') {
     const id = `custom-${window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2)}`;
     const entry = { id, name, presetId: layout.presetId, widgets: layout.widgets };
-    persistCockpitLayout({ ...layout, activeCustomId: id, customPresets: [...presets, entry] });
+    const nextCustoms = [...presets, entry];
+    const nextOrder = normalizeCockpitPresetOrder([...curOrder, id], nextCustoms);
+    persistCockpitLayout({ ...layout, activeCustomId: id, customPresets: nextCustoms, presetOrder: nextOrder });
   } else if (active) {
     const entry = action === 'rename' ? { ...active, name } : { ...active, widgets: layout.widgets };
-    persistCockpitLayout({ ...layout, customPresets: presets.map(item => item === active ? entry : item) });
+    persistCockpitLayout({ ...layout, customPresets: presets.map(item => item === active ? entry : item), presetOrder: curOrder });
   }
   applyCockpitLayoutToDom();
   return getCockpitLayout();
+}
+
+function reorderCockpitPresets(sourceId, targetId, insertAfter = false, { persist = true } = {}) {
+  const layout = getCockpitLayout();
+  const customs = layout.customPresets || [];
+  const order = normalizeCockpitPresetOrder(layout.presetOrder, customs).slice();
+  const fromIdx = order.indexOf(sourceId);
+  const toIdxOrig = order.indexOf(targetId);
+  if (fromIdx < 0 || toIdxOrig < 0 || sourceId === targetId) return layout;
+  order.splice(fromIdx, 1);
+  let targetIdx = order.indexOf(targetId);
+  if (targetIdx < 0) return layout;
+  if (insertAfter) targetIdx += 1;
+  order.splice(targetIdx, 0, sourceId);
+  const saved = persistCockpitLayout({ ...layout, presetOrder: order }, { persistHost: persist });
+  renderCockpitPresetsTrack(saved);
+  return saved;
+}
+
+function moveCockpitPresetByOffset(presetId, offset, { persist = true } = {}) {
+  const layout = getCockpitLayout();
+  const customs = layout.customPresets || [];
+  const order = normalizeCockpitPresetOrder(layout.presetOrder, customs).slice();
+  const idx = order.indexOf(presetId);
+  const delta = Number(offset) || 0;
+  const nextIdx = idx + delta;
+  if (idx < 0 || delta === 0 || nextIdx < 0 || nextIdx >= order.length) return layout;
+  order.splice(idx, 1);
+  order.splice(nextIdx, 0, presetId);
+  const saved = persistCockpitLayout({ ...layout, presetOrder: order }, { persistHost: persist });
+  renderCockpitPresetsTrack(saved);
+  return saved;
 }
 
 function getCockpitLayout() {
@@ -49493,12 +50626,13 @@ function applySkylineLayout(grid, items, metrics) {
   return placements;
 }
 
-function applyCockpitPreset(presetId, { persist = true, customPresets = getCockpitLayout().customPresets } = {}) {
+function applyCockpitPreset(presetId, { persist = true, customPresets = getCockpitLayout().customPresets, presetOrder = getCockpitLayout().presetOrder } = {}) {
   const custom = customPresets?.find(item => item.id === presetId);
   const safeId = custom?.presetId || (Object.prototype.hasOwnProperty.call(COCKPIT_PRESET_LAYOUTS, presetId) ? presetId : 'cockpit');
+  const nextOrder = normalizeCockpitPresetOrder(presetOrder, customPresets);
   const next = custom
-    ? { presetId: safeId, widgets: custom.widgets, activeCustomId: custom.id, customPresets }
-    : { ...buildDefaultCockpitLayout(safeId), customPresets };
+    ? { presetId: safeId, widgets: custom.widgets, activeCustomId: custom.id, customPresets, presetOrder: nextOrder }
+    : { ...buildDefaultCockpitLayout(safeId), customPresets, presetOrder: nextOrder };
   persistCockpitLayout(next, { persistHost: persist });
 
   if (safeId === 'speed_cost') {
@@ -50101,8 +51235,24 @@ function initSessionCockpitGrid() {
         }
         return;
       }
+      const moveBtn = target?.closest?.('[data-preset-move]');
+      if (moveBtn) {
+        const moveId = moveBtn.getAttribute('data-preset-move-id');
+        const delta = Number(moveBtn.getAttribute('data-preset-move') || 0);
+        if (moveId && delta) moveCockpitPresetByOffset(moveId, delta, { persist: true });
+        return;
+      }
+      if (target?.closest?.('#btn-ctx-preset-sort')) {
+        presetSortMode = !presetSortMode;
+        renderCockpitPresetsTrack(getCockpitLayout());
+        return;
+      }
       const presetBtn = target?.closest?.('[data-cockpit-preset]');
       if (presetBtn) {
+        if (toolbar._suppressPresetClick) {
+          toolbar._suppressPresetClick = false;
+          return;
+        }
         const pid = presetBtn.getAttribute('data-cockpit-preset');
         applyCockpitPreset(pid, { persist: true });
         return;
@@ -50119,6 +51269,105 @@ function initSessionCockpitGrid() {
         closeCockpitWidgetManager();
       }
     });
+
+    // 预设条长按指针拖拽重排 + 键盘左右方向键辅助排序
+    const presetTrack = el('ctx-cockpit-presets-track') || toolbar.querySelector?.('.ctx-cockpit-presets');
+    if (presetTrack && !presetTrack._presetDragBound) {
+      presetTrack._presetDragBound = true;
+      let pDrag = null;
+      const clearPDrag = () => {
+        if (!pDrag) return;
+        if (pDrag.pressTimer) clearTimeout(pDrag.pressTimer);
+        if (pDrag.chipEl) pDrag.chipEl.classList?.remove?.('is-dragging');
+        window.removeEventListener?.('pointermove', onPMove);
+        window.removeEventListener?.('pointerup', onPUp);
+        window.removeEventListener?.('pointercancel', clearPDrag);
+        window.removeEventListener?.('keydown', onPEsc, true);
+        pDrag = null;
+      };
+      const onPEsc = (ev) => {
+        if (ev.key === 'Escape' && pDrag) {
+          ev.preventDefault?.();
+          clearPDrag();
+        }
+      };
+      const onPMove = (ev) => {
+        if (!pDrag) return;
+        const dx = Math.abs((ev.clientX || 0) - pDrag.startX);
+        const dy = Math.abs((ev.clientY || 0) - pDrag.startY);
+        if (!pDrag.active && (dx > 6 || dy > 6)) {
+          if (!pDrag.armed) { clearPDrag(); return; }
+          pDrag.active = true;
+          pDrag.chipEl?.classList?.add?.('is-dragging');
+        }
+        if (!pDrag.active) return;
+        const btns = Array.from(presetTrack.querySelectorAll?.('[data-cockpit-preset]') || []);
+        for (const cand of btns) {
+          const cid = cand.getAttribute?.('data-cockpit-preset');
+          if (!cid || cid === pDrag.presetId || typeof cand.getBoundingClientRect !== 'function') continue;
+          const r = cand.getBoundingClientRect();
+          if ((ev.clientX || 0) >= r.left && (ev.clientX || 0) <= r.right) {
+            pDrag.targetId = cid;
+            pDrag.insertAfter = (ev.clientX || 0) >= (r.left + r.width / 2);
+            break;
+          }
+        }
+      };
+      const onPUp = () => {
+        if (!pDrag) return;
+        const { active, presetId, targetId, insertAfter } = pDrag;
+        clearPDrag();
+        if (active) {
+          toolbar._suppressPresetClick = true;
+          setTimeout(() => { toolbar._suppressPresetClick = false; }, 120);
+          if (targetId && targetId !== presetId) {
+            reorderCockpitPresets(presetId, targetId, insertAfter, { persist: true });
+          }
+        }
+      };
+      presetTrack.addEventListener?.('pointerdown', (ev) => {
+        if (ev.isPrimary === false || (ev.button != null && ev.button !== 0)) return;
+        if (ev.target?.closest?.('.ctx-preset-sort-step')) return;
+        const btn = ev.target?.closest?.('[data-cockpit-preset]');
+        const pid = btn?.getAttribute?.('data-cockpit-preset');
+        if (!pid) return;
+        clearPDrag();
+        pDrag = {
+          presetId: pid,
+          chipEl: btn.closest?.('.ctx-preset-chip-group') || btn,
+          startX: ev.clientX || 0,
+          startY: ev.clientY || 0,
+          armed: false,
+          active: false,
+          targetId: null,
+          insertAfter: false,
+          pressTimer: setTimeout(() => {
+            if (!pDrag || pDrag.presetId !== pid) return;
+            pDrag.armed = true;
+            pDrag.active = true;
+            pDrag.chipEl?.classList?.add?.('is-dragging');
+          }, 180)
+        };
+        window.addEventListener?.('pointermove', onPMove);
+        window.addEventListener?.('pointerup', onPUp);
+        window.addEventListener?.('pointercancel', clearPDrag);
+        window.addEventListener?.('keydown', onPEsc, true);
+      });
+      presetTrack.addEventListener?.('keydown', (ev) => {
+        if (!presetSortMode) return;
+        const btn = ev.target?.closest?.('[data-cockpit-preset]');
+        const pid = btn?.getAttribute?.('data-cockpit-preset');
+        if (!pid) return;
+        if (ev.key === 'ArrowLeft') {
+          ev.preventDefault?.();
+          moveCockpitPresetByOffset(pid, -1, { persist: true });
+        } else if (ev.key === 'ArrowRight') {
+          ev.preventDefault?.();
+          moveCockpitPresetByOffset(pid, 1, { persist: true });
+        }
+      });
+      activeDisposers.add(clearPDrag);
+    }
   }
 
   if (typeof shadow !== 'undefined' && shadow && typeof shadow.addEventListener === 'function' && !shadow._cockpitOutsideBound) {
@@ -51013,6 +52262,1553 @@ function initSessionCockpitGrid() {
 
   applyCockpitLayoutToDom();
 }
+// =========================================================================
+  // 轻量模型与思考档位分离选择器模块（Phase 5 · 复用宿主链路的优雅增强层）
+  // 遵循规则：
+  // 1. 每个基础模型在菜单中仅出现一次；思考档位拆分到旁边独立控件；
+  // 2. 固定档位与 Orchestrator 只读展示或隐藏可选下拉，绝不虚构不支持的档位；
+  // 3. 切换模型优先沿用当前档位，不支持时按宿主规则回退并明确提示 High / Extra High；
+  // 4. 按 .surface-composer 独立隔离分屏与 Side Chat 会话归属；结构不可识别时无缝退回原生菜单。
+  // =========================================================================
+
+  function getMpCore() {
+    return (typeof __AGContextMeterCore !== 'undefined' && __AGContextMeterCore)
+      ? __AGContextMeterCore
+      : ((typeof globalThis !== 'undefined' && globalThis.__AGContextMeterCore) || {});
+  }
+
+  let simplifiedModelPickerEnabled = (() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const v = localStorage.getItem('ag_simplified_model_picker');
+        if (v === 'false' || v === '0') return false;
+      }
+    } catch { }
+    return true;
+  })();
+
+  const MODEL_PICKER_STYLE_ID = 'ag-model-picker-style';
+  const modelPickerWeakState = new WeakMap();
+  const mountedPickerRecords = new Set();
+  let activeOpenPickerState = null;
+  let globalPickerListenersBound = false;
+
+  function ensureModelPickerStyles() {
+    try {
+      if (typeof document === 'undefined' || !document.head) return;
+      if (document.getElementById(MODEL_PICKER_STYLE_ID)) return;
+      const style = document.createElement('style');
+      style.id = MODEL_PICKER_STYLE_ID;
+      style.textContent = `
+        .ag-mp-native-hidden {
+          position: absolute !important;
+          width: 1px !important;
+          height: 1px !important;
+          opacity: 0 !important;
+          pointer-events: none !important;
+          overflow: hidden !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          border: 0 !important;
+        }
+        body.ag-mp-native-probing [role="listbox"],
+        body.ag-mp-native-probing [role="menu"],
+        body.ag-mp-native-probing [data-radix-popper-content-wrapper] {
+          opacity: 0 !important;
+          pointer-events: none !important;
+        }
+        .ag-mp-wrap {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          position: relative;
+          min-width: 0;
+          max-width: 100%;
+          flex-shrink: 1;
+          vertical-align: middle;
+          font-family: inherit;
+        }
+        .ag-mp-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          height: 26px;
+          padding: 0 8px;
+          border-radius: 7px;
+          border: 1px solid rgba(148, 163, 184, 0.24);
+          background: rgba(148, 163, 184, 0.08);
+          color: inherit;
+          font-size: 12px;
+          font-weight: 500;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          min-width: 0;
+          max-width: 210px;
+          transition: background 120ms ease, border-color 120ms ease;
+        }
+        .ag-mp-btn:hover,
+        .ag-mp-btn[aria-expanded="true"] {
+          background: rgba(148, 163, 184, 0.16);
+          border-color: rgba(148, 163, 184, 0.42);
+        }
+        .ag-mp-btn:focus-visible {
+          outline: 2px solid #8b5cf6;
+          outline-offset: 1px;
+        }
+        .ag-mp-model-lbl {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .ag-mp-effort-btn {
+          max-width: 126px;
+        }
+        .ag-mp-effort-btn[data-readonly="true"] {
+          opacity: 0.68;
+          cursor: default;
+          background: rgba(148, 163, 184, 0.05);
+          border-style: dashed;
+        }
+        .ag-mp-effort-btn[data-readonly="true"]:hover {
+          background: rgba(148, 163, 184, 0.05);
+          border-color: rgba(148, 163, 184, 0.24);
+        }
+        .ag-mp-chevron {
+          opacity: 0.7;
+          font-size: 10px;
+          flex-shrink: 0;
+        }
+        .ag-mp-fallback-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 2px 7px;
+          border-radius: 6px;
+          font-size: 11px;
+          line-height: 1.3;
+          background: rgba(148, 163, 184, 0.14);
+          border: 1px solid rgba(148, 163, 184, 0.28);
+          color: inherit;
+          white-space: nowrap;
+          max-width: 220px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .ag-mp-fallback-pill[data-level="high"] {
+          background: rgba(245, 158, 11, 0.16);
+          border-color: rgba(245, 158, 11, 0.5);
+          color: #f59e0b;
+        }
+        .ag-mp-fallback-pill[hidden] {
+          display: none !important;
+        }
+        .ag-mp-popover {
+          position: fixed;
+          z-index: 2147483000;
+          min-width: 228px;
+          max-width: min(320px, calc(100vw - 16px));
+          max-height: min(420px, calc(100vh - 24px));
+          overflow-y: auto;
+          padding: 6px;
+          border-radius: 10px;
+          border: 1px solid rgba(148, 163, 184, 0.28);
+          background: var(--vscode-menu-background, #18181b);
+          color: var(--vscode-menu-foreground, #f4f4f5);
+          box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+          font-size: 12px;
+        }
+        .ag-mp-popover[hidden] {
+          display: none !important;
+        }
+        .ag-mp-popover[data-light="true"] {
+          background: #ffffff;
+          color: #18181b;
+          border-color: rgba(15, 23, 42, 0.16);
+          box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+        }
+        .ag-mp-hdr {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 4px 8px 6px;
+          font-size: 11px;
+          opacity: 0.72;
+          border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+          margin-bottom: 4px;
+        }
+        .ag-mp-item {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          width: 100%;
+          border: 0;
+          background: transparent;
+          color: inherit;
+          padding: 6px 8px;
+          border-radius: 6px;
+          text-align: left;
+          font-size: 12px;
+          cursor: pointer;
+        }
+        .ag-mp-item:hover,
+        .ag-mp-item.is-focused {
+          background: rgba(139, 92, 246, 0.18);
+        }
+        .ag-mp-item[aria-selected="true"] {
+          font-weight: 600;
+        }
+        .ag-mp-item[aria-disabled="true"] {
+          opacity: 0.46;
+          cursor: not-allowed;
+        }
+        .ag-mp-item[aria-disabled="true"]:hover {
+          background: transparent;
+        }
+        .ag-mp-item-meta {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11px;
+          opacity: 0.78;
+          flex-shrink: 0;
+        }
+        .ag-mp-divider {
+          height: 1px;
+          background: rgba(148, 163, 184, 0.18);
+          margin: 5px 4px;
+        }
+        .ag-mp-subpanel {
+          padding: 4px 2px 2px;
+        }
+        .ag-mp-subpanel[hidden] {
+          display: none !important;
+        }
+        .ag-mp-sub-group-title {
+          font-size: 10.5px;
+          opacity: 0.68;
+          padding: 4px 8px 2px;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+        @media (max-width: 480px) {
+          .ag-mp-btn { max-width: 138px; padding: 0 6px; font-size: 11px; }
+          .ag-mp-effort-btn { max-width: 82px; }
+          .ag-mp-fallback-pill { max-width: 136px; font-size: 10.5px; }
+        }
+      `;
+      document.head.appendChild(style);
+    } catch { }
+  }
+
+  function resolveComposerRouteContext(composer, trigger) {
+    try {
+      const convNode = composer?.closest?.('[data-testid="conversation-view"], [data-cascade-id], [data-session-id]');
+      const explicitId = convNode?.getAttribute?.('data-cascade-id') || convNode?.getAttribute?.('data-session-id') || null;
+      if (explicitId) return explicitId;
+      const layout = typeof parseConversationLayout === 'function' ? parseConversationLayout() : null;
+      if (layout?.targets?.length) {
+        const hit = layout.targets.find(tg => {
+          const elNode = tg.triggerEl || tg.containerEl || tg.node;
+          return elNode && (elNode === trigger || elNode === composer || composer?.contains?.(elNode) || elNode?.contains?.(composer));
+        });
+        if (hit?.id) return hit.id;
+      }
+    } catch { }
+    return state.route || null;
+  }
+
+  function parseTriggerTextAndEffort(trigger) {
+    if (!trigger) return { label: '', productLabel: '', effort: null, modelId: null, isOrchestrator: false };
+    let effortAttr = null;
+    try {
+      const efNode = trigger.querySelector?.('[data-testid="model-selector-effort-option"]') || trigger.querySelector?.('[data-effort]');
+      if (efNode) effortAttr = efNode.getAttribute?.('data-effort') || efNode.textContent?.trim() || null;
+    } catch { }
+
+    let rawText = '';
+    try {
+      const clone = trigger.cloneNode ? trigger.cloneNode(true) : trigger;
+      const svgs = clone.querySelectorAll ? clone.querySelectorAll('svg, [aria-hidden="true"]') : [];
+      if (svgs && svgs.forEach) svgs.forEach(s => s.remove());
+      rawText = String(clone.textContent || trigger.textContent || '').replace(/\s+/g, ' ').trim();
+    } catch {
+      rawText = String(trigger.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    const stripped = rawText.replace(/^(?:Orchestrator|Planner|Worker|Executor)\s*[·|:\-–—»/]+\s*/i, '').trim();
+    const isOrch = /^orchestrator\b/i.test(rawText);
+
+    const parsedSplit = typeof getMpCore().splitModelDisplayAndEffort === 'function'
+      ? getMpCore().splitModelDisplayAndEffort(stripped || rawText)
+      : null;
+
+    let baseName = parsedSplit?.baseName || stripped || rawText;
+    let effort = effortAttr ? (getMpCore().normalizeEffortValue?.(effortAttr) || effortAttr) : (parsedSplit?.effort || null);
+    if (isOrch) {
+      baseName = rawText;
+      effort = null;
+    }
+
+    return {
+      label: rawText,
+      productLabel: baseName,
+      effort,
+      isOrchestrator: isOrch
+    };
+  }
+
+  function getActiveGroupedMenu() {
+    const existingMenu = lastComputedQuotaView?.groupedModels
+      || quotaState?.snapshot?.groupedModels
+      || state?.groupedModels
+      || null;
+    if (existingMenu && Array.isArray(existingMenu.baseModels) && existingMenu.baseModels.length > 0) {
+      return existingMenu;
+    }
+    const rawUserStatusCfgs = quotaState?.rawInput?.userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelConfigs
+      || quotaState?.rawInput?.userStatusRes?.cascadeModelConfigData?.clientModelConfigs
+      || quotaState?.rawInput?.cascadeModelConfigs
+      || [];
+    const rawUserStatusSorts = quotaState?.rawInput?.userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelSorts
+      || quotaState?.rawInput?.userStatusRes?.cascadeModelConfigData?.clientModelSorts
+      || state.clientModelSorts
+      || [];
+    const configs = (Array.isArray(rawUserStatusCfgs) && rawUserStatusCfgs.length > 0)
+      ? rawUserStatusCfgs
+      : (Array.isArray(state.cascadeModelConfigs) && state.cascadeModelConfigs.length > 0
+        ? state.cascadeModelConfigs
+        : (Array.isArray(state.scan?.cascadeModelConfigs) ? state.scan.cascadeModelConfigs : []));
+    const mpCore = getMpCore();
+    if (!configs.length || typeof mpCore.buildGroupedModelMenu !== 'function') {
+      return null;
+    }
+    return mpCore.buildGroupedModelMenu({
+      cascadeModelConfigs: configs,
+      clientModelSorts: rawUserStatusSorts,
+      defaultOverrideModelConfig: state.defaultOverrideModelConfig || null,
+      pools: lastComputedQuotaView?.pools || quotaState?.snapshot?.pools || []
+    });
+  }
+
+  function findOpenNativeModelOptions() {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return [];
+    const containers = Array.from(document.querySelectorAll('[role="listbox"], [role="menu"], [data-radix-popper-content-wrapper], [data-testid*="model-selector-menu"]') || []);
+    const candidates = [];
+    for (const c of containers) {
+      if (!c || c.closest?.('.ag-mp-popover') || c.closest?.('#ag-context-meter')) continue;
+      const items = Array.from(c.querySelectorAll?.('[role="option"], [role="menuitem"], button, [data-value], [data-model-id]') || []);
+      for (const it of items) candidates.push(it);
+    }
+    return candidates;
+  }
+
+  async function dispatchHostModelSwitch(rec, variant, productLabel) {
+    if (!rec || !rec.trigger || !variant) return { ok: false, reason: 'missing_target' };
+    try {
+      // 1. 允许测试或宿主直接注册回调桥，否则通过隐藏探测点击真实宿主下拉项
+      const testHook = typeof window !== 'undefined' && typeof window.__agTestModelSelectHook === 'function'
+        ? window.__agTestModelSelectHook
+        : null;
+      if (testHook) {
+        const res = await testHook({
+          composer: rec.composer,
+          trigger: rec.trigger,
+          route: resolveComposerRouteContext(rec.composer, rec.trigger),
+          variant,
+          productLabel
+        });
+        if (res === false || res?.ok === false) {
+          return { ok: false, reason: res?.reason || 'host_hook_rejected' };
+        }
+        return { ok: true, method: 'hook', modelId: variant.modelId, effort: variant.effort || null };
+      }
+
+      if (typeof document !== 'undefined' && document.body) {
+        document.body.classList?.add?.('ag-mp-native-probing');
+      }
+      try {
+        rec.trigger.click?.();
+      } catch { }
+
+      const deadline = Date.now() + 200;
+      let matchedNode = null;
+      while (Date.now() <= deadline) {
+        const options = findOpenNativeModelOptions();
+        for (const opt of options) {
+          const dataModelId = String(opt.getAttribute?.('data-model-id') || opt.getAttribute?.('data-value') || '').trim();
+          if (dataModelId && (dataModelId === variant.modelId || (variant.alias && dataModelId === variant.alias))) {
+            matchedNode = opt;
+            break;
+          }
+          const txt = String(opt.textContent || '').replace(/\s+/g, ' ').trim();
+          const mpCore = getMpCore();
+          if (typeof mpCore.matchHostMenuOptionText === 'function'
+            ? mpCore.matchHostMenuOptionText(txt, variant, productLabel)
+            : (txt && txt.toLowerCase() === String(variant.label || '').toLowerCase())) {
+            matchedNode = opt;
+            break;
+          }
+        }
+        if (matchedNode) break;
+        await new Promise(r => setTimeout(r, 16));
+      }
+
+      if (!matchedNode) {
+        // 宿主结构不可识别：解除屏蔽并允许用户直接使用宿主原生按钮
+        try {
+          if (typeof document !== 'undefined' && document.body) {
+            document.body.classList?.remove?.('ag-mp-native-probing');
+          }
+        } catch { }
+        return { ok: false, reason: 'native_option_not_found' };
+      }
+
+      matchedNode.click?.();
+      await new Promise(r => setTimeout(r, 20));
+      return { ok: true, method: 'native_dom', modelId: variant.modelId, effort: variant.effort || null };
+    } catch (e) {
+      return { ok: false, reason: e?.message || 'dispatch_error' };
+    } finally {
+      try {
+        if (typeof document !== 'undefined' && document.body) {
+          document.body.classList?.remove?.('ag-mp-native-probing');
+        }
+      } catch { }
+      try { scheduleHostModelSync(); } catch { }
+    }
+  }
+
+  function closeActiveModelPicker(restoreFocus = false) {
+    if (!activeOpenPickerState) return;
+    const st = activeOpenPickerState;
+    const prevMode = st.openMode;
+    st.openMode = null;
+    st.submenuOpen = false;
+    st.focusedIndex = -1;
+    if (st.modelMenuEl) st.modelMenuEl.hidden = true;
+    if (st.effortMenuEl) st.effortMenuEl.hidden = true;
+    st.modelBtn?.setAttribute?.('aria-expanded', 'false');
+    st.effortBtn?.setAttribute?.('aria-expanded', 'false');
+    activeOpenPickerState = null;
+    if (restoreFocus) {
+      if (prevMode === 'effort' && !st.effortBtn?.disabled) {
+        st.effortBtn?.focus?.();
+      } else {
+        st.modelBtn?.focus?.();
+      }
+    }
+  }
+
+  function positionPickerPopover(anchorBtn, popoverEl) {
+    if (!anchorBtn || !popoverEl || !popoverEl.style) return;
+    try {
+      const vw = (typeof window !== 'undefined' && Number(window.innerWidth) > 0) ? Number(window.innerWidth) : 1280;
+      const vh = (typeof window !== 'undefined' && Number(window.innerHeight) > 0) ? Number(window.innerHeight) : 800;
+      const rect = anchorBtn.getBoundingClientRect ? anchorBtn.getBoundingClientRect() : { left: 20, top: 600, bottom: 626, width: 120 };
+      const popW = Math.min(320, Math.max(200, vw - 16));
+      const popH = Math.min(360, vh - 24);
+      const clampedLeft = Math.max(8, Math.min(rect.left || 8, vw - popW - 8));
+      const placeAbove = (rect.top || 0) > popH + 16 || (vh - (rect.bottom || 0)) < 180;
+      popoverEl.style.left = `${Math.round(clampedLeft)}px`;
+      if (placeAbove) {
+        popoverEl.style.top = 'auto';
+        popoverEl.style.bottom = `${Math.max(8, Math.round(vh - (rect.top || 0) + 6))}px`;
+      } else {
+        popoverEl.style.bottom = 'auto';
+        popoverEl.style.top = `${Math.min(vh - 48, Math.round((rect.bottom || 0) + 6))}px`;
+      }
+      popoverEl.style.maxWidth = `${Math.max(180, vw - 16)}px`;
+      const isLightHost = host?.getAttribute?.('data-theme') === 'light';
+      if (isLightHost) popoverEl.setAttribute('data-light', 'true');
+      else popoverEl.removeAttribute('data-light');
+    } catch { }
+  }
+
+  function bindGlobalPickerListeners() {
+    if (globalPickerListenersBound || typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+    globalPickerListenersBound = true;
+    const onDocPointerDown = (e) => {
+      if (!activeOpenPickerState) return;
+      const tgt = e.target;
+      const inside = activeOpenPickerState.wrap?.contains?.(tgt)
+        || activeOpenPickerState.modelMenuEl?.contains?.(tgt)
+        || activeOpenPickerState.effortMenuEl?.contains?.(tgt);
+      if (!inside) closeActiveModelPicker(false);
+    };
+    const onDocKeyDown = (e) => {
+      if (!activeOpenPickerState) return;
+      const st = activeOpenPickerState;
+      const menuEl = st.openMode === 'effort' ? st.effortMenuEl : st.modelMenuEl;
+      if (!menuEl || menuEl.hidden) return;
+      if (e.key === 'Escape') {
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        if (st.submenuOpen && st.openMode === 'model') {
+          st.submenuOpen = false;
+          renderModelMenuContents(st);
+          return;
+        }
+        closeActiveModelPicker(true);
+        return;
+      }
+      const focusableItems = Array.from(menuEl.querySelectorAll?.('.ag-mp-item[data-selectable="true"]') || []);
+      if (!focusableItems.length) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault?.();
+        st.focusedIndex = (st.focusedIndex + 1 + focusableItems.length) % focusableItems.length;
+        updateMenuFocusHighlight(focusableItems, st.focusedIndex);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault?.();
+        st.focusedIndex = (st.focusedIndex - 1 + focusableItems.length) % focusableItems.length;
+        updateMenuFocusHighlight(focusableItems, st.focusedIndex);
+      } else if (e.key === 'ArrowRight' && st.openMode === 'model') {
+        const curItem = focusableItems[st.focusedIndex];
+        if (curItem?.getAttribute?.('data-item-role') === 'orchestrator-entry') {
+          e.preventDefault?.();
+          st.submenuOpen = true;
+          renderModelMenuContents(st);
+        }
+      } else if (e.key === 'ArrowLeft' && st.openMode === 'model' && st.submenuOpen) {
+        e.preventDefault?.();
+        st.submenuOpen = false;
+        renderModelMenuContents(st);
+      } else if ((e.key === 'Enter' || e.key === ' ') && st.focusedIndex >= 0 && focusableItems[st.focusedIndex]) {
+        e.preventDefault?.();
+        focusableItems[st.focusedIndex].click?.();
+      }
+    };
+    document.addEventListener('pointerdown', onDocPointerDown, true);
+    document.addEventListener('keydown', onDocKeyDown, true);
+    activeDisposers.add(() => {
+      try {
+        document.removeEventListener('pointerdown', onDocPointerDown, true);
+        document.removeEventListener('keydown', onDocKeyDown, true);
+      } catch { }
+      globalPickerListenersBound = false;
+    });
+  }
+
+  function updateMenuFocusHighlight(items, activeIdx) {
+    items.forEach((node, idx) => {
+      if (idx === activeIdx) node.classList?.add?.('is-focused');
+      else node.classList?.remove?.('is-focused');
+    });
+  }
+
+  function openComposerQuotaFromModelMenu(rec) {
+    closeActiveModelPicker(false);
+    try {
+      const csbQuota = el('csb-group-quota');
+      if (csbQuota && typeof csbQuota.click === 'function' && !csbQuota.hidden) {
+        csbQuota.click();
+        return true;
+      }
+      const panelQuota = el('panel-quota');
+      if (panelQuota && !panelQuota.hidden && panelQuota.style?.display !== 'none') {
+        showPanel('none');
+      } else if (typeof togglePanel === 'function') {
+        togglePanel('quota');
+      }
+      return true;
+    } catch { return false; }
+  }
+
+  function resolveCurrentSelectionForPicker(rec, menu) {
+    const parsed = parseTriggerTextAndEffort(rec.trigger);
+    if (rec.pendingSelection && rec.pendingSelection.label === parsed.label) {
+      return rec.pendingSelection;
+    }
+    const baseModels = Array.isArray(menu?.baseModels) ? menu.baseModels : [];
+    const orch = menu?.orchestrator || null;
+
+    if (parsed.isOrchestrator && orch?.hasOrchestrator) {
+      const hit = (orch.presets || []).find(p =>
+        p.label.toLowerCase() === parsed.label.toLowerCase()
+        || p.targetLabel.toLowerCase() === parsed.label.replace(/^orchestrator\s*[（(]?|[)）]$/gi, '').trim().toLowerCase()
+      ) || orch.presets?.[0] || null;
+      return {
+        isOrchestrator: true,
+        productKey: 'orchestrator',
+        productLabel: hit ? hit.label : (parsed.label || 'Orchestrator'),
+        effort: null,
+        isFixedEffort: true,
+        supportedEfforts: [],
+        variant: hit,
+        modelId: hit?.modelId || null,
+        route: resolveComposerRouteContext(rec.composer, rec.trigger)
+      };
+    }
+
+    const lowLabel = parsed.label.toLowerCase();
+    const lowProd = parsed.productLabel.toLowerCase();
+    let matchedBase = baseModels.find(m =>
+      m.productLabel.toLowerCase() === lowProd
+      || m.variants.some(v => v.label.toLowerCase() === lowLabel)
+    ) || null;
+    if (!matchedBase && lowProd) {
+      const mpCore = getMpCore();
+      const normProd = typeof mpCore.normalizeModelLookupName === 'function' ? mpCore.normalizeModelLookupName(lowProd) : lowProd;
+      matchedBase = baseModels.find(m =>
+        typeof mpCore.normalizeModelLookupName === 'function'
+          ? mpCore.normalizeModelLookupName(m.productLabel) === normProd
+          : m.productLabel.toLowerCase().includes(lowProd)
+      ) || null;
+    }
+    if (!matchedBase) matchedBase = baseModels[0] || null;
+
+    const chosenEffort = parsed.effort || matchedBase?.defaultEffort || matchedBase?.fixedEffortLabel || null;
+    const matchedVariant = matchedBase
+      ? (matchedBase.variants.find(v => chosenEffort && v.effort && v.effort.toLowerCase() === chosenEffort.toLowerCase()) || matchedBase.variants[0] || null)
+      : null;
+
+    return {
+      isOrchestrator: false,
+      productKey: matchedBase?.productKey || null,
+      productLabel: matchedBase?.productLabel || parsed.productLabel || t('modelPicker.unknownModel'),
+      effort: matchedVariant?.effort || chosenEffort || null,
+      isFixedEffort: matchedBase ? Boolean(matchedBase.isFixedEffort) : true,
+      supportedEfforts: matchedBase?.supportedEfforts || [],
+      variant: matchedVariant,
+      modelId: matchedVariant?.modelId || null,
+      route: resolveComposerRouteContext(rec.composer, rec.trigger)
+    };
+  }
+
+  async function applyModelOrEffortSelection(rec, targetRes) {
+    if (!rec || !targetRes || !targetRes.ok || !targetRes.variant) return { ok: false, reason: targetRes?.reason || 'invalid' };
+    const dispatchRes = await dispatchHostModelSwitch(rec, targetRes.variant, targetRes.productLabel);
+    if (!dispatchRes.ok) {
+      if (dispatchRes.reason === 'native_option_not_found') {
+        rec.nativeStructureMismatch = true;
+        fallbackPickerToNative(rec);
+      }
+      return dispatchRes;
+    }
+
+    rec.pendingSelection = {
+      ...targetRes,
+      label: targetRes.variant.label
+    };
+    if (targetRes.fallbackApplied) {
+      rec.fallbackNotice = {
+        highWarning: Boolean(targetRes.highFallbackWarning),
+        fromEffort: targetRes.fallbackFrom,
+        toEffort: targetRes.fallbackTo || targetRes.effort || '',
+        text: targetRes.highFallbackWarning
+          ? t('modelPicker.fallbackHighWarn', { from: targetRes.fallbackFrom || '', to: targetRes.fallbackTo || targetRes.effort || '' })
+          : t('modelPicker.fallbackNormal', { to: targetRes.fallbackTo || targetRes.effort || '' })
+      };
+    } else {
+      rec.fallbackNotice = null;
+    }
+
+    updatePickerButtonsUi(rec);
+    closeActiveModelPicker(false);
+    return {
+      ok: true,
+      modelId: targetRes.variant.modelId,
+      effort: targetRes.effort || null,
+      fallbackApplied: Boolean(targetRes.fallbackApplied),
+      highFallbackWarning: Boolean(targetRes.highFallbackWarning),
+      route: resolveComposerRouteContext(rec.composer, rec.trigger)
+    };
+  }
+
+  function renderModelMenuContents(rec) {
+    const menuEl = rec.modelMenuEl;
+    if (!menuEl) return;
+    const menu = getActiveGroupedMenu();
+    if (!menu || !menu.baseModels?.length) return;
+    const curSel = resolveCurrentSelectionForPicker(rec, menu);
+    menuEl.replaceChildren?.();
+
+    const hdr = document.createElement('div');
+    hdr.className = 'ag-mp-hdr';
+    const hdrTitle = document.createElement('span');
+    hdrTitle.textContent = rec.submenuOpen ? t('modelPicker.orchestratorTitle') : t('modelPicker.title');
+    hdr.appendChild(hdrTitle);
+    const hdrNote = document.createElement('span');
+    hdrNote.textContent = rec.submenuOpen ? t('modelPicker.orchestratorSubHint') : t('modelPicker.subtitle');
+    hdr.appendChild(hdrNote);
+    menuEl.appendChild(hdr);
+
+    if (rec.submenuOpen && menu.orchestrator?.hasOrchestrator) {
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.className = 'ag-mp-item';
+      backBtn.setAttribute('data-selectable', 'true');
+      backBtn.setAttribute('role', 'option');
+      backBtn.textContent = `‹ ${t('modelPicker.backToModels')}`;
+      backBtn.addEventListener('click', (e) => {
+        e.stopPropagation?.();
+        rec.submenuOpen = false;
+        rec.focusedIndex = -1;
+        renderModelMenuContents(rec);
+      });
+      menuEl.appendChild(backBtn);
+
+      if (menu.orchestrator.supportsIndependentRoles) {
+        // 仅当宿主真实暴露独立 Planner / Executor 配置时提供双角色选择
+        const addRoleSection = (titleKey, list, roleKind) => {
+          if (!Array.isArray(list) || !list.length) return;
+          const subT = document.createElement('div');
+          subT.className = 'ag-mp-sub-group-title';
+          subT.textContent = t(titleKey);
+          menuEl.appendChild(subT);
+          for (const item of list) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'ag-mp-item';
+            btn.setAttribute('role', 'option');
+            btn.setAttribute('data-role-kind', roleKind);
+            btn.setAttribute('data-model-id', item.modelId);
+            if (item.unavailable) {
+              btn.setAttribute('aria-disabled', 'true');
+              btn.title = item.unavailabilityReason || t('modelPicker.unavailable');
+            } else {
+              btn.setAttribute('data-selectable', 'true');
+              btn.addEventListener('click', (e) => {
+                e.stopPropagation?.();
+                void applyModelOrEffortSelection(rec, {
+                  ok: true,
+                  isOrchestrator: true,
+                  productKey: 'orchestrator',
+                  productLabel: item.label,
+                  variant: item,
+                  modelId: item.modelId,
+                  effort: null,
+                  isFixedEffort: true
+                });
+              });
+            }
+            const lbl = document.createElement('span');
+            lbl.textContent = item.targetLabel || item.label;
+            btn.appendChild(lbl);
+            if (item.unavailable) {
+              const meta = document.createElement('span');
+              meta.className = 'ag-mp-item-meta';
+              meta.textContent = t('modelPicker.unavailable');
+              btn.appendChild(meta);
+            }
+            menuEl.appendChild(btn);
+          }
+        };
+        addRoleSection('modelPicker.plannerSection', menu.orchestrator.planners, 'planner');
+        addRoleSection('modelPicker.executorSection', menu.orchestrator.executors, 'executor');
+      } else {
+        for (const preset of (menu.orchestrator.presets || [])) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ag-mp-item';
+          btn.setAttribute('role', 'option');
+          btn.setAttribute('data-model-id', preset.modelId);
+          const isActive = curSel.isOrchestrator && (curSel.modelId === preset.modelId || curSel.productLabel === preset.label);
+          btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+          if (preset.unavailable) {
+            btn.setAttribute('aria-disabled', 'true');
+            btn.title = preset.unavailabilityReason || t('modelPicker.unavailable');
+          } else {
+            btn.setAttribute('data-selectable', 'true');
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation?.();
+              void applyModelOrEffortSelection(rec, {
+                ok: true,
+                isOrchestrator: true,
+                productKey: 'orchestrator',
+                productLabel: preset.label,
+                variant: preset,
+                modelId: preset.modelId,
+                effort: null,
+                isFixedEffort: true
+              });
+            });
+          }
+          const lbl = document.createElement('span');
+          lbl.textContent = preset.label;
+          btn.appendChild(lbl);
+          const meta = document.createElement('span');
+          meta.className = 'ag-mp-item-meta';
+          meta.textContent = preset.unavailable ? t('modelPicker.unavailable') : (isActive ? '✓' : '');
+          btn.appendChild(meta);
+          menuEl.appendChild(btn);
+        }
+      }
+      return;
+    }
+
+    // 主模型列表：每个基础模型只出现一次
+    for (const m of menu.baseModels) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ag-mp-item';
+      btn.setAttribute('role', 'option');
+      btn.setAttribute('data-product-key', m.productKey);
+      const isSelected = !curSel.isOrchestrator && curSel.productKey === m.productKey;
+      btn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+      if (m.unavailable) {
+        btn.setAttribute('aria-disabled', 'true');
+        btn.title = m.unavailabilityReason || t('modelPicker.unavailable');
+      } else {
+        btn.setAttribute('data-selectable', 'true');
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation?.();
+          const targetRes = getMpCore().resolveTargetModelAndEffort(
+            menu,
+            m.productKey,
+            curSel.effort,
+            { defaultOverrideModelConfig: state.defaultOverrideModelConfig || null }
+          );
+          void applyModelOrEffortSelection(rec, targetRes);
+        });
+      }
+      const lbl = document.createElement('span');
+      lbl.textContent = m.productLabel;
+      btn.appendChild(lbl);
+      const meta = document.createElement('span');
+      meta.className = 'ag-mp-item-meta';
+      if (m.unavailable) {
+        meta.textContent = t('modelPicker.unavailable');
+      } else if (isSelected) {
+        meta.textContent = '✓';
+      } else if (m.isFixedEffort && m.fixedEffortLabel) {
+        meta.textContent = m.fixedEffortLabel;
+      }
+      btn.appendChild(meta);
+      menuEl.appendChild(btn);
+    }
+
+    // Orchestrator 单一合并入口
+    if (menu.orchestrator?.hasOrchestrator) {
+      const div1 = document.createElement('div');
+      div1.className = 'ag-mp-divider';
+      menuEl.appendChild(div1);
+
+      const orchBtn = document.createElement('button');
+      orchBtn.type = 'button';
+      orchBtn.className = 'ag-mp-item';
+      orchBtn.setAttribute('role', 'option');
+      orchBtn.setAttribute('data-item-role', 'orchestrator-entry');
+      orchBtn.setAttribute('aria-selected', curSel.isOrchestrator ? 'true' : 'false');
+      if (menu.orchestrator.allUnavailable) {
+        orchBtn.setAttribute('aria-disabled', 'true');
+      } else {
+        orchBtn.setAttribute('data-selectable', 'true');
+        orchBtn.addEventListener('click', (e) => {
+          e.stopPropagation?.();
+          rec.submenuOpen = true;
+          rec.focusedIndex = -1;
+          renderModelMenuContents(rec);
+        });
+      }
+      const oLbl = document.createElement('span');
+      oLbl.textContent = t('modelPicker.orchestratorEntry');
+      orchBtn.appendChild(oLbl);
+      const oArrow = document.createElement('span');
+      oArrow.className = 'ag-mp-item-meta';
+      oArrow.textContent = curSel.isOrchestrator ? '✓ ›' : '›';
+      orchBtn.appendChild(oArrow);
+      menuEl.appendChild(orchBtn);
+    }
+
+    // 「查看用量」复用输入框已有用量入口
+    const div2 = document.createElement('div');
+    div2.className = 'ag-mp-divider';
+    menuEl.appendChild(div2);
+
+    const quotaBtn = document.createElement('button');
+    quotaBtn.type = 'button';
+    quotaBtn.className = 'ag-mp-item';
+    quotaBtn.setAttribute('role', 'option');
+    quotaBtn.setAttribute('data-item-role', 'view-usage');
+    quotaBtn.setAttribute('data-selectable', 'true');
+    quotaBtn.textContent = t('modelPicker.viewUsage');
+    quotaBtn.addEventListener('click', (e) => {
+      e.stopPropagation?.();
+      openComposerQuotaFromModelMenu(rec);
+    });
+    menuEl.appendChild(quotaBtn);
+  }
+
+  function renderEffortMenuContents(rec) {
+    const menuEl = rec.effortMenuEl;
+    if (!menuEl) return;
+    const menu = getActiveGroupedMenu();
+    if (!menu) return;
+    const curSel = resolveCurrentSelectionForPicker(rec, menu);
+    menuEl.replaceChildren?.();
+    if (curSel.isFixedEffort || !curSel.supportedEfforts?.length || curSel.isOrchestrator) return;
+
+    const targetModel = menu.baseModels.find(m => m.productKey === curSel.productKey);
+    if (!targetModel) return;
+
+    const hdr = document.createElement('div');
+    hdr.className = 'ag-mp-hdr';
+    const title = document.createElement('span');
+    title.textContent = t('modelPicker.effortTitle');
+    hdr.appendChild(title);
+    menuEl.appendChild(hdr);
+
+    for (const ef of targetModel.supportedEfforts) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ag-mp-item';
+      btn.setAttribute('role', 'option');
+      btn.setAttribute('data-effort', ef);
+      btn.setAttribute('data-selectable', 'true');
+      const active = Boolean(curSel.effort && curSel.effort.toLowerCase() === ef.toLowerCase());
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation?.();
+        const res = getMpCore().resolveTargetModelAndEffort(menu, targetModel.productKey, ef, {
+          defaultOverrideModelConfig: state.defaultOverrideModelConfig || null
+        });
+        void applyModelOrEffortSelection(rec, res);
+      });
+      const lbl = document.createElement('span');
+      lbl.textContent = ef;
+      btn.appendChild(lbl);
+      const chk = document.createElement('span');
+      chk.className = 'ag-mp-item-meta';
+      chk.textContent = active ? '✓' : '';
+      btn.appendChild(chk);
+      menuEl.appendChild(btn);
+    }
+  }
+
+  function updatePickerButtonsUi(rec) {
+    const menu = getActiveGroupedMenu();
+    if (!menu || !rec) return;
+    const curSel = resolveCurrentSelectionForPicker(rec, menu);
+    if (rec.modelLblEl) rec.modelLblEl.textContent = curSel.productLabel || t('modelPicker.unknownModel');
+
+    if (rec.effortBtn) {
+      if (curSel.isOrchestrator) {
+        rec.effortBtn.hidden = true;
+        rec.effortBtn.disabled = true;
+        rec.effortBtn.setAttribute('data-readonly', 'true');
+        rec.effortBtn.setAttribute('aria-disabled', 'true');
+      } else if (!curSel.effort && (!curSel.supportedEfforts || curSel.supportedEfforts.length === 0)) {
+        rec.effortBtn.hidden = true;
+        rec.effortBtn.disabled = true;
+      } else {
+        rec.effortBtn.hidden = false;
+        const readOnly = Boolean(curSel.isFixedEffort || (curSel.supportedEfforts?.length || 0) <= 1);
+        rec.effortBtn.disabled = readOnly;
+        rec.effortBtn.setAttribute('data-readonly', readOnly ? 'true' : 'false');
+        rec.effortBtn.setAttribute('aria-disabled', readOnly ? 'true' : 'false');
+        rec.effortBtn.setAttribute('tabindex', readOnly ? '-1' : '0');
+        rec.effortLblEl.textContent = curSel.effort || curSel.supportedEfforts?.[0] || '';
+        if (rec.effortChevronEl) rec.effortChevronEl.hidden = readOnly;
+      }
+    }
+
+    if (rec.fallbackPillEl) {
+      if (rec.fallbackNotice?.text) {
+        rec.fallbackPillEl.hidden = false;
+        rec.fallbackPillEl.textContent = rec.fallbackNotice.text;
+        rec.fallbackPillEl.setAttribute('data-level', rec.fallbackNotice.highWarning ? 'high' : 'normal');
+      } else {
+        rec.fallbackPillEl.hidden = true;
+        rec.fallbackPillEl.textContent = '';
+      }
+    }
+  }
+
+  function fallbackPickerToNative(rec) {
+    if (!rec) return;
+    if (activeOpenPickerState === rec) closeActiveModelPicker(false);
+    try { rec.trigger?.classList?.remove?.('ag-mp-native-hidden'); } catch { }
+    try { rec.wrap?.remove?.(); } catch { }
+    try { rec.modelMenuEl?.remove?.(); } catch { }
+    try { rec.effortMenuEl?.remove?.(); } catch { }
+    if (rec.composer) modelPickerWeakState.delete(rec.composer);
+    mountedPickerRecords.delete(rec);
+  }
+
+  function mountModelPickerForComposer(composer, trigger) {
+    if (!composer || !trigger || !trigger.parentElement) return null;
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return null;
+
+    let rec = modelPickerWeakState.get(composer);
+    if (rec && rec.trigger === trigger && rec.wrap?.isConnected !== false) {
+      updatePickerButtonsUi(rec);
+      return rec;
+    }
+    if (rec) fallbackPickerToNative(rec);
+
+    ensureModelPickerStyles();
+    bindGlobalPickerListeners();
+
+    const wrap = document.createElement('div');
+    wrap.className = 'ag-mp-wrap';
+    wrap.setAttribute('data-ag-model-picker', 'true');
+
+    const modelBtn = document.createElement('button');
+    modelBtn.type = 'button';
+    modelBtn.className = 'ag-mp-btn ag-mp-model-btn';
+    modelBtn.setAttribute('aria-haspopup', 'listbox');
+    modelBtn.setAttribute('aria-expanded', 'false');
+    const modelLbl = document.createElement('span');
+    modelLbl.className = 'ag-mp-model-lbl';
+    modelBtn.appendChild(modelLbl);
+    const modelChev = document.createElement('span');
+    modelChev.className = 'ag-mp-chevron';
+    modelChev.textContent = '▾';
+    modelBtn.appendChild(modelChev);
+
+    const effortBtn = document.createElement('button');
+    effortBtn.type = 'button';
+    effortBtn.className = 'ag-mp-btn ag-mp-effort-btn';
+    effortBtn.setAttribute('aria-haspopup', 'listbox');
+    effortBtn.setAttribute('aria-expanded', 'false');
+    const effortLbl = document.createElement('span');
+    effortLbl.className = 'ag-mp-model-lbl';
+    effortBtn.appendChild(effortLbl);
+    const effortChev = document.createElement('span');
+    effortChev.className = 'ag-mp-chevron';
+    effortChev.textContent = '▾';
+    effortBtn.appendChild(effortChev);
+
+    const fallbackPill = document.createElement('span');
+    fallbackPill.className = 'ag-mp-fallback-pill';
+    fallbackPill.hidden = true;
+
+    const modelMenuEl = document.createElement('div');
+    modelMenuEl.className = 'ag-mp-popover ag-mp-model-menu';
+    modelMenuEl.setAttribute('role', 'listbox');
+    modelMenuEl.hidden = true;
+
+    const effortMenuEl = document.createElement('div');
+    effortMenuEl.className = 'ag-mp-popover ag-mp-effort-menu';
+    effortMenuEl.setAttribute('role', 'listbox');
+    effortMenuEl.hidden = true;
+
+    wrap.appendChild(modelBtn);
+    wrap.appendChild(effortBtn);
+    wrap.appendChild(fallbackPill);
+    document.body?.appendChild?.(modelMenuEl);
+    document.body?.appendChild?.(effortMenuEl);
+
+    rec = {
+      composer,
+      trigger,
+      wrap,
+      modelBtn,
+      modelLblEl: modelLbl,
+      effortBtn,
+      effortLblEl: effortLbl,
+      effortChevronEl: effortChev,
+      fallbackPillEl: fallbackPill,
+      modelMenuEl,
+      effortMenuEl,
+      openMode: null,
+      submenuOpen: false,
+      focusedIndex: -1,
+      fallbackNotice: null,
+      pendingSelection: null,
+      nativeStructureMismatch: false
+    };
+
+    modelBtn.addEventListener('click', (e) => {
+      e.stopPropagation?.();
+      if (activeOpenPickerState === rec && rec.openMode === 'model') {
+        closeActiveModelPicker(false);
+        return;
+      }
+      closeActiveModelPicker(false);
+      rec.openMode = 'model';
+      rec.submenuOpen = false;
+      rec.focusedIndex = -1;
+      activeOpenPickerState = rec;
+      renderModelMenuContents(rec);
+      rec.modelMenuEl.hidden = false;
+      rec.modelBtn.setAttribute('aria-expanded', 'true');
+      positionPickerPopover(rec.modelBtn, rec.modelMenuEl);
+    });
+
+    effortBtn.addEventListener('click', (e) => {
+      e.stopPropagation?.();
+      if (rec.effortBtn.disabled || rec.effortBtn.getAttribute('data-readonly') === 'true') return;
+      if (activeOpenPickerState === rec && rec.openMode === 'effort') {
+        closeActiveModelPicker(false);
+        return;
+      }
+      closeActiveModelPicker(false);
+      rec.openMode = 'effort';
+      rec.focusedIndex = -1;
+      activeOpenPickerState = rec;
+      renderEffortMenuContents(rec);
+      rec.effortMenuEl.hidden = false;
+      rec.effortBtn.setAttribute('aria-expanded', 'true');
+      positionPickerPopover(rec.effortBtn, rec.effortMenuEl);
+    });
+
+    // 保留原按钮在 DOM 中的真实尺寸 (>=1px) 与绑定以供现有选择器追踪与安全回退
+    trigger.classList?.add?.('ag-mp-native-hidden');
+    if (typeof trigger.after === 'function') {
+      trigger.after(wrap);
+    } else if (typeof trigger.parentElement.insertBefore === 'function') {
+      trigger.parentElement.insertBefore(wrap, trigger.nextSibling || null);
+    } else {
+      trigger.parentElement.appendChild?.(wrap);
+    }
+
+    modelPickerWeakState.set(composer, rec);
+    mountedPickerRecords.add(rec);
+    updatePickerButtonsUi(rec);
+    return rec;
+  }
+
+  function syncModelPickers() {
+    try {
+      if (state.disposed) return [];
+      const menu = getActiveGroupedMenu();
+      const marketplaceActive = typeof isHostMarketplaceActive === 'function' ? isHostMarketplaceActive() : false;
+      if (!simplifiedModelPickerEnabled || marketplaceActive || !menu || !menu.baseModels?.length) {
+        for (const rec of Array.from(mountedPickerRecords)) fallbackPickerToNative(rec);
+        return [];
+      }
+      if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return [];
+
+      const composers = Array.from(document.querySelectorAll('.surface-composer') || []);
+      const validComposers = new Set();
+      const results = [];
+
+      for (const comp of composers) {
+        if (!comp || comp.closest?.('#ag-context-meter, [role="dialog"], .settings-modal-container')) continue;
+        const trigger = comp.querySelector?.('[data-testid="model-selector-trigger"]');
+        if (!trigger || !trigger.parentElement) continue;
+        const existingRec = modelPickerWeakState.get(comp);
+        if (existingRec?.nativeStructureMismatch) continue;
+        validComposers.add(comp);
+        const rec = mountModelPickerForComposer(comp, trigger);
+        if (rec) results.push(rec);
+      }
+
+      for (const rec of Array.from(mountedPickerRecords)) {
+        if (!validComposers.has(rec.composer) || rec.trigger?.isConnected === false) {
+          fallbackPickerToNative(rec);
+        }
+      }
+      return results;
+    } catch {
+      return [];
+    }
+  }
+
+  function disposeModelPickers() {
+    closeActiveModelPicker(false);
+    for (const rec of Array.from(mountedPickerRecords)) {
+      fallbackPickerToNative(rec);
+    }
+    try { document.getElementById(MODEL_PICKER_STYLE_ID)?.remove?.(); } catch { }
+  }
+// =========================================================================
+  // 下一句预测控制器 (Phase 6 · 默认关闭、8 项拦截门禁、跨会话/草稿隔离、Tab 仅填不发)
+  // =========================================================================
+
+  let nextPromptEnabled = (() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        return localStorage.getItem('ag_next_prompt_enabled') === 'true';
+      }
+    } catch { }
+    return false;
+  })();
+
+  const NEXT_PROMPT_STYLE_ID = 'ag-next-prompt-style';
+  let nextPromptState = {
+    seq: 0,
+    inFlight: false,
+    suggestion: '',
+    routeId: null,
+    turnKey: null,
+    model: null,
+    composerEl: null,
+    ghostEl: null,
+    isComposing: false,
+    attemptedTurnKeys: new Set()
+  };
+
+  function ensureNextPromptStyles() {
+    try {
+      if (typeof document === 'undefined' || !document.head) return;
+      if (document.getElementById(NEXT_PROMPT_STYLE_ID)) return;
+      const st = document.createElement('style');
+      st.id = NEXT_PROMPT_STYLE_ID;
+      st.textContent = `
+        .ag-np-ghost {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          margin: 4px 10px 2px;
+          padding: 4px 10px;
+          border-radius: 7px;
+          border: 1px dashed rgba(148, 163, 184, 0.32);
+          background: rgba(148, 163, 184, 0.08);
+          color: rgba(148, 163, 184, 0.92);
+          font-size: 11.5px;
+          line-height: 1.4;
+          pointer-events: auto;
+          user-select: none;
+        }
+        .ag-np-ghost[hidden] {
+          display: none !important;
+        }
+        .ag-np-ghost-text {
+          flex: 1 1 auto;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-style: italic;
+        }
+        .ag-np-ghost-actions {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          flex-shrink: 0;
+          font-size: 10.5px;
+        }
+        .ag-np-kbd {
+          padding: 1px 5px;
+          border-radius: 4px;
+          border: 1px solid rgba(148, 163, 184, 0.35);
+          background: rgba(148, 163, 184, 0.12);
+          cursor: pointer;
+          font-family: inherit;
+          color: inherit;
+        }
+        .ag-np-kbd:hover {
+          background: rgba(139, 92, 246, 0.2);
+          border-color: rgba(139, 92, 246, 0.5);
+        }
+      `;
+      document.head.appendChild(st);
+    } catch { }
+  }
+
+  function resolveComposerEditorEl(composer) {
+    if (!composer || typeof composer.querySelector !== 'function') return null;
+    return composer.querySelector('[data-lexical-editor="true"][contenteditable="true"], textarea, [contenteditable="true"]');
+  }
+
+  function readEditorDraftText(editor) {
+    if (!editor) return '';
+    if (typeof editor.value === 'string') return editor.value;
+    return String(editor.textContent || '');
+  }
+
+  function findActiveVisibleComposer(targetRoute) {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return null;
+    const composers = Array.from(document.querySelectorAll('.surface-composer') || [])
+      .filter(c => c && !c.closest?.('#ag-context-meter, [role="dialog"], .settings-modal-container'));
+    if (!composers.length) return null;
+
+    const activeEl = document.activeElement;
+    if (activeEl) {
+      const focusedComp = activeEl.closest?.('.surface-composer') || composers.find(c => c.contains?.(activeEl));
+      if (focusedComp) return focusedComp;
+    }
+    if (targetRoute) {
+      const matched = composers.find(c => {
+        const conv = c.closest?.('[data-testid="conversation-view"], [data-cascade-id], [data-session-id]');
+        const cid = conv?.getAttribute?.('data-cascade-id') || conv?.getAttribute?.('data-session-id') || '';
+        return cid && sameRouteId(cid, targetRoute);
+      });
+      if (matched) return matched;
+    }
+    return composers[0];
+  }
+
+  function hasPendingHostApprovalOrQueue(composer) {
+    try {
+      if (state.livePendingRequest) return true;
+      if (state.compacting || state.lastDomCompactingActive) return true;
+      if (typeof document !== 'undefined' && typeof document.querySelector === 'function') {
+        const stopBtn = composer?.querySelector?.('button[data-testid="stop-button"], button[aria-label^="Stop"]')
+          || document.querySelector('.surface-composer button[data-testid="stop-button"]');
+        if (stopBtn) return true;
+        const approvalBtn = document.querySelector('[data-testid*="approval"], [data-testid*="permission-prompt"], [role="alertdialog"]');
+        if (approvalBtn && !approvalBtn.closest?.('#ag-context-meter')) return true;
+      }
+      if (state.latest?.error || state.awaitingAutoRecovery) return true;
+    } catch { }
+    return false;
+  }
+
+  function dismissNextPromptSuggestion(invalidateInFlight = false) {
+    if (invalidateInFlight) {
+      nextPromptState.seq++;
+      nextPromptState.inFlight = false;
+    }
+    nextPromptState.suggestion = '';
+    if (nextPromptState.ghostEl) {
+      nextPromptState.ghostEl.hidden = true;
+      nextPromptState.ghostEl.textContent = '';
+    }
+  }
+
+  function acceptNextPromptIntoComposer(composer = null) {
+    const text = nextPromptState.suggestion;
+    const targetComp = composer || nextPromptState.composerEl;
+    if (!text || !targetComp) return false;
+    const editor = resolveComposerEditorEl(targetComp);
+    if (!editor) return false;
+    // 严格保护已有草稿不被覆盖
+    if (readEditorDraftText(editor).trim() !== '') {
+      dismissNextPromptSuggestion(true);
+      return false;
+    }
+    try {
+      editor.focus?.();
+      if (typeof editor.value === 'string') {
+        editor.value = text;
+      } else if (typeof document?.execCommand === 'function') {
+        const ok = document.execCommand('insertText', false, text);
+        if (!ok) editor.textContent = text;
+      } else {
+        editor.textContent = text;
+      }
+      try {
+        if (typeof editor.dispatchEvent === 'function') {
+          editor.dispatchEvent(typeof InputEvent === 'function'
+            ? new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' })
+            : { type: 'input', target: editor });
+        }
+      } catch { }
+      dismissNextPromptSuggestion(true);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function renderNextPromptGhost(composer, suggestionText) {
+    if (!composer || !suggestionText) {
+      dismissNextPromptSuggestion(false);
+      return;
+    }
+    ensureNextPromptStyles();
+    let ghost = nextPromptState.ghostEl;
+    if (!ghost || ghost.parentElement !== composer) {
+      if (ghost) try { ghost.remove?.(); } catch { }
+      ghost = document.createElement('div');
+      ghost.className = 'ag-np-ghost';
+      ghost.setAttribute('data-ag-next-prompt-ghost', 'true');
+      const txtEl = document.createElement('span');
+      txtEl.className = 'ag-np-ghost-text';
+      const actEl = document.createElement('span');
+      actEl.className = 'ag-np-ghost-actions';
+      const tabBtn = document.createElement('button');
+      tabBtn.type = 'button';
+      tabBtn.className = 'ag-np-kbd';
+      tabBtn.setAttribute('data-np-action', 'accept');
+      tabBtn.textContent = t('nextPrompt.tabFill');
+      tabBtn.addEventListener('click', (e) => {
+        e.stopPropagation?.();
+        acceptNextPromptIntoComposer(composer);
+      });
+      const escBtn = document.createElement('button');
+      escBtn.type = 'button';
+      escBtn.className = 'ag-np-kbd';
+      escBtn.setAttribute('data-np-action', 'dismiss');
+      escBtn.textContent = 'Esc';
+      escBtn.addEventListener('click', (e) => {
+        e.stopPropagation?.();
+        dismissNextPromptSuggestion(true);
+      });
+      actEl.appendChild(tabBtn);
+      actEl.appendChild(escBtn);
+      ghost.appendChild(txtEl);
+      ghost.appendChild(actEl);
+      composer.appendChild?.(ghost);
+      nextPromptState.ghostEl = ghost;
+    }
+    const textSpan = ghost.querySelector?.('.ag-np-ghost-text') || ghost.children?.[0];
+    if (textSpan) textSpan.textContent = suggestionText;
+    ghost.hidden = false;
+    nextPromptState.composerEl = composer;
+    nextPromptState.suggestion = suggestionText;
+  }
+
+  function extractRecentTurnsFromActiveSession() {
+    const timelineTurns = Array.isArray(state.timelineData?.turns) ? state.timelineData.turns : [];
+    if (timelineTurns.length > 0) {
+      return timelineTurns.slice(-8).map(tr => ({
+        role: tr.role || (tr.isAssistant ? 'assistant' : 'user'),
+        sourceType: tr.sourceType || (tr.isAssistant ? 'assistant' : 'user'),
+        text: tr.text || tr.promptText || tr.responseText || '',
+        status: tr.status || 'completed',
+        toolSummary: tr.toolSummary || '',
+        verificationEvidence: tr.verificationEvidence || ''
+      }));
+    }
+    const out = [];
+    if (state.latest?.promptText) out.push({ role: 'user', sourceType: 'user', text: state.latest.promptText, status: 'completed' });
+    if (state.latest?.responseText || state.latest?.lastText) {
+      out.push({
+        role: 'assistant',
+        sourceType: 'assistant',
+        text: state.latest.responseText || state.latest.lastText || '',
+        status: state.latest?.isStreaming ? 'streaming' : (state.latest?.error ? 'error' : 'completed')
+      });
+    }
+    return out;
+  }
+
+  function bindNextPromptComposerListeners() {
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+    const onCompStart = (e) => {
+      if (e.target?.closest?.('.surface-composer')) {
+        nextPromptState.isComposing = true;
+        dismissNextPromptSuggestion(true);
+      }
+    };
+    const onCompEnd = (e) => {
+      if (e.target?.closest?.('.surface-composer')) {
+        nextPromptState.isComposing = false;
+      }
+    };
+    const onInput = (e) => {
+      const comp = e.target?.closest?.('.surface-composer');
+      if (!comp || comp.closest?.('#ag-context-meter')) return;
+      const editor = resolveComposerEditorEl(comp);
+      if (editor && readEditorDraftText(editor).trim() !== '') {
+        dismissNextPromptSuggestion(true);
+      }
+    };
+    const onKeyDown = (e) => {
+      if (!nextPromptState.suggestion) return;
+      const comp = e.target?.closest?.('.surface-composer');
+      if (!comp || comp !== nextPromptState.composerEl) return;
+      if (e.key === 'Escape') {
+        e.preventDefault?.();
+        dismissNextPromptSuggestion(true);
+        return;
+      }
+      if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !nextPromptState.isComposing) {
+        const editor = resolveComposerEditorEl(comp);
+        if (editor && readEditorDraftText(editor).trim() === '') {
+          e.preventDefault?.();
+          acceptNextPromptIntoComposer(comp);
+        }
+      }
+    };
+    document.addEventListener('compositionstart', onCompStart, true);
+    document.addEventListener('compositionend', onCompEnd, true);
+    document.addEventListener('input', onInput, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    activeDisposers.add(() => {
+      try {
+        document.removeEventListener('compositionstart', onCompStart, true);
+        document.removeEventListener('compositionend', onCompEnd, true);
+        document.removeEventListener('input', onInput, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+      } catch { }
+    });
+  }
+
+  async function maybeRequestNextPromptPrediction(opts = {}) {
+    if (state.disposed) return { skipped: true, reason: 'disposed' };
+    if (!nextPromptEnabled && opts.force !== true) return { skipped: true, reason: 'disabled' };
+    const routeId = opts.routeId || state.route || null;
+    if (!routeId) return { skipped: true, reason: 'no_route' };
+    const composer = opts.composer || findActiveVisibleComposer(routeId);
+    if (!composer) return { skipped: true, reason: 'no_composer' };
+    if (nextPromptState.isComposing) return { skipped: true, reason: 'ime_composing' };
+    const editor = resolveComposerEditorEl(composer);
+    if (!editor || editor.disabled || editor.getAttribute?.('aria-disabled') === 'true') {
+      return { skipped: true, reason: 'editor_disabled' };
+    }
+    if (readEditorDraftText(editor).trim() !== '') {
+      dismissNextPromptSuggestion(true);
+      return { skipped: true, reason: 'draft_non_empty' };
+    }
+    if (hasPendingHostApprovalOrQueue(composer)) {
+      return { skipped: true, reason: 'busy_approval_or_queue' };
+    }
+
+    const turns = Array.isArray(opts.turns) ? opts.turns : extractRecentTurnsFromActiveSession();
+    if (!turns.length) return { skipped: true, reason: 'no_turns' };
+    const lastTurn = turns[turns.length - 1];
+    if (lastTurn.role !== 'assistant' || lastTurn.status === 'streaming' || lastTurn.status === 'error') {
+      return { skipped: true, reason: 'turn_not_ready' };
+    }
+
+    const turnKey = opts.turnKey || `${routeId}::${state.latest?.completedAtMs || state.latest?.turnId || lastTurn.text?.slice(-60) || turns.length}`;
+    if (nextPromptState.attemptedTurnKeys.has(turnKey) && opts.force !== true) {
+      return { skipped: true, reason: 'already_predicted_for_turn' };
+    }
+    nextPromptState.attemptedTurnKeys.add(turnKey);
+
+    const reqSeq = ++nextPromptState.seq;
+    nextPromptState.inFlight = true;
+    nextPromptState.routeId = routeId;
+    nextPromptState.turnKey = turnKey;
+
+    try {
+      const payload = {
+        cascadeId: routeId,
+        turnId: turnKey,
+        turns,
+        ...(opts.taskMarkdown !== undefined ? { taskMarkdown: opts.taskMarkdown } : {}),
+        ...(opts.model ? { model: opts.model } : {}),
+        allowWhenDisabled: opts.force === true
+      };
+
+      let res = null;
+      if (typeof window?.contextMeterAPI?.predictNextPrompt === 'function') {
+        res = await window.contextMeterAPI.predictNextPrompt(payload);
+      } else if (hasLiveHttpBridge()) {
+        const httpRes = await fetch(resolveLiveHttpUrl('/predict-next-prompt'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        res = httpRes.ok ? await httpRes.json() : { ok: false, error: `HTTP ${httpRes.status}` };
+      }
+
+      // 异步到达严格核对：会话切换 / 新轮开始 / 输入框已填草稿，必须丢弃旧建议
+      if (state.disposed || reqSeq !== nextPromptState.seq) {
+        return { skipped: true, stale: true, reason: 'superseded_or_disposed' };
+      }
+      if ((state.route || routeId) !== routeId) {
+        dismissNextPromptSuggestion(false);
+        return { skipped: true, stale: true, reason: 'route_changed' };
+      }
+      const currentComp = findActiveVisibleComposer(routeId) || composer;
+      const currentEditor = resolveComposerEditorEl(currentComp);
+      if (!currentEditor || readEditorDraftText(currentEditor).trim() !== '' || nextPromptState.isComposing) {
+        dismissNextPromptSuggestion(false);
+        return { skipped: true, stale: true, reason: 'draft_changed_while_inflight' };
+      }
+
+      nextPromptState.inFlight = false;
+      const sug = String(res?.suggestion || '').trim();
+      if (!res?.ok || !sug) {
+        dismissNextPromptSuggestion(false);
+        return { ok: Boolean(res?.ok), abstained: true, suggestion: '' };
+      }
+
+      nextPromptState.model = res.model || null;
+      renderNextPromptGhost(currentComp, sug);
+      return { ok: true, abstained: false, suggestion: sug, model: nextPromptState.model };
+    } catch (e) {
+      nextPromptState.inFlight = false;
+      return { ok: false, abstained: true, suggestion: '', error: e?.message || 'predict_failed' };
+    }
+  }
+
+  function disposeNextPrompt() {
+    dismissNextPromptSuggestion(true);
+    nextPromptState.attemptedTurnKeys.clear();
+    try { document.getElementById(NEXT_PROMPT_STYLE_ID)?.remove?.(); } catch { }
+  }
 // =========================================================================
 // 模块 3A: 全景脉冲趋势增强 · 全会话压缩带 / 耗时叠加 / 事件标旗 / Hover Scrub 与三行摘要
 // =========================================================================
@@ -53667,7 +56463,16 @@ function initCrossSessionInsightsControls() {
       };
     }
     if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
-      const elapsedSec = Math.max(0, (Date.now() - state.livePendingRequest.startedAtMs) / 1000);
+      if (state.livePendingRequest.stage === 'queued') {
+        return {
+          phase: 'queued',
+          status: 'queued',
+          outcomeStatus: 'queued',
+          elapsedSec: null
+        };
+      }
+      const refDisp = Number(state.livePendingRequest.dispatchedAtMs || state.livePendingRequest.startedAtMs || 0);
+      const elapsedSec = refDisp > 0 ? Math.max(0, (Date.now() - refDisp) / 1000) : 0;
       return {
         phase: 'waiting',
         status: 'waiting',
@@ -53879,6 +56684,7 @@ function initCrossSessionInsightsControls() {
     const fold = el('ctx-timing-diag-fold');
     const btn = el('btn-ctx-timing-diag-toggle');
     const open = Boolean(state.timingDiagExpanded);
+    state.speedBreakdownOpen = open;
     if (fold) fold.hidden = !open;
     if (btn) {
       btn.setAttribute?.('aria-expanded', open ? 'true' : 'false');
@@ -53907,7 +56713,16 @@ function initCrossSessionInsightsControls() {
 
     const isCompact = state.layoutMode === 'compact';
     const shortSampleText = t('session.speed.shortSampleBadge');
-    if (evalRes.phase === 'waiting') {
+    if (evalRes.phase === 'queued') {
+      bSpeed?.setAttribute?.('data-speed-phase', 'queued');
+      if (waitSvgWrap) waitSvgWrap.hidden = true;
+      if (speedAmount) speedAmount.textContent = isCompact ? '…' : t('composer.runtime.reason.queued');
+      if (overflowSpeedVal) overflowSpeedVal.textContent = t('composer.runtime.reason.queued');
+      if (bSpeed) {
+        bSpeed.title = evalRes.comment;
+        bSpeed.setAttribute?.('aria-label', evalRes.comment);
+      }
+    } else if (evalRes.phase === 'waiting') {
       // ELV-93: 等待态顶栏纯 SVG 沙漏动效，去除每秒文字变化导致的横向抖动
       bSpeed?.setAttribute?.('data-speed-phase', 'waiting');
       if (waitSvgWrap) waitSvgWrap.hidden = false;
@@ -53960,7 +56775,6 @@ function initCrossSessionInsightsControls() {
     const spTokens = el('speed-tokens');
     const spSub = el('speed-sub-label');
     const spTakeaway = el('speed-takeaway');
-    const spToggleBtn = el('btn-speed-breakdown-toggle');
     const spBreakdownDet = el('speed-breakdown-details');
     const spBreakdownGrid = el('speed-breakdown-grid');
 
@@ -53989,7 +56803,9 @@ function initCrossSessionInsightsControls() {
       }
     }
     if (spVal) {
-      if (evalRes.phase === 'waiting') {
+      if (evalRes.phase === 'queued') {
+        spVal.textContent = evalRes.shortTitle || t('composer.runtime.reason.queued');
+      } else if (evalRes.phase === 'waiting') {
         spVal.textContent = isEn ? 'Waiting' : '等待首字';
       } else if (evalRes.phase === 'remote_unavailable') {
         spVal.textContent = evalRes.shortTitle || '—';
@@ -54027,15 +56843,11 @@ function initCrossSessionInsightsControls() {
     }
 
     const canShowBreakdown = evalRes.phase === 'final' || evalRes.phase === 'streaming';
-    if (spToggleBtn) {
-      spToggleBtn.hidden = !canShowBreakdown;
-      spToggleBtn.textContent = state.speedBreakdownOpen ? t('session.speed.hideDetails') : t('session.speed.details');
-      spToggleBtn.setAttribute?.('aria-expanded', state.speedBreakdownOpen ? 'true' : 'false');
-    }
+    const breakdownVisible = Boolean(canShowBreakdown && (state.timingDiagExpanded || state.speedBreakdownOpen));
     if (spBreakdownDet) {
-      spBreakdownDet.style.display = (canShowBreakdown && state.speedBreakdownOpen) ? 'block' : 'none';
+      spBreakdownDet.style.display = breakdownVisible ? 'block' : 'none';
     }
-    if (spBreakdownGrid && canShowBreakdown && state.speedBreakdownOpen) {
+    if (spBreakdownGrid && breakdownVisible) {
       spBreakdownGrid.replaceChildren();
       const unk = t('session.latestCall.unknownVal');
       const eText = evalRes.efficiency?.available
@@ -54142,16 +56954,23 @@ function initCrossSessionInsightsControls() {
     if (typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
   }
 
-  function startLivePendingRequestWait(cascadeId) {
+  function isPriorTurnActivelyGenerating(cascadeId) {
     const cid = cascadeId || state.route;
-    if (!cid) return;
-    const latestRec = resolveLatestSessionCallRecord();
-    state.livePendingRequest = {
-      cascadeId: cid,
-      startedAtMs: Date.now(),
-      baselineCallId: latestRec?.callId || null,
-      baselineCount: state.count || 0
-    };
+    if (!cid) return false;
+    const latestRec = typeof resolveLatestSessionCallRecord === 'function' ? resolveLatestSessionCallRecord() : null;
+    if (latestRec && latestRec.status === 'streaming') return true;
+    if (state.turnState?.streaming && !state.livePendingRequest) return true;
+    if (state.livePendingRequest && state.livePendingRequest.cascadeId === cid && state.livePendingRequest.stage === 'dispatched') {
+      return true;
+    }
+    try {
+      const stopBtn = typeof document !== 'undefined' && document.querySelector?.('.surface-composer button[data-testid="stop-button"], .surface-composer button[aria-label^="Stop"], .surface-composer button[aria-label^="停止"]');
+      if (stopBtn) return true;
+    } catch { }
+    return false;
+  }
+
+  function startPendingWaitTickTimer() {
     const updateWaitOnly = () => {
       if (state.disposed || !state.livePendingRequest || state.livePendingRequest.cascadeId !== state.route) {
         stopLiveWaitTickTimer();
@@ -54164,6 +56983,133 @@ function initCrossSessionInsightsControls() {
     updateWaitOnly();
     stopLiveWaitTickTimer();
     state.liveWaitTickTimer = setInterval(updateWaitOnly, 1000);
+  }
+
+  function startLivePendingRequestWait(cascadeId, options = {}) {
+    const cid = cascadeId || state.route;
+    if (!cid) return null;
+    const latestRec = resolveLatestSessionCallRecord();
+    const now = Number(options.nowMs) || Date.now();
+    const shouldQueue = options.queued !== undefined
+      ? Boolean(options.queued)
+      : isPriorTurnActivelyGenerating(cid);
+
+    if (shouldQueue) {
+      state.livePendingRequest = {
+        cascadeId: cid,
+        stage: 'queued',
+        queuedAtMs: now,
+        dispatchedAtMs: null,
+        startedAtMs: null,
+        firstTokenAtMs: null,
+        queuedFromComposerDom: Boolean(options.fromDom),
+        baselineCallId: latestRec?.callId || null,
+        baselineCount: state.count || 0
+      };
+    } else {
+      state.livePendingRequest = {
+        cascadeId: cid,
+        stage: 'dispatched',
+        queuedAtMs: null,
+        dispatchedAtMs: now,
+        startedAtMs: now,
+        firstTokenAtMs: null,
+        queuedFromComposerDom: false,
+        baselineCallId: latestRec?.callId || null,
+        baselineCount: state.count || 0
+      };
+    }
+    startPendingWaitTickTimer();
+    if (!state.disposed && typeof syncComposerStatusBar === 'function') syncComposerStatusBar();
+    if (!state.disposed && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
+    return state.livePendingRequest;
+  }
+
+  function promoteQueuedPendingRequestToDispatched(cascadeId, nowMs = Date.now()) {
+    const req = state.livePendingRequest;
+    const cid = cascadeId || state.route;
+    if (!req || !cid || req.cascadeId !== cid || req.stage !== 'queued') return false;
+    const latestRec = resolveLatestSessionCallRecord();
+    const ts = Number(nowMs) || Date.now();
+    req.stage = 'dispatched';
+    req.dispatchedAtMs = ts;
+    req.startedAtMs = ts;
+    req.baselineCallId = latestRec?.callId || req.baselineCallId || null;
+    req.baselineCount = state.count || req.baselineCount || 0;
+    startPendingWaitTickTimer();
+    if (!state.disposed && typeof syncComposerStatusBar === 'function') syncComposerStatusBar();
+    if (!state.disposed && typeof syncFloatingOrbState === 'function') syncFloatingOrbState();
+    return true;
+  }
+
+  function cancelOrEditQueuedPendingRequest(reason = 'canceled') {
+    const req = state.livePendingRequest;
+    if (!req) return false;
+    if (req.stage === 'queued' || /cancel|abort|edit|rpc_cancel/i.test(String(reason))) {
+      clearLivePendingRequestWait();
+      if (!state.disposed && typeof evaluateGenerationExperience === 'function') {
+        renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
+      }
+      if (!state.disposed && typeof syncComposerStatusBar === 'function') syncComposerStatusBar();
+      if (!state.disposed && typeof syncRequestsLiveViewIfVisible === 'function') syncRequestsLiveViewIfVisible();
+      return true;
+    }
+    return false;
+  }
+
+  // 监听宿主输入框排队提交、撤回/取消与重编辑，避免排队或中断误产生假首字计时
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    const onComposerQueueKeydown = (e) => {
+      if (state.disposed || !state.route) return;
+      if (e.key === 'Escape' && state.livePendingRequest?.stage === 'queued') {
+        if (e.target?.closest?.('.surface-composer')) {
+          cancelOrEditQueuedPendingRequest('escape_edit');
+        }
+        return;
+      }
+      if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+      const composer = e.target?.closest?.('.surface-composer');
+      if (!composer || composer.closest?.('#ag-context-meter')) return;
+      if (isPriorTurnActivelyGenerating(state.route) && e.target?.textContent?.trim() && !/^\/compact(?:\s|$)/i.test(e.target.textContent.trim())) {
+        startLivePendingRequestWait(state.route, { queued: true, fromDom: true });
+      }
+    };
+    const onComposerQueueClick = (e) => {
+      if (state.disposed || !state.route) return;
+      const btn = e.target?.closest?.('button');
+      if (!btn || btn.closest?.('#ag-context-meter')) return;
+      const testId = String(btn.getAttribute?.('data-testid') || '');
+      const aria = String(btn.getAttribute?.('aria-label') || '');
+      const txt = String(btn.textContent || '').trim();
+      const composer = btn.closest?.('.surface-composer');
+      if (composer && testId === 'send-button' && isPriorTurnActivelyGenerating(state.route)) {
+        startLivePendingRequestWait(state.route, { queued: true, fromDom: true });
+        return;
+      }
+      if (state.livePendingRequest?.stage === 'queued') {
+        const metaStr = `${testId} ${aria} ${txt}`;
+        if (/(?:stop|cancel|abort|remove|delete|edit|withdraw|停止|取消|删除|移除|编辑|撤回)/i.test(metaStr)) {
+          cancelOrEditQueuedPendingRequest('dom_cancel_or_edit');
+        }
+      }
+    };
+    const onComposerQueueInput = (e) => {
+      if (state.disposed || state.livePendingRequest?.stage !== 'queued' || !state.livePendingRequest.queuedFromComposerDom) return;
+      const composer = e.target?.closest?.('.surface-composer');
+      if (composer && !composer.closest?.('#ag-context-meter')) {
+        cancelOrEditQueuedPendingRequest('dom_edit');
+      }
+    };
+    document.addEventListener('keydown', onComposerQueueKeydown, true);
+    document.addEventListener('click', onComposerQueueClick, true);
+    document.addEventListener('input', onComposerQueueInput, true);
+    earlyDisposeHooks.push(() => {
+      try {
+        document.removeEventListener('keydown', onComposerQueueKeydown, true);
+        document.removeEventListener('click', onComposerQueueClick, true);
+        document.removeEventListener('input', onComposerQueueInput, true);
+      } catch { }
+    });
   }
 
   function syncSpeedBadgeText() {
@@ -57483,6 +60429,12 @@ function initCrossSessionInsightsControls() {
     if (getModelRank(prevWm.model, prevWm.modelKey) > getModelRank(nextWm.model, nextWm.modelKey)) {
       merged.model = prevCall.model;
     }
+    if (!merged.requestedModel && prevCall.requestedModel) {
+      merged.requestedModel = prevCall.requestedModel;
+    }
+    if (!merged.requestedModelRaw && prevCall.requestedModelRaw) {
+      merged.requestedModelRaw = prevCall.requestedModelRaw;
+    }
     if (!nextWm.modelKey && prevWm.modelKey) {
       merged.modelKey = prevCall.modelKey;
     }
@@ -57787,8 +60739,14 @@ function initCrossSessionInsightsControls() {
             (state.livePendingRequest && state.livePendingRequest.cascadeId === id && call.callId !== state.livePendingRequest.baselineCallId)
           );
           if (isNewLiveObservation) {
+            const trackedReq = state.lastRequestedModelByCascade?.get?.(id);
+            const useTrackedReq = !effectiveCall.requestedModel && trackedReq && (Date.now() - (trackedReq.ts || 0) < 300000);
             effectiveCall = {
               ...effectiveCall,
+              ...(useTrackedReq ? {
+                requestedModel: trackedReq.requestedModel,
+                ...(trackedReq.requestedModelRaw ? { requestedModelRaw: trackedReq.requestedModelRaw } : {})
+              } : {}),
               liveRealtimeConfirmed: true,
               liveObservedAtMs: prevSessionCall?.liveObservedAtMs || Date.now()
             };
@@ -57891,13 +60849,28 @@ function initCrossSessionInsightsControls() {
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
 
-      // 清除等待首字计时器（禁止用 1000ms 轮询步进时间戳伪造服务器分块流式间隔，避免误判为“输出平稳”）
+      // 清除等待首字计时器与排队->调度状态流转（禁止用轮询时间戳伪造分块间隔）
       const newestPollCall = state.sessionCalls.length ? state.sessionCalls[state.sessionCalls.length - 1] : null;
       if (newestPollCall) {
         if (state.livePendingRequest && state.livePendingRequest.cascadeId === id) {
           const isNewCall = newestPollCall.callId !== state.livePendingRequest.baselineCallId;
           const gotFirstToken = (newestPollCall.outputTokens || 0) > 0 || newestPollCall.ttftSec != null || newestPollCall.status === 'final';
-          if ((isNewCall && gotFirstToken) || (state.count > (state.livePendingRequest.baselineCount || 0) && gotFirstToken) || newestPollCall.error) {
+          if (state.livePendingRequest.stage === 'queued') {
+            const baselineCall = state.livePendingRequest.baselineCallId
+              ? state.sessionCallsMap?.get?.(state.livePendingRequest.baselineCallId)
+              : null;
+            if ((isNewCall && gotFirstToken) || (state.count > (state.livePendingRequest.baselineCount || 0) && gotFirstToken) || (isNewCall && newestPollCall.error)) {
+              state.livePendingRequest.stage = 'first_token';
+              state.livePendingRequest.firstTokenAtMs = Date.now();
+              clearLivePendingRequestWait();
+            } else if (isNewCall || (state.count > (state.livePendingRequest.baselineCount || 0))) {
+              promoteQueuedPendingRequestToDispatched(id, newestPollCall.timestamp || Date.now());
+            } else if (baselineCall && baselineCall.status === 'final' && !state.livePendingRequest.queuedFromComposerDom) {
+              promoteQueuedPendingRequestToDispatched(id, Date.now());
+            }
+          } else if ((isNewCall && gotFirstToken) || (state.count > (state.livePendingRequest.baselineCount || 0) && gotFirstToken) || newestPollCall.error) {
+            state.livePendingRequest.stage = 'first_token';
+            state.livePendingRequest.firstTokenAtMs = Date.now();
             clearLivePendingRequestWait();
           }
         }
@@ -58070,6 +61043,9 @@ function initCrossSessionInsightsControls() {
         }
         state.scanNext = Date.now() + (document.hidden ? 60000 : 20000);
         render();
+        if (nextPromptEnabled && !state.compacting && id === state.route && typeof maybeRequestNextPromptPrediction === 'function') {
+          void maybeRequestNextPromptPrediction({ routeId: id });
+        }
       }
     }
   }
@@ -59942,7 +62918,7 @@ function initCrossSessionInsightsControls() {
   }
 
   function bindQuotaScrollUserIntent() {
-    for (const nodeId of ['view-quota', 'panel-quota']) {
+    for (const nodeId of ['view-quota', 'panel-quota', 'panel']) {
       const node = el(nodeId);
       if (!node?.addEventListener) continue;
       for (const evt of ['wheel', 'touchstart', 'mousedown']) {
@@ -59958,9 +62934,10 @@ function initCrossSessionInsightsControls() {
   }
 
   function renderQuotaBoard(nowMs = Date.now(), renderOpts = {}) {
-    bindQuotaScrollUserIntentOnce();    const panel = el('panel-quota');
+    bindQuotaScrollUserIntentOnce();
+    const panel = el('panel-quota');
     const scrollPositions = !state.disposed && panel && !panel.hidden
-      ? [el('view-quota'), panel].filter(Boolean).map(node => [node, node.scrollTop])
+      ? [el('view-quota'), panel, el('panel')].filter(node => node && !node.hidden).map(node => [node, node.scrollTop])
       : [];
     const viewQuotaBody = el('view-quota');
     const view = computeEffectiveQuotaView(nowMs);
@@ -60026,7 +63003,8 @@ function initCrossSessionInsightsControls() {
       const nextTitle = [
         `${tipModel}${poolHeader} · ${view.activeStatusLabel} (${view.badge.text})${selNote ? ` [${selNote}]` : ''} · [${modeTag}]`,
         winLines.length ? winLines.join(' | ') : `${t('quota.time.reset')}: ${tipReset}`,
-        `${currentPanelLanguage === 'en' ? 'Updated' : '更新'}: ${updatedStr}`
+        `${currentPanelLanguage === 'en' ? 'Updated' : '更新'}: ${updatedStr}`,
+        t('settings.quotaBadgeMode.desc')
       ].filter(Boolean).join('\n');
       if (bQuota.title !== nextTitle) bQuota.title = nextTitle;
       setQuotaAttrIfChanged(bQuota, 'aria-label', `${t('badge.quota.aria')}: ${view.badge.text} (${view.activeStatusLabel})`);
@@ -60733,7 +63711,7 @@ function initCrossSessionInsightsControls() {
           rpcErr = t('quota.bridgeMissing');
         } else {
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
-          const isGeneratingNow = Boolean(state.livePendingRequest || state.turnState?.streaming || state.compacting?.cascadeId === state.route);
+          const isGeneratingNow = hasActiveCompactionOrGeneration();
           const out = await callBackendWithPriority({
             ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), isGenerating: isGeneratingNow }) : null,
             liveRoute: '/quota',
@@ -60750,6 +63728,16 @@ function initCrossSessionInsightsControls() {
             payload = resObj.data;
           } else if (resObj?.error) {
             rpcErr = resObj.error;
+          }
+          if (resObj?.accountSyncResult) {
+            const sr = resObj.accountSyncResult;
+            if (sr.action === 'restart_pending') {
+              accountsUiState.feedback = sr.switchResult?.message || '已触发自动切号，正在重启客户端';
+              accountsUiState.feedbackTone = 'info';
+            } else if (sr.action === 'switch_failed_halted') {
+              accountsUiState.feedback = sr.error || '自动切号失败，已停止自动切换';
+              accountsUiState.feedbackTone = 'error';
+            }
           }
         }
       } catch (e) {
@@ -60799,6 +63787,7 @@ function initCrossSessionInsightsControls() {
             );
             renderHeaderModelDropdown();
             syncContextModelSelectionFromState();
+            if (typeof syncModelPickers === 'function') syncModelPickers();
             if (!isContextSettingsView && activeContextTab === 'models') {
               renderModelSettingsTab();
             }
@@ -60866,18 +63855,8 @@ function initCrossSessionInsightsControls() {
 
   el('btn-ctx-timing-diag-toggle')?.addEventListener('click', () => {
     state.timingDiagExpanded = !state.timingDiagExpanded;
-    if (state.timingDiagExpanded && !state.speedBreakdownOpen) {
-      state.speedBreakdownOpen = true;
-    }
+    state.speedBreakdownOpen = state.timingDiagExpanded;
     syncTimingDiagFoldUi?.();
-    if (typeof evaluateGenerationExperience === 'function') {
-      renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
-    }
-    positionFloatingPanels();
-  });
-
-  el('btn-speed-breakdown-toggle')?.addEventListener('click', () => {
-    state.speedBreakdownOpen = !state.speedBreakdownOpen;
     if (typeof evaluateGenerationExperience === 'function') {
       renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
     }
@@ -61224,15 +64203,94 @@ function initCrossSessionInsightsControls() {
     }
   });
 
+  function readAutoSwitchFormValues() {
+    const chk = el('chk-auto-switch-enabled');
+    const poolSel = el('sel-auto-switch-pool');
+    const modeSel = el('sel-auto-switch-mode');
+    const winSel = el('sel-auto-switch-window');
+    const thInp = el('inp-auto-switch-threshold');
+    const checkedCands = typeof shadow?.querySelectorAll === 'function'
+      ? Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked') || []).map(n => n.value)
+      : Array.from(el('auto-switch-candidates-list')?.children || [])
+        .map(lbl => lbl?.children?.find?.(c => c?.type === 'checkbox' || c?.className === 'auto-switch-cand-checkbox') || (lbl?.checked !== undefined ? lbl : null))
+        .filter(box => box && box.checked)
+        .map(box => box.value);
+    return {
+      enabled: Boolean(chk?.checked),
+      poolKey: poolSel?.value || 'shared_gemini_main',
+      metricMode: modeSel?.value || 'remaining_pct',
+      windowKey: winSel?.value || 'primary',
+      thresholdPct: thInp ? Number(thInp.value) : 10,
+      candidates: checkedCands
+    };
+  }
+
   function isEditingAutoSwitchDraft() {
+    if (autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty) return true;
     try {
       const ae = shadow?.activeElement;
       if (!ae) return false;
       const body = el('auto-switch-config-body');
-      return Boolean(body && body.contains?.(ae));
+      const chk = el('chk-auto-switch-enabled');
+      return Boolean((body && body.contains?.(ae)) || ae === chk);
     } catch {
       return false;
     }
+  }
+
+  let autoSwitchDraftDirty = false;
+  let autoSwitchSaving = false;
+  function syncQuotaAccountsSummaryCard(ovOverride = null) {
+    const ov = ovOverride || accountsUiState.overview || { accounts: [], autoSwitch: {}, autoSwitchStatus: { state: 'disabled' } };
+    const pillEl = el('quota-entry-autoswitch-pill');
+    const acctEl = el('quota-entry-active-account');
+    const ruleEl = el('quota-entry-rule-summary');
+    const refreshEntryBtn = el('btn-quota-entry-refresh-accts');
+    if (refreshEntryBtn) refreshEntryBtn.disabled = Boolean(accountsUiState.busy);
+    const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
+    const activeAcc = accts.find(a => a?.isActive) || null;
+    const activeLabel = activeAcc?.email || ov.activeAccountEmail || '';
+    if (acctEl) {
+      acctEl.textContent = activeLabel
+        ? t('accounts.entryActiveLabel', { email: activeLabel, count: accts.length })
+        : t('accounts.entryNoActive', { count: accts.length });
+    }
+    const lr = ov.autoSwitchStatus?.lastResult;
+    const stKeys = new Set([
+      'disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown',
+      'switching', 'restarting', 'all_candidates_exhausted', 'blocked_untrusted_quota',
+      'blocked_missing_pool', 'blocked_missing_account', 'error'
+    ]);
+    const isRestartPend = Boolean(lr?.restartPending);
+    const sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
+    const statusText = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
+    if (pillEl) {
+      pillEl.textContent = statusText;
+      const isWarn = sKey === 'error' || sKey === 'all_candidates_exhausted'
+        || sKey === 'blocked_missing_pool' || sKey === 'blocked_missing_account' || sKey === 'blocked_untrusted_quota';
+      const isInfo = sKey === 'restarting' || sKey === 'switching' || sKey === 'waiting_idle' || sKey === 'pending_debounce';
+      pillEl.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : (isInfo ? 'pill-info' : 'pill-muted'))}`;
+    }
+    if (ruleEl) {
+      const hasDraft = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty);
+      const thVal = hasDraft
+        ? (accountsUiState.autoSwitchDraft?.values?.thresholdPct ?? ov.autoSwitch?.thresholdPct ?? 10)
+        : (ov.autoSwitch?.thresholdPct ?? 10);
+      ruleEl.textContent = hasDraft
+        ? t('accounts.entryRuleUnsaved')
+        : t('accounts.entryRuleSummary', { state: statusText, threshold: thVal });
+    }
+  }
+
+  function markAutoSwitchDraftEdited() {
+    autoSwitchDraftDirty = true;
+    accountsUiState.autoSwitchDraft.dirty = true;
+    accountsUiState.autoSwitchDraft.values = readAutoSwitchFormValues();
+    accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.ruleUnsaved';
+    accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+    const status = el('auto-switch-save-status');
+    if (status) status.textContent = t('accounts.ruleUnsaved');
+    syncQuotaAccountsSummaryCard();
   }
 
   function renderAccountsOverviewSection() {
@@ -61458,12 +64516,12 @@ function initCrossSessionInsightsControls() {
       }
     }
 
-    // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿）
+    // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿；账户增删时仍同步候选列表）
     const stPill = el('auto-switch-status-pill');
     const lastNote = el('auto-switch-last-note');
     const stKeys = new Set([
       'disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown',
-      'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota',
+      'switching', 'restarting', 'all_candidates_exhausted', 'blocked_untrusted_quota',
       'blocked_missing_pool', 'blocked_missing_account', 'error'
     ]);
     const blockedReasonText = (() => {
@@ -61496,21 +64554,31 @@ function initCrossSessionInsightsControls() {
       if (br === 'generation_in_progress') {
         return t('accounts.blockedReason.waiting_idle');
       }
+      if (br === 'multi_window_open') return t('accounts.blockedReason.multi_window_open');
+      if (br === 'live_mode_cannot_auto_restart') return t('accounts.blockedReason.live_mode_cannot_auto_restart');
+      if (br === 'client_restart_requires_idle_window') return t('accounts.blockedReason.restartWindow');
+      if (stObj.state === 'pending_debounce') return t('accounts.blockedReason.pending_debounce');
       if (stObj.state === 'cooldown') {
         return t('accounts.blockedReason.cooldown');
       }
       return '';
     })();
     if (stPill) {
-      const sKey = ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled');
+      const isRestartPend = Boolean(lr?.restartPending);
+      const sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
       stPill.textContent = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
       const isWarn = sKey === 'error' || sKey === 'all_candidates_exhausted'
         || sKey === 'blocked_missing_pool' || sKey === 'blocked_missing_account' || sKey === 'blocked_untrusted_quota';
-      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : 'pill-muted')}`;
+      const isInfo = sKey === 'restarting' || sKey === 'switching' || sKey === 'waiting_idle' || sKey === 'pending_debounce';
+      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : (isInfo ? 'pill-info' : 'pill-muted'))}`;
     }
     if (lastNote) {
       if (rawLastErr) {
         lastNote.textContent = formatPersistedError(rawLastErr);
+      } else if (lr?.ok === false && lr?.restartPending) {
+        lastNote.textContent = lr.message
+          ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
+          : t('accounts.status.restarting');
       } else if (lr?.ok === false) {
         lastNote.textContent = formatPersistedError(t('accounts.actionFail'));
       } else if (blockedReasonText) {
@@ -61520,7 +64588,10 @@ function initCrossSessionInsightsControls() {
       }
     }
 
-    if (!isEditingAutoSwitchDraft()) {
+    const editingDraft = isEditingAutoSwitchDraft();
+    const draftValues = editingDraft ? (accountsUiState.autoSwitchDraft?.values || readAutoSwitchFormValues()) : null;
+    const activeRuleCfg = editingDraft ? draftValues : (ov.autoSwitch || {});
+    if (!editingDraft) {
       const cfg = ov.autoSwitch || {};
       const chk = el('chk-auto-switch-enabled');
       const poolSel = el('sel-auto-switch-pool');
@@ -61537,12 +64608,18 @@ function initCrossSessionInsightsControls() {
         enhancedDropdowns.get('sel-auto-switch-mode')?.refresh?.();
         enhancedDropdowns.get('sel-auto-switch-window')?.refresh?.();
       }
+    }
 
-      const candWrap = el('auto-switch-candidates-list');
-      if (candWrap) {
+    const candWrap = el('auto-switch-candidates-list');
+    if (candWrap) {
+      const accountsList = Array.isArray(ov.accounts) ? ov.accounts : [];
+      const currentDomEmails = Array.from(candWrap.querySelectorAll('.auto-switch-cand-checkbox')).map(n => n.value);
+      const nextEmails = accountsList.map(a => a.email);
+      const candListChanged = currentDomEmails.length !== nextEmails.length || currentDomEmails.some((v, idx) => v !== nextEmails[idx]);
+      if (!editingDraft || candListChanged) {
         candWrap.replaceChildren();
-        const selectedSet = new Set(Array.isArray(cfg.candidates) ? cfg.candidates : []);
-        for (const acc of (ov.accounts || [])) {
+        const selectedSet = new Set(Array.isArray(activeRuleCfg?.candidates) ? activeRuleCfg.candidates : []);
+        for (const acc of accountsList) {
           const lbl = document.createElement('label');
           lbl.className = 'auto-switch-cand-chip';
           const box = document.createElement('input');
@@ -61553,6 +64630,7 @@ function initCrossSessionInsightsControls() {
           if (box.checked) lbl.classList.add('is-checked');
           box.addEventListener('change', () => {
             lbl.classList.toggle('is-checked', Boolean(box.checked));
+            markAutoSwitchDraftEdited();
           });
           const span = document.createElement('span');
           span.textContent = acc.maskedEmail || acc.email;
@@ -61560,6 +64638,20 @@ function initCrossSessionInsightsControls() {
           lbl.appendChild(span);
           candWrap.appendChild(lbl);
         }
+      }
+    }
+
+    const saveStatusEl = el('auto-switch-save-status');
+    if (saveStatusEl) {
+      const draftState = accountsUiState.autoSwitchDraft || {};
+      if (draftState.dirty) {
+        saveStatusEl.textContent = t('accounts.ruleUnsaved');
+      } else if (draftState.saveStatusKey === 'prefs.saveError') {
+        saveStatusEl.textContent = t('prefs.saveError', { reason: draftState.saveErrorDetail || t('accounts.actionFail') });
+      } else if (draftState.saveStatusKey) {
+        saveStatusEl.textContent = t(draftState.saveStatusKey);
+      } else {
+        saveStatusEl.textContent = '';
       }
     }
 
@@ -61647,6 +64739,7 @@ function initCrossSessionInsightsControls() {
     }
     if (kaStopBtn) kaStopBtn.hidden = !ks.running;
 
+    syncQuotaAccountsSummaryCard(ov);
     syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
     if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
   }
@@ -61870,21 +64963,46 @@ function initCrossSessionInsightsControls() {
   el('btn-acct-import-current')?.addEventListener('click', () => void performAccountAction('import_current'));
   el('btn-acct-import-tools')?.addEventListener('click', () => void performAccountAction('import_tools'));
   el('btn-acct-oauth-add')?.addEventListener('click', () => void performAccountAction('oauth_login'));
+  el('btn-quota-open-accounts-settings')?.addEventListener('click', () => openContextSettings({ section: 'accounts' }));
+  el('btn-quota-entry-refresh-accts')?.addEventListener('click', () => void refreshAccountsOverview({ silent: false, refreshAllRemote: true }));
   el('btn-keepalive-stop')?.addEventListener('click', () => void performAccountAction('stop_keepalive', { reason: 'manual_button' }));
-  el('btn-save-auto-switch')?.addEventListener('click', () => {
-    const enabled = Boolean(el('chk-auto-switch-enabled')?.checked);
-    const poolKey = el('sel-auto-switch-pool')?.value || 'shared_gemini_main';
-    const metricMode = el('sel-auto-switch-mode')?.value || 'remaining_pct';
-    const windowKey = el('sel-auto-switch-window')?.value || 'primary';
-    const thresholdPct = Number(el('inp-auto-switch-threshold')?.value) || 10;
-    const candidates = Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked')).map(n => n.value);
-    void performAccountAction('update_auto_switch', {
+  for (const id of ['chk-auto-switch-enabled', 'sel-auto-switch-pool', 'sel-auto-switch-mode', 'sel-auto-switch-window', 'inp-auto-switch-threshold']) {
+    el(id)?.addEventListener(id === 'inp-auto-switch-threshold' ? 'input' : 'change', markAutoSwitchDraftEdited);
+  }
+  el('btn-save-auto-switch')?.addEventListener('click', async () => {
+    if (autoSwitchSaving || accountsUiState.busy) return;
+    const { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates } = readAutoSwitchFormValues();
+    const status = el('auto-switch-save-status');
+    if (!(thresholdPct >= 1 && thresholdPct <= 95)) {
+      if (status) status.textContent = t('accounts.ruleThreshold');
+      return;
+    }
+    autoSwitchSaving = true;
+    accountsUiState.autoSwitchDraft.saving = true;
+    const button = el('btn-save-auto-switch');
+    if (button) button.disabled = true;
+    if (status) status.textContent = t('accounts.actionBusy');
+    const out = await performAccountAction('update_auto_switch', {
       config: { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates }
-    }).then((out) => {
-      if (out?.ok && enabled) {
-        void syncQuotaFromHost(true, { manual: false });
-      }
     });
+    autoSwitchSaving = false;
+    accountsUiState.autoSwitchDraft.saving = false;
+    if (button) button.disabled = false;
+    if (!out?.ok) {
+      autoSwitchDraftDirty = true;
+      accountsUiState.autoSwitchDraft.dirty = true;
+      accountsUiState.autoSwitchDraft.saveStatusKey = 'prefs.saveError';
+      accountsUiState.autoSwitchDraft.saveErrorDetail = out?.error || t('accounts.actionFail');
+      if (status) status.textContent = t('prefs.saveError', { reason: accountsUiState.autoSwitchDraft.saveErrorDetail });
+      return;
+    }
+    autoSwitchDraftDirty = false;
+    accountsUiState.autoSwitchDraft.dirty = false;
+    accountsUiState.autoSwitchDraft.values = null;
+    accountsUiState.autoSwitchDraft.saveStatusKey = enabled ? 'accounts.ruleSavedOn' : 'accounts.ruleSavedOff';
+    accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+    renderAccountsOverviewSection();
+    if (enabled) void syncQuotaFromHost(true, { manual: false });
   });
   const btnQuotaBannerRestartInit = el('btn-quota-banner-restart');
   if (btnQuotaBannerRestartInit) {
@@ -61988,6 +65106,7 @@ function initCrossSessionInsightsControls() {
       const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
       const cachedSnap = (sameScreenSwitch && id) ? readSessionSnapshotFromCache(id) : null;
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
+if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
         timelineFetchController = null;
@@ -62066,6 +65185,7 @@ function initCrossSessionInsightsControls() {
       }
     }
     quotaTickCounter = (quotaTickCounter + 1) % 2;
+    if (quotaTickCounter === 0) void maybeAutoCompact();
     if (quotaTickCounter === 0 && el('panel-quota') && !el('panel-quota').hidden) {
       renderQuotaBoard(Date.now());
     }
@@ -62161,7 +65281,7 @@ function initCrossSessionInsightsControls() {
       : ((pTokens && !pTokens.hidden) ? 'tokens'
         : ((pCtx && !pCtx.hidden) ? 'context' : 'none'));
     const scrollTops = {};
-    for (const sId of ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'quota-view-body']) {
+    for (const sId of HOT_RELOAD_SCROLL_IDS) {
       const n = el(sId);
       if (n && Number(n.scrollTop) > 0) scrollTops[sId] = Number(n.scrollTop);
     }
@@ -62251,7 +65371,7 @@ function initCrossSessionInsightsControls() {
     const restoreScrolls = () => {
       if (state.disposed) return;
       for (const [sId, topVal] of Object.entries(scrollTops)) {
-        const node = el(sId);
+        const node = el(sId) || (sId === 'quota-view-body' && !scrollTops['view-quota'] ? el('view-quota') : null);
         if (node && Number(topVal) > 0) node.scrollTop = Number(topVal);
       }
     };
@@ -62264,7 +65384,7 @@ function initCrossSessionInsightsControls() {
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '2303c0bdd268067f',
+    buildId: '2225b7bda13919de',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -62627,7 +65747,10 @@ function initCrossSessionInsightsControls() {
     },
     setSpeedEvaluationForTest: (mockInput, opts = {}) => {
       state.speedOverrideForTest = mockInput || null;
-      if (opts.openBreakdown !== undefined) state.speedBreakdownOpen = Boolean(opts.openBreakdown);
+      if (opts.openBreakdown !== undefined) {
+        state.timingDiagExpanded = Boolean(opts.openBreakdown);
+        state.speedBreakdownOpen = state.timingDiagExpanded;
+      }
       if (typeof evaluateGenerationExperience === 'function') {
         const res = evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage);
         renderSpeedExperienceInPlace(res);
@@ -62635,6 +65758,13 @@ function initCrossSessionInsightsControls() {
       }
       return null;
     },
+    formatReqSpeedForTest: (rec) => formatReqSpeed(rec),
+    resolveReqSpeedDisplayForTest: (rec) => resolveReqSpeedDisplayInfo(rec),
+    resolveRequestedModelForTest: (rec) => formatReqRequestedModel(rec, formatReqActualModel(rec)),
+    startPendingRequestForTest: (cascadeId, opts = {}) => startLivePendingRequestWait(cascadeId || state.route, opts),
+    promoteQueuedRequestForTest: (cascadeId, nowMs) => promoteQueuedPendingRequestToDispatched(cascadeId || state.route, nowMs),
+    cancelOrEditQueuedRequestForTest: (reason) => cancelOrEditQueuedPendingRequest(reason),
+    getPendingRequestStateForTest: () => state.livePendingRequest ? { ...state.livePendingRequest } : null,
     speedAlgorithmForTest: () => speedAlgorithm,
     setSpeedAlgorithmForTest: (alg) => {
       speedAlgorithm = ['median', 'mean', 'composite'].includes(alg) ? alg : 'median';
@@ -62772,9 +65902,17 @@ function initCrossSessionInsightsControls() {
           scope: n.getAttribute?.('data-scope') || null,
           turnKey: n.getAttribute?.('data-turn-key') || null,
           callId: n.getAttribute?.('data-call-id') || null,
+          multiCall: n.getAttribute?.('data-multi-call') === 'true',
           title: n.title || ''
         }))
       };
+    },
+    toggleTurnFooterScopeForTest: (turnKey) => {
+      const cur = turnFooterScopeState.get(turnKey) || 'turn';
+      const next = cur === 'turn' ? 'request' : 'turn';
+      turnFooterScopeState.set(turnKey, next);
+      renderTurnFooterStats();
+      return next;
     },
     getPanelPickerStateForTest: () => {
       const om = el('overflow-menu');
@@ -63014,6 +66152,27 @@ function initCrossSessionInsightsControls() {
     setCockpitWidgetHeightForTest: (wId, heightMode, px) => (typeof setCockpitWidgetHeight === 'function' ? setCockpitWidgetHeight(wId, heightMode, px) : null),
     toggleCockpitWidgetVisibleForTest: (wId, vis) => (typeof toggleCockpitWidgetVisibility === 'function' ? toggleCockpitWidgetVisibility(wId, vis) : null),
     revealCockpitWidgetForTest: (wId) => (typeof revealAndScrollToCockpitWidget === 'function' ? revealAndScrollToCockpitWidget(wId, { flash: false }) : null),
+    reorderCockpitPresetsForTest: (srcId, tgtId, after = false) => (typeof reorderCockpitPresets === 'function' ? reorderCockpitPresets(srcId, tgtId, after, { persist: true }) : null),
+    moveCockpitPresetForTest: (pid, delta) => (typeof moveCockpitPresetByOffset === 'function' ? moveCockpitPresetByOffset(pid, delta, { persist: true }) : null),
+    togglePresetSortModeForTest: (enabled) => {
+      if (typeof presetSortMode !== 'undefined') {
+        presetSortMode = enabled !== undefined ? Boolean(enabled) : !presetSortMode;
+        if (typeof renderCockpitPresetsTrack === 'function') renderCockpitPresetsTrack(getCockpitLayout());
+        return presetSortMode;
+      }
+      return false;
+    },
+    createCustomCockpitPresetForTest: (name) => (typeof updateCustomCockpitPreset === 'function' ? updateCustomCockpitPreset('save', name) : null),
+    getPresetTrackStateForTest: () => {
+      const track = el('ctx-cockpit-presets-track');
+      const layout = typeof getCockpitLayout === 'function' ? getCockpitLayout() : null;
+      return {
+        sortMode: typeof presetSortMode !== 'undefined' ? Boolean(presetSortMode) : false,
+        presetOrder: layout?.presetOrder || [],
+        domOrder: Array.from(track?.querySelectorAll?.('[data-cockpit-preset]') || []).map(b => b.getAttribute?.('data-cockpit-preset')),
+        customPresets: layout?.customPresets || []
+      };
+    },
     getModule3WidgetsStateForTest: () => ({
       traceRows: el('ctx-trace-stream-list')?.children?.length || 0,
       traceGanttBars: el('ctx-trace-gantt-svg')?.querySelectorAll?.('[data-trace-node-id]')?.length || 0,
@@ -63074,11 +66233,77 @@ function initCrossSessionInsightsControls() {
       actualDock: host.getAttribute('data-dock'),
       panelHidden: Boolean(el('panel')?.hidden),
       auxBarHidden: Boolean(el('dock-aux-context-bar')?.hidden),
+      auxViewTab,
+      auxCollapsed,
+      auxWidthPx,
+      auxResizerHidden: Boolean(el('dock-aux-resizer')?.hidden),
       auxSessionLabel: el('dock-aux-session-label')?.textContent || '',
       lastPreciseDashboardUrl,
       feedbackText: el('dock-open-feedback')?.textContent || '',
       fallbackActionsHidden: Boolean(el('dock-fallback-actions')?.hidden),
       auxContainerFound: Boolean(findAuxSidebarContainer())
+    }),
+    setAuxViewTabForTest: (tab, opts = {}) => setAuxViewTab(tab, opts),
+    setAuxCollapsedForTest: (col, opts = {}) => setAuxCollapsed(col, opts),
+    resizeAuxPanelForTest: (px, opts = {}) => applyAuxWidthPx(px, opts),
+    syncModelPickersForTest: () => (typeof syncModelPickers === 'function' ? syncModelPickers() : []),
+    getModelPickersStateForTest: () => {
+      const menu = typeof getActiveGroupedMenu === 'function' ? getActiveGroupedMenu() : null;
+      return Array.from(mountedPickerRecords || []).map(rec => {
+        const sel = typeof resolveCurrentSelectionForPicker === 'function' ? resolveCurrentSelectionForPicker(rec, menu) : null;
+        return {
+          route: sel?.route || resolveComposerRouteContext(rec.composer, rec.trigger),
+          productKey: sel?.productKey || null,
+          productLabel: sel?.productLabel || '',
+          effort: sel?.effort || null,
+          isFixedEffort: Boolean(sel?.isFixedEffort),
+          supportedEfforts: sel?.supportedEfforts || [],
+          isOrchestrator: Boolean(sel?.isOrchestrator),
+          openMode: rec.openMode,
+          submenuOpen: Boolean(rec.submenuOpen),
+          fallbackNotice: rec.fallbackNotice ? { ...rec.fallbackNotice } : null,
+          nativeHidden: Boolean(rec.trigger?.classList?.contains?.('ag-mp-native-hidden')),
+          effortBtnHidden: Boolean(rec.effortBtn?.hidden),
+          effortBtnReadOnly: rec.effortBtn?.getAttribute?.('data-readonly') === 'true',
+          modelBtnText: rec.modelLblEl?.textContent || '',
+          effortBtnText: rec.effortLblEl?.textContent || '',
+          modelMenuHidden: Boolean(rec.modelMenuEl?.hidden),
+          effortMenuHidden: Boolean(rec.effortMenuEl?.hidden),
+          modelBtn: rec.modelBtn,
+          effortBtn: rec.effortBtn,
+          modelMenuEl: rec.modelMenuEl,
+          effortMenuEl: rec.effortMenuEl,
+          composer: rec.composer,
+          trigger: rec.trigger
+        };
+      });
+    },
+    setSimplifiedModelPickerEnabledForTest: (enabled) => {
+      simplifiedModelPickerEnabled = Boolean(enabled);
+      const chk = el('chk-simplified-model-picker');
+      if (chk) chk.checked = simplifiedModelPickerEnabled;
+      if (typeof syncModelPickers === 'function') syncModelPickers();
+      return simplifiedModelPickerEnabled;
+    },
+    setNextPromptEnabledForTest: (enabled) => {
+      nextPromptEnabled = enabled === true;
+      const chk = el('chk-next-prompt-enabled');
+      if (chk) chk.checked = nextPromptEnabled;
+      if (!nextPromptEnabled && typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
+      return nextPromptEnabled;
+    },
+    maybeRequestNextPromptForTest: (opts = {}) => (typeof maybeRequestNextPromptPrediction === 'function' ? maybeRequestNextPromptPrediction(opts) : Promise.resolve({ skipped: true })),
+    acceptNextPromptForTest: (comp = null) => (typeof acceptNextPromptIntoComposer === 'function' ? acceptNextPromptIntoComposer(comp) : false),
+    dismissNextPromptForTest: (invalidate = true) => (typeof dismissNextPromptSuggestion === 'function' ? dismissNextPromptSuggestion(invalidate) : undefined),
+    getNextPromptStateForTest: () => ({
+      enabled: Boolean(nextPromptEnabled),
+      inFlight: Boolean(nextPromptState?.inFlight),
+      suggestion: nextPromptState?.suggestion || '',
+      routeId: nextPromptState?.routeId || null,
+      turnKey: nextPromptState?.turnKey || null,
+      model: nextPromptState?.model || null,
+      ghostHidden: Boolean(!nextPromptState?.ghostEl || nextPromptState.ghostEl.hidden),
+      isComposing: Boolean(nextPromptState?.isComposing)
     }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
@@ -63097,7 +66322,9 @@ function initCrossSessionInsightsControls() {
       clearQuotaTimers();
       clearInterval(timer);
       sessionSnapshotCache.clear();
+      state.lastRequestedModelByCascade?.clear?.();
       clearLivePendingRequestWait();
+      restoreAuxHostSiblings();
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
         timelineFetchController = null;
@@ -63124,6 +66351,9 @@ function initCrossSessionInsightsControls() {
       document.removeEventListener('keydown', escape, true);
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
+      turnFooterScopeState.clear();
+      if (typeof disposeModelPickers === 'function') disposeModelPickers();
+      if (typeof disposeNextPrompt === 'function') disposeNextPrompt();
       disposeRadialTopLayer();
       composerSummary?.remove?.();
       host.remove();
@@ -63136,6 +66366,10 @@ function initCrossSessionInsightsControls() {
   syncAllViewPrefControlsUi();
   syncRadialOrbHiddenUi();
   if (el('chk-show-composer-quota')) el('chk-show-composer-quota').checked = showComposerQuotaSummary;
+  if (el('chk-simplified-model-picker')) el('chk-simplified-model-picker').checked = simplifiedModelPickerEnabled;
+  if (el('chk-next-prompt-enabled')) el('chk-next-prompt-enabled').checked = nextPromptEnabled;
+  if (el('chk-show-turn-footer-stats')) el('chk-show-turn-footer-stats').checked = showTurnFooterStats;
+  if (typeof bindNextPromptComposerListeners === 'function') bindNextPromptComposerListeners();
   applyStaticPanelTranslations(shadow);
   if (radialShadow) {
     applyStaticPanelTranslations(radialShadow);

@@ -131,6 +131,25 @@ function harness(scanSession = session(), extraSandbox = null) {
   return { sandbox, host, pending, scans, elements, tick: () => timers[0](), flush: () => new Promise(resolve => setImmediate(resolve)), finishScan(i = 0) { scans[i].resolve({ ok: true, data: { session: scanSession, scannedAt: Date.now(), latest: null } }); } };
 }
 function response(chatModel) { return { ok: true, json: async () => ({ generatorMetadata: [{ chatModel }] }) }; }
+
+test('帖子 #124：会话费用栏展示最近未知调用折算和混合会话总额', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const calls = [
+    { callId: 'known', model: 'Gemini 4 Carbon', isPriced: true, costUSD: 2.5 },
+    { callId: 'unknown', inputTokens: 40000, cacheTokens: 20000, outputTokens: 10000 }
+  ];
+  try {
+    api.setComposerStateForTest({ sessionCalls: calls });
+    api.setAvailableWidthForTest(900);
+    const mixed = core.summarizeSessionHybridCost(calls);
+    assert.ok(h.elements.get('round-cost-text').textContent.includes(mixed.latestEstimateUSD.toFixed(4)));
+    assert.ok(h.elements.get('session-cost-text').textContent.includes(mixed.combinedTotalUSD.toFixed(4)));
+    assert.match(h.elements.get('session-cost-text').title, /Gemini 3\.8 Flash/);
+  } finally {
+    api.dispose();
+  }
+});
 test('late old request and old full-scan responses cannot contaminate a newly selected chat', async () => {
   const h = harness(); h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222'; h.tick();
   assert.equal(h.pending[0].options.signal.aborted, true);
@@ -4696,7 +4715,7 @@ test('PR #13 & PR #21: 弹窗动态锚点定位、首帧显示前预设坐标、
     h.elements.get('badge-tokens').click();
     assert.equal(h.elements.get('panel-tokens').style.left, `${1048 - 730}px`);
 
-    h.elements.get('badge-quota').click();
+    h.elements.get('badge-quota').trigger('click', { detail: 0 });
     assert.equal(h.elements.get('panel-quota').style.left, `${1104 - 460}px`);
 
     // 溢出入口打开 tokens / quota 时必须对齐 badge-overflow 而非隐藏按钮
@@ -6264,18 +6283,31 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
     assert.equal(h.elements.get('quota-badge-dual').hidden, true, '点按自动按钮双显隐藏并恢复单显');
     assert.equal(h.elements.get('quota-badge-val').textContent, '64%');
 
-    // 右键 #badge-quota 从 auto 轮转到 5h 并当场刷新
-    h.elements.get('badge-quota').trigger('contextmenu', { preventDefault() { } });
+    const quotaBadge = h.elements.get('badge-quota');
+    const quotaPanel = h.elements.get('panel-quota');
+    // 左键轮转，提示和数值即时更新，面板保持关闭。
+    quotaBadge.trigger('click', { detail: 1 });
     assert.equal(api.getQuotaBadgeWindowMode(), '5h');
     assert.equal(h.elements.get('quota-badge-val').textContent, '92%');
+    assert.equal(quotaPanel.hidden, true);
 
-    // Alt+点击 #badge-quota 切换到 weekly 且不打开额度面板
-    assert.equal(h.elements.get('panel-quota').hidden, true);
-    h.elements.get('badge-quota').trigger('click', { altKey: true, preventDefault() { } });
-    assert.equal(api.getQuotaBadgeWindowMode(), 'weekly');
-    assert.equal(h.elements.get('quota-badge-val').textContent, '64%');
-    assert.equal(h.elements.get('panel-quota').hidden, true);
-    assert.ok(savedPayloads.some(p => p.quotaBadgeWindowMode === 'both'));
+    let prevented = false;
+    let stopped = false;
+    quotaBadge.trigger('contextmenu', {
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; }
+    });
+    assert.ok(prevented && stopped);
+    assert.equal(quotaPanel.hidden, false);
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    quotaBadge.trigger('click', { altKey: true, detail: 1 });
+    assert.equal(quotaPanel.hidden, true);
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    quotaBadge.trigger('click', { detail: 0 });
+    assert.equal(quotaPanel.hidden, false);
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    h.elements.get('close-quota').click();
+    assert.equal(savedPayloads.at(-1).quotaBadgeWindowMode, '5h');
 
     // 5. ELV-93 顶栏等待状态改为纯 SVG 沙漏动效（去除 Wait Xs / 等待 Xs 文本抖动）
     api.setSpeedEvaluationForTest({ phase: 'waiting', elapsedSec: 4 });
@@ -10005,7 +10037,8 @@ test('v0.9.0 三项 UI 精修: 独立顶层挂载至 body 末尾 + 快捷隐藏�
     assert.ok(radialHost && meterHost);
     assert.equal(env1.body.lastElementChild, radialHost, '#ag-context-meter-radial-host 必须位于 document.body 末尾');
     assert.match(radialHost.style.cssText, /position:\s*fixed/i);
-    assert.match(radialHost.style.cssText, /inset:\s*0/i);
+    assert.match(radialHost.style.cssText, /width:\s*0\s*!important;\s*height:\s*0\s*!important/i);
+    assert.doesNotMatch(radialHost.style.cssText, /app-region/);
     assert.match(radialHost.style.cssText, /pointer-events:\s*none/i);
     assert.equal(radialHost.style.zIndex, '2147483000');
 
@@ -10017,6 +10050,7 @@ test('v0.9.0 三项 UI 精修: 独立顶层挂载至 body 末尾 + 快捷隐藏�
     assert.equal(mainShadow.getElementById('ctx-radial-orb'), null, '主 shadow 内不应保留悬浮球重复节点');
     assert.equal(mainShadow.getElementById('ctx-radial-layer'), null, '主 shadow 内不应保留径向层重复节点');
     const radialStyle = radialShadow.querySelector('style')?.textContent || '';
+    assert.doesNotMatch(radialStyle.match(/:host\s*\{[^}]*\}/)?.[0] || '', /app-region/);
     assert.match(radialStyle, /:host\s*\{[\s\S]*z-index:\s*2147483000\s*!important[\s\S]*pointer-events:\s*none\s*!important/);
     assert.match(radialStyle, /\.ctx-radial-orb\s*\{[\s\S]*pointer-events:\s*auto/);
     assert.match(radialStyle, /:host\(\[data-marketplace-active="true"\]\)\s+#ctx-radial-orb/);
@@ -10431,5 +10465,197 @@ test('speed trend colors and names match each plotted model, including duplicate
     assert.deepEqual(svg.children.filter(node => node.tagName === 'polyline').map(node => node.getAttribute('stroke')), colors);
   } finally {
     api.dispose();
+  }
+});
+
+
+test('Phase 1.3: 账号与自动切号迁入设置页专卡、移除弹窗顶层化、双入口共享状态与草稿', async () => {
+  const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const i18nSrc = fs.readFileSync(path.join(__dirname, 'src/renderer/i18n.js'), 'utf8');
+  const settingsPaneIdx = tpl.indexOf('id="pane-ctx-settings"');
+  const settingsAcctsIdx = tpl.indexOf('id="settings-accounts-card"');
+  const restartModalIdx = tpl.indexOf('id="global-restart-modal"');
+  const removeModalIdx = tpl.indexOf('id="account-remove-modal"');
+  const quotaPanelIdx = tpl.indexOf('id="panel-quota"');
+  const quotaEntryIdx = tpl.indexOf('id="quota-accounts-entry-card"');
+  const keepaliveIdx = tpl.indexOf('id="quota-keepalive-section"');
+  assert.ok(settingsPaneIdx > 0 && settingsAcctsIdx > settingsPaneIdx, '设置页必须包含 #settings-accounts-card');
+  assert.ok(settingsAcctsIdx < restartModalIdx, '#settings-accounts-card 必须在 #pane-ctx-settings 内部');
+  assert.ok(removeModalIdx > restartModalIdx && removeModalIdx < quotaPanelIdx, '#account-remove-modal 必须提升至顶层且位于 #panel-quota 外部');
+  assert.ok(quotaEntryIdx > quotaPanelIdx && keepaliveIdx > quotaEntryIdx, '额度面板必须保留摘要入口卡与缓存保活诊断');
+  assert.match(tpl, /data-nav-target="settings-accounts-card"/, '设置页快捷导航必须包含账号与切号入口');
+
+  for (const key of [
+    'settings.nav.accounts', 'accounts.manageBtn', 'accounts.refreshEntry',
+    'accounts.entryActiveLabel', 'accounts.entryNoActive', 'accounts.entryRuleUnsaved', 'accounts.entryRuleSummary'
+  ]) {
+    const m = i18nSrc.match(new RegExp(`'${key.replace(/\./g, '\\.')}'\\s*:\\s*\\{[^\\n]+\\}`));
+    assert.ok(m, `必须包含词条 ${key}`);
+    assert.doesNotMatch(m[0], /[（）()]/, `新增三语词条 ${key} 不得包含括号`);
+  }
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    api.setAccountsOverviewForTest({
+      accounts: [
+        { email: 'a@example.com', maskedEmail: 'a***@example.com', isActive: true, hasRefreshToken: true, quotaSnapshot: { pools: [] } },
+        { email: 'b@example.com', maskedEmail: 'b***@example.com', isActive: false, hasRefreshToken: true, quotaSnapshot: { pools: [] } }
+      ],
+      autoSwitch: { enabled: true, poolKey: 'shared_gemini_main', metricMode: 'remaining_pct', windowKey: '5h', thresholdPct: 20, candidates: ['b@example.com'] },
+      autoSwitchStatus: { state: 'watching' }
+    });
+    assert.match(h.elements.get('quota-entry-active-account').textContent, /a@example\.com/);
+    assert.equal(h.elements.get('quota-entry-autoswitch-pill').textContent, '监控中');
+    assert.match(h.elements.get('quota-entry-rule-summary').textContent, /20%/);
+
+    const th = h.elements.get('inp-auto-switch-threshold');
+    th.value = '35';
+    th.trigger('input');
+    assert.match(h.elements.get('quota-entry-rule-summary').textContent, /未保存/);
+    assert.match(h.elements.get('auto-switch-save-status').textContent, /未保存/);
+    api.setAccountsOverviewForTest({
+      accounts: [
+        { email: 'a@example.com', maskedEmail: 'a***@example.com', isActive: true, hasRefreshToken: true, quotaSnapshot: { pools: [] } },
+        { email: 'b@example.com', maskedEmail: 'b***@example.com', isActive: false, hasRefreshToken: true, quotaSnapshot: { pools: [] } }
+      ],
+      autoSwitch: { enabled: true, poolKey: 'shared_gemini_main', metricMode: 'remaining_pct', windowKey: '5h', thresholdPct: 20, candidates: ['b@example.com'] },
+      autoSwitchStatus: { state: 'watching' }
+    });
+    assert.equal(th.value, '35', '后台刷新不得冲掉正在编辑的草稿');
+
+    h.elements.get('btn-quota-open-accounts-settings').click();
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
+  } finally {
+    api.dispose();
+  }
+});
+
+
+test('Phase 2C (PR #102 & Issue #106): 无独立菜单栏/macOS隐藏标题栏注入空白拖区且全屏径向宿主保持0x0无全屏no-drag', async () => {
+  const h = harness();
+  try {
+    if (!h.sandbox.document.head) h.sandbox.document.head = h.sandbox.document.createElement();
+    const api = h.sandbox.__AGContextMeter;
+
+    // 1. 径向顶层容器保持 0x0 不覆盖视口
+    const src = fs.readFileSync(path.join(__dirname, 'src/renderer/main.js'), 'utf8');
+    assert.match(src, /radialHost\.style\.cssText\s*=\s*`position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;/);
+    assert.doesNotMatch(src.slice(src.indexOf('function extractRadialTopLayerCss()'), src.indexOf('function ensureRadialHostAtBodyEnd()')), /-webkit-app-region:\s*no-drag/);
+
+    // 2. Windows 顶栏 WCO / 无独立菜单栏时声明 @container/titlebar -webkit-app-region: drag，交互按钮保持 no-drag
+    h.sandbox.navigator = { platform: 'Win32' };
+    h.sandbox.window.innerWidth = 1280;
+    h.sandbox.window.outerWidth = 1280;
+    const tb = h.sandbox.document.createElement();
+    tb.getBoundingClientRect = () => ({ top: 0, left: 0, right: 1280, bottom: 40, width: 1280, height: 40 });
+    h.sandbox.document.querySelector = sel => (sel.includes('@container/titlebar') ? tb : null);
+    api.syncWindowControlsOverlayForTest();
+    const fixEl = h.sandbox.document.getElementById('ag-topbar-host-fix');
+    assert.ok(fixEl);
+    assert.match(fixEl.textContent, /\[class\*="@container\/titlebar"\][\s\S]*-webkit-app-region:\s*drag;/);
+    assert.match(fixEl.textContent, /#ag-context-meter,\s*#ag-context-meter \* \{ -webkit-app-region: no-drag !important;/);
+
+    // 3. macOS 隐藏标题栏（computeWindowControlsWidth 为 0）仍补齐空白拖动区
+    h.sandbox.navigator = { platform: 'MacIntel' };
+    api.syncWindowControlsOverlayForTest();
+    assert.match(fixEl.textContent, /-webkit-app-region:\s*drag;/);
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(浏览器在最右)、保留滚动与网页状态、左缘宽窄拖拽与收起展开及设置持久化', async () => {
+  const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const auxBarPos = tpl.indexOf('id="dock-aux-context-bar"');
+  const panelPos = tpl.indexOf('id="panel"');
+  assert.ok(auxBarPos > 0 && panelPos > auxBarPos, '#dock-aux-context-bar 必须位于 #panel 外部，切换浏览器或收起后仍保留入口');
+  const tabPlugPos = tpl.indexOf('id="btn-dock-aux-view-plugin"');
+  const tabBrwPos = tpl.indexOf('id="btn-dock-aux-view-browser"');
+  assert.ok(tabPlugPos > 0 && tabBrwPos > tabPlugPos, '辅助栏标签切换中 浏览器 按钮必须位于最右侧');
+
+  const h = harness();
+  try {
+    if (!h.sandbox.document.head) h.sandbox.document.head = h.sandbox.document.createElement();
+    const api = h.sandbox.__AGContextMeter;
+
+    // 构造模拟宿主右侧辅助栏与 webview 浏览器节点
+    const hostSidebar = h.sandbox.document.createElement('div');
+    hostSidebar.setAttribute('data-aux-pane-focus-scope', 'true');
+    hostSidebar.getBoundingClientRect = () => ({ left: 800, top: 0, width: 420, height: 800, right: 1220, bottom: 800 });
+    const hostWebviewContainer = h.sandbox.document.createElement('div');
+    hostWebviewContainer.id = 'mock-host-browser-pane';
+    const webview = h.sandbox.document.createElement('webview');
+    webview.style.pointerEvents = 'auto';
+    hostSidebar.appendChild(hostWebviewContainer);
+    h.sandbox.document.body = h.sandbox.document.createElement('body');
+    h.sandbox.document.body.appendChild(hostSidebar);
+
+    const winListeners = new Map();
+    h.sandbox.window.addEventListener = (type, fn) => {
+      if (!winListeners.has(type)) winListeners.set(type, new Set());
+      winListeners.get(type).add(fn);
+    };
+    h.sandbox.window.removeEventListener = (type, fn) => {
+      winListeners.get(type)?.delete(fn);
+    };
+    h.sandbox.window.trigger = (type, ev = {}) => {
+      for (const fn of (winListeners.get(type) || [])) fn(ev);
+    };
+
+    const prevQueryAll = h.sandbox.document.querySelectorAll;
+    const prevQuery = h.sandbox.document.querySelector;
+    h.sandbox.document.querySelector = sel => (sel.includes('aux-pane-focus-scope') ? hostSidebar : prevQuery(sel));
+    h.sandbox.document.querySelectorAll = sel => {
+      if (sel.includes('webview')) return [webview];
+      return prevQueryAll ? prevQueryAll(sel) : [];
+    };
+
+    api.setDockPosition('aux', { persist: false });
+    let st = api.getAuxDockStateForTest();
+    assert.equal(st.auxBarHidden, false);
+    assert.equal(st.auxResizerHidden, false);
+    assert.equal(st.auxViewTab, 'plugin');
+    assert.equal(hostWebviewContainer.style.display, 'none', '插件态时宿主兄弟容器仅隐藏而不销毁 DOM');
+
+    // 记录面板滚动位置 -> 切至浏览器保留浏览器容器与面板滚动位置 -> 切回插件还原滚动位置
+    h.elements.get('panel').scrollTop = 240;
+    h.elements.get('btn-dock-aux-view-browser').click();
+    st = api.getAuxDockStateForTest();
+    assert.equal(st.auxViewTab, 'browser');
+    assert.equal(h.host.getAttribute('data-aux-view'), 'browser');
+    assert.equal(hostWebviewContainer.style.display, '', '切换浏览器后宿主原生浏览器内容立即可见且未被卸载');
+    assert.equal(st.auxBarHidden, false, '浏览器态仍保留辅助切换栏以便一键切回插件');
+
+    h.elements.get('btn-dock-aux-view-plugin').click();
+    st = api.getAuxDockStateForTest();
+    assert.equal(st.auxViewTab, 'plugin');
+    assert.equal(h.elements.get('panel').scrollTop, 240, '切回插件必须无损恢复先前滚动位置');
+    assert.equal(hostWebviewContainer.style.display, 'none');
+
+    // 收起 / 展开测试
+    h.elements.get('btn-dock-aux-collapse').click();
+    assert.equal(api.getAuxDockStateForTest().auxCollapsed, true);
+    assert.equal(h.host.getAttribute('data-aux-collapsed'), 'true');
+    h.elements.get('btn-dock-aux-collapse').click();
+    assert.equal(api.getAuxDockStateForTest().auxCollapsed, false);
+
+    // 拖拽左缘 resizer 期间禁用 webview pointer-events，结束后必还原并钳位宽度
+    const resizer = h.elements.get('dock-aux-resizer');
+    resizer.trigger('pointerdown', { pointerId: 1, button: 0, isPrimary: true, clientX: 900, preventDefault() {} });
+    assert.equal(webview.style.pointerEvents, 'none', '拖拽分栏宽窄期间必须禁用 webview pointer-events');
+    h.sandbox.window.trigger('pointermove', { clientX: 820 });
+    h.sandbox.window.trigger('pointerup', { clientX: 820 });
+    assert.equal(webview.style.pointerEvents, 'auto', '拖拽结束后必须恢复 webview pointer-events');
+    st = api.getAuxDockStateForTest();
+    assert.ok(st.auxWidthPx >= 280 && st.auxWidthPx <= 920);
+    assert.equal(hostSidebar.style.width, `${st.auxWidthPx}px`);
+
+    // 退出 aux 模式后必须清理隐藏标记恢复宿主浏览器显示
+    h.elements.get('btn-dock-aux-back').click();
+    assert.equal(hostWebviewContainer.style.display, '');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
   }
 });

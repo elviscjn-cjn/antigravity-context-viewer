@@ -435,6 +435,8 @@ function parseTranscriptTailSummary(transcriptPath) {
       }
       const m = obj.model || obj.chatModel?.model || obj.metadata?.model;
       const mLabel = obj.chatModel?.modelDisplayName || obj.modelLabel || obj.metadata?.modelLabel || null;
+      const reqModelRaw = obj.requestedModel || obj.requested_model || obj.metadata?.requestedModel?.model || obj.metadata?.requestedModel || obj.chatModel?.requestedModel?.model || obj.chatModel?.requestedModel || obj.chatModel?.modelOrAlias?.model || ((obj.chatModel?.model && obj.chatModel?.responseModel && obj.chatModel.model !== obj.chatModel.responseModel) ? obj.chatModel.model : null);
+      const reqModelStr = typeof reqModelRaw === 'string' ? reqModelRaw.trim() : (reqModelRaw && typeof reqModelRaw === 'object' ? String(reqModelRaw.model || reqModelRaw.alias || '').trim() : '');
       if (typeof m === 'string' && m.trim()) out.lastModel = m.trim();
 
       // 提取 usage（兼容平铺蛇形/驼峰以及 obj.usage / obj.chatModel.usage）
@@ -467,6 +469,7 @@ function parseTranscriptTailSummary(transcriptPath) {
         out.lastModelStep = {
           stepIndex: stepIdx,
           responseId: obj.responseId || obj.response_id || null,
+          ...(reqModelStr ? { requestedModel: reqModelStr } : {}),
           model: (typeof m === 'string' && m.trim()) ? m.trim() : out.lastModel,
           modelLabel: mLabel,
           inputTokens: inp,
@@ -758,9 +761,9 @@ function computeCliSessionSpeedMetrics(latestCall, dbMeta = null, nowMs = Date.n
   if (durationSec === null) {
     const durMs = Number(latestCall.durationMs || latestCall.elapsedMs || 0);
     if (Number.isFinite(durMs) && durMs > 0) {
-      durationSec = Number((durMs / 1000).toFixed(2));
+      durationSec = Number((durMs / 1000).toFixed(4));
     } else if (ttftSec !== null && streamingSec !== null) {
-      durationSec = Number((ttftSec + streamingSec).toFixed(2));
+      durationSec = Number((ttftSec + streamingSec).toFixed(4));
     } else if (streamingSec !== null && streamingSec > 0) {
       durationSec = streamingSec;
     }
@@ -773,8 +776,8 @@ function computeCliSessionSpeedMetrics(latestCall, dbMeta = null, nowMs = Date.n
       const elapsedSec = (nowMs - ts) / 1000;
       const estStream = ttftSec !== null ? Math.max(0, elapsedSec - ttftSec) : elapsedSec;
       if (estStream > 0 && estStream < 3600) {
-        streamingSec = Number(estStream.toFixed(2));
-        if (durationSec === null) durationSec = Number(elapsedSec.toFixed(2));
+        streamingSec = Number(estStream.toFixed(4));
+        if (durationSec === null) durationSec = Number(elapsedSec.toFixed(4));
       }
     }
   }
@@ -800,6 +803,23 @@ function computeCliSessionSpeedMetrics(latestCall, dbMeta = null, nowMs = Date.n
       })
     : null;
 
+  const rowSpeedInfo = typeof core.resolveRequestRowSpeed === 'function'
+    ? core.resolveRequestRowSpeed({
+        outputTokens: outp,
+        ttftSec,
+        streamingSec,
+        durationSec,
+        streamingTps: streamSpeedIn,
+        tps: overallSpeedIn,
+        status: rawStatus || 'final',
+        outcomeStatus: rawStatus || 'final'
+      })
+    : null;
+
+  const reqModelMeta = typeof core.resolveRequestedModelDisplay === 'function'
+    ? core.resolveRequestedModelDisplay(latestCall.requestedModel || latestCall.requestedModelRaw || dbStep?.requestedModel || null)
+    : { text: latestCall.requestedModel || null };
+
   let speedTokPerSec = null;
   let speedSource = evalRes?.phase || 'unavailable';
   if (evalRes && evalRes.phase !== 'waiting' && evalRes.phase !== 'idle' && evalRes.phase !== 'canceled' && evalRes.phase !== 'failed') {
@@ -817,17 +837,22 @@ function computeCliSessionSpeedMetrics(latestCall, dbMeta = null, nowMs = Date.n
   return {
     speedTokPerSec,
     speedSource,
+    requestedModel: reqModelMeta?.text || null,
     latestCallMetrics: {
       callId: latestCall.callId || latestCall.responseId || null,
       stepIndex: stepIdx,
       created_at: latestCall.created_at || (latestCall.timestamp ? new Date(latestCall.timestamp).toISOString() : null),
       status: rawStatus || 'final',
+      requestedModel: reqModelMeta?.text || null,
       outputTokens: outp,
       ttftSec,
       streamingSec,
       durationSec,
       streamSpeed: evalRes?.streamSpeed ?? streamSpeedIn,
       overallTps: evalRes?.overallTps ?? overallSpeedIn,
+      rowSpeedTokPerSec: rowSpeedInfo?.speed ?? null,
+      rowSpeedSource: rowSpeedInfo?.source ?? null,
+      speedReason: rowSpeedInfo?.reasonCode ?? null,
       excludesTtft: speedSource === 'streaming',
       isSampleSparse: Boolean(evalRes?.isSampleSparse)
     }
@@ -1060,6 +1085,7 @@ function scanCliSessions(options = {}) {
       const speedInfo = computeCliSessionSpeedMetrics(activeCall, dbMeta, nowMs);
       s.speedTokPerSec = speedInfo.speedTokPerSec;
       s.speedSource = speedInfo.speedSource;
+      s.requestedModel = speedInfo.requestedModel || s.requestedModel || null;
       s.latestCallMetrics = speedInfo.latestCallMetrics;
     }
   }

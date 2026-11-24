@@ -100,14 +100,6 @@
 
 
 
-<div id="ctx-scope-highlights" class="ctx-scope-highlights" popover="manual" hidden aria-hidden="true"></div>
-<div id="ctx-scope-menu" class="ctx-scope-menu" popover="manual" hidden role="group" data-i18n-aria="scope.actions">
-  <button type="button" data-pane-action="focus" data-i18n="scope.focusPane">定位并聚焦窗格</button>
-  <button type="button" data-pane-action="close" data-i18n="scope.closePane">关闭此窗格</button>
-  <button type="button" data-pane-action="others" data-i18n="scope.closeOthers">关闭其他窗格</button>
-  <button type="button" data-pane-action="right" data-i18n="scope.closeRight">关闭右侧窗格</button>
-</div>
-
 <!-- CLI 启动反馈提示气泡 -->
 <div id="cli-launch-toast" hidden role="status" aria-live="polite"></div>
 
@@ -274,6 +266,33 @@
   </div>
 </div>
 
+<!-- 右侧辅助栏左缘宽窄拖拽条（仅 aux 且未回退时显示） -->
+<div id="dock-aux-resizer" class="dock-aux-resizer" role="separator" aria-orientation="vertical"
+  aria-label="拖拽调整右侧辅助面板宽度" data-i18n-aria="settings.dock.auxResizeAria" title="左右拖拽调整宽度"
+  data-i18n-title="settings.dock.auxResizeTitle" hidden></div>
+
+<!-- 右侧辅助栏停靠控制条：置于面板外部顶层以保证切至浏览器或收起时仍可随时切换/恢复 -->
+<div id="dock-aux-context-bar" class="dock-aux-context-bar" hidden>
+  <span id="dock-aux-session-label" class="dock-aux-session-label"
+    data-i18n="settings.dock.auxUnresolved">当前未解析会话</span>
+  <div id="dock-aux-tab-switch" class="ctx-segmented dock-aux-tab-switch" role="tablist" aria-label="右侧辅助视图">
+    <button id="btn-dock-aux-view-plugin" class="ctx-seg-btn active" type="button" role="tab" aria-selected="true"
+      data-aux-view="plugin" data-i18n="settings.dock.auxTabPlugin">插件</button>
+    <button id="btn-dock-aux-view-browser" class="ctx-seg-btn" type="button" role="tab" aria-selected="false"
+      data-aux-view="browser" data-i18n="settings.dock.auxTabBrowser">浏览器</button>
+  </div>
+  <div class="dock-aux-actions">
+    <button id="btn-dock-aux-collapse" class="dock-aux-btn" type="button" aria-expanded="true"
+      data-i18n="settings.dock.auxCollapse">收起</button>
+    <button id="btn-dock-aux-copy-url" class="dock-aux-btn" type="button"
+      data-i18n="settings.dock.auxCopyUrl">复制链接</button>
+    <button id="btn-dock-aux-external" class="dock-aux-btn" type="button"
+      data-i18n="settings.dock.auxExternal">外部浏览器</button>
+    <button id="btn-dock-aux-back" class="dock-aux-btn dock-aux-btn-back" type="button" title="退出右侧停靠，返回顶部工具栏"
+      data-i18n-title="settings.dock.auxBackTitle" data-i18n="settings.dock.auxBack">返回顶栏</button>
+  </div>
+</div>
+
 <!-- 弹出式面板 1: 会话上下文与速度监控 (#panel, 450px) -->
 <section id="panel" class="ag-panel" hidden aria-label="会话与上下文详情" data-i18n-aria="panel.ctx.aria">
   <div class="panel-header-bar">
@@ -326,19 +345,6 @@
   </div>
 
   <div id="view-context">
-    <!-- 右侧辅助栏停靠跟随条（仅 aux 且未回退时显示） -->
-    <div id="dock-aux-context-bar" class="dock-aux-context-bar" hidden>
-      <span id="dock-aux-session-label" class="dock-aux-session-label"
-        data-i18n="settings.dock.auxUnresolved">当前未解析会话</span>
-      <div class="dock-aux-actions">
-        <button id="btn-dock-aux-copy-url" class="dock-aux-btn" type="button"
-          data-i18n="settings.dock.auxCopyUrl">复制链接</button>
-        <button id="btn-dock-aux-external" class="dock-aux-btn" type="button"
-          data-i18n="settings.dock.auxExternal">外部浏览器</button>
-        <button id="btn-dock-aux-back" class="dock-aux-btn dock-aux-btn-back" type="button" title="退出右侧停靠，返回顶部工具栏"
-          data-i18n-title="settings.dock.auxBackTitle" data-i18n="settings.dock.auxBack">返回顶栏</button>
-      </div>
-    </div>
     <!-- 顶部 4 分页标签栏 -->
     <div id="ctx-tabs-bar" class="ctx-tabs-bar" role="tablist" aria-label="上下文面板分页" data-i18n-aria="tabs.aria">
       <button id="tab-ctx-session" class="ctx-tab-btn active" type="button" role="tab" aria-selected="true"
@@ -351,7 +357,7 @@
         data-ctx-tab="settings" data-i18n="tab.settings">配置</button>
     </div>
 
-    <!-- 分页 1: 当前会话（12 列自适应自由拖拽 Bento 会话总览） -->
+    <!-- 分页 1: 当前会话（12 列自适应自由拖拽 Bento 全景驾驶舱） -->
     <div id="pane-ctx-session" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-session">
       <div id="ctx-scope-bar" class="ctx-scope-bar" hidden role="region" aria-label="同屏会话视角切换"
         data-i18n-aria="scope.bar.aria">
@@ -362,36 +368,53 @@
           <span class="ctx-scope-follow-dot" aria-hidden="true"></span><span id="ctx-scope-follow-label"
             data-i18n="scope.follow.auto">跟随焦点</span>
         </button>
-        <button id="ctx-scope-batch" class="ctx-scope-follow-btn" type="button" aria-pressed="false"
-          hidden data-i18n="scope.batch">批量关闭</button>
-        <div id="ctx-scope-batch-actions" class="ctx-scope-batch-actions" hidden>
-          <button id="ctx-scope-batch-others" class="ctx-scope-follow-btn" type="button" data-i18n="scope.selectOthers">全选其他</button>
-          <button id="ctx-scope-batch-close" class="ctx-scope-follow-btn" type="button"></button>
-          <button id="ctx-scope-batch-cancel" class="ctx-scope-follow-btn" type="button" data-i18n="scope.cancel">取消</button>
-        </div>
       </div>
 
       <!-- 驾驶舱顶部预设工具条与模块管理浮层 -->
       <div id="ctx-cockpit-toolbar" class="ctx-cockpit-toolbar">
-        <div class="ctx-cockpit-presets" role="group" aria-label="布局预设" data-i18n-aria="session.preset.label">
-          <button id="btn-preset-cockpit" class="ctx-preset-btn active" type="button" data-cockpit-preset="cockpit"
-            aria-pressed="true" data-i18n="session.preset.cockpit">会话总览</button>
-          <button id="btn-preset-minimal" class="ctx-preset-btn" type="button" data-cockpit-preset="minimal"
-            aria-pressed="false" data-i18n="session.preset.minimal">极简遥测</button>
-          <button id="btn-preset-debug" class="ctx-preset-btn" type="button" data-cockpit-preset="debug"
-            aria-pressed="false" data-i18n="session.preset.debug">深度排障</button>
-          <button id="btn-preset-speed-cost" class="ctx-preset-btn" type="button" data-cockpit-preset="speed_cost"
-            aria-pressed="false" data-i18n="session.preset.speedCost">速度与成本</button>
-          <button id="btn-preset-collab" class="ctx-preset-btn" type="button" data-cockpit-preset="collab"
-            aria-pressed="false" data-i18n="session.preset.collab">多代理协作</button>
-          <span id="ctx-custom-presets" class="ctx-custom-presets"></span>
+        <div class="ctx-cockpit-presets-wrap">
+          <div id="ctx-cockpit-presets-track" class="ctx-cockpit-presets" role="group" aria-label="布局预设"
+            data-i18n-aria="session.preset.label">
+            <button id="btn-preset-cockpit" class="ctx-preset-btn active" type="button" data-cockpit-preset="cockpit"
+              aria-pressed="true" data-i18n="session.preset.cockpit">会话总览</button>
+            <button id="btn-preset-minimal" class="ctx-preset-btn" type="button" data-cockpit-preset="minimal"
+              aria-pressed="false" data-i18n="session.preset.minimal">极简遥测</button>
+            <button id="btn-preset-debug" class="ctx-preset-btn" type="button" data-cockpit-preset="debug"
+              aria-pressed="false" data-i18n="session.preset.debug">深度排障</button>
+            <button id="btn-preset-speed-cost" class="ctx-preset-btn" type="button" data-cockpit-preset="speed_cost"
+              aria-pressed="false" data-i18n="session.preset.speedCost">速度与成本</button>
+            <button id="btn-preset-collab" class="ctx-preset-btn" type="button" data-cockpit-preset="collab"
+              aria-pressed="false" data-i18n="session.preset.collab">多代理协作</button>
+          </div>
+          <div id="ctx-custom-presets" class="ctx-custom-presets" hidden aria-hidden="true"></div>
+          <button id="btn-ctx-preset-sort" class="ctx-action-pill ctx-preset-sort-toggle" type="button"
+            aria-pressed="false" title="长按预设标签拖拽排序或点击进入按键重排" data-i18n-title="session.preset.sortTitle"
+            data-i18n="session.preset.sort">排序</button>
         </div>
         <div class="ctx-cockpit-toolbar-right" id="ctx-widget-mgr-wrap">
-          <button id="btn-ctx-widget-mgr" class="ctx-action-pill" type="button" aria-expanded="false"
-            title="显示或调整模块顺序" data-i18n-title="session.preset.mgrTitle">
+          <div class="ctx-custom-preset-controls">
+            <button class="ctx-action-pill" type="button" data-custom-preset-action="save"
+              data-i18n="session.preset.saveNew">+ 保存为预设</button>
+            <div id="ctx-custom-preset-actions" class="ctx-custom-preset-actions" hidden>
+              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="overwrite"
+                data-i18n="session.preset.overwrite">覆盖保存</button>
+              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="rename"
+                data-i18n="session.preset.rename">重命名</button>
+              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="delete"
+                data-i18n="session.preset.delete">删除预设</button>
+            </div>
+          </div>
+          <form id="ctx-custom-preset-editor" class="ctx-preset-editor" hidden>
+            <input id="ctx-custom-preset-name" type="text" maxlength="60" placeholder="预设名称"
+              data-i18n-placeholder="session.preset.name" />
+            <button class="ctx-action-pill" type="submit" data-i18n="session.preset.submit">保存</button>
+            <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="cancel"
+              data-i18n="session.preset.cancel">取消</button>
+          </form>
+          <button id="btn-ctx-widget-mgr" class="ctx-action-pill" type="button" aria-expanded="false" title="显示或调整模块顺序"
+            data-i18n-title="session.preset.mgrTitle">
             <span data-i18n="session.preset.mgrBtn">模块管理</span>
           </button>
-          <button class="ctx-action-pill" type="button" data-custom-preset-action="save" data-i18n="session.preset.saveNew">保存为预设</button>
           <div id="ctx-widget-mgr-popover" class="ctx-widget-mgr-popover" hidden>
             <div class="ctx-widget-mgr-hdr">
               <span data-i18n="session.preset.mgrTitle">显示或调整模块顺序</span>
@@ -401,17 +424,6 @@
             <div id="ctx-widget-mgr-list" class="ctx-widget-mgr-list"></div>
           </div>
         </div>
-        <div id="ctx-custom-preset-actions" class="ctx-preset-editor" hidden>
-          <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="overwrite" data-i18n="session.preset.overwrite">覆盖保存</button>
-          <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="rename" data-i18n="session.preset.rename">重命名</button>
-          <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="delete" data-i18n="session.preset.delete">删除预设</button>
-        </div>
-        <form id="ctx-custom-preset-editor" class="ctx-preset-editor" hidden>
-          <input id="ctx-custom-preset-name" maxlength="80" required data-i18n-aria="session.preset.name" aria-label="预设名称"
-            data-i18n-placeholder="session.preset.name" placeholder="预设名称">
-          <button class="ctx-action-pill" type="submit" data-i18n="session.preset.submit">保存</button>
-          <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="cancel" data-i18n="session.preset.cancel">取消</button>
-        </form>
       </div>
 
       <!-- 12 列等高可拖拽 Widget 网格 -->
@@ -546,7 +558,6 @@
               当前占用为单次上下文，累计包含多轮请求输入与输出；配置预算独立于宿主窗口上限。</div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 2: Token 构成与费用 (#token-breakdown) -->
@@ -575,28 +586,6 @@
             <div id="ctx-token-cache-cost-strip" class="ctx-token-cache-cost-strip"></div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
-        </section>
-
-        <section class="ctx-widget-card ctx-bento-card" data-widget-id="request-cost" data-span="6" hidden>
-          <header class="ctx-widget-hdr">
-            <div class="ctx-widget-hdr-left">
-              <button class="ctx-widget-drag-handle ag-widget-drag-handle" type="button"
-                data-i18n-aria="session.widget.dragAria" data-i18n-title="session.widget.dragTitle">⋮⋮</button>
-              <span class="ctx-widget-title" data-i18n="session.widget.requestCost">单次请求费用与缓存节省</span>
-            </div>
-            <div class="ctx-widget-hdr-actions">
-              <button class="ctx-widget-ctrl-btn" type="button" data-widget-action="cycle-span" data-i18n-title="session.widget.spanTitle">6列</button>
-              <button class="ctx-widget-ctrl-btn" type="button" data-widget-action="cycle-height" data-i18n-title="session.widget.heightTitle">标准</button>
-            </div>
-          </header>
-          <div class="ctx-widget-body ctx-request-cost-body">
-            <div id="ctx-request-cost-summary" class="ctx-request-cost-summary"></div>
-            <ol id="ctx-request-cost-rows" class="ctx-request-cost-rows" tabindex="0" data-i18n-aria="session.widget.requestCost"></ol>
-            <p id="ctx-request-cost-empty" data-i18n="session.requestCost.empty">暂无已完成的请求</p>
-          </div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 3: 耗时与流式效率 (#timing-speed, 原 8 项详细诊断折叠) -->
@@ -666,8 +655,6 @@
             <div class="ctx-timing-diag-bar">
               <button id="btn-ctx-timing-diag-toggle" class="ctx-action-pill" type="button" aria-expanded="false"
                 data-i18n="session.timing.diagToggleOpen">详细诊断评分 ▼</button>
-              <button id="btn-speed-breakdown-toggle" class="latest-call-link-btn" type="button" aria-expanded="false"
-                hidden data-i18n="session.speed.details">拆解</button>
             </div>
             <div id="ctx-timing-diag-fold" class="ctx-timing-diag-fold" hidden>
               <div id="ctx-timing-ts-note" class="ctx-timing-ts-note" data-i18n="session.timing.missingTsNote">
@@ -679,7 +666,6 @@
             </div>
           </section>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 4: 全景脉冲趋势 + 三行步骤速览 + 当前步骤条 (#trend-pulse) -->
@@ -788,7 +774,6 @@
             </div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 5: 上下文解剖台 · 分类树 / 顺序切片视图 (#context-inspector) -->
@@ -939,7 +924,6 @@
             </section>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 6: 会话执行轨迹 (#execution-trace) -->
@@ -997,7 +981,6 @@
             <div id="ctx-trace-stream-list" class="ctx-trace-stream-list"></div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 7: 上下文异动日志 (#context-events) -->
@@ -1023,7 +1006,6 @@
             <div id="ctx-events-list" class="ctx-events-list"></div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 8: 文件变更雷达 (#file-radar) -->
@@ -1064,7 +1046,6 @@
             <div id="ctx-file-radar-list" class="ctx-file-radar-list"></div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 9: 终端命令审计 (#command-audit, 宽屏左右双栏联动) -->
@@ -1114,7 +1095,6 @@
             </div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 10: 多代理协作中枢 (#agent-collab) -->
@@ -1158,24 +1138,19 @@
             </div>
           </div>
           <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
         <!-- Widget 11: 底层技术参数与附件审计 (#tech-drawer) -->
         <section class="ctx-widget-card ctx-bento-card" data-widget-id="tech-drawer" data-span="12"
           data-height-mode="compact">
           <div class="tech-drawer">
-            <div class="ctx-widget-hdr ctx-tech-widget-hdr">
-              <button class="ctx-widget-drag-handle ag-widget-drag-handle" type="button"
-                data-i18n-aria="session.widget.dragAria" aria-label="拖动排序">⋮⋮</button>
-              <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
-                <span class="drawer-trigger-left">
-                  <span data-i18n="session.techDrawer.title">📋 底层技术参数与附件审计</span>
-                </span>
-                <span id="drawer-arrow" class="drawer-arrow" data-i18n="session.techDrawer.expand">▼ 点击展开明细</span>
-              </button>
-            </div>
-            <div id="drawer-body" class="drawer-body ctx-widget-body" style="display:none;">
+            <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
+              <span class="drawer-trigger-left">
+                <span data-i18n="session.techDrawer.title">📋 底层技术参数与附件审计</span>
+              </span>
+              <span id="drawer-arrow" class="drawer-arrow" data-i18n="session.techDrawer.expand">▼ 点击展开明细</span>
+            </button>
+            <div id="drawer-body" class="drawer-body" style="display:none;">
               <p id="status" data-i18n="session.tech.checking">正在核对请求和附件…</p>
               <p id="model"></p>
               <h4 data-i18n="session.tech.latestReq">最近一次模型请求</h4>
@@ -1233,8 +1208,6 @@
               <p id="updated"></p>
             </div>
           </div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" aria-hidden="true"></div>
-          <div class="ctx-widget-resize-handle ag-widget-resize-handle" data-resize-edge="left" aria-hidden="true"></div>
         </section>
 
       </div>
@@ -1616,162 +1589,75 @@
 
     <!-- 分页 3: 速度对比 -->
     <div id="pane-ctx-speed" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-speed" hidden>
-      <!-- 44px 筛选工具栏：原型假顶栏已移除，页面直接从工具栏开始 -->
-      <div id="speed-filter-bar" class="ctx-speed-filterbar">
-        <div class="ctx-segmented ctx-speed-seg" role="group" aria-label="时间范围" data-i18n-aria="speed.range.aria">
-          <button id="speed-range-1d" class="ctx-seg-btn" type="button" data-i18n="speed.range.1d">今日</button>
-          <button id="speed-range-3d" class="ctx-seg-btn" type="button" data-i18n="speed.range.3d">近 3 天</button>
-          <button id="speed-range-5d" class="ctx-seg-btn" type="button" data-i18n="speed.range.5d">近 5 天</button>
+      <div class="ctx-speed-toolbar">
+        <div class="ctx-segmented" role="group" aria-label="时间范围" data-i18n-aria="speed.range.aria">
           <button id="speed-range-7d" class="ctx-seg-btn active" type="button" data-speed-range="7"
-            data-i18n="speed.range.7d">近一周</button>
+            data-i18n="speed.range.7d">近 7 天</button>
           <button id="speed-range-30d" class="ctx-seg-btn" type="button" data-speed-range="30"
             data-i18n="speed.range.30d">近 30 天</button>
           <button id="speed-range-all" class="ctx-seg-btn" type="button" data-speed-range="all"
-            data-i18n="speed.range.all">全量历史</button>
-          <button id="speed-range-custom" class="ctx-seg-btn" type="button" aria-pressed="false"
-            aria-controls="speed-custom-dates" data-i18n="speed.range.custom">自定义</button>
+            data-i18n="speed.range.all">全部</button>
         </div>
-        <div class="ctx-speed-filter-group">
-          <span class="ctx-speed-filter-label" data-i18n="speed.filter.source">数据源</span>
-          <div id="speed-origin-filter-wrap" class="ctx-segmented ctx-speed-seg" role="group" aria-label="样本来源"
-            data-i18n-aria="speed.origin.aria">
-            <button id="speed-origin-all" class="ctx-seg-btn active" type="button" data-speed-origin="all"
-              data-i18n="speed.origin.all">全部来源</button>
-            <button id="speed-origin-chat" class="ctx-seg-btn" type="button" data-speed-origin="chat"
-              data-i18n="speed.origin.chat">日常对话</button>
-          </div>
+        <div id="speed-origin-filter-wrap" class="ctx-segmented" role="group" aria-label="样本来源"
+          data-i18n-aria="speed.origin.aria">
+          <button id="speed-origin-all" class="ctx-seg-btn active" type="button" data-speed-origin="all"
+            data-i18n="speed.origin.all">全部来源</button>
+          <button id="speed-origin-chat" class="ctx-seg-btn" type="button" data-speed-origin="chat"
+            data-i18n="speed.origin.chat">日常对话</button>
         </div>
-        <div class="ctx-speed-filter-group ctx-speed-filter-group-metric">
-          <span class="ctx-speed-filter-label" data-i18n="speed.filter.metric">对比指标</span>
-          <div class="ctx-segmented ctx-speed-seg" role="group" aria-label="对比指标" data-i18n-aria="speed.metric.aria">
+        <button id="btn-save-default-view-speed" class="save-default-btn" type="button" data-save-default="speed"
+          title="将当前时间范围、趋势模式与排序方式保存为默认视图" data-i18n-title="prefs.saveDefaultTitle"
+          data-i18n="prefs.saveDefault">设为默认</button>
+      </div>
+
+      <!-- 柱状图卡片 -->
+      <div class="ctx-chart-card">
+        <div class="ctx-chart-header">
+          <span id="speed-bar-title" class="ctx-chart-title" data-i18n="speed.barTitle.tps">输出速度对比</span>
+          <div class="ctx-segmented" role="group" aria-label="对比指标" data-i18n-aria="speed.metric.aria">
             <button id="speed-metric-tps" class="ctx-seg-btn active" type="button" data-speed-metric="tps"
-              data-i18n="speed.metric.tps">输出速度 tok/s</button>
+              data-i18n="speed.metric.tps">输出速度</button>
             <button id="speed-metric-ttft" class="ctx-seg-btn" type="button" data-speed-metric="ttft"
-              data-i18n="speed.metric.ttft">首字延迟 TTFT</button>
+              data-i18n="speed.metric.ttft">首字延迟</button>
             <button id="speed-metric-duration" class="ctx-seg-btn" type="button" data-speed-metric="duration"
               data-i18n="speed.metric.duration">总耗时</button>
           </div>
         </div>
-        <div class="ctx-speed-filter-group">
-          <span class="ctx-speed-filter-label" data-i18n="speed.filter.algo">统计口径</span>
-          <div id="speed-algo-segmented" class="ctx-segmented ctx-speed-seg-algo" role="group"
-            aria-label="统计口径">
-            <button id="speed-algo-median" class="ctx-seg-btn active" type="button" data-speed-algo="median"
-              data-i18n="speed.algo.median">中位数</button>
-            <button id="speed-algo-mean" class="ctx-seg-btn" type="button" data-speed-algo="mean"
-              data-i18n="speed.algo.mean">均值</button>
-            <button id="speed-algo-composite" class="ctx-seg-btn" type="button" data-speed-algo="composite"
-              data-i18n="speed.algo.composite">综合效率</button>
-          </div>
-        </div>
-        <button id="btn-save-default-view-speed" class="save-default-btn ctx-speed-save" type="button"
-          data-save-default="speed" title="将当前时间范围、趋势模式与排序方式保存为默认视图"
-          data-i18n-title="prefs.saveDefaultTitle" data-i18n="prefs.saveDefault">设为默认</button>
-      </div>
-
-      <form id="speed-custom-dates" class="ctx-speed-dates" hidden>
-        <label><span data-i18n="speed.range.start">开始日期</span> <input id="speed-date-start" type="text" placeholder="YYYY-MM-DD" maxlength="10" required></label>
-        <label><span data-i18n="speed.range.end">结束日期</span> <input id="speed-date-end" type="text" placeholder="YYYY-MM-DD" maxlength="10" required></label>
-        <button type="submit" class="ctx-speed-ghost-btn" data-i18n="speed.range.apply">应用</button>
-        <span id="speed-date-error" role="alert" data-i18n="speed.range.invalid" hidden>请选择有效的起止日期</span>
-      </form>
-
-      <!-- Row 1：模型速度 PK 对比台 + 多系列走势 -->
-      <section id="speed-hero" class="ctx-speed-hero">
-        <header class="ctx-speed-hero-head">
-          <span class="ctx-speed-hero-title" data-i18n="speed.hero.title">模型速度 PK 对比台</span>
-          <span class="ctx-speed-hero-count"><span data-i18n="speed.hero.selectedPrev">已选</span>
-            <b id="speed-pk-count">0</b> <span data-i18n="speed.hero.selectedUnit">款</span></span>
-          <div id="speed-pk-chips" class="ctx-speed-chips"></div>
-          <div class="ctx-speed-hero-actions">
-            <button id="speed-pk-add" class="ctx-speed-ghost-btn" type="button"
-              data-i18n="speed.hero.addModel">+ 添加模型对比</button>
-            <button id="speed-pk-clear" class="ctx-speed-ghost-btn" type="button"
-              data-i18n="speed.hero.clear">清空选择</button>
-          </div>
-        </header>
-        <div class="ctx-speed-hero-body">
-          <div id="speed-pk-cards" class="ctx-speed-pk-grid"></div>
-          <div class="ctx-speed-trend-panel">
-            <div class="ctx-speed-trend-head">
-              <span id="speed-trend-title" class="ctx-speed-trend-title"
-                data-i18n="speed.trend.title">各模型速度走势 · tok/s</span>
-              <div id="speed-trend-legend" class="ctx-speed-trend-legend"></div>
-            </div>
-            <div id="speed-line-chart-wrap" class="ctx-svg-wrap ctx-speed-trend-wrap" style="position:relative;">
-              <svg id="speed-line-svg" class="ctx-speed-svg" role="img" aria-label="所选模型与档位历史输出速度折线图"
-                data-i18n-aria="speed.lineSvg.aria"></svg>
-              <div id="speed-line-tooltip" class="ctx-chart-tooltip" hidden></div>
-            </div>
-            <p id="speed-line-empty" data-i18n="speed.hero.emptyTrend" hidden>暂无对比曲线</p>
-            <div id="speed-trend-foot" class="ctx-speed-trend-foot"></div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Row 2：全量模型统计排行 -->
-      <section id="speed-rank" class="ctx-speed-rank">
-        <header class="ctx-speed-rank-head">
-          <span class="ctx-speed-rank-title" data-i18n="speed.rank.title">全量模型统计排行 · 点击勾选加入对比</span>
-          <span id="speed-rank-count" class="ctx-speed-rank-count"></span>
-          <div class="ctx-speed-rank-tools">
-            <input id="speed-rank-search" class="ctx-speed-search" type="search"
-              placeholder="过滤模型名称或架构标签" data-i18n-placeholder="speed.rank.searchPlaceholder" />
-            <div id="speed-rank-sort" class="ctx-segmented ctx-speed-seg" role="group" aria-label="排序方式"
-              data-i18n-aria="speed.rank.sortAria">
-              <button class="ctx-seg-btn active" type="button" data-rank-sort="tps"
-                data-i18n="speed.rank.sortTps">中位速度降序</button>
-              <button class="ctx-seg-btn" type="button" data-rank-sort="ttft"
-                data-i18n="speed.rank.sortTtft">首字延迟升序</button>
-              <button class="ctx-seg-btn" type="button" data-rank-sort="samples"
-                data-i18n="speed.rank.sortSamples">样本数降序</button>
-            </div>
-          </div>
-        </header>
-        <div class="ctx-speed-rank-thead">
-          <span data-i18n="speed.rank.colPick">对比</span>
-          <span data-i18n="speed.rank.colModel">模型规格与配置</span>
-          <span data-i18n="speed.rank.colDist">吞吐速度分布 · tok/s</span>
-          <span data-i18n="speed.rank.colMetric">核心实测指标 · 中位数</span>
-        </div>
-        <div id="speed-rank-rows" class="ctx-speed-rank-rows"></div>
-        <div class="ctx-speed-rank-foot">
-          <span class="ctx-speed-rank-note" data-i18n="speed.rank.note">速率仅统计有效 Streaming 生成周期 · 已剔除首次网络握手耗时</span>
-          <div class="ctx-speed-rank-foot-actions">
-            <button id="speed-rank-export" class="ctx-speed-ghost-btn" type="button"
-              data-i18n="speed.rank.export">导出 CSV</button>
-            <button id="speed-rank-reset" class="ctx-speed-ghost-btn" type="button"
-              data-i18n="speed.rank.reset">重置筛选</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 兼容桥：旧柱状图 / 下拉 / 标题节点保留，继续由既有渲染逻辑驱动 -->
-      <div class="ctx-speed-legacy" hidden>
-        <span id="speed-bar-title" class="ctx-chart-title" data-i18n="speed.barTitle.tps">输出速度对比</span>
         <div id="speed-bar-empty" class="ctx-speed-empty" hidden data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
         <div id="speed-bar-chart-wrap" class="ctx-svg-wrap" style="position:relative;">
           <svg id="speed-bar-svg" class="ctx-speed-svg" role="img" aria-label="各模型与档位速度对比柱状图"
             data-i18n-aria="speed.barSvg.aria"></svg>
           <div id="speed-bar-tooltip" class="ctx-chart-tooltip" hidden></div>
         </div>
-        <div id="speed-line-empty" class="ctx-speed-empty" data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
-        <div id="speed-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-speed-dropdown">
-          <div id="speed-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0"
-            title="选择一个模型与档位查看速度变化" data-i18n-title="speed.linePickTitle">
-            <span id="speed-model-dropdown-label" class="ag-dropdown-label"
-              data-i18n="speed.lineNoModel">暂无模型记录</span>
-            <div class="ag-dropdown-arrow">
-              <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                stroke-linecap="round" stroke-linejoin="round">
-                <path d="M1 1l4 4 4-4" />
-              </svg>
+        <div id="speed-bar-note" class="ctx-chart-note" data-i18n="speed.barNote">以各模型与档位的中位数统计；不足 3
+          条标注“样本少”。总耗时受输出长度影响，条件相近时才可比较。</div>
+      </div>
+
+      <!-- 单模型折线图卡片 -->
+      <div class="ctx-chart-card">
+        <div class="ctx-chart-header ctx-line-header">
+          <span class="ctx-chart-title" data-i18n="speed.lineTitle">单模型速度趋势</span>
+          <div id="speed-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-speed-dropdown">
+            <div id="speed-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0"
+              title="选择一个模型与档位查看速度变化" data-i18n-title="speed.linePickTitle">
+              <span id="speed-model-dropdown-label" class="ag-dropdown-label"
+                data-i18n="speed.lineNoModel">暂无模型记录</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </div>
             </div>
+            <div id="speed-model-dropdown-menu" class="ag-dropdown-menu"></div>
           </div>
-          <div id="speed-model-dropdown-menu" class="ag-dropdown-menu"></div>
         </div>
-        <div id="speed-bar-note" class="ctx-chart-note" data-i18n="speed.barNote">以各模型与档位的中位数统计 · 不足 3
-          条标注偏少 · 总耗时受输出长度影响 · 条件相近时才可比较.</div>
+        <div id="speed-line-empty" class="ctx-speed-empty" data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
+        <div id="speed-line-chart-wrap" class="ctx-svg-wrap" style="position:relative;" hidden>
+          <svg id="speed-line-svg" class="ctx-speed-svg" role="img" aria-label="所选模型与档位历史输出速度折线图"
+            data-i18n-aria="speed.lineSvg.aria"></svg>
+          <div id="speed-line-tooltip" class="ctx-chart-tooltip" hidden></div>
+        </div>
       </div>
 
     </div>
@@ -1787,6 +1673,8 @@
           style="display:flex;gap:3px;flex:1;justify-content:flex-end">
           <button class="ctx-seg-btn active" type="button" data-nav-target="ui-slim-prefs-card"
             data-i18n="settings.nav.appearance">🎨 外观停靠</button>
+          <button class="ctx-seg-btn" type="button" data-nav-target="settings-accounts-card"
+            data-i18n="settings.nav.accounts">👤 账号切号</button>
           <button class="ctx-seg-btn" type="button" data-nav-target="enhance-preset-card"
             data-i18n="settings.nav.preset">✨ 推荐配置</button>
           <button class="ctx-seg-btn" type="button" data-nav-target="rehydrate-hook-card"
@@ -1969,6 +1857,36 @@
               </div>
             </div>
 
+            <div class="ctx-prefs-row" id="row-simplified-model-picker">
+              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-simplified-model-picker"
+                for="chk-simplified-model-picker">
+                <span class="ctx-prefs-row-title" data-i18n="settings.modelPicker.label">简化输入框模型与思考档位菜单</span>
+                <span class="ctx-prefs-row-sub" data-i18n="settings.modelPicker.desc">
+                  基础模型仅展示一次并将思考档位独立调节，不兼容时退回原生菜单.</span>
+              </label>
+              <div class="ctx-prefs-row-ctl">
+                <label class="ctx-toggle" for="chk-simplified-model-picker">
+                  <input id="chk-simplified-model-picker" class="ctx-toggle-input" type="checkbox">
+                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="ctx-prefs-row" id="row-next-prompt">
+              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-next-prompt"
+                for="chk-next-prompt-enabled">
+                <span class="ctx-prefs-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</span>
+                <span class="ctx-prefs-row-sub" data-i18n="settings.nextPrompt.desc">
+                  默认关闭. 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿.</span>
+              </label>
+              <div class="ctx-prefs-row-ctl">
+                <label class="ctx-toggle" for="chk-next-prompt-enabled">
+                  <input id="chk-next-prompt-enabled" class="ctx-toggle-input" type="checkbox">
+                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                </label>
+              </div>
+            </div>
+
             <div class="ctx-prefs-row" id="row-turn-footer">
               <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-turn-footer" for="chk-show-turn-footer-stats">
                 <span class="ctx-prefs-row-title" data-i18n="settings.turnFooter.label">每轮回复尾部统计</span>
@@ -2026,7 +1944,126 @@
         <div id="dock-fallback-actions" class="dock-fallback-actions" hidden></div>
       </div>
 
-      <!-- 1. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
+      <!-- 1. 多账号管理、阈值自动切号与共享额度对照 (图1入口迁入设置专卡，保留原DOM ID与状态共享) -->
+      <div class="ctx-settings-card" id="settings-accounts-card">
+        <div id="quota-accounts-section" class="quota-accounts-section settings-accounts-embedded">
+          <div class="quota-subsec-header">
+            <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
+            <div class="quota-subsec-actions">
+              <button id="btn-acct-import-current" class="switch-pill-btn" type="button"
+                data-i18n="accounts.importCurrent">导入当前</button>
+              <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden
+                data-i18n="accounts.importTools">导入 Tools</button>
+              <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button" data-i18n="accounts.oauthAdd">+
+                登录添加</button>
+            </div>
+          </div>
+          <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
+          <div id="quota-accounts-list" class="quota-accounts-list"></div>
+
+          <!-- 阈值自动切号配置 -->
+          <div class="quota-subcard">
+            <div class="quota-subcard-row">
+              <label class="quota-switch-lbl">
+                <input id="chk-auto-switch-enabled" type="checkbox" />
+                <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号，默认关闭</span>
+              </label>
+              <span id="auto-switch-status-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
+            </div>
+            <div id="auto-switch-config-body" class="auto-switch-grid">
+              <div class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
+                <select id="sel-auto-switch-pool" class="quota-compact-select" aria-label="监控共享池"
+                  data-i18n-aria="accounts.poolLabel" style="display:none">
+                  <option value="shared_gemini_main">Gemini 4 (Neon / Hydrogen / Flash)</option>
+                  <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
+                  <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
+                  <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
+                </select>
+                <div id="sel-auto-switch-pool-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+                  <div id="sel-auto-switch-pool-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                    <span id="sel-auto-switch-pool-dropdown-label" class="ag-dropdown-label">Gemini 4 (Neon / Hydrogen /
+                      Flash)</span>
+                    <div class="ag-dropdown-arrow">
+                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 1l4 4 4-4" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div id="sel-auto-switch-pool-dropdown-menu" class="ag-dropdown-menu"></div>
+                </div>
+              </div>
+              <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
+                <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径"
+                  data-i18n-aria="accounts.metricLabel" style="display:none">
+                  <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
+                  <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
+                </select>
+                <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+                  <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                    <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label"
+                      data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</span>
+                    <div class="ag-dropdown-arrow">
+                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 1l4 4 4-4" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
+                </div>
+              </div>
+              <div class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
+                <select id="sel-auto-switch-window" class="quota-compact-select" aria-label="限额窗口"
+                  data-i18n-aria="accounts.windowLabel" style="display:none">
+                  <option value="primary" data-i18n="accounts.winPrimary">主窗口最紧缩</option>
+                  <option value="5h">5h</option>
+                  <option value="7d">7d</option>
+                </select>
+                <div id="sel-auto-switch-window-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+                  <div id="sel-auto-switch-window-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                    <span id="sel-auto-switch-window-dropdown-label" class="ag-dropdown-label"
+                      data-i18n="accounts.winPrimary">主窗口最紧缩</span>
+                    <div class="ag-dropdown-arrow">
+                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 1l4 4 4-4" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div id="sel-auto-switch-window-dropdown-menu" class="ag-dropdown-menu"></div>
+                </div>
+              </div>
+              <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
+                <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95"
+                  value="10" />
+              </label>
+              <div class="auto-switch-candidates-wrap">
+                <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
+                <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
+              </div>
+              <div class="auto-switch-save-row">
+                <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button"
+                  data-i18n="accounts.saveRule">保存切号规则</button>
+                <span id="auto-switch-last-note" class="quota-muted-note"></span>
+              </div>
+              <div id="auto-switch-save-status" class="quota-muted-note" role="status"></div>
+            </div>
+          </div>
+
+          <!-- 本机消耗与共享账号额度变化对照 -->
+          <div class="quota-subsec-header" style="margin-top:10px">
+            <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
+          </div>
+          <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px"
+            data-i18n="quota.compareDisclaimer">
+            按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
+          </div>
+          <div id="quota-compare-list" class="quota-compare-list"></div>
+        </div>
+      </div>
+
+      <!-- 2. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
       <div class="ctx-settings-card" id="enhance-preset-card">
         <div class="ctx-settings-card-hdr">
           <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
@@ -2531,6 +2568,22 @@
     </div>
   </div>
 </section>
+
+<!-- 移除账号二次确认模态弹窗（提升至 Shadow DOM 顶层，避免被隐藏或滚动面板裁切） -->
+<div id="account-remove-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
+  aria-labelledby="modal-account-remove-title">
+  <div class="ag-modal-card">
+    <div id="modal-account-remove-title" class="ag-modal-title" data-i18n="accounts.removeModal.title">移除账号</div>
+    <div id="modal-account-remove-text" class="ag-modal-body"></div>
+    <div id="modal-account-remove-feedback" class="ag-modal-feedback" hidden></div>
+    <div class="ag-modal-actions">
+      <button id="btn-modal-account-remove-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+        data-i18n="accounts.removeModal.cancel">取消</button>
+      <button id="btn-modal-account-remove-confirm" class="unlock-btn unlock-btn-danger" type="button"
+        data-i18n="accounts.removeModal.confirm">确认移除</button>
+    </div>
+  </div>
+</div>
 
 <!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
 <section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria">
@@ -3887,123 +3940,25 @@
     </div>
     <div id="quota-pools-list" class="quota-pools-list"></div>
 
-    <!-- 统一多账号切换、自动切号、共享额度对照(ELV-57)与缓存保活保障(ELV-52) -->
-    <div id="quota-accounts-section" class="quota-accounts-section">
-      <div class="quota-subsec-header">
+    <!-- 多账号与自动切号摘要直达入口（共用设置页账号状态与未保存草稿） -->
+    <div id="quota-accounts-entry-card" class="quota-subcard quota-accounts-entry-card">
+      <div class="quota-subcard-row">
         <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
-        <div class="quota-subsec-actions">
-          <button id="btn-acct-import-current" class="switch-pill-btn" type="button"
-            data-i18n="accounts.importCurrent">导入当前</button>
-          <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden
-            data-i18n="accounts.importTools">导入 Tools</button>
-          <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button" data-i18n="accounts.oauthAdd">+
-            登录添加</button>
-        </div>
+        <span id="quota-entry-autoswitch-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
       </div>
-      <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
-      <div id="quota-accounts-list" class="quota-accounts-list"></div>
+      <div id="quota-entry-active-account" class="quota-acct-meta"></div>
+      <div id="quota-entry-rule-summary" class="quota-muted-note"></div>
+      <div class="quota-subsec-actions" style="margin-top:4px">
+        <button id="btn-quota-open-accounts-settings" class="switch-pill-btn active" type="button"
+          data-i18n="accounts.manageBtn">在设置中管理账号与自动切号</button>
+        <button id="btn-quota-entry-refresh-accts" class="switch-pill-btn" type="button"
+          data-i18n="accounts.refreshEntry">刷新账号</button>
+      </div>
+    </div>
 
-      <!-- 阈值自动切号配置 -->
-      <div class="quota-subcard">
-        <div class="quota-subcard-row">
-          <label class="quota-switch-lbl">
-            <input id="chk-auto-switch-enabled" type="checkbox" />
-            <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号（默认关闭）</span>
-          </label>
-          <span id="auto-switch-status-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
-        </div>
-        <div id="auto-switch-config-body" class="auto-switch-grid">
-          <div class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
-            <select id="sel-auto-switch-pool" class="quota-compact-select" aria-label="监控共享池"
-              data-i18n-aria="accounts.poolLabel" style="display:none">
-              <option value="shared_gemini_main">Gemini 4 (Neon / Hydrogen / Flash)</option>
-              <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
-              <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
-              <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
-            </select>
-            <div id="sel-auto-switch-pool-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-              <div id="sel-auto-switch-pool-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                <span id="sel-auto-switch-pool-dropdown-label" class="ag-dropdown-label">Gemini 4 (Neon / Hydrogen /
-                  Flash)</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1 1l4 4 4-4" />
-                  </svg>
-                </div>
-              </div>
-              <div id="sel-auto-switch-pool-dropdown-menu" class="ag-dropdown-menu"></div>
-            </div>
-          </div>
-          <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
-            <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径"
-              data-i18n-aria="accounts.metricLabel" style="display:none">
-              <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
-              <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
-            </select>
-            <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-              <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label"
-                  data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1 1l4 4 4-4" />
-                  </svg>
-                </div>
-              </div>
-              <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
-            </div>
-          </div>
-          <div class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
-            <select id="sel-auto-switch-window" class="quota-compact-select" aria-label="限额窗口"
-              data-i18n-aria="accounts.windowLabel" style="display:none">
-              <option value="primary" data-i18n="accounts.winPrimary">主窗口（最紧缩）</option>
-              <option value="5h">5h</option>
-              <option value="7d">7d</option>
-            </select>
-            <div id="sel-auto-switch-window-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-              <div id="sel-auto-switch-window-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                <span id="sel-auto-switch-window-dropdown-label" class="ag-dropdown-label"
-                  data-i18n="accounts.winPrimary">主窗口（最紧缩）</span>
-                <div class="ag-dropdown-arrow">
-                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1 1l4 4 4-4" />
-                  </svg>
-                </div>
-              </div>
-              <div id="sel-auto-switch-window-dropdown-menu" class="ag-dropdown-menu"></div>
-            </div>
-          </div>
-          <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
-            <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95"
-              value="10" />
-          </label>
-          <div class="auto-switch-candidates-wrap">
-            <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
-            <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
-          </div>
-          <div class="auto-switch-save-row">
-            <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button"
-              data-i18n="accounts.saveRule">保存切号规则</button>
-            <span id="auto-switch-last-note" class="quota-muted-note"></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 本机消耗与共享账号额度变化对照 -->
-      <div class="quota-subsec-header" style="margin-top:10px">
-        <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
-      </div>
-      <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px"
-        data-i18n="quota.compareDisclaimer">
-        按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
-      </div>
-      <div id="quota-compare-list" class="quota-compare-list"></div>
-
-      <!-- 模型 Prompt Cache 保活协议与保障 -->
-      <div class="quota-subsec-header" style="margin-top:10px">
+    <!-- 模型 Prompt Cache 保活协议与保障（保留在额度面板内作为诊断信息） -->
+    <div id="quota-keepalive-section" class="quota-accounts-section">
+      <div class="quota-subsec-header">
         <span class="quota-subsec-title" data-i18n="keepalive.title">🧊 模型缓存保活状态与协议核查</span>
         <span id="keepalive-status-pill" class="key-pill pill-muted" data-i18n="accounts.keepaliveOff">默认关闭</span>
       </div>
@@ -4018,26 +3973,10 @@
       </div>
     </div>
   </div>
-
-  <!-- 移除账号二次确认模态弹窗（移除插件凭证与切号候选，保留历史本地用量与归属） -->
-  <div id="account-remove-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
-    aria-labelledby="modal-account-remove-title">
-    <div class="ag-modal-card">
-      <div id="modal-account-remove-title" class="ag-modal-title" data-i18n="accounts.removeModal.title">移除账号</div>
-      <div id="modal-account-remove-text" class="ag-modal-body"></div>
-      <div id="modal-account-remove-feedback" class="ag-modal-feedback" hidden></div>
-      <div class="ag-modal-actions">
-        <button id="btn-modal-account-remove-cancel" class="unlock-btn unlock-btn-secondary" type="button"
-          data-i18n="accounts.removeModal.cancel">取消</button>
-        <button id="btn-modal-account-remove-confirm" class="unlock-btn unlock-btn-danger" type="button"
-          data-i18n="accounts.removeModal.confirm">确认移除</button>
-      </div>
-    </div>
-  </div>
 </section>
 
 <!-- 输入栏紧凑状态条 (Composer Status Bar) 与 5 行悬停/固定详情卡 -->
-<div id="composer-status-bar" class="composer-status-bar" data-dock="composer">
+<div id="composer-status-bar" class="composer-status-bar" data-dock="composer" hidden>
   <!-- 组 0: 会话 4 态实时运行状态点（悬停预览，点击固定详情卡） -->
   <button id="csb-group-status" class="csb-pill csb-runtime-pill" type="button" aria-haspopup="dialog"
     aria-expanded="false" data-runtime-state="idle" data-tooltip="当前会话运行状态">

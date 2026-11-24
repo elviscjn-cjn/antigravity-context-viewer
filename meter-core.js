@@ -724,7 +724,7 @@
       tps = Number((output / duration).toFixed(1));
     }
     let streamingTps = null;
-    if (output && streamingSec && streamingSec >= 0.05) {
+    if (output && streamingSec && streamingSec > 0) {
       streamingTps = Number((output / streamingSec).toFixed(1));
     }
     const isSettledStream = Boolean(output && streamingSec !== null && (
@@ -3445,6 +3445,61 @@
   }
 
   /**
+   * 统一解析请求模型标识：支持字符串或对象入参、解析 MODEL_PLACEHOLDER_* 占位符并保留原始值以供回退对比
+   */
+  function resolveRequestedModelDisplay(rawRequested, cascadeModelConfigs = [], availableModels = null) {
+    let rawStr = '';
+    if (typeof rawRequested === 'string') {
+      rawStr = rawRequested.trim();
+    } else if (rawRequested && typeof rawRequested === 'object') {
+      rawStr = String(
+        rawRequested.model
+        || rawRequested.alias
+        || rawRequested.modelOrAlias?.model
+        || rawRequested.modelOrAlias?.alias
+        || rawRequested.choice?.value
+        || rawRequested.modelId
+        || ''
+      ).trim();
+    }
+    if (!rawStr || /^unknown$/i.test(rawStr) || rawStr === 'unattributed') {
+      return { text: null, rawId: null, stableId: null, effort: null, isPlaceholder: false, isResolved: false };
+    }
+    const phInfo = resolvePlaceholderModelInfo(rawStr, cascadeModelConfigs, availableModels);
+    const low = rawStr.toLowerCase();
+    const strippedLow = low.replace(/^model_/, '');
+    const fbLabel = MODEL_USAGE_ID_FALLBACK_LABELS[low] || MODEL_USAGE_ID_FALLBACK_LABELS[strippedLow] || null;
+    const effortText = phInfo.effort ? formatEffortLabel(phInfo.effort, 'en') : '';
+    const baseDisplay = phInfo.displayName || '';
+    let resolvedLabel = '';
+    if (baseDisplay) {
+      resolvedLabel = effortText && !baseDisplay.toLowerCase().includes(effortText.toLowerCase())
+        ? `${baseDisplay} ${effortText}`
+        : baseDisplay;
+    } else if (fbLabel) {
+      resolvedLabel = fbLabel.replace(/\s*\((High|Medium|Low|XHigh|Max|Extra High|Minimal)\)$/i, ' $1');
+    } else if (phInfo.isPlaceholder && phInfo.stableModelId && !/^model_placeholder_/i.test(phInfo.stableModelId)) {
+      resolvedLabel = phInfo.stableModelId;
+    } else if (!phInfo.isPlaceholder && /^MODEL_/i.test(rawStr)) {
+      resolvedLabel = normalizeModelId(rawStr) || rawStr;
+    } else {
+      resolvedLabel = rawStr;
+    }
+    const stableId = (phInfo.stableModelId && !/^model_placeholder_/i.test(phInfo.stableModelId))
+      ? phInfo.stableModelId
+      : (normalizeModelId(resolvedLabel) || normalizeModelId(rawStr) || null);
+    const isResolved = Boolean(!phInfo.isPlaceholder || phInfo.isMapped || fbLabel);
+    return {
+      text: resolvedLabel || rawStr,
+      rawId: rawStr,
+      stableId,
+      effort: phInfo.effort || null,
+      isPlaceholder: phInfo.isPlaceholder,
+      isResolved
+    };
+  }
+
+  /**
    * 档位展示映射：默认/英文返回标准英文名（如 Extra High），中文面板按繁简返回对照标签
    * @param {string} effort 原始力度值
    * @param {string} [lang='en'] 语言代码（'en' | 'zh-CN' | 'zh-TW'）
@@ -3569,6 +3624,115 @@
     if (!Number.isFinite(out) || out <= 0) return false;
     if (!Number.isFinite(dur) || dur <= 0) return false;
     return true;
+  }
+
+  /**
+   * 逐条请求速率统一口径：保留原始小数耗时精度，解除 < 0.2s 有效流式样本限制，并标明不可计算原因
+   */
+  function resolveRequestRowSpeed(rec) {
+    if (!rec || typeof rec !== 'object') {
+      return { calculable: false, speed: null, rawSpeed: null, source: 'unavailable', reasonCode: 'missing_record', isShortStream: false };
+    }
+    const outp = Math.max(0, Number(rec.outputTokens ?? 0) || 0);
+    const isStreaming = rec.status === 'streaming' || String(rec.outcomeStatus || '').toLowerCase() === 'streaming';
+    const sSecRaw = rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) ? Number(rec.streamingSec) : null;
+    const durRaw = rec.durationSec != null && Number.isFinite(Number(rec.durationSec)) && Number(rec.durationSec) > 0 ? Number(rec.durationSec) : null;
+    const ttftRaw = rec.ttftSec != null && Number.isFinite(Number(rec.ttftSec)) && Number(rec.ttftSec) >= 0 ? Number(rec.ttftSec) : null;
+    const sTpsRaw = rec.streamingTps != null && Number.isFinite(Number(rec.streamingTps)) && Number(rec.streamingTps) > 0 ? Number(rec.streamingTps) : null;
+    const tpsRaw = rec.tps != null && Number.isFinite(Number(rec.tps)) && Number(rec.tps) > 0 ? Number(rec.tps) : null;
+
+    if (outp <= 0) {
+      return {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        source: isStreaming ? 'waiting' : 'unavailable',
+        reasonCode: isStreaming ? 'awaiting_first_token' : 'no_output_tokens',
+        isShortStream: false,
+        streamingSec: sSecRaw,
+        durationSec: durRaw
+      };
+    }
+
+    if (sTpsRaw !== null && !(sSecRaw !== null && sSecRaw <= 0)) {
+      const exactRaw = (sSecRaw !== null && sSecRaw > 0) ? (outp / sSecRaw) : sTpsRaw;
+      const calcVal = (sSecRaw !== null && sSecRaw > 0) ? exactRaw : sTpsRaw;
+      return {
+        calculable: true,
+        speed: Number(calcVal.toFixed(1)),
+        rawSpeed: calcVal,
+        source: 'streaming',
+        reasonCode: null,
+        isShortStream: sSecRaw !== null && sSecRaw < 0.2,
+        streamingSec: sSecRaw,
+        durationSec: durRaw
+      };
+    }
+
+    if (sSecRaw !== null && sSecRaw > 0) {
+      const calcRaw = outp / sSecRaw;
+      return {
+        calculable: true,
+        speed: Number(calcRaw.toFixed(1)),
+        rawSpeed: calcRaw,
+        source: 'streaming',
+        reasonCode: null,
+        isShortStream: sSecRaw < 0.2,
+        streamingSec: sSecRaw,
+        durationSec: durRaw
+      };
+    }
+
+    if ((sSecRaw !== null && sSecRaw <= 0) || (sSecRaw === null && ttftRaw !== null && durRaw !== null && durRaw <= ttftRaw)) {
+      return {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        source: 'unavailable',
+        reasonCode: 'non_streaming_final',
+        isShortStream: false,
+        streamingSec: sSecRaw,
+        durationSec: durRaw
+      };
+    }
+
+    if (durRaw === null || durRaw <= 0) {
+      return {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        source: 'unavailable',
+        reasonCode: 'missing_duration',
+        isShortStream: false,
+        streamingSec: sSecRaw,
+        durationSec: durRaw
+      };
+    }
+
+    if (!isStreaming && sSecRaw === null && tpsRaw !== null && outp >= 20) {
+      const calcOverall = durRaw > 0 ? (outp / durRaw) : tpsRaw;
+      return {
+        calculable: true,
+        speed: Number(calcOverall.toFixed(1)),
+        rawSpeed: calcOverall,
+        source: 'overall',
+        reasonCode: null,
+        isShortStream: false,
+        streamingSec: null,
+        durationSec: durRaw
+      };
+    }
+
+    return {
+      calculable: false,
+      speed: null,
+      rawSpeed: null,
+      source: 'unavailable',
+      reasonCode: 'missing_streaming_duration',
+      isShortStream: false,
+      streamingSec: sSecRaw,
+      durationSec: durRaw
+    };
   }
 
   /**
@@ -3913,6 +4077,35 @@
     return { rows, costUSD, savingsUSD, unpriced, savingsRatio: costUSD + savingsUSD > 0 ? savingsUSD / (costUSD + savingsUSD) : 0 };
   }
 
+  function summarizeSessionHybridCost(calls = []) {
+    let knownCostUSD = 0;
+    const residual = { inputTokens: 0, cacheTokens: 0, outputTokens: 0 };
+    let latestEstimateUSD = null;
+    const latest = calls[calls.length - 1];
+    for (const call of calls) {
+      if (!call) continue;
+      if (call.isPriced && Number.isFinite(call.costUSD) && call.costUSD >= 0) {
+        knownCostUSD += call.costUSD;
+        continue;
+      }
+      const usage = {
+        inputTokens: Math.max(0, Number(call.inputTokens) || 0),
+        cacheTokens: Math.max(0, Number(call.cacheTokens ?? call.cacheReadTokens) || 0),
+        outputTokens: Math.max(0, Number(call.outputTokens) || 0)
+      };
+      residual.inputTokens += usage.inputTokens;
+      residual.cacheTokens += usage.cacheTokens;
+      residual.outputTokens += usage.outputTokens;
+      if (call === latest && usage.inputTokens + usage.cacheTokens + usage.outputTokens > 0) {
+        latestEstimateUSD = calculateReferenceModelCost(usage, 'gemini-3.8-flash', { pricingDate: '2026-11-09' }).totalCostUSD;
+      }
+    }
+    const estimate = calculateReferenceModelCost(residual, 'gemini-3.8-flash', {
+      pricingDate: '2026-11-09', knownUsage: { costUSD: knownCostUSD }
+    }).hybrid;
+    return { ...estimate, latestEstimateUSD };
+  }
+
   function summarizeApiCost(requests = [], extraUnpricedCount = 0, extraUnpricedReasons = {}, extraUnpricedTokens = 0) {
     let pricedCostUSD = 0;
     let pricedTokens = 0;
@@ -4046,6 +4239,16 @@
     const model = cm.modelDisplayName || cm.responseModel || cm.model || row.model || row.modelId || '';
     const modelKey = normalizeModelId(model);
     const cascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
+    const availableModels = options.availableModels || options.userStatus?.availableModels || null;
+    const rawRequestedCandidate = row.requestedModel
+      ?? row.requested_model
+      ?? row.metadata?.requestedModel
+      ?? cm.requestedModel
+      ?? cm.chatStartMetadata?.requestedModel
+      ?? row.chatStartMetadata?.requestedModel
+      ?? cm.modelOrAlias
+      ?? ((row.chatModel && cm.model && (cm.responseModel || /^model_placeholder_/i.test(String(cm.model)))) ? cm.model : null);
+    const reqModelMeta = resolveRequestedModelDisplay(rawRequestedCandidate, cascadeConfigs, availableModels);
     const modelExactId = resolveStableModelId(row, cascadeConfigs) || resolveStableModelId(model, cascadeConfigs) || null;
     const modelLabelRaw = String(cm.modelDisplayName || row.modelLabel || model || modelExactId || '').trim();
     const productMeta = groupModelProduct({
@@ -4158,20 +4361,20 @@
 
     const speedFields = {};
     if (status === 'final' && !isEstimated && output > 0 && durationSecRaw !== null && durationSecRaw > 0) {
-      if (ttftSecRaw !== null) speedFields.ttftSec = Number(ttftSecRaw.toFixed(2));
-      if (streamingSecRaw !== null) speedFields.streamingSec = Number(streamingSecRaw.toFixed(2));
-      speedFields.durationSec = Number(durationSecRaw.toFixed(2));
+      if (ttftSecRaw !== null) speedFields.ttftSec = Number(ttftSecRaw.toFixed(4));
+      if (streamingSecRaw !== null) speedFields.streamingSec = Number(streamingSecRaw.toFixed(4));
+      speedFields.durationSec = Number(durationSecRaw.toFixed(4));
       speedFields.tps = (row.tps !== undefined && row.tps !== null && Number.isFinite(Number(row.tps)) && Number(row.tps) > 0)
         ? Number(Number(row.tps).toFixed(1))
         : Number((output / durationSecRaw).toFixed(1));
-      if (streamingSecRaw !== null && streamingSecRaw > 0.05) {
+      if (streamingSecRaw !== null && streamingSecRaw > 0) {
         speedFields.streamingTps = Number((output / streamingSecRaw).toFixed(1));
       }
       speedFields.origin = row.origin === 'speed-test' ? 'speed-test' : 'chat';
     } else {
-      if (ttftSecRaw !== null && ttftSecRaw >= 0) speedFields.ttftSec = Number(ttftSecRaw.toFixed(2));
-      if (streamingSecRaw !== null && streamingSecRaw >= 0) speedFields.streamingSec = Number(streamingSecRaw.toFixed(2));
-      if (durationSecRaw !== null && durationSecRaw > 0) speedFields.durationSec = Number(durationSecRaw.toFixed(2));
+      if (ttftSecRaw !== null && ttftSecRaw >= 0) speedFields.ttftSec = Number(ttftSecRaw.toFixed(4));
+      if (streamingSecRaw !== null && streamingSecRaw >= 0) speedFields.streamingSec = Number(streamingSecRaw.toFixed(4));
+      if (durationSecRaw !== null && durationSecRaw > 0) speedFields.durationSec = Number(durationSecRaw.toFixed(4));
     }
 
     let outcomeStatus = status === 'streaming' ? 'streaming' : 'success';
@@ -4189,6 +4392,8 @@
       source,
       cascadeId,
       stepIndex,
+      ...(reqModelMeta.text ? { requestedModel: reqModelMeta.text } : {}),
+      ...(reqModelMeta.rawId && reqModelMeta.rawId !== reqModelMeta.text ? { requestedModelRaw: reqModelMeta.rawId } : {}),
       model,
       modelKey,
       modelExactId: modelExactId || undefined,
@@ -7313,6 +7518,20 @@
       badgeText = '未知';
     }
 
+    const rawSorts = input.clientModelSorts || userStatusRoot?.cascadeModelConfigData?.clientModelSorts || [];
+    const clientModelSorts = sanitizeClientModelSorts(rawSorts);
+    const defaultOverrideModelConfig = input.defaultOverrideModelConfig
+      || userStatusRoot?.cascadeModelConfigData?.defaultOverrideModelConfig
+      || null;
+    const groupedModels = buildGroupedModelMenu({
+      cascadeModelConfigs: rawConfigs,
+      clientModelSorts,
+      defaultOverrideModelConfig,
+      planStatus,
+      pools,
+      nowMs
+    });
+
     return {
       schemaVersion: 1,
       syncState,
@@ -7348,8 +7567,403 @@
       planTierId: planStatus?.tierId || null,
       planTeamsTier: planStatus?.teamsTier || null,
       pools,
+      clientModelSorts,
+      groupedModels,
       basisNote: '仅依据宿主接口返回的剩余比例与重置时间展示，不凭空换算剩余 Token 数量。'
     };
+  }
+
+  const MENU_EFFORT_ORDER = ['Minimal', 'Low', 'Medium', 'High', 'Extra', 'XHigh', 'Extra High', 'Max'];
+
+  function sortEffortsCanonical(list = []) {
+    const uniq = [];
+    const seen = new Set();
+    for (const raw of list) {
+      const norm = normalizeEffortValue(raw);
+      if (!norm) continue;
+      const key = norm.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(norm);
+    }
+    uniq.sort((a, b) => {
+      const ia = MENU_EFFORT_ORDER.findIndex(x => x.toLowerCase() === a.toLowerCase());
+      const ib = MENU_EFFORT_ORDER.findIndex(x => x.toLowerCase() === b.toLowerCase());
+      if (ia >= 0 && ib >= 0) return ia - ib;
+      if (ia >= 0) return -1;
+      if (ib >= 0) return 1;
+      return a.localeCompare(b);
+    });
+    return uniq;
+  }
+
+  /**
+   * 规范化宿主下发的 clientModelSorts 结构
+   */
+  function sanitizeClientModelSorts(rawSorts) {
+    if (!Array.isArray(rawSorts)) return [];
+    const out = [];
+    for (const s of rawSorts) {
+      if (!s || typeof s !== 'object') continue;
+      const groups = Array.isArray(s.groups)
+        ? s.groups.map(g => ({
+          modelIds: Array.isArray(g?.modelIds) ? g.modelIds.map(x => String(x || '').trim()).filter(Boolean) : []
+        })).filter(g => g.modelIds.length > 0)
+        : [];
+      out.push({
+        name: typeof s.name === 'string' ? s.name.trim() : '',
+        displayName: typeof s.displayName === 'string' ? s.displayName.trim() : '',
+        groups
+      });
+    }
+    return out;
+  }
+
+  /**
+   * 判断配置项是否属于 Orchestrator 路由预设或角色配置
+   */
+  function isOrchestratorConfig(cfg) {
+    if (!cfg || typeof cfg !== 'object') return false;
+    const label = String(cfg.label || cfg.modelDisplayName || '').trim();
+    const id = String(cfg.modelId || cfg.model || cfg.modelOrAlias?.model || '').trim();
+    if (/^orchestrator\b/i.test(label) || /\borchestrator\b/i.test(id)) return true;
+    if (cfg.orchestratorRole || cfg.plannerModel || cfg.executorModel) return true;
+    return false;
+  }
+
+  /**
+   * 将宿主 clientModelConfigs 与 clientModelSorts 去重聚合为「模型 × 独立思考档位 + 单一 Orchestrator 入口」菜单模型
+   */
+  function buildGroupedModelMenu(input = {}) {
+    const rawConfigs = Array.isArray(input.cascadeModelConfigs) ? input.cascadeModelConfigs : [];
+    const cleanSorts = sanitizeClientModelSorts(input.clientModelSorts);
+    const planStatus = input.planStatus || null;
+    const pools = Array.isArray(input.pools) ? input.pools : [];
+
+    // 根据 clientModelSorts 建立宿主原始顺序权重映射（同一模型取最早出现的索引）
+    const sortRankByIdOrLabel = new Map();
+    let rankCounter = 0;
+    for (const s of cleanSorts) {
+      for (const grp of (s.groups || [])) {
+        for (const mId of (grp.modelIds || [])) {
+          const k = String(mId || '').trim().toLowerCase();
+          if (k && !sortRankByIdOrLabel.has(k)) {
+            sortRankByIdOrLabel.set(k, rankCounter++);
+          }
+        }
+      }
+    }
+
+    const baseProductMap = new Map();
+    const orchestratorConfigs = [];
+    const plannerItems = [];
+    const executorItems = [];
+    const seenPlannerIds = new Set();
+    const seenExecutorIds = new Set();
+
+    let seqIdx = 0;
+    for (const cfg of rawConfigs) {
+      if (!cfg || typeof cfg !== 'object') continue;
+      if (cfg.isHistorical === true || cfg.isInternal === true) continue;
+      const rawMId = String(cfg.modelId || cfg.model || '').trim();
+      const rawAlias = String(cfg.modelOrAlias?.model || '').trim();
+      const lowMId = rawMId.toLowerCase();
+      const lowAlias = rawAlias.toLowerCase();
+      if ((lowMId.startsWith('chat_') && /^chat_\d+$/.test(lowMId)) || (lowAlias.startsWith('chat_') && /^chat_\d+$/.test(lowAlias))) continue;
+      if (lowMId.startsWith('tab_') || lowAlias.startsWith('tab_')) continue;
+      if (/^gemini-2\.5-/i.test(lowMId) || /^gemini-2\.5-/i.test(lowAlias) || /^gemini\s*2\.5\b/i.test(String(cfg.label || ''))) continue;
+
+      const avail = classifyModelQuotaAvailability(cfg, planStatus);
+      const qi = cfg.quotaInfo || {};
+      const parsedFrac = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
+      const label = String(cfg.label || cfg.modelDisplayName || rawMId || rawAlias || '').trim();
+      const modelId = rawMId || rawAlias || label;
+
+      if (isOrchestratorConfig(cfg)) {
+        const subMatch = label.match(/^orchestrator\s*[（(]([^()（）]+)[)）]/i);
+        const targetName = subMatch ? subMatch[1].trim() : label;
+        const poolHit = pools.find(p => p.poolKey === getSharedQuotaGroupKey(cfg)) || null;
+        const variantObj = {
+          modelId,
+          alias: rawAlias || null,
+          label: label || modelId,
+          targetLabel: targetName || label,
+          unavailable: avail.unavailable,
+          unavailabilityReason: avail.reason || null,
+          noticeText: avail.noticeText || null,
+          isRecommended: cfg.isRecommended === true,
+          remainingFraction: avail.noPermission ? null : (parsedFrac.hasValue ? parsedFrac.fraction : (poolHit?.remainingFraction ?? null)),
+          percentText: avail.noPermission ? '无权限' : (parsedFrac.hasValue ? formatQuotaPercentText(parsedFrac.fraction) : (poolHit?.percentText || '—')),
+          plannerModel: cfg.plannerModel || null,
+          executorModel: cfg.executorModel || null
+        };
+        orchestratorConfigs.push(variantObj);
+
+        if (cfg.orchestratorRole === 'planner' && !seenPlannerIds.has(modelId.toLowerCase())) {
+          seenPlannerIds.add(modelId.toLowerCase());
+          plannerItems.push(variantObj);
+        } else if (cfg.orchestratorRole === 'executor' && !seenExecutorIds.has(modelId.toLowerCase())) {
+          seenExecutorIds.add(modelId.toLowerCase());
+          executorItems.push(variantObj);
+        }
+        continue;
+      }
+
+      const gInfo = groupModelProduct(cfg);
+      const pKey = gInfo.productKey;
+      const sortRank = Math.min(
+        sortRankByIdOrLabel.get(lowMId) ?? Infinity,
+        sortRankByIdOrLabel.get(lowAlias) ?? Infinity,
+        sortRankByIdOrLabel.get(label.toLowerCase()) ?? Infinity,
+        sortRankByIdOrLabel.get(gInfo.productLabel.toLowerCase()) ?? Infinity
+      );
+
+      let entry = baseProductMap.get(pKey);
+      if (!entry) {
+        entry = {
+          productKey: pKey,
+          productLabel: gInfo.productLabel,
+          vendor: gInfo.vendor,
+          poolKey: getSharedQuotaGroupKey(cfg),
+          variants: [],
+          _seqIdx: seqIdx++,
+          _sortRank: sortRank
+        };
+        baseProductMap.set(pKey, entry);
+      } else if (sortRank < entry._sortRank) {
+        entry._sortRank = sortRank;
+      }
+
+      const poolHit = pools.find(p => p.poolKey === entry.poolKey) || null;
+      entry.variants.push({
+        modelId,
+        alias: rawAlias || null,
+        label: label || gInfo.productLabel,
+        effort: gInfo.effort || null,
+        isRecommended: cfg.isRecommended === true,
+        unavailable: avail.unavailable,
+        unavailabilityReason: avail.reason || null,
+        noticeText: avail.noticeText || null,
+        supportsImages: typeof cfg.supportsImages === 'boolean' ? cfg.supportsImages : undefined,
+        remainingFraction: avail.noPermission ? null : (parsedFrac.hasValue ? parsedFrac.fraction : (poolHit?.remainingFraction ?? null)),
+        percentText: avail.noPermission ? '无权限' : (parsedFrac.hasValue ? formatQuotaPercentText(parsedFrac.fraction) : (poolHit?.percentText || '—'))
+      });
+    }
+
+    const baseModels = Array.from(baseProductMap.values())
+      .sort((a, b) => {
+        const ra = Number.isFinite(a._sortRank) ? a._sortRank : Infinity;
+        const rb = Number.isFinite(b._sortRank) ? b._sortRank : Infinity;
+        if (ra !== rb) return ra - rb;
+        return a._seqIdx - b._seqIdx;
+      })
+      .map(entry => {
+        const availableVariants = entry.variants.filter(v => !v.unavailable);
+        const allEffortsRaw = (availableVariants.length > 0 ? availableVariants : entry.variants)
+          .map(v => v.effort)
+          .filter(Boolean);
+        const supportedEfforts = sortEffortsCanonical(allEffortsRaw);
+        const isFixedEffort = supportedEfforts.length <= 1;
+        const fixedEffortLabel = supportedEfforts.length === 1 ? supportedEfforts[0] : null;
+        const defRes = resolveTargetVariantFromVariants(
+          entry.variants,
+          null,
+          input.defaultOverrideModelConfig
+        );
+        const firstNotice = entry.variants.find(v => v.noticeText)?.noticeText || null;
+        const firstUnavail = entry.variants.find(v => v.unavailabilityReason)?.unavailabilityReason || null;
+        const anyFrac = availableVariants.find(v => typeof v.remainingFraction === 'number') || entry.variants[0] || null;
+        return {
+          productKey: entry.productKey,
+          productLabel: entry.productLabel,
+          vendor: entry.vendor,
+          poolKey: entry.poolKey,
+          supportedEfforts,
+          isFixedEffort,
+          fixedEffortLabel,
+          defaultEffort: defRes?.effort || fixedEffortLabel || null,
+          defaultModelId: defRes?.modelId || entry.variants[0]?.modelId || null,
+          variants: entry.variants,
+          unavailable: availableVariants.length === 0,
+          unavailabilityReason: availableVariants.length === 0 ? (firstUnavail || '当前套餐无权访问该模型') : null,
+          noticeText: firstNotice,
+          remainingFraction: anyFrac?.remainingFraction ?? null,
+          percentText: anyFrac?.percentText || (availableVariants.length === 0 ? '无权限' : '—')
+        };
+      });
+
+    // 判断宿主是否支持独立 Planner / Executor 选择；默认只列出真实预设组合，不虚构支持独立调整档位
+    const hasExplicitRoleSplit = (
+      plannerItems.length > 0 && executorItems.length > 0
+    ) || Boolean(input.orchestratorRolesSupported === true);
+
+    const orchestrator = {
+      hasOrchestrator: orchestratorConfigs.length > 0 || hasExplicitRoleSplit,
+      supportsIndependentRoles: hasExplicitRoleSplit,
+      supportsEffortSelection: false,
+      planners: plannerItems,
+      executors: executorItems,
+      presets: orchestratorConfigs,
+      allUnavailable: orchestratorConfigs.length > 0 && orchestratorConfigs.every(p => p.unavailable)
+    };
+
+    return {
+      schemaVersion: 1,
+      baseModels,
+      orchestrator,
+      clientModelSorts: cleanSorts,
+      allConfigsCount: rawConfigs.length
+    };
+  }
+
+  function resolveTargetVariantFromVariants(variants = [], desiredEffort = null, defaultOverrideModelConfig = null) {
+    const avail = (variants || []).filter(v => v && !v.unavailable);
+    if (!avail.length) return null;
+
+    const normDesired = desiredEffort ? normalizeEffortValue(desiredEffort) : null;
+    if (normDesired) {
+      const exact = avail.find(v => v.effort && v.effort.toLowerCase() === normDesired.toLowerCase());
+      if (exact) return exact;
+      // 兼容 XHigh 与 Extra High 在跨系列间的平滑沿用
+      if (normDesired === 'XHigh' || normDesired === 'Extra High') {
+        const alt = avail.find(v => v.effort === 'Extra High' || v.effort === 'XHigh');
+        if (alt) return alt;
+      }
+    }
+
+    // 未能精确沿用：按宿主推荐/默认规则选取目标模型可用档位
+    const overrideId = String(defaultOverrideModelConfig?.modelOrAlias?.model || defaultOverrideModelConfig?.modelId || '').trim().toLowerCase();
+    if (overrideId) {
+      const byOverride = avail.find(v =>
+        String(v.modelId || '').toLowerCase() === overrideId
+        || String(v.alias || '').toLowerCase() === overrideId
+      );
+      if (byOverride) return byOverride;
+    }
+    const recommended = avail.find(v => v.isRecommended === true);
+    if (recommended) return recommended;
+
+    const hostFallbackOrder = ['Medium', 'High', 'Low', 'Extra High', 'XHigh', 'Extra', 'Minimal', 'Max'];
+    for (const candEffort of hostFallbackOrder) {
+      const hit = avail.find(v => v.effort && v.effort.toLowerCase() === candEffort.toLowerCase());
+      if (hit) return hit;
+    }
+    return avail[0];
+  }
+
+  /**
+   * 依据宿主规则为目标基础模型解析最佳思考档位与真实变体，返回是否沿用/回退以及是否落入高耗能档位
+   */
+  function resolveTargetModelAndEffort(groupedMenu, targetProductKey, desiredEffort = null, opts = {}) {
+    if (!groupedMenu || typeof groupedMenu !== 'object') {
+      return { ok: false, reason: 'missing_menu' };
+    }
+    const baseModels = Array.isArray(groupedMenu.baseModels) ? groupedMenu.baseModels : [];
+    const targetModel = baseModels.find(m => m.productKey === targetProductKey || m.productLabel === targetProductKey) || null;
+    if (!targetModel) {
+      // 检查是否匹配 Orchestrator 预设
+      const orchPresets = groupedMenu.orchestrator?.presets || [];
+      const orchHit = orchPresets.find(p => p.modelId === targetProductKey || p.label === targetProductKey || p.targetLabel === targetProductKey);
+      if (orchHit) {
+        if (orchHit.unavailable) {
+          return { ok: false, reason: orchHit.unavailabilityReason || 'unavailable', unavailable: true };
+        }
+        return {
+          ok: true,
+          isOrchestrator: true,
+          productKey: 'orchestrator',
+          productLabel: orchHit.label,
+          variant: orchHit,
+          modelId: orchHit.modelId,
+          effort: null,
+          isFixedEffort: true,
+          fallbackApplied: false,
+          highFallbackWarning: false
+        };
+      }
+      return { ok: false, reason: 'model_not_found' };
+    }
+
+    if (targetModel.unavailable) {
+      return {
+        ok: false,
+        reason: targetModel.unavailabilityReason || '当前套餐无权访问该模型',
+        unavailable: true,
+        targetModel
+      };
+    }
+
+    const normDesired = desiredEffort ? normalizeEffortValue(desiredEffort) : null;
+    const chosen = resolveTargetVariantFromVariants(
+      targetModel.variants,
+      normDesired,
+      opts.defaultOverrideModelConfig || null
+    );
+    if (!chosen) {
+      return { ok: false, reason: 'no_available_variant', unavailable: true, targetModel };
+    }
+
+    const actualEffort = chosen.effort || null;
+    const reusedCompat = Boolean(
+      normDesired &&
+      actualEffort &&
+      (actualEffort.toLowerCase() === normDesired.toLowerCase()
+        || ((normDesired === 'XHigh' || normDesired === 'Extra High') && (actualEffort === 'XHigh' || actualEffort === 'Extra High')))
+    );
+    const fallbackApplied = Boolean(normDesired && !reusedCompat);
+    const highFallbackWarning = Boolean(
+      fallbackApplied && actualEffort && /^(High|Extra High|XHigh|Extra|Max)$/i.test(actualEffort)
+    );
+
+    return {
+      ok: true,
+      isOrchestrator: false,
+      productKey: targetModel.productKey,
+      productLabel: targetModel.productLabel,
+      variant: chosen,
+      modelId: chosen.modelId,
+      effort: actualEffort,
+      supportedEfforts: targetModel.supportedEfforts || [],
+      isFixedEffort: Boolean(targetModel.isFixedEffort),
+      fallbackApplied,
+      fallbackFrom: fallbackApplied ? normDesired : null,
+      fallbackTo: fallbackApplied ? actualEffort : null,
+      highFallbackWarning
+    };
+  }
+
+  /**
+   * 将简化选择器目标变体与宿主原生下拉行文本精确对齐，防止基础模型与 Orchestrator 混串
+   */
+  function matchHostMenuOptionText(candidateText, targetVariant, targetProductLabel = '') {
+    const cleanCand = String(candidateText || '').replace(/\s+/g, ' ').trim();
+    if (!cleanCand || !targetVariant) return false;
+    const targetLabel = String(targetVariant.label || '').replace(/\s+/g, ' ').trim();
+    const targetProd = String(targetProductLabel || '').replace(/\s+/g, ' ').trim();
+    const targetEff = targetVariant.effort ? normalizeEffortValue(targetVariant.effort) : null;
+    const isTargetOrch = /^orchestrator\b/i.test(targetLabel);
+    const isCandOrch = /^orchestrator\b/i.test(cleanCand);
+    if (isTargetOrch !== isCandOrch) return false;
+
+    const stripDecor = (s) => s
+      .replace(/\s+(?:new|beta|preview|recommended|unavailable)\b.*$/i, '')
+      .replace(/[()（）]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+
+    const candCore = stripDecor(cleanCand);
+    const lblCore = stripDecor(targetLabel);
+    if (lblCore && candCore === lblCore) return true;
+    if (targetProd && targetEff) {
+      const joinedCore = stripDecor(`${targetProd} ${targetEff}`);
+      if (candCore === joinedCore) return true;
+      if (targetEff === 'Extra High' && candCore === stripDecor(`${targetProd} XHigh`)) return true;
+      if (targetEff === 'XHigh' && candCore === stripDecor(`${targetProd} Extra High`)) return true;
+    } else if (targetProd && candCore === stripDecor(targetProd)) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -8807,6 +9421,7 @@
 
     const availableModels = options.availableModels || options.userStatus?.availableModels || null;
     const phInfo = resolvePlaceholderModelInfo(raw, cascadeConfigs, availableModels);
+    const reqModelMeta = resolveRequestedModelDisplay(raw.requestedModel || raw.requestedModelRaw || raw.chatModel?.requestedModel || null, cascadeConfigs, availableModels);
     const bucket = resolveModelUsageBucket(raw, cascadeConfigs);
     const modelExactId = raw.modelExactId || resolveStableModelId(raw, cascadeConfigs) || null;
     const rawCandidateLabel = raw.modelLabel
@@ -8838,16 +9453,16 @@
     }
 
     const ttftSec = raw.ttftSec !== undefined && raw.ttftSec !== null && Number.isFinite(Number(raw.ttftSec))
-      ? Number(Number(raw.ttftSec).toFixed(2))
+      ? Number(Number(raw.ttftSec).toFixed(4))
       : null;
     const streamingSec = raw.streamingSec !== undefined && raw.streamingSec !== null && Number.isFinite(Number(raw.streamingSec))
-      ? Number(Number(raw.streamingSec).toFixed(2))
+      ? Number(Number(raw.streamingSec).toFixed(4))
       : null;
     let durationSec = raw.durationSec !== undefined && raw.durationSec !== null && Number.isFinite(Number(raw.durationSec))
-      ? Number(Number(raw.durationSec).toFixed(2))
+      ? Number(Number(raw.durationSec).toFixed(4))
       : null;
     if (durationSec === null && (ttftSec !== null || streamingSec !== null)) {
-      durationSec = Number(((ttftSec || 0) + (streamingSec || 0)).toFixed(2));
+      durationSec = Number(((ttftSec || 0) + (streamingSec || 0)).toFixed(4));
     }
     const outNum = cacheStats.output ?? 0;
     let tps = raw.tps !== undefined && raw.tps !== null && Number.isFinite(Number(raw.tps)) && Number(raw.tps) > 0
@@ -8859,7 +9474,7 @@
     let streamingTps = raw.streamingTps !== undefined && raw.streamingTps !== null && Number.isFinite(Number(raw.streamingTps)) && Number(raw.streamingTps) > 0
       ? Number(Number(raw.streamingTps).toFixed(1))
       : null;
-    if (streamingTps === null && outNum > 0 && streamingSec !== null && streamingSec > 0.05) {
+    if (streamingTps === null && outNum > 0 && streamingSec !== null && streamingSec > 0) {
       streamingTps = Number((outNum / streamingSec).toFixed(1));
     }
 
@@ -8922,6 +9537,8 @@
       attributionConfidence,
       source: raw.source || 'desktop',
       stepIndex,
+      ...(reqModelMeta.text ? { requestedModel: reqModelMeta.text } : {}),
+      ...((reqModelMeta.rawId || raw.requestedModelRaw) ? { requestedModelRaw: reqModelMeta.rawId || raw.requestedModelRaw } : {}),
       model: raw.model || modelLabel || phInfo.rawPlaceholderId || modelExactId || '',
       modelKey: raw.modelKey || (bucket.isAttributed ? bucket.modelKey : null),
       rawModelId: raw.rawModelId || phInfo.rawId || null,
@@ -11058,7 +11675,7 @@
       : ((input.streamingTps !== undefined && input.streamingTps !== null && Number.isFinite(Number(input.streamingTps)) && Number(input.streamingTps) > 0)
         ? Number(Number(input.streamingTps).toFixed(1))
         : null);
-    if (streamSpeed === null && outputTokens !== null && outputTokens > 0 && streamingSec !== null && streamingSec >= 0.05) {
+    if (streamSpeed === null && outputTokens !== null && outputTokens > 0 && streamingSec !== null && streamingSec > 0) {
       streamSpeed = Number((outputTokens / streamingSec).toFixed(1));
     }
 
@@ -11077,12 +11694,43 @@
     let phase = input.phase || '';
     if (!phase) {
       if (outcome === 'remote_unavailable' || (input.isRemote === true && ttftSec === null && totalDurationSec === null && streamSpeed === null && !(outputTokens > 0))) phase = 'remote_unavailable';
+      else if (outcome === 'queued') phase = 'queued';
       else if (outcome === 'canceled') phase = 'canceled';
       else if (['failed', 'exceeded', 'network', 'quota_exhausted', 'rate_limited', 'auth_error', 'service_unavailable'].includes(outcome) || input.error) phase = 'failed';
       else if (outcome === 'waiting' || (elapsedSec !== null && ttftSec === null && !outputTokens)) phase = 'waiting';
       else if (outcome === 'streaming') phase = 'streaming';
       else if (ttftSec !== null || totalDurationSec !== null || streamSpeed !== null || (outputTokens !== null && outputTokens > 0)) phase = 'final';
       else phase = 'idle';
+    }
+
+    // 队列等待态：前序生成尚未结束，不计入 TTFT 首字等待时钟
+    if (phase === 'queued') {
+      return {
+        phase: 'queued',
+        scoreRuleVersion: ELV91_SCORE_RULE_VERSION,
+        badge: {
+          text: isEn ? 'Queued' : (isTw ? '排隊中' : '排队中'),
+          color: '#9CA3AF',
+          severity: 'neutral',
+          glyph: '⏳'
+        },
+        shortTitle: isEn ? 'Queued' : (isTw ? '排隊中' : '排队中'),
+        comment: isEn
+          ? 'Message queued behind active turn; TTFT clock will start only after dispatch.'
+          : (isTw ? '訊息排隊等待前序生成結束，尚未計入首字延遲.' : '消息排队等待前序生成结束，尚未计入首字延迟.'),
+        subLabel: isEn ? 'Queued before dispatch' : (isTw ? '排隊等待調度' : '排队等待调度'),
+        elapsedFormatted: '—',
+        ttftFormatted: '—',
+        durationFormatted: '—',
+        ttftRatioPct: null,
+        streamSpeed: null,
+        overallTps: null,
+        ttftTier: null,
+        speedTier: null,
+        durationTier: null,
+        stability: computeStreamStability({}),
+        efficiency: { available: false, skippedReason: 'queued', score: null, grade: null, tier: null, ruleVersion: ELV91_SCORE_RULE_VERSION }
+      };
     }
 
     // 远程/云端对话且本地无轨迹数据（Issue #56）
@@ -11412,6 +12060,101 @@
     };
   }
 
+  /**
+   * 规范化语义版本号用于严格相等判定
+   * @param {string|null|undefined} rawVer
+   * @returns {string}
+   */
+  function normalizeStrictVersion(rawVer) {
+    return String(rawVer || '').trim().replace(/^v/i, '').toLowerCase();
+  }
+
+  /**
+   * 计算更新流程的严格阶段状态，确保仅在已下载、待重启与新版已生效三态间精确流转
+   * @param {Object} input
+   * @returns {Object}
+   */
+  function computeStrictUpdateState(input = {}) {
+    const src = input && typeof input === 'object' ? input : {};
+    const hasBridge = src.hasBridge !== false;
+    const rendererVersion = String(src.rendererVersion || '').trim();
+    const observedBackendVersion = String(src.backendVersion || src.liveHostVersion || src.ipcBackendVersion || '').trim();
+    const normRenderer = normalizeStrictVersion(rendererVersion);
+    const normBackend = normalizeStrictVersion(observedBackendVersion);
+    const applyRes = src.applyResult && typeof src.applyResult === 'object' ? src.applyResult : null;
+    const checkRes = src.checkResult && typeof src.checkResult === 'object' ? src.checkResult : null;
+    const targetRaw = src.targetVersion || applyRes?.targetVersion || applyRes?.version || applyRes?.stagedVersion || checkRes?.latestVersion || null;
+    const targetVersion = targetRaw ? String(targetRaw).trim() : null;
+    const normTarget = normalizeStrictVersion(targetVersion);
+    const actionPhase = String(src.actionPhase || 'idle').trim();
+    const backendMismatch = Boolean(
+      src.backendVersionMismatch ||
+      (normRenderer && normBackend && normRenderer !== normBackend)
+    );
+    const pendingRestart = Boolean(src.pendingUpdateRestart);
+    const lastError = src.lastError || (applyRes?.ok === false ? applyRes.error : null) || (checkRes?.ok === false ? checkRes.error : null) || null;
+
+    let stage = 'idle';
+    if (!hasBridge) {
+      stage = 'unavailable';
+    } else if (actionPhase === 'checking') {
+      stage = 'checking';
+    } else if (actionPhase === 'downloading' || actionPhase === 'applying') {
+      stage = 'downloading';
+    } else if (actionPhase === 'error' || (applyRes && applyRes.ok === false) || (checkRes && checkRes.ok === false)) {
+      stage = 'error';
+    } else if (applyRes && applyRes.ok === true) {
+      const isLiveStagedOnly = Boolean(
+        (applyRes.liveStaged === true || applyRes.diskInstalled === false || applyRes.mode === 'live') &&
+        !applyRes.liveInjected
+      );
+      if (isLiveStagedOnly) {
+        stage = 'downloaded';
+      } else {
+        const appliedTarget = normTarget || normalizeStrictVersion(applyRes.version || applyRes.installedVersion);
+        const rendererAligned = Boolean(appliedTarget && normRenderer && normRenderer === appliedTarget);
+        const backendAligned = Boolean(
+          (appliedTarget && normBackend && normBackend === appliedTarget && !backendMismatch) ||
+          (applyRes.liveInjected && applyRes.backendHotReloaded && rendererAligned && !backendMismatch)
+        );
+        stage = (rendererAligned && backendAligned && !pendingRestart) ? 'active' : 'pending_restart';
+      }
+    } else if (normTarget && src.updateActivatedTarget) {
+      const targetAligned = Boolean(normRenderer === normTarget && normBackend === normTarget && !backendMismatch && !pendingRestart);
+      if (checkRes?.livePendingReload && !targetAligned) {
+        stage = 'downloaded';
+      } else {
+        stage = targetAligned ? 'active' : 'pending_restart';
+      }
+    } else if (checkRes && checkRes.ok === true) {
+      if (checkRes.hasUpdate && checkRes.latestVersion) {
+        stage = 'available';
+      } else if (checkRes.livePendingReload) {
+        stage = 'downloaded';
+      } else if (checkRes.diskPendingRestart || pendingRestart) {
+        stage = 'pending_restart';
+      } else {
+        stage = 'latest';
+      }
+    } else if (pendingRestart) {
+      stage = 'pending_restart';
+    }
+
+    return {
+      stage,
+      hasBridge,
+      rendererVersion: rendererVersion || null,
+      backendVersion: observedBackendVersion || null,
+      backendSource: src.backendSource || null,
+      backendMismatch,
+      pendingRestart,
+      targetVersion,
+      downloaded: stage === 'downloaded' || Boolean(applyRes?.ok && (applyRes.downloaded || applyRes.liveStaged || applyRes.diskInstalled)),
+      activeConfirmed: stage === 'active',
+      error: lastError ? String(lastError) : null
+    };
+  }
+
   const api = {
     summarize,
     classifyRequestError,
@@ -11427,6 +12170,11 @@
     selectPrimaryQuotaBucket,
     resolveQuotaWindowBucketPair,
     buildModelQuotaSnapshot,
+    sanitizeClientModelSorts,
+    isOrchestratorConfig,
+    buildGroupedModelMenu,
+    resolveTargetModelAndEffort,
+    matchHostMenuOptionText,
     splitModelDisplayAndEffort,
     resolvePlaceholderModelInfo,
     formatApproxTokensShort,
@@ -11477,6 +12225,7 @@
     CURRENCY_SYMBOLS,
     normalizeModelId,
     resolveStableModelId,
+    resolveRequestedModelDisplay,
     UNATTRIBUTED_MODEL_KEY,
     lookupModelDisplayLabel,
     resolveModelUsageBucket,
@@ -11508,6 +12257,7 @@
     groupModelProduct,
     formatTokensK,
     isValidSpeedSample,
+    resolveRequestRowSpeed,
     summarizeSessionSpeed,
     computeMedian,
     summarizeSpeedByModel,
@@ -11515,6 +12265,7 @@
     MAX_SPEED_SAMPLES_PER_MODEL,
     calculateRequestApiCost,
     summarizeSessionRequestCosts,
+    summarizeSessionHybridCost,
     summarizeApiCost,
     calculateReferenceModelCost,
     resolveEffectivePlanStatus,
@@ -11543,7 +12294,9 @@
     compareVersions,
     filterReleases,
     findReleaseAsset,
-    isValidExternalUrl
+    isValidExternalUrl,
+    normalizeStrictVersion,
+    computeStrictUpdateState
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.__AGContextMeterCore = api;

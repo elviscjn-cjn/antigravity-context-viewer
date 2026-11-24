@@ -2,6 +2,13 @@
 
 [简体中文](#简体中文) · [English](#english)
 
+## 待发布 / Unreleased
+
+- [@Evander-8](https://github.com/Evander-8) · 定位额度面板异步刷新和更新重载后的滚动跳顶，以及 Antigravity 2.34.0 切号时需要重启客户端才能重新下发凭据。候选版采用了滚动位置恢复和切号重启确认。 [PR #83](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/83) · [PR #96](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/96)
+- [@zhao33079-zhao](https://github.com/zhao33079-zhao) · 定位输入框状态条的隐藏规则和挂载时序问题。 [Issue #101](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/101)
+- [@IpiggyI](https://github.com/IpiggyI) · 定位径向菜单顶层容器覆盖 Windows 原生拖动区域，并给出最小修复方案。 [Issue #106](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/106)
+- [@jzPPP3333](https://github.com/jzPPP3333) · 定位额度圆环右键与宿主菜单冲突，提出左右键分工及对应回归。 [Issue #107](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/107)
+
 ## v0.9.2
 
 - [@ltppp](https://github.com/ltppp) · 提供 Token 历史、汉化监听和面板重绘的排查及优化方案. 本版补齐按账号识别历史更新，以及隐藏视图的重绘门禁. [PR #90](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/90)

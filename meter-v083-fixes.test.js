@@ -307,6 +307,8 @@ test('0.8.3 修复验证 3: 居中统一模态重启弹窗、立即可见、绝�
   const btnModalCancel = h.elements.get('btn-modal-restart-cancel');
   const btnModalConfirm = h.elements.get('btn-modal-restart-confirm');
   assert.ok(modal && btnModalCancel && btnModalConfirm, '必须具备全局统一模态重启弹窗');
+  modal.showModal = () => { modal.open = true; };
+  modal.close = () => { modal.open = false; };
 
   // 模拟用户在模型设置中有未保存的脏草稿
   h.api.switchContextTabForTest('models');
@@ -324,10 +326,12 @@ test('0.8.3 修复验证 3: 居中统一模态重启弹窗、立即可见、绝�
 
   // 弹窗必须立即可见，无论滚动到哪里
   assert.equal(modal.hidden, false, '模态居中弹窗必须展开且可见');
+  assert.equal(modal.open, true, '重启确认应通过原生 dialog 进入顶层');
 
   // 1. 点击取消 -> 弹窗隐藏，绝不触发重启
   btnModalCancel.click();
   assert.equal(modal.hidden, true, '点击取消后弹窗必须关闭');
+  assert.equal(modal.open, false, '取消应退出原生模态层');
   assert.equal(h.getRestartCalled(), false, '取消不得触发重启');
   assert.equal(draftSaved, false, '取消绝不得顺带保存草稿');
 
@@ -1384,7 +1388,7 @@ test('冷启动与连续5次会话切换性能隔离：切路由不强刷全量�
       replaceChildren() { this.children = []; },
       querySelector() { return null; },
       querySelectorAll() { return []; },
-      click() { listeners.get(el)?.get('click')?.({ preventDefault() {}, stopPropagation() {} }); },
+      click() { listeners.get(el)?.get('click')?.({ detail: 0, preventDefault() {}, stopPropagation() {} }); },
       getBoundingClientRect() { return { top: 8, left: 600, right: 680, bottom: 32, width: 80, height: 24 }; }
     };
     return el;

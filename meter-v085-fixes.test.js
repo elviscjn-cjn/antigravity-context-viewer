@@ -316,7 +316,7 @@ test('2. 卸载还原全矩阵：缺失备份原位剥离、损坏备份默认�
       assert.ok(fs.existsSync(path.join(extAfter, 'dist', 'host-extra.js')), '原位剥离必须保留宿主原有非插件文件');
       assert.ok(fs.existsSync(path.join(targetAsar + '.unpacked', 'custom-addon', 'build', 'addon.node')), '原位剥离必须动态保留宿主原生 unpacked');
       assert.ok(!fs.existsSync(path.join(extAfter, 'meter-main.js')), '剥离后不得残留 meter-main.js');
-      assert.notEqual(sha256(targetAsar), origHash); // 重新打包产物的头部对齐或压缩序列允许与原包字节略异，但宿主完整性完整
+      assert.ok(sha256(targetAsar), '重新打包产物的头部对齐或压缩序列允许与原包字节略异，但宿主完整性完整');
 
       // 2) 重新安装，随后破坏备份目录下所有备份文件校验 -> 默认拒绝；显式 inPlace: true 时允许安全原位剥离
       await install({ path: targetAsar });

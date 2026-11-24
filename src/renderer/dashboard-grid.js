@@ -213,12 +213,35 @@ let cockpitDragCleanup = null;
 let cancelCockpitManagerDrag = null;
 let stopCockpitManagerPositioning = null;
 
+const BUILTIN_COCKPIT_PRESET_IDS = Object.freeze(['cockpit', 'minimal', 'debug', 'speed_cost', 'collab']);
+
+function normalizeCockpitPresetOrder(rawOrder, customPresets = []) {
+  const customIds = Array.isArray(customPresets) ? customPresets.map(p => String(p?.id || '').trim()).filter(Boolean) : [];
+  const validIds = new Set([...BUILTIN_COCKPIT_PRESET_IDS, ...customIds]);
+  const seen = new Set();
+  const out = [];
+  for (const rawId of (Array.isArray(rawOrder) ? rawOrder : [])) {
+    const pid = typeof rawId === 'string' ? rawId.trim() : '';
+    if (!pid || !validIds.has(pid) || seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+  }
+  for (const bId of BUILTIN_COCKPIT_PRESET_IDS) {
+    if (!seen.has(bId)) { seen.add(bId); out.push(bId); }
+  }
+  for (const cId of customIds) {
+    if (!seen.has(cId)) { seen.add(cId); out.push(cId); }
+  }
+  return out;
+}
+
 function buildDefaultCockpitLayout(presetId = 'cockpit') {
   const safeId = Object.prototype.hasOwnProperty.call(COCKPIT_PRESET_LAYOUTS, presetId) ? presetId : 'cockpit';
   const base = COCKPIT_PRESET_LAYOUTS[safeId];
   return {
     version: 1,
     presetId: safeId,
+    presetOrder: [...BUILTIN_COCKPIT_PRESET_IDS],
     widgets: [...base.items, ...COCKPIT_WIDGET_DEFS.filter(def => !base.items.some(it => it.id === def.id))
       .map(def => ({ id: def.id, span: def.defaultSpan, height: def.defaultHeight, visible: false }))].map(it => ({
       id: it.id,
@@ -300,61 +323,186 @@ function normalizeCockpitLayout(raw, includePresets = true) {
     presetId,
     widgets: normalized
   };
-  if (!includePresets || !Array.isArray(raw.customPresets)) return result;
+  if (!includePresets) return result;
   const seenPresets = new Set();
   const customPresets = [];
-  for (const item of raw.customPresets) {
-    const id = String(item?.id || '');
-    const name = String(item?.name || '').replace(/[（）()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
-    if (!/^custom-[\w-]{1,72}$/.test(id) || !name || seenPresets.has(id)) continue;
-    seenPresets.add(id);
-    customPresets.push({ ...normalizeCockpitLayout(item, false), id, name });
+  if (Array.isArray(raw.customPresets)) {
+    for (const item of raw.customPresets) {
+      const id = String(item?.id || '');
+      const name = String(item?.name || '').replace(/[（）()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (!/^custom-[\w-]{1,72}$/.test(id) || !name || seenPresets.has(id)) continue;
+      seenPresets.add(id);
+      customPresets.push({ ...normalizeCockpitLayout(item, false), id, name });
+    }
+    if (customPresets.length) result.customPresets = customPresets;
+    if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
   }
-  if (customPresets.length) result.customPresets = customPresets;
-  if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
+  result.presetOrder = normalizeCockpitPresetOrder(raw.presetOrder, customPresets);
   return result;
 }
 
-function renderCustomCockpitPresets(layout) {
-  const list = el('ctx-custom-presets');
-  if (!list) return;
-  const signature = JSON.stringify([layout.activeCustomId, (layout.customPresets || []).map(({ id, name }) => [id, name])]);
-  if (list._presetSignature !== signature) {
-    list._presetSignature = signature;
-    list.replaceChildren();
-    for (const { id, name } of layout.customPresets || []) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'ctx-preset-btn';
-      button.textContent = name;
-      button.title = name;
-      button.setAttribute('data-cockpit-preset', id);
-      button.setAttribute('aria-pressed', String(id === layout.activeCustomId));
-      button.classList.toggle('active', id === layout.activeCustomId);
-      list.appendChild(button);
+let presetSortMode = false;
+
+function renderCockpitPresetsTrack(layout) {
+  const track = el('ctx-cockpit-presets-track') || el('ctx-cockpit-toolbar')?.querySelector?.('.ctx-cockpit-presets');
+  const sortToggleBtn = el('btn-ctx-preset-sort');
+  if (sortToggleBtn) {
+    sortToggleBtn.setAttribute('aria-pressed', presetSortMode ? 'true' : 'false');
+    sortToggleBtn.classList?.toggle?.('active', presetSortMode);
+    sortToggleBtn.textContent = presetSortMode ? t('session.preset.sortDone') : t('session.preset.sort');
+  }
+  const activeId = layout.activeCustomId || layout.presetId;
+  if (track) {
+    const customList = Array.isArray(layout.customPresets) ? layout.customPresets : [];
+    const customMap = new Map(customList.map(c => [c.id, c]));
+    const order = normalizeCockpitPresetOrder(layout.presetOrder, customList);
+    const sig = JSON.stringify([activeId, presetSortMode, order, customList.map(c => [c.id, c.name])]);
+    if (track._presetTrackSignature !== sig) {
+      track._presetTrackSignature = sig;
+      const builtinBtnIdMap = {
+        cockpit: 'btn-preset-cockpit',
+        minimal: 'btn-preset-minimal',
+        debug: 'btn-preset-debug',
+        speed_cost: 'btn-preset-speed-cost',
+        collab: 'btn-preset-collab'
+      };
+      const existingById = new Map();
+      if (typeof track.querySelectorAll === 'function') {
+        for (const btn of Array.from(track.querySelectorAll('[data-cockpit-preset]'))) {
+          const pid = btn.getAttribute?.('data-cockpit-preset');
+          if (pid && !existingById.has(pid)) existingById.set(pid, btn);
+        }
+      }
+      for (const [pid, domId] of Object.entries(builtinBtnIdMap)) {
+        if (!existingById.has(pid)) {
+          const found = el(domId);
+          if (found) {
+            found.setAttribute?.('data-cockpit-preset', pid);
+            existingById.set(pid, found);
+          }
+        }
+      }
+      track.setAttribute?.('data-sort-mode', presetSortMode ? 'true' : 'false');
+      const items = [];
+      for (let i = 0; i < order.length; i++) {
+        const pid = order[i];
+        const meta = COCKPIT_PRESET_LAYOUTS[pid];
+        const customMeta = customMap.get(pid);
+        if (!meta && !customMeta) continue;
+        let btn = existingById.get(pid);
+        if (!btn) {
+          btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ctx-preset-btn';
+          btn.setAttribute('data-cockpit-preset', pid);
+        }
+        if (customMeta) {
+          btn.textContent = customMeta.name;
+          btn.title = customMeta.name;
+          btn.setAttribute?.('data-custom-preset', 'true');
+        } else if (meta) {
+          btn.removeAttribute?.('data-custom-preset');
+          btn.textContent = t(meta.labelKey);
+        }
+        const isAct = pid === activeId;
+        btn.setAttribute?.('aria-pressed', isAct ? 'true' : 'false');
+        btn.classList?.toggle?.('active', isAct);
+
+        if (presetSortMode) {
+          const wrap = document.createElement('span');
+          wrap.className = 'ctx-preset-chip-group';
+          wrap.setAttribute('data-preset-chip-id', pid);
+          const leftBtn = document.createElement('button');
+          leftBtn.type = 'button';
+          leftBtn.className = 'ctx-preset-sort-step';
+          leftBtn.setAttribute('data-preset-move', '-1');
+          leftBtn.setAttribute('data-preset-move-id', pid);
+          leftBtn.setAttribute('aria-label', t('session.preset.moveLeftAria'));
+          leftBtn.textContent = '‹';
+          leftBtn.disabled = i === 0;
+          const rightBtn = document.createElement('button');
+          rightBtn.type = 'button';
+          rightBtn.className = 'ctx-preset-sort-step';
+          rightBtn.setAttribute('data-preset-move', '1');
+          rightBtn.setAttribute('data-preset-move-id', pid);
+          rightBtn.setAttribute('aria-label', t('session.preset.moveRightAria'));
+          rightBtn.textContent = '›';
+          rightBtn.disabled = i === order.length - 1;
+          wrap.appendChild(leftBtn);
+          wrap.appendChild(btn);
+          wrap.appendChild(rightBtn);
+          items.push(wrap);
+        } else {
+          items.push(btn);
+        }
+      }
+      if (typeof track.replaceChildren === 'function') {
+        track.replaceChildren(...items);
+      }
     }
   }
   const actions = el('ctx-custom-preset-actions');
   if (actions) actions.hidden = !layout.activeCustomId;
 }
 
+function renderCustomCockpitPresets(layout) {
+  renderCockpitPresetsTrack(layout);
+}
+
 function updateCustomCockpitPreset(action, name = '') {
   const layout = getCockpitLayout();
   const presets = layout.customPresets || [];
   const active = presets.find(item => item.id === layout.activeCustomId);
+  const curOrder = normalizeCockpitPresetOrder(layout.presetOrder, presets);
   if (action === 'delete' && active) {
-    return applyCockpitPreset('cockpit', { customPresets: presets.filter(item => item !== active) });
+    const nextCustoms = presets.filter(item => item !== active);
+    const nextOrder = curOrder.filter(id => id !== active.id);
+    return applyCockpitPreset('cockpit', { customPresets: nextCustoms, presetOrder: nextOrder });
   }
   if (action === 'save') {
     const id = `custom-${window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2)}`;
     const entry = { id, name, presetId: layout.presetId, widgets: layout.widgets };
-    persistCockpitLayout({ ...layout, activeCustomId: id, customPresets: [...presets, entry] });
+    const nextCustoms = [...presets, entry];
+    const nextOrder = normalizeCockpitPresetOrder([...curOrder, id], nextCustoms);
+    persistCockpitLayout({ ...layout, activeCustomId: id, customPresets: nextCustoms, presetOrder: nextOrder });
   } else if (active) {
     const entry = action === 'rename' ? { ...active, name } : { ...active, widgets: layout.widgets };
-    persistCockpitLayout({ ...layout, customPresets: presets.map(item => item === active ? entry : item) });
+    persistCockpitLayout({ ...layout, customPresets: presets.map(item => item === active ? entry : item), presetOrder: curOrder });
   }
   applyCockpitLayoutToDom();
   return getCockpitLayout();
+}
+
+function reorderCockpitPresets(sourceId, targetId, insertAfter = false, { persist = true } = {}) {
+  const layout = getCockpitLayout();
+  const customs = layout.customPresets || [];
+  const order = normalizeCockpitPresetOrder(layout.presetOrder, customs).slice();
+  const fromIdx = order.indexOf(sourceId);
+  const toIdxOrig = order.indexOf(targetId);
+  if (fromIdx < 0 || toIdxOrig < 0 || sourceId === targetId) return layout;
+  order.splice(fromIdx, 1);
+  let targetIdx = order.indexOf(targetId);
+  if (targetIdx < 0) return layout;
+  if (insertAfter) targetIdx += 1;
+  order.splice(targetIdx, 0, sourceId);
+  const saved = persistCockpitLayout({ ...layout, presetOrder: order }, { persistHost: persist });
+  renderCockpitPresetsTrack(saved);
+  return saved;
+}
+
+function moveCockpitPresetByOffset(presetId, offset, { persist = true } = {}) {
+  const layout = getCockpitLayout();
+  const customs = layout.customPresets || [];
+  const order = normalizeCockpitPresetOrder(layout.presetOrder, customs).slice();
+  const idx = order.indexOf(presetId);
+  const delta = Number(offset) || 0;
+  const nextIdx = idx + delta;
+  if (idx < 0 || delta === 0 || nextIdx < 0 || nextIdx >= order.length) return layout;
+  order.splice(idx, 1);
+  order.splice(nextIdx, 0, presetId);
+  const saved = persistCockpitLayout({ ...layout, presetOrder: order }, { persistHost: persist });
+  renderCockpitPresetsTrack(saved);
+  return saved;
 }
 
 function getCockpitLayout() {
@@ -748,12 +896,13 @@ function applySkylineLayout(grid, items, metrics) {
   return placements;
 }
 
-function applyCockpitPreset(presetId, { persist = true, customPresets = getCockpitLayout().customPresets } = {}) {
+function applyCockpitPreset(presetId, { persist = true, customPresets = getCockpitLayout().customPresets, presetOrder = getCockpitLayout().presetOrder } = {}) {
   const custom = customPresets?.find(item => item.id === presetId);
   const safeId = custom?.presetId || (Object.prototype.hasOwnProperty.call(COCKPIT_PRESET_LAYOUTS, presetId) ? presetId : 'cockpit');
+  const nextOrder = normalizeCockpitPresetOrder(presetOrder, customPresets);
   const next = custom
-    ? { presetId: safeId, widgets: custom.widgets, activeCustomId: custom.id, customPresets }
-    : { ...buildDefaultCockpitLayout(safeId), customPresets };
+    ? { presetId: safeId, widgets: custom.widgets, activeCustomId: custom.id, customPresets, presetOrder: nextOrder }
+    : { ...buildDefaultCockpitLayout(safeId), customPresets, presetOrder: nextOrder };
   persistCockpitLayout(next, { persistHost: persist });
 
   if (safeId === 'speed_cost') {
@@ -1356,8 +1505,24 @@ function initSessionCockpitGrid() {
         }
         return;
       }
+      const moveBtn = target?.closest?.('[data-preset-move]');
+      if (moveBtn) {
+        const moveId = moveBtn.getAttribute('data-preset-move-id');
+        const delta = Number(moveBtn.getAttribute('data-preset-move') || 0);
+        if (moveId && delta) moveCockpitPresetByOffset(moveId, delta, { persist: true });
+        return;
+      }
+      if (target?.closest?.('#btn-ctx-preset-sort')) {
+        presetSortMode = !presetSortMode;
+        renderCockpitPresetsTrack(getCockpitLayout());
+        return;
+      }
       const presetBtn = target?.closest?.('[data-cockpit-preset]');
       if (presetBtn) {
+        if (toolbar._suppressPresetClick) {
+          toolbar._suppressPresetClick = false;
+          return;
+        }
         const pid = presetBtn.getAttribute('data-cockpit-preset');
         applyCockpitPreset(pid, { persist: true });
         return;
@@ -1374,6 +1539,105 @@ function initSessionCockpitGrid() {
         closeCockpitWidgetManager();
       }
     });
+
+    // 预设条长按指针拖拽重排 + 键盘左右方向键辅助排序
+    const presetTrack = el('ctx-cockpit-presets-track') || toolbar.querySelector?.('.ctx-cockpit-presets');
+    if (presetTrack && !presetTrack._presetDragBound) {
+      presetTrack._presetDragBound = true;
+      let pDrag = null;
+      const clearPDrag = () => {
+        if (!pDrag) return;
+        if (pDrag.pressTimer) clearTimeout(pDrag.pressTimer);
+        if (pDrag.chipEl) pDrag.chipEl.classList?.remove?.('is-dragging');
+        window.removeEventListener?.('pointermove', onPMove);
+        window.removeEventListener?.('pointerup', onPUp);
+        window.removeEventListener?.('pointercancel', clearPDrag);
+        window.removeEventListener?.('keydown', onPEsc, true);
+        pDrag = null;
+      };
+      const onPEsc = (ev) => {
+        if (ev.key === 'Escape' && pDrag) {
+          ev.preventDefault?.();
+          clearPDrag();
+        }
+      };
+      const onPMove = (ev) => {
+        if (!pDrag) return;
+        const dx = Math.abs((ev.clientX || 0) - pDrag.startX);
+        const dy = Math.abs((ev.clientY || 0) - pDrag.startY);
+        if (!pDrag.active && (dx > 6 || dy > 6)) {
+          if (!pDrag.armed) { clearPDrag(); return; }
+          pDrag.active = true;
+          pDrag.chipEl?.classList?.add?.('is-dragging');
+        }
+        if (!pDrag.active) return;
+        const btns = Array.from(presetTrack.querySelectorAll?.('[data-cockpit-preset]') || []);
+        for (const cand of btns) {
+          const cid = cand.getAttribute?.('data-cockpit-preset');
+          if (!cid || cid === pDrag.presetId || typeof cand.getBoundingClientRect !== 'function') continue;
+          const r = cand.getBoundingClientRect();
+          if ((ev.clientX || 0) >= r.left && (ev.clientX || 0) <= r.right) {
+            pDrag.targetId = cid;
+            pDrag.insertAfter = (ev.clientX || 0) >= (r.left + r.width / 2);
+            break;
+          }
+        }
+      };
+      const onPUp = () => {
+        if (!pDrag) return;
+        const { active, presetId, targetId, insertAfter } = pDrag;
+        clearPDrag();
+        if (active) {
+          toolbar._suppressPresetClick = true;
+          setTimeout(() => { toolbar._suppressPresetClick = false; }, 120);
+          if (targetId && targetId !== presetId) {
+            reorderCockpitPresets(presetId, targetId, insertAfter, { persist: true });
+          }
+        }
+      };
+      presetTrack.addEventListener?.('pointerdown', (ev) => {
+        if (ev.isPrimary === false || (ev.button != null && ev.button !== 0)) return;
+        if (ev.target?.closest?.('.ctx-preset-sort-step')) return;
+        const btn = ev.target?.closest?.('[data-cockpit-preset]');
+        const pid = btn?.getAttribute?.('data-cockpit-preset');
+        if (!pid) return;
+        clearPDrag();
+        pDrag = {
+          presetId: pid,
+          chipEl: btn.closest?.('.ctx-preset-chip-group') || btn,
+          startX: ev.clientX || 0,
+          startY: ev.clientY || 0,
+          armed: false,
+          active: false,
+          targetId: null,
+          insertAfter: false,
+          pressTimer: setTimeout(() => {
+            if (!pDrag || pDrag.presetId !== pid) return;
+            pDrag.armed = true;
+            pDrag.active = true;
+            pDrag.chipEl?.classList?.add?.('is-dragging');
+          }, 180)
+        };
+        window.addEventListener?.('pointermove', onPMove);
+        window.addEventListener?.('pointerup', onPUp);
+        window.addEventListener?.('pointercancel', clearPDrag);
+        window.addEventListener?.('keydown', onPEsc, true);
+      });
+      presetTrack.addEventListener?.('keydown', (ev) => {
+        if (!presetSortMode) return;
+        const btn = ev.target?.closest?.('[data-cockpit-preset]');
+        const pid = btn?.getAttribute?.('data-cockpit-preset');
+        if (!pid) return;
+        if (ev.key === 'ArrowLeft') {
+          ev.preventDefault?.();
+          moveCockpitPresetByOffset(pid, -1, { persist: true });
+        } else if (ev.key === 'ArrowRight') {
+          ev.preventDefault?.();
+          moveCockpitPresetByOffset(pid, 1, { persist: true });
+        }
+      });
+      activeDisposers.add(clearPDrag);
+    }
   }
 
   if (typeof shadow !== 'undefined' && shadow && typeof shadow.addEventListener === 'function' && !shadow._cockpitOutsideBound) {

@@ -55,6 +55,8 @@ node cli.js install
 node cli.js live              # Patch-free CDP injection (auto-launches with CDP port; pass --relaunch outside host if already running without CDP on v2.33.0+)
 node cli.js watch             # Patch-free background watcher (recommended on macOS to preserve Apple code signatures)
 node cli.js stop-watch
+node cli.js update --check-only
+node cli.js update            # Stage a verified plugin release for watch or live to load
 node cli.js status
 node cli.js restore
 node cli.js enhance-status
@@ -62,10 +64,12 @@ node cli.js enhance --tier 3 --chinese-title on --brand-title english
 node cli.js enhance-restore
 ```
 
+If your plugin copy does not recognize `update`, download a plugin package with the command from [GitHub Releases](https://github.com/elviscjn-cjn/antigravity-context-viewer/releases), extract it to a new folder, and run `node cli.js watch` there. If the macOS application signature is already damaged, reinstall the official client and check scheduled tasks before using `watch`.
+
 > [!IMPORTANT]
 > **Antigravity v2.34.0 & macOS `ElectronAsarIntegrity` Support Scope**:
 > - **Window-loader anchor (`loadHubWindowUrl`)**: Verified across clean install, upgrade (`v2.33.0 -> v2.34.0`), and lossless restore tests.
-> - **macOS `ElectronAsarIntegrity` & code signature**: Signed macOS `Antigravity.app` bundles enable `ElectronAsarIntegrity` in `Info.plist` plus Hardened Runtime (`TeamIdentifier`). Modifying `app.asar` in-place risks launch integrity failures or breaking Keychain/TCC permissions. `node cli.js check` reports integrity preflight status, and `node cli.js install` blocks patching integrity-protected macOS `.app` bundles by default in favor of patch-free **`node cli.js watch`** (`open -a Antigravity --args --remote-debugging-port=58321`) unless `--force-mac-asar` is explicitly passed.
+> - **macOS `ElectronAsarIntegrity` and code signing**: `node cli.js check` reports signing and ASAR integrity status. `install` and `recover` block patching when `ElectronAsarIntegrity` is enabled or the application bundle has a publisher signature. Use patch-free **`node cli.js watch`** on these bundles. Modifying `app.asar` can invalidate the signature and prevent the app or its scheduled-task `language_server` from launching.
 > - **Unverified on real Mac hardware**: No physical macOS host was available during this release cycle; real macOS cold-boot signature behavior and desktop UI interactions await community hardware feedback.
 
 ---

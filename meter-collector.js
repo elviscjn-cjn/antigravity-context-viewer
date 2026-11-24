@@ -81,6 +81,7 @@ const {
   CURRENCY_SYMBOLS,
   parseUserPlanStatus,
   buildModelQuotaSnapshot,
+  sanitizeClientModelSorts,
   isDecorativeBadgeTagTitle,
   getModelPoolKey,
   getSharedQuotaGroupKey,
@@ -89,6 +90,7 @@ const {
   extractModelString,
   normalizeModelId,
   resolveStableModelId,
+  resolveRequestedModelDisplay,
   UNATTRIBUTED_MODEL_KEY,
   lookupModelDisplayLabel,
   resolveModelUsageBucket,
@@ -99,6 +101,7 @@ const {
   sanitizeTurnPreviewText,
   groupSessionCallsByTurns,
   isValidSpeedSample,
+  resolveRequestRowSpeed,
   MAX_SPEED_SAMPLES_PER_MODEL,
   parseSpeedDateRange,
   calculateRequestApiCost,
@@ -674,7 +677,11 @@ function sanitizeCascadeModelConfig(c) {
     isHistorical: isHist,
     releaseDate: c.releaseDate || null,
     family: c.family || null,
-    effort: c.effort || null
+    effort: c.effort || null,
+    isRecommended: c.isRecommended === true,
+    orchestratorRole: typeof c.orchestratorRole === 'string' ? c.orchestratorRole : undefined,
+    plannerModel: c.plannerModel || undefined,
+    executorModel: c.executorModel || undefined
   };
 }
 
@@ -1069,6 +1076,12 @@ async function collect(origin, id, options = {}) {
       }
       if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const session = analyzeSteps(steps);
+      const trajectoryMeta = trajectory.metadata || trajectory.trajectoryMetadata;
+      const workspaceUris = Array.isArray(trajectoryMeta?.workspaceUris) ? trajectoryMeta.workspaceUris : [];
+      const workspaceEntries = Array.isArray(trajectoryMeta?.workspaces) ? trajectoryMeta.workspaces : [];
+      session.isRemote = full.isRemote === true || trajectory.isRemote === true || trajectoryMeta?.isRemote === true
+        || [...workspaceUris, ...workspaceEntries.flatMap(ws => [ws?.workspaceFolderAbsoluteUri, ws?.gitRootAbsoluteUri])]
+          .some(uri => typeof uri === 'string' && /^(?:ssh:\/\/|vscode-remote:\/\/ssh-remote\+)/i.test(uri));
       const firstUserStep = steps.find(s => s?.userInput);
       const firstUserTitleRaw = firstUserStep?.userInput
         ? (firstUserStep.userInput.userResponse || (firstUserStep.userInput.items || []).map(it => it?.text || '').join(' '))
@@ -2059,6 +2072,10 @@ function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitSt
   const preservedExactId = incomingEntry.modelExactId || baseEntry.modelExactId;
   const preservedLabel = incomingEntry.modelLabel || baseEntry.modelLabel;
   const preservedEffort = incomingEntry.effort || baseEntry.effort;
+  const preservedRequestedModel = preferIncomingModel && !incomingIsStaleStatus
+    ? pickRicherModel(incomingEntry.requestedModel, baseEntry.requestedModel)
+    : pickRicherModel(baseEntry.requestedModel, incomingEntry.requestedModel);
+  const preservedRequestedRaw = baseEntry.requestedModelRaw || incomingEntry.requestedModelRaw;
   const keepSpeed = (!hasSpeedMetrics(baseEntry) && hasSpeedMetrics(incomingEntry) && isValidSpeedSample(incomingEntry))
     ? {
       ...(incomingEntry.ttftSec != null ? { ttftSec: incomingEntry.ttftSec } : {}),
@@ -2088,6 +2105,8 @@ function mergeSameCallRecords(baseEntry, incomingEntry, canonicalKey, explicitSt
     source: baseEntry.source || incomingEntry.source || 'desktop',
     ...(resolvedCascadeId ? { cascadeId: resolvedCascadeId } : {}),
     stepIndex: resolvedStep,
+    ...(preservedRequestedModel ? { requestedModel: preservedRequestedModel } : {}),
+    ...(preservedRequestedRaw ? { requestedModelRaw: preservedRequestedRaw } : {}),
     model: mergedModel,
     ...(preservedExactId ? { modelExactId: preservedExactId } : {}),
     ...(preservedLabel ? { modelLabel: preservedLabel } : {}),
@@ -2173,6 +2192,7 @@ function callSemanticSignature(c) {
     String(c.source || 'desktop'),
     String(c.cascadeId || ''),
     c.stepIndex ?? '',
+    String(c.requestedModel || ''),
     String(c.model || ''),
     String(c.modelKey || ''),
     String(c.modelExactId || ''),
@@ -4266,19 +4286,39 @@ function sanitizeSessionCockpitLayout(raw, includePresets = true) {
     trendOverviewRibbon: raw.trendOverviewRibbon === true,
     trendLatencyOverlay: raw.trendLatencyOverlay === true
   };
-  if (!includePresets || !Array.isArray(raw.customPresets)) return result;
+  const builtinPresetIds = ['cockpit', 'minimal', 'debug', 'speed_cost', 'collab'];
   const customPresets = [];
   const seenPresets = new Set();
-  for (const item of raw.customPresets) {
-    const id = String(item?.id || '');
-    const name = String(item?.name || '').replace(/[（）()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
-    if (!/^custom-[\w-]{1,72}$/.test(id) || !name || seenPresets.has(id)) continue;
-    const normalized = sanitizeSessionCockpitLayout(item, false);
-    seenPresets.add(id);
-    customPresets.push({ id, name, presetId: normalized.presetId, widgets: normalized.widgets });
+  if (includePresets && Array.isArray(raw.customPresets)) {
+    for (const item of raw.customPresets) {
+      const id = String(item?.id || '');
+      const name = String(item?.name || '').replace(/[（）()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (!/^custom-[\w-]{1,72}$/.test(id) || !name || seenPresets.has(id)) continue;
+      const normalized = sanitizeSessionCockpitLayout(item, false);
+      seenPresets.add(id);
+      customPresets.push({ id, name, presetId: normalized.presetId, widgets: normalized.widgets });
+    }
+    if (customPresets.length) result.customPresets = customPresets;
+    if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
   }
-  if (customPresets.length) result.customPresets = customPresets;
-  if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
+  if (includePresets) {
+    const validPresetIds = new Set([...builtinPresetIds, ...customPresets.map(p => p.id)]);
+    const seenOrder = new Set();
+    const presetOrder = [];
+    for (const pid of (Array.isArray(raw.presetOrder) ? raw.presetOrder : [])) {
+      const s = typeof pid === 'string' ? pid.trim() : '';
+      if (!s || !validPresetIds.has(s) || seenOrder.has(s)) continue;
+      seenOrder.add(s);
+      presetOrder.push(s);
+    }
+    for (const bId of builtinPresetIds) {
+      if (!seenOrder.has(bId)) { seenOrder.add(bId); presetOrder.push(bId); }
+    }
+    for (const cp of customPresets) {
+      if (!seenOrder.has(cp.id)) { seenOrder.add(cp.id); presetOrder.push(cp.id); }
+    }
+    result.presetOrder = presetOrder;
+  }
   return result;
 }
 
@@ -4352,6 +4392,11 @@ function getPluginSettings(options = {}) {
     topbarMode: resolvedTopbarMode,
     panelDockMode: resolvedPanelDockMode,
     autoHideTopbarOnDockedPanel,
+    auxViewTab: uiPrefs.auxViewTab === 'browser' ? 'browser' : 'plugin',
+    auxCollapsed: uiPrefs.auxCollapsed === true,
+    auxWidthPx: (Number.isFinite(Number(uiPrefs.auxWidthPx)) && Number(uiPrefs.auxWidthPx) >= 260 && Number(uiPrefs.auxWidthPx) <= 1200)
+      ? Math.round(Number(uiPrefs.auxWidthPx))
+      : null,
     quickMenuStyle: legacyQuickMenuStyle,
     radialOrbEnabled: resolvedRadialOrbEnabled,
     radialTopbarEnabled: resolvedRadialTopbarEnabled,
@@ -4361,8 +4406,10 @@ function getPluginSettings(options = {}) {
     quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
     panelLanguage: hasExplicitPanelLanguage ? uiPrefs.panelLanguage : 'zh-CN',
     panelLanguageExplicit: hasExplicitPanelLanguage,
-    showTurnFooterStats: uiPrefs.showTurnFooterStats === true,
+    showTurnFooterStats: uiPrefs.showTurnFooterStats !== false,
     showComposerQuotaSummary: uiPrefs.showComposerQuotaSummary === true,
+    simplifiedModelPickerEnabled: uiPrefs.simplifiedModelPickerEnabled !== false,
+    nextPromptEnabled: uiPrefs.nextPromptEnabled === true,
     cliAccountEmail: uiPrefs.cliAccountEmail || null,
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
@@ -4557,10 +4604,30 @@ function savePluginSettings(payload = {}, options = {}) {
   if (typeof payload.showComposerQuotaSummary === 'boolean') {
     topLevelUiPrefs.showComposerQuotaSummary = payload.showComposerQuotaSummary;
   }
+  if (typeof payload.simplifiedModelPickerEnabled === 'boolean') {
+    topLevelUiPrefs.simplifiedModelPickerEnabled = payload.simplifiedModelPickerEnabled;
+  }
+  if (typeof payload.nextPromptEnabled === 'boolean') {
+    topLevelUiPrefs.nextPromptEnabled = payload.nextPromptEnabled;
+  }
   if (typeof payload.cliAccountEmail === 'string') {
     topLevelUiPrefs.cliAccountEmail = payload.cliAccountEmail.trim() || null;
   } else if (payload.cliAccountEmail === null) {
     topLevelUiPrefs.cliAccountEmail = null;
+  }
+  if (payload.auxViewTab === 'plugin' || payload.auxViewTab === 'browser') {
+    topLevelUiPrefs.auxViewTab = payload.auxViewTab;
+  }
+  if (typeof payload.auxCollapsed === 'boolean') {
+    topLevelUiPrefs.auxCollapsed = payload.auxCollapsed;
+  }
+  if (payload.auxWidthPx !== undefined) {
+    const aw = Number(payload.auxWidthPx);
+    if (payload.auxWidthPx === null) {
+      topLevelUiPrefs.auxWidthPx = null;
+    } else if (Number.isFinite(aw) && aw >= 260 && aw <= 1200) {
+      topLevelUiPrefs.auxWidthPx = Math.round(aw);
+    }
   }
   const rawViewPrefs = (payload.defaultViewPrefs && typeof payload.defaultViewPrefs === 'object' && !Array.isArray(payload.defaultViewPrefs))
     ? payload.defaultViewPrefs
@@ -4592,6 +4659,13 @@ function savePluginSettings(payload = {}, options = {}) {
     : (Object.keys(topLevelUiPrefs).length > 0 ? topLevelUiPrefs : null);
 
   if (incomingUiPrefs) {
+    if (incomingUiPrefs.autoCompactEnabled !== undefined && typeof incomingUiPrefs.autoCompactEnabled !== 'boolean') {
+      return { ok: false, error: '无效的自动压缩开关' };
+    }
+    if (incomingUiPrefs.autoCompactThreshold !== undefined && (!Number.isInteger(incomingUiPrefs.autoCompactThreshold)
+      || incomingUiPrefs.autoCompactThreshold < 50 || incomingUiPrefs.autoCompactThreshold > 99)) {
+      return { ok: false, error: '自动压缩阈值必须为 50 到 99 的整数' };
+    }
     if (incomingUiPrefs.panelLanguage !== undefined && !validPanelLanguages.has(incomingUiPrefs.panelLanguage)) {
       delete incomingUiPrefs.panelLanguage;
     }
@@ -4886,9 +4960,16 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     const rawConfigs = userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelConfigs
       || userStatusRes?.cascadeModelConfigData?.clientModelConfigs
       || [];
+    const rawSorts = userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelSorts
+      || userStatusRes?.cascadeModelConfigData?.clientModelSorts
+      || [];
+    const defaultOverrideModelConfig = userStatusRes?.userStatus?.cascadeModelConfigData?.defaultOverrideModelConfig
+      || userStatusRes?.cascadeModelConfigData?.defaultOverrideModelConfig
+      || null;
     const sanitizedConfigs = Array.isArray(rawConfigs)
       ? rawConfigs.map(sanitizeCascadeModelConfig).filter(Boolean)
       : [];
+    const sanitizedSorts = sanitizeClientModelSorts(rawSorts);
     const parsedPlan = userStatusRes ? parseUserPlanStatus(userStatusRes) : null;
     const rawEmail = parsedPlan?.email || userStatusRes?.userStatus?.email || '';
     const scopeQuotaState = cachedQuotaStateByOrigin.get(originScope) || null;
@@ -4920,6 +5001,8 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       const prevRaw = (!accountSwitched && curScoped?._raw) ? curScoped._raw : null;
       const snapshot = buildModelQuotaSnapshot({
         cascadeModelConfigs: prevRaw?.cascadeModelConfigs || [],
+        clientModelSorts: prevRaw?.clientModelSorts || [],
+        defaultOverrideModelConfig: prevRaw?.defaultOverrideModelConfig || null,
         quotaSummaryRes: prevRaw?.quotaSummaryRes || null,
         planStatus: prevRaw?.planStatus || null,
         currentModel: options.currentModel || null,
@@ -4952,6 +5035,8 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
           planName: prevRaw.planStatus.planName || null
         } : null,
         snapshot,
+        groupedModels: snapshot?.groupedModels || null,
+        clientModelSorts: prevRaw?.clientModelSorts || [],
         _raw: prevRaw
       };
       if (!hasStaticFixture && !options.agDir && curScoped) {
@@ -4962,6 +5047,8 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
 
     const rawRecord = {
       cascadeModelConfigs: sanitizedConfigs,
+      clientModelSorts: sanitizedSorts,
+      defaultOverrideModelConfig,
       quotaSummaryRes,
       planStatus: parsedPlan,
       fetchedAtMs: doneAtMs,
@@ -4970,6 +5057,8 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
 
     const snapshot = buildModelQuotaSnapshot({
       cascadeModelConfigs: sanitizedConfigs,
+      clientModelSorts: sanitizedSorts,
+      defaultOverrideModelConfig,
       quotaSummaryRes,
       planStatus: parsedPlan,
       currentModel: options.currentModel || null,
@@ -5003,6 +5092,8 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
         planName: parsedPlan.planName || null
       } : null,
       snapshot,
+      groupedModels: snapshot?.groupedModels || null,
+      clientModelSorts: sanitizedSorts,
       cascadeModelConfigs: sanitizedConfigs,
       _raw: rawRecord
     };
@@ -5028,10 +5119,12 @@ async function fetchUserStatusFromHost(options = {}) {
     if (!options.userStatus) return null;
     const parsed = parseUserPlanStatus(options.userStatus);
     const configs = options.userStatus?.userStatus?.cascadeModelConfigData?.clientModelConfigs || options.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
+    const sorts = options.userStatus?.userStatus?.cascadeModelConfigData?.clientModelSorts || options.userStatus?.cascadeModelConfigData?.clientModelSorts || [];
     const availMap = options.availableModels ? parseAvailableModelsResponse(options.availableModels) : {};
     if (parsed) {
       if (Object.keys(availMap).length) parsed.availableModelDetails = availMap;
       if (configs.length) parsed.cascadeModelConfigs = mergeModelCapabilitiesIntoConfigs(configs, availMap);
+      if (sorts.length) parsed.clientModelSorts = sanitizeClientModelSorts(sorts);
     }
     return parsed;
   }
@@ -5057,10 +5150,12 @@ async function fetchUserStatusFromHost(options = {}) {
     ]);
     const parsed = parseUserPlanStatus(res);
     const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
+    const sorts = res?.userStatus?.cascadeModelConfigData?.clientModelSorts || [];
     const availMap = availRes ? parseAvailableModelsResponse(availRes) : {};
     if (parsed) {
       if (Object.keys(availMap).length) parsed.availableModelDetails = availMap;
       if (configs.length) parsed.cascadeModelConfigs = mergeModelCapabilitiesIntoConfigs(configs, availMap);
+      if (sorts.length) parsed.clientModelSorts = sanitizeClientModelSorts(sorts);
     }
     if (parsed && !options.agDir) {
       const nextScope = parsed.email ? buildAccountScopeKey(parsed.email) : null;
@@ -5089,17 +5184,26 @@ const transcriptFileCache = new Map();
 
 function parseEventDurSec(rawDur) {
   if (rawDur == null) return null;
-  if (typeof rawDur === 'number' && Number.isFinite(rawDur) && rawDur >= 0) return Number(rawDur.toFixed(2));
+  if (typeof rawDur === 'number' && Number.isFinite(rawDur) && rawDur >= 0) return Number(rawDur.toFixed(4));
   if (typeof rawDur === 'string') {
     const m = rawDur.trim().match(/^(\d+(?:\.\d+)?)\s*s$/i);
-    if (m) return Number(Number(m[1]).toFixed(2));
+    if (m) return Number(Number(m[1]).toFixed(4));
     const n = Number(rawDur);
-    if (Number.isFinite(n) && n >= 0) return Number(n.toFixed(2));
+    if (Number.isFinite(n) && n >= 0) return Number(n.toFixed(4));
   } else if (typeof rawDur === 'object') {
     const sec = Number(rawDur.seconds || 0) + Number(rawDur.nanos || 0) / 1e9;
-    if (Number.isFinite(sec) && sec >= 0) return Number(sec.toFixed(2));
+    if (Number.isFinite(sec) && sec >= 0) return Number(sec.toFixed(4));
   }
   return null;
+}
+
+function extractRequestedModelRawCompat(val) {
+  if (!val) return '';
+  if (typeof val === 'string') return val.trim();
+  if (typeof val === 'object') {
+    return String(val.model || val.alias || val.modelOrAlias?.model || val.choice?.value || val.modelId || '').trim();
+  }
+  return '';
 }
 
 function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
@@ -5123,9 +5227,17 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
   if (!hasValidCreatedAt) return null;
 
   let inp = 0, outp = 0, cap = 0, thinking = 0;
-  const model = event.chatModel?.model || event.chatModel?.responseModel || event.model || event.modelId || '';
+  const model = event.chatModel?.modelDisplayName || event.chatModel?.responseModel || event.chatModel?.model || event.model || event.modelId || '';
   const modelExactId = event.chatModel?.modelId || event.modelId || '';
   const modelLabel = event.chatModel?.modelDisplayName || '';
+  const requestedModelRaw = extractRequestedModelRawCompat(
+    event.requestedModel
+    || event.requested_model
+    || event.metadata?.requestedModel
+    || event.chatModel?.requestedModel
+    || event.chatModel?.modelOrAlias
+    || ((event.chatModel?.model && event.chatModel?.responseModel && event.chatModel.model !== event.chatModel.responseModel) ? event.chatModel.model : '')
+  );
 
   if (event.input_tokens != null || event.output_tokens != null || event.cache_read_tokens != null) {
     inp = Number(event.input_tokens || 0);
@@ -5200,6 +5312,7 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
       eventId,
       cascadeId,
       stepIndex,
+      ...(requestedModelRaw ? { requestedModel: requestedModelRaw } : {}),
       model,
       ...(modelExactId ? { modelExactId } : {}),
       ...(modelLabel ? { modelLabel } : {}),
@@ -6215,7 +6328,7 @@ function parsePbDurationSec(buf, start, end) {
   });
   if (!hasField) return null;
   const secVal = seconds + nanos / 1e9;
-  return Number.isFinite(secVal) && secVal >= 0 ? Number(secVal.toFixed(2)) : null;
+  return Number.isFinite(secVal) && secVal >= 0 ? Number(secVal.toFixed(4)) : null;
 }
 
 /**
@@ -6228,6 +6341,7 @@ function extractStepMetaFromGenMetadataBlob(rawData) {
   let rawModel = '';
   let label = '';
   let modelEnum = '';
+  let requestedModel = '';
   let responseId = '';
   let ttftSec = null;
   let streamingSec = null;
@@ -6278,6 +6392,7 @@ function extractStepMetaFromGenMetadataBlob(rawData) {
             else if (kfn === 2) v = buf.toString('utf8', kvs, kve).trim();
           });
           if (k === 'model_enum' && v) modelEnum = v;
+          else if ((k === 'requested_model' || k === 'requested_model_id') && v) requestedModel = v;
           else if (k === 'parent_cascade_id' && v) parentCascadeId = v;
           else if (k === 'root_cascade_id' && v) rootCascadeId = v;
           else if (k === 'subagent_type' && v) subagentType = v;
@@ -6291,8 +6406,9 @@ function extractStepMetaFromGenMetadataBlob(rawData) {
 
   const resolvedModel = label || rawModel || modelEnum;
   const resolvedExactId = modelEnum || rawModel || '';
+  const resolvedRequestedModel = requestedModel || (modelEnum && rawModel && modelEnum !== rawModel ? modelEnum : '');
   if (!steps.length) return [];
-  if (!resolvedModel && !resolvedExactId && !responseId && ttftSec === null && streamingSec === null && !parentCascadeId && !rootCascadeId) {
+  if (!resolvedModel && !resolvedExactId && !resolvedRequestedModel && !responseId && ttftSec === null && streamingSec === null && !parentCascadeId && !rootCascadeId) {
     return [];
   }
   return steps.map(stepIndex => ({
@@ -6301,6 +6417,7 @@ function extractStepMetaFromGenMetadataBlob(rawData) {
     rawModel,
     modelLabel: label,
     modelExactId: resolvedExactId,
+    ...(resolvedRequestedModel ? { requestedModel: resolvedRequestedModel } : {}),
     responseId,
     ttftSec,
     streamingSec,
@@ -6558,6 +6675,9 @@ function backfillMissingModelsFromConversationDb(records, convDir, options = {})
       }
       if (!rec.modelExactId && recovered.modelExactId) {
         rec.modelExactId = recovered.modelExactId;
+      }
+      if (!rec.requestedModel && recovered.requestedModel) {
+        rec.requestedModel = recovered.requestedModel;
       }
       const recoveredLabel = recovered.modelLabel || (recovered.model && /[A-Z\s()]/.test(recovered.model) ? recovered.model : '');
       if (!rec.modelLabel && recoveredLabel) {
@@ -7117,20 +7237,21 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
             existingReq.isPriced = enrichedCost.isPriced;
             existingReq.costUSD = enrichedCost.costUSD ?? 0;
           }
+          if (!existingReq.requestedModel && rec.requestedModel) existingReq.requestedModel = rec.requestedModel;
           if (!existingReq.modelExactId && rec.modelExactId) existingReq.modelExactId = rec.modelExactId;
           if (!existingReq.modelLabel && rec.modelLabel) existingReq.modelLabel = rec.modelLabel;
           if (existingReq.ttftSec == null && rec.ttftSec != null) existingReq.ttftSec = rec.ttftSec;
           if (existingReq.streamingSec == null && rec.streamingSec != null) existingReq.streamingSec = rec.streamingSec;
           if (existingReq.durationSec == null && (existingReq.ttftSec != null || existingReq.streamingSec != null)) {
             const dSum = (existingReq.ttftSec != null && existingReq.streamingSec != null)
-              ? Number((Number(existingReq.ttftSec) + Number(existingReq.streamingSec)).toFixed(2))
+              ? Number((Number(existingReq.ttftSec) + Number(existingReq.streamingSec)).toFixed(4))
               : Number((existingReq.streamingSec ?? existingReq.ttftSec));
             if (Number.isFinite(dSum) && dSum > 0) existingReq.durationSec = dSum;
           }
           if (existingReq.tps == null && existingReq.outputTokens > 0 && existingReq.durationSec > 0) {
             existingReq.tps = Number((existingReq.outputTokens / existingReq.durationSec).toFixed(1));
           }
-          if (existingReq.streamingTps == null && existingReq.outputTokens > 0 && existingReq.streamingSec >= 0.2) {
+          if (existingReq.streamingTps == null && existingReq.outputTokens > 0 && existingReq.streamingSec > 0) {
             existingReq.streamingTps = Number((existingReq.outputTokens / existingReq.streamingSec).toFixed(1));
           }
           // 若两个不同 convDir 下的非 UUID 同名会话共享同一真实 responseId（非 step 拼接键），证明是同一镜像会话
@@ -7168,18 +7289,18 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
 
         const modelKey = normalizeModelId(rec.model);
         const recTtft = (rec.ttftSec != null && Number.isFinite(Number(rec.ttftSec)) && Number(rec.ttftSec) >= 0)
-          ? Number(Number(rec.ttftSec).toFixed(2))
+          ? Number(Number(rec.ttftSec).toFixed(4))
           : null;
         const recStream = (rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) && Number(rec.streamingSec) >= 0)
-          ? Number(Number(rec.streamingSec).toFixed(2))
+          ? Number(Number(rec.streamingSec).toFixed(4))
           : null;
         const recDuration = (recTtft !== null && recStream !== null)
-          ? Number((recTtft + recStream).toFixed(2))
+          ? Number((recTtft + recStream).toFixed(4))
           : (recStream !== null && recStream > 0 ? recStream : (recTtft !== null && recTtft > 0 ? recTtft : null));
         const recTps = (rec.outp > 0 && recDuration !== null && recDuration > 0)
           ? Number((rec.outp / recDuration).toFixed(1))
           : null;
-        const recStreamingTps = (rec.outp > 0 && recStream !== null && recStream >= 0.2)
+        const recStreamingTps = (rec.outp > 0 && recStream !== null && recStream > 0)
           ? Number((rec.outp / recStream).toFixed(1))
           : null;
         const reqObj = {
@@ -7189,6 +7310,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
           _convDirNorm: jobConvNorm,
           cascadeId: rec.cascadeId,
           stepIndex: rec.stepIndex,
+          ...(rec.requestedModel ? { requestedModel: rec.requestedModel } : {}),
           model: rec.model,
           ...(rec.modelExactId ? { modelExactId: rec.modelExactId } : {}),
           ...(rec.modelLabel ? { modelLabel: rec.modelLabel } : {}),
@@ -8138,25 +8260,37 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     });
     return sorted.slice(0, 300).map(({ c, ts, inp, cache, outp, tot }) => {
       const ttftSec = (c.ttftSec != null && Number.isFinite(Number(c.ttftSec)) && Number(c.ttftSec) >= 0)
-        ? Number(Number(c.ttftSec).toFixed(2))
+        ? Number(Number(c.ttftSec).toFixed(4))
         : null;
       const streamingSec = (c.streamingSec != null && Number.isFinite(Number(c.streamingSec)) && Number(c.streamingSec) >= 0)
-        ? Number(Number(c.streamingSec).toFixed(2))
+        ? Number(Number(c.streamingSec).toFixed(4))
         : null;
       const rawDur = (c.durationSec != null && Number.isFinite(Number(c.durationSec)) && Number(c.durationSec) > 0)
-        ? Number(Number(c.durationSec).toFixed(2))
+        ? Number(Number(c.durationSec).toFixed(4))
         : null;
       const durationSec = rawDur !== null
         ? rawDur
         : ((ttftSec !== null && streamingSec !== null)
-          ? Number((ttftSec + streamingSec).toFixed(2))
+          ? Number((ttftSec + streamingSec).toFixed(4))
           : (streamingSec !== null && streamingSec > 0 ? streamingSec : (ttftSec !== null && ttftSec > 0 ? ttftSec : null)));
       const tps = (c.tps != null && Number.isFinite(Number(c.tps)) && Number(c.tps) > 0)
         ? Number(Number(c.tps).toFixed(1))
         : ((outp > 0 && durationSec !== null && durationSec > 0) ? Number((outp / durationSec).toFixed(1)) : null);
-      const streamingTps = (c.streamingTps != null && Number.isFinite(Number(c.streamingTps)) && Number(c.streamingTps) > 0)
-        ? Number(Number(c.streamingTps).toFixed(1))
-        : ((outp > 0 && streamingSec !== null && streamingSec >= 0.2) ? Number((outp / streamingSec).toFixed(1)) : null);
+      const rowSpeedInfo = resolveRequestRowSpeed({
+        outputTokens: outp,
+        ttftSec,
+        streamingSec,
+        durationSec,
+        tps,
+        streamingTps: c.streamingTps,
+        status: c.status,
+        outcomeStatus: c.outcomeStatus
+      });
+      const streamingTps = rowSpeedInfo.source === 'streaming'
+        ? rowSpeedInfo.speed
+        : ((c.streamingTps != null && Number.isFinite(Number(c.streamingTps)) && Number(c.streamingTps) > 0)
+          ? Number(Number(c.streamingTps).toFixed(1))
+          : ((outp > 0 && streamingSec !== null && streamingSec > 0) ? Number((outp / streamingSec).toFixed(1)) : null));
       const totalInput = inp + cache;
       const cacheReadPct = totalInput > 0 ? Number(((cache / totalInput) * 100).toFixed(1)) : null;
       const exactId = c.modelExactId || resolveStableModelId(c, modelConfigs) || null;
@@ -8182,9 +8316,12 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       const status = c.status === 'streaming' ? 'streaming' : 'final';
       const errText = c.error ? String(c.error).slice(0, 200) : null;
       const outcomeStatus = c.outcomeStatus || (errText ? 'failed' : (status === 'streaming' ? 'streaming' : 'success'));
-      const reqModelCandidate = c.requestedModel && !/^model_placeholder_/i.test(String(c.requestedModel))
-        ? String(c.requestedModel)
-        : null;
+      const reqMeta = resolveRequestedModelDisplay(
+        c.requestedModel || c.requestedModelRaw || null,
+        modelConfigs,
+        livePlanStatus?.availableModels || null
+      );
+      const reqModelCandidate = reqMeta.text || null;
       return {
         callId: c.callId || null,
         cascadeId: c.cascadeId || null,
@@ -8196,6 +8333,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         agentRole: c.agentRole || (c.parentCascadeId || c.subagentType ? 'subagent' : 'main'),
         subagentType: c.subagentType || null,
         requestedModel: reqModelCandidate,
+        ...(reqMeta.rawId && reqMeta.rawId !== reqModelCandidate ? { requestedModelRaw: reqMeta.rawId } : (c.requestedModelRaw ? { requestedModelRaw: c.requestedModelRaw } : {})),
         model: c.model || exactId || modelKey || '',
         modelExactId: exactId,
         modelKey,
@@ -8216,6 +8354,9 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         durationSec,
         tps,
         streamingTps,
+        speedSource: rowSpeedInfo.source,
+        speedReason: rowSpeedInfo.reasonCode || null,
+        isShortStream: Boolean(rowSpeedInfo.isShortStream),
         status,
         outcomeStatus,
         error: errText
@@ -9936,6 +10077,7 @@ const MAX_GITHUB_STREAM_BYTES = 100 * 1024 * 1024;
 
 let cachedUpdateCheck = null;
 let cachedUpdateCheckAt = 0;
+let cachedUpdateCheckKey = null;
 let isApplyingUpdate = false;
 
 /**
@@ -10689,7 +10831,7 @@ async function resolveAssetsForWebRelease(targetRelease, fetcher, timeout = 8000
 
 async function checkUpdateAsync(options = {}) {
   const runtimeVersion = options.currentVersion || PROJECT_VERSION;
-  const diskVersion = getInstalledMeterVersion(options);
+  const diskVersion = options.liveOnly ? getStagedLiveRuntime(options)?.version : getInstalledMeterVersion(options);
   const effectiveCurrentVersion = (diskVersion && compareVersions(diskVersion, runtimeVersion) > 0)
     ? diskVersion
     : runtimeVersion;
@@ -10697,28 +10839,12 @@ async function checkUpdateAsync(options = {}) {
   const resolvedAllowBeta = typeof options.allowBetaUpdates === 'boolean'
     ? options.allowBetaUpdates
     : getPluginSettings(options).allowBetaUpdates === true;
+  const cacheKey = JSON.stringify([options.liveOnly === true, runtimeVersion, installedVersion, resolvedAllowBeta]);
 
   const now = Date.now();
   const cacheTtl = 6 * 3600 * 1000;
-  if (!options.force && cachedUpdateCheck && (now - cachedUpdateCheckAt < cacheTtl)) {
-    // 若预发布通道开关或运行时版本与缓存不一致，缓存立即失效
-    if (Boolean(cachedUpdateCheck.allowBetaUpdates) !== resolvedAllowBeta) {
-      cachedUpdateCheck = null;
-      cachedUpdateCheckAt = 0;
-    } else if (cachedUpdateCheck.currentVersion && cachedUpdateCheck.currentVersion !== runtimeVersion) {
-      cachedUpdateCheck = null;
-      cachedUpdateCheckAt = 0;
-    } else if (cachedUpdateCheck.hasUpdate && cachedUpdateCheck.latestVersion) {
-      // 若当前磁盘或生效版本已追平或超越缓存的最新发布版本，该缓存必须即刻失效
-      if (compareVersions(effectiveCurrentVersion, cachedUpdateCheck.latestVersion) >= 0) {
-        cachedUpdateCheck = null;
-        cachedUpdateCheckAt = 0;
-      } else {
-        return cachedUpdateCheck;
-      }
-    } else {
-      return cachedUpdateCheck;
-    }
+  if (!options.force && cachedUpdateCheck && cachedUpdateCheckKey === cacheKey && now - cachedUpdateCheckAt < cacheTtl) {
+    return cachedUpdateCheck;
   }
 
   try {
@@ -10757,6 +10883,7 @@ async function checkUpdateAsync(options = {}) {
         ...(assetsWarning ? { assetsWarning } : {})
       };
       cachedUpdateCheckAt = now;
+      cachedUpdateCheckKey = cacheKey;
       return cachedUpdateCheck;
     }
     cachedUpdateCheck = {
@@ -10766,10 +10893,12 @@ async function checkUpdateAsync(options = {}) {
       installedVersion,
       latestVersion: effectiveCurrentVersion,
       allowBetaUpdates: resolvedAllowBeta,
-      diskPendingRestart: compareVersions(installedVersion, runtimeVersion) > 0,
+      diskPendingRestart: !options.liveOnly && compareVersions(installedVersion, runtimeVersion) > 0,
+      ...(options.liveOnly && compareVersions(installedVersion, runtimeVersion) > 0 ? { livePendingReload: true } : {}),
       source
     };
     cachedUpdateCheckAt = now;
+    cachedUpdateCheckKey = cacheKey;
     return cachedUpdateCheck;
   } catch (err) {
     return {
@@ -10846,6 +10975,7 @@ function waitWritableStreamClose(stream) {
 const LIVE_RUNTIME_FILES = [
   'package.json',
   'cli.js',
+  'autostart.js',
   'install.js',
   'restore.js',
   'live-host.js',
@@ -10866,6 +10996,7 @@ const LIVE_RUNTIME_FILES = [
   'meter-context-unlock.js',
   'meter-enhance.js',
   'meter-accounts.js',
+  'meter-next-prompt.js',
   'macos-binary-utils.js',
   'attachment_scan.py',
   'asar-engine.js',
@@ -10880,6 +11011,52 @@ function getLiveRuntimeDir(customStateDir = null) {
   const { getStateDir } = require('./asar-engine');
   const stateDir = customStateDir || getStateDir();
   return path.join(stateDir, 'live-runtime');
+}
+
+function getStagedLiveRuntime(options = {}) {
+  const stateDir = options.stateDir || require('./asar-engine').getStateDir();
+  const root = path.join(stateDir, 'live-updates');
+  try {
+    const { version, bundle } = JSON.parse(fs.readFileSync(path.join(root, 'current.json'), 'utf8'));
+    if (typeof bundle !== 'string' || !/^bundle-[a-zA-Z0-9]+$/.test(bundle)) return null;
+    const dir = path.join(root, bundle);
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    if (pkg.version !== version || pkg.name !== 'antigravity-context-viewer' || !fs.statSync(path.join(dir, 'cli.js')).isFile()) return null;
+    return { version, dir };
+  } catch {
+    return null;
+  }
+}
+
+async function stageLiveUpdate(sourceDir, version, options) {
+  const stateDir = options.stateDir || require('./asar-engine').getStateDir();
+  const root = path.join(stateDir, 'live-updates');
+  const pointer = path.join(root, 'current.json');
+  await fs.promises.mkdir(root, { recursive: true });
+  return withFileLockAsync(pointer, async () => {
+    const existing = getStagedLiveRuntime({ stateDir });
+    if (existing && compareVersions(existing.version, version) >= 0) return existing;
+    const pkg = JSON.parse(await fs.promises.readFile(path.join(sourceDir, 'package.json'), 'utf8'));
+    if (pkg.name !== 'antigravity-context-viewer' || pkg.version !== version) {
+      throw new Error('免改盘更新包的版本与发行版本不一致');
+    }
+    const dir = await fs.promises.mkdtemp(path.join(root, 'bundle-'));
+    try {
+      for (const file of LIVE_RUNTIME_FILES) {
+        const source = path.join(sourceDir, file);
+        if (!(await fs.promises.lstat(source)).isFile()) throw new Error(`更新包包含不支持的文件: ${file}`);
+        const target = path.join(dir, file);
+        await fs.promises.mkdir(path.dirname(target), { recursive: true });
+        await fs.promises.copyFile(source, target);
+      }
+      const saved = safeWriteJsonSync(pointer, { version, bundle: path.basename(dir) });
+      if (!saved.ok) throw new Error('无法保存免改盘更新指针');
+      return { version, dir };
+    } catch (error) {
+      await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  });
 }
 
 /**
@@ -11341,17 +11518,30 @@ async function applyUpdateAsync(options = {}) {
       return { ok: false, error: '解压包中缺少 cli.js 安装入口', htmlUrl: targetRelease.htmlUrl };
     }
 
-    const runtimeResolver = options._resolveNodeRuntime || resolveNodeRuntime;
-    const runtimeInfo = runtimeResolver();
-    const subArgs = [...runtimeInfo.args, cliPath, 'install'];
-    if (options.diskOnly === true) subArgs.push('--disk-only');
+    if (options.liveOnly === true) {
+      const staged = await stageLiveUpdate(extractDir, targetRelease.version, options);
+      cachedUpdateCheck = null;
+      cachedUpdateCheckAt = 0;
+      return {
+        ok: true,
+        diskInstalled: false,
+        liveStaged: true,
+        downloaded: true,
+        stagedVersion: staged.version,
+        targetVersion: targetRelease.version,
+        version: staged.version,
+        updateState: 'downloaded',
+        mode: 'live',
+        liveInjected: false
+      };
+    }
 
     // 检查是否存在已记录的自定义安装路径，确保更新子进程继续更新原目标
     let recordedInstalledPath = options.targetPath || null;
     if (!recordedInstalledPath) {
       try {
         const { getStateDir } = require('./asar-engine');
-        const stateDir = getStateDir();
+        const stateDir = options.stateDir || getStateDir();
         const candidatePaths = [
           path.join(stateDir, 'installation.json'),
           path.join(__dirname, 'installation.json')
@@ -11367,6 +11557,59 @@ async function applyUpdateAsync(options = {}) {
         }
       } catch { }
     }
+
+    // Phase 2B (Issue #104): 改盘更新执行前执行 macOS 签名与 ElectronAsarIntegrity 前置保护
+    try {
+      let checkAsarPath = recordedInstalledPath;
+      if (!checkAsarPath && (effectivePlatform === 'darwin' || options.enforceMacIntegrityCheck === true)) {
+        try {
+          const { findAsarPath } = require('./install');
+          checkAsarPath = findAsarPath(null);
+        } catch { }
+      }
+      if (checkAsarPath) {
+        const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
+        const macCheck = inspectMacAsarIntegrity(checkAsarPath, {
+          _platform: effectivePlatform,
+          _existsSync: options._existsSync,
+          _readFileSync: options._readFileSync,
+          _execFileSync: options._execFileSync
+        });
+        if (
+          macCheck.isMacAppBundle &&
+          (effectivePlatform === 'darwin' || options.enforceMacIntegrityCheck === true) &&
+          (macCheck.patchRisk === 'blocked_integrity' || macCheck.patchRisk === 'blocked_signature') &&
+          !options.allowIntegrityOverride
+        ) {
+          if (options.allowLiveFallback === true) {
+            const staged = await stageLiveUpdate(extractDir, targetRelease.version, options);
+            cachedUpdateCheck = null;
+            cachedUpdateCheckAt = 0;
+            return {
+              ok: true,
+              diskInstalled: false,
+              liveStaged: true,
+              version: staged.version,
+              liveInjected: false,
+              macIntegrityProtected: true
+            };
+          }
+          return {
+            ok: false,
+            blocked: true,
+            reason: macCheck.patchRisk === 'blocked_integrity' ? 'macos_asar_integrity_blocked' : 'macos_bundle_signature_blocked',
+            recommendedEntry: macCheck.recommendedEntry || 'node cli.js watch',
+            error: `[macOS 完整性保护] ${macCheck.reason}。已中止改盘更新，请改用免改盘 watch 更新`,
+            htmlUrl: targetRelease.htmlUrl
+          };
+        }
+      }
+    } catch { }
+
+    const runtimeResolver = options._resolveNodeRuntime || resolveNodeRuntime;
+    const runtimeInfo = runtimeResolver();
+    const subArgs = [...runtimeInfo.args, cliPath, 'install'];
+    if (options.diskOnly === true) subArgs.push('--disk-only');
     if (recordedInstalledPath && typeof recordedInstalledPath === 'string') {
       subArgs.push('--path', recordedInstalledPath);
     }
@@ -11441,12 +11684,14 @@ async function applyUpdateAsync(options = {}) {
     return {
       ok: true,
       diskInstalled: true,
+      downloaded: true,
       liveInjected,
       backendHotReloaded: Boolean(installMeta?.backendHotReloaded),
       backendVersion: installMeta?.backendVersion || null,
       backendSource: installMeta?.backendSource || null,
       hotReloadReport: installMeta || null,
       liveRuntimeDir: liveRuntimeDir || null,
+      targetVersion: targetRelease.version,
       version: targetRelease.version,
       installedVersion: finalInstalledVer,
       diagnostics: {
@@ -11569,6 +11814,7 @@ module.exports = {
   SUBSCRIPTION_ACQUISITION_PRESETS,
   checkUpdateAsync,
   applyUpdateAsync,
+  getStagedLiveRuntime,
   extractUpdateZip,
   sanitizeUpdateErrorText,
   LIVE_RUNTIME_FILES,

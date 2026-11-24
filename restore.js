@@ -7,12 +7,14 @@ const http = require('http');
 const crypto = require('crypto');
 const { getStateDir, getAppDataDir, isIsolatedTestPath, builtinAsar, collectUnpackedPaths, loadAsarEngine } = require('./asar-engine');
 const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
+const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
 const { acquireFileLock } = require('./modules-config');
 const {
   TAGS,
   validateSyntax,
   cleanUtilsSource,
   cleanPreloadSource,
+  diagnoseCleanStructure,
   verifyCleanStructure
 } = require('./modular-installer');
 
@@ -195,8 +197,26 @@ async function restore(options = {}) {
       }
     }
 
+    const macIntegrity = inspectMacAsarIntegrity(targetFile, {
+      _platform: options._platform,
+      _existsSync: options._existsSync,
+      _readFileSync: options._readFileSync,
+      _execFileSync: options._execFileSync
+    });
+    const effectivePlatform = options._platform || process.platform;
+    const allowMacOverride = Boolean(options.allowIntegrityOverride || process.argv.includes('--force-mac-asar'));
+    const removeStaleResHelper = () => {
+      try {
+        const resHelper = path.join(path.dirname(targetFile), 'bin', 'cli-window-helper.exe');
+        if (fs.existsSync(resHelper)) fs.unlinkSync(resHelper);
+      } catch {}
+    };
+
     // 4. 若有效备份匹配当前文件且哈希与期望一致：幂等返回
     if (validBackup && versionMatches && currentInstalledSha === validExpectedSha) {
+      if (!(macIntegrity.isMacAppBundle && effectivePlatform === 'darwin' && (macIntegrity.patchRisk === 'blocked_integrity' || macIntegrity.patchRisk === 'blocked_signature'))) {
+        removeStaleResHelper();
+      }
       await tryHotDispose();
       return { restored: targetFile, fromBackup: validBackup, alreadyRestored: true };
     }
@@ -215,6 +235,7 @@ async function restore(options = {}) {
       if (sha(targetFile) !== validExpectedSha) {
         throw new Error('Restored file checksum mismatch');
       }
+      removeStaleResHelper();
       await tryHotDispose();
       if (hasManifest) {
         try {
@@ -238,6 +259,18 @@ async function restore(options = {}) {
     );
 
     if (canTryInPlace) {
+      if (
+        macIntegrity.isMacAppBundle &&
+        (effectivePlatform === 'darwin' || options.enforceMacIntegrityCheck === true) &&
+        (macIntegrity.patchRisk === 'blocked_integrity' || macIntegrity.patchRisk === 'blocked_signature') &&
+        !allowMacOverride
+      ) {
+        throw new Error(
+          `[macOS 完整性保护] ${macIntegrity.reason}。\n` +
+          '原位重打包 app.asar 会产生未封签摘要并导致客户端启动崩溃，已中止写入。\n' +
+          '恢复建议：重新安装对应的官方 Antigravity.app 以恢复代码签名后，改用免改盘 `node cli.js watch`。'
+        );
+      }
       if (!targetValid) {
         throw new Error(`无法卸载目标文件 (${targetFile})：不支持或损坏的文件结构 (${targetParseError || '缺少 dist/utils.js'})，已完整保留原文件现场。`);
       }
@@ -269,11 +302,12 @@ async function restore(options = {}) {
       } else {
         const potentialCleanUtils = cleanUtilsSource(currentUtilsRaw);
         const potentialCleanPreload = currentPreloadRaw ? cleanPreloadSource(currentPreloadRaw) : '';
+        const utilsDiag = diagnoseCleanStructure(potentialCleanUtils);
         const utilsSyntaxOk = validateSyntax(potentialCleanUtils, 'clean-restore-utils.js');
         const preloadSyntaxOk = !potentialCleanPreload || validateSyntax(potentialCleanPreload, 'clean-restore-preload.js');
 
-        if (!verifyCleanStructure(potentialCleanUtils) || !utilsSyntaxOk || !preloadSyntaxOk) {
-          throw new Error(`无法对目标文件 (${targetFile}) 执行原位卸载：剥离插件后的宿主核心结构或语法校验未通过，已完整保留原文件现场。`);
+        if (!utilsDiag.ok || !utilsSyntaxOk || !preloadSyntaxOk) {
+          throw new Error(`无法对目标文件 (${targetFile}) 执行原位卸载：剥离插件后的宿主核心结构 (${utilsDiag.stage}) 或语法校验未通过，已完整保留原文件现场。`);
         }
 
         const stamp = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
@@ -293,6 +327,7 @@ async function restore(options = {}) {
             'asar-engine.js',
             'modules-config.js',
             'modular-installer.js',
+            'host-recovery.js',
             'install.js',
             'restore.js',
             'meter-main.js',
@@ -302,10 +337,15 @@ async function restore(options = {}) {
             'meter-storage.js',
             'meter-proxy.js',
             'meter-cli-launcher.js',
+            'meter-cli-monitor.js',
+            'meter-cli-adapter.js',
+            'meter-cli-companion.js',
+            'meter-cli-ui.js',
             'meter-context-unlock.js',
             'meter-enhance.js',
             'meter-rehydrate.js',
             'meter-accounts.js',
+            'meter-next-prompt.js',
             'macos-binary-utils.js',
             'local-api.js',
             'attachment_scan.py',
@@ -354,6 +394,7 @@ async function restore(options = {}) {
             }
 
             console.log('[Restore] 已通过原位解构精准移除插件挂载，并完整保留宿主现有修改与构建内容。');
+            removeStaleResHelper();
             const hotDisposed = await tryHotDispose();
             if (hasManifest) {
               info.restoredAt = new Date().toISOString();

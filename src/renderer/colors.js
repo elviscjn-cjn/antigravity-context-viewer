@@ -75,6 +75,7 @@
     if (savedPreset && HEAT_PRESETS[savedPreset]) heatPreset = savedPreset;
   } catch {}
 
+  let colorSaveTimer = null;
   function saveCustomColors() {
     try {
       if (typeof localStorage !== 'undefined') {
@@ -82,6 +83,24 @@
         localStorage.setItem(HEAT_PRESET_STORAGE_KEY, heatPreset);
       }
     } catch {}
+    userActionSeq++;
+    if (colorSaveTimer) clearTimeout(colorSaveTimer);
+    colorSaveTimer = setTimeout(() => {
+      colorSaveTimer = null;
+      if (!state.disposed) void saveSettingsPayloadBridge({ uiPreferences: { customColors: { ...customColors }, heatPreset } });
+    }, 250);
+  }
+
+  function restoreAppearancePreferences(prefs) {
+    if (prefs.customColors && typeof prefs.customColors === 'object') {
+      for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = normalizeHex(prefs.customColors[key]) || '';
+      if (HEAT_PRESETS[prefs.heatPreset]) heatPreset = prefs.heatPreset;
+      applyCustomColors();
+    }
+    if (['auto', 'light', 'dark'].includes(prefs.themeMode) && prefs.themeMode !== currentThemeMode) {
+      currentThemeMode = prefs.themeMode;
+      applyTheme();
+    }
   }
 
   // 色彩空间转换与格式化工具（HEX <-> RGB <-> HSV <-> HSL）
@@ -726,6 +745,8 @@
       if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', currentThemeMode);
     } catch {}
     applyTheme();
+    userActionSeq++;
+    void saveSettingsPayloadBridge({ uiPreferences: { themeMode: currentThemeMode } });
   }
 
   let themeObserver = null;

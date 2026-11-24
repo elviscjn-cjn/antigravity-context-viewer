@@ -920,3 +920,117 @@ test('applyUpdateAsync 支持指定 prerelease 版本（如 0.9.0-beta.1）透�
   // 关键断言：不应因未透传 allowBetaUpdates 而报「未获取到可用的官方发布版本」或「未找到版本」，应走到资产缺失校验
   assert.match(res.error, /未提供对应系统架构资产/);
 });
+
+test('免改盘更新校验发行包后暂存完整运行时，不调用 ASAR 安装器', async () => {
+  const { LIVE_RUNTIME_FILES, getStagedLiveRuntime } = require('./meter-collector');
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-live-update-'));
+  const version = '0.99.1';
+  const osName = { win32: 'windows', darwin: 'darwin', linux: 'linux' }[process.platform];
+  const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
+  const zipName = `antigravity-context-viewer_${version}_${osName}_${arch}.zip`;
+  const zip = Buffer.from('update-test');
+  const hash = crypto.createHash('sha256').update(zip).digest('hex');
+  const assets = [zipName, 'checksums.txt'].map(name => ({ name, browser_download_url: `${OFFICIAL_RELEASES_WEB_BASE}/download/v${version}/${name}` }));
+  try {
+    const result = await applyUpdateAsync({
+      currentVersion: '0.99.0', version, stateDir, liveOnly: true,
+      _requestGithubUrl: async (url, opts) => opts?.streamTo
+        ? writeStreamAsync(opts.streamTo, url.endsWith('.zip') ? zip : `${hash}  ${zipName}\n`)
+        : JSON.stringify([{ tag_name: `v${version}`, published_at: new Date(Date.now() - 60000).toISOString(), html_url: `${OFFICIAL_RELEASES_WEB_BASE}/tag/v${version}`, assets }]),
+      _extractZip: (_, dest) => {
+        for (const file of LIVE_RUNTIME_FILES) {
+          const target = path.join(dest, file);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, file === 'package.json' ? JSON.stringify({ name: 'antigravity-context-viewer', version }) : `fixture ${file}`);
+        }
+      },
+      _spawn: () => { throw new Error('live update must not spawn the ASAR installer'); }
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.diskInstalled, false);
+    assert.equal(result.liveStaged, true);
+    const staged = getStagedLiveRuntime({ stateDir });
+    assert.equal(staged.version, version);
+    assert.equal(fs.readFileSync(path.join(staged.dir, 'meter-renderer.js'), 'utf8'), 'fixture meter-renderer.js');
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('免改盘更新检查不复用改盘结果，并能发现其他进程暂存的新版', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-live-update-check-'));
+  const currentVersion = '0.97.0';
+  const version = '0.97.1';
+  const request = async () => JSON.stringify([{
+    tag_name: `v${version}`, html_url: `${OFFICIAL_RELEASES_WEB_BASE}/tag/v${version}`,
+    published_at: new Date(Date.now() - 60000).toISOString(), assets: []
+  }]);
+  try {
+    const options = { currentVersion, stateDir, allowBetaUpdates: false, _requestGithubUrl: request };
+    const disk = await checkUpdateAsync({ ...options, installedVersion: version, force: true });
+    assert.equal(disk.diskPendingRestart, true);
+
+    const live = await checkUpdateAsync({ ...options, liveOnly: true });
+    assert.equal(live.hasUpdate, true);
+    assert.equal(live.latestVersion, version);
+
+    const updates = path.join(stateDir, 'live-updates');
+    const bundle = 'bundle-cached';
+    const runtime = path.join(updates, bundle);
+    fs.mkdirSync(runtime, { recursive: true });
+    fs.writeFileSync(path.join(runtime, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version }));
+    fs.writeFileSync(path.join(runtime, 'cli.js'), '');
+    fs.writeFileSync(path.join(updates, 'current.json'), JSON.stringify({ version, bundle }));
+
+    const staged = await checkUpdateAsync({ ...options, liveOnly: true });
+    assert.equal(staged.hasUpdate, false);
+    assert.equal(staged.livePendingReload, true);
+    assert.equal(staged.diskPendingRestart, false);
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+
+test('Phase 2B (Issue #104): applyUpdateAsync 非 liveOnly 改盘分支在 macOS ElectronAsarIntegrity 下写前拦截不调用安装器', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-mac-apply-block-'));
+  const appResDir = path.join(stateDir, 'Antigravity.app', 'Contents', 'Resources');
+  const plistPath = path.join(stateDir, 'Antigravity.app', 'Contents', 'Info.plist');
+  fs.mkdirSync(appResDir, { recursive: true });
+  fs.writeFileSync(plistPath, '<plist><dict><key>ElectronAsarIntegrity</key><dict><key>Resources/app.asar</key><dict><key>algorithm</key><string>SHA256</string></dict></dict></dict></plist>', 'utf8');
+  const macAsarPath = path.join(appResDir, 'app.asar');
+  fs.writeFileSync(macAsarPath, 'mock-signed-asar');
+  const version = '0.99.2';
+  const zipName = `antigravity-context-viewer_${version}_darwin_arm64.zip`;
+  const zip = Buffer.from('mac-update-test');
+  const hash = crypto.createHash('sha256').update(zip).digest('hex');
+  const assets = [zipName, 'checksums.txt'].map(name => ({ name, browser_download_url: `${OFFICIAL_RELEASES_WEB_BASE}/download/v${version}/${name}` }));
+  let spawned = false;
+  try {
+    const res = await applyUpdateAsync({
+      currentVersion: '0.99.0',
+      version,
+      stateDir,
+      targetPath: macAsarPath,
+      _platform: 'darwin',
+      _arch: 'arm64',
+      _requestGithubUrl: async (url, opts) => opts?.streamTo
+        ? writeStreamAsync(opts.streamTo, url.endsWith('.zip') ? zip : `${hash}  ${zipName}\n`)
+        : JSON.stringify([{ tag_name: `v${version}`, published_at: new Date(Date.now() - 60000).toISOString(), html_url: `${OFFICIAL_RELEASES_WEB_BASE}/tag/v${version}`, assets }]),
+      _extractZip: (_, dest) => {
+        fs.writeFileSync(path.join(dest, 'cli.js'), 'console.log("ok")');
+      },
+      _spawn: () => {
+        spawned = true;
+        throw new Error('must not spawn disk installer on Integrity protected macOS bundle');
+      }
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.blocked, true);
+    assert.equal(res.reason, 'macos_asar_integrity_blocked');
+    assert.equal(spawned, false);
+    assert.equal(fs.readFileSync(macAsarPath, 'utf8'), 'mock-signed-asar');
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});

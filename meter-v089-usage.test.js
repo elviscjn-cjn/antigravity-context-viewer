@@ -952,7 +952,7 @@ test('实时请求统计：后端 .db 耗时回填 + recentRequestLogs 排序去
       assert.equal(st.rowCount, 3);
       assert.equal(st.emptyVisible, false);
 
-      // 核对第一行（Desktop，0.1s 极短流速度应显示 —，4.3s 绿、0% 缓存、$0.031）
+      // 核对第一行（Desktop，0.1s 有效流式短输出不再一刀切丢弃 -> 184 / 0.1 = 1840 token/秒，4.3s 绿、0% 缓存、$0.031）
       assert.equal(st.rows[0].length, 13, '表格每行必须包含完整 13 列');
       assert.equal(st.rows[0][1], 'Antigravity');
       assert.equal(st.rows[0][2], '—');
@@ -964,10 +964,10 @@ test('实时请求统计：后端 .db 耗时回填 + recentRequestLogs 排序去
       assert.equal(st.rows[0][8], '$0.031');
       assert.equal(st.rows[0][9], '≈4.2 秒');
       assert.equal(st.rows[0][10], '≈4.3 秒');
-      assert.equal(st.rows[0][11], '—');
+      assert.equal(st.rows[0][11], '1840 token/秒');
       assert.equal(st.rows[0][12], '成功');
 
-      // 核对第二行（Antigravity CLI，99% 缓存，$0.137，132 token/秒）
+      // 核对第二行（Antigravity CLI，99% 缓存，$0.137，精确 3800 / 28.8 = 131.9 token/秒）
       assert.equal(st.rows[1][1], 'Antigravity CLI');
       assert.equal(st.rows[1][4], 'gemini-4-neon');
       assert.equal(st.rows[1][5], '4.0K');
@@ -975,7 +975,7 @@ test('实时请求统计：后端 .db 耗时回填 + recentRequestLogs 排序去
       assert.equal(st.rows[1][7], '99%');
       assert.equal(st.rows[1][8], '$0.137');
       assert.equal(st.rows[1][10], '≈34 秒');
-      assert.equal(st.rows[1][11], '132 token/秒');
+      assert.equal(st.rows[1][11], '131.9 token/秒');
 
       // 核对第三行（99.5% 缓存，限流状态）
       assert.equal(st.rows[2][7], '99.5%');
@@ -1004,7 +1004,7 @@ test('实时请求统计：后端 .db 耗时回填 + recentRequestLogs 排序去
       st = h.api.getRequestsViewStateForTest();
       assert.equal(st.rows[0][3], 'Local Session');
       assert.equal(st.rows[0][9], '≈4.2s');
-      assert.equal(st.rows[1][11], '132 tok/s');
+      assert.equal(st.rows[1][11], '131.9 tok/s');
       assert.equal(st.rows[0][12], 'Success');
       assert.equal(st.rows[2][12], 'Rate Limited');
       for (const row of st.rows) {
@@ -1967,5 +1967,124 @@ test('Issue #77 历史用量守恒与防撞回归：删会话保留旧消耗、�
     assert.equal(fs.statSync(bakFile).mtimeMs, bakMtimeBefore);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Phase 3 (图 5): requestedModel 占位符映射、回退路由保留、短流式小数速度排序与 Desktop/CLI 数值精度对齐', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-phase3-speed-cli-'));
+  const agDir = path.join(rootDir, 'desktop');
+  const cliDir = path.join(rootDir, 'cli');
+  const cidDesk = 'cccccccc-3333-4333-8333-333333333333';
+  const cidCli = 'dddddddd-4444-4444-8444-444444444444';
+  try {
+    fs.mkdirSync(path.join(agDir, 'brain', cidDesk, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agDir, 'conversations'), { recursive: true });
+    fs.mkdirSync(path.join(cliDir, 'brain', cidCli, '.system_generated', 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(cliDir, 'conversations'), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(agDir, 'brain', cidDesk, '.system_generated', 'logs', 'transcript.jsonl'),
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        created_at: '2026-11-24T08:00:00.000Z',
+        chatModel: {
+          model: 'MODEL_PLACEHOLDER_M667',
+          responseModel: 'gemini-4-argon',
+          modelDisplayName: 'Gemini 4 Argon',
+          timeToFirstToken: '1.2345s',
+          streamingDuration: '0.15s',
+          usage: { inputTokens: 1000, cacheReadTokens: 2000, outputTokens: 19 }
+        }
+      }) + '\n',
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(cliDir, 'brain', cidCli, '.system_generated', 'logs', 'transcript.jsonl'),
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        created_at: '2026-11-24T08:05:00.000Z',
+        chatModel: {
+          model: 'MODEL_PLACEHOLDER_M525',
+          responseModel: 'gemini-4-hydrogen',
+          modelDisplayName: 'Gemini 4 Hydrogen (High)',
+          timeToFirstToken: '1.1000s',
+          streamingDuration: '0.15s',
+          usage: { inputTokens: 1000, cacheReadTokens: 2000, outputTokens: 19 }
+        }
+      }) + '\n',
+      'utf8'
+    );
+
+    const cliMonitor = require('./meter-cli-monitor');
+    const history = await collector.collectTokenHistoryAsync({
+      agDir,
+      agCliDir: cliDir,
+      force: true,
+      useWorker: false,
+      hostFetcher: async () => ({
+        userStatus: {
+          cascadeModelConfigData: {
+            clientModelConfigs: [
+              { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M667' }, modelId: 'gemini-4-carbon', label: 'Orchestrator (Carbon)' },
+              { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M525' }, modelId: 'gemini-4-hydrogen-tiered-high', label: 'Gemini 4 Hydrogen (High)' }
+            ]
+          }
+        }
+      })
+    });
+    const deskLog = history.recentRequestLogs.find(r => r.cascadeId === cidDesk);
+    const cliLog = history.recentRequestLogs.find(r => r.cascadeId === cidCli);
+    assert.ok(deskLog && cliLog);
+    assert.equal(deskLog.requestedModel, 'Orchestrator (Carbon)');
+    assert.equal(deskLog.requestedModelRaw, 'MODEL_PLACEHOLDER_M667');
+    assert.equal(deskLog.modelKey, 'gemini-4-argon');
+    assert.equal(deskLog.streamingSec, 0.15);
+    assert.equal(deskLog.streamingTps, 126.7);
+    assert.equal(cliLog.requestedModel, 'Gemini 4 Hydrogen High');
+    assert.equal(cliLog.streamingTps, 126.7);
+
+    // 校验 CLI Monitor 对同会话输出行级精度与 requestedModel 一致
+    const cliScan = cliMonitor.scanCliSessions({
+      agDir,
+      agCliDir: cliDir,
+      stateDir: path.join(rootDir, 'state')
+    });
+    const cliSess = cliScan.sessions.find(s => s.sessionId === cidCli);
+    assert.ok(cliSess);
+    assert.equal(cliSess.requestedModel, 'Gemini 4 Hydrogen High');
+    assert.equal(cliSess.latestCallMetrics.rowSpeedTokPerSec, cliLog.streamingTps);
+
+    // 校验前端渲染器速度降序排序 & 不可计算原因归底
+    const h = createV089DomSandbox();
+    try {
+      const dm = { '2026-11-24': { total: 10000, input: 4000, cache: 5000, output: 1000, steps: 3 } };
+      h.api.applyTokenHistoryPayload({
+        schemaVersion: '0.9.2',
+        firstUseDate: '2026-11-24',
+        dailyMap: dm,
+        dailyMapBySource: { all: dm, desktop: dm, cli: dm },
+        summary: { grandTotalTokens: 10000, todayTokens: 10000 },
+        recentRequestLogs: [
+          { callId: 'r-nonstream', cascadeId: cidDesk, timestamp: 3000, date: '2026-11-24', source: 'desktop', modelKey: 'gemini-4-argon', inputTokens: 100, outputTokens: 120, ttftSec: 2, streamingSec: 0, durationSec: 2, status: 'final' },
+          { callId: 'r-short', cascadeId: cidDesk, timestamp: 1000, date: '2026-11-24', source: 'desktop', requestedModel: 'Orchestrator (Carbon)', requestedModelRaw: 'MODEL_PLACEHOLDER_M667', modelKey: 'gemini-4-argon', inputTokens: 100, outputTokens: 19, ttftSec: 1.2345, streamingSec: 0.15, durationSec: 1.3845, streamingTps: 126.7, status: 'final' },
+          { callId: 'r-fast', cascadeId: cidCli, timestamp: 2000, date: '2026-11-24', source: 'cli', requestedModel: 'Gemini 4 Hydrogen High', modelKey: 'gemini-4-hydrogen', inputTokens: 100, outputTokens: 500, ttftSec: 1, streamingSec: 2.5, durationSec: 3.5, streamingTps: 200, status: 'final' }
+        ]
+      });
+      h.api.switchTokenViewForTest('requests');
+      h.elements.get('req-sort-bar').trigger('click', {
+        target: { closest: (sel) => (sel === '[data-req-sort]' ? { getAttribute: () => 'speed_desc' } : null) }
+      });
+      const st = h.api.getRequestsViewStateForTest();
+      assert.equal(st.rows[0][11], '200 token/秒');
+      assert.equal(st.rows[1][2], 'Orchestrator (Carbon)');
+      assert.equal(st.rows[1][11], '126.7 token/秒');
+      assert.equal(st.rows[2][11], '—', '不可计算样本必须按 speed_desc 排到可计算样本之后');
+    } finally {
+      h.api.dispose();
+    }
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
   }
 });
