@@ -1003,6 +1003,10 @@
   }
 
   function applyBrandTitleToText(trimmed, parentEl) {
+    if (trimmed !== 'Antigravity' && trimmed !== 'Google Antigravity' &&
+        trimmed !== '反重力' && trimmed !== 'Google 反重力') {
+      return null;
+    }
     var mode = getBrandTitleMode();
     if (!parentEl || !parentEl.tagName) return null;
     var tag = parentEl.tagName;
@@ -1076,10 +1080,13 @@
     }
   }
 
-  function translateTextNode(node) {
+  function translateTextNode(node, parentAlreadySafe) {
     if (!node || node.nodeType !== 3) return;
     var parent = node.parentElement || node.parentNode;
-    if (parent && (shouldIgnoreElement(parent) || parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA' || hasProtectedCoreAncestor(parent))) return;
+    if (parent) {
+      if (parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA') return;
+      if (!parentAlreadySafe && (shouldIgnoreElement(parent) || hasProtectedCoreAncestor(parent))) return;
+    }
 
     var original = node.nodeValue;
     if ((!original || !original.trim()) && node._agyHiddenOrigBrand) {
@@ -1181,9 +1188,19 @@
     return null;
   }
 
-  function translateElement(el, scanId) {
+  function shouldIgnoreChildElementFast(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (hasProtectedNodeOwnMarkers(el)) return true;
+    if (el.getAttribute && el.getAttribute('data-testid') === 'menu-option-label') {
+      var optTxt = (el.innerText || el.textContent || '').trim();
+      return !Object.prototype.hasOwnProperty.call(MENTION_CATEGORIES, optTxt);
+    }
+    return false;
+  }
+
+  function translateElement(el, scanId, parentAlreadySafe, yieldBudget) {
     if (!el || el.nodeType !== 1) return;
-    if (shouldIgnoreElement(el)) return;
+    if (parentAlreadySafe ? shouldIgnoreChildElementFast(el) : shouldIgnoreElement(el)) return;
 
     if (scanId && el._agyScanId === scanId) return;
     if (scanId) el._agyScanId = scanId;
@@ -1338,9 +1355,13 @@
     var child = el.firstChild;
     while (child) {
       if (child.nodeType === 3) {
-        translateTextNode(child);
+        translateTextNode(child, true);
       } else if (child.nodeType === 1) {
-        translateElement(child, scanId);
+        if (yieldBudget && yieldBudget.checkExceeded()) {
+          enqueueNode(child);
+        } else {
+          translateElement(child, scanId, true, yieldBudget);
+        }
       }
       child = child.nextSibling;
     }
@@ -1385,11 +1406,11 @@
     if (!node) return;
     if (pendingNodeSet) {
       if (pendingNodeSet.has(node)) return;
-      if (pendingNodes.length < 500) {
+      if (pendingNodes.length < 2000) {
         pendingNodes.push(node);
         pendingNodeSet.add(node);
       }
-    } else if (pendingNodes.length < 500) {
+    } else if (pendingNodes.length < 2000) {
       pendingNodes.push(node);
     }
   }
@@ -1403,17 +1424,28 @@
     var startMs = getNow();
     var limit = Math.min(pendingNodes.length, 200);
     var processed = 0;
+    var ops = 0;
+    var budgetExceeded = false;
+    var yieldBudget = {
+      checkExceeded: function () {
+        if (budgetExceeded) return true;
+        if ((++ops & 15) === 0 && (getNow() - startMs) >= 8) {
+          budgetExceeded = true;
+        }
+        return budgetExceeded;
+      }
+    };
     disconnectObserver();
     try {
       for (var i = 0; i < limit; i++) {
         var node = pendingNodes[i];
         if (pendingNodeSet) pendingNodeSet.delete(node);
         if (node) {
-          if (node.nodeType === 1) translateElement(node);
-          else if (node.nodeType === 3) translateTextNode(node);
+          if (node.nodeType === 1) translateElement(node, undefined, false, yieldBudget);
+          else if (node.nodeType === 3) translateTextNode(node, false);
         }
         processed++;
-        if (processed >= 1 && i + 1 < limit && (getNow() - startMs) >= 6) {
+        if (budgetExceeded || (processed >= 1 && i + 1 < limit && (getNow() - startMs) >= 8)) {
           break;
         }
       }
@@ -1545,9 +1577,11 @@
         disconnectObserver();
         try {
           var last = doc.body.lastElementChild;
-          if (last && isFloatingElement(last)) translateElement(last);
-          if (last && last.previousElementSibling && isFloatingElement(last.previousElementSibling)) translateElement(last.previousElementSibling);
-          var tooltips = doc.querySelectorAll ? doc.querySelectorAll('[role="tooltip"], [role="menu"], [role="dialog"], [data-floating-ui-portal], [data-radix-popper-content-wrapper], .popover, .tooltip, .context-view, .monaco-hover') : null;
+          if (last && isFloatingElement(last) && last.getAttribute('role') !== 'dialog') translateElement(last);
+          if (last && last.previousElementSibling && isFloatingElement(last.previousElementSibling) && last.previousElementSibling.getAttribute('role') !== 'dialog') {
+            translateElement(last.previousElementSibling);
+          }
+          var tooltips = doc.querySelectorAll ? doc.querySelectorAll('[role="tooltip"], [role="menu"], [data-floating-ui-portal], [data-radix-popper-content-wrapper], .popover, .tooltip, .context-view, .monaco-hover') : null;
           if (tooltips && tooltips.length > 0) {
             for (var tIdx = 0; tIdx < tooltips.length; tIdx++) translateElement(tooltips[tIdx]);
           }
@@ -1557,19 +1591,18 @@
 
       var onHoverAction = function (e) {
         var now = Date.now ? Date.now() : (+new Date());
-        if (now - lastHoverTime < 120) return;
+        if (now - lastHoverTime < 150) return;
         lastHoverTime = now;
 
         var target = e.target;
         if (!target) return;
-        disconnectObserver();
-        try {
-          if (target.nodeType === 1) {
+        if (target.nodeType === 1 && target.childElementCount <= 8) {
+          disconnectObserver();
+          try {
             translateElement(target);
-            if (target.parentElement && !isWorkbenchOrRoot(target.parentElement)) translateElement(target.parentElement);
-          }
-        } catch (e) {}
-        reconnectObserver();
+          } catch (e) {}
+          reconnectObserver();
+        }
 
         if (hoverScanTimer) clearTimeout(hoverScanTimer);
         hoverScanTimer = setTimeout(function () {
