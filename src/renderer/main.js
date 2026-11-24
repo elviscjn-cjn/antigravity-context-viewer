@@ -1108,7 +1108,7 @@
             '[class*="@container/titlebar"],',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child {',
-            '  /* Native titlebar owns draggable regions. */',
+            '  -webkit-app-region: drag;',
             '}',
             '[class*="@container/titlebar"] button,',
             '[class*="@container/titlebar"] a,',
