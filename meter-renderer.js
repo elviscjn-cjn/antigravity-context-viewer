@@ -20514,7 +20514,7 @@
         overflow: visible !important;
         pointer-events: none !important;
         z-index: ${RADIAL_TOP_Z_INDEX} !important;
-        -webkit-app-region: no-drag !important;
+        /* 全屏宿主不能设置 no-drag，否则会覆盖并阻断顶栏窗口拖拽区域 */
         font: 12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
         --ag-ring-warn: #f59e0b;
         --ag-ring-danger: #ef4444;
@@ -20573,7 +20573,7 @@
       radialHost.id = RADIAL_TOP_HOST_ID;
       radialHost.setAttribute?.('data-ag-radial-top-layer', 'true');
       if (radialHost.style) {
-        radialHost.style.cssText = `position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;pointer-events:none!important;z-index:${RADIAL_TOP_Z_INDEX}!important;-webkit-app-region:no-drag!important;`;
+        radialHost.style.cssText = `position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;pointer-events:none!important;z-index:${RADIAL_TOP_Z_INDEX}!important;`;
       }
       const styleEl = document.createElement('style');
       if (styleEl) {
@@ -62264,7 +62264,7 @@ function initCrossSessionInsightsControls() {
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '2303c0bdd268067f',
+    buildId: '153f35d4b3213d4b',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
