@@ -773,3 +773,42 @@ test('Phase 7.3: 底栏开关解耦、#csb-group-status 直达与窄窗优先露
     api.dispose();
   }
 });
+
+test('底栏挂载防呆: 不得误插进横排分栏右侧且错位后可自愈重挂', async () => {
+  const h = createHostSettingsTestHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    await h.flush();
+    const csbBar = h.elements.get('composer-status-bar');
+    assert.ok(csbBar, 'composer-status-bar 应存在');
+
+    // 模拟已错位挂在左右分栏（flex-direction: row）的聊天主栏右侧
+    const rowSplit = { tagName: 'DIV', style: { display: 'flex', flexDirection: 'row' }, children: [] };
+    const chatColumn = {
+      tagName: 'DIV',
+      parentElement: rowSplit,
+      closest: () => null,
+      querySelector: (sel) => (String(sel).includes('textarea') ? { tagName: 'TEXTAREA' } : null),
+      getBoundingClientRect: () => ({ height: 860 })
+    };
+    rowSplit.children = [chatColumn, csbBar];
+    csbBar.parentElement = rowSplit;
+    Object.defineProperty(csbBar, 'isConnected', { value: true, configurable: true });
+    Object.defineProperty(csbBar, 'previousElementSibling', { get: () => chatColumn, configurable: true });
+    csbBar.hidden = false;
+
+    const origGetComputedStyle = h.sandbox.getComputedStyle;
+    h.sandbox.getComputedStyle = (node) => {
+      if (node === rowSplit) return { display: 'flex', flexDirection: 'row' };
+      if (node && node.style) return node.style;
+      return origGetComputedStyle ? origGetComputedStyle(node) : {};
+    };
+    h.sandbox.window.innerHeight = 900;
+
+    // 没有真实输入框控件时，短路不应放行错位，应自动隐藏防止悬在右侧
+    api.ensureComposerStatusBarMountedForTest();
+    assert.equal(csbBar.hidden, true, '处于横排分栏右侧时不得短路放行，应隐藏待重挂');
+  } finally {
+    api.dispose();
+  }
+});
