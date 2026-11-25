@@ -11005,6 +11005,7 @@ const LIVE_RUNTIME_FILES = [
   'meter-cli-companion.js',
   'meter-cli-ui.js',
   'meter-rehydrate.js',
+  'meter-autoguard.js',
   'meter-context-unlock.js',
   'meter-enhance.js',
   'meter-accounts.js',
@@ -11015,6 +11016,7 @@ const LIVE_RUNTIME_FILES = [
   'modules-config.js',
   'modular-installer.js',
   'rehydrate/rehydrate_after_compact.py',
+  'autoguard/auto_guard_hook.js',
   'i18n/zh-CN.json',
   'i18n/i18n-runtime.js'
 ];

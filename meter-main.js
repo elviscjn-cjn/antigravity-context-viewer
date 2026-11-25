@@ -58,6 +58,7 @@ const MAIN_CAPABILITIES = {
   contextUnlock: true,
   enhance: true,
   rehydrate: true,
+  autoguard: true,
   modules: true,
   accounts: true,
   checkUpdate: true,
@@ -1192,6 +1193,50 @@ function registerMeterIpcHandlers(ipcMain) {
     try {
       const { installPythonRuntimeAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
       return await installPythonRuntimeAsync(sanitizeRehydrateRendererOptions(options, 'install-python'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:autoguard-status', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getAutoGuardStatusAsync, sanitizeAutoGuardRendererOptions } = require('./meter-autoguard');
+      return { ok: true, data: await getAutoGuardStatusAsync(sanitizeAutoGuardRendererOptions(options, 'status')) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:autoguard-apply', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { applyAutoGuardAsync, sanitizeAutoGuardRendererOptions } = require('./meter-autoguard');
+      return await applyAutoGuardAsync(sanitizeAutoGuardRendererOptions(options, 'apply'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:autoguard-disable', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { disableAutoGuardAsync, sanitizeAutoGuardRendererOptions } = require('./meter-autoguard');
+      return await disableAutoGuardAsync(sanitizeAutoGuardRendererOptions(options, 'disable'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:autoguard-restore', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { restoreAutoGuardAsync, sanitizeAutoGuardRendererOptions } = require('./meter-autoguard');
+      return await restoreAutoGuardAsync(sanitizeAutoGuardRendererOptions(options, 'restore'));
     } catch (e) {
       return { ok: false, error: e.message };
     }

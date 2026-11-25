@@ -672,6 +672,7 @@ async function install(options = {}) {
         'meter-context-unlock.js',
         'meter-enhance.js',
         'meter-rehydrate.js',
+        'meter-autoguard.js',
         'meter-accounts.js',
         'meter-next-prompt.js',
         'macos-binary-utils.js',
@@ -726,6 +727,19 @@ async function install(options = {}) {
         fs.copyFileSync(rehydrateSrcP, path.join(rehydrateDstDir, 'rehydrate_after_compact.py'));
       }
 
+      // 拷贝 Auto Guard PreToolUse Hook 脚本至 ASAR 内部，确保客户端面板可直接离线部署与校验
+      const autoguardSrcCandidates = [
+        path.join(__dirname, 'autoguard', 'auto_guard_hook.js'),
+        path.join(__dirname, 'dist', 'autoguard', 'auto_guard_hook.js'),
+        path.join(__dirname, '..', 'autoguard', 'auto_guard_hook.js')
+      ];
+      const autoguardSrcP = autoguardSrcCandidates.find(p => fs.existsSync(p));
+      if (autoguardSrcP) {
+        const autoguardDstDir = path.join(staging, 'dist', 'autoguard');
+        fs.mkdirSync(autoguardDstDir, { recursive: true });
+        fs.copyFileSync(autoguardSrcP, path.join(autoguardDstDir, 'auto_guard_hook.js'));
+      }
+
       fs.writeFileSync(path.join(staging, 'dist', 'meter-manifest.json'), JSON.stringify({
         version: pkgVersion,
         hostVersion: version,
@@ -748,6 +762,7 @@ async function install(options = {}) {
         'dist/i18n/zh-CN.json',
         'dist/i18n/i18n-runtime.js',
         'dist/rehydrate/rehydrate_after_compact.py',
+        'dist/autoguard/auto_guard_hook.js',
         ...additions.map(f => 'dist/' + f)
       ].map(p => path.normalize(p));
       for (const file of originalEntries) {
@@ -763,6 +778,7 @@ async function install(options = {}) {
           allowedChanges.includes(name) ||
           name.startsWith('dist' + path.sep + 'i18n' + path.sep) ||
           name.startsWith('dist' + path.sep + 'rehydrate' + path.sep) ||
+          name.startsWith('dist' + path.sep + 'autoguard' + path.sep) ||
           name.startsWith('dist' + path.sep + 'assets' + path.sep);
         if (!isAllowed) {
           if (!before.unpacked) {
@@ -1003,7 +1019,7 @@ function getWatchBundleBuildId(baseDir = null) {
   try {
     const root = baseDir || __dirname;
     const h = crypto.createHash('sha256');
-    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-accounts.js', 'meter-next-prompt.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-autoguard.js', 'meter-accounts.js', 'meter-next-prompt.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
       const p = path.join(root, f);
       if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
     }

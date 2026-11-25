@@ -153,6 +153,10 @@ const ALLOWED_ROUTES = [
   '/rehydrate-disable',
   '/rehydrate-restore',
   '/rehydrate-install-python',
+  '/autoguard-status',
+  '/autoguard-apply',
+  '/autoguard-disable',
+  '/autoguard-restore',
   '/modules-status',
   '/toggle-module',
   '/test-proxy',
@@ -180,6 +184,7 @@ const LIVE_CAPABILITIES = {
   contextUnlock: true,
   enhance: true,
   rehydrate: true,
+  autoguard: true,
   modules: true,
   accounts: true,
   checkUpdate: true,
@@ -397,6 +402,34 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         if (req.url === '/rehydrate-install-python') {
           const { installPythonRuntimeAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
           const result = await installPythonRuntimeAsync(sanitizeRehydrateRendererOptions(request, 'install-python'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/autoguard-status') {
+          const { getAutoGuardStatusAsync, sanitizeAutoGuardRendererOptions } = require('./meter-autoguard');
+          const result = await getAutoGuardStatusAsync(sanitizeAutoGuardRendererOptions(request, 'status'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: result }));
+          return;
+        }
+        if (req.url === '/autoguard-apply') {
+          const { applyAutoGuardAsync, sanitizeAutoGuardRendererOptions } = require('./meter-autoguard');
+          const result = await applyAutoGuardAsync(sanitizeAutoGuardRendererOptions(request, 'apply'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/autoguard-disable') {
+          const { disableAutoGuardAsync, sanitizeAutoGuardRendererOptions } = require('./meter-autoguard');
+          const result = await disableAutoGuardAsync(sanitizeAutoGuardRendererOptions(request, 'disable'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/autoguard-restore') {
+          const { restoreAutoGuardAsync, sanitizeAutoGuardRendererOptions } = require('./meter-autoguard');
+          const result = await restoreAutoGuardAsync(sanitizeAutoGuardRendererOptions(request, 'restore'));
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;

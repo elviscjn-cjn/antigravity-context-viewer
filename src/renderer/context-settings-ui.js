@@ -1513,6 +1513,28 @@ const {
       <div class="ag-ns-row ag-ns-row-stack">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div class="ag-ns-row-text">
+            <div class="ag-ns-row-title" data-i18n="autoguard.card.title">🛡️ Auto 智能审批护栏 (Win10 可用)</div>
+            <div class="ag-ns-row-desc" data-i18n="ns.autoguard.desc">在输入框 Turbo 菜单补充 Auto 档位：常规操作免点确认，高危命令与跨工作区修改强制弹窗拦截</div>
+          </div>
+          <span id="ag-ns-autoguard-badge" class="ag-ns-pill" data-i18n="settings.common.reading">读取中…</span>
+        </div>
+        <div class="ag-ns-control" style="justify-content:space-between;width:100%;flex-wrap:wrap;gap:8px">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="autoGuardMode">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="smart" data-i18n="autoguard.mode.smart">智能平衡</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="strict_auto" data-i18n="autoguard.mode.strict_auto">严格白名单</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="guard_only" data-i18n="autoguard.mode.guard_only">仅高危护栏</button>
+          </div>
+          <div class="ag-ns-actions" style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" id="ag-ns-btn-autoguard-enable" class="ag-ns-btn is-primary" data-ag-ns-action="autoguardEnable" data-i18n="autoguard.btn.enable">开启</button>
+            <button type="button" id="ag-ns-btn-autoguard-disable" class="ag-ns-btn" data-ag-ns-action="autoguardDisable" data-i18n="autoguard.btn.disable">停用</button>
+            <button type="button" id="ag-ns-btn-autoguard-remove" class="ag-ns-btn" data-ag-ns-action="autoguardRemove" data-i18n="autoguard.btn.remove">卸载移除</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div class="ag-ns-row-text">
             <div class="ag-ns-row-title" data-i18n="enhance.prompt.title">回答与工具使用规则</div>
             <div id="ag-ns-enhance-desc" class="ag-ns-row-desc" data-i18n="ns.enhance.desc">调整语言服务提示模板档位并支持恢复官方默认</div>
           </div>
@@ -2487,6 +2509,18 @@ const {
     var btnRehydrateDis = byId(root, 'ag-ns-btn-rehydrate-disable');
     if (btnRehydrateEn) btnRehydrateEn.disabled = Boolean(status.rehydrateBusy || status.rehydrateDisableEnable);
     if (btnRehydrateDis) btnRehydrateDis.disabled = Boolean(status.rehydrateBusy || status.rehydrateDisableDisable);
+
+    var agBadge = byId(root, 'ag-ns-autoguard-badge');
+    if (agBadge && status.autoGuardBadgeText) {
+      agBadge.textContent = status.autoGuardBadgeText;
+      agBadge.className = 'ag-ns-pill ' + (status.autoGuardBadgeClass || '');
+    }
+    var btnAgEn = byId(root, 'ag-ns-btn-autoguard-enable');
+    var btnAgDis = byId(root, 'ag-ns-btn-autoguard-disable');
+    var btnAgRem = byId(root, 'ag-ns-btn-autoguard-remove');
+    if (btnAgEn) btnAgEn.disabled = Boolean(status.autoGuardBusy || status.autoGuardDisableEnable);
+    if (btnAgDis) btnAgDis.disabled = Boolean(status.autoGuardBusy || status.autoGuardDisableDisable);
+    if (btnAgRem) btnAgRem.disabled = Boolean(status.autoGuardBusy || status.autoGuardDisableRemove);
 
     var enhBadge = byId(root, 'ag-ns-enhance-badge');
     if (enhBadge && status.enhanceBadgeText) {
