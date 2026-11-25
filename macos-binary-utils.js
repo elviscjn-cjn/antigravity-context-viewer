@@ -512,6 +512,109 @@ function inspectMacAsarIntegrity(asarPath, options = {}) {
   return result;
 }
 
+/**
+ * 在 macOS .app 的 Resources/app.asar 被改写或还原后，按需重签外层 .app Bundle 并校验。
+ * 若当前包体已通过 codesign --verify --deep --strict，则保持原签名不变；
+ * 仅在签名因资源改动失效且原签名状态为 signed / adhoc 时，保留 entitlements 执行 ad-hoc 重签。
+ */
+function resignMacAppBundleIfNeeded(asarOrBundlePath, macIntegrity = null, options = {}) {
+  const platform = options._platform || process.platform;
+  const existsFn = options._existsSync || fs.existsSync;
+  const integrity = macIntegrity || inspectMacAsarIntegrity(asarOrBundlePath, options);
+  const appBundlePath = integrity?.appBundlePath || null;
+
+  if (platform !== 'darwin' || !integrity?.isMacAppBundle || !appBundlePath) {
+    return { attempted: false, ok: false, skipped: true, reason: 'not_mac_app_bundle' };
+  }
+  if (options.skipMacResign === true) {
+    return { attempted: false, ok: false, skipped: true, reason: 'skipped_by_option' };
+  }
+  if (integrity.signatureStatus !== 'signed' && integrity.signatureStatus !== 'adhoc') {
+    return {
+      attempted: false,
+      ok: false,
+      skipped: true,
+      reason: integrity.signatureStatus === 'unsigned' ? 'unsigned' : 'unknown_signature',
+      signatureStatus: integrity.signatureStatus
+    };
+  }
+  if (typeof options._execFileSync !== 'function' && !existsFn(appBundlePath)) {
+    return { attempted: false, ok: false, skipped: true, reason: 'bundle_not_found', appBundlePath };
+  }
+
+  const runSync = typeof options._execFileSync === 'function' ? options._execFileSync : execFileSync;
+  const codesignBin = options.codesignBin || 'codesign';
+  const execOpts = { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] };
+  const manualCmd = `codesign --force --sign - --preserve-metadata=entitlements "${appBundlePath}"`;
+
+  try {
+    runSync(codesignBin, ['--verify', '--deep', '--strict', '--verbose=1', appBundlePath], {
+      ...execOpts,
+      timeout: 15000
+    });
+    return {
+      attempted: false,
+      ok: true,
+      alreadyValid: true,
+      appBundlePath,
+      previousSignatureStatus: integrity.signatureStatus,
+      previousTeamIdentifier: integrity.teamIdentifier || null,
+      signatureStatus: integrity.signatureStatus,
+      verified: true
+    };
+  } catch {
+    // 签名已因 app.asar 变更失效，继续执行外层 .app 重签
+  }
+
+  try {
+    runSync(
+      codesignBin,
+      ['--force', '--sign', '-', '--preserve-metadata=entitlements', appBundlePath],
+      execOpts
+    );
+    runSync(codesignBin, ['--verify', '--deep', '--strict', '--verbose=1', appBundlePath], {
+      ...execOpts,
+      timeout: 15000
+    });
+    return {
+      attempted: true,
+      ok: true,
+      verified: true,
+      appBundlePath,
+      previousSignatureStatus: integrity.signatureStatus,
+      previousTeamIdentifier: integrity.teamIdentifier || null,
+      signatureStatus: 'adhoc',
+      manualCmd
+    };
+  } catch (err) {
+    return {
+      attempted: true,
+      ok: false,
+      verified: false,
+      appBundlePath,
+      previousSignatureStatus: integrity.signatureStatus,
+      previousTeamIdentifier: integrity.teamIdentifier || null,
+      error: err?.stderr ? String(err.stderr).trim() : (err?.message || String(err)),
+      manualCmd
+    };
+  }
+}
+
+function logMacBundleResignResult(resignResult, options = {}) {
+  if (options.silent || !resignResult || !resignResult.attempted) return;
+  if (resignResult.ok) {
+    const teamNote = resignResult.previousTeamIdentifier
+      ? `（原 TeamIdentifier=${resignResult.previousTeamIdentifier} 已切换为 adhoc，可能会重新提示系统权限或影响官方签名关联能力）`
+      : '';
+    console.log(`🔐 [macOS 重签] 已保留 entitlements 完成外层 .app ad-hoc 重签并通过 codesign 校验${teamNote}。`);
+    return;
+  }
+  console.warn(`⚠️ [macOS 重签] 自动重签或校验未通过: ${resignResult.error}`);
+  if (resignResult.manualCmd) {
+    console.warn(`   👉 请手动执行: ${resignResult.manualCmd}`);
+  }
+}
+
 module.exports = {
   MH_MAGIC_64,
   FAT_MAGIC,
@@ -533,5 +636,7 @@ module.exports = {
   isExactMacLanguageServerProcess,
   listMacProcessesSync,
   listMacProcessesAsync,
-  inspectMacAsarIntegrity
+  inspectMacAsarIntegrity,
+  resignMacAppBundleIfNeeded,
+  logMacBundleResignResult
 };

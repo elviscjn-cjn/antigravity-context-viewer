@@ -13,7 +13,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, getAppDataDir, isIsolatedTestPath, findAsarPath } = require('./asar-engine');
-const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
+const { inspectMacAsarIntegrity, resignMacAppBundleIfNeeded, logMacBundleResignResult } = require('./macos-binary-utils');
 const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
 const { loadModulesConfig, saveModulesConfig, acquireFileLock, getHostCoreBuildId } = require('./modules-config');
 const {
@@ -945,6 +945,18 @@ async function install(options = {}) {
         manifest.verifiedMainSha256 = installedMainSha;
         manifest.helperSha256 = helperSha;
         manifest.verifiedAt = new Date().toISOString();
+
+        const macResign = resignMacAppBundleIfNeeded(installed, macIntegrity, {
+          _platform: options._platform,
+          _existsSync: options._existsSync,
+          _execFileSync: options._execFileSync,
+          skipMacResign: options.skipMacResign,
+          codesignBin: options.codesignBin
+        });
+        if (macResign.attempted) {
+          manifest.macResign = macResign;
+          logMacBundleResignResult(macResign, { silent: options.silent });
+        }
 
         fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
         replacedManifest = true;
