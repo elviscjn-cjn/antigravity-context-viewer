@@ -3140,6 +3140,38 @@
     } catch { }
   }
 
+  function isComposerMountContainerValid(composer, opts = {}) {
+    if (!composer || composer === document.body || composer === document.documentElement) return false;
+    if (composer.closest?.('header,[role="dialog"],#ag-context-meter')) return false;
+    const isForm = Boolean(opts.trustedForm) || composer.tagName === 'FORM';
+    if (!isForm && !composer.querySelector?.('[contenteditable="true"],textarea')) return false;
+
+    // 防止在无 <form> 时沿父链爬升至聊天主栏外层，误插进左右分栏（flex row / 多列 grid）的右侧区域
+    const parent = composer.parentElement;
+    if (!isForm && parent && typeof getComputedStyle === 'function') {
+      try {
+        const pStyle = getComputedStyle(parent);
+        if (pStyle) {
+          const disp = String(pStyle.display || '').toLowerCase();
+          const dir = String(pStyle.flexDirection || '').toLowerCase();
+          if ((disp === 'flex' || disp === 'inline-flex') && dir.startsWith('row')) return false;
+          if ((disp === 'grid' || disp === 'inline-grid') &&
+              String(pStyle.gridTemplateColumns || '').trim().split(/\s+/).filter(Boolean).length > 1) {
+            return false;
+          }
+        }
+      } catch { }
+    }
+    if (!isForm && typeof composer.getBoundingClientRect === 'function' &&
+        typeof window !== 'undefined' && Number(window.innerHeight) > 0) {
+      try {
+        const rect = composer.getBoundingClientRect();
+        if (rect && rect.height > 0 && rect.height > window.innerHeight * 0.65) return false;
+      } catch { }
+    }
+    return true;
+  }
+
   function ensureComposerStatusBarMounted(opts = {}) {
     try {
       const csbBar = el('composer-status-bar');
@@ -3159,10 +3191,7 @@
         (!document.contains || document.contains(csbBar))
       ) {
         const prevSibling = csbBar.previousElementSibling;
-        if (
-          prevSibling &&
-          (prevSibling.tagName === 'FORM' || Boolean(prevSibling.querySelector?.('[contenteditable="true"],textarea')))
-        ) {
+        if (isComposerMountContainerValid(prevSibling)) {
           csbBar.hidden = false;
           return;
         }
@@ -3172,12 +3201,12 @@
       if (!target || !target.bar) return;
 
       let composer = target.bar.closest('form');
+      const trustedForm = Boolean(composer);
       if (!composer) {
         composer = target.bar;
         while (composer && !composer.querySelector('[contenteditable="true"],textarea')) composer = composer.parentElement;
       }
-      if (!composer || composer === document.body || composer === document.documentElement ||
-          composer.closest?.('header,[role="dialog"],#ag-context-meter')) return;
+      if (!isComposerMountContainerValid(composer, { trustedForm })) return;
       if (composer.nextElementSibling !== csbBar) composer.after(csbBar);
       csbBar.hidden = false;
     } catch (e) {
